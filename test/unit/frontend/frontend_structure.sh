@@ -45,3 +45,5 @@ done
 grep -Fq '流程自动化测试平台' "${project_root}/web/src/stores/app.ts"
 grep -Fq 'packages:' "${project_root}/pnpm-workspace.yaml"
 grep -Fq -- '- web' "${project_root}/pnpm-workspace.yaml"
+
+"${project_root}/test/unit/frontend/theme_and_layout_structure.sh"
