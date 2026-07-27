@@ -44,6 +44,7 @@ async function loadMore() {
   const version = ++requestVersion
   loading.value = true
   await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
   if (version !== requestVersion) return
   batchCount.value += 1
   loading.value = false
