@@ -1,0 +1,13 @@
+root = "."
+tmp_dir = ".runtime/air"
+
+[build]
+  cmd = "go build -o .runtime/server ./cmd/server"
+  entrypoint = [".runtime/server"]
+  include_ext = ["go"]
+  exclude_dir = [".git", ".runtime", "node_modules", "参考代码", "web", "test", "docs", "重构指南"]
+  exclude_regex = ["_test\\.go"]
+  delay = 300
+  stop_on_error = true
+  send_interrupt = true
+  kill_delay = "500ms"

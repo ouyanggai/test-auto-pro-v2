@@ -1,0 +1,13 @@
+{
+  "name": "test-auto-pro-v2",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.25.0",
+  "scripts": {
+    "dev:frontend": "pnpm --filter test-auto-pro-v2-web dev",
+    "dev:backend": "go tool air -c .air.toml",
+    "check:frontend": "pnpm --filter test-auto-pro-v2-web typecheck && pnpm --filter test-auto-pro-v2-web build",
+    "check:backend": "go test ./test/unit/backend ./test/contracts && go build ./cmd/server",
+    "test:f000": "./test/run-f000.sh"
+  }
+}
