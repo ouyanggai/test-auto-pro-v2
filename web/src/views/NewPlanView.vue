@@ -480,8 +480,13 @@ async function submitPrototype() {
 }
 
 .back-bar {
-  width: max-content;
-  margin-bottom: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 0 12px;
+  background-color: inherit;
 }
 
 .form-content {
