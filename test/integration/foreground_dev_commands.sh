@@ -24,14 +24,33 @@ stop_job() {
   wait "${command_pid}" 2>/dev/null || true
 }
 
+stop_owned_listener() {
+  local port="$1"
+  local command_fragment="$2"
+  local listener_pid
+  local listener_command
+
+  while IFS= read -r listener_pid; do
+    listener_command="$(ps -p "${listener_pid}" -o command= 2>/dev/null || true)"
+    [[ "${listener_command}" == *"${command_fragment}"* ]] || continue
+    kill -INT "${listener_pid}" 2>/dev/null || true
+  done < <(lsof -t -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)
+}
+
 cleanup() {
+  stop_job "${frontend_pid}"
+  stop_job "${backend_pid}"
+  # 等待 Air 的子进程退出或完成最后一次启动，再按已验证命令行清理残留监听。
+  sleep 1
+  # 仅终止命令行明确归属于本项目的测试子进程，不触碰同端口的其他监听者。
+  stop_owned_listener 19000 "${project_root}/web/node_modules"
+  stop_owned_listener 19080 "${project_root}/.runtime/server"
   if [[ -f "${health_source_backup}" ]]; then
     cp "${health_source_backup}" "${health_source}"
   fi
-  stop_job "${frontend_pid}"
-  stop_job "${backend_pid}"
   for attempt in {1..40}; do
-    if ! lsof -nP -iTCP:19080 -sTCP:LISTEN >/dev/null 2>&1; then
+    if ! lsof -nP -iTCP:19080 -sTCP:LISTEN | grep -Fq "${project_root}/.runtime/server" &&
+      ! lsof -nP -iTCP:19000 -sTCP:LISTEN | grep -Fq "${project_root}/web/node_modules"; then
       return 0
     fi
     sleep 0.25
@@ -77,6 +96,9 @@ wait_for_health || {
   cat "${backend_log}" >&2
   exit 1
 }
+
+# Air 的监听器会在服务首个健康响应后短暂完成注册，避免测试修改过早丢失文件事件。
+sleep 1
 
 perl -0pi -e 's/热更新探针=初始/热更新探针=已触发/' "${health_source}"
 grep -Fq '热更新探针=已触发' "${health_source}"
