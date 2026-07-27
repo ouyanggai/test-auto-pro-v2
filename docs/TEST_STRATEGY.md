@@ -21,6 +21,6 @@
 - 前端类型检查、生产构建和 `pnpm dev:frontend` 开发服务器 smoke。
 - `pnpm dev:backend` 的 Air 配置、健康接口和 Go 源码变更后的热重载。
 - 两个前台命令均以前台日志和 `Ctrl+C` 停止，不建立 PID 或后台进程管理。
-- 应用壳主题默认值、切换与 `localStorage` 持久化源码契约，以及顶栏右侧工具栏、1px 顶栏/侧栏分隔线、Naive UI 圆形侧栏收缩触发器和主内容滚动边界。
+- 应用壳主题默认值、切换与 `localStorage` 持久化源码契约，以及 `NLayoutHeader bordered`/`NLayoutSider bordered` 的 1px 分隔线、无嵌入色的统一表面、至少 `32px × 32px` 且收缩后完整可点的 Naive UI 圆形触发器和主内容滚动边界。
 - 13 个参考仓库的远端、分支、HEAD 与清洁状态。
 - 参考仓库脏工作树保护必须拒绝同步。
