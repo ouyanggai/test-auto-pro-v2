@@ -1,0 +1,43 @@
+import type { FlowCandidate, FlowSource } from './types.ts'
+
+export const FLOW_CANDIDATE_BATCH_SIZE = 6
+
+export const flowSourceLabels: Record<FlowSource, string> = {
+  new: '新发起',
+  started: '已发',
+  pending: '待发',
+}
+
+export const flowSelectionLabels: Record<FlowSource, string> = {
+  new: '流程模板',
+  started: '已发流程',
+  pending: '待发流程',
+}
+
+export function isFlowSourceAvailable(source: FlowSource, accountVerified: boolean): boolean {
+  return source === 'new' || accountVerified
+}
+
+export function getCandidateSearchText(candidate: FlowCandidate): string {
+  if (candidate.kind === 'template') {
+    return [candidate.flowName, candidate.typeName, candidate.groupName, candidate.statusText].join(' ')
+  }
+  if (candidate.kind === 'submitted') {
+    return [candidate.name, candidate.status, candidate.createDate, candidate.currentNodeName, candidate.currentAuditUserNames].join(' ')
+  }
+  return [candidate.flowInstanceName, candidate.statusName, candidate.initiator, candidate.initiatorDate].join(' ')
+}
+
+export function filterFlowCandidates(candidates: readonly FlowCandidate[], query: string): FlowCandidate[] {
+  const keyword = query.trim().toLocaleLowerCase('zh-CN')
+  if (!keyword) return [...candidates]
+  return candidates.filter((candidate) => getCandidateSearchText(candidate).toLocaleLowerCase('zh-CN').includes(keyword))
+}
+
+export function takeCandidateBatches(
+  candidates: readonly FlowCandidate[],
+  batchCount: number,
+  batchSize = FLOW_CANDIDATE_BATCH_SIZE,
+): FlowCandidate[] {
+  return candidates.slice(0, Math.max(1, batchCount) * batchSize)
+}
