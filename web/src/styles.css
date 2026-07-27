@@ -1,0 +1,71 @@
+:root {
+  color: #1f2937;
+  background: #f3f5f7;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-width: 1024px;
+  min-height: 100%;
+  margin: 0;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  background: #ffffff;
+}
+
+.product-name {
+  height: 64px;
+  padding: 0 24px;
+  border-bottom: 1px solid #e5e7eb;
+  color: #111827;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 64px;
+  white-space: nowrap;
+}
+
+.app-header {
+  height: 64px;
+  padding: 0 28px;
+  background: #ffffff;
+  color: #6b7280;
+  line-height: 64px;
+}
+
+.app-content {
+  padding: 28px;
+  background: #f3f5f7;
+}
+
+.placeholder-page {
+  min-height: 240px;
+  padding: 28px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.placeholder-page h1 {
+  margin: 0 0 12px;
+  color: #111827;
+  font-size: 24px;
+}
+
+.placeholder-page p {
+  margin: 0;
+  color: #6b7280;
+  line-height: 1.7;
+}
