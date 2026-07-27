@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { getMockFlowCandidates } from '../../../web/src/features/plans/mock.ts'
+import { getMockFlowCandidates } from '../../fixtures/f001_flow_candidates.ts'
 import {
   FLOW_CANDIDATE_BATCH_SIZE,
   calculateNearestScrollDelta,

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { NEl, NEmpty, NInput, NSpin, NTag, NText, NVirtualList } from 'naive-ui'
+import { computed, ref, watch } from 'vue'
+import { NButton, NEl, NEmpty, NInput, NSpin, NTag, NText, NVirtualList } from 'naive-ui'
 
-import { filterFlowCandidates, flowSelectionLabels, takeCandidateBatches } from './selection'
+import { flowSelectionLabels } from './selection'
 import type { FlowCandidate, FlowSource } from './types'
 
 const props = defineProps<{
@@ -10,52 +10,40 @@ const props = defineProps<{
   items: FlowCandidate[]
   selectedKey: string | null
   requestKey: string
+	accountName: string
+	loading: boolean
+	loadingMore: boolean
+	error: string
+	hasMore: boolean
+	total: number
 }>()
 
 const emit = defineEmits<{
   select: [key: string]
+	queryChange: [query: string]
+	loadMore: []
+	retry: []
 }>()
 
 const query = ref('')
-const batchCount = ref(1)
-const loading = ref(false)
 const searchFieldRef = ref<HTMLElement | null>(null)
-let requestVersion = 0
 
 const title = computed(() => flowSelectionLabels[props.source])
-const filteredItems = computed(() => filterFlowCandidates(props.items, query.value))
-const visibleItems = computed(() => takeCandidateBatches(filteredItems.value, batchCount.value))
-const hasMore = computed(() => visibleItems.value.length < filteredItems.value.length)
-
-function resetList() {
-  requestVersion += 1
-  batchCount.value = 1
-  loading.value = false
-}
 
 watch(() => props.requestKey, () => {
   query.value = ''
-  resetList()
 })
 
-watch(query, resetList)
-
-async function loadMore() {
-  if (loading.value || !hasMore.value) return
-  const version = ++requestVersion
-  loading.value = true
-  await nextTick()
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-  if (version !== requestVersion) return
-  batchCount.value += 1
-  loading.value = false
+function updateQuery(value: string) {
+	query.value = value
+	emit('queryChange', value)
 }
 
 function handleScroll(event: Event) {
   const target = event.target as HTMLElement | null
   if (!target) return
-  if (target.scrollTop + target.clientHeight >= target.scrollHeight - 24) {
-    void loadMore()
+  if (target.scrollTop + target.clientHeight >= target.scrollHeight - 24 && props.hasMore && !props.loading && !props.loadingMore) {
+	emit('loadMore')
   }
 }
 
@@ -101,21 +89,32 @@ defineExpose({ getSearchElement, focusSearch })
     <div class="candidate-toolbar">
       <div ref="searchFieldRef" class="candidate-search-field">
         <n-input
-          v-model:value="query"
+		  :value="query"
           clearable
           :placeholder="`搜索${title}名称或状态`"
           :aria-label="`搜索${title}`"
+		  @update:value="updateQuery"
         />
       </div>
-      <n-text depth="3">{{ items[0]?.accountName }} · 本地静态数据 · {{ filteredItems.length }} 项</n-text>
+	  <n-text depth="3">{{ accountName }} · 真实目标平台 · 已加载 {{ items.length }} / {{ total }}</n-text>
     </div>
 
-    <n-empty v-if="filteredItems.length === 0" class="candidate-empty" :description="`没有匹配的${title}`" />
+	<div v-if="loading && items.length === 0" class="candidate-state" aria-live="polite">
+	  <n-spin size="small" />
+	  <n-text depth="3">正在读取{{ title }}…</n-text>
+	</div>
+
+	<div v-else-if="error && items.length === 0" class="candidate-state" aria-live="polite">
+	  <n-empty :description="error" />
+	  <n-button secondary size="small" @click="emit('retry')">重新加载</n-button>
+	</div>
+
+	<n-empty v-else-if="items.length === 0" class="candidate-empty" :description="`没有匹配的${title}`" />
 
     <n-virtual-list
       v-else
       class="candidate-virtual-list"
-      :items="visibleItems"
+	  :items="items"
       :item-size="84"
       key-field="key"
       @scroll="handleScroll"
@@ -140,13 +139,17 @@ defineExpose({ getSearchElement, focusSearch })
       </template>
     </n-virtual-list>
 
-    <div v-if="filteredItems.length > 0" class="candidate-footer" aria-live="polite">
-      <template v-if="loading">
+	<div v-if="items.length > 0" class="candidate-footer" aria-live="polite">
+	  <template v-if="loadingMore">
         <n-spin size="small" />
         <n-text depth="3">正在追加下一批…</n-text>
       </template>
-      <n-text v-else-if="hasMore" depth="3">滚动到底加载更多</n-text>
-      <n-text v-else depth="3">已显示全部 {{ filteredItems.length }} 项</n-text>
+	  <template v-else-if="error">
+		<n-text type="error">{{ error }}</n-text>
+		<n-button text type="primary" size="small" @click="emit('retry')">重试本页</n-button>
+	  </template>
+	  <n-text v-else-if="hasMore" depth="3">滚动到底加载更多</n-text>
+	  <n-text v-else depth="3">已显示全部 {{ items.length }} 项</n-text>
     </div>
   </n-el>
 </template>
@@ -258,5 +261,14 @@ defineExpose({ getSearchElement, focusSearch })
 .candidate-empty {
   min-height: 252px;
   padding-top: 72px;
+}
+
+.candidate-state {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	min-height: 252px;
 }
 </style>

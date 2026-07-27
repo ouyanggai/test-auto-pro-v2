@@ -24,7 +24,15 @@ import {
 import { useRouter } from 'vue-router'
 
 import FlowCandidateList from '../features/plans/FlowCandidateList.vue'
-import { getMockFlowCandidates } from '../features/plans/mock'
+import { fetchTargetCandidates, TargetApiError, verifyTargetAccount } from '../features/plans/api'
+import {
+  createDebouncedRunner,
+  invalidatesVerification,
+  isCurrentRemoteRequest,
+  mergeCandidatePages,
+  retryPageFor,
+  type RemoteRequestIdentity,
+} from '../features/plans/remote'
 import {
   calculateNearestScrollDelta,
   flowSelectionLabels,
@@ -32,7 +40,13 @@ import {
   isFlowSourceAvailable,
   resolvePostSelectionGuidance,
 } from '../features/plans/selection'
-import type { AccountVerificationState, FlowCandidate, FlowSource, PlanFormValue } from '../features/plans/types'
+import type {
+  AccountVerificationState,
+  FlowCandidate,
+  FlowSource,
+  PlanFormValue,
+  VerifiedTargetAccount,
+} from '../features/plans/types'
 
 const router = useRouter()
 const message = useMessage()
@@ -64,9 +78,27 @@ const form = reactive<PlanFormValue>({
 })
 
 const verificationState = ref<AccountVerificationState>('idle')
+const verificationError = ref('')
 const verifiedAccount = ref('')
+const verifiedSummary = ref<VerifiedTargetAccount | null>(null)
 let verificationVersion = 0
+let verificationController: AbortController | null = null
+
+const candidates = ref<FlowCandidate[]>([])
+const candidateLoading = ref(false)
+const candidateLoadingMore = ref(false)
+const candidateError = ref('')
+const candidateHasMore = ref(false)
+const candidateTotal = ref(0)
+const candidatePage = ref(0)
+const candidateQuery = ref('')
+const candidateFailedPage = ref<number | null>(null)
 const selectionVersion = ref(0)
+let candidateRequestVersion = 0
+let candidateController: AbortController | null = null
+const searchDebouncer = createDebouncedRunner((query: string) => {
+  void loadCandidatePage(1, true, query)
+})
 
 const accountVerified = computed(() => (
   verificationState.value === 'verified'
@@ -80,13 +112,14 @@ const sourceOptions = computed(() => (
     disabled: !isFlowSourceAvailable(value, accountVerified.value),
   }))
 ))
-const candidates = computed<FlowCandidate[]>(() => (
-  accountVerified.value ? getMockFlowCandidates(form.flowSource, verifiedAccount.value) : []
-))
 const selectedCandidateKey = computed(() => {
-  if (form.flowSource === 'new') return form.templateId
-  if (form.flowSource === 'started') return form.submittedFlowId
-  return form.dueFlowId
+  if (form.flowSource === 'new') {
+    return candidates.value.find((candidate) => candidate.kind === 'template' && candidate.templateId === form.templateId)?.key ?? null
+  }
+  if (form.flowSource === 'started') {
+    return candidates.value.find((candidate) => candidate.kind === 'submitted' && candidate.id === form.submittedFlowId)?.key ?? null
+  }
+  return candidates.value.find((candidate) => candidate.kind === 'due' && candidate.flowInstanceId === form.dueFlowId)?.key ?? null
 })
 const candidateRequestKey = computed(() => (
   `${selectionVersion.value}:${verifiedAccount.value}:${form.flowSource}`
@@ -98,12 +131,21 @@ const selectionPath = computed(() => {
   return 'dueFlowId'
 })
 const accountStatusCopy = computed(() => {
-  if (verificationState.value === 'verifying') return '正在校验本地输入，不会请求真实平台…'
-  if (accountVerified.value) return `已完成“${verifiedAccount.value}”的本地静态验证，未登录真实平台。`
+  if (verificationState.value === 'verifying') return '正在验证目标平台账号…'
+  if (accountVerified.value) {
+    const identity = [verifiedSummary.value?.displayName, verifiedSummary.value?.companyName].filter(Boolean).join(' · ')
+    return identity ? `目标平台账号已验证：${identity}` : `目标平台账号“${verifiedAccount.value}”已验证。`
+  }
+  if (verificationState.value === 'failed') return verificationError.value || '账号验证失败，请重试。'
   if (verificationState.value === 'invalid') return '账号已编辑，原验证失效，请重新验证。'
-  return '本轮仅验证界面联动，不会登录真实平台或生成 SID。'
+  return '验证成功后才能读取该账号的真实流程。'
 })
-const accountStatusType = computed(() => (accountVerified.value ? 'success' : verificationState.value === 'invalid' ? 'warning' : undefined))
+const accountStatusType = computed(() => {
+  if (accountVerified.value) return 'success'
+  if (verificationState.value === 'invalid') return 'warning'
+  if (verificationState.value === 'failed') return 'error'
+  return undefined
+})
 
 let guidanceVersion = 0
 let pendingSelectionGuidance: number | null = null
@@ -230,13 +272,142 @@ function clearFlowSelections() {
   selectionVersion.value += 1
 }
 
+function cancelCandidateRequest() {
+  candidateController?.abort()
+  candidateController = null
+  candidateRequestVersion += 1
+  candidateLoading.value = false
+  candidateLoadingMore.value = false
+}
+
+function clearCandidateState() {
+  cancelCandidateRequest()
+  candidates.value = []
+  candidateError.value = ''
+  candidateHasMore.value = false
+  candidateTotal.value = 0
+  candidatePage.value = 0
+  candidateFailedPage.value = null
+}
+
+function invalidateVerifiedAccount(errorMessage: string) {
+  searchDebouncer.cancel()
+  clearCandidateState()
+  verifiedAccount.value = ''
+  verifiedSummary.value = null
+  verificationState.value = 'failed'
+  verificationError.value = errorMessage
+  if (form.flowSource !== 'new') form.flowSource = 'new'
+  clearFlowSelections()
+}
+
+function currentRequestIdentity(): RemoteRequestIdentity {
+  return {
+    version: candidateRequestVersion,
+    account: verifiedAccount.value,
+    source: form.flowSource,
+    query: candidateQuery.value,
+  }
+}
+
+async function loadCandidatePage(page: number, reset: boolean, query: string) {
+  if (!accountVerified.value) return
+  candidateController?.abort()
+  const controller = new AbortController()
+  candidateController = controller
+  candidateQuery.value = query
+  const requestIdentity: RemoteRequestIdentity = {
+    version: ++candidateRequestVersion,
+    account: verifiedAccount.value,
+    source: form.flowSource,
+    query,
+  }
+  candidateError.value = ''
+  candidateFailedPage.value = null
+  if (reset) {
+    candidates.value = []
+    candidatePage.value = 0
+    candidateTotal.value = 0
+    candidateHasMore.value = false
+    candidateLoading.value = true
+  }
+  else {
+    candidateLoadingMore.value = true
+  }
+
+  try {
+    const result = await fetchTargetCandidates({
+      account: requestIdentity.account,
+      source: requestIdentity.source as FlowSource,
+      query: requestIdentity.query,
+      page,
+      pageSize: 20,
+      signal: controller.signal,
+    })
+    if (!isCurrentRemoteRequest(currentRequestIdentity(), requestIdentity) || result.account !== requestIdentity.account) return
+    candidates.value = reset ? result.items : mergeCandidatePages(candidates.value, result.items)
+    candidatePage.value = result.page
+    candidateTotal.value = result.total
+    candidateHasMore.value = result.hasMore && result.items.length > 0
+  }
+  catch (error) {
+    if (controller.signal.aborted || !isCurrentRemoteRequest(currentRequestIdentity(), requestIdentity)) return
+    const apiError = error instanceof TargetApiError ? error : new TargetApiError('读取目标平台失败，请重试')
+    if (invalidatesVerification(apiError.code)) {
+      invalidateVerifiedAccount(apiError.message)
+      message.error(apiError.message)
+      return
+    }
+    candidateError.value = apiError.message
+    candidateFailedPage.value = page
+  }
+  finally {
+    if (isCurrentRemoteRequest(currentRequestIdentity(), requestIdentity)) {
+      candidateLoading.value = false
+      candidateLoadingMore.value = false
+      candidateController = null
+    }
+  }
+}
+
+function handleCandidateQueryChange(query: string) {
+  candidateQuery.value = query
+  candidateController?.abort()
+  candidateController = null
+  candidateRequestVersion += 1
+  candidateLoading.value = false
+  candidateLoadingMore.value = false
+	 candidateHasMore.value = false
+  candidateError.value = ''
+  candidateFailedPage.value = null
+  searchDebouncer.schedule(query)
+}
+
+function loadMoreCandidates() {
+	if (!accountVerified.value || candidateLoading.value || candidateLoadingMore.value || candidateError.value || !candidateHasMore.value) return
+  void loadCandidatePage(candidatePage.value + 1, false, candidateQuery.value)
+}
+
+function retryCandidates() {
+  if (!accountVerified.value) return
+  const page = retryPageFor(candidates.value, candidatePage.value, candidateFailedPage.value)
+  void loadCandidatePage(page, page === 1, candidateQuery.value)
+}
+
 watch(() => form.account, async () => {
+  verificationController?.abort()
+  verificationController = null
   verificationVersion += 1
   guidanceVersion += 1
   pendingSelectionGuidance = null
+  searchDebouncer.cancel()
   if (verificationState.value !== 'idle') verificationState.value = 'invalid'
+  verificationError.value = ''
   verifiedAccount.value = ''
+  verifiedSummary.value = null
   if (form.flowSource !== 'new') form.flowSource = 'new'
+  candidateQuery.value = ''
+  clearCandidateState()
   clearFlowSelections()
   await nextTick()
   selectionItemRef.value?.restoreValidation()
@@ -247,8 +418,14 @@ watch(() => form.flowSource, async (source) => {
     form.flowSource = 'new'
     return
   }
+  searchDebouncer.cancel()
+  candidateQuery.value = ''
+  clearCandidateState()
   clearFlowSelections()
-  if (accountVerified.value) requestSelectionGuidance()
+  if (accountVerified.value) {
+    requestSelectionGuidance()
+    void loadCandidatePage(1, true, '')
+  }
   await nextTick()
   selectionItemRef.value?.restoreValidation()
 })
@@ -275,23 +452,47 @@ async function verifyAccount() {
     return
   }
 
+  verificationController?.abort()
+  const controller = new AbortController()
+  verificationController = controller
   const account = form.account.trim()
   const version = ++verificationVersion
   verificationState.value = 'verifying'
-  await nextTick()
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-  if (version !== verificationVersion || account !== form.account.trim()) return
-  verifiedAccount.value = account
-  verificationState.value = 'verified'
-  accountItemRef.value?.restoreValidation()
-  requestSelectionGuidance()
-  message.success('本地静态验证完成，未登录真实平台')
+  verificationError.value = ''
+  try {
+    const summary = await verifyTargetAccount(account, controller.signal)
+    if (controller.signal.aborted || version !== verificationVersion || account !== form.account.trim()) return
+    verifiedAccount.value = account
+    verifiedSummary.value = summary
+    verificationState.value = 'verified'
+    accountItemRef.value?.restoreValidation()
+    candidateQuery.value = ''
+    clearCandidateState()
+    clearFlowSelections()
+    requestSelectionGuidance()
+    message.success('目标平台账号验证成功')
+    void loadCandidatePage(1, true, '')
+  }
+  catch (error) {
+    if (controller.signal.aborted || version !== verificationVersion) return
+    const apiError = error instanceof TargetApiError ? error : new TargetApiError('账号验证失败，请重试')
+    verificationState.value = 'failed'
+    verificationError.value = apiError.message
+    verifiedAccount.value = ''
+    verifiedSummary.value = null
+    message.error(apiError.message)
+  }
+  finally {
+    if (version === verificationVersion) verificationController = null
+  }
 }
 
 async function selectCandidate(key: string) {
-  if (form.flowSource === 'new') form.templateId = key
-  else if (form.flowSource === 'started') form.submittedFlowId = key
-  else form.dueFlowId = key
+  const candidate = candidates.value.find((item) => item.key === key)
+  if (!candidate) return
+  if (candidate.kind === 'template') form.templateId = candidate.templateId
+  else if (candidate.kind === 'submitted') form.submittedFlowId = candidate.id
+  else form.dueFlowId = candidate.flowInstanceId
   await nextTick()
   selectionItemRef.value?.restoreValidation()
   requestPostSelectionGuidance()
@@ -318,7 +519,7 @@ async function submitPrototype() {
     <div class="form-content">
       <header class="page-heading">
         <h1>新建计划</h1>
-        <p>先验证账号并选择对应流程。当前页面只演示静态交互，不会登录目标平台或保存计划。</p>
+		<p>验证目标平台真实账号并选择可见流程。当前只读取候选，不保存计划，也不修改目标平台。</p>
       </header>
 
       <n-form
@@ -452,10 +653,19 @@ async function submitPrototype() {
                   :items="candidates"
                   :selected-key="selectedCandidateKey"
                   :request-key="candidateRequestKey"
+				  :account-name="verifiedSummary?.displayName || verifiedAccount"
+				  :loading="candidateLoading"
+				  :loading-more="candidateLoadingMore"
+				  :error="candidateError"
+				  :has-more="candidateHasMore"
+				  :total="candidateTotal"
                   @select="selectCandidate"
+				  @query-change="handleCandidateQueryChange"
+				  @load-more="loadMoreCandidates"
+				  @retry="retryCandidates"
                 />
                 <div v-else key="unverified" class="selection-placeholder">
-                  <n-empty description="请先验证账号，再加载该账号可见的流程模板" />
+				  <n-empty description="请先验证账号，再读取该账号可见的真实流程" />
                 </div>
               </transition>
             </div>

@@ -1,7 +1,7 @@
 export type PlanStatus = 'pending_configuration' | 'ready' | 'running' | 'completed'
 export type PlanRunMode = 'serial' | 'parallel'
 export type FlowSource = 'new' | 'started' | 'pending'
-export type AccountVerificationState = 'idle' | 'verifying' | 'verified' | 'invalid'
+export type AccountVerificationState = 'idle' | 'verifying' | 'verified' | 'invalid' | 'failed'
 export type FlowCandidateKind = 'template' | 'submitted' | 'due'
 
 export interface PlanRow {
@@ -54,6 +54,12 @@ export interface FlowTemplateCandidate extends FlowCandidateBase {
   groupName: string
   statusText: string
   updateTime: string
+}
+
+export interface VerifiedTargetAccount {
+  account: string
+  displayName: string
+  companyName: string
 }
 
 export interface SubmittedFlowCandidate extends FlowCandidateBase {
