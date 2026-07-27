@@ -24,7 +24,7 @@
 
 ## 状态记录
 
-状态只能按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进；`accepted` 必须记录用户明确验收。
+正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进；`accepted` 必须记录用户明确验收。用户明确反馈人工验收未通过时，允许 `ready_for_manual -> implementing`，必须记录反馈和新的验证结果。
 
 ## 人工验收
 

@@ -1,6 +1,6 @@
 # F-000 项目初始化
 
-- 状态：ready_for_manual
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的“人工验收原则”
 - 架构依据：`docs/ARCHITECTURE.md`
 - 计划确认时间：2026-07-27
@@ -16,7 +16,7 @@
 - Git 与忽略规则、持久化项目文档、四个项目本地技能。
 - 13 个参考仓库的干净克隆、安全同步、状态报告与清单生成。
 - Go 标准库健康接口和 Vue 3 最小中文应用壳。
-- 本地后台启停、状态、日志命令和 F-000 分类测试。
+- 两个前台热更新终端、前台启动命令和 F-000 分类测试。
 
 不包含：
 
@@ -33,7 +33,7 @@
 - [x] `make refs-sync` 和 `make refs-status` 可用，脏仓库保护已验证。
 - [x] 健康接口精确返回约定 JSON，后端监听 19080。
 - [x] 前端使用约定技术栈，监听 19000，三个中文路由与 `/api` 代理可用。
-- [x] `make setup/dev/restart/stop/status/logs` 已实际验证。
+- [ ] 前端 `pnpm dev` 与后端 `make backend-dev` 均使用前台热更新方式，且不保留后台 PID 管理。
 - [x] Go build、前端类型检查与构建、F-000 当前测试全部通过。
 - [x] 状态更新为 `ready_for_manual` 并停止，不开始 F-001。
 
@@ -43,6 +43,7 @@
 - 2026-07-27：`awaiting_approval`
 - 2026-07-27：用户确认计划，进入 `implementing`
 - 2026-07-27：实现与自动验证完成，进入 `ready_for_manual`
+- 2026-07-27：用户反馈后台 PID 启动管理方式不通过，按人工验收反馈从 `ready_for_manual` 返回 `implementing`。
 
 ## 人工验收
 

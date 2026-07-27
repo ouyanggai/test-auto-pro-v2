@@ -18,7 +18,7 @@
 
 ## 功能状态与人工门禁
 
-状态只能按以下顺序推进：
+正常推进顺序为：
 
 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted`
 
@@ -26,6 +26,7 @@
 - 实施与自动验证完成后停在 `ready_for_manual`。
 - 只有用户明确验收后才能进入 `accepted`。
 - 到达 `ready_for_manual` 后禁止自动开始下一功能。
+- 用户明确反馈人工验收未通过时，当前功能允许从 `ready_for_manual` 返回 `implementing`；必须记录反馈、重新验证，并再次停在 `ready_for_manual`。
 
 ## 默认技能
 
