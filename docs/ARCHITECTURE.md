@@ -45,7 +45,7 @@
 - 侧栏使用 `NLayoutSider` 的 `collapse-mode="width"`、`show-trigger="arrow-circle"` 与 `collapsed-width="0"`；圆形触发器真实点击区至少为 `32px × 32px`，零宽收缩态通过定位覆盖完整留在 viewport 内，收缩时不展示无依据图标。
 - 浏览器根节点固定为 `100dvh` 且不滚动；顶栏固定，侧栏可收缩，主内容区独立 `overflow-y: auto`，侧栏仅在菜单超出时自身滚动。Flex/Grid 子项使用最小尺寸约束，避免撑出 viewport。
 - 通过 `NConfigProvider`、`NGlobalStyle` 与 `darkTheme` 实现深浅主题；默认浅色，主题值保存到 `localStorage`，所有表面、文字、边线和选中态使用 Naive UI 语义变量随主题切换。
-- 保持中文、桌面优先；F-001 才进行测试计划静态 mock。
+- 保持中文、桌面优先；F-001 的计划列表与新建页只使用 `web/src/features/plans` 中的最小类型、mock 和纯函数，不建立通用表格或表单框架，不访问后端。
 - Vue Flow 与 dagre 统一延后到 F-004；F-000 不安装也不预留画布抽象。
 - 只有真实复杂流程证明 dagre 不可读时，才另行批准评估 ELK.js。
 
