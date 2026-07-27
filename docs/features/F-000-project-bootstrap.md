@@ -1,6 +1,6 @@
 # F-000 项目初始化
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“人工验收原则”
 - 架构依据：`docs/ARCHITECTURE.md`
 - 计划确认时间：2026-07-27
@@ -33,7 +33,7 @@
 - [x] `make refs-sync` 和 `make refs-status` 可用，脏仓库保护已验证。
 - [x] 健康接口精确返回约定 JSON，后端监听 19080。
 - [x] 前端使用约定技术栈，监听 19000，三个中文路由与 `/api` 代理可用。
-- [ ] 根目录 `pnpm dev:frontend` 与 `pnpm dev:backend` 均使用前台热更新方式，且不保留后台 PID 管理。
+- [x] 根目录 `pnpm dev:frontend` 与 `pnpm dev:backend` 均使用前台热更新方式，且不保留后台 PID 管理。
 - [x] Go build、前端类型检查与构建、F-000 当前测试全部通过。
 - [x] 状态更新为 `ready_for_manual` 并停止，不开始 F-001。
 
@@ -44,6 +44,7 @@
 - 2026-07-27：用户确认计划，进入 `implementing`
 - 2026-07-27：实现与自动验证完成，进入 `ready_for_manual`
 - 2026-07-27：用户反馈后台 PID 启动管理方式不通过，按人工验收反馈从 `ready_for_manual` 返回 `implementing`。
+- 2026-07-27：已改为根目录 pnpm 两前台终端，Air 热重载和 Vite 访问实测通过，重新进入 `ready_for_manual`。
 
 ## 人工验收
 
