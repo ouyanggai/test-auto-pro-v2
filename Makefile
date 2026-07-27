@@ -1,4 +1,4 @@
-.PHONY: setup dev restart stop status logs refs-sync refs-status
+.PHONY: setup dev restart stop status logs refs-sync refs-status test-f000
 
 setup:
 	@command -v go >/dev/null || { echo '缺少 go'; exit 1; }
@@ -21,6 +21,9 @@ status:
 
 logs:
 	@./scripts/runtime.sh logs
+
+test-f000: setup
+	@./test/run-f000.sh
 
 refs-sync:
 	@./scripts/reference-repos.sh sync
