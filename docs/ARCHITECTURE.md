@@ -45,14 +45,25 @@
 - 侧栏使用 `NLayoutSider` 的 `collapse-mode="width"`、`show-trigger="arrow-circle"` 与 `collapsed-width="0"`；圆形触发器真实点击区至少为 `32px × 32px`，零宽收缩态通过定位覆盖完整留在 viewport 内，收缩时不展示无依据图标。
 - 浏览器根节点固定为 `100dvh` 且不滚动；顶栏固定，侧栏可收缩，主内容区独立 `overflow-y: auto`，侧栏仅在菜单超出时自身滚动。Flex/Grid 子项使用最小尺寸约束，避免撑出 viewport。
 - 通过 `NConfigProvider`、`NGlobalStyle` 与 `darkTheme` 实现深浅主题；默认浅色，主题值保存到 `localStorage`，所有表面、文字、边线和选中态使用 Naive UI 语义变量随主题切换。
-- 保持中文、桌面优先；F-001 的计划列表与新建页只使用 `web/src/features/plans` 中的最小类型、mock 和纯函数，不建立通用表格或表单框架，不访问后端。
+- 保持中文、桌面优先；计划列表继续使用 F-001 的静态计划行，新建页从 F-002 起通过 `web/src/features/plans/api.ts` 读取真实账号与候选，不建立通用表格、表单或远程列表框架。
 - Vue Flow 与 dagre 统一延后到 F-004；F-000 不安装也不预留画布抽象。
 - 只有真实复杂流程证明 dagre 不可读时，才另行批准评估 ELK.js。
+
+## F-002 目标平台只读接入
+
+- `internal/config` 从进程环境读取 `TARGET_*`。`TARGET_API_GATEWAY`、`TARGET_LOGIN_PASSWORD`、`TARGET_LOGIN_AES_KEY`、`TARGET_LOGIN_CODE` 必需；缺失时服务和 health 正常启动，三个 target API 返回 `TARGET_CONFIG_MISSING`。
+- `TARGET_PLATFORM_CODE` 默认 `200001`、`TARGET_TEMPLATE_PLATFORM_CODES` 默认 `200001,999999`、`TARGET_SESSION_TTL` 默认 `8h`、`TARGET_HTTP_TIMEOUT` 默认 `120s`，均来自用户批准沿用的 V1 非敏感约定；`TARGET_CUSTOMER_CODE` 可为空。敏感配置没有代码默认值。
+- `internal/adapter/target` 是唯一拼装目标 URL、加密登录密码、传递 SID 和解析目标响应的区域。SID 按目标协议进入 body、query、header，但应用不得记录完整出站 URL、header、body 或目标原始报文。
+- `internal/session` 使用单进程内存缓存，按去除首尾空白的账号键控，默认绝对 TTL 为 8 小时；每个账号独立锁定登录，不同账号不互相阻塞。会话失效后只允许删除缓存、重登和重放当前只读请求一次。
+- 缓存条目只保存 SID、必要账号摘要和目标代码，不保存密码、AES key 或 code；进程退出自然清空。F-002 不引入 Redis，多实例共享需求出现后再单独评估。
+- 对浏览器提供三个独立边界：`POST /api/target/accounts/verify`、`GET /api/target/flow-templates`、`GET /api/target/flow-instances`。公开响应只含验证摘要、候选 DTO、分页或稳定错误，不含 SID、凭证、customerCode、platformCode 或目标敏感原文。
+- 模板、已发、待发分别映射 `/web/flowTemplateApi/list`、`/web/flowInstanceApi/list`、`/web/flowJobTaskLink/list`；三类 DTO 独立，不用同一个模糊目标类型覆盖字段差异。
+- 前端搜索以 250ms 防抖触发真实分页请求，通过 `AbortController` 和 account/source/query/version 联合身份取消或忽略旧结果；追加按三类真实 ID 去重，错误不回退 mock。
 
 ## 数据与部署演进
 
 - MySQL 延后到 F-003。
-- MongoDB 与 Redis 延后到真实运行阶段，并以实际需要为前提。
+- MongoDB 延后到真实运行阶段；Redis 只在多实例共享会话或登录频率约束形成真实需求后评估。
 - 当前不引入 Docker、微服务、独立 worker 或部署编排。
 
 ## 参考源码边界
