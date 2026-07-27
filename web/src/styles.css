@@ -19,13 +19,18 @@ body,
 }
 
 .app-shell {
-  display: grid;
-  grid-template-rows: 64px minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   min-height: 0;
-  background: var(--n-color);
-  color: var(--n-text-color);
+}
+
+.app-shell > .n-layout-scroll-container {
+  display: grid;
+  grid-template-rows: 64px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .app-header {
@@ -34,8 +39,6 @@ body,
   justify-content: space-between;
   min-width: 0;
   padding: 0 28px;
-  border-bottom: 1px solid var(--n-border-color);
-  background: var(--n-color);
 }
 
 .product-name {
@@ -74,6 +77,21 @@ body,
   height: 100%;
 }
 
+.app-sidebar .n-layout-toggle-button {
+  width: 32px;
+  height: 32px;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.app-sidebar.n-layout-sider--collapsed .n-layout-toggle-button {
+  left: 4px;
+  right: auto;
+  transform: translateY(-50%);
+  z-index: 2;
+  pointer-events: auto;
+}
+
 .app-sidebar-content {
   min-height: 0;
   padding: 14px 6px;
@@ -83,9 +101,13 @@ body,
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
+  height: 100%;
+}
+
+.app-main > .n-layout-scroll-container {
+  height: 100%;
   padding: 40px 48px;
   overflow-y: auto;
-  background: var(--n-color);
 }
 
 .placeholder-page {

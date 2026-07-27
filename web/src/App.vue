@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
-import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutSider, NMenu, darkTheme, dateZhCN, zhCN } from 'naive-ui'
+import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu, darkTheme, dateZhCN, zhCN } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
@@ -24,8 +24,8 @@ const sidebarCollapsed = ref(false)
 <template>
   <n-config-provider :theme="naiveTheme" :locale="zhCN" :date-locale="dateZhCN">
     <n-global-style />
-    <div class="app-shell">
-      <header class="app-header">
+    <n-layout class="app-shell" native-scrollbar>
+      <n-layout-header class="app-header" bordered>
         <span class="product-name">{{ appStore.productName }}</span>
         <div class="header-toolbar">
           <n-button
@@ -38,9 +38,9 @@ const sidebarCollapsed = ref(false)
             {{ appStore.themeMode === 'dark' ? '浅色' : '深色' }}
           </n-button>
         </div>
-      </header>
+      </n-layout-header>
 
-      <n-layout class="app-workspace" embedded has-sider native-scrollbar>
+      <n-layout class="app-workspace" has-sider native-scrollbar>
         <n-layout-sider
           v-model:collapsed="sidebarCollapsed"
           class="app-sidebar"
@@ -56,10 +56,10 @@ const sidebarCollapsed = ref(false)
             <n-menu :options="menuOptions" :value="selectedKey" />
           </nav>
         </n-layout-sider>
-        <main class="app-main">
+        <n-layout-content class="app-main" native-scrollbar>
           <router-view />
-        </main>
+        </n-layout-content>
       </n-layout>
-    </div>
+    </n-layout>
   </n-config-provider>
 </template>
