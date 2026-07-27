@@ -25,26 +25,38 @@ requireText(store, "toggleThemeMode()", '主题切换')
 requireText(store, "setItem(themeStorageKey, this.themeMode)", '主题持久化')
 
 const app = read('web/src/App.vue')
-requireText(app, 'NConfigProvider, NGlobalStyle', '主题组件')
+requireText(app, 'NConfigProvider, NGlobalStyle, NLayout, NLayoutSider', '主题与布局组件')
 requireText(app, 'darkTheme', '深色主题')
 requireText(app, '<n-global-style />', '全局主题样式')
 requireText(app, ':theme="naiveTheme"', '主题注入')
 requireText(app, '@click="appStore.toggleThemeMode"', '主题切换入口')
 requireText(app, '<header class="app-header">', '顶栏布局')
-requireText(app, '<aside class="app-sidebar"', '侧栏布局')
+requireText(app, '<div class="header-toolbar">', '右侧主题工具栏')
+requireText(app, '<n-layout-sider', '官方侧栏组件')
+requireText(app, '          bordered', '侧栏分隔线')
+requireText(app, 'v-model:collapsed="sidebarCollapsed"', '侧栏收缩状态')
+requireText(app, 'collapse-mode="width"', '侧栏收缩模式')
+requireText(app, 'show-trigger="arrow-circle"', '侧栏圆形收缩触发器')
+requireText(app, ':collapsed-width="0"', '侧栏收缩宽度')
+requireText(app, ':show-collapsed-content="false"', '收缩菜单内容')
 requireText(app, '<main class="app-main">', '主内容布局')
+if (app.includes('项目初始化')) {
+  throw new Error('应用壳不应出现“项目初始化”状态文字')
+}
+if (app.indexOf('<div class="header-toolbar">') < app.indexOf('<span class="product-name">')) {
+  throw new Error('主题工具栏必须位于产品名称右侧')
+}
 
 const styles = read('web/src/styles.css')
 for (const expected of [
   'height: 100dvh;',
   'overflow: hidden;',
   'grid-template-rows: 64px minmax(0, 1fr);',
-  'grid-template-columns: 240px minmax(0, 1fr);',
   '.app-sidebar',
   '.app-main',
   'overflow-y: auto;',
+  'overflow: hidden;',
   'border-bottom: 1px solid var(--n-border-color);',
-  'border-right: 1px solid var(--n-border-color);',
   'background: var(--n-color);',
 ]) {
   requireText(styles, expected, '应用壳布局')
