@@ -57,6 +57,7 @@
 - 2026-07-27：前端源码契约、类型检查与生产构建均通过，重新进入 `ready_for_manual`；等待用户手工核对，不得开始 F-001。
 - 2026-07-27：用户第三次反馈应用壳验收未通过：普通 DOM 未取得 Naive 语义变量、工作区嵌入色不一致、收缩触发器点击区过小；从 `ready_for_manual` 返回 `implementing`。
 - 2026-07-27：改用 `NLayoutHeader bordered`、移除工作区 `embedded`、主内容改为 `NLayoutContent`；原生圆形触发器扩展为 `32px × 32px`，零宽态完整定位在 viewport 内。
+- 2026-07-27：前端布局契约、类型检查、生产构建及产物中的 `NLayoutHeader` 1px 边线规则均通过，重新进入 `ready_for_manual`；等待用户手工核对，不得开始 F-001。
 
 ## 人工验收
 
