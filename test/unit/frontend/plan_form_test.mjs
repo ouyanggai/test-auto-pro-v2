@@ -4,8 +4,10 @@ import test from 'node:test'
 import { getMockFlowCandidates } from '../../../web/src/features/plans/mock.ts'
 import {
   FLOW_CANDIDATE_BATCH_SIZE,
+  calculateNearestScrollDelta,
   filterFlowCandidates,
   isFlowSourceAvailable,
+  resolvePostSelectionGuidance,
   takeCandidateBatches,
 } from '../../../web/src/features/plans/selection.ts'
 
@@ -43,4 +45,31 @@ test('候选列表按固定批次增量追加直到全部显示', () => {
   assert.equal(takeCandidateBatches(candidates, 1).length, FLOW_CANDIDATE_BATCH_SIZE)
   assert.equal(takeCandidateBatches(candidates, 2).length, FLOW_CANDIDATE_BATCH_SIZE * 2)
   assert.equal(takeCandidateBatches(candidates, 99).length, candidates.length)
+})
+
+test('选中候选后按未完成字段决定下一步', () => {
+  assert.equal(resolvePostSelectionGuidance({
+    scheduleEnabled: true,
+    scheduledAt: null,
+    runMode: 'parallel',
+    maxConcurrency: 1,
+  }), 'scheduledAt')
+  assert.equal(resolvePostSelectionGuidance({
+    scheduleEnabled: false,
+    scheduledAt: null,
+    runMode: 'parallel',
+    maxConcurrency: 1,
+  }), 'maxConcurrency')
+  assert.equal(resolvePostSelectionGuidance({
+    scheduleEnabled: false,
+    scheduledAt: null,
+    runMode: 'parallel',
+    maxConcurrency: 2,
+  }), 'submit')
+})
+
+test('仅在目标区域未完整可见时计算最小滚动距离', () => {
+  assert.equal(calculateNearestScrollDelta(120, 180, 100, 300), 0)
+  assert.equal(calculateNearestScrollDelta(80, 150, 100, 300), -36)
+  assert.equal(calculateNearestScrollDelta(220, 320, 100, 300), 36)
 })

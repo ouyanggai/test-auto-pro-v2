@@ -62,17 +62,13 @@ grep -Fq ':disabled="option.disabled"' "${form_file}"
 grep -Fq '验证账号后可选择“已发”或“待发”' "${form_file}"
 
 for source_contract in \
-  "form.flowSource === 'new'" \
-  'path="templateId"' \
-  'label="流程模板"' \
-  'source="new"' \
-  "form.flowSource === 'started'" \
-  'path="submittedFlowId"' \
-  'label="已发流程"' \
-  'source="started"' \
-  'path="dueFlowId"' \
-  'label="待发流程"' \
-  'source="pending"'; do
+  "if (form.flowSource === 'new') return 'templateId'" \
+  "if (form.flowSource === 'started') return 'submittedFlowId'" \
+  "return 'dueFlowId'" \
+  ':path="selectionPath"' \
+  ':label="selectionLabel"' \
+  ':source="form.flowSource"' \
+  'flowSelectionLabels'; do
   grep -Fq "${source_contract}" "${form_file}"
 done
 
@@ -111,7 +107,29 @@ for schedule_contract in \
   grep -Fq "${schedule_contract}" "${form_file}"
 done
 
-grep -Fq 'position: sticky;' "${form_file}"
+grep -Fq 'NDivider' "${form_file}"
+grep -Fq '<n-divider class="selection-divider" title-placement="left">选择流程</n-divider>' "${form_file}"
+grep -Fq 'class="selection-shell"' "${form_file}"
+grep -Fq 'min-height: 348px;' "${form_file}"
+grep -Fq '<transition name="selection-content" mode="out-in" @after-enter="handleSelectionContentEntered">' "${form_file}"
+grep -Fq '@media (prefers-reduced-motion: reduce)' "${form_file}"
+grep -Fq 'transform: translateY(4px);' "${form_file}"
+grep -Fq 'defineExpose({ getSearchElement, focusSearch })' "${candidate_file}"
+grep -Fq 'searchFieldRef' "${candidate_file}"
+grep -Fq "window.matchMedia('(prefers-reduced-motion: reduce)')" "${form_file}"
+grep -Fq 'calculateNearestScrollDelta(' "${form_file}"
+grep -Fq "container.scrollBy({ top: delta, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })" "${form_file}"
+grep -Fq 'if (delta === 0) return' "${form_file}"
+grep -Fq 'pendingSelectionGuidance' "${form_file}"
+grep -Fq 'requestSelectionGuidance()' "${form_file}"
+grep -Fq 'requestPostSelectionGuidance()' "${form_file}"
+grep -Fq 'resolvePostSelectionGuidance(form)' "${form_file}"
+
+if grep -Eq 'position:\s*(sticky|fixed)|top:\s*0' "${form_file}"; then
+  printf 'F-001 返回入口不应保留吸顶或固定定位\n' >&2
+  exit 1
+fi
+
 grep -Fq 'margin: 0 auto;' "${form_file}"
 grep -Fq 'v-if="showMaxConcurrency"' "${form_file}"
 grep -Fq "new Error('并行最大并发数应为 2 至 20')" "${form_file}"
