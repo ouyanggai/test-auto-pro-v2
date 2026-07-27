@@ -125,8 +125,18 @@ grep -Fq 'requestSelectionGuidance()' "${form_file}"
 grep -Fq 'requestPostSelectionGuidance()' "${form_file}"
 grep -Fq 'resolvePostSelectionGuidance(form)' "${form_file}"
 
-if grep -Eq 'position:\s*(sticky|fixed)|top:\s*0' "${form_file}"; then
-  printf 'F-001 返回入口不应保留吸顶或固定定位\n' >&2
+for back_bar_contract in \
+  '.back-bar {' \
+  'position: sticky;' \
+  'top: 0;' \
+  'z-index: 2;' \
+  'min-height: 44px;' \
+  'background-color: inherit;'; do
+  grep -Fq "${back_bar_contract}" "${form_file}"
+done
+
+if grep -A8 '^\.back-bar {' "${form_file}" | grep -Eq 'transition:|transform:'; then
+  printf 'F-001 吸顶返回入口不应带位移动画\n' >&2
   exit 1
 fi
 
