@@ -1,0 +1,4 @@
+interface:
+  display_name: "审查功能切片"
+  short_description: "审查单个功能的实现、验证证据、范围边界和人工验收门禁"
+  default_prompt: "使用 $review-feature-slice 审查当前功能切片是否可以进入人工验收。"

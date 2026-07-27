@@ -1,0 +1,4 @@
+interface:
+  display_name: "实施功能切片"
+  short_description: "按已批准范围实施单个功能、验证全部结果并停在人工验收门禁"
+  default_prompt: "使用 $implement-feature-slice 实施已获批准的当前功能并等待人工验收。"

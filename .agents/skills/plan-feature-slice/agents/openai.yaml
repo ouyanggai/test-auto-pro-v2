@@ -1,0 +1,4 @@
+interface:
+  display_name: "规划功能切片"
+  short_description: "规划单个功能的范围、完成标准、验证方法和人工审批门禁"
+  default_prompt: "使用 $plan-feature-slice 规划当前唯一功能切片并停在审批门禁。"

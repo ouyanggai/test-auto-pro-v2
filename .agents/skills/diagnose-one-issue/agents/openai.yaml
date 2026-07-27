@@ -1,0 +1,4 @@
+interface:
+  display_name: "诊断单个问题"
+  short_description: "只读复现单个故障、收集完整证据并定位根因和实际影响范围"
+  default_prompt: "使用 $diagnose-one-issue 诊断这个问题并给出证据，不直接修改代码。"
