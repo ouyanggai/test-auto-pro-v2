@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, h } from 'vue'
-import { NButton, NConfigProvider, NGlobalStyle, NMenu, darkTheme, dateZhCN, zhCN } from 'naive-ui'
+import { computed, h, ref } from 'vue'
+import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutSider, NMenu, darkTheme, dateZhCN, zhCN } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
@@ -18,6 +18,7 @@ const menuOptions: MenuOption[] = [
 const selectedKey = computed(() => route.path)
 const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
 const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
+const sidebarCollapsed = ref(false)
 </script>
 
 <template>
@@ -25,8 +26,8 @@ const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换
     <n-global-style />
     <div class="app-shell">
       <header class="app-header">
-        <div class="product-brand">
-          <span class="product-name">{{ appStore.productName }}</span>
+        <span class="product-name">{{ appStore.productName }}</span>
+        <div class="header-toolbar">
           <n-button
             quaternary
             size="small"
@@ -37,17 +38,28 @@ const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换
             {{ appStore.themeMode === 'dark' ? '浅色' : '深色' }}
           </n-button>
         </div>
-        <span class="header-context">项目初始化</span>
       </header>
 
-      <div class="app-workspace">
-        <aside class="app-sidebar" aria-label="主导航">
-          <n-menu :options="menuOptions" :value="selectedKey" />
-        </aside>
+      <n-layout class="app-workspace" embedded has-sider native-scrollbar>
+        <n-layout-sider
+          v-model:collapsed="sidebarCollapsed"
+          class="app-sidebar"
+          bordered
+          collapse-mode="width"
+          show-trigger="arrow-circle"
+          :width="240"
+          :collapsed-width="0"
+          :show-collapsed-content="false"
+          content-class="app-sidebar-content"
+        >
+          <nav aria-label="主导航">
+            <n-menu :options="menuOptions" :value="selectedKey" />
+          </nav>
+        </n-layout-sider>
         <main class="app-main">
           <router-view />
         </main>
-      </div>
+      </n-layout>
     </div>
   </n-config-provider>
 </template>

@@ -1,6 +1,6 @@
 <template>
   <section class="placeholder-page">
     <h1>测试计划</h1>
-    <p>当前仅提供项目初始化占位内容，正式页面将在 F-001 经人工确认后实现。</p>
+    <p>此页面当前仅保留占位说明，正式内容将在后续获批功能中实现。</p>
   </section>
 </template>
