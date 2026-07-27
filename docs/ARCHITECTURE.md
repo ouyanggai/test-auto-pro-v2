@@ -14,8 +14,8 @@
 
 - 根目录 `package.json` 仅提供全栈开发与检查命令；Go 依赖仍只由 `go.mod` 管理。
 - 根目录 `pnpm-workspace.yaml` 只包含 `web`，从根目录执行 `pnpm install` 只生成一个 `pnpm-lock.yaml`。
-- 前端在一个前台终端执行 `pnpm dev:frontend`，Vite 监听 `127.0.0.1:19000` 并提供热更新。
-- 后端在另一个前台终端执行 `pnpm dev:backend`，实际命令为 `go tool air -c .air.toml`。Air 固定为 Go 1.25 tool dependency，构建 `cmd/server` 到被忽略的 `.runtime/`。
+- 前端在一个前台终端执行 `pnpm dev:f`，Vite 监听 `127.0.0.1:19000` 并提供热更新。
+- 后端在另一个前台终端执行 `pnpm dev:b`，实际命令为 `go tool air -c .air.toml`。Air 固定为 Go 1.25 tool dependency，构建 `cmd/server` 到被忽略的 `.runtime/`。
 - 两个前台进程的日志留在各自终端，用户通过 `Ctrl+C` 停止；不使用后台守护、PID 文件、日志文件、`concurrently` 或后台重启命令。
 - `.air.toml` 只监听项目 Go 源码，排除 `.git`、`.runtime`、根目录 `node_modules`、`web`、`参考代码`、`test`、`docs` 和历史资料。
 
@@ -51,7 +51,9 @@
 
 ## F-002 目标平台只读接入
 
-- `internal/config` 从进程环境读取 `TARGET_*`。`TARGET_API_GATEWAY`、`TARGET_LOGIN_PASSWORD`、`TARGET_LOGIN_AES_KEY`、`TARGET_LOGIN_CODE` 必需；缺失时服务和 health 正常启动，三个 target API 返回 `TARGET_CONFIG_MISSING`。
+- `internal/config` 按“进程环境 > 项目根目录 `.env.local` > 非敏感代码默认值”的顺序读取 `TARGET_*`。`.env.local` 被 Git 忽略且只在当前机器保存；Air 从项目根启动时会自动读取，不修改进程环境，也不进入浏览器。
+- `TARGET_API_GATEWAY`、`TARGET_LOGIN_PASSWORD`、`TARGET_LOGIN_AES_KEY`、`TARGET_LOGIN_CODE` 必需；本地文件不存在时仍允许纯环境变量运行。本地文件解析失败、关键配置缺失或 AES key 长度非法时，服务和 health 正常启动，三个 target API 稳定返回 `TARGET_CONFIG_MISSING`。
+- `cmd/sync-v1-target-config` 只在维护时读取显式指定的 V1 YAML，将目标网关、平台/租户代码和 AES key 与既有本机登录配置合并，使用 `0600` 临时文件原子替换 `.env.local`，并在清空当前进程 `TARGET_*` 后做完整性检查。命令不含 V1 绝对路径或登录值，不回显配置值；正常启动不依赖 V1 仓库。
 - `TARGET_PLATFORM_CODE` 默认 `200001`、`TARGET_TEMPLATE_PLATFORM_CODES` 默认 `200001,999999`、`TARGET_SESSION_TTL` 默认 `8h`、`TARGET_HTTP_TIMEOUT` 默认 `120s`，均来自用户批准沿用的 V1 非敏感约定；`TARGET_CUSTOMER_CODE` 可为空。敏感配置没有代码默认值。
 - `internal/adapter/target` 是唯一拼装目标 URL、加密登录密码、传递 SID 和解析目标响应的区域。SID 按目标协议进入 body、query、header，但应用不得记录完整出站 URL、header、body 或目标原始报文。
 - `internal/session` 使用单进程内存缓存，按去除首尾空白的账号键控，默认绝对 TTL 为 8 小时；每个账号独立锁定登录，不同账号不互相阻塞。会话失效后只允许删除缓存、重登和重放当前只读请求一次。
