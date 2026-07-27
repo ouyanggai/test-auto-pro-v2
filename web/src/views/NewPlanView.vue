@@ -1,24 +1,32 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import {
-  NAlert,
   NButton,
   NDatePicker,
   NForm,
-  NFormItem,
+  NFormItemGi,
+  NGrid,
   NInput,
   NInputNumber,
   NRadio,
   NRadioGroup,
   NSelect,
+  useMessage,
+  type FormInst,
+  type FormItemInst,
+  type FormItemRule,
+  type FormRules,
 } from 'naive-ui'
 import { useRouter } from 'vue-router'
 
-import { hasPlanFormErrors, shouldShowMaxConcurrency, validatePlanForm } from '../features/plans/logic'
 import { accountOptions, flowSourceOptions, getTargetFlowOptions } from '../features/plans/mock'
-import type { PlanFormErrors, PlanFormValue } from '../features/plans/types'
+import type { PlanFormValue } from '../features/plans/types'
 
 const router = useRouter()
+const message = useMessage()
+const formRef = ref<FormInst | null>(null)
+const targetFlowItemRef = ref<FormItemInst | null>(null)
+const concurrencyItemRef = ref<FormItemInst | null>(null)
 const form = reactive<PlanFormValue>({
   name: '',
   accountId: null,
@@ -28,42 +36,85 @@ const form = reactive<PlanFormValue>({
   maxConcurrency: null,
   scheduledAt: null,
 })
-const formErrors = ref<PlanFormErrors>({})
-const feedback = ref<{ type: 'error' | 'success'; message: string } | null>(null)
 
 const targetFlowOptions = computed(() => getTargetFlowOptions(form.accountId, form.flowSource))
-const showMaxConcurrency = computed(() => shouldShowMaxConcurrency(form.runMode))
+const targetFlowEnabled = computed(() => Boolean(form.accountId && form.flowSource))
+const showMaxConcurrency = computed(() => form.runMode === 'parallel')
 const targetFlowPlaceholder = computed(() => {
   if (!form.accountId) return '请先选择真实账号'
   if (!form.flowSource) return '请先选择唯一流程来源'
   return '请选择目标流程'
 })
 
-watch([() => form.accountId, () => form.flowSource], () => {
+const maxConcurrencyRules = computed<FormItemRule[]>(() => {
+  if (form.runMode !== 'parallel') return []
+  return [
+    {
+      required: true,
+      type: 'number',
+      trigger: ['change', 'blur'],
+      message: '请输入并行最大并发数',
+    },
+    {
+      trigger: ['change', 'blur'],
+      validator: (_rule: FormItemRule, value: number | null) => {
+        if (typeof value !== 'number' || value < 2 || value > 20) {
+          return new Error('并行最大并发数应为 2 至 20')
+        }
+        return true
+      },
+    },
+  ]
+})
+
+const rules = computed<FormRules>(() => ({
+  name: {
+    required: true,
+    trigger: ['input', 'blur'],
+    message: '请输入计划名称',
+  },
+  accountId: {
+    required: true,
+    trigger: ['change', 'blur'],
+    message: '请选择真实账号',
+  },
+  flowSource: {
+    required: true,
+    trigger: ['change', 'blur'],
+    message: '请选择唯一流程来源',
+  },
+  flowId: targetFlowEnabled.value
+    ? {
+        required: true,
+        trigger: ['change', 'blur'],
+        message: '请选择目标流程',
+      }
+    : [],
+  maxConcurrency: maxConcurrencyRules.value,
+}))
+
+watch([() => form.accountId, () => form.flowSource], async () => {
   form.flowId = null
+  await nextTick()
+  targetFlowItemRef.value?.restoreValidation()
 })
 
-watch(() => form.runMode, (runMode) => {
+watch(() => form.runMode, async (runMode) => {
+  concurrencyItemRef.value?.restoreValidation()
   form.maxConcurrency = runMode === 'parallel' ? 2 : null
+  await nextTick()
+  concurrencyItemRef.value?.restoreValidation()
 })
 
-watch(form, () => {
-  formErrors.value = {}
-  feedback.value = null
-}, { deep: true })
+async function submitPrototype() {
+  if (!formRef.value) return
 
-function submitPrototype() {
-  const errors = validatePlanForm(form)
-  formErrors.value = errors
-
-  if (hasPlanFormErrors(errors)) {
-    feedback.value = { type: 'error', message: '请先完成表单中的必填项和条件字段。' }
-    return
+  try {
+    await formRef.value.validate()
+    message.success('静态原型已完成校验，真实创建将在后续功能接入。')
   }
-
-  feedback.value = {
-    type: 'success',
-    message: '静态原型已完成校验，真实创建将在后续功能接入。',
+  catch {
+    message.error('请检查标红的必填项')
   }
 }
 </script>
@@ -80,103 +131,86 @@ function submitPrototype() {
     </header>
 
     <n-form
+      ref="formRef"
       class="plan-form"
-      label-placement="left"
-      label-align="right"
-      :label-width="150"
-      :show-require-mark="true"
+      :model="form"
+      :rules="rules"
+      label-placement="top"
+      require-mark-placement="right-hanging"
+      :show-feedback="true"
       @submit.prevent="submitPrototype"
     >
-      <n-form-item
-        label="计划名称"
-        required
-        :validation-status="formErrors.name ? 'error' : undefined"
-        :feedback="formErrors.name"
-      >
-        <n-input v-model:value="form.name" maxlength="60" show-count placeholder="例如：采购申请主流程回归" />
-      </n-form-item>
+      <n-grid :cols="24" :x-gap="24">
+        <n-form-item-gi span="12" path="name" label="计划名称" first>
+          <n-input v-model:value="form.name" maxlength="60" show-count placeholder="例如：采购申请主流程回归" />
+        </n-form-item-gi>
 
-      <n-form-item
-        label="真实账号"
-        required
-        :validation-status="formErrors.accountId ? 'error' : undefined"
-        :feedback="formErrors.accountId"
-      >
-        <n-select v-model:value="form.accountId" filterable clearable :options="accountOptions" placeholder="请选择 mock 真实账号" />
-      </n-form-item>
+        <n-form-item-gi span="12" path="accountId" label="真实账号" first>
+          <n-select v-model:value="form.accountId" filterable clearable :options="accountOptions" placeholder="请选择 mock 真实账号" />
+        </n-form-item-gi>
 
-      <n-form-item
-        label="唯一流程来源"
-        required
-        :validation-status="formErrors.flowSource ? 'error' : undefined"
-        :feedback="formErrors.flowSource"
-      >
-        <n-select v-model:value="form.flowSource" clearable :options="flowSourceOptions" placeholder="请选择流程来源" />
-      </n-form-item>
+        <n-form-item-gi span="12" path="flowSource" label="唯一流程来源" first>
+          <n-select v-model:value="form.flowSource" clearable :options="flowSourceOptions" placeholder="请选择流程来源" />
+        </n-form-item-gi>
 
-      <n-form-item
-        label="目标流程"
-        required
-        :validation-status="formErrors.flowId ? 'error' : undefined"
-        :feedback="formErrors.flowId"
-      >
-        <n-select
-          v-model:value="form.flowId"
-          filterable
-          clearable
-          :disabled="!form.accountId || !form.flowSource"
-          :options="targetFlowOptions"
-          :placeholder="targetFlowPlaceholder"
-        />
-      </n-form-item>
+        <n-form-item-gi ref="targetFlowItemRef" span="12" path="flowId" label="目标流程" first>
+          <n-select
+            v-model:value="form.flowId"
+            filterable
+            clearable
+            :disabled="!targetFlowEnabled"
+            :options="targetFlowOptions"
+            :placeholder="targetFlowPlaceholder"
+          />
+        </n-form-item-gi>
 
-      <n-form-item label="运行方式" required>
-        <n-radio-group v-model:value="form.runMode">
-          <n-radio value="serial">串行</n-radio>
-          <n-radio value="parallel">并行</n-radio>
-        </n-radio-group>
-      </n-form-item>
+        <n-form-item-gi span="12" path="runMode" label="运行方式" first>
+          <n-radio-group v-model:value="form.runMode">
+            <n-radio value="serial">串行</n-radio>
+            <n-radio value="parallel">并行</n-radio>
+          </n-radio-group>
+        </n-form-item-gi>
 
-      <n-form-item
-        v-if="showMaxConcurrency"
-        label="并行最大并发数"
-        required
-        :validation-status="formErrors.maxConcurrency ? 'error' : undefined"
-        :feedback="formErrors.maxConcurrency"
-      >
-        <n-input-number v-model:value="form.maxConcurrency" :min="2" :max="20" :precision="0" />
-      </n-form-item>
+        <n-form-item-gi span="12" path="scheduledAt" label="定时时间" first>
+          <n-date-picker
+            v-model:value="form.scheduledAt"
+            class="full-width-control"
+            type="datetime"
+            clearable
+            placeholder="不设置则手动启动"
+          />
+        </n-form-item-gi>
 
-      <n-form-item label="定时时间">
-        <n-date-picker
-          v-model:value="form.scheduledAt"
-          type="datetime"
-          clearable
-          placeholder="不设置则手动启动"
-        />
-      </n-form-item>
+        <n-form-item-gi
+          v-if="showMaxConcurrency"
+          ref="concurrencyItemRef"
+          span="12"
+          path="maxConcurrency"
+          label="并行最大并发数"
+          first
+        >
+          <n-input-number
+            v-model:value="form.maxConcurrency"
+            class="full-width-control"
+            :min="2"
+            :max="20"
+            :precision="0"
+          />
+        </n-form-item-gi>
 
-      <div class="form-actions">
-        <n-button type="primary" attr-type="submit">创建并选择路径</n-button>
-      </div>
+        <n-form-item-gi span="24" :show-label="false" :show-feedback="false">
+          <div class="form-actions">
+            <n-button type="primary" attr-type="submit">创建并选择路径</n-button>
+          </div>
+        </n-form-item-gi>
+      </n-grid>
     </n-form>
-
-    <n-alert
-      v-if="feedback"
-      class="form-feedback"
-      :type="feedback.type"
-      :title="feedback.type === 'success' ? '校验完成' : '请检查表单'"
-      closable
-      @close="feedback = null"
-    >
-      {{ feedback.message }}
-    </n-alert>
   </section>
 </template>
 
 <style scoped>
 .new-plan-page {
-  width: min(100%, 920px);
+  width: min(100%, 960px);
   min-width: 0;
 }
 
@@ -185,7 +219,7 @@ function submitPrototype() {
 }
 
 .page-heading {
-  margin-bottom: 36px;
+  margin-bottom: 32px;
 }
 
 .page-heading h1 {
@@ -202,16 +236,18 @@ function submitPrototype() {
 }
 
 .plan-form {
-  width: min(100%, 760px);
+  width: 100%;
+  max-width: 960px;
+}
+
+.full-width-control {
+  width: 100%;
 }
 
 .form-actions {
-  padding-left: 150px;
-  margin-top: 8px;
-}
-
-.form-feedback {
-  width: min(100%, 760px);
-  margin-top: 24px;
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  padding-top: 8px;
 }
 </style>

@@ -34,9 +34,6 @@ export interface PlanFormValue {
   scheduledAt: number | null
 }
 
-export type PlanFormField = 'name' | 'accountId' | 'flowSource' | 'flowId' | 'maxConcurrency'
-export type PlanFormErrors = Partial<Record<PlanFormField, string>>
-
 export interface SelectOption {
   label: string
   value: string

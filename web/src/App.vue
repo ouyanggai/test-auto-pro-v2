@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
-import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu, darkTheme, dateZhCN, zhCN } from 'naive-ui'
+import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu, NMessageProvider, darkTheme, dateZhCN, zhCN } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
@@ -23,43 +23,45 @@ const sidebarCollapsed = ref(false)
 
 <template>
   <n-config-provider :theme="naiveTheme" :locale="zhCN" :date-locale="dateZhCN">
-    <n-global-style />
-    <n-layout class="app-shell" native-scrollbar>
-      <n-layout-header class="app-header" bordered>
-        <span class="product-name">{{ appStore.productName }}</span>
-        <div class="header-toolbar">
-          <n-button
-            quaternary
-            size="small"
-            class="theme-toggle"
-            :aria-label="themeToggleLabel"
-            @click="appStore.toggleThemeMode"
-          >
-            {{ appStore.themeMode === 'dark' ? '浅色' : '深色' }}
-          </n-button>
-        </div>
-      </n-layout-header>
+    <n-message-provider>
+      <n-global-style />
+      <n-layout class="app-shell" native-scrollbar>
+        <n-layout-header class="app-header" bordered>
+          <span class="product-name">{{ appStore.productName }}</span>
+          <div class="header-toolbar">
+            <n-button
+              quaternary
+              size="small"
+              class="theme-toggle"
+              :aria-label="themeToggleLabel"
+              @click="appStore.toggleThemeMode"
+            >
+              {{ appStore.themeMode === 'dark' ? '浅色' : '深色' }}
+            </n-button>
+          </div>
+        </n-layout-header>
 
-      <n-layout class="app-workspace" has-sider native-scrollbar>
-        <n-layout-sider
-          v-model:collapsed="sidebarCollapsed"
-          class="app-sidebar"
-          bordered
-          collapse-mode="width"
-          show-trigger="arrow-circle"
-          :width="240"
-          :collapsed-width="0"
-          :show-collapsed-content="false"
-          content-class="app-sidebar-content"
-        >
-          <nav aria-label="主导航">
-            <n-menu :options="menuOptions" :value="selectedKey" />
-          </nav>
-        </n-layout-sider>
-        <n-layout-content class="app-main" native-scrollbar>
-          <router-view />
-        </n-layout-content>
+        <n-layout class="app-workspace" has-sider native-scrollbar>
+          <n-layout-sider
+            v-model:collapsed="sidebarCollapsed"
+            class="app-sidebar"
+            bordered
+            collapse-mode="width"
+            show-trigger="arrow-circle"
+            :width="240"
+            :collapsed-width="0"
+            :show-collapsed-content="false"
+            content-class="app-sidebar-content"
+          >
+            <nav aria-label="主导航">
+              <n-menu :options="menuOptions" :value="selectedKey" />
+            </nav>
+          </n-layout-sider>
+          <n-layout-content class="app-main" native-scrollbar>
+            <router-view />
+          </n-layout-content>
+        </n-layout>
       </n-layout>
-    </n-layout>
+    </n-message-provider>
   </n-config-provider>
 </template>
