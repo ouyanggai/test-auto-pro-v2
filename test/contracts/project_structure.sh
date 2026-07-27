@@ -7,6 +7,10 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 required_files=(
   AGENTS.md
   CONTEXT.md
+  README.md
+  package.json
+  pnpm-workspace.yaml
+  .air.toml
   docs/PRODUCT.md
   docs/ARCHITECTURE.md
   docs/ROADMAP.md
@@ -37,3 +41,7 @@ grep -Fq 'ready_for_manual' "${project_root}/AGENTS.md"
 grep -Fq '只有用户明确验收' "${project_root}/AGENTS.md"
 grep -Fq '纯 Vue 3、Vite、Vue Router、Pinia、Naive UI' "${project_root}/docs/ARCHITECTURE.md"
 grep -Fq 'Vue Flow 与 dagre 统一延后到 F-004' "${project_root}/docs/ARCHITECTURE.md"
+grep -Fq 'go tool air' "${project_root}/package.json"
+grep -Fq 'tool github.com/air-verse/air' "${project_root}/go.mod"
+! grep -Fq 'runtime.sh' "${project_root}/Makefile"
+! grep -Eq '^(dev|restart|stop|status|logs|backend-dev):' "${project_root}/Makefile"

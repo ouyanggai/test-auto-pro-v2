@@ -4,7 +4,7 @@ import (
 	"net/http"
 )
 
-// 健康接口保持固定响应，供本地热更新验证和基础连通性检查使用。
+// 健康接口保持固定响应，供本地热更新探针=初始和基础连通性检查使用。
 const healthResponse = `{"status":"ok","service":"test-auto-pro","version":"dev"}`
 
 func NewHandler() http.Handler {

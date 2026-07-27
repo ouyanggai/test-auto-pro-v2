@@ -24,8 +24,24 @@ for (const dependency of forbidden) {
 }
 NODE
 
+node - "${project_root}/package.json" <<'NODE'
+const fs = require('node:fs')
+
+const packageData = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'))
+for (const scriptName of ['dev:frontend', 'dev:backend']) {
+  if (!packageData.scripts?.[scriptName]) {
+    throw new Error(`缺少根目录开发命令：${scriptName}`)
+  }
+}
+if (Object.values(packageData.scripts).some((script) => script.includes('concurrently'))) {
+  throw new Error('F-000 不应引入 concurrently')
+}
+NODE
+
 for route_name in plans runs settings; do
   grep -Fq "path: '/${route_name}'" "${project_root}/web/src/router/index.ts"
 done
 
 grep -Fq '流程自动化测试平台' "${project_root}/web/src/stores/app.ts"
+grep -Fq 'packages:' "${project_root}/pnpm-workspace.yaml"
+grep -Fq -- '- web' "${project_root}/pnpm-workspace.yaml"
