@@ -6,6 +6,9 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 router_file="${project_root}/web/src/router/index.ts"
 list_file="${project_root}/web/src/views/PlansView.vue"
 form_file="${project_root}/web/src/views/NewPlanView.vue"
+candidate_file="${project_root}/web/src/features/plans/FlowCandidateList.vue"
+selection_file="${project_root}/web/src/features/plans/selection.ts"
+mock_file="${project_root}/web/src/features/plans/mock.ts"
 app_file="${project_root}/web/src/App.vue"
 styles_file="${project_root}/web/src/styles.css"
 
@@ -24,20 +27,8 @@ for filter_contract in 'v-model:value="filters.name"' 'v-model:value="filters.st
   grep -Fq "${filter_contract}" "${list_file}"
 done
 
-grep -Fq "router.push('/plans')" "${form_file}"
-grep -Fq '创建并选择路径' "${form_file}"
-grep -Fq '静态原型已完成校验，真实创建将在后续功能接入。' "${form_file}"
-grep -Fq "message.error('请检查标红的必填项')" "${form_file}"
-grep -Fq "message.success('静态原型已完成校验，真实创建将在后续功能接入。')" "${form_file}"
-grep -Fq 'v-if="showMaxConcurrency"' "${form_file}"
-grep -Fq 'watch([() => form.accountId, () => form.flowSource]' "${form_file}"
-grep -Fq 'targetFlowItemRef.value?.restoreValidation()' "${form_file}"
-grep -Fq 'concurrencyItemRef.value?.restoreValidation()' "${form_file}"
-for field_name in 计划名称 真实账号 唯一流程来源 目标流程 运行方式 并行最大并发数 定时时间; do
-  grep -Fq "${field_name}" "${form_file}"
-done
-
 for form_contract in \
+  "router.push('/plans')" \
   'ref="formRef"' \
   ':model="form"' \
   ':rules="rules"' \
@@ -46,30 +37,93 @@ for form_contract in \
   ':show-feedback="true"' \
   '<n-grid :cols="24" :x-gap="24">' \
   'span="12" path="name"' \
-  'span="12" path="accountId"' \
-  'span="12" path="flowSource"' \
-  'span="12" path="flowId"' \
-  'span="12" path="runMode"' \
-  'span="12" path="scheduledAt"' \
-  'span="24" :show-label="false" :show-feedback="false"'; do
+  'span="12" path="account"' \
+  'label="真实账号"' \
+  'v-model:value="form.account"' \
+  '验证账号' \
+  'label="流程来源"' \
+  '创建并选择路径'; do
   grep -Fq "${form_contract}" "${form_file}"
 done
 
-for rule_contract in \
-  "trigger: ['input', 'blur']" \
-  "trigger: ['change', 'blur']" \
-  'flowId: targetFlowEnabled.value' \
-  ': []' \
-  "new Error('并行最大并发数应为 2 至 20')"; do
-  grep -Fq "${rule_contract}" "${form_file}"
+for verification_contract in \
+  "verificationState.value = 'verifying'" \
+  "verificationState.value = 'verified'" \
+  "verificationState.value = 'invalid'" \
+  '本地静态验证完成，未登录真实平台' \
+  "new Error('请先验证当前账号')" \
+  "if (form.flowSource !== 'new') form.flowSource = 'new'" \
+  'clearFlowSelections()'; do
+  grep -Fq "${verification_contract}" "${form_file}"
 done
+
+grep -Fq "return source === 'new' || accountVerified" "${selection_file}"
+grep -Fq ':disabled="option.disabled"' "${form_file}"
+grep -Fq '验证账号后可选择“已发”或“待发”' "${form_file}"
+
+for source_contract in \
+  "form.flowSource === 'new'" \
+  'path="templateId"' \
+  'label="流程模板"' \
+  'source="new"' \
+  "form.flowSource === 'started'" \
+  'path="submittedFlowId"' \
+  'label="已发流程"' \
+  'source="started"' \
+  'path="dueFlowId"' \
+  'label="待发流程"' \
+  'source="pending"'; do
+  grep -Fq "${source_contract}" "${form_file}"
+done
+
+for target_field in templateId flowName typeName groupName statusText updateTime; do
+  grep -Fq "${target_field}" "${mock_file}"
+done
+for target_field in id name status createDate currentNodeName currentAuditUserNames; do
+  grep -Fq "${target_field}" "${mock_file}"
+done
+for target_field in flowInstanceId flowInstanceName statusName initiator initiatorDate; do
+  grep -Fq "${target_field}" "${mock_file}"
+done
+
+for list_contract in \
+  'NVirtualList' \
+  '<n-virtual-list' \
+  ':item-size="84"' \
+  '@scroll="handleScroll"' \
+  'v-model:value="query"' \
+  'requestVersion += 1' \
+  'version !== requestVersion' \
+  'batchCount.value += 1' \
+  '没有匹配的' \
+  '正在追加下一批' \
+  '已显示全部' \
+  'candidate-row--selected'; do
+  grep -Fq "${list_contract}" "${candidate_file}"
+done
+
+for schedule_contract in \
+  '<n-switch v-model:value="form.scheduleEnabled"' \
+  'v-if="form.scheduleEnabled"' \
+  'path="scheduledAt"' \
+  'if (!enabled) form.scheduledAt = null' \
+  "message: '请选择启动时间'"; do
+  grep -Fq "${schedule_contract}" "${form_file}"
+done
+
+grep -Fq 'position: sticky;' "${form_file}"
+grep -Fq 'margin: 0 auto;' "${form_file}"
+grep -Fq 'v-if="showMaxConcurrency"' "${form_file}"
+grep -Fq "new Error('并行最大并发数应为 2 至 20')" "${form_file}"
+grep -Fq "message.error('请检查标红的必填项')" "${form_file}"
+grep -Fq "message.success('静态原型已完成校验，真实创建将在后续功能接入。')" "${form_file}"
 
 grep -Fq 'NMessageProvider' "${app_file}"
 grep -Fq '<n-message-provider>' "${app_file}"
 grep -Fq 'useMessage' "${form_file}"
 
-if grep -Eq '<n-alert|formErrors|validation-status=|:feedback=|validatePlanForm|hasPlanFormErrors|show-require-mark' "${form_file}"; then
-  printf 'F-001 表单不应保留页面级错误块或手写校验状态\n' >&2
+if grep -Eq '<n-select|accountOptions|唯一流程来源|目标流程|path="flowId"|form\.flowId|<n-alert|formErrors|validation-status=|:feedback=|show-require-mark' "${form_file}"; then
+  printf 'F-001 表单不应保留账号下拉、统一目标流程或页面级错误块\n' >&2
   exit 1
 fi
 
@@ -79,21 +133,31 @@ const source = fs.readFileSync(process.env.FORM_FILE, 'utf8')
 const rulesSource = source.match(/const rules = computed<FormRules>\(\(\) => \(\{([\s\S]*?)\n\}\)\)/)?.[1]
 
 if (!rulesSource) throw new Error('未找到 Naive UI FormRules 定义')
-if (rulesSource.includes('scheduledAt:')) throw new Error('可选定时时间不应配置必填规则')
-if (!/flowId:\s*targetFlowEnabled\.value[\s\S]*?:\s*\[\]/.test(rulesSource)) {
-  throw new Error('前置条件缺失时目标流程规则应为空，不产生第三个红错')
+for (const field of ['account:', 'templateId:', 'submittedFlowId:', 'dueFlowId:', 'scheduledAt:']) {
+  if (!rulesSource.includes(field)) throw new Error(`缺少 ${field} 的动态规则`)
 }
-if (!source.includes('first>')) throw new Error('每个必填表项应启用 first，仅显示首个错误')
+if (!rulesSource.includes("trigger: 'account-verification'")) {
+  throw new Error('提交时必须校验账号已完成静态验证')
+}
+if (!/templateId:[\s\S]*?flowSource === 'new'[\s\S]*?: \[\]/.test(rulesSource)) {
+  throw new Error('流程模板规则必须只在账号已验证且来源为新发起时启用')
+}
+if (!/scheduledAt:\s*form\.scheduleEnabled[\s\S]*?: \[\]/.test(rulesSource)) {
+  throw new Error('启动时间规则必须只在定时启动开启时启用')
+}
+if (!source.includes('first>')) throw new Error('必填表项应启用 first，仅显示首个错误')
 NODE
 
 grep -Fq 'overflow: hidden;' "${styles_file}"
 grep -Fq '.app-main > .n-layout-scroll-container' "${styles_file}"
 grep -Fq 'overflow-y: auto;' "${styles_file}"
 
+grep -Fq '不会登录真实平台或生成 SID' "${form_file}"
+
 if grep -REq 'fetch\(|axios|/api/' \
   "${project_root}/web/src/features/plans" \
   "${list_file}" \
   "${form_file}"; then
-  printf 'F-001 静态原型不应访问后端 API\n' >&2
+  printf 'F-001 静态原型不应访问后端或目标平台\n' >&2
   exit 1
 fi

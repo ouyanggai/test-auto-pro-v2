@@ -5,7 +5,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${project_root}"
 
-printf '验证计划筛选、状态动作与新建表单规则\n'
+printf '验证计划筛选、状态动作、来源映射与增量列表规则\n'
 node --no-warnings --experimental-strip-types --test \
   test/unit/frontend/plan_filters_test.mjs \
   test/unit/frontend/plan_actions_test.mjs \
