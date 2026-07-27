@@ -1,6 +1,6 @@
 # F-001 应用壳与测试计划页静态 mock
 
-- 状态：ready_for_manual
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的“测试计划页面行为”
 - 架构依据：`docs/ARCHITECTURE.md` 的“前端边界”
 - 计划确认时间：2026-07-27
@@ -26,6 +26,14 @@
 - 计划详情、编辑、删除、路径选择、启动执行和运行结果页面。
 - Vue Flow、FormMaking、参考代码分析、V1/V2 页面复制。
 - 通用表格框架、通用表单框架或额外顶级导航。
+
+## 设计依据
+
+- [Naive UI 标签上置示例](https://github.com/tusen-ai/naive-ui/blob/main/src/form/demos/zhCN/top.demo.vue)：采用 `label-placement="top"`、24 列 `NGrid`、半行 `NFormItemGi` 与 `x-gap=24`。
+- [Naive UI 标签左置示例](https://github.com/tusen-ai/naive-ui/blob/main/src/form/demos/zhCN/left.demo.vue)：作为已排除方案的对照；本页字段较多，不继续使用左置标签。
+- [Naive UI Form API 与规则](https://github.com/tusen-ai/naive-ui/blob/main/src/form/demos/zhCN/index.demo-entry.md)：使用 `model`、`rules`、`path`、`trigger`、`first` 与 `show-feedback`，必填标记由规则推导。
+- [Naive UI 自定义校验示例](https://github.com/tusen-ai/naive-ui/blob/main/src/form/demos/zhCN/custom-validation.demo.vue)：特殊反馈仍归属对应表项，不建立页面级错误汇总。
+- [Naive UI warning 示例](https://github.com/tusen-ai/naive-ui/blob/main/src/form/demos/zhCN/abnormal-warning.demo.vue)：`warning` 仅用于非阻断提醒；必填缺失使用 `error`。
 
 ## 页面行为
 
@@ -78,3 +86,4 @@
 - 2026-07-27：范围和完成标准已形成，进入 `awaiting_approval`。
 - 2026-07-27：用户明确回复“可以了 开始下一项任务吧”，批准路线图既定 F-001，进入 `implementing`。
 - 2026-07-27：静态列表、新建表单及当前范围自动验证完成，进入 `ready_for_manual`；等待用户人工核对，不开始 F-002。
+- 2026-07-27：用户反馈新建表单人工验收未通过，要求依据 Naive UI 官方示例改为上置标签两列栅格，并统一使用原生字段反馈与短暂 message；从 `ready_for_manual` 返回 `implementing`。
