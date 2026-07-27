@@ -3,12 +3,20 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 const defaultServerAddress = "127.0.0.1:19080"
+
+const (
+	defaultTargetLocalEnvFile = ".env.local"
+	targetLocalEnvFileEnv     = "TEST_AUTO_PRO_TARGET_ENV_FILE"
+)
 
 func ServerAddress() string {
 	if address := os.Getenv("TEST_AUTO_PRO_SERVER_ADDR"); address != "" {
@@ -35,26 +43,33 @@ type TargetConfig struct {
 	CustomerCode          string
 	SessionTTL            time.Duration
 	HTTPTimeout           time.Duration
+	localConfigInvalid    bool
 }
 
-// LoadTargetConfig 从进程环境读取目标平台配置；敏感值没有代码默认值。
+// LoadTargetConfig 优先读取进程环境，其次读取项目根目录的本机忽略配置。
+// 本地文件只被解析到内存，不写入进程环境，避免影响测试和其他组件。
 func LoadTargetConfig() TargetConfig {
+	localValues, localErr := loadTargetLocalValues(targetLocalEnvFile())
 	return TargetConfig{
-		APIGateway:            strings.TrimSpace(os.Getenv("TARGET_API_GATEWAY")),
-		LoginPassword:         os.Getenv("TARGET_LOGIN_PASSWORD"),
-		LoginAESKey:           os.Getenv("TARGET_LOGIN_AES_KEY"),
-		LoginCode:             os.Getenv("TARGET_LOGIN_CODE"),
-		PlatformCode:          firstNonEmpty(strings.TrimSpace(os.Getenv("TARGET_PLATFORM_CODE")), defaultTargetPlatformCode),
-		TemplatePlatformCodes: firstNonEmpty(strings.TrimSpace(os.Getenv("TARGET_TEMPLATE_PLATFORM_CODES")), defaultTargetTemplatePlatformCodes),
-		CustomerCode:          strings.TrimSpace(os.Getenv("TARGET_CUSTOMER_CODE")),
-		SessionTTL:            durationFromEnv("TARGET_SESSION_TTL", defaultTargetSessionTTL),
-		HTTPTimeout:           durationFromEnv("TARGET_HTTP_TIMEOUT", defaultTargetHTTPTimeout),
+		APIGateway:            strings.TrimSpace(targetConfigValue("TARGET_API_GATEWAY", localValues)),
+		LoginPassword:         targetConfigValue("TARGET_LOGIN_PASSWORD", localValues),
+		LoginAESKey:           targetConfigValue("TARGET_LOGIN_AES_KEY", localValues),
+		LoginCode:             targetConfigValue("TARGET_LOGIN_CODE", localValues),
+		PlatformCode:          firstNonEmpty(strings.TrimSpace(targetConfigValue("TARGET_PLATFORM_CODE", localValues)), defaultTargetPlatformCode),
+		TemplatePlatformCodes: firstNonEmpty(strings.TrimSpace(targetConfigValue("TARGET_TEMPLATE_PLATFORM_CODES", localValues)), defaultTargetTemplatePlatformCodes),
+		CustomerCode:          strings.TrimSpace(targetConfigValue("TARGET_CUSTOMER_CODE", localValues)),
+		SessionTTL:            durationFromValue(targetConfigValue("TARGET_SESSION_TTL", localValues), defaultTargetSessionTTL),
+		HTTPTimeout:           durationFromValue(targetConfigValue("TARGET_HTTP_TIMEOUT", localValues), defaultTargetHTTPTimeout),
+		localConfigInvalid:    localErr != nil,
 	}
 }
 
 // MissingRequired 返回缺失或格式不合法的配置名，不返回配置值。
 func (c TargetConfig) MissingRequired() []string {
-	missing := make([]string, 0, 4)
+	missing := make([]string, 0, 5)
+	if c.localConfigInvalid {
+		missing = append(missing, "TARGET_LOCAL_CONFIG")
+	}
 	if strings.TrimSpace(c.APIGateway) == "" {
 		missing = append(missing, "TARGET_API_GATEWAY")
 	}
@@ -72,8 +87,8 @@ func (c TargetConfig) MissingRequired() []string {
 	return missing
 }
 
-func durationFromEnv(name string, fallback time.Duration) time.Duration {
-	value := strings.TrimSpace(os.Getenv(name))
+func durationFromValue(value string, fallback time.Duration) time.Duration {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return fallback
 	}
@@ -84,6 +99,38 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 		return time.Duration(seconds) * time.Second
 	}
 	return fallback
+}
+
+func targetLocalEnvFile() string {
+	if path, ok := os.LookupEnv(targetLocalEnvFileEnv); ok {
+		return strings.TrimSpace(path)
+	}
+	return defaultTargetLocalEnvFile
+}
+
+func loadTargetLocalValues(path string) (map[string]string, error) {
+	if path == "" {
+		return map[string]string{}, nil
+	}
+	content, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return map[string]string{}, err
+	}
+	values, err := godotenv.Unmarshal(string(content))
+	if err != nil {
+		return map[string]string{}, err
+	}
+	return values, nil
+}
+
+func targetConfigValue(name string, localValues map[string]string) string {
+	if value, ok := os.LookupEnv(name); ok {
+		return value
+	}
+	return localValues[name]
 }
 
 func firstNonEmpty(values ...string) string {

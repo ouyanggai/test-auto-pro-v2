@@ -8,6 +8,9 @@ cd "${project_root}"
 printf '验证 F-002 后端配置、会话与 DTO 单元测试\n'
 go test -count=1 ./test/unit/backend -run '^(TestTargetConfig|TestSessionManager|TestPasswordEncryption)'
 
+printf '验证 F-002 本机配置安全同步与自动加载\n'
+./test/integration/f002_local_config_sync.sh
+
 printf '验证 F-002 三个公开 API 与安全错误契约\n'
 go test -count=1 ./test/contracts -run '^(TestTargetAPI|TestMissingTargetConfig)'
 
