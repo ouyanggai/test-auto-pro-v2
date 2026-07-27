@@ -1,6 +1,4 @@
 :root {
-  color: #1f2937;
-  background: #f3f5f7;
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -13,59 +11,97 @@
 html,
 body,
 #app {
+  width: 100%;
+  height: 100%;
   min-width: 1024px;
-  min-height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 .app-shell {
-  min-height: 100vh;
-}
-
-.app-sidebar {
-  background: #ffffff;
-}
-
-.product-name {
-  height: 64px;
-  padding: 0 24px;
-  border-bottom: 1px solid #e5e7eb;
-  color: #111827;
-  font-size: 17px;
-  font-weight: 650;
-  line-height: 64px;
-  white-space: nowrap;
+  display: grid;
+  grid-template-rows: 64px minmax(0, 1fr);
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  background: var(--n-color);
+  color: var(--n-text-color);
 }
 
 .app-header {
-  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
   padding: 0 28px;
-  background: #ffffff;
-  color: #6b7280;
-  line-height: 64px;
+  border-bottom: 1px solid var(--n-border-color);
+  background: var(--n-color);
 }
 
-.app-content {
-  padding: 28px;
-  background: #f3f5f7;
+.product-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.product-name {
+  overflow: hidden;
+  color: var(--n-text-color);
+  font-size: 17px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-toggle {
+  flex: 0 0 auto;
+}
+
+.header-context {
+  flex: 0 0 auto;
+  color: var(--n-text-color-3);
+  font-size: 14px;
+}
+
+.app-workspace {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.app-sidebar {
+  min-height: 0;
+  padding: 14px 6px;
+  overflow-y: auto;
+  border-right: 1px solid var(--n-border-color);
+  background: var(--n-color);
+}
+
+.app-main {
+  min-width: 0;
+  min-height: 0;
+  padding: 40px 48px;
+  overflow-y: auto;
+  background: var(--n-color);
 }
 
 .placeholder-page {
-  min-height: 240px;
-  padding: 28px;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  background: #ffffff;
+  width: min(100%, 1040px);
+  min-height: 100%;
 }
 
 .placeholder-page h1 {
-  margin: 0 0 12px;
-  color: #111827;
-  font-size: 24px;
+  margin: 0 0 16px;
+  color: var(--n-text-color);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .placeholder-page p {
   margin: 0;
-  color: #6b7280;
+  color: var(--n-text-color-2);
   line-height: 1.7;
 }

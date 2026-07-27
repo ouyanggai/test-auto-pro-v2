@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h } from 'vue'
-import { NConfigProvider, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu, zhCN, dateZhCN } from 'naive-ui'
+import { NButton, NConfigProvider, NGlobalStyle, NMenu, darkTheme, dateZhCN, zhCN } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
@@ -16,21 +16,38 @@ const menuOptions: MenuOption[] = [
 ]
 
 const selectedKey = computed(() => route.path)
+const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
+const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
 </script>
 
 <template>
-  <n-config-provider :locale="zhCN" :date-locale="dateZhCN">
-    <n-layout class="app-shell" has-sider>
-      <n-layout-sider class="app-sidebar" :width="224" bordered>
-        <div class="product-name">{{ appStore.productName }}</div>
-        <n-menu :options="menuOptions" :value="selectedKey" />
-      </n-layout-sider>
-      <n-layout>
-        <n-layout-header class="app-header" bordered>项目初始化</n-layout-header>
-        <n-layout-content class="app-content">
+  <n-config-provider :theme="naiveTheme" :locale="zhCN" :date-locale="dateZhCN">
+    <n-global-style />
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="product-brand">
+          <span class="product-name">{{ appStore.productName }}</span>
+          <n-button
+            quaternary
+            size="small"
+            class="theme-toggle"
+            :aria-label="themeToggleLabel"
+            @click="appStore.toggleThemeMode"
+          >
+            {{ appStore.themeMode === 'dark' ? '浅色' : '深色' }}
+          </n-button>
+        </div>
+        <span class="header-context">项目初始化</span>
+      </header>
+
+      <div class="app-workspace">
+        <aside class="app-sidebar" aria-label="主导航">
+          <n-menu :options="menuOptions" :value="selectedKey" />
+        </aside>
+        <main class="app-main">
           <router-view />
-        </n-layout-content>
-      </n-layout>
-    </n-layout>
+        </main>
+      </div>
+    </div>
   </n-config-provider>
 </template>
