@@ -9,6 +9,7 @@ required_files=(
   CONTEXT.md
   README.md
   package.json
+  pnpm-lock.yaml
   pnpm-workspace.yaml
   .air.toml
   docs/PRODUCT.md
@@ -45,3 +46,4 @@ grep -Fq 'go tool air' "${project_root}/package.json"
 grep -Fq 'tool github.com/air-verse/air' "${project_root}/go.mod"
 ! grep -Fq 'runtime.sh' "${project_root}/Makefile"
 ! grep -Eq '^(dev|restart|stop|status|logs|backend-dev):' "${project_root}/Makefile"
+[[ ! -f "${project_root}/web/pnpm-lock.yaml" ]]
