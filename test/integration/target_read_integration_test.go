@@ -1,0 +1,376 @@
+package integration_test
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/api"
+)
+
+type fakeTarget struct {
+	t             *testing.T
+	password      string
+	loginCode     string
+	mu            sync.Mutex
+	loginCount    int
+	templateCount int
+	expireMode    string
+	sessions      []string
+}
+
+func newFakeTarget(t *testing.T) *fakeTarget {
+	t.Helper()
+	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6)}
+}
+
+func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request) {
+	switch request.URL.Path {
+	case "/web/user/api/login/user/login":
+		f.handleLogin(response, request)
+	case "/web/flowTemplateApi/list":
+		f.handleTemplates(response, request)
+	case "/web/flowInstanceApi/list":
+		body := f.requireSession(request)
+		data, _ := body["data"].(map[string]any)
+		if data["useScope"] != "invest" || data["name"] != "sent" || body["pagination"] != true {
+			f.t.Error("已发流程请求参数不符合已核实协议")
+		}
+		writeTargetJSON(response, map[string]any{
+			"isSuccess": true,
+			"data": []any{map[string]any{
+				"id": "submitted-id", "name": "真实已发流程", "formName": "备用标题", "status": "run",
+				"createDate": "2026-07-27 10:00", "currentNodeName": "部门审批",
+				"currentAuditUserInfo": map[string]any{"node-a": map[string]any{"userList": []any{map[string]any{"name": "处理人甲"}}}},
+			}},
+			"total": 1, "pages": 1, "current": 1, "size": 20,
+		})
+	case "/web/flowJobTaskLink/list":
+		body := f.requireSession(request)
+		data, _ := body["data"].(map[string]any)
+		if data["taskStatus"] != "waiting_send" || data["useScope"] != "invest" || data["flowInstanceName"] != "due" || body["pagination"] != true {
+			f.t.Error("待发流程请求参数不符合已核实协议")
+		}
+		writeTargetJSON(response, map[string]any{
+			"isSuccess": true,
+			"data": []any{map[string]any{
+				"flowInstanceId": "due-id", "flowInstanceName": "真实待发流程", "formName": "备用标题",
+				"flowStatus": "draft", "initiator": "发起人甲", "initiatorDate": "2026-07-27 09:00",
+			}},
+			"total": 1, "pages": 1, "current": 1, "size": 20,
+		})
+	default:
+		http.NotFound(response, request)
+	}
+}
+
+func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Request) {
+	var body struct {
+		Data struct {
+			LoginType    string `json:"loginType"`
+			Account      string `json:"account"`
+			Password     string `json:"password"`
+			PlatformCode string `json:"platformCode"`
+			CustomerCode string `json:"customerCode"`
+			Code         string `json:"code"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		f.t.Error("登录请求体无法解析")
+	}
+	if body.Data.LoginType != "ACCOUNT" || body.Data.Account == "" || body.Data.Password == "" || body.Data.Password == f.password {
+		f.t.Error("登录请求结构或密码加密不符合协议")
+	}
+	if body.Data.PlatformCode != "200001" || body.Data.Code != f.loginCode {
+		f.t.Error("登录请求未采用运行时 code 或已批准平台代码")
+	}
+	if f.expireMode == "login-rejected" {
+		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "LOGIN_REJECTED", "message": "login rejected"})
+		return
+	}
+	if f.expireMode == "login-http-unauthorized" {
+		response.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	f.mu.Lock()
+	f.loginCount++
+	active := runtimeValue(f.t, 16)
+	f.sessions = append(f.sessions, active)
+	f.mu.Unlock()
+	writeTargetJSON(response, map[string]any{
+		"isSuccess": true,
+		"sid":       active,
+		"data": map[string]any{
+			"user":      map[string]any{"name": "测试人员", "customerCode": "tenant-code"},
+			"companyVo": map[string]any{"name": "测试公司"},
+		},
+	})
+}
+
+func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http.Request) {
+	body := f.requireSession(request)
+	data, _ := body["data"].(map[string]any)
+	_, hasFlowName := data["flowName"].(string)
+	if !hasFlowName || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true {
+		f.t.Error("流程模板请求参数不符合已核实协议")
+	}
+	f.mu.Lock()
+	f.templateCount++
+	call := f.templateCount
+	mode := f.expireMode
+	f.mu.Unlock()
+	if mode == "business-once" && call == 1 || mode == "business-always" {
+		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "RESP401", "message": "session invalid"})
+		return
+	}
+	if mode == "business-message-once" && call == 1 {
+		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "ERROR_99999", "message": "用户会话已失效"})
+		return
+	}
+	if mode == "business-minus-one-once" && call == 1 {
+		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "-1", "message": "session invalid"})
+		return
+	}
+	if mode == "http-once" && call == 1 || mode == "http-always" {
+		response.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if mode == "empty" {
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{}, "total": 0, "pages": 0, "current": 1, "size": 20})
+		return
+	}
+	if mode == "invalid-json" {
+		_, _ = response.Write([]byte("{"))
+		return
+	}
+	if mode == "bad-pagination" {
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{}, "total": -1})
+		return
+	}
+	if mode == "unavailable" {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	writeTargetJSON(response, map[string]any{
+		"isSuccess": true,
+		"data": []any{map[string]any{
+			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
+			"flowStatus": "enable", "typeName": "经营管理", "updateDate": "2026-07-27 08:00",
+		}},
+		"total": 1, "pages": 1, "current": 1, "size": 20,
+	})
+}
+
+func (f *fakeTarget) requireSession(request *http.Request) map[string]any {
+	f.mu.Lock()
+	if len(f.sessions) == 0 {
+		f.mu.Unlock()
+		f.t.Error("业务请求发生在登录前")
+		return nil
+	}
+	active := f.sessions[len(f.sessions)-1]
+	f.mu.Unlock()
+	var body map[string]any
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		f.t.Error("业务请求体无法解析")
+		return nil
+	}
+	if request.URL.Query().Get("sid") != active || request.Header.Get("sid") != active || body["sid"] != active {
+		f.t.Error("SID 未按 body、query、header 三处协议传递")
+	}
+	if request.URL.Query().Get("platformCode") != "200001" {
+		f.t.Error("业务请求缺少平台代码")
+	}
+	return body
+}
+
+func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	app := api.NewHandler()
+
+	responses := [][]byte{
+		callApp(t, app, http.MethodPost, "/api/target/accounts/verify", `{"account":"account-a"}`, http.StatusOK),
+		callApp(t, app, http.MethodGet, "/api/target/flow-templates?account=account-a&query=flow&page=1&pageSize=20", "", http.StatusOK),
+		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=submitted&query=sent&page=1&pageSize=20", "", http.StatusOK),
+		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=due&query=due&page=1&pageSize=20", "", http.StatusOK),
+	}
+	wants := []string{"displayName", "真实流程模板", "currentAuditUserNames", "真实待发流程"}
+	for index, body := range responses {
+		if !bytes.Contains(body, []byte(wants[index])) {
+			t.Fatalf("第 %d 个真实读取响应缺少预期映射", index+1)
+		}
+		for _, active := range fake.sessions {
+			if bytes.Contains(body, []byte(active)) {
+				t.Fatal("公开响应泄露后端会话")
+			}
+		}
+	}
+	if fake.loginCount != 1 {
+		t.Fatalf("三类读取未复用同一账号会话，登录次数 = %d", fake.loginCount)
+	}
+}
+
+func TestSessionExpiryRelogsAndReplaysOnce(t *testing.T) {
+	for _, mode := range []string{"business-once", "business-message-once", "business-minus-one-once", "http-once"} {
+		t.Run(mode, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			fake.expireMode = mode
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			body := callApp(t, api.NewHandler(), http.MethodGet, "/api/target/flow-templates?account=account-a", "", http.StatusOK)
+			if !bytes.Contains(body, []byte("真实流程模板")) || fake.loginCount != 2 || fake.templateCount != 2 {
+				t.Fatal("会话失效后未完成一次安全重登和只读重放")
+			}
+		})
+	}
+}
+
+func TestLoginRejectionUsesStablePublicError(t *testing.T) {
+	for _, mode := range []string{"login-rejected", "login-http-unauthorized"} {
+		t.Run(mode, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			fake.expireMode = mode
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			body := callApp(t, api.NewHandler(), http.MethodPost, "/api/target/accounts/verify", `{"account":"account-a"}`, http.StatusUnauthorized)
+			if !bytes.Contains(body, []byte("TARGET_LOGIN_REJECTED")) {
+				t.Fatal("目标登录拒绝未映射为稳定公开错误")
+			}
+		})
+	}
+}
+
+func TestSessionExpiryStopsAfterOneReplay(t *testing.T) {
+	for _, mode := range []string{"business-always", "http-always"} {
+		t.Run(mode, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			fake.expireMode = mode
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			body := callApp(t, api.NewHandler(), http.MethodGet, "/api/target/flow-templates?account=account-a", "", http.StatusUnauthorized)
+			if !bytes.Contains(body, []byte("TARGET_SESSION_EXPIRED")) || fake.loginCount != 2 || fake.templateCount != 2 {
+				t.Fatal("会话重登或重放超过一次边界")
+			}
+		})
+	}
+}
+
+func TestEmptyBadPaginationBadJSONAndTargetUnavailable(t *testing.T) {
+	tests := []struct {
+		mode   string
+		status int
+		code   string
+	}{
+		{mode: "empty", status: http.StatusOK, code: `"items":[]`},
+		{mode: "invalid-json", status: http.StatusBadGateway, code: "TARGET_RESPONSE_INVALID"},
+		{mode: "bad-pagination", status: http.StatusBadGateway, code: "TARGET_RESPONSE_INVALID"},
+		{mode: "unavailable", status: http.StatusBadGateway, code: "TARGET_UNAVAILABLE"},
+	}
+	for _, test := range tests {
+		t.Run(test.mode, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			fake.expireMode = test.mode
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			body := callApp(t, api.NewHandler(), http.MethodGet, "/api/target/flow-templates?account=account-a", "", test.status)
+			if !bytes.Contains(body, []byte(test.code)) {
+				t.Fatal("目标异常未映射为预期稳定结果")
+			}
+		})
+	}
+}
+
+func TestTargetTimeoutAndContextCancellation(t *testing.T) {
+	started := make(chan struct{})
+	var startOnce sync.Once
+	targetServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		startOnce.Do(func() { close(started) })
+		select {
+		case <-request.Context().Done():
+		case <-time.After(100 * time.Millisecond):
+		}
+	}))
+	defer targetServer.Close()
+	password := runtimeValue(t, 12)
+	loginCode := runtimeValue(t, 6)
+	configureTargetEnv(t, targetServer.URL, password, loginCode, "20ms")
+	body := callApp(t, api.NewHandler(), http.MethodPost, "/api/target/accounts/verify", `{"account":"account-a"}`, http.StatusGatewayTimeout)
+	if !bytes.Contains(body, []byte("TARGET_TIMEOUT")) {
+		t.Fatal("目标超时未返回稳定错误")
+	}
+	<-started
+
+	client, err := target.NewClient(target.ClientConfig{
+		BaseURL: targetServer.URL, LoginPassword: password, LoginAESKey: runtimeValue(t, 8),
+		LoginCode: loginCode, PlatformCode: "200001", TemplatePlatformCodes: "200001,999999", Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("创建目标客户端失败：%v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.Login(ctx, "account-a"); !errors.Is(err, context.Canceled) {
+		t.Fatal("目标请求未透传 context 取消")
+	}
+}
+
+func configureTargetEnv(t *testing.T, baseURL, password, loginCode, timeout string) {
+	t.Helper()
+	t.Setenv("TARGET_API_GATEWAY", baseURL)
+	t.Setenv("TARGET_LOGIN_PASSWORD", password)
+	t.Setenv("TARGET_LOGIN_AES_KEY", runtimeValue(t, 8))
+	t.Setenv("TARGET_LOGIN_CODE", loginCode)
+	t.Setenv("TARGET_PLATFORM_CODE", "")
+	t.Setenv("TARGET_TEMPLATE_PLATFORM_CODES", "")
+	t.Setenv("TARGET_CUSTOMER_CODE", "")
+	t.Setenv("TARGET_SESSION_TTL", "1h")
+	t.Setenv("TARGET_HTTP_TIMEOUT", timeout)
+}
+
+func callApp(t *testing.T, handler http.Handler, method, path, body string, expectedStatus int) []byte {
+	t.Helper()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != expectedStatus {
+		t.Fatalf("状态码 = %d，期望 %d", recorder.Code, expectedStatus)
+	}
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	if err != nil {
+		t.Fatal("读取应用响应失败")
+	}
+	return responseBody
+}
+
+func runtimeValue(t *testing.T, byteCount int) string {
+	t.Helper()
+	data := make([]byte, byteCount)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal("无法生成测试期临时值")
+	}
+	return hex.EncodeToString(data)
+}
+
+func writeTargetJSON(response http.ResponseWriter, value any) {
+	response.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(response).Encode(value)
+}
