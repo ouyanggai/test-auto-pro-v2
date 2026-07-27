@@ -1,6 +1,6 @@
 # 当前进度
 
 - 当前功能：F-000 项目初始化
-- 当前状态：implementing
+- 当前状态：ready_for_manual
 - 阻塞：无
-- 下一步：完成 F-000 实施与自动验证后更新为 `ready_for_manual`，等待用户手工验收。
+- 下一步：等待用户按 `test/manual/F-000.md` 手工验收；未明确验收前不开始 F-001。

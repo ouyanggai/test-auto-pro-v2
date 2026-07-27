@@ -1,6 +1,6 @@
 # F-000 项目初始化
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“人工验收原则”
 - 架构依据：`docs/ARCHITECTURE.md`
 - 计划确认时间：2026-07-27
@@ -26,22 +26,23 @@
 
 ## 完成标准
 
-- [ ] Git 已初始化，忽略项覆盖参考源码、凭证、依赖、构建和运行产物。
-- [ ] 项目文档职责单一，现行技术冲突已解决。
-- [ ] 四个本地技能包含 `SKILL.md` 与 `agents/openai.yaml` 并通过格式校验。
-- [ ] 13 个参考仓库来自远端干净克隆，分支与远端 HEAD 已核对。
-- [ ] `make refs-sync` 和 `make refs-status` 可用，脏仓库保护已验证。
-- [ ] 健康接口精确返回约定 JSON，后端监听 19080。
-- [ ] 前端使用约定技术栈，监听 19000，三个中文路由与 `/api` 代理可用。
-- [ ] `make setup/dev/restart/stop/status/logs` 已实际验证。
-- [ ] Go build、前端类型检查与构建、F-000 当前测试全部通过。
-- [ ] 状态更新为 `ready_for_manual` 并停止，不开始 F-001。
+- [x] Git 已初始化，忽略项覆盖参考源码、凭证、依赖、构建和运行产物。
+- [x] 项目文档职责单一，现行技术冲突已解决。
+- [x] 四个本地技能包含 `SKILL.md` 与 `agents/openai.yaml` 并通过格式校验。
+- [x] 13 个参考仓库来自远端干净克隆，分支与远端 HEAD 已核对。
+- [x] `make refs-sync` 和 `make refs-status` 可用，脏仓库保护已验证。
+- [x] 健康接口精确返回约定 JSON，后端监听 19080。
+- [x] 前端使用约定技术栈，监听 19000，三个中文路由与 `/api` 代理可用。
+- [x] `make setup/dev/restart/stop/status/logs` 已实际验证。
+- [x] Go build、前端类型检查与构建、F-000 当前测试全部通过。
+- [x] 状态更新为 `ready_for_manual` 并停止，不开始 F-001。
 
 ## 状态记录
 
 - 2026-07-27：`preparing`
 - 2026-07-27：`awaiting_approval`
 - 2026-07-27：用户确认计划，进入 `implementing`
+- 2026-07-27：实现与自动验证完成，进入 `ready_for_manual`
 
 ## 人工验收
 
