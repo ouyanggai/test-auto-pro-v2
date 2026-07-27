@@ -15,7 +15,7 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: '/settings' }, { default: () => '系统设置' }), key: '/settings' },
 ]
 
-const selectedKey = computed(() => route.path)
+const selectedKey = computed(() => (route.path.startsWith('/plans') ? '/plans' : route.path))
 const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
 const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
 const sidebarCollapsed = ref(false)
