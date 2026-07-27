@@ -16,6 +16,7 @@ grep -Fq 'candidateRequestVersion' "${form_file}"
 grep -Fq 'isCurrentRemoteRequest' "${form_file}"
 grep -Fq 'mergeCandidatePages' "${form_file}"
 grep -Fq 'searchDebouncer.schedule(query)' "${form_file}"
+grep -Fq 'invalidateVerifiedAccount(apiError.message)' "${form_file}"
 grep -Fq "code === 'TARGET_SESSION_EXPIRED'" "${remote_file}"
 grep -Fq 'REMOTE_SEARCH_DEBOUNCE_MS = 250' "${remote_file}"
 

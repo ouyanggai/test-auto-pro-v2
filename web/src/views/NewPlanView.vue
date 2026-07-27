@@ -476,10 +476,7 @@ async function verifyAccount() {
   catch (error) {
     if (controller.signal.aborted || version !== verificationVersion) return
     const apiError = error instanceof TargetApiError ? error : new TargetApiError('账号验证失败，请重试')
-    verificationState.value = 'failed'
-    verificationError.value = apiError.message
-    verifiedAccount.value = ''
-    verifiedSummary.value = null
+	 invalidateVerifiedAccount(apiError.message)
     message.error(apiError.message)
   }
   finally {
