@@ -1,4 +1,4 @@
-import type { FlowCandidate, FlowSource } from './types.ts'
+import type { FlowCandidate, FlowSource, PlanFormValue } from './types.ts'
 
 export const FLOW_CANDIDATE_BATCH_SIZE = 6
 
@@ -40,4 +40,26 @@ export function takeCandidateBatches(
   batchSize = FLOW_CANDIDATE_BATCH_SIZE,
 ): FlowCandidate[] {
   return candidates.slice(0, Math.max(1, batchCount) * batchSize)
+}
+
+export type PostSelectionGuidanceTarget = 'scheduledAt' | 'maxConcurrency' | 'submit'
+
+export function resolvePostSelectionGuidance(form: Pick<PlanFormValue, 'scheduleEnabled' | 'scheduledAt' | 'runMode' | 'maxConcurrency'>): PostSelectionGuidanceTarget {
+  if (form.scheduleEnabled && !form.scheduledAt) return 'scheduledAt'
+  if (form.runMode === 'parallel' && (typeof form.maxConcurrency !== 'number' || form.maxConcurrency < 2 || form.maxConcurrency > 20)) {
+    return 'maxConcurrency'
+  }
+  return 'submit'
+}
+
+export function calculateNearestScrollDelta(
+  targetTop: number,
+  targetBottom: number,
+  viewportTop: number,
+  viewportBottom: number,
+  inset = 16,
+): number {
+  if (targetTop < viewportTop + inset) return targetTop - viewportTop - inset
+  if (targetBottom > viewportBottom - inset) return targetBottom - viewportBottom + inset
+  return 0
 }

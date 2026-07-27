@@ -19,6 +19,7 @@ const emit = defineEmits<{
 const query = ref('')
 const batchCount = ref(1)
 const loading = ref(false)
+const searchFieldRef = ref<HTMLElement | null>(null)
 let requestVersion = 0
 
 const title = computed(() => flowSelectionLabels[props.source])
@@ -81,17 +82,31 @@ function candidateDetail(candidate: FlowCandidate): string {
   if (candidate.kind === 'submitted') return `当前处理人 ${candidate.currentAuditUserNames}`
   return `实例编号 ${candidate.flowInstanceId}`
 }
+
+function getSearchElement(): HTMLInputElement | null {
+  return searchFieldRef.value?.querySelector('input') ?? null
+}
+
+function focusSearch() {
+  const input = getSearchElement()
+  if (!input) return
+  input.focus({ preventScroll: true })
+}
+
+defineExpose({ getSearchElement, focusSearch })
 </script>
 
 <template>
   <n-el class="candidate-picker">
     <div class="candidate-toolbar">
-      <n-input
-        v-model:value="query"
-        clearable
-        :placeholder="`搜索${title}名称或状态`"
-        :aria-label="`搜索${title}`"
-      />
+      <div ref="searchFieldRef" class="candidate-search-field">
+        <n-input
+          v-model:value="query"
+          clearable
+          :placeholder="`搜索${title}名称或状态`"
+          :aria-label="`搜索${title}`"
+        />
+      </div>
       <n-text depth="3">{{ items[0]?.accountName }} · 本地静态数据 · {{ filteredItems.length }} 项</n-text>
     </div>
 
@@ -140,8 +155,7 @@ function candidateDetail(candidate: FlowCandidate): string {
 .candidate-picker {
   width: 100%;
   min-width: 0;
-  border-top: 1px solid var(--border-color);
-  border-bottom: 1px solid var(--border-color);
+  min-height: 348px;
 }
 
 .candidate-toolbar {
@@ -153,8 +167,12 @@ function candidateDetail(candidate: FlowCandidate): string {
   border-bottom: 1px solid var(--divider-color);
 }
 
-.candidate-toolbar .n-input {
+.candidate-search-field {
   width: min(100%, 360px);
+}
+
+.candidate-search-field .n-input {
+  width: 100%;
 }
 
 .candidate-toolbar .n-text {

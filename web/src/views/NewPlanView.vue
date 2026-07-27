@@ -3,6 +3,7 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import {
   NButton,
   NDatePicker,
+  NDivider,
   NEmpty,
   NForm,
   NFormItemGi,
@@ -24,7 +25,13 @@ import { useRouter } from 'vue-router'
 
 import FlowCandidateList from '../features/plans/FlowCandidateList.vue'
 import { getMockFlowCandidates } from '../features/plans/mock'
-import { flowSourceLabels, isFlowSourceAvailable } from '../features/plans/selection'
+import {
+  calculateNearestScrollDelta,
+  flowSelectionLabels,
+  flowSourceLabels,
+  isFlowSourceAvailable,
+  resolvePostSelectionGuidance,
+} from '../features/plans/selection'
 import type { AccountVerificationState, FlowCandidate, FlowSource, PlanFormValue } from '../features/plans/types'
 
 const router = useRouter()
@@ -34,6 +41,14 @@ const accountItemRef = ref<FormItemInst | null>(null)
 const selectionItemRef = ref<FormItemInst | null>(null)
 const concurrencyItemRef = ref<FormItemInst | null>(null)
 const scheduledAtItemRef = ref<FormItemInst | null>(null)
+const selectionRegionRef = ref<HTMLElement | null>(null)
+const scheduledAtGuideRef = ref<HTMLElement | null>(null)
+const concurrencyGuideRef = ref<HTMLElement | null>(null)
+const submitGuideRef = ref<HTMLElement | null>(null)
+const candidateListRef = ref<{
+  getSearchElement: () => HTMLInputElement | null
+  focusSearch: () => void
+} | null>(null)
 
 const form = reactive<PlanFormValue>({
   name: '',
@@ -76,6 +91,12 @@ const selectedCandidateKey = computed(() => {
 const candidateRequestKey = computed(() => (
   `${selectionVersion.value}:${verifiedAccount.value}:${form.flowSource}`
 ))
+const selectionLabel = computed(() => flowSelectionLabels[form.flowSource])
+const selectionPath = computed(() => {
+  if (form.flowSource === 'new') return 'templateId'
+  if (form.flowSource === 'started') return 'submittedFlowId'
+  return 'dueFlowId'
+})
 const accountStatusCopy = computed(() => {
   if (verificationState.value === 'verifying') return '正在校验本地输入，不会请求真实平台…'
   if (accountVerified.value) return `已完成“${verifiedAccount.value}”的本地静态验证，未登录真实平台。`
@@ -83,6 +104,66 @@ const accountStatusCopy = computed(() => {
   return '本轮仅验证界面联动，不会登录真实平台或生成 SID。'
 })
 const accountStatusType = computed(() => (accountVerified.value ? 'success' : verificationState.value === 'invalid' ? 'warning' : undefined))
+
+let guidanceVersion = 0
+let pendingSelectionGuidance: number | null = null
+
+function nextFrame() {
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+}
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function getMainScrollContainer(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.app-main > .n-layout-scroll-container')
+}
+
+async function guideTo(target: 'selection' | 'scheduledAt' | 'maxConcurrency' | 'submit', version: number, focusSearch = false) {
+  await nextTick()
+  await nextFrame()
+  if (version !== guidanceVersion) return
+
+  const element = target === 'selection'
+    ? candidateListRef.value?.getSearchElement() ?? selectionRegionRef.value
+    : target === 'scheduledAt'
+      ? scheduledAtGuideRef.value
+      : target === 'maxConcurrency'
+        ? concurrencyGuideRef.value
+        : submitGuideRef.value
+  const container = getMainScrollContainer()
+  if (!element || !container) return
+
+  const delta = calculateNearestScrollDelta(
+    element.getBoundingClientRect().top,
+    element.getBoundingClientRect().bottom,
+    container.getBoundingClientRect().top,
+    container.getBoundingClientRect().bottom,
+  )
+  if (delta === 0) return
+
+  container.scrollBy({ top: delta, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+  if (focusSearch) candidateListRef.value?.focusSearch()
+}
+
+function requestSelectionGuidance() {
+  const version = ++guidanceVersion
+  pendingSelectionGuidance = version
+}
+
+function handleSelectionContentEntered() {
+  const version = pendingSelectionGuidance
+  pendingSelectionGuidance = null
+  if (version === null) return
+  void guideTo('selection', version, true)
+}
+
+function requestPostSelectionGuidance() {
+  const version = ++guidanceVersion
+  const nextTarget = resolvePostSelectionGuidance(form)
+  void guideTo(nextTarget, version)
+}
 
 const maxConcurrencyRules = computed<FormItemRule[]>(() => {
   if (form.runMode !== 'parallel') return []
@@ -151,6 +232,8 @@ function clearFlowSelections() {
 
 watch(() => form.account, async () => {
   verificationVersion += 1
+  guidanceVersion += 1
+  pendingSelectionGuidance = null
   if (verificationState.value !== 'idle') verificationState.value = 'invalid'
   verifiedAccount.value = ''
   if (form.flowSource !== 'new') form.flowSource = 'new'
@@ -165,6 +248,7 @@ watch(() => form.flowSource, async (source) => {
     return
   }
   clearFlowSelections()
+  if (accountVerified.value) requestSelectionGuidance()
   await nextTick()
   selectionItemRef.value?.restoreValidation()
 })
@@ -200,6 +284,7 @@ async function verifyAccount() {
   verifiedAccount.value = account
   verificationState.value = 'verified'
   accountItemRef.value?.restoreValidation()
+  requestSelectionGuidance()
   message.success('本地静态验证完成，未登录真实平台')
 }
 
@@ -209,6 +294,7 @@ async function selectCandidate(key: string) {
   else form.dueFlowId = key
   await nextTick()
   selectionItemRef.value?.restoreValidation()
+  requestPostSelectionGuidance()
 }
 
 async function submitPrototype() {
@@ -311,13 +397,15 @@ async function submitPrototype() {
             label="启动时间"
             first
           >
-            <n-date-picker
-              v-model:value="form.scheduledAt"
-              class="full-width-control"
-              type="datetime"
-              clearable
-              placeholder="请选择启动时间"
-            />
+            <div ref="scheduledAtGuideRef" class="full-width-control">
+              <n-date-picker
+                v-model:value="form.scheduledAt"
+                class="full-width-control"
+                type="datetime"
+                clearable
+                placeholder="请选择启动时间"
+              />
+            </div>
           </n-form-item-gi>
 
           <n-form-item-gi
@@ -328,70 +416,53 @@ async function submitPrototype() {
             label="并行最大并发数"
             first
           >
-            <n-input-number
-              v-model:value="form.maxConcurrency"
-              class="full-width-control"
-              :min="2"
-              :max="20"
-              :precision="0"
-            />
+            <div ref="concurrencyGuideRef" class="full-width-control">
+              <n-input-number
+                v-model:value="form.maxConcurrency"
+                class="full-width-control"
+                :min="2"
+                :max="20"
+                :precision="0"
+              />
+            </div>
           </n-form-item-gi>
 
           <n-form-item-gi
-            v-if="form.flowSource === 'new'"
-            ref="selectionItemRef"
             span="24"
-            path="templateId"
-            label="流程模板"
-            first
+            :show-label="false"
+            :show-feedback="false"
           >
-            <flow-candidate-list
-              v-if="accountVerified"
-              source="new"
-              :items="candidates"
-              :selected-key="selectedCandidateKey"
-              :request-key="candidateRequestKey"
-              @select="selectCandidate"
-            />
-            <n-empty v-else class="verification-empty" description="请先验证账号，再加载该账号可见的流程模板" />
+            <n-divider class="selection-divider" title-placement="left">选择流程</n-divider>
           </n-form-item-gi>
 
           <n-form-item-gi
-            v-else-if="form.flowSource === 'started'"
             ref="selectionItemRef"
             span="24"
-            path="submittedFlowId"
-            label="已发流程"
+            :path="selectionPath"
+            :label="selectionLabel"
             first
           >
-            <flow-candidate-list
-              source="started"
-              :items="candidates"
-              :selected-key="selectedCandidateKey"
-              :request-key="candidateRequestKey"
-              @select="selectCandidate"
-            />
-          </n-form-item-gi>
-
-          <n-form-item-gi
-            v-else
-            ref="selectionItemRef"
-            span="24"
-            path="dueFlowId"
-            label="待发流程"
-            first
-          >
-            <flow-candidate-list
-              source="pending"
-              :items="candidates"
-              :selected-key="selectedCandidateKey"
-              :request-key="candidateRequestKey"
-              @select="selectCandidate"
-            />
+            <div ref="selectionRegionRef" class="selection-shell">
+              <transition name="selection-content" mode="out-in" @after-enter="handleSelectionContentEntered">
+                <flow-candidate-list
+                  v-if="accountVerified"
+                  ref="candidateListRef"
+                  :key="candidateRequestKey"
+                  :source="form.flowSource"
+                  :items="candidates"
+                  :selected-key="selectedCandidateKey"
+                  :request-key="candidateRequestKey"
+                  @select="selectCandidate"
+                />
+                <div v-else key="unverified" class="selection-placeholder">
+                  <n-empty description="请先验证账号，再加载该账号可见的流程模板" />
+                </div>
+              </transition>
+            </div>
           </n-form-item-gi>
 
           <n-form-item-gi span="24" :show-label="false" :show-feedback="false">
-            <div class="form-actions">
+            <div ref="submitGuideRef" class="form-actions">
               <n-button type="primary" attr-type="submit">创建并选择路径</n-button>
             </div>
           </n-form-item-gi>
@@ -409,12 +480,8 @@ async function submitPrototype() {
 }
 
 .back-bar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
   width: max-content;
-  padding: 8px 0;
-  background-color: inherit;
+  margin-bottom: 16px;
 }
 
 .form-content {
@@ -475,8 +542,51 @@ async function submitPrototype() {
 
 .verification-empty {
   width: 100%;
-  min-height: 180px;
-  padding-top: 42px;
+}
+
+.selection-divider {
+  margin: 12px 0 20px;
+}
+
+.selection-shell {
+  display: grid;
+  width: 100%;
+  min-height: 348px;
+  overflow: hidden;
+}
+
+.selection-shell > * {
+  width: 100%;
+}
+
+.selection-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 348px;
+}
+
+.selection-content-enter-active,
+.selection-content-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.selection-content-enter-from,
+.selection-content-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .selection-content-enter-active,
+  .selection-content-leave-active {
+    transition: none;
+  }
+
+  .selection-content-enter-from,
+  .selection-content-leave-to {
+    transform: none;
+  }
 }
 
 .form-actions {
