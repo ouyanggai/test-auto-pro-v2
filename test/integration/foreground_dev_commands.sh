@@ -20,7 +20,8 @@ stop_job() {
 
   [[ -n "${command_pid}" ]] || return 0
   kill -0 "${command_pid}" 2>/dev/null || return 0
-  kill -INT -- "-${command_pid}" 2>/dev/null || kill -INT "${command_pid}" 2>/dev/null || true
+  # 不向进程组广播，避免测试清理信号影响当前测试 shell；残留监听由命令行归属校验后单独处理。
+  kill -INT "${command_pid}" 2>/dev/null || true
   wait "${command_pid}" 2>/dev/null || true
 }
 
