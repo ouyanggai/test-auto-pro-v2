@@ -12,6 +12,7 @@
 
 # Go 构建与测试产物
 /bin/
+/server
 *.test
 *.out
 /coverage/
