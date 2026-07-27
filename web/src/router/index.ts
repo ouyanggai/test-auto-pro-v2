@@ -1,9 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-import PlansView from '../views/PlansView.vue'
-import NewPlanView from '../views/NewPlanView.vue'
-import RunsView from '../views/RunsView.vue'
-import SettingsView from '../views/SettingsView.vue'
+const PlansView = () => import('../views/PlansView.vue')
+const NewPlanView = () => import('../views/NewPlanView.vue')
+const RunsView = () => import('../views/RunsView.vue')
+const SettingsView = () => import('../views/SettingsView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
