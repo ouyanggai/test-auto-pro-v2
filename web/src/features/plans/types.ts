@@ -55,7 +55,6 @@ export interface FlowTemplateCandidate extends FlowCandidateBase {
 	statusText: string
 	updateTime: string
 	code: string
-	companyName: string
 	remark: string
 	flowCreateType: string
 	formExist: string
@@ -71,9 +70,10 @@ export interface VerifiedTargetAccount {
 export interface SubmittedFlowCandidate extends FlowCandidateBase {
   kind: 'submitted'
   id: string
-  name: string
-  status: string
-  createDate: string
+	name: string
+	status: string
+	statusName: string
+	createDate: string
   currentNodeName: string
   currentAuditUserNames: string
 }

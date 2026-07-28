@@ -22,19 +22,18 @@ export function candidateTitle(candidate: FlowCandidate): string {
 
 export function candidateStatus(candidate: FlowCandidate): string {
   if (candidate.kind === 'template') return ''
-  if (candidate.kind === 'submitted') return candidate.status
+  if (candidate.kind === 'submitted') return candidate.statusName
   return candidate.statusName
 }
 
-export function templateCompanyName(candidate: FlowCandidate): string {
-  return candidate.kind === 'template' ? candidate.companyName.trim() : ''
+export function templateGroupName(candidate: FlowCandidate): string {
+  return candidate.kind === 'template' ? candidate.groupName.trim() : ''
 }
 
 export function candidateMeta(candidate: FlowCandidate): string {
   if (candidate.kind === 'template') {
-    const classification = [candidate.typeName, candidate.groupName].filter(Boolean).join(' / ')
     return joinMeta([
-      classification ? `分类 ${classification}` : '',
+		candidate.typeName ? `分类 ${candidate.typeName}` : '',
       templateFormSummary(candidate),
       candidate.updateTime ? `更新 ${candidate.updateTime}` : '',
     ])

@@ -10,7 +10,7 @@ import {
   candidateMeta,
   candidateStatus,
   candidateTitle,
-  templateCompanyName,
+  templateGroupName,
 } from './presentation'
 import type { FlowCandidate, FlowSource } from './types'
 
@@ -115,12 +115,12 @@ defineExpose({ getSearchElement, focusSearch })
           <span class="candidate-row__heading">
             <strong>{{ candidateTitle(item as FlowCandidate) }}</strong>
 			<n-tag
-			  v-if="templateCompanyName(item as FlowCandidate)"
+			  v-if="templateGroupName(item as FlowCandidate)"
 			  size="small"
 			  type="info"
 			  :bordered="false"
 			>
-			  {{ templateCompanyName(item as FlowCandidate) }}
+			  {{ templateGroupName(item as FlowCandidate) }}
 			</n-tag>
 			<n-tag
 			  v-if="selectedKey === item.key || candidateStatus(item as FlowCandidate)"

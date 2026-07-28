@@ -112,7 +112,6 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 			CustomerCode string `json:"customerCode"`
 		} `json:"user"`
 		Company struct {
-			ID           string `json:"id"`
 			Name         string `json:"name"`
 			CustomerCode string `json:"customerCode"`
 		} `json:"companyVo"`
@@ -127,7 +126,6 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 		SID:          resp.SID,
 		CustomerCode: customerCode,
 		PlatformCode: c.config.PlatformCode,
-		CompanyID:    data.Company.ID,
 		Summary: AccountSummary{
 			Account:     strings.TrimSpace(account),
 			DisplayName: data.User.Name,
@@ -136,28 +134,22 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 	}, nil
 }
 
-type templateCompanyRelation struct {
-	OtherBiz   string `json:"otherBiz"`
-	OtherBizID string `json:"otherBizId"`
-}
-
 type rawFlowTemplate struct {
-	ID                             string                    `json:"id"`
-	FlowName                       string                    `json:"flowName"`
-	Code                           string                    `json:"code"`
-	FlowCode                       string                    `json:"flowCode"`
-	GroupName                      string                    `json:"groupName"`
-	FlowStatus                     string                    `json:"flowStatus"`
-	TypeName                       string                    `json:"typeName"`
-	UpdateDate                     string                    `json:"updateDate"`
-	UpdateTime                     string                    `json:"updateTime"`
-	CreateDate                     string                    `json:"createDate"`
-	CreateTime                     string                    `json:"createTime"`
-	Remark                         string                    `json:"remark"`
-	FlowCreateType                 string                    `json:"flowCreateType"`
-	FormExist                      string                    `json:"formExist"`
-	FormTemplateList               []json.RawMessage         `json:"formTemplateList"`
-	FormTemplateBizRelevanceVoList []templateCompanyRelation `json:"formTemplateBizRelevanceVoList"`
+	ID               string            `json:"id"`
+	FlowName         string            `json:"flowName"`
+	Code             string            `json:"code"`
+	FlowCode         string            `json:"flowCode"`
+	GroupName        string            `json:"groupName"`
+	FlowStatus       string            `json:"flowStatus"`
+	TypeName         string            `json:"typeName"`
+	UpdateDate       string            `json:"updateDate"`
+	UpdateTime       string            `json:"updateTime"`
+	CreateDate       string            `json:"createDate"`
+	CreateTime       string            `json:"createTime"`
+	Remark           string            `json:"remark"`
+	FlowCreateType   string            `json:"flowCreateType"`
+	FormExist        string            `json:"formExist"`
+	FormTemplateList []json.RawMessage `json:"formTemplateList"`
 }
 
 func (c *Client) ListTemplates(ctx context.Context, session Session, query string, page, pageSize int) (Page[FlowTemplate], error) {
@@ -167,16 +159,17 @@ func (c *Client) ListTemplates(ctx context.Context, session Session, query strin
 			"useScope":     "invest",
 			"customerCode": firstNonEmpty(session.CustomerCode, c.config.CustomerCode),
 		},
-		"showMe":                          true,
-		"formTemplateBizRelevanceList":    []any{},
-		"notFormTemplateBizRelevanceList": []map[string]any{{"otherBiz": "isProject", "otherBizId": "isProject"}},
-		"ignoreTemplateData":              true,
-		"pagination":                      true,
-		"pages":                           page,
-		"size":                            pageSize,
-		"projectId":                       "",
-		"platformCode":                    c.config.TemplatePlatformCodes,
-		"notAuditWayList":                 []string{"staff_annual_assessment"},
+		"showMe":                             true,
+		"ignoreFormTemplateBizRelevanceData": true,
+		"formTemplateBizRelevanceList":       []any{},
+		"notFormTemplateBizRelevanceList":    []map[string]any{{"otherBiz": "isProject", "otherBizId": "isProject"}},
+		"ignoreTemplateData":                 true,
+		"pagination":                         true,
+		"pages":                              page,
+		"size":                               pageSize,
+		"projectId":                          "",
+		"platformCode":                       c.config.TemplatePlatformCodes,
+		"notAuditWayList":                    []string{"staff_annual_assessment"},
 	}
 	resp, err := c.call(ctx, "/web/flowTemplateApi/list", session.SID, body)
 	if err != nil {
@@ -189,7 +182,6 @@ func (c *Client) ListTemplates(ctx context.Context, session Session, query strin
 	if err := decodeArray(resp.Data, &raw); err != nil {
 		return Page[FlowTemplate]{}, err
 	}
-	companyNames := c.templateCompanyNames(ctx, session, raw)
 	items := make([]FlowTemplate, 0, len(raw))
 	for _, item := range raw {
 		items = append(items, FlowTemplate{
@@ -206,58 +198,9 @@ func (c *Client) ListTemplates(ctx context.Context, session Session, query strin
 			FlowCreateType:    item.FlowCreateType,
 			FormExist:         item.FormExist,
 			FormTemplateCount: len(item.FormTemplateList),
-			CompanyName:       companyNames[templateCompanyID(item.FormTemplateBizRelevanceVoList)],
 		})
 	}
 	return normalizePage(items, resp, page, pageSize)
-}
-
-func templateCompanyID(relations []templateCompanyRelation) string {
-	for _, relation := range relations {
-		if relation.OtherBiz == "company" && strings.TrimSpace(relation.OtherBizID) != "" {
-			return strings.TrimSpace(relation.OtherBizID)
-		}
-	}
-	return ""
-}
-
-func (c *Client) templateCompanyNames(ctx context.Context, session Session, templates []rawFlowTemplate) map[string]string {
-	if strings.TrimSpace(session.CompanyID) == "" {
-		return nil
-	}
-	hasCompanyRelation := false
-	for _, template := range templates {
-		if templateCompanyID(template.FormTemplateBizRelevanceVoList) != "" {
-			hasCompanyRelation = true
-			break
-		}
-	}
-	if !hasCompanyRelation {
-		return nil
-	}
-
-	response, err := c.call(ctx, "/web/user/api/company/getParentCompanyList", session.SID, map[string]any{
-		"data": map[string]any{"id": session.CompanyID},
-	})
-	if err != nil || !responseSucceeded(response) {
-		return nil
-	}
-	var companies []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	if decodeArray(response.Data, &companies) != nil {
-		return nil
-	}
-	names := make(map[string]string, len(companies))
-	for _, company := range companies {
-		id := strings.TrimSpace(company.ID)
-		name := strings.TrimSpace(company.Name)
-		if id != "" && name != "" {
-			names[id] = name
-		}
-	}
-	return names
 }
 
 func (c *Client) ListSubmitted(ctx context.Context, session Session, query string, page, pageSize int) (Page[SubmittedFlow], error) {
@@ -300,6 +243,7 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 			FormName:              item.FormName,
 			Title:                 firstNonEmpty(item.Name, item.FormName),
 			Status:                item.Status,
+			StatusName:            submittedStatusText(item.Status),
 			CreateDate:            firstNonEmpty(item.CreateDate, item.CreateTime),
 			CurrentNodeName:       item.CurrentNodeName,
 			CurrentAuditUserNames: auditUserNames(item.CurrentAuditUserInfo),
@@ -545,6 +489,29 @@ func templateStatusText(status string) string {
 		return "停用"
 	default:
 		return status
+	}
+}
+
+func submittedStatusText(status string) string {
+	switch status {
+	case "await_sent":
+		return "待发"
+	case "run":
+		return "审批中"
+	case "withdraw":
+		return "撤销"
+	case "termination":
+		return "终止"
+	case "abandon":
+		return "丢弃"
+	case "rejected":
+		return "驳回"
+	case "end":
+		return "完结"
+	case "draft":
+		return "草稿"
+	default:
+		return "状态未知"
 	}
 }
 

@@ -22,7 +22,6 @@ export function getCandidateSearchText(candidate: FlowCandidate): string {
 	if (candidate.kind === 'template') {
 		return [
 			candidate.flowName,
-			candidate.companyName,
 			candidate.typeName,
 			candidate.groupName,
 			candidate.remark,
@@ -31,7 +30,7 @@ export function getCandidateSearchText(candidate: FlowCandidate): string {
 		].join(' ')
 	}
   if (candidate.kind === 'submitted') {
-    return [candidate.name, candidate.status, candidate.createDate, candidate.currentNodeName, candidate.currentAuditUserNames].join(' ')
+    return [candidate.name, candidate.status, candidate.statusName, candidate.createDate, candidate.currentNodeName, candidate.currentAuditUserNames].join(' ')
   }
   return [candidate.flowInstanceName, candidate.statusName, candidate.initiator, candidate.initiatorDate].join(' ')
 }

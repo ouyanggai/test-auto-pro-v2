@@ -28,12 +28,11 @@ type fakeTarget struct {
 	templateCount int
 	expireMode    string
 	sessions      []string
-	companyName   string
 }
 
 func newFakeTarget(t *testing.T) *fakeTarget {
 	t.Helper()
-	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), companyName: "所属公司"}
+	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6)}
 }
 
 func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request) {
@@ -42,8 +41,6 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 		f.handleLogin(response, request)
 	case "/web/flowTemplateApi/list":
 		f.handleTemplates(response, request)
-	case "/web/user/api/company/getParentCompanyList":
-		f.handleParentCompanies(response, request)
 	case "/web/flowInstanceApi/list":
 		body := f.requireSession(request)
 		data, _ := body["data"].(map[string]any)
@@ -52,12 +49,17 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 		}
 		writeTargetJSON(response, map[string]any{
 			"isSuccess": true,
-			"data": []any{map[string]any{
-				"id": "submitted-id", "name": "真实已发流程", "formName": "备用标题", "status": "run",
-				"createDate": "2026-07-27 10:00", "currentNodeName": "部门审批",
-				"currentAuditUserInfo": map[string]any{"node-a": map[string]any{"userList": []any{map[string]any{"name": "处理人甲"}}}},
-			}},
-			"total": 1, "pages": 1, "current": 1, "size": 20,
+			"data": []any{
+				map[string]any{"id": "submitted-run", "name": "真实已发流程", "formName": "备用标题", "status": "run", "createDate": "2026-07-27 10:00", "currentNodeName": "部门审批", "currentAuditUserInfo": map[string]any{"node-a": map[string]any{"userList": []any{map[string]any{"name": "处理人甲"}}}}},
+				map[string]any{"id": "submitted-end", "name": "已完结流程", "status": "end"},
+				map[string]any{"id": "submitted-rejected", "name": "已驳回流程", "status": "rejected"},
+				map[string]any{"id": "submitted-withdraw", "name": "已撤销流程", "status": "withdraw"},
+				map[string]any{"id": "submitted-await", "name": "待发流程", "status": "await_sent"},
+				map[string]any{"id": "submitted-termination", "name": "终止流程", "status": "termination"},
+				map[string]any{"id": "submitted-abandon", "name": "丢弃流程", "status": "abandon"},
+				map[string]any{"id": "submitted-draft", "name": "草稿流程", "status": "draft"},
+			},
+			"total": 8, "pages": 1, "current": 1, "size": 20,
 		})
 	case "/web/flowJobTaskLink/list":
 		body := f.requireSession(request)
@@ -116,7 +118,7 @@ func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Req
 		"sid":       active,
 		"data": map[string]any{
 			"user":      map[string]any{"name": "测试人员", "customerCode": "tenant-code"},
-			"companyVo": map[string]any{"id": "account-company", "name": "测试公司"},
+			"companyVo": map[string]any{"name": "测试公司"},
 		},
 	})
 }
@@ -125,7 +127,7 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	_, hasFlowName := data["flowName"].(string)
-	if !hasFlowName || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true || body["ignoreFormTemplateBizRelevanceData"] == true {
+	if !hasFlowName || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true || body["ignoreFormTemplateBizRelevanceData"] != true {
 		f.t.Error("流程模板请求参数不符合已核实协议")
 	}
 	f.mu.Lock()
@@ -171,24 +173,10 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
 			"flowStatus": "enable", "typeName": "经营管理", "updateDate": "2026-07-27 08:00",
 			"remark": "用于验证采购审批", "formExist": "withForm",
-			"formTemplateList":               []any{map[string]any{"id": "form-a"}, map[string]any{"id": "form-b"}},
-			"formTemplateBizRelevanceVoList": []any{map[string]any{"otherBiz": "company", "otherBizId": "template-company"}},
+			"formTemplateList": []any{map[string]any{"id": "form-a"}, map[string]any{"id": "form-b"}},
 		}},
 		"total": 1, "pages": 1, "current": 1, "size": 20,
 	})
-}
-
-func (f *fakeTarget) handleParentCompanies(response http.ResponseWriter, request *http.Request) {
-	body := f.requireSession(request)
-	data, _ := body["data"].(map[string]any)
-	if data["id"] != "account-company" {
-		f.t.Error("公司目录请求未使用登录摘要中的公司 ID")
-	}
-	companies := []any{}
-	if f.companyName != "" {
-		companies = append(companies, map[string]any{"id": "template-company", "name": f.companyName})
-	}
-	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": companies})
 }
 
 func (f *fakeTarget) requireSession(request *http.Request) map[string]any {
@@ -227,7 +215,7 @@ func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
 		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=submitted&query=sent&page=1&pageSize=20", "", http.StatusOK),
 		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=due&query=due&page=1&pageSize=20", "", http.StatusOK),
 	}
-	wants := []string{"displayName", "formTemplateCount\":2", "currentAuditUserNames", "真实待发流程"}
+	wants := []string{"displayName", "formTemplateCount\":2", "审批中", "真实待发流程"}
 	for index, body := range responses {
 		if !bytes.Contains(body, []byte(wants[index])) {
 			t.Fatalf("第 %d 个真实读取响应缺少预期映射", index+1)
@@ -241,20 +229,10 @@ func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
 	if fake.loginCount != 1 {
 		t.Fatalf("三类读取未复用同一账号会话，登录次数 = %d", fake.loginCount)
 	}
-	if !bytes.Contains(responses[1], []byte(`"companyName":"所属公司"`)) {
-		t.Fatal("模板响应未映射已核实的公司名称")
-	}
-}
-
-func TestTemplateCompanyNameStaysEmptyWhenDirectoryHasNoMatch(t *testing.T) {
-	fake := newFakeTarget(t)
-	fake.companyName = ""
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
-	body := callApp(t, api.NewHandler(), http.MethodGet, "/api/target/flow-templates?account=account-a", "", http.StatusOK)
-	if !bytes.Contains(body, []byte(`"companyName":""`)) {
-		t.Fatal("无公司名称时未保持空值")
+	for _, statusName := range []string{"待发", "审批中", "撤销", "终止", "丢弃", "驳回", "完结", "草稿"} {
+		if !bytes.Contains(responses[2], []byte(statusName)) {
+			t.Fatalf("已发流程响应缺少中文状态 %s", statusName)
+		}
 	}
 }
 

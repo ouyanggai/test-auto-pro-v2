@@ -58,10 +58,9 @@ interface TemplateDTO {
   groupName: string
   flowStatus: string
   statusText: string
-  typeName: string
+	typeName: string
 	updateDate: string
 	createDate: string
-	companyName: string
 	remark: string
 	flowCreateType: string
 	formExist: string
@@ -73,8 +72,9 @@ interface SubmittedDTO {
   name: string
   formName: string
   title: string
-  status: string
-  createDate: string
+	status: string
+	statusName: string
+	createDate: string
   currentNodeName: string
   currentAuditUserNames: string
 }
@@ -107,6 +107,21 @@ const errorMessages: Record<string, string> = {
 	TARGET_RESPONSE_INVALID: '流程数据异常，请重试',
 	TARGET_UNAVAILABLE: '暂时无法读取流程，请重试',
 	TARGET_TIMEOUT: '读取流程超时，请重试',
+}
+
+const submittedStatusNames: Record<string, string> = {
+	await_sent: '待发',
+	run: '审批中',
+	withdraw: '撤销',
+	termination: '终止',
+	abandon: '丢弃',
+	rejected: '驳回',
+	end: '完结',
+	draft: '草稿',
+}
+
+export function submittedStatusName(status: string): string {
+	return submittedStatusNames[status] || '状态未知'
 }
 
 export function targetApiErrorMessage(code?: string): string {
@@ -178,7 +193,6 @@ export async function fetchTargetCandidates(params: {
         statusText: item.statusText || item.flowStatus,
 		updateTime: item.updateDate || item.createDate,
 		code: item.code,
-		companyName: item.companyName,
 		remark: item.remark,
 			flowCreateType: item.flowCreateType,
 			formExist: item.formExist,
@@ -199,6 +213,7 @@ export async function fetchTargetCandidates(params: {
         id: item.id,
         name: item.title || item.name || item.formName,
         status: item.status,
+		statusName: item.statusName || submittedStatusName(item.status),
         createDate: item.createDate,
         currentNodeName: item.currentNodeName,
         currentAuditUserNames: item.currentAuditUserNames,

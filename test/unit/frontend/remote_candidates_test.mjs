@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { fetchTargetCandidates, targetApiErrorMessage, TargetApiError, verifyTargetAccount } from '../../../web/src/features/plans/api.ts'
+import { fetchTargetCandidates, submittedStatusName, targetApiErrorMessage, TargetApiError, verifyTargetAccount } from '../../../web/src/features/plans/api.ts'
 import {
   CANDIDATE_ITEM_SIZE,
   CANDIDATE_VIEWPORT_HEIGHT,
@@ -9,7 +9,7 @@ import {
   candidateDetailTitle,
   candidateMeta,
   candidateStatus,
-  templateCompanyName,
+  templateGroupName,
 } from '../../../web/src/features/plans/presentation.ts'
 import {
   REMOTE_SEARCH_DEBOUNCE_MS,
@@ -27,11 +27,10 @@ const template = (id, name = id) => ({
   templateId: id,
   flowName: name,
   typeName: '测试类型',
-  groupName: '测试分组',
 	statusText: '正常',
 	updateTime: '2026-07-27 10:00',
 	code: 'FLOW-CODE',
-	companyName: '所属公司',
+	groupName: '集团公司',
 	remark: '用于验证采购审批',
 	flowCreateType: 'current_platform',
 	formExist: 'withForm',
@@ -71,22 +70,31 @@ test('分页追加按来源真实 ID 去重并保留顺序', () => {
   assert.equal(merged[1].flowName, '新名称')
 })
 
-test('模板展示公司归属、分类表单关联和备注，不把编码或状态作为主展示', () => {
+test('模板高亮分组、展示分类表单关联和备注，不把编码或状态作为主展示', () => {
 	const item = template('one', '采购审批')
 	assert.equal(candidateStatus(item), '')
-	assert.equal(templateCompanyName(item), '所属公司')
+	assert.equal(templateGroupName(item), '集团公司')
 	assert.doesNotMatch(candidateMeta(item), /编码 FLOW-CODE/)
-	assert.match(candidateMeta(item), /分类 测试类型 \/ 测试分组/)
+	assert.match(candidateMeta(item), /分类 测试类型/)
+	assert.doesNotMatch(candidateMeta(item), /集团公司/)
 	assert.match(candidateMeta(item), /有表单 · 关联 2 个/)
 	assert.equal(candidateDetail(item), '备注：用于验证采购审批')
 
 	const emptyRemark = { ...item, remark: '' }
 	assert.equal(candidateDetail(emptyRemark), '备注：暂无备注')
-	assert.equal(templateCompanyName({ ...item, companyName: '  ' }), '')
+	assert.equal(templateGroupName({ ...item, groupName: '  ' }), '')
 	const longRemark = { ...item, remark: '用于采购审批主流程的跨部门长文本说明，列表只截断视觉内容但保留完整提示。' }
 	assert.equal(candidateDetailTitle(longRemark), candidateDetail(longRemark))
 	assert.equal(CANDIDATE_ITEM_SIZE, 96)
 	assert.equal(CANDIDATE_VIEWPORT_HEIGHT, 480)
+})
+
+test('已发状态统一映射中文且未知值使用中文兜底', () => {
+	assert.deepEqual(
+		['await_sent', 'run', 'withdraw', 'termination', 'abandon', 'rejected', 'end', 'draft'].map(submittedStatusName),
+		['待发', '审批中', '撤销', '终止', '丢弃', '驳回', '完结', '草稿'],
+	)
+	assert.equal(submittedStatusName('unexpected'), '状态未知')
 })
 
 test('稳定错误码映射为简洁业务提示', () => {
@@ -125,11 +133,11 @@ test('三类真实 API 数据映射为各自候选且稳定错误可恢复', asy
   const responses = [
     {
       success: true,
-		data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 't1', flowName: '模板', code: 'FLOW-CODE', companyName: '所属公司', groupName: '', flowStatus: 'enable', statusText: '正常', typeName: '经营管理', updateDate: '', createDate: '', remark: '用途说明', flowCreateType: '', formExist: 'withForm', formTemplateCount: 2 }] },
+		data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 't1', flowName: '模板', code: 'FLOW-CODE', groupName: '集团公司', flowStatus: 'enable', statusText: '正常', typeName: '经营管理', updateDate: '', createDate: '', remark: '用途说明', flowCreateType: '', formExist: 'withForm', formTemplateCount: 2 }] },
     },
     {
       success: true,
-      data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 's1', name: '', formName: '已发表单', title: '已发表单', status: 'run', createDate: '', currentNodeName: '', currentAuditUserNames: '' }] },
+		data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 's1', name: '', formName: '已发表单', title: '已发表单', status: 'run', statusName: '审批中', createDate: '', currentNodeName: '', currentAuditUserNames: '' }] },
     },
     {
       success: true,
@@ -147,8 +155,9 @@ test('三类真实 API 数据映射为各自候选且稳定错误可恢复', asy
 	assert.equal(templates.items[0].kind, 'template')
 	assert.equal(templates.items[0].remark, '用途说明')
 	assert.equal(templates.items[0].formTemplateCount, 2)
-	assert.equal(templates.items[0].companyName, '所属公司')
-    assert.equal(submitted.items[0].kind, 'submitted')
+	assert.equal(templates.items[0].groupName, '集团公司')
+	assert.equal(submitted.items[0].kind, 'submitted')
+	assert.equal(submitted.items[0].statusName, '审批中')
     assert.equal(due.items[0].kind, 'due')
 
     globalThis.fetch = async () => new Response(JSON.stringify({
