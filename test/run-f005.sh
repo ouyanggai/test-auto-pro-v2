@@ -12,7 +12,7 @@ printf '验证 F-005 流程入口与四个路径 API 契约\n'
 go test -count=1 ./test/contracts -run '^(TestExecutionPathAPI|TestPlanAPIExposesRealPathCount|TestFlowGraphAPI)'
 
 printf '验证 F-005 假目标三类入口、结束状态和会话只重放一次\n'
-go test -count=1 ./test/integration -run '^(TestFlowTreeReadUsesExactSourceLookupBeforeDetails|TestFlowTreeSnapshotUsesSourceSpecificEntryNodes|TestDueFlowSnapshotReadsAllWaitingSendPages|TestSubmittedFinishedInstanceIsNotConfigurable|TestSubmittedAwaitSentInstanceRemainsConfigurable|TestFlowTreeReadSessionExpiryReplaysWholeChainOnce)'
+go test -count=1 ./test/integration -run '^(TestFlowTreeReadUsesExactSourceLookupBeforeDetails|TestFlowTreeSnapshotUsesSourceSpecificEntryNodes|TestDueFlowSnapshot.*|TestSubmittedFinishedInstanceIsNotConfigurable|TestSubmittedAwaitSentInstanceRemainsConfigurable|TestFlowTreeReadSessionExpiryReplaysWholeChainOnce)'
 
 printf '验证 F-005 随机临时 MySQL 的迁移、事务、计数器、幂等、归属和重连读取\n'
 TEST_AUTO_PRO_PLAN_DB_ENV_FILE="${project_root}/.env.local" \

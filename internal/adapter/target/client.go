@@ -421,7 +421,8 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 	entries := make([]string, 0)
 	seen := make(map[string]struct{})
 	const pageSize = 100
-	for page := 1; ; page++ {
+	const maxPages = 20
+	for page := 1; page <= maxPages; page++ {
 		// 待发实例可能同时存在多个并行任务，必须遍历目标分页，不能只保留第一页入口。
 		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
 			"data": map[string]any{
@@ -467,15 +468,21 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 				entries = append(entries, entryID)
 			}
 		}
+		hasMore := false
 		if resp.Pages > 0 {
-			if page >= resp.Pages {
-				break
-			}
-			if resp.Pages > 20 {
+			if resp.Pages > maxPages {
 				return "", nil, false, invalidResponse("due task pagination exceeds safe limit")
 			}
-		} else if len(raw) < pageSize {
+			hasMore = page < resp.Pages
+		} else {
+			hasMore = len(raw) >= pageSize
+		}
+		if !hasMore {
 			break
+		}
+		// 目标可能省略 pages 且持续返回满页；硬上限必须独立于目标元数据，避免异常响应造成无界读取。
+		if page == maxPages {
+			return "", nil, false, invalidResponse("due task pagination exceeds safe limit")
 		}
 	}
 	if proxyID == "" {

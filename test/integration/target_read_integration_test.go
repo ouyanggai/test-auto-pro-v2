@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,7 @@ type fakeTarget struct {
 	graphCalls      []string
 	submittedStatus string
 	duePaged        bool
+	dueUnbounded    bool
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
@@ -87,6 +89,17 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				f.t.Error("待发实例精确核对参数不正确")
 			}
 			f.recordGraphCall("due-list")
+			if f.dueUnbounded {
+				items := make([]any, 0, 100)
+				for index := 0; index < 100; index++ {
+					items = append(items, map[string]any{
+						"flowInstanceId": "due-id", "flowProxyId": "proxy-due",
+						"flowNodeProxyId": fmt.Sprintf("node-%d", index),
+					})
+				}
+				writeTargetJSON(response, map[string]any{"isSuccess": true, "data": items, "current": body["pages"], "size": 100})
+				return
+			}
 			if f.duePaged {
 				page, _ := body["pages"].(float64)
 				entryID := "start"
@@ -351,6 +364,26 @@ func TestDueFlowSnapshotReadsAllWaitingSendPages(t *testing.T) {
 	fake.mu.Unlock()
 	if strings.Join(calls, ",") != "due-list,due-list,proxy-detail:proxy-due" {
 		t.Fatalf("待发分页读取调用顺序不正确：%v", calls)
+	}
+}
+
+// TestDueFlowSnapshotStopsAtTwentyPagesWithoutMetadata 验证目标省略页数时也不会发生无界读取。
+func TestDueFlowSnapshotStopsAtTwentyPagesWithoutMetadata(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.dueUnbounded = true
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	_, err := reader.FlowTreeSnapshot(context.Background(), "account-a", "pending", "due-id")
+	if !target.IsKind(err, target.ErrorResponseInvalid) {
+		t.Fatalf("待发无页数满页响应没有稳定停止：%v", err)
+	}
+	fake.mu.Lock()
+	calls := append([]string(nil), fake.graphCalls...)
+	fake.mu.Unlock()
+	if len(calls) != 20 {
+		t.Fatalf("待发分页上限调用次数 = %d，期望 20", len(calls))
 	}
 }
 
