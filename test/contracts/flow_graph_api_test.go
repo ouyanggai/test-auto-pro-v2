@@ -27,8 +27,11 @@ func (s *stubFlowGraphService) Get(context.Context, uint64) (model.FlowGraph, er
 func TestFlowGraphAPISuccessContractAndSafety(t *testing.T) {
 	graphs := &stubFlowGraphService{graph: model.FlowGraph{
 		PlanID: 41, TargetName: "采购流程", FlowSource: "new",
-		Nodes:    []model.FlowGraphNode{{ID: "start", Name: "发起", Type: "start", TypeName: "发起"}},
-		Edges:    []model.FlowGraphEdge{{ID: "start|end|sequence|", Source: "start", Target: "end", Kind: "sequence"}},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Name: "发起", Type: "start", TypeName: "发起"},
+			{ID: "route", Name: "条件", Type: "condition", TypeName: "条件", MergeTargetID: "merge"},
+		},
+		Edges:    []model.FlowGraphEdge{{ID: "start|route|sequence|", Source: "start", Target: "route", Kind: "sequence"}},
 		Warnings: []string{},
 	}}
 	handler := apiHandlerWithGraph(graphs)
@@ -38,10 +41,13 @@ func TestFlowGraphAPISuccessContractAndSafety(t *testing.T) {
 		t.Fatalf("流程图成功状态码 = %d", recorder.Code)
 	}
 	body := recorder.Body.String()
-	for _, field := range []string{`"planId":"41"`, `"targetName":"采购流程"`, `"flowSource":"new"`, `"typeName":"发起"`, `"warnings":[]`} {
+	for _, field := range []string{`"planId":"41"`, `"targetName":"采购流程"`, `"flowSource":"new"`, `"typeName":"发起"`, `"mergeTargetId":"merge"`, `"warnings":[]`} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("流程图响应缺少 %s", field)
 		}
+	}
+	if strings.Contains(body, `"id":"start","name":"发起","type":"start","typeName":"发起","mergeTargetId"`) {
+		t.Fatal("普通节点不应输出空汇合提示")
 	}
 	for _, forbidden := range []string{"flowProxyId", "sid", "password", "approval", "fieldPower", "customerCode", "platformCode"} {
 		if strings.Contains(strings.ToLower(body), strings.ToLower(forbidden)) {

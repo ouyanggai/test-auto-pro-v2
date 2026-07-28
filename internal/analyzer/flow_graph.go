@@ -122,6 +122,9 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 		if nextID == "" {
 			return nil, ErrFlowStructureInvalid
 		}
+		graphNode := b.nodes[id]
+		graphNode.MergeTargetID = nextID
+		b.nodes[id] = graphNode
 		for _, exit := range branchExits {
 			b.addEdge(exit, nextID, "sequence", "", "")
 		}

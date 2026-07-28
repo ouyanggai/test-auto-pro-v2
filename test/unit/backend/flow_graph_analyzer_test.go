@@ -35,6 +35,9 @@ func TestFlowGraphAnalyzerDeduplicatesSharedRealNode(t *testing.T) {
 	if err != nil || len(nodes) != 2 || len(edges) != 2 {
 		t.Fatalf("共享真实节点未正确去重：nodes=%d edges=%d err=%v", len(nodes), len(edges), err)
 	}
+	if nodes[0].MergeTargetID != "" {
+		t.Fatalf("无主线后继的路由不应设置汇合提示：%q", nodes[0].MergeTargetID)
+	}
 }
 
 func TestFlowGraphAnalyzerConditionManualParallelNestedAndMerge(t *testing.T) {
@@ -67,11 +70,13 @@ func TestFlowGraphAnalyzerConditionManualParallelNestedAndMerge(t *testing.T) {
 	wantKinds := map[string]bool{"condition": false, "manual": false, "parallel": false, "sequence": false}
 	mergeIncoming := 0
 	seenNode := map[string]bool{}
+	mergeTargets := map[string]string{}
 	for _, node := range nodes {
 		if seenNode[node.ID] {
 			t.Fatal("节点未按真实 ID 去重")
 		}
 		seenNode[node.ID] = true
+		mergeTargets[node.ID] = node.MergeTargetID
 	}
 	for _, edge := range edges {
 		wantKinds[edge.Kind] = true
@@ -92,6 +97,9 @@ func TestFlowGraphAnalyzerConditionManualParallelNestedAndMerge(t *testing.T) {
 	}
 	if len(nodes) != 11 {
 		t.Fatalf("嵌套图节点数量异常：%d", len(nodes))
+	}
+	if mergeTargets["condition"] != "manual" || mergeTargets["manual"] != "nested" || mergeTargets["nested"] != "merge" {
+		t.Fatalf("嵌套路由汇合提示不正确：%v", mergeTargets)
 	}
 }
 

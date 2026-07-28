@@ -10,10 +10,11 @@ type FlowGraph struct {
 }
 
 type FlowGraphNode struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	TypeName string `json:"typeName"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	TypeName      string `json:"typeName"`
+	MergeTargetID string `json:"mergeTargetId,omitempty"`
 }
 
 type FlowGraphEdge struct {
