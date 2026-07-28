@@ -46,6 +46,7 @@
 - 浏览器根节点固定为 `100dvh` 且不滚动；顶栏固定，侧栏可收缩，主内容区独立 `overflow-y: auto`，侧栏仅在菜单超出时自身滚动。Flex/Grid 子项使用最小尺寸约束，避免撑出 viewport。
 - 通过 `NConfigProvider`、`NGlobalStyle` 与 `darkTheme` 实现深浅主题；默认浅色，主题值保存到 `localStorage`，所有表面、文字、边线和选中态使用 Naive UI 语义变量随主题切换。
 - 保持中文、桌面优先；计划列表继续使用 F-001 的静态计划行，新建页从 F-002 起通过 `web/src/features/plans/api.ts` 读取真实账号与候选，不建立通用表格、表单或远程列表框架。
+- F-003 将计划列表切换到 Go API 和 MySQL 真实数据；创建成功后进入独立 `/plans/:id/paths` 路由。该路由在 F-003 只读取计划摘要和展示无路径空状态，不提前创建流程画布或通用 CRUD 页面。
 - Vue Flow 与 dagre 统一延后到 F-004；F-000 不安装也不预留画布抽象。
 - 只有真实复杂流程证明 dagre 不可读时，才另行批准评估 ELK.js。
 
@@ -63,9 +64,19 @@
 - 模板 DTO 只补充实施平台列表已使用的 `formExist` 与 `formTemplateCount`；`groupName` 是模板既有分组字段，前端只在其非空时以内联标签高亮，不请求公司目录或公开额外公司字段。已发 DTO 保留原始 `status` 并提供集中派生的中文 `statusName`。候选虚拟列表固定行高 `96px`、视口 `480px`，常见桌面一次完整显示 5 行，加载、空、错误与来源切换共用 `574px` 稳定外壳。
 - 前端搜索以 250ms 防抖触发真实分页请求，通过 `AbortController` 和 account/source/query/version 联合身份取消或忽略旧结果；追加按三类真实 ID 去重，错误不回退 mock。
 
+## F-003 最小计划持久化
+
+- 工具侧计划使用 MySQL；Go 通过 `database/sql` 和 MySQL 驱动访问，不引入 ORM。`internal/repository` 定义计划仓储边界，MySQL 实现只负责迁移、SQL 和行映射，业务校验与幂等语义位于 `internal/service`。
+- 工具数据库连接只读取 `PLAN_DB_*`，配置优先级沿用“进程环境 > 根目录 `.env.local` > 非敏感默认值”。本机配置从 V1 `runnerDb` 安全同步，禁止使用目标平台 `target.mysql*` 作为工具库。
+- F-003 建议在同一 MySQL 服务上创建独立数据库 `test_auto_pro_v2`；数据库名只允许字母、数字和下划线。同步和启动日志不得输出 DSN、用户名密码或配置值。
+- 版本化 SQL 通过 `schema_migrations` 记录；后端在监听端口前完成数据库连接、建库和向前迁移，失败则直接退出。迁移不自动 down，不修改 V1 原数据库或目标平台数据库。
+- F-003 只建立 `test_plans`。`scheduled_at IS NULL` 表示未开启定时，串行计划的 `max_concurrency` 为 `NULL`；时间统一以 UTC 保存并用 RFC 3339 传输。
+- 创建使用 `Idempotency-Key` 和数据库唯一键保证同一次网络重试返回同一条计划。公开响应不返回幂等键、SID、目标凭证或数据库内部字段。
+- 执行路径表延期到 F-005：F-004 先用保存的账号、来源和目标对象 ID 重新读取真实流程结构，F-005 再依据真实节点和分支建立路径数据，不在 F-003 保存无业务依据的占位路径。
+
 ## 数据与部署演进
 
-- MySQL 延后到 F-003。
+- MySQL 在 F-003 用于最小计划持久化；执行路径在 F-005 才进入 MySQL。
 - MongoDB 延后到真实运行阶段；Redis 只在多实例共享会话或登录频率约束形成真实需求后评估。
 - 当前不引入 Docker、微服务、独立 worker 或部署编排。
 
