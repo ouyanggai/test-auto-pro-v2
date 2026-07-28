@@ -59,6 +59,13 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	if err != nil || !created || first.SequenceNo != 1 {
 		t.Fatalf("首次路径创建失败：created=%v path=%+v err=%v", created, first, err)
 	}
+	found, exists, err := paths.FindByCreateKey(ctx, newPlan.ID, "123e4567-e89b-12d3-a456-426614174201")
+	if err != nil || !exists || found.ID != first.ID || len(found.Choices) != 1 {
+		t.Fatalf("计划内幂等记录无法直接读取：found=%+v exists=%v err=%v", found, exists, err)
+	}
+	if leaked, exists, err := paths.FindByCreateKey(ctx, startedPlan.ID, "123e4567-e89b-12d3-a456-426614174201"); err != nil || exists || leaked.ID != 0 {
+		t.Fatalf("幂等记录泄露到其他计划：found=%+v exists=%v err=%v", leaked, exists, err)
+	}
 	retried, created, err := paths.Create(ctx, newPlan.ID, "123e4567-e89b-12d3-a456-426614174201", firstChoices, time.Now().UTC())
 	if err != nil || created || retried.ID != first.ID {
 		t.Fatal("相同创建键没有返回同一路径")

@@ -26,9 +26,11 @@ func (r *executionPathGraphReader) Get(context.Context, uint64) (model.FlowGraph
 
 type memoryExecutionPathRepository struct {
 	paths       []model.ExecutionPath
+	createKeys  map[string]uint64
 	createErr   error
 	updateErr   error
 	deleteErr   error
+	findCalls   int
 	createCalls int
 	updateCalls int
 }
@@ -38,14 +40,34 @@ func (r *memoryExecutionPathRepository) List(context.Context, uint64) ([]model.E
 	return append([]model.ExecutionPath(nil), r.paths...), nil
 }
 
+// FindByCreateKey 只返回同一计划内已成功写入的内存幂等记录。
+func (r *memoryExecutionPathRepository) FindByCreateKey(_ context.Context, planID uint64, createKey string) (model.ExecutionPath, bool, error) {
+	r.findCalls++
+	pathID, found := r.createKeys[createKey]
+	if !found {
+		return model.ExecutionPath{}, false, nil
+	}
+	for _, path := range r.paths {
+		if path.ID == pathID && path.PlanID == planID {
+			path.Choices = append([]model.ExecutionPathChoice(nil), path.Choices...)
+			return path, true, nil
+		}
+	}
+	return model.ExecutionPath{}, false, nil
+}
+
 // Create 记录写入次数并模拟事务仓储创建结果。
-func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64, _ string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, bool, error) {
+func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64, createKey string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, bool, error) {
 	r.createCalls++
 	if r.createErr != nil {
 		return model.ExecutionPath{}, false, r.createErr
 	}
-	path := model.ExecutionPath{ID: 1, PlanID: planID, SequenceNo: 1, Choices: choices, CreatedAt: now, UpdatedAt: now}
+	path := model.ExecutionPath{ID: uint64(len(r.paths) + 1), PlanID: planID, SequenceNo: uint(len(r.paths) + 1), Choices: append([]model.ExecutionPathChoice(nil), choices...), CreatedAt: now, UpdatedAt: now}
 	r.paths = append(r.paths, path)
+	if r.createKeys == nil {
+		r.createKeys = make(map[string]uint64)
+	}
+	r.createKeys[createKey] = path.ID
 	return path, true, nil
 }
 
@@ -100,6 +122,54 @@ func TestExecutionPathServiceRereadsAndValidatesCurrentGraph(t *testing.T) {
 	}
 	if _, err := serviceUnderTest.Update(context.Background(), 7, path.ID, choices); err != nil || graphs.calls != 2 {
 		t.Fatalf("更新路径没有再次读取当前图：calls=%d err=%v", graphs.calls, err)
+	}
+}
+
+// TestExecutionPathServiceIdempotentRetrySkipsChangedGraph 验证已成功请求重试不会再次依赖目标图。
+func TestExecutionPathServiceIdempotentRetrySkipsChangedGraph(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
+	repo := &memoryExecutionPathRepository{}
+	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
+	key := "123e4567-e89b-12d3-a456-426614174301"
+	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
+	first, created, err := serviceUnderTest.Create(context.Background(), 7, key, choices)
+	if err != nil || !created {
+		t.Fatalf("首次创建路径失败：created=%v err=%v", created, err)
+	}
+	graphs.err = errors.New("目标平台随后不可用")
+	retried, created, err := serviceUnderTest.Create(context.Background(), 7, key, nil)
+	if err != nil || created || retried.ID != first.ID || retried.SequenceNo != first.SequenceNo {
+		t.Fatalf("幂等重试没有返回原路径：first=%+v retried=%+v created=%v err=%v", first, retried, created, err)
+	}
+	if graphs.calls != 1 || repo.createCalls != 1 || len(repo.paths) != 1 {
+		t.Fatalf("幂等重试重复读取或写入：graphCalls=%d createCalls=%d paths=%d", graphs.calls, repo.createCalls, len(repo.paths))
+	}
+}
+
+// TestExecutionPathServiceIdempotencyDoesNotLeakAcrossPlans 验证计划范围之外的相同键不能返回其他计划路径。
+func TestExecutionPathServiceIdempotencyDoesNotLeakAcrossPlans(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{
+		{ID: 7, Status: model.PlanStatusPendingConfiguration},
+		{ID: 8, Status: model.PlanStatusPendingConfiguration},
+	}
+	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
+	repo := &memoryExecutionPathRepository{}
+	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
+	key := "123e4567-e89b-12d3-a456-426614174301"
+	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
+	if _, _, err := serviceUnderTest.Create(context.Background(), 7, key, choices); err != nil {
+		t.Fatalf("准备其他计划幂等记录失败：%v", err)
+	}
+	graphs.err = errors.New("用于证明未错误命中其他计划")
+	other, _, err := serviceUnderTest.Create(context.Background(), 8, key, choices)
+	if err == nil || other.ID != 0 {
+		t.Fatalf("其他计划泄露了幂等记录：path=%+v err=%v", other, err)
+	}
+	if graphs.calls != 2 {
+		t.Fatalf("其他计划错误命中幂等记录：graphCalls=%d", graphs.calls)
 	}
 }
 

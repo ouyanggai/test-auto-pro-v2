@@ -58,6 +58,25 @@ ORDER BY sequence_no ASC`, planID)
 	return paths, nil
 }
 
+// FindByCreateKey 在指定计划内读取已经成功创建的幂等记录，不向其他计划暴露路径。
+func (r *ExecutionPathRepository) FindByCreateKey(ctx context.Context, planID uint64, createKey string) (model.ExecutionPath, bool, error) {
+	path, err := scanExecutionPath(r.db.QueryRowContext(ctx, `
+SELECT id, plan_id, sequence_no, created_at, updated_at
+FROM test_execution_paths
+WHERE plan_id = ? AND create_key = ?`, planID, createKey))
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ExecutionPath{}, false, nil
+	}
+	if err != nil {
+		return model.ExecutionPath{}, false, err
+	}
+	path.Choices, err = loadExecutionPathChoices(ctx, r.db, path.ID)
+	if err != nil {
+		return model.ExecutionPath{}, false, err
+	}
+	return path, true, nil
+}
+
 // Create 在计划行锁保护下执行幂等检查、来源上限、序号分配和路径写入。
 func (r *ExecutionPathRepository) Create(ctx context.Context, planID uint64, createKey string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)

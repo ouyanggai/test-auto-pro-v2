@@ -17,6 +17,8 @@ var (
 
 type ExecutionPathRepository interface {
 	List(context.Context, uint64) ([]model.ExecutionPath, error)
+	// FindByCreateKey 只在指定计划内查询已成功的幂等记录。
+	FindByCreateKey(context.Context, uint64, string) (model.ExecutionPath, bool, error)
 	Create(context.Context, uint64, string, []model.ExecutionPathChoice, time.Time) (model.ExecutionPath, bool, error)
 	Update(context.Context, uint64, uint64, []model.ExecutionPathChoice, time.Time) (model.ExecutionPath, error)
 	Delete(context.Context, uint64, uint64, time.Time) error

@@ -73,10 +73,17 @@ func (s *ExecutionPathService) List(ctx context.Context, planID uint64) ([]model
 	return paths, nil
 }
 
-// Create 重新读取当前真实图验证完整选择，再以幂等键事务创建路径。
+// Create 优先返回已成功的幂等记录；新请求才重读真实图并事务创建路径。
 func (s *ExecutionPathService) Create(ctx context.Context, planID uint64, createKey string, choices []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
-	if planID == 0 || !validUUID(strings.TrimSpace(createKey)) {
+	createKey = strings.TrimSpace(createKey)
+	if planID == 0 || !validUUID(createKey) {
 		return model.ExecutionPath{}, false, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "创建请求标识不正确，请重试"}
+	}
+	// 首次响应可能在到达浏览器前丢失；幂等命中必须先于目标图读取，避免目标随后不可用或变化时把已成功操作误报为失败。
+	if existing, found, err := s.repository.FindByCreateKey(ctx, planID, createKey); err != nil {
+		return model.ExecutionPath{}, false, mapExecutionPathRepositoryError(err)
+	} else if found {
+		return existing, false, nil
 	}
 	normalized, err := normalizeExecutionPathChoices(choices)
 	if err != nil {
@@ -88,7 +95,7 @@ func (s *ExecutionPathService) Create(ctx context.Context, planID uint64, create
 	if err := s.validateCurrentChoices(ctx, planID, normalized); err != nil {
 		return model.ExecutionPath{}, false, err
 	}
-	path, created, err := s.repository.Create(ctx, planID, strings.TrimSpace(createKey), normalized, s.now().UTC())
+	path, created, err := s.repository.Create(ctx, planID, createKey, normalized, s.now().UTC())
 	if err != nil {
 		return model.ExecutionPath{}, false, mapExecutionPathRepositoryError(err)
 	}
