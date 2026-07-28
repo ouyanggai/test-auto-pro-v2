@@ -27,8 +27,8 @@ export function candidateStatus(candidate: FlowCandidate): string {
 }
 
 export function candidateMeta(candidate: FlowCandidate): string {
-  if (candidate.kind === 'template') {
-    const classification = candidate.typeName || candidate.groupName
+	if (candidate.kind === 'template') {
+		const classification = [candidate.typeName, candidate.groupName].filter(Boolean).join(' / ')
     return joinMeta([
       candidate.code ? `编码 ${candidate.code}` : '',
       classification ? `分类 ${classification}` : '',

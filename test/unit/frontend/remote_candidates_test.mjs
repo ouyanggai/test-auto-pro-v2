@@ -73,7 +73,7 @@ test('模板展示使用编码分类表单关联和备注，不把状态作为�
 	const item = template('one', '采购审批')
 	assert.equal(candidateStatus(item), '')
 	assert.match(candidateMeta(item), /编码 FLOW-CODE/)
-	assert.match(candidateMeta(item), /分类 测试类型/)
+	assert.match(candidateMeta(item), /分类 测试类型 \/ 测试分组/)
 	assert.match(candidateMeta(item), /有表单 · 关联 2 个/)
 	assert.equal(candidateDetail(item), '备注：用于验证采购审批')
 
