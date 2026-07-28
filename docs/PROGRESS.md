@@ -1,6 +1,6 @@
 # 当前进度
 
 - 当前功能：F-005 执行路径选择与持久化
-- 当前状态：awaiting_approval
-- 阻塞：无技术阻塞；等待用户确认 F-005 的路径语义、范围、数据边界和人工验收点。
-- 下一步：用户批准 `docs/features/F-005-execution-path-selection.md` 后才进入 `implementing`；实施任务按高难度前后端切片执行，未批准前不写代码。
+- 当前状态：implementing
+- 阻塞：无。
+- 下一步：实施任务按 F-005 完成标准依次完成真实入口与路径算法、MySQL 持久化与 API、画布选择交互和定向验证；主任务逐项审查，全部通过后停在 `ready_for_manual`。
