@@ -32,6 +32,7 @@ type Plan struct {
 	MaxConcurrency     *int
 	ScheduledAt        *time.Time
 	Status             PlanStatus
+	PathCount          int
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }

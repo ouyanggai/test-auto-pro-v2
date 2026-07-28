@@ -1,0 +1,130 @@
+package backend_test
+
+import (
+	"errors"
+	"testing"
+
+	"test-auto-pro-v2/internal/analyzer"
+	"test-auto-pro-v2/internal/model"
+)
+
+func pathNode(id, nodeType string) model.FlowGraphNode {
+	return model.FlowGraphNode{ID: id, Name: id, Type: nodeType, TypeName: nodeType}
+}
+
+func pathEdge(id, source, target, kind, branchID string) model.FlowGraphEdge {
+	return model.FlowGraphEdge{ID: id, Source: source, Target: target, Kind: kind, BranchID: branchID}
+}
+
+func TestExecutionPathAnalyzerStraightFlowNeedsNoChoice(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"start"},
+		Nodes:        []model.FlowGraphNode{pathNode("start", "start"), pathNode("end", "end")},
+		Edges:        []model.FlowGraphEdge{pathEdge("start-end", "start", "end", "sequence", "")},
+	}
+	result, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, nil)
+	if err != nil || !result.Complete || len(result.ReachableNodeIDs) != 2 {
+		t.Fatalf("直线路径分析失败：result=%+v err=%v", result, err)
+	}
+}
+
+func TestExecutionPathAnalyzerConditionAndManualRequireOneReachableChoice(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"condition"},
+		Nodes: []model.FlowGraphNode{
+			pathNode("condition", "condition"), pathNode("left", "common"), pathNode("right", "common"),
+			pathNode("manual", "manual"), pathNode("manual-a", "common"), pathNode("manual-b", "common"), pathNode("end", "end"),
+		},
+		Edges: []model.FlowGraphEdge{
+			pathEdge("condition-left", "condition", "left", "condition", "left-branch"),
+			pathEdge("condition-right", "condition", "right", "condition", "right-branch"),
+			pathEdge("left-manual", "left", "manual", "sequence", ""),
+			pathEdge("right-end", "right", "end", "sequence", ""),
+			pathEdge("manual-a", "manual", "manual-a", "manual", "manual-a-branch"),
+			pathEdge("manual-b", "manual", "manual-b", "manual", "manual-b-branch"),
+			pathEdge("manual-a-end", "manual-a", "end", "sequence", ""),
+			pathEdge("manual-b-end", "manual-b", "end", "sequence", ""),
+		},
+	}
+	pathAnalyzer := analyzer.NewExecutionPathAnalyzer()
+	incomplete, err := pathAnalyzer.Analyze(graph, []model.ExecutionPathChoice{{RouteNodeID: "condition", BranchID: "left-branch"}})
+	if err != nil || incomplete.Complete || len(incomplete.MissingRouteNodeIDs) != 1 || incomplete.MissingRouteNodeIDs[0] != "manual" {
+		t.Fatalf("可达手动分支没有成为唯一待选项：result=%+v err=%v", incomplete, err)
+	}
+	complete, err := pathAnalyzer.Analyze(graph, []model.ExecutionPathChoice{
+		{RouteNodeID: "condition", BranchID: "left-branch"},
+		{RouteNodeID: "manual", BranchID: "manual-b-branch"},
+	})
+	if err != nil || !complete.Complete {
+		t.Fatalf("条件与手动分支完整选择失败：result=%+v err=%v", complete, err)
+	}
+	_, err = pathAnalyzer.Analyze(graph, []model.ExecutionPathChoice{
+		{RouteNodeID: "condition", BranchID: "right-branch"},
+		{RouteNodeID: "manual", BranchID: "manual-a-branch"},
+	})
+	if !errors.Is(err, analyzer.ErrExecutionPathInvalid) {
+		t.Fatalf("不可达手动选择未被拒绝：%v", err)
+	}
+}
+
+func TestExecutionPathAnalyzerParallelIncludesAllBranchesAndNestedChoices(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"parallel"},
+		Nodes: []model.FlowGraphNode{
+			pathNode("parallel", "parallel"), pathNode("left-route", "condition"), pathNode("right-route", "manual"),
+			pathNode("left-a", "common"), pathNode("left-b", "common"), pathNode("right-a", "common"), pathNode("right-b", "common"),
+			pathNode("merge", "common"), pathNode("end", "end"),
+		},
+		Edges: []model.FlowGraphEdge{
+			pathEdge("parallel-left", "parallel", "left-route", "parallel", "parallel-left"),
+			pathEdge("parallel-right", "parallel", "right-route", "parallel", "parallel-right"),
+			pathEdge("left-a", "left-route", "left-a", "condition", "left-a-branch"),
+			pathEdge("left-b", "left-route", "left-b", "condition", "left-b-branch"),
+			pathEdge("right-a", "right-route", "right-a", "manual", "right-a-branch"),
+			pathEdge("right-b", "right-route", "right-b", "manual", "right-b-branch"),
+			pathEdge("left-a-merge", "left-a", "merge", "sequence", ""), pathEdge("left-b-merge", "left-b", "merge", "sequence", ""),
+			pathEdge("right-a-merge", "right-a", "merge", "sequence", ""), pathEdge("right-b-merge", "right-b", "merge", "sequence", ""),
+			pathEdge("merge-end", "merge", "end", "sequence", ""),
+		},
+	}
+	result, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, []model.ExecutionPathChoice{
+		{RouteNodeID: "left-route", BranchID: "left-a-branch"},
+		{RouteNodeID: "right-route", BranchID: "right-b-branch"},
+	})
+	if err != nil || !result.Complete {
+		t.Fatalf("并行嵌套选择失败：result=%+v err=%v", result, err)
+	}
+	wants := map[string]bool{"parallel-left": true, "parallel-right": true, "left-a": true, "right-b": true}
+	for _, id := range result.ReachableEdgeIDs {
+		delete(wants, id)
+	}
+	if len(wants) != 0 {
+		t.Fatalf("并行分支未全部纳入：%v", wants)
+	}
+}
+
+func TestExecutionPathAnalyzerRejectsDuplicateMissingExtraAndCrossGraphChoice(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"route"},
+		Nodes:        []model.FlowGraphNode{pathNode("route", "condition"), pathNode("a", "end"), pathNode("b", "end")},
+		Edges: []model.FlowGraphEdge{
+			pathEdge("route-a", "route", "a", "condition", "branch-a"),
+			pathEdge("route-b", "route", "b", "condition", "branch-b"),
+		},
+	}
+	pathAnalyzer := analyzer.NewExecutionPathAnalyzer()
+	missing, err := pathAnalyzer.Analyze(graph, nil)
+	if err != nil || missing.Complete || len(missing.MissingRouteNodeIDs) != 1 {
+		t.Fatalf("缺失选择未正确报告：result=%+v err=%v", missing, err)
+	}
+	invalidChoices := [][]model.ExecutionPathChoice{
+		{{RouteNodeID: "route", BranchID: "branch-a"}, {RouteNodeID: "route", BranchID: "branch-b"}},
+		{{RouteNodeID: "route", BranchID: "other-branch"}},
+		{{RouteNodeID: "other-route", BranchID: "branch-a"}},
+	}
+	for _, choices := range invalidChoices {
+		if _, err := pathAnalyzer.Analyze(graph, choices); !errors.Is(err, analyzer.ErrExecutionPathInvalid) {
+			t.Fatalf("非法选择未被拒绝：choices=%+v err=%v", choices, err)
+		}
+	}
+}

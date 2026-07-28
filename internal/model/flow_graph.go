@@ -1,12 +1,13 @@
 package model
 
 type FlowGraph struct {
-	PlanID     uint64
-	TargetName string
-	FlowSource string
-	Nodes      []FlowGraphNode
-	Edges      []FlowGraphEdge
-	Warnings   []string
+	PlanID       uint64
+	TargetName   string
+	FlowSource   string
+	EntryNodeIDs []string
+	Nodes        []FlowGraphNode
+	Edges        []FlowGraphEdge
+	Warnings     []string
 }
 
 type FlowGraphNode struct {
