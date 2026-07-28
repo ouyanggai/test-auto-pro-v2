@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	ErrTargetFlowNotFound       = errors.New("目标流程当前不可读取")
-	ErrTargetFlowStructureEmpty = errors.New("目标流程暂未配置节点")
+	ErrTargetFlowNotFound        = errors.New("目标流程当前不可读取")
+	ErrTargetFlowStructureEmpty  = errors.New("目标流程暂未配置节点")
+	ErrTargetFlowNotConfigurable = errors.New("目标流程当前不能配置执行路径")
 )
 
 type TargetReadService struct {
@@ -103,12 +104,21 @@ func (s *TargetReadService) Due(ctx context.Context, account, query string, page
 }
 
 func (s *TargetReadService) FlowTree(ctx context.Context, account, source, targetObjectID string) (*target.FlowNodeTemplate, error) {
-	if err := s.ready(); err != nil {
+	snapshot, err := s.FlowTreeSnapshot(ctx, account, source, targetObjectID)
+	if err != nil {
 		return nil, err
 	}
-	var result *target.FlowNodeTemplate
+	return snapshot.Tree, nil
+}
+
+func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, source, targetObjectID string) (target.FlowTreeSnapshot, error) {
+	if err := s.ready(); err != nil {
+		return target.FlowTreeSnapshot{}, err
+	}
+	var result target.FlowTreeSnapshot
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
 		var tree *target.FlowNodeTemplate
+		var entryNodeIDs []string
 		var err error
 		switch strings.TrimSpace(source) {
 		case "new":
@@ -121,22 +131,24 @@ func (s *TargetReadService) FlowTree(ctx context.Context, account, source, targe
 			}
 			tree, err = s.client.ReadTemplateTree(callContext, active, targetObjectID)
 		case "started":
-			proxyID, found, findErr := s.client.FindSubmittedProxyID(callContext, active, targetObjectID)
+			proxyID, entries, found, findErr := s.client.FindSubmittedFlow(callContext, active, targetObjectID)
 			if findErr != nil {
 				return findErr
 			}
 			if !found {
 				return ErrTargetFlowNotFound
 			}
+			entryNodeIDs = entries
 			tree, err = s.client.ReadProxyTree(callContext, active, proxyID)
 		case "pending":
-			proxyID, found, findErr := s.client.FindDueProxyID(callContext, active, targetObjectID)
+			proxyID, entries, found, findErr := s.client.FindDueFlow(callContext, active, targetObjectID)
 			if findErr != nil {
 				return findErr
 			}
 			if !found {
 				return ErrTargetFlowNotFound
 			}
+			entryNodeIDs = entries
 			tree, err = s.client.ReadProxyTree(callContext, active, proxyID)
 		default:
 			return ErrTargetFlowNotFound
@@ -147,7 +159,10 @@ func (s *TargetReadService) FlowTree(ctx context.Context, account, source, targe
 		if tree == nil {
 			return ErrTargetFlowStructureEmpty
 		}
-		result = tree
+		if strings.TrimSpace(source) == "new" {
+			entryNodeIDs = []string{strings.TrimSpace(tree.ID)}
+		}
+		result = target.FlowTreeSnapshot{Tree: tree, EntryNodeIDs: entryNodeIDs}
 		return nil
 	})
 	return result, err

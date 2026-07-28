@@ -18,12 +18,13 @@ type FlowGraphService interface {
 }
 
 type flowGraphResponse struct {
-	PlanID     string                `json:"planId"`
-	TargetName string                `json:"targetName"`
-	FlowSource string                `json:"flowSource"`
-	Nodes      []model.FlowGraphNode `json:"nodes"`
-	Edges      []model.FlowGraphEdge `json:"edges"`
-	Warnings   []string              `json:"warnings"`
+	PlanID       string                `json:"planId"`
+	TargetName   string                `json:"targetName"`
+	FlowSource   string                `json:"flowSource"`
+	EntryNodeIDs []string              `json:"entryNodeIds"`
+	Nodes        []model.FlowGraphNode `json:"nodes"`
+	Edges        []model.FlowGraphEdge `json:"edges"`
+	Warnings     []string              `json:"warnings"`
 }
 
 func registerFlowGraphRoute(mux *http.ServeMux, graphs FlowGraphService) {
@@ -40,7 +41,8 @@ func registerFlowGraphRoute(mux *http.ServeMux, graphs FlowGraphService) {
 		}
 		writeSuccess(response, flowGraphResponse{
 			PlanID: strconv.FormatUint(graph.PlanID, 10), TargetName: graph.TargetName, FlowSource: graph.FlowSource,
-			Nodes: nonNilSlice(graph.Nodes), Edges: nonNilSlice(graph.Edges), Warnings: nonNilSlice(graph.Warnings),
+			EntryNodeIDs: nonNilSlice(graph.EntryNodeIDs),
+			Nodes:        nonNilSlice(graph.Nodes), Edges: nonNilSlice(graph.Edges), Warnings: nonNilSlice(graph.Warnings),
 		})
 	})
 }
@@ -58,6 +60,8 @@ func writeFlowGraphError(response http.ResponseWriter, err error) {
 		writeFailure(response, http.StatusNotFound, "TARGET_FLOW_NOT_FOUND", "目标流程当前不可读取", false)
 	case errors.Is(err, service.ErrTargetFlowStructureEmpty):
 		writeFailure(response, http.StatusUnprocessableEntity, "TARGET_FLOW_STRUCTURE_EMPTY", "目标流程暂未配置节点", false)
+	case errors.Is(err, service.ErrTargetFlowNotConfigurable):
+		writeFailure(response, http.StatusConflict, "TARGET_FLOW_NOT_CONFIGURABLE", "当前流程已经不能配置执行路径", false)
 	case errors.Is(err, analyzer.ErrFlowStructureInvalid):
 		writeFailure(response, http.StatusBadGateway, "TARGET_FLOW_STRUCTURE_INVALID", "目标流程结构异常", false)
 	case errors.As(err, &configErr):

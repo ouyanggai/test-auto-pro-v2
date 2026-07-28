@@ -52,7 +52,10 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				f.t.Error("已发实例精确核对参数不正确")
 			}
 			f.recordGraphCall("submitted-list")
-			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{"id": "submitted-id", "flowProxyId": "proxy-submitted"}}})
+			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{
+				"id": "submitted-id", "flowProxyId": "proxy-submitted", "currentNodeProxyId": "end",
+				"currentAuditUserInfo": map[string]any{"start": map[string]any{"userList": []any{}}},
+			}}})
 			return
 		}
 		if data["useScope"] != "invest" || data["name"] != "sent" || body["pagination"] != true {
@@ -80,7 +83,10 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				f.t.Error("待发实例精确核对参数不正确")
 			}
 			f.recordGraphCall("due-list")
-			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due"}}})
+			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{
+				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": "start"},
+				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": "end"},
+			}})
 			return
 		}
 		if data["taskStatus"] != "waiting_send" || data["useScope"] != "invest" || data["flowInstanceName"] != "due" || body["pagination"] != true {
@@ -273,6 +279,34 @@ func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
 			fake.mu.Unlock()
 			if strings.Join(calls, ",") != strings.Join(test.calls, ",") {
 				t.Fatalf("核对与详情请求顺序不正确：%v", calls)
+			}
+		})
+	}
+}
+
+func TestFlowTreeSnapshotUsesSourceSpecificEntryNodes(t *testing.T) {
+	tests := []struct {
+		source string
+		id     string
+		want   string
+	}{
+		{source: "new", id: "template-id", want: "start"},
+		{source: "started", id: "submitted-id", want: "start"},
+		{source: "pending", id: "due-id", want: "start,end"},
+	}
+	for _, test := range tests {
+		t.Run(test.source, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			reader := service.NewTargetReadService(config.LoadTargetConfig())
+			snapshot, err := reader.FlowTreeSnapshot(context.Background(), "account-a", test.source, test.id)
+			if err != nil {
+				t.Fatalf("读取流程入口失败：%v", err)
+			}
+			if strings.Join(snapshot.EntryNodeIDs, ",") != test.want {
+				t.Fatalf("%s 入口 = %v，期望 %s", test.source, snapshot.EntryNodeIDs, test.want)
 			}
 		})
 	}

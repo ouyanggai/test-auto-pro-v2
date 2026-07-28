@@ -231,6 +231,7 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 		CreateDate           string          `json:"createDate"`
 		CreateTime           string          `json:"createTime"`
 		CurrentNodeName      string          `json:"currentNodeName"`
+		CurrentNodeProxyID   string          `json:"currentNodeProxyId"`
 		CurrentAuditUserInfo json.RawMessage `json:"currentAuditUserInfo"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
@@ -249,6 +250,8 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 			CreateDate:            firstNonEmpty(item.CreateDate, item.CreateTime),
 			CurrentNodeName:       item.CurrentNodeName,
 			CurrentAuditUserNames: auditUserNames(item.CurrentAuditUserInfo),
+			CurrentNodeProxyID:    strings.TrimSpace(item.CurrentNodeProxyID),
+			ActiveNodeProxyIDs:    auditNodeIDs(item.CurrentAuditUserInfo),
 		})
 	}
 	return normalizePage(items, resp, page, pageSize)
@@ -277,6 +280,7 @@ func (c *Client) ListDue(ctx context.Context, session Session, query string, pag
 	var raw []struct {
 		FlowInstanceID   string `json:"flowInstanceId"`
 		FlowProxyID      string `json:"flowProxyId"`
+		FlowNodeProxyID  string `json:"flowNodeProxyId"`
 		FlowInstanceName string `json:"flowInstanceName"`
 		FormName         string `json:"formName"`
 		FlowStatus       string `json:"flowStatus"`
@@ -294,6 +298,7 @@ func (c *Client) ListDue(ctx context.Context, session Session, query string, pag
 		items = append(items, DueFlow{
 			FlowInstanceID:   item.FlowInstanceID,
 			FlowProxyID:      item.FlowProxyID,
+			FlowNodeProxyID:  strings.TrimSpace(item.FlowNodeProxyID),
 			FlowInstanceName: item.FlowInstanceName,
 			FormName:         item.FormName,
 			Title:            firstNonEmpty(item.FlowInstanceName, item.FormName),
@@ -364,7 +369,7 @@ func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templa
 	return false, nil
 }
 
-func (c *Client) FindSubmittedProxyID(ctx context.Context, active Session, instanceID string) (string, bool, error) {
+func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, bool, error) {
 	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
 		"data": map[string]any{
 			"useScope":                     "invest",
@@ -375,27 +380,33 @@ func (c *Client) FindSubmittedProxyID(ctx context.Context, active Session, insta
 		"ids": []string{strings.TrimSpace(instanceID)}, "pagination": true, "pages": 1, "size": 100,
 	})
 	if err != nil {
-		return "", false, err
+		return "", nil, false, err
 	}
 	if !responseSucceeded(resp) {
-		return "", false, responseError(resp)
+		return "", nil, false, responseError(resp)
 	}
 	var raw []struct {
-		ID          string `json:"id"`
-		FlowProxyID string `json:"flowProxyId"`
+		ID                   string          `json:"id"`
+		FlowProxyID          string          `json:"flowProxyId"`
+		CurrentNodeProxyID   string          `json:"currentNodeProxyId"`
+		CurrentAuditUserInfo json.RawMessage `json:"currentAuditUserInfo"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
-		return "", false, err
+		return "", nil, false, err
 	}
 	for _, item := range raw {
 		if strings.TrimSpace(item.ID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
-			return strings.TrimSpace(item.FlowProxyID), true, nil
+			entries := auditNodeIDs(item.CurrentAuditUserInfo)
+			if len(entries) == 0 && strings.TrimSpace(item.CurrentNodeProxyID) != "" {
+				entries = []string{strings.TrimSpace(item.CurrentNodeProxyID)}
+			}
+			return strings.TrimSpace(item.FlowProxyID), entries, true, nil
 		}
 	}
-	return "", false, nil
+	return "", nil, false, nil
 }
 
-func (c *Client) FindDueProxyID(ctx context.Context, active Session, instanceID string) (string, bool, error) {
+func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID string) (string, []string, bool, error) {
 	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
 		"data": map[string]any{
 			"flowInstanceId":               strings.TrimSpace(instanceID),
@@ -408,24 +419,44 @@ func (c *Client) FindDueProxyID(ctx context.Context, active Session, instanceID 
 		"pagination": true, "pages": 1, "size": 100,
 	})
 	if err != nil {
-		return "", false, err
+		return "", nil, false, err
 	}
 	if !responseSucceeded(resp) {
-		return "", false, responseError(resp)
+		return "", nil, false, responseError(resp)
 	}
 	var raw []struct {
-		FlowInstanceID string `json:"flowInstanceId"`
-		FlowProxyID    string `json:"flowProxyId"`
+		FlowInstanceID  string `json:"flowInstanceId"`
+		FlowProxyID     string `json:"flowProxyId"`
+		FlowNodeProxyID string `json:"flowNodeProxyId"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
-		return "", false, err
+		return "", nil, false, err
 	}
+	proxyID := ""
+	entries := make([]string, 0)
+	seen := make(map[string]struct{})
 	for _, item := range raw {
-		if strings.TrimSpace(item.FlowInstanceID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
-			return strings.TrimSpace(item.FlowProxyID), true, nil
+		if strings.TrimSpace(item.FlowInstanceID) != strings.TrimSpace(instanceID) || strings.TrimSpace(item.FlowProxyID) == "" {
+			continue
+		}
+		currentProxyID := strings.TrimSpace(item.FlowProxyID)
+		if proxyID != "" && proxyID != currentProxyID {
+			return "", nil, false, invalidResponse("due tasks reference different flow proxies")
+		}
+		proxyID = currentProxyID
+		entryID := strings.TrimSpace(item.FlowNodeProxyID)
+		if entryID == "" {
+			continue
+		}
+		if _, exists := seen[entryID]; !exists {
+			seen[entryID] = struct{}{}
+			entries = append(entries, entryID)
 		}
 	}
-	return "", false, nil
+	if proxyID == "" {
+		return "", nil, false, nil
+	}
+	return proxyID, entries, true, nil
 }
 
 func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, error) {
@@ -657,6 +688,24 @@ func auditUserNames(data json.RawMessage) string {
 		}
 	}
 	return strings.Join(names, ",")
+}
+
+func auditNodeIDs(data json.RawMessage) []string {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var nodes map[string]json.RawMessage
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil
+	}
+	result := make([]string, 0, len(nodes))
+	for key := range nodes {
+		if id := strings.TrimSpace(key); id != "" {
+			result = append(result, id)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func templateStatusText(status string) string {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
@@ -10,7 +11,7 @@ import (
 )
 
 type FlowTreeReader interface {
-	FlowTree(context.Context, string, string, string) (*target.FlowNodeTemplate, error)
+	FlowTreeSnapshot(context.Context, string, string, string) (target.FlowTreeSnapshot, error)
 }
 
 type FlowAnalyzer interface {
@@ -32,19 +33,50 @@ func (s *FlowGraphService) Get(ctx context.Context, planID uint64) (model.FlowGr
 	if err != nil {
 		return model.FlowGraph{}, err
 	}
-	tree, err := s.target.FlowTree(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
+	snapshot, err := s.target.FlowTreeSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
 	if err != nil {
 		return model.FlowGraph{}, err
 	}
-	nodes, edges, warnings, err := s.analyzer.Analyze(tree)
+	nodes, edges, warnings, err := s.analyzer.Analyze(snapshot.Tree)
 	if err != nil {
 		if errors.Is(err, analyzer.ErrFlowStructureInvalid) {
 			return model.FlowGraph{}, analyzer.ErrFlowStructureInvalid
 		}
 		return model.FlowGraph{}, err
 	}
+	entries, err := validateEntryNodeIDs(snapshot.EntryNodeIDs, nodes)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
 	return model.FlowGraph{
 		PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
-		Nodes: nodes, Edges: edges, Warnings: warnings,
+		EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings,
 	}, nil
+}
+
+func validateEntryNodeIDs(entryNodeIDs []string, nodes []model.FlowGraphNode) ([]string, error) {
+	known := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		known[node.ID] = struct{}{}
+	}
+	entries := make([]string, 0, len(entryNodeIDs))
+	seen := make(map[string]struct{}, len(entryNodeIDs))
+	for _, rawID := range entryNodeIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if _, exists := known[id]; !exists {
+			return nil, ErrTargetFlowNotConfigurable
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		entries = append(entries, id)
+	}
+	if len(entries) == 0 {
+		return nil, ErrTargetFlowNotConfigurable
+	}
+	return entries, nil
 }

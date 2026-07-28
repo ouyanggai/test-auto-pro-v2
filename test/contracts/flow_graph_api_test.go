@@ -27,6 +27,7 @@ func (s *stubFlowGraphService) Get(context.Context, uint64) (model.FlowGraph, er
 func TestFlowGraphAPISuccessContractAndSafety(t *testing.T) {
 	graphs := &stubFlowGraphService{graph: model.FlowGraph{
 		PlanID: 41, TargetName: "采购流程", FlowSource: "new",
+		EntryNodeIDs: []string{"start"},
 		Nodes: []model.FlowGraphNode{
 			{ID: "start", Name: "发起", Type: "start", TypeName: "发起"},
 			{ID: "route", Name: "条件", Type: "condition", TypeName: "条件", MergeTargetID: "merge"},
@@ -41,7 +42,7 @@ func TestFlowGraphAPISuccessContractAndSafety(t *testing.T) {
 		t.Fatalf("流程图成功状态码 = %d", recorder.Code)
 	}
 	body := recorder.Body.String()
-	for _, field := range []string{`"planId":"41"`, `"targetName":"采购流程"`, `"flowSource":"new"`, `"typeName":"发起"`, `"mergeTargetId":"merge"`, `"warnings":[]`} {
+	for _, field := range []string{`"planId":"41"`, `"targetName":"采购流程"`, `"flowSource":"new"`, `"entryNodeIds":["start"]`, `"typeName":"发起"`, `"mergeTargetId":"merge"`, `"warnings":[]`} {
 		if !strings.Contains(body, field) {
 			t.Fatalf("流程图响应缺少 %s", field)
 		}
@@ -66,6 +67,7 @@ func TestFlowGraphAPIStableErrors(t *testing.T) {
 		{name: "计划不存在", err: &service.PlanError{Kind: service.PlanErrorNotFound}, status: 404, code: "PLAN_NOT_FOUND"},
 		{name: "目标不可见", err: service.ErrTargetFlowNotFound, status: 404, code: "TARGET_FLOW_NOT_FOUND"},
 		{name: "空结构", err: service.ErrTargetFlowStructureEmpty, status: 422, code: "TARGET_FLOW_STRUCTURE_EMPTY"},
+		{name: "入口不可配置", err: service.ErrTargetFlowNotConfigurable, status: 409, code: "TARGET_FLOW_NOT_CONFIGURABLE"},
 		{name: "结构异常", err: analyzer.ErrFlowStructureInvalid, status: 502, code: "TARGET_FLOW_STRUCTURE_INVALID"},
 		{name: "登录失败", err: target.NewError(target.ErrorLoginRejected, nil), status: 401, code: "TARGET_LOGIN_REJECTED"},
 		{name: "会话失效", err: target.NewError(target.ErrorSessionExpired, nil), status: 401, code: "TARGET_SESSION_EXPIRED"},

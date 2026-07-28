@@ -31,16 +31,18 @@ type FlowTemplate struct {
 }
 
 type SubmittedFlow struct {
-	ID                    string `json:"id"`
-	Name                  string `json:"name"`
-	FormName              string `json:"formName"`
-	Title                 string `json:"title"`
-	Status                string `json:"status"`
-	StatusName            string `json:"statusName"`
-	CreateDate            string `json:"createDate"`
-	CurrentNodeName       string `json:"currentNodeName"`
-	CurrentAuditUserNames string `json:"currentAuditUserNames"`
-	FlowProxyID           string `json:"-"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	FormName              string   `json:"formName"`
+	Title                 string   `json:"title"`
+	Status                string   `json:"status"`
+	StatusName            string   `json:"statusName"`
+	CreateDate            string   `json:"createDate"`
+	CurrentNodeName       string   `json:"currentNodeName"`
+	CurrentAuditUserNames string   `json:"currentAuditUserNames"`
+	FlowProxyID           string   `json:"-"`
+	CurrentNodeProxyID    string   `json:"-"`
+	ActiveNodeProxyIDs    []string `json:"-"`
 }
 
 type DueFlow struct {
@@ -53,6 +55,13 @@ type DueFlow struct {
 	Initiator        string `json:"initiator"`
 	InitiatorDate    string `json:"initiatorDate"`
 	FlowProxyID      string `json:"-"`
+	FlowNodeProxyID  string `json:"-"`
+}
+
+// FlowTreeSnapshot 把本次读取的真实代理树和运行态入口绑定在一起。
+type FlowTreeSnapshot struct {
+	Tree         *FlowNodeTemplate
+	EntryNodeIDs []string
 }
 
 // FlowNodeTemplate 是目标平台流程树的最小只读传输结构。
