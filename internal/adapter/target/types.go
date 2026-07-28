@@ -15,17 +15,19 @@ type Session struct {
 }
 
 type FlowTemplate struct {
-	ID             string `json:"id"`
-	FlowName       string `json:"flowName"`
-	Code           string `json:"code"`
-	GroupName      string `json:"groupName"`
-	FlowStatus     string `json:"flowStatus"`
-	StatusText     string `json:"statusText"`
-	TypeName       string `json:"typeName"`
-	UpdateDate     string `json:"updateDate"`
-	CreateDate     string `json:"createDate"`
-	Remark         string `json:"remark"`
-	FlowCreateType string `json:"flowCreateType"`
+	ID                string `json:"id"`
+	FlowName          string `json:"flowName"`
+	Code              string `json:"code"`
+	GroupName         string `json:"groupName"`
+	FlowStatus        string `json:"flowStatus"`
+	StatusText        string `json:"statusText"`
+	TypeName          string `json:"typeName"`
+	UpdateDate        string `json:"updateDate"`
+	CreateDate        string `json:"createDate"`
+	Remark            string `json:"remark"`
+	FlowCreateType    string `json:"flowCreateType"`
+	FormExist         string `json:"formExist"`
+	FormTemplateCount int    `json:"formTemplateCount"`
 }
 
 type SubmittedFlow struct {

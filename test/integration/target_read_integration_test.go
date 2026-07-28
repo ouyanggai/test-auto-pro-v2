@@ -167,6 +167,8 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		"data": []any{map[string]any{
 			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
 			"flowStatus": "enable", "typeName": "经营管理", "updateDate": "2026-07-27 08:00",
+			"remark": "用于验证采购审批", "formExist": "withForm",
+			"formTemplateList": []any{map[string]any{"id": "form-a"}, map[string]any{"id": "form-b"}},
 		}},
 		"total": 1, "pages": 1, "current": 1, "size": 20,
 	})
@@ -208,7 +210,7 @@ func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
 		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=submitted&query=sent&page=1&pageSize=20", "", http.StatusOK),
 		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=due&query=due&page=1&pageSize=20", "", http.StatusOK),
 	}
-	wants := []string{"displayName", "真实流程模板", "currentAuditUserNames", "真实待发流程"}
+	wants := []string{"displayName", "formTemplateCount\":2", "currentAuditUserNames", "真实待发流程"}
 	for index, body := range responses {
 		if !bytes.Contains(body, []byte(wants[index])) {
 			t.Fatalf("第 %d 个真实读取响应缺少预期映射", index+1)

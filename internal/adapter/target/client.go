@@ -161,19 +161,21 @@ func (c *Client) ListTemplates(ctx context.Context, session Session, query strin
 		return Page[FlowTemplate]{}, responseError(resp)
 	}
 	var raw []struct {
-		ID             string `json:"id"`
-		FlowName       string `json:"flowName"`
-		Code           string `json:"code"`
-		FlowCode       string `json:"flowCode"`
-		GroupName      string `json:"groupName"`
-		FlowStatus     string `json:"flowStatus"`
-		TypeName       string `json:"typeName"`
-		UpdateDate     string `json:"updateDate"`
-		UpdateTime     string `json:"updateTime"`
-		CreateDate     string `json:"createDate"`
-		CreateTime     string `json:"createTime"`
-		Remark         string `json:"remark"`
-		FlowCreateType string `json:"flowCreateType"`
+		ID               string            `json:"id"`
+		FlowName         string            `json:"flowName"`
+		Code             string            `json:"code"`
+		FlowCode         string            `json:"flowCode"`
+		GroupName        string            `json:"groupName"`
+		FlowStatus       string            `json:"flowStatus"`
+		TypeName         string            `json:"typeName"`
+		UpdateDate       string            `json:"updateDate"`
+		UpdateTime       string            `json:"updateTime"`
+		CreateDate       string            `json:"createDate"`
+		CreateTime       string            `json:"createTime"`
+		Remark           string            `json:"remark"`
+		FlowCreateType   string            `json:"flowCreateType"`
+		FormExist        string            `json:"formExist"`
+		FormTemplateList []json.RawMessage `json:"formTemplateList"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
 		return Page[FlowTemplate]{}, err
@@ -181,17 +183,19 @@ func (c *Client) ListTemplates(ctx context.Context, session Session, query strin
 	items := make([]FlowTemplate, 0, len(raw))
 	for _, item := range raw {
 		items = append(items, FlowTemplate{
-			ID:             item.ID,
-			FlowName:       item.FlowName,
-			Code:           firstNonEmpty(item.Code, item.FlowCode),
-			GroupName:      item.GroupName,
-			FlowStatus:     item.FlowStatus,
-			StatusText:     templateStatusText(item.FlowStatus),
-			TypeName:       item.TypeName,
-			UpdateDate:     firstNonEmpty(item.UpdateDate, item.UpdateTime),
-			CreateDate:     firstNonEmpty(item.CreateDate, item.CreateTime),
-			Remark:         item.Remark,
-			FlowCreateType: item.FlowCreateType,
+			ID:                item.ID,
+			FlowName:          item.FlowName,
+			Code:              firstNonEmpty(item.Code, item.FlowCode),
+			GroupName:         item.GroupName,
+			FlowStatus:        item.FlowStatus,
+			StatusText:        templateStatusText(item.FlowStatus),
+			TypeName:          item.TypeName,
+			UpdateDate:        firstNonEmpty(item.UpdateDate, item.UpdateTime),
+			CreateDate:        firstNonEmpty(item.CreateDate, item.CreateTime),
+			Remark:            item.Remark,
+			FlowCreateType:    item.FlowCreateType,
+			FormExist:         item.FormExist,
+			FormTemplateCount: len(item.FormTemplateList),
 		})
 	}
 	return normalizePage(items, resp, page, pageSize)
