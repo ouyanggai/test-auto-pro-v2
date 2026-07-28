@@ -22,6 +22,24 @@ import (
 
 var temporaryPlanDatabasePattern = regexp.MustCompile(`^test_auto_pro_v2_test_[a-f0-9]{12}$`)
 
+func TestPlanMySQLConfiguredDatabaseIsIndependentAndMinimal(t *testing.T) {
+	cfg := config.LoadPlanDBConfig()
+	if missing := cfg.MissingRequired(); len(missing) != 0 {
+		t.Fatalf("F-003 本机计划数据库缺少配置名：%v", missing)
+	}
+	if cfg.Name != "test_auto_pro_v2" {
+		t.Fatal("本机计划数据库没有使用已批准的独立库名")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	database, err := planmysql.OpenAndMigrate(ctx, cfg)
+	if err != nil {
+		t.Fatalf("本机独立计划数据库迁移失败：%v", err)
+	}
+	defer database.Close()
+	assertOnlyF003Tables(t, database.DB)
+}
+
 func TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead(t *testing.T) {
 	baseConfig := config.LoadPlanDBConfig()
 	if missing := baseConfig.MissingRequired(); len(missing) != 0 {
@@ -107,7 +125,7 @@ func assertOnlyF003Tables(t *testing.T, db *sql.DB) {
 		found[table] = true
 	}
 	if len(found) != 2 || !found["schema_migrations"] || !found["test_plans"] {
-		t.Fatal("临时数据库包含 F-003 范围外的表")
+		t.Fatalf("计划数据库包含 F-003 范围外的表：%v", found)
 	}
 }
 

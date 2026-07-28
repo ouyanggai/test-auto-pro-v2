@@ -28,7 +28,7 @@ test "$(stat -f '%Lp' "${output_file}")" = "600"
 for name in PLAN_DB_HOST PLAN_DB_PORT PLAN_DB_USER PLAN_DB_PASSWORD PLAN_DB_NAME; do
   grep -q "^${name}=" "${output_file}"
 done
-grep -q '^PLAN_DB_NAME=test_auto_pro_v2$' "${output_file}"
+grep -Eq '^PLAN_DB_NAME="?test_auto_pro_v2"?$' "${output_file}"
 grep -q '^TARGET_API_GATEWAY=' "${output_file}"
 grep -q '^TARGET_LOGIN_PASSWORD=' "${output_file}"
 
