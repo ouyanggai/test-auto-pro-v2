@@ -16,10 +16,12 @@ type PlanRepository struct {
 	db *sql.DB
 }
 
+// NewPlanRepository 创建计划仓储并复用已迁移的计划数据库连接池。
 func NewPlanRepository(db *sql.DB) *PlanRepository {
 	return &PlanRepository{db: db}
 }
 
+// Create 按全局幂等键创建最小计划或返回已有计划。
 func (r *PlanRepository) Create(ctx context.Context, createKey string, plan model.Plan) (model.Plan, bool, error) {
 	result, err := r.db.ExecContext(ctx, `
 INSERT INTO test_plans (
@@ -50,6 +52,7 @@ INSERT INTO test_plans (
 	return existing, false, selectErr
 }
 
+// List 按名称和状态筛选计划，并从路径表实时统计 pathCount。
 func (r *PlanRepository) List(ctx context.Context, filter model.PlanListFilter) ([]model.Plan, error) {
 	query := `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
@@ -80,6 +83,7 @@ LIMIT ?`
 	return plans, nil
 }
 
+// Get 按主键读取计划详情及真实路径数量。
 func (r *PlanRepository) Get(ctx context.Context, id uint64) (model.Plan, error) {
 	row := r.db.QueryRowContext(ctx, `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
@@ -94,6 +98,7 @@ FROM test_plans WHERE id = ?`, id)
 	return plan, err
 }
 
+// getByCreateKey 读取计划创建幂等键对应的原记录。
 func (r *PlanRepository) getByCreateKey(ctx context.Context, createKey string) (model.Plan, error) {
 	row := r.db.QueryRowContext(ctx, `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
@@ -108,6 +113,7 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
+// scanPlan 将查询行转换为 UTC 计划模型并校验持久化状态。
 func scanPlan(row rowScanner) (model.Plan, error) {
 	var plan model.Plan
 	var maxConcurrency sql.NullInt64

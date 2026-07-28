@@ -14,10 +14,12 @@ type ExecutionPathRepository struct {
 	db *sql.DB
 }
 
+// NewExecutionPathRepository 创建基于同一计划数据库连接池的路径仓储。
 func NewExecutionPathRepository(db *sql.DB) *ExecutionPathRepository {
 	return &ExecutionPathRepository{db: db}
 }
 
+// List 按稳定序号读取计划路径及其最小分支选择集合。
 func (r *ExecutionPathRepository) List(ctx context.Context, planID uint64) ([]model.ExecutionPath, error) {
 	var exists int
 	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_plans WHERE id = ?", planID).Scan(&exists); err != nil {
@@ -56,12 +58,14 @@ ORDER BY sequence_no ASC`, planID)
 	return paths, nil
 }
 
+// Create 在计划行锁保护下执行幂等检查、来源上限、序号分配和路径写入。
 func (r *ExecutionPathRepository) Create(ctx context.Context, planID uint64, createKey string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.ExecutionPath{}, false, err
 	}
 	defer tx.Rollback()
+	// 计划行锁既保护来源数量上限，也串行化同一计划的稳定序号计数器。
 	source, nextSequenceNo, err := lockMutablePlan(ctx, tx, planID)
 	if err != nil {
 		return model.ExecutionPath{}, false, err
@@ -69,6 +73,7 @@ func (r *ExecutionPathRepository) Create(ctx context.Context, planID uint64, cre
 	if existing, found, err := findExecutionPathByCreateKey(ctx, tx, createKey); err != nil {
 		return model.ExecutionPath{}, false, err
 	} else if found {
+		// 相同幂等键必须返回原记录，不能再次分配序号或重复写选择。
 		if existing.PlanID != planID {
 			return model.ExecutionPath{}, false, repository.ErrExecutionPathDataInvalid
 		}
@@ -82,6 +87,7 @@ func (r *ExecutionPathRepository) Create(ctx context.Context, planID uint64, cre
 		return existing, false, nil
 	}
 	if source != "new" {
+		// 已发和待发计划只对应一个既有实例，数据库事务内再次限制最多一条路径。
 		var count int
 		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_execution_paths WHERE plan_id = ?", planID).Scan(&count); err != nil {
 			return model.ExecutionPath{}, false, err
@@ -95,6 +101,7 @@ func (r *ExecutionPathRepository) Create(ctx context.Context, planID uint64, cre
 		return model.ExecutionPath{}, false, err
 	}
 	sequenceNo := nextSequenceNo
+	// MAX+1 兼容计数器加入前已有路径；之后由持久计数器保证删除最高序号也不回退。
 	if maxSequenceNo > sequenceNo {
 		sequenceNo = maxSequenceNo
 	}
@@ -124,6 +131,7 @@ VALUES (?, ?, ?, ?, ?)`, planID, sequenceNo, createKey, now.UTC(), now.UTC())
 	return model.ExecutionPath{ID: uint64(id), PlanID: planID, SequenceNo: sequenceNo, Choices: copyChoices(choices), CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, true, nil
 }
 
+// Update 在计划锁和单一事务内替换选择并同步路径、计划更新时间。
 func (r *ExecutionPathRepository) Update(ctx context.Context, planID, pathID uint64, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -157,6 +165,7 @@ func (r *ExecutionPathRepository) Update(ctx context.Context, planID, pathID uin
 	return path, nil
 }
 
+// Delete 硬删除指定计划的路径并依赖外键级联删除选择，计数器保持不变。
 func (r *ExecutionPathRepository) Delete(ctx context.Context, planID, pathID uint64, now time.Time) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -178,6 +187,7 @@ func (r *ExecutionPathRepository) Delete(ctx context.Context, planID, pathID uin
 	return tx.Commit()
 }
 
+// lockMutablePlan 锁定计划并返回来源和下一稳定序号，非待配置计划立即拒绝。
 func lockMutablePlan(ctx context.Context, tx *sql.Tx, planID uint64) (string, uint, error) {
 	var source string
 	var status model.PlanStatus
@@ -199,6 +209,7 @@ func lockMutablePlan(ctx context.Context, tx *sql.Tx, planID uint64) (string, ui
 	return source, nextSequenceNo, nil
 }
 
+// findExecutionPathByCreateKey 在当前事务内读取幂等键对应路径。
 func findExecutionPathByCreateKey(ctx context.Context, tx *sql.Tx, createKey string) (model.ExecutionPath, bool, error) {
 	path, err := scanExecutionPath(tx.QueryRowContext(ctx, `
 SELECT id, plan_id, sequence_no, created_at, updated_at
@@ -209,6 +220,7 @@ FROM test_execution_paths WHERE create_key = ?`, createKey))
 	return path, err == nil, err
 }
 
+// findExecutionPath 按计划归属精确读取路径，避免跨计划修改。
 func findExecutionPath(ctx context.Context, tx *sql.Tx, planID, pathID uint64) (model.ExecutionPath, error) {
 	path, err := scanExecutionPath(tx.QueryRowContext(ctx, `
 SELECT id, plan_id, sequence_no, created_at, updated_at
@@ -219,6 +231,7 @@ FROM test_execution_paths WHERE id = ? AND plan_id = ?`, pathID, planID))
 	return path, err
 }
 
+// insertExecutionPathChoices 只写真实条件或手动路由选择，不保存任何派生节点。
 func insertExecutionPathChoices(ctx context.Context, tx *sql.Tx, pathID uint64, choices []model.ExecutionPathChoice) error {
 	for _, choice := range choices {
 		if _, err := tx.ExecContext(ctx, `
@@ -234,6 +247,7 @@ type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// loadExecutionPathChoices 按路由标识稳定读取一条路径的选择集合。
 func loadExecutionPathChoices(ctx context.Context, db queryer, pathID uint64) ([]model.ExecutionPathChoice, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT route_node_id, branch_id
@@ -255,6 +269,7 @@ ORDER BY route_node_id ASC`, pathID)
 	return choices, rows.Err()
 }
 
+// touchPlan 在路径事务内同步计划更新时间，保证列表排序反映配置变化。
 func touchPlan(ctx context.Context, tx *sql.Tx, planID uint64, now time.Time) error {
 	_, err := tx.ExecContext(ctx, "UPDATE test_plans SET updated_at = ? WHERE id = ?", now.UTC(), planID)
 	return err
@@ -264,6 +279,7 @@ type executionPathScanner interface {
 	Scan(...any) error
 }
 
+// scanExecutionPath 将数据库行转换为 UTC 路径模型并拒绝非法关键字段。
 func scanExecutionPath(row executionPathScanner) (model.ExecutionPath, error) {
 	var path model.ExecutionPath
 	if err := row.Scan(&path.ID, &path.PlanID, &path.SequenceNo, &path.CreatedAt, &path.UpdatedAt); err != nil {
@@ -277,6 +293,7 @@ func scanExecutionPath(row executionPathScanner) (model.ExecutionPath, error) {
 	return path, nil
 }
 
+// copyChoices 隔离仓储返回值与调用方切片，避免事务完成后被意外修改。
 func copyChoices(choices []model.ExecutionPathChoice) []model.ExecutionPathChoice {
 	return append([]model.ExecutionPathChoice(nil), choices...)
 }

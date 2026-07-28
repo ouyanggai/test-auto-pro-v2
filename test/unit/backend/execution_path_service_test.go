@@ -18,6 +18,7 @@ type executionPathGraphReader struct {
 	calls int
 }
 
+// Get 记录服务重读次数并返回预设真实图。
 func (r *executionPathGraphReader) Get(context.Context, uint64) (model.FlowGraph, error) {
 	r.calls++
 	return r.graph, r.err
@@ -31,9 +32,12 @@ type memoryExecutionPathRepository struct {
 	createCalls int
 }
 
+// List 返回内存路径副本供服务单元测试使用。
 func (r *memoryExecutionPathRepository) List(context.Context, uint64) ([]model.ExecutionPath, error) {
 	return append([]model.ExecutionPath(nil), r.paths...), nil
 }
+
+// Create 记录写入次数并模拟事务仓储创建结果。
 func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64, _ string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, bool, error) {
 	r.createCalls++
 	if r.createErr != nil {
@@ -43,16 +47,21 @@ func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64,
 	r.paths = append(r.paths, path)
 	return path, true, nil
 }
+
+// Update 模拟原位替换选择并保留稳定序号。
 func (r *memoryExecutionPathRepository) Update(_ context.Context, planID, pathID uint64, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, error) {
 	if r.updateErr != nil {
 		return model.ExecutionPath{}, r.updateErr
 	}
 	return model.ExecutionPath{ID: pathID, PlanID: planID, SequenceNo: 1, Choices: choices, UpdatedAt: now}, nil
 }
+
+// Delete 返回预设仓储错误以覆盖删除边界。
 func (r *memoryExecutionPathRepository) Delete(context.Context, uint64, uint64, time.Time) error {
 	return r.deleteErr
 }
 
+// TestExecutionPathServiceRereadsAndValidatesCurrentGraph 验证每次创建和更新都重读当前图。
 func TestExecutionPathServiceRereadsAndValidatesCurrentGraph(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
@@ -70,6 +79,7 @@ func TestExecutionPathServiceRereadsAndValidatesCurrentGraph(t *testing.T) {
 	}
 }
 
+// TestExecutionPathServiceRejectsIncompleteAndExtraSelections 验证无效选择不会进入仓储。
 func TestExecutionPathServiceRejectsIncompleteAndExtraSelections(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
@@ -87,6 +97,7 @@ func TestExecutionPathServiceRejectsIncompleteAndExtraSelections(t *testing.T) {
 	}
 }
 
+// TestExecutionPathServiceMapsRepositoryBoundaries 验证事务错误映射为稳定业务种类。
 func TestExecutionPathServiceMapsRepositoryBoundaries(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
@@ -109,6 +120,7 @@ func TestExecutionPathServiceMapsRepositoryBoundaries(t *testing.T) {
 	}
 }
 
+// selectableExecutionPathGraph 返回包含一个条件路由的最小当前图。
 func selectableExecutionPathGraph() model.FlowGraph {
 	return model.FlowGraph{
 		EntryNodeIDs: []string{"start"},

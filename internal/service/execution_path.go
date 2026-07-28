@@ -28,8 +28,10 @@ type ExecutionPathError struct {
 	Message string
 }
 
+// Error 返回可映射为稳定 API 错误的人类可读说明。
 func (e *ExecutionPathError) Error() string { return e.Message }
 
+// IsExecutionPathErrorKind 判断错误是否属于指定的执行路径业务边界。
 func IsExecutionPathErrorKind(err error, kind ExecutionPathErrorKind) bool {
 	var pathErr *ExecutionPathError
 	return errors.As(err, &pathErr) && pathErr.Kind == kind
@@ -51,10 +53,12 @@ type ExecutionPathService struct {
 	now        func() time.Time
 }
 
+// NewExecutionPathService 组装计划、真实图、路径分析与事务仓储边界。
 func NewExecutionPathService(plans *PlanService, graphs CurrentFlowGraphReader, pathAnalyzer ExecutionPathChoiceAnalyzer, pathRepository repository.ExecutionPathRepository) *ExecutionPathService {
 	return &ExecutionPathService{plans: plans, graphs: graphs, analyzer: pathAnalyzer, repository: pathRepository, now: time.Now}
 }
 
+// List 读取属于指定计划的持久化路径，不伪造当前图有效性。
 func (s *ExecutionPathService) List(ctx context.Context, planID uint64) ([]model.ExecutionPath, error) {
 	if planID == 0 {
 		return nil, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划 ID 不正确"}
@@ -69,6 +73,7 @@ func (s *ExecutionPathService) List(ctx context.Context, planID uint64) ([]model
 	return paths, nil
 }
 
+// Create 重新读取当前真实图验证完整选择，再以幂等键事务创建路径。
 func (s *ExecutionPathService) Create(ctx context.Context, planID uint64, createKey string, choices []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
 	if planID == 0 || !validUUID(strings.TrimSpace(createKey)) {
 		return model.ExecutionPath{}, false, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "创建请求标识不正确，请重试"}
@@ -90,6 +95,7 @@ func (s *ExecutionPathService) Create(ctx context.Context, planID uint64, create
 	return path, created, nil
 }
 
+// Update 重新核实真实图后原位替换指定路径的全部分支选择。
 func (s *ExecutionPathService) Update(ctx context.Context, planID, pathID uint64, choices []model.ExecutionPathChoice) (model.ExecutionPath, error) {
 	if planID == 0 || pathID == 0 {
 		return model.ExecutionPath{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
@@ -111,6 +117,7 @@ func (s *ExecutionPathService) Update(ctx context.Context, planID, pathID uint64
 	return path, nil
 }
 
+// Delete 只删除本工具中属于待配置计划的路径，不访问目标系统。
 func (s *ExecutionPathService) Delete(ctx context.Context, planID, pathID uint64) error {
 	if planID == 0 || pathID == 0 {
 		return &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
@@ -121,6 +128,7 @@ func (s *ExecutionPathService) Delete(ctx context.Context, planID, pathID uint64
 	return nil
 }
 
+// validateMutablePlan 在访问目标图前阻止已经产生后续事实的计划继续修改。
 func (s *ExecutionPathService) validateMutablePlan(ctx context.Context, planID uint64) error {
 	plan, err := s.plans.Get(ctx, planID)
 	if err != nil {
@@ -132,6 +140,7 @@ func (s *ExecutionPathService) validateMutablePlan(ctx context.Context, planID u
 	return nil
 }
 
+// validateCurrentChoices 用计划持久化身份重读真实图，禁止浏览器用过期或跨图选择写库。
 func (s *ExecutionPathService) validateCurrentChoices(ctx context.Context, planID uint64, choices []model.ExecutionPathChoice) error {
 	graph, err := s.graphs.Get(ctx, planID)
 	if err != nil {
@@ -144,6 +153,7 @@ func (s *ExecutionPathService) validateCurrentChoices(ctx context.Context, planI
 	return nil
 }
 
+// normalizeExecutionPathChoices 收敛请求标识并限制数据库字段与图规模边界。
 func normalizeExecutionPathChoices(choices []model.ExecutionPathChoice) ([]model.ExecutionPathChoice, error) {
 	if len(choices) > 500 {
 		return nil, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "路径选择数量过多"}
@@ -160,6 +170,7 @@ func normalizeExecutionPathChoices(choices []model.ExecutionPathChoice) ([]model
 	return normalized, nil
 }
 
+// mapExecutionPathRepositoryError 将事务仓储错误收敛为稳定的业务错误种类。
 func mapExecutionPathRepositoryError(err error) error {
 	switch {
 	case errors.Is(err, repository.ErrPlanNotFound):

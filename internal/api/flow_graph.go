@@ -27,6 +27,7 @@ type flowGraphResponse struct {
 	Warnings     []string              `json:"warnings"`
 }
 
+// registerFlowGraphRoute 注册计划真实流程图只读端点。
 func registerFlowGraphRoute(mux *http.ServeMux, graphs FlowGraphService) {
 	mux.HandleFunc("GET /api/plans/{id}/flow-graph", func(response http.ResponseWriter, request *http.Request) {
 		id, err := strconv.ParseUint(request.PathValue("id"), 10, 64)
@@ -47,6 +48,7 @@ func registerFlowGraphRoute(mux *http.ServeMux, graphs FlowGraphService) {
 	})
 }
 
+// writeFlowGraphError 将计划、目标会话和结构错误收敛为稳定公开响应。
 func writeFlowGraphError(response http.ResponseWriter, err error) {
 	var configErr *config.MissingTargetConfigError
 	switch {
@@ -81,6 +83,7 @@ func writeFlowGraphError(response http.ResponseWriter, err error) {
 
 type unavailableFlowGraphService struct{}
 
+// Get 在未注入图服务时返回稳定的计划存储不可用错误。
 func (unavailableFlowGraphService) Get(context.Context, uint64) (model.FlowGraph, error) {
 	return model.FlowGraph{}, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
 }

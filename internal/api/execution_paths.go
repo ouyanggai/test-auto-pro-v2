@@ -35,6 +35,7 @@ type executionPathListResponse struct {
 	Items []executionPathResponse `json:"items"`
 }
 
+// registerExecutionPathRoutes 注册同一计划下的四个路径读写端点。
 func registerExecutionPathRoutes(mux *http.ServeMux, paths ExecutionPathService) {
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths", handleListExecutionPaths(paths))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths", handleCreateExecutionPath(paths))
@@ -42,6 +43,7 @@ func registerExecutionPathRoutes(mux *http.ServeMux, paths ExecutionPathService)
 	mux.HandleFunc("DELETE /api/plans/{id}/execution-paths/{pathId}", handleDeleteExecutionPath(paths))
 }
 
+// handleListExecutionPaths 返回按稳定序号排列的最小路径 DTO。
 func handleListExecutionPaths(paths ExecutionPathService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
@@ -61,6 +63,7 @@ func handleListExecutionPaths(paths ExecutionPathService) http.HandlerFunc {
 	}
 }
 
+// handleCreateExecutionPath 只接受 choices 与请求头幂等键，不接受浏览器伪造图身份。
 func handleCreateExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
@@ -84,6 +87,7 @@ func handleCreateExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	}
 }
 
+// handleUpdateExecutionPath 用完整 choices 原位替换属于该计划的路径。
 func handleUpdateExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
@@ -107,6 +111,7 @@ func handleUpdateExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	}
 }
 
+// handleDeleteExecutionPath 删除本地路径记录并返回无响应体的 204。
 func handleDeleteExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
@@ -125,6 +130,7 @@ func handleDeleteExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	}
 }
 
+// decodeExecutionPathRequest 严格拒绝未知字段和多余 JSON，缩小浏览器可信输入面。
 func decodeExecutionPathRequest(response http.ResponseWriter, request *http.Request) (executionPathRequest, bool) {
 	var input executionPathRequest
 	decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
@@ -139,6 +145,7 @@ func decodeExecutionPathRequest(response http.ResponseWriter, request *http.Requ
 	return input, true
 }
 
+// parseExecutionPathID 解析计划或路径正整数标识并直接写出稳定参数错误。
 func parseExecutionPathID(response http.ResponseWriter, raw string) (uint64, bool) {
 	id, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil || id == 0 {
@@ -148,6 +155,7 @@ func parseExecutionPathID(response http.ResponseWriter, raw string) (uint64, boo
 	return id, true
 }
 
+// toExecutionPathResponse 仅公开选择所需标识、稳定序号和更新时间。
 func toExecutionPathResponse(path model.ExecutionPath) executionPathResponse {
 	return executionPathResponse{
 		ID: strconv.FormatUint(path.ID, 10), SequenceNo: path.SequenceNo,
@@ -155,6 +163,7 @@ func toExecutionPathResponse(path model.ExecutionPath) executionPathResponse {
 	}
 }
 
+// writeExecutionPathError 将路径、计划和目标读取错误映射为批准的稳定契约。
 func writeExecutionPathError(response http.ResponseWriter, err error) {
 	switch {
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorInvalidArgument):
@@ -176,15 +185,22 @@ func writeExecutionPathError(response http.ResponseWriter, err error) {
 
 type unavailableExecutionPathService struct{}
 
+// List 在未注入路径存储时返回稳定不可用错误。
 func (unavailableExecutionPathService) List(context.Context, uint64) ([]model.ExecutionPath, error) {
 	return nil, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
 }
+
+// Create 在未注入路径存储时拒绝创建。
 func (unavailableExecutionPathService) Create(context.Context, uint64, string, []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
 	return model.ExecutionPath{}, false, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
 }
+
+// Update 在未注入路径存储时拒绝更新。
 func (unavailableExecutionPathService) Update(context.Context, uint64, uint64, []model.ExecutionPathChoice) (model.ExecutionPath, error) {
 	return model.ExecutionPath{}, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
 }
+
+// Delete 在未注入路径存储时拒绝删除。
 func (unavailableExecutionPathService) Delete(context.Context, uint64, uint64) error {
 	return &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
 }

@@ -18,6 +18,7 @@ type capturedFlowTreeReader struct {
 	entries  []string
 }
 
+// FlowTreeSnapshot 记录计划持久化身份并返回预设真实入口。
 func (r *capturedFlowTreeReader) FlowTreeSnapshot(_ context.Context, account, source, targetID string) (target.FlowTreeSnapshot, error) {
 	r.account, r.source, r.targetID = account, source, targetID
 	entries := r.entries
@@ -27,6 +28,7 @@ func (r *capturedFlowTreeReader) FlowTreeSnapshot(_ context.Context, account, so
 	return target.FlowTreeSnapshot{Tree: &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start"}, EntryNodeIDs: entries}, nil
 }
 
+// TestFlowGraphServiceRejectsMissingOrForeignEntries 验证空入口和跨图入口均不可配置。
 func TestFlowGraphServiceRejectsMissingOrForeignEntries(t *testing.T) {
 	for _, entries := range [][]string{{}, {"other"}} {
 		repo := newMemoryPlanRepository()
@@ -39,6 +41,7 @@ func TestFlowGraphServiceRejectsMissingOrForeignEntries(t *testing.T) {
 	}
 }
 
+// TestFlowGraphServiceUsesOnlyPersistedPlanIdentity 验证图读取只采用计划保存身份。
 func TestFlowGraphServiceUsesOnlyPersistedPlanIdentity(t *testing.T) {
 	repo := newMemoryPlanRepository()
 	repo.plans = []model.Plan{{

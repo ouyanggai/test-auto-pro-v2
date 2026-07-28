@@ -15,6 +15,7 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
+// main 在监听端口前完成向前迁移并组装目标读取、计划、流程图和路径服务。
 func main() {
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 15*time.Second)
 	planDatabase, err := planmysql.OpenAndMigrate(startupContext, config.LoadPlanDBConfig())

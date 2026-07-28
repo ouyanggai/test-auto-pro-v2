@@ -7,25 +7,30 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
-// 健康接口保持固定响应，供本地热更新探针=初始和基础连通性检查使用。
+// 健康接口保持固定响应，供本地热更新探针和基础连通性检查使用。
 const healthResponse = `{"status":"ok","service":"test-auto-pro","version":"dev"}`
 
+// NewHandler 创建仅包含基础能力的默认处理器，业务存储缺失时返回稳定错误。
 func NewHandler() http.Handler {
 	return NewHandlerWithServices(service.NewTargetReadService(config.LoadTargetConfig()), unavailablePlanService{})
 }
 
+// NewHandlerWithTargetReader 为目标读取测试注入替代实现。
 func NewHandlerWithTargetReader(reader TargetReader) http.Handler {
 	return NewHandlerWithServices(reader, unavailablePlanService{})
 }
 
+// NewHandlerWithServices 为计划 API 测试注入目标和计划服务。
 func NewHandlerWithServices(reader TargetReader, plans PlanService) http.Handler {
 	return NewHandlerWithFlowGraphServices(reader, plans, unavailableFlowGraphService{})
 }
 
+// NewHandlerWithFlowGraphServices 为流程图范围注入真实图服务。
 func NewHandlerWithFlowGraphServices(reader TargetReader, plans PlanService, graphs FlowGraphService) http.Handler {
 	return NewHandlerWithExecutionPathServices(reader, plans, graphs, unavailableExecutionPathService{})
 }
 
+// NewHandlerWithExecutionPathServices 组装包含 F-005 路径端点的完整 HTTP 路由。
 func NewHandlerWithExecutionPathServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
@@ -36,6 +41,7 @@ func NewHandlerWithExecutionPathServices(reader TargetReader, plans PlanService,
 	return mux
 }
 
+// health 返回无时间戳的稳定健康响应。
 func health(response http.ResponseWriter, _ *http.Request) {
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	response.WriteHeader(http.StatusOK)

@@ -49,6 +49,7 @@ type envelope struct {
 	Size      int             `json:"size"`
 }
 
+// NewClient 校验网关与超时边界并创建只读目标 HTTP 客户端。
 func NewClient(cfg ClientConfig) (*Client, error) {
 	parsed, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -72,6 +73,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}, nil
 }
 
+// Login 按已核实协议加密服务端密码并获取只保留在后端的会话。
 func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 	encrypted, err := EncryptPassword(c.config.LoginPassword, c.config.LoginAESKey)
 	if err != nil {
@@ -152,6 +154,7 @@ type rawFlowTemplate struct {
 	FormTemplateList []json.RawMessage `json:"formTemplateList"`
 }
 
+// ListTemplates 分页读取账号可见模板并映射已核实公开字段。
 func (c *Client) ListTemplates(ctx context.Context, session Session, query string, page, pageSize int) (Page[FlowTemplate], error) {
 	body := map[string]any{
 		"data": map[string]any{
@@ -203,6 +206,7 @@ func (c *Client) ListTemplates(ctx context.Context, session Session, query strin
 	return normalizePage(items, resp, page, pageSize)
 }
 
+// ListSubmitted 分页读取已发实例，并保留后端路径入口核对所需的非公开字段。
 func (c *Client) ListSubmitted(ctx context.Context, session Session, query string, page, pageSize int) (Page[SubmittedFlow], error) {
 	data := map[string]any{
 		"useScope":                     "invest",
@@ -257,6 +261,7 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 	return normalizePage(items, resp, page, pageSize)
 }
 
+// ListDue 分页读取 waiting_send 待发任务，并保留非公开代理节点入口。
 func (c *Client) ListDue(ctx context.Context, session Session, query string, page, pageSize int) (Page[DueFlow], error) {
 	data := map[string]any{
 		"taskStatus":                   "waiting_send",
@@ -331,6 +336,7 @@ type rawFlowBranchTemplate struct {
 	Child      *rawFlowNodeTemplate `json:"childFlowNodeTemplate"`
 }
 
+// FindVisibleTemplate 通过顶层 ids 精确核对保存模板，不能依赖目标端不会筛选的 data.id。
 func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templateID string) (bool, error) {
 	body := map[string]any{
 		"data": map[string]any{
@@ -369,6 +375,7 @@ func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templa
 	return false, nil
 }
 
+// FindSubmittedFlow 精确重查已发实例并返回代理树标识、活动入口和真实状态。
 func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, string, bool, error) {
 	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
 		"data": map[string]any{
@@ -397,6 +404,7 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 	}
 	for _, item := range raw {
 		if strings.TrimSpace(item.ID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
+			// 活动节点集合优先于单一 currentNodeProxyId，避免并行入口被压缩成一个节点。
 			entries := auditNodeIDs(item.CurrentAuditUserInfo)
 			if len(entries) == 0 && strings.TrimSpace(item.CurrentNodeProxyID) != "" {
 				entries = []string{strings.TrimSpace(item.CurrentNodeProxyID)}
@@ -407,6 +415,7 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 	return "", nil, "", false, nil
 }
 
+// FindDueFlow 精确重查实例全部 waiting_send 任务并汇总其代理节点入口。
 func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID string) (string, []string, bool, error) {
 	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
 		"data": map[string]any{
@@ -441,6 +450,7 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 			continue
 		}
 		currentProxyID := strings.TrimSpace(item.FlowProxyID)
+		// 同一实例任务若指向不同代理树，无法证明入口归属，必须拒绝而不是任选一个。
 		if proxyID != "" && proxyID != currentProxyID {
 			return "", nil, false, invalidResponse("due tasks reference different flow proxies")
 		}
@@ -460,14 +470,17 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 	return proxyID, entries, true, nil
 }
 
+// ReadTemplateTree 按模板 ID 读取新发起的真实节点树。
 func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, error) {
 	return c.readFlowTree(ctx, active, "/web/flowTemplateApi/findById", templateID)
 }
 
+// ReadProxyTree 按已核实的 flowProxyId 读取既有实例代理树。
 func (c *Client) ReadProxyTree(ctx context.Context, active Session, proxyID string) (*FlowNodeTemplate, error) {
 	return c.readFlowTree(ctx, active, "/web/flowProxy/findById", proxyID)
 }
 
+// readFlowTree 调用目标详情端点并只转换流程节点结构。
 func (c *Client) readFlowTree(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, error) {
 	resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": strings.TrimSpace(id)}})
 	if err != nil {
@@ -488,6 +501,7 @@ func (c *Client) readFlowTree(ctx context.Context, active Session, path, id stri
 	return convertFlowNode(data.FlowNodeTemplate), nil
 }
 
+// convertFlowNode 递归转换目标节点，丢弃审批配置和字段权限等敏感原文。
 func convertFlowNode(raw *rawFlowNodeTemplate) *FlowNodeTemplate {
 	if raw == nil {
 		return nil
@@ -501,6 +515,7 @@ func convertFlowNode(raw *rawFlowNodeTemplate) *FlowNodeTemplate {
 	return node
 }
 
+// convertFlowBranches 保留真实分支 ID、顺序、名称和子节点。
 func convertFlowBranches(raw []rawFlowBranchTemplate) []FlowBranchTemplate {
 	result := make([]FlowBranchTemplate, 0, len(raw))
 	for _, branch := range raw {
@@ -512,6 +527,7 @@ func convertFlowBranches(raw []rawFlowBranchTemplate) []FlowBranchTemplate {
 	return result
 }
 
+// call 按已核实协议传递后端会话，并限制响应体、超时和公开错误内容。
 func (c *Client) call(ctx context.Context, path, sid string, body map[string]any) (*envelope, error) {
 	payload := make(map[string]any, len(body)+1)
 	for key, value := range body {
@@ -581,6 +597,7 @@ func (c *Client) call(ctx context.Context, path, sid string, body map[string]any
 	return &result, nil
 }
 
+// EncryptPassword 使用目标登录协议要求的 AES 块加密服务端密码。
 func EncryptPassword(password, key string) (string, error) {
 	block, err := aes.NewCipher([]byte(key))
 	if err != nil {
@@ -596,10 +613,12 @@ func EncryptPassword(password, key string) (string, error) {
 	return base64.StdEncoding.EncodeToString(encrypted), nil
 }
 
+// responseSucceeded 兼容目标响应的两种成功标识。
 func responseSucceeded(resp *envelope) bool {
 	return resp != nil && (resp.IsSuccess || resp.Success)
 }
 
+// responseError 把目标业务失败收敛为会话失效或暂不可用。
 func responseError(resp *envelope) error {
 	if responseSessionExpired(resp) {
 		return NewError(ErrorSessionExpired, nil)
@@ -607,6 +626,7 @@ func responseError(resp *envelope) error {
 	return NewError(ErrorUnavailable, nil)
 }
 
+// responseSessionExpired 只识别已有证据支持的会话失效代码和文案。
 func responseSessionExpired(resp *envelope) bool {
 	if resp == nil || responseSucceeded(resp) {
 		return false
@@ -622,6 +642,7 @@ func responseSessionExpired(resp *envelope) bool {
 	}
 }
 
+// decodeArray 兼容目标列表的直接数组和 records 包装结构。
 func decodeArray(data json.RawMessage, destination any) error {
 	if len(data) == 0 || string(data) == "null" {
 		return nil
@@ -641,6 +662,7 @@ func decodeArray(data json.RawMessage, destination any) error {
 	return nil
 }
 
+// normalizePage 规范分页结果并拒绝目标端返回的负数边界。
 func normalizePage[T any](items []T, resp *envelope, page, pageSize int) (Page[T], error) {
 	if resp.Total < 0 || resp.Current < 0 || resp.Size < 0 || resp.Pages < 0 {
 		return Page[T]{}, invalidResponse("negative pagination")
@@ -656,6 +678,7 @@ func normalizePage[T any](items []T, resp *envelope, page, pageSize int) (Page[T
 	return Page[T]{Items: items, Page: page, PageSize: pageSize, Total: total, HasMore: hasMore}, nil
 }
 
+// auditUserNames 从活动节点映射中去重提取公开处理人名称。
 func auditUserNames(data json.RawMessage) string {
 	if len(data) == 0 || string(data) == "null" {
 		return ""
@@ -691,6 +714,7 @@ func auditUserNames(data json.RawMessage) string {
 	return strings.Join(names, ",")
 }
 
+// auditNodeIDs 把 currentAuditUserInfo 的真实节点键稳定转换为并行入口集合。
 func auditNodeIDs(data json.RawMessage) []string {
 	if len(data) == 0 || string(data) == "null" {
 		return nil
@@ -709,6 +733,7 @@ func auditNodeIDs(data json.RawMessage) []string {
 	return result
 }
 
+// templateStatusText 将模板状态转换为已有中文展示。
 func templateStatusText(status string) string {
 	switch status {
 	case "enable":
@@ -720,6 +745,7 @@ func templateStatusText(status string) string {
 	}
 }
 
+// submittedStatusText 将已发状态按参考页面证据转换为中文，未知值不泄露英文原值。
 func submittedStatusText(status string) string {
 	switch status {
 	case "await_sent":
@@ -743,6 +769,7 @@ func submittedStatusText(status string) string {
 	}
 }
 
+// dueStatusText 转换待发实例已有证据支持的状态文案。
 func dueStatusText(status string) string {
 	switch status {
 	case "rejected":
@@ -756,11 +783,13 @@ func dueStatusText(status string) string {
 	}
 }
 
+// isTimeout 判断底层网络错误是否属于超时边界。
 func isTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
+// firstNonEmpty 返回首个非空字段以兼容目标响应的已核实别名。
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

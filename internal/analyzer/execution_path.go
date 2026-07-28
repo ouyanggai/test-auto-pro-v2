@@ -11,8 +11,10 @@ var ErrExecutionPathInvalid = errors.New("执行路径选择无效")
 
 type ExecutionPathAnalyzer struct{}
 
+// NewExecutionPathAnalyzer 创建无状态的执行路径分析器。
 func NewExecutionPathAnalyzer() *ExecutionPathAnalyzer { return &ExecutionPathAnalyzer{} }
 
+// Analyze 从后端核实的入口遍历当前真实图，只接受恰好覆盖可达条件与手动路由的选择。
 func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.ExecutionPathChoice) (model.ExecutionPathAnalysis, error) {
 	nodeByID := make(map[string]model.FlowGraphNode, len(graph.Nodes))
 	outgoing := make(map[string][]model.FlowGraphEdge, len(graph.Nodes))
@@ -36,6 +38,7 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 	}
 
 	choiceByRoute := make(map[string]string, len(choices))
+	// 浏览器选择不是可信图结构；先拒绝空值和同一路由重复选择，再进入可达性判断。
 	for _, choice := range choices {
 		routeID := strings.TrimSpace(choice.RouteNodeID)
 		branchID := strings.TrimSpace(choice.BranchID)
@@ -54,6 +57,7 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 	reachableNodes := make([]string, 0, len(graph.Nodes))
 	reachableEdges := make([]string, 0, len(graph.Edges))
 	queue := append([]string(nil), graph.EntryNodeIDs...)
+	// 多入口和并行支线可能在汇合点重叠，visited 保证共享后继只分析一次。
 	for len(queue) > 0 {
 		nodeID := queue[0]
 		queue = queue[1:]
@@ -69,6 +73,7 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 		edges := outgoing[nodeID]
 		switch node.Type {
 		case "condition", "manual":
+			// 单选路由缺少选择时只记录待选点，不继续猜测任何下游分支。
 			branchID, selected := choiceByRoute[nodeID]
 			if !selected {
 				missing = append(missing, nodeID)
@@ -89,6 +94,7 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 			reachableEdges = append(reachableEdges, selectedEdge.ID)
 			queue = append(queue, selectedEdge.Target)
 		case "parallel":
+			// 并行分支属于同一执行路径，必须整体纳入，浏览器没有取消其中一支的权力。
 			if len(edges) == 0 {
 				return model.ExecutionPathAnalysis{}, ErrExecutionPathInvalid
 			}
@@ -113,6 +119,7 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 		}
 	}
 	if len(usedChoices) != len(choiceByRoute) {
+		// 未被遍历使用的选择来自不可达路由或其他图，必须整条拒绝。
 		return model.ExecutionPathAnalysis{}, ErrExecutionPathInvalid
 	}
 	return model.ExecutionPathAnalysis{

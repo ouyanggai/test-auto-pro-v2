@@ -8,14 +8,17 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
+// pathNode 创建路径分析测试使用的最小节点。
 func pathNode(id, nodeType string) model.FlowGraphNode {
 	return model.FlowGraphNode{ID: id, Name: id, Type: nodeType, TypeName: nodeType}
 }
 
+// pathEdge 创建路径分析测试使用的最小真实边。
 func pathEdge(id, source, target, kind, branchID string) model.FlowGraphEdge {
 	return model.FlowGraphEdge{ID: id, Source: source, Target: target, Kind: kind, BranchID: branchID}
 }
 
+// TestExecutionPathAnalyzerStraightFlowNeedsNoChoice 验证直线图零选择即可完整。
 func TestExecutionPathAnalyzerStraightFlowNeedsNoChoice(t *testing.T) {
 	graph := model.FlowGraph{
 		EntryNodeIDs: []string{"start"},
@@ -28,6 +31,7 @@ func TestExecutionPathAnalyzerStraightFlowNeedsNoChoice(t *testing.T) {
 	}
 }
 
+// TestExecutionPathAnalyzerConditionAndManualRequireOneReachableChoice 验证单选路由只要求可达分支。
 func TestExecutionPathAnalyzerConditionAndManualRequireOneReachableChoice(t *testing.T) {
 	graph := model.FlowGraph{
 		EntryNodeIDs: []string{"condition"},
@@ -67,6 +71,7 @@ func TestExecutionPathAnalyzerConditionAndManualRequireOneReachableChoice(t *tes
 	}
 }
 
+// TestExecutionPathAnalyzerParallelIncludesAllBranchesAndNestedChoices 验证并行全包含及嵌套待选点。
 func TestExecutionPathAnalyzerParallelIncludesAllBranchesAndNestedChoices(t *testing.T) {
 	graph := model.FlowGraph{
 		EntryNodeIDs: []string{"parallel"},
@@ -103,6 +108,7 @@ func TestExecutionPathAnalyzerParallelIncludesAllBranchesAndNestedChoices(t *tes
 	}
 }
 
+// TestExecutionPathAnalyzerRejectsDuplicateMissingExtraAndCrossGraphChoice 验证不可信选择的拒绝边界。
 func TestExecutionPathAnalyzerRejectsDuplicateMissingExtraAndCrossGraphChoice(t *testing.T) {
 	graph := model.FlowGraph{
 		EntryNodeIDs: []string{"route"},

@@ -54,12 +54,14 @@ type planListResponse struct {
 	Items []planResponse `json:"items"`
 }
 
+// registerPlanRoutes 注册计划创建、列表和详情端点。
 func registerPlanRoutes(mux *http.ServeMux, plans PlanService) {
 	mux.HandleFunc("POST /api/plans", handleCreatePlan(plans))
 	mux.HandleFunc("GET /api/plans", handleListPlans(plans))
 	mux.HandleFunc("GET /api/plans/{id}", handleGetPlan(plans))
 }
 
+// handleCreatePlan 严格解析计划创建请求并使用请求头幂等键。
 func handleCreatePlan(plans PlanService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		var input createPlanRequest
@@ -100,6 +102,7 @@ func handleCreatePlan(plans PlanService) http.HandlerFunc {
 	}
 }
 
+// handleListPlans 按名称和状态返回当前计划列表。
 func handleListPlans(plans PlanService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		items, err := plans.List(
@@ -119,6 +122,7 @@ func handleListPlans(plans PlanService) http.HandlerFunc {
 	}
 }
 
+// handleGetPlan 返回指定计划的持久化详情。
 func handleGetPlan(plans PlanService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		id, err := strconv.ParseUint(request.PathValue("id"), 10, 64)
@@ -135,6 +139,7 @@ func handleGetPlan(plans PlanService) http.HandlerFunc {
 	}
 }
 
+// parseOptionalRFC3339 解析可选启动时间并统一转换为 UTC。
 func parseOptionalRFC3339(response http.ResponseWriter, value *string) (*time.Time, bool) {
 	if value == nil {
 		return nil, true
@@ -148,6 +153,7 @@ func parseOptionalRFC3339(response http.ResponseWriter, value *string) (*time.Ti
 	return &parsed, true
 }
 
+// ensureJSONEnd 拒绝单个请求对象之后的额外 JSON 内容。
 func ensureJSONEnd(decoder *json.Decoder) error {
 	var extra any
 	err := decoder.Decode(&extra)
@@ -157,6 +163,7 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 	return errors.New("存在额外 JSON 内容")
 }
 
+// toPlanResponse 将计划模型转换为公开 DTO，并返回数据库实时统计的路径数量。
 func toPlanResponse(plan model.Plan) planResponse {
 	var scheduledAt *string
 	if plan.ScheduledAt != nil {
@@ -182,6 +189,7 @@ func toPlanResponse(plan model.Plan) planResponse {
 	}
 }
 
+// writePlanError 将计划业务和存储错误映射为稳定公开契约。
 func writePlanError(response http.ResponseWriter, err error) {
 	switch {
 	case service.IsPlanErrorKind(err, service.PlanErrorInvalidArgument):
@@ -197,14 +205,17 @@ func writePlanError(response http.ResponseWriter, err error) {
 
 type unavailablePlanService struct{}
 
+// Create 在未注入计划存储时拒绝创建。
 func (unavailablePlanService) Create(context.Context, string, service.CreatePlanInput) (model.Plan, bool, error) {
 	return model.Plan{}, false, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
 }
 
+// List 在未注入计划存储时拒绝列表读取。
 func (unavailablePlanService) List(context.Context, string, model.PlanStatus) ([]model.Plan, error) {
 	return nil, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
 }
 
+// Get 在未注入计划存储时拒绝详情读取。
 func (unavailablePlanService) Get(context.Context, uint64) (model.Plan, error) {
 	return model.Plan{}, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
 }

@@ -34,11 +34,13 @@ type fakeTarget struct {
 	submittedStatus string
 }
 
+// newFakeTarget 创建不含固定凭证的假目标服务状态。
 func newFakeTarget(t *testing.T) *fakeTarget {
 	t.Helper()
 	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), submittedStatus: "run"}
 }
 
+// handler 按已核实只读协议响应登录、列表和流程树请求。
 func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
 	case "/web/user/api/login/user/login":
@@ -110,12 +112,14 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 	}
 }
 
+// recordGraphCall 线程安全记录精确核对与详情调用顺序。
 func (f *fakeTarget) recordGraphCall(value string) {
 	f.mu.Lock()
 	f.graphCalls = append(f.graphCalls, value)
 	f.mu.Unlock()
 }
 
+// handleFlowDetail 验证模板或代理树详情只能使用已核实的真实 ID。
 func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *http.Request, expectedID, callName string) {
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
@@ -136,6 +140,7 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 	})
 }
 
+// handleLogin 验证登录结构并生成仅存在于测试运行期的随机会话。
 func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Request) {
 	var body struct {
 		Data struct {
@@ -179,6 +184,7 @@ func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Req
 	})
 }
 
+// handleTemplates 验证模板查询或顶层 ids 精确核对协议。
 func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http.Request) {
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
@@ -253,6 +259,7 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	})
 }
 
+// TestFlowTreeReadUsesExactSourceLookupBeforeDetails 验证三类来源先核对再读详情。
 func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -285,6 +292,7 @@ func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
 	}
 }
 
+// TestFlowTreeSnapshotUsesSourceSpecificEntryNodes 验证根、活动节点和待发任务入口集合。
 func TestFlowTreeSnapshotUsesSourceSpecificEntryNodes(t *testing.T) {
 	tests := []struct {
 		source string
@@ -313,6 +321,7 @@ func TestFlowTreeSnapshotUsesSourceSpecificEntryNodes(t *testing.T) {
 	}
 }
 
+// TestSubmittedFinishedInstanceIsNotConfigurable 验证结束状态不能借 end 节点保存零选择路径。
 func TestSubmittedFinishedInstanceIsNotConfigurable(t *testing.T) {
 	for _, status := range []string{"end", "termination", "abandon", "rejected", "withdraw"} {
 		t.Run(status, func(t *testing.T) {
@@ -336,6 +345,7 @@ func TestSubmittedFinishedInstanceIsNotConfigurable(t *testing.T) {
 	}
 }
 
+// TestSubmittedAwaitSentInstanceRemainsConfigurable 验证有可映射入口的待发状态仍可配置。
 func TestSubmittedAwaitSentInstanceRemainsConfigurable(t *testing.T) {
 	fake := newFakeTarget(t)
 	fake.submittedStatus = "await_sent"
@@ -349,6 +359,7 @@ func TestSubmittedAwaitSentInstanceRemainsConfigurable(t *testing.T) {
 	}
 }
 
+// TestFlowTreeReadSessionExpiryReplaysWholeChainOnce 验证会话失效后整条只读链仅重放一次。
 func TestFlowTreeReadSessionExpiryReplaysWholeChainOnce(t *testing.T) {
 	fake := newFakeTarget(t)
 	fake.expireMode = "business-once"
@@ -371,6 +382,7 @@ func TestFlowTreeReadSessionExpiryReplaysWholeChainOnce(t *testing.T) {
 	}
 }
 
+// TestFlowTreeReadRejectsUnmatchedTemplateEvenWhenListHasOtherItems 验证列表其他项不能冒充保存模板。
 func TestFlowTreeReadRejectsUnmatchedTemplateEvenWhenListHasOtherItems(t *testing.T) {
 	fake := newFakeTarget(t)
 	fake.expireMode = "template-other-only"
@@ -390,6 +402,7 @@ func TestFlowTreeReadRejectsUnmatchedTemplateEvenWhenListHasOtherItems(t *testin
 	}
 }
 
+// requireSession 验证 SID 只在后端按目标协议传递并解析请求体。
 func (f *fakeTarget) requireSession(request *http.Request) map[string]any {
 	f.mu.Lock()
 	if len(f.sessions) == 0 {
@@ -413,6 +426,7 @@ func (f *fakeTarget) requireSession(request *http.Request) map[string]any {
 	return body
 }
 
+// TestRealReadProtocolAndThreeSourceMappings 验证三类只读列表的协议与公开映射。
 func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
 	fake := newFakeTarget(t)
 	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
@@ -447,6 +461,7 @@ func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
 	}
 }
 
+// TestSessionExpiryRelogsAndReplaysOnce 验证列表读取会话失效后只重登一次。
 func TestSessionExpiryRelogsAndReplaysOnce(t *testing.T) {
 	for _, mode := range []string{"business-once", "business-message-once", "business-minus-one-once", "http-once"} {
 		t.Run(mode, func(t *testing.T) {
@@ -463,6 +478,7 @@ func TestSessionExpiryRelogsAndReplaysOnce(t *testing.T) {
 	}
 }
 
+// TestLoginRejectionUsesStablePublicError 验证登录拒绝不泄露目标原文。
 func TestLoginRejectionUsesStablePublicError(t *testing.T) {
 	for _, mode := range []string{"login-rejected", "login-http-unauthorized"} {
 		t.Run(mode, func(t *testing.T) {
@@ -479,6 +495,7 @@ func TestLoginRejectionUsesStablePublicError(t *testing.T) {
 	}
 }
 
+// TestSessionExpiryStopsAfterOneReplay 验证持续失效时禁止无限重登。
 func TestSessionExpiryStopsAfterOneReplay(t *testing.T) {
 	for _, mode := range []string{"business-always", "http-always"} {
 		t.Run(mode, func(t *testing.T) {
@@ -495,6 +512,7 @@ func TestSessionExpiryStopsAfterOneReplay(t *testing.T) {
 	}
 }
 
+// TestEmptyBadPaginationBadJSONAndTargetUnavailable 验证空、坏响应和不可用边界。
 func TestEmptyBadPaginationBadJSONAndTargetUnavailable(t *testing.T) {
 	tests := []struct {
 		mode   string
@@ -521,6 +539,7 @@ func TestEmptyBadPaginationBadJSONAndTargetUnavailable(t *testing.T) {
 	}
 }
 
+// TestTargetTimeoutAndContextCancellation 验证超时和调用方取消保持可区分。
 func TestTargetTimeoutAndContextCancellation(t *testing.T) {
 	started := make(chan struct{})
 	var startOnce sync.Once
@@ -555,6 +574,7 @@ func TestTargetTimeoutAndContextCancellation(t *testing.T) {
 	}
 }
 
+// configureTargetEnv 为单个假目标测试隔离运行期配置。
 func configureTargetEnv(t *testing.T, baseURL, password, loginCode, timeout string) {
 	t.Helper()
 	t.Setenv("TARGET_API_GATEWAY", baseURL)
@@ -568,6 +588,7 @@ func configureTargetEnv(t *testing.T, baseURL, password, loginCode, timeout stri
 	t.Setenv("TARGET_HTTP_TIMEOUT", timeout)
 }
 
+// callApp 调用测试 HTTP 处理器并核对状态码。
 func callApp(t *testing.T, handler http.Handler, method, path, body string, expectedStatus int) []byte {
 	t.Helper()
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -584,6 +605,7 @@ func callApp(t *testing.T, handler http.Handler, method, path, body string, expe
 	return responseBody
 }
 
+// runtimeValue 生成不会写入源码或日志的随机测试值。
 func runtimeValue(t *testing.T, byteCount int) string {
 	t.Helper()
 	data := make([]byte, byteCount)
@@ -593,6 +615,7 @@ func runtimeValue(t *testing.T, byteCount int) string {
 	return hex.EncodeToString(data)
 }
 
+// writeTargetJSON 写出假目标 JSON 响应。
 func writeTargetJSON(response http.ResponseWriter, value any) {
 	response.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(response).Encode(value)

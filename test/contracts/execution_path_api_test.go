@@ -21,19 +21,27 @@ type stubExecutionPathService struct {
 	choices []model.ExecutionPathChoice
 }
 
+// List 返回契约测试预设的路径集合或错误。
 func (s *stubExecutionPathService) List(context.Context, uint64) ([]model.ExecutionPath, error) {
 	return s.items, s.err
 }
+
+// Create 记录浏览器提交的最小 choices 并返回预设创建结果。
 func (s *stubExecutionPathService) Create(_ context.Context, _ uint64, _ string, choices []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
 	s.choices = choices
 	return s.path, s.created, s.err
 }
+
+// Update 记录完整替换 choices 并返回预设路径。
 func (s *stubExecutionPathService) Update(_ context.Context, _, _ uint64, choices []model.ExecutionPathChoice) (model.ExecutionPath, error) {
 	s.choices = choices
 	return s.path, s.err
 }
+
+// Delete 返回预设删除错误以覆盖稳定映射。
 func (s *stubExecutionPathService) Delete(context.Context, uint64, uint64) error { return s.err }
 
+// TestExecutionPathAPIFourOperationsAndSafety 验证四个端点和公开字段安全边界。
 func TestExecutionPathAPIFourOperationsAndSafety(t *testing.T) {
 	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
 	path := model.ExecutionPath{ID: 31, PlanID: 7, SequenceNo: 2, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route-a", BranchID: "branch-a"}}, UpdatedAt: now}
@@ -61,6 +69,7 @@ func TestExecutionPathAPIFourOperationsAndSafety(t *testing.T) {
 	}
 }
 
+// TestExecutionPathAPIRejectsUnknownFieldsAndMapsStableErrors 验证伪造字段拒绝和稳定错误码。
 func TestExecutionPathAPIRejectsUnknownFieldsAndMapsStableErrors(t *testing.T) {
 	tests := []struct {
 		err    error
@@ -92,6 +101,7 @@ func TestExecutionPathAPIRejectsUnknownFieldsAndMapsStableErrors(t *testing.T) {
 	}
 }
 
+// assertExecutionPathResponse 核对路径响应只包含批准的公开字段。
 func assertExecutionPathResponse(t *testing.T, recorder *httptest.ResponseRecorder, status int) {
 	t.Helper()
 	if recorder.Code != status {

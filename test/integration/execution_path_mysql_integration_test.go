@@ -14,6 +14,7 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
+// TestExecutionPathMySQLMigrationTransactionsAndCounts 验证真实迁移、事务、幂等、计数和重连读取。
 func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	cfg := config.LoadPlanDBConfig()
 	if missing := cfg.MissingRequired(); len(missing) != 0 {
@@ -91,6 +92,7 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	}
 }
 
+// createPathTestPlan 在随机临时库中创建指定来源的待配置计划。
 func createPathTestPlan(t *testing.T, ctx context.Context, plans *service.PlanService, source, key string) model.Plan {
 	t.Helper()
 	plan, created, err := plans.Create(ctx, key, service.CreatePlanInput{
@@ -103,6 +105,7 @@ func createPathTestPlan(t *testing.T, ctx context.Context, plans *service.PlanSe
 	return plan
 }
 
+// assertF005Tables 精确核对 F-005 临时库表、迁移和内部序号计数器。
 func assertF005Tables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	want := map[string]bool{

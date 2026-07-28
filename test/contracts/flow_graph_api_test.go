@@ -20,10 +20,12 @@ type stubFlowGraphService struct {
 	err   error
 }
 
+// Get 返回流程图契约测试预设结果。
 func (s *stubFlowGraphService) Get(context.Context, uint64) (model.FlowGraph, error) {
 	return s.graph, s.err
 }
 
+// TestFlowGraphAPISuccessContractAndSafety 验证入口扩展和敏感字段隔离。
 func TestFlowGraphAPISuccessContractAndSafety(t *testing.T) {
 	graphs := &stubFlowGraphService{graph: model.FlowGraph{
 		PlanID: 41, TargetName: "采购流程", FlowSource: "new",
@@ -57,6 +59,7 @@ func TestFlowGraphAPISuccessContractAndSafety(t *testing.T) {
 	}
 }
 
+// TestFlowGraphAPIStableErrors 验证不可配置入口和既有目标错误契约。
 func TestFlowGraphAPIStableErrors(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -93,6 +96,7 @@ func TestFlowGraphAPIStableErrors(t *testing.T) {
 	}
 }
 
+// apiHandlerWithGraph 组装仅供流程图契约测试使用的处理器。
 func apiHandlerWithGraph(graphs *stubFlowGraphService) http.Handler {
 	return api.NewHandlerWithFlowGraphServices(&stubTargetReader{}, service.NewPlanService(&contractPlanRepository{}), graphs)
 }
