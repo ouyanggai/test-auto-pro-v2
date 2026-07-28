@@ -14,6 +14,11 @@ grep -Fq "buildCreatePlanRequest(form, verifiedSummary.value, selectedCandidate.
 grep -Fq "creationKey.value || crypto.randomUUID()" "${new_plan}"
 grep -Fq ':loading="creationLoading"' "${new_plan}"
 grep -Fq "await router.push(\`/plans/\${plan.id}/paths\`)" "${new_plan}"
+grep -Fq '验证账号并选择流程，创建后计划将保存为待配置。' "${new_plan}"
+if grep -Fq '本页只读取候选，创建与路径配置将在后续开放。' "${new_plan}"; then
+  printf '生产新建页仍保留计划未开放的过期说明\n' >&2
+  exit 1
+fi
 grep -Fq "Idempotency-Key" "${persistence}"
 grep -Fq "candidate.flowName" "${persistence}"
 grep -Fq "candidate.name" "${persistence}"

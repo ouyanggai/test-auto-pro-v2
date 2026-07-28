@@ -561,7 +561,7 @@ async function submitPlan() {
     <div class="form-content">
       <header class="page-heading">
         <h1>新建计划</h1>
-		<p>验证账号并选择流程。本页只读取候选，创建与路径配置将在后续开放。</p>
+		<p>验证账号并选择流程，创建后计划将保存为待配置。</p>
       </header>
 
       <n-form
