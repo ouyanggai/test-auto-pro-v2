@@ -101,6 +101,24 @@ func TestExecutionPathAPIRejectsUnknownFieldsAndMapsStableErrors(t *testing.T) {
 	}
 }
 
+// TestPlanAPIExposesRealPathCount 验证计划公开响应采用持久化真实路径计数。
+func TestPlanAPIExposesRealPathCount(t *testing.T) {
+	repo := &contractPlanRepository{found: true, plan: model.Plan{
+		ID: 7, Name: "路径计划", Account: "account", FlowSource: "new",
+		TargetObjectID: "target", TargetObjectName: "流程", RunMode: "serial",
+		Status: model.PlanStatusPendingConfiguration, PathCount: 3,
+	}}
+	handler := api.NewHandlerWithServices(&stubTargetReader{}, service.NewPlanService(repo))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/plans/7", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"pathCount":3`) {
+		t.Fatalf("计划响应没有返回真实路径数量：status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "next_path_sequence_no") {
+		t.Fatal("计划响应泄露内部稳定序号计数器")
+	}
+}
+
 // assertExecutionPathResponse 核对路径响应只包含批准的公开字段。
 func assertExecutionPathResponse(t *testing.T, recorder *httptest.ResponseRecorder, status int) {
 	t.Helper()

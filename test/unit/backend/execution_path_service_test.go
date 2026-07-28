@@ -30,6 +30,7 @@ type memoryExecutionPathRepository struct {
 	updateErr   error
 	deleteErr   error
 	createCalls int
+	updateCalls int
 }
 
 // List 返回内存路径副本供服务单元测试使用。
@@ -50,10 +51,33 @@ func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64,
 
 // Update 模拟原位替换选择并保留稳定序号。
 func (r *memoryExecutionPathRepository) Update(_ context.Context, planID, pathID uint64, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, error) {
+	r.updateCalls++
 	if r.updateErr != nil {
 		return model.ExecutionPath{}, r.updateErr
 	}
 	return model.ExecutionPath{ID: pathID, PlanID: planID, SequenceNo: 1, Choices: choices, UpdatedAt: now}, nil
+}
+
+// TestExecutionPathServiceRejectsChoicesAfterCurrentGraphChanges 验证保存前真实图变化会阻止旧选择写入。
+func TestExecutionPathServiceRejectsChoicesAfterCurrentGraphChanges(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	reader := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
+	repo := &memoryExecutionPathRepository{}
+	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), reader, analyzer.NewExecutionPathAnalyzer(), repo)
+	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
+	created, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", choices)
+	if err != nil {
+		t.Fatalf("准备已有路径失败：%v", err)
+	}
+	reader.graph.Edges = []model.FlowGraphEdge{
+		{ID: "start-route", Source: "start", Target: "route", Kind: "sequence"},
+		{ID: "branch-b-edge", Source: "route", Target: "end-b", Kind: "condition", BranchID: "branch-b"},
+	}
+	_, err = serviceUnderTest.Update(context.Background(), 7, created.ID, choices)
+	if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorInvalid) || repo.updateCalls != 0 {
+		t.Fatalf("真实图变化后旧选择仍进入仓储：updates=%d err=%v", repo.updateCalls, err)
+	}
 }
 
 // Delete 返回预设仓储错误以覆盖删除边界。

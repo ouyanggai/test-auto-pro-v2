@@ -23,7 +23,8 @@ grep -Fq "@vue-flow/controls/dist/style.css" "${main_file}"
 
 grep -Fq "fetchFlowGraph(planID.value" "${view_file}"
 grep -Fq "loadController?.abort()" "${view_file}"
-grep -Fq '<flow-graph-canvas :graph="graph" @retry="retryGraph" />' "${view_file}"
+grep -Fq '<flow-graph-canvas' "${view_file}"
+grep -Fq '@retry="retryGraph"' "${view_file}"
 grep -Fq 'min-height: 560px' "${view_file}"
 
 grep -Fq ":nodes-draggable=\"false\"" "${canvas_file}"
@@ -76,7 +77,7 @@ if grep -Eq "type: ['\"]?(step|smoothstep)|dagre" "${layout_file}"; then
 fi
 grep -Fq "type: routingHub ? 'routingHub' : 'flowNode'" "${layout_file}"
 grep -Fq '<flow-routing-hub />' "${canvas_file}"
-grep -Fq '<flow-tree-edge v-bind="edgeProps" />' "${canvas_file}"
+grep -Fq '<flow-tree-edge v-bind="edgeProps"' "${canvas_file}"
 grep -Fq "BaseEdge" "${edge_file}"
 grep -Fq 'flow-tree-edge__direction' "${edge_file}"
 grep -Fq 'stroke-dasharray:' "${edge_file}"
@@ -86,8 +87,8 @@ grep -Fq 'animation: none' "${edge_file}"
 grep -Fq 'pointer-events: none' "${hub_file}"
 grep -Fq 'opacity: 0' "${hub_file}"
 
-if grep -RInE 'execution_paths|save.*path|create.*path|update.*path|selectedPath' "${project_root}/web/src/features/flow-graph" "${view_file}" >/dev/null; then
-  printf 'F-004 前端越界引入路径选择或保存\n' >&2
+if grep -RInE 'createExecutionPath|updateExecutionPath|deleteExecutionPath|features/execution-paths/api' "${project_root}/web/src/features/flow-graph" >/dev/null; then
+  printf 'F-004 流程图展示组件不得直接持久化执行路径\n' >&2
   exit 1
 fi
 

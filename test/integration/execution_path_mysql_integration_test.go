@@ -53,12 +53,19 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	if err != nil || updated.SequenceNo != 1 || updated.Choices[0].BranchID != "branch-b" {
 		t.Fatal("路径原位更新没有保留序号或替换选择")
 	}
+	if _, err := paths.Update(ctx, startedPlan.ID, first.ID, updatedChoices, time.Now().UTC()); !errors.Is(err, repository.ErrExecutionPathNotFound) {
+		t.Fatalf("跨计划路径更新没有被归属校验拒绝：%v", err)
+	}
 	storedPlan, err := plans.Get(ctx, newPlan.ID)
 	if err != nil || storedPlan.PathCount != 2 || storedPlan.Status != model.PlanStatusPendingConfiguration {
 		t.Fatal("计划详情没有返回真实路径数量或状态被提前改变")
 	}
 	if err := paths.Delete(ctx, newPlan.ID, second.ID, time.Now().UTC()); err != nil {
 		t.Fatalf("删除路径失败：%v", err)
+	}
+	var deletedChoices int
+	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_execution_path_choices WHERE path_id = ?", second.ID).Scan(&deletedChoices); err != nil || deletedChoices != 0 {
+		t.Fatalf("删除路径没有级联清理选择：count=%d err=%v", deletedChoices, err)
 	}
 	remaining, err := paths.List(ctx, newPlan.ID)
 	if err != nil || len(remaining) != 1 || remaining[0].ID != first.ID || remaining[0].SequenceNo != 1 {
