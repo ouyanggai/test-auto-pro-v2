@@ -7,7 +7,12 @@ import { VueFlow as VueFlowCanvas, useVueFlow } from '@vue-flow/core'
 import FlowGraphNode from './FlowGraphNode.vue'
 import FlowRoutingHub from './FlowRoutingHub.vue'
 import FlowTreeEdge from './FlowTreeEdge.vue'
-import { initialViewportForGraph, safeLayoutFlowGraph, shouldSetInitialViewport } from './layout'
+import {
+  compensateViewportForContainerWidth,
+  initialViewportForGraph,
+  safeLayoutFlowGraph,
+  shouldSetInitialViewport,
+} from './layout'
 import type { FlowGraph } from './types'
 
 const props = defineProps<{ graph: FlowGraph }>()
@@ -23,10 +28,11 @@ const canvasStyle = computed(() => ({
   '--flow-surface-color': themeVars.value.bodyColor,
   '--flow-direction-color': themeVars.value.primaryColor,
 }))
-const { onInit, setViewport } = useVueFlow()
+const { getViewport, onInit, setViewport } = useVueFlow()
 let ready = false
 let positionedPlanId = ''
 let viewportVersion = 0
+let pageFullscreenVersion = 0
 let previousDocumentOverflow: string | null = null
 
 function reducedMotion(): boolean {
@@ -56,15 +62,22 @@ function setDocumentScrollLocked(locked: boolean) {
   }
 }
 
-function togglePageFullscreen() {
-  isPageFullscreen.value = !isPageFullscreen.value
-  setDocumentScrollLocked(isPageFullscreen.value)
+async function setPageFullscreen(next: boolean) {
+  const version = ++pageFullscreenVersion
+  const beforeWidth = canvasRoot.value?.clientWidth ?? 0
+  const viewport = getViewport()
+  isPageFullscreen.value = next
+  setDocumentScrollLocked(next)
+  await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  if (version !== pageFullscreenVersion) return
+  const afterWidth = canvasRoot.value?.clientWidth ?? 0
+  await setViewport(compensateViewportForContainerWidth(viewport, beforeWidth, afterWidth), { duration: 0 })
 }
 
 function handlePageFullscreenKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape' || !isPageFullscreen.value) return
-  isPageFullscreen.value = false
-  setDocumentScrollLocked(false)
+  void setPageFullscreen(false)
 }
 
 onInit(() => {
@@ -77,13 +90,13 @@ watch(() => props.graph.planId, () => {
 })
 watch(laidOut, (value) => {
   if (value || !isPageFullscreen.value) return
-  isPageFullscreen.value = false
-  setDocumentScrollLocked(false)
+  void setPageFullscreen(false)
 })
 
 onMounted(() => document.addEventListener('keydown', handlePageFullscreenKeydown))
 onBeforeUnmount(() => {
   viewportVersion++
+  pageFullscreenVersion++
   setDocumentScrollLocked(false)
   document.removeEventListener('keydown', handlePageFullscreenKeydown)
 })
@@ -103,7 +116,7 @@ onBeforeUnmount(() => {
       size="small"
       secondary
       :aria-pressed="isPageFullscreen"
-      @click="togglePageFullscreen"
+      @click="setPageFullscreen(!isPageFullscreen)"
     >
       {{ isPageFullscreen ? '退出全屏' : '页面全屏' }}
     </n-button>

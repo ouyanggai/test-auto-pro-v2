@@ -82,6 +82,21 @@ export function initialViewportForGraph(
   }
 }
 
+export function compensateViewportForContainerWidth(
+  viewport: FlowViewport,
+  beforeWidth: number,
+  afterWidth: number,
+): FlowViewport {
+  if (!Number.isFinite(beforeWidth) || !Number.isFinite(afterWidth) || beforeWidth <= 0 || afterWidth <= 0) {
+    return viewport
+  }
+  return {
+    x: viewport.x + (afterWidth - beforeWidth) / 2,
+    y: viewport.y,
+    zoom: viewport.zoom,
+  }
+}
+
 class FlowTreeLayout {
   private readonly graph: FlowGraph
   private readonly nodeById = new Map<string, FlowGraphNode>()
