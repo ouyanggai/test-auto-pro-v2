@@ -54,6 +54,7 @@ func (r *PlanRepository) List(ctx context.Context, filter model.PlanListFilter) 
 	query := `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
        target_object_name, run_mode, max_concurrency, scheduled_at, status,
+       (SELECT COUNT(*) FROM test_execution_paths ep WHERE ep.plan_id = test_plans.id) AS path_count,
        created_at, updated_at
 FROM test_plans
 WHERE (? = '' OR name LIKE CONCAT('%', ?, '%'))
@@ -83,6 +84,7 @@ func (r *PlanRepository) Get(ctx context.Context, id uint64) (model.Plan, error)
 	row := r.db.QueryRowContext(ctx, `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
        target_object_name, run_mode, max_concurrency, scheduled_at, status,
+       (SELECT COUNT(*) FROM test_execution_paths ep WHERE ep.plan_id = test_plans.id) AS path_count,
        created_at, updated_at
 FROM test_plans WHERE id = ?`, id)
 	plan, err := scanPlan(row)
@@ -96,6 +98,7 @@ func (r *PlanRepository) getByCreateKey(ctx context.Context, createKey string) (
 	row := r.db.QueryRowContext(ctx, `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
        target_object_name, run_mode, max_concurrency, scheduled_at, status,
+       (SELECT COUNT(*) FROM test_execution_paths ep WHERE ep.plan_id = test_plans.id) AS path_count,
        created_at, updated_at
 FROM test_plans WHERE create_key = ?`, createKey)
 	return scanPlan(row)
@@ -112,7 +115,7 @@ func scanPlan(row rowScanner) (model.Plan, error) {
 	if err := row.Scan(
 		&plan.ID, &plan.Name, &plan.Account, &plan.AccountDisplayName, &plan.FlowSource,
 		&plan.TargetObjectID, &plan.TargetObjectName, &plan.RunMode, &maxConcurrency,
-		&scheduledAt, &plan.Status, &plan.CreatedAt, &plan.UpdatedAt,
+		&scheduledAt, &plan.Status, &plan.PathCount, &plan.CreatedAt, &plan.UpdatedAt,
 	); err != nil {
 		return model.Plan{}, err
 	}
