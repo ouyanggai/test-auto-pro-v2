@@ -175,7 +175,7 @@ async function retryPaths() {
 }
 
 function selectSavedPath(path: ExecutionPath) {
-  if (!graph.value || saving.value || deleting.value) return
+  if (!graph.value) return
   const reconciled = reconcileExecutionPathChoices(graph.value, path.choices)
   activePathID.value = path.id
   draftMode.value = 'edit'
@@ -343,6 +343,7 @@ onBeforeUnmount(() => loadController?.abort())
                         size="small"
                         :type="activePathID === item.id ? 'primary' : 'default'"
                         :secondary="activePathID === item.id"
+						:disabled="saving || deleting"
                         @click="selectSavedPath(item)"
                       >
                         路径 {{ item.sequenceNo }}
@@ -357,10 +358,10 @@ onBeforeUnmount(() => loadController?.abort())
                         <template v-else-if="remainingChoices > 0">还需选择 {{ remainingChoices }} 处</template>
                         <template v-else>路径已完整</template>
                       </span>
-                      <n-button v-if="allowNewPath" size="small" @click="startNewPath">
+                      <n-button v-if="allowNewPath" size="small" :disabled="saving || deleting" @click="startNewPath">
                         {{ plan.flowSource === 'new' ? '新增路径' : '选择当前实例后续路径' }}
                       </n-button>
-                      <n-button v-if="allowCopy" size="small" @click="copyActivePath">复制此路径</n-button>
+                      <n-button v-if="allowCopy" size="small" :disabled="saving || deleting" @click="copyActivePath">复制此路径</n-button>
                       <n-button
                         v-if="draftMode"
                         size="small"
