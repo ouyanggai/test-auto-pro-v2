@@ -6,6 +6,7 @@ import { VueFlow as VueFlowCanvas, useVueFlow } from '@vue-flow/core'
 
 import FlowGraphNode from './FlowGraphNode.vue'
 import FlowRoutingHub from './FlowRoutingHub.vue'
+import FlowTreeEdge from './FlowTreeEdge.vue'
 import { initialViewportForGraph, layoutFlowGraph, shouldSetInitialViewport } from './layout'
 import type { FlowGraph } from './types'
 
@@ -18,6 +19,7 @@ const canvasStyle = computed(() => ({
   '--flow-edge-color': themeVars.value.borderColor,
   '--flow-label-color': themeVars.value.textColor2,
   '--flow-surface-color': themeVars.value.bodyColor,
+  '--flow-direction-color': themeVars.value.primaryColor,
 }))
 const { onInit, setViewport } = useVueFlow()
 let ready = false
@@ -119,6 +121,9 @@ onBeforeUnmount(() => {
       </template>
       <template #node-routingHub>
         <flow-routing-hub />
+      </template>
+      <template #edge-treeEdge="edgeProps">
+        <flow-tree-edge v-bind="edgeProps" />
       </template>
       <controls position="bottom-right" :show-interactive="false" />
     </vue-flow-canvas>

@@ -8,11 +8,15 @@ main_file="${project_root}/web/src/main.ts"
 view_file="${project_root}/web/src/views/PlanPathsView.vue"
 canvas_file="${project_root}/web/src/features/flow-graph/FlowGraphCanvas.vue"
 hub_file="${project_root}/web/src/features/flow-graph/FlowRoutingHub.vue"
+edge_file="${project_root}/web/src/features/flow-graph/FlowTreeEdge.vue"
 layout_file="${project_root}/web/src/features/flow-graph/layout.ts"
 
 grep -Fq '"@vue-flow/core"' "${package_file}"
 grep -Fq '"@vue-flow/controls"' "${package_file}"
-grep -Fq '"@dagrejs/dagre"' "${package_file}"
+if grep -Rq '@dagrejs/dagre' "${package_file}" "${project_root}/pnpm-lock.yaml" "${layout_file}"; then
+  printf 'F-004 不得继续依赖或导入 dagre\n' >&2
+  exit 1
+fi
 grep -Fq "@vue-flow/core/dist/style.css" "${main_file}"
 grep -Fq "@vue-flow/core/dist/theme-default.css" "${main_file}"
 grep -Fq "@vue-flow/controls/dist/style.css" "${main_file}"
@@ -45,10 +49,21 @@ if grep -Eq "requestFullscreen|fullscreenElement|fullscreenchange" "${canvas_fil
   exit 1
 fi
 grep -Fq "useThemeVars()" "${canvas_file}"
-grep -Fq "rankdir: 'TB'" "${layout_file}"
-grep -Fq "type: 'step'" "${layout_file}"
+grep -Fq "class FlowTreeLayout" "${layout_file}"
+grep -Fq "type: 'treeEdge'" "${layout_file}"
+if grep -Eq "type: ['\"]?(step|smoothstep)|dagre" "${layout_file}"; then
+  printf 'F-004 不得保留通用自动边或 dagre 临时布局\n' >&2
+  exit 1
+fi
 grep -Fq "type: routingHub ? 'routingHub' : 'flowNode'" "${layout_file}"
 grep -Fq '<flow-routing-hub />' "${canvas_file}"
+grep -Fq '<flow-tree-edge v-bind="edgeProps" />' "${canvas_file}"
+grep -Fq "BaseEdge" "${edge_file}"
+grep -Fq 'flow-tree-edge__direction' "${edge_file}"
+grep -Fq 'stroke-dasharray:' "${edge_file}"
+grep -Fq '@keyframes flow-tree-direction' "${edge_file}"
+grep -Fq '@media (prefers-reduced-motion: reduce)' "${edge_file}"
+grep -Fq 'animation: none' "${edge_file}"
 grep -Fq 'pointer-events: none' "${hub_file}"
 grep -Fq 'opacity: 0' "${hub_file}"
 

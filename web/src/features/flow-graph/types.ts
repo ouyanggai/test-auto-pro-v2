@@ -6,6 +6,7 @@ export interface FlowGraphNode {
   name: string
   type: FlowGraphNodeType
   typeName: string
+  mergeTargetId?: string
 }
 
 export interface FlowGraphEdge {
@@ -30,4 +31,13 @@ export interface FlowNodeData extends Record<string, unknown> {
   name: string
   type: FlowGraphNodeType
   typeName: string
+  mergeTargetId?: string
+}
+
+export interface FlowTreeEdgeData extends Record<string, unknown> {
+  path: string
+  role: 'main' | 'fork' | 'merge'
+  railY?: number
+  labelX?: number
+  labelY?: number
 }

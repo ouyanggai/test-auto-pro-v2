@@ -3,76 +3,181 @@ import test from 'node:test'
 
 import { fetchFlowGraph, FlowGraphApiError } from '../../../web/src/features/flow-graph/api.ts'
 import {
-  flowNodeHorizontalGap,
-  flowNodeVerticalGap,
+  flowNodeHeight,
+  flowNodeWidth,
+  flowRoutingHubSize,
+  flowTreeHorizontalGap,
   initialFlowZoom,
   initialViewportForGraph,
   layoutFlowGraph,
   shouldSetInitialViewport,
 } from '../../../web/src/features/flow-graph/layout.ts'
 
-const fixture = {
+const node = (id, type = 'common', mergeTargetId) => ({
+  id,
+  name: id,
+  type,
+  typeName: type,
+  ...(mergeTargetId ? { mergeTargetId } : {}),
+})
+const edge = (id, source, target, kind = 'sequence', label = '') => ({
+  id,
+  source,
+  target,
+  kind,
+  label,
+  branchId: kind === 'sequence' ? '' : id,
+})
+const centerX = (value) => value.position.x + (value.type === 'routingHub' ? flowRoutingHubSize : flowNodeWidth) / 2
+
+function byId(layout) {
+  return Object.fromEntries(layout.nodes.map((value) => [value.id, value]))
+}
+
+function assertNoNodeOverlap(layout) {
+  const rectangles = layout.nodes.map((value) => ({
+    id: value.id,
+    left: value.position.x,
+    top: value.position.y,
+    right: value.position.x + (value.type === 'routingHub' ? flowRoutingHubSize : flowNodeWidth),
+    bottom: value.position.y + (value.type === 'routingHub' ? flowRoutingHubSize : flowNodeHeight),
+  }))
+  for (let leftIndex = 0; leftIndex < rectangles.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < rectangles.length; rightIndex++) {
+      const left = rectangles[leftIndex]
+      const right = rectangles[rightIndex]
+      const overlaps = left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top
+      assert.equal(overlaps, false, `${left.id} 与 ${right.id} 不应重叠`)
+    }
+  }
+}
+
+const straightFixture = {
   planId: '41',
   targetName: '采购流程',
   flowSource: 'new',
-  nodes: [
-    { id: 'start', name: '发起', type: 'start', typeName: '发起' },
-    { id: 'condition', name: '条件', type: 'condition', typeName: '条件' },
-    { id: 'end', name: '结束', type: 'end', typeName: '结束' },
-  ],
-  edges: [
-    { id: 'a', source: 'start', target: 'condition', kind: 'sequence', label: '', branchId: '' },
-    { id: 'b', source: 'condition', target: 'end', kind: 'condition', label: '金额较小', branchId: 'strategy-a' },
-  ],
+  nodes: [node('start', 'start'), node('approval'), node('end', 'end')],
+  edges: [edge('start-approval', 'start', 'approval'), edge('approval-end', 'approval', 'end')],
   warnings: [],
 }
 
-test('dagre 以 TB 方向生成确定位置并保留真实分支名称', () => {
-  const first = layoutFlowGraph(fixture)
-  const second = layoutFlowGraph(fixture)
+function branchedFixture() {
+  return {
+    ...straightFixture,
+    nodes: [
+      node('start', 'start'), node('route', 'condition', 'merge'),
+      node('a'), node('b1'), node('b2'), node('c1'), node('c2'), node('c3'),
+      node('merge'), node('end', 'end'),
+    ],
+    edges: [
+      edge('start-route', 'start', 'route'),
+      edge('route-a', 'route', 'a', 'condition', 'A'),
+      edge('route-b', 'route', 'b1', 'condition', 'B'),
+      edge('route-c', 'route', 'c1', 'condition', 'C'),
+      edge('a-merge', 'a', 'merge'),
+      edge('b1-b2', 'b1', 'b2'), edge('b2-merge', 'b2', 'merge'),
+      edge('c1-c2', 'c1', 'c2'), edge('c2-c3', 'c2', 'c3'), edge('c3-merge', 'c3', 'merge'),
+      edge('merge-end', 'merge', 'end'),
+    ],
+  }
+}
+
+function nestedFixture() {
+  return {
+    ...straightFixture,
+    nodes: [
+      node('start', 'start'), node('outer', 'condition', 'merge'), node('a'),
+      node('inner', 'manual', 'inner-merge'), node('d'), node('e'), node('inner-merge'), node('inner-tail'),
+      node('c'), node('merge'), node('end', 'end'),
+    ],
+    edges: [
+      edge('start-outer', 'start', 'outer'),
+      edge('outer-a', 'outer', 'a', 'condition', 'A'),
+      edge('outer-inner', 'outer', 'inner', 'condition', 'B'),
+      edge('outer-c', 'outer', 'c', 'condition', 'C'),
+      edge('a-merge', 'a', 'merge'), edge('c-merge', 'c', 'merge'),
+      edge('inner-d', 'inner', 'd', 'manual', 'D'), edge('inner-e', 'inner', 'e', 'manual', 'E'),
+      edge('d-inner-merge', 'd', 'inner-merge'), edge('e-inner-merge', 'e', 'inner-merge'),
+      edge('inner-merge-tail', 'inner-merge', 'inner-tail'), edge('inner-tail-merge', 'inner-tail', 'merge'),
+      edge('merge-end', 'merge', 'end'),
+    ],
+  }
+}
+
+test('直线流程保持同一主干中心且只生成确定垂直路径', () => {
+  const first = layoutFlowGraph(straightFixture)
+  const second = layoutFlowGraph(straightFixture)
   assert.deepEqual(first, second)
-  assert.equal(first.nodes.length, 3)
-  assert.ok(first.nodes[0].position.y < first.nodes[1].position.y)
-  assert.ok(first.nodes[1].position.y < first.nodes[2].position.y)
-  assert.equal(first.edges[1].label, '金额较小')
+  const nodes = byId(first)
+  assert.equal(centerX(nodes.start), centerX(nodes.approval))
+  assert.equal(centerX(nodes.approval), centerX(nodes.end))
+  assert.ok(nodes.start.position.y < nodes.approval.position.y)
+  assert.ok(nodes.approval.position.y < nodes.end.position.y)
+  for (const value of first.edges) {
+    assert.equal(value.type, 'treeEdge')
+    assert.equal(value.data.role, 'main')
+    assert.match(value.data.path, /^M [\d.]+ [\d.]+ V [\d.]+$/)
+    assert.doesNotMatch(value.data.path, / H /)
+  }
   assert.equal(first.nodes[0].draggable, false)
   assert.equal(first.nodes[0].selectable, false)
   assert.equal(first.nodes[0].connectable, false)
-  assert.equal(first.nodes.find((node) => node.id === 'condition').type, 'routingHub')
-  assert.equal(first.edges[1].type, 'step')
 })
 
-test('嵌套路由的每组分支都严格按后端边顺序从左到右', () => {
-  const graph = {
-    ...fixture,
-    nodes: [
-      { id: 'start', name: '发起', type: 'start', typeName: '发起' },
-      { id: 'route-1', name: '条件', type: 'condition', typeName: '条件路由' },
-      { id: 'a', name: '分支 A', type: 'common', typeName: '审批' },
-      { id: 'b', name: '手动', type: 'manual', typeName: '手动路由' },
-      { id: 'c', name: '分支 C', type: 'common', typeName: '审批' },
-      { id: 'd', name: '分支 D', type: 'common', typeName: '审批' },
-      { id: 'e', name: '分支 E', type: 'common', typeName: '审批' },
-      { id: 'f', name: '分支 F', type: 'common', typeName: '审批' },
-    ],
-    edges: [
-      { id: 's-r1', source: 'start', target: 'route-1', kind: 'sequence', label: '', branchId: '' },
-      { id: 'r1-a', source: 'route-1', target: 'a', kind: 'condition', label: 'A', branchId: 'a' },
-      { id: 'r1-b', source: 'route-1', target: 'b', kind: 'condition', label: 'B', branchId: 'b' },
-      { id: 'r1-c', source: 'route-1', target: 'c', kind: 'condition', label: 'C', branchId: 'c' },
-      { id: 'b-d', source: 'b', target: 'd', kind: 'manual', label: 'D', branchId: 'd' },
-      { id: 'b-e', source: 'b', target: 'e', kind: 'manual', label: 'E', branchId: 'e' },
-      { id: 'b-f', source: 'b', target: 'f', kind: 'manual', label: 'F', branchId: 'f' },
-    ],
+test('三分支按 A B C 左到右顶对齐并共享唯一分叉轨和汇合轨', () => {
+  const layout = layoutFlowGraph(branchedFixture())
+  const nodes = byId(layout)
+  assert.ok(nodes.a.position.x < nodes.b1.position.x && nodes.b1.position.x < nodes.c1.position.x)
+  assert.equal(nodes.a.position.y, nodes.b1.position.y)
+  assert.equal(nodes.b1.position.y, nodes.c1.position.y)
+  assert.equal(centerX(nodes.start), centerX(nodes.route))
+  assert.equal(centerX(nodes.route), centerX(nodes.merge))
+  assert.equal(centerX(nodes.merge), centerX(nodes.end))
+
+  const forkEdges = layout.edges.filter((value) => value.data.role === 'fork')
+  const mergeEdges = layout.edges.filter((value) => value.data.role === 'merge')
+  assert.equal(new Set(forkEdges.map((value) => value.data.railY)).size, 1)
+  assert.equal(new Set(mergeEdges.map((value) => value.data.railY)).size, 1)
+  assert.ok(forkEdges.every((value) => value.data.path.includes(` V ${value.data.railY} H `)))
+  assert.ok(mergeEdges.every((value) => value.data.path.includes(` V ${value.data.railY} H `)))
+  assert.deepEqual(forkEdges.map((value) => value.label), ['A', 'B', 'C'])
+  assert.ok(mergeEdges.every((value) => value.data.railY > nodes.c3.position.y + flowNodeHeight))
+  assert.ok(nodes.merge.position.y > mergeEdges[0].data.railY)
+  assertNoNodeOverlap(layout)
+})
+
+test('两级嵌套路由在父分支块内展开并推开相邻分支', () => {
+  const layout = layoutFlowGraph(nestedFixture())
+  const nodes = byId(layout)
+  assert.equal(nodes.outer.type, 'routingHub')
+  assert.equal(nodes.inner.type, 'routingHub')
+  assert.ok(nodes.a.position.x < nodes.inner.position.x && nodes.inner.position.x < nodes.c.position.x)
+  assert.ok(nodes.d.position.x < nodes.e.position.x)
+  assert.equal(nodes.d.position.y, nodes.e.position.y)
+  assert.ok(nodes.c.position.x - nodes.a.position.x > (flowNodeWidth + flowTreeHorizontalGap) * 2)
+  assert.equal(centerX(nodes.outer), centerX(nodes.merge))
+  assert.equal(centerX(nodes.inner), centerX(nodes['inner-merge']))
+  const forkRailYs = layout.edges.filter((value) => value.data.role === 'fork').map((value) => value.data.railY)
+  const mergeRailYs = layout.edges.filter((value) => value.data.role === 'merge').map((value) => value.data.railY)
+  assert.equal(new Set(forkRailYs).size, 2)
+  assert.equal(new Set(mergeRailYs).size, 2)
+  assertNoNodeOverlap(layout)
+})
+
+test('结构化布局拒绝循环和重复分支节点而不回退通用图布局', () => {
+  const cycle = {
+    ...straightFixture,
+    nodes: [node('a'), node('b')],
+    edges: [edge('a-b', 'a', 'b'), edge('b-a', 'b', 'a')],
   }
-  const laidOut = layoutFlowGraph(graph)
-  const x = Object.fromEntries(laidOut.nodes.map((node) => [node.id, node.position.x]))
-  assert.ok(x.a < x.b && x.b < x.c, '第一层 A、B、C 应从左到右')
-  assert.ok(x.d < x.e && x.e < x.f, '嵌套层 D、E、F 应从左到右')
-  assert.equal(laidOut.nodes.find((node) => node.id === 'route-1').type, 'routingHub')
-  assert.equal(laidOut.nodes.find((node) => node.id === 'b').type, 'routingHub')
-  assert.ok(flowNodeHorizontalGap >= 100)
-  assert.ok(flowNodeVerticalGap >= 110)
+  assert.throws(() => layoutFlowGraph(cycle), /真实根节点/)
+
+  const duplicate = {
+    ...straightFixture,
+    nodes: [node('route', 'parallel'), node('shared')],
+    edges: [edge('route-a', 'route', 'shared', 'parallel'), edge('route-b', 'route', 'shared', 'parallel')],
+  }
+  assert.throws(() => layoutFlowGraph(duplicate), /重复出现/)
 })
 
 test('每个计划只设置一次可读初始视口并把根业务节点放在上方中央', () => {
@@ -81,12 +186,12 @@ test('每个计划只设置一次可读初始视口并把根业务节点放在�
   assert.equal(shouldSetInitialViewport(true, '41', '41'), false)
   assert.equal(shouldSetInitialViewport(true, '41', '42'), true)
 
-  const laidOut = layoutFlowGraph(fixture)
+  const laidOut = layoutFlowGraph(straightFixture)
   const viewport = initialViewportForGraph(laidOut.nodes, 1000)
-  const root = laidOut.nodes.find((node) => node.id === 'start')
+  const root = laidOut.nodes.find((value) => value.id === 'start')
   assert.ok(viewport)
   assert.equal(viewport.zoom, initialFlowZoom)
-  assert.equal((root.position.x + 90) * viewport.zoom + viewport.x, 500)
+  assert.equal((root.position.x + flowNodeWidth / 2) * viewport.zoom + viewport.x, 500)
   assert.equal(root.position.y * viewport.zoom + viewport.y, 52)
 })
 
