@@ -9,6 +9,7 @@ import {
   candidateDetailTitle,
   candidateMeta,
   candidateStatus,
+  templateCompanyName,
 } from '../../../web/src/features/plans/presentation.ts'
 import {
   REMOTE_SEARCH_DEBOUNCE_MS,
@@ -30,6 +31,7 @@ const template = (id, name = id) => ({
 	statusText: '正常',
 	updateTime: '2026-07-27 10:00',
 	code: 'FLOW-CODE',
+	companyName: '所属公司',
 	remark: '用于验证采购审批',
 	flowCreateType: 'current_platform',
 	formExist: 'withForm',
@@ -69,16 +71,18 @@ test('分页追加按来源真实 ID 去重并保留顺序', () => {
   assert.equal(merged[1].flowName, '新名称')
 })
 
-test('模板展示使用编码分类表单关联和备注，不把状态作为主展示', () => {
+test('模板展示公司归属、分类表单关联和备注，不把编码或状态作为主展示', () => {
 	const item = template('one', '采购审批')
 	assert.equal(candidateStatus(item), '')
-	assert.match(candidateMeta(item), /编码 FLOW-CODE/)
+	assert.equal(templateCompanyName(item), '所属公司')
+	assert.doesNotMatch(candidateMeta(item), /编码 FLOW-CODE/)
 	assert.match(candidateMeta(item), /分类 测试类型 \/ 测试分组/)
 	assert.match(candidateMeta(item), /有表单 · 关联 2 个/)
 	assert.equal(candidateDetail(item), '备注：用于验证采购审批')
 
 	const emptyRemark = { ...item, remark: '' }
 	assert.equal(candidateDetail(emptyRemark), '备注：暂无备注')
+	assert.equal(templateCompanyName({ ...item, companyName: '  ' }), '')
 	const longRemark = { ...item, remark: '用于采购审批主流程的跨部门长文本说明，列表只截断视觉内容但保留完整提示。' }
 	assert.equal(candidateDetailTitle(longRemark), candidateDetail(longRemark))
 	assert.equal(CANDIDATE_ITEM_SIZE, 96)
@@ -121,7 +125,7 @@ test('三类真实 API 数据映射为各自候选且稳定错误可恢复', asy
   const responses = [
     {
       success: true,
-		data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 't1', flowName: '模板', code: 'FLOW-CODE', groupName: '', flowStatus: 'enable', statusText: '正常', typeName: '经营管理', updateDate: '', createDate: '', remark: '用途说明', flowCreateType: '', formExist: 'withForm', formTemplateCount: 2 }] },
+		data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 't1', flowName: '模板', code: 'FLOW-CODE', companyName: '所属公司', groupName: '', flowStatus: 'enable', statusText: '正常', typeName: '经营管理', updateDate: '', createDate: '', remark: '用途说明', flowCreateType: '', formExist: 'withForm', formTemplateCount: 2 }] },
     },
     {
       success: true,
@@ -143,6 +147,7 @@ test('三类真实 API 数据映射为各自候选且稳定错误可恢复', asy
 	assert.equal(templates.items[0].kind, 'template')
 	assert.equal(templates.items[0].remark, '用途说明')
 	assert.equal(templates.items[0].formTemplateCount, 2)
+	assert.equal(templates.items[0].companyName, '所属公司')
     assert.equal(submitted.items[0].kind, 'submitted')
     assert.equal(due.items[0].kind, 'due')
 

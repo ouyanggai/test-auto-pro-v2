@@ -59,9 +59,10 @@ interface TemplateDTO {
   flowStatus: string
   statusText: string
   typeName: string
-  updateDate: string
-  createDate: string
-  remark: string
+	updateDate: string
+	createDate: string
+	companyName: string
+	remark: string
 	flowCreateType: string
 	formExist: string
 	formTemplateCount: number
@@ -175,9 +176,10 @@ export async function fetchTargetCandidates(params: {
         typeName: item.typeName,
         groupName: item.groupName,
         statusText: item.statusText || item.flowStatus,
-        updateTime: item.updateDate || item.createDate,
-        code: item.code,
-			remark: item.remark,
+		updateTime: item.updateDate || item.createDate,
+		code: item.code,
+		companyName: item.companyName,
+		remark: item.remark,
 			flowCreateType: item.flowCreateType,
 			formExist: item.formExist,
 			formTemplateCount: Number.isInteger(item.formTemplateCount) && item.formTemplateCount > 0 ? item.formTemplateCount : 0,

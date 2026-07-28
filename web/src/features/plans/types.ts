@@ -55,6 +55,7 @@ export interface FlowTemplateCandidate extends FlowCandidateBase {
 	statusText: string
 	updateTime: string
 	code: string
+	companyName: string
 	remark: string
 	flowCreateType: string
 	formExist: string

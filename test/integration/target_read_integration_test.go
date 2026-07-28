@@ -28,11 +28,12 @@ type fakeTarget struct {
 	templateCount int
 	expireMode    string
 	sessions      []string
+	companyName   string
 }
 
 func newFakeTarget(t *testing.T) *fakeTarget {
 	t.Helper()
-	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6)}
+	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), companyName: "所属公司"}
 }
 
 func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request) {
@@ -41,6 +42,8 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 		f.handleLogin(response, request)
 	case "/web/flowTemplateApi/list":
 		f.handleTemplates(response, request)
+	case "/web/user/api/company/getParentCompanyList":
+		f.handleParentCompanies(response, request)
 	case "/web/flowInstanceApi/list":
 		body := f.requireSession(request)
 		data, _ := body["data"].(map[string]any)
@@ -113,7 +116,7 @@ func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Req
 		"sid":       active,
 		"data": map[string]any{
 			"user":      map[string]any{"name": "测试人员", "customerCode": "tenant-code"},
-			"companyVo": map[string]any{"name": "测试公司"},
+			"companyVo": map[string]any{"id": "account-company", "name": "测试公司"},
 		},
 	})
 }
@@ -122,7 +125,7 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	_, hasFlowName := data["flowName"].(string)
-	if !hasFlowName || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true {
+	if !hasFlowName || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true || body["ignoreFormTemplateBizRelevanceData"] == true {
 		f.t.Error("流程模板请求参数不符合已核实协议")
 	}
 	f.mu.Lock()
@@ -168,10 +171,24 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
 			"flowStatus": "enable", "typeName": "经营管理", "updateDate": "2026-07-27 08:00",
 			"remark": "用于验证采购审批", "formExist": "withForm",
-			"formTemplateList": []any{map[string]any{"id": "form-a"}, map[string]any{"id": "form-b"}},
+			"formTemplateList":               []any{map[string]any{"id": "form-a"}, map[string]any{"id": "form-b"}},
+			"formTemplateBizRelevanceVoList": []any{map[string]any{"otherBiz": "company", "otherBizId": "template-company"}},
 		}},
 		"total": 1, "pages": 1, "current": 1, "size": 20,
 	})
+}
+
+func (f *fakeTarget) handleParentCompanies(response http.ResponseWriter, request *http.Request) {
+	body := f.requireSession(request)
+	data, _ := body["data"].(map[string]any)
+	if data["id"] != "account-company" {
+		f.t.Error("公司目录请求未使用登录摘要中的公司 ID")
+	}
+	companies := []any{}
+	if f.companyName != "" {
+		companies = append(companies, map[string]any{"id": "template-company", "name": f.companyName})
+	}
+	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": companies})
 }
 
 func (f *fakeTarget) requireSession(request *http.Request) map[string]any {
@@ -223,6 +240,21 @@ func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
 	}
 	if fake.loginCount != 1 {
 		t.Fatalf("三类读取未复用同一账号会话，登录次数 = %d", fake.loginCount)
+	}
+	if !bytes.Contains(responses[1], []byte(`"companyName":"所属公司"`)) {
+		t.Fatal("模板响应未映射已核实的公司名称")
+	}
+}
+
+func TestTemplateCompanyNameStaysEmptyWhenDirectoryHasNoMatch(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.companyName = ""
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	body := callApp(t, api.NewHandler(), http.MethodGet, "/api/target/flow-templates?account=account-a", "", http.StatusOK)
+	if !bytes.Contains(body, []byte(`"companyName":""`)) {
+		t.Fatal("无公司名称时未保持空值")
 	}
 }
 

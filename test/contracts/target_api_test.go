@@ -35,7 +35,7 @@ func (s *stubTargetReader) Templates(_ context.Context, _ string, _ string, page
 	return target.Page[target.FlowTemplate]{
 		Items: []target.FlowTemplate{{
 			ID: "template-id", FlowName: "测试流程", FlowStatus: "enable", StatusText: "正常",
-			Code: "FLOW-CODE", TypeName: "经营管理", Remark: "用于验证采购审批", FormExist: "withForm", FormTemplateCount: 2,
+			Code: "FLOW-CODE", CompanyName: "所属公司", TypeName: "经营管理", Remark: "用于验证采购审批", FormExist: "withForm", FormTemplateCount: 2,
 		}},
 		Page: page, PageSize: pageSize, Total: 1,
 	}, nil
@@ -71,7 +71,7 @@ func TestTargetAPIContracts(t *testing.T) {
 		fields []string
 	}{
 		{name: "验证账号", method: http.MethodPost, path: "/api/target/accounts/verify", body: `{"account":"account-a"}`, fields: []string{"verified", "displayName", "companyName"}},
-		{name: "模板列表", method: http.MethodGet, path: "/api/target/flow-templates?account=account-a&query=test&page=1&pageSize=20", fields: []string{"flowName", "code", "typeName", "remark", "formExist", "formTemplateCount", "hasMore"}},
+		{name: "模板列表", method: http.MethodGet, path: "/api/target/flow-templates?account=account-a&query=test&page=1&pageSize=20", fields: []string{"flowName", "code", "companyName", "typeName", "remark", "formExist", "formTemplateCount", "hasMore"}},
 		{name: "已发列表", method: http.MethodGet, path: "/api/target/flow-instances?account=account-a&source=submitted&page=1&pageSize=20", fields: []string{"submitted", "currentAuditUserNames", "hasMore"}},
 		{name: "待发列表", method: http.MethodGet, path: "/api/target/flow-instances?account=account-a&source=due&page=1&pageSize=20", fields: []string{"due", "flowInstanceId", "statusName"}},
 	}

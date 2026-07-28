@@ -22,7 +22,7 @@ export function getCandidateSearchText(candidate: FlowCandidate): string {
 	if (candidate.kind === 'template') {
 		return [
 			candidate.flowName,
-			candidate.code,
+			candidate.companyName,
 			candidate.typeName,
 			candidate.groupName,
 			candidate.remark,

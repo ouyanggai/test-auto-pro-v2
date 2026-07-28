@@ -26,11 +26,14 @@ export function candidateStatus(candidate: FlowCandidate): string {
   return candidate.statusName
 }
 
+export function templateCompanyName(candidate: FlowCandidate): string {
+  return candidate.kind === 'template' ? candidate.companyName.trim() : ''
+}
+
 export function candidateMeta(candidate: FlowCandidate): string {
-	if (candidate.kind === 'template') {
-		const classification = [candidate.typeName, candidate.groupName].filter(Boolean).join(' / ')
+  if (candidate.kind === 'template') {
+    const classification = [candidate.typeName, candidate.groupName].filter(Boolean).join(' / ')
     return joinMeta([
-      candidate.code ? `编码 ${candidate.code}` : '',
       classification ? `分类 ${classification}` : '',
       templateFormSummary(candidate),
       candidate.updateTime ? `更新 ${candidate.updateTime}` : '',

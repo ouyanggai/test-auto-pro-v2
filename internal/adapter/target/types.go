@@ -11,6 +11,7 @@ type Session struct {
 	SID          string         `json:"-"`
 	CustomerCode string         `json:"-"`
 	PlatformCode string         `json:"-"`
+	CompanyID    string         `json:"-"`
 	Summary      AccountSummary `json:"-"`
 }
 
@@ -28,6 +29,7 @@ type FlowTemplate struct {
 	FlowCreateType    string `json:"flowCreateType"`
 	FormExist         string `json:"formExist"`
 	FormTemplateCount int    `json:"formTemplateCount"`
+	CompanyName       string `json:"companyName"`
 }
 
 type SubmittedFlow struct {
