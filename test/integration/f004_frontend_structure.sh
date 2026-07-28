@@ -23,7 +23,7 @@ grep -Fq "@vue-flow/controls/dist/style.css" "${main_file}"
 
 grep -Fq "fetchFlowGraph(planID.value" "${view_file}"
 grep -Fq "loadController?.abort()" "${view_file}"
-grep -Fq '<flow-graph-canvas :graph="graph" />' "${view_file}"
+grep -Fq '<flow-graph-canvas :graph="graph" @retry="retryGraph" />' "${view_file}"
 grep -Fq 'min-height: 560px' "${view_file}"
 
 grep -Fq ":nodes-draggable=\"false\"" "${canvas_file}"
@@ -49,6 +49,11 @@ if grep -Eq "requestFullscreen|fullscreenElement|fullscreenchange" "${canvas_fil
   exit 1
 fi
 grep -Fq "useThemeVars()" "${canvas_file}"
+grep -Fq "safeLayoutFlowGraph(props.graph)" "${canvas_file}"
+grep -Fq 'v-if="laidOut"' "${canvas_file}"
+grep -Fq 'layoutResult.error' "${canvas_file}"
+grep -Fq "emit('retry')" "${canvas_file}"
+grep -Fq "return { layout: null, error: flowStructureErrorMessage }" "${layout_file}"
 grep -Fq "class FlowTreeLayout" "${layout_file}"
 grep -Fq "type: 'treeEdge'" "${layout_file}"
 if grep -Eq "type: ['\"]?(step|smoothstep)|dagre" "${layout_file}"; then

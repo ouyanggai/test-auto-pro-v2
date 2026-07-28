@@ -1,20 +1,22 @@
 <script setup lang="ts">
 import { Controls } from '@vue-flow/controls'
-import { NButton, useThemeVars } from 'naive-ui'
+import { NButton, NEmpty, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { VueFlow as VueFlowCanvas, useVueFlow } from '@vue-flow/core'
 
 import FlowGraphNode from './FlowGraphNode.vue'
 import FlowRoutingHub from './FlowRoutingHub.vue'
 import FlowTreeEdge from './FlowTreeEdge.vue'
-import { initialViewportForGraph, layoutFlowGraph, shouldSetInitialViewport } from './layout'
+import { initialViewportForGraph, safeLayoutFlowGraph, shouldSetInitialViewport } from './layout'
 import type { FlowGraph } from './types'
 
 const props = defineProps<{ graph: FlowGraph }>()
+const emit = defineEmits<{ retry: [] }>()
 const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
 const isPageFullscreen = ref(false)
-const laidOut = computed(() => layoutFlowGraph(props.graph))
+const layoutResult = computed(() => safeLayoutFlowGraph(props.graph))
+const laidOut = computed(() => layoutResult.value.layout)
 const canvasStyle = computed(() => ({
   '--flow-edge-color': themeVars.value.borderColor,
   '--flow-label-color': themeVars.value.textColor2,
@@ -36,6 +38,7 @@ async function setInitialViewport() {
   await nextTick()
   await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
   if (version !== viewportVersion || !shouldSetInitialViewport(ready, positionedPlanId, props.graph.planId)) return
+  if (!laidOut.value) return
   const viewport = initialViewportForGraph(laidOut.value.nodes, canvasRoot.value?.clientWidth ?? 0)
   if (!viewport) return
   positionedPlanId = props.graph.planId
@@ -72,6 +75,11 @@ onInit(() => {
 watch(() => props.graph.planId, () => {
   void setInitialViewport()
 })
+watch(laidOut, (value) => {
+  if (value || !isPageFullscreen.value) return
+  isPageFullscreen.value = false
+  setDocumentScrollLocked(false)
+})
 
 onMounted(() => document.addEventListener('keydown', handlePageFullscreenKeydown))
 onBeforeUnmount(() => {
@@ -90,6 +98,7 @@ onBeforeUnmount(() => {
     aria-label="只读流程图"
   >
     <n-button
+      v-if="laidOut"
       class="flow-graph-canvas__fullscreen"
       size="small"
       secondary
@@ -99,6 +108,7 @@ onBeforeUnmount(() => {
       {{ isPageFullscreen ? '退出全屏' : '页面全屏' }}
     </n-button>
     <vue-flow-canvas
+      v-if="laidOut"
       :nodes="laidOut.nodes"
       :edges="laidOut.edges"
       :nodes-draggable="false"
@@ -127,6 +137,13 @@ onBeforeUnmount(() => {
       </template>
       <controls position="bottom-right" :show-interactive="false" />
     </vue-flow-canvas>
+    <div v-else class="flow-graph-canvas__error">
+      <n-empty :description="layoutResult.error">
+        <template #extra>
+          <n-button type="primary" secondary @click="emit('retry')">重试</n-button>
+        </template>
+      </n-empty>
+    </div>
   </div>
 </template>
 
@@ -156,6 +173,13 @@ onBeforeUnmount(() => {
   top: 12px;
   right: 16px;
   z-index: 6;
+}
+
+.flow-graph-canvas__error {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
 }
 
 .flow-graph-canvas :deep(.vue-flow__pane) {

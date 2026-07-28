@@ -155,7 +155,7 @@ onBeforeUnmount(() => loadController?.abort())
               <n-alert v-if="graph.warnings.length" class="graph-warning" type="warning" :show-icon="false">
                 {{ graph.warnings.join('；') }}
               </n-alert>
-              <flow-graph-canvas :graph="graph" />
+              <flow-graph-canvas :graph="graph" @retry="retryGraph" />
             </template>
             <div v-else class="graph-state">
               <n-empty :description="graphError?.message || '暂时无法读取流程'">

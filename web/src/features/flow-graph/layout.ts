@@ -11,6 +11,7 @@ export const flowTreeForkOffset = 48
 export const flowTreeRailToNodeGap = 48
 export const flowTreeMargin = 48
 export const initialFlowZoom = 0.9
+export const flowStructureErrorMessage = '目标流程结构异常'
 
 const routingNodeTypes = new Set(['condition', 'manual', 'parallel'])
 
@@ -42,6 +43,11 @@ interface EdgeRail {
 export interface LaidOutFlowGraph {
   nodes: Node<FlowNodeData>[]
   edges: Edge<FlowTreeEdgeData>[]
+}
+
+export interface SafeFlowLayoutResult {
+  layout: LaidOutFlowGraph | null
+  error: string
 }
 
 export interface FlowViewport {
@@ -323,4 +329,13 @@ class FlowTreeLayout {
 
 export function layoutFlowGraph(graph: FlowGraph): LaidOutFlowGraph {
   return new FlowTreeLayout(graph).layout()
+}
+
+export function safeLayoutFlowGraph(graph: FlowGraph): SafeFlowLayoutResult {
+  try {
+    return { layout: layoutFlowGraph(graph), error: '' }
+  }
+  catch {
+    return { layout: null, error: flowStructureErrorMessage }
+  }
 }

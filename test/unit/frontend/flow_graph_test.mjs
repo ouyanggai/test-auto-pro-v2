@@ -6,10 +6,12 @@ import {
   flowNodeHeight,
   flowNodeWidth,
   flowRoutingHubSize,
+  flowStructureErrorMessage,
   flowTreeHorizontalGap,
   initialFlowZoom,
   initialViewportForGraph,
   layoutFlowGraph,
+  safeLayoutFlowGraph,
   shouldSetInitialViewport,
 } from '../../../web/src/features/flow-graph/layout.ts'
 
@@ -197,6 +199,19 @@ test('结构化布局拒绝循环和重复分支节点而不回退通用图布�
     edges: [edge('route-a', 'route', 'shared', 'parallel'), edge('route-b', 'route', 'shared', 'parallel')],
   }
   assert.throws(() => layoutFlowGraph(duplicate), /重复出现/)
+
+  const disconnected = {
+    ...straightFixture,
+    nodes: [node('disconnected-a'), node('disconnected-b')],
+    edges: [],
+  }
+  for (const invalid of [cycle, duplicate, disconnected]) {
+    const result = safeLayoutFlowGraph(invalid)
+    assert.equal(result.layout, null)
+    assert.equal(result.error, flowStructureErrorMessage)
+    assert.equal(result.error, '目标流程结构异常')
+    assert.doesNotMatch(result.error, /shared|disconnected|节点/)
+  }
 })
 
 test('每个计划只设置一次可读初始视口并把根业务节点放在上方中央', () => {
