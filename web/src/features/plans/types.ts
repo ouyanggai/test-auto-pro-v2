@@ -51,9 +51,14 @@ export interface FlowTemplateCandidate extends FlowCandidateBase {
   templateId: string
   flowName: string
   typeName: string
-  groupName: string
-  statusText: string
-  updateTime: string
+	groupName: string
+	statusText: string
+	updateTime: string
+	code: string
+	remark: string
+	flowCreateType: string
+	formExist: string
+	formTemplateCount: number
 }
 
 export interface VerifiedTargetAccount {

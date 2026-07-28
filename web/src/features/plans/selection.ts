@@ -19,9 +19,17 @@ export function isFlowSourceAvailable(source: FlowSource, accountVerified: boole
 }
 
 export function getCandidateSearchText(candidate: FlowCandidate): string {
-  if (candidate.kind === 'template') {
-    return [candidate.flowName, candidate.typeName, candidate.groupName, candidate.statusText].join(' ')
-  }
+	if (candidate.kind === 'template') {
+		return [
+			candidate.flowName,
+			candidate.code,
+			candidate.typeName,
+			candidate.groupName,
+			candidate.remark,
+			candidate.formExist,
+			String(candidate.formTemplateCount),
+		].join(' ')
+	}
   if (candidate.kind === 'submitted') {
     return [candidate.name, candidate.status, candidate.createDate, candidate.currentNodeName, candidate.currentAuditUserNames].join(' ')
   }

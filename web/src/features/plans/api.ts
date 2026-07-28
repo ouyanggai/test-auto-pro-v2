@@ -62,7 +62,9 @@ interface TemplateDTO {
   updateDate: string
   createDate: string
   remark: string
-  flowCreateType: string
+	flowCreateType: string
+	formExist: string
+	formTemplateCount: number
 }
 
 interface SubmittedDTO {
@@ -96,6 +98,20 @@ export interface CandidatePage {
   hasMore: boolean
 }
 
+const errorMessages: Record<string, string> = {
+	INVALID_ARGUMENT: '请求参数不正确',
+	TARGET_CONFIG_MISSING: '服务配置不完整，请联系维护人员',
+	TARGET_LOGIN_REJECTED: '账号验证失败，请核对账号',
+	TARGET_SESSION_EXPIRED: '账号验证已失效，请重新验证',
+	TARGET_RESPONSE_INVALID: '流程数据异常，请重试',
+	TARGET_UNAVAILABLE: '暂时无法读取流程，请重试',
+	TARGET_TIMEOUT: '读取流程超时，请重试',
+}
+
+export function targetApiErrorMessage(code?: string): string {
+	return code ? errorMessages[code] || '请求失败，请重试' : '请求失败，请重试'
+}
+
 async function request<T>(path: string, init: RequestInit, signal: AbortSignal): Promise<T> {
   let response: Response
   try {
@@ -103,7 +119,7 @@ async function request<T>(path: string, init: RequestInit, signal: AbortSignal):
   }
   catch (error) {
     if (signal.aborted) throw error
-    throw new TargetApiError('无法连接后端服务，请稍后重试', { code: 'TARGET_UNAVAILABLE', retryable: true })
+		throw new TargetApiError('服务暂不可用，请稍后重试', { code: 'TARGET_UNAVAILABLE', retryable: true })
   }
 
   let envelope: ApiEnvelope<T>
@@ -111,11 +127,11 @@ async function request<T>(path: string, init: RequestInit, signal: AbortSignal):
     envelope = await response.json() as ApiEnvelope<T>
   }
   catch {
-    throw new TargetApiError('服务返回的数据格式异常', { code: 'TARGET_RESPONSE_INVALID', retryable: true, status: response.status })
+		throw new TargetApiError('服务返回数据异常，请重试', { code: 'TARGET_RESPONSE_INVALID', retryable: true, status: response.status })
   }
   if (!response.ok || !envelope.success) {
     const failure = envelope as ApiFailure
-    throw new TargetApiError(failure.error?.message || '请求失败，请重试', {
+		throw new TargetApiError(targetApiErrorMessage(failure.error?.code), {
       code: failure.error?.code,
       retryable: failure.error?.retryable,
       status: response.status,
@@ -161,9 +177,11 @@ export async function fetchTargetCandidates(params: {
         statusText: item.statusText || item.flowStatus,
         updateTime: item.updateDate || item.createDate,
         code: item.code,
-        remark: item.remark,
-        flowCreateType: item.flowCreateType,
-      })),
+			remark: item.remark,
+			flowCreateType: item.flowCreateType,
+			formExist: item.formExist,
+			formTemplateCount: Number.isInteger(item.formTemplateCount) && item.formTemplateCount > 0 ? item.formTemplateCount : 0,
+		})),
     }
   }
 

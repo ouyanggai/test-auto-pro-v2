@@ -131,14 +131,14 @@ const selectionPath = computed(() => {
   return 'dueFlowId'
 })
 const accountStatusCopy = computed(() => {
-  if (verificationState.value === 'verifying') return '正在验证目标平台账号…'
+	if (verificationState.value === 'verifying') return '正在验证账号…'
   if (accountVerified.value) {
     const identity = [verifiedSummary.value?.displayName, verifiedSummary.value?.companyName].filter(Boolean).join(' · ')
-    return identity ? `目标平台账号已验证：${identity}` : `目标平台账号“${verifiedAccount.value}”已验证。`
+		return identity ? `账号已验证：${identity}` : `账号“${verifiedAccount.value}”已验证。`
   }
   if (verificationState.value === 'failed') return verificationError.value || '账号验证失败，请重试。'
   if (verificationState.value === 'invalid') return '账号已编辑，原验证失效，请重新验证。'
-  return '验证成功后才能读取该账号的真实流程。'
+	return '验证账号后可读取流程。'
 })
 const accountStatusType = computed(() => {
   if (accountVerified.value) return 'success'
@@ -238,7 +238,7 @@ const rules = computed<FormRules>(() => ({
     {
       required: true,
       trigger: ['input', 'blur'],
-      message: '请输入真实账号',
+		message: '请输入账号',
     },
     {
       trigger: 'account-verification',
@@ -352,7 +352,7 @@ async function loadCandidatePage(page: number, reset: boolean, query: string) {
   }
   catch (error) {
     if (controller.signal.aborted || !isCurrentRemoteRequest(currentRequestIdentity(), requestIdentity)) return
-    const apiError = error instanceof TargetApiError ? error : new TargetApiError('读取目标平台失败，请重试')
+		const apiError = error instanceof TargetApiError ? error : new TargetApiError('读取流程失败，请重试')
     if (invalidatesVerification(apiError.code)) {
       invalidateVerifiedAccount(apiError.message)
       message.error(apiError.message)
@@ -470,7 +470,7 @@ async function verifyAccount() {
     clearCandidateState()
     clearFlowSelections()
     requestSelectionGuidance()
-    message.success('目标平台账号验证成功')
+		message.success('账号验证成功')
     void loadCandidatePage(1, true, '')
   }
   catch (error) {
@@ -499,7 +499,7 @@ async function submitPrototype() {
   if (!formRef.value) return
   try {
     await formRef.value.validate()
-    message.success('静态原型已完成校验，真实创建将在后续功能接入。')
+		message.success('表单校验通过，创建与路径配置将在后续开放。')
   }
   catch {
     message.error('请检查标红的必填项')
@@ -516,7 +516,7 @@ async function submitPrototype() {
     <div class="form-content">
       <header class="page-heading">
         <h1>新建计划</h1>
-		<p>验证目标平台真实账号并选择可见流程。当前只读取候选，不保存计划，也不修改目标平台。</p>
+		<p>验证账号并选择流程。本页只读取候选，创建与路径配置将在后续开放。</p>
       </header>
 
       <n-form
@@ -534,13 +534,13 @@ async function submitPrototype() {
             <n-input v-model:value="form.name" maxlength="60" show-count placeholder="例如：采购申请主流程回归" />
           </n-form-item-gi>
 
-          <n-form-item-gi ref="accountItemRef" span="12" path="account" label="真实账号" first>
+		  <n-form-item-gi ref="accountItemRef" span="12" path="account" label="账号" first>
             <div class="account-control">
               <n-input-group>
                 <n-input
                   v-model:value="form.account"
                   clearable
-                  placeholder="请输入目标平台真实账号"
+				  placeholder="请输入账号"
                   @keydown.enter.prevent="verifyAccount"
                 />
                 <n-button
@@ -662,7 +662,7 @@ async function submitPrototype() {
 				  @retry="retryCandidates"
                 />
                 <div v-else key="unverified" class="selection-placeholder">
-				  <n-empty description="请先验证账号，再读取该账号可见的真实流程" />
+				  <n-empty description="请先验证账号，再读取可见流程" />
                 </div>
               </transition>
             </div>
@@ -763,7 +763,7 @@ async function submitPrototype() {
 .selection-shell {
   display: grid;
   width: 100%;
-  min-height: 348px;
+	min-height: 574px;
   overflow: hidden;
 }
 
@@ -775,7 +775,7 @@ async function submitPrototype() {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 348px;
+	min-height: 574px;
 }
 
 .selection-content-enter-active,

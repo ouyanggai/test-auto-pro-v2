@@ -3,6 +3,14 @@ import { computed, ref, watch } from 'vue'
 import { NButton, NEl, NEmpty, NInput, NSpin, NTag, NText, NVirtualList } from 'naive-ui'
 
 import { flowSelectionLabels } from './selection'
+import {
+  CANDIDATE_ITEM_SIZE,
+  candidateDetail,
+  candidateDetailTitle,
+  candidateMeta,
+  candidateStatus,
+  candidateTitle,
+} from './presentation'
 import type { FlowCandidate, FlowSource } from './types'
 
 const props = defineProps<{
@@ -47,30 +55,6 @@ function handleScroll(event: Event) {
   }
 }
 
-function candidateTitle(candidate: FlowCandidate): string {
-  if (candidate.kind === 'template') return candidate.flowName
-  if (candidate.kind === 'submitted') return candidate.name
-  return candidate.flowInstanceName
-}
-
-function candidateStatus(candidate: FlowCandidate): string {
-  if (candidate.kind === 'template') return candidate.statusText
-  if (candidate.kind === 'submitted') return candidate.status
-  return candidate.statusName
-}
-
-function candidateMeta(candidate: FlowCandidate): string {
-  if (candidate.kind === 'template') return `${candidate.typeName} · ${candidate.groupName}`
-  if (candidate.kind === 'submitted') return `提交时间 ${candidate.createDate} · 当前节点 ${candidate.currentNodeName}`
-  return `发起人 ${candidate.initiator} · 提交时间 ${candidate.initiatorDate}`
-}
-
-function candidateDetail(candidate: FlowCandidate): string {
-  if (candidate.kind === 'template') return `更新于 ${candidate.updateTime}`
-  if (candidate.kind === 'submitted') return `当前处理人 ${candidate.currentAuditUserNames}`
-  return `实例编号 ${candidate.flowInstanceId}`
-}
-
 function getSearchElement(): HTMLInputElement | null {
   return searchFieldRef.value?.querySelector('input') ?? null
 }
@@ -91,12 +75,12 @@ defineExpose({ getSearchElement, focusSearch })
         <n-input
 		  :value="query"
           clearable
-          :placeholder="`搜索${title}名称或状态`"
+		  :placeholder="`搜索${title}名称`"
           :aria-label="`搜索${title}`"
 		  @update:value="updateQuery"
         />
       </div>
-	  <n-text depth="3">{{ accountName }} · 真实目标平台 · 已加载 {{ items.length }} / {{ total }}</n-text>
+		<n-text depth="3">{{ accountName }} · 已加载 {{ items.length }} / {{ total }}</n-text>
     </div>
 
 	<div v-if="loading && items.length === 0" class="candidate-state" aria-live="polite">
@@ -115,7 +99,7 @@ defineExpose({ getSearchElement, focusSearch })
       v-else
       class="candidate-virtual-list"
 	  :items="items"
-      :item-size="84"
+		  :item-size="CANDIDATE_ITEM_SIZE"
       key-field="key"
       @scroll="handleScroll"
     >
@@ -129,12 +113,21 @@ defineExpose({ getSearchElement, focusSearch })
         >
           <span class="candidate-row__heading">
             <strong>{{ candidateTitle(item as FlowCandidate) }}</strong>
-            <n-tag size="small" :type="selectedKey === item.key ? 'success' : 'default'" :bordered="false">
-              {{ selectedKey === item.key ? '已选择' : candidateStatus(item as FlowCandidate) }}
-            </n-tag>
-          </span>
-          <span class="candidate-row__meta">{{ candidateMeta(item as FlowCandidate) }}</span>
-          <span class="candidate-row__detail">{{ candidateDetail(item as FlowCandidate) }}</span>
+			<n-tag
+			  v-if="selectedKey === item.key || candidateStatus(item as FlowCandidate)"
+			  size="small"
+			  :type="selectedKey === item.key ? 'success' : 'default'"
+			  :bordered="false"
+			>
+			  {{ selectedKey === item.key ? '已选择' : candidateStatus(item as FlowCandidate) }}
+			</n-tag>
+		  </span>
+		  <span class="candidate-row__meta">{{ candidateMeta(item as FlowCandidate) }}</span>
+		  <span
+			class="candidate-row__detail"
+			:class="{ 'candidate-row__detail--remark': item.kind === 'template' }"
+			:title="candidateDetailTitle(item as FlowCandidate)"
+		  >{{ candidateDetail(item as FlowCandidate) }}</span>
         </button>
       </template>
     </n-virtual-list>
@@ -158,7 +151,7 @@ defineExpose({ getSearchElement, focusSearch })
 .candidate-picker {
   width: 100%;
   min-width: 0;
-  min-height: 348px;
+	min-height: 574px;
 }
 
 .candidate-toolbar {
@@ -184,7 +177,7 @@ defineExpose({ getSearchElement, focusSearch })
 }
 
 .candidate-virtual-list {
-  height: 252px;
+	height: 480px;
 }
 
 .candidate-row {
@@ -192,7 +185,7 @@ defineExpose({ getSearchElement, focusSearch })
   flex-direction: column;
   justify-content: center;
   width: 100%;
-  height: 84px;
+	height: 96px;
   padding: 10px 16px 10px 13px;
   overflow: hidden;
   color: var(--text-color-1);
@@ -202,7 +195,8 @@ defineExpose({ getSearchElement, focusSearch })
   border: 0;
   border-bottom: 1px solid var(--divider-color);
   border-left: 3px solid transparent;
-  cursor: pointer;
+	cursor: pointer;
+	transition: background-color 120ms ease, border-color 120ms ease;
 }
 
 .candidate-row:hover {
@@ -249,6 +243,14 @@ defineExpose({ getSearchElement, focusSearch })
   white-space: nowrap;
 }
 
+.candidate-row__detail--remark {
+	display: -webkit-box;
+	line-height: 1.35;
+	white-space: normal;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+}
+
 .candidate-footer {
   display: flex;
   align-items: center;
@@ -259,8 +261,8 @@ defineExpose({ getSearchElement, focusSearch })
 }
 
 .candidate-empty {
-  min-height: 252px;
-  padding-top: 72px;
+	min-height: 480px;
+	padding-top: 160px;
 }
 
 .candidate-state {
@@ -269,6 +271,12 @@ defineExpose({ getSearchElement, focusSearch })
 	align-items: center;
 	justify-content: center;
 	gap: 12px;
-	min-height: 252px;
+	min-height: 480px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.candidate-row {
+		transition: none;
+	}
 }
 </style>

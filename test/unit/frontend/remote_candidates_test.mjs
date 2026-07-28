@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { fetchTargetCandidates, TargetApiError, verifyTargetAccount } from '../../../web/src/features/plans/api.ts'
+import { fetchTargetCandidates, targetApiErrorMessage, TargetApiError, verifyTargetAccount } from '../../../web/src/features/plans/api.ts'
+import {
+  CANDIDATE_ITEM_SIZE,
+  CANDIDATE_VIEWPORT_HEIGHT,
+  candidateDetail,
+  candidateDetailTitle,
+  candidateMeta,
+  candidateStatus,
+} from '../../../web/src/features/plans/presentation.ts'
 import {
   REMOTE_SEARCH_DEBOUNCE_MS,
   createDebouncedRunner,
@@ -19,8 +27,13 @@ const template = (id, name = id) => ({
   flowName: name,
   typeName: '测试类型',
   groupName: '测试分组',
-  statusText: '正常',
-  updateTime: '2026-07-27 10:00',
+	statusText: '正常',
+	updateTime: '2026-07-27 10:00',
+	code: 'FLOW-CODE',
+	remark: '用于验证采购审批',
+	flowCreateType: 'current_platform',
+	formExist: 'withForm',
+	formTemplateCount: 2,
 })
 
 test('搜索防抖只执行最后一次输入且可取消', async () => {
@@ -56,6 +69,28 @@ test('分页追加按来源真实 ID 去重并保留顺序', () => {
   assert.equal(merged[1].flowName, '新名称')
 })
 
+test('模板展示使用编码分类表单关联和备注，不把状态作为主展示', () => {
+	const item = template('one', '采购审批')
+	assert.equal(candidateStatus(item), '')
+	assert.match(candidateMeta(item), /编码 FLOW-CODE/)
+	assert.match(candidateMeta(item), /分类 测试类型/)
+	assert.match(candidateMeta(item), /有表单 · 关联 2 个/)
+	assert.equal(candidateDetail(item), '备注：用于验证采购审批')
+
+	const emptyRemark = { ...item, remark: '' }
+	assert.equal(candidateDetail(emptyRemark), '备注：暂无备注')
+	const longRemark = { ...item, remark: '用于采购审批主流程的跨部门长文本说明，列表只截断视觉内容但保留完整提示。' }
+	assert.equal(candidateDetailTitle(longRemark), candidateDetail(longRemark))
+	assert.equal(CANDIDATE_ITEM_SIZE, 96)
+	assert.equal(CANDIDATE_VIEWPORT_HEIGHT, 480)
+})
+
+test('稳定错误码映射为简洁业务提示', () => {
+	assert.equal(targetApiErrorMessage('TARGET_LOGIN_REJECTED'), '账号验证失败，请核对账号')
+	assert.equal(targetApiErrorMessage('TARGET_TIMEOUT'), '读取流程超时，请重试')
+	assert.equal(targetApiErrorMessage('UNKNOWN'), '请求失败，请重试')
+})
+
 test('追加错误优先重试失败页且会话错误使验证失效', () => {
   assert.equal(retryPageFor([], 0, null), 1)
   assert.equal(retryPageFor([template('one')], 1, null), 2)
@@ -86,7 +121,7 @@ test('三类真实 API 数据映射为各自候选且稳定错误可恢复', asy
   const responses = [
     {
       success: true,
-      data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 't1', flowName: '模板', code: '', groupName: '', flowStatus: 'enable', statusText: '正常', typeName: '', updateDate: '', createDate: '', remark: '', flowCreateType: '' }] },
+		data: { account: 'account-a', page: 1, pageSize: 20, total: 1, hasMore: false, items: [{ id: 't1', flowName: '模板', code: 'FLOW-CODE', groupName: '', flowStatus: 'enable', statusText: '正常', typeName: '经营管理', updateDate: '', createDate: '', remark: '用途说明', flowCreateType: '', formExist: 'withForm', formTemplateCount: 2 }] },
     },
     {
       success: true,
@@ -105,7 +140,9 @@ test('三类真实 API 数据映射为各自候选且稳定错误可恢复', asy
     const templates = await fetchTargetCandidates({ ...common, source: 'new' })
     const submitted = await fetchTargetCandidates({ ...common, source: 'started' })
     const due = await fetchTargetCandidates({ ...common, source: 'pending' })
-    assert.equal(templates.items[0].kind, 'template')
+	assert.equal(templates.items[0].kind, 'template')
+	assert.equal(templates.items[0].remark, '用途说明')
+	assert.equal(templates.items[0].formTemplateCount, 2)
     assert.equal(submitted.items[0].kind, 'submitted')
     assert.equal(due.items[0].kind, 'due')
 
