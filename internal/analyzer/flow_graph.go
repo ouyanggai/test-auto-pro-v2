@@ -28,7 +28,7 @@ type graphBuilder struct {
 	edgeOrder []string
 	warnings  []string
 	stack     map[string]bool
-	memo      map[string][]string
+	seen      map[string]bool
 }
 
 func (a *FlowGraphAnalyzer) Analyze(root *target.FlowNodeTemplate) ([]model.FlowGraphNode, []model.FlowGraphEdge, []string, error) {
@@ -37,7 +37,7 @@ func (a *FlowGraphAnalyzer) Analyze(root *target.FlowNodeTemplate) ([]model.Flow
 	}
 	builder := &graphBuilder{
 		nodes: make(map[string]model.FlowGraphNode), edges: make(map[string]model.FlowGraphEdge),
-		stack: make(map[string]bool), memo: make(map[string][]string),
+		stack: make(map[string]bool), seen: make(map[string]bool),
 	}
 	if _, err := builder.parse(root, 1); err != nil {
 		return nil, nil, nil, err
@@ -58,12 +58,10 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 		return nil, ErrFlowStructureInvalid
 	}
 	id := strings.TrimSpace(node.ID)
-	if id == "" || b.stack[id] {
+	if id == "" || b.stack[id] || b.seen[id] {
 		return nil, ErrFlowStructureInvalid
 	}
-	if exits, ok := b.memo[id]; ok {
-		return append([]string(nil), exits...), nil
-	}
+	b.seen[id] = true
 	b.stack[id] = true
 	defer delete(b.stack, id)
 
@@ -107,7 +105,9 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 			if label == "" && kind == "parallel" {
 				label = fmt.Sprintf("分支 %d", index+1)
 			}
-			b.addEdge(id, branch.Child.ID, kind, label, branchID)
+			if err := b.addEdge(id, branch.Child.ID, kind, label, branchID); err != nil {
+				return nil, err
+			}
 			exits, err := b.parse(branch.Child, depth+1)
 			if err != nil {
 				return nil, err
@@ -115,7 +115,6 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 			branchExits = appendUnique(branchExits, exits...)
 		}
 		if node.Child == nil {
-			b.memo[id] = append([]string(nil), branchExits...)
 			return branchExits, nil
 		}
 		nextID := strings.TrimSpace(node.Child.ID)
@@ -126,40 +125,47 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 		graphNode.MergeTargetID = nextID
 		b.nodes[id] = graphNode
 		for _, exit := range branchExits {
-			b.addEdge(exit, nextID, "sequence", "", "")
+			if err := b.addEdge(exit, nextID, "sequence", "", ""); err != nil {
+				return nil, err
+			}
 		}
 		exits, err := b.parse(node.Child, depth+1)
 		if err != nil {
 			return nil, err
 		}
-		b.memo[id] = append([]string(nil), exits...)
 		return exits, nil
 	}
 
 	if node.Child == nil {
-		b.memo[id] = []string{id}
 		return []string{id}, nil
 	}
 	nextID := strings.TrimSpace(node.Child.ID)
 	if nextID == "" {
 		return nil, ErrFlowStructureInvalid
 	}
-	b.addEdge(id, nextID, "sequence", "", "")
+	if err := b.addEdge(id, nextID, "sequence", "", ""); err != nil {
+		return nil, err
+	}
 	exits, err := b.parse(node.Child, depth+1)
 	if err != nil {
 		return nil, err
 	}
-	b.memo[id] = append([]string(nil), exits...)
 	return exits, nil
 }
 
-func (b *graphBuilder) addEdge(source, destination, kind, label, branchID string) {
-	id := strings.Join([]string{strings.TrimSpace(source), strings.TrimSpace(destination), kind, branchID}, "|")
-	if _, exists := b.edges[id]; exists {
-		return
+func (b *graphBuilder) addEdge(source, destination, kind, label, branchID string) error {
+	source = strings.TrimSpace(source)
+	destination = strings.TrimSpace(destination)
+	if source == "" || destination == "" || source == destination {
+		return ErrFlowStructureInvalid
 	}
-	b.edges[id] = model.FlowGraphEdge{ID: id, Source: strings.TrimSpace(source), Target: strings.TrimSpace(destination), Kind: kind, Label: label, BranchID: branchID}
+	id := strings.Join([]string{source, destination, kind, branchID}, "|")
+	if _, exists := b.edges[id]; exists {
+		return nil
+	}
+	b.edges[id] = model.FlowGraphEdge{ID: id, Source: source, Target: destination, Kind: kind, Label: label, BranchID: branchID}
 	b.edgeOrder = append(b.edgeOrder, id)
+	return nil
 }
 
 func flowNodeType(value, branchExecuteType string) (string, bool) {

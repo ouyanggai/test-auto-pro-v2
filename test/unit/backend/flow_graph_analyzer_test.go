@@ -22,7 +22,7 @@ func TestFlowGraphAnalyzerStraightUnknownAndDeduplication(t *testing.T) {
 	}
 }
 
-func TestFlowGraphAnalyzerDeduplicatesSharedRealNode(t *testing.T) {
+func TestFlowGraphAnalyzerRejectsSharedNodeBeforeExplicitMerge(t *testing.T) {
 	shared := &target.FlowNodeTemplate{ID: "shared", Name: "共享审批", Type: "common"}
 	root := &target.FlowNodeTemplate{
 		ID: "parallel", Name: "并行", Type: "parallel",
@@ -31,12 +31,8 @@ func TestFlowGraphAnalyzerDeduplicatesSharedRealNode(t *testing.T) {
 			{ID: "branch-b", Name: "乙", Child: &target.FlowNodeTemplate{ID: "shared", Name: "共享审批", Type: "common"}},
 		},
 	}
-	nodes, edges, _, err := analyzer.NewFlowGraphAnalyzer().Analyze(root)
-	if err != nil || len(nodes) != 2 || len(edges) != 2 {
-		t.Fatalf("共享真实节点未正确去重：nodes=%d edges=%d err=%v", len(nodes), len(edges), err)
-	}
-	if nodes[0].MergeTargetID != "" {
-		t.Fatalf("无主线后继的路由不应设置汇合提示：%q", nodes[0].MergeTargetID)
+	if _, _, _, err := analyzer.NewFlowGraphAnalyzer().Analyze(root); !errors.Is(err, analyzer.ErrFlowStructureInvalid) {
+		t.Fatalf("非显式跨分支共享节点未被拒绝：%v", err)
 	}
 }
 
@@ -110,6 +106,13 @@ func TestFlowGraphAnalyzerRejectsInvalidStructuresAndLimits(t *testing.T) {
 	emptyBranch := &target.FlowNodeTemplate{ID: "condition", Name: "条件", Type: "condition"}
 	missingBranchID := &target.FlowNodeTemplate{ID: "condition", Name: "条件", Type: "condition", ConditionNodes: []target.FlowBranchTemplate{{Child: &target.FlowNodeTemplate{ID: "child", Type: "common"}}}}
 	unknownBranch := &target.FlowNodeTemplate{ID: "unknown", Name: "未知", Type: "future", ConditionNodes: []target.FlowBranchTemplate{{ID: "branch", Child: &target.FlowNodeTemplate{ID: "child", Type: "common"}}}}
+	selfConnection := &target.FlowNodeTemplate{ID: "self", Name: "自连接", Type: "common"}
+	selfConnection.Child = selfConnection
+	merge := &target.FlowNodeTemplate{ID: "merge", Name: "汇合", Type: "common"}
+	branchStartsAtMerge := &target.FlowNodeTemplate{
+		ID: "route", Name: "条件", Type: "condition", Child: merge,
+		ConditionNodes: []target.FlowBranchTemplate{{ID: "branch", Name: "错误分支", Child: merge}},
+	}
 
 	tooDeep := &target.FlowNodeTemplate{ID: "node-0", Type: "start"}
 	cursor := tooDeep
@@ -126,6 +129,7 @@ func TestFlowGraphAnalyzerRejectsInvalidStructuresAndLimits(t *testing.T) {
 	for name, root := range map[string]*target.FlowNodeTemplate{
 		"循环": cycle, "关键 ID 缺失": missingID, "空分支": emptyBranch,
 		"策略 ID 缺失": missingBranchID, "未知分支节点": unknownBranch,
+		"自连接": selfConnection, "分支入口等于汇合点": branchStartsAtMerge,
 		"超过节点上限": tooMany, "超过深度上限": tooDeep,
 	} {
 		t.Run(name, func(t *testing.T) {
