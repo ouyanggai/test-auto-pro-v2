@@ -131,12 +131,15 @@ func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, sourc
 			}
 			tree, err = s.client.ReadTemplateTree(callContext, active, targetObjectID)
 		case "started":
-			proxyID, entries, found, findErr := s.client.FindSubmittedFlow(callContext, active, targetObjectID)
+			proxyID, entries, status, found, findErr := s.client.FindSubmittedFlow(callContext, active, targetObjectID)
 			if findErr != nil {
 				return findErr
 			}
 			if !found {
 				return ErrTargetFlowNotFound
+			}
+			if strings.TrimSpace(status) != "run" {
+				return ErrTargetFlowNotConfigurable
 			}
 			entryNodeIDs = entries
 			tree, err = s.client.ReadProxyTree(callContext, active, proxyID)

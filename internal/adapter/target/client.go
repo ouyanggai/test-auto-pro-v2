@@ -369,7 +369,7 @@ func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templa
 	return false, nil
 }
 
-func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, bool, error) {
+func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, string, bool, error) {
 	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
 		"data": map[string]any{
 			"useScope":                     "invest",
@@ -380,19 +380,20 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 		"ids": []string{strings.TrimSpace(instanceID)}, "pagination": true, "pages": 1, "size": 100,
 	})
 	if err != nil {
-		return "", nil, false, err
+		return "", nil, "", false, err
 	}
 	if !responseSucceeded(resp) {
-		return "", nil, false, responseError(resp)
+		return "", nil, "", false, responseError(resp)
 	}
 	var raw []struct {
 		ID                   string          `json:"id"`
 		FlowProxyID          string          `json:"flowProxyId"`
+		Status               string          `json:"status"`
 		CurrentNodeProxyID   string          `json:"currentNodeProxyId"`
 		CurrentAuditUserInfo json.RawMessage `json:"currentAuditUserInfo"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
-		return "", nil, false, err
+		return "", nil, "", false, err
 	}
 	for _, item := range raw {
 		if strings.TrimSpace(item.ID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
@@ -400,10 +401,10 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 			if len(entries) == 0 && strings.TrimSpace(item.CurrentNodeProxyID) != "" {
 				entries = []string{strings.TrimSpace(item.CurrentNodeProxyID)}
 			}
-			return strings.TrimSpace(item.FlowProxyID), entries, true, nil
+			return strings.TrimSpace(item.FlowProxyID), entries, strings.TrimSpace(item.Status), true, nil
 		}
 	}
-	return "", nil, false, nil
+	return "", nil, "", false, nil
 }
 
 func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID string) (string, []string, bool, error) {

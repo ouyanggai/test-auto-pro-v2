@@ -22,20 +22,21 @@ import (
 )
 
 type fakeTarget struct {
-	t             *testing.T
-	password      string
-	loginCode     string
-	mu            sync.Mutex
-	loginCount    int
-	templateCount int
-	expireMode    string
-	sessions      []string
-	graphCalls    []string
+	t               *testing.T
+	password        string
+	loginCode       string
+	mu              sync.Mutex
+	loginCount      int
+	templateCount   int
+	expireMode      string
+	sessions        []string
+	graphCalls      []string
+	submittedStatus string
 }
 
 func newFakeTarget(t *testing.T) *fakeTarget {
 	t.Helper()
-	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6)}
+	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), submittedStatus: "run"}
 }
 
 func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request) {
@@ -53,7 +54,7 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 			}
 			f.recordGraphCall("submitted-list")
 			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{
-				"id": "submitted-id", "flowProxyId": "proxy-submitted", "currentNodeProxyId": "end",
+				"id": "submitted-id", "flowProxyId": "proxy-submitted", "status": f.submittedStatus, "currentNodeProxyId": "end",
 				"currentAuditUserInfo": map[string]any{"start": map[string]any{"userList": []any{}}},
 			}}})
 			return
@@ -307,6 +308,29 @@ func TestFlowTreeSnapshotUsesSourceSpecificEntryNodes(t *testing.T) {
 			}
 			if strings.Join(snapshot.EntryNodeIDs, ",") != test.want {
 				t.Fatalf("%s 入口 = %v，期望 %s", test.source, snapshot.EntryNodeIDs, test.want)
+			}
+		})
+	}
+}
+
+func TestSubmittedFinishedInstanceIsNotConfigurable(t *testing.T) {
+	for _, status := range []string{"end", "termination", "abandon", "rejected", "withdraw"} {
+		t.Run(status, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			fake.submittedStatus = status
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			reader := service.NewTargetReadService(config.LoadTargetConfig())
+			_, err := reader.FlowTreeSnapshot(context.Background(), "account-a", "started", "submitted-id")
+			if !errors.Is(err, service.ErrTargetFlowNotConfigurable) {
+				t.Fatalf("结束状态 %s 没有被拒绝：%v", status, err)
+			}
+			fake.mu.Lock()
+			calls := append([]string(nil), fake.graphCalls...)
+			fake.mu.Unlock()
+			if strings.Join(calls, ",") != "submitted-list" {
+				t.Fatalf("结束状态仍读取了代理树：%v", calls)
 			}
 		})
 	}
