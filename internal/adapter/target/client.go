@@ -417,51 +417,65 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 
 // FindDueFlow 精确重查实例全部 waiting_send 任务并汇总其代理节点入口。
 func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID string) (string, []string, bool, error) {
-	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
-		"data": map[string]any{
-			"flowInstanceId":               strings.TrimSpace(instanceID),
-			"taskStatus":                   "waiting_send",
-			"auditWayList":                 []string{},
-			"useScope":                     "invest",
-			"flowInstanceBizRelevance":     map[string]any{},
-			"flowInstanceBizRelevanceList": []any{},
-		},
-		"pagination": true, "pages": 1, "size": 100,
-	})
-	if err != nil {
-		return "", nil, false, err
-	}
-	if !responseSucceeded(resp) {
-		return "", nil, false, responseError(resp)
-	}
-	var raw []struct {
-		FlowInstanceID  string `json:"flowInstanceId"`
-		FlowProxyID     string `json:"flowProxyId"`
-		FlowNodeProxyID string `json:"flowNodeProxyId"`
-	}
-	if err := decodeArray(resp.Data, &raw); err != nil {
-		return "", nil, false, err
-	}
 	proxyID := ""
 	entries := make([]string, 0)
 	seen := make(map[string]struct{})
-	for _, item := range raw {
-		if strings.TrimSpace(item.FlowInstanceID) != strings.TrimSpace(instanceID) || strings.TrimSpace(item.FlowProxyID) == "" {
-			continue
+	const pageSize = 100
+	for page := 1; ; page++ {
+		// 待发实例可能同时存在多个并行任务，必须遍历目标分页，不能只保留第一页入口。
+		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
+			"data": map[string]any{
+				"flowInstanceId":               strings.TrimSpace(instanceID),
+				"taskStatus":                   "waiting_send",
+				"auditWayList":                 []string{},
+				"useScope":                     "invest",
+				"flowInstanceBizRelevance":     map[string]any{},
+				"flowInstanceBizRelevanceList": []any{},
+			},
+			"pagination": true, "pages": page, "size": pageSize,
+		})
+		if err != nil {
+			return "", nil, false, err
 		}
-		currentProxyID := strings.TrimSpace(item.FlowProxyID)
-		// 同一实例任务若指向不同代理树，无法证明入口归属，必须拒绝而不是任选一个。
-		if proxyID != "" && proxyID != currentProxyID {
-			return "", nil, false, invalidResponse("due tasks reference different flow proxies")
+		if !responseSucceeded(resp) {
+			return "", nil, false, responseError(resp)
 		}
-		proxyID = currentProxyID
-		entryID := strings.TrimSpace(item.FlowNodeProxyID)
-		if entryID == "" {
-			continue
+		var raw []struct {
+			FlowInstanceID  string `json:"flowInstanceId"`
+			FlowProxyID     string `json:"flowProxyId"`
+			FlowNodeProxyID string `json:"flowNodeProxyId"`
 		}
-		if _, exists := seen[entryID]; !exists {
-			seen[entryID] = struct{}{}
-			entries = append(entries, entryID)
+		if err := decodeArray(resp.Data, &raw); err != nil {
+			return "", nil, false, err
+		}
+		for _, item := range raw {
+			if strings.TrimSpace(item.FlowInstanceID) != strings.TrimSpace(instanceID) || strings.TrimSpace(item.FlowProxyID) == "" {
+				continue
+			}
+			currentProxyID := strings.TrimSpace(item.FlowProxyID)
+			// 同一实例任务若指向不同代理树，无法证明入口归属，必须拒绝而不是任选一个。
+			if proxyID != "" && proxyID != currentProxyID {
+				return "", nil, false, invalidResponse("due tasks reference different flow proxies")
+			}
+			proxyID = currentProxyID
+			entryID := strings.TrimSpace(item.FlowNodeProxyID)
+			if entryID == "" {
+				continue
+			}
+			if _, exists := seen[entryID]; !exists {
+				seen[entryID] = struct{}{}
+				entries = append(entries, entryID)
+			}
+		}
+		if resp.Pages > 0 {
+			if page >= resp.Pages {
+				break
+			}
+			if resp.Pages > 20 {
+				return "", nil, false, invalidResponse("due task pagination exceeds safe limit")
+			}
+		} else if len(raw) < pageSize {
+			break
 		}
 	}
 	if proxyID == "" {

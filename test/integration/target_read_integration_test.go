@@ -32,6 +32,7 @@ type fakeTarget struct {
 	sessions        []string
 	graphCalls      []string
 	submittedStatus string
+	duePaged        bool
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
@@ -86,6 +87,18 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				f.t.Error("待发实例精确核对参数不正确")
 			}
 			f.recordGraphCall("due-list")
+			if f.duePaged {
+				page, _ := body["pages"].(float64)
+				entryID := "start"
+				if page == 2 {
+					entryID = "end"
+				}
+				writeTargetJSON(response, map[string]any{
+					"isSuccess": true, "pages": 2, "current": int(page), "size": 100,
+					"data": []any{map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": entryID}},
+				})
+				return
+			}
 			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{
 				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": "start"},
 				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": "end"},
@@ -318,6 +331,26 @@ func TestFlowTreeSnapshotUsesSourceSpecificEntryNodes(t *testing.T) {
 				t.Fatalf("%s 入口 = %v，期望 %s", test.source, snapshot.EntryNodeIDs, test.want)
 			}
 		})
+	}
+}
+
+// TestDueFlowSnapshotReadsAllWaitingSendPages 验证并行待发入口不会被第一页截断。
+func TestDueFlowSnapshotReadsAllWaitingSendPages(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.duePaged = true
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	snapshot, err := reader.FlowTreeSnapshot(context.Background(), "account-a", "pending", "due-id")
+	if err != nil || strings.Join(snapshot.EntryNodeIDs, ",") != "start,end" {
+		t.Fatalf("待发分页入口没有完整读取：entries=%v err=%v", snapshot.EntryNodeIDs, err)
+	}
+	fake.mu.Lock()
+	calls := append([]string(nil), fake.graphCalls...)
+	fake.mu.Unlock()
+	if strings.Join(calls, ",") != "due-list,due-list,proxy-detail:proxy-due" {
+		t.Fatalf("待发分页读取调用顺序不正确：%v", calls)
 	}
 }
 
