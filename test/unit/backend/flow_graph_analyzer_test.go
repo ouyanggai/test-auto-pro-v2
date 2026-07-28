@@ -22,6 +22,21 @@ func TestFlowGraphAnalyzerStraightUnknownAndDeduplication(t *testing.T) {
 	}
 }
 
+func TestFlowGraphAnalyzerDeduplicatesSharedRealNode(t *testing.T) {
+	shared := &target.FlowNodeTemplate{ID: "shared", Name: "共享审批", Type: "common"}
+	root := &target.FlowNodeTemplate{
+		ID: "parallel", Name: "并行", Type: "parallel",
+		ParallelNodes: []target.FlowBranchTemplate{
+			{ID: "branch-a", Name: "甲", Child: shared},
+			{ID: "branch-b", Name: "乙", Child: &target.FlowNodeTemplate{ID: "shared", Name: "共享审批", Type: "common"}},
+		},
+	}
+	nodes, edges, _, err := analyzer.NewFlowGraphAnalyzer().Analyze(root)
+	if err != nil || len(nodes) != 2 || len(edges) != 2 {
+		t.Fatalf("共享真实节点未正确去重：nodes=%d edges=%d err=%v", len(nodes), len(edges), err)
+	}
+}
+
 func TestFlowGraphAnalyzerConditionManualParallelNestedAndMerge(t *testing.T) {
 	merge := &target.FlowNodeTemplate{ID: "merge", Name: "汇合审批", Type: "common", Child: &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}}
 	nested := &target.FlowNodeTemplate{
@@ -88,15 +103,22 @@ func TestFlowGraphAnalyzerRejectsInvalidStructuresAndLimits(t *testing.T) {
 	missingBranchID := &target.FlowNodeTemplate{ID: "condition", Name: "条件", Type: "condition", ConditionNodes: []target.FlowBranchTemplate{{Child: &target.FlowNodeTemplate{ID: "child", Type: "common"}}}}
 	unknownBranch := &target.FlowNodeTemplate{ID: "unknown", Name: "未知", Type: "future", ConditionNodes: []target.FlowBranchTemplate{{ID: "branch", Child: &target.FlowNodeTemplate{ID: "child", Type: "common"}}}}
 
-	tooMany := &target.FlowNodeTemplate{ID: "node-0", Type: "start"}
-	cursor := tooMany
-	for index := 1; index <= 500; index++ {
+	tooDeep := &target.FlowNodeTemplate{ID: "node-0", Type: "start"}
+	cursor := tooDeep
+	for index := 1; index <= 200; index++ {
 		cursor.Child = &target.FlowNodeTemplate{ID: fmt.Sprintf("node-%d", index), Type: "common"}
 		cursor = cursor.Child
 	}
+	tooMany := &target.FlowNodeTemplate{ID: "parallel-root", Name: "并行", Type: "parallel"}
+	for index := 0; index < 500; index++ {
+		tooMany.ParallelNodes = append(tooMany.ParallelNodes, target.FlowBranchTemplate{
+			ID: fmt.Sprintf("branch-%d", index), Child: &target.FlowNodeTemplate{ID: fmt.Sprintf("wide-%d", index), Type: "common"},
+		})
+	}
 	for name, root := range map[string]*target.FlowNodeTemplate{
 		"循环": cycle, "关键 ID 缺失": missingID, "空分支": emptyBranch,
-		"策略 ID 缺失": missingBranchID, "未知分支节点": unknownBranch, "超过节点与深度上限": tooMany,
+		"策略 ID 缺失": missingBranchID, "未知分支节点": unknownBranch,
+		"超过节点上限": tooMany, "超过深度上限": tooDeep,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, _, err := analyzer.NewFlowGraphAnalyzer().Analyze(root)

@@ -267,6 +267,28 @@ func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
 	}
 }
 
+func TestFlowTreeReadSessionExpiryReplaysWholeChainOnce(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.expireMode = "business-once"
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	tree, err := reader.FlowTree(context.Background(), "account-a", "new", "template-id")
+	if err != nil || tree == nil {
+		t.Fatalf("会话失效后读取流程树失败：%v", err)
+	}
+	if fake.loginCount != 2 || fake.templateCount != 2 {
+		t.Fatalf("整条核对与详情链没有只重放一次：login=%d list=%d", fake.loginCount, fake.templateCount)
+	}
+	fake.mu.Lock()
+	calls := append([]string(nil), fake.graphCalls...)
+	fake.mu.Unlock()
+	if strings.Join(calls, ",") != "template-list,template-list,template-detail:template-id" {
+		t.Fatalf("会话重放顺序不正确：%v", calls)
+	}
+}
+
 func (f *fakeTarget) requireSession(request *http.Request) map[string]any {
 	f.mu.Lock()
 	if len(f.sessions) == 0 {
