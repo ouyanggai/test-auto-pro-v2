@@ -1,6 +1,6 @@
 # F-004 只读真实流程图
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“计划与运行主线”“只读真实流程图行为”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-002 目标平台只读接入”“F-003 最小计划持久化”“F-004 只读真实流程图”
 - 计划形成时间：2026-07-28
@@ -50,7 +50,7 @@ F-004 以 `rsh-flow-components/GroupApproveManage` 及其直接引用的 Workflo
 
 ### 新发起 `new`
 
-1. 使用保存的模板 ID 调用模板列表，并沿用 F-002 的当前用户、`invest` 使用范围、平台范围和排除条件，只接受 ID 精确匹配项。
+1. 使用顶层 `ids=[targetObjectId]` 调用模板列表，并沿用 F-002 的当前用户、`invest` 使用范围、平台范围和排除条件；`data.id` 不参与该列表筛选，只接受响应中 ID 精确匹配项。
 2. 匹配成功后调用 `/web/flowTemplateApi/findById`，请求 `data.id=targetObjectId`。
 3. 读取 `data.flowNodeTemplate`。
 
@@ -202,3 +202,4 @@ F-004 以 `rsh-flow-components/GroupApproveManage` 及其直接引用的 Workflo
 - 2026-07-28：用户明确回复“批准实施”；本轮完成标准以本文九项完成标准和 `test/run-f004.sh` 定向验证为准，状态进入 `implementing`，不得扩展到路径选择或 F-005。
 - 2026-07-28：完成三类来源精确核对、模板/代理详情读取、独立图分析器、流程图 API 和 Vue Flow + dagre 只读画布。`test/run-f004.sh` 验证后端图分析与安全契约、三类目标请求顺序、实例 ID 到代理 ID 转换、会话整链只重放一次、前端 3 项逻辑测试、结构约束、Go build、`vue-tsc` 和 Vite build 全部通过；状态进入 `ready_for_manual`，等待真实环境人工验收，不开始 F-005。
 - 2026-07-28：主任务只读审查发现新发起模板核对错误使用 `data.id` 和第一页 100 条数据；目标服务实际只读取顶层 `ids`，真实账号模板超过 100 条时会把后续模板误报为不可读取。用户人工验收前退回 `implementing`，仅修正该协议和定向测试。
+- 2026-07-28：模板核对改为顶层 `ids=[targetObjectId]`，继续保留 `useScope`、客户和平台范围等可见性条件；假目标明确拒绝 `data.id`，并覆盖混入其他模板与仅返回其他模板时的精确匹配和拒绝详情边界。`test/run-f004.sh` 再次全部通过，状态回到 `ready_for_manual`，等待人工验收，不开始 F-005。
