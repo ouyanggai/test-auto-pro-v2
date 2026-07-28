@@ -138,7 +138,7 @@ func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, sourc
 			if !found {
 				return ErrTargetFlowNotFound
 			}
-			if strings.TrimSpace(status) != "run" {
+			if !submittedFlowConfigurable(status) {
 				return ErrTargetFlowNotConfigurable
 			}
 			entryNodeIDs = entries
@@ -169,6 +169,15 @@ func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, sourc
 		return nil
 	})
 	return result, err
+}
+
+func submittedFlowConfigurable(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "run", "await_sent":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *TargetReadService) ready() error {

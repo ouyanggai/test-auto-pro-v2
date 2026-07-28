@@ -336,6 +336,19 @@ func TestSubmittedFinishedInstanceIsNotConfigurable(t *testing.T) {
 	}
 }
 
+func TestSubmittedAwaitSentInstanceRemainsConfigurable(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.submittedStatus = "await_sent"
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	snapshot, err := reader.FlowTreeSnapshot(context.Background(), "account-a", "started", "submitted-id")
+	if err != nil || snapshot.Tree == nil || strings.Join(snapshot.EntryNodeIDs, ",") != "start" {
+		t.Fatalf("待发状态且入口可映射时没有允许配置：snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
 func TestFlowTreeReadSessionExpiryReplaysWholeChainOnce(t *testing.T) {
 	fake := newFakeTarget(t)
 	fake.expireMode = "business-once"
