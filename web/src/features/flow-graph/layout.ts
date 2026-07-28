@@ -335,9 +335,12 @@ class FlowTreeLayout {
       data: {
         path,
         role: edgeRail.role,
+		routeNodeId: edge.source,
+		branchId: edge.branchId,
+		kind: edge.kind,
         railY: edgeRail.railY,
-        labelX: edge.label ? targetX : undefined,
-        labelY: edge.label && edgeRail.railY !== undefined ? edgeRail.railY - 14 : undefined,
+		labelX: edge.kind !== 'sequence' ? targetX : undefined,
+		labelY: edge.kind !== 'sequence' && edgeRail.railY !== undefined ? edgeRail.railY - 18 : undefined,
       },
     }
   }

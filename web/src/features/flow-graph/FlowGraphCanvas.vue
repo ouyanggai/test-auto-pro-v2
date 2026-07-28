@@ -14,14 +14,58 @@ import {
   shouldSetInitialViewport,
 } from './layout'
 import type { FlowGraph } from './types'
+import { analyzeExecutionPath, viewportForPointNearest } from '../execution-paths/logic'
+import type { ExecutionPathChoice } from '../execution-paths/types'
 
-const props = defineProps<{ graph: FlowGraph }>()
-const emit = defineEmits<{ retry: [] }>()
+const props = withDefaults(defineProps<{
+  graph: FlowGraph
+  choices?: ExecutionPathChoice[]
+  selectionEnabled?: boolean
+}>(), { choices: () => [], selectionEnabled: false })
+const emit = defineEmits<{
+  retry: []
+  selectBranch: [choice: ExecutionPathChoice]
+}>()
 const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
 const isPageFullscreen = ref(false)
 const layoutResult = computed(() => safeLayoutFlowGraph(props.graph))
 const laidOut = computed(() => layoutResult.value.layout)
+const pathAnalysis = computed(() => analyzeExecutionPath(props.graph, props.choices))
+const displayedLayout = computed(() => {
+  if (!laidOut.value || !props.selectionEnabled) return laidOut.value
+  const selectedByRoute = new Map(props.choices.map((choice) => [choice.routeNodeId, choice.branchId]))
+  const analysis = pathAnalysis.value
+  return {
+    nodes: laidOut.value.nodes.map((node) => ({
+      ...node,
+      class: analysis.reachableNodeIds.has(node.id) ? 'flow-node--path-active' : 'flow-node--path-muted',
+    })),
+    edges: laidOut.value.edges.map((edge) => {
+      const kind = edge.data?.kind
+      const selectedBranch = edge.data ? selectedByRoute.get(edge.data.routeNodeId) : undefined
+      const routeReachable = edge.data ? analysis.reachableNodeIds.has(edge.data.routeNodeId) : false
+      const selected = edge.data
+        ? analysis.reachableEdgeIds.has(edge.id) || selectedBranch === edge.data.branchId
+        : false
+      const candidate = routeReachable && (kind === 'condition' || kind === 'manual') && !selectedBranch
+      const active = selected || candidate || (routeReachable && (kind === 'condition' || kind === 'manual'))
+      return {
+        ...edge,
+        data: edge.data
+          ? {
+              ...edge.data,
+              selectionEnabled: true,
+              selected,
+              candidate,
+              active,
+              parallelRequired: kind === 'parallel' && selected,
+            }
+          : edge.data,
+      }
+    }),
+  }
+})
 const canvasStyle = computed(() => ({
   '--flow-edge-color': themeVars.value.borderColor,
   '--flow-label-color': themeVars.value.textColor2,
@@ -102,6 +146,24 @@ function handlePageFullscreenKeydown(event: KeyboardEvent) {
   void requestPageFullscreen(false)
 }
 
+async function handleSelectBranch(choice: ExecutionPathChoice) {
+  emit('selectBranch', choice)
+  await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  const nextRouteID = pathAnalysis.value.missingRouteNodeIds[0]
+  if (!nextRouteID || !laidOut.value || !canvasRoot.value) return
+  const nextNode = laidOut.value.nodes.find((node) => node.id === nextRouteID)
+  if (!nextNode) return
+  const viewport = getViewport()
+  const nextViewport = viewportForPointNearest(
+    viewport,
+    { x: nextNode.position.x, y: nextNode.position.y },
+    { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight },
+  )
+  if (nextViewport.x === viewport.x && nextViewport.y === viewport.y) return
+  await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 180 })
+}
+
 onInit(() => {
   ready = true
   void setInitialViewport()
@@ -133,6 +195,9 @@ onBeforeUnmount(() => {
     :style="canvasStyle"
     aria-label="只读流程图"
   >
+	<div v-if="laidOut && $slots.toolbar" class="flow-graph-canvas__toolbar">
+	  <slot name="toolbar" />
+	</div>
     <n-button
       v-if="laidOut"
       class="flow-graph-canvas__fullscreen"
@@ -145,8 +210,8 @@ onBeforeUnmount(() => {
     </n-button>
     <vue-flow-canvas
       v-if="laidOut"
-      :nodes="laidOut.nodes"
-      :edges="laidOut.edges"
+      :nodes="displayedLayout?.nodes"
+      :edges="displayedLayout?.edges"
       :nodes-draggable="false"
       :nodes-connectable="false"
       :elements-selectable="false"
@@ -169,7 +234,7 @@ onBeforeUnmount(() => {
         <flow-routing-hub />
       </template>
       <template #edge-treeEdge="edgeProps">
-        <flow-tree-edge v-bind="edgeProps" />
+        <flow-tree-edge v-bind="edgeProps" @select-branch="handleSelectBranch" />
       </template>
       <controls position="bottom-right" :show-interactive="false" />
     </vue-flow-canvas>
@@ -211,6 +276,19 @@ onBeforeUnmount(() => {
   z-index: 6;
 }
 
+.flow-graph-canvas__toolbar {
+  position: absolute;
+  top: 12px;
+  right: 126px;
+  left: 16px;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.flow-graph-canvas__toolbar :deep(*) {
+  pointer-events: auto;
+}
+
 .flow-graph-canvas__error {
   display: grid;
   width: 100%;
@@ -229,6 +307,14 @@ onBeforeUnmount(() => {
 .flow-graph-canvas :deep(.vue-flow__edge-path) {
   stroke: var(--flow-edge-color);
   stroke-width: 1.35;
+}
+
+.flow-graph-canvas :deep(.flow-node--path-muted) {
+  opacity: 0.46;
+}
+
+.flow-graph-canvas :deep(.flow-node--path-active) {
+  opacity: 1;
 }
 
 .flow-graph-canvas :deep(.vue-flow__edge-textbg) {

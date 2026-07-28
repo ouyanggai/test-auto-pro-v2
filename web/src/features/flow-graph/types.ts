@@ -22,6 +22,7 @@ export interface FlowGraph {
   planId: string
   targetName: string
   flowSource: 'new' | 'started' | 'pending'
+  entryNodeIds: string[]
   nodes: FlowGraphNode[]
   edges: FlowGraphEdge[]
   warnings: string[]
@@ -40,4 +41,12 @@ export interface FlowTreeEdgeData extends Record<string, unknown> {
   railY?: number
   labelX?: number
   labelY?: number
+  routeNodeId: string
+  branchId: string
+  kind: FlowGraphEdgeKind
+  selectionEnabled?: boolean
+  selected?: boolean
+  candidate?: boolean
+  active?: boolean
+  parallelRequired?: boolean
 }
