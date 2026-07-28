@@ -164,6 +164,25 @@ test('两级嵌套路由在父分支块内展开并推开相邻分支', () => {
   assertNoNodeOverlap(layout)
 })
 
+test('没有共享后继的末端分叉按独立列自然结束', () => {
+  const graph = {
+    ...straightFixture,
+    nodes: [node('start', 'start'), node('route', 'parallel'), node('left'), node('right')],
+    edges: [
+      edge('start-route', 'start', 'route'),
+      edge('route-left', 'route', 'left', 'parallel', '左'),
+      edge('route-right', 'route', 'right', 'parallel', '右'),
+    ],
+  }
+  const layout = layoutFlowGraph(graph)
+  const nodes = byId(layout)
+  assert.ok(nodes.left.position.x < nodes.right.position.x)
+  assert.equal(nodes.left.position.y, nodes.right.position.y)
+  assert.equal(layout.edges.filter((value) => value.data.role === 'fork').length, 2)
+  assert.equal(layout.edges.filter((value) => value.data.role === 'merge').length, 0)
+  assertNoNodeOverlap(layout)
+})
+
 test('结构化布局拒绝循环和重复分支节点而不回退通用图布局', () => {
   const cycle = {
     ...straightFixture,
