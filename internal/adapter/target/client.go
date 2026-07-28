@@ -329,10 +329,10 @@ type rawFlowBranchTemplate struct {
 func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templateID string) (bool, error) {
 	body := map[string]any{
 		"data": map[string]any{
-			"id":           strings.TrimSpace(templateID),
 			"useScope":     "invest",
 			"customerCode": firstNonEmpty(active.CustomerCode, c.config.CustomerCode),
 		},
+		"ids":                                []string{strings.TrimSpace(templateID)},
 		"showMe":                             true,
 		"ignoreFormTemplateBizRelevanceData": true,
 		"formTemplateBizRelevanceList":       []any{},

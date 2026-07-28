@@ -176,13 +176,16 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	_, hasFlowName := data["flowName"].(string)
-	templateID, hasTemplateID := data["id"].(string)
-	if (!hasFlowName && !hasTemplateID) || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true || body["ignoreFormTemplateBizRelevanceData"] != true {
+	ids, hasIDs := body["ids"].([]any)
+	if (!hasFlowName && !hasIDs) || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true || body["ignoreFormTemplateBizRelevanceData"] != true {
 		f.t.Error("流程模板请求参数不符合已核实协议")
 	}
-	if hasTemplateID {
-		if templateID != "template-id" {
-			f.t.Error("模板列表没有使用保存的模板 ID 精确核对")
+	if hasIDs {
+		if len(ids) != 1 || ids[0] != "template-id" {
+			f.t.Error("模板列表没有通过顶层 ids 精确核对保存的模板 ID")
+		}
+		if _, exists := data["id"]; exists {
+			f.t.Error("模板列表错误地依赖 data.id，目标服务不会用它筛选")
 		}
 		f.recordGraphCall("template-list")
 	}
@@ -223,15 +226,23 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	writeTargetJSON(response, map[string]any{
-		"isSuccess": true,
-		"data": []any{map[string]any{
+	items := []any{
+		map[string]any{
 			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
 			"flowStatus": "enable", "typeName": "经营管理", "updateDate": "2026-07-27 08:00",
 			"remark": "用于验证采购审批", "formExist": "withForm",
 			"formTemplateList": []any{map[string]any{"id": "form-a"}, map[string]any{"id": "form-b"}},
-		}},
-		"total": 1, "pages": 1, "current": 1, "size": 20,
+		},
+	}
+	if hasIDs {
+		items = append([]any{map[string]any{"id": "other-template", "flowName": "其他模板"}}, items...)
+	}
+	if mode == "template-other-only" {
+		items = []any{map[string]any{"id": "other-template", "flowName": "其他模板"}}
+	}
+	writeTargetJSON(response, map[string]any{
+		"isSuccess": true, "data": items,
+		"total": len(items), "pages": 1, "current": 1, "size": 20,
 	})
 }
 
@@ -286,6 +297,25 @@ func TestFlowTreeReadSessionExpiryReplaysWholeChainOnce(t *testing.T) {
 	fake.mu.Unlock()
 	if strings.Join(calls, ",") != "template-list,template-list,template-detail:template-id" {
 		t.Fatalf("会话重放顺序不正确：%v", calls)
+	}
+}
+
+func TestFlowTreeReadRejectsUnmatchedTemplateEvenWhenListHasOtherItems(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.expireMode = "template-other-only"
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	_, err := reader.FlowTree(context.Background(), "account-a", "new", "template-id")
+	if !errors.Is(err, service.ErrTargetFlowNotFound) {
+		t.Fatalf("未精确匹配保存模板 ID 时没有拒绝读取：%v", err)
+	}
+	fake.mu.Lock()
+	calls := append([]string(nil), fake.graphCalls...)
+	fake.mu.Unlock()
+	if strings.Join(calls, ",") != "template-list" {
+		t.Fatalf("未匹配模板仍继续读取详情：%v", calls)
 	}
 }
 
