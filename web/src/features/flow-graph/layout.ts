@@ -175,9 +175,10 @@ class FlowTreeLayout {
 
   private layoutRoute(node: FlowGraphNode, branchEdges: FlowGraphEdge[], stopId: string, ancestors: Set<string>): SegmentBlock {
     const mergeTargetId = node.mergeTargetId ?? ''
+    const branchStopId = mergeTargetId || stopId
     const branches = branchEdges.map((edge) => ({
       edge,
-      block: this.layoutSegment(edge.target, mergeTargetId, ancestors),
+      block: this.layoutSegment(edge.target, branchStopId, ancestors),
     }))
     const branchGroupWidth = branches.reduce((total, branch) => total + branch.block.width, 0)
       + flowTreeHorizontalGap * Math.max(0, branches.length - 1)

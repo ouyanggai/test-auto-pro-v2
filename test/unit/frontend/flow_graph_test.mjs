@@ -106,6 +106,34 @@ function nestedFixture() {
   }
 }
 
+function inheritedMergeFixture() {
+  return {
+    ...straightFixture,
+    nodes: [
+      node('start', 'start'), node('outer', 'condition', 'merge'),
+      node('left-route', 'parallel'), node('left-a'), node('left-b'),
+      node('middle-route', 'manual'), node('middle-a'), node('middle-b'),
+      node('right'), node('merge'), node('end', 'end'),
+    ],
+    edges: [
+      edge('start-outer', 'start', 'outer'),
+      edge('outer-left', 'outer', 'left-route', 'condition', '左'),
+      edge('outer-middle', 'outer', 'middle-route', 'condition', '中'),
+      edge('outer-right', 'outer', 'right', 'condition', '右'),
+      edge('left-route-a', 'left-route', 'left-a', 'parallel', '左一'),
+      edge('left-route-b', 'left-route', 'left-b', 'parallel', '左二'),
+      edge('middle-route-a', 'middle-route', 'middle-a', 'manual', '中一'),
+      edge('middle-route-b', 'middle-route', 'middle-b', 'manual', '中二'),
+      edge('left-a-merge', 'left-a', 'merge'),
+      edge('left-b-merge', 'left-b', 'merge'),
+      edge('middle-a-merge', 'middle-a', 'merge'),
+      edge('middle-b-merge', 'middle-b', 'merge'),
+      edge('right-merge', 'right', 'merge'),
+      edge('merge-end', 'merge', 'end'),
+    ],
+  }
+}
+
 test('直线流程保持同一主干中心且只生成确定垂直路径', () => {
   const first = layoutFlowGraph(straightFixture)
   const second = layoutFlowGraph(straightFixture)
@@ -163,6 +191,37 @@ test('两级嵌套路由在父分支块内展开并推开相邻分支', () => {
   const mergeRailYs = layout.edges.filter((value) => value.data.role === 'merge').map((value) => value.data.railY)
   assert.equal(new Set(forkRailYs).size, 2)
   assert.equal(new Set(mergeRailYs).size, 2)
+  assertNoNodeOverlap(layout)
+})
+
+test('无独立汇合的内层路由继承祖先停止点并由外层统一汇合', () => {
+  const graph = inheritedMergeFixture()
+  const layout = layoutFlowGraph(graph)
+  const nodes = byId(layout)
+  assert.equal(layout.nodes.length, graph.nodes.length)
+  assert.equal(new Set(layout.nodes.map((value) => value.id)).size, graph.nodes.length)
+  assert.equal(nodes['left-route'].type, 'routingHub')
+  assert.equal(nodes['middle-route'].type, 'routingHub')
+
+  const mergeEdges = layout.edges.filter((value) => value.data.role === 'merge')
+  assert.equal(mergeEdges.length, 5)
+  assert.equal(new Set(mergeEdges.map((value) => value.data.railY)).size, 1)
+  assert.ok(mergeEdges.every((value) => value.target === 'merge'))
+
+  const forkEdges = layout.edges.filter((value) => value.data.role === 'fork')
+  const outerForkRail = forkEdges.find((value) => value.id === 'outer-left').data.railY
+  const leftForkRail = forkEdges.find((value) => value.id === 'left-route-a').data.railY
+  const middleForkRail = forkEdges.find((value) => value.id === 'middle-route-a').data.railY
+  assert.notEqual(leftForkRail, outerForkRail)
+  assert.notEqual(middleForkRail, outerForkRail)
+  assert.equal(
+    new Set(forkEdges.filter((value) => value.source === 'left-route').map((value) => value.data.railY)).size,
+    1,
+  )
+  assert.equal(
+    new Set(forkEdges.filter((value) => value.source === 'middle-route').map((value) => value.data.railY)).size,
+    1,
+  )
   assertNoNodeOverlap(layout)
 })
 
