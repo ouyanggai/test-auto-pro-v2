@@ -62,7 +62,7 @@ func (r *ExecutionPathRepository) Create(ctx context.Context, planID uint64, cre
 		return model.ExecutionPath{}, false, err
 	}
 	defer tx.Rollback()
-	source, err := lockMutablePlan(ctx, tx, planID)
+	source, nextSequenceNo, err := lockMutablePlan(ctx, tx, planID)
 	if err != nil {
 		return model.ExecutionPath{}, false, err
 	}
@@ -90,9 +90,13 @@ func (r *ExecutionPathRepository) Create(ctx context.Context, planID uint64, cre
 			return model.ExecutionPath{}, false, repository.ErrExecutionPathLimit
 		}
 	}
-	var sequenceNo uint
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM test_execution_paths WHERE plan_id = ?", planID).Scan(&sequenceNo); err != nil {
+	var maxSequenceNo uint
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM test_execution_paths WHERE plan_id = ?", planID).Scan(&maxSequenceNo); err != nil {
 		return model.ExecutionPath{}, false, err
+	}
+	sequenceNo := nextSequenceNo
+	if maxSequenceNo > sequenceNo {
+		sequenceNo = maxSequenceNo
 	}
 	result, err := tx.ExecContext(ctx, `
 INSERT INTO test_execution_paths (plan_id, sequence_no, create_key, created_at, updated_at)
@@ -105,6 +109,10 @@ VALUES (?, ?, ?, ?, ?)`, planID, sequenceNo, createKey, now.UTC(), now.UTC())
 		return model.ExecutionPath{}, false, repository.ErrExecutionPathDataInvalid
 	}
 	if err := insertExecutionPathChoices(ctx, tx, uint64(id), choices); err != nil {
+		return model.ExecutionPath{}, false, err
+	}
+	// 计数器与路径在同一计划行锁和事务内推进，硬删除最高序号后也不能复用历史编号。
+	if _, err := tx.ExecContext(ctx, "UPDATE test_plans SET next_path_sequence_no = ? WHERE id = ?", sequenceNo+1, planID); err != nil {
 		return model.ExecutionPath{}, false, err
 	}
 	if err := touchPlan(ctx, tx, planID, now); err != nil {
@@ -122,7 +130,7 @@ func (r *ExecutionPathRepository) Update(ctx context.Context, planID, pathID uin
 		return model.ExecutionPath{}, err
 	}
 	defer tx.Rollback()
-	if _, err := lockMutablePlan(ctx, tx, planID); err != nil {
+	if _, _, err := lockMutablePlan(ctx, tx, planID); err != nil {
 		return model.ExecutionPath{}, err
 	}
 	path, err := findExecutionPath(ctx, tx, planID, pathID)
@@ -155,7 +163,7 @@ func (r *ExecutionPathRepository) Delete(ctx context.Context, planID, pathID uin
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := lockMutablePlan(ctx, tx, planID); err != nil {
+	if _, _, err := lockMutablePlan(ctx, tx, planID); err != nil {
 		return err
 	}
 	if _, err := findExecutionPath(ctx, tx, planID, pathID); err != nil {
@@ -170,20 +178,25 @@ func (r *ExecutionPathRepository) Delete(ctx context.Context, planID, pathID uin
 	return tx.Commit()
 }
 
-func lockMutablePlan(ctx context.Context, tx *sql.Tx, planID uint64) (string, error) {
+func lockMutablePlan(ctx context.Context, tx *sql.Tx, planID uint64) (string, uint, error) {
 	var source string
 	var status model.PlanStatus
-	err := tx.QueryRowContext(ctx, "SELECT flow_source, status FROM test_plans WHERE id = ? FOR UPDATE", planID).Scan(&source, &status)
+	var nextSequenceNo uint
+	// FOR UPDATE 将同一计划的计数器分配串行化，不同计划仍可并发创建路径。
+	err := tx.QueryRowContext(ctx, "SELECT flow_source, status, next_path_sequence_no FROM test_plans WHERE id = ? FOR UPDATE", planID).Scan(&source, &status, &nextSequenceNo)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", repository.ErrPlanNotFound
+		return "", 0, repository.ErrPlanNotFound
 	}
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if status != model.PlanStatusPendingConfiguration {
-		return "", repository.ErrExecutionPathPlanLocked
+		return "", 0, repository.ErrExecutionPathPlanLocked
 	}
-	return source, nil
+	if nextSequenceNo == 0 {
+		return "", 0, repository.ErrExecutionPathDataInvalid
+	}
+	return source, nextSequenceNo, nil
 }
 
 func findExecutionPathByCreateKey(ctx context.Context, tx *sql.Tx, createKey string) (model.ExecutionPath, bool, error) {

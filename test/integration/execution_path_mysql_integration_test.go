@@ -56,12 +56,16 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	if err != nil || storedPlan.PathCount != 2 || storedPlan.Status != model.PlanStatusPendingConfiguration {
 		t.Fatal("计划详情没有返回真实路径数量或状态被提前改变")
 	}
-	if err := paths.Delete(ctx, newPlan.ID, first.ID, time.Now().UTC()); err != nil {
+	if err := paths.Delete(ctx, newPlan.ID, second.ID, time.Now().UTC()); err != nil {
 		t.Fatalf("删除路径失败：%v", err)
 	}
 	remaining, err := paths.List(ctx, newPlan.ID)
-	if err != nil || len(remaining) != 1 || remaining[0].ID != second.ID || remaining[0].SequenceNo != 2 {
+	if err != nil || len(remaining) != 1 || remaining[0].ID != first.ID || remaining[0].SequenceNo != 1 {
 		t.Fatal("删除路径后错误重排了剩余序号")
+	}
+	third, created, err := paths.Create(ctx, newPlan.ID, "123e4567-e89b-12d3-a456-426614174205", firstChoices, time.Now().UTC())
+	if err != nil || !created || third.SequenceNo != 3 {
+		t.Fatalf("删除最高序号后复用了历史编号：created=%v path=%+v err=%v", created, third, err)
 	}
 
 	started, _, err := paths.Create(ctx, startedPlan.ID, "123e4567-e89b-12d3-a456-426614174203", nil, time.Now().UTC())
@@ -82,7 +86,7 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	}
 	defer reopened.Close()
 	reloaded, err := planmysql.NewExecutionPathRepository(reopened.DB).List(ctx, newPlan.ID)
-	if err != nil || len(reloaded) != 1 || reloaded[0].SequenceNo != 2 {
+	if err != nil || len(reloaded) != 2 || reloaded[0].SequenceNo != 1 || reloaded[1].SequenceNo != 3 {
 		t.Fatal("重启语义下没有读取到相同路径")
 	}
 }
@@ -127,7 +131,13 @@ func assertF005Tables(t *testing.T, db *sql.DB) {
 		}
 	}
 	var migrations int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 3 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 4 {
 		t.Fatalf("F-005 迁移版本数量不正确：%d err=%v", migrations, err)
+	}
+	var counterColumns int
+	if err := db.QueryRow(`
+SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema = DATABASE() AND table_name = 'test_plans' AND column_name = 'next_path_sequence_no'`).Scan(&counterColumns); err != nil || counterColumns != 1 {
+		t.Fatalf("F-005 稳定序号计数器不可用：count=%d err=%v", counterColumns, err)
 	}
 }

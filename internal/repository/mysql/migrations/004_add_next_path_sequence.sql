@@ -1,0 +1,1 @@
+ALTER TABLE test_plans ADD COLUMN next_path_sequence_no INT UNSIGNED NOT NULL DEFAULT 1;
