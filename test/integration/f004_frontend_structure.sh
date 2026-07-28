@@ -7,6 +7,7 @@ package_file="${project_root}/web/package.json"
 main_file="${project_root}/web/src/main.ts"
 view_file="${project_root}/web/src/views/PlanPathsView.vue"
 canvas_file="${project_root}/web/src/features/flow-graph/FlowGraphCanvas.vue"
+hub_file="${project_root}/web/src/features/flow-graph/FlowRoutingHub.vue"
 layout_file="${project_root}/web/src/features/flow-graph/layout.ts"
 
 grep -Fq '"@vue-flow/core"' "${package_file}"
@@ -27,9 +28,29 @@ grep -Fq ":elements-selectable=\"false\"" "${canvas_file}"
 grep -Fq ":delete-key-code=\"null\"" "${canvas_file}"
 grep -Fq ":pan-on-drag=\"true\"" "${canvas_file}"
 grep -Fq ":zoom-on-scroll=\"true\"" "${canvas_file}"
-grep -Fq "fitView({ padding: 0.18" "${canvas_file}"
+grep -Fq "setViewport(viewport" "${canvas_file}"
+if grep -Fq "fitView(" "${canvas_file}"; then
+  printf 'F-004 不得在初次加载时自动适配整图\n' >&2
+  exit 1
+fi
+grep -Fq "flow-graph-canvas--page-fullscreen" "${canvas_file}"
+grep -Fq "position: fixed" "${canvas_file}"
+grep -Fq "inset: 0" "${canvas_file}"
+grep -Fq "event.key !== 'Escape'" "${canvas_file}"
+grep -Fq "document.addEventListener('keydown'" "${canvas_file}"
+grep -Fq "document.removeEventListener('keydown'" "${canvas_file}"
+grep -Fq "页面全屏" "${canvas_file}"
+if grep -Eq "requestFullscreen|fullscreenElement|fullscreenchange" "${canvas_file}"; then
+  printf 'F-004 页面全屏不得调用浏览器 Fullscreen API\n' >&2
+  exit 1
+fi
 grep -Fq "useThemeVars()" "${canvas_file}"
 grep -Fq "rankdir: 'TB'" "${layout_file}"
+grep -Fq "type: 'step'" "${layout_file}"
+grep -Fq "type: routingHub ? 'routingHub' : 'flowNode'" "${layout_file}"
+grep -Fq '<flow-routing-hub />' "${canvas_file}"
+grep -Fq 'pointer-events: none' "${hub_file}"
+grep -Fq 'opacity: 0' "${hub_file}"
 
 if grep -RInE 'execution_paths|save.*path|create.*path|update.*path|selectedPath' "${project_root}/web/src/features/flow-graph" "${view_file}" >/dev/null; then
   printf 'F-004 前端越界引入路径选择或保存\n' >&2

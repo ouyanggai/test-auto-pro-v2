@@ -14,7 +14,7 @@ go test -count=1 ./test/contracts -run '^TestFlowGraph'
 printf '验证 F-004 三类目标请求顺序与代理 ID 转换\n'
 go test -count=1 ./test/integration -run '^TestFlowTreeRead'
 
-printf '验证 F-004 前端布局、错误、取消和首次适配\n'
+printf '验证 F-004 前端布局、错误、取消和首次可读视口\n'
 node --no-warnings --experimental-strip-types --test test/unit/frontend/flow_graph_test.mjs
 
 printf '验证 F-004 前端只读结构与依赖边界\n'

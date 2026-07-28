@@ -1,55 +1,101 @@
 <script setup lang="ts">
 import { Controls } from '@vue-flow/controls'
-import { useThemeVars } from 'naive-ui'
-import { computed, nextTick, onBeforeUnmount, watch } from 'vue'
+import { NButton, useThemeVars } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { VueFlow as VueFlowCanvas, useVueFlow } from '@vue-flow/core'
 
 import FlowGraphNode from './FlowGraphNode.vue'
-import { layoutFlowGraph, shouldFitInitialGraph } from './layout'
+import FlowRoutingHub from './FlowRoutingHub.vue'
+import { initialViewportForGraph, layoutFlowGraph, shouldSetInitialViewport } from './layout'
 import type { FlowGraph } from './types'
 
 const props = defineProps<{ graph: FlowGraph }>()
 const themeVars = useThemeVars()
+const canvasRoot = ref<HTMLElement | null>(null)
+const isPageFullscreen = ref(false)
 const laidOut = computed(() => layoutFlowGraph(props.graph))
 const canvasStyle = computed(() => ({
   '--flow-edge-color': themeVars.value.borderColor,
   '--flow-label-color': themeVars.value.textColor2,
   '--flow-surface-color': themeVars.value.bodyColor,
 }))
-const { onInit, fitView } = useVueFlow()
+const { onInit, setViewport } = useVueFlow()
 let ready = false
-let fittedPlanId = ''
-let fitVersion = 0
+let positionedPlanId = ''
+let viewportVersion = 0
+let previousDocumentOverflow: string | null = null
 
 function reducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
-async function fitInitialGraph() {
-  const version = ++fitVersion
+async function setInitialViewport() {
+  const version = ++viewportVersion
   await nextTick()
   await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-  if (version !== fitVersion || !shouldFitInitialGraph(ready, fittedPlanId, props.graph.planId)) return
-  fittedPlanId = props.graph.planId
-  await fitView({ padding: 0.18, duration: reducedMotion() ? 0 : 280, maxZoom: 1.15 })
+  if (version !== viewportVersion || !shouldSetInitialViewport(ready, positionedPlanId, props.graph.planId)) return
+  const viewport = initialViewportForGraph(laidOut.value.nodes, canvasRoot.value?.clientWidth ?? 0)
+  if (!viewport) return
+  positionedPlanId = props.graph.planId
+  await setViewport(viewport, { duration: reducedMotion() ? 0 : 220 })
+}
+
+function setDocumentScrollLocked(locked: boolean) {
+  if (locked && previousDocumentOverflow === null) {
+    previousDocumentOverflow = document.documentElement.style.overflow
+    document.documentElement.style.overflow = 'hidden'
+  }
+  else if (!locked && previousDocumentOverflow !== null) {
+    document.documentElement.style.overflow = previousDocumentOverflow
+    previousDocumentOverflow = null
+  }
+}
+
+function togglePageFullscreen() {
+  isPageFullscreen.value = !isPageFullscreen.value
+  setDocumentScrollLocked(isPageFullscreen.value)
+}
+
+function handlePageFullscreenKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !isPageFullscreen.value) return
+  isPageFullscreen.value = false
+  setDocumentScrollLocked(false)
 }
 
 onInit(() => {
   ready = true
-  void fitInitialGraph()
+  void setInitialViewport()
 })
 
 watch(() => props.graph.planId, () => {
-  void fitInitialGraph()
+  void setInitialViewport()
 })
 
+onMounted(() => document.addEventListener('keydown', handlePageFullscreenKeydown))
 onBeforeUnmount(() => {
-  fitVersion++
+  viewportVersion++
+  setDocumentScrollLocked(false)
+  document.removeEventListener('keydown', handlePageFullscreenKeydown)
 })
 </script>
 
 <template>
-  <div class="flow-graph-canvas" :style="canvasStyle" aria-label="只读流程图">
+  <div
+    ref="canvasRoot"
+    class="flow-graph-canvas"
+    :class="{ 'flow-graph-canvas--page-fullscreen': isPageFullscreen }"
+    :style="canvasStyle"
+    aria-label="只读流程图"
+  >
+    <n-button
+      class="flow-graph-canvas__fullscreen"
+      size="small"
+      secondary
+      :aria-pressed="isPageFullscreen"
+      @click="togglePageFullscreen"
+    >
+      {{ isPageFullscreen ? '退出全屏' : '页面全屏' }}
+    </n-button>
     <vue-flow-canvas
       :nodes="laidOut.nodes"
       :edges="laidOut.edges"
@@ -71,6 +117,9 @@ onBeforeUnmount(() => {
       <template #node-flowNode="{ data }">
         <flow-graph-node :data="data" />
       </template>
+      <template #node-routingHub>
+        <flow-routing-hub />
+      </template>
       <controls position="bottom-right" :show-interactive="false" />
     </vue-flow-canvas>
   </div>
@@ -78,12 +127,30 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .flow-graph-canvas {
+  position: relative;
   width: 100%;
   height: 560px;
   min-height: 560px;
   overflow: hidden;
   background: var(--flow-surface-color);
   border-top: 1px solid var(--flow-edge-color);
+}
+
+.flow-graph-canvas--page-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  border: 0;
+}
+
+.flow-graph-canvas__fullscreen {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 6;
 }
 
 .flow-graph-canvas :deep(.vue-flow__pane) {

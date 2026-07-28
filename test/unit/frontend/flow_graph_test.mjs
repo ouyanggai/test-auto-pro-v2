@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { fetchFlowGraph, FlowGraphApiError } from '../../../web/src/features/flow-graph/api.ts'
-import { layoutFlowGraph, shouldFitInitialGraph } from '../../../web/src/features/flow-graph/layout.ts'
+import {
+  flowNodeHorizontalGap,
+  flowNodeVerticalGap,
+  initialFlowZoom,
+  initialViewportForGraph,
+  layoutFlowGraph,
+  shouldSetInitialViewport,
+} from '../../../web/src/features/flow-graph/layout.ts'
 
 const fixture = {
   planId: '41',
@@ -31,13 +38,56 @@ test('dagre 以 TB 方向生成确定位置并保留真实分支名称', () => {
   assert.equal(first.nodes[0].draggable, false)
   assert.equal(first.nodes[0].selectable, false)
   assert.equal(first.nodes[0].connectable, false)
+  assert.equal(first.nodes.find((node) => node.id === 'condition').type, 'routingHub')
+  assert.equal(first.edges[1].type, 'step')
 })
 
-test('每个计划只在图首次就绪时触发适配', () => {
-  assert.equal(shouldFitInitialGraph(false, '', '41'), false)
-  assert.equal(shouldFitInitialGraph(true, '', '41'), true)
-  assert.equal(shouldFitInitialGraph(true, '41', '41'), false)
-  assert.equal(shouldFitInitialGraph(true, '41', '42'), true)
+test('嵌套路由的每组分支都严格按后端边顺序从左到右', () => {
+  const graph = {
+    ...fixture,
+    nodes: [
+      { id: 'start', name: '发起', type: 'start', typeName: '发起' },
+      { id: 'route-1', name: '条件', type: 'condition', typeName: '条件路由' },
+      { id: 'a', name: '分支 A', type: 'common', typeName: '审批' },
+      { id: 'route-2', name: '手动', type: 'manual', typeName: '手动路由' },
+      { id: 'c', name: '分支 C', type: 'common', typeName: '审批' },
+      { id: 'd', name: '分支 D', type: 'common', typeName: '审批' },
+      { id: 'e', name: '分支 E', type: 'common', typeName: '审批' },
+      { id: 'f', name: '分支 F', type: 'common', typeName: '审批' },
+    ],
+    edges: [
+      { id: 's-r1', source: 'start', target: 'route-1', kind: 'sequence', label: '', branchId: '' },
+      { id: 'r1-a', source: 'route-1', target: 'a', kind: 'condition', label: 'A', branchId: 'a' },
+      { id: 'r1-r2', source: 'route-1', target: 'route-2', kind: 'condition', label: 'B', branchId: 'b' },
+      { id: 'r1-c', source: 'route-1', target: 'c', kind: 'condition', label: 'C', branchId: 'c' },
+      { id: 'r2-d', source: 'route-2', target: 'd', kind: 'manual', label: 'D', branchId: 'd' },
+      { id: 'r2-e', source: 'route-2', target: 'e', kind: 'manual', label: 'E', branchId: 'e' },
+      { id: 'r2-f', source: 'route-2', target: 'f', kind: 'manual', label: 'F', branchId: 'f' },
+    ],
+  }
+  const laidOut = layoutFlowGraph(graph)
+  const x = Object.fromEntries(laidOut.nodes.map((node) => [node.id, node.position.x]))
+  assert.ok(x.a < x['route-2'] && x['route-2'] < x.c, '第一层 A、B、C 应从左到右')
+  assert.ok(x.d < x.e && x.e < x.f, '嵌套层 D、E、F 应从左到右')
+  assert.equal(laidOut.nodes.find((node) => node.id === 'route-1').type, 'routingHub')
+  assert.equal(laidOut.nodes.find((node) => node.id === 'route-2').type, 'routingHub')
+  assert.ok(flowNodeHorizontalGap >= 100)
+  assert.ok(flowNodeVerticalGap >= 110)
+})
+
+test('每个计划只设置一次可读初始视口并把根业务节点放在上方中央', () => {
+  assert.equal(shouldSetInitialViewport(false, '', '41'), false)
+  assert.equal(shouldSetInitialViewport(true, '', '41'), true)
+  assert.equal(shouldSetInitialViewport(true, '41', '41'), false)
+  assert.equal(shouldSetInitialViewport(true, '41', '42'), true)
+
+  const laidOut = layoutFlowGraph(fixture)
+  const viewport = initialViewportForGraph(laidOut.nodes, 1000)
+  const root = laidOut.nodes.find((node) => node.id === 'start')
+  assert.ok(viewport)
+  assert.equal(viewport.zoom, initialFlowZoom)
+  assert.equal((root.position.x + 90) * viewport.zoom + viewport.x, 500)
+  assert.equal(root.position.y * viewport.zoom + viewport.y, 52)
 })
 
 test('流程图 API 保留稳定错误与取消边界', async (t) => {
