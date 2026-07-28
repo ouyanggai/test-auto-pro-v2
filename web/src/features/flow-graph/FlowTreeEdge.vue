@@ -14,7 +14,8 @@ const emit = defineEmits<{
     :id="id"
 	:class="{
 	  'flow-tree-edge__base--selected': data.selected,
-	  'flow-tree-edge__base--dimmed': data.selectionEnabled && data.active === false,
+	  'flow-tree-edge__base--candidate': data.candidate,
+	  'flow-tree-edge__base--dimmed': data.selectionEnabled && data.dimmed,
 	}"
     :path="data.path"
     :marker-start="markerStart"
@@ -33,7 +34,8 @@ const emit = defineEmits<{
 	class="flow-tree-edge__direction"
 	:class="{
 	  'flow-tree-edge__direction--selected': data.selected,
-	  'flow-tree-edge__direction--dimmed': data.active === false,
+	  'flow-tree-edge__direction--animated': !data.selectionEnabled || data.selected,
+	  'flow-tree-edge__direction--dimmed': data.selectionEnabled && data.dimmed,
 	}"
 	:d="data.path"
 	aria-hidden="true"
@@ -53,6 +55,7 @@ const emit = defineEmits<{
 	  :class="{
 		'flow-tree-edge__choice--selected': data.selected,
 		'flow-tree-edge__choice--candidate': data.candidate,
+		'flow-tree-edge__choice--dimmed': data.dimmed,
 	  }"
 	  :style="{ transform: `translate(-50%, -50%) translate(${data.labelX}px, ${data.labelY}px)` }"
 	  :aria-pressed="data.selected"
@@ -80,12 +83,20 @@ const emit = defineEmits<{
   stroke-linecap: round;
   opacity: 0.42;
   pointer-events: none;
+}
+
+.flow-tree-edge__direction--animated {
   animation: flow-tree-direction 1.6s linear infinite;
 }
 
 :deep(.flow-tree-edge__base--selected) {
   stroke: var(--flow-direction-color);
-  stroke-width: 2;
+  stroke-width: 3;
+}
+
+:deep(.flow-tree-edge__base--candidate) {
+  stroke: var(--flow-direction-color);
+  stroke-width: 1.8;
 }
 
 :deep(.flow-tree-edge__base--dimmed) {
@@ -93,8 +104,8 @@ const emit = defineEmits<{
 }
 
 .flow-tree-edge__direction--selected {
-  stroke-width: 2.4;
-  opacity: 0.86;
+  stroke-width: 3.2;
+  opacity: 0.9;
 }
 
 .flow-tree-edge__direction--dimmed {
@@ -135,7 +146,12 @@ const emit = defineEmits<{
 }
 
 .flow-tree-edge__choice--dimmed {
-  opacity: 0.5;
+  opacity: 0.62;
+}
+
+.flow-tree-edge__choice--dimmed:hover,
+.flow-tree-edge__choice--dimmed:focus-visible {
+  opacity: 1;
 }
 
 .flow-tree-edge__required {
@@ -152,7 +168,7 @@ const emit = defineEmits<{
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .flow-tree-edge__direction {
+  .flow-tree-edge__direction--animated {
     animation: none;
   }
 

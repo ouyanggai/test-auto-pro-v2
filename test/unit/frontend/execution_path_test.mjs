@@ -5,7 +5,12 @@ import {
   analyzeExecutionPath,
   applyExecutionPathChoice,
   canCreateAdditionalPath,
+  canEnterExecutionPathSelection,
+  classifyExecutionPathEdges,
+  nextExecutionPathRouteID,
+  projectExecutionPathSummary,
   reconcileExecutionPathChoices,
+  refreshExecutionPathDraft,
   viewportForPointNearest,
 } from '../../../web/src/features/execution-paths/logic.ts'
 import {
@@ -61,6 +66,17 @@ test('路径选择只要求当前可达路由且并行分支全部纳入', () =>
   assert.equal(complete.invalid, false)
 })
 
+test('空入口与下一待选点顺序保持后端一致', () => {
+  const emptyEntry = analyzeExecutionPath({ ...graph, entryNodeIds: [] }, [])
+  assert.equal(emptyEntry.complete, false)
+  assert.equal(emptyEntry.invalid, true)
+
+  const initial = analyzeExecutionPath(graph, [])
+  assert.equal(nextExecutionPathRouteID(initial), 'route-a')
+  const enteredParallel = analyzeExecutionPath(graph, [{ routeNodeId: 'route-a', branchId: 'branch-a' }])
+  assert.equal(nextExecutionPathRouteID(enteredParallel), 'left-route')
+})
+
 test('改选上游分支会清理已不可达选择且不会猜测新分支', () => {
   const original = [
     { routeNodeId: 'route-a', branchId: 'branch-a' },
@@ -81,11 +97,66 @@ test('真实图变化时只保留仍可对应且可达的选择', () => {
   assert.deepEqual(result.choices, [{ routeNodeId: 'route-a', branchId: 'branch-a' }])
 })
 
+test('失效保存刷新图时协调有效选择，刷新失败仍保留原草稿', async () => {
+  const draft = [
+    { routeNodeId: 'route-a', branchId: 'branch-a' },
+    { routeNodeId: 'left-route', branchId: 'removed' },
+  ]
+  const refreshed = await refreshExecutionPathDraft(draft, async () => graph)
+  assert.equal(refreshed.error, null)
+  assert.equal(refreshed.changed, true)
+  assert.deepEqual(refreshed.choices, [{ routeNodeId: 'route-a', branchId: 'branch-a' }])
+
+  const failed = await refreshExecutionPathDraft(draft, async () => { throw new Error('unavailable') })
+  assert.equal(failed.graph, null)
+  assert.equal(failed.changed, true)
+  assert.deepEqual(failed.choices, draft)
+  assert.notEqual(failed.choices, draft)
+})
+
+test('实时路径摘要只投影可达节点、选择、并行必经和下一待选点', () => {
+  const choices = [{ routeNodeId: 'route-a', branchId: 'branch-a' }]
+  const analysis = analyzeExecutionPath(graph, choices)
+  const summary = projectExecutionPathSummary(graph, analysis, choices)
+  assert.ok(summary.some((item) => item.kind === 'node' && item.label === '发起'))
+  assert.ok(summary.some((item) => item.kind === 'choice' && item.label === '进入并行'))
+  assert.ok(summary.some((item) => item.kind === 'parallel' && item.detail.includes('并行必经')))
+  assert.ok(summary.some((item) => item.kind === 'next' && item.id === 'left-route'))
+  assert.equal(summary.some((item) => item.id === 'other-end'), false)
+})
+
+test('线路边明确区分已选、待选和弱化且弱化分支仍保持活动', () => {
+  const initialAnalysis = analyzeExecutionPath(graph, [])
+  const initialStates = classifyExecutionPathEdges(graph, initialAnalysis, [])
+  assert.equal(initialStates.get('route-parallel').candidate, true)
+  assert.equal(initialStates.get('route-other').candidate, true)
+  assert.equal(initialStates.get('parallel-left').dimmed, true)
+
+  const choices = [{ routeNodeId: 'route-a', branchId: 'branch-a' }]
+  const selectedAnalysis = analyzeExecutionPath(graph, choices)
+  const selectedStates = classifyExecutionPathEdges(graph, selectedAnalysis, choices)
+  assert.equal(selectedStates.get('route-parallel').selected, true)
+  assert.equal(selectedStates.get('route-other').dimmed, true)
+  assert.equal(selectedStates.get('route-other').active, true)
+  assert.equal(selectedStates.get('route-other').candidate, false)
+  assert.equal(selectedStates.get('parallel-left').selected, true)
+  assert.equal(selectedStates.get('parallel-right').selected, true)
+  assert.equal(selectedStates.get('left-a').candidate, true)
+})
+
 test('新发起允许多路径而已发待发最多一条', () => {
   assert.equal(canCreateAdditionalPath('new', 3), true)
   assert.equal(canCreateAdditionalPath('started', 0), true)
   assert.equal(canCreateAdditionalPath('started', 1), false)
   assert.equal(canCreateAdditionalPath('pending', 1), false)
+})
+
+test('路径列表未完成或失败时不能进入选择模式', () => {
+  const ready = { graphReady: true, pathsLoaded: true, pathsFailed: false, hasDraft: false, canCreate: true }
+  assert.equal(canEnterExecutionPathSelection(ready), true)
+  assert.equal(canEnterExecutionPathSelection({ ...ready, pathsLoaded: false }), false)
+  assert.equal(canEnterExecutionPathSelection({ ...ready, pathsFailed: true }), false)
+  assert.equal(canEnterExecutionPathSelection({ ...ready, graphReady: false }), false)
 })
 
 test('下一待选点只做保持缩放的最小视口平移', () => {
@@ -95,6 +166,11 @@ test('下一待选点只做保持缩放的最小视口平移', () => {
   assert.equal(moved.zoom, viewport.zoom)
   assert.ok(moved.x < viewport.x)
   assert.ok(moved.y < viewport.y)
+
+  const panelSafe = viewportForPointNearest(viewport, { x: 820, y: 200 }, { width: 1000, height: 560 }, 72, 336)
+  assert.ok(panelSafe.x < viewport.x)
+  assert.equal(panelSafe.y, viewport.y)
+  assert.equal(panelSafe.zoom, viewport.zoom)
 })
 
 test('路径 API 只提交 choices、创建键和归属路径地址', async () => {

@@ -17,3 +17,10 @@ export interface ExecutionPathAnalysis {
   reachableNodeIds: Set<string>
   reachableEdgeIds: Set<string>
 }
+
+export interface ExecutionPathSummaryItem {
+  id: string
+  kind: 'node' | 'choice' | 'parallel' | 'next'
+  label: string
+  detail: string
+}

@@ -1,5 +1,5 @@
 import type { FlowGraph } from '../flow-graph/types.ts'
-import type { ExecutionPathAnalysis, ExecutionPathChoice } from './types.ts'
+import type { ExecutionPathAnalysis, ExecutionPathChoice, ExecutionPathSummaryItem } from './types.ts'
 
 const selectableKinds = new Set(['condition', 'manual'])
 
@@ -21,6 +21,11 @@ export function analyzeExecutionPath(graph: FlowGraph, choices: ExecutionPathCho
   const reachableEdgeIds = new Set<string>()
   const missingRouteNodeIds: string[] = []
   const usedChoices = new Set<string>()
+
+  // 后端把空入口视为不可配置；前端必须同样拒绝，不能把空遍历误判成零选择完整路径。
+  if (graph.entryNodeIds.length === 0) {
+    return { complete: false, invalid: true, missingRouteNodeIds, reachableNodeIds, reachableEdgeIds }
+  }
   const queue = [...graph.entryNodeIds]
   while (queue.length > 0 && !invalid) {
     const nodeId = queue.shift()!
@@ -124,8 +129,109 @@ export function reconcileExecutionPathChoices(graph: FlowGraph, choices: Executi
   return { choices: reachable, changed }
 }
 
+export async function refreshExecutionPathDraft(
+  choices: ExecutionPathChoice[],
+  readGraph: () => Promise<FlowGraph>,
+) {
+  // 刷新失败也必须保留独立副本，避免网络异常把用户尚未保存的选择清空。
+  const preserved = choices.map((choice) => ({ ...choice }))
+  try {
+    const graph = await readGraph()
+    const reconciled = reconcileExecutionPathChoices(graph, preserved)
+    return { graph, choices: reconciled.choices, changed: true, error: null }
+  }
+  catch (error) {
+    return { graph: null, choices: preserved, changed: true, error }
+  }
+}
+
+export function nextExecutionPathRouteID(analysis: ExecutionPathAnalysis): string | null {
+  // 分析器按真实入口和后端边顺序广度遍历，首个待选点因此是稳定的左到右下一步。
+  return analysis.missingRouteNodeIds[0] ?? null
+}
+
+export function projectExecutionPathSummary(
+  graph: FlowGraph,
+  analysis: ExecutionPathAnalysis,
+  choices: ExecutionPathChoice[],
+): ExecutionPathSummaryItem[] {
+  const selectedByRoute = new Map(choices.map((choice) => [choice.routeNodeId, choice.branchId]))
+  const missing = new Set(analysis.missingRouteNodeIds)
+  const outgoing = new Map<string, typeof graph.edges>()
+  for (const edge of graph.edges) {
+    const items = outgoing.get(edge.source) ?? []
+    items.push(edge)
+    outgoing.set(edge.source, items)
+  }
+
+  // 摘要只投影分析器已经确认的可达节点，不自行推演第二份路径业务模型。
+  return graph.nodes.flatMap((node): ExecutionPathSummaryItem[] => {
+    if (!analysis.reachableNodeIds.has(node.id)) return []
+    const label = node.name || node.typeName || '流程节点'
+    if (node.type === 'condition' || node.type === 'manual') {
+      if (missing.has(node.id)) {
+        return [{ id: node.id, kind: 'next', label: label || '请选择分支', detail: '下一待选点' }]
+      }
+      const branchID = selectedByRoute.get(node.id)
+      const edge = (outgoing.get(node.id) ?? []).find((item) => item.branchId === branchID)
+      return [{
+        id: node.id,
+        kind: 'choice',
+        label: edge?.label || '已选分支',
+        detail: node.type === 'condition' ? '条件分支' : '手动分支',
+      }]
+    }
+    if (node.type === 'parallel') {
+      const branches = (outgoing.get(node.id) ?? [])
+        .filter((edge) => edge.kind === 'parallel')
+        .map((edge) => edge.label)
+        .filter(Boolean)
+      return [{
+        id: node.id,
+        kind: 'parallel',
+        label: label || '并行分支',
+        detail: branches.length > 0 ? `并行必经：${branches.join('、')}` : '并行必经',
+      }]
+    }
+    return [{ id: node.id, kind: 'node', label, detail: node.typeName || '流程节点' }]
+  })
+}
+
+export function classifyExecutionPathEdges(
+  graph: FlowGraph,
+  analysis: ExecutionPathAnalysis,
+  choices: ExecutionPathChoice[],
+) {
+  const selectedByRoute = new Map(choices.map((choice) => [choice.routeNodeId, choice.branchId]))
+  return new Map(graph.edges.map((edge) => {
+    const selectable = edge.kind === 'condition' || edge.kind === 'manual'
+    const selectedBranch = selectedByRoute.get(edge.source)
+    const routeReachable = analysis.reachableNodeIds.has(edge.source)
+    const selected = analysis.reachableEdgeIds.has(edge.id)
+    const candidate = routeReachable && selectable && !selectedBranch
+    // 选定一支后，同一路由其他标签仍属于可操作候选，只弱化而不能隐藏或禁用。
+    const active = selected || candidate || (routeReachable && selectable)
+    const dimmed = !selected && !candidate
+    return [edge.id, { selected, candidate, dimmed, active }] as const
+  }))
+}
+
 export function canCreateAdditionalPath(source: FlowGraph['flowSource'], savedCount: number): boolean {
   return source === 'new' || savedCount === 0
+}
+
+export function canEnterExecutionPathSelection(options: {
+  graphReady: boolean
+  pathsLoaded: boolean
+  pathsFailed: boolean
+  hasDraft: boolean
+  canCreate: boolean
+}): boolean {
+  // 未完成或失败的路径列表不能按空数组处理，否则已发/待发可能错误开放第二条路径。
+  return options.graphReady
+    && options.pathsLoaded
+    && !options.pathsFailed
+    && (options.hasDraft || options.canCreate)
 }
 
 export function viewportForPointNearest(
@@ -133,14 +239,16 @@ export function viewportForPointNearest(
   point: { x: number, y: number },
   container: { width: number, height: number },
   margin = 72,
+  reservedRight = 0,
 ) {
-  if (container.width <= margin * 2 || container.height <= margin * 2 || viewport.zoom <= 0) return viewport
+  const safeWidth = container.width - Math.max(0, reservedRight)
+  if (safeWidth <= margin * 2 || container.height <= margin * 2 || viewport.zoom <= 0) return viewport
   const screenX = point.x * viewport.zoom + viewport.x
   const screenY = point.y * viewport.zoom + viewport.y
   let x = viewport.x
   let y = viewport.y
   if (screenX < margin) x += margin - screenX
-  else if (screenX > container.width - margin) x -= screenX - (container.width - margin)
+  else if (screenX > safeWidth - margin) x -= screenX - (safeWidth - margin)
   if (screenY < margin) y += margin - screenY
   else if (screenY > container.height - margin) y -= screenY - (container.height - margin)
   return { x, y, zoom: viewport.zoom }

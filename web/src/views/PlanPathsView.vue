@@ -24,7 +24,10 @@ import {
   analyzeExecutionPath,
   applyExecutionPathChoice,
   canCreateAdditionalPath,
+  canEnterExecutionPathSelection,
+  projectExecutionPathSummary,
   reconcileExecutionPathChoices,
+  refreshExecutionPathDraft,
 } from '../features/execution-paths/logic'
 import type { ExecutionPath, ExecutionPathChoice } from '../features/execution-paths/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
@@ -44,6 +47,7 @@ const paths = ref<ExecutionPath[]>([])
 const planLoading = ref(false)
 const graphLoading = ref(false)
 const pathsLoading = ref(false)
+const pathsLoaded = ref(false)
 const planError = ref('')
 const graphError = ref<FlowGraphApiError | null>(null)
 const pathsError = ref('')
@@ -55,8 +59,14 @@ const draftChangedByGraph = ref(false)
 const createKey = ref('')
 const saving = ref(false)
 const deleting = ref(false)
+const selectionMode = ref(false)
+const selectionStarted = ref(false)
+const draftRecoveryLoading = ref(false)
+const draftRecoveryError = ref('')
 let loadController: AbortController | null = null
 let loadVersion = 0
+let draftRecoveryController: AbortController | null = null
+let draftRecoveryVersion = 0
 
 const planID = computed(() => String(route.params.id || ''))
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
@@ -64,20 +74,41 @@ const pathAnalysis = computed(() => graph.value
   ? analyzeExecutionPath(graph.value, draftChoices.value)
   : null)
 const remainingChoices = computed(() => pathAnalysis.value?.missingRouteNodeIds.length ?? 0)
-const saveDisabled = computed(() => !draftMode.value || !pathAnalysis.value?.complete || saving.value)
+const saveDisabled = computed(() => !draftMode.value
+  || !pathAnalysis.value?.complete
+  || saving.value
+  || draftRecoveryLoading.value
+  || Boolean(draftRecoveryError.value))
 const allowNewPath = computed(() => Boolean(
-  graph.value && plan.value && canCreateAdditionalPath(plan.value.flowSource, paths.value.length),
+  graph.value
+  && plan.value
+  && pathsLoaded.value
+  && !pathsError.value
+  && canCreateAdditionalPath(plan.value.flowSource, paths.value.length),
 ))
-const allowCopy = computed(() => plan.value?.flowSource === 'new' && Boolean(activePath.value))
+const allowCopy = computed(() => pathsLoaded.value && plan.value?.flowSource === 'new' && Boolean(activePath.value))
+const selectionAvailable = computed(() => canEnterExecutionPathSelection({
+  graphReady: Boolean(graph.value),
+  pathsLoaded: pathsLoaded.value,
+  pathsFailed: Boolean(pathsError.value),
+  hasDraft: Boolean(draftMode.value),
+  canCreate: allowNewPath.value,
+}))
+const selectionResumable = computed(() => selectionStarted.value && Boolean(draftMode.value))
+const pathSummary = computed(() => graph.value && pathAnalysis.value
+  ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
+  : [])
 
 async function loadPage() {
   loadController?.abort()
+  draftRecoveryController?.abort()
   const controller = new AbortController()
   loadController = controller
   const version = ++loadVersion
   planLoading.value = true
   graphLoading.value = false
   pathsLoading.value = false
+  pathsLoaded.value = false
   planError.value = ''
   graphError.value = null
   pathsError.value = ''
@@ -85,6 +116,10 @@ async function loadPage() {
   plan.value = null
   graph.value = null
   paths.value = []
+  selectionMode.value = false
+  selectionStarted.value = false
+  draftRecoveryLoading.value = false
+  draftRecoveryError.value = ''
   clearDraft()
   try {
     const storedPlan = await fetchPlan(planID.value, controller.signal)
@@ -105,10 +140,14 @@ async function loadPage() {
         ? caught
         : new FlowGraphApiError('暂时无法读取流程，请重试', { retryable: true })
     }
-    if (pathsResult.status === 'fulfilled') paths.value = pathsResult.value
+    if (pathsResult.status === 'fulfilled') {
+      paths.value = pathsResult.value
+      pathsLoaded.value = true
+    }
     else {
       const caught = pathsResult.reason
       pathsError.value = caught instanceof ExecutionPathApiError ? caught.message : '暂时无法读取执行路径'
+      pathsLoaded.value = false
     }
     if (graph.value && paths.value[0]) selectSavedPath(paths.value[0])
   }
@@ -159,14 +198,17 @@ async function retryPaths() {
   const controller = new AbortController()
   const version = loadVersion
   pathsLoading.value = true
+  pathsLoaded.value = false
   pathsError.value = ''
   try {
     const items = await fetchExecutionPaths(planID.value, controller.signal)
     if (version !== loadVersion) return
     paths.value = items
+    pathsLoaded.value = true
     if (graph.value && items[0]) selectSavedPath(items[0])
   }
   catch (caught) {
+    pathsLoaded.value = false
     pathsError.value = caught instanceof ExecutionPathApiError ? caught.message : '暂时无法读取执行路径'
   }
   finally {
@@ -181,6 +223,7 @@ function selectSavedPath(path: ExecutionPath) {
   draftMode.value = 'edit'
   draftChoices.value = reconciled.choices
   draftChangedByGraph.value = reconciled.changed
+  draftRecoveryError.value = ''
   createKey.value = ''
 }
 
@@ -190,6 +233,7 @@ function startNewPath() {
   draftMode.value = 'new'
   draftChoices.value = []
   draftChangedByGraph.value = false
+  draftRecoveryError.value = ''
   createKey.value = crypto.randomUUID()
 }
 
@@ -200,6 +244,7 @@ function copyActivePath() {
   draftMode.value = 'copy'
   draftChoices.value = reconciled.choices
   draftChangedByGraph.value = reconciled.changed
+  draftRecoveryError.value = ''
   createKey.value = crypto.randomUUID()
 }
 
@@ -208,13 +253,59 @@ function clearDraft() {
   draftMode.value = null
   draftChoices.value = []
   draftChangedByGraph.value = false
+  draftRecoveryError.value = ''
   createKey.value = ''
 }
 
 function selectBranch(choice: ExecutionPathChoice) {
-  if (!graph.value || !draftMode.value || saving.value) return
+  if (!graph.value || !draftMode.value || !selectionMode.value || saving.value) return
   draftChoices.value = applyExecutionPathChoice(graph.value, draftChoices.value, choice.routeNodeId, choice.branchId)
   draftChangedByGraph.value = false
+}
+
+function enterSelectionMode() {
+  if (!selectionAvailable.value || !graph.value) return
+  // 首次进入时才创建本地草稿；退出页面全屏不会清理它，确保再次进入可继续选择。
+  if (!draftMode.value) {
+    if (allowNewPath.value) startNewPath()
+    else if (paths.value[0]) selectSavedPath(paths.value[0])
+  }
+  if (!draftMode.value) return
+  selectionMode.value = true
+  selectionStarted.value = true
+}
+
+function exitSelectionMode() {
+  // 这里只关闭交互展示，草稿、活动路径和创建键都必须原样保留。
+  selectionMode.value = false
+}
+
+async function refreshDraftAfterInvalidSave() {
+  if (!draftMode.value) return
+  draftRecoveryController?.abort()
+  const controller = new AbortController()
+  draftRecoveryController = controller
+  const version = ++draftRecoveryVersion
+  draftRecoveryLoading.value = true
+  draftRecoveryError.value = ''
+  const result = await refreshExecutionPathDraft(
+    draftChoices.value,
+    () => fetchFlowGraph(planID.value, controller.signal),
+  )
+  if (controller.signal.aborted || version !== draftRecoveryVersion) return
+  draftChangedByGraph.value = true
+  if (result.graph) {
+    // 只替换同一计划的当前图和仍能精确对应的选择，不触发 fitView，也不改变草稿模式或幂等键。
+    graph.value = result.graph
+    draftChoices.value = result.choices
+    message.warning('流程已变化，需要重新选择')
+  }
+  else {
+    draftChoices.value = result.choices
+    draftRecoveryError.value = '流程已变化，但暂时无法读取最新流程，请重试'
+    message.error(draftRecoveryError.value)
+  }
+  draftRecoveryLoading.value = false
 }
 
 async function savePath() {
@@ -236,7 +327,13 @@ async function savePath() {
     const apiError = caught instanceof ExecutionPathApiError
       ? caught
       : new ExecutionPathApiError('保存失败，请重试')
-    message.error(apiError.message)
+    if (apiError.code === 'EXECUTION_PATH_INVALID') {
+      // 后端已经证明旧图不可继续使用；保留草稿后读取最新图协调，不能让用户从头重选。
+      await refreshDraftAfterInvalidSave()
+    }
+    else {
+      message.error(apiError.message)
+    }
   }
   finally {
     saving.value = false
@@ -252,7 +349,10 @@ async function removeActivePath() {
     paths.value = paths.value.filter((path) => path.id !== deletingID)
     plan.value.pathCount = paths.value.length
     if (paths.value[0] && graph.value) selectSavedPath(paths.value[0])
-    else clearDraft()
+    else {
+      clearDraft()
+      selectionMode.value = false
+    }
     message.success('执行路径已删除')
   }
   catch (caught) {
@@ -278,7 +378,10 @@ function scheduledAtText(value: string | null): string {
 }
 
 watch(planID, () => { void loadPage() }, { immediate: true })
-onBeforeUnmount(() => loadController?.abort())
+onBeforeUnmount(() => {
+  loadController?.abort()
+  draftRecoveryController?.abort()
+})
 </script>
 
 <template>
@@ -316,7 +419,13 @@ onBeforeUnmount(() => loadController?.abort())
               <h2 id="flow-graph-heading">流程结构</h2>
               <p>在条件或手动分支上选择线路；并行分支会自动全部纳入。</p>
             </div>
+            <n-spin v-if="pathsLoading" size="small" description="正在读取路径" />
           </div>
+
+          <n-alert v-if="pathsError" class="paths-load-error" type="error" :show-icon="false">
+            {{ pathsError }}
+            <n-button text type="primary" @click="retryPaths">重试</n-button>
+          </n-alert>
 
           <div class="graph-region">
             <div v-if="graphLoading" class="graph-state">
@@ -329,21 +438,37 @@ onBeforeUnmount(() => loadController?.abort())
               <flow-graph-canvas
                 :graph="graph"
                 :choices="draftChoices"
-                :selection-enabled="draftMode !== null"
+                :selection-mode="selectionMode"
+                :selection-available="selectionAvailable"
+                :selection-resumable="selectionResumable"
                 @select-branch="selectBranch"
+                @enter-selection="enterSelectionMode"
+                @exit-selection="exitSelectionMode"
                 @retry="retryGraph"
               >
-                <template #toolbar>
-                  <div class="path-toolbar">
-                    <div class="path-toolbar__paths">
-                      <n-spin v-if="pathsLoading" size="small" />
+                <template #selection-panel>
+                  <section class="path-selection-panel">
+                    <header class="path-selection-panel__header">
+                      <div>
+                        <h3>线路选择</h3>
+                        <p v-if="draftChangedByGraph">流程已变化，需要重新选择</p>
+                        <p v-else-if="pathAnalysis?.invalid">当前选择已失效</p>
+                        <p v-else-if="remainingChoices > 0">还需选择 {{ remainingChoices }} 处</p>
+                        <p v-else>线路已完整，请保存</p>
+                      </div>
+                      <n-tag size="small" :type="pathAnalysis?.invalid ? 'error' : remainingChoices > 0 ? 'warning' : 'success'" :bordered="false">
+                        {{ pathAnalysis?.invalid ? '选择异常' : `${remainingChoices} 处待选` }}
+                      </n-tag>
+                    </header>
+
+                    <div class="path-selection-panel__paths" aria-label="已保存路径">
                       <n-button
                         v-for="item in paths"
                         :key="item.id"
                         size="small"
                         :type="activePathID === item.id ? 'primary' : 'default'"
                         :secondary="activePathID === item.id"
-						:disabled="saving || deleting"
+                        :disabled="saving || deleting || draftRecoveryLoading"
                         @click="selectSavedPath(item)"
                       >
                         路径 {{ item.sequenceNo }}
@@ -351,20 +476,41 @@ onBeforeUnmount(() => loadController?.abort())
                       <n-tag v-if="draftMode === 'new'" size="small" type="info" :bordered="false">新路径</n-tag>
                       <n-tag v-if="draftMode === 'copy'" size="small" type="info" :bordered="false">路径副本</n-tag>
                     </div>
-                    <div class="path-toolbar__actions">
-                      <span v-if="draftMode" class="path-toolbar__remaining">
-                        <template v-if="draftChangedByGraph">流程已变化，需要重新选择</template>
-                        <template v-else-if="pathAnalysis?.invalid">当前选择已失效</template>
-                        <template v-else-if="remainingChoices > 0">还需选择 {{ remainingChoices }} 处</template>
-                        <template v-else>路径已完整</template>
-                      </span>
-                      <n-button v-if="allowNewPath" size="small" :disabled="saving || deleting" @click="startNewPath">
+
+                    <div class="path-selection-panel__create-actions">
+                      <n-button v-if="allowNewPath" size="small" :disabled="saving || deleting || draftRecoveryLoading" @click="startNewPath">
                         {{ plan.flowSource === 'new' ? '新增路径' : '选择当前实例后续路径' }}
                       </n-button>
-                      <n-button v-if="allowCopy" size="small" :disabled="saving || deleting" @click="copyActivePath">复制此路径</n-button>
+                      <n-button v-if="allowCopy" size="small" :disabled="saving || deleting || draftRecoveryLoading" @click="copyActivePath">复制此路径</n-button>
+                    </div>
+
+                    <n-alert v-if="draftRecoveryError" class="path-selection-panel__error" type="error" :show-icon="false">
+                      {{ draftRecoveryError }}
+                      <n-button text type="primary" :loading="draftRecoveryLoading" @click="refreshDraftAfterInvalidSave">重新读取</n-button>
+                    </n-alert>
+
+                    <div class="path-selection-panel__summary" aria-label="实时线路摘要">
+                      <h4>实时流向</h4>
+                      <ol v-if="pathSummary.length" class="path-summary">
+                        <li
+                          v-for="item in pathSummary"
+                          :key="`${item.kind}-${item.id}`"
+                          class="path-summary__item"
+                          :class="`path-summary__item--${item.kind}`"
+                        >
+                          <span class="path-summary__marker" aria-hidden="true" />
+                          <div>
+                            <strong>{{ item.label }}</strong>
+                            <span>{{ item.detail }}</span>
+                          </div>
+                        </li>
+                      </ol>
+                      <n-empty v-else size="small" description="当前没有可投影的线路" />
+                    </div>
+
+                    <footer class="path-selection-panel__footer">
                       <n-button
                         v-if="draftMode"
-                        size="small"
                         type="primary"
                         :loading="saving"
                         :disabled="saveDisabled"
@@ -378,12 +524,8 @@ onBeforeUnmount(() => loadController?.abort())
                         </template>
                         只删除当前工具中的路径记录，确认继续？
                       </n-popconfirm>
-                    </div>
-                  </div>
-                  <n-alert v-if="pathsError" class="path-toolbar__error" type="error" :show-icon="false">
-                    {{ pathsError }}
-                    <n-button text type="primary" @click="retryPaths">重试</n-button>
-                  </n-alert>
+                    </footer>
+                  </section>
                 </template>
               </flow-graph-canvas>
             </template>
@@ -501,44 +643,146 @@ onBeforeUnmount(() => loadController?.abort())
   z-index: 4;
 }
 
-.path-toolbar {
+.paths-load-error {
+  margin-bottom: 12px;
+}
+
+.path-selection-panel {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.path-selection-panel__header {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  min-height: 40px;
-  gap: 16px;
-  padding: 5px 8px;
-  background: color-mix(in srgb, var(--flow-surface-color) 94%, transparent);
-  border: 1px solid var(--flow-edge-color);
-  border-radius: 4px;
+  gap: 12px;
+  padding: 4px 14px 12px;
+  border-bottom: 1px solid var(--flow-edge-color);
 }
 
-.path-toolbar__paths,
-.path-toolbar__actions {
+.path-selection-panel__header h3,
+.path-selection-panel__header p,
+.path-selection-panel__summary h4 {
+  margin: 0;
+}
+
+.path-selection-panel__header h3 {
+  margin-bottom: 4px;
+  font-size: 16px;
+}
+
+.path-selection-panel__header p,
+.path-summary__item span {
+  color: var(--flow-label-color);
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.path-selection-panel__paths,
+.path-selection-panel__create-actions {
   display: flex;
-  align-items: center;
-  min-width: 0;
+  flex-wrap: wrap;
   gap: 8px;
+  padding: 10px 14px 0;
 }
 
-.path-toolbar__paths {
-  overflow-x: auto;
+.path-selection-panel__paths {
+  max-height: 96px;
+  overflow-y: auto;
 }
 
-.path-toolbar__actions {
-  flex: 0 0 auto;
+.path-selection-panel__create-actions {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--flow-edge-color);
 }
 
-.path-toolbar__remaining {
+.path-selection-panel__error {
+  margin: 10px 14px 0;
+}
+
+.path-selection-panel__summary {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+}
+
+.path-selection-panel__summary h4 {
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.path-summary {
+  margin: 0;
+  padding: 0 0 0 9px;
+  list-style: none;
+  border-left: 1px solid var(--flow-edge-color);
+}
+
+.path-summary__item {
+  position: relative;
+  min-height: 48px;
+  padding: 0 0 14px 16px;
+}
+
+.path-summary__item:last-child {
+  padding-bottom: 0;
+}
+
+.path-summary__marker {
+  position: absolute;
+  top: 5px;
+  left: -14px;
+  width: 9px;
+  height: 9px;
+  background: var(--flow-surface-color);
+  border: 2px solid var(--flow-edge-color);
+  border-radius: 50%;
+}
+
+.path-summary__item div {
+  display: grid;
+  gap: 3px;
+}
+
+.path-summary__item strong {
+  overflow: hidden;
   color: var(--flow-label-color);
   font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.path-toolbar__error {
-  width: max-content;
-  max-width: 100%;
-  margin-top: 6px;
+.path-summary__item--choice .path-summary__marker,
+.path-summary__item--parallel .path-summary__marker {
+  background: var(--flow-direction-color);
+  border-color: var(--flow-direction-color);
+}
+
+.path-summary__item--next strong {
+  color: var(--flow-direction-color);
+}
+
+.path-summary__item--next .path-summary__marker {
+  border-color: var(--flow-direction-color);
+}
+
+.path-selection-panel__footer {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--flow-surface-color);
+  border-top: 1px solid var(--flow-edge-color);
+}
+
+.path-selection-panel__footer > :first-child {
+  flex: 1 1 auto;
 }
 
 .error-actions {

@@ -47,6 +47,7 @@ export interface FlowTreeEdgeData extends Record<string, unknown> {
   selectionEnabled?: boolean
   selected?: boolean
   candidate?: boolean
+  dimmed?: boolean
   active?: boolean
   parallelRequired?: boolean
 }
