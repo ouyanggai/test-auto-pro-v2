@@ -19,10 +19,15 @@ func NewHandlerWithTargetReader(reader TargetReader) http.Handler {
 }
 
 func NewHandlerWithServices(reader TargetReader, plans PlanService) http.Handler {
+	return NewHandlerWithFlowGraphServices(reader, plans, unavailableFlowGraphService{})
+}
+
+func NewHandlerWithFlowGraphServices(reader TargetReader, plans PlanService, graphs FlowGraphService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
 	registerPlanRoutes(mux, plans)
+	registerFlowGraphRoute(mux, graphs)
 	return mux
 }
 

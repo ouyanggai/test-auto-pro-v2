@@ -17,6 +17,8 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/api"
+	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/service"
 )
 
 type fakeTarget struct {
@@ -28,6 +30,7 @@ type fakeTarget struct {
 	templateCount int
 	expireMode    string
 	sessions      []string
+	graphCalls    []string
 }
 
 func newFakeTarget(t *testing.T) *fakeTarget {
@@ -44,6 +47,14 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 	case "/web/flowInstanceApi/list":
 		body := f.requireSession(request)
 		data, _ := body["data"].(map[string]any)
+		if ids, ok := body["ids"].([]any); ok {
+			if len(ids) != 1 || ids[0] != "submitted-id" || data["useScope"] != "invest" {
+				f.t.Error("已发实例精确核对参数不正确")
+			}
+			f.recordGraphCall("submitted-list")
+			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{"id": "submitted-id", "flowProxyId": "proxy-submitted"}}})
+			return
+		}
 		if data["useScope"] != "invest" || data["name"] != "sent" || body["pagination"] != true {
 			f.t.Error("已发流程请求参数不符合已核实协议")
 		}
@@ -64,6 +75,14 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 	case "/web/flowJobTaskLink/list":
 		body := f.requireSession(request)
 		data, _ := body["data"].(map[string]any)
+		if instanceID, ok := data["flowInstanceId"].(string); ok {
+			if instanceID != "due-id" || data["taskStatus"] != "waiting_send" || data["useScope"] != "invest" {
+				f.t.Error("待发实例精确核对参数不正确")
+			}
+			f.recordGraphCall("due-list")
+			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due"}}})
+			return
+		}
 		if data["taskStatus"] != "waiting_send" || data["useScope"] != "invest" || data["flowInstanceName"] != "due" || body["pagination"] != true {
 			f.t.Error("待发流程请求参数不符合已核实协议")
 		}
@@ -75,9 +94,39 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 			}},
 			"total": 1, "pages": 1, "current": 1, "size": 20,
 		})
+	case "/web/flowTemplateApi/findById":
+		f.handleFlowDetail(response, request, "template-id", "template-detail")
+	case "/web/flowProxy/findById":
+		f.handleFlowDetail(response, request, "", "proxy-detail")
 	default:
 		http.NotFound(response, request)
 	}
+}
+
+func (f *fakeTarget) recordGraphCall(value string) {
+	f.mu.Lock()
+	f.graphCalls = append(f.graphCalls, value)
+	f.mu.Unlock()
+}
+
+func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *http.Request, expectedID, callName string) {
+	body := f.requireSession(request)
+	data, _ := body["data"].(map[string]any)
+	id, _ := data["id"].(string)
+	if expectedID != "" && id != expectedID {
+		f.t.Error("模板详情没有使用保存的模板 ID")
+	}
+	if expectedID == "" && id != "proxy-submitted" && id != "proxy-due" {
+		f.t.Errorf("实例详情错误地使用了实例 ID：%s", id)
+	}
+	f.recordGraphCall(callName + ":" + id)
+	writeTargetJSON(response, map[string]any{
+		"isSuccess": true,
+		"data": map[string]any{"flowNodeTemplate": map[string]any{
+			"id": "start", "nodeName": "发起", "type": "start",
+			"childFlowNodeTemplate": map[string]any{"id": "end", "nodeName": "结束", "type": "end"},
+		}},
+	})
 }
 
 func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Request) {
@@ -127,8 +176,15 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	_, hasFlowName := data["flowName"].(string)
-	if !hasFlowName || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true || body["ignoreFormTemplateBizRelevanceData"] != true {
+	templateID, hasTemplateID := data["id"].(string)
+	if (!hasFlowName && !hasTemplateID) || data["useScope"] != "invest" || body["platformCode"] != "200001,999999" || body["pagination"] != true || body["ignoreFormTemplateBizRelevanceData"] != true {
 		f.t.Error("流程模板请求参数不符合已核实协议")
+	}
+	if hasTemplateID {
+		if templateID != "template-id" {
+			f.t.Error("模板列表没有使用保存的模板 ID 精确核对")
+		}
+		f.recordGraphCall("template-list")
 	}
 	f.mu.Lock()
 	f.templateCount++
@@ -177,6 +233,38 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		}},
 		"total": 1, "pages": 1, "current": 1, "size": 20,
 	})
+}
+
+func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		id     string
+		calls  []string
+	}{
+		{name: "新发起模板树", source: "new", id: "template-id", calls: []string{"template-list", "template-detail:template-id"}},
+		{name: "已发实例代理树", source: "started", id: "submitted-id", calls: []string{"submitted-list", "proxy-detail:proxy-submitted"}},
+		{name: "待发实例代理树", source: "pending", id: "due-id", calls: []string{"due-list", "proxy-detail:proxy-due"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			reader := service.NewTargetReadService(config.LoadTargetConfig())
+			tree, err := reader.FlowTree(context.Background(), "account-a", test.source, test.id)
+			if err != nil || tree == nil || tree.ID != "start" || tree.Child == nil || tree.Child.ID != "end" {
+				t.Fatalf("真实流程树读取失败：%v", err)
+			}
+			fake.mu.Lock()
+			calls := append([]string(nil), fake.graphCalls...)
+			fake.mu.Unlock()
+			if strings.Join(calls, ",") != strings.Join(test.calls, ",") {
+				t.Fatalf("核对与详情请求顺序不正确：%v", calls)
+			}
+		})
+	}
 }
 
 func (f *fakeTarget) requireSession(request *http.Request) map[string]any {

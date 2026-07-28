@@ -40,6 +40,7 @@ type SubmittedFlow struct {
 	CreateDate            string `json:"createDate"`
 	CurrentNodeName       string `json:"currentNodeName"`
 	CurrentAuditUserNames string `json:"currentAuditUserNames"`
+	FlowProxyID           string `json:"-"`
 }
 
 type DueFlow struct {
@@ -51,6 +52,25 @@ type DueFlow struct {
 	StatusName       string `json:"statusName"`
 	Initiator        string `json:"initiator"`
 	InitiatorDate    string `json:"initiatorDate"`
+	FlowProxyID      string `json:"-"`
+}
+
+// FlowNodeTemplate 是目标平台流程树的最小只读传输结构。
+type FlowNodeTemplate struct {
+	ID                string
+	Name              string
+	Type              string
+	BranchExecuteType string
+	Child             *FlowNodeTemplate
+	ConditionNodes    []FlowBranchTemplate
+	ParallelNodes     []FlowBranchTemplate
+}
+
+type FlowBranchTemplate struct {
+	ID    string
+	Name  string
+	Sort  int
+	Child *FlowNodeTemplate
 }
 
 type Page[T any] struct {

@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/api"
 	"test-auto-pro-v2/internal/config"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
@@ -25,9 +26,10 @@ func main() {
 
 	targetReader := service.NewTargetReadService(config.LoadTargetConfig())
 	planService := service.NewPlanService(planmysql.NewPlanRepository(planDatabase.DB))
+	flowGraphService := service.NewFlowGraphService(planService, targetReader, analyzer.NewFlowGraphAnalyzer())
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithServices(targetReader, planService),
+		Handler:           api.NewHandlerWithFlowGraphServices(targetReader, planService, flowGraphService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

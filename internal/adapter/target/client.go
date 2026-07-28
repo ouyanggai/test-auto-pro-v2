@@ -224,6 +224,7 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 	}
 	var raw []struct {
 		ID                   string          `json:"id"`
+		FlowProxyID          string          `json:"flowProxyId"`
 		Name                 string          `json:"name"`
 		FormName             string          `json:"formName"`
 		Status               string          `json:"status"`
@@ -239,6 +240,7 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 	for _, item := range raw {
 		items = append(items, SubmittedFlow{
 			ID:                    item.ID,
+			FlowProxyID:           item.FlowProxyID,
 			Name:                  item.Name,
 			FormName:              item.FormName,
 			Title:                 firstNonEmpty(item.Name, item.FormName),
@@ -274,6 +276,7 @@ func (c *Client) ListDue(ctx context.Context, session Session, query string, pag
 	}
 	var raw []struct {
 		FlowInstanceID   string `json:"flowInstanceId"`
+		FlowProxyID      string `json:"flowProxyId"`
 		FlowInstanceName string `json:"flowInstanceName"`
 		FormName         string `json:"formName"`
 		FlowStatus       string `json:"flowStatus"`
@@ -290,6 +293,7 @@ func (c *Client) ListDue(ctx context.Context, session Session, query string, pag
 	for _, item := range raw {
 		items = append(items, DueFlow{
 			FlowInstanceID:   item.FlowInstanceID,
+			FlowProxyID:      item.FlowProxyID,
 			FlowInstanceName: item.FlowInstanceName,
 			FormName:         item.FormName,
 			Title:            firstNonEmpty(item.FlowInstanceName, item.FormName),
@@ -300,6 +304,180 @@ func (c *Client) ListDue(ctx context.Context, session Session, query string, pag
 		})
 	}
 	return normalizePage(items, resp, page, pageSize)
+}
+
+type rawFlowNodeTemplate struct {
+	ID                string                  `json:"id"`
+	NodeName          string                  `json:"nodeName"`
+	Name              string                  `json:"name"`
+	Type              string                  `json:"type"`
+	BranchExecuteType string                  `json:"branchExecuteType"`
+	Child             *rawFlowNodeTemplate    `json:"childFlowNodeTemplate"`
+	ConditionNodes    []rawFlowBranchTemplate `json:"conditionNodes"`
+	ParallelNodes     []rawFlowBranchTemplate `json:"parallelNodes"`
+}
+
+type rawFlowBranchTemplate struct {
+	ID         string               `json:"id"`
+	StrategyID string               `json:"strategyId"`
+	NodeName   string               `json:"nodeName"`
+	Name       string               `json:"name"`
+	Sort       int                  `json:"sort"`
+	Child      *rawFlowNodeTemplate `json:"childFlowNodeTemplate"`
+}
+
+func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templateID string) (bool, error) {
+	body := map[string]any{
+		"data": map[string]any{
+			"id":           strings.TrimSpace(templateID),
+			"useScope":     "invest",
+			"customerCode": firstNonEmpty(active.CustomerCode, c.config.CustomerCode),
+		},
+		"showMe":                             true,
+		"ignoreFormTemplateBizRelevanceData": true,
+		"formTemplateBizRelevanceList":       []any{},
+		"notFormTemplateBizRelevanceList":    []map[string]any{{"otherBiz": "isProject", "otherBizId": "isProject"}},
+		"ignoreTemplateData":                 true,
+		"pagination":                         true,
+		"pages":                              1,
+		"size":                               100,
+		"projectId":                          "",
+		"platformCode":                       c.config.TemplatePlatformCodes,
+		"notAuditWayList":                    []string{"staff_annual_assessment"},
+	}
+	resp, err := c.call(ctx, "/web/flowTemplateApi/list", active.SID, body)
+	if err != nil {
+		return false, err
+	}
+	if !responseSucceeded(resp) {
+		return false, responseError(resp)
+	}
+	var raw []rawFlowTemplate
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return false, err
+	}
+	for _, item := range raw {
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(templateID) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *Client) FindSubmittedProxyID(ctx context.Context, active Session, instanceID string) (string, bool, error) {
+	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
+		"data": map[string]any{
+			"useScope":                     "invest",
+			"auditWayList":                 []string{},
+			"statusList":                   []string{"await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
+			"flowInstanceBizRelevanceList": []map[string]any{{"otherBiz": "company", "otherBizId": ""}},
+		},
+		"ids": []string{strings.TrimSpace(instanceID)}, "pagination": true, "pages": 1, "size": 100,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if !responseSucceeded(resp) {
+		return "", false, responseError(resp)
+	}
+	var raw []struct {
+		ID          string `json:"id"`
+		FlowProxyID string `json:"flowProxyId"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return "", false, err
+	}
+	for _, item := range raw {
+		if strings.TrimSpace(item.ID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
+			return strings.TrimSpace(item.FlowProxyID), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (c *Client) FindDueProxyID(ctx context.Context, active Session, instanceID string) (string, bool, error) {
+	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
+		"data": map[string]any{
+			"flowInstanceId":               strings.TrimSpace(instanceID),
+			"taskStatus":                   "waiting_send",
+			"auditWayList":                 []string{},
+			"useScope":                     "invest",
+			"flowInstanceBizRelevance":     map[string]any{},
+			"flowInstanceBizRelevanceList": []any{},
+		},
+		"pagination": true, "pages": 1, "size": 100,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if !responseSucceeded(resp) {
+		return "", false, responseError(resp)
+	}
+	var raw []struct {
+		FlowInstanceID string `json:"flowInstanceId"`
+		FlowProxyID    string `json:"flowProxyId"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return "", false, err
+	}
+	for _, item := range raw {
+		if strings.TrimSpace(item.FlowInstanceID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
+			return strings.TrimSpace(item.FlowProxyID), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, error) {
+	return c.readFlowTree(ctx, active, "/web/flowTemplateApi/findById", templateID)
+}
+
+func (c *Client) ReadProxyTree(ctx context.Context, active Session, proxyID string) (*FlowNodeTemplate, error) {
+	return c.readFlowTree(ctx, active, "/web/flowProxy/findById", proxyID)
+}
+
+func (c *Client) readFlowTree(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, error) {
+	resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": strings.TrimSpace(id)}})
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
+	}
+	var data struct {
+		FlowNodeTemplate *rawFlowNodeTemplate `json:"flowNodeTemplate"`
+	}
+	if len(resp.Data) == 0 || string(resp.Data) == "null" {
+		return nil, nil
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return nil, invalidResponse("invalid flow tree data")
+	}
+	return convertFlowNode(data.FlowNodeTemplate), nil
+}
+
+func convertFlowNode(raw *rawFlowNodeTemplate) *FlowNodeTemplate {
+	if raw == nil {
+		return nil
+	}
+	node := &FlowNodeTemplate{
+		ID: raw.ID, Name: firstNonEmpty(raw.NodeName, raw.Name), Type: raw.Type,
+		BranchExecuteType: raw.BranchExecuteType, Child: convertFlowNode(raw.Child),
+	}
+	node.ConditionNodes = convertFlowBranches(raw.ConditionNodes)
+	node.ParallelNodes = convertFlowBranches(raw.ParallelNodes)
+	return node
+}
+
+func convertFlowBranches(raw []rawFlowBranchTemplate) []FlowBranchTemplate {
+	result := make([]FlowBranchTemplate, 0, len(raw))
+	for _, branch := range raw {
+		result = append(result, FlowBranchTemplate{
+			ID: firstNonEmpty(branch.StrategyID, branch.ID), Name: firstNonEmpty(branch.NodeName, branch.Name),
+			Sort: branch.Sort, Child: convertFlowNode(branch.Child),
+		})
+	}
+	return result
 }
 
 func (c *Client) call(ctx context.Context, path, sid string, body map[string]any) (*envelope, error) {
