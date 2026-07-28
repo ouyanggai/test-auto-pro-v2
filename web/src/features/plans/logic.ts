@@ -12,6 +12,15 @@ export const planActionByStatus: Record<PlanStatus, PlanAction> = {
   completed: { label: '查看结果', intent: 'view_result' },
 }
 
+export const planStatusLabels: Record<PlanStatus, string> = {
+  pending_configuration: '待配置',
+  ready: '可运行',
+  running: '运行中',
+  completed: '已完成',
+}
+
+export const planStatusOptions = Object.entries(planStatusLabels).map(([value, label]) => ({ value, label }))
+
 export function filterPlans(plans: readonly PlanRow[], filters: PlanFilters): PlanRow[] {
   const normalizedName = filters.name.trim().toLocaleLowerCase('zh-CN')
 

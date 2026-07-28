@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, reactive, ref } from 'vue'
+import { computed, h, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   NButton,
   NDataTable,
@@ -11,15 +11,19 @@ import {
 } from 'naive-ui'
 import { useRouter } from 'vue-router'
 
-import { filterPlans, getPlanAction } from '../features/plans/logic'
-import { mockPlans, planStatusLabels, planStatusOptions } from '../features/plans/mock'
+import { getPlanAction, planStatusLabels, planStatusOptions } from '../features/plans/logic'
+import { fetchPlans, PlanApiError } from '../features/plans/persistence'
 import type { PlanFilters, PlanRow, PlanStatus } from '../features/plans/types'
 
 const router = useRouter()
 const filters = reactive<PlanFilters>({ name: '', status: null })
 const prototypeNotice = ref('')
+const plans = ref<PlanRow[]>([])
+const loading = ref(false)
+const loadError = ref('')
+let loadVersion = 0
+let loadController: AbortController | null = null
 
-const filteredPlans = computed(() => filterPlans(mockPlans, filters))
 const statusOptions: SelectOption[] = planStatusOptions
 const hasFilters = computed(() => Boolean(filters.name || filters.status))
 
@@ -28,10 +32,46 @@ function clearFilters() {
   filters.status = null
 }
 
-function showPrototypeNotice(plan: PlanRow) {
+function handlePlanAction(plan: PlanRow) {
   const action = getPlanAction(plan.status)
+  if (action.intent === 'configure') {
+    void router.push(`/plans/${plan.id}/paths`)
+    return
+  }
   prototypeNotice.value = `“${plan.name}”的“${action.label}”当前仅用于静态原型展示，真实业务将在后续功能接入。`
 }
+
+async function loadPlans() {
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
+  const version = ++loadVersion
+  loading.value = true
+  loadError.value = ''
+  try {
+    const result = await fetchPlans(filters, controller.signal)
+    if (version !== loadVersion || controller.signal.aborted) return
+    plans.value = result
+  }
+  catch (error) {
+    if (controller.signal.aborted || version !== loadVersion) return
+    const apiError = error instanceof PlanApiError ? error : new PlanApiError('暂时无法读取计划，请重试')
+    loadError.value = apiError.message
+    plans.value = []
+  }
+  finally {
+    if (version === loadVersion) loading.value = false
+  }
+}
+
+function formatScheduledAt(value: string | null): string {
+  if (!value) return '未设置'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? '时间异常' : parsed.toLocaleString('zh-CN', { hour12: false })
+}
+
+watch([() => filters.name, () => filters.status], () => { void loadPlans() }, { immediate: true })
+onBeforeUnmount(() => loadController?.abort())
 
 function statusTagType(status: PlanStatus): 'default' | 'success' | 'warning' | 'info' {
   if (status === 'ready') return 'success'
@@ -55,7 +95,7 @@ const columns: DataTableColumns<PlanRow> = [
     title: '定时时间',
     key: 'scheduledAt',
     width: 170,
-    render: (row) => row.scheduledAt ?? '未设置',
+    render: (row) => formatScheduledAt(row.scheduledAt),
   },
   {
     title: '计划状态',
@@ -71,7 +111,7 @@ const columns: DataTableColumns<PlanRow> = [
     fixed: 'right',
     render: (row) => {
       const action = getPlanAction(row.status)
-      return h(NButton, { text: true, type: 'primary', onClick: () => showPrototypeNotice(row) }, { default: () => action.label })
+      return h(NButton, { text: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label })
     },
   },
 ]
@@ -82,7 +122,7 @@ const columns: DataTableColumns<PlanRow> = [
     <header class="page-heading">
       <div>
         <h1>测试计划</h1>
-        <p>查看并筛选测试计划；当前数据仅用于静态交互确认。</p>
+        <p>查看并筛选已经保存的测试计划。</p>
       </div>
       <n-button type="primary" @click="router.push('/plans/new')">新建计划</n-button>
     </header>
@@ -109,10 +149,16 @@ const columns: DataTableColumns<PlanRow> = [
       <n-button text type="primary" @click="prototypeNotice = ''">关闭</n-button>
     </div>
 
-    <div class="plan-table-region">
+    <div v-if="loadError" class="plan-load-error" role="alert">
+      <span>{{ loadError }}</span>
+      <n-button text type="primary" @click="loadPlans">重试</n-button>
+    </div>
+
+    <div v-else class="plan-table-region">
       <n-data-table
         :columns="columns"
-        :data="filteredPlans"
+        :data="plans"
+        :loading="loading"
         :row-key="(row: PlanRow) => row.id"
         :scroll-x="1370"
         :single-line="false"
@@ -178,5 +224,13 @@ const columns: DataTableColumns<PlanRow> = [
   width: 100%;
   min-width: 0;
   overflow: hidden;
+}
+
+.plan-load-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 120px;
+  color: var(--n-text-color-2);
 }
 </style>

@@ -16,6 +16,24 @@ export interface PlanRow {
   lastRunResult: string
 }
 
+export interface PersistedPlan {
+  id: string
+  name: string
+  account: string
+  accountDisplayName: string
+  flowSource: FlowSource
+  targetObjectId: string
+  targetObjectName: string
+  runMode: PlanRunMode
+  maxConcurrency: number | null
+  scheduledAt: string | null
+  status: PlanStatus
+  pathCount: number
+  lastRunResult: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface PlanFilters {
   name: string
   status: PlanStatus | null

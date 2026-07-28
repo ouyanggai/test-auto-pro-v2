@@ -1,16 +1,6 @@
 import type {
   PlanRow,
-  PlanStatus,
 } from './types.ts'
-
-export const planStatusLabels: Record<PlanStatus, string> = {
-  pending_configuration: '待配置',
-  ready: '可运行',
-  running: '运行中',
-  completed: '已完成',
-}
-
-export const planStatusOptions = Object.entries(planStatusLabels).map(([value, label]) => ({ value, label }))
 
 export const mockPlans: PlanRow[] = [
   {

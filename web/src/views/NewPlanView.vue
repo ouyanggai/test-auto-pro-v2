@@ -25,6 +25,7 @@ import { useRouter } from 'vue-router'
 
 import FlowCandidateList from '../features/plans/FlowCandidateList.vue'
 import { fetchTargetCandidates, TargetApiError, verifyTargetAccount } from '../features/plans/api'
+import { buildCreatePlanRequest, createPlan, PlanApiError } from '../features/plans/persistence'
 import {
   createDebouncedRunner,
   invalidatesVerification,
@@ -76,6 +77,10 @@ const form = reactive<PlanFormValue>({
   scheduleEnabled: false,
   scheduledAt: null,
 })
+const selectedCandidate = ref<FlowCandidate | null>(null)
+const creationLoading = ref(false)
+const creationKey = ref<string | null>(null)
+let creationController: AbortController | null = null
 
 const verificationState = ref<AccountVerificationState>('idle')
 const verificationError = ref('')
@@ -113,13 +118,7 @@ const sourceOptions = computed(() => (
   }))
 ))
 const selectedCandidateKey = computed(() => {
-  if (form.flowSource === 'new') {
-    return candidates.value.find((candidate) => candidate.kind === 'template' && candidate.templateId === form.templateId)?.key ?? null
-  }
-  if (form.flowSource === 'started') {
-    return candidates.value.find((candidate) => candidate.kind === 'submitted' && candidate.id === form.submittedFlowId)?.key ?? null
-  }
-  return candidates.value.find((candidate) => candidate.kind === 'due' && candidate.flowInstanceId === form.dueFlowId)?.key ?? null
+  return selectedCandidate.value?.key ?? null
 })
 const candidateRequestKey = computed(() => (
   `${selectionVersion.value}:${verifiedAccount.value}:${form.flowSource}`
@@ -261,7 +260,17 @@ const rules = computed<FormRules>(() => ({
     : [],
   maxConcurrency: maxConcurrencyRules.value,
   scheduledAt: form.scheduleEnabled
-    ? { required: true, type: 'number', trigger: ['change', 'blur'], message: '请选择启动时间' }
+    ? [
+        { required: true, type: 'number', trigger: ['change', 'blur'], message: '请选择启动时间' },
+        {
+          trigger: ['change', 'blur'],
+          validator: (_rule: FormItemRule, value: number | null) => (
+            typeof value === 'number' && value > Date.now()
+              ? true
+              : new Error('启动时间必须晚于当前时间')
+          ),
+        },
+      ]
     : [],
 }))
 
@@ -269,6 +278,7 @@ function clearFlowSelections() {
   form.templateId = null
   form.submittedFlowId = null
   form.dueFlowId = null
+  selectedCandidate.value = null
   selectionVersion.value += 1
 }
 
@@ -444,6 +454,10 @@ watch(() => form.scheduleEnabled, async (enabled) => {
   scheduledAtItemRef.value?.restoreValidation()
 })
 
+watch(form, () => {
+  if (!creationLoading.value) creationKey.value = null
+}, { deep: true })
+
 async function verifyAccount() {
   try {
     await accountItemRef.value?.validate('blur')
@@ -487,6 +501,7 @@ async function verifyAccount() {
 async function selectCandidate(key: string) {
   const candidate = candidates.value.find((item) => item.key === key)
   if (!candidate) return
+  selectedCandidate.value = candidate
   if (candidate.kind === 'template') form.templateId = candidate.templateId
   else if (candidate.kind === 'submitted') form.submittedFlowId = candidate.id
   else form.dueFlowId = candidate.flowInstanceId
@@ -495,14 +510,44 @@ async function selectCandidate(key: string) {
   requestPostSelectionGuidance()
 }
 
-async function submitPrototype() {
-  if (!formRef.value) return
+async function submitPlan() {
+  if (!formRef.value || creationLoading.value) return
   try {
     await formRef.value.validate()
-		message.success('表单校验通过，创建与路径配置将在后续开放。')
   }
   catch {
     message.error('请检查标红的必填项')
+    return
+  }
+  if (!verifiedSummary.value || !selectedCandidate.value) {
+    message.error('请重新选择当前流程')
+    return
+  }
+
+  const idempotencyKey = creationKey.value || crypto.randomUUID()
+  creationKey.value = idempotencyKey
+  creationController?.abort()
+  const controller = new AbortController()
+  creationController = controller
+  creationLoading.value = true
+  try {
+    const plan = await createPlan(
+      buildCreatePlanRequest(form, verifiedSummary.value, selectedCandidate.value),
+      idempotencyKey,
+      controller.signal,
+    )
+    creationKey.value = null
+    message.success('计划已创建')
+    await router.push(`/plans/${plan.id}/paths`)
+  }
+  catch (error) {
+    if (controller.signal.aborted) return
+    const apiError = error instanceof PlanApiError ? error : new PlanApiError('暂时无法创建计划，请重试')
+    message.error(apiError.message)
+  }
+  finally {
+    if (creationController === controller) creationController = null
+    creationLoading.value = false
   }
 }
 </script>
@@ -527,7 +572,7 @@ async function submitPrototype() {
         label-placement="top"
         require-mark-placement="right-hanging"
         :show-feedback="true"
-        @submit.prevent="submitPrototype"
+        @submit.prevent="submitPlan"
       >
         <n-grid :cols="24" :x-gap="24">
           <n-form-item-gi span="12" path="name" label="计划名称" first>
@@ -670,7 +715,9 @@ async function submitPrototype() {
 
           <n-form-item-gi span="24" :show-label="false" :show-feedback="false">
             <div ref="submitGuideRef" class="form-actions">
-              <n-button type="primary" attr-type="submit">创建并选择路径</n-button>
+              <n-button type="primary" attr-type="submit" :loading="creationLoading" :disabled="creationLoading">
+                创建并选择路径
+              </n-button>
             </div>
           </n-form-item-gi>
         </n-grid>
