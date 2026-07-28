@@ -1,14 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
-	"gopkg.in/yaml.v3"
 
 	"test-auto-pro-v2/internal/config"
 )
@@ -81,14 +82,75 @@ func syncConfig(source, output string) error {
 
 func readV1Config(path string) (v1Config, error) {
 	var value v1Config
-	content, err := os.ReadFile(filepath.Clean(path))
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return value, fmt.Errorf("读取 V1 配置失败")
 	}
-	if err := yaml.Unmarshal(content, &value); err != nil {
-		return value, fmt.Errorf("解析 V1 配置失败")
+	defer file.Close()
+
+	targetIndent := -1
+	foundTarget := false
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if !foundTarget {
+			if trimmed == "target:" {
+				foundTarget = true
+				targetIndent = indent
+			}
+			continue
+		}
+		if indent <= targetIndent {
+			break
+		}
+		key, rawValue, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			continue
+		}
+		fieldValue := yamlScalar(rawValue)
+		switch strings.TrimSpace(key) {
+		case "apiGateway":
+			value.Target.APIGateway = fieldValue
+		case "platformCode":
+			value.Target.PlatformCode = fieldValue
+		case "customerCode":
+			value.Target.CustomerCode = fieldValue
+		case "loginAesKey":
+			value.Target.LoginAESKey = fieldValue
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return value, fmt.Errorf("读取 V1 配置失败")
+	}
+	if !foundTarget {
+		return value, fmt.Errorf("解析 V1 配置失败：缺少 target 节")
 	}
 	return value, nil
+}
+
+// yamlScalar 只读取 V1 当前 target 节中的标量配置，避免维护命令依赖额外解析器。
+func yamlScalar(raw string) string {
+	value := strings.TrimSpace(raw)
+	for index := 1; index < len(value); index++ {
+		if value[index] == '#' && (value[index-1] == ' ' || value[index-1] == '\t') {
+			value = strings.TrimSpace(value[:index])
+			break
+		}
+	}
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			return unquoted
+		}
+	}
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return strings.ReplaceAll(value[1:len(value)-1], "''", "'")
+	}
+	return value
 }
 
 func readExisting(path string) (map[string]string, error) {
