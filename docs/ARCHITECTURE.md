@@ -60,7 +60,7 @@
 - 缓存条目只保存 SID、必要账号摘要和目标代码，不保存密码、AES key 或 code；进程退出自然清空。F-002 不引入 Redis，多实例共享需求出现后再单独评估。
 - 对浏览器提供三个独立边界：`POST /api/target/accounts/verify`、`GET /api/target/flow-templates`、`GET /api/target/flow-instances`。公开响应只含验证摘要、候选 DTO、分页或稳定错误，不含 SID、凭证、customerCode、platformCode 或目标敏感原文。
 - 模板、已发、待发分别映射 `/web/flowTemplateApi/list`、`/web/flowInstanceApi/list`、`/web/flowJobTaskLink/list`；三类 DTO 独立，不用同一个模糊目标类型覆盖字段差异。
-- 模板 DTO 在原有字段外补充实施平台列表已使用的 `formExist`、`formTemplateCount` 与 `companyName`；流程模板响应中的公司关联只提供 `formTemplateBizRelevanceVoList[].otherBizId`，适配层用登录响应的 `companyVo.id` 调用已核实的公司目录接口后在服务端按 ID 匹配为名称，绝不公开公司 ID；无匹配名称保持为空。前端模板行保留底层状态字段但不展示为主标签。候选虚拟列表固定行高 `96px`、视口 `480px`，常见桌面一次完整显示 5 行，加载、空、错误与来源切换共用 `574px` 稳定外壳。
+- 模板 DTO 只补充实施平台列表已使用的 `formExist` 与 `formTemplateCount`；`groupName` 是模板既有分组字段，前端只在其非空时以内联标签高亮，不请求公司目录或公开额外公司字段。已发 DTO 保留原始 `status` 并提供集中派生的中文 `statusName`。候选虚拟列表固定行高 `96px`、视口 `480px`，常见桌面一次完整显示 5 行，加载、空、错误与来源切换共用 `574px` 稳定外壳。
 - 前端搜索以 250ms 防抖触发真实分页请求，通过 `AbortController` 和 account/source/query/version 联合身份取消或忽略旧结果；追加按三类真实 ID 去重，错误不回退 mock。
 
 ## 数据与部署演进

@@ -1,6 +1,6 @@
 # F-002 真实账号与目标平台只读列表闭环
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“计划与运行主线”和“测试计划页面行为”
 - 架构依据：`docs/ARCHITECTURE.md` 的“系统边界”“数据与部署演进”和“参考源码边界”
 - 计划形成时间：2026-07-27
@@ -72,14 +72,12 @@ V1 `internal/adapter/target/flow_reader.go` 与 `internal/handler/workbench.go` 
 | `src/views/flowLibrary/FormMulBranch/components/Steps1.vue` | 配置流程时实际填写流程名称、类型、流程分组、用途说明和可选表单模板编号；用途说明 `remark` 为必填 | 列表显示分类/分组与备注，帮助用户区分同名或近似模板 |
 | `src/views/flowLibrary/NoFormMulBranch/components/Steps1.vue` | 无表单流程同样维护类型、分组和用途说明，并以 `formExist` 区分有/无表单 | 将有表单/无表单作为辅助信息，不臆造新的状态 |
 | `src/views/formTemplates/index.vue` | “表单模板配置”页使用另一个配置列表，仅展示配置范围、名称与公司 | 该页不是 `/web/flowTemplateApi/list` 的流程候选，不把它的字段错误混入流程模板 DTO |
-| `src/views/flowLibrary/index.vue`、`FormMulBranch/index.vue`、`NoFormMulBranch/index.vue` | 流程库按 `formTemplateBizRelevanceList[{otherBiz: "company", otherBizId}]` 筛选；流程详情从响应 `formTemplateBizRelevanceVoList` 中取 `otherBiz: "company"` 的 `otherBizId` | 已核实流程模板公司关联的 JSON 结构是 `formTemplateBizRelevanceVoList[].otherBiz`、`otherBizId`；该值是内部 ID，不能直接公开 |
-| `src/api/index.js`、`src/views/flowLibrary/index.vue` | `frameworkInfo.getParentCompanyList` 指向 `POST /web/user/api/company/getParentCompanyList`，请求 `data.id`，页面以返回项 `id`、`name` 填充公司选择项 | 适配层仅在模板带公司关联且登录响应有 `companyVo.id` 时服务端读取该目录，并按关联 ID 映射为名称；未匹配或空名称不显示标签 |
 
 字段分层结论：
 
-- **接口确实返回**：V1 已解析名称、编码、分组、状态、分类、更新时间、备注、创建方式和 `formExist`；实施平台的同一列表还直接读取 `formTemplateList`，当前后端只公开其数量，不公开表单内容。流程模板的公司归属以 `formTemplateBizRelevanceVoList` 中 `otherBiz: "company"` 的 `otherBizId` 表示，不是可公开名称。
+- **接口确实返回**：V1 已解析名称、编码、分组、状态、分类、更新时间、备注、创建方式和 `formExist`；实施平台的同一列表还直接读取 `formTemplateList`，当前后端只公开其数量，不公开表单内容。
 - **实施平台页面实际使用**：名称、分类、表单存在性与数量、备注、表单模型关联、更新时间；流程配置页进一步证明类型、分组和用途说明是业务配置，而非展示臆测。
-- **当前列表值得公开**：名称为标题；仅在服务端能从已核实公司目录匹配到名称时显示公司标签，分类/分组、表单关联、更新时间为辅助信息；备注独立显示。编码只保留在后端兼容 DTO，不在候选行展示，也不参与前端本地搜索。`flowStatus/statusText` 继续保留在底层兼容 DTO，但不影响当前可选性，因此不再占主标签。
+- **当前列表值得公开**：名称为标题；`typeName` 作为分类文本，当前接口已有的 `groupName` 紧邻标题以内联小标签高亮，表单关联、更新时间为辅助信息；备注独立显示。编码只保留在后端兼容 DTO，不在候选行展示，也不参与前端本地搜索。`flowStatus/statusText` 继续保留在底层兼容 DTO，但不影响当前可选性，因此不再占主标签。分组标签不触发额外目标请求，也不把内部公司关联错误解释为用户可见归属。
 - **明确不采用**：`formTemplateBizRelevanceVoList` 中的表单模型编号虽被实施平台展示，但当前请求主动忽略关联详情，F-002 不为填满列表而扩大响应；表单 JSON、节点配置和创建方式也不在候选行展示。
 
 ### 已发流程
@@ -90,6 +88,8 @@ V1 `internal/adapter/target/flow_reader.go` 与 `internal/handler/workbench.go` 
 - V1 已核实目标入口：`POST /web/flowInstanceApi/list`。
 - 请求：顶层 `pagination: true`、`pages`、`size`；`data` 含 `useScope: invest`、`auditWayList: []`、状态集合 `await_sent/run/withdraw/termination/abandon/rejected/end`、公司关联筛选和名称搜索。
 - 参考页面实际展示字段：标题取 `name || formName`，另有 `id`、`status`、`createDate`、`currentNodeName`、`currentAuditUserInfo`；当前处理人名称从 `currentAuditUserInfo.*.userList[].name` 汇总。
+- 参考页面直接调用 `src/utils/index.js` 的 `approveManageFlowStatus`：`run` 为“审批中”、`withdraw` 为“撤销”、`draft` 为“草稿”、`termination` 为“终止”、`rejected` 为“驳回”、`end` 为“完结”；同目录 `components/flowTypeMixin.js` 确认 `await_sent` 为“待发”，`Backlog/index.vue` 确认 `abandon` 为“丢弃”。
+- F-002 后端保留原始 `status` 用于兼容和搜索，并集中派生 `statusName`：`await_sent`“待发”、`run`“审批中”、`withdraw`“撤销”、`termination`“终止”、`abandon`“丢弃”、`rejected`“驳回”、`end`“完结”、`draft`“草稿”；未知值统一显示“状态未知”，绝不直接显示英文原始值。
 
 ### 待发流程
 
@@ -171,7 +171,7 @@ V1 的 `LoginRequest` 虽有 `sign` 字段，但已核实的登录请求体没�
 成功数据字段：
 
 - `account`：当前账号，便于前端核对迟到响应。
-- `items[]`：`id`、`flowName`、`code`、`groupName`、`flowStatus`、`statusText`、`typeName`、`updateDate`、`createDate`、`remark`、`flowCreateType`、`formExist`、`formTemplateCount`、`companyName`。`formTemplateCount` 只由响应 `formTemplateList` 长度派生，不公开表单内容；`companyName` 仅由已核实的模板公司关联 ID 与服务端公司目录名称匹配后产生，绝不返回 `otherBizId`、`companyId`。
+- `items[]`：`id`、`flowName`、`code`、`groupName`、`flowStatus`、`statusText`、`typeName`、`updateDate`、`createDate`、`remark`、`flowCreateType`、`formExist`、`formTemplateCount`。`formTemplateCount` 只由响应 `formTemplateList` 长度派生，不公开表单内容；`groupName` 直接来自模板列表响应，不发起公司目录查询。
 - `page`、`pageSize`、`total`、`hasMore`：由目标顶层分页字段规范化；`statusText` 与 `hasMore` 为有明确来源的展示派生值。
 
 #### 3. 流程实例列表
@@ -180,7 +180,7 @@ V1 的 `LoginRequest` 虽有 `sign` 字段，但已核实的登录请求体没�
 
 `source=submitted` 的 `items[]`：
 
-- `id`、`name`、`formName`、`title`、`status`、`createDate`、`currentNodeName`、`currentAuditUserNames`。
+- `id`、`name`、`formName`、`title`、`status`、`statusName`、`createDate`、`currentNodeName`、`currentAuditUserNames`。
 - `title = name || formName`；`currentAuditUserNames` 从 `currentAuditUserInfo.*.userList[].name` 汇总。
 
 `source=due` 的 `items[]`：
@@ -216,7 +216,7 @@ V1 的 `LoginRequest` 虽有 `sign` 字段，但已核实的登录请求体没�
 - 首屏、追加、空、错误、到底都在同一稳定外壳内呈现。首屏错误提供重试；追加失败保留已有项并允许重试当前页。
 - 面向用户的账号、验证和读取提示采用简洁业务语言，不展示“真实目标平台”“未登录真实平台”等技术证明式文案；稳定后端错误码由前端映射为简短提示。
 - 三类来源共用 `96px` 固定虚拟行与 `480px` 列表视口，常见桌面一次完整显示 5 行；工具栏、列表和页脚组成 `574px` 稳定外壳。模板备注最多显示两行并通过 `title` 保留完整内容，空值显示“暂无备注”。
-- 模板未选中时不展示“正常/不正常”状态标签；选中时只显示“已选择”。已发、待发仍保留各自已核实状态语义。
+- 模板未选中时不展示“正常/不正常”状态标签；选中时只显示“已选择”。模板的 `groupName` 以内联小标签紧邻标题展示，空值不占位；已发使用集中映射的中文 `statusName`，待发仍保留其已核实状态语义。
 - 生产代码不再导入 F-001 候选 mock；mock 仅保留为测试 fixture。提交按钮仍只执行当前表单校验和静态边界提示，不保存计划、不导航到路径页。
 
 ## 有序内部里程碑
@@ -240,7 +240,7 @@ V1 的 `LoginRequest` 虽有 `sign` 字段，但已核实的登录请求体没�
 - [x] 目标请求全程只读；不保存计划、不创建数据库记录、不修改目标平台、不进入路径选择。
 - [x] F-002 当前范围测试、Go build、前端类型检查和生产构建通过。
 - [x] 当前机器无需设置 `TARGET_*`，`pnpm dev:b` 自动读取已准备的本机忽略配置，页面只需输入用户名。
-- [ ] 页面文案已去除证明式技术表达；模板候选展示名称、分类与分组（仅 `groupName` 有值时以内联标签高亮）、表单关联、备注和更新时间，不再展示编码或以启停状态作为主信息。
+- [x] 页面文案已去除证明式技术表达；模板候选展示名称、分类与分组（仅 `groupName` 有值时以内联标签高亮）、表单关联、备注和更新时间，不再展示编码或以启停状态作为主信息；已发状态始终使用已核实中文映射。
 - [x] 候选列表使用 `96px` 固定行和 `480px` 视口，常见桌面一次显示 5 行，并保持虚拟滚动、稳定外壳和渐进引导。
 - [x] 文档状态更新为 `ready_for_manual`，列出真实环境人工步骤并停止，不开始 F-003。
 
@@ -249,9 +249,9 @@ V1 的 `LoginRequest` 虽有 `sign` 字段，但已核实的登录请求体没�
 所有新增测试必须位于根目录 `test/`，只运行 F-002 相关测试：
 
 - `test/unit/backend/`：配置必填与脱敏、本机文件加载、环境优先级、非法文件与测试隔离、TTL、账号隔离、同账号并发去重、一次重登上限、登录/模板/实例 DTO 映射。
-- `test/contracts/`：三个 API 的请求、成功字段、分页、模板公司名称与稳定错误码，以及任何响应均不含 SID。
-- `test/integration/`：使用 `httptest.Server` 模拟目标平台，覆盖登录、模板公司关联 ID 到目录名称的服务端匹配、无名称空值、三类列表、空列表、HTTP/业务会话失效、401 后一次重登、超时、取消、坏分页和目标 5xx；另以临时 V1 YAML 验证安全同步、`0600` 权限与自动加载，不读取真实本机配置。
-- `test/unit/frontend/`：搜索防抖、request version、账号/来源切换忽略旧响应、分页追加去重、到底和错误恢复；同时验证模板 DTO 公司名称映射、无名称、编码不展示与不参与本地搜索、备注空值/长值、分类/分组/表单关联、无主状态标签，以及 `96px` 行高与 `480px` 视口常量。
+- `test/contracts/`：三个 API 的请求、成功字段、分页、模板只调用列表接口、已发 `statusName` 与稳定错误码，以及任何响应均不含 SID。
+- `test/integration/`：使用 `httptest.Server` 模拟目标平台，覆盖登录、模板只调用已批准的列表接口、三类列表、已发状态中文映射、空列表、HTTP/业务会话失效、401 后一次重登、超时、取消、坏分页和目标 5xx；另以临时 V1 YAML 验证安全同步、`0600` 权限与自动加载，不读取真实本机配置。
+- `test/unit/frontend/`：搜索防抖、request version、账号/来源切换忽略旧响应、分页追加去重、到底和错误恢复；同时验证已发全部已核实状态与中文兜底、`groupName` 标签和空值、编码不展示与不参与本地搜索、备注空值/长值、分类/表单关联、无主状态标签，以及 `96px` 行高与 `480px` 视口常量。
 - `test/integration/`：结构契约确认生产候选区不再导入 mock，并保留稳定外壳、虚拟列表、吸顶返回入口和独立滚动边界。
 - `test/manual/F-002.md`：真实账号和三类真实候选的人工核对清单，不记录账号、密码或 SID。
 - `test/run-f002.sh`：聚合当前范围测试、Go build、`vue-tsc` 与 Vite 生产构建；不跑无关全量测试，不启动浏览器。
@@ -272,8 +272,8 @@ V1 的 `LoginRequest` 虽有 `sign` 字段，但已核实的登录请求体没�
 2. 打开 `/plans/new`，输入空账号确认就地校验；输入错误账号确认不会进入已验证态。
 3. 输入可用真实账号并验证，核对显示名、公司名和目标平台实际身份一致，页面不声称保存凭证。
 4. 在浏览器网络响应和存储中核对没有 SID、密码、AES key、customerCode 或 platformCode。
-5. 选择“新发起”，核对模板名称、分类/分组、表单关联、备注和更新时间，不显示编码；有已核实公司名称时显示小标签，无名称时不显示占位，选中后公司标签与“已选择”并存；确认未选择项不再显示“正常/不正常”，一次完整显示约 5 行。
-6. 切换“已发”和“待发”，分别核对标题、状态、时间、当前节点/处理人或发起人字段与目标平台页面一致。
+5. 选择“新发起”，核对模板名称、分类、表单关联、备注和更新时间，不显示编码；`groupName` 有值时在流程名称右侧显示小标签，无值时不显示占位，选中后分组标签与“已选择”并存；确认未选择项不再显示“正常/不正常”，一次完整显示约 5 行。
+6. 切换“已发”和“待发”，分别核对标题、状态、时间、当前节点/处理人或发起人字段与目标平台页面一致；已发状态必须显示“待发、审批中、撤销、终止、丢弃、驳回、完结、草稿”或未知值的“状态未知”，不显示原始英文值。
 7. 快速修改搜索词、切换来源和切换账号，确认没有旧列表闪回、混入或覆盖当前选择。
 8. 在读取中断开目标环境或使用可重现失败条件，确认 loading 会结束、错误可重试且不会展示 mock 数据。
 9. 刷新页面或重启后端，确认浏览器没有保存 SID；后端重启后会安全重新登录。
@@ -304,14 +304,15 @@ V1 的 `LoginRequest` 虽有 `sign` 字段，但已核实的登录请求体没�
 - 2026-07-28：用户人工验收反馈页面存在证明式技术文案、模板候选信息价值不足且一次可见条目过少；状态从 `ready_for_manual` 返回 `implementing`，仅返工 F-002 用户文案、模板信息层级与候选列表容量。
 - 2026-07-28：实施平台模板列表与配置组件证据核实完成；模板 DTO 补充表单存在性与关联数量，页面文案、模板信息层级和候选容量完成返工，定向测试与构建通过；状态重新进入 `ready_for_manual`，等待用户视觉与现场数据复验。
 - 2026-07-28：用户人工验收反馈“不要显示编码，属于哪个公司可以高亮”；状态从 `ready_for_manual` 返回 `implementing`，仅核实流程模板响应中的公司归属字段并返工候选行展示，不开始 F-003。
-- 2026-07-28：已核实模板关联只返回 `formTemplateBizRelevanceVoList[].otherBizId`，公司目录返回 `id`、`name`；后端仅在服务端完成匹配并公开 `companyName`，前端移除编码展示和本地编码搜索、在有名称时以小标签高亮。无名称不显示占位；定向测试和构建通过，状态重新进入 `ready_for_manual`，等待用户现场复验。
+- 2026-07-28：此前错误地将模板关联 ID 与公司目录名称匹配后作为候选标签；编码展示已移除，但该额外目录读取与 `companyName` 映射不再保留，后续反馈按现有 `groupName` 重新核实并修正。
 - 2026-07-28：用户截图明确纠正：模板高亮应使用现有分类分组 `groupName`，不是额外公司目录名称；已发状态不得显示 `end`、`run` 等原始英文值。状态从 `ready_for_manual` 返回 `implementing`，仅移除错误公司目录路径、集中映射已发中文状态并调整候选行展示，不开始 F-003。
+- 2026-07-28：已删除模板公司目录请求、`companyName` 映射与独立标签；模板直接以已有 `groupName` 在名称右侧高亮。已发保留原始 `status` 并集中提供中文 `statusName`，未知值为“状态未知”；定向测试与构建通过，状态重新进入 `ready_for_manual`，等待用户人工复验。
 
 ## 自动验证结果
 
 - `./test/run-f002.sh`：通过。
 - Go 定向测试：后端单元、API 契约、假目标集成全部通过；新增配置测试覆盖本机文件、环境优先级、缺失/非法配置和测试路径隔离，集成同步验证覆盖 V1 字段映射、`0600` 权限与清空 `TARGET_*` 后的完整加载。
-- 前端单元：8 项全部通过；结构契约脚本通过，覆盖模板公司标签、无名称、编码移除、本地搜索边界、备注、无主状态标签、固定虚拟尺寸和过期文案清理。
+- 前端单元：9 项全部通过；结构契约脚本通过，覆盖模板 `groupName` 标签及空值、已发中文状态和未知值兜底、编码移除、本地搜索边界、备注、无主状态标签、固定虚拟尺寸和过期文案清理。
 - `go build ./cmd/server`、`pnpm --filter test-auto-pro-v2-web typecheck`、`pnpm --filter test-auto-pro-v2-web build`：全部通过。
 - 自动验证只使用运行期生成的假目标值，未连接真实平台、未启动浏览器、未写入目标数据。
 - 当前工作区已在不显示配置值的前提下从 V1 配置生成 `.env.local`；清空 `TARGET_*` 后完整性复检通过，`pnpm dev:b` 启动与 health 精确响应通过，验证结束后后端进程已停止。
