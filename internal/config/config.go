@@ -16,6 +16,7 @@ const defaultServerAddress = "127.0.0.1:19080"
 const (
 	defaultTargetLocalEnvFile = ".env.local"
 	targetLocalEnvFileEnv     = "TEST_AUTO_PRO_TARGET_ENV_FILE"
+	planDBLocalEnvFileEnv     = "TEST_AUTO_PRO_PLAN_DB_ENV_FILE"
 )
 
 func ServerAddress() string {
@@ -44,6 +45,73 @@ type TargetConfig struct {
 	SessionTTL            time.Duration
 	HTTPTimeout           time.Duration
 	localConfigInvalid    bool
+}
+
+// PlanDBConfig 只保存工具侧独立计划数据库的连接配置。
+type PlanDBConfig struct {
+	Host               string
+	Port               int
+	User               string
+	Password           string
+	Name               string
+	localConfigInvalid bool
+}
+
+const (
+	defaultPlanDBPort = 3306
+	defaultPlanDBName = "test_auto_pro_v2"
+)
+
+// LoadPlanDBConfig 优先读取进程环境，其次读取项目根目录的本机忽略配置。
+func LoadPlanDBConfig() PlanDBConfig {
+	localValues, localErr := loadTargetLocalValues(planDBLocalEnvFile())
+	return PlanDBConfig{
+		Host:               strings.TrimSpace(targetConfigValue("PLAN_DB_HOST", localValues)),
+		Port:               positiveIntFromValue(targetConfigValue("PLAN_DB_PORT", localValues), defaultPlanDBPort),
+		User:               strings.TrimSpace(targetConfigValue("PLAN_DB_USER", localValues)),
+		Password:           targetConfigValue("PLAN_DB_PASSWORD", localValues),
+		Name:               firstNonEmpty(strings.TrimSpace(targetConfigValue("PLAN_DB_NAME", localValues)), defaultPlanDBName),
+		localConfigInvalid: localErr != nil,
+	}
+}
+
+// MissingRequired 返回计划数据库缺失或非法的配置名，不包含任何配置值。
+func (c PlanDBConfig) MissingRequired() []string {
+	missing := make([]string, 0, 5)
+	if c.localConfigInvalid {
+		missing = append(missing, "PLAN_DB_LOCAL_CONFIG")
+	}
+	if c.Host == "" {
+		missing = append(missing, "PLAN_DB_HOST")
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		missing = append(missing, "PLAN_DB_PORT")
+	}
+	if c.User == "" {
+		missing = append(missing, "PLAN_DB_USER")
+	}
+	if c.Password == "" {
+		missing = append(missing, "PLAN_DB_PASSWORD")
+	}
+	if !ValidDatabaseName(c.Name) {
+		missing = append(missing, "PLAN_DB_NAME")
+	}
+	return missing
+}
+
+// ValidDatabaseName 限制可拼入 CREATE DATABASE 的标识符，避免任意 SQL 片段。
+func ValidDatabaseName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, character := range name {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadTargetConfig 优先读取进程环境，其次读取项目根目录的本机忽略配置。
@@ -108,6 +176,13 @@ func targetLocalEnvFile() string {
 	return defaultTargetLocalEnvFile
 }
 
+func planDBLocalEnvFile() string {
+	if path, ok := os.LookupEnv(planDBLocalEnvFileEnv); ok {
+		return strings.TrimSpace(path)
+	}
+	return defaultTargetLocalEnvFile
+}
+
 func loadTargetLocalValues(path string) (map[string]string, error) {
 	if path == "" {
 		return map[string]string{}, nil
@@ -133,6 +208,18 @@ func targetConfigValue(name string, localValues map[string]string) string {
 	return localValues[name]
 }
 
+func positiveIntFromValue(value string, fallback int) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 || parsed > 65535 {
+		return 0
+	}
+	return parsed
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -149,4 +236,13 @@ type MissingTargetConfigError struct {
 
 func (e *MissingTargetConfigError) Error() string {
 	return fmt.Sprintf("目标环境配置不完整：%s", strings.Join(e.Names, "、"))
+}
+
+// MissingPlanDBConfigError 只暴露缺失配置名，安全用于启动错误。
+type MissingPlanDBConfigError struct {
+	Names []string
+}
+
+func (e *MissingPlanDBConfigError) Error() string {
+	return fmt.Sprintf("计划数据库配置不完整：%s", strings.Join(e.Names, "、"))
 }

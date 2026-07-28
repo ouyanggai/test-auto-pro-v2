@@ -11,13 +11,18 @@ import (
 const healthResponse = `{"status":"ok","service":"test-auto-pro","version":"dev"}`
 
 func NewHandler() http.Handler {
-	return NewHandlerWithTargetReader(service.NewTargetReadService(config.LoadTargetConfig()))
+	return NewHandlerWithServices(service.NewTargetReadService(config.LoadTargetConfig()), unavailablePlanService{})
 }
 
 func NewHandlerWithTargetReader(reader TargetReader) http.Handler {
+	return NewHandlerWithServices(reader, unavailablePlanService{})
+}
+
+func NewHandlerWithServices(reader TargetReader, plans PlanService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
+	registerPlanRoutes(mux, plans)
 	return mux
 }
 

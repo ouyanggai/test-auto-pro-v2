@@ -1,0 +1,133 @@
+package mysql
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+
+	driver "github.com/go-sql-driver/mysql"
+
+	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/repository"
+)
+
+type PlanRepository struct {
+	db *sql.DB
+}
+
+func NewPlanRepository(db *sql.DB) *PlanRepository {
+	return &PlanRepository{db: db}
+}
+
+func (r *PlanRepository) Create(ctx context.Context, createKey string, plan model.Plan) (model.Plan, bool, error) {
+	result, err := r.db.ExecContext(ctx, `
+INSERT INTO test_plans (
+  create_key, name, account, account_display_name, flow_source,
+  target_object_id, target_object_name, run_mode, max_concurrency,
+  scheduled_at, status, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		createKey, plan.Name, plan.Account, plan.AccountDisplayName, plan.FlowSource,
+		plan.TargetObjectID, plan.TargetObjectName, plan.RunMode, plan.MaxConcurrency,
+		plan.ScheduledAt, plan.Status, plan.CreatedAt, plan.UpdatedAt,
+	)
+	if err == nil {
+		id, idErr := result.LastInsertId()
+		if idErr != nil {
+			return model.Plan{}, false, idErr
+		}
+		if id < 1 {
+			return model.Plan{}, false, errors.New("计划主键无效")
+		}
+		plan.ID = uint64(id)
+		return plan, true, nil
+	}
+	var mysqlErr *driver.MySQLError
+	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1062 {
+		return model.Plan{}, false, err
+	}
+	existing, selectErr := r.getByCreateKey(ctx, createKey)
+	return existing, false, selectErr
+}
+
+func (r *PlanRepository) List(ctx context.Context, filter model.PlanListFilter) ([]model.Plan, error) {
+	query := `
+SELECT id, name, account, account_display_name, flow_source, target_object_id,
+       target_object_name, run_mode, max_concurrency, scheduled_at, status,
+       created_at, updated_at
+FROM test_plans
+WHERE (? = '' OR name LIKE CONCAT('%', ?, '%'))
+  AND (? = '' OR status = ?)
+ORDER BY updated_at DESC, id DESC
+LIMIT ?`
+	rows, err := r.db.QueryContext(ctx, query, filter.Name, filter.Name, filter.Status, filter.Status, filter.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	plans := make([]model.Plan, 0)
+	for rows.Next() {
+		plan, scanErr := scanPlan(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		plans = append(plans, plan)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return plans, nil
+}
+
+func (r *PlanRepository) Get(ctx context.Context, id uint64) (model.Plan, error) {
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, name, account, account_display_name, flow_source, target_object_id,
+       target_object_name, run_mode, max_concurrency, scheduled_at, status,
+       created_at, updated_at
+FROM test_plans WHERE id = ?`, id)
+	plan, err := scanPlan(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Plan{}, repository.ErrPlanNotFound
+	}
+	return plan, err
+}
+
+func (r *PlanRepository) getByCreateKey(ctx context.Context, createKey string) (model.Plan, error) {
+	row := r.db.QueryRowContext(ctx, `
+SELECT id, name, account, account_display_name, flow_source, target_object_id,
+       target_object_name, run_mode, max_concurrency, scheduled_at, status,
+       created_at, updated_at
+FROM test_plans WHERE create_key = ?`, createKey)
+	return scanPlan(row)
+}
+
+type rowScanner interface {
+	Scan(...any) error
+}
+
+func scanPlan(row rowScanner) (model.Plan, error) {
+	var plan model.Plan
+	var maxConcurrency sql.NullInt64
+	var scheduledAt sql.NullTime
+	if err := row.Scan(
+		&plan.ID, &plan.Name, &plan.Account, &plan.AccountDisplayName, &plan.FlowSource,
+		&plan.TargetObjectID, &plan.TargetObjectName, &plan.RunMode, &maxConcurrency,
+		&scheduledAt, &plan.Status, &plan.CreatedAt, &plan.UpdatedAt,
+	); err != nil {
+		return model.Plan{}, err
+	}
+	if maxConcurrency.Valid {
+		value := int(maxConcurrency.Int64)
+		plan.MaxConcurrency = &value
+	}
+	if scheduledAt.Valid {
+		value := scheduledAt.Time.UTC()
+		plan.ScheduledAt = &value
+	}
+	plan.CreatedAt = plan.CreatedAt.UTC()
+	plan.UpdatedAt = plan.UpdatedAt.UTC()
+	if strings.TrimSpace(plan.Name) == "" || !model.ValidPlanStatus(plan.Status) {
+		return model.Plan{}, repository.ErrPlanDataInvalid
+	}
+	return plan, nil
+}
