@@ -289,10 +289,12 @@ test('每个计划只设置一次可读初始视口并把根业务节点放在�
   assert.equal(root.position.y * viewport.zoom + viewport.y, 52)
 })
 
-test('全屏宽度变化补偿水平观察中心且保持纵向位置和缩放', () => {
+test('全屏宽度变化串行补偿后快速往返恢复原观察位置', () => {
   const viewport = { x: -120, y: -340, zoom: 0.9 }
-  assert.deepEqual(compensateViewportForContainerWidth(viewport, 1000, 1600), { x: 180, y: -340, zoom: 0.9 })
-  assert.deepEqual(compensateViewportForContainerWidth({ x: 180, y: -340, zoom: 0.9 }, 1600, 1000), viewport)
+  const afterEnter = compensateViewportForContainerWidth(viewport, 1000, 1600)
+  assert.deepEqual(afterEnter, { x: 180, y: -340, zoom: 0.9 })
+  const afterExit = compensateViewportForContainerWidth(afterEnter, 1600, 1000)
+  assert.deepEqual(afterExit, viewport)
   assert.deepEqual(compensateViewportForContainerWidth(viewport, 0, 1600), viewport)
   assert.deepEqual(compensateViewportForContainerWidth(viewport, 1000, Number.NaN), viewport)
 })

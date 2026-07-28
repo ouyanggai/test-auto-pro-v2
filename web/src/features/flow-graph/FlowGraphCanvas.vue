@@ -32,7 +32,9 @@ const { getViewport, onInit, setViewport } = useVueFlow()
 let ready = false
 let positionedPlanId = ''
 let viewportVersion = 0
-let pageFullscreenVersion = 0
+let requestedPageFullscreen = false
+let pageFullscreenTask: Promise<void> | null = null
+let pageFullscreenDisposed = false
 let previousDocumentOverflow: string | null = null
 
 function reducedMotion(): boolean {
@@ -62,22 +64,42 @@ function setDocumentScrollLocked(locked: boolean) {
   }
 }
 
-async function setPageFullscreen(next: boolean) {
-  const version = ++pageFullscreenVersion
-  const beforeWidth = canvasRoot.value?.clientWidth ?? 0
-  const viewport = getViewport()
-  isPageFullscreen.value = next
-  setDocumentScrollLocked(next)
-  await nextTick()
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-  if (version !== pageFullscreenVersion) return
-  const afterWidth = canvasRoot.value?.clientWidth ?? 0
-  await setViewport(compensateViewportForContainerWidth(viewport, beforeWidth, afterWidth), { duration: 0 })
+function requestPageFullscreen(next: boolean) {
+  requestedPageFullscreen = next
+  if (!pageFullscreenTask) {
+    pageFullscreenTask = runPageFullscreenTransitions().finally(() => {
+      pageFullscreenTask = null
+      if (!pageFullscreenDisposed && isPageFullscreen.value !== requestedPageFullscreen) {
+        void requestPageFullscreen(requestedPageFullscreen)
+      }
+    })
+  }
+  return pageFullscreenTask
+}
+
+async function runPageFullscreenTransitions() {
+  while (!pageFullscreenDisposed && isPageFullscreen.value !== requestedPageFullscreen) {
+    const next = requestedPageFullscreen
+    const beforeWidth = canvasRoot.value?.clientWidth ?? 0
+    const viewport = getViewport()
+    isPageFullscreen.value = next
+    setDocumentScrollLocked(next)
+    await nextTick()
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+    if (pageFullscreenDisposed) return
+    if (!laidOut.value) {
+      if (!next) setDocumentScrollLocked(false)
+      continue
+    }
+    const afterWidth = canvasRoot.value?.clientWidth ?? 0
+    await setViewport(compensateViewportForContainerWidth(viewport, beforeWidth, afterWidth), { duration: 0 })
+  }
+  if (!isPageFullscreen.value) setDocumentScrollLocked(false)
 }
 
 function handlePageFullscreenKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape' || !isPageFullscreen.value) return
-  void setPageFullscreen(false)
+  void requestPageFullscreen(false)
 }
 
 onInit(() => {
@@ -90,13 +112,14 @@ watch(() => props.graph.planId, () => {
 })
 watch(laidOut, (value) => {
   if (value || !isPageFullscreen.value) return
-  void setPageFullscreen(false)
+  void requestPageFullscreen(false)
 })
 
 onMounted(() => document.addEventListener('keydown', handlePageFullscreenKeydown))
 onBeforeUnmount(() => {
   viewportVersion++
-  pageFullscreenVersion++
+  pageFullscreenDisposed = true
+  requestedPageFullscreen = false
   setDocumentScrollLocked(false)
   document.removeEventListener('keydown', handlePageFullscreenKeydown)
 })
@@ -116,7 +139,7 @@ onBeforeUnmount(() => {
       size="small"
       secondary
       :aria-pressed="isPageFullscreen"
-      @click="setPageFullscreen(!isPageFullscreen)"
+      @click="requestPageFullscreen(!isPageFullscreen)"
     >
       {{ isPageFullscreen ? '退出全屏' : '页面全屏' }}
     </n-button>

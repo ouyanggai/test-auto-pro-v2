@@ -34,11 +34,19 @@ grep -Fq ":pan-on-drag=\"true\"" "${canvas_file}"
 grep -Fq ":zoom-on-scroll=\"true\"" "${canvas_file}"
 grep -Fq "setViewport(viewport" "${canvas_file}"
 grep -Fq "getViewport" "${canvas_file}"
-grep -Fq "setPageFullscreen" "${canvas_file}"
+grep -Fq "requestedPageFullscreen" "${canvas_file}"
+grep -Fq "pageFullscreenTask" "${canvas_file}"
+grep -Fq "runPageFullscreenTransitions" "${canvas_file}"
+grep -Fq "while (!pageFullscreenDisposed && isPageFullscreen.value !== requestedPageFullscreen)" "${canvas_file}"
+grep -Fq "requestPageFullscreen" "${canvas_file}"
 grep -Fq "compensateViewportForContainerWidth" "${canvas_file}"
-grep -Fq "void setPageFullscreen(false)" "${canvas_file}"
-grep -Fq "@click=\"setPageFullscreen(!isPageFullscreen)\"" "${canvas_file}"
+grep -Fq "void requestPageFullscreen(false)" "${canvas_file}"
+grep -Fq "@click=\"requestPageFullscreen(!isPageFullscreen)\"" "${canvas_file}"
 grep -Fq "compensateViewportForContainerWidth" "${layout_file}"
+if grep -Fq "pageFullscreenVersion" "${canvas_file}"; then
+  printf 'F-004 页面全屏不得仅以版本号丢弃切换补偿\n' >&2
+  exit 1
+fi
 if grep -Fq "fitView(" "${canvas_file}"; then
   printf 'F-004 不得在初次加载时自动适配整图\n' >&2
   exit 1
