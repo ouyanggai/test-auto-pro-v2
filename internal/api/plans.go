@@ -175,7 +175,7 @@ func toPlanResponse(plan model.Plan) planResponse {
 		MaxConcurrency:     plan.MaxConcurrency,
 		ScheduledAt:        scheduledAt,
 		Status:             string(plan.Status),
-		PathCount:          0,
+		PathCount:          plan.PathCount,
 		LastRunResult:      "",
 		CreatedAt:          plan.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:          plan.UpdatedAt.UTC().Format(time.RFC3339Nano),
