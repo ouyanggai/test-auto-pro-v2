@@ -1,6 +1,6 @@
 # F-004 只读真实流程图
 
-- 状态：ready_for_manual
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的“计划与运行主线”“只读真实流程图行为”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-002 目标平台只读接入”“F-003 最小计划持久化”“F-004 只读真实流程图”
 - 计划形成时间：2026-07-28
@@ -230,3 +230,4 @@ F-004 以 `rsh-flow-components/GroupApproveManage` 及其直接引用的 Workflo
 - 2026-07-28：内层无独立 `mergeTargetId` 时改为继承祖先停止点，只保留自己的分叉轨并把真实分支末端交由外层统一生成一条共享汇合轨。计划 2 的本机临时 API 响应已实际通过 `layoutFlowGraph`，节点和边数量一致且无重复节点；新增 parallel/manual 同构回归，原显式嵌套汇合、顶层末端分支和非法结构测试继续通过。`test/run-f004.sh`、Go build、`vue-tsc`、Vite build 与 `git diff --check` 全部通过，状态回到 `ready_for_manual`，等待人工复验，不开始 F-005。
 - 2026-07-28：用户人工复验发现页面全屏切换后流程偏左：画布从内容宽度变为固定全视口宽度时，旧 `viewport.x` 未补偿。F-004 返回 `implementing`；本轮仅在进入/退出页面全屏时保持水平观察中心，原缩放和纵向位置不变，不重做布局或进入 F-005。
 - 2026-07-28：页面全屏按钮和 `Esc` 统一经异步切换流程处理：切换前读取当前 viewport 与容器宽度，DOM 更新后按宽度差的一半补偿 `viewport.x`，保留原 `y` 和 `zoom`；版本号阻止快速切换的旧异步结果覆盖。前端纯函数覆盖进入、退出和无效宽度，结构测试确认按钮与 `Esc` 均走统一流程。`test/run-f004.sh`、Go build、`vue-tsc`、Vite build 与 `git diff --check` 全部通过，状态回到 `ready_for_manual`，等待人工复验，不开始 F-005。
+- 2026-07-28：主任务只读审查发现页面全屏版本号方案仍有快速往返竞态：进入已切换容器但尚未补偿时立刻退出，会丢弃进入补偿却执行退出补偿，最终错误左移。F-004 返回 `implementing`；本轮只改为串行处理全屏请求，保证每次实际容器切换的补偿完成后才处理最新相反请求，不开始 F-005。
