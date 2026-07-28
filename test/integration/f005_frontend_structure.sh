@@ -54,6 +54,18 @@ grep -Fq ':aria-pressed="data.selected"' "${edge_file}"
 grep -Fq '并行必经' "${edge_file}"
 grep -Fq 'data.dimmed' "${edge_file}"
 grep -Fq 'flow-tree-edge__choice--dimmed' "${edge_file}"
+grep -Fq '尚未到达' "${edge_file}"
+grep -Fq "(data.kind === 'condition' || data.kind === 'manual') && data.active !== false" "${edge_file}"
+if ! awk '
+  BEGIN { found_button = 0 }
+  /<edge-label-renderer/ { in_renderer = 1; next }
+  /<button/ { if (in_renderer) { found_button = 1; exit 0 } }
+  in_renderer && /data\.active !== false/ { exit 1 }
+  END { if (!found_button) exit 1 }
+' "${edge_file}"; then
+  echo 'F-005 未到达分支标签不得在渲染器外层整体隐藏' >&2
+  exit 1
+fi
 grep -Fq "'flow-tree-edge__direction--animated': !data.selectionEnabled || data.selected" "${edge_file}"
 grep -Fq 'flow-tree-edge__base--candidate' "${edge_file}"
 grep -Fq '@media (prefers-reduced-motion: reduce)' "${edge_file}"
@@ -61,6 +73,8 @@ grep -Fq 'analyzeExecutionPath' "${logic_file}"
 grep -Fq 'graph.entryNodeIds.length === 0' "${logic_file}"
 grep -Fq 'canEnterExecutionPathSelection' "${logic_file}"
 grep -Fq 'projectExecutionPathSummary' "${logic_file}"
+grep -Fq "kind: 'pending'" "${logic_file}"
+grep -Fq "'已完整'" "${view_file}"
 grep -Fq 'Idempotency-Key' "${api_file}"
 
 if grep -Eq 'requestFullscreen|fullscreenElement|fullscreenchange' "${canvas_file}"; then

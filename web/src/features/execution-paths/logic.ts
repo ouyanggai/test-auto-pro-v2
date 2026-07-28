@@ -157,6 +157,7 @@ export function projectExecutionPathSummary(
 ): ExecutionPathSummaryItem[] {
   const selectedByRoute = new Map(choices.map((choice) => [choice.routeNodeId, choice.branchId]))
   const missing = new Set(analysis.missingRouteNodeIds)
+  const nextRouteID = nextExecutionPathRouteID(analysis)
   const outgoing = new Map<string, typeof graph.edges>()
   for (const edge of graph.edges) {
     const items = outgoing.get(edge.source) ?? []
@@ -170,7 +171,11 @@ export function projectExecutionPathSummary(
     const label = node.name || node.typeName || '流程节点'
     if (node.type === 'condition' || node.type === 'manual') {
       if (missing.has(node.id)) {
-        return [{ id: node.id, kind: 'next', label: label || '请选择分支', detail: '下一待选点' }]
+        // 并行会同时暴露多个待选路由，但面板只能指向一个当前动作，避免用户误以为可以越过左侧分支。
+        if (node.id === nextRouteID) {
+          return [{ id: node.id, kind: 'next', label: label || '请选择分支', detail: '下一待选点' }]
+        }
+        return [{ id: node.id, kind: 'pending', label: label || '请选择分支', detail: '后续待选' }]
       }
       const branchID = selectedByRoute.get(node.id)
       const edge = (outgoing.get(node.id) ?? []).find((item) => item.branchId === branchID)

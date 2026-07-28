@@ -457,7 +457,7 @@ onBeforeUnmount(() => {
                         <p v-else>线路已完整，请保存</p>
                       </div>
                       <n-tag size="small" :type="pathAnalysis?.invalid ? 'error' : remainingChoices > 0 ? 'warning' : 'success'" :bordered="false">
-                        {{ pathAnalysis?.invalid ? '选择异常' : `${remainingChoices} 处待选` }}
+                        {{ pathAnalysis?.invalid ? '选择异常' : remainingChoices > 0 ? `${remainingChoices} 处待选` : '已完整' }}
                       </n-tag>
                     </header>
 
@@ -770,6 +770,14 @@ onBeforeUnmount(() => {
 
 .path-summary__item--next .path-summary__marker {
   border-color: var(--flow-direction-color);
+}
+
+.path-summary__item--pending {
+  opacity: 0.62;
+}
+
+.path-summary__item--pending .path-summary__marker {
+  border-style: dashed;
 }
 
 .path-selection-panel__footer {

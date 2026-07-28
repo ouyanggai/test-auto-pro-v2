@@ -20,7 +20,7 @@ export interface ExecutionPathAnalysis {
 
 export interface ExecutionPathSummaryItem {
   id: string
-  kind: 'node' | 'choice' | 'parallel' | 'next'
+  kind: 'node' | 'choice' | 'parallel' | 'next' | 'pending'
   label: string
   detail: string
 }

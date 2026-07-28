@@ -43,13 +43,11 @@ const emit = defineEmits<{
 	<edge-label-renderer
 	  v-if="data.selectionEnabled
 		&& data.kind !== 'sequence'
-		&& data.active !== false
-		&& (data.kind === 'condition' || data.kind === 'manual' || data.parallelRequired)
 		&& data.labelX !== undefined
 		&& data.labelY !== undefined"
 	>
 	<button
-	  v-if="data.kind === 'condition' || data.kind === 'manual'"
+	  v-if="(data.kind === 'condition' || data.kind === 'manual') && data.active !== false"
 	  type="button"
 	  class="flow-tree-edge__choice"
 	  :class="{
@@ -67,9 +65,10 @@ const emit = defineEmits<{
 	<span
 	  v-else
 	  class="flow-tree-edge__required"
+	  :class="{ 'flow-tree-edge__required--dimmed': data.dimmed || data.active === false }"
 	  :style="{ transform: `translate(-50%, -50%) translate(${data.labelX}px, ${data.labelY}px)` }"
 	>
-	  {{ label ? `${label} · 并行必经` : '并行必经' }}
+	  {{ data.parallelRequired ? (label ? `${label} · 并行必经` : '并行必经') : (label ? `${label} · 尚未到达` : '尚未到达') }}
 	</span>
   </edge-label-renderer>
 </template>
@@ -159,6 +158,10 @@ const emit = defineEmits<{
   align-items: center;
   color: var(--flow-direction-color);
   pointer-events: none;
+}
+
+.flow-tree-edge__required--dimmed {
+  opacity: 0.48;
 }
 
 @keyframes flow-tree-direction {

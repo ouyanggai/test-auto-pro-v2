@@ -125,6 +125,33 @@ test('实时路径摘要只投影可达节点、选择、并行必经和下一�
   assert.equal(summary.some((item) => item.id === 'other-end'), false)
 })
 
+test('并行待选路由只突出一个下一步，其他路由稳定显示为后续待选', () => {
+  const parallelGraph = {
+    ...graph,
+    entryNodeIds: ['parallel'],
+    nodes: [
+      { id: 'parallel', name: '并行开始', type: 'parallel', typeName: '并行' },
+      { id: 'left-route', name: '左侧审批', type: 'condition', typeName: '条件' },
+      { id: 'right-route', name: '右侧审批', type: 'manual', typeName: '手动' },
+      { id: 'left-end', name: '左结束', type: 'end', typeName: '结束' },
+      { id: 'right-end', name: '右结束', type: 'end', typeName: '结束' },
+    ],
+    edges: [
+      { id: 'parallel-left', source: 'parallel', target: 'left-route', kind: 'parallel', label: '左支线', branchId: 'parallel-left' },
+      { id: 'parallel-right', source: 'parallel', target: 'right-route', kind: 'parallel', label: '右支线', branchId: 'parallel-right' },
+      { id: 'left-approve', source: 'left-route', target: 'left-end', kind: 'condition', label: '同意', branchId: 'left-approve' },
+      { id: 'right-approve', source: 'right-route', target: 'right-end', kind: 'manual', label: '通过', branchId: 'right-approve' },
+    ],
+  }
+  const analysis = analyzeExecutionPath(parallelGraph, [])
+  const summary = projectExecutionPathSummary(parallelGraph, analysis, [])
+
+  assert.deepEqual(analysis.missingRouteNodeIds, ['left-route', 'right-route'])
+  assert.equal(nextExecutionPathRouteID(analysis), 'left-route')
+  assert.deepEqual(summary.filter((item) => item.kind === 'next').map((item) => item.id), ['left-route'])
+  assert.deepEqual(summary.filter((item) => item.kind === 'pending').map((item) => item.id), ['right-route'])
+})
+
 test('线路边明确区分已选、待选和弱化且弱化分支仍保持活动', () => {
   const initialAnalysis = analyzeExecutionPath(graph, [])
   const initialStates = classifyExecutionPathEdges(graph, initialAnalysis, [])
