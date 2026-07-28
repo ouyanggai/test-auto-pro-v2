@@ -74,6 +74,17 @@
 - 创建使用 `Idempotency-Key` 和数据库唯一键保证同一次网络重试返回同一条计划。公开响应不返回幂等键、SID、目标凭证或数据库内部字段。
 - 执行路径表延期到 F-005：F-004 先用保存的账号、来源和目标对象 ID 重新读取真实流程结构，F-005 再依据真实节点和分支建立路径数据，不在 F-003 保存无业务依据的占位路径。
 
+## F-004 只读真实流程图
+
+- `GET /api/plans/{id}/flow-graph` 是唯一公开图读取入口。服务端先读取计划，再使用计划内账号、来源和目标 ID 调用目标平台；浏览器不得覆盖这些字段。
+- `new` 先通过模板列表精确核对可见性，再调用 `/web/flowTemplateApi/findById`；`started` 通过已发列表精确取得当前 `flowProxyId`；`pending` 通过待发列表精确取得当前 `flowProxyId`。后两类再调用 `/web/flowProxy/findById`，禁止把实例 ID 当代理 ID。
+- 多个目标只读调用放在 F-002 `session.Manager.DoRead` 的一次操作中；任一调用发现会话失效时，整个核对与详情读取链只允许重新登录并重放一次。
+- `internal/adapter/target` 解析最小目标树；`internal/analyzer` 将 `childFlowNodeTemplate`、`conditionNodes`、`parallelNodes` 规范化为独立图 DTO。API 不透传目标 envelope、代理 ID、审批配置、字段权限或凭证。
+- 分支解析以真实节点 ID 去重，以真实策略 ID 标识分支边；各分支末端连接到分支节点的同一个主线后继来表达汇合，不创建虚假业务节点。循环、关键 ID 缺失、空分支入口或超过 500 节点/200 深度时拒绝半图。
+- 前端使用 `@vue-flow/core`、`@vue-flow/controls` 与 `@dagrejs/dagre`，布局方向固定为 `TB`。只允许画布平移、缩放和适配视口；关闭节点拖动、连接、删除、选择和位置持久化。
+- 画布使用 Naive UI 主题变量并与内容区保持同一表面色。首次图数据稳定后只执行一次平滑适配；后续重绘和窗口尺寸变化不得反复重置用户视口。
+- F-004 不增加数据库迁移、不缓存图、不生成拓扑指纹和路径。F-005 才依据真实节点与分支建立路径持久化。
+
 ## 数据与部署演进
 
 - MySQL 在 F-003 用于最小计划持久化；执行路径在 F-005 才进入 MySQL。
