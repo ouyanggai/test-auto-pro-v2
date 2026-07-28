@@ -14,6 +14,25 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
+// TestExecutionPathMySQLConfiguredDatabaseHasF005Schema 验证本机独立开发库已安全应用 F-005 向前迁移。
+func TestExecutionPathMySQLConfiguredDatabaseHasF005Schema(t *testing.T) {
+	cfg := config.LoadPlanDBConfig()
+	if missing := cfg.MissingRequired(); len(missing) != 0 {
+		t.Fatalf("F-005 本机计划数据库缺少配置名：%v", missing)
+	}
+	if cfg.Name != "test_auto_pro_v2" {
+		t.Fatal("F-005 拒绝在批准范围外的数据库核对开发迁移")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	database, err := planmysql.OpenAndMigrate(ctx, cfg)
+	if err != nil {
+		t.Fatalf("F-005 本机独立计划数据库迁移失败：%v", err)
+	}
+	defer database.Close()
+	assertF005Tables(t, database.DB)
+}
+
 // TestExecutionPathMySQLMigrationTransactionsAndCounts 验证真实迁移、事务、幂等、计数和重连读取。
 func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	cfg := config.LoadPlanDBConfig()
