@@ -30,18 +30,20 @@ import type { ExecutionPathGuideCandidate } from '../execution-paths/logic'
 const props = withDefaults(defineProps<{
   graph: FlowGraph
   choices?: ExecutionPathChoice[]
-  selectionMode?: boolean
-  selectionAvailable?: boolean
-  selectionResumable?: boolean
+  workspaceOpen?: boolean
+  branchEditing?: boolean
+  workspaceAvailable?: boolean
+  workspaceResumable?: boolean
+  saveGuideVisible?: boolean
   savedPathsOpen?: boolean
 }>(), {
-  choices: () => [], selectionMode: false, selectionAvailable: false, selectionResumable: false, savedPathsOpen: false,
+  choices: () => [], workspaceOpen: false, branchEditing: false, workspaceAvailable: false, workspaceResumable: false, saveGuideVisible: false, savedPathsOpen: false,
 })
 const emit = defineEmits<{
   retry: []
   selectBranch: [choice: ExecutionPathChoice]
-  enterSelection: []
-  exitSelection: []
+  enterWorkspace: []
+  exitWorkspace: []
   closeSavedPaths: []
 }>()
 const themeVars = useThemeVars()
@@ -61,7 +63,7 @@ const layoutResult = computed(() => safeLayoutFlowGraph(props.graph))
 const laidOut = computed(() => layoutResult.value.layout)
 const pathAnalysis = computed(() => analyzeExecutionPath(props.graph, props.choices))
 const displayedLayout = computed(() => {
-  if (!laidOut.value || !props.selectionMode) return laidOut.value
+  if (!laidOut.value || !props.workspaceOpen) return laidOut.value
   const analysis = pathAnalysis.value
   const edgeStates = classifyExecutionPathEdges(props.graph, analysis, props.choices)
   return {
@@ -77,7 +79,8 @@ const displayedLayout = computed(() => {
         data: edge.data
           ? {
               ...edge.data,
-              selectionEnabled: true,
+              workspaceOpen: true,
+              branchEditing: props.branchEditing,
               ...state,
               parallelRequired: kind === 'parallel' && state.selected,
             }
@@ -166,9 +169,13 @@ async function guideSelectionNext(anchorNodeID = '') {
   const version = ++guideVersion
   await nextTick()
   await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
-  if (version !== guideVersion || !props.selectionMode || !laidOut.value || !canvasRoot.value) return
+  if (version !== guideVersion || !props.workspaceOpen || !props.branchEditing || !laidOut.value || !canvasRoot.value) return
 
   const nextRouteID = nextExecutionPathRouteID(pathAnalysis.value)
+  if (!nextRouteID && !props.saveGuideVisible) {
+    clearGuideBubble()
+    return
+  }
   const targetID = nextRouteID || anchorNodeID || props.graph.entryNodeIds[0]
   const targetNode = laidOut.value.nodes.find((node) => node.id === targetID)
   if (!targetNode) return
@@ -182,7 +189,7 @@ async function guideSelectionNext(anchorNodeID = '') {
     ? viewportForCandidateGroupCentered(viewport, candidates, container, reservedRight.value)
     : viewportForPointCentered(viewport, point, container, reservedRight.value)
   await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 250 })
-  if (version !== guideVersion || !props.selectionMode || !canvasRoot.value) return
+  if (version !== guideVersion || !props.workspaceOpen || !props.branchEditing || !canvasRoot.value) return
   viewportState.value = nextViewport
   const guideKey = nextRouteID || `complete:${anchorNodeID || targetID}`
   clearGuideBubble()
@@ -230,17 +237,17 @@ function requestPageFullscreen(next: boolean) {
 }
 
 async function handleSelectionButton() {
-  if (props.selectionMode) {
+  if (props.workspaceOpen) {
     clearGuideBubble()
     emit('closeSavedPaths')
-    emit('exitSelection')
+    emit('exitWorkspace')
     return
   }
-  if (!props.selectionAvailable) return
+  if (!props.workspaceAvailable) return
   // 线路编辑只允许在页面全屏中发生，先完成容器切换和视口补偿，再开放分支交互。
   if (!isPageFullscreen.value) await requestPageFullscreen(true)
   if (pageFullscreenDisposed || !isPageFullscreen.value) return
-  emit('enterSelection')
+  emit('enterWorkspace')
 }
 
 async function runPageFullscreenTransitions() {
@@ -275,7 +282,7 @@ function handlePageFullscreenKeydown(event: KeyboardEvent) {
 }
 
 function handleSelectBranch(choice: ExecutionPathChoice) {
-  if (!props.selectionMode) return
+  if (!props.workspaceOpen || !props.branchEditing) return
   pendingGuideAnchor = choice.routeNodeId
   emit('selectBranch', choice)
 }
@@ -290,12 +297,12 @@ watch(() => props.graph.planId, () => {
 })
 watch(() => props.graph, () => {
   // 保存冲突换入同计划最新图时保持当前缩放，只重新定位仍待选择的下一处。
-  if (props.selectionMode) void guideSelectionNext()
+  if (props.workspaceOpen && props.branchEditing) void guideSelectionNext()
 })
 watch(() => props.choices, () => {
   const anchor = pendingGuideAnchor
   pendingGuideAnchor = ''
-  if (props.selectionMode) void guideSelectionNext(anchor)
+  if (props.workspaceOpen && props.branchEditing) void guideSelectionNext(anchor)
 })
 watch(laidOut, (value) => {
   if (value || !isPageFullscreen.value) return
@@ -304,22 +311,34 @@ watch(laidOut, (value) => {
 watch(isPageFullscreen, (value) => {
   // Esc 或“退出全屏”结束编辑展示，但草稿由父页面保留供下次继续选择。
   if (!value) emit('closeSavedPaths')
-  if (!value && props.selectionMode) emit('exitSelection')
+  if (!value && props.workspaceOpen) emit('exitWorkspace')
 })
-watch(() => props.selectionMode, (enabled) => {
+watch(() => props.workspaceOpen, (enabled) => {
   if (!enabled) {
     guideVersion++
     clearGuideBubble()
     emit('closeSavedPaths')
     return
   }
-  void guideSelectionNext()
+  if (props.branchEditing) void guideSelectionNext()
+})
+watch(() => props.branchEditing, (enabled) => {
+  // 保存成功和加载已保存路径都会切回查看态；此时必须立即清理保存引导，不能等待下一次路径变化。
+  if (!enabled) {
+    guideVersion++
+    clearGuideBubble()
+    return
+  }
+  if (props.workspaceOpen) void guideSelectionNext()
+})
+watch(() => props.saveGuideVisible, () => {
+  if (props.workspaceOpen && props.branchEditing) void guideSelectionNext()
 })
 watch(isSelectionPanelCollapsed, () => {
-  if (props.selectionMode) void guideSelectionNext()
+  if (props.workspaceOpen && props.branchEditing) void guideSelectionNext()
 })
 watch(() => props.savedPathsOpen, (open) => {
-  if (!open && props.selectionMode && !guideBubble.value) void guideSelectionNext()
+  if (!open && props.workspaceOpen && props.branchEditing && !guideBubble.value) void guideSelectionNext()
 })
 
 onMounted(() => {
@@ -352,21 +371,21 @@ onBeforeUnmount(() => {
     class="flow-graph-canvas"
     :class="{
       'flow-graph-canvas--page-fullscreen': isPageFullscreen,
-      'flow-graph-canvas--selection': selectionMode,
+      'flow-graph-canvas--workspace': workspaceOpen,
       'flow-graph-canvas--panel-collapsed': isSelectionPanelCollapsed,
     }"
     :style="canvasStyle"
-    :aria-label="selectionMode ? '线路选择流程图' : '只读流程图'"
+    :aria-label="workspaceOpen ? (branchEditing ? '线路编辑流程图' : '路径查看流程图') : '只读流程图'"
   >
     <div v-if="laidOut" class="flow-graph-canvas__actions">
       <n-button
         size="small"
         secondary
-        :disabled="!selectionAvailable && !selectionMode"
-        :aria-pressed="selectionMode"
+        :disabled="!workspaceAvailable && !workspaceOpen"
+        :aria-pressed="workspaceOpen"
         @click="handleSelectionButton"
       >
-        {{ selectionMode ? '退出选择' : selectionResumable ? '继续选择' : '线路选择' }}
+        {{ workspaceOpen ? '退出选择' : workspaceResumable ? '继续选择' : '线路选择' }}
       </n-button>
       <n-button
         size="small"
@@ -409,7 +428,7 @@ onBeforeUnmount(() => {
       <controls position="bottom-right" :show-interactive="false" />
     </vue-flow-canvas>
     <aside
-      v-if="laidOut && selectionMode"
+      v-if="laidOut && workspaceOpen"
       class="flow-graph-canvas__selection-panel"
       :class="{ 'flow-graph-canvas__selection-panel--collapsed': isSelectionPanelCollapsed }"
       aria-label="线路选择面板"
@@ -424,18 +443,18 @@ onBeforeUnmount(() => {
         {{ isSelectionPanelCollapsed ? '展开' : '收起' }}
       </n-button>
       <div v-if="!isSelectionPanelCollapsed" class="flow-graph-canvas__selection-panel-content">
-        <slot name="selection-panel" />
+        <slot name="workspace-panel" />
       </div>
     </aside>
     <aside
-      v-if="laidOut && selectionMode && savedPathsOpen && !isSelectionPanelCollapsed"
+      v-if="laidOut && workspaceOpen && savedPathsOpen && !isSelectionPanelCollapsed"
       class="flow-graph-canvas__saved-paths"
       aria-label="已保存路径"
     >
       <slot name="saved-paths" />
     </aside>
     <svg
-      v-if="guideBubble && guideProjection && selectionMode && !savedPathsOpen && !guideBubble.complete"
+      v-if="guideBubble && guideProjection && workspaceOpen && branchEditing && !savedPathsOpen && !guideBubble.complete"
       class="flow-graph-canvas__guide-lines"
       aria-hidden="true"
     >
@@ -453,7 +472,7 @@ onBeforeUnmount(() => {
       />
     </svg>
     <div
-      v-if="guideBubble && guideProjection && selectionMode && !savedPathsOpen"
+      v-if="guideBubble && guideProjection && workspaceOpen && branchEditing && !savedPathsOpen"
       class="flow-graph-canvas__guide"
       :style="{ left: `${guideProjection.bubble.x}px`, top: `${guideProjection.bubble.y}px` }"
       role="status"
@@ -463,13 +482,13 @@ onBeforeUnmount(() => {
       <button type="button" aria-label="关闭提示" @click="dismissGuideBubble">×</button>
     </div>
     <div
-      v-if="guideBubble && guideProjection?.hiddenLeftCount && selectionMode && !savedPathsOpen"
+      v-if="guideBubble && guideProjection?.hiddenLeftCount && workspaceOpen && branchEditing && !savedPathsOpen"
       class="flow-graph-canvas__guide-overflow flow-graph-canvas__guide-overflow--left"
     >
       ← 还有 {{ guideProjection.hiddenLeftCount }} 个候选
     </div>
     <div
-      v-if="guideBubble && guideProjection?.hiddenRightCount && selectionMode && !savedPathsOpen"
+      v-if="guideBubble && guideProjection?.hiddenRightCount && workspaceOpen && branchEditing && !savedPathsOpen"
       class="flow-graph-canvas__guide-overflow flow-graph-canvas__guide-overflow--right"
       :style="{ right: `${reservedRight + 8}px` }"
     >
@@ -551,16 +570,18 @@ onBeforeUnmount(() => {
 
 .flow-graph-canvas__saved-paths {
   position: absolute;
-  top: 56px;
+  top: 104px;
   right: 340px;
-  bottom: 12px;
   z-index: 7;
-  width: 300px;
+  width: 280px;
+  max-height: 320px;
   overflow: hidden;
   color: var(--flow-label-color);
-  background: var(--flow-surface-color);
+  background: color-mix(in srgb, var(--flow-surface-color) 90%, transparent);
   border: 1px solid var(--flow-edge-color);
   border-radius: 4px;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   animation: flow-saved-paths-in 140ms ease-out;
 }
 
@@ -694,12 +715,12 @@ onBeforeUnmount(() => {
   opacity: 0.45;
 }
 
-.flow-graph-canvas--selection :deep(.vue-flow__controls) {
+.flow-graph-canvas--workspace :deep(.vue-flow__controls) {
   right: 336px;
   transition: right 160ms ease;
 }
 
-.flow-graph-canvas--selection.flow-graph-canvas--panel-collapsed :deep(.vue-flow__controls) {
+.flow-graph-canvas--workspace.flow-graph-canvas--panel-collapsed :deep(.vue-flow__controls) {
   right: 56px;
 }
 

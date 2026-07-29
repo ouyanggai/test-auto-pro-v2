@@ -7,6 +7,7 @@ import {
   canCreateAdditionalPath,
   canEnterExecutionPathSelection,
   classifyExecutionPathEdges,
+  deriveExecutionPathWorkspacePresentation,
   hasExecutionPathDraftChanges,
   nextExecutionPathRouteID,
   previewAllExecutionPaths,
@@ -14,6 +15,7 @@ import {
   projectExecutionPathGuide,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
+  transitionExecutionPathWorkspace,
   viewportForCandidateGroupCentered,
   viewportForPointNearest,
   viewportForPointCentered,
@@ -203,6 +205,60 @@ test('路径切换只在名称或线路真实变化时保护草稿', () => {
   assert.equal(hasExecutionPathDraftChanges('new', '', [], null), false)
   assert.equal(hasExecutionPathDraftChanges('new', '新草稿', [], null), true)
   assert.equal(hasExecutionPathDraftChanges('copy', '', [...saved.choices], null), true)
+  assert.equal(hasExecutionPathDraftChanges('view', '误改名称', [], saved), false)
+})
+
+test('已保存路径加载和保存后统一进入查看态', () => {
+  assert.equal(transitionExecutionPathWorkspace(null, 'select-saved'), 'view')
+  assert.equal(transitionExecutionPathWorkspace('new', 'select-saved'), 'view')
+  assert.equal(transitionExecutionPathWorkspace('copy', 'select-saved'), 'view')
+  assert.equal(transitionExecutionPathWorkspace('view', 'edit'), 'edit')
+  assert.equal(transitionExecutionPathWorkspace('new', 'edit'), 'new')
+})
+
+test('路径工作区只在真实编辑变化时显示保存语义', () => {
+  const view = deriveExecutionPathWorkspacePresentation({
+    mode: 'view', dirty: false, remainingChoices: 0, invalid: false, changedByGraph: false,
+  })
+  assert.deepEqual(view, {
+    title: '路径详情',
+    branchEditing: false,
+    dirty: false,
+    showNameInput: false,
+    showSave: false,
+    hint: '已保存',
+  })
+
+  const unchangedEdit = deriveExecutionPathWorkspacePresentation({
+    mode: 'edit', dirty: false, remainingChoices: 0, invalid: false, changedByGraph: false,
+  })
+  assert.equal(unchangedEdit.title, '编辑路径')
+  assert.equal(unchangedEdit.branchEditing, true)
+  assert.equal(unchangedEdit.showNameInput, true)
+  assert.equal(unchangedEdit.showSave, false)
+  assert.equal(unchangedEdit.hint, '已保存')
+
+  const renamed = deriveExecutionPathWorkspacePresentation({
+    mode: 'edit', dirty: true, remainingChoices: 0, invalid: false, changedByGraph: false,
+  })
+  assert.equal(renamed.showSave, true)
+  assert.equal(renamed.hint, '修改未保存')
+
+  const changedLine = deriveExecutionPathWorkspacePresentation({
+    mode: 'edit', dirty: true, remainingChoices: 2, invalid: false, changedByGraph: false,
+  })
+  assert.equal(changedLine.showSave, true)
+  assert.equal(changedLine.hint, '还需选择 2 处')
+
+  const savedAgain = deriveExecutionPathWorkspacePresentation({
+    mode: transitionExecutionPathWorkspace('edit', 'select-saved'),
+    dirty: false,
+    remainingChoices: 0,
+    invalid: false,
+    changedByGraph: false,
+  })
+  assert.equal(savedAgain.showSave, false)
+  assert.equal(savedAgain.hint, '已保存')
 })
 
 test('下一待选点保持缩放并移动到扣除面板后的操作区中央', () => {

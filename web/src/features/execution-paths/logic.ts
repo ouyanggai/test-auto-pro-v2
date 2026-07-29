@@ -5,6 +5,8 @@ import type {
   ExecutionPathChoice,
   ExecutionPathGenerationPreview,
   ExecutionPathSummaryItem,
+  ExecutionPathWorkspaceMode,
+  ExecutionPathWorkspacePresentation,
 } from './types.ts'
 
 const selectableKinds = new Set(['condition', 'manual'])
@@ -239,12 +241,13 @@ function executionPathChoiceSignature(choices: ExecutionPathChoice[]): string {
 }
 
 export function hasExecutionPathDraftChanges(
-  mode: 'new' | 'copy' | 'edit' | null,
+  mode: ExecutionPathWorkspaceMode,
   name: string,
   choices: ExecutionPathChoice[],
   savedPath: ExecutionPath | null,
 ): boolean {
   if (!mode) return false
+  if (mode === 'view') return false
   if (mode === 'new' || mode === 'copy') {
     return name.trim() !== '' || choices.length > 0
   }
@@ -253,6 +256,51 @@ export function hasExecutionPathDraftChanges(
   // 分支选择的传输顺序不是业务事实；切换保护只比较规范化集合，避免同一线路因数组顺序变化被误报为未保存。
   return name.trim() !== savedName
     || executionPathChoiceSignature(choices) !== executionPathChoiceSignature(savedPath.choices)
+}
+
+export function deriveExecutionPathWorkspacePresentation(options: {
+  mode: ExecutionPathWorkspaceMode
+  dirty: boolean
+  remainingChoices: number
+  invalid: boolean
+  changedByGraph: boolean
+}): ExecutionPathWorkspacePresentation {
+  const branchEditing = options.mode === 'edit' || options.mode === 'new' || options.mode === 'copy'
+  const title = options.mode === 'edit'
+    ? '编辑路径'
+    : options.mode === 'new'
+      ? '新建路径'
+      : options.mode === 'copy'
+        ? '复制路径'
+        : '路径详情'
+  let hint = '已保存'
+  if (branchEditing) {
+    if (options.changedByGraph || options.invalid) hint = '当前选择已失效，需要重新选择'
+    else if (options.remainingChoices > 0) hint = `还需选择 ${options.remainingChoices} 处`
+    else if (options.dirty || options.mode === 'new' || options.mode === 'copy') hint = '线路选择已完成，保存后生效'
+  }
+  // 编辑已保存路径时，没有真实变化就保持安静的已保存状态，也不暴露无意义的保存操作。
+  if (options.mode === 'edit' && options.dirty && options.remainingChoices === 0 && !options.invalid && !options.changedByGraph) {
+    hint = '修改未保存'
+  }
+  return {
+    title,
+    branchEditing,
+    dirty: options.dirty,
+    showNameInput: branchEditing,
+    showSave: branchEditing && (options.mode === 'new' || options.mode === 'copy' || options.dirty),
+    hint,
+  }
+}
+
+export function transitionExecutionPathWorkspace(
+  current: ExecutionPathWorkspaceMode,
+  action: 'select-saved' | 'edit' | 'new' | 'copy',
+): ExecutionPathWorkspaceMode {
+  // 已保存路径无论来自首次加载、切换还是保存响应，都统一落到查看态，避免成功后残留编辑和保存提示。
+  if (action === 'select-saved') return 'view'
+  if (action === 'edit') return current === 'view' ? 'edit' : current
+  return action
 }
 
 export function previewAllExecutionPaths(

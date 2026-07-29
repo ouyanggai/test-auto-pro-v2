@@ -15,13 +15,13 @@ const emit = defineEmits<{
 	:class="{
 	  'flow-tree-edge__base--selected': data.selected,
 	  'flow-tree-edge__base--candidate': data.candidate,
-	  'flow-tree-edge__base--dimmed': data.selectionEnabled && data.dimmed,
+	  'flow-tree-edge__base--dimmed': data.workspaceOpen && data.dimmed,
 	}"
     :path="data.path"
     :marker-start="markerStart"
     :marker-end="markerEnd"
     :interaction-width="interactionWidth"
-	:label="data.selectionEnabled && data.kind !== 'sequence' ? undefined : label"
+	:label="data.workspaceOpen && data.kind !== 'sequence' ? undefined : label"
     :label-x="data.labelX"
     :label-y="data.labelY"
     :label-style="labelStyle"
@@ -34,20 +34,20 @@ const emit = defineEmits<{
 	class="flow-tree-edge__direction"
 	:class="{
 	  'flow-tree-edge__direction--selected': data.selected,
-	  'flow-tree-edge__direction--animated': !data.selectionEnabled || data.selected,
-	  'flow-tree-edge__direction--dimmed': data.selectionEnabled && data.dimmed,
+	  'flow-tree-edge__direction--animated': !data.workspaceOpen || data.selected,
+	  'flow-tree-edge__direction--dimmed': data.workspaceOpen && data.dimmed,
 	}"
 	:d="data.path"
 	aria-hidden="true"
   />
 	<edge-label-renderer
-	  v-if="data.selectionEnabled
+	  v-if="data.workspaceOpen
 		&& data.kind !== 'sequence'
 		&& data.labelX !== undefined
 		&& data.labelY !== undefined"
 	>
 	<button
-	  v-if="(data.kind === 'condition' || data.kind === 'manual') && data.active !== false"
+	  v-if="data.branchEditing && (data.kind === 'condition' || data.kind === 'manual') && data.active !== false"
 	  type="button"
 	  class="flow-tree-edge__choice"
 	  :class="{
@@ -69,7 +69,15 @@ const emit = defineEmits<{
 	  :class="{ 'flow-tree-edge__required--dimmed': data.dimmed || data.active === false }"
 	  :style="{ transform: `translate(-50%, -50%) translate(${data.labelX}px, ${data.labelY}px)` }"
 	>
-	  {{ data.parallelRequired ? (label ? `${label} · 并行必经` : '并行必经') : (label ? `${label} · 尚未到达` : '尚未到达') }}
+	  {{ !data.branchEditing
+	    ? (data.parallelRequired
+	      ? (label ? label + ' · 并行必经' : '并行必经')
+	      : data.selected
+	        ? (label ? label + ' · 已选择' : '已选择')
+	        : (label || '未纳入'))
+	    : data.parallelRequired
+	      ? (label ? label + ' · 并行必经' : '并行必经')
+	      : (label ? label + ' · 尚未到达' : '尚未到达') }}
 	</span>
   </edge-label-renderer>
 </template>

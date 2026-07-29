@@ -25,6 +25,17 @@ export interface ExecutionPathGenerationPreview {
   exceeded: boolean
 }
 
+export type ExecutionPathWorkspaceMode = 'view' | 'edit' | 'new' | 'copy' | null
+
+export interface ExecutionPathWorkspacePresentation {
+  title: '路径详情' | '编辑路径' | '新建路径' | '复制路径'
+  branchEditing: boolean
+  dirty: boolean
+  showNameInput: boolean
+  showSave: boolean
+  hint: string
+}
+
 export interface ExecutionPathAnalysis {
   complete: boolean
   invalid: boolean

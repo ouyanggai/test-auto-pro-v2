@@ -44,7 +44,8 @@ export interface FlowTreeEdgeData extends Record<string, unknown> {
   routeNodeId: string
   branchId: string
   kind: FlowGraphEdgeKind
-  selectionEnabled?: boolean
+  workspaceOpen?: boolean
+  branchEditing?: boolean
   selected?: boolean
   candidate?: boolean
   dimmed?: boolean

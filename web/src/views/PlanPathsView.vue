@@ -11,6 +11,7 @@ import {
   NPopconfirm,
   NSpin,
   NTag,
+  NVirtualList,
   useMessage,
 } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
@@ -28,13 +29,15 @@ import {
   applyExecutionPathChoice,
   canCreateAdditionalPath,
   canEnterExecutionPathSelection,
+  deriveExecutionPathWorkspacePresentation,
   hasExecutionPathDraftChanges,
   projectExecutionPathSummary,
   previewAllExecutionPaths,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
+  transitionExecutionPathWorkspace,
 } from '../features/execution-paths/logic'
-import type { ExecutionPath, ExecutionPathChoice } from '../features/execution-paths/types'
+import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode } from '../features/execution-paths/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
@@ -58,7 +61,7 @@ const graphError = ref<FlowGraphApiError | null>(null)
 const pathsError = ref('')
 const planNotFound = ref(false)
 const activePathID = ref<string | null>(null)
-const draftMode = ref<'new' | 'copy' | 'edit' | null>(null)
+const workspaceMode = ref<ExecutionPathWorkspaceMode>(null)
 const draftChoices = ref<ExecutionPathChoice[]>([])
 const draftName = ref('')
 const draftChangedByGraph = ref(false)
@@ -67,13 +70,14 @@ const saving = ref(false)
 const deleting = ref(false)
 const generatingAll = ref(false)
 const generateAllKey = ref('')
-const selectionMode = ref(false)
+const pathWorkspaceOpen = ref(false)
 const selectionStarted = ref(false)
 const savedPathsOpen = ref(false)
 const pendingPathSwitch = ref<ExecutionPath | null>(null)
 const switchConfirmOpen = ref(false)
 const draftRecoveryLoading = ref(false)
 const draftRecoveryError = ref('')
+const SAVED_PATH_ITEM_SIZE = 44
 let loadController: AbortController | null = null
 let loadVersion = 0
 let draftRecoveryController: AbortController | null = null
@@ -85,8 +89,9 @@ const pathAnalysis = computed(() => graph.value
   ? analyzeExecutionPath(graph.value, draftChoices.value)
   : null)
 const remainingChoices = computed(() => pathAnalysis.value?.missingRouteNodeIds.length ?? 0)
-const saveDisabled = computed(() => !draftMode.value
+const saveDisabled = computed(() => !workspacePresentation.value.branchEditing
   || !pathAnalysis.value?.complete
+  || (workspaceMode.value === 'edit' && !draftHasUnsavedChanges.value && !draftChangedByGraph.value)
   || saving.value
   || generatingAll.value
   || draftRecoveryLoading.value
@@ -98,27 +103,38 @@ const allowNewPath = computed(() => Boolean(
   && !pathsError.value
   && canCreateAdditionalPath(plan.value.flowSource, paths.value.length),
 ))
-const allowCopy = computed(() => pathsLoaded.value && plan.value?.flowSource === 'new' && Boolean(activePath.value))
+const allowCopy = computed(() => pathsLoaded.value
+  && plan.value?.flowSource === 'new'
+  && workspaceMode.value === 'view'
+  && Boolean(activePath.value))
 const selectionAvailable = computed(() => canEnterExecutionPathSelection({
   graphReady: Boolean(graph.value),
   pathsLoaded: pathsLoaded.value,
   pathsFailed: Boolean(pathsError.value),
-  hasDraft: Boolean(draftMode.value),
+  hasDraft: Boolean(workspaceMode.value),
   canCreate: allowNewPath.value,
 }))
-const selectionResumable = computed(() => selectionStarted.value && Boolean(draftMode.value))
+const selectionResumable = computed(() => selectionStarted.value && Boolean(workspaceMode.value))
 const draftHasUnsavedChanges = computed(() => hasExecutionPathDraftChanges(
-  draftMode.value,
+  workspaceMode.value,
   draftName.value,
   draftChoices.value,
   activePath.value,
 ))
+const workspacePresentation = computed(() => deriveExecutionPathWorkspacePresentation({
+  mode: workspaceMode.value,
+  dirty: workspaceMode.value !== 'view' && (draftHasUnsavedChanges.value || draftChangedByGraph.value),
+  remainingChoices: remainingChoices.value,
+  invalid: Boolean(pathAnalysis.value?.invalid),
+  changedByGraph: draftChangedByGraph.value,
+}))
 const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
 const batchPreview = computed(() => graph.value && plan.value?.flowSource === 'new'
   ? previewAllExecutionPaths(graph.value, paths.value)
   : { totalCount: 0, existingCount: 0, pendingCount: 0, exceeded: false })
+const savedPathListHeight = computed(() => Math.min(paths.value.length, 6) * SAVED_PATH_ITEM_SIZE)
 
 async function loadPage() {
   loadController?.abort()
@@ -137,7 +153,7 @@ async function loadPage() {
   plan.value = null
   graph.value = null
   paths.value = []
-  selectionMode.value = false
+  pathWorkspaceOpen.value = false
   selectionStarted.value = false
   savedPathsOpen.value = false
   pendingPathSwitch.value = null
@@ -244,7 +260,7 @@ function selectSavedPath(path: ExecutionPath) {
   if (!graph.value) return
   const reconciled = reconcileExecutionPathChoices(graph.value, path.choices)
   activePathID.value = path.id
-  draftMode.value = 'edit'
+  workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'select-saved')
   draftChoices.value = reconciled.choices
   draftName.value = path.name || `路径 ${path.sequenceNo}`
   draftChangedByGraph.value = reconciled.changed
@@ -291,7 +307,7 @@ function startNewPath() {
   if (!allowNewPath.value) return
   closeSavedPaths()
   activePathID.value = null
-  draftMode.value = 'new'
+  workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'new')
   draftChoices.value = []
   draftName.value = ''
   draftChangedByGraph.value = false
@@ -304,7 +320,7 @@ function copyActivePath() {
   closeSavedPaths()
   const reconciled = reconcileExecutionPathChoices(graph.value, activePath.value.choices)
   activePathID.value = null
-  draftMode.value = 'copy'
+  workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'copy')
   draftChoices.value = reconciled.choices
   draftName.value = ''
   draftChangedByGraph.value = reconciled.changed
@@ -314,7 +330,7 @@ function copyActivePath() {
 
 function clearDraft() {
   activePathID.value = null
-  draftMode.value = null
+  workspaceMode.value = null
   draftChoices.value = []
   draftName.value = ''
   draftChangedByGraph.value = false
@@ -323,7 +339,7 @@ function clearDraft() {
 }
 
 function selectBranch(choice: ExecutionPathChoice) {
-  if (!graph.value || !draftMode.value || !selectionMode.value || saving.value || generatingAll.value) return
+  if (!graph.value || !workspacePresentation.value.branchEditing || !pathWorkspaceOpen.value || saving.value || generatingAll.value) return
   if (draftChoices.value.some((item) => item.routeNodeId === choice.routeNodeId && item.branchId === choice.branchId)) return
   draftChoices.value = applyExecutionPathChoice(graph.value, draftChoices.value, choice.routeNodeId, choice.branchId)
   draftChangedByGraph.value = false
@@ -332,23 +348,29 @@ function selectBranch(choice: ExecutionPathChoice) {
 function enterSelectionMode() {
   if (!selectionAvailable.value || !graph.value) return
   // 首次进入时才创建本地草稿；退出页面全屏不会清理它，确保再次进入可继续选择。
-  if (!draftMode.value) {
+  if (!workspaceMode.value) {
     if (allowNewPath.value) startNewPath()
     else if (paths.value[0]) selectSavedPath(paths.value[0])
   }
-  if (!draftMode.value) return
-  selectionMode.value = true
+  if (!workspaceMode.value) return
+  pathWorkspaceOpen.value = true
   selectionStarted.value = true
+}
+
+function editActivePath() {
+  if (!activePath.value || workspaceMode.value !== 'view') return
+  workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'edit')
+  closeSavedPaths()
 }
 
 function exitSelectionMode() {
   // 这里只关闭交互展示，草稿、活动路径和创建键都必须原样保留。
-  selectionMode.value = false
+  pathWorkspaceOpen.value = false
   closeSavedPaths()
 }
 
 async function refreshDraftAfterInvalidSave() {
-  if (!draftMode.value) return
+  if (!workspacePresentation.value.branchEditing) return
   draftRecoveryController?.abort()
   const controller = new AbortController()
   draftRecoveryController = controller
@@ -376,10 +398,10 @@ async function refreshDraftAfterInvalidSave() {
 }
 
 async function savePath() {
-  if (!plan.value || !graph.value || !draftMode.value || saveDisabled.value) return
+  if (!plan.value || !graph.value || !workspacePresentation.value.branchEditing || saveDisabled.value) return
   saving.value = true
   try {
-    const saved = draftMode.value === 'edit' && activePathID.value
+    const saved = workspaceMode.value === 'edit' && activePathID.value
       ? await updateExecutionPath(planID.value, activePathID.value, draftName.value, draftChoices.value)
       : await createExecutionPath(planID.value, draftName.value, draftChoices.value, createKey.value)
     const existingIndex = paths.value.findIndex((path) => path.id === saved.id)
@@ -388,6 +410,7 @@ async function savePath() {
     paths.value.sort((left, right) => left.sequenceNo - right.sequenceNo)
     plan.value.pathCount = paths.value.length
     selectSavedPath(saved)
+    closeSavedPaths()
     message.success('执行路径已保存')
   }
   catch (caught) {
@@ -433,6 +456,7 @@ async function generateAllPaths() {
     plan.value.pathCount = refreshed.length
     // 批量生成是旁路管理动作，只刷新持久化列表；当前未保存草稿、名称和单条创建键都不能被新路径覆盖。
     generateAllKey.value = ''
+    closeSavedPaths()
     if (result.createdCount === 0) message.info(`全部 ${result.totalCount} 条路径均已存在，无需新增`)
     else message.success(`已新增 ${result.createdCount} 条路径，跳过 ${result.existingCount} 条已存在路径`)
   }
@@ -459,7 +483,7 @@ async function removeActivePath() {
     if (paths.value[0] && graph.value) selectSavedPath(paths.value[0])
     else {
       clearDraft()
-      selectionMode.value = false
+      pathWorkspaceOpen.value = false
     }
     closeSavedPaths()
     message.success('执行路径已删除')
@@ -547,51 +571,55 @@ onBeforeUnmount(() => {
               <flow-graph-canvas
                 :graph="graph"
                 :choices="draftChoices"
-                :selection-mode="selectionMode"
-                :selection-available="selectionAvailable"
-                :selection-resumable="selectionResumable"
+                :workspace-open="pathWorkspaceOpen"
+                :branch-editing="workspacePresentation.branchEditing"
+                :workspace-available="selectionAvailable"
+                :workspace-resumable="selectionResumable"
+                :save-guide-visible="workspacePresentation.showSave"
                 :saved-paths-open="savedPathsOpen"
                 @select-branch="selectBranch"
-                @enter-selection="enterSelectionMode"
-                @exit-selection="exitSelectionMode"
+                @enter-workspace="enterSelectionMode"
+                @exit-workspace="exitSelectionMode"
                 @close-saved-paths="closeSavedPaths"
                 @retry="retryGraph"
               >
-                <template #selection-panel>
+                <template #workspace-panel>
                   <section class="path-selection-panel">
                     <header class="path-selection-panel__header">
-                      <div>
-                        <h3>线路选择</h3>
-                        <p v-if="draftChangedByGraph">流程已变化，需要重新选择</p>
-                        <p v-else-if="pathAnalysis?.invalid">当前选择已失效</p>
-                        <p v-else-if="remainingChoices > 0">还需选择 {{ remainingChoices }} 处</p>
-                        <p v-else>线路已完整，请保存</p>
-                      </div>
-                      <div class="path-selection-panel__header-actions">
-                        <n-button
-                          size="small"
-                          secondary
-                          :aria-expanded="savedPathsOpen"
-                          @click="toggleSavedPaths"
-                        >
-                          已保存路径 {{ paths.length }}
-                        </n-button>
-                        <n-tag size="small" :type="pathAnalysis?.invalid ? 'error' : remainingChoices > 0 ? 'warning' : 'success'" :bordered="false">
-                          {{ pathAnalysis?.invalid ? '选择异常' : remainingChoices > 0 ? `${remainingChoices} 处待选` : '已完整' }}
-                        </n-tag>
-                      </div>
+                      <h3>{{ workspacePresentation.title }}</h3>
                     </header>
 
-                    <div class="path-selection-panel__current" aria-label="当前路径状态">
-                      <span>当前路径</span>
-                      <n-tag v-if="activePath" size="small" type="info" :bordered="false">
-                        稳定序号 #{{ activePath.sequenceNo }} · {{ pathDisplayName(activePath) }}
-                      </n-tag>
-                      <n-tag v-if="draftMode === 'new'" size="small" type="info" :bordered="false">待分配序号 · 新路径</n-tag>
-                      <n-tag v-if="draftMode === 'copy'" size="small" type="info" :bordered="false">待分配序号 · 路径副本</n-tag>
-                    </div>
+                    <section class="path-selection-panel__details" aria-label="当前路径">
+                      <h4>当前路径</h4>
+                      <dl>
+                        <div>
+                          <dt>序号</dt>
+                          <dd>{{ activePath ? `#${activePath.sequenceNo}` : '待分配' }}</dd>
+                        </div>
+                        <div>
+                          <dt>名称</dt>
+                          <dd :title="activePath ? pathDisplayName(activePath) : undefined">
+                            {{ activePath ? pathDisplayName(activePath) : workspaceMode === 'copy' ? '路径副本' : '新路径' }}
+                          </dd>
+                        </div>
+                      </dl>
+                    </section>
 
-                    <div class="path-selection-panel__create-actions">
+                    <section class="path-selection-panel__operations" aria-label="路径操作">
+                      <h4>路径操作</h4>
+                      <div>
+                      <n-button
+                        size="small"
+                        secondary
+                        :aria-expanded="savedPathsOpen"
+                        :disabled="paths.length === 0"
+                        @click="toggleSavedPaths"
+                      >
+                        已保存的路径
+                      </n-button>
+                      <n-button v-if="workspaceMode === 'view' && activePath" size="small" @click="editActivePath">
+                        编辑路径
+                      </n-button>
                       <n-button v-if="allowNewPath" size="small" :disabled="saving || deleting || generatingAll || draftRecoveryLoading" @click="startNewPath">
                         {{ plan.flowSource === 'new' ? '新增路径' : '选择当前实例后续路径' }}
                       </n-button>
@@ -619,9 +647,31 @@ onBeforeUnmount(() => {
                       >
                         一键生成全部路径
                       </n-button>
-                    </div>
+                      <n-button
+                        v-if="workspacePresentation.showSave"
+                        type="primary"
+                        size="small"
+                        :loading="saving"
+                        :disabled="saveDisabled"
+                        @click="savePath"
+                      >
+                        保存路径
+                      </n-button>
+                      <n-popconfirm v-if="activePath" @positive-click="removeActivePath">
+                        <template #trigger>
+                          <n-button size="small" type="error" secondary :loading="deleting">删除路径</n-button>
+                        </template>
+                        只删除当前工具中的路径记录，确认继续？
+                      </n-popconfirm>
+                      </div>
+                    </section>
 
-                    <div v-if="draftMode" class="path-selection-panel__name">
+                    <section class="path-selection-panel__hint" aria-live="polite" aria-label="操作提示">
+                      <h4>操作提示</h4>
+                      <p>{{ workspacePresentation.hint }}</p>
+                    </section>
+
+                    <div v-if="workspacePresentation.showNameInput" class="path-selection-panel__name">
                       <div class="path-selection-panel__name-label">
                         <span>路径名称</span>
                         <n-tag size="small" :bordered="false">
@@ -661,36 +711,24 @@ onBeforeUnmount(() => {
                       </ol>
                       <n-empty v-else size="small" description="当前没有可投影的线路" />
                     </div>
-
-                    <footer class="path-selection-panel__footer">
-                      <n-button
-                        v-if="draftMode"
-                        type="primary"
-                        :loading="saving"
-                        :disabled="saveDisabled"
-                        @click="savePath"
-                      >
-                        保存路径
-                      </n-button>
-                      <n-popconfirm v-if="activePath" @positive-click="removeActivePath">
-                        <template #trigger>
-                          <n-button size="small" type="error" secondary :loading="deleting">删除路径</n-button>
-                        </template>
-                        只删除当前工具中的路径记录，确认继续？
-                      </n-popconfirm>
-                    </footer>
                   </section>
                 </template>
                 <template #saved-paths>
                   <section class="saved-paths-popover">
                     <header class="saved-paths-popover__header">
-                      <h3>已保存路径 {{ paths.length }}</h3>
+                      <h3>已保存的路径</h3>
                       <n-button text size="small" aria-label="关闭已保存路径" @click="closeSavedPaths">关闭</n-button>
                     </header>
-                    <div class="saved-paths-popover__list">
+                    <n-virtual-list
+                      v-if="paths.length"
+                      class="saved-paths-popover__list"
+                      :items="paths"
+                      :item-size="SAVED_PATH_ITEM_SIZE"
+                      :style="{ height: `${savedPathListHeight}px` }"
+                      key-field="id"
+                    >
+                      <template #default="{ item }">
                       <n-button
-                        v-for="item in paths"
-                        :key="item.id"
                         class="saved-paths-popover__item"
                         :class="{ 'saved-paths-popover__item--active': activePathID === item.id }"
                         text
@@ -703,8 +741,9 @@ onBeforeUnmount(() => {
                         <span class="saved-paths-popover__name">{{ pathDisplayName(item) }}</span>
                         <span v-if="activePathID === item.id" class="saved-paths-popover__selected">当前</span>
                       </n-button>
-                      <n-empty v-if="paths.length === 0" size="small" description="暂无已保存路径" />
-                    </div>
+                      </template>
+                    </n-virtual-list>
+                    <n-empty v-else class="saved-paths-popover__empty" size="small" description="暂无已保存路径" />
                   </section>
                 </template>
               </flow-graph-canvas>
@@ -847,23 +886,14 @@ onBeforeUnmount(() => {
 }
 
 .path-selection-panel__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 14px 12px;
+  padding: 4px 14px 10px;
   border-bottom: 1px solid var(--flow-edge-color);
 }
 
-.path-selection-panel__header-actions {
-  display: grid;
-  flex: 0 0 auto;
-  justify-items: end;
-  gap: 7px;
-}
-
 .path-selection-panel__header h3,
-.path-selection-panel__header p,
+.path-selection-panel__details h4,
+.path-selection-panel__operations h4,
+.path-selection-panel__hint h4,
 .path-selection-panel__summary h4 {
   margin: 0;
 }
@@ -873,39 +903,70 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 
-.path-selection-panel__header p,
+.path-selection-panel__hint p,
 .path-summary__item span {
   color: var(--flow-label-color);
   font-size: 12px;
   opacity: 0.72;
 }
 
-.path-selection-panel__current,
-.path-selection-panel__create-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 14px 0;
+.path-selection-panel__details,
+.path-selection-panel__operations,
+.path-selection-panel__hint {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--flow-edge-color);
 }
 
-.path-selection-panel__current {
-  align-items: center;
-  justify-content: space-between;
-  color: var(--flow-label-color);
+.path-selection-panel__details h4,
+.path-selection-panel__operations h4,
+.path-selection-panel__hint h4 {
+  margin-bottom: 8px;
   font-size: 13px;
 }
 
-.path-selection-panel__create-actions {
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--flow-edge-color);
+.path-selection-panel__details dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.path-selection-panel__details dl > div {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.path-selection-panel__details dt {
+  color: var(--flow-label-color);
+  font-size: 12px;
+  opacity: 0.68;
+}
+
+.path-selection-panel__details dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--flow-label-color);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-selection-panel__operations > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.path-selection-panel__hint p {
+  margin: 0;
 }
 
 .saved-paths-popover {
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: 100%;
-  min-height: 0;
+  max-height: 320px;
 }
 
 .saved-paths-popover__header {
@@ -925,19 +986,15 @@ onBeforeUnmount(() => {
 }
 
 .saved-paths-popover__list {
-  display: grid;
-  align-content: start;
-  flex: 1 1 auto;
-  gap: 4px;
-  min-height: 0;
-  padding: 8px;
-  overflow-y: auto;
+  width: 100%;
+  max-height: 264px;
+  padding: 0 8px;
 }
 
 .saved-paths-popover__item {
   width: 100%;
   min-width: 0;
-  min-height: 36px;
+  height: 44px;
   padding: 0 8px;
   border-radius: 3px;
 }
@@ -978,6 +1035,10 @@ onBeforeUnmount(() => {
   margin-left: auto;
   padding-left: 8px;
   font-size: 12px;
+}
+
+.saved-paths-popover__empty {
+  padding: 18px 12px;
 }
 
 .path-selection-panel__name {
@@ -1097,19 +1158,6 @@ onBeforeUnmount(() => {
 
 .path-summary__item--pending .path-summary__marker {
   border-style: dashed;
-}
-
-.path-selection-panel__footer {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-  padding: 12px 14px;
-  background: var(--flow-surface-color);
-  border-top: 1px solid var(--flow-edge-color);
-}
-
-.path-selection-panel__footer > :first-child {
-  flex: 1 1 auto;
 }
 
 .error-actions {
