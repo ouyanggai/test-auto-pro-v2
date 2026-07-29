@@ -7,6 +7,7 @@ import {
   NDescriptionsItem,
   NEmpty,
   NInput,
+  NModal,
   NPopconfirm,
   NSpin,
   NTag,
@@ -27,6 +28,7 @@ import {
   applyExecutionPathChoice,
   canCreateAdditionalPath,
   canEnterExecutionPathSelection,
+  hasExecutionPathDraftChanges,
   projectExecutionPathSummary,
   previewAllExecutionPaths,
   reconcileExecutionPathChoices,
@@ -67,6 +69,9 @@ const generatingAll = ref(false)
 const generateAllKey = ref('')
 const selectionMode = ref(false)
 const selectionStarted = ref(false)
+const savedPathsOpen = ref(false)
+const pendingPathSwitch = ref<ExecutionPath | null>(null)
+const switchConfirmOpen = ref(false)
 const draftRecoveryLoading = ref(false)
 const draftRecoveryError = ref('')
 let loadController: AbortController | null = null
@@ -102,6 +107,12 @@ const selectionAvailable = computed(() => canEnterExecutionPathSelection({
   canCreate: allowNewPath.value,
 }))
 const selectionResumable = computed(() => selectionStarted.value && Boolean(draftMode.value))
+const draftHasUnsavedChanges = computed(() => hasExecutionPathDraftChanges(
+  draftMode.value,
+  draftName.value,
+  draftChoices.value,
+  activePath.value,
+))
 const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
@@ -128,6 +139,9 @@ async function loadPage() {
   paths.value = []
   selectionMode.value = false
   selectionStarted.value = false
+  savedPathsOpen.value = false
+  pendingPathSwitch.value = null
+  switchConfirmOpen.value = false
   draftRecoveryLoading.value = false
   draftRecoveryError.value = ''
   clearDraft()
@@ -238,8 +252,44 @@ function selectSavedPath(path: ExecutionPath) {
   createKey.value = ''
 }
 
+function closeSavedPaths() {
+  savedPathsOpen.value = false
+}
+
+function toggleSavedPaths() {
+  savedPathsOpen.value = !savedPathsOpen.value
+}
+
+function requestSavedPathSwitch(path: ExecutionPath) {
+  if (activePathID.value === path.id) {
+    closeSavedPaths()
+    return
+  }
+  // 只有真实名称或线路变化才阻止切换；取消确认必须保持当前路径、草稿和浮层原样。
+  if (draftHasUnsavedChanges.value) {
+    pendingPathSwitch.value = path
+    switchConfirmOpen.value = true
+    return
+  }
+  selectSavedPath(path)
+  closeSavedPaths()
+}
+
+function confirmSavedPathSwitch() {
+  if (pendingPathSwitch.value) selectSavedPath(pendingPathSwitch.value)
+  pendingPathSwitch.value = null
+  switchConfirmOpen.value = false
+  closeSavedPaths()
+}
+
+function cancelSavedPathSwitch() {
+  pendingPathSwitch.value = null
+  switchConfirmOpen.value = false
+}
+
 function startNewPath() {
   if (!allowNewPath.value) return
+  closeSavedPaths()
   activePathID.value = null
   draftMode.value = 'new'
   draftChoices.value = []
@@ -251,6 +301,7 @@ function startNewPath() {
 
 function copyActivePath() {
   if (!allowCopy.value || !activePath.value || !graph.value) return
+  closeSavedPaths()
   const reconciled = reconcileExecutionPathChoices(graph.value, activePath.value.choices)
   activePathID.value = null
   draftMode.value = 'copy'
@@ -293,6 +344,7 @@ function enterSelectionMode() {
 function exitSelectionMode() {
   // 这里只关闭交互展示，草稿、活动路径和创建键都必须原样保留。
   selectionMode.value = false
+  closeSavedPaths()
 }
 
 async function refreshDraftAfterInvalidSave() {
@@ -409,6 +461,7 @@ async function removeActivePath() {
       clearDraft()
       selectionMode.value = false
     }
+    closeSavedPaths()
     message.success('执行路径已删除')
   }
   catch (caught) {
@@ -497,9 +550,11 @@ onBeforeUnmount(() => {
                 :selection-mode="selectionMode"
                 :selection-available="selectionAvailable"
                 :selection-resumable="selectionResumable"
+                :saved-paths-open="savedPathsOpen"
                 @select-branch="selectBranch"
                 @enter-selection="enterSelectionMode"
                 @exit-selection="exitSelectionMode"
+                @close-saved-paths="closeSavedPaths"
                 @retry="retryGraph"
               >
                 <template #selection-panel>
@@ -512,26 +567,26 @@ onBeforeUnmount(() => {
                         <p v-else-if="remainingChoices > 0">还需选择 {{ remainingChoices }} 处</p>
                         <p v-else>线路已完整，请保存</p>
                       </div>
-                      <n-tag size="small" :type="pathAnalysis?.invalid ? 'error' : remainingChoices > 0 ? 'warning' : 'success'" :bordered="false">
-                        {{ pathAnalysis?.invalid ? '选择异常' : remainingChoices > 0 ? `${remainingChoices} 处待选` : '已完整' }}
-                      </n-tag>
+                      <div class="path-selection-panel__header-actions">
+                        <n-button
+                          size="small"
+                          secondary
+                          :aria-expanded="savedPathsOpen"
+                          @click="toggleSavedPaths"
+                        >
+                          已保存路径 {{ paths.length }}
+                        </n-button>
+                        <n-tag size="small" :type="pathAnalysis?.invalid ? 'error' : remainingChoices > 0 ? 'warning' : 'success'" :bordered="false">
+                          {{ pathAnalysis?.invalid ? '选择异常' : remainingChoices > 0 ? `${remainingChoices} 处待选` : '已完整' }}
+                        </n-tag>
+                      </div>
                     </header>
 
-                    <div class="path-selection-panel__paths" aria-label="已保存路径">
-                      <n-button
-                        v-for="item in paths"
-                        :key="item.id"
-                        class="path-selection-panel__path-button"
-                        size="small"
-                        :type="activePathID === item.id ? 'primary' : 'default'"
-                        :secondary="activePathID === item.id"
-                        :disabled="saving || deleting || generatingAll || draftRecoveryLoading"
-                        :title="pathDisplayName(item)"
-                        @click="selectSavedPath(item)"
-                      >
-                        <span class="path-selection-panel__sequence">#{{ item.sequenceNo }}</span>
-                        <span class="path-selection-panel__path-name">{{ pathDisplayName(item) }}</span>
-                      </n-button>
+                    <div class="path-selection-panel__current" aria-label="当前路径状态">
+                      <span>当前路径</span>
+                      <n-tag v-if="activePath" size="small" type="info" :bordered="false">
+                        稳定序号 #{{ activePath.sequenceNo }} · {{ pathDisplayName(activePath) }}
+                      </n-tag>
                       <n-tag v-if="draftMode === 'new'" size="small" type="info" :bordered="false">待分配序号 · 新路径</n-tag>
                       <n-tag v-if="draftMode === 'copy'" size="small" type="info" :bordered="false">待分配序号 · 路径副本</n-tag>
                     </div>
@@ -626,6 +681,32 @@ onBeforeUnmount(() => {
                     </footer>
                   </section>
                 </template>
+                <template #saved-paths>
+                  <section class="saved-paths-popover">
+                    <header class="saved-paths-popover__header">
+                      <h3>已保存路径 {{ paths.length }}</h3>
+                      <n-button text size="small" aria-label="关闭已保存路径" @click="closeSavedPaths">关闭</n-button>
+                    </header>
+                    <div class="saved-paths-popover__list">
+                      <n-button
+                        v-for="item in paths"
+                        :key="item.id"
+                        class="saved-paths-popover__item"
+                        :class="{ 'saved-paths-popover__item--active': activePathID === item.id }"
+                        text
+                        :title="pathDisplayName(item)"
+                        :disabled="saving || deleting || generatingAll || draftRecoveryLoading"
+                        :aria-current="activePathID === item.id ? 'true' : undefined"
+                        @click="requestSavedPathSwitch(item)"
+                      >
+                        <span class="saved-paths-popover__sequence">#{{ item.sequenceNo }}</span>
+                        <span class="saved-paths-popover__name">{{ pathDisplayName(item) }}</span>
+                        <span v-if="activePathID === item.id" class="saved-paths-popover__selected">当前</span>
+                      </n-button>
+                      <n-empty v-if="paths.length === 0" size="small" description="暂无已保存路径" />
+                    </div>
+                  </section>
+                </template>
               </flow-graph-canvas>
             </template>
             <div v-else class="graph-state">
@@ -650,6 +731,17 @@ onBeforeUnmount(() => {
         </n-empty>
       </div>
     </n-spin>
+    <n-modal
+      v-model:show="switchConfirmOpen"
+      preset="dialog"
+      title="切换已保存路径"
+      positive-text="放弃修改并切换"
+      negative-text="取消"
+      @positive-click="confirmSavedPathSwitch"
+      @negative-click="cancelSavedPathSwitch"
+    >
+      当前路径存在未保存的名称或线路变化，切换后这些修改会丢失。
+    </n-modal>
   </section>
 </template>
 
@@ -763,6 +855,13 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--flow-edge-color);
 }
 
+.path-selection-panel__header-actions {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 7px;
+}
+
 .path-selection-panel__header h3,
 .path-selection-panel__header p,
 .path-selection-panel__summary h4 {
@@ -781,7 +880,7 @@ onBeforeUnmount(() => {
   opacity: 0.72;
 }
 
-.path-selection-panel__paths,
+.path-selection-panel__current,
 .path-selection-panel__create-actions {
   display: flex;
   flex-wrap: wrap;
@@ -789,39 +888,96 @@ onBeforeUnmount(() => {
   padding: 10px 14px 0;
 }
 
-.path-selection-panel__sequence {
-  flex: 0 0 auto;
-  margin-right: 5px;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.68;
-}
-
-.path-selection-panel__path-button {
-  max-width: 100%;
-  min-width: 0;
-}
-
-.path-selection-panel__path-button :deep(.n-button__content) {
-  max-width: 100%;
-  min-width: 0;
-}
-
-.path-selection-panel__path-name {
-  min-width: 0;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.path-selection-panel__paths {
-  max-height: 96px;
-  overflow-y: auto;
+.path-selection-panel__current {
+  align-items: center;
+  justify-content: space-between;
+  color: var(--flow-label-color);
+  font-size: 13px;
 }
 
 .path-selection-panel__create-actions {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--flow-edge-color);
+}
+
+.saved-paths-popover {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.saved-paths-popover__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--flow-edge-color);
+}
+
+.saved-paths-popover__header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.saved-paths-popover__list {
+  display: grid;
+  align-content: start;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.saved-paths-popover__item {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 8px;
+  border-radius: 3px;
+}
+
+.saved-paths-popover__item :deep(.n-button__content) {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.saved-paths-popover__item--active {
+  color: var(--flow-direction-color);
+  background: color-mix(in srgb, var(--flow-direction-color) 10%, var(--flow-surface-color));
+}
+
+.saved-paths-popover__sequence,
+.saved-paths-popover__selected {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.saved-paths-popover__sequence {
+  width: 42px;
+  text-align: left;
+  opacity: 0.68;
+}
+
+.saved-paths-popover__name {
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-paths-popover__selected {
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 12px;
 }
 
 .path-selection-panel__name {

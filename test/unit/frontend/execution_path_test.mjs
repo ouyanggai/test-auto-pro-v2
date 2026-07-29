@@ -7,6 +7,7 @@ import {
   canCreateAdditionalPath,
   canEnterExecutionPathSelection,
   classifyExecutionPathEdges,
+  hasExecutionPathDraftChanges,
   nextExecutionPathRouteID,
   previewAllExecutionPaths,
   projectExecutionPathSummary,
@@ -189,6 +190,19 @@ test('路径列表未完成或失败时不能进入选择模式', () => {
   assert.equal(canEnterExecutionPathSelection({ ...ready, pathsLoaded: false }), false)
   assert.equal(canEnterExecutionPathSelection({ ...ready, pathsFailed: true }), false)
   assert.equal(canEnterExecutionPathSelection({ ...ready, graphReady: false }), false)
+})
+
+test('路径切换只在名称或线路真实变化时保护草稿', () => {
+  const saved = {
+    id: '31', sequenceNo: 3, name: '重点路径', updatedAt: '',
+    choices: [{ routeNodeId: 'route-a', branchId: 'branch-a' }],
+  }
+  assert.equal(hasExecutionPathDraftChanges('edit', '重点路径', [...saved.choices], saved), false)
+  assert.equal(hasExecutionPathDraftChanges('edit', '改名路径', [...saved.choices], saved), true)
+  assert.equal(hasExecutionPathDraftChanges('edit', '重点路径', [{ routeNodeId: 'route-a', branchId: 'branch-b' }], saved), true)
+  assert.equal(hasExecutionPathDraftChanges('new', '', [], null), false)
+  assert.equal(hasExecutionPathDraftChanges('new', '新草稿', [], null), true)
+  assert.equal(hasExecutionPathDraftChanges('copy', '', [...saved.choices], null), true)
 })
 
 test('下一待选点保持缩放并移动到扣除面板后的操作区中央', () => {

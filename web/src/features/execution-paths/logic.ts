@@ -238,6 +238,23 @@ function executionPathChoiceSignature(choices: ExecutionPathChoice[]): string {
     .join(';')
 }
 
+export function hasExecutionPathDraftChanges(
+  mode: 'new' | 'copy' | 'edit' | null,
+  name: string,
+  choices: ExecutionPathChoice[],
+  savedPath: ExecutionPath | null,
+): boolean {
+  if (!mode) return false
+  if (mode === 'new' || mode === 'copy') {
+    return name.trim() !== '' || choices.length > 0
+  }
+  if (!savedPath) return name.trim() !== '' || choices.length > 0
+  const savedName = savedPath.name?.trim() || `路径 ${savedPath.sequenceNo}`
+  // 分支选择的传输顺序不是业务事实；切换保护只比较规范化集合，避免同一线路因数组顺序变化被误报为未保存。
+  return name.trim() !== savedName
+    || executionPathChoiceSignature(choices) !== executionPathChoiceSignature(savedPath.choices)
+}
+
 export function previewAllExecutionPaths(
   graph: FlowGraph,
   savedPaths: ExecutionPath[],
