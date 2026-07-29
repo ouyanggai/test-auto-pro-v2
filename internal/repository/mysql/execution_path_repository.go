@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -201,11 +200,9 @@ func (r *ExecutionPathRepository) FindBatchByCreateKey(ctx context.Context, plan
 	if batchPlanID != planID {
 		return model.ExecutionPathBatchResult{}, false, nil
 	}
-	if result.Paths == nil {
-		result.Paths, err = loadExecutionPathBatchPaths(ctx, r.db, batchID)
-		if err != nil {
-			return model.ExecutionPathBatchResult{}, false, err
-		}
+	result.Paths, err = loadExecutionPathBatchPaths(ctx, r.db, batchID)
+	if err != nil {
+		return model.ExecutionPathBatchResult{}, false, err
 	}
 	return result, true, nil
 }
@@ -227,11 +224,9 @@ func (r *ExecutionPathRepository) GenerateAll(ctx context.Context, planID uint64
 		if batchPlanID != planID {
 			return model.ExecutionPathBatchResult{}, false, repository.ErrExecutionPathDataInvalid
 		}
-		if existing.Paths == nil {
-			existing.Paths, err = loadExecutionPathBatchPaths(ctx, tx, batchID)
-			if err != nil {
-				return model.ExecutionPathBatchResult{}, false, err
-			}
+		existing.Paths, err = loadExecutionPathBatchPaths(ctx, tx, batchID)
+		if err != nil {
+			return model.ExecutionPathBatchResult{}, false, err
 		}
 		if err := tx.Commit(); err != nil {
 			return model.ExecutionPathBatchResult{}, false, err
@@ -321,14 +316,6 @@ VALUES (?, ?, ?)`, batchID, index+1, pathID); err != nil {
 		if err := touchPlan(ctx, tx, planID, now); err != nil {
 			return model.ExecutionPathBatchResult{}, false, err
 		}
-	}
-	snapshot, err := json.Marshal(result)
-	if err != nil {
-		return model.ExecutionPathBatchResult{}, false, repository.ErrExecutionPathDataInvalid
-	}
-	// 幂等结果快照与路径同事务提交，后续用户主动删除路径也不能改变原请求已经返回的批次事实。
-	if _, err := tx.ExecContext(ctx, "UPDATE test_execution_path_batches SET result_json = ? WHERE id = ?", snapshot, batchID); err != nil {
-		return model.ExecutionPathBatchResult{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return model.ExecutionPathBatchResult{}, false, err
@@ -477,22 +464,16 @@ type executionPathBatchQueryer interface {
 func findExecutionPathBatchByCreateKey(ctx context.Context, db executionPathBatchQueryer, createKey string) (uint64, uint64, model.ExecutionPathBatchResult, bool, error) {
 	var batchID, planID uint64
 	var result model.ExecutionPathBatchResult
-	var snapshot sql.NullString
 	err := db.QueryRowContext(ctx, `
-SELECT id, plan_id, total_count, existing_count, created_count, result_json
+SELECT id, plan_id, total_count, existing_count, created_count
 FROM test_execution_path_batches WHERE create_key = ?`, createKey).Scan(
-		&batchID, &planID, &result.TotalCount, &result.ExistingCount, &result.CreatedCount, &snapshot,
+		&batchID, &planID, &result.TotalCount, &result.ExistingCount, &result.CreatedCount,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, model.ExecutionPathBatchResult{}, false, nil
 	}
 	if err != nil {
 		return 0, 0, model.ExecutionPathBatchResult{}, false, err
-	}
-	if snapshot.Valid && strings.TrimSpace(snapshot.String) != "" {
-		if err := json.Unmarshal([]byte(snapshot.String), &result); err != nil {
-			return 0, 0, model.ExecutionPathBatchResult{}, false, repository.ErrExecutionPathDataInvalid
-		}
 	}
 	return batchID, planID, result, true, nil
 }
