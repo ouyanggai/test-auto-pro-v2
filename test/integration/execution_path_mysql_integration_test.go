@@ -170,6 +170,13 @@ func TestExecutionPathMySQLGenerateAllIsPersistentAndAtomic(t *testing.T) {
 	if err != nil || !exists || found.Paths[0].ID != result.Paths[0].ID {
 		t.Fatalf("批次无法在目标读取前恢复：result=%+v exists=%v err=%v", found, exists, err)
 	}
+	if err := paths.Delete(ctx, plan.ID, result.Paths[0].ID, time.Now().UTC()); err != nil {
+		t.Fatalf("删除批量生成路径失败：%v", err)
+	}
+	afterDelete, exists, err := paths.FindBatchByCreateKey(ctx, plan.ID, key)
+	if err != nil || !exists || len(afterDelete.Paths) != 1 || afterDelete.Paths[0].ID != result.Paths[0].ID {
+		t.Fatalf("路径删除改变了已提交幂等批次事实：result=%+v exists=%v err=%v", afterDelete, exists, err)
+	}
 
 	failurePlan := createPathTestPlan(t, ctx, plans, "new", "123e4567-e89b-12d3-a456-426614174112")
 	invalid := []model.ExecutionPathChoice{{RouteNodeID: "same", BranchID: "a"}, {RouteNodeID: "same", BranchID: "b"}}
@@ -230,7 +237,7 @@ func assertF005Tables(t *testing.T, db *sql.DB) {
 		}
 	}
 	var migrations int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 7 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 8 {
 		t.Fatalf("F-005 迁移版本数量不正确：%d err=%v", migrations, err)
 	}
 	var counterColumns int
