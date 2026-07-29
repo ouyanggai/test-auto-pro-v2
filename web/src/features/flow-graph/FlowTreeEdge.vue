@@ -57,6 +57,7 @@ const emit = defineEmits<{
 	  }"
 	  :style="{ transform: `translate(-50%, -50%) translate(${data.labelX}px, ${data.labelY}px)` }"
 	  :aria-pressed="data.selected"
+	  :disabled="data.selected"
 	  :aria-label="`${label || '此分支'}，${data.selected ? '已选择' : '选择此分支'}`"
 	  @click="emit('selectBranch', { routeNodeId: data.routeNodeId, branchId: data.branchId })"
 	>
@@ -142,6 +143,11 @@ const emit = defineEmits<{
   color: var(--flow-direction-color);
   background: color-mix(in srgb, var(--flow-direction-color) 10%, var(--flow-surface-color));
   border-color: var(--flow-direction-color);
+}
+
+.flow-tree-edge__choice--selected:disabled {
+  cursor: default;
+  opacity: 1;
 }
 
 .flow-tree-edge__choice--dimmed {

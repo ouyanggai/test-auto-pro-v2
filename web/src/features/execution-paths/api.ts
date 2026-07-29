@@ -1,4 +1,4 @@
-import type { ExecutionPath, ExecutionPathChoice } from './types.ts'
+import type { ExecutionPath, ExecutionPathBatchResult, ExecutionPathChoice } from './types.ts'
 
 interface ApiSuccess<T> {
   success: true
@@ -31,17 +31,24 @@ export async function fetchExecutionPaths(planId: string, signal: AbortSignal): 
   return result.items
 }
 
-export function createExecutionPath(planId: string, choices: ExecutionPathChoice[], idempotencyKey: string): Promise<ExecutionPath> {
+export function createExecutionPath(planId: string, name: string, choices: ExecutionPathChoice[], idempotencyKey: string): Promise<ExecutionPath> {
   return request<ExecutionPath>(`/api/plans/${encodeURIComponent(planId)}/execution-paths`, {
     method: 'POST',
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify({ choices }),
+    body: JSON.stringify({ name, choices }),
   })
 }
 
-export function updateExecutionPath(planId: string, pathId: string, choices: ExecutionPathChoice[]): Promise<ExecutionPath> {
+export function updateExecutionPath(planId: string, pathId: string, name: string, choices: ExecutionPathChoice[]): Promise<ExecutionPath> {
   return request<ExecutionPath>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}`, {
-    method: 'PUT', body: JSON.stringify({ choices }),
+    method: 'PUT', body: JSON.stringify({ name, choices }),
+  })
+}
+
+export function generateAllExecutionPaths(planId: string, idempotencyKey: string): Promise<ExecutionPathBatchResult> {
+  return request<ExecutionPathBatchResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/generate-all`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
   })
 }
 

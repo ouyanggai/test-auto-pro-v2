@@ -1,5 +1,11 @@
 import type { FlowGraph } from '../flow-graph/types.ts'
-import type { ExecutionPathAnalysis, ExecutionPathChoice, ExecutionPathSummaryItem } from './types.ts'
+import type {
+  ExecutionPath,
+  ExecutionPathAnalysis,
+  ExecutionPathChoice,
+  ExecutionPathGenerationPreview,
+  ExecutionPathSummaryItem,
+} from './types.ts'
 
 const selectableKinds = new Set(['condition', 'manual'])
 
@@ -225,6 +231,58 @@ export function canCreateAdditionalPath(source: FlowGraph['flowSource'], savedCo
   return source === 'new' || savedCount === 0
 }
 
+function executionPathChoiceSignature(choices: ExecutionPathChoice[]): string {
+  return [...choices]
+    .sort((left, right) => left.routeNodeId.localeCompare(right.routeNodeId) || left.branchId.localeCompare(right.branchId))
+    .map((choice) => `${choice.routeNodeId.length}:${choice.routeNodeId}${choice.branchId.length}:${choice.branchId}`)
+    .join(';')
+}
+
+export function previewAllExecutionPaths(
+  graph: FlowGraph,
+  savedPaths: ExecutionPath[],
+  limit = 128,
+): ExecutionPathGenerationPreview {
+  const outgoing = new Map<string, typeof graph.edges>()
+  for (const edge of graph.edges) {
+    const items = outgoing.get(edge.source) ?? []
+    items.push(edge)
+    outgoing.set(edge.source, items)
+  }
+  const combinations: ExecutionPathChoice[][] = []
+  let exceeded = false
+  const visit = (choices: ExecutionPathChoice[]) => {
+    if (exceeded) return
+    const analysis = analyzeExecutionPath(graph, choices)
+    if (analysis.invalid) return
+    if (analysis.complete) {
+      combinations.push(choices)
+      exceeded = combinations.length > limit
+      return
+    }
+    const routeNodeId = analysis.missingRouteNodeIds[0]
+    if (!routeNodeId) return
+    for (const edge of outgoing.get(routeNodeId) ?? []) {
+      if (edge.kind !== 'condition' && edge.kind !== 'manual') continue
+      // 与后端相同地每次扩展首个待选点，避免前端预览和真实批量结果采用两套组合语义。
+      visit([...choices, { routeNodeId, branchId: edge.branchId }])
+      if (exceeded) return
+    }
+  }
+  visit([])
+  if (exceeded) {
+    return { totalCount: limit + 1, existingCount: 0, pendingCount: 0, exceeded: true }
+  }
+  const savedSignatures = new Set(savedPaths.map((path) => executionPathChoiceSignature(path.choices)))
+  const existingCount = combinations.filter((choices) => savedSignatures.has(executionPathChoiceSignature(choices))).length
+  return {
+    totalCount: combinations.length,
+    existingCount,
+    pendingCount: combinations.length - existingCount,
+    exceeded: false,
+  }
+}
+
 export function canEnterExecutionPathSelection(options: {
   graphReady: boolean
   pathsLoaded: boolean
@@ -257,4 +315,20 @@ export function viewportForPointNearest(
   if (screenY < margin) y += margin - screenY
   else if (screenY > container.height - margin) y -= screenY - (container.height - margin)
   return { x, y, zoom: viewport.zoom }
+}
+
+export function viewportForPointCentered(
+  viewport: { x: number, y: number, zoom: number },
+  point: { x: number, y: number },
+  container: { width: number, height: number },
+  reservedRight = 0,
+) {
+  const safeWidth = container.width - Math.max(0, reservedRight)
+  if (safeWidth <= 0 || container.height <= 0 || viewport.zoom <= 0) return viewport
+  // 下一步始终落在扣除侧栏后的操作区正中央，用户不需要再根据气泡自行寻找目标。
+  return {
+    x: safeWidth / 2 - point.x * viewport.zoom,
+    y: container.height / 2 - point.y * viewport.zoom,
+    zoom: viewport.zoom,
+  }
 }

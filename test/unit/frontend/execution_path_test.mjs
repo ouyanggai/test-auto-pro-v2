@@ -8,16 +8,19 @@ import {
   canEnterExecutionPathSelection,
   classifyExecutionPathEdges,
   nextExecutionPathRouteID,
+  previewAllExecutionPaths,
   projectExecutionPathSummary,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
   viewportForPointNearest,
+  viewportForPointCentered,
 } from '../../../web/src/features/execution-paths/logic.ts'
 import {
   createExecutionPath,
   deleteExecutionPath,
   ExecutionPathApiError,
   fetchExecutionPaths,
+  generateAllExecutionPaths,
   updateExecutionPath,
 } from '../../../web/src/features/execution-paths/api.ts'
 
@@ -186,7 +189,7 @@ test('路径列表未完成或失败时不能进入选择模式', () => {
   assert.equal(canEnterExecutionPathSelection({ ...ready, graphReady: false }), false)
 })
 
-test('下一待选点只做保持缩放的最小视口平移', () => {
+test('下一待选点保持缩放并移动到扣除面板后的操作区中央', () => {
   const viewport = { x: 0, y: 0, zoom: 0.9 }
   assert.deepEqual(viewportForPointNearest(viewport, { x: 200, y: 200 }, { width: 1000, height: 560 }), viewport)
   const moved = viewportForPointNearest(viewport, { x: 1800, y: 900 }, { width: 1000, height: 560 })
@@ -198,6 +201,30 @@ test('下一待选点只做保持缩放的最小视口平移', () => {
   assert.ok(panelSafe.x < viewport.x)
   assert.equal(panelSafe.y, viewport.y)
   assert.equal(panelSafe.zoom, viewport.zoom)
+
+  const centered = viewportForPointCentered(viewport, { x: 820, y: 200 }, { width: 1000, height: 560 }, 336)
+  assert.equal(centered.zoom, viewport.zoom)
+  assert.equal(820 * centered.zoom + centered.x, (1000 - 336) / 2)
+  assert.equal(200 * centered.zoom + centered.y, 560 / 2)
+})
+
+test('全路径预览按完整组合过滤已保存线路并在第129条停止', () => {
+  const saved = [{ id: '1', sequenceNo: 1, name: '路径 1', choices: [{ routeNodeId: 'route-a', branchId: 'branch-b' }], updatedAt: '' }]
+  const preview = previewAllExecutionPaths(graph, saved)
+  assert.deepEqual(preview, { totalCount: 3, existingCount: 1, pendingCount: 2, exceeded: false })
+
+  const wideGraph = { planId: '8', targetName: '', flowSource: 'new', entryNodeIds: ['route-0'], nodes: [], edges: [], warnings: [] }
+  for (let index = 0; index < 8; index++) {
+    const source = `route-${index}`
+    const target = index === 7 ? 'end' : `route-${index + 1}`
+    wideGraph.nodes.push({ id: source, name: source, type: 'condition', typeName: '条件' })
+    wideGraph.edges.push(
+      { id: `${source}-a`, source, target, kind: 'condition', label: 'A', branchId: 'a' },
+      { id: `${source}-b`, source, target, kind: 'condition', label: 'B', branchId: 'b' },
+    )
+  }
+  wideGraph.nodes.push({ id: 'end', name: '结束', type: 'end', typeName: '结束' })
+  assert.equal(previewAllExecutionPaths(wideGraph, []).exceeded, true)
 })
 
 test('路径 API 只提交 choices、创建键和归属路径地址', async () => {
@@ -207,22 +234,27 @@ test('路径 API 只提交 choices、创建键和归属路径地址', async () =
     calls.push({ url: String(url), init })
     if (init.method === 'DELETE') return new Response(null, { status: 204 })
     if (init.method === 'GET') return Response.json({ success: true, data: { items: [] } })
-    return Response.json({ success: true, data: { id: '31', sequenceNo: 1, choices: [], updatedAt: '2026-07-28T00:00:00Z' } })
+    if (String(url).endsWith('/generate-all')) return Response.json({ success: true, data: { totalCount: 2, existingCount: 1, createdCount: 1, items: [] } })
+    return Response.json({ success: true, data: { id: '31', sequenceNo: 1, name: '路径 1', choices: [], updatedAt: '2026-07-28T00:00:00Z' } })
   }
   try {
     const signal = new AbortController().signal
     await fetchExecutionPaths('7', signal)
-    await createExecutionPath('7', [], '123e4567-e89b-12d3-a456-426614174301')
-    await updateExecutionPath('7', '31', [])
+    await createExecutionPath('7', '重点路径', [], '123e4567-e89b-12d3-a456-426614174301')
+    await updateExecutionPath('7', '31', '改名路径', [])
+    await generateAllExecutionPaths('7', '123e4567-e89b-12d3-a456-426614174302')
     await deleteExecutionPath('7', '31')
     assert.deepEqual(calls.map((call) => [call.init.method, call.url]), [
       ['GET', '/api/plans/7/execution-paths'],
       ['POST', '/api/plans/7/execution-paths'],
       ['PUT', '/api/plans/7/execution-paths/31'],
+      ['POST', '/api/plans/7/execution-paths/generate-all'],
       ['DELETE', '/api/plans/7/execution-paths/31'],
     ])
     assert.equal(calls[1].init.headers['Idempotency-Key'], '123e4567-e89b-12d3-a456-426614174301')
-    assert.equal(calls[1].init.body, '{"choices":[]}')
+    assert.equal(calls[1].init.body, '{"name":"重点路径","choices":[]}')
+    assert.equal(calls[2].init.body, '{"name":"改名路径","choices":[]}')
+    assert.equal(calls[3].init.headers['Idempotency-Key'], '123e4567-e89b-12d3-a456-426614174302')
   }
   finally {
     globalThis.fetch = originalFetch
@@ -238,7 +270,7 @@ test('保存失败返回稳定错误且不修改调用方草稿', async () => {
   }, { status: 409 })
   try {
     await assert.rejects(
-      () => createExecutionPath('7', draft, '123e4567-e89b-12d3-a456-426614174301'),
+      () => createExecutionPath('7', '失败保留', draft, '123e4567-e89b-12d3-a456-426614174301'),
       (error) => error instanceof ExecutionPathApiError && error.code === 'EXECUTION_PATH_INVALID',
     )
     assert.deepEqual(draft, [{ routeNodeId: 'route-a', branchId: 'branch-a' }])

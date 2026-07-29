@@ -6,6 +6,7 @@ import {
   NDescriptions,
   NDescriptionsItem,
   NEmpty,
+  NInput,
   NPopconfirm,
   NSpin,
   NTag,
@@ -18,6 +19,7 @@ import {
   deleteExecutionPath,
   ExecutionPathApiError,
   fetchExecutionPaths,
+  generateAllExecutionPaths,
   updateExecutionPath,
 } from '../features/execution-paths/api'
 import {
@@ -26,6 +28,7 @@ import {
   canCreateAdditionalPath,
   canEnterExecutionPathSelection,
   projectExecutionPathSummary,
+  previewAllExecutionPaths,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
 } from '../features/execution-paths/logic'
@@ -55,10 +58,13 @@ const planNotFound = ref(false)
 const activePathID = ref<string | null>(null)
 const draftMode = ref<'new' | 'copy' | 'edit' | null>(null)
 const draftChoices = ref<ExecutionPathChoice[]>([])
+const draftName = ref('')
 const draftChangedByGraph = ref(false)
 const createKey = ref('')
 const saving = ref(false)
 const deleting = ref(false)
+const generatingAll = ref(false)
+const generateAllKey = ref('')
 const selectionMode = ref(false)
 const selectionStarted = ref(false)
 const draftRecoveryLoading = ref(false)
@@ -77,6 +83,7 @@ const remainingChoices = computed(() => pathAnalysis.value?.missingRouteNodeIds.
 const saveDisabled = computed(() => !draftMode.value
   || !pathAnalysis.value?.complete
   || saving.value
+  || generatingAll.value
   || draftRecoveryLoading.value
   || Boolean(draftRecoveryError.value))
 const allowNewPath = computed(() => Boolean(
@@ -98,6 +105,9 @@ const selectionResumable = computed(() => selectionStarted.value && Boolean(draf
 const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
+const batchPreview = computed(() => graph.value && plan.value?.flowSource === 'new'
+  ? previewAllExecutionPaths(graph.value, paths.value)
+  : { totalCount: 0, existingCount: 0, pendingCount: 0, exceeded: false })
 
 async function loadPage() {
   loadController?.abort()
@@ -222,6 +232,7 @@ function selectSavedPath(path: ExecutionPath) {
   activePathID.value = path.id
   draftMode.value = 'edit'
   draftChoices.value = reconciled.choices
+  draftName.value = path.name || `路径 ${path.sequenceNo}`
   draftChangedByGraph.value = reconciled.changed
   draftRecoveryError.value = ''
   createKey.value = ''
@@ -232,6 +243,7 @@ function startNewPath() {
   activePathID.value = null
   draftMode.value = 'new'
   draftChoices.value = []
+  draftName.value = ''
   draftChangedByGraph.value = false
   draftRecoveryError.value = ''
   createKey.value = crypto.randomUUID()
@@ -243,6 +255,7 @@ function copyActivePath() {
   activePathID.value = null
   draftMode.value = 'copy'
   draftChoices.value = reconciled.choices
+  draftName.value = ''
   draftChangedByGraph.value = reconciled.changed
   draftRecoveryError.value = ''
   createKey.value = crypto.randomUUID()
@@ -252,13 +265,15 @@ function clearDraft() {
   activePathID.value = null
   draftMode.value = null
   draftChoices.value = []
+  draftName.value = ''
   draftChangedByGraph.value = false
   draftRecoveryError.value = ''
   createKey.value = ''
 }
 
 function selectBranch(choice: ExecutionPathChoice) {
-  if (!graph.value || !draftMode.value || !selectionMode.value || saving.value) return
+  if (!graph.value || !draftMode.value || !selectionMode.value || saving.value || generatingAll.value) return
+  if (draftChoices.value.some((item) => item.routeNodeId === choice.routeNodeId && item.branchId === choice.branchId)) return
   draftChoices.value = applyExecutionPathChoice(graph.value, draftChoices.value, choice.routeNodeId, choice.branchId)
   draftChangedByGraph.value = false
 }
@@ -313,8 +328,8 @@ async function savePath() {
   saving.value = true
   try {
     const saved = draftMode.value === 'edit' && activePathID.value
-      ? await updateExecutionPath(planID.value, activePathID.value, draftChoices.value)
-      : await createExecutionPath(planID.value, draftChoices.value, createKey.value)
+      ? await updateExecutionPath(planID.value, activePathID.value, draftName.value, draftChoices.value)
+      : await createExecutionPath(planID.value, draftName.value, draftChoices.value, createKey.value)
     const existingIndex = paths.value.findIndex((path) => path.id === saved.id)
     if (existingIndex >= 0) paths.value.splice(existingIndex, 1, saved)
     else paths.value.push(saved)
@@ -337,6 +352,51 @@ async function savePath() {
   }
   finally {
     saving.value = false
+  }
+}
+
+function pathDisplayName(path: ExecutionPath): string {
+  return path.name?.trim() || `路径 ${path.sequenceNo}`
+}
+
+function explainGenerateAllUnavailable() {
+  if (batchPreview.value.exceeded) {
+    message.warning('当前流程超过 128 条路径，请手动建立重点路径')
+    return
+  }
+  message.info('当前真实流程的全部路径都已存在')
+}
+
+async function generateAllPaths() {
+  if (!plan.value || plan.value.flowSource !== 'new' || generatingAll.value || batchPreview.value.exceeded || batchPreview.value.pendingCount === 0) return
+  if (!generateAllKey.value) generateAllKey.value = crypto.randomUUID()
+  generatingAll.value = true
+  try {
+    const result = await generateAllExecutionPaths(planID.value, generateAllKey.value)
+    const controller = new AbortController()
+    const refreshed = await fetchExecutionPaths(planID.value, controller.signal)
+    paths.value = refreshed
+    pathsLoaded.value = true
+    pathsError.value = ''
+    plan.value.pathCount = refreshed.length
+    const latestCreated = result.items[result.items.length - 1]
+    if (latestCreated && graph.value) {
+      const saved = refreshed.find((path) => path.id === latestCreated.id) ?? latestCreated
+      selectSavedPath(saved)
+    }
+    generateAllKey.value = ''
+    if (result.createdCount === 0) message.info(`全部 ${result.totalCount} 条路径均已存在，无需新增`)
+    else message.success(`已新增 ${result.createdCount} 条路径，跳过 ${result.existingCount} 条已存在路径`)
+  }
+  catch (caught) {
+    const apiError = caught instanceof ExecutionPathApiError
+      ? caught
+      : new ExecutionPathApiError('生成全部路径失败，请重试')
+    // 失败保留同一个批量幂等键，网络响应丢失时再次确认不会生成第二批记录。
+    message.error(apiError.message)
+  }
+  finally {
+    generatingAll.value = false
   }
 }
 
@@ -468,20 +528,61 @@ onBeforeUnmount(() => {
                         size="small"
                         :type="activePathID === item.id ? 'primary' : 'default'"
                         :secondary="activePathID === item.id"
-                        :disabled="saving || deleting || draftRecoveryLoading"
+                        :disabled="saving || deleting || generatingAll || draftRecoveryLoading"
                         @click="selectSavedPath(item)"
                       >
-                        路径 {{ item.sequenceNo }}
+                        <span class="path-selection-panel__sequence">#{{ item.sequenceNo }}</span>
+                        <span>{{ pathDisplayName(item) }}</span>
                       </n-button>
-                      <n-tag v-if="draftMode === 'new'" size="small" type="info" :bordered="false">新路径</n-tag>
-                      <n-tag v-if="draftMode === 'copy'" size="small" type="info" :bordered="false">路径副本</n-tag>
+                      <n-tag v-if="draftMode === 'new'" size="small" type="info" :bordered="false">待分配序号 · 新路径</n-tag>
+                      <n-tag v-if="draftMode === 'copy'" size="small" type="info" :bordered="false">待分配序号 · 路径副本</n-tag>
                     </div>
 
                     <div class="path-selection-panel__create-actions">
-                      <n-button v-if="allowNewPath" size="small" :disabled="saving || deleting || draftRecoveryLoading" @click="startNewPath">
+                      <n-button v-if="allowNewPath" size="small" :disabled="saving || deleting || generatingAll || draftRecoveryLoading" @click="startNewPath">
                         {{ plan.flowSource === 'new' ? '新增路径' : '选择当前实例后续路径' }}
                       </n-button>
-                      <n-button v-if="allowCopy" size="small" :disabled="saving || deleting || draftRecoveryLoading" @click="copyActivePath">复制此路径</n-button>
+                      <n-button v-if="allowCopy" size="small" :disabled="saving || deleting || generatingAll || draftRecoveryLoading" @click="copyActivePath">复制此路径</n-button>
+                      <n-popconfirm
+                        v-if="plan.flowSource === 'new' && !batchPreview.exceeded && batchPreview.pendingCount > 0"
+                        :show-icon="false"
+                        positive-text="确认生成"
+                        negative-text="取消"
+                        @positive-click="generateAllPaths"
+                      >
+                        <template #trigger>
+                          <n-button size="small" secondary :loading="generatingAll" :disabled="saving || deleting || draftRecoveryLoading">
+                            一键生成全部路径
+                          </n-button>
+                        </template>
+                        当前真实流程共 {{ batchPreview.totalCount }} 条完整路径，已存在 {{ batchPreview.existingCount }} 条，本次将新增 {{ batchPreview.pendingCount }} 条。确认继续？
+                      </n-popconfirm>
+                      <n-button
+                        v-else-if="plan.flowSource === 'new'"
+                        size="small"
+                        secondary
+                        :disabled="generatingAll"
+                        @click="explainGenerateAllUnavailable"
+                      >
+                        一键生成全部路径
+                      </n-button>
+                    </div>
+
+                    <div v-if="draftMode" class="path-selection-panel__name">
+                      <div class="path-selection-panel__name-label">
+                        <span>路径名称</span>
+                        <n-tag size="small" :bordered="false">
+                          {{ activePath ? `稳定序号 #${activePath.sequenceNo}` : '保存后分配稳定序号' }}
+                        </n-tag>
+                      </div>
+                      <n-input
+                        v-model:value="draftName"
+                        maxlength="50"
+                        show-count
+                        clearable
+                        placeholder="留空后按实际序号命名，例如：路径 3"
+                        :disabled="saving || generatingAll || draftRecoveryLoading"
+                      />
                     </div>
 
                     <n-alert v-if="draftRecoveryError" class="path-selection-panel__error" type="error" :show-icon="false">
@@ -690,6 +791,12 @@ onBeforeUnmount(() => {
   padding: 10px 14px 0;
 }
 
+.path-selection-panel__sequence {
+  margin-right: 5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.68;
+}
+
 .path-selection-panel__paths {
   max-height: 96px;
   overflow-y: auto;
@@ -698,6 +805,22 @@ onBeforeUnmount(() => {
 .path-selection-panel__create-actions {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--flow-edge-color);
+}
+
+.path-selection-panel__name {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--flow-edge-color);
+}
+
+.path-selection-panel__name-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--flow-label-color);
+  font-size: 13px;
 }
 
 .path-selection-panel__error {
@@ -720,13 +843,36 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 0 0 0 9px;
   list-style: none;
-  border-left: 1px solid var(--flow-edge-color);
 }
 
 .path-summary__item {
   position: relative;
   min-height: 48px;
   padding: 0 0 14px 16px;
+}
+
+.path-summary__item:not(:last-child)::before,
+.path-summary__item:not(:last-child)::after {
+  position: absolute;
+  left: -10px;
+  width: 2px;
+  content: '';
+  pointer-events: none;
+}
+
+.path-summary__item:not(:last-child)::before {
+  top: 14px;
+  bottom: 0;
+  background: var(--flow-edge-color);
+}
+
+.path-summary__item--node:not(:last-child)::after,
+.path-summary__item--choice:not(:last-child)::after,
+.path-summary__item--parallel:not(:last-child)::after {
+  top: 14px;
+  height: 14px;
+  background: linear-gradient(to bottom, transparent, var(--flow-direction-color), transparent);
+  animation: path-summary-flow 1.25s linear infinite;
 }
 
 .path-summary__item:last-child {
@@ -796,5 +942,16 @@ onBeforeUnmount(() => {
 .error-actions {
   display: flex;
   gap: 12px;
+}
+
+@keyframes path-summary-flow {
+  from { transform: translateY(-14px); }
+  to { transform: translateY(28px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .path-summary__item::after {
+    animation: none !important;
+  }
 }
 </style>

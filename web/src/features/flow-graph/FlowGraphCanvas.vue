@@ -20,7 +20,7 @@ import {
   analyzeExecutionPath,
   classifyExecutionPathEdges,
   nextExecutionPathRouteID,
-  viewportForPointNearest,
+  viewportForPointCentered,
 } from '../execution-paths/logic'
 import type { ExecutionPathChoice } from '../execution-paths/types'
 
@@ -136,31 +136,32 @@ async function guideSelectionNext(anchorNodeID = '') {
   const point = { x: targetNode.position.x + nodeWidth / 2, y: targetNode.position.y + 20 }
   const viewport = getViewport()
   const reservedRight = isSelectionPanelCollapsed.value ? 56 : 336
-  // 右侧面板不属于可操作视口；只在下一待选点被遮挡时平移，避免每一步都抢夺用户当前观察位置。
-  const nextViewport = viewportForPointNearest(
+  // 右侧面板不属于可操作视口；每一步都保持缩放并把明确目标放到实际操作区中央。
+  const nextViewport = viewportForPointCentered(
     viewport,
     point,
     { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight },
-    84,
     reservedRight,
   )
-  if (nextViewport.x !== viewport.x || nextViewport.y !== viewport.y) {
-    await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 250 })
-  }
+  await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 250 })
   if (version !== guideVersion || !props.selectionMode || !canvasRoot.value) return
 
   const safeWidth = Math.max(0, canvasRoot.value.clientWidth - reservedRight)
-  const bubbleX = point.x * nextViewport.zoom + nextViewport.x + 16
-  const bubbleY = point.y * nextViewport.zoom + nextViewport.y - 18
+  const bubbleX = point.x * nextViewport.zoom + nextViewport.x
+  const bubbleY = point.y * nextViewport.zoom + nextViewport.y
   clearGuideBubble()
   guideBubble.value = {
     message: nextRouteID
       ? `下一步：请选择一条分支（还剩 ${pathAnalysis.value.missingRouteNodeIds.length} 处）`
       : '线路已完整，请保存',
-    x: Math.min(Math.max(12, bubbleX), Math.max(12, safeWidth - 300)),
-    y: Math.min(Math.max(56, bubbleY), Math.max(56, canvasRoot.value.clientHeight - 72)),
+    x: Math.min(Math.max(160, bubbleX), Math.max(160, safeWidth - 160)),
+    y: Math.min(Math.max(120, bubbleY), Math.max(120, canvasRoot.value.clientHeight - 80)),
   }
-  guideBubbleTimer = window.setTimeout(() => { guideBubble.value = null }, 4200)
+  guideBubbleTimer = window.setTimeout(() => { guideBubble.value = null }, 5200)
+}
+
+function toggleSelectionPanel() {
+  isSelectionPanelCollapsed.value = !isSelectionPanelCollapsed.value
 }
 
 function requestPageFullscreen(next: boolean) {
@@ -253,6 +254,9 @@ watch(() => props.selectionMode, (enabled) => {
   }
   void guideSelectionNext()
 })
+watch(isSelectionPanelCollapsed, () => {
+  if (props.selectionMode) void guideSelectionNext()
+})
 
 onMounted(() => document.addEventListener('keydown', handlePageFullscreenKeydown))
 onBeforeUnmount(() => {
@@ -338,7 +342,7 @@ onBeforeUnmount(() => {
         size="small"
         text
         :aria-expanded="!isSelectionPanelCollapsed"
-        @click="isSelectionPanelCollapsed = !isSelectionPanelCollapsed"
+        @click="toggleSelectionPanel"
       >
         {{ isSelectionPanelCollapsed ? '展开' : '收起' }}
       </n-button>
@@ -442,7 +446,31 @@ onBeforeUnmount(() => {
   background: var(--flow-surface-color);
   border: 1px solid var(--flow-direction-color);
   border-radius: 4px;
+  transform: translate(-50%, calc(-100% - 18px));
   animation: flow-guide-in 140ms ease-out;
+}
+
+.flow-graph-canvas__guide::before,
+.flow-graph-canvas__guide::after {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  content: '';
+  border: solid transparent;
+  transform: translateX(-50%);
+}
+
+.flow-graph-canvas__guide::before {
+  border-width: 10px;
+  border-top-color: var(--flow-direction-color);
+}
+
+.flow-graph-canvas__guide::after {
+  margin-top: -1px;
+  border-width: 8px;
+  border-top-color: var(--flow-surface-color);
 }
 
 .flow-graph-canvas__guide button {
@@ -503,6 +531,21 @@ onBeforeUnmount(() => {
   border-bottom-color: var(--flow-edge-color);
 }
 
+.flow-graph-canvas :deep(.vue-flow__controls-button:hover) {
+  color: var(--flow-direction-color);
+  background: color-mix(in srgb, var(--flow-direction-color) 10%, var(--flow-surface-color));
+}
+
+.flow-graph-canvas :deep(.vue-flow__controls-button svg) {
+  fill: currentcolor;
+}
+
+.flow-graph-canvas :deep(.vue-flow__controls-button:disabled) {
+  color: var(--flow-label-color);
+  background: var(--flow-surface-color);
+  opacity: 0.45;
+}
+
 .flow-graph-canvas--selection :deep(.vue-flow__controls) {
   right: 336px;
   transition: right 160ms ease;
@@ -515,7 +558,7 @@ onBeforeUnmount(() => {
 @keyframes flow-guide-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translate(-50%, calc(-100% - 12px));
   }
 }
 

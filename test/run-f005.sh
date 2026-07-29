@@ -5,16 +5,16 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${project_root}"
 
-printf '验证 F-005 真实入口、路径分析、写前重验和稳定错误\n'
+printf '验证 F-005 真实入口、路径分析、全组合枚举、名称和写前重验\n'
 go test -count=1 ./test/unit/backend -run '^(TestExecutionPath|TestFlowGraphService)'
 
-printf '验证 F-005 流程入口与四个路径 API 契约\n'
+printf '验证 F-005 流程入口与单条、批量路径 API 契约\n'
 go test -count=1 ./test/contracts -run '^(TestExecutionPathAPI|TestPlanAPIExposesRealPathCount|TestFlowGraphAPI)'
 
 printf '验证 F-005 假目标三类入口、结束状态和会话只重放一次\n'
 go test -count=1 ./test/integration -run '^(TestFlowTreeReadUsesExactSourceLookupBeforeDetails|TestFlowTreeSnapshotUsesSourceSpecificEntryNodes|TestDueFlowSnapshot.*|TestSubmittedFinishedInstanceIsNotConfigurable|TestSubmittedAwaitSentInstanceRemainsConfigurable|TestFlowTreeReadSessionExpiryReplaysWholeChainOnce)'
 
-printf '验证 F-005 随机临时 MySQL 的迁移、事务、计数器、幂等、归属和重连读取\n'
+printf '验证 F-005 随机临时 MySQL 的名称、批量原子事务、持久幂等、计数器和重连读取\n'
 TEST_AUTO_PRO_PLAN_DB_ENV_FILE="${project_root}/.env.local" \
   go test -count=1 ./test/integration -run '^TestExecutionPathMySQL'
 
