@@ -33,6 +33,8 @@ type memoryExecutionPathRepository struct {
 	deleteErr   error
 	findCalls   int
 	createCalls int
+	createStored chan struct{}
+	createRelease chan struct{}
 	updateCalls int
 	batch       model.ExecutionPathBatchResult
 	batchKey    string
@@ -77,6 +79,11 @@ func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64,
 		r.createKeys = make(map[string]uint64)
 	}
 	r.createKeys[createKey] = path.ID
+	if r.createStored != nil {
+		// 用提交后、响应前的停顿模拟客户端超时；此时同键重试必须能观察到已落库事实，而不是再次读取目标图。
+		close(r.createStored)
+		<-r.createRelease
+	}
 	return path, true, nil
 }
 
@@ -180,6 +187,47 @@ func TestExecutionPathServiceIdempotentRetrySkipsChangedGraph(t *testing.T) {
 	}
 	if graphs.calls != 1 || repo.createCalls != 1 || len(repo.paths) != 1 {
 		t.Fatalf("幂等重试重复读取或写入：graphCalls=%d createCalls=%d paths=%d", graphs.calls, repo.createCalls, len(repo.paths))
+	}
+}
+
+// TestExecutionPathServiceLateResponseRetryUsesCommittedPath 验证首次写入已完成但响应迟到时，同键重试直接返回原路径。
+func TestExecutionPathServiceLateResponseRetryUsesCommittedPath(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
+	repo := &memoryExecutionPathRepository{createStored: make(chan struct{}), createRelease: make(chan struct{})}
+	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
+	key := "123e4567-e89b-12d3-a456-426614174306"
+	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
+	type createResult struct {
+		path    model.ExecutionPath
+		created bool
+		err     error
+	}
+	firstResult := make(chan createResult, 1)
+	go func() {
+		path, created, err := serviceUnderTest.Create(context.Background(), 7, key, "迟到响应路径", choices)
+		firstResult <- createResult{path: path, created: created, err: err}
+	}()
+	<-repo.createStored
+	release := repo.createRelease
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+
+	graphs.err = errors.New("首次提交后目标平台不可用")
+	retried, created, err := serviceUnderTest.Create(context.Background(), 7, key, "重试名称", nil)
+	if err != nil || created || retried.ID == 0 || retried.Name != "迟到响应路径" {
+		t.Fatalf("迟到响应期间同键重试没有返回已提交路径：path=%+v created=%v err=%v", retried, created, err)
+	}
+	close(release)
+	released = true
+	first := <-firstResult
+	if first.err != nil || !first.created || first.path.ID != retried.ID || repo.createCalls != 1 || graphs.calls != 1 || len(repo.paths) != 1 {
+		t.Fatalf("迟到响应重试重复读取或写入：first=%+v retried=%+v graph=%d create=%d paths=%d", first, retried, graphs.calls, repo.createCalls, len(repo.paths))
 	}
 }
 

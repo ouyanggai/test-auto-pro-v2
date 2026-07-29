@@ -108,6 +108,32 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 		t.Fatalf("删除最高序号后复用了历史编号：created=%v path=%+v err=%v", created, third, err)
 	}
 
+	concurrentPlan := createPathTestPlan(t, ctx, plans, "new", "123e4567-e89b-12d3-a456-426614174103")
+	type concurrentCreateResult struct {
+		path    model.ExecutionPath
+		created bool
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan concurrentCreateResult, 2)
+	for index := 0; index < 2; index++ {
+		go func() {
+			<-start
+			path, created, err := paths.Create(ctx, concurrentPlan.ID, "123e4567-e89b-12d3-a456-426614174206", "并发幂等路径", firstChoices, time.Now().UTC())
+			results <- concurrentCreateResult{path: path, created: created, err: err}
+		}()
+	}
+	// 两次同键请求同时越过客户端边界时，计划行锁与事务内幂等检查必须只允许一个真实写入。
+	close(start)
+	left, right := <-results, <-results
+	if left.err != nil || right.err != nil || left.path.ID == 0 || left.path.ID != right.path.ID || left.created == right.created {
+		t.Fatalf("并发同键创建没有收敛为一条路径：left=%+v right=%+v", left, right)
+	}
+	var concurrentCount int
+	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_execution_paths WHERE plan_id = ?", concurrentPlan.ID).Scan(&concurrentCount); err != nil || concurrentCount != 1 {
+		t.Fatalf("并发同键创建产生重复路径：count=%d err=%v", concurrentCount, err)
+	}
+
 	started, _, err := paths.Create(ctx, startedPlan.ID, "123e4567-e89b-12d3-a456-426614174203", "", nil, time.Now().UTC())
 	if err != nil || started.ID == 0 {
 		t.Fatalf("已发计划首条路径创建失败：%v", err)
