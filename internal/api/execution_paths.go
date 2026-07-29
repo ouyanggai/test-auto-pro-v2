@@ -45,7 +45,7 @@ type executionPathListResponse struct {
 	Items []executionPathResponse `json:"items"`
 }
 
-// registerExecutionPathRoutes 注册同一计划下的四个路径读写端点。
+// registerExecutionPathRoutes 注册同一计划下的五个单条与批量路径读写端点。
 func registerExecutionPathRoutes(mux *http.ServeMux, paths ExecutionPathService) {
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths", handleListExecutionPaths(paths))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths", handleCreateExecutionPath(paths))
@@ -74,7 +74,7 @@ func handleListExecutionPaths(paths ExecutionPathService) http.HandlerFunc {
 	}
 }
 
-// handleCreateExecutionPath 只接受 choices 与请求头幂等键，不接受浏览器伪造图身份。
+// handleCreateExecutionPath 只接受名称、choices 与请求头幂等键，不接受浏览器伪造图身份。
 func handleCreateExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
