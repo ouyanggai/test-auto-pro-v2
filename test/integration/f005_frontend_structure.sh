@@ -67,11 +67,28 @@ grep -Fq 'class="path-selection-panel__footer"' "${view_file}"
 grep -Fq '<n-dropdown trigger="click" :options="pathMoreOptions"' "${view_file}"
 grep -Fq '>编辑路径</n-button>' "${view_file}"
 grep -Fq '>更多</n-button>' "${view_file}"
+grep -Fq 'aria-label="关闭路径详情"' "${view_file}"
+grep -Fq '@click="closePathDetails"' "${view_file}"
+grep -Fq 'if (workspaceMode.value !== '\''view'\'') return' "${view_file}"
+grep -Fq '关闭只读详情只清理当前投影，不改变用户主动开启的页面全屏浏览状态' "${view_file}"
+grep -Fq ':disabled="!activePath || workspaceActionBusy"' "${view_file}"
+grep -Fq '<n-dropdown trigger="click" :options="pathMoreOptions" :disabled="workspaceActionBusy"' "${view_file}"
+if ! awk '
+  /function closePathDetails\(\)/ { in_close = 1 }
+  in_close && /resetWorkspaceState\(\)/ { reset = 1 }
+  in_close && /setPageFullscreen/ { exit 1 }
+  in_close && /^}/ { exit reset ? 0 : 1 }
+  END { if (!reset) exit 1 }
+' "${view_file}"; then
+  echo 'F-005 关闭只读详情必须复位查看状态且不得强制退出页面全屏' >&2
+  exit 1
+fi
 grep -Fq '@click="cancelPathEditing"' "${view_file}"
 grep -Fq 'aria-label="实时线路摘要"' "${view_file}"
 grep -Fq 'projectExecutionPathSummary' "${view_file}"
 grep -Fq ':workspace-open="pathWorkspaceOpen"' "${view_file}"
 grep -Fq ':branch-editing="workspacePresentation.branchEditing"' "${view_file}"
+grep -Fq ':workspace-exit-disabled="saving"' "${view_file}"
 grep -Fq ':save-guide-visible="workspacePresentation.showSave"' "${view_file}"
 grep -Fq '@request-workspace-exit="requestWorkspaceExit"' "${view_file}"
 grep -Fq '@select-branch="selectBranch"' "${view_file}"
@@ -95,6 +112,7 @@ grep -Fq 'resetWorkspaceState()' "${view_file}"
 grep -Fq "emit('requestWorkspaceExit')" "${canvas_file}"
 grep -Fq 'workspaceOpen?: boolean' "${canvas_file}"
 grep -Fq 'branchEditing?: boolean' "${canvas_file}"
+grep -Fq 'workspaceExitDisabled?: boolean' "${canvas_file}"
 grep -Fq 'saveGuideVisible?: boolean' "${canvas_file}"
 if grep -Fq 'selectionMode' "${canvas_file}" || grep -Fq 'selectionEnabled' "${edge_file}"; then
   echo 'F-005 路径工作区与分支编辑不得继续复用旧选择状态' >&2
@@ -106,6 +124,18 @@ if grep -Fq '继续选择' "${canvas_file}" || grep -Fq '退出选择' "${canvas
 fi
 grep -Fq '<slot name="canvas-actions" />' "${canvas_file}"
 grep -Fq 'aria-label="isPageFullscreen ? '\''退出页面全屏'\'' : '\''页面全屏'\''"' "${canvas_file}"
+grep -Fq ':disabled="branchEditing && workspaceExitDisabled"' "${canvas_file}"
+grep -Fq 'if (props.branchEditing && props.workspaceExitDisabled) return' "${canvas_file}"
+grep -Fq 'if (props.workspaceExitDisabled) return' "${canvas_file}"
+if ! awk '
+  /function requestWorkspaceExit\(\)/ { in_exit = 1 }
+  in_exit && /if \(saving\.value\) return/ { guarded = 1 }
+  in_exit && /deriveExecutionPathWorkspaceDisposition/ { exit guarded ? 0 : 1 }
+  END { if (!guarded) exit 1 }
+' "${view_file}"; then
+  echo 'F-005 父页面工作区退出必须先检查保存状态' >&2
+  exit 1
+fi
 grep -Fq 'flow-graph-canvas__selection-panel' "${canvas_file}"
 grep -Fq 'width: 320px' "${canvas_file}"
 grep -Fq ':aria-expanded="!isSelectionPanelCollapsed"' "${canvas_file}"

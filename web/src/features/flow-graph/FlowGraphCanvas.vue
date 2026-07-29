@@ -32,10 +32,11 @@ const props = withDefaults(defineProps<{
   choices?: ExecutionPathChoice[]
   workspaceOpen?: boolean
   branchEditing?: boolean
+  workspaceExitDisabled?: boolean
   saveGuideVisible?: boolean
   savedPathsOpen?: boolean
 }>(), {
-  choices: () => [], workspaceOpen: false, branchEditing: false, saveGuideVisible: false, savedPathsOpen: false,
+  choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
 })
 const emit = defineEmits<{
   retry: []
@@ -257,6 +258,7 @@ async function runPageFullscreenTransitions() {
 
 function handlePageFullscreenKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape' || !isPageFullscreen.value) return
+  if (props.branchEditing && props.workspaceExitDisabled) return
   if (props.savedPathsOpen) {
     emit('closeSavedPaths')
     return
@@ -270,6 +272,7 @@ function handlePageFullscreenKeydown(event: KeyboardEvent) {
 
 function togglePageFullscreen() {
   if (isPageFullscreen.value && props.branchEditing) {
+    if (props.workspaceExitDisabled) return
     emit('requestWorkspaceExit')
     return
   }
@@ -387,6 +390,7 @@ onBeforeUnmount(() => {
         :aria-pressed="isPageFullscreen"
         :aria-label="isPageFullscreen ? '退出页面全屏' : '页面全屏'"
         :title="isPageFullscreen ? '退出页面全屏' : '页面全屏'"
+        :disabled="branchEditing && workspaceExitDisabled"
         @click="togglePageFullscreen"
       >
         <span aria-hidden="true">{{ isPageFullscreen ? '×' : '⛶' }}</span>

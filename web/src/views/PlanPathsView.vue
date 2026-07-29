@@ -127,6 +127,10 @@ const workspacePresentation = computed(() => deriveExecutionPathWorkspacePresent
 }))
 const hasDiscardableChanges = computed(() => workspacePresentation.value.branchEditing
   && (draftHasUnsavedChanges.value || draftChangedByGraph.value))
+const workspaceActionBusy = computed(() => saving.value
+  || deleting.value
+  || generatingAll.value
+  || draftRecoveryLoading.value)
 const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
@@ -334,7 +338,7 @@ function selectBranch(choice: ExecutionPathChoice) {
 }
 
 async function editActivePath() {
-  if (!activePath.value || workspaceMode.value !== 'view') return
+  if (!activePath.value || workspaceMode.value !== 'view' || workspaceActionBusy.value) return
   workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'edit')
   closeSavedPaths()
   await canvasRef.value?.setPageFullscreen(true)
@@ -346,6 +350,12 @@ function resetWorkspaceState() {
   closeSavedPaths()
 }
 
+function closePathDetails() {
+  if (workspaceMode.value !== 'view') return
+  // 关闭只读详情只清理当前投影，不改变用户主动开启的页面全屏浏览状态。
+  resetWorkspaceState()
+}
+
 async function completeWorkspaceReset() {
   // 保存成功和用户确认放弃共用同一复位边界，保证不会遗留名称、选择或创建幂等键。
   resetWorkspaceState()
@@ -353,6 +363,8 @@ async function completeWorkspaceReset() {
 }
 
 function requestWorkspaceExit() {
+  // 保存请求可能已在服务端提交成功，响应返回前禁止丢弃工作区，避免出现“已放弃但迟到响应仍保存”的竞态。
+  if (saving.value) return
   const disposition = deriveExecutionPathWorkspaceDisposition('fullscreen-exit', hasDiscardableChanges.value)
   if (disposition === 'confirm') {
     discardConfirmOpen.value = true
@@ -376,6 +388,7 @@ function confirmDiscardWorkspace() {
 }
 
 function handlePathMoreAction(key: string) {
+  if (workspaceActionBusy.value) return
   if (key === 'copy') {
     void copyActivePath()
     return
@@ -586,6 +599,7 @@ onBeforeUnmount(() => {
                 :choices="draftChoices"
                 :workspace-open="pathWorkspaceOpen"
                 :branch-editing="workspacePresentation.branchEditing"
+                :workspace-exit-disabled="saving"
                 :save-guide-visible="workspacePresentation.showSave"
                 :saved-paths-open="savedPathsOpen"
                 @select-branch="selectBranch"
@@ -617,7 +631,20 @@ onBeforeUnmount(() => {
                 <template #workspace-panel>
                   <section class="path-selection-panel">
                     <header class="path-selection-panel__header">
-                      <h3>{{ workspacePresentation.title }}</h3>
+                      <div class="path-selection-panel__title-row">
+                        <h3>{{ workspacePresentation.title }}</h3>
+                        <n-button
+                          v-if="workspaceMode === 'view'"
+                          size="small"
+                          text
+                          circle
+                          aria-label="关闭路径详情"
+                          title="关闭路径详情"
+                          @click="closePathDetails"
+                        >
+                          <span aria-hidden="true">×</span>
+                        </n-button>
+                      </div>
                       <div v-if="workspacePresentation.branchEditing" class="path-selection-panel__progress" aria-label="决策进度">
                         <span>已选 {{ decisionProgress.selected }}</span>
                         <span>待选 {{ decisionProgress.pending }}</span>
@@ -682,9 +709,9 @@ onBeforeUnmount(() => {
                     </div>
                     <footer class="path-selection-panel__footer">
                       <template v-if="workspaceMode === 'view'">
-                        <n-button type="primary" :disabled="!activePath" @click="editActivePath">编辑路径</n-button>
-                        <n-dropdown trigger="click" :options="pathMoreOptions" @select="handlePathMoreAction">
-                          <n-button secondary :disabled="!activePath">更多</n-button>
+                        <n-button type="primary" :disabled="!activePath || workspaceActionBusy" @click="editActivePath">编辑路径</n-button>
+                        <n-dropdown trigger="click" :options="pathMoreOptions" :disabled="workspaceActionBusy" @select="handlePathMoreAction">
+                          <n-button secondary :disabled="!activePath || workspaceActionBusy">更多</n-button>
                         </n-dropdown>
                       </template>
                       <template v-else>
@@ -917,6 +944,18 @@ onBeforeUnmount(() => {
 .path-selection-panel__header h3 {
   margin-bottom: 4px;
   font-size: 16px;
+}
+
+.path-selection-panel__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  gap: 8px;
+}
+
+.path-selection-panel__title-row h3 {
+  margin-bottom: 0;
 }
 
 .path-summary__item span {
