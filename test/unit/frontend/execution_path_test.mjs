@@ -10,8 +10,10 @@ import {
   nextExecutionPathRouteID,
   previewAllExecutionPaths,
   projectExecutionPathSummary,
+  projectExecutionPathGuide,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
+  viewportForCandidateGroupCentered,
   viewportForPointNearest,
   viewportForPointCentered,
 } from '../../../web/src/features/execution-paths/logic.ts'
@@ -206,6 +208,46 @@ test('下一待选点保持缩放并移动到扣除面板后的操作区中央',
   assert.equal(centered.zoom, viewport.zoom)
   assert.equal(820 * centered.zoom + centered.x, (1000 - 336) / 2)
   assert.equal(200 * centered.zoom + centered.y, 560 / 2)
+})
+
+test('多候选引导按整体中心定位并为三个可见分支生成三个箭头目标', () => {
+  const viewport = { x: -120, y: -40, zoom: 0.9 }
+  const candidates = [
+    { id: 'left', x: 200, y: 320 },
+    { id: 'middle', x: 500, y: 320 },
+    { id: 'right', x: 800, y: 320 },
+  ]
+  const centered = viewportForCandidateGroupCentered(viewport, candidates, { width: 1200, height: 680 }, 336)
+  assert.equal(centered.zoom, viewport.zoom)
+  const projection = projectExecutionPathGuide(candidates, centered, { width: 1200, height: 680 }, 336)
+  assert.equal(projection.visibleCandidates.length, 3)
+  assert.deepEqual(projection.visibleCandidates.map((candidate) => candidate.id), ['left', 'middle', 'right'])
+  assert.equal(projection.hiddenLeftCount, 0)
+  assert.equal(projection.hiddenRightCount, 0)
+  assert.equal((projection.visibleCandidates[0].x + projection.visibleCandidates[2].x) / 2, (1200 - 336) / 2)
+})
+
+test('候选组过宽时保持缩放并分别统计左右屏外数量', () => {
+  const candidates = [
+    { id: 'far-left', x: -500, y: 300 },
+    { id: 'left', x: 100, y: 300 },
+    { id: 'right', x: 900, y: 300 },
+    { id: 'far-right', x: 1500, y: 300 },
+  ]
+  const viewport = viewportForCandidateGroupCentered({ x: 0, y: 0, zoom: 1 }, candidates, { width: 900, height: 600 }, 320)
+  assert.equal(viewport.zoom, 1)
+  const projection = projectExecutionPathGuide(candidates, viewport, { width: 900, height: 600 }, 320)
+  assert.equal(projection.hiddenLeftCount, 2)
+  assert.equal(projection.hiddenRightCount, 2)
+  assert.equal(projection.visibleCandidates.length, 0)
+})
+
+test('画布平移缩放后引导目标使用最新视口坐标', () => {
+  const candidates = [{ id: 'branch', x: 300, y: 240 }]
+  const first = projectExecutionPathGuide(candidates, { x: 0, y: 0, zoom: 1 }, { width: 900, height: 600 }, 320)
+  const moved = projectExecutionPathGuide(candidates, { x: 30, y: -20, zoom: 1.2 }, { width: 900, height: 600 }, 320)
+  assert.deepEqual(first.visibleCandidates[0], { id: 'branch', x: 300, y: 240 })
+  assert.deepEqual(moved.visibleCandidates[0], { id: 'branch', x: 390, y: 268 })
 })
 
 test('全路径预览按完整组合过滤已保存线路并在第129条停止', () => {

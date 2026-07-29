@@ -332,3 +332,77 @@ export function viewportForPointCentered(
     zoom: viewport.zoom,
   }
 }
+
+export interface ExecutionPathGuideCandidate {
+  id: string
+  x: number
+  y: number
+}
+
+export interface ExecutionPathGuideProjection {
+  bubble: { x: number, y: number }
+  visibleCandidates: ExecutionPathGuideCandidate[]
+  hiddenLeftCount: number
+  hiddenRightCount: number
+}
+
+export function viewportForCandidateGroupCentered(
+  viewport: { x: number, y: number, zoom: number },
+  candidates: ExecutionPathGuideCandidate[],
+  container: { width: number, height: number },
+  reservedRight = 0,
+) {
+  const finiteCandidates = candidates.filter((candidate) => Number.isFinite(candidate.x) && Number.isFinite(candidate.y))
+  const safeWidth = container.width - Math.max(0, reservedRight)
+  if (finiteCandidates.length === 0 || safeWidth <= 0 || container.height <= 0 || viewport.zoom <= 0) return viewport
+  const xs = finiteCandidates.map((candidate) => candidate.x)
+  const ys = finiteCandidates.map((candidate) => candidate.y)
+  // 候选可能横跨多个分支列；用整体包围盒中心而不是首个标签，才能让三支及更多分支获得对称的可操作空间。
+  const center = {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+  }
+  return {
+    x: safeWidth / 2 - center.x * viewport.zoom,
+    y: container.height / 2 - center.y * viewport.zoom,
+    zoom: viewport.zoom,
+  }
+}
+
+export function projectExecutionPathGuide(
+  candidates: ExecutionPathGuideCandidate[],
+  viewport: { x: number, y: number, zoom: number },
+  container: { width: number, height: number },
+  reservedRight = 0,
+  horizontalMargin = 44,
+): ExecutionPathGuideProjection {
+  const safeWidth = Math.max(0, container.width - Math.max(0, reservedRight))
+  const projected = candidates
+    .filter((candidate) => Number.isFinite(candidate.x) && Number.isFinite(candidate.y))
+    .map((candidate) => ({
+      id: candidate.id,
+      x: candidate.x * viewport.zoom + viewport.x,
+      y: candidate.y * viewport.zoom + viewport.y,
+    }))
+  const hiddenLeftCount = projected.filter((candidate) => candidate.x < horizontalMargin).length
+  const hiddenRightCount = projected.filter((candidate) => candidate.x > safeWidth - horizontalMargin).length
+  const visibleCandidates = projected.filter((candidate) => (
+    candidate.x >= horizontalMargin
+    && candidate.x <= safeWidth - horizontalMargin
+    && candidate.y >= 24
+    && candidate.y <= container.height - 24
+  ))
+  const visibleXs = visibleCandidates.map((candidate) => candidate.x)
+  const visibleYs = visibleCandidates.map((candidate) => candidate.y)
+  const fallbackX = safeWidth / 2
+  const fallbackY = Math.max(58, container.height / 2 - 76)
+  return {
+    bubble: {
+      x: visibleXs.length > 0 ? (Math.min(...visibleXs) + Math.max(...visibleXs)) / 2 : fallbackX,
+      y: visibleYs.length > 0 ? Math.max(58, Math.min(...visibleYs) - 76) : fallbackY,
+    },
+    visibleCandidates,
+    hiddenLeftCount,
+    hiddenRightCount,
+  }
+}

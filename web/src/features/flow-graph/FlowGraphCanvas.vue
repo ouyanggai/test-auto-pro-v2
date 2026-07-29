@@ -20,9 +20,12 @@ import {
   analyzeExecutionPath,
   classifyExecutionPathEdges,
   nextExecutionPathRouteID,
+  projectExecutionPathGuide,
+  viewportForCandidateGroupCentered,
   viewportForPointCentered,
 } from '../execution-paths/logic'
 import type { ExecutionPathChoice } from '../execution-paths/types'
+import type { ExecutionPathGuideCandidate } from '../execution-paths/logic'
 
 const props = withDefaults(defineProps<{
   graph: FlowGraph
@@ -30,18 +33,30 @@ const props = withDefaults(defineProps<{
   selectionMode?: boolean
   selectionAvailable?: boolean
   selectionResumable?: boolean
-}>(), { choices: () => [], selectionMode: false, selectionAvailable: false, selectionResumable: false })
+  savedPathsOpen?: boolean
+}>(), {
+  choices: () => [], selectionMode: false, selectionAvailable: false, selectionResumable: false, savedPathsOpen: false,
+})
 const emit = defineEmits<{
   retry: []
   selectBranch: [choice: ExecutionPathChoice]
   enterSelection: []
   exitSelection: []
+  closeSavedPaths: []
 }>()
 const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
 const isPageFullscreen = ref(false)
 const isSelectionPanelCollapsed = ref(false)
-const guideBubble = ref<{ message: string, x: number, y: number } | null>(null)
+const canvasSize = ref({ width: 0, height: 0 })
+const viewportState = ref({ x: 0, y: 0, zoom: 1 })
+const guideBubble = ref<{
+  key: string
+  message: string
+  candidates: ExecutionPathGuideCandidate[]
+  complete: boolean
+} | null>(null)
+const dismissedGuideKey = ref('')
 const layoutResult = computed(() => safeLayoutFlowGraph(props.graph))
 const laidOut = computed(() => layoutResult.value.layout)
 const pathAnalysis = computed(() => analyzeExecutionPath(props.graph, props.choices))
@@ -85,9 +100,19 @@ let requestedPageFullscreen = false
 let pageFullscreenTask: Promise<void> | null = null
 let pageFullscreenDisposed = false
 let previousDocumentOverflow: string | null = null
-let guideBubbleTimer: number | null = null
 let guideVersion = 0
 let pendingGuideAnchor = ''
+let canvasResizeObserver: ResizeObserver | null = null
+
+const reservedRight = computed(() => isSelectionPanelCollapsed.value ? 56 : 336)
+const guideProjection = computed(() => guideBubble.value
+  ? projectExecutionPathGuide(
+      guideBubble.value.candidates,
+      viewportState.value,
+      canvasSize.value,
+      reservedRight.value,
+    )
+  : null)
 
 function reducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -103,6 +128,7 @@ async function setInitialViewport() {
   if (!viewport) return
   positionedPlanId = props.graph.planId
   await setViewport(viewport, { duration: reducedMotion() ? 0 : 220 })
+  viewportState.value = viewport
 }
 
 function setDocumentScrollLocked(locked: boolean) {
@@ -117,9 +143,23 @@ function setDocumentScrollLocked(locked: boolean) {
 }
 
 function clearGuideBubble() {
-  if (guideBubbleTimer !== null) window.clearTimeout(guideBubbleTimer)
-  guideBubbleTimer = null
   guideBubble.value = null
+}
+
+function dismissGuideBubble() {
+  if (guideBubble.value) dismissedGuideKey.value = guideBubble.value.key
+  clearGuideBubble()
+}
+
+function guideCandidatesForRoute(routeNodeID: string): ExecutionPathGuideCandidate[] {
+  if (!laidOut.value) return []
+  return laidOut.value.edges.flatMap((edge): ExecutionPathGuideCandidate[] => {
+    if (edge.data?.routeNodeId !== routeNodeID
+      || (edge.data.kind !== 'condition' && edge.data.kind !== 'manual')
+      || edge.data.labelX === undefined
+      || edge.data.labelY === undefined) return []
+    return [{ id: edge.id, x: edge.data.labelX, y: edge.data.labelY }]
+  })
 }
 
 async function guideSelectionNext(anchorNodeID = '') {
@@ -135,33 +175,45 @@ async function guideSelectionNext(anchorNodeID = '') {
   const nodeWidth = targetNode.type === 'routingHub' ? flowRoutingHubSize : flowNodeWidth
   const point = { x: targetNode.position.x + nodeWidth / 2, y: targetNode.position.y + 20 }
   const viewport = getViewport()
-  const reservedRight = isSelectionPanelCollapsed.value ? 56 : 336
-  // 右侧面板不属于可操作视口；每一步都保持缩放并把明确目标放到实际操作区中央。
-  const nextViewport = viewportForPointCentered(
-    viewport,
-    point,
-    { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight },
-    reservedRight,
-  )
+  const candidates = nextRouteID ? guideCandidatesForRoute(nextRouteID) : [{ id: targetID, ...point }]
+  const container = { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight }
+  // 下一步以整组候选标签为定位基准，候选再宽也只平移而不改变用户缩放；完成态继续定位最后操作点。
+  const nextViewport = nextRouteID
+    ? viewportForCandidateGroupCentered(viewport, candidates, container, reservedRight.value)
+    : viewportForPointCentered(viewport, point, container, reservedRight.value)
   await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 250 })
   if (version !== guideVersion || !props.selectionMode || !canvasRoot.value) return
-
-  const safeWidth = Math.max(0, canvasRoot.value.clientWidth - reservedRight)
-  const bubbleX = point.x * nextViewport.zoom + nextViewport.x
-  const bubbleY = point.y * nextViewport.zoom + nextViewport.y
+  viewportState.value = nextViewport
+  const guideKey = nextRouteID || `complete:${anchorNodeID || targetID}`
   clearGuideBubble()
+  if (dismissedGuideKey.value === guideKey) return
   guideBubble.value = {
+    key: guideKey,
     message: nextRouteID
-      ? `下一步：请选择一条分支（还剩 ${pathAnalysis.value.missingRouteNodeIds.length} 处）`
+      ? `请在以下 ${candidates.length} 个分支中选择 1 个（还剩 ${pathAnalysis.value.missingRouteNodeIds.length} 处）`
       : '线路已完整，请保存',
-    x: Math.min(Math.max(160, bubbleX), Math.max(160, safeWidth - 160)),
-    y: Math.min(Math.max(120, bubbleY), Math.max(120, canvasRoot.value.clientHeight - 80)),
+    candidates,
+    complete: !nextRouteID,
   }
-  guideBubbleTimer = window.setTimeout(() => { guideBubble.value = null }, 5200)
 }
 
 function toggleSelectionPanel() {
   isSelectionPanelCollapsed.value = !isSelectionPanelCollapsed.value
+  if (isSelectionPanelCollapsed.value) emit('closeSavedPaths')
+}
+
+function handleViewportChange(viewport: { x: number, y: number, zoom: number }) {
+  // 引导端点必须跟随 Vue Flow 当前变换，拖动或缩放后不能继续指向旧屏幕坐标。
+  viewportState.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+}
+
+function guideArrowPath(candidate: ExecutionPathGuideCandidate): string {
+  if (!guideProjection.value) return ''
+  const startX = guideProjection.value.bubble.x
+  const startY = guideProjection.value.bubble.y + 23
+  const endY = candidate.y - 19
+  const railY = startY + Math.max(14, (endY - startY) * 0.48)
+  return `M ${startX} ${startY} L ${startX} ${railY} L ${candidate.x} ${railY} L ${candidate.x} ${endY}`
 }
 
 function requestPageFullscreen(next: boolean) {
@@ -180,6 +232,7 @@ function requestPageFullscreen(next: boolean) {
 async function handleSelectionButton() {
   if (props.selectionMode) {
     clearGuideBubble()
+    emit('closeSavedPaths')
     emit('exitSelection')
     return
   }
@@ -205,13 +258,19 @@ async function runPageFullscreenTransitions() {
       continue
     }
     const afterWidth = canvasRoot.value?.clientWidth ?? 0
-    await setViewport(compensateViewportForContainerWidth(viewport, beforeWidth, afterWidth), { duration: 0 })
+    const compensated = compensateViewportForContainerWidth(viewport, beforeWidth, afterWidth)
+    await setViewport(compensated, { duration: 0 })
+    viewportState.value = compensated
   }
   if (!isPageFullscreen.value) setDocumentScrollLocked(false)
 }
 
 function handlePageFullscreenKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape' || !isPageFullscreen.value) return
+  if (props.savedPathsOpen) {
+    emit('closeSavedPaths')
+    return
+  }
   void requestPageFullscreen(false)
 }
 
@@ -244,12 +303,14 @@ watch(laidOut, (value) => {
 })
 watch(isPageFullscreen, (value) => {
   // Esc 或“退出全屏”结束编辑展示，但草稿由父页面保留供下次继续选择。
+  if (!value) emit('closeSavedPaths')
   if (!value && props.selectionMode) emit('exitSelection')
 })
 watch(() => props.selectionMode, (enabled) => {
   if (!enabled) {
     guideVersion++
     clearGuideBubble()
+    emit('closeSavedPaths')
     return
   }
   void guideSelectionNext()
@@ -257,14 +318,29 @@ watch(() => props.selectionMode, (enabled) => {
 watch(isSelectionPanelCollapsed, () => {
   if (props.selectionMode) void guideSelectionNext()
 })
+watch(() => props.savedPathsOpen, (open) => {
+  if (!open && props.selectionMode && !guideBubble.value) void guideSelectionNext()
+})
 
-onMounted(() => document.addEventListener('keydown', handlePageFullscreenKeydown))
+onMounted(() => {
+  document.addEventListener('keydown', handlePageFullscreenKeydown)
+  if (canvasRoot.value) {
+    canvasSize.value = { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight }
+    canvasResizeObserver = new ResizeObserver(([entry]) => {
+      if (!entry) return
+      canvasSize.value = { width: entry.contentRect.width, height: entry.contentRect.height }
+    })
+    canvasResizeObserver.observe(canvasRoot.value)
+  }
+})
 onBeforeUnmount(() => {
   viewportVersion++
   guideVersion++
   pageFullscreenDisposed = true
   requestedPageFullscreen = false
   clearGuideBubble()
+  canvasResizeObserver?.disconnect()
+  canvasResizeObserver = null
   setDocumentScrollLocked(false)
   document.removeEventListener('keydown', handlePageFullscreenKeydown)
 })
@@ -319,6 +395,7 @@ onBeforeUnmount(() => {
       :min-zoom="0.15"
       :max-zoom="2"
       :fit-view-on-init="false"
+      @viewport-change="handleViewportChange"
     >
       <template #node-flowNode="{ data }">
         <flow-graph-node :data="data" />
@@ -350,15 +427,53 @@ onBeforeUnmount(() => {
         <slot name="selection-panel" />
       </div>
     </aside>
+    <aside
+      v-if="laidOut && selectionMode && savedPathsOpen && !isSelectionPanelCollapsed"
+      class="flow-graph-canvas__saved-paths"
+      aria-label="已保存路径"
+    >
+      <slot name="saved-paths" />
+    </aside>
+    <svg
+      v-if="guideBubble && guideProjection && selectionMode && !savedPathsOpen && !guideBubble.complete"
+      class="flow-graph-canvas__guide-lines"
+      aria-hidden="true"
+    >
+      <defs>
+        <marker id="flow-guide-arrow" viewBox="0 0 10 10" ref-x="8" ref-y="5" marker-width="5" marker-height="5" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" />
+        </marker>
+      </defs>
+      <path
+        v-for="candidate in guideProjection.visibleCandidates"
+        :key="candidate.id"
+        class="flow-graph-canvas__guide-line"
+        :d="guideArrowPath(candidate)"
+        marker-end="url(#flow-guide-arrow)"
+      />
+    </svg>
     <div
-      v-if="guideBubble && selectionMode"
+      v-if="guideBubble && guideProjection && selectionMode && !savedPathsOpen"
       class="flow-graph-canvas__guide"
-      :style="{ left: `${guideBubble.x}px`, top: `${guideBubble.y}px` }"
+      :style="{ left: `${guideProjection.bubble.x}px`, top: `${guideProjection.bubble.y}px` }"
       role="status"
       aria-live="polite"
     >
       <span>{{ guideBubble.message }}</span>
-      <button type="button" aria-label="关闭提示" @click="clearGuideBubble">×</button>
+      <button type="button" aria-label="关闭提示" @click="dismissGuideBubble">×</button>
+    </div>
+    <div
+      v-if="guideBubble && guideProjection?.hiddenLeftCount && selectionMode && !savedPathsOpen"
+      class="flow-graph-canvas__guide-overflow flow-graph-canvas__guide-overflow--left"
+    >
+      ← 还有 {{ guideProjection.hiddenLeftCount }} 个候选
+    </div>
+    <div
+      v-if="guideBubble && guideProjection?.hiddenRightCount && selectionMode && !savedPathsOpen"
+      class="flow-graph-canvas__guide-overflow flow-graph-canvas__guide-overflow--right"
+      :style="{ right: `${reservedRight + 8}px` }"
+    >
+      还有 {{ guideProjection.hiddenRightCount }} 个候选 →
     </div>
     <div v-if="!laidOut" class="flow-graph-canvas__error">
       <n-empty :description="layoutResult.error">
@@ -434,9 +549,47 @@ onBeforeUnmount(() => {
   padding-top: 40px;
 }
 
+.flow-graph-canvas__saved-paths {
+  position: absolute;
+  top: 56px;
+  right: 340px;
+  bottom: 12px;
+  z-index: 7;
+  width: 300px;
+  overflow: hidden;
+  color: var(--flow-label-color);
+  background: var(--flow-surface-color);
+  border: 1px solid var(--flow-edge-color);
+  border-radius: 4px;
+  animation: flow-saved-paths-in 140ms ease-out;
+}
+
+.flow-graph-canvas__guide-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.flow-graph-canvas__guide-line {
+  fill: none;
+  stroke: var(--flow-direction-color);
+  stroke-width: 1.4;
+  stroke-dasharray: 4 5;
+  opacity: 0.82;
+  animation: flow-guide-direction 900ms linear infinite;
+}
+
+.flow-graph-canvas__guide-lines marker path {
+  fill: var(--flow-direction-color);
+}
+
 .flow-graph-canvas__guide {
   position: absolute;
-  z-index: 8;
+  z-index: 9;
   display: flex;
   align-items: center;
   max-width: 292px;
@@ -446,31 +599,8 @@ onBeforeUnmount(() => {
   background: var(--flow-surface-color);
   border: 1px solid var(--flow-direction-color);
   border-radius: 4px;
-  transform: translate(-50%, calc(-100% - 18px));
+  transform: translate(-50%, -50%);
   animation: flow-guide-in 140ms ease-out;
-}
-
-.flow-graph-canvas__guide::before,
-.flow-graph-canvas__guide::after {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  width: 0;
-  height: 0;
-  content: '';
-  border: solid transparent;
-  transform: translateX(-50%);
-}
-
-.flow-graph-canvas__guide::before {
-  border-width: 10px;
-  border-top-color: var(--flow-direction-color);
-}
-
-.flow-graph-canvas__guide::after {
-  margin-top: -1px;
-  border-width: 8px;
-  border-top-color: var(--flow-surface-color);
 }
 
 .flow-graph-canvas__guide button {
@@ -481,6 +611,24 @@ onBeforeUnmount(() => {
   cursor: pointer;
   background: transparent;
   border: 0;
+}
+
+.flow-graph-canvas__guide-overflow {
+  position: absolute;
+  top: 50%;
+  z-index: 9;
+  padding: 5px 8px;
+  color: var(--flow-direction-color);
+  font-size: 12px;
+  background: var(--flow-surface-color);
+  border: 1px solid var(--flow-direction-color);
+  border-radius: 4px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.flow-graph-canvas__guide-overflow--left {
+  left: 8px;
 }
 
 .flow-graph-canvas__error {
@@ -558,7 +706,18 @@ onBeforeUnmount(() => {
 @keyframes flow-guide-in {
   from {
     opacity: 0;
-    transform: translate(-50%, calc(-100% - 12px));
+    transform: translate(-50%, calc(-50% + 6px));
+  }
+}
+
+@keyframes flow-guide-direction {
+  to { stroke-dashoffset: -9; }
+}
+
+@keyframes flow-saved-paths-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
   }
 }
 
@@ -571,6 +730,11 @@ onBeforeUnmount(() => {
   }
 
   .flow-graph-canvas__guide {
+    animation: none;
+  }
+
+  .flow-graph-canvas__guide-line,
+  .flow-graph-canvas__saved-paths {
     animation: none;
   }
 }
