@@ -379,11 +379,7 @@ async function generateAllPaths() {
     pathsLoaded.value = true
     pathsError.value = ''
     plan.value.pathCount = refreshed.length
-    const latestCreated = result.items[result.items.length - 1]
-    if (latestCreated && graph.value) {
-      const saved = refreshed.find((path) => path.id === latestCreated.id) ?? latestCreated
-      selectSavedPath(saved)
-    }
+    // 批量生成是旁路管理动作，只刷新持久化列表；当前未保存草稿、名称和单条创建键都不能被新路径覆盖。
     generateAllKey.value = ''
     if (result.createdCount === 0) message.info(`全部 ${result.totalCount} 条路径均已存在，无需新增`)
     else message.success(`已新增 ${result.createdCount} 条路径，跳过 ${result.existingCount} 条已存在路径`)
@@ -525,14 +521,16 @@ onBeforeUnmount(() => {
                       <n-button
                         v-for="item in paths"
                         :key="item.id"
+                        class="path-selection-panel__path-button"
                         size="small"
                         :type="activePathID === item.id ? 'primary' : 'default'"
                         :secondary="activePathID === item.id"
                         :disabled="saving || deleting || generatingAll || draftRecoveryLoading"
+                        :title="pathDisplayName(item)"
                         @click="selectSavedPath(item)"
                       >
                         <span class="path-selection-panel__sequence">#{{ item.sequenceNo }}</span>
-                        <span>{{ pathDisplayName(item) }}</span>
+                        <span class="path-selection-panel__path-name">{{ pathDisplayName(item) }}</span>
                       </n-button>
                       <n-tag v-if="draftMode === 'new'" size="small" type="info" :bordered="false">待分配序号 · 新路径</n-tag>
                       <n-tag v-if="draftMode === 'copy'" size="small" type="info" :bordered="false">待分配序号 · 路径副本</n-tag>
@@ -792,9 +790,28 @@ onBeforeUnmount(() => {
 }
 
 .path-selection-panel__sequence {
+  flex: 0 0 auto;
   margin-right: 5px;
   font-variant-numeric: tabular-nums;
   opacity: 0.68;
+}
+
+.path-selection-panel__path-button {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.path-selection-panel__path-button :deep(.n-button__content) {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.path-selection-panel__path-name {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .path-selection-panel__paths {

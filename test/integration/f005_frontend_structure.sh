@@ -20,9 +20,19 @@ grep -Fq '一键生成全部路径' "${view_file}"
 grep -Fq 'generateAllExecutionPaths' "${view_file}"
 grep -Fq 'previewAllExecutionPaths' "${view_file}"
 grep -Fq '稳定序号 #' "${view_file}"
+grep -Fq ':title="pathDisplayName(item)"' "${view_file}"
+grep -Fq 'class="path-selection-panel__path-name"' "${view_file}"
+grep -Fq 'max-width: 180px' "${view_file}"
+grep -Fq 'text-overflow: ellipsis' "${view_file}"
+grep -Fq 'flex: 0 0 auto' "${view_file}"
 grep -Fq 'v-model:value="draftName"' "${view_file}"
 grep -Fq 'maxlength="50"' "${view_file}"
 grep -Fq '生成全部路径失败，请重试' "${view_file}"
+grep -Fq '当前未保存草稿、名称和单条创建键都不能被新路径覆盖' "${view_file}"
+if grep -Fq 'selectSavedPath(latestCreated)' "${view_file}"; then
+  echo 'F-005 批量成功不得覆盖当前未保存草稿' >&2
+  exit 1
+fi
 grep -Fq '<n-popconfirm' "${view_file}"
 grep -Fq '<template #selection-panel>' "${view_file}"
 grep -Fq 'class="path-selection-panel__summary"' "${view_file}"
