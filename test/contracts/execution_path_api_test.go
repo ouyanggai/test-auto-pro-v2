@@ -19,6 +19,8 @@ type stubExecutionPathService struct {
 	created bool
 	err     error
 	choices []model.ExecutionPathChoice
+	name    string
+	batch   model.ExecutionPathBatchResult
 }
 
 // List 返回契约测试预设的路径集合或错误。
@@ -27,24 +29,31 @@ func (s *stubExecutionPathService) List(context.Context, uint64) ([]model.Execut
 }
 
 // Create 记录浏览器提交的最小 choices 并返回预设创建结果。
-func (s *stubExecutionPathService) Create(_ context.Context, _ uint64, _ string, choices []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
+func (s *stubExecutionPathService) Create(_ context.Context, _ uint64, _, name string, choices []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
 	s.choices = choices
+	s.name = name
 	return s.path, s.created, s.err
 }
 
 // Update 记录完整替换 choices 并返回预设路径。
-func (s *stubExecutionPathService) Update(_ context.Context, _, _ uint64, choices []model.ExecutionPathChoice) (model.ExecutionPath, error) {
+func (s *stubExecutionPathService) Update(_ context.Context, _, _ uint64, name string, choices []model.ExecutionPathChoice) (model.ExecutionPath, error) {
 	s.choices = choices
+	s.name = name
 	return s.path, s.err
 }
 
 // Delete 返回预设删除错误以覆盖稳定映射。
 func (s *stubExecutionPathService) Delete(context.Context, uint64, uint64) error { return s.err }
 
+// GenerateAll 返回预设批量结果以覆盖批量 API 契约。
+func (s *stubExecutionPathService) GenerateAll(context.Context, uint64, string) (model.ExecutionPathBatchResult, bool, error) {
+	return s.batch, s.created, s.err
+}
+
 // TestExecutionPathAPIFourOperationsAndSafety 验证四个端点和公开字段安全边界。
 func TestExecutionPathAPIFourOperationsAndSafety(t *testing.T) {
 	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
-	path := model.ExecutionPath{ID: 31, PlanID: 7, SequenceNo: 2, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route-a", BranchID: "branch-a"}}, UpdatedAt: now}
+	path := model.ExecutionPath{ID: 31, PlanID: 7, SequenceNo: 2, Name: "财务重点路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route-a", BranchID: "branch-a"}}, UpdatedAt: now}
 	stub := &stubExecutionPathService{items: []model.ExecutionPath{path}, path: path, created: true}
 	handler := api.NewHandlerWithExecutionPathServices(&stubTargetReader{}, service.NewPlanService(&contractPlanRepository{}), &stubFlowGraphService{}, stub)
 
@@ -52,20 +61,45 @@ func TestExecutionPathAPIFourOperationsAndSafety(t *testing.T) {
 	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/plans/7/execution-paths", nil))
 	assertExecutionPathResponse(t, list, http.StatusOK)
 
-	createRequest := httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths", strings.NewReader(`{"choices":[{"routeNodeId":"route-a","branchId":"branch-a"}]}`))
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths", strings.NewReader(`{"name":"财务重点路径","choices":[{"routeNodeId":"route-a","branchId":"branch-a"}]}`))
 	createRequest.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174301")
 	create := httptest.NewRecorder()
 	handler.ServeHTTP(create, createRequest)
 	assertExecutionPathResponse(t, create, http.StatusCreated)
 
 	update := httptest.NewRecorder()
-	handler.ServeHTTP(update, httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31", strings.NewReader(`{"choices":[]}`)))
+	handler.ServeHTTP(update, httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31", strings.NewReader(`{"name":"改名后","choices":[]}`)))
 	assertExecutionPathResponse(t, update, http.StatusOK)
 
 	remove := httptest.NewRecorder()
 	handler.ServeHTTP(remove, httptest.NewRequest(http.MethodDelete, "/api/plans/7/execution-paths/31", nil))
 	if remove.Code != http.StatusNoContent || remove.Body.Len() != 0 {
 		t.Fatalf("删除路径契约不正确：status=%d body=%s", remove.Code, remove.Body.String())
+	}
+	if stub.name != "改名后" {
+		t.Fatalf("路径名称没有传入服务：%q", stub.name)
+	}
+}
+
+// TestExecutionPathAPIGenerateAllContract 验证批量 API 返回计数、名称和创建路径且接受幂等键。
+func TestExecutionPathAPIGenerateAllContract(t *testing.T) {
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	path := model.ExecutionPath{ID: 41, PlanID: 7, SequenceNo: 4, Name: "路径 4", UpdatedAt: now}
+	stub := &stubExecutionPathService{created: true, batch: model.ExecutionPathBatchResult{
+		TotalCount: 3, ExistingCount: 2, CreatedCount: 1, Paths: []model.ExecutionPath{path},
+	}}
+	handler := api.NewHandlerWithExecutionPathServices(&stubTargetReader{}, service.NewPlanService(&contractPlanRepository{}), &stubFlowGraphService{}, stub)
+	request := httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/generate-all", nil)
+	request.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174399")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("批量 API 状态不正确：%d %s", recorder.Code, recorder.Body.String())
+	}
+	for _, want := range []string{`"totalCount":3`, `"existingCount":2`, `"createdCount":1`, `"name":"路径 4"`} {
+		if !strings.Contains(recorder.Body.String(), want) {
+			t.Fatalf("批量响应缺少 %s：%s", want, recorder.Body.String())
+		}
 	}
 }
 
@@ -79,6 +113,8 @@ func TestExecutionPathAPIRejectsUnknownFieldsAndMapsStableErrors(t *testing.T) {
 		{err: &service.ExecutionPathError{Kind: service.ExecutionPathErrorNotFound}, status: 404, code: "EXECUTION_PATH_NOT_FOUND"},
 		{err: &service.ExecutionPathError{Kind: service.ExecutionPathErrorInvalid}, status: 409, code: "EXECUTION_PATH_INVALID"},
 		{err: &service.ExecutionPathError{Kind: service.ExecutionPathErrorLimit}, status: 409, code: "EXECUTION_PATH_LIMIT_REACHED"},
+		{err: &service.ExecutionPathError{Kind: service.ExecutionPathErrorEnumerationLimit}, status: 409, code: "EXECUTION_PATH_ENUMERATION_LIMIT"},
+		{err: &service.ExecutionPathError{Kind: service.ExecutionPathErrorGenerateAll}, status: 409, code: "EXECUTION_PATH_GENERATE_ALL_UNAVAILABLE"},
 		{err: service.ErrTargetFlowNotConfigurable, status: 409, code: "TARGET_FLOW_NOT_CONFIGURABLE"},
 		{err: &service.ExecutionPathError{Kind: service.ExecutionPathErrorLocked}, status: 409, code: "PLAN_LOCKED"},
 		{err: &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage}, status: 503, code: "PLAN_STORAGE_UNAVAILABLE"},
@@ -126,7 +162,7 @@ func assertExecutionPathResponse(t *testing.T, recorder *httptest.ResponseRecord
 		t.Fatalf("路径 API 状态码 = %d，响应=%s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{`"id":"31"`, `"sequenceNo":2`, `"routeNodeId":"route-a"`, `"branchId":"branch-a"`} {
+	for _, want := range []string{`"id":"31"`, `"sequenceNo":2`, `"name":"财务重点路径"`, `"routeNodeId":"route-a"`, `"branchId":"branch-a"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("路径响应缺少 %s：%s", want, body)
 		}

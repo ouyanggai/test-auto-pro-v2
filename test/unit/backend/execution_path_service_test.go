@@ -3,6 +3,7 @@ package backend_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ type memoryExecutionPathRepository struct {
 	findCalls   int
 	createCalls int
 	updateCalls int
+	batch       model.ExecutionPathBatchResult
+	batchKey    string
+	batchErr    error
+	batchCalls  int
 }
 
 // List 返回内存路径副本供服务单元测试使用。
@@ -57,12 +62,16 @@ func (r *memoryExecutionPathRepository) FindByCreateKey(_ context.Context, planI
 }
 
 // Create 记录写入次数并模拟事务仓储创建结果。
-func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64, createKey string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, bool, error) {
+func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64, createKey, name string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, bool, error) {
 	r.createCalls++
 	if r.createErr != nil {
 		return model.ExecutionPath{}, false, r.createErr
 	}
-	path := model.ExecutionPath{ID: uint64(len(r.paths) + 1), PlanID: planID, SequenceNo: uint(len(r.paths) + 1), Choices: append([]model.ExecutionPathChoice(nil), choices...), CreatedAt: now, UpdatedAt: now}
+	sequenceNo := uint(len(r.paths) + 1)
+	if name == "" {
+		name = "路径 " + string(rune('0'+sequenceNo))
+	}
+	path := model.ExecutionPath{ID: uint64(len(r.paths) + 1), PlanID: planID, SequenceNo: sequenceNo, Name: name, Choices: append([]model.ExecutionPathChoice(nil), choices...), CreatedAt: now, UpdatedAt: now}
 	r.paths = append(r.paths, path)
 	if r.createKeys == nil {
 		r.createKeys = make(map[string]uint64)
@@ -72,12 +81,38 @@ func (r *memoryExecutionPathRepository) Create(_ context.Context, planID uint64,
 }
 
 // Update 模拟原位替换选择并保留稳定序号。
-func (r *memoryExecutionPathRepository) Update(_ context.Context, planID, pathID uint64, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, error) {
+func (r *memoryExecutionPathRepository) Update(_ context.Context, planID, pathID uint64, name string, choices []model.ExecutionPathChoice, now time.Time) (model.ExecutionPath, error) {
 	r.updateCalls++
 	if r.updateErr != nil {
 		return model.ExecutionPath{}, r.updateErr
 	}
-	return model.ExecutionPath{ID: pathID, PlanID: planID, SequenceNo: 1, Choices: choices, UpdatedAt: now}, nil
+	return model.ExecutionPath{ID: pathID, PlanID: planID, SequenceNo: 1, Name: name, Choices: choices, UpdatedAt: now}, nil
+}
+
+// FindBatchByCreateKey 返回内存中已经提交的批量幂等结果。
+func (r *memoryExecutionPathRepository) FindBatchByCreateKey(_ context.Context, _ uint64, createKey string) (model.ExecutionPathBatchResult, bool, error) {
+	if r.batchErr != nil {
+		return model.ExecutionPathBatchResult{}, false, r.batchErr
+	}
+	if r.batchKey == createKey {
+		return r.batch, true, nil
+	}
+	return model.ExecutionPathBatchResult{}, false, nil
+}
+
+// GenerateAll 模拟批量原子写入并记录服务传入的完整组合数。
+func (r *memoryExecutionPathRepository) GenerateAll(_ context.Context, planID uint64, createKey string, candidates [][]model.ExecutionPathChoice, now time.Time) (model.ExecutionPathBatchResult, bool, error) {
+	r.batchCalls++
+	if r.batchErr != nil {
+		return model.ExecutionPathBatchResult{}, false, r.batchErr
+	}
+	items := make([]model.ExecutionPath, 0, len(candidates))
+	for index, choices := range candidates {
+		items = append(items, model.ExecutionPath{ID: uint64(index + 1), PlanID: planID, SequenceNo: uint(index + 1), Name: "路径 " + string(rune('1'+index)), Choices: choices, CreatedAt: now, UpdatedAt: now})
+	}
+	r.batchKey = createKey
+	r.batch = model.ExecutionPathBatchResult{TotalCount: len(candidates), CreatedCount: len(items), Paths: items}
+	return r.batch, true, nil
 }
 
 // TestExecutionPathServiceRejectsChoicesAfterCurrentGraphChanges 验证保存前真实图变化会阻止旧选择写入。
@@ -88,7 +123,7 @@ func TestExecutionPathServiceRejectsChoicesAfterCurrentGraphChanges(t *testing.T
 	repo := &memoryExecutionPathRepository{}
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), reader, analyzer.NewExecutionPathAnalyzer(), repo)
 	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
-	created, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", choices)
+	created, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", "", choices)
 	if err != nil {
 		t.Fatalf("准备已有路径失败：%v", err)
 	}
@@ -96,7 +131,7 @@ func TestExecutionPathServiceRejectsChoicesAfterCurrentGraphChanges(t *testing.T
 		{ID: "start-route", Source: "start", Target: "route", Kind: "sequence"},
 		{ID: "branch-b-edge", Source: "route", Target: "end-b", Kind: "condition", BranchID: "branch-b"},
 	}
-	_, err = serviceUnderTest.Update(context.Background(), 7, created.ID, choices)
+	_, err = serviceUnderTest.Update(context.Background(), 7, created.ID, "自定义路径", choices)
 	if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorInvalid) || repo.updateCalls != 0 {
 		t.Fatalf("真实图变化后旧选择仍进入仓储：updates=%d err=%v", repo.updateCalls, err)
 	}
@@ -116,11 +151,11 @@ func TestExecutionPathServiceRereadsAndValidatesCurrentGraph(t *testing.T) {
 	repo := &memoryExecutionPathRepository{}
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
 	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
-	path, created, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", choices)
+	path, created, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", "重点路径", choices)
 	if err != nil || !created || path.SequenceNo != 1 || graphs.calls != 1 || repo.createCalls != 1 {
 		t.Fatalf("创建路径没有重读并验证当前图：path=%+v created=%v calls=%d err=%v", path, created, graphs.calls, err)
 	}
-	if _, err := serviceUnderTest.Update(context.Background(), 7, path.ID, choices); err != nil || graphs.calls != 2 {
+	if _, err := serviceUnderTest.Update(context.Background(), 7, path.ID, "重点路径", choices); err != nil || graphs.calls != 2 {
 		t.Fatalf("更新路径没有再次读取当前图：calls=%d err=%v", graphs.calls, err)
 	}
 }
@@ -134,12 +169,12 @@ func TestExecutionPathServiceIdempotentRetrySkipsChangedGraph(t *testing.T) {
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
 	key := "123e4567-e89b-12d3-a456-426614174301"
 	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
-	first, created, err := serviceUnderTest.Create(context.Background(), 7, key, choices)
+	first, created, err := serviceUnderTest.Create(context.Background(), 7, key, "", choices)
 	if err != nil || !created {
 		t.Fatalf("首次创建路径失败：created=%v err=%v", created, err)
 	}
 	graphs.err = errors.New("目标平台随后不可用")
-	retried, created, err := serviceUnderTest.Create(context.Background(), 7, key, nil)
+	retried, created, err := serviceUnderTest.Create(context.Background(), 7, key, "另一个名字", nil)
 	if err != nil || created || retried.ID != first.ID || retried.SequenceNo != first.SequenceNo {
 		t.Fatalf("幂等重试没有返回原路径：first=%+v retried=%+v created=%v err=%v", first, retried, created, err)
 	}
@@ -160,11 +195,11 @@ func TestExecutionPathServiceIdempotencyDoesNotLeakAcrossPlans(t *testing.T) {
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
 	key := "123e4567-e89b-12d3-a456-426614174301"
 	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
-	if _, _, err := serviceUnderTest.Create(context.Background(), 7, key, choices); err != nil {
+	if _, _, err := serviceUnderTest.Create(context.Background(), 7, key, "", choices); err != nil {
 		t.Fatalf("准备其他计划幂等记录失败：%v", err)
 	}
 	graphs.err = errors.New("用于证明未错误命中其他计划")
-	other, _, err := serviceUnderTest.Create(context.Background(), 8, key, choices)
+	other, _, err := serviceUnderTest.Create(context.Background(), 8, key, "", choices)
 	if err == nil || other.ID != 0 {
 		t.Fatalf("其他计划泄露了幂等记录：path=%+v err=%v", other, err)
 	}
@@ -184,7 +219,7 @@ func TestExecutionPathServiceRejectsIncompleteAndExtraSelections(t *testing.T) {
 	} {
 		repo := &memoryExecutionPathRepository{}
 		serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: selectableExecutionPathGraph()}, analyzer.NewExecutionPathAnalyzer(), repo)
-		_, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", choices)
+		_, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", "", choices)
 		if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorInvalid) || repo.createCalls != 0 {
 			t.Fatalf("无效选择进入了仓储：choices=%v err=%v", choices, err)
 		}
@@ -207,10 +242,71 @@ func TestExecutionPathServiceMapsRepositoryBoundaries(t *testing.T) {
 	for _, test := range tests {
 		repo := &memoryExecutionPathRepository{createErr: test.err}
 		serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: selectableExecutionPathGraph()}, analyzer.NewExecutionPathAnalyzer(), repo)
-		_, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", choices)
+		_, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", "", choices)
 		if !service.IsExecutionPathErrorKind(err, test.kind) {
 			t.Fatalf("仓储错误映射不正确：source=%v mapped=%v", test.err, err)
 		}
+	}
+}
+
+// TestExecutionPathServiceGenerateAllReadsGraphOnceAndPersistsRetry 验证批量生成只读一次真实图且成功重试不再依赖目标。
+func TestExecutionPathServiceGenerateAllReadsGraphOnceAndPersistsRetry(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, FlowSource: "new", Status: model.PlanStatusPendingConfiguration}}
+	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
+	repo := &memoryExecutionPathRepository{}
+	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
+	key := "123e4567-e89b-12d3-a456-426614174399"
+	result, created, err := serviceUnderTest.GenerateAll(context.Background(), 7, key)
+	if err != nil || !created || result.TotalCount != 2 || result.CreatedCount != 2 || len(result.Paths) != 2 {
+		t.Fatalf("批量生成结果不正确：result=%+v created=%v err=%v", result, created, err)
+	}
+	if graphs.calls != 1 || repo.batchCalls != 1 {
+		t.Fatalf("批量生成没有保持单次图读取：graph=%d batch=%d", graphs.calls, repo.batchCalls)
+	}
+	graphs.err = errors.New("目标平台随后不可用")
+	retried, created, err := serviceUnderTest.GenerateAll(context.Background(), 7, key)
+	if err != nil || created || retried.CreatedCount != 2 || graphs.calls != 1 || repo.batchCalls != 1 {
+		t.Fatalf("批量幂等重试仍依赖目标或重复写入：result=%+v created=%v graph=%d batch=%d err=%v", retried, created, graphs.calls, repo.batchCalls, err)
+	}
+}
+
+// TestExecutionPathServiceGenerateAllRejectsSourceAndLimit 验证非新发起与超过 128 条都不会进入批量事务。
+func TestExecutionPathServiceGenerateAllRejectsSourceAndLimit(t *testing.T) {
+	for _, source := range []string{"started", "pending"} {
+		plans := newMemoryPlanRepository()
+		plans.plans = []model.Plan{{ID: 7, FlowSource: source, Status: model.PlanStatusPendingConfiguration}}
+		repo := &memoryExecutionPathRepository{}
+		serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: selectableExecutionPathGraph()}, analyzer.NewExecutionPathAnalyzer(), repo)
+		_, _, err := serviceUnderTest.GenerateAll(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174399")
+		if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorGenerateAll) || repo.batchCalls != 0 {
+			t.Fatalf("来源 %s 错误开放批量生成：err=%v calls=%d", source, err, repo.batchCalls)
+		}
+	}
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, FlowSource: "new", Status: model.PlanStatusPendingConfiguration}}
+	repo := &memoryExecutionPathRepository{}
+	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: binaryRouteChain(8)}, analyzer.NewExecutionPathAnalyzer(), repo)
+	_, _, err := serviceUnderTest.GenerateAll(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174399")
+	if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorEnumerationLimit) || repo.batchCalls != 0 {
+		t.Fatalf("超过上限仍进入批量事务：err=%v calls=%d", err, repo.batchCalls)
+	}
+}
+
+// TestExecutionPathServiceNormalizesPathName 验证路径名称去空格、长度边界和空值默认语义。
+func TestExecutionPathServiceNormalizesPathName(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	repo := &memoryExecutionPathRepository{}
+	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: selectableExecutionPathGraph()}, analyzer.NewExecutionPathAnalyzer(), repo)
+	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
+	path, _, err := serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174301", "  重点线路  ", choices)
+	if err != nil || path.Name != "重点线路" {
+		t.Fatalf("自定义名称没有规范化：path=%+v err=%v", path, err)
+	}
+	_, _, err = serviceUnderTest.Create(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174302", strings.Repeat("名", 51), choices)
+	if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorInvalidArgument) {
+		t.Fatalf("超长名称没有被拒绝：%v", err)
 	}
 }
 

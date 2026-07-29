@@ -7,7 +7,10 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-var ErrExecutionPathInvalid = errors.New("执行路径选择无效")
+var (
+	ErrExecutionPathInvalid          = errors.New("执行路径选择无效")
+	ErrExecutionPathEnumerationLimit = errors.New("执行路径组合超过上限")
+)
 
 type ExecutionPathAnalyzer struct{}
 
@@ -126,4 +129,56 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 		Complete: len(missing) == 0, MissingRouteNodeIDs: missing,
 		ReachableNodeIDs: reachableNodes, ReachableEdgeIDs: reachableEdges,
 	}, nil
+}
+
+// EnumerateAll 按真实分支顺序枚举全部合法完整路径，超过上限时立即停止并返回专用错误。
+func (a *ExecutionPathAnalyzer) EnumerateAll(graph model.FlowGraph, limit int) ([][]model.ExecutionPathChoice, error) {
+	if limit < 1 {
+		return nil, ErrExecutionPathInvalid
+	}
+	outgoing := make(map[string][]model.FlowGraphEdge, len(graph.Nodes))
+	for _, edge := range graph.Edges {
+		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
+	}
+	results := make([][]model.ExecutionPathChoice, 0)
+	var visit func([]model.ExecutionPathChoice) error
+	visit = func(choices []model.ExecutionPathChoice) error {
+		analysis, err := a.Analyze(graph, choices)
+		if err != nil {
+			return err
+		}
+		if analysis.Complete {
+			if len(results) >= limit {
+				return ErrExecutionPathEnumerationLimit
+			}
+			results = append(results, append([]model.ExecutionPathChoice(nil), choices...))
+			return nil
+		}
+		if len(analysis.MissingRouteNodeIDs) == 0 {
+			return ErrExecutionPathInvalid
+		}
+		routeID := analysis.MissingRouteNodeIDs[0]
+		branches := outgoing[routeID]
+		if len(branches) == 0 {
+			return ErrExecutionPathInvalid
+		}
+		for _, edge := range branches {
+			if edge.Kind != "condition" && edge.Kind != "manual" {
+				return ErrExecutionPathInvalid
+			}
+			// 每次只扩展分析器确认的首个待选点，可自然覆盖并行支线中的笛卡尔组合，同时保持图中稳定顺序。
+			next := append(append([]model.ExecutionPathChoice(nil), choices...), model.ExecutionPathChoice{
+				RouteNodeID: routeID,
+				BranchID:    edge.BranchID,
+			})
+			if err := visit(next); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(nil); err != nil {
+		return nil, err
+	}
+	return results, nil
 }

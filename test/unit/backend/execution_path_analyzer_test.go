@@ -2,6 +2,7 @@ package backend_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"test-auto-pro-v2/internal/analyzer"
@@ -133,4 +134,73 @@ func TestExecutionPathAnalyzerRejectsDuplicateMissingExtraAndCrossGraphChoice(t 
 			t.Fatalf("非法选择未被拒绝：choices=%+v err=%v", choices, err)
 		}
 	}
+}
+
+// TestExecutionPathAnalyzerEnumeratesStableParallelCombinations 验证批量枚举包含并行支线中的完整笛卡尔组合并保持分支顺序。
+func TestExecutionPathAnalyzerEnumeratesStableParallelCombinations(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"parallel"},
+		Nodes: []model.FlowGraphNode{
+			pathNode("parallel", "parallel"), pathNode("left", "condition"), pathNode("right", "manual"),
+			pathNode("la", "end"), pathNode("lb", "end"), pathNode("ra", "end"), pathNode("rb", "end"),
+		},
+		Edges: []model.FlowGraphEdge{
+			pathEdge("parallel-left", "parallel", "left", "parallel", "pl"),
+			pathEdge("parallel-right", "parallel", "right", "parallel", "pr"),
+			pathEdge("left-a", "left", "la", "condition", "la"), pathEdge("left-b", "left", "lb", "condition", "lb"),
+			pathEdge("right-a", "right", "ra", "manual", "ra"), pathEdge("right-b", "right", "rb", "manual", "rb"),
+		},
+	}
+	paths, err := analyzer.NewExecutionPathAnalyzer().EnumerateAll(graph, 128)
+	if err != nil || len(paths) != 4 {
+		t.Fatalf("并行组合枚举失败：count=%d err=%v", len(paths), err)
+	}
+	want := [][]model.ExecutionPathChoice{
+		{{RouteNodeID: "left", BranchID: "la"}, {RouteNodeID: "right", BranchID: "ra"}},
+		{{RouteNodeID: "left", BranchID: "la"}, {RouteNodeID: "right", BranchID: "rb"}},
+		{{RouteNodeID: "left", BranchID: "lb"}, {RouteNodeID: "right", BranchID: "ra"}},
+		{{RouteNodeID: "left", BranchID: "lb"}, {RouteNodeID: "right", BranchID: "rb"}},
+	}
+	for index := range want {
+		if len(paths[index]) != len(want[index]) {
+			t.Fatalf("第 %d 条组合长度不正确：%+v", index, paths[index])
+		}
+		for choiceIndex := range want[index] {
+			if paths[index][choiceIndex] != want[index][choiceIndex] {
+				t.Fatalf("组合顺序不稳定：got=%+v want=%+v", paths, want)
+			}
+		}
+	}
+}
+
+// TestExecutionPathAnalyzerEnumerationLimitIsAllOrNothing 验证第 129 条组合触发明确上限而不是静默截断。
+func TestExecutionPathAnalyzerEnumerationLimitIsAllOrNothing(t *testing.T) {
+	graph := binaryRouteChain(8)
+	paths, err := analyzer.NewExecutionPathAnalyzer().EnumerateAll(graph, 128)
+	if !errors.Is(err, analyzer.ErrExecutionPathEnumerationLimit) || paths != nil {
+		t.Fatalf("超过 128 条没有整体拒绝：count=%d err=%v", len(paths), err)
+	}
+	paths, err = analyzer.NewExecutionPathAnalyzer().EnumerateAll(binaryRouteChain(7), 128)
+	if err != nil || len(paths) != 128 {
+		t.Fatalf("128 条边界被错误拒绝：count=%d err=%v", len(paths), err)
+	}
+}
+
+// binaryRouteChain 构造每层两个分支都汇入下一层的稳定组合图。
+func binaryRouteChain(depth int) model.FlowGraph {
+	graph := model.FlowGraph{EntryNodeIDs: []string{"route-0"}}
+	for index := 0; index < depth; index++ {
+		routeID := fmt.Sprintf("route-%d", index)
+		nextID := fmt.Sprintf("route-%d", index+1)
+		if index == depth-1 {
+			nextID = "end"
+		}
+		graph.Nodes = append(graph.Nodes, pathNode(routeID, "condition"))
+		graph.Edges = append(graph.Edges,
+			pathEdge(routeID+"-a", routeID, nextID, "condition", "a"),
+			pathEdge(routeID+"-b", routeID, nextID, "condition", "b"),
+		)
+	}
+	graph.Nodes = append(graph.Nodes, pathNode("end", "end"))
+	return graph
 }
