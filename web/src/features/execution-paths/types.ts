@@ -36,6 +36,14 @@ export interface ExecutionPathWorkspacePresentation {
   hint: string
 }
 
+export interface ExecutionPathDecisionProgress {
+  selected: number
+  pending: number
+  total: number
+}
+
+export type ExecutionPathWorkspaceDisposition = 'confirm' | 'reset' | 'preserve'
+
 export interface ExecutionPathAnalysis {
   complete: boolean
   invalid: boolean

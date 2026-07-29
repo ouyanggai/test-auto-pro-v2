@@ -32,19 +32,16 @@ const props = withDefaults(defineProps<{
   choices?: ExecutionPathChoice[]
   workspaceOpen?: boolean
   branchEditing?: boolean
-  workspaceAvailable?: boolean
-  workspaceResumable?: boolean
   saveGuideVisible?: boolean
   savedPathsOpen?: boolean
 }>(), {
-  choices: () => [], workspaceOpen: false, branchEditing: false, workspaceAvailable: false, workspaceResumable: false, saveGuideVisible: false, savedPathsOpen: false,
+  choices: () => [], workspaceOpen: false, branchEditing: false, saveGuideVisible: false, savedPathsOpen: false,
 })
 const emit = defineEmits<{
   retry: []
   selectBranch: [choice: ExecutionPathChoice]
-  enterWorkspace: []
-  exitWorkspace: []
   closeSavedPaths: []
+  requestWorkspaceExit: []
 }>()
 const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
@@ -107,7 +104,7 @@ let guideVersion = 0
 let pendingGuideAnchor = ''
 let canvasResizeObserver: ResizeObserver | null = null
 
-const reservedRight = computed(() => isSelectionPanelCollapsed.value ? 56 : 336)
+const reservedRight = computed(() => props.workspaceOpen ? 336 : 0)
 const guideProjection = computed(() => guideBubble.value
   ? projectExecutionPathGuide(
       guideBubble.value.candidates,
@@ -236,20 +233,6 @@ function requestPageFullscreen(next: boolean) {
   return pageFullscreenTask
 }
 
-async function handleSelectionButton() {
-  if (props.workspaceOpen) {
-    clearGuideBubble()
-    emit('closeSavedPaths')
-    emit('exitWorkspace')
-    return
-  }
-  if (!props.workspaceAvailable) return
-  // 线路编辑只允许在页面全屏中发生，先完成容器切换和视口补偿，再开放分支交互。
-  if (!isPageFullscreen.value) await requestPageFullscreen(true)
-  if (pageFullscreenDisposed || !isPageFullscreen.value) return
-  emit('enterWorkspace')
-}
-
 async function runPageFullscreenTransitions() {
   while (!pageFullscreenDisposed && isPageFullscreen.value !== requestedPageFullscreen) {
     const next = requestedPageFullscreen
@@ -278,8 +261,26 @@ function handlePageFullscreenKeydown(event: KeyboardEvent) {
     emit('closeSavedPaths')
     return
   }
+  if (props.branchEditing) {
+    emit('requestWorkspaceExit')
+    return
+  }
   void requestPageFullscreen(false)
 }
+
+function togglePageFullscreen() {
+  if (isPageFullscreen.value && props.branchEditing) {
+    emit('requestWorkspaceExit')
+    return
+  }
+  void requestPageFullscreen(!isPageFullscreen.value)
+}
+
+async function setPageFullscreen(next: boolean) {
+  await requestPageFullscreen(next)
+}
+
+defineExpose({ setPageFullscreen })
 
 function handleSelectBranch(choice: ExecutionPathChoice) {
   if (!props.workspaceOpen || !props.branchEditing) return
@@ -309,12 +310,11 @@ watch(laidOut, (value) => {
   void requestPageFullscreen(false)
 })
 watch(isPageFullscreen, (value) => {
-  // Esc 或“退出全屏”结束编辑展示，但草稿由父页面保留供下次继续选择。
   if (!value) emit('closeSavedPaths')
-  if (!value && props.workspaceOpen) emit('exitWorkspace')
 })
 watch(() => props.workspaceOpen, (enabled) => {
   if (!enabled) {
+    isSelectionPanelCollapsed.value = false
     guideVersion++
     clearGuideBubble()
     emit('closeSavedPaths')
@@ -378,22 +378,18 @@ onBeforeUnmount(() => {
     :aria-label="workspaceOpen ? (branchEditing ? '线路编辑流程图' : '路径查看流程图') : '只读流程图'"
   >
     <div v-if="laidOut" class="flow-graph-canvas__actions">
+      <slot name="canvas-actions" />
       <n-button
+        class="flow-graph-canvas__fullscreen-button"
         size="small"
-        secondary
-        :disabled="!workspaceAvailable && !workspaceOpen"
-        :aria-pressed="workspaceOpen"
-        @click="handleSelectionButton"
-      >
-        {{ workspaceOpen ? '退出选择' : workspaceResumable ? '继续选择' : '线路选择' }}
-      </n-button>
-      <n-button
-        size="small"
-        secondary
+        circle
+        quaternary
         :aria-pressed="isPageFullscreen"
-        @click="requestPageFullscreen(!isPageFullscreen)"
+        :aria-label="isPageFullscreen ? '退出页面全屏' : '页面全屏'"
+        :title="isPageFullscreen ? '退出页面全屏' : '页面全屏'"
+        @click="togglePageFullscreen"
       >
-        {{ isPageFullscreen ? '退出全屏' : '页面全屏' }}
+        <span aria-hidden="true">{{ isPageFullscreen ? '×' : '⛶' }}</span>
       </n-button>
     </div>
     <vue-flow-canvas
@@ -445,9 +441,12 @@ onBeforeUnmount(() => {
       <div v-if="!isSelectionPanelCollapsed" class="flow-graph-canvas__selection-panel-content">
         <slot name="workspace-panel" />
       </div>
+      <div v-else class="flow-graph-canvas__selection-panel-collapsed-content">
+        <slot name="workspace-collapsed" />
+      </div>
     </aside>
     <aside
-      v-if="laidOut && workspaceOpen && savedPathsOpen && !isSelectionPanelCollapsed"
+      v-if="laidOut && savedPathsOpen && (!workspaceOpen || !isSelectionPanelCollapsed)"
       class="flow-graph-canvas__saved-paths"
       aria-label="已保存路径"
     >
@@ -536,7 +535,6 @@ onBeforeUnmount(() => {
 
 .flow-graph-canvas__selection-panel {
   position: absolute;
-  top: 56px;
   right: 12px;
   bottom: 12px;
   z-index: 7;
@@ -546,11 +544,12 @@ onBeforeUnmount(() => {
   background: var(--flow-surface-color);
   border: 1px solid var(--flow-edge-color);
   border-radius: 4px;
-  transition: width 160ms ease;
+  height: calc(100% - 68px);
+  transition: height 160ms ease;
 }
 
 .flow-graph-canvas__selection-panel--collapsed {
-  width: 40px;
+  height: 104px;
 }
 
 .flow-graph-canvas__panel-toggle {
@@ -568,10 +567,16 @@ onBeforeUnmount(() => {
   padding-top: 40px;
 }
 
+.flow-graph-canvas__selection-panel-collapsed-content {
+  width: 100%;
+  height: 100%;
+  padding: 10px 52px 10px 14px;
+}
+
 .flow-graph-canvas__saved-paths {
   position: absolute;
   top: 104px;
-  right: 340px;
+  right: 16px;
   z-index: 7;
   width: 280px;
   max-height: 320px;
@@ -583,6 +588,10 @@ onBeforeUnmount(() => {
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   animation: flow-saved-paths-in 140ms ease-out;
+}
+
+.flow-graph-canvas--workspace .flow-graph-canvas__saved-paths {
+  right: 340px;
 }
 
 .flow-graph-canvas__guide-lines {
@@ -718,10 +727,6 @@ onBeforeUnmount(() => {
 .flow-graph-canvas--workspace :deep(.vue-flow__controls) {
   right: 336px;
   transition: right 160ms ease;
-}
-
-.flow-graph-canvas--workspace.flow-graph-canvas--panel-collapsed :deep(.vue-flow__controls) {
-  right: 56px;
 }
 
 @keyframes flow-guide-in {

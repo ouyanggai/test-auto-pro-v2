@@ -8,6 +8,8 @@ import {
   canEnterExecutionPathSelection,
   classifyExecutionPathEdges,
   deriveExecutionPathWorkspacePresentation,
+  deriveExecutionPathDecisionProgress,
+  deriveExecutionPathWorkspaceDisposition,
   hasExecutionPathDraftChanges,
   nextExecutionPathRouteID,
   previewAllExecutionPaths,
@@ -214,6 +216,22 @@ test('已保存路径加载和保存后统一进入查看态', () => {
   assert.equal(transitionExecutionPathWorkspace('copy', 'select-saved'), 'view')
   assert.equal(transitionExecutionPathWorkspace('view', 'edit'), 'edit')
   assert.equal(transitionExecutionPathWorkspace('new', 'edit'), 'new')
+})
+
+test('决策进度只统计当前可达的条件和手动分支', () => {
+  const choices = [{ routeNodeId: 'route-a', branchId: 'branch-a' }]
+  const analysis = analyzeExecutionPath(graph, choices)
+  const progress = deriveExecutionPathDecisionProgress(graph, analysis, choices)
+  assert.deepEqual(progress, { selected: 1, pending: 1, total: 2 })
+  assert.equal(progress.selected + progress.pending, progress.total)
+  assert.equal(graph.nodes.some((node) => node.type === 'parallel'), true)
+})
+
+test('取消退出和保存结果统一决定草稿复位边界', () => {
+  assert.equal(deriveExecutionPathWorkspaceDisposition('cancel', false), 'reset')
+  assert.equal(deriveExecutionPathWorkspaceDisposition('fullscreen-exit', true), 'confirm')
+  assert.equal(deriveExecutionPathWorkspaceDisposition('save-success', true), 'reset')
+  assert.equal(deriveExecutionPathWorkspaceDisposition('save-failure', true), 'preserve')
 })
 
 test('路径工作区只在真实编辑变化时显示保存语义', () => {

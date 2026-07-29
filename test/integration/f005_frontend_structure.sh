@@ -14,7 +14,7 @@ if grep -Fq '<template #toolbar>' "${view_file}" || grep -Fq 'class="path-toolba
   exit 1
 fi
 grep -Fq '新增路径' "${view_file}"
-grep -Fq '复制此路径' "${view_file}"
+grep -Fq '复制路径' "${view_file}"
 grep -Fq '保存路径' "${view_file}"
 grep -Fq '一键生成全部路径' "${view_file}"
 grep -Fq 'generateAllExecutionPaths' "${view_file}"
@@ -35,6 +35,7 @@ if grep -Fq 'selectSavedPath(latestCreated)' "${view_file}"; then
 fi
 grep -Fq '<n-popconfirm' "${view_file}"
 grep -Fq '<template #workspace-panel>' "${view_file}"
+grep -Fq '<template #canvas-actions>' "${view_file}"
 grep -Fq '<template #saved-paths>' "${view_file}"
 grep -Fq ':saved-paths-open="savedPathsOpen"' "${view_file}"
 grep -Fq '@close-saved-paths="closeSavedPaths"' "${view_file}"
@@ -50,34 +51,48 @@ if grep -Eq '已保存路径[[:space:]]*\{\{|已保存的路径[[:space:]]*[0-9]
 fi
 grep -Fq 'requestSavedPathSwitch' "${view_file}"
 grep -Fq 'hasExecutionPathDraftChanges' "${view_file}"
-grep -Fq '当前路径存在未保存的名称或线路变化' "${view_file}"
+grep -Fq '当前名称或线路尚未保存，放弃后本次修改无法恢复' "${view_file}"
 grep -Fq 'class="path-selection-panel__summary"' "${view_file}"
-grep -Fq 'class="path-selection-panel__operations"' "${view_file}"
-grep -Fq 'class="path-selection-panel__hint"' "${view_file}"
-grep -Fq 'aria-label="路径操作"' "${view_file}"
-grep -Fq 'aria-label="操作提示"' "${view_file}"
-grep -Fq '<p>{{ workspacePresentation.hint }}</p>' "${view_file}"
+if grep -Fq 'class="path-selection-panel__operations"' "${view_file}" \
+  || grep -Fq 'aria-label="路径操作"' "${view_file}" \
+  || grep -Fq 'aria-label="操作提示"' "${view_file}"; then
+  echo 'F-005 编辑面板不得保留路径操作或操作提示分区' >&2
+  exit 1
+fi
+grep -Fq 'class="path-selection-panel__progress"' "${view_file}"
+grep -Fq '已选 {{ decisionProgress.selected }}' "${view_file}"
+grep -Fq '待选 {{ decisionProgress.pending }}' "${view_file}"
+grep -Fq '共 {{ decisionProgress.total }}' "${view_file}"
+grep -Fq 'class="path-selection-panel__footer"' "${view_file}"
+grep -Fq '<n-dropdown trigger="click" :options="pathMoreOptions"' "${view_file}"
+grep -Fq '>编辑路径</n-button>' "${view_file}"
+grep -Fq '>更多</n-button>' "${view_file}"
+grep -Fq '@click="cancelPathEditing"' "${view_file}"
 grep -Fq 'aria-label="实时线路摘要"' "${view_file}"
 grep -Fq 'projectExecutionPathSummary' "${view_file}"
 grep -Fq ':workspace-open="pathWorkspaceOpen"' "${view_file}"
 grep -Fq ':branch-editing="workspacePresentation.branchEditing"' "${view_file}"
 grep -Fq ':save-guide-visible="workspacePresentation.showSave"' "${view_file}"
-grep -Fq '@enter-workspace="enterSelectionMode"' "${view_file}"
-grep -Fq '@exit-workspace="exitSelectionMode"' "${view_file}"
+grep -Fq '@request-workspace-exit="requestWorkspaceExit"' "${view_file}"
 grep -Fq '@select-branch="selectBranch"' "${view_file}"
 grep -Fq "transitionExecutionPathWorkspace(workspaceMode.value, 'select-saved')" "${view_file}"
-grep -Fq 'selectSavedPath(saved)' "${view_file}"
-grep -Fq "workspaceMode === 'view' && activePath" "${view_file}"
+if grep -Fq 'selectSavedPath(saved)' "${view_file}"; then
+  echo 'F-005 保存成功不得停留在活动路径详情' >&2
+  exit 1
+fi
+grep -Fq "workspaceMode === 'view'" "${view_file}"
 grep -Fq 'v-if="workspacePresentation.showNameInput"' "${view_file}"
-grep -Fq 'v-if="workspacePresentation.showSave"' "${view_file}"
-grep -Fq 'pathsLoaded: pathsLoaded.value' "${view_file}"
+grep -Fq ':disabled="saveDisabled"' "${view_file}"
+grep -Fq '&& pathsLoaded.value' "${view_file}"
 grep -Fq "apiError.code === 'EXECUTION_PATH_INVALID'" "${view_file}"
 grep -Fq 'refreshExecutionPathDraft' "${view_file}"
 grep -Fq '流程已变化，需要重新选择' "${view_file}"
 grep -Fq 'flow-graph-canvas--page-fullscreen' "${canvas_file}"
-grep -Fq "await requestPageFullscreen(true)" "${canvas_file}"
-grep -Fq "emit('enterWorkspace')" "${canvas_file}"
-grep -Fq "emit('exitWorkspace')" "${canvas_file}"
+grep -Fq 'defineExpose({ setPageFullscreen })' "${canvas_file}"
+grep -Fq 'await canvasRef.value?.setPageFullscreen(true)' "${view_file}"
+grep -Fq 'await canvasRef.value?.setPageFullscreen(false)' "${view_file}"
+grep -Fq 'resetWorkspaceState()' "${view_file}"
+grep -Fq "emit('requestWorkspaceExit')" "${canvas_file}"
 grep -Fq 'workspaceOpen?: boolean' "${canvas_file}"
 grep -Fq 'branchEditing?: boolean' "${canvas_file}"
 grep -Fq 'saveGuideVisible?: boolean' "${canvas_file}"
@@ -85,11 +100,21 @@ if grep -Fq 'selectionMode' "${canvas_file}" || grep -Fq 'selectionEnabled' "${e
   echo 'F-005 路径工作区与分支编辑不得继续复用旧选择状态' >&2
   exit 1
 fi
-grep -Fq '线路选择' "${canvas_file}"
-grep -Fq '继续选择' "${canvas_file}"
+if grep -Fq '继续选择' "${canvas_file}" || grep -Fq '退出选择' "${canvas_file}"; then
+  echo 'F-005 不得保留继续选择或退出选择入口' >&2
+  exit 1
+fi
+grep -Fq '<slot name="canvas-actions" />' "${canvas_file}"
+grep -Fq 'aria-label="isPageFullscreen ? '\''退出页面全屏'\'' : '\''页面全屏'\''"' "${canvas_file}"
 grep -Fq 'flow-graph-canvas__selection-panel' "${canvas_file}"
 grep -Fq 'width: 320px' "${canvas_file}"
 grep -Fq ':aria-expanded="!isSelectionPanelCollapsed"' "${canvas_file}"
+grep -Fq 'height: 104px' "${canvas_file}"
+grep -Fq '<slot name="workspace-collapsed" />' "${canvas_file}"
+if grep -Fq 'width: 40px' "${canvas_file}"; then
+  echo 'F-005 面板折叠不得退化为侧边窄条' >&2
+  exit 1
+fi
 grep -Fq 'savedPathsOpen?: boolean' "${canvas_file}"
 grep -Fq 'closeSavedPaths: []' "${canvas_file}"
 grep -Fq '<slot name="saved-paths" />' "${canvas_file}"
@@ -99,7 +124,17 @@ grep -Fq 'max-height: 320px' "${canvas_file}"
 grep -Fq 'right: 340px' "${canvas_file}"
 grep -Fq '90%, transparent' "${canvas_file}"
 grep -Fq 'backdrop-filter: blur(8px)' "${canvas_file}"
-grep -Fq 'if (props.savedPathsOpen)' "${canvas_file}"
+grep -Fq 'v-if="laidOut && savedPathsOpen && (!workspaceOpen || !isSelectionPanelCollapsed)"' "${canvas_file}"
+grep -Fq 'class="saved-paths-popover__generate"' "${view_file}"
+if ! awk '
+  /<template #saved-paths>/ { in_saved = 1 }
+  in_saved && /saved-paths-popover__generate/ { found_generate = 1 }
+  in_saved && /<n-virtual-list/ { exit found_generate ? 0 : 1 }
+  END { if (!found_generate) exit 1 }
+' "${view_file}"; then
+  echo 'F-005 一键生成全部路径必须位于已保存路径浮层顶部' >&2
+  exit 1
+fi
 grep -Fq "emit('closeSavedPaths')" "${canvas_file}"
 grep -Fq 'nextExecutionPathRouteID' "${canvas_file}"
 grep -Fq 'reservedRight' "${canvas_file}"
@@ -157,6 +192,8 @@ grep -Fq 'viewportForCandidateGroupCentered' "${logic_file}"
 grep -Fq 'hasExecutionPathDraftChanges' "${logic_file}"
 grep -Fq 'deriveExecutionPathWorkspacePresentation' "${logic_file}"
 grep -Fq 'transitionExecutionPathWorkspace' "${logic_file}"
+grep -Fq 'deriveExecutionPathDecisionProgress' "${logic_file}"
+grep -Fq 'deriveExecutionPathWorkspaceDisposition' "${logic_file}"
 grep -Fq "kind: 'pending'" "${logic_file}"
 grep -Fq "'路径详情'" "${logic_file}"
 grep -Fq "'编辑路径'" "${logic_file}"

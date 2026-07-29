@@ -42,7 +42,7 @@ grep -Fq "while (!pageFullscreenDisposed && isPageFullscreen.value !== requested
 grep -Fq "requestPageFullscreen" "${canvas_file}"
 grep -Fq "compensateViewportForContainerWidth" "${canvas_file}"
 grep -Fq "void requestPageFullscreen(false)" "${canvas_file}"
-grep -Fq "@click=\"requestPageFullscreen(!isPageFullscreen)\"" "${canvas_file}"
+grep -Fq "@click=\"togglePageFullscreen\"" "${canvas_file}"
 grep -Fq "compensateViewportForContainerWidth" "${layout_file}"
 if grep -Fq "pageFullscreenVersion" "${canvas_file}"; then
   printf 'F-004 页面全屏不得仅以版本号丢弃切换补偿\n' >&2

@@ -3,9 +3,11 @@ import type {
   ExecutionPath,
   ExecutionPathAnalysis,
   ExecutionPathChoice,
+  ExecutionPathDecisionProgress,
   ExecutionPathGenerationPreview,
   ExecutionPathSummaryItem,
   ExecutionPathWorkspaceMode,
+  ExecutionPathWorkspaceDisposition,
   ExecutionPathWorkspacePresentation,
 } from './types.ts'
 
@@ -158,6 +160,28 @@ export function nextExecutionPathRouteID(analysis: ExecutionPathAnalysis): strin
   return analysis.missingRouteNodeIds[0] ?? null
 }
 
+export function deriveExecutionPathDecisionProgress(
+  graph: FlowGraph,
+  analysis: ExecutionPathAnalysis,
+  choices: ExecutionPathChoice[],
+): ExecutionPathDecisionProgress {
+  const selectableNodeIDs = new Set(
+    graph.nodes
+      .filter((node) => selectableKinds.has(node.type))
+      .map((node) => node.id),
+  )
+  // 只统计分析器已证明可达的人工决策点；并行路由由系统自动纳入，不能抬高用户需要完成的数量。
+  const selected = new Set(
+    choices
+      .map((choice) => choice.routeNodeId)
+      .filter((routeNodeID) => selectableNodeIDs.has(routeNodeID) && analysis.reachableNodeIds.has(routeNodeID)),
+  ).size
+  const pending = new Set(
+    analysis.missingRouteNodeIds.filter((routeNodeID) => selectableNodeIDs.has(routeNodeID)),
+  ).size
+  return { selected, pending, total: selected + pending }
+}
+
 export function projectExecutionPathSummary(
   graph: FlowGraph,
   analysis: ExecutionPathAnalysis,
@@ -301,6 +325,16 @@ export function transitionExecutionPathWorkspace(
   if (action === 'select-saved') return 'view'
   if (action === 'edit') return current === 'view' ? 'edit' : current
   return action
+}
+
+export function deriveExecutionPathWorkspaceDisposition(
+  action: 'cancel' | 'fullscreen-exit' | 'save-success' | 'save-failure',
+  dirty: boolean,
+): ExecutionPathWorkspaceDisposition {
+  // 网络或目标图失败必须保留同一草稿和幂等键；只有成功或用户明确放弃才能清空本地编辑状态。
+  if (action === 'save-failure') return 'preserve'
+  if (action === 'save-success') return 'reset'
+  return dirty ? 'confirm' : 'reset'
 }
 
 export function previewAllExecutionPaths(
