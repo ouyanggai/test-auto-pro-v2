@@ -43,6 +43,12 @@ grep -Fq "requestPageFullscreen" "${canvas_file}"
 grep -Fq "compensateViewportForContainerWidth" "${canvas_file}"
 grep -Fq "void requestPageFullscreen(false)" "${canvas_file}"
 grep -Fq "@click=\"togglePageFullscreen\"" "${canvas_file}"
+grep -Fq ':aria-label="isPageFullscreen ? '\''退出全屏'\'' : '\''页面全屏'\''"' "${canvas_file}"
+grep -Fq "{{ isPageFullscreen ? '退出全屏' : '页面全屏' }}" "${canvas_file}"
+if grep -Fq '⛶' "${canvas_file}"; then
+  printf 'F-004 页面全屏入口必须保留文字，不得退化为纯图标\n' >&2
+  exit 1
+fi
 grep -Fq "compensateViewportForContainerWidth" "${layout_file}"
 if grep -Fq "pageFullscreenVersion" "${canvas_file}"; then
   printf 'F-004 页面全屏不得仅以版本号丢弃切换补偿\n' >&2

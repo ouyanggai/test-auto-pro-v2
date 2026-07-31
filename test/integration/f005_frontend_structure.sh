@@ -122,8 +122,16 @@ if grep -Fq '继续选择' "${canvas_file}" || grep -Fq '退出选择' "${canvas
   echo 'F-005 不得保留继续选择或退出选择入口' >&2
   exit 1
 fi
-grep -Fq '<slot name="canvas-actions" />' "${canvas_file}"
-grep -Fq 'aria-label="isPageFullscreen ? '\''退出页面全屏'\'' : '\''页面全屏'\''"' "${canvas_file}"
+grep -Fq '<slot v-if="isPageFullscreen" name="canvas-actions" />' "${canvas_file}"
+grep -Fq 'aria-label="isPageFullscreen ? '\''退出全屏'\'' : '\''页面全屏'\''"' "${canvas_file}"
+grep -Fq "{{ isPageFullscreen ? '退出全屏' : '页面全屏' }}" "${canvas_file}"
+grep -Fq 'v-if="laidOut && isPageFullscreen && savedPathsOpen' "${canvas_file}"
+grep -Fq 'v-if="!workspacePresentation.branchEditing && allowNewPath"' "${view_file}"
+grep -Fq 'canCreateAdditionalPath(plan.value.flowSource, paths.value.length)' "${view_file}"
+if grep -Fq '<slot name="canvas-actions" />' "${canvas_file}" || grep -Fq '⛶' "${canvas_file}"; then
+  echo 'F-005 普通画布不得渲染路径入口，全屏按钮不得使用纯图标' >&2
+  exit 1
+fi
 grep -Fq ':disabled="branchEditing && workspaceExitDisabled"' "${canvas_file}"
 grep -Fq 'if (props.branchEditing && props.workspaceExitDisabled) return' "${canvas_file}"
 grep -Fq 'if (props.workspaceExitDisabled) return' "${canvas_file}"
@@ -154,7 +162,7 @@ grep -Fq 'max-height: 320px' "${canvas_file}"
 grep -Fq 'right: 340px' "${canvas_file}"
 grep -Fq '90%, transparent' "${canvas_file}"
 grep -Fq 'backdrop-filter: blur(8px)' "${canvas_file}"
-grep -Fq 'v-if="laidOut && savedPathsOpen && (!workspaceOpen || !isSelectionPanelCollapsed)"' "${canvas_file}"
+grep -Fq 'v-if="laidOut && isPageFullscreen && savedPathsOpen && (!workspaceOpen || !isSelectionPanelCollapsed)"' "${canvas_file}"
 grep -Fq 'class="saved-paths-popover__generate"' "${view_file}"
 if ! awk '
   /<template #saved-paths>/ { in_saved = 1 }

@@ -381,19 +381,18 @@ onBeforeUnmount(() => {
     :aria-label="workspaceOpen ? (branchEditing ? '线路编辑流程图' : '路径查看流程图') : '只读流程图'"
   >
     <div v-if="laidOut" class="flow-graph-canvas__actions">
-      <slot name="canvas-actions" />
+      <slot v-if="isPageFullscreen" name="canvas-actions" />
       <n-button
         class="flow-graph-canvas__fullscreen-button"
         size="small"
-        circle
-        quaternary
+        secondary
         :aria-pressed="isPageFullscreen"
-        :aria-label="isPageFullscreen ? '退出页面全屏' : '页面全屏'"
-        :title="isPageFullscreen ? '退出页面全屏' : '页面全屏'"
+        :aria-label="isPageFullscreen ? '退出全屏' : '页面全屏'"
+        :title="isPageFullscreen ? '退出全屏' : '页面全屏'"
         :disabled="branchEditing && workspaceExitDisabled"
         @click="togglePageFullscreen"
       >
-        <span aria-hidden="true">{{ isPageFullscreen ? '×' : '⛶' }}</span>
+        {{ isPageFullscreen ? '退出全屏' : '页面全屏' }}
       </n-button>
     </div>
     <vue-flow-canvas
@@ -450,7 +449,7 @@ onBeforeUnmount(() => {
       </div>
     </aside>
     <aside
-      v-if="laidOut && savedPathsOpen && (!workspaceOpen || !isSelectionPanelCollapsed)"
+      v-if="laidOut && isPageFullscreen && savedPathsOpen && (!workspaceOpen || !isSelectionPanelCollapsed)"
       class="flow-graph-canvas__saved-paths"
       aria-label="已保存路径"
     >
