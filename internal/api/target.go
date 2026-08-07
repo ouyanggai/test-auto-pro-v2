@@ -36,6 +36,7 @@ type apiErrorDTO struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
+	Details   any    `json:"details,omitempty"`
 }
 
 type verifyRequest struct {

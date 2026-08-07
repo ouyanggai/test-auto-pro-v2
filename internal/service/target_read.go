@@ -247,6 +247,79 @@ func (s *TargetReadService) FlowRequirementSnapshot(ctx context.Context, account
 	return result, err
 }
 
+// PathConfigurationSnapshot 按计划保存的来源读取流程树、字段详情和实例现值，供配置工作台使用。
+func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, account, source, targetObjectID string) (target.PathConfigurationSnapshot, error) {
+	if err := s.ready(); err != nil {
+		return target.PathConfigurationSnapshot{}, err
+	}
+	var result target.PathConfigurationSnapshot
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		var tree *target.FlowNodeTemplate
+		var fields []target.FormFieldDetail
+		var values map[string]any
+		var entries []string
+		var err error
+		switch strings.TrimSpace(source) {
+		case "new":
+			visible, findErr := s.client.FindVisibleTemplate(callContext, active, targetObjectID)
+			if findErr != nil {
+				return findErr
+			}
+			if !visible {
+				return ErrTargetFlowNotFound
+			}
+			var snapshot target.PathConfigurationSnapshot
+			snapshot, err = s.client.ReadTemplateConfiguration(callContext, active, targetObjectID)
+			tree, fields = snapshot.Tree, snapshot.FormFields
+		case "started":
+			var proxyID, status string
+			var formProxyIDs []string
+			var found bool
+			proxyID, entries, status, formProxyIDs, found, err = s.client.FindSubmittedFlow(callContext, active, targetObjectID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return ErrTargetFlowNotFound
+			}
+			if !submittedFlowConfigurable(status) {
+				return ErrTargetFlowNotConfigurable
+			}
+			var snapshot target.PathConfigurationSnapshot
+			snapshot, err = s.client.ReadProxyConfiguration(callContext, active, proxyID, formProxyIDs, targetObjectID)
+			tree, fields, values = snapshot.Tree, snapshot.FormFields, snapshot.InstanceValues
+		case "pending":
+			var proxyID string
+			var formProxyIDs []string
+			var found bool
+			proxyID, entries, formProxyIDs, found, err = s.client.FindDueFlow(callContext, active, targetObjectID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return ErrTargetFlowNotFound
+			}
+			var snapshot target.PathConfigurationSnapshot
+			snapshot, err = s.client.ReadProxyConfiguration(callContext, active, proxyID, formProxyIDs, targetObjectID)
+			tree, fields, values = snapshot.Tree, snapshot.FormFields, snapshot.InstanceValues
+		default:
+			return ErrTargetFlowNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if tree == nil {
+			return ErrTargetFlowStructureEmpty
+		}
+		if strings.TrimSpace(source) == "new" {
+			entries = []string{strings.TrimSpace(tree.ID)}
+		}
+		result = target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: entries, FormFields: fields, InstanceValues: values}
+		return nil
+	})
+	return result, err
+}
+
 // submittedFlowConfigurable 只允许参考页面明确展示且仍可继续的已发状态。
 func submittedFlowConfigurable(status string) bool {
 	switch strings.TrimSpace(status) {

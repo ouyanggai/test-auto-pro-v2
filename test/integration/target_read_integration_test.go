@@ -138,6 +138,8 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 		f.handleFormDetail(response, request, "form-template", "模板表单")
 	case "/web/formProxy/findById":
 		f.handleFormDetail(response, request, "", "代理表单")
+	case "/web/flowInstanceApi/getCurrentFromData":
+		f.handleInstanceCurrentData(response, request)
 	default:
 		http.NotFound(response, request)
 	}
@@ -203,7 +205,25 @@ func (f *fakeTarget) handleFormDetail(response http.ResponseWriter, request *htt
 	}
 	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
 		"id": id, "name": formName,
-		"fieldsTemplateList": []any{map[string]any{"id": "field-amount", "name": "申请金额", "englishName": "amount"}},
+		"fieldsTemplateList": []any{map[string]any{
+			"id": "field-amount", "name": "申请金额", "englishName": "amount",
+			"fieldType": "doubleType", "defaultValue": "1000", "valueOrigin": "fromUser", "fieldStatus": "enable",
+		}},
+		"templateData": `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"defaultValue":1000,"required":true}}]}`,
+	}})
+}
+
+// handleInstanceCurrentData 验证实例现值读取使用精确实例 ID 并返回 formDataMongoVo.data。
+func (f *fakeTarget) handleInstanceCurrentData(response http.ResponseWriter, request *http.Request) {
+	body := f.requireSession(request)
+	data, _ := body["data"].(map[string]any)
+	id, _ := data["id"].(string)
+	if id != "submitted-id" && id != "due-id" {
+		f.t.Errorf("实例现值读取错误地使用了非精确实例 ID：%s", id)
+	}
+	f.recordGraphCall("instance-data:" + id)
+	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
+		"data": map[string]any{"amount": 2500.5},
 	}})
 }
 
@@ -841,4 +861,80 @@ func runtimeValue(t *testing.T, byteCount int) string {
 func writeTargetJSON(response http.ResponseWriter, value any) {
 	response.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(response).Encode(value)
+}
+
+// TestPathConfigurationSnapshotReadsTemplateDefaultsAndProxyValues 验证字段详情、真实选项与实例现值按来源读取。
+func TestPathConfigurationSnapshotReadsTemplateDefaultsAndProxyValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		id     string
+		calls  []string
+		values map[string]any
+	}{
+		{
+			name: "新发起模板默认值", source: "new", id: "template-id",
+			calls: []string{"template-list", "template-detail:template-id", "form-detail:form-template"},
+		},
+		{
+			name: "已发实例现值", source: "started", id: "submitted-id",
+			calls:  []string{"submitted-list", "proxy-detail:proxy-submitted", "form-detail:form-proxy-submitted", "instance-data:submitted-id"},
+			values: map[string]any{"amount": 2500.5},
+		},
+		{
+			name: "待发实例现值", source: "pending", id: "due-id",
+			calls:  []string{"due-list", "proxy-detail:proxy-due", "form-detail:form-proxy-due", "instance-data:due-id"},
+			values: map[string]any{"amount": 2500.5},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			reader := service.NewTargetReadService(config.LoadTargetConfig())
+			snapshot, err := reader.PathConfigurationSnapshot(context.Background(), "account-a", test.source, test.id)
+			if err != nil || snapshot.Tree == nil || len(snapshot.FormFields) != 1 {
+				t.Fatalf("路径配置快照读取失败：snapshot=%+v err=%v", snapshot, err)
+			}
+			field := snapshot.FormFields[0]
+			if field.Name != "申请金额" || field.FieldType != "doubleType" || field.DefaultValue != "1000" || !field.Required || field.ComponentType != "number" || field.ValueOrigin != "fromUser" || field.FieldStatus != "enable" {
+				t.Fatalf("字段详情没有按真实元数据解码：%+v", field)
+			}
+			if test.source == "new" {
+				if snapshot.InstanceValues != nil {
+					t.Fatalf("新发起不应返回实例现值：%+v", snapshot.InstanceValues)
+				}
+			} else if snapshot.InstanceValues["amount"] != test.values["amount"] {
+				t.Fatalf("实例现值没有按精确 ID 读取：%+v", snapshot.InstanceValues)
+			}
+			fake.mu.Lock()
+			calls := append([]string(nil), fake.graphCalls...)
+			fake.mu.Unlock()
+			if strings.Join(calls, ",") != strings.Join(test.calls, ",") {
+				t.Fatalf("配置快照调用顺序不正确：%v", calls)
+			}
+		})
+	}
+}
+
+// TestPathConfigurationSnapshotReadsFormMakingOptions 验证选项、必填和默认值来自 FormMaking 组件配置。
+func TestPathConfigurationSnapshotReadsFormMakingOptions(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	snapshot, err := reader.PathConfigurationSnapshot(context.Background(), "account-a", "new", "template-id")
+	if err != nil || len(snapshot.FormFields) != 1 {
+		t.Fatalf("选项读取失败：snapshot=%+v err=%v", snapshot, err)
+	}
+	field := snapshot.FormFields[0]
+	if field.DefaultValue != "1000" {
+		t.Fatalf("组件默认值没有覆盖字段默认值：%+v", field)
+	}
+	if !field.Required {
+		t.Fatalf("组件必填状态没有读取：%+v", field)
+	}
 }

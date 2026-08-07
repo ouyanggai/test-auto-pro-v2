@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -388,6 +389,42 @@ type rawFormField struct {
 	EnglishName string `json:"englishName"`
 }
 
+// rawFormFieldDetail 是模板或代理表单字段详情，补充真实类型、默认值、值来源和启用状态。
+type rawFormFieldDetail struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	EnglishName  string `json:"englishName"`
+	FieldType    string `json:"fieldType"`
+	DefaultValue string `json:"defaultValue"`
+	ValueOrigin  string `json:"valueOrigin"`
+	FieldStatus  string `json:"fieldStatus"`
+}
+
+// rawFormMakingOption 是表单组件选项，值可能来自 value 或 id 字段。
+type rawFormMakingOption struct {
+	ID    any    `json:"id"`
+	Value any    `json:"value"`
+	Label string `json:"label"`
+}
+
+// rawFormMakingComponent 是模板数据中 FormMaking 组件的最小结构；必填、默认值和选项来自组件配置。
+type rawFormMakingComponent struct {
+	Type    string `json:"type"`
+	Model   string `json:"model"`
+	Name    string `json:"name"`
+	Options struct {
+		DefaultValue any                   `json:"defaultValue"`
+		Required     bool                  `json:"required"`
+		Multiple     bool                  `json:"multiple"`
+		Options      []rawFormMakingOption `json:"options"`
+	} `json:"options"`
+}
+
+// rawFormMakingData 是模板数据 JSON 的外层结构，组件列表位于 list 字段。
+type rawFormMakingData struct {
+	List []rawFormMakingComponent `json:"list"`
+}
+
 // FindVisibleTemplate 通过顶层 ids 精确核对保存模板，不能依赖目标端不会筛选的 data.id。
 func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templateID string) (bool, error) {
 	body := map[string]any{
@@ -596,6 +633,42 @@ func (c *Client) ReadProxyRequirements(ctx context.Context, active Session, prox
 	return tree, fields, err
 }
 
+// ReadTemplateConfiguration 读取模板树、表单字段详情和模板默认值，供新发起路径配置使用。
+func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, templateID string) (PathConfigurationSnapshot, error) {
+	tree, forms, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	if err != nil {
+		return PathConfigurationSnapshot{}, err
+	}
+	fields, err := c.readFormFieldDetails(ctx, active, "/web/formTemplateApi/findById", forms)
+	if err != nil {
+		return PathConfigurationSnapshot{}, err
+	}
+	return PathConfigurationSnapshot{Tree: tree, FormFields: fields}, nil
+}
+
+// ReadProxyConfiguration 读取代理树、实例代理表单字段详情和实例当前表单数据，供已发/待发路径配置使用。
+func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, proxyID string, formProxyIDs []string, instanceID string) (PathConfigurationSnapshot, error) {
+	tree, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	if err != nil {
+		return PathConfigurationSnapshot{}, err
+	}
+	forms := make([]rawFormReference, 0, len(formProxyIDs))
+	for _, rawID := range formProxyIDs {
+		if id := strings.TrimSpace(rawID); id != "" {
+			forms = append(forms, rawFormReference{ID: id})
+		}
+	}
+	fields, err := c.readFormFieldDetails(ctx, active, "/web/formProxy/findById", forms)
+	if err != nil {
+		return PathConfigurationSnapshot{}, err
+	}
+	values, err := c.readInstanceCurrentData(ctx, active, instanceID)
+	if err != nil {
+		return PathConfigurationSnapshot{}, err
+	}
+	return PathConfigurationSnapshot{Tree: tree, FormFields: fields, InstanceValues: values}, nil
+}
+
 // readFlowDetail 调用目标详情端点并转换同一棵流程树和关联表单引用。
 func (c *Client) readFlowDetail(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, []rawFormReference, error) {
 	resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": strings.TrimSpace(id)}})
@@ -659,6 +732,182 @@ func (c *Client) readFormFields(ctx context.Context, active Session, path string
 		}
 	}
 	return result, nil
+}
+
+// readFormFieldDetails 逐个读取已核实表单详情，并把 FormMaking 组件配置合并为字段类型、必填、默认值和选项。
+func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path string, forms []rawFormReference) ([]FormFieldDetail, error) {
+	result := make([]FormFieldDetail, 0)
+	seen := make(map[string]struct{}, len(forms))
+	for _, form := range forms {
+		formID := strings.TrimSpace(form.ID)
+		if formID == "" {
+			continue
+		}
+		if _, exists := seen[formID]; exists {
+			continue
+		}
+		seen[formID] = struct{}{}
+		resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": formID}})
+		if err != nil {
+			return nil, err
+		}
+		if !responseSucceeded(resp) {
+			return nil, responseError(resp)
+		}
+		if len(resp.Data) == 0 || string(resp.Data) == "null" {
+			continue
+		}
+		var data struct {
+			ID           string               `json:"id"`
+			Name         string               `json:"name"`
+			Fields       []rawFormFieldDetail `json:"fieldsTemplateList"`
+			TemplateData string               `json:"templateData"`
+		}
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, invalidResponse("invalid form field data")
+		}
+		components := parseFormMakingComponents(data.TemplateData)
+		resolvedFormID := firstNonEmpty(data.ID, formID)
+		resolvedFormName := firstNonEmpty(data.Name, form.Name)
+		for _, field := range data.Fields {
+			component, hasComponent := components[strings.TrimSpace(field.EnglishName)]
+			detail := FormFieldDetail{
+				FormID: resolvedFormID, FormName: resolvedFormName, FieldID: field.ID,
+				Name: firstNonEmpty(component.Name, field.Name), EnglishName: field.EnglishName,
+				FieldType: strings.TrimSpace(field.FieldType), DefaultValue: strings.TrimSpace(field.DefaultValue),
+				ValueOrigin: strings.TrimSpace(field.ValueOrigin), FieldStatus: strings.TrimSpace(field.FieldStatus),
+				ComponentType: component.Type,
+			}
+			if hasComponent {
+				detail.Required = component.Options.Required
+				detail.Multiple = component.Options.Multiple
+				detail.Options = formMakingOptions(component.Options.Options)
+				if value, ok := componentDefaultValue(component.Options.DefaultValue); ok {
+					detail.DefaultValue = value
+				}
+			}
+			result = append(result, detail)
+		}
+	}
+	return result, nil
+}
+
+// parseFormMakingComponents 解析模板数据 JSON 并以组件 model 为键建立索引；损坏时按空表处理避免整体失败。
+func parseFormMakingComponents(raw string) map[string]rawFormMakingComponent {
+	result := make(map[string]rawFormMakingComponent)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return result
+	}
+	var data rawFormMakingData
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return result
+	}
+	for _, component := range data.List {
+		key := strings.TrimSpace(component.Model)
+		if key == "" {
+			continue
+		}
+		if _, exists := result[key]; !exists {
+			result[key] = component
+		}
+	}
+	return result
+}
+
+// formMakingOptions 把组件选项收敛为标签与值；值优先取 value，缺省回退 id，标签回退值本身。
+func formMakingOptions(raw []rawFormMakingOption) []FormFieldOption {
+	result := make([]FormFieldOption, 0, len(raw))
+	for _, option := range raw {
+		value := anyString(option.Value)
+		if value == "" {
+			value = anyString(option.ID)
+		}
+		label := strings.TrimSpace(option.Label)
+		if label == "" {
+			label = value
+		}
+		if value == "" {
+			continue
+		}
+		result = append(result, FormFieldOption{Label: label, Value: value})
+	}
+	return result
+}
+
+// componentDefaultValue 读取组件默认值并把标量值统一为字符串；数组等复杂默认值保持空。
+func componentDefaultValue(value any) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed), true
+	case bool:
+		if typed {
+			return "true", true
+		}
+		return "false", true
+	case float64:
+		return formatNumber(typed), true
+	default:
+		return "", false
+	}
+}
+
+// anyString 把选项 id/value 标量转换为字符串；对象或数组等复杂值保持空。
+func anyString(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return formatNumber(typed)
+	default:
+		return ""
+	}
+}
+
+// formatNumber 把 JSON 数字格式化为无冗余尾数的十进制字符串。
+func formatNumber(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+// readInstanceCurrentData 按精确实例 ID 读取当前 formDataMongoVo.data，作为已发/待发路径初始值。
+func (c *Client) readInstanceCurrentData(ctx context.Context, active Session, instanceID string) (map[string]any, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return nil, nil
+	}
+	resp, err := c.call(ctx, "/web/flowInstanceApi/getCurrentFromData", active.SID, map[string]any{
+		"data": map[string]any{"id": instanceID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
+	}
+	if len(resp.Data) == 0 || string(resp.Data) == "null" {
+		return nil, nil
+	}
+	var data struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return nil, invalidResponse("invalid instance form data")
+	}
+	if data.Data == nil {
+		return nil, nil
+	}
+	return data.Data, nil
 }
 
 // convertFlowNode 递归转换目标节点；内部配置只供要求分析，公开图分析器不会序列化这些字段。

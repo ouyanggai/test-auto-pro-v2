@@ -37,6 +37,11 @@ func NewHandlerWithExecutionPathServices(reader TargetReader, plans PlanService,
 
 // NewHandlerWithRequirementServices 组装包含 F-006 只读路径要求端点的完整 HTTP 路由。
 func NewHandlerWithRequirementServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService) http.Handler {
+	return NewHandlerWithConfigurationServices(reader, plans, graphs, paths, requirements, unavailablePathConfigurationService{})
+}
+
+// NewHandlerWithConfigurationServices 组装包含 F-007 路径配置读写端点的完整 HTTP 路由。
+func NewHandlerWithConfigurationServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -44,6 +49,7 @@ func NewHandlerWithRequirementServices(reader TargetReader, plans PlanService, g
 	registerFlowGraphRoute(mux, graphs)
 	registerExecutionPathRoutes(mux, paths)
 	registerPathRequirementRoute(mux, requirements)
+	registerPathConfigurationRoutes(mux, configurations)
 	return mux
 }
 

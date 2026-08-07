@@ -144,6 +144,37 @@ type FormFieldMetadata struct {
 	EnglishName string
 }
 
+// FormFieldDetail 在名称字典基础上补充字段类型、默认值、必填和真实选项，供路径配置使用。
+type FormFieldDetail struct {
+	FormID        string
+	FormName      string
+	FieldID       string
+	Name          string
+	EnglishName   string
+	FieldType     string
+	DefaultValue  string
+	Required      bool
+	Multiple      bool
+	Options       []FormFieldOption
+	ValueOrigin   string
+	FieldStatus   string
+	ComponentType string
+}
+
+// FormFieldOption 是目标平台表单组件提供的选项标签与值。
+type FormFieldOption struct {
+	Label string
+	Value string
+}
+
+// PathConfigurationSnapshot 把同一真实流程树、当前入口、表单字段详情和实例现值绑定在一起。
+type PathConfigurationSnapshot struct {
+	Tree           *FlowNodeTemplate
+	EntryNodeIDs   []string
+	FormFields     []FormFieldDetail
+	InstanceValues map[string]any
+}
+
 type Page[T any] struct {
 	Items    []T  `json:"items"`
 	Page     int  `json:"page"`
