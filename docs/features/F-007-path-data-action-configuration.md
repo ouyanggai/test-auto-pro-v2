@@ -1,6 +1,6 @@
 # F-007 路径数据与节点动作配置
 
-- 状态：awaiting_approval
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的“计划与运行主线”“路径要求分析行为”“路径配置工作台行为（F-007）”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-005 执行路径选择与持久化”“F-006 路径要求分析”“F-007 路径数据与节点动作配置”
 - 计划形成时间：2026-08-07
@@ -105,3 +105,4 @@
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。
 
 - 2026-08-07：F-006 已由用户明确“继续下一个任务”而进入 `accepted`；根据用户对独立核对功能无意义的反馈，F-007 改为直接配置工作台，当前进入 `awaiting_approval`，等待用户批准实施。
+- 2026-08-07：用户明确“开始实施”，F-007 进入 `implementing`。完成标准以本文为准，只派发固定实施任务，完成定向验证后停在 `ready_for_manual`，不开始 F-008。
