@@ -332,10 +332,25 @@ func (p *requirementProjection) personRequirement(node *target.FlowNodeTemplate)
 			status = model.RequirementReview
 		}
 	}
+	if auditTypeRequiresRange(config.AuditType) && len(config.Details) == 0 && len(config.Scopes) == 0 {
+		// 指定类规则没有任何范围时无法自动得到处理人，必须降级而不能把类型名称当作完整配置。
+		detailParts = append(detailParts, "处理范围缺失")
+		status = model.RequirementReview
+	}
 	if !known || !auditModeValid(config.Mode, config.CountersignNum) {
 		status = model.RequirementReview
 	}
 	return model.RequirementItem{Category: "人员", Title: title, Detail: strings.Join(nonEmptyStrings(detailParts), "；"), Status: status}
+}
+
+// auditTypeRequiresRange 判断哪些自动确定规则必须携带至少一项目标范围。
+func auditTypeRequiresRange(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "assign", "company", "company_id", "department", "position", "role":
+		return true
+	default:
+		return false
+	}
 }
 
 // fieldPowerRequirements 把字段权限转换为中文字段名；无法解析的关联单项降级人工核对。

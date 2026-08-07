@@ -12,7 +12,7 @@ printf '验证 F-006 只读 API、归属隔离、路径失效和公开字段边�
 go test -count=1 ./test/contracts -run '^TestPathRequirementAPI'
 
 printf '验证 F-006 三类来源的流程详情与模板/代理表单字段读取\n'
-go test -count=1 ./test/integration -run '^(TestFlowRequirementSnapshotReadsSourceSpecificFormMetadata|TestFlowTreeReadUsesExactSourceLookupBeforeDetails|TestFlowTreeReadSessionExpiryReplaysWholeChainOnce)'
+go test -count=1 ./test/integration -run '^(TestFlowRequirementSnapshotReadsSourceSpecificFormMetadata|TestFlowRequirementReadPreservesTimeoutCancellationAndResponseLimit|TestFlowRequirementReadSessionExpiryReplaysWholeChainOnce|TestFlowTreeReadUsesExactSourceLookupBeforeDetails)'
 
 printf '验证 F-006 前端路径切换、F-005 路径遍历和 F-004 图布局必要回归\n'
 node --no-warnings --experimental-strip-types --test test/unit/frontend/path_requirements_test.mjs

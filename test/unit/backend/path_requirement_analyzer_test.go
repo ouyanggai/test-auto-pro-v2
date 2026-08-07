@@ -107,6 +107,25 @@ func TestPathRequirementAnalyzerDegradesUnknownMetadata(t *testing.T) {
 	}
 }
 
+// TestPathRequirementAnalyzerReviewsMissingAutomaticRange 验证指定类人员规则缺少范围时不会误报自动确定。
+func TestPathRequirementAnalyzerReviewsMissingAutomaticRange(t *testing.T) {
+	tree := requirementConditionTree()
+	tree.Child.ConditionNodes[0].Child.AuditConfig.Details = nil
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备缺失范围路径失败：%v", err)
+	}
+	result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, nil, path, analysis)
+	if err != nil {
+		t.Fatalf("缺失人员范围不应让整页失败：%v", err)
+	}
+	if body := requirementText(result); !strings.Contains(body, "处理范围缺失") || !strings.Contains(body, "需要人工核对") {
+		t.Fatalf("缺失范围没有降级人工核对：%s", body)
+	}
+}
+
 // requirementGraph 使用现有唯一流程图分析器生成要求测试图。
 func requirementGraph(t *testing.T, tree *target.FlowNodeTemplate) model.FlowGraph {
 	t.Helper()

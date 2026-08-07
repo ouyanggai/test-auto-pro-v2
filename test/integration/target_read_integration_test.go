@@ -29,6 +29,7 @@ type fakeTarget struct {
 	mu              sync.Mutex
 	loginCount      int
 	templateCount   int
+	formCount       int
 	expireMode      string
 	sessions        []string
 	graphCalls      []string
@@ -191,6 +192,15 @@ func (f *fakeTarget) handleFormDetail(response http.ResponseWriter, request *htt
 		f.t.Errorf("代理表单详情 ID 不正确：%s", id)
 	}
 	f.recordGraphCall("form-detail:" + id)
+	f.mu.Lock()
+	f.formCount++
+	formCall := f.formCount
+	mode := f.expireMode
+	f.mu.Unlock()
+	if mode == "form-session-once" && formCall == 1 {
+		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "RESP401", "message": "session invalid"})
+		return
+	}
 	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
 		"id": id, "name": formName,
 		"fieldsTemplateList": []any{map[string]any{"id": "field-amount", "name": "申请金额", "englishName": "amount"}},
@@ -382,6 +392,85 @@ func TestFlowRequirementSnapshotReadsSourceSpecificFormMetadata(t *testing.T) {
 				t.Fatalf("要求读取调用顺序不正确：%v", calls)
 			}
 		})
+	}
+}
+
+// TestFlowRequirementReadPreservesTimeoutCancellationAndResponseLimit 验证要求详情沿用目标客户端的超时、取消和响应上限。
+func TestFlowRequirementReadPreservesTimeoutCancellationAndResponseLimit(t *testing.T) {
+	t.Run("超时", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			select {
+			case <-request.Context().Done():
+			case <-time.After(100 * time.Millisecond):
+			}
+		}))
+		defer server.Close()
+		client, err := target.NewClient(target.ClientConfig{BaseURL: server.URL, Timeout: 20 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("创建超时测试客户端失败：%v", err)
+		}
+		_, _, err = client.ReadTemplateRequirements(context.Background(), target.Session{SID: "runtime-session"}, "template")
+		if !target.IsKind(err, target.ErrorTimeout) {
+			t.Fatalf("要求详情超时未保持稳定分类：%v", err)
+		}
+	})
+
+	t.Run("调用方取消", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			<-request.Context().Done()
+		}))
+		defer server.Close()
+		client, err := target.NewClient(target.ClientConfig{BaseURL: server.URL, Timeout: time.Second})
+		if err != nil {
+			t.Fatalf("创建取消测试客户端失败：%v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, _, err = client.ReadTemplateRequirements(ctx, target.Session{SID: "runtime-session"}, "template")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("要求详情没有透传调用方取消：%v", err)
+		}
+	})
+
+	t.Run("响应上限", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = response.Write([]byte(strings.Repeat("x", 9<<20)))
+		}))
+		defer server.Close()
+		client, err := target.NewClient(target.ClientConfig{BaseURL: server.URL, Timeout: time.Second})
+		if err != nil {
+			t.Fatalf("创建响应上限测试客户端失败：%v", err)
+		}
+		_, _, err = client.ReadTemplateRequirements(context.Background(), target.Session{SID: "runtime-session"}, "template")
+		if !target.IsKind(err, target.ErrorResponseInvalid) {
+			t.Fatalf("要求详情超大响应未稳定拒绝：%v", err)
+		}
+	})
+}
+
+// TestFlowRequirementReadSessionExpiryReplaysWholeChainOnce 验证表单详情会话失效时整条核对链只重放一次。
+func TestFlowRequirementReadSessionExpiryReplaysWholeChainOnce(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.expireMode = "form-session-once"
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	snapshot, err := reader.FlowRequirementSnapshot(context.Background(), "account-a", "new", "template-id")
+	if err != nil || len(snapshot.FormFields) != 1 {
+		t.Fatalf("表单详情会话失效后要求读取失败：snapshot=%+v err=%v", snapshot, err)
+	}
+	fake.mu.Lock()
+	loginCount := fake.loginCount
+	calls := append([]string(nil), fake.graphCalls...)
+	fake.mu.Unlock()
+	want := []string{
+		"template-list", "template-detail:template-id", "form-detail:form-template",
+		"template-list", "template-detail:template-id", "form-detail:form-template",
+	}
+	if loginCount != 2 || strings.Join(calls, ",") != strings.Join(want, ",") {
+		t.Fatalf("要求核对链重放次数不正确：login=%d calls=%v", loginCount, calls)
 	}
 }
 
