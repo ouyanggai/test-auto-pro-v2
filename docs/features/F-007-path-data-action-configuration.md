@@ -106,3 +106,4 @@
 
 - 2026-08-07：F-006 已由用户明确“继续下一个任务”而进入 `accepted`；根据用户对独立核对功能无意义的反馈，F-007 改为直接配置工作台，当前进入 `awaiting_approval`，等待用户批准实施。
 - 2026-08-07：用户明确“开始实施”，F-007 进入 `implementing`。完成标准以本文为准，只派发固定实施任务，完成定向验证后停在 `ready_for_manual`，不开始 F-008。
+- 2026-08-07（实施启动）：固定实施任务记录本轮完成标准——后端新增路径配置读取/保存 API、`test_execution_path_configs` 008 迁移与修订号；目标适配器按真实证据扩展字段类型/默认值/选项/实例现值读取；分析器按真实节点顺序投影可编辑字段与标准动作，不同意动作阻断后续线路；幂等键命中先于目标读取；前端新增 `/plans/:planId/paths/:pathId/configure` 配置页与已保存路径详情入口；所有测试入根 `test/` 并由 `./test/run-f007.sh` 聚合（含 F-006/F-005 必要回归、Go build、vue-tsc、Vite build、git diff --check），完成后停在 `ready_for_manual`。
