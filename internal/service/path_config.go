@@ -109,6 +109,10 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 		return model.PathConfiguration{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
 	}
 	configuration.Revision = stored.Revision
+	if !found {
+		// 没有本地配置记录时必须明确处于待保存状态；默认值或实例现值未改变也仍允许首次保存。
+		configuration.Status = "pending"
+	}
 	// 配置状态以本次投影为准：分析器判定目标结构受影响时不能被已保存的 configured 覆盖，
 	// 否则用户看不到“需要重新核对”的状态；只有投影无受影响项时才沿用已保存状态。
 	if found && configuration.Status != "affected" {
@@ -330,10 +334,26 @@ func validateConfigFieldValue(target analyzer.PathConfigFieldTarget, raw string)
 		return "字段值格式不正确"
 	}
 	switch target.Type {
-	case analyzer.PathConfigTypeText, analyzer.PathConfigTypeDateTime:
+	case analyzer.PathConfigTypeText:
 		text, ok := parsed.(string)
 		if !ok {
 			return "字段值必须是文本"
+		}
+		if target.Required && strings.TrimSpace(text) == "" {
+			return "必填字段不能为空"
+		}
+	case analyzer.PathConfigTypeDate:
+		text, ok := parsed.(string)
+		if !ok || !validConfigDate(text) {
+			return "日期格式必须是 YYYY-MM-DD"
+		}
+		if target.Required && strings.TrimSpace(text) == "" {
+			return "必填字段不能为空"
+		}
+	case analyzer.PathConfigTypeDateTime:
+		text, ok := parsed.(string)
+		if !ok || !validConfigDateTime(text) {
+			return "日期时间格式必须是 YYYY-MM-DD HH:mm:ss"
 		}
 		if target.Required && strings.TrimSpace(text) == "" {
 			return "必填字段不能为空"
@@ -379,6 +399,24 @@ func validateConfigFieldValue(target analyzer.PathConfigFieldTarget, raw string)
 		return "字段类型暂不支持保存"
 	}
 	return ""
+}
+
+// validConfigDate 校验保存请求中的日期值，避免任意文本绕过日期控件进入配置表。
+func validConfigDate(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return true
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", value, time.UTC)
+	return err == nil && parsed.Format("2006-01-02") == value
+}
+
+// validConfigDateTime 校验保存请求中的日期时间值，保持前端控件与后端回写格式一致。
+func validConfigDateTime(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return true
+	}
+	parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, time.UTC)
+	return err == nil && parsed.Format("2006-01-02 15:04:05") == value
 }
 
 // parseConfigNumber 解析数字字段值；空字符串允许但标记为空。

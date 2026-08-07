@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/model"
@@ -16,6 +17,7 @@ import (
 const (
 	PathConfigTypeText         = "text"
 	PathConfigTypeNumber       = "number"
+	PathConfigTypeDate         = "date"
 	PathConfigTypeDateTime     = "dateTime"
 	PathConfigTypeSingleSelect = "singleSelect"
 	PathConfigTypeMultiSelect  = "multiSelect"
@@ -67,7 +69,7 @@ func pathConfigToken(kind, first, second string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// Analyze 沿当前已验证路径按真实节点顺序生成字段分组与动作，并用保存值覆盖现值。
+// Analyze 沿当前已验证路径按真实节点顺序生成字段分组与动作，并优先保留已保存值。
 func (a *PathConfigAnalyzer) Analyze(
 	graph model.FlowGraph,
 	tree *target.FlowNodeTemplate,
@@ -442,7 +444,7 @@ func (p *pathConfigProjection) buildField(nodeID string, detail target.FormField
 	fieldKey := strings.TrimSpace(detail.EnglishName)
 	key := PathConfigFieldToken(nodeID, fieldKey)
 	options := pathConfigOptions(detail.Options)
-	value, note := p.fieldValue(nodeID, fieldKey, controlType, detail.DefaultValue, options)
+	value, note := p.fieldValue(nodeID, fieldKey, controlType, detail.Required, detail.DefaultValue, options)
 	affected := note != "" && strings.Contains(note, "已变化")
 	field := model.PathConfigField{
 		Key: key, Name: detail.Name, Type: controlType, Required: detail.Required,
@@ -460,9 +462,9 @@ func (p *pathConfigProjection) buildField(nodeID string, detail target.FormField
 }
 
 // fieldValue 按“已保存值优先于实例现值”的规则取值：用户保存过的字段不能被实例现值覆盖。
-func (p *pathConfigProjection) fieldValue(nodeID, fieldKey, controlType, defaultValue string, options []model.PathConfigOption) (string, string) {
+func (p *pathConfigProjection) fieldValue(nodeID, fieldKey, controlType string, required bool, defaultValue string, options []model.PathConfigOption) (string, string) {
 	if stored, exists := p.storedFields[nodeID][fieldKey]; exists {
-		valid, reason := validateStoredValue(stored, controlType, options)
+		valid, reason := validateStoredValue(stored, controlType, required, options)
 		if valid {
 			return stored, ""
 		}
@@ -560,15 +562,21 @@ func encodeDefaultValue(value string, controlType string) string {
 }
 
 // validateStoredValue 校验已保存值在当前结构下仍然有效；选项或类型变化时返回影响说明。
-func validateStoredValue(stored, controlType string, options []model.PathConfigOption) (bool, string) {
+func validateStoredValue(stored, controlType string, required bool, options []model.PathConfigOption) (bool, string) {
 	var parsed any
 	if err := json.Unmarshal([]byte(stored), &parsed); err != nil {
 		return false, "目标结构已变化，值需要重新核对"
 	}
 	switch controlType {
-	case PathConfigTypeText, PathConfigTypeDateTime:
-		_, ok := parsed.(string)
-		return ok, "目标结构已变化，值需要重新核对"
+	case PathConfigTypeText:
+		text, ok := parsed.(string)
+		return ok && (!required || strings.TrimSpace(text) != ""), "目标结构已变化，值需要重新核对"
+	case PathConfigTypeDate:
+		text, ok := parsed.(string)
+		return ok && validPathConfigDate(text) && (!required || strings.TrimSpace(text) != ""), "目标结构已变化，值需要重新核对"
+	case PathConfigTypeDateTime:
+		text, ok := parsed.(string)
+		return ok && validPathConfigDateTime(text) && (!required || strings.TrimSpace(text) != ""), "目标结构已变化，值需要重新核对"
 	case PathConfigTypeNumber:
 		switch typed := parsed.(type) {
 		case float64:
@@ -576,7 +584,7 @@ func validateStoredValue(stored, controlType string, options []model.PathConfigO
 		case string:
 			value := strings.TrimSpace(typed)
 			if value == "" {
-				return true, ""
+				return !required, "目标结构已变化，值需要重新核对"
 			}
 			if _, err := json.Number(value).Float64(); err != nil {
 				return false, "目标结构已变化，值需要重新核对"
@@ -591,7 +599,7 @@ func validateStoredValue(stored, controlType string, options []model.PathConfigO
 			return false, "目标结构已变化，值需要重新核对"
 		}
 		if text == "" {
-			return true, ""
+			return !required, "目标结构已变化，值需要重新核对"
 		}
 		if !pathConfigOptionExists(options, text) {
 			return false, "目标选项已变化，需要重新选择"
@@ -600,6 +608,9 @@ func validateStoredValue(stored, controlType string, options []model.PathConfigO
 	case PathConfigTypeMultiSelect:
 		items, ok := parsed.([]any)
 		if !ok {
+			return false, "目标结构已变化，值需要重新核对"
+		}
+		if required && len(items) == 0 {
 			return false, "目标结构已变化，值需要重新核对"
 		}
 		for _, item := range items {
@@ -634,8 +645,11 @@ func pathConfigControlType(detail target.FormFieldDetail) (string, bool) {
 		return PathConfigTypeText, true
 	case "number":
 		return PathConfigTypeNumber, true
-	case "date", "time":
-		return PathConfigTypeDateTime, true
+	case "date":
+		if strings.EqualFold(strings.TrimSpace(detail.DateMode), "datetime") {
+			return PathConfigTypeDateTime, true
+		}
+		return PathConfigTypeDate, true
 	case "select":
 		if detail.Multiple {
 			return PathConfigTypeMultiSelect, true
@@ -664,10 +678,28 @@ func pathConfigFallbackControlType(detail target.FormFieldDetail) (string, bool)
 	case "intType", "doubleType":
 		return PathConfigTypeNumber, true
 	case "dateType":
-		return PathConfigTypeDateTime, true
+		return PathConfigTypeDate, true
 	default:
 		return "", false
 	}
+}
+
+// validPathConfigDate 校验日期字段只接受目标配置工作台使用的 ISO 日期格式。
+func validPathConfigDate(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return true
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", value, time.UTC)
+	return err == nil && parsed.Format("2006-01-02") == value
+}
+
+// validPathConfigDateTime 校验日期时间字段只接受秒级本地时间格式，拒绝任意文本伪装。
+func validPathConfigDateTime(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return true
+	}
+	parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, time.UTC)
+	return err == nil && parsed.Format("2006-01-02 15:04:05") == value
 }
 
 // pathConfigUnsupportedReason 返回未知控件或复杂结构的稳定中文缺口原因。

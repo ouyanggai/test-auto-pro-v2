@@ -100,6 +100,18 @@ func TestPathConfigServiceUsesPersistedIdentityAndPlanScopedPath(t *testing.T) {
 	}
 }
 
+// TestPathConfigServiceGetWithoutStoredConfigReportsPending 验证首次读取无配置记录时公开待保存状态。
+func TestPathConfigServiceGetWithoutStoredConfigReportsPending(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	reader := &pathConfigReader{snapshot: target.PathConfigurationSnapshot{Tree: pathConfigTree(), EntryNodeIDs: []string{"start"}, FormFields: pathConfigFields()}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configuration, err := newPathConfigService(t, plans, reader, paths, &memoryPathConfigRepository{}).Get(context.Background(), 7, 32)
+	if err != nil || configuration.Status != "pending" {
+		t.Fatalf("无配置记录没有显示待保存状态：configuration=%+v err=%v", configuration, err)
+	}
+}
+
 // TestPathConfigServiceIdempotentRetrySkipsTargetRead 验证已成功保存后同键重试直接返回原结果且不再读取目标图。
 func TestPathConfigServiceIdempotentRetrySkipsTargetRead(t *testing.T) {
 	plans := newMemoryPlanRepository()
@@ -239,6 +251,38 @@ func TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange(t *testing.T
 	kind := findConfigField(approval.Fields, "类型")
 	if kind == nil || !kind.Affected {
 		t.Fatalf("失效已保存字段没有被标记受影响：%+v", kind)
+	}
+}
+
+// TestPathConfigServiceRejectsLooseDateText 验证日期与日期时间保存严格拒绝任意文本格式。
+func TestPathConfigServiceRejectsLooseDateText(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	tree := pathConfigTree()
+	approval := tree.Child.ConditionNodes[0].Child
+	approval.FieldPowers = append(approval.FieldPowers,
+		target.FlowNodeFieldPower{FormID: "form-a", FieldID: "field-date", EnglishName: "date", Power: "edit"},
+		target.FlowNodeFieldPower{FormID: "form-a", FieldID: "field-datetime", EnglishName: "datetime", Power: "edit"},
+	)
+	fields := append(pathConfigFields(),
+		target.FormFieldDetail{FormID: "form-a", FieldID: "field-date", Name: "日期", EnglishName: "date", FieldType: "dateType", ComponentType: "date", DateMode: "date"},
+		target.FormFieldDetail{FormID: "form-a", FieldID: "field-datetime", Name: "日期时间", EnglishName: "datetime", FieldType: "dateType", ComponentType: "date", DateMode: "datetime"},
+	)
+	reader := &pathConfigReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FormFields: fields}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{}
+	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
+	valid := append(validPathConfigSubmission(),
+		model.PathConfigFieldValue{Key: analyzer.PathConfigFieldToken("approve-a", "date"), Value: `"2026-08-07"`},
+		model.PathConfigFieldValue{Key: analyzer.PathConfigFieldToken("approve-a", "datetime"), Value: `"2026-08-07 10:20:30"`},
+	)
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174509", 0, valid, nil); err != nil {
+		t.Fatalf("严格格式合法日期保存失败：%v", err)
+	}
+	invalid := append([]model.PathConfigFieldValue(nil), valid...)
+	invalid[len(invalid)-1].Value = `"2026/08/07 10:20"`
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174510", 1, invalid, nil); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
+		t.Fatalf("任意日期时间文本没有被拒绝：%v", err)
 	}
 }
 

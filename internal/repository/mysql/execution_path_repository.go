@@ -33,17 +33,19 @@ func (r *ExecutionPathRepository) List(ctx context.Context, planID uint64) ([]mo
 		return nil, repository.ErrPlanNotFound
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, plan_id, sequence_no, name, created_at, updated_at
-FROM test_execution_paths
-WHERE plan_id = ?
-ORDER BY sequence_no ASC`, planID)
+SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at,
+       CASE WHEN config.path_id IS NULL THEN 'pending' ELSE config.config_status END
+FROM test_execution_paths path
+LEFT JOIN test_execution_path_configs config ON config.path_id = path.id
+WHERE path.plan_id = ?
+ORDER BY path.sequence_no ASC`, planID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	paths := make([]model.ExecutionPath, 0)
 	for rows.Next() {
-		path, scanErr := scanExecutionPath(rows)
+		path, scanErr := scanExecutionPathWithStatus(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -531,6 +533,24 @@ func scanExecutionPath(row executionPathScanner) (model.ExecutionPath, error) {
 		return model.ExecutionPath{}, repository.ErrExecutionPathDataInvalid
 	}
 	path.Name = storedExecutionPathName(path.Name, path.SequenceNo)
+	return path, nil
+}
+
+// scanExecutionPathWithStatus 将列表查询中的本地配置状态转换为安全的路径模型，不触发目标平台读取。
+func scanExecutionPathWithStatus(row executionPathScanner) (model.ExecutionPath, error) {
+	var path model.ExecutionPath
+	if err := row.Scan(&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt, &path.ConfigurationStatus); err != nil {
+		return model.ExecutionPath{}, err
+	}
+	path.CreatedAt = path.CreatedAt.UTC()
+	path.UpdatedAt = path.UpdatedAt.UTC()
+	if path.ID == 0 || path.PlanID == 0 || path.SequenceNo < 1 {
+		return model.ExecutionPath{}, repository.ErrExecutionPathDataInvalid
+	}
+	path.Name = storedExecutionPathName(path.Name, path.SequenceNo)
+	if strings.TrimSpace(path.ConfigurationStatus) == "" {
+		path.ConfigurationStatus = "pending"
+	}
 	return path, nil
 }
 

@@ -27,11 +27,12 @@ type executionPathRequest struct {
 }
 
 type executionPathResponse struct {
-	ID         string                      `json:"id"`
-	SequenceNo uint                        `json:"sequenceNo"`
-	Name       string                      `json:"name"`
-	Choices    []model.ExecutionPathChoice `json:"choices"`
-	UpdatedAt  string                      `json:"updatedAt"`
+	ID                  string                      `json:"id"`
+	SequenceNo          uint                        `json:"sequenceNo"`
+	Name                string                      `json:"name"`
+	ConfigurationStatus string                      `json:"configurationStatus"`
+	Choices             []model.ExecutionPathChoice `json:"choices"`
+	UpdatedAt           string                      `json:"updatedAt"`
 }
 
 type executionPathBatchResponse struct {
@@ -195,9 +196,13 @@ func parseExecutionPathID(response http.ResponseWriter, raw string) (uint64, boo
 
 // toExecutionPathResponse 仅公开选择所需标识、稳定序号和更新时间。
 func toExecutionPathResponse(path model.ExecutionPath) executionPathResponse {
+	configurationStatus := strings.TrimSpace(path.ConfigurationStatus)
+	if configurationStatus == "" {
+		configurationStatus = "pending"
+	}
 	return executionPathResponse{
 		ID: strconv.FormatUint(path.ID, 10), SequenceNo: path.SequenceNo,
-		Name:    path.Name,
+		Name: path.Name, ConfigurationStatus: configurationStatus,
 		Choices: nonNilSlice(path.Choices), UpdatedAt: path.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }

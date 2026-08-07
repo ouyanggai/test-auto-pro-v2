@@ -178,6 +178,33 @@ func TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue(t *testing.T) {
 	}
 }
 
+// TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls 验证目标元数据的日期模式映射为严格控件类型。
+func TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls(t *testing.T) {
+	tree := pathConfigTree()
+	approval := tree.Child.ConditionNodes[0].Child
+	approval.FieldPowers = append(approval.FieldPowers,
+		target.FlowNodeFieldPower{FormID: "form-a", FieldID: "field-date", EnglishName: "date", Power: "edit"},
+		target.FlowNodeFieldPower{FormID: "form-a", FieldID: "field-datetime", EnglishName: "datetime", Power: "edit"},
+	)
+	fields := append(pathConfigFields(),
+		target.FormFieldDetail{FormID: "form-a", FieldID: "field-date", Name: "日期", EnglishName: "date", FieldType: "dateType", ComponentType: "date", DateMode: "date"},
+		target.FormFieldDetail{FormID: "form-a", FieldID: "field-datetime", Name: "日期时间", EnglishName: "datetime", FieldType: "dateType", ComponentType: "date", DateMode: "datetime"},
+	)
+	graph := requirementGraph(t, tree)
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}})
+	if err != nil {
+		t.Fatalf("准备日期路径失败：%v", err)
+	}
+	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, fields, model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}, analysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("日期控件投影失败：%v", err)
+	}
+	approvalConfig := findConfigNode(configuration.Groups, "财务审批")
+	if findConfigField(approvalConfig.Fields, "日期").Type != analyzer.PathConfigTypeDate || findConfigField(approvalConfig.Fields, "日期时间").Type != analyzer.PathConfigTypeDateTime {
+		t.Fatalf("日期与日期时间控件没有区分：%+v", approvalConfig.Fields)
+	}
+}
+
 // TestPathConfigAnalyzerBlocksLineAfterDisagree 验证不同意动作之后的节点不再按原路径继续。
 func TestPathConfigAnalyzerBlocksLineAfterDisagree(t *testing.T) {
 	tree := pathConfigTree()

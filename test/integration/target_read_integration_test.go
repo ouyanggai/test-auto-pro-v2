@@ -36,6 +36,8 @@ type fakeTarget struct {
 	submittedStatus string
 	duePaged        bool
 	dueUnbounded    bool
+	formFields      []any
+	templateData    string
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
@@ -203,13 +205,21 @@ func (f *fakeTarget) handleFormDetail(response http.ResponseWriter, request *htt
 		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "RESP401", "message": "session invalid"})
 		return
 	}
-	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
-		"id": id, "name": formName,
-		"fieldsTemplateList": []any{map[string]any{
+	fields := f.formFields
+	if fields == nil {
+		fields = []any{map[string]any{
 			"id": "field-amount", "name": "申请金额", "englishName": "amount",
 			"fieldType": "doubleType", "defaultValue": "1000", "valueOrigin": "fromUser", "fieldStatus": "enable",
-		}},
-		"templateData": `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"defaultValue":1000,"required":true}}]}`,
+		}}
+	}
+	templateData := f.templateData
+	if templateData == "" {
+		templateData = `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"defaultValue":1000,"required":true}}]}`
+	}
+	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
+		"id": id, "name": formName,
+		"fieldsTemplateList": fields,
+		"templateData":       templateData,
 	}})
 }
 
@@ -936,5 +946,37 @@ func TestPathConfigurationSnapshotReadsFormMakingOptions(t *testing.T) {
 	}
 	if !field.Required {
 		t.Fatalf("组件必填状态没有读取：%+v", field)
+	}
+}
+
+// TestPathConfigurationSnapshotRecursesFormMakingContainers 验证栅格、报表、表格列和嵌套复杂组件不会因不在顶层 list 而漏读或伪造成文本。
+func TestPathConfigurationSnapshotRecursesFormMakingContainers(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.formFields = []any{
+		map[string]any{"id": "field-grid", "name": "栅格字段", "englishName": "gridValue", "fieldType": "stringType"},
+		map[string]any{"id": "field-report", "name": "报表字段", "englishName": "reportValue", "fieldType": "stringType"},
+		map[string]any{"id": "field-table", "name": "表格字段", "englishName": "tableValue", "fieldType": "stringType"},
+		map[string]any{"id": "field-complex", "name": "复杂组件", "englishName": "complexValue", "fieldType": "listType"},
+	}
+	fake.templateData = `{"list":[{"type":"grid","columns":[{"type":"col","list":[{"type":"input","model":"gridValue","name":"栅格字段","options":{"required":true}}]}]},{"type":"report","rows":[{"columns":[{"type":"td","list":[{"type":"input","model":"reportValue","name":"报表字段"}]}]}]},{"type":"table","tableColumns":[{"type":"input","model":"tableValue","name":"表格字段"}]},{"type":"subform","model":"complexValue","name":"复杂组件","list":[{"type":"input","model":"hiddenChild","name":"隐藏子项"}]}]}`
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	snapshot, err := reader.PathConfigurationSnapshot(context.Background(), "account-a", "new", "template-id")
+	if err != nil || len(snapshot.FormFields) != 4 {
+		t.Fatalf("递归表单字段读取失败：fields=%+v err=%v", snapshot.FormFields, err)
+	}
+	byName := make(map[string]target.FormFieldDetail, len(snapshot.FormFields))
+	for _, field := range snapshot.FormFields {
+		byName[field.EnglishName] = field
+	}
+	for _, key := range []string{"gridValue", "reportValue", "tableValue"} {
+		if byName[key].Name == "" || byName[key].ComponentType != "input" {
+			t.Fatalf("嵌套基础字段没有按真实组件解析：%s %+v", key, byName[key])
+		}
+	}
+	if byName["complexValue"].ComponentType != "subform" {
+		t.Fatalf("复杂组件不能降级为普通文本：%+v", byName["complexValue"])
 	}
 }

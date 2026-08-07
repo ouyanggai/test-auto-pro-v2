@@ -407,7 +407,7 @@ type rawFormMakingOption struct {
 	Label string `json:"label"`
 }
 
-// rawFormMakingComponent 是模板数据中 FormMaking 组件的最小结构；必填、默认值和选项来自组件配置。
+// rawFormMakingComponent 是模板数据中 FormMaking 组件的递归结构；容器字段统一保留，未知组件不会回退成文本。
 type rawFormMakingComponent struct {
 	Type    string `json:"type"`
 	Model   string `json:"model"`
@@ -416,8 +416,13 @@ type rawFormMakingComponent struct {
 		DefaultValue any                   `json:"defaultValue"`
 		Required     bool                  `json:"required"`
 		Multiple     bool                  `json:"multiple"`
+		Type         string                `json:"type"`
 		Options      []rawFormMakingOption `json:"options"`
 	} `json:"options"`
+	List         []rawFormMakingComponent `json:"list"`
+	Columns      []rawFormMakingComponent `json:"columns"`
+	Rows         []rawFormMakingComponent `json:"rows"`
+	TableColumns []rawFormMakingComponent `json:"tableColumns"`
 }
 
 // rawFormMakingData 是模板数据 JSON 的外层结构，组件列表位于 list 字段。
@@ -777,6 +782,7 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 				FieldType: strings.TrimSpace(field.FieldType), DefaultValue: strings.TrimSpace(field.DefaultValue),
 				ValueOrigin: strings.TrimSpace(field.ValueOrigin), FieldStatus: strings.TrimSpace(field.FieldStatus),
 				ComponentType: component.Type,
+				DateMode:      strings.TrimSpace(component.Options.Type),
 			}
 			if hasComponent {
 				detail.Required = component.Options.Required
@@ -792,7 +798,7 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 	return result, nil
 }
 
-// parseFormMakingComponents 解析模板数据 JSON 并以组件 model 为键建立索引；损坏时按空表处理避免整体失败。
+// parseFormMakingComponents 递归解析 FormMaking 的 list、grid、report、tableColumns 与嵌套容器。
 func parseFormMakingComponents(raw string) map[string]rawFormMakingComponent {
 	result := make(map[string]rawFormMakingComponent)
 	raw = strings.TrimSpace(raw)
@@ -804,15 +810,31 @@ func parseFormMakingComponents(raw string) map[string]rawFormMakingComponent {
 		return result
 	}
 	for _, component := range data.List {
-		key := strings.TrimSpace(component.Model)
-		if key == "" {
-			continue
-		}
+		collectFormMakingComponent(result, component)
+	}
+	return result
+}
+
+// collectFormMakingComponent 深度优先收集组件及其所有真实容器子列表，避免嵌套字段因漏读而降级伪造。
+func collectFormMakingComponent(result map[string]rawFormMakingComponent, component rawFormMakingComponent) {
+	key := strings.TrimSpace(component.Model)
+	if key != "" {
 		if _, exists := result[key]; !exists {
 			result[key] = component
 		}
 	}
-	return result
+	for _, child := range component.List {
+		collectFormMakingComponent(result, child)
+	}
+	for _, child := range component.Columns {
+		collectFormMakingComponent(result, child)
+	}
+	for _, child := range component.Rows {
+		collectFormMakingComponent(result, child)
+	}
+	for _, child := range component.TableColumns {
+		collectFormMakingComponent(result, child)
+	}
 }
 
 // formMakingOptions 把组件选项收敛为标签与值；值优先取 value，缺省回退 id，标签回退值本身。

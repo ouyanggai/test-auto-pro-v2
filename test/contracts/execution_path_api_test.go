@@ -53,7 +53,7 @@ func (s *stubExecutionPathService) GenerateAll(context.Context, uint64, string) 
 // TestExecutionPathAPIFourOperationsAndSafety 验证四个端点和公开字段安全边界。
 func TestExecutionPathAPIFourOperationsAndSafety(t *testing.T) {
 	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
-	path := model.ExecutionPath{ID: 31, PlanID: 7, SequenceNo: 2, Name: "财务重点路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route-a", BranchID: "branch-a"}}, UpdatedAt: now}
+	path := model.ExecutionPath{ID: 31, PlanID: 7, SequenceNo: 2, Name: "财务重点路径", ConfigurationStatus: "configured", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route-a", BranchID: "branch-a"}}, UpdatedAt: now}
 	stub := &stubExecutionPathService{items: []model.ExecutionPath{path}, path: path, created: true}
 	handler := api.NewHandlerWithExecutionPathServices(&stubTargetReader{}, service.NewPlanService(&contractPlanRepository{}), &stubFlowGraphService{}, stub)
 
@@ -162,7 +162,7 @@ func assertExecutionPathResponse(t *testing.T, recorder *httptest.ResponseRecord
 		t.Fatalf("路径 API 状态码 = %d，响应=%s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{`"id":"31"`, `"sequenceNo":2`, `"name":"财务重点路径"`, `"routeNodeId":"route-a"`, `"branchId":"branch-a"`} {
+	for _, want := range []string{`"id":"31"`, `"sequenceNo":2`, `"name":"财务重点路径"`, `"configurationStatus":"configured"`, `"routeNodeId":"route-a"`, `"branchId":"branch-a"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("路径响应缺少 %s：%s", want, body)
 		}

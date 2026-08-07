@@ -159,6 +159,7 @@ type FormFieldDetail struct {
 	ValueOrigin   string
 	FieldStatus   string
 	ComponentType string
+	DateMode      string
 }
 
 // FormFieldOption 是目标平台表单组件提供的选项标签与值。

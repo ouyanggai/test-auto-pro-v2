@@ -12,9 +12,11 @@ type ExecutionPath struct {
 	PlanID     uint64
 	SequenceNo uint
 	Name       string
-	Choices    []ExecutionPathChoice
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// ConfigurationStatus 只表示本地路径配置表是否已有记录，不触发目标读取或完整配置分析。
+	ConfigurationStatus string
+	Choices             []ExecutionPathChoice
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type ExecutionPathBatchResult struct {
