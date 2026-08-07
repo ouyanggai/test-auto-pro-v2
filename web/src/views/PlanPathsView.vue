@@ -555,9 +555,18 @@ onBeforeUnmount(() => {
             <h1>{{ plan.name }}</h1>
             <p>从当前入口选择执行线路，并保存为计划路径。</p>
           </div>
-          <n-tag size="small" type="warning" :bordered="false">
-            {{ planStatusLabels[plan.status] }}
-          </n-tag>
+          <div class="page-heading__actions">
+            <n-button
+              v-if="pathsLoaded && paths.length > 0"
+              secondary
+              @click="router.push(`/plans/${planID}/requirements`)"
+            >
+              核对路径要求
+            </n-button>
+            <n-tag size="small" type="warning" :bordered="false">
+              {{ planStatusLabels[plan.status] }}
+            </n-tag>
+          </div>
         </header>
 
         <n-descriptions label-placement="left" :column="3" bordered size="small">
@@ -861,6 +870,12 @@ onBeforeUnmount(() => {
 
 .page-heading {
   margin-bottom: 24px;
+}
+
+.page-heading__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .page-heading h1,
