@@ -94,6 +94,90 @@ func TestPathConfigAnalyzerOverlaysStoredValuesAndMarksAffected(t *testing.T) {
 	assertPathConfigPublicSafety(t, configuration)
 }
 
+// TestPathConfigAnalyzerStoredValueWinsOverInstanceValue 验证同一字段同时存在实例现值与已保存值时已保存值优先。
+func TestPathConfigAnalyzerStoredValueWinsOverInstanceValue(t *testing.T) {
+	tree := pathConfigTree()
+	fields := pathConfigFields()
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备配置路径失败：%v", err)
+	}
+	instanceValues := map[string]any{"amount": 2500.5, "type": "instance-value"}
+	storedFields := map[string]map[string]string{"approve-a": {"amount": "888", "type": "\"a\""}}
+	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(
+		graph, tree, fields, path, analysis, instanceValues, storedFields, nil,
+	)
+	if err != nil {
+		t.Fatalf("已保存值优先投影失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	amount := findConfigField(approval.Fields, "申请金额")
+	if amount == nil || amount.Value != "888" || amount.Affected {
+		t.Fatalf("已保存数字值被实例现值覆盖：%+v", amount)
+	}
+	kind := findConfigField(approval.Fields, "类型")
+	if kind == nil || kind.Value != "\"a\"" || kind.Affected {
+		t.Fatalf("已保存单选值没有优先或错误标记受影响：%+v", kind)
+	}
+	if configuration.Status != "configured" {
+		t.Fatalf("有效已保存值不应改变配置状态：%s", configuration.Status)
+	}
+}
+
+// TestPathConfigAnalyzerMarksAffectedWhenStoredValueInvalidEvenWithInstanceValue 验证已保存值失效时保留原值并标记受影响。
+func TestPathConfigAnalyzerMarksAffectedWhenStoredValueInvalidEvenWithInstanceValue(t *testing.T) {
+	tree := pathConfigTree()
+	fields := pathConfigFields()
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备配置路径失败：%v", err)
+	}
+	instanceValues := map[string]any{"amount": 2500.5}
+	storedFields := map[string]map[string]string{"approve-a": {"amount": "\"abc\""}}
+	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(
+		graph, tree, fields, path, analysis, instanceValues, storedFields, nil,
+	)
+	if err != nil {
+		t.Fatalf("失效已保存值投影失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	amount := findConfigField(approval.Fields, "申请金额")
+	if amount == nil || amount.Value != "\"abc\"" || !amount.Affected || !strings.Contains(amount.Note, "已变化") {
+		t.Fatalf("失效已保存值没有保留并标记受影响：%+v", amount)
+	}
+	if configuration.Status != "affected" {
+		t.Fatalf("失效已保存值没有把配置状态置为 affected：%s", configuration.Status)
+	}
+}
+
+// TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue 验证已发/待发未保存过配置时仍显示实例当前值。
+func TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue(t *testing.T) {
+	tree := pathConfigTree()
+	fields := pathConfigFields()
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备配置路径失败：%v", err)
+	}
+	instanceValues := map[string]any{"amount": 2500.5}
+	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(
+		graph, tree, fields, path, analysis, instanceValues, nil, nil,
+	)
+	if err != nil {
+		t.Fatalf("实例现值投影失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	amount := findConfigField(approval.Fields, "申请金额")
+	if amount == nil || amount.Value != "2500.5" || amount.Affected {
+		t.Fatalf("未保存字段没有显示实例现值：%+v", amount)
+	}
+}
+
 // TestPathConfigAnalyzerBlocksLineAfterDisagree 验证不同意动作之后的节点不再按原路径继续。
 func TestPathConfigAnalyzerBlocksLineAfterDisagree(t *testing.T) {
 	tree := pathConfigTree()

@@ -109,7 +109,9 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 		return model.PathConfiguration{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
 	}
 	configuration.Revision = stored.Revision
-	if found {
+	// 配置状态以本次投影为准：分析器判定目标结构受影响时不能被已保存的 configured 覆盖，
+	// 否则用户看不到“需要重新核对”的状态；只有投影无受影响项时才沿用已保存状态。
+	if found && configuration.Status != "affected" {
 		configuration.Status = stored.Status
 	}
 	return configuration, nil

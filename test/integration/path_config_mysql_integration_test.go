@@ -101,6 +101,60 @@ func TestPathConfigurationMySQLMigrationAndCascade(t *testing.T) {
 	}
 }
 
+// TestPathConfigurationMySQLConcurrentSameKeyFirstSave 验证同一幂等键并发首次保存只产生一条配置且修订号一致。
+func TestPathConfigurationMySQLConcurrentSameKeyFirstSave(t *testing.T) {
+	cfg := config.LoadPlanDBConfig()
+	if missing := cfg.MissingRequired(); len(missing) != 0 {
+		t.Fatalf("F-007 并发测试缺少本机计划数据库配置名：%v", missing)
+	}
+	cfg.Name = temporaryPlanDatabaseName(t)
+	t.Cleanup(func() { dropTemporaryPlanDatabase(t, cfg) })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	database, err := planmysql.OpenAndMigrate(ctx, cfg)
+	if err != nil {
+		t.Fatalf("F-007 并发测试临时数据库迁移失败：%v", err)
+	}
+	defer database.Close()
+	plans := service.NewPlanService(planmysql.NewPlanRepository(database.DB))
+	plan := createPathTestPlan(t, ctx, plans, "new", "123e4567-e89b-12d3-a456-426614174709")
+	paths := planmysql.NewExecutionPathRepository(database.DB)
+	path, _, err := paths.Create(ctx, plan.ID, "123e4567-e89b-12d3-a456-426614174719", "并发配置路径", []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "a"}}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("准备并发测试路径失败：%v", err)
+	}
+	configs := planmysql.NewPathConfigurationRepository(database.DB)
+	key := "123e4567-e89b-12d3-a456-426614174729"
+	record := model.StoredPathConfig{
+		PathID: path.ID, Revision: 1, IdempotencyKey: key, Status: "configured",
+		FieldValues:  map[string]map[string]string{"node-a": {"amount": "2500"}},
+		ActionValues: map[string]string{"node-a": "agree"},
+	}
+	type concurrentSaveResult struct {
+		record model.StoredPathConfig
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan concurrentSaveResult, 2)
+	for index := 0; index < 2; index++ {
+		go func() {
+			<-start
+			saved, saveErr := configs.Save(ctx, record, 0, time.Now().UTC())
+			results <- concurrentSaveResult{record: saved, err: saveErr}
+		}()
+	}
+	// 两个同键请求同时越过服务层幂等检查时，仓储必须在唯一键冲突后返回同一胜出记录，而不是存储错误。
+	close(start)
+	left, right := <-results, <-results
+	if left.err != nil || right.err != nil || left.record.Revision != 1 || right.record.Revision != 1 || left.record.IdempotencyKey != key || right.record.IdempotencyKey != key {
+		t.Fatalf("并发同键首次保存没有收敛为同一结果：left=%+v right=%+v", left, right)
+	}
+	var count int
+	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_execution_path_configs WHERE path_id = ?", path.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("并发同键首次保存产生重复配置：count=%d err=%v", count, err)
+	}
+}
+
 // assertF007Tables 精确核对 F-007 临时库表与迁移版本数量。
 func assertF007Tables(t *testing.T, db *sql.DB) {
 	t.Helper()

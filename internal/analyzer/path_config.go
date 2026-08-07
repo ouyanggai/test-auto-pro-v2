@@ -441,12 +441,13 @@ func (p *pathConfigProjection) buildField(nodeID string, detail target.FormField
 	}
 	fieldKey := strings.TrimSpace(detail.EnglishName)
 	key := PathConfigFieldToken(nodeID, fieldKey)
-	value, note := p.fieldValue(nodeID, fieldKey, controlType, detail.DefaultValue)
+	options := pathConfigOptions(detail.Options)
+	value, note := p.fieldValue(nodeID, fieldKey, controlType, detail.DefaultValue, options)
 	affected := note != "" && strings.Contains(note, "已变化")
 	field := model.PathConfigField{
 		Key: key, Name: detail.Name, Type: controlType, Required: detail.Required,
 		Value: value, Editable: true, Affected: affected, Note: note,
-		Options: pathConfigOptions(detail.Options),
+		Options: options,
 	}
 	if affected {
 		p.affected = true
@@ -458,8 +459,18 @@ func (p *pathConfigProjection) buildField(nodeID string, detail target.FormField
 	return field, nil
 }
 
-// fieldValue 依次取实例现值、已保存值、模板默认值，并按字段类型规范化为 JSON 文本。
-func (p *pathConfigProjection) fieldValue(nodeID, fieldKey, controlType, defaultValue string) (string, string) {
+// fieldValue 按“已保存值优先于实例现值”的规则取值：用户保存过的字段不能被实例现值覆盖。
+func (p *pathConfigProjection) fieldValue(nodeID, fieldKey, controlType, defaultValue string, options []model.PathConfigOption) (string, string) {
+	if stored, exists := p.storedFields[nodeID][fieldKey]; exists {
+		valid, reason := validateStoredValue(stored, controlType, options)
+		if valid {
+			return stored, ""
+		}
+		// 已保存值在当前结构下失效时保留原值并标记受影响，让用户重新选择而不是静默回退到实例现值。
+		p.affected = true
+		return stored, reason
+	}
+	// 未保存过配置的已发/待发路径继续展示实例当前值，未编辑字段不会被空值覆盖。
 	if p.instanceValues != nil {
 		if raw, exists := p.instanceValues[fieldKey]; exists {
 			encoded, ok := encodeConfigValue(raw, controlType)
@@ -469,24 +480,7 @@ func (p *pathConfigProjection) fieldValue(nodeID, fieldKey, controlType, default
 			return "", "当前值来自业务对象或复杂结构，暂不支持配置"
 		}
 	}
-	if stored, exists := p.storedFields[nodeID][fieldKey]; exists {
-		valid, reason := validateStoredValue(stored, controlType, p.fieldOptionsFor(nodeID, fieldKey))
-		if valid {
-			return stored, ""
-		}
-		p.affected = true
-		return stored, reason
-	}
 	return encodeDefaultValue(defaultValue, controlType), ""
-}
-
-// fieldOptionsFor 按当前节点字段重新取出选项，供已保存值校验使用。
-func (p *pathConfigProjection) fieldOptionsFor(nodeID, fieldKey string) []model.PathConfigOption {
-	target, exists := p.validation.FieldTokens[PathConfigFieldToken(nodeID, fieldKey)]
-	if !exists {
-		return nil
-	}
-	return target.Options
 }
 
 // encodeConfigValue 把实例原始值按字段类型编码为 JSON 文本；复杂对象与类型不匹配返回不可用。

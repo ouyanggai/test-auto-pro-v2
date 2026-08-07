@@ -209,6 +209,39 @@ func TestPathConfigServiceStoresDisagreeAndBlocksSubsequent(t *testing.T) {
 	}
 }
 
+// TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange 验证目标选项变化后重新读取配置的状态必须是 affected。
+func TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	reader := &pathConfigReader{snapshot: target.PathConfigurationSnapshot{Tree: pathConfigTree(), EntryNodeIDs: []string{"start"}, FormFields: pathConfigFields()}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{}
+	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174507", 0, validPathConfigSubmission(), nil); err != nil {
+		t.Fatalf("首次保存失败：%v", err)
+	}
+	// 目标平台把“类型”字段选项从 a/b 收缩为只剩 b，已保存的 a 变成失效值。
+	changedFields := pathConfigFields()
+	for index := range changedFields {
+		if changedFields[index].EnglishName == "type" {
+			changedFields[index].Options = []target.FormFieldOption{{Label: "B", Value: "b"}}
+		}
+	}
+	reader.snapshot.FormFields = changedFields
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("目标变化后重新读取配置失败：%v", err)
+	}
+	if configuration.Status != "affected" {
+		t.Fatalf("目标选项变化后配置状态没有置为 affected：%s", configuration.Status)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	kind := findConfigField(approval.Fields, "类型")
+	if kind == nil || !kind.Affected {
+		t.Fatalf("失效已保存字段没有被标记受影响：%+v", kind)
+	}
+}
+
 // TestPathConfigServiceRejectsLockedPlan 验证计划进入运行态后禁止继续保存配置。
 func TestPathConfigServiceRejectsLockedPlan(t *testing.T) {
 	plans := newMemoryPlanRepository()

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
+
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -66,6 +68,22 @@ func (r *PathConfigurationRepository) Save(ctx context.Context, record model.Sto
 	if !exists {
 		_, err = tx.ExecContext(ctx, "INSERT INTO test_execution_path_configs (path_id, revision, idempotency_key, config_status, field_values, action_values, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 			record.PathID, record.Revision, record.IdempotencyKey, record.Status, fieldJSON, actionJSON, now.UTC(), now.UTC())
+		if isDuplicateKeyError(err) {
+			// 并发首次同键保存：另一请求已提交同一幂等键。读取胜出记录并直接返回，
+			// 保证同键重试得到同一修订号，而不是把并发竞态误报为存储错误。
+			existing, found, scanErr := scanStoredPathConfig(tx.QueryRowContext(ctx, "SELECT path_id, revision, idempotency_key, config_status, field_values, action_values, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? FOR UPDATE", record.PathID))
+			if scanErr != nil {
+				return model.StoredPathConfig{}, scanErr
+			}
+			if !found || existing.IdempotencyKey != record.IdempotencyKey {
+				// 不同键抢占了同一路径行属于修订冲突，不能把其他保存结果当作本次幂等结果。
+				return model.StoredPathConfig{}, repository.ErrPathConfigConflict
+			}
+			if err := tx.Commit(); err != nil {
+				return model.StoredPathConfig{}, err
+			}
+			return existing, nil
+		}
 	} else {
 		_, err = tx.ExecContext(ctx, "UPDATE test_execution_path_configs SET revision = ?, idempotency_key = ?, config_status = ?, field_values = ?, action_values = ?, updated_at = ? WHERE path_id = ?",
 			record.Revision, record.IdempotencyKey, record.Status, fieldJSON, actionJSON, now.UTC(), record.PathID)
@@ -79,6 +97,12 @@ func (r *PathConfigurationRepository) Save(ctx context.Context, record model.Sto
 	record.CreatedAt = now.UTC()
 	record.UpdatedAt = now.UTC()
 	return record, nil
+}
+
+// isDuplicateKeyError 判断 MySQL 唯一键冲突错误，用于并发同键首次保存兜底。
+func isDuplicateKeyError(err error) bool {
+	var mysqlErr *mysqldriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
 // scanStoredPathConfig 解析配置行并统一处理未找到与 JSON 数据损坏。
