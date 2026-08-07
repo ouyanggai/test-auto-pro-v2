@@ -325,15 +325,67 @@ type rawFlowNodeTemplate struct {
 	Child             *rawFlowNodeTemplate    `json:"childFlowNodeTemplate"`
 	ConditionNodes    []rawFlowBranchTemplate `json:"conditionNodes"`
 	ParallelNodes     []rawFlowBranchTemplate `json:"parallelNodes"`
+	AuditConfig       *rawFlowNodeAuditConfig `json:"flowNodeAuditConfig"`
+	FieldPowers       []rawFlowNodeFieldPower `json:"flowNodeFieldPowerTemplateList"`
+	IsSkip            *bool                   `json:"isSkip"`
+	Delay             *int                    `json:"delay"`
+	Unit              string                  `json:"unit"`
+	DeadlineType      string                  `json:"deadlineType"`
 }
 
 type rawFlowBranchTemplate struct {
-	ID         string               `json:"id"`
-	StrategyID string               `json:"strategyId"`
-	NodeName   string               `json:"nodeName"`
-	Name       string               `json:"name"`
-	Sort       int                  `json:"sort"`
-	Child      *rawFlowNodeTemplate `json:"childFlowNodeTemplate"`
+	ID            string               `json:"id"`
+	StrategyID    string               `json:"strategyId"`
+	NodeName      string               `json:"nodeName"`
+	Name          string               `json:"name"`
+	Sort          int                  `json:"sort"`
+	ConditionList []rawFlowCondition   `json:"conditionList"`
+	Child         *rawFlowNodeTemplate `json:"childFlowNodeTemplate"`
+}
+
+type rawFlowCondition struct {
+	FieldA        string `json:"fieldaName"`
+	FieldB        string `json:"fieldbName"`
+	ValueB        string `json:"bvalue"`
+	ValueType     string `json:"btype"`
+	Judge         string `json:"judge"`
+	ConditionType string `json:"conditionType"`
+}
+
+type rawFlowNodeAuditConfig struct {
+	AuditType       string               `json:"auditType"`
+	Mode            string               `json:"type"`
+	CountersignNum  *int                 `json:"countersignNum"`
+	FormPersonField string               `json:"formPersonFields"`
+	Details         []rawFlowAuditDetail `json:"flowNodeDetailConfigList"`
+	Scopes          []rawFlowAuditScope  `json:"nodeAuditScopeList"`
+}
+
+type rawFlowAuditDetail struct {
+	Name string `json:"name"`
+	Type string `json:"auditDetailType"`
+}
+
+type rawFlowAuditScope struct {
+	Type string `json:"type"`
+}
+
+type rawFlowNodeFieldPower struct {
+	FormID      string `json:"formTemplateId"`
+	FieldID     string `json:"formFieldTemplateId"`
+	EnglishName string `json:"formFieldTemplateEnglishName"`
+	Power       string `json:"fieldPower"`
+}
+
+type rawFormReference struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type rawFormField struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	EnglishName string `json:"englishName"`
 }
 
 // FindVisibleTemplate 通过顶层 ids 精确核对保存模板，不能依赖目标端不会筛选的 data.id。
@@ -375,8 +427,8 @@ func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templa
 	return false, nil
 }
 
-// FindSubmittedFlow 精确重查已发实例并返回代理树标识、活动入口和真实状态。
-func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, string, bool, error) {
+// FindSubmittedFlow 精确重查已发实例并返回代理树标识、活动入口、真实状态和代理表单。
+func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, string, []string, bool, error) {
 	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
 		"data": map[string]any{
 			"useScope":                     "invest",
@@ -387,20 +439,21 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 		"ids": []string{strings.TrimSpace(instanceID)}, "pagination": true, "pages": 1, "size": 100,
 	})
 	if err != nil {
-		return "", nil, "", false, err
+		return "", nil, "", nil, false, err
 	}
 	if !responseSucceeded(resp) {
-		return "", nil, "", false, responseError(resp)
+		return "", nil, "", nil, false, responseError(resp)
 	}
 	var raw []struct {
 		ID                   string          `json:"id"`
 		FlowProxyID          string          `json:"flowProxyId"`
+		FormProxyID          string          `json:"formProxyId"`
 		Status               string          `json:"status"`
 		CurrentNodeProxyID   string          `json:"currentNodeProxyId"`
 		CurrentAuditUserInfo json.RawMessage `json:"currentAuditUserInfo"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
-		return "", nil, "", false, err
+		return "", nil, "", nil, false, err
 	}
 	for _, item := range raw {
 		if strings.TrimSpace(item.ID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
@@ -409,17 +462,23 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 			if len(entries) == 0 && strings.TrimSpace(item.CurrentNodeProxyID) != "" {
 				entries = []string{strings.TrimSpace(item.CurrentNodeProxyID)}
 			}
-			return strings.TrimSpace(item.FlowProxyID), entries, strings.TrimSpace(item.Status), true, nil
+			formProxyIDs := make([]string, 0, 1)
+			if formID := strings.TrimSpace(item.FormProxyID); formID != "" {
+				formProxyIDs = append(formProxyIDs, formID)
+			}
+			return strings.TrimSpace(item.FlowProxyID), entries, strings.TrimSpace(item.Status), formProxyIDs, true, nil
 		}
 	}
-	return "", nil, "", false, nil
+	return "", nil, "", nil, false, nil
 }
 
-// FindDueFlow 精确重查实例全部 waiting_send 任务并汇总其代理节点入口。
-func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID string) (string, []string, bool, error) {
+// FindDueFlow 精确重查实例全部 waiting_send 任务并汇总其代理节点入口和代理表单。
+func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID string) (string, []string, []string, bool, error) {
 	proxyID := ""
 	entries := make([]string, 0)
 	seen := make(map[string]struct{})
+	formProxyIDs := make([]string, 0)
+	seenForms := make(map[string]struct{})
 	const pageSize = 100
 	const maxPages = 20
 	for page := 1; page <= maxPages; page++ {
@@ -436,18 +495,19 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 			"pagination": true, "pages": page, "size": pageSize,
 		})
 		if err != nil {
-			return "", nil, false, err
+			return "", nil, nil, false, err
 		}
 		if !responseSucceeded(resp) {
-			return "", nil, false, responseError(resp)
+			return "", nil, nil, false, responseError(resp)
 		}
 		var raw []struct {
 			FlowInstanceID  string `json:"flowInstanceId"`
 			FlowProxyID     string `json:"flowProxyId"`
 			FlowNodeProxyID string `json:"flowNodeProxyId"`
+			FormProxyID     string `json:"formProxyId"`
 		}
 		if err := decodeArray(resp.Data, &raw); err != nil {
-			return "", nil, false, err
+			return "", nil, nil, false, err
 		}
 		for _, item := range raw {
 			if strings.TrimSpace(item.FlowInstanceID) != strings.TrimSpace(instanceID) || strings.TrimSpace(item.FlowProxyID) == "" {
@@ -456,7 +516,7 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 			currentProxyID := strings.TrimSpace(item.FlowProxyID)
 			// 同一实例任务若指向不同代理树，无法证明入口归属，必须拒绝而不是任选一个。
 			if proxyID != "" && proxyID != currentProxyID {
-				return "", nil, false, invalidResponse("due tasks reference different flow proxies")
+				return "", nil, nil, false, invalidResponse("due tasks reference different flow proxies")
 			}
 			proxyID = currentProxyID
 			entryID := strings.TrimSpace(item.FlowNodeProxyID)
@@ -467,11 +527,18 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 				seen[entryID] = struct{}{}
 				entries = append(entries, entryID)
 			}
+			formID := strings.TrimSpace(item.FormProxyID)
+			if formID != "" {
+				if _, exists := seenForms[formID]; !exists {
+					seenForms[formID] = struct{}{}
+					formProxyIDs = append(formProxyIDs, formID)
+				}
+			}
 		}
 		hasMore := false
 		if resp.Pages > 0 {
 			if resp.Pages > maxPages {
-				return "", nil, false, invalidResponse("due task pagination exceeds safe limit")
+				return "", nil, nil, false, invalidResponse("due task pagination exceeds safe limit")
 			}
 			hasMore = page < resp.Pages
 		} else {
@@ -482,47 +549,119 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 		}
 		// 目标可能省略 pages 且持续返回满页；硬上限必须独立于目标元数据，避免异常响应造成无界读取。
 		if page == maxPages {
-			return "", nil, false, invalidResponse("due task pagination exceeds safe limit")
+			return "", nil, nil, false, invalidResponse("due task pagination exceeds safe limit")
 		}
 	}
 	if proxyID == "" {
-		return "", nil, false, nil
+		return "", nil, nil, false, nil
 	}
-	return proxyID, entries, true, nil
+	return proxyID, entries, formProxyIDs, true, nil
 }
 
 // ReadTemplateTree 按模板 ID 读取新发起的真实节点树。
 func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, error) {
-	return c.readFlowTree(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	return tree, err
 }
 
 // ReadProxyTree 按已核实的 flowProxyId 读取既有实例代理树。
 func (c *Client) ReadProxyTree(ctx context.Context, active Session, proxyID string) (*FlowNodeTemplate, error) {
-	return c.readFlowTree(ctx, active, "/web/flowProxy/findById", proxyID)
+	tree, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	return tree, err
 }
 
-// readFlowTree 调用目标详情端点并只转换流程节点结构。
-func (c *Client) readFlowTree(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, error) {
+// ReadTemplateRequirements 读取模板树及其关联表单字段，供路径要求核对内部使用。
+func (c *Client) ReadTemplateRequirements(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, []FormFieldMetadata, error) {
+	tree, forms, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	if err != nil {
+		return nil, nil, err
+	}
+	fields, err := c.readFormFields(ctx, active, "/web/formTemplateApi/findById", forms)
+	return tree, fields, err
+}
+
+// ReadProxyRequirements 读取代理树及实例代理表单字段，不回退到模板表单猜测运行态字段。
+func (c *Client) ReadProxyRequirements(ctx context.Context, active Session, proxyID string, formProxyIDs []string) (*FlowNodeTemplate, []FormFieldMetadata, error) {
+	tree, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	if err != nil {
+		return nil, nil, err
+	}
+	forms := make([]rawFormReference, 0, len(formProxyIDs))
+	for _, rawID := range formProxyIDs {
+		if id := strings.TrimSpace(rawID); id != "" {
+			forms = append(forms, rawFormReference{ID: id})
+		}
+	}
+	fields, err := c.readFormFields(ctx, active, "/web/formProxy/findById", forms)
+	return tree, fields, err
+}
+
+// readFlowDetail 调用目标详情端点并转换同一棵流程树和关联表单引用。
+func (c *Client) readFlowDetail(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, []rawFormReference, error) {
 	resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": strings.TrimSpace(id)}})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !responseSucceeded(resp) {
-		return nil, responseError(resp)
+		return nil, nil, responseError(resp)
 	}
 	var data struct {
 		FlowNodeTemplate *rawFlowNodeTemplate `json:"flowNodeTemplate"`
+		FormTemplateList []rawFormReference   `json:"formTemplateList"`
 	}
 	if len(resp.Data) == 0 || string(resp.Data) == "null" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
-		return nil, invalidResponse("invalid flow tree data")
+		return nil, nil, invalidResponse("invalid flow tree data")
 	}
-	return convertFlowNode(data.FlowNodeTemplate), nil
+	return convertFlowNode(data.FlowNodeTemplate), data.FormTemplateList, nil
 }
 
-// convertFlowNode 递归转换目标节点，丢弃审批配置和字段权限等敏感原文。
+// readFormFields 逐个读取已核实表单详情，只保留中文展示所需的名称字典。
+func (c *Client) readFormFields(ctx context.Context, active Session, path string, forms []rawFormReference) ([]FormFieldMetadata, error) {
+	result := make([]FormFieldMetadata, 0)
+	seen := make(map[string]struct{}, len(forms))
+	for _, form := range forms {
+		formID := strings.TrimSpace(form.ID)
+		if formID == "" {
+			continue
+		}
+		if _, exists := seen[formID]; exists {
+			continue
+		}
+		seen[formID] = struct{}{}
+		resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": formID}})
+		if err != nil {
+			return nil, err
+		}
+		if !responseSucceeded(resp) {
+			return nil, responseError(resp)
+		}
+		if len(resp.Data) == 0 || string(resp.Data) == "null" {
+			continue
+		}
+		var data struct {
+			ID     string         `json:"id"`
+			Name   string         `json:"name"`
+			Fields []rawFormField `json:"fieldsTemplateList"`
+		}
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, invalidResponse("invalid form field data")
+		}
+		resolvedFormID := firstNonEmpty(data.ID, formID)
+		resolvedFormName := firstNonEmpty(data.Name, form.Name)
+		for _, field := range data.Fields {
+			result = append(result, FormFieldMetadata{
+				FormID: resolvedFormID, FormName: resolvedFormName, FieldID: field.ID,
+				Name: field.Name, EnglishName: field.EnglishName,
+			})
+		}
+	}
+	return result, nil
+}
+
+// convertFlowNode 递归转换目标节点；内部配置只供要求分析，公开图分析器不会序列化这些字段。
 func convertFlowNode(raw *rawFlowNodeTemplate) *FlowNodeTemplate {
 	if raw == nil {
 		return nil
@@ -530,6 +669,8 @@ func convertFlowNode(raw *rawFlowNodeTemplate) *FlowNodeTemplate {
 	node := &FlowNodeTemplate{
 		ID: raw.ID, Name: firstNonEmpty(raw.NodeName, raw.Name), Type: raw.Type,
 		BranchExecuteType: raw.BranchExecuteType, Child: convertFlowNode(raw.Child),
+		AuditConfig: convertFlowAuditConfig(raw.AuditConfig), FieldPowers: convertFlowFieldPowers(raw.FieldPowers),
+		IsSkip: raw.IsSkip, Delay: raw.Delay, Unit: raw.Unit, DeadlineType: raw.DeadlineType,
 	}
 	node.ConditionNodes = convertFlowBranches(raw.ConditionNodes)
 	node.ParallelNodes = convertFlowBranches(raw.ParallelNodes)
@@ -542,7 +683,48 @@ func convertFlowBranches(raw []rawFlowBranchTemplate) []FlowBranchTemplate {
 	for _, branch := range raw {
 		result = append(result, FlowBranchTemplate{
 			ID: firstNonEmpty(branch.StrategyID, branch.ID), Name: firstNonEmpty(branch.NodeName, branch.Name),
-			Sort: branch.Sort, Child: convertFlowNode(branch.Child),
+			Sort: branch.Sort, Conditions: convertFlowConditions(branch.ConditionList), Child: convertFlowNode(branch.Child),
+		})
+	}
+	return result
+}
+
+// convertFlowConditions 复制条件内部关联键，后续分析必须翻译后才能公开。
+func convertFlowConditions(raw []rawFlowCondition) []FlowCondition {
+	result := make([]FlowCondition, 0, len(raw))
+	for _, condition := range raw {
+		result = append(result, FlowCondition{
+			FieldA: condition.FieldA, FieldB: condition.FieldB, ValueB: condition.ValueB,
+			ValueType: condition.ValueType, Judge: condition.Judge, ConditionType: condition.ConditionType,
+		})
+	}
+	return result
+}
+
+// convertFlowAuditConfig 去除审批业务 ID，仅保留分类、数量和可展示名称。
+func convertFlowAuditConfig(raw *rawFlowNodeAuditConfig) *FlowNodeAuditConfig {
+	if raw == nil {
+		return nil
+	}
+	result := &FlowNodeAuditConfig{
+		AuditType: raw.AuditType, Mode: raw.Mode, CountersignNum: raw.CountersignNum,
+		FormPersonField: raw.FormPersonField,
+	}
+	for _, detail := range raw.Details {
+		result.Details = append(result.Details, FlowAuditDetail{Name: detail.Name, Type: detail.Type})
+	}
+	for _, scope := range raw.Scopes {
+		result.Scopes = append(result.Scopes, FlowAuditScope{Type: scope.Type})
+	}
+	return result
+}
+
+// convertFlowFieldPowers 复制字段权限关联键，公开层只使用解析后的字段中文名。
+func convertFlowFieldPowers(raw []rawFlowNodeFieldPower) []FlowNodeFieldPower {
+	result := make([]FlowNodeFieldPower, 0, len(raw))
+	for _, power := range raw {
+		result = append(result, FlowNodeFieldPower{
+			FormID: power.FormID, FieldID: power.FieldID, EnglishName: power.EnglishName, Power: power.Power,
 		})
 	}
 	return result

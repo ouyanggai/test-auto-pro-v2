@@ -64,6 +64,13 @@ type FlowTreeSnapshot struct {
 	EntryNodeIDs []string
 }
 
+// FlowRequirementSnapshot 把同一次真实目标核对得到的结构、入口和表单字段绑定在一起。
+type FlowRequirementSnapshot struct {
+	Tree         *FlowNodeTemplate
+	EntryNodeIDs []string
+	FormFields   []FormFieldMetadata
+}
+
 // FlowNodeTemplate 是目标平台流程树的最小只读传输结构。
 type FlowNodeTemplate struct {
 	ID                string
@@ -73,13 +80,68 @@ type FlowNodeTemplate struct {
 	Child             *FlowNodeTemplate
 	ConditionNodes    []FlowBranchTemplate
 	ParallelNodes     []FlowBranchTemplate
+	AuditConfig       *FlowNodeAuditConfig
+	FieldPowers       []FlowNodeFieldPower
+	IsSkip            *bool
+	Delay             *int
+	Unit              string
+	DeadlineType      string
 }
 
 type FlowBranchTemplate struct {
-	ID    string
-	Name  string
-	Sort  int
-	Child *FlowNodeTemplate
+	ID         string
+	Name       string
+	Sort       int
+	Conditions []FlowCondition
+	Child      *FlowNodeTemplate
+}
+
+// FlowCondition 是条件分支的内部只读表达，字段键和枚举代码不会直接公开。
+type FlowCondition struct {
+	FieldA        string
+	FieldB        string
+	ValueB        string
+	ValueType     string
+	Judge         string
+	ConditionType string
+}
+
+// FlowNodeAuditConfig 是审批节点的内部只读配置。
+type FlowNodeAuditConfig struct {
+	AuditType       string
+	Mode            string
+	CountersignNum  *int
+	FormPersonField string
+	Details         []FlowAuditDetail
+	Scopes          []FlowAuditScope
+}
+
+// FlowAuditDetail 只保留可展示名称，业务 ID 仅用于内部计数且不会公开。
+type FlowAuditDetail struct {
+	Name string
+	Type string
+}
+
+// FlowAuditScope 只保留范围类型，目标业务 ID 不进入公开响应。
+type FlowAuditScope struct {
+	Type string
+}
+
+// FlowNodeFieldPower 记录节点字段权限与表单归属提示。
+type FlowNodeFieldPower struct {
+	FormID      string
+	FieldID     string
+	EnglishName string
+	Power       string
+}
+
+// FormFieldMetadata 是模板或代理表单的字段名称字典。
+type FormFieldMetadata struct {
+	FormID      string
+	FormName    string
+	FieldID     string
+	Name        string
+	EnglishName string
 }
 
 type Page[T any] struct {

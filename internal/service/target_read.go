@@ -139,7 +139,7 @@ func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, sourc
 			}
 			tree, err = s.client.ReadTemplateTree(callContext, active, targetObjectID)
 		case "started":
-			proxyID, entries, status, found, findErr := s.client.FindSubmittedFlow(callContext, active, targetObjectID)
+			proxyID, entries, status, _, found, findErr := s.client.FindSubmittedFlow(callContext, active, targetObjectID)
 			if findErr != nil {
 				return findErr
 			}
@@ -154,7 +154,7 @@ func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, sourc
 			tree, err = s.client.ReadProxyTree(callContext, active, proxyID)
 		case "pending":
 			// waiting_send 任务本身是可继续证据；不存在任务时不会退回实例名称猜测入口。
-			proxyID, entries, found, findErr := s.client.FindDueFlow(callContext, active, targetObjectID)
+			proxyID, entries, _, found, findErr := s.client.FindDueFlow(callContext, active, targetObjectID)
 			if findErr != nil {
 				return findErr
 			}
@@ -176,6 +176,72 @@ func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, sourc
 			entryNodeIDs = []string{strings.TrimSpace(tree.ID)}
 		}
 		result = target.FlowTreeSnapshot{Tree: tree, EntryNodeIDs: entryNodeIDs}
+		return nil
+	})
+	return result, err
+}
+
+// FlowRequirementSnapshot 按计划保存的来源读取同一流程树、当前入口和对应表单字段元数据。
+func (s *TargetReadService) FlowRequirementSnapshot(ctx context.Context, account, source, targetObjectID string) (target.FlowRequirementSnapshot, error) {
+	if err := s.ready(); err != nil {
+		return target.FlowRequirementSnapshot{}, err
+	}
+	var result target.FlowRequirementSnapshot
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		var tree *target.FlowNodeTemplate
+		var fields []target.FormFieldMetadata
+		var entries []string
+		var err error
+		switch strings.TrimSpace(source) {
+		case "new":
+			visible, findErr := s.client.FindVisibleTemplate(callContext, active, targetObjectID)
+			if findErr != nil {
+				return findErr
+			}
+			if !visible {
+				return ErrTargetFlowNotFound
+			}
+			tree, fields, err = s.client.ReadTemplateRequirements(callContext, active, targetObjectID)
+		case "started":
+			var proxyID, status string
+			var formProxyIDs []string
+			var found bool
+			proxyID, entries, status, formProxyIDs, found, err = s.client.FindSubmittedFlow(callContext, active, targetObjectID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return ErrTargetFlowNotFound
+			}
+			if !submittedFlowConfigurable(status) {
+				return ErrTargetFlowNotConfigurable
+			}
+			tree, fields, err = s.client.ReadProxyRequirements(callContext, active, proxyID, formProxyIDs)
+		case "pending":
+			var proxyID string
+			var formProxyIDs []string
+			var found bool
+			proxyID, entries, formProxyIDs, found, err = s.client.FindDueFlow(callContext, active, targetObjectID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return ErrTargetFlowNotFound
+			}
+			tree, fields, err = s.client.ReadProxyRequirements(callContext, active, proxyID, formProxyIDs)
+		default:
+			return ErrTargetFlowNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if tree == nil {
+			return ErrTargetFlowStructureEmpty
+		}
+		if strings.TrimSpace(source) == "new" {
+			entries = []string{strings.TrimSpace(tree.ID)}
+		}
+		result = target.FlowRequirementSnapshot{Tree: tree, EntryNodeIDs: entries, FormFields: fields}
 		return nil
 	})
 	return result, err

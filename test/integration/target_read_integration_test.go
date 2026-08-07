@@ -59,7 +59,7 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 			}
 			f.recordGraphCall("submitted-list")
 			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{
-				"id": "submitted-id", "flowProxyId": "proxy-submitted", "status": f.submittedStatus, "currentNodeProxyId": "end",
+				"id": "submitted-id", "flowProxyId": "proxy-submitted", "formProxyId": "form-proxy-submitted", "status": f.submittedStatus, "currentNodeProxyId": "end",
 				"currentAuditUserInfo": map[string]any{"start": map[string]any{"userList": []any{}}},
 			}}})
 			return
@@ -93,7 +93,7 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				items := make([]any, 0, 100)
 				for index := 0; index < 100; index++ {
 					items = append(items, map[string]any{
-						"flowInstanceId": "due-id", "flowProxyId": "proxy-due",
+						"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "formProxyId": "form-proxy-due",
 						"flowNodeProxyId": fmt.Sprintf("node-%d", index),
 					})
 				}
@@ -108,13 +108,13 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				}
 				writeTargetJSON(response, map[string]any{
 					"isSuccess": true, "pages": 2, "current": int(page), "size": 100,
-					"data": []any{map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": entryID}},
+					"data": []any{map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "formProxyId": "form-proxy-due", "flowNodeProxyId": entryID}},
 				})
 				return
 			}
 			writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{
-				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": "start"},
-				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "flowNodeProxyId": "end"},
+				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "formProxyId": "form-proxy-due", "flowNodeProxyId": "start"},
+				map[string]any{"flowInstanceId": "due-id", "flowProxyId": "proxy-due", "formProxyId": "form-proxy-due", "flowNodeProxyId": "end"},
 			}})
 			return
 		}
@@ -133,6 +133,10 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 		f.handleFlowDetail(response, request, "template-id", "template-detail")
 	case "/web/flowProxy/findById":
 		f.handleFlowDetail(response, request, "", "proxy-detail")
+	case "/web/formTemplateApi/findById":
+		f.handleFormDetail(response, request, "form-template", "模板表单")
+	case "/web/formProxy/findById":
+		f.handleFormDetail(response, request, "", "代理表单")
 	default:
 		http.NotFound(response, request)
 	}
@@ -157,13 +161,40 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 		f.t.Errorf("实例详情错误地使用了实例 ID：%s", id)
 	}
 	f.recordGraphCall(callName + ":" + id)
+	detailData := map[string]any{"flowNodeTemplate": map[string]any{
+		"id": "start", "nodeName": "发起", "type": "start",
+		"childFlowNodeTemplate": map[string]any{
+			"id": "approval", "nodeName": "审批", "type": "common", "isSkip": true,
+			"flowNodeAuditConfig":            map[string]any{"auditType": "form_person", "type": "scramble", "formPersonFields": "amount"},
+			"flowNodeFieldPowerTemplateList": []any{map[string]any{"formTemplateId": "form-template", "formFieldTemplateId": "field-amount", "formFieldTemplateEnglishName": "amount", "fieldPower": "only_read"}},
+			"childFlowNodeTemplate":          map[string]any{"id": "end", "nodeName": "结束", "type": "end"},
+		},
+	}}
+	if expectedID != "" {
+		detailData["formTemplateList"] = []any{map[string]any{"id": "form-template", "name": "模板表单"}}
+	}
 	writeTargetJSON(response, map[string]any{
 		"isSuccess": true,
-		"data": map[string]any{"flowNodeTemplate": map[string]any{
-			"id": "start", "nodeName": "发起", "type": "start",
-			"childFlowNodeTemplate": map[string]any{"id": "end", "nodeName": "结束", "type": "end"},
-		}},
+		"data":      detailData,
 	})
+}
+
+// handleFormDetail 验证模板和代理表单详情使用已核实标识，并返回中文字段元数据。
+func (f *fakeTarget) handleFormDetail(response http.ResponseWriter, request *http.Request, expectedID, formName string) {
+	body := f.requireSession(request)
+	data, _ := body["data"].(map[string]any)
+	id, _ := data["id"].(string)
+	if expectedID != "" && id != expectedID {
+		f.t.Errorf("模板表单详情 ID 不正确：%s", id)
+	}
+	if expectedID == "" && id != "form-proxy-submitted" && id != "form-proxy-due" {
+		f.t.Errorf("代理表单详情 ID 不正确：%s", id)
+	}
+	f.recordGraphCall("form-detail:" + id)
+	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
+		"id": id, "name": formName,
+		"fieldsTemplateList": []any{map[string]any{"id": "field-amount", "name": "申请金额", "englishName": "amount"}},
+	}})
 }
 
 // handleLogin 验证登录结构并生成仅存在于测试运行期的随机会话。
@@ -305,7 +336,7 @@ func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
 			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
 			reader := service.NewTargetReadService(config.LoadTargetConfig())
 			tree, err := reader.FlowTree(context.Background(), "account-a", test.source, test.id)
-			if err != nil || tree == nil || tree.ID != "start" || tree.Child == nil || tree.Child.ID != "end" {
+			if err != nil || tree == nil || tree.ID != "start" || tree.Child == nil || tree.Child.ID != "approval" || tree.Child.Child == nil || tree.Child.Child.ID != "end" {
 				t.Fatalf("真实流程树读取失败：%v", err)
 			}
 			fake.mu.Lock()
@@ -313,6 +344,42 @@ func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
 			fake.mu.Unlock()
 			if strings.Join(calls, ",") != strings.Join(test.calls, ",") {
 				t.Fatalf("核对与详情请求顺序不正确：%v", calls)
+			}
+		})
+	}
+}
+
+// TestFlowRequirementSnapshotReadsSourceSpecificFormMetadata 验证三类来源读取对应模板或代理表单字段且保持调用顺序。
+func TestFlowRequirementSnapshotReadsSourceSpecificFormMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		id     string
+		calls  []string
+	}{
+		{name: "新发起模板表单", source: "new", id: "template-id", calls: []string{"template-list", "template-detail:template-id", "form-detail:form-template"}},
+		{name: "已发代理表单", source: "started", id: "submitted-id", calls: []string{"submitted-list", "proxy-detail:proxy-submitted", "form-detail:form-proxy-submitted"}},
+		{name: "待发代理表单", source: "pending", id: "due-id", calls: []string{"due-list", "proxy-detail:proxy-due", "form-detail:form-proxy-due"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeTarget(t)
+			targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+			defer targetServer.Close()
+			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+			reader := service.NewTargetReadService(config.LoadTargetConfig())
+			snapshot, err := reader.FlowRequirementSnapshot(context.Background(), "account-a", test.source, test.id)
+			if err != nil || snapshot.Tree == nil || len(snapshot.FormFields) != 1 || snapshot.FormFields[0].Name != "申请金额" {
+				t.Fatalf("路径要求目标快照读取失败：snapshot=%+v err=%v", snapshot, err)
+			}
+			if snapshot.Tree.Child == nil || snapshot.Tree.Child.AuditConfig == nil || snapshot.Tree.Child.AuditConfig.AuditType != "form_person" || len(snapshot.Tree.Child.FieldPowers) != 1 {
+				t.Fatalf("流程节点要求元数据没有解码：%+v", snapshot.Tree.Child)
+			}
+			fake.mu.Lock()
+			calls := append([]string(nil), fake.graphCalls...)
+			fake.mu.Unlock()
+			if strings.Join(calls, ",") != strings.Join(test.calls, ",") {
+				t.Fatalf("要求读取调用顺序不正确：%v", calls)
 			}
 		})
 	}

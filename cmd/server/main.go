@@ -28,12 +28,17 @@ func main() {
 	targetReader := service.NewTargetReadService(config.LoadTargetConfig())
 	planService := service.NewPlanService(planmysql.NewPlanRepository(planDatabase.DB))
 	flowGraphService := service.NewFlowGraphService(planService, targetReader, analyzer.NewFlowGraphAnalyzer())
+	pathRepository := planmysql.NewExecutionPathRepository(planDatabase.DB)
 	executionPathService := service.NewExecutionPathService(
-		planService, flowGraphService, analyzer.NewExecutionPathAnalyzer(), planmysql.NewExecutionPathRepository(planDatabase.DB),
+		planService, flowGraphService, analyzer.NewExecutionPathAnalyzer(), pathRepository,
+	)
+	pathRequirementService := service.NewPathRequirementService(
+		planService, targetReader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),
+		analyzer.NewPathRequirementAnalyzer(), pathRepository,
 	)
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithExecutionPathServices(targetReader, planService, flowGraphService, executionPathService),
+		Handler:           api.NewHandlerWithRequirementServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
