@@ -280,7 +280,7 @@ func (p *requirementProjection) translateCondition(condition target.FlowConditio
 	return strings.TrimSpace(left + " " + judge + " " + right), leftOK && judgeOK && rightOK
 }
 
-// resolveField 使用节点表单提示缩小同名键范围，无法唯一匹配时明确降级而不猜字段。
+// resolveField 使用节点表单提示缩小同名键范围；跨表单同键唯一消歧时补充表单名。
 func (p *requirementProjection) resolveField(key string, powers []target.FlowNodeFieldPower) (string, bool) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -294,20 +294,30 @@ func (p *requirementProjection) resolveField(key string, powers []target.FlowNod
 			}
 		}
 	}
-	matches := make([]target.FormFieldMetadata, 0)
+	allMatches := make([]target.FormFieldMetadata, 0)
 	for _, field := range p.fields {
 		if strings.TrimSpace(field.EnglishName) != key && strings.TrimSpace(field.FieldID) != key {
 			continue
 		}
-		if len(preferredForms) > 0 && !preferredForms[strings.TrimSpace(field.FormID)] {
-			continue
-		}
-		matches = append(matches, field)
+		allMatches = append(allMatches, field)
 	}
-	if len(matches) != 1 || strings.TrimSpace(matches[0].Name) == "" {
+	if len(allMatches) == 1 && strings.TrimSpace(allMatches[0].Name) != "" {
+		return strings.TrimSpace(allMatches[0].Name), true
+	}
+	if len(allMatches) < 2 || len(preferredForms) != 1 {
 		return "未识别的表单字段", false
 	}
-	return strings.TrimSpace(matches[0].Name), true
+	matchedByForm := make([]target.FormFieldMetadata, 0, 1)
+	for _, field := range allMatches {
+		if preferredForms[strings.TrimSpace(field.FormID)] {
+			matchedByForm = append(matchedByForm, field)
+		}
+	}
+	if len(matchedByForm) != 1 || strings.TrimSpace(matchedByForm[0].FormName) == "" || strings.TrimSpace(matchedByForm[0].Name) == "" {
+		return "未识别的表单字段", false
+	}
+	// 只有多表单同键且节点权限唯一指向一个表单时才公开“表单 / 字段”，避免把内部 ID 当作消歧依据展示。
+	return strings.TrimSpace(matchedByForm[0].FormName) + " / " + strings.TrimSpace(matchedByForm[0].Name), true
 }
 
 // personRequirement 将审批类型映射为后续准备责任，并只展示名称和数量摘要。

@@ -29,6 +29,7 @@ grep -Fq '尚未保存执行路径，请先返回选择并保存路径' "${requi
 grep -Fq 'class="requirements-layout"' "${requirements_view}"
 grep -Fq 'grid-template-columns: 250px minmax(0, 1fr)' "${requirements_view}"
 grep -Fq 'aria-label="已保存路径"' "${requirements_view}"
+grep -Fq 'class="requirements-path-list"' "${requirements_view}"
 grep -Fq 'aria-live="polite"' "${requirements_view}"
 grep -Fq 'requirementController?.abort()' "${requirements_view}"
 grep -Fq 'shouldApplyRequirementResponse' "${requirements_view}"
@@ -38,6 +39,22 @@ grep -Fq '目标平台自动确定' "${requirements_logic}"
 grep -Fq '运行时确定' "${requirements_logic}"
 grep -Fq '需要人工核对' "${requirements_logic}"
 grep -Fq '@media (prefers-reduced-motion: reduce)' "${requirements_view}"
+grep -Fq 'v-for="(group, groupIndex) in requirements.groups"' "${requirements_view}"
+grep -Fq ':key="`requirement-group-${groupIndex}`"' "${requirements_view}"
+grep -Fq 'v-for="(node, nodeIndex) in group.nodes"' "${requirements_view}"
+grep -Fq ':key="`requirement-node-${groupIndex}-${nodeIndex}`"' "${requirements_view}"
+if grep -Fq ':key="`${group.kind}-${group.title}`"' "${requirements_view}" \
+  || grep -Fq ':key="`${group.title}-${node.name}-${node.typeName}`"' "${requirements_view}"; then
+  echo 'F-006 分组和节点不得继续用可重复业务文案拼接 Vue key' >&2
+  exit 1
+fi
+grep -Fq 'height: min(620px, calc(100dvh - 260px))' "${requirements_view}"
+if [[ "$(grep -Fc 'overflow-y: auto' "${requirements_view}")" -lt 2 ]]; then
+  echo 'F-006 桌面布局必须让左侧路径列表和右侧要求内容分别滚动' >&2
+  exit 1
+fi
+grep -Fq 'overscroll-behavior: contain' "${requirements_view}"
+grep -Fq 'height: auto' "${requirements_view}"
 
 for forbidden in '运行计划' 'v-model:value' 'FlowGraphCanvas' '@vue-flow/core' '@click="save' '保存后生效'; do
   if grep -Fq "${forbidden}" "${requirements_view}"; then

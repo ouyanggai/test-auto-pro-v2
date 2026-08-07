@@ -228,6 +228,63 @@ func TestPathRequirementAnalyzerPreservesAndOrFieldComparisonAndManualBranch(t *
 	}
 }
 
+// TestPathRequirementAnalyzerDisambiguatesDuplicateFieldKeysByNodeForm 验证节点字段权限能唯一定位表单时公开“表单 / 字段”。
+func TestPathRequirementAnalyzerDisambiguatesDuplicateFieldKeysByNodeForm(t *testing.T) {
+	tree := requirementConditionTree()
+	tree.Child.FieldPowers = []target.FlowNodeFieldPower{{FormID: "form-budget", EnglishName: "amount", Power: "only_read"}}
+	fields := []target.FormFieldMetadata{
+		{FormID: "form-request", FormName: "申请表", FieldID: "field-request", Name: "金额", EnglishName: "amount"},
+		{FormID: "form-budget", FormName: "预算表", FieldID: "field-budget", Name: "金额", EnglishName: "amount"},
+	}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备跨表单同键路径失败：%v", err)
+	}
+	result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, fields, path, analysis)
+	if err != nil {
+		t.Fatalf("跨表单同键消歧失败：%v", err)
+	}
+	body := requirementText(result)
+	if !strings.Contains(body, "预算表 / 金额 大于等于 10000") {
+		t.Fatalf("节点表单提示没有输出表单名与字段名：%s", body)
+	}
+	for _, forbidden := range []string{"amount", "form-budget", "field-budget"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("跨表单消歧泄露内部关联键 %q：%s", forbidden, body)
+		}
+	}
+}
+
+// TestPathRequirementAnalyzerReviewsAmbiguousDuplicateFieldKeys 验证跨表单同键无法唯一定位时保持人工核对。
+func TestPathRequirementAnalyzerReviewsAmbiguousDuplicateFieldKeys(t *testing.T) {
+	tree := requirementConditionTree()
+	fields := []target.FormFieldMetadata{
+		{FormID: "form-request", FormName: "申请表", Name: "金额", EnglishName: "amount"},
+		{FormID: "form-budget", FormName: "预算表", Name: "金额", EnglishName: "amount"},
+	}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备歧义字段路径失败：%v", err)
+	}
+	result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, fields, path, analysis)
+	if err != nil {
+		t.Fatalf("歧义字段不应让整页失败：%v", err)
+	}
+	item, found := findRequirementItem(result, "大额")
+	if !found || item.Status != model.RequirementReview || !strings.Contains(item.Detail, "未识别的表单字段") {
+		t.Fatalf("歧义字段没有稳定降级人工核对：item=%+v result=%s", item, requirementText(result))
+	}
+	for _, forbidden := range []string{"amount", "form-request", "form-budget"} {
+		if strings.Contains(item.Detail, forbidden) {
+			t.Fatalf("歧义字段降级泄露内部关联键 %q：%s", forbidden, item.Detail)
+		}
+	}
+}
+
 // requirementGraph 使用现有唯一流程图分析器生成要求测试图。
 func requirementGraph(t *testing.T, tree *target.FlowNodeTemplate) model.FlowGraph {
 	t.Helper()
@@ -317,4 +374,18 @@ func hasRequirementItem(result model.PathRequirements, title string, status mode
 		}
 	}
 	return false
+}
+
+// findRequirementItem 按公开标题查找单条要求，供精确断言状态与文案。
+func findRequirementItem(result model.PathRequirements, title string) (model.RequirementItem, bool) {
+	for _, group := range result.Groups {
+		for _, node := range group.Nodes {
+			for _, item := range node.Items {
+				if item.Title == title {
+					return item, true
+				}
+			}
+		}
+	}
+	return model.RequirementItem{}, false
 }

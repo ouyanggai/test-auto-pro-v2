@@ -152,7 +152,7 @@ onBeforeUnmount(() => {
         <div v-else class="requirements-layout">
           <aside class="requirements-paths" aria-label="已保存路径">
             <h2>已保存路径</h2>
-            <n-list hoverable clickable>
+            <n-list class="requirements-path-list" hoverable clickable>
               <n-list-item v-for="path in paths" :key="path.id" @click="selectPath(path)">
                 <button
                   type="button"
@@ -198,13 +198,21 @@ onBeforeUnmount(() => {
                 </div>
               </header>
 
-              <section v-for="group in requirements.groups" :key="`${group.kind}-${group.title}`" class="requirement-group">
+              <section
+                v-for="(group, groupIndex) in requirements.groups"
+                :key="`requirement-group-${groupIndex}`"
+                class="requirement-group"
+              >
                 <header>
                   <h3>{{ group.title }}</h3>
                   <n-tag size="small" :bordered="false">{{ group.kind === 'main' ? '主线' : '并行' }}</n-tag>
                 </header>
                 <div class="requirement-nodes">
-                  <article v-for="node in group.nodes" :key="`${group.title}-${node.name}-${node.typeName}`" class="requirement-node">
+                  <article
+                    v-for="(node, nodeIndex) in group.nodes"
+                    :key="`requirement-node-${groupIndex}-${nodeIndex}`"
+                    class="requirement-node"
+                  >
                     <div class="requirement-node__title">
                       <strong>{{ node.name }}</strong>
                       <span>{{ node.typeName }}</span>
@@ -289,11 +297,17 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
   gap: 24px;
-  min-height: 620px;
+  height: min(620px, calc(100dvh - 260px));
+  min-height: 0;
+  overflow: hidden;
 }
 
 .requirements-paths {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--n-border-color);
   padding-right: 20px;
 }
@@ -301,6 +315,12 @@ onBeforeUnmount(() => {
 .requirements-paths h2 {
   margin-bottom: 12px;
   font-size: 16px;
+}
+
+.requirements-path-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .requirements-path-button {
@@ -328,6 +348,10 @@ onBeforeUnmount(() => {
 
 .requirements-detail {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
 }
 
 .requirements-error-actions {
@@ -431,12 +455,20 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .requirements-layout {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
 
   .requirements-paths {
     border-right: 0;
     border-bottom: 1px solid var(--n-border-color);
     padding: 0 0 16px;
+    overflow: visible;
+  }
+
+  .requirements-path-list,
+  .requirements-detail {
+    overflow: visible;
   }
 
   .requirement-node {
