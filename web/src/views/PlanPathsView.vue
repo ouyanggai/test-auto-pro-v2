@@ -556,13 +556,6 @@ onBeforeUnmount(() => {
             <p>从当前入口选择执行线路，并保存为计划路径。</p>
           </div>
           <div class="page-heading__actions">
-            <n-button
-              v-if="pathsLoaded && paths.length > 0"
-              secondary
-              @click="router.push(`/plans/${planID}/requirements`)"
-            >
-              核对路径要求
-            </n-button>
             <n-tag size="small" type="warning" :bordered="false">
               {{ planStatusLabels[plan.status] }}
             </n-tag>

@@ -7,60 +7,27 @@ router_file="${project_root}/web/src/router/index.ts"
 paths_view="${project_root}/web/src/views/PlanPathsView.vue"
 requirements_view="${project_root}/web/src/views/RequirementsView.vue"
 requirements_logic="${project_root}/web/src/features/plans/requirements.ts"
+requirements_test="${project_root}/test/unit/frontend/path_requirements_test.mjs"
 
-grep -Fq "{ path: '/plans/:id/requirements', component: RequirementsView }" "${router_file}"
-grep -Fq '核对路径要求' "${paths_view}"
-grep -Fq 'pathsLoaded && paths.length > 0' "${paths_view}"
-grep -Fq 'router.push(`/plans/${planID}/requirements`)' "${paths_view}"
-
-if awk '
-  /<template #canvas-actions>/ { in_canvas = 1 }
-  in_canvas && /核对路径要求/ { exit 1 }
-  in_canvas && /<\/template>/ { exit 0 }
-' "${paths_view}"; then
-  :
-else
-  echo 'F-006 核对入口不得进入 F-005 画布工具栏' >&2
+if grep -Fq "/plans/:id/requirements" "${router_file}" || grep -Fq "RequirementsView" "${router_file}"; then
+  echo 'F-006 不得保留面向用户的路径要求页面路由' >&2
   exit 1
 fi
-
-grep -Fq '返回路径选择' "${requirements_view}"
-grep -Fq '尚未保存执行路径，请先返回选择并保存路径' "${requirements_view}"
-grep -Fq 'class="requirements-layout"' "${requirements_view}"
-grep -Fq 'grid-template-columns: 250px minmax(0, 1fr)' "${requirements_view}"
-grep -Fq 'aria-label="已保存路径"' "${requirements_view}"
-grep -Fq 'class="requirements-path-list"' "${requirements_view}"
-grep -Fq 'aria-live="polite"' "${requirements_view}"
-grep -Fq 'requirementController?.abort()' "${requirements_view}"
-grep -Fq 'shouldApplyRequirementResponse' "${requirements_view}"
-grep -Fq "requirementError.code === 'EXECUTION_PATH_INVALID'" "${requirements_view}"
-grep -Fq '当前路径已不符合最新流程，请返回重新选择' "${requirements_logic}"
-grep -Fq '目标平台自动确定' "${requirements_logic}"
-grep -Fq '运行时确定' "${requirements_logic}"
-grep -Fq '需要人工核对' "${requirements_logic}"
-grep -Fq '@media (prefers-reduced-motion: reduce)' "${requirements_view}"
-grep -Fq 'v-for="(group, groupIndex) in requirements.groups"' "${requirements_view}"
-grep -Fq ':key="`requirement-group-${groupIndex}`"' "${requirements_view}"
-grep -Fq 'v-for="(node, nodeIndex) in group.nodes"' "${requirements_view}"
-grep -Fq ':key="`requirement-node-${groupIndex}-${nodeIndex}`"' "${requirements_view}"
-if grep -Fq ':key="`${group.kind}-${group.title}`"' "${requirements_view}" \
-  || grep -Fq ':key="`${group.title}-${node.name}-${node.typeName}`"' "${requirements_view}"; then
-  echo 'F-006 分组和节点不得继续用可重复业务文案拼接 Vue key' >&2
+if grep -Fq '核对路径要求' "${paths_view}" || grep -Fq '/requirements' "${paths_view}"; then
+  echo 'F-006 不得在路径配置页显示独立核对入口' >&2
   exit 1
 fi
-grep -Fq 'height: min(620px, calc(100dvh - 260px))' "${requirements_view}"
-if [[ "$(grep -Fc 'overflow-y: auto' "${requirements_view}")" -lt 2 ]]; then
-  echo 'F-006 桌面布局必须让左侧路径列表和右侧要求内容分别滚动' >&2
-  exit 1
-fi
-grep -Fq 'overscroll-behavior: contain' "${requirements_view}"
-grep -Fq 'height: auto' "${requirements_view}"
-
-for forbidden in '运行计划' 'v-model:value' 'FlowGraphCanvas' '@vue-flow/core' '@click="save' '保存后生效'; do
-  if grep -Fq "${forbidden}" "${requirements_view}"; then
-    echo "F-006 只读核对页出现禁止内容：${forbidden}" >&2
+for removed in "${requirements_view}" "${requirements_logic}" "${requirements_test}"; do
+  if [[ -e "${removed}" ]]; then
+    echo "F-006 页面专用前端文件必须删除：${removed}" >&2
     exit 1
   fi
 done
 
-echo 'F-006 前端路由、只读页面、迟到保护与 F-005 工具栏边界检查通过'
+# F-005 画布入口和路径能力仍然存在，删除 F-006 页面不得改变路径配置边界。
+grep -Fq 'FlowGraphCanvas' "${paths_view}"
+grep -Fq '新增路径' "${paths_view}"
+grep -Fq '页面全屏' "${paths_view}"
+grep -Fq '保存路径' "${paths_view}"
+
+echo 'F-006 独立核对入口、路由、页面及页面专用前端模块已移除；F-005 路径边界保留'

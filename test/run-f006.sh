@@ -15,7 +15,6 @@ printf '验证 F-006 三类来源的流程详情与模板/代理表单字段读�
 go test -count=1 ./test/integration -run '^(TestFlowRequirementSnapshotReadsSourceSpecificFormMetadata|TestFlowRequirementReadPreservesTimeoutCancellationAndResponseLimit|TestFlowRequirementReadSessionExpiryReplaysWholeChainOnce|TestFlowTreeReadUsesExactSourceLookupBeforeDetails)'
 
 printf '验证 F-006 前端路径切换、F-005 路径遍历和 F-004 图布局必要回归\n'
-node --no-warnings --experimental-strip-types --test test/unit/frontend/path_requirements_test.mjs
 node --no-warnings --experimental-strip-types --test test/unit/frontend/execution_path_test.mjs
 node --no-warnings --experimental-strip-types --test test/unit/frontend/flow_graph_test.mjs
 ./test/integration/f004_frontend_structure.sh
