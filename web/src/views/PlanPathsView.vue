@@ -344,6 +344,12 @@ async function editActivePath() {
   await canvasRef.value?.setPageFullscreen(true)
 }
 
+// openPathConfiguration 从只读路径详情进入 F-007 单条路径配置工作台。
+function openPathConfiguration() {
+  if (!activePath.value) return
+  router.push('/plans/' + planID.value + '/paths/' + activePath.value.id + '/configure')
+}
+
 function resetWorkspaceState() {
   clearDraft()
   pathWorkspaceOpen.value = false
@@ -711,6 +717,7 @@ onBeforeUnmount(() => {
                     </div>
                     <footer class="path-selection-panel__footer">
                       <template v-if="workspaceMode === 'view'">
+                        <n-button :disabled="!activePath || workspaceActionBusy" @click="openPathConfiguration">配置路径</n-button>
                         <n-button type="primary" :disabled="!activePath || workspaceActionBusy" @click="editActivePath">编辑路径</n-button>
                         <n-dropdown trigger="click" :options="pathMoreOptions" :disabled="workspaceActionBusy" @select="handlePathMoreAction">
                           <n-button secondary :disabled="!activePath || workspaceActionBusy">更多</n-button>
