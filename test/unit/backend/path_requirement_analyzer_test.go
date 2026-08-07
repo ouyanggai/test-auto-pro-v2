@@ -86,6 +86,51 @@ func TestPathRequirementAnalyzerProjectsParallelGroupsAndStatuses(t *testing.T) 
 	}
 }
 
+// TestPathRequirementAnalyzerProjectsMultipleActiveParallelEntries 验证多活动入口分别成组且共同汇合后继只回到主线一次。
+func TestPathRequirementAnalyzerProjectsMultipleActiveParallelEntries(t *testing.T) {
+	tree := requirementParallelTree()
+	graph := requirementGraph(t, tree)
+	graph.EntryNodeIDs = []string{"finance", "business"}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, nil)
+	if err != nil || !analysis.Complete {
+		t.Fatalf("准备多活动并行入口失败：analysis=%+v err=%v", analysis, err)
+	}
+	result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, nil, model.ExecutionPath{SequenceNo: 4, Name: "并行进行中"}, analysis)
+	if err != nil {
+		t.Fatalf("多活动并行入口要求分析失败：%v", err)
+	}
+	if len(result.Groups) != 3 || result.Groups[0].Kind != "main" || result.Groups[1].Kind != "parallel" || result.Groups[2].Kind != "parallel" {
+		t.Fatalf("多活动入口没有形成主线和两个并行分组：%+v", result.Groups)
+	}
+	if !groupHasOnlyNodes(result.Groups[0], "结束") || !groupHasOnlyNodes(result.Groups[1], "财务协同") || !groupHasOnlyNodes(result.Groups[2], "业务审批") {
+		t.Fatalf("多活动入口分组或共同汇合位置不正确：%+v", result.Groups)
+	}
+	if strings.Contains(requirementText(result), "finance") || strings.Contains(requirementText(result), "business") {
+		t.Fatalf("多活动入口要求泄露内部节点 ID：%s", requirementText(result))
+	}
+}
+
+// TestPathRequirementAnalyzerKeepsIndependentMultipleEntriesGrouped 验证无法证明共同汇合时不伪造主线或串联入口。
+func TestPathRequirementAnalyzerKeepsIndependentMultipleEntriesGrouped(t *testing.T) {
+	tree := requirementIndependentParallelTree()
+	graph := requirementGraph(t, tree)
+	graph.EntryNodeIDs = []string{"finance-end", "business-end"}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, nil)
+	if err != nil || !analysis.Complete {
+		t.Fatalf("准备无共同后继多入口失败：analysis=%+v err=%v", analysis, err)
+	}
+	result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, nil, model.ExecutionPath{SequenceNo: 5, Name: "独立分支进行中"}, analysis)
+	if err != nil {
+		t.Fatalf("无共同后继多入口要求分析失败：%v", err)
+	}
+	if len(result.Groups) != 2 || result.Groups[0].Kind != "parallel" || result.Groups[1].Kind != "parallel" {
+		t.Fatalf("无共同后继多入口不应伪造主线：%+v", result.Groups)
+	}
+	if !groupHasOnlyNodes(result.Groups[0], "财务结束") || !groupHasOnlyNodes(result.Groups[1], "业务结束") {
+		t.Fatalf("无共同后继入口被错误串联：%+v", result.Groups)
+	}
+}
+
 // TestPathRequirementAnalyzerDegradesUnknownMetadata 验证未知人员、字段和比较规则只降级单项而不泄露原代码。
 func TestPathRequirementAnalyzerDegradesUnknownMetadata(t *testing.T) {
 	tree := requirementConditionTree()
@@ -305,6 +350,34 @@ func TestPathRequirementAnalyzerDisambiguatesDuplicateFieldKeysByNodeForm(t *tes
 	}
 }
 
+// TestPathRequirementAnalyzerRejectsUniqueFieldOutsideNodeForm 验证唯一候选不属于节点提示表单时不得误匹配。
+func TestPathRequirementAnalyzerRejectsUniqueFieldOutsideNodeForm(t *testing.T) {
+	tree := requirementConditionTree()
+	tree.Child.FieldPowers = []target.FlowNodeFieldPower{{FormID: "form-budget", EnglishName: "amount", Power: "only_read"}}
+	fields := []target.FormFieldMetadata{
+		{FormID: "form-request", FormName: "申请表", FieldID: "field-request", Name: "金额", EnglishName: "amount"},
+	}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备表单提示不一致路径失败：%v", err)
+	}
+	result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, fields, path, analysis)
+	if err != nil {
+		t.Fatalf("表单提示不一致不应让整页失败：%v", err)
+	}
+	item, found := findRequirementItem(result, "大额")
+	if !found || item.Status != model.RequirementReview || !strings.Contains(item.Detail, "未识别的表单字段") {
+		t.Fatalf("表单提示不一致没有稳定降级人工核对：item=%+v result=%s", item, requirementText(result))
+	}
+	for _, forbidden := range []string{"金额", "amount", "form-request", "form-budget", "field-request"} {
+		if strings.Contains(item.Detail, forbidden) {
+			t.Fatalf("表单提示不一致错误使用或泄露字段信息 %q：%s", forbidden, item.Detail)
+		}
+	}
+}
+
 // TestPathRequirementAnalyzerReviewsAmbiguousDuplicateFieldKeys 验证跨表单同键无法唯一定位时保持人工核对。
 func TestPathRequirementAnalyzerReviewsAmbiguousDuplicateFieldKeys(t *testing.T) {
 	tree := requirementConditionTree()
@@ -382,6 +455,18 @@ func requirementParallelTree() *target.FlowNodeTemplate {
 	return &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: parallel}
 }
 
+// requirementIndependentParallelTree 构造两支没有共同后继的并行样本。
+func requirementIndependentParallelTree() *target.FlowNodeTemplate {
+	parallel := &target.FlowNodeTemplate{
+		ID: "parallel", Name: "并行处理", Type: "parallel",
+		ParallelNodes: []target.FlowBranchTemplate{
+			{ID: "parallel-a", Name: "财务线", Sort: 1, Child: &target.FlowNodeTemplate{ID: "finance-end", Name: "财务结束", Type: "end"}},
+			{ID: "parallel-b", Name: "业务线", Sort: 2, Child: &target.FlowNodeTemplate{ID: "business-end", Name: "业务结束", Type: "end"}},
+		},
+	}
+	return &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: parallel}
+}
+
 // requirementText 把公开要求扁平为测试文本。
 func requirementText(result model.PathRequirements) string {
 	var parts []string
@@ -422,6 +507,19 @@ func hasRequirementItem(result model.PathRequirements, title string, status mode
 		}
 	}
 	return false
+}
+
+// groupHasOnlyNodes 验证分组只包含给定公开节点名称且保持顺序。
+func groupHasOnlyNodes(group model.RequirementGroup, names ...string) bool {
+	if len(group.Nodes) != len(names) {
+		return false
+	}
+	for index, name := range names {
+		if group.Nodes[index].Name != name {
+			return false
+		}
+	}
+	return true
 }
 
 // findRequirementItem 按公开标题查找单条要求，供精确断言状态与文案。

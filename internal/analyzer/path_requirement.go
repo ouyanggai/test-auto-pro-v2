@@ -56,11 +56,8 @@ func (a *PathRequirementAnalyzer) Analyze(graph model.FlowGraph, tree *target.Fl
 	if err := collectTargetNodes(tree, projection.targetNodes, make(map[string]bool)); err != nil {
 		return model.PathRequirements{}, err
 	}
-	projection.ensureGroup("main", "主线", "main")
-	for _, entryID := range graph.EntryNodeIDs {
-		if err := projection.walk(entryID, "main", ""); err != nil {
-			return model.PathRequirements{}, err
-		}
+	if err := projection.projectEntries(graph.EntryNodeIDs); err != nil {
+		return model.PathRequirements{}, err
 	}
 	result := model.PathRequirements{
 		Path:   model.PathRequirementPath{SequenceNo: path.SequenceNo, Name: path.Name},
@@ -68,6 +65,106 @@ func (a *PathRequirementAnalyzer) Analyze(graph model.FlowGraph, tree *target.Fl
 	}
 	result.Summary = summarizeRequirements(result.Groups)
 	return result, nil
+}
+
+// projectEntries 按入口数量选择主线或并行活动分组，并只把可证明的共同汇合后继放回主线。
+func (p *requirementProjection) projectEntries(entryIDs []string) error {
+	if len(entryIDs) == 1 {
+		p.ensureGroup("main", "主线", "main")
+		return p.walk(entryIDs[0], "main", "")
+	}
+	mergeID := p.commonReachableMerge(entryIDs)
+	if mergeID != "" {
+		p.ensureGroup("main", "主线", "main")
+	}
+	for index, entryID := range entryIDs {
+		p.parallelIndex++
+		groupKey := fmt.Sprintf("active-parallel-%d", p.parallelIndex)
+		// 多活动入口未必仍能追溯到原并行分支标题，使用稳定顺序说明而不按节点名称或内部 ID 猜测业务分支。
+		p.ensureGroup(groupKey, fmt.Sprintf("并行活动分支 %d", index+1), "parallel")
+		if err := p.walk(entryID, groupKey, mergeID); err != nil {
+			return err
+		}
+	}
+	if mergeID != "" {
+		return p.walk(mergeID, "main", "")
+	}
+	return nil
+}
+
+// commonReachableMerge 在当前路径可达边中寻找所有活动入口最早且唯一的共同汇合节点。
+func (p *requirementProjection) commonReachableMerge(entryIDs []string) string {
+	distances := make([]map[string]int, 0, len(entryIDs))
+	for _, entryID := range entryIDs {
+		distances = append(distances, p.reachableDistances(entryID))
+	}
+	incomingCount := make(map[string]int)
+	for sourceID := range p.outgoing {
+		for _, edge := range p.reachableOutgoing(sourceID) {
+			incomingCount[edge.Target]++
+		}
+	}
+	bestID := ""
+	bestMaxDistance := int(^uint(0) >> 1)
+	bestTotalDistance := bestMaxDistance
+	ambiguous := false
+	for candidateID, firstDistance := range distances[0] {
+		// 共同可达还不足以证明汇合；至少两条当前可达入边才能排除入口祖先等伪共同点。
+		if incomingCount[candidateID] < 2 {
+			continue
+		}
+		maxDistance := firstDistance
+		totalDistance := firstDistance
+		common := true
+		for _, entryDistances := range distances[1:] {
+			distance, exists := entryDistances[candidateID]
+			if !exists {
+				common = false
+				break
+			}
+			if distance > maxDistance {
+				maxDistance = distance
+			}
+			totalDistance += distance
+		}
+		if !common {
+			continue
+		}
+		if maxDistance < bestMaxDistance || (maxDistance == bestMaxDistance && totalDistance < bestTotalDistance) {
+			bestID = candidateID
+			bestMaxDistance = maxDistance
+			bestTotalDistance = totalDistance
+			ambiguous = false
+			continue
+		}
+		if maxDistance == bestMaxDistance && totalDistance == bestTotalDistance {
+			// 同样接近的多个共同点无法安全判断哪个是真实首次汇合，宁可保持分组也不伪造主线。
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return bestID
+}
+
+// reachableDistances 以当前已验证路径的边计算入口到各节点的最短距离。
+func (p *requirementProjection) reachableDistances(entryID string) map[string]int {
+	entryID = strings.TrimSpace(entryID)
+	result := map[string]int{entryID: 0}
+	queue := []string{entryID}
+	for len(queue) > 0 {
+		sourceID := queue[0]
+		queue = queue[1:]
+		for _, edge := range p.reachableOutgoing(sourceID) {
+			if _, exists := result[edge.Target]; exists {
+				continue
+			}
+			result[edge.Target] = result[sourceID] + 1
+			queue = append(queue, edge.Target)
+		}
+	}
+	return result
 }
 
 // collectTargetNodes 建立同一真实树的节点索引，重复或循环仍按结构异常处理。
@@ -309,8 +406,16 @@ func (p *requirementProjection) resolveField(key string, powers []target.FlowNod
 		}
 		allMatches = append(allMatches, field)
 	}
-	if len(allMatches) == 1 && strings.TrimSpace(allMatches[0].Name) != "" {
-		return strings.TrimSpace(allMatches[0].Name), true
+	if len(allMatches) == 1 {
+		candidate := allMatches[0]
+		// 节点已明确给出表单范围时，即使全局只有一个同键字段也必须先核对归属；否则会把其他表单字段误用于当前节点。
+		if len(preferredForms) > 0 && !preferredForms[strings.TrimSpace(candidate.FormID)] {
+			return "未识别的表单字段", false
+		}
+		if strings.TrimSpace(candidate.Name) != "" {
+			return strings.TrimSpace(candidate.Name), true
+		}
+		return "未识别的表单字段", false
 	}
 	if len(allMatches) < 2 || len(preferredForms) != 1 {
 		return "未识别的表单字段", false
