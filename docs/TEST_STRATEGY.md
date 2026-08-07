@@ -101,3 +101,4 @@
 - Go 注释结构测试：F-007 新增或修改的具名函数和方法必须有紧邻中文职责/边界注释，核心字段映射、修订并发、幂等和异常兜底另有说明。
 - `test/run-f007.sh` 只聚合上述 F-007 测试、F-006 要求分析及 F-005 路径归属必要回归、Go build、`vue-tsc`、Vite build 和 `git diff --check`；不跑无关全量测试，不自动启动浏览器。
 - 用户按 `test/manual/F-007.md` 使用真实目标字段和多条已保存路径核对配置入口、字段控件、动作提示、刷新持久化、路径隔离和深浅主题。
+- F-007 实施已完成：`./test/run-f007.sh` 已建立并全量通过（后端单元/契约/适配器集成、F-006/F-005 必要回归、Go build、vue-tsc、Vite build、git diff --check；本机未配置 PLAN_DB_* 时按脚本约定跳过 MySQL 集成测试），状态停在 `ready_for_manual`。

@@ -147,6 +147,7 @@ function updateActionValue(action: PathConfigAction, value: string) {
 }
 
 function backToPaths() {
+  if (dirty.value && !window.confirm('当前有未保存的修改，确定返回吗？')) return
   router.push('/plans/' + planID.value + '/paths')
 }
 
@@ -214,7 +215,7 @@ loadPage()
                   />
                   <n-input-number
                     v-else-if="field.type === 'number'"
-                    :value="typeof fieldValue(field) === 'number' ? fieldValue(field) as number : null"
+                    :value="typeof fieldValue(field) === 'number' ? fieldValue(field) as number : Number(fieldValue(field)) || null"
                     :disabled="node.lineBlocked || !field.editable"
                     :placeholder="field.required ? '请输入必填值' : '选填'"
                     @update:value="(value) => updateFieldValue(field, value)"

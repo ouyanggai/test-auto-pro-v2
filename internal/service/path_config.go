@@ -336,9 +336,6 @@ func validateConfigFieldValue(target analyzer.PathConfigFieldTarget, raw string)
 		if target.Required && strings.TrimSpace(text) == "" {
 			return "必填字段不能为空"
 		}
-		if target.Type == analyzer.PathConfigTypeDateTime && strings.TrimSpace(text) != "" && !validDateTimeText(text) {
-			return "日期时间格式不正确"
-		}
 	case analyzer.PathConfigTypeNumber:
 		_, empty, ok := parseConfigNumber(parsed)
 		if !ok {
@@ -380,17 +377,6 @@ func validateConfigFieldValue(target analyzer.PathConfigFieldTarget, raw string)
 		return "字段类型暂不支持保存"
 	}
 	return ""
-}
-
-// validDateTimeText 校验日期、时间或日期时间文本，兼容目标平台的常见格式。
-func validDateTimeText(value string) bool {
-	value = strings.TrimSpace(value)
-	for _, layout := range []string{"2006-01-02", "2006-01-02 15:04:05", "2006-01-02T15:04:05", "15:04:05"} {
-		if _, err := time.Parse(layout, value); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 // parseConfigNumber 解析数字字段值；空字符串允许但标记为空。
