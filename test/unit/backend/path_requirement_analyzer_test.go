@@ -126,6 +126,108 @@ func TestPathRequirementAnalyzerReviewsMissingAutomaticRange(t *testing.T) {
 	}
 }
 
+// TestPathRequirementAnalyzerMapsAllApprovedAuditTypes 验证功能文档列出的人员规则全部落入证据化中文状态。
+func TestPathRequirementAnalyzerMapsAllApprovedAuditTypes(t *testing.T) {
+	tests := []struct {
+		auditType   string
+		title       string
+		status      model.RequirementStatus
+		rangeNeeded bool
+	}{
+		{auditType: "assign", title: "指定人员", status: model.RequirementAutomatic, rangeNeeded: true},
+		{auditType: "company", title: "项目指定人员", status: model.RequirementAutomatic, rangeNeeded: true},
+		{auditType: "company_id", title: "指定公司", status: model.RequirementAutomatic, rangeNeeded: true},
+		{auditType: "department", title: "指定部门", status: model.RequirementAutomatic, rangeNeeded: true},
+		{auditType: "position", title: "指定岗位", status: model.RequirementAutomatic, rangeNeeded: true},
+		{auditType: "role", title: "选择角色", status: model.RequirementAutomatic, rangeNeeded: true},
+		{auditType: "initiator", title: "发起人自己", status: model.RequirementRuntime},
+		{auditType: "department_supervisor", title: "发起人部门主管", status: model.RequirementRuntime},
+		{auditType: "branched_passage_manager", title: "发起人分管副总", status: model.RequirementRuntime},
+		{auditType: "level", title: "指定岗级", status: model.RequirementRuntime},
+		{auditType: "extendedAttribute", title: "扩展属性", status: model.RequirementRuntime},
+		{auditType: "run_node_choose", title: "审批人自选", status: model.RequirementPending},
+		{auditType: "form_person", title: "指定表单人员", status: model.RequirementPending},
+	}
+	for _, test := range tests {
+		t.Run(test.auditType, func(t *testing.T) {
+			config := &target.FlowNodeAuditConfig{AuditType: test.auditType, Mode: "scramble"}
+			if test.rangeNeeded {
+				config.Details = []target.FlowAuditDetail{{Name: "已配置范围"}}
+			}
+			node := &target.FlowNodeTemplate{ID: "approval", Name: "审批", Type: "common", AuditConfig: config}
+			fields := []target.FormFieldMetadata(nil)
+			if test.auditType == "form_person" {
+				config.FormPersonField = "owner"
+				node.FieldPowers = []target.FlowNodeFieldPower{{FormID: "form", EnglishName: "owner"}}
+				fields = []target.FormFieldMetadata{{FormID: "form", Name: "经办人", EnglishName: "owner"}}
+			}
+			tree := &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: node}
+			graph := requirementGraph(t, tree)
+			path := model.ExecutionPath{SequenceNo: 1}
+			analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, nil)
+			if err != nil {
+				t.Fatalf("准备人员规则路径失败：%v", err)
+			}
+			result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, fields, path, analysis)
+			if err != nil {
+				t.Fatalf("人员规则分析失败：%v", err)
+			}
+			if !hasRequirementItem(result, test.title, test.status) {
+				t.Fatalf("人员规则映射不正确：type=%s result=%s", test.auditType, requirementText(result))
+			}
+		})
+	}
+}
+
+// TestPathRequirementAnalyzerPreservesAndOrFieldComparisonAndManualBranch 验证字段对字段、多条件连接和手动分支语义。
+func TestPathRequirementAnalyzerPreservesAndOrFieldComparisonAndManualBranch(t *testing.T) {
+	end := &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}
+	manual := &target.FlowNodeTemplate{
+		ID: "manual", Name: "人工选择", Type: "condition", BranchExecuteType: "custom_choose",
+		ConditionNodes: []target.FlowBranchTemplate{
+			{ID: "manual-a", Name: "加签", Sort: 1, Child: end},
+			{ID: "manual-b", Name: "直接通过", Sort: 2, Child: &target.FlowNodeTemplate{ID: "end-b", Name: "另一结束", Type: "end"}},
+		},
+	}
+	route := &target.FlowNodeTemplate{
+		ID: "route", Name: "组合条件", Type: "condition", Child: manual,
+		ConditionNodes: []target.FlowBranchTemplate{
+			{ID: "branch-a", Name: "预算内", Sort: 1, Conditions: []target.FlowCondition{
+				{FieldA: "amount", FieldB: "budget", Judge: "lte", ConditionType: "and"},
+				{FieldA: "status", ValueB: "已确认", Judge: "eq"},
+			}, Child: &target.FlowNodeTemplate{ID: "empty", Name: "空节点", Type: "empty"}},
+			{ID: "branch-last", Name: "其他", Sort: 2, Child: &target.FlowNodeTemplate{ID: "fallback", Name: "兜底", Type: "empty"}},
+		},
+	}
+	tree := &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: route}
+	fields := []target.FormFieldMetadata{
+		{Name: "申请金额", EnglishName: "amount"}, {Name: "可用预算", EnglishName: "budget"}, {Name: "确认状态", EnglishName: "status"},
+	}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}, {RouteNodeID: "manual", BranchID: "manual-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备组合条件路径失败：%v", err)
+	}
+	result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, fields, path, analysis)
+	if err != nil {
+		t.Fatalf("组合条件与手动分支分析失败：%v", err)
+	}
+	body := requirementText(result)
+	for _, want := range []string{"申请金额 小于等于 可用预算 并且 确认状态 等于 已确认", "运行时选择该分支：加签"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("组合条件或手动分支语义缺少 %q：%s", want, body)
+		}
+	}
+	for _, group := range result.Groups {
+		for _, node := range group.Nodes {
+			if (node.Name == "空节点" || node.Name == "结束") && len(node.Items) != 0 {
+				t.Fatalf("空节点或结束节点错误产生动作要求：%+v", node)
+			}
+		}
+	}
+}
+
 // requirementGraph 使用现有唯一流程图分析器生成要求测试图。
 func requirementGraph(t *testing.T, tree *target.FlowNodeTemplate) model.FlowGraph {
 	t.Helper()
@@ -198,6 +300,20 @@ func hasRequirementStatus(counts []model.RequirementCount, status model.Requirem
 	for _, count := range counts {
 		if count.Status == status {
 			return true
+		}
+	}
+	return false
+}
+
+// hasRequirementItem 判断结果中是否存在指定标题和状态的要求项。
+func hasRequirementItem(result model.PathRequirements, title string, status model.RequirementStatus) bool {
+	for _, group := range result.Groups {
+		for _, node := range group.Nodes {
+			for _, item := range node.Items {
+				if item.Title == title && item.Status == status {
+					return true
+				}
+			}
 		}
 	}
 	return false
