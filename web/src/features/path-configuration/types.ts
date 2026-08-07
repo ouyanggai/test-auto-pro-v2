@@ -1,4 +1,4 @@
-export type PathConfigFieldType = 'text' | 'number' | 'dateTime' | 'singleSelect' | 'multiSelect' | 'switch'
+export type PathConfigFieldType = 'text' | 'number' | 'date' | 'dateTime' | 'singleSelect' | 'multiSelect' | 'switch'
 
 export interface PathConfigPath {
   sequenceNo: number
@@ -8,7 +8,7 @@ export interface PathConfigPath {
 export interface PathConfiguration {
   path: PathConfigPath
   revision: number
-  status: 'configured' | 'affected'
+  status: 'pending' | 'configured' | 'affected'
   groups: PathConfigGroup[]
   warnings: string[]
 }

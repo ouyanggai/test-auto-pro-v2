@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import {
   NAlert,
   NButton,
+  NDatePicker,
   NInput,
   NInputNumber,
   NSelect,
@@ -10,7 +11,6 @@ import {
   NRadioGroup,
   NRadioButton,
   NSpin,
-  useMessage,
 } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -20,10 +20,16 @@ import {
   savePathConfiguration,
 } from '../features/path-configuration/api'
 import {
+  fetchExecutionPaths,
+} from '../features/execution-paths/api'
+import type { ExecutionPath } from '../features/execution-paths/types'
+import {
+  applyPathConfigDraft,
   allEditableFieldsFilled,
   buildPathConfigSavePayload,
   encodePathConfigValue,
   hasPathConfigDraftChanges,
+  canSavePathConfiguration,
   initPathConfigDraft,
   parsePathConfigValue,
 } from '../features/path-configuration/logic'
@@ -38,7 +44,6 @@ import type { PersistedPlan } from '../features/plans/types'
 
 const route = useRoute()
 const router = useRouter()
-const message = useMessage()
 const planID = computed(() => String(route.params.planId || ''))
 const pathID = computed(() => String(route.params.pathId || ''))
 const plan = ref<PersistedPlan | null>(null)
@@ -49,6 +54,8 @@ const saving = ref(false)
 const pageError = ref('')
 const saveError = ref('')
 const saveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
+const savedSuccessfully = ref(false)
+const executionPaths = ref<ExecutionPath[]>([])
 let loadVersion = 0
 let loadController: AbortController | null = null
 let saveController: AbortController | null = null
@@ -61,8 +68,8 @@ const requiredState = computed(() => configuration.value
 const saveDisabled = computed(() => loading.value
   || saving.value
   || !configuration.value
-  || !dirty.value
-  || !requiredState.value.complete)
+  || !canSavePathConfiguration(configuration.value, draft.value))
+const nextUnconfiguredPath = computed(() => executionPaths.value.find((path) => path.configurationStatus !== 'configured') ?? null)
 
 async function loadPage() {
   loadController?.abort()
@@ -73,6 +80,7 @@ async function loadPage() {
   pageError.value = ''
   saveError.value = ''
   saveDetails.value = []
+  savedSuccessfully.value = false
   plan.value = null
   configuration.value = null
   try {
@@ -106,14 +114,24 @@ async function saveConfiguration() {
   saveDetails.value = []
   const payload = buildPathConfigSavePayload(current, draft.value)
   try {
-    await savePathConfiguration(planID.value, pathID.value, current.revision, payload.fields, payload.actions, saveKey)
-    message.success('路径配置已保存')
-    // 保存成功后以服务端最新模型刷新，同步修订号与不同意动作后的阻断状态。
-    await loadPage()
+    const saved = await savePathConfiguration(planID.value, pathID.value, current.revision, payload.fields, payload.actions, saveKey)
+    configuration.value = applyPathConfigDraft(current, draft.value, saved.revision)
+    saveKey = crypto.randomUUID()
+    savedSuccessfully.value = true
+    saveError.value = ''
+    saveDetails.value = []
+    // 保存成功后只刷新本地路径状态列表，不重读目标图，避免把用户视口和当前配置结果打回初始态。
+    try {
+      executionPaths.value = await fetchExecutionPaths(planID.value, new AbortController().signal)
+    }
+    catch (caught) {
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) {
+        executionPaths.value = []
+      }
+    }
   }
   catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') return
-    saving.value = false
     if (caught instanceof PathConfigApiError) {
       saveDetails.value = caught.details
       if (caught.code === 'CONFIG_INVALID') {
@@ -128,6 +146,10 @@ async function saveConfiguration() {
       saveError.value = '保存失败，草稿已保留，请重试'
     }
   }
+  finally {
+    // 无论成功、失败还是请求取消，都释放保存门禁；否则成功后的返回/下一条操作会被永久误判为保存中。
+    saving.value = false
+  }
 }
 
 function fieldValue(field: PathConfigField): unknown {
@@ -136,6 +158,11 @@ function fieldValue(field: PathConfigField): unknown {
 
 function updateFieldValue(field: PathConfigField, value: unknown) {
   draft.value.fields[field.key] = encodePathConfigValue(field, value)
+}
+
+function dateFieldValue(field: PathConfigField): string | null {
+  const value = fieldValue(field)
+  return typeof value === 'string' && value.trim() !== '' ? value : null
 }
 
 function actionValue(action: PathConfigAction): string {
@@ -170,8 +197,8 @@ loadPage()
       <div v-if="configuration" class="path-configuration-page__summary">
         <span>序号 #{{ configuration.path.sequenceNo }}</span>
         <span>{{ configuration.path.name }}</span>
-        <n-tag :bordered="false" :type="configuration.status === 'affected' ? 'warning' : 'success'" size="small">
-          {{ configuration.status === 'affected' ? '需要重新核对' : '已保存配置' }}
+        <n-tag :bordered="false" :type="configuration.status === 'affected' ? 'warning' : configuration.status === 'pending' ? 'default' : 'success'" size="small">
+          {{ configuration.status === 'affected' ? '需要重新核对' : configuration.status === 'pending' ? '待保存配置' : '已保存配置' }}
         </n-tag>
       </div>
     </header>
@@ -220,12 +247,23 @@ loadPage()
                     :placeholder="field.required ? '请输入必填值' : '选填'"
                     @update:value="(value) => updateFieldValue(field, value)"
                   />
-                  <n-input
-                    v-else-if="field.type === 'dateTime'"
-                    :value="String(fieldValue(field))"
+                  <n-date-picker
+                    v-else-if="field.type === 'date'"
+                    type="date"
+                    value-format="yyyy-MM-dd"
+                    :formatted-value="dateFieldValue(field)"
                     :disabled="node.lineBlocked || !field.editable"
-                    placeholder="例如 2026-08-07 或 2026-08-07 10:00:00"
-                    @update:value="(value) => updateFieldValue(field, value)"
+                    placeholder="请选择日期"
+                    @update:formatted-value="(value) => updateFieldValue(field, value)"
+                  />
+                  <n-date-picker
+                    v-else-if="field.type === 'dateTime'"
+                    type="datetime"
+                    value-format="yyyy-MM-dd HH:mm:ss"
+                    :formatted-value="dateFieldValue(field)"
+                    :disabled="node.lineBlocked || !field.editable"
+                    placeholder="请选择日期时间"
+                    @update:formatted-value="(value) => updateFieldValue(field, value)"
                   />
                   <n-select
                     v-else-if="field.type === 'singleSelect'"
@@ -302,7 +340,17 @@ loadPage()
         </n-alert>
         <span v-else-if="requiredState.missing.length">还有 {{ requiredState.missing.length }} 个必填字段未填写</span>
         <span v-else-if="dirty">有未保存的修改</span>
+        <n-alert v-if="savedSuccessfully" type="success" :show-icon="false" size="small">
+          路径配置已保存
+        </n-alert>
+        <span v-else-if="configuration.status === 'pending'">尚未保存配置</span>
         <span v-else>配置已保存</span>
+      </div>
+      <div v-if="savedSuccessfully" class="path-configuration-page__success-actions">
+        <n-button @click="router.push('/plans/' + planID + '/paths')">返回计划详情</n-button>
+        <n-button v-if="nextUnconfiguredPath" type="primary" @click="router.push('/plans/' + planID + '/paths/' + nextUnconfiguredPath.id + '/configure')">
+          配置下一条
+        </n-button>
       </div>
       <n-button type="primary" :loading="saving" :disabled="saveDisabled" @click="saveConfiguration">保存配置</n-button>
     </footer>
@@ -462,6 +510,11 @@ loadPage()
 .path-configuration-page__footer-status {
   flex: 1;
   font-size: 13px;
+}
+
+.path-configuration-page__success-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .path-configuration-page__details {

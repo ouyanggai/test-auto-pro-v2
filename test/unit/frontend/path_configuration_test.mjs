@@ -3,6 +3,8 @@ import test from 'node:test'
 
 import {
   allEditableFieldsFilled,
+  canSavePathConfiguration,
+  applyPathConfigDraft,
   buildPathConfigSavePayload,
   encodePathConfigValue,
   hasPathConfigDraftChanges,
@@ -71,6 +73,22 @@ test('草稿无变化不提示保存，修改后提示', () => {
   draft.fields['field-amount'] = '2500'
   draft.actions['action-approve'] = 'disagree'
   assert.equal(hasPathConfigDraftChanges(configuration, draft), true)
+})
+
+test('首次没有配置记录时即使草稿未变化也允许保存，已保存状态仍需真实变化', () => {
+  const draft = initPathConfigDraft({ ...configuration, status: 'pending' })
+  assert.equal(canSavePathConfiguration({ ...configuration, status: 'pending' }, draft), true)
+  assert.equal(canSavePathConfiguration(configuration, initPathConfigDraft(configuration)), false)
+})
+
+test('保存成功后配置模型立即成为已保存基线并保留当前结果', () => {
+  const draft = initPathConfigDraft({ ...configuration, status: 'pending' })
+  draft.fields['field-amount'] = '3000'
+  const saved = applyPathConfigDraft({ ...configuration, status: 'pending' }, draft, 3)
+  assert.equal(saved.status, 'configured')
+  assert.equal(saved.revision, 3)
+  assert.equal(saved.groups[0].nodes[1].fields[0].value, '3000')
+  assert.equal(hasPathConfigDraftChanges(saved, draft), false)
 })
 
 test('字段值按控件类型往返编码', () => {

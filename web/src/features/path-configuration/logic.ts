@@ -49,6 +49,31 @@ export function hasPathConfigDraftChanges(configuration: PathConfiguration, draf
   return baselineFields !== JSON.stringify(draft.fields) || baselineActions !== JSON.stringify(draft.actions)
 }
 
+// canSavePathConfiguration 允许首次无记录配置在默认值/实例现值未改变时保存，同时要求必填项完整。
+export function canSavePathConfiguration(configuration: PathConfiguration, draft: PathConfigDraft): boolean {
+  const required = allEditableFieldsFilled(configuration, draft)
+  if (!required.complete) return false
+  return configuration.status === 'pending' || hasPathConfigDraftChanges(configuration, draft)
+}
+
+// applyPathConfigDraft 把成功保存后的草稿写回当前投影，立即复位 dirty 基线而不重新读取目标或重置页面视口。
+export function applyPathConfigDraft(configuration: PathConfiguration, draft: PathConfigDraft, revision: number): PathConfiguration {
+  const next = structuredClone(configuration) as PathConfiguration
+  next.revision = revision
+  next.status = 'configured'
+  for (const group of next.groups) {
+    for (const node of group.nodes) {
+      for (const field of node.fields) {
+        if (Object.prototype.hasOwnProperty.call(draft.fields, field.key)) field.value = draft.fields[field.key]
+      }
+      for (const action of node.actions) {
+        if (Object.prototype.hasOwnProperty.call(draft.actions, action.key)) action.current = draft.actions[action.key]
+      }
+    }
+  }
+  return next
+}
+
 // buildPathConfigSavePayload 把草稿收敛为后端最小回写体，只包含当前配置中的可编辑项。
 export function buildPathConfigSavePayload(configuration: PathConfiguration, draft: PathConfigDraft): { fields: PathConfigFieldValue[], actions: PathConfigActionValue[] } {
   const fields: PathConfigFieldValue[] = []

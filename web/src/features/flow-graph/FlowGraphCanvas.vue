@@ -382,6 +382,7 @@ onBeforeUnmount(() => {
   >
     <div v-if="laidOut" class="flow-graph-canvas__actions">
       <slot v-if="isPageFullscreen" name="canvas-actions" />
+      <slot v-else name="canvas-actions-normal" />
       <n-button
         class="flow-graph-canvas__fullscreen-button"
         size="small"

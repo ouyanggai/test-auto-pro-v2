@@ -14,6 +14,7 @@ import {
   nextExecutionPathRouteID,
   previewAllExecutionPaths,
   projectExecutionPathSummary,
+  summarizeExecutionPathConfiguration,
   projectExecutionPathGuide,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
@@ -194,6 +195,17 @@ test('路径列表未完成或失败时不能进入选择模式', () => {
   assert.equal(canEnterExecutionPathSelection({ ...ready, pathsLoaded: false }), false)
   assert.equal(canEnterExecutionPathSelection({ ...ready, pathsFailed: true }), false)
   assert.equal(canEnterExecutionPathSelection({ ...ready, graphReady: false }), false)
+})
+
+test('路径准备摘要只依据本地配置状态并稳定选择下一条', () => {
+  const paths = [
+    { id: '1', sequenceNo: 1, name: '一', configurationStatus: 'configured', choices: [], updatedAt: '' },
+    { id: '2', sequenceNo: 2, name: '二', configurationStatus: 'pending', choices: [], updatedAt: '' },
+    { id: '3', sequenceNo: 3, name: '三', configurationStatus: 'pending', choices: [], updatedAt: '' },
+  ]
+  const summary = summarizeExecutionPathConfiguration(paths)
+  assert.deepEqual({ total: summary.total, configured: summary.configured, pending: summary.pending }, { total: 3, configured: 1, pending: 2 })
+  assert.equal(summary.nextPath.id, '2')
 })
 
 test('路径切换只在名称或线路真实变化时保护草稿', () => {

@@ -37,6 +37,7 @@ import {
   previewAllExecutionPaths,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
+  summarizeExecutionPathConfiguration,
   transitionExecutionPathWorkspace,
 } from '../features/execution-paths/logic'
 import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode } from '../features/execution-paths/types'
@@ -87,6 +88,10 @@ let draftRecoveryVersion = 0
 
 const planID = computed(() => String(route.params.id || ''))
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
+const pathConfigurationSummary = computed(() => summarizeExecutionPathConfiguration(paths.value))
+const configuredPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'configured'))
+const pendingPaths = computed(() => paths.value.filter((path) => path.configurationStatus !== 'configured'))
+const nextUnconfiguredPath = computed(() => pathConfigurationSummary.value.nextPath)
 const pathAnalysis = computed(() => graph.value
   ? analyzeExecutionPath(graph.value, draftChoices.value)
   : null)
@@ -337,6 +342,20 @@ function selectBranch(choice: ExecutionPathChoice) {
   draftChangedByGraph.value = false
 }
 
+// enterPathEditing 让“编辑路径”明确承担线路管理入口；页面全屏按钮本身只负责查看放大。
+async function enterPathEditing() {
+  if (!graph.value || !pathsLoaded.value || pathsError.value || saving.value || deleting.value || draftRecoveryLoading.value) return
+  if (paths.value.length === 0) {
+    await startNewPath()
+    return
+  }
+  clearDraft()
+  pathWorkspaceOpen.value = false
+  closeSavedPaths()
+  await canvasRef.value?.setPageFullscreen(true)
+  savedPathsOpen.value = true
+}
+
 async function editActivePath() {
   if (!activePath.value || workspaceMode.value !== 'view' || workspaceActionBusy.value) return
   workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'edit')
@@ -345,9 +364,9 @@ async function editActivePath() {
 }
 
 // openPathConfiguration 从只读路径详情进入 F-007 单条路径配置工作台。
-function openPathConfiguration() {
-  if (!activePath.value) return
-  router.push('/plans/' + planID.value + '/paths/' + activePath.value.id + '/configure')
+function openPathConfiguration(path: ExecutionPath | null = activePath.value) {
+  if (!path) return
+  router.push('/plans/' + planID.value + '/paths/' + path.id + '/configure')
 }
 
 function resetWorkspaceState() {
@@ -442,6 +461,15 @@ async function savePath() {
     else paths.value.push(saved)
     paths.value.sort((left, right) => left.sequenceNo - right.sequenceNo)
     plan.value.pathCount = paths.value.length
+    try {
+      // 路径线路保存接口不负责配置状态；保存后重新读取本地列表，避免已配置路径被响应中的空状态覆盖。
+      const refreshed = await fetchExecutionPaths(planID.value, new AbortController().signal)
+      paths.value = refreshed
+      plan.value.pathCount = refreshed.length
+    }
+    catch {
+      // 列表刷新失败不影响已成功保存的线路，也不清空当前列表或草稿状态。
+    }
     if (deriveExecutionPathWorkspaceDisposition('save-success', true) === 'reset') {
       await completeWorkspaceReset()
     }
@@ -579,6 +607,45 @@ onBeforeUnmount(() => {
           <n-descriptions-item label="路径数量">{{ plan.pathCount }}</n-descriptions-item>
         </n-descriptions>
 
+        <section class="path-preparation" aria-labelledby="path-preparation-heading">
+          <div class="path-preparation__header">
+            <div>
+              <h2 id="path-preparation-heading">路径准备 / 下一步</h2>
+              <p v-if="pathsLoading">正在读取本地路径配置状态</p>
+              <p v-else-if="pathsError">暂时无法读取路径状态，请先重试</p>
+              <p v-else>已保存 {{ paths.length }} 条，已配置 {{ configuredPaths.length }} 条，待配置 {{ pendingPaths.length }} 条</p>
+            </div>
+            <n-button
+              v-if="!pathsLoading && !pathsError && nextUnconfiguredPath"
+              type="primary"
+              :disabled="!graph || graphLoading"
+              @click="openPathConfiguration(nextUnconfiguredPath)"
+            >
+              配置下一条
+            </n-button>
+            <n-tag v-else-if="!pathsLoading && !pathsError && paths.length" type="success" :bordered="false">
+              路径配置已完成
+            </n-tag>
+          </div>
+
+          <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
+            <span>下一步：新增执行路径</span>
+            <n-button type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="enterPathEditing">新增路径</n-button>
+          </div>
+          <div v-else-if="!pathsLoading && !pathsError && paths.length" class="path-preparation__list">
+            <div v-for="path in paths" :key="path.id" class="path-preparation__item">
+              <div class="path-preparation__identity">
+                <span class="path-preparation__sequence">#{{ path.sequenceNo }}</span>
+                <span class="path-preparation__name" :title="pathDisplayName(path)">{{ pathDisplayName(path) }}</span>
+                <n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : 'warning'">
+                  {{ path.configurationStatus === 'configured' ? '已配置' : '未配置' }}
+                </n-tag>
+              </div>
+              <n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">配置</n-button>
+            </div>
+          </div>
+        </section>
+
         <section class="graph-section" aria-labelledby="flow-graph-heading">
           <div class="graph-heading">
             <div>
@@ -615,6 +682,16 @@ onBeforeUnmount(() => {
                 @close-saved-paths="closeSavedPaths"
                 @retry="retryGraph"
               >
+                <template #canvas-actions-normal>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    :disabled="!pathsLoaded || Boolean(pathsError) || saving || deleting || generatingAll || draftRecoveryLoading"
+                    @click="enterPathEditing"
+                  >
+                    编辑路径
+                  </n-button>
+                </template>
                 <template #canvas-actions>
                   <n-button
                     v-if="!workspacePresentation.branchEditing"
@@ -717,7 +794,7 @@ onBeforeUnmount(() => {
                     </div>
                     <footer class="path-selection-panel__footer">
                       <template v-if="workspaceMode === 'view'">
-                        <n-button :disabled="!activePath || workspaceActionBusy" @click="openPathConfiguration">配置路径</n-button>
+                        <n-button :disabled="!activePath || workspaceActionBusy" @click="() => openPathConfiguration()">配置路径</n-button>
                         <n-button type="primary" :disabled="!activePath || workspaceActionBusy" @click="editActivePath">编辑路径</n-button>
                         <n-dropdown trigger="click" :options="pathMoreOptions" :disabled="workspaceActionBusy" @select="handlePathMoreAction">
                           <n-button secondary :disabled="!activePath || workspaceActionBusy">更多</n-button>
@@ -887,6 +964,75 @@ onBeforeUnmount(() => {
 .page-heading h1 {
   margin-bottom: 8px;
   font-size: 28px;
+}
+
+.path-preparation {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 14px 16px;
+  background: var(--n-color);
+  border: 1px solid var(--n-border-color);
+  border-radius: 4px;
+}
+
+.path-preparation__header,
+.path-preparation__item,
+.path-preparation__empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.path-preparation__header h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.path-preparation__header p {
+  margin: 0;
+  color: var(--n-text-color-2);
+  font-size: 13px;
+}
+
+.path-preparation__empty {
+  padding-top: 4px;
+  color: var(--n-text-color-1);
+  font-size: 13px;
+}
+
+.path-preparation__list {
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.path-preparation__item {
+  min-height: 40px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--n-divider-color);
+}
+
+.path-preparation__identity {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.path-preparation__sequence {
+  flex: 0 0 auto;
+  color: var(--n-text-color-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.path-preparation__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .graph-heading h2 {
