@@ -100,6 +100,12 @@ func writePathConfigError(response http.ResponseWriter, err error) {
 		}})
 	case service.IsPathConfigErrorKind(err, service.PathConfigErrorStorage):
 		writeFailure(response, http.StatusServiceUnavailable, "PLAN_STORAGE_UNAVAILABLE", "路径配置存储暂不可用，请重试", true)
+	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorNotFound):
+		writeFailure(response, http.StatusNotFound, "EXECUTION_PATH_NOT_FOUND", "执行路径不存在", false)
+	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorLocked):
+		writeFailure(response, http.StatusConflict, "PLAN_LOCKED", "计划已经不能修改路径配置", false)
+	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorStorage):
+		writeFailure(response, http.StatusServiceUnavailable, "PLAN_STORAGE_UNAVAILABLE", "路径存储暂不可用，请重试", true)
 	default:
 		writeFlowGraphError(response, err)
 	}
