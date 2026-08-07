@@ -228,6 +228,54 @@ func TestPathRequirementAnalyzerPreservesAndOrFieldComparisonAndManualBranch(t *
 	}
 }
 
+// TestPathRequirementAnalyzerTranslatesContainsUsingTargetArgumentOrder 验证包含判断按目标 b.contains(a) 的真实方向表达。
+func TestPathRequirementAnalyzerTranslatesContainsUsingTargetArgumentOrder(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		valueType string
+		want      string
+		forbidden []string
+	}{
+		{name: "固定业务值", value: "集团总部、区域公司", want: "集团总部、区域公司 包含 申请部门"},
+		{name: "目标人员范围", value: "person-secret-1,person-secret-2", valueType: "person", want: "目标配置的人员范围 包含 申请部门", forbidden: []string{"person-secret-1", "person-secret-2"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tree := requirementConditionTree()
+			condition := &tree.Child.ConditionNodes[0].Conditions[0]
+			condition.FieldA = "department"
+			condition.FieldB = ""
+			condition.ValueB = test.value
+			condition.ValueType = test.valueType
+			condition.Judge = "contains"
+			fields := []target.FormFieldMetadata{{Name: "申请部门", EnglishName: "department"}}
+			graph := requirementGraph(t, tree)
+			path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+			analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+			if err != nil {
+				t.Fatalf("准备包含条件路径失败：%v", err)
+			}
+			result, err := analyzer.NewPathRequirementAnalyzer().Analyze(graph, tree, fields, path, analysis)
+			if err != nil {
+				t.Fatalf("包含条件要求分析失败：%v", err)
+			}
+			body := requirementText(result)
+			if !strings.Contains(body, test.want) {
+				t.Fatalf("包含条件方向不符合目标 b.contains(a)：want=%q result=%s", test.want, body)
+			}
+			if strings.Contains(body, "申请部门 包含") {
+				t.Fatalf("包含条件错误沿用左字段包含右值：%s", body)
+			}
+			for _, forbidden := range test.forbidden {
+				if strings.Contains(body, forbidden) {
+					t.Fatalf("人员包含条件泄露目标人员 ID %q：%s", forbidden, body)
+				}
+			}
+		})
+	}
+}
+
 // TestPathRequirementAnalyzerDisambiguatesDuplicateFieldKeysByNodeForm 验证节点字段权限能唯一定位表单时公开“表单 / 字段”。
 func TestPathRequirementAnalyzerDisambiguatesDuplicateFieldKeysByNodeForm(t *testing.T) {
 	tree := requirementConditionTree()

@@ -266,7 +266,11 @@ func (p *requirementProjection) translateCondition(condition target.FlowConditio
 		right, rightOK = p.resolveField(condition.FieldB, powers)
 	} else if strings.TrimSpace(condition.ValueType) == "person" {
 		// 人员条件值常为目标业务 ID，公开层只能说明其业务语义，不能把原值透出。
-		right = "目标配置的人员值"
+		if strings.TrimSpace(condition.Judge) == "contains" {
+			right = "目标配置的人员范围"
+		} else {
+			right = "目标配置的人员值"
+		}
 	} else if right == "" && judge != "已填写" && judge != "已修改" {
 		right = "未识别的条件值"
 		rightOK = false
@@ -276,6 +280,10 @@ func (p *requirementProjection) translateCondition(condition target.FlowConditio
 	}
 	if right == "" {
 		return strings.TrimSpace(left + " " + judge), leftOK && judgeOK && rightOK
+	}
+	if strings.TrimSpace(condition.Judge) == "contains" {
+		// 目标 JudgeEnum 实际执行 b.contains(a)，因此中文必须保持右值包含左字段值，不能沿用其他比较符的左右顺序。
+		return strings.TrimSpace(right + " " + judge + " " + left), leftOK && judgeOK && rightOK
 	}
 	return strings.TrimSpace(left + " " + judge + " " + right), leftOK && judgeOK && rightOK
 }
