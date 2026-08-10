@@ -131,10 +131,10 @@
 - 路径准备卡片通过 `useThemeVars` 映射 Naive UI 的 `cardColor`、`bodyColor`、`borderColor`、`dividerColor` 和主次文字色，避免从 `NSpin` 等父组件误继承 `--n-color` 主色。路径列表独立滚动并限制在首屏剩余空间；流程区为纵向 flex，画布占用标题与错误提示之外的剩余高度。
 - 后端新增路径配置服务和配置仓储，所有请求先校验计划、路径归属及计划仍处于未运行状态，再按计划保存的账号、流程来源和目标对象重新读取当前真实配置。要求分析、可编辑字段投影和动作目录在同一次目标只读会话中完成，目标会话失效时整条读取链最多重放一次。
 - 公开节点配置 DTO 按真实节点分组，只返回路径摘要、节点顺序与类型、逐节点配置状态、人员规则、合法候选、动作候选和缺口状态。节点右侧面板不再接收或渲染表单字段；配置键仍由后端生成且只用于本次回写。
-- 新增独立 `form-runtime/` 前端工作区，使用与 `rsh-flow-components` 一致的 Vue 2、Element UI 和真实 FormMaking 生成器渲染表单，通过 iframe 与主 Vue 3 应用隔离。实现以 `参考代码/rsh-cloud-vue-form-making` 为表单引擎来源、以 `参考代码/rsh-flow-components` 为集成行为依据，只复制当前运行所需的渲染资产和适配组件，不复制旧流程路由、Vuex、认证、axios、目标写接口或业务工作台。
-- `form-runtime` 不直接调用目标平台。Go 适配层读取当前模板、实例数据和权限后提供经过约束的表单会话；主应用以带版本和会话标识的 `postMessage` 协议向 iframe 发送模板、初始值、模式和权限，iframe 只返回 ready、change、validate、snapshot 和 unsupported 事件。消息必须校验窗口来源、会话标识和协议版本，销毁后拒绝迟到消息。
+- 新增独立 `form-runtime/` 前端工作区，以 `参考代码/rsh-flow-components` 固定提交 `bff4ef8b938db5578c3f7eab1f482a4e9388917c` 的完整 tracked 源码副本为上游原样区，保留真实 `fm-generate-form`、字段权限、刷新、虚拟字段和目标自定义组件源码。`form-runtime/upstream/` 只由受控同步覆盖；`form-runtime/src/`、`vendor/`、构建入口和同步清单属于本项目适配层，禁止同步静默覆盖。`.npmrc`、Git 元数据、依赖和构建产物明确排除。
+- 独立入口不挂载旧工作台路由、登录页或 Vuex，也不调用目标流程写接口。主应用以带版本、会话标识和请求标识的 `postMessage` 协议向 iframe 发送完整模板、权限、初始值、模式及当前已验证账号缓存的 SID/目标只读网关；消息必须核对 origin、source、协议版本和 session，销毁后拒绝迟到消息。SID 只存在于当前会话请求策略闭包，不写入数据库、Git 或浏览器长期存储；目标提交、草稿和已知业务写端点在运行时侧再次阻断。
 - 开发时根 `pnpm dev:f` 同时以前台持有方式启动主 Vue 3 页面和表单运行时并保持热更新；主页面使用稳定的 `/form-runtime/` 地址加载 iframe。生产构建先构建运行时，再把产物放入主站固定子目录，不依赖旧 `rsh-flow-components` 服务在线。
-- 新发起从当前模板读取完整 FormMaking 模板和默认模型，并叠加该路径工具侧保存的测试数据；已发、待发按精确实例 ID 读取当前 `formDataMongoVo.data`，本切片只读展示。模板原始标识、SID 和目标 envelope 不进入 postMessage；需要目标查询的自定义组件必须经过本项目单独的适配 RPC，没有适配时由运行时在原布局位置报告 unsupported，禁止组件自行复用旧应用 axios。
+- 新发起从当前模板读取完整 FormMaking 模板和默认模型，并叠加该路径工具侧保存的测试数据；已发、待发按精确实例 ID 读取当前 `formDataMongoVo.data`，本切片只读展示。目标 envelope 不进入 postMessage；目标组件只有在独立入口中证明可在受控只读请求策略下运行时才注册，仍依赖旧宿主路由、Vuex、业务写钩子或外部服务的组件明确报告 unsupported，禁止降级为普通控件。
 - FormMaking 会话加载模板后按目标字段权限执行 `refresh`，隐藏或禁用不可编辑字段并移除其必填校验；保存先执行 `getData(true)`，再以 `getValues()` 的完整对象为权威数据。运行时不得执行 `beforeSubmitAndDraft` 等可能产生目标业务写入的钩子。
 - 新增独立的模板解析、样本画像和表单数据生成模块。生成器递归处理 FormMaking 容器与基础控件，使用稳定 seed 叠加模板默认值、真实选项、当前发起人、受限人员候选、路径条件约束和少量近期样本；显式人工覆盖始终优先，并保存 `generatedFieldPaths` 与 `manualOverridePaths`。高级 AI 语义生成、跨模板学习及未知复杂组件生成延后。
 - 样本只通过 `internal/adapter/target` 使用计划保存的账号读取近期可见已发实例，再以 `getCurrentFromData` 获取少量 `formDataMongoVo.data`；禁止直连目标 Mongo。读取必须限制页数、样本数和并发，并使用短期进程内缓存；样本不足返回来源摘要后由模板约束确定性兜底。
@@ -145,6 +145,13 @@
 - Vue Flow 只读模式继续禁止任意元素编辑；配置态对当前路径可配置节点显式打开包装层指针事件并使用节点点击事件切换面板。状态角标脱离节点名称排版，可点击节点具备 pointer、hover、focus、selected 和键盘反馈，路径外节点保持禁用。
 - 节点配置画布组件明确区分配置态与后续运行态。F-007 只实现配置态；暂停、继续、单步和临时断点在没有运行记录与真实调度时不得显示为可用。后续运行态复用同一流程树、节点选择和固定操作面板，临时断点保存在运行记录而非路径配置。
 - F-007 的 `configured` 只表示工具侧当前路径的必需节点已逐一确认，且该来源要求的路径级表单状态已经满足；它不改变 `test_plans.status` 为可运行，不生成运行记录，也不调用目标平台写接口。附件上传、高级 AI 语义生成、跨模板学习、成功断言和运行时动作进入后续切片。
+
+### form-runtime 受控维护流水线
+
+- 维护语义迁移自旧 V2 ADR-0016，固定状态机为 `INSPECT → SYNC → SYNC_CHECK → BUILD → RESTART → VERIFY → COMPLETED`。当前项目不复制旧 Docker/Colima 部署：`PnpmOperator` 把候选构建到 `.runtime/form-runtime-maintenance/versions/candidate-job-N`，构建和静态健康检查完成前不触碰 `web/dist/form-runtime`；切换使用同父目录替换并持久化 current 指针，切换或最终健康失败时从 previous 版本目录恢复并再次核验。
+- 同步来源固定为 `参考代码/rsh-flow-components` 的规范远端、`master` 分支和清单记录的精确 HEAD。更新参考仓库仍先经过 `make refs-sync`/`make refs-status` 的干净、分支和快进约束；维护 API 不接受路径、分支、HEAD、构建命令或环境选择。执行前再次复核任务创建时的来源快照，来源变脏或变化即失败。
+- `form-runtime/sync-manifest.json` 是唯一同步映射：当前来源本身已是独立组件仓库，因此完整镜像其 tracked `src/`、`public/` 和构建元数据，比旧 V2 从完整业务应用抽取的 35 项映射更直接；仍保留显式映射、内容摘要 `SYNC_CHECK`、未知 upstream 修改拒绝和本地适配保护语义。状态/试运行通过 `make form-runtime-status`，一键任务通过 `make form-runtime-sync` 或系统设置页触发，两者都不能覆盖参数。
+- `test_form_runtime_sync_jobs` 是维护任务正确性来源，数据库唯一键保证单活动任务。Worker 使用租约续期与 fencing token；旧 Worker 不能推进阶段或完成任务，进程重启后从持久化的 `RESTART/VERIFY` 和 candidate/previous 事实恢复，不能重新同步或覆盖既有候选。在线日志写入运行目录，API 最多返回最新 512 KiB 并标记截断，SID 与表单数据不会进入维护任务或日志。
 
 ## 数据与部署演进
 

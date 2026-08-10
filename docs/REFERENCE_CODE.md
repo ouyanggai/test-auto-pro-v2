@@ -23,3 +23,5 @@
 - 目标平台真实代码和运行结果是业务规则依据。
 - `rsh-cloud-invest-power-system` 只分析 `GroupApproveManage` 及其直接引用公共组件。
 - 任何脏目录、分支不符、分叉或远端错误都会中止同步；禁止 reset 或 checkout 覆盖。
+- F-007 的 `form-runtime/upstream/` 固定同步 `rsh-flow-components` 的规范远端、`master` 和 HEAD `bff4ef8b938db5578c3f7eab1f482a4e9388917c`。更新先执行 `make refs-sync`/`make refs-status`，再评审并更新 `form-runtime/sync-manifest.json`；系统设置的一键维护只消费该固定快照，不接受任意来源。
+- 上游原样区、本项目 iframe/SID/写阻断适配层和 FormMaking vendor 的边界记录在 `form-runtime/UPSTREAM.md`。维护流水线复用旧 V2 ADR-0016 的固定来源、候选、回退、租约和恢复语义，但以 pnpm 版本目录替代 Docker 镜像。

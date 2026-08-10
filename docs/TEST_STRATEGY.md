@@ -98,7 +98,8 @@
 - API 契约测试：单条路径配置读取、当前节点合并保存、表单独立保存与智能生成；计划/路径归属、计划已运行、目标结构变化、unsupported 和稳定错误；公开 JSON 不包含 SID、凭证、目标 envelope、字段英文名或表单/节点/分支 ID。
 - MySQL 集成测试：使用严格前缀随机临时库实际验证配置迁移、逐节点确认集合、完整表单数据与生成元数据、路径派生状态、修订号、幂等重试、路径隔离、旧配置 affected、级联删除和重启读取；本轮核心迁移不得因开发环境未导出变量静默跳过。
 - form-runtime 单元与结构测试：真实 `fm-generate-form` 模板回填、权限 refresh、`getData(true)` 校验、`getValues()` 虚拟字段、只读模式、unsupported 组件，以及版本化 postMessage 的 origin/source/session/迟到响应隔离和人工覆盖跟踪。
+- form-runtime 维护测试：固定远端/分支/HEAD 和脏来源拒绝、真实参考仓库与 upstream 内容摘要、清单同步幂等与本地适配保护、候选构建失败不影响 current、切换/健康失败恢复 previous、单活动任务、租约/fencing、`RESTART/VERIFY` 恢复、有界日志、固定维护 API 与 pnpm 静态/HTTP 健康检查。配置 `PLAN_DB_*` 时在临时 MySQL 实际验证维护任务迁移与接管。
 - 主前端单元与结构测试：同页节点/表单工作区切换、Vue Flow 节点 hover/focus/click、独立状态角标、节点面板无表单字段、表单工具条、响应不确定 GET 对账、单节点状态更新、表单状态重建和路径隔离；确认不恢复 requirements 页面、JSON 编辑器或虚假运行按钮。
 - Go 注释结构测试：F-007 新增或修改的具名函数和方法必须有紧邻中文职责/边界注释，核心字段映射、修订并发、幂等和异常兜底另有说明。
-- `test/run-f007.sh` 只聚合上述 F-007 测试、F-006 要求分析及 F-005/F-004 必要回归、Go build、主前端与 form-runtime 类型/生产构建和 `git diff --check`；不跑无关全量测试，不自动启动浏览器。
+- `test/run-f007.sh` 只聚合上述 F-007 测试、F-006 要求分析及 F-005/F-004 必要回归、Go build、主前端与 form-runtime 类型/生产构建、固定来源同步校验和 `git diff --check`；不跑无关全量测试，不自动启动浏览器。
 - 用户按 `test/manual/F-007.md` 使用真实 FormMaking 模板、多条已保存路径和可用的近期样本核对表单渲染、智能生成、人工修改、逐节点保存、状态对账、路径隔离和深浅主题。
