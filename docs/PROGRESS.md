@@ -1,7 +1,7 @@
 # 当前进度
 
 - 当前功能：F-007 已保存路径的节点可视化配置
-- 当前状态：ready_for_manual
+- 当前状态：implementing
 - 已完成：完整 `rsh-flow-components`、真实 FormMaking 与目标自定义组件已成为唯一 dev/build 输入；维护任务动态记录创建时 HEAD，候选同步/构建真实进入产物，同时切换 19001 源码与生产 `/form-runtime/`，并以 HTTP 快照确认或回退 previous。表单生成、逐节点保存、幂等对账和 F-005 路径交互无回退。
 - 阻塞：无。
 - 下一步：由主任务独立复审后，用户按 `test/manual/F-007.md` 人工核对真实表单、自定义组件、SID 会话和维护切换/回退；不开始后续运行功能。
@@ -26,3 +26,4 @@
 - 2026-08-10（第四次实施完成）：`./test/run-f007.sh` 全部通过；本机 `PLAN_DB_*` 已从忽略配置加载，临时 MySQL 配置/维护迁移与事务测试实际执行。F-007 进入 `ready_for_manual`，等待人工核对真实 FormMaking、SID 会话、自定义组件 unsupported、智能生成、逐节点状态与维护回退。
 - 2026-08-10（第四次人工复核退回）：确认当前 upstream 只是闲置快照，实际入口仍走独立 vendor 与空组件注册，固定历史 HEAD 也阻断后续安全快进；维护 RESTART/VERIFY 未作用于 19001 或真实 `/form-runtime/` HTTP 服务。状态退回 `implementing`，只修复原生运行、同步与真实服务更新链路。
 - 2026-08-10（原生运行与同步返工完成）：完整 `runtime-source/` 已成为真实 Vue CLI 入口，原生 FormMaking、20 个目标组件、同步资产与 SID 适配同链运行；动态任务 HEAD、隔离候选、真实 HTTP 健康和源码/产物 previous 回退均有定向证据。`./test/run-f007.sh` 全部通过，临时 MySQL 实际执行；状态回到 `ready_for_manual`。
+- 2026-08-10（运行时写边界独立复核退回）：完整目标组件源码暴露了现有少量写路径正则的缺口，上传、文件关联和业务保存请求可能绕过策略；F-007 退回 `implementing`，只修复目标请求的只读允许/未知写拒绝边界，完成后再回到 `ready_for_manual`。

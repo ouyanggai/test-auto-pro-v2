@@ -38,9 +38,9 @@
 
 读取所选路径上的真实条件、人员规则和标准节点动作，形成供后续配置直接消费的只读要求结果。独立核对页面、入口和页面专用前端代码已删除，后端分析与 API 保留并通过聚合验证；用户已明确继续下一任务，F-006 进入 `accepted`。详细范围见 `docs/features/F-006-path-requirements-review.md`。
 
-### F-007 路径节点与独立表单数据配置（当前，待人工复验）
+### F-007 路径节点与独立表单数据配置（当前，运行时写边界返工）
 
-保留 F-005 已通过验收的路径交互。完整 `rsh-flow-components` 现为唯一真实 dev/build 输入；原生同步资产、动态任务 HEAD、19001 实际源码更新、生产 `/form-runtime/` HTTP 健康和 previous 回退已完成自动验证，等待用户人工复验。详细范围见 `docs/features/F-007-path-data-action-configuration.md`。
+保留 F-005 已通过验收的路径交互。完整 `rsh-flow-components` 仍为唯一真实 dev/build 输入；本轮只补齐表单运行时对流程、业务、上传和文件关联写接口的明确拒绝，同时保留已证明只读 POST 查询与 SID 会话。详细范围见 `docs/features/F-007-path-data-action-configuration.md`。
 
 ### 后续运行准备与真实执行（后两项）
 
