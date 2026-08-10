@@ -61,6 +61,11 @@ func (m *Manager) Verify(ctx context.Context, account string) (target.AccountSum
 	return session.Summary, nil
 }
 
+// Current 返回当前账号缓存或新登录得到的完整会话，仅供后端建立短期运行时上下文。
+func (m *Manager) Current(ctx context.Context, account string) (target.Session, error) {
+	return m.getOrLogin(ctx, account)
+}
+
 // DoRead 只对会话失效执行一次重登和一次只读重放。
 func (m *Manager) DoRead(ctx context.Context, account string, call func(context.Context, target.Session) error) error {
 	session, err := m.getOrLogin(ctx, account)

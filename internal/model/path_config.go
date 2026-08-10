@@ -10,20 +10,96 @@ type PathConfigPath struct {
 
 // PathConfigSaveResult 是保存配置成功后返回的最小结果，供幂等重试返回同一事实。
 type PathConfigSaveResult struct {
-	Path     PathConfigPath `json:"path"`
-	Revision uint64         `json:"revision"`
-	Status   string         `json:"status"`
+	Path         PathConfigPath `json:"path"`
+	Revision     uint64         `json:"revision"`
+	NodeRevision uint64         `json:"nodeRevision"`
+	FormRevision uint64         `json:"formRevision"`
+	Status       string         `json:"status"`
 }
 
 // PathConfiguration 是单条已保存路径的完整配置工作台模型。
 type PathConfiguration struct {
-	Path        PathConfigPath     `json:"path"`
-	Revision    uint64             `json:"revision"`
-	Status      string             `json:"status"`
-	Progress    PathConfigProgress `json:"progress"`
-	NextNodeKey string             `json:"nextNodeKey"`
-	Groups      []PathConfigGroup  `json:"groups"`
-	Warnings    []string           `json:"warnings"`
+	Path         PathConfigPath     `json:"path"`
+	Revision     uint64             `json:"revision"`
+	NodeRevision uint64             `json:"nodeRevision"`
+	Status       string             `json:"status"`
+	Progress     PathConfigProgress `json:"progress"`
+	NextNodeKey  string             `json:"nextNodeKey"`
+	Groups       []PathConfigGroup  `json:"groups"`
+	Warnings     []string           `json:"warnings"`
+	Form         PathFormConfig     `json:"form"`
+}
+
+// PathFormConfig 是与节点配置分离的真实 FormMaking 表单工作区模型。
+type PathFormConfig struct {
+	Revision            uint64                   `json:"revision"`
+	Status              string                   `json:"status"`
+	StatusName          string                   `json:"statusName"`
+	ReadOnly            bool                     `json:"readOnly"`
+	Template            map[string]any           `json:"template"`
+	Permissions         []PathFormPermission     `json:"permissions"`
+	Values              map[string]any           `json:"values"`
+	Seed                int64                    `json:"seed"`
+	GeneratedFieldPaths []string                 `json:"generatedFieldPaths"`
+	ManualOverridePaths []string                 `json:"manualOverridePaths"`
+	SampleSummary       PathFormSampleSummary    `json:"sampleSummary"`
+	Validated           bool                     `json:"validated"`
+	Unsupported         []string                 `json:"unsupported"`
+	Affected            []PathConfigAffectedItem `json:"affected"`
+	AutoFilled          int                      `json:"autoFilled"`
+	ManualPending       int                      `json:"manualPending"`
+}
+
+// PathFormPermission 是 iframe 应用字段权限所需的最小字段键与权限。
+type PathFormPermission struct {
+	Field string `json:"field"`
+	Power string `json:"power"`
+}
+
+// PathFormSampleSummary 说明生成使用的样本层级，不公开实例、账号或目标内部标识。
+type PathFormSampleSummary struct {
+	Saved    bool `json:"saved"`
+	Defaults int  `json:"defaults"`
+	Recent   int  `json:"recent"`
+	Fallback int  `json:"fallback"`
+}
+
+// PathFormGenerateResult 是智能生成或换一组返回的权威表单草稿。
+type PathFormGenerateResult struct {
+	Revision            uint64                `json:"revision"`
+	Status              string                `json:"status"`
+	Values              map[string]any        `json:"values"`
+	Seed                int64                 `json:"seed"`
+	GeneratedFieldPaths []string              `json:"generatedFieldPaths"`
+	ManualOverridePaths []string              `json:"manualOverridePaths"`
+	SampleSummary       PathFormSampleSummary `json:"sampleSummary"`
+	AutoFilled          int                   `json:"autoFilled"`
+	ManualPending       int                   `json:"manualPending"`
+	Unsupported         []string              `json:"unsupported"`
+}
+
+// PathFormSaveInput 是表单运行时校验后提交给服务层的完整 values 与生成元数据。
+type PathFormSaveInput struct {
+	Revision            uint64                `json:"revision"`
+	Values              map[string]any        `json:"values"`
+	Seed                int64                 `json:"seed"`
+	GeneratedFieldPaths []string              `json:"generatedFieldPaths"`
+	ManualOverridePaths []string              `json:"manualOverridePaths"`
+	SampleSummary       PathFormSampleSummary `json:"sampleSummary"`
+	Validated           bool                  `json:"validated"`
+}
+
+// PathNodeSaveInput 是单个节点人员与动作的最小回写体。
+type PathNodeSaveInput struct {
+	Revision uint64                  `json:"revision"`
+	Actions  []PathConfigActionValue `json:"actions"`
+}
+
+// PathFormRuntimeSession 是 iframe 当前会话使用的短期目标读取上下文；绝不持久化。
+type PathFormRuntimeSession struct {
+	SID         string `json:"sid"`
+	BaseURL     string `json:"baseURL"`
+	AccountName string `json:"accountName"`
 }
 
 // PathConfigProgress 汇总当前路径节点配置进度，不把结构上下文节点误计为待处理项。
@@ -141,12 +217,24 @@ type PathConfigAffectedItem struct {
 
 // StoredPathConfig 是数据库中的路径唯一配置记录。
 type StoredPathConfig struct {
-	PathID         uint64
-	Revision       uint64
-	IdempotencyKey string
-	Status         string
-	FieldValues    map[string]map[string]string
-	ActionValues   map[string]string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	PathID              uint64
+	Revision            uint64
+	NodeRevision        uint64
+	FormRevision        uint64
+	IdempotencyKey      string
+	Status              string
+	ConfigVersion       uint
+	FieldValues         map[string]map[string]string
+	ActionValues        map[string]string
+	ConfirmedNodeKeys   []string
+	FormValues          map[string]any
+	FormStatus          string
+	FormValidated       bool
+	FormSeed            int64
+	GeneratedFieldPaths []string
+	ManualOverridePaths []string
+	SampleSummary       PathFormSampleSummary
+	FormTemplateVersion string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }

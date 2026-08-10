@@ -180,7 +180,21 @@ type PathConfigurationSnapshot struct {
 	Tree           *FlowNodeTemplate
 	EntryNodeIDs   []string
 	FormFields     []FormFieldDetail
+	Forms          []FormRuntimeTemplate
 	InstanceValues map[string]any
+}
+
+// FormRuntimeTemplate 保留目标完整 FormMaking 模板及公开名称，只在后端和隔离运行时之间流转。
+type FormRuntimeTemplate struct {
+	Name         string
+	TemplateData string
+}
+
+// FormRuntimeSession 是当前已验证账号的短期表单读取会话，不得持久化。
+type FormRuntimeSession struct {
+	SID         string
+	BaseURL     string
+	AccountName string
 }
 
 type Page[T any] struct {

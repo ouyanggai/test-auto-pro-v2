@@ -16,6 +16,10 @@ import (
 type PathConfigurationService interface {
 	Get(context.Context, uint64, uint64) (model.PathConfiguration, error)
 	Save(context.Context, uint64, uint64, string, uint64, []model.PathConfigFieldValue, []model.PathConfigActionValue) (model.PathConfigSaveResult, error)
+	SaveNode(context.Context, uint64, uint64, string, string, model.PathNodeSaveInput) (model.PathConfigSaveResult, error)
+	GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string) (model.PathFormGenerateResult, error)
+	SaveForm(context.Context, uint64, uint64, string, model.PathFormSaveInput) (model.PathConfigSaveResult, error)
+	RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error)
 }
 
 // pathConfigurationUpdate 是浏览器最小可信回写体，只包含修订号和不透明键值。
@@ -25,10 +29,118 @@ type pathConfigurationUpdate struct {
 	Actions  []model.PathConfigActionValue `json:"actions"`
 }
 
+type pathFormGenerateInput struct {
+	Seed                int64          `json:"seed"`
+	Values              map[string]any `json:"values"`
+	ManualOverridePaths []string       `json:"manualOverridePaths"`
+}
+
 // registerPathConfigurationRoutes 注册同一计划下单条路径的配置读取与保存端点。
 func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConfigurationService) {
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration", handleGetPathConfiguration(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration", handleSavePathConfiguration(configurations))
+	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/nodes/{nodeKey}", handleSavePathConfigurationNode(configurations))
+	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/form/generate", handleGeneratePathConfigurationForm(configurations))
+	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/form", handleSavePathConfigurationForm(configurations))
+	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration/runtime-session", handlePathConfigurationRuntimeSession(configurations))
+}
+
+// parsePathConfigurationIDs 统一解析计划与路径 ID，所有分域端点沿用相同归属边界。
+func parsePathConfigurationIDs(response http.ResponseWriter, request *http.Request) (uint64, uint64, bool) {
+	planID, ok := parseExecutionPathID(response, request.PathValue("id"))
+	if !ok {
+		return 0, 0, false
+	}
+	pathID, ok := parseExecutionPathID(response, request.PathValue("pathId"))
+	return planID, pathID, ok
+}
+
+// handleSavePathConfigurationNode 保存当前节点人员与动作，不覆盖其他节点或表单 values。
+func handleSavePathConfigurationNode(configurations PathConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		var input model.PathNodeSaveInput
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "节点配置请求格式不正确", false)
+			return
+		}
+		result, err := configurations.SaveNode(
+			request.Context(), planID, pathID, strings.TrimSpace(request.PathValue("nodeKey")),
+			strings.TrimSpace(request.Header.Get("Idempotency-Key")), input,
+		)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
+}
+
+// handleGeneratePathConfigurationForm 生成或换一组表单草稿，不写数据库或目标平台。
+func handleGeneratePathConfigurationForm(configurations PathConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		var input pathFormGenerateInput
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "智能生成请求格式不正确", false)
+			return
+		}
+		result, err := configurations.GenerateForm(request.Context(), planID, pathID, input.Seed, input.Values, input.ManualOverridePaths)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
+}
+
+// handleSavePathConfigurationForm 独立保存真实 getValues 结果和生成元数据。
+func handleSavePathConfigurationForm(configurations PathConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		var input model.PathFormSaveInput
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "表单数据请求格式不正确", false)
+			return
+		}
+		result, err := configurations.SaveForm(request.Context(), planID, pathID, strings.TrimSpace(request.Header.Get("Idempotency-Key")), input)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
+}
+
+// handlePathConfigurationRuntimeSession 返回当前账号的短期 SID 会话，iframe 销毁后由前端清空。
+func handlePathConfigurationRuntimeSession(configurations PathConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		result, err := configurations.RuntimeSession(request.Context(), planID, pathID)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
 }
 
 // handleGetPathConfiguration 返回当前路径的可操作配置工作台模型。
@@ -121,4 +233,24 @@ func (unavailablePathConfigurationService) Get(context.Context, uint64, uint64) 
 // Save 在未注入配置服务时拒绝保存。
 func (unavailablePathConfigurationService) Save(context.Context, uint64, uint64, string, uint64, []model.PathConfigFieldValue, []model.PathConfigActionValue) (model.PathConfigSaveResult, error) {
 	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
+}
+
+// SaveNode 在未注入配置服务时拒绝节点保存。
+func (unavailablePathConfigurationService) SaveNode(context.Context, uint64, uint64, string, string, model.PathNodeSaveInput) (model.PathConfigSaveResult, error) {
+	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
+}
+
+// GenerateForm 在未注入配置服务时拒绝智能生成。
+func (unavailablePathConfigurationService) GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string) (model.PathFormGenerateResult, error) {
+	return model.PathFormGenerateResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "表单生成服务暂不可用"}
+}
+
+// SaveForm 在未注入配置服务时拒绝表单保存。
+func (unavailablePathConfigurationService) SaveForm(context.Context, uint64, uint64, string, model.PathFormSaveInput) (model.PathConfigSaveResult, error) {
+	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "表单配置服务暂不可用"}
+}
+
+// RuntimeSession 在未注入配置服务时拒绝发放 SID 会话。
+func (unavailablePathConfigurationService) RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error) {
+	return model.PathFormRuntimeSession{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
 }

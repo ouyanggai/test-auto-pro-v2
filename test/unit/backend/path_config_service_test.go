@@ -73,7 +73,7 @@ func (r *memoryPathConfigRepository) Save(_ context.Context, record model.Stored
 }
 
 // newPathConfigService 组装使用真实分析器与内存仓储的配置服务。
-func newPathConfigService(t *testing.T, plans *memoryPlanRepository, reader *pathConfigReader, paths *memoryExecutionPathRepository, configs *memoryPathConfigRepository) *service.PathConfigService {
+func newPathConfigService(t *testing.T, plans *memoryPlanRepository, reader service.PathConfigReader, paths *memoryExecutionPathRepository, configs *memoryPathConfigRepository) *service.PathConfigService {
 	t.Helper()
 	return service.NewPathConfigService(
 		service.NewPlanService(plans), reader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),

@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -21,6 +23,13 @@ type TargetReadService struct {
 	configMissing []string
 	client        *target.Client
 	sessions      *session.Manager
+	sampleMu      sync.Mutex
+	sampleCache   map[string]recentFormSampleCache
+}
+
+type recentFormSampleCache struct {
+	expiresAt time.Time
+	values    []map[string]any
 }
 
 // NewTargetReadService 从后端运行配置创建只读目标客户端和会话管理器。
@@ -43,14 +52,15 @@ func NewTargetReadService(cfg config.TargetConfig) *TargetReadService {
 		return &TargetReadService{configMissing: []string{"TARGET_API_GATEWAY"}}
 	}
 	return &TargetReadService{
-		client:   client,
-		sessions: session.NewManager(client, cfg.SessionTTL),
+		client:      client,
+		sessions:    session.NewManager(client, cfg.SessionTTL),
+		sampleCache: make(map[string]recentFormSampleCache),
 	}
 }
 
 // NewTargetReadServiceWithClient 为假目标集成测试注入客户端和会话有效期。
 func NewTargetReadServiceWithClient(client *target.Client, ttl time.Duration) *TargetReadService {
-	return &TargetReadService{client: client, sessions: session.NewManager(client, ttl)}
+	return &TargetReadService{client: client, sessions: session.NewManager(client, ttl), sampleCache: make(map[string]recentFormSampleCache)}
 }
 
 // Verify 验证账号并只返回非敏感摘要。
@@ -256,6 +266,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
 		var tree *target.FlowNodeTemplate
 		var fields []target.FormFieldDetail
+		var forms []target.FormRuntimeTemplate
 		var values map[string]any
 		var entries []string
 		var err error
@@ -270,7 +281,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 			}
 			var snapshot target.PathConfigurationSnapshot
 			snapshot, err = s.client.ReadTemplateConfiguration(callContext, active, targetObjectID)
-			tree, fields = snapshot.Tree, snapshot.FormFields
+			tree, fields, forms = snapshot.Tree, snapshot.FormFields, snapshot.Forms
 		case "started":
 			var proxyID, status string
 			var formProxyIDs []string
@@ -287,7 +298,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 			}
 			var snapshot target.PathConfigurationSnapshot
 			snapshot, err = s.client.ReadProxyConfiguration(callContext, active, proxyID, formProxyIDs, targetObjectID)
-			tree, fields, values = snapshot.Tree, snapshot.FormFields, snapshot.InstanceValues
+			tree, fields, forms, values = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.InstanceValues
 		case "pending":
 			var proxyID string
 			var formProxyIDs []string
@@ -301,7 +312,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 			}
 			var snapshot target.PathConfigurationSnapshot
 			snapshot, err = s.client.ReadProxyConfiguration(callContext, active, proxyID, formProxyIDs, targetObjectID)
-			tree, fields, values = snapshot.Tree, snapshot.FormFields, snapshot.InstanceValues
+			tree, fields, forms, values = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.InstanceValues
 		default:
 			return ErrTargetFlowNotFound
 		}
@@ -314,10 +325,80 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 		if strings.TrimSpace(source) == "new" {
 			entries = []string{strings.TrimSpace(tree.ID)}
 		}
-		result = target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: entries, FormFields: fields, InstanceValues: values}
+		result = target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: entries, FormFields: fields, Forms: forms, InstanceValues: values}
 		return nil
 	})
 	return result, err
+}
+
+// FormRuntimeSession 从现有账号验证缓存建立短期 iframe 上下文，不额外持久化或复制 SID。
+func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account string) (target.FormRuntimeSession, error) {
+	if err := s.ready(); err != nil {
+		return target.FormRuntimeSession{}, err
+	}
+	active, err := s.sessions.Current(ctx, account)
+	if err != nil {
+		return target.FormRuntimeSession{}, err
+	}
+	return target.FormRuntimeSession{
+		SID: active.SID, BaseURL: s.client.BaseURL(), AccountName: active.Summary.DisplayName,
+	}, nil
+}
+
+// RecentFormSamples 读取最多五条近期可见已发实例表单值，并用短期内存缓存限制目标请求。
+func (s *TargetReadService) RecentFormSamples(ctx context.Context, account string, limit int) ([]map[string]any, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 5 {
+		limit = 5
+	}
+	cacheKey := strings.TrimSpace(account)
+	s.sampleMu.Lock()
+	cached, found := s.sampleCache[cacheKey]
+	s.sampleMu.Unlock()
+	if found && time.Now().Before(cached.expiresAt) {
+		return cloneRecentSamples(cached.values), nil
+	}
+	result := make([]map[string]any, 0, limit)
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		page, err := s.client.ListSubmitted(callContext, active, "", 1, limit)
+		if err != nil {
+			return err
+		}
+		// 并发度固定为一，避免智能生成同时放大目标实例与表单读取压力。
+		for _, item := range page.Items {
+			if len(result) >= limit {
+				break
+			}
+			values, readErr := s.client.ReadInstanceCurrentData(callContext, active, item.ID)
+			if readErr != nil {
+				return readErr
+			}
+			if len(values) > 0 {
+				result = append(result, values)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.sampleMu.Lock()
+	s.sampleCache[cacheKey] = recentFormSampleCache{expiresAt: time.Now().Add(30 * time.Second), values: cloneRecentSamples(result)}
+	s.sampleMu.Unlock()
+	return cloneRecentSamples(result), nil
+}
+
+// cloneRecentSamples 深复制近期样本，生成器修改 values 时不会污染跨请求缓存。
+func cloneRecentSamples(values []map[string]any) []map[string]any {
+	data, _ := json.Marshal(values)
+	result := make([]map[string]any, 0)
+	_ = json.Unmarshal(data, &result)
+	return result
 }
 
 // submittedFlowConfigurable 只允许参考页面明确展示且仍可继续的已发状态。

@@ -22,6 +22,9 @@ type stubPathConfigurationService struct {
 	revision      uint64
 	fields        []model.PathConfigFieldValue
 	actions       []model.PathConfigActionValue
+	nodeKey       string
+	generateSeed  int64
+	formInput     model.PathFormSaveInput
 }
 
 // Get 返回契约测试预设的配置模型或稳定错误。
@@ -37,6 +40,74 @@ func (s *stubPathConfigurationService) Save(_ context.Context, planID, pathID ui
 		return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorInvalidArgument, Message: "保存标识不正确"}
 	}
 	return s.result, s.err
+}
+
+// SaveNode 返回契约测试预设的逐节点保存结果。
+func (s *stubPathConfigurationService) SaveNode(_ context.Context, planID, pathID uint64, nodeKey, key string, input model.PathNodeSaveInput) (model.PathConfigSaveResult, error) {
+	s.planID, s.pathID, s.nodeKey, s.key, s.revision, s.actions = planID, pathID, nodeKey, key, input.Revision, input.Actions
+	return s.result, s.err
+}
+
+// GenerateForm 返回契约测试预设的智能生成结果。
+func (s *stubPathConfigurationService) GenerateForm(_ context.Context, _ uint64, _ uint64, seed int64, _ map[string]any, _ []string) (model.PathFormGenerateResult, error) {
+	s.generateSeed = seed
+	return model.PathFormGenerateResult{Status: "draft", Values: map[string]any{"amount": 100}}, s.err
+}
+
+// SaveForm 返回契约测试预设的表单保存结果。
+func (s *stubPathConfigurationService) SaveForm(_ context.Context, planID, pathID uint64, key string, input model.PathFormSaveInput) (model.PathConfigSaveResult, error) {
+	s.planID, s.pathID, s.key, s.revision = planID, pathID, key, input.Revision
+	s.formInput = input
+	return s.result, s.err
+}
+
+// TestPathConfigurationAPIWorkspaceContracts 验证逐节点、智能生成、真实表单保存与短期 SID 会话端点边界。
+func TestPathConfigurationAPIWorkspaceContracts(t *testing.T) {
+	stub := &stubPathConfigurationService{result: model.PathConfigSaveResult{
+		Path: model.PathConfigPath{SequenceNo: 2, Name: "财务路径"}, Revision: 6, NodeRevision: 2, FormRevision: 4, Status: "pending",
+	}}
+	handler := newConfigurationHandler(stub)
+
+	node := httptest.NewRecorder()
+	nodeRequest := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/nodes/node-token", strings.NewReader(`{"revision":1,"actions":[{"key":"person-token","action":"[]"}]}`))
+	nodeRequest.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174611")
+	handler.ServeHTTP(node, nodeRequest)
+	if node.Code != http.StatusOK || stub.nodeKey != "node-token" || stub.revision != 1 || len(stub.actions) != 1 || !strings.Contains(node.Body.String(), `"nodeRevision":2`) {
+		t.Fatalf("逐节点保存契约不正确：status=%d body=%s stub=%+v", node.Code, node.Body.String(), stub)
+	}
+
+	generated := httptest.NewRecorder()
+	handler.ServeHTTP(generated, httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/31/configuration/form/generate", strings.NewReader(`{"seed":73,"values":{"amount":100},"manualOverridePaths":["title"]}`)))
+	if generated.Code != http.StatusOK || stub.generateSeed != 73 || !strings.Contains(generated.Body.String(), `"status":"draft"`) {
+		t.Fatalf("表单生成契约不正确：status=%d body=%s seed=%d", generated.Code, generated.Body.String(), stub.generateSeed)
+	}
+
+	form := httptest.NewRecorder()
+	formRequest := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/form", strings.NewReader(`{"revision":3,"values":{"amount":2500,"type":"a"},"seed":73,"generatedFieldPaths":["amount"],"manualOverridePaths":["type"],"sampleSummary":{"saved":false,"defaults":1,"recent":2,"fallback":0},"validated":true}`))
+	formRequest.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174612")
+	handler.ServeHTTP(form, formRequest)
+	if form.Code != http.StatusOK || stub.formInput.Revision != 3 || stub.formInput.Values["amount"] != float64(2500) || stub.formInput.SampleSummary.Recent != 2 || !stub.formInput.Validated {
+		t.Fatalf("完整表单保存契约不正确：status=%d body=%s input=%+v", form.Code, form.Body.String(), stub.formInput)
+	}
+
+	session := httptest.NewRecorder()
+	handler.ServeHTTP(session, httptest.NewRequest(http.MethodGet, "/api/plans/7/execution-paths/31/configuration/runtime-session", nil))
+	if session.Code != http.StatusOK || !strings.Contains(session.Body.String(), `"sid":"runtime-sid"`) || !strings.Contains(session.Body.String(), `"baseURL":"http://target.test"`) {
+		t.Fatalf("短期运行时会话契约不正确：status=%d body=%s", session.Code, session.Body.String())
+	}
+
+	unknown := httptest.NewRecorder()
+	bad := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/form", strings.NewReader(`{"revision":3,"values":{},"validated":true,"sid":"forged"}`))
+	bad.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174613")
+	handler.ServeHTTP(unknown, bad)
+	if unknown.Code != http.StatusBadRequest || !strings.Contains(unknown.Body.String(), "INVALID_ARGUMENT") {
+		t.Fatalf("表单保存接受了浏览器伪造 SID：status=%d body=%s", unknown.Code, unknown.Body.String())
+	}
+}
+
+// RuntimeSession 返回不落库的短期 SID 契约样本。
+func (s *stubPathConfigurationService) RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error) {
+	return model.PathFormRuntimeSession{SID: "runtime-sid", BaseURL: "http://target.test", AccountName: "测试用户"}, s.err
 }
 
 // newConfigurationHandler 组装包含路径配置端点的完整路由用于契约测试。

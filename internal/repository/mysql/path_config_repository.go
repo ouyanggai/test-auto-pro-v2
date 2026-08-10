@@ -25,12 +25,12 @@ func NewPathConfigurationRepository(db *sql.DB) *PathConfigurationRepository {
 
 // FindByPath 读取指定路径的当前配置；未保存时返回 false，不把空记录误当配置。
 func (r *PathConfigurationRepository) FindByPath(ctx context.Context, pathID uint64) (model.StoredPathConfig, bool, error) {
-	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, idempotency_key, config_status, field_values, action_values, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ?", pathID))
+	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ?", pathID))
 }
 
 // FindByPathAndKey 只在指定路径内按幂等键读取已保存结果，避免跨路径键碰撞。
 func (r *PathConfigurationRepository) FindByPathAndKey(ctx context.Context, pathID uint64, idempotencyKey string) (model.StoredPathConfig, bool, error) {
-	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, idempotency_key, config_status, field_values, action_values, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? AND idempotency_key = ?", pathID, idempotencyKey))
+	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? AND idempotency_key = ?", pathID, idempotencyKey))
 }
 
 // Save 在事务中锁定路径配置行，校验期望修订号后整份替换字段值与动作值并推进修订号。
@@ -65,13 +65,35 @@ func (r *PathConfigurationRepository) Save(ctx context.Context, record model.Sto
 	if err != nil {
 		return model.StoredPathConfig{}, err
 	}
+	confirmedJSON, err := encodeStringSlice(record.ConfirmedNodeKeys)
+	if err != nil {
+		return model.StoredPathConfig{}, err
+	}
+	formJSON, err := encodeAnyMap(record.FormValues)
+	if err != nil {
+		return model.StoredPathConfig{}, err
+	}
+	generatedJSON, err := encodeStringSlice(record.GeneratedFieldPaths)
+	if err != nil {
+		return model.StoredPathConfig{}, err
+	}
+	manualJSON, err := encodeStringSlice(record.ManualOverridePaths)
+	if err != nil {
+		return model.StoredPathConfig{}, err
+	}
+	summaryJSON, err := json.Marshal(record.SampleSummary)
+	if err != nil {
+		return model.StoredPathConfig{}, err
+	}
 	if !exists {
-		_, err = tx.ExecContext(ctx, "INSERT INTO test_execution_path_configs (path_id, revision, idempotency_key, config_status, field_values, action_values, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-			record.PathID, record.Revision, record.IdempotencyKey, record.Status, fieldJSON, actionJSON, now.UTC(), now.UTC())
+		_, err = tx.ExecContext(ctx, "INSERT INTO test_execution_path_configs (path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			record.PathID, record.Revision, record.NodeRevision, record.FormRevision, record.IdempotencyKey, record.Status, record.ConfigVersion,
+			fieldJSON, actionJSON, confirmedJSON, formJSON, record.FormStatus, record.FormValidated, record.FormSeed,
+			generatedJSON, manualJSON, string(summaryJSON), record.FormTemplateVersion, now.UTC(), now.UTC())
 		if isDuplicateKeyError(err) {
 			// 并发首次同键保存：另一请求已提交同一幂等键。读取胜出记录并直接返回，
 			// 保证同键重试得到同一修订号，而不是把并发竞态误报为存储错误。
-			existing, found, scanErr := scanStoredPathConfig(tx.QueryRowContext(ctx, "SELECT path_id, revision, idempotency_key, config_status, field_values, action_values, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? FOR UPDATE", record.PathID))
+			existing, found, scanErr := scanStoredPathConfig(tx.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? FOR UPDATE", record.PathID))
 			if scanErr != nil {
 				return model.StoredPathConfig{}, scanErr
 			}
@@ -85,8 +107,10 @@ func (r *PathConfigurationRepository) Save(ctx context.Context, record model.Sto
 			return existing, nil
 		}
 	} else {
-		_, err = tx.ExecContext(ctx, "UPDATE test_execution_path_configs SET revision = ?, idempotency_key = ?, config_status = ?, field_values = ?, action_values = ?, updated_at = ? WHERE path_id = ?",
-			record.Revision, record.IdempotencyKey, record.Status, fieldJSON, actionJSON, now.UTC(), record.PathID)
+		_, err = tx.ExecContext(ctx, "UPDATE test_execution_path_configs SET revision = ?, node_revision = ?, form_revision = ?, idempotency_key = ?, config_status = ?, config_version = ?, field_values = ?, action_values = ?, confirmed_node_keys = ?, form_values = ?, form_status = ?, form_validated = ?, form_seed = ?, generated_field_paths = ?, manual_override_paths = ?, sample_summary = ?, form_template_version = ?, updated_at = ? WHERE path_id = ?",
+			record.Revision, record.NodeRevision, record.FormRevision, record.IdempotencyKey, record.Status, record.ConfigVersion,
+			fieldJSON, actionJSON, confirmedJSON, formJSON, record.FormStatus, record.FormValidated, record.FormSeed,
+			generatedJSON, manualJSON, string(summaryJSON), record.FormTemplateVersion, now.UTC(), record.PathID)
 	}
 	if err != nil {
 		return model.StoredPathConfig{}, err
@@ -110,7 +134,17 @@ func scanStoredPathConfig(row *sql.Row) (model.StoredPathConfig, bool, error) {
 	var record model.StoredPathConfig
 	var fieldJSON string
 	var actionJSON string
-	err := row.Scan(&record.PathID, &record.Revision, &record.IdempotencyKey, &record.Status, &fieldJSON, &actionJSON, &record.CreatedAt, &record.UpdatedAt)
+	var confirmedJSON string
+	var formJSON string
+	var generatedJSON string
+	var manualJSON string
+	var summaryJSON string
+	err := row.Scan(
+		&record.PathID, &record.Revision, &record.NodeRevision, &record.FormRevision,
+		&record.IdempotencyKey, &record.Status, &record.ConfigVersion, &fieldJSON, &actionJSON,
+		&confirmedJSON, &formJSON, &record.FormStatus, &record.FormValidated, &record.FormSeed,
+		&generatedJSON, &manualJSON, &summaryJSON, &record.FormTemplateVersion, &record.CreatedAt, &record.UpdatedAt,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.StoredPathConfig{}, false, nil
 	}
@@ -125,7 +159,43 @@ func scanStoredPathConfig(row *sql.Row) (model.StoredPathConfig, bool, error) {
 	if err != nil {
 		return model.StoredPathConfig{}, false, repository.ErrPathConfigDataInvalid
 	}
+	if err := json.Unmarshal([]byte(confirmedJSON), &record.ConfirmedNodeKeys); err != nil {
+		return model.StoredPathConfig{}, false, repository.ErrPathConfigDataInvalid
+	}
+	if err := json.Unmarshal([]byte(formJSON), &record.FormValues); err != nil {
+		return model.StoredPathConfig{}, false, repository.ErrPathConfigDataInvalid
+	}
+	if err := json.Unmarshal([]byte(generatedJSON), &record.GeneratedFieldPaths); err != nil {
+		return model.StoredPathConfig{}, false, repository.ErrPathConfigDataInvalid
+	}
+	if err := json.Unmarshal([]byte(manualJSON), &record.ManualOverridePaths); err != nil {
+		return model.StoredPathConfig{}, false, repository.ErrPathConfigDataInvalid
+	}
+	if err := json.Unmarshal([]byte(summaryJSON), &record.SampleSummary); err != nil {
+		return model.StoredPathConfig{}, false, repository.ErrPathConfigDataInvalid
+	}
+	if record.FormValues == nil {
+		record.FormValues = map[string]any{}
+	}
 	return record, true, nil
+}
+
+// encodeStringSlice 把有序路径或节点键列表编码为 JSON 空数组安全值。
+func encodeStringSlice(values []string) (string, error) {
+	if values == nil {
+		values = []string{}
+	}
+	data, err := json.Marshal(values)
+	return string(data), err
+}
+
+// encodeAnyMap 把完整 FormMaking values 编码为 JSON 空对象安全值。
+func encodeAnyMap(values map[string]any) (string, error) {
+	if values == nil {
+		values = map[string]any{}
+	}
+	data, err := json.Marshal(values)
+	return string(data), err
 }
 
 // encodePathConfigValues 把节点-字段-值两层映射编码为稳定 JSON。

@@ -14,7 +14,7 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
-// TestPathConfigurationMySQLMigrationAndCascade 验证 008 迁移、路径隔离、修订号、幂等与删除级联。
+// TestPathConfigurationMySQLMigrationAndCascade 验证 008/009 迁移、节点与表单分域存储、幂等与删除级联。
 func TestPathConfigurationMySQLMigrationAndCascade(t *testing.T) {
 	cfg := config.LoadPlanDBConfig()
 	if missing := cfg.MissingRequired(); len(missing) != 0 {
@@ -45,17 +45,24 @@ func TestPathConfigurationMySQLMigrationAndCascade(t *testing.T) {
 	configs := planmysql.NewPathConfigurationRepository(database.DB)
 	now := time.Now().UTC()
 	firstRecord := model.StoredPathConfig{
-		PathID: firstPath.ID, Revision: 1, IdempotencyKey: "123e4567-e89b-12d3-a456-426614174721", Status: "configured",
-		FieldValues:  map[string]map[string]string{"node-a": {"amount": "2500"}},
-		ActionValues: map[string]string{"node-a": "agree"},
+		PathID: firstPath.ID, Revision: 1, NodeRevision: 1, FormRevision: 1,
+		IdempotencyKey: "123e4567-e89b-12d3-a456-426614174721", Status: "configured", ConfigVersion: 2,
+		FieldValues: map[string]map[string]string{"node-a": {"amount": "2500"}}, ActionValues: map[string]string{"node-a": "agree"},
+		ConfirmedNodeKeys: []string{"node-token"}, FormValues: map[string]any{"amount": float64(2500), "__condition": "large"},
+		FormStatus: "valid", FormValidated: true, FormSeed: 73,
+		GeneratedFieldPaths: []string{"amount"}, ManualOverridePaths: []string{"note"},
+		SampleSummary: model.PathFormSampleSummary{Saved: true, Recent: 2}, FormTemplateVersion: "template-v2",
 	}
 	saved, err := configs.Save(ctx, firstRecord, 0, now)
 	if err != nil || saved.Revision != 1 {
 		t.Fatalf("首次配置保存失败：saved=%+v err=%v", saved, err)
 	}
 	loaded, found, err := configs.FindByPath(ctx, firstPath.ID)
-	if err != nil || !found || loaded.Revision != 1 || loaded.FieldValues["node-a"]["amount"] != "2500" || loaded.ActionValues["node-a"] != "agree" {
+	if err != nil || !found || loaded.Revision != 1 || loaded.NodeRevision != 1 || loaded.FormRevision != 1 || loaded.FieldValues["node-a"]["amount"] != "2500" || loaded.ActionValues["node-a"] != "agree" {
 		t.Fatalf("配置读取不正确：loaded=%+v found=%v err=%v", loaded, found, err)
+	}
+	if loaded.FormStatus != "valid" || !loaded.FormValidated || loaded.FormValues["amount"] != float64(2500) || loaded.SampleSummary.Recent != 2 || loaded.FormTemplateVersion != "template-v2" {
+		t.Fatalf("表单 values 与生成元数据没有同事务恢复：%+v", loaded)
 	}
 	byKey, found, err := configs.FindByPathAndKey(ctx, firstPath.ID, "123e4567-e89b-12d3-a456-426614174721")
 	if err != nil || !found || byKey.Revision != 1 {
@@ -163,7 +170,11 @@ func assertF007Tables(t *testing.T, db *sql.DB) {
 		t.Fatalf("F-007 临时库缺少配置表：count=%d err=%v", count, err)
 	}
 	var migrations int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 8 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 9 {
 		t.Fatalf("F-007 迁移版本数量不正确：%d err=%v", migrations, err)
+	}
+	var columns int
+	if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'test_execution_path_configs' AND column_name IN ('node_revision','form_revision','form_values','form_status','generated_field_paths','manual_override_paths')").Scan(&columns); err != nil || columns != 6 {
+		t.Fatalf("F-007 节点与表单分域列不完整：count=%d err=%v", columns, err)
 	}
 }

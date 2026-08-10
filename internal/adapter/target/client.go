@@ -653,11 +653,11 @@ func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, 
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	fields, err := c.readFormFieldDetails(ctx, active, "/web/formTemplateApi/findById", forms)
+	fields, runtimeForms, err := c.readFormFieldDetails(ctx, active, "/web/formTemplateApi/findById", forms)
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FormFields: fields}, nil
+	return PathConfigurationSnapshot{Tree: tree, FormFields: fields, Forms: runtimeForms}, nil
 }
 
 // ReadProxyConfiguration 读取代理树、实例代理表单字段详情和实例当前表单数据，供已发/待发路径配置使用。
@@ -672,7 +672,7 @@ func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, pro
 			forms = append(forms, rawFormReference{ID: id})
 		}
 	}
-	fields, err := c.readFormFieldDetails(ctx, active, "/web/formProxy/findById", forms)
+	fields, runtimeForms, err := c.readFormFieldDetails(ctx, active, "/web/formProxy/findById", forms)
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
@@ -680,7 +680,7 @@ func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, pro
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FormFields: fields, InstanceValues: values}, nil
+	return PathConfigurationSnapshot{Tree: tree, FormFields: fields, Forms: runtimeForms, InstanceValues: values}, nil
 }
 
 // readFlowDetail 调用目标详情端点并转换同一棵流程树和关联表单引用。
@@ -749,8 +749,9 @@ func (c *Client) readFormFields(ctx context.Context, active Session, path string
 }
 
 // readFormFieldDetails 逐个读取已核实表单详情，并把 FormMaking 组件配置合并为字段类型、必填、默认值和选项。
-func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path string, forms []rawFormReference) ([]FormFieldDetail, error) {
+func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path string, forms []rawFormReference) ([]FormFieldDetail, []FormRuntimeTemplate, error) {
 	result := make([]FormFieldDetail, 0)
+	runtimeForms := make([]FormRuntimeTemplate, 0, len(forms))
 	seen := make(map[string]struct{}, len(forms))
 	for _, form := range forms {
 		formID := strings.TrimSpace(form.ID)
@@ -763,10 +764,10 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 		seen[formID] = struct{}{}
 		resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": formID}})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !responseSucceeded(resp) {
-			return nil, responseError(resp)
+			return nil, nil, responseError(resp)
 		}
 		if len(resp.Data) == 0 || string(resp.Data) == "null" {
 			continue
@@ -778,11 +779,14 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 			TemplateData string               `json:"templateData"`
 		}
 		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			return nil, invalidResponse("invalid form field data")
+			return nil, nil, invalidResponse("invalid form field data")
 		}
 		components := parseFormMakingComponents(data.TemplateData)
 		resolvedFormID := firstNonEmpty(data.ID, formID)
 		resolvedFormName := firstNonEmpty(data.Name, form.Name)
+		if strings.TrimSpace(data.TemplateData) != "" {
+			runtimeForms = append(runtimeForms, FormRuntimeTemplate{Name: resolvedFormName, TemplateData: data.TemplateData})
+		}
 		for _, field := range data.Fields {
 			component, hasComponent := components[strings.TrimSpace(field.EnglishName)]
 			detail := FormFieldDetail{
@@ -804,7 +808,20 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 			result = append(result, detail)
 		}
 	}
-	return result, nil
+	return result, runtimeForms, nil
+}
+
+// BaseURL 返回目标网关公开地址，供短期 iframe 会话请求必要的表单只读数据。
+func (c *Client) BaseURL() string {
+	if c == nil || c.baseURL == nil {
+		return ""
+	}
+	return strings.TrimRight(c.baseURL.String(), "/")
+}
+
+// ReadInstanceCurrentData 读取已核实实例的当前表单值，供受限近期样本链复用。
+func (c *Client) ReadInstanceCurrentData(ctx context.Context, active Session, instanceID string) (map[string]any, error) {
+	return c.readInstanceCurrentData(ctx, active, instanceID)
 }
 
 // parseFormMakingComponents 递归解析 FormMaking 的 list、grid、report、tableColumns 与嵌套容器。

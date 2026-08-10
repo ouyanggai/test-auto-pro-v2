@@ -67,7 +67,8 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 			}}})
 			return
 		}
-		if data["useScope"] != "invest" || data["name"] != "sent" || body["pagination"] != true {
+		name, _ := data["name"].(string)
+		if data["useScope"] != "invest" || (name != "" && name != "sent") || body["pagination"] != true {
 			f.t.Error("已发流程请求参数不符合已核实协议")
 		}
 		writeTargetJSON(response, map[string]any{
@@ -231,7 +232,7 @@ func (f *fakeTarget) handleInstanceCurrentData(response http.ResponseWriter, req
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	id, _ := data["id"].(string)
-	if id != "submitted-id" && id != "due-id" {
+	if id != "submitted-id" && id != "due-id" && !strings.HasPrefix(id, "submitted-") {
 		f.t.Errorf("实例现值读取错误地使用了非精确实例 ID：%s", id)
 	}
 	f.recordGraphCall("instance-data:" + id)
@@ -908,8 +909,11 @@ func TestPathConfigurationSnapshotReadsTemplateDefaultsAndProxyValues(t *testing
 			configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
 			reader := service.NewTargetReadService(config.LoadTargetConfig())
 			snapshot, err := reader.PathConfigurationSnapshot(context.Background(), "account-a", test.source, test.id)
-			if err != nil || snapshot.Tree == nil || len(snapshot.FormFields) != 1 {
+			if err != nil || snapshot.Tree == nil || len(snapshot.FormFields) != 1 || len(snapshot.Forms) != 1 {
 				t.Fatalf("路径配置快照读取失败：snapshot=%+v err=%v", snapshot, err)
+			}
+			if snapshot.Forms[0].Name == "" || !strings.Contains(snapshot.Forms[0].TemplateData, `"model":"amount"`) {
+				t.Fatalf("完整 FormMaking 模板没有随快照返回：%+v", snapshot.Forms)
 			}
 			field := snapshot.FormFields[0]
 			if field.Name != "申请金额" || field.FieldType != "doubleType" || field.DefaultValue != "1000" || !field.Required || field.ComponentType != "number" || field.ValueOrigin != "fromUser" || field.FieldStatus != "enable" {
@@ -932,6 +936,41 @@ func TestPathConfigurationSnapshotReadsTemplateDefaultsAndProxyValues(t *testing
 				t.Fatalf("配置快照调用顺序不正确：%v", calls)
 			}
 		})
+	}
+}
+
+// TestPathConfigurationRuntimeSessionAndRecentSamplesUseVerifiedCache 验证 SID 只从现有账号会话取得，近期样本有限读取并命中短期缓存。
+func TestPathConfigurationRuntimeSessionAndRecentSamplesUseVerifiedCache(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	if _, err := reader.PathConfigurationSnapshot(context.Background(), "account-a", "new", "template-id"); err != nil {
+		t.Fatalf("预热账号会话失败：%v", err)
+	}
+	runtimeSession, err := reader.FormRuntimeSession(context.Background(), "account-a")
+	if err != nil || runtimeSession.SID == "" || runtimeSession.BaseURL != targetServer.URL {
+		t.Fatalf("短期运行时会话没有复用已验证账号缓存：session=%+v err=%v", runtimeSession, err)
+	}
+	first, err := reader.RecentFormSamples(context.Background(), "account-a", 2)
+	if err != nil || len(first) != 2 || first[0]["amount"] != 2500.5 {
+		t.Fatalf("近期表单样本读取失败：samples=%+v err=%v", first, err)
+	}
+	fake.mu.Lock()
+	callsBeforeCache := len(fake.graphCalls)
+	loginCount := fake.loginCount
+	fake.mu.Unlock()
+	second, err := reader.RecentFormSamples(context.Background(), "account-a", 2)
+	if err != nil || len(second) != 2 {
+		t.Fatalf("近期样本缓存读取失败：samples=%+v err=%v", second, err)
+	}
+	fake.mu.Lock()
+	callsAfterCache := len(fake.graphCalls)
+	loginCountAfterCache := fake.loginCount
+	fake.mu.Unlock()
+	if callsAfterCache != callsBeforeCache || loginCountAfterCache != loginCount || loginCount != 1 {
+		t.Fatalf("短期缓存或 SID 会话产生重复目标读取：calls=%d/%d login=%d/%d", callsBeforeCache, callsAfterCache, loginCount, loginCountAfterCache)
 	}
 }
 
