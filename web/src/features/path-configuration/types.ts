@@ -9,8 +9,16 @@ export interface PathConfiguration {
   path: PathConfigPath
   revision: number
   status: 'pending' | 'configured' | 'affected'
+  progress: PathConfigProgress
+  nextNodeKey: string
   groups: PathConfigGroup[]
   warnings: string[]
+}
+
+export interface PathConfigProgress {
+  total: number
+  completed: number
+  pending: number
 }
 
 export interface PathConfigGroup {
@@ -20,13 +28,45 @@ export interface PathConfigGroup {
 }
 
 export interface PathConfigNode {
+  key: string
   name: string
   typeName: string
   kind: string
+  status: 'not_required' | 'pending' | 'partial' | 'configured' | 'runtime' | 'affected'
+  statusName: string
   fields: PathConfigField[]
+  persons: PathConfigPerson[]
   gaps: PathConfigGap[]
+  requirements: PathConfigRequirement[]
   actions: PathConfigAction[]
   lineBlocked: boolean
+}
+
+export interface PathConfigPerson {
+  key: string
+  title: string
+  mode: 'fixed' | 'select' | 'runtime' | 'review'
+  detail: string
+  editable: boolean
+  multiple: boolean
+  required: boolean
+  minCount: number
+  selected: string[]
+  options: PathConfigPersonOption[]
+  affected: boolean
+  note: string
+}
+
+export interface PathConfigPersonOption {
+  label: string
+  value: string
+}
+
+export interface PathConfigRequirement {
+  category: string
+  title: string
+  detail: string
+  status: string
 }
 
 export interface PathConfigField {
@@ -85,6 +125,7 @@ export interface PathConfigSaveResult {
 export interface PathConfigDraft {
   fields: Record<string, string>
   actions: Record<string, string>
+  persons: Record<string, string[]>
 }
 
 export type PathConfigPagePhase =

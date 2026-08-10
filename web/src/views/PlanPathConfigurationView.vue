@@ -1,76 +1,117 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
-import {
-  NAlert,
-  NButton,
-  NDatePicker,
-  NInput,
-  NInputNumber,
-  NSelect,
-  NSwitch,
-  NRadioGroup,
-  NRadioButton,
-  NSpin,
-} from 'naive-ui'
+import { NAlert, NButton, NEmpty, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { analyzeExecutionPath } from '../features/execution-paths/logic'
+import { fetchExecutionPaths } from '../features/execution-paths/api'
+import type { ExecutionPath } from '../features/execution-paths/types'
+import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
+import { fetchFlowGraph } from '../features/flow-graph/api'
+import type { FlowGraph } from '../features/flow-graph/types'
+import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
+import {
+  applyPathConfigDraft,
+  allEditableFieldsFilled,
+  bindPathConfigurationNodes,
+  buildPathConfigSavePayload,
+  canSavePathConfiguration,
+  encodePathConfigValue,
+  hasPathConfigDraftChanges,
+  initialPathConfigurationNodeID,
+  initPathConfigDraft,
+  pathConfigurationNodesByGraphID,
+  projectPathConfigurationNodeStates,
+  reconcilePathConfigDraft,
+} from '../features/path-configuration/logic'
 import {
   fetchPathConfiguration,
   PathConfigApiError,
   savePathConfiguration,
 } from '../features/path-configuration/api'
-import {
-  fetchExecutionPaths,
-} from '../features/execution-paths/api'
-import type { ExecutionPath } from '../features/execution-paths/types'
-import {
-  applyPathConfigDraft,
-  allEditableFieldsFilled,
-  buildPathConfigSavePayload,
-  encodePathConfigValue,
-  hasPathConfigDraftChanges,
-  canSavePathConfiguration,
-  initPathConfigDraft,
-  parsePathConfigValue,
-} from '../features/path-configuration/logic'
 import type {
   PathConfigAction,
   PathConfigDraft,
   PathConfigField,
+  PathConfigNode,
   PathConfiguration,
+  PathConfigPerson,
 } from '../features/path-configuration/types'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import type { PersistedPlan } from '../features/plans/types'
 
 const route = useRoute()
 const router = useRouter()
+const themeVars = useThemeVars()
 const planID = computed(() => String(route.params.planId || ''))
 const pathID = computed(() => String(route.params.pathId || ''))
 const plan = ref<PersistedPlan | null>(null)
+const graph = ref<FlowGraph | null>(null)
+const currentPath = ref<ExecutionPath | null>(null)
+const executionPaths = ref<ExecutionPath[]>([])
 const configuration = ref<PathConfiguration | null>(null)
-const draft = ref<PathConfigDraft>({ fields: {}, actions: {} })
+const draft = ref<PathConfigDraft>({ fields: {}, actions: {}, persons: {} })
+const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
+const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
+const selectedNodeID = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const pageError = ref('')
 const saveError = ref('')
 const saveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const savedSuccessfully = ref(false)
-const executionPaths = ref<ExecutionPath[]>([])
+const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 let loadVersion = 0
 let loadController: AbortController | null = null
 let saveController: AbortController | null = null
 let saveKey = ''
 
-const dirty = computed(() => configuration.value ? hasPathConfigDraftChanges(configuration.value, draft.value) : false)
+const pageThemeStyle = computed(() => ({
+  '--path-config-page-color': themeVars.value.bodyColor,
+  '--path-config-card-color': themeVars.value.cardColor,
+  '--path-config-border-color': themeVars.value.borderColor,
+  '--path-config-text-color': themeVars.value.textColor1,
+  '--path-config-text-secondary-color': themeVars.value.textColor2,
+}))
+const pathAnalysis = computed(() => graph.value && currentPath.value
+  ? analyzeExecutionPath(graph.value, currentPath.value.choices)
+  : null)
+const selectedNode = computed(() => configurationByGraphNodeID.value.get(selectedNodeID.value) ?? null)
+const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
+  ? projectPathConfigurationNodeStates(graph.value, pathAnalysis.value, configurationByGraphNodeID.value, selectedNodeID.value)
+  : {})
 const requiredState = computed(() => configuration.value
   ? allEditableFieldsFilled(configuration.value, draft.value)
   : { missing: [] as string[], complete: false })
+const dirty = computed(() => configuration.value ? hasPathConfigDraftChanges(configuration.value, draft.value) : false)
 const saveDisabled = computed(() => loading.value
   || saving.value
   || !configuration.value
   || !canSavePathConfiguration(configuration.value, draft.value))
-const nextUnconfiguredPath = computed(() => executionPaths.value.find((path) => path.configurationStatus !== 'configured') ?? null)
+const nextUnconfiguredPath = computed(() => executionPaths.value.find((path) => (
+  path.id !== pathID.value && path.configurationStatus !== 'configured'
+)) ?? null)
 
+// publicPageError 把读取链路异常收敛为不含内部标识的稳定页面错误。
+function publicPageError(caught: unknown): string {
+  if (caught instanceof PlanApiError || caught instanceof PathConfigApiError) return caught.message
+  if (caught instanceof Error && (
+    caught.message === '已保存路径不存在或已删除'
+    || caught.message === '当前已保存路径与真实流程不一致，请先编辑路径'
+    || caught.message === '路径节点配置与当前流程结构不一致'
+  )) return caught.message
+  return '暂时无法读取节点配置，请重试'
+}
+
+// focusSelectedNode 仅在首次加载或用户明确要求时定位，普通节点切换不抢夺画布位置。
+async function focusSelectedNode() {
+  if (!selectedNodeID.value) return
+  await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  await canvasRef.value?.focusNode(selectedNodeID.value)
+}
+
+// loadPage 读取计划、已保存路径、真实图和当前节点配置，并用不透明节点键建立本次快照映射。
 async function loadPage() {
   loadController?.abort()
   const controller = new AbortController()
@@ -82,443 +123,353 @@ async function loadPage() {
   saveDetails.value = []
   savedSuccessfully.value = false
   plan.value = null
+  graph.value = null
+  currentPath.value = null
+  executionPaths.value = []
   configuration.value = null
+  configurationByGraphNodeID.value = new Map()
+  graphNodeIDByConfigurationKey.value = new Map()
+  selectedNodeID.value = ''
   try {
-    const [storedPlan, storedConfiguration] = await Promise.all([
+    const [storedPlan, storedGraph, storedPaths] = await Promise.all([
       fetchPlan(planID.value, controller.signal),
-      fetchPathConfiguration(planID.value, pathID.value, controller.signal),
+      fetchFlowGraph(planID.value, controller.signal),
+      fetchExecutionPaths(planID.value, controller.signal),
     ])
     if (controller.signal.aborted || version !== loadVersion) return
+    const storedPath = storedPaths.find((path) => path.id === pathID.value)
+    if (!storedPath) throw new Error('已保存路径不存在或已删除')
+    const analysis = analyzeExecutionPath(storedGraph, storedPath.choices)
+    if (!analysis.complete || analysis.invalid) throw new Error('当前已保存路径与真实流程不一致，请先编辑路径')
+
+    const storedConfiguration = await fetchPathConfiguration(planID.value, pathID.value, controller.signal)
+    if (controller.signal.aborted || version !== loadVersion) return
+    const bindings = await bindPathConfigurationNodes(storedGraph, storedConfiguration)
+    if (controller.signal.aborted || version !== loadVersion) return
+
     plan.value = storedPlan
+    graph.value = storedGraph
+    currentPath.value = storedPath
+    executionPaths.value = storedPaths
     configuration.value = storedConfiguration
     draft.value = initPathConfigDraft(storedConfiguration)
+    configurationByGraphNodeID.value = bindings.byGraphNodeID
+    graphNodeIDByConfigurationKey.value = bindings.graphNodeIDByKey
+    selectedNodeID.value = initialPathConfigurationNodeID(storedConfiguration, bindings.graphNodeIDByKey)
     saveKey = crypto.randomUUID()
-    loading.value = false
   }
   catch (caught) {
     if (controller.signal.aborted || version !== loadVersion) return
-    loading.value = false
-    pageError.value = caught instanceof PlanApiError || caught instanceof PathConfigApiError
-      ? caught.message
-      : '暂时无法读取路径配置，请重试'
+    pageError.value = publicPageError(caught)
+  }
+  finally {
+    if (version === loadVersion) loading.value = false
+  }
+  if (version === loadVersion && configuration.value) await focusSelectedNode()
+}
+
+// refreshAfterInvalidSave 用当前真实图重新绑定配置，只保留仍能用不透明键安全对应的草稿。
+async function refreshAfterInvalidSave(controller: AbortController) {
+  const preservedDraft = structuredClone(draft.value) as PathConfigDraft
+  const preservedSelectedNodeID = selectedNodeID.value
+  try {
+    const [latestGraph, latestConfiguration] = await Promise.all([
+      fetchFlowGraph(planID.value, controller.signal),
+      fetchPathConfiguration(planID.value, pathID.value, controller.signal),
+    ])
+    if (controller.signal.aborted) return
+    const bindings = await bindPathConfigurationNodes(latestGraph, latestConfiguration)
+    graph.value = latestGraph
+    configuration.value = latestConfiguration
+    draft.value = reconcilePathConfigDraft(latestConfiguration, preservedDraft)
+    configurationByGraphNodeID.value = bindings.byGraphNodeID
+    graphNodeIDByConfigurationKey.value = bindings.graphNodeIDByKey
+    selectedNodeID.value = bindings.byGraphNodeID.has(preservedSelectedNodeID)
+      ? preservedSelectedNodeID
+      : initialPathConfigurationNodeID(latestConfiguration, bindings.graphNodeIDByKey)
+  }
+  catch (caught) {
+    if (controller.signal.aborted) return
+    // 刷新失败时不替换现有图、草稿或选中节点，用户仍可在原现场重试。
+    saveError.value = '目标结构已变化，但暂时无法读取最新配置；当前草稿已保留'
   }
 }
 
+// saveConfiguration 按路径保存全部节点配置；失败保留草稿和视口，成功只刷新本地配置事实。
 async function saveConfiguration() {
   const current = configuration.value
   if (!current || saveDisabled.value) return
   saveController?.abort()
-  saveController = new AbortController()
+  const controller = new AbortController()
+  saveController = controller
   saving.value = true
+  savedSuccessfully.value = false
   saveError.value = ''
   saveDetails.value = []
   const payload = buildPathConfigSavePayload(current, draft.value)
   try {
-    const saved = await savePathConfiguration(planID.value, pathID.value, current.revision, payload.fields, payload.actions, saveKey)
-    configuration.value = applyPathConfigDraft(current, draft.value, saved.revision)
+    const saved = await savePathConfiguration(
+      planID.value,
+      pathID.value,
+      current.revision,
+      payload.fields,
+      payload.actions,
+      saveKey,
+    )
+    if (controller.signal.aborted) return
+    const updatedConfiguration = applyPathConfigDraft(current, draft.value, saved.revision)
+    configuration.value = updatedConfiguration
+    // 保存后重建节点索引，画布状态与侧栏必须立即指向新基线，不能继续显示旧对象。
+    configurationByGraphNodeID.value = pathConfigurationNodesByGraphID(updatedConfiguration, graphNodeIDByConfigurationKey.value)
     saveKey = crypto.randomUUID()
     savedSuccessfully.value = true
-    saveError.value = ''
-    saveDetails.value = []
-    // 保存成功后只刷新本地路径状态列表，不重读目标图，避免把用户视口和当前配置结果打回初始态。
     try {
-      executionPaths.value = await fetchExecutionPaths(planID.value, new AbortController().signal)
+      executionPaths.value = await fetchExecutionPaths(planID.value, controller.signal)
     }
     catch (caught) {
-      if (!(caught instanceof DOMException && caught.name === 'AbortError')) {
-        executionPaths.value = []
-      }
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) executionPaths.value = []
     }
   }
   catch (caught) {
-    if (caught instanceof DOMException && caught.name === 'AbortError') return
+    if (controller.signal.aborted) return
     if (caught instanceof PathConfigApiError) {
       saveDetails.value = caught.details
       if (caught.code === 'CONFIG_INVALID') {
-        // 结构变化或必填不完整时保留草稿，让用户继续补选，不整页重置。
-        saveError.value = '流程已变化或配置不完整，需要重新选择后保存'
+        saveError.value = '目标流程配置已变化，需要重新确认受影响节点'
+        await refreshAfterInvalidSave(controller)
       }
       else {
         saveError.value = caught.message
       }
     }
     else {
-      saveError.value = '保存失败，草稿已保留，请重试'
+      saveError.value = '保存失败，当前节点和草稿已保留，请重试'
     }
   }
   finally {
-    // 无论成功、失败还是请求取消，都释放保存门禁；否则成功后的返回/下一条操作会被永久误判为保存中。
     saving.value = false
   }
 }
 
-function fieldValue(field: PathConfigField): unknown {
-  return parsePathConfigValue(field, draft.value.fields[field.key] ?? '')
+// selectConfigurationNode 切换侧栏内容但不重置或自动移动用户当前视口。
+function selectConfigurationNode(nodeID: string) {
+  if (!configurationByGraphNodeID.value.has(nodeID)) return
+  selectedNodeID.value = nodeID
+  savedSuccessfully.value = false
 }
 
+// selectNextConfigurationNode 显式定位后端给出的下一待配置节点，并保持当前缩放。
+async function selectNextConfigurationNode() {
+  const key = configuration.value?.nextNodeKey
+  const nodeID = key ? graphNodeIDByConfigurationKey.value.get(key) : ''
+  if (!nodeID) return
+  selectedNodeID.value = nodeID
+  await focusSelectedNode()
+}
+
+// updateFieldValue 编码受控组件值，浏览器只保存后端下发的不透明字段键。
 function updateFieldValue(field: PathConfigField, value: unknown) {
   draft.value.fields[field.key] = encodePathConfigValue(field, value)
+  savedSuccessfully.value = false
 }
 
-function dateFieldValue(field: PathConfigField): string | null {
-  const value = fieldValue(field)
-  return typeof value === 'string' && value.trim() !== '' ? value : null
-}
-
-function actionValue(action: PathConfigAction): string {
-  return draft.value.actions[action.key] ?? action.default
-}
-
+// updateActionValue 更新当前节点合法动作草稿。
 function updateActionValue(action: PathConfigAction, value: string) {
   draft.value.actions[action.key] = value
+  savedSuccessfully.value = false
 }
 
-function backToPaths() {
-  if (dirty.value && !window.confirm('当前有未保存的修改，确定返回吗？')) return
+// updatePersonValue 更新当前模板允许的人员候选草稿，不接收面板之外的任意人员值。
+function updatePersonValue(person: PathConfigPerson, value: string[]) {
+  const allowed = new Set(person.options.map((option) => option.value))
+  draft.value.persons[person.key] = value.filter((candidate) => allowed.has(candidate))
+  savedSuccessfully.value = false
+}
+
+// backToPlan 返回计划详情；存在真实修改时需要用户确认，首次未保存但未修改不误报。
+function backToPlan() {
+  if (dirty.value && !window.confirm('当前有未保存的节点配置，确定返回吗？')) return
   router.push('/plans/' + planID.value + '/paths')
 }
 
+// configureNextPath 在用户确认保存结果后切到下一条待配置路径，不自动跳转。
+function configureNextPath() {
+  if (!nextUnconfiguredPath.value) return
+  router.push('/plans/' + planID.value + '/paths/' + nextUnconfiguredPath.value.id + '/configure')
+}
+
+watch([planID, pathID], () => {
+  void loadPage()
+})
+
 onBeforeUnmount(() => {
+  loadVersion++
   loadController?.abort()
   saveController?.abort()
 })
 
-loadPage()
+void loadPage()
 </script>
 
 <template>
-  <main class="path-configuration-page">
-    <header class="path-configuration-page__header">
-      <div>
-        <n-button text type="primary" @click="backToPaths">返回测试计划</n-button>
-        <h1>路径数据与节点动作配置</h1>
-        <p v-if="plan" class="path-configuration-page__plan">{{ plan.name }}</p>
+  <main class="path-node-configuration-page" :style="pageThemeStyle">
+    <header class="path-node-configuration-page__header">
+      <div class="path-node-configuration-page__identity">
+        <n-button text type="primary" @click="backToPlan">返回计划详情</n-button>
+        <div>
+          <h1>路径节点配置</h1>
+          <p v-if="plan && configuration">
+            {{ plan.name }} · #{{ configuration.path.sequenceNo }} {{ configuration.path.name }}
+          </p>
+        </div>
       </div>
-      <div v-if="configuration" class="path-configuration-page__summary">
-        <span>序号 #{{ configuration.path.sequenceNo }}</span>
-        <span>{{ configuration.path.name }}</span>
-        <n-tag :bordered="false" :type="configuration.status === 'affected' ? 'warning' : configuration.status === 'pending' ? 'default' : 'success'" size="small">
-          {{ configuration.status === 'affected' ? '需要重新核对' : configuration.status === 'pending' ? '待保存配置' : '已保存配置' }}
+      <div v-if="configuration" class="path-node-configuration-page__progress" aria-label="节点配置进度">
+        <span>已完成 {{ configuration.progress.completed }}</span>
+        <span>待处理 {{ configuration.progress.pending }}</span>
+        <span>共 {{ configuration.progress.total }}</span>
+        <n-tag
+          size="small"
+          :bordered="false"
+          :type="configuration.status === 'configured' ? 'success' : configuration.status === 'affected' ? 'error' : 'warning'"
+        >
+          {{ configuration.status === 'configured' ? '已保存配置' : configuration.status === 'affected' ? '配置需重新确认' : '待保存配置' }}
         </n-tag>
+        <n-button v-if="configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">
+          下一待配置节点
+        </n-button>
       </div>
     </header>
 
-    <n-spin :show="loading" class="path-configuration-page__spin">
-      <div class="path-configuration-page__body">
-        <n-alert v-if="pageError" type="error" :show-icon="false" class="path-configuration-page__alert">
-          {{ pageError }}
-        </n-alert>
-        <n-button v-if="pageError" size="small" class="path-configuration-page__retry" @click="loadPage">重新读取</n-button>
-
-        <template v-if="configuration">
-          <n-alert v-for="(warning, index) in configuration.warnings" :key="index" type="warning" :show-icon="false" class="path-configuration-page__alert">
-            {{ warning }}
-          </n-alert>
-
-          <section v-for="(group, groupIndex) in configuration.groups" :key="'group-' + groupIndex" class="path-configuration-page__group">
-            <h2>{{ group.title }}</h2>
-            <article v-for="(node, nodeIndex) in group.nodes" :key="'node-' + groupIndex + '-' + nodeIndex" class="path-configuration-node" :class="{ 'path-configuration-node--blocked': node.lineBlocked }">
-              <header class="path-configuration-node__header">
-                <strong>{{ node.name }}</strong>
-                <n-tag size="small" :bordered="false">{{ node.typeName }}</n-tag>
-                <n-alert v-if="node.lineBlocked" type="warning" :show-icon="false" size="small">
-                  前序节点选择了不同意，本节点及后续不再按原路径继续
-                </n-alert>
-              </header>
-
-              <div v-if="node.fields.length" class="path-configuration-node__fields">
-                <div v-for="field in node.fields" :key="field.key" class="path-configuration-field" :class="{ 'path-configuration-field--affected': field.affected }">
-                  <label>
-                    <span>{{ field.name }}</span>
-                    <n-tag v-if="field.required" size="tiny" :bordered="false" type="error">必填</n-tag>
-                    <n-tag v-if="field.affected" size="tiny" :bordered="false" type="warning">受影响</n-tag>
-                  </label>
-                  <n-input
-                    v-if="field.type === 'text'"
-                    :value="String(fieldValue(field))"
-                    :disabled="node.lineBlocked || !field.editable"
-                    :placeholder="field.required ? '请输入必填值' : '选填'"
-                    @update:value="(value) => updateFieldValue(field, value)"
-                  />
-                  <n-input-number
-                    v-else-if="field.type === 'number'"
-                    :value="typeof fieldValue(field) === 'number' ? fieldValue(field) as number : Number(fieldValue(field)) || null"
-                    :disabled="node.lineBlocked || !field.editable"
-                    :placeholder="field.required ? '请输入必填值' : '选填'"
-                    @update:value="(value) => updateFieldValue(field, value)"
-                  />
-                  <n-date-picker
-                    v-else-if="field.type === 'date'"
-                    type="date"
-                    value-format="yyyy-MM-dd"
-                    :formatted-value="dateFieldValue(field)"
-                    :disabled="node.lineBlocked || !field.editable"
-                    placeholder="请选择日期"
-                    @update:formatted-value="(value) => updateFieldValue(field, value)"
-                  />
-                  <n-date-picker
-                    v-else-if="field.type === 'dateTime'"
-                    type="datetime"
-                    value-format="yyyy-MM-dd HH:mm:ss"
-                    :formatted-value="dateFieldValue(field)"
-                    :disabled="node.lineBlocked || !field.editable"
-                    placeholder="请选择日期时间"
-                    @update:formatted-value="(value) => updateFieldValue(field, value)"
-                  />
-                  <n-select
-                    v-else-if="field.type === 'singleSelect'"
-                    :value="String(fieldValue(field))"
-                    :options="field.options"
-                    :disabled="node.lineBlocked || !field.editable"
-                    :placeholder="field.required ? '请选择必填项' : '请选择'"
-                    @update:value="(value) => updateFieldValue(field, value)"
-                  />
-                  <n-select
-                    v-else-if="field.type === 'multiSelect'"
-                    multiple
-                    :value="Array.isArray(fieldValue(field)) ? fieldValue(field) as string[] : []"
-                    :options="field.options"
-                    :disabled="node.lineBlocked || !field.editable"
-                    :placeholder="field.required ? '请选择必填项' : '请选择'"
-                    @update:value="(value) => updateFieldValue(field, value)"
-                  />
-                  <n-switch
-                    v-else-if="field.type === 'switch'"
-                    :value="fieldValue(field) === true"
-                    :disabled="node.lineBlocked || !field.editable"
-                    @update:value="(value) => updateFieldValue(field, value)"
-                  />
-                  <p v-if="field.note" class="path-configuration-field__note">{{ field.note }}</p>
-                </div>
-              </div>
-
-              <ul v-if="node.gaps.length" class="path-configuration-node__gaps">
-                <li v-for="(gap, gapIndex) in node.gaps" :key="'gap-' + gapIndex">
-                  <span>{{ gap.name }}</span>
-                  <em>{{ gap.reason }}</em>
-                </li>
-              </ul>
-
-              <div v-if="node.actions.length" class="path-configuration-node__actions">
-                <div v-for="action in node.actions" :key="action.key" class="path-configuration-action">
-                  <span>{{ action.label }}</span>
-                  <n-radio-group
-                    v-if="action.kind === 'agree_disagree'"
-                    :value="actionValue(action)"
-                    :disabled="node.lineBlocked"
-                    @update:value="(value) => updateActionValue(action, value as string)"
-                  >
-                    <n-radio-button
-                      v-for="option in action.options"
-                      :key="option.value"
-                      :value="option.value"
-                    >
-                      {{ option.label }}
-                    </n-radio-button>
-                  </n-radio-group>
-                  <n-tag v-else :bordered="false" type="info">固定{{ action.current === 'submit' ? '提交' : action.current }}</n-tag>
-                  <p v-if="action.kind === 'agree_disagree' && actionValue(action) === 'disagree'" class="path-configuration-action__warning">
-                    {{ action.disagreeWarning }}
-                  </p>
-                </div>
-              </div>
-            </article>
-          </section>
+    <n-spin :show="loading" class="path-node-configuration-page__stage">
+      <n-alert v-if="pageError" type="error" :show-icon="false" class="path-node-configuration-page__error">
+        <span>{{ pageError }}</span>
+        <n-button size="small" class="path-node-configuration-page__retry" @click="loadPage">重新读取</n-button>
+      </n-alert>
+      <flow-graph-canvas
+        v-else-if="graph && currentPath && configuration"
+        ref="canvasRef"
+        class="path-node-configuration-page__canvas"
+        :graph="graph"
+        :choices="currentPath.choices"
+        configuration-mode
+        :configuration-node-states="configurationNodeStates"
+        @select-configuration-node="selectConfigurationNode"
+        @retry="loadPage"
+      >
+        <template #configuration-panel>
+          <node-configuration-panel
+            :node="selectedNode"
+            :warnings="configuration.warnings"
+            :draft="draft"
+            :saving="saving"
+            :save-disabled="saveDisabled"
+            :missing-count="requiredState.missing.length"
+            :save-error="saveError"
+            :save-details="saveDetails"
+            :saved-successfully="savedSuccessfully"
+            :has-next-path="Boolean(nextUnconfiguredPath)"
+            @update-field="updateFieldValue"
+            @update-action="updateActionValue"
+            @update-person="updatePersonValue"
+            @save="saveConfiguration"
+            @back-to-plan="backToPlan"
+            @configure-next="configureNextPath"
+          />
         </template>
-      </div>
+      </flow-graph-canvas>
+      <n-empty v-else-if="!loading && !pageError" description="暂时没有可配置的路径节点" />
     </n-spin>
-
-    <footer v-if="configuration" class="path-configuration-page__footer">
-      <div class="path-configuration-page__footer-status">
-        <n-alert v-if="saveError" type="error" :show-icon="false" size="small">
-          {{ saveError }}
-          <template v-if="saveDetails.length">
-            <ul class="path-configuration-page__details">
-              <li v-for="(item, index) in saveDetails" :key="index">{{ item.name }}：{{ item.reason }}</li>
-            </ul>
-          </template>
-        </n-alert>
-        <span v-else-if="requiredState.missing.length">还有 {{ requiredState.missing.length }} 个必填字段未填写</span>
-        <span v-else-if="dirty">有未保存的修改</span>
-        <n-alert v-if="savedSuccessfully" type="success" :show-icon="false" size="small">
-          路径配置已保存
-        </n-alert>
-        <span v-else-if="configuration.status === 'pending'">尚未保存配置</span>
-        <span v-else>配置已保存</span>
-      </div>
-      <div v-if="savedSuccessfully" class="path-configuration-page__success-actions">
-        <n-button @click="router.push('/plans/' + planID + '/paths')">返回计划详情</n-button>
-        <n-button v-if="nextUnconfiguredPath" type="primary" @click="router.push('/plans/' + planID + '/paths/' + nextUnconfiguredPath.id + '/configure')">
-          配置下一条
-        </n-button>
-      </div>
-      <n-button type="primary" :loading="saving" :disabled="saveDisabled" @click="saveConfiguration">保存配置</n-button>
-    </footer>
   </main>
 </template>
 
 <style scoped>
-.path-configuration-page {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background: var(--bg-color, #ffffff);
-  color: var(--text-color, #333333);
+.path-node-configuration-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  height: calc(100dvh - 144px);
+  min-height: 560px;
+  overflow: hidden;
+  color: var(--path-config-text-color);
+  background: var(--path-config-page-color);
 }
 
-.path-configuration-page__header {
+.path-node-configuration-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 0 14px;
+}
+
+.path-node-configuration-page__identity {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 16px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border-color, rgba(0, 0, 0, 0.08));
+  min-width: 0;
 }
 
-.path-configuration-page__header h1 {
-  margin: 8px 0 4px;
-  font-size: 20px;
+.path-node-configuration-page__identity h1 {
+  margin: 0 0 5px;
+  font-size: 24px;
   line-height: 1.3;
 }
 
-.path-configuration-page__plan {
+.path-node-configuration-page__identity p {
+  max-width: 520px;
   margin: 0;
-  color: var(--text-color-2, #666666);
+  overflow: hidden;
+  color: var(--path-config-text-secondary-color);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.path-configuration-page__summary {
+.path-node-configuration-page__progress {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--text-color-2, #666666);
-}
-
-.path-configuration-page__body {
-  flex: 1;
-  overflow: auto;
-  padding: 16px 24px 88px;
-}
-
-.path-configuration-page__alert {
-  margin-bottom: 12px;
-}
-
-.path-configuration-page__retry {
-  margin-bottom: 12px;
-}
-
-.path-configuration-page__group {
-  margin-bottom: 20px;
-}
-
-.path-configuration-page__group h2 {
-  margin: 0 0 8px;
-  font-size: 16px;
-}
-
-.path-configuration-node {
-  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.08));
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin-bottom: 12px;
-  background: var(--card-color, rgba(0, 0, 0, 0.02));
-}
-
-.path-configuration-node--blocked {
-  opacity: 0.72;
-}
-
-.path-configuration-node__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.path-configuration-node__fields {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-}
-
-.path-configuration-field label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--path-config-text-secondary-color);
   font-size: 13px;
 }
 
-.path-configuration-field--affected {
-  outline: 1px solid var(--warning-color, #f0a020);
-  border-radius: 6px;
-  padding: 6px;
+.path-node-configuration-page__stage {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--path-config-card-color);
+  border: 1px solid var(--path-config-border-color);
+  border-radius: 4px;
 }
 
-.path-configuration-field__note,
-.path-configuration-action__warning {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--warning-color, #b8740a);
+.path-node-configuration-page__stage :deep(.n-spin-content) {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
-.path-configuration-node__gaps {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-  display: grid;
-  gap: 6px;
+.path-node-configuration-page__canvas {
+  height: 100%;
+  min-height: 0;
+  border-top: 0;
 }
 
-.path-configuration-node__gaps li {
-  display: flex;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-color-2, #666666);
+.path-node-configuration-page__error {
+  margin: 20px;
 }
 
-.path-configuration-node__gaps em {
-  font-style: normal;
-  color: var(--warning-color, #b8740a);
+.path-node-configuration-page__retry {
+  margin-left: 12px;
 }
 
-.path-configuration-node__actions {
-  margin-top: 10px;
-}
+@media (max-width: 1180px) {
+  .path-node-configuration-page__header {
+    align-items: flex-start;
+  }
 
-.path-configuration-action {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.path-configuration-page__footer {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 24px;
-  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.08));
-  background: var(--bg-color, #ffffff);
-}
-
-.path-configuration-page__footer-status {
-  flex: 1;
-  font-size: 13px;
-}
-
-.path-configuration-page__success-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.path-configuration-page__details {
-  margin: 4px 0 0;
-  padding-left: 18px;
+  .path-node-configuration-page__progress {
+    max-width: 360px;
+    flex-wrap: wrap;
+  }
 }
 </style>

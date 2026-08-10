@@ -375,7 +375,7 @@ async function editActivePath() {
   await canvasRef.value?.setPageFullscreen(true)
 }
 
-// openPathConfiguration 从只读路径详情进入 F-007 单条路径配置工作台。
+// openPathConfiguration 从只读路径详情进入 F-007 单条路径节点配置画布。
 function openPathConfiguration(path: ExecutionPath | null = activePath.value) {
   if (!path) return
   router.push('/plans/' + planID.value + '/paths/' + path.id + '/configure')
@@ -654,8 +654,8 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
-              <span>下一步：新增执行路径</span>
-              <n-button type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="enterPathEditing">新增路径</n-button>
+              <span>请先配置并保存执行路径</span>
+              <n-button type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="enterPathEditing">配置路径</n-button>
             </div>
             <div v-else-if="!pathsLoading && !pathsError && paths.length" class="path-preparation__list">
               <div v-for="path in paths" :key="path.id" class="path-preparation__item">
@@ -666,7 +666,7 @@ onBeforeUnmount(() => {
                     {{ path.configurationStatus === 'configured' ? '已配置' : '未配置' }}
                   </n-tag>
                 </div>
-                <n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">配置</n-button>
+                <n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">配置节点</n-button>
               </div>
             </div>
           </section>
@@ -824,7 +824,7 @@ onBeforeUnmount(() => {
                     </div>
                     <footer class="path-selection-panel__footer">
                       <template v-if="workspaceMode === 'view'">
-                        <n-button :disabled="!activePath || workspaceActionBusy" @click="() => openPathConfiguration()">配置路径</n-button>
+                        <n-button :disabled="!activePath || workspaceActionBusy" @click="() => openPathConfiguration()">配置节点</n-button>
                         <n-button type="primary" :disabled="!activePath || workspaceActionBusy" @click="editActivePath">编辑路径</n-button>
                         <n-dropdown trigger="click" :options="pathMoreOptions" :disabled="workspaceActionBusy" @select="handlePathMoreAction">
                           <n-button secondary :disabled="!activePath || workspaceActionBusy">更多</n-button>

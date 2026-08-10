@@ -33,6 +33,18 @@ export interface FlowNodeData extends Record<string, unknown> {
   type: FlowGraphNodeType
   typeName: string
   mergeTargetId?: string
+  configurationMode?: boolean
+  configurationStatus?: 'not_required' | 'pending' | 'partial' | 'configured' | 'runtime' | 'affected'
+  configurationStatusName?: string
+  configurationInteractive?: boolean
+  configurationSelected?: boolean
+}
+
+export interface FlowConfigurationNodeState {
+  status: NonNullable<FlowNodeData['configurationStatus']>
+  statusName: string
+  interactive: boolean
+  selected: boolean
 }
 
 export interface FlowTreeEdgeData extends Record<string, unknown> {

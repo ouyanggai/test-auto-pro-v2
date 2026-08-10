@@ -8,23 +8,17 @@ config_view="${project_root}/web/src/views/PlanPathConfigurationView.vue"
 paths_view="${project_root}/web/src/views/PlanPathsView.vue"
 config_api="${project_root}/web/src/features/path-configuration/api.ts"
 config_logic="${project_root}/web/src/features/path-configuration/logic.ts"
-paths_view="${project_root}/web/src/views/PlanPathsView.vue"
+config_panel="${project_root}/web/src/features/path-configuration/NodeConfigurationPanel.vue"
 canvas_view="${project_root}/web/src/features/flow-graph/FlowGraphCanvas.vue"
+flow_node="${project_root}/web/src/features/flow-graph/FlowGraphNode.vue"
+routing_hub="${project_root}/web/src/features/flow-graph/FlowRoutingHub.vue"
 
 if ! grep -Fq "/plans/:planId/paths/:pathId/configure" "${router_file}" || ! grep -Fq "PlanPathConfigurationView" "${router_file}"; then
-  echo 'F-007 必须存在单条路径配置页路由' >&2
-  exit 1
-fi
-if ! grep -Fq "配置路径" "${paths_view}"; then
-  echo 'F-007 已保存路径详情必须提供配置路径入口' >&2
+  echo 'F-007 必须保留单条已保存路径的节点配置路由' >&2
   exit 1
 fi
 if grep -Fq "/plans/:id/requirements" "${router_file}" || grep -Fq "RequirementsView" "${router_file}"; then
   echo 'F-007 不得恢复独立路径要求核对路由' >&2
-  exit 1
-fi
-if grep -Fq "JSON.stringify" "${config_view}" || grep -Eq "<textarea|contenteditable" "${config_view}"; then
-  echo 'F-007 配置页不得出现 JSON 编辑器或文本伪造输入' >&2
   exit 1
 fi
 if grep -Fq "/web/" "${config_api}"; then
@@ -32,68 +26,76 @@ if grep -Fq "/web/" "${config_api}"; then
   exit 1
 fi
 
-# 配置页要求独立内容滚动与固定保存区。
-grep -Fq "path-configuration-page__body" "${config_view}"
-grep -Fq "overflow: auto" "${config_view}"
-grep -Fq "path-configuration-page__footer" "${config_view}"
-
-# 缺口、受影响、不同意提示和必填状态必须保留明确中文呈现。
-grep -Fq "path-configuration-node__gaps" "${config_view}"
-grep -Fq "path-configuration-field--affected" "${config_view}"
-grep -Fq "disagreeWarning" "${config_view}"
-grep -Fq "必填" "${config_view}"
-grep -Fq "NDatePicker" "${config_view}"
-grep -Fq 'type="date"' "${config_view}"
-grep -Fq 'type="datetime"' "${config_view}"
-grep -Fq "canSavePathConfiguration" "${config_view}"
-
-# 首次无配置记录必须允许保存；日期与日期时间控件必须在普通计划详情和画布入口之外可见。
-grep -Fq "status === 'pending'" "${config_logic}"
-grep -Fq "path-preparation" "${paths_view}"
-grep -Fq "下一步：新增执行路径" "${paths_view}"
-grep -Fq "配置下一条" "${paths_view}"
-grep -Fq "返回计划详情" "${config_view}"
-grep -Fq "executionPaths" "${config_view}"
-grep -Fq "已配置" "${paths_view}"
-grep -Fq "未配置" "${paths_view}"
-grep -Fq "canvas-actions-normal" "${paths_view}"
+# 无路径先进入既有 F-005 配置路径；有路径才提供逐条节点配置，两个职责不能混用。
+grep -Fq "请先配置并保存执行路径" "${paths_view}"
+grep -Fq ">配置路径</n-button>" "${paths_view}"
+grep -Fq ">配置节点</n-button>" "${paths_view}"
 grep -Fq "编辑路径" "${paths_view}"
+grep -Fq "configurationStatus === 'configured'" "${paths_view}"
+if grep -Fq "下一步：新增执行路径" "${paths_view}"; then
+  echo 'F-007 无路径状态不得显示无效节点配置或含糊的新增步骤' >&2
+  exit 1
+fi
+
+# 配置页以复用 Vue Flow 的节点画布为主体，不再按组展开整页字段表单。
+grep -Fq "FlowGraphCanvas" "${config_view}"
+grep -Fq "configuration-mode" "${config_view}"
+grep -Fq "configuration-node-states" "${config_view}"
+grep -Fq 'name="configuration-panel"' "${canvas_view}"
+grep -Fq "flow-graph-canvas__configuration-panel" "${canvas_view}"
+grep -Fq "position: absolute" "${canvas_view}"
+grep -Fq "NodeConfigurationPanel" "${config_view}"
+grep -Fq "bindPathConfigurationNodes" "${config_view}"
+grep -Fq "focusNode" "${canvas_view}"
+grep -Fq "viewportForPointCentered" "${canvas_view}"
+if grep -Fq 'v-for="(group' "${config_view}" || grep -Fq "path-configuration-page__group" "${config_view}"; then
+  echo 'F-007 配置页不得恢复整页字段分组表单' >&2
+  exit 1
+fi
+
+# 当前路径节点可操作，路径外节点只作弱化上下文；路由节点仍复用同一真实拓扑。
+grep -Fq "configurationInteractive" "${flow_node}"
+grep -Fq "configurationStatusName" "${flow_node}"
+grep -Fq "flow-node--configuration-selected" "${flow_node}"
+grep -Fq "flow-routing-hub__configuration" "${routing_hub}"
+grep -Fq "flow-node--path-muted" "${canvas_view}"
+grep -Fq "branchEditing: props.configurationMode ? false" "${canvas_view}"
+
+# 侧栏按后端模板模型呈现字段、严格日期控件、人员与动作；运行时人员不能伪造成选择器。
+grep -Fq "node.requirements" "${config_panel}"
+grep -Fq "node.fields" "${config_panel}"
+grep -Fq "node.persons" "${config_panel}"
+grep -Fq "person.editable" "${config_panel}"
+grep -Fq "运行时确定" "${config_panel}"
+grep -Fq "NDatePicker" "${config_panel}"
+grep -Fq 'type="date"' "${config_panel}"
+grep -Fq 'type="datetime"' "${config_panel}"
+grep -Fq "固定提交" "${config_panel}"
+grep -Fq "disagreeWarning" "${config_panel}"
+grep -Fq "暂不支持" "${config_panel}"
+grep -Fq "overflow-y: auto" "${config_panel}"
+grep -Fq "保存节点配置" "${config_panel}"
+grep -Fq "返回计划详情" "${config_panel}"
+grep -Fq "配置下一条" "${config_panel}"
+
+# 浏览器只处理不透明键，结构变化保留可对应草稿；不得出现假运行控制。
+grep -Fq "pathConfigNodeKey" "${config_logic}"
+grep -Fq "reconcilePathConfigDraft" "${config_logic}"
+grep -Fq "status === 'pending'" "${config_logic}"
+if grep -Eq '> *(暂停|继续|单步|运行|设置断点) *<' "${config_view}" "${config_panel}" "${canvas_view}"; then
+  echo 'F-007 不得显示尚未生效的运行、单步或断点按钮' >&2
+  exit 1
+fi
+if grep -Fq "JSON.stringify" "${config_view}" || grep -Eq "<textarea|contenteditable" "${config_view}" "${config_panel}"; then
+  echo 'F-007 配置页不得出现目标原始 JSON 编辑器或文本伪造输入' >&2
+  exit 1
+fi
+
+# F-005 普通画布与页面全屏入口保持原样，节点配置模式只增加独立面板。
 grep -Fq 'name="canvas-actions-normal"' "${canvas_view}"
 grep -Fq 'name="canvas-actions"' "${canvas_view}"
-if ! awk '/name="canvas-actions-normal"/{normal=NR} /页面全屏/{fullscreen=NR} END{exit !(normal && fullscreen && normal < fullscreen)}' "${canvas_view}"; then
-  echo 'F-007 普通画布必须先渲染编辑路径插槽，再渲染文字页面全屏按钮' >&2
-  exit 1
-fi
-grep -Fq '点击“页面全屏”只放大当前流程图' "${project_root}/test/manual/F-007.md"
-grep -Fq '点击“编辑路径”才进入线路管理' "${project_root}/test/manual/F-007.md"
+grep -Fq "页面全屏" "${canvas_view}"
+grep -Fq "workspaceOpen" "${canvas_view}"
+grep -Fq "branchEditing" "${canvas_view}"
 
-# 计划详情使用 Naive UI 中性主题和两个完整内容视口；路径列表是首屏唯一允许的内部纵向滚动区。
-grep -Fq "useThemeVars" "${paths_view}"
-grep -Fq "themeVars.value.cardColor" "${paths_view}"
-grep -Fq -- "--plan-card-color" "${paths_view}"
-grep -Fq -- "--plan-border-color" "${paths_view}"
-grep -Fq -- "--plan-text-secondary-color" "${paths_view}"
-if grep -Eq '#18a058|rgb\(24,[[:space:]]*160,[[:space:]]*88\)|background:[[:space:]]*var\(--n-color\)' "${paths_view}"; then
-  echo 'F-007 路径准备区域不得使用硬编码或继承组件主色的大面积绿色背景' >&2
-  exit 1
-fi
-grep -Fq 'class="plan-paths-screen plan-paths-screen--overview"' "${paths_view}"
-grep -Fq 'class="plan-paths-screen plan-paths-screen--graph graph-section"' "${paths_view}"
-grep -Fq "plan-paths-scroll-container" "${paths_view}"
-grep -Fq "scroll-snap-type: y mandatory" "${paths_view}"
-grep -Fq "scroll-snap-align: start" "${paths_view}"
-grep -Fq "scroll-snap-stop: always" "${paths_view}"
-grep -Fq "path-preparation__list" "${paths_view}"
-grep -Fq "scrollbar-gutter: stable" "${paths_view}"
-grep -Fq ".graph-region :deep(.flow-graph-canvas:not(.flow-graph-canvas--page-fullscreen))" "${paths_view}"
-grep -Fq "查看流程结构" "${paths_view}"
-grep -Fq "scrollIntoView" "${paths_view}"
-grep -Fq "behavior: reducedMotion ? 'auto' : 'smooth'" "${paths_view}"
-grep -Fq "@media (prefers-reduced-motion: reduce)" "${paths_view}"
-
-if [[ ! -f "${config_logic}" ]]; then
-  echo 'F-007 配置纯逻辑模块缺失' >&2
-  exit 1
-fi
-
-echo 'F-007 配置页路由、入口、只读边界、滚动与保存区结构检查通过'
+echo 'F-007 节点可视化配置入口、同图投影、模板侧栏与只读运行边界结构检查通过'

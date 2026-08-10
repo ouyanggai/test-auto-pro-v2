@@ -6,6 +6,7 @@ import { computed } from 'vue'
 import type { FlowNodeData } from './types'
 
 const props = defineProps<{ data: FlowNodeData }>()
+const emit = defineEmits<{ select: [] }>()
 
 const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>(() => {
   switch (props.data.type) {
@@ -18,10 +19,42 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
     default: return 'default'
   }
 })
+
+const configurationTagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>(() => {
+  switch (props.data.configurationStatus) {
+    case 'configured': return 'success'
+    case 'pending':
+    case 'partial': return 'warning'
+    case 'affected': return 'error'
+    case 'runtime': return 'info'
+    default: return 'default'
+  }
+})
 </script>
 
 <template>
-  <n-tag class="flow-node" :type="tagType" :bordered="true" :title="data.name">
+  <button
+    v-if="data.configurationMode"
+    type="button"
+    class="flow-node flow-node--configuration"
+    :class="{
+      'flow-node--configuration-selected': data.configurationSelected,
+      'flow-node--configuration-disabled': !data.configurationInteractive,
+    }"
+    :disabled="!data.configurationInteractive"
+    :aria-pressed="data.configurationSelected"
+    :title="data.configurationInteractive ? `${data.name}，${data.configurationStatusName}` : `${data.name}，不在当前路径`"
+    @click="emit('select')"
+  >
+    <handle type="target" :position="Position.Top" :connectable="false" />
+    <span class="flow-node__type">{{ data.typeName }}</span>
+    <span class="flow-node__name">{{ data.name }}</span>
+    <n-tag size="tiny" :bordered="false" :type="configurationTagType">
+      {{ data.configurationInteractive ? data.configurationStatusName : '路径外上下文' }}
+    </n-tag>
+    <handle type="source" :position="Position.Bottom" :connectable="false" />
+  </button>
+  <n-tag v-else class="flow-node" :type="tagType" :bordered="true" :title="data.name">
     <handle type="target" :position="Position.Top" :connectable="false" />
     <span class="flow-node__type">{{ data.typeName }}</span>
     <span class="flow-node__name">{{ data.name }}</span>
@@ -40,6 +73,31 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   gap: 3px;
   border-radius: 4px;
   white-space: normal;
+}
+
+.flow-node--configuration {
+  color: var(--flow-label-color);
+  cursor: pointer;
+  background: var(--flow-surface-color);
+  border: 1px solid var(--flow-edge-color);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.flow-node--configuration:hover,
+.flow-node--configuration:focus-visible,
+.flow-node--configuration-selected {
+  border-color: var(--flow-direction-color);
+  outline: none;
+}
+
+.flow-node--configuration-selected {
+  background: color-mix(in srgb, var(--flow-direction-color) 9%, var(--flow-surface-color));
+  border-width: 2px;
+}
+
+.flow-node--configuration-disabled {
+  cursor: default;
+  opacity: 0.52;
 }
 
 .flow-node__type {
@@ -67,5 +125,11 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   border: 1px solid currentcolor;
   background: currentcolor;
   pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-node--configuration {
+    transition: none;
+  }
 }
 </style>

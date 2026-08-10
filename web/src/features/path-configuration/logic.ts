@@ -5,6 +5,77 @@ import type {
   PathConfigField,
   PathConfigFieldValue,
 } from './types.ts'
+import type { ExecutionPathAnalysis } from '../execution-paths/types.ts'
+import type { FlowConfigurationNodeState, FlowGraph } from '../flow-graph/types.ts'
+
+// pathConfigNodeKey 使用与后端相同的稳定哈希把图节点映射到配置节点；公开配置模型无需返回目标节点 ID。
+export async function pathConfigNodeKey(nodeID: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`node:${nodeID.trim()}:configuration`)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest).slice(0, 16)]
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+// bindPathConfigurationNodes 把同一真实图的节点 ID 与配置不透明键绑定，并拒绝缺失或额外配置节点。
+export async function bindPathConfigurationNodes(graph: FlowGraph, configuration: PathConfiguration) {
+  const configByKey = new Map(configuration.groups.flatMap((group) => group.nodes).map((node) => [node.key, node]))
+  const graphNodeIDByKey = new Map<string, string>()
+  await Promise.all(graph.nodes.map(async (node) => {
+    const key = await pathConfigNodeKey(node.id)
+    graphNodeIDByKey.set(key, node.id)
+  }))
+  for (const key of configByKey.keys()) {
+    if (!graphNodeIDByKey.has(key)) throw new Error('路径节点配置与当前流程结构不一致')
+  }
+  return { byGraphNodeID: pathConfigurationNodesByGraphID(configuration, graphNodeIDByKey), graphNodeIDByKey }
+}
+
+// pathConfigurationNodesByGraphID 使用已经核实过的键映射重建响应式节点索引，保存后不会继续引用旧投影。
+export function pathConfigurationNodesByGraphID(configuration: PathConfiguration, graphNodeIDByKey: Map<string, string>) {
+  const result = new Map<string, PathConfiguration['groups'][number]['nodes'][number]>()
+  for (const group of configuration.groups) {
+    for (const node of group.nodes) {
+      const graphNodeID = graphNodeIDByKey.get(node.key)
+      if (graphNodeID) result.set(graphNodeID, node)
+    }
+  }
+  return result
+}
+
+// initialPathConfigurationNodeID 优先选择后端给出的下一待配置节点，否则选择投影顺序中的首个节点。
+export function initialPathConfigurationNodeID(configuration: PathConfiguration, graphNodeIDByKey: Map<string, string>): string {
+  const next = graphNodeIDByKey.get(configuration.nextNodeKey)
+  if (next) return next
+  for (const group of configuration.groups) {
+    for (const node of group.nodes) {
+      const graphNodeID = graphNodeIDByKey.get(node.key)
+      if (graphNodeID) return graphNodeID
+    }
+  }
+  return ''
+}
+
+// projectPathConfigurationNodeStates 把后端节点状态投影到同一流程图；路径外节点只作弱化上下文且不可配置。
+export function projectPathConfigurationNodeStates(
+  graph: FlowGraph,
+  analysis: ExecutionPathAnalysis,
+  configByGraphNodeID: Map<string, PathConfiguration['groups'][number]['nodes'][number]>,
+  selectedNodeID: string,
+): Record<string, FlowConfigurationNodeState> {
+  const result: Record<string, FlowConfigurationNodeState> = {}
+  for (const node of graph.nodes) {
+    const configNode = configByGraphNodeID.get(node.id)
+    const onCurrentPath = analysis.reachableNodeIds.has(node.id)
+    result[node.id] = {
+      status: configNode?.status ?? 'not_required',
+      statusName: configNode?.statusName ?? '路径外上下文',
+      interactive: Boolean(onCurrentPath && configNode),
+      selected: Boolean(onCurrentPath && configNode && node.id === selectedNodeID),
+    }
+  }
+  return result
+}
 
 // parsePathConfigValue 把后端 JSON 文本值按字段类型解析为前端控件值；无法解析时退回原始文本。
 export function parsePathConfigValue(field: PathConfigField, raw: string): unknown {
@@ -28,6 +99,7 @@ export function encodePathConfigValue(field: PathConfigField, value: unknown): s
 export function initPathConfigDraft(configuration: PathConfiguration): PathConfigDraft {
   const fields: Record<string, string> = {}
   const actions: Record<string, string> = {}
+  const persons: Record<string, string[]> = {}
   for (const group of configuration.groups) {
     for (const node of group.nodes) {
       for (const field of node.fields) {
@@ -36,9 +108,12 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
       for (const action of node.actions) {
         actions[action.key] = action.current
       }
+      for (const person of node.persons) {
+        if (person.editable) persons[person.key] = [...person.selected]
+      }
     }
   }
-  return { fields, actions }
+  return { fields, actions, persons }
 }
 
 // hasPathConfigDraftChanges 判断草稿相对配置模型是否有真实变化；仅用于保存按钮可用性。
@@ -46,7 +121,33 @@ export function hasPathConfigDraftChanges(configuration: PathConfiguration, draf
   const baseline = initPathConfigDraft(configuration)
   const baselineFields = JSON.stringify(baseline.fields)
   const baselineActions = JSON.stringify(baseline.actions)
-  return baselineFields !== JSON.stringify(draft.fields) || baselineActions !== JSON.stringify(draft.actions)
+  const baselinePersons = JSON.stringify(baseline.persons)
+  return baselineFields !== JSON.stringify(draft.fields)
+    || baselineActions !== JSON.stringify(draft.actions)
+    || baselinePersons !== JSON.stringify(draft.persons)
+}
+
+// reconcilePathConfigDraft 在目标结构刷新后只保留仍有相同不透明配置键的草稿，避免跨节点或跨路径串值。
+export function reconcilePathConfigDraft(configuration: PathConfiguration, draft: PathConfigDraft): PathConfigDraft {
+  const next = initPathConfigDraft(configuration)
+  for (const key of Object.keys(next.fields)) {
+    if (Object.prototype.hasOwnProperty.call(draft.fields, key)) next.fields[key] = draft.fields[key]
+  }
+  for (const group of configuration.groups) {
+    for (const node of group.nodes) {
+      for (const action of node.actions) {
+        const candidate = draft.actions[action.key]
+        if (candidate && action.options.some((option) => option.value === candidate)) next.actions[action.key] = candidate
+      }
+      for (const person of node.persons) {
+        if (!person.editable || !Object.prototype.hasOwnProperty.call(draft.persons, person.key)) continue
+        const allowed = new Set(person.options.map((option) => option.value))
+        // 人员候选由当前目标快照决定；刷新后只保留仍在合法候选中的值，不能回写已经失效的目标人员 ID。
+        next.persons[person.key] = draft.persons[person.key].filter((value) => allowed.has(value))
+      }
+    }
+  }
+  return next
 }
 
 // canSavePathConfiguration 允许首次无记录配置在默认值/实例现值未改变时保存，同时要求必填项完整。
@@ -64,13 +165,39 @@ export function applyPathConfigDraft(configuration: PathConfiguration, draft: Pa
   for (const group of next.groups) {
     for (const node of group.nodes) {
       for (const field of node.fields) {
-        if (Object.prototype.hasOwnProperty.call(draft.fields, field.key)) field.value = draft.fields[field.key]
+        if (Object.prototype.hasOwnProperty.call(draft.fields, field.key)) {
+          field.value = draft.fields[field.key]
+          // 保存接口已经用当前目标快照验证成功，原先可编辑项的受影响标记可以安全复位。
+          if (field.editable) {
+            field.affected = false
+            field.note = ''
+          }
+        }
       }
       for (const action of node.actions) {
         if (Object.prototype.hasOwnProperty.call(draft.actions, action.key)) action.current = draft.actions[action.key]
       }
+      for (const person of node.persons) {
+        if (Object.prototype.hasOwnProperty.call(draft.persons, person.key)) {
+          person.selected = [...draft.persons[person.key]]
+          if (person.editable) {
+            person.affected = false
+            person.note = ''
+          }
+        }
+      }
+      const hasAffectedItem = node.fields.some((field) => field.affected) || node.persons.some((person) => person.affected)
+      if ((node.status === 'pending' || node.status === 'partial' || node.status === 'affected')
+        && node.gaps.length === 0
+        && !hasAffectedItem) {
+        node.status = 'configured'
+        node.statusName = '已完成'
+      }
     }
   }
+  next.progress.completed = next.groups.flatMap((group) => group.nodes).filter((node) => node.status === 'configured').length
+  next.progress.pending = Math.max(0, next.progress.total - next.progress.completed)
+  next.nextNodeKey = next.groups.flatMap((group) => group.nodes).find((node) => node.status === 'pending' || node.status === 'partial' || node.status === 'affected')?.key ?? ''
   return next
 }
 
@@ -90,6 +217,12 @@ export function buildPathConfigSavePayload(configuration: PathConfiguration, dra
           actions.push({ key: action.key, action: draft.actions[action.key] })
         }
       }
+      for (const person of node.persons) {
+        if (person.editable && Object.prototype.hasOwnProperty.call(draft.persons, person.key)) {
+          // 人员选择继续复用既有 actions 最小回写数组，后端按不透明键区分真实动作与人员命名空间。
+          actions.push({ key: person.key, action: JSON.stringify(draft.persons[person.key]) })
+        }
+      }
     }
   }
   return { fields, actions }
@@ -105,6 +238,11 @@ export function allEditableFieldsFilled(configuration: PathConfiguration, draft:
         const value = parsePathConfigValue(field, draft.fields[field.key] ?? '')
         const empty = Array.isArray(value) ? value.length === 0 : value === '' || value === undefined || value === null
         if (empty) missing.push(field.name)
+      }
+      for (const person of node.persons) {
+        if (!person.editable || !person.required) continue
+        const selected = draft.persons[person.key] ?? []
+        if (selected.length < person.minCount) missing.push(person.title)
       }
     }
   }

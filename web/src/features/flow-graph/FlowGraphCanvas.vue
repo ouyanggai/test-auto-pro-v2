@@ -15,7 +15,7 @@ import {
   safeLayoutFlowGraph,
   shouldSetInitialViewport,
 } from './layout'
-import type { FlowGraph } from './types'
+import type { FlowConfigurationNodeState, FlowGraph } from './types'
 import {
   analyzeExecutionPath,
   classifyExecutionPathEdges,
@@ -35,14 +35,18 @@ const props = withDefaults(defineProps<{
   workspaceExitDisabled?: boolean
   saveGuideVisible?: boolean
   savedPathsOpen?: boolean
+  configurationMode?: boolean
+  configurationNodeStates?: Record<string, FlowConfigurationNodeState>
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
+  configurationMode: false, configurationNodeStates: () => ({}),
 })
 const emit = defineEmits<{
   retry: []
   selectBranch: [choice: ExecutionPathChoice]
   closeSavedPaths: []
   requestWorkspaceExit: []
+  selectConfigurationNode: [nodeID: string]
 }>()
 const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
@@ -61,14 +65,25 @@ const layoutResult = computed(() => safeLayoutFlowGraph(props.graph))
 const laidOut = computed(() => layoutResult.value.layout)
 const pathAnalysis = computed(() => analyzeExecutionPath(props.graph, props.choices))
 const displayedLayout = computed(() => {
-  if (!laidOut.value || !props.workspaceOpen) return laidOut.value
+  if (!laidOut.value || (!props.workspaceOpen && !props.configurationMode)) return laidOut.value
   const analysis = pathAnalysis.value
   const edgeStates = classifyExecutionPathEdges(props.graph, analysis, props.choices)
   return {
-    nodes: laidOut.value.nodes.map((node) => ({
-      ...node,
-      class: analysis.reachableNodeIds.has(node.id) ? 'flow-node--path-active' : 'flow-node--path-muted',
-    })),
+    nodes: laidOut.value.nodes.map((node) => {
+      const configurationState = props.configurationNodeStates[node.id]
+      return {
+        ...node,
+        class: analysis.reachableNodeIds.has(node.id) ? 'flow-node--path-active' : 'flow-node--path-muted',
+        data: {
+          ...node.data,
+          configurationMode: props.configurationMode,
+          configurationStatus: configurationState?.status,
+          configurationStatusName: configurationState?.statusName,
+          configurationInteractive: configurationState?.interactive ?? false,
+          configurationSelected: configurationState?.selected ?? false,
+        },
+      }
+    }),
     edges: laidOut.value.edges.map((edge) => {
       const kind = edge.data?.kind
       const state = edgeStates.get(edge.id) ?? { selected: false, candidate: false, dimmed: true, active: false }
@@ -78,7 +93,7 @@ const displayedLayout = computed(() => {
           ? {
               ...edge.data,
               workspaceOpen: true,
-              branchEditing: props.branchEditing,
+              branchEditing: props.configurationMode ? false : props.branchEditing,
               ...state,
               parallelRequired: kind === 'parallel' && state.selected,
             }
@@ -105,7 +120,7 @@ let guideVersion = 0
 let pendingGuideAnchor = ''
 let canvasResizeObserver: ResizeObserver | null = null
 
-const reservedRight = computed(() => props.workspaceOpen ? 336 : 0)
+const reservedRight = computed(() => props.workspaceOpen || props.configurationMode ? 336 : 0)
 const guideProjection = computed(() => guideBubble.value
   ? projectExecutionPathGuide(
       guideBubble.value.candidates,
@@ -120,6 +135,7 @@ function reducedMotion(): boolean {
 }
 
 async function setInitialViewport() {
+  if (props.configurationMode) return
   const version = ++viewportVersion
   await nextTick()
   await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
@@ -283,12 +299,39 @@ async function setPageFullscreen(next: boolean) {
   await requestPageFullscreen(next)
 }
 
-defineExpose({ setPageFullscreen })
+async function focusNode(nodeID: string) {
+  await nextTick()
+  if (!laidOut.value || !canvasRoot.value) return
+  const targetNode = laidOut.value.nodes.find((node) => node.id === nodeID)
+  if (!targetNode) return
+  const nodeWidth = targetNode.type === 'routingHub' ? flowRoutingHubSize : flowNodeWidth
+  const point = {
+    x: targetNode.position.x + nodeWidth / 2,
+    y: targetNode.position.y + (targetNode.type === 'routingHub' ? flowRoutingHubSize : 72) / 2,
+  }
+  // 节点配置定位只在当前缩放下平移到扣除右侧面板的安全区域，不 fitView，也不改变用户对大图的阅读尺度。
+  const current = getViewport()
+  const nextViewport = viewportForPointCentered(
+    current,
+    point,
+    { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight },
+    reservedRight.value,
+  )
+  await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 220 })
+  viewportState.value = nextViewport
+}
+
+defineExpose({ setPageFullscreen, focusNode })
 
 function handleSelectBranch(choice: ExecutionPathChoice) {
   if (!props.workspaceOpen || !props.branchEditing) return
   pendingGuideAnchor = choice.routeNodeId
   emit('selectBranch', choice)
+}
+
+function handleSelectConfigurationNode(nodeID: string) {
+  if (!props.configurationMode || !props.configurationNodeStates[nodeID]?.interactive) return
+  emit('selectConfigurationNode', nodeID)
 }
 
 onInit(() => {
@@ -375,10 +418,11 @@ onBeforeUnmount(() => {
     :class="{
       'flow-graph-canvas--page-fullscreen': isPageFullscreen,
       'flow-graph-canvas--workspace': workspaceOpen,
+      'flow-graph-canvas--configuration': configurationMode,
       'flow-graph-canvas--panel-collapsed': isSelectionPanelCollapsed,
     }"
     :style="canvasStyle"
-    :aria-label="workspaceOpen ? (branchEditing ? '线路编辑流程图' : '路径查看流程图') : '只读流程图'"
+    :aria-label="configurationMode ? '路径节点配置流程图' : workspaceOpen ? (branchEditing ? '线路编辑流程图' : '路径查看流程图') : '只读流程图'"
   >
     <div v-if="laidOut" class="flow-graph-canvas__actions">
       <slot v-if="isPageFullscreen" name="canvas-actions" />
@@ -416,11 +460,11 @@ onBeforeUnmount(() => {
       :fit-view-on-init="false"
       @viewport-change="handleViewportChange"
     >
-      <template #node-flowNode="{ data }">
-        <flow-graph-node :data="data" />
+      <template #node-flowNode="{ id, data }">
+        <flow-graph-node :data="data" @select="handleSelectConfigurationNode(id)" />
       </template>
-      <template #node-routingHub>
-        <flow-routing-hub />
+      <template #node-routingHub="{ id, data }">
+        <flow-routing-hub :data="data" @select="handleSelectConfigurationNode(id)" />
       </template>
       <template #edge-treeEdge="edgeProps">
         <flow-tree-edge v-bind="edgeProps" @select-branch="handleSelectBranch" />
@@ -448,6 +492,13 @@ onBeforeUnmount(() => {
       <div v-else class="flow-graph-canvas__selection-panel-collapsed-content">
         <slot name="workspace-collapsed" />
       </div>
+    </aside>
+    <aside
+      v-if="laidOut && configurationMode"
+      class="flow-graph-canvas__configuration-panel"
+      aria-label="节点配置面板"
+    >
+      <slot name="configuration-panel" />
     </aside>
     <aside
       v-if="laidOut && isPageFullscreen && savedPathsOpen && (!workspaceOpen || !isSelectionPanelCollapsed)"
@@ -550,6 +601,21 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   height: calc(100% - 68px);
   transition: height 160ms ease;
+}
+
+.flow-graph-canvas__configuration-panel {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 7;
+  width: 320px;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--flow-label-color);
+  background: var(--flow-surface-color);
+  border: 1px solid var(--flow-edge-color);
+  border-radius: 4px;
 }
 
 .flow-graph-canvas__selection-panel--collapsed {
@@ -728,7 +794,8 @@ onBeforeUnmount(() => {
   opacity: 0.45;
 }
 
-.flow-graph-canvas--workspace :deep(.vue-flow__controls) {
+.flow-graph-canvas--workspace :deep(.vue-flow__controls),
+.flow-graph-canvas--configuration :deep(.vue-flow__controls) {
   right: 336px;
   transition: right 160ms ease;
 }
