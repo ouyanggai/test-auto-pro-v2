@@ -118,7 +118,7 @@ func writeFormRuntimeMaintenanceError(response http.ResponseWriter, err error) {
 	case errors.Is(err, formruntimemaintenance.ErrJobNotFound), errors.Is(err, formruntimemaintenance.ErrLogNotFound):
 		writeFailure(response, http.StatusNotFound, "FORM_RUNTIME_SYNC_NOT_FOUND", "表单运行时同步任务不存在", false)
 	case errors.Is(err, formruntimemaintenance.ErrSourceInvalid), errors.Is(err, formruntimemaintenance.ErrTargetModified):
-		writeFailure(response, http.StatusConflict, "FORM_RUNTIME_SOURCE_INVALID", "固定来源或上游原样区不符合安全同步条件", false)
+		writeFailure(response, http.StatusConflict, "FORM_RUNTIME_SOURCE_INVALID", "固定来源或实际运行源码不符合安全同步条件", false)
 	default:
 		writeFailure(response, http.StatusInternalServerError, "FORM_RUNTIME_MAINTENANCE_FAILED", "表单运行时维护操作失败", true)
 	}

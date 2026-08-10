@@ -14,7 +14,7 @@ var (
 	ErrStaleLease       = errors.New("表单运行时同步任务租约已失效")
 	ErrLogNotFound      = errors.New("表单运行时同步日志不存在")
 	ErrSourceInvalid    = errors.New("表单运行时固定来源不符合约束")
-	ErrTargetModified   = errors.New("表单运行时上游原样区存在未知修改")
+	ErrTargetModified   = errors.New("表单运行时实际源码存在同步任务之外的修改")
 )
 
 // JobStatus 表示维护任务的持久化生命周期。
@@ -176,8 +176,8 @@ type LogStore interface {
 
 // RuntimeOperator 把旧 V2 Docker 镜像语义适配为 pnpm 候选构建与版本目录切换。
 type RuntimeOperator interface {
-	Sync(context.Context, io.Writer) error
-	SyncCheck(context.Context, io.Writer) error
+	Sync(context.Context, uint64, SourceState, io.Writer) error
+	SyncCheck(context.Context, uint64, SourceState, io.Writer) error
 	BuildCandidate(context.Context, uint64, io.Writer) (string, error)
 	CurrentVersion(context.Context) (string, error)
 	Restart(context.Context, string, string, io.Writer) error

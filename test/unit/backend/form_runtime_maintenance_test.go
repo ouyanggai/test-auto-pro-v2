@@ -1,7 +1,10 @@
 package backend_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +29,7 @@ type maintenanceFixture struct {
 	syncer    *formruntimemaintenance.Syncer
 }
 
-// newMaintenanceFixture 创建两个临时 Git 仓库，模拟固定参考来源和当前项目 upstream 原样区。
+// newMaintenanceFixture 创建两个临时 Git 仓库，模拟固定参考来源和当前项目实际运行源码区。
 func newMaintenanceFixture(t *testing.T) maintenanceFixture {
 	t.Helper()
 	root := t.TempDir()
@@ -33,6 +37,7 @@ func newMaintenanceFixture(t *testing.T) maintenanceFixture {
 	source := filepath.Join(workspace, "reference", "rsh-flow-components")
 	mustMkdir(t, filepath.Join(source, "src"))
 	mustWrite(t, filepath.Join(source, "src", "component.js"), "export default 'source'\n")
+	mustWrite(t, filepath.Join(source, "src", "main.js"), "const components = [{ name: 'custom-one', component: {} }]\n")
 	mustWrite(t, filepath.Join(source, "package.json"), `{"name":"source"}`)
 	git(t, source, "init", "-b", "master")
 	git(t, source, "config", "user.email", "test@example.com")
@@ -40,28 +45,48 @@ func newMaintenanceFixture(t *testing.T) maintenanceFixture {
 	git(t, source, "add", ".")
 	git(t, source, "commit", "-m", "来源基线")
 	git(t, source, "remote", "add", "origin", "ssh://fixed/rsh-flow-components.git")
-	head := strings.TrimSpace(git(t, source, "rev-parse", "HEAD"))
 
-	mustMkdir(t, filepath.Join(workspace, "form-runtime", "upstream", "src"))
+	mustMkdir(t, filepath.Join(workspace, "form-runtime", "runtime-source", "src"))
 	mustMkdir(t, filepath.Join(workspace, "form-runtime", "src"))
-	mustWrite(t, filepath.Join(workspace, "form-runtime", "upstream", "src", "component.js"), "export default 'source'\n")
-	mustWrite(t, filepath.Join(workspace, "form-runtime", "upstream", "package.json"), `{"name":"source"}`)
+	mustWrite(t, filepath.Join(workspace, "form-runtime", "runtime-source", "src", "component.js"), "export default 'source'\n")
+	mustWrite(t, filepath.Join(workspace, "form-runtime", "runtime-source", "src", "main.js"), "const components = [{ name: 'custom-one', component: {} }]\n")
+	mustWrite(t, filepath.Join(workspace, "form-runtime", "runtime-source", "package.json"), `{"name":"source"}`)
 	mustWrite(t, filepath.Join(workspace, "form-runtime", "src", "adapter.js"), "export const protectedAdapter = true\n")
+	projectRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"sync-config.js", "sync.js", "sync-check.js"} {
+		content, readErr := os.ReadFile(filepath.Join(projectRoot, "form-runtime", "scripts", name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		mustWrite(t, filepath.Join(workspace, "form-runtime", "scripts", name), string(content))
+	}
+	manifest := formruntimemaintenance.Manifest{
+		Repository: "rsh-flow-components", SourceRoot: "reference/rsh-flow-components",
+		SourceRemote: "ssh://fixed/rsh-flow-components.git", SourceBranch: "master",
+		Mappings: []formruntimemaintenance.Mapping{
+			{Source: "src", Target: "runtime-source/src", Type: "directory"},
+			{Source: "package.json", Target: "runtime-source/package.json", Type: "file"},
+		},
+		GeneratedTargetPaths: []string{"runtime-source/.f007-source.json"},
+		ProtectedLocalPaths:  []string{"src", "scripts"},
+	}
+	manifestContent, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(workspace, "form-runtime", "sync-manifest.json"), string(manifestContent))
+	head := strings.TrimSpace(git(t, source, "rev-parse", "HEAD"))
+	metadata := fmt.Sprintf(`{"repository":"rsh-flow-components","remote":"ssh://fixed/rsh-flow-components.git","branch":"master","head":"%s","digest":"%s","targetDigest":"%s"}`, head, strings.Repeat("b", 64), testDirectoryDigest(t, filepath.Join(workspace, "form-runtime", "runtime-source")))
+	mustWrite(t, filepath.Join(workspace, "form-runtime", "runtime-source", ".f007-source.json"), metadata)
 	git(t, workspace, "init", "-b", "main")
 	git(t, workspace, "config", "user.email", "test@example.com")
 	git(t, workspace, "config", "user.name", "测试")
 	git(t, workspace, "add", ".")
 	git(t, workspace, "commit", "-m", "项目基线")
 
-	manifest := formruntimemaintenance.Manifest{
-		Repository: "rsh-flow-components", SourceRoot: "reference/rsh-flow-components",
-		SourceRemote: "ssh://fixed/rsh-flow-components.git", SourceBranch: "master", SourceHead: head,
-		Mappings: []formruntimemaintenance.Mapping{
-			{Source: "src", Target: "upstream/src", Type: "directory"},
-			{Source: "package.json", Target: "upstream/package.json", Type: "file"},
-		},
-		ProtectedLocalPaths: []string{"src", "vendor"},
-	}
 	inspector, err := formruntimemaintenance.NewGitSourceInspector(workspace, manifest, time.Now)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +96,40 @@ func newMaintenanceFixture(t *testing.T) maintenanceFixture {
 		t.Fatal(err)
 	}
 	return maintenanceFixture{workspace: workspace, source: source, manifest: manifest, inspector: inspector, syncer: syncer}
+}
+
+// testDirectoryDigest 按生产摘要规则计算测试运行源码，排除元数据自身。
+func testDirectoryDigest(t *testing.T, root string) string {
+	t.Helper()
+	paths := make([]string, 0)
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			relative, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			if filepath.ToSlash(relative) != ".f007-source.json" {
+				paths = append(paths, filepath.ToSlash(relative))
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(paths)
+	hash := sha256.New()
+	for _, relative := range paths {
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = hash.Write([]byte(relative + "\x00"))
+		_, _ = hash.Write(content)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 // git 在测试仓库执行固定 Git 命令。
@@ -105,16 +164,18 @@ func mustWrite(t *testing.T, path, content string) {
 func TestFormRuntimeMaintenanceSourceAndSyncGuards(t *testing.T) {
 	fixture := newMaintenanceFixture(t)
 	state, err := fixture.inspector.Inspect(context.Background())
-	if err != nil || state.Dirty || state.Head != fixture.manifest.SourceHead {
+	if err != nil || state.Dirty || len(state.Head) != 40 {
 		t.Fatalf("固定来源检查失败：state=%+v err=%v", state, err)
 	}
-	if err := fixture.syncer.Sync(context.Background(), io.Discard); err != nil {
+	target := filepath.Join(fixture.workspace, ".runtime", "form-runtime-maintenance", "workspaces", "job-1", "runtime-source")
+	var syncOutput bytes.Buffer
+	if err := fixture.syncer.Sync(context.Background(), state, target, &syncOutput); err != nil {
+		t.Fatalf("%v\n%s", err, syncOutput.String())
+	}
+	if err := fixture.syncer.Check(context.Background(), state, target, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.syncer.Check(context.Background(), io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.syncer.Sync(context.Background(), io.Discard); err != nil {
+	if err := fixture.syncer.Sync(context.Background(), state, target, io.Discard); err != nil {
 		t.Fatalf("重复同步必须幂等：%v", err)
 	}
 	adapter, _ := os.ReadFile(filepath.Join(fixture.workspace, "form-runtime", "src", "adapter.js"))
@@ -133,18 +194,28 @@ func TestFormRuntimeMaintenanceSourceAndSyncGuards(t *testing.T) {
 	}
 }
 
-// TestFormRuntimeMaintenanceRejectsHeadAndTargetChanges 验证来源提交不符与 upstream 未提交修改都被拒绝。
+// TestFormRuntimeMaintenanceRejectsHeadAndTargetChanges 验证新 HEAD 可建任务、旧任务快照变化与运行源码修改会被拒绝。
 func TestFormRuntimeMaintenanceRejectsHeadAndTargetChanges(t *testing.T) {
 	fixture := newMaintenanceFixture(t)
-	wrong := fixture.manifest
-	wrong.SourceHead = strings.Repeat("a", 40)
-	inspector, _ := formruntimemaintenance.NewGitSourceInspector(fixture.workspace, wrong, time.Now)
-	if _, err := inspector.Inspect(context.Background()); !errors.Is(err, formruntimemaintenance.ErrSourceInvalid) {
-		t.Fatalf("错误 HEAD 未拒绝：%v", err)
+	oldState, err := fixture.inspector.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(fixture.workspace, "form-runtime", "upstream", "src", "component.js"), "local change")
-	if err := fixture.syncer.Sync(context.Background(), io.Discard); !errors.Is(err, formruntimemaintenance.ErrTargetModified) {
-		t.Fatalf("upstream 未提交修改未拒绝：%v", err)
+	mustWrite(t, filepath.Join(fixture.source, "src", "component.js"), "export default 'new head'\n")
+	git(t, fixture.source, "add", ".")
+	git(t, fixture.source, "commit", "-m", "来源更新")
+	newState, err := fixture.inspector.Inspect(context.Background())
+	if err != nil || newState.Head == oldState.Head {
+		t.Fatalf("固定分支的新 HEAD 应可被任务记录：state=%+v err=%v", newState, err)
+	}
+	target := filepath.Join(fixture.workspace, ".runtime", "form-runtime-maintenance", "workspaces", "job-2", "runtime-source")
+	if err := fixture.syncer.Sync(context.Background(), oldState, target, io.Discard); err == nil {
+		t.Fatal("来源 HEAD 在任务执行前变化却未拒绝")
+	}
+	mustWrite(t, filepath.Join(fixture.workspace, "form-runtime", "runtime-source", "src", "component.js"), "local change")
+	operator, _ := newTestPnpmOperator(t, fixture, nil, healthCheckerFunc(func(context.Context, string, string) error { return nil }))
+	if err := operator.Sync(context.Background(), 2, newState, io.Discard); !errors.Is(err, formruntimemaintenance.ErrTargetModified) {
+		t.Fatalf("实际运行源码未提交修改未拒绝：%v", err)
 	}
 }
 
@@ -167,6 +238,12 @@ func writeRuntimeBuild(t *testing.T, directory, marker string) {
 	t.Helper()
 	mustWrite(t, filepath.Join(directory, "index.html"), `<script src="assets/app.js"></script>`)
 	mustWrite(t, filepath.Join(directory, "assets", "app.js"), marker)
+	metadata := formruntimemaintenance.RuntimeBuildMetadata{Service: "rsh-flow-components", SourceRepository: "rsh-flow-components", SourceBranch: "master", SourceHead: strings.Repeat("a", 40), SourceDigest: strings.Repeat("b", 64), BuildHash: marker}
+	content, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(directory, "runtime-health.json"), string(content))
 }
 
 // newTestPnpmOperator 创建隔离 pnpm 算子。
@@ -176,7 +253,8 @@ func newTestPnpmOperator(t *testing.T, fixture maintenanceFixture, runner formru
 	writeRuntimeBuild(t, live, "previous")
 	operator, err := formruntimemaintenance.NewPnpmOperator(formruntimemaintenance.PnpmOperatorOptions{
 		WorkspaceRoot: fixture.workspace, RuntimeDir: filepath.Join(fixture.workspace, "form-runtime"), LiveDir: live,
-		StateRoot: filepath.Join(fixture.workspace, ".runtime", "form-runtime-maintenance"), HealthURL: "http://runtime.test/health",
+		LiveSourceDir: filepath.Join(fixture.workspace, "form-runtime", "runtime-source"),
+		StateRoot:     filepath.Join(fixture.workspace, ".runtime", "form-runtime-maintenance"), HealthURL: "http://runtime.test/health",
 	}, fixture.syncer, runner, checker)
 	if err != nil {
 		t.Fatal(err)
@@ -218,6 +296,13 @@ func TestPnpmOperatorBuildFailureKeepsCurrentAndHealthFailureRollsBack(t *testin
 		return nil
 	})
 	operator, live := newTestPnpmOperator(t, fixture, runner, checker)
+	state, err := fixture.inspector.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operator.Sync(context.Background(), 2, state, io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	previous, err := operator.CurrentVersion(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +322,41 @@ func TestPnpmOperatorBuildFailureKeepsCurrentAndHealthFailureRollsBack(t *testin
 	}
 }
 
+// TestPnpmOperatorBuildConsumesSynchronizedCandidate 验证来源代表性改动进入实际构建输入和候选产物，而非只更新闲置快照。
+func TestPnpmOperatorBuildConsumesSynchronizedCandidate(t *testing.T) {
+	fixture := newMaintenanceFixture(t)
+	mustWrite(t, filepath.Join(fixture.source, "src", "component.js"), "export default 'candidate-source-change'\n")
+	git(t, fixture.source, "add", ".")
+	git(t, fixture.source, "commit", "-m", "候选源码更新")
+	state, err := fixture.inspector.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := commandRunnerFunc(func(_ context.Context, command formruntimemaintenance.Command, _ io.Writer) error {
+		content, readErr := os.ReadFile(filepath.Join(command.Env["FORM_RUNTIME_SOURCE_DIR"], "src", "component.js"))
+		if readErr != nil {
+			return readErr
+		}
+		writeRuntimeBuild(t, command.Env["FORM_RUNTIME_OUT_DIR"], string(content))
+		return nil
+	})
+	operator, _ := newTestPnpmOperator(t, fixture, runner, healthCheckerFunc(func(context.Context, string, string) error { return nil }))
+	if err := operator.Sync(context.Background(), 3, state, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := operator.SyncCheck(context.Background(), 3, state, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	version, err := operator.BuildCandidate(context.Background(), 3, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := os.ReadFile(filepath.Join(fixture.workspace, ".runtime", "form-runtime-maintenance", "versions", version, "assets", "app.js"))
+	if err != nil || !strings.Contains(string(artifact), "candidate-source-change") {
+		t.Fatalf("同步变更没有进入候选构建产物：%s err=%v", artifact, err)
+	}
+}
+
 type fakeRuntimeOperator struct {
 	current      string
 	restartCalls int
@@ -244,10 +364,14 @@ type fakeRuntimeOperator struct {
 }
 
 // Sync 模拟同步成功。
-func (o *fakeRuntimeOperator) Sync(context.Context, io.Writer) error { return nil }
+func (o *fakeRuntimeOperator) Sync(context.Context, uint64, formruntimemaintenance.SourceState, io.Writer) error {
+	return nil
+}
 
 // SyncCheck 模拟同步校验成功。
-func (o *fakeRuntimeOperator) SyncCheck(context.Context, io.Writer) error { return nil }
+func (o *fakeRuntimeOperator) SyncCheck(context.Context, uint64, formruntimemaintenance.SourceState, io.Writer) error {
+	return nil
+}
 
 // BuildCandidate 返回固定候选。
 func (o *fakeRuntimeOperator) BuildCandidate(context.Context, uint64, io.Writer) (string, error) {
@@ -314,7 +438,7 @@ func TestMaintenanceStoreLeaseAndResume(t *testing.T) {
 	}
 }
 
-// TestMaintenanceLogTruncationAndHTTPHealth 验证日志尾部截断和可选 HTTP 健康检查。
+// TestMaintenanceLogTruncationAndHTTPHealth 验证日志尾部截断和真实 HTTP 快照轮询。
 func TestMaintenanceLogTruncationAndHTTPHealth(t *testing.T) {
 	logs, err := formruntimemaintenance.NewFileLogStore(t.TempDir(), 8)
 	if err != nil {
@@ -329,13 +453,23 @@ func TestMaintenanceLogTruncationAndHTTPHealth(t *testing.T) {
 	}
 	directory := t.TempDir()
 	writeRuntimeBuild(t, directory, "healthy")
+	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
-		_, _ = response.Write([]byte("ok"))
+		if requests == 1 {
+			_, _ = response.Write([]byte(`{"service":"rsh-flow-components","sourceRepository":"rsh-flow-components","sourceBranch":"master","sourceHead":"cccccccccccccccccccccccccccccccccccccccc","sourceDigest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","buildHash":"previous"}`))
+			return
+		}
+		_, _ = response.Write([]byte(`{"service":"rsh-flow-components","sourceRepository":"rsh-flow-components","sourceBranch":"master","sourceHead":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sourceDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","buildHash":"served"}`))
 	}))
 	defer server.Close()
 	if err := formruntimemaintenance.NewStaticHTTPHealthChecker().Check(context.Background(), directory, server.URL); err != nil {
 		t.Fatalf("pnpm 运行时健康检查失败：%v", err)
+	}
+	if requests < 2 {
+		t.Fatal("健康检查没有等待实际服务从 previous 切换到候选")
 	}
 }
 
@@ -343,7 +477,7 @@ func TestMaintenanceLogTruncationAndHTTPHealth(t *testing.T) {
 func TestManifestRejectsProtectedMapping(t *testing.T) {
 	workspace := t.TempDir()
 	manifestPath := filepath.Join(workspace, "manifest.json")
-	mustWrite(t, manifestPath, fmt.Sprintf(`{"repository":"fixed","sourceRoot":"source","sourceRemote":"ssh://fixed","sourceBranch":"master","sourceHead":"%s","mappings":[{"source":"src","target":"src","type":"directory"}],"protectedLocalPaths":["src"]}`, strings.Repeat("a", 40)))
+	mustWrite(t, manifestPath, `{"repository":"fixed","sourceRoot":"source","sourceRemote":"ssh://fixed","sourceBranch":"master","mappings":[{"source":"src","target":"runtime-source/src","type":"directory"}],"protectedLocalPaths":["runtime-source/src"]}`)
 	if _, err := formruntimemaintenance.LoadManifest(workspace, manifestPath); !errors.Is(err, formruntimemaintenance.ErrSourceInvalid) {
 		t.Fatalf("覆盖本地适配层的清单未拒绝：%v", err)
 	}

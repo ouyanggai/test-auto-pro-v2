@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
         <h1>表单运行时维护</h1>
         <p>只从项目固定参考仓库同步，候选验证通过后才替换当前可用版本。</p>
       </div>
-      <n-button type="primary" :loading="creating" :disabled="loading || active || source?.dirty" @click="startSync">一键同步并重启</n-button>
+      <n-button type="primary" :loading="creating" :disabled="loading || active || source?.dirty" @click="startSync">一键同步并更新运行时</n-button>
     </header>
 
     <n-alert v-if="errorMessage" type="error" :show-icon="false">{{ errorMessage }}</n-alert>

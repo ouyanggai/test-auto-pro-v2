@@ -73,12 +73,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	healthURL := os.Getenv("FORM_RUNTIME_HEALTH_URL")
+	if healthURL == "" {
+		// 开发环境也必须核对真正运行在 19001 的服务，不能把静态目录替换冒充重启成功。
+		healthURL = "http://127.0.0.1:19001/form-runtime/runtime-health.json"
+	}
 	operator, err := formruntimemaintenance.NewPnpmOperator(formruntimemaintenance.PnpmOperatorOptions{
 		WorkspaceRoot: workspaceRoot,
 		RuntimeDir:    filepath.Join(workspaceRoot, "form-runtime"),
+		LiveSourceDir: filepath.Join(workspaceRoot, "form-runtime", "runtime-source"),
 		LiveDir:       filepath.Join(workspaceRoot, "web", "dist", "form-runtime"),
 		StateRoot:     maintenanceRoot,
-		HealthURL:     os.Getenv("FORM_RUNTIME_HEALTH_URL"),
+		HealthURL:     healthURL,
 	}, syncer, nil, nil)
 	if err != nil {
 		log.Fatal(err)

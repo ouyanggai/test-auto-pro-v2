@@ -74,10 +74,14 @@ func (p *Pipeline) ProcessNext(ctx context.Context) (bool, error) {
 	if current.Dirty || !sameSource(job.Source, current) {
 		return true, p.fail(ctx, job, StageInspect, errors.New("同步来源在任务创建后发生变化，请重新创建任务"), output)
 	}
-	if err := p.runStage(ctx, job, StageSync, output, p.operator.Sync); err != nil {
+	if err := p.runStage(ctx, job, StageSync, output, func(work context.Context, writer io.Writer) error {
+		return p.operator.Sync(work, job.ID, job.Source, writer)
+	}); err != nil {
 		return true, err
 	}
-	if err := p.runStage(ctx, job, StageCheck, output, p.operator.SyncCheck); err != nil {
+	if err := p.runStage(ctx, job, StageCheck, output, func(work context.Context, writer io.Writer) error {
+		return p.operator.SyncCheck(work, job.ID, job.Source, writer)
+	}); err != nil {
 		return true, err
 	}
 	if err := p.progress(ctx, job, StageBuild, "", ""); err != nil {

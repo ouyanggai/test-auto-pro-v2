@@ -3,23 +3,22 @@ package formruntimemaintenance
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
-// Syncer 只同步清单映射到 upstream 原样区，并保护本地适配层。
+// Syncer 调用 rsh-flow-components 原生同步脚本的本项目适配入口。
 type Syncer struct {
 	workspaceRoot string
-	sourceRoot    string
 	manifest      Manifest
 }
 
-// NewSyncer 创建受控同步器。
+// NewSyncer 创建固定脚本同步器，并确认来源路径就是清单声明的参考仓库。
 func NewSyncer(workspaceRoot, sourceRoot string, manifest Manifest) (*Syncer, error) {
 	workspace, err := filepath.Abs(filepath.Clean(workspaceRoot))
 	if err != nil {
@@ -29,106 +28,51 @@ func NewSyncer(workspaceRoot, sourceRoot string, manifest Manifest) (*Syncer, er
 	if err != nil {
 		return nil, err
 	}
-	return &Syncer{workspaceRoot: workspace, sourceRoot: source, manifest: manifest}, nil
+	expectedSource := filepath.Join(workspace, filepath.Clean(manifest.SourceRoot))
+	if source != expectedSource {
+		return nil, fmt.Errorf("%w: 同步来源不是清单固定仓库", ErrSourceInvalid)
+	}
+	return &Syncer{workspaceRoot: workspace, manifest: manifest}, nil
 }
 
-// Sync 在覆盖前用当前项目 Git 状态识别 upstream 未提交修改，避免静默抹掉本地现场。
-func (s *Syncer) Sync(ctx context.Context, output io.Writer) error {
-	status, err := gitRaw(ctx, s.workspaceRoot, "status", "--porcelain=v1", "--untracked-files=all", "--", "form-runtime/upstream")
+// Sync 以任务创建时 HEAD 执行原生 sync.js，目标只能是该任务的隔离候选源码。
+func (s *Syncer) Sync(ctx context.Context, source SourceState, targetRoot string, output io.Writer) error {
+	return s.run(ctx, "sync.js", source, targetRoot, output)
+}
+
+// Check 以同一任务快照执行原生 sync-check.js，保证候选源码与实际构建入口一致。
+func (s *Syncer) Check(ctx context.Context, source SourceState, targetRoot string, output io.Writer) error {
+	return s.run(ctx, "sync-check.js", source, targetRoot, output)
+}
+
+// run 只执行项目内固定 Node 脚本，不接受 API 传入脚本名、仓库或命令参数。
+func (s *Syncer) run(ctx context.Context, script string, source SourceState, targetRoot string, output io.Writer) error {
+	if source.Repository != s.manifest.Repository || source.Branch != s.manifest.SourceBranch || len(source.Head) != 40 || source.Dirty {
+		return fmt.Errorf("%w: 任务来源快照不合法", ErrSourceInvalid)
+	}
+	target, err := filepath.Abs(filepath.Clean(targetRoot))
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(status) != "" {
-		return fmt.Errorf("%w: 请先处理 form-runtime/upstream 的本地修改", ErrTargetModified)
+	allowedRoot := filepath.Join(s.workspaceRoot, ".runtime", "form-runtime-maintenance", "workspaces")
+	if !within(allowedRoot, target) || filepath.Base(target) != "runtime-source" {
+		return fmt.Errorf("%w: 候选同步目标不在任务工作区", ErrSourceInvalid)
 	}
-	for _, mapping := range s.manifest.Mappings {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		source := filepath.Join(s.sourceRoot, filepath.Clean(mapping.Source))
-		target := filepath.Join(s.workspaceRoot, "form-runtime", filepath.Clean(mapping.Target))
-		if mapping.Type == "file" {
-			if err := copyFile(source, target); err != nil {
-				return err
-			}
-		} else if err := mirrorDirectory(source, target); err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(output, "[SYNC] %s -> %s\n", mapping.Source, mapping.Target)
+	command := exec.CommandContext(ctx, "node", filepath.Join(s.workspaceRoot, "form-runtime", "scripts", script))
+	command.Dir = s.workspaceRoot
+	command.Env = append(os.Environ(),
+		"FORM_RUNTIME_EXPECTED_HEAD="+source.Head,
+		"FORM_RUNTIME_TARGET_ROOT="+target,
+	)
+	command.Stdout = output
+	command.Stderr = output
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("执行表单运行时 %s: %w", script, err)
 	}
 	return nil
 }
 
-// Check 比较每个映射的路径集合与内容摘要，保证重复同步幂等且没有额外文件。
-func (s *Syncer) Check(ctx context.Context, output io.Writer) error {
-	for _, mapping := range s.manifest.Mappings {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		source := filepath.Join(s.sourceRoot, filepath.Clean(mapping.Source))
-		target := filepath.Join(s.workspaceRoot, "form-runtime", filepath.Clean(mapping.Target))
-		left, err := pathDigest(source)
-		if err != nil {
-			return err
-		}
-		right, err := pathDigest(target)
-		if err != nil {
-			return err
-		}
-		if left != right {
-			return fmt.Errorf("同步校验不一致: %s -> %s", mapping.Source, mapping.Target)
-		}
-		_, _ = fmt.Fprintf(output, "[SYNC_CHECK] %s 已与固定来源一致\n", mapping.Target)
-	}
-	return nil
-}
-
-// copyFile 原子替换单个同步文件，避免半写入状态。
-func copyFile(source, target string) error {
-	content, err := os.ReadFile(source)
-	if err != nil {
-		return fmt.Errorf("读取同步来源 %s: %w", source, err)
-	}
-	info, err := os.Stat(source)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	temporary := target + ".sync-candidate"
-	if err := os.WriteFile(temporary, content, info.Mode().Perm()); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, target); err != nil {
-		_ = os.Remove(temporary)
-		return err
-	}
-	return nil
-}
-
-// mirrorDirectory 在 upstream 目标内做精确镜像，调用方已通过 Git 状态确认没有未知本地修改。
-func mirrorDirectory(source, target string) error {
-	if err := os.RemoveAll(target); err != nil {
-		return err
-	}
-	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		destination := filepath.Join(target, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(destination, 0o755)
-		}
-		return copyFile(path, destination)
-	})
-}
-
-// pathDigest 对目录路径、相对文件名和内容做稳定摘要，用于 sync-check/status。
+// pathDigest 对目录路径、相对文件名和内容做稳定摘要，用于 bootstrap 版本命名。
 func pathDigest(root string) (string, error) {
 	info, err := os.Stat(root)
 	if err != nil {
@@ -144,16 +88,23 @@ func pathDigest(root string) (string, error) {
 		return fmt.Sprintf("%x", hash.Sum(nil)), nil
 	}
 	paths := make([]string, 0)
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("表单运行时源码与产物不得包含符号链接")
 		}
 		if !entry.IsDir() {
 			relative, err := filepath.Rel(root, path)
 			if err != nil {
 				return err
 			}
-			paths = append(paths, filepath.ToSlash(relative))
+			relative = filepath.ToSlash(relative)
+			// 目标摘要写在该文件里，必须排除自身才能稳定复算并识别其他未知修改。
+			if relative != ".f007-source.json" {
+				paths = append(paths, relative)
+			}
 		}
 		return nil
 	})

@@ -19,16 +19,17 @@ type Mapping struct {
 	Type   string `json:"type"`
 }
 
-// Manifest 固定来源仓库、分支、HEAD、同步映射与本地保护区。
+// Manifest 固定来源仓库、远端、分支、同步映射与本地保护区；HEAD 由每次任务动态记录。
 type Manifest struct {
-	Repository          string    `json:"repository"`
-	SourceRoot          string    `json:"sourceRoot"`
-	SourceRemote        string    `json:"sourceRemote"`
-	SourceBranch        string    `json:"sourceBranch"`
-	SourceHead          string    `json:"sourceHead"`
-	Mappings            []Mapping `json:"mappings"`
-	ProtectedLocalPaths []string  `json:"protectedLocalPaths"`
-	ExcludedSourcePaths []string  `json:"excludedSourcePaths"`
+	Repository           string    `json:"repository"`
+	SourceRoot           string    `json:"sourceRoot"`
+	SourceRemote         string    `json:"sourceRemote"`
+	SourceBranch         string    `json:"sourceBranch"`
+	Mappings             []Mapping `json:"mappings"`
+	PreservedTargetPaths []string  `json:"preservedTargetPaths"`
+	GeneratedTargetPaths []string  `json:"generatedTargetPaths"`
+	ProtectedLocalPaths  []string  `json:"protectedLocalPaths"`
+	ExcludedSourcePaths  []string  `json:"excludedSourcePaths"`
 }
 
 // LoadManifest 读取并严格校验项目内固定同步清单，拒绝路径逃逸和本地适配覆盖。
@@ -42,12 +43,19 @@ func LoadManifest(workspaceRoot, manifestPath string) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("解析表单运行时同步清单: %w", err)
 	}
 	if strings.TrimSpace(manifest.Repository) == "" || strings.TrimSpace(manifest.SourceRemote) == "" ||
-		strings.TrimSpace(manifest.SourceBranch) == "" || len(strings.TrimSpace(manifest.SourceHead)) != 40 || len(manifest.Mappings) == 0 {
+		strings.TrimSpace(manifest.SourceBranch) == "" || !safeRelativePath(manifest.SourceRoot) || len(manifest.Mappings) == 0 {
 		return Manifest{}, fmt.Errorf("%w: 清单缺少固定来源", ErrSourceInvalid)
+	}
+	boundaryPaths := append(append(append([]string{}, manifest.PreservedTargetPaths...), manifest.GeneratedTargetPaths...), manifest.ProtectedLocalPaths...)
+	boundaryPaths = append(boundaryPaths, manifest.ExcludedSourcePaths...)
+	for _, path := range boundaryPaths {
+		if !safeRelativePath(path) {
+			return Manifest{}, fmt.Errorf("%w: 清单包含非法边界路径 %s", ErrSourceInvalid, path)
+		}
 	}
 	for _, mapping := range manifest.Mappings {
 		if !safeRelativePath(mapping.Source) || !safeRelativePath(mapping.Target) ||
-			(mapping.Type != "file" && mapping.Type != "directory") || !strings.HasPrefix(filepath.ToSlash(mapping.Target), "upstream/") {
+			(mapping.Type != "file" && mapping.Type != "directory") || !strings.HasPrefix(filepath.ToSlash(mapping.Target), "runtime-source/") {
 			return Manifest{}, fmt.Errorf("%w: 非法同步映射 %s -> %s", ErrSourceInvalid, mapping.Source, mapping.Target)
 		}
 		for _, protected := range manifest.ProtectedLocalPaths {
@@ -99,7 +107,7 @@ func (i *GitSourceInspector) SourceRoot() string {
 	return filepath.Join(i.workspaceRoot, filepath.Clean(i.manifest.SourceRoot))
 }
 
-// Inspect 校验仓库、远端、分支、精确 HEAD 和工作树，并返回公开摘要。
+// Inspect 校验仓库、远端、固定分支和工作树，并把检查当刻 HEAD 返回给任务持久化。
 func (i *GitSourceInspector) Inspect(ctx context.Context) (SourceState, error) {
 	root := i.SourceRoot()
 	remote, err := gitOutput(ctx, root, "remote", "get-url", "origin")
@@ -111,8 +119,8 @@ func (i *GitSourceInspector) Inspect(ctx context.Context) (SourceState, error) {
 		return SourceState{}, fmt.Errorf("%w: 来源分支必须是 %s", ErrSourceInvalid, i.manifest.SourceBranch)
 	}
 	head, err := gitOutput(ctx, root, "rev-parse", "HEAD")
-	if err != nil || head != i.manifest.SourceHead {
-		return SourceState{}, fmt.Errorf("%w: 来源 HEAD 必须是 %s", ErrSourceInvalid, i.manifest.SourceHead)
+	if err != nil || len(head) != 40 {
+		return SourceState{}, fmt.Errorf("%w: 无法读取来源 HEAD", ErrSourceInvalid)
 	}
 	status, err := gitRaw(ctx, root, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
