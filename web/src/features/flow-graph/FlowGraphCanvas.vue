@@ -37,6 +37,8 @@ const props = withDefaults(defineProps<{
   savedPathsOpen?: boolean
   configurationMode?: boolean
   configurationNodeStates?: Record<string, FlowConfigurationNodeState>
+  configurationFormStatus?: string
+  configurationFormStatusName?: string
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
   configurationMode: false, configurationNodeStates: () => ({}),
@@ -47,6 +49,7 @@ const emit = defineEmits<{
   closeSavedPaths: []
   requestWorkspaceExit: []
   selectConfigurationNode: [nodeID: string]
+  openConfigurationForm: []
 }>()
 const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
@@ -81,6 +84,8 @@ const displayedLayout = computed(() => {
           configurationStatusName: configurationState?.statusName,
           configurationInteractive: configurationState?.interactive ?? false,
           configurationSelected: configurationState?.selected ?? false,
+          configurationFormStatus: props.configurationFormStatus,
+          configurationFormStatusName: props.configurationFormStatusName,
         },
       }
     }),
@@ -107,6 +112,10 @@ const canvasStyle = computed(() => ({
   '--flow-label-color': themeVars.value.textColor2,
   '--flow-surface-color': themeVars.value.bodyColor,
   '--flow-direction-color': themeVars.value.primaryColor,
+  '--success-color': themeVars.value.successColor,
+  '--warning-color': themeVars.value.warningColor,
+  '--error-color': themeVars.value.errorColor,
+  '--info-color': themeVars.value.infoColor,
 }))
 const { getViewport, onInit, setViewport } = useVueFlow()
 let ready = false
@@ -135,7 +144,6 @@ function reducedMotion(): boolean {
 }
 
 async function setInitialViewport() {
-  if (props.configurationMode) return
   const version = ++viewportVersion
   await nextTick()
   await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
@@ -461,7 +469,7 @@ onBeforeUnmount(() => {
       @viewport-change="handleViewportChange"
     >
       <template #node-flowNode="{ id, data }">
-        <flow-graph-node :data="data" @select="handleSelectConfigurationNode(id)" />
+        <flow-graph-node :data="data" @select="handleSelectConfigurationNode(id)" @open-form="emit('openConfigurationForm')" />
       </template>
       <template #node-routingHub="{ id, data }">
         <flow-routing-hub :data="data" @select="handleSelectConfigurationNode(id)" />
@@ -744,6 +752,14 @@ onBeforeUnmount(() => {
 
 .flow-graph-canvas :deep(.vue-flow__pane.dragging) {
   cursor: grabbing;
+}
+
+.flow-graph-canvas--configuration :deep(.vue-flow__node) {
+  pointer-events: auto;
+}
+
+.flow-graph-canvas--configuration :deep(.vue-flow__node-flowNode) {
+  cursor: pointer;
 }
 
 .flow-graph-canvas :deep(.vue-flow__edge-path) {

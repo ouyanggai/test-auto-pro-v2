@@ -38,6 +38,8 @@ export interface FlowNodeData extends Record<string, unknown> {
   configurationStatusName?: string
   configurationInteractive?: boolean
   configurationSelected?: boolean
+  configurationFormStatus?: string
+  configurationFormStatusName?: string
 }
 
 export interface FlowConfigurationNodeState {

@@ -38,6 +38,9 @@ export default {
       savedValues: {},
       generatedValues: {},
       generatedFieldPaths: [],
+      manualOverridePaths: [],
+      savedGeneratedFieldPaths: [],
+      savedManualOverridePaths: [],
       unsupported: [],
       readOnly: false,
       loading: false,
@@ -108,6 +111,9 @@ export default {
         this.savedValues = clonePlain(this.values)
         this.generatedValues = clonePlain(payload.generatedValues || this.values)
         this.generatedFieldPaths = Array.isArray(payload.generatedFieldPaths) ? payload.generatedFieldPaths.map(String) : []
+        this.manualOverridePaths = Array.isArray(payload.manualOverridePaths) ? payload.manualOverridePaths.map(String) : []
+        this.savedGeneratedFieldPaths = [...this.generatedFieldPaths]
+        this.savedManualOverridePaths = [...this.manualOverridePaths]
         await this.$nextTick()
         await this.setData(this.values)
         await this.refresh()
@@ -120,6 +126,7 @@ export default {
         await this.setData(nextValues)
         this.generatedValues = clonePlain(nextValues)
         this.generatedFieldPaths = Array.isArray(payload.generatedFieldPaths) ? payload.generatedFieldPaths.map(String) : []
+        this.manualOverridePaths = Array.isArray(payload.manualOverridePaths) ? payload.manualOverridePaths.map(String) : []
         this.dirty = true
         await this.refresh()
         this.result(command, await this.capture(false))
@@ -127,6 +134,9 @@ export default {
       }
       if (command.type === 'restore') {
         await this.setData(this.savedValues)
+        this.generatedValues = clonePlain(this.savedValues)
+        this.generatedFieldPaths = [...this.savedGeneratedFieldPaths]
+        this.manualOverridePaths = [...this.savedManualOverridePaths]
         this.dirty = false
         await this.refresh()
         this.result(command, await this.capture(false))
@@ -173,7 +183,7 @@ export default {
         unsupported: this.unsupported,
         dirty: this.dirty,
         generatedFieldPaths: this.generatedFieldPaths,
-        manualOverridePaths: diffManualPaths(this.generatedValues, values)
+        manualOverridePaths: [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
       }
     },
     markDirty () {
@@ -191,6 +201,9 @@ export default {
       this.savedValues = {}
       this.generatedValues = {}
       this.generatedFieldPaths = []
+      this.manualOverridePaths = []
+      this.savedGeneratedFieldPaths = []
+      this.savedManualOverridePaths = []
       this.unsupported = []
       this.dirty = false
       this.loading = false

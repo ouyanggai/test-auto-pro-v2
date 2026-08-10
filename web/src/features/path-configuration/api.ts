@@ -3,6 +3,9 @@ import type {
   PathConfiguration,
   PathConfigFieldValue,
   PathConfigSaveResult,
+  PathFormGenerateResult,
+  PathFormSampleSummary,
+  PathFormRuntimeSession,
 } from './types.ts'
 
 interface ApiSuccess<T> {
@@ -52,6 +55,59 @@ export function savePathConfiguration(
     headers: { 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify({ revision, fields, actions }),
   })
+}
+
+// savePathConfigurationNode 只保存当前节点人员和动作，避免一次点击覆盖整条路径。
+export function savePathConfigurationNode(
+  planId: string,
+  pathId: string,
+  nodeKey: string,
+  revision: number,
+  actions: PathConfigActionValue[],
+  idempotencyKey: string,
+): Promise<PathConfigSaveResult> {
+  return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/nodes/${encodeURIComponent(nodeKey)}`, {
+    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ revision, actions }),
+  })
+}
+
+// generatePathFormData 请求服务端按当前模板、样本和路径条件生成草稿，不产生保存事实。
+export function generatePathFormData(
+  planId: string,
+  pathId: string,
+  seed: number,
+  values: Record<string, unknown>,
+  manualOverridePaths: string[],
+  signal?: AbortSignal,
+): Promise<PathFormGenerateResult> {
+  return request<PathFormGenerateResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/form/generate`, {
+    method: 'POST', body: JSON.stringify({ seed, values, manualOverridePaths }),
+  }, signal)
+}
+
+// savePathFormData 保存真实 getValues 返回的完整对象与生成元数据。
+export function savePathFormData(
+  planId: string,
+  pathId: string,
+  idempotencyKey: string,
+  payload: {
+    revision: number
+    values: Record<string, unknown>
+    seed: number
+    generatedFieldPaths: string[]
+    manualOverridePaths: string[]
+    sampleSummary: PathFormSampleSummary
+    validated: boolean
+  },
+): Promise<PathConfigSaveResult> {
+  return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/form`, {
+    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(payload),
+  })
+}
+
+// fetchPathFormRuntimeSession 取得当前账号缓存的短期 SID；调用方只保存在 iframe 会话内。
+export function fetchPathFormRuntimeSession(planId: string, pathId: string, signal?: AbortSignal): Promise<PathFormRuntimeSession> {
+  return request<PathFormRuntimeSession>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/runtime-session`, { method: 'GET' }, signal)
 }
 
 async function request<T>(path: string, init: RequestInit, signal?: AbortSignal): Promise<T> {

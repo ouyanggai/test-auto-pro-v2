@@ -23,6 +23,7 @@ fi
 
 printf '验证 F-007 前端配置逻辑、F-005 路径逻辑与 F-004 图布局必要回归\n'
 node --no-warnings --experimental-strip-types --test test/unit/frontend/path_configuration_test.mjs
+node --no-warnings --experimental-strip-types --test test/unit/frontend/form_runtime_test.mjs
 node --no-warnings --experimental-strip-types --test test/unit/frontend/execution_path_test.mjs
 node --no-warnings --experimental-strip-types --test test/unit/frontend/flow_graph_test.mjs
 ./test/integration/f004_frontend_structure.sh
@@ -35,7 +36,9 @@ node --no-warnings --experimental-strip-types --test test/unit/frontend/flow_gra
 printf '验证 Go 构建、前端类型与生产构建\n'
 go build -o .runtime/server ./cmd/server
 pnpm --filter test-auto-pro-v2-web typecheck
+pnpm --filter test-auto-pro-v2-form-runtime typecheck
 pnpm --filter test-auto-pro-v2-web build
+pnpm --filter test-auto-pro-v2-form-runtime build
 
 git diff --check
 printf 'F-007 自动验证全部通过\n'

@@ -6,11 +6,15 @@ import {
   canSavePathConfiguration,
   applyPathConfigDraft,
   bindPathConfigurationNodes,
+  buildPathConfigNodeSavePayload,
   buildPathConfigSavePayload,
   encodePathConfigValue,
   hasPathConfigDraftChanges,
   initialPathConfigurationNodeID,
   initPathConfigDraft,
+  currentNodeConfigurationComplete,
+  hasCurrentNodeDraftChanges,
+  nextFormGenerationSeed,
   pathConfigNodeKey,
   pathConfigurationNodesByGraphID,
   parsePathConfigValue,
@@ -222,4 +226,24 @@ test('目标结构刷新只保留仍可对应字段动作和合法人员候选',
   assert.equal(Object.prototype.hasOwnProperty.call(reconciled.fields, 'removed-field'), false)
   assert.equal(reconciled.actions['action-approve'], 'disagree')
   assert.deepEqual(reconciled.persons['person-approve'], ['person-a'])
+})
+
+test('当前节点保存载荷不覆盖其他节点且保存完整性只看人员动作', () => {
+  const draft = initPathConfigDraft(configuration)
+  const approval = configuration.groups[0].nodes[1]
+  const payload = buildPathConfigNodeSavePayload(approval, draft)
+  assert.deepEqual(payload.map(item => item.key).sort(), ['action-approve', 'person-approve'])
+  assert.equal(payload.some(item => item.key === 'action-submit'), false)
+  assert.equal(currentNodeConfigurationComplete(approval, draft).complete, true)
+  assert.equal(hasCurrentNodeDraftChanges(approval, draft), false)
+  draft.persons['person-approve'] = []
+  assert.deepEqual(currentNodeConfigurationComplete(approval, draft).missing, ['审批人'])
+  draft.persons['person-approve'] = ['person-b']
+  assert.equal(hasCurrentNodeDraftChanges(approval, draft), true)
+})
+
+test('换一组种子稳定推进并安全处理非法值', () => {
+  assert.equal(nextFormGenerationSeed(73), 104802)
+  assert.equal(nextFormGenerationSeed(0), 1)
+  assert.equal(nextFormGenerationSeed(Number.NaN), 1)
 })

@@ -7,7 +7,14 @@ const FORBIDDEN_WRITE_PATHS = [
 
 // targetURL 只对当前会话核实的目标网关请求附加 SID，其他源保持浏览器默认行为。
 function targetURL (raw, baseURL, sid) {
-  const url = new URL(String(raw), window.location.href)
+  const text = String(raw)
+  // 目标表单组件大量使用 /web/... 相对地址；独立 iframe 必须把这类请求解析到本次后端核实的目标网关，
+  // 但不能把运行时自身的脚本、样式或其他第三方请求错误改写到目标平台。
+  const useTargetBase = Boolean(baseURL) && /^\/?web\//i.test(text)
+  const targetRequest = useTargetBase
+    ? `${String(baseURL).replace(/\/$/, '')}/${text.replace(/^\//, '')}`
+    : text
+  const url = new URL(targetRequest, window.location.href)
   if (!baseURL) return url
   const base = new URL(baseURL)
   if (url.origin !== base.origin) return url

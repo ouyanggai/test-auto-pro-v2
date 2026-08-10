@@ -9,6 +9,10 @@ paths_view="${project_root}/web/src/views/PlanPathsView.vue"
 config_api="${project_root}/web/src/features/path-configuration/api.ts"
 config_logic="${project_root}/web/src/features/path-configuration/logic.ts"
 config_panel="${project_root}/web/src/features/path-configuration/NodeConfigurationPanel.vue"
+form_frame="${project_root}/web/src/features/path-configuration/FormRuntimeFrame.vue"
+runtime_app="${project_root}/form-runtime/src/App.vue"
+runtime_protocol="${project_root}/form-runtime/src/runtime/protocol.js"
+runtime_policy="${project_root}/form-runtime/src/runtime/requestPolicy.js"
 canvas_view="${project_root}/web/src/features/flow-graph/FlowGraphCanvas.vue"
 flow_node="${project_root}/web/src/features/flow-graph/FlowGraphNode.vue"
 routing_hub="${project_root}/web/src/features/flow-graph/FlowRoutingHub.vue"
@@ -37,8 +41,15 @@ if grep -Fq "下一步：新增执行路径" "${paths_view}"; then
   exit 1
 fi
 
-# 配置页以复用 Vue Flow 的节点画布为主体，不再按组展开整页字段表单。
+# 配置页在同一路由内切换节点画布和隔离表单工作区，不再把表单字段塞进节点侧栏。
 grep -Fq "FlowGraphCanvas" "${config_view}"
+grep -Fq "FormRuntimeFrame" "${config_view}"
+grep -Fq "workspace === 'nodes'" "${config_view}"
+grep -Fq "workspace === 'form'" "${config_view}"
+grep -Fq "智能生成" "${config_view}"
+grep -Fq "换一组" "${config_view}"
+grep -Fq "恢复已保存" "${config_view}"
+grep -Fq "保存表单数据" "${config_view}"
 grep -Fq "configuration-mode" "${config_view}"
 grep -Fq "configuration-node-states" "${config_view}"
 grep -Fq 'name="configuration-panel"' "${canvas_view}"
@@ -61,22 +72,31 @@ grep -Fq "flow-routing-hub__configuration" "${routing_hub}"
 grep -Fq "flow-node--path-muted" "${canvas_view}"
 grep -Fq "branchEditing: props.configurationMode ? false" "${canvas_view}"
 
-# 侧栏按后端模板模型呈现字段、严格日期控件、人员与动作；运行时人员不能伪造成选择器。
+# 节点侧栏只呈现人员、动作和规则；表单字段必须由独立 FormMaking runtime 渲染。
 grep -Fq "node.requirements" "${config_panel}"
-grep -Fq "node.fields" "${config_panel}"
 grep -Fq "node.persons" "${config_panel}"
 grep -Fq "person.editable" "${config_panel}"
 grep -Fq "运行时确定" "${config_panel}"
-grep -Fq "NDatePicker" "${config_panel}"
-grep -Fq 'type="date"' "${config_panel}"
-grep -Fq 'type="datetime"' "${config_panel}"
 grep -Fq "固定提交" "${config_panel}"
 grep -Fq "disagreeWarning" "${config_panel}"
 grep -Fq "暂不支持" "${config_panel}"
 grep -Fq "overflow-y: auto" "${config_panel}"
-grep -Fq "保存节点配置" "${config_panel}"
-grep -Fq "返回计划详情" "${config_panel}"
-grep -Fq "配置下一条" "${config_panel}"
+grep -Fq "保存当前节点" "${config_panel}"
+if grep -Eq 'node\.fields|NDatePicker|NInput|NCheckbox|NSwitch' "${config_panel}"; then
+  echo 'F-007 节点侧栏不得重新模拟目标表单字段控件' >&2
+  exit 1
+fi
+
+# iframe 契约必须隔离 SID、拒绝迟到会话并阻断目标写接口；完整 values 只经 getValues 返回。
+grep -Fq "sessionId" "${form_frame}"
+grep -Fq "event.source !== iframe.value?.contentWindow" "${form_frame}"
+grep -Fq "event.origin !== runtimeOrigin.value" "${form_frame}"
+grep -Fq "getValues" "${runtime_app}"
+grep -Fq "getData(true)" "${runtime_app}"
+grep -Fq "destroySession" "${runtime_app}"
+grep -Fq "FORM_RUNTIME_VERSION" "${runtime_protocol}"
+grep -Fq "FORBIDDEN_WRITE_PATHS" "${runtime_policy}"
+grep -Fq "SID" "${runtime_policy}"
 
 # 浏览器只处理不透明键，结构变化保留可对应草稿；不得出现假运行控制。
 grep -Fq "pathConfigNodeKey" "${config_logic}"

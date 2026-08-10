@@ -2,23 +2,17 @@
 import {
   NAlert,
   NButton,
-  NDatePicker,
   NEmpty,
-  NInput,
-  NInputNumber,
   NRadioButton,
   NRadioGroup,
   NSelect,
-  NSwitch,
   NTag,
 } from 'naive-ui'
 import type { SelectOption } from 'naive-ui'
 
-import { parsePathConfigValue } from './logic'
 import type {
   PathConfigAction,
   PathConfigDraft,
-  PathConfigField,
   PathConfigNode,
   PathConfigPerson,
 } from './types'
@@ -37,24 +31,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  updateField: [field: PathConfigField, value: unknown]
   updateAction: [action: PathConfigAction, value: string]
   updatePerson: [person: PathConfigPerson, value: string[]]
   save: []
   backToPlan: []
   configureNext: []
 }>()
-
-// fieldValue 只解析当前节点的后端受约束值，控件不接触目标字段编码或原始 JSON。
-function fieldValue(field: PathConfigField): unknown {
-  return parsePathConfigValue(field, props.draft.fields[field.key] ?? '')
-}
-
-// dateFieldValue 给 Naive UI 严格日期控件提供格式化值，空值保持 null。
-function dateFieldValue(field: PathConfigField): string | null {
-  const value = fieldValue(field)
-  return typeof value === 'string' && value.trim() !== '' ? value : null
-}
 
 // actionValue 返回节点动作草稿；缺失时使用目标模板给出的默认动作。
 function actionValue(action: PathConfigAction): string {
@@ -69,11 +51,6 @@ function personValue(person: PathConfigPerson): string[] {
 // updateSinglePerson 把单选控件值统一收敛为后端人员数组语义。
 function updateSinglePerson(person: PathConfigPerson, value: string | null) {
   emit('updatePerson', person, value ? [value] : [])
-}
-
-// fieldOptions 转为 Naive UI 的只读选项结构，不附带任何目标原始字段信息。
-function fieldOptions(field: PathConfigField): SelectOption[] {
-  return field.options.map((option) => ({ label: option.label, value: option.value }))
 }
 
 // personOptions 转为 Naive UI 的不透明人员候选选项。
@@ -118,78 +95,6 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
               <span>{{ requirement.detail }}</span>
             </li>
           </ul>
-        </section>
-
-        <section v-if="node.fields.length" class="node-configuration-panel__section" aria-labelledby="node-fields-heading">
-          <h3 id="node-fields-heading">表单数据</h3>
-          <div
-            v-for="field in node.fields"
-            :key="field.key"
-            class="node-configuration-panel__field"
-            :class="{ 'node-configuration-panel__field--affected': field.affected }"
-          >
-            <label>
-              <span>{{ field.name }}</span>
-              <n-tag v-if="field.required" size="tiny" :bordered="false" type="error">必填</n-tag>
-              <n-tag v-if="field.affected" size="tiny" :bordered="false" type="warning">需重新确认</n-tag>
-            </label>
-            <n-input
-              v-if="field.type === 'text'"
-              :value="String(fieldValue(field))"
-              :disabled="node.lineBlocked || !field.editable"
-              :placeholder="field.required ? '请输入必填值' : '选填'"
-              @update:value="(value) => emit('updateField', field, value)"
-            />
-            <n-input-number
-              v-else-if="field.type === 'number'"
-              :value="typeof fieldValue(field) === 'number' ? fieldValue(field) as number : Number(fieldValue(field)) || null"
-              :disabled="node.lineBlocked || !field.editable"
-              :placeholder="field.required ? '请输入必填值' : '选填'"
-              @update:value="(value) => emit('updateField', field, value)"
-            />
-            <n-date-picker
-              v-else-if="field.type === 'date'"
-              type="date"
-              value-format="yyyy-MM-dd"
-              :formatted-value="dateFieldValue(field)"
-              :disabled="node.lineBlocked || !field.editable"
-              placeholder="请选择日期"
-              @update:formatted-value="(value) => emit('updateField', field, value)"
-            />
-            <n-date-picker
-              v-else-if="field.type === 'dateTime'"
-              type="datetime"
-              value-format="yyyy-MM-dd HH:mm:ss"
-              :formatted-value="dateFieldValue(field)"
-              :disabled="node.lineBlocked || !field.editable"
-              placeholder="请选择日期时间"
-              @update:formatted-value="(value) => emit('updateField', field, value)"
-            />
-            <n-select
-              v-else-if="field.type === 'singleSelect'"
-              :value="String(fieldValue(field))"
-              :options="fieldOptions(field)"
-              :disabled="node.lineBlocked || !field.editable"
-              :placeholder="field.required ? '请选择必填项' : '请选择'"
-              @update:value="(value) => emit('updateField', field, value)"
-            />
-            <n-select
-              v-else-if="field.type === 'multiSelect'"
-              multiple
-              :value="Array.isArray(fieldValue(field)) ? fieldValue(field) as string[] : []"
-              :options="fieldOptions(field)"
-              :disabled="node.lineBlocked || !field.editable"
-              :placeholder="field.required ? '请选择必填项' : '请选择'"
-              @update:value="(value) => emit('updateField', field, value)"
-            />
-            <n-switch
-              v-else-if="field.type === 'switch'"
-              :value="fieldValue(field) === true"
-              :disabled="node.lineBlocked || !field.editable"
-              @update:value="(value) => emit('updateField', field, value)"
-            />
-            <p v-if="field.note">{{ field.note }}</p>
-          </div>
         </section>
 
         <section v-if="node.persons.length" class="node-configuration-panel__section" aria-labelledby="node-persons-heading">
@@ -256,7 +161,7 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
         </section>
 
         <n-empty
-          v-if="!node.fields.length && !node.persons.length && !node.actions.length && !node.gaps.length && !node.requirements.length"
+          v-if="!node.persons.length && !node.actions.length && !node.gaps.length && !node.requirements.length"
           size="small"
           description="此节点没有需要配置的内容"
         />
@@ -270,17 +175,17 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
           </ul>
         </n-alert>
         <n-alert v-else-if="savedSuccessfully" type="success" :show-icon="false" size="small">
-          路径节点配置已保存
+          当前节点配置已保存
         </n-alert>
         <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足模板要求</span>
-        <span v-else>保存会校验整条路径的当前目标模板</span>
+        <span v-else>保存只更新当前节点的人员与动作</span>
         <div class="node-configuration-panel__footer-actions">
           <template v-if="savedSuccessfully">
             <n-button size="small" @click="emit('backToPlan')">返回计划详情</n-button>
             <n-button v-if="hasNextPath" size="small" type="primary" @click="emit('configureNext')">配置下一条</n-button>
           </template>
           <n-button v-else type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">
-            保存节点配置
+            保存当前节点
           </n-button>
         </div>
       </footer>
@@ -362,7 +267,6 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
 
 .node-configuration-panel__requirements span,
 .node-configuration-panel__readonly,
-.node-configuration-panel__field p,
 .node-configuration-panel__person p {
   margin: 4px 0 0;
   color: var(--flow-label-color);
@@ -371,7 +275,6 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
   opacity: 0.76;
 }
 
-.node-configuration-panel__field,
 .node-configuration-panel__person,
 .node-configuration-panel__action {
   display: grid;
@@ -379,18 +282,11 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
   margin-bottom: 12px;
 }
 
-.node-configuration-panel__field label,
 .node-configuration-panel__person label {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 13px;
-}
-
-.node-configuration-panel__field--affected {
-  padding: 8px;
-  border: 1px solid var(--warning-color, var(--flow-direction-color));
-  border-radius: 4px;
 }
 
 .node-configuration-panel__readonly {

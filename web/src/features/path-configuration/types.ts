@@ -8,11 +8,60 @@ export interface PathConfigPath {
 export interface PathConfiguration {
   path: PathConfigPath
   revision: number
+  nodeRevision: number
   status: 'pending' | 'configured' | 'affected'
   progress: PathConfigProgress
   nextNodeKey: string
   groups: PathConfigGroup[]
   warnings: string[]
+  form: PathFormConfiguration
+}
+
+export type PathFormStatus = 'empty' | 'draft' | 'valid' | 'affected' | 'unsupported'
+
+export interface PathFormConfiguration {
+  revision: number
+  status: PathFormStatus
+  statusName: string
+  readOnly: boolean
+  template: Record<string, unknown>
+  permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
+  values: Record<string, unknown>
+  seed: number
+  generatedFieldPaths: string[]
+  manualOverridePaths: string[]
+  sampleSummary: PathFormSampleSummary
+  validated: boolean
+  unsupported: string[]
+  affected: Array<{ kind: string, name: string, reason: string }>
+  autoFilled: number
+  manualPending: number
+}
+
+export interface PathFormSampleSummary {
+  saved: boolean
+  defaults: number
+  recent: number
+  fallback: number
+}
+
+export interface PathFormGenerateResult {
+  revision: number
+  status: 'draft'
+  values: Record<string, unknown>
+  seed: number
+  generatedFieldPaths: string[]
+  manualOverridePaths: string[]
+  sampleSummary: PathFormSampleSummary
+  autoFilled: number
+  manualPending: number
+  unsupported: string[]
+}
+
+export interface PathFormRuntimeSession {
+  sid: string
+  baseURL: string
+  accountName: string
 }
 
 export interface PathConfigProgress {
@@ -119,6 +168,8 @@ export interface PathConfigActionValue {
 export interface PathConfigSaveResult {
   path: PathConfigPath
   revision: number
+  nodeRevision: number
+  formRevision: number
   status: string
 }
 

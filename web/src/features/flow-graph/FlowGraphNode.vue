@@ -6,7 +6,7 @@ import { computed } from 'vue'
 import type { FlowNodeData } from './types'
 
 const props = defineProps<{ data: FlowNodeData }>()
-const emit = defineEmits<{ select: [] }>()
+const emit = defineEmits<{ select: [], openForm: [] }>()
 
 const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>(() => {
   switch (props.data.type) {
@@ -20,40 +20,45 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   }
 })
 
-const configurationTagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>(() => {
-  switch (props.data.configurationStatus) {
-    case 'configured': return 'success'
-    case 'pending':
-    case 'partial': return 'warning'
-    case 'affected': return 'error'
-    case 'runtime': return 'info'
-    default: return 'default'
-  }
-})
 </script>
 
 <template>
-  <button
-    v-if="data.configurationMode"
-    type="button"
-    class="flow-node flow-node--configuration"
-    :class="{
-      'flow-node--configuration-selected': data.configurationSelected,
-      'flow-node--configuration-disabled': !data.configurationInteractive,
-    }"
-    :disabled="!data.configurationInteractive"
-    :aria-pressed="data.configurationSelected"
-    :title="data.configurationInteractive ? `${data.name}，${data.configurationStatusName}` : `${data.name}，不在当前路径`"
-    @click="emit('select')"
-  >
-    <handle type="target" :position="Position.Top" :connectable="false" />
-    <span class="flow-node__type">{{ data.typeName }}</span>
-    <span class="flow-node__name">{{ data.name }}</span>
-    <n-tag size="tiny" :bordered="false" :type="configurationTagType">
-      {{ data.configurationInteractive ? data.configurationStatusName : '路径外上下文' }}
-    </n-tag>
-    <handle type="source" :position="Position.Bottom" :connectable="false" />
-  </button>
+  <div v-if="data.configurationMode" class="flow-node-shell">
+    <button
+      type="button"
+      class="flow-node flow-node--configuration"
+      :class="{
+        'flow-node--configuration-selected': data.configurationSelected,
+        'flow-node--configuration-disabled': !data.configurationInteractive,
+      }"
+      :disabled="!data.configurationInteractive"
+      :aria-pressed="data.configurationSelected"
+      :title="data.configurationInteractive ? `${data.name}，${data.configurationStatusName}` : `${data.name}，不在当前路径`"
+      @click="emit('select')"
+    >
+      <handle type="target" :position="Position.Top" :connectable="false" />
+      <span class="flow-node__type">{{ data.typeName }}</span>
+      <span class="flow-node__name">{{ data.name }}</span>
+      <span
+        class="flow-node__configuration-status"
+        :class="`flow-node__configuration-status--${data.configurationStatus || 'not_required'}`"
+        :aria-label="data.configurationInteractive ? data.configurationStatusName : '路径外上下文'"
+        :title="data.configurationInteractive ? data.configurationStatusName : '路径外上下文'"
+      />
+      <handle type="source" :position="Position.Bottom" :connectable="false" />
+    </button>
+    <button
+      v-if="data.type === 'start' && data.configurationInteractive && data.configurationFormStatus"
+      type="button"
+      class="flow-node__form-entry"
+      :class="`flow-node__form-entry--${data.configurationFormStatus}`"
+      :aria-label="`打开表单数据，${data.configurationFormStatusName || '待配置'}`"
+      :title="`表单数据：${data.configurationFormStatusName || '待配置'}`"
+      @click.stop="emit('openForm')"
+    >
+      表
+    </button>
+  </div>
   <n-tag v-else class="flow-node" :type="tagType" :bordered="true" :title="data.name">
     <handle type="target" :position="Position.Top" :connectable="false" />
     <span class="flow-node__type">{{ data.typeName }}</span>
@@ -75,12 +80,19 @@ const configurationTagType = computed<'default' | 'success' | 'warning' | 'error
   white-space: normal;
 }
 
+.flow-node-shell {
+  position: relative;
+  width: 180px;
+  height: 72px;
+}
+
 .flow-node--configuration {
+  position: relative;
   color: var(--flow-label-color);
   cursor: pointer;
   background: var(--flow-surface-color);
   border: 1px solid var(--flow-edge-color);
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
 }
 
 .flow-node--configuration:hover,
@@ -88,6 +100,15 @@ const configurationTagType = computed<'default' | 'success' | 'warning' | 'error
 .flow-node--configuration-selected {
   border-color: var(--flow-direction-color);
   outline: none;
+}
+
+.flow-node--configuration:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.flow-node--configuration:focus-visible {
+  outline: 2px solid var(--flow-direction-color);
+  outline-offset: 2px;
 }
 
 .flow-node--configuration-selected {
@@ -99,6 +120,53 @@ const configurationTagType = computed<'default' | 'success' | 'warning' | 'error
   cursor: default;
   opacity: 0.52;
 }
+
+.flow-node__configuration-status {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 8px;
+  height: 8px;
+  background: var(--flow-edge-color);
+  border: 2px solid var(--flow-surface-color);
+  border-radius: 50%;
+}
+
+.flow-node__configuration-status--configured { background: var(--success-color, #18a058); }
+.flow-node__configuration-status--pending,
+.flow-node__configuration-status--partial { background: var(--warning-color, #f0a020); }
+.flow-node__configuration-status--affected { background: var(--error-color, #d03050); }
+.flow-node__configuration-status--runtime { background: var(--info-color, #2080f0); }
+
+.flow-node__form-entry {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  z-index: 2;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--flow-label-color);
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--flow-surface-color);
+  border: 1px solid var(--flow-edge-color);
+  border-radius: 50%;
+  place-items: center;
+}
+
+.flow-node__form-entry:hover,
+.flow-node__form-entry:focus-visible {
+  border-color: var(--flow-direction-color);
+  outline: 2px solid color-mix(in srgb, var(--flow-direction-color) 34%, transparent);
+}
+
+.flow-node__form-entry--valid { color: var(--success-color, #18a058); }
+.flow-node__form-entry--affected,
+.flow-node__form-entry--unsupported { color: var(--error-color, #d03050); }
+.flow-node__form-entry--empty,
+.flow-node__form-entry--draft { color: var(--warning-color, #f0a020); }
 
 .flow-node__type {
   font-size: 12px;

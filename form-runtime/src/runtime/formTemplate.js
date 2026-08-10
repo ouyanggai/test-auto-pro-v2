@@ -40,7 +40,8 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
         unsupported.add(`${component.name || model || type || '未知组件'}：依赖 rsh-flow-components 宿主业务适配`)
       }
       if (model) {
-        const power = permissionByField.get(model) || (readOnly ? 'only_read' : 'edit')
+        // 目标页面先禁用整张表单，再只开放流程节点明确授权的字段；缺少权限不能默认可编辑。
+        const power = permissionByField.get(model) || 'only_read'
         component.options = component.options || {}
         component.options.hidden = power === 'hide'
         component.options.disabled = readOnly || power !== 'edit'

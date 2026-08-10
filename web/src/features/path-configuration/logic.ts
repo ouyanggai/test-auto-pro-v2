@@ -4,6 +4,7 @@ import type {
   PathConfigDraft,
   PathConfigField,
   PathConfigFieldValue,
+  PathConfigNode,
 } from './types.ts'
 import type { ExecutionPathAnalysis } from '../execution-paths/types.ts'
 import type { FlowConfigurationNodeState, FlowGraph } from '../flow-graph/types.ts'
@@ -226,6 +227,56 @@ export function buildPathConfigSavePayload(configuration: PathConfiguration, dra
     }
   }
   return { fields, actions }
+}
+
+// buildPathConfigNodeSavePayload 只收敛当前节点的动作与人员，不允许一次保存覆盖其他节点。
+export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft): PathConfigActionValue[] {
+  const actions: PathConfigActionValue[] = []
+  for (const action of node.actions) {
+    if (Object.prototype.hasOwnProperty.call(draft.actions, action.key)) {
+      actions.push({ key: action.key, action: draft.actions[action.key] })
+    }
+  }
+  for (const person of node.persons) {
+    if (person.editable && Object.prototype.hasOwnProperty.call(draft.persons, person.key)) {
+      actions.push({ key: person.key, action: JSON.stringify(draft.persons[person.key]) })
+    }
+  }
+  return actions
+}
+
+// currentNodeConfigurationComplete 判断当前节点人数约束是否满足；表单字段不再属于节点侧栏。
+export function currentNodeConfigurationComplete(node: PathConfigNode | null, draft: PathConfigDraft): { missing: string[], complete: boolean } {
+  if (!node || node.lineBlocked) return { missing: [], complete: false }
+  const missing: string[] = []
+  for (const person of node.persons) {
+    if (!person.editable) continue
+    const selected = draft.persons[person.key] ?? []
+    const requiredEmpty = person.required && selected.length === 0
+    const belowMinimum = selected.length > 0 && selected.length < person.minCount
+    if (requiredEmpty || belowMinimum) missing.push(person.title)
+  }
+  const actionable = node.actions.length > 0 || node.persons.some((person) => person.editable)
+  return { missing, complete: actionable && missing.length === 0 && node.status !== 'affected' && node.status !== 'partial' }
+}
+
+// hasCurrentNodeDraftChanges 只比较当前节点动作与人员，其他节点草稿不影响保存按钮。
+export function hasCurrentNodeDraftChanges(node: PathConfigNode | null, draft: PathConfigDraft): boolean {
+  if (!node) return false
+  for (const action of node.actions) {
+    if ((draft.actions[action.key] ?? action.current) !== action.current) return true
+  }
+  for (const person of node.persons) {
+    if (!person.editable) continue
+    if (JSON.stringify(draft.persons[person.key] ?? person.selected) !== JSON.stringify(person.selected)) return true
+  }
+  return false
+}
+
+// nextFormGenerationSeed 对换一组稳定推进种子，同一输入种子重复调用仍可复现。
+export function nextFormGenerationSeed(seed: number): number {
+  if (!Number.isSafeInteger(seed) || seed < 1) return 1
+  return seed >= Number.MAX_SAFE_INTEGER - 104729 ? 1 : seed + 104729
 }
 
 // allEditableFieldsFilled 判断必填字段和人员人数约束是否满足，用于保存前即时提示。
