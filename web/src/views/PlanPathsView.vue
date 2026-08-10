@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
@@ -14,6 +14,7 @@ import {
   NTag,
   NVirtualList,
   useMessage,
+  useThemeVars,
 } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -52,6 +53,7 @@ import type { PersistedPlan } from '../features/plans/types'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const themeVars = useThemeVars()
 const plan = ref<PersistedPlan | null>(null)
 const graph = ref<FlowGraph | null>(null)
 const paths = ref<ExecutionPath[]>([])
@@ -81,10 +83,12 @@ const draftRecoveryLoading = ref(false)
 const draftRecoveryError = ref('')
 const SAVED_PATH_ITEM_SIZE = 44
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
+const graphScreenRef = ref<HTMLElement | null>(null)
 let loadController: AbortController | null = null
 let loadVersion = 0
 let draftRecoveryController: AbortController | null = null
 let draftRecoveryVersion = 0
+let pageScrollContainer: HTMLElement | null = null
 
 const planID = computed(() => String(route.params.id || ''))
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
@@ -92,6 +96,14 @@ const pathConfigurationSummary = computed(() => summarizeExecutionPathConfigurat
 const configuredPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'configured'))
 const pendingPaths = computed(() => paths.value.filter((path) => path.configurationStatus !== 'configured'))
 const nextUnconfiguredPath = computed(() => pathConfigurationSummary.value.nextPath)
+const pageThemeStyle = computed(() => ({
+  '--plan-card-color': themeVars.value.cardColor,
+  '--plan-page-color': themeVars.value.bodyColor,
+  '--plan-border-color': themeVars.value.borderColor,
+  '--plan-divider-color': themeVars.value.dividerColor,
+  '--plan-text-color': themeVars.value.textColor1,
+  '--plan-text-secondary-color': themeVars.value.textColor2,
+}))
 const pathAnalysis = computed(() => graph.value
   ? analyzeExecutionPath(graph.value, draftChoices.value)
   : null)
@@ -569,84 +581,102 @@ function scheduledAtText(value: string | null): string {
   return Number.isNaN(parsed.getTime()) ? '时间异常' : parsed.toLocaleString('zh-CN', { hour12: false })
 }
 
+// scrollToGraphStructure 只响应用户点击导航；滚轮浏览完全交给 CSS 吸附，减少动态效果时不播放平滑动画。
+function scrollToGraphStructure() {
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  graphScreenRef.value?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
+}
+
 watch(planID, () => { void loadPage() }, { immediate: true })
+onMounted(() => {
+  // 主内容区是页面唯一滚动容器；组件只挂载吸附样式类，不接管滚轮事件或强制跳屏。
+  pageScrollContainer = document.querySelector<HTMLElement>('.app-main > .n-layout-scroll-container')
+  pageScrollContainer?.classList.add('plan-paths-scroll-container')
+})
 onBeforeUnmount(() => {
   loadController?.abort()
   draftRecoveryController?.abort()
+  pageScrollContainer?.classList.remove('plan-paths-scroll-container')
+  pageScrollContainer = null
 })
 </script>
 
 <template>
-  <section class="plan-paths-page">
-    <div class="paths-back-bar">
-      <n-button text type="primary" @click="router.push('/plans')">返回测试计划</n-button>
-    </div>
-
+  <section class="plan-paths-page" :style="pageThemeStyle">
     <n-spin :show="planLoading">
       <div v-if="plan" class="paths-content">
-        <header class="page-heading">
-          <div>
-            <h1>{{ plan.name }}</h1>
-            <p>从当前入口选择执行线路，并保存为计划路径。</p>
+        <section class="plan-paths-screen plan-paths-screen--overview" aria-labelledby="plan-paths-heading">
+          <div class="paths-back-bar">
+            <n-button text type="primary" @click="router.push('/plans')">返回测试计划</n-button>
           </div>
-          <div class="page-heading__actions">
-            <n-tag size="small" type="warning" :bordered="false">
-              {{ planStatusLabels[plan.status] }}
-            </n-tag>
-          </div>
-        </header>
-
-        <n-descriptions label-placement="left" :column="3" bordered size="small">
-          <n-descriptions-item label="目标流程">{{ plan.targetObjectName }}</n-descriptions-item>
-          <n-descriptions-item label="发起账号">
-            {{ plan.accountDisplayName ? `${plan.accountDisplayName}（${plan.account}）` : plan.account }}
-          </n-descriptions-item>
-          <n-descriptions-item label="流程来源">{{ flowSourceLabels[plan.flowSource] }}</n-descriptions-item>
-          <n-descriptions-item label="运行方式">{{ runModeText(plan) }}</n-descriptions-item>
-          <n-descriptions-item label="定时启动">{{ scheduledAtText(plan.scheduledAt) }}</n-descriptions-item>
-          <n-descriptions-item label="路径数量">{{ plan.pathCount }}</n-descriptions-item>
-        </n-descriptions>
-
-        <section class="path-preparation" aria-labelledby="path-preparation-heading">
-          <div class="path-preparation__header">
+          <header class="page-heading">
             <div>
-              <h2 id="path-preparation-heading">路径准备 / 下一步</h2>
-              <p v-if="pathsLoading">正在读取本地路径配置状态</p>
-              <p v-else-if="pathsError">暂时无法读取路径状态，请先重试</p>
-              <p v-else>已保存 {{ paths.length }} 条，已配置 {{ configuredPaths.length }} 条，待配置 {{ pendingPaths.length }} 条</p>
+              <h1 id="plan-paths-heading">{{ plan.name }}</h1>
+              <p>从当前入口选择执行线路，并保存为计划路径。</p>
             </div>
-            <n-button
-              v-if="!pathsLoading && !pathsError && nextUnconfiguredPath"
-              type="primary"
-              :disabled="!graph || graphLoading"
-              @click="openPathConfiguration(nextUnconfiguredPath)"
-            >
-              配置下一条
-            </n-button>
-            <n-tag v-else-if="!pathsLoading && !pathsError && paths.length" type="success" :bordered="false">
-              路径配置已完成
-            </n-tag>
-          </div>
+            <div class="page-heading__actions">
+              <n-tag size="small" type="warning" :bordered="false">
+                {{ planStatusLabels[plan.status] }}
+              </n-tag>
+            </div>
+          </header>
 
-          <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
-            <span>下一步：新增执行路径</span>
-            <n-button type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="enterPathEditing">新增路径</n-button>
-          </div>
-          <div v-else-if="!pathsLoading && !pathsError && paths.length" class="path-preparation__list">
-            <div v-for="path in paths" :key="path.id" class="path-preparation__item">
-              <div class="path-preparation__identity">
-                <span class="path-preparation__sequence">#{{ path.sequenceNo }}</span>
-                <span class="path-preparation__name" :title="pathDisplayName(path)">{{ pathDisplayName(path) }}</span>
-                <n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : 'warning'">
-                  {{ path.configurationStatus === 'configured' ? '已配置' : '未配置' }}
-                </n-tag>
+          <n-descriptions label-placement="left" :column="3" bordered size="small">
+            <n-descriptions-item label="目标流程">{{ plan.targetObjectName }}</n-descriptions-item>
+            <n-descriptions-item label="发起账号">
+              {{ plan.accountDisplayName ? `${plan.accountDisplayName}（${plan.account}）` : plan.account }}
+            </n-descriptions-item>
+            <n-descriptions-item label="流程来源">{{ flowSourceLabels[plan.flowSource] }}</n-descriptions-item>
+            <n-descriptions-item label="运行方式">{{ runModeText(plan) }}</n-descriptions-item>
+            <n-descriptions-item label="定时启动">{{ scheduledAtText(plan.scheduledAt) }}</n-descriptions-item>
+            <n-descriptions-item label="路径数量">{{ plan.pathCount }}</n-descriptions-item>
+          </n-descriptions>
+
+          <section class="path-preparation" aria-labelledby="path-preparation-heading">
+            <div class="path-preparation__header">
+              <div>
+                <h2 id="path-preparation-heading">路径准备 / 下一步</h2>
+                <p v-if="pathsLoading">正在读取本地路径配置状态</p>
+                <p v-else-if="pathsError">暂时无法读取路径状态，请先重试</p>
+                <p v-else>已保存 {{ paths.length }} 条，已配置 {{ configuredPaths.length }} 条，待配置 {{ pendingPaths.length }} 条</p>
               </div>
-              <n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">配置</n-button>
+              <n-button
+                v-if="!pathsLoading && !pathsError && nextUnconfiguredPath"
+                type="primary"
+                :disabled="!graph || graphLoading"
+                @click="openPathConfiguration(nextUnconfiguredPath)"
+              >
+                配置下一条
+              </n-button>
+              <n-tag v-else-if="!pathsLoading && !pathsError && paths.length" type="success" :bordered="false">
+                路径配置已完成
+              </n-tag>
             </div>
+
+            <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
+              <span>下一步：新增执行路径</span>
+              <n-button type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="enterPathEditing">新增路径</n-button>
+            </div>
+            <div v-else-if="!pathsLoading && !pathsError && paths.length" class="path-preparation__list">
+              <div v-for="path in paths" :key="path.id" class="path-preparation__item">
+                <div class="path-preparation__identity">
+                  <span class="path-preparation__sequence">#{{ path.sequenceNo }}</span>
+                  <span class="path-preparation__name" :title="pathDisplayName(path)">{{ pathDisplayName(path) }}</span>
+                  <n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : 'warning'">
+                    {{ path.configurationStatus === 'configured' ? '已配置' : '未配置' }}
+                  </n-tag>
+                </div>
+                <n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">配置</n-button>
+              </div>
+            </div>
+          </section>
+
+          <div class="flow-structure-jump">
+            <n-button size="small" secondary @click="scrollToGraphStructure">查看流程结构 ↓</n-button>
           </div>
         </section>
 
-        <section class="graph-section" aria-labelledby="flow-graph-heading">
+        <section ref="graphScreenRef" class="plan-paths-screen plan-paths-screen--graph graph-section" aria-labelledby="flow-graph-heading">
           <div class="graph-heading">
             <div>
               <h2 id="flow-graph-heading">流程结构</h2>
@@ -881,7 +911,10 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <div v-else-if="!planLoading" class="paths-error-region">
+      <section v-else-if="!planLoading" class="plan-paths-screen plan-paths-screen--error paths-error-region">
+        <div class="paths-back-bar">
+          <n-button text type="primary" @click="router.push('/plans')">返回测试计划</n-button>
+        </div>
         <n-empty :description="planNotFound ? '计划不存在或已不可用' : planError || '暂时无法读取计划'">
           <template #extra>
             <div class="error-actions">
@@ -890,7 +923,7 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </n-empty>
-      </div>
+      </section>
     </n-spin>
     <n-modal
       v-model:show="discardConfirmOpen"
@@ -918,23 +951,45 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .plan-paths-page {
+  --plan-screen-height: calc(100dvh - 144px);
+
   width: 100%;
   min-width: 0;
+  color: var(--plan-text-color);
+  background: var(--plan-page-color);
 }
 
-.paths-back-bar {
-  position: sticky;
-  top: -32px;
-  z-index: 5;
-  margin: -32px -48px 24px;
-  padding: 16px 48px 12px;
-  background: var(--n-color);
-  border-bottom: 1px solid var(--n-border-color);
+:global(.app-main > .n-layout-scroll-container.plan-paths-scroll-container) {
+  scroll-padding-block: 40px;
+  scroll-snap-type: y mandatory;
+  overscroll-behavior-y: contain;
 }
 
 .paths-content {
+  display: grid;
   width: min(1180px, 100%);
   margin: 0 auto;
+  gap: 40px;
+}
+
+.plan-paths-screen {
+  width: 100%;
+  height: var(--plan-screen-height);
+  min-height: 0;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+.plan-paths-screen--overview,
+.plan-paths-screen--graph,
+.plan-paths-screen--error {
+  display: flex;
+  flex-direction: column;
+}
+
+.paths-back-bar {
+  flex: 0 0 auto;
+  margin-bottom: 12px;
 }
 
 .page-heading,
@@ -946,7 +1001,8 @@ onBeforeUnmount(() => {
 }
 
 .page-heading {
-  margin-bottom: 24px;
+  flex: 0 0 auto;
+  margin-bottom: 18px;
 }
 
 .page-heading__actions {
@@ -963,16 +1019,20 @@ onBeforeUnmount(() => {
 
 .page-heading h1 {
   margin-bottom: 8px;
+  color: var(--plan-text-color);
   font-size: 28px;
 }
 
 .path-preparation {
   display: grid;
+  flex: 0 1 auto;
   gap: 12px;
   margin-top: 20px;
   padding: 14px 16px;
-  background: var(--n-color);
-  border: 1px solid var(--n-border-color);
+  overflow: hidden;
+  color: var(--plan-text-color);
+  background: var(--plan-card-color);
+  border: 1px solid var(--plan-border-color);
   border-radius: 4px;
 }
 
@@ -992,27 +1052,34 @@ onBeforeUnmount(() => {
 
 .path-preparation__header p {
   margin: 0;
-  color: var(--n-text-color-2);
+  color: var(--plan-text-secondary-color);
   font-size: 13px;
 }
 
 .path-preparation__empty {
   padding-top: 4px;
-  color: var(--n-text-color-1);
+  color: var(--plan-text-color);
   font-size: 13px;
 }
 
 .path-preparation__list {
   display: grid;
+  min-height: 0;
   gap: 6px;
-  max-height: 240px;
+  max-height: clamp(96px, calc(var(--plan-screen-height) - 380px), 280px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .path-preparation__item {
   min-height: 40px;
   padding: 6px 8px;
-  border-top: 1px solid var(--n-divider-color);
+  border-top: 1px solid var(--plan-divider-color);
+}
+
+.path-preparation__item:first-child {
+  border-top: 0;
 }
 
 .path-preparation__identity {
@@ -1024,7 +1091,7 @@ onBeforeUnmount(() => {
 
 .path-preparation__sequence {
   flex: 0 0 auto;
-  color: var(--n-text-color-2);
+  color: var(--plan-text-secondary-color);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1043,33 +1110,55 @@ onBeforeUnmount(() => {
 .page-heading p,
 .graph-heading p {
   margin: 0;
-  color: var(--n-text-color-2);
+  color: var(--plan-text-secondary-color);
 }
 
 .graph-section {
-  margin-top: 28px;
+  margin-top: 0;
 }
 
 .graph-heading {
+  flex: 0 0 auto;
   margin-bottom: 14px;
 }
 
-.graph-region,
-.graph-state,
-.paths-error-region {
-  min-height: 560px;
+.flow-structure-jump {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  margin-top: auto;
+  padding-top: 14px;
 }
 
 .graph-region {
   position: relative;
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.graph-state,
-.paths-error-region {
+.graph-state {
   display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
   place-items: center;
-  border-top: 1px solid var(--n-border-color);
+  border-top: 1px solid var(--plan-border-color);
+}
+
+.graph-region :deep(.flow-graph-canvas:not(.flow-graph-canvas--page-fullscreen)) {
+  height: 100%;
+  min-height: 0;
+}
+
+.plan-paths-screen--error {
+  justify-content: flex-start;
+}
+
+.paths-error-region > .n-empty {
+  flex: 1 1 auto;
+  align-self: center;
 }
 
 .graph-warning {
@@ -1081,6 +1170,7 @@ onBeforeUnmount(() => {
 }
 
 .paths-load-error {
+  flex: 0 0 auto;
   margin-bottom: 12px;
 }
 
@@ -1395,6 +1485,10 @@ onBeforeUnmount(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :global(.app-main > .n-layout-scroll-container.plan-paths-scroll-container) {
+    scroll-behavior: auto;
+  }
+
   .path-summary__item::after {
     animation: none !important;
   }

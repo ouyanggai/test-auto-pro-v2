@@ -67,6 +67,30 @@ fi
 grep -Fq '点击“页面全屏”只放大当前流程图' "${project_root}/test/manual/F-007.md"
 grep -Fq '点击“编辑路径”才进入线路管理' "${project_root}/test/manual/F-007.md"
 
+# 计划详情使用 Naive UI 中性主题和两个完整内容视口；路径列表是首屏唯一允许的内部纵向滚动区。
+grep -Fq "useThemeVars" "${paths_view}"
+grep -Fq "themeVars.value.cardColor" "${paths_view}"
+grep -Fq -- "--plan-card-color" "${paths_view}"
+grep -Fq -- "--plan-border-color" "${paths_view}"
+grep -Fq -- "--plan-text-secondary-color" "${paths_view}"
+if grep -Eq '#18a058|rgb\(24,[[:space:]]*160,[[:space:]]*88\)|background:[[:space:]]*var\(--n-color\)' "${paths_view}"; then
+  echo 'F-007 路径准备区域不得使用硬编码或继承组件主色的大面积绿色背景' >&2
+  exit 1
+fi
+grep -Fq 'class="plan-paths-screen plan-paths-screen--overview"' "${paths_view}"
+grep -Fq 'class="plan-paths-screen plan-paths-screen--graph graph-section"' "${paths_view}"
+grep -Fq "plan-paths-scroll-container" "${paths_view}"
+grep -Fq "scroll-snap-type: y mandatory" "${paths_view}"
+grep -Fq "scroll-snap-align: start" "${paths_view}"
+grep -Fq "scroll-snap-stop: always" "${paths_view}"
+grep -Fq "path-preparation__list" "${paths_view}"
+grep -Fq "scrollbar-gutter: stable" "${paths_view}"
+grep -Fq ".graph-region :deep(.flow-graph-canvas:not(.flow-graph-canvas--page-fullscreen))" "${paths_view}"
+grep -Fq "查看流程结构" "${paths_view}"
+grep -Fq "scrollIntoView" "${paths_view}"
+grep -Fq "behavior: reducedMotion ? 'auto' : 'smooth'" "${paths_view}"
+grep -Fq "@media (prefers-reduced-motion: reduce)" "${paths_view}"
+
 if [[ ! -f "${config_logic}" ]]; then
   echo 'F-007 配置纯逻辑模块缺失' >&2
   exit 1
