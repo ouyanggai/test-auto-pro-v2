@@ -9,7 +9,11 @@ const emit = defineEmits<{ select: [] }>()
 </script>
 
 <template>
-  <div class="flow-routing-hub" :aria-hidden="data?.configurationMode ? undefined : 'true'">
+  <div
+    class="flow-routing-hub"
+    :class="{ 'flow-routing-hub--configuration': data?.configurationMode }"
+    :aria-hidden="data?.configurationMode ? undefined : 'true'"
+  >
     <handle type="target" :position="Position.Top" :connectable="false" />
     <button
       v-if="data?.configurationMode"
@@ -37,6 +41,11 @@ const emit = defineEmits<{ select: [] }>()
   width: 8px;
   height: 8px;
   pointer-events: none;
+  opacity: 0;
+}
+
+.flow-routing-hub--configuration {
+  opacity: 1;
 }
 
 .flow-routing-hub__configuration {

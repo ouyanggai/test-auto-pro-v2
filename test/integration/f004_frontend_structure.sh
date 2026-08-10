@@ -83,7 +83,7 @@ if grep -Eq "type: ['\"]?(step|smoothstep)|dagre" "${layout_file}"; then
   exit 1
 fi
 grep -Fq "type: routingHub ? 'routingHub' : 'flowNode'" "${layout_file}"
-grep -Fq '<flow-routing-hub />' "${canvas_file}"
+grep -Fq '<flow-routing-hub' "${canvas_file}"
 grep -Fq '<flow-tree-edge v-bind="edgeProps"' "${canvas_file}"
 grep -Fq "BaseEdge" "${edge_file}"
 grep -Fq 'flow-tree-edge__direction' "${edge_file}"
@@ -93,6 +93,8 @@ grep -Fq '@media (prefers-reduced-motion: reduce)' "${edge_file}"
 grep -Fq 'animation: none' "${edge_file}"
 grep -Fq 'pointer-events: none' "${hub_file}"
 grep -Fq 'opacity: 0' "${hub_file}"
+grep -Fq 'flow-routing-hub--configuration' "${hub_file}"
+grep -Fq 'opacity: 1' "${hub_file}"
 
 if grep -RInE 'createExecutionPath|updateExecutionPath|deleteExecutionPath|features/execution-paths/api' "${project_root}/web/src/features/flow-graph" >/dev/null; then
   printf 'F-004 流程图展示组件不得直接持久化执行路径\n' >&2
