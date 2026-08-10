@@ -1,0 +1,60 @@
+{
+  "defaultSyncEnv": "test",
+  "sourceRoots": {
+    "test": "/Volumes/oygsky/bigsys/rsh-cloud-invest-power-system-test",
+    "prod": "/Volumes/oygsky/bigsys/rsh-cloud-invest-power-system"
+  },
+  "targetRoot": "/Volumes/oygsky/bigsys/rsh-flow-components",
+  "mappings": [
+    { "src": "src/views/GroupApproveManage/", "dest": "src/views/GroupApproveManage/", "type": "dir" },
+    { "src": "src/views/BudgetManage/", "dest": "src/views/BudgetManage/", "type": "dir" },
+    { "src": "src/views/PerformanceManage/", "dest": "src/views/PerformanceManage/", "type": "dir" },
+    { "src": "src/components/", "dest": "src/components/", "type": "dir" },
+    { "src": "src/layout/components/globalDialog/", "dest": "src/layout/components/globalDialog/", "type": "dir" },
+    { "src": "src/lib/vue-form-making/", "dest": "src/lib/vue-form-making/", "type": "dir" },
+    { "src": "src/api/index.js", "dest": "src/api/index.js", "type": "file" },
+    { "src": "src/views/BudgetManage/CompanyBudget/components/", "dest": "src/cross-modules/BudgetManage/CompanyBudget/components/", "type": "dir" },
+    { "src": "src/views/BudgetManage/MonthlyBudget/components/", "dest": "src/cross-modules/BudgetManage/MonthlyBudget/components/", "type": "dir" },
+    { "src": "src/views/BudgetManage/ProjectBudget/components/", "dest": "src/cross-modules/BudgetManage/ProjectBudget/components/", "type": "dir" },
+    { "src": "src/views/PerformanceManage/TargetBook/", "dest": "src/cross-modules/PerformanceManage/TargetBook/", "type": "dir" },
+    { "src": "src/views/PerformanceManage/MonthlyPerf/", "dest": "src/cross-modules/PerformanceManage/MonthlyPerf/", "type": "dir" },
+    { "src": "src/views/PerformanceManage/monthlyPerfBlocSum/", "dest": "src/cross-modules/PerformanceManage/monthlyPerfBlocSum/", "type": "dir" },
+    { "src": "src/views/PerformanceManage/reserveMonthSum/", "dest": "src/cross-modules/PerformanceManage/reserveMonthSum/", "type": "dir" },
+    { "src": "src/views/PerformanceManage/staffAnnualAssessment/", "dest": "src/cross-modules/PerformanceManage/staffAnnualAssessment/", "type": "dir" },
+    { "src": "src/views/BacklogManage/components/NewEvent.vue", "dest": "src/cross-modules/BacklogManage/components/NewEvent.vue", "type": "file" },
+    { "src": "src/views/PerformanceManage/QuarterPerfAssess/", "dest": "src/views/PerformanceManage/QuarterPerfAssess/", "type": "dir" },
+    { "src": "src/views/PerformanceManage/QuarterPerfAssess/", "dest": "src/cross-modules/PerformanceManage/QuarterPerfAssess/", "type": "dir" },
+    { "src": "src/views/QuestionnaireManage/components/fill.vue", "dest": "src/views/QuestionnaireManage/components/fill.vue", "type": "file" },
+    { "src": "src/views/QuestionnaireManage/components/fill.vue", "dest": "src/cross-modules/QuestionnaireManage/components/fill.vue", "type": "file" },
+    { "src": "src/views/TaskManage/TaskArrange/components/", "dest": "src/views/TaskManage/TaskArrange/components/", "type": "dir" },
+    { "src": "src/views/TaskManage/TaskArrange/components/", "dest": "src/cross-modules/TaskManage/TaskArrange/components/", "type": "dir" },
+    { "src": "src/views/BacklogManage/components/NoFormMulBranch/", "dest": "src/views/BacklogManage/components/NoFormMulBranch/", "type": "dir" },
+    { "src": "src/views/BacklogManage/components/NoFormMulBranch/", "dest": "src/cross-modules/BacklogManage/components/NoFormMulBranch/", "type": "dir" },
+    { "src": "src/views/flowLibrary/components/", "dest": "src/views/flowLibrary/components/", "type": "dir" },
+    { "src": "src/views/flowLibrary/components/", "dest": "src/cross-modules/flowLibrary/components/", "type": "dir" },
+    { "src": "src/utils/", "dest": "src/utils/", "type": "dir" },
+    { "src": "src/store/modules/", "dest": "src/store/modules/", "type": "dir" },
+    { "src": "src/store/getters.js", "dest": "src/store/getters.js", "type": "file" },
+    { "src": "src/settings.js", "dest": "src/settings.js", "type": "file" },
+    { "src": "src/assets/styles/", "dest": "src/assets/styles/", "type": "dir" },
+    { "src": "src/assets/icons/", "dest": "src/assets/icons/", "type": "dir" },
+    { "src": "src/directives/", "dest": "src/directives/", "type": "dir" },
+    { "src": "src/filters/", "dest": "src/filters/", "type": "dir" },
+    { "src": "src/assets/images/", "dest": "src/assets/images/", "type": "dir" }
+  ],
+  "postSync": {
+    "stubComponents": {
+      "file": "src/layout/components/globalDialog/components.js",
+      "stubs": ["commonAccounts", "invoiceCommonInfo"],
+      "keep": ["orgTree", "flowDetail", "loanMoney"]
+    },
+    "axiosOverride": {
+      "file": "src/utils/axios.js",
+      "description": "Replace 401 location.reload() with parent.postMessage"
+    },
+    "envOverride": {
+      "file": "src/config/env.js",
+      "description": "Replace with runtime-configurable version"
+    }
+  }
+}

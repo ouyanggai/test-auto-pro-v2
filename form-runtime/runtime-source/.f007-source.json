@@ -1,0 +1,8 @@
+{
+  "repository": "rsh-flow-components",
+  "remote": "git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git",
+  "branch": "master",
+  "head": "bff4ef8b938db5578c3f7eab1f482a4e9388917c",
+  "digest": "c70c23efba0da4e00278b6fbf1d8662fbe0f2a853a837b109559baeda317be5d",
+  "targetDigest": "ec451f545d57f1761021ac2ada4ae4c00d0fc0408de9071c5afbf4bb80818b3c"
+}

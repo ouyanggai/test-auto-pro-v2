@@ -16,7 +16,7 @@ const emit = defineEmits<{
 
 const iframe = ref<HTMLIFrameElement | null>(null)
 const sessionId = ref(crypto.randomUUID())
-const iframeSource = computed(() => import.meta.env.DEV ? 'http://127.0.0.1:19001/' : '/form-runtime/')
+const iframeSource = computed(() => import.meta.env.DEV ? 'http://127.0.0.1:19001/form-runtime/#/test-auto-form' : '/form-runtime/#/test-auto-form')
 const runtimeOrigin = computed(() => new URL(iframeSource.value, window.location.href).origin)
 const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer: number }>()
 let disposed = false
@@ -47,6 +47,7 @@ async function loadRuntime() {
     const payload = await postCommand('load', {
       sid: props.runtimeSession.sid,
       baseURL: props.runtimeSession.baseURL,
+      accountName: props.runtimeSession.accountName,
       readOnly: props.form.readOnly,
       template: props.form.template,
       permissions: props.form.permissions,

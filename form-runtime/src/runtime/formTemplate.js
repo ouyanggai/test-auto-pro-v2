@@ -3,6 +3,7 @@ const STANDARD_TYPES = new Set([
   'input', 'textarea', 'number', 'date', 'time', 'select', 'radio', 'checkbox', 'switch',
   'text', 'html', 'divider', 'blank', 'link', 'button', ...CONTAINER_TYPES
 ])
+const TARGET_COMPONENT_NAMES = new Set(JSON.parse(process.env.VUE_APP_TARGET_COMPONENT_NAMES || '[]'))
 
 // clonePlain 在 postMessage 与 Vue 观察对象边界复制纯数据，禁止代理对象进入 FormMaking。
 export function clonePlain (value) {
@@ -36,7 +37,9 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
       const type = String(component && component.type || '').trim()
       const model = String(component && component.model || '').trim()
       const customName = String(component && component.options && (component.options.componentName || component.options.component) || '').trim()
-      if (!STANDARD_TYPES.has(type) || type === 'component' || customName) {
+      const targetComponentName = customName || (type === 'component' ? String(component.componentName || '') : type)
+      // 真实上游 main.js 已注册的目标组件交给原生 FormMaking 渲染；只有未注册组件才阻止错误宣称支持。
+      if ((!STANDARD_TYPES.has(type) || type === 'component' || customName) && !TARGET_COMPONENT_NAMES.has(targetComponentName)) {
         unsupported.add(`${component.name || model || type || '未知组件'}：依赖 rsh-flow-components 宿主业务适配`)
       }
       if (model) {

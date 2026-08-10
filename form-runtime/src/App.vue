@@ -26,6 +26,7 @@
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
 import { clonePlain, prepareTemplate, diffManualPaths } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
+import { clearRuntimeAuth, setRuntimeAuth } from './runtime/memoryAuth'
 
 export default {
   name: 'FormRuntimeApp',
@@ -104,6 +105,16 @@ export default {
           sid: String(payload.sid || ''),
           baseURL: String(payload.baseURL || '')
         })
+        // 目标组件继续走 rsh-flow-components 原生 Vuex/axios 链；认证只写当前 iframe 内存适配，销毁会话即清除。
+        setRuntimeAuth({
+          token: String(payload.sid || ''),
+          sid: String(payload.sid || ''),
+          userName: String(payload.accountName || '')
+        })
+        if (window.$store) {
+          window.$store.commit('user/SET_TOKEN', String(payload.sid || ''))
+          window.$store.commit('user/SET_USER_NAME', String(payload.accountName || ''))
+        }
         const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly)
         this.template = prepared.template
         this.unsupported = prepared.unsupported
@@ -207,7 +218,9 @@ export default {
       this.unsupported = []
       this.dirty = false
       this.loading = false
-      // SID 只存在于请求策略闭包；销毁会话后不保留到 storage、Vuex 或全局变量。
+      clearRuntimeAuth()
+      if (window.$store && window.$store._mutations['user/RESET_STATE']) window.$store.commit('user/RESET_STATE')
+      // SID 只存在于请求策略闭包和内存认证适配；销毁会话后不保留到 storage、Vuex 或全局变量。
     }
   }
 }

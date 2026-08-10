@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { diffManualPaths, prepareTemplate } from '../../../form-runtime/src/runtime/formTemplate.js'
+process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel'])
+const { diffManualPaths, prepareTemplate } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
 
@@ -38,6 +39,14 @@ test('未显式授权字段默认只读且人工覆盖路径递归稳定', () =>
     { title: '生成标题', nested: { amount: 10 }, rows: [{ id: 1 }] },
     { title: '人工标题', nested: { amount: 10 }, rows: [{ id: 2 }] },
   ), ['rows', 'title'])
+})
+
+test('真实入口已注册的目标组件不再被统一标记为 unsupported', () => {
+  const prepared = prepareTemplate({ list: [
+    { type: 'component', model: 'members', name: '人员多选', options: { componentName: 'person-mulSelect' } },
+  ] }, [{ field: 'members', power: 'edit' }], false)
+  assert.deepEqual(prepared.unsupported, [])
+  assert.equal(prepared.template.list[0].options.disabled, false)
 })
 
 test('版本化消息拒绝旧版本、空会话和未知命令', () => {
