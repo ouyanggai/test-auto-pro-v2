@@ -3,6 +3,7 @@ package backend_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,6 +284,64 @@ func TestPathConfigServiceRejectsLooseDateText(t *testing.T) {
 	invalid[len(invalid)-1].Value = `"2026/08/07 10:20"`
 	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174510", 1, invalid, nil); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
 		t.Fatalf("任意日期时间文本没有被拒绝：%v", err)
+	}
+}
+
+// TestPathConfigServiceValidatesAndStoresTemplatePersonSelection 验证人员候选必须属于当前模板并复用既有动作 JSON 按节点隔离保存。
+func TestPathConfigServiceValidatesAndStoresTemplatePersonSelection(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	tree := pathConfigTree()
+	tree.Child.ConditionNodes[0].Child.AuditConfig = &target.FlowNodeAuditConfig{
+		AuditType: "run_node_choose", Mode: "scramble",
+		Candidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}},
+	}
+	reader := &pathConfigReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FormFields: pathConfigFields()}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{}
+	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
+	personKey := analyzer.PathConfigPersonToken("approve-a")
+	invalid := []model.PathConfigActionValue{{Key: personKey, Action: `["forged-person"]`}}
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174511", 0, validPathConfigSubmission(), invalid); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
+		t.Fatalf("模板外人员候选没有被拒绝：%v", err)
+	}
+	selectedToken := analyzer.PathConfigPersonOptionToken("approve-a", "person-1")
+	valid := []model.PathConfigActionValue{{Key: personKey, Action: `["` + selectedToken + `"]`}}
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174512", 0, validPathConfigSubmission(), valid); err != nil {
+		t.Fatalf("合法人员候选保存失败：%v", err)
+	}
+	stored := configs.records[32].ActionValues[analyzer.PathConfigPersonStorageKey("approve-a")]
+	if stored != `["person-1"]` || strings.Contains(stored, selectedToken) {
+		t.Fatalf("人员选择没有转换为路径隔离的内部值：%s", stored)
+	}
+}
+
+// TestPathConfigServiceMarksLegacyConfigWithoutRequiredPersonAffected 验证旧配置缺少新证实的人员选择时要求重新确认。
+func TestPathConfigServiceMarksLegacyConfigWithoutRequiredPersonAffected(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	tree := pathConfigTree()
+	tree.Child.ConditionNodes[0].Child.AuditConfig = &target.FlowNodeAuditConfig{
+		AuditType: "run_node_choose", Mode: "scramble",
+		Candidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}},
+	}
+	reader := &pathConfigReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FormFields: pathConfigFields()}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{records: map[uint64]model.StoredPathConfig{32: {
+		PathID: 32, Revision: 1, Status: "configured",
+		FieldValues: map[string]map[string]string{
+			"approve-a": {"amount": "2500", "type": `"a"`},
+			"approve-b": {"note": `"备注内容"`},
+		},
+		ActionValues: map[string]string{"approve-a": "agree", "approve-b": "agree"},
+	}}}
+	configuration, err := newPathConfigService(t, plans, reader, paths, configs).Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("读取旧配置失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	if configuration.Status != "affected" || approval == nil || approval.Status != "affected" || !approval.Persons[0].Affected || !strings.Contains(approval.Persons[0].Note, "旧配置") {
+		t.Fatalf("旧配置缺少人员选择没有标记重新确认：configuration=%+v node=%+v", configuration, approval)
 	}
 }
 

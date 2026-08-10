@@ -170,7 +170,10 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 		"id": "start", "nodeName": "发起", "type": "start",
 		"childFlowNodeTemplate": map[string]any{
 			"id": "approval", "nodeName": "审批", "type": "common", "isSkip": true,
-			"flowNodeAuditConfig":            map[string]any{"auditType": "form_person", "type": "scramble", "formPersonFields": "amount"},
+			"flowNodeAuditConfig": map[string]any{
+				"auditType": "form_person", "type": "scramble", "formPersonFields": "amount",
+				"userVoList": []any{map[string]any{"id": "candidate-1", "realName": "候选人甲"}},
+			},
 			"flowNodeFieldPowerTemplateList": []any{map[string]any{"formTemplateId": "form-template", "formFieldTemplateId": "field-amount", "formFieldTemplateEnglishName": "amount", "fieldPower": "only_read"}},
 			"childFlowNodeTemplate":          map[string]any{"id": "end", "nodeName": "结束", "type": "end"},
 		},
@@ -911,6 +914,9 @@ func TestPathConfigurationSnapshotReadsTemplateDefaultsAndProxyValues(t *testing
 			field := snapshot.FormFields[0]
 			if field.Name != "申请金额" || field.FieldType != "doubleType" || field.DefaultValue != "1000" || !field.Required || field.ComponentType != "number" || field.ValueOrigin != "fromUser" || field.FieldStatus != "enable" {
 				t.Fatalf("字段详情没有按真实元数据解码：%+v", field)
+			}
+			if snapshot.Tree.Child == nil || snapshot.Tree.Child.AuditConfig == nil || len(snapshot.Tree.Child.AuditConfig.Candidates) != 1 || snapshot.Tree.Child.AuditConfig.Candidates[0].Name != "候选人甲" {
+				t.Fatalf("目标详情返回的受限人员候选没有解码：%+v", snapshot.Tree)
 			}
 			if test.source == "new" {
 				if snapshot.InstanceValues != nil {

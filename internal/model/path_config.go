@@ -17,11 +17,20 @@ type PathConfigSaveResult struct {
 
 // PathConfiguration 是单条已保存路径的完整配置工作台模型。
 type PathConfiguration struct {
-	Path     PathConfigPath    `json:"path"`
-	Revision uint64            `json:"revision"`
-	Status   string            `json:"status"`
-	Groups   []PathConfigGroup `json:"groups"`
-	Warnings []string          `json:"warnings"`
+	Path        PathConfigPath     `json:"path"`
+	Revision    uint64             `json:"revision"`
+	Status      string             `json:"status"`
+	Progress    PathConfigProgress `json:"progress"`
+	NextNodeKey string             `json:"nextNodeKey"`
+	Groups      []PathConfigGroup  `json:"groups"`
+	Warnings    []string           `json:"warnings"`
+}
+
+// PathConfigProgress 汇总当前路径节点配置进度，不把结构上下文节点误计为待处理项。
+type PathConfigProgress struct {
+	Total     int `json:"total"`
+	Completed int `json:"completed"`
+	Pending   int `json:"pending"`
 }
 
 // PathConfigGroup 表示主线或一条并行分支的节点顺序分组。
@@ -33,13 +42,40 @@ type PathConfigGroup struct {
 
 // PathConfigNode 是路径顺序上的一个业务节点及其字段、缺口和标准动作。
 type PathConfigNode struct {
-	Name        string             `json:"name"`
-	TypeName    string             `json:"typeName"`
-	Kind        string             `json:"kind"`
-	Fields      []PathConfigField  `json:"fields"`
-	Gaps        []PathConfigGap    `json:"gaps"`
-	Actions     []PathConfigAction `json:"actions"`
-	LineBlocked bool               `json:"lineBlocked"`
+	Key          string             `json:"key"`
+	Name         string             `json:"name"`
+	TypeName     string             `json:"typeName"`
+	Kind         string             `json:"kind"`
+	Status       string             `json:"status"`
+	StatusName   string             `json:"statusName"`
+	Fields       []PathConfigField  `json:"fields"`
+	Persons      []PathConfigPerson `json:"persons"`
+	Gaps         []PathConfigGap    `json:"gaps"`
+	Requirements []RequirementItem  `json:"requirements"`
+	Actions      []PathConfigAction `json:"actions"`
+	LineBlocked  bool               `json:"lineBlocked"`
+}
+
+// PathConfigPerson 是模板约束下的处理人呈现；只有 editable=true 时浏览器才允许回写候选。
+type PathConfigPerson struct {
+	Key      string                   `json:"key"`
+	Title    string                   `json:"title"`
+	Mode     string                   `json:"mode"`
+	Detail   string                   `json:"detail"`
+	Editable bool                     `json:"editable"`
+	Multiple bool                     `json:"multiple"`
+	Required bool                     `json:"required"`
+	MinCount int                      `json:"minCount"`
+	Selected []string                 `json:"selected"`
+	Options  []PathConfigPersonOption `json:"options"`
+	Affected bool                     `json:"affected"`
+	Note     string                   `json:"note"`
+}
+
+// PathConfigPersonOption 只公开合法候选的中文名称与不透明回写键。
+type PathConfigPersonOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
 }
 
 // PathConfigField 是可配置基础字段的安全展示与回写载体。

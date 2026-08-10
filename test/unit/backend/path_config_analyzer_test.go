@@ -178,6 +178,67 @@ func TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue(t *testing.T) {
 	}
 }
 
+// TestPathConfigAnalyzerProjectsOpaqueNodeStatusAndTemplatePersonRules 验证节点映射键、状态和模板受限人员候选按真实节点投影。
+func TestPathConfigAnalyzerProjectsOpaqueNodeStatusAndTemplatePersonRules(t *testing.T) {
+	tree := pathConfigTree()
+	approval := tree.Child.ConditionNodes[0].Child
+	approval.AuditConfig = &target.FlowNodeAuditConfig{
+		AuditType: "run_node_choose", Mode: "countersign", CountersignNum: intPointer(2),
+		Candidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}},
+	}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备人员配置路径失败：%v", err)
+	}
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, analysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("人员配置投影失败：%v", err)
+	}
+	approvalConfig := findConfigNode(configuration.Groups, "财务审批")
+	if approvalConfig == nil || approvalConfig.Key == "" || approvalConfig.Key == "approve-a" || approvalConfig.Status != "pending" || approvalConfig.StatusName != "待配置" {
+		t.Fatalf("节点不透明键或待配置状态不正确：%+v", approvalConfig)
+	}
+	if len(approvalConfig.Persons) != 1 {
+		t.Fatalf("审批节点缺少人员规则：%+v", approvalConfig.Persons)
+	}
+	person := approvalConfig.Persons[0]
+	if !person.Editable || person.Mode != "select" || !person.Multiple || person.MinCount != 2 || len(person.Options) != 2 || person.Options[0].Label != "张三" {
+		t.Fatalf("模板受限人员候选不正确：%+v", person)
+	}
+	if person.Options[0].Value == "person-1" || validation.ActionTokens[person.Key].CandidateTokens[person.Options[0].Value] != "person-1" {
+		t.Fatalf("人员候选未使用不透明回写键：person=%+v validation=%+v", person, validation.ActionTokens[person.Key])
+	}
+	if len(approvalConfig.Requirements) == 0 || configuration.NextNodeKey == "" || configuration.Progress.Pending == 0 {
+		t.Fatalf("节点要求或配置进度没有生成：node=%+v progress=%+v next=%q", approvalConfig, configuration.Progress, configuration.NextNodeKey)
+	}
+	assertPathConfigPublicSafety(t, configuration)
+}
+
+// TestPathConfigAnalyzerKeepsRuntimePersonRulesReadOnly 验证目标未返回合法候选时审批人自选保持运行时只读。
+func TestPathConfigAnalyzerKeepsRuntimePersonRulesReadOnly(t *testing.T) {
+	tree := pathConfigTree()
+	tree.Child.ConditionNodes[0].Child.AuditConfig = &target.FlowNodeAuditConfig{AuditType: "run_node_choose", Mode: "scramble"}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备运行时人员路径失败：%v", err)
+	}
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, analysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("运行时人员投影失败：%v", err)
+	}
+	person := findConfigNode(configuration.Groups, "财务审批").Persons[0]
+	if person.Editable || person.Mode != "runtime" || len(person.Options) != 0 || !strings.Contains(person.Detail, "真实运行节点") {
+		t.Fatalf("运行时人员被伪造成可选候选：%+v", person)
+	}
+	if len(validation.ActionTokens) != 3 {
+		t.Fatalf("运行时人员不应增加人员回写键：%+v", validation.ActionTokens)
+	}
+}
+
 // TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls 验证目标元数据的日期模式映射为严格控件类型。
 func TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls(t *testing.T) {
 	tree := pathConfigTree()
@@ -279,10 +340,12 @@ func pathConfigTree() *target.FlowNodeTemplate {
 	end := &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}
 	approvalB := &target.FlowNodeTemplate{
 		ID: "approve-b", Name: "部门审批", Type: "common",
+		AuditConfig: &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "部门负责人", Type: "personnel"}}},
 		FieldPowers: []target.FlowNodeFieldPower{{FormID: "form-a", FieldID: "field-note", EnglishName: "note", Power: "edit"}},
 	}
 	approvalA := &target.FlowNodeTemplate{
 		ID: "approve-a", Name: "财务审批", Type: "common",
+		AuditConfig: &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "财务负责人", Type: "personnel"}}},
 		FieldPowers: []target.FlowNodeFieldPower{
 			{FormID: "form-a", FieldID: "field-amount", EnglishName: "amount", Power: "edit"},
 			{FormID: "form-a", FieldID: "field-type", EnglishName: "type", Power: "edit"},
@@ -293,7 +356,7 @@ func pathConfigTree() *target.FlowNodeTemplate {
 		ID: "route", Name: "金额条件", Type: "condition", Child: end,
 		ConditionNodes: []target.FlowBranchTemplate{
 			{ID: "branch-a", Name: "大额", Sort: 1, Child: approvalA},
-			{ID: "branch-b", Name: "普通", Sort: 2, Child: &target.FlowNodeTemplate{ID: "approve-c", Name: "普通审批", Type: "common"}},
+			{ID: "branch-b", Name: "普通", Sort: 2, Child: &target.FlowNodeTemplate{ID: "approve-c", Name: "普通审批", Type: "common", AuditConfig: &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "审批负责人", Type: "personnel"}}}}},
 		},
 	}
 	return &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: route}
@@ -307,6 +370,9 @@ func pathConfigFields() []target.FormFieldDetail {
 		{FormID: "form-a", FormName: "申请表", FieldID: "field-note", Name: "备注", EnglishName: "note", FieldType: "stringType", ComponentType: "input"},
 	}
 }
+
+// intPointer 为人员会签测试构造明确人数指针。
+func intPointer(value int) *int { return &value }
 
 // findConfigNode 按节点中文名查找配置节点。
 func findConfigNode(groups []model.PathConfigGroup, name string) *model.PathConfigNode {
@@ -339,7 +405,7 @@ func assertPathConfigPublicSafety(t *testing.T, configuration model.PathConfigur
 		t.Fatalf("配置 DTO 无法序列化：%v", err)
 	}
 	text := string(encoded)
-	for _, forbidden := range []string{"approve-a", "approve-b", "approve-c", "route", "branch-a", "branch-b", "form-a", "field-amount", "field-type", "field-note", "englishName", "nodeId"} {
+	for _, forbidden := range []string{"approve-a", "approve-b", "approve-c", "route", "branch-a", "branch-b", "person-1", "person-2", "form-a", "field-amount", "field-type", "field-note", "englishName", "nodeId"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("配置公开 DTO 泄露内部标识 %q：%s", forbidden, text)
 		}

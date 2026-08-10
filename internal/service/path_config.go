@@ -50,7 +50,7 @@ type PathConfigReader interface {
 
 // PathConfigAnalyzer 把已验证路径投影为配置 DTO 与保存校验索引。
 type PathConfigAnalyzer interface {
-	Analyze(model.FlowGraph, *target.FlowNodeTemplate, []target.FormFieldDetail, model.ExecutionPath, model.ExecutionPathAnalysis, map[string]any, map[string]map[string]string, map[string]string) (model.PathConfiguration, analyzer.PathConfigValidation, error)
+	Analyze(model.FlowGraph, *target.FlowNodeTemplate, []target.FormFieldDetail, model.ExecutionPath, model.ExecutionPathAnalysis, map[string]any, map[string]map[string]string, map[string]string, ...bool) (model.PathConfiguration, analyzer.PathConfigValidation, error)
 }
 
 // PathConfigService 组织计划身份、路径归属、目标重验、配置投影与事务保存。
@@ -103,7 +103,7 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	}
 	configuration, _, err := s.configAnalyzer.Analyze(
 		analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis,
-		snapshot.InstanceValues, stored.FieldValues, stored.ActionValues,
+		snapshot.InstanceValues, stored.FieldValues, stored.ActionValues, found,
 	)
 	if err != nil {
 		return model.PathConfiguration{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
@@ -261,6 +261,10 @@ func validatePathConfigSubmission(validation analyzer.PathConfigValidation, fiel
 	if len(fields) > 500 || len(actions) > 500 {
 		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "路径配置项目数量过多"}
 	}
+	if len(validation.Blockers) > 0 {
+		// 当前模板存在无法安全配置的字段或人员时整份保存必须拒绝，不能把“部分完成”伪装成已配置。
+		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径节点仍有需要重新核对的配置项", Affected: validation.Blockers}
+	}
 	seenFields := make(map[string]bool, len(fields))
 	fieldValues := make(map[string]map[string]string)
 	affected := make([]model.PathConfigAffectedItem, 0, len(fields))
@@ -308,20 +312,61 @@ func validatePathConfigSubmission(validation analyzer.PathConfigValidation, fiel
 		if !exists {
 			return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径动作配置已失效，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: "动作", Reason: "动作已不属于当前路径或目标结构已变化"}}}
 		}
+		if target.Kind == "person_select" {
+			storedValue, reason := validatePathConfigPersonSelection(target, actionValue)
+			if reason != "" {
+				return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径人员配置不正确，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Name, Reason: reason}}}
+			}
+			actionValues[target.StorageKey] = storedValue
+			continue
+		}
 		if !validPathConfigAction(target.Kind, actionValue) {
 			return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径动作配置不正确，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: target.Name, Reason: "动作候选不合法"}}}
 		}
 		if target.Kind != "submit" {
-			actionValues[target.NodeID] = actionValue
+			actionValues[target.StorageKey] = actionValue
 		}
 	}
 	// 未显式提交的审批/协同动作按默认推荐同意保存，发起节点固定提交无需落库。
 	for key, target := range validation.ActionTokens {
 		if !seenActions[key] && target.Kind == "agree_disagree" {
-			actionValues[target.NodeID] = "agree"
+			actionValues[target.StorageKey] = "agree"
+		}
+		if !seenActions[key] && target.Kind == "person_select" && target.Required {
+			return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径人员配置不完整，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Name, Reason: "缺少合法处理人选择"}}}
 		}
 	}
 	return fieldValues, actionValues, nil
+}
+
+// validatePathConfigPersonSelection 校验不透明候选、人数下限和会签上限，并转换为内部候选 ID JSON。
+func validatePathConfigPersonSelection(target analyzer.PathConfigActionTarget, raw string) (string, string) {
+	var tokens []string
+	if err := json.Unmarshal([]byte(raw), &tokens); err != nil {
+		return "", "人员选择格式不正确"
+	}
+	if target.Required && len(tokens) < target.MinCount {
+		return "", "选择人数不足"
+	}
+	if target.MaxCount > 0 && len(tokens) > target.MaxCount {
+		return "", "选择人数超过模板限制"
+	}
+	seen := make(map[string]bool, len(tokens))
+	selectedIDs := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		candidateID, exists := target.CandidateTokens[token]
+		if token == "" || !exists || seen[token] {
+			return "", "包含不属于当前模板的人员候选"
+		}
+		seen[token] = true
+		selectedIDs = append(selectedIDs, candidateID)
+	}
+	encoded, err := json.Marshal(selectedIDs)
+	if err != nil {
+		return "", "人员选择无法保存"
+	}
+	return string(encoded), ""
 }
 
 // validateConfigFieldValue 按字段类型校验必填、类型、选项与值边界，返回可公开的中文原因。

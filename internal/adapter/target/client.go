@@ -360,6 +360,7 @@ type rawFlowNodeAuditConfig struct {
 	FormPersonField string               `json:"formPersonFields"`
 	Details         []rawFlowAuditDetail `json:"flowNodeDetailConfigList"`
 	Scopes          []rawFlowAuditScope  `json:"nodeAuditScopeList"`
+	Candidates      []rawFlowAuditUser   `json:"userVoList"`
 }
 
 type rawFlowAuditDetail struct {
@@ -369,6 +370,14 @@ type rawFlowAuditDetail struct {
 
 type rawFlowAuditScope struct {
 	Type string `json:"type"`
+}
+
+// rawFlowAuditUser 只解析目标节点配置已经返回的候选身份与中文名称，不额外查询全员目录。
+type rawFlowAuditUser struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	RealName    string `json:"realName"`
+	DisplayName string `json:"displayName"`
 }
 
 type rawFlowNodeFieldPower struct {
@@ -986,6 +995,16 @@ func convertFlowAuditConfig(raw *rawFlowNodeAuditConfig) *FlowNodeAuditConfig {
 	}
 	for _, scope := range raw.Scopes {
 		result.Scopes = append(result.Scopes, FlowAuditScope{Type: scope.Type})
+	}
+	seenCandidates := make(map[string]bool, len(raw.Candidates))
+	for _, candidate := range raw.Candidates {
+		id := strings.TrimSpace(candidate.ID)
+		name := firstNonEmpty(candidate.Name, candidate.RealName, candidate.DisplayName)
+		if id == "" || strings.TrimSpace(name) == "" || seenCandidates[id] {
+			continue
+		}
+		seenCandidates[id] = true
+		result.Candidates = append(result.Candidates, FlowAuditCandidate{ID: id, Name: strings.TrimSpace(name)})
 	}
 	return result
 }

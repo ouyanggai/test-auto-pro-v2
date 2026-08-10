@@ -42,15 +42,43 @@ type PathConfigFieldTarget struct {
 
 // PathConfigActionTarget 保存校验所需的最小内部动作定位，不进入公开响应。
 type PathConfigActionTarget struct {
-	NodeID string
-	Kind   string
-	Name   string
+	NodeID          string
+	StorageKey      string
+	Kind            string
+	Name            string
+	CandidateTokens map[string]string
+	Required        bool
+	MinCount        int
+	MaxCount        int
 }
 
 // PathConfigValidation 是不透明回写键到当前真实节点与字段的内部映射。
 type PathConfigValidation struct {
 	FieldTokens  map[string]PathConfigFieldTarget
 	ActionTokens map[string]PathConfigActionTarget
+	Blockers     []model.PathConfigAffectedItem
+}
+
+const pathConfigPersonStoragePrefix = "person:"
+
+// PathConfigNodeToken 生成配置节点与真实流程节点之间的稳定不透明映射键。
+func PathConfigNodeToken(nodeID string) string {
+	return pathConfigToken("node", nodeID, "configuration")
+}
+
+// PathConfigPersonToken 生成节点人员选择的不透明回写键。
+func PathConfigPersonToken(nodeID string) string {
+	return pathConfigToken("person", nodeID, "selection")
+}
+
+// PathConfigPersonOptionToken 生成单个合法人员候选的不透明回写键。
+func PathConfigPersonOptionToken(nodeID, candidateID string) string {
+	return pathConfigToken("person-option", nodeID, candidateID)
+}
+
+// PathConfigPersonStorageKey 生成配置表 action_values 内部的人员命名空间键，避免与节点动作键冲突。
+func PathConfigPersonStorageKey(nodeID string) string {
+	return pathConfigPersonStoragePrefix + strings.TrimSpace(nodeID)
 }
 
 // PathConfigFieldToken 生成字段的不透明回写键；同一节点同一字段在每次响应中保持稳定。
@@ -79,9 +107,14 @@ func (a *PathConfigAnalyzer) Analyze(
 	instanceValues map[string]any,
 	storedFields map[string]map[string]string,
 	storedActions map[string]string,
+	storedPresent ...bool,
 ) (model.PathConfiguration, PathConfigValidation, error) {
 	if tree == nil || !analysis.Complete || len(graph.EntryNodeIDs) == 0 {
 		return model.PathConfiguration{}, PathConfigValidation{}, ErrExecutionPathInvalid
+	}
+	hasStored := len(storedPresent) > 0 && storedPresent[0]
+	if !hasStored {
+		hasStored = len(storedFields) > 0 || len(storedActions) > 0
 	}
 	projection := &pathConfigProjection{
 		graphNodes:    make(map[string]model.FlowGraphNode, len(graph.Nodes)),
@@ -90,7 +123,7 @@ func (a *PathConfigAnalyzer) Analyze(
 		reachableEdge: make(map[string]bool, len(analysis.ReachableEdgeIDs)),
 		choices:       make(map[string]string, len(path.Choices)),
 		fields:        fields, instanceValues: instanceValues,
-		storedFields: storedFields, storedActions: storedActions,
+		storedFields: storedFields, storedActions: storedActions, storedPresent: hasStored,
 		groupByKey: make(map[string]int), visited: make(map[string]bool),
 		validation: PathConfigValidation{
 			FieldTokens:  make(map[string]PathConfigFieldTarget),
@@ -112,6 +145,7 @@ func (a *PathConfigAnalyzer) Analyze(
 	if err := collectTargetNodes(tree, projection.targetNodes, make(map[string]bool)); err != nil {
 		return model.PathConfiguration{}, PathConfigValidation{}, err
 	}
+	projection.requirements = newConfigRequirementProjection(projection)
 	if err := projection.projectEntries(graph.EntryNodeIDs); err != nil {
 		return model.PathConfiguration{}, PathConfigValidation{}, err
 	}
@@ -121,6 +155,7 @@ func (a *PathConfigAnalyzer) Analyze(
 		Groups:   projection.groups,
 		Warnings: nonNilStrings(projection.warnings),
 	}
+	result.Progress, result.NextNodeKey = summarizePathConfigProgress(result.Groups)
 	if projection.affected {
 		result.Status = "affected"
 		result.Warnings = append(result.Warnings, "目标结构已变化，部分字段需要重新核对")
@@ -138,6 +173,8 @@ type pathConfigProjection struct {
 	instanceValues map[string]any
 	storedFields   map[string]map[string]string
 	storedActions  map[string]string
+	storedPresent  bool
+	requirements   *requirementProjection
 	groups         []model.PathConfigGroup
 	groupByKey     map[string]int
 	visited        map[string]bool
@@ -145,6 +182,45 @@ type pathConfigProjection struct {
 	validation     PathConfigValidation
 	warnings       []string
 	affected       bool
+}
+
+// newConfigRequirementProjection 复用 F-006 的同一条件、人员和约束翻译规则，避免配置页另建一套业务推导。
+func newConfigRequirementProjection(config *pathConfigProjection) *requirementProjection {
+	fields := make([]target.FormFieldMetadata, 0, len(config.fields))
+	for _, field := range config.fields {
+		fields = append(fields, target.FormFieldMetadata{
+			FormID: field.FormID, FormName: field.FormName, FieldID: field.FieldID,
+			Name: field.Name, EnglishName: field.EnglishName,
+		})
+	}
+	return &requirementProjection{
+		graphNodes: config.graphNodes, targetNodes: config.targetNodes, outgoing: config.outgoing,
+		reachableEdge: config.reachableEdge, choices: config.choices, fields: fields,
+	}
+}
+
+// summarizePathConfigProgress 只统计真正需要工具侧处理的节点，并返回第一个待处理节点的不透明键。
+func summarizePathConfigProgress(groups []model.PathConfigGroup) (model.PathConfigProgress, string) {
+	progress := model.PathConfigProgress{}
+	nextKey := ""
+	for _, group := range groups {
+		for _, node := range group.Nodes {
+			switch node.Status {
+			case "not_required", "runtime":
+				continue
+			case "configured":
+				progress.Total++
+				progress.Completed++
+			default:
+				progress.Total++
+				progress.Pending++
+				if nextKey == "" {
+					nextKey = node.Key
+				}
+			}
+		}
+	}
+	return progress, nextKey
 }
 
 // projectEntries 与路径要求分析一致：单入口走主线，多入口各自形成并行分组并按共同汇合回主线。
@@ -333,23 +409,89 @@ func (p *pathConfigProjection) reachableOutgoing(nodeID string) []model.FlowGrap
 // nodeConfig 按节点类型组合字段、缺口与标准动作。
 func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *target.FlowNodeTemplate, blocked bool) model.PathConfigNode {
 	result := model.PathConfigNode{
-		Name: graphNode.Name, TypeName: graphNode.TypeName, Kind: graphNode.Type,
-		LineBlocked: blocked, Actions: []model.PathConfigAction{},
+		Key: PathConfigNodeToken(graphNode.ID), Name: graphNode.Name, TypeName: graphNode.TypeName, Kind: graphNode.Type,
+		LineBlocked: blocked, Actions: []model.PathConfigAction{}, Persons: []model.PathConfigPerson{}, Requirements: []model.RequirementItem{},
 	}
 	result.Fields, result.Gaps = p.fieldConfig(node)
+	if p.requirements != nil {
+		result.Requirements = p.requirements.nodeRequirements(graphNode, node)
+	}
 	switch graphNode.Type {
 	case "start":
 		result.Actions = append(result.Actions, p.submitAction(graphNode.ID))
 	case "common", "synergy":
+		result.Persons = append(result.Persons, p.personConfig(graphNode.ID, node))
 		result.Actions = append(result.Actions, p.approvalAction(graphNode.ID, graphNode.Name))
 	}
+	if !blocked {
+		for _, gap := range result.Gaps {
+			p.validation.Blockers = append(p.validation.Blockers, model.PathConfigAffectedItem{Kind: "field", Name: gap.Name, Reason: gap.Reason})
+		}
+		for _, person := range result.Persons {
+			if person.Mode == "review" {
+				p.validation.Blockers = append(p.validation.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: person.Detail})
+			}
+		}
+	}
+	result.Status, result.StatusName = pathConfigNodeStatus(result, p.storedPresent)
 	return result
+}
+
+// pathConfigNodeStatus 按节点可保存项、运行时规则和失效事实派生画布状态，不把结构节点伪装成待配置。
+func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string, string) {
+	if node.LineBlocked {
+		return "not_required", "无需配置"
+	}
+	for _, field := range node.Fields {
+		if field.Affected {
+			return "affected", "配置失效"
+		}
+	}
+	for _, person := range node.Persons {
+		if person.Affected {
+			return "affected", "配置失效"
+		}
+	}
+	if len(node.Gaps) > 0 {
+		return "partial", "部分完成"
+	}
+	hasRuntime := false
+	hasEditablePerson := false
+	personIncomplete := false
+	for _, person := range node.Persons {
+		if person.Mode == "review" {
+			return "partial", "部分完成"
+		}
+		if person.Mode == "runtime" {
+			hasRuntime = true
+		}
+		if person.Editable {
+			hasEditablePerson = true
+			if person.Required && len(person.Selected) < person.MinCount {
+				personIncomplete = true
+			}
+		}
+	}
+	hasConfigItem := len(node.Fields) > 0 || len(node.Actions) > 0 || hasEditablePerson
+	if !hasConfigItem {
+		if hasRuntime {
+			return "runtime", "运行时确定"
+		}
+		return "not_required", "无需配置"
+	}
+	if !storedPresent {
+		return "pending", "待配置"
+	}
+	if personIncomplete {
+		return "partial", "部分完成"
+	}
+	return "configured", "已完成"
 }
 
 // submitAction 发起节点固定提交，不提供其他候选。
 func (p *pathConfigProjection) submitAction(nodeID string) model.PathConfigAction {
 	key := PathConfigActionToken(nodeID, "submit")
-	p.validation.ActionTokens[key] = PathConfigActionTarget{NodeID: nodeID, Kind: "submit", Name: "发起动作"}
+	p.validation.ActionTokens[key] = PathConfigActionTarget{NodeID: nodeID, StorageKey: nodeID, Kind: "submit", Name: "发起动作"}
 	return model.PathConfigAction{
 		Key: key, Kind: "submit", Label: "发起动作", Current: "submit", Default: "submit",
 		Options: []model.PathConfigActionOption{{Value: "submit", Label: "提交"}},
@@ -363,7 +505,7 @@ func (p *pathConfigProjection) approvalAction(nodeID, nodeName string) model.Pat
 	if current == "" {
 		current = "agree"
 	}
-	p.validation.ActionTokens[key] = PathConfigActionTarget{NodeID: nodeID, Kind: "agree_disagree", Name: nodeName}
+	p.validation.ActionTokens[key] = PathConfigActionTarget{NodeID: nodeID, StorageKey: nodeID, Kind: "agree_disagree", Name: nodeName}
 	return model.PathConfigAction{
 		Key: key, Kind: "agree_disagree", Label: "处理结果", Current: current, Default: "agree",
 		Options: []model.PathConfigActionOption{
@@ -372,6 +514,93 @@ func (p *pathConfigProjection) approvalAction(nodeID, nodeName string) model.Pat
 		},
 		DisagreeWarning: "选择不同意会提前结束或改变后续线路，保存后不再按原路径继续",
 	}
+}
+
+// personConfig 按目标审批类型生成只读规则或受限候选；目标没有返回候选时绝不回退全员目录。
+func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNodeTemplate) model.PathConfigPerson {
+	config := node.AuditConfig
+	if config == nil || strings.TrimSpace(config.AuditType) == "" {
+		return model.PathConfigPerson{Title: "处理人规则", Mode: "review", Detail: "当前节点缺少处理人配置", Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+	}
+	title, requirementStatus, known := auditTypePresentation(config.AuditType)
+	detail := auditModeText(config.Mode, config.CountersignNum)
+	if names := auditDetailNames(config.Details); len(names) > 0 {
+		detail += "；范围：" + strings.Join(names, "、")
+	} else if len(config.Scopes) > 0 || len(config.Details) > 0 {
+		detail += fmt.Sprintf("；已配置 %d 项范围", len(config.Scopes)+len(config.Details))
+	}
+	if !known || !auditModeValid(config.Mode, config.CountersignNum) {
+		return model.PathConfigPerson{Title: title, Mode: "review", Detail: detail + "；处理规则需要人工核对", Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+	}
+	if strings.TrimSpace(config.AuditType) != "run_node_choose" {
+		mode := "fixed"
+		if requirementStatus == model.RequirementRuntime || requirementStatus == model.RequirementPending {
+			mode = "runtime"
+		}
+		return model.PathConfigPerson{Title: title, Mode: mode, Detail: detail, Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+	}
+	if len(config.Candidates) == 0 {
+		// 参考实现的审批人自选候选依赖当前流程实例与批次；详情未返回候选时只能标记运行时确定。
+		return model.PathConfigPerson{Title: title, Mode: "runtime", Detail: detail + "；合法候选需在真实运行节点加载", Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+	}
+	key := PathConfigPersonToken(nodeID)
+	options := make([]model.PathConfigPersonOption, 0, len(config.Candidates))
+	candidateTokens := make(map[string]string, len(config.Candidates))
+	rawToToken := make(map[string]string, len(config.Candidates))
+	for _, candidate := range config.Candidates {
+		token := PathConfigPersonOptionToken(nodeID, candidate.ID)
+		candidateTokens[token] = candidate.ID
+		rawToToken[candidate.ID] = token
+		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token})
+	}
+	multiple := strings.TrimSpace(config.Mode) == "countersign"
+	minCount := 1
+	maxCount := 1
+	if multiple {
+		maxCount = len(options)
+		if config.CountersignNum != nil && *config.CountersignNum == -1 {
+			minCount = len(options)
+		} else if config.CountersignNum != nil && *config.CountersignNum > 0 {
+			minCount = *config.CountersignNum
+		}
+	}
+	required := node.IsSkip == nil || !*node.IsSkip
+	selected, affected, note := pathConfigStoredPersonSelection(p.storedActions[PathConfigPersonStorageKey(nodeID)], rawToToken)
+	if p.storedPresent && len(selected) == 0 && required && !affected {
+		affected = true
+		note = "旧配置缺少人员选择，需要重新确认"
+	}
+	if affected {
+		p.affected = true
+	}
+	p.validation.ActionTokens[key] = PathConfigActionTarget{
+		NodeID: nodeID, StorageKey: PathConfigPersonStorageKey(nodeID), Kind: "person_select", Name: title,
+		CandidateTokens: candidateTokens, Required: required, MinCount: minCount, MaxCount: maxCount,
+	}
+	return model.PathConfigPerson{
+		Key: key, Title: title, Mode: "select", Detail: detail, Editable: true, Multiple: multiple,
+		Required: required, MinCount: minCount, Selected: selected, Options: options, Affected: affected, Note: note,
+	}
+}
+
+// pathConfigStoredPersonSelection 把内部候选 ID 恢复为当前响应的不透明键，失效候选只标记影响而不猜测替代项。
+func pathConfigStoredPersonSelection(raw string, rawToToken map[string]string) ([]string, bool, string) {
+	if strings.TrimSpace(raw) == "" {
+		return []string{}, false, ""
+	}
+	var stored []string
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return []string{}, true, "已保存人员数据无法识别，需要重新确认"
+	}
+	selected := make([]string, 0, len(stored))
+	for _, candidateID := range stored {
+		token, exists := rawToToken[candidateID]
+		if !exists {
+			return selected, true, "目标人员候选已变化，需要重新选择"
+		}
+		selected = append(selected, token)
+	}
+	return selected, false, ""
 }
 
 // fieldConfig 投影节点字段权限允许编辑且可可靠映射的基础字段，其余项目转为明确缺口。

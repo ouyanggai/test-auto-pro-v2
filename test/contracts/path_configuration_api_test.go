@@ -52,11 +52,16 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 	stub := &stubPathConfigurationService{
 		configuration: model.PathConfiguration{
 			Path: model.PathConfigPath{SequenceNo: 2, Name: "财务路径"}, Revision: 3, Status: "configured",
+			Progress: model.PathConfigProgress{Total: 1, Completed: 1}, NextNodeKey: "",
 			Groups: []model.PathConfigGroup{{Title: "主线", Kind: "main", Nodes: []model.PathConfigNode{{
-				Name: "财务审批", TypeName: "审批", Kind: "common",
+				Key: "opaque-node-key", Name: "财务审批", TypeName: "审批", Kind: "common", Status: "configured", StatusName: "已完成",
 				Fields: []model.PathConfigField{{
 					Key: "opaque-field-key", Name: "申请金额", Type: "number", Required: true,
 					Value: "2500", Options: []model.PathConfigOption{}, Editable: true,
+				}},
+				Persons: []model.PathConfigPerson{{
+					Key: "opaque-person-key", Title: "审批人自选", Mode: "select", Editable: true, Required: true,
+					Selected: []string{"opaque-person-option"}, Options: []model.PathConfigPersonOption{{Label: "候选人甲", Value: "opaque-person-option"}},
 				}},
 				Actions: []model.PathConfigAction{{Key: "opaque-action-key", Kind: "agree_disagree", Label: "处理结果", Current: "agree", Default: "agree", Options: []model.PathConfigActionOption{{Value: "agree", Label: "同意"}, {Value: "disagree", Label: "不同意"}}}},
 			}}}},
@@ -70,12 +75,12 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 		t.Fatalf("配置读取状态不正确：%d %s", get.Code, get.Body.String())
 	}
 	getBody := get.Body.String()
-	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-field-key"`, `"申请金额"`, `"agree"`} {
+	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-node-key"`, `"statusName":"已完成"`, `"opaque-field-key"`, `"申请金额"`, `"候选人甲"`, `"agree"`} {
 		if !strings.Contains(getBody, want) {
 			t.Fatalf("配置读取响应缺少 %s：%s", want, getBody)
 		}
 	}
-	for _, forbidden := range []string{"englishName", "nodeId", "branchId", "flowProxyId", "formTemplateId", "sid", "password", "templateData", "formDataMongoVo"} {
+	for _, forbidden := range []string{"candidate-internal-id", "englishName", "nodeId", "branchId", "flowProxyId", "formTemplateId", "sid", "password", "templateData", "formDataMongoVo"} {
 		if strings.Contains(getBody, forbidden) {
 			t.Fatalf("配置读取响应泄露禁止字段 %s：%s", forbidden, getBody)
 		}

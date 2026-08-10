@@ -114,6 +114,7 @@ type FlowNodeAuditConfig struct {
 	FormPersonField string
 	Details         []FlowAuditDetail
 	Scopes          []FlowAuditScope
+	Candidates      []FlowAuditCandidate
 }
 
 // FlowAuditDetail 只保留可展示名称，业务 ID 仅用于内部计数且不会公开。
@@ -125,6 +126,12 @@ type FlowAuditDetail struct {
 // FlowAuditScope 只保留范围类型，目标业务 ID 不进入公开响应。
 type FlowAuditScope struct {
 	Type string
+}
+
+// FlowAuditCandidate 是目标详情已经返回的受限人员候选，仅在后端内部参与不透明键映射。
+type FlowAuditCandidate struct {
+	ID   string
+	Name string
 }
 
 // FlowNodeFieldPower 记录节点字段权限与表单归属提示。
