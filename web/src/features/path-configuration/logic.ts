@@ -228,7 +228,7 @@ export function buildPathConfigSavePayload(configuration: PathConfiguration, dra
   return { fields, actions }
 }
 
-// allEditableFieldsFilled 判断必填字段是否都有值，用于保存前即时提示。
+// allEditableFieldsFilled 判断必填字段和人员人数约束是否满足，用于保存前即时提示。
 export function allEditableFieldsFilled(configuration: PathConfiguration, draft: PathConfigDraft): { missing: string[], complete: boolean } {
   const missing: string[] = []
   for (const group of configuration.groups) {
@@ -240,9 +240,12 @@ export function allEditableFieldsFilled(configuration: PathConfiguration, draft:
         if (empty) missing.push(field.name)
       }
       for (const person of node.persons) {
-        if (!person.editable || !person.required) continue
+        if (!person.editable) continue
         const selected = draft.persons[person.key] ?? []
-        if (selected.length < person.minCount) missing.push(person.title)
+        // 可跳过节点允许保持零选择；主动选择后仍须一次满足模板最低人数，避免前端放行不完整会签组。
+        const requiredEmpty = person.required && selected.length === 0
+        const partialSelection = selected.length > 0 && selected.length < person.minCount
+        if (requiredEmpty || partialSelection) missing.push(person.title)
       }
     }
   }

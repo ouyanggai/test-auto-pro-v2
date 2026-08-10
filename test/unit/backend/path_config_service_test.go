@@ -2,7 +2,9 @@ package backend_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -313,6 +315,52 @@ func TestPathConfigServiceValidatesAndStoresTemplatePersonSelection(t *testing.T
 	stored := configs.records[32].ActionValues[analyzer.PathConfigPersonStorageKey("approve-a")]
 	if stored != `["person-1"]` || strings.Contains(stored, selectedToken) {
 		t.Fatalf("人员选择没有转换为路径隔离的内部值：%s", stored)
+	}
+}
+
+// TestPathConfigServiceValidatesOptionalPersonMinimum 验证可跳过节点仅允许零选择或一次满足模板最低人数。
+func TestPathConfigServiceValidatesOptionalPersonMinimum(t *testing.T) {
+	tests := []struct {
+		name        string
+		isSkip      bool
+		selectedIDs []string
+		wantInvalid bool
+	}{
+		{name: "可跳过零选择", isSkip: true, selectedIDs: []string{}},
+		{name: "可跳过但一人不足", isSkip: true, selectedIDs: []string{"person-1"}, wantInvalid: true},
+		{name: "可跳过且两人满足", isSkip: true, selectedIDs: []string{"person-1", "person-2"}},
+		{name: "必选零选择仍拒绝", isSkip: false, selectedIDs: []string{}, wantInvalid: true},
+	}
+	for index, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			plans := newMemoryPlanRepository()
+			plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+			tree := pathConfigTree()
+			tree.Child.ConditionNodes[0].Child.IsSkip = &testCase.isSkip
+			tree.Child.ConditionNodes[0].Child.AuditConfig = &target.FlowNodeAuditConfig{
+				AuditType: "run_node_choose", Mode: "countersign", CountersignNum: intPointer(2),
+				Candidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}, {ID: "person-3", Name: "王五"}},
+			}
+			reader := &pathConfigReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FormFields: pathConfigFields()}}
+			paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+			serviceUnderTest := newPathConfigService(t, plans, reader, paths, &memoryPathConfigRepository{})
+			selectedTokens := make([]string, 0, len(testCase.selectedIDs))
+			for _, personID := range testCase.selectedIDs {
+				selectedTokens = append(selectedTokens, analyzer.PathConfigPersonOptionToken("approve-a", personID))
+			}
+			encoded, err := json.Marshal(selectedTokens)
+			if err != nil {
+				t.Fatalf("人员候选测试数据无法编码：%v", err)
+			}
+			actions := []model.PathConfigActionValue{{Key: analyzer.PathConfigPersonToken("approve-a"), Action: string(encoded)}}
+			_, saveErr := serviceUnderTest.Save(context.Background(), 7, 32, fmt.Sprintf("123e4567-e89b-12d3-a456-4266141746%02d", index), 0, validPathConfigSubmission(), actions)
+			if testCase.wantInvalid && !service.IsPathConfigErrorKind(saveErr, service.PathConfigErrorInvalid) {
+				t.Fatalf("不满足最低人数的选择没有被拒绝：%v", saveErr)
+			}
+			if !testCase.wantInvalid && saveErr != nil {
+				t.Fatalf("合法人员选择保存失败：%v", saveErr)
+			}
+		})
 	}
 }
 

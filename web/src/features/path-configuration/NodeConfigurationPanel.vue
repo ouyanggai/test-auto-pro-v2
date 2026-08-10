@@ -272,7 +272,7 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
         <n-alert v-else-if="savedSuccessfully" type="success" :show-icon="false" size="small">
           路径节点配置已保存
         </n-alert>
-        <span v-else-if="missingCount">还有 {{ missingCount }} 个必填项未完成</span>
+        <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足模板要求</span>
         <span v-else>保存会校验整条路径的当前目标模板</span>
         <div class="node-configuration-panel__footer-actions">
           <template v-if="savedSuccessfully">

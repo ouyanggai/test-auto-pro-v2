@@ -345,10 +345,15 @@ func validatePathConfigPersonSelection(target analyzer.PathConfigActionTarget, r
 	if err := json.Unmarshal([]byte(raw), &tokens); err != nil {
 		return "", "人员选择格式不正确"
 	}
-	if target.Required && len(tokens) < target.MinCount {
+	selectionCount := len(tokens)
+	// 可跳过只允许完整的零选择；一旦用户主动选人，模板最低人数仍然生效，不能保存半组会签人员。
+	if target.Required && selectionCount == 0 {
 		return "", "选择人数不足"
 	}
-	if target.MaxCount > 0 && len(tokens) > target.MaxCount {
+	if selectionCount > 0 && selectionCount < target.MinCount {
+		return "", "选择人数不足"
+	}
+	if target.MaxCount > 0 && selectionCount > target.MaxCount {
 		return "", "选择人数超过模板限制"
 	}
 	seen := make(map[string]bool, len(tokens))

@@ -151,6 +151,28 @@ test('必填字段缺失时提示具体中文名称', () => {
   assert.deepEqual(allEditableFieldsFilled(configuration, draft).missing, ['审批人'])
 })
 
+test('可跳过人员零选择合法但主动选择仍满足最低人数', () => {
+  const optionalConfiguration = structuredClone(configuration)
+  const person = optionalConfiguration.groups[0].nodes[1].persons[0]
+  person.required = false
+  person.multiple = true
+  person.minCount = 2
+
+  const draft = initPathConfigDraft(optionalConfiguration)
+  draft.persons[person.key] = []
+  assert.equal(allEditableFieldsFilled(optionalConfiguration, draft).complete, true)
+
+  draft.persons[person.key] = ['person-a']
+  assert.deepEqual(allEditableFieldsFilled(optionalConfiguration, draft).missing, ['审批人'])
+
+  draft.persons[person.key] = ['person-a', 'person-b']
+  assert.equal(allEditableFieldsFilled(optionalConfiguration, draft).complete, true)
+
+  person.required = true
+  draft.persons[person.key] = []
+  assert.deepEqual(allEditableFieldsFilled(optionalConfiguration, draft).missing, ['审批人'])
+})
+
 test('配置节点不透明键与真实图节点稳定绑定且不暴露节点 ID', async () => {
   const graph = {
     planId: '1', targetName: '流程', flowSource: 'new', entryNodeIds: ['start'], warnings: [],
