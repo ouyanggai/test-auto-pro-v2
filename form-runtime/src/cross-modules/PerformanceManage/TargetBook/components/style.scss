@@ -1,0 +1,334 @@
+$inputbcolor: #d4d4d4;
+$bcolor: #666;
+$back: #333;
+$fontColor: #333;
+::v-deep .elFormExpanded{
+  width: 100%;
+  .el-form-item__content{
+    width: 100%;
+  }
+}
+.el-table{
+  ::v-deep tbody td{
+    padding: 1.5px;
+    .cell{
+      padding: 1.5px;
+      button{
+        padding: 0;
+      }
+    }
+  }
+  ::v-deep .el-textarea textarea{
+    // border: none;
+    // background-color: transparent;
+    // padding: 0px;
+    // resize: none;
+    padding:3px 2px;
+  }
+  ::v-deep .el-input input{
+    // border: none;
+    // background-color: transparent;
+    // padding: 0px;
+    padding:3px 2px;
+  }
+}
+.target-book-container {
+  ::-webkit-scrollbar{
+    // width: 6px; // 注释了，加了这个会导致表格线条错位
+  }
+  ::v-deep .el-textarea__inner::-webkit-scrollbar {
+    width: 6px;
+  }
+  // overflow: hidden; // 因为转发流程暂时注释
+  height: 100%;
+
+  .btn-box {
+    border: 1px solid $bcolor;
+    border-bottom: 0;
+    padding: 5px 10px;
+  }
+
+  ::v-deep .el-form-item__error {
+    padding-top: 0;
+    margin-top: 3px;
+  }
+
+  .grade-container {
+    border: 1px solid $bcolor;
+    line-height: 40px;
+
+    .weight {
+      span {
+        display: inline-block;
+        width: 100px;
+      }
+    }
+
+    .grade {
+      width: 150px;
+      text-align: center;
+      border-left: 1px solid $bcolor;
+    }
+  }
+}
+
+h3 {
+  text-align: center;
+}
+
+.el-table td.el-table__cell div {
+  margin-right: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.footer-bt {
+  text-align: center;
+  background: transparent;
+  width: 100%;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 1000;
+  pointer-events: none;
+  .footer-inner {
+    background: #fff;
+    padding: 25px 0;
+    pointer-events: all;
+  }
+}
+
+::v-deep .el-input.is-disabled .el-input__inner,
+::v-deep .el-textarea.is-disabled .el-textarea__inner {
+  color: #333 !important;
+}
+
+::v-deep input::-webkit-outer-spin-button,
+::v-deep input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+::v-deep .el-input.is-disabled .el-input-group__append{
+  // border:none !important;
+  // background: #fff;
+}
+::v-deep .box-card.el-card {
+  border: none;
+}
+::v-deep .box-card {
+  h3 {
+      text-align: center;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 0 16px 0;
+
+      .el-form-item {
+        margin-bottom: 0;
+        margin-right: 0;
+        font-size: 16px;
+      }
+
+    }
+  .el-input-group__append{
+    padding:0 5px !important;
+    color:$fontColor;
+  }
+  .el-table .el-form-item--mini .el-form-item__content {
+    width: 100%;
+  }
+
+  .el-form-item__label {
+    color: $back !important;
+    font-weight: 900 !important;
+  }
+
+  .el-table thead {
+    color: $back !important;
+    font-size: 14px;
+  }
+
+  .el-textarea.is-disabled .el-textarea__inner,
+  .el-input.is-disabled .el-input__inner {
+    background: #fff;
+    border: none;
+    resize: none;
+
+  }
+
+  .el-input__inner,
+  .el-textarea__inner {
+    background: #fff;
+    border-color: $inputbcolor;
+    color: $fontColor;
+    font-size: 14px;
+  }
+
+  .el-input__inner:focus,
+  .el-textarea__inner:focus {
+    border-color: #1989FA;
+  }
+
+  .el-form-item.is-error .el-input__inner,
+  .el-form-item.is-error .el-textarea__inner {
+    border-color: #ff0000;
+  }
+
+  // .el-textarea__inner:focus
+  .el-table th.el-table__cell.is-leaf,
+  .el-table td.el-table__cell {
+    border-color: $bcolor;
+    background: #fff;
+  }
+
+  .el-table--group,
+  .el-table--border {
+    border-color: $bcolor;
+  }
+
+  .el-table--border::after,
+  .el-table::before {
+    background: $bcolor;
+  }
+
+  .el-table thead.is-group th.el-table__cell {
+    border-color: $bcolor;
+    background: #fff;
+  }
+  .el-input.is-disabled .el-input__icon{
+    display: none;
+  }
+  .el-input input {
+    font-size: 14px;
+  }
+
+  .top-form {
+    border: 1px solid $bcolor;
+    font-weight: 900;
+    display: flex;
+    margin-bottom:5px;
+    .el-form-item {
+      margin-bottom: 0;
+      padding: 5px 3px 5px 0;
+      padding-left: 10px;
+      border-right: 1px solid $bcolor;
+      margin-right:0;
+    }
+    .el-input__inner{
+        padding:0 5px !important;
+    }
+  }
+
+  .current-row td {
+    background: rgba(230, 230, 240, 0.8) !important;
+  }
+
+  .el-table__row td:first-child {
+    cursor: pointer;
+  }
+
+  .el-date-editor input {
+    font-weight: bold;
+    padding-right: 0px;
+    padding-left: 25px;
+    text-align: center;
+  }
+
+  .el-table__body .cell {
+    padding: 1.5px;
+    font-size: 14px;
+    color: $fontColor;
+  }
+
+  .el-card__body {
+    padding: 10px;
+  }
+
+  .el-table th.el-table__cell>.cell {
+    padding-left: 5px;
+    padding-right: 5px;
+  }
+
+  .el-table__header,
+  .el-table__body,
+  .el-table__footer {
+    font-weight: 900;
+    font-size: 15px;
+  }
+
+  .file-div {
+    border: 1px solid $bcolor;
+    border-bottom: none;
+    display: flex;
+    align-items: center;
+
+    .title {
+      width: 151px;
+      border-right: 1px solid $bcolor;
+      padding: 8px 0 8px 10px;
+      color: $fontColor;
+      font-weight: bold;
+    }
+
+    .el-form-item--mini.el-form-item {
+      margin-bottom: 0;
+    }
+
+    .el-form-item__error {
+      top: 5px;
+      left: 100%;
+      width: 110px;
+      font-weight: bold;
+    }
+
+    .attach-ul .attach-li {
+      margin-top: 0px;
+    }
+  }
+
+  .el-textarea .el-input__count {
+    font-size: 10px;
+    bottom: -4px;
+    font-weight: 100;
+  }
+
+  #perform-footer {
+    background: #fff;
+    z-index: 1;
+  }
+  .weight-class input{
+    text-align:right !important;
+  }
+  .danwei .el-form-item__content{
+    width: calc(100% - 100px);
+  }
+}
+.zoom {
+  display: flex;
+  position: absolute;
+  top: 6px;
+  right: 0;
+  z-index: 1;
+
+  .zoom-button {
+    color: #409EFF;
+    font-size: 22px;
+    padding: 0 4px;
+    cursor: pointer;
+    user-select: none;
+    width: 30px;
+    text-align: center;
+  }
+
+  .zoom-button.disabled {
+    cursor: not-allowed;
+  }
+
+  >span {
+    display: inline-block;
+    width: 50px;
+    text-align: center;
+    line-height: 36px;
+  }
+}

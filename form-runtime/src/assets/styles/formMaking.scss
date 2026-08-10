@@ -1,0 +1,81 @@
+.fm-form {
+  margin: auto;
+
+  .el-date-editor.el-input,
+  .el-date-editor.el-input__inner {
+    width: 100px !important;
+  }
+
+  .el-icon-date:before,
+  .el-icon-time:before {
+    display: none;
+  }
+
+  .el-textarea__inner {
+    height: 100%;
+    overflow: hidden;
+    resize: none !important;
+  }
+
+  .el-form-item .el-form-item__label {
+    line-height: 20px !important;
+    width: 100% !important;
+    text-align: left;
+    font-size: 12px;
+    padding: 0 !important;
+  }
+
+  .fm-form-item .el-form-item .el-form-item__label:last-child {
+    font-size: 14px;
+    font-weight: 600;
+    text-align: right !important;
+  }
+
+  table {
+    border-collapse: collapse;
+  }
+
+  .fm-report-table__table .fm-report-table__td {
+    padding: 3px !important;
+  }
+
+  td {
+    vertical-align: middle;
+  }
+
+  input {
+    outline: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0;
+  }
+
+  textarea {
+    border: none !important;
+    padding: 0 !important;
+  }
+
+  .title {
+    text-align: center;
+    font-weight: 600;
+    height: 28px;
+
+    label {
+      font-size: 20px !important;
+      text-align: center !important;
+    }
+  }
+
+  .el-form-item {
+    margin-bottom: 0 !important;
+  }
+
+  .item-status {
+    display: none;
+  }
+
+  .el-button.is-disabled {
+    display: none;
+  }
+
+}

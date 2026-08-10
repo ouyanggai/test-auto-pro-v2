@@ -1,0 +1,57 @@
+.form-container{
+  margin: 0 auto;
+}
+.title{
+  text-align: center;
+}
+.attach-div{
+  margin: 5px auto;
+}
+.padding{
+  padding: 5px 0;
+}
+.right{
+  text-align: right;
+}
+.card-div{
+  margin-bottom: 10px;
+  position: relative;
+  padding: 15px 0;
+}
+.delete{
+  position: absolute;
+  right: 10px;
+  bottom: 2px;
+}
+.footer-bt {
+  text-align: center;
+  background: transparent;
+  width: 100%;
+  position: absolute;
+  left: 0;
+  bottom: 16px;
+  z-index: 1000;
+  padding: 15px 10px;
+
+  .footer-inner {
+
+    background: #fff;
+  }
+}
+::v-deep .el-dialog__footer{
+  text-align: center;
+}
+::v-deep  .el-form-item__error{
+  z-index: 100;
+  left: 10px;
+}
+.col-div{
+  display: flex;
+  align-items: center;
+}
+::v-deep .el-input.is-disabled .el-input__inner{
+  color: #555;
+}
+::v-deep .el-radio.is-disabled.is-checked .el-radio__label{
+  color: #555;
+}

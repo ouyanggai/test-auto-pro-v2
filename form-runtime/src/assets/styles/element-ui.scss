@@ -1,0 +1,93 @@
+// cover some element-ui styles
+
+.el-breadcrumb__inner,
+.el-breadcrumb__inner a {
+  font-weight: 400 !important;
+}
+
+.el-upload {
+  input[type="file"] {
+    display: none !important;
+  }
+}
+
+.el-upload__input {
+  display: none;
+}
+
+
+// to fixed https://github.com/ElemeFE/element/issues/2461
+.el-dialog {
+  transform: none;
+  left: 0;
+  position: relative;
+  margin: 0 auto;
+  width: 500px;
+
+  .el-dialog__body {
+    // max-height: 60vh;
+    overflow-y: auto;
+  }
+
+  &.is-fullscreen {
+    width: 95%;
+    height: 95%;
+    margin: 20px auto;
+
+    .el-dialog__body {
+      max-height: 80vh;
+      min-height: 80vh;
+      overflow-y: auto;
+    }
+  }
+}
+
+// refine element ui upload
+.upload-container {
+  .el-upload {
+    width: 100%;
+
+    .el-upload-dragger {
+      width: 100%;
+      height: 200px;
+    }
+  }
+}
+
+// dropdown
+.el-dropdown-menu {
+  a {
+    display: block
+  }
+}
+
+// to fix el-date-picker css style
+.el-range-separator {
+  box-sizing: content-box;
+}
+
+.el-table__body tr.current-row>td {
+  background-color: #d9ecff;
+}
+
+.el-table--enable-row-hover .el-table__body tr:hover>td {
+  background-color: #d9ecff;
+}
+
+/* 改变主题色变量 */
+$--color-primary: #1989FA;
+
+/* 改变 icon 字体路径变量，必需 */
+$--font-path: '~element-ui/lib/theme-chalk/fonts';
+
+@import "~element-ui/packages/theme-chalk/src/index";
+
+// 这个改的是下拉和输入框置灰时内部的字体，因为手机浏览的时候颜色太浅，所以加深颜色。直接这样设置会影响其他地方的样式
+// .el-textarea.is-disabled .el-textarea__inner,
+// .el-select .el-input .el-select__caret,
+// .el-input.is-disabled .el-input__inner {
+//   color: #606266 !important;
+//   -webkit-text-fill-color: #606266 !important;
+//   -webkit-opacity: 1;
+//   opacity: 1;
+// }
