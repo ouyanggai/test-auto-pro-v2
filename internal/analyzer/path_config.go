@@ -578,7 +578,11 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 		// 存量配置必须按当前模板重新核对人数，覆盖误存记录和模板人数变更，状态派生只消费这一处结果。
 		if issue := PathConfigPersonSelectionIssue(required, minCount, maxCount, len(selected)); issue != "" {
 			affected = true
-			note = issue + "，需要重新确认"
+			if required && len(selected) == 0 {
+				note = "旧配置缺少人员选择，需要重新确认"
+			} else {
+				note = issue + "，需要重新确认"
+			}
 		}
 	}
 	if affected {
