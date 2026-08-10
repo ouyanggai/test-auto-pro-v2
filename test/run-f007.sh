@@ -14,11 +14,15 @@ go test -count=1 ./test/contracts -run '^(TestPathConfigurationAPI|TestPathRequi
 printf '验证 F-007 三类来源字段详情与实例现值读取及 F-006 回归\n'
 go test -count=1 ./test/integration -run '^(TestPathConfigurationSnapshot|TestFlowRequirementSnapshotReadsSourceSpecificFormMetadata|TestFlowRequirementReadPreservesTimeoutCancellationAndResponseLimit|TestFlowRequirementReadSessionExpiryReplaysWholeChainOnce|TestFlowTreeReadUsesExactSourceLookupBeforeDetails|TestFormRuntimeFixedSourceSnapshot)'
 
-if [[ -n "${PLAN_DB_HOST:-}" ]] && [[ -n "${PLAN_DB_USER:-}" ]] && [[ -n "${PLAN_DB_PASSWORD:-}" ]]; then
+if [[ -f "${project_root}/.env.local" ]]; then
+  printf '验证 F-007 配置表迁移、事务、幂等、级联与维护任务持久化（本机忽略配置）\n'
+  TEST_AUTO_PRO_PLAN_DB_ENV_FILE="${project_root}/.env.local" go test -count=1 ./test/integration -run '^(TestPathConfigurationMySQL|TestFormRuntimeMaintenanceMySQL)'
+elif [[ -n "${PLAN_DB_HOST:-}" ]] && [[ -n "${PLAN_DB_USER:-}" ]] && [[ -n "${PLAN_DB_PASSWORD:-}" ]]; then
   printf '验证 F-007 配置表迁移、事务、幂等与级联\n'
   go test -count=1 ./test/integration -run '^(TestPathConfigurationMySQL|TestFormRuntimeMaintenanceMySQL)'
 else
-  echo '本机未配置 PLAN_DB_*，跳过 MySQL 集成测试'
+  echo '本机未配置 PLAN_DB_* 或 .env.local，无法执行 F-007 核心 MySQL 集成测试' >&2
+  exit 1
 fi
 
 printf '验证 F-007 前端配置逻辑、F-005 路径逻辑与 F-004 图布局必要回归\n'
