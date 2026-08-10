@@ -9,15 +9,28 @@ files=(
   internal/adapter/target/types.go
   internal/analyzer/path_config.go
   internal/api/health.go
+  internal/api/form_runtime_maintenance.go
   internal/api/path_configuration.go
   internal/model/path_config.go
   internal/repository/path_config.go
   internal/repository/mysql/path_config_repository.go
   internal/service/path_config.go
   internal/service/target_read.go
+  internal/formruntimemaintenance/model.go
+  internal/formruntimemaintenance/source.go
+  internal/formruntimemaintenance/sync.go
+  internal/formruntimemaintenance/memory_store.go
+  internal/formruntimemaintenance/mysql_store.go
+  internal/formruntimemaintenance/log_store.go
+  internal/formruntimemaintenance/service.go
+  internal/formruntimemaintenance/pipeline.go
+  internal/formruntimemaintenance/pnpm_operator.go
+  test/contracts/form_runtime_maintenance_api_test.go
   test/contracts/path_configuration_api_test.go
   test/integration/path_config_mysql_integration_test.go
   test/integration/target_read_integration_test.go
+  test/integration/form_runtime_maintenance_mysql_integration_test.go
+  test/unit/backend/form_runtime_maintenance_test.go
   test/unit/backend/path_config_analyzer_test.go
   test/unit/backend/path_config_service_test.go
 )

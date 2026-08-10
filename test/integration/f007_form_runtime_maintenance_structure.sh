@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+manifest="${project_root}/form-runtime/sync-manifest.json"
+runtime_main="${project_root}/form-runtime/src/main.js"
+vite_config="${project_root}/form-runtime/vite.config.js"
+maintenance_view="${project_root}/web/src/views/FormRuntimeMaintenanceView.vue"
+router="${project_root}/web/src/router/index.ts"
+settings="${project_root}/web/src/views/SettingsView.vue"
+
+grep -Fq '"repository": "rsh-flow-components"' "${manifest}"
+grep -Fq '"sourceBranch": "master"' "${manifest}"
+grep -Fq '"sourceHead": "bff4ef8b938db5578c3f7eab1f482a4e9388917c"' "${manifest}"
+grep -Fq '"target": "upstream/src"' "${manifest}"
+grep -Fq '"protectedLocalPaths"' "${manifest}"
+grep -Fq '".npmrc"' "${manifest}"
+
+test -f "${project_root}/form-runtime/upstream/src/views/GroupApproveManage/Submitted/components/OtherSteps2.vue"
+test -f "${project_root}/form-runtime/upstream/src/components/Custom/components/PersonMulSelect/index.vue"
+test -f "${project_root}/form-runtime/vendor/form-making/FormMaking.common.js"
+test -f "${project_root}/form-runtime/src/runtime/requestPolicy.js"
+if test -e "${project_root}/form-runtime/upstream/.npmrc"; then
+  echo 'F-007 upstream 原样区不得复制含凭证的 .npmrc' >&2
+  exit 1
+fi
+grep -Fq "@vendor/FormMaking.common" "${runtime_main}"
+grep -Fq "targetComponents" "${runtime_main}"
+grep -Fq "FORM_RUNTIME_OUT_DIR" "${vite_config}"
+
+grep -Fq "/settings/form-runtime" "${router}"
+grep -Fq "表单运行时维护" "${settings}"
+grep -Fq "一键同步并重启" "${maintenance_view}"
+grep -Fq "固定来源" "${maintenance_view}"
+grep -Fq "恢复结果" "${maintenance_view}"
+grep -Fq "在线日志" "${maintenance_view}"
+if grep -Eq '<(n-)?input|v-model.*(path|branch|command)' "${maintenance_view}"; then
+  echo 'F-007 维护页不得提供任意来源、分支或命令输入' >&2
+  exit 1
+fi
+
+grep -Fq 'form-runtime-sync:' "${project_root}/Makefile"
+grep -Fq 'form-runtime-status:' "${project_root}/Makefile"
+grep -Fq '/api/form-runtime-maintenance/jobs' "${project_root}/scripts/form-runtime-maintenance.sh"
+
+for stage in INSPECT SYNC SYNC_CHECK BUILD RESTART VERIFY COMPLETED; do
+  grep -Fq "${stage}" "${project_root}/internal/formruntimemaintenance/model.go"
+done
+grep -Fq "fencing_token" "${project_root}/internal/repository/mysql/migrations/010_create_form_runtime_sync_jobs.sql"
+grep -Fq "active_guard" "${project_root}/internal/repository/mysql/migrations/010_create_form_runtime_sync_jobs.sql"
+
+echo 'F-007 表单运行时固定来源、原样区保护、pnpm 候选流水线和维护入口结构检查通过'

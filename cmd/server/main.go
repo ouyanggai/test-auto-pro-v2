@@ -4,13 +4,16 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/api"
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/formruntimemaintenance"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
 	"test-auto-pro-v2/internal/service"
 )
@@ -41,15 +44,67 @@ func main() {
 		planService, targetReader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),
 		analyzer.NewPathConfigAnalyzer(), pathRepository, pathConfigRepository,
 	)
+	workspaceRoot := os.Getenv("TEST_AUTO_PRO_WORKSPACE_ROOT")
+	if workspaceRoot == "" {
+		workspaceRoot, err = os.Getwd()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	workspaceRoot, err = filepath.Abs(filepath.Clean(workspaceRoot))
+	if err != nil {
+		log.Fatal(err)
+	}
+	manifestPath := filepath.Join(workspaceRoot, "form-runtime", "sync-manifest.json")
+	manifest, err := formruntimemaintenance.LoadManifest(workspaceRoot, manifestPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	inspector, err := formruntimemaintenance.NewGitSourceInspector(workspaceRoot, manifest, time.Now)
+	if err != nil {
+		log.Fatal(err)
+	}
+	syncer, err := formruntimemaintenance.NewSyncer(workspaceRoot, inspector.SourceRoot(), manifest)
+	if err != nil {
+		log.Fatal(err)
+	}
+	maintenanceRoot := filepath.Join(workspaceRoot, ".runtime", "form-runtime-maintenance")
+	maintenanceLogs, err := formruntimemaintenance.NewFileLogStore(filepath.Join(maintenanceRoot, "logs"), 512*1024)
+	if err != nil {
+		log.Fatal(err)
+	}
+	operator, err := formruntimemaintenance.NewPnpmOperator(formruntimemaintenance.PnpmOperatorOptions{
+		WorkspaceRoot: workspaceRoot,
+		RuntimeDir:    filepath.Join(workspaceRoot, "form-runtime"),
+		LiveDir:       filepath.Join(workspaceRoot, "web", "dist", "form-runtime"),
+		StateRoot:     maintenanceRoot,
+		HealthURL:     os.Getenv("FORM_RUNTIME_HEALTH_URL"),
+	}, syncer, nil, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	maintenanceStore := formruntimemaintenance.NewMySQLStore(planDatabase.DB, time.Now)
+	maintenanceService := formruntimemaintenance.NewService(inspector, maintenanceStore, maintenanceLogs)
+	maintenancePipeline := formruntimemaintenance.NewPipeline(maintenanceStore, inspector, operator, maintenanceLogs, formruntimemaintenance.WorkerOptions{
+		WorkerID: "server-maintenance-worker", LeaseDuration: 2 * time.Minute, RenewalInterval: 30 * time.Second,
+	})
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithConfigurationServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService),
+		Handler:           api.NewHandlerWithMaintenanceServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	log.Printf("后端服务监听 %s", server.Addr)
 	shutdownContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	maintenanceRunner := formruntimemaintenance.NewRunner(maintenancePipeline, time.Second).WithErrorHandler(func(runErr error) {
+		log.Printf("表单运行时维护任务失败: %v", runErr)
+	})
+	go func() {
+		if runErr := maintenanceRunner.Run(shutdownContext); runErr != nil {
+			log.Printf("表单运行时维护 Worker 停止: %v", runErr)
+		}
+	}()
 	serverError := make(chan error, 1)
 	go func() {
 		serverError <- server.ListenAndServe()

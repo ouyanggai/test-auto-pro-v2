@@ -1,0 +1,31 @@
+{
+  "repository": "rsh-flow-components",
+  "sourceRoot": "参考代码/rsh-flow-components",
+  "sourceRemote": "git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git",
+  "sourceBranch": "master",
+  "sourceHead": "bff4ef8b938db5578c3f7eab1f482a4e9388917c",
+  "mappings": [
+    { "source": "src", "target": "upstream/src", "type": "directory" },
+    { "source": "public", "target": "upstream/public", "type": "directory" },
+    { "source": "package.json", "target": "upstream/package.json", "type": "file" },
+    { "source": "package-lock.json", "target": "upstream/package-lock.json", "type": "file" },
+    { "source": "babel.config.js", "target": "upstream/babel.config.js", "type": "file" },
+    { "source": "vue.config.js", "target": "upstream/vue.config.js", "type": "file" },
+    { "source": "README.md", "target": "upstream/README.md", "type": "file" },
+    { "source": ".npmignore", "target": "upstream/.npmignore", "type": "file" }
+  ],
+  "protectedLocalPaths": [
+    "src",
+    "vendor",
+    "index.html",
+    "package.json",
+    "vite.config.js",
+    "sync-manifest.json"
+  ],
+  "excludedSourcePaths": [
+    ".git",
+    ".npmrc",
+    "node_modules",
+    "dist"
+  ]
+}

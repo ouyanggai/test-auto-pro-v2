@@ -6,6 +6,7 @@ const PlanPathsView = () => import('../views/PlanPathsView.vue')
 const PlanPathConfigurationView = () => import('../views/PlanPathConfigurationView.vue')
 const RunsView = () => import('../views/RunsView.vue')
 const SettingsView = () => import('../views/SettingsView.vue')
+const FormRuntimeMaintenanceView = () => import('../views/FormRuntimeMaintenanceView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -17,6 +18,7 @@ const router = createRouter({
     { path: '/plans/:planId/paths/:pathId/configure', component: PlanPathConfigurationView },
     { path: '/runs', component: RunsView },
     { path: '/settings', component: SettingsView },
+    { path: '/settings/form-runtime', component: FormRuntimeMaintenanceView },
   ],
 })
 

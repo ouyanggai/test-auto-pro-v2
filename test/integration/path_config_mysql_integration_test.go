@@ -170,11 +170,14 @@ func assertF007Tables(t *testing.T, db *sql.DB) {
 		t.Fatalf("F-007 临时库缺少配置表：count=%d err=%v", count, err)
 	}
 	var migrations int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 9 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 10 {
 		t.Fatalf("F-007 迁移版本数量不正确：%d err=%v", migrations, err)
 	}
 	var columns int
 	if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'test_execution_path_configs' AND column_name IN ('node_revision','form_revision','form_values','form_status','generated_field_paths','manual_override_paths')").Scan(&columns); err != nil || columns != 6 {
 		t.Fatalf("F-007 节点与表单分域列不完整：count=%d err=%v", columns, err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'test_form_runtime_sync_jobs'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("F-007 临时库缺少表单运行时维护任务表：count=%d err=%v", count, err)
 	}
 }

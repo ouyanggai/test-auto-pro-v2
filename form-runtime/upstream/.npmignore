@@ -1,0 +1,20 @@
+# Development files
+node_modules/
+.DS_Store
+.omc/
+.claude/
+
+# Build output (we publish source, not dist)
+dist/
+
+# Large asset directories
+src/assets/images/
+src/assets/icons/svg/
+
+# Examples and docs
+examples/
+
+# Config files not needed at runtime
+sync-manifest.json
+vue.config.js
+babel.config.js

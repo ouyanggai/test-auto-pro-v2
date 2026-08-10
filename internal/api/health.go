@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/formruntimemaintenance"
 	"test-auto-pro-v2/internal/service"
 )
 
@@ -42,6 +44,11 @@ func NewHandlerWithRequirementServices(reader TargetReader, plans PlanService, g
 
 // NewHandlerWithConfigurationServices 组装包含 F-007 路径配置读写端点的完整 HTTP 路由。
 func NewHandlerWithConfigurationServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService) http.Handler {
+	return NewHandlerWithMaintenanceServices(reader, plans, graphs, paths, requirements, configurations, unavailableFormRuntimeMaintenanceService{})
+}
+
+// NewHandlerWithMaintenanceServices 组装 F-007 表单运行时维护端点，仍不允许请求指定来源或命令。
+func NewHandlerWithMaintenanceServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -50,7 +57,35 @@ func NewHandlerWithConfigurationServices(reader TargetReader, plans PlanService,
 	registerExecutionPathRoutes(mux, paths)
 	registerPathRequirementRoute(mux, requirements)
 	registerPathConfigurationRoutes(mux, configurations)
+	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
 	return mux
+}
+
+type unavailableFormRuntimeMaintenanceService struct{}
+
+// InspectSource 在默认测试处理器未注入维护服务时返回稳定不可用错误。
+func (unavailableFormRuntimeMaintenanceService) InspectSource(context.Context) (formruntimemaintenance.SourceState, error) {
+	return formruntimemaintenance.SourceState{}, formruntimemaintenance.ErrSourceInvalid
+}
+
+// CreateJob 在默认测试处理器未注入维护服务时返回稳定不可用错误。
+func (unavailableFormRuntimeMaintenanceService) CreateJob(context.Context) (formruntimemaintenance.Job, error) {
+	return formruntimemaintenance.Job{}, formruntimemaintenance.ErrSourceInvalid
+}
+
+// GetJob 在默认测试处理器未注入维护服务时返回稳定不可用错误。
+func (unavailableFormRuntimeMaintenanceService) GetJob(context.Context, uint64) (formruntimemaintenance.Job, error) {
+	return formruntimemaintenance.Job{}, formruntimemaintenance.ErrJobNotFound
+}
+
+// LatestJob 在默认测试处理器未注入维护服务时返回稳定不可用错误。
+func (unavailableFormRuntimeMaintenanceService) LatestJob(context.Context) (formruntimemaintenance.Job, error) {
+	return formruntimemaintenance.Job{}, formruntimemaintenance.ErrJobNotFound
+}
+
+// GetJobLog 在默认测试处理器未注入维护服务时返回稳定不可用错误。
+func (unavailableFormRuntimeMaintenanceService) GetJobLog(context.Context, uint64) (formruntimemaintenance.Log, error) {
+	return formruntimemaintenance.Log{}, formruntimemaintenance.ErrLogNotFound
 }
 
 // health 返回无时间戳的稳定健康响应。
