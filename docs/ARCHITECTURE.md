@@ -131,8 +131,8 @@
 - 路径准备卡片通过 `useThemeVars` 映射 Naive UI 的 `cardColor`、`bodyColor`、`borderColor`、`dividerColor` 和主次文字色，避免从 `NSpin` 等父组件误继承 `--n-color` 主色。路径列表独立滚动并限制在首屏剩余空间；流程区为纵向 flex，画布占用标题与错误提示之外的剩余高度。
 - 后端新增路径配置服务和配置仓储，所有请求先校验计划、路径归属及计划仍处于未运行状态，再按计划保存的账号、流程来源和目标对象重新读取当前真实配置。要求分析、可编辑字段投影和动作目录在同一次目标只读会话中完成，目标会话失效时整条读取链最多重放一次。
 - 公开节点配置 DTO 按真实节点分组，只返回路径摘要、节点顺序与类型、逐节点配置状态、人员规则、合法候选、动作候选和缺口状态。节点右侧面板不再接收或渲染表单字段；配置键仍由后端生成且只用于本次回写。
-- 新增独立 `form-runtime/` 前端工作区，以 `参考代码/rsh-flow-components` 固定提交 `bff4ef8b938db5578c3f7eab1f482a4e9388917c` 的完整 tracked 源码副本为上游原样区，保留真实 `fm-generate-form`、字段权限、刷新、虚拟字段和目标自定义组件源码。`form-runtime/upstream/` 只由受控同步覆盖；`form-runtime/src/`、`vendor/`、构建入口和同步清单属于本项目适配层，禁止同步静默覆盖。`.npmrc`、Git 元数据、依赖和构建产物明确排除。
-- 独立入口不挂载旧工作台路由、登录页或 Vuex，也不调用目标流程写接口。主应用以带版本、会话标识和请求标识的 `postMessage` 协议向 iframe 发送完整模板、权限、初始值、模式及当前已验证账号缓存的 SID/目标只读网关；消息必须核对 origin、source、协议版本和 session，销毁后拒绝迟到消息。SID 只存在于当前会话请求策略闭包，不写入数据库、Git 或浏览器长期存储；目标提交、草稿和已知业务写端点在运行时侧再次阻断。
+- 独立 `form-runtime/` 前端工作区以 `runtime-source/` 作为唯一实际 dev/build 源码：完整保留 `参考代码/rsh-flow-components` 的 tracked 源码、原生同步资产、真实 `fm-generate-form`、字段权限、刷新、虚拟字段、20 个目标自定义组件、Vuex/router/axios 与样式。`form-runtime/src/`、根 `scripts/`、构建配置和 iframe/SID/写阻断属于本项目保护层；`.npmrc`、Git 元数据、依赖、构建产物与凭证明确排除。
+- 独立入口沿用目标组件依赖的原生 Vuex/router/axios，但主应用只进入本项目追加的 `/test-auto-form` 配置路由；旧登录页和其他工作台页面不作为用户入口，不安全的上游 `postMessage` 初始化被本地适配禁用，也不调用目标流程写接口。主应用以带版本、会话标识和请求标识的协议发送完整模板、权限、初始值、模式及当前已验证账号缓存的 SID/目标只读网关；消息必须核对 origin、source、协议版本和 session，销毁后拒绝迟到消息。SID 只存在于当前会话内存认证与请求策略，不写入数据库、Git 或浏览器长期存储；目标提交、草稿和已知业务写端点在运行时侧再次阻断。
 - 开发时根 `pnpm dev:f` 同时以前台持有方式启动主 Vue 3 页面和表单运行时并保持热更新；主页面使用稳定的 `/form-runtime/` 地址加载 iframe。生产构建先构建运行时，再把产物放入主站固定子目录，不依赖旧 `rsh-flow-components` 服务在线。
 - 新发起从当前模板读取完整 FormMaking 模板和默认模型，并叠加该路径工具侧保存的测试数据；已发、待发按精确实例 ID 读取当前 `formDataMongoVo.data`，本切片只读展示。目标 envelope 不进入 postMessage；目标组件只有在独立入口中证明可在受控只读请求策略下运行时才注册，仍依赖旧宿主路由、Vuex、业务写钩子或外部服务的组件明确报告 unsupported，禁止降级为普通控件。
 - FormMaking 会话加载模板后按目标字段权限执行 `refresh`，隐藏或禁用不可编辑字段并移除其必填校验；保存先执行 `getData(true)`，再以 `getValues()` 的完整对象为权威数据。运行时不得执行 `beforeSubmitAndDraft` 等可能产生目标业务写入的钩子。
@@ -148,9 +148,10 @@
 
 ### form-runtime 受控维护流水线
 
-- 维护语义迁移自旧 V2 ADR-0016，固定状态机为 `INSPECT → SYNC → SYNC_CHECK → BUILD → RESTART → VERIFY → COMPLETED`。当前项目不复制旧 Docker/Colima 部署：`PnpmOperator` 把候选构建到 `.runtime/form-runtime-maintenance/versions/candidate-job-N`，构建和静态健康检查完成前不触碰 `web/dist/form-runtime`；切换使用同父目录替换并持久化 current 指针，切换或最终健康失败时从 previous 版本目录恢复并再次核验。
-- 同步来源固定为 `参考代码/rsh-flow-components` 的规范远端、`master` 分支和清单记录的精确 HEAD。更新参考仓库仍先经过 `make refs-sync`/`make refs-status` 的干净、分支和快进约束；维护 API 不接受路径、分支、HEAD、构建命令或环境选择。执行前再次复核任务创建时的来源快照，来源变脏或变化即失败。
-- `form-runtime/sync-manifest.json` 是唯一同步映射：当前来源本身已是独立组件仓库，因此完整镜像其 tracked `src/`、`public/` 和构建元数据，比旧 V2 从完整业务应用抽取的 35 项映射更直接；仍保留显式映射、内容摘要 `SYNC_CHECK`、未知 upstream 修改拒绝和本地适配保护语义。状态/试运行通过 `make form-runtime-status`，一键任务通过 `make form-runtime-sync` 或系统设置页触发，两者都不能覆盖参数。
+- 维护语义迁移自旧 V2 ADR-0016，固定状态机为 `INSPECT → SYNC → SYNC_CHECK → BUILD → RESTART → VERIFY → COMPLETED`。当前项目不复制旧 Docker/Colima 部署：`PnpmOperator` 在任务工作区同步完整候选源码，并构建到 `.runtime/form-runtime-maintenance/versions/candidate-job-N`；静态健康完成前不触碰 current。切换同时替换 `runtime-source/` 与 `web/dist/form-runtime` 并持久化 current 指针，切换或最终 HTTP 健康失败时从 previous 源码/产物版本恢复并再次核验。
+- 同步来源固定为 `参考代码/rsh-flow-components` 的规范仓库、远端和 `master`，但不把历史 HEAD 永久写死在代码中。更新参考仓库仍先经过 `make refs-sync`/`make refs-status` 的干净、分支和快进约束；维护任务创建时持久化当刻 HEAD，Worker 执行前复核同一快照。维护 API 不接受路径、分支、HEAD、构建命令或环境选择，任务中途来源变脏或变化即失败。
+- 候选同步与构建在 `.runtime/form-runtime-maintenance` 隔离目录完成，实际构建显式消费候选 `runtime-source/`。切换时同时替换 19001 Vue CLI 监听的真实源码和生产 `web/dist/form-runtime` 产物；`runtime-health.json` 公开非敏感仓库/分支/HEAD/摘要，运行中的 HTTP 地址必须报告同一快照才能完成。候选失败不影响 current，切换或健康失败恢复源码与产物 previous 并再次核验。
+- `form-runtime/sync-manifest.json` 是唯一项目同步映射：当前来源本身已是独立组件仓库，因此完整镜像其 tracked `src/`、`public/`、原生同步清单/脚本和构建资产；旧 V2/上游的 35 项生成映射继续随源码保留。项目同步执行逐文件 `SYNC_CHECK`、完整目标摘要、本地适配保护和实际运行源码未知修改拒绝。状态通过 `make form-runtime-status`，一键任务通过 `make form-runtime-sync` 或系统设置页触发，两者都不能覆盖参数。
 - `test_form_runtime_sync_jobs` 是维护任务正确性来源，数据库唯一键保证单活动任务。Worker 使用租约续期与 fencing token；旧 Worker 不能推进阶段或完成任务，进程重启后从持久化的 `RESTART/VERIFY` 和 candidate/previous 事实恢复，不能重新同步或覆盖既有候选。在线日志写入运行目录，API 最多返回最新 512 KiB 并标记截断，SID 与表单数据不会进入维护任务或日志。
 
 ## 数据与部署演进

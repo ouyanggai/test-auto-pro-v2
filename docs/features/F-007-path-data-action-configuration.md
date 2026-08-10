@@ -1,6 +1,6 @@
 # F-007 已保存路径的节点可视化配置
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“路径生成与节点配置边界”“路径节点可视化配置行为（F-007）”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-005 执行路径选择与持久化”“F-006 路径要求分析”“F-007 已保存路径的节点可视化配置”
 - 重新规划时间：2026-08-10
@@ -64,8 +64,8 @@
 
 - `PlanPathsView` 继续负责计划详情、路径列表和现有 F-005 路径编辑入口；无路径时引导配置路径，有路径时提供逐条“配置节点”。
 - `PlanPathConfigurationView` 负责节点画布和独立表单工作区的协调；`NodeConfigurationPanel` 只消费人员、动作和规则，不再渲染表单字段。
-- 新建 `form-runtime/` 独立前端包，以 `参考代码/rsh-flow-components` 固定提交 `bff4ef8b938db5578c3f7eab1f482a4e9388917c` 的完整 tracked 源码副本为上游原样区，保留真实 `fm-generate-form`、权限/刷新行为、虚拟字段和目标自定义组件源码；主 Vue 3 只通过 iframe 和版本化 `postMessage` 契约通信。
-- `form-runtime/upstream/` 只由受控同步清单更新，`form-runtime/src/`、FormMaking vendor、iframe/SID/写阻断适配和构建入口属于本项目保护区。独立入口不挂载旧工作台路由、登录页、Vuex 或流程写操作；确实依赖旧宿主且未完成独立适配的自定义组件保留识别并明确 `unsupported`，不能降级成普通控件。
+- `form-runtime/` 的实际 dev/build 源码位于 `runtime-source/`，由 `参考代码/rsh-flow-components` 当前已核实的完整 tracked 源码、原生同步资产与真实 FormMaking 组成；当前落库基线为 `bff4ef8b938db5578c3f7eab1f482a4e9388917c`。主 Vue 3 只通过 iframe 和版本化 `postMessage` 契约通信。
+- 真实入口沿用 `rsh-flow-components` 的 FormMaking、自定义组件注册、Vuex、router、axios 和表单样式；`form-runtime/src/`、根 `scripts/`、构建配置、iframe/SID/写阻断适配属于本项目保护区。配置阶段禁用原工作台登录与不安全消息入口并阻断流程/业务写操作；确实依赖外部宿主且未完成独立适配的组件明确 `unsupported`，不能降级成普通控件。
 - 主应用把当前已验证账号缓存的 SID 和核实目标网关放入单次 iframe 会话，使目标表单组件可执行必要只读请求；切换计划、路径、账号或关闭工作区时销毁会话并清除 SID/上下文，消息必须核对 origin、source、session 和协议版本。SID 不写入 Git、路径配置、维护任务或浏览器长期存储；配置阶段阻断目标流程提交、草稿和业务写端点。
 - 复用现有路径配置表、修订号和幂等能力，但增加配置模式版本、逐节点确认集合、表单数据与表单状态。旧版配置记录保留数据并标记为 `affected`，不得继续按“存在一行即已完成”投影。
 - 节点与表单分别保存：节点请求只合并当前节点的人员和动作，表单请求保存 FormMaking 校验后的路径级模型。前端只提交不透明键；服务端返回并重建权威状态，不能在浏览器本地把所有节点批量改成已完成。
@@ -80,7 +80,7 @@
 - 不调用目标平台提交、审批、人员写入或业务保存接口，不创建运行记录。
 - 不在本轮实现真实暂停、继续、单步、临时断点或运行调度；只保证节点画布可以在后续复用于运行态。
 - 不复制 V1 的动作程序树、动作库拖拽、全局人员池或复杂工作室布局。
-- 不把旧 `rsh-flow-components` 工作台作为在线依赖，也不启用其登录、页面路由、Vuex、流程提交或业务写操作；上游副本只作为独立表单渲染服务的可审计源码来源。
+- 不把旧 `rsh-flow-components` 工作台页面作为本产品业务入口；运行时只复用目标组件必需的 Vuex/router/axios 内部链路并进入独立配置路由，不启用旧登录流程、目标流程提交或业务写操作。
 - 不在本轮实现高级 AI 语义生成、跨模板学习或未知复杂业务组件的自动适配；基础智能生成只覆盖模板和真实样本能够安全证明的字段与路径条件。
 
 ## 完成标准
@@ -104,27 +104,27 @@
 - [x] 前端回归覆盖 Vue 响应式对象保存、服务端对账、节点真实点击事件、单节点状态更新、表单工作区和路径间隔离。
 - [x] 后端单元与契约测试覆盖节点合并保存、表单独立保存、路径四态与表单五态、幂等对账、旧配置 affected 和目标结构变化。
 - [x] 使用隔离临时数据库实际运行迁移与存储集成，不再因未导出 `PLAN_DB_*` 跳过本轮核心持久化验证。
-- [x] `pnpm dev:f` 能同时持有主前端与独立表单运行时；主前端、表单运行时类型/构建、Go build、必要 F-004/F-005/F-006 回归和 `git diff --check` 全部通过。
-- [x] 运行时维护固定来源、精确 HEAD、脏源拒绝、完整映射/摘要校验和本地适配保护均有根目录测试；不能把一次性复制脚本作为同步正确性来源。
+- [x] `pnpm dev:f` 的命令结构同时持有主前端与 19001 独立表单运行时；主前端、表单运行时类型/完整生产构建、Go build、必要 F-004/F-005/F-006 回归和 `git diff --check` 全部通过。
+- [x] 运行时维护固定仓库/远端/分支、任务创建时 HEAD、脏源拒绝、完整映射/摘要校验和本地适配保护均有根目录测试；不能把一次性复制脚本作为同步正确性来源。
 - [x] 维护任务完整执行 `INSPECT → SYNC → SYNC_CHECK → BUILD → RESTART → VERIFY → COMPLETED`；单活动任务、租约/fencing、Worker 恢复、有界日志、候选构建失败不影响 current、切换/健康失败恢复 previous 和 pnpm 健康检查均有自动证据。
 - [x] 自动验证完成后停在 `ready_for_manual`，不自动启动浏览器，不开始后续运行功能。
 
 ## form-runtime 来源与维护决定
 
-- 来源仓库、分支和 HEAD 由 `form-runtime/sync-manifest.json` 固定；`make refs-sync`/`make refs-status` 负责参考仓库的干净、分支和快进安全，维护 API 只消费该固定快照，不允许请求提交路径、分支、HEAD 或命令。
-- 当前 `rsh-flow-components` 已是独立组件仓库，因此同步完整 tracked `src/`、`public/` 和构建元数据；旧 V2 从目标业务应用抽取的 35 项清单不再机械复用，但其显式映射、同步校验和本地适配保护语义保持不变。含凭证的 `.npmrc`、Git 元数据、依赖和构建产物不复制。
-- 维护状态机复用旧 V2 ADR-0016 的固定来源、来源快照复核、单活动任务、租约/fencing、在线日志、候选构建、失败回退和崩溃恢复语义。当前项目用 pnpm 版本目录与静态产物原子替换适配 Docker 镜像：候选先在 `.runtime` 隔离构建，成功后才切换 `web/dist/form-runtime`，失败恢复并复核 previous。
-- 系统设置提供唯一维护入口，展示固定来源、分支、HEAD、dirty、检查时间、阶段、结果、恢复结果与有界日志；只有“一键同步并重启”，不提供任意命令输入。SID/表单会话和同步维护完全分离。
+- `form-runtime/sync-manifest.json` 固定来源仓库、远端、`master` 与允许映射，不永久写死历史 HEAD；`make refs-sync`/`make refs-status` 负责参考仓库的分支与快进安全，创建任务时持久化当刻干净 HEAD，Worker 执行前复核同一快照。API 不允许请求提交路径、分支、HEAD 或命令。
+- 同步完整 tracked `src/`、`public/`、原生 `scripts/sync*.js`、上游清单和构建资产，真实构建直接消费 `runtime-source/`。上游原生 35 项映射资产仍保留供来源追踪；当前项目清单负责从已核实的组件仓库形成候选。`.npmrc`、Git 元数据、依赖、构建产物和凭证不复制，本地适配不在同步覆盖区。
+- 维护状态机复用旧 V2 ADR-0016 的来源快照复核、单活动任务、租约/fencing、在线日志、候选构建、失败回退和崩溃恢复语义。当前项目用 pnpm 版本目录替代 Docker：候选在 `.runtime` 隔离同步/构建，成功后才同时切换实际 dev 输入与生产 `web/dist/form-runtime`；真实 HTTP 必须报告同一 HEAD/摘要才可完成，否则恢复并复核 previous。
+- 系统设置提供唯一维护入口，展示固定来源、分支、任务 HEAD、dirty、检查时间、阶段、结果、恢复结果与有界日志；只有“一键同步并更新运行时”，不提供任意命令输入。SID/表单会话和同步维护完全分离。
 
 ## 第四次人工复核退回完成标准
 
-- [ ] `form-runtime/` 的真实 dev/build 入口直接消费完整 `rsh-flow-components` 可运行源码、原生自定义组件注册与真实 FormMaking 链路；删除闲置 upstream、独立 vendor 和空组件注册组成的平行运行时。
-- [ ] 保留并适配上游 `scripts/sync*.js`、`sync-manifest.json` 及构建资产；同步后的代表性源码变化必须进入实际候选构建输入和产物。
-- [ ] 来源固定为规范仓库、远端与 `master` 分支；创建维护任务时记录当次干净 HEAD，Worker 执行前复核同一快照，后续经 `make refs-sync` 安全快进的新 HEAD 可以创建新任务。
-- [ ] 开发态同步真实作用于 19001 服务的热更新或受控重启；生产候选切换真实作用于主站 `/form-runtime/`，且只有 HTTP 健康检查通过才能完成，失败恢复 previous 并再次核验。
-- [ ] SID 会话传入、销毁、消息隔离、目标业务写阻断与完整 `getValues()` 保存保持有效；目标自定义组件不得被统一清空或降级成普通控件。
-- [ ] 根目录测试覆盖完整同步资产、真实入口、原生组件注册、创建时 HEAD、执行时来源变化拒绝、候选产物变化、开发服务更新、生产 HTTP 健康、current 保护、previous 回退与维护事务状态机。
-- [ ] 隔离临时 MySQL、`./test/run-f007.sh`、Go build、主前端与表单服务构建、必要 F-004/F-005/F-006 回归和 `git diff --check` 全部通过后，状态才恢复 `ready_for_manual`。
+- [x] `form-runtime/` 的真实 dev/build 入口直接消费完整 `rsh-flow-components` 可运行源码、原生自定义组件注册与真实 FormMaking 链路；删除闲置 upstream、独立 vendor 和空组件注册组成的平行运行时。
+- [x] 保留并适配上游 `scripts/sync*.js`、`sync-manifest.json` 及构建资产；同步后的代表性源码变化进入实际候选构建输入和产物。
+- [x] 来源固定为规范仓库、远端与 `master` 分支；创建维护任务时记录当次干净 HEAD，Worker 执行前复核同一快照，后续经 `make refs-sync` 安全快进的新 HEAD 可创建新任务。
+- [x] 开发态同步替换 19001 Vue CLI 服务的实际监听源码并等待其 HTTP 快照；生产候选切换作用于主站 `/form-runtime/`，只有 HTTP HEAD/摘要匹配才能完成，失败恢复 previous 并再次核验。
+- [x] SID 会话传入、销毁、消息隔离、目标业务写阻断与完整 `getValues()` 保存保持有效；目标自定义组件不再被统一清空或降级成普通控件。
+- [x] 根目录测试覆盖完整同步资产、真实入口、原生组件注册、创建时 HEAD、执行时来源变化拒绝、候选产物变化、开发服务更新、生产 HTTP 健康、current 保护、previous 回退与维护事务状态机。
+- [x] 隔离临时 MySQL、`./test/run-f007.sh`、Go build、主前端与表单服务构建、必要 F-004/F-005/F-006 回归和 `git diff --check` 全部通过，状态恢复 `ready_for_manual`。
 
 ## 已被本轮人工验收否决的旧实现
 
@@ -139,14 +139,15 @@
 
 - 后端新增表单生成/保存分域和逐节点合并保存，完整 FormMaking values、seed、生成/人工路径、样本摘要、五态表单与路径状态均由服务端持久化并复验；同一幂等键并发首次保存通过 no-op upsert 收敛为同一修订，不同键仍保持修订冲突。
 - 主前端配置页复用当前路径流程树，节点可真实 hover/focus/click 并切换固定面板；节点侧栏只显示人员、动作和规则。表单数据切换到独立 iframe 工作区，提供智能生成、换一组、恢复已保存和独立保存，网络结果不确定时使用原键重试/GET 对账。
-- `form-runtime/` 使用 `rsh-flow-components` 固定副本的真实 FormMaking 构建产物与完整 upstream 源码，通过会话级 SID 只读策略、版本化消息和目标写阻断隔离。复杂组件缺少独立宿主适配时明确 unsupported，不降级为普通控件。
-- 表单运行时维护采用持久化七阶段状态机、固定来源清单、真实同步摘要、pnpm 候选版本目录、previous 回退、租约/fencing、Worker 恢复和有界在线日志；系统设置只有固定“一键同步并重启”。
+- `form-runtime/` 已由完整 `runtime-source/` 驱动真实 Vue CLI dev/build；实际入口加载原生 FormMaking、20 个目标自定义组件、Vuex/router/axios 与样式，本地只追加 iframe 会话、SID 内存认证、写阻断和配置路由。闲置 upstream、独立 vendor 与空组件表已删除。
+- 表单运行时维护采用持久化七阶段状态机、动态任务 HEAD、完整目标摘要、隔离源码/产物候选、真实 HTTP 快照、previous 回退、租约/fencing、Worker 恢复和有界日志；代表性源码变化已证明进入候选产物，系统设置只有固定“一键同步并更新运行时”。
 
 ## 第四次自动验证结果
 
 - `./test/run-f007.sh`：全部通过，包含 F-007 后端单元/API/目标适配/前端/运行时/维护流水线、F-004/F-005/F-006 必要回归、Go build、双前端类型检查与生产构建、真实来源 `SYNC_CHECK` 和 `git diff --check`。
 - 本次从本机忽略文件加载 `PLAN_DB_*`，在隔离临时 MySQL 实际完成配置表与维护任务表迁移、逐节点/表单持久化、幂等并发、级联、单活动任务、租约和 fencing 验证；临时库按测试清理。
 - 未启动浏览器；真实目标模板、自定义组件、视觉、iframe 高度及现场维护回退由 `test/manual/F-007.md` 人工核对。
+- 真实 `pnpm --dir form-runtime sync`/`sync:check`、完整 Vue CLI 表单运行时生产构建与构建包关键入口检查通过；构建仅保留目标源码本身，生成的 `web/dist`、`.runtime/server` 已清理。
 
 ## 旧实现的自动验证结果（不代表人工通过）
 
@@ -203,3 +204,4 @@
 - 2026-08-10（第四次实施进行中）：已完成表单生成与独立保存、真实 FormMaking iframe 工作区、逐节点配置与保存对账，以及 `rsh-flow-components` upstream/本地适配分层和维护 API/Worker/页面；状态保持 `implementing`，等待完整自动门禁后再进入人工验收。
 - 2026-08-10（第四次实施完成）：完整 `./test/run-f007.sh` 通过，临时 MySQL 集成实际执行；真实表单、智能生成、逐节点/表单独立保存、权威状态、SID 会话隔离及受控维护流水线均形成自动证据。状态进入 `ready_for_manual`，不开始后续运行功能。
 - 2026-08-10（第四次人工复核退回）：确认现有同步只更新未被真实入口消费的 upstream 快照，实际入口仍使用独立 vendor FormMaking 且自定义组件注册为空；来源 HEAD 被历史提交永久锁死，维护任务也未真实更新 19001 开发服务或以 HTTP 证明生产 `/form-runtime/` 健康。F-007 退回 `implementing`，按本节完成标准恢复 `rsh-flow-components` 原生运行与同步链路。
+- 2026-08-10（原生运行与同步修复完成）：完整 `rsh-flow-components`、真实 FormMaking、20 个自定义组件和原生同步资产已成为唯一 dev/build 输入；维护任务改为创建时记录动态 HEAD、隔离同步构建、同时切换实际源码与生产产物，并以真实 HTTP HEAD/摘要确认或回退。`./test/run-f007.sh` 全部通过，隔离临时 MySQL 未跳过；状态恢复 `ready_for_manual`，等待人工复验，不开始后续运行功能。
