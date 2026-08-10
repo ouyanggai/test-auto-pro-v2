@@ -346,15 +346,9 @@ func validatePathConfigPersonSelection(target analyzer.PathConfigActionTarget, r
 		return "", "人员选择格式不正确"
 	}
 	selectionCount := len(tokens)
-	// 可跳过只允许完整的零选择；一旦用户主动选人，模板最低人数仍然生效，不能保存半组会签人员。
-	if target.Required && selectionCount == 0 {
-		return "", "选择人数不足"
-	}
-	if selectionCount > 0 && selectionCount < target.MinCount {
-		return "", "选择人数不足"
-	}
-	if target.MaxCount > 0 && selectionCount > target.MaxCount {
-		return "", "选择人数超过模板限制"
+	// 保存与存量投影复用同一人数规则，避免当前请求和刷新后的节点状态出现相反结论。
+	if issue := analyzer.PathConfigPersonSelectionIssue(target.Required, target.MinCount, target.MaxCount, selectionCount); issue != "" {
+		return "", issue
 	}
 	seen := make(map[string]bool, len(tokens))
 	selectedIDs := make([]string, 0, len(tokens))

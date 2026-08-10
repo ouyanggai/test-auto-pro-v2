@@ -216,6 +216,64 @@ func TestPathConfigAnalyzerProjectsOpaqueNodeStatusAndTemplatePersonRules(t *tes
 	assertPathConfigPublicSafety(t, configuration)
 }
 
+// TestPathConfigAnalyzerRevalidatesStoredPersonCounts 验证存量人员选择按当前模板人数重新投影并驱动节点状态。
+func TestPathConfigAnalyzerRevalidatesStoredPersonCounts(t *testing.T) {
+	tests := []struct {
+		name         string
+		isSkip       bool
+		mode         string
+		selectedIDs  []string
+		wantAffected bool
+	}{
+		{name: "可跳过零人合法", isSkip: true, mode: "countersign", selectedIDs: []string{}},
+		{name: "可跳过一人低于最低人数", isSkip: true, mode: "countersign", selectedIDs: []string{"person-1"}, wantAffected: true},
+		{name: "可跳过两人满足最低人数", isSkip: true, mode: "countersign", selectedIDs: []string{"person-1", "person-2"}},
+		{name: "必选零人仍失效", isSkip: false, mode: "countersign", selectedIDs: []string{}, wantAffected: true},
+		{name: "单选存量两人超过上限", isSkip: true, mode: "scramble", selectedIDs: []string{"person-1", "person-2"}, wantAffected: true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			tree := pathConfigTree()
+			approval := tree.Child.ConditionNodes[0].Child
+			approval.IsSkip = &testCase.isSkip
+			approval.AuditConfig = &target.FlowNodeAuditConfig{
+				AuditType: "run_node_choose", Mode: testCase.mode, CountersignNum: intPointer(2),
+				Candidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}, {ID: "person-3", Name: "王五"}},
+			}
+			graph := requirementGraph(t, tree)
+			path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+			analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+			if err != nil {
+				t.Fatalf("准备存量人员配置路径失败：%v", err)
+			}
+			encoded, err := json.Marshal(testCase.selectedIDs)
+			if err != nil {
+				t.Fatalf("存量人员测试数据无法编码：%v", err)
+			}
+			storedActions := map[string]string{analyzer.PathConfigPersonStorageKey("approve-a"): string(encoded)}
+			configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, analysis, nil, nil, storedActions, true)
+			if err != nil {
+				t.Fatalf("存量人员配置投影失败：%v", err)
+			}
+			approvalConfig := findConfigNode(configuration.Groups, "财务审批")
+			if approvalConfig == nil || len(approvalConfig.Persons) != 1 {
+				t.Fatalf("存量人员配置节点缺失：%+v", approvalConfig)
+			}
+			person := approvalConfig.Persons[0]
+			if person.Affected != testCase.wantAffected {
+				t.Fatalf("存量人员影响状态不正确：person=%+v", person)
+			}
+			if testCase.wantAffected {
+				if approvalConfig.Status != "affected" || configuration.Status != "affected" || !strings.Contains(person.Note, "重新确认") {
+					t.Fatalf("无效存量人员没有驱动配置失效：configuration=%+v node=%+v person=%+v", configuration, approvalConfig, person)
+				}
+			} else if approvalConfig.Status != "configured" || configuration.Status != "configured" {
+				t.Fatalf("合法存量人员被错误标记：configuration=%+v node=%+v", configuration, approvalConfig)
+			}
+		})
+	}
+}
+
 // TestPathConfigAnalyzerKeepsRuntimePersonRulesReadOnly 验证目标未返回合法候选时审批人自选保持运行时只读。
 func TestPathConfigAnalyzerKeepsRuntimePersonRulesReadOnly(t *testing.T) {
 	tree := pathConfigTree()

@@ -59,6 +59,21 @@ type PathConfigValidation struct {
 	Blockers     []model.PathConfigAffectedItem
 }
 
+// PathConfigPersonSelectionIssue 按当前模板判断人员数量是否有效，空字符串表示满足约束。
+func PathConfigPersonSelectionIssue(required bool, minCount, maxCount, selectedCount int) string {
+	if required && selectedCount == 0 {
+		return "选择人数不足"
+	}
+	// 可跳过只豁免完整的零选择；一旦已有选择，最低人数仍须整体满足。
+	if selectedCount > 0 && selectedCount < minCount {
+		return "选择人数不足"
+	}
+	if maxCount > 0 && selectedCount > maxCount {
+		return "选择人数超过模板限制"
+	}
+	return ""
+}
+
 const pathConfigPersonStoragePrefix = "person:"
 
 // PathConfigNodeToken 生成配置节点与真实流程节点之间的稳定不透明映射键。
@@ -457,7 +472,6 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 	}
 	hasRuntime := false
 	hasEditablePerson := false
-	personIncomplete := false
 	for _, person := range node.Persons {
 		if person.Mode == "review" {
 			return "partial", "部分完成"
@@ -467,9 +481,6 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 		}
 		if person.Editable {
 			hasEditablePerson = true
-			if person.Required && len(person.Selected) < person.MinCount {
-				personIncomplete = true
-			}
 		}
 	}
 	hasConfigItem := len(node.Fields) > 0 || len(node.Actions) > 0 || hasEditablePerson
@@ -481,9 +492,6 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 	}
 	if !storedPresent {
 		return "pending", "待配置"
-	}
-	if personIncomplete {
-		return "partial", "部分完成"
 	}
 	return "configured", "已完成"
 }
@@ -566,9 +574,12 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 	}
 	required := node.IsSkip == nil || !*node.IsSkip
 	selected, affected, note := pathConfigStoredPersonSelection(p.storedActions[PathConfigPersonStorageKey(nodeID)], rawToToken)
-	if p.storedPresent && len(selected) == 0 && required && !affected {
-		affected = true
-		note = "旧配置缺少人员选择，需要重新确认"
+	if p.storedPresent && !affected {
+		// 存量配置必须按当前模板重新核对人数，覆盖误存记录和模板人数变更，状态派生只消费这一处结果。
+		if issue := PathConfigPersonSelectionIssue(required, minCount, maxCount, len(selected)); issue != "" {
+			affected = true
+			note = issue + "，需要重新确认"
+		}
 	}
 	if affected {
 		p.affected = true
