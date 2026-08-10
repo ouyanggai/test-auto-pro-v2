@@ -2,19 +2,19 @@
 
 ## 固定选型
 
-- 前端：纯 Vue 3、Vite、Vue Router、Pinia、Naive UI。
+- 主前端：Vue 3、Vite、Vue Router、Pinia、Naive UI；F-007 的 `form-runtime/` 是唯一隔离例外，使用目标表单引擎要求的 Vue 2、Element UI 与 FormMaking，并通过 iframe 接入主应用。
 - 后端：Go 单体，一个二进制进程；F-000 使用标准库 `net/http`。
 - 包管理：pnpm。
 - 本地端口：前端 `19000`，后端 `19080`；前端开发服务器将 `/api` 代理到后端。
 - Go module：`test-auto-pro-v2`。
 
-不采用 Vben Admin、Element Plus 或其他中后台应用基座。历史 PRD 中相反描述已被本文件取代。
+主应用不采用 Vben Admin、Element Plus 或其他中后台应用基座，也不直接混用 Vue 2 组件；历史 PRD 中相反描述已被本文件取代。
 
 ## 本地开发方式
 
 - 根目录 `package.json` 仅提供全栈开发与检查命令；Go 依赖仍只由 `go.mod` 管理。
-- 根目录 `pnpm-workspace.yaml` 只包含 `web`，从根目录执行 `pnpm install` 只生成一个 `pnpm-lock.yaml`。
-- 前端在一个前台终端执行 `pnpm dev:f`，Vite 监听 `127.0.0.1:19000` 并提供热更新。
+- F-007 起根目录 `pnpm-workspace.yaml` 只包含 `web` 与 `form-runtime`，从根目录执行 `pnpm install` 仍只生成一个 `pnpm-lock.yaml`。
+- 前端在一个前台终端执行 `pnpm dev:f`，同时持有主应用和表单运行时两个 Vite 开发进程并提供热更新；主应用继续监听 `127.0.0.1:19000`，表单运行时只作为主应用固定子路径的开发代理来源，不另设用户操作入口。
 - 后端在另一个前台终端执行 `pnpm dev:b`，实际命令为 `go tool air -c .air.toml`。Air 固定为 Go 1.25 tool dependency，构建 `cmd/server` 到被忽略的 `.runtime/`。
 - 两个前台进程的日志留在各自终端，用户通过 `Ctrl+C` 停止；不使用后台守护、PID 文件、日志文件、`concurrently` 或后台重启命令。
 - `.air.toml` 只监听项目 Go 源码，排除 `.git`、`.runtime`、根目录 `node_modules`、`web`、`参考代码`、`test`、`docs` 和历史资料。
@@ -130,15 +130,18 @@
 - `PlanPathsView` 在挂载期间只给既有 `.app-main > .n-layout-scroll-container` 增加页面专用吸附类，卸载时清理；不创建第二个页面滚动容器、不监听或劫持滚轮。概览与流程 section 各占当前内容视口，使用 `scroll-snap-align` 对齐；两屏间保留与主内容 padding 一致的间隔，避免首屏露出下一屏。点击导航只调用一次 `scrollIntoView`，减少动态效果时使用即时定位。
 - 路径准备卡片通过 `useThemeVars` 映射 Naive UI 的 `cardColor`、`bodyColor`、`borderColor`、`dividerColor` 和主次文字色，避免从 `NSpin` 等父组件误继承 `--n-color` 主色。路径列表独立滚动并限制在首屏剩余空间；流程区为纵向 flex，画布占用标题与错误提示之外的剩余高度。
 - 后端新增路径配置服务和配置仓储，所有请求先校验计划、路径归属及计划仍处于未运行状态，再按计划保存的账号、流程来源和目标对象重新读取当前真实配置。要求分析、可编辑字段投影和动作目录在同一次目标只读会话中完成，目标会话失效时整条读取链最多重放一次。
-- 公开配置 DTO 按真实节点分组，只返回页面所需的业务名称和后端生成的不透明配置键：路径摘要、节点顺序与类型、节点配置状态、字段、人员规则与允许候选、动作候选和缺口状态。配置键只用于本次回写，不能反推出目标字段英文名、表单 ID、节点 ID、分支 ID 或目标原始 JSON。
-- 首轮字段投影只允许可靠映射且目标节点字段权限为可编辑的基础字段。文本、数字、日期、日期时间、单选、多选和开关分别映射为受约束的 Naive UI 控件；日期值使用 `YYYY-MM-DD`，日期时间值使用 `YYYY-MM-DD HH:mm:ss`，前后端均严格校验。未知控件、业务对象、附件、明细表、表单人员和派生字段统一返回不可编辑缺口，不建立自制的 FormMaking 运行时；FormMaking 组件解析递归覆盖 `grid.columns[].list`、`report.rows[].columns[].list`、`tableColumns` 和嵌套 `list` 容器。
-- 新发起从当前模板表单元数据提取基础字段和默认值；已发、待发除代理表单元数据外，还按精确实例 ID 读取当前 `formDataMongoVo.data` 作为初始值。读取现值属于同一次只读操作，响应只投影当前路径相关且允许配置的值，不向浏览器返回整份实例表单原文。
-- 配置保存请求只接收不透明配置键对应的字段值、合法人员选择和标准动作。服务端必须重新解析当前目标元数据，验证配置仍属于当前路径和当前节点，人员模式与候选范围仍被模板允许，并拒绝过期结构、越权字段、重复字段、未知动作和不属于该路径的节点。保存不执行目标平台写操作，也不依据浏览器提交的节点集合或流程名称做信任判断。
-- 工具侧以 `test_execution_path_configs` 保存每条路径唯一的一份配置，包含路径归属、修订号、字段值 JSON、动作配置 JSON、配置状态和时间；字段值与动作都必须按路径隔离，删除路径时级联删除配置。表中不保存目标流程快照、SID、凭证或原始目标响应，修订号只用于并发编辑冲突检测。
-- `GET /api/plans/{planID}/execution-paths/{pathID}/configuration` 返回当前配置工作台模型；`PUT /api/plans/{planID}/execution-paths/{pathID}/configuration` 以修订号和 `Idempotency-Key` 保存整份路径配置。请求失败保留最后一次有效配置，重复键返回同一保存结果；目标结构变化返回稳定的“需要重新配置”错误并带受影响项目，不覆盖其他已保存路径。
-- 执行路径列表 DTO 增加本地 `configurationStatus`（`pending` 或 `configured`），由 `test_execution_path_configs` 的左连接存在性提供；该状态不进入目标重验，也不改变计划状态。首次无记录的配置读取模型公开 `pending`，允许无草稿变化的首次保存。
+- 公开节点配置 DTO 按真实节点分组，只返回路径摘要、节点顺序与类型、逐节点配置状态、人员规则、合法候选、动作候选和缺口状态。节点右侧面板不再接收或渲染表单字段；配置键仍由后端生成且只用于本次回写。
+- 新增独立 `form-runtime/` 前端工作区，使用与 `rsh-flow-components` 一致的 Vue 2、Element UI 和真实 FormMaking 生成器渲染表单，通过 iframe 与主 Vue 3 应用隔离。实现以 `参考代码/rsh-cloud-vue-form-making` 为表单引擎来源、以 `参考代码/rsh-flow-components` 为集成行为依据，只复制当前运行所需的渲染资产和适配组件，不复制旧流程路由、Vuex、认证、axios、目标写接口或业务工作台。
+- `form-runtime` 不直接调用目标平台。Go 适配层读取当前模板、实例数据和权限后提供经过约束的表单会话；主应用以带版本和会话标识的 `postMessage` 协议向 iframe 发送模板、初始值、模式和权限，iframe 只返回 ready、change、validate、snapshot 和 unsupported 事件。消息必须校验窗口来源、会话标识和协议版本，销毁后拒绝迟到消息。
+- 开发时根 `pnpm dev:f` 同时以前台持有方式启动主 Vue 3 页面和表单运行时并保持热更新；主页面使用稳定的 `/form-runtime/` 地址加载 iframe。生产构建先构建运行时，再把产物放入主站固定子目录，不依赖旧 `rsh-flow-components` 服务在线。
+- 新发起从当前模板读取完整 FormMaking 模板和默认模型，并叠加该路径工具侧保存的测试数据；已发、待发按精确实例 ID 读取当前 `formDataMongoVo.data`，本切片只读展示。模板原始标识、SID 和目标 envelope 不进入 postMessage；需要目标查询的自定义组件必须经过本项目单独的适配 RPC，没有适配时由运行时在原布局位置报告 unsupported，禁止组件自行复用旧应用 axios。
+- 节点保存请求只接收当前选中节点的不透明键、合法人员选择和标准动作；表单保存使用独立请求接收表单运行时校验后的模型。服务端每次重新解析当前目标元数据，验证节点、字段、人员和动作仍属于当前路径，保存不执行目标平台写操作。
+- `test_execution_path_configs` 继续保持每条路径一行，但新增配置模式版本、已明确确认节点集合、表单数据和表单状态；字段/动作仍按节点隔离。节点保存采用事务内合并而不是整份替换，表单保存只更新表单区。旧版仅凭一行即为 configured 的记录保留原值但标记 `affected`，必须重新确认，不能静默沿用错误完成状态。
+- `GET /api/plans/{planID}/execution-paths/{pathID}/configuration` 返回服务端权威的画布、逐节点和表单状态；`PUT /api/plans/{planID}/execution-paths/{pathID}/configuration/nodes/{nodeKey}` 只合并当前节点，`PUT /api/plans/{planID}/execution-paths/{pathID}/configuration/form` 只保存表单区域，两类写入分别携带修订号和 `Idempotency-Key`。网络结果不确定时前端使用同一幂等键重试或 GET 对账，不在已提交成功后显示失败。
+- 执行路径列表的 `configurationStatus` 扩展为 `pending`、`partial`、`configured`、`affected`，直接读取持久化的派生状态而不是判断配置行是否存在。新发起只有表单数据已保存且所有需要人工确认的节点已逐一保存时才 configured；已发、待发的只读表单不作为可编辑项阻塞，但节点仍需逐一确认。
+- Vue Flow 只读模式继续禁止任意元素编辑；配置态对当前路径可配置节点显式打开包装层指针事件并使用节点点击事件切换面板。状态角标脱离节点名称排版，可点击节点具备 pointer、hover、focus、selected 和键盘反馈，路径外节点保持禁用。
 - 节点配置画布组件明确区分配置态与后续运行态。F-007 只实现配置态；暂停、继续、单步和临时断点在没有运行记录与真实调度时不得显示为可用。后续运行态复用同一流程树、节点选择和固定操作面板，临时断点保存在运行记录而非路径配置。
-- F-007 的完成状态只表示工具侧节点配置已保存，不改变 `test_plans.status` 为可运行，不生成运行记录，不调用目标平台写接口。附件、完整目标表单运行时、成功断言和运行时动作进入后续切片。
+- F-007 的 `configured` 只表示工具侧当前路径的必需节点已逐一确认，且该来源要求的路径级表单状态已经满足；它不改变 `test_plans.status` 为可运行，不生成运行记录，也不调用目标平台写接口。附件上传、随机或自动表单数据生成、成功断言和运行时动作进入后续切片。
 
 ## 数据与部署演进
 
