@@ -135,13 +135,16 @@
 - `form-runtime` 不直接调用目标平台。Go 适配层读取当前模板、实例数据和权限后提供经过约束的表单会话；主应用以带版本和会话标识的 `postMessage` 协议向 iframe 发送模板、初始值、模式和权限，iframe 只返回 ready、change、validate、snapshot 和 unsupported 事件。消息必须校验窗口来源、会话标识和协议版本，销毁后拒绝迟到消息。
 - 开发时根 `pnpm dev:f` 同时以前台持有方式启动主 Vue 3 页面和表单运行时并保持热更新；主页面使用稳定的 `/form-runtime/` 地址加载 iframe。生产构建先构建运行时，再把产物放入主站固定子目录，不依赖旧 `rsh-flow-components` 服务在线。
 - 新发起从当前模板读取完整 FormMaking 模板和默认模型，并叠加该路径工具侧保存的测试数据；已发、待发按精确实例 ID 读取当前 `formDataMongoVo.data`，本切片只读展示。模板原始标识、SID 和目标 envelope 不进入 postMessage；需要目标查询的自定义组件必须经过本项目单独的适配 RPC，没有适配时由运行时在原布局位置报告 unsupported，禁止组件自行复用旧应用 axios。
+- FormMaking 会话加载模板后按目标字段权限执行 `refresh`，隐藏或禁用不可编辑字段并移除其必填校验；保存先执行 `getData(true)`，再以 `getValues()` 的完整对象为权威数据。运行时不得执行 `beforeSubmitAndDraft` 等可能产生目标业务写入的钩子。
+- 新增独立的模板解析、样本画像和表单数据生成模块。生成器递归处理 FormMaking 容器与基础控件，使用稳定 seed 叠加模板默认值、真实选项、当前发起人、受限人员候选、路径条件约束和少量近期样本；显式人工覆盖始终优先，并保存 `generatedFieldPaths` 与 `manualOverridePaths`。高级 AI 语义生成、跨模板学习及未知复杂组件生成延后。
+- 样本只通过 `internal/adapter/target` 使用计划保存的账号读取近期可见已发实例，再以 `getCurrentFromData` 获取少量 `formDataMongoVo.data`；禁止直连目标 Mongo。读取必须限制页数、样本数和并发，并使用短期进程内缓存；样本不足返回来源摘要后由模板约束确定性兜底。
 - 节点保存请求只接收当前选中节点的不透明键、合法人员选择和标准动作；表单保存使用独立请求接收表单运行时校验后的模型。服务端每次重新解析当前目标元数据，验证节点、字段、人员和动作仍属于当前路径，保存不执行目标平台写操作。
-- `test_execution_path_configs` 继续保持每条路径一行，但新增配置模式版本、已明确确认节点集合、表单数据和表单状态；字段/动作仍按节点隔离。节点保存采用事务内合并而不是整份替换，表单保存只更新表单区。旧版仅凭一行即为 configured 的记录保留原值但标记 `affected`，必须重新确认，不能静默沿用错误完成状态。
+- `test_execution_path_configs` 继续保持每条路径一行，但新增配置模式版本、已明确确认节点集合、完整表单数据、表单状态、校验结果、稳定 seed、生成字段路径、人工覆盖字段路径和样本来源摘要；字段/动作仍按节点隔离。节点保存采用事务内合并而不是整份替换，表单保存只更新表单区。旧版仅凭一行即为 configured 的记录保留原值但标记 `affected`，必须重新确认，不能静默沿用错误完成状态。
 - `GET /api/plans/{planID}/execution-paths/{pathID}/configuration` 返回服务端权威的画布、逐节点和表单状态；`PUT /api/plans/{planID}/execution-paths/{pathID}/configuration/nodes/{nodeKey}` 只合并当前节点，`PUT /api/plans/{planID}/execution-paths/{pathID}/configuration/form` 只保存表单区域，两类写入分别携带修订号和 `Idempotency-Key`。网络结果不确定时前端使用同一幂等键重试或 GET 对账，不在已提交成功后显示失败。
 - 执行路径列表的 `configurationStatus` 扩展为 `pending`、`partial`、`configured`、`affected`，直接读取持久化的派生状态而不是判断配置行是否存在。新发起只有表单数据已保存且所有需要人工确认的节点已逐一保存时才 configured；已发、待发的只读表单不作为可编辑项阻塞，但节点仍需逐一确认。
 - Vue Flow 只读模式继续禁止任意元素编辑；配置态对当前路径可配置节点显式打开包装层指针事件并使用节点点击事件切换面板。状态角标脱离节点名称排版，可点击节点具备 pointer、hover、focus、selected 和键盘反馈，路径外节点保持禁用。
 - 节点配置画布组件明确区分配置态与后续运行态。F-007 只实现配置态；暂停、继续、单步和临时断点在没有运行记录与真实调度时不得显示为可用。后续运行态复用同一流程树、节点选择和固定操作面板，临时断点保存在运行记录而非路径配置。
-- F-007 的 `configured` 只表示工具侧当前路径的必需节点已逐一确认，且该来源要求的路径级表单状态已经满足；它不改变 `test_plans.status` 为可运行，不生成运行记录，也不调用目标平台写接口。附件上传、随机或自动表单数据生成、成功断言和运行时动作进入后续切片。
+- F-007 的 `configured` 只表示工具侧当前路径的必需节点已逐一确认，且该来源要求的路径级表单状态已经满足；它不改变 `test_plans.status` 为可运行，不生成运行记录，也不调用目标平台写接口。附件上传、高级 AI 语义生成、跨模板学习、成功断言和运行时动作进入后续切片。
 
 ## 数据与部署演进
 
