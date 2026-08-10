@@ -95,7 +95,10 @@ grep -Fq "getValues" "${runtime_app}"
 grep -Fq "getData(true)" "${runtime_app}"
 grep -Fq "destroySession" "${runtime_app}"
 grep -Fq "FORM_RUNTIME_VERSION" "${runtime_protocol}"
-grep -Fq "FORBIDDEN_WRITE_PATHS" "${runtime_policy}"
+grep -Fq "targetRequestAllowed" "${runtime_policy}"
+grep -Fq "WRITE_SEGMENT_PREFIXES" "${runtime_policy}"
+grep -Fq "READ_SEGMENT_PREFIXES" "${runtime_policy}"
+grep -Fq "window.fetch = async" "${runtime_policy}"
 grep -Fq "SID" "${runtime_policy}"
 
 # 浏览器只处理不透明键，结构变化保留可对应草稿；不得出现假运行控制。

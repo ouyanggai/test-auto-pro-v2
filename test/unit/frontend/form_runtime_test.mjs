@@ -57,9 +57,10 @@ test('版本化消息拒绝旧版本、空会话和未知命令', () => {
   assert.equal(isRuntimeCommand({ ...valid, type: 'submit' }), false)
 })
 
-test('SID 仅附加到核实目标请求且销毁策略后清除', () => {
+test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍带 SID', async () => {
   const opened = []
   const sentHeaders = []
+  const fetched = []
   class FakeXHR {
     open(method, url) { opened.push([method, url]) }
     setRequestHeader(name, value) { sentHeaders.push([name, value]) }
@@ -68,9 +69,13 @@ test('SID 仅附加到核实目标请求且销毁策略后清除', () => {
   const originalWindow = globalThis.window
   const originalXHR = globalThis.XMLHttpRequest
   globalThis.XMLHttpRequest = FakeXHR
+  const nativeFetch = async (...args) => {
+    fetched.push(args)
+    return new Response('{}')
+  }
   globalThis.window = {
     location: { href: 'http://127.0.0.1:19001/' },
-    fetch: async () => new Response('{}'),
+    fetch: nativeFetch,
   }
   try {
     const restore = installReadOnlyRequestPolicy({ sid: 'memory-only-sid', baseURL: 'http://target.test/api' })
@@ -79,8 +84,19 @@ test('SID 仅附加到核实目标请求且销毁策略后清除', () => {
     request.send('{}')
     assert.match(opened[0][1], /^http:\/\/target\.test\/api\/web\/form\/read\?sid=memory-only-sid$/)
     assert.deepEqual(sentHeaders, [['sid', 'memory-only-sid']])
-    assert.throws(() => request.open('POST', '/web/flowInstanceApi/submit'), /禁止调用目标流程或业务写接口/)
+    assert.throws(() => request.open('POST', '/web/flowInstanceApi/submit'), /不支持未证明为只读/)
+    assert.throws(() => request.open('POST', '/api/web/file/api/file/uploadFile'), /不支持未证明为只读/)
+    assert.throws(() => request.open('POST', '/web/file/api/relationFile/saveBatch'), /不支持未证明为只读/)
+    assert.throws(() => request.open('POST', '/web/custom/api/runAction'), /不支持未证明为只读/)
+    assert.throws(() => request.open('POST', '/web/custom/api/getOrCreate'), /不支持未证明为只读/)
+    await assert.rejects(window.fetch('/web/measuring/api/contractInvoicing/uploadFile', { method: 'POST' }), /不支持未证明为只读/)
+    await assert.rejects(window.fetch('/web/file/api/relationFile/deleteByRelationIdAndFileIds', { method: 'POST' }), /不支持未证明为只读/)
+    await window.fetch('/web/flowProxy/findById', { method: 'POST', body: '{}' })
+    assert.equal(fetched.length, 1)
+    assert.equal(fetched[0][0], 'http://target.test/api/web/flowProxy/findById?sid=memory-only-sid')
+    assert.equal(fetched[0][1].headers.get('sid'), 'memory-only-sid')
     restore()
+    assert.equal(window.fetch, nativeFetch)
     const afterDestroy = new XMLHttpRequest()
     afterDestroy.open('GET', '/web/form/read')
     assert.equal(opened.at(-1)[1], '/web/form/read')
