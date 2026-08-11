@@ -111,10 +111,13 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 	}
 	var data struct {
 		User struct {
+			ID           string `json:"id"`
 			Name         string `json:"name"`
 			CustomerCode string `json:"customerCode"`
+			DepartmentID string `json:"departmentId"`
 		} `json:"user"`
 		Company struct {
+			ID           string `json:"id"`
 			Name         string `json:"name"`
 			CustomerCode string `json:"customerCode"`
 		} `json:"companyVo"`
@@ -129,6 +132,9 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 		SID:          resp.SID,
 		CustomerCode: customerCode,
 		PlatformCode: c.config.PlatformCode,
+		UserID:       strings.TrimSpace(data.User.ID),
+		CompanyID:    strings.TrimSpace(data.Company.ID),
+		DepartmentID: strings.TrimSpace(data.User.DepartmentID),
 		Summary: AccountSummary{
 			Account:     strings.TrimSpace(account),
 			DisplayName: data.User.Name,
@@ -354,22 +360,26 @@ type rawFlowCondition struct {
 }
 
 type rawFlowNodeAuditConfig struct {
-	AuditType       string               `json:"auditType"`
-	Mode            string               `json:"type"`
-	CountersignNum  *int                 `json:"countersignNum"`
-	FormPersonField string               `json:"formPersonFields"`
-	Details         []rawFlowAuditDetail `json:"flowNodeDetailConfigList"`
-	Scopes          []rawFlowAuditScope  `json:"nodeAuditScopeList"`
-	Candidates      []rawFlowAuditUser   `json:"userVoList"`
+	AuditType         string               `json:"auditType"`
+	Mode              string               `json:"type"`
+	CountersignNum    *int                 `json:"countersignNum"`
+	FormPersonField   string               `json:"formPersonFields"`
+	AuditCondition    string               `json:"auditCondition"`
+	Details           []rawFlowAuditDetail `json:"flowNodeDetailConfigList"`
+	Scopes            []rawFlowAuditScope  `json:"nodeAuditScopeList"`
+	Candidates        []rawFlowAuditUser   `json:"userVoList"`
+	DefaultCandidates []rawFlowAuditUser   `json:"defaultUserVoList"`
 }
 
 type rawFlowAuditDetail struct {
-	Name string `json:"name"`
-	Type string `json:"auditDetailType"`
+	BizID string `json:"bizId"`
+	Name  string `json:"name"`
+	Type  string `json:"auditDetailType"`
 }
 
 type rawFlowAuditScope struct {
-	Type string `json:"type"`
+	BizID string `json:"bizId"`
+	Type  string `json:"type"`
 }
 
 // rawFlowAuditUser 只解析目标节点配置已经返回的候选身份与中文名称，不额外查询全员目录。
@@ -653,6 +663,7 @@ func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, 
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
+	c.resolveFlowAuditMetadata(ctx, active, tree)
 	fields, runtimeForms, err := c.readFormFieldDetails(ctx, active, "/web/formTemplateApi/findById", forms)
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
@@ -666,6 +677,7 @@ func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, pro
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
+	c.resolveFlowAuditMetadata(ctx, active, tree)
 	forms := make([]rawFormReference, 0, len(formProxyIDs))
 	for _, rawID := range formProxyIDs {
 		if id := strings.TrimSpace(rawID); id != "" {
@@ -1005,13 +1017,13 @@ func convertFlowAuditConfig(raw *rawFlowNodeAuditConfig) *FlowNodeAuditConfig {
 	}
 	result := &FlowNodeAuditConfig{
 		AuditType: raw.AuditType, Mode: raw.Mode, CountersignNum: raw.CountersignNum,
-		FormPersonField: raw.FormPersonField,
+		FormPersonField: raw.FormPersonField, AuditCondition: raw.AuditCondition,
 	}
 	for _, detail := range raw.Details {
-		result.Details = append(result.Details, FlowAuditDetail{Name: detail.Name, Type: detail.Type})
+		result.Details = append(result.Details, FlowAuditDetail{ID: strings.TrimSpace(detail.BizID), Name: detail.Name, Type: detail.Type})
 	}
 	for _, scope := range raw.Scopes {
-		result.Scopes = append(result.Scopes, FlowAuditScope{Type: scope.Type})
+		result.Scopes = append(result.Scopes, FlowAuditScope{ID: strings.TrimSpace(scope.BizID), Type: scope.Type})
 	}
 	seenCandidates := make(map[string]bool, len(raw.Candidates))
 	for _, candidate := range raw.Candidates {
@@ -1022,6 +1034,16 @@ func convertFlowAuditConfig(raw *rawFlowNodeAuditConfig) *FlowNodeAuditConfig {
 		}
 		seenCandidates[id] = true
 		result.Candidates = append(result.Candidates, FlowAuditCandidate{ID: id, Name: strings.TrimSpace(name)})
+	}
+	seenDefaults := make(map[string]bool, len(raw.DefaultCandidates))
+	for _, candidate := range raw.DefaultCandidates {
+		id := strings.TrimSpace(candidate.ID)
+		name := firstNonEmpty(candidate.Name, candidate.RealName, candidate.DisplayName)
+		if id == "" || strings.TrimSpace(name) == "" || seenDefaults[id] {
+			continue
+		}
+		seenDefaults[id] = true
+		result.DefaultCandidates = append(result.DefaultCandidates, FlowAuditCandidate{ID: id, Name: strings.TrimSpace(name)})
 	}
 	return result
 }

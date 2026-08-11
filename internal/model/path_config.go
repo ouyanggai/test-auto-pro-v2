@@ -91,8 +91,10 @@ type PathFormSaveInput struct {
 
 // PathNodeSaveInput 是单个节点人员与动作的最小回写体。
 type PathNodeSaveInput struct {
-	Revision uint64                  `json:"revision"`
-	Actions  []PathConfigActionValue `json:"actions"`
+	Revision uint64                          `json:"revision"`
+	Persons  []PathConfigPersonStrategyInput `json:"persons"`
+	Arrivals []PathConfigArrivalInput        `json:"arrivals"`
+	Actions  []PathConfigActionValue         `json:"actions,omitempty"`
 }
 
 // PathFormRuntimeSession 是 iframe 当前会话使用的短期目标读取上下文；绝不持久化。
@@ -118,35 +120,41 @@ type PathConfigGroup struct {
 
 // PathConfigNode 是路径顺序上的一个业务节点及其字段、缺口和标准动作。
 type PathConfigNode struct {
-	Key          string             `json:"key"`
-	Name         string             `json:"name"`
-	TypeName     string             `json:"typeName"`
-	Kind         string             `json:"kind"`
-	Status       string             `json:"status"`
-	StatusName   string             `json:"statusName"`
-	Fields       []PathConfigField  `json:"fields"`
-	Persons      []PathConfigPerson `json:"persons"`
-	Gaps         []PathConfigGap    `json:"gaps"`
-	Requirements []RequirementItem  `json:"requirements"`
-	Actions      []PathConfigAction `json:"actions"`
-	LineBlocked  bool               `json:"lineBlocked"`
+	Key          string               `json:"key"`
+	Name         string               `json:"name"`
+	TypeName     string               `json:"typeName"`
+	Kind         string               `json:"kind"`
+	Status       string               `json:"status"`
+	StatusName   string               `json:"statusName"`
+	Fields       []PathConfigField    `json:"fields"`
+	Persons      []PathConfigPerson   `json:"persons"`
+	Gaps         []PathConfigGap      `json:"gaps"`
+	Requirements []RequirementItem    `json:"requirements"`
+	Actions      []PathConfigAction   `json:"actions"`
+	ActionPlan   PathConfigActionPlan `json:"actionPlan"`
+	LineBlocked  bool                 `json:"lineBlocked"`
 }
 
 // PathConfigPerson 是模板约束下的处理人呈现；只有 editable=true 时浏览器才允许回写候选。
 type PathConfigPerson struct {
-	Key      string                        `json:"key"`
-	Title    string                        `json:"title"`
-	Mode     string                        `json:"mode"`
-	Detail   string                        `json:"detail"`
-	Items    []PathConfigPersonDisplayItem `json:"items"`
-	Editable bool                          `json:"editable"`
-	Multiple bool                          `json:"multiple"`
-	Required bool                          `json:"required"`
-	MinCount int                           `json:"minCount"`
-	Selected []string                      `json:"selected"`
-	Options  []PathConfigPersonOption      `json:"options"`
-	Affected bool                          `json:"affected"`
-	Note     string                        `json:"note"`
+	Key             string                           `json:"key"`
+	Title           string                           `json:"title"`
+	Mode            string                           `json:"mode"`
+	Detail          string                           `json:"detail"`
+	Items           []PathConfigPersonDisplayItem    `json:"items"`
+	Editable        bool                             `json:"editable"`
+	Multiple        bool                             `json:"multiple"`
+	Required        bool                             `json:"required"`
+	MinCount        int                              `json:"minCount"`
+	MaxCount        int                              `json:"maxCount"`
+	Selected        []string                         `json:"selected"`
+	DefaultSelected []string                         `json:"defaultSelected"`
+	Options         []PathConfigPersonOption         `json:"options"`
+	Strategy        string                           `json:"strategy"`
+	StrategySeed    int64                            `json:"strategySeed"`
+	Strategies      []PathConfigPersonStrategyOption `json:"strategies"`
+	Affected        bool                             `json:"affected"`
+	Note            string                           `json:"note"`
 }
 
 // PathConfigPersonDisplayItem 公开目标模板中可证明的人员规则类别、中文名称和同类数量，不携带业务 ID。
@@ -160,6 +168,20 @@ type PathConfigPersonDisplayItem struct {
 type PathConfigPersonOption struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+}
+
+// PathConfigPersonStrategyOption 是目标模板当前允许的人员选择策略。
+type PathConfigPersonStrategyOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// PathConfigPersonStrategyInput 是浏览器保存人员策略的最小不透明回写体。
+type PathConfigPersonStrategyInput struct {
+	Key      string   `json:"key"`
+	Strategy string   `json:"strategy"`
+	Seed     int64    `json:"seed"`
+	Selected []string `json:"selected"`
 }
 
 // PathConfigField 是可配置基础字段的安全展示与回写载体。
@@ -202,6 +224,56 @@ type PathConfigAction struct {
 type PathConfigActionOption struct {
 	Value string `json:"value"`
 	Label string `json:"label"`
+}
+
+// PathConfigActionPlan 是节点按连续到达次数组织的有序动作计划。
+type PathConfigActionPlan struct {
+	Catalog         []PathConfigActionCatalogItem `json:"catalog"`
+	RollbackTargets []PathConfigActionOption      `json:"rollbackTargets"`
+	Arrivals        []PathConfigArrivalPlan       `json:"arrivals"`
+	MaxArrivals     int                           `json:"maxArrivals"`
+	MaxPathSteps    int                           `json:"maxPathSteps"`
+	Affected        bool                          `json:"affected"`
+	Note            string                        `json:"note"`
+}
+
+// PathConfigActionCatalogItem 说明当前节点可静态证明合法的动作及必要参数。
+type PathConfigActionCatalogItem struct {
+	Kind           string `json:"kind"`
+	Label          string `json:"label"`
+	Description    string `json:"description"`
+	AllowsOpinion  bool   `json:"allowsOpinion"`
+	RequiresTarget bool   `json:"requiresTarget"`
+	RequiresPerson bool   `json:"requiresPerson"`
+}
+
+// PathConfigArrivalPlan 表示节点第几次到达时按顺序执行的动作。
+type PathConfigArrivalPlan struct {
+	Visit int                    `json:"visit"`
+	Steps []PathConfigActionStep `json:"steps"`
+}
+
+// PathConfigActionStep 是公开动作步骤；目标节点与人员均使用不透明键。
+type PathConfigActionStep struct {
+	Kind    string                         `json:"kind"`
+	Label   string                         `json:"label"`
+	Opinion string                         `json:"opinion"`
+	Target  string                         `json:"target"`
+	Person  *PathConfigPersonStrategyInput `json:"person,omitempty"`
+}
+
+// PathConfigArrivalInput 是浏览器保存单次到达动作顺序的最小回写体。
+type PathConfigArrivalInput struct {
+	Visit int                         `json:"visit"`
+	Steps []PathConfigActionStepInput `json:"steps"`
+}
+
+// PathConfigActionStepInput 只允许稳定动作枚举、不透明回退目标和受约束人员策略。
+type PathConfigActionStepInput struct {
+	Kind    string                         `json:"kind"`
+	Opinion string                         `json:"opinion"`
+	Target  string                         `json:"target"`
+	Person  *PathConfigPersonStrategyInput `json:"person,omitempty"`
 }
 
 // PathConfigFieldValue 是浏览器回写的一个字段值；Key 为不透明回写键。

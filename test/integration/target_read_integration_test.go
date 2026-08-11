@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/api"
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/service"
 )
 
@@ -38,6 +40,8 @@ type fakeTarget struct {
 	dueUnbounded    bool
 	formFields      []any
 	templateData    string
+	directoryAudit  bool
+	directoryFail   bool
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
@@ -143,6 +147,28 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 		f.handleFormDetail(response, request, "", "代理表单")
 	case "/web/flowInstanceApi/getCurrentFromData":
 		f.handleInstanceCurrentData(response, request)
+	case "/web/user/api/user/findByCompanyIdUserList":
+		f.handleDirectoryResponse(response, []any{map[string]any{"id": "person-1", "realName": "张三"}})
+	case "/web/user/api/company/children":
+		body := f.requireSession(request)
+		data, _ := body["data"].(map[string]any)
+		flag, _ := data["flag"].(string)
+		byFlag := map[string]any{
+			"2": []any{map[string]any{"id": "department-1", "name": "财务部", "childrenList": []any{map[string]any{"id": "person-2", "name": "李四", "type": "5"}}}},
+			"4": []any{map[string]any{"id": "position-1", "name": "财务主任"}},
+			"7": []any{map[string]any{"id": "company-1", "name": "测试公司", "childrenList": []any{map[string]any{"id": "person-3", "name": "王五", "type": "5"}}}},
+		}
+		f.handleDirectoryResponse(response, byFlag[flag])
+	case "/web/user/api/dutyLevel/list":
+		f.handleDirectoryResponse(response, []any{map[string]any{"id": "level-1", "name": "二级岗"}})
+	case "/web/flowRoleApi/list":
+		f.handleDirectoryResponse(response, []any{map[string]any{"id": "role-1", "name": "财务审批角色"}})
+	case "/web/user/api/expandAttr/list":
+		f.handleDirectoryResponse(response, []any{map[string]any{"id": "attr-1", "name": "项目负责人属性"}})
+	case "/web/flowRoleUserApi/list":
+		f.handleDirectoryResponse(response, []any{map[string]any{"userVo": map[string]any{"id": "person-4", "realName": "赵六"}}})
+	case "/web/user/api/user/getUserVosByBizIds":
+		f.handleDirectoryResponse(response, []any{map[string]any{"id": "person-5", "realName": "孙七"}})
 	default:
 		http.NotFound(response, request)
 	}
@@ -167,14 +193,36 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 		f.t.Errorf("实例详情错误地使用了实例 ID：%s", id)
 	}
 	f.recordGraphCall(callName + ":" + id)
+	auditConfig := map[string]any{
+		"auditType": "form_person", "type": "scramble", "formPersonFields": "amount",
+		"userVoList": []any{map[string]any{"id": "candidate-1", "realName": "候选人甲"}},
+	}
+	if f.directoryAudit {
+		auditConfig = map[string]any{
+			"auditType": "run_node_choose", "type": "countersign", "countersignNum": 2,
+			"flowNodeDetailConfigList": []any{
+				map[string]any{"bizId": "person-1", "auditDetailType": "personnel"},
+				map[string]any{"bizId": "position-1", "auditDetailType": "position"},
+				map[string]any{"bizId": "level-1", "auditDetailType": "level"},
+				map[string]any{"bizId": "role-1", "auditDetailType": "role"},
+				map[string]any{"bizId": "department-1", "auditDetailType": "department"},
+				map[string]any{"bizId": "company-1", "auditDetailType": "company"},
+				map[string]any{"bizId": "attr-1", "auditDetailType": "extendedAttribute"},
+			},
+			"nodeAuditScopeList": []any{
+				map[string]any{"bizId": "role-1", "type": "role"},
+				map[string]any{"bizId": "position-1", "type": "position"},
+				map[string]any{"bizId": "department-1", "type": "department"},
+				map[string]any{"bizId": "company-1", "type": "company"},
+				map[string]any{"bizId": "person-1", "type": "personnel"},
+			},
+		}
+	}
 	detailData := map[string]any{"flowNodeTemplate": map[string]any{
 		"id": "start", "nodeName": "发起", "type": "start",
 		"childFlowNodeTemplate": map[string]any{
 			"id": "approval", "nodeName": "审批", "type": "common", "isSkip": true,
-			"flowNodeAuditConfig": map[string]any{
-				"auditType": "form_person", "type": "scramble", "formPersonFields": "amount",
-				"userVoList": []any{map[string]any{"id": "candidate-1", "realName": "候选人甲"}},
-			},
+			"flowNodeAuditConfig":            auditConfig,
 			"flowNodeFieldPowerTemplateList": []any{map[string]any{"formTemplateId": "form-template", "formFieldTemplateId": "field-amount", "formFieldTemplateEnglishName": "amount", "fieldPower": "only_read"}},
 			"childFlowNodeTemplate":          map[string]any{"id": "end", "nodeName": "结束", "type": "end"},
 		},
@@ -186,6 +234,15 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 		"isSuccess": true,
 		"data":      detailData,
 	})
+}
+
+// handleDirectoryResponse 返回固定只读目录或模拟稳定读取失败，不接收任何写语义。
+func (f *fakeTarget) handleDirectoryResponse(response http.ResponseWriter, data any) {
+	if f.directoryFail {
+		writeTargetJSON(response, map[string]any{"isSuccess": false, "message": "directory unavailable"})
+		return
+	}
+	writeTargetJSON(response, map[string]any{"isSuccess": true, "data": data})
 }
 
 // handleFormDetail 验证模板和代理表单详情使用已核实标识，并返回中文字段元数据。
@@ -279,8 +336,8 @@ func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Req
 		"isSuccess": true,
 		"sid":       active,
 		"data": map[string]any{
-			"user":      map[string]any{"name": "测试人员", "customerCode": "tenant-code"},
-			"companyVo": map[string]any{"name": "测试公司"},
+			"user":      map[string]any{"id": "person-current", "name": "测试人员", "customerCode": "tenant-code", "departmentId": "department-1"},
+			"companyVo": map[string]any{"id": "company-root", "name": "测试公司"},
 		},
 	})
 }
@@ -936,6 +993,87 @@ func TestPathConfigurationSnapshotReadsTemplateDefaultsAndProxyValues(t *testing
 				t.Fatalf("配置快照调用顺序不正确：%v", calls)
 			}
 		})
+	}
+}
+
+// TestPathConfigurationSnapshotResolvesConcreteAuditDirectories 验证人员、岗位、岗级、角色、部门、公司和扩展属性均由目标只读目录解析。
+func TestPathConfigurationSnapshotResolvesConcreteAuditDirectories(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.directoryAudit = true
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	snapshot, err := service.NewTargetReadService(config.LoadTargetConfig()).PathConfigurationSnapshot(context.Background(), "account-a", "new", "template-id")
+	if err != nil || snapshot.Tree == nil || snapshot.Tree.Child == nil || snapshot.Tree.Child.AuditConfig == nil {
+		t.Fatalf("人员目录配置读取失败：snapshot=%+v err=%v", snapshot, err)
+	}
+	audit := snapshot.Tree.Child.AuditConfig
+	wantNames := map[string]bool{"张三": true, "财务主任": true, "二级岗": true, "财务审批角色": true, "财务部": true, "测试公司": true, "项目负责人属性": true}
+	for _, detail := range audit.Details {
+		delete(wantNames, detail.Name)
+	}
+	if len(wantNames) != 0 || len(audit.ResolutionIssues) != 0 {
+		t.Fatalf("固定人员对象没有完整解析：missing=%v audit=%+v", wantNames, audit)
+	}
+	wantScopes := map[string]bool{"财务审批角色": true, "财务主任": true, "财务部": true, "测试公司": true, "张三": true}
+	for _, scope := range audit.Scopes {
+		delete(wantScopes, scope.Name)
+	}
+	if len(wantScopes) != 0 || len(audit.Candidates) != 5 {
+		t.Fatalf("运行节点范围或合法候选没有完整解析：missing=%v scopes=%+v candidates=%+v", wantScopes, audit.Scopes, audit.Candidates)
+	}
+	graphNodes, graphEdges, warnings, err := analyzer.NewFlowGraphAnalyzer().Analyze(snapshot.Tree)
+	if err != nil {
+		t.Fatalf("目录测试流程图分析失败：%v", err)
+	}
+	graph := model.FlowGraph{EntryNodeIDs: snapshot.EntryNodeIDs, Nodes: graphNodes, Edges: graphEdges, Warnings: warnings}
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, nil)
+	if err != nil {
+		t.Fatalf("目录测试路径分析失败：%v", err)
+	}
+	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, snapshot.Tree, snapshot.FormFields, model.ExecutionPath{}, pathAnalysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("目录测试配置投影失败：%v", err)
+	}
+	encoded, _ := json.Marshal(configuration)
+	for _, forbidden := range []string{"person-1", "position-1", "level-1", "role-1", "department-1", "company-1", "attr-1"} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("公开配置泄露目标目录 ID %s：%s", forbidden, encoded)
+		}
+	}
+}
+
+// TestPathConfigurationSnapshotClassifiesAuditDirectoryFailure 验证目标目录失败形成明确阻塞项而不是伪装成运行时确定。
+func TestPathConfigurationSnapshotClassifiesAuditDirectoryFailure(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.directoryAudit = true
+	fake.directoryFail = true
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	snapshot, err := service.NewTargetReadService(config.LoadTargetConfig()).PathConfigurationSnapshot(context.Background(), "account-a", "new", "template-id")
+	if err != nil || snapshot.Tree == nil || snapshot.Tree.Child == nil || snapshot.Tree.Child.AuditConfig == nil {
+		t.Fatalf("目录失败快照不应丢失流程结构：snapshot=%+v err=%v", snapshot, err)
+	}
+	if len(snapshot.Tree.Child.AuditConfig.ResolutionIssues) == 0 {
+		t.Fatalf("目录读取失败没有形成稳定分类：%+v", snapshot.Tree.Child.AuditConfig)
+	}
+	graphNodes, graphEdges, warnings, err := analyzer.NewFlowGraphAnalyzer().Analyze(snapshot.Tree)
+	if err != nil {
+		t.Fatalf("目录失败流程图分析失败：%v", err)
+	}
+	graph := model.FlowGraph{EntryNodeIDs: snapshot.EntryNodeIDs, Nodes: graphNodes, Edges: graphEdges, Warnings: warnings}
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, nil)
+	if err != nil {
+		t.Fatalf("目录失败路径分析失败：%v", err)
+	}
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, snapshot.Tree, snapshot.FormFields, model.ExecutionPath{}, pathAnalysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("目录失败配置投影失败：%v", err)
+	}
+	approval := configuration.Groups[0].Nodes[1]
+	if len(approval.Persons) != 1 || approval.Persons[0].Mode != "review" || len(validation.Blockers) == 0 || !strings.Contains(approval.Persons[0].Detail, "读取失败") {
+		t.Fatalf("目录失败被错误降级：person=%+v blockers=%+v", approval.Persons, validation.Blockers)
 	}
 }
 

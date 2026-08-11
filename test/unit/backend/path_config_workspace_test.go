@@ -75,11 +75,11 @@ func TestPathConfigWorkspaceGeneratesAndPersistsFormSeparately(t *testing.T) {
 	}
 	for _, group := range afterForm.Groups {
 		for _, node := range group.Nodes {
-			if len(node.Actions) == 0 && !hasEditableWorkspacePerson(node) {
+			if len(node.ActionPlan.Catalog) == 0 && !hasEditableWorkspacePerson(node) {
 				continue
 			}
 			result, saveErr := serviceUnderTest.SaveNode(context.Background(), 7, 32, node.Key, nextWorkspaceSaveKey(configs.saveCalls), model.PathNodeSaveInput{
-				Revision: configs.records[32].NodeRevision, Actions: workspaceNodeActions(node),
+				Revision: configs.records[32].NodeRevision, Persons: workspaceNodePersons(node), Arrivals: workspaceNodeArrivals(node),
 			})
 			if saveErr != nil {
 				t.Fatalf("逐节点保存失败：node=%s result=%+v err=%v", node.Name, result, saveErr)
@@ -157,6 +157,79 @@ func TestPathConfigWorkspaceNewFormUsesEntryNodePermissions(t *testing.T) {
 	}
 }
 
+// TestPathConfigWorkspaceSavesPersonStrategyAndOrderedArrivals 验证逐节点保存只合并当前人员策略与有序动作，并在候选变化后权威标记失效。
+func TestPathConfigWorkspaceSavesPersonStrategyAndOrderedArrivals(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	snapshot := pathConfigWorkspaceSnapshot()
+	approvalTemplate := snapshot.Tree.Child.ConditionNodes[0].Child
+	approvalTemplate.AuditConfig = &target.FlowNodeAuditConfig{
+		AuditType: "run_node_choose", Mode: "countersign", CountersignNum: intPointer(2),
+		Candidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}, {ID: "person-3", Name: "王五"}},
+	}
+	reader := &pathConfigReader{snapshot: snapshot}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{}
+	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("读取人员动作配置失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	if approval == nil || len(approval.Persons) != 1 || len(approval.ActionPlan.Catalog) < 5 {
+		t.Fatalf("人员策略或动作目录没有投影：%+v", approval)
+	}
+	person := approval.Persons[0]
+	input := model.PathNodeSaveInput{
+		Revision: configuration.NodeRevision,
+		Persons:  []model.PathConfigPersonStrategyInput{{Key: person.Key, Strategy: "manual", Seed: 11, Selected: []string{person.Options[0].Value, person.Options[1].Value}}},
+		Arrivals: []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass", Opinion: "同意办理"}}}},
+	}
+	result, err := serviceUnderTest.SaveNode(context.Background(), 7, 32, approval.Key, "123e4567-e89b-12d3-a456-426614174880", input)
+	if err != nil || result.NodeRevision != 1 {
+		t.Fatalf("新版逐节点保存失败：result=%+v err=%v", result, err)
+	}
+	stored := configs.records[32]
+	if stored.ActionValues["person-plan:approve-a"] == "" || stored.ActionValues["action-plan:approve-a"] == "" || stored.ActionValues["approve-a"] != "" {
+		t.Fatalf("新版人员和动作没有进入独立命名空间：%+v", stored.ActionValues)
+	}
+	refreshed, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil || findConfigNode(refreshed.Groups, "财务审批").Status != "configured" {
+		t.Fatalf("刷新没有以已保存节点事实投影完成：configuration=%+v err=%v", refreshed, err)
+	}
+	approvalTemplate.AuditConfig.Candidates = approvalTemplate.AuditConfig.Candidates[:1]
+	affected, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil || findConfigNode(affected.Groups, "财务审批").Status != "affected" || affected.Status != "affected" {
+		t.Fatalf("候选变化没有使存量策略失效：configuration=%+v err=%v", affected, err)
+	}
+}
+
+// TestPathConfigWorkspaceRejectsDirectoryResolutionFailure 验证目标目录失败不能绕过页面直接保存为完成节点。
+func TestPathConfigWorkspaceRejectsDirectoryResolutionFailure(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	snapshot := pathConfigWorkspaceSnapshot()
+	approvalTemplate := snapshot.Tree.Child.ConditionNodes[0].Child
+	approvalTemplate.AuditConfig = &target.FlowNodeAuditConfig{
+		AuditType: "run_node_choose", Mode: "scramble",
+		ResolutionIssues: []target.FlowAuditResolutionIssue{{Category: "角色", Reason: "角色范围读取失败"}},
+	}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	serviceUnderTest := newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, &memoryPathConfigRepository{})
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("读取目录失败节点配置失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	_, err = serviceUnderTest.SaveNode(context.Background(), 7, 32, approval.Key, "123e4567-e89b-12d3-a456-426614174881", model.PathNodeSaveInput{
+		Revision: configuration.NodeRevision,
+		Arrivals: []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}}},
+	})
+	if !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
+		t.Fatalf("目录读取失败节点被错误保存：%v", err)
+	}
+}
+
 // pathConfigWorkspaceSnapshot 构造带完整目标 FormMaking 模板的当前路径快照。
 func pathConfigWorkspaceSnapshot() target.PathConfigurationSnapshot {
 	tree := pathConfigTree()
@@ -181,18 +254,26 @@ func hasEditableWorkspacePerson(node model.PathConfigNode) bool {
 	return false
 }
 
-// workspaceNodeActions 返回节点当前默认动作和人员选择，用于验证逐节点保存边界。
-func workspaceNodeActions(node model.PathConfigNode) []model.PathConfigActionValue {
-	result := make([]model.PathConfigActionValue, 0, len(node.Actions)+len(node.Persons))
-	for _, action := range node.Actions {
-		if action.Kind == "agree_disagree" {
-			result = append(result, model.PathConfigActionValue{Key: action.Key, Action: action.Default})
+// workspaceNodePersons 返回节点当前人员策略，用于验证新版逐节点保存边界。
+func workspaceNodePersons(node model.PathConfigNode) []model.PathConfigPersonStrategyInput {
+	result := make([]model.PathConfigPersonStrategyInput, 0, len(node.Persons))
+	for _, person := range node.Persons {
+		if person.Editable {
+			result = append(result, model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: person.Strategy, Seed: person.StrategySeed, Selected: append([]string(nil), person.Selected...)})
 		}
 	}
-	for _, person := range node.Persons {
-		if person.Editable && len(person.Selected) > 0 {
-			result = append(result, model.PathConfigActionValue{Key: person.Key, Action: `[]`})
+	return result
+}
+
+// workspaceNodeArrivals 把公开动作计划转换成新版逐节点保存输入。
+func workspaceNodeArrivals(node model.PathConfigNode) []model.PathConfigArrivalInput {
+	result := make([]model.PathConfigArrivalInput, 0, len(node.ActionPlan.Arrivals))
+	for _, arrival := range node.ActionPlan.Arrivals {
+		input := model.PathConfigArrivalInput{Visit: arrival.Visit, Steps: make([]model.PathConfigActionStepInput, 0, len(arrival.Steps))}
+		for _, step := range arrival.Steps {
+			input.Steps = append(input.Steps, model.PathConfigActionStepInput{Kind: step.Kind, Opinion: step.Opinion, Target: step.Target, Person: step.Person})
 		}
+		result = append(result, input)
 	}
 	return result
 }

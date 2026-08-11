@@ -231,8 +231,7 @@ func TestPathConfigAnalyzerProjectsStructuredPersonNames(t *testing.T) {
 		{name: "岗位", auditType: "position", details: []target.FlowAuditDetail{{Name: "主任", Type: "position"}}, wantCategory: "岗位", wantName: "主任", wantItemCount: 1},
 		{name: "岗级", auditType: "level", details: []target.FlowAuditDetail{{Name: "二级岗", Type: "level"}}, wantCategory: "岗级", wantName: "二级岗", wantItemCount: 1},
 		{name: "角色", auditType: "role", details: []target.FlowAuditDetail{{Name: "财务审批角色"}}, wantCategory: "角色", wantName: "财务审批角色", wantItemCount: 1},
-		{name: "组织", auditType: "department", details: []target.FlowAuditDetail{{Name: "财务部", Type: "department"}}, wantCategory: "组织", wantName: "财务部", wantItemCount: 1},
-		{name: "无名称范围", auditType: "run_node_choose", scopes: []target.FlowAuditScope{{Type: "level"}, {Type: "level"}}, wantCategory: "岗级", wantName: "名称需运行时解析", wantItemCount: 2},
+		{name: "部门", auditType: "department", details: []target.FlowAuditDetail{{Name: "财务部", Type: "department"}}, wantCategory: "部门", wantName: "财务部", wantItemCount: 1},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -443,6 +442,134 @@ func TestPathConfigAnalyzerMapsUnsupportedFieldsToGaps(t *testing.T) {
 		}
 	}
 	assertPathConfigPublicSafety(t, configuration)
+}
+
+// TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom 验证目标默认、手动、确定性随机和全选均受当前候选与人数边界约束。
+func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *testing.T) {
+	tree := pathConfigTree()
+	approval := tree.Child.ConditionNodes[0].Child
+	approval.AuditConfig = &target.FlowNodeAuditConfig{
+		AuditType: "run_node_choose", Mode: "countersign", CountersignNum: intPointer(-1),
+		Candidates:        []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}, {ID: "person-3", Name: "王五"}},
+		DefaultCandidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}, {ID: "person-3", Name: "王五"}},
+	}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备人员策略路径失败：%v", err)
+	}
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("人员策略投影失败：%v", err)
+	}
+	person := findConfigNode(configuration.Groups, "财务审批").Persons[0]
+	if person.Strategy != "target_default" || len(person.Selected) != 3 || len(person.Strategies) != 4 {
+		t.Fatalf("目标默认或策略目录不正确：%+v", person)
+	}
+	targetPlan := validation.NodeTokens[findConfigNode(configuration.Groups, "财务审批").Key].Person
+	if targetPlan == nil {
+		t.Fatal("人员策略没有进入节点校验索引")
+	}
+	manual := model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "manual", Seed: 7, Selected: []string{person.Options[0].Value, person.Options[1].Value, person.Options[2].Value}}
+	if _, reason := analyzer.EncodePathConfigPersonStrategy(*targetPlan, manual); reason != "" {
+		t.Fatalf("合法手动策略被拒绝：%s", reason)
+	}
+	random := model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "random", Seed: 9, Selected: []string{person.Options[0].Value}}
+	first, reason := analyzer.EncodePathConfigPersonStrategy(*targetPlan, random)
+	if reason != "" {
+		t.Fatalf("合法随机策略被拒绝：%s", reason)
+	}
+	second, reason := analyzer.EncodePathConfigPersonStrategy(*targetPlan, random)
+	if reason != "" || first != second {
+		t.Fatalf("相同 seed 的随机策略不可复现：first=%s second=%s reason=%s", first, second, reason)
+	}
+	all := model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "all", Seed: 1, Selected: []string{person.Options[0].Value}}
+	if encoded, reason := analyzer.EncodePathConfigPersonStrategy(*targetPlan, all); reason != "" || !strings.Contains(encoded, "person-3") {
+		t.Fatalf("全选策略没有覆盖当前受限候选：encoded=%s reason=%s", encoded, reason)
+	}
+	manual.Selected = append(manual.Selected, "forged-token")
+	if _, reason := analyzer.EncodePathConfigPersonStrategy(*targetPlan, manual); !strings.Contains(reason, "不属于") {
+		t.Fatalf("越界人员候选没有被拒绝：%s", reason)
+	}
+	nodeTarget := validation.NodeTokens[findConfigNode(configuration.Groups, "财务审批").Key]
+	manual.Selected = manual.Selected[:3]
+	actions := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
+		{Kind: "add_sign", Person: &manual},
+		{Kind: "transfer_approver", Person: &random},
+		{Kind: "approve_pass", Opinion: "同意"},
+	}}}
+	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 3 {
+		t.Fatalf("加签或移交没有复用当前合法人员策略：count=%d reason=%s", count, reason)
+	}
+}
+
+// TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration 验证动作目录、回退目标、有序步骤与旧 agree/disagree 首访迁移。
+func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T) {
+	tree := pathConfigTree()
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备动作路径失败：%v", err)
+	}
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, map[string]string{"approve-a": "disagree"}, true)
+	if err != nil {
+		t.Fatalf("动作计划投影失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	if approval == nil || len(approval.ActionPlan.Arrivals) != 1 || approval.ActionPlan.Arrivals[0].Steps[0].Kind != "reject_no_pass" {
+		t.Fatalf("旧 disagree 没有准确迁移为首访不同意：%+v", approval)
+	}
+	wantKinds := map[string]bool{"approve_pass": true, "reject_no_pass": true, "draft_save": true, "rollback_previous": true}
+	for _, item := range approval.ActionPlan.Catalog {
+		delete(wantKinds, item.Kind)
+	}
+	if len(wantKinds) != 0 || len(approval.ActionPlan.RollbackTargets) == 0 {
+		t.Fatalf("审批动作目录或回退目标不完整：missing=%v plan=%+v", wantKinds, approval.ActionPlan)
+	}
+	nodeTarget := validation.NodeTokens[approval.Key]
+	input := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
+		{Kind: "draft_save"},
+	}}}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, input); reason != "" {
+		t.Fatalf("合法暂存动作被拒绝：%s", reason)
+	}
+	input = []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}, {Kind: "draft_save"}}}}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, input); !strings.Contains(reason, "最后一步") {
+		t.Fatalf("终止动作后的额外步骤没有被拒绝：%s", reason)
+	}
+	tooMany := make([]model.PathConfigArrivalInput, 11)
+	for index := range tooMany {
+		tooMany[index] = model.PathConfigArrivalInput{Visit: index + 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}}
+	}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, tooMany); !strings.Contains(reason, "10") {
+		t.Fatalf("超过十次到达没有被拒绝：%s", reason)
+	}
+}
+
+// TestPathConfigAnalyzerCountsWholePathActionLimit 验证整条路径超过一百个动作步骤时统一拒绝。
+func TestPathConfigAnalyzerCountsWholePathActionLimit(t *testing.T) {
+	targetPlan := analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"draft_save": true}, RollbackTargets: map[string]string{}}
+	arrivals := make([]model.PathConfigArrivalInput, 10)
+	for index := range arrivals {
+		arrivals[index] = model.PathConfigArrivalInput{Visit: index + 1, Steps: []model.PathConfigActionStepInput{{Kind: "draft_save"}}}
+	}
+	encoded, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, arrivals)
+	if reason != "" {
+		t.Fatalf("准备动作上限样本失败：%s", reason)
+	}
+	values := make(map[string]string)
+	for index := 0; index < 10; index++ {
+		values[analyzer.PathConfigActionPlanStorageKey(string(rune('a'+index)))] = encoded
+	}
+	if count, valid := analyzer.CountStoredPathConfigActionSteps(values); !valid || count != 100 {
+		t.Fatalf("一百步边界计算错误：count=%d valid=%v", count, valid)
+	}
+	values[analyzer.PathConfigActionPlanStorageKey("overflow")] = encoded
+	if count, valid := analyzer.CountStoredPathConfigActionSteps(values); valid || count != 110 {
+		t.Fatalf("超过一百步没有被拒绝：count=%d valid=%v", count, valid)
+	}
 }
 
 // pathConfigTree 构造含条件路由、两个审批节点和字段权限的真实树形样本。

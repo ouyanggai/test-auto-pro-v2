@@ -368,6 +368,32 @@ func validatePathConfigPersonSelection(target analyzer.PathConfigActionTarget, r
 	return string(encoded), ""
 }
 
+// validatePathConfigNodeSubmission 只校验并编码一个节点的人员策略与有序到达动作，不接受跨节点覆盖。
+func validatePathConfigNodeSubmission(target analyzer.PathConfigNodeTarget, input model.PathNodeSaveInput) (map[string]string, error) {
+	if len(target.Blockers) > 0 {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点仍有无法安全确认的配置项", Affected: target.Blockers}
+	}
+	values := make(map[string]string)
+	if target.Person != nil {
+		if len(input.Persons) != 1 || strings.TrimSpace(input.Persons[0].Key) != target.Person.Key {
+			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略不完整", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Person.Name, Reason: "缺少或重复提交人员策略"}}}
+		}
+		encoded, reason := analyzer.EncodePathConfigPersonStrategy(*target.Person, input.Persons[0])
+		if reason != "" {
+			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略不合法", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Person.Name, Reason: reason}}}
+		}
+		values[analyzer.PathConfigPersonPlanStorageKey(target.NodeID)] = encoded
+	} else if len(input.Persons) > 0 {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点不允许配置处理人员"}
+	}
+	encoded, _, reason := analyzer.EncodePathConfigActionPlan(target, input.Arrivals)
+	if reason != "" {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作计划不合法", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: target.Name, Reason: reason}}}
+	}
+	values[analyzer.PathConfigActionPlanStorageKey(target.NodeID)] = encoded
+	return values, nil
+}
+
 // validateConfigFieldValue 按字段类型校验必填、类型、选项与值边界，返回可公开的中文原因。
 func validateConfigFieldValue(target analyzer.PathConfigFieldTarget, raw string) string {
 	if utf8.RuneCountInString(raw) > 20000 {

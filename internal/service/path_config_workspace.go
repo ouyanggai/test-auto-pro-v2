@@ -11,7 +11,9 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-const currentPathConfigVersion = 2
+const currentPathConfigVersion = 3
+
+const currentPathFormConfigVersion = 2
 
 type pathFormRuntimeSessionReader interface {
 	FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error)
@@ -147,24 +149,49 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 	if err != nil {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点无法投影，请重新读取"}
 	}
-	nodeValidation := analyzer.PathConfigValidation{FieldTokens: map[string]analyzer.PathConfigFieldTarget{}, ActionTokens: map[string]analyzer.PathConfigActionTarget{}}
+	nodeValidation := analyzer.PathConfigValidation{FieldTokens: map[string]analyzer.PathConfigFieldTarget{}, ActionTokens: map[string]analyzer.PathConfigActionTarget{}, NodeTokens: map[string]analyzer.PathConfigNodeTarget{}}
 	for key, action := range validation.ActionTokens {
 		if analyzer.PathConfigNodeToken(action.NodeID) == nodeKey {
 			nodeValidation.ActionTokens[key] = action
 		}
 	}
-	if len(nodeValidation.ActionTokens) == 0 {
+	if nodeTarget, exists := validation.NodeTokens[nodeKey]; exists {
+		nodeValidation.NodeTokens[nodeKey] = nodeTarget
+	}
+	if len(nodeValidation.ActionTokens) == 0 && len(nodeValidation.NodeTokens) == 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "当前节点没有可保存配置"}
 	}
-	_, nodeActions, err := validatePathConfigSubmission(nodeValidation, nil, input.Actions)
-	if err != nil {
-		return model.PathConfigSaveResult{}, err
+	nodeActions := make(map[string]string)
+	if len(input.Arrivals) > 0 || len(input.Persons) > 0 {
+		nodeTarget, exists := nodeValidation.NodeTokens[nodeKey]
+		if !exists {
+			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作目录已变化，请重新读取"}
+		}
+		nodeActions, err = validatePathConfigNodeSubmission(nodeTarget, input)
+		if err != nil {
+			return model.PathConfigSaveResult{}, err
+		}
+	} else {
+		// 兼容已部署页面的旧最小动作数组；新页面只使用人员策略和到达计划。
+		_, nodeActions, err = validatePathConfigSubmission(nodeValidation, nil, input.Actions)
+		if err != nil {
+			return model.PathConfigSaveResult{}, err
+		}
 	}
 	if stored.ActionValues == nil {
 		stored.ActionValues = map[string]string{}
 	}
 	for storageKey, value := range nodeActions {
 		stored.ActionValues[storageKey] = value
+	}
+	if len(input.Arrivals) > 0 || len(input.Persons) > 0 {
+		nodeTarget := nodeValidation.NodeTokens[nodeKey]
+		// 新格式成为当前节点的权威值后移除旧键，刷新时不会出现两套语义竞争。
+		delete(stored.ActionValues, nodeTarget.NodeID)
+		delete(stored.ActionValues, analyzer.PathConfigPersonStorageKey(nodeTarget.NodeID))
+	}
+	if _, valid := analyzer.CountStoredPathConfigActionSteps(stored.ActionValues); !valid {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "整条路径的动作步骤不能超过 100 个"}
 	}
 	stored.ConfirmedNodeKeys = appendUnique(stored.ConfirmedNodeKeys, nodeKey)
 	stored.PathID = pathID
@@ -280,7 +307,7 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 		return form
 	}
 	version := formdata.TemplateVersion(template)
-	if found && stored.ConfigVersion < currentPathConfigVersion {
+	if found && stored.ConfigVersion < currentPathFormConfigVersion {
 		form.Status, form.StatusName = "affected", "旧配置需要重新确认"
 		form.Affected = []model.PathConfigAffectedItem{{Kind: "form", Name: "表单数据", Reason: "旧配置未保存完整 FormMaking values"}}
 		return form
@@ -333,7 +360,7 @@ func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKe
 			if node.Status == "affected" || node.Status == "partial" || node.LineBlocked {
 				continue
 			}
-			requiresSave := len(node.Actions) > 0
+			requiresSave := len(node.ActionPlan.Catalog) > 0
 			for _, person := range node.Persons {
 				requiresSave = requiresSave || person.Editable
 			}

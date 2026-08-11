@@ -11,6 +11,9 @@ type Session struct {
 	SID          string         `json:"-"`
 	CustomerCode string         `json:"-"`
 	PlatformCode string         `json:"-"`
+	UserID       string         `json:"-"`
+	CompanyID    string         `json:"-"`
+	DepartmentID string         `json:"-"`
 	Summary      AccountSummary `json:"-"`
 }
 
@@ -108,30 +111,42 @@ type FlowCondition struct {
 
 // FlowNodeAuditConfig 是审批节点的内部只读配置。
 type FlowNodeAuditConfig struct {
-	AuditType       string
-	Mode            string
-	CountersignNum  *int
-	FormPersonField string
-	Details         []FlowAuditDetail
-	Scopes          []FlowAuditScope
-	Candidates      []FlowAuditCandidate
+	AuditType         string
+	Mode              string
+	CountersignNum    *int
+	FormPersonField   string
+	AuditCondition    string
+	Details           []FlowAuditDetail
+	Scopes            []FlowAuditScope
+	Candidates        []FlowAuditCandidate
+	DefaultCandidates []FlowAuditCandidate
+	ResolutionIssues  []FlowAuditResolutionIssue
 }
 
-// FlowAuditDetail 只保留可展示名称，业务 ID 仅用于内部计数且不会公开。
+// FlowAuditDetail 保留目录解析所需内部 ID 与可展示名称，业务 ID 不会进入公开响应。
 type FlowAuditDetail struct {
+	ID   string
 	Name string
 	Type string
 }
 
-// FlowAuditScope 只保留范围类型，目标业务 ID 不进入公开响应。
+// FlowAuditScope 保留运行节点范围的内部 ID、类型和解析名称，目标业务 ID 不进入公开响应。
 type FlowAuditScope struct {
+	ID   string
 	Type string
+	Name string
 }
 
 // FlowAuditCandidate 是目标详情已经返回的受限人员候选，仅在后端内部参与不透明键映射。
 type FlowAuditCandidate struct {
 	ID   string
 	Name string
+}
+
+// FlowAuditResolutionIssue 记录目标目录解析失败的公开类别与原因，不携带目标响应原文。
+type FlowAuditResolutionIssue struct {
+	Category string
+	Reason   string
 }
 
 // FlowNodeFieldPower 记录节点字段权限与表单归属提示。

@@ -22,6 +22,8 @@ type stubPathConfigurationService struct {
 	revision      uint64
 	fields        []model.PathConfigFieldValue
 	actions       []model.PathConfigActionValue
+	persons       []model.PathConfigPersonStrategyInput
+	arrivals      []model.PathConfigArrivalInput
 	nodeKey       string
 	generateSeed  int64
 	formInput     model.PathFormSaveInput
@@ -45,6 +47,7 @@ func (s *stubPathConfigurationService) Save(_ context.Context, planID, pathID ui
 // SaveNode 返回契约测试预设的逐节点保存结果。
 func (s *stubPathConfigurationService) SaveNode(_ context.Context, planID, pathID uint64, nodeKey, key string, input model.PathNodeSaveInput) (model.PathConfigSaveResult, error) {
 	s.planID, s.pathID, s.nodeKey, s.key, s.revision, s.actions = planID, pathID, nodeKey, key, input.Revision, input.Actions
+	s.persons, s.arrivals = input.Persons, input.Arrivals
 	return s.result, s.err
 }
 
@@ -69,10 +72,10 @@ func TestPathConfigurationAPIWorkspaceContracts(t *testing.T) {
 	handler := newConfigurationHandler(stub)
 
 	node := httptest.NewRecorder()
-	nodeRequest := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/nodes/node-token", strings.NewReader(`{"revision":1,"actions":[{"key":"person-token","action":"[]"}]}`))
+	nodeRequest := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/nodes/node-token", strings.NewReader(`{"revision":1,"persons":[{"key":"person-token","strategy":"random","seed":9,"selected":["person-option"]}],"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass","opinion":"同意"}]}]}`))
 	nodeRequest.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174611")
 	handler.ServeHTTP(node, nodeRequest)
-	if node.Code != http.StatusOK || stub.nodeKey != "node-token" || stub.revision != 1 || len(stub.actions) != 1 || !strings.Contains(node.Body.String(), `"nodeRevision":2`) {
+	if node.Code != http.StatusOK || stub.nodeKey != "node-token" || stub.revision != 1 || len(stub.persons) != 1 || stub.persons[0].Strategy != "random" || len(stub.arrivals) != 1 || stub.arrivals[0].Steps[0].Kind != "approve_pass" || !strings.Contains(node.Body.String(), `"nodeRevision":2`) {
 		t.Fatalf("逐节点保存契约不正确：status=%d body=%s stub=%+v", node.Code, node.Body.String(), stub)
 	}
 
@@ -135,7 +138,8 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 					Items:    []model.PathConfigPersonDisplayItem{{Category: "岗位", Name: "财务主任", Count: 1}},
 					Selected: []string{"opaque-person-option"}, Options: []model.PathConfigPersonOption{{Label: "候选人甲", Value: "opaque-person-option"}},
 				}},
-				Actions: []model.PathConfigAction{{Key: "opaque-action-key", Kind: "agree_disagree", Label: "处理结果", Current: "agree", Default: "agree", Options: []model.PathConfigActionOption{{Value: "agree", Label: "同意"}, {Value: "disagree", Label: "不同意"}}}},
+				Actions:    []model.PathConfigAction{{Key: "opaque-action-key", Kind: "agree_disagree", Label: "处理结果", Current: "agree", Default: "agree", Options: []model.PathConfigActionOption{{Value: "agree", Label: "同意"}, {Value: "disagree", Label: "不同意"}}}},
+				ActionPlan: model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{{Kind: "approve_pass", Label: "同意"}}, Arrivals: []model.PathConfigArrivalPlan{{Visit: 1, Steps: []model.PathConfigActionStep{{Kind: "approve_pass", Label: "同意"}}}}, MaxArrivals: 10, MaxPathSteps: 100},
 			}}}},
 		},
 		result: model.PathConfigSaveResult{Path: model.PathConfigPath{SequenceNo: 2, Name: "财务路径"}, Revision: 4, Status: "configured"},
@@ -147,7 +151,7 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 		t.Fatalf("配置读取状态不正确：%d %s", get.Code, get.Body.String())
 	}
 	getBody := get.Body.String()
-	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-node-key"`, `"statusName":"已完成"`, `"opaque-field-key"`, `"申请金额"`, `"category":"岗位"`, `"name":"财务主任"`, `"候选人甲"`, `"agree"`} {
+	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-node-key"`, `"statusName":"已完成"`, `"opaque-field-key"`, `"申请金额"`, `"category":"岗位"`, `"name":"财务主任"`, `"候选人甲"`, `"agree"`, `"approve_pass"`, `"maxArrivals":10`} {
 		if !strings.Contains(getBody, want) {
 			t.Fatalf("配置读取响应缺少 %s：%s", want, getBody)
 		}
