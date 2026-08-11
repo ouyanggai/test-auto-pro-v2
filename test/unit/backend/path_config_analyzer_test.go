@@ -548,6 +548,33 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 	}
 }
 
+// TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings 验证并行遍历中更早出现的兄弟支线不能被伪造成回退前驱。
+func TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings(t *testing.T) {
+	tree := requirementParallelTree()
+	graph := requirementGraph(t, tree)
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, nil)
+	if err != nil {
+		t.Fatalf("准备并行路径失败：%v", err)
+	}
+	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, nil, model.ExecutionPath{}, pathAnalysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("并行动作目录投影失败：%v", err)
+	}
+	finance := findConfigNode(configuration.Groups, "财务协同")
+	business := findConfigNode(configuration.Groups, "业务审批")
+	if finance == nil || business == nil {
+		t.Fatalf("并行业务节点缺失：finance=%+v business=%+v", finance, business)
+	}
+	for _, option := range business.ActionPlan.RollbackTargets {
+		if option.Label == finance.Name {
+			t.Fatalf("并行兄弟节点被错误加入回退目录：%+v", business.ActionPlan.RollbackTargets)
+		}
+	}
+	if len(business.ActionPlan.RollbackTargets) != 1 || business.ActionPlan.RollbackTargets[0].Label != "发起" {
+		t.Fatalf("业务支线应仅能回退到共同前驱：%+v", business.ActionPlan.RollbackTargets)
+	}
+}
+
 // TestPathConfigAnalyzerCountsWholePathActionLimit 验证整条路径超过一百个动作步骤时统一拒绝。
 func TestPathConfigAnalyzerCountsWholePathActionLimit(t *testing.T) {
 	targetPlan := analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"draft_save": true}, RollbackTargets: map[string]string{}}

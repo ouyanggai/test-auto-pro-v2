@@ -255,6 +255,10 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, per
 			if earlierNode.Type != "start" && earlierNode.Type != "common" && earlierNode.Type != "synergy" {
 				continue
 			}
+			// 并行支线在遍历顺序上可能更早，但不一定能到达当前节点；回退目录只能包含真实可达前驱。
+			if !p.reachableBusinessPredecessor(earlierID, nodeID) {
+				continue
+			}
 			token := pathConfigToken("rollback-target", nodeID, earlierID)
 			target.RollbackTargets[token] = earlierID
 			result.RollbackTargets = append(result.RollbackTargets, model.PathConfigActionOption{Value: token, Label: earlierNode.Name})
@@ -277,6 +281,29 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, per
 	}
 	p.validation.NodeTokens[PathConfigNodeToken(nodeID)] = target
 	return result
+}
+
+// reachableBusinessPredecessor 判断更早业务节点能否沿当前已选路径到达目标节点，避免并行兄弟节点互相回退。
+func (p *pathConfigProjection) reachableBusinessPredecessor(sourceID, targetID string) bool {
+	if sourceID == "" || targetID == "" || sourceID == targetID {
+		return false
+	}
+	queue := []string{sourceID}
+	seen := map[string]bool{sourceID: true}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, edge := range p.reachableOutgoing(current) {
+			if edge.Target == targetID {
+				return true
+			}
+			if !seen[edge.Target] {
+				seen[edge.Target] = true
+				queue = append(queue, edge.Target)
+			}
+		}
+	}
+	return false
 }
 
 // firstNonEmptyPathConfig 返回首个非空公开说明，避免阻塞项出现空原因。
