@@ -193,8 +193,9 @@ func TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately(t *testing.
 
 	values := map[string]any{
 		"amount": float64(2800), "type": "a", "note": "人工填写",
-		"generalInfo":            `{"bizType":"project","value":"示例"}`,
-		"generalInfo__condition": map[string]any{"field": "project"}, "__formPersonId": "person-token",
+		"generalInfo":               `{"id":"project-42","name":"示例项目"}`,
+		"generalInfo__condition":    "示例项目",
+		"generalInfo__formPersonId": "project-42",
 	}
 	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 17, values, []string{"generalInfo"})
 	if err != nil || len(generated.Unsupported) != 0 || generated.Values["generalInfo"] != values["generalInfo"] {
@@ -209,7 +210,10 @@ func TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately(t *testing.
 		t.Fatalf("已注册自定义组件完整值保存失败：result=%+v err=%v", result, err)
 	}
 	reloaded, err := serviceUnderTest.Get(context.Background(), 7, 32)
-	if err != nil || reloaded.Form.Values["generalInfo"] != values["generalInfo"] || reloaded.Form.Values["__formPersonId"] != "person-token" {
+	if err != nil ||
+		reloaded.Form.Values["generalInfo"] != values["generalInfo"] ||
+		reloaded.Form.Values["generalInfo__condition"] != values["generalInfo__condition"] ||
+		reloaded.Form.Values["generalInfo__formPersonId"] != values["generalInfo__formPersonId"] {
 		t.Fatalf("自定义组件或虚拟字段没有完整往返：form=%+v err=%v", reloaded.Form, err)
 	}
 }
@@ -221,10 +225,24 @@ func TestPathConfigWorkspaceRejectsRuntimeUnsupportedComponents(t *testing.T) {
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
 	configs := &memoryPathConfigRepository{}
 	serviceUnderTest := newPathConfigService(t, plans, &pathConfigReader{snapshot: pathConfigWorkspaceSnapshot()}, paths, configs)
-	_, err := serviceUnderTest.SaveForm(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174853", model.PathFormSaveInput{
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("读取未知组件场景的节点配置失败：%v", err)
+	}
+	start := findConfigNode(configuration.Groups, "发起")
+	if start == nil {
+		t.Fatal("未知组件场景缺少发起节点")
+	}
+	if _, err := serviceUnderTest.SaveNode(context.Background(), 7, 32, start.Key, "123e4567-e89b-12d3-a456-426614174853", model.PathNodeSaveInput{
+		Revision: configuration.NodeRevision, Arrivals: workspaceNodeArrivals(*start),
+	}); err != nil {
+		t.Fatalf("未知组件错误阻断节点人员动作独立保存：%v", err)
+	}
+	_, err = serviceUnderTest.SaveForm(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174854", model.PathFormSaveInput{
+		Revision:  configuration.Form.Revision,
 		Validated: true, Unsupported: []string{"未知宿主组件：依赖 rsh-flow-components 宿主业务适配"},
 	})
-	if !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) || configs.saveCalls != 0 {
+	if !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) || configs.saveCalls != 1 {
 		t.Fatalf("运行时未知组件没有阻止保存：err=%v saves=%d", err, configs.saveCalls)
 	}
 }
