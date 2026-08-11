@@ -1,10 +1,11 @@
 # 当前进度
 
 - 当前功能：F-007 已保存路径的节点可视化配置
-- 当前状态：ready_for_manual
+- 当前状态：implementing
 - 已完成：节点配置已与表单字段/组件缺口解耦；真实 `el` 与运行时注册表负责组件兼容性；`generalInfo` 及两个字段级虚拟键已按真实组件值形态完成保存往返验证。
-- 阻塞：无。
-- 下一步：等待用户人工复验 `custome-info-select` 真实表单编辑与保存；不开始后续运行功能。
+- 阻塞：节点动作响应式草稿在保存请求构造前触发 `DataCloneError`，节点 PUT 未发出。
+- 下一步：统一节点动作草稿普通对象复制边界，验证真实 PUT、成功/对账推进和 Vue reactive 回归；不开始后续运行功能。
+- 2026-08-11（第八次人工验收退回）：保存当前节点前对 Vue Proxy 动作数组执行 `structuredClone`，浏览器抛出 `DataCloneError` 且请求未发出。F-007 退回 `implementing`，只修节点保存链路。
 - 2026-08-11（第七次独立复核修复完成）：真实 `generalInfo` JSON、`generalInfo__condition` 名称字符串和 `generalInfo__formPersonId` 标识字符串已完整保存并重载；未知组件仅拒绝表单保存，节点人员/动作独立保存不受影响。完整 `./test/run-f007.sh` 与实际 MySQL 集成通过，状态恢复 `ready_for_manual`。
 - 2026-08-11（第七次独立复核退回）：现有测试使用全局 `__formPersonId` 和错误的 `__condition` 值形态，未证明真实 `CustomeInfoSelect` 虚拟字段往返。F-007 退回 `implementing`，只修当前证据与可能暴露的最小持久化问题。
 - 2026-08-11（第七次人工返工完成）：节点字段/缺口不再进入节点状态、进度或保存；表单运行时按真实 `el` 和实际注册表识别组件，生成器跳过复杂字段但不阻断整表，完整自定义组件值与虚拟字段可保存恢复。`./test/run-f007.sh`、实际 MySQL、Go build、主前端与 form-runtime 双构建全部通过，状态回到 `ready_for_manual`。
