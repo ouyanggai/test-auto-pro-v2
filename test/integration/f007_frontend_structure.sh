@@ -130,19 +130,61 @@ grep -Fq "READ_SEGMENT_PREFIXES" "${runtime_policy}"
 grep -Fq "window.fetch = async" "${runtime_policy}"
 grep -Fq "SID" "${runtime_policy}"
 
-# 表单工作区是单层宽屏主体：紧凑工具栏固定，真实 iframe 占满余下宽高并自行滚动。
-grep -Fq "'path-configuration-page--form': workspace === 'form'" "${config_view}"
-grep -Fq 'flex-direction: column' "${config_view}"
-grep -Fq 'flex: 0 0 auto' "${config_view}"
-grep -Fq 'flex: 1 1 0' "${config_view}"
-grep -Fq 'overscroll-behavior: contain' "${config_view}"
-grep -Fq 'width: 100%' "${form_frame}"
-grep -Fq 'height: 100%' "${form_frame}"
-grep -Fq 'min-height: 0' "${form_frame}"
-if grep -Eq 'transform: *scale|zoom:' "${config_view}" "${form_frame}"; then
-  echo 'F-007 真实表单不得通过 zoom/scale 缩小后塞入工作区' >&2
-  exit 1
-fi
+# 表单模式必须用真实视口公式抵消 app-main 留白；不能只声明 class 或零散 flex 字段造成假通过。
+node --input-type=module - "${config_view}" "${form_frame}" <<'NODE'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+const view = readFileSync(process.argv[2], 'utf8')
+const frame = readFileSync(process.argv[3], 'utf8')
+const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const rule = (selector) => {
+  const match = view.match(new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`, 's'))
+  assert.ok(match, `缺少样式规则：${selector}`)
+  return match[1]
+}
+const pxVariable = (name) => {
+  const match = view.match(new RegExp(`${escapeRegExp(name)}:\\s*(\\d+)px`))
+  assert.ok(match, `缺少像素变量：${name}`)
+  return Number(match[1])
+}
+
+assert.match(view, /'path-configuration-page--form': workspace === 'form'/)
+const formPage = rule('.path-configuration-page--form')
+assert.match(formPage, /grid-template-rows:\s*minmax\(0, 1fr\)/)
+assert.match(formPage, /width:\s*calc\(100% \+ var\(--path-config-main-inline-padding\) \+ var\(--path-config-main-inline-padding\)\)/)
+assert.match(formPage, /height:\s*calc\(100dvh - var\(--path-config-app-header-height\)\)/)
+assert.match(formPage, /margin:\s*calc\(0px - var\(--path-config-main-block-padding\)\) calc\(0px - var\(--path-config-main-inline-padding\)\)/)
+assert.match(formPage, /overflow:\s*hidden/)
+
+const hiddenChrome = view.match(/\.path-configuration-page--form > \.path-configuration-page__header,\s*\.path-configuration-page--form > \.path-configuration-page__switch\s*\{([^}]*)\}/s)
+assert.ok(hiddenChrome)
+assert.match(hiddenChrome[1], /display:\s*none/)
+const flatStage = rule('.path-configuration-page--form > .path-configuration-page__stage')
+assert.match(flatStage, /height:\s*100%/)
+assert.match(flatStage, /border:\s*0/)
+assert.match(flatStage, /border-radius:\s*0/)
+
+const formWorkspace = rule('.path-configuration-page__form-workspace')
+assert.match(formWorkspace, /display:\s*flex/)
+assert.match(formWorkspace, /overflow:\s*hidden/)
+const toolbar = rule('.path-configuration-page__form-toolbar')
+assert.match(toolbar, /height:\s*var\(--path-config-form-toolbar-height\)/)
+assert.match(toolbar, /flex:\s*0 0 auto/)
+const feedback = rule('.path-configuration-page__form-feedback')
+assert.match(feedback, /position:\s*absolute/)
+const iframeHost = rule('.path-configuration-page__form-frame')
+assert.match(iframeHost, /flex:\s*1 1 0/)
+assert.match(iframeHost, /width:\s*100%/)
+assert.match(iframeHost, /height:\s*100%/)
+assert.match(iframeHost, /overflow:\s*hidden/)
+assert.match(frame, /\.form-runtime-frame\s*\{[^}]*width:\s*100%[^}]*height:\s*100%[^}]*min-height:\s*0/s)
+
+const appHeader = pxVariable('--path-config-app-header-height')
+const toolbarHeight = pxVariable('--path-config-form-toolbar-height')
+assert.ok(768 - appHeader - toolbarHeight >= 600, '1366×768 下 iframe 计算高度必须至少约 600px')
+assert.doesNotMatch(`${view}\n${frame}`, /transform:\s*scale|zoom:/)
+NODE
 
 # 浏览器只处理不透明键，结构变化保留可对应草稿；不得出现假运行控制。
 grep -Fq "pathConfigNodeKey" "${config_logic}"

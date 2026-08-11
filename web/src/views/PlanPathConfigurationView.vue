@@ -517,6 +517,11 @@ void loadPage()
 
 <style scoped>
 .path-configuration-page {
+  --path-config-app-header-height: 64px;
+  --path-config-main-block-padding: 40px;
+  --path-config-main-inline-padding: 48px;
+  --path-config-form-toolbar-height: 54px;
+
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   width: 100%;
@@ -525,6 +530,22 @@ void loadPage()
   overflow: hidden;
   color: var(--path-config-text-color);
   background: var(--path-config-page-color);
+}
+
+.path-configuration-page--form {
+  grid-template-rows: minmax(0, 1fr);
+  width: calc(100% + var(--path-config-main-inline-padding) + var(--path-config-main-inline-padding));
+  height: calc(100dvh - var(--path-config-app-header-height));
+  min-height: calc(100dvh - var(--path-config-app-header-height));
+  max-height: calc(100dvh - var(--path-config-app-header-height));
+  margin: calc(0px - var(--path-config-main-block-padding)) calc(0px - var(--path-config-main-inline-padding));
+  overflow: hidden;
+}
+
+/* 表单自身工具栏已包含返回入口；隐藏重复页头和导航才能把顶栏以下高度完整交给真实 FormMaking。 */
+.path-configuration-page--form > .path-configuration-page__header,
+.path-configuration-page--form > .path-configuration-page__switch {
+  display: none;
 }
 
 .path-configuration-page__header,
@@ -553,11 +574,19 @@ void loadPage()
   border-radius: 4px;
 }
 
+.path-configuration-page--form > .path-configuration-page__stage {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
 .path-configuration-page__stage :deep(.n-spin-content) { width: 100%; height: 100%; min-height: 0; }
 .path-configuration-page__canvas { height: 100%; min-height: 0; border-top: 0; }
 .path-configuration-page__error { margin: 20px; }
 
 .path-configuration-page__form-workspace {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -570,7 +599,8 @@ void loadPage()
   flex: 0 0 auto;
   justify-content: space-between;
   gap: 16px;
-  min-height: 54px;
+  height: var(--path-config-form-toolbar-height);
+  min-height: var(--path-config-form-toolbar-height);
   padding: 8px 12px;
   border-bottom: 1px solid var(--path-config-border-color);
 }
@@ -578,11 +608,15 @@ void loadPage()
 .path-configuration-page__form-toolbar p { margin: 0; color: var(--path-config-text-secondary-color); font-size: 12px; }
 .path-configuration-page__form-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .path-configuration-page__form-feedback {
+  position: absolute;
+  top: calc(var(--path-config-form-toolbar-height) + 8px);
+  right: 12px;
+  left: 12px;
+  z-index: 3;
   display: grid;
-  flex: 0 0 auto;
   gap: 6px;
   max-height: 112px;
-  padding: 8px 12px 0;
+  padding: 0;
   overflow-y: auto;
 }
 .path-configuration-page__form-frame {
@@ -590,17 +624,30 @@ void loadPage()
   width: 100%;
   height: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   border: 0;
 }
 
 @media (max-width: 900px) {
   .path-configuration-page { height: auto; min-height: calc(100dvh - 120px); overflow: visible; }
+  .path-configuration-page--form {
+    height: calc(100dvh - var(--path-config-app-header-height));
+    min-height: calc(100dvh - var(--path-config-app-header-height));
+    max-height: none;
+    overflow: hidden;
+  }
   .path-configuration-page__header, .path-configuration-page__form-toolbar { align-items: flex-start; flex-direction: column; }
+  .path-configuration-page--form .path-configuration-page__form-toolbar {
+    height: auto;
+    min-height: var(--path-config-form-toolbar-height);
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
   .path-configuration-page__progress { flex-wrap: wrap; justify-content: flex-start; }
   .path-configuration-page__stage { min-height: 640px; }
-  .path-configuration-page__form-workspace { min-height: 640px; }
+  .path-configuration-page--form > .path-configuration-page__stage,
+  .path-configuration-page__form-workspace { min-height: 0; }
   .path-configuration-page__form-toolbar { flex: 0 0 auto; }
 }
 </style>
