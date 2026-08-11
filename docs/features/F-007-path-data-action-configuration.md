@@ -1,6 +1,6 @@
 # F-007 已保存路径的节点可视化配置
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“路径生成与节点配置边界”“路径节点可视化配置行为（F-007）”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-005 执行路径选择与持久化”“F-006 路径要求分析”“F-007 已保存路径的节点可视化配置”
 - 重新规划时间：2026-08-10
@@ -38,6 +38,8 @@
 主任务复核发现，现有后端回归使用了全局 `__formPersonId` 和对象形态的 `__condition`，与真实 `CustomeInfoSelect` 组件按字段名写入虚拟字段的行为不一致。真实组件会保存主字段 JSON 字符串，并生成 `<modelName>__condition` 名称字符串与 `<modelName>__formPersonId` 标识字符串；原测试不能证明这些实际键值能够随路径表单配置保存并重新读取。
 
 本轮只修正真实组件输出格式的保存证据，并继续证明未知未注册组件只阻止表单保存、不阻止节点人员与动作独立保存。若真实键值回归暴露生产缺陷，仅做最小持久化修复；F-005、节点/表单解耦、数据库和目标写边界保持不变。状态退回 `implementing`。
+
+定向测试已按真实组件源码改用 `generalInfo` JSON 字符串、`generalInfo__condition` 名称字符串和 `generalInfo__formPersonId` 标识字符串，三项保存并重新读取后均原样保留；生产持久化无需修改。未知组件场景先完成节点人员/动作保存，再稳定拒绝表单保存且不产生额外写入。完整自动门禁通过，状态恢复 `ready_for_manual`。
 
 本轮只保存可执行意图，不调用目标平台动作。F-007 的边界如下：
 
@@ -276,7 +278,7 @@
 - 节点侧栏删除表单缺口区域，当前节点完整性明确忽略兼容响应中的字段与缺口；人员解析失败和动作计划失效仍按原规则阻止错误保存。
 - 目标适配层保留 FormMaking 组件真实 `el`，表单运行时按 `el -> options.componentName/options.component -> componentName/component` 对照实际 `rsh-flow-components` 注册表。`type=custom, el=custome-info-select` 已由定向测试证明可编辑且不进入 unsupported，未知注册名仍只在表单工作区阻止保存。
 - 智能生成器只跳过不能安全生成的复杂组件并计入手工待填，不覆盖已有 JSON 值，也不再把生成能力当作整张表单的运行兼容性。保存继续由真实运行时执行 `getData(true)` 并提交 `getValues()`；运行时 unsupported 随保存契约传入，幂等命中仍优先返回已成功事实。
-- `custome-info-select` JSON 字符串值及 `__condition`、`__formPersonId` 等虚拟字段已经通过服务层保存和刷新往返测试；目标写阻断、SID 会话隔离、新发起权限和已发/待发只读回归均通过。
+- `custome-info-select` 的 `generalInfo` JSON 字符串、`generalInfo__condition` 名称字符串及 `generalInfo__formPersonId` 标识字符串已经通过服务层保存和刷新往返测试；目标写阻断、SID 会话隔离、新发起权限和已发/待发只读回归均通过。
 
 ## 第七次返工自动验证结果
 
@@ -371,3 +373,4 @@
 - 2026-08-11（第七次人工验收退回）：用户确认节点配置只负责人员和动作，表单字段及组件兼容性必须全部由独立 FormMaking 服务承担；当前节点字段缺口阻塞保存、真实 `el` 丢失和已注册 `custome-info-select` 被误判 unsupported。F-007 退回 `implementing`，只修节点/表单解耦与运行时组件识别。
 - 2026-08-11（第七次人工返工完成）：节点字段与组件缺口已从节点投影、状态、保存 blocker 和侧栏移除；真实 `el` 进入适配元数据，`custome-info-select` 按实际注册表识别，生成器跳过复杂字段但不阻断整表，完整自定义组件值与虚拟字段可独立保存。`./test/run-f007.sh`、实际 MySQL、Go build、主前端与 form-runtime 双构建全部通过，状态恢复 `ready_for_manual`，不开始后续功能。
 - 2026-08-11（第七次独立复核退回）：现有测试错误使用全局 `__formPersonId` 和对象形态 `__condition`，未按真实组件的 `generalInfo__condition`、`generalInfo__formPersonId` 字符串键值证明保存往返。F-007 退回 `implementing`，只修正证据并复核表单与节点保存边界。
+- 2026-08-11（第七次独立复核修复完成）：回归已改用真实组件的字段级虚拟键和值形态，完整保存与重新读取原样保留；未知组件只阻止表单保存，节点人员/动作仍可独立完成。`./test/run-f007.sh`、实际 MySQL、Go build、主前端与 form-runtime 双构建全部通过，状态恢复 `ready_for_manual`。
