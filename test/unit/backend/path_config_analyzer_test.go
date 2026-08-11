@@ -216,7 +216,7 @@ func TestPathConfigAnalyzerProjectsOpaqueNodeStatusAndTemplatePersonRules(t *tes
 	assertPathConfigPublicSafety(t, configuration)
 }
 
-// TestPathConfigAnalyzerProjectsStructuredPersonNames 验证人员、岗位、岗级、角色和组织名称结构化公开，无名称范围只给出运行时解析说明。
+// TestPathConfigAnalyzerProjectsStructuredPersonNames 验证人员、岗位、岗级、角色和组织名称结构化公开，无名称对象不进入公开列表。
 func TestPathConfigAnalyzerProjectsStructuredPersonNames(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -232,6 +232,7 @@ func TestPathConfigAnalyzerProjectsStructuredPersonNames(t *testing.T) {
 		{name: "岗级", auditType: "level", details: []target.FlowAuditDetail{{Name: "二级岗", Type: "level"}}, wantCategory: "岗级", wantName: "二级岗", wantItemCount: 1},
 		{name: "角色", auditType: "role", details: []target.FlowAuditDetail{{Name: "财务审批角色"}}, wantCategory: "角色", wantName: "财务审批角色", wantItemCount: 1},
 		{name: "部门", auditType: "department", details: []target.FlowAuditDetail{{Name: "财务部", Type: "department"}}, wantCategory: "部门", wantName: "财务部", wantItemCount: 1},
+		{name: "无名称对象", auditType: "department", details: []target.FlowAuditDetail{{Type: "department"}}, wantItemCount: 0},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -255,11 +256,15 @@ func TestPathConfigAnalyzerProjectsStructuredPersonNames(t *testing.T) {
 					t.Fatalf("结构化人员区存在时不应重复输出长文本人员要求：%+v", requirement)
 				}
 			}
-			if len(person.Items) != 1 || person.Items[0].Category != testCase.wantCategory || person.Items[0].Name != testCase.wantName || person.Items[0].Count != testCase.wantItemCount {
+			if testCase.wantItemCount == 0 {
+				if len(person.Items) != 0 {
+					t.Fatalf("无真实名称的人员对象不应进入公开列表：%+v", person.Items)
+				}
+			} else if len(person.Items) != 1 || person.Items[0].Category != testCase.wantCategory || person.Items[0].Name != testCase.wantName || person.Items[0].Count != testCase.wantItemCount {
 				t.Fatalf("结构化人员名称不正确：%+v", person.Items)
 			}
 			encoded, _ := json.Marshal(person.Items)
-			if strings.Contains(string(encoded), "person-secret") || strings.Contains(string(encoded), "bizId") {
+			if strings.Contains(string(encoded), "person-secret") || strings.Contains(string(encoded), "bizId") || strings.Contains(string(encoded), "名称需运行时解析") {
 				t.Fatalf("结构化人员名称泄露内部标识：%s", encoded)
 			}
 			assertPathConfigPublicSafety(t, configuration)
@@ -467,6 +472,21 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 	if person.Strategy != "target_default" || len(person.Selected) != 3 || len(person.Strategies) != 4 {
 		t.Fatalf("目标默认或策略目录不正确：%+v", person)
 	}
+	if person.StrategySeed < 1 || person.StrategySeed > 9007199254740991 {
+		t.Fatalf("默认稳定 seed 超出 JavaScript 安全整数范围：%d", person.StrategySeed)
+	}
+	legacySeedPlan := `{"strategy":"random","seed":9007199254740992,"selected":["person-2","person-3","person-1"]}`
+	legacyConfiguration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(
+		graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil,
+		map[string]string{analyzer.PathConfigPersonPlanStorageKey("approve-a"): legacySeedPlan}, true,
+	)
+	if err != nil {
+		t.Fatalf("不安全存量 seed 投影失败：%v", err)
+	}
+	legacyPerson := findConfigNode(legacyConfiguration.Groups, "财务审批").Persons[0]
+	if legacyPerson.StrategySeed != 1 || !legacyPerson.Affected || !strings.Contains(legacyPerson.Note, "随机种子") {
+		t.Fatalf("不安全存量 seed 未收敛并标记重确认：%+v", legacyPerson)
+	}
 	targetPlan := validation.NodeTokens[findConfigNode(configuration.Groups, "财务审批").Key].Person
 	if targetPlan == nil {
 		t.Fatal("人员策略没有进入节点校验索引")
@@ -497,10 +517,54 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 	actions := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
 		{Kind: "add_sign", Person: &manual},
 		{Kind: "transfer_approver", Person: &random},
+	}}}
+	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 2 {
+		t.Fatalf("加签或移交没有复用当前合法人员策略：count=%d reason=%s", count, reason)
+	}
+	transferThenApprove := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
+		{Kind: "transfer_approver", Person: &random},
 		{Kind: "approve_pass", Opinion: "同意"},
 	}}}
-	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 3 {
-		t.Fatalf("加签或移交没有复用当前合法人员策略：count=%d reason=%s", count, reason)
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, transferThenApprove); !strings.Contains(reason, "最后一步") {
+		t.Fatalf("移交后的同次到达动作没有被拒绝：%s", reason)
+	}
+}
+
+// TestPathConfigAnalyzerNormalizesJavaScriptSafeSeeds 验证边界 seed 与非法 seed 在服务端统一编码，避免浏览器预览和保存结果分叉。
+func TestPathConfigAnalyzerNormalizesJavaScriptSafeSeeds(t *testing.T) {
+	targetPlan := analyzer.PathConfigPersonTarget{
+		Key:               "person-key",
+		Required:          true,
+		MinCount:          1,
+		MaxCount:          1,
+		CandidateOrder:    []string{"person-1", "person-2"},
+		CandidateTokens:   map[string]string{"token-1": "person-1", "token-2": "person-2"},
+		AllowedStrategies: map[string]bool{"random": true},
+	}
+	tests := []struct {
+		name string
+		seed int64
+		want int64
+	}{
+		{name: "最小值", seed: 1, want: 1},
+		{name: "最大安全值", seed: 9007199254740991, want: 9007199254740991},
+		{name: "零值", seed: 0, want: 1},
+		{name: "负数", seed: -7, want: 1},
+		{name: "超过安全值", seed: 9007199254740992, want: 1},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			raw, reason := analyzer.EncodePathConfigPersonStrategy(targetPlan, model.PathConfigPersonStrategyInput{Key: targetPlan.Key, Strategy: "random", Seed: testCase.seed})
+			if reason != "" {
+				t.Fatalf("seed 规范化失败：%s", reason)
+			}
+			var stored struct {
+				Seed int64 `json:"seed"`
+			}
+			if err := json.Unmarshal([]byte(raw), &stored); err != nil || stored.Seed != testCase.want {
+				t.Fatalf("seed 编码不一致：raw=%s err=%v want=%d", raw, err, testCase.want)
+			}
+		})
 	}
 }
 

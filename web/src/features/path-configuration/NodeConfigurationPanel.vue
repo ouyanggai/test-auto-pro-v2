@@ -27,6 +27,7 @@ import type {
 } from './types'
 
 const PERSON_PREVIEW_LIMIT = 3
+const MAX_SAFE_PERSON_SEED = Number.MAX_SAFE_INTEGER
 const personDetailsOpen = ref(false)
 const detailedPerson = ref<PathConfigPerson | null>(null)
 const activeVisit = ref(1)
@@ -236,7 +237,7 @@ function stepPersonDraft(step: PathConfigArrivalInput['steps'][number], person: 
 
 // terminalAction 判断会结束单次到达的动作，新增前置动作必须插在它之前。
 function terminalAction(kind: PathConfigActionKind): boolean {
-  return ['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous'].includes(kind)
+  return ['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'].includes(kind)
 }
 </script>
 
@@ -297,6 +298,7 @@ function terminalAction(kind: PathConfigActionKind): boolean {
                 v-if="personDraft(person).strategy === 'random'"
                 :value="personDraft(person).seed"
                 :min="1"
+                :max="MAX_SAFE_PERSON_SEED"
                 :show-button="true"
                 aria-label="随机种子"
                 @update:value="value => updatePersonStrategy(person, { seed: value || 1 })"
@@ -379,6 +381,7 @@ function terminalAction(kind: PathConfigActionKind): boolean {
                     v-if="stepPersonDraft(step, primaryPersonForAction()).strategy === 'random'"
                     :value="stepPersonDraft(step, primaryPersonForAction()).seed"
                     :min="1"
+                    :max="MAX_SAFE_PERSON_SEED"
                     aria-label="动作人员随机种子"
                     @update:value="value => updateStepPerson(arrivalIndex, stepIndex, primaryPersonForAction(), { seed: value || 1 })"
                   />

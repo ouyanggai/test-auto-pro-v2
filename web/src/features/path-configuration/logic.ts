@@ -362,7 +362,7 @@ export function resolvedPersonStrategySelection(person: PathConfigPerson, input?
   if (strategy === 'random') {
     if (!person.options.length) return []
     const count = Math.min(person.options.length, Math.max(1, person.minCount || 1))
-    const seed = Number.isSafeInteger(input?.seed) && Number(input?.seed) !== 0 ? Math.abs(Number(input?.seed)) : 1
+    const seed = normalizedPathConfigSeed(input?.seed ?? person.strategySeed)
     const start = seed % person.options.length
     return Array.from({ length: count }, (_, index) => person.options[(start + index) % person.options.length].value)
   }
@@ -372,10 +372,17 @@ export function resolvedPersonStrategySelection(person: PathConfigPerson, input?
 // normalizedPersonStrategy 生成可保存人员策略，并把前端计算的最终名单一并提交供后端核对。
 export function normalizedPersonStrategy(person: PathConfigPerson, input?: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput {
   const current = input ?? { key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected }
-  return { ...current, key: person.key, selected: resolvedPersonStrategySelection(person, current) }
+  const seed = normalizedPathConfigSeed(current.seed)
+  return { ...current, key: person.key, seed, selected: resolvedPersonStrategySelection(person, { ...current, seed }) }
 }
 
-const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous'])
+// normalizedPathConfigSeed 与服务端统一把非正数、非整数和超过 JavaScript 安全整数的值规范为 1。
+export function normalizedPathConfigSeed(seed: unknown): number {
+  return typeof seed === 'number' && Number.isSafeInteger(seed) && seed >= 1 ? seed : 1
+}
+
+// 目标移交成功后当前处理任务已交给新处理人，因此与处理结果一样结束本次到达。
+const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
 
 // validPathConfigArrivals 即时校验连续访问、有序终止动作和必要参数，服务端仍会以当前目标快照重新核对。
 export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConfigArrivalInput[]): boolean {

@@ -14,6 +14,7 @@ const (
 	pathConfigActionPlanVersion = 1
 	maxPathConfigArrivals       = 10
 	maxPathConfigActionSteps    = 100
+	maxPathConfigSafeSeed       = int64(9007199254740991)
 )
 
 type storedPathConfigPersonPlan struct {
@@ -43,6 +44,7 @@ type storedPathConfigStep struct {
 func projectPathConfigPersonStrategy(nodeID string, stored map[string]string, target *PathConfigPersonTarget, rawToToken map[string]string) (string, int64, []string, bool, string) {
 	strategy := "manual"
 	seed := stablePathConfigSeed(nodeID)
+	seedAffected := false
 	selectedIDs := []string{}
 	planRaw, hasPlan := stored[PathConfigPersonPlanStorageKey(nodeID)]
 	if hasPlan {
@@ -62,14 +64,20 @@ func projectPathConfigPersonStrategy(nodeID string, stored map[string]string, ta
 		}
 		return strategy, seed, rawPersonIDsToTokens(selectedIDs, rawToToken), false, ""
 	}
-	if seed == 0 {
-		seed = stablePathConfigSeed(nodeID)
+	normalizedSeed := normalizePathConfigSeed(seed)
+	if normalizedSeed != seed {
+		// 旧配置可能来自修复前的 63 位 seed；公开前必须收敛到 JavaScript 可精确表达的范围，避免页面名单与保存名单分叉。
+		seedAffected = true
+		seed = normalizedSeed
 	}
 	resolved, reason := resolveStoredPersonStrategy(target, strategy, seed, selectedIDs)
 	public := rawPersonIDsToTokens(resolved, rawToToken)
 	if reason != "" {
 		// 已失效的真实 ID 不向浏览器公开；仍可对应的选择保留下来供用户最小修正。
 		return strategy, seed, public, true, reason
+	}
+	if seedAffected {
+		return strategy, seed, public, true, "旧人员策略随机种子超出安全范围，需要重新确认"
 	}
 	return strategy, seed, public, false, ""
 }
@@ -80,10 +88,8 @@ func EncodePathConfigPersonStrategy(target PathConfigPersonTarget, input model.P
 	if !target.AllowedStrategies[strategy] {
 		return "", "人员策略不属于当前模板允许范围"
 	}
-	seed := input.Seed
-	if seed == 0 {
-		seed = stablePathConfigSeed(target.Key)
-	}
+	// 浏览器 Number 与 Go int64 的精度边界不同；统一把非法值规范为 1，确保页面预览和服务端最终名单使用同一个 seed。
+	seed := normalizePathConfigSeed(input.Seed)
 	selectedIDs := make([]string, 0, len(input.Selected))
 	seen := make(map[string]bool, len(input.Selected))
 	for _, token := range input.Selected {
@@ -168,7 +174,7 @@ func deterministicPathConfigPeople(candidateIDs []string, seed int64, count int)
 	if count > len(candidateIDs) {
 		count = len(candidateIDs)
 	}
-	start := int(uint64(seed) % uint64(len(candidateIDs)))
+	start := int(uint64(normalizePathConfigSeed(seed)) % uint64(len(candidateIDs)))
 	result := make([]string, 0, count)
 	for index := 0; index < count; index++ {
 		result = append(result, candidateIDs[(start+index)%len(candidateIDs)])
@@ -176,11 +182,19 @@ func deterministicPathConfigPeople(candidateIDs []string, seed int64, count int)
 	return result
 }
 
-// stablePathConfigSeed 为未设置 seed 的存量或首次策略生成稳定非零值。
+// stablePathConfigSeed 为未设置 seed 的存量或首次策略生成 JavaScript 可精确表达的稳定正整数。
 func stablePathConfigSeed(value string) int64 {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
-	seed := int64(binary.BigEndian.Uint64(sum[:8]) & uint64(^uint64(0)>>1))
+	seed := int64(binary.BigEndian.Uint64(sum[:8]) & uint64(maxPathConfigSafeSeed))
 	if seed == 0 {
+		return 1
+	}
+	return seed
+}
+
+// normalizePathConfigSeed 把外部或存量 seed 收敛到 Go 与 JavaScript 都能无损表达的统一范围。
+func normalizePathConfigSeed(seed int64) int64 {
+	if seed < 1 || seed > maxPathConfigSafeSeed {
 		return 1
 	}
 	return seed
@@ -361,7 +375,7 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 				return result, "动作计划超过上限或包含当前节点不允许的动作"
 			}
 			if pathConfigTerminalAction(step.Kind) && stepIndex != len(arrival.Steps)-1 {
-				return result, "推进、回退或暂存动作必须位于本次到达的最后一步"
+				return result, "推进、移交、回退或暂存动作必须位于本次到达的最后一步"
 			}
 			projected := model.PathConfigActionStep{Kind: step.Kind, Label: pathConfigActionLabel(step.Kind), Opinion: step.Opinion}
 			if step.Kind == "rollback_previous" {
@@ -378,11 +392,15 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 				if target.Person == nil || step.Person == nil {
 					return result, "加签或移交缺少合法人员策略"
 				}
-				resolved, reason := resolveStoredPersonStrategy(target.Person, step.Person.Strategy, step.Person.Seed, step.Person.Selected)
+				seed := normalizePathConfigSeed(step.Person.Seed)
+				if seed != step.Person.Seed {
+					return result, "加签或移交人员随机种子超出安全范围，需要重新确认"
+				}
+				resolved, reason := resolveStoredPersonStrategy(target.Person, step.Person.Strategy, seed, step.Person.Selected)
 				if reason != "" {
 					return result, "加签或移交人员已失效：" + reason
 				}
-				projected.Person = &model.PathConfigPersonStrategyInput{Key: target.Person.Key, Strategy: step.Person.Strategy, Seed: step.Person.Seed, Selected: rawPersonIDsToTokens(resolved, invertTokenMap(target.Person.CandidateTokens))}
+				projected.Person = &model.PathConfigPersonStrategyInput{Key: target.Person.Key, Strategy: step.Person.Strategy, Seed: seed, Selected: rawPersonIDsToTokens(resolved, invertTokenMap(target.Person.CandidateTokens))}
 			}
 			public.Steps = append(public.Steps, projected)
 		}
@@ -422,7 +440,7 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 				return "", total, "处理意见不能超过 1000 个字符"
 			}
 			if pathConfigTerminalAction(kind) && stepIndex != len(arrival.Steps)-1 {
-				return "", total, "推进、回退或暂存动作必须位于本次到达的最后一步"
+				return "", total, "推进、移交、回退或暂存动作必须位于本次到达的最后一步"
 			}
 			storedStep := storedPathConfigStep{Kind: kind, Opinion: strings.TrimSpace(step.Opinion)}
 			if kind == "rollback_previous" {
@@ -447,7 +465,7 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 			storedArrival.Steps = append(storedArrival.Steps, storedStep)
 		}
 		if !pathConfigTerminalAction(storedArrival.Steps[len(storedArrival.Steps)-1].Kind) {
-			return "", total, "每次到达必须以提交、处理结果、回退或暂存结束"
+			return "", total, "每次到达必须以提交、处理结果、移交、回退或暂存结束"
 		}
 		stored.Arrivals = append(stored.Arrivals, storedArrival)
 	}
@@ -492,6 +510,9 @@ func pathConfigActionPlanBlocksLine(plan model.PathConfigActionPlan) bool {
 func pathConfigTerminalAction(kind string) bool {
 	switch kind {
 	case "submit", "approve_pass", "reject_no_pass", "draft_save", "rollback_previous":
+		return true
+	case "transfer_approver":
+		// 目标 handOver 成功后立即刷新待办，当前处理任务已经交给新处理人，同一次到达不能再继续执行同意等动作。
 		return true
 	default:
 		return false

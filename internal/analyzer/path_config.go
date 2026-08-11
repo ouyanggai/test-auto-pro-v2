@@ -705,7 +705,7 @@ func candidateOrder(candidates []target.FlowAuditCandidate) []string {
 	return result
 }
 
-// pathConfigPersonDisplayItems 把目标详情名称和无名称范围投影为稳定中文展示项；无名称范围只能说明运行时解析，不能用业务 ID 猜名称。
+// pathConfigPersonDisplayItems 只把目标已证明的具体中文名称投影为展示项；动态依赖或目录失败统一由明确状态说明承载。
 func pathConfigPersonDisplayItems(config *target.FlowNodeAuditConfig) []model.PathConfigPersonDisplayItem {
 	if config == nil {
 		return []model.PathConfigPersonDisplayItem{}
@@ -719,7 +719,8 @@ func pathConfigPersonDisplayItems(config *target.FlowNodeAuditConfig) []model.Pa
 			category = "处理对象"
 		}
 		if name == "" {
-			name = "名称需运行时解析"
+			// 无名称对象不能以模糊占位伪装为已解析；person.detail 或 ResolutionIssues 会给出具体动态依赖或读取失败原因。
+			return
 		}
 		key := category + "\x00" + name
 		if index, exists := positions[key]; exists {

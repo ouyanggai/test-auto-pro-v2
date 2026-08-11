@@ -9,6 +9,8 @@ paths_view="${project_root}/web/src/views/PlanPathsView.vue"
 config_api="${project_root}/web/src/features/path-configuration/api.ts"
 config_logic="${project_root}/web/src/features/path-configuration/logic.ts"
 config_panel="${project_root}/web/src/features/path-configuration/NodeConfigurationPanel.vue"
+config_analyzer="${project_root}/internal/analyzer/path_config.go"
+config_plan_analyzer="${project_root}/internal/analyzer/path_config_plan.go"
 form_frame="${project_root}/web/src/features/path-configuration/FormRuntimeFrame.vue"
 runtime_app="${project_root}/form-runtime/src/App.vue"
 runtime_template="${project_root}/form-runtime/src/runtime/formTemplate.js"
@@ -125,11 +127,20 @@ grep -Fq "add_sign" "${config_panel}"
 grep -Fq "transfer_approver" "${config_panel}"
 grep -Fq "resolvedPersonStrategySelection" "${config_logic}"
 grep -Fq "validPathConfigArrivals" "${config_logic}"
+grep -Fq "normalizedPathConfigSeed" "${config_logic}"
+grep -Fq "Number.MAX_SAFE_INTEGER" "${config_logic}"
+grep -Fq ':max="MAX_SAFE_PERSON_SEED"' "${config_panel}"
+grep -Fq '"transfer_approver"' "${config_plan_analyzer}"
+grep -Fq "'transfer_approver'" "${config_logic}"
 grep -Fq "暂不支持" "${config_panel}"
 grep -Fq "overflow-y: auto" "${config_panel}"
 grep -Fq "保存当前节点" "${config_panel}"
 if grep -Eq 'node\.fields|NDatePicker|NCheckbox|NSwitch' "${config_panel}"; then
   echo 'F-007 节点侧栏不得重新模拟目标表单字段控件' >&2
+  exit 1
+fi
+if grep -Eq '名称需运行时解析|已配置 [^" ]+ 项范围' "${config_analyzer}"; then
+  echo 'F-007 人员公开列表不得保留模糊名称或范围数量兜底' >&2
   exit 1
 fi
 

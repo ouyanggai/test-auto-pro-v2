@@ -15,6 +15,7 @@ import {
   currentNodeConfigurationComplete,
   hasCurrentNodeDraftChanges,
   nextFormGenerationSeed,
+  normalizedPathConfigSeed,
   pathConfigNodeKey,
   pathConfigurationNodesByGraphID,
   parsePathConfigValue,
@@ -212,7 +213,7 @@ test('人员规则长列表摘要保留真实总数并提供前三项预览', ()
     { category: '人员', name: '张三', count: 1 },
     { category: '岗位', name: '主任', count: 1 },
     { category: '组织', name: '财务部', count: 1 },
-    { category: '岗级', name: '名称需运行时解析', count: 12 },
+    { category: '岗级', name: '二级岗', count: 12 },
   ])
   assert.equal(summary.total, 15)
   assert.equal(summary.preview.length, 3)
@@ -310,9 +311,17 @@ test('人员策略和有界到达动作即时投影与后端规则一致', () =>
   person.maxCount = 2
   person.strategies.push({ value: 'all', label: '全部候选' })
   approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签', description: '受限候选', allowsOpinion: false, requiresTarget: false, requiresPerson: true })
+  approval.actionPlan.catalog.push({ kind: 'transfer_approver', label: '移交', description: '结束本次到达', allowsOpinion: false, requiresTarget: false, requiresPerson: true })
   const random = { key: person.key, strategy: 'random', seed: 1, selected: [] }
   assert.deepEqual(resolvedPersonStrategySelection(person, random), ['person-b', 'person-a'])
   assert.deepEqual(resolvedPersonStrategySelection(person, random), resolvedPersonStrategySelection(person, random))
+  assert.equal(normalizedPathConfigSeed(1), 1)
+  assert.equal(normalizedPathConfigSeed(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER)
+  assert.equal(normalizedPathConfigSeed(0), 1)
+  assert.equal(normalizedPathConfigSeed(-1), 1)
+  assert.equal(normalizedPathConfigSeed(Number.MAX_SAFE_INTEGER + 1), 1)
+  assert.deepEqual(resolvedPersonStrategySelection(person, { ...random, seed: Number.MAX_SAFE_INTEGER }), ['person-b', 'person-a'])
+  assert.deepEqual(resolvedPersonStrategySelection(person, { ...random, seed: -9 }), ['person-b', 'person-a'])
   const valid = [{ visit: 1, steps: [{ kind: 'rollback_previous', opinion: '退回补充', target: 'rollback-start' }] }]
   assert.equal(validPathConfigArrivals(approval, valid), true)
   assert.equal(validPathConfigArrivals(approval, [{ visit: 2, steps: valid[0].steps }]), false)
@@ -324,6 +333,9 @@ test('人员策略和有界到达动作即时投影与后端规则一致', () =>
   assert.equal(validPathConfigArrivals(approval, partialSign), false)
   partialSign[0].steps[0].person.selected.push('person-b')
   assert.equal(validPathConfigArrivals(approval, partialSign), true)
+  const transfer = { kind: 'transfer_approver', opinion: '', target: '', person: { key: person.key, strategy: 'all', seed: 1, selected: [] } }
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [transfer] }]), true)
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [transfer, { kind: 'approve_pass', opinion: '', target: '' }] }]), false)
   const overflow = Array.from({ length: 100 }, () => ({
     kind: 'add_sign', opinion: '', target: '', person: { key: person.key, strategy: 'all', seed: 1, selected: [] },
   }))
