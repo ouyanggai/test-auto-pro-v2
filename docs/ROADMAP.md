@@ -11,7 +11,7 @@
 | F-004 | 使用 Vue Flow 显示只读真实流程树 | accepted |
 | F-005 | 在真实流程结构上选择并持久化执行路径 | accepted |
 | F-006 | 分析所选路径的条件、人员和可配置动作要求 | accepted |
-| F-007 | 在已保存路径的独立画布中配置节点人员与动作，并用独立 FormMaking 运行时生成、修改和保存路径表单数据 | ready_for_manual |
+| F-007 | 在已保存路径的独立画布中配置节点人员与动作，并用独立 FormMaking 运行时生成、修改和保存路径表单数据 | implementing |
 | 后续 | 扩展运行准备、真实执行和运行记录 | 未规划 |
 
 ## 当前与后两项
@@ -40,7 +40,7 @@
 
 ### F-007 路径节点与独立表单数据配置（当前，待人工复验）
 
-保留 F-005 已通过验收的路径交互。完整 `rsh-flow-components` 仍为唯一真实 dev/build 输入；节点官方事件链、保存后同路径下一节点推进和宽屏 FormMaking 工作区已完成返工，运行时写阻断、只读 POST 与 SID 会话边界保持不变。自动验证完成，等待用户人工复验。详细范围见 `docs/features/F-007-path-data-action-configuration.md`。
+保留 F-005 已通过验收的路径交互。完整 `rsh-flow-components` 仍为唯一真实 dev/build 输入；节点官方事件链和保存后同路径下一节点推进已经完成，当前只返工 FormMaking 工作区的真实可计算全高/全宽布局及尺寸验证门禁。运行时写阻断、只读 POST 与 SID 会话边界保持不变。详细范围见 `docs/features/F-007-path-data-action-configuration.md`。
 
 ### 后续运行准备与真实执行（后两项）
 
