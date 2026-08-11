@@ -42,6 +42,7 @@ type fakeTarget struct {
 	templateData    string
 	directoryAudit  bool
 	directoryFail   bool
+	directoryFlags  []string
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
@@ -148,15 +149,22 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 	case "/web/flowInstanceApi/getCurrentFromData":
 		f.handleInstanceCurrentData(response, request)
 	case "/web/user/api/user/findByCompanyIdUserList":
-		f.handleDirectoryResponse(response, []any{map[string]any{"id": "person-1", "realName": "张三"}})
+		f.handleDirectoryResponse(response, map[string]any{"dataList": []any{map[string]any{"id": "person-1", "realName": "张三"}}})
 	case "/web/user/api/company/children":
 		body := f.requireSession(request)
 		data, _ := body["data"].(map[string]any)
 		flag, _ := data["flag"].(string)
+		f.mu.Lock()
+		f.directoryFlags = append(f.directoryFlags, flag)
+		f.mu.Unlock()
 		byFlag := map[string]any{
-			"2": []any{map[string]any{"id": "department-1", "name": "财务部", "childrenList": []any{map[string]any{"id": "person-2", "name": "李四", "type": "5"}}}},
+			"2": []any{map[string]any{"id": "department-1", "name": "财务部"}},
+			"3": []any{map[string]any{"id": "company-1", "name": "测试公司", "childrenList": []any{
+				map[string]any{"id": "department-1", "name": "财务部", "childrenList": []any{map[string]any{"id": "person-2", "name": "李四", "type": "5"}}},
+				map[string]any{"id": "person-3", "name": "王五", "type": "5"},
+			}}},
 			"4": []any{map[string]any{"id": "position-1", "name": "财务主任"}},
-			"7": []any{map[string]any{"id": "company-1", "name": "测试公司", "childrenList": []any{map[string]any{"id": "person-3", "name": "王五", "type": "5"}}}},
+			"7": []any{map[string]any{"id": "company-1", "name": "测试公司"}},
 		}
 		f.handleDirectoryResponse(response, byFlag[flag])
 	case "/web/user/api/dutyLevel/list":
@@ -1021,6 +1029,19 @@ func TestPathConfigurationSnapshotResolvesConcreteAuditDirectories(t *testing.T)
 	}
 	if len(wantScopes) != 0 || len(audit.Candidates) != 5 {
 		t.Fatalf("运行节点范围或合法候选没有完整解析：missing=%v scopes=%+v candidates=%+v", wantScopes, audit.Scopes, audit.Candidates)
+	}
+	wantCandidates := map[string]bool{"张三": true, "李四": true, "王五": true, "赵六": true, "孙七": true}
+	for _, candidate := range audit.Candidates {
+		delete(wantCandidates, candidate.Name)
+	}
+	if len(wantCandidates) != 0 {
+		t.Fatalf("人员、部门和公司范围没有按真实目录候选解析：missing=%v candidates=%+v", wantCandidates, audit.Candidates)
+	}
+	fake.mu.Lock()
+	flags := append([]string(nil), fake.directoryFlags...)
+	fake.mu.Unlock()
+	if strings.Count(strings.Join(flags, ","), "3") != 1 {
+		t.Fatalf("部门和公司候选必须复用一次 flag=3 人员树：flags=%v", flags)
 	}
 	graphNodes, graphEdges, warnings, err := analyzer.NewFlowGraphAnalyzer().Analyze(snapshot.Tree)
 	if err != nil {

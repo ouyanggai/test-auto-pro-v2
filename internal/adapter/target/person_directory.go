@@ -34,6 +34,10 @@ type rawAuditNamedItem struct {
 	} `json:"userVo"`
 }
 
+type rawAuditPersonnelPage struct {
+	DataList []rawAuditNamedItem `json:"dataList"`
+}
+
 type auditDirectoryResolver struct {
 	client        *Client
 	ctx           context.Context
@@ -130,9 +134,7 @@ func (r *auditDirectoryResolver) resolve(config *FlowNodeAuditConfig) {
 func (r *auditDirectoryResolver) resolveName(category, id string) (string, error) {
 	switch category {
 	case "人员":
-		return r.nameFromNamed("personnel", "/web/user/api/user/findByCompanyIdUserList", map[string]any{
-			"data": map[string]any{"companyId": r.active.CompanyID}, "pagination": true, "pages": 1, "size": 1000,
-		}, id)
+		return r.nameFromPersonnel(id)
 	case "岗位":
 		return r.nameFromTree("4", id)
 	case "岗级":
@@ -158,9 +160,7 @@ func (r *auditDirectoryResolver) resolveName(category, id string) (string, error
 func (r *auditDirectoryResolver) resolveScope(scopeType, id string) (string, []FlowAuditCandidate, error) {
 	switch strings.TrimSpace(scopeType) {
 	case "personnel":
-		items, err := r.namedItems("personnel", "/web/user/api/user/findByCompanyIdUserList", map[string]any{
-			"data": map[string]any{"companyId": r.active.CompanyID}, "pagination": true, "pages": 1, "size": 1000,
-		})
+		items, err := r.personnelItems()
 		if err != nil {
 			return "", nil, err
 		}
@@ -185,28 +185,37 @@ func (r *auditDirectoryResolver) resolveScope(scopeType, id string) (string, []F
 		candidates, err := r.roleCandidates(id)
 		return name, candidates, err
 	case "department":
-		return r.treeScope("2", id)
+		return r.organizationalScope("2", id)
 	case "company":
-		return r.treeScope("7", id)
+		return r.organizationalScope("7", id)
 	default:
 		return "", nil, fmt.Errorf("unsupported audit scope type")
 	}
 	return "", nil, fmt.Errorf("audit scope not found")
 }
 
-// treeScope 从目标公司组织树定位范围并收集其子树人员，保持部门和公司范围的真实边界。
-func (r *auditDirectoryResolver) treeScope(flag, id string) (string, []FlowAuditCandidate, error) {
-	tree, err := r.companyTree(flag)
+// organizationalScope 分别使用名称目录和 flag=3 人员树，避免错误假定 flag=2/7 含人员节点。
+func (r *auditDirectoryResolver) organizationalScope(nameFlag, id string) (string, []FlowAuditCandidate, error) {
+	name, err := r.nameFromTree(nameFlag, id)
 	if err != nil {
 		return "", nil, err
 	}
-	node := findAuditDirectoryNode(tree, id)
+	// 目标工作台明确只从 flag=3 的公司部门人员树按 bizId 截取候选，不能扩大到整棵公司树。
+	peopleTree, err := r.companyTree("3")
+	if err != nil {
+		return "", nil, err
+	}
+	node := findAuditDirectoryNode(peopleTree, id)
 	if node == nil {
 		return "", nil, fmt.Errorf("audit scope not found")
 	}
 	candidates := make([]FlowAuditCandidate, 0)
 	collectAuditDirectoryUsers(*node, &candidates)
-	return strings.TrimSpace(node.Name), appendUniqueAuditCandidates(nil, candidates...), nil
+	candidates = appendUniqueAuditCandidates(nil, candidates...)
+	if len(candidates) == 0 {
+		return "", nil, fmt.Errorf("audit scope has no personnel")
+	}
+	return name, candidates, nil
 }
 
 // nameFromTree 在目标公司目录树中按内部 ID 查找中文名称。
@@ -244,13 +253,47 @@ func (r *auditDirectoryResolver) companyTree(flag string) ([]rawAuditDirectoryNo
 	return result, nil
 }
 
-// namedItems 读取并缓存目标扁平目录响应，缓存键只由固定端点语义构造。
+// personnelItems 只按 findByCompanyIdUserList 的真实 dataList envelope 解析人员目录。
+func (r *auditDirectoryResolver) personnelItems() ([]rawAuditNamedItem, error) {
+	if cached, exists := r.named["personnel"]; exists {
+		return cached, nil
+	}
+	if strings.TrimSpace(r.active.CompanyID) == "" {
+		return nil, fmt.Errorf("login response missing company id")
+	}
+	resp, err := r.client.call(r.ctx, "/web/user/api/user/findByCompanyIdUserList", r.active.SID, map[string]any{
+		"data": map[string]any{"companyId": r.active.CompanyID}, "pagination": true, "pages": 1, "size": 1000,
+	})
+	if err != nil || !responseSucceeded(resp) {
+		return nil, fmt.Errorf("personnel directory unavailable")
+	}
+	var page rawAuditPersonnelPage
+	if err := json.Unmarshal(resp.Data, &page); err != nil {
+		return nil, fmt.Errorf("invalid personnel directory")
+	}
+	r.named["personnel"] = page.DataList
+	return page.DataList, nil
+}
+
+// nameFromPersonnel 在真实人员 dataList 中按内部 ID 查找中文姓名。
+func (r *auditDirectoryResolver) nameFromPersonnel(id string) (string, error) {
+	items, err := r.personnelItems()
+	if err != nil {
+		return "", err
+	}
+	for _, item := range items {
+		candidate := auditCandidateFromNamed(item)
+		if candidate.ID == strings.TrimSpace(id) && candidate.Name != "" {
+			return candidate.Name, nil
+		}
+	}
+	return "", fmt.Errorf("personnel directory item not found")
+}
+
+// namedItems 只读取已核实为 data 数组的岗级、角色和扩展属性目录，不兼容猜测对象 envelope。
 func (r *auditDirectoryResolver) namedItems(cacheKey, path string, body map[string]any) ([]rawAuditNamedItem, error) {
 	if cached, exists := r.named[cacheKey]; exists {
 		return cached, nil
-	}
-	if cacheKey == "personnel" && strings.TrimSpace(r.active.CompanyID) == "" {
-		return nil, fmt.Errorf("login response missing company id")
 	}
 	resp, err := r.client.call(r.ctx, path, r.active.SID, body)
 	if err != nil || !responseSucceeded(resp) {
