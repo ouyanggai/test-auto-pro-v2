@@ -459,15 +459,15 @@ func (p *pathConfigProjection) reachableOutgoing(nodeID string) []model.FlowGrap
 	return result
 }
 
-// nodeConfig 按节点类型组合字段、缺口与标准动作。
+// nodeConfig 按节点类型组合人员、动作与节点规则；表单字段由独立 FormMaking 工作区负责。
 func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *target.FlowNodeTemplate, blocked bool) model.PathConfigNode {
 	result := model.PathConfigNode{
 		Key: PathConfigNodeToken(graphNode.ID), Name: graphNode.Name, TypeName: graphNode.TypeName, Kind: graphNode.Type,
-		LineBlocked: blocked, Actions: []model.PathConfigAction{}, Persons: []model.PathConfigPerson{}, Requirements: []model.RequirementItem{},
+		LineBlocked: blocked, Fields: []model.PathConfigField{}, Gaps: []model.PathConfigGap{},
+		Actions: []model.PathConfigAction{}, Persons: []model.PathConfigPerson{}, Requirements: []model.RequirementItem{},
 	}
-	result.Fields, result.Gaps = p.fieldConfig(node)
 	if p.requirements != nil {
-		result.Requirements = p.requirements.nodeRequirements(graphNode, node)
+		result.Requirements = pathConfigNodeRequirements(p.requirements.nodeRequirements(graphNode, node))
 	}
 	switch graphNode.Type {
 	case "start":
@@ -479,15 +479,8 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 	if graphNode.Type == "start" || graphNode.Type == "common" || graphNode.Type == "synergy" {
 		p.businessOrder = append(p.businessOrder, graphNode.ID)
 	}
-	result.ActionPlan = p.actionPlan(graphNode.ID, graphNode.Name, graphNode.Type, result.Persons, result.Gaps)
-	if len(result.Persons) > 0 {
-		// 节点侧栏已经用结构化人员项呈现真实名称，移除旧要求中的长文本名单，避免同一信息重复挤占空间。
-		result.Requirements = pathConfigNonPersonRequirements(result.Requirements)
-	}
+	result.ActionPlan = p.actionPlan(graphNode.ID, graphNode.Name, graphNode.Type, result.Persons)
 	if !blocked {
-		for _, gap := range result.Gaps {
-			p.validation.Blockers = append(p.validation.Blockers, model.PathConfigAffectedItem{Kind: "field", Name: gap.Name, Reason: gap.Reason})
-		}
 		for _, person := range result.Persons {
 			if person.Mode == "review" {
 				p.validation.Blockers = append(p.validation.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: person.Detail})
@@ -498,11 +491,11 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 	return result
 }
 
-// pathConfigNonPersonRequirements 仅在节点配置 DTO 中移除已由 Persons 承载的人员要求，不改变 F-006 独立分析结果。
-func pathConfigNonPersonRequirements(requirements []model.RequirementItem) []model.RequirementItem {
+// pathConfigNodeRequirements 从节点配置提示中移除人员长文本与字段权限，避免表单字段重新进入节点侧栏。
+func pathConfigNodeRequirements(requirements []model.RequirementItem) []model.RequirementItem {
 	result := make([]model.RequirementItem, 0, len(requirements))
 	for _, requirement := range requirements {
-		if strings.TrimSpace(requirement.Category) == "人员" {
+		if strings.TrimSpace(requirement.Category) == "人员" || strings.TrimSpace(requirement.Title) == "字段权限" {
 			continue
 		}
 		result = append(result, requirement)
@@ -515,11 +508,6 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 	if node.LineBlocked {
 		return "not_required", "无需配置"
 	}
-	for _, field := range node.Fields {
-		if field.Affected {
-			return "affected", "配置失效"
-		}
-	}
 	for _, person := range node.Persons {
 		if person.Affected {
 			return "affected", "配置失效"
@@ -527,9 +515,6 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 	}
 	if node.ActionPlan.Affected {
 		return "affected", "配置失效"
-	}
-	if len(node.Gaps) > 0 {
-		return "partial", "部分完成"
 	}
 	hasRuntime := false
 	hasEditablePerson := false
@@ -544,7 +529,7 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 			hasEditablePerson = true
 		}
 	}
-	hasConfigItem := len(node.Fields) > 0 || len(node.ActionPlan.Catalog) > 0 || hasEditablePerson
+	hasConfigItem := len(node.ActionPlan.Catalog) > 0 || hasEditablePerson
 	if !hasConfigItem {
 		if hasRuntime {
 			return "runtime", "运行时确定"

@@ -132,11 +132,10 @@ grep -Fq "Number.MAX_SAFE_INTEGER" "${config_logic}"
 grep -Fq ':max="MAX_SAFE_PERSON_SEED"' "${config_panel}"
 grep -Fq '"transfer_approver"' "${config_plan_analyzer}"
 grep -Fq "'transfer_approver'" "${config_logic}"
-grep -Fq "暂不支持" "${config_panel}"
 grep -Fq "overflow-y: auto" "${config_panel}"
 grep -Fq "保存当前节点" "${config_panel}"
-if grep -Eq 'node\.fields|NDatePicker|NCheckbox|NSwitch' "${config_panel}"; then
-  echo 'F-007 节点侧栏不得重新模拟目标表单字段控件' >&2
+if grep -Eq 'node\.fields|node\.gaps|暂不支持|NDatePicker|NCheckbox|NSwitch' "${config_panel}"; then
+  echo 'F-007 节点侧栏不得呈现表单字段、组件缺口或模拟目标表单控件' >&2
   exit 1
 fi
 if grep -Eq '名称需运行时解析|已配置 [^" ]+ 项范围' "${config_analyzer}"; then
@@ -152,6 +151,8 @@ grep -Fq "getValues" "${runtime_app}"
 grep -Fq "captureFormValues" "${runtime_app}"
 grep -Fq "form.getData(true)" "${runtime_template}"
 grep -Fq "delete config[hook]" "${runtime_template}"
+grep -Fq "component.el" "${runtime_template}"
+grep -Fq "TARGET_COMPONENT_NAMES.has(targetComponentName)" "${runtime_template}"
 grep -Fq "this.applyFieldPermissions(form)" "${runtime_app}"
 grep -Fq "form.disabled(this.allFields, true)" "${runtime_app}"
 grep -Fq "form.disabled(this.editableFields, false)" "${runtime_app}"

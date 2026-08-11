@@ -369,6 +369,8 @@ async function saveFormData() {
       manualOverridePaths: Array.isArray(captured.manualOverridePaths) ? captured.manualOverridePaths.map(String) : current.form.manualOverridePaths,
       sampleSummary: current.form.sampleSummary,
       validated: true,
+      // 真实运行时注册表是组件支持性的唯一来源；服务端据此阻止未知组件被绕过保存。
+      unsupported: Array.isArray(captured.unsupported) ? captured.unsupported.map(String) : runtimeUnsupported.value,
     })
     await reloadConfiguration()
     formSaveKey = crypto.randomUUID()

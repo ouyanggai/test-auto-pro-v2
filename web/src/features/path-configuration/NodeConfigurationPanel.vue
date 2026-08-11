@@ -396,12 +396,7 @@ function terminalAction(kind: PathConfigActionKind): boolean {
           </template>
         </section>
 
-        <section v-if="node.gaps.length" class="node-configuration-panel__section" aria-labelledby="node-gaps-heading">
-          <h3 id="node-gaps-heading">暂不支持</h3>
-          <n-alert v-for="(gap, index) in node.gaps" :key="index" type="warning" :show-icon="false" size="small"><strong>{{ gap.name }}</strong>：{{ gap.reason }}</n-alert>
-        </section>
-
-        <n-empty v-if="!node.persons.length && !node.actionPlan.catalog.length && !node.gaps.length" size="small" description="此节点没有需要配置的内容" />
+        <n-empty v-if="!node.persons.length && !node.actionPlan.catalog.length" size="small" description="此节点没有需要配置的内容" />
       </div>
 
       <footer class="node-configuration-panel__footer">

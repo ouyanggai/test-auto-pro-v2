@@ -208,6 +208,15 @@ test('可跳过人员零选择合法但主动选择仍满足最低人数', () =>
   assert.deepEqual(allEditableFieldsFilled(optionalConfiguration, draft).missing, ['审批人'])
 })
 
+test('节点完整性不依赖兼容响应中的表单字段和组件缺口', () => {
+  const node = structuredClone(configuration.groups[0].nodes[0])
+  node.status = 'partial'
+  node.fields = [{ key: 'legacy-field', name: '通用信息选择', type: 'text', required: true, value: '', options: [], editable: false, affected: true, note: '旧字段' }]
+  node.gaps = [{ name: '通用信息选择', reason: '旧组件缺口' }]
+  const draft = initPathConfigDraft({ ...configuration, groups: [{ ...configuration.groups[0], nodes: [node] }] })
+  assert.deepEqual(currentNodeConfigurationComplete(node, draft), { missing: [], complete: true })
+})
+
 test('人员规则长列表摘要保留真实总数并提供前三项预览', () => {
   const summary = summarizePathConfigPersonItems([
     { category: '人员', name: '张三', count: 1 },

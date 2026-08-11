@@ -1162,7 +1162,7 @@ func TestPathConfigurationSnapshotRecursesFormMakingContainers(t *testing.T) {
 		map[string]any{"id": "field-table", "name": "表格字段", "englishName": "tableValue", "fieldType": "stringType"},
 		map[string]any{"id": "field-complex", "name": "复杂组件", "englishName": "complexValue", "fieldType": "listType"},
 	}
-	fake.templateData = `{"list":[{"type":"grid","columns":[{"type":"col","list":[{"type":"input","model":"gridValue","name":"栅格字段","options":{"required":true}}]}]},{"type":"report","rows":[{"columns":[{"type":"td","list":[{"type":"input","model":"reportValue","name":"报表字段"}]}]}]},{"type":"table","tableColumns":[{"type":"input","model":"tableValue","name":"表格字段"}]},{"type":"subform","model":"complexValue","name":"复杂组件","list":[{"type":"input","model":"hiddenChild","name":"隐藏子项"}]}]}`
+	fake.templateData = `{"list":[{"type":"grid","columns":[{"type":"col","list":[{"type":"input","model":"gridValue","name":"栅格字段","options":{"required":true}}]}]},{"type":"report","rows":[{"columns":[{"type":"td","list":[{"type":"input","model":"reportValue","name":"报表字段"}]}]}]},{"type":"table","tableColumns":[{"type":"input","model":"tableValue","name":"表格字段"}]},{"type":"custom","el":"custome-info-select","model":"complexValue","name":"通用信息选择","options":{}}]}`
 	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
 	defer targetServer.Close()
 	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
@@ -1180,7 +1180,7 @@ func TestPathConfigurationSnapshotRecursesFormMakingContainers(t *testing.T) {
 			t.Fatalf("嵌套基础字段没有按真实组件解析：%s %+v", key, byName[key])
 		}
 	}
-	if byName["complexValue"].ComponentType != "subform" {
-		t.Fatalf("复杂组件不能降级为普通文本：%+v", byName["complexValue"])
+	if byName["complexValue"].ComponentType != "custom" || byName["complexValue"].ComponentName != "custome-info-select" {
+		t.Fatalf("自定义组件真实 el 没有保留：%+v", byName["complexValue"])
 	}
 }

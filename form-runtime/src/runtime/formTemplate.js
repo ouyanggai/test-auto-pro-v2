@@ -33,6 +33,19 @@ function componentLists (component) {
   return lists
 }
 
+// componentRuntimeName 按目标模板真实字段优先级解析组件注册名，避免 type=custom 掩盖 el。
+export function componentRuntimeName (component) {
+  const options = component && component.options
+  return String(
+    (component && component.el) ||
+    (options && options.componentName) ||
+    (options && options.component) ||
+    (component && component.componentName) ||
+    (component && component.component) ||
+    ''
+  ).trim()
+}
+
 // prepareTemplate 在完整模板副本上应用字段权限，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
 export function prepareTemplate (rawTemplate, permissions, readOnly) {
   const template = clonePlain(rawTemplate || {})
@@ -45,10 +58,10 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
     for (const component of Array.isArray(list) ? list : []) {
       const type = String(component && component.type || '').trim()
       const model = String(component && component.model || '').trim()
-      const customName = String(component && component.options && (component.options.componentName || component.options.component) || '').trim()
-      const targetComponentName = customName || (type === 'component' ? String(component.componentName || '') : type)
+      const targetComponentName = componentRuntimeName(component) || (!STANDARD_TYPES.has(type) ? type : '')
+      const needsTargetRegistration = type === 'custom' || type === 'component' || !STANDARD_TYPES.has(type)
       // 真实上游 main.js 已注册的目标组件交给原生 FormMaking 渲染；只有未注册组件才阻止错误宣称支持。
-      if ((!STANDARD_TYPES.has(type) || type === 'component' || customName) && !TARGET_COMPONENT_NAMES.has(targetComponentName)) {
+      if (needsTargetRegistration && !TARGET_COMPONENT_NAMES.has(targetComponentName)) {
         unsupported.add(`${component.name || model || type || '未知组件'}：依赖 rsh-flow-components 宿主业务适配`)
       }
       if (model) {

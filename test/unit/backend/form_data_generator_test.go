@@ -33,19 +33,19 @@ func TestFormDataGeneratorParsesNestedTargetTemplate(t *testing.T) {
 	}
 }
 
-// TestFormDataGeneratorKeepsComplexComponentsUnsupported 验证复杂业务组件只报告缺口，不伪造成普通文本值。
+// TestFormDataGeneratorSkipsComplexComponentsWithoutBlockingForm 验证复杂组件留给真实表单人工填写，不伪造值或阻断整张表单。
 func TestFormDataGeneratorKeepsComplexComponentsUnsupported(t *testing.T) {
 	template := map[string]any{"list": []any{
 		map[string]any{"type": "grid", "columns": []any{map[string]any{"list": []any{
 			map[string]any{"type": "component", "model": "contract", "name": "合同组件", "options": map[string]any{}},
 		}}}},
 	}}
-	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 7})
-	if len(result.Unsupported) != 1 || !strings.Contains(result.Unsupported[0], "合同组件") {
-		t.Fatalf("复杂组件没有稳定标记 unsupported：%+v", result)
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Base: map[string]any{"contract": `{"selected":"历史值"}`}, Seed: 7})
+	if len(result.Unsupported) != 0 || result.Pending != 1 {
+		t.Fatalf("复杂组件应只计入人工待填而非阻断表单：%+v", result)
 	}
-	if _, exists := result.Values["contract"]; exists {
-		t.Fatalf("复杂组件被错误生成普通值：%+v", result.Values)
+	if result.Values["contract"] != `{"selected":"历史值"}` {
+		t.Fatalf("复杂组件已有值被生成器覆盖或删除：%+v", result.Values)
 	}
 }
 

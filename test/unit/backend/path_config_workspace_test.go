@@ -110,6 +110,7 @@ func TestPathConfigWorkspaceFormIdempotencyReconcilesLostResponse(t *testing.T) 
 		t.Fatalf("首次表单保存失败：result=%+v calls=%d saves=%d err=%v", first, reader.calls, configs.saveCalls, err)
 	}
 	reader.err = errors.New("目标随后不可用")
+	input.Unsupported = []string{"迟到的运行时状态不应覆盖已成功事实"}
 	retried, err := serviceUnderTest.SaveForm(context.Background(), 7, 32, key, input)
 	if err != nil || retried.FormRevision != 1 || reader.calls != 1 || configs.saveCalls != 1 {
 		t.Fatalf("同键对账没有直接返回原表单事实：result=%+v calls=%d saves=%d err=%v", retried, reader.calls, configs.saveCalls, err)
@@ -154,6 +155,77 @@ func TestPathConfigWorkspaceNewFormUsesEntryNodePermissions(t *testing.T) {
 	}
 	if powers["amount"] != "edit" || powers["type"] == "edit" || powers["note"] == "edit" {
 		t.Fatalf("新发起错误合并下游节点权限：%+v", configuration.Form.Permissions)
+	}
+}
+
+// TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately 验证已注册自定义组件不阻断节点保存，完整值和虚拟字段可独立往返。
+func TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	snapshot := pathConfigWorkspaceSnapshot()
+	snapshot.Tree.FieldPowers = append(snapshot.Tree.FieldPowers, target.FlowNodeFieldPower{FormID: "form-a", FieldID: "field-general", EnglishName: "generalInfo", Power: "edit"})
+	snapshot.Forms[0].TemplateData = `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"required":true}},{"type":"select","model":"type","name":"类型","options":{"required":true,"options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}},{"type":"input","model":"note","name":"备注","options":{}},{"type":"custom","el":"custome-info-select","model":"generalInfo","name":"通用信息选择","options":{}}],"config":{}}`
+	reader := &pathConfigReader{snapshot: snapshot}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{}
+	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
+
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil || configuration.Form.Status == "unsupported" {
+		t.Fatalf("已注册自定义组件被服务端误判为不支持：configuration=%+v err=%v", configuration, err)
+	}
+	for _, group := range configuration.Groups {
+		for _, node := range group.Nodes {
+			if len(node.Fields) != 0 || len(node.Gaps) != 0 {
+				t.Fatalf("表单组件错误进入节点配置：%+v", node)
+			}
+		}
+	}
+	start := findConfigNode(configuration.Groups, "发起")
+	if start == nil {
+		t.Fatal("缺少发起节点")
+	}
+	if _, err := serviceUnderTest.SaveNode(context.Background(), 7, 32, start.Key, "123e4567-e89b-12d3-a456-426614174851", model.PathNodeSaveInput{
+		Revision: configuration.NodeRevision, Arrivals: workspaceNodeArrivals(*start),
+	}); err != nil {
+		t.Fatalf("自定义组件错误阻断节点独立保存：%v", err)
+	}
+
+	values := map[string]any{
+		"amount": float64(2800), "type": "a", "note": "人工填写",
+		"generalInfo":            `{"bizType":"project","value":"示例"}`,
+		"generalInfo__condition": map[string]any{"field": "project"}, "__formPersonId": "person-token",
+	}
+	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 17, values, []string{"generalInfo"})
+	if err != nil || len(generated.Unsupported) != 0 || generated.Values["generalInfo"] != values["generalInfo"] {
+		t.Fatalf("生成器错误阻断或覆盖自定义组件值：generated=%+v err=%v", generated, err)
+	}
+	result, err := serviceUnderTest.SaveForm(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174852", model.PathFormSaveInput{
+		Revision: generated.Revision, Values: generated.Values, Seed: generated.Seed,
+		GeneratedFieldPaths: generated.GeneratedFieldPaths, ManualOverridePaths: generated.ManualOverridePaths,
+		SampleSummary: generated.SampleSummary, Validated: true, Unsupported: []string{},
+	})
+	if err != nil || result.FormRevision != 1 {
+		t.Fatalf("已注册自定义组件完整值保存失败：result=%+v err=%v", result, err)
+	}
+	reloaded, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil || reloaded.Form.Values["generalInfo"] != values["generalInfo"] || reloaded.Form.Values["__formPersonId"] != "person-token" {
+		t.Fatalf("自定义组件或虚拟字段没有完整往返：form=%+v err=%v", reloaded.Form, err)
+	}
+}
+
+// TestPathConfigWorkspaceRejectsRuntimeUnsupportedComponents 验证真实运行时报告的未知组件不能绕过正常表单保存流程。
+func TestPathConfigWorkspaceRejectsRuntimeUnsupportedComponents(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{}
+	serviceUnderTest := newPathConfigService(t, plans, &pathConfigReader{snapshot: pathConfigWorkspaceSnapshot()}, paths, configs)
+	_, err := serviceUnderTest.SaveForm(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174853", model.PathFormSaveInput{
+		Validated: true, Unsupported: []string{"未知宿主组件：依赖 rsh-flow-components 宿主业务适配"},
+	})
+	if !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) || configs.saveCalls != 0 {
+		t.Fatalf("运行时未知组件没有阻止保存：err=%v saves=%d", err, configs.saveCalls)
 	}
 }
 

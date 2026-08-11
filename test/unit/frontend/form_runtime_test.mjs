@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel'])
-const { captureFormValues, diffManualPaths, prepareTemplate } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select'])
+const { captureFormValues, componentRuntimeName, diffManualPaths, prepareTemplate } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
 
@@ -84,6 +84,21 @@ test('真实入口已注册的目标组件不再被统一标记为 unsupported',
   ] }, [{ field: 'members', power: 'edit' }], false)
   assert.deepEqual(prepared.unsupported, [])
   assert.equal(prepared.template.list[0].options.disabled, false)
+})
+
+test('目标模板 type custom 优先按 el 匹配真实注册组件', () => {
+  const supported = prepareTemplate({ list: [
+    { type: 'custom', el: 'custome-info-select', model: 'generalInfo', name: '通用信息选择', options: {} },
+  ] }, [{ field: 'generalInfo', power: 'edit' }], false)
+  assert.equal(componentRuntimeName(supported.template.list[0]), 'custome-info-select')
+  assert.deepEqual(supported.unsupported, [])
+  assert.equal(supported.template.list[0].options.disabled, false)
+
+  const unknown = prepareTemplate({ list: [
+    { type: 'custom', el: 'unknown-host-component', model: 'unknownValue', name: '未知宿主组件', options: {} },
+  ] }, [{ field: 'unknownValue', power: 'edit' }], false)
+  assert.equal(unknown.unsupported.length, 1)
+  assert.match(unknown.unsupported[0], /未知宿主组件/)
 })
 
 test('版本化消息拒绝旧版本、空会话和未知命令', () => {

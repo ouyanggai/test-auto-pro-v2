@@ -326,6 +326,10 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
   if (!node || node.lineBlocked) return { missing: [], complete: false }
   const missing: string[] = []
   for (const person of node.persons) {
+    if (person.mode === 'review' || person.affected) {
+      missing.push(person.title)
+      continue
+    }
     if (!person.editable) continue
     const selected = resolvedPersonStrategySelection(person, draft.personStrategies[person.key])
     const requiredEmpty = person.required && selected.length === 0
@@ -333,9 +337,10 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
     if (requiredEmpty || belowMinimum) missing.push(person.title)
   }
   const arrivals = draft.arrivals[node.key] ?? []
-  if (!validPathConfigArrivals(node, arrivals)) missing.push('动作计划')
+  if (node.actionPlan.affected || !validPathConfigArrivals(node, arrivals)) missing.push('动作计划')
   const actionable = node.actionPlan.catalog.length > 0 || node.persons.some((person) => person.editable)
-  return { missing, complete: actionable && missing.length === 0 && node.status !== 'partial' }
+  // 历史 fields/gaps 即使仍出现在兼容响应中也不能阻断节点保存；表单兼容性只由独立运行时负责。
+  return { missing, complete: actionable && missing.length === 0 }
 }
 
 // hasCurrentNodeDraftChanges 只比较当前节点动作与人员，其他节点草稿不影响保存按钮。

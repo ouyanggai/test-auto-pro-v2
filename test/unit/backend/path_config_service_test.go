@@ -123,7 +123,7 @@ func TestPathConfigServiceIdempotentRetrySkipsTargetRead(t *testing.T) {
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
 	configs := &memoryPathConfigRepository{}
 	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
-	fields := validPathConfigSubmission()
+	var fields []model.PathConfigFieldValue
 	first, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174501", 0, fields, nil)
 	if err != nil || first.Revision != 1 || reader.calls != 1 {
 		t.Fatalf("首次保存失败：result=%+v calls=%d err=%v", first, reader.calls, err)
@@ -146,7 +146,7 @@ func TestPathConfigServiceRejectsRevisionConflict(t *testing.T) {
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
 	configs := &memoryPathConfigRepository{}
 	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
-	fields := validPathConfigSubmission()
+	var fields []model.PathConfigFieldValue
 	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174502", 0, fields, nil); err != nil {
 		t.Fatalf("首次保存失败：%v", err)
 	}
@@ -206,7 +206,7 @@ func TestPathConfigServiceStoresDisagreeAndBlocksSubsequent(t *testing.T) {
 	serviceUnderTest := newPathConfigService(t, plans, reader, paths, &memoryPathConfigRepository{})
 	disagreeKey := analyzer.PathConfigActionToken("approve-a", "agree_disagree")
 	actions := []model.PathConfigActionValue{{Key: disagreeKey, Action: "disagree"}}
-	result, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174505", 0, validPathConfigSubmission(), actions)
+	result, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174505", 0, nil, actions)
 	if err != nil || result.Revision != 1 {
 		t.Fatalf("不同意动作保存失败：result=%+v err=%v", result, err)
 	}
@@ -224,7 +224,7 @@ func TestPathConfigServiceStoresDisagreeAndBlocksSubsequent(t *testing.T) {
 	}
 }
 
-// TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange 验证目标选项变化后重新读取配置的状态必须是 affected。
+// TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange 验证表单选项变化不会污染节点配置状态。
 func TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
@@ -232,7 +232,7 @@ func TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange(t *testing.T
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
 	configs := &memoryPathConfigRepository{}
 	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
-	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174507", 0, validPathConfigSubmission(), nil); err != nil {
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174507", 0, nil, nil); err != nil {
 		t.Fatalf("首次保存失败：%v", err)
 	}
 	// 目标平台把“类型”字段选项从 a/b 收缩为只剩 b，已保存的 a 变成失效值。
@@ -247,44 +247,43 @@ func TestPathConfigServiceGetReportsAffectedAfterTargetOptionChange(t *testing.T
 	if err != nil {
 		t.Fatalf("目标变化后重新读取配置失败：%v", err)
 	}
-	if configuration.Status != "affected" {
-		t.Fatalf("目标选项变化后配置状态没有置为 affected：%s", configuration.Status)
+	if configuration.Status == "affected" {
+		t.Fatalf("表单选项变化错误污染节点配置状态：%s", configuration.Status)
 	}
 	approval := findConfigNode(configuration.Groups, "财务审批")
-	kind := findConfigField(approval.Fields, "类型")
-	if kind == nil || !kind.Affected {
-		t.Fatalf("失效已保存字段没有被标记受影响：%+v", kind)
+	if len(approval.Fields) != 0 || len(approval.Gaps) != 0 {
+		t.Fatalf("表单字段变化错误进入节点配置：%+v", approval)
 	}
 }
 
-// TestPathConfigServiceRejectsLooseDateText 验证日期与日期时间保存严格拒绝任意文本格式。
+// TestPathConfigServiceRejectsLooseDateText 验证日期与日期时间由独立表单保存接口严格校验。
 func TestPathConfigServiceRejectsLooseDateText(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
-	tree := pathConfigTree()
-	approval := tree.Child.ConditionNodes[0].Child
-	approval.FieldPowers = append(approval.FieldPowers,
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	snapshot := pathConfigWorkspaceSnapshot()
+	snapshot.Tree.FieldPowers = append(snapshot.Tree.FieldPowers,
 		target.FlowNodeFieldPower{FormID: "form-a", FieldID: "field-date", EnglishName: "date", Power: "edit"},
 		target.FlowNodeFieldPower{FormID: "form-a", FieldID: "field-datetime", EnglishName: "datetime", Power: "edit"},
 	)
-	fields := append(pathConfigFields(),
-		target.FormFieldDetail{FormID: "form-a", FieldID: "field-date", Name: "日期", EnglishName: "date", FieldType: "dateType", ComponentType: "date", DateMode: "date"},
-		target.FormFieldDetail{FormID: "form-a", FieldID: "field-datetime", Name: "日期时间", EnglishName: "datetime", FieldType: "dateType", ComponentType: "date", DateMode: "datetime"},
-	)
-	reader := &pathConfigReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FormFields: fields}}
+	snapshot.Forms[0].TemplateData = `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"required":true}},{"type":"select","model":"type","name":"类型","options":{"required":true,"options":[{"label":"A","value":"a"}] }},{"type":"input","model":"note","name":"备注","options":{}},{"type":"date","model":"date","name":"日期","options":{"required":true,"type":"date"}},{"type":"date","model":"datetime","name":"日期时间","options":{"required":true,"type":"datetime"}}],"config":{}}`
+	reader := &pathConfigReader{snapshot: snapshot}
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
 	configs := &memoryPathConfigRepository{}
 	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
-	valid := append(validPathConfigSubmission(),
-		model.PathConfigFieldValue{Key: analyzer.PathConfigFieldToken("approve-a", "date"), Value: `"2026-08-07"`},
-		model.PathConfigFieldValue{Key: analyzer.PathConfigFieldToken("approve-a", "datetime"), Value: `"2026-08-07 10:20:30"`},
-	)
-	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174509", 0, valid, nil); err != nil {
+	valid := model.PathFormSaveInput{Validated: true, Values: map[string]any{
+		"amount": float64(2500), "type": "a", "note": "备注内容", "date": "2026-08-07", "datetime": "2026-08-07 10:20:30",
+	}}
+	if _, err := serviceUnderTest.SaveForm(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174509", valid); err != nil {
 		t.Fatalf("严格格式合法日期保存失败：%v", err)
 	}
-	invalid := append([]model.PathConfigFieldValue(nil), valid...)
-	invalid[len(invalid)-1].Value = `"2026/08/07 10:20"`
-	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174510", 1, invalid, nil); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
+	invalid := valid
+	invalid.Revision = 1
+	invalid.Values = make(map[string]any, len(valid.Values))
+	for key, value := range valid.Values {
+		invalid.Values[key] = value
+	}
+	invalid.Values["datetime"] = "2026/08/07 10:20"
+	if _, err := serviceUnderTest.SaveForm(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174510", invalid); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
 		t.Fatalf("任意日期时间文本没有被拒绝：%v", err)
 	}
 }
@@ -304,12 +303,12 @@ func TestPathConfigServiceValidatesAndStoresTemplatePersonSelection(t *testing.T
 	serviceUnderTest := newPathConfigService(t, plans, reader, paths, configs)
 	personKey := analyzer.PathConfigPersonToken("approve-a")
 	invalid := []model.PathConfigActionValue{{Key: personKey, Action: `["forged-person"]`}}
-	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174511", 0, validPathConfigSubmission(), invalid); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174511", 0, nil, invalid); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
 		t.Fatalf("模板外人员候选没有被拒绝：%v", err)
 	}
 	selectedToken := analyzer.PathConfigPersonOptionToken("approve-a", "person-1")
 	valid := []model.PathConfigActionValue{{Key: personKey, Action: `["` + selectedToken + `"]`}}
-	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174512", 0, validPathConfigSubmission(), valid); err != nil {
+	if _, err := serviceUnderTest.Save(context.Background(), 7, 32, "123e4567-e89b-12d3-a456-426614174512", 0, nil, valid); err != nil {
 		t.Fatalf("合法人员候选保存失败：%v", err)
 	}
 	stored := configs.records[32].ActionValues[analyzer.PathConfigPersonStorageKey("approve-a")]
@@ -353,7 +352,7 @@ func TestPathConfigServiceValidatesOptionalPersonMinimum(t *testing.T) {
 				t.Fatalf("人员候选测试数据无法编码：%v", err)
 			}
 			actions := []model.PathConfigActionValue{{Key: analyzer.PathConfigPersonToken("approve-a"), Action: string(encoded)}}
-			_, saveErr := serviceUnderTest.Save(context.Background(), 7, 32, fmt.Sprintf("123e4567-e89b-12d3-a456-4266141746%02d", index), 0, validPathConfigSubmission(), actions)
+			_, saveErr := serviceUnderTest.Save(context.Background(), 7, 32, fmt.Sprintf("123e4567-e89b-12d3-a456-4266141746%02d", index), 0, nil, actions)
 			if testCase.wantInvalid && !service.IsPathConfigErrorKind(saveErr, service.PathConfigErrorInvalid) {
 				t.Fatalf("不满足最低人数的选择没有被拒绝：%v", saveErr)
 			}

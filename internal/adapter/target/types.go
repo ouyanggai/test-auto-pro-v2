@@ -181,6 +181,7 @@ type FormFieldDetail struct {
 	ValueOrigin   string
 	FieldStatus   string
 	ComponentType string
+	ComponentName string
 	DateMode      string
 }
 

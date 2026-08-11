@@ -127,7 +127,7 @@ func collectList(list []any, prefix string, fields *[]Field, unsupported *[]stri
 
 // Generate 从保存值或最佳近期样本开始，按当前模板、路径约束和稳定种子重建完整 values。
 func Generate(input GenerateInput) GenerateResult {
-	fields, unsupported := ParseTemplate(input.Template)
+	fields, skipped := ParseTemplate(input.Template)
 	seed := input.Seed
 	if seed == 0 {
 		seed = 1
@@ -139,7 +139,8 @@ func Generate(input GenerateInput) GenerateResult {
 		manual[strings.TrimSpace(path)] = true
 	}
 	generated := make([]string, 0, len(fields))
-	result := GenerateResult{Values: values, ManualOverridePaths: uniqueSorted(input.ManualOverridePaths), Unsupported: unsupported}
+	// 复杂组件由真实 FormMaking 负责渲染和校验；生成器只跳过它们并提示人工填写，不能把整张表单误判为不支持。
+	result := GenerateResult{Values: values, ManualOverridePaths: uniqueSorted(input.ManualOverridePaths), Pending: len(skipped), Unsupported: []string{}}
 	for _, field := range fields {
 		if manual[field.Path] {
 			continue
@@ -207,8 +208,9 @@ func Validate(template, values map[string]any, constraints []Constraint) []strin
 
 // ValidateEditable 按当前路径可编辑字段复验 required；只读/隐藏字段仍校验已有值形状，但不强制必填。
 func ValidateEditable(template, values map[string]any, constraints []Constraint, editablePaths map[string]bool) []string {
-	fields, unsupported := ParseTemplate(template)
-	errors := append([]string(nil), unsupported...)
+	fields, _ := ParseTemplate(template)
+	errors := make([]string, 0)
+	// 未被基础生成器识别的组件已经由真实运行时校验；服务端这里只复验可证明的基础字段与路径条件。
 	for _, field := range fields {
 		value, exists := getPath(values, field.Path)
 		required := field.Required && (editablePaths == nil || editablePaths[field.Path])

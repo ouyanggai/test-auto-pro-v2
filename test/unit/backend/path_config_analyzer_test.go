@@ -10,7 +10,7 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-// TestPathConfigAnalyzerProjectsFieldsActionsAndValuesInPathOrder 验证字段、动作、默认值与实例现值按真实节点顺序投影。
+// TestPathConfigAnalyzerProjectsFieldsActionsAndValuesInPathOrder 验证节点配置只投影人员与动作，不携带表单字段或组件缺口。
 func TestPathConfigAnalyzerProjectsFieldsActionsAndValuesInPathOrder(t *testing.T) {
 	tree := pathConfigTree()
 	fields := pathConfigFields()
@@ -45,24 +45,18 @@ func TestPathConfigAnalyzerProjectsFieldsActionsAndValuesInPathOrder(t *testing.
 	if len(approval.Actions) != 1 || approval.Actions[0].Kind != "agree_disagree" || approval.Actions[0].Default != "agree" || approval.Actions[0].Current != "agree" {
 		t.Fatalf("审批动作默认推荐不正确：%+v", approval.Actions)
 	}
-	if len(approval.Fields) != 2 {
-		t.Fatalf("可编辑字段数量不正确：%+v", approval.Fields)
+	if len(approval.Fields) != 0 || len(approval.Gaps) != 0 || len(validation.FieldTokens) != 0 {
+		t.Fatalf("表单字段或缺口不应进入节点配置：fields=%+v gaps=%+v tokens=%+v", approval.Fields, approval.Gaps, validation.FieldTokens)
 	}
-	amount := findConfigField(approval.Fields, "申请金额")
-	if amount == nil || amount.Type != "number" || amount.Required != true || amount.Value != "2500.5" {
-		t.Fatalf("实例现值没有覆盖数字字段：%+v", amount)
-	}
-	kind := findConfigField(approval.Fields, "类型")
-	if kind == nil || kind.Type != "singleSelect" || len(kind.Options) != 2 || kind.Options[0].Label != "A" {
-		t.Fatalf("单选字段选项不正确：%+v", kind)
-	}
-	if _, exists := validation.FieldTokens[amount.Key]; !exists || validation.FieldTokens[amount.Key].NodeID == "" || validation.FieldTokens[amount.Key].FieldKey != "amount" {
-		t.Fatalf("字段回写索引不正确：%+v", validation.FieldTokens[amount.Key])
+	for _, requirement := range approval.Requirements {
+		if requirement.Title == "字段权限" {
+			t.Fatalf("字段权限不应出现在节点模板要求中：%+v", approval.Requirements)
+		}
 	}
 	assertPathConfigPublicSafety(t, configuration)
 }
 
-// TestPathConfigAnalyzerOverlaysStoredValuesAndMarksAffected 验证已保存值覆盖默认值，选项变化时标出受影响项目。
+// TestPathConfigAnalyzerOverlaysStoredValuesAndMarksAffected 验证历史字段值不会重新进入节点配置或把节点标记失效。
 func TestPathConfigAnalyzerOverlaysStoredValuesAndMarksAffected(t *testing.T) {
 	tree := pathConfigTree()
 	fields := pathConfigFields()
@@ -80,21 +74,13 @@ func TestPathConfigAnalyzerOverlaysStoredValuesAndMarksAffected(t *testing.T) {
 		t.Fatalf("已保存值叠加失败：%v", err)
 	}
 	approval := findConfigNode(configuration.Groups, "财务审批")
-	amount := findConfigField(approval.Fields, "申请金额")
-	if amount == nil || amount.Value != "888" || amount.Affected {
-		t.Fatalf("可对应已保存值没有保留：%+v", amount)
-	}
-	kind := findConfigField(approval.Fields, "类型")
-	if kind == nil || !kind.Affected || !strings.Contains(kind.Note, "选项已变化") {
-		t.Fatalf("失效选项没有标记受影响：%+v", kind)
-	}
-	if configuration.Status != "affected" {
-		t.Fatalf("结构变化状态没有反映到配置状态：%s", configuration.Status)
+	if len(approval.Fields) != 0 || len(approval.Gaps) != 0 || configuration.Status == "affected" {
+		t.Fatalf("历史字段值错误污染节点状态：node=%+v status=%s", approval, configuration.Status)
 	}
 	assertPathConfigPublicSafety(t, configuration)
 }
 
-// TestPathConfigAnalyzerStoredValueWinsOverInstanceValue 验证同一字段同时存在实例现值与已保存值时已保存值优先。
+// TestPathConfigAnalyzerStoredValueWinsOverInstanceValue 验证实例值与已保存表单值都只属于表单工作区。
 func TestPathConfigAnalyzerStoredValueWinsOverInstanceValue(t *testing.T) {
 	tree := pathConfigTree()
 	fields := pathConfigFields()
@@ -113,20 +99,12 @@ func TestPathConfigAnalyzerStoredValueWinsOverInstanceValue(t *testing.T) {
 		t.Fatalf("已保存值优先投影失败：%v", err)
 	}
 	approval := findConfigNode(configuration.Groups, "财务审批")
-	amount := findConfigField(approval.Fields, "申请金额")
-	if amount == nil || amount.Value != "888" || amount.Affected {
-		t.Fatalf("已保存数字值被实例现值覆盖：%+v", amount)
-	}
-	kind := findConfigField(approval.Fields, "类型")
-	if kind == nil || kind.Value != "\"a\"" || kind.Affected {
-		t.Fatalf("已保存单选值没有优先或错误标记受影响：%+v", kind)
-	}
-	if configuration.Status != "configured" {
-		t.Fatalf("有效已保存值不应改变配置状态：%s", configuration.Status)
+	if len(approval.Fields) != 0 || len(approval.Gaps) != 0 {
+		t.Fatalf("实例值或已保存值错误进入节点配置：%+v", approval)
 	}
 }
 
-// TestPathConfigAnalyzerMarksAffectedWhenStoredValueInvalidEvenWithInstanceValue 验证已保存值失效时保留原值并标记受影响。
+// TestPathConfigAnalyzerMarksAffectedWhenStoredValueInvalidEvenWithInstanceValue 验证失效表单值不会影响节点配置状态。
 func TestPathConfigAnalyzerMarksAffectedWhenStoredValueInvalidEvenWithInstanceValue(t *testing.T) {
 	tree := pathConfigTree()
 	fields := pathConfigFields()
@@ -145,16 +123,12 @@ func TestPathConfigAnalyzerMarksAffectedWhenStoredValueInvalidEvenWithInstanceVa
 		t.Fatalf("失效已保存值投影失败：%v", err)
 	}
 	approval := findConfigNode(configuration.Groups, "财务审批")
-	amount := findConfigField(approval.Fields, "申请金额")
-	if amount == nil || amount.Value != "\"abc\"" || !amount.Affected || !strings.Contains(amount.Note, "已变化") {
-		t.Fatalf("失效已保存值没有保留并标记受影响：%+v", amount)
-	}
-	if configuration.Status != "affected" {
-		t.Fatalf("失效已保存值没有把配置状态置为 affected：%s", configuration.Status)
+	if len(approval.Fields) != 0 || len(approval.Gaps) != 0 || configuration.Status == "affected" {
+		t.Fatalf("失效表单值错误影响节点配置：node=%+v status=%s", approval, configuration.Status)
 	}
 }
 
-// TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue 验证已发/待发未保存过配置时仍显示实例当前值。
+// TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue 验证未保存实例值不会进入节点配置。
 func TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue(t *testing.T) {
 	tree := pathConfigTree()
 	fields := pathConfigFields()
@@ -172,9 +146,8 @@ func TestPathConfigAnalyzerUsesInstanceValueWithoutStoredValue(t *testing.T) {
 		t.Fatalf("实例现值投影失败：%v", err)
 	}
 	approval := findConfigNode(configuration.Groups, "财务审批")
-	amount := findConfigField(approval.Fields, "申请金额")
-	if amount == nil || amount.Value != "2500.5" || amount.Affected {
-		t.Fatalf("未保存字段没有显示实例现值：%+v", amount)
+	if len(approval.Fields) != 0 || len(approval.Gaps) != 0 {
+		t.Fatalf("实例当前值错误进入节点配置：%+v", approval)
 	}
 }
 
@@ -353,7 +326,7 @@ func TestPathConfigAnalyzerKeepsRuntimePersonRulesReadOnly(t *testing.T) {
 	}
 }
 
-// TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls 验证目标元数据的日期模式映射为严格控件类型。
+// TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls 验证日期与日期时间组件不再投影为节点控件。
 func TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls(t *testing.T) {
 	tree := pathConfigTree()
 	approval := tree.Child.ConditionNodes[0].Child
@@ -375,8 +348,8 @@ func TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls(t *testing.T) {
 		t.Fatalf("日期控件投影失败：%v", err)
 	}
 	approvalConfig := findConfigNode(configuration.Groups, "财务审批")
-	if findConfigField(approvalConfig.Fields, "日期").Type != analyzer.PathConfigTypeDate || findConfigField(approvalConfig.Fields, "日期时间").Type != analyzer.PathConfigTypeDateTime {
-		t.Fatalf("日期与日期时间控件没有区分：%+v", approvalConfig.Fields)
+	if len(approvalConfig.Fields) != 0 || len(approvalConfig.Gaps) != 0 {
+		t.Fatalf("日期组件错误进入节点配置：%+v", approvalConfig)
 	}
 }
 
@@ -405,7 +378,7 @@ func TestPathConfigAnalyzerBlocksLineAfterDisagree(t *testing.T) {
 	}
 }
 
-// TestPathConfigAnalyzerMapsUnsupportedFieldsToGaps 验证未知控件、明细表和缺选项字段转为不可编辑缺口。
+// TestPathConfigAnalyzerMapsUnsupportedFieldsToGaps 验证未知组件和字段权限不会成为节点缺口。
 func TestPathConfigAnalyzerMapsUnsupportedFieldsToGaps(t *testing.T) {
 	tree := &target.FlowNodeTemplate{
 		ID: "start", Name: "发起", Type: "start",
@@ -428,23 +401,13 @@ func TestPathConfigAnalyzerMapsUnsupportedFieldsToGaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("准备无分支路径失败：%v", err)
 	}
-	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, fields, model.ExecutionPath{SequenceNo: 1}, analysis, nil, nil, nil)
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, fields, model.ExecutionPath{SequenceNo: 1}, analysis, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("缺口投影失败：%v", err)
 	}
 	start := configuration.Groups[0].Nodes[0]
-	if len(start.Fields) != 0 || len(start.Gaps) != 4 {
-		t.Fatalf("缺口数量不正确：fields=%+v gaps=%+v", start.Fields, start.Gaps)
-	}
-	reasons := make([]string, 0, len(start.Gaps))
-	for _, gap := range start.Gaps {
-		reasons = append(reasons, gap.Reason)
-	}
-	joined := strings.Join(reasons, "|")
-	for _, want := range []string{"明细表", "附件", "选项来源无法确认", "字段权限不明确"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("缺口缺少原因 %q：%s", want, joined)
-		}
+	if len(start.Fields) != 0 || len(start.Gaps) != 0 || len(validation.FieldTokens) != 0 || len(validation.Blockers) != 0 {
+		t.Fatalf("表单组件错误进入节点字段、缺口或保存 blocker：node=%+v validation=%+v", start, validation)
 	}
 	assertPathConfigPublicSafety(t, configuration)
 }

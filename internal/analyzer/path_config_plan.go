@@ -241,17 +241,14 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
-// actionPlan 生成当前节点动作目录、回退目标和版本化到达计划，并登记保存校验映射。
-func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, persons []model.PathConfigPerson, gaps []model.PathConfigGap) model.PathConfigActionPlan {
+// actionPlan 生成当前节点动作目录、回退目标和版本化到达计划，并登记人员与动作保存校验映射。
+func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, persons []model.PathConfigPerson) model.PathConfigActionPlan {
 	result := model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{}, RollbackTargets: []model.PathConfigActionOption{}, Arrivals: []model.PathConfigArrivalPlan{}, MaxArrivals: maxPathConfigArrivals, MaxPathSteps: maxPathConfigActionSteps}
 	target := PathConfigNodeTarget{NodeID: nodeID, Name: nodeName, Person: p.personTargets[nodeID], ActionKinds: make(map[string]bool), RollbackTargets: make(map[string]string)}
 	for _, person := range persons {
 		if person.Mode == "review" || person.Affected {
 			target.Blockers = append(target.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: firstNonEmptyPathConfig(person.Note, person.Detail)})
 		}
-	}
-	for _, gap := range gaps {
-		target.Blockers = append(target.Blockers, model.PathConfigAffectedItem{Kind: "field", Name: gap.Name, Reason: gap.Reason})
 	}
 	appendAction := func(kind, label, description string, opinion, targetRequired, personRequired bool) {
 		result.Catalog = append(result.Catalog, model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, AllowsOpinion: opinion, RequiresTarget: targetRequired, RequiresPerson: personRequired})

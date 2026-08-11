@@ -87,6 +87,7 @@ type PathFormSaveInput struct {
 	ManualOverridePaths []string              `json:"manualOverridePaths"`
 	SampleSummary       PathFormSampleSummary `json:"sampleSummary"`
 	Validated           bool                  `json:"validated"`
+	Unsupported         []string              `json:"unsupported"`
 }
 
 // PathNodeSaveInput 是单个节点人员与动作的最小回写体。
@@ -118,7 +119,7 @@ type PathConfigGroup struct {
 	Nodes []PathConfigNode `json:"nodes"`
 }
 
-// PathConfigNode 是路径顺序上的一个业务节点及其字段、缺口和标准动作。
+// PathConfigNode 是路径顺序上的一个业务节点及其人员、规则和标准动作。
 type PathConfigNode struct {
 	Key          string               `json:"key"`
 	Name         string               `json:"name"`
@@ -126,9 +127,9 @@ type PathConfigNode struct {
 	Kind         string               `json:"kind"`
 	Status       string               `json:"status"`
 	StatusName   string               `json:"statusName"`
-	Fields       []PathConfigField    `json:"fields"`
+	Fields       []PathConfigField    `json:"fields"` // 兼容旧响应，节点配置不再投影表单字段。
 	Persons      []PathConfigPerson   `json:"persons"`
-	Gaps         []PathConfigGap      `json:"gaps"`
+	Gaps         []PathConfigGap      `json:"gaps"` // 兼容旧响应，组件缺口只由表单工作区呈现。
 	Requirements []RequirementItem    `json:"requirements"`
 	Actions      []PathConfigAction   `json:"actions"`
 	ActionPlan   PathConfigActionPlan `json:"actionPlan"`

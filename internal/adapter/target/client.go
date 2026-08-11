@@ -428,15 +428,20 @@ type rawFormMakingOption struct {
 
 // rawFormMakingComponent 是模板数据中 FormMaking 组件的递归结构；容器字段统一保留，未知组件不会回退成文本。
 type rawFormMakingComponent struct {
-	Type    string `json:"type"`
-	Model   string `json:"model"`
-	Name    string `json:"name"`
-	Options struct {
-		DefaultValue any                   `json:"defaultValue"`
-		Required     bool                  `json:"required"`
-		Multiple     bool                  `json:"multiple"`
-		Type         string                `json:"type"`
-		Options      []rawFormMakingOption `json:"options"`
+	Type          string `json:"type"`
+	El            string `json:"el"`
+	ComponentName string `json:"componentName"`
+	Component     string `json:"component"`
+	Model         string `json:"model"`
+	Name          string `json:"name"`
+	Options       struct {
+		DefaultValue  any                   `json:"defaultValue"`
+		Required      bool                  `json:"required"`
+		Multiple      bool                  `json:"multiple"`
+		Type          string                `json:"type"`
+		ComponentName string                `json:"componentName"`
+		Component     string                `json:"component"`
+		Options       []rawFormMakingOption `json:"options"`
 	} `json:"options"`
 	List         []rawFormMakingComponent `json:"list"`
 	Columns      []rawFormMakingComponent `json:"columns"`
@@ -806,8 +811,8 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 				Name: firstNonEmpty(component.Name, field.Name), EnglishName: field.EnglishName,
 				FieldType: strings.TrimSpace(field.FieldType), DefaultValue: strings.TrimSpace(field.DefaultValue),
 				ValueOrigin: strings.TrimSpace(field.ValueOrigin), FieldStatus: strings.TrimSpace(field.FieldStatus),
-				ComponentType: component.Type,
-				DateMode:      strings.TrimSpace(component.Options.Type),
+				ComponentType: component.Type, ComponentName: formMakingComponentName(component),
+				DateMode: strings.TrimSpace(component.Options.Type),
 			}
 			if hasComponent {
 				detail.Required = component.Options.Required
@@ -821,6 +826,11 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 		}
 	}
 	return result, runtimeForms, nil
+}
+
+// formMakingComponentName 按目标模板真实优先级保留自定义组件注册名，供诊断与兼容投影使用。
+func formMakingComponentName(component rawFormMakingComponent) string {
+	return firstNonEmpty(component.El, component.Options.ComponentName, component.Options.Component, component.ComponentName, component.Component)
 }
 
 // BaseURL 返回目标网关公开地址，供短期 iframe 会话请求必要的表单只读数据。

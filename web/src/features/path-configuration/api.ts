@@ -99,6 +99,7 @@ export function savePathFormData(
     manualOverridePaths: string[]
     sampleSummary: PathFormSampleSummary
     validated: boolean
+    unsupported: string[]
   },
 ): Promise<PathConfigSaveResult> {
   return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/form`, {

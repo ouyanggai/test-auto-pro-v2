@@ -232,6 +232,10 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 	} else if found {
 		return pathConfigSaveResult(path, existing), nil
 	}
+	if unsupported := uniquePublicStrings(input.Unsupported); len(unsupported) > 0 {
+		// 组件注册表只存在于真实 rsh-flow-components 运行时；幂等命中后再校验，既不重写成功事实，也不另建易漂移白名单。
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前表单含未适配组件，不能保存为可执行配置", Affected: affectedFromStrings("form", unsupported)}
+	}
 	stored, _, err := s.configRepository.FindByPath(ctx, pathID)
 	if err != nil {
 		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
@@ -249,7 +253,7 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 	}
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	if len(unsupported) > 0 {
-		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前表单含未适配组件，不能保存为可执行配置", Affected: affectedFromStrings("form", unsupported)}
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前表单结构无法载入", Affected: affectedFromStrings("form", unsupported)}
 	}
 	if reasons := formdata.ValidateEditable(template, input.Values, buildPathConstraints(snapshot.Tree, path.Choices), editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))); len(reasons) > 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据不符合当前模板或路径条件", Affected: affectedFromStrings("form", reasons)}
@@ -440,7 +444,7 @@ func (s *PathConfigService) deriveStoredStatus(ctx context.Context, planID uint6
 	return derivePathConfigurationStatus(configuration)
 }
 
-// runtimeTemplate 解析单一完整模板；多表单或损坏模板明确阻止保存。
+// runtimeTemplate 只解析单一完整模板；组件兼容性必须以真实 rsh-flow-components 注册表为准。
 func runtimeTemplate(forms []target.FormRuntimeTemplate) (map[string]any, []string) {
 	if len(forms) == 0 {
 		return map[string]any{"list": []any{}, "config": map[string]any{}}, nil
@@ -453,8 +457,6 @@ func runtimeTemplate(forms []target.FormRuntimeTemplate) (map[string]any, []stri
 	if err := json.Unmarshal([]byte(forms[0].TemplateData), &template); err != nil {
 		return map[string]any{"list": []any{}, "config": map[string]any{}}, append(unsupported, "目标 FormMaking 模板无法解析")
 	}
-	_, componentUnsupported := formdata.ParseTemplate(template)
-	unsupported = append(unsupported, componentUnsupported...)
 	return template, uniquePublicStrings(unsupported)
 }
 
