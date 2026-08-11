@@ -89,6 +89,14 @@ grep -Fq "branchEditing: props.configurationMode ? false" "${canvas_view}"
 
 # 节点保存正常响应和 GET 对账必须复用同一同路径推进规则，不得再出现跨路径“配置下一条”。
 grep -Fq "resolveConfirmedNodeSaveDestination" "${config_logic}"
+grep -Fq "copyPathConfigArrivals" "${config_logic}"
+grep -Fq "copyPathConfigArrivals" "${config_panel}"
+grep -Fq "copyPathConfigArrivals" "${config_view}"
+if grep -Eq 'structuredClone\((draft\.arrivals|props\.draft\.arrivals|value\))' "${config_logic}" "${config_panel}" "${config_view}"; then
+  echo 'F-007 节点动作保存链不得直接 structuredClone Vue 响应式草稿' >&2
+  exit 1
+fi
+grep -Fq "savePathConfigurationNode(planID.value, pathID.value, node.key" "${config_view}"
 grep -Fq "async function finishConfirmedNodeSave" "${config_view}"
 if [[ "$(grep -Fc 'await finishConfirmedNodeSave()' "${config_view}")" -ne 2 ]]; then
   echo 'F-007 正常保存与响应不确定对账必须共同推进当前路径下一节点' >&2

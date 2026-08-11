@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { isProxy, reactive } from '../../../web/node_modules/vue/index.mjs'
 
 import {
   allEditableFieldsFilled,
@@ -8,6 +9,7 @@ import {
   bindPathConfigurationNodes,
   buildPathConfigNodeSavePayload,
   buildPathConfigSavePayload,
+  copyPathConfigArrivals,
   encodePathConfigValue,
   hasPathConfigDraftChanges,
   initialPathConfigurationNodeID,
@@ -26,6 +28,7 @@ import {
   summarizePathConfigPersonItems,
   validPathConfigArrivals,
 } from '../../../web/src/features/path-configuration/logic.ts'
+import { savePathConfigurationNode } from '../../../web/src/features/path-configuration/api.ts'
 
 const configuration = {
   path: { sequenceNo: 1, name: '财务路径' },
@@ -310,6 +313,43 @@ test('当前节点保存载荷不覆盖其他节点且保存完整性只看人�
   draft.persons['person-approve'] = ['person-b']
   draft.personStrategies['person-approve'].selected = ['person-b']
   assert.equal(hasCurrentNodeDraftChanges(approval, draft), true)
+})
+
+test('响应式节点动作草稿转为普通载荷并真实发出节点 PUT', async (t) => {
+  const approval = configuration.groups[0].nodes[1]
+  const draft = reactive(initPathConfigDraft(configuration))
+  draft.arrivals[approval.key][0].steps[0].opinion = '同意办理'
+  draft.arrivals[approval.key][0].steps[0].person = {
+    key: 'person-approve', strategy: 'manual', seed: 7, selected: ['person-a'],
+  }
+  assert.equal(isProxy(draft.arrivals[approval.key]), true)
+  assert.equal(isProxy(draft.arrivals[approval.key][0].steps[0].person.selected), true)
+
+  const copied = copyPathConfigArrivals(draft.arrivals[approval.key])
+  const payload = buildPathConfigNodeSavePayload(approval, draft)
+  assert.equal(isProxy(copied), false)
+  assert.equal(isProxy(payload.arrivals), false)
+  assert.equal(isProxy(payload.arrivals[0].steps[0]), false)
+  assert.equal(isProxy(payload.arrivals[0].steps[0].person.selected), false)
+  payload.arrivals[0].steps[0].opinion = '修改载荷'
+  payload.arrivals[0].steps[0].person.selected.push('person-b')
+  assert.equal(draft.arrivals[approval.key][0].steps[0].opinion, '同意办理')
+  assert.deepEqual(draft.arrivals[approval.key][0].steps[0].person.selected, ['person-a'])
+
+  let request
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  globalThis.fetch = async (input, init) => {
+    request = { input, init }
+    return Response.json({ success: true, data: { path: { sequenceNo: 1, name: '财务路径' }, revision: 3, nodeRevision: 4, formRevision: 1, status: 'partial' } })
+  }
+  await savePathConfigurationNode('7', '32', approval.key, 3, buildPathConfigNodeSavePayload(approval, draft), 'node-save-key')
+  assert.equal(request.input, `/api/plans/7/execution-paths/32/configuration/nodes/${approval.key}`)
+  assert.equal(request.init.method, 'PUT')
+  const body = JSON.parse(request.init.body)
+  assert.equal(body.revision, 3)
+  assert.equal(body.arrivals[0].steps[0].opinion, '同意办理')
+  assert.deepEqual(body.arrivals[0].steps[0].person.selected, ['person-a'])
 })
 
 test('人员策略和有界到达动作即时投影与后端规则一致', () => {

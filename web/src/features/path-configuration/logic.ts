@@ -313,12 +313,33 @@ export function buildPathConfigSavePayload(configuration: PathConfiguration, dra
   return { fields, actions }
 }
 
+// copyPathConfigArrivals 把可能来自 Vue Proxy 的动作草稿逐字段复制为普通对象，供组件传递和网络序列化共同使用。
+export function copyPathConfigArrivals(arrivals: readonly PathConfigArrivalInput[]): PathConfigArrivalInput[] {
+  return arrivals.map(arrival => ({
+    visit: arrival.visit,
+    steps: arrival.steps.map(step => ({
+      kind: step.kind,
+      opinion: step.opinion,
+      target: step.target,
+      person: step.person
+        ? {
+            key: step.person.key,
+            strategy: step.person.strategy,
+            seed: step.person.seed,
+            selected: [...step.person.selected],
+          }
+        : undefined,
+    })),
+  }))
+}
+
 // buildPathConfigNodeSavePayload 只收敛当前节点的动作与人员，不允许一次保存覆盖其他节点。
 export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft): PathConfigNodeSavePayload {
   const persons = node.persons
     .filter(person => person.editable)
     .map(person => normalizedPersonStrategy(person, draft.personStrategies[person.key]))
-  return { persons, arrivals: structuredClone(draft.arrivals[node.key] ?? []) }
+  // 保存前必须脱离 Vue 深响应式对象，否则 structuredClone 会在 fetch 之前抛 DataCloneError，导致节点 PUT 根本没有发出。
+  return { persons, arrivals: copyPathConfigArrivals(draft.arrivals[node.key] ?? []) }
 }
 
 // currentNodeConfigurationComplete 判断当前节点人数约束是否满足；表单字段不再属于节点侧栏。

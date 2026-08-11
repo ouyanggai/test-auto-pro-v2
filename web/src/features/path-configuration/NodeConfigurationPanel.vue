@@ -15,7 +15,7 @@ import {
 import type { SelectOption } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
-import { normalizedPersonStrategy, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import { copyPathConfigArrivals, normalizedPersonStrategy, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type {
   PathConfigActionCatalogItem,
   PathConfigActionKind,
@@ -115,7 +115,7 @@ function closePersonDetails() {
 // currentArrivals 返回当前节点到达计划的深复制，所有修改通过单一事件交给父页面持有。
 function currentArrivals(): PathConfigArrivalInput[] {
   if (!props.node) return []
-  return structuredClone(props.draft.arrivals[props.node.key] ?? [])
+  return copyPathConfigArrivals(props.draft.arrivals[props.node.key] ?? [])
 }
 
 // actionOptions 返回当前节点可静态证明合法的动作目录。
@@ -202,7 +202,9 @@ function addStep(arrivalIndex: number) {
 function addArrival(copyPrevious = true) {
   const arrivals = currentArrivals()
   if (!props.node || arrivals.length >= props.node.actionPlan.maxArrivals) return
-  const source = copyPrevious && arrivals.length ? structuredClone(arrivals[arrivals.length - 1].steps) : []
+  const source = copyPrevious && arrivals.length
+    ? copyPathConfigArrivals([arrivals[arrivals.length - 1]])[0].steps
+    : []
   const first = props.node.actionPlan.catalog[0]
 	if (!first || totalActionSteps() + Math.max(1, source.length) > props.node.actionPlan.maxPathSteps) return
   arrivals.push({ visit: arrivals.length + 1, steps: source.length ? source : [{ kind: first.kind, opinion: '', target: '' }] })

@@ -14,6 +14,7 @@ import NodeConfigurationPanel from '../features/path-configuration/NodeConfigura
 import {
   bindPathConfigurationNodes,
   buildPathConfigNodeSavePayload,
+  copyPathConfigArrivals,
   currentNodeConfigurationComplete,
   hasCurrentNodeDraftChanges,
   initialPathConfigurationNodeID,
@@ -242,7 +243,8 @@ function updatePersonStrategy(person: PathConfigPerson, value: PathConfigPersonS
 // updateNodeArrivals 替换当前节点的连续到达动作草稿，不允许面板越过节点边界写其他节点。
 function updateNodeArrivals(nodeKey: string, value: PathConfigArrivalInput[]) {
   if (selectedNode.value?.key !== nodeKey) return
-  draft.value.arrivals[nodeKey] = structuredClone(value)
+  // 子组件事件值仍可能携带 Vue Proxy；父页面只持有逐字段复制后的普通草稿，避免保存前再次触发克隆异常。
+  draft.value.arrivals[nodeKey] = copyPathConfigArrivals(value)
   nodeSavedSuccessfully.value = false
 }
 
