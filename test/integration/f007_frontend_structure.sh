@@ -11,6 +11,7 @@ config_logic="${project_root}/web/src/features/path-configuration/logic.ts"
 config_panel="${project_root}/web/src/features/path-configuration/NodeConfigurationPanel.vue"
 form_frame="${project_root}/web/src/features/path-configuration/FormRuntimeFrame.vue"
 runtime_app="${project_root}/form-runtime/src/App.vue"
+runtime_template="${project_root}/form-runtime/src/runtime/formTemplate.js"
 runtime_protocol="${project_root}/form-runtime/src/runtime/protocol.js"
 runtime_policy="${project_root}/form-runtime/src/runtime/requestPolicy.js"
 canvas_view="${project_root}/web/src/features/flow-graph/FlowGraphCanvas.vue"
@@ -105,6 +106,11 @@ fi
 grep -Fq "node.requirements" "${config_panel}"
 grep -Fq "node.persons" "${config_panel}"
 grep -Fq "person.editable" "${config_panel}"
+grep -Fq "person.items" "${config_panel}"
+grep -Fq "NModal" "${config_panel}"
+grep -Fq "NScrollbar" "${config_panel}"
+grep -Fq "查看全部" "${config_panel}"
+grep -Fq "summarizePathConfigPersonItems" "${config_logic}"
 grep -Fq "运行时确定" "${config_panel}"
 grep -Fq "固定提交" "${config_panel}"
 grep -Fq "disagreeWarning" "${config_panel}"
@@ -121,7 +127,17 @@ grep -Fq "sessionId" "${form_frame}"
 grep -Fq "event.source !== iframe.value?.contentWindow" "${form_frame}"
 grep -Fq "event.origin !== runtimeOrigin.value" "${form_frame}"
 grep -Fq "getValues" "${runtime_app}"
-grep -Fq "getData(true)" "${runtime_app}"
+grep -Fq "captureFormValues" "${runtime_app}"
+grep -Fq "form.getData(true)" "${runtime_template}"
+grep -Fq "delete config[hook]" "${runtime_template}"
+grep -Fq "this.applyFieldPermissions(form)" "${runtime_app}"
+grep -Fq "form.disabled(this.allFields, true)" "${runtime_app}"
+grep -Fq "form.disabled(this.editableFields, false)" "${runtime_app}"
+grep -Fq "form.hide(this.hiddenFields)" "${runtime_app}"
+if grep -Fq '<el-alert' "${runtime_app}"; then
+  echo 'F-007 iframe 不得重复渲染宿主已经展示的阻塞告警' >&2
+  exit 1
+fi
 grep -Fq "destroySession" "${runtime_app}"
 grep -Fq "FORM_RUNTIME_VERSION" "${runtime_protocol}"
 grep -Fq "targetRequestAllowed" "${runtime_policy}"
@@ -172,7 +188,9 @@ const toolbar = rule('.path-configuration-page__form-toolbar')
 assert.match(toolbar, /height:\s*var\(--path-config-form-toolbar-height\)/)
 assert.match(toolbar, /flex:\s*0 0 auto/)
 const feedback = rule('.path-configuration-page__form-feedback')
-assert.match(feedback, /position:\s*absolute/)
+assert.match(feedback, /position:\s*static/)
+assert.match(feedback, /flex:\s*0 0 auto/)
+assert.doesNotMatch(feedback, /z-index|top:|right:|left:/)
 const iframeHost = rule('.path-configuration-page__form-frame')
 assert.match(iframeHost, /flex:\s*1 1 0/)
 assert.match(iframeHost, /width:\s*100%/)

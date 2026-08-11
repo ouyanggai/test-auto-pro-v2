@@ -94,7 +94,7 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: template, Base: base, Samples: samples, Seed: seed, Initiator: initiator,
 		Constraints: buildPathConstraints(snapshot.Tree, path.Choices), ManualOverridePaths: manualPaths,
-		EditablePaths: editableFormPaths(snapshot.Tree, owned.pathAnalysis.ReachableNodeIDs),
+		EditablePaths: editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs)),
 	})
 	generated.Unsupported = append(generated.Unsupported, unsupported...)
 	return model.PathFormGenerateResult{
@@ -224,7 +224,7 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 	if len(unsupported) > 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前表单含未适配组件，不能保存为可执行配置", Affected: affectedFromStrings("form", unsupported)}
 	}
-	if reasons := formdata.ValidateEditable(template, input.Values, buildPathConstraints(snapshot.Tree, path.Choices), editableFormPaths(snapshot.Tree, owned.pathAnalysis.ReachableNodeIDs)); len(reasons) > 0 {
+	if reasons := formdata.ValidateEditable(template, input.Values, buildPathConstraints(snapshot.Tree, path.Choices), editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))); len(reasons) > 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据不符合当前模板或路径条件", Affected: affectedFromStrings("form", reasons)}
 	}
 	stored.PathID = pathID
@@ -254,7 +254,7 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	form := model.PathFormConfig{
 		Revision: stored.FormRevision, Status: "empty", StatusName: "待生成",
-		ReadOnly: source != "new", Template: template, Permissions: formPermissions(snapshot.Tree, analysis.ReachableNodeIDs),
+		ReadOnly: source != "new", Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
 	}
@@ -305,6 +305,20 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 		form.Status, form.StatusName = "empty", "待生成或填写"
 	}
 	return form
+}
+
+// formPermissionNodeIDs 为新发起只选择真实入口节点权限；下游审批节点的 edit 不能提前开放到发起表单。
+func formPermissionNodeIDs(source string, snapshot target.PathConfigurationSnapshot, reachable []string) []string {
+	if strings.TrimSpace(source) != "new" {
+		return reachable
+	}
+	if len(snapshot.EntryNodeIDs) > 0 {
+		return append([]string(nil), snapshot.EntryNodeIDs...)
+	}
+	if snapshot.Tree != nil && strings.TrimSpace(snapshot.Tree.ID) != "" {
+		return []string{snapshot.Tree.ID}
+	}
+	return []string{}
 }
 
 // applyConfirmedNodeState 用节点确认事实覆盖旧的“一行存在即全部完成”投影语义。

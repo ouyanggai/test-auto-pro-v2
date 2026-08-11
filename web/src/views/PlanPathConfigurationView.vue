@@ -99,7 +99,11 @@ const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(
 const selectedNodeDirty = computed(() => hasCurrentNodeDraftChanges(selectedNode.value, draft.value))
 const nodeSaveDisabled = computed(() => loading.value || savingNode.value || !selectedNodeRequirement.value.complete
   || (selectedNode.value?.status === 'configured' && !selectedNodeDirty.value))
-const runtimeBlocked = computed(() => Boolean(configuration.value?.form.unsupported.length || runtimeUnsupported.value.length))
+const runtimeBlockingReasons = computed(() => [...new Set([
+  ...(configuration.value?.form.unsupported ?? []),
+  ...runtimeUnsupported.value,
+])])
+const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
 
 // publicPageError 把读取链路异常收敛为不含内部标识的稳定页面错误。
 function publicPageError(caught: unknown): string {
@@ -495,7 +499,7 @@ void loadPage()
             表单数据已保存并完成服务端复验。节点仍需逐个完成，整条路径不会被静默标记。
           </n-alert>
           <n-alert v-if="runtimeBlocked" type="warning" :show-icon="false" size="small">
-            {{ [...configuration.form.unsupported, ...runtimeUnsupported].join('；') }}
+            {{ runtimeBlockingReasons.join('；') }}
           </n-alert>
         </div>
         <form-runtime-frame
@@ -608,15 +612,12 @@ void loadPage()
 .path-configuration-page__form-toolbar p { margin: 0; color: var(--path-config-text-secondary-color); font-size: 12px; }
 .path-configuration-page__form-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .path-configuration-page__form-feedback {
-  position: absolute;
-  top: calc(var(--path-config-form-toolbar-height) + 8px);
-  right: 12px;
-  left: 12px;
-  z-index: 3;
+  position: static;
+  flex: 0 0 auto;
   display: grid;
   gap: 6px;
   max-height: 112px;
-  padding: 0;
+  padding: 8px 12px 0;
   overflow-y: auto;
 }
 .path-configuration-page__form-frame {

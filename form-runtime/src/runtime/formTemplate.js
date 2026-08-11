@@ -4,10 +4,16 @@ const STANDARD_TYPES = new Set([
   'text', 'html', 'divider', 'blank', 'link', 'button', ...CONTAINER_TYPES
 ])
 const TARGET_COMPONENT_NAMES = new Set(JSON.parse(process.env.VUE_APP_TARGET_COMPONENT_NAMES || '[]'))
+const SUBMIT_HOOK_NAMES = ['beforeSubmitAndDraft', 'beforeSubmit', 'eventScript']
 
 // clonePlain 在 postMessage 与 Vue 观察对象边界复制纯数据，禁止代理对象进入 FormMaking。
 export function clonePlain (value) {
   return JSON.parse(JSON.stringify(value == null ? null : value))
+}
+
+// normalizeFieldPath 对齐目标页面的嵌套字段权限编码，避免 edit 权限因 _$$_ 分隔符失配而被错误禁用。
+function normalizeFieldPath (value) {
+  return String(value || '').trim().replaceAll('_$$_', '.')
 }
 
 // componentLists 枚举目标 FormMaking 的真实嵌套容器结构。
@@ -30,8 +36,11 @@ function componentLists (component) {
 // prepareTemplate 在完整模板副本上应用字段权限，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
 export function prepareTemplate (rawTemplate, permissions, readOnly) {
   const template = clonePlain(rawTemplate || {})
-  const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [String(item.field || ''), item.power]))
+  const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [normalizeFieldPath(item.field), item.power]))
   const unsupported = new Set()
+  const allFields = new Set()
+  const editableFields = new Set()
+  const hiddenFields = new Set()
   const visit = (list) => {
     for (const component of Array.isArray(list) ? list : []) {
       const type = String(component && component.type || '').trim()
@@ -44,24 +53,53 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
       }
       if (model) {
         // 目标页面先禁用整张表单，再只开放流程节点明确授权的字段；缺少权限不能默认可编辑。
-        const power = permissionByField.get(model) || 'only_read'
+        const field = normalizeFieldPath(model)
+        const power = permissionByField.get(field) || 'only_read'
+        allFields.add(field)
+        if (!readOnly && power === 'edit') editableFields.add(field)
+        if (power === 'hide') hiddenFields.add(field)
         component.options = component.options || {}
         component.options.hidden = power === 'hide'
         component.options.disabled = readOnly || power !== 'edit'
         if (component.options.disabled) {
           component.options.required = false
-          if (Array.isArray(component.rules)) component.rules = component.rules.filter(rule => !rule || !rule.required)
+          // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
+          if (Array.isArray(component.rules)) component.rules = []
         }
       }
       for (const children of componentLists(component)) visit(children)
     }
   }
   visit(template.list)
-  const config = template.config || {}
-  if (config.beforeSubmitAndDraft || config.beforeSubmit || config.eventScript) {
-    unsupported.add('表单业务提交钩子：配置阶段禁止执行外部业务写入')
+  const config = template.config = template.config || {}
+  const isolatedHooks = []
+  for (const hook of SUBMIT_HOOK_NAMES) {
+    if (config[hook]) isolatedHooks.push(hook)
+    // F-007 只保存 V2 配置，提交/草稿/业务事件钩子必须在 FormMaking 装载前清除，不能执行也不能误判成不支持。
+    delete config[hook]
   }
-  return { template, unsupported: [...unsupported] }
+  return {
+    template,
+    unsupported: [...unsupported],
+    isolatedHooks,
+    allFields: [...allFields],
+    editableFields: [...editableFields],
+    hiddenFields: [...hiddenFields]
+  }
+}
+
+// captureFormValues 使用目标运行时 getData 仅做校验，并以 getValues 返回包含虚拟字段的完整对象。
+export async function captureFormValues (form, validate) {
+  if (!form) throw new Error('目标 FormMaking 尚未就绪')
+  if (validate) {
+    try {
+      await form.getData(true)
+    } catch (_) {
+      throw new Error('请先完成表单中的必填项')
+    }
+  }
+  if (typeof form.getValues !== 'function') throw new Error('目标 FormMaking 运行时缺少 getValues 能力')
+  return clonePlain(form.getValues())
 }
 
 // diffManualPaths 递归比较生成基线与 getValues 结果，得到换一组时必须保留的人工覆盖路径。

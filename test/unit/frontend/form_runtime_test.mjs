@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel'])
-const { diffManualPaths, prepareTemplate } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, diffManualPaths, prepareTemplate } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
 
@@ -15,7 +15,7 @@ test('目标表单模板递归应用权限且复杂组件不降级', () => {
       ] }] },
       { type: 'component', model: 'contract', name: '合同业务组件', options: { componentName: 'contract-seal-review' } },
     ],
-    config: { beforeSubmitAndDraft: 'writeBusinessData()' },
+    config: { beforeSubmitAndDraft: 'writeBusinessData()', eventScript: [{ name: 'beforeSubmit', func: 'saveTarget()' }] },
   }, [{ field: 'title', power: 'edit' }, { field: 'hiddenValue', power: 'hide' }], false)
   const fields = prepared.template.list[0].columns[0].list
   assert.equal(fields[0].options.disabled, false)
@@ -24,7 +24,13 @@ test('目标表单模板递归应用权限且复杂组件不降级', () => {
   assert.equal(fields[1].options.disabled, true)
   assert.equal(fields[1].options.required, false)
   assert.ok(prepared.unsupported.some(item => item.includes('合同业务组件')))
-  assert.ok(prepared.unsupported.some(item => item.includes('业务提交钩子')))
+  assert.equal(prepared.unsupported.some(item => item.includes('业务提交钩子')), false)
+  assert.deepEqual(prepared.isolatedHooks, ['beforeSubmitAndDraft', 'eventScript'])
+  assert.equal(Object.hasOwn(prepared.template.config, 'beforeSubmitAndDraft'), false)
+  assert.equal(Object.hasOwn(prepared.template.config, 'eventScript'), false)
+  assert.deepEqual(prepared.allFields.sort(), ['contract', 'hiddenValue', 'title'])
+  assert.deepEqual(prepared.editableFields, ['title'])
+  assert.deepEqual(prepared.hiddenFields, ['hiddenValue'])
 })
 
 test('未显式授权字段默认只读且人工覆盖路径递归稳定', () => {
@@ -39,6 +45,37 @@ test('未显式授权字段默认只读且人工覆盖路径递归稳定', () =>
     { title: '生成标题', nested: { amount: 10 }, rows: [{ id: 1 }] },
     { title: '人工标题', nested: { amount: 10 }, rows: [{ id: 2 }] },
   ), ['rows', 'title'])
+})
+
+test('新发起只开放 edit 字段且已发待发保持全表只读', () => {
+  const template = { list: [
+    { type: 'input', model: 'basic.title', options: { required: true } },
+    { type: 'input', model: 'readonlyValue', options: { required: true } },
+  ] }
+  const editable = prepareTemplate(template, [
+    { field: 'basic_$$_title', power: 'edit' },
+    { field: 'readonlyValue', power: 'only_read' },
+  ], false)
+  assert.equal(editable.template.list[0].options.disabled, false)
+  assert.equal(editable.template.list[0].options.required, true)
+  assert.equal(editable.template.list[1].options.disabled, true)
+  assert.equal(editable.template.list[1].options.required, false)
+  assert.deepEqual(editable.editableFields, ['basic.title'])
+
+  const readonly = prepareTemplate(template, [{ field: 'basic_$$_title', power: 'edit' }], true)
+  assert.equal(readonly.template.list[0].options.disabled, true)
+  assert.equal(readonly.template.list[0].options.required, false)
+  assert.deepEqual(readonly.editableFields, [])
+})
+
+test('校验只使用 getData 而完整保存值来自 getValues 人工输入与虚拟字段', async () => {
+  let validated = false
+  const values = await captureFormValues({
+    async getData(strict) { validated = strict },
+    getValues() { return { title: '人工填写', title__virtualName: '人工填写', nested: { enabled: true } } },
+  }, true)
+  assert.equal(validated, true)
+  assert.deepEqual(values, { title: '人工填写', title__virtualName: '人工填写', nested: { enabled: true } })
 })
 
 test('真实入口已注册的目标组件不再被统一标记为 unsupported', () => {

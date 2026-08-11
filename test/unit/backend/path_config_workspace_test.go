@@ -135,10 +135,38 @@ func TestPathConfigWorkspaceReadOnlyUsesInstanceValues(t *testing.T) {
 	}
 }
 
+// TestPathConfigWorkspaceNewFormUsesEntryNodePermissions 验证新发起只开放真实入口节点 edit 字段，不合并下游审批权限。
+func TestPathConfigWorkspaceNewFormUsesEntryNodePermissions(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	snapshot := pathConfigWorkspaceSnapshot()
+	snapshot.Tree.FieldPowers = []target.FlowNodeFieldPower{{EnglishName: "amount", Power: "edit"}}
+	reader := &pathConfigReader{snapshot: snapshot}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	serviceUnderTest := newPathConfigService(t, plans, reader, paths, &memoryPathConfigRepository{})
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("读取新发起表单权限失败：%v", err)
+	}
+	powers := make(map[string]string, len(configuration.Form.Permissions))
+	for _, permission := range configuration.Form.Permissions {
+		powers[permission.Field] = permission.Power
+	}
+	if powers["amount"] != "edit" || powers["type"] == "edit" || powers["note"] == "edit" {
+		t.Fatalf("新发起错误合并下游节点权限：%+v", configuration.Form.Permissions)
+	}
+}
+
 // pathConfigWorkspaceSnapshot 构造带完整目标 FormMaking 模板的当前路径快照。
 func pathConfigWorkspaceSnapshot() target.PathConfigurationSnapshot {
+	tree := pathConfigTree()
+	tree.FieldPowers = []target.FlowNodeFieldPower{
+		{FormID: "form-a", FieldID: "field-amount", EnglishName: "amount", Power: "edit"},
+		{FormID: "form-a", FieldID: "field-type", EnglishName: "type", Power: "edit"},
+		{FormID: "form-a", FieldID: "field-note", EnglishName: "note", Power: "edit"},
+	}
 	return target.PathConfigurationSnapshot{
-		Tree: pathConfigTree(), EntryNodeIDs: []string{"start"}, FormFields: pathConfigFields(),
+		Tree: tree, EntryNodeIDs: []string{"start"}, FormFields: pathConfigFields(),
 		Forms: []target.FormRuntimeTemplate{{Name: "申请表", TemplateData: `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"required":true}},{"type":"select","model":"type","name":"类型","options":{"required":true,"options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}},{"type":"input","model":"note","name":"备注","options":{}}],"config":{}}`}},
 	}
 }
