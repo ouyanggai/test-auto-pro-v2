@@ -44,10 +44,14 @@ func TestPathConfigurationMySQLMigrationAndCascade(t *testing.T) {
 	}
 	configs := planmysql.NewPathConfigurationRepository(database.DB)
 	now := time.Now().UTC()
+	personPlan := `{"strategy":"manual","seed":7,"selected":["person-internal-a"]}`
+	actionPlan := `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"add_sign","person":{"strategy":"manual","seed":7,"selected":["person-internal-a"]}},{"kind":"approve_pass","opinion":"同意"}]}]}`
 	firstRecord := model.StoredPathConfig{
 		PathID: firstPath.ID, Revision: 1, NodeRevision: 1, FormRevision: 1,
-		IdempotencyKey: "123e4567-e89b-12d3-a456-426614174721", Status: "configured", ConfigVersion: 2,
-		FieldValues: map[string]map[string]string{"node-a": {"amount": "2500"}}, ActionValues: map[string]string{"node-a": "agree"},
+		IdempotencyKey: "123e4567-e89b-12d3-a456-426614174721", Status: "configured", ConfigVersion: 3,
+		FieldValues: map[string]map[string]string{"node-a": {"amount": "2500"}}, ActionValues: map[string]string{
+			"node-a": "agree", "person-plan:node-a": personPlan, "action-plan:node-a": actionPlan,
+		},
 		ConfirmedNodeKeys: []string{"node-token"}, FormValues: map[string]any{"amount": float64(2500), "__condition": "large"},
 		FormStatus: "valid", FormValidated: true, FormSeed: 73,
 		GeneratedFieldPaths: []string{"amount"}, ManualOverridePaths: []string{"note"},
@@ -58,7 +62,7 @@ func TestPathConfigurationMySQLMigrationAndCascade(t *testing.T) {
 		t.Fatalf("首次配置保存失败：saved=%+v err=%v", saved, err)
 	}
 	loaded, found, err := configs.FindByPath(ctx, firstPath.ID)
-	if err != nil || !found || loaded.Revision != 1 || loaded.NodeRevision != 1 || loaded.FormRevision != 1 || loaded.FieldValues["node-a"]["amount"] != "2500" || loaded.ActionValues["node-a"] != "agree" {
+	if err != nil || !found || loaded.Revision != 1 || loaded.NodeRevision != 1 || loaded.FormRevision != 1 || loaded.FieldValues["node-a"]["amount"] != "2500" || loaded.ActionValues["node-a"] != "agree" || loaded.ActionValues["person-plan:node-a"] != personPlan || loaded.ActionValues["action-plan:node-a"] != actionPlan {
 		t.Fatalf("配置读取不正确：loaded=%+v found=%v err=%v", loaded, found, err)
 	}
 	if loaded.FormStatus != "valid" || !loaded.FormValidated || loaded.FormValues["amount"] != float64(2500) || loaded.SampleSummary.Recent != 2 || loaded.FormTemplateVersion != "template-v2" {
@@ -74,7 +78,8 @@ func TestPathConfigurationMySQLMigrationAndCascade(t *testing.T) {
 	if _, err := configs.Save(ctx, model.StoredPathConfig{PathID: firstPath.ID, Revision: 2, IdempotencyKey: "123e4567-e89b-12d3-a456-426614174722", Status: "configured", FieldValues: map[string]map[string]string{"node-a": {"amount": "3000"}}}, 0, now); !errors.Is(err, repository.ErrPathConfigConflict) {
 		t.Fatalf("过期修订号没有被事务内拒绝：%v", err)
 	}
-	secondSave, err := configs.Save(ctx, model.StoredPathConfig{PathID: firstPath.ID, Revision: 2, IdempotencyKey: "123e4567-e89b-12d3-a456-426614174722", Status: "configured", FieldValues: map[string]map[string]string{"node-a": {"amount": "3000"}}, ActionValues: map[string]string{"node-a": "disagree"}}, 1, now)
+	updatedActionPlan := `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass","opinion":"复核通过"}]},{"visit":2,"steps":[{"kind":"draft_save"}]}]}`
+	secondSave, err := configs.Save(ctx, model.StoredPathConfig{PathID: firstPath.ID, Revision: 2, IdempotencyKey: "123e4567-e89b-12d3-a456-426614174722", Status: "configured", ConfigVersion: 3, FieldValues: map[string]map[string]string{"node-a": {"amount": "3000"}}, ActionValues: map[string]string{"node-a": "disagree", "person-plan:node-a": personPlan, "action-plan:node-a": updatedActionPlan}}, 1, now)
 	if err != nil || secondSave.Revision != 2 || secondSave.FieldValues["node-a"]["amount"] != "3000" {
 		t.Fatalf("修订号推进保存失败：saved=%+v err=%v", secondSave, err)
 	}
@@ -83,7 +88,7 @@ func TestPathConfigurationMySQLMigrationAndCascade(t *testing.T) {
 		t.Fatalf("第二条路径配置保存失败：saved=%+v err=%v", other, err)
 	}
 	firstReload, _, err := configs.FindByPath(ctx, firstPath.ID)
-	if err != nil || firstReload.FieldValues["node-a"]["amount"] != "3000" || firstReload.ActionValues["node-a"] != "disagree" {
+	if err != nil || firstReload.FieldValues["node-a"]["amount"] != "3000" || firstReload.ActionValues["node-a"] != "disagree" || firstReload.ActionValues["person-plan:node-a"] != personPlan || firstReload.ActionValues["action-plan:node-a"] != updatedActionPlan {
 		t.Fatalf("路径配置互相覆盖：%+v err=%v", firstReload, err)
 	}
 
