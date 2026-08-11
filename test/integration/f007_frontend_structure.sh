@@ -102,22 +102,33 @@ if grep -Eq 'nextUnconfiguredPath|configureNextPath|hasNextPath|configureNext|�
   exit 1
 fi
 
-# 节点侧栏只呈现人员、动作和规则；表单字段必须由独立 FormMaking runtime 渲染。
+# 节点侧栏只呈现人员和动作；模板要求收进标题弹层，表单字段仍由独立 FormMaking runtime 渲染。
 grep -Fq "node.requirements" "${config_panel}"
+grep -Fq "NPopover" "${config_panel}"
+grep -Fq "查看模板要求" "${config_panel}"
 grep -Fq "node.persons" "${config_panel}"
 grep -Fq "person.editable" "${config_panel}"
+grep -Fq "人员策略" "${config_panel}"
+grep -Fq "person.strategies" "${config_panel}"
+grep -Fq "最终使用" "${config_panel}"
 grep -Fq "person.items" "${config_panel}"
 grep -Fq "NModal" "${config_panel}"
 grep -Fq "NScrollbar" "${config_panel}"
 grep -Fq "查看全部" "${config_panel}"
 grep -Fq "summarizePathConfigPersonItems" "${config_logic}"
 grep -Fq "运行时确定" "${config_panel}"
-grep -Fq "固定提交" "${config_panel}"
-grep -Fq "disagreeWarning" "${config_panel}"
+grep -Fq "动作计划" "${config_panel}"
+grep -Fq "第 {{ arrival.visit }} 次" "${config_panel}"
+grep -Fq "复制前一次" "${config_panel}"
+grep -Fq "rollbackTargets" "${config_panel}"
+grep -Fq "add_sign" "${config_panel}"
+grep -Fq "transfer_approver" "${config_panel}"
+grep -Fq "resolvedPersonStrategySelection" "${config_logic}"
+grep -Fq "validPathConfigArrivals" "${config_logic}"
 grep -Fq "暂不支持" "${config_panel}"
 grep -Fq "overflow-y: auto" "${config_panel}"
 grep -Fq "保存当前节点" "${config_panel}"
-if grep -Eq 'node\.fields|NDatePicker|NInput|NCheckbox|NSwitch' "${config_panel}"; then
+if grep -Eq 'node\.fields|NDatePicker|NCheckbox|NSwitch' "${config_panel}"; then
   echo 'F-007 节点侧栏不得重新模拟目标表单字段控件' >&2
   exit 1
 fi

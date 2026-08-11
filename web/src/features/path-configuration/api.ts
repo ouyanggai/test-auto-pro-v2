@@ -2,6 +2,7 @@ import type {
   PathConfigActionValue,
   PathConfiguration,
   PathConfigFieldValue,
+  PathConfigNodeSavePayload,
   PathConfigSaveResult,
   PathFormGenerateResult,
   PathFormSampleSummary,
@@ -63,11 +64,11 @@ export function savePathConfigurationNode(
   pathId: string,
   nodeKey: string,
   revision: number,
-  actions: PathConfigActionValue[],
+  payload: PathConfigNodeSavePayload,
   idempotencyKey: string,
 ): Promise<PathConfigSaveResult> {
   return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/nodes/${encodeURIComponent(nodeKey)}`, {
-    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ revision, actions }),
+    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ revision, ...payload }),
   })
 }
 

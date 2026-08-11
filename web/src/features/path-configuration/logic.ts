@@ -1,4 +1,6 @@
 import type {
+  PathConfigActionKind,
+  PathConfigArrivalInput,
   PathConfigActionValue,
   PathConfiguration,
   PathConfigDraft,
@@ -6,6 +8,9 @@ import type {
   PathConfigFieldValue,
   PathConfigNode,
   PathConfigPersonDisplayItem,
+  PathConfigPerson,
+  PathConfigPersonStrategyInput,
+  PathConfigNodeSavePayload,
   PathFormStatus,
 } from './types.ts'
 import type { ExecutionPathAnalysis } from '../execution-paths/types.ts'
@@ -142,6 +147,8 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
   const fields: Record<string, string> = {}
   const actions: Record<string, string> = {}
   const persons: Record<string, string[]> = {}
+  const personStrategies: Record<string, PathConfigPersonStrategyInput> = {}
+  const arrivals: Record<string, PathConfigArrivalInput[]> = {}
   for (const group of configuration.groups) {
     for (const node of group.nodes) {
       for (const field of node.fields) {
@@ -151,11 +158,28 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
         actions[action.key] = action.current
       }
       for (const person of node.persons) {
-        if (person.editable) persons[person.key] = [...person.selected]
+        if (person.editable) {
+          persons[person.key] = [...person.selected]
+          personStrategies[person.key] = {
+            key: person.key,
+            strategy: person.strategy || 'manual',
+            seed: person.strategySeed || 1,
+            selected: [...person.selected],
+          }
+        }
       }
+      if (node.actionPlan.catalog.length) arrivals[node.key] = node.actionPlan.arrivals.map(arrival => ({
+        visit: arrival.visit,
+        steps: arrival.steps.map(step => ({
+          kind: step.kind,
+          opinion: step.opinion,
+          target: step.target,
+          person: step.person ? { ...step.person, selected: [...step.person.selected] } : undefined,
+        })),
+      }))
     }
   }
-  return { fields, actions, persons }
+  return { fields, actions, persons, personStrategies, arrivals }
 }
 
 // hasPathConfigDraftChanges 判断草稿相对配置模型是否有真实变化；仅用于保存按钮可用性。
@@ -167,6 +191,8 @@ export function hasPathConfigDraftChanges(configuration: PathConfiguration, draf
   return baselineFields !== JSON.stringify(draft.fields)
     || baselineActions !== JSON.stringify(draft.actions)
     || baselinePersons !== JSON.stringify(draft.persons)
+    || JSON.stringify(baseline.personStrategies) !== JSON.stringify(draft.personStrategies)
+    || JSON.stringify(baseline.arrivals) !== JSON.stringify(draft.arrivals)
 }
 
 // reconcilePathConfigDraft 在目标结构刷新后只保留仍有相同不透明配置键的草稿，避免跨节点或跨路径串值。
@@ -186,6 +212,23 @@ export function reconcilePathConfigDraft(configuration: PathConfiguration, draft
         const allowed = new Set(person.options.map((option) => option.value))
         // 人员候选由当前目标快照决定；刷新后只保留仍在合法候选中的值，不能回写已经失效的目标人员 ID。
         next.persons[person.key] = draft.persons[person.key].filter((value) => allowed.has(value))
+        const strategy = draft.personStrategies[person.key]
+        if (strategy && person.strategies.some(option => option.value === strategy.strategy)) {
+          next.personStrategies[person.key] = {
+            ...strategy,
+            key: person.key,
+            selected: strategy.selected.filter(value => allowed.has(value)),
+          }
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(draft.arrivals, node.key)) {
+        const allowedKinds = new Set(node.actionPlan.catalog.map(item => item.kind))
+        next.arrivals[node.key] = draft.arrivals[node.key]
+          .slice(0, node.actionPlan.maxArrivals)
+          .map((arrival, index) => ({
+            visit: index + 1,
+            steps: arrival.steps.filter(step => allowedKinds.has(step.kind)).map(step => ({ ...step })),
+          }))
       }
     }
   }
@@ -271,19 +314,11 @@ export function buildPathConfigSavePayload(configuration: PathConfiguration, dra
 }
 
 // buildPathConfigNodeSavePayload 只收敛当前节点的动作与人员，不允许一次保存覆盖其他节点。
-export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft): PathConfigActionValue[] {
-  const actions: PathConfigActionValue[] = []
-  for (const action of node.actions) {
-    if (Object.prototype.hasOwnProperty.call(draft.actions, action.key)) {
-      actions.push({ key: action.key, action: draft.actions[action.key] })
-    }
-  }
-  for (const person of node.persons) {
-    if (person.editable && Object.prototype.hasOwnProperty.call(draft.persons, person.key)) {
-      actions.push({ key: person.key, action: JSON.stringify(draft.persons[person.key]) })
-    }
-  }
-  return actions
+export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft): PathConfigNodeSavePayload {
+  const persons = node.persons
+    .filter(person => person.editable)
+    .map(person => normalizedPersonStrategy(person, draft.personStrategies[person.key]))
+  return { persons, arrivals: structuredClone(draft.arrivals[node.key] ?? []) }
 }
 
 // currentNodeConfigurationComplete 判断当前节点人数约束是否满足；表单字段不再属于节点侧栏。
@@ -292,26 +327,87 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
   const missing: string[] = []
   for (const person of node.persons) {
     if (!person.editable) continue
-    const selected = draft.persons[person.key] ?? []
+    const selected = resolvedPersonStrategySelection(person, draft.personStrategies[person.key])
     const requiredEmpty = person.required && selected.length === 0
     const belowMinimum = selected.length > 0 && selected.length < person.minCount
     if (requiredEmpty || belowMinimum) missing.push(person.title)
   }
-  const actionable = node.actions.length > 0 || node.persons.some((person) => person.editable)
-  return { missing, complete: actionable && missing.length === 0 && node.status !== 'affected' && node.status !== 'partial' }
+  const arrivals = draft.arrivals[node.key] ?? []
+  if (!validPathConfigArrivals(node, arrivals)) missing.push('动作计划')
+  const actionable = node.actionPlan.catalog.length > 0 || node.persons.some((person) => person.editable)
+  return { missing, complete: actionable && missing.length === 0 && node.status !== 'partial' }
 }
 
 // hasCurrentNodeDraftChanges 只比较当前节点动作与人员，其他节点草稿不影响保存按钮。
 export function hasCurrentNodeDraftChanges(node: PathConfigNode | null, draft: PathConfigDraft): boolean {
   if (!node) return false
-  for (const action of node.actions) {
-    if ((draft.actions[action.key] ?? action.current) !== action.current) return true
-  }
   for (const person of node.persons) {
     if (!person.editable) continue
-    if (JSON.stringify(draft.persons[person.key] ?? person.selected) !== JSON.stringify(person.selected)) return true
+    if (JSON.stringify(normalizedPersonStrategy(person, draft.personStrategies[person.key])) !== JSON.stringify({
+      key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected,
+    })) return true
   }
-  return false
+  const baseline = node.actionPlan.arrivals.map(arrival => ({
+    visit: arrival.visit,
+    steps: arrival.steps.map(step => ({ kind: step.kind, opinion: step.opinion, target: step.target, person: step.person })),
+  }))
+  return JSON.stringify(draft.arrivals[node.key] ?? []) !== JSON.stringify(baseline)
+}
+
+// resolvedPersonStrategySelection 在浏览器内按公开候选顺序投影最终名单，随机结果与后端轮转算法一致。
+export function resolvedPersonStrategySelection(person: PathConfigPerson, input?: PathConfigPersonStrategyInput): string[] {
+  const strategy = input?.strategy ?? person.strategy ?? 'manual'
+  if (strategy === 'target_default') return [...person.defaultSelected]
+  if (strategy === 'all') return person.options.map(option => option.value)
+  if (strategy === 'random') {
+    if (!person.options.length) return []
+    const count = Math.min(person.options.length, Math.max(1, person.minCount || 1))
+    const seed = Number.isSafeInteger(input?.seed) && Number(input?.seed) !== 0 ? Math.abs(Number(input?.seed)) : 1
+    const start = seed % person.options.length
+    return Array.from({ length: count }, (_, index) => person.options[(start + index) % person.options.length].value)
+  }
+  return [...(input?.selected ?? person.selected)]
+}
+
+// normalizedPersonStrategy 生成可保存人员策略，并把前端计算的最终名单一并提交供后端核对。
+export function normalizedPersonStrategy(person: PathConfigPerson, input?: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput {
+  const current = input ?? { key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected }
+  return { ...current, key: person.key, selected: resolvedPersonStrategySelection(person, current) }
+}
+
+const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous'])
+
+// validPathConfigArrivals 即时校验连续访问、有序终止动作和必要参数，服务端仍会以当前目标快照重新核对。
+export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConfigArrivalInput[]): boolean {
+  if (!arrivals.length || arrivals.length > node.actionPlan.maxArrivals) return false
+  const catalog = new Map(node.actionPlan.catalog.map(item => [item.kind, item]))
+  let total = 0
+  for (let index = 0; index < arrivals.length; index++) {
+    const arrival = arrivals[index]
+    if (arrival.visit !== index + 1 || !arrival.steps.length) return false
+    for (let stepIndex = 0; stepIndex < arrival.steps.length; stepIndex++) {
+      const step = arrival.steps[stepIndex]
+      const item = catalog.get(step.kind)
+      total++
+      if (!item || total > node.actionPlan.maxPathSteps) return false
+      if (TERMINAL_ACTIONS.has(step.kind) && stepIndex !== arrival.steps.length - 1) return false
+      if (item.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === step.target)) return false
+      if (item.requiresPerson) {
+        const person = node.persons.find(candidate => candidate.editable)
+        if (!person || !step.person || step.person.key !== person.key || !person.strategies.some(strategy => strategy.value === step.person?.strategy)) return false
+        const allowed = new Set(person.options.map(option => option.value))
+        const selected = resolvedPersonStrategySelection(person, step.person)
+        if (selected.some(value => !allowed.has(value))) return false
+        const requiredEmpty = person.required && selected.length === 0
+        const belowMinimum = selected.length > 0 && selected.length < person.minCount
+        const aboveMaximum = person.maxCount > 0 && selected.length > person.maxCount
+        // 加签与移交复用节点人员范围；前端必须和服务端一样即时拒绝零必选、部分会签和超限选择。
+        if (requiredEmpty || belowMinimum || aboveMaximum) return false
+      }
+    }
+    if (!TERMINAL_ACTIONS.has(arrival.steps[arrival.steps.length - 1].kind)) return false
+  }
+  return true
 }
 
 // nextFormGenerationSeed 对换一组稳定推进种子，同一输入种子重复调用仍可复现。
@@ -333,7 +429,7 @@ export function allEditableFieldsFilled(configuration: PathConfiguration, draft:
       }
       for (const person of node.persons) {
         if (!person.editable) continue
-        const selected = draft.persons[person.key] ?? []
+        const selected = resolvedPersonStrategySelection(person, draft.personStrategies[person.key])
         // 可跳过节点允许保持零选择；主动选择后仍须一次满足模板最低人数，避免前端放行不完整会签组。
         const requiredEmpty = person.required && selected.length === 0
         const partialSelection = selected.length > 0 && selected.length < person.minCount

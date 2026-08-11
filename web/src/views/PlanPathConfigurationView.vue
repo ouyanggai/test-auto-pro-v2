@@ -32,11 +32,12 @@ import {
   savePathFormData,
 } from '../features/path-configuration/api'
 import type {
-  PathConfigAction,
+  PathConfigArrivalInput,
   PathConfigDraft,
   PathConfigNode,
   PathConfiguration,
   PathConfigPerson,
+  PathConfigPersonStrategyInput,
   PathFormRuntimeSession,
 } from '../features/path-configuration/types'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
@@ -60,7 +61,7 @@ const graph = ref<FlowGraph | null>(null)
 const currentPath = ref<ExecutionPath | null>(null)
 const executionPaths = ref<ExecutionPath[]>([])
 const configuration = ref<PathConfiguration | null>(null)
-const draft = ref<PathConfigDraft>({ fields: {}, actions: {}, persons: {} })
+const draft = ref<PathConfigDraft>({ fields: {}, actions: {}, persons: {}, personStrategies: {}, arrivals: {} })
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
@@ -230,16 +231,18 @@ async function finishConfirmedNodeSave() {
   nodeSavedSuccessfully.value = true
 }
 
-// updateActionValue 更新当前节点合法动作草稿。
-function updateActionValue(action: PathConfigAction, value: string) {
-  draft.value.actions[action.key] = value
+// updatePersonStrategy 只保留当前模板策略和候选中的不透明值。
+function updatePersonStrategy(person: PathConfigPerson, value: PathConfigPersonStrategyInput) {
+  const allowed = new Set(person.options.map(option => option.value))
+  draft.value.personStrategies[person.key] = { ...value, selected: value.selected.filter(candidate => allowed.has(candidate)) }
+  draft.value.persons[person.key] = [...draft.value.personStrategies[person.key].selected]
   nodeSavedSuccessfully.value = false
 }
 
-// updatePersonValue 只保留当前模板候选中的不透明人员键。
-function updatePersonValue(person: PathConfigPerson, value: string[]) {
-  const allowed = new Set(person.options.map(option => option.value))
-  draft.value.persons[person.key] = value.filter(candidate => allowed.has(candidate))
+// updateNodeArrivals 替换当前节点的连续到达动作草稿，不允许面板越过节点边界写其他节点。
+function updateNodeArrivals(nodeKey: string, value: PathConfigArrivalInput[]) {
+  if (selectedNode.value?.key !== nodeKey) return
+  draft.value.arrivals[nodeKey] = structuredClone(value)
   nodeSavedSuccessfully.value = false
 }
 
@@ -467,8 +470,8 @@ void loadPage()
             :save-details="nodeSaveDetails"
             :saved-successfully="nodeSavedSuccessfully"
             :form-complete="configuration.form.status === 'valid'"
-            @update-action="updateActionValue"
-            @update-person="updatePersonValue"
+            @update-person-strategy="updatePersonStrategy"
+            @update-arrivals="updateNodeArrivals"
             @save="saveCurrentNode"
             @back-to-plan="backToPlan"
             @open-form="openFormWorkspace"

@@ -88,6 +88,7 @@ export interface PathConfigNode {
   gaps: PathConfigGap[]
   requirements: PathConfigRequirement[]
   actions: PathConfigAction[]
+  actionPlan: PathConfigActionPlan
   lineBlocked: boolean
 }
 
@@ -101,8 +102,13 @@ export interface PathConfigPerson {
   multiple: boolean
   required: boolean
   minCount: number
+  maxCount: number
   selected: string[]
+  defaultSelected: string[]
   options: PathConfigPersonOption[]
+  strategy: PathConfigPersonStrategy
+  strategySeed: number
+  strategies: PathConfigPersonStrategyOption[]
   affected: boolean
   note: string
 }
@@ -116,6 +122,20 @@ export interface PathConfigPersonDisplayItem {
 export interface PathConfigPersonOption {
   label: string
   value: string
+}
+
+export type PathConfigPersonStrategy = 'target_default' | 'manual' | 'random' | 'all'
+
+export interface PathConfigPersonStrategyOption {
+  value: PathConfigPersonStrategy
+  label: string
+}
+
+export interface PathConfigPersonStrategyInput {
+  key: string
+  strategy: PathConfigPersonStrategy
+  seed: number
+  selected: string[]
 }
 
 export interface PathConfigRequirement {
@@ -162,6 +182,52 @@ export interface PathConfigActionOption {
   label: string
 }
 
+export type PathConfigActionKind = 'submit' | 'approve_pass' | 'reject_no_pass' | 'draft_save' | 'rollback_previous' | 'add_sign' | 'transfer_approver'
+
+export interface PathConfigActionPlan {
+  catalog: PathConfigActionCatalogItem[]
+  rollbackTargets: PathConfigActionOption[]
+  arrivals: PathConfigArrivalPlan[]
+  maxArrivals: number
+  maxPathSteps: number
+  affected: boolean
+  note: string
+}
+
+export interface PathConfigActionCatalogItem {
+  kind: PathConfigActionKind
+  label: string
+  description: string
+  allowsOpinion: boolean
+  requiresTarget: boolean
+  requiresPerson: boolean
+}
+
+export interface PathConfigArrivalPlan {
+  visit: number
+  steps: PathConfigActionStep[]
+}
+
+export interface PathConfigActionStep {
+  kind: PathConfigActionKind
+  label: string
+  opinion: string
+  target: string
+  person?: PathConfigPersonStrategyInput
+}
+
+export interface PathConfigArrivalInput {
+  visit: number
+  steps: PathConfigActionStepInput[]
+}
+
+export interface PathConfigActionStepInput {
+  kind: PathConfigActionKind
+  opinion: string
+  target: string
+  person?: PathConfigPersonStrategyInput
+}
+
 export interface PathConfigFieldValue {
   key: string
   value: string
@@ -184,6 +250,13 @@ export interface PathConfigDraft {
   fields: Record<string, string>
   actions: Record<string, string>
   persons: Record<string, string[]>
+  personStrategies: Record<string, PathConfigPersonStrategyInput>
+  arrivals: Record<string, PathConfigArrivalInput[]>
+}
+
+export interface PathConfigNodeSavePayload {
+  persons: PathConfigPersonStrategyInput[]
+  arrivals: PathConfigArrivalInput[]
 }
 
 export type PathConfigPagePhase =

@@ -21,7 +21,9 @@ import {
   projectPathConfigurationNodeStates,
   reconcilePathConfigDraft,
   resolveConfirmedNodeSaveDestination,
+  resolvedPersonStrategySelection,
   summarizePathConfigPersonItems,
+  validPathConfigArrivals,
 } from '../../../web/src/features/path-configuration/logic.ts'
 
 const configuration = {
@@ -51,6 +53,11 @@ const configuration = {
           actions: [
             { key: 'action-submit', kind: 'submit', label: '发起动作', current: 'submit', default: 'submit', options: [{ value: 'submit', label: '提交' }], disagreeWarning: '' },
           ],
+          actionPlan: {
+            catalog: [{ kind: 'submit', label: '提交', description: '提交发起节点', allowsOpinion: false, requiresTarget: false, requiresPerson: false }],
+            rollbackTargets: [], arrivals: [{ visit: 1, steps: [{ kind: 'submit', label: '提交', opinion: '', target: '' }] }],
+            maxArrivals: 10, maxPathSteps: 100, affected: false, note: '',
+          },
         },
         {
           key: 'cdba0a9513cd968ebdc32f2cbb516267',
@@ -72,13 +79,25 @@ const configuration = {
             {
               key: 'person-approve', title: '审批人', mode: 'select', detail: '从模板合法候选中选择', editable: true,
               items: [{ category: '人员', name: '张三', count: 1 }],
-              multiple: false, required: true, minCount: 1, selected: ['person-a'],
+              multiple: false, required: true, minCount: 1, maxCount: 1, selected: ['person-a'], defaultSelected: [],
+              strategy: 'manual', strategySeed: 7, strategies: [{ value: 'manual', label: '手动选择' }, { value: 'random', label: '确定性随机' }],
               options: [{ label: '张三', value: 'person-a' }, { label: '李四', value: 'person-b' }], affected: false, note: '',
             },
           ],
           actions: [
             { key: 'action-approve', kind: 'agree_disagree', label: '处理结果', current: 'agree', default: 'agree', options: [{ value: 'agree', label: '同意' }, { value: 'disagree', label: '不同意' }], disagreeWarning: '会改变后续线路' },
           ],
+          actionPlan: {
+            catalog: [
+              { kind: 'approve_pass', label: '同意', description: '继续当前路径', allowsOpinion: true, requiresTarget: false, requiresPerson: false },
+              { kind: 'reject_no_pass', label: '不同意', description: '结束当前线路', allowsOpinion: true, requiresTarget: false, requiresPerson: false },
+              { kind: 'draft_save', label: '暂存', description: '不推进流程', allowsOpinion: false, requiresTarget: false, requiresPerson: false },
+              { kind: 'rollback_previous', label: '回退上一级', description: '回退更早节点', allowsOpinion: true, requiresTarget: true, requiresPerson: false },
+            ],
+            rollbackTargets: [{ label: '发起', value: 'rollback-start' }],
+            arrivals: [{ visit: 1, steps: [{ kind: 'approve_pass', label: '同意', opinion: '', target: '' }] }],
+            maxArrivals: 10, maxPathSteps: 100, affected: false, note: '',
+          },
         },
       ],
     },
@@ -95,6 +114,8 @@ test('初始化草稿只包含可编辑字段与全部动作', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(draft.fields, 'field-subform'), false)
   assert.deepEqual(draft.actions, { 'action-submit': 'submit', 'action-approve': 'agree' })
   assert.deepEqual(draft.persons, { 'person-approve': ['person-a'] })
+  assert.equal(draft.personStrategies['person-approve'].strategy, 'manual')
+  assert.equal(draft.arrivals['cdba0a9513cd968ebdc32f2cbb516267'][0].steps[0].kind, 'approve_pass')
 })
 
 test('草稿无变化不提示保存，修改后提示', () => {
@@ -107,6 +128,7 @@ test('草稿无变化不提示保存，修改后提示', () => {
   assert.equal(hasPathConfigDraftChanges(configuration, draft), true)
   draft.actions['action-approve'] = 'agree'
   draft.persons['person-approve'] = ['person-b']
+  draft.personStrategies['person-approve'].selected = ['person-b']
   assert.equal(hasPathConfigDraftChanges(configuration, draft), true)
 })
 
@@ -155,6 +177,7 @@ test('必填字段缺失时提示具体中文名称', () => {
   draft.fields['field-amount'] = '3500'
   assert.equal(allEditableFieldsFilled(configuration, draft).complete, true)
   draft.persons['person-approve'] = []
+  draft.personStrategies['person-approve'].selected = []
   assert.deepEqual(allEditableFieldsFilled(configuration, draft).missing, ['审批人'])
 })
 
@@ -167,16 +190,20 @@ test('可跳过人员零选择合法但主动选择仍满足最低人数', () =>
 
   const draft = initPathConfigDraft(optionalConfiguration)
   draft.persons[person.key] = []
+  draft.personStrategies[person.key].selected = []
   assert.equal(allEditableFieldsFilled(optionalConfiguration, draft).complete, true)
 
   draft.persons[person.key] = ['person-a']
+  draft.personStrategies[person.key].selected = ['person-a']
   assert.deepEqual(allEditableFieldsFilled(optionalConfiguration, draft).missing, ['审批人'])
 
   draft.persons[person.key] = ['person-a', 'person-b']
+  draft.personStrategies[person.key].selected = ['person-a', 'person-b']
   assert.equal(allEditableFieldsFilled(optionalConfiguration, draft).complete, true)
 
   person.required = true
   draft.persons[person.key] = []
+  draft.personStrategies[person.key].selected = []
   assert.deepEqual(allEditableFieldsFilled(optionalConfiguration, draft).missing, ['审批人'])
 })
 
@@ -249,26 +276,59 @@ test('目标结构刷新只保留仍可对应字段动作和合法人员候选',
   draft.fields['field-amount'] = '3800'
   draft.actions['action-approve'] = 'disagree'
   draft.persons['person-approve'] = ['person-a', 'removed-person']
+  draft.personStrategies['person-approve'].selected = ['person-a', 'removed-person']
   draft.fields['removed-field'] = '"secret"'
   const reconciled = reconcilePathConfigDraft(configuration, draft)
   assert.equal(reconciled.fields['field-amount'], '3800')
   assert.equal(Object.prototype.hasOwnProperty.call(reconciled.fields, 'removed-field'), false)
   assert.equal(reconciled.actions['action-approve'], 'disagree')
   assert.deepEqual(reconciled.persons['person-approve'], ['person-a'])
+  assert.deepEqual(reconciled.personStrategies['person-approve'].selected, ['person-a'])
 })
 
 test('当前节点保存载荷不覆盖其他节点且保存完整性只看人员动作', () => {
   const draft = initPathConfigDraft(configuration)
   const approval = configuration.groups[0].nodes[1]
   const payload = buildPathConfigNodeSavePayload(approval, draft)
-  assert.deepEqual(payload.map(item => item.key).sort(), ['action-approve', 'person-approve'])
-  assert.equal(payload.some(item => item.key === 'action-submit'), false)
+  assert.deepEqual(payload.persons.map(item => item.key), ['person-approve'])
+  assert.equal(payload.arrivals[0].steps[0].kind, 'approve_pass')
   assert.equal(currentNodeConfigurationComplete(approval, draft).complete, true)
   assert.equal(hasCurrentNodeDraftChanges(approval, draft), false)
   draft.persons['person-approve'] = []
+  draft.personStrategies['person-approve'].selected = []
   assert.deepEqual(currentNodeConfigurationComplete(approval, draft).missing, ['审批人'])
   draft.persons['person-approve'] = ['person-b']
+  draft.personStrategies['person-approve'].selected = ['person-b']
   assert.equal(hasCurrentNodeDraftChanges(approval, draft), true)
+})
+
+test('人员策略和有界到达动作即时投影与后端规则一致', () => {
+  const approval = structuredClone(configuration.groups[0].nodes[1])
+  const person = approval.persons[0]
+  person.multiple = true
+  person.minCount = 2
+  person.maxCount = 2
+  person.strategies.push({ value: 'all', label: '全部候选' })
+  approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签', description: '受限候选', allowsOpinion: false, requiresTarget: false, requiresPerson: true })
+  const random = { key: person.key, strategy: 'random', seed: 1, selected: [] }
+  assert.deepEqual(resolvedPersonStrategySelection(person, random), ['person-b', 'person-a'])
+  assert.deepEqual(resolvedPersonStrategySelection(person, random), resolvedPersonStrategySelection(person, random))
+  const valid = [{ visit: 1, steps: [{ kind: 'rollback_previous', opinion: '退回补充', target: 'rollback-start' }] }]
+  assert.equal(validPathConfigArrivals(approval, valid), true)
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 2, steps: valid[0].steps }]), false)
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [{ kind: 'approve_pass', opinion: '', target: '' }, { kind: 'draft_save', opinion: '', target: '' }] }]), false)
+  const partialSign = [{ visit: 1, steps: [
+    { kind: 'add_sign', opinion: '', target: '', person: { key: person.key, strategy: 'manual', seed: 1, selected: ['person-a'] } },
+    { kind: 'approve_pass', opinion: '', target: '' },
+  ] }]
+  assert.equal(validPathConfigArrivals(approval, partialSign), false)
+  partialSign[0].steps[0].person.selected.push('person-b')
+  assert.equal(validPathConfigArrivals(approval, partialSign), true)
+  const overflow = Array.from({ length: 100 }, () => ({
+    kind: 'add_sign', opinion: '', target: '', person: { key: person.key, strategy: 'all', seed: 1, selected: [] },
+  }))
+  overflow.push({ kind: 'approve_pass', opinion: '', target: '' })
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: overflow }]), false)
 })
 
 test('换一组种子稳定推进并安全处理非法值', () => {
