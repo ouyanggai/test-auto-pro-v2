@@ -21,6 +21,7 @@ import {
   projectPathConfigurationNodeStates,
   reconcilePathConfigDraft,
   resolveConfirmedNodeSaveDestination,
+  summarizePathConfigPersonItems,
 } from '../../../web/src/features/path-configuration/logic.ts'
 
 const configuration = {
@@ -70,6 +71,7 @@ const configuration = {
           persons: [
             {
               key: 'person-approve', title: '审批人', mode: 'select', detail: '从模板合法候选中选择', editable: true,
+              items: [{ category: '人员', name: '张三', count: 1 }],
               multiple: false, required: true, minCount: 1, selected: ['person-a'],
               options: [{ label: '张三', value: 'person-a' }, { label: '李四', value: 'person-b' }], affected: false, note: '',
             },
@@ -176,6 +178,19 @@ test('可跳过人员零选择合法但主动选择仍满足最低人数', () =>
   person.required = true
   draft.persons[person.key] = []
   assert.deepEqual(allEditableFieldsFilled(optionalConfiguration, draft).missing, ['审批人'])
+})
+
+test('人员规则长列表摘要保留真实总数并提供前三项预览', () => {
+  const summary = summarizePathConfigPersonItems([
+    { category: '人员', name: '张三', count: 1 },
+    { category: '岗位', name: '主任', count: 1 },
+    { category: '组织', name: '财务部', count: 1 },
+    { category: '岗级', name: '名称需运行时解析', count: 12 },
+  ])
+  assert.equal(summary.total, 15)
+  assert.equal(summary.preview.length, 3)
+  assert.equal(summary.hidden, 12)
+  assert.deepEqual(summary.preview.map(item => item.name), ['张三', '主任', '财务部'])
 })
 
 test('配置节点不透明键与真实图节点稳定绑定且不暴露节点 ID', async () => {

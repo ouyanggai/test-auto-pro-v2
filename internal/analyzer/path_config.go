@@ -438,6 +438,10 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 		result.Persons = append(result.Persons, p.personConfig(graphNode.ID, node))
 		result.Actions = append(result.Actions, p.approvalAction(graphNode.ID, graphNode.Name))
 	}
+	if len(result.Persons) > 0 {
+		// 节点侧栏已经用结构化人员项呈现真实名称，移除旧要求中的长文本名单，避免同一信息重复挤占空间。
+		result.Requirements = pathConfigNonPersonRequirements(result.Requirements)
+	}
 	if !blocked {
 		for _, gap := range result.Gaps {
 			p.validation.Blockers = append(p.validation.Blockers, model.PathConfigAffectedItem{Kind: "field", Name: gap.Name, Reason: gap.Reason})
@@ -449,6 +453,18 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 		}
 	}
 	result.Status, result.StatusName = pathConfigNodeStatus(result, p.storedPresent)
+	return result
+}
+
+// pathConfigNonPersonRequirements 仅在节点配置 DTO 中移除已由 Persons 承载的人员要求，不改变 F-006 独立分析结果。
+func pathConfigNonPersonRequirements(requirements []model.RequirementItem) []model.RequirementItem {
+	result := make([]model.RequirementItem, 0, len(requirements))
+	for _, requirement := range requirements {
+		if strings.TrimSpace(requirement.Category) == "人员" {
+			continue
+		}
+		result = append(result, requirement)
+	}
 	return result
 }
 
@@ -528,28 +544,24 @@ func (p *pathConfigProjection) approvalAction(nodeID, nodeName string) model.Pat
 func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNodeTemplate) model.PathConfigPerson {
 	config := node.AuditConfig
 	if config == nil || strings.TrimSpace(config.AuditType) == "" {
-		return model.PathConfigPerson{Title: "处理人规则", Mode: "review", Detail: "当前节点缺少处理人配置", Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+		return model.PathConfigPerson{Title: "处理人规则", Mode: "review", Detail: "当前节点缺少处理人配置", Items: []model.PathConfigPersonDisplayItem{}, Selected: []string{}, Options: []model.PathConfigPersonOption{}}
 	}
 	title, requirementStatus, known := auditTypePresentation(config.AuditType)
 	detail := auditModeText(config.Mode, config.CountersignNum)
-	if names := auditDetailNames(config.Details); len(names) > 0 {
-		detail += "；范围：" + strings.Join(names, "、")
-	} else if len(config.Scopes) > 0 || len(config.Details) > 0 {
-		detail += fmt.Sprintf("；已配置 %d 项范围", len(config.Scopes)+len(config.Details))
-	}
+	items := pathConfigPersonDisplayItems(config)
 	if !known || !auditModeValid(config.Mode, config.CountersignNum) {
-		return model.PathConfigPerson{Title: title, Mode: "review", Detail: detail + "；处理规则需要人工核对", Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+		return model.PathConfigPerson{Title: title, Mode: "review", Detail: detail + "；处理规则需要人工核对", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}}
 	}
 	if strings.TrimSpace(config.AuditType) != "run_node_choose" {
 		mode := "fixed"
 		if requirementStatus == model.RequirementRuntime || requirementStatus == model.RequirementPending {
 			mode = "runtime"
 		}
-		return model.PathConfigPerson{Title: title, Mode: mode, Detail: detail, Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+		return model.PathConfigPerson{Title: title, Mode: mode, Detail: detail, Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}}
 	}
 	if len(config.Candidates) == 0 {
 		// 参考实现的审批人自选候选依赖当前流程实例与批次；详情未返回候选时只能标记运行时确定。
-		return model.PathConfigPerson{Title: title, Mode: "runtime", Detail: detail + "；合法候选需在真实运行节点加载", Selected: []string{}, Options: []model.PathConfigPersonOption{}}
+		return model.PathConfigPerson{Title: title, Mode: "runtime", Detail: detail + "；合法候选需在真实运行节点加载", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}}
 	}
 	key := PathConfigPersonToken(nodeID)
 	options := make([]model.PathConfigPersonOption, 0, len(config.Candidates))
@@ -593,8 +605,81 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 		CandidateTokens: candidateTokens, Required: required, MinCount: minCount, MaxCount: maxCount,
 	}
 	return model.PathConfigPerson{
-		Key: key, Title: title, Mode: "select", Detail: detail, Editable: true, Multiple: multiple,
+		Key: key, Title: title, Mode: "select", Detail: detail, Items: items, Editable: true, Multiple: multiple,
 		Required: required, MinCount: minCount, Selected: selected, Options: options, Affected: affected, Note: note,
+	}
+}
+
+// pathConfigPersonDisplayItems 把目标详情名称和无名称范围投影为稳定中文展示项；无名称范围只能说明运行时解析，不能用业务 ID 猜名称。
+func pathConfigPersonDisplayItems(config *target.FlowNodeAuditConfig) []model.PathConfigPersonDisplayItem {
+	if config == nil {
+		return []model.PathConfigPersonDisplayItem{}
+	}
+	items := make([]model.PathConfigPersonDisplayItem, 0, len(config.Details)+len(config.Scopes))
+	positions := make(map[string]int, len(config.Details)+len(config.Scopes))
+	appendItem := func(category, name string) {
+		category = strings.TrimSpace(category)
+		name = strings.TrimSpace(name)
+		if category == "" {
+			category = "处理对象"
+		}
+		if name == "" {
+			name = "名称需运行时解析"
+		}
+		key := category + "\x00" + name
+		if index, exists := positions[key]; exists {
+			items[index].Count++
+			return
+		}
+		positions[key] = len(items)
+		items = append(items, model.PathConfigPersonDisplayItem{Category: category, Name: name, Count: 1})
+	}
+	for _, detail := range config.Details {
+		appendItem(pathConfigPersonCategory(detail.Type, config.AuditType), detail.Name)
+	}
+	for _, scope := range config.Scopes {
+		appendItem(pathConfigPersonCategory(scope.Type, config.AuditType), "名称需运行时解析")
+	}
+	return items
+}
+
+// pathConfigPersonCategory 将目标审批详情和范围枚举映射为用户可读类别，未知值不原样公开目标代码。
+func pathConfigPersonCategory(value, auditType string) string {
+	switch strings.TrimSpace(value) {
+	case "personnel":
+		return "人员"
+	case "position":
+		return "岗位"
+	case "level":
+		return "岗级"
+	case "role", "c":
+		return "角色"
+	case "department":
+		return "组织"
+	case "company":
+		return "公司"
+	case "extendedAttribute":
+		return "扩展属性"
+	}
+	switch strings.TrimSpace(auditType) {
+	case "assign", "company", "initiator", "form_person":
+		return "人员"
+	case "position":
+		return "岗位"
+	case "level":
+		return "岗级"
+	case "role":
+		return "角色"
+	case "department", "department_supervisor", "branched_passage_manager":
+		return "组织"
+	case "company_id":
+		return "公司"
+	case "extendedAttribute":
+		return "扩展属性"
+	case "run_node_choose":
+		return "候选范围"
+	default:
+		return "处理对象"
 	}
 }
 

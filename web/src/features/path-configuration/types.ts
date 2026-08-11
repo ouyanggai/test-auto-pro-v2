@@ -96,6 +96,7 @@ export interface PathConfigPerson {
   title: string
   mode: 'fixed' | 'select' | 'runtime' | 'review'
   detail: string
+  items: PathConfigPersonDisplayItem[]
   editable: boolean
   multiple: boolean
   required: boolean
@@ -104,6 +105,12 @@ export interface PathConfigPerson {
   options: PathConfigPersonOption[]
   affected: boolean
   note: string
+}
+
+export interface PathConfigPersonDisplayItem {
+  category: string
+  name: string
+  count: number
 }
 
 export interface PathConfigPersonOption {

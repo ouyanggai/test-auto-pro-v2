@@ -134,18 +134,26 @@ type PathConfigNode struct {
 
 // PathConfigPerson 是模板约束下的处理人呈现；只有 editable=true 时浏览器才允许回写候选。
 type PathConfigPerson struct {
-	Key      string                   `json:"key"`
-	Title    string                   `json:"title"`
-	Mode     string                   `json:"mode"`
-	Detail   string                   `json:"detail"`
-	Editable bool                     `json:"editable"`
-	Multiple bool                     `json:"multiple"`
-	Required bool                     `json:"required"`
-	MinCount int                      `json:"minCount"`
-	Selected []string                 `json:"selected"`
-	Options  []PathConfigPersonOption `json:"options"`
-	Affected bool                     `json:"affected"`
-	Note     string                   `json:"note"`
+	Key      string                        `json:"key"`
+	Title    string                        `json:"title"`
+	Mode     string                        `json:"mode"`
+	Detail   string                        `json:"detail"`
+	Items    []PathConfigPersonDisplayItem `json:"items"`
+	Editable bool                          `json:"editable"`
+	Multiple bool                          `json:"multiple"`
+	Required bool                          `json:"required"`
+	MinCount int                           `json:"minCount"`
+	Selected []string                      `json:"selected"`
+	Options  []PathConfigPersonOption      `json:"options"`
+	Affected bool                          `json:"affected"`
+	Note     string                        `json:"note"`
+}
+
+// PathConfigPersonDisplayItem 公开目标模板中可证明的人员规则类别、中文名称和同类数量，不携带业务 ID。
+type PathConfigPersonDisplayItem struct {
+	Category string `json:"category"`
+	Name     string `json:"name"`
+	Count    int    `json:"count"`
 }
 
 // PathConfigPersonOption 只公开合法候选的中文名称与不透明回写键。

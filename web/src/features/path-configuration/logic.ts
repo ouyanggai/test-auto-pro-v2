@@ -5,6 +5,7 @@ import type {
   PathConfigField,
   PathConfigFieldValue,
   PathConfigNode,
+  PathConfigPersonDisplayItem,
   PathFormStatus,
 } from './types.ts'
 import type { ExecutionPathAnalysis } from '../execution-paths/types.ts'
@@ -63,6 +64,26 @@ export type ConfirmedNodeSaveDestination =
   | { kind: 'form' }
   | { kind: 'complete' }
   | { kind: 'unmapped' }
+
+export interface PathConfigPersonItemSummary {
+  preview: PathConfigPersonDisplayItem[]
+  total: number
+  hidden: number
+}
+
+// summarizePathConfigPersonItems 按目标对象数量生成侧栏摘要；聚合范围的 count 仍计入“查看全部 N 项”。
+export function summarizePathConfigPersonItems(items: PathConfigPersonDisplayItem[], limit = 3): PathConfigPersonItemSummary {
+  const safeItems = Array.isArray(items) ? items.filter(item => item && item.count > 0) : []
+  const total = safeItems.reduce((sum, item) => sum + item.count, 0)
+  let visibleCount = 0
+  const preview: PathConfigPersonDisplayItem[] = []
+  for (const item of safeItems) {
+    if (visibleCount >= limit) break
+    preview.push(item)
+    visibleCount += item.count
+  }
+  return { preview, total, hidden: Math.max(0, total - Math.min(total, limit)) }
+}
 
 // resolveConfirmedNodeSaveDestination 只按服务端最新 nextNodeKey 推进当前路径；没有下一节点时才转入表单或完成态。
 export function resolveConfirmedNodeSaveDestination(

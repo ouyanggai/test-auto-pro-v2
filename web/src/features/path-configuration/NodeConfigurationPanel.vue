@@ -2,20 +2,29 @@
 import {
   NAlert,
   NButton,
+  NCard,
   NEmpty,
+  NModal,
   NRadioButton,
   NRadioGroup,
+  NScrollbar,
   NSelect,
   NTag,
 } from 'naive-ui'
 import type { SelectOption } from 'naive-ui'
+import { ref } from 'vue'
 
+import { summarizePathConfigPersonItems } from './logic'
 import type {
   PathConfigAction,
   PathConfigDraft,
   PathConfigNode,
   PathConfigPerson,
 } from './types'
+
+const PERSON_PREVIEW_LIMIT = 3
+const personDetailsOpen = ref(false)
+const detailedPerson = ref<PathConfigPerson | null>(null)
 
 const props = defineProps<{
   node: PathConfigNode | null
@@ -56,6 +65,23 @@ function updateSinglePerson(person: PathConfigPerson, value: string | null) {
 // personOptions 转为 Naive UI 的不透明人员候选选项。
 function personOptions(person: PathConfigPerson): SelectOption[] {
   return person.options.map((option) => ({ label: option.label, value: option.value }))
+}
+
+// personItemSummary 收敛侧栏预览和弹窗总数，避免大量模板对象把固定侧栏无限撑长。
+function personItemSummary(person: PathConfigPerson) {
+  return summarizePathConfigPersonItems(person.items, PERSON_PREVIEW_LIMIT)
+}
+
+// openPersonDetails 打开当前人员规则的完整只读名称列表。
+function openPersonDetails(person: PathConfigPerson) {
+  detailedPerson.value = person
+  personDetailsOpen.value = true
+}
+
+// closePersonDetails 关闭弹窗并释放上一个节点的展示引用。
+function closePersonDetails() {
+  personDetailsOpen.value = false
+  detailedPerson.value = null
 }
 </script>
 
@@ -123,6 +149,23 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
               @update:value="(value) => updateSinglePerson(person, value)"
             />
             <p v-else class="node-configuration-panel__readonly">{{ person.detail }}</p>
+            <ul v-if="person.items.length" class="node-configuration-panel__person-items" aria-label="目标模板已配置对象">
+              <li v-for="(item, itemIndex) in personItemSummary(person).preview" :key="`${item.category}-${item.name}-${itemIndex}`">
+                <n-tag size="tiny" :bordered="false">{{ item.category }}</n-tag>
+                <span>{{ item.name }}</span>
+                <small v-if="item.count > 1">{{ item.count }} 项</small>
+              </li>
+            </ul>
+            <n-button
+              v-if="personItemSummary(person).total > PERSON_PREVIEW_LIMIT"
+              text
+              type="primary"
+              size="small"
+              class="node-configuration-panel__person-more"
+              @click="openPersonDetails(person)"
+            >
+              查看全部 {{ personItemSummary(person).total }} 项
+            </n-button>
             <p v-if="person.note">{{ person.note }}</p>
           </div>
         </section>
@@ -189,6 +232,29 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
           </n-button>
         </div>
       </footer>
+
+      <n-modal :show="personDetailsOpen" :mask-closable="true" @update:show="(show) => { if (!show) closePersonDetails() }">
+        <n-card v-if="detailedPerson" class="node-configuration-panel__person-modal" :bordered="false" role="dialog" aria-modal="true" aria-labelledby="person-details-title">
+          <template #header>
+            <div class="node-configuration-panel__person-modal-heading">
+              <span>目标模板已配置对象</span>
+              <h3 id="person-details-title">{{ detailedPerson.title }} · {{ personItemSummary(detailedPerson).total }} 项</h3>
+            </div>
+          </template>
+          <template #header-extra>
+            <n-button quaternary size="small" aria-label="关闭人员详情" @click="closePersonDetails">关闭</n-button>
+          </template>
+          <n-scrollbar class="node-configuration-panel__person-modal-scroll" style="max-height: 360px">
+            <ul>
+              <li v-for="(item, itemIndex) in detailedPerson.items" :key="`${item.category}-${item.name}-${itemIndex}`">
+                <n-tag size="small" :bordered="false">{{ item.category }}</n-tag>
+                <span>{{ item.name }}</span>
+                <small v-if="item.count > 1">对应 {{ item.count }} 项目标范围</small>
+              </li>
+            </ul>
+          </n-scrollbar>
+        </n-card>
+      </n-modal>
     </template>
     <n-empty v-else class="node-configuration-panel__empty" description="请在当前路径上选择一个节点" />
   </section>
@@ -293,6 +359,62 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
   padding: 7px 9px;
   background: color-mix(in srgb, var(--flow-edge-color) 18%, transparent);
   border-radius: 4px;
+}
+
+.node-configuration-panel__person-items,
+.node-configuration-panel__person-modal ul {
+  display: grid;
+  gap: 7px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.node-configuration-panel__person-items li,
+.node-configuration-panel__person-modal li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.node-configuration-panel__person-items li > span,
+.node-configuration-panel__person-modal li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-configuration-panel__person-items small,
+.node-configuration-panel__person-modal small {
+  color: var(--flow-label-color);
+  opacity: 0.65;
+}
+
+.node-configuration-panel__person-more {
+  justify-self: start;
+}
+
+.node-configuration-panel__person-modal {
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(520px, calc(100dvh - 48px));
+}
+
+.node-configuration-panel__person-modal h3 {
+  margin: 3px 0 0;
+  font-size: 16px;
+}
+
+.node-configuration-panel__person-modal-heading > span {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.node-configuration-panel__person-modal-scroll {
+  min-height: 0;
+  padding: 12px 4px 4px 0;
 }
 
 .node-configuration-panel__footer {

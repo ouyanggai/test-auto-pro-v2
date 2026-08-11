@@ -216,6 +216,58 @@ func TestPathConfigAnalyzerProjectsOpaqueNodeStatusAndTemplatePersonRules(t *tes
 	assertPathConfigPublicSafety(t, configuration)
 }
 
+// TestPathConfigAnalyzerProjectsStructuredPersonNames 验证人员、岗位、岗级、角色和组织名称结构化公开，无名称范围只给出运行时解析说明。
+func TestPathConfigAnalyzerProjectsStructuredPersonNames(t *testing.T) {
+	tests := []struct {
+		name          string
+		auditType     string
+		details       []target.FlowAuditDetail
+		scopes        []target.FlowAuditScope
+		wantCategory  string
+		wantName      string
+		wantItemCount int
+	}{
+		{name: "人员", auditType: "assign", details: []target.FlowAuditDetail{{Name: "张三", Type: "personnel"}}, wantCategory: "人员", wantName: "张三", wantItemCount: 1},
+		{name: "岗位", auditType: "position", details: []target.FlowAuditDetail{{Name: "主任", Type: "position"}}, wantCategory: "岗位", wantName: "主任", wantItemCount: 1},
+		{name: "岗级", auditType: "level", details: []target.FlowAuditDetail{{Name: "二级岗", Type: "level"}}, wantCategory: "岗级", wantName: "二级岗", wantItemCount: 1},
+		{name: "角色", auditType: "role", details: []target.FlowAuditDetail{{Name: "财务审批角色"}}, wantCategory: "角色", wantName: "财务审批角色", wantItemCount: 1},
+		{name: "组织", auditType: "department", details: []target.FlowAuditDetail{{Name: "财务部", Type: "department"}}, wantCategory: "组织", wantName: "财务部", wantItemCount: 1},
+		{name: "无名称范围", auditType: "run_node_choose", scopes: []target.FlowAuditScope{{Type: "level"}, {Type: "level"}}, wantCategory: "岗级", wantName: "名称需运行时解析", wantItemCount: 2},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			tree := pathConfigTree()
+			tree.Child.ConditionNodes[0].Child.AuditConfig = &target.FlowNodeAuditConfig{
+				AuditType: testCase.auditType, Mode: "scramble", Details: testCase.details, Scopes: testCase.scopes,
+			}
+			graph := requirementGraph(t, tree)
+			path := model.ExecutionPath{SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+			analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+			if err != nil {
+				t.Fatalf("准备人员名称路径失败：%v", err)
+			}
+			configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, analysis, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("结构化人员名称投影失败：%v", err)
+			}
+			person := findConfigNode(configuration.Groups, "财务审批").Persons[0]
+			for _, requirement := range findConfigNode(configuration.Groups, "财务审批").Requirements {
+				if requirement.Category == "人员" {
+					t.Fatalf("结构化人员区存在时不应重复输出长文本人员要求：%+v", requirement)
+				}
+			}
+			if len(person.Items) != 1 || person.Items[0].Category != testCase.wantCategory || person.Items[0].Name != testCase.wantName || person.Items[0].Count != testCase.wantItemCount {
+				t.Fatalf("结构化人员名称不正确：%+v", person.Items)
+			}
+			encoded, _ := json.Marshal(person.Items)
+			if strings.Contains(string(encoded), "person-secret") || strings.Contains(string(encoded), "bizId") {
+				t.Fatalf("结构化人员名称泄露内部标识：%s", encoded)
+			}
+			assertPathConfigPublicSafety(t, configuration)
+		})
+	}
+}
+
 // TestPathConfigAnalyzerRevalidatesStoredPersonCounts 验证存量人员选择按当前模板人数重新投影并驱动节点状态。
 func TestPathConfigAnalyzerRevalidatesStoredPersonCounts(t *testing.T) {
 	tests := []struct {
