@@ -27,7 +27,7 @@ const props = defineProps<{
   saveError: string
   saveDetails: Array<{ kind: string, name: string, reason: string }>
   savedSuccessfully: boolean
-  hasNextPath: boolean
+  formComplete: boolean
 }>()
 
 const emit = defineEmits<{
@@ -35,7 +35,7 @@ const emit = defineEmits<{
   updatePerson: [person: PathConfigPerson, value: string[]]
   save: []
   backToPlan: []
-  configureNext: []
+  openForm: []
 }>()
 
 // actionValue 返回节点动作草稿；缺失时使用目标模板给出的默认动作。
@@ -175,14 +175,14 @@ function personOptions(person: PathConfigPerson): SelectOption[] {
           </ul>
         </n-alert>
         <n-alert v-else-if="savedSuccessfully" type="success" :show-icon="false" size="small">
-          当前节点配置已保存
+          {{ formComplete ? '当前路径的节点与表单配置均已完成' : '当前节点配置已保存，节点配置已完成' }}
         </n-alert>
         <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足模板要求</span>
         <span v-else>保存只更新当前节点的人员与动作</span>
         <div class="node-configuration-panel__footer-actions">
           <template v-if="savedSuccessfully">
             <n-button size="small" @click="emit('backToPlan')">返回计划详情</n-button>
-            <n-button v-if="hasNextPath" size="small" type="primary" @click="emit('configureNext')">配置下一条</n-button>
+            <n-button v-if="!formComplete" size="small" type="primary" @click="emit('openForm')">配置表单数据</n-button>
           </template>
           <n-button v-else type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">
             保存当前节点

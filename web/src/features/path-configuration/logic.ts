@@ -5,6 +5,7 @@ import type {
   PathConfigField,
   PathConfigFieldValue,
   PathConfigNode,
+  PathFormStatus,
 } from './types.ts'
 import type { ExecutionPathAnalysis } from '../execution-paths/types.ts'
 import type { FlowConfigurationNodeState, FlowGraph } from '../flow-graph/types.ts'
@@ -55,6 +56,25 @@ export function initialPathConfigurationNodeID(configuration: PathConfiguration,
     }
   }
   return ''
+}
+
+export type ConfirmedNodeSaveDestination =
+  | { kind: 'next-node', nodeID: string }
+  | { kind: 'form' }
+  | { kind: 'complete' }
+  | { kind: 'unmapped' }
+
+// resolveConfirmedNodeSaveDestination 只按服务端最新 nextNodeKey 推进当前路径；没有下一节点时才转入表单或完成态。
+export function resolveConfirmedNodeSaveDestination(
+  nextNodeKey: string,
+  graphNodeIDByConfigurationKey: Map<string, string>,
+  formStatus: PathFormStatus,
+): ConfirmedNodeSaveDestination {
+  if (nextNodeKey) {
+    const nodeID = graphNodeIDByConfigurationKey.get(nextNodeKey)
+    return nodeID ? { kind: 'next-node', nodeID } : { kind: 'unmapped' }
+  }
+  return formStatus === 'valid' ? { kind: 'complete' } : { kind: 'form' }
 }
 
 // projectPathConfigurationNodeStates 把后端节点状态投影到同一流程图；路径外节点只作弱化上下文且不可配置。

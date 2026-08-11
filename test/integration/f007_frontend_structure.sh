@@ -59,6 +59,18 @@ grep -Fq "NodeConfigurationPanel" "${config_view}"
 grep -Fq "bindPathConfigurationNodes" "${config_view}"
 grep -Fq "focusNode" "${canvas_view}"
 grep -Fq "viewportForPointCentered" "${canvas_view}"
+grep -Fq '@node-click="handleConfigurationNodeClick"' "${canvas_view}"
+grep -Fq '@nodes-change="handleConfigurationNodeChanges"' "${canvas_view}"
+grep -Fq ':nodes-focusable="configurationMode"' "${canvas_view}"
+grep -Fq 'selectable: configurationInteractive' "${canvas_view}"
+grep -Fq 'focusable: configurationInteractive' "${canvas_view}"
+grep -Fq '.vue-flow__node.selectable' "${canvas_view}"
+grep -Fq '!props.configurationNodeStates[nodeID]?.interactive' "${canvas_view}"
+grep -Fq "change.type !== 'select' || !change.selected" "${canvas_view}"
+if grep -Eq '@select="handleSelectConfigurationNode|defineEmits<\{ select:' "${canvas_view}" "${flow_node}" "${routing_hub}"; then
+  echo 'F-007 节点切换必须统一走 Vue Flow 官方包装层事件，不能保留内部平行点击链' >&2
+  exit 1
+fi
 if grep -Fq 'v-for="(group' "${config_view}" || grep -Fq "path-configuration-page__group" "${config_view}"; then
   echo 'F-007 配置页不得恢复整页字段分组表单' >&2
   exit 1
@@ -71,6 +83,23 @@ grep -Fq "flow-node--configuration-selected" "${flow_node}"
 grep -Fq "flow-routing-hub__configuration" "${routing_hub}"
 grep -Fq "flow-node--path-muted" "${canvas_view}"
 grep -Fq "branchEditing: props.configurationMode ? false" "${canvas_view}"
+
+# 节点保存正常响应和 GET 对账必须复用同一同路径推进规则，不得再出现跨路径“配置下一条”。
+grep -Fq "resolveConfirmedNodeSaveDestination" "${config_logic}"
+grep -Fq "async function finishConfirmedNodeSave" "${config_view}"
+if [[ "$(grep -Fc 'await finishConfirmedNodeSave()' "${config_view}")" -ne 2 ]]; then
+  echo 'F-007 正常保存与响应不确定对账必须共同推进当前路径下一节点' >&2
+  exit 1
+fi
+grep -Fq 'selectedNodeID.value = destination.nodeID' "${config_view}"
+grep -Fq 'await focusSelectedNode()' "${config_view}"
+grep -Fq ':form-complete="configuration.form.status === '\''valid'\''"' "${config_view}"
+grep -Fq '>配置表单数据</n-button>' "${config_panel}"
+grep -Fq '当前路径的节点与表单配置均已完成' "${config_panel}"
+if grep -Eq 'nextUnconfiguredPath|configureNextPath|hasNextPath|configureNext|配置下一条' "${config_view}" "${config_panel}"; then
+  echo 'F-007 节点配置页不得把下一节点误写成另一条路径' >&2
+  exit 1
+fi
 
 # 节点侧栏只呈现人员、动作和规则；表单字段必须由独立 FormMaking runtime 渲染。
 grep -Fq "node.requirements" "${config_panel}"
@@ -100,6 +129,20 @@ grep -Fq "WRITE_SEGMENT_PREFIXES" "${runtime_policy}"
 grep -Fq "READ_SEGMENT_PREFIXES" "${runtime_policy}"
 grep -Fq "window.fetch = async" "${runtime_policy}"
 grep -Fq "SID" "${runtime_policy}"
+
+# 表单工作区是单层宽屏主体：紧凑工具栏固定，真实 iframe 占满余下宽高并自行滚动。
+grep -Fq "'path-configuration-page--form': workspace === 'form'" "${config_view}"
+grep -Fq 'flex-direction: column' "${config_view}"
+grep -Fq 'flex: 0 0 auto' "${config_view}"
+grep -Fq 'flex: 1 1 0' "${config_view}"
+grep -Fq 'overscroll-behavior: contain' "${config_view}"
+grep -Fq 'width: 100%' "${form_frame}"
+grep -Fq 'height: 100%' "${form_frame}"
+grep -Fq 'min-height: 0' "${form_frame}"
+if grep -Eq 'transform: *scale|zoom:' "${config_view}" "${form_frame}"; then
+  echo 'F-007 真实表单不得通过 zoom/scale 缩小后塞入工作区' >&2
+  exit 1
+fi
 
 # 浏览器只处理不透明键，结构变化保留可对应草稿；不得出现假运行控制。
 grep -Fq "pathConfigNodeKey" "${config_logic}"

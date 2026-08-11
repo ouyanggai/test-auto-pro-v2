@@ -3,6 +3,7 @@ import { Controls } from '@vue-flow/controls'
 import { NButton, NEmpty, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { VueFlow as VueFlowCanvas, useVueFlow } from '@vue-flow/core'
+import type { NodeChange, NodeMouseEvent } from '@vue-flow/core'
 
 import FlowGraphNode from './FlowGraphNode.vue'
 import FlowRoutingHub from './FlowRoutingHub.vue'
@@ -74,15 +75,25 @@ const displayedLayout = computed(() => {
   return {
     nodes: laidOut.value.nodes.map((node) => {
       const configurationState = props.configurationNodeStates[node.id]
+      const configurationInteractive = Boolean(props.configurationMode && configurationState?.interactive)
       return {
         ...node,
+        // Vue Flow 会用节点自身的 selectable/focusable 覆盖全局只读值；仅当前路径可配置节点进入官方事件链。
+        selectable: configurationInteractive,
+        focusable: configurationInteractive,
+        draggable: false,
+        connectable: false,
+        deletable: false,
+        ariaLabel: configurationInteractive
+          ? `${node.data?.name || '流程节点'}，${configurationState?.statusName || '待配置'}，按回车或空格选择节点`
+          : `${node.data?.name || '流程节点'}，不可配置`,
         class: analysis.reachableNodeIds.has(node.id) ? 'flow-node--path-active' : 'flow-node--path-muted',
         data: {
           ...node.data,
           configurationMode: props.configurationMode,
           configurationStatus: configurationState?.status,
           configurationStatusName: configurationState?.statusName,
-          configurationInteractive: configurationState?.interactive ?? false,
+          configurationInteractive,
           configurationSelected: configurationState?.selected ?? false,
           configurationFormStatus: props.configurationFormStatus,
           configurationFormStatusName: props.configurationFormStatusName,
@@ -342,6 +353,21 @@ function handleSelectConfigurationNode(nodeID: string) {
   emit('selectConfigurationNode', nodeID)
 }
 
+// handleConfigurationNodeClick 使用 Vue Flow 官方节点点击事件，确保包装层而非内部样式承担 pointer 边界。
+function handleConfigurationNodeClick({ node }: NodeMouseEvent) {
+  handleSelectConfigurationNode(node.id)
+}
+
+// handleConfigurationNodeChanges 接住包装层 Enter/Space 产生的选择变更；不可配置节点不会产生有效切换。
+function handleConfigurationNodeChanges(changes: NodeChange[]) {
+  if (!props.configurationMode) return
+  for (const change of changes) {
+    if (change.type !== 'select' || !change.selected) continue
+    handleSelectConfigurationNode(change.id)
+    return
+  }
+}
+
 onInit(() => {
   ready = true
   void setInitialViewport()
@@ -455,6 +481,7 @@ onBeforeUnmount(() => {
       :nodes-draggable="false"
       :nodes-connectable="false"
       :elements-selectable="false"
+      :nodes-focusable="configurationMode"
       :select-nodes-on-drag="false"
       :delete-key-code="null"
       :multi-selection-key-code="null"
@@ -466,13 +493,15 @@ onBeforeUnmount(() => {
       :min-zoom="0.15"
       :max-zoom="2"
       :fit-view-on-init="false"
+      @node-click="handleConfigurationNodeClick"
+      @nodes-change="handleConfigurationNodeChanges"
       @viewport-change="handleViewportChange"
     >
-      <template #node-flowNode="{ id, data }">
-        <flow-graph-node :data="data" @select="handleSelectConfigurationNode(id)" @open-form="emit('openConfigurationForm')" />
+      <template #node-flowNode="{ data }">
+        <flow-graph-node :data="data" @open-form="emit('openConfigurationForm')" />
       </template>
-      <template #node-routingHub="{ id, data }">
-        <flow-routing-hub :data="data" @select="handleSelectConfigurationNode(id)" />
+      <template #node-routingHub="{ data }">
+        <flow-routing-hub :data="data" />
       </template>
       <template #edge-treeEdge="edgeProps">
         <flow-tree-edge v-bind="edgeProps" @select-branch="handleSelectBranch" />
@@ -754,11 +783,7 @@ onBeforeUnmount(() => {
   cursor: grabbing;
 }
 
-.flow-graph-canvas--configuration :deep(.vue-flow__node) {
-  pointer-events: auto;
-}
-
-.flow-graph-canvas--configuration :deep(.vue-flow__node-flowNode) {
+.flow-graph-canvas--configuration :deep(.vue-flow__node.selectable) {
   cursor: pointer;
 }
 

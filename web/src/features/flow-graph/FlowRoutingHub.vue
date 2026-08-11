@@ -5,7 +5,6 @@ import { NTag } from 'naive-ui'
 import type { FlowNodeData } from './types'
 
 defineProps<{ data?: FlowNodeData }>()
-const emit = defineEmits<{ select: [] }>()
 </script>
 
 <template>
@@ -26,7 +25,6 @@ const emit = defineEmits<{ select: [] }>()
       :disabled="!data.configurationInteractive"
       :aria-pressed="data.configurationSelected"
       :title="data.configurationInteractive ? `${data.name}，${data.configurationStatusName}` : `${data.name}，不在当前路径`"
-      @click="emit('select')"
     >
       <span>{{ data.name }}</span>
       <n-tag size="tiny" :bordered="false">{{ data.configurationInteractive ? data.configurationStatusName : '路径外上下文' }}</n-tag>
@@ -66,7 +64,7 @@ const emit = defineEmits<{ select: [] }>()
   pointer-events: all;
 }
 
-.flow-routing-hub__configuration:hover,
+.flow-routing-hub__configuration:hover:not(:disabled),
 .flow-routing-hub__configuration:focus-visible,
 .flow-routing-hub__configuration--selected {
   border-color: var(--flow-direction-color);

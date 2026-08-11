@@ -144,9 +144,10 @@ defineExpose({ setGeneratedData, restoreSaved, getValues, validateAndGetValues, 
 
 <style scoped>
 .form-runtime-frame {
+  display: block;
   width: 100%;
   height: 100%;
-  min-height: 520px;
+  min-height: 0;
   background: var(--path-config-card-color);
   border: 0;
 }

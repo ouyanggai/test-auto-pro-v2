@@ -21,6 +21,7 @@ import {
   nextFormGenerationSeed,
   pathConfigurationNodesByGraphID,
   projectPathConfigurationNodeStates,
+  resolveConfirmedNodeSaveDestination,
 } from '../features/path-configuration/logic'
 import {
   fetchPathConfiguration,
@@ -98,7 +99,6 @@ const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(
 const selectedNodeDirty = computed(() => hasCurrentNodeDraftChanges(selectedNode.value, draft.value))
 const nodeSaveDisabled = computed(() => loading.value || savingNode.value || !selectedNodeRequirement.value.complete
   || (selectedNode.value?.status === 'configured' && !selectedNodeDirty.value))
-const nextUnconfiguredPath = computed(() => executionPaths.value.find(path => path.id !== pathID.value && path.configurationStatus !== 'configured') ?? null)
 const runtimeBlocked = computed(() => Boolean(configuration.value?.form.unsupported.length || runtimeUnsupported.value.length))
 
 // publicPageError 把读取链路异常收敛为不含内部标识的稳定页面错误。
@@ -199,6 +199,33 @@ async function selectNextConfigurationNode() {
   await focusSelectedNode()
 }
 
+// finishConfirmedNodeSave 让正常响应与 GET 对账共用同一推进规则，绝不把“下一节点”解释为另一条路径。
+async function finishConfirmedNodeSave() {
+  const current = configuration.value
+  if (!current) return
+  nodeSaveKey = crypto.randomUUID()
+  nodeSaveError.value = ''
+  nodeSaveDetails.value = []
+  const destination = resolveConfirmedNodeSaveDestination(
+    current.nextNodeKey,
+    graphNodeIDByConfigurationKey.value,
+    current.form.status,
+  )
+  if (destination.kind === 'next-node') {
+    // 推进前清除上一节点成功态，侧栏立即成为下一节点的真实草稿和要求。
+    nodeSavedSuccessfully.value = false
+    selectedNodeID.value = destination.nodeID
+    await focusSelectedNode()
+    return
+  }
+  if (destination.kind === 'unmapped') {
+    nodeSavedSuccessfully.value = false
+    nodeSaveError.value = '路径节点配置与当前流程结构不一致，请重新读取'
+    return
+  }
+  nodeSavedSuccessfully.value = true
+}
+
 // updateActionValue 更新当前节点合法动作草稿。
 function updateActionValue(action: PathConfigAction, value: string) {
   draft.value.actions[action.key] = value
@@ -225,16 +252,14 @@ async function saveCurrentNode() {
   try {
     await savePathConfigurationNode(planID.value, pathID.value, node.key, previousRevision, buildPathConfigNodeSavePayload(node, draft.value), nodeSaveKey)
     await reloadConfiguration()
-    nodeSaveKey = crypto.randomUUID()
-    nodeSavedSuccessfully.value = true
+    await finishConfirmedNodeSave()
   }
   catch (caught) {
     try {
       const reconciled = await reloadConfiguration()
       const reconciledNode = reconciled.groups.flatMap(group => group.nodes).find(candidate => candidate.key === node.key)
       if (reconciled.nodeRevision > previousRevision && reconciledNode?.status === 'configured') {
-        nodeSaveKey = crypto.randomUUID()
-        nodeSavedSuccessfully.value = true
+        await finishConfirmedNodeSave()
         return
       }
     }
@@ -366,11 +391,6 @@ function backToPlan() {
   router.push('/plans/' + planID.value + '/paths')
 }
 
-// configureNextPath 在确认当前结果后显式进入下一条，页面不会自动跳走。
-function configureNextPath() {
-  if (nextUnconfiguredPath.value) router.push(`/plans/${planID.value}/paths/${nextUnconfiguredPath.value.id}/configure`)
-}
-
 watch([planID, pathID], () => { void loadPage() })
 onBeforeUnmount(() => {
   loadVersion++
@@ -383,7 +403,11 @@ void loadPage()
 </script>
 
 <template>
-  <main class="path-configuration-page" :style="pageThemeStyle">
+  <main
+    class="path-configuration-page"
+    :class="{ 'path-configuration-page--form': workspace === 'form' }"
+    :style="pageThemeStyle"
+  >
     <header class="path-configuration-page__header">
       <div class="path-configuration-page__identity">
         <n-button text type="primary" @click="backToPlan">返回计划详情</n-button>
@@ -438,12 +462,12 @@ void loadPage()
             :save-error="nodeSaveError"
             :save-details="nodeSaveDetails"
             :saved-successfully="nodeSavedSuccessfully"
-            :has-next-path="Boolean(nextUnconfiguredPath)"
+            :form-complete="configuration.form.status === 'valid'"
             @update-action="updateActionValue"
             @update-person="updatePersonValue"
             @save="saveCurrentNode"
             @back-to-plan="backToPlan"
-            @configure-next="configureNextPath"
+            @open-form="openFormWorkspace"
           />
         </template>
       </flow-graph-canvas>
@@ -465,13 +489,15 @@ void loadPage()
             </template>
           </div>
         </header>
-        <n-alert v-if="formError" type="error" :show-icon="false">{{ formError }}</n-alert>
-        <n-alert v-else-if="formSavedSuccessfully" type="success" :show-icon="false">
-          表单数据已保存并完成服务端复验。节点仍需逐个完成，整条路径不会被静默标记。
-        </n-alert>
-        <n-alert v-if="runtimeBlocked" type="warning" :show-icon="false">
-          {{ [...configuration.form.unsupported, ...runtimeUnsupported].join('；') }}
-        </n-alert>
+        <div v-if="formError || formSavedSuccessfully || runtimeBlocked" class="path-configuration-page__form-feedback">
+          <n-alert v-if="formError" type="error" :show-icon="false" size="small">{{ formError }}</n-alert>
+          <n-alert v-else-if="formSavedSuccessfully" type="success" :show-icon="false" size="small">
+            表单数据已保存并完成服务端复验。节点仍需逐个完成，整条路径不会被静默标记。
+          </n-alert>
+          <n-alert v-if="runtimeBlocked" type="warning" :show-icon="false" size="small">
+            {{ [...configuration.form.unsupported, ...runtimeUnsupported].join('；') }}
+          </n-alert>
+        </div>
         <form-runtime-frame
           v-if="runtimeSession"
           ref="formFrame"
@@ -532,24 +558,49 @@ void loadPage()
 .path-configuration-page__error { margin: 20px; }
 
 .path-configuration-page__form-workspace {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 14px;
+  overflow: hidden;
+  background: var(--path-config-card-color);
 }
 
-.path-configuration-page__form-toolbar { justify-content: space-between; gap: 20px; }
+.path-configuration-page__form-toolbar {
+  flex: 0 0 auto;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 54px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--path-config-border-color);
+}
 .path-configuration-page__form-toolbar h2 { margin: 0 0 4px; font-size: 18px; }
 .path-configuration-page__form-toolbar p { margin: 0; color: var(--path-config-text-secondary-color); font-size: 12px; }
 .path-configuration-page__form-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.path-configuration-page__form-frame { min-height: 0; overflow: hidden; border: 1px solid var(--path-config-border-color); }
+.path-configuration-page__form-feedback {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  max-height: 112px;
+  padding: 8px 12px 0;
+  overflow-y: auto;
+}
+.path-configuration-page__form-frame {
+  flex: 1 1 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 0;
+}
 
 @media (max-width: 900px) {
   .path-configuration-page { height: auto; min-height: calc(100dvh - 120px); overflow: visible; }
   .path-configuration-page__header, .path-configuration-page__form-toolbar { align-items: flex-start; flex-direction: column; }
   .path-configuration-page__progress { flex-wrap: wrap; justify-content: flex-start; }
   .path-configuration-page__stage { min-height: 640px; }
+  .path-configuration-page__form-workspace { min-height: 640px; }
+  .path-configuration-page__form-toolbar { flex: 0 0 auto; }
 }
 </style>

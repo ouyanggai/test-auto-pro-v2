@@ -20,6 +20,7 @@ import {
   parsePathConfigValue,
   projectPathConfigurationNodeStates,
   reconcilePathConfigDraft,
+  resolveConfirmedNodeSaveDestination,
 } from '../../../web/src/features/path-configuration/logic.ts'
 
 const configuration = {
@@ -183,6 +184,7 @@ test('配置节点不透明键与真实图节点稳定绑定且不暴露节点 I
     nodes: [
       { id: 'start', name: '发起', type: 'start', typeName: '发起' },
       { id: 'approve-a', name: '财务审批', type: 'common', typeName: '审批' },
+      { id: 'outside', name: '路径外节点', type: 'common', typeName: '审批' },
     ],
     edges: [{ id: 'edge-1', source: 'start', target: 'approve-a', kind: 'sequence', label: '', branchId: '' }],
   }
@@ -204,6 +206,8 @@ test('配置节点不透明键与真实图节点稳定绑定且不暴露节点 I
   assert.equal(states.start.interactive, true)
   assert.equal(states['approve-a'].status, 'configured')
   assert.equal(states['approve-a'].selected, true)
+  assert.equal(states.outside.interactive, false)
+  assert.equal(states.outside.selected, false)
   const rebound = pathConfigurationNodesByGraphID(configuration, bindings.graphNodeIDByKey)
   assert.equal(rebound.get('start').key, 'e6900f7404ce5bff4c1835f949b38c86')
 
@@ -213,6 +217,16 @@ test('配置节点不透明键与真实图节点稳定绑定且不暴露节点 I
     () => bindPathConfigurationNodes(graph, foreignConfiguration),
     /路径节点配置与当前流程结构不一致/,
   )
+})
+
+test('节点保存确认后只推进同一路径节点并正确分流表单完成态', () => {
+  const bindings = new Map([['next-key', 'approve-next']])
+  assert.deepEqual(resolveConfirmedNodeSaveDestination('next-key', bindings, 'empty'), {
+    kind: 'next-node', nodeID: 'approve-next',
+  })
+  assert.deepEqual(resolveConfirmedNodeSaveDestination('', bindings, 'draft'), { kind: 'form' })
+  assert.deepEqual(resolveConfirmedNodeSaveDestination('', bindings, 'valid'), { kind: 'complete' })
+  assert.deepEqual(resolveConfirmedNodeSaveDestination('removed-key', bindings, 'valid'), { kind: 'unmapped' })
 })
 
 test('目标结构刷新只保留仍可对应字段动作和合法人员候选', () => {

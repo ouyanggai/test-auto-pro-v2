@@ -6,7 +6,7 @@ import { computed } from 'vue'
 import type { FlowNodeData } from './types'
 
 const props = defineProps<{ data: FlowNodeData }>()
-const emit = defineEmits<{ select: [], openForm: [] }>()
+const emit = defineEmits<{ openForm: [] }>()
 
 const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>(() => {
   switch (props.data.type) {
@@ -34,7 +34,6 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       :disabled="!data.configurationInteractive"
       :aria-pressed="data.configurationSelected"
       :title="data.configurationInteractive ? `${data.name}，${data.configurationStatusName}` : `${data.name}，不在当前路径`"
-      @click="emit('select')"
     >
       <handle type="target" :position="Position.Top" :connectable="false" />
       <span class="flow-node__type">{{ data.typeName }}</span>
@@ -95,7 +94,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
 }
 
-.flow-node--configuration:hover,
+.flow-node--configuration:hover:not(:disabled),
 .flow-node--configuration:focus-visible,
 .flow-node--configuration-selected {
   border-color: var(--flow-direction-color);
