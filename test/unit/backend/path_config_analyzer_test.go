@@ -2,6 +2,7 @@ package backend_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -526,31 +527,27 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 	}
 	actionManual := model.PathConfigPersonStrategyInput{Key: actionPerson.Key, Strategy: "manual", Seed: 7, Selected: []string{actionPerson.Options[0].Value, actionPerson.Options[1].Value}}
 	transferManual := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{transferPerson.Options[0].Value, transferPerson.Options[1].Value}}
-	actions := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
-		{Kind: "add_sign", Person: &actionManual},
-		{Kind: "transfer_approver", Person: &transferManual},
-	}}}
+	actions := model.PathConfigActionPlanInput{
+		AddSignNodes: []model.PathConfigAddSignNodeInput{{Person: actionManual}},
+		Result:       model.PathConfigActionStepInput{Kind: "transfer_approver", Person: &transferManual},
+	}
 	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 2 {
 		t.Fatalf("加签节点或移交人员策略没有按各自动作目录保存：count=%d reason=%s", count, reason)
 	}
 	transferAll := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "all", Seed: 9, Selected: []string{transferPerson.Options[0].Value}}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "transfer_approver", Person: &transferAll}}}}); reason != "" {
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "transfer_approver", Person: &transferAll}}); reason != "" {
 		t.Fatalf("移交全选策略被错误拒绝：%s", reason)
 	}
 	transferEmpty := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{}}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "transfer_approver", Person: &transferEmpty}}}}); !strings.Contains(reason, "人数不足") {
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "transfer_approver", Person: &transferEmpty}}); !strings.Contains(reason, "人数不足") {
 		t.Fatalf("移交空选没有被拒绝：%s", reason)
 	}
 	transferForged := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{transferPerson.Options[0].Value, "forged-token"}}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "transfer_approver", Person: &transferForged}}}}); !strings.Contains(reason, "不属于") {
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "transfer_approver", Person: &transferForged}}); !strings.Contains(reason, "不属于") {
 		t.Fatalf("移交伪造候选没有被拒绝：%s", reason)
 	}
-	transferThenApprove := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
-		{Kind: "transfer_approver", Person: &transferManual},
-		{Kind: "approve_pass", Opinion: "同意"},
-	}}}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, transferThenApprove); !strings.Contains(reason, "不能继续追加") {
-		t.Fatalf("移交后的追加动作没有被拒绝：%s", reason)
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "add_sign", Person: &actionManual}}); !strings.Contains(reason, "处理结果") {
+		t.Fatalf("加签节点被伪造成处理结果时没有被拒绝：%s", reason)
 	}
 }
 
@@ -628,8 +625,8 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 		t.Fatalf("动作计划投影失败：%v", err)
 	}
 	approval := findConfigNode(configuration.Groups, "财务审批")
-	if approval == nil || len(approval.ActionPlan.Arrivals) != 1 || approval.ActionPlan.Arrivals[0].Steps[0].Kind != "reject_no_pass" {
-		t.Fatalf("旧 disagree 没有准确迁移为首访不同意：%+v", approval)
+	if approval == nil || approval.ActionPlan.Result.Kind != "reject_no_pass" || len(approval.ActionPlan.AddSignNodes) != 0 {
+		t.Fatalf("旧 disagree 没有准确迁移为不同意处理结果：%+v", approval)
 	}
 	wantKinds := map[string]bool{"approve_pass": true, "reject_no_pass": true, "draft_save": true}
 	for _, item := range approval.ActionPlan.Catalog {
@@ -647,48 +644,33 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 		t.Fatalf("第二审批没有自动绑定直接上一审批：%+v", secondApproval.ActionPlan)
 	}
 	nodeTarget := validation.NodeTokens[secondApproval.Key]
-	input := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
-		{Kind: "draft_save"},
-	}}}
+	input := model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "draft_save"}}
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, input); reason != "" {
 		t.Fatalf("合法暂存动作被拒绝：%s", reason)
 	}
-	input = []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}, {Kind: "draft_save"}}}}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, input); !strings.Contains(reason, "不能继续追加") {
-		t.Fatalf("终止动作后的追加动作没有被拒绝：%s", reason)
-	}
 	rollbackToken := secondApproval.ActionPlan.RollbackTargets[0].Value
-	encoded, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "rollback_previous", Target: rollbackToken, Opinion: "不应保存"}}}})
+	encoded, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "rollback_previous", Target: rollbackToken, Opinion: "不应保存"}})
 	if reason != "" || strings.Contains(encoded, "不应保存") {
 		t.Fatalf("自动回退目标或处理意见清空不正确：encoded=%s reason=%s", encoded, reason)
 	}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(validation.NodeTokens[approval.Key], []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "rollback_previous", Target: rollbackToken}}}}); !strings.Contains(reason, "不允许") {
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(validation.NodeTokens[approval.Key], model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "rollback_previous", Target: rollbackToken}}); !strings.Contains(reason, "允许范围") {
 		t.Fatalf("第一审批错误接受回退：%s", reason)
-	}
-	tooMany := make([]model.PathConfigArrivalInput, 11)
-	for index := range tooMany {
-		tooMany[index] = model.PathConfigArrivalInput{Visit: index + 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}}
-	}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, tooMany); !strings.Contains(reason, "10") {
-		t.Fatalf("超过十次终止动作没有被拒绝：%s", reason)
-	}
-	twice := []model.PathConfigArrivalInput{
-		{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
-		{Visit: 2, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
-	}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, twice); !strings.Contains(reason, "同意最多配置 1 次") {
-		t.Fatalf("重复同意没有被权威单次规则拒绝：%s", reason)
-	}
-	mixedDecision := []model.PathConfigArrivalInput{
-		{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
-		{Visit: 2, Steps: []model.PathConfigActionStepInput{{Kind: "reject_no_pass"}}},
-	}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, mixedDecision); !strings.Contains(reason, "只能选择一种处理结果") {
-		t.Fatalf("替代流转与默认同意同时保存没有被拒绝：%s", reason)
 	}
 	secondAddSign := findActionCatalogItem(t, secondApproval.ActionPlan.Catalog, "add_sign")
 	if !secondAddSign.Enabled || secondAddSign.Label != "加签节点" || secondAddSign.Person == nil || secondAddSign.Person.Title != "加签节点处理人" {
 		t.Fatalf("第二审批节点没有获得独立加签节点处理人策略：%+v", secondAddSign)
+	}
+	addSignPerson := model.PathConfigPersonStrategyInput{Key: secondAddSign.Person.Key, Strategy: "manual", Seed: 11, Selected: []string{secondAddSign.Person.Options[0].Value}}
+	tooMany := make([]model.PathConfigAddSignNodeInput, 11)
+	for index := range tooMany {
+		tooMany[index] = model.PathConfigAddSignNodeInput{Person: addSignPerson}
+	}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{AddSignNodes: tooMany, Result: model.PathConfigActionStepInput{Kind: "approve_pass"}}); !strings.Contains(reason, "上限") {
+		t.Fatalf("超过十个加签节点没有被拒绝：%s", reason)
+	}
+	twoAddSigns := model.PathConfigActionPlanInput{AddSignNodes: []model.PathConfigAddSignNodeInput{{Person: addSignPerson}, {Person: addSignPerson}}, Result: model.PathConfigActionStepInput{Kind: "approve_pass"}}
+	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, twoAddSigns); reason != "" || count != 3 {
+		t.Fatalf("两个独立加签节点没有在唯一同意前保存：count=%d reason=%s", count, reason)
 	}
 }
 
@@ -707,16 +689,12 @@ func TestPathConfigAnalyzerLimitsSubmitToOne(t *testing.T) {
 	}
 	start := findConfigNode(configuration.Groups, "发起")
 	submit := findActionCatalogItem(t, start.ActionPlan.Catalog, "submit")
-	if !submit.Enabled || submit.MaxCount != 1 {
-		t.Fatalf("提交目录没有固定单次上限：%+v", submit)
+	if !submit.Enabled || start.ActionPlan.Result.Kind != "submit" || len(start.ActionPlan.AddSignNodes) != 0 {
+		t.Fatalf("发起节点没有投影唯一提交结果：item=%+v plan=%+v", submit, start.ActionPlan)
 	}
 	targetPlan := validation.NodeTokens[start.Key]
-	twice := []model.PathConfigArrivalInput{
-		{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "submit"}}},
-		{Visit: 2, Steps: []model.PathConfigActionStepInput{{Kind: "submit"}}},
-	}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, twice); !strings.Contains(reason, "提交最多配置 1 次") {
-		t.Fatalf("多次提交保存没有被服务端拒绝：%s", reason)
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, model.PathConfigActionPlanInput{AddSignNodes: []model.PathConfigAddSignNodeInput{{}}, Result: model.PathConfigActionStepInput{Kind: "submit"}}); !strings.Contains(reason, "只能提交") {
+		t.Fatalf("提交之外追加节点没有被服务端拒绝：%s", reason)
 	}
 
 	stored := map[string]string{
@@ -727,13 +705,13 @@ func TestPathConfigAnalyzerLimitsSubmitToOne(t *testing.T) {
 		t.Fatalf("投影错误存量提交失败：%v", err)
 	}
 	storedStart := findConfigNode(projected.Groups, "发起")
-	if storedStart == nil || !storedStart.ActionPlan.Affected || !strings.Contains(storedStart.ActionPlan.Note, "提交最多配置 1 次") || len(storedStart.ActionPlan.Arrivals) != 2 {
-		t.Fatalf("错误存量提交没有完整保留并标记重新确认：%+v", storedStart)
+	if storedStart == nil || !storedStart.ActionPlan.Affected || !strings.Contains(storedStart.ActionPlan.Note, "重复处理") || storedStart.ActionPlan.Result.Kind != "submit" {
+		t.Fatalf("错误存量提交没有标记重新确认：%+v", storedStart)
 	}
 }
 
-// TestPathConfigAnalyzerMarksRepeatedApprovalStoredPlanAffected 验证存量重复同意完整保留并标记重新确认。
-func TestPathConfigAnalyzerMarksRepeatedApprovalStoredPlanAffected(t *testing.T) {
+// TestPathConfigAnalyzerMarksAmbiguousStoredPlanAffected 验证存量重复同意或多处理结果不能静默投影为有效配置。
+func TestPathConfigAnalyzerMarksAmbiguousStoredPlanAffected(t *testing.T) {
 	tree := pathConfigTree()
 	graph := requirementGraph(t, tree)
 	path := model.ExecutionPath{Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
@@ -741,16 +719,26 @@ func TestPathConfigAnalyzerMarksRepeatedApprovalStoredPlanAffected(t *testing.T)
 	if err != nil {
 		t.Fatalf("准备存量同意路径失败：%v", err)
 	}
-	stored := map[string]string{
-		analyzer.PathConfigActionPlanStorageKey("approve-a"): `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass"}]},{"visit":2,"steps":[{"kind":"approve_pass"}]}]}`,
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "重复同意", raw: `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass"}]},{"visit":2,"steps":[{"kind":"approve_pass"}]}]}`},
+		{name: "同一次处理包含多个结果", raw: `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass"},{"kind":"reject_no_pass"}]}]}`},
+		{name: "结果后追加加签", raw: `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass"},{"kind":"add_sign"}]}]}`},
 	}
-	projected, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, stored, true)
-	if err != nil {
-		t.Fatalf("投影重复同意存量失败：%v", err)
-	}
-	approval := findConfigNode(projected.Groups, "财务审批")
-	if approval == nil || !approval.ActionPlan.Affected || !strings.Contains(approval.ActionPlan.Note, "同意最多配置 1 次") || len(approval.ActionPlan.Arrivals) != 2 {
-		t.Fatalf("重复同意存量没有完整保留并标记重新确认：%+v", approval)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			stored := map[string]string{analyzer.PathConfigActionPlanStorageKey("approve-a"): testCase.raw}
+			projected, _, analyzeErr := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, stored, true)
+			if analyzeErr != nil {
+				t.Fatalf("投影歧义存量失败：%v", analyzeErr)
+			}
+			approval := findConfigNode(projected.Groups, "财务审批")
+			if approval == nil || !approval.ActionPlan.Affected || approval.ActionPlan.Result.Kind != "approve_pass" || approval.ActionPlan.Note == "" {
+				t.Fatalf("歧义存量没有标记重新确认：%+v", approval)
+			}
+		})
 	}
 }
 
@@ -785,23 +773,19 @@ func TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings(t *testing.T) 
 // TestPathConfigAnalyzerCountsWholePathActionLimit 验证整条路径超过一百个动作时统一拒绝。
 func TestPathConfigAnalyzerCountsWholePathActionLimit(t *testing.T) {
 	targetPlan := analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"draft_save": true}, RollbackTargets: map[string]string{}}
-	arrivals := make([]model.PathConfigArrivalInput, 10)
-	for index := range arrivals {
-		arrivals[index] = model.PathConfigArrivalInput{Visit: index + 1, Steps: []model.PathConfigActionStepInput{{Kind: "draft_save"}}}
-	}
-	encoded, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, arrivals)
+	encoded, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "draft_save"}})
 	if reason != "" {
 		t.Fatalf("准备动作上限样本失败：%s", reason)
 	}
 	values := make(map[string]string)
-	for index := 0; index < 10; index++ {
-		values[analyzer.PathConfigActionPlanStorageKey(string(rune('a'+index)))] = encoded
+	for index := 0; index < 100; index++ {
+		values[analyzer.PathConfigActionPlanStorageKey(fmt.Sprintf("node-%03d", index))] = encoded
 	}
 	if count, valid := analyzer.CountStoredPathConfigActionSteps(values); !valid || count != 100 {
 		t.Fatalf("一百步边界计算错误：count=%d valid=%v", count, valid)
 	}
 	values[analyzer.PathConfigActionPlanStorageKey("overflow")] = encoded
-	if count, valid := analyzer.CountStoredPathConfigActionSteps(values); valid || count != 110 {
+	if count, valid := analyzer.CountStoredPathConfigActionSteps(values); valid || count != 101 {
 		t.Fatalf("超过一百步没有被拒绝：count=%d valid=%v", count, valid)
 	}
 }

@@ -92,10 +92,10 @@ type PathFormSaveInput struct {
 
 // PathNodeSaveInput 是单个节点人员与动作的最小回写体。
 type PathNodeSaveInput struct {
-	Revision uint64                          `json:"revision"`
-	Persons  []PathConfigPersonStrategyInput `json:"persons"`
-	Arrivals []PathConfigArrivalInput        `json:"arrivals"`
-	Actions  []PathConfigActionValue         `json:"actions,omitempty"`
+	Revision   uint64                          `json:"revision"`
+	Persons    []PathConfigPersonStrategyInput `json:"persons"`
+	ActionPlan PathConfigActionPlanInput       `json:"actionPlan"`
+	Actions    []PathConfigActionValue         `json:"actions,omitempty"`
 }
 
 // PathFormRuntimeSession 是 iframe 当前会话使用的短期目标读取上下文；绝不持久化。
@@ -227,13 +227,12 @@ type PathConfigActionOption struct {
 	Label string `json:"label"`
 }
 
-// PathConfigActionPlan 是节点有序动作列表及其兼容存储投影。
+// PathConfigActionPlan 是节点配置期可操作的加签节点列表与唯一处理结果。
 type PathConfigActionPlan struct {
 	Catalog         []PathConfigActionCatalogItem `json:"catalog"`
 	RollbackTargets []PathConfigActionOption      `json:"rollbackTargets"`
-	Arrivals        []PathConfigArrivalPlan       `json:"arrivals"`
-	MaxArrivals     int                           `json:"maxArrivals"`
-	MaxPathSteps    int                           `json:"maxPathSteps"`
+	AddSignNodes    []PathConfigAddSignNode       `json:"addSignNodes"`
+	Result          PathConfigActionStep          `json:"result"`
 	Affected        bool                          `json:"affected"`
 	Note            string                        `json:"note"`
 }
@@ -245,20 +244,13 @@ type PathConfigActionCatalogItem struct {
 	Description    string            `json:"description"`
 	Enabled        bool              `json:"enabled"`
 	DisabledReason string            `json:"disabledReason"`
-	MaxCount       int               `json:"maxCount"`
 	AllowsOpinion  bool              `json:"allowsOpinion"`
 	RequiresTarget bool              `json:"requiresTarget"`
 	RequiresPerson bool              `json:"requiresPerson"`
 	Person         *PathConfigPerson `json:"person,omitempty"`
 }
 
-// PathConfigArrivalPlan 表示兼容存储中的一组有序动作。
-type PathConfigArrivalPlan struct {
-	Visit int                    `json:"visit"`
-	Steps []PathConfigActionStep `json:"steps"`
-}
-
-// PathConfigActionStep 是公开动作项；目标节点与人员均使用不透明键。
+// PathConfigActionStep 是唯一处理结果；目标节点与人员均使用不透明键。
 type PathConfigActionStep struct {
 	Kind    string                         `json:"kind"`
 	Label   string                         `json:"label"`
@@ -267,13 +259,23 @@ type PathConfigActionStep struct {
 	Person  *PathConfigPersonStrategyInput `json:"person,omitempty"`
 }
 
-// PathConfigArrivalInput 是浏览器保存兼容动作分组的最小回写体。
-type PathConfigArrivalInput struct {
-	Visit int                         `json:"visit"`
-	Steps []PathConfigActionStepInput `json:"steps"`
+// PathConfigAddSignNode 是一个独立的新增加签审批节点及其处理人策略。
+type PathConfigAddSignNode struct {
+	Person PathConfigPersonStrategyInput `json:"person"`
 }
 
-// PathConfigActionStepInput 只允许稳定动作枚举、不透明回退目标和受约束人员策略。
+// PathConfigActionPlanInput 是浏览器保存的语义化动作配置，不暴露内部兼容分组。
+type PathConfigActionPlanInput struct {
+	AddSignNodes []PathConfigAddSignNodeInput `json:"addSignNodes"`
+	Result       PathConfigActionStepInput    `json:"result"`
+}
+
+// PathConfigAddSignNodeInput 是一个待保存的加签节点人员策略。
+type PathConfigAddSignNodeInput struct {
+	Person PathConfigPersonStrategyInput `json:"person"`
+}
+
+// PathConfigActionStepInput 只允许唯一处理结果、不透明回退目标和受约束移交人员策略。
 type PathConfigActionStepInput struct {
 	Kind    string                         `json:"kind"`
 	Opinion string                         `json:"opinion"`

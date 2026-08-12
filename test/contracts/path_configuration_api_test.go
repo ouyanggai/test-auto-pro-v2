@@ -23,7 +23,7 @@ type stubPathConfigurationService struct {
 	fields        []model.PathConfigFieldValue
 	actions       []model.PathConfigActionValue
 	persons       []model.PathConfigPersonStrategyInput
-	arrivals      []model.PathConfigArrivalInput
+	actionPlan    model.PathConfigActionPlanInput
 	nodeKey       string
 	generateSeed  int64
 	formInput     model.PathFormSaveInput
@@ -47,7 +47,7 @@ func (s *stubPathConfigurationService) Save(_ context.Context, planID, pathID ui
 // SaveNode 返回契约测试预设的逐节点保存结果。
 func (s *stubPathConfigurationService) SaveNode(_ context.Context, planID, pathID uint64, nodeKey, key string, input model.PathNodeSaveInput) (model.PathConfigSaveResult, error) {
 	s.planID, s.pathID, s.nodeKey, s.key, s.revision, s.actions = planID, pathID, nodeKey, key, input.Revision, input.Actions
-	s.persons, s.arrivals = input.Persons, input.Arrivals
+	s.persons, s.actionPlan = input.Persons, input.ActionPlan
 	return s.result, s.err
 }
 
@@ -72,10 +72,10 @@ func TestPathConfigurationAPIWorkspaceContracts(t *testing.T) {
 	handler := newConfigurationHandler(stub)
 
 	node := httptest.NewRecorder()
-	nodeRequest := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/nodes/node-token", strings.NewReader(`{"revision":1,"persons":[{"key":"person-token","strategy":"random","seed":9,"selected":["person-option"]}],"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass","opinion":"同意"}]}]}`))
+	nodeRequest := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/nodes/node-token", strings.NewReader(`{"revision":1,"persons":[{"key":"person-token","strategy":"random","seed":9,"selected":["person-option"]}],"actionPlan":{"addSignNodes":[],"result":{"kind":"approve_pass"}}}`))
 	nodeRequest.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174611")
 	handler.ServeHTTP(node, nodeRequest)
-	if node.Code != http.StatusOK || stub.nodeKey != "node-token" || stub.revision != 1 || len(stub.persons) != 1 || stub.persons[0].Strategy != "random" || len(stub.arrivals) != 1 || stub.arrivals[0].Steps[0].Kind != "approve_pass" || !strings.Contains(node.Body.String(), `"nodeRevision":2`) {
+	if node.Code != http.StatusOK || stub.nodeKey != "node-token" || stub.revision != 1 || len(stub.persons) != 1 || stub.persons[0].Strategy != "random" || stub.actionPlan.Result.Kind != "approve_pass" || len(stub.actionPlan.AddSignNodes) != 0 || !strings.Contains(node.Body.String(), `"nodeRevision":2`) {
 		t.Fatalf("逐节点保存契约不正确：status=%d body=%s stub=%+v", node.Code, node.Body.String(), stub)
 	}
 
@@ -139,7 +139,7 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 					Selected: []string{"opaque-person-option"}, Options: []model.PathConfigPersonOption{{Label: "候选人甲", Value: "opaque-person-option"}},
 				}},
 				Actions:    []model.PathConfigAction{{Key: "opaque-action-key", Kind: "agree_disagree", Label: "处理结果", Current: "agree", Default: "agree", Options: []model.PathConfigActionOption{{Value: "agree", Label: "同意"}, {Value: "disagree", Label: "不同意"}}}},
-				ActionPlan: model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{{Kind: "approve_pass", Label: "同意", MaxCount: 10}}, Arrivals: []model.PathConfigArrivalPlan{{Visit: 1, Steps: []model.PathConfigActionStep{{Kind: "approve_pass", Label: "同意"}}}}, MaxArrivals: 10, MaxPathSteps: 100},
+				ActionPlan: model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{{Kind: "approve_pass", Label: "同意"}}, AddSignNodes: []model.PathConfigAddSignNode{}, Result: model.PathConfigActionStep{Kind: "approve_pass", Label: "同意"}},
 			}}}},
 		},
 		result: model.PathConfigSaveResult{Path: model.PathConfigPath{SequenceNo: 2, Name: "财务路径"}, Revision: 4, Status: "configured"},
@@ -151,15 +151,18 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 		t.Fatalf("配置读取状态不正确：%d %s", get.Code, get.Body.String())
 	}
 	getBody := get.Body.String()
-	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-node-key"`, `"statusName":"已完成"`, `"opaque-field-key"`, `"申请金额"`, `"category":"岗位"`, `"name":"财务主任"`, `"候选人甲"`, `"agree"`, `"approve_pass"`, `"maxCount":10`, `"maxArrivals":10`} {
+	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-node-key"`, `"statusName":"已完成"`, `"opaque-field-key"`, `"申请金额"`, `"category":"岗位"`, `"name":"财务主任"`, `"候选人甲"`, `"agree"`, `"approve_pass"`, `"addSignNodes":[]`, `"result":{"kind":"approve_pass"`} {
 		if !strings.Contains(getBody, want) {
 			t.Fatalf("配置读取响应缺少 %s：%s", want, getBody)
 		}
 	}
-	for _, forbidden := range []string{"candidate-internal-id", "englishName", "nodeId", "branchId", "flowProxyId", "formTemplateId", "sid", "password", "templateData", "formDataMongoVo"} {
+	for _, forbidden := range []string{"candidate-internal-id", "englishName", "nodeId", "branchId", "flowProxyId", "formTemplateId", "sid", "password", "templateData", "formDataMongoVo", `"arrivals"`, `"maxArrivals"`, `"maxPathSteps"`} {
 		if strings.Contains(getBody, forbidden) {
 			t.Fatalf("配置读取响应泄露禁止字段 %s：%s", forbidden, getBody)
 		}
+	}
+	if strings.Contains(getBody, `"label":"同意","description":"","enabled":false,"disabledReason":"","maxCount"`) {
+		t.Fatalf("动作目录仍公开内部次数上限：%s", getBody)
 	}
 
 	put := httptest.NewRecorder()

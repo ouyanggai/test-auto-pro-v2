@@ -368,7 +368,7 @@ func validatePathConfigPersonSelection(target analyzer.PathConfigActionTarget, r
 	return string(encoded), ""
 }
 
-// validatePathConfigNodeSubmission 只校验并编码一个节点的人员策略与有序到达动作，不接受跨节点覆盖。
+// validatePathConfigNodeSubmission 只校验并编码一个节点的人员策略、加签节点和唯一处理结果，不接受跨节点覆盖。
 func validatePathConfigNodeSubmission(target analyzer.PathConfigNodeTarget, input model.PathNodeSaveInput) (map[string]string, error) {
 	if len(target.Blockers) > 0 {
 		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点仍有无法安全确认的配置项", Affected: target.Blockers}
@@ -386,7 +386,7 @@ func validatePathConfigNodeSubmission(target analyzer.PathConfigNodeTarget, inpu
 	} else if len(input.Persons) > 0 {
 		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点不允许配置处理人员"}
 	}
-	encoded, _, reason := analyzer.EncodePathConfigActionPlan(target, input.Arrivals)
+	encoded, _, reason := analyzer.EncodePathConfigActionPlan(target, input.ActionPlan)
 	if reason != "" {
 		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作计划不合法", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: target.Name, Reason: reason}}}
 	}

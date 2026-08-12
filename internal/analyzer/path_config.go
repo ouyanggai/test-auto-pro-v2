@@ -73,7 +73,6 @@ type PathConfigNodeTarget struct {
 	Person          *PathConfigPersonTarget
 	ActionPersons   map[string]*PathConfigPersonTarget
 	ActionKinds     map[string]bool
-	ActionMaxCounts map[string]int
 	RollbackTargets map[string]string
 	Blockers        []model.PathConfigAffectedItem
 }

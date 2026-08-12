@@ -79,7 +79,7 @@ func TestPathConfigWorkspaceGeneratesAndPersistsFormSeparately(t *testing.T) {
 				continue
 			}
 			result, saveErr := serviceUnderTest.SaveNode(context.Background(), 7, 32, node.Key, nextWorkspaceSaveKey(configs.saveCalls), model.PathNodeSaveInput{
-				Revision: configs.records[32].NodeRevision, Persons: workspaceNodePersons(node), Arrivals: workspaceNodeArrivals(node),
+				Revision: configs.records[32].NodeRevision, Persons: workspaceNodePersons(node), ActionPlan: workspaceNodeActionPlan(node),
 			})
 			if saveErr != nil {
 				t.Fatalf("逐节点保存失败：node=%s result=%+v err=%v", node.Name, result, saveErr)
@@ -196,7 +196,7 @@ func TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately(t *testing.
 		t.Fatal("缺少发起节点")
 	}
 	if _, err := serviceUnderTest.SaveNode(context.Background(), 7, 32, start.Key, "123e4567-e89b-12d3-a456-426614174851", model.PathNodeSaveInput{
-		Revision: configuration.NodeRevision, Arrivals: workspaceNodeArrivals(*start),
+		Revision: configuration.NodeRevision, ActionPlan: workspaceNodeActionPlan(*start),
 	}); err != nil {
 		t.Fatalf("自定义组件错误阻断节点独立保存：%v", err)
 	}
@@ -244,7 +244,7 @@ func TestPathConfigWorkspaceRejectsRuntimeUnsupportedComponents(t *testing.T) {
 		t.Fatal("未知组件场景缺少发起节点")
 	}
 	if _, err := serviceUnderTest.SaveNode(context.Background(), 7, 32, start.Key, "123e4567-e89b-12d3-a456-426614174853", model.PathNodeSaveInput{
-		Revision: configuration.NodeRevision, Arrivals: workspaceNodeArrivals(*start),
+		Revision: configuration.NodeRevision, ActionPlan: workspaceNodeActionPlan(*start),
 	}); err != nil {
 		t.Fatalf("未知组件错误阻断节点人员动作独立保存：%v", err)
 	}
@@ -257,8 +257,8 @@ func TestPathConfigWorkspaceRejectsRuntimeUnsupportedComponents(t *testing.T) {
 	}
 }
 
-// TestPathConfigWorkspaceSavesPersonStrategyAndOrderedArrivals 验证逐节点保存只合并当前人员策略与有序动作，并在候选变化后权威标记失效。
-func TestPathConfigWorkspaceSavesPersonStrategyAndOrderedArrivals(t *testing.T) {
+// TestPathConfigWorkspaceSavesPersonStrategyAndActionPlan 验证逐节点保存只合并当前人员策略与语义化动作计划，并在候选变化后权威标记失效。
+func TestPathConfigWorkspaceSavesPersonStrategyAndActionPlan(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
 	snapshot := pathConfigWorkspaceSnapshot()
@@ -281,9 +281,9 @@ func TestPathConfigWorkspaceSavesPersonStrategyAndOrderedArrivals(t *testing.T) 
 	}
 	person := approval.Persons[0]
 	input := model.PathNodeSaveInput{
-		Revision: configuration.NodeRevision,
-		Persons:  []model.PathConfigPersonStrategyInput{{Key: person.Key, Strategy: "manual", Seed: 11, Selected: []string{person.Options[0].Value, person.Options[1].Value}}},
-		Arrivals: []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass", Opinion: "同意办理"}}}},
+		Revision:   configuration.NodeRevision,
+		Persons:    []model.PathConfigPersonStrategyInput{{Key: person.Key, Strategy: "manual", Seed: 11, Selected: []string{person.Options[0].Value, person.Options[1].Value}}},
+		ActionPlan: model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "approve_pass", Opinion: "同意办理"}},
 	}
 	result, err := serviceUnderTest.SaveNode(context.Background(), 7, 32, approval.Key, "123e4567-e89b-12d3-a456-426614174880", input)
 	if err != nil || result.NodeRevision != 1 {
@@ -322,8 +322,8 @@ func TestPathConfigWorkspaceRejectsDirectoryResolutionFailure(t *testing.T) {
 	}
 	approval := findConfigNode(configuration.Groups, "财务审批")
 	_, err = serviceUnderTest.SaveNode(context.Background(), 7, 32, approval.Key, "123e4567-e89b-12d3-a456-426614174881", model.PathNodeSaveInput{
-		Revision: configuration.NodeRevision,
-		Arrivals: []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}}},
+		Revision:   configuration.NodeRevision,
+		ActionPlan: model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "approve_pass"}},
 	})
 	if !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
 		t.Fatalf("目录读取失败节点被错误保存：%v", err)
@@ -365,15 +365,14 @@ func workspaceNodePersons(node model.PathConfigNode) []model.PathConfigPersonStr
 	return result
 }
 
-// workspaceNodeArrivals 把公开动作计划转换成新版逐节点保存输入。
-func workspaceNodeArrivals(node model.PathConfigNode) []model.PathConfigArrivalInput {
-	result := make([]model.PathConfigArrivalInput, 0, len(node.ActionPlan.Arrivals))
-	for _, arrival := range node.ActionPlan.Arrivals {
-		input := model.PathConfigArrivalInput{Visit: arrival.Visit, Steps: make([]model.PathConfigActionStepInput, 0, len(arrival.Steps))}
-		for _, step := range arrival.Steps {
-			input.Steps = append(input.Steps, model.PathConfigActionStepInput{Kind: step.Kind, Opinion: step.Opinion, Target: step.Target, Person: step.Person})
-		}
-		result = append(result, input)
+// workspaceNodeActionPlan 把公开加签节点和唯一处理结果转换成逐节点保存输入。
+func workspaceNodeActionPlan(node model.PathConfigNode) model.PathConfigActionPlanInput {
+	result := model.PathConfigActionPlanInput{
+		AddSignNodes: make([]model.PathConfigAddSignNodeInput, 0, len(node.ActionPlan.AddSignNodes)),
+		Result:       model.PathConfigActionStepInput{Kind: node.ActionPlan.Result.Kind, Target: node.ActionPlan.Result.Target, Person: node.ActionPlan.Result.Person},
+	}
+	for _, addSign := range node.ActionPlan.AddSignNodes {
+		result.AddSignNodes = append(result.AddSignNodes, model.PathConfigAddSignNodeInput{Person: addSign.Person})
 	}
 	return result
 }
