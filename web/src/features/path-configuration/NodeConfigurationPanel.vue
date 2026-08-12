@@ -12,16 +12,15 @@ import {
   NSelect,
   NTag,
 } from 'naive-ui'
-import { ArrowDownOutline, ArrowUpOutline, CloseOutline, InformationCircleOutline } from '@vicons/ionicons5'
+import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline, InformationCircleOutline } from '@vicons/ionicons5'
 import type { SelectOption } from 'naive-ui'
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 
-import { canUsePathConfigAction, normalizedPathConfigActionCount, normalizedPersonStrategy, pathConfigActionRowsFromArrivals, pathConfigActionRowsToArrivals, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import { copyPathConfigActionPlan, normalizedPersonStrategy, pathConfigActionPlanInput, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type {
   PathConfigActionCatalogItem,
   PathConfigActionKind,
-  PathConfigActionRow,
-  PathConfigArrivalInput,
+  PathConfigActionPlanInput,
   PathConfigDraft,
   PathConfigNode,
   PathConfigPerson,
@@ -32,7 +31,6 @@ const PERSON_PREVIEW_LIMIT = 3
 const MAX_SAFE_PERSON_SEED = Number.MAX_SAFE_INTEGER
 const personDetailsOpen = ref(false)
 const detailedPerson = ref<PathConfigPerson | null>(null)
-const newActionKind = ref<PathConfigActionKind | null>(null)
 
 const props = defineProps<{
   node: PathConfigNode | null
@@ -49,15 +47,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]
-  updateArrivals: [nodeKey: string, value: PathConfigArrivalInput[]]
+  updateActionPlan: [nodeKey: string, value: PathConfigActionPlanInput]
   save: []
   backToPlan: []
   openForm: []
 }>()
-
-watch(() => props.node?.key, () => {
-  newActionKind.value = null
-})
 
 // personOptions 转为可搜索的 Naive UI 不透明候选，页面不接触目标业务 ID。
 function personOptions(person: PathConfigPerson): SelectOption[] {
@@ -104,18 +98,20 @@ function closePersonDetails() {
   detailedPerson.value = null
 }
 
-const actionRows = computed(() => props.node ? pathConfigActionRowsFromArrivals(props.draft.arrivals[props.node.key] ?? []) : [])
+const actionPlan = computed(() => props.node ? (props.draft.actionPlans[props.node.key] ?? pathConfigActionPlanInput(props.node)) : null)
+const resultKind = computed<PathConfigActionKind>(() => actionPlan.value?.result.kind ?? (props.node?.kind === 'start' ? 'submit' : 'approve_pass'))
 
-// actionOptions 返回完整动作目录，并阻止行内切换绕过当前动作次数上限。
-function actionOptions(rowIndex: number): SelectOption[] {
-  if (!props.node) return []
-  return props.node.actionPlan.catalog.map(item => ({ label: item.label, value: item.kind, disabled: !canUsePathConfigAction(props.node as PathConfigNode, actionRows.value, item.kind, rowIndex) }))
+// resultPerson 返回当前处理结果的人员草稿，模板只通过函数读取以避开空节点切换期。
+function resultPerson(): PathConfigPersonStrategyInput | undefined {
+  return actionPlan.value?.result.person
 }
 
-// addActionOptions 在新增入口展示完整目录；静态不可用或达到次数上限的动作保持可见但禁用。
-function addActionOptions(): SelectOption[] {
+// resultOptions 展示当前节点完整处理结果目录；静态不可用项保留但不能选择。
+function resultOptions(): SelectOption[] {
   if (!props.node) return []
-  return props.node.actionPlan.catalog.map(item => ({ label: item.label, value: item.kind, disabled: !canAddAction(item.kind) }))
+  return props.node.actionPlan.catalog
+    .filter(item => item.kind !== 'add_sign' && (props.node?.kind === 'start' ? item.kind === 'submit' : item.kind !== 'submit'))
+    .map(item => ({ label: item.label, value: item.kind, disabled: !item.enabled }))
 }
 
 // actionDefinition 查找动作参数定义；未知动作不会获得输入控件。
@@ -133,138 +129,83 @@ function requiredActionPerson(kind: PathConfigActionKind): PathConfigPerson {
   return actionPerson(kind) as PathConfigPerson
 }
 
-// emitRows 通过唯一纯函数展开兼容 arrivals，组件只呈现动作、次数和必要参数。
-function emitRows(rows: PathConfigActionRow[]) {
-  if (!props.node) return
-  emit('updateArrivals', props.node.key, pathConfigActionRowsToArrivals(rows, props.node))
-}
-
-// editableRows 复制当前动作行及嵌套人员选择，避免直接修改 Vue 响应式草稿。
-function editableRows(): PathConfigActionRow[] {
-  return actionRows.value.map(row => ({ ...row, person: row.person ? { ...row.person, selected: [...row.person.selected] } : undefined }))
-}
-
-// configuredActionCount 汇总当前动作已配置次数，供信息弹层解释动态上限。
-function configuredActionCount(kind: PathConfigActionKind): number {
-  return actionRows.value.reduce((total, row) => row.kind === kind ? total + row.count : total, 0)
-}
-
-// actionRuleReason 返回静态禁用或当前配置已达上限的集中说明，行内不再重复铺开。
+// actionRuleReason 返回静态禁用原因，运行态条件只保留在集中说明中。
 function actionRuleReason(item: PathConfigActionCatalogItem): string {
-  if (!item.enabled) return item.disabledReason
-  if (configuredActionCount(item.kind) >= item.maxCount) return `已达到当前配置上限（最多 ${item.maxCount} 次）`
-  return ''
+  return item.enabled ? '' : item.disabledReason
 }
 
-// actionRuleStatus 为信息弹层提供简短状态，达到配置上限与静态不可用分开表达。
+// actionRuleStatus 为信息弹层提供简短静态状态。
 function actionRuleStatus(item: PathConfigActionCatalogItem): string {
-  if (!item.enabled) return '不可用'
-  return configuredActionCount(item.kind) >= item.maxCount ? '已达上限' : '可用'
+  return item.enabled ? '可用' : '不可用'
 }
 
-// canAddAction 同时执行单动作、当前任务结束动作和整条路径三层上限的即时门禁。
-function canAddAction(kind: PathConfigActionKind): boolean {
-  if (!props.node || !canUsePathConfigAction(props.node, actionRows.value, kind)) return false
-  if (totalActionSteps() >= props.node.actionPlan.maxPathSteps) return false
-  return !terminalAction(kind) || currentTerminalActionCount() < props.node.actionPlan.maxArrivals
+// emitPlan 把语义化动作草稿复制成普通对象后交给父页面，避免直接修改响应式值。
+function emitPlan(next: PathConfigActionPlanInput) {
+  if (!props.node) return
+  emit('updateActionPlan', props.node.key, copyPathConfigActionPlan(next))
 }
 
-// updateActionKind 切换动作时只保留适用参数；回退自动绑定唯一静态直接上一审批节点。
-function updateActionKind(rowIndex: number, kind: PathConfigActionKind) {
+// updateResult 切换唯一处理结果，并只保留该结果实际需要的回退或移交参数。
+function updateResult(kind: PathConfigActionKind) {
   const definition = actionDefinition(kind)
-  if (!definition?.enabled || !props.node || !canUsePathConfigAction(props.node, actionRows.value, kind, rowIndex)) return
-  const rows = editableRows()
-  const current = rows[rowIndex]
-  if (!current) return
-  rows[rowIndex] = {
+  if (!definition?.enabled || !props.node || !actionPlan.value || kind === 'add_sign') return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  next.result = {
     kind,
-    count: normalizedPathConfigActionCount(props.node, kind, current.count),
-    target: definition.requiresTarget && props.node?.actionPlan.rollbackTargets.length === 1 ? props.node.actionPlan.rollbackTargets[0].value : '',
-    person: definition.person ? personDraft(definition.person) : undefined,
-  }
-  emitRows(rows)
-}
-
-// moveActionRow 调整动作执行顺序，终止组合合法性由即时校验和服务端共同保证。
-function moveActionRow(rowIndex: number, offset: number) {
-  const rows = editableRows()
-  const target = rowIndex + offset
-  if (target < 0 || target >= rows.length) return
-  ;[rows[rowIndex], rows[target]] = [rows[target], rows[rowIndex]]
-  emitRows(rows)
-}
-
-// removeActionRow 删除动作行；节点至少保留一个可执行动作。
-function removeActionRow(rowIndex: number) {
-  const rows = editableRows()
-  if (!canRemoveActionRow(rowIndex)) return
-  rows.splice(rowIndex, 1)
-  emitRows(rows)
-}
-
-// canRemoveActionRow 保留审批节点唯一处理结果；用户应通过切换该行选择替代默认同意。
-function canRemoveActionRow(rowIndex: number): boolean {
-  if (actionRows.value.length <= 1) return false
-  const row = actionRows.value[rowIndex]
-  if (!row || !terminalAction(row.kind)) return true
-  return actionRows.value.some((item, index) => index !== rowIndex && terminalAction(item.kind))
-}
-
-// totalActionSteps 统计当前路径草稿动作总数，前端即时遵守服务端一百步上限。
-function totalActionSteps(): number {
-  return Object.values(props.draft.arrivals).reduce((total, arrivals) => total + arrivals.reduce((count, arrival) => count + arrival.steps.length, 0), 0)
-}
-
-// currentTerminalActionCount 统计会结束当前任务处理的动作次数，继续遵守兼容模型的十次上限。
-function currentTerminalActionCount(): number {
-  return actionRows.value.reduce((total, row) => total + (terminalAction(row.kind) ? row.count : 0), 0)
-}
-
-// addActionRow 新增动作行；加签自动排到首个终止动作之前，其他动作按列表顺序追加。
-function addActionRow() {
-  const kind = newActionKind.value
-  const definition = kind ? actionDefinition(kind) : undefined
-  if (!kind || !definition?.enabled || !props.node || !canAddAction(kind)) return
-  const rows = editableRows()
-  const row: PathConfigActionRow = {
-    kind,
-    count: 1,
+    opinion: '',
     target: definition.requiresTarget && props.node.actionPlan.rollbackTargets.length === 1 ? props.node.actionPlan.rollbackTargets[0].value : '',
     person: definition.person ? personDraft(definition.person) : undefined,
   }
-  const firstTerminal = rows.findIndex(item => terminalAction(item.kind))
-  if (!terminalAction(kind) && firstTerminal >= 0) rows.splice(firstTerminal, 0, row)
-  else rows.push(row)
-  emitRows(rows)
-  newActionKind.value = null
+  emitPlan(next)
 }
 
-// updateActionRowCount 直接调整该动作执行次数，并同时遵守节点十次和路径一百步上限。
-function updateActionRowCount(rowIndex: number, value: number | null) {
-  if (!props.node || !value) return
-  const rows = editableRows()
-  const otherPathActions = totalActionSteps() - rows[rowIndex].count
-  const terminalRoom = terminalAction(rows[rowIndex].kind) ? props.node.actionPlan.maxArrivals - (currentTerminalActionCount() - rows[rowIndex].count) : props.node.actionPlan.maxArrivals
-  const actionRoom = normalizedPathConfigActionCount(props.node, rows[rowIndex].kind, value)
-  rows[rowIndex].count = Math.max(1, Math.min(actionRoom, terminalRoom, props.node.actionPlan.maxPathSteps - otherPathActions))
-  emitRows(rows)
+// addSignNode 新增一个拥有独立人员策略的审批节点；多个条目代表多个真实加签节点。
+function addSignNode() {
+  const definition = actionDefinition('add_sign')
+  if (!definition?.enabled || !definition.person || !actionPlan.value || actionPlan.value.addSignNodes.length >= 10) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  next.addSignNodes.push({ person: personDraft(definition.person) })
+  emitPlan(next)
 }
 
-// updateActionRowPerson 更新加签节点或移交的独立人员策略，候选范围与服务端目录完全一致。
-function updateActionRowPerson(rowIndex: number, person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) {
-  const rows = editableRows()
-  const row = rows[rowIndex]
-  if (!row) return
-  const base = row.person ?? personDraft(person)
-  const next = { ...base, ...patch, key: person.key }
-  next.selected = resolvedPersonStrategySelection(person, next)
-  row.person = next
-  emitRows(rows)
+// moveAddSignNode 调整加签节点的执行顺序，唯一处理结果始终位于列表之后。
+function moveAddSignNode(index: number, offset: number) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  const target = index + offset
+  if (target < 0 || target >= next.addSignNodes.length) return
+  ;[next.addSignNodes[index], next.addSignNodes[target]] = [next.addSignNodes[target], next.addSignNodes[index]]
+  emitPlan(next)
 }
 
-// terminalAction 判断会结束当前任务处理的动作，其他动作必须排在其之前。
-function terminalAction(kind: PathConfigActionKind): boolean {
-  return ['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'].includes(kind)
+// removeAddSignNode 删除一个加签节点，不影响当前节点唯一处理结果。
+function removeAddSignNode(index: number) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  next.addSignNodes.splice(index, 1)
+  emitPlan(next)
+}
+
+// updateAddSignPerson 更新一个加签节点自己的人员策略，不能共享或覆盖其他加签节点。
+function updateAddSignPerson(index: number, person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  const base = next.addSignNodes[index]?.person ?? personDraft(person)
+  const updated = { ...base, ...patch, key: person.key }
+  updated.selected = resolvedPersonStrategySelection(person, updated)
+  next.addSignNodes[index] = { person: updated }
+  emitPlan(next)
+}
+
+// updateResultPerson 更新移交结果自己的人员策略，候选范围与服务端目录一致。
+function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) {
+  if (!actionPlan.value) return
+  const plan = copyPathConfigActionPlan(actionPlan.value)
+  const base = plan.result.person ?? personDraft(person)
+  const updated = { ...base, ...patch, key: person.key }
+  updated.selected = resolvedPersonStrategySelection(person, updated)
+  plan.result.person = updated
+  emitPlan(plan)
 }
 </script>
 
@@ -368,11 +309,11 @@ function terminalAction(kind: PathConfigActionKind): boolean {
               <template #trigger><n-button class="node-configuration-panel__action-info" circle size="small" aria-label="查看动作规则" title="查看动作规则"><n-icon><InformationCircleOutline /></n-icon></n-button></template>
               <div class="node-configuration-panel__action-rules">
                 <strong>动作说明</strong>
-                <p class="node-configuration-panel__runtime-note">次数表示计划真实执行次数，不是网络自动重试。每次执行前仍会核对实例、待办、审批权限、会签、并行及任务链状态。</p>
+                <p class="node-configuration-panel__runtime-note">流程后续再次进入节点时，会重新读取真实实例、待办、权限、分支和人员。当前配置不模拟网络重试或流程循环。</p>
                 <n-scrollbar style="max-height: 320px">
                   <ul>
                     <li v-for="item in node.actionPlan.catalog" :key="item.kind">
-                      <div><strong>{{ item.label }}</strong><n-tag size="tiny" :bordered="false" :type="actionRuleReason(item) ? 'default' : 'success'">{{ actionRuleStatus(item) }}</n-tag><small>最多 {{ item.maxCount }} 次</small></div>
+                      <div><strong>{{ item.label }}</strong><n-tag size="tiny" :bordered="false" :type="actionRuleReason(item) ? 'default' : 'success'">{{ actionRuleStatus(item) }}</n-tag></div>
                       <p>{{ item.description }}</p>
                       <small v-if="actionRuleReason(item)">{{ actionRuleReason(item) }}</small>
                     </li>
@@ -382,55 +323,63 @@ function terminalAction(kind: PathConfigActionKind): boolean {
             </n-popover>
           </div>
           <n-alert v-if="node.actionPlan.note" type="warning" :show-icon="false" size="small">{{ node.actionPlan.note }}</n-alert>
-          <div class="node-configuration-panel__action-rows">
-            <div v-for="(row, rowIndex) in actionRows" :key="`${row.kind}-${rowIndex}`" class="node-configuration-panel__action-row">
-              <div class="node-configuration-panel__action-main">
-                <n-select class="node-configuration-panel__action-select" :value="row.kind" :options="actionOptions(rowIndex)" :consistent-menu-width="false" aria-label="动作" @update:value="value => updateActionKind(rowIndex, value)" />
-                <label class="node-configuration-panel__row-count">
-                  <span>次数</span>
-                  <span v-if="actionDefinition(row.kind)?.maxCount === 1" class="node-configuration-panel__fixed-count">固定 1 次</span>
-                  <n-input-number v-else :value="row.count" :min="1" :max="actionDefinition(row.kind)?.maxCount ?? node.actionPlan.maxArrivals" size="small" aria-label="动作执行次数" @update:value="value => updateActionRowCount(rowIndex, value)" />
-                </label>
-                <div class="node-configuration-panel__row-tools">
-                  <n-button quaternary circle size="tiny" title="上移" aria-label="上移动作" :disabled="rowIndex === 0" @click="moveActionRow(rowIndex, -1)"><n-icon><ArrowUpOutline /></n-icon></n-button>
-                  <n-button quaternary circle size="tiny" title="下移" aria-label="下移动作" :disabled="rowIndex === actionRows.length - 1" @click="moveActionRow(rowIndex, 1)"><n-icon><ArrowDownOutline /></n-icon></n-button>
-                  <n-button quaternary circle size="tiny" title="删除" aria-label="删除动作" :disabled="!canRemoveActionRow(rowIndex)" @click="removeActionRow(rowIndex)"><n-icon><CloseOutline /></n-icon></n-button>
-                </div>
+          <div v-if="actionPlan" class="node-configuration-panel__action-plan">
+            <section v-if="node.kind !== 'start'" class="node-configuration-panel__add-signs" aria-labelledby="add-sign-nodes-heading">
+              <div class="node-configuration-panel__subheading">
+                <div><strong id="add-sign-nodes-heading">加签节点</strong><small>按列表顺序在处理结果前插入审批节点</small></div>
+                <n-button v-if="actionDefinition('add_sign')?.enabled" dashed size="small" :disabled="actionPlan.addSignNodes.length >= 10" @click="addSignNode">
+                  <template #icon><n-icon><AddOutline /></n-icon></template>添加加签节点
+                </n-button>
               </div>
-              <p v-if="actionDefinition(row.kind)?.requiresTarget && node.actionPlan.rollbackTargets.length === 1" class="node-configuration-panel__readonly">回退至：{{ node.actionPlan.rollbackTargets[0].label }}</p>
-              <template v-if="actionDefinition(row.kind)?.requiresPerson && actionPerson(row.kind)">
-                  <span class="node-configuration-panel__parameter-title">{{ row.kind === 'add_sign' ? '加签节点处理人' : '移交人员' }}</span>
+              <n-empty v-if="!actionPlan.addSignNodes.length" size="small" description="没有加签节点" />
+              <div v-for="(addSign, index) in actionPlan.addSignNodes" :key="`add-sign-${index}`" class="node-configuration-panel__add-sign-node">
+                <div class="node-configuration-panel__add-sign-heading">
+                  <strong>加签节点 {{ index + 1 }}</strong>
+                  <div class="node-configuration-panel__row-tools">
+                    <n-button quaternary circle size="tiny" title="上移" aria-label="上移加签节点" :disabled="index === 0" @click="moveAddSignNode(index, -1)"><n-icon><ArrowUpOutline /></n-icon></n-button>
+                    <n-button quaternary circle size="tiny" title="下移" aria-label="下移加签节点" :disabled="index === actionPlan.addSignNodes.length - 1" @click="moveAddSignNode(index, 1)"><n-icon><ArrowDownOutline /></n-icon></n-button>
+                    <n-button quaternary circle size="tiny" title="删除" aria-label="删除加签节点" @click="removeAddSignNode(index)"><n-icon><CloseOutline /></n-icon></n-button>
+                  </div>
+                </div>
+                <template v-if="actionPerson('add_sign')">
+                  <span class="node-configuration-panel__parameter-title">加签节点处理人</span>
+                  <n-select :value="addSign.person.strategy" :options="strategyOptions(requiredActionPerson('add_sign'))" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { strategy: value })" />
                   <n-select
-                    :value="row.person?.strategy ?? requiredActionPerson(row.kind).strategy"
-                    :options="strategyOptions(requiredActionPerson(row.kind))"
-                    @update:value="value => updateActionRowPerson(rowIndex, requiredActionPerson(row.kind), { strategy: value })"
-                  />
-                  <n-select
-                    v-if="(row.person?.strategy ?? requiredActionPerson(row.kind).strategy) === 'manual'"
-                    :multiple="requiredActionPerson(row.kind).multiple"
+                    v-if="addSign.person.strategy === 'manual'"
+                    :multiple="requiredActionPerson('add_sign').multiple"
                     filterable
-                    :value="requiredActionPerson(row.kind).multiple ? (row.person?.selected ?? []) : (row.person?.selected?.[0] ?? null)"
-                    :options="personOptions(requiredActionPerson(row.kind))"
-                    @update:value="value => updateActionRowPerson(rowIndex, requiredActionPerson(row.kind), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
+                    :value="requiredActionPerson('add_sign').multiple ? addSign.person.selected : (addSign.person.selected[0] ?? null)"
+                    :options="personOptions(requiredActionPerson('add_sign'))"
+                    @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
                   />
-                  <n-input-number
-                    v-if="(row.person?.strategy ?? requiredActionPerson(row.kind).strategy) === 'random'"
-                    :value="row.person?.seed ?? requiredActionPerson(row.kind).strategySeed"
-                    :min="1"
-                    :max="MAX_SAFE_PERSON_SEED"
-                    aria-label="动作人员随机种子"
-                    @update:value="value => updateActionRowPerson(rowIndex, requiredActionPerson(row.kind), { seed: value || 1 })"
-                  />
+                  <n-input-number v-if="addSign.person.strategy === 'random'" :value="addSign.person.seed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="加签节点人员随机种子" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { seed: value || 1 })" />
                   <div class="node-configuration-panel__resolved-persons">
                     <span>最终使用</span>
-                    <n-tag v-for="name in selectedPersonNames(requiredActionPerson(row.kind), row.person ?? personDraft(requiredActionPerson(row.kind))).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
+                    <n-tag v-for="name in selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
                   </div>
+                </template>
+              </div>
+            </section>
+
+            <section class="node-configuration-panel__result" aria-labelledby="processing-result-heading">
+              <strong id="processing-result-heading">{{ node.kind === 'start' ? '发起动作' : '处理结果' }}</strong>
+              <div v-if="node.kind === 'start'" class="node-configuration-panel__fixed-result">提交</div>
+              <n-select v-else class="node-configuration-panel__result-select" :value="resultKind" :options="resultOptions()" :consistent-menu-width="false" aria-label="处理结果" @update:value="updateResult" />
+              <p v-if="actionDefinition(resultKind)?.requiresTarget && node.actionPlan.rollbackTargets.length === 1" class="node-configuration-panel__readonly">回退至：{{ node.actionPlan.rollbackTargets[0].label }}</p>
+              <template v-if="actionDefinition(resultKind)?.requiresPerson && actionPerson(resultKind)">
+                <span class="node-configuration-panel__parameter-title">移交人员</span>
+                <n-select :value="resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy" :options="strategyOptions(requiredActionPerson(resultKind))" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { strategy: value })" />
+                <n-select
+                  v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'manual'"
+                  :multiple="requiredActionPerson(resultKind).multiple"
+                  filterable
+                  :value="requiredActionPerson(resultKind).multiple ? (resultPerson()?.selected ?? []) : (resultPerson()?.selected?.[0] ?? null)"
+                  :options="personOptions(requiredActionPerson(resultKind))"
+                  @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
+                />
+                <n-input-number v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'random'" :value="resultPerson()?.seed ?? requiredActionPerson(resultKind).strategySeed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="移交人员随机种子" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { seed: value || 1 })" />
               </template>
-            </div>
-          </div>
-          <div class="node-configuration-panel__add-action">
-            <n-select v-model:value="newActionKind" class="node-configuration-panel__action-select" :options="addActionOptions()" :consistent-menu-width="false" size="small" placeholder="选择动作" aria-label="新增动作" />
-            <n-button dashed size="small" :disabled="!newActionKind || !canAddAction(newActionKind)" @click="addActionRow">添加动作</n-button>
+            </section>
           </div>
         </section>
 
@@ -493,15 +442,15 @@ function terminalAction(kind: PathConfigActionKind): boolean {
 .node-configuration-panel__person-items li, .node-configuration-panel__person-modal li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; min-width: 0; font-size: 12px; }
 .node-configuration-panel__person-items li > span, .node-configuration-panel__person-modal li > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-configuration-panel__person-more { justify-self: start; }
-.node-configuration-panel__action-rows { display: grid; gap: 9px; }
-.node-configuration-panel__action-row { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--flow-edge-color); border-radius: 4px; }
-.node-configuration-panel__action-main { display: grid; grid-template-columns: minmax(132px, 1fr) auto; align-items: center; gap: 7px; }
-.node-configuration-panel__action-select { min-width: 132px; }
-.node-configuration-panel__row-count, .node-configuration-panel__row-tools { display: flex; align-items: center; gap: 5px; font-size: 12px; }
-.node-configuration-panel__row-tools { grid-column: 1 / -1; justify-content: flex-end; }
-.node-configuration-panel__row-count :deep(.n-input-number) { width: 76px; }
-.node-configuration-panel__fixed-count { min-width: 76px; color: var(--flow-label-color); text-align: center; }
-.node-configuration-panel__add-action { display: grid; grid-template-columns: minmax(132px, 1fr) auto; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--flow-edge-color); }
+.node-configuration-panel__action-plan, .node-configuration-panel__add-signs, .node-configuration-panel__result, .node-configuration-panel__add-sign-node { display: grid; gap: 9px; }
+.node-configuration-panel__subheading, .node-configuration-panel__add-sign-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.node-configuration-panel__subheading > div { display: grid; gap: 2px; }
+.node-configuration-panel__subheading small { font-size: 12px; opacity: .68; }
+.node-configuration-panel__add-sign-node, .node-configuration-panel__result { padding: 10px; border: 1px solid var(--flow-edge-color); border-radius: 4px; }
+.node-configuration-panel__result { margin-top: 5px; }
+.node-configuration-panel__result-select { min-width: 188px; }
+.node-configuration-panel__fixed-result { padding: 8px 10px; font-weight: 600; background: color-mix(in srgb, var(--flow-edge-color) 16%, transparent); border-radius: 4px; }
+.node-configuration-panel__row-tools { display: flex; align-items: center; gap: 5px; }
 .node-configuration-panel__action-info { color: var(--flow-direction-color); background: color-mix(in srgb, var(--flow-direction-color) 14%, var(--flow-surface-color)); border: 1px solid color-mix(in srgb, var(--flow-direction-color) 45%, var(--flow-edge-color)); }
 .node-configuration-panel__action-info:hover, .node-configuration-panel__action-info:focus-visible { background: color-mix(in srgb, var(--flow-direction-color) 22%, var(--flow-surface-color)); }
 .node-configuration-panel__action-rules { display: grid; gap: 8px; }

@@ -187,9 +187,8 @@ export type PathConfigActionKind = 'submit' | 'approve_pass' | 'reject_no_pass' 
 export interface PathConfigActionPlan {
   catalog: PathConfigActionCatalogItem[]
   rollbackTargets: PathConfigActionOption[]
-  arrivals: PathConfigArrivalPlan[]
-  maxArrivals: number
-  maxPathSteps: number
+  addSignNodes: PathConfigAddSignNode[]
+  result: PathConfigActionStep
   affected: boolean
   note: string
 }
@@ -200,36 +199,31 @@ export interface PathConfigActionCatalogItem {
   description: string
   enabled: boolean
   disabledReason: string
-  maxCount: number
   allowsOpinion: boolean
   requiresTarget: boolean
   requiresPerson: boolean
   person?: PathConfigPerson
 }
 
-export interface PathConfigActionRow {
-  kind: PathConfigActionKind
-  count: number
-  target: string
-  person?: PathConfigPersonStrategyInput
-}
-
-export interface PathConfigArrivalPlan {
-  visit: number
-  steps: PathConfigActionStep[]
+export interface PathConfigAddSignNode {
+  person: PathConfigPersonStrategyInput
 }
 
 export interface PathConfigActionStep {
-  kind: PathConfigActionKind
+  kind: PathConfigActionKind | ''
   label: string
   opinion: string
   target: string
   person?: PathConfigPersonStrategyInput
 }
 
-export interface PathConfigArrivalInput {
-  visit: number
-  steps: PathConfigActionStepInput[]
+export interface PathConfigActionPlanInput {
+  addSignNodes: PathConfigAddSignNodeInput[]
+  result: PathConfigActionStepInput
+}
+
+export interface PathConfigAddSignNodeInput {
+  person: PathConfigPersonStrategyInput
 }
 
 export interface PathConfigActionStepInput {
@@ -262,12 +256,12 @@ export interface PathConfigDraft {
   actions: Record<string, string>
   persons: Record<string, string[]>
   personStrategies: Record<string, PathConfigPersonStrategyInput>
-  arrivals: Record<string, PathConfigArrivalInput[]>
+  actionPlans: Record<string, PathConfigActionPlanInput>
 }
 
 export interface PathConfigNodeSavePayload {
   persons: PathConfigPersonStrategyInput[]
-  arrivals: PathConfigArrivalInput[]
+  actionPlan: PathConfigActionPlanInput
 }
 
 export type PathConfigPagePhase =

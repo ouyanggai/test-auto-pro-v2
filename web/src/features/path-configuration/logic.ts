@@ -1,8 +1,7 @@
 import type {
+  PathConfigActionPlanInput,
+  PathConfigActionStepInput,
   PathConfigActionKind,
-  PathConfigActionRow,
-  PathConfigArrivalPlan,
-  PathConfigArrivalInput,
   PathConfigActionValue,
   PathConfiguration,
   PathConfigDraft,
@@ -150,7 +149,7 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
   const actions: Record<string, string> = {}
   const persons: Record<string, string[]> = {}
   const personStrategies: Record<string, PathConfigPersonStrategyInput> = {}
-  const arrivals: Record<string, PathConfigArrivalInput[]> = {}
+  const actionPlans: Record<string, PathConfigActionPlanInput> = {}
   for (const group of configuration.groups) {
     for (const node of group.nodes) {
       for (const field of node.fields) {
@@ -170,19 +169,10 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
           }
         }
       }
-      if (node.actionPlan.catalog.some(item => item.enabled)) arrivals[node.key] = pathConfigActionRowsToArrivals(pathConfigActionRowsFromArrivals(node.actionPlan.arrivals), node)
-      else if (node.actionPlan.arrivals.length) arrivals[node.key] = node.actionPlan.arrivals.map(arrival => ({
-        visit: arrival.visit,
-        steps: arrival.steps.map(step => ({
-          kind: step.kind,
-          opinion: '',
-          target: step.target,
-          person: step.person ? { ...step.person, selected: [...step.person.selected] } : undefined,
-        })),
-      }))
+      if (node.actionPlan.result.kind) actionPlans[node.key] = pathConfigActionPlanInput(node)
     }
   }
-  return { fields, actions, persons, personStrategies, arrivals }
+  return { fields, actions, persons, personStrategies, actionPlans }
 }
 
 // hasPathConfigDraftChanges 判断草稿相对配置模型是否有真实变化；仅用于保存按钮可用性。
@@ -195,7 +185,7 @@ export function hasPathConfigDraftChanges(configuration: PathConfiguration, draf
     || baselineActions !== JSON.stringify(draft.actions)
     || baselinePersons !== JSON.stringify(draft.persons)
     || JSON.stringify(baseline.personStrategies) !== JSON.stringify(draft.personStrategies)
-    || JSON.stringify(baseline.arrivals) !== JSON.stringify(draft.arrivals)
+    || JSON.stringify(baseline.actionPlans) !== JSON.stringify(draft.actionPlans)
 }
 
 // reconcilePathConfigDraft 在目标结构刷新后只保留仍有相同不透明配置键的草稿，避免跨节点或跨路径串值。
@@ -224,14 +214,9 @@ export function reconcilePathConfigDraft(configuration: PathConfiguration, draft
           }
         }
       }
-      if (Object.prototype.hasOwnProperty.call(draft.arrivals, node.key)) {
-        const allowedKinds = new Set(node.actionPlan.catalog.filter(item => item.enabled).map(item => item.kind))
-        next.arrivals[node.key] = draft.arrivals[node.key]
-          .slice(0, node.actionPlan.maxArrivals)
-          .map((arrival, index) => ({
-            visit: index + 1,
-            steps: arrival.steps.filter(step => allowedKinds.has(step.kind)).map(step => ({ ...step })),
-          }))
+      if (Object.prototype.hasOwnProperty.call(draft.actionPlans, node.key)) {
+        const candidate = copyPathConfigActionPlan(draft.actionPlans[node.key])
+        if (validPathConfigActionPlan(node, candidate)) next.actionPlans[node.key] = candidate
       }
     }
   }
@@ -316,24 +301,41 @@ export function buildPathConfigSavePayload(configuration: PathConfiguration, dra
   return { fields, actions }
 }
 
-// copyPathConfigArrivals 把可能来自 Vue Proxy 的动作草稿逐字段复制为普通对象，供组件传递和网络序列化共同使用。
-export function copyPathConfigArrivals(arrivals: readonly PathConfigArrivalInput[]): PathConfigArrivalInput[] {
-  return arrivals.map(arrival => ({
-    visit: arrival.visit,
-    steps: arrival.steps.map(step => ({
-      kind: step.kind,
+// copyPathConfigPersonStrategy 把可能来自 Vue Proxy 的人员策略逐字段复制成普通对象。
+function copyPathConfigPersonStrategy(input: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput {
+  return { key: input.key, strategy: input.strategy, seed: input.seed, selected: [...input.selected] }
+}
+
+// copyPathConfigActionStep 把处理结果复制成可直接序列化的普通对象，处理意见不属于 F-007 新配置。
+function copyPathConfigActionStep(input: PathConfigActionStepInput): PathConfigActionStepInput {
+  return {
+    kind: input.kind,
+    opinion: '',
+    target: input.target || '',
+    person: input.person ? copyPathConfigPersonStrategy(input.person) : undefined,
+  }
+}
+
+// copyPathConfigActionPlan 复制独立加签节点与唯一处理结果，避免 Vue Proxy 在请求前触发 DataCloneError。
+export function copyPathConfigActionPlan(input: PathConfigActionPlanInput): PathConfigActionPlanInput {
+  return {
+    addSignNodes: input.addSignNodes.map(item => ({ person: copyPathConfigPersonStrategy(item.person) })),
+    result: copyPathConfigActionStep(input.result),
+  }
+}
+
+// pathConfigActionPlanInput 把服务端公开投影转换成语义化草稿，不暴露内部兼容存储结构。
+export function pathConfigActionPlanInput(node: PathConfigNode): PathConfigActionPlanInput {
+  const resultKind: PathConfigActionKind = node.actionPlan.result.kind || (node.kind === 'start' ? 'submit' : 'approve_pass')
+  return copyPathConfigActionPlan({
+    addSignNodes: node.actionPlan.addSignNodes.map(item => ({ person: item.person })),
+    result: {
+      kind: resultKind,
       opinion: '',
-      target: step.target,
-      person: step.person
-        ? {
-            key: step.person.key,
-            strategy: step.person.strategy,
-            seed: step.person.seed,
-            selected: [...step.person.selected],
-          }
-        : undefined,
-    })),
-  }))
+      target: node.actionPlan.result.target || '',
+      person: node.actionPlan.result.person,
+    },
+  })
 }
 
 // buildPathConfigNodeSavePayload 只收敛当前节点的动作与人员，不允许一次保存覆盖其他节点。
@@ -341,9 +343,8 @@ export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: Path
   const persons = node.persons
     .filter(person => person.editable)
     .map(person => normalizedPersonStrategy(person, draft.personStrategies[person.key]))
-  // 保存前必须脱离 Vue 深响应式对象，否则 structuredClone 会在 fetch 之前抛 DataCloneError，导致节点 PUT 根本没有发出。
-  const rows = pathConfigActionRowsFromArrivals(draft.arrivals[node.key] ?? [])
-  return { persons, arrivals: pathConfigActionRowsToArrivals(rows, node) }
+  // 保存前必须脱离 Vue 深响应式对象，否则浏览器会在 fetch 之前抛 DataCloneError，导致节点 PUT 根本没有发出。
+  return { persons, actionPlan: copyPathConfigActionPlan(draft.actionPlans[node.key] ?? pathConfigActionPlanInput(node)) }
 }
 
 // currentNodeConfigurationComplete 判断当前节点人数约束是否满足；表单字段不再属于节点侧栏。
@@ -361,9 +362,9 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
     const belowMinimum = selected.length > 0 && selected.length < person.minCount
     if (requiredEmpty || belowMinimum) missing.push(person.title)
   }
-  const arrivals = draft.arrivals[node.key] ?? []
+  const actionPlan = draft.actionPlans[node.key] ?? pathConfigActionPlanInput(node)
   // 受影响存量会先按当前目录规范化到草稿；只要规范化结果合法就允许用户重新确认保存，不能因旧状态永久禁用保存。
-  if (!validPathConfigArrivals(node, arrivals)) missing.push('动作计划')
+  if (!validPathConfigActionPlan(node, actionPlan)) missing.push('动作计划')
   const actionable = node.actionPlan.catalog.some(item => item.enabled) || node.persons.some((person) => person.editable)
   // 历史 fields/gaps 即使仍出现在兼容响应中也不能阻断节点保存；表单兼容性只由独立运行时负责。
   return { missing, complete: actionable && missing.length === 0 }
@@ -378,8 +379,7 @@ export function hasCurrentNodeDraftChanges(node: PathConfigNode | null, draft: P
       key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected,
     })) return true
   }
-  const baseline = pathConfigActionRowsToArrivals(pathConfigActionRowsFromArrivals(node.actionPlan.arrivals), node)
-  return JSON.stringify(draft.arrivals[node.key] ?? []) !== JSON.stringify(baseline)
+  return JSON.stringify(draft.actionPlans[node.key] ?? pathConfigActionPlanInput(node)) !== JSON.stringify(pathConfigActionPlanInput(node))
 }
 
 // resolvedPersonStrategySelection 在浏览器内按公开候选顺序投影最终名单，随机结果与后端轮转算法一致。
@@ -409,120 +409,36 @@ export function normalizedPathConfigSeed(seed: unknown): number {
   return typeof seed === 'number' && Number.isSafeInteger(seed) && seed >= 1 ? seed : 1
 }
 
-// 目标移交成功后当前处理任务已交给新处理人，因此与处理结果一样结束当前任务处理。
-const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
+const RESULT_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
+const MAX_ADD_SIGN_NODES = 10
 
-// DECISION_ACTIONS 表示互相替代的任务处理结果；加签节点不结束当前处理，可排在唯一结果之前。
-const DECISION_ACTIONS = new Set<PathConfigActionKind>(['approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
-
-// pathConfigActionMaxCount 读取服务端权威单动作上限；兼容旧响应时只回退节点既有有界上限。
-export function pathConfigActionMaxCount(node: PathConfigNode, kind: PathConfigActionKind): number {
-  const configured = node.actionPlan.catalog.find(item => item.kind === kind)?.maxCount
-  return Number.isInteger(configured) && Number(configured) > 0 ? Number(configured) : node.actionPlan.maxArrivals
+// validPathConfigActionPerson 统一校验加签节点和移交的独立人员策略，页面与后端使用相同候选和人数边界。
+function validPathConfigActionPerson(person: PathConfigPerson | undefined, input: PathConfigPersonStrategyInput | undefined): boolean {
+  if (!person || !input || input.key !== person.key || !person.strategies.some(item => item.value === input.strategy)) return false
+  const allowed = new Set(person.options.map(option => option.value))
+  const selected = resolvedPersonStrategySelection(person, input)
+  if (selected.some(value => !allowed.has(value))) return false
+  const requiredEmpty = person.required && selected.length === 0
+  const belowMinimum = selected.length > 0 && selected.length < person.minCount
+  const aboveMaximum = person.maxCount > 0 && selected.length > person.maxCount
+  return !requiredEmpty && !belowMinimum && !aboveMaximum
 }
 
-// normalizedPathConfigActionCount 把输入次数收敛到当前动作上限，提交因此始终固定为一次。
-export function normalizedPathConfigActionCount(node: PathConfigNode, kind: PathConfigActionKind, count: unknown): number {
-  const parsed = typeof count === 'number' && Number.isFinite(count) ? Math.trunc(count) : 1
-  return Math.max(1, Math.min(pathConfigActionMaxCount(node, kind), parsed))
-}
-
-// canUsePathConfigAction 判断新增或切换动作是否会突破目录上限；忽略当前行可支持原地切换和保持现值。
-export function canUsePathConfigAction(node: PathConfigNode, rows: readonly PathConfigActionRow[], kind: PathConfigActionKind, ignoredIndex = -1): boolean {
-  const definition = node.actionPlan.catalog.find(item => item.kind === kind)
-  if (!definition?.enabled) return false
-  const configured = rows.reduce((total, row, index) => index === ignoredIndex || row.kind !== kind ? total : total + row.count, 0)
-  if (configured >= pathConfigActionMaxCount(node, kind)) return false
-  // 审批节点默认同意；用户切换当前结果行可以选择替代结果，但不能新增第二种结束当前处理的结果。
-  if (DECISION_ACTIONS.has(kind) && rows.some((row, index) => index !== ignoredIndex && DECISION_ACTIONS.has(row.kind))) return false
-  return true
-}
-
-// pathConfigActionRowsFromArrivals 把旧兼容结构压平成用户可理解的动作行，并合并相邻且参数相同的动作次数。
-export function pathConfigActionRowsFromArrivals(arrivals: readonly PathConfigArrivalInput[] | readonly PathConfigArrivalPlan[]): PathConfigActionRow[] {
-  const rows: PathConfigActionRow[] = []
-  for (const arrival of arrivals) {
-    for (const step of arrival.steps) {
-      const candidate: PathConfigActionRow = {
-        kind: step.kind,
-        count: 1,
-        target: step.target || '',
-        person: step.person ? { ...step.person, selected: [...step.person.selected] } : undefined,
-      }
-      const previous = rows[rows.length - 1]
-      if (previous && previous.kind === candidate.kind && previous.target === candidate.target && JSON.stringify(previous.person) === JSON.stringify(candidate.person)) previous.count++
-      else rows.push(candidate)
-    }
-  }
-  return rows
-}
-
-// pathConfigActionRowsToArrivals 将动作行确定性展开为兼容存储结构；加签排在下一终止动作前，其他动作各自结束一次处理。
-export function pathConfigActionRowsToArrivals(rows: readonly PathConfigActionRow[], node: PathConfigNode): PathConfigArrivalInput[] {
-  const arrivals: PathConfigArrivalInput[] = []
-  const pending: PathConfigArrivalInput['steps'] = []
-  const targetFallback = node.actionPlan.rollbackTargets.length === 1 ? node.actionPlan.rollbackTargets[0].value : ''
-  const limit = node.actionPlan.maxPathSteps
-  let expanded = 0
-  for (const row of rows) {
-    const count = normalizedPathConfigActionCount(node, row.kind, row.count)
-    for (let index = 0; index < count && expanded < limit; index++, expanded++) {
-      const step = {
-        kind: row.kind,
-        opinion: '',
-        target: row.kind === 'rollback_previous' ? (row.target || targetFallback) : '',
-        person: row.person ? { ...row.person, selected: [...row.person.selected] } : undefined,
-      }
-      if (!TERMINAL_ACTIONS.has(row.kind)) {
-        pending.push(step)
-        continue
-      }
-      arrivals.push({ visit: arrivals.length + 1, steps: [...pending.splice(0), step] })
-    }
-  }
-  if (pending.length) arrivals.push({ visit: arrivals.length + 1, steps: pending.splice(0) })
-  return arrivals
-}
-
-// validPathConfigArrivals 即时校验连续访问、有序终止动作和必要参数，服务端仍会以当前目标快照重新核对。
-export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConfigArrivalInput[]): boolean {
-  if (!arrivals.length || arrivals.length > node.actionPlan.maxArrivals) return false
+// validPathConfigActionPlan 即时校验零到多个独立加签节点和唯一处理结果，服务端仍按最新目标快照复验。
+export function validPathConfigActionPlan(node: PathConfigNode, input: PathConfigActionPlanInput): boolean {
+  if (!input || input.addSignNodes.length > MAX_ADD_SIGN_NODES) return false
   const catalog = new Map(node.actionPlan.catalog.map(item => [item.kind, item]))
-  const actionCounts = new Map<PathConfigActionKind, number>()
-  let decisionKind: PathConfigActionKind | null = null
-  let total = 0
-  for (let index = 0; index < arrivals.length; index++) {
-    const arrival = arrivals[index]
-    if (arrival.visit !== index + 1 || !arrival.steps.length) return false
-    for (let stepIndex = 0; stepIndex < arrival.steps.length; stepIndex++) {
-      const step = arrival.steps[stepIndex]
-      const item = catalog.get(step.kind)
-      total++
-      if (!item?.enabled || total > node.actionPlan.maxPathSteps) return false
-      const configuredCount = (actionCounts.get(step.kind) ?? 0) + 1
-      actionCounts.set(step.kind, configuredCount)
-      if (configuredCount > pathConfigActionMaxCount(node, step.kind)) return false
-      if (DECISION_ACTIONS.has(step.kind)) {
-        if (decisionKind && decisionKind !== step.kind) return false
-        decisionKind = step.kind
-      }
-      if (TERMINAL_ACTIONS.has(step.kind) && stepIndex !== arrival.steps.length - 1) return false
-      if (item.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === step.target)) return false
-      if (item.requiresPerson) {
-        const person = item.person
-        if (!person || !step.person || step.person.key !== person.key || !person.strategies.some(strategy => strategy.value === step.person?.strategy)) return false
-        const allowed = new Set(person.options.map(option => option.value))
-        const selected = resolvedPersonStrategySelection(person, step.person)
-        if (selected.some(value => !allowed.has(value))) return false
-        const requiredEmpty = person.required && selected.length === 0
-        const belowMinimum = selected.length > 0 && selected.length < person.minCount
-        const aboveMaximum = person.maxCount > 0 && selected.length > person.maxCount
-        // 加签节点与移交使用各自动作目录的人员策略；前端必须和服务端一样拒绝空选、部分选择和超限选择。
-        if (requiredEmpty || belowMinimum || aboveMaximum) return false
-      }
-    }
-    if (!TERMINAL_ACTIONS.has(arrival.steps[arrival.steps.length - 1].kind)) return false
+  const resultDefinition = catalog.get(input.result.kind)
+  if (!resultDefinition?.enabled || !RESULT_ACTIONS.has(input.result.kind)) return false
+  if (input.result.kind === 'submit') return input.addSignNodes.length === 0 && node.kind === 'start'
+  if (node.kind !== 'common' && node.kind !== 'synergy') return false
+  const addSignDefinition = catalog.get('add_sign')
+  if (input.addSignNodes.length && !addSignDefinition?.enabled) return false
+  for (const addSign of input.addSignNodes) {
+    if (!validPathConfigActionPerson(addSignDefinition?.person, addSign.person)) return false
   }
+  if (resultDefinition.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === input.result.target)) return false
+  if (resultDefinition.requiresPerson && !validPathConfigActionPerson(resultDefinition.person, input.result.person)) return false
   return true
 }
 

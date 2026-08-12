@@ -8,6 +8,7 @@ config_view="${project_root}/web/src/views/PlanPathConfigurationView.vue"
 paths_view="${project_root}/web/src/views/PlanPathsView.vue"
 config_api="${project_root}/web/src/features/path-configuration/api.ts"
 config_logic="${project_root}/web/src/features/path-configuration/logic.ts"
+config_types="${project_root}/web/src/features/path-configuration/types.ts"
 config_panel="${project_root}/web/src/features/path-configuration/NodeConfigurationPanel.vue"
 config_analyzer="${project_root}/internal/analyzer/path_config.go"
 config_plan_analyzer="${project_root}/internal/analyzer/path_config_plan.go"
@@ -90,10 +91,10 @@ grep -Fq "branchEditing: props.configurationMode ? false" "${canvas_view}"
 
 # 节点保存正常响应和 GET 对账必须复用同一同路径推进规则，不得再出现跨路径“配置下一条”。
 grep -Fq "resolveConfirmedNodeSaveDestination" "${config_logic}"
-grep -Fq "copyPathConfigArrivals" "${config_logic}"
-grep -Fq "pathConfigActionRowsToArrivals" "${config_panel}"
-grep -Fq "copyPathConfigArrivals" "${config_view}"
-if grep -Eq 'structuredClone\((draft\.arrivals|props\.draft\.arrivals|value\))' "${config_logic}" "${config_panel}" "${config_view}"; then
+grep -Fq "copyPathConfigActionPlan" "${config_logic}"
+grep -Fq "pathConfigActionPlanInput" "${config_panel}"
+grep -Fq "copyPathConfigActionPlan" "${config_view}"
+if grep -Eq 'structuredClone\((draft\.actionPlans|props\.draft\.actionPlans|value\))' "${config_logic}" "${config_panel}" "${config_view}"; then
   echo 'F-007 节点动作保存链不得直接 structuredClone Vue 响应式草稿' >&2
   exit 1
 fi
@@ -129,16 +130,12 @@ grep -Fq "查看全部" "${config_panel}"
 grep -Fq "summarizePathConfigPersonItems" "${config_logic}"
 grep -Fq "运行时确定" "${config_panel}"
 grep -Fq "动作计划" "${config_panel}"
-grep -Fq "actionRows" "${config_panel}"
-grep -Fq "pathConfigActionRowsFromArrivals" "${config_logic}"
-grep -Fq "pathConfigActionRowsToArrivals" "${config_logic}"
-grep -Fq "normalizedPathConfigActionCount" "${config_logic}"
-grep -Fq "canUsePathConfigAction" "${config_logic}"
-grep -Fq 'aria-label="动作执行次数"' "${config_panel}"
-grep -Fq '固定 1 次' "${config_panel}"
-grep -Fq 'actionDefinition(row.kind)?.maxCount === 1' "${config_panel}"
-grep -Fq 'canRemoveActionRow(rowIndex)' "${config_panel}"
-grep -Fq 'placeholder="选择动作"' "${config_panel}"
+grep -Fq "actionPlan.addSignNodes" "${config_panel}"
+grep -Fq "validPathConfigActionPlan" "${config_logic}"
+grep -Fq 'aria-label="处理结果"' "${config_panel}"
+grep -Fq 'id="add-sign-nodes-heading">加签节点</strong>' "${config_panel}"
+grep -Fq "node.kind === 'start' ? '发起动作' : '处理结果'" "${config_panel}"
+grep -Fq '添加加签节点' "${config_panel}"
 grep -Fq "disabledReason" "${config_panel}"
 grep -Fq 'class="node-configuration-panel__action-info"' "${config_panel}"
 grep -Fq "from '@vicons/ionicons5'" "${config_panel}"
@@ -146,15 +143,13 @@ grep -Fq '<InformationCircleOutline />' "${config_panel}"
 grep -Fq '<ArrowUpOutline />' "${config_panel}"
 grep -Fq '<ArrowDownOutline />' "${config_panel}"
 grep -Fq '<CloseOutline />' "${config_panel}"
+grep -Fq '<AddOutline />' "${config_panel}"
 grep -Fq '"@vicons/ionicons5": "0.13.0"' "${project_root}/web/package.json"
 grep -Fq '加签节点处理人' "${config_panel}"
-grep -Fq '次数表示计划真实执行次数，不是网络自动重试' "${config_panel}"
+grep -Fq '当前配置不模拟网络重试或流程循环' "${config_panel}"
 grep -Fq 'node-configuration-panel__action-rules' "${config_panel}"
 grep -Fq ':consistent-menu-width="false"' "${config_panel}"
-grep -Fq 'minmax(132px, 1fr)' "${config_panel}"
-grep -Fq 'min-width: 132px' "${config_panel}"
-grep -Fq 'margin-top: 14px' "${config_panel}"
-grep -Fq 'padding-top: 12px' "${config_panel}"
+grep -Fq 'min-width: 188px' "${config_panel}"
 grep -Fq 'color-mix(in srgb, var(--flow-direction-color)' "${config_panel}"
 if grep -Fq 'node-configuration-panel__disabled-actions' "${config_panel}"; then
   echo 'F-007 禁用原因必须集中在动作信息弹层，不能继续平铺列表' >&2
@@ -164,32 +159,41 @@ if grep -Eq '>i</n-button>|>↑</n-button>|>↓</n-button>|>×</n-button>' "${co
   echo 'F-007 动作面板工具按钮必须使用正式图标组件，不能保留字母或文字符号' >&2
   exit 1
 fi
-if sed -n '/node-configuration-panel__action-row/,/node-configuration-panel__add-action/p' "${config_panel}" | grep -Fq 'actionDefinition(row.kind)?.description'; then
-  echo 'F-007 动作说明不得继续平铺在动作行内' >&2
+if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达|visit|arrival|动作次数|固定 1 次|次数|步骤|前置动作|处理意见|添加动作|选择动作'; then
+  echo 'F-007 动作区不得再暴露次数、兼容分组、步骤、复制或任意动作列表概念' >&2
   exit 1
 fi
-if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达次数|次到达|第 \{\{|步骤|前置动作|处理意见'; then
-  echo 'F-007 动作区不得再暴露到达、步骤、复制或处理意见概念' >&2
-  exit 1
-fi
-grep -Fq '| 节点类别 | 动作 | 配置阶段静态条件 | 是否可多次 | 运行时复验 |' "${feature_doc}"
-grep -Fq '动作次数不是网络重试次数' "${feature_doc}"
+grep -Fq '加签从处理结果中拆出为独立“加签节点”列表' "${feature_doc}"
+grep -Fq '唯一处理结果' "${feature_doc}"
 grep -Fq '| 发起 | 提交 |' "${feature_doc}"
-grep -Fq '否，固定 1 次' "${feature_doc}"
 grep -Fq '| 审批/协同 | 回退上一级 |' "${feature_doc}"
 grep -Fq "rollbackTargets" "${config_panel}"
 grep -Fq "add_sign" "${config_panel}"
-grep -Fq "transfer_approver" "${config_panel}"
+grep -Fq "updateResultPerson" "${config_panel}"
+grep -Fq "requiresPerson" "${config_panel}"
 grep -Fq '不同意' "${config_plan_analyzer}"
 grep -Fq '回退上一级' "${config_plan_analyzer}"
-grep -Fq ':multiple="requiredActionPerson(row.kind).multiple"' "${config_panel}"
+grep -Fq ':multiple="requiredActionPerson(resultKind).multiple"' "${config_panel}"
 grep -Fq "resolvedPersonStrategySelection" "${config_logic}"
-grep -Fq "validPathConfigArrivals" "${config_logic}"
+grep -Fq "validPathConfigActionPlan" "${config_logic}"
 grep -Fq "normalizedPathConfigSeed" "${config_logic}"
 grep -Fq "Number.MAX_SAFE_INTEGER" "${config_logic}"
 grep -Fq ':max="MAX_SAFE_PERSON_SEED"' "${config_panel}"
 grep -Fq '"transfer_approver"' "${config_plan_analyzer}"
 grep -Fq "'transfer_approver'" "${config_logic}"
+if grep -Eq 'PathConfigArrival|arrivals|maxArrivals|maxPathSteps' "${config_logic}" "${config_panel}" "${config_view}" "${config_types}"; then
+  echo 'F-007 公开前端协议与组件不得暴露内部兼容动作分组或次数上限' >&2
+  exit 1
+fi
+node --input-type=module - "${config_types}" <<'NODE'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+const source = readFileSync(process.argv[2], 'utf8')
+const catalog = source.match(/export interface PathConfigActionCatalogItem\s*\{([^}]*)\}/s)
+assert.ok(catalog, '缺少公开动作目录类型')
+assert.doesNotMatch(catalog[1], /maxCount|repeatable|count/, '公开动作目录不得恢复动作次数模型')
+NODE
 grep -Fq "overflow-y: auto" "${config_panel}"
 grep -Fq "保存当前节点" "${config_panel}"
 if grep -Eq 'node\.fields|node\.gaps|暂不支持|NDatePicker|NCheckbox|NSwitch' "${config_panel}"; then

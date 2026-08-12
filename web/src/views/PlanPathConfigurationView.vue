@@ -14,7 +14,7 @@ import NodeConfigurationPanel from '../features/path-configuration/NodeConfigura
 import {
   bindPathConfigurationNodes,
   buildPathConfigNodeSavePayload,
-  copyPathConfigArrivals,
+  copyPathConfigActionPlan,
   currentNodeConfigurationComplete,
   hasCurrentNodeDraftChanges,
   initialPathConfigurationNodeID,
@@ -33,7 +33,7 @@ import {
   savePathFormData,
 } from '../features/path-configuration/api'
 import type {
-  PathConfigArrivalInput,
+  PathConfigActionPlanInput,
   PathConfigDraft,
   PathConfigNode,
   PathConfiguration,
@@ -62,7 +62,7 @@ const graph = ref<FlowGraph | null>(null)
 const currentPath = ref<ExecutionPath | null>(null)
 const executionPaths = ref<ExecutionPath[]>([])
 const configuration = ref<PathConfiguration | null>(null)
-const draft = ref<PathConfigDraft>({ fields: {}, actions: {}, persons: {}, personStrategies: {}, arrivals: {} })
+const draft = ref<PathConfigDraft>({ fields: {}, actions: {}, persons: {}, personStrategies: {}, actionPlans: {} })
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
@@ -240,11 +240,11 @@ function updatePersonStrategy(person: PathConfigPerson, value: PathConfigPersonS
   nodeSavedSuccessfully.value = false
 }
 
-// updateNodeArrivals 替换当前节点的连续到达动作草稿，不允许面板越过节点边界写其他节点。
-function updateNodeArrivals(nodeKey: string, value: PathConfigArrivalInput[]) {
+// updateNodeActionPlan 替换当前节点的加签节点与处理结果草稿，不允许面板越过节点边界写其他节点。
+function updateNodeActionPlan(nodeKey: string, value: PathConfigActionPlanInput) {
   if (selectedNode.value?.key !== nodeKey) return
   // 子组件事件值仍可能携带 Vue Proxy；父页面只持有逐字段复制后的普通草稿，避免保存前再次触发克隆异常。
-  draft.value.arrivals[nodeKey] = copyPathConfigArrivals(value)
+  draft.value.actionPlans[nodeKey] = copyPathConfigActionPlan(value)
   nodeSavedSuccessfully.value = false
 }
 
@@ -475,7 +475,7 @@ void loadPage()
             :saved-successfully="nodeSavedSuccessfully"
             :form-complete="configuration.form.status === 'valid'"
             @update-person-strategy="updatePersonStrategy"
-            @update-arrivals="updateNodeArrivals"
+            @update-action-plan="updateNodeActionPlan"
             @save="saveCurrentNode"
             @back-to-plan="backToPlan"
             @open-form="openFormWorkspace"
