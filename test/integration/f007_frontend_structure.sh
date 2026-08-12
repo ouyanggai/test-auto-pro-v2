@@ -19,6 +19,7 @@ runtime_policy="${project_root}/form-runtime/src/runtime/requestPolicy.js"
 canvas_view="${project_root}/web/src/features/flow-graph/FlowGraphCanvas.vue"
 flow_node="${project_root}/web/src/features/flow-graph/FlowGraphNode.vue"
 routing_hub="${project_root}/web/src/features/flow-graph/FlowRoutingHub.vue"
+feature_doc="${project_root}/docs/features/F-007-path-data-action-configuration.md"
 
 if ! grep -Fq "/plans/:planId/paths/:pathId/configure" "${router_file}" || ! grep -Fq "PlanPathConfigurationView" "${router_file}"; then
   echo 'F-007 必须保留单条已保存路径的节点配置路由' >&2
@@ -158,6 +159,11 @@ if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前
   echo 'F-007 动作区不得再暴露到达、步骤、复制或处理意见概念' >&2
   exit 1
 fi
+grep -Fq '| 节点类别 | 动作 | 配置阶段静态条件 | 是否可多次 | 运行时复验 |' "${feature_doc}"
+grep -Fq '动作次数不是网络重试次数' "${feature_doc}"
+grep -Fq '| 发起 | 提交 |' "${feature_doc}"
+grep -Fq '否，固定 1 次' "${feature_doc}"
+grep -Fq '| 审批/协同 | 回退上一级 |' "${feature_doc}"
 grep -Fq "rollbackTargets" "${config_panel}"
 grep -Fq "add_sign" "${config_panel}"
 grep -Fq "transfer_approver" "${config_panel}"
