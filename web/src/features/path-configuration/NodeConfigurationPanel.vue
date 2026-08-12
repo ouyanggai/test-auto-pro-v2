@@ -15,7 +15,7 @@ import {
 import type { SelectOption } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
-import { copyPathConfigArrivals, normalizedPersonStrategy, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import { copyPathConfigArrivals, normalizedPersonStrategy, pathConfigSupplementaryActions, resizePathConfigArrivals, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type {
   PathConfigActionCatalogItem,
   PathConfigActionKind,
@@ -31,6 +31,7 @@ const MAX_SAFE_PERSON_SEED = Number.MAX_SAFE_INTEGER
 const personDetailsOpen = ref(false)
 const detailedPerson = ref<PathConfigPerson | null>(null)
 const activeVisit = ref(1)
+const additionalActionKind = ref<PathConfigActionKind | null>(null)
 
 const props = defineProps<{
   node: PathConfigNode | null
@@ -53,14 +54,10 @@ const emit = defineEmits<{
   openForm: []
 }>()
 
-const primaryPerson = computed(() => props.node?.persons.find(person => person.editable) ?? null)
-
-// primaryPersonForAction 仅在模板已确认存在可编辑人员时取值，避免动作参数绕过人员范围。
-function primaryPersonForAction(): PathConfigPerson {
-  return primaryPerson.value as PathConfigPerson
-}
-
-watch(() => props.node?.key, () => { activeVisit.value = 1 })
+watch(() => props.node?.key, () => {
+  activeVisit.value = 1
+  additionalActionKind.value = null
+})
 
 // personOptions 转为可搜索的 Naive UI 不透明候选，页面不接触目标业务 ID。
 function personOptions(person: PathConfigPerson): SelectOption[] {
@@ -128,6 +125,16 @@ function actionDefinition(kind: PathConfigActionKind): PathConfigActionCatalogIt
   return props.node?.actionPlan.catalog.find(item => item.kind === kind)
 }
 
+// actionPerson 返回动作目录自己的合法人员范围，加签/移交不再依赖节点主处理人是否可编辑。
+function actionPerson(kind: PathConfigActionKind): PathConfigPerson | null {
+  return actionDefinition(kind)?.person ?? null
+}
+
+// requiredActionPerson 供 requiresPerson 模板分支取得服务端已保证存在的动作人员规则。
+function requiredActionPerson(kind: PathConfigActionKind): PathConfigPerson {
+  return actionPerson(kind) as PathConfigPerson
+}
+
 // emitArrivals 统一重排连续访问序号并限制当前节点最大到达次数。
 function emitArrivals(arrivals: PathConfigArrivalInput[]) {
   if (!props.node) return
@@ -146,8 +153,8 @@ function updateStep(arrivalIndex: number, stepIndex: number, patch: Partial<Path
   if (!definition?.allowsOpinion) next.opinion = ''
   if (!definition?.requiresTarget) next.target = ''
   if (definition?.requiresPerson) {
-    const primary = props.node?.persons.find(person => person.editable)
-    if (primary && !next.person) next.person = personDraft(primary)
+    const person = definition.person
+    if (person && !next.person) next.person = personDraft(person)
   }
   else delete next.person
   arrivals[arrivalIndex].steps[stepIndex] = next
@@ -172,9 +179,9 @@ function removeStep(arrivalIndex: number, stepIndex: number) {
   emitArrivals(arrivals)
 }
 
-// supplementaryAction 返回可排在终止动作前的动作；提交、审批结果、回退和暂存不能重复插入。
-function supplementaryAction(): PathConfigActionCatalogItem | undefined {
-  return props.node?.actionPlan.catalog.find(item => !terminalAction(item.kind))
+// supplementaryActionOptions 返回当前节点可明确选择的附加动作，避免一个永久灰色按钮掩盖真实目录。
+function supplementaryActionOptions(): SelectOption[] {
+  return props.node ? pathConfigSupplementaryActions(props.node).map(item => ({ label: item.label, value: item.kind })) : []
 }
 
 // totalActionSteps 统计当前路径草稿动作总数，前端即时遵守服务端一百步上限。
@@ -184,40 +191,32 @@ function totalActionSteps(): number {
 
 // canAddStep 判断当前节点是否存在合法前置动作且整条路径仍有动作容量。
 function canAddStep(): boolean {
-  return Boolean(supplementaryAction()) && totalActionSteps() < (props.node?.actionPlan.maxPathSteps ?? 0)
+  return Boolean(additionalActionKind.value) && totalActionSteps() < (props.node?.actionPlan.maxPathSteps ?? 0)
 }
 
 // addStep 在当前到达的终止动作前增加合法前置步骤，不复制终止动作。
 function addStep(arrivalIndex: number) {
   const arrivals = currentArrivals()
-  const first = supplementaryAction()
-  if (!first || !arrivals[arrivalIndex]) return
+  const kind = additionalActionKind.value
+  const definition = kind ? actionDefinition(kind) : undefined
+  if (!kind || !definition || terminalAction(kind) || !arrivals[arrivalIndex]) return
   const steps = arrivals[arrivalIndex].steps
   const insertAt = terminalAction(steps[steps.length - 1]?.kind) ? steps.length - 1 : steps.length
-  steps.splice(insertAt, 0, { kind: first.kind, opinion: '', target: '' })
+  const person = definition.person
+  steps.splice(insertAt, 0, { kind, opinion: '', target: '', person: person ? personDraft(person) : undefined })
   emitArrivals(arrivals)
 }
 
-// addArrival 新增连续到达并复制上一次计划，让回退循环配置保持紧凑可理解。
-function addArrival(copyPrevious = true) {
-  const arrivals = currentArrivals()
-  if (!props.node || arrivals.length >= props.node.actionPlan.maxArrivals) return
-  const source = copyPrevious && arrivals.length
-    ? copyPathConfigArrivals([arrivals[arrivals.length - 1]])[0].steps
-    : []
-  const first = props.node.actionPlan.catalog[0]
-	if (!first || totalActionSteps() + Math.max(1, source.length) > props.node.actionPlan.maxPathSteps) return
-  arrivals.push({ visit: arrivals.length + 1, steps: source.length ? source : [{ kind: first.kind, opinion: '', target: '' }] })
-  emitArrivals(arrivals)
-  activeVisit.value = arrivals.length
-}
-
-// removeLastArrival 只允许从末尾删除，保证到达序号连续且语义明确。
-function removeLastArrival() {
-  const arrivals = currentArrivals()
-  if (arrivals.length <= 1) return
-  arrivals.pop()
-  emitArrivals(arrivals)
+// updateActionCount 用直接动作次数调整内部 arrivals；新增组内部复用上一组，但不把复制暴露成用户概念。
+function updateActionCount(value: number | null) {
+  if (!props.node || !value) return
+  const current = currentArrivals()
+  const otherSteps = totalActionSteps() - current.reduce((total, arrival) => total + arrival.steps.length, 0)
+  const fallback = props.node.actionPlan.catalog[0]?.kind
+  if (!fallback) return
+  const resized = resizePathConfigArrivals(current, value, props.node.actionPlan.maxArrivals, Math.max(0, props.node.actionPlan.maxPathSteps - otherSteps), fallback)
+  emitArrivals(resized)
+  activeVisit.value = Math.min(value, resized.length)
 }
 
 // updateStepPerson 更新加签或移交的受限人员策略，候选范围与当前节点主人员规则相同。
@@ -339,15 +338,23 @@ function terminalAction(kind: PathConfigActionKind): boolean {
         <section v-if="node.actionPlan.catalog.length" class="node-configuration-panel__section" aria-labelledby="node-actions-heading">
           <div class="node-configuration-panel__section-heading">
             <h3 id="node-actions-heading">动作计划</h3>
-            <span>最多 {{ node.actionPlan.maxArrivals }} 次到达</span>
+            <label class="node-configuration-panel__action-count">
+              <span>动作次数</span>
+              <n-input-number
+                :value="draft.arrivals[node.key]?.length ?? 1"
+                :min="1"
+                :max="node.actionPlan.maxArrivals"
+                size="small"
+                aria-label="动作次数"
+                @update:value="updateActionCount"
+              />
+            </label>
           </div>
           <n-alert v-if="node.actionPlan.note" type="warning" :show-icon="false" size="small">{{ node.actionPlan.note }}</n-alert>
-          <div class="node-configuration-panel__visits" aria-label="节点到达次数">
+          <div class="node-configuration-panel__visits" aria-label="动作次数切换">
             <n-button v-for="arrival in (draft.arrivals[node.key] ?? [])" :key="arrival.visit" size="tiny" :type="activeVisit === arrival.visit ? 'primary' : 'default'" @click="activeVisit = arrival.visit">
               第 {{ arrival.visit }} 次
             </n-button>
-            <n-button size="tiny" :disabled="(draft.arrivals[node.key]?.length ?? 0) >= node.actionPlan.maxArrivals" @click="addArrival(true)">复制前一次</n-button>
-            <n-button size="tiny" :disabled="(draft.arrivals[node.key]?.length ?? 0) <= 1" @click="removeLastArrival">删除末次</n-button>
           </div>
           <template v-for="(arrival, arrivalIndex) in (draft.arrivals[node.key] ?? [])" :key="arrival.visit">
             <div v-if="activeVisit === arrival.visit" class="node-configuration-panel__arrival">
@@ -364,36 +371,40 @@ function terminalAction(kind: PathConfigActionKind): boolean {
                 <small>{{ actionDefinition(step.kind)?.description }}</small>
                 <n-input v-if="actionDefinition(step.kind)?.allowsOpinion" :value="step.opinion" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" maxlength="1000" show-count placeholder="可选处理意见" @update:value="value => updateStep(arrivalIndex, stepIndex, { opinion: value })" />
                 <n-select v-if="actionDefinition(step.kind)?.requiresTarget" :value="step.target || null" :options="rollbackOptions()" placeholder="选择更早业务节点" @update:value="value => updateStep(arrivalIndex, stepIndex, { target: value || '' })" />
-                <template v-if="actionDefinition(step.kind)?.requiresPerson && primaryPerson">
+                <template v-if="actionDefinition(step.kind)?.requiresPerson && actionPerson(step.kind)">
                   <span class="node-configuration-panel__parameter-title">{{ step.kind === 'add_sign' ? '加签人员' : step.kind === 'transfer_approver' ? '移交人员' : '处理人员' }}</span>
                   <n-select
-                    :value="stepPersonDraft(step, primaryPersonForAction()).strategy"
-                    :options="strategyOptions(primaryPersonForAction())"
-                    @update:value="value => updateStepPerson(arrivalIndex, stepIndex, primaryPersonForAction(), { strategy: value })"
+                    :value="stepPersonDraft(step, requiredActionPerson(step.kind)).strategy"
+                    :options="strategyOptions(requiredActionPerson(step.kind))"
+                    @update:value="value => updateStepPerson(arrivalIndex, stepIndex, requiredActionPerson(step.kind), { strategy: value })"
                   />
                   <n-select
-                    v-if="stepPersonDraft(step, primaryPersonForAction()).strategy === 'manual'"
-                    :multiple="primaryPersonForAction().multiple"
+                    v-if="stepPersonDraft(step, requiredActionPerson(step.kind)).strategy === 'manual'"
+                    :multiple="requiredActionPerson(step.kind).multiple"
                     filterable
-                    :value="primaryPersonForAction().multiple ? stepPersonDraft(step, primaryPersonForAction()).selected : (stepPersonDraft(step, primaryPersonForAction()).selected[0] ?? null)"
-                    :options="personOptions(primaryPersonForAction())"
-                    @update:value="value => updateStepPerson(arrivalIndex, stepIndex, primaryPersonForAction(), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
+                    :value="requiredActionPerson(step.kind).multiple ? stepPersonDraft(step, requiredActionPerson(step.kind)).selected : (stepPersonDraft(step, requiredActionPerson(step.kind)).selected[0] ?? null)"
+                    :options="personOptions(requiredActionPerson(step.kind))"
+                    @update:value="value => updateStepPerson(arrivalIndex, stepIndex, requiredActionPerson(step.kind), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
                   />
                   <n-input-number
-                    v-if="stepPersonDraft(step, primaryPersonForAction()).strategy === 'random'"
-                    :value="stepPersonDraft(step, primaryPersonForAction()).seed"
+                    v-if="stepPersonDraft(step, requiredActionPerson(step.kind)).strategy === 'random'"
+                    :value="stepPersonDraft(step, requiredActionPerson(step.kind)).seed"
                     :min="1"
                     :max="MAX_SAFE_PERSON_SEED"
                     aria-label="动作人员随机种子"
-                    @update:value="value => updateStepPerson(arrivalIndex, stepIndex, primaryPersonForAction(), { seed: value || 1 })"
+                    @update:value="value => updateStepPerson(arrivalIndex, stepIndex, requiredActionPerson(step.kind), { seed: value || 1 })"
                   />
                   <div class="node-configuration-panel__resolved-persons">
                     <span>最终使用</span>
-                    <n-tag v-for="name in selectedPersonNames(primaryPersonForAction(), stepPersonDraft(step, primaryPersonForAction())).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
+                    <n-tag v-for="name in selectedPersonNames(requiredActionPerson(step.kind), stepPersonDraft(step, requiredActionPerson(step.kind))).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
                   </div>
                 </template>
               </div>
-              <n-button dashed block size="small" :disabled="!canAddStep()" @click="addStep(arrivalIndex)">添加动作步骤</n-button>
+              <div v-if="supplementaryActionOptions().length" class="node-configuration-panel__add-action">
+                <n-select v-model:value="additionalActionKind" :options="supplementaryActionOptions()" size="small" placeholder="选择要添加的动作" aria-label="可追加动作" />
+                <n-button dashed size="small" :disabled="!canAddStep()" @click="addStep(arrivalIndex)">添加动作</n-button>
+              </div>
+              <small v-else class="node-configuration-panel__no-action">当前节点没有可追加的前置动作</small>
             </div>
           </template>
         </section>
@@ -440,6 +451,8 @@ function terminalAction(kind: PathConfigActionKind): boolean {
 .node-configuration-panel__header, .node-configuration-panel__footer { padding: 12px 14px; background: var(--flow-surface-color); }
 .node-configuration-panel__header { border-bottom: 1px solid var(--flow-edge-color); }
 .node-configuration-panel__title-row, .node-configuration-panel__section-heading, .node-configuration-panel__step-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.node-configuration-panel__action-count { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.node-configuration-panel__action-count :deep(.n-input-number) { width: 92px; }
 .node-configuration-panel__header h2 { margin: 3px 0 8px; font-size: 17px; line-height: 1.35; }
 .node-configuration-panel__eyebrow { font-size: 12px; opacity: .7; }
 .node-configuration-panel__tags, .node-configuration-panel__footer-actions, .node-configuration-panel__visits, .node-configuration-panel__resolved-persons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -459,6 +472,8 @@ function terminalAction(kind: PathConfigActionKind): boolean {
 .node-configuration-panel__person-more { justify-self: start; }
 .node-configuration-panel__step { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--flow-edge-color); border-radius: 4px; }
 .node-configuration-panel__step-head > div { display: flex; gap: 2px; }
+.node-configuration-panel__add-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.node-configuration-panel__no-action { opacity: .68; }
 .node-configuration-panel__person-modal { width: min(520px, calc(100vw - 32px)); max-height: min(520px, calc(100dvh - 48px)); }
 .node-configuration-panel__person-modal h3 { margin: 3px 0 0; font-size: 16px; }
 .node-configuration-panel__person-modal-heading > span { font-size: 12px; opacity: .7; }

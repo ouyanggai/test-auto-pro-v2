@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -241,26 +242,30 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
-// actionPlan 生成当前节点动作目录、回退目标和版本化到达计划，并登记人员与动作保存校验映射。
-func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, persons []model.PathConfigPerson) model.PathConfigActionPlan {
+// actionPlan 生成当前节点动作目录、回退目标和版本化动作计划，并登记动作专用人员范围与保存校验映射。
+func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, node *target.FlowNodeTemplate, persons []model.PathConfigPerson) model.PathConfigActionPlan {
 	result := model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{}, RollbackTargets: []model.PathConfigActionOption{}, Arrivals: []model.PathConfigArrivalPlan{}, MaxArrivals: maxPathConfigArrivals, MaxPathSteps: maxPathConfigActionSteps}
-	target := PathConfigNodeTarget{NodeID: nodeID, Name: nodeName, Person: p.personTargets[nodeID], ActionKinds: make(map[string]bool), RollbackTargets: make(map[string]string)}
+	validationTarget := PathConfigNodeTarget{NodeID: nodeID, Name: nodeName, Person: p.personTargets[nodeID], ActionPersons: make(map[string]*PathConfigPersonTarget), ActionKinds: make(map[string]bool), RollbackTargets: make(map[string]string)}
 	for _, person := range persons {
 		if person.Mode == "review" || person.Affected {
-			target.Blockers = append(target.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: firstNonEmptyPathConfig(person.Note, person.Detail)})
+			validationTarget.Blockers = append(validationTarget.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: firstNonEmptyPathConfig(person.Note, person.Detail)})
 		}
 	}
-	appendAction := func(kind, label, description string, opinion, targetRequired, personRequired bool) {
-		result.Catalog = append(result.Catalog, model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, AllowsOpinion: opinion, RequiresTarget: targetRequired, RequiresPerson: personRequired})
-		target.ActionKinds[kind] = true
+	appendAction := func(kind, label, description string, opinion, targetRequired bool, person *model.PathConfigPerson, personTarget *PathConfigPersonTarget) {
+		item := model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, AllowsOpinion: opinion, RequiresTarget: targetRequired, RequiresPerson: person != nil, Person: person}
+		result.Catalog = append(result.Catalog, item)
+		validationTarget.ActionKinds[kind] = true
+		if personTarget != nil {
+			validationTarget.ActionPersons[kind] = personTarget
+		}
 	}
 	switch nodeKind {
 	case "start":
-		appendAction("submit", "提交", "提交当前发起节点并进入后续流程", false, false, false)
+		appendAction("submit", "提交", "提交当前发起节点并进入后续流程", false, false, nil, nil)
 	case "common", "synergy":
-		appendAction("approve_pass", "同意", "审批或协同通过并继续当前路径", true, false, false)
-		appendAction("reject_no_pass", "不同意", "审批不通过，可能改变或结束后续线路", true, false, false)
-		appendAction("draft_save", "暂存", "保存当前处理内容但不推进流程", false, false, false)
+		appendAction("approve_pass", "同意", "审批或协同通过并继续当前路径", true, false, nil, nil)
+		appendAction("reject_no_pass", "不同意", "审批不通过，可能改变或结束后续线路", true, false, nil, nil)
+		appendAction("draft_save", "暂存", "保存当前处理内容但不推进流程", false, false, nil, nil)
 		for _, earlierID := range p.businessOrder[:maxInt(0, len(p.businessOrder)-1)] {
 			earlierNode := p.graphNodes[earlierID]
 			if earlierNode.Type != "start" && earlierNode.Type != "common" && earlierNode.Type != "synergy" {
@@ -271,27 +276,89 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, per
 				continue
 			}
 			token := pathConfigToken("rollback-target", nodeID, earlierID)
-			target.RollbackTargets[token] = earlierID
+			validationTarget.RollbackTargets[token] = earlierID
 			result.RollbackTargets = append(result.RollbackTargets, model.PathConfigActionOption{Value: token, Label: earlierNode.Name})
 		}
 		if len(result.RollbackTargets) > 0 {
-			appendAction("rollback_previous", "回退上一级", "回退到当前路径上更早且可达的业务节点", true, true, false)
+			appendAction("rollback_previous", "回退上一级", "回退到当前路径上更早且可达的业务节点", true, true, nil, nil)
 		}
-		if target.Person != nil {
-			appendAction("add_sign", "加签", "在当前节点增加受模板候选范围约束的处理人", false, false, true)
-			appendAction("transfer_approver", "移交", "把当前处理任务移交给受模板候选范围约束的处理人", false, false, true)
+		if person, personTarget := actionPersonConfig(nodeID, "add_sign", node); person != nil && personTarget != nil {
+			// 加签与移交在目标工作台是独立动作，不能和“当前节点主处理人是否可编辑”绑定；候选仍严格来自当前目标模板范围。
+			appendAction("add_sign", "加签", "在当前节点增加受目标范围约束的处理人", false, false, person, personTarget)
+		}
+		if person, personTarget := actionPersonConfig(nodeID, "transfer_approver", node); person != nil && personTarget != nil {
+			appendAction("transfer_approver", "移交", "把当前处理任务移交给受目标范围约束的一名处理人并结束本次处理", false, false, person, personTarget)
 		}
 	}
 	if len(result.Catalog) == 0 {
 		return result
 	}
-	plan, affected, note := p.projectStoredActionPlan(nodeID, nodeKind, target, result.Catalog)
+	plan, affected, note := p.projectStoredActionPlan(nodeID, nodeKind, validationTarget, result.Catalog)
 	result.Arrivals, result.Affected, result.Note = plan, affected, note
 	if affected {
 		p.affected = true
 	}
-	p.validation.NodeTokens[PathConfigNodeToken(nodeID)] = target
+	p.validation.NodeTokens[PathConfigNodeToken(nodeID)] = validationTarget
 	return result
+}
+
+// actionPersonConfig 从目标当前快照已解析的合法候选生成动作专用人员规则，加签可多选而移交严格单选。
+func actionPersonConfig(nodeID, actionKind string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
+	if node == nil || node.AuditConfig == nil || len(node.AuditConfig.ResolutionIssues) > 0 || len(node.AuditConfig.Candidates) == 0 {
+		return nil, nil
+	}
+	config := node.AuditConfig
+	key := PathConfigPersonToken(nodeID + ":" + actionKind)
+	options := make([]model.PathConfigPersonOption, 0, len(config.Candidates))
+	candidateTokens := make(map[string]string, len(config.Candidates))
+	candidateNames := make(map[string]string, len(config.Candidates))
+	rawToToken := make(map[string]string, len(config.Candidates))
+	for _, candidate := range config.Candidates {
+		token := PathConfigPersonOptionToken(nodeID+":"+actionKind, candidate.ID)
+		candidateTokens[token] = candidate.ID
+		candidateNames[candidate.ID] = candidate.Name
+		rawToToken[candidate.ID] = token
+		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token})
+	}
+	if len(options) == 0 {
+		return nil, nil
+	}
+	defaultIDs := make([]string, 0, len(config.DefaultCandidates))
+	defaultSelected := make([]string, 0, len(config.DefaultCandidates))
+	for _, candidate := range config.DefaultCandidates {
+		if token, exists := rawToToken[candidate.ID]; exists {
+			defaultIDs = append(defaultIDs, candidate.ID)
+			defaultSelected = append(defaultSelected, token)
+		}
+	}
+	strategies := []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}, {Value: "random", Label: "确定性随机"}}
+	allowed := map[string]bool{"manual": true, "random": true}
+	if len(defaultIDs) > 0 {
+		strategies = append([]model.PathConfigPersonStrategyOption{{Value: "target_default", Label: "目标默认"}}, strategies...)
+		allowed["target_default"] = true
+	}
+	if actionKind == "add_sign" && len(options) > 1 {
+		strategies = append(strategies, model.PathConfigPersonStrategyOption{Value: "all", Label: "全部候选"})
+		allowed["all"] = true
+	}
+	maxCount := 1
+	multiple := false
+	if actionKind == "add_sign" {
+		maxCount = len(options)
+		multiple = true
+	}
+	personTarget := &PathConfigPersonTarget{
+		Key: key, Name: "动作人员", CandidateTokens: candidateTokens, CandidateNames: candidateNames,
+		CandidateOrder: candidateOrder(config.Candidates), DefaultIDs: defaultIDs, AllowedStrategies: allowed,
+		Required: true, MinCount: 1, MaxCount: maxCount,
+	}
+	person := &model.PathConfigPerson{
+		Key: key, Title: "动作人员", Mode: "select", Detail: "候选来自当前节点目标模板的合法人员范围", Editable: true,
+		Multiple: multiple, Required: true, MinCount: 1, MaxCount: maxCount, Selected: []string{}, DefaultSelected: defaultSelected,
+		Options: options, Strategy: "manual", StrategySeed: stablePathConfigSeed(nodeID + ":action"), Strategies: strategies,
+		Items: []model.PathConfigPersonDisplayItem{},
+	}
+	return person, personTarget
 }
 
 // reachableBusinessPredecessor 判断更早业务节点能否沿当前已选路径到达目标节点，避免并行兄弟节点互相回退。
@@ -386,18 +453,19 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 				}
 			}
 			if step.Kind == "add_sign" || step.Kind == "transfer_approver" {
-				if target.Person == nil || step.Person == nil {
+				personTarget := target.ActionPersons[step.Kind]
+				if personTarget == nil || step.Person == nil {
 					return result, "加签或移交缺少合法人员策略"
 				}
 				seed := normalizePathConfigSeed(step.Person.Seed)
 				if seed != step.Person.Seed {
 					return result, "加签或移交人员随机种子超出安全范围，需要重新确认"
 				}
-				resolved, reason := resolveStoredPersonStrategy(target.Person, step.Person.Strategy, seed, step.Person.Selected)
+				resolved, reason := resolveStoredPersonStrategy(personTarget, step.Person.Strategy, seed, step.Person.Selected)
 				if reason != "" {
 					return result, "加签或移交人员已失效：" + reason
 				}
-				projected.Person = &model.PathConfigPersonStrategyInput{Key: target.Person.Key, Strategy: step.Person.Strategy, Seed: seed, Selected: rawPersonIDsToTokens(resolved, invertTokenMap(target.Person.CandidateTokens))}
+				projected.Person = &model.PathConfigPersonStrategyInput{Key: personTarget.Key, Strategy: step.Person.Strategy, Seed: seed, Selected: rawPersonIDsToTokens(resolved, invertTokenMap(personTarget.CandidateTokens))}
 			}
 			public.Steps = append(public.Steps, projected)
 		}
@@ -448,10 +516,11 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 				storedStep.Target = id
 			}
 			if kind == "add_sign" || kind == "transfer_approver" {
-				if target.Person == nil || step.Person == nil {
+				personTarget := target.ActionPersons[kind]
+				if personTarget == nil || step.Person == nil {
 					return "", total, "加签或移交缺少合法人员策略"
 				}
-				personRaw, reason := EncodePathConfigPersonStrategy(*target.Person, *step.Person)
+				personRaw, reason := EncodePathConfigPersonStrategy(*personTarget, *step.Person)
 				if reason != "" {
 					return "", total, "加签或移交人员不合法：" + reason
 				}

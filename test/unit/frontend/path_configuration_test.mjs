@@ -21,10 +21,12 @@ import {
   pathConfigNodeKey,
   pathConfigurationNodesByGraphID,
   parsePathConfigValue,
+  pathConfigSupplementaryActions,
   projectPathConfigurationNodeStates,
   reconcilePathConfigDraft,
   resolveConfirmedNodeSaveDestination,
   resolvedPersonStrategySelection,
+  resizePathConfigArrivals,
   summarizePathConfigPersonItems,
   validPathConfigArrivals,
 } from '../../../web/src/features/path-configuration/logic.ts'
@@ -359,8 +361,8 @@ test('人员策略和有界到达动作即时投影与后端规则一致', () =>
   person.minCount = 2
   person.maxCount = 2
   person.strategies.push({ value: 'all', label: '全部候选' })
-  approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签', description: '受限候选', allowsOpinion: false, requiresTarget: false, requiresPerson: true })
-  approval.actionPlan.catalog.push({ kind: 'transfer_approver', label: '移交', description: '结束本次到达', allowsOpinion: false, requiresTarget: false, requiresPerson: true })
+  approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签', description: '受限候选', allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
+  approval.actionPlan.catalog.push({ kind: 'transfer_approver', label: '移交', description: '结束本次动作', allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
   const random = { key: person.key, strategy: 'random', seed: 1, selected: [] }
   assert.deepEqual(resolvedPersonStrategySelection(person, random), ['person-b', 'person-a'])
   assert.deepEqual(resolvedPersonStrategySelection(person, random), resolvedPersonStrategySelection(person, random))
@@ -390,6 +392,17 @@ test('人员策略和有界到达动作即时投影与后端规则一致', () =>
   }))
   overflow.push({ kind: 'approve_pass', opinion: '', target: '' })
   assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: overflow }]), false)
+  assert.deepEqual(pathConfigSupplementaryActions(approval).map(item => item.kind), ['add_sign'])
+
+  const once = [{ visit: 1, steps: [{ kind: 'approve_pass', opinion: '保留', target: '' }] }]
+  const three = resizePathConfigArrivals(reactive(once), 3, 10, 100, 'approve_pass')
+  assert.equal(three.length, 3)
+  assert.deepEqual(three.map(item => item.visit), [1, 2, 3])
+  assert.equal(isProxy(three), false)
+  three[1].steps[0].opinion = '独立修改'
+  assert.equal(three[0].steps[0].opinion, '保留')
+  const backToOne = resizePathConfigArrivals(three, 1, 10, 100, 'approve_pass')
+  assert.equal(backToOne.length, 1)
 })
 
 test('换一组种子稳定推进并安全处理非法值', () => {

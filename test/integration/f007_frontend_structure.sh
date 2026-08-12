@@ -129,7 +129,13 @@ grep -Fq "summarizePathConfigPersonItems" "${config_logic}"
 grep -Fq "运行时确定" "${config_panel}"
 grep -Fq "动作计划" "${config_panel}"
 grep -Fq "第 {{ arrival.visit }} 次" "${config_panel}"
-grep -Fq "复制前一次" "${config_panel}"
+grep -Fq "动作次数" "${config_panel}"
+grep -Fq "supplementaryActionOptions" "${config_panel}"
+grep -Fq "选择要添加的动作" "${config_panel}"
+if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达次数|次到达|添加动作步骤'; then
+  echo 'F-007 动作区不得再暴露到达或复制概念' >&2
+  exit 1
+fi
 grep -Fq "rollbackTargets" "${config_panel}"
 grep -Fq "add_sign" "${config_panel}"
 grep -Fq "transfer_approver" "${config_panel}"
@@ -161,10 +167,11 @@ grep -Fq "form.getData(true)" "${runtime_template}"
 grep -Fq "delete config[hook]" "${runtime_template}"
 grep -Fq "component.el" "${runtime_template}"
 grep -Fq "TARGET_COMPONENT_NAMES.has(targetComponentName)" "${runtime_template}"
-grep -Fq "this.applyFieldPermissions(form)" "${runtime_app}"
-grep -Fq "form.disabled(this.allFields, true)" "${runtime_app}"
-grep -Fq "form.disabled(this.editableFields, false)" "${runtime_app}"
-grep -Fq "form.hide(this.hiddenFields)" "${runtime_app}"
+grep -Fq "refreshPreparedForm(this.form())" "${runtime_app}"
+if grep -Eq 'applyFieldPermissions|form\.disabled\(|form\.hide\(' "${runtime_app}"; then
+  echo 'F-007 表单刷新不得统一调用不兼容自定义组件权限 API' >&2
+  exit 1
+fi
 if grep -Fq '<el-alert' "${runtime_app}"; then
   echo 'F-007 iframe 不得重复渲染宿主已经展示的阻塞告警' >&2
   exit 1
@@ -172,6 +179,8 @@ fi
 grep -Fq "destroySession" "${runtime_app}"
 grep -Fq "FORM_RUNTIME_VERSION" "${runtime_protocol}"
 grep -Fq "targetRequestAllowed" "${runtime_policy}"
+grep -Fq "KNOWN_TARGET_ORIGINS" "${runtime_policy}"
+grep -Fq "rewriteTargetPath" "${runtime_policy}"
 grep -Fq "WRITE_SEGMENT_PREFIXES" "${runtime_policy}"
 grep -Fq "READ_SEGMENT_PREFIXES" "${runtime_policy}"
 grep -Fq "window.fetch = async" "${runtime_policy}"

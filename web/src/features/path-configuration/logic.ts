@@ -1,5 +1,6 @@
 import type {
   PathConfigActionKind,
+  PathConfigActionCatalogItem,
   PathConfigArrivalInput,
   PathConfigActionValue,
   PathConfiguration,
@@ -410,6 +411,32 @@ export function normalizedPathConfigSeed(seed: unknown): number {
 // 目标移交成功后当前处理任务已交给新处理人，因此与处理结果一样结束本次到达。
 const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
 
+// pathConfigSupplementaryActions 返回可重复插在终止动作之前的静态合法动作，推进类动作不能作为附加步骤。
+export function pathConfigSupplementaryActions(node: PathConfigNode): PathConfigActionCatalogItem[] {
+  return node.actionPlan.catalog.filter(item => !TERMINAL_ACTIONS.has(item.kind))
+}
+
+// resizePathConfigArrivals 按动作次数调整内部 arrivals；增加时复制上一组动作，减少时只裁掉尾部并保持连续序号。
+export function resizePathConfigArrivals(
+  arrivals: readonly PathConfigArrivalInput[],
+  requestedCount: number,
+  maxArrivals: number,
+  maxAllowedSteps: number,
+  fallbackKind: PathConfigActionKind,
+): PathConfigArrivalInput[] {
+  const desired = Math.min(maxArrivals, Math.max(1, Math.trunc(Number.isFinite(requestedCount) ? requestedCount : 1)))
+  const result = copyPathConfigArrivals(arrivals.length ? arrivals : [{ visit: 1, steps: [{ kind: fallbackKind, opinion: '', target: '' }] }])
+  if (desired < result.length) return result.slice(0, desired).map((arrival, index) => ({ ...arrival, visit: index + 1 }))
+  while (result.length < desired) {
+    const previous = result[result.length - 1]
+    const nextSteps = copyPathConfigArrivals([previous])[0].steps
+    const currentSteps = result.reduce((total, arrival) => total + arrival.steps.length, 0)
+    if (currentSteps + nextSteps.length > maxAllowedSteps) break
+    result.push({ visit: result.length + 1, steps: nextSteps })
+  }
+  return result
+}
+
 // validPathConfigArrivals 即时校验连续访问、有序终止动作和必要参数，服务端仍会以当前目标快照重新核对。
 export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConfigArrivalInput[]): boolean {
   if (!arrivals.length || arrivals.length > node.actionPlan.maxArrivals) return false
@@ -426,7 +453,7 @@ export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConf
       if (TERMINAL_ACTIONS.has(step.kind) && stepIndex !== arrival.steps.length - 1) return false
       if (item.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === step.target)) return false
       if (item.requiresPerson) {
-        const person = node.persons.find(candidate => candidate.editable)
+        const person = item.person
         if (!person || !step.person || step.person.key !== person.key || !person.strategies.some(strategy => strategy.value === step.person?.strategy)) return false
         const allowed = new Set(person.options.map(option => option.value))
         const selected = resolvedPersonStrategySelection(person, step.person)

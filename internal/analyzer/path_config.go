@@ -71,6 +71,7 @@ type PathConfigNodeTarget struct {
 	NodeID          string
 	Name            string
 	Person          *PathConfigPersonTarget
+	ActionPersons   map[string]*PathConfigPersonTarget
 	ActionKinds     map[string]bool
 	RollbackTargets map[string]string
 	Blockers        []model.PathConfigAffectedItem
@@ -479,7 +480,7 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 	if graphNode.Type == "start" || graphNode.Type == "common" || graphNode.Type == "synergy" {
 		p.businessOrder = append(p.businessOrder, graphNode.ID)
 	}
-	result.ActionPlan = p.actionPlan(graphNode.ID, graphNode.Name, graphNode.Type, result.Persons)
+	result.ActionPlan = p.actionPlan(graphNode.ID, graphNode.Name, graphNode.Type, node, result.Persons)
 	if !blocked {
 		for _, person := range result.Persons {
 			if person.Mode == "review" {

@@ -240,12 +240,13 @@ type PathConfigActionPlan struct {
 
 // PathConfigActionCatalogItem 说明当前节点可静态证明合法的动作及必要参数。
 type PathConfigActionCatalogItem struct {
-	Kind           string `json:"kind"`
-	Label          string `json:"label"`
-	Description    string `json:"description"`
-	AllowsOpinion  bool   `json:"allowsOpinion"`
-	RequiresTarget bool   `json:"requiresTarget"`
-	RequiresPerson bool   `json:"requiresPerson"`
+	Kind           string            `json:"kind"`
+	Label          string            `json:"label"`
+	Description    string            `json:"description"`
+	AllowsOpinion  bool              `json:"allowsOpinion"`
+	RequiresTarget bool              `json:"requiresTarget"`
+	RequiresPerson bool              `json:"requiresPerson"`
+	Person         *PathConfigPerson `json:"person,omitempty"`
 }
 
 // PathConfigArrivalPlan 表示节点第几次到达时按顺序执行的动作。

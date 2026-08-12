@@ -326,6 +326,43 @@ func TestPathConfigAnalyzerKeepsRuntimePersonRulesReadOnly(t *testing.T) {
 	}
 }
 
+// TestPathConfigAnalyzerProjectsActionPeopleIndependently 验证固定主处理人不妨碍按当前模板候选投影加签与移交动作人员。
+func TestPathConfigAnalyzerProjectsActionPeopleIndependently(t *testing.T) {
+	tree := pathConfigTree()
+	approval := tree.Child.ConditionNodes[0].Child
+	approval.AuditConfig = &target.FlowNodeAuditConfig{
+		AuditType: "assign", Mode: "scramble",
+		Details:    []target.FlowAuditDetail{{ID: "leader", Name: "部门负责人", Type: "personnel"}},
+		Candidates: []target.FlowAuditCandidate{{ID: "person-1", Name: "张三"}, {ID: "person-2", Name: "李四"}},
+	}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备固定人员动作路径失败：%v", err)
+	}
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, analysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("固定人员动作投影失败：%v", err)
+	}
+	node := findConfigNode(configuration.Groups, "财务审批")
+	if node == nil || node.Persons[0].Editable {
+		t.Fatalf("主处理人应保持固定只读：%+v", node)
+	}
+	for _, kind := range []string{"add_sign", "transfer_approver"} {
+		item := findActionCatalogItem(t, node.ActionPlan.Catalog, kind)
+		if !item.RequiresPerson || item.Person == nil || len(item.Person.Options) != 2 {
+			t.Fatalf("%s 没有独立受限人员范围：%+v", kind, item)
+		}
+		if kind == "transfer_approver" && (item.Person.Multiple || item.Person.MaxCount != 1) {
+			t.Fatalf("移交必须严格选择一名处理人：%+v", item.Person)
+		}
+		if validation.NodeTokens[node.Key].ActionPersons[kind] == nil {
+			t.Fatalf("%s 没有进入服务端动作人员校验映射", kind)
+		}
+	}
+}
+
 // TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls 验证日期与日期时间组件不再投影为节点控件。
 func TestPathConfigAnalyzerDistinguishesDateAndDateTimeControls(t *testing.T) {
 	tree := pathConfigTree()
@@ -476,21 +513,42 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 		t.Fatalf("越界人员候选没有被拒绝：%s", reason)
 	}
 	nodeTarget := validation.NodeTokens[findConfigNode(configuration.Groups, "财务审批").Key]
-	manual.Selected = manual.Selected[:3]
+	actionPerson := findActionCatalogItem(t, findConfigNode(configuration.Groups, "财务审批").ActionPlan.Catalog, "add_sign").Person
+	if actionPerson == nil || len(actionPerson.Options) != 3 {
+		t.Fatalf("动作人员范围没有独立投影当前目标候选：%+v", actionPerson)
+	}
+	transferPerson := findActionCatalogItem(t, findConfigNode(configuration.Groups, "财务审批").ActionPlan.Catalog, "transfer_approver").Person
+	if transferPerson == nil || len(transferPerson.Options) != 3 || transferPerson.Multiple {
+		t.Fatalf("移交人员范围没有独立投影单选候选：%+v", transferPerson)
+	}
+	actionManual := model.PathConfigPersonStrategyInput{Key: actionPerson.Key, Strategy: "manual", Seed: 7, Selected: []string{actionPerson.Options[0].Value, actionPerson.Options[1].Value, actionPerson.Options[2].Value}}
+	actionRandom := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "random", Seed: 9, Selected: []string{transferPerson.Options[0].Value}}
 	actions := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
-		{Kind: "add_sign", Person: &manual},
-		{Kind: "transfer_approver", Person: &random},
+		{Kind: "add_sign", Person: &actionManual},
+		{Kind: "transfer_approver", Person: &actionRandom},
 	}}}
 	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 2 {
 		t.Fatalf("加签或移交没有复用当前合法人员策略：count=%d reason=%s", count, reason)
 	}
 	transferThenApprove := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
-		{Kind: "transfer_approver", Person: &random},
+		{Kind: "transfer_approver", Person: &actionRandom},
 		{Kind: "approve_pass", Opinion: "同意"},
 	}}}
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, transferThenApprove); !strings.Contains(reason, "最后一步") {
 		t.Fatalf("移交后的同次到达动作没有被拒绝：%s", reason)
 	}
+}
+
+// findActionCatalogItem 按稳定动作枚举查找测试目录项，缺失时立即失败。
+func findActionCatalogItem(t *testing.T, items []model.PathConfigActionCatalogItem, kind string) model.PathConfigActionCatalogItem {
+	t.Helper()
+	for _, item := range items {
+		if item.Kind == kind {
+			return item
+		}
+	}
+	t.Fatalf("缺少动作目录：%s", kind)
+	return model.PathConfigActionCatalogItem{}
 }
 
 // TestPathConfigAnalyzerNormalizesJavaScriptSafeSeeds 验证边界 seed 与非法 seed 在服务端统一编码，避免浏览器预览和保存结果分叉。

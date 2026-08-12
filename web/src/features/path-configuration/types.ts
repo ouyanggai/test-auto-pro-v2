@@ -201,6 +201,7 @@ export interface PathConfigActionCatalogItem {
   allowsOpinion: boolean
   requiresTarget: boolean
   requiresPerson: boolean
+  person?: PathConfigPerson
 }
 
 export interface PathConfigArrivalPlan {
