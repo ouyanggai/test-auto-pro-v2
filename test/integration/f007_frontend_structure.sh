@@ -136,9 +136,18 @@ grep -Fq "normalizedPathConfigActionCount" "${config_logic}"
 grep -Fq "canUsePathConfigAction" "${config_logic}"
 grep -Fq 'aria-label="动作执行次数"' "${config_panel}"
 grep -Fq '固定 1 次' "${config_panel}"
+grep -Fq 'actionDefinition(row.kind)?.maxCount === 1' "${config_panel}"
+grep -Fq 'canRemoveActionRow(rowIndex)' "${config_panel}"
 grep -Fq 'placeholder="选择动作"' "${config_panel}"
 grep -Fq "disabledReason" "${config_panel}"
 grep -Fq 'class="node-configuration-panel__action-info"' "${config_panel}"
+grep -Fq "from '@vicons/ionicons5'" "${config_panel}"
+grep -Fq '<InformationCircleOutline />' "${config_panel}"
+grep -Fq '<ArrowUpOutline />' "${config_panel}"
+grep -Fq '<ArrowDownOutline />' "${config_panel}"
+grep -Fq '<CloseOutline />' "${config_panel}"
+grep -Fq '"@vicons/ionicons5": "0.13.0"' "${project_root}/web/package.json"
+grep -Fq '加签节点处理人' "${config_panel}"
 grep -Fq '次数表示计划真实执行次数，不是网络自动重试' "${config_panel}"
 grep -Fq 'node-configuration-panel__action-rules' "${config_panel}"
 grep -Fq ':consistent-menu-width="false"' "${config_panel}"
@@ -149,6 +158,10 @@ grep -Fq 'padding-top: 12px' "${config_panel}"
 grep -Fq 'color-mix(in srgb, var(--flow-direction-color)' "${config_panel}"
 if grep -Fq 'node-configuration-panel__disabled-actions' "${config_panel}"; then
   echo 'F-007 禁用原因必须集中在动作信息弹层，不能继续平铺列表' >&2
+  exit 1
+fi
+if grep -Eq '>i</n-button>|>↑</n-button>|>↓</n-button>|>×</n-button>' "${config_panel}"; then
+  echo 'F-007 动作面板工具按钮必须使用正式图标组件，不能保留字母或文字符号' >&2
   exit 1
 fi
 if sed -n '/node-configuration-panel__action-row/,/node-configuration-panel__add-action/p' "${config_panel}" | grep -Fq 'actionDefinition(row.kind)?.description'; then

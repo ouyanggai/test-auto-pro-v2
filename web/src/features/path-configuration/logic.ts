@@ -412,6 +412,9 @@ export function normalizedPathConfigSeed(seed: unknown): number {
 // 目标移交成功后当前处理任务已交给新处理人，因此与处理结果一样结束当前任务处理。
 const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
 
+// DECISION_ACTIONS 表示互相替代的任务处理结果；加签节点不结束当前处理，可排在唯一结果之前。
+const DECISION_ACTIONS = new Set<PathConfigActionKind>(['approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
+
 // pathConfigActionMaxCount 读取服务端权威单动作上限；兼容旧响应时只回退节点既有有界上限。
 export function pathConfigActionMaxCount(node: PathConfigNode, kind: PathConfigActionKind): number {
   const configured = node.actionPlan.catalog.find(item => item.kind === kind)?.maxCount
@@ -429,7 +432,10 @@ export function canUsePathConfigAction(node: PathConfigNode, rows: readonly Path
   const definition = node.actionPlan.catalog.find(item => item.kind === kind)
   if (!definition?.enabled) return false
   const configured = rows.reduce((total, row, index) => index === ignoredIndex || row.kind !== kind ? total : total + row.count, 0)
-  return configured < pathConfigActionMaxCount(node, kind)
+  if (configured >= pathConfigActionMaxCount(node, kind)) return false
+  // 审批节点默认同意；用户切换当前结果行可以选择替代结果，但不能新增第二种结束当前处理的结果。
+  if (DECISION_ACTIONS.has(kind) && rows.some((row, index) => index !== ignoredIndex && DECISION_ACTIONS.has(row.kind))) return false
+  return true
 }
 
 // pathConfigActionRowsFromArrivals 把旧兼容结构压平成用户可理解的动作行，并合并相邻且参数相同的动作次数。
@@ -483,6 +489,7 @@ export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConf
   if (!arrivals.length || arrivals.length > node.actionPlan.maxArrivals) return false
   const catalog = new Map(node.actionPlan.catalog.map(item => [item.kind, item]))
   const actionCounts = new Map<PathConfigActionKind, number>()
+  let decisionKind: PathConfigActionKind | null = null
   let total = 0
   for (let index = 0; index < arrivals.length; index++) {
     const arrival = arrivals[index]
@@ -495,6 +502,10 @@ export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConf
       const configuredCount = (actionCounts.get(step.kind) ?? 0) + 1
       actionCounts.set(step.kind, configuredCount)
       if (configuredCount > pathConfigActionMaxCount(node, step.kind)) return false
+      if (DECISION_ACTIONS.has(step.kind)) {
+        if (decisionKind && decisionKind !== step.kind) return false
+        decisionKind = step.kind
+      }
       if (TERMINAL_ACTIONS.has(step.kind) && stepIndex !== arrival.steps.length - 1) return false
       if (item.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === step.target)) return false
       if (item.requiresPerson) {
@@ -506,7 +517,7 @@ export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConf
         const requiredEmpty = person.required && selected.length === 0
         const belowMinimum = selected.length > 0 && selected.length < person.minCount
         const aboveMaximum = person.maxCount > 0 && selected.length > person.maxCount
-        // 加签与移交复用节点人员范围；前端必须和服务端一样即时拒绝零必选、部分会签和超限选择。
+        // 加签节点与移交使用各自动作目录的人员策略；前端必须和服务端一样拒绝空选、部分选择和超限选择。
         if (requiredEmpty || belowMinimum || aboveMaximum) return false
       }
     }

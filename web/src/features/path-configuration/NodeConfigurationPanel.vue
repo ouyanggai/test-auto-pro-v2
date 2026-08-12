@@ -5,12 +5,14 @@ import {
   NCard,
   NEmpty,
   NInputNumber,
+  NIcon,
   NModal,
   NPopover,
   NScrollbar,
   NSelect,
   NTag,
 } from 'naive-ui'
+import { ArrowDownOutline, ArrowUpOutline, CloseOutline, InformationCircleOutline } from '@vicons/ionicons5'
 import type { SelectOption } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
@@ -121,7 +123,7 @@ function actionDefinition(kind: PathConfigActionKind): PathConfigActionCatalogIt
   return props.node?.actionPlan.catalog.find(item => item.kind === kind)
 }
 
-// actionPerson 返回动作目录自己的合法人员范围，加签/移交不再依赖节点主处理人是否可编辑。
+// actionPerson 返回动作目录自己的合法人员范围，加签节点处理人不再依赖当前节点主处理人是否可编辑。
 function actionPerson(kind: PathConfigActionKind): PathConfigPerson | null {
   return actionDefinition(kind)?.person ?? null
 }
@@ -195,9 +197,17 @@ function moveActionRow(rowIndex: number, offset: number) {
 // removeActionRow 删除动作行；节点至少保留一个可执行动作。
 function removeActionRow(rowIndex: number) {
   const rows = editableRows()
-  if (rows.length <= 1) return
+  if (!canRemoveActionRow(rowIndex)) return
   rows.splice(rowIndex, 1)
   emitRows(rows)
+}
+
+// canRemoveActionRow 保留审批节点唯一处理结果；用户应通过切换该行选择替代默认同意。
+function canRemoveActionRow(rowIndex: number): boolean {
+  if (actionRows.value.length <= 1) return false
+  const row = actionRows.value[rowIndex]
+  if (!row || !terminalAction(row.kind)) return true
+  return actionRows.value.some((item, index) => index !== rowIndex && terminalAction(item.kind))
 }
 
 // totalActionSteps 统计当前路径草稿动作总数，前端即时遵守服务端一百步上限。
@@ -240,7 +250,7 @@ function updateActionRowCount(rowIndex: number, value: number | null) {
   emitRows(rows)
 }
 
-// updateActionRowPerson 更新加签或移交的受限人员策略，候选范围与服务端目录完全一致。
+// updateActionRowPerson 更新加签节点或移交的独立人员策略，候选范围与服务端目录完全一致。
 function updateActionRowPerson(rowIndex: number, person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) {
   const rows = editableRows()
   const row = rows[rowIndex]
@@ -269,7 +279,7 @@ function terminalAction(kind: PathConfigActionKind): boolean {
           </div>
           <n-popover trigger="click" placement="bottom-end" :width="300" scrollable>
             <template #trigger>
-              <n-button quaternary circle size="small" aria-label="查看模板要求" title="查看模板要求">i</n-button>
+              <n-button quaternary circle size="small" aria-label="查看模板要求" title="查看模板要求"><n-icon><InformationCircleOutline /></n-icon></n-button>
             </template>
             <div class="node-configuration-panel__requirements-popover">
               <strong>模板要求</strong>
@@ -355,7 +365,7 @@ function terminalAction(kind: PathConfigActionKind): boolean {
           <div class="node-configuration-panel__section-heading">
             <h3 id="node-actions-heading">动作计划</h3>
             <n-popover trigger="click" placement="bottom-end" :width="340" scrollable>
-              <template #trigger><n-button class="node-configuration-panel__action-info" circle size="small" aria-label="查看动作规则" title="查看动作规则">i</n-button></template>
+              <template #trigger><n-button class="node-configuration-panel__action-info" circle size="small" aria-label="查看动作规则" title="查看动作规则"><n-icon><InformationCircleOutline /></n-icon></n-button></template>
               <div class="node-configuration-panel__action-rules">
                 <strong>动作说明</strong>
                 <p class="node-configuration-panel__runtime-note">次数表示计划真实执行次数，不是网络自动重试。每次执行前仍会核对实例、待办、审批权限、会签、并行及任务链状态。</p>
@@ -378,18 +388,18 @@ function terminalAction(kind: PathConfigActionKind): boolean {
                 <n-select class="node-configuration-panel__action-select" :value="row.kind" :options="actionOptions(rowIndex)" :consistent-menu-width="false" aria-label="动作" @update:value="value => updateActionKind(rowIndex, value)" />
                 <label class="node-configuration-panel__row-count">
                   <span>次数</span>
-                  <span v-if="row.kind === 'submit'" class="node-configuration-panel__fixed-count">固定 1 次</span>
+                  <span v-if="actionDefinition(row.kind)?.maxCount === 1" class="node-configuration-panel__fixed-count">固定 1 次</span>
                   <n-input-number v-else :value="row.count" :min="1" :max="actionDefinition(row.kind)?.maxCount ?? node.actionPlan.maxArrivals" size="small" aria-label="动作执行次数" @update:value="value => updateActionRowCount(rowIndex, value)" />
                 </label>
                 <div class="node-configuration-panel__row-tools">
-                  <n-button quaternary circle size="tiny" title="上移" aria-label="上移动作" :disabled="rowIndex === 0" @click="moveActionRow(rowIndex, -1)">↑</n-button>
-                  <n-button quaternary circle size="tiny" title="下移" aria-label="下移动作" :disabled="rowIndex === actionRows.length - 1" @click="moveActionRow(rowIndex, 1)">↓</n-button>
-                  <n-button quaternary circle size="tiny" title="删除" aria-label="删除动作" :disabled="actionRows.length <= 1" @click="removeActionRow(rowIndex)">×</n-button>
+                  <n-button quaternary circle size="tiny" title="上移" aria-label="上移动作" :disabled="rowIndex === 0" @click="moveActionRow(rowIndex, -1)"><n-icon><ArrowUpOutline /></n-icon></n-button>
+                  <n-button quaternary circle size="tiny" title="下移" aria-label="下移动作" :disabled="rowIndex === actionRows.length - 1" @click="moveActionRow(rowIndex, 1)"><n-icon><ArrowDownOutline /></n-icon></n-button>
+                  <n-button quaternary circle size="tiny" title="删除" aria-label="删除动作" :disabled="!canRemoveActionRow(rowIndex)" @click="removeActionRow(rowIndex)"><n-icon><CloseOutline /></n-icon></n-button>
                 </div>
               </div>
               <p v-if="actionDefinition(row.kind)?.requiresTarget && node.actionPlan.rollbackTargets.length === 1" class="node-configuration-panel__readonly">回退至：{{ node.actionPlan.rollbackTargets[0].label }}</p>
               <template v-if="actionDefinition(row.kind)?.requiresPerson && actionPerson(row.kind)">
-                  <span class="node-configuration-panel__parameter-title">{{ row.kind === 'add_sign' ? '加签人员' : '移交人员' }}</span>
+                  <span class="node-configuration-panel__parameter-title">{{ row.kind === 'add_sign' ? '加签节点处理人' : '移交人员' }}</span>
                   <n-select
                     :value="row.person?.strategy ?? requiredActionPerson(row.kind).strategy"
                     :options="strategyOptions(requiredActionPerson(row.kind))"
@@ -447,7 +457,7 @@ function terminalAction(kind: PathConfigActionKind): boolean {
       <n-modal :show="personDetailsOpen" :mask-closable="true" @update:show="show => { if (!show) closePersonDetails() }">
         <n-card v-if="detailedPerson" class="node-configuration-panel__person-modal" :bordered="false" role="dialog" aria-modal="true" aria-labelledby="person-details-title">
           <template #header><div class="node-configuration-panel__person-modal-heading"><span>人员与范围详情</span><h3 id="person-details-title">{{ detailedPerson.title }}</h3></div></template>
-          <template #header-extra><n-button quaternary size="small" aria-label="关闭人员详情" @click="closePersonDetails">关闭</n-button></template>
+          <template #header-extra><n-button quaternary circle size="small" title="关闭" aria-label="关闭人员详情" @click="closePersonDetails"><n-icon><CloseOutline /></n-icon></n-button></template>
           <n-scrollbar class="node-configuration-panel__person-modal-scroll" style="max-height: 360px">
             <strong v-if="selectedPersonNames(detailedPerson).length">最终使用人员 · {{ selectedPersonNames(detailedPerson).length }} 人</strong>
             <ul v-if="selectedPersonNames(detailedPerson).length"><li v-for="(name, itemIndex) in selectedPersonNames(detailedPerson)" :key="`selected-${name}-${itemIndex}`"><n-tag size="small" :bordered="false" type="success">人员</n-tag><span>{{ name }}</span></li></ul>

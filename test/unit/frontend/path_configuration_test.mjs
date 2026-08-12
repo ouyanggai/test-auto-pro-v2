@@ -97,7 +97,7 @@ const configuration = {
           ],
           actionPlan: {
             catalog: [
-              { kind: 'approve_pass', label: '同意', description: '继续当前路径', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: false },
+              { kind: 'approve_pass', label: '同意', description: '继续当前路径', enabled: true, disabledReason: '', maxCount: 1, allowsOpinion: false, requiresTarget: false, requiresPerson: false },
               { kind: 'reject_no_pass', label: '不同意', description: '结束当前线路', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: false },
               { kind: 'draft_save', label: '暂存', description: '不推进流程', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: false },
               { kind: 'rollback_previous', label: '回退上一级', description: '回退第一审批', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: true, requiresPerson: false },
@@ -363,7 +363,7 @@ test('人员策略和有界动作列表即时投影与后端规则一致', () =>
   person.minCount = 2
   person.maxCount = 2
   person.strategies.push({ value: 'all', label: '全部候选' })
-  approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签', description: '受限候选', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
+  approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签节点', description: '新增审批节点', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: true, person: { ...person, title: '加签节点处理人' } })
   approval.actionPlan.catalog.push({ kind: 'transfer_approver', label: '移交', description: '结束本次动作', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
   const random = { key: person.key, strategy: 'random', seed: 1, selected: [] }
   assert.deepEqual(resolvedPersonStrategySelection(person, random), ['person-b', 'person-a'])
@@ -409,10 +409,9 @@ test('人员策略和有界动作列表即时投影与后端规则一致', () =>
   rows[0].count = 2
   const expanded = pathConfigActionRowsToArrivals(rows, approval)
   assert.equal(isProxy(expanded), false)
-  assert.deepEqual(expanded.map(item => item.visit), [1, 2])
+  assert.deepEqual(expanded.map(item => item.visit), [1])
   assert.deepEqual(expanded[0].steps.map(step => step.kind), ['add_sign', 'add_sign', 'approve_pass'])
   assert.equal(expanded[0].steps.every(step => step.opinion === ''), true)
-  assert.equal(expanded[1].steps[0].kind, 'approve_pass')
 
   const rollbackRows = [{ kind: 'rollback_previous', count: 1, target: '' }]
   assert.equal(pathConfigActionRowsToArrivals(rollbackRows, approval)[0].steps[0].target, 'rollback-start')
@@ -424,7 +423,7 @@ test('换一组种子稳定推进并安全处理非法值', () => {
   assert.equal(nextFormGenerationSeed(Number.NaN), 1)
 })
 
-test('提交固定一次且不能通过新增或切换绕过目录上限', () => {
+test('提交和同意固定一次且替代结果不能与默认同意并存', () => {
   const start = configuration.groups[0].nodes[0]
   const submitRows = [{ kind: 'submit', count: 3, target: '' }]
   assert.equal(normalizedPathConfigActionCount(start, 'submit', 3), 1)
@@ -448,6 +447,15 @@ test('提交固定一次且不能通过新增或切换绕过目录上限', () =>
   const approval = configuration.groups[0].nodes[1]
   const repeatedApproval = [{ kind: 'approve_pass', count: 2, target: '' }]
   const expanded = pathConfigActionRowsToArrivals(repeatedApproval, approval)
-  assert.equal(expanded.length, 2)
+  assert.equal(normalizedPathConfigActionCount(approval, 'approve_pass', 2), 1)
+  assert.equal(expanded.length, 1)
   assert.equal(validPathConfigArrivals(approval, expanded), true)
+  assert.equal(canUsePathConfigAction(approval, [], 'approve_pass'), true)
+  assert.equal(canUsePathConfigAction(approval, [{ kind: 'approve_pass', count: 1, target: '' }], 'approve_pass'), false)
+  assert.equal(canUsePathConfigAction(approval, [{ kind: 'approve_pass', count: 1, target: '' }], 'reject_no_pass'), false)
+  assert.equal(canUsePathConfigAction(approval, [{ kind: 'approve_pass', count: 1, target: '' }], 'reject_no_pass', 0), true)
+  assert.equal(validPathConfigArrivals(approval, [
+    { visit: 1, steps: [{ kind: 'approve_pass', opinion: '', target: '' }] },
+    { visit: 2, steps: [{ kind: 'reject_no_pass', opinion: '', target: '' }] },
+  ]), false)
 })
