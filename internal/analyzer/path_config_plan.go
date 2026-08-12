@@ -251,46 +251,51 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, nod
 			validationTarget.Blockers = append(validationTarget.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: firstNonEmptyPathConfig(person.Note, person.Detail)})
 		}
 	}
-	appendAction := func(kind, label, description string, opinion, targetRequired bool, person *model.PathConfigPerson, personTarget *PathConfigPersonTarget) {
-		item := model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, AllowsOpinion: opinion, RequiresTarget: targetRequired, RequiresPerson: person != nil, Person: person}
+	appendAction := func(kind, label, description string, enabled bool, disabledReason string, targetRequired bool, person *model.PathConfigPerson, personTarget *PathConfigPersonTarget) {
+		item := model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, Enabled: enabled, DisabledReason: disabledReason, RequiresTarget: targetRequired, RequiresPerson: person != nil, Person: person}
 		result.Catalog = append(result.Catalog, item)
-		validationTarget.ActionKinds[kind] = true
-		if personTarget != nil {
+		if enabled {
+			validationTarget.ActionKinds[kind] = true
+		}
+		if enabled && personTarget != nil {
 			validationTarget.ActionPersons[kind] = personTarget
 		}
 	}
 	switch nodeKind {
 	case "start":
-		appendAction("submit", "提交", "提交当前发起节点并进入后续流程", false, false, nil, nil)
+		appendAction("submit", "提交", "提交当前发起节点并进入后续流程；执行时仍会核对模板、表单和账号", true, "", false, nil, nil)
+		appendDisabledApprovalActions(appendAction, "仅审批或协同节点可用")
 	case "common", "synergy":
-		appendAction("approve_pass", "同意", "审批或协同通过并继续当前路径", true, false, nil, nil)
-		appendAction("reject_no_pass", "不同意", "审批不通过，可能改变或结束后续线路", true, false, nil, nil)
-		appendAction("draft_save", "暂存", "保存当前处理内容但不推进流程", false, false, nil, nil)
-		for _, earlierID := range p.businessOrder[:maxInt(0, len(p.businessOrder)-1)] {
-			earlierNode := p.graphNodes[earlierID]
-			if earlierNode.Type != "start" && earlierNode.Type != "common" && earlierNode.Type != "synergy" {
-				continue
-			}
-			// 并行支线在遍历顺序上可能更早，但不一定能到达当前节点；回退目录只能包含真实可达前驱。
-			if !p.reachableBusinessPredecessor(earlierID, nodeID) {
-				continue
-			}
-			token := pathConfigToken("rollback-target", nodeID, earlierID)
-			validationTarget.RollbackTargets[token] = earlierID
-			result.RollbackTargets = append(result.RollbackTargets, model.PathConfigActionOption{Value: token, Label: earlierNode.Name})
-		}
-		if len(result.RollbackTargets) > 0 {
-			appendAction("rollback_previous", "回退上一级", "回退到当前路径上更早且可达的业务节点", true, true, nil, nil)
+		appendAction("submit", "提交", "提交只适用于发起节点", false, "仅发起节点可用", false, nil, nil)
+		appendAction("approve_pass", "同意", "审批或协同通过并继续当前路径；执行时仍会核对待办、权限、会签和并行状态", true, "", false, nil, nil)
+		appendAction("reject_no_pass", "不同意", "审批不通过并回到发起侧；执行时仍会核对待办、权限和并行状态", true, "", false, nil, nil)
+		appendAction("draft_save", "暂存", "保存当前处理内容但不推进流程；执行时仍会核对真实任务状态", true, "", false, nil, nil)
+		previousID, rollbackReason := p.uniquePreviousBusinessNode(nodeID)
+		if previousID != "" {
+			previousNode := p.graphNodes[previousID]
+			token := pathConfigToken("rollback-target", nodeID, previousID)
+			validationTarget.RollbackTargets[token] = previousID
+			result.RollbackTargets = append(result.RollbackTargets, model.PathConfigActionOption{Value: token, Label: previousNode.Name})
+			appendAction("rollback_previous", "回退上一级", "回退到当前任务链唯一直接上一审批节点；执行时仍会核对实例、待办、pid 和权限", true, "", true, nil, nil)
+		} else {
+			appendAction("rollback_previous", "回退上一级", "回退目标必须由当前任务链的直接上一待办确定", false, rollbackReason, false, nil, nil)
 		}
 		if person, personTarget := actionPersonConfig(nodeID, "add_sign", node); person != nil && personTarget != nil {
 			// 加签与移交在目标工作台是独立动作，不能和“当前节点主处理人是否可编辑”绑定；候选仍严格来自当前目标模板范围。
-			appendAction("add_sign", "加签", "在当前节点增加受目标范围约束的处理人", false, false, person, personTarget)
+			appendAction("add_sign", "加签", "在当前节点增加受目标范围约束的处理人；执行时仍会核对真实任务权限", true, "", false, person, personTarget)
+		} else {
+			appendAction("add_sign", "加签", "在当前节点增加处理人", false, "当前模板未解析到可证明合法的加签人员范围", false, nil, nil)
 		}
 		if person, personTarget := actionPersonConfig(nodeID, "transfer_approver", node); person != nil && personTarget != nil {
-			appendAction("transfer_approver", "移交", "把当前处理任务移交给受目标范围约束的一名或多名处理人并结束本次处理", false, false, person, personTarget)
+			appendAction("transfer_approver", "移交", "把当前处理任务移交给受目标范围约束的一名或多名处理人并结束当前任务", true, "", false, person, personTarget)
+		} else {
+			appendAction("transfer_approver", "移交", "把当前处理任务移交给其他处理人", false, "当前模板未解析到可证明合法的移交人员范围", false, nil, nil)
 		}
+	default:
+		appendAction("submit", "提交", "提交只适用于发起节点", false, "当前节点没有业务处理动作", false, nil, nil)
+		appendDisabledApprovalActions(appendAction, "当前节点没有业务处理动作")
 	}
-	if len(result.Catalog) == 0 {
+	if len(validationTarget.ActionKinds) == 0 {
 		return result
 	}
 	plan, affected, note := p.projectStoredActionPlan(nodeID, nodeKind, validationTarget, result.Catalog)
@@ -300,6 +305,16 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, nod
 	}
 	p.validation.NodeTokens[PathConfigNodeToken(nodeID)] = validationTarget
 	return result
+}
+
+// appendDisabledApprovalActions 为非审批节点补齐稳定动作目录，界面可解释静态不可用原因而不是静默隐藏。
+func appendDisabledApprovalActions(appendAction func(string, string, string, bool, string, bool, *model.PathConfigPerson, *PathConfigPersonTarget), reason string) {
+	appendAction("approve_pass", "同意", "审批或协同通过", false, reason, false, nil, nil)
+	appendAction("reject_no_pass", "不同意", "审批不通过", false, reason, false, nil, nil)
+	appendAction("draft_save", "暂存", "暂存当前处理", false, reason, false, nil, nil)
+	appendAction("rollback_previous", "回退上一级", "回退到直接上一审批节点", false, reason, false, nil, nil)
+	appendAction("add_sign", "加签", "增加处理人", false, reason, false, nil, nil)
+	appendAction("transfer_approver", "移交", "移交当前任务", false, reason, false, nil, nil)
 }
 
 // actionPersonConfig 从目标当前快照已解析的合法候选生成动作专用人员规则；加签和移交均可在该受限范围内多选。
@@ -358,27 +373,38 @@ func actionPersonConfig(nodeID, actionKind string, node *target.FlowNodeTemplate
 	return person, personTarget
 }
 
-// reachableBusinessPredecessor 判断更早业务节点能否沿当前已选路径到达目标节点，避免并行兄弟节点互相回退。
-func (p *pathConfigProjection) reachableBusinessPredecessor(sourceID, targetID string) bool {
-	if sourceID == "" || targetID == "" || sourceID == targetID {
-		return false
-	}
-	queue := []string{sourceID}
-	seen := map[string]bool{sourceID: true}
+// uniquePreviousBusinessNode 反向穿过条件、手动和并行路由，只接受唯一直接上一业务节点。
+func (p *pathConfigProjection) uniquePreviousBusinessNode(nodeID string) (string, string) {
+	queue := []string{nodeID}
+	seen := map[string]bool{nodeID: true}
+	candidates := make(map[string]bool)
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
-		for _, edge := range p.reachableOutgoing(current) {
-			if edge.Target == targetID {
-				return true
+		for _, edge := range p.incoming[current] {
+			if !p.reachableEdge[edge.ID] || seen[edge.Source] {
+				continue
 			}
-			if !seen[edge.Target] {
-				seen[edge.Target] = true
-				queue = append(queue, edge.Target)
+			seen[edge.Source] = true
+			previous := p.graphNodes[edge.Source]
+			switch previous.Type {
+			case "start", "common", "synergy":
+				candidates[previous.ID] = true
+			default:
+				queue = append(queue, previous.ID)
 			}
 		}
 	}
-	return false
+	if len(candidates) != 1 {
+		return "", "无法从当前路径静态确定唯一直接上一审批节点，执行时将按真实任务链复验"
+	}
+	for candidateID := range candidates {
+		if p.graphNodes[candidateID].Type == "start" {
+			return "", "上一级为发起人，请使用不同意驳回"
+		}
+		return candidateID, ""
+	}
+	return "", "无法从当前路径静态确定唯一直接上一审批节点，执行时将按真实任务链复验"
 }
 
 // firstNonEmptyPathConfig 返回首个非空公开说明，避免阻塞项出现空原因。
@@ -391,7 +417,7 @@ func firstNonEmptyPathConfig(values ...string) string {
 	return "当前配置需要重新核对"
 }
 
-// projectStoredActionPlan 兼容旧 agree/disagree，并按当前动作目录重新核验已保存到达计划。
+// projectStoredActionPlan 兼容旧 agree/disagree，并按当前动作目录重新核验已保存动作计划。
 func (p *pathConfigProjection) projectStoredActionPlan(nodeID, nodeKind string, target PathConfigNodeTarget, catalog []model.PathConfigActionCatalogItem) ([]model.PathConfigArrivalPlan, bool, string) {
 	raw, exists := p.storedActions[PathConfigActionPlanStorageKey(nodeID)]
 	if !exists {
@@ -418,16 +444,16 @@ func (p *pathConfigProjection) projectStoredActionPlan(nodeID, nodeKind string, 
 	return projected, reason != "", reason
 }
 
-// projectStoredArrivals 把内部动作目标和人员转换成不透明公开值，并同时执行连续到达与动作上限校验。
+// projectStoredArrivals 把内部动作目标和人员转换成不透明公开值，并同时执行动作结构与上限校验。
 func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathConfigArrival) ([]model.PathConfigArrivalPlan, string) {
 	if len(arrivals) == 0 || len(arrivals) > maxPathConfigArrivals {
-		return nil, "到达次数不符合 1 至 10 次限制"
+		return nil, "结束当前任务的动作次数不符合 1 至 10 次限制"
 	}
 	result := make([]model.PathConfigArrivalPlan, 0, len(arrivals))
 	total := 0
 	for index, arrival := range arrivals {
 		if arrival.Visit != index+1 || len(arrival.Steps) == 0 {
-			return result, "到达序号必须连续且每次至少包含一个动作"
+			return result, "动作计划结构不完整"
 		}
 		public := model.PathConfigArrivalPlan{Visit: arrival.Visit, Steps: []model.PathConfigActionStep{}}
 		for stepIndex, step := range arrival.Steps {
@@ -436,9 +462,10 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 				return result, "动作计划超过上限或包含当前节点不允许的动作"
 			}
 			if pathConfigTerminalAction(step.Kind) && stepIndex != len(arrival.Steps)-1 {
-				return result, "推进、移交、回退或暂存动作必须位于本次到达的最后一步"
+				return result, "结束当前任务的动作后不能继续追加其他动作"
 			}
-			projected := model.PathConfigActionStep{Kind: step.Kind, Label: pathConfigActionLabel(step.Kind), Opinion: step.Opinion}
+			// 处理意见不是 F-007 配置数据；旧值只用于兼容解析，公开投影和后续新保存都保持为空。
+			projected := model.PathConfigActionStep{Kind: step.Kind, Label: pathConfigActionLabel(step.Kind)}
 			if step.Kind == "rollback_previous" {
 				for token, id := range target.RollbackTargets {
 					if id == step.Target {
@@ -483,13 +510,13 @@ func invertTokenMap(values map[string]string) map[string]string {
 // EncodePathConfigActionPlan 校验浏览器有序动作、回退目标和嵌套人员策略并编码内部 JSON。
 func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.PathConfigArrivalInput) (string, int, string) {
 	if len(arrivals) == 0 || len(arrivals) > maxPathConfigArrivals {
-		return "", 0, "到达次数不符合 1 至 10 次限制"
+		return "", 0, "结束当前任务的动作次数不符合 1 至 10 次限制"
 	}
 	stored := storedPathConfigActionPlan{Version: pathConfigActionPlanVersion, Arrivals: make([]storedPathConfigArrival, 0, len(arrivals))}
 	total := 0
 	for index, arrival := range arrivals {
 		if arrival.Visit != index+1 || len(arrival.Steps) == 0 {
-			return "", total, "到达序号必须连续且每次至少包含一个动作"
+			return "", total, "动作计划结构不完整"
 		}
 		storedArrival := storedPathConfigArrival{Visit: arrival.Visit, Steps: make([]storedPathConfigStep, 0, len(arrival.Steps))}
 		for stepIndex, step := range arrival.Steps {
@@ -498,13 +525,11 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 			if total > maxPathConfigActionSteps || !target.ActionKinds[kind] {
 				return "", total, "动作计划超过上限或包含当前节点不允许的动作"
 			}
-			if len([]rune(step.Opinion)) > 1000 {
-				return "", total, "处理意见不能超过 1000 个字符"
-			}
 			if pathConfigTerminalAction(kind) && stepIndex != len(arrival.Steps)-1 {
-				return "", total, "推进、移交、回退或暂存动作必须位于本次到达的最后一步"
+				return "", total, "结束当前任务的动作后不能继续追加其他动作"
 			}
-			storedStep := storedPathConfigStep{Kind: kind, Opinion: strings.TrimSpace(step.Opinion)}
+			// 用户只配置动作、次数和必要参数；处理意见由未来执行阶段按真实接口需要另行处理。
+			storedStep := storedPathConfigStep{Kind: kind}
 			if kind == "rollback_previous" {
 				id, exists := target.RollbackTargets[strings.TrimSpace(step.Target)]
 				if !exists {
@@ -528,7 +553,7 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 			storedArrival.Steps = append(storedArrival.Steps, storedStep)
 		}
 		if !pathConfigTerminalAction(storedArrival.Steps[len(storedArrival.Steps)-1].Kind) {
-			return "", total, "每次到达必须以提交、处理结果、移交、回退或暂存结束"
+			return "", total, "动作列表必须以提交、处理结果、移交、回退或暂存结束"
 		}
 		stored.Arrivals = append(stored.Arrivals, storedArrival)
 	}
@@ -557,7 +582,7 @@ func CountStoredPathConfigActionSteps(values map[string]string) (int, bool) {
 	return total, total <= maxPathConfigActionSteps
 }
 
-// pathConfigActionPlanBlocksLine 仅把最终不同意视为当前路径后续不再需要配置；回退由显式后续到达表达。
+// pathConfigActionPlanBlocksLine 仅把最终不同意视为当前路径后续不再需要配置；回退后的动作由后续动作列表表达。
 func pathConfigActionPlanBlocksLine(plan model.PathConfigActionPlan) bool {
 	if len(plan.Arrivals) == 0 {
 		return false
@@ -569,13 +594,13 @@ func pathConfigActionPlanBlocksLine(plan model.PathConfigActionPlan) bool {
 	return lastArrival.Steps[len(lastArrival.Steps)-1].Kind == "reject_no_pass"
 }
 
-// pathConfigTerminalAction 标识结束单次到达的动作，后续步骤不得排在其后。
+// pathConfigTerminalAction 标识结束当前任务处理的动作，其他动作不得排在其后。
 func pathConfigTerminalAction(kind string) bool {
 	switch kind {
 	case "submit", "approve_pass", "reject_no_pass", "draft_save", "rollback_previous":
 		return true
 	case "transfer_approver":
-		// 目标 handOver 成功后立即刷新待办，当前处理任务已经交给新处理人，同一次到达不能再继续执行同意等动作。
+		// 目标 handOver 成功后立即刷新待办，当前处理任务已经交给新处理人，不能再继续执行同意等动作。
 		return true
 	default:
 		return false
@@ -602,12 +627,4 @@ func pathConfigActionLabel(kind string) string {
 	default:
 		return fmt.Sprintf("未知动作（%s）", kind)
 	}
-}
-
-// maxInt 返回两个整数中的较大值，用于安全截取已访问业务节点。
-func maxInt(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }

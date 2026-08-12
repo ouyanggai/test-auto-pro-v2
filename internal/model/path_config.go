@@ -227,7 +227,7 @@ type PathConfigActionOption struct {
 	Label string `json:"label"`
 }
 
-// PathConfigActionPlan 是节点按连续到达次数组织的有序动作计划。
+// PathConfigActionPlan 是节点有序动作列表及其兼容存储投影。
 type PathConfigActionPlan struct {
 	Catalog         []PathConfigActionCatalogItem `json:"catalog"`
 	RollbackTargets []PathConfigActionOption      `json:"rollbackTargets"`
@@ -243,19 +243,21 @@ type PathConfigActionCatalogItem struct {
 	Kind           string            `json:"kind"`
 	Label          string            `json:"label"`
 	Description    string            `json:"description"`
+	Enabled        bool              `json:"enabled"`
+	DisabledReason string            `json:"disabledReason"`
 	AllowsOpinion  bool              `json:"allowsOpinion"`
 	RequiresTarget bool              `json:"requiresTarget"`
 	RequiresPerson bool              `json:"requiresPerson"`
 	Person         *PathConfigPerson `json:"person,omitempty"`
 }
 
-// PathConfigArrivalPlan 表示节点第几次到达时按顺序执行的动作。
+// PathConfigArrivalPlan 表示兼容存储中的一组有序动作。
 type PathConfigArrivalPlan struct {
 	Visit int                    `json:"visit"`
 	Steps []PathConfigActionStep `json:"steps"`
 }
 
-// PathConfigActionStep 是公开动作步骤；目标节点与人员均使用不透明键。
+// PathConfigActionStep 是公开动作项；目标节点与人员均使用不透明键。
 type PathConfigActionStep struct {
 	Kind    string                         `json:"kind"`
 	Label   string                         `json:"label"`
@@ -264,7 +266,7 @@ type PathConfigActionStep struct {
 	Person  *PathConfigPersonStrategyInput `json:"person,omitempty"`
 }
 
-// PathConfigArrivalInput 是浏览器保存单次到达动作顺序的最小回写体。
+// PathConfigArrivalInput 是浏览器保存兼容动作分组的最小回写体。
 type PathConfigArrivalInput struct {
 	Visit int                         `json:"visit"`
 	Steps []PathConfigActionStepInput `json:"steps"`

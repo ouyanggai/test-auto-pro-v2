@@ -75,7 +75,7 @@ func TestPathConfigWorkspaceGeneratesAndPersistsFormSeparately(t *testing.T) {
 	}
 	for _, group := range afterForm.Groups {
 		for _, node := range group.Nodes {
-			if len(node.ActionPlan.Catalog) == 0 && !hasEditableWorkspacePerson(node) {
+			if !hasEnabledWorkspaceAction(node) && !hasEditableWorkspacePerson(node) {
 				continue
 			}
 			result, saveErr := serviceUnderTest.SaveNode(context.Background(), 7, 32, node.Key, nextWorkspaceSaveKey(configs.saveCalls), model.PathNodeSaveInput{
@@ -90,6 +90,16 @@ func TestPathConfigWorkspaceGeneratesAndPersistsFormSeparately(t *testing.T) {
 	if err != nil || complete.Status != "configured" || complete.Progress.Pending != 0 {
 		t.Fatalf("表单与必需节点全部完成后没有得到 configured：configuration=%+v err=%v", complete, err)
 	}
+}
+
+// hasEnabledWorkspaceAction 判断节点是否存在需要用户保存的可用动作，禁用目录只用于解释规则。
+func hasEnabledWorkspaceAction(node model.PathConfigNode) bool {
+	for _, action := range node.ActionPlan.Catalog {
+		if action.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // TestPathConfigWorkspaceFormIdempotencyReconcilesLostResponse 验证表单保存响应丢失后同键重试不再读取目标且返回同一事实。

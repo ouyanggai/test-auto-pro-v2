@@ -90,7 +90,7 @@ grep -Fq "branchEditing: props.configurationMode ? false" "${canvas_view}"
 # 节点保存正常响应和 GET 对账必须复用同一同路径推进规则，不得再出现跨路径“配置下一条”。
 grep -Fq "resolveConfirmedNodeSaveDestination" "${config_logic}"
 grep -Fq "copyPathConfigArrivals" "${config_logic}"
-grep -Fq "copyPathConfigArrivals" "${config_panel}"
+grep -Fq "pathConfigActionRowsToArrivals" "${config_panel}"
 grep -Fq "copyPathConfigArrivals" "${config_view}"
 if grep -Eq 'structuredClone\((draft\.arrivals|props\.draft\.arrivals|value\))' "${config_logic}" "${config_panel}" "${config_view}"; then
   echo 'F-007 节点动作保存链不得直接 structuredClone Vue 响应式草稿' >&2
@@ -128,18 +128,20 @@ grep -Fq "查看全部" "${config_panel}"
 grep -Fq "summarizePathConfigPersonItems" "${config_logic}"
 grep -Fq "运行时确定" "${config_panel}"
 grep -Fq "动作计划" "${config_panel}"
-grep -Fq "第 {{ arrival.visit }} 次" "${config_panel}"
-grep -Fq "动作次数" "${config_panel}"
-grep -Fq "supplementaryActionOptions" "${config_panel}"
-grep -Fq "选择要添加的动作" "${config_panel}"
-if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达次数|次到达|添加动作步骤'; then
-  echo 'F-007 动作区不得再暴露到达或复制概念' >&2
+grep -Fq "actionRows" "${config_panel}"
+grep -Fq "pathConfigActionRowsFromArrivals" "${config_logic}"
+grep -Fq "pathConfigActionRowsToArrivals" "${config_logic}"
+grep -Fq 'aria-label="动作执行次数"' "${config_panel}"
+grep -Fq 'placeholder="选择动作"' "${config_panel}"
+grep -Fq "disabledReason" "${config_panel}"
+if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达次数|次到达|第 \{\{|步骤|前置动作|处理意见'; then
+  echo 'F-007 动作区不得再暴露到达、步骤、复制或处理意见概念' >&2
   exit 1
 fi
 grep -Fq "rollbackTargets" "${config_panel}"
 grep -Fq "add_sign" "${config_panel}"
 grep -Fq "transfer_approver" "${config_panel}"
-grep -Fq ':multiple="requiredActionPerson(step.kind).multiple"' "${config_panel}"
+grep -Fq ':multiple="requiredActionPerson(row.kind).multiple"' "${config_panel}"
 grep -Fq "resolvedPersonStrategySelection" "${config_logic}"
 grep -Fq "validPathConfigArrivals" "${config_logic}"
 grep -Fq "normalizedPathConfigSeed" "${config_logic}"

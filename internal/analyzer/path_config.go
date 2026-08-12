@@ -131,7 +131,7 @@ func PathConfigPersonPlanStorageKey(nodeID string) string {
 	return pathConfigPersonPlanStoragePrefix + strings.TrimSpace(nodeID)
 }
 
-// PathConfigActionPlanStorageKey 生成版本化到达动作计划的内部 JSON 键。
+// PathConfigActionPlanStorageKey 生成版本化节点动作计划的内部 JSON 键。
 func PathConfigActionPlanStorageKey(nodeID string) string {
 	return pathConfigActionPlanStoragePrefix + strings.TrimSpace(nodeID)
 }
@@ -175,6 +175,7 @@ func (a *PathConfigAnalyzer) Analyze(
 		graphNodes:    make(map[string]model.FlowGraphNode, len(graph.Nodes)),
 		targetNodes:   make(map[string]*target.FlowNodeTemplate, len(graph.Nodes)),
 		outgoing:      make(map[string][]model.FlowGraphEdge, len(graph.Nodes)),
+		incoming:      make(map[string][]model.FlowGraphEdge, len(graph.Nodes)),
 		reachableEdge: make(map[string]bool, len(analysis.ReachableEdgeIDs)),
 		choices:       make(map[string]string, len(path.Choices)),
 		fields:        fields, instanceValues: instanceValues,
@@ -192,6 +193,7 @@ func (a *PathConfigAnalyzer) Analyze(
 	}
 	for _, edge := range graph.Edges {
 		projection.outgoing[edge.Source] = append(projection.outgoing[edge.Source], edge)
+		projection.incoming[edge.Target] = append(projection.incoming[edge.Target], edge)
 	}
 	for _, edgeID := range analysis.ReachableEdgeIDs {
 		projection.reachableEdge[edgeID] = true
@@ -224,6 +226,7 @@ type pathConfigProjection struct {
 	graphNodes     map[string]model.FlowGraphNode
 	targetNodes    map[string]*target.FlowNodeTemplate
 	outgoing       map[string][]model.FlowGraphEdge
+	incoming       map[string][]model.FlowGraphEdge
 	reachableEdge  map[string]bool
 	choices        map[string]string
 	fields         []target.FormFieldDetail
@@ -238,7 +241,6 @@ type pathConfigProjection struct {
 	parallelIndex  int
 	validation     PathConfigValidation
 	personTargets  map[string]*PathConfigPersonTarget
-	businessOrder  []string
 	warnings       []string
 	affected       bool
 }
@@ -477,9 +479,6 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 		result.Persons = append(result.Persons, p.personConfig(graphNode.ID, node))
 		result.Actions = append(result.Actions, p.approvalAction(graphNode.ID, graphNode.Name))
 	}
-	if graphNode.Type == "start" || graphNode.Type == "common" || graphNode.Type == "synergy" {
-		p.businessOrder = append(p.businessOrder, graphNode.ID)
-	}
 	result.ActionPlan = p.actionPlan(graphNode.ID, graphNode.Name, graphNode.Type, node, result.Persons)
 	if !blocked {
 		for _, person := range result.Persons {
@@ -530,7 +529,14 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 			hasEditablePerson = true
 		}
 	}
-	hasConfigItem := len(node.ActionPlan.Catalog) > 0 || hasEditablePerson
+	hasEnabledAction := false
+	for _, action := range node.ActionPlan.Catalog {
+		if action.Enabled {
+			hasEnabledAction = true
+			break
+		}
+	}
+	hasConfigItem := hasEnabledAction || hasEditablePerson
 	if !hasConfigItem {
 		if hasRuntime {
 			return "runtime", "运行时确定"
@@ -602,7 +608,7 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 			return model.PathConfigPerson{Title: title, Mode: "review", Detail: detail + "；当前合法范围内没有可选人员", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 		}
 		// 没有静态范围时只允许明确说明真实依赖，不能伪造全公司候选。
-		return model.PathConfigPerson{Title: title, Mode: "runtime", Detail: detail + "；依赖真实任务上下文，只能在真实运行节点到达时加载候选", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+		return model.PathConfigPerson{Title: title, Mode: "runtime", Detail: detail + "；依赖真实任务上下文，只能在实际执行该节点时加载候选", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
 	key := PathConfigPersonToken(nodeID)
 	options := make([]model.PathConfigPersonOption, 0, len(config.Candidates))

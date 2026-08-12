@@ -172,7 +172,7 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 			return model.PathConfigSaveResult{}, err
 		}
 	} else {
-		// 兼容已部署页面的旧最小动作数组；新页面只使用人员策略和到达计划。
+		// 兼容已部署页面的旧最小动作数组；新页面只使用人员策略和动作列表。
 		_, nodeActions, err = validatePathConfigSubmission(nodeValidation, nil, input.Actions)
 		if err != nil {
 			return model.PathConfigSaveResult{}, err
@@ -191,7 +191,7 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 		delete(stored.ActionValues, analyzer.PathConfigPersonStorageKey(nodeTarget.NodeID))
 	}
 	if _, valid := analyzer.CountStoredPathConfigActionSteps(stored.ActionValues); !valid {
-		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "整条路径的动作步骤不能超过 100 个"}
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "整条路径的动作总数不能超过 100 个"}
 	}
 	stored.ConfirmedNodeKeys = appendUnique(stored.ConfirmedNodeKeys, nodeKey)
 	stored.PathID = pathID
@@ -364,7 +364,13 @@ func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKe
 			if node.Status == "affected" || node.Status == "partial" || node.LineBlocked {
 				continue
 			}
-			requiresSave := len(node.ActionPlan.Catalog) > 0
+			requiresSave := false
+			for _, action := range node.ActionPlan.Catalog {
+				if action.Enabled {
+					requiresSave = true
+					break
+				}
+			}
 			for _, person := range node.Persons {
 				requiresSave = requiresSave || person.Editable
 			}

@@ -318,7 +318,7 @@ func TestPathConfigAnalyzerKeepsRuntimePersonRulesReadOnly(t *testing.T) {
 		t.Fatalf("运行时人员投影失败：%v", err)
 	}
 	person := findConfigNode(configuration.Groups, "财务审批").Persons[0]
-	if person.Editable || person.Mode != "runtime" || len(person.Options) != 0 || !strings.Contains(person.Detail, "真实运行节点") {
+	if person.Editable || person.Mode != "runtime" || len(person.Options) != 0 || !strings.Contains(person.Detail, "实际执行该节点") {
 		t.Fatalf("运行时人员被伪造成可选候选：%+v", person)
 	}
 	if len(validation.ActionTokens) != 3 {
@@ -549,8 +549,8 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 		{Kind: "transfer_approver", Person: &transferManual},
 		{Kind: "approve_pass", Opinion: "同意"},
 	}}}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, transferThenApprove); !strings.Contains(reason, "最后一步") {
-		t.Fatalf("移交后的同次到达动作没有被拒绝：%s", reason)
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, transferThenApprove); !strings.Contains(reason, "不能继续追加") {
+		t.Fatalf("移交后的追加动作没有被拒绝：%s", reason)
 	}
 }
 
@@ -614,7 +614,7 @@ func TestPathConfigAnalyzerNormalizesJavaScriptSafeSeeds(t *testing.T) {
 	}
 }
 
-// TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration 验证动作目录、回退目标、有序步骤与旧 agree/disagree 首访迁移。
+// TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration 验证动作目录、直接上一审批回退与旧 agree/disagree 迁移。
 func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T) {
 	tree := pathConfigTree()
 	graph := requirementGraph(t, tree)
@@ -631,14 +631,22 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 	if approval == nil || len(approval.ActionPlan.Arrivals) != 1 || approval.ActionPlan.Arrivals[0].Steps[0].Kind != "reject_no_pass" {
 		t.Fatalf("旧 disagree 没有准确迁移为首访不同意：%+v", approval)
 	}
-	wantKinds := map[string]bool{"approve_pass": true, "reject_no_pass": true, "draft_save": true, "rollback_previous": true}
+	wantKinds := map[string]bool{"approve_pass": true, "reject_no_pass": true, "draft_save": true}
 	for _, item := range approval.ActionPlan.Catalog {
-		delete(wantKinds, item.Kind)
+		if item.Enabled {
+			delete(wantKinds, item.Kind)
+		}
 	}
-	if len(wantKinds) != 0 || len(approval.ActionPlan.RollbackTargets) == 0 {
+	firstRollback := findActionCatalogItem(t, approval.ActionPlan.Catalog, "rollback_previous")
+	if len(wantKinds) != 0 || firstRollback.Enabled || firstRollback.DisabledReason != "上一级为发起人，请使用不同意驳回" || len(approval.ActionPlan.RollbackTargets) != 0 {
 		t.Fatalf("审批动作目录或回退目标不完整：missing=%v plan=%+v", wantKinds, approval.ActionPlan)
 	}
-	nodeTarget := validation.NodeTokens[approval.Key]
+	secondApproval := findConfigNode(configuration.Groups, "部门审批")
+	secondRollback := findActionCatalogItem(t, secondApproval.ActionPlan.Catalog, "rollback_previous")
+	if !secondRollback.Enabled || len(secondApproval.ActionPlan.RollbackTargets) != 1 || secondApproval.ActionPlan.RollbackTargets[0].Label != "财务审批" {
+		t.Fatalf("第二审批没有自动绑定直接上一审批：%+v", secondApproval.ActionPlan)
+	}
+	nodeTarget := validation.NodeTokens[secondApproval.Key]
 	input := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
 		{Kind: "draft_save"},
 	}}}
@@ -646,19 +654,27 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 		t.Fatalf("合法暂存动作被拒绝：%s", reason)
 	}
 	input = []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}, {Kind: "draft_save"}}}}
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, input); !strings.Contains(reason, "最后一步") {
-		t.Fatalf("终止动作后的额外步骤没有被拒绝：%s", reason)
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, input); !strings.Contains(reason, "不能继续追加") {
+		t.Fatalf("终止动作后的追加动作没有被拒绝：%s", reason)
+	}
+	rollbackToken := secondApproval.ActionPlan.RollbackTargets[0].Value
+	encoded, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "rollback_previous", Target: rollbackToken, Opinion: "不应保存"}}}})
+	if reason != "" || strings.Contains(encoded, "不应保存") {
+		t.Fatalf("自动回退目标或处理意见清空不正确：encoded=%s reason=%s", encoded, reason)
+	}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(validation.NodeTokens[approval.Key], []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "rollback_previous", Target: rollbackToken}}}}); !strings.Contains(reason, "不允许") {
+		t.Fatalf("第一审批错误接受回退：%s", reason)
 	}
 	tooMany := make([]model.PathConfigArrivalInput, 11)
 	for index := range tooMany {
 		tooMany[index] = model.PathConfigArrivalInput{Visit: index + 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}}
 	}
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, tooMany); !strings.Contains(reason, "10") {
-		t.Fatalf("超过十次到达没有被拒绝：%s", reason)
+		t.Fatalf("超过十次终止动作没有被拒绝：%s", reason)
 	}
 }
 
-// TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings 验证并行遍历中更早出现的兄弟支线不能被伪造成回退前驱。
+// TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings 验证并行支线不能把兄弟或发起人伪造成可回退审批节点。
 func TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings(t *testing.T) {
 	tree := requirementParallelTree()
 	graph := requirementGraph(t, tree)
@@ -680,12 +696,13 @@ func TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings(t *testing.T) 
 			t.Fatalf("并行兄弟节点被错误加入回退目录：%+v", business.ActionPlan.RollbackTargets)
 		}
 	}
-	if len(business.ActionPlan.RollbackTargets) != 1 || business.ActionPlan.RollbackTargets[0].Label != "发起" {
-		t.Fatalf("业务支线应仅能回退到共同前驱：%+v", business.ActionPlan.RollbackTargets)
+	rollback := findActionCatalogItem(t, business.ActionPlan.Catalog, "rollback_previous")
+	if rollback.Enabled || len(business.ActionPlan.RollbackTargets) != 0 || rollback.DisabledReason != "上一级为发起人，请使用不同意驳回" {
+		t.Fatalf("业务支线错误开放回退发起人：item=%+v targets=%+v", rollback, business.ActionPlan.RollbackTargets)
 	}
 }
 
-// TestPathConfigAnalyzerCountsWholePathActionLimit 验证整条路径超过一百个动作步骤时统一拒绝。
+// TestPathConfigAnalyzerCountsWholePathActionLimit 验证整条路径超过一百个动作时统一拒绝。
 func TestPathConfigAnalyzerCountsWholePathActionLimit(t *testing.T) {
 	targetPlan := analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"draft_save": true}, RollbackTargets: map[string]string{}}
 	arrivals := make([]model.PathConfigArrivalInput, 10)

@@ -198,10 +198,19 @@ export interface PathConfigActionCatalogItem {
   kind: PathConfigActionKind
   label: string
   description: string
+  enabled: boolean
+  disabledReason: string
   allowsOpinion: boolean
   requiresTarget: boolean
   requiresPerson: boolean
   person?: PathConfigPerson
+}
+
+export interface PathConfigActionRow {
+  kind: PathConfigActionKind
+  count: number
+  target: string
+  person?: PathConfigPersonStrategyInput
 }
 
 export interface PathConfigArrivalPlan {

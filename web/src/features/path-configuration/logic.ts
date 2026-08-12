@@ -1,6 +1,7 @@
 import type {
   PathConfigActionKind,
-  PathConfigActionCatalogItem,
+  PathConfigActionRow,
+  PathConfigArrivalPlan,
   PathConfigArrivalInput,
   PathConfigActionValue,
   PathConfiguration,
@@ -169,11 +170,12 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
           }
         }
       }
-      if (node.actionPlan.catalog.length) arrivals[node.key] = node.actionPlan.arrivals.map(arrival => ({
+      if (node.actionPlan.catalog.some(item => item.enabled)) arrivals[node.key] = pathConfigActionRowsToArrivals(pathConfigActionRowsFromArrivals(node.actionPlan.arrivals), node)
+      else if (node.actionPlan.arrivals.length) arrivals[node.key] = node.actionPlan.arrivals.map(arrival => ({
         visit: arrival.visit,
         steps: arrival.steps.map(step => ({
           kind: step.kind,
-          opinion: step.opinion,
+          opinion: '',
           target: step.target,
           person: step.person ? { ...step.person, selected: [...step.person.selected] } : undefined,
         })),
@@ -223,7 +225,7 @@ export function reconcilePathConfigDraft(configuration: PathConfiguration, draft
         }
       }
       if (Object.prototype.hasOwnProperty.call(draft.arrivals, node.key)) {
-        const allowedKinds = new Set(node.actionPlan.catalog.map(item => item.kind))
+        const allowedKinds = new Set(node.actionPlan.catalog.filter(item => item.enabled).map(item => item.kind))
         next.arrivals[node.key] = draft.arrivals[node.key]
           .slice(0, node.actionPlan.maxArrivals)
           .map((arrival, index) => ({
@@ -320,7 +322,7 @@ export function copyPathConfigArrivals(arrivals: readonly PathConfigArrivalInput
     visit: arrival.visit,
     steps: arrival.steps.map(step => ({
       kind: step.kind,
-      opinion: step.opinion,
+      opinion: '',
       target: step.target,
       person: step.person
         ? {
@@ -340,7 +342,8 @@ export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: Path
     .filter(person => person.editable)
     .map(person => normalizedPersonStrategy(person, draft.personStrategies[person.key]))
   // 保存前必须脱离 Vue 深响应式对象，否则 structuredClone 会在 fetch 之前抛 DataCloneError，导致节点 PUT 根本没有发出。
-  return { persons, arrivals: copyPathConfigArrivals(draft.arrivals[node.key] ?? []) }
+  const rows = pathConfigActionRowsFromArrivals(draft.arrivals[node.key] ?? [])
+  return { persons, arrivals: pathConfigActionRowsToArrivals(rows, node) }
 }
 
 // currentNodeConfigurationComplete 判断当前节点人数约束是否满足；表单字段不再属于节点侧栏。
@@ -360,7 +363,7 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
   }
   const arrivals = draft.arrivals[node.key] ?? []
   if (node.actionPlan.affected || !validPathConfigArrivals(node, arrivals)) missing.push('动作计划')
-  const actionable = node.actionPlan.catalog.length > 0 || node.persons.some((person) => person.editable)
+  const actionable = node.actionPlan.catalog.some(item => item.enabled) || node.persons.some((person) => person.editable)
   // 历史 fields/gaps 即使仍出现在兼容响应中也不能阻断节点保存；表单兼容性只由独立运行时负责。
   return { missing, complete: actionable && missing.length === 0 }
 }
@@ -374,10 +377,7 @@ export function hasCurrentNodeDraftChanges(node: PathConfigNode | null, draft: P
       key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected,
     })) return true
   }
-  const baseline = node.actionPlan.arrivals.map(arrival => ({
-    visit: arrival.visit,
-    steps: arrival.steps.map(step => ({ kind: step.kind, opinion: step.opinion, target: step.target, person: step.person })),
-  }))
+  const baseline = pathConfigActionRowsToArrivals(pathConfigActionRowsFromArrivals(node.actionPlan.arrivals), node)
   return JSON.stringify(draft.arrivals[node.key] ?? []) !== JSON.stringify(baseline)
 }
 
@@ -408,33 +408,53 @@ export function normalizedPathConfigSeed(seed: unknown): number {
   return typeof seed === 'number' && Number.isSafeInteger(seed) && seed >= 1 ? seed : 1
 }
 
-// 目标移交成功后当前处理任务已交给新处理人，因此与处理结果一样结束本次到达。
+// 目标移交成功后当前处理任务已交给新处理人，因此与处理结果一样结束当前任务处理。
 const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
 
-// pathConfigSupplementaryActions 返回可重复插在终止动作之前的静态合法动作，推进类动作不能作为附加步骤。
-export function pathConfigSupplementaryActions(node: PathConfigNode): PathConfigActionCatalogItem[] {
-  return node.actionPlan.catalog.filter(item => !TERMINAL_ACTIONS.has(item.kind))
+// pathConfigActionRowsFromArrivals 把旧兼容结构压平成用户可理解的动作行，并合并相邻且参数相同的动作次数。
+export function pathConfigActionRowsFromArrivals(arrivals: readonly PathConfigArrivalInput[] | readonly PathConfigArrivalPlan[]): PathConfigActionRow[] {
+  const rows: PathConfigActionRow[] = []
+  for (const arrival of arrivals) {
+    for (const step of arrival.steps) {
+      const candidate: PathConfigActionRow = {
+        kind: step.kind,
+        count: 1,
+        target: step.target || '',
+        person: step.person ? { ...step.person, selected: [...step.person.selected] } : undefined,
+      }
+      const previous = rows[rows.length - 1]
+      if (previous && previous.kind === candidate.kind && previous.target === candidate.target && JSON.stringify(previous.person) === JSON.stringify(candidate.person)) previous.count++
+      else rows.push(candidate)
+    }
+  }
+  return rows
 }
 
-// resizePathConfigArrivals 按动作次数调整内部 arrivals；增加时复制上一组动作，减少时只裁掉尾部并保持连续序号。
-export function resizePathConfigArrivals(
-  arrivals: readonly PathConfigArrivalInput[],
-  requestedCount: number,
-  maxArrivals: number,
-  maxAllowedSteps: number,
-  fallbackKind: PathConfigActionKind,
-): PathConfigArrivalInput[] {
-  const desired = Math.min(maxArrivals, Math.max(1, Math.trunc(Number.isFinite(requestedCount) ? requestedCount : 1)))
-  const result = copyPathConfigArrivals(arrivals.length ? arrivals : [{ visit: 1, steps: [{ kind: fallbackKind, opinion: '', target: '' }] }])
-  if (desired < result.length) return result.slice(0, desired).map((arrival, index) => ({ ...arrival, visit: index + 1 }))
-  while (result.length < desired) {
-    const previous = result[result.length - 1]
-    const nextSteps = copyPathConfigArrivals([previous])[0].steps
-    const currentSteps = result.reduce((total, arrival) => total + arrival.steps.length, 0)
-    if (currentSteps + nextSteps.length > maxAllowedSteps) break
-    result.push({ visit: result.length + 1, steps: nextSteps })
+// pathConfigActionRowsToArrivals 将动作行确定性展开为兼容存储结构；加签排在下一终止动作前，其他动作各自结束一次处理。
+export function pathConfigActionRowsToArrivals(rows: readonly PathConfigActionRow[], node: PathConfigNode): PathConfigArrivalInput[] {
+  const arrivals: PathConfigArrivalInput[] = []
+  const pending: PathConfigArrivalInput['steps'] = []
+  const targetFallback = node.actionPlan.rollbackTargets.length === 1 ? node.actionPlan.rollbackTargets[0].value : ''
+  const limit = node.actionPlan.maxPathSteps
+  let expanded = 0
+  for (const row of rows) {
+    const count = Math.min(node.actionPlan.maxArrivals, Math.max(1, Math.trunc(Number.isFinite(row.count) ? row.count : 1)))
+    for (let index = 0; index < count && expanded < limit; index++, expanded++) {
+      const step = {
+        kind: row.kind,
+        opinion: '',
+        target: row.kind === 'rollback_previous' ? (row.target || targetFallback) : '',
+        person: row.person ? { ...row.person, selected: [...row.person.selected] } : undefined,
+      }
+      if (!TERMINAL_ACTIONS.has(row.kind)) {
+        pending.push(step)
+        continue
+      }
+      arrivals.push({ visit: arrivals.length + 1, steps: [...pending.splice(0), step] })
+    }
   }
-  return result
+  if (pending.length) arrivals.push({ visit: arrivals.length + 1, steps: pending.splice(0) })
+  return arrivals
 }
 
 // validPathConfigArrivals 即时校验连续访问、有序终止动作和必要参数，服务端仍会以当前目标快照重新核对。
@@ -449,7 +469,7 @@ export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConf
       const step = arrival.steps[stepIndex]
       const item = catalog.get(step.kind)
       total++
-      if (!item || total > node.actionPlan.maxPathSteps) return false
+      if (!item?.enabled || total > node.actionPlan.maxPathSteps) return false
       if (TERMINAL_ACTIONS.has(step.kind) && stepIndex !== arrival.steps.length - 1) return false
       if (item.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === step.target)) return false
       if (item.requiresPerson) {
