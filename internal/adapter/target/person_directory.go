@@ -63,6 +63,7 @@ func (c *Client) resolveFlowAuditMetadata(ctx context.Context, active Session, t
 		}
 		visited[node.ID] = true
 		resolver.resolve(node.AuditConfig)
+		resolver.resolveAddSignCandidates(node)
 		walk(node.Child)
 		for index := range node.ConditionNodes {
 			walk(node.ConditionNodes[index].Child)
@@ -72,6 +73,37 @@ func (c *Client) resolveFlowAuditMetadata(ctx context.Context, active Session, t
 		}
 	}
 	walk(tree)
+}
+
+// resolveAddSignCandidates 为审批或协同节点读取新增加签节点可使用的公司人员目录，不复用当前节点处理人范围。
+func (r *auditDirectoryResolver) resolveAddSignCandidates(node *FlowNodeTemplate) {
+	if node == nil || (strings.TrimSpace(node.Type) != "common" && strings.TrimSpace(node.Type) != "synergy") {
+		return
+	}
+	items, err := r.personnelItems()
+	if err != nil {
+		node.AddSignIssues = append(node.AddSignIssues, FlowAuditResolutionIssue{Category: "加签节点处理人", Reason: "目标公司人员目录读取失败"})
+		return
+	}
+	candidates := make([]FlowAuditCandidate, 0, len(items))
+	for _, item := range items {
+		candidate := auditCandidateFromNamed(item)
+		if candidate.ID == "" || candidate.Name == "" {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	candidates = appendUniqueAuditCandidates(nil, candidates...)
+	if len(candidates) == 0 {
+		node.AddSignIssues = append(node.AddSignIssues, FlowAuditResolutionIssue{Category: "加签节点处理人", Reason: "目标公司人员目录没有可配置人员"})
+		return
+	}
+	if len(candidates) > maxAuditDirectoryCandidates {
+		node.AddSignCandidates = candidates[:maxAuditDirectoryCandidates]
+		node.AddSignIssues = append(node.AddSignIssues, FlowAuditResolutionIssue{Category: "加签节点处理人", Reason: "目标公司人员目录超过当前安全解析上限"})
+		return
+	}
+	node.AddSignCandidates = candidates
 }
 
 // resolve 补齐固定详情、运行节点范围名称和合法候选；未知范围或目录失败均阻止误保存为完成。

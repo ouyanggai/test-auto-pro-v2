@@ -282,13 +282,13 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, nod
 		} else {
 			appendAction("rollback_previous", "回退上一级", "回退目标必须由当前任务链的直接上一待办确定", false, rollbackReason, false, nil, nil)
 		}
-		if person, personTarget := actionPersonConfig(nodeID, "add_sign", node); person != nil && personTarget != nil {
-			// 加签与移交在目标工作台是独立动作，不能和“当前节点主处理人是否可编辑”绑定；候选仍严格来自当前目标模板范围。
-			appendAction("add_sign", "加签", "在当前节点增加受目标范围约束的处理人；执行时仍会核对真实任务权限", true, "", false, person, personTarget)
+		if person, personTarget := addSignNodePersonConfig(nodeID, node); person != nil && personTarget != nil {
+			// 目标 AddCounterSign 保存的是新审批节点结构；加签节点处理人必须独立于当前节点主处理人范围。
+			appendAction("add_sign", "加签节点", "在当前流程中新增审批节点并配置其处理人；执行时仍会核对真实任务权限和目标模板", true, "", false, person, personTarget)
 		} else {
-			appendAction("add_sign", "加签", "在当前节点增加处理人", false, "当前模板未解析到可证明合法的加签人员范围", false, nil, nil)
+			appendAction("add_sign", "加签节点", "在当前流程中新增审批节点", false, addSignDisabledReason(node), false, nil, nil)
 		}
-		if person, personTarget := actionPersonConfig(nodeID, "transfer_approver", node); person != nil && personTarget != nil {
+		if person, personTarget := transferPersonConfig(nodeID, node); person != nil && personTarget != nil {
 			appendAction("transfer_approver", "移交", "把当前处理任务移交给受目标范围约束的一名或多名处理人并结束当前任务", true, "", false, person, personTarget)
 		} else {
 			appendAction("transfer_approver", "移交", "把当前处理任务移交给其他处理人", false, "当前模板未解析到可证明合法的移交人员范围", false, nil, nil)
@@ -315,22 +315,43 @@ func appendDisabledApprovalActions(appendAction func(string, string, string, boo
 	appendAction("reject_no_pass", "不同意", "审批不通过", false, reason, false, nil, nil)
 	appendAction("draft_save", "暂存", "暂存当前处理", false, reason, false, nil, nil)
 	appendAction("rollback_previous", "回退上一级", "回退到直接上一审批节点", false, reason, false, nil, nil)
-	appendAction("add_sign", "加签", "增加处理人", false, reason, false, nil, nil)
+	appendAction("add_sign", "加签节点", "新增审批节点", false, reason, false, nil, nil)
 	appendAction("transfer_approver", "移交", "移交当前任务", false, reason, false, nil, nil)
 }
 
-// actionPersonConfig 从目标当前快照已解析的合法候选生成动作专用人员规则；加签和移交均可在该受限范围内多选。
-func actionPersonConfig(nodeID, actionKind string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
+// transferPersonConfig 从当前节点已解析的合法候选生成移交人员规则，候选不得扩大到节点范围之外。
+func transferPersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
 	if node == nil || node.AuditConfig == nil || len(node.AuditConfig.ResolutionIssues) > 0 || len(node.AuditConfig.Candidates) == 0 {
 		return nil, nil
 	}
 	config := node.AuditConfig
+	return actionCandidatePersonConfig(nodeID, "transfer_approver", "移交人员", "候选来自当前节点目标模板的合法人员范围", config.Candidates, config.DefaultCandidates)
+}
+
+// addSignNodePersonConfig 从目标公司人员目录生成新增审批节点的独立处理人策略，不受当前节点人员配置是否可编辑影响。
+func addSignNodePersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
+	if node == nil || len(node.AddSignIssues) > 0 || len(node.AddSignCandidates) == 0 {
+		return nil, nil
+	}
+	return actionCandidatePersonConfig(nodeID, "add_sign", "加签节点处理人", "候选来自当前账号可配置的新审批节点人员目录", node.AddSignCandidates, nil)
+}
+
+// addSignDisabledReason 返回加签节点不可配置的明确目录原因，避免错误归因于当前节点人员范围。
+func addSignDisabledReason(node *target.FlowNodeTemplate) string {
+	if node != nil && len(node.AddSignIssues) > 0 && strings.TrimSpace(node.AddSignIssues[0].Reason) != "" {
+		return strings.TrimSpace(node.AddSignIssues[0].Reason)
+	}
+	return "当前账号没有解析到可配置的加签节点处理人"
+}
+
+// actionCandidatePersonConfig 把动作自己的真实人员候选转换为不透明策略模型，并统一人数与随机边界。
+func actionCandidatePersonConfig(nodeID, actionKind, title, detail string, candidates, defaults []target.FlowAuditCandidate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
 	key := PathConfigPersonToken(nodeID + ":" + actionKind)
-	options := make([]model.PathConfigPersonOption, 0, len(config.Candidates))
-	candidateTokens := make(map[string]string, len(config.Candidates))
-	candidateNames := make(map[string]string, len(config.Candidates))
-	rawToToken := make(map[string]string, len(config.Candidates))
-	for _, candidate := range config.Candidates {
+	options := make([]model.PathConfigPersonOption, 0, len(candidates))
+	candidateTokens := make(map[string]string, len(candidates))
+	candidateNames := make(map[string]string, len(candidates))
+	rawToToken := make(map[string]string, len(candidates))
+	for _, candidate := range candidates {
 		token := PathConfigPersonOptionToken(nodeID+":"+actionKind, candidate.ID)
 		candidateTokens[token] = candidate.ID
 		candidateNames[candidate.ID] = candidate.Name
@@ -340,9 +361,9 @@ func actionPersonConfig(nodeID, actionKind string, node *target.FlowNodeTemplate
 	if len(options) == 0 {
 		return nil, nil
 	}
-	defaultIDs := make([]string, 0, len(config.DefaultCandidates))
-	defaultSelected := make([]string, 0, len(config.DefaultCandidates))
-	for _, candidate := range config.DefaultCandidates {
+	defaultIDs := make([]string, 0, len(defaults))
+	defaultSelected := make([]string, 0, len(defaults))
+	for _, candidate := range defaults {
 		if token, exists := rawToToken[candidate.ID]; exists {
 			defaultIDs = append(defaultIDs, candidate.ID)
 			defaultSelected = append(defaultSelected, token)
@@ -354,20 +375,20 @@ func actionPersonConfig(nodeID, actionKind string, node *target.FlowNodeTemplate
 		strategies = append([]model.PathConfigPersonStrategyOption{{Value: "target_default", Label: "目标默认"}}, strategies...)
 		allowed["target_default"] = true
 	}
-	if (actionKind == "add_sign" || actionKind == "transfer_approver") && len(options) > 1 {
+	if len(options) > 1 {
 		strategies = append(strategies, model.PathConfigPersonStrategyOption{Value: "all", Label: "全部候选"})
 		allowed["all"] = true
 	}
-	// 目标移交弹窗以多选树收集 checkboxPersonGroup，并完整提交 userIds；不能把真实多人范围缩成单选。
+	// 目标移交和新增审批节点都允许提交完整人员集合，不能把真实多人能力缩成单选。
 	maxCount := len(options)
 	multiple := true
 	personTarget := &PathConfigPersonTarget{
-		Key: key, Name: "动作人员", CandidateTokens: candidateTokens, CandidateNames: candidateNames,
-		CandidateOrder: candidateOrder(config.Candidates), DefaultIDs: defaultIDs, AllowedStrategies: allowed,
+		Key: key, Name: title, CandidateTokens: candidateTokens, CandidateNames: candidateNames,
+		CandidateOrder: candidateOrder(candidates), DefaultIDs: defaultIDs, AllowedStrategies: allowed,
 		Required: true, MinCount: 1, MaxCount: maxCount,
 	}
 	person := &model.PathConfigPerson{
-		Key: key, Title: "动作人员", Mode: "select", Detail: "候选来自当前节点目标模板的合法人员范围", Editable: true,
+		Key: key, Title: title, Mode: "select", Detail: detail, Editable: true,
 		Multiple: multiple, Required: true, MinCount: 1, MaxCount: maxCount, Selected: []string{}, DefaultSelected: defaultSelected,
 		Options: options, Strategy: "manual", StrategySeed: stablePathConfigSeed(nodeID + ":action"), Strategies: strategies,
 		Items: []model.PathConfigPersonDisplayItem{},
@@ -455,6 +476,8 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 	total := 0
 	actionCounts := make(map[string]int)
 	countIssue := ""
+	decisionKind := ""
+	decisionIssue := ""
 	for index, arrival := range arrivals {
 		if arrival.Visit != index+1 || len(arrival.Steps) == 0 {
 			return result, "动作计划结构不完整"
@@ -468,6 +491,9 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 			actionCounts[step.Kind]++
 			if countIssue == "" {
 				countIssue = pathConfigActionCountIssue(target, step.Kind, actionCounts[step.Kind])
+			}
+			if pathConfigTerminalAction(step.Kind) && decisionIssue == "" {
+				decisionKind, decisionIssue = pathConfigDecisionActionIssue(decisionKind, step.Kind)
 			}
 			if pathConfigTerminalAction(step.Kind) && stepIndex != len(arrival.Steps)-1 {
 				return result, "结束当前任务的动作后不能继续追加其他动作"
@@ -504,7 +530,10 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 		result = append(result, public)
 	}
 	// 存量超限动作仍完整投影供用户核对，但必须标记 affected，不能静默截断成看似有效的配置。
-	return result, countIssue
+	if countIssue != "" {
+		return result, countIssue
+	}
+	return result, decisionIssue
 }
 
 // invertTokenMap 构造内部 ID 到公开 token 的反向映射，仅供投影已保存人员策略。
@@ -524,6 +553,7 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 	stored := storedPathConfigActionPlan{Version: pathConfigActionPlanVersion, Arrivals: make([]storedPathConfigArrival, 0, len(arrivals))}
 	total := 0
 	actionCounts := make(map[string]int)
+	decisionKind := ""
 	for index, arrival := range arrivals {
 		if arrival.Visit != index+1 || len(arrival.Steps) == 0 {
 			return "", total, "动作计划结构不完整"
@@ -538,6 +568,13 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 			actionCounts[kind]++
 			if reason := pathConfigActionCountIssue(target, kind, actionCounts[kind]); reason != "" {
 				return "", total, reason
+			}
+			if pathConfigTerminalAction(kind) {
+				var reason string
+				decisionKind, reason = pathConfigDecisionActionIssue(decisionKind, kind)
+				if reason != "" {
+					return "", total, reason
+				}
 			}
 			if pathConfigTerminalAction(kind) && stepIndex != len(arrival.Steps)-1 {
 				return "", total, "结束当前任务的动作后不能继续追加其他动作"
@@ -578,9 +615,10 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 	return string(encoded), total, ""
 }
 
-// pathConfigActionMaxCount 返回配置期可证明的单动作次数上限；提交只能创建一个发起实例，其他动作沿用既有有界次数。
+// pathConfigActionMaxCount 返回配置期可证明的单动作次数上限；提交和同意都会结束并推进唯一当前任务，只能各配置一次。
 func pathConfigActionMaxCount(kind string) int {
-	if strings.TrimSpace(kind) == "submit" {
+	switch strings.TrimSpace(kind) {
+	case "submit", "approve_pass":
 		return 1
 	}
 	return maxPathConfigArrivals
@@ -596,6 +634,15 @@ func pathConfigActionCountIssue(target PathConfigNodeTarget, kind string, count 
 		return ""
 	}
 	return fmt.Sprintf("%s最多配置 %d 次", pathConfigActionLabel(kind), maxCount)
+}
+
+// pathConfigDecisionActionIssue 确保审批节点只有一种结束当前处理的流转结果，显式选择的结果会替代默认同意。
+func pathConfigDecisionActionIssue(current, next string) (string, string) {
+	next = strings.TrimSpace(next)
+	if current == "" || current == next {
+		return next, ""
+	}
+	return current, "同一节点只能选择一种处理结果；不同意、暂存、回退或移交会替代默认同意"
 }
 
 // CountStoredPathConfigActionSteps 统计整条路径版本化动作计划步数；损坏 JSON 返回 false。
@@ -655,7 +702,7 @@ func pathConfigActionLabel(kind string) string {
 	case "rollback_previous":
 		return "回退上一级"
 	case "add_sign":
-		return "加签"
+		return "加签节点"
 	case "transfer_approver":
 		return "移交"
 	default:

@@ -84,6 +84,8 @@ type FlowNodeTemplate struct {
 	ConditionNodes    []FlowBranchTemplate
 	ParallelNodes     []FlowBranchTemplate
 	AuditConfig       *FlowNodeAuditConfig
+	AddSignCandidates []FlowAuditCandidate
+	AddSignIssues     []FlowAuditResolutionIssue
 	FieldPowers       []FlowNodeFieldPower
 	IsSkip            *bool
 	Delay             *int

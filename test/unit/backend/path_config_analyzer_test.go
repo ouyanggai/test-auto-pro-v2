@@ -514,8 +514,8 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 	}
 	nodeTarget := validation.NodeTokens[findConfigNode(configuration.Groups, "财务审批").Key]
 	actionPerson := findActionCatalogItem(t, findConfigNode(configuration.Groups, "财务审批").ActionPlan.Catalog, "add_sign").Person
-	if actionPerson == nil || len(actionPerson.Options) != 3 {
-		t.Fatalf("动作人员范围没有独立投影当前目标候选：%+v", actionPerson)
+	if actionPerson == nil || actionPerson.Title != "加签节点处理人" || len(actionPerson.Options) != 2 || actionPerson.Options[0].Label != "加签候选甲" {
+		t.Fatalf("加签节点没有使用独立人员目录：%+v", actionPerson)
 	}
 	transferPerson := findActionCatalogItem(t, findConfigNode(configuration.Groups, "财务审批").ActionPlan.Catalog, "transfer_approver").Person
 	if transferPerson == nil || len(transferPerson.Options) != 3 || !transferPerson.Multiple || transferPerson.MinCount != 1 || transferPerson.MaxCount != 3 {
@@ -524,14 +524,14 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 	if !containsPersonStrategy(transferPerson.Strategies, "all") {
 		t.Fatalf("移交多人候选缺少全选策略：%+v", transferPerson.Strategies)
 	}
-	actionManual := model.PathConfigPersonStrategyInput{Key: actionPerson.Key, Strategy: "manual", Seed: 7, Selected: []string{actionPerson.Options[0].Value, actionPerson.Options[1].Value, actionPerson.Options[2].Value}}
+	actionManual := model.PathConfigPersonStrategyInput{Key: actionPerson.Key, Strategy: "manual", Seed: 7, Selected: []string{actionPerson.Options[0].Value, actionPerson.Options[1].Value}}
 	transferManual := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{transferPerson.Options[0].Value, transferPerson.Options[1].Value}}
 	actions := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
 		{Kind: "add_sign", Person: &actionManual},
 		{Kind: "transfer_approver", Person: &transferManual},
 	}}}
 	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 2 {
-		t.Fatalf("加签或移交没有复用当前合法人员策略：count=%d reason=%s", count, reason)
+		t.Fatalf("加签节点或移交人员策略没有按各自动作目录保存：count=%d reason=%s", count, reason)
 	}
 	transferAll := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "all", Seed: 9, Selected: []string{transferPerson.Options[0].Value}}
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "transfer_approver", Person: &transferAll}}}}); reason != "" {
@@ -676,8 +676,19 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 		{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
 		{Visit: 2, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
 	}
-	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, twice); reason != "" || count != 2 {
-		t.Fatalf("非提交动作的既有有界次数被错误收紧：count=%d reason=%s", count, reason)
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, twice); !strings.Contains(reason, "同意最多配置 1 次") {
+		t.Fatalf("重复同意没有被权威单次规则拒绝：%s", reason)
+	}
+	mixedDecision := []model.PathConfigArrivalInput{
+		{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
+		{Visit: 2, Steps: []model.PathConfigActionStepInput{{Kind: "reject_no_pass"}}},
+	}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, mixedDecision); !strings.Contains(reason, "只能选择一种处理结果") {
+		t.Fatalf("替代流转与默认同意同时保存没有被拒绝：%s", reason)
+	}
+	secondAddSign := findActionCatalogItem(t, secondApproval.ActionPlan.Catalog, "add_sign")
+	if !secondAddSign.Enabled || secondAddSign.Label != "加签节点" || secondAddSign.Person == nil || secondAddSign.Person.Title != "加签节点处理人" {
+		t.Fatalf("第二审批节点没有获得独立加签节点处理人策略：%+v", secondAddSign)
 	}
 }
 
@@ -718,6 +729,28 @@ func TestPathConfigAnalyzerLimitsSubmitToOne(t *testing.T) {
 	storedStart := findConfigNode(projected.Groups, "发起")
 	if storedStart == nil || !storedStart.ActionPlan.Affected || !strings.Contains(storedStart.ActionPlan.Note, "提交最多配置 1 次") || len(storedStart.ActionPlan.Arrivals) != 2 {
 		t.Fatalf("错误存量提交没有完整保留并标记重新确认：%+v", storedStart)
+	}
+}
+
+// TestPathConfigAnalyzerMarksRepeatedApprovalStoredPlanAffected 验证存量重复同意完整保留并标记重新确认。
+func TestPathConfigAnalyzerMarksRepeatedApprovalStoredPlanAffected(t *testing.T) {
+	tree := pathConfigTree()
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备存量同意路径失败：%v", err)
+	}
+	stored := map[string]string{
+		analyzer.PathConfigActionPlanStorageKey("approve-a"): `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"approve_pass"}]},{"visit":2,"steps":[{"kind":"approve_pass"}]}]}`,
+	}
+	projected, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, stored, true)
+	if err != nil {
+		t.Fatalf("投影重复同意存量失败：%v", err)
+	}
+	approval := findConfigNode(projected.Groups, "财务审批")
+	if approval == nil || !approval.ActionPlan.Affected || !strings.Contains(approval.ActionPlan.Note, "同意最多配置 1 次") || len(approval.ActionPlan.Arrivals) != 2 {
+		t.Fatalf("重复同意存量没有完整保留并标记重新确认：%+v", approval)
 	}
 }
 
@@ -778,12 +811,14 @@ func pathConfigTree() *target.FlowNodeTemplate {
 	end := &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}
 	approvalB := &target.FlowNodeTemplate{
 		ID: "approve-b", Name: "部门审批", Type: "common",
-		AuditConfig: &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "部门负责人", Type: "personnel"}}},
-		FieldPowers: []target.FlowNodeFieldPower{{FormID: "form-a", FieldID: "field-note", EnglishName: "note", Power: "edit"}},
+		AuditConfig:       &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "部门负责人", Type: "personnel"}}},
+		AddSignCandidates: []target.FlowAuditCandidate{{ID: "sign-person-1", Name: "加签候选甲"}, {ID: "sign-person-2", Name: "加签候选乙"}},
+		FieldPowers:       []target.FlowNodeFieldPower{{FormID: "form-a", FieldID: "field-note", EnglishName: "note", Power: "edit"}},
 	}
 	approvalA := &target.FlowNodeTemplate{
 		ID: "approve-a", Name: "财务审批", Type: "common",
-		AuditConfig: &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "财务负责人", Type: "personnel"}}},
+		AuditConfig:       &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "财务负责人", Type: "personnel"}}},
+		AddSignCandidates: []target.FlowAuditCandidate{{ID: "sign-person-1", Name: "加签候选甲"}, {ID: "sign-person-2", Name: "加签候选乙"}},
 		FieldPowers: []target.FlowNodeFieldPower{
 			{FormID: "form-a", FieldID: "field-amount", EnglishName: "amount", Power: "edit"},
 			{FormID: "form-a", FieldID: "field-type", EnglishName: "type", Power: "edit"},
@@ -794,7 +829,7 @@ func pathConfigTree() *target.FlowNodeTemplate {
 		ID: "route", Name: "金额条件", Type: "condition", Child: end,
 		ConditionNodes: []target.FlowBranchTemplate{
 			{ID: "branch-a", Name: "大额", Sort: 1, Child: approvalA},
-			{ID: "branch-b", Name: "普通", Sort: 2, Child: &target.FlowNodeTemplate{ID: "approve-c", Name: "普通审批", Type: "common", AuditConfig: &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "审批负责人", Type: "personnel"}}}}},
+			{ID: "branch-b", Name: "普通", Sort: 2, Child: &target.FlowNodeTemplate{ID: "approve-c", Name: "普通审批", Type: "common", AuditConfig: &target.FlowNodeAuditConfig{AuditType: "assign", Mode: "scramble", Details: []target.FlowAuditDetail{{Name: "审批负责人", Type: "personnel"}}}, AddSignCandidates: []target.FlowAuditCandidate{{ID: "sign-person-1", Name: "加签候选甲"}}}},
 		},
 	}
 	return &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: route}

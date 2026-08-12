@@ -1037,6 +1037,9 @@ func TestPathConfigurationSnapshotResolvesConcreteAuditDirectories(t *testing.T)
 	if len(wantCandidates) != 0 {
 		t.Fatalf("人员、部门和公司范围没有按真实目录候选解析：missing=%v candidates=%+v", wantCandidates, audit.Candidates)
 	}
+	if len(snapshot.Tree.Child.AddSignIssues) != 0 || len(snapshot.Tree.Child.AddSignCandidates) != 1 || snapshot.Tree.Child.AddSignCandidates[0].Name != "张三" {
+		t.Fatalf("加签节点人员目录没有独立按公司人员响应解析：candidates=%+v issues=%+v", snapshot.Tree.Child.AddSignCandidates, snapshot.Tree.Child.AddSignIssues)
+	}
 	fake.mu.Lock()
 	flags := append([]string(nil), fake.directoryFlags...)
 	fake.mu.Unlock()
