@@ -245,17 +245,19 @@ func sameStrings(left, right []string) bool {
 // actionPlan 生成当前节点动作目录、回退目标和版本化动作计划，并登记动作专用人员范围与保存校验映射。
 func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, node *target.FlowNodeTemplate, persons []model.PathConfigPerson) model.PathConfigActionPlan {
 	result := model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{}, RollbackTargets: []model.PathConfigActionOption{}, Arrivals: []model.PathConfigArrivalPlan{}, MaxArrivals: maxPathConfigArrivals, MaxPathSteps: maxPathConfigActionSteps}
-	validationTarget := PathConfigNodeTarget{NodeID: nodeID, Name: nodeName, Person: p.personTargets[nodeID], ActionPersons: make(map[string]*PathConfigPersonTarget), ActionKinds: make(map[string]bool), RollbackTargets: make(map[string]string)}
+	validationTarget := PathConfigNodeTarget{NodeID: nodeID, Name: nodeName, Person: p.personTargets[nodeID], ActionPersons: make(map[string]*PathConfigPersonTarget), ActionKinds: make(map[string]bool), ActionMaxCounts: make(map[string]int), RollbackTargets: make(map[string]string)}
 	for _, person := range persons {
 		if person.Mode == "review" || person.Affected {
 			validationTarget.Blockers = append(validationTarget.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: firstNonEmptyPathConfig(person.Note, person.Detail)})
 		}
 	}
 	appendAction := func(kind, label, description string, enabled bool, disabledReason string, targetRequired bool, person *model.PathConfigPerson, personTarget *PathConfigPersonTarget) {
-		item := model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, Enabled: enabled, DisabledReason: disabledReason, RequiresTarget: targetRequired, RequiresPerson: person != nil, Person: person}
+		maxCount := pathConfigActionMaxCount(kind)
+		item := model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, Enabled: enabled, DisabledReason: disabledReason, MaxCount: maxCount, RequiresTarget: targetRequired, RequiresPerson: person != nil, Person: person}
 		result.Catalog = append(result.Catalog, item)
 		if enabled {
 			validationTarget.ActionKinds[kind] = true
+			validationTarget.ActionMaxCounts[kind] = maxCount
 		}
 		if enabled && personTarget != nil {
 			validationTarget.ActionPersons[kind] = personTarget
@@ -451,6 +453,8 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 	}
 	result := make([]model.PathConfigArrivalPlan, 0, len(arrivals))
 	total := 0
+	actionCounts := make(map[string]int)
+	countIssue := ""
 	for index, arrival := range arrivals {
 		if arrival.Visit != index+1 || len(arrival.Steps) == 0 {
 			return result, "动作计划结构不完整"
@@ -460,6 +464,10 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 			total++
 			if total > maxPathConfigActionSteps || !target.ActionKinds[step.Kind] {
 				return result, "动作计划超过上限或包含当前节点不允许的动作"
+			}
+			actionCounts[step.Kind]++
+			if countIssue == "" {
+				countIssue = pathConfigActionCountIssue(target, step.Kind, actionCounts[step.Kind])
 			}
 			if pathConfigTerminalAction(step.Kind) && stepIndex != len(arrival.Steps)-1 {
 				return result, "结束当前任务的动作后不能继续追加其他动作"
@@ -495,7 +503,8 @@ func projectStoredArrivals(target PathConfigNodeTarget, arrivals []storedPathCon
 		}
 		result = append(result, public)
 	}
-	return result, ""
+	// 存量超限动作仍完整投影供用户核对，但必须标记 affected，不能静默截断成看似有效的配置。
+	return result, countIssue
 }
 
 // invertTokenMap 构造内部 ID 到公开 token 的反向映射，仅供投影已保存人员策略。
@@ -514,6 +523,7 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 	}
 	stored := storedPathConfigActionPlan{Version: pathConfigActionPlanVersion, Arrivals: make([]storedPathConfigArrival, 0, len(arrivals))}
 	total := 0
+	actionCounts := make(map[string]int)
 	for index, arrival := range arrivals {
 		if arrival.Visit != index+1 || len(arrival.Steps) == 0 {
 			return "", total, "动作计划结构不完整"
@@ -524,6 +534,10 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 			kind := strings.TrimSpace(step.Kind)
 			if total > maxPathConfigActionSteps || !target.ActionKinds[kind] {
 				return "", total, "动作计划超过上限或包含当前节点不允许的动作"
+			}
+			actionCounts[kind]++
+			if reason := pathConfigActionCountIssue(target, kind, actionCounts[kind]); reason != "" {
+				return "", total, reason
 			}
 			if pathConfigTerminalAction(kind) && stepIndex != len(arrival.Steps)-1 {
 				return "", total, "结束当前任务的动作后不能继续追加其他动作"
@@ -562,6 +576,26 @@ func EncodePathConfigActionPlan(target PathConfigNodeTarget, arrivals []model.Pa
 		return "", total, "动作计划无法保存"
 	}
 	return string(encoded), total, ""
+}
+
+// pathConfigActionMaxCount 返回配置期可证明的单动作次数上限；提交只能创建一个发起实例，其他动作沿用既有有界次数。
+func pathConfigActionMaxCount(kind string) int {
+	if strings.TrimSpace(kind) == "submit" {
+		return 1
+	}
+	return maxPathConfigArrivals
+}
+
+// pathConfigActionCountIssue 让存量投影和新保存共用同一次数边界，避免页面接受而服务端另行解释。
+func pathConfigActionCountIssue(target PathConfigNodeTarget, kind string, count int) string {
+	maxCount := target.ActionMaxCounts[kind]
+	if maxCount <= 0 {
+		maxCount = pathConfigActionMaxCount(kind)
+	}
+	if count <= maxCount {
+		return ""
+	}
+	return fmt.Sprintf("%s最多配置 %d 次", pathConfigActionLabel(kind), maxCount)
 }
 
 // CountStoredPathConfigActionSteps 统计整条路径版本化动作计划步数；损坏 JSON 返回 false。

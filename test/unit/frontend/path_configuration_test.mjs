@@ -5,6 +5,7 @@ import { isProxy, reactive } from '../../../web/node_modules/vue/index.mjs'
 import {
   allEditableFieldsFilled,
   canSavePathConfiguration,
+  canUsePathConfigAction,
   applyPathConfigDraft,
   bindPathConfigurationNodes,
   buildPathConfigNodeSavePayload,
@@ -18,6 +19,7 @@ import {
   hasCurrentNodeDraftChanges,
   nextFormGenerationSeed,
   normalizedPathConfigSeed,
+  normalizedPathConfigActionCount,
   pathConfigActionRowsFromArrivals,
   pathConfigActionRowsToArrivals,
   pathConfigNodeKey,
@@ -60,7 +62,7 @@ const configuration = {
             { key: 'action-submit', kind: 'submit', label: '发起动作', current: 'submit', default: 'submit', options: [{ value: 'submit', label: '提交' }], disagreeWarning: '' },
           ],
           actionPlan: {
-            catalog: [{ kind: 'submit', label: '提交', description: '提交发起节点', enabled: true, disabledReason: '', allowsOpinion: false, requiresTarget: false, requiresPerson: false }],
+            catalog: [{ kind: 'submit', label: '提交', description: '提交发起节点', enabled: true, disabledReason: '', maxCount: 1, allowsOpinion: false, requiresTarget: false, requiresPerson: false }],
             rollbackTargets: [], arrivals: [{ visit: 1, steps: [{ kind: 'submit', label: '提交', opinion: '', target: '' }] }],
             maxArrivals: 10, maxPathSteps: 100, affected: false, note: '',
           },
@@ -95,10 +97,10 @@ const configuration = {
           ],
           actionPlan: {
             catalog: [
-              { kind: 'approve_pass', label: '同意', description: '继续当前路径', enabled: true, disabledReason: '', allowsOpinion: false, requiresTarget: false, requiresPerson: false },
-              { kind: 'reject_no_pass', label: '不同意', description: '结束当前线路', enabled: true, disabledReason: '', allowsOpinion: false, requiresTarget: false, requiresPerson: false },
-              { kind: 'draft_save', label: '暂存', description: '不推进流程', enabled: true, disabledReason: '', allowsOpinion: false, requiresTarget: false, requiresPerson: false },
-              { kind: 'rollback_previous', label: '回退上一级', description: '回退第一审批', enabled: true, disabledReason: '', allowsOpinion: false, requiresTarget: true, requiresPerson: false },
+              { kind: 'approve_pass', label: '同意', description: '继续当前路径', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: false },
+              { kind: 'reject_no_pass', label: '不同意', description: '结束当前线路', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: false },
+              { kind: 'draft_save', label: '暂存', description: '不推进流程', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: false },
+              { kind: 'rollback_previous', label: '回退上一级', description: '回退第一审批', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: true, requiresPerson: false },
             ],
             rollbackTargets: [{ label: '发起', value: 'rollback-start' }],
             arrivals: [{ visit: 1, steps: [{ kind: 'approve_pass', label: '同意', opinion: '', target: '' }] }],
@@ -361,8 +363,8 @@ test('人员策略和有界动作列表即时投影与后端规则一致', () =>
   person.minCount = 2
   person.maxCount = 2
   person.strategies.push({ value: 'all', label: '全部候选' })
-  approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签', description: '受限候选', enabled: true, disabledReason: '', allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
-  approval.actionPlan.catalog.push({ kind: 'transfer_approver', label: '移交', description: '结束本次动作', enabled: true, disabledReason: '', allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
+  approval.actionPlan.catalog.push({ kind: 'add_sign', label: '加签', description: '受限候选', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
+  approval.actionPlan.catalog.push({ kind: 'transfer_approver', label: '移交', description: '结束本次动作', enabled: true, disabledReason: '', maxCount: 10, allowsOpinion: false, requiresTarget: false, requiresPerson: true, person })
   const random = { key: person.key, strategy: 'random', seed: 1, selected: [] }
   assert.deepEqual(resolvedPersonStrategySelection(person, random), ['person-b', 'person-a'])
   assert.deepEqual(resolvedPersonStrategySelection(person, random), resolvedPersonStrategySelection(person, random))
@@ -420,4 +422,32 @@ test('换一组种子稳定推进并安全处理非法值', () => {
   assert.equal(nextFormGenerationSeed(73), 104802)
   assert.equal(nextFormGenerationSeed(0), 1)
   assert.equal(nextFormGenerationSeed(Number.NaN), 1)
+})
+
+test('提交固定一次且不能通过新增或切换绕过目录上限', () => {
+  const start = configuration.groups[0].nodes[0]
+  const submitRows = [{ kind: 'submit', count: 3, target: '' }]
+  assert.equal(normalizedPathConfigActionCount(start, 'submit', 3), 1)
+  assert.equal(pathConfigActionRowsToArrivals(submitRows, start).length, 1)
+  assert.equal(pathConfigActionRowsToArrivals(submitRows, start)[0].steps.length, 1)
+  assert.equal(canUsePathConfigAction(start, [], 'submit'), true)
+  assert.equal(canUsePathConfigAction(start, [{ kind: 'submit', count: 1, target: '' }], 'submit'), false)
+  assert.equal(validPathConfigArrivals(start, [
+    { visit: 1, steps: [{ kind: 'submit', opinion: '', target: '' }] },
+    { visit: 2, steps: [{ kind: 'submit', opinion: '', target: '' }] },
+  ]), false)
+  const affectedStart = structuredClone(start)
+  affectedStart.actionPlan.affected = true
+  affectedStart.actionPlan.arrivals = [
+    { visit: 1, steps: [{ kind: 'submit', label: '提交', opinion: '', target: '' }] },
+    { visit: 2, steps: [{ kind: 'submit', label: '提交', opinion: '', target: '' }] },
+  ]
+  const normalizedDraft = { fields: {}, actions: {}, persons: {}, personStrategies: {}, arrivals: { [start.key]: pathConfigActionRowsToArrivals([{ kind: 'submit', count: 2, target: '' }], affectedStart) } }
+  assert.equal(currentNodeConfigurationComplete(affectedStart, normalizedDraft).complete, true)
+
+  const approval = configuration.groups[0].nodes[1]
+  const repeatedApproval = [{ kind: 'approve_pass', count: 2, target: '' }]
+  const expanded = pathConfigActionRowsToArrivals(repeatedApproval, approval)
+  assert.equal(expanded.length, 2)
+  assert.equal(validPathConfigArrivals(approval, expanded), true)
 })

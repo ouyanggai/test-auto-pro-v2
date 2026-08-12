@@ -672,6 +672,53 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, tooMany); !strings.Contains(reason, "10") {
 		t.Fatalf("超过十次终止动作没有被拒绝：%s", reason)
 	}
+	twice := []model.PathConfigArrivalInput{
+		{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
+		{Visit: 2, Steps: []model.PathConfigActionStepInput{{Kind: "approve_pass"}}},
+	}
+	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, twice); reason != "" || count != 2 {
+		t.Fatalf("非提交动作的既有有界次数被错误收紧：count=%d reason=%s", count, reason)
+	}
+}
+
+// TestPathConfigAnalyzerLimitsSubmitToOne 验证提交目录、恶意保存和错误存量统一执行单次约束。
+func TestPathConfigAnalyzerLimitsSubmitToOne(t *testing.T) {
+	tree := pathConfigTree()
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备提交单次路径失败：%v", err)
+	}
+	configuration, validation, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("投影提交目录失败：%v", err)
+	}
+	start := findConfigNode(configuration.Groups, "发起")
+	submit := findActionCatalogItem(t, start.ActionPlan.Catalog, "submit")
+	if !submit.Enabled || submit.MaxCount != 1 {
+		t.Fatalf("提交目录没有固定单次上限：%+v", submit)
+	}
+	targetPlan := validation.NodeTokens[start.Key]
+	twice := []model.PathConfigArrivalInput{
+		{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "submit"}}},
+		{Visit: 2, Steps: []model.PathConfigActionStepInput{{Kind: "submit"}}},
+	}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, twice); !strings.Contains(reason, "提交最多配置 1 次") {
+		t.Fatalf("多次提交保存没有被服务端拒绝：%s", reason)
+	}
+
+	stored := map[string]string{
+		analyzer.PathConfigActionPlanStorageKey("start"): `{"version":1,"arrivals":[{"visit":1,"steps":[{"kind":"submit"}]},{"visit":2,"steps":[{"kind":"submit"}]}]}`,
+	}
+	projected, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, stored, true)
+	if err != nil {
+		t.Fatalf("投影错误存量提交失败：%v", err)
+	}
+	storedStart := findConfigNode(projected.Groups, "发起")
+	if storedStart == nil || !storedStart.ActionPlan.Affected || !strings.Contains(storedStart.ActionPlan.Note, "提交最多配置 1 次") || len(storedStart.ActionPlan.Arrivals) != 2 {
+		t.Fatalf("错误存量提交没有完整保留并标记重新确认：%+v", storedStart)
+	}
 }
 
 // TestPathConfigAnalyzerRollbackTargetsExcludeParallelSiblings 验证并行支线不能把兄弟或发起人伪造成可回退审批节点。

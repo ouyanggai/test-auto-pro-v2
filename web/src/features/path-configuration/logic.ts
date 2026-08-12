@@ -362,7 +362,8 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
     if (requiredEmpty || belowMinimum) missing.push(person.title)
   }
   const arrivals = draft.arrivals[node.key] ?? []
-  if (node.actionPlan.affected || !validPathConfigArrivals(node, arrivals)) missing.push('动作计划')
+  // 受影响存量会先按当前目录规范化到草稿；只要规范化结果合法就允许用户重新确认保存，不能因旧状态永久禁用保存。
+  if (!validPathConfigArrivals(node, arrivals)) missing.push('动作计划')
   const actionable = node.actionPlan.catalog.some(item => item.enabled) || node.persons.some((person) => person.editable)
   // 历史 fields/gaps 即使仍出现在兼容响应中也不能阻断节点保存；表单兼容性只由独立运行时负责。
   return { missing, complete: actionable && missing.length === 0 }
@@ -411,6 +412,26 @@ export function normalizedPathConfigSeed(seed: unknown): number {
 // 目标移交成功后当前处理任务已交给新处理人，因此与处理结果一样结束当前任务处理。
 const TERMINAL_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
 
+// pathConfigActionMaxCount 读取服务端权威单动作上限；兼容旧响应时只回退节点既有有界上限。
+export function pathConfigActionMaxCount(node: PathConfigNode, kind: PathConfigActionKind): number {
+  const configured = node.actionPlan.catalog.find(item => item.kind === kind)?.maxCount
+  return Number.isInteger(configured) && Number(configured) > 0 ? Number(configured) : node.actionPlan.maxArrivals
+}
+
+// normalizedPathConfigActionCount 把输入次数收敛到当前动作上限，提交因此始终固定为一次。
+export function normalizedPathConfigActionCount(node: PathConfigNode, kind: PathConfigActionKind, count: unknown): number {
+  const parsed = typeof count === 'number' && Number.isFinite(count) ? Math.trunc(count) : 1
+  return Math.max(1, Math.min(pathConfigActionMaxCount(node, kind), parsed))
+}
+
+// canUsePathConfigAction 判断新增或切换动作是否会突破目录上限；忽略当前行可支持原地切换和保持现值。
+export function canUsePathConfigAction(node: PathConfigNode, rows: readonly PathConfigActionRow[], kind: PathConfigActionKind, ignoredIndex = -1): boolean {
+  const definition = node.actionPlan.catalog.find(item => item.kind === kind)
+  if (!definition?.enabled) return false
+  const configured = rows.reduce((total, row, index) => index === ignoredIndex || row.kind !== kind ? total : total + row.count, 0)
+  return configured < pathConfigActionMaxCount(node, kind)
+}
+
 // pathConfigActionRowsFromArrivals 把旧兼容结构压平成用户可理解的动作行，并合并相邻且参数相同的动作次数。
 export function pathConfigActionRowsFromArrivals(arrivals: readonly PathConfigArrivalInput[] | readonly PathConfigArrivalPlan[]): PathConfigActionRow[] {
   const rows: PathConfigActionRow[] = []
@@ -438,7 +459,7 @@ export function pathConfigActionRowsToArrivals(rows: readonly PathConfigActionRo
   const limit = node.actionPlan.maxPathSteps
   let expanded = 0
   for (const row of rows) {
-    const count = Math.min(node.actionPlan.maxArrivals, Math.max(1, Math.trunc(Number.isFinite(row.count) ? row.count : 1)))
+    const count = normalizedPathConfigActionCount(node, row.kind, row.count)
     for (let index = 0; index < count && expanded < limit; index++, expanded++) {
       const step = {
         kind: row.kind,
@@ -461,6 +482,7 @@ export function pathConfigActionRowsToArrivals(rows: readonly PathConfigActionRo
 export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConfigArrivalInput[]): boolean {
   if (!arrivals.length || arrivals.length > node.actionPlan.maxArrivals) return false
   const catalog = new Map(node.actionPlan.catalog.map(item => [item.kind, item]))
+  const actionCounts = new Map<PathConfigActionKind, number>()
   let total = 0
   for (let index = 0; index < arrivals.length; index++) {
     const arrival = arrivals[index]
@@ -470,6 +492,9 @@ export function validPathConfigArrivals(node: PathConfigNode, arrivals: PathConf
       const item = catalog.get(step.kind)
       total++
       if (!item?.enabled || total > node.actionPlan.maxPathSteps) return false
+      const configuredCount = (actionCounts.get(step.kind) ?? 0) + 1
+      actionCounts.set(step.kind, configuredCount)
+      if (configuredCount > pathConfigActionMaxCount(node, step.kind)) return false
       if (TERMINAL_ACTIONS.has(step.kind) && stepIndex !== arrival.steps.length - 1) return false
       if (item.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === step.target)) return false
       if (item.requiresPerson) {

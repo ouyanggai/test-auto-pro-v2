@@ -139,7 +139,7 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 					Selected: []string{"opaque-person-option"}, Options: []model.PathConfigPersonOption{{Label: "候选人甲", Value: "opaque-person-option"}},
 				}},
 				Actions:    []model.PathConfigAction{{Key: "opaque-action-key", Kind: "agree_disagree", Label: "处理结果", Current: "agree", Default: "agree", Options: []model.PathConfigActionOption{{Value: "agree", Label: "同意"}, {Value: "disagree", Label: "不同意"}}}},
-				ActionPlan: model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{{Kind: "approve_pass", Label: "同意"}}, Arrivals: []model.PathConfigArrivalPlan{{Visit: 1, Steps: []model.PathConfigActionStep{{Kind: "approve_pass", Label: "同意"}}}}, MaxArrivals: 10, MaxPathSteps: 100},
+				ActionPlan: model.PathConfigActionPlan{Catalog: []model.PathConfigActionCatalogItem{{Kind: "approve_pass", Label: "同意", MaxCount: 10}}, Arrivals: []model.PathConfigArrivalPlan{{Visit: 1, Steps: []model.PathConfigActionStep{{Kind: "approve_pass", Label: "同意"}}}}, MaxArrivals: 10, MaxPathSteps: 100},
 			}}}},
 		},
 		result: model.PathConfigSaveResult{Path: model.PathConfigPath{SequenceNo: 2, Name: "财务路径"}, Revision: 4, Status: "configured"},
@@ -151,7 +151,7 @@ func TestPathConfigurationAPIGetAndPutContracts(t *testing.T) {
 		t.Fatalf("配置读取状态不正确：%d %s", get.Code, get.Body.String())
 	}
 	getBody := get.Body.String()
-	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-node-key"`, `"statusName":"已完成"`, `"opaque-field-key"`, `"申请金额"`, `"category":"岗位"`, `"name":"财务主任"`, `"候选人甲"`, `"agree"`, `"approve_pass"`, `"maxArrivals":10`} {
+	for _, want := range []string{`"sequenceNo":2`, `"name":"财务路径"`, `"revision":3`, `"opaque-node-key"`, `"statusName":"已完成"`, `"opaque-field-key"`, `"申请金额"`, `"category":"岗位"`, `"name":"财务主任"`, `"候选人甲"`, `"agree"`, `"approve_pass"`, `"maxCount":10`, `"maxArrivals":10`} {
 		if !strings.Contains(getBody, want) {
 			t.Fatalf("配置读取响应缺少 %s：%s", want, getBody)
 		}

@@ -14,7 +14,7 @@ import {
 import type { SelectOption } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
-import { normalizedPersonStrategy, pathConfigActionRowsFromArrivals, pathConfigActionRowsToArrivals, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import { canUsePathConfigAction, normalizedPathConfigActionCount, normalizedPersonStrategy, pathConfigActionRowsFromArrivals, pathConfigActionRowsToArrivals, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type {
   PathConfigActionCatalogItem,
   PathConfigActionKind,
@@ -104,14 +104,16 @@ function closePersonDetails() {
 
 const actionRows = computed(() => props.node ? pathConfigActionRowsFromArrivals(props.draft.arrivals[props.node.key] ?? []) : [])
 
-// actionOptions 返回完整动作目录；静态不合法动作保留禁用状态，避免用户猜测为什么消失。
-function actionOptions(): SelectOption[] {
-  return (props.node?.actionPlan.catalog ?? []).map(item => ({ label: item.label, value: item.kind, disabled: !item.enabled }))
+// actionOptions 返回完整动作目录，并阻止行内切换绕过当前动作次数上限。
+function actionOptions(rowIndex: number): SelectOption[] {
+  if (!props.node) return []
+  return props.node.actionPlan.catalog.map(item => ({ label: item.label, value: item.kind, disabled: !canUsePathConfigAction(props.node as PathConfigNode, actionRows.value, item.kind, rowIndex) }))
 }
 
-// enabledActionOptions 只提供可以新增的动作，保存端仍会按同一服务端目录再次校验。
-function enabledActionOptions(): SelectOption[] {
-  return (props.node?.actionPlan.catalog ?? []).filter(item => item.enabled).map(item => ({ label: item.label, value: item.kind }))
+// addActionOptions 在新增入口展示完整目录；静态不可用或达到次数上限的动作保持可见但禁用。
+function addActionOptions(): SelectOption[] {
+  if (!props.node) return []
+  return props.node.actionPlan.catalog.map(item => ({ label: item.label, value: item.kind, disabled: !canAddAction(item.kind) }))
 }
 
 // actionDefinition 查找动作参数定义；未知动作不会获得输入控件。
@@ -140,16 +142,41 @@ function editableRows(): PathConfigActionRow[] {
   return actionRows.value.map(row => ({ ...row, person: row.person ? { ...row.person, selected: [...row.person.selected] } : undefined }))
 }
 
+// configuredActionCount 汇总当前动作已配置次数，供信息弹层解释动态上限。
+function configuredActionCount(kind: PathConfigActionKind): number {
+  return actionRows.value.reduce((total, row) => row.kind === kind ? total + row.count : total, 0)
+}
+
+// actionRuleReason 返回静态禁用或当前配置已达上限的集中说明，行内不再重复铺开。
+function actionRuleReason(item: PathConfigActionCatalogItem): string {
+  if (!item.enabled) return item.disabledReason
+  if (configuredActionCount(item.kind) >= item.maxCount) return `已达到当前配置上限（最多 ${item.maxCount} 次）`
+  return ''
+}
+
+// actionRuleStatus 为信息弹层提供简短状态，达到配置上限与静态不可用分开表达。
+function actionRuleStatus(item: PathConfigActionCatalogItem): string {
+  if (!item.enabled) return '不可用'
+  return configuredActionCount(item.kind) >= item.maxCount ? '已达上限' : '可用'
+}
+
+// canAddAction 同时执行单动作、当前任务结束动作和整条路径三层上限的即时门禁。
+function canAddAction(kind: PathConfigActionKind): boolean {
+  if (!props.node || !canUsePathConfigAction(props.node, actionRows.value, kind)) return false
+  if (totalActionSteps() >= props.node.actionPlan.maxPathSteps) return false
+  return !terminalAction(kind) || currentTerminalActionCount() < props.node.actionPlan.maxArrivals
+}
+
 // updateActionKind 切换动作时只保留适用参数；回退自动绑定唯一静态直接上一审批节点。
 function updateActionKind(rowIndex: number, kind: PathConfigActionKind) {
   const definition = actionDefinition(kind)
-  if (!definition?.enabled) return
+  if (!definition?.enabled || !props.node || !canUsePathConfigAction(props.node, actionRows.value, kind, rowIndex)) return
   const rows = editableRows()
   const current = rows[rowIndex]
   if (!current) return
   rows[rowIndex] = {
     kind,
-    count: current.count,
+    count: normalizedPathConfigActionCount(props.node, kind, current.count),
     target: definition.requiresTarget && props.node?.actionPlan.rollbackTargets.length === 1 ? props.node.actionPlan.rollbackTargets[0].value : '',
     person: definition.person ? personDraft(definition.person) : undefined,
   }
@@ -187,7 +214,7 @@ function currentTerminalActionCount(): number {
 function addActionRow() {
   const kind = newActionKind.value
   const definition = kind ? actionDefinition(kind) : undefined
-  if (!kind || !definition?.enabled || !props.node || totalActionSteps() >= props.node.actionPlan.maxPathSteps || (terminalAction(kind) && currentTerminalActionCount() >= props.node.actionPlan.maxArrivals)) return
+  if (!kind || !definition?.enabled || !props.node || !canAddAction(kind)) return
   const rows = editableRows()
   const row: PathConfigActionRow = {
     kind,
@@ -208,7 +235,8 @@ function updateActionRowCount(rowIndex: number, value: number | null) {
   const rows = editableRows()
   const otherPathActions = totalActionSteps() - rows[rowIndex].count
   const terminalRoom = terminalAction(rows[rowIndex].kind) ? props.node.actionPlan.maxArrivals - (currentTerminalActionCount() - rows[rowIndex].count) : props.node.actionPlan.maxArrivals
-  rows[rowIndex].count = Math.max(1, Math.min(value, terminalRoom, props.node.actionPlan.maxPathSteps - otherPathActions))
+  const actionRoom = normalizedPathConfigActionCount(props.node, rows[rowIndex].kind, value)
+  rows[rowIndex].count = Math.max(1, Math.min(actionRoom, terminalRoom, props.node.actionPlan.maxPathSteps - otherPathActions))
   emitRows(rows)
 }
 
@@ -326,19 +354,32 @@ function terminalAction(kind: PathConfigActionKind): boolean {
         <section v-if="node.actionPlan.catalog.length" class="node-configuration-panel__section" aria-labelledby="node-actions-heading">
           <div class="node-configuration-panel__section-heading">
             <h3 id="node-actions-heading">动作计划</h3>
-            <n-popover trigger="click" placement="bottom-end" :width="300">
-              <template #trigger><n-button quaternary circle size="tiny" aria-label="查看动作规则">i</n-button></template>
-              <p class="node-configuration-panel__runtime-note">执行时仍会核对实例、待办、审批权限、会签、并行及任务链状态。</p>
+            <n-popover trigger="click" placement="bottom-end" :width="340" scrollable>
+              <template #trigger><n-button class="node-configuration-panel__action-info" circle size="small" aria-label="查看动作规则" title="查看动作规则">i</n-button></template>
+              <div class="node-configuration-panel__action-rules">
+                <strong>动作说明</strong>
+                <p class="node-configuration-panel__runtime-note">次数表示计划真实执行次数，不是网络自动重试。每次执行前仍会核对实例、待办、审批权限、会签、并行及任务链状态。</p>
+                <n-scrollbar style="max-height: 320px">
+                  <ul>
+                    <li v-for="item in node.actionPlan.catalog" :key="item.kind">
+                      <div><strong>{{ item.label }}</strong><n-tag size="tiny" :bordered="false" :type="actionRuleReason(item) ? 'default' : 'success'">{{ actionRuleStatus(item) }}</n-tag><small>最多 {{ item.maxCount }} 次</small></div>
+                      <p>{{ item.description }}</p>
+                      <small v-if="actionRuleReason(item)">{{ actionRuleReason(item) }}</small>
+                    </li>
+                  </ul>
+                </n-scrollbar>
+              </div>
             </n-popover>
           </div>
           <n-alert v-if="node.actionPlan.note" type="warning" :show-icon="false" size="small">{{ node.actionPlan.note }}</n-alert>
           <div class="node-configuration-panel__action-rows">
             <div v-for="(row, rowIndex) in actionRows" :key="`${row.kind}-${rowIndex}`" class="node-configuration-panel__action-row">
               <div class="node-configuration-panel__action-main">
-                <n-select :value="row.kind" :options="actionOptions()" aria-label="动作" @update:value="value => updateActionKind(rowIndex, value)" />
+                <n-select class="node-configuration-panel__action-select" :value="row.kind" :options="actionOptions(rowIndex)" :consistent-menu-width="false" aria-label="动作" @update:value="value => updateActionKind(rowIndex, value)" />
                 <label class="node-configuration-panel__row-count">
                   <span>次数</span>
-                  <n-input-number :value="row.count" :min="1" :max="node.actionPlan.maxArrivals" size="small" aria-label="动作执行次数" @update:value="value => updateActionRowCount(rowIndex, value)" />
+                  <span v-if="row.kind === 'submit'" class="node-configuration-panel__fixed-count">固定 1 次</span>
+                  <n-input-number v-else :value="row.count" :min="1" :max="actionDefinition(row.kind)?.maxCount ?? node.actionPlan.maxArrivals" size="small" aria-label="动作执行次数" @update:value="value => updateActionRowCount(rowIndex, value)" />
                 </label>
                 <div class="node-configuration-panel__row-tools">
                   <n-button quaternary circle size="tiny" title="上移" aria-label="上移动作" :disabled="rowIndex === 0" @click="moveActionRow(rowIndex, -1)">↑</n-button>
@@ -346,7 +387,6 @@ function terminalAction(kind: PathConfigActionKind): boolean {
                   <n-button quaternary circle size="tiny" title="删除" aria-label="删除动作" :disabled="actionRows.length <= 1" @click="removeActionRow(rowIndex)">×</n-button>
                 </div>
               </div>
-              <small>{{ actionDefinition(row.kind)?.description }}</small>
               <p v-if="actionDefinition(row.kind)?.requiresTarget && node.actionPlan.rollbackTargets.length === 1" class="node-configuration-panel__readonly">回退至：{{ node.actionPlan.rollbackTargets[0].label }}</p>
               <template v-if="actionDefinition(row.kind)?.requiresPerson && actionPerson(row.kind)">
                   <span class="node-configuration-panel__parameter-title">{{ row.kind === 'add_sign' ? '加签人员' : '移交人员' }}</span>
@@ -379,14 +419,9 @@ function terminalAction(kind: PathConfigActionKind): boolean {
             </div>
           </div>
           <div class="node-configuration-panel__add-action">
-            <n-select v-model:value="newActionKind" :options="enabledActionOptions()" size="small" placeholder="选择动作" aria-label="新增动作" />
-            <n-button dashed size="small" :disabled="!newActionKind || totalActionSteps() >= node.actionPlan.maxPathSteps || (terminalAction(newActionKind) && currentTerminalActionCount() >= node.actionPlan.maxArrivals)" @click="addActionRow">添加动作</n-button>
+            <n-select v-model:value="newActionKind" class="node-configuration-panel__action-select" :options="addActionOptions()" :consistent-menu-width="false" size="small" placeholder="选择动作" aria-label="新增动作" />
+            <n-button dashed size="small" :disabled="!newActionKind || !canAddAction(newActionKind)" @click="addActionRow">添加动作</n-button>
           </div>
-          <ul v-if="node.actionPlan.catalog.some(item => !item.enabled)" class="node-configuration-panel__disabled-actions" aria-label="当前不可用动作">
-            <li v-for="item in node.actionPlan.catalog.filter(item => !item.enabled)" :key="item.kind">
-              <span>{{ item.label }}</span><small>{{ item.disabledReason }}</small>
-            </li>
-          </ul>
         </section>
 
         <n-empty v-if="!node.persons.length && !node.actionPlan.catalog.length" size="small" description="此节点没有需要配置的内容" />
@@ -437,7 +472,7 @@ function terminalAction(kind: PathConfigActionKind): boolean {
 .node-configuration-panel__scroll { min-height: 0; padding: 12px 14px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .node-configuration-panel__section + .node-configuration-panel__section { margin-top: 18px; }
 .node-configuration-panel__section h3 { margin: 0 0 9px; font-size: 14px; }
-.node-configuration-panel__section-heading > span, .node-configuration-panel__action-row > small, .node-configuration-panel__parameter-title { font-size: 12px; opacity: .7; }
+.node-configuration-panel__section-heading > span, .node-configuration-panel__parameter-title { font-size: 12px; opacity: .7; }
 .node-configuration-panel__requirements-popover ul, .node-configuration-panel__person-items, .node-configuration-panel__person-modal ul { display: grid; gap: 7px; padding: 0; margin: 8px 0 0; list-style: none; }
 .node-configuration-panel__requirements-popover li { display: grid; gap: 2px; padding-left: 8px; border-left: 2px solid var(--flow-edge-color); }
 .node-configuration-panel__requirements-popover small { line-height: 1.45; opacity: .72; }
@@ -450,12 +485,22 @@ function terminalAction(kind: PathConfigActionKind): boolean {
 .node-configuration-panel__person-more { justify-self: start; }
 .node-configuration-panel__action-rows { display: grid; gap: 9px; }
 .node-configuration-panel__action-row { display: grid; gap: 7px; padding: 9px; border: 1px solid var(--flow-edge-color); border-radius: 4px; }
-.node-configuration-panel__action-main { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 7px; }
+.node-configuration-panel__action-main { display: grid; grid-template-columns: minmax(132px, 1fr) auto; align-items: center; gap: 7px; }
+.node-configuration-panel__action-select { min-width: 132px; }
 .node-configuration-panel__row-count, .node-configuration-panel__row-tools { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.node-configuration-panel__row-tools { grid-column: 1 / -1; justify-content: flex-end; }
 .node-configuration-panel__row-count :deep(.n-input-number) { width: 76px; }
-.node-configuration-panel__add-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-.node-configuration-panel__disabled-actions { display: grid; gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
-.node-configuration-panel__disabled-actions li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; font-size: 12px; opacity: .68; }
+.node-configuration-panel__fixed-count { min-width: 76px; color: var(--flow-label-color); text-align: center; }
+.node-configuration-panel__add-action { display: grid; grid-template-columns: minmax(132px, 1fr) auto; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--flow-edge-color); }
+.node-configuration-panel__action-info { color: var(--flow-direction-color); background: color-mix(in srgb, var(--flow-direction-color) 14%, var(--flow-surface-color)); border: 1px solid color-mix(in srgb, var(--flow-direction-color) 45%, var(--flow-edge-color)); }
+.node-configuration-panel__action-info:hover, .node-configuration-panel__action-info:focus-visible { background: color-mix(in srgb, var(--flow-direction-color) 22%, var(--flow-surface-color)); }
+.node-configuration-panel__action-rules { display: grid; gap: 8px; }
+.node-configuration-panel__action-rules > strong, .node-configuration-panel__action-rules p { margin: 0; }
+.node-configuration-panel__action-rules ul { display: grid; gap: 9px; padding: 0 6px 0 0; margin: 0; list-style: none; }
+.node-configuration-panel__action-rules li { display: grid; gap: 3px; padding: 8px; background: color-mix(in srgb, var(--flow-edge-color) 13%, transparent); border-radius: 4px; }
+.node-configuration-panel__action-rules li > div { display: flex; align-items: center; gap: 6px; }
+.node-configuration-panel__action-rules li > div > small { margin-left: auto; opacity: .68; }
+.node-configuration-panel__action-rules li > p, .node-configuration-panel__action-rules li > small { font-size: 12px; line-height: 1.45; }
 .node-configuration-panel__runtime-note { margin: 0; font-size: 12px; line-height: 1.55; }
 .node-configuration-panel__person-modal { width: min(520px, calc(100vw - 32px)); max-height: min(520px, calc(100dvh - 48px)); }
 .node-configuration-panel__person-modal h3 { margin: 3px 0 0; font-size: 16px; }

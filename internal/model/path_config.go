@@ -245,6 +245,7 @@ type PathConfigActionCatalogItem struct {
 	Description    string            `json:"description"`
 	Enabled        bool              `json:"enabled"`
 	DisabledReason string            `json:"disabledReason"`
+	MaxCount       int               `json:"maxCount"`
 	AllowsOpinion  bool              `json:"allowsOpinion"`
 	RequiresTarget bool              `json:"requiresTarget"`
 	RequiresPerson bool              `json:"requiresPerson"`

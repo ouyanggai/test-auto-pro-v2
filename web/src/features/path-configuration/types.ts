@@ -200,6 +200,7 @@ export interface PathConfigActionCatalogItem {
   description: string
   enabled: boolean
   disabledReason: string
+  maxCount: number
   allowsOpinion: boolean
   requiresTarget: boolean
   requiresPerson: boolean
