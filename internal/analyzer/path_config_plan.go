@@ -287,7 +287,7 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, nod
 			appendAction("add_sign", "加签", "在当前节点增加受目标范围约束的处理人", false, false, person, personTarget)
 		}
 		if person, personTarget := actionPersonConfig(nodeID, "transfer_approver", node); person != nil && personTarget != nil {
-			appendAction("transfer_approver", "移交", "把当前处理任务移交给受目标范围约束的一名处理人并结束本次处理", false, false, person, personTarget)
+			appendAction("transfer_approver", "移交", "把当前处理任务移交给受目标范围约束的一名或多名处理人并结束本次处理", false, false, person, personTarget)
 		}
 	}
 	if len(result.Catalog) == 0 {
@@ -302,7 +302,7 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, nod
 	return result
 }
 
-// actionPersonConfig 从目标当前快照已解析的合法候选生成动作专用人员规则，加签可多选而移交严格单选。
+// actionPersonConfig 从目标当前快照已解析的合法候选生成动作专用人员规则；加签和移交均可在该受限范围内多选。
 func actionPersonConfig(nodeID, actionKind string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
 	if node == nil || node.AuditConfig == nil || len(node.AuditConfig.ResolutionIssues) > 0 || len(node.AuditConfig.Candidates) == 0 {
 		return nil, nil
@@ -337,16 +337,13 @@ func actionPersonConfig(nodeID, actionKind string, node *target.FlowNodeTemplate
 		strategies = append([]model.PathConfigPersonStrategyOption{{Value: "target_default", Label: "目标默认"}}, strategies...)
 		allowed["target_default"] = true
 	}
-	if actionKind == "add_sign" && len(options) > 1 {
+	if (actionKind == "add_sign" || actionKind == "transfer_approver") && len(options) > 1 {
 		strategies = append(strategies, model.PathConfigPersonStrategyOption{Value: "all", Label: "全部候选"})
 		allowed["all"] = true
 	}
-	maxCount := 1
-	multiple := false
-	if actionKind == "add_sign" {
-		maxCount = len(options)
-		multiple = true
-	}
+	// 目标移交弹窗以多选树收集 checkboxPersonGroup，并完整提交 userIds；不能把真实多人范围缩成单选。
+	maxCount := len(options)
+	multiple := true
 	personTarget := &PathConfigPersonTarget{
 		Key: key, Name: "动作人员", CandidateTokens: candidateTokens, CandidateNames: candidateNames,
 		CandidateOrder: candidateOrder(config.Candidates), DefaultIDs: defaultIDs, AllowedStrategies: allowed,

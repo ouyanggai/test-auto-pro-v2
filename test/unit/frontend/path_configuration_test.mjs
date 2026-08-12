@@ -386,6 +386,12 @@ test('人员策略和有界到达动作即时投影与后端规则一致', () =>
   assert.equal(validPathConfigArrivals(approval, partialSign), true)
   const transfer = { kind: 'transfer_approver', opinion: '', target: '', person: { key: person.key, strategy: 'all', seed: 1, selected: [] } }
   assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [transfer] }]), true)
+  const transferTwoPeople = { kind: 'transfer_approver', opinion: '', target: '', person: { key: person.key, strategy: 'manual', seed: 1, selected: ['person-a', 'person-b'] } }
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [transferTwoPeople] }]), true)
+  const transferEmpty = { kind: 'transfer_approver', opinion: '', target: '', person: { key: person.key, strategy: 'manual', seed: 1, selected: [] } }
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [transferEmpty] }]), false)
+  const transferForged = { kind: 'transfer_approver', opinion: '', target: '', person: { key: person.key, strategy: 'manual', seed: 1, selected: ['person-a', 'forged-person'] } }
+  assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [transferForged] }]), false)
   assert.equal(validPathConfigArrivals(approval, [{ visit: 1, steps: [transfer, { kind: 'approve_pass', opinion: '', target: '' }] }]), false)
   const overflow = Array.from({ length: 100 }, () => ({
     kind: 'add_sign', opinion: '', target: '', person: { key: person.key, strategy: 'all', seed: 1, selected: [] },

@@ -139,6 +139,7 @@ fi
 grep -Fq "rollbackTargets" "${config_panel}"
 grep -Fq "add_sign" "${config_panel}"
 grep -Fq "transfer_approver" "${config_panel}"
+grep -Fq ':multiple="requiredActionPerson(step.kind).multiple"' "${config_panel}"
 grep -Fq "resolvedPersonStrategySelection" "${config_logic}"
 grep -Fq "validPathConfigArrivals" "${config_logic}"
 grep -Fq "normalizedPathConfigSeed" "${config_logic}"

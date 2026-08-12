@@ -354,8 +354,8 @@ func TestPathConfigAnalyzerProjectsActionPeopleIndependently(t *testing.T) {
 		if !item.RequiresPerson || item.Person == nil || len(item.Person.Options) != 2 {
 			t.Fatalf("%s 没有独立受限人员范围：%+v", kind, item)
 		}
-		if kind == "transfer_approver" && (item.Person.Multiple || item.Person.MaxCount != 1) {
-			t.Fatalf("移交必须严格选择一名处理人：%+v", item.Person)
+		if !item.Person.Multiple || item.Person.MinCount != 1 || item.Person.MaxCount != len(item.Person.Options) {
+			t.Fatalf("%s 必须允许当前受限候选范围内的一人或多人选择：%+v", kind, item.Person)
 		}
 		if validation.NodeTokens[node.Key].ActionPersons[kind] == nil {
 			t.Fatalf("%s 没有进入服务端动作人员校验映射", kind)
@@ -518,25 +518,50 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 		t.Fatalf("动作人员范围没有独立投影当前目标候选：%+v", actionPerson)
 	}
 	transferPerson := findActionCatalogItem(t, findConfigNode(configuration.Groups, "财务审批").ActionPlan.Catalog, "transfer_approver").Person
-	if transferPerson == nil || len(transferPerson.Options) != 3 || transferPerson.Multiple {
-		t.Fatalf("移交人员范围没有独立投影单选候选：%+v", transferPerson)
+	if transferPerson == nil || len(transferPerson.Options) != 3 || !transferPerson.Multiple || transferPerson.MinCount != 1 || transferPerson.MaxCount != 3 {
+		t.Fatalf("移交人员范围没有独立投影多人候选：%+v", transferPerson)
+	}
+	if !containsPersonStrategy(transferPerson.Strategies, "all") {
+		t.Fatalf("移交多人候选缺少全选策略：%+v", transferPerson.Strategies)
 	}
 	actionManual := model.PathConfigPersonStrategyInput{Key: actionPerson.Key, Strategy: "manual", Seed: 7, Selected: []string{actionPerson.Options[0].Value, actionPerson.Options[1].Value, actionPerson.Options[2].Value}}
-	actionRandom := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "random", Seed: 9, Selected: []string{transferPerson.Options[0].Value}}
+	transferManual := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{transferPerson.Options[0].Value, transferPerson.Options[1].Value}}
 	actions := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
 		{Kind: "add_sign", Person: &actionManual},
-		{Kind: "transfer_approver", Person: &actionRandom},
+		{Kind: "transfer_approver", Person: &transferManual},
 	}}}
 	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 2 {
 		t.Fatalf("加签或移交没有复用当前合法人员策略：count=%d reason=%s", count, reason)
 	}
+	transferAll := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "all", Seed: 9, Selected: []string{transferPerson.Options[0].Value}}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "transfer_approver", Person: &transferAll}}}}); reason != "" {
+		t.Fatalf("移交全选策略被错误拒绝：%s", reason)
+	}
+	transferEmpty := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{}}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "transfer_approver", Person: &transferEmpty}}}}); !strings.Contains(reason, "人数不足") {
+		t.Fatalf("移交空选没有被拒绝：%s", reason)
+	}
+	transferForged := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{transferPerson.Options[0].Value, "forged-token"}}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{{Kind: "transfer_approver", Person: &transferForged}}}}); !strings.Contains(reason, "不属于") {
+		t.Fatalf("移交伪造候选没有被拒绝：%s", reason)
+	}
 	transferThenApprove := []model.PathConfigArrivalInput{{Visit: 1, Steps: []model.PathConfigActionStepInput{
-		{Kind: "transfer_approver", Person: &actionRandom},
+		{Kind: "transfer_approver", Person: &transferManual},
 		{Kind: "approve_pass", Opinion: "同意"},
 	}}}
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, transferThenApprove); !strings.Contains(reason, "最后一步") {
 		t.Fatalf("移交后的同次到达动作没有被拒绝：%s", reason)
 	}
+}
+
+// containsPersonStrategy 判断公开动作人员目录是否包含预期策略，避免测试依赖目录显示顺序。
+func containsPersonStrategy(items []model.PathConfigPersonStrategyOption, expected string) bool {
+	for _, item := range items {
+		if item.Value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 // findActionCatalogItem 按稳定动作枚举查找测试目录项，缺失时立即失败。
