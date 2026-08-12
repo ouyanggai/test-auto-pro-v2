@@ -1,3 +1,10 @@
 packages:
   - web
   - form-runtime
+
+# Vue 2 的 template compiler 会在运行时 require('vue') 校验版本，但旧包未声明该依赖。
+# 工作区同时包含 Vue 3 主应用时必须显式绑定 Vue 2，避免安装顺序改变表单服务构建结果。
+packageExtensions:
+  vue-template-compiler@2.6.11:
+    peerDependencies:
+      vue: 2.6.11

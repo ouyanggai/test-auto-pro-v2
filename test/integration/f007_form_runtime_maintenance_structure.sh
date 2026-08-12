@@ -8,6 +8,7 @@ runtime_main="${project_root}/form-runtime/src/main.js"
 upstream_main="${project_root}/form-runtime/runtime-source/src/main.js"
 vue_config="${project_root}/form-runtime/vue.config.js"
 runtime_package="${project_root}/form-runtime/package.json"
+workspace_file="${project_root}/pnpm-workspace.yaml"
 maintenance_view="${project_root}/web/src/views/FormRuntimeMaintenanceView.vue"
 router="${project_root}/web/src/router/index.ts"
 settings="${project_root}/web/src/views/SettingsView.vue"
@@ -30,6 +31,8 @@ test -f "${project_root}/form-runtime/runtime-source/src/lib/vue-form-making/dis
 test -f "${project_root}/form-runtime/runtime-source/scripts/sync.js"
 test -f "${project_root}/form-runtime/runtime-source/sync-manifest.json"
 test -f "${project_root}/form-runtime/src/runtime/requestPolicy.js"
+grep -Fq 'vue-template-compiler@2.6.11:' "${workspace_file}"
+grep -Fq 'vue: 2.6.11' "${workspace_file}"
 if test -e "${project_root}/form-runtime/runtime-source/.npmrc"; then
   echo 'F-007 实际运行源码不得复制含凭证的 .npmrc' >&2
   exit 1
