@@ -115,6 +115,12 @@ export async function captureFormValues (form, validate) {
   return clonePlain(form.getValues())
 }
 
+// refreshPreparedForm 只刷新已预先写入权限的模板，避免目标自定义组件因缺少 disabledElement 被统一运行时禁用调用击穿。
+export async function refreshPreparedForm (form) {
+  if (!form || typeof form.refresh !== 'function') throw new Error('目标 FormMaking 运行时缺少 refresh 能力')
+  await form.refresh()
+}
+
 // diffManualPaths 递归比较生成基线与 getValues 结果，得到换一组时必须保留的人工覆盖路径。
 export function diffManualPaths (generated, current) {
   const paths = new Set()

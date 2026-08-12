@@ -15,9 +15,10 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { captureFormValues, clonePlain, prepareTemplate, diffManualPaths } from './runtime/formTemplate'
+import { captureFormValues, clonePlain, prepareTemplate, diffManualPaths, refreshPreparedForm } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, setRuntimeAuth } from './runtime/memoryAuth'
+import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
 
 export default {
   name: 'FormRuntimeApp',
@@ -96,9 +97,13 @@ export default {
         this.sessionId = command.sessionId
         this.loading = true
         this.readOnly = Boolean(payload.readOnly)
+        const baseURL = String(payload.baseURL || '')
+        const targetOrigin = baseURL ? new URL(baseURL).origin : ''
+        // 上游 axios 可能已捕获同步源码的旧默认地址；会话环境与请求策略双重收敛到后端核实的当前网关。
+        setRuntimeEnvironment({ baseUrl: baseURL, viewFileUrl: targetOrigin })
         this.removeRequestPolicy = installReadOnlyRequestPolicy({
           sid: String(payload.sid || ''),
-          baseURL: String(payload.baseURL || '')
+          baseURL
         })
         // 目标组件继续走 rsh-flow-components 原生 Vuex/axios 链；认证只写当前 iframe 内存适配，销毁会话即清除。
         setRuntimeAuth({
@@ -170,17 +175,8 @@ export default {
       this.values = clonePlain(values)
     },
     async refresh () {
-      const form = this.form()
-      if (!form || typeof form.refresh !== 'function') throw new Error('目标 FormMaking 运行时缺少 refresh 能力')
-      await form.refresh()
-      this.applyFieldPermissions(form)
-    },
-    applyFieldPermissions (form) {
-      if (typeof form.disabled !== 'function' || typeof form.hide !== 'function') throw new Error('目标 FormMaking 运行时缺少字段权限能力')
-      // 与目标 OtherSteps2 一致：先禁用全表，再只开放节点 edit 字段，最后应用 hide；已发/待发不会开放任何字段。
-      if (this.allFields.length) form.disabled(this.allFields, true)
-      if (!this.readOnly && this.editableFields.length) form.disabled(this.editableFields, false)
-      if (this.hiddenFields.length) form.hide(this.hiddenFields)
+      // 字段权限已在 FormMaking 装载前写入每个组件 options；refresh 后统一调用 disabled 会击穿缺少 disabledElement 的已注册组件。
+      await refreshPreparedForm(this.form())
     },
     async capture (validate) {
       const form = this.form()
@@ -220,6 +216,7 @@ export default {
       this.hiddenFields = []
       this.dirty = false
       this.loading = false
+      setRuntimeEnvironment({ baseUrl: '', viewFileUrl: '', onlyOfficeUrl: '' })
       clearRuntimeAuth()
       if (window.$store && window.$store._mutations['user/RESET_STATE']) window.$store.commit('user/RESET_STATE')
       // SID 只存在于请求策略闭包和内存认证适配；销毁会话后不保留到 storage、Vuex 或全局变量。

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select'])
-const { captureFormValues, componentRuntimeName, diffManualPaths, prepareTemplate } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, componentRuntimeName, diffManualPaths, prepareTemplate, refreshPreparedForm } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
 
@@ -66,6 +66,20 @@ test('新发起只开放 edit 字段且已发待发保持全表只读', () => {
   assert.equal(readonly.template.list[0].options.disabled, true)
   assert.equal(readonly.template.list[0].options.required, false)
   assert.deepEqual(readonly.editableFields, [])
+})
+
+test('刷新已预置权限的模板不会统一调用自定义组件 disabledElement', async () => {
+  let refreshed = false
+  let disabledCalled = false
+  await refreshPreparedForm({
+    async refresh() { refreshed = true },
+    disabled() {
+      disabledCalled = true
+      throw new TypeError('n.disabledElement is not a function')
+    },
+  })
+  assert.equal(refreshed, true)
+  assert.equal(disabledCalled, false)
 })
 
 test('校验只使用 getData 而完整保存值来自 getValues 人工输入与虚拟字段', async () => {
@@ -147,6 +161,15 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     assert.equal(fetched.length, 1)
     assert.equal(fetched[0][0], 'http://target.test/api/web/flowProxy/findById?sid=memory-only-sid')
     assert.equal(fetched[0][1].headers.get('sid'), 'memory-only-sid')
+
+    await window.fetch('http://192.168.1.220:28081/api/web/user/api/company/children?flag=3', { method: 'POST', body: '{}' })
+    assert.equal(fetched[1][0], 'http://target.test/api/web/user/api/company/children?flag=3&sid=memory-only-sid')
+    assert.equal(fetched[1][1].headers.get('sid'), 'memory-only-sid')
+    await assert.rejects(window.fetch('http://192.168.1.220:28081/api/web/file/api/relationFile/saveBatchFile', { method: 'POST' }), /不支持未证明为只读/)
+
+    await window.fetch('https://cdn.example.test/assets/form.css')
+    assert.equal(fetched[2][0], 'https://cdn.example.test/assets/form.css')
+    assert.equal(fetched[2][1].headers.has('sid'), false)
     restore()
     assert.equal(window.fetch, nativeFetch)
     const afterDestroy = new XMLHttpRequest()

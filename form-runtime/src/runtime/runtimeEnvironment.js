@@ -6,7 +6,7 @@ export let wsUrl = ''
 
 // setConfig 只更新非认证运行参数，SID 由独立内存认证适配持有。
 export function setConfig (config = {}) {
-  if (config.baseUrl) baseUrl = config.baseUrl
-  if (config.viewFileUrl) viewFileUrl = config.viewFileUrl
-  if (config.onlyOfficeUrl) onlyOfficeUrl = config.onlyOfficeUrl
+  if (Object.prototype.hasOwnProperty.call(config, 'baseUrl')) baseUrl = String(config.baseUrl || '')
+  if (Object.prototype.hasOwnProperty.call(config, 'viewFileUrl')) viewFileUrl = String(config.viewFileUrl || '')
+  if (Object.prototype.hasOwnProperty.call(config, 'onlyOfficeUrl')) onlyOfficeUrl = String(config.onlyOfficeUrl || '')
 }

@@ -16,6 +16,12 @@ const EXPLICIT_FORBIDDEN_PATHS = [
   /\/web\/flowOperate(?:Api|Service)?(?:\/|$)/i,
   /\/web\/user\/api\/login\/user\/(?:login|loginOut|switchLinkage)(?:\/|$)/i
 ]
+const KNOWN_TARGET_ORIGINS = new Set([
+  'http://192.168.1.220:28081',
+  'http://192.168.1.220:38081',
+  'http://192.168.1.218:8077',
+  'https://iserver.runshihua.com'
+])
 
 // pathSegments 统一解码目标路径并保留层级，供写语义优先判断。
 function pathSegments (pathname) {
@@ -40,19 +46,36 @@ export function targetRequestAllowed (method, pathname) {
     READ_SEGMENT_SUFFIXES.some(suffix => action.endsWith(suffix))
 }
 
-// resolveURL 把目标组件使用的 /web 与 /api/web 两种网关地址都收敛到当前核实目标。
+// targetPath 判断请求是否属于目标平台网关的 /web 或 /api/web 路径。
+function targetPath (pathname) {
+  return /^\/?(?:api\/)?web(?:\/|$)/i.test(String(pathname || ''))
+}
+
+// rewriteTargetPath 保持原查询串，把目标 /web 路径收敛到会话网关的 /api 前缀。
+function rewriteTargetPath (source, base) {
+  const gatewayPrefix = base.pathname.replace(/\/$/, '').endsWith('/api') ? base.pathname.replace(/\/$/, '') : '/api'
+  const pathname = source.pathname.replace(/^\/?api(?=\/web(?:\/|$))/i, '').replace(/^\//, '')
+  const target = new URL(`${base.origin}${gatewayPrefix}/${pathname}`)
+  target.search = source.search
+  target.hash = source.hash
+  return target
+}
+
+// resolveURL 把相对地址和同步源码遗留的目标绝对地址都收敛到当前会话网关，真正第三方资源保持原样。
 function resolveURL (raw, baseURL) {
   const text = String(raw)
   if (!baseURL) return new URL(text, window.location.href)
   const base = new URL(baseURL)
-  if (/^\/?web\//i.test(text)) {
-    return new URL(`${String(baseURL).replace(/\/$/, '')}/${text.replace(/^\//, '')}`)
+  if (/^\/?(?:api\/)?web(?:\/|$)/i.test(text)) {
+    return rewriteTargetPath(new URL(text.replace(/^\/?api(?=\/web)/i, ''), base.origin), base)
   }
-  if (/^\/?api\/web\//i.test(text)) {
-    const gatewayPrefix = base.pathname.replace(/\/$/, '').endsWith('/api') ? base.pathname.replace(/\/$/, '') : '/api'
-    return new URL(`${base.origin}${gatewayPrefix}/${text.replace(/^\/?api\//i, '')}`)
+  const resolved = new URL(text, window.location.href)
+  if (!targetPath(resolved.pathname)) return resolved
+  // 同步源码的开发环境可能在 axios 初始化时捕获旧 28081；同主机旧端口和已知目标网关都必须改写，不能绕过会话只读策略。
+  if (resolved.hostname === base.hostname || KNOWN_TARGET_ORIGINS.has(resolved.origin)) {
+    return rewriteTargetPath(resolved, base)
   }
-  return new URL(text, window.location.href)
+  return resolved
 }
 
 // targetURL 只对当前会话核实且已证明只读的目标请求附加 SID，其他源保持浏览器默认行为。
