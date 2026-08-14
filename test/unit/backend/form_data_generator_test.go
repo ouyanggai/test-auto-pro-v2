@@ -101,6 +101,33 @@ func TestFormDataGeneratorValidatesDatesAndORGroups(t *testing.T) {
 	}
 }
 
+// TestFormDataGeneratorFillsRequiredEmptyDefaults 验证空字符串默认值不会被当成有效值，必填基础字段仍回退生成。
+func TestFormDataGeneratorFillsRequiredEmptyDefaults(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "textarea", "model": "reason", "name": "原因", "options": map[string]any{"required": true, "defaultValue": ""}},
+	}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 3})
+	if reason, _ := result.Values["reason"].(string); strings.TrimSpace(reason) == "" {
+		t.Fatalf("必填字段空默认值没有被回退生成：%+v", result.Values)
+	}
+	if result.Pending != 0 {
+		t.Fatalf("必填基础字段不应计入人工待填：%+v", result)
+	}
+}
+
+// TestFormDataGeneratorCountsEachCustomFieldPending 验证多个同名自定义组件不会被去重，各自计入人工待填。
+func TestFormDataGeneratorCountsEachCustomFieldPending(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "custom", "model": "myCompanyName", "name": "通用信息选择", "options": map[string]any{}},
+		map[string]any{"type": "custom", "model": "myDepName", "name": "通用信息选择", "options": map[string]any{}},
+		map[string]any{"type": "custom", "model": "myUserName", "name": "通用信息选择", "options": map[string]any{}},
+	}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 1})
+	if result.Pending != 3 {
+		t.Fatalf("同名自定义组件应各自计入人工待填：%+v", result)
+	}
+}
+
 // generatorTemplate 返回生成器测试共用的基础 FormMaking 模板。
 func generatorTemplate() map[string]any {
 	return map[string]any{"list": []any{

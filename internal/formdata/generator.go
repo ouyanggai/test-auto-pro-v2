@@ -97,7 +97,8 @@ func collectList(list []any, prefix string, fields *[]Field, unsupported *[]stri
 			// 明细/子表单的 values 是数组行结构，当前基础生成器不能把它当成点路径对象伪造。
 			*unsupported = append(*unsupported, firstText(name, model)+"："+typeName+" 需要独立明细数据适配")
 		} else if model != "" && !containerTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" {
-			*unsupported = append(*unsupported, firstText(name, model)+"："+firstText(typeName, "未知组件"))
+			// 用 model 作主标识，避免多个同名自定义组件被去重后人工待填计数失真。
+			*unsupported = append(*unsupported, firstText(model, name)+"："+firstText(typeName, "未知组件"))
 		}
 		childPrefix := prefix
 		if (typeName == "subform" || typeName == "table" || typeName == "group") && model != "" {
@@ -161,7 +162,7 @@ func Generate(input GenerateInput) GenerateResult {
 			result.Recent++
 			continue
 		}
-		if usableValue(field, field.Default) {
+		if usableValue(field, field.Default) && !emptyValue(field.Default) {
 			setPath(values, field.Path, cloneValue(field.Default))
 			generated = append(generated, field.Path)
 			result.Defaults++
