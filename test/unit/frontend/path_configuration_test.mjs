@@ -423,3 +423,14 @@ test('发起只提交且审批草稿始终只有一个处理结果', () => {
   assert.equal(validPathConfigActionPlan(approval, draft.actionPlans[approval.key]), true)
   assert.equal(Object.keys(draft.actionPlans[approval.key].result).filter(key => key === 'kind').length, 1)
 })
+
+test('后端 addSignNodes 为 null 时投影与初始化草稿均按空数组处理', () => {
+  const start = configuration.groups[0].nodes[0]
+  const withNullAddSign = { ...start, actionPlan: { ...start.actionPlan, addSignNodes: null } }
+  assert.deepEqual(pathConfigActionPlanInput(withNullAddSign).addSignNodes, [])
+  const draft = initPathConfigDraft({
+    ...configuration,
+    groups: [{ ...configuration.groups[0], nodes: [withNullAddSign] }],
+  })
+  assert.deepEqual(draft.actionPlans[start.key].addSignNodes, [])
+})

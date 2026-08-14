@@ -187,7 +187,8 @@ export type PathConfigActionKind = 'submit' | 'approve_pass' | 'reject_no_pass' 
 export interface PathConfigActionPlan {
   catalog: PathConfigActionCatalogItem[]
   rollbackTargets: PathConfigActionOption[]
-  addSignNodes: PathConfigAddSignNode[]
+  // 后端在节点没有已保存加签节点时返回 null（Go nil 切片），只有 manual/condition 等无动作节点才返回空数组。
+  addSignNodes: PathConfigAddSignNode[] | null
   result: PathConfigActionStep
   affected: boolean
   note: string

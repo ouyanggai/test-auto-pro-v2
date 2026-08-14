@@ -319,7 +319,8 @@ function copyPathConfigActionStep(input: PathConfigActionStepInput): PathConfigA
 // copyPathConfigActionPlan 复制独立加签节点与唯一处理结果，避免 Vue Proxy 在请求前触发 DataCloneError。
 export function copyPathConfigActionPlan(input: PathConfigActionPlanInput): PathConfigActionPlanInput {
   return {
-    addSignNodes: input.addSignNodes.map(item => ({ person: copyPathConfigPersonStrategy(item.person) })),
+    // 加签节点可能来自后端投影或本地草稿；统一按空数组兜底，避免 null 触发 .map 异常。
+    addSignNodes: (input.addSignNodes ?? []).map(item => ({ person: copyPathConfigPersonStrategy(item.person) })),
     result: copyPathConfigActionStep(input.result),
   }
 }
@@ -328,7 +329,8 @@ export function copyPathConfigActionPlan(input: PathConfigActionPlanInput): Path
 export function pathConfigActionPlanInput(node: PathConfigNode): PathConfigActionPlanInput {
   const resultKind: PathConfigActionKind = node.actionPlan.result.kind || (node.kind === 'start' ? 'submit' : 'approve_pass')
   return copyPathConfigActionPlan({
-    addSignNodes: node.actionPlan.addSignNodes.map(item => ({ person: item.person })),
+    // 后端对无加签节点的 start/common/synergy 返回 null，必须兜底为空数组，否则整页投影抛 TypeError。
+    addSignNodes: (node.actionPlan.addSignNodes ?? []).map(item => ({ person: item.person })),
     result: {
       kind: resultKind,
       opinion: '',
