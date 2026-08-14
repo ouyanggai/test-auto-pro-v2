@@ -342,6 +342,7 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 	}
 	return target.FormRuntimeSession{
 		SID: active.SID, BaseURL: s.client.BaseURL(), AccountName: active.Summary.DisplayName,
+		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: active.Summary.CompanyName,
 	}, nil
 }
 

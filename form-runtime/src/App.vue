@@ -114,6 +114,11 @@ export default {
         if (window.$store) {
           window.$store.commit('user/SET_TOKEN', String(payload.sid || ''))
           window.$store.commit('user/SET_USER_NAME', String(payload.accountName || ''))
+          // 公司/人员选择组件从目标登录上下文读取本地公司树；只装载后端已核实的非空字段，避免空值覆盖既有会话。
+          if (payload.userId) window.$store.commit('user/SET_USER_ID', String(payload.userId))
+          if (payload.companyId) window.$store.commit('user/SET_COMPANY_ID', String(payload.companyId))
+          if (payload.customerCode) window.$store.commit('user/SET_CUSTOMERCODE', String(payload.customerCode))
+          if (payload.companyName) window.$store.commit('user/SET_COMPANY_NAME', String(payload.companyName))
         }
         const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly)
         this.template = prepared.template

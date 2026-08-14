@@ -40,7 +40,10 @@ func (s *PathConfigService) RuntimeSession(ctx context.Context, planID, pathID u
 	if err != nil {
 		return model.PathFormRuntimeSession{}, err
 	}
-	return model.PathFormRuntimeSession{SID: active.SID, BaseURL: active.BaseURL, AccountName: active.AccountName}, nil
+	return model.PathFormRuntimeSession{
+		SID: active.SID, BaseURL: active.BaseURL, AccountName: active.AccountName,
+		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: active.CompanyName,
+	}, nil
 }
 
 // GenerateForm 按当前真实模板、近期样本、发起人和路径条件生成可复现草稿。

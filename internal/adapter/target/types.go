@@ -210,9 +210,13 @@ type FormRuntimeTemplate struct {
 
 // FormRuntimeSession 是当前已验证账号的短期表单读取会话，不得持久化。
 type FormRuntimeSession struct {
-	SID         string
-	BaseURL     string
-	AccountName string
+	SID          string
+	BaseURL      string
+	AccountName  string
+	UserID       string
+	CompanyID    string
+	CustomerCode string
+	CompanyName  string
 }
 
 type Page[T any] struct {

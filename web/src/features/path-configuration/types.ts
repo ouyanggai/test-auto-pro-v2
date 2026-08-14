@@ -62,6 +62,10 @@ export interface PathFormRuntimeSession {
   sid: string
   baseURL: string
   accountName: string
+  userId: string
+  companyId: string
+  customerCode: string
+  companyName: string
 }
 
 export interface PathConfigProgress {
