@@ -18,6 +18,7 @@ type rawAuditDirectoryNode struct {
 	RealName     string                  `json:"realName"`
 	DisplayName  string                  `json:"displayName"`
 	Type         string                  `json:"type"`
+	ParentID     string                  `json:"parentId"`
 	ChildrenList []rawAuditDirectoryNode `json:"childrenList"`
 }
 
@@ -494,4 +495,63 @@ func auditDirectoryCategory(value, auditType string) string {
 	default:
 		return "处理人员"
 	}
+}
+
+// FormIdentityContext 读取 flag=3 公司部门人员树，定位当前账号的公司、部门与本人节点。
+// 三个节点都携带 custome-info-select 组件约定所需的 type、parentId 与部门所属公司 ID；目标目录无法定位时对应项保持空。
+func (c *Client) FormIdentityContext(ctx context.Context, active Session) (FormIdentityContext, error) {
+	result := FormIdentityContext{}
+	if strings.TrimSpace(active.CompanyID) == "" {
+		return result, fmt.Errorf("login response missing company id")
+	}
+	resp, err := c.call(ctx, "/web/user/api/company/children", active.SID, map[string]any{
+		"data": map[string]any{"flag": "3", "id": active.CompanyID, "customerCode": active.CustomerCode},
+	})
+	if err != nil || !responseSucceeded(resp) {
+		return result, fmt.Errorf("company directory unavailable")
+	}
+	var tree []rawAuditDirectoryNode
+	if err := json.Unmarshal(resp.Data, &tree); err != nil {
+		return result, fmt.Errorf("invalid company directory")
+	}
+	companyID := strings.TrimSpace(active.CompanyID)
+	userID := strings.TrimSpace(active.UserID)
+	userFound := false
+	var walk func(nodes []rawAuditDirectoryNode, parentID, ancestorCompanyID, departmentID, departmentName, departmentParentID string)
+	walk = func(nodes []rawAuditDirectoryNode, parentID, ancestorCompanyID, departmentID, departmentName, departmentParentID string) {
+		for index := range nodes {
+			node := &nodes[index]
+			nodeID := strings.TrimSpace(node.ID)
+			nodeType := strings.TrimSpace(node.Type)
+			nodeName := firstNonEmpty(node.Name, node.RealName, node.DisplayName)
+			nextCompanyID, nextDepartmentID, nextDepartmentName, nextDepartmentParentID := ancestorCompanyID, departmentID, departmentName, departmentParentID
+			if nodeType == "1" {
+				nextCompanyID = nodeID
+			}
+			if nodeType == "2" {
+				nextDepartmentID, nextDepartmentName, nextDepartmentParentID = nodeID, nodeName, parentID
+			}
+			if nodeID == companyID && nodeType == "1" {
+				result.Company = FormIdentityNode{ID: nodeID, Name: nodeName, Type: nodeType, ParentID: strings.TrimSpace(node.ParentID), CompanyID: ""}
+			}
+			if nodeID == userID && nodeType == "5" {
+				// 同一个人可能挂在多个公司部门下；优先选择属于当前登录公司的节点，其余只作兜底。
+				belongsToCurrentCompany := ancestorCompanyID == companyID
+				if !userFound || belongsToCurrentCompany {
+					result.User = FormIdentityNode{ID: nodeID, Name: nodeName, Type: nodeType, ParentID: strings.TrimSpace(node.ParentID), CompanyID: ""}
+					result.Department = FormIdentityNode{ID: departmentID, Name: departmentName, Type: "2", ParentID: departmentParentID, CompanyID: ancestorCompanyID}
+					userFound = true
+				}
+				if belongsToCurrentCompany {
+					return
+				}
+			}
+			walk(node.ChildrenList, nodeID, nextCompanyID, nextDepartmentID, nextDepartmentName, nextDepartmentParentID)
+		}
+	}
+	walk(tree, "", "", "", "", "")
+	if !userFound {
+		return result, fmt.Errorf("current user not found in company directory")
+	}
+	return result, nil
 }

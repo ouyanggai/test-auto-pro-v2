@@ -1,6 +1,7 @@
 package backend_test
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -125,6 +126,63 @@ func TestFormDataGeneratorCountsEachCustomFieldPending(t *testing.T) {
 	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 1})
 	if result.Pending != 3 {
 		t.Fatalf("同名自定义组件应各自计入人工待填：%+v", result)
+	}
+}
+
+// TestFormDataGeneratorFillsInfoSelectFromIdentity 验证选公司/部门/人员组件按账号身份目录节点生成组件约定 JSON 值。
+func TestFormDataGeneratorFillsInfoSelectFromIdentity(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "text", "name": "公司", "model": ""},
+		map[string]any{"type": "custom", "el": "custome-info-select", "model": "myCompanyName", "name": "通用信息选择", "options": map[string]any{"required": true}},
+		map[string]any{"type": "text", "name": "部门", "model": ""},
+		map[string]any{"type": "custom", "el": "custome-info-select", "model": "myDepName", "name": "通用信息选择", "options": map[string]any{"required": true}},
+		map[string]any{"type": "text", "name": "姓名", "model": ""},
+		map[string]any{"type": "custom", "el": "custome-info-select", "model": "myUserName", "name": "通用信息选择", "options": map[string]any{"required": true}},
+	}}
+	identity := formdata.IdentityContext{
+		Company:    formdata.IdentityNode{ID: "c1", Name: "测试公司", Type: "1", ParentID: "g1"},
+		Department: formdata.IdentityNode{ID: "d1", Name: "测试部", Type: "2", ParentID: "c1", CompanyID: "c1"},
+		User:       formdata.IdentityNode{ID: "u1", Name: "测试人", Type: "5", ParentID: "d1"},
+	}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 1, Identity: identity})
+	if result.Identity != 3 || result.Pending != 0 {
+		t.Fatalf("信息选择组件没有按身份填充：%+v", result)
+	}
+	company := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myCompanyName"].(string)), &company); err != nil || company["id"] != "c1" || company["name"] != "测试公司" {
+		t.Fatalf("公司组件值不符合组件约定：%+v err=%v", result.Values["myCompanyName"], err)
+	}
+	department := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myDepName"].(string)), &department); err != nil || department["id"] != "d1" || department["companyId"] != "c1" {
+		t.Fatalf("部门组件值不符合组件约定：%+v err=%v", result.Values["myDepName"], err)
+	}
+	user := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myUserName"].(string)), &user); err != nil || user["id"] != "u1" || user["parentId"] != "d1" {
+		t.Fatalf("人员组件值不符合组件约定：%+v err=%v", result.Values["myUserName"], err)
+	}
+}
+
+// TestFormDataGeneratorUsesLabelsAndSmartText 验证前置 text 标签成为字段名称并生成可读文本值。
+func TestFormDataGeneratorUsesLabelsAndSmartText(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "text", "name": "请假原因", "model": ""},
+		map[string]any{"type": "textarea", "model": "vacateReason", "name": "多行文本", "options": map[string]any{"required": true, "defaultValue": ""}},
+		map[string]any{"type": "text", "name": "发起人", "model": ""},
+		map[string]any{"type": "input", "model": "initiatorName", "name": "单行文本", "options": map[string]any{"required": true}},
+	}}
+	fields, unsupported := formdata.ParseTemplate(template)
+	if len(unsupported) != 0 || len(fields) != 2 {
+		t.Fatalf("标签解析结果不正确：fields=%+v unsupported=%v", fields, unsupported)
+	}
+	if fields[0].Name != "请假原因" || fields[1].Name != "发起人" {
+		t.Fatalf("前置 text 标签没有成为字段名称：%+v", fields)
+	}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 5, Initiator: "骆蒙恩"})
+	if result.Values["vacateReason"] != "个人事务需要处理" {
+		t.Fatalf("请假原因没有生成可读文本：%+v", result.Values)
+	}
+	if result.Values["initiatorName"] != "骆蒙恩" {
+		t.Fatalf("发起人字段没有使用账号姓名：%+v", result.Values)
 	}
 }
 

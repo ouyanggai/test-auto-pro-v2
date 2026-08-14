@@ -48,6 +48,13 @@ type PathFormConfig struct {
 	Affected            []PathConfigAffectedItem `json:"affected"`
 	AutoFilled          int                      `json:"autoFilled"`
 	ManualPending       int                      `json:"manualPending"`
+	ConditionHints      []PathFormConditionHint  `json:"conditionHints"`
+}
+
+// PathFormConditionHint 是当前路径条件分支使用到的关键字段提示，只用于表单气泡展示。
+type PathFormConditionHint struct {
+	Field string `json:"field"`
+	Text  string `json:"text"`
 }
 
 // PathFormPermission 是 iframe 应用字段权限所需的最小字段键与权限。
@@ -62,6 +69,7 @@ type PathFormSampleSummary struct {
 	Defaults int  `json:"defaults"`
 	Recent   int  `json:"recent"`
 	Fallback int  `json:"fallback"`
+	Identity int  `json:"identity"`
 }
 
 // PathFormGenerateResult 是智能生成或换一组返回的权威表单草稿。

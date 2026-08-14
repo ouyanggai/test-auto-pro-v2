@@ -346,6 +346,18 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 	}, nil
 }
 
+// FormIdentityContext 从已验证账号缓存解析公司目录中的公司、部门与本人节点，供表单选人/选公司组件自动填充。
+func (s *TargetReadService) FormIdentityContext(ctx context.Context, account string) (target.FormIdentityContext, error) {
+	if err := s.ready(); err != nil {
+		return target.FormIdentityContext{}, err
+	}
+	active, err := s.sessions.Current(ctx, account)
+	if err != nil {
+		return target.FormIdentityContext{}, err
+	}
+	return s.client.FormIdentityContext(ctx, active)
+}
+
 // RecentFormSamples 读取最多五条近期可见已发实例表单值，并用短期内存缓存限制目标请求。
 func (s *TargetReadService) RecentFormSamples(ctx context.Context, account string, limit int) ([]map[string]any, error) {
 	if err := s.ready(); err != nil {

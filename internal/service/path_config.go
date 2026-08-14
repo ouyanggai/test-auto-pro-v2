@@ -115,7 +115,7 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	if err != nil {
 		return model.PathConfiguration{}, err
 	}
-	configuration.Form = projectPathForm(plan.FlowSource, snapshot, analysis.pathAnalysis, stored, found)
+	configuration.Form = projectPathForm(plan.FlowSource, snapshot, analysis.pathAnalysis, path.Choices, stored, found)
 	// 整条路径的权威状态必须同时满足表单 valid 与所有必需节点完成；数据库一行存在不再代表配置完成。
 	configuration.Status = derivePathConfigurationStatus(configuration)
 	return configuration, nil

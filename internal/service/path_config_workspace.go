@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -21,6 +22,10 @@ type pathFormRuntimeSessionReader interface {
 
 type pathFormSampleReader interface {
 	RecentFormSamples(context.Context, string, int) ([]map[string]any, error)
+}
+
+type pathFormIdentityReader interface {
+	FormIdentityContext(context.Context, string) (target.FormIdentityContext, error)
 }
 
 // RuntimeSession 校验计划与路径归属后返回当前账号缓存的短期 iframe 会话。
@@ -96,16 +101,24 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 			initiator = active.AccountName
 		}
 	}
+	identity := formdata.IdentityContext{}
+	if reader, ok := s.target.(pathFormIdentityReader); ok {
+		// 身份目录读取失败只影响选人/选公司自动填充，不阻断其他基础字段生成。
+		if active, identityErr := reader.FormIdentityContext(ctx, plan.Account); identityErr == nil {
+			identity = formdataIdentityContext(active)
+		}
+	}
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: template, Base: base, Samples: samples, Seed: seed, Initiator: initiator,
 		Constraints: buildPathConstraints(snapshot.Tree, path.Choices), ManualOverridePaths: manualPaths,
 		EditablePaths: editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs)),
+		Identity:    identity,
 	})
 	generated.Unsupported = append(generated.Unsupported, unsupported...)
 	return model.PathFormGenerateResult{
 		Revision: stored.FormRevision, Status: "draft", Values: generated.Values, Seed: seed,
 		GeneratedFieldPaths: generated.GeneratedFieldPaths, ManualOverridePaths: generated.ManualOverridePaths,
-		SampleSummary: model.PathFormSampleSummary{Saved: found && len(stored.FormValues) > 0, Defaults: generated.Defaults, Recent: generated.Recent, Fallback: generated.Fallback},
+		SampleSummary: model.PathFormSampleSummary{Saved: found && len(stored.FormValues) > 0, Defaults: generated.Defaults, Recent: generated.Recent, Fallback: generated.Fallback, Identity: generated.Identity},
 		AutoFilled:    len(generated.GeneratedFieldPaths), ManualPending: generated.Pending,
 		Unsupported: uniquePublicStrings(generated.Unsupported),
 	}, nil
@@ -284,13 +297,14 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 }
 
 // projectPathForm 把当前真实模板、权限、实例值和已保存元数据投影为 iframe 工作区。
-func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, analysis model.ExecutionPathAnalysis, stored model.StoredPathConfig, found bool) model.PathFormConfig {
+func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, analysis model.ExecutionPathAnalysis, choices []model.ExecutionPathChoice, stored model.StoredPathConfig, found bool) model.PathFormConfig {
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	form := model.PathFormConfig{
 		Revision: stored.FormRevision, Status: "empty", StatusName: "待生成",
 		ReadOnly: source != "new", Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
+		ConditionHints: buildPathConditionHints(snapshot.Tree, choices, template),
 	}
 	if found && len(stored.FormValues) > 0 {
 		form.Values = cloneFormValues(stored.FormValues)
@@ -449,7 +463,7 @@ func (s *PathConfigService) deriveStoredStatus(ctx context.Context, planID uint6
 	if err != nil {
 		return "affected"
 	}
-	configuration.Form = projectPathForm(plan.FlowSource, snapshot, owned.pathAnalysis, stored, true)
+	configuration.Form = projectPathForm(plan.FlowSource, snapshot, owned.pathAnalysis, path.Choices, stored, true)
 	return derivePathConfigurationStatus(configuration)
 }
 
@@ -612,6 +626,121 @@ func normalizeConditionJudge(value string) string {
 		return "in"
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+// formdataIdentityContext 把目标目录身份节点转换为生成器输入，不暴露任何内部 ID 到公开响应。
+func formdataIdentityContext(identity target.FormIdentityContext) formdata.IdentityContext {
+	return formdata.IdentityContext{
+		Company: formdata.IdentityNode{
+			ID: identity.Company.ID, Name: identity.Company.Name, Type: identity.Company.Type,
+			ParentID: identity.Company.ParentID, CompanyID: identity.Company.CompanyID,
+		},
+		Department: formdata.IdentityNode{
+			ID: identity.Department.ID, Name: identity.Department.Name, Type: identity.Department.Type,
+			ParentID: identity.Department.ParentID, CompanyID: identity.Department.CompanyID,
+		},
+		User: formdata.IdentityNode{
+			ID: identity.User.ID, Name: identity.User.Name, Type: identity.User.Type,
+			ParentID: identity.User.ParentID, CompanyID: identity.User.CompanyID,
+		},
+	}
+}
+
+// buildPathConditionHints 为当前路径已选条件分支生成字段级气泡提示，说明关键数据用于哪个分支。
+func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template map[string]any) []model.PathFormConditionHint {
+	fields, _ := formdata.ParseTemplate(template)
+	labelByModel := make(map[string]string, len(fields))
+	for _, field := range fields {
+		if strings.TrimSpace(field.Path) != "" && strings.TrimSpace(field.Name) != "" {
+			labelByModel[field.Path] = field.Name
+		}
+	}
+	selected := make(map[string]string, len(choices))
+	for _, choice := range choices {
+		selected[choice.RouteNodeID] = choice.BranchID
+	}
+	hints := make([]model.PathFormConditionHint, 0)
+	visitTargetTree(tree, map[string]bool{}, func(node *target.FlowNodeTemplate) {
+		branchID := selected[node.ID]
+		if branchID == "" {
+			return
+		}
+		for _, branch := range node.ConditionNodes {
+			if branch.ID != branchID {
+				continue
+			}
+			branchName := strings.TrimSpace(branch.Name)
+			if branchName == "" {
+				branchName = "已选条件分支"
+			}
+			for _, condition := range branch.Conditions {
+				field := strings.TrimSpace(condition.FieldA)
+				if field == "" || strings.TrimSpace(condition.FieldB) != "" {
+					continue
+				}
+				judge, ok := pathConditionJudgeText(condition.Judge)
+				if !ok {
+					judge = "按条件"
+				}
+				label := labelByModel[field]
+				if label == "" {
+					label = field
+				}
+				hints = append(hints, model.PathFormConditionHint{
+					Field: field,
+					Text:  fmt.Sprintf("分支「%s」：%s %s %s", branchName, label, judge, pathConditionDisplayText(pathConditionValue(condition.ValueB))),
+				})
+			}
+		}
+	})
+	return hints
+}
+
+// pathConditionJudgeText 把比较码翻译为气泡可读中文；未知码返回 false。
+func pathConditionJudgeText(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "eq":
+		return "等于", true
+	case "neq":
+		return "不等于", true
+	case "gt":
+		return "大于", true
+	case "gte":
+		return "大于等于", true
+	case "lt":
+		return "小于", true
+	case "lte":
+		return "小于等于", true
+	case "in":
+		return "属于", true
+	case "contains":
+		return "包含", true
+	default:
+		return "", false
+	}
+}
+
+// pathConditionDisplayText 把条件常量收敛为气泡可读文本，数组与对象只保留简短摘要。
+func pathConditionDisplayText(value any) string {
+	switch typed := value.(type) {
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			parts = append(parts, fmt.Sprint(item))
+		}
+		return strings.Join(parts, "、")
+	case map[string]any:
+		if text, ok := typed["name"].(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+		return "目标配置值"
+	default:
+		text := strings.TrimSpace(fmt.Sprint(value))
+		if text == "" {
+			return "（未填）"
+		}
+		return text
 	}
 }
 

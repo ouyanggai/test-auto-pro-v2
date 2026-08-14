@@ -46,10 +46,19 @@ export function componentRuntimeName (component) {
   ).trim()
 }
 
-// prepareTemplate 在完整模板副本上应用字段权限，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
-export function prepareTemplate (rawTemplate, permissions, readOnly) {
+// prepareTemplate 在完整模板副本上应用字段权限与分支关键数据气泡提示，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
+export function prepareTemplate (rawTemplate, permissions, readOnly, conditionHints = []) {
   const template = clonePlain(rawTemplate || {})
   const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [normalizeFieldPath(item.field), item.power]))
+  // 同一字段可能被多个条件分支使用，提示必须按字段合并而不是被后一项覆盖。
+  const hintByField = new Map()
+  for (const item of Array.isArray(conditionHints) ? conditionHints : []) {
+    const field = normalizeFieldPath(item && item.field)
+    const text = String((item && item.text) || '')
+    if (!field || !text) continue
+    const existing = hintByField.get(field)
+    hintByField.set(field, existing ? `${existing}\n${text}` : text)
+  }
   const unsupported = new Set()
   const allFields = new Set()
   const editableFields = new Set()
@@ -78,6 +87,12 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
           component.options.required = false
           // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
           if (Array.isArray(component.rules)) component.rules = []
+        }
+        // 分支条件关键数据提示：FormMaking 会把 options.tip 渲染成字段旁的提示气泡，只提示不改值。
+        const hintText = hintByField.get(field)
+        if (hintText) {
+          component.options.tip = String(component.options.tip || '').trim()
+            ? `${String(component.options.tip).trim()}\n${hintText}` : hintText
         }
       }
       for (const children of componentLists(component)) visit(children)

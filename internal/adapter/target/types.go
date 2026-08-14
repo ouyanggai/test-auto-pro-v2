@@ -219,6 +219,22 @@ type FormRuntimeSession struct {
 	CompanyName  string
 }
 
+// FormIdentityNode 是当前账号在目标公司目录树中的节点上下文，供表单人员/公司组件自动填充。
+type FormIdentityNode struct {
+	ID        string
+	Name      string
+	Type      string
+	ParentID  string
+	CompanyID string
+}
+
+// FormIdentityContext 汇总当前账号的公司、部门与本人节点；目标目录无法定位时对应项保持空。
+type FormIdentityContext struct {
+	Company    FormIdentityNode
+	Department FormIdentityNode
+	User       FormIdentityNode
+}
+
 type Page[T any] struct {
 	Items    []T  `json:"items"`
 	Page     int  `json:"page"`

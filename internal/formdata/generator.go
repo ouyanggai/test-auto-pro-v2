@@ -29,6 +29,7 @@ type GenerateInput struct {
 	Constraints         []Constraint
 	ManualOverridePaths []string
 	EditablePaths       map[string]bool
+	Identity            IdentityContext
 }
 
 // GenerateResult 是一次稳定智能填充的完整 values 与所有权摘要。
@@ -39,6 +40,7 @@ type GenerateResult struct {
 	Defaults            int
 	Recent              int
 	Fallback            int
+	Identity            int
 	Pending             int
 	Unsupported         []string
 }
@@ -54,6 +56,23 @@ type Field struct {
 	Options     []any
 	OptionNames map[string]string
 	Unsupported bool
+	El          string
+}
+
+// IdentityNode 是当前账号在公司目录树中的节点上下文，用于自定义人员/公司组件自动填充。
+type IdentityNode struct {
+	ID        string
+	Name      string
+	Type      string
+	ParentID  string
+	CompanyID string
+}
+
+// IdentityContext 汇总当前账号的公司、部门与本人节点，字段缺失时对应项保持空。
+type IdentityContext struct {
+	Company    IdentityNode
+	Department IdentityNode
+	User       IdentityNode
 }
 
 var supportedTypes = map[string]bool{
@@ -66,16 +85,35 @@ var containerTypes = map[string]bool{
 	"dialog": true, "card": true, "group": true, "tabs": true, "collapse": true,
 }
 
-// ParseTemplate 递归解析 list、grid/report 的行列、tableColumns 与嵌套容器。
+// ParseTemplate 递归解析 list、grid/report 的行列、tableColumns 与嵌套容器，并识别前置 text 标签与可自动填充的信息选择组件。
 func ParseTemplate(template map[string]any) ([]Field, []string) {
 	fields := make([]Field, 0)
 	unsupported := make([]string, 0)
-	collectList(anySlice(template["list"]), "", &fields, &unsupported)
+	pendingLabel := ""
+	collectList(anySlice(template["list"]), "", &pendingLabel, &fields, &unsupported)
 	return fields, uniqueSorted(unsupported)
 }
 
+// infoSelectKind 按目标组件字段命名约定识别选公司、选部门、选人、选岗位语义。
+func infoSelectKind(model string) string {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(lower, "company"):
+		return "company"
+	case strings.Contains(lower, "dep"):
+		return "department"
+	case strings.Contains(lower, "user"):
+		return "user"
+	case strings.Contains(lower, "duty"), strings.Contains(lower, "position"), strings.Contains(lower, "post"):
+		return "position"
+	default:
+		return ""
+	}
+}
+
 // collectList 深度优先收集字段；复杂组件仅记录缺口，绝不降级成普通文本值。
-func collectList(list []any, prefix string, fields *[]Field, unsupported *[]string) {
+// 目标模板的字段标题是独立 text 组件，这里把最近的前置标题作为字段展示名称。
+func collectList(list []any, prefix string, pendingLabel *string, fields *[]Field, unsupported *[]string) {
 	for _, raw := range list {
 		component, ok := raw.(map[string]any)
 		if !ok {
@@ -84,31 +122,49 @@ func collectList(list []any, prefix string, fields *[]Field, unsupported *[]stri
 		typeName := strings.TrimSpace(anyText(component["type"]))
 		model := strings.TrimSpace(anyText(component["model"]))
 		name := strings.TrimSpace(anyText(component["name"]))
+		el := strings.TrimSpace(anyText(component["el"]))
 		path := joinPath(prefix, model)
-		if supportedTypes[typeName] && model != "" {
+		switch {
+		case typeName == "text" && model == "" && name != "":
+			*pendingLabel = name
+		case typeName == "text":
+			// 带 model 的文本（审批意见占位等）不是字段标题，避免标题串到后续字段。
+			*pendingLabel = ""
+		case supportedTypes[typeName] && model != "":
 			options, _ := component["options"].(map[string]any)
 			values, names := optionValues(options["options"])
 			*fields = append(*fields, Field{
-				Path: path, Name: firstText(name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["type"])),
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["type"])),
 				Required: anyBool(options["required"]), Default: options["defaultValue"],
-				Options: values, OptionNames: names,
+				Options: values, OptionNames: names, El: el,
 			})
-		} else if model != "" && (typeName == "subform" || typeName == "table") {
+			*pendingLabel = ""
+		case typeName == "custom" && el == "custome-info-select" && model != "":
+			// 选公司/部门/岗位/人员组件可由当前账号身份自动填充，不再当作不可生成缺口。
+			options, _ := component["options"].(map[string]any)
+			*fields = append(*fields, Field{
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: "infoSelect", Mode: infoSelectKind(model),
+				Required: anyBool(options["required"]), Default: options["defaultValue"], El: el,
+			})
+			*pendingLabel = ""
+		case model != "" && (typeName == "subform" || typeName == "table"):
 			// 明细/子表单的 values 是数组行结构，当前基础生成器不能把它当成点路径对象伪造。
-			*unsupported = append(*unsupported, firstText(name, model)+"："+typeName+" 需要独立明细数据适配")
-		} else if model != "" && !containerTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" {
+			*unsupported = append(*unsupported, firstText(*pendingLabel, name, model)+"："+typeName+" 需要独立明细数据适配")
+			*pendingLabel = ""
+		case model != "" && !containerTypes[typeName] && typeName != "html" && typeName != "divider" && typeName != "blank":
 			// 用 model 作主标识，避免多个同名自定义组件被去重后人工待填计数失真。
-			*unsupported = append(*unsupported, firstText(model, name)+"："+firstText(typeName, "未知组件"))
+			*unsupported = append(*unsupported, firstText(model, *pendingLabel, name)+"："+firstText(typeName, "未知组件"))
+			*pendingLabel = ""
 		}
 		childPrefix := prefix
 		if (typeName == "subform" || typeName == "table" || typeName == "group") && model != "" {
 			childPrefix = path
 		}
-		collectList(anySlice(component["list"]), childPrefix, fields, unsupported)
-		collectList(anySlice(component["tableColumns"]), childPrefix, fields, unsupported)
+		collectList(anySlice(component["list"]), childPrefix, pendingLabel, fields, unsupported)
+		collectList(anySlice(component["tableColumns"]), childPrefix, pendingLabel, fields, unsupported)
 		for _, column := range anySlice(component["columns"]) {
 			if item, ok := column.(map[string]any); ok {
-				collectList(anySlice(item["list"]), childPrefix, fields, unsupported)
+				collectList(anySlice(item["list"]), childPrefix, pendingLabel, fields, unsupported)
 			}
 		}
 		for _, row := range anySlice(component["rows"]) {
@@ -116,10 +172,10 @@ func collectList(list []any, prefix string, fields *[]Field, unsupported *[]stri
 			if !ok {
 				continue
 			}
-			collectList(anySlice(item["list"]), childPrefix, fields, unsupported)
+			collectList(anySlice(item["list"]), childPrefix, pendingLabel, fields, unsupported)
 			for _, column := range anySlice(item["columns"]) {
 				if nested, ok := column.(map[string]any); ok {
-					collectList(anySlice(nested["list"]), childPrefix, fields, unsupported)
+					collectList(anySlice(nested["list"]), childPrefix, pendingLabel, fields, unsupported)
 				}
 			}
 		}
@@ -154,6 +210,17 @@ func Generate(input GenerateInput) GenerateResult {
 				result.Defaults++
 			}
 			manual[field.Path] = true
+			continue
+		}
+		if field.Type == "infoSelect" {
+			// 选公司/部门/人员优先使用当前账号在真实目录树中的节点，无法解析时保留已有值并计入人工待填。
+			if value, ok := infoSelectValue(field.Mode, input.Identity); ok {
+				setPath(values, field.Path, value)
+				generated = append(generated, field.Path)
+				result.Identity++
+			} else if field.Required {
+				result.Pending++
+			}
 			continue
 		}
 		if sample, ok := sampleValue(input.Samples, field); ok {
@@ -268,14 +335,59 @@ func sampleValue(samples []map[string]any, field Field) (any, bool) {
 	return nil, false
 }
 
+// infoSelectValue 把账号目录节点编码为 custome-info-select 组件约定的 JSON 文本值。
+func infoSelectValue(kind string, identity IdentityContext) (string, bool) {
+	var node IdentityNode
+	switch kind {
+	case "company":
+		node = identity.Company
+	case "department":
+		node = identity.Department
+	case "user":
+		node = identity.User
+	default:
+		return "", false
+	}
+	if strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.Name) == "" {
+		return "", false
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"id": node.ID, "name": node.Name, "type": node.Type,
+		"companyId": node.CompanyID, "parentId": node.ParentID,
+	})
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+// smartTextValue 按字段中文标题生成可读的占位内容，避免出现“组件名-编号”这类无意义文本。
+func smartTextValue(label, initiator string) string {
+	switch {
+	case strings.Contains(label, "发起人"), strings.Contains(label, "申请人"), strings.Contains(label, "姓名"),
+		strings.Contains(label, "联系人"), strings.Contains(label, "负责人"):
+		if strings.TrimSpace(initiator) != "" {
+			return strings.TrimSpace(initiator)
+		}
+	case strings.Contains(label, "原因"):
+		return "个人事务需要处理"
+	case strings.Contains(label, "说明"), strings.Contains(label, "描述"), strings.Contains(label, "备注"):
+		return "无特殊说明"
+	case strings.Contains(label, "电话"), strings.Contains(label, "手机"), strings.Contains(label, "联系方式"):
+		return "13800000000"
+	case strings.Contains(label, "邮箱"):
+		return "test@example.com"
+	case strings.Contains(label, "地址"):
+		return "测试地址（请核对）"
+	}
+	return strings.TrimSpace(label) + "（自动填写，请核对）"
+}
+
 // safeFallback 只为基础组件生成确定性安全值，未知复杂组件永远不编造。
 func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 	switch field.Type {
 	case "input", "textarea":
-		if strings.Contains(field.Name, "发起人") && strings.TrimSpace(initiator) != "" {
-			return strings.TrimSpace(initiator), true
-		}
-		return fmt.Sprintf("%s-%03d", field.Name, rng.Intn(900)+100), true
+		return smartTextValue(field.Name, initiator), true
 	case "number":
 		return rng.Intn(90) + 10, true
 	case "date":
@@ -396,6 +508,9 @@ func usableValue(field Field, value any) bool {
 	case "input", "textarea":
 		_, ok := value.(string)
 		return ok
+	case "infoSelect":
+		text, ok := value.(string)
+		return ok && strings.TrimSpace(text) != ""
 	case "date":
 		text, ok := value.(string)
 		if !ok {

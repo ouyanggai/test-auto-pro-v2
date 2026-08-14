@@ -120,7 +120,7 @@ export default {
           if (payload.customerCode) window.$store.commit('user/SET_CUSTOMERCODE', String(payload.customerCode))
           if (payload.companyName) window.$store.commit('user/SET_COMPANY_NAME', String(payload.companyName))
         }
-        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly)
+        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, payload.conditionHints)
         this.template = prepared.template
         this.unsupported = prepared.unsupported
         this.isolatedHooks = prepared.isolatedHooks
@@ -253,6 +253,21 @@ body {
   padding: 48px 20px;
   color: #8c8c8c;
   text-align: center;
+}
+
+/* 分支条件关键数据气泡：目标 FormMaking 会把 options.tip 渲染为字段旁提示，这里收敛成可读提示芯片。 */
+.fm-form .fm-item-tooltip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid #d9ecff;
+  border-radius: 10px;
+  background: #ecf5ff;
+  color: #409eff;
+  font-size: 12px;
+  line-height: 18px;
+  vertical-align: middle;
+  white-space: pre-line;
 }
 
 @media (prefers-color-scheme: dark) {

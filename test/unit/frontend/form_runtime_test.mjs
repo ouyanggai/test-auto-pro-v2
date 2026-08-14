@@ -111,6 +111,19 @@ test('真实入口已注册的目标组件不再被统一标记为 unsupported',
   assert.equal(prepared.template.list[0].options.disabled, false)
 })
 
+test('分支条件关键数据提示写入字段 options.tip 且不修改值', () => {
+  const prepared = prepareTemplate({ list: [
+    { type: 'number', model: 'vacateDayNum', name: '计数器', options: { required: true } },
+    { type: 'input', model: 'other', name: '其他', options: {} },
+  ] }, [{ field: 'vacateDayNum', power: 'edit' }, { field: 'other', power: 'edit' }], false, [
+    { field: 'vacateDayNum', text: '分支「大于2天」：请假天数 大于 2' },
+    { field: 'vacateDayNum', text: '分支「大于4天」：请假天数 大于 4' },
+  ])
+  assert.equal(prepared.template.list[0].options.tip, '分支「大于2天」：请假天数 大于 2\n分支「大于4天」：请假天数 大于 4')
+  assert.equal(prepared.template.list[1].options.tip, undefined)
+  assert.equal(prepared.template.list[0].options.required, true)
+})
+
 test('目标模板 type custom 优先按 el 匹配真实注册组件', () => {
   const supported = prepareTemplate({ list: [
     { type: 'custom', el: 'custome-info-select', model: 'generalInfo', name: '通用信息选择', options: {} },

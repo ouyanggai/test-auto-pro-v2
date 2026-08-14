@@ -159,9 +159,11 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 		f.mu.Unlock()
 		byFlag := map[string]any{
 			"2": []any{map[string]any{"id": "department-1", "name": "财务部"}},
-			"3": []any{map[string]any{"id": "company-1", "name": "测试公司", "childrenList": []any{
-				map[string]any{"id": "department-1", "name": "财务部", "childrenList": []any{map[string]any{"id": "person-2", "name": "李四", "type": "5"}}},
-				map[string]any{"id": "person-3", "name": "王五", "type": "5"},
+			"3": []any{map[string]any{"id": "company-1", "name": "测试公司", "type": "1", "parentId": "", "childrenList": []any{
+				map[string]any{"id": "department-1", "name": "财务部", "type": "2", "parentId": "company-1", "childrenList": []any{
+					map[string]any{"id": "person-2", "name": "李四", "type": "5", "parentId": "department-1"},
+				}},
+				map[string]any{"id": "person-3", "name": "王五", "type": "5", "parentId": "company-1"},
 			}}},
 			"4": []any{map[string]any{"id": "position-1", "name": "财务主任"}},
 			"7": []any{map[string]any{"id": "company-1", "name": "测试公司"}},
@@ -344,8 +346,8 @@ func (f *fakeTarget) handleLogin(response http.ResponseWriter, request *http.Req
 		"isSuccess": true,
 		"sid":       active,
 		"data": map[string]any{
-			"user":      map[string]any{"id": "person-current", "name": "测试人员", "customerCode": "tenant-code", "departmentId": "department-1"},
-			"companyVo": map[string]any{"id": "company-root", "name": "测试公司"},
+			"user":      map[string]any{"id": "person-2", "name": "测试人员", "customerCode": "tenant-code", "departmentId": "department-1"},
+			"companyVo": map[string]any{"id": "company-1", "name": "测试公司"},
 		},
 	})
 }
@@ -1133,6 +1135,28 @@ func TestPathConfigurationRuntimeSessionAndRecentSamplesUseVerifiedCache(t *test
 	fake.mu.Unlock()
 	if callsAfterCache != callsBeforeCache || loginCountAfterCache != loginCount || loginCount != 1 {
 		t.Fatalf("短期缓存或 SID 会话产生重复目标读取：calls=%d/%d login=%d/%d", callsBeforeCache, callsAfterCache, loginCount, loginCountAfterCache)
+	}
+}
+
+// TestFormIdentityContextResolvesCompanyDepartmentUser 验证账号身份在 flag=3 目录树中定位为公司、部门与本人节点。
+func TestFormIdentityContextResolvesCompanyDepartmentUser(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	identity, err := reader.FormIdentityContext(context.Background(), "account-a")
+	if err != nil {
+		t.Fatalf("身份目录解析失败：%v", err)
+	}
+	if identity.Company.ID != "company-1" || identity.Company.Name != "测试公司" || identity.Company.Type != "1" {
+		t.Fatalf("公司节点解析不正确：%+v", identity.Company)
+	}
+	if identity.Department.ID != "department-1" || identity.Department.Name != "财务部" || identity.Department.Type != "2" || identity.Department.CompanyID != "company-1" {
+		t.Fatalf("部门节点解析不正确：%+v", identity.Department)
+	}
+	if identity.User.ID != "person-2" || identity.User.Name != "李四" || identity.User.Type != "5" || identity.User.ParentID != "department-1" {
+		t.Fatalf("本人节点解析不正确：%+v", identity.User)
 	}
 }
 
