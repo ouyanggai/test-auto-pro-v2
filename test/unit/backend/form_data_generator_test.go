@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"test-auto-pro-v2/internal/formdata"
 )
@@ -183,6 +184,27 @@ func TestFormDataGeneratorUsesLabelsAndSmartText(t *testing.T) {
 	}
 	if result.Values["initiatorName"] != "骆蒙恩" {
 		t.Fatalf("发起人字段没有使用账号姓名：%+v", result.Values)
+	}
+}
+
+// TestFormDataGeneratorFillsDateRange 验证日期范围组件生成 [开始, 结束] 数组并通过同模板校验。
+func TestFormDataGeneratorFillsDateRange(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "text", "name": "起讫时间", "model": ""},
+		map[string]any{"type": "date", "model": "range", "name": "日期选择器", "options": map[string]any{"required": true, "type": "daterange"}},
+	}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 3})
+	list, ok := result.Values["range"].([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("日期范围没有生成 [开始, 结束] 数组：%+v", result.Values["range"])
+	}
+	for _, item := range list {
+		if _, err := time.Parse("2006-01-02", item.(string)); err != nil {
+			t.Fatalf("日期范围元素格式错误：%+v", list)
+		}
+	}
+	if reasons := formdata.Validate(template, result.Values, nil); len(reasons) != 0 {
+		t.Fatalf("日期范围生成结果没有通过同模板校验：%v", reasons)
 	}
 }
 

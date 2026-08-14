@@ -111,17 +111,11 @@ test('真实入口已注册的目标组件不再被统一标记为 unsupported',
   assert.equal(prepared.template.list[0].options.disabled, false)
 })
 
-test('分支条件关键数据提示写入字段 options.tip 且不修改值', () => {
-  const prepared = prepareTemplate({ list: [
-    { type: 'number', model: 'vacateDayNum', name: '计数器', options: { required: true } },
-    { type: 'input', model: 'other', name: '其他', options: {} },
-  ] }, [{ field: 'vacateDayNum', power: 'edit' }, { field: 'other', power: 'edit' }], false, [
-    { field: 'vacateDayNum', text: '分支「大于2天」：请假天数 大于 2' },
-    { field: 'vacateDayNum', text: '分支「大于4天」：请假天数 大于 4' },
-  ])
-  assert.equal(prepared.template.list[0].options.tip, '分支「大于2天」：请假天数 大于 2\n分支「大于4天」：请假天数 大于 4')
-  assert.equal(prepared.template.list[1].options.tip, undefined)
-  assert.equal(prepared.template.list[0].options.required, true)
+test('初始默认模型的空值不会被误判为人工覆盖，真实非空修改才会', () => {
+  const emptyDefaults = { myCompanyName: '', myDepName: '', myUserName: '', time: [], vacateReason: '', vacateType: '', vacateTime: null }
+  assert.deepEqual(diffManualPaths({}, emptyDefaults), [])
+  const realEdit = { ...emptyDefaults, vacateReason: '个人事务需要处理' }
+  assert.deepEqual(diffManualPaths({}, realEdit), ['vacateReason'])
 })
 
 test('目标模板 type custom 优先按 el 匹配真实注册组件', () => {
@@ -150,11 +144,12 @@ test('版本化消息拒绝旧版本、空会话和未知命令', () => {
 test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍带 SID', async () => {
   const opened = []
   const sentHeaders = []
+  const sentBodies = []
   const fetched = []
   class FakeXHR {
     open(method, url) { opened.push([method, url]) }
     setRequestHeader(name, value) { sentHeaders.push([name, value]) }
-    send() {}
+    send(body) { sentBodies.push(body) }
   }
   const originalWindow = globalThis.window
   const originalXHR = globalThis.XMLHttpRequest
@@ -171,9 +166,11 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     const restore = installReadOnlyRequestPolicy({ sid: 'memory-only-sid', baseURL: 'http://target.test/api' })
     const request = new XMLHttpRequest()
     request.open('POST', '/web/form/read')
-    request.send('{}')
+    request.send('{"data":{"flag":"3"}}')
     assert.match(opened[0][1], /^http:\/\/target\.test\/api\/web\/form\/read\?sid=memory-only-sid$/)
-    assert.deepEqual(sentHeaders, [['sid', 'memory-only-sid']])
+    assert.deepEqual(sentHeaders[0], ['sid', 'memory-only-sid'])
+    // 目标网关只在请求体携带 SID 时才认可会话；JSON 请求体必须合并 SID。
+    assert.deepEqual(JSON.parse(sentBodies[0]), { data: { flag: '3' }, sid: 'memory-only-sid' })
     assert.throws(() => request.open('POST', '/web/flowInstanceApi/submit'), /不支持未证明为只读/)
     assert.throws(() => request.open('POST', '/api/web/file/api/file/uploadFile'), /不支持未证明为只读/)
     assert.throws(() => request.open('POST', '/web/file/api/relationFile/saveBatch'), /不支持未证明为只读/)
@@ -185,6 +182,7 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     assert.equal(fetched.length, 1)
     assert.equal(fetched[0][0], 'http://target.test/api/web/flowProxy/findById?sid=memory-only-sid')
     assert.equal(fetched[0][1].headers.get('sid'), 'memory-only-sid')
+    assert.deepEqual(JSON.parse(fetched[0][1].body), { sid: 'memory-only-sid' })
 
     await window.fetch('http://192.168.1.220:28081/api/web/user/api/company/children?flag=3', { method: 'POST', body: '{}' })
     assert.equal(fetched[1][0], 'http://target.test/api/web/user/api/company/children?flag=3&sid=memory-only-sid')

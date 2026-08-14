@@ -99,26 +99,65 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL }) {
   const originalOpen = XMLHttpRequest.prototype.open
   const originalSend = XMLHttpRequest.prototype.send
   const originalFetch = window.fetch
+  const targetOrigin = baseURL ? new URL(baseURL).origin : ''
+
+  // withTargetSid 把 SID 并入请求体；目标网关只在请求体携带 SID 时才认可会话（与后端适配层一致）。
+  function withTargetSid (body) {
+    if (!sid || body === undefined || body === null) return body
+    if (typeof body === 'string') {
+      try {
+        const parsed = JSON.parse(body)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsed.sid = sid
+          return JSON.stringify(parsed)
+        }
+      } catch (_) {
+        // 非 JSON 文本保持原样，不能因注入失败破坏原始请求。
+      }
+      return body
+    }
+    if (typeof FormData !== 'undefined' && body instanceof FormData) {
+      body.set('sid', sid)
+      return body
+    }
+    return body
+  }
+
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     const resolved = targetURL(url, method, baseURL, sid)
-    this.__f007TargetRequest = baseURL && resolved.origin === new URL(baseURL).origin
+    this.__f007TargetRequest = Boolean(baseURL) && resolved.origin === new URL(baseURL).origin
     return originalOpen.call(this, method, resolved.toString(), ...rest)
   }
   XMLHttpRequest.prototype.send = function (body) {
-    if (this.__f007TargetRequest && sid) this.setRequestHeader('sid', sid)
+    if (this.__f007TargetRequest && sid) {
+      this.setRequestHeader('sid', sid)
+      if (targetOrigin) {
+        this.setRequestHeader('origin', targetOrigin)
+        this.setRequestHeader('Referer', targetOrigin + '/')
+      }
+      body = withTargetSid(body)
+    }
     return originalSend.call(this, body)
   }
   window.fetch = async function (input, init) {
     const raw = typeof input === 'string' || input instanceof URL ? input : input.url
-    const method = init && init.method || (input instanceof Request ? input.method : 'GET')
+    const method = (init && init.method) || (input instanceof Request ? input.method : 'GET')
     const resolved = targetURL(raw, method, baseURL, sid)
-    const headers = new Headers(init && init.headers || (input instanceof Request ? input.headers : undefined))
-    if (baseURL && resolved.origin === new URL(baseURL).origin && sid) headers.set('sid', sid)
+    const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined))
+    const nextInit = { ...(init || {}) }
+    if (baseURL && resolved.origin === new URL(baseURL).origin && sid) {
+      headers.set('sid', sid)
+      if (targetOrigin) {
+        headers.set('origin', targetOrigin)
+        headers.set('Referer', targetOrigin + '/')
+      }
+      nextInit.body = withTargetSid(init && init.body)
+    }
     if (input instanceof Request) {
       const request = new Request(resolved.toString(), input)
-      return originalFetch.call(window, request, { ...(init || {}), headers })
+      return originalFetch.call(window, request, { ...nextInit, headers })
     }
-    return originalFetch.call(window, resolved.toString(), { ...(init || {}), headers })
+    return originalFetch.call(window, resolved.toString(), { ...nextInit, headers })
   }
   return () => {
     XMLHttpRequest.prototype.open = originalOpen

@@ -55,7 +55,6 @@ async function loadRuntime() {
       readOnly: props.form.readOnly,
       template: props.form.template,
       permissions: props.form.permissions,
-      conditionHints: props.form.conditionHints,
       values: props.form.values,
       generatedValues: props.form.values,
       generatedFieldPaths: props.form.generatedFieldPaths,

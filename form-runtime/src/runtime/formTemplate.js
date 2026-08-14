@@ -46,19 +46,11 @@ export function componentRuntimeName (component) {
   ).trim()
 }
 
-// prepareTemplate 在完整模板副本上应用字段权限与分支关键数据气泡提示，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
-export function prepareTemplate (rawTemplate, permissions, readOnly, conditionHints = []) {
+// prepareTemplate 在完整模板副本上应用字段权限，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
+// 分支关键数据提示由宿主平台工作区渲染，不写入表单字段单元格。
+export function prepareTemplate (rawTemplate, permissions, readOnly) {
   const template = clonePlain(rawTemplate || {})
   const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [normalizeFieldPath(item.field), item.power]))
-  // 同一字段可能被多个条件分支使用，提示必须按字段合并而不是被后一项覆盖。
-  const hintByField = new Map()
-  for (const item of Array.isArray(conditionHints) ? conditionHints : []) {
-    const field = normalizeFieldPath(item && item.field)
-    const text = String((item && item.text) || '')
-    if (!field || !text) continue
-    const existing = hintByField.get(field)
-    hintByField.set(field, existing ? `${existing}\n${text}` : text)
-  }
   const unsupported = new Set()
   const allFields = new Set()
   const editableFields = new Set()
@@ -87,12 +79,6 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, conditionHi
           component.options.required = false
           // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
           if (Array.isArray(component.rules)) component.rules = []
-        }
-        // 分支条件关键数据提示：FormMaking 会把 options.tip 渲染成字段旁的提示气泡，只提示不改值。
-        const hintText = hintByField.get(field)
-        if (hintText) {
-          component.options.tip = String(component.options.tip || '').trim()
-            ? `${String(component.options.tip).trim()}\n${hintText}` : hintText
         }
       }
       for (const children of componentLists(component)) visit(children)
@@ -139,11 +125,22 @@ export async function refreshPreparedForm (form) {
   if (current != null && typeof form.setData === 'function') await form.setData(current)
 }
 
+// isEmptyModelValue 判断值是否为空形态；初始默认模型里的空键不能误判为人工覆盖。
+function isEmptyModelValue (value) {
+  if (value === undefined || value === null) return true
+  if (typeof value === 'string') return value.trim() === ''
+  if (Array.isArray(value)) return value.length === 0
+  if (typeof value === 'object') return Object.keys(value).length === 0
+  return false
+}
+
 // diffManualPaths 递归比较生成基线与 getValues 结果，得到换一组时必须保留的人工覆盖路径。
+// 只有右侧出现非空真实值才视为人工修改，避免 FormMaking 初始默认模型把全部字段误报成人工覆盖。
 export function diffManualPaths (generated, current) {
   const paths = new Set()
   const walk = (left, right, prefix) => {
     if (JSON.stringify(left) === JSON.stringify(right)) return
+    if (isEmptyModelValue(right)) return
     if (left && right && typeof left === 'object' && typeof right === 'object' && !Array.isArray(left) && !Array.isArray(right)) {
       const keys = new Set([...Object.keys(left), ...Object.keys(right)])
       for (const key of keys) walk(left[key], right[key], prefix ? `${prefix}.${key}` : key)

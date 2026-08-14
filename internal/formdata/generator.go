@@ -392,6 +392,10 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 		return rng.Intn(90) + 10, true
 	case "date":
 		value := time.Date(2024, 1, 1, rng.Intn(8)+9, rng.Intn(12)*5, 0, 0, time.UTC).AddDate(0, 0, rng.Intn(365))
+		if field.Mode == "daterange" {
+			// 目标日期范围组件要求 [开始, 结束] 数组，单日期字符串不会被渲染。
+			return []any{value.Format("2006-01-02"), value.AddDate(0, 0, 3).Format("2006-01-02")}, true
+		}
 		if field.Mode == "datetime" {
 			return value.Format("2006-01-02 15:04:05"), true
 		}
@@ -512,6 +516,22 @@ func usableValue(field Field, value any) bool {
 		text, ok := value.(string)
 		return ok && strings.TrimSpace(text) != ""
 	case "date":
+		if field.Mode == "daterange" {
+			list, ok := value.([]any)
+			if !ok || len(list) != 2 {
+				return false
+			}
+			for _, item := range list {
+				text, ok := item.(string)
+				if !ok {
+					return false
+				}
+				if _, err := time.Parse("2006-01-02", text); err != nil {
+					return false
+				}
+			}
+			return true
+		}
 		text, ok := value.(string)
 		if !ok {
 			return false

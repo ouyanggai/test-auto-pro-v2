@@ -77,6 +77,7 @@ const nodeSaveError = ref('')
 const nodeSaveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const formError = ref('')
 const formErrorDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
+const hintsExpanded = ref(true)
 const nodeSavedSuccessfully = ref(false)
 const formSavedSuccessfully = ref(false)
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
@@ -504,6 +505,17 @@ void loadPage()
             </template>
           </div>
         </header>
+        <div v-if="configuration.form.conditionHints.length" class="path-configuration-page__form-hints">
+          <button type="button" class="path-configuration-page__form-hints-toggle" :aria-expanded="hintsExpanded" @click="hintsExpanded = !hintsExpanded">
+            <span>{{ hintsExpanded ? '收起' : '展开' }}分支关键数据提示</span>
+          </button>
+          <div v-show="hintsExpanded" class="path-configuration-page__form-hints-body">
+            <p>以下关键数据被当前路径的条件分支使用，仅作参考提示；修改这些字段可能影响实际分支走向。</p>
+            <ul>
+              <li v-for="(hint, index) in configuration.form.conditionHints" :key="`${hint.field}-${index}`">{{ hint.text }}</li>
+            </ul>
+          </div>
+        </div>
         <div v-if="formError || formSavedSuccessfully || runtimeBlocked" class="path-configuration-page__form-feedback">
           <n-alert v-if="formError" type="error" :show-icon="false" size="small">
             <div>{{ formError }}</div>
@@ -635,6 +647,37 @@ void loadPage()
   max-height: 112px;
   padding: 8px 12px 0;
   overflow-y: auto;
+}
+.path-configuration-page__form-hints {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--path-config-border-color);
+  background: var(--path-config-card-color);
+}
+.path-configuration-page__form-hints-toggle {
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--path-config-text-secondary-color);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.path-configuration-page__form-hints-toggle:hover { color: var(--path-config-text-color); }
+.path-configuration-page__form-hints-body {
+  padding: 0 12px 10px;
+}
+.path-configuration-page__form-hints-body p {
+  margin: 0 0 6px;
+  color: var(--path-config-text-secondary-color);
+  font-size: 12px;
+}
+.path-configuration-page__form-hints-body ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--path-config-text-secondary-color);
+  font-size: 12px;
+  line-height: 1.8;
 }
 .path-configuration-page__form-error-details {
   margin: 6px 0 0;
