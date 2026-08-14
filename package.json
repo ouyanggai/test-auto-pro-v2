@@ -4,7 +4,8 @@
   "version": "0.0.0",
   "packageManager": "pnpm@10.25.0",
   "scripts": {
-    "dev:f": "pnpm --parallel --filter test-auto-pro-v2-web --filter test-auto-pro-v2-form-runtime dev",
+    "dev:f": "pnpm --parallel --filter test-auto-pro-v2-web dev",
+    "dev:form": "pnpm --filter test-auto-pro-v2-form-runtime dev",
     "dev:b": "go tool air -c .air.toml",
     "check:frontend": "pnpm --filter test-auto-pro-v2-web typecheck && pnpm --filter test-auto-pro-v2-form-runtime typecheck && pnpm --filter test-auto-pro-v2-web build && pnpm --filter test-auto-pro-v2-form-runtime build",
     "check:backend": "go test ./test/unit/backend ./test/contracts && go build ./cmd/server",
