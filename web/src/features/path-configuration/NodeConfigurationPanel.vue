@@ -105,6 +105,18 @@ function resultPerson(): PathConfigPersonStrategyInput | undefined {
   return actionPlan.value?.result.person
 }
 
+// selectedResultPersonNames 把移交处理结果的人员候选映射为中文名称。
+function selectedResultPersonNames(kind: PathConfigActionKind): string[] {
+  const person = actionPerson(kind)
+  if (!person) return []
+  return selectedPersonNames(person, resultPerson())
+}
+
+// addSignDisabledReason 返回加签动作不可添加时的目录原因，避免模板对可选定义做非空断言。
+function addSignDisabledReason(): string {
+  return actionDefinition('add_sign')?.disabledReason || '当前节点不支持添加加签动作'
+}
+
 // resultOptions 展示当前节点完整处理结果目录；静态不可用项保留但不能选择。
 function resultOptions(): SelectOption[] {
   if (!props.node) return []
@@ -322,62 +334,93 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
           </div>
           <n-alert v-if="node.actionPlan.note" type="warning" :show-icon="false" size="small">{{ node.actionPlan.note }}</n-alert>
           <div v-if="actionPlan" class="node-configuration-panel__action-plan">
-            <section v-if="node.kind !== 'start'" class="node-configuration-panel__add-signs" aria-labelledby="add-sign-nodes-heading">
-              <div class="node-configuration-panel__subheading">
-                <div><strong id="add-sign-nodes-heading">加签节点</strong><small>按列表顺序在处理结果前插入审批节点</small></div>
-                <n-button v-if="actionDefinition('add_sign')?.enabled" dashed size="small" :disabled="actionPlan.addSignNodes.length >= 10" @click="addSignNode">
-                  <template #icon><n-icon><AddOutline /></n-icon></template>添加加签节点
-                </n-button>
+            <!-- 发起节点只有固定提交动作。 -->
+            <div v-if="node.kind === 'start'" class="node-configuration-panel__action-row">
+              <div class="node-configuration-panel__action-row-head">
+                <strong>提交</strong>
+                <n-tag size="tiny" :bordered="false" type="success">发起动作</n-tag>
               </div>
-              <n-empty v-if="!actionPlan.addSignNodes.length" size="small" description="没有加签节点" />
-              <div v-for="(addSign, index) in actionPlan.addSignNodes" :key="`add-sign-${index}`" class="node-configuration-panel__add-sign-node">
-                <div class="node-configuration-panel__add-sign-heading">
+              <p class="node-configuration-panel__runtime-note">提交当前发起节点并进入后续流程；执行时仍会核对模板、表单和账号。</p>
+            </div>
+
+            <!-- 审批/协同节点：加签与处理结果统一为动作列表，每个动作一行。 -->
+            <template v-else>
+              <div v-for="(addSign, index) in actionPlan.addSignNodes" :key="`add-sign-${index}`" class="node-configuration-panel__action-row">
+                <div class="node-configuration-panel__action-row-head">
                   <strong>加签节点 {{ index + 1 }}</strong>
-                  <div class="node-configuration-panel__row-tools">
+                  <div class="node-configuration-panel__action-row-tools">
+                    <n-popover v-if="actionPerson('add_sign')" trigger="click" placement="bottom-start" :width="320">
+                      <template #trigger>
+                        <n-button size="tiny" secondary>选择人员</n-button>
+                      </template>
+                      <div class="node-configuration-panel__person-picker">
+                        <span class="node-configuration-panel__parameter-title">加签节点处理人</span>
+                        <n-select :value="addSign.person.strategy" :options="strategyOptions(requiredActionPerson('add_sign'))" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { strategy: value })" />
+                        <n-select
+                          v-if="addSign.person.strategy === 'manual'"
+                          :multiple="requiredActionPerson('add_sign').multiple"
+                          filterable
+                          :value="requiredActionPerson('add_sign').multiple ? addSign.person.selected : (addSign.person.selected[0] ?? null)"
+                          :options="personOptions(requiredActionPerson('add_sign'))"
+                          @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
+                        />
+                        <n-input-number v-if="addSign.person.strategy === 'random'" :value="addSign.person.seed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="加签节点人员随机种子" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { seed: value || 1 })" />
+                      </div>
+                    </n-popover>
                     <n-button quaternary circle size="tiny" title="上移" aria-label="上移加签节点" :disabled="index === 0" @click="moveAddSignNode(index, -1)"><n-icon><ArrowUpOutline /></n-icon></n-button>
                     <n-button quaternary circle size="tiny" title="下移" aria-label="下移加签节点" :disabled="index === actionPlan.addSignNodes.length - 1" @click="moveAddSignNode(index, 1)"><n-icon><ArrowDownOutline /></n-icon></n-button>
                     <n-button quaternary circle size="tiny" title="删除" aria-label="删除加签节点" @click="removeAddSignNode(index)"><n-icon><CloseOutline /></n-icon></n-button>
                   </div>
                 </div>
-                <template v-if="actionPerson('add_sign')">
-                  <span class="node-configuration-panel__parameter-title">加签节点处理人</span>
-                  <n-select :value="addSign.person.strategy" :options="strategyOptions(requiredActionPerson('add_sign'))" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { strategy: value })" />
-                  <n-select
-                    v-if="addSign.person.strategy === 'manual'"
-                    :multiple="requiredActionPerson('add_sign').multiple"
-                    filterable
-                    :value="requiredActionPerson('add_sign').multiple ? addSign.person.selected : (addSign.person.selected[0] ?? null)"
-                    :options="personOptions(requiredActionPerson('add_sign'))"
-                    @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
-                  />
-                  <n-input-number v-if="addSign.person.strategy === 'random'" :value="addSign.person.seed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="加签节点人员随机种子" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { seed: value || 1 })" />
-                  <div class="node-configuration-panel__resolved-persons">
-                    <span>最终使用</span>
+                <div class="node-configuration-panel__action-row-selected">
+                  <template v-if="actionPerson('add_sign') && selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).length">
                     <n-tag v-for="name in selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
+                    <span v-if="selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).length > PERSON_PREVIEW_LIMIT" class="node-configuration-panel__more">等 {{ selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).length }} 人</span>
+                  </template>
+                  <span v-else class="node-configuration-panel__row-empty">尚未选择处理人</span>
+                </div>
+              </div>
+
+              <!-- 处理结果行 -->
+              <div class="node-configuration-panel__action-row node-configuration-panel__action-row--result">
+                <div class="node-configuration-panel__action-row-head">
+                  <strong>处理结果</strong>
+                  <n-select size="small" class="node-configuration-panel__result-select" :value="resultKind" :options="resultOptions()" :consistent-menu-width="false" aria-label="处理结果" @update:value="updateResult" />
+                </div>
+                <p v-if="actionDefinition(resultKind)?.requiresTarget && node.actionPlan.rollbackTargets.length === 1" class="node-configuration-panel__readonly">回退至：{{ node.actionPlan.rollbackTargets[0].label }}</p>
+                <template v-if="actionDefinition(resultKind)?.requiresPerson && actionPerson(resultKind)">
+                  <div class="node-configuration-panel__action-row-selected">
+                    <n-popover trigger="click" placement="bottom-start" :width="320">
+                      <template #trigger>
+                        <n-button size="tiny" secondary>选择移交人员</n-button>
+                      </template>
+                      <div class="node-configuration-panel__person-picker">
+                        <span class="node-configuration-panel__parameter-title">移交人员</span>
+                        <n-select :value="resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy" :options="strategyOptions(requiredActionPerson(resultKind))" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { strategy: value })" />
+                        <n-select
+                          v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'manual'"
+                          :multiple="requiredActionPerson(resultKind).multiple"
+                          filterable
+                          :value="requiredActionPerson(resultKind).multiple ? (resultPerson()?.selected ?? []) : (resultPerson()?.selected?.[0] ?? null)"
+                          :options="personOptions(requiredActionPerson(resultKind))"
+                          @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
+                        />
+                        <n-input-number v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'random'" :value="resultPerson()?.seed ?? requiredActionPerson(resultKind).strategySeed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="移交人员随机种子" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { seed: value || 1 })" />
+                      </div>
+                    </n-popover>
+                    <n-tag v-for="name in selectedResultPersonNames(resultKind).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
                   </div>
                 </template>
               </div>
-            </section>
 
-            <section class="node-configuration-panel__result" aria-labelledby="processing-result-heading">
-              <strong id="processing-result-heading">{{ node.kind === 'start' ? '发起动作' : '处理结果' }}</strong>
-              <div v-if="node.kind === 'start'" class="node-configuration-panel__fixed-result">提交</div>
-              <n-select v-else class="node-configuration-panel__result-select" :value="resultKind" :options="resultOptions()" :consistent-menu-width="false" aria-label="处理结果" @update:value="updateResult" />
-              <p v-if="actionDefinition(resultKind)?.requiresTarget && node.actionPlan.rollbackTargets.length === 1" class="node-configuration-panel__readonly">回退至：{{ node.actionPlan.rollbackTargets[0].label }}</p>
-              <template v-if="actionDefinition(resultKind)?.requiresPerson && actionPerson(resultKind)">
-                <span class="node-configuration-panel__parameter-title">移交人员</span>
-                <n-select :value="resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy" :options="strategyOptions(requiredActionPerson(resultKind))" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { strategy: value })" />
-                <n-select
-                  v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'manual'"
-                  :multiple="requiredActionPerson(resultKind).multiple"
-                  filterable
-                  :value="requiredActionPerson(resultKind).multiple ? (resultPerson()?.selected ?? []) : (resultPerson()?.selected?.[0] ?? null)"
-                  :options="personOptions(requiredActionPerson(resultKind))"
-                  @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
-                />
-                <n-input-number v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'random'" :value="resultPerson()?.seed ?? requiredActionPerson(resultKind).strategySeed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="移交人员随机种子" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { seed: value || 1 })" />
-              </template>
-            </section>
+              <!-- 添加动作：只追加新的加签动作，处理结果保持唯一。 -->
+              <div class="node-configuration-panel__action-add">
+                <n-button v-if="actionDefinition('add_sign')?.enabled" dashed size="small" :disabled="actionPlan.addSignNodes.length >= 10" @click="addSignNode">
+                  <template #icon><n-icon><AddOutline /></n-icon></template>添加动作
+                </n-button>
+                <span v-else-if="actionDefinition('add_sign')" class="node-configuration-panel__runtime-note">{{ addSignDisabledReason() }}</span>
+              </div>
+            </template>
           </div>
         </section>
 
@@ -440,14 +483,17 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
 .node-configuration-panel__person-items li, .node-configuration-panel__person-modal li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; min-width: 0; font-size: 12px; }
 .node-configuration-panel__person-items li > span, .node-configuration-panel__person-modal li > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-configuration-panel__person-more { justify-self: start; }
-.node-configuration-panel__action-plan, .node-configuration-panel__add-signs, .node-configuration-panel__result, .node-configuration-panel__add-sign-node { display: grid; gap: 9px; }
-.node-configuration-panel__subheading, .node-configuration-panel__add-sign-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.node-configuration-panel__subheading > div { display: grid; gap: 2px; }
-.node-configuration-panel__subheading small { font-size: 12px; opacity: .68; }
-.node-configuration-panel__add-sign-node, .node-configuration-panel__result { padding: 10px; border: 1px solid var(--flow-edge-color); border-radius: 4px; }
-.node-configuration-panel__result { margin-top: 5px; }
+.node-configuration-panel__action-plan { display: grid; gap: 9px; }
+.node-configuration-panel__action-row { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--flow-edge-color); border-radius: 4px; }
+.node-configuration-panel__action-row--result { border-style: dashed; }
+.node-configuration-panel__action-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.node-configuration-panel__action-row-tools { display: flex; align-items: center; gap: 5px; }
+.node-configuration-panel__action-row-selected { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.node-configuration-panel__action-row-selected .node-configuration-panel__more,
+.node-configuration-panel__row-empty { font-size: 12px; opacity: .68; }
+.node-configuration-panel__action-add { display: flex; align-items: center; gap: 8px; }
+.node-configuration-panel__person-picker { display: grid; gap: 8px; padding: 4px 2px; }
 .node-configuration-panel__result-select { min-width: 188px; }
-.node-configuration-panel__fixed-result { padding: 8px 10px; font-weight: 600; background: color-mix(in srgb, var(--flow-edge-color) 16%, transparent); border-radius: 4px; }
 .node-configuration-panel__row-tools { display: flex; align-items: center; gap: 5px; }
 .node-configuration-panel__action-info { color: var(--flow-direction-color); background: color-mix(in srgb, var(--flow-direction-color) 14%, var(--flow-surface-color)); border: 1px solid color-mix(in srgb, var(--flow-direction-color) 45%, var(--flow-edge-color)); }
 .node-configuration-panel__action-info:hover, .node-configuration-panel__action-info:focus-visible { background: color-mix(in srgb, var(--flow-direction-color) 22%, var(--flow-surface-color)); }

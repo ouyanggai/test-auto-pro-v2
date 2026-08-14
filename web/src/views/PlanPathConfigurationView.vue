@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NEmpty, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -77,7 +77,6 @@ const nodeSaveError = ref('')
 const nodeSaveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const formError = ref('')
 const formErrorDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
-const hintsExpanded = ref(true)
 const nodeSavedSuccessfully = ref(false)
 const formSavedSuccessfully = ref(false)
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
@@ -507,17 +506,18 @@ void loadPage()
             </template>
           </div>
         </header>
-        <div v-if="configuration.form.conditionHints.length" class="path-configuration-page__form-hints" :class="{ 'path-configuration-page__form-hints--collapsed': !hintsExpanded }">
-          <button type="button" class="path-configuration-page__form-hints-toggle" :aria-expanded="hintsExpanded" @click="hintsExpanded = !hintsExpanded">
-            {{ hintsExpanded ? '收起分支关键数据提示' : '分支关键数据提示' }}
-          </button>
-          <div v-show="hintsExpanded" class="path-configuration-page__form-hints-body">
-            <p>以下关键数据被当前路径的条件分支使用，仅作参考提示；修改这些字段可能影响实际分支走向。</p>
-            <ul>
-              <li v-for="(hint, index) in configuration.form.conditionHints" :key="`${hint.field}-${index}`">{{ hint.text }}</li>
-            </ul>
-          </div>
-        </div>
+        <n-card v-if="configuration.form.conditionHints.length" size="small" class="path-configuration-page__form-hints">
+          <n-collapse :default-expanded-names="['condition-hints']" arrow-placement="right">
+            <n-collapse-item title="分支关键数据提示" name="condition-hints">
+              <div class="path-configuration-page__form-hints-body">
+                <p>以下关键数据被当前路径的条件分支使用，仅作参考提示；修改这些字段可能影响实际分支走向。</p>
+                <ul>
+                  <li v-for="(hint, index) in configuration.form.conditionHints" :key="`${hint.field}-${index}`">{{ hint.text }}</li>
+                </ul>
+              </div>
+            </n-collapse-item>
+          </n-collapse>
+        </n-card>
         <div v-if="formError || formSavedSuccessfully || runtimeBlocked" class="path-configuration-page__form-feedback">
           <n-alert v-if="formError" type="error" :show-icon="false" size="small">
             <div>{{ formError }}</div>
@@ -657,42 +657,10 @@ void loadPage()
   z-index: 30;
   width: 300px;
   max-width: calc(100% - 28px);
-  overflow: hidden;
-  background: var(--path-config-card-color);
-  border: 1px solid var(--path-config-border-color);
-  border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
 }
-.path-configuration-page__form-hints--collapsed {
-  width: auto;
-  overflow: visible;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-.path-configuration-page__form-hints-toggle {
-  display: block;
-  width: 100%;
-  padding: 6px 10px;
-  border: 0;
-  background: transparent;
-  color: var(--path-config-text-secondary-color);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-.path-configuration-page__form-hints--collapsed .path-configuration-page__form-hints-toggle {
-  width: auto;
-  padding: 4px 12px;
-  background: var(--path-config-card-color);
-  border: 1px solid var(--path-config-border-color);
-  border-radius: 14px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-}
-.path-configuration-page__form-hints-toggle:hover { color: var(--path-config-text-color); }
 .path-configuration-page__form-hints-body {
   max-height: 300px;
-  padding: 0 10px 10px;
   overflow-y: auto;
 }
 .path-configuration-page__form-hints-body p {
