@@ -116,9 +116,12 @@ export async function captureFormValues (form, validate) {
 }
 
 // refreshPreparedForm 只刷新已预先写入权限的模板，避免目标自定义组件因缺少 disabledElement 被统一运行时禁用调用击穿。
+// FormMaking 的 refresh 会重新初始化模板并清空 models；因此刷新前捕获当前值、刷新后回填，避免用户已填数据被清空。
 export async function refreshPreparedForm (form) {
   if (!form || typeof form.refresh !== 'function') throw new Error('目标 FormMaking 运行时缺少 refresh 能力')
+  const current = typeof form.getValues === 'function' ? form.getValues() : null
   await form.refresh()
+  if (current != null && typeof form.setData === 'function') await form.setData(current)
 }
 
 // diffManualPaths 递归比较生成基线与 getValues 结果，得到换一组时必须保留的人工覆盖路径。

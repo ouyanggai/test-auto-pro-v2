@@ -82,6 +82,17 @@ test('刷新已预置权限的模板不会统一调用自定义组件 disabledEl
   assert.equal(disabledCalled, false)
 })
 
+test('刷新会回填已填数据，避免 FormMaking 重新初始化清空 models', async () => {
+  const form = {
+    model: { title: '人工填写', amount: 2500 },
+    getValues() { return this.model },
+    async refresh() { this.model = {} },
+    async setData(values) { this.model = values },
+  }
+  await refreshPreparedForm(form)
+  assert.deepEqual(form.model, { title: '人工填写', amount: 2500 })
+})
+
 test('校验只使用 getData 而完整保存值来自 getValues 人工输入与虚拟字段', async () => {
   let validated = false
   const values = await captureFormValues({

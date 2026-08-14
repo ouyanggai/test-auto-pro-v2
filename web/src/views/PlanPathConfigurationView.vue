@@ -76,6 +76,7 @@ const pageError = ref('')
 const nodeSaveError = ref('')
 const nodeSaveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const formError = ref('')
+const formErrorDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const nodeSavedSuccessfully = ref(false)
 const formSavedSuccessfully = ref(false)
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
@@ -316,6 +317,7 @@ async function generateFormData(nextGroup: boolean) {
   if (!current || current.form.readOnly || formBusy.value || !formFrame.value) return
   formBusy.value = true
   formError.value = ''
+  formErrorDetails.value = []
   formSavedSuccessfully.value = false
   try {
     const captured = await formFrame.value.getValues()
@@ -359,6 +361,7 @@ async function saveFormData() {
   if (!current || current.form.readOnly || runtimeBlocked.value || formBusy.value || !formFrame.value) return
   formBusy.value = true
   formError.value = ''
+  formErrorDetails.value = []
   formSavedSuccessfully.value = false
   const previousRevision = current.form.revision
   try {
@@ -389,6 +392,7 @@ async function saveFormData() {
     }
     catch { /* 对账失败保留当前 iframe、values 和幂等键。 */ }
     formError.value = caught instanceof Error ? caught.message : '保存失败，当前表单数据已保留，请重试'
+    formErrorDetails.value = caught instanceof PathConfigApiError ? caught.details : []
   }
   finally {
     formBusy.value = false
@@ -501,7 +505,12 @@ void loadPage()
           </div>
         </header>
         <div v-if="formError || formSavedSuccessfully || runtimeBlocked" class="path-configuration-page__form-feedback">
-          <n-alert v-if="formError" type="error" :show-icon="false" size="small">{{ formError }}</n-alert>
+          <n-alert v-if="formError" type="error" :show-icon="false" size="small">
+            <div>{{ formError }}</div>
+            <ul v-if="formErrorDetails.length" class="path-configuration-page__form-error-details">
+              <li v-for="(item, index) in formErrorDetails" :key="`${item.kind}-${index}`">{{ item.reason || item.name }}</li>
+            </ul>
+          </n-alert>
           <n-alert v-else-if="formSavedSuccessfully" type="success" :show-icon="false" size="small">
             表单数据已保存并完成服务端复验。节点仍需逐个完成，整条路径不会被静默标记。
           </n-alert>
@@ -626,6 +635,13 @@ void loadPage()
   max-height: 112px;
   padding: 8px 12px 0;
   overflow-y: auto;
+}
+.path-configuration-page__form-error-details {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--path-config-text-secondary-color);
+  font-size: 12px;
+  line-height: 1.7;
 }
 .path-configuration-page__form-frame {
   flex: 1 1 0;
