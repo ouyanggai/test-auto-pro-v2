@@ -34,7 +34,6 @@ const detailedPerson = ref<PathConfigPerson | null>(null)
 
 const props = defineProps<{
   node: PathConfigNode | null
-  warnings: string[]
   draft: PathConfigDraft
   saving: boolean
   saveDisabled: boolean
@@ -243,7 +242,6 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
       </header>
 
       <div class="node-configuration-panel__scroll">
-        <n-alert v-for="(warning, index) in warnings" :key="`warning-${index}`" type="warning" :show-icon="false" size="small">{{ warning }}</n-alert>
         <n-alert v-if="node.lineBlocked" type="warning" :show-icon="false" size="small">前序动作已结束当前线路，本节点无需继续配置。</n-alert>
 
         <section v-if="node.persons.length" class="node-configuration-panel__section" aria-labelledby="node-persons-heading">

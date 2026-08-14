@@ -57,6 +57,11 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
     >
       表
     </button>
+    <span
+      v-if="data.type === 'start' && data.configurationInteractive && data.configurationFormStatus === 'valid'"
+      class="flow-node__form-configured-badge"
+      aria-label="表单数据已配置"
+    >表单已配置</span>
   </div>
   <n-tag v-else class="flow-node" :type="tagType" :bordered="true" :title="data.name">
     <handle type="target" :position="Position.Top" :connectable="false" />
@@ -166,6 +171,21 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 .flow-node__form-entry--unsupported { color: var(--error-color, #d03050); }
 .flow-node__form-entry--empty,
 .flow-node__form-entry--draft { color: var(--warning-color, #f0a020); }
+
+.flow-node__form-configured-badge {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  z-index: 2;
+  padding: 1px 8px;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  background: var(--success-color, #18a058);
+  border-radius: 9px;
+  transform: translateX(-50%);
+}
 
 .flow-node__type {
   font-size: 12px;

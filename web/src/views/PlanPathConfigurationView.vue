@@ -381,6 +381,8 @@ async function saveFormData() {
     await reloadConfiguration()
     formSaveKey = crypto.randomUUID()
     formSavedSuccessfully.value = true
+    // 保存成功后自动回到节点画布；发起人节点上会显示“表单已配置”提示。
+    returnToNodes()
   }
   catch (caught) {
     try {
@@ -388,6 +390,7 @@ async function saveFormData() {
       if (reconciled.form.revision > previousRevision && reconciled.form.status === 'valid') {
         formSaveKey = crypto.randomUUID()
         formSavedSuccessfully.value = true
+        returnToNodes()
         return
       }
     }
@@ -470,7 +473,6 @@ void loadPage()
         <template #configuration-panel>
           <node-configuration-panel
             :node="selectedNode"
-            :warnings="configuration.warnings"
             :draft="draft"
             :saving="savingNode"
             :save-disabled="nodeSaveDisabled"
@@ -505,9 +507,9 @@ void loadPage()
             </template>
           </div>
         </header>
-        <div v-if="configuration.form.conditionHints.length" class="path-configuration-page__form-hints">
+        <div v-if="configuration.form.conditionHints.length" class="path-configuration-page__form-hints" :class="{ 'path-configuration-page__form-hints--collapsed': !hintsExpanded }">
           <button type="button" class="path-configuration-page__form-hints-toggle" :aria-expanded="hintsExpanded" @click="hintsExpanded = !hintsExpanded">
-            <span>{{ hintsExpanded ? '收起' : '展开' }}分支关键数据提示</span>
+            {{ hintsExpanded ? '收起分支关键数据提示' : '分支关键数据提示' }}
           </button>
           <div v-show="hintsExpanded" class="path-configuration-page__form-hints-body">
             <p>以下关键数据被当前路径的条件分支使用，仅作参考提示；修改这些字段可能影响实际分支走向。</p>
@@ -649,13 +651,29 @@ void loadPage()
   overflow-y: auto;
 }
 .path-configuration-page__form-hints {
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--path-config-border-color);
+  position: absolute;
+  top: 66px;
+  right: 14px;
+  z-index: 30;
+  width: 300px;
+  max-width: calc(100% - 28px);
+  overflow: hidden;
   background: var(--path-config-card-color);
+  border: 1px solid var(--path-config-border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+.path-configuration-page__form-hints--collapsed {
+  width: auto;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 .path-configuration-page__form-hints-toggle {
+  display: block;
   width: 100%;
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 0;
   background: transparent;
   color: var(--path-config-text-secondary-color);
@@ -663,9 +681,19 @@ void loadPage()
   text-align: left;
   cursor: pointer;
 }
+.path-configuration-page__form-hints--collapsed .path-configuration-page__form-hints-toggle {
+  width: auto;
+  padding: 4px 12px;
+  background: var(--path-config-card-color);
+  border: 1px solid var(--path-config-border-color);
+  border-radius: 14px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
 .path-configuration-page__form-hints-toggle:hover { color: var(--path-config-text-color); }
 .path-configuration-page__form-hints-body {
-  padding: 0 12px 10px;
+  max-height: 300px;
+  padding: 0 10px 10px;
+  overflow-y: auto;
 }
 .path-configuration-page__form-hints-body p {
   margin: 0 0 6px;
