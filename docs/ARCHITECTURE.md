@@ -14,7 +14,7 @@
 
 - 根目录 `package.json` 仅提供全栈开发与检查命令；Go 依赖仍只由 `go.mod` 管理。
 - F-007 起根目录 `pnpm-workspace.yaml` 只包含 `web` 与 `form-runtime`，从根目录执行 `pnpm install` 仍只生成一个 `pnpm-lock.yaml`。
-- 前端在一个前台终端执行 `pnpm dev:f`，同时持有主应用和表单运行时两个 Vite 开发进程并提供热更新；主应用继续监听 `127.0.0.1:19000`，表单运行时只作为主应用固定子路径的开发代理来源，不另设用户操作入口。
+- 前端在一个前台终端执行 `pnpm dev:f`，仅启动主 Vue 3 应用并监听 `127.0.0.1:19000`；表单运行时在独立前台终端执行 `pnpm dev:form`，监听 `127.0.0.1:19001` 并提供热更新，主应用通过固定 iframe 地址使用它。
 - 后端在另一个前台终端执行 `pnpm dev:b`，实际命令为 `go tool air -c .air.toml`。Air 固定为 Go 1.25 tool dependency，构建 `cmd/server` 到被忽略的 `.runtime/`。
 - 两个前台进程的日志留在各自终端，用户通过 `Ctrl+C` 停止；不使用后台守护、PID 文件、日志文件、`concurrently` 或后台重启命令。
 - `.air.toml` 只监听项目 Go 源码，排除 `.git`、`.runtime`、根目录 `node_modules`、`web`、`参考代码`、`test`、`docs` 和历史资料。
@@ -133,7 +133,7 @@
 - 公开节点配置 DTO 按真实节点分组，只返回路径摘要、节点顺序与类型、逐节点配置状态、结构化人员规则、已解析的具体对象、合法候选、动作目录、有序动作计划和缺口状态。人员、岗位、岗级、角色、部门、公司等业务对象只通过不透明写入键回传，公开响应不得暴露目标内部 ID。节点右侧面板不再接收或渲染表单字段；配置键仍由后端生成且只用于本次回写。
 - 独立 `form-runtime/` 前端工作区以 `runtime-source/` 作为唯一实际 dev/build 源码：完整保留 `参考代码/rsh-flow-components` 的 tracked 源码、原生同步资产、真实 `fm-generate-form`、字段权限、刷新、虚拟字段、20 个目标自定义组件、Vuex/router/axios 与样式。`form-runtime/src/`、根 `scripts/`、构建配置和 iframe/SID/写阻断属于本项目保护层；`.npmrc`、Git 元数据、依赖、构建产物与凭证明确排除。
 - 独立入口沿用目标组件依赖的原生 Vuex/router/axios，但主应用只进入本项目追加的 `/test-auto-form` 配置路由；旧登录页和其他工作台页面不作为用户入口，不安全的上游 `postMessage` 初始化被本地适配禁用，也不调用目标流程写接口。主应用以带版本、会话标识和请求标识的协议发送完整模板、权限、初始值、模式及当前已验证账号缓存的 SID/目标只读网关；消息必须核对 origin、source、协议版本和 session，销毁后拒绝迟到消息。SID 只存在于当前会话内存认证与请求策略，不写入数据库、Git 或浏览器长期存储；目标提交、草稿和已知业务写端点在运行时侧再次阻断。
-- 开发时根 `pnpm dev:f` 同时以前台持有方式启动主 Vue 3 页面和表单运行时并保持热更新；主页面使用稳定的 `/form-runtime/` 地址加载 iframe。生产构建先构建运行时，再把产物放入主站固定子目录，不依赖旧 `rsh-flow-components` 服务在线。
+- 开发时根 `pnpm dev:f` 只启动主 Vue 3 页面，`pnpm dev:form` 独立启动监听 `127.0.0.1:19001` 的表单运行时并保持热更新；主页面使用稳定的 `/form-runtime/` 地址加载 iframe。生产构建先构建运行时，再把产物放入主站固定子目录，不依赖旧 `rsh-flow-components` 服务在线。
 - 新发起从当前模板读取完整 FormMaking 模板和默认模型，并叠加该路径工具侧保存的测试数据；已发、待发按精确实例 ID 读取当前 `formDataMongoVo.data`，本切片只读展示。目标 envelope 不进入 postMessage；目标组件只有在独立入口中证明可在受控只读请求策略下运行时才注册，仍依赖旧宿主路由、Vuex、业务写钩子或外部服务的组件明确报告 unsupported，禁止降级为普通控件。
 - FormMaking 会话加载模板后按目标字段权限执行 `refresh`，隐藏或禁用不可编辑字段并移除其必填校验；保存先执行 `getData(true)`，再以 `getValues()` 的完整对象为权威数据。运行时不得执行 `beforeSubmitAndDraft` 等可能产生目标业务写入的钩子。
 - 新增独立的模板解析、样本画像和表单数据生成模块。生成器递归处理 FormMaking 容器与基础控件，使用稳定 seed 叠加模板默认值、真实选项、当前发起人、受限人员候选、路径条件约束和少量近期样本；显式人工覆盖始终优先，并保存 `generatedFieldPaths` 与 `manualOverridePaths`。生成器不能生成复杂组件时只跳过并保留已有值，不能据此判定整张表单 unsupported；组件支持性唯一来源是运行时按真实 `el` 等标识对照实际注册表的结果。高级 AI 语义生成、跨模板学习及未知复杂组件生成延后。

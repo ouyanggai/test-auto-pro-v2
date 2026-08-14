@@ -25,8 +25,19 @@ Form runtime 使用与目标平台同源的 FormMaking 组件逻辑渲染完整�
 - Go `1.25`
 - Node.js `>=20.19`
 - pnpm `10.25`（根目录已声明版本）
-- 可连接的 MySQL：计划、路径和配置数据使用本项目独立数据库；后端启动会执行本项目迁移。
+- 可连接的 MySQL：计划、路径和配置数据使用本项目独立数据库；后端启动会执行本项目迁移。工具库配置为 `PLAN_DB_HOST`、`PLAN_DB_PORT`、`PLAN_DB_USER`、`PLAN_DB_PASSWORD`、`PLAN_DB_NAME`，推荐使用独立库。
+- 配置优先级为：进程环境变量 > 根目录 Git 忽略的 `.env.local` > 非敏感默认值。`.env.example` 只列目标平台 `TARGET_*` 配置，不包含 `PLAN_DB_*`。
 - 本机目标平台配置：参考 [.env.example](.env.example) 安全准备 Git 忽略的 `.env.local`，或通过同名进程环境变量覆盖。真实密码、SID、AES key、验收账号和网关地址不得提交。
+
+两种安全配置同步路径如下；命令不会回显凭证，生成后的 `.env.local` 不得提交：
+
+```bash
+# 从已批准的 V1 配置同步本项目工具库配置
+make plan-db-config-sync V1_CONFIG=/path/to/V1/config.yaml
+
+# 目标平台配置变化时同步目标读取配置
+go run ./cmd/sync-v1-target-config -source /path/to/V1/config.yaml
+```
 
 安装前端依赖：
 
