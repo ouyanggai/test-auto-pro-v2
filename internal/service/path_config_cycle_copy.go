@@ -48,6 +48,17 @@ func (s *PathConfigService) CopyCycles(ctx context.Context, planID, targetPathID
 	if err != nil {
 		return model.PathConfigSaveResult{}, err
 	}
+	sourceOwned, err := s.analyzeOwnedPath(ctx, planID, snapshot, sourcePath)
+	if err != nil {
+		return model.PathConfigSaveResult{}, err
+	}
+	sourceConfiguration, _, err := s.configAnalyzer.Analyze(sourceOwned.graph, snapshot.Tree, snapshot.FormFields, sourcePath, sourceOwned.pathAnalysis, snapshot.InstanceValues, sourceStored.FieldValues, sourceStored.ActionValues, true)
+	if err != nil {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "来源路径循环无法核对，请重新读取"}
+	}
+	if _, cycleErr := validatePathConfigActionCycles(sourceConfiguration, cycleInputs); cycleErr != nil {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "来源路径循环已不再适用，请先重新配置"}
+	}
 	owned, err := s.analyzeOwnedPath(ctx, planID, snapshot, targetPath)
 	if err != nil {
 		return model.PathConfigSaveResult{}, err
