@@ -54,6 +54,13 @@ export function applyPathConfigurationPreset(planId: string, pathId: string, sco
   return request<PathConfigPresetApplyResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/preset/apply`, { method: 'POST', body: JSON.stringify({ scope }) })
 }
 
+// copyPathConfigurationCycles 复制来源路径已保存的循环，服务端会再次核对完整结构签名。
+export function copyPathConfigurationCycles(planId: string, targetPathId: string, sourcePathId: string, idempotencyKey: string): Promise<PathConfigSaveResult> {
+  return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(targetPathId)}/configuration/cycles/copy`, {
+    method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ sourcePathId }),
+  })
+}
+
 // savePathConfigurationNode 只保存当前节点人员和动作，避免一次点击覆盖整条路径。
 export function savePathConfigurationNode(
   planId: string,

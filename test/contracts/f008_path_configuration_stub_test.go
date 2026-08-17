@@ -57,6 +57,11 @@ func (stubPathConfigurationService) ApplyPreset(context.Context, uint64, uint64,
 	return model.PathConfigPresetApplyResult{}, nil
 }
 
+// CopyCycles 返回空复制结果桩。
+func (stubPathConfigurationService) CopyCycles(context.Context, uint64, uint64, uint64, string) (model.PathConfigSaveResult, error) {
+	return model.PathConfigSaveResult{}, nil
+}
+
 // GenerateForm 返回空生成结果桩。
 func (stubPathConfigurationService) GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error) {
 	return model.PathFormGenerateResult{}, nil
@@ -85,5 +90,31 @@ func TestF008PresetAPIContract(t *testing.T) {
 	handler.ServeHTTP(apply, httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/31/configuration/preset/apply", strings.NewReader(`{"scope":"selected"}`)))
 	if apply.Code != http.StatusOK || stub.scope != "selected" || !strings.Contains(apply.Body.String(), `"written":1`) {
 		t.Fatalf("预设应用契约不正确：status=%d scope=%s body=%s", apply.Code, stub.scope, apply.Body.String())
+	}
+}
+
+type f008CycleCopyStub struct {
+	stubPathConfigurationService
+	targetPathID uint64
+	sourcePathID uint64
+	idempotency  string
+}
+
+// CopyCycles 记录复制来源、目标和幂等键，证明端点不把循环成员交给浏览器。
+func (s *f008CycleCopyStub) CopyCycles(_ context.Context, _, targetPathID, sourcePathID uint64, idempotency string) (model.PathConfigSaveResult, error) {
+	s.targetPathID, s.sourcePathID, s.idempotency = targetPathID, sourcePathID, idempotency
+	return model.PathConfigSaveResult{Revision: 2}, nil
+}
+
+// TestF008CycleCopyAPIContract 验证循环复制只透传来源路径并使用目标路径 URL。
+func TestF008CycleCopyAPIContract(t *testing.T) {
+	stub := &f008CycleCopyStub{}
+	handler := api.NewHandlerWithConfigurationServices(&stubTargetReader{}, service.NewPlanService(&contractPlanRepository{}), &stubFlowGraphService{}, &stubExecutionPathService{}, &stubPathRequirementService{}, stub)
+	request := httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/31/configuration/cycles/copy", strings.NewReader(`{"sourcePathId":12}`))
+	request.Header.Set("Idempotency-Key", "01234567-89ab-cdef-0123-456789abcdef")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || stub.targetPathID != 31 || stub.sourcePathID != 12 || stub.idempotency == "" {
+		t.Fatalf("循环复制契约不正确：status=%d target=%d source=%d key=%s body=%s", response.Code, stub.targetPathID, stub.sourcePathID, stub.idempotency, response.Body.String())
 	}
 }

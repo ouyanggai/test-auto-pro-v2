@@ -69,6 +69,11 @@ type PathConfigPresetApplyResult struct {
 	Manual  int                     `json:"manual"`
 }
 
+// PathConfigCycleCopyInput 指定把当前已保存循环复制到目标路径；目标路径由服务端校验结构签名。
+type PathConfigCycleCopyInput struct {
+	SourcePathID uint64 `json:"sourcePathId"`
+}
+
 // PathConfigActionCycle 是服务端根据当前保存路径派生的只读循环摘要。
 type PathConfigActionCycle struct {
 	Key        string   `json:"key"`

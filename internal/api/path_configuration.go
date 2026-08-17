@@ -19,6 +19,7 @@ type PathConfigurationService interface {
 	SaveSelection(context.Context, uint64, uint64, string, model.PathConfigSelectionInput) (model.PathConfigSaveResult, error)
 	PreviewPreset(context.Context, uint64, uint64, string) (model.PathConfigPresetPreview, error)
 	ApplyPreset(context.Context, uint64, uint64, string) (model.PathConfigPresetApplyResult, error)
+	CopyCycles(context.Context, uint64, uint64, uint64, string) (model.PathConfigSaveResult, error)
 	GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error)
 	SaveForm(context.Context, uint64, uint64, string, model.PathFormSaveInput) (model.PathConfigSaveResult, error)
 	RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error)
@@ -38,6 +39,7 @@ func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConf
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/selection", handleSavePathConfigurationSelection(configurations))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/preset/preview", handlePreviewPathConfigurationPreset(configurations))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/preset/apply", handleApplyPathConfigurationPreset(configurations))
+	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/cycles/copy", handleCopyPathConfigurationCycles(configurations))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/form/generate", handleGeneratePathConfigurationForm(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/form", handleSavePathConfigurationForm(configurations))
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration/runtime-session", handlePathConfigurationRuntimeSession(configurations))
@@ -45,6 +47,29 @@ func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConf
 
 type pathConfigPresetRequest struct {
 	Scope string `json:"scope"`
+}
+
+// handleCopyPathConfigurationCycles 只复制工具侧循环配置，并要求目标路径与来源路径结构签名完全一致。
+func handleCopyPathConfigurationCycles(configurations PathConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, targetPathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		var input model.PathConfigCycleCopyInput
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "循环复制请求格式不正确", false)
+			return
+		}
+		result, err := configurations.CopyCycles(request.Context(), planID, targetPathID, input.SourcePathID, strings.TrimSpace(request.Header.Get("Idempotency-Key")))
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
 }
 
 // handlePreviewPathConfigurationPreset 仅计算批量预设将产生的本地配置，不写库或调用目标平台动作。
@@ -292,6 +317,11 @@ func (unavailablePathConfigurationService) PreviewPreset(context.Context, uint64
 // ApplyPreset 在未注入配置服务时拒绝一键预设写入。
 func (unavailablePathConfigurationService) ApplyPreset(context.Context, uint64, uint64, string) (model.PathConfigPresetApplyResult, error) {
 	return model.PathConfigPresetApplyResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
+}
+
+// CopyCycles 在未注入配置服务时拒绝循环复制。
+func (unavailablePathConfigurationService) CopyCycles(context.Context, uint64, uint64, uint64, string) (model.PathConfigSaveResult, error) {
+	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
 }
 
 // GenerateForm 在未注入配置服务时拒绝智能生成。

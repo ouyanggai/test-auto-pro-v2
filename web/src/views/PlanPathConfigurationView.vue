@@ -28,6 +28,7 @@ import {
 } from '../features/path-configuration/logic'
 import {
 	applyPathConfigurationPreset,
+  copyPathConfigurationCycles,
   fetchPathConfiguration,
   fetchPathFormRuntimeSession,
   generatePathFormData,
@@ -95,6 +96,10 @@ const presetScope = ref<PathConfigPresetScope>('current')
 const presetPreview = ref<PathConfigPresetPreview | null>(null)
 const presetBusy = ref(false)
 const presetError = ref('')
+const cycleCopyModalOpen = ref(false)
+const cycleCopyTargetID = ref('')
+const cycleCopyBusy = ref(false)
+const cycleCopyError = ref('')
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 const formFrame = ref<FormRuntimeExpose | null>(null)
 let loadVersion = 0
@@ -123,6 +128,14 @@ const runtimeBlockingReasons = computed(() => [...new Set([
   ...runtimeUnsupported.value,
 ])])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
+// pathSignature 与服务端使用同一选择序列，前端只展示可能成功的目标，最终仍由服务端复验。
+function pathSignature(path: ExecutionPath): string { return path.choices.map(choice => `${choice.routeNodeId.trim()}:${choice.branchId.trim()}`).join('|') }
+const cycleCopyTargets = computed(() => {
+  const current = currentPath.value
+  if (!current || !configuration.value?.actionCycles.length) return []
+  const signature = pathSignature(current)
+  return executionPaths.value.filter(path => path.id !== current.id && pathSignature(path) === signature)
+})
 
 // applyRuntimeFormState 只接受 iframe 已核验会话回传的统计与人工覆盖摘要，宿主不自行猜测 FormMaking 当前字段值。
 function applyRuntimeFormState(payload: Record<string, unknown>) {
@@ -313,6 +326,29 @@ function openPreset() {
   presetPreview.value = null
   presetError.value = ''
   presetModalOpen.value = true
+}
+
+// openCycleCopy 打开来源路径的安全复制确认，只允许当前已保存循环复制到兼容路径。
+function openCycleCopy() {
+  cycleCopyError.value = ''
+  cycleCopyTargetID.value = cycleCopyTargets.value[0]?.id ?? ''
+  cycleCopyModalOpen.value = true
+}
+
+// copyCycles 确认后只写目标路径的循环命名空间，不触发目标平台接口。
+async function copyCycles() {
+  const source = currentPath.value
+  if (!source || !cycleCopyTargetID.value || cycleCopyBusy.value) return
+  cycleCopyBusy.value = true
+  cycleCopyError.value = ''
+  try {
+    await copyPathConfigurationCycles(planID.value, cycleCopyTargetID.value, source.id, crypto.randomUUID())
+    cycleCopyModalOpen.value = false
+  }
+  catch (caught) {
+    cycleCopyError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '循环复制失败，请重试'
+  }
+  finally { cycleCopyBusy.value = false }
 }
 
 // previewPreset 先由服务端按最新快照逐节点说明写入、保留、跳过或人工处理。
@@ -544,6 +580,7 @@ void loadPage()
         </n-tag>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
         <n-button v-if="workspace === 'nodes'" size="small" @click="openPreset">一键预设</n-button>
+        <n-button v-if="workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
         <label class="path-configuration-page__include"><span>纳入本次测试</span><n-switch :value="includedInTest" @update:value="updateIncludedInTest" /></label>
       </div>
     </header>
@@ -581,6 +618,23 @@ void loadPage()
             <n-button :loading="presetBusy" @click="previewPreset">预览</n-button>
             <n-button type="primary" :loading="presetBusy" :disabled="!presetPreview" @click="applyPreset">确认应用</n-button>
           </div>
+        </template>
+      </n-card>
+    </n-modal>
+
+    <n-modal v-model:show="cycleCopyModalOpen">
+      <n-card title="复制已保存循环" style="width: min(620px, 94vw)">
+        <n-alert type="info" :show-icon="false">只允许复制到流程结构完全一致的路径；复制只影响本系统配置，不会调用目标平台，也不会覆盖源路径。
+        </n-alert>
+        <n-alert v-if="cycleCopyError" type="error" :show-icon="false">{{ cycleCopyError }}
+        </n-alert>
+        <n-select
+          v-model:value="cycleCopyTargetID"
+          :options="cycleCopyTargets.map(path => ({ label: `#${path.sequenceNo} ${path.name}`, value: path.id }))"
+          placeholder="选择结构一致的目标路径"
+        />
+        <template #footer>
+          <n-space justify="end"><n-button @click="cycleCopyModalOpen = false">取消</n-button><n-button type="primary" :loading="cycleCopyBusy" :disabled="!cycleCopyTargetID" @click="copyCycles">确认复制</n-button></n-space>
         </template>
       </n-card>
     </n-modal>
