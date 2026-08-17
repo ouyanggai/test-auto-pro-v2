@@ -104,7 +104,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
             <n-button quaternary circle title="上移动作" aria-label="上移动作" :disabled="index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
             <n-button quaternary circle title="下移动作" aria-label="下移动作" :disabled="index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
             <n-popconfirm @positive-click="removeAction(index)">
-              <template #trigger><n-button quaternary circle type="error" title="删除动作" aria-label="删除动作"><CloseOutline /></n-button></template>
+              <template #trigger><n-button type="error" secondary size="small" title="删除动作" aria-label="删除动作"><CloseOutline /> 删除</n-button></template>
               删除这个动作配置？
             </n-popconfirm>
           </div>
@@ -125,4 +125,8 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 
 <style scoped>
 .node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:12px;padding:16px}.node-configuration-panel__header,.node-configuration-panel__footer,.cycle-list li{display:flex;align-items:center;justify-content:space-between;gap:10px}.node-configuration-panel__body{overflow:auto;display:flex;flex-direction:column;gap:16px}.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:14px}.person-row{display:flex;flex-direction:column;align-items:stretch;gap:7px;margin-top:12px}.person-controls,.action-person-fields{display:flex;flex-direction:column;gap:7px}.action-summary{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 12px}.action-row{display:grid;grid-template-columns:88px minmax(220px,1fr) 78px 112px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #edf0f3}.action-arrival{white-space:nowrap;color:#475569}.action-row__actions{display:flex;justify-content:flex-end;gap:2px}.action-count{width:78px}.action-person-fields{grid-column:2 / -1;max-width:420px}.muted-text,.node-configuration-panel p,.node-configuration-panel small{color:#64748b}.node-configuration-panel__footer{border-top:1px solid #e5e7eb;padding-top:12px}.cycle-list{padding-left:0;list-style:none}.node-configuration-panel h2,.node-configuration-panel h3{margin:0}.node-configuration-panel p{margin:0}@media (max-width:680px){.node-configuration-panel{padding:12px}.action-row{grid-template-columns:1fr 78px 96px}.action-arrival{grid-column:1 / -1}.action-select{grid-column:1 / -1}.action-person-fields{grid-column:1 / -1}.action-row__actions{grid-column:3}.person-row{gap:6px}}
+/* 操作列固定留出删除文字，避免删除入口只剩不可见的窄图标。 */
+.action-row{grid-template-columns:88px minmax(220px,1fr) 78px 148px}
+.action-row__actions{align-items:center;gap:4px}
+@media (max-width:680px){.action-row__actions{grid-column:1 / -1;justify-content:flex-start}}
 </style>
