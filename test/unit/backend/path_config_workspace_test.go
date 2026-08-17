@@ -390,7 +390,7 @@ func TestPathConfigWorkspaceRejectsDirectoryResolutionFailure(t *testing.T) {
 // pathConfigWorkspaceSnapshot 构造带完整目标 FormMaking 模板的当前路径快照。
 func pathConfigWorkspaceSnapshot() target.PathConfigurationSnapshot {
 	tree := pathConfigTree()
-	// 基础夹具将第一分支声明为可证明满足的条件；第二分支仍保留目标平台的最终兜底语义。
+	// 基础夹具将第一分支声明为可证明满足的条件，避免测试把无条件分支误当作生成目标。
 	tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "amount", Judge: "gte", ValueB: "0"}}
 	tree.FieldPowers = []target.FlowNodeFieldPower{
 		{FormID: "form-a", FieldID: "field-amount", EnglishName: "amount", Power: "edit"},

@@ -653,7 +653,7 @@ func isNumericConditionJudge(judge string) bool {
 	}
 }
 
-// validateTargetPathSelection 按目标平台“排序逐项命中，最后一项兜底”规则复验 values 的实际选支。
+// validateTargetPathSelection 按目标平台有序策略和完整条件表达式复验 values 的实际选支。
 func validateTargetPathSelection(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, values map[string]any) []string {
 	expected := make(map[string]string, len(choices))
 	for _, choice := range choices {
@@ -688,7 +688,7 @@ func resolveTargetConditionBranches(tree *target.FlowNodeTemplate, values map[st
 		}
 		var selectedChild *target.FlowNodeTemplate
 		for index, branch := range branches {
-			// 目标平台最后一个策略无条件兜底；其条件不应反向阻止流程继续。
+			// 目标源码在前序策略均未成立时仍会选择最后一项；这里只复现运行结果，绝不据此生成或改写字段。
 			if index == len(branches)-1 {
 				actual[node.ID] = branch.ID
 				selectedChild = branch.Child
