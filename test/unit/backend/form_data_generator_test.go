@@ -208,6 +208,30 @@ func TestFormDataGeneratorFillsDateRange(t *testing.T) {
 	}
 }
 
+// TestFormDataGeneratorBindsDateRangeToDuration 验证唯一结构绑定按自然日含首尾同步日期，并拒绝手工改成不匹配区间。
+func TestFormDataGeneratorBindsDateRangeToDuration(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "number", "model": "durationValue", "name": "数值字段", "options": map[string]any{"required": true}},
+		map[string]any{"type": "date", "model": "periodValue", "name": "日期字段", "options": map[string]any{"required": true, "type": "daterange"}},
+	}}
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: template, Samples: []map[string]any{{"durationValue": float64(15), "periodValue": []any{"2026-01-31", "2026-02-02"}}}, Seed: 4,
+		Constraints:       []formdata.Constraint{{Field: "durationValue", Op: "gte", Value: 15}},
+		DateRangeBindings: []formdata.DateRangeBinding{{DurationField: "durationValue", RangeField: "periodValue"}},
+	})
+	rangeValue := result.Values["periodValue"].([]any)
+	if rangeValue[0] != "2026-01-31" || rangeValue[1] != "2026-02-14" {
+		t.Fatalf("日期区间没有按十五天跨月计算：%+v", rangeValue)
+	}
+	if reasons := formdata.ValidateDateRangeBindings(result.Values, []formdata.DateRangeBinding{{DurationField: "durationValue", RangeField: "periodValue"}}); len(reasons) != 0 {
+		t.Fatalf("同步后的日期区间被错误拒绝：%v", reasons)
+	}
+	result.Values["periodValue"] = []any{"2026-01-31", "2026-02-13"}
+	if reasons := formdata.ValidateDateRangeBindings(result.Values, []formdata.DateRangeBinding{{DurationField: "durationValue", RangeField: "periodValue"}}); len(reasons) == 0 {
+		t.Fatal("手工缩短日期区间后仍被当作有效")
+	}
+}
+
 // generatorTemplate 返回生成器测试共用的基础 FormMaking 模板。
 func generatorTemplate() map[string]any {
 	return map[string]any{"list": []any{

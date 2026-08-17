@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -111,13 +112,22 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		}
 	}
 	permissions := formPermissions(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))
+	dateRangeBindings := buildPathDateRangeBindings(snapshot.Tree, path.Choices, template)
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: template, Base: base, Samples: samples, Seed: seed, Initiator: initiator,
 		Constraints: buildPathConstraints(snapshot.Tree, path.Choices), ManualOverridePaths: manualPaths,
-		EditablePaths: editableFormPathsFromPermissions(permissions),
-		Identity:      identity,
+		DateRangeBindings: dateRangeBindings,
+		EditablePaths:     editableFormPathsFromPermissions(permissions),
+		Identity:          identity,
 	})
 	generated.Unsupported = append(generated.Unsupported, unsupported...)
+	if reasons := validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values); len(reasons) > 0 {
+		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "生成数据无法命中当前已选分支", Affected: affectedFromStrings("form", reasons)}
+	}
+	if reasons := formdata.ValidateDateRangeBindings(generated.Values, dateRangeBindings); len(reasons) > 0 {
+		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "生成日期区间无法满足当前条件天数", Affected: affectedFromStrings("form", reasons)}
+	}
+	hints := buildPathConditionHints(snapshot.Tree, path.Choices, template, permissions, generated.Values)
 	if nextGroup && reflect.DeepEqual(base, generated.Values) {
 		// “换一组”只能在当前模板、样本和路径约束能证明产生新值时成功，避免旧值被伪装成新候选。
 		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "没有可切换的下一组有效候选，当前数据已保持不变"}
@@ -127,7 +137,8 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		GeneratedFieldPaths: generated.GeneratedFieldPaths, ManualOverridePaths: generated.ManualOverridePaths,
 		SampleSummary: model.PathFormSampleSummary{Saved: found && len(stored.FormValues) > 0, Defaults: generated.Defaults, Recent: generated.Recent, Fallback: generated.Fallback, Identity: generated.Identity},
 		AutoFilled:    len(generated.GeneratedFieldPaths), ManualPending: generated.Pending,
-		Unsupported: uniquePublicStrings(generated.Unsupported),
+		Unsupported:    uniquePublicStrings(generated.Unsupported),
+		ConditionHints: hints, FieldRules: buildPathFormFieldRules(hints),
 	}, nil
 }
 
@@ -281,6 +292,12 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 	if reasons := formdata.ValidateEditable(template, input.Values, buildPathConstraints(snapshot.Tree, path.Choices), editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))); len(reasons) > 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据不符合当前模板或路径条件", Affected: affectedFromStrings("form", reasons)}
 	}
+	if reasons := validateTargetPathSelection(snapshot.Tree, path.Choices, input.Values); len(reasons) > 0 {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据无法命中当前已选分支", Affected: affectedFromStrings("form", reasons)}
+	}
+	if reasons := formdata.ValidateDateRangeBindings(input.Values, buildPathDateRangeBindings(snapshot.Tree, path.Choices, template)); len(reasons) > 0 {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "日期区间与当前条件天数不一致", Affected: affectedFromStrings("form", reasons)}
+	}
 	stored.PathID = pathID
 	stored.Revision++
 	stored.FormRevision++
@@ -311,9 +328,8 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 		ReadOnly: source != "new", Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
-		ConditionHints: buildPathConditionHints(snapshot.Tree, choices, template, formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs))),
+		ConditionHints: []model.PathFormConditionHint{},
 	}
-	form.FieldRules = buildPathFormFieldRules(form.ConditionHints)
 	if found && len(stored.FormValues) > 0 {
 		form.Values = cloneFormValues(stored.FormValues)
 		form.Seed = stored.FormSeed
@@ -326,6 +342,9 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	if len(form.Values) == 0 && len(snapshot.InstanceValues) > 0 {
 		form.Values = cloneFormValues(snapshot.InstanceValues)
 	}
+	// 提示和禁用必须基于当前实际 values 复算；未生成或无法证明命中时仅保留普通条件说明。
+	form.ConditionHints = buildPathConditionHints(snapshot.Tree, choices, template, form.Permissions, form.Values)
+	form.FieldRules = buildPathFormFieldRules(form.ConditionHints)
 	if len(snapshot.Forms) == 0 {
 		form.Status, form.StatusName, form.Validated = "valid", "无需表单数据", true
 		return form
@@ -560,21 +579,7 @@ func buildPathConstraints(tree *target.FlowNodeTemplate, choices []model.Executi
 				continue
 			}
 			if len(branch.Conditions) == 0 {
-				avoidByField := make(map[string][]any)
-				for _, sibling := range branches {
-					if sibling.ID == branchID {
-						continue
-					}
-					for _, condition := range sibling.Conditions {
-						field := normalizeFormFieldPath(condition.FieldA)
-						if field != "" {
-							avoidByField[field] = append(avoidByField[field], condition.ValueB)
-						}
-					}
-				}
-				for field, avoid := range avoidByField {
-					constraints = append(constraints, formdata.Constraint{Field: field, Op: "default", Avoid: avoid})
-				}
+				// 无显式条件的分支不能反向猜测其他分支的字段值；实际选支只能由后续完整复验得出。
 				continue
 			}
 			orGroup := 0
@@ -598,6 +603,244 @@ func buildPathConstraints(tree *target.FlowNodeTemplate, choices []model.Executi
 		}
 	})
 	return constraints
+}
+
+// buildPathDateRangeBindings 仅在模板与路径条件形成唯一一对一结构关系时声明天数区间绑定。
+// 这避免按“请假天数”等名称猜测字段，模板存在多个数值或日期区间时宁可不自动绑定。
+func buildPathDateRangeBindings(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template map[string]any) []formdata.DateRangeBinding {
+	selected := make(map[string]string, len(choices))
+	for _, choice := range choices {
+		selected[choice.RouteNodeID] = choice.BranchID
+	}
+	conditionFields := make(map[string]bool)
+	visitTargetTree(tree, map[string]bool{}, func(node *target.FlowNodeTemplate) {
+		for _, branch := range node.ConditionNodes {
+			if selected[node.ID] != branch.ID {
+				continue
+			}
+			for _, condition := range branch.Conditions {
+				field := normalizeFormFieldPath(condition.FieldA)
+				if field != "" && strings.TrimSpace(condition.FieldB) == "" && isNumericConditionJudge(condition.Judge) {
+					conditionFields[field] = true
+				}
+			}
+		}
+	})
+	fields, _ := formdata.ParseTemplate(template)
+	numbers, ranges := make([]string, 0), make([]string, 0)
+	for _, field := range fields {
+		path := normalizeFormFieldPath(field.Path)
+		if field.Type == "number" && conditionFields[path] {
+			numbers = append(numbers, path)
+		}
+		if field.Type == "date" && field.Mode == "daterange" {
+			ranges = append(ranges, path)
+		}
+	}
+	if len(numbers) != 1 || len(ranges) != 1 {
+		return nil
+	}
+	return []formdata.DateRangeBinding{{DurationField: numbers[0], RangeField: ranges[0]}}
+}
+
+// isNumericConditionJudge 判断目标比较码是否可以稳定投影为天数约束。
+func isNumericConditionJudge(judge string) bool {
+	switch normalizeConditionJudge(judge) {
+	case "gt", "gte", "lt", "lte", "eq":
+		return true
+	default:
+		return false
+	}
+}
+
+// validateTargetPathSelection 按目标平台“排序逐项命中，最后一项兜底”规则复验 values 的实际选支。
+func validateTargetPathSelection(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, values map[string]any) []string {
+	expected := make(map[string]string, len(choices))
+	for _, choice := range choices {
+		expected[choice.RouteNodeID] = choice.BranchID
+	}
+	actual, reasons := resolveTargetConditionBranches(tree, values, choices)
+	for routeNodeID, branchID := range expected {
+		if actualBranchID, exists := actual[routeNodeID]; exists && actualBranchID != branchID {
+			reasons = append(reasons, "表单数据实际会命中其他排序更靠前的条件分支")
+		}
+	}
+	return uniquePublicStrings(reasons)
+}
+
+// resolveTargetConditionBranches 复刻目标条件节点的有序策略选择，返回每个条件节点真正会进入的分支。
+func resolveTargetConditionBranches(tree *target.FlowNodeTemplate, values map[string]any, choices []model.ExecutionPathChoice) (map[string]string, []string) {
+	actual := make(map[string]string)
+	reasons := make([]string, 0)
+	selected := make(map[string]string, len(choices))
+	for _, choice := range choices {
+		selected[choice.RouteNodeID] = choice.BranchID
+	}
+	var visit func(*target.FlowNodeTemplate)
+	visit = func(node *target.FlowNodeTemplate) {
+		if node == nil {
+			return
+		}
+		branches := orderedTargetBranches(node.ConditionNodes)
+		if len(branches) == 0 {
+			visit(node.Child)
+			return
+		}
+		var selectedChild *target.FlowNodeTemplate
+		for index, branch := range branches {
+			// 目标平台最后一个策略无条件兜底；其条件不应反向阻止流程继续。
+			if index == len(branches)-1 {
+				actual[node.ID] = branch.ID
+				selectedChild = branch.Child
+				break
+			}
+			matched, evaluable := targetBranchMatches(values, branch.Conditions)
+			if !evaluable {
+				reasons = append(reasons, "当前表单值无法完整计算条件分支")
+				break
+			}
+			if matched {
+				actual[node.ID] = branch.ID
+				selectedChild = branch.Child
+				break
+			}
+		}
+		if selected[node.ID] == "" || actual[node.ID] == selected[node.ID] {
+			visit(selectedChild)
+		}
+	}
+	visit(tree)
+	return actual, uniquePublicStrings(reasons)
+}
+
+// orderedTargetBranches 按目标策略 sort 保持稳定排序，数据库同序号仍保留读取顺序。
+func orderedTargetBranches(branches []target.FlowBranchTemplate) []target.FlowBranchTemplate {
+	ordered := append([]target.FlowBranchTemplate(nil), branches...)
+	sort.SliceStable(ordered, func(left, right int) bool { return ordered[left].Sort < ordered[right].Sort })
+	return ordered
+}
+
+// targetBranchMatches 复刻目标 isLastResult 的顺序 and/or 聚合，不把跨分支条件错误并成全局阈值。
+func targetBranchMatches(values map[string]any, conditions []target.FlowCondition) (bool, bool) {
+	if len(conditions) == 0 {
+		return false, true
+	}
+	lastResult := false
+	var previousResult *bool
+	previousType := ""
+	for _, condition := range conditions {
+		current, evaluable := targetConditionMatches(values, condition)
+		if !evaluable {
+			return false, false
+		}
+		conditionType := strings.ToLower(strings.TrimSpace(condition.ConditionType))
+		if conditionType == "" && previousType == "" {
+			return current, true
+		}
+		switch previousType {
+		case "and":
+			if previousResult != nil && current && *previousResult && conditionType == "" {
+				lastResult = true
+			}
+			merged := previousResult != nil && current && *previousResult
+			previousResult = &merged
+		case "or":
+			if previousResult != nil && (current || *previousResult) && conditionType == "" {
+				lastResult = true
+			}
+			merged := previousResult != nil && (current || *previousResult)
+			previousResult = &merged
+		default:
+			previousResult = &current
+		}
+		previousType = conditionType
+	}
+	return lastResult, true
+}
+
+// targetConditionMatches 用目标条件的字段 A、固定值或字段 B 执行基础比较，未知比较码不伪造命中。
+func targetConditionMatches(values map[string]any, condition target.FlowCondition) (bool, bool) {
+	left, exists := pathFormValue(values, normalizeFormFieldPath(condition.FieldA))
+	if !exists {
+		return false, false
+	}
+	right := pathConditionValue(condition.ValueB)
+	if strings.TrimSpace(condition.ValueB) == "" {
+		var found bool
+		right, found = pathFormValue(values, normalizeFormFieldPath(condition.FieldB))
+		if !found {
+			return false, false
+		}
+	}
+	switch normalizeConditionJudge(condition.Judge) {
+	case "eq":
+		return targetValuesEqual(left, right), true
+	case "neq":
+		return !targetValuesEqual(left, right), true
+	case "gt", "gte", "lt", "lte":
+		leftNumber, leftOK := targetNumber(left)
+		rightNumber, rightOK := targetNumber(right)
+		if !leftOK || !rightOK {
+			return false, false
+		}
+		switch normalizeConditionJudge(condition.Judge) {
+		case "gt":
+			return leftNumber > rightNumber, true
+		case "gte":
+			return leftNumber >= rightNumber, true
+		case "lt":
+			return leftNumber < rightNumber, true
+		default:
+			return leftNumber <= rightNumber, true
+		}
+	case "in":
+		list, ok := right.([]any)
+		if !ok {
+			return targetValuesEqual(left, right), true
+		}
+		for _, value := range list {
+			if targetValuesEqual(left, value) {
+				return true, true
+			}
+		}
+		return false, true
+	case "contains":
+		return strings.Contains(fmt.Sprint(left), fmt.Sprint(right)), true
+	default:
+		return false, false
+	}
+}
+
+// pathFormValue 读取点分隔表单字段键，不跨数组或显示名称猜测字段。
+func pathFormValue(values map[string]any, path string) (any, bool) {
+	current := any(values)
+	for _, part := range strings.Split(strings.TrimSpace(path), ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+// targetValuesEqual 先以数字比较兼容 JSON 数字与条件字符串，再回退到目标展示值比较。
+func targetValuesEqual(left, right any) bool {
+	leftNumber, leftOK := targetNumber(left)
+	rightNumber, rightOK := targetNumber(right)
+	if leftOK && rightOK {
+		return leftNumber == rightNumber
+	}
+	return fmt.Sprint(left) == fmt.Sprint(right)
+}
+
+// targetNumber 把目标运行时可能出现的 JSON 数值或数值文本转换为比较值。
+func targetNumber(value any) (float64, bool) {
+	result, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64)
+	return result, err == nil
 }
 
 // pathConditionValue 把目标条件常量恢复为 JSON 标量或列表，无法解析时保留原字符串。
@@ -663,8 +906,8 @@ func formdataIdentityContext(identity target.FormIdentityContext) formdata.Ident
 	}
 }
 
-// buildPathConditionHints 为当前路径已选条件分支生成字段级高亮提示，并仅对模板模型精确匹配且可编辑的字段施加保护。
-func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template map[string]any, permissions []model.PathFormPermission) []model.PathFormConditionHint {
+// buildPathConditionHints 展示当前路径全部相关条件，并只高亮经目标排序语义复验的实际命中分支。
+func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template map[string]any, permissions []model.PathFormPermission, values map[string]any) []model.PathFormConditionHint {
 	fields, _ := formdata.ParseTemplate(template)
 	labelByModel := make(map[string]string, len(fields))
 	for _, field := range fields {
@@ -672,24 +915,23 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 			labelByModel[normalized] = field.Name
 		}
 	}
-	editable := editableFormPathsFromPermissions(permissions)
+	_ = permissions // 字段权限由 iframe 同时应用；提示的命中事实不能因原字段已只读而丢失。
 	selected := make(map[string]string, len(choices))
 	for _, choice := range choices {
 		selected[choice.RouteNodeID] = choice.BranchID
 	}
 	hints := make([]model.PathFormConditionHint, 0)
-	visitTargetTree(tree, map[string]bool{}, func(node *target.FlowNodeTemplate) {
+	active, _ := resolveTargetConditionBranches(tree, values, choices)
+	visitSelectedPathConditionNodes(tree, selected, func(node *target.FlowNodeTemplate) {
 		branchID := selected[node.ID]
 		if branchID == "" {
 			return
 		}
-		for _, branch := range node.ConditionNodes {
-			if branch.ID != branchID {
-				continue
-			}
+		for _, branch := range orderedTargetBranches(node.ConditionNodes) {
+			isActive := active[node.ID] == branch.ID && branch.ID == branchID
 			branchName := strings.TrimSpace(branch.Name)
 			if branchName == "" {
-				branchName = "已选条件分支"
+				branchName = "条件分支"
 			}
 			for _, condition := range branch.Conditions {
 				field := normalizeFormFieldPath(condition.FieldA)
@@ -702,12 +944,16 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 				}
 				label, mapped := labelByModel[field]
 				if !mapped {
-					hints = append(hints, model.PathFormConditionHint{Field: field, Text: fmt.Sprintf("分支「%s」命中条件无法精确映射到当前表单字段，未限制编辑，请人工核对", branchName), Mapped: false})
+					text := fmt.Sprintf("分支「%s」条件无法精确映射到当前表单字段，未限制编辑，请人工核对", branchName)
+					if isActive {
+						text = fmt.Sprintf("当前路径实际命中分支「%s」的条件无法精确映射到当前表单字段，未限制编辑，请人工核对", branchName)
+					}
+					hints = append(hints, model.PathFormConditionHint{Field: field, Text: text, Mapped: false})
 					continue
 				}
 				hints = append(hints, model.PathFormConditionHint{
 					Field: field, Text: fmt.Sprintf("分支「%s」：%s %s %s", branchName, label, judge, pathConditionDisplayText(pathConditionValue(condition.ValueB))),
-					Mapped: true, Protected: editable[field],
+					Mapped: true, Protected: isActive,
 				})
 			}
 		}
@@ -715,11 +961,44 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 	return hints
 }
 
+// visitSelectedPathConditionNodes 只沿已保存路径的分支子树投影条件，避免把其他路径节点的提示带进当前表单。
+func visitSelectedPathConditionNodes(tree *target.FlowNodeTemplate, selected map[string]string, call func(*target.FlowNodeTemplate)) {
+	var visit func(*target.FlowNodeTemplate)
+	visit = func(node *target.FlowNodeTemplate) {
+		if node == nil {
+			return
+		}
+		if len(node.ConditionNodes) > 0 {
+			call(node)
+			branchID := selected[node.ID]
+			for _, branch := range node.ConditionNodes {
+				if branch.ID == branchID {
+					visit(branch.Child)
+					return
+				}
+			}
+			return
+		}
+		if len(node.ParallelNodes) > 0 {
+			call(node)
+			for _, branch := range node.ParallelNodes {
+				if branch.ID == selected[node.ID] {
+					visit(branch.Child)
+					return
+				}
+			}
+			return
+		}
+		visit(node.Child)
+	}
+	visit(tree)
+}
+
 // buildPathFormFieldRules 合并同一字段的命中条件，供 iframe 在真实组件创建前设置 disabled。
 func buildPathFormFieldRules(hints []model.PathFormConditionHint) []model.PathFormFieldRule {
 	byField := make(map[string]*model.PathFormFieldRule)
 	for _, hint := range hints {
-		if !hint.Mapped || strings.TrimSpace(hint.Field) == "" {
+		if !hint.Mapped || !hint.Protected || strings.TrimSpace(hint.Field) == "" {
 			continue
 		}
 		rule := byField[hint.Field]

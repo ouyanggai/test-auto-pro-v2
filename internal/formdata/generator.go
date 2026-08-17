@@ -19,6 +19,13 @@ type Constraint struct {
 	Group int
 }
 
+// DateRangeBinding 是已由调用方精确证明的天数与日期区间字段对应关系。
+// 两个字段均使用模板模型键，生成器不会根据字段名称或中文标签自行推断。
+type DateRangeBinding struct {
+	DurationField string
+	RangeField    string
+}
+
 // GenerateInput 汇总模板、样本、身份、路径约束和人工覆盖边界。
 type GenerateInput struct {
 	Template            map[string]any
@@ -27,6 +34,7 @@ type GenerateInput struct {
 	Seed                int64
 	Initiator           string
 	Constraints         []Constraint
+	DateRangeBindings   []DateRangeBinding
 	ManualOverridePaths []string
 	EditablePaths       map[string]bool
 	Identity            IdentityContext
@@ -246,9 +254,26 @@ func Generate(input GenerateInput) GenerateResult {
 		}
 	}
 	applyConstraints(values, input.Constraints, manual, rng, &generated)
+	applyDateRangeBindings(values, input.DateRangeBindings, manual, &generated)
 	addVirtualValues(values, fields, &generated)
 	result.GeneratedFieldPaths = uniqueSorted(generated)
 	return result
+}
+
+// ValidateDateRangeBindings 校验已声明绑定的日期区间是否以自然日含首尾覆盖对应天数。
+func ValidateDateRangeBindings(values map[string]any, bindings []DateRangeBinding) []string {
+	errors := make([]string, 0)
+	for _, binding := range bindings {
+		duration, durationOK := formWholeDays(values, binding.DurationField)
+		start, end, rangeOK := formDateRange(values, binding.RangeField)
+		if !durationOK || !rangeOK {
+			continue
+		}
+		if start.AddDate(0, 0, duration-1).Format("2006-01-02") != end.Format("2006-01-02") {
+			errors = append(errors, "日期区间与条件天数不一致")
+		}
+	}
+	return uniqueSorted(errors)
 }
 
 // MergeGenerated 保留人工覆盖路径，只替换仍由生成器拥有的字段。
@@ -417,6 +442,37 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 	return nil, false
 }
 
+// formWholeDays 读取正整数天数；小数、零和缺失值不参与区间同步或校验。
+func formWholeDays(values map[string]any, path string) (int, bool) {
+	value, exists := getPath(values, path)
+	if !exists {
+		return 0, false
+	}
+	number, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64)
+	if err != nil || number <= 0 || number != float64(int(number)) {
+		return 0, false
+	}
+	return int(number), true
+}
+
+// formDateRange 读取 FormMaking daterange 的开始和结束日期，仅接受标准日期字符串。
+func formDateRange(values map[string]any, path string) (time.Time, time.Time, bool) {
+	value, exists := getPath(values, path)
+	if !exists {
+		return time.Time{}, time.Time{}, false
+	}
+	rangeValues, ok := value.([]any)
+	if !ok || len(rangeValues) != 2 {
+		return time.Time{}, time.Time{}, false
+	}
+	start, startErr := time.Parse("2006-01-02", strings.TrimSpace(fmt.Sprint(rangeValues[0])))
+	end, endErr := time.Parse("2006-01-02", strings.TrimSpace(fmt.Sprint(rangeValues[1])))
+	if startErr != nil || endErr != nil || end.Before(start) {
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
+}
+
 // applyConstraints 只覆盖生成器拥有的字段；命中条件字段也纳入生成所有权，供运行时统计准确识别自动值。
 func applyConstraints(values map[string]any, constraints []Constraint, manual map[string]bool, rng *rand.Rand, generated *[]string) {
 	appliedGroups := make(map[int]bool)
@@ -426,6 +482,13 @@ func applyConstraints(values map[string]any, constraints []Constraint, manual ma
 		}
 		// OR 组只需选择一个可满足分支；稳定选择列表中的第一项，避免同组后续约束互相覆盖。
 		if constraint.Group > 0 && appliedGroups[constraint.Group] {
+			continue
+		}
+		if current, exists := getPath(values, constraint.Field); exists && constraintSatisfied(current, constraint) {
+			// 近期样本或已有草稿已经满足路径条件时必须保留，不能为了“生成”篡改有效候选。
+			if constraint.Group > 0 {
+				appliedGroups[constraint.Group] = true
+			}
 			continue
 		}
 		switch strings.ToLower(constraint.Op) {
@@ -455,6 +518,23 @@ func applyConstraints(values map[string]any, constraints []Constraint, manual ma
 			appliedGroups[constraint.Group] = true
 		}
 		*generated = append(*generated, constraint.Field)
+	}
+}
+
+// applyDateRangeBindings 在条件值稳定后同步日期结束日，日期区间按自然日含首尾计算。
+func applyDateRangeBindings(values map[string]any, bindings []DateRangeBinding, manual map[string]bool, generated *[]string) {
+	for _, binding := range bindings {
+		if manual[binding.RangeField] {
+			continue
+		}
+		duration, durationOK := formWholeDays(values, binding.DurationField)
+		start, _, rangeOK := formDateRange(values, binding.RangeField)
+		if !durationOK || !rangeOK {
+			continue
+		}
+		// FormMaking daterange 的两端均计入请假天数，不能沿用通用兜底的固定三天。
+		setPath(values, binding.RangeField, []any{start.Format("2006-01-02"), start.AddDate(0, 0, duration-1).Format("2006-01-02")})
+		*generated = append(*generated, binding.RangeField)
 	}
 }
 

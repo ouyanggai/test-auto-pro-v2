@@ -58,6 +58,8 @@ export interface PathFormGenerateResult {
   autoFilled: number
   manualPending: number
   unsupported: string[]
+  conditionHints: Array<{ field: string, text: string, protected: boolean, mapped: boolean }>
+  fieldRules: Array<{ field: string, disabled: boolean, conditionHints: string[] }>
 }
 
 export interface PathFormRuntimeSession {

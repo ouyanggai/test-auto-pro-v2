@@ -85,16 +85,18 @@ type PathFormSampleSummary struct {
 
 // PathFormGenerateResult 是智能生成或换一组返回的权威表单草稿。
 type PathFormGenerateResult struct {
-	Revision            uint64                `json:"revision"`
-	Status              string                `json:"status"`
-	Values              map[string]any        `json:"values"`
-	Seed                int64                 `json:"seed"`
-	GeneratedFieldPaths []string              `json:"generatedFieldPaths"`
-	ManualOverridePaths []string              `json:"manualOverridePaths"`
-	SampleSummary       PathFormSampleSummary `json:"sampleSummary"`
-	AutoFilled          int                   `json:"autoFilled"`
-	ManualPending       int                   `json:"manualPending"`
-	Unsupported         []string              `json:"unsupported"`
+	Revision            uint64                  `json:"revision"`
+	Status              string                  `json:"status"`
+	Values              map[string]any          `json:"values"`
+	Seed                int64                   `json:"seed"`
+	GeneratedFieldPaths []string                `json:"generatedFieldPaths"`
+	ManualOverridePaths []string                `json:"manualOverridePaths"`
+	SampleSummary       PathFormSampleSummary   `json:"sampleSummary"`
+	AutoFilled          int                     `json:"autoFilled"`
+	ManualPending       int                     `json:"manualPending"`
+	Unsupported         []string                `json:"unsupported"`
+	ConditionHints      []PathFormConditionHint `json:"conditionHints"`
+	FieldRules          []PathFormFieldRule     `json:"fieldRules"`
 }
 
 // PathFormSaveInput 是表单运行时校验后提交给服务层的完整 values 与生成元数据。

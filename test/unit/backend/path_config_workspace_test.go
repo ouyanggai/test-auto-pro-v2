@@ -168,7 +168,7 @@ func TestPathConfigWorkspaceNewFormUsesEntryNodePermissions(t *testing.T) {
 	}
 }
 
-// TestPathConfigWorkspaceProjectsConditionFieldRules 验证路径命中条件仅在精确映射且可编辑时禁用真实运行时字段。
+// TestPathConfigWorkspaceProjectsConditionFieldRules 验证仅实际命中分支高亮和禁用，其他条件保留普通说明。
 func TestPathConfigWorkspaceProjectsConditionFieldRules(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
@@ -176,20 +176,25 @@ func TestPathConfigWorkspaceProjectsConditionFieldRules(t *testing.T) {
 	snapshot.Tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "amount", Judge: "gte", ValueB: "3000"}}
 	snapshot.Tree.Child.ConditionNodes[1].Conditions = []target.FlowCondition{{FieldA: "unknown_$$_field", Judge: "eq", ValueB: "x"}}
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
-	configuration, err := newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, &memoryPathConfigRepository{}).Get(context.Background(), 7, 32)
+	serviceUnderTest := newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, &memoryPathConfigRepository{})
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
 	if err != nil {
 		t.Fatalf("读取条件字段规则失败：%v", err)
 	}
-	if len(configuration.Form.ConditionHints) != 1 || !configuration.Form.ConditionHints[0].Mapped || !configuration.Form.ConditionHints[0].Protected {
-		t.Fatalf("命中条件没有形成精确高亮和保护标记：%+v", configuration.Form.ConditionHints)
+	if len(configuration.Form.ConditionHints) != 2 || len(configuration.Form.FieldRules) != 0 {
+		t.Fatalf("没有实际表单值时不应伪造命中或禁用字段：%+v", configuration.Form)
 	}
-	if len(configuration.Form.FieldRules) != 1 || configuration.Form.FieldRules[0].Field != "amount" || !configuration.Form.FieldRules[0].Disabled || len(configuration.Form.FieldRules[0].ConditionHints) != 1 {
-		t.Fatalf("精确映射字段没有生成真实组件规则：%+v", configuration.Form.FieldRules)
+	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 3, nil, nil, false)
+	if err != nil || len(generated.ConditionHints) != 2 || !generated.ConditionHints[0].Mapped || !generated.ConditionHints[0].Protected || generated.ConditionHints[1].Mapped || generated.ConditionHints[1].Protected {
+		t.Fatalf("只有实际命中的精确字段应高亮保护：generated=%+v err=%v", generated, err)
+	}
+	if len(generated.FieldRules) != 1 || generated.FieldRules[0].Field != "amount" || !generated.FieldRules[0].Disabled || len(generated.FieldRules[0].ConditionHints) != 1 {
+		t.Fatalf("实际命中字段没有生成真实组件禁用规则：%+v", generated.FieldRules)
 	}
 
 	snapshot.Tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "unknown_$$_field", Judge: "eq", ValueB: "x"}}
 	configuration, err = newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, &memoryPathConfigRepository{}).Get(context.Background(), 7, 32)
-	if err != nil || len(configuration.Form.FieldRules) != 0 || len(configuration.Form.ConditionHints) != 1 || configuration.Form.ConditionHints[0].Mapped || configuration.Form.ConditionHints[0].Protected {
+	if err != nil || len(configuration.Form.FieldRules) != 0 || len(configuration.Form.ConditionHints) != 2 || configuration.Form.ConditionHints[0].Mapped || configuration.Form.ConditionHints[0].Protected {
 		t.Fatalf("无法精确映射字段被错误禁用或未提示：form=%+v err=%v", configuration.Form, err)
 	}
 }
@@ -385,6 +390,8 @@ func TestPathConfigWorkspaceRejectsDirectoryResolutionFailure(t *testing.T) {
 // pathConfigWorkspaceSnapshot 构造带完整目标 FormMaking 模板的当前路径快照。
 func pathConfigWorkspaceSnapshot() target.PathConfigurationSnapshot {
 	tree := pathConfigTree()
+	// 基础夹具将第一分支声明为可证明满足的条件；第二分支仍保留目标平台的最终兜底语义。
+	tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "amount", Judge: "gte", ValueB: "0"}}
 	tree.FieldPowers = []target.FlowNodeFieldPower{
 		{FormID: "form-a", FieldID: "field-amount", EnglishName: "amount", Power: "edit"},
 		{FormID: "form-a", FieldID: "field-type", EnglishName: "type", Power: "edit"},
