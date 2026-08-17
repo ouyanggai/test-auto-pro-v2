@@ -44,12 +44,12 @@ export async function fetchPathConfiguration(planId: string, pathId: string, sig
   return result
 }
 
-// previewPathConfigurationPreset 计算一键预设逐节点结果，不产生任何写入。
+// previewPathConfigurationPreset 计算每个节点的随机动作预设结果，不产生任何写入。
 export function previewPathConfigurationPreset(planId: string, pathId: string, scope: PathConfigPresetScope): Promise<PathConfigPresetPreview> {
   return request<PathConfigPresetPreview>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/preset/preview`, { method: 'POST', body: JSON.stringify({ scope }) })
 }
 
-// applyPathConfigurationPreset 只应用预览中的安全默认项，不生成循环或覆盖人工配置。
+// applyPathConfigurationPreset 应用随机动作预设，不生成循环或覆盖人工配置。
 export function applyPathConfigurationPreset(planId: string, pathId: string, scope: PathConfigPresetScope): Promise<PathConfigPresetApplyResult> {
   return request<PathConfigPresetApplyResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/preset/apply`, { method: 'POST', body: JSON.stringify({ scope }) })
 }

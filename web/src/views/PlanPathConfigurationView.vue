@@ -365,7 +365,7 @@ async function previewPreset() {
   finally { presetBusy.value = false }
 }
 
-// applyPreset 只在用户确认预览后应用安全默认项，随后刷新当前路径准备情况。
+// applyPreset 只在用户确认预览后应用随机动作，随后刷新当前路径准备情况。
 async function applyPreset() {
   if (!presetPreview.value || presetBusy.value) return
   presetBusy.value = true
@@ -596,7 +596,7 @@ void loadPage()
           ]"
           @update:value="presetPreview = null"
         />
-        <n-alert type="info" :show-icon="false">仅填入发起提交一次、普通节点同意一次和目标默认人员；不会覆盖人工配置，也不会创建循环。</n-alert>
+        <n-alert type="info" :show-icon="false">为每个节点预设一个随机动作，并尽量覆盖不同动作；不会覆盖已有配置，也不会创建循环。</n-alert>
         <n-alert v-if="presetError" type="error" :show-icon="false">{{ presetError }}</n-alert>
         <div v-if="presetPreview" class="path-configuration-page__preset-preview">
           <section v-for="path in presetPreview.paths" :key="`${path.path.sequenceNo}-${path.path.name}`">

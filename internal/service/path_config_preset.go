@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -29,16 +31,24 @@ type pathConfigPresetDecision struct {
 	input model.PathNodeSaveInput
 }
 
-// PreviewPreset 预览安全默认项在指定路径范围的逐节点结果，绝不写入工具侧或目标平台。
+type pathConfigPresetActionSlot struct {
+	candidateIndex int
+	decisionIndex  int
+	node           model.PathConfigNode
+	seed           string
+}
+
+// PreviewPreset 预览指定范围内每个节点的随机动作预设结果，绝不写入工具侧或目标平台。
 func (s *PathConfigService) PreviewPreset(ctx context.Context, planID, pathID uint64, scope string) (model.PathConfigPresetPreview, error) {
 	candidates, err := s.pathConfigPresetCandidates(ctx, planID, pathID, scope)
 	if err != nil {
 		return model.PathConfigPresetPreview{}, err
 	}
 	preview := model.PathConfigPresetPreview{Scope: scope, Paths: make([]model.PathConfigPresetPath, 0, len(candidates))}
-	for _, candidate := range candidates {
+	decisionsByCandidate := pathConfigPresetDecisions(candidates)
+	for candidateIndex, candidate := range candidates {
 		items := make([]model.PathConfigPresetNodeItem, 0)
-		for _, decision := range pathConfigPresetDecisions(candidate) {
+		for _, decision := range decisionsByCandidate[candidateIndex] {
 			items = append(items, decision.item)
 		}
 		preview.Paths = append(preview.Paths, model.PathConfigPresetPath{Path: model.PathConfigPath{SequenceNo: candidate.path.SequenceNo, Name: candidate.path.Name}, Items: items})
@@ -46,15 +56,16 @@ func (s *PathConfigService) PreviewPreset(ctx context.Context, planID, pathID ui
 	return preview, nil
 }
 
-// ApplyPreset 写入预览中唯一安全的默认项；已保存动作、人员和循环都保持原样。
+// ApplyPreset 写入预览中的随机动作；已保存动作、人员和循环都保持原样。
 func (s *PathConfigService) ApplyPreset(ctx context.Context, planID, pathID uint64, scope string) (model.PathConfigPresetApplyResult, error) {
 	candidates, err := s.pathConfigPresetCandidates(ctx, planID, pathID, scope)
 	if err != nil {
 		return model.PathConfigPresetApplyResult{}, err
 	}
 	result := model.PathConfigPresetApplyResult{Preview: model.PathConfigPresetPreview{Scope: scope, Paths: make([]model.PathConfigPresetPath, 0, len(candidates))}}
-	for _, candidate := range candidates {
-		decisions := pathConfigPresetDecisions(candidate)
+	decisionsByCandidate := pathConfigPresetDecisions(candidates)
+	for candidateIndex, candidate := range candidates {
+		decisions := decisionsByCandidate[candidateIndex]
 		items := make([]model.PathConfigPresetNodeItem, 0, len(decisions))
 		values := copyPathConfigActionValues(candidate.stored.ActionValues)
 		confirmed := append([]string(nil), candidate.stored.ConfirmedNodeKeys...)
@@ -156,31 +167,125 @@ func (s *PathConfigService) pathConfigPresetCandidates(ctx context.Context, plan
 	return result, nil
 }
 
-// pathConfigPresetDecisions 只预览系统基础动作，基础动作不写入用户动作列表。
-func pathConfigPresetDecisions(candidate pathConfigPresetCandidate) []pathConfigPresetDecision {
-	result := make([]pathConfigPresetDecision, 0)
-	for _, group := range candidate.configuration.Groups {
-		for _, node := range group.Nodes {
-			target, exists := candidate.validation.NodeTokens[node.Key]
-			if !exists {
-				continue
-			}
-			item := model.PathConfigPresetNodeItem{NodeKey: node.Key, NodeName: node.Name}
-			if candidate.stored.ActionValues[analyzer.PathConfigActionConfigurationStorageKey(target.NodeID)] != "" || candidate.stored.ActionValues[analyzer.PathConfigPersonPlanStorageKey(target.NodeID)] != "" {
-				item.Status, item.Detail = "keep", "已保留人工配置"
+// pathConfigPresetDecisions 为所有目标节点选择一个可用额外动作，并按范围尽量覆盖动作目录。
+func pathConfigPresetDecisions(candidates []pathConfigPresetCandidate) [][]pathConfigPresetDecision {
+	decisionsByCandidate := make([][]pathConfigPresetDecision, len(candidates))
+	coverage := map[string]int{}
+	slots := make([]pathConfigPresetActionSlot, 0)
+	for candidateIndex, candidate := range candidates {
+		result := make([]pathConfigPresetDecision, 0)
+		for _, group := range candidate.configuration.Groups {
+			for _, node := range group.Nodes {
+				target, exists := candidate.validation.NodeTokens[node.Key]
+				if !exists {
+					continue
+				}
+				item := model.PathConfigPresetNodeItem{NodeKey: node.Key, NodeName: node.Name}
+				if candidate.stored.ActionValues[analyzer.PathConfigActionConfigurationStorageKey(target.NodeID)] != "" {
+					item.Status, item.Detail = "keep", "已保留人工配置"
+					result = append(result, pathConfigPresetDecision{item: item})
+					continue
+				}
+				if len(pathConfigPresetActionCatalog(node.ActionConfiguration.Catalog)) == 0 {
+					item.Status, item.Detail = "skip", "当前节点没有可自动配置的动作"
+					result = append(result, pathConfigPresetDecision{item: item})
+					continue
+				}
+				decisionIndex := len(result)
 				result = append(result, pathConfigPresetDecision{item: item})
-				continue
+				slots = append(slots, pathConfigPresetActionSlot{candidateIndex: candidateIndex, decisionIndex: decisionIndex, node: node, seed: target.NodeID})
 			}
-			if node.ActionConfiguration.Base == nil {
-				item.Status, item.Detail = "skip", "当前节点没有安全默认动作"
-				result = append(result, pathConfigPresetDecision{item: item})
-				continue
+		}
+		decisionsByCandidate[candidateIndex] = result
+	}
+	for _, candidate := range candidates {
+		for _, group := range candidate.configuration.Groups {
+			for _, node := range group.Nodes {
+				for _, action := range node.ActionConfiguration.Actions {
+					coverage[action.Kind]++
+				}
 			}
-			item.Action, item.Status, item.Detail = node.ActionConfiguration.Base.Label, "keep", "系统基础动作已固定 1 次"
-			result = append(result, pathConfigPresetDecision{item: item})
+		}
+	}
+	for _, slot := range slots {
+		decision := &decisionsByCandidate[slot.candidateIndex][slot.decisionIndex]
+		action, ok := choosePathConfigPresetAction(pathConfigPresetActionCatalog(slot.node.ActionConfiguration.Catalog), coverage, slot.seed)
+		if !ok {
+			decision.item.Status, decision.item.Detail = "manual", "当前动作需要人工补充人员"
+			continue
+		}
+		input, valid := pathConfigPresetActionInput(slot.node, action)
+		if !valid {
+			decision.item.Status, decision.item.Detail = "manual", "当前动作需要人工补充人员"
+			continue
+		}
+		decision.item.Action, decision.item.Status, decision.item.Detail = action.Label, "write", "将为该节点添加一个随机动作"
+		decision.input = input
+		coverage[action.Kind]++
+	}
+	return decisionsByCandidate
+}
+
+// pathConfigPresetActionCatalog 只保留可自动配置的额外动作，系统同意/提交不进入预设。
+func pathConfigPresetActionCatalog(catalog []model.PathConfigActionCatalogItem) []model.PathConfigActionCatalogItem {
+	result := make([]model.PathConfigActionCatalogItem, 0, len(catalog))
+	for _, item := range catalog {
+		if item.Enabled && (!item.RequiresPerson || item.Person != nil) {
+			result = append(result, item)
 		}
 	}
 	return result
+}
+
+// choosePathConfigPresetAction 在覆盖次数最低的动作中稳定抽取一个，保证预览和应用结果一致。
+func choosePathConfigPresetAction(catalog []model.PathConfigActionCatalogItem, coverage map[string]int, seed string) (model.PathConfigActionCatalogItem, bool) {
+	if len(catalog) == 0 {
+		return model.PathConfigActionCatalogItem{}, false
+	}
+	minimum := -1
+	for _, item := range catalog {
+		count := coverage[item.Kind]
+		if minimum < 0 || count < minimum {
+			minimum = count
+		}
+	}
+	candidates := make([]model.PathConfigActionCatalogItem, 0, len(catalog))
+	for _, item := range catalog {
+		if coverage[item.Kind] == minimum {
+			candidates = append(candidates, item)
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(seed)))
+	index := binary.BigEndian.Uint64(sum[:8]) % uint64(len(candidates))
+	return candidates[index], true
+}
+
+// pathConfigPresetActionInput 生成一个动作次数为 1 的自动预设节点载荷。
+func pathConfigPresetActionInput(node model.PathConfigNode, action model.PathConfigActionCatalogItem) (model.PathNodeSaveInput, bool) {
+	input := model.PathNodeSaveInput{Persons: make([]model.PathConfigPersonStrategyInput, 0), Actions: []model.PathConfigConfiguredActionInput{{Key: "preset-" + node.Key, Kind: action.Kind, Count: 1}}}
+	for _, person := range node.Persons {
+		if !person.Editable {
+			continue
+		}
+		strategy := strings.TrimSpace(person.Strategy)
+		if strategy == "" {
+			strategy = "random"
+		}
+		input.Persons = append(input.Persons, model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: strategy, Seed: person.StrategySeed, Selected: append([]string(nil), person.Selected...)})
+	}
+	if !action.RequiresPerson {
+		return input, true
+	}
+	if action.Person == nil || !action.Person.Editable {
+		return model.PathNodeSaveInput{}, false
+	}
+	for _, option := range action.Person.Strategies {
+		if option.Value == "random" {
+			input.Actions[0].Person = &model.PathConfigPersonStrategyInput{Key: action.Person.Key, Strategy: "random", Seed: action.Person.StrategySeed}
+			return input, true
+		}
+	}
+	return model.PathNodeSaveInput{}, false
 }
 
 // pathConfigPresetDefaultPerson 仅接受公开模型中目标默认且当前合法的人员策略。

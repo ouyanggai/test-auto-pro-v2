@@ -33,6 +33,7 @@ grep -Fq '>复制已保存循环</n-button>' "${view}"
 grep -Fq '当前路径' "${view}"
 grep -Fq '已选路径' "${view}"
 grep -Fq '全部兼容路径' "${view}"
+grep -Fq '为每个节点预设一个随机动作' "${view}"
 grep -Fq '确认应用' "${view}"
 grep -Fq 'PathConfigActionCycle' "${model}"
 grep -Fq 'restart_from_initiator' "${workspace}"
@@ -48,6 +49,8 @@ grep -Fq 'NPopconfirm' "${plans_view}"
 grep -Fq '删除后会清除本系统中的路径和配置' "${plans_view}"
 grep -Fq 'Strategy: "random"' "${project_root}/internal/analyzer/path_config_plan.go"
 grep -Fq 'deterministicPathConfigPeople' "${project_root}/internal/analyzer/path_config_plan.go"
+grep -Fq 'choosePathConfigPresetAction' "${project_root}/internal/service/path_config_preset.go"
+grep -Fq '将为该节点添加一个随机动作' "${project_root}/internal/service/path_config_preset.go"
 
 if sed -n '/<template>/,/<\/template>/p' "${panel}" | grep -Eq '动作组合循环次数|前置动作|处理结果|动作计划'; then
   echo 'F-008 节点侧栏或动作弹窗仍暴露旧动作概念' >&2
