@@ -104,7 +104,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
     <n-modal v-model:show="actionEditorOpen">
       <n-card title="动作配置" style="width: min(680px, 94vw)">
         <p class="beginner-hint">流程第几次走到这个节点，就执行第几行；一次到达只执行一行。</p>
-        <n-alert type="info" :show-icon="false">次数表示后续真实再次到达时的顺序，不会在同一次任务内连续调用接口。</n-alert>
+        <n-alert type="info" :show-icon="false">一次到达只执行一行。</n-alert>
         <div v-if="node.actionConfiguration.base" class="action-base-row"><span>系统默认</span><strong>{{ node.actionConfiguration.base.label }}</strong><span>固定 1 次</span></div>
         <div v-for="(action, index) in actions" :key="action.key" class="action-row">
           <div class="action-row__header">
