@@ -424,6 +424,42 @@ func TestPathConfigWorkspaceSavesPersonStrategyAndActionPlan(t *testing.T) {
 	}
 }
 
+// TestPathConfigWorkspacePersistsOnlyProvenActionCycle 验证重复动作只能随两种真实引擎循环保存，且循环在刷新后恢复。
+func TestPathConfigWorkspacePersistsOnlyProvenActionCycle(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{}
+	serviceUnderTest := newPathConfigService(t, plans, &pathConfigReader{snapshot: pathConfigWorkspaceSnapshot()}, paths, configs)
+	configuration, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("读取循环配置失败：%v", err)
+	}
+	approval := findConfigNode(configuration.Groups, "财务审批")
+	if approval == nil {
+		t.Fatal("循环配置缺少审批节点")
+	}
+	input := model.PathNodeSaveInput{
+		Revision: configuration.NodeRevision,
+		Persons:  workspaceNodePersons(*approval),
+		ActionPlan: model.PathConfigActionPlanInput{Actions: []model.PathConfigConfiguredActionInput{{Key: "action-1", Kind: "reject_no_pass", Count: 2}}},
+		ActionCycles: []model.PathConfigActionCycleInput{{Key: "restart", Type: "restart_from_initiator", EndNodeKey: approval.Key, Count: 1}},
+	}
+	if _, err = serviceUnderTest.SaveNode(context.Background(), 7, 32, approval.Key, "123e4567-e89b-12d3-a456-426614174882", input); err != nil {
+		t.Fatalf("真实重提循环保存失败：%v", err)
+	}
+	refreshed, err := serviceUnderTest.Get(context.Background(), 7, 32)
+	if err != nil || len(refreshed.ActionCycles) != 1 || refreshed.ActionCycles[0].Type != "restart_from_initiator" {
+		t.Fatalf("循环没有在刷新后恢复：configuration=%+v err=%v", refreshed.ActionCycles, err)
+	}
+	input.Revision = refreshed.NodeRevision
+	input.ActionCycles = []model.PathConfigActionCycleInput{{Key: "redo", Type: "redo_previous_task", EndNodeKey: approval.Key, Count: 1}}
+	input.ActionPlan.Actions[0].Kind = "draft_save"
+	if _, err = serviceUnderTest.SaveNode(context.Background(), 7, 32, approval.Key, "123e4567-e89b-12d3-a456-426614174883", input); !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalid) {
+		t.Fatalf("暂存被错误加入静态循环：%v", err)
+	}
+}
+
 // TestPathConfigWorkspaceRejectsDirectoryResolutionFailure 验证目标目录失败不能绕过页面直接保存为完成节点。
 func TestPathConfigWorkspaceRejectsDirectoryResolutionFailure(t *testing.T) {
 	plans := newMemoryPlanRepository()
