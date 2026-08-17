@@ -75,23 +75,25 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
       </section>
 
       <section class="node-configuration-panel__section">
-        <h3>准备情况</h3>
+        <div class="action-section__header">
+          <h3>已配置的动作</h3>
+          <n-button type="primary" size="small" :disabled="node.lineBlocked || !node.actionConfiguration.catalog.length" @click="openActionEditor">动作配置</n-button>
+        </div>
         <div v-if="savedActions.length" class="action-summary">
           <n-tag v-for="action in savedActions" :key="action.key" size="small">
             {{ actionDefinition(action.kind)?.label || action.kind }}
           </n-tag>
         </div>
         <span v-else class="muted-text">未添加额外动作</span>
-        <n-space>
-          <n-button type="primary" :disabled="node.lineBlocked || !node.actionConfiguration.catalog.length" @click="openActionEditor">动作配置</n-button>
-        </n-space>
       </section>
     </div>
 
     <footer class="node-configuration-panel__footer">
-      <n-alert v-if="saveError" type="error" :show-icon="false">{{ pathConfigurationMessage(saveError) }}</n-alert>
-      <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足配置要求</span>
-      <n-button type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
+      <div class="save-status">
+        <n-alert v-if="saveError" type="error" :show-icon="false">{{ pathConfigurationMessage(saveError) }}</n-alert>
+        <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足配置要求</span>
+      </div>
+      <n-button class="save-button" type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
     </footer>
 
     <n-modal v-model:show="actionEditorOpen">
@@ -124,7 +126,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 </template>
 
 <style scoped>
-.node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:12px;padding:16px}.node-configuration-panel__header,.node-configuration-panel__footer,.cycle-list li{display:flex;align-items:center;justify-content:space-between;gap:10px}.node-configuration-panel__body{overflow:auto;display:flex;flex-direction:column;gap:16px}.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:14px}.person-row{display:flex;flex-direction:column;align-items:stretch;gap:7px;margin-top:12px}.person-controls,.action-person-fields{display:flex;flex-direction:column;gap:7px}.action-summary{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 12px}.action-row{display:grid;grid-template-columns:88px minmax(220px,1fr) 78px 112px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #edf0f3}.action-arrival{white-space:nowrap;color:#475569}.action-row__actions{display:flex;justify-content:flex-end;gap:2px}.action-count{width:78px}.action-person-fields{grid-column:2 / -1;max-width:420px}.muted-text,.node-configuration-panel p,.node-configuration-panel small{color:#64748b}.node-configuration-panel__footer{border-top:1px solid #e5e7eb;padding-top:12px}.cycle-list{padding-left:0;list-style:none}.node-configuration-panel h2,.node-configuration-panel h3{margin:0}.node-configuration-panel p{margin:0}@media (max-width:680px){.node-configuration-panel{padding:12px}.action-row{grid-template-columns:1fr 78px 96px}.action-arrival{grid-column:1 / -1}.action-select{grid-column:1 / -1}.action-person-fields{grid-column:1 / -1}.action-row__actions{grid-column:3}.person-row{gap:6px}}
+.node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:12px;padding:16px}.node-configuration-panel__header,.cycle-list li{display:flex;align-items:center;justify-content:space-between;gap:10px}.node-configuration-panel__body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:16px}.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:14px}.action-section__header{display:flex;align-items:center;justify-content:space-between;gap:12px}.person-row{display:flex;flex-direction:column;align-items:stretch;gap:7px;margin-top:12px}.person-controls,.action-person-fields{display:flex;flex-direction:column;gap:7px}.action-summary{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0}.action-row{display:grid;grid-template-columns:88px minmax(220px,1fr) 78px 112px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #edf0f3}.action-arrival{white-space:nowrap;color:#475569}.action-row__actions{display:flex;justify-content:flex-end;gap:2px}.action-count{width:78px}.action-person-fields{grid-column:2 / -1;max-width:420px}.muted-text,.node-configuration-panel p,.node-configuration-panel small{color:#64748b}.node-configuration-panel__footer{display:flex;flex-direction:column;align-items:stretch;gap:10px;margin:0 -16px -16px;padding:14px 16px 16px;border-top:1px solid #e5e7eb;background:#fafafa}.save-status{min-height:20px;color:#64748b}.save-button{align-self:flex-end;min-width:132px}.cycle-list{padding-left:0;list-style:none}.node-configuration-panel h2,.node-configuration-panel h3{margin:0}.node-configuration-panel p{margin:0}@media (max-width:680px){.node-configuration-panel{padding:12px}.action-row{grid-template-columns:1fr 78px 96px}.action-arrival{grid-column:1 / -1}.action-select{grid-column:1 / -1}.action-person-fields{grid-column:1 / -1}.action-row__actions{grid-column:1 / -1;justify-content:flex-start}.save-button{width:100%}.node-configuration-panel__footer{margin:0 -12px -12px;padding:12px}}
 /* 操作列固定留出删除文字，避免删除入口只剩不可见的窄图标。 */
 .action-row{grid-template-columns:88px minmax(220px,1fr) 78px 148px}
 .action-row__actions{align-items:center;gap:4px}

@@ -14,6 +14,8 @@ plans_view="${project_root}/web/src/views/PlansView.vue"
 grep -Fq '>动作配置</n-button>' "${panel}"
 grep -Fq 'action-row__actions' "${panel}"
 grep -Fq 'aria-label="删除动作"' "${panel}"
+grep -Fq '已配置的动作' "${panel}"
+if grep -Fq '准备情况' "${panel}"; then exit 1; fi
 grep -Fq 'action-select' "${panel}"
 grep -Fq 'action-count' "${panel}"
 grep -Fq 'person-controls' "${panel}"
