@@ -25,9 +25,8 @@ type pathConfigPresetCandidate struct {
 }
 
 type pathConfigPresetDecision struct {
-	item     model.PathConfigPresetNodeItem
-	input    model.PathNodeSaveInput
-	writable bool
+	item  model.PathConfigPresetNodeItem
+	input model.PathNodeSaveInput
 }
 
 // PreviewPreset 预览安全默认项在指定路径范围的逐节点结果，绝不写入工具侧或目标平台。
@@ -201,7 +200,7 @@ func pathConfigPresetDecisions(candidate pathConfigPresetCandidate) []pathConfig
 				continue
 			}
 			item.Status, item.Detail = "write", "将写入安全默认动作"
-			result = append(result, pathConfigPresetDecision{item: item, input: input, writable: true})
+			result = append(result, pathConfigPresetDecision{item: item, input: input})
 		}
 	}
 	return result
