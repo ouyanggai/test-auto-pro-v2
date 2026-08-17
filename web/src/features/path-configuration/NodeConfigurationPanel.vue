@@ -5,8 +5,8 @@ import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline } from '@vic
 import { copyPathConfigActions, normalizedActionCount, normalizedPersonStrategy, pathConfigActionsInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type { PathConfigActionCycle, PathConfigActionCycleInput, PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; saveDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; actionCycles: PathConfigActionCycle[] }>()
-const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; updateActionCycles: [value: PathConfigActionCycleInput[]]; save: []; backToPlan: []; openForm: [] }>()
+const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; actionCycles: PathConfigActionCycle[] }>()
+const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; updateActionCycles: [value: PathConfigActionCycleInput[]]; save: []; saveAll: []; backToPlan: []; openForm: [] }>()
 const actionEditorOpen = ref(false)
 const actionDraft = ref<PathConfigConfiguredActionInput[]>([])
 
@@ -93,7 +93,10 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
         <n-alert v-if="saveError" type="error" :show-icon="false">{{ pathConfigurationMessage(saveError) }}</n-alert>
         <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足配置要求</span>
       </div>
-      <n-button class="save-button" type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
+      <div class="save-actions">
+        <n-button secondary :loading="saving" :disabled="saveAllDisabled" @click="emit('saveAll')">保存全部节点</n-button>
+        <n-button class="save-button" type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
+      </div>
     </footer>
 
     <n-modal v-model:show="actionEditorOpen">
@@ -131,4 +134,6 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 .action-row{grid-template-columns:88px minmax(220px,1fr) 78px 148px}
 .action-row__actions{align-items:center;gap:4px}
 @media (max-width:680px){.action-row__actions{grid-column:1 / -1;justify-content:flex-start}}
+.save-actions{display:flex;justify-content:flex-end;gap:8px}
+@media (max-width:680px){.save-actions{flex-direction:column-reverse}.save-actions :deep(.n-button){width:100%}.save-button{width:100%}}
 </style>

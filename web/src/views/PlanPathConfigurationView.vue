@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NModal, NSelect, NSpin, NSwitch, NTag, useThemeVars } from 'naive-ui'
+import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NModal, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -16,7 +16,6 @@ import {
   buildPathConfigNodeSavePayload,
 	copyPathConfigActions,
   currentNodeConfigurationComplete,
-  hasCurrentNodeDraftChanges,
   initialPathConfigurationNodeID,
   initPathConfigDraft,
   nextFormGenerationSeed,
@@ -35,7 +34,6 @@ import {
   PathConfigApiError,
 	previewPathConfigurationPreset,
   savePathConfigurationNode,
-  savePathConfigurationSelection,
   savePathFormData,
 } from '../features/path-configuration/api'
 import type {
@@ -74,7 +72,6 @@ const executionPaths = ref<ExecutionPath[]>([])
 const configuration = ref<PathConfiguration | null>(null)
 const draft = ref<PathConfigDraft>({ fields: {}, persons: {}, personStrategies: {}, actionConfigurations: {} })
 const actionCycles = ref<PathConfigActionCycleInput[]>([])
-const includedInTest = ref(false)
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
@@ -120,9 +117,8 @@ const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
   ? projectPathConfigurationNodeStates(graph.value, pathAnalysis.value, configurationByGraphNodeID.value, selectedNodeID.value)
   : {})
 const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(selectedNode.value, draft.value))
-const selectedNodeDirty = computed(() => hasCurrentNodeDraftChanges(selectedNode.value, draft.value))
-const nodeSaveDisabled = computed(() => loading.value || savingNode.value || !selectedNodeRequirement.value.complete
-  || (selectedNode.value?.status === 'configured' && !selectedNodeDirty.value))
+const nodeSaveDisabled = computed(() => loading.value || savingNode.value || !selectedNodeRequirement.value.complete)
+const saveAllNodesDisabled = computed(() => loading.value || savingNode.value || !configuration.value)
 const runtimeBlockingReasons = computed(() => [...new Set([
   ...(configuration.value?.form.unsupported ?? []),
   ...runtimeUnsupported.value,
@@ -179,7 +175,6 @@ async function applyConfiguration(next: PathConfiguration, preserveSelected = tr
   configuration.value = next
   draft.value = initPathConfigDraft(next)
   actionCycles.value = next.actionCycles.map(cycle => ({ key: cycle.key, type: cycle.type, endNodeKey: cycle.endNodeKey, count: cycle.count }))
-  includedInTest.value = next.preparation.included
   configurationByGraphNodeID.value = bindings.byGraphNodeID
   graphNodeIDByConfigurationKey.value = bindings.graphNodeIDByKey
   selectedNodeID.value = preserveSelected && bindings.byGraphNodeID.has(selected)
@@ -305,22 +300,6 @@ function updateActionCycles(value: PathConfigActionCycleInput[]) {
   nodeSavedSuccessfully.value = false
 }
 
-// updateIncludedInTest 仅标记后续运行范围，不创建运行记录也不执行目标平台动作。
-async function updateIncludedInTest(value: boolean) {
-  includedInTest.value = value
-  nodeSavedSuccessfully.value = false
-  const current = configuration.value
-  if (!current) return
-  try {
-    await savePathConfigurationSelection(planID.value, pathID.value, current.nodeRevision, value, crypto.randomUUID())
-    await reloadConfiguration()
-  }
-  catch (caught) {
-    includedInTest.value = current.preparation.included
-    nodeSaveError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '本次测试路径未能保存，请重试'
-  }
-}
-
 // openPreset 打开一键预设，并每次清除上次范围的预览结果。
 function openPreset() {
   presetPreview.value = null
@@ -411,6 +390,55 @@ async function saveCurrentNode() {
       nodeSaveDetails.value = caught.details
     }
     else nodeSaveError.value = '保存失败，当前节点和草稿已保留，请重试'
+  }
+  finally {
+    savingNode.value = false
+  }
+}
+
+// saveAllNodes 按当前服务端修订号顺序保存所有已满足规则的节点，不改变当前选中节点。
+async function saveAllNodes() {
+  const current = configuration.value
+  if (!current || saveAllNodesDisabled.value) return
+  savingNode.value = true
+  nodeSaveError.value = ''
+  nodeSaveDetails.value = []
+  nodeSavedSuccessfully.value = false
+  let revision = current.nodeRevision
+  let savedCount = 0
+  const skipped: string[] = []
+  try {
+    const nodes = current.groups.flatMap(group => group.nodes).filter(node => !node.lineBlocked)
+    for (const node of nodes) {
+      const completion = currentNodeConfigurationComplete(node, draft.value)
+      if (!completion.complete) {
+        skipped.push(node.name)
+        continue
+      }
+      const result = await savePathConfigurationNode(
+        planID.value,
+        pathID.value,
+        node.key,
+        revision,
+        buildPathConfigNodeSavePayload(node, draft.value, actionCycles.value),
+        crypto.randomUUID(),
+      )
+      revision = result.nodeRevision
+      savedCount += 1
+    }
+    await reloadConfiguration()
+    if (skipped.length) {
+      nodeSaveError.value = `已保存 ${savedCount} 个节点，还有 ${skipped.length} 个节点需要先补充配置`
+    } else {
+      nodeSavedSuccessfully.value = savedCount > 0
+    }
+  }
+  catch (caught) {
+    try { await reloadConfiguration() } catch { /* 保留原错误，用户可以再次点击保存全部节点。 */ }
+    if (caught instanceof PathConfigApiError) {
+      nodeSaveError.value = pathConfigurationMessage(caught.message)
+      nodeSaveDetails.value = caught.details
+    } else nodeSaveError.value = '保存全部节点失败，已保存的节点不会重复提交，请重试'
   }
   finally {
     savingNode.value = false
@@ -581,7 +609,6 @@ void loadPage()
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
         <n-button v-if="workspace === 'nodes'" size="small" @click="openPreset">一键预设</n-button>
         <n-button v-if="workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
-        <label class="path-configuration-page__include"><span>纳入本次测试</span><n-switch :value="includedInTest" @update:value="updateIncludedInTest" /></label>
       </div>
     </header>
 
@@ -670,6 +697,7 @@ void loadPage()
             :draft="draft"
             :saving="savingNode"
             :save-disabled="nodeSaveDisabled"
+            :save-all-disabled="saveAllNodesDisabled"
             :missing-count="selectedNodeRequirement.missing.length"
             :save-error="nodeSaveError"
             :save-details="nodeSaveDetails"
@@ -680,6 +708,7 @@ void loadPage()
             @update-action-configuration="updateNodeActionConfiguration"
             @update-action-cycles="updateActionCycles"
             @save="saveCurrentNode"
+            @save-all="saveAllNodes"
             @back-to-plan="backToPlan"
             @open-form="openFormWorkspace"
           />
@@ -800,7 +829,6 @@ void loadPage()
 .path-configuration-page__identity h1 { margin: 0 0 4px; font-size: 24px; }
 .path-configuration-page__identity p { margin: 0; color: var(--path-config-text-secondary-color); }
 .path-configuration-page__progress { justify-content: flex-end; gap: 10px; font-size: 13px; color: var(--path-config-text-secondary-color); }
-.path-configuration-page__include { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--path-config-border-color); }
 .path-configuration-page__preset-preview { display: grid; gap: 12px; max-height: 52vh; overflow: auto; margin-top: 14px; }
 .path-configuration-page__preset-preview section { border-top: 1px solid var(--path-config-border-color); padding-top: 10px; }

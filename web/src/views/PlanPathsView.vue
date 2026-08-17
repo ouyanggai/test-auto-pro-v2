@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
+  NCheckbox,
   NDescriptions,
   NDescriptionsItem,
   NDropdown,
@@ -42,6 +43,7 @@ import {
   transitionExecutionPathWorkspace,
 } from '../features/execution-paths/logic'
 import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode } from '../features/execution-paths/types'
+import { fetchPathConfiguration, savePathConfigurationSelection } from '../features/path-configuration/api'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
@@ -81,6 +83,11 @@ const discardConfirmOpen = ref(false)
 const deleteConfirmOpen = ref(false)
 const draftRecoveryLoading = ref(false)
 const draftRecoveryError = ref('')
+const selectedRunPathIDs = ref(new Set<string>())
+const pathSelectionRevisions = ref<Record<string, number>>({})
+const pathSelectionLoading = ref(false)
+const pathSelectionSaving = ref(false)
+const pathSelectionError = ref('')
 const SAVED_PATH_ITEM_SIZE = 44
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 const graphScreenRef = ref<HTMLElement | null>(null)
@@ -155,6 +162,7 @@ const batchPreview = computed(() => graph.value && plan.value?.flowSource === 'n
   ? previewAllExecutionPaths(graph.value, paths.value)
   : { totalCount: 0, existingCount: 0, pendingCount: 0, exceeded: false })
 const savedPathListHeight = computed(() => Math.min(paths.value.length, 5) * SAVED_PATH_ITEM_SIZE)
+const allPathsSelectedForRun = computed(() => paths.value.length > 0 && paths.value.every(path => selectedRunPathIDs.value.has(path.id)))
 const pathMoreOptions = computed(() => [
   ...(allowCopy.value ? [{ label: '复制路径', key: 'copy' }] : []),
   { label: '删除路径', key: 'delete' },
@@ -177,6 +185,9 @@ async function loadPage() {
   plan.value = null
   graph.value = null
   paths.value = []
+  selectedRunPathIDs.value = new Set()
+  pathSelectionRevisions.value = {}
+  pathSelectionError.value = ''
   pathWorkspaceOpen.value = false
   savedPathsOpen.value = false
   draftRecoveryLoading.value = false
@@ -204,6 +215,7 @@ async function loadPage() {
     if (pathsResult.status === 'fulfilled') {
       paths.value = pathsResult.value
       pathsLoaded.value = true
+      await loadRunPathSelections(pathsResult.value, controller.signal)
     }
     else {
       const caught = pathsResult.reason
@@ -265,6 +277,7 @@ async function retryPaths() {
     if (version !== loadVersion) return
     paths.value = items
     pathsLoaded.value = true
+    await loadRunPathSelections(items, controller.signal)
   }
   catch (caught) {
     pathsLoaded.value = false
@@ -286,6 +299,72 @@ function selectSavedPath(path: ExecutionPath) {
   draftRecoveryError.value = ''
   createKey.value = ''
   pathWorkspaceOpen.value = true
+}
+
+// loadRunPathSelections 读取每条路径已保存的运行选择与修订号，供列表复选和后续保存使用。
+async function loadRunPathSelections(items: ExecutionPath[], signal?: AbortSignal) {
+  pathSelectionLoading.value = true
+  pathSelectionError.value = ''
+  try {
+    const selections = await Promise.all(items.map(async path => {
+      const configuration = await fetchPathConfiguration(planID.value, path.id, signal || new AbortController().signal)
+      return { pathID: path.id, included: configuration.preparation.included, revision: configuration.nodeRevision }
+    }))
+    const selected = new Set<string>()
+    const revisions: Record<string, number> = {}
+    for (const selection of selections) {
+      if (selection.included) selected.add(selection.pathID)
+      revisions[selection.pathID] = selection.revision
+    }
+    selectedRunPathIDs.value = selected
+    pathSelectionRevisions.value = revisions
+  }
+  catch {
+    pathSelectionError.value = '暂时无法读取运行路径选择，请重试'
+  }
+  finally {
+    pathSelectionLoading.value = false
+  }
+}
+
+// persistRunPathSelection 复用现有路径选择接口，只改变当前路径的运行纳入标记。
+async function persistRunPathSelection(path: ExecutionPath, included: boolean) {
+  const revision = pathSelectionRevisions.value[path.id]
+  if (!Number.isInteger(revision)) throw new Error('当前路径选择尚未读取完成')
+  const saved = await savePathConfigurationSelection(planID.value, path.id, revision, included, crypto.randomUUID())
+  pathSelectionRevisions.value = { ...pathSelectionRevisions.value, [path.id]: saved.nodeRevision }
+  const next = new Set(selectedRunPathIDs.value)
+  if (included) next.add(path.id)
+  else next.delete(path.id)
+  selectedRunPathIDs.value = next
+}
+
+// updateRunPathSelection 保存用户手动勾选的一条运行路径。
+async function updateRunPathSelection(path: ExecutionPath, included: boolean) {
+  if (pathSelectionSaving.value || pathSelectionLoading.value) return
+  pathSelectionSaving.value = true
+  pathSelectionError.value = ''
+  try {
+    await persistRunPathSelection(path, included)
+  }
+  catch (caught) {
+    pathSelectionError.value = caught instanceof Error ? caught.message : '运行路径选择保存失败，请重试'
+  }
+  finally {
+    pathSelectionSaving.value = false
+  }
+}
+
+// setAllRunPathSelections 批量全选或取消全选当前列表中的所有路径。
+async function setAllRunPathSelections(included: boolean) {
+  if (pathSelectionSaving.value || pathSelectionLoading.value || (included && allPathsSelectedForRun.value) || (!included && selectedRunPathIDs.value.size === 0)) return
+  pathSelectionSaving.value = true
+  pathSelectionError.value = ''
+  const targets = paths.value.filter(path => selectedRunPathIDs.value.has(path.id) !== included)
+  const results = await Promise.allSettled(targets.map(path => persistRunPathSelection(path, included)))
+  const failed = results.find(result => result.status === 'rejected')
+  if (failed?.status === 'rejected') pathSelectionError.value = failed.reason instanceof Error ? failed.reason.message : '部分运行路径选择保存失败，请重试'
+  pathSelectionSaving.value = false
 }
 
 function closeSavedPaths() {
@@ -478,6 +557,7 @@ async function savePath() {
       const refreshed = await fetchExecutionPaths(planID.value, new AbortController().signal)
       paths.value = refreshed
       plan.value.pathCount = refreshed.length
+      await loadRunPathSelections(refreshed)
     }
     catch {
       // 列表刷新失败不影响已成功保存的线路，也不清空当前列表或草稿状态。
@@ -529,6 +609,7 @@ async function generateAllPaths() {
     pathsLoaded.value = true
     pathsError.value = ''
     plan.value.pathCount = refreshed.length
+    await loadRunPathSelections(refreshed)
     // 批量生成是旁路管理动作，只刷新持久化列表；当前未保存草稿、名称和单条创建键都不能被新路径覆盖。
     generateAllKey.value = ''
     closeSavedPaths()
@@ -554,6 +635,12 @@ async function removeActivePath() {
   try {
     await deleteExecutionPath(planID.value, deletingID)
     paths.value = paths.value.filter((path) => path.id !== deletingID)
+    const selected = new Set(selectedRunPathIDs.value)
+    selected.delete(deletingID)
+    selectedRunPathIDs.value = selected
+    const revisions = { ...pathSelectionRevisions.value }
+    delete revisions[deletingID]
+    pathSelectionRevisions.value = revisions
     plan.value.pathCount = paths.value.length
     deleteConfirmOpen.value = false
     await completeWorkspaceReset()
@@ -635,23 +722,31 @@ onBeforeUnmount(() => {
           <section class="path-preparation" aria-labelledby="path-preparation-heading">
             <div class="path-preparation__header">
               <div>
-                <h2 id="path-preparation-heading">路径准备 / 下一步</h2>
+                <h2 id="path-preparation-heading">路径准备与运行选择</h2>
                 <p v-if="pathsLoading">正在读取本地路径配置状态</p>
                 <p v-else-if="pathsError">暂时无法读取路径状态，请先重试</p>
-                <p v-else>已保存 {{ paths.length }} 条，已配置 {{ configuredPaths.length }} 条，待配置 {{ pendingPaths.length }} 条</p>
+                <p v-else>已保存 {{ paths.length }} 条，已配置 {{ configuredPaths.length }} 条，待配置 {{ pendingPaths.length }} 条，已选运行 {{ selectedRunPathIDs.size }} 条</p>
               </div>
-              <n-button
-                v-if="!pathsLoading && !pathsError && nextUnconfiguredPath"
-                type="primary"
-                :disabled="!graph || graphLoading"
-                @click="openPathConfiguration(nextUnconfiguredPath)"
-              >
-                配置下一条
-              </n-button>
-              <n-tag v-else-if="!pathsLoading && !pathsError && paths.length" type="success" :bordered="false">
-                路径配置已完成
-              </n-tag>
+              <div class="path-preparation__header-actions">
+                <n-button
+                  v-if="!pathsLoading && !pathsError && nextUnconfiguredPath"
+                  type="primary"
+                  :disabled="!graph || graphLoading"
+                  @click="openPathConfiguration(nextUnconfiguredPath)"
+                >
+                  配置下一条
+                </n-button>
+                <n-tag v-else-if="!pathsLoading && !pathsError && paths.length" type="success" :bordered="false">
+                  路径配置已完成
+                </n-tag>
+                <n-button v-if="paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选运行</n-button>
+                <n-button v-if="paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
+              </div>
             </div>
+            <n-alert v-if="pathSelectionError" type="error" :show-icon="false">
+              {{ pathSelectionError }}
+              <n-button text type="primary" @click="loadRunPathSelections(paths)">重新读取</n-button>
+            </n-alert>
 
             <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
               <span>请先配置并保存执行路径</span>
@@ -659,6 +754,13 @@ onBeforeUnmount(() => {
             </div>
             <div v-else-if="!pathsLoading && !pathsError && paths.length" class="path-preparation__list">
               <div v-for="path in paths" :key="path.id" class="path-preparation__item">
+                <n-checkbox
+                  :checked="selectedRunPathIDs.has(path.id)"
+                  :disabled="pathSelectionLoading || pathSelectionSaving"
+                  @update:checked="value => updateRunPathSelection(path, value)"
+                >
+                  运行
+                </n-checkbox>
                 <div class="path-preparation__identity">
                   <span class="path-preparation__sequence">#{{ path.sequenceNo }}</span>
                   <span class="path-preparation__name" :title="pathDisplayName(path)">{{ pathDisplayName(path) }}</span>
@@ -1045,6 +1147,14 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
+.path-preparation__header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .path-preparation__header h2 {
   margin: 0 0 4px;
   font-size: 15px;
@@ -1085,6 +1195,7 @@ onBeforeUnmount(() => {
 .path-preparation__identity {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   min-width: 0;
   gap: 8px;
 }
