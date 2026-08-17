@@ -8,6 +8,8 @@ view="${project_root}/web/src/views/PlanPathConfigurationView.vue"
 model="${project_root}/internal/model/path_config.go"
 workspace="${project_root}/internal/service/path_config_workspace.go"
 api="${project_root}/internal/api/path_configuration.go"
+plans_api="${project_root}/internal/api/plans.go"
+plans_view="${project_root}/web/src/views/PlansView.vue"
 
 grep -Fq '>动作配置</n-button>' "${panel}"
 grep -Fq '>循环配置</n-button>' "${panel}"
@@ -24,6 +26,9 @@ grep -Fq '暂存、加签、移交和转发不能加入静态循环' "${workspac
 grep -Fq '循环只保存服务端从当前路径派生出的事实' "${workspace}"
 grep -Fq 'configuration/selection' "${api}"
 grep -Fq 'SaveSelection' "${workspace}"
+grep -Fq 'DELETE /api/plans/{id}' "${plans_api}"
+grep -Fq 'NPopconfirm' "${plans_view}"
+grep -Fq '删除后会清除本系统中的路径和配置' "${plans_view}"
 
 if sed -n '/<template>/,/<\/template>/p' "${panel}" | grep -Eq '动作组合循环次数|到达|前置动作|处理结果'; then
   echo 'F-008 节点侧栏或动作弹窗仍暴露旧动作概念' >&2

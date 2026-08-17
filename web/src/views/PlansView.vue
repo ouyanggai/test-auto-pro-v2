@@ -3,7 +3,8 @@ import { computed, h, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   NButton,
   NDataTable,
-  NInput,
+	NInput,
+	NPopconfirm,
   NSelect,
   NTag,
   type DataTableColumns,
@@ -12,7 +13,7 @@ import {
 import { useRouter } from 'vue-router'
 
 import { getPlanAction, planStatusLabels, planStatusOptions } from '../features/plans/logic'
-import { fetchPlans, PlanApiError } from '../features/plans/persistence'
+import { deletePlan, fetchPlans, PlanApiError } from '../features/plans/persistence'
 import type { PlanFilters, PlanRow, PlanStatus } from '../features/plans/types'
 
 const router = useRouter()
@@ -39,6 +40,20 @@ function handlePlanAction(plan: PlanRow) {
     return
   }
   prototypeNotice.value = `“${plan.name}”的“${action.label}”当前仅用于静态原型展示，真实业务将在后续功能接入。`
+}
+
+// removePlan 删除本系统开发计划后重读列表；当前目标平台不会收到任何写请求。
+async function removePlan(plan: PlanRow) {
+	prototypeNotice.value = ''
+	try {
+		await deletePlan(plan.id)
+		plans.value = plans.value.filter(item => item.id !== plan.id)
+		await loadPlans()
+	}
+	catch (error) {
+		const apiError = error instanceof PlanApiError ? error : new PlanApiError('删除计划失败，请重试')
+		loadError.value = apiError.message
+	}
 }
 
 async function loadPlans() {
@@ -107,11 +122,17 @@ const columns: DataTableColumns<PlanRow> = [
   {
     title: '操作',
     key: 'actions',
-    width: 120,
+    width: 180,
     fixed: 'right',
     render: (row) => {
       const action = getPlanAction(row.status)
-      return h(NButton, { text: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label })
+		return h('div', { class: 'plan-row-actions' }, [
+			h(NButton, { text: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label }),
+			h(NPopconfirm, { positiveText: '删除计划', negativeText: '取消', onPositiveClick: () => void removePlan(row) }, {
+			default: () => '删除后会清除本系统中的路径和配置，不能恢复。',
+			trigger: () => h(NButton, { text: true, type: 'error' }, { default: () => '删除' }),
+		}),
+		])
     },
   },
 ]
@@ -233,4 +254,6 @@ const columns: DataTableColumns<PlanRow> = [
   min-height: 120px;
   color: var(--n-text-color-2);
 }
+
+.plan-row-actions { display: inline-flex; align-items: center; gap: 10px; }
 </style>

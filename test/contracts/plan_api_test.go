@@ -58,6 +58,18 @@ func (r *contractPlanRepository) Get(_ context.Context, id uint64) (model.Plan, 
 	return r.plan, nil
 }
 
+// Delete 删除夹具中的计划，供 DELETE 契约验证。
+func (r *contractPlanRepository) Delete(_ context.Context, id uint64) error {
+	if r.err != nil {
+		return r.err
+	}
+	if !r.found || r.plan.ID != id {
+		return repository.ErrPlanNotFound
+	}
+	r.found = false
+	return nil
+}
+
 func TestPlanAPIContractsAndIdempotency(t *testing.T) {
 	repo := &contractPlanRepository{}
 	handler := api.NewHandlerWithServices(&stubTargetReader{}, service.NewPlanService(repo))
@@ -86,6 +98,23 @@ func TestPlanAPIContractsAndIdempotency(t *testing.T) {
 			t.Fatalf("读取计划契约失败：%s status=%d", path, recorder.Code)
 		}
 		assertPlanResponseSafe(t, recorder.Body.Bytes())
+	}
+}
+
+// TestPlanAPIDeletesDevelopmentPlan 验证删除只影响系统计划数据，重复删除稳定返回不存在。
+func TestPlanAPIDeletesDevelopmentPlan(t *testing.T) {
+	repo := &contractPlanRepository{plan: model.Plan{ID: 41, Status: model.PlanStatusPendingConfiguration}, found: true}
+	handler := api.NewHandlerWithServices(&stubTargetReader{}, service.NewPlanService(repo))
+	request := httptest.NewRequest(http.MethodDelete, "/api/plans/41", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"deleted":true`) {
+		t.Fatalf("删除计划契约不正确：%d %s", recorder.Code, recorder.Body.String())
+	}
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, httptest.NewRequest(http.MethodDelete, "/api/plans/41", nil))
+	if second.Code != http.StatusNotFound || !strings.Contains(second.Body.String(), "PLAN_NOT_FOUND") {
+		t.Fatalf("重复删除没有稳定返回不存在：%d %s", second.Code, second.Body.String())
 	}
 }
 

@@ -118,7 +118,12 @@ export async function fetchPlans(filters: PlanFilters, signal: AbortSignal): Pro
 }
 
 export async function fetchPlan(id: string, signal: AbortSignal): Promise<PersistedPlan> {
-  return request<PersistedPlan>(`/api/plans/${encodeURIComponent(id)}`, { method: 'GET' }, signal)
+	return request<PersistedPlan>(`/api/plans/${encodeURIComponent(id)}`, { method: 'GET' }, signal)
+}
+
+// deletePlan 删除本系统计划及其路径配置，不触发目标平台请求。
+export async function deletePlan(id: string): Promise<void> {
+	await request<{ deleted: boolean }>(`/api/plans/${encodeURIComponent(id)}`, { method: 'DELETE' }, new AbortController().signal)
 }
 
 async function request<T>(path: string, init: RequestInit, signal: AbortSignal): Promise<T> {

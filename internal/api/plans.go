@@ -18,6 +18,7 @@ type PlanService interface {
 	Create(context.Context, string, service.CreatePlanInput) (model.Plan, bool, error)
 	List(context.Context, string, model.PlanStatus) ([]model.Plan, error)
 	Get(context.Context, uint64) (model.Plan, error)
+	Delete(context.Context, uint64) error
 }
 
 type createPlanRequest struct {
@@ -59,6 +60,23 @@ func registerPlanRoutes(mux *http.ServeMux, plans PlanService) {
 	mux.HandleFunc("POST /api/plans", handleCreatePlan(plans))
 	mux.HandleFunc("GET /api/plans", handleListPlans(plans))
 	mux.HandleFunc("GET /api/plans/{id}", handleGetPlan(plans))
+	mux.HandleFunc("DELETE /api/plans/{id}", handleDeletePlan(plans))
+}
+
+// handleDeletePlan 删除本系统计划及其开发配置；目标平台不参与这个操作。
+func handleDeletePlan(plans PlanService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		id, err := strconv.ParseUint(request.PathValue("id"), 10, 64)
+		if err != nil || id == 0 {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "计划 ID 不正确", false)
+			return
+		}
+		if err := plans.Delete(request.Context(), id); err != nil {
+			writePlanError(response, err)
+			return
+		}
+		writeSuccess(response, map[string]bool{"deleted": true})
+	}
 }
 
 // handleCreatePlan 严格解析计划创建请求并使用请求头幂等键。
@@ -218,4 +236,9 @@ func (unavailablePlanService) List(context.Context, string, model.PlanStatus) ([
 // Get 在未注入计划存储时拒绝详情读取。
 func (unavailablePlanService) Get(context.Context, uint64) (model.Plan, error) {
 	return model.Plan{}, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
+}
+
+// Delete 在未注入计划存储时拒绝删除。
+func (unavailablePlanService) Delete(context.Context, uint64) error {
+	return &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
 }

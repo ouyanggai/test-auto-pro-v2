@@ -57,6 +57,20 @@ func (r *memoryPlanRepository) Get(_ context.Context, id uint64) (model.Plan, er
 	return model.Plan{}, repository.ErrPlanNotFound
 }
 
+// Delete 从内存夹具中移除计划，模拟数据库级联清理后的计划不可再读取状态。
+func (r *memoryPlanRepository) Delete(_ context.Context, id uint64) error {
+	if r.err != nil {
+		return r.err
+	}
+	for index, plan := range r.plans {
+		if plan.ID == id {
+			r.plans = append(r.plans[:index], r.plans[index+1:]...)
+			return nil
+		}
+	}
+	return repository.ErrPlanNotFound
+}
+
 func TestPlanServiceCreatesPendingPlanAndReusesIdempotencyKey(t *testing.T) {
 	repo := newMemoryPlanRepository()
 	plans := service.NewPlanService(repo)
@@ -80,6 +94,19 @@ func TestPlanServiceCreatesPendingPlanAndReusesIdempotencyKey(t *testing.T) {
 	}
 	if first.ScheduledAt == nil || first.ScheduledAt.Location() != time.UTC {
 		t.Fatal("定时时间未统一为 UTC")
+	}
+}
+
+// TestPlanServiceDeletesDevelopmentPlan 验证待配置计划可以删除且后续读取返回不存在。
+func TestPlanServiceDeletesDevelopmentPlan(t *testing.T) {
+	repo := newMemoryPlanRepository()
+	repo.plans = []model.Plan{{ID: 9, Status: model.PlanStatusPendingConfiguration}}
+	plans := service.NewPlanService(repo)
+	if err := plans.Delete(context.Background(), 9); err != nil {
+		t.Fatalf("删除开发计划失败：%v", err)
+	}
+	if _, err := plans.Get(context.Background(), 9); !service.IsPlanErrorKind(err, service.PlanErrorNotFound) {
+		t.Fatalf("删除后计划仍可读取：%v", err)
 	}
 }
 

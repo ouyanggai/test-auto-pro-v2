@@ -107,6 +107,24 @@ func (s *PlanService) Get(ctx context.Context, id uint64) (model.Plan, error) {
 	return plan, nil
 }
 
+// Delete 删除尚未进入运行事实的开发计划，并依赖仓储外键清理路径与工具侧配置。
+func (s *PlanService) Delete(ctx context.Context, id uint64) error {
+	if id == 0 {
+		return &PlanError{Kind: PlanErrorInvalidArgument, Message: "计划 ID 不正确"}
+	}
+	plan, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return mapRepositoryError(err)
+	}
+	if plan.Status == model.PlanStatusRunning || plan.Status == model.PlanStatusCompleted {
+		return &PlanError{Kind: PlanErrorInvalidArgument, Message: "已有运行记录的计划不能删除"}
+	}
+	if err := s.repository.Delete(ctx, id); err != nil {
+		return mapRepositoryError(err)
+	}
+	return nil
+}
+
 func normalizeCreateInput(input CreatePlanInput) CreatePlanInput {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Account = strings.TrimSpace(input.Account)

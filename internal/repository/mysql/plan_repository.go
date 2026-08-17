@@ -98,6 +98,22 @@ FROM test_plans WHERE id = ?`, id)
 	return plan, err
 }
 
+// Delete 删除一个计划；路径及其工具侧配置由外键级联清理，绝不访问目标平台。
+func (r *PlanRepository) Delete(ctx context.Context, id uint64) error {
+	result, err := r.db.ExecContext(ctx, "DELETE FROM test_plans WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return repository.ErrPlanNotFound
+	}
+	return nil
+}
+
 // getByCreateKey 读取计划创建幂等键对应的原记录。
 func (r *PlanRepository) getByCreateKey(ctx context.Context, createKey string) (model.Plan, error) {
 	row := r.db.QueryRowContext(ctx, `
