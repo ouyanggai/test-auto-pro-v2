@@ -456,7 +456,7 @@ func workspaceNodeActionPlan(node model.PathConfigNode) model.PathConfigActionPl
 		Result:       model.PathConfigActionStepInput{Kind: node.ActionPlan.Result.Kind, Target: node.ActionPlan.Result.Target, Person: node.ActionPlan.Result.Person},
 	}
 	for _, addSign := range node.ActionPlan.AddSignNodes {
-		result.AddSignNodes = append(result.AddSignNodes, model.PathConfigAddSignNodeInput{Person: addSign.Person})
+		result.AddSignNodes = append(result.AddSignNodes, model.PathConfigAddSignNodeInput{Person: addSign.Person, Count: addSign.Count})
 	}
 	return result
 }

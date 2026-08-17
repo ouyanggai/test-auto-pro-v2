@@ -528,7 +528,7 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 	actionManual := model.PathConfigPersonStrategyInput{Key: actionPerson.Key, Strategy: "manual", Seed: 7, Selected: []string{actionPerson.Options[0].Value, actionPerson.Options[1].Value}}
 	transferManual := model.PathConfigPersonStrategyInput{Key: transferPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{transferPerson.Options[0].Value, transferPerson.Options[1].Value}}
 	actions := model.PathConfigActionPlanInput{
-		AddSignNodes: []model.PathConfigAddSignNodeInput{{Person: actionManual}},
+		AddSignNodes: []model.PathConfigAddSignNodeInput{{Person: actionManual, Count: 1}},
 		Result:       model.PathConfigActionStepInput{Kind: "transfer_approver", Person: &transferManual},
 	}
 	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, actions); reason != "" || count != 2 {
@@ -663,12 +663,12 @@ func TestPathConfigAnalyzerProjectsOrderedActionsAndLegacyMigration(t *testing.T
 	addSignPerson := model.PathConfigPersonStrategyInput{Key: secondAddSign.Person.Key, Strategy: "manual", Seed: 11, Selected: []string{secondAddSign.Person.Options[0].Value}}
 	tooMany := make([]model.PathConfigAddSignNodeInput, 11)
 	for index := range tooMany {
-		tooMany[index] = model.PathConfigAddSignNodeInput{Person: addSignPerson}
+		tooMany[index] = model.PathConfigAddSignNodeInput{Person: addSignPerson, Count: 1}
 	}
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{AddSignNodes: tooMany, Result: model.PathConfigActionStepInput{Kind: "approve_pass"}}); !strings.Contains(reason, "上限") {
 		t.Fatalf("超过十个加签节点没有被拒绝：%s", reason)
 	}
-	twoAddSigns := model.PathConfigActionPlanInput{AddSignNodes: []model.PathConfigAddSignNodeInput{{Person: addSignPerson}, {Person: addSignPerson}}, Result: model.PathConfigActionStepInput{Kind: "approve_pass"}}
+	twoAddSigns := model.PathConfigActionPlanInput{AddSignNodes: []model.PathConfigAddSignNodeInput{{Person: addSignPerson, Count: 1}, {Person: addSignPerson, Count: 1}}, Result: model.PathConfigActionStepInput{Kind: "approve_pass"}}
 	if _, count, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, twoAddSigns); reason != "" || count != 3 {
 		t.Fatalf("两个独立加签节点没有在唯一同意前保存：count=%d reason=%s", count, reason)
 	}
@@ -693,7 +693,7 @@ func TestPathConfigAnalyzerLimitsSubmitToOne(t *testing.T) {
 		t.Fatalf("发起节点没有投影唯一提交结果：item=%+v plan=%+v", submit, start.ActionPlan)
 	}
 	targetPlan := validation.NodeTokens[start.Key]
-	if _, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, model.PathConfigActionPlanInput{AddSignNodes: []model.PathConfigAddSignNodeInput{{}}, Result: model.PathConfigActionStepInput{Kind: "submit"}}); !strings.Contains(reason, "只能提交") {
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(targetPlan, model.PathConfigActionPlanInput{AddSignNodes: []model.PathConfigAddSignNodeInput{{Count: 1}}, Result: model.PathConfigActionStepInput{Kind: "submit"}}); !strings.Contains(reason, "只能提交") {
 		t.Fatalf("提交之外追加节点没有被服务端拒绝：%s", reason)
 	}
 

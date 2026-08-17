@@ -190,16 +190,27 @@ export interface PathConfigActionOption {
   label: string
 }
 
-export type PathConfigActionKind = 'submit' | 'approve_pass' | 'reject_no_pass' | 'draft_save' | 'rollback_previous' | 'add_sign' | 'transfer_approver'
+export type PathConfigActionKind = 'submit' | 'approve_pass' | 'reject_no_pass' | 'draft_save' | 'rollback_previous' | 'add_sign' | 'transfer_approver' | 'transpond'
 
 export interface PathConfigActionPlan {
   catalog: PathConfigActionCatalogItem[]
   rollbackTargets: PathConfigActionOption[]
+  actions: PathConfigConfiguredAction[]
+  combinationCount: number
   // 后端在节点没有已保存加签节点时返回 null（Go nil 切片），只有 manual/condition 等无动作节点才返回空数组。
   addSignNodes: PathConfigAddSignNode[] | null
   result: PathConfigActionStep
   affected: boolean
   note: string
+}
+
+export interface PathConfigConfiguredAction {
+  key: string
+  kind: PathConfigActionKind
+  label: string
+  count: number
+  target: string
+  person?: PathConfigPersonStrategyInput
 }
 
 export interface PathConfigActionCatalogItem {
@@ -216,9 +227,12 @@ export interface PathConfigActionCatalogItem {
 
 export interface PathConfigAddSignNode {
   person: PathConfigPersonStrategyInput
+  // 次数按目标平台语义表示加签节点数量，同一行共享同一处理人策略。
+  count: number
 }
 
 export interface PathConfigActionStep {
+  // Kind 为空表示默认同意；同意不作为界面配置项。
   kind: PathConfigActionKind | ''
   label: string
   opinion: string
@@ -227,12 +241,23 @@ export interface PathConfigActionStep {
 }
 
 export interface PathConfigActionPlanInput {
+  actions: PathConfigConfiguredActionInput[]
+  combinationCount: number
   addSignNodes: PathConfigAddSignNodeInput[]
   result: PathConfigActionStepInput
 }
 
+export interface PathConfigConfiguredActionInput {
+  key: string
+  kind: PathConfigActionKind
+  count: number
+  target: string
+  person?: PathConfigPersonStrategyInput
+}
+
 export interface PathConfigAddSignNodeInput {
   person: PathConfigPersonStrategyInput
+  count: number
 }
 
 export interface PathConfigActionStepInput {

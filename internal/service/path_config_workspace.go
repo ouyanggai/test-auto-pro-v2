@@ -198,7 +198,7 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "当前节点没有可保存配置"}
 	}
 	nodeActions := make(map[string]string)
-	if strings.TrimSpace(input.ActionPlan.Result.Kind) != "" || len(input.ActionPlan.AddSignNodes) > 0 || len(input.Persons) > 0 {
+	if strings.TrimSpace(input.ActionPlan.Result.Kind) != "" || len(input.ActionPlan.Actions) > 0 || input.ActionPlan.CombinationCount > 0 || len(input.ActionPlan.AddSignNodes) > 0 || len(input.Persons) > 0 {
 		nodeTarget, exists := nodeValidation.NodeTokens[nodeKey]
 		if !exists {
 			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作目录已变化，请重新读取"}
@@ -220,7 +220,7 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 	for storageKey, value := range nodeActions {
 		stored.ActionValues[storageKey] = value
 	}
-	if strings.TrimSpace(input.ActionPlan.Result.Kind) != "" || len(input.ActionPlan.AddSignNodes) > 0 || len(input.Persons) > 0 {
+	if strings.TrimSpace(input.ActionPlan.Result.Kind) != "" || len(input.ActionPlan.Actions) > 0 || input.ActionPlan.CombinationCount > 0 || len(input.ActionPlan.AddSignNodes) > 0 || len(input.Persons) > 0 {
 		nodeTarget := nodeValidation.NodeTokens[nodeKey]
 		// 新格式成为当前节点的权威值后移除旧键，刷新时不会出现两套语义竞争。
 		delete(stored.ActionValues, nodeTarget.NodeID)

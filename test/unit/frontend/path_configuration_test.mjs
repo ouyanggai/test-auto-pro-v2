@@ -425,7 +425,7 @@ test('换一组种子稳定推进并安全处理非法值', () => {
 
 test('发起只提交且审批草稿始终只有一个处理结果', () => {
   const start = configuration.groups[0].nodes[0]
-  assert.deepEqual(pathConfigActionPlanInput(start), { addSignNodes: [], result: { kind: 'submit', opinion: '', target: '', person: undefined } })
+  assert.deepEqual(pathConfigActionPlanInput(start), { actions: [{ key: 'action-1', kind: 'submit', count: 1, target: '', person: undefined }], combinationCount: 1, addSignNodes: [], result: { kind: 'submit', opinion: '', target: '', person: undefined } })
   assert.equal(validPathConfigActionPlan(start, { addSignNodes: [], result: { kind: 'submit', opinion: '', target: '' } }), true)
   assert.equal(validPathConfigActionPlan(start, { addSignNodes: [{ person: { key: 'x', strategy: 'manual', seed: 1, selected: [] } }], result: { kind: 'submit', opinion: '', target: '' } }), false)
   const approval = configuration.groups[0].nodes[1]
@@ -434,6 +434,22 @@ test('发起只提交且审批草稿始终只有一个处理结果', () => {
   draft.actionPlans[approval.key].result = { kind: 'reject_no_pass', opinion: '', target: '' }
   assert.equal(validPathConfigActionPlan(approval, draft.actionPlans[approval.key]), true)
   assert.equal(Object.keys(draft.actionPlans[approval.key].result).filter(key => key === 'kind').length, 1)
+})
+
+test('动作组合循环次数与单动作次数独立保存草稿', () => {
+  const approval = configuration.groups[0].nodes[1]
+  const input = {
+    actions: [{ key: 'action-1', kind: 'add_sign', count: 2, target: '', person: { key: 'person-add-sign', strategy: 'manual', seed: 1, selected: ['sign-a'] } }],
+    combinationCount: 3,
+    addSignNodes: [],
+    result: { kind: 'approve_pass', opinion: '', target: '' },
+  }
+  const copied = copyPathConfigActionPlan(input)
+  assert.equal(copied.actions[0].count, 2)
+  assert.equal(copied.combinationCount, 3)
+  assert.equal(validPathConfigActionPlan(approval, copied), true)
+  copied.combinationCount = 11
+  assert.equal(validPathConfigActionPlan(approval, copied), false)
 })
 
 test('后端 addSignNodes 为 null 时投影与初始化草稿均按空数组处理', () => {

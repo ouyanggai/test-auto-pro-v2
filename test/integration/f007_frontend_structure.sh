@@ -133,9 +133,10 @@ grep -Fq "动作计划" "${config_panel}"
 grep -Fq "actionPlan.addSignNodes" "${config_panel}"
 grep -Fq "validPathConfigActionPlan" "${config_logic}"
 grep -Fq 'aria-label="处理结果"' "${config_panel}"
-grep -Fq 'id="add-sign-nodes-heading">加签节点</strong>' "${config_panel}"
-grep -Fq "node.kind === 'start' ? '发起动作' : '处理结果'" "${config_panel}"
-grep -Fq '添加加签节点' "${config_panel}"
+grep -Fq 'class="node-configuration-panel__action-add"' "${config_panel}"
+grep -Fq '发起动作' "${config_panel}"
+grep -Fq '>处理结果</strong>' "${config_panel}"
+grep -Fq '添加动作' "${config_panel}"
 grep -Fq "disabledReason" "${config_panel}"
 grep -Fq 'class="node-configuration-panel__action-info"' "${config_panel}"
 grep -Fq "from '@vicons/ionicons5'" "${config_panel}"
@@ -159,8 +160,8 @@ if grep -Eq '>i</n-button>|>↑</n-button>|>↓</n-button>|>×</n-button>' "${co
   echo 'F-007 动作面板工具按钮必须使用正式图标组件，不能保留字母或文字符号' >&2
   exit 1
 fi
-if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达|visit|arrival|动作次数|固定 1 次|次数|步骤|前置动作|处理意见|添加动作|选择动作'; then
-  echo 'F-007 动作区不得再暴露次数、兼容分组、步骤、复制或任意动作列表概念' >&2
+if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达|visit|arrival|固定 1 次|步骤|前置动作|处理意见'; then
+  echo 'F-007 动作区不得再暴露兼容分组、步骤、复制或处理意见概念' >&2
   exit 1
 fi
 grep -Fq '加签从处理结果中拆出为独立“加签节点”列表' "${feature_doc}"
@@ -196,6 +197,11 @@ assert.doesNotMatch(catalog[1], /maxCount|repeatable|count/, '公开动作目录
 NODE
 grep -Fq "overflow-y: auto" "${config_panel}"
 grep -Fq "保存当前节点" "${config_panel}"
+grep -Fq "编辑动作配置" "${config_panel}"
+grep -Fq "动作组合循环次数" "${config_panel}"
+grep -Fq "动作次数" "${config_panel}"
+grep -Fq "addConfiguredAction" "${config_panel}"
+grep -Fq "moveConfiguredAction" "${config_panel}"
 if grep -Eq 'node\.fields|node\.gaps|暂不支持|NDatePicker|NCheckbox|NSwitch' "${config_panel}"; then
   echo 'F-007 节点侧栏不得呈现表单字段、组件缺口或模拟目标表单控件' >&2
   exit 1

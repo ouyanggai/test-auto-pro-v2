@@ -260,13 +260,26 @@ type PathConfigActionOption struct {
 }
 
 // PathConfigActionPlan 是节点配置期可操作的加签节点列表与唯一处理结果。
+// 未显式配置处理结果时 Result.Kind 为空，表示默认同意；同意不进入界面配置。
 type PathConfigActionPlan struct {
-	Catalog         []PathConfigActionCatalogItem `json:"catalog"`
-	RollbackTargets []PathConfigActionOption      `json:"rollbackTargets"`
-	AddSignNodes    []PathConfigAddSignNode       `json:"addSignNodes"`
-	Result          PathConfigActionStep          `json:"result"`
-	Affected        bool                          `json:"affected"`
-	Note            string                        `json:"note"`
+	Catalog          []PathConfigActionCatalogItem `json:"catalog"`
+	RollbackTargets  []PathConfigActionOption      `json:"rollbackTargets"`
+	Actions          []PathConfigConfiguredAction  `json:"actions"`
+	CombinationCount int                           `json:"combinationCount"`
+	AddSignNodes     []PathConfigAddSignNode       `json:"addSignNodes"`
+	Result           PathConfigActionStep          `json:"result"`
+	Affected         bool                          `json:"affected"`
+	Note             string                        `json:"note"`
+}
+
+// PathConfigConfiguredAction 是配置期动作组合中的一项；Count 只表示该动作重复次数，不是组合循环次数。
+type PathConfigConfiguredAction struct {
+	Key    string                         `json:"key"`
+	Kind   string                         `json:"kind"`
+	Label  string                         `json:"label"`
+	Count  int                            `json:"count"`
+	Target string                         `json:"target"`
+	Person *PathConfigPersonStrategyInput `json:"person,omitempty"`
 }
 
 // PathConfigActionCatalogItem 说明当前节点可静态证明合法的动作及必要参数。
@@ -282,7 +295,7 @@ type PathConfigActionCatalogItem struct {
 	Person         *PathConfigPerson `json:"person,omitempty"`
 }
 
-// PathConfigActionStep 是唯一处理结果；目标节点与人员均使用不透明键。
+// PathConfigActionStep 是唯一处理结果；目标节点与人员均使用不透明键。Kind 为空表示默认同意。
 type PathConfigActionStep struct {
 	Kind    string                         `json:"kind"`
 	Label   string                         `json:"label"`
@@ -291,23 +304,37 @@ type PathConfigActionStep struct {
 	Person  *PathConfigPersonStrategyInput `json:"person,omitempty"`
 }
 
-// PathConfigAddSignNode 是一个独立的新增加签审批节点及其处理人策略。
+// PathConfigAddSignNode 是一个独立的新增加签审批节点、其处理人策略与加签次数。
+// 次数按目标平台语义表示加签节点数量，同一行共享同一处理人策略。
 type PathConfigAddSignNode struct {
 	Person PathConfigPersonStrategyInput `json:"person"`
+	Count  int                           `json:"count"`
 }
 
 // PathConfigActionPlanInput 是浏览器保存的语义化动作配置，不暴露内部兼容分组。
 type PathConfigActionPlanInput struct {
-	AddSignNodes []PathConfigAddSignNodeInput `json:"addSignNodes"`
-	Result       PathConfigActionStepInput    `json:"result"`
+	Actions          []PathConfigConfiguredActionInput `json:"actions"`
+	CombinationCount int                               `json:"combinationCount"`
+	AddSignNodes     []PathConfigAddSignNodeInput      `json:"addSignNodes"`
+	Result           PathConfigActionStepInput         `json:"result"`
 }
 
-// PathConfigAddSignNodeInput 是一个待保存的加签节点人员策略。
+// PathConfigConfiguredActionInput 是浏览器保存的一个动作组合项，人员和目标仍为不透明键。
+type PathConfigConfiguredActionInput struct {
+	Key    string                         `json:"key"`
+	Kind   string                         `json:"kind"`
+	Count  int                            `json:"count"`
+	Target string                         `json:"target"`
+	Person *PathConfigPersonStrategyInput `json:"person,omitempty"`
+}
+
+// PathConfigAddSignNodeInput 是一个待保存的加签节点人员策略与次数。
 type PathConfigAddSignNodeInput struct {
 	Person PathConfigPersonStrategyInput `json:"person"`
+	Count  int                           `json:"count"`
 }
 
-// PathConfigActionStepInput 只允许唯一处理结果、不透明回退目标和受约束移交人员策略。
+// PathConfigActionStepInput 只允许唯一处理结果、不透明回退目标和受约束移交人员策略；Kind 为空表示默认同意。
 type PathConfigActionStepInput struct {
 	Kind    string                         `json:"kind"`
 	Opinion string                         `json:"opinion"`

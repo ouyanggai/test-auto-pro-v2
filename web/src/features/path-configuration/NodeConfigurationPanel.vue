@@ -24,6 +24,7 @@ import type {
   PathConfigDraft,
   PathConfigNode,
   PathConfigPerson,
+  PathConfigPersonStrategy,
   PathConfigPersonStrategyInput,
 } from './types'
 
@@ -31,6 +32,7 @@ const PERSON_PREVIEW_LIMIT = 3
 const MAX_SAFE_PERSON_SEED = Number.MAX_SAFE_INTEGER
 const personDetailsOpen = ref(false)
 const detailedPerson = ref<PathConfigPerson | null>(null)
+const actionEditorOpen = ref(false)
 
 const props = defineProps<{
   node: PathConfigNode | null
@@ -170,12 +172,38 @@ function updateResult(kind: PathConfigActionKind) {
   emitPlan(next)
 }
 
-// addSignNode 新增一个拥有独立人员策略的审批节点；多个条目代表多个真实加签节点。
+// restoreDefaultResult 恢复默认同意：同意不进入界面，仅作为未配置其他处理结果时的默认动作。
+function restoreDefaultResult() {
+  if (actionDefinition('approve_pass')?.enabled) updateResult('approve_pass')
+}
+
+// resultOverridden 判断用户是否显式选择了非默认处理结果。
+const resultOverridden = computed<boolean>(() => {
+  const kind = actionPlan.value?.result.kind ?? ''
+  return kind !== '' && kind !== 'approve_pass' && kind !== 'submit'
+})
+
+// addSignTotalCount 统计当前全部加签次数，界面与保存前共同遵守单节点十次上限。
+const addSignTotalCount = computed(() => (actionPlan.value?.addSignNodes ?? []).reduce((sum, item) => sum + Math.max(1, Math.min(10, Number(item.count) || 1)), 0))
+
+// addSignNode 新增一个拥有独立人员策略的审批节点；次数表示按目标语义创建的加签节点数量。
 function addSignNode() {
   const definition = actionDefinition('add_sign')
-  if (!definition?.enabled || !definition.person || !actionPlan.value || actionPlan.value.addSignNodes.length >= 10) return
+  if (!definition?.enabled || !definition.person || !actionPlan.value || addSignTotalCount.value >= 10) return
   const next = copyPathConfigActionPlan(actionPlan.value)
-  next.addSignNodes.push({ person: personDraft(definition.person) })
+  next.addSignNodes.push({ person: personDraft(definition.person), count: 1 })
+  emitPlan(next)
+}
+
+// updateAddSignCount 调整单个加签行的次数，总次数不能超过单节点十次上限。
+function updateAddSignCount(index: number, count: number | null) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  const row = next.addSignNodes[index]
+  if (!row) return
+  const normalized = Math.max(1, Math.min(10, Number(count) || 1))
+  if (addSignTotalCount.value - Math.max(1, Math.min(10, Number(row.count) || 1)) + normalized > 10) return
+  row.count = normalized
   emitPlan(next)
 }
 
@@ -204,7 +232,7 @@ function updateAddSignPerson(index: number, person: PathConfigPerson, patch: Par
   const base = next.addSignNodes[index]?.person ?? personDraft(person)
   const updated = { ...base, ...patch, key: person.key }
   updated.selected = resolvedPersonStrategySelection(person, updated)
-  next.addSignNodes[index] = { person: updated }
+  next.addSignNodes[index] = { person: updated, count: Math.max(1, Math.min(10, Number(next.addSignNodes[index]?.count) || 1)) }
   emitPlan(next)
 }
 
@@ -217,6 +245,85 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
   updated.selected = resolvedPersonStrategySelection(person, updated)
   plan.result.person = updated
   emitPlan(plan)
+}
+
+// actionEditorOptions 只允许选择当前节点目录中已静态证明可用的动作，避免编辑器制造无效类型。
+const actionEditorOptions = computed<SelectOption[]>(() => (props.node?.actionPlan.catalog ?? [])
+  .filter(item => item.enabled)
+  .map(item => ({ label: item.label, value: item.kind })))
+
+// configuredActionDefinition 从当前目录获取动作参数要求，目录变化后不会沿用旧节点的人员范围。
+function configuredActionDefinition(kind: PathConfigActionKind) {
+  return props.node?.actionPlan.catalog.find(item => item.kind === kind && item.enabled)
+}
+
+// configuredActionPerson 返回当前动作目录的专用候选范围，缺失时不渲染人员输入。
+function configuredActionPerson(kind: PathConfigActionKind): PathConfigPerson | undefined {
+  return configuredActionDefinition(kind)?.person
+}
+
+// rollbackOptions 转为 Naive UI 选项，回退目标始终由当前路径的后端目录提供。
+function rollbackOptions(): SelectOption[] {
+  return (props.node?.actionPlan.rollbackTargets ?? []).map(item => ({ label: item.label, value: item.value }))
+}
+
+// configuredActionSelected 把选择控件回传统一为不透明人员键数组。
+function configuredActionSelected(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String)
+  return value ? [String(value)] : []
+}
+
+// updateCombinationCount 更新组合循环次数；它只影响配置期序列化，不与任一动作的 Count 混用。
+function updateCombinationCount(value: number | null) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  next.combinationCount = Math.max(1, Math.min(10, Number(value) || 1))
+  emitPlan(next)
+}
+
+// updateConfiguredAction 更新一个配置期动作行；改变类型时立即重置不再适用的目标与人员参数。
+function updateConfiguredAction(index: number, patch: Partial<PathConfigActionPlanInput['actions'][number]>) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  const action = next.actions[index]
+  if (!action) return
+  const kind = (patch.kind ?? action.kind) as PathConfigActionKind
+  const definition = configuredActionDefinition(kind)
+  if (!definition) return
+  action.kind = kind
+  action.count = Math.max(1, Math.min(10, Number(patch.count ?? action.count) || 1))
+  action.target = definition.requiresTarget ? (patch.target ?? action.target ?? '') : ''
+  action.person = definition.requiresPerson
+    ? (patch.person ?? action.person ?? personDraft(definition.person!))
+    : undefined
+  emitPlan(next)
+}
+
+// addConfiguredAction 追加一个可用动作并用目录默认值初始化，实际执行仍不属于 F-007。
+function addConfiguredAction() {
+  const definition = props.node?.actionPlan.catalog.find(item => item.enabled)
+  if (!definition || !actionPlan.value || actionPlan.value.actions.length >= 10) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  next.actions.push({ key: `action-local-${Date.now()}-${next.actions.length}`, kind: definition.kind as PathConfigActionKind, count: 1, target: definition.requiresTarget && props.node!.actionPlan.rollbackTargets.length === 1 ? props.node!.actionPlan.rollbackTargets[0].value : '', person: definition.requiresPerson && definition.person ? personDraft(definition.person) : undefined })
+  emitPlan(next)
+}
+
+// moveConfiguredAction 只调整配置期组合顺序，不修改兼容动作步骤或触发任何目标写入。
+function moveConfiguredAction(index: number, offset: number) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  const target = index + offset
+  if (target < 0 || target >= next.actions.length) return
+  ;[next.actions[index], next.actions[target]] = [next.actions[target], next.actions[index]]
+  emitPlan(next)
+}
+
+// removeConfiguredAction 删除一个配置期动作行；节点保存仍由后端按最新目录再次校验。
+function removeConfiguredAction(index: number) {
+  if (!actionPlan.value) return
+  const next = copyPathConfigActionPlan(actionPlan.value)
+  next.actions.splice(index, 1)
+  emitPlan(next)
 }
 </script>
 
@@ -315,6 +422,7 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
         <section v-if="node.actionPlan.catalog.length" class="node-configuration-panel__section" aria-labelledby="node-actions-heading">
           <div class="node-configuration-panel__section-heading">
             <h3 id="node-actions-heading">动作计划</h3>
+            <n-button size="small" secondary :disabled="node.lineBlocked" @click="actionEditorOpen = true">编辑动作配置</n-button>
             <n-popover trigger="click" placement="bottom-end" :width="340" scrollable>
               <template #trigger><n-button class="node-configuration-panel__action-info" circle size="small" aria-label="查看动作规则" title="查看动作规则"><n-icon><InformationCircleOutline /></n-icon></n-button></template>
               <div class="node-configuration-panel__action-rules">
@@ -444,6 +552,42 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
         </div>
       </footer>
 
+      <n-modal :show="actionEditorOpen" :mask-closable="true" @update:show="show => actionEditorOpen = show">
+        <n-card v-if="node && actionPlan" class="node-configuration-panel__action-modal" :bordered="false" role="dialog" aria-modal="true" aria-labelledby="action-editor-title">
+          <template #header><div class="node-configuration-panel__action-modal-heading"><span>动作配置</span><h3 id="action-editor-title">{{ node.name }}</h3></div></template>
+          <template #header-extra><n-button quaternary circle size="small" title="关闭" aria-label="关闭动作配置" @click="actionEditorOpen = false"><n-icon><CloseOutline /></n-icon></n-button></template>
+          <div class="node-configuration-panel__action-modal-loop">
+            <span>动作组合循环次数</span>
+            <n-input-number :value="actionPlan.combinationCount" :min="1" :max="10" :show-button="true" aria-label="动作组合循环次数" @update:value="updateCombinationCount" />
+          </div>
+          <n-alert v-if="!actionPlan.actions.length" type="info" :show-icon="false" size="small">当前没有单独配置的动作，可从目录添加。</n-alert>
+          <n-scrollbar class="node-configuration-panel__action-modal-scroll" style="max-height: 420px">
+            <div v-for="(action, index) in actionPlan.actions" :key="action.key || index" class="node-configuration-panel__action-modal-row">
+              <div class="node-configuration-panel__action-modal-row-head">
+                <strong>动作 {{ index + 1 }}</strong>
+                <div class="node-configuration-panel__action-row-tools">
+                  <n-button quaternary circle size="small" :disabled="index === 0" title="上移" aria-label="上移" @click="moveConfiguredAction(index, -1)"><n-icon><ArrowUpOutline /></n-icon></n-button>
+                  <n-button quaternary circle size="small" :disabled="index === actionPlan.actions.length - 1" title="下移" aria-label="下移" @click="moveConfiguredAction(index, 1)"><n-icon><ArrowDownOutline /></n-icon></n-button>
+                  <n-button quaternary circle size="small" title="删除动作" aria-label="删除动作" @click="removeConfiguredAction(index)"><n-icon><CloseOutline /></n-icon></n-button>
+                </div>
+              </div>
+              <n-select :value="action.kind" :options="actionEditorOptions" aria-label="动作类型" @update:value="value => updateConfiguredAction(index, { kind: value as PathConfigActionKind })" />
+              <n-input-number :value="action.count" :min="1" :max="10" :show-button="true" aria-label="动作次数" @update:value="value => updateConfiguredAction(index, { count: Number(value) || 1 })" />
+              <n-select v-if="configuredActionDefinition(action.kind)?.requiresTarget" :value="action.target || null" :options="rollbackOptions()" clearable aria-label="回退目标" @update:value="value => updateConfiguredAction(index, { target: String(value || '') })" />
+              <template v-for="person in [configuredActionPerson(action.kind)]" :key="person?.key || action.key">
+                <template v-if="person">
+                  <n-alert v-if="!person.options.length" type="warning" :show-icon="false" size="small">当前动作没有可用候选人员。</n-alert>
+                  <n-select :value="action.person?.strategy || person.strategy" :options="strategyOptions(person)" aria-label="动作人员策略" @update:value="value => updateConfiguredAction(index, { person: { ...personDraft(person), ...action.person, key: person.key, strategy: value as PathConfigPersonStrategy } })" />
+                  <n-input-number v-if="(action.person?.strategy || person.strategy) === 'random'" :value="action.person?.seed || person.strategySeed" :min="1" :max="MAX_SAFE_PERSON_SEED" :show-button="true" aria-label="动作随机种子" @update:value="value => updateConfiguredAction(index, { person: { ...personDraft(person), ...action.person, key: person.key, seed: Number(value) || 1 } })" />
+                  <n-select v-if="(action.person?.strategy || person.strategy) === 'manual'" :multiple="person.multiple" filterable :value="person.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(person)" :placeholder="person.minCount > 1 ? `至少选择 ${person.minCount} 人` : '请选择处理人'" @update:value="value => updateConfiguredAction(index, { person: { ...personDraft(person), ...action.person, key: person.key, selected: configuredActionSelected(value) } })" />
+                </template>
+              </template>
+            </div>
+          </n-scrollbar>
+          <template #footer><n-button size="small" :disabled="actionPlan.actions.length >= 10" @click="addConfiguredAction"><n-icon><AddOutline /></n-icon>添加动作</n-button></template>
+        </n-card>
+      </n-modal>
+
       <n-modal :show="personDetailsOpen" :mask-closable="true" @update:show="show => { if (!show) closePersonDetails() }">
         <n-card v-if="detailedPerson" class="node-configuration-panel__person-modal" :bordered="false" role="dialog" aria-modal="true" aria-labelledby="person-details-title">
           <template #header><div class="node-configuration-panel__person-modal-heading"><span>人员与范围详情</span><h3 id="person-details-title">{{ detailedPerson.title }}</h3></div></template>
@@ -464,6 +608,13 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
 <style scoped>
 .node-configuration-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: 100%; height: 100%; color: var(--flow-label-color); background: var(--flow-surface-color); }
 .node-configuration-panel__header, .node-configuration-panel__footer { padding: 12px 14px; background: var(--flow-surface-color); }
+.node-configuration-panel__action-modal { width: min(760px, calc(100vw - 32px)); }
+.node-configuration-panel__action-modal-heading, .node-configuration-panel__action-modal-row-head, .node-configuration-panel__action-modal-loop { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.node-configuration-panel__action-modal-heading h3 { margin: 2px 0 0; font-size: 16px; }
+.node-configuration-panel__action-modal-loop { margin-bottom: 12px; }
+.node-configuration-panel__action-modal-loop .n-input-number { width: 150px; }
+.node-configuration-panel__action-modal-row { display: grid; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--flow-edge-color); }
+.node-configuration-panel__action-modal-row:last-child { border-bottom: 0; }
 .node-configuration-panel__header { border-bottom: 1px solid var(--flow-edge-color); }
 .node-configuration-panel__title-row, .node-configuration-panel__section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .node-configuration-panel__header h2 { margin: 3px 0 8px; font-size: 17px; line-height: 1.35; }

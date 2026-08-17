@@ -1,5 +1,6 @@
 import type {
   PathConfigActionPlanInput,
+  PathConfigConfiguredActionInput,
   PathConfigActionStepInput,
   PathConfigActionKind,
   PathConfigActionValue,
@@ -182,7 +183,7 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
           }
         }
       }
-      if (node.actionPlan.result.kind) actionPlans[node.key] = pathConfigActionPlanInput(node)
+      if (node.actionPlan.result.kind || node.actionPlan.actions?.length || node.actionPlan.combinationCount > 1) actionPlans[node.key] = pathConfigActionPlanInput(node)
     }
   }
   return { fields, actions, persons, personStrategies, actionPlans }
@@ -329,21 +330,37 @@ function copyPathConfigActionStep(input: PathConfigActionStepInput): PathConfigA
   }
 }
 
+// copyPathConfigConfiguredAction 复制动作组合项，次数和组合循环次数各自独立归一。
+function copyPathConfigConfiguredAction(input: PathConfigConfiguredActionInput): PathConfigConfiguredActionInput {
+  return { key: input.key, kind: input.kind, count: normalizedAddSignCount(input.count), target: input.target || '', person: input.person ? copyPathConfigPersonStrategy(input.person) : undefined }
+}
+
 // copyPathConfigActionPlan 复制独立加签节点与唯一处理结果，避免 Vue Proxy 在请求前触发 DataCloneError。
 export function copyPathConfigActionPlan(input: PathConfigActionPlanInput): PathConfigActionPlanInput {
   return {
+    actions: (input.actions ?? []).map(copyPathConfigConfiguredAction),
+    combinationCount: normalizedAddSignCount(input.combinationCount),
     // 加签节点可能来自后端投影或本地草稿；统一按空数组兜底，避免 null 触发 .map 异常。
-    addSignNodes: (input.addSignNodes ?? []).map(item => ({ person: copyPathConfigPersonStrategy(item.person) })),
+    addSignNodes: (input.addSignNodes ?? []).map(item => ({ person: copyPathConfigPersonStrategy(item.person), count: normalizedAddSignCount(item.count) })),
     result: copyPathConfigActionStep(input.result),
   }
+}
+
+// normalizedAddSignCount 把加签次数收敛到 1..MAX_ADD_SIGN_NODES，缺失或非法按 1 处理。
+export function normalizedAddSignCount(count: unknown): number {
+  return typeof count === 'number' && Number.isInteger(count) && count >= 1 && count <= MAX_ADD_SIGN_NODES ? count : 1
 }
 
 // pathConfigActionPlanInput 把服务端公开投影转换成语义化草稿，不暴露内部兼容存储结构。
 export function pathConfigActionPlanInput(node: PathConfigNode): PathConfigActionPlanInput {
   const resultKind: PathConfigActionKind = node.actionPlan.result.kind || (node.kind === 'start' ? 'submit' : 'approve_pass')
+  const legacyActions: PathConfigConfiguredActionInput[] = (node.actionPlan.addSignNodes ?? []).map((item, index) => ({ key: `action-${index + 1}`, kind: 'add_sign', count: normalizedAddSignCount(item.count), target: '', person: item.person }))
+  if (resultKind) legacyActions.push({ key: `action-${legacyActions.length + 1}`, kind: resultKind, count: 1, target: node.actionPlan.result.target || '', person: node.actionPlan.result.person })
   return copyPathConfigActionPlan({
+    actions: node.actionPlan.actions?.length ? node.actionPlan.actions.map(action => ({ key: action.key, kind: action.kind, count: action.count, target: action.target, person: action.person })) : legacyActions,
+    combinationCount: node.actionPlan.combinationCount,
     // 后端对无加签节点的 start/common/synergy 返回 null，必须兜底为空数组，否则整页投影抛 TypeError。
-    addSignNodes: (node.actionPlan.addSignNodes ?? []).map(item => ({ person: item.person })),
+    addSignNodes: (node.actionPlan.addSignNodes ?? []).map(item => ({ person: item.person, count: item.count })),
     result: {
       kind: resultKind,
       opinion: '',
@@ -424,7 +441,7 @@ export function normalizedPathConfigSeed(seed: unknown): number {
   return typeof seed === 'number' && Number.isSafeInteger(seed) && seed >= 1 ? seed : 1
 }
 
-const RESULT_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver'])
+const RESULT_ACTIONS = new Set<PathConfigActionKind>(['submit', 'approve_pass', 'reject_no_pass', 'draft_save', 'rollback_previous', 'transfer_approver', 'transpond'])
 const MAX_ADD_SIGN_NODES = 10
 
 // validPathConfigActionPerson 统一校验加签节点和移交的独立人员策略，页面与后端使用相同候选和人数边界。
@@ -439,21 +456,31 @@ function validPathConfigActionPerson(person: PathConfigPerson | undefined, input
   return !requiredEmpty && !belowMinimum && !aboveMaximum
 }
 
-// validPathConfigActionPlan 即时校验零到多个独立加签节点和唯一处理结果，服务端仍按最新目标快照复验。
+// validPathConfigActionPlan 即时校验零到多个独立加签节点（含次数）和唯一处理结果，服务端仍按最新目标快照复验。
 export function validPathConfigActionPlan(node: PathConfigNode, input: PathConfigActionPlanInput): boolean {
-  if (!input || input.addSignNodes.length > MAX_ADD_SIGN_NODES) return false
+  if (!input) return false
+  const combinationCount = input.combinationCount ?? 1
+  if (normalizedAddSignCount(combinationCount) !== combinationCount) return false
+  const totalAddSigns = input.addSignNodes.reduce((sum, item) => sum + normalizedAddSignCount(item.count), 0)
+  if (totalAddSigns > MAX_ADD_SIGN_NODES) return false
   const catalog = new Map(node.actionPlan.catalog.map(item => [item.kind, item]))
   const resultDefinition = catalog.get(input.result.kind)
   if (!resultDefinition?.enabled || !RESULT_ACTIONS.has(input.result.kind)) return false
-  if (input.result.kind === 'submit') return input.addSignNodes.length === 0 && node.kind === 'start'
+  if (input.result.kind === 'submit') return totalAddSigns === 0 && node.kind === 'start' && (input.actions ?? []).every(action => action.kind === 'submit' && normalizedAddSignCount(action.count) === action.count)
   if (node.kind !== 'common' && node.kind !== 'synergy') return false
   const addSignDefinition = catalog.get('add_sign')
-  if (input.addSignNodes.length && !addSignDefinition?.enabled) return false
+  if (totalAddSigns > 0 && !addSignDefinition?.enabled) return false
   for (const addSign of input.addSignNodes) {
     if (!validPathConfigActionPerson(addSignDefinition?.person, addSign.person)) return false
   }
   if (resultDefinition.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === input.result.target)) return false
   if (resultDefinition.requiresPerson && !validPathConfigActionPerson(resultDefinition.person, input.result.person)) return false
+  for (const action of input.actions ?? []) {
+    const definition = catalog.get(action.kind)
+    if (!definition?.enabled || normalizedAddSignCount(action.count) !== action.count) return false
+    if (definition.requiresTarget && !node.actionPlan.rollbackTargets.some(option => option.value === action.target)) return false
+    if (definition.requiresPerson && !validPathConfigActionPerson(definition.person, action.person)) return false
+  }
   return true
 }
 
