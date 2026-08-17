@@ -275,6 +275,50 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 	return pathConfigSaveResult(path, saved), nil
 }
 
+// SaveSelection 保存本次测试纳入标记；它不要求节点已准备完成，也不调用目标平台。
+func (s *PathConfigService) SaveSelection(ctx context.Context, planID, pathID uint64, idempotencyKey string, input model.PathConfigSelectionInput) (model.PathConfigSaveResult, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if !validUUID(idempotencyKey) {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "保存标识不正确，请重试"}
+	}
+	path, err := s.ownedPath(ctx, planID, pathID)
+	if err != nil {
+		return model.PathConfigSaveResult{}, err
+	}
+	if err = s.validateConfigMutablePlan(ctx, planID); err != nil {
+		return model.PathConfigSaveResult{}, err
+	}
+	if existing, found, findErr := s.configRepository.FindByPathAndKey(ctx, pathID, idempotencyKey); findErr != nil {
+		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(findErr)
+	} else if found {
+		return pathConfigSaveResult(path, existing), nil
+	}
+	stored, found, err := s.configRepository.FindByPath(ctx, pathID)
+	if err != nil {
+		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
+	}
+	if found && input.Revision != stored.NodeRevision {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "配置已被其他操作更新，请刷新后重试"}
+	}
+	if stored.ActionValues == nil {
+		stored.ActionValues = map[string]string{}
+	}
+	if input.Included {
+		stored.ActionValues["f008:test-included"] = "true"
+	} else {
+		delete(stored.ActionValues, "f008:test-included")
+	}
+	stored.PathID, stored.Revision, stored.NodeRevision, stored.IdempotencyKey, stored.ConfigVersion = pathID, stored.Revision+1, stored.NodeRevision+1, idempotencyKey, currentPathConfigVersion
+	if !found {
+		stored.Status, stored.FormStatus = "pending", "empty"
+	}
+	saved, err := s.configRepository.Save(ctx, stored, stored.Revision-1, s.now().UTC())
+	if err != nil {
+		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
+	}
+	return pathConfigSaveResult(path, saved), nil
+}
+
 // projectPathConfigActionCycles 从持久化输入与当前路径投影出公开摘要；旧动作数据不推断循环。
 func projectPathConfigActionCycles(values map[string]string, configuration model.PathConfiguration) []model.PathConfigActionCycle {
 	var inputs []model.PathConfigActionCycleInput

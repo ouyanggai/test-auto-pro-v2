@@ -156,6 +156,12 @@ type PathNodeSaveInput struct {
 	Included     *bool                           `json:"included,omitempty"`
 }
 
+// PathConfigSelectionInput 是本次测试路径选择的最小回写体，不携带节点或目标平台动作。
+type PathConfigSelectionInput struct {
+	Revision uint64 `json:"revision"`
+	Included bool   `json:"included"`
+}
+
 // PathFormRuntimeSession 是 iframe 当前会话使用的短期目标读取上下文；绝不持久化。
 // 公司/人员选择组件按目标登录上下文读取本地公司树，因此需把已核实账号的公司、用户与租户字段一并透传。
 type PathFormRuntimeSession struct {

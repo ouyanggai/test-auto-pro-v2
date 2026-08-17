@@ -72,6 +72,13 @@ export function savePathConfigurationNode(
   })
 }
 
+// savePathConfigurationSelection 只保存路径是否纳入本次测试，不触发节点动作或目标平台请求。
+export function savePathConfigurationSelection(planId: string, pathId: string, revision: number, included: boolean, idempotencyKey: string): Promise<PathConfigSaveResult> {
+  return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/selection`, {
+    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ revision, included }),
+  })
+}
+
 // generatePathFormData 请求服务端按当前模板、样本和路径条件生成草稿，不产生保存事实。
 export function generatePathFormData(
   planId: string,

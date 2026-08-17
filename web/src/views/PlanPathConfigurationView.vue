@@ -32,6 +32,7 @@ import {
   generatePathFormData,
   PathConfigApiError,
   savePathConfigurationNode,
+  savePathConfigurationSelection,
   savePathFormData,
 } from '../features/path-configuration/api'
 import type {
@@ -283,9 +284,19 @@ function updateActionCycles(value: PathConfigActionCycleInput[]) {
 }
 
 // updateIncludedInTest 仅标记后续运行范围，不创建运行记录也不执行目标平台动作。
-function updateIncludedInTest(value: boolean) {
+async function updateIncludedInTest(value: boolean) {
   includedInTest.value = value
   nodeSavedSuccessfully.value = false
+  const current = configuration.value
+  if (!current) return
+  try {
+    await savePathConfigurationSelection(planID.value, pathID.value, current.nodeRevision, value, crypto.randomUUID())
+    await reloadConfiguration()
+  }
+  catch (caught) {
+    includedInTest.value = current.preparation.included
+    nodeSaveError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '本次测试路径未能保存，请重试'
+  }
 }
 
 // saveCurrentNode 保存当前节点后立即 GET 对账；请求响应丢失时也以服务端事实为准。

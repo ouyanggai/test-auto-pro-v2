@@ -17,6 +17,7 @@ type PathConfigurationService interface {
 	Get(context.Context, uint64, uint64) (model.PathConfiguration, error)
 	Save(context.Context, uint64, uint64, string, uint64, []model.PathConfigFieldValue, []model.PathConfigActionValue) (model.PathConfigSaveResult, error)
 	SaveNode(context.Context, uint64, uint64, string, string, model.PathNodeSaveInput) (model.PathConfigSaveResult, error)
+	SaveSelection(context.Context, uint64, uint64, string, model.PathConfigSelectionInput) (model.PathConfigSaveResult, error)
 	GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error)
 	SaveForm(context.Context, uint64, uint64, string, model.PathFormSaveInput) (model.PathConfigSaveResult, error)
 	RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error)
@@ -41,9 +42,33 @@ func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConf
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration", handleGetPathConfiguration(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration", handleSavePathConfiguration(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/nodes/{nodeKey}", handleSavePathConfigurationNode(configurations))
+	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/selection", handleSavePathConfigurationSelection(configurations))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/form/generate", handleGeneratePathConfigurationForm(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/form", handleSavePathConfigurationForm(configurations))
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration/runtime-session", handlePathConfigurationRuntimeSession(configurations))
+}
+
+// handleSavePathConfigurationSelection 只保存后续运行范围选择，不触发节点或目标平台写操作。
+func handleSavePathConfigurationSelection(configurations PathConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		var input model.PathConfigSelectionInput
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "本次测试路径请求格式不正确", false)
+			return
+		}
+		result, err := configurations.SaveSelection(request.Context(), planID, pathID, strings.TrimSpace(request.Header.Get("Idempotency-Key")), input)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
 }
 
 // parsePathConfigurationIDs 统一解析计划与路径 ID，所有分域端点沿用相同归属边界。
@@ -238,6 +263,11 @@ func (unavailablePathConfigurationService) Save(context.Context, uint64, uint64,
 
 // SaveNode 在未注入配置服务时拒绝节点保存。
 func (unavailablePathConfigurationService) SaveNode(context.Context, uint64, uint64, string, string, model.PathNodeSaveInput) (model.PathConfigSaveResult, error) {
+	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
+}
+
+// SaveSelection 在未注入配置服务时拒绝路径选择保存。
+func (unavailablePathConfigurationService) SaveSelection(context.Context, uint64, uint64, string, model.PathConfigSelectionInput) (model.PathConfigSaveResult, error) {
 	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
 }
 

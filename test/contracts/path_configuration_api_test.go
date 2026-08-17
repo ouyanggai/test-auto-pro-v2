@@ -52,6 +52,12 @@ func (s *stubPathConfigurationService) SaveNode(_ context.Context, planID, pathI
 	return s.result, s.err
 }
 
+// SaveSelection 记录本次测试路径选择，供独立端点契约测试复用。
+func (s *stubPathConfigurationService) SaveSelection(_ context.Context, planID, pathID uint64, key string, input model.PathConfigSelectionInput) (model.PathConfigSaveResult, error) {
+	s.planID, s.pathID, s.key, s.revision = planID, pathID, key, input.Revision
+	return s.result, s.err
+}
+
 // GenerateForm 返回契约测试预设的智能生成结果。
 func (s *stubPathConfigurationService) GenerateForm(_ context.Context, _ uint64, _ uint64, seed int64, _ map[string]any, _ []string, nextGroup bool) (model.PathFormGenerateResult, error) {
 	s.generateSeed = seed
@@ -79,6 +85,14 @@ func TestPathConfigurationAPIWorkspaceContracts(t *testing.T) {
 	handler.ServeHTTP(node, nodeRequest)
 	if node.Code != http.StatusOK || stub.nodeKey != "node-token" || stub.revision != 1 || len(stub.persons) != 1 || stub.persons[0].Strategy != "random" || stub.actionPlan.Result.Kind != "approve_pass" || len(stub.actionPlan.AddSignNodes) != 0 || !strings.Contains(node.Body.String(), `"nodeRevision":2`) {
 		t.Fatalf("逐节点保存契约不正确：status=%d body=%s stub=%+v", node.Code, node.Body.String(), stub)
+	}
+
+	selection := httptest.NewRecorder()
+	selectionRequest := httptest.NewRequest(http.MethodPut, "/api/plans/7/execution-paths/31/configuration/selection", strings.NewReader(`{"revision":2,"included":true}`))
+	selectionRequest.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174613")
+	handler.ServeHTTP(selection, selectionRequest)
+	if selection.Code != http.StatusOK || stub.revision != 2 || !strings.Contains(selection.Body.String(), `"nodeRevision":2`) {
+		t.Fatalf("本次测试路径选择契约不正确：status=%d body=%s stub=%+v", selection.Code, selection.Body.String(), stub)
 	}
 
 	generated := httptest.NewRecorder()
