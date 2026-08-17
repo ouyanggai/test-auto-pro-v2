@@ -12,14 +12,15 @@ plans_api="${project_root}/internal/api/plans.go"
 plans_view="${project_root}/web/src/views/PlansView.vue"
 
 grep -Fq '>动作配置</n-button>' "${panel}"
-grep -Fq '>循环配置</n-button>' "${panel}"
-grep -Fq 'cycle-fixed-note' "${panel}"
 grep -Fq 'action-row__actions' "${panel}"
 grep -Fq 'aria-label="删除动作"' "${panel}"
 grep -Fq 'action-select' "${panel}"
 grep -Fq 'action-count' "${panel}"
 grep -Fq 'person-controls' "${panel}"
-if grep -Eq 'action-base-row|beginner-hint|保存只更新当前节点' "${panel}"; then exit 1; fi
+grep -Fq 'actionDraft' "${panel}"
+grep -Fq '@click="openActionEditor"' "${panel}"
+grep -Fq '@click="saveActionEditor"' "${panel}"
+if grep -Eq 'action-base-row|beginner-hint|保存只更新当前节点|循环配置|cycleEditorOpen|cycle-fixed-note' "${panel}"; then exit 1; fi
 if grep -Eq 'transfer_approver|transpond|转办|转发|移交' "${panel}"; then exit 1; fi
 grep -Fq 'actionCycles' "${view}"
 grep -Fq '纳入本次测试' "${view}"

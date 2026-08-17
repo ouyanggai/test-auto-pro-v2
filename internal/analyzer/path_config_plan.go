@@ -396,7 +396,7 @@ func actionCandidatePersonConfig(nodeID, actionKind, title, detail string, candi
 			defaultIDs, defaultSelected = append(defaultIDs, candidate.ID), append(defaultSelected, token)
 		}
 	}
-	strategies, allowed := []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}, {Value: "random", Label: "确定性随机"}}, map[string]bool{"manual": true, "random": true}
+	strategies, allowed := []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}, {Value: "random", Label: "范围随机"}}, map[string]bool{"manual": true, "random": true}
 	if len(defaultIDs) > 0 {
 		strategies, allowed["target_default"] = append([]model.PathConfigPersonStrategyOption{{Value: "target_default", Label: "目标默认"}}, strategies...), true
 	}

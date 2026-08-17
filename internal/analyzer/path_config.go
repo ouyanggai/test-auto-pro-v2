@@ -604,7 +604,7 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 			defaultSelected = append(defaultSelected, token)
 		}
 	}
-	strategies := []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}, {Value: "random", Label: "确定性随机"}}
+	strategies := []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}, {Value: "random", Label: "范围随机"}}
 	allowedStrategies := map[string]bool{"manual": true, "random": true}
 	if len(defaultIDs) > 0 && PathConfigPersonSelectionIssue(required, minCount, maxCount, len(defaultIDs)) == "" {
 		strategies = append([]model.PathConfigPersonStrategyOption{{Value: "target_default", Label: "目标默认"}}, strategies...)
@@ -638,7 +638,7 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 	}
 }
 
-// candidateOrder 保持目标候选响应顺序，确定性随机不能依赖 Go map 的非稳定遍历。
+// candidateOrder 保持目标候选响应顺序，范围随机不能依赖 Go map 的非稳定遍历。
 func candidateOrder(candidates []target.FlowAuditCandidate) []string {
 	result := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {

@@ -30,11 +30,11 @@ test('F-008 动作复制保持次数与顺序', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(copied[0], 'target'), false)
 })
 
-test('F-008 人员从确定性随机切换手动时保留候选人姓名对应的值', () => {
+test('F-008 人员从范围随机切换手动时保留候选人姓名对应的值', () => {
   const person = {
     key: 'person-1', title: '审批人', strategy: 'random', strategySeed: 7, selected: ['person-token-a'], defaultSelected: [],
     options: [{ label: '张三', value: 'person-token-a' }, { label: '李四', value: 'person-token-b' }],
-    strategies: [{ value: 'random', label: '确定性随机' }, { value: 'manual', label: '手动选择' }],
+    strategies: [{ value: 'random', label: '范围随机' }, { value: 'manual', label: '手动选择' }],
     multiple: false, required: true, minCount: 1, maxCount: 1,
   }
   const manual = normalizedPersonStrategy(person, { key: person.key, strategy: 'manual', seed: 7, selected: ['person-token-b'] })

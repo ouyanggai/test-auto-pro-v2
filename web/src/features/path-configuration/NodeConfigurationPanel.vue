@@ -5,19 +5,21 @@ import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline } from '@vic
 import { copyPathConfigActions, normalizedActionCount, normalizedPersonStrategy, pathConfigActionsInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type { PathConfigActionCycle, PathConfigActionCycleInput, PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const MAX_SAFE_PERSON_SEED = Number.MAX_SAFE_INTEGER
 const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; saveDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; actionCycles: PathConfigActionCycle[] }>()
 const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; updateActionCycles: [value: PathConfigActionCycleInput[]]; save: []; backToPlan: []; openForm: [] }>()
 const actionEditorOpen = ref(false)
-const cycleEditorOpen = ref(false)
-const cycleType = ref<PathConfigActionCycleInput['type']>('restart_from_initiator')
+const actionDraft = ref<PathConfigConfiguredActionInput[]>([])
 
 // actions 只保留当前节点的 F-008 动作行。
-const actions = computed(() => props.node ? (props.draft.actionConfigurations[props.node.key] ?? pathConfigActionsInput(props.node)) : [])
+const savedActions = computed(() => props.node ? (props.draft.actionConfigurations[props.node.key] ?? pathConfigActionsInput(props.node)) : [])
+const actions = computed(() => actionDraft.value)
 // cycleInputs 只回传服务端派生的循环事实。
-const cycleInputs = computed(() => props.actionCycles.map(cycle => ({ key: cycle.key, type: cycle.type, endNodeKey: cycle.endNodeKey, count: 1 as const })))
 // emitActions 复制动作行后更新父级草稿，避免 Vue Proxy 进入请求体。
 function emitActions(next: PathConfigConfiguredActionInput[]) { if (props.node) emit('updateActionConfiguration', props.node.key, copyPathConfigActions(next)) }
+// openActionEditor 打开弹窗时复制父级草稿，取消不会修改节点面板。
+function openActionEditor() { actionDraft.value = copyPathConfigActions(savedActions.value); actionEditorOpen.value = true }
+// saveActionEditor 只提交已经确认的弹窗草稿，页面保存按钮负责后端持久化。
+function saveActionEditor() { emitActions(actionDraft.value); actionEditorOpen.value = false }
 // personDraft 返回当前人员策略草稿。
 function personDraft(person: PathConfigPerson) { return normalizedPersonStrategy(person, props.draft.personStrategies[person.key]) }
 // personOptions 生成不透明人员候选。
@@ -40,10 +42,6 @@ function addAction() { const definition = props.node?.actionConfiguration.catalo
 function moveAction(index: number, offset: number) { const target = index + offset; if (target < 0 || target >= actions.value.length) return; const next = copyPathConfigActions(actions.value); [next[index], next[target]] = [next[target], next[index]]; emitActions(next) }
 // removeAction 删除一个动作行。
 function removeAction(index: number) { const next = copyPathConfigActions(actions.value); next.splice(index, 1); emitActions(next) }
-// addCycle 以当前节点作为引擎派生终点，不允许传入成员或回退目标。
-function addCycle() { if (!props.node) return; emit('updateActionCycles', [...cycleInputs.value, { key: `cycle-local-${Date.now()}`, type: cycleType.value, endNodeKey: props.node.key, count: 1 }]); cycleEditorOpen.value = false }
-// removeCycle 删除循环草稿，不调用目标平台。
-function removeCycle(key: string) { emit('updateActionCycles', cycleInputs.value.filter(cycle => cycle.key !== key)) }
 // itemCount 汇总已解析人员规则，保持侧栏简短。
 function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonItems(person.items).total }
 </script>
@@ -64,7 +62,6 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           <template v-if="person.editable">
             <div class="person-controls">
               <n-select :value="personDraft(person).strategy" :options="strategyOptions(person)" @update:value="value => updatePersonStrategy(person, { strategy: value })" />
-              <n-input-number v-if="personDraft(person).strategy === 'random'" :value="personDraft(person).seed" :min="1" :max="MAX_SAFE_PERSON_SEED" @update:value="value => updatePersonStrategy(person, { seed: value || 1 })" />
               <n-select v-if="personDraft(person).strategy === 'manual'" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
             </div>
           </template>
@@ -76,25 +73,15 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 
       <section class="node-configuration-panel__section">
         <h3>准备情况</h3>
-        <div v-if="actions.length" class="action-summary">
-          <n-tag v-for="action in actions" :key="action.key" size="small">
+        <div v-if="savedActions.length" class="action-summary">
+          <n-tag v-for="action in savedActions" :key="action.key" size="small">
             {{ actionDefinition(action.kind)?.label || action.kind }}
           </n-tag>
         </div>
         <span v-else class="muted-text">未添加额外动作</span>
         <n-space>
-          <n-button type="primary" :disabled="node.lineBlocked || !node.actionConfiguration.catalog.length" @click="actionEditorOpen = true">动作配置</n-button>
-          <n-button :disabled="node.lineBlocked" @click="cycleEditorOpen = true">循环配置</n-button>
+          <n-button type="primary" :disabled="node.lineBlocked || !node.actionConfiguration.catalog.length" @click="openActionEditor">动作配置</n-button>
         </n-space>
-        <ul v-if="actionCycles.length" class="cycle-list">
-          <li v-for="cycle in actionCycles" :key="cycle.key">
-            <span>{{ cycle.label }}：{{ cycle.members.join(' → ') }}</span>
-            <n-popconfirm @positive-click="removeCycle(cycle.key)">
-              <template #trigger><n-button text title="删除循环"><CloseOutline /></n-button></template>
-              删除这个循环配置？
-            </n-popconfirm>
-          </li>
-        </ul>
       </section>
     </div>
 
@@ -124,17 +111,8 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           </div>
         </div>
         <template #footer>
-          <n-space justify="end"><n-button @click="actionEditorOpen = false">取消</n-button><n-button :disabled="actions.length >= 10" @click="addAction"><AddOutline /> 添加动作</n-button><n-button type="primary" @click="emit('save')">保存动作配置</n-button></n-space>
+          <n-space justify="end"><n-button @click="actionEditorOpen = false">取消</n-button><n-button :disabled="actions.length >= 10" @click="addAction"><AddOutline /> 添加动作</n-button><n-button type="primary" @click="saveActionEditor">保存动作配置</n-button></n-space>
         </template>
-      </n-card>
-    </n-modal>
-
-    <n-modal v-model:show="cycleEditorOpen">
-      <n-card title="循环配置" style="width: min(560px, 94vw)">
-        <n-select v-model:value="cycleType" :options="[{ label: '不同意后重新提交', value: 'restart_from_initiator' }, { label: '回退上一步后重做', value: 'redo_previous_task' }]" />
-        <p class="cycle-fixed-note">每个循环固定执行一轮。</p>
-        <n-alert type="info" :show-icon="false">重新提交会从发起人开始重新解析条件、并行和人员；回退只能由引擎返回真实上一个待办。</n-alert>
-        <template #footer><n-space justify="end"><n-button @click="cycleEditorOpen = false">取消</n-button><n-button type="primary" @click="addCycle">加入循环</n-button></n-space></template>
       </n-card>
     </n-modal>
 
