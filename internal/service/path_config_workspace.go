@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -324,7 +326,7 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, analysis model.ExecutionPathAnalysis, choices []model.ExecutionPathChoice, stored model.StoredPathConfig, found bool) model.PathFormConfig {
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	form := model.PathFormConfig{
-		Revision: stored.FormRevision, Status: "empty", StatusName: "待生成",
+		Revision: stored.FormRevision, Status: "empty", StatusName: "待配置",
 		ReadOnly: source != "new", Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
@@ -346,38 +348,38 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	form.ConditionHints = buildPathConditionHints(snapshot.Tree, choices, template, form.Permissions, form.Values)
 	form.FieldRules = buildPathFormFieldRules(form.ConditionHints)
 	if len(snapshot.Forms) == 0 {
-		form.Status, form.StatusName, form.Validated = "valid", "无需表单数据", true
+		form.Status, form.StatusName, form.Validated = "valid", "已配置", true
 		return form
 	}
 	if len(form.Unsupported) > 0 {
-		form.Status, form.StatusName = "unsupported", "存在未适配组件"
+		form.Status, form.StatusName = "unsupported", "待配置"
 		form.Affected = affectedFromStrings("form", form.Unsupported)
 		return form
 	}
 	version := formdata.TemplateVersion(template)
 	if found && stored.ConfigVersion < currentPathFormConfigVersion {
-		form.Status, form.StatusName = "affected", "旧配置需要重新确认"
+		form.Status, form.StatusName = "affected", "部分配置"
 		form.Affected = []model.PathConfigAffectedItem{{Kind: "form", Name: "表单数据", Reason: "旧配置未保存完整 FormMaking values"}}
 		return form
 	}
 	if found && stored.FormTemplateVersion != "" && stored.FormTemplateVersion != version {
-		form.Status, form.StatusName = "affected", "目标模板已变化"
+		form.Status, form.StatusName = "affected", "部分配置"
 		form.Affected = []model.PathConfigAffectedItem{{Kind: "form", Name: "表单数据", Reason: "目标表单模板已变化，需要重新校验"}}
 		return form
 	}
 	if form.ReadOnly {
-		form.Status, form.StatusName, form.Validated = "valid", "实例当前值（只读）", true
+		form.Status, form.StatusName, form.Validated = "valid", "已配置", true
 		return form
 	}
 	switch form.Status {
 	case "valid":
-		form.StatusName = "已保存并校验"
+		form.StatusName = "已配置"
 	case "draft":
-		form.StatusName = "草稿待校验"
+		form.StatusName = "部分配置"
 	case "affected":
-		form.StatusName = "需要重新确认"
+		form.StatusName = "部分配置"
 	default:
-		form.Status, form.StatusName = "empty", "待生成或填写"
+		form.Status, form.StatusName = "empty", "待配置"
 	}
 	return form
 }
@@ -906,7 +908,7 @@ func formdataIdentityContext(identity target.FormIdentityContext) formdata.Ident
 	}
 }
 
-// buildPathConditionHints 展示当前路径全部相关条件，并只高亮经目标排序语义复验的实际命中分支。
+// buildPathConditionHints 只投影当前路径实际选择的条件节点和分支；无法复验实际值时仍保护精确映射字段。
 func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template map[string]any, permissions []model.PathFormPermission, values map[string]any) []model.PathFormConditionHint {
 	fields, _ := formdata.ParseTemplate(template)
 	labelByModel := make(map[string]string, len(fields))
@@ -927,38 +929,88 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 		if branchID == "" {
 			return
 		}
-		for _, branch := range orderedTargetBranches(node.ConditionNodes) {
-			isActive := active[node.ID] == branch.ID && branch.ID == branchID
-			branchName := strings.TrimSpace(branch.Name)
-			if branchName == "" {
-				branchName = "条件分支"
-			}
-			for _, condition := range branch.Conditions {
-				field := normalizeFormFieldPath(condition.FieldA)
-				if field == "" || strings.TrimSpace(condition.FieldB) != "" {
+		branch := selectedTargetConditionBranch(node.ConditionNodes, branchID)
+		if branch == nil {
+			return
+		}
+		branchName := strings.TrimSpace(branch.Name)
+		if branchName == "" {
+			branchName = "已选条件分支"
+		}
+		actualBranch, activeKnown := active[node.ID]
+		isActive := activeKnown && actualBranch == branch.ID
+		// 当前路径已选分支是生成和保存必须满足的约束。运行时值不完整时不能撤销已建立的精确字段保护。
+		protected := isActive || !activeKnown
+		if len(branch.Conditions) == 0 {
+			hints = append(hints, model.PathFormConditionHint{
+				Key: conditionHintKey(node.ID, branch.ID, 0), NodeName: node.Name, BranchName: branchName,
+				Text:   fmt.Sprintf("节点「%s」的当前路径选择「%s」没有显式条件", node.Name, branchName),
+				Active: isActive, ActiveKnown: activeKnown, Mapped: false,
+			})
+			return
+		}
+		for index, condition := range branch.Conditions {
+			leftField := normalizeFormFieldPath(condition.FieldA)
+			rightField := normalizeFormFieldPath(condition.FieldB)
+			fields := uniquePublicStrings([]string{leftField, rightField})
+			mapped := len(fields) > 0
+			for _, field := range fields {
+				_, exists := labelByModel[field]
+				if !exists {
+					mapped = false
 					continue
 				}
-				judge, ok := pathConditionJudgeText(condition.Judge)
-				if !ok {
-					judge = "按条件"
-				}
-				label, mapped := labelByModel[field]
-				if !mapped {
-					text := fmt.Sprintf("分支「%s」条件无法精确映射到当前表单字段，未限制编辑，请人工核对", branchName)
-					if isActive {
-						text = fmt.Sprintf("当前路径实际命中分支「%s」的条件无法精确映射到当前表单字段，未限制编辑，请人工核对", branchName)
-					}
-					hints = append(hints, model.PathFormConditionHint{Field: field, Text: text, Mapped: false})
-					continue
-				}
-				hints = append(hints, model.PathFormConditionHint{
-					Field: field, Text: fmt.Sprintf("分支「%s」：%s %s %s", branchName, label, judge, pathConditionDisplayText(pathConditionValue(condition.ValueB))),
-					Mapped: true, Protected: isActive,
-				})
 			}
+			judge, ok := pathConditionJudgeText(condition.Judge)
+			if !ok {
+				judge = "使用未识别的比较方式"
+			}
+			leftText := "未识别字段"
+			if leftField != "" {
+				if label, exists := labelByModel[leftField]; exists {
+					leftText = label
+				}
+			}
+			rightText := pathConditionDisplayText(pathConditionValue(condition.ValueB))
+			if rightField != "" {
+				if label, exists := labelByModel[rightField]; exists {
+					rightText = label
+				} else {
+					rightText = "未识别字段"
+				}
+			}
+			text := fmt.Sprintf("节点「%s」· 当前路径选择「%s」：%s %s %s", node.Name, branchName, leftText, judge, rightText)
+			if !mapped {
+				text += "（条件字段无法精确映射，保持可编辑）"
+			}
+			field := ""
+			if len(fields) > 0 {
+				field = fields[0]
+			}
+			hints = append(hints, model.PathFormConditionHint{
+				Key: conditionHintKey(node.ID, branch.ID, index), NodeName: node.Name, BranchName: branchName,
+				Field: field, Fields: fields, Text: text, Protected: protected && mapped,
+				Active: isActive, ActiveKnown: activeKnown, Mapped: mapped,
+			})
 		}
 	})
 	return hints
+}
+
+// selectedTargetConditionBranch 按保存的真实分支标识定位当前条件节点的已选分支。
+func selectedTargetConditionBranch(branches []target.FlowBranchTemplate, branchID string) *target.FlowBranchTemplate {
+	for index := range branches {
+		if strings.TrimSpace(branches[index].ID) == strings.TrimSpace(branchID) {
+			return &branches[index]
+		}
+	}
+	return nil
+}
+
+// conditionHintKey 为当前节点、分支和条件序号生成不暴露目标 ID 的稳定公开键。
+func conditionHintKey(nodeID, branchID string, index int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("path-condition-hint:%s:%s:%d", nodeID, branchID, index)))
+	return hex.EncodeToString(sum[:16])
 }
 
 // visitSelectedPathConditionNodes 只沿已保存路径的分支子树投影条件，避免把其他路径节点的提示带进当前表单。
@@ -998,16 +1050,25 @@ func visitSelectedPathConditionNodes(tree *target.FlowNodeTemplate, selected map
 func buildPathFormFieldRules(hints []model.PathFormConditionHint) []model.PathFormFieldRule {
 	byField := make(map[string]*model.PathFormFieldRule)
 	for _, hint := range hints {
-		if !hint.Mapped || !hint.Protected || strings.TrimSpace(hint.Field) == "" {
+		if !hint.Mapped || !hint.Protected {
 			continue
 		}
-		rule := byField[hint.Field]
-		if rule == nil {
-			rule = &model.PathFormFieldRule{Field: hint.Field, ConditionHints: []string{}}
-			byField[hint.Field] = rule
+		fields := hint.Fields
+		if len(fields) == 0 && strings.TrimSpace(hint.Field) != "" {
+			fields = []string{hint.Field}
 		}
-		rule.Disabled = rule.Disabled || hint.Protected
-		rule.ConditionHints = append(rule.ConditionHints, hint.Text)
+		for _, field := range fields {
+			if strings.TrimSpace(field) == "" {
+				continue
+			}
+			rule := byField[field]
+			if rule == nil {
+				rule = &model.PathFormFieldRule{Field: field, ConditionHints: []string{}}
+				byField[field] = rule
+			}
+			rule.Disabled = true
+			rule.ConditionHints = append(rule.ConditionHints, hint.Text)
+		}
 	}
 	result := make([]model.PathFormFieldRule, 0, len(byField))
 	for _, rule := range byField {

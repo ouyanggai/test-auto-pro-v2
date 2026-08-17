@@ -217,6 +217,15 @@ grep -Fq "current.form.conditionHints = generated.conditionHints" "${config_view
 grep -Fq "current.form.fieldRules = generated.fieldRules" "${config_view}"
 grep -Fq "await formFrame.value.reloadRuntime()" "${config_view}"
 grep -Fq "v-if=\"hint.protected\"" "${config_view}"
+grep -Fq "当前分支命中 · 已保护" "${config_view}"
+grep -Fq "hint.key ||" "${config_view}"
+grep -Fq "pathConfigurationStatusName" "${config_view}"
+grep -Fq "pathConfigurationStatusName" "${config_panel}"
+grep -Fq "conditionHintKey" "${config_plan_analyzer}" || grep -Fq "conditionHintKey" "${project_root}/internal/service/path_config_workspace.go"
+if grep -Eq '需要重新确认|配置失效|受影响需确认' "${config_view}" "${config_panel}"; then
+  echo 'F-007 面向用户的配置页不得渲染旧确认或失效状态文案' >&2
+  exit 1
+fi
 grep -Fq "form.getData(true)" "${runtime_template}"
 grep -Fq "delete config[hook]" "${runtime_template}"
 grep -Fq "component.el" "${runtime_template}"

@@ -16,7 +16,7 @@ import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline, Information
 import type { SelectOption } from 'naive-ui'
 import { computed, ref } from 'vue'
 
-import { copyPathConfigActionPlan, normalizedPersonStrategy, pathConfigActionPlanInput, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import { copyPathConfigActionPlan, normalizedPersonStrategy, pathConfigActionPlanInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type {
   PathConfigActionCatalogItem,
   PathConfigActionKind,
@@ -247,8 +247,8 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
         </div>
         <div class="node-configuration-panel__tags">
           <n-tag size="small" :bordered="false">{{ node.typeName }}</n-tag>
-          <n-tag size="small" :bordered="false" :type="node.status === 'configured' ? 'success' : node.status === 'affected' ? 'error' : node.status === 'runtime' ? 'info' : 'warning'">
-            {{ node.statusName }}
+          <n-tag size="small" :bordered="false" :type="node.status === 'configured' || node.status === 'not_required' ? 'success' : node.status === 'runtime' ? 'info' : 'warning'">
+            {{ pathConfigurationStatusName(node.status) }}
           </n-tag>
         </div>
       </header>
@@ -308,7 +308,7 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
             <n-button v-if="personItemSummary(person).total > PERSON_PREVIEW_LIMIT" text type="primary" size="small" class="node-configuration-panel__person-more" @click="openPersonDetails(person)">
               查看全部 {{ personItemSummary(person).total }} 项
             </n-button>
-            <p v-if="person.note">{{ person.note }}</p>
+            <p v-if="person.note">{{ pathConfigurationMessage(person.note) }}</p>
           </div>
         </section>
 
@@ -332,7 +332,7 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
               </div>
             </n-popover>
           </div>
-          <n-alert v-if="node.actionPlan.note" type="warning" :show-icon="false" size="small">{{ node.actionPlan.note }}</n-alert>
+          <n-alert v-if="node.actionPlan.note" type="warning" :show-icon="false" size="small">{{ pathConfigurationMessage(node.actionPlan.note) }}</n-alert>
           <div v-if="actionPlan" class="node-configuration-panel__action-plan">
             <!-- 发起节点只有固定提交动作。 -->
             <div v-if="node.kind === 'start'" class="node-configuration-panel__action-row">
@@ -429,8 +429,8 @@ function updateResultPerson(person: PathConfigPerson, patch: Partial<PathConfigP
 
       <footer class="node-configuration-panel__footer">
         <n-alert v-if="saveError" type="error" :show-icon="false" size="small">
-          {{ saveError }}
-          <ul v-if="saveDetails.length"><li v-for="(item, index) in saveDetails" :key="index">{{ item.name }}：{{ item.reason }}</li></ul>
+          {{ pathConfigurationMessage(saveError) }}
+          <ul v-if="saveDetails.length"><li v-for="(item, index) in saveDetails" :key="index">{{ item.name }}：{{ pathConfigurationMessage(item.reason) }}</li></ul>
         </n-alert>
         <n-alert v-else-if="savedSuccessfully" type="success" :show-icon="false" size="small">{{ formComplete ? '当前路径的节点与表单配置均已完成' : '当前节点配置已保存，节点配置已完成' }}</n-alert>
         <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足模板要求</span>

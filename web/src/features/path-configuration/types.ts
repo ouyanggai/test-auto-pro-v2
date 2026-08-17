@@ -36,7 +36,7 @@ export interface PathFormConfiguration {
   affected: Array<{ kind: string, name: string, reason: string }>
   autoFilled: number
   manualPending: number
-  conditionHints: Array<{ field: string, text: string, protected: boolean, mapped: boolean }>
+  conditionHints: Array<{ key: string, nodeName: string, branchName: string, field: string, fields: string[], text: string, protected: boolean, active: boolean, activeKnown: boolean, mapped: boolean }>
   fieldRules: Array<{ field: string, disabled: boolean, conditionHints: string[] }>
 }
 
@@ -58,7 +58,7 @@ export interface PathFormGenerateResult {
   autoFilled: number
   manualPending: number
   unsupported: string[]
-  conditionHints: Array<{ field: string, text: string, protected: boolean, mapped: boolean }>
+  conditionHints: Array<{ key: string, nodeName: string, branchName: string, field: string, fields: string[], text: string, protected: boolean, active: boolean, activeKnown: boolean, mapped: boolean }>
   fieldRules: Array<{ field: string, disabled: boolean, conditionHints: string[] }>
 }
 

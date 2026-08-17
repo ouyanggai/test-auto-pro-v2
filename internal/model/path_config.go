@@ -52,12 +52,18 @@ type PathFormConfig struct {
 	FieldRules          []PathFormFieldRule      `json:"fieldRules"`
 }
 
-// PathFormConditionHint 是当前路径命中条件的可读高亮信息；未精确映射时明确保留可编辑边界。
+// PathFormConditionHint 是当前路径已选分支条件的可读信息；Fields 只包含模板精确匹配的模型键。
 type PathFormConditionHint struct {
-	Field     string `json:"field"`
-	Text      string `json:"text"`
-	Protected bool   `json:"protected"`
-	Mapped    bool   `json:"mapped"`
+	Key         string   `json:"key"`
+	NodeName    string   `json:"nodeName"`
+	BranchName  string   `json:"branchName"`
+	Field       string   `json:"field"`
+	Fields      []string `json:"fields"`
+	Text        string   `json:"text"`
+	Protected   bool     `json:"protected"`
+	Active      bool     `json:"active"`
+	ActiveKnown bool     `json:"activeKnown"`
+	Mapped      bool     `json:"mapped"`
 }
 
 // PathFormFieldRule 是运行时在真实 FormMaking 组件渲染前应用的字段级适配规则。

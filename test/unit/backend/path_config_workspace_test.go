@@ -168,7 +168,7 @@ func TestPathConfigWorkspaceNewFormUsesEntryNodePermissions(t *testing.T) {
 	}
 }
 
-// TestPathConfigWorkspaceProjectsConditionFieldRules 验证仅实际命中分支高亮和禁用，其他条件保留普通说明。
+// TestPathConfigWorkspaceProjectsConditionFieldRules 验证当前路径分支持续展示并在值缺失时保留精确字段保护。
 func TestPathConfigWorkspaceProjectsConditionFieldRules(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
@@ -181,12 +181,12 @@ func TestPathConfigWorkspaceProjectsConditionFieldRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取条件字段规则失败：%v", err)
 	}
-	if len(configuration.Form.ConditionHints) != 2 || len(configuration.Form.FieldRules) != 0 {
-		t.Fatalf("没有实际表单值时不应伪造命中或禁用字段：%+v", configuration.Form)
+	if len(configuration.Form.ConditionHints) != 1 || len(configuration.Form.FieldRules) != 1 || !configuration.Form.ConditionHints[0].Protected || configuration.Form.ConditionHints[0].ActiveKnown {
+		t.Fatalf("值为空时当前路径的精确条件提示或保护丢失：%+v", configuration.Form)
 	}
 	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 3, nil, nil, false)
-	if err != nil || len(generated.ConditionHints) != 2 || !generated.ConditionHints[0].Mapped || !generated.ConditionHints[0].Protected || generated.ConditionHints[1].Mapped || generated.ConditionHints[1].Protected {
-		t.Fatalf("只有实际命中的精确字段应高亮保护：generated=%+v err=%v", generated, err)
+	if err != nil || len(generated.ConditionHints) != 1 || !generated.ConditionHints[0].Mapped || !generated.ConditionHints[0].Protected || !generated.ConditionHints[0].Active || !generated.ConditionHints[0].ActiveKnown {
+		t.Fatalf("当前路径实际命中的精确字段没有高亮保护：generated=%+v err=%v", generated, err)
 	}
 	if len(generated.FieldRules) != 1 || generated.FieldRules[0].Field != "amount" || !generated.FieldRules[0].Disabled || len(generated.FieldRules[0].ConditionHints) != 1 {
 		t.Fatalf("实际命中字段没有生成真实组件禁用规则：%+v", generated.FieldRules)
@@ -194,8 +194,33 @@ func TestPathConfigWorkspaceProjectsConditionFieldRules(t *testing.T) {
 
 	snapshot.Tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "unknown_$$_field", Judge: "eq", ValueB: "x"}}
 	configuration, err = newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, &memoryPathConfigRepository{}).Get(context.Background(), 7, 32)
-	if err != nil || len(configuration.Form.FieldRules) != 0 || len(configuration.Form.ConditionHints) != 2 || configuration.Form.ConditionHints[0].Mapped || configuration.Form.ConditionHints[0].Protected {
+	if err != nil || len(configuration.Form.FieldRules) != 0 || len(configuration.Form.ConditionHints) != 1 || configuration.Form.ConditionHints[0].Mapped || configuration.Form.ConditionHints[0].Protected {
 		t.Fatalf("无法精确映射字段被错误禁用或未提示：form=%+v err=%v", configuration.Form, err)
+	}
+}
+
+// TestPathConfigWorkspaceProtectsBothConditionFields 验证 FieldA/FieldB 都以真实已保存表单值复验并在运行时前禁用。
+func TestPathConfigWorkspaceProtectsBothConditionFields(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	snapshot := pathConfigWorkspaceSnapshot()
+	snapshot.Tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "amount", FieldB: "mirrorAmount", Judge: "eq"}}
+	snapshot.Tree.FieldPowers = append(snapshot.Tree.FieldPowers, target.FlowNodeFieldPower{EnglishName: "mirrorAmount", Power: "edit"})
+	snapshot.Forms[0].TemplateData = `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"required":true}},{"type":"number","model":"mirrorAmount","name":"对比金额","options":{"required":true}},{"type":"select","model":"type","name":"类型","options":{"required":true,"options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}},{"type":"input","model":"note","name":"备注","options":{}}],"config":{}}`
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configs := &memoryPathConfigRepository{records: map[uint64]model.StoredPathConfig{32: {
+		PathID: 32, ConfigVersion: 3, FormStatus: "draft", FormValues: map[string]any{"amount": float64(3600), "mirrorAmount": float64(3600), "type": "a", "note": "已保存"},
+	}}}
+	configuration, err := newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, configs).Get(context.Background(), 7, 32)
+	if err != nil || len(configuration.Form.ConditionHints) != 1 {
+		t.Fatalf("读取 FieldA/FieldB 条件提示失败：form=%+v err=%v", configuration.Form, err)
+	}
+	hint := configuration.Form.ConditionHints[0]
+	if !hint.Active || !hint.ActiveKnown || !hint.Protected || len(hint.Fields) != 2 || hint.Fields[0] != "amount" || hint.Fields[1] != "mirrorAmount" {
+		t.Fatalf("FieldA/FieldB 条件没有按当前路径真实值高亮：%+v", hint)
+	}
+	if len(configuration.Form.FieldRules) != 2 || configuration.Form.FieldRules[0].Field != "amount" || configuration.Form.FieldRules[1].Field != "mirrorAmount" || !configuration.Form.FieldRules[0].Disabled || !configuration.Form.FieldRules[1].Disabled {
+		t.Fatalf("FieldA/FieldB 没有在组件创建前生成禁用规则：%+v", configuration.Form.FieldRules)
 	}
 }
 

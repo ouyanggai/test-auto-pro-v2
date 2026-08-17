@@ -17,6 +17,19 @@ import type {
 import type { ExecutionPathAnalysis } from '../execution-paths/types.ts'
 import type { FlowConfigurationNodeState, FlowGraph } from '../flow-graph/types.ts'
 
+// pathConfigurationStatusName 把内部状态收敛为页面仅展示的配置完成度，affected 仍只在校验链路中使用。
+export function pathConfigurationStatusName(status: string): '待配置' | '部分配置' | '已配置' {
+  if (status === 'configured' || status === 'valid' || status === 'not_required') return '已配置'
+  if (status === 'pending' || status === 'empty' || status === 'unsupported') return '待配置'
+  return '部分配置'
+}
+
+// pathConfigurationMessage 隐藏内部 affected 校验术语，页面只提示用户补齐当前配置而不暴露历史状态名。
+export function pathConfigurationMessage(message: string): string {
+  return String(message || '')
+    .replace(/配置失效|需要重新确认|受影响需确认|需要重新核对/g, '请补充配置')
+}
+
 // pathConfigNodeKey 使用与后端相同的稳定哈希把图节点映射到配置节点；公开配置模型无需返回目标节点 ID。
 export async function pathConfigNodeKey(nodeID: string): Promise<string> {
   const bytes = new TextEncoder().encode(`node:${nodeID.trim()}:configuration`)
@@ -117,7 +130,7 @@ export function projectPathConfigurationNodeStates(
     const onCurrentPath = analysis.reachableNodeIds.has(node.id)
     result[node.id] = {
       status: configNode?.status ?? 'not_required',
-      statusName: configNode?.statusName ?? '路径外上下文',
+      statusName: configNode ? pathConfigurationStatusName(configNode.status) : '路径外上下文',
       interactive: Boolean(onCurrentPath && configNode),
       selected: Boolean(onCurrentPath && configNode && node.id === selectedNodeID),
     }
@@ -264,7 +277,7 @@ export function applyPathConfigDraft(configuration: PathConfiguration, draft: Pa
         && node.gaps.length === 0
         && !hasAffectedItem) {
         node.status = 'configured'
-        node.statusName = '已完成'
+        node.statusName = '已配置'
       }
     }
   }

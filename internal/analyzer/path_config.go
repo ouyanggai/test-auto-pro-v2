@@ -506,21 +506,21 @@ func pathConfigNodeRequirements(requirements []model.RequirementItem) []model.Re
 // pathConfigNodeStatus 按节点可保存项、运行时规则和失效事实派生画布状态，不把结构节点伪装成待配置。
 func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string, string) {
 	if node.LineBlocked {
-		return "not_required", "无需配置"
+		return "not_required", "已配置"
 	}
 	for _, person := range node.Persons {
 		if person.Affected {
-			return "affected", "配置失效"
+			return "affected", "部分配置"
 		}
 	}
 	if node.ActionPlan.Affected {
-		return "affected", "配置失效"
+		return "affected", "部分配置"
 	}
 	hasRuntime := false
 	hasEditablePerson := false
 	for _, person := range node.Persons {
 		if person.Mode == "review" {
-			return "partial", "部分完成"
+			return "partial", "部分配置"
 		}
 		if person.Mode == "runtime" {
 			hasRuntime = true
@@ -539,14 +539,14 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 	hasConfigItem := hasEnabledAction || hasEditablePerson
 	if !hasConfigItem {
 		if hasRuntime {
-			return "runtime", "运行时确定"
+			return "runtime", "部分配置"
 		}
-		return "not_required", "无需配置"
+		return "not_required", "已配置"
 	}
 	if !storedPresent {
 		return "pending", "待配置"
 	}
-	return "configured", "已完成"
+	return "configured", "已配置"
 }
 
 // submitAction 发起节点固定提交，不提供其他候选。

@@ -46,8 +46,8 @@ func TestPathConfigWorkspaceUsesTargetOrderedBranchRuntime(t *testing.T) {
 	if startErr != nil || endErr != nil || end.Sub(start).Hours()/24 != duration-1 {
 		t.Fatalf("日期区间没有按条件天数的自然日含首尾生成：duration=%v range=%+v", duration, dateRange)
 	}
-	if len(generated.ConditionHints) != 4 || !generated.ConditionHints[3].Protected || generated.ConditionHints[0].Protected || generated.ConditionHints[1].Protected || generated.ConditionHints[2].Protected {
-		t.Fatalf("只有实际命中的十五天分支应高亮：%+v", generated.ConditionHints)
+	if len(generated.ConditionHints) != 1 || !generated.ConditionHints[0].Protected || !generated.ConditionHints[0].Active || generated.ConditionHints[0].BranchName != "十五天" {
+		t.Fatalf("提示没有只展示并高亮当前路径的十五天分支：%+v", generated.ConditionHints)
 	}
 	if len(generated.FieldRules) != 1 || generated.FieldRules[0].Field != "durationValue" || !generated.FieldRules[0].Disabled {
 		t.Fatalf("实际命中条件字段没有在 iframe 渲染前禁用：%+v", generated.FieldRules)

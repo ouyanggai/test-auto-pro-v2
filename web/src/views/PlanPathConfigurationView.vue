@@ -20,6 +20,8 @@ import {
   initialPathConfigurationNodeID,
   initPathConfigDraft,
   nextFormGenerationSeed,
+  pathConfigurationMessage,
+  pathConfigurationStatusName,
   pathConfigurationNodesByGraphID,
   projectPathConfigurationNodeStates,
   resolveConfirmedNodeSaveDestination,
@@ -130,8 +132,8 @@ function handleRuntimeReady(payload: Record<string, unknown>) {
 
 // publicPageError 把读取链路异常收敛为不含内部标识的稳定页面错误。
 function publicPageError(caught: unknown): string {
-  if (caught instanceof PlanApiError || caught instanceof PathConfigApiError) return caught.message
-  if (caught instanceof Error && ['已保存路径不存在或已删除', '当前已保存路径与真实流程不一致，请先编辑路径', '路径节点配置与当前流程结构不一致'].includes(caught.message)) return caught.message
+  if (caught instanceof PlanApiError || caught instanceof PathConfigApiError) return pathConfigurationMessage(caught.message)
+  if (caught instanceof Error && ['已保存路径不存在或已删除', '当前已保存路径与真实流程不一致，请先编辑路径', '路径节点配置与当前流程结构不一致'].includes(caught.message)) return pathConfigurationMessage(caught.message)
   return '暂时无法读取路径配置，请重试'
 }
 
@@ -295,7 +297,7 @@ async function saveCurrentNode() {
     }
     catch { /* 对账失败保留原草稿和幂等键，用户重试不会重复写入。 */ }
     if (caught instanceof PathConfigApiError) {
-      nodeSaveError.value = caught.message
+      nodeSaveError.value = pathConfigurationMessage(caught.message)
       nodeSaveDetails.value = caught.details
     }
     else nodeSaveError.value = '保存失败，当前节点和草稿已保留，请重试'
@@ -348,7 +350,7 @@ async function generateFormData(nextGroup: boolean) {
     current.form.values = generated.values
     current.form.seed = generated.seed
     current.form.status = 'draft'
-    current.form.statusName = '草稿待校验'
+    current.form.statusName = pathConfigurationStatusName(current.form.status)
     current.form.generatedFieldPaths = generated.generatedFieldPaths
     current.form.manualOverridePaths = generated.manualOverridePaths
     current.form.sampleSummary = generated.sampleSummary
@@ -418,7 +420,7 @@ async function saveFormData() {
       }
     }
     catch { /* 对账失败保留当前 iframe、values 和幂等键。 */ }
-    formError.value = caught instanceof Error ? caught.message : '保存失败，当前表单数据已保留，请重试'
+    formError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '保存失败，当前表单数据已保留，请重试'
     formErrorDetails.value = caught instanceof PathConfigApiError ? caught.details : []
   }
   finally {
@@ -460,9 +462,9 @@ void loadPage()
       </div>
       <div v-if="configuration" class="path-configuration-page__progress" aria-label="路径配置进度">
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
-        <span>表单：{{ configuration.form.statusName }}</span>
-        <n-tag size="small" :bordered="false" :type="configuration.status === 'configured' ? 'success' : configuration.status === 'affected' ? 'error' : 'warning'">
-          {{ configuration.status === 'configured' ? '路径已配置' : configuration.status === 'affected' ? '需要重新确认' : '待配置' }}
+        <span>表单：{{ pathConfigurationStatusName(configuration.form.status) }}</span>
+        <n-tag size="small" :bordered="false" :type="configuration.status === 'configured' ? 'success' : 'warning'">
+          {{ pathConfigurationStatusName(configuration.status) }}
         </n-tag>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
       </div>
@@ -488,7 +490,7 @@ void loadPage()
         configuration-mode
         :configuration-node-states="configurationNodeStates"
         :configuration-form-status="configuration.form.status"
-        :configuration-form-status-name="configuration.form.statusName"
+        :configuration-form-status-name="pathConfigurationStatusName(configuration.form.status)"
         @select-configuration-node="selectConfigurationNode"
         @open-configuration-form="openFormWorkspace"
         @retry="loadPage"
@@ -535,8 +537,9 @@ void loadPage()
             <n-collapse-item title="分支关键数据提示" name="condition-hints">
               <div class="path-configuration-page__form-hints-body">
                 <ul class="path-configuration-page__form-hints-list">
-                  <li v-for="(hint, index) in configuration.form.conditionHints" :key="`${hint.field}-${index}`" :class="{ 'path-configuration-page__form-hint--protected': hint.protected, 'path-configuration-page__form-hint--unmapped': !hint.mapped }">
-                    <n-tag v-if="hint.protected" size="small" type="warning" :bordered="false">当前路径命中 · 已保护</n-tag>
+                  <li v-for="(hint, index) in configuration.form.conditionHints" :key="hint.key || `${hint.field}-${index}`" :class="{ 'path-configuration-page__form-hint--protected': hint.protected, 'path-configuration-page__form-hint--unmapped': !hint.mapped }">
+                    <n-tag v-if="hint.protected && hint.active" size="small" type="warning" :bordered="false">当前分支命中 · 已保护</n-tag>
+                    <n-tag v-else-if="hint.protected" size="small" type="warning" :bordered="false">当前路径选择 · 已保护</n-tag>
                     <n-tag v-else-if="!hint.mapped" size="small" type="error" :bordered="false">无法精确映射 · 可编辑</n-tag>
                     <strong v-if="hint.protected">{{ hint.text }}</strong>
                     <span v-else>{{ hint.text }}</span>
@@ -550,14 +553,14 @@ void loadPage()
           <n-alert v-if="formError" type="error" :show-icon="false" size="small">
             <div>{{ formError }}</div>
             <ul v-if="formErrorDetails.length" class="path-configuration-page__form-error-details">
-              <li v-for="(item, index) in formErrorDetails" :key="`${item.kind}-${index}`">{{ item.reason || item.name }}</li>
+              <li v-for="(item, index) in formErrorDetails" :key="`${item.kind}-${index}`">{{ pathConfigurationMessage(item.reason || item.name) }}</li>
             </ul>
           </n-alert>
           <n-alert v-else-if="formSavedSuccessfully" type="success" :show-icon="false" size="small">
             表单数据已保存并完成服务端复验。节点仍需逐个完成，整条路径不会被静默标记。
           </n-alert>
           <n-alert v-if="runtimeBlocked" type="warning" :show-icon="false" size="small">
-            {{ runtimeBlockingReasons.join('；') }}
+            {{ runtimeBlockingReasons.map(pathConfigurationMessage).join('；') }}
           </n-alert>
         </div>
         <form-runtime-frame

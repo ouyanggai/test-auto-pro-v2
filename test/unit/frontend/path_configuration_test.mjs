@@ -20,6 +20,8 @@ import {
   normalizedPathConfigSeed,
   pathConfigActionPlanInput,
   pathConfigNodeKey,
+  pathConfigurationMessage,
+  pathConfigurationStatusName,
   pathConfigurationNodesByGraphID,
   parsePathConfigValue,
   projectPathConfigurationNodeStates,
@@ -124,6 +126,16 @@ const configuration = {
     },
   ],
 }
+
+test('页面状态只展示配置完成度，内部 affected 不直接暴露', () => {
+  assert.equal(pathConfigurationStatusName('pending'), '待配置')
+  assert.equal(pathConfigurationStatusName('empty'), '待配置')
+  assert.equal(pathConfigurationStatusName('affected'), '部分配置')
+  assert.equal(pathConfigurationStatusName('partial'), '部分配置')
+  assert.equal(pathConfigurationStatusName('configured'), '已配置')
+  assert.equal(pathConfigurationStatusName('valid'), '已配置')
+  assert.equal(pathConfigurationMessage('旧配置需要重新确认，当前配置失效'), '旧配置请补充配置，当前请补充配置')
+})
 
 test('初始化草稿只包含可编辑字段与全部动作', () => {
   const draft = initPathConfigDraft(configuration)

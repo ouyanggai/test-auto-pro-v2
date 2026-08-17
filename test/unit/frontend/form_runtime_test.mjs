@@ -71,19 +71,23 @@ test('新发起只开放 edit 字段且已发待发保持全表只读', () => {
 test('路径条件规则在真实组件装载前禁用精确字段，统计按真实权限和值重算', () => {
   const prepared = prepareTemplate({ list: [
     { type: 'number', model: 'amount', options: { required: true } },
+    { type: 'number', model: 'mirrorAmount', options: { required: true } },
     { type: 'input', model: 'title', options: { required: true } },
-  ] }, [{ field: 'amount', power: 'edit' }, { field: 'title', power: 'edit' }], false, [
+  ] }, [{ field: 'amount', power: 'edit' }, { field: 'mirrorAmount', power: 'edit' }, { field: 'title', power: 'edit' }], false, [
     { field: 'amount', disabled: true, conditionHints: ['分支「大额」：申请金额 大于等于 3000'] },
+    { field: 'mirrorAmount', disabled: true, conditionHints: ['分支「金额相同」：申请金额 等于 对比金额'] },
     { field: 'missing', disabled: true, conditionHints: ['不得按名称猜测'] },
   ])
   assert.equal(prepared.template.list[0].options.disabled, true)
   assert.equal(prepared.template.list[0].options.required, false)
-  assert.equal(prepared.template.list[1].options.disabled, false)
-  assert.deepEqual(prepared.protectedFields, ['amount'])
+  assert.equal(prepared.template.list[1].options.disabled, true)
+  assert.equal(prepared.template.list[1].options.required, false)
+  assert.equal(prepared.template.list[2].options.disabled, false)
+  assert.deepEqual(prepared.protectedFields, ['amount', 'mirrorAmount'])
   assert.deepEqual(prepared.editableFields, ['title'])
-  assert.deepEqual(formRuntimeStats({ amount: 3000, title: '自动生成' }, ['amount', 'title'], [], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 2, manualPending: 0 })
-  assert.deepEqual(formRuntimeStats({ amount: 3000, title: '' }, ['amount', 'title'], [], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 1, manualPending: 1 })
-  assert.deepEqual(formRuntimeStats({ amount: 3000, title: '人工填写' }, ['amount', 'title'], ['title'], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 1, manualPending: 0 })
+  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '自动生成' }, ['amount', 'mirrorAmount', 'title'], [], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 3, manualPending: 0 })
+  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '' }, ['amount', 'mirrorAmount', 'title'], [], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 2, manualPending: 1 })
+  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '人工填写' }, ['amount', 'mirrorAmount', 'title'], ['title'], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 2, manualPending: 0 })
 })
 
 test('刷新已预置权限的模板不会统一调用自定义组件 disabledElement', async () => {
