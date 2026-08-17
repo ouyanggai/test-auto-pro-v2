@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NEmpty, NInputNumber, NModal, NSelect, NSpace, NTag } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline } from '@vicons/ionicons5'
 import { copyPathConfigActions, normalizedActionCount, normalizedPersonStrategy, pathConfigActionsInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
@@ -85,7 +85,10 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
         <ul v-if="actionCycles.length" class="cycle-list">
           <li v-for="cycle in actionCycles" :key="cycle.key">
             <span>{{ cycle.label }} × {{ cycle.count }}：{{ cycle.members.join(' → ') }}</span>
-            <n-button text title="删除循环" @click="removeCycle(cycle.key)"><CloseOutline /></n-button>
+            <n-popconfirm @positive-click="removeCycle(cycle.key)">
+              <template #trigger><n-button text title="删除循环"><CloseOutline /></n-button></template>
+              删除这个循环配置？
+            </n-popconfirm>
           </li>
         </ul>
       </section>
@@ -105,9 +108,12 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           <div class="action-row__header">
             <strong>动作 {{ index + 1 }}</strong>
             <n-space>
-              <n-button text :disabled="index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
-              <n-button text :disabled="index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
-              <n-button text @click="removeAction(index)"><CloseOutline /></n-button>
+              <n-button text title="上移动作" :disabled="index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
+              <n-button text title="下移动作" :disabled="index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
+              <n-popconfirm @positive-click="removeAction(index)">
+                <template #trigger><n-button text title="删除动作"><CloseOutline /></n-button></template>
+                删除这个动作配置？
+              </n-popconfirm>
             </n-space>
           </div>
           <n-select :value="action.kind" :options="node.actionConfiguration.catalog.map(item => ({ label: item.label, value: item.kind }))" @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })" />

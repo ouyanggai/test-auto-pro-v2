@@ -13,6 +13,8 @@ plans_view="${project_root}/web/src/views/PlansView.vue"
 
 grep -Fq '>动作配置</n-button>' "${panel}"
 grep -Fq '>循环配置</n-button>' "${panel}"
+grep -Fq '删除这个动作配置？' "${panel}"
+grep -Fq '删除这个循环配置？' "${panel}"
 grep -Fq '重新提交会从发起人开始重新解析条件、并行和人员' "${panel}"
 grep -Fq '回退只能由引擎返回真实上一个待办' "${panel}"
 grep -Fq '每次真实到达只执行一个动作' "${panel}"
