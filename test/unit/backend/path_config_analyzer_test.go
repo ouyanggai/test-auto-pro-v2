@@ -519,7 +519,7 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 		t.Fatalf("加签节点没有使用独立人员目录：%+v", actionPerson)
 	}
 	transferPerson := findActionCatalogItem(t, findConfigNode(configuration.Groups, "财务审批").ActionPlan.Catalog, "transfer_approver").Person
-	if transferPerson == nil || len(transferPerson.Options) != 3 || !transferPerson.Multiple || transferPerson.MinCount != 1 || transferPerson.MaxCount != 3 {
+	if transferPerson == nil || len(transferPerson.Options) != 2 || !transferPerson.Multiple || transferPerson.MinCount != 1 || transferPerson.MaxCount != 2 {
 		t.Fatalf("移交人员范围没有独立投影多人候选：%+v", transferPerson)
 	}
 	if !containsPersonStrategy(transferPerson.Strategies, "all") {
@@ -548,6 +548,39 @@ func TestPathConfigAnalyzerProjectsPersonStrategiesAndDeterministicRandom(t *tes
 	}
 	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "add_sign", Person: &actionManual}}); !strings.Contains(reason, "处理结果") {
 		t.Fatalf("加签节点被伪造成处理结果时没有被拒绝：%s", reason)
+	}
+	transpondPerson := findActionCatalogItem(t, findConfigNode(configuration.Groups, "财务审批").ActionPlan.Catalog, "transpond").Person
+	if transpondPerson == nil || len(transpondPerson.Options) != 2 || transpondPerson.Multiple || transpondPerson.MaxCount != 1 || containsPersonStrategy(transpondPerson.Strategies, "all") {
+		t.Fatalf("转发没有使用组织目录单选边界：%+v", transpondPerson)
+	}
+	transpondManual := model.PathConfigPersonStrategyInput{Key: transpondPerson.Key, Strategy: "manual", Seed: 9, Selected: []string{transpondPerson.Options[0].Value, transpondPerson.Options[1].Value}}
+	if _, _, reason := analyzer.EncodePathConfigActionPlan(nodeTarget, model.PathConfigActionPlanInput{Result: model.PathConfigActionStepInput{Kind: "transpond", Person: &transpondManual}}); !strings.Contains(reason, "人数") {
+		t.Fatalf("转发多选没有被服务端拒绝：%s", reason)
+	}
+}
+
+// TestPathConfigAnalyzerOrganizationActionsDoNotUseOrdinaryCandidates 验证组织动作没有普通节点候选时不会越权回退或远程补候选。
+func TestPathConfigAnalyzerOrganizationActionsDoNotUseOrdinaryCandidates(t *testing.T) {
+	tree := pathConfigTree()
+	approval := tree.Child.ConditionNodes[0].Child
+	approval.AddSignCandidates = nil
+	approval.AuditConfig.Candidates = []target.FlowAuditCandidate{{ID: "ordinary-1", Name: "普通候选甲"}, {ID: "ordinary-2", Name: "普通候选乙"}}
+	graph := requirementGraph(t, tree)
+	path := model.ExecutionPath{Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}
+	pathAnalysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		t.Fatalf("准备组织动作候选路径失败：%v", err)
+	}
+	configuration, _, err := analyzer.NewPathConfigAnalyzer().Analyze(graph, tree, pathConfigFields(), path, pathAnalysis, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("组织动作候选投影失败：%v", err)
+	}
+	node := findConfigNode(configuration.Groups, "财务审批")
+	for _, kind := range []string{"add_sign", "transfer_approver", "transpond"} {
+		item := findActionCatalogItem(t, node.ActionPlan.Catalog, kind)
+		if item.Enabled || item.Person != nil || strings.TrimSpace(item.DisabledReason) == "" {
+			t.Fatalf("%s 错误复用了普通节点候选：%+v", kind, item)
+		}
 	}
 }
 

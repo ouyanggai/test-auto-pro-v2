@@ -952,15 +952,17 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 		for index, condition := range branch.Conditions {
 			leftField := normalizeFormFieldPath(condition.FieldA)
 			rightField := normalizeFormFieldPath(condition.FieldB)
-			fields := uniquePublicStrings([]string{leftField, rightField})
-			mapped := len(fields) > 0
-			for _, field := range fields {
-				_, exists := labelByModel[field]
-				if !exists {
-					mapped = false
-					continue
+			conditionFields := uniquePublicStrings([]string{leftField, rightField})
+			mappedFields := make([]string, 0, len(conditionFields))
+			unmappedFields := make([]string, 0, len(conditionFields))
+			for _, field := range conditionFields {
+				if _, exists := labelByModel[field]; exists {
+					mappedFields = append(mappedFields, field)
+				} else {
+					unmappedFields = append(unmappedFields, field)
 				}
 			}
+			mapped := len(conditionFields) > 0 && len(unmappedFields) == 0
 			judge, ok := pathConditionJudgeText(condition.Judge)
 			if !ok {
 				judge = "使用未识别的比较方式"
@@ -980,16 +982,16 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 				}
 			}
 			text := fmt.Sprintf("节点「%s」· 当前路径选择「%s」：%s %s %s", node.Name, branchName, leftText, judge, rightText)
-			if !mapped {
-				text += "（条件字段无法精确映射，保持可编辑）"
+			if len(unmappedFields) > 0 {
+				text += fmt.Sprintf("（未映射字段：%s，保持可编辑）", strings.Join(unmappedFields, "、"))
 			}
 			field := ""
-			if len(fields) > 0 {
-				field = fields[0]
+			if len(mappedFields) > 0 {
+				field = mappedFields[0]
 			}
 			hints = append(hints, model.PathFormConditionHint{
 				Key: conditionHintKey(node.ID, branch.ID, index), NodeName: node.Name, BranchName: branchName,
-				Field: field, Fields: fields, Text: text, Protected: protected && mapped,
+				Field: field, Fields: mappedFields, UnmappedFields: unmappedFields, Text: text, Protected: protected && len(mappedFields) > 0,
 				Active: isActive, ActiveKnown: activeKnown, Mapped: mapped,
 			})
 		}
@@ -1050,7 +1052,7 @@ func visitSelectedPathConditionNodes(tree *target.FlowNodeTemplate, selected map
 func buildPathFormFieldRules(hints []model.PathFormConditionHint) []model.PathFormFieldRule {
 	byField := make(map[string]*model.PathFormFieldRule)
 	for _, hint := range hints {
-		if !hint.Mapped || !hint.Protected {
+		if !hint.Protected {
 			continue
 		}
 		fields := hint.Fields

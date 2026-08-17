@@ -296,13 +296,13 @@ func (p *pathConfigProjection) actionPlan(nodeID, nodeName, nodeKind string, nod
 			appendAction("add_sign", "加签节点", "在当前流程中新增审批节点", false, addSignDisabledReason(node), false, nil, nil)
 		}
 		if person, personTarget := transferPersonConfig(nodeID, node); person != nil && personTarget != nil {
-			appendAction("transfer_approver", "移交", "把当前处理任务移交给受目标范围约束的一名或多名处理人并结束当前任务", true, "", false, person, personTarget)
+			appendAction("transfer_approver", "移交", "从组织人员目录选择一名或多名接收人并结束当前任务；当前快照未提供当前处理人标识，未猜测排除", true, "", false, person, personTarget)
 			if transpondPerson, transpondTarget := transpondPersonConfig(nodeID, node); transpondPerson != nil && transpondTarget != nil {
-				appendAction("transpond", "转发", "将当前处理任务转发给当前节点候选范围内的一名接收人；仅保存配置，不执行目标操作", true, "", false, transpondPerson, transpondTarget)
+				appendAction("transpond", "转发", "从组织人员目录选择一名接收人转发当前任务；当前快照未提供当前处理人标识，未猜测排除；仅保存配置，不执行目标操作", true, "", false, transpondPerson, transpondTarget)
 			}
 		} else {
-			appendAction("transfer_approver", "移交", "把当前处理任务移交给其他处理人", false, "当前模板未解析到可证明合法的移交人员范围", false, nil, nil)
-			appendAction("transpond", "转发", "将当前处理任务转发给接收人", false, "当前模板未解析到可证明合法的转发人员范围", false, nil, nil)
+			appendAction("transfer_approver", "移交", "从组织人员目录选择接收人并结束当前任务", false, "当前模板未解析到可证明合法的组织人员目录；当前快照没有可用于排除当前处理人的精确标识", false, nil, nil)
+			appendAction("transpond", "转发", "从组织人员目录选择接收人转发当前任务", false, "当前模板未解析到可证明合法的组织人员目录；当前快照没有可用于排除当前处理人的精确标识", false, nil, nil)
 		}
 	default:
 		appendAction("submit", "提交", "提交只适用于发起节点", false, "当前节点没有业务处理动作", false, nil, nil)
@@ -389,18 +389,14 @@ func appendDisabledApprovalActions(appendAction func(string, string, string, boo
 	appendAction("transpond", "转发", "转发当前任务", false, reason, false, nil, nil)
 }
 
-// transferPersonConfig 从当前节点已解析的合法候选生成移交人员规则，候选不得扩大到节点范围之外。
+// transferPersonConfig 从已解析的组织人员目录生成移交人员规则；当前快照没有当前处理人标识时不猜测排除。
 func transferPersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
-	if node == nil || node.AuditConfig == nil || len(node.AuditConfig.ResolutionIssues) > 0 || len(node.AuditConfig.Candidates) == 0 {
-		return nil, nil
-	}
-	config := node.AuditConfig
-	return actionCandidatePersonConfig(nodeID, "transfer_approver", "移交人员", "候选来自当前节点目标模板的合法人员范围", config.Candidates, config.DefaultCandidates)
+	return organizationActionPersonConfig(nodeID, node, "transfer_approver", "移交人员", "候选来自当前账号可配置的组织人员目录；当前快照未提供当前处理人标识，未猜测排除")
 }
 
-// transpondPersonConfig 复用当前节点合法候选，但按 V1 转发语义严格限制为单个接收人。
+// transpondPersonConfig 从组织人员目录生成转发接收人规则，并按 V1 语义严格限制为单个接收人。
 func transpondPersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
-	person, personTarget := transferPersonConfig(nodeID, node)
+	person, personTarget := organizationActionPersonConfig(nodeID, node, "transpond", "转发接收人", "候选来自当前账号可配置的组织人员目录；当前快照未提供当前处理人标识，未猜测排除")
 	if person == nil || personTarget == nil {
 		return nil, nil
 	}
@@ -414,6 +410,14 @@ func transpondPersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model
 	personTarget.MaxCount = 1
 	delete(personTarget.AllowedStrategies, "all")
 	return person, personTarget
+}
+
+// organizationActionPersonConfig 统一使用目标公司组织目录为加签、转发和移交提供候选，禁止回退到普通节点处理人范围。
+func organizationActionPersonConfig(nodeID string, node *target.FlowNodeTemplate, actionKind, title, detail string) (*model.PathConfigPerson, *PathConfigPersonTarget) {
+	if node == nil || len(node.AddSignIssues) > 0 || len(node.AddSignCandidates) == 0 {
+		return nil, nil
+	}
+	return actionCandidatePersonConfig(nodeID, actionKind, title, detail, node.AddSignCandidates, nil)
 }
 
 // removePathConfigPersonStrategy 移除与单选边界冲突的全选策略，保留默认、手动和随机策略。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -221,6 +222,43 @@ func TestPathConfigWorkspaceProtectsBothConditionFields(t *testing.T) {
 	}
 	if len(configuration.Form.FieldRules) != 2 || configuration.Form.FieldRules[0].Field != "amount" || configuration.Form.FieldRules[1].Field != "mirrorAmount" || !configuration.Form.FieldRules[0].Disabled || !configuration.Form.FieldRules[1].Disabled {
 		t.Fatalf("FieldA/FieldB 没有在组件创建前生成禁用规则：%+v", configuration.Form.FieldRules)
+	}
+}
+
+// TestPathConfigWorkspaceProtectsEachMappedConditionFieldIndependently 验证 FieldA/FieldB 一侧缺失时不取消另一侧精确字段保护。
+func TestPathConfigWorkspaceProtectsEachMappedConditionFieldIndependently(t *testing.T) {
+	tests := []struct {
+		name   string
+		fieldA string
+		fieldB string
+	}{
+		{name: "FieldA 已映射", fieldA: "amount", fieldB: "missingField"},
+		{name: "FieldB 已映射", fieldA: "missingField", fieldB: "amount"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			plans := newMemoryPlanRepository()
+			plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+			snapshot := pathConfigWorkspaceSnapshot()
+			snapshot.Tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: testCase.fieldA, FieldB: testCase.fieldB, Judge: "eq"}}
+			snapshot.Forms[0].TemplateData = `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"required":true}}],"config":{}}`
+			paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+			configs := &memoryPathConfigRepository{records: map[uint64]model.StoredPathConfig{32: {PathID: 32, ConfigVersion: 3, FormStatus: "draft", FormValues: map[string]any{"amount": float64(3600)}}}}
+			configuration, err := newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, configs).Get(context.Background(), 7, 32)
+			if err != nil || len(configuration.Form.ConditionHints) != 1 {
+				t.Fatalf("读取部分映射条件失败：form=%+v err=%v", configuration.Form, err)
+			}
+			hint := configuration.Form.ConditionHints[0]
+			if hint.Mapped || !hint.Protected || len(hint.Fields) != 1 || hint.Fields[0] != "amount" || len(hint.UnmappedFields) != 1 || hint.UnmappedFields[0] != "missingField" {
+				t.Fatalf("部分映射条件没有独立投影字段：%+v", hint)
+			}
+			if len(configuration.Form.FieldRules) != 1 || configuration.Form.FieldRules[0].Field != "amount" || !configuration.Form.FieldRules[0].Disabled {
+				t.Fatalf("已映射字段保护被未映射字段取消：%+v", configuration.Form.FieldRules)
+			}
+			if !strings.Contains(hint.Text, "missingField") || !strings.Contains(hint.Text, "保持可编辑") {
+				t.Fatalf("未映射字段没有在提示中说明可编辑：%s", hint.Text)
+			}
+		})
 	}
 }
 
