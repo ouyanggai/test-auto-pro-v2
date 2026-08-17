@@ -42,9 +42,9 @@ function postCommand(type: string, payload: Record<string, unknown> = {}): Promi
   })
 }
 
-// loadRuntime 只把 SID 传给当前 iframe 内存会话，并装载完整模板、权限和 values。
-async function loadRuntime() {
-  try {
+// loadRuntime 只把 SID 传给当前 iframe 内存会话，并装载完整模板、权限、字段规则和 values。
+async function loadRuntime(): Promise<Record<string, unknown>> {
+	try {
     const payload = await postCommand('load', {
       sid: props.runtimeSession.sid,
       baseURL: props.runtimeSession.baseURL,
@@ -56,16 +56,18 @@ async function loadRuntime() {
       readOnly: props.form.readOnly,
       template: props.form.template,
       permissions: props.form.permissions,
-		fieldRules: props.form.fieldRules,
+      fieldRules: props.form.fieldRules,
       values: props.form.values,
       generatedValues: props.form.values,
       generatedFieldPaths: props.form.generatedFieldPaths,
       manualOverridePaths: props.form.manualOverridePaths,
     })
 		emit('ready', payload)
+    return payload
   }
   catch (caught) {
     emit('error', caught instanceof Error ? caught.message : '表单运行时加载失败')
+    return {}
   }
 }
 
@@ -94,6 +96,12 @@ function handleMessage(event: MessageEvent) {
 // setGeneratedData 把服务端生成结果交给真实 FormMaking setData/refresh。
 function setGeneratedData(values: Record<string, unknown>, generatedFieldPaths: string[], manualOverridePaths: string[]) {
   return postCommand('setData', { values, generatedFieldPaths, manualOverridePaths })
+}
+
+// reloadRuntime 在新字段规则到达后销毁旧组件实例，再在真实组件创建前应用最新规则和 values。
+async function reloadRuntime() {
+  destroyRuntime()
+  return loadRuntime()
 }
 
 // restoreSaved 恢复本次载入时的已保存值。
@@ -139,7 +147,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('message', handleMessage)
 })
 
-defineExpose({ setGeneratedData, restoreSaved, getValues, validateAndGetValues, destroyRuntime })
+defineExpose({ setGeneratedData, reloadRuntime, restoreSaved, getValues, validateAndGetValues, destroyRuntime })
 </script>
 
 <template>

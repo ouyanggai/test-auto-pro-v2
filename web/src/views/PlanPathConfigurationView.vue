@@ -46,6 +46,7 @@ import type { PersistedPlan } from '../features/plans/types'
 
 type FormRuntimeExpose = InstanceType<typeof FormRuntimeFrame> & {
   setGeneratedData: (values: Record<string, unknown>, paths: string[], manualPaths: string[]) => Promise<Record<string, unknown>>
+  reloadRuntime: () => Promise<Record<string, unknown>>
   restoreSaved: () => Promise<Record<string, unknown>>
   getValues: () => Promise<Record<string, unknown>>
   validateAndGetValues: () => Promise<Record<string, unknown>>
@@ -354,7 +355,11 @@ async function generateFormData(nextGroup: boolean) {
     current.form.autoFilled = generated.autoFilled
     current.form.manualPending = generated.manualPending
     current.form.unsupported = generated.unsupported
-    applyRuntimeFormState(await formFrame.value.setGeneratedData(generated.values, generated.generatedFieldPaths, generated.manualOverridePaths))
+    current.form.conditionHints = generated.conditionHints
+    current.form.fieldRules = generated.fieldRules
+    // 字段规则只能在 FormMaking 创建组件前生效；重新载入后统计由真实运行时重新对账。
+    await nextTick()
+    applyRuntimeFormState(await formFrame.value.reloadRuntime())
   }
   catch (caught) {
     formError.value = publicPageError(caught)
@@ -533,8 +538,8 @@ void loadPage()
                   <li v-for="(hint, index) in configuration.form.conditionHints" :key="`${hint.field}-${index}`" :class="{ 'path-configuration-page__form-hint--protected': hint.protected, 'path-configuration-page__form-hint--unmapped': !hint.mapped }">
                     <n-tag v-if="hint.protected" size="small" type="warning" :bordered="false">当前路径命中 · 已保护</n-tag>
                     <n-tag v-else-if="!hint.mapped" size="small" type="error" :bordered="false">无法精确映射 · 可编辑</n-tag>
-                    <n-tag v-else size="small" type="info" :bordered="false">当前路径命中</n-tag>
-                    <strong>{{ hint.text }}</strong>
+                    <strong v-if="hint.protected">{{ hint.text }}</strong>
+                    <span v-else>{{ hint.text }}</span>
                   </li>
                 </ul>
               </div>
