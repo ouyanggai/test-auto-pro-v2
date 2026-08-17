@@ -17,7 +17,7 @@ type PathConfigurationService interface {
 	Get(context.Context, uint64, uint64) (model.PathConfiguration, error)
 	Save(context.Context, uint64, uint64, string, uint64, []model.PathConfigFieldValue, []model.PathConfigActionValue) (model.PathConfigSaveResult, error)
 	SaveNode(context.Context, uint64, uint64, string, string, model.PathNodeSaveInput) (model.PathConfigSaveResult, error)
-	GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string) (model.PathFormGenerateResult, error)
+	GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error)
 	SaveForm(context.Context, uint64, uint64, string, model.PathFormSaveInput) (model.PathConfigSaveResult, error)
 	RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error)
 }
@@ -33,6 +33,7 @@ type pathFormGenerateInput struct {
 	Seed                int64          `json:"seed"`
 	Values              map[string]any `json:"values"`
 	ManualOverridePaths []string       `json:"manualOverridePaths"`
+	NextGroup           bool           `json:"nextGroup"`
 }
 
 // registerPathConfigurationRoutes 注册同一计划下单条路径的配置读取与保存端点。
@@ -95,7 +96,7 @@ func handleGeneratePathConfigurationForm(configurations PathConfigurationService
 			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "智能生成请求格式不正确", false)
 			return
 		}
-		result, err := configurations.GenerateForm(request.Context(), planID, pathID, input.Seed, input.Values, input.ManualOverridePaths)
+		result, err := configurations.GenerateForm(request.Context(), planID, pathID, input.Seed, input.Values, input.ManualOverridePaths, input.NextGroup)
 		if err != nil {
 			writePathConfigError(response, err)
 			return
@@ -241,7 +242,7 @@ func (unavailablePathConfigurationService) SaveNode(context.Context, uint64, uin
 }
 
 // GenerateForm 在未注入配置服务时拒绝智能生成。
-func (unavailablePathConfigurationService) GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string) (model.PathFormGenerateResult, error) {
+func (unavailablePathConfigurationService) GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error) {
 	return model.PathFormGenerateResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "表单生成服务暂不可用"}
 }
 

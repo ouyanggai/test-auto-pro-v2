@@ -26,6 +26,7 @@ type stubPathConfigurationService struct {
 	actionPlan    model.PathConfigActionPlanInput
 	nodeKey       string
 	generateSeed  int64
+	nextGroup     bool
 	formInput     model.PathFormSaveInput
 }
 
@@ -52,8 +53,9 @@ func (s *stubPathConfigurationService) SaveNode(_ context.Context, planID, pathI
 }
 
 // GenerateForm 返回契约测试预设的智能生成结果。
-func (s *stubPathConfigurationService) GenerateForm(_ context.Context, _ uint64, _ uint64, seed int64, _ map[string]any, _ []string) (model.PathFormGenerateResult, error) {
+func (s *stubPathConfigurationService) GenerateForm(_ context.Context, _ uint64, _ uint64, seed int64, _ map[string]any, _ []string, nextGroup bool) (model.PathFormGenerateResult, error) {
 	s.generateSeed = seed
+	s.nextGroup = nextGroup
 	return model.PathFormGenerateResult{Status: "draft", Values: map[string]any{"amount": 100}}, s.err
 }
 
@@ -80,8 +82,8 @@ func TestPathConfigurationAPIWorkspaceContracts(t *testing.T) {
 	}
 
 	generated := httptest.NewRecorder()
-	handler.ServeHTTP(generated, httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/31/configuration/form/generate", strings.NewReader(`{"seed":73,"values":{"amount":100},"manualOverridePaths":["title"]}`)))
-	if generated.Code != http.StatusOK || stub.generateSeed != 73 || !strings.Contains(generated.Body.String(), `"status":"draft"`) {
+	handler.ServeHTTP(generated, httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/31/configuration/form/generate", strings.NewReader(`{"seed":73,"values":{"amount":100},"manualOverridePaths":["title"],"nextGroup":true}`)))
+	if generated.Code != http.StatusOK || stub.generateSeed != 73 || !stub.nextGroup || !strings.Contains(generated.Body.String(), `"status":"draft"`) {
 		t.Fatalf("表单生成契约不正确：status=%d body=%s seed=%d", generated.Code, generated.Body.String(), stub.generateSeed)
 	}
 

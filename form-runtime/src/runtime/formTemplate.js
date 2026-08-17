@@ -46,15 +46,20 @@ export function componentRuntimeName (component) {
   ).trim()
 }
 
-// prepareTemplate 在完整模板副本上应用字段权限，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
-// 分支关键数据提示由宿主平台工作区渲染，不写入表单字段单元格。
-export function prepareTemplate (rawTemplate, permissions, readOnly) {
-  const template = clonePlain(rawTemplate || {})
-  const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [normalizeFieldPath(item.field), item.power]))
+// prepareTemplate 在完整模板副本上应用字段权限和宿主投影的精确字段规则，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
+// 条件字段规则只能按模型键匹配；未映射条件不传入这里，不能按标题猜测后误禁用真实组件。
+export function prepareTemplate (rawTemplate, permissions, readOnly, fieldRules = []) {
+	const template = clonePlain(rawTemplate || {})
+	const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [normalizeFieldPath(item.field), item.power]))
+	const ruleByField = new Map((Array.isArray(fieldRules) ? fieldRules : [])
+		.filter(item => item && typeof item === 'object' && String(item.field || '').trim())
+		.map(item => [normalizeFieldPath(item.field), Boolean(item.disabled)]))
   const unsupported = new Set()
   const allFields = new Set()
   const editableFields = new Set()
-  const hiddenFields = new Set()
+	const hiddenFields = new Set()
+	const protectedFields = new Set()
+	const requiredEditableFields = new Set()
   const visit = (list) => {
     for (const component of Array.isArray(list) ? list : []) {
       const type = String(component && component.type || '').trim()
@@ -70,15 +75,20 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
         const field = normalizeFieldPath(model)
         const power = permissionByField.get(field) || 'only_read'
         allFields.add(field)
-        if (!readOnly && power === 'edit') editableFields.add(field)
-        if (power === 'hide') hiddenFields.add(field)
-        component.options = component.options || {}
-        component.options.hidden = power === 'hide'
-        component.options.disabled = readOnly || power !== 'edit'
-        if (component.options.disabled) {
+			const protectedByCondition = ruleByField.get(field) === true
+			if (!readOnly && power === 'edit' && !protectedByCondition) editableFields.add(field)
+			if (protectedByCondition) protectedFields.add(field)
+			if (power === 'hide') hiddenFields.add(field)
+			component.options = component.options || {}
+			component.options.hidden = power === 'hide'
+			// 条件锁定在组件创建前写入 options，不能依赖宿主视觉遮挡或不兼容的运行时 disabled API。
+			component.options.disabled = readOnly || power !== 'edit' || protectedByCondition
+			if (component.options.disabled) {
           component.options.required = false
           // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
-          if (Array.isArray(component.rules)) component.rules = []
+				if (Array.isArray(component.rules)) component.rules = []
+			} else if (component.options.required || Array.isArray(component.rules) && component.rules.some(rule => rule && rule.required)) {
+				requiredEditableFields.add(field)
         }
       }
       for (const children of componentLists(component)) visit(children)
@@ -97,9 +107,30 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
     unsupported: [...unsupported],
     isolatedHooks,
     allFields: [...allFields],
-    editableFields: [...editableFields],
-    hiddenFields: [...hiddenFields]
-  }
+		editableFields: [...editableFields],
+		hiddenFields: [...hiddenFields],
+		protectedFields: [...protectedFields],
+		requiredEditableFields: [...requiredEditableFields]
+	}
+}
+
+// formRuntimeStats 只根据真实 getValues、组件生效后的编辑权限、生成所有权和人工修改计算工具栏统计。
+export function formRuntimeStats (values, generatedFieldPaths, manualOverridePaths, editableFields, protectedFields, requiredEditableFields) {
+	const getPath = (input, path) => String(path || '').split('.').filter(Boolean).reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, input)
+	const generated = new Set((Array.isArray(generatedFieldPaths) ? generatedFieldPaths : []).map(normalizeFieldPath))
+	const manual = new Set((Array.isArray(manualOverridePaths) ? manualOverridePaths : []).map(normalizeFieldPath))
+	const protectedSet = new Set((Array.isArray(protectedFields) ? protectedFields : []).map(normalizeFieldPath))
+	const editable = new Set((Array.isArray(editableFields) ? editableFields : []).map(normalizeFieldPath))
+	const autoEligible = new Set([...editable, ...protectedSet])
+	let autoFilled = 0
+	for (const field of autoEligible) {
+		if (generated.has(field) && !manual.has(field) && !isEmptyModelValue(getPath(values, field))) autoFilled++
+	}
+	let manualPending = 0
+	for (const field of new Set((Array.isArray(requiredEditableFields) ? requiredEditableFields : []).map(normalizeFieldPath))) {
+		if (editable.has(field) && !protectedSet.has(field) && isEmptyModelValue(getPath(values, field))) manualPending++
+	}
+	return { autoFilled, manualPending }
 }
 
 // captureFormValues 使用目标运行时 getData 仅做校验，并以 getValues 返回包含虚拟字段的完整对象。

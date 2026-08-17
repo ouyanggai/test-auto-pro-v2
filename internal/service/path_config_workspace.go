@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -52,7 +54,7 @@ func (s *PathConfigService) RuntimeSession(ctx context.Context, planID, pathID u
 }
 
 // GenerateForm 按当前真实模板、近期样本、发起人和路径条件生成可复现草稿。
-func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uint64, seed int64, current map[string]any, manualPaths []string) (model.PathFormGenerateResult, error) {
+func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uint64, seed int64, current map[string]any, manualPaths []string, nextGroup bool) (model.PathFormGenerateResult, error) {
 	path, err := s.ownedPath(ctx, planID, pathID)
 	if err != nil {
 		return model.PathFormGenerateResult{}, err
@@ -108,13 +110,18 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 			identity = formdataIdentityContext(active)
 		}
 	}
+	permissions := formPermissions(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: template, Base: base, Samples: samples, Seed: seed, Initiator: initiator,
 		Constraints: buildPathConstraints(snapshot.Tree, path.Choices), ManualOverridePaths: manualPaths,
-		EditablePaths: editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs)),
-		Identity:    identity,
+		EditablePaths: editableFormPathsFromPermissions(permissions),
+		Identity:      identity,
 	})
 	generated.Unsupported = append(generated.Unsupported, unsupported...)
+	if nextGroup && reflect.DeepEqual(base, generated.Values) {
+		// “换一组”只能在当前模板、样本和路径约束能证明产生新值时成功，避免旧值被伪装成新候选。
+		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "没有可切换的下一组有效候选，当前数据已保持不变"}
+	}
 	return model.PathFormGenerateResult{
 		Revision: stored.FormRevision, Status: "draft", Values: generated.Values, Seed: seed,
 		GeneratedFieldPaths: generated.GeneratedFieldPaths, ManualOverridePaths: generated.ManualOverridePaths,
@@ -304,8 +311,9 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 		ReadOnly: source != "new", Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
-		ConditionHints: buildPathConditionHints(snapshot.Tree, choices, template),
+		ConditionHints: buildPathConditionHints(snapshot.Tree, choices, template, formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs))),
 	}
+	form.FieldRules = buildPathFormFieldRules(form.ConditionHints)
 	if found && len(stored.FormValues) > 0 {
 		form.Values = cloneFormValues(stored.FormValues)
 		form.Seed = stored.FormSeed
@@ -495,7 +503,7 @@ func formPermissions(tree *target.FlowNodeTemplate, reachable []string) []model.
 			return
 		}
 		for _, power := range node.FieldPowers {
-			field := strings.TrimSpace(power.EnglishName)
+			field := normalizeFormFieldPath(power.EnglishName)
 			if field == "" {
 				continue
 			}
@@ -517,8 +525,13 @@ func formPermissions(tree *target.FlowNodeTemplate, reachable []string) []model.
 
 // editableFormPaths 提取当前路径任一节点明确授予 edit 的字段，未授权字段由真实运行时保持只读或隐藏。
 func editableFormPaths(tree *target.FlowNodeTemplate, reachable []string) map[string]bool {
+	return editableFormPathsFromPermissions(formPermissions(tree, reachable))
+}
+
+// editableFormPathsFromPermissions 从已投影权限中提取可编辑字段，保证生成、校验和运行时使用相同字段路径规范。
+func editableFormPathsFromPermissions(permissions []model.PathFormPermission) map[string]bool {
 	result := make(map[string]bool)
-	for _, permission := range formPermissions(tree, reachable) {
+	for _, permission := range permissions {
 		if permission.Power == "edit" {
 			result[permission.Field] = true
 		}
@@ -553,7 +566,10 @@ func buildPathConstraints(tree *target.FlowNodeTemplate, choices []model.Executi
 						continue
 					}
 					for _, condition := range sibling.Conditions {
-						avoidByField[condition.FieldA] = append(avoidByField[condition.FieldA], condition.ValueB)
+						field := normalizeFormFieldPath(condition.FieldA)
+						if field != "" {
+							avoidByField[field] = append(avoidByField[field], condition.ValueB)
+						}
 					}
 				}
 				for field, avoid := range avoidByField {
@@ -576,7 +592,7 @@ func buildPathConstraints(tree *target.FlowNodeTemplate, choices []model.Executi
 					group = orGroup
 				}
 				constraints = append(constraints, formdata.Constraint{
-					Field: strings.TrimSpace(condition.FieldA), Op: normalizeConditionJudge(condition.Judge), Value: pathConditionValue(condition.ValueB), Group: group,
+					Field: normalizeFormFieldPath(condition.FieldA), Op: normalizeConditionJudge(condition.Judge), Value: pathConditionValue(condition.ValueB), Group: group,
 				})
 			}
 		}
@@ -647,15 +663,16 @@ func formdataIdentityContext(identity target.FormIdentityContext) formdata.Ident
 	}
 }
 
-// buildPathConditionHints 为当前路径已选条件分支生成字段级气泡提示，说明关键数据用于哪个分支。
-func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template map[string]any) []model.PathFormConditionHint {
+// buildPathConditionHints 为当前路径已选条件分支生成字段级高亮提示，并仅对模板模型精确匹配且可编辑的字段施加保护。
+func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template map[string]any, permissions []model.PathFormPermission) []model.PathFormConditionHint {
 	fields, _ := formdata.ParseTemplate(template)
 	labelByModel := make(map[string]string, len(fields))
 	for _, field := range fields {
-		if strings.TrimSpace(field.Path) != "" && strings.TrimSpace(field.Name) != "" {
-			labelByModel[field.Path] = field.Name
+		if normalized := normalizeFormFieldPath(field.Path); normalized != "" && strings.TrimSpace(field.Name) != "" {
+			labelByModel[normalized] = field.Name
 		}
 	}
+	editable := editableFormPathsFromPermissions(permissions)
 	selected := make(map[string]string, len(choices))
 	for _, choice := range choices {
 		selected[choice.RouteNodeID] = choice.BranchID
@@ -675,7 +692,7 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 				branchName = "已选条件分支"
 			}
 			for _, condition := range branch.Conditions {
-				field := strings.TrimSpace(condition.FieldA)
+				field := normalizeFormFieldPath(condition.FieldA)
 				if field == "" || strings.TrimSpace(condition.FieldB) != "" {
 					continue
 				}
@@ -683,18 +700,48 @@ func buildPathConditionHints(tree *target.FlowNodeTemplate, choices []model.Exec
 				if !ok {
 					judge = "按条件"
 				}
-				label := labelByModel[field]
-				if label == "" {
-					label = field
+				label, mapped := labelByModel[field]
+				if !mapped {
+					hints = append(hints, model.PathFormConditionHint{Field: field, Text: fmt.Sprintf("分支「%s」命中条件无法精确映射到当前表单字段，未限制编辑，请人工核对", branchName), Mapped: false})
+					continue
 				}
 				hints = append(hints, model.PathFormConditionHint{
-					Field: field,
-					Text:  fmt.Sprintf("分支「%s」：%s %s %s", branchName, label, judge, pathConditionDisplayText(pathConditionValue(condition.ValueB))),
+					Field: field, Text: fmt.Sprintf("分支「%s」：%s %s %s", branchName, label, judge, pathConditionDisplayText(pathConditionValue(condition.ValueB))),
+					Mapped: true, Protected: editable[field],
 				})
 			}
 		}
 	})
 	return hints
+}
+
+// buildPathFormFieldRules 合并同一字段的命中条件，供 iframe 在真实组件创建前设置 disabled。
+func buildPathFormFieldRules(hints []model.PathFormConditionHint) []model.PathFormFieldRule {
+	byField := make(map[string]*model.PathFormFieldRule)
+	for _, hint := range hints {
+		if !hint.Mapped || strings.TrimSpace(hint.Field) == "" {
+			continue
+		}
+		rule := byField[hint.Field]
+		if rule == nil {
+			rule = &model.PathFormFieldRule{Field: hint.Field, ConditionHints: []string{}}
+			byField[hint.Field] = rule
+		}
+		rule.Disabled = rule.Disabled || hint.Protected
+		rule.ConditionHints = append(rule.ConditionHints, hint.Text)
+	}
+	result := make([]model.PathFormFieldRule, 0, len(byField))
+	for _, rule := range byField {
+		rule.ConditionHints = uniquePublicStrings(rule.ConditionHints)
+		result = append(result, *rule)
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].Field < result[right].Field })
+	return result
+}
+
+// normalizeFormFieldPath 只做目标已定义的嵌套分隔符归一，不按字段名称或相似度猜测映射。
+func normalizeFormFieldPath(value string) string {
+	return strings.TrimSpace(strings.ReplaceAll(value, "_$$_", "."))
 }
 
 // pathConditionJudgeText 把比较码翻译为气泡可读中文；未知码返回 false。

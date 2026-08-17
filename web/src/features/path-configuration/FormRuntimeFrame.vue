@@ -10,7 +10,8 @@ const props = defineProps<{
   runtimeSession: PathFormRuntimeSession
 }>()
 const emit = defineEmits<{
-  ready: [unsupported: string[]]
+  ready: [payload: Record<string, unknown>]
+  state: [payload: Record<string, unknown>]
   error: [message: string]
 }>()
 
@@ -55,12 +56,13 @@ async function loadRuntime() {
       readOnly: props.form.readOnly,
       template: props.form.template,
       permissions: props.form.permissions,
+		fieldRules: props.form.fieldRules,
       values: props.form.values,
       generatedValues: props.form.values,
       generatedFieldPaths: props.form.generatedFieldPaths,
       manualOverridePaths: props.form.manualOverridePaths,
     })
-    emit('ready', Array.isArray(payload.unsupported) ? payload.unsupported.map(String) : [])
+		emit('ready', payload)
   }
   catch (caught) {
     emit('error', caught instanceof Error ? caught.message : '表单运行时加载失败')
@@ -71,12 +73,16 @@ async function loadRuntime() {
 function handleMessage(event: MessageEvent) {
   if (event.origin !== runtimeOrigin.value || event.source !== iframe.value?.contentWindow) return
   const message = event.data as { version?: string, sessionId?: string, requestId?: string, type?: string, payload?: Record<string, unknown> }
-  if (message.version !== FORM_RUNTIME_VERSION) return
+	if (message.version !== FORM_RUNTIME_VERSION) return
   if (message.type === 'ready' && message.requestId === 'boot') {
     void loadRuntime()
     return
   }
-  if (message.sessionId !== sessionId.value || !message.requestId) return
+	if (message.sessionId !== sessionId.value || !message.requestId) return
+	if (message.type === 'state') {
+		emit('state', message.payload || {})
+		return
+	}
   const request = pending.get(message.requestId)
   if (!request) return
   window.clearTimeout(request.timer)

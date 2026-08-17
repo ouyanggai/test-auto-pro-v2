@@ -76,13 +76,14 @@ export function savePathConfigurationNode(
 export function generatePathFormData(
   planId: string,
   pathId: string,
-  seed: number,
-  values: Record<string, unknown>,
-  manualOverridePaths: string[],
-  signal?: AbortSignal,
+	seed: number,
+	values: Record<string, unknown>,
+	manualOverridePaths: string[],
+	nextGroup: boolean,
+	signal?: AbortSignal,
 ): Promise<PathFormGenerateResult> {
   return request<PathFormGenerateResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/form/generate`, {
-    method: 'POST', body: JSON.stringify({ seed, values, manualOverridePaths }),
+		method: 'POST', body: JSON.stringify({ seed, values, manualOverridePaths, nextGroup }),
   }, signal)
 }
 

@@ -108,6 +108,25 @@ const runtimeBlockingReasons = computed(() => [...new Set([
 ])])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
 
+// applyRuntimeFormState 只接受 iframe 已核验会话回传的统计与人工覆盖摘要，宿主不自行猜测 FormMaking 当前字段值。
+function applyRuntimeFormState(payload: Record<string, unknown>) {
+  const form = configuration.value?.form
+  if (!form) return
+  const stats = payload.stats
+  if (stats && typeof stats === 'object') {
+    const runtimeStats = stats as { autoFilled?: unknown, manualPending?: unknown }
+    if (typeof runtimeStats.autoFilled === 'number' && Number.isInteger(runtimeStats.autoFilled) && runtimeStats.autoFilled >= 0) form.autoFilled = runtimeStats.autoFilled
+    if (typeof runtimeStats.manualPending === 'number' && Number.isInteger(runtimeStats.manualPending) && runtimeStats.manualPending >= 0) form.manualPending = runtimeStats.manualPending
+  }
+  if (Array.isArray(payload.manualOverridePaths)) form.manualOverridePaths = payload.manualOverridePaths.map(String)
+}
+
+// handleRuntimeReady 接收真实组件注册表与首次字段统计，避免初始化阶段仍显示旧的生成器估算值。
+function handleRuntimeReady(payload: Record<string, unknown>) {
+  runtimeUnsupported.value = Array.isArray(payload.unsupported) ? payload.unsupported.map(String) : []
+  applyRuntimeFormState(payload)
+}
+
 // publicPageError 把读取链路异常收敛为不含内部标识的稳定页面错误。
 function publicPageError(caught: unknown): string {
   if (caught instanceof PlanApiError || caught instanceof PathConfigApiError) return caught.message
@@ -324,7 +343,7 @@ async function generateFormData(nextGroup: boolean) {
     const values = (captured.values || current.form.values) as Record<string, unknown>
     const manual = Array.isArray(captured.manualOverridePaths) ? captured.manualOverridePaths.map(String) : current.form.manualOverridePaths
     const seed = nextGroup ? nextFormGenerationSeed(current.form.seed) : current.form.seed
-    const generated = await generatePathFormData(planID.value, pathID.value, seed, values, manual)
+    const generated = await generatePathFormData(planID.value, pathID.value, seed, values, manual, nextGroup)
     current.form.values = generated.values
     current.form.seed = generated.seed
     current.form.status = 'draft'
@@ -335,7 +354,7 @@ async function generateFormData(nextGroup: boolean) {
     current.form.autoFilled = generated.autoFilled
     current.form.manualPending = generated.manualPending
     current.form.unsupported = generated.unsupported
-    await formFrame.value.setGeneratedData(generated.values, generated.generatedFieldPaths, generated.manualOverridePaths)
+    applyRuntimeFormState(await formFrame.value.setGeneratedData(generated.values, generated.generatedFieldPaths, generated.manualOverridePaths))
   }
   catch (caught) {
     formError.value = publicPageError(caught)
@@ -350,7 +369,7 @@ async function restoreSavedForm() {
   if (!formFrame.value || formBusy.value) return
   formBusy.value = true
   formError.value = ''
-  try { await formFrame.value.restoreSaved() }
+  try { applyRuntimeFormState(await formFrame.value.restoreSaved()) }
   catch (caught) { formError.value = publicPageError(caught) }
   finally { formBusy.value = false }
 }
@@ -510,9 +529,13 @@ void loadPage()
           <n-collapse :default-expanded-names="['condition-hints']" arrow-placement="right">
             <n-collapse-item title="分支关键数据提示" name="condition-hints">
               <div class="path-configuration-page__form-hints-body">
-                <p>以下关键数据被当前路径的条件分支使用，仅作参考提示；修改这些字段可能影响实际分支走向。</p>
-                <ul>
-                  <li v-for="(hint, index) in configuration.form.conditionHints" :key="`${hint.field}-${index}`">{{ hint.text }}</li>
+                <ul class="path-configuration-page__form-hints-list">
+                  <li v-for="(hint, index) in configuration.form.conditionHints" :key="`${hint.field}-${index}`" :class="{ 'path-configuration-page__form-hint--protected': hint.protected, 'path-configuration-page__form-hint--unmapped': !hint.mapped }">
+                    <n-tag v-if="hint.protected" size="small" type="warning" :bordered="false">当前路径命中 · 已保护</n-tag>
+                    <n-tag v-else-if="!hint.mapped" size="small" type="error" :bordered="false">无法精确映射 · 可编辑</n-tag>
+                    <n-tag v-else size="small" type="info" :bordered="false">当前路径命中</n-tag>
+                    <strong>{{ hint.text }}</strong>
+                  </li>
                 </ul>
               </div>
             </n-collapse-item>
@@ -538,7 +561,8 @@ void loadPage()
           class="path-configuration-page__form-frame"
           :form="configuration.form"
           :runtime-session="runtimeSession"
-          @ready="(items) => runtimeUnsupported = items"
+          @ready="handleRuntimeReady"
+          @state="applyRuntimeFormState"
           @error="(message) => formError = message"
         />
         <n-empty v-else-if="!formBusy" description="表单运行时会话暂不可用，请返回节点画布后重试" />
@@ -663,17 +687,30 @@ void loadPage()
   max-height: 300px;
   overflow-y: auto;
 }
-.path-configuration-page__form-hints-body p {
-  margin: 0 0 6px;
-  color: var(--path-config-text-secondary-color);
+.path-configuration-page__form-hints-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
   font-size: 12px;
 }
-.path-configuration-page__form-hints-body ul {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--path-config-text-secondary-color);
-  font-size: 12px;
-  line-height: 1.8;
+.path-configuration-page__form-hints-list li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  padding: 7px 8px;
+  border-left: 3px solid color-mix(in srgb, var(--path-config-border-color) 78%, transparent);
+  line-height: 1.55;
+}
+.path-configuration-page__form-hints-list li + li { margin-top: 5px; }
+.path-configuration-page__form-hints-list strong { color: var(--path-config-text-color); font-weight: 600; }
+.path-configuration-page__form-hint--protected {
+  background: color-mix(in srgb, #f0a020 12%, var(--path-config-card-color));
+  border-left-color: #f0a020 !important;
+}
+.path-configuration-page__form-hint--unmapped {
+  background: color-mix(in srgb, #d03050 9%, var(--path-config-card-color));
+  border-left-color: #d03050 !important;
 }
 .path-configuration-page__form-error-details {
   margin: 6px 0 0;

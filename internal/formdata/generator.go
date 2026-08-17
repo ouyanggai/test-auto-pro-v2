@@ -223,7 +223,7 @@ func Generate(input GenerateInput) GenerateResult {
 			}
 			continue
 		}
-		if sample, ok := sampleValue(input.Samples, field); ok {
+		if sample, ok := sampleValue(input.Samples, field, int(seed)); ok {
 			setPath(values, field.Path, sample)
 			generated = append(generated, field.Path)
 			result.Recent++
@@ -245,7 +245,7 @@ func Generate(input GenerateInput) GenerateResult {
 			result.Pending++
 		}
 	}
-	applyConstraints(values, input.Constraints, manual, rng)
+	applyConstraints(values, input.Constraints, manual, rng, &generated)
 	addVirtualValues(values, fields, &generated)
 	result.GeneratedFieldPaths = uniqueSorted(generated)
 	return result
@@ -325,9 +325,10 @@ func TemplateVersion(template map[string]any) string {
 	return strconv.FormatUint(hash, 16)
 }
 
-// sampleValue 选择第一个与当前组件形状匹配的近期样本值。
-func sampleValue(samples []map[string]any, field Field) (any, bool) {
-	for _, sample := range samples {
+// sampleValue 按稳定种子轮转近期样本，换一组时只从同一已验证样本来源选择下一可用值。
+func sampleValue(samples []map[string]any, field Field, offset int) (any, bool) {
+	for index := range samples {
+		sample := samples[(index+offset)%len(samples)]
 		if value, ok := getPath(sample, field.Path); ok && !emptyValue(value) && usableValue(field, value) {
 			return cloneValue(value), true
 		}
@@ -416,8 +417,8 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 	return nil, false
 }
 
-// applyConstraints 只覆盖生成器拥有的字段；人工值冲突留给保存校验明确提示。
-func applyConstraints(values map[string]any, constraints []Constraint, manual map[string]bool, rng *rand.Rand) {
+// applyConstraints 只覆盖生成器拥有的字段；命中条件字段也纳入生成所有权，供运行时统计准确识别自动值。
+func applyConstraints(values map[string]any, constraints []Constraint, manual map[string]bool, rng *rand.Rand, generated *[]string) {
 	appliedGroups := make(map[int]bool)
 	for _, constraint := range constraints {
 		if constraint.Field == "" || manual[constraint.Field] {
@@ -453,6 +454,7 @@ func applyConstraints(values map[string]any, constraints []Constraint, manual ma
 		if constraint.Group > 0 {
 			appliedGroups[constraint.Group] = true
 		}
+		*generated = append(*generated, constraint.Field)
 	}
 }
 

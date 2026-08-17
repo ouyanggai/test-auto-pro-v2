@@ -36,7 +36,8 @@ export interface PathFormConfiguration {
   affected: Array<{ kind: string, name: string, reason: string }>
   autoFilled: number
   manualPending: number
-  conditionHints: Array<{ field: string, text: string }>
+  conditionHints: Array<{ field: string, text: string, protected: boolean, mapped: boolean }>
+  fieldRules: Array<{ field: string, disabled: boolean, conditionHints: string[] }>
 }
 
 export interface PathFormSampleSummary {

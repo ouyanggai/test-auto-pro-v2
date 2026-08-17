@@ -49,12 +49,23 @@ type PathFormConfig struct {
 	AutoFilled          int                      `json:"autoFilled"`
 	ManualPending       int                      `json:"manualPending"`
 	ConditionHints      []PathFormConditionHint  `json:"conditionHints"`
+	FieldRules          []PathFormFieldRule      `json:"fieldRules"`
 }
 
-// PathFormConditionHint 是当前路径条件分支使用到的关键字段提示，只用于表单气泡展示。
+// PathFormConditionHint 是当前路径命中条件的可读高亮信息；未精确映射时明确保留可编辑边界。
 type PathFormConditionHint struct {
-	Field string `json:"field"`
-	Text  string `json:"text"`
+	Field     string `json:"field"`
+	Text      string `json:"text"`
+	Protected bool   `json:"protected"`
+	Mapped    bool   `json:"mapped"`
+}
+
+// PathFormFieldRule 是运行时在真实 FormMaking 组件渲染前应用的字段级适配规则。
+// Field 只能来自模板模型的精确匹配，禁止按显示名称猜测并错误禁用字段。
+type PathFormFieldRule struct {
+	Field          string   `json:"field"`
+	Disabled       bool     `json:"disabled"`
+	ConditionHints []string `json:"conditionHints"`
 }
 
 // PathFormPermission 是 iframe 应用字段权限所需的最小字段键与权限。

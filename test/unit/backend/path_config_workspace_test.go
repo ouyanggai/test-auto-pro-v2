@@ -52,7 +52,7 @@ func TestPathConfigWorkspaceGeneratesAndPersistsFormSeparately(t *testing.T) {
 	if err != nil || initial.Form.Status != "empty" || initial.Status != "pending" {
 		t.Fatalf("首次表单或路径状态错误：configuration=%+v err=%v", initial, err)
 	}
-	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 73, nil, nil)
+	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 73, nil, nil, false)
 	if err != nil || generated.Status != "draft" || generated.Values["amount"] != float64(3600) || generated.SampleSummary.Recent == 0 {
 		t.Fatalf("智能生成没有使用近期样本：generated=%+v err=%v", generated, err)
 	}
@@ -168,6 +168,58 @@ func TestPathConfigWorkspaceNewFormUsesEntryNodePermissions(t *testing.T) {
 	}
 }
 
+// TestPathConfigWorkspaceProjectsConditionFieldRules 验证路径命中条件仅在精确映射且可编辑时禁用真实运行时字段。
+func TestPathConfigWorkspaceProjectsConditionFieldRules(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	snapshot := pathConfigWorkspaceSnapshot()
+	snapshot.Tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "amount", Judge: "gte", ValueB: "3000"}}
+	snapshot.Tree.Child.ConditionNodes[1].Conditions = []target.FlowCondition{{FieldA: "unknown_$$_field", Judge: "eq", ValueB: "x"}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	configuration, err := newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, &memoryPathConfigRepository{}).Get(context.Background(), 7, 32)
+	if err != nil {
+		t.Fatalf("读取条件字段规则失败：%v", err)
+	}
+	if len(configuration.Form.ConditionHints) != 1 || !configuration.Form.ConditionHints[0].Mapped || !configuration.Form.ConditionHints[0].Protected {
+		t.Fatalf("命中条件没有形成精确高亮和保护标记：%+v", configuration.Form.ConditionHints)
+	}
+	if len(configuration.Form.FieldRules) != 1 || configuration.Form.FieldRules[0].Field != "amount" || !configuration.Form.FieldRules[0].Disabled || len(configuration.Form.FieldRules[0].ConditionHints) != 1 {
+		t.Fatalf("精确映射字段没有生成真实组件规则：%+v", configuration.Form.FieldRules)
+	}
+
+	snapshot.Tree.Child.ConditionNodes[0].Conditions = []target.FlowCondition{{FieldA: "unknown_$$_field", Judge: "eq", ValueB: "x"}}
+	configuration, err = newPathConfigService(t, plans, &pathConfigReader{snapshot: snapshot}, paths, &memoryPathConfigRepository{}).Get(context.Background(), 7, 32)
+	if err != nil || len(configuration.Form.FieldRules) != 0 || len(configuration.Form.ConditionHints) != 1 || configuration.Form.ConditionHints[0].Mapped || configuration.Form.ConditionHints[0].Protected {
+		t.Fatalf("无法精确映射字段被错误禁用或未提示：form=%+v err=%v", configuration.Form, err)
+	}
+}
+
+// TestPathConfigWorkspaceChangesOnlyWhenNextCandidateExists 验证换一组轮转同一近期样本来源且无新候选时明确拒绝。
+func TestPathConfigWorkspaceChangesOnlyWhenNextCandidateExists(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration, Account: "account-a", FlowSource: "new", TargetObjectID: "template-a"}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 32, PlanID: 7, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}}}}
+	reader := &workspacePathConfigReader{pathConfigReader: &pathConfigReader{snapshot: pathConfigWorkspaceSnapshot()}, samples: []map[string]any{
+		{"amount": float64(1800), "type": "a", "note": "样本甲"},
+		{"amount": float64(2800), "type": "b", "note": "样本乙"},
+	}}
+	serviceUnderTest := newPathConfigService(t, plans, reader, paths, &memoryPathConfigRepository{})
+	first, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 1, nil, nil, false)
+	if err != nil {
+		t.Fatalf("生成首组候选失败：%v", err)
+	}
+	next, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 2, first.Values, nil, true)
+	if err != nil || next.Values["amount"] == first.Values["amount"] || next.Values["note"] == first.Values["note"] {
+		t.Fatalf("换一组没有切换到同源下一有效候选：first=%+v next=%+v err=%v", first.Values, next.Values, err)
+	}
+
+	reader.samples = []map[string]any{{"amount": next.Values["amount"], "type": next.Values["type"], "note": next.Values["note"]}}
+	_, err = serviceUnderTest.GenerateForm(context.Background(), 7, 32, 3, next.Values, nil, true)
+	if !service.IsPathConfigErrorKind(err, service.PathConfigErrorInvalidArgument) {
+		t.Fatalf("没有下一候选时错误报告切换成功：%v", err)
+	}
+}
+
 // TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately 验证已注册自定义组件不阻断节点保存，完整值和虚拟字段可独立往返。
 func TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately(t *testing.T) {
 	plans := newMemoryPlanRepository()
@@ -207,7 +259,7 @@ func TestPathConfigWorkspaceSupportsRegisteredCustomValuesSeparately(t *testing.
 		"generalInfo__condition":    "示例项目",
 		"generalInfo__formPersonId": "project-42",
 	}
-	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 17, values, []string{"generalInfo"})
+	generated, err := serviceUnderTest.GenerateForm(context.Background(), 7, 32, 17, values, []string{"generalInfo"}, false)
 	if err != nil || len(generated.Unsupported) != 0 || generated.Values["generalInfo"] != values["generalInfo"] {
 		t.Fatalf("生成器错误阻断或覆盖自定义组件值：generated=%+v err=%v", generated, err)
 	}

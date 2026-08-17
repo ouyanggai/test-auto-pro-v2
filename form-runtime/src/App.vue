@@ -15,7 +15,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { captureFormValues, clonePlain, prepareTemplate, diffManualPaths, refreshPreparedForm } from './runtime/formTemplate'
+import { captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, diffManualPaths, refreshPreparedForm } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -39,10 +39,13 @@ export default {
       allFields: [],
       editableFields: [],
       hiddenFields: [],
+		protectedFields: [],
+		requiredEditableFields: [],
       readOnly: false,
       loading: false,
       dirty: false,
-      removeRequestPolicy: null
+		removeRequestPolicy: null,
+		stateTimer: null
     }
   },
   mounted () {
@@ -120,13 +123,15 @@ export default {
           if (payload.customerCode) window.$store.commit('user/SET_CUSTOMERCODE', String(payload.customerCode))
           if (payload.companyName) window.$store.commit('user/SET_COMPANY_NAME', String(payload.companyName))
         }
-        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly)
+		const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, payload.fieldRules || [])
         this.template = prepared.template
         this.unsupported = prepared.unsupported
         this.isolatedHooks = prepared.isolatedHooks
         this.allFields = prepared.allFields
         this.editableFields = prepared.editableFields
-        this.hiddenFields = prepared.hiddenFields
+		this.hiddenFields = prepared.hiddenFields
+		this.protectedFields = prepared.protectedFields
+		this.requiredEditableFields = prepared.requiredEditableFields
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
         this.generatedValues = clonePlain(payload.generatedValues || this.values)
@@ -138,7 +143,7 @@ export default {
         await this.setData(this.values)
         await this.refresh()
         this.loading = false
-        this.result(command, { ready: true, unsupported: this.unsupported, isolatedHooks: this.isolatedHooks })
+		this.result(command, { ready: true, unsupported: this.unsupported, isolatedHooks: this.isolatedHooks, stats: this.stats() })
         return
       }
       if (command.type === 'setData') {
@@ -183,26 +188,45 @@ export default {
       // 字段权限已在 FormMaking 装载前写入每个组件 options；refresh 后统一调用 disabled 会击穿缺少 disabledElement 的已注册组件。
       await refreshPreparedForm(this.form())
     },
-    async capture (validate) {
+	async capture (validate) {
       const form = this.form()
       const values = await captureFormValues(form, validate)
       this.values = values
-      return {
+		const manualOverridePaths = [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
+		return {
         values,
         validated: validate,
         unsupported: this.unsupported,
         dirty: this.dirty,
         generatedFieldPaths: this.generatedFieldPaths,
-        manualOverridePaths: [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
-      }
-    },
-    markDirty () {
-      if (!this.loading && !this.readOnly) this.dirty = true
+			manualOverridePaths,
+			stats: this.stats(values, manualOverridePaths)
+		}
+	},
+	stats (values = this.values, manualOverridePaths = this.manualOverridePaths) {
+		return formRuntimeStats(values, this.generatedFieldPaths, manualOverridePaths, this.editableFields, this.protectedFields, this.requiredEditableFields)
+	},
+	markDirty () {
+		if (this.loading || this.readOnly) return
+		this.dirty = true
+		if (this.stateTimer) window.clearTimeout(this.stateTimer)
+		this.stateTimer = window.setTimeout(() => { void this.reportState() }, 0)
+	},
+	async reportState () {
+		if (!this.sessionId || this.loading || this.readOnly) return
+		try {
+			const captured = await this.capture(false)
+			this.post({ version: FORM_RUNTIME_VERSION, sessionId: this.sessionId, requestId: 'state', type: 'state', payload: { stats: captured.stats, manualOverridePaths: captured.manualOverridePaths } })
+		} catch (_) {
+			// 输入过程中的临时组件状态不影响实际保存；下一次稳定变更会重新对账。
+		}
     },
     result (command, payload) {
       this.post({ version: FORM_RUNTIME_VERSION, sessionId: command.sessionId, requestId: command.requestId, type: 'result', payload })
     },
-    destroySession () {
+	destroySession () {
+		if (this.stateTimer) window.clearTimeout(this.stateTimer)
+		this.stateTimer = null
       if (typeof this.removeRequestPolicy === 'function') this.removeRequestPolicy()
       this.removeRequestPolicy = null
       this.sessionId = ''
@@ -218,7 +242,9 @@ export default {
       this.isolatedHooks = []
       this.allFields = []
       this.editableFields = []
-      this.hiddenFields = []
+		this.hiddenFields = []
+		this.protectedFields = []
+		this.requiredEditableFields = []
       this.dirty = false
       this.loading = false
       setRuntimeEnvironment({ baseUrl: '', viewFileUrl: '', onlyOfficeUrl: '' })
