@@ -8,10 +8,10 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-// TestF008ActionConfigurationUsesOneArrivalPerAction 验证动作次数只表达真实再次到达，不生成旧动作计划结构。
+// TestF008ActionConfigurationUsesOneArrivalPerAction 验证可配置动作按到达顺序保存，不包含系统基础动作。
 func TestF008ActionConfigurationUsesOneArrivalPerAction(t *testing.T) {
-	target := analyzer.PathConfigNodeTarget{NodeID: "approval-a", Name: "审批", ActionKinds: map[string]bool{"approve_pass": true, "reject_no_pass": true}}
-	encoded, count, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Key: "action-1", Kind: "approve_pass", Count: 2}})
+	target := analyzer.PathConfigNodeTarget{NodeID: "approval-a", Name: "审批", ActionKinds: map[string]bool{"reject_no_pass": true}}
+	encoded, count, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Key: "action-1", Kind: "reject_no_pass", Count: 2}})
 	if reason != "" || count != 2 {
 		t.Fatalf("动作配置编码失败：count=%d reason=%s", count, reason)
 	}
@@ -22,12 +22,14 @@ func TestF008ActionConfigurationUsesOneArrivalPerAction(t *testing.T) {
 
 // TestF008ActionConfigurationRejectsUnsupportedInput 验证动作目录、次数和单节点上限由服务端约束。
 func TestF008ActionConfigurationRejectsUnsupportedInput(t *testing.T) {
-	target := analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"approve_pass": true}}
+	target := analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"reject_no_pass": true}}
 	if _, _, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Kind: "draft_save", Count: 1}}); reason == "" {
 		t.Fatal("不允许的动作没有被拒绝")
 	}
-	if _, _, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Kind: "approve_pass", Count: 11}}); reason == "" {
-		t.Fatal("超出次数上限没有被拒绝")
+	for _, kind := range []string{"approve_pass", "submit", "transfer_approver", "transpond"} {
+		if _, _, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Kind: kind, Count: 1}}); reason == "" {
+			t.Fatalf("系统基础或错误动作没有被拒绝：%s", kind)
+		}
 	}
 }
 
@@ -37,7 +39,7 @@ func TestF008ActionExecutionCountIgnoresLegacyKeys(t *testing.T) {
 	if count, valid := analyzer.CountStoredPathConfigActionExecutions(values); count != 0 || !valid {
 		t.Fatalf("旧动作键错误影响新统计：count=%d valid=%v", count, valid)
 	}
-	encoded, _, _ := analyzer.EncodePathConfigActions(analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"approve_pass": true}}, []model.PathConfigConfiguredActionInput{{Kind: "approve_pass", Count: 1}})
+	encoded, _, _ := analyzer.EncodePathConfigActions(analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"reject_no_pass": true}}, []model.PathConfigConfiguredActionInput{{Kind: "reject_no_pass", Count: 1}})
 	values[analyzer.PathConfigActionConfigurationStorageKey("approval-a")] = encoded
 	if count, valid := analyzer.CountStoredPathConfigActionExecutions(values); count != 1 || !valid {
 		t.Fatalf("新动作执行量统计错误：count=%d valid=%v", count, valid)

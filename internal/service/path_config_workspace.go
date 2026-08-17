@@ -295,7 +295,7 @@ func projectPathConfigActionCycles(values map[string]string, configuration model
 	return cycles
 }
 
-// validatePathConfigActionCycles 校验两种引擎真实回路及重复动作；静态循环不能包含暂存、加签或转办。
+// validatePathConfigActionCycles 校验两种引擎真实回路及重复动作；静态循环不能包含暂存或加签。
 func validatePathConfigActionCycles(configuration model.PathConfiguration, inputs []model.PathConfigActionCycleInput) ([]model.PathConfigActionCycleInput, *PathConfigError) {
 	cycles, err := derivePathConfigActionCycles(configuration, inputs)
 	if err != nil {
@@ -330,8 +330,8 @@ func validatePathConfigActionCycles(configuration model.PathConfiguration, input
 			if action.Count > 1 && !contained {
 				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作次数需要先建立真实循环", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: pathConfigCycleNodeName(configuration, nodeKey), Reason: "重复动作需要通过重新发起一整轮或上一节点返工再次到达该节点"}}}
 			}
-			if contained && (action.Kind == "draft_save" || action.Kind == "add_sign" || action.Kind == "transfer_approver" || action.Kind == "transpond") {
-				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "循环不能包含当前动作", Affected: []model.PathConfigAffectedItem{{Kind: "cycle", Name: pathConfigCycleNodeName(configuration, nodeKey), Reason: "暂存、加签、移交和转发不能加入静态循环"}}}
+			if contained && (action.Kind == "draft_save" || action.Kind == "add_sign") {
+				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "循环不能包含当前动作", Affected: []model.PathConfigAffectedItem{{Kind: "cycle", Name: pathConfigCycleNodeName(configuration, nodeKey), Reason: "暂存、加签不能加入静态循环"}}}
 			}
 		}
 	}
@@ -391,8 +391,8 @@ func derivePathConfigActionCycles(configuration model.PathConfiguration, inputs 
 	seen := map[string]bool{}
 	result := make([]model.PathConfigActionCycle, 0, len(inputs))
 	for index, input := range inputs {
-		if input.Count < 1 || input.Count > 10 {
-			return nil, fmt.Errorf("循环次数必须在 1 到 10 之间")
+		if input.Count != 1 {
+			return nil, fmt.Errorf("循环固定执行一次")
 		}
 		key := strings.TrimSpace(input.Key)
 		if key == "" {

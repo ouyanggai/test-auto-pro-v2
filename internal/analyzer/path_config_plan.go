@@ -221,9 +221,9 @@ func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind st
 	}
 	switch nodeKind {
 	case "start":
-		appendAction("submit", "提交", "提交发起节点；执行时仍会核对真实模板、表单和账号。", nil, nil)
+		result.Base = &model.PathConfigActionBase{Kind: "submit", Label: "提交", Count: 1, Detail: "发起节点固定提交 1 次"}
 	case "common", "synergy":
-		appendAction("approve_pass", "同意", "同意当前待办并继续流程。", nil, nil)
+		result.Base = &model.PathConfigActionBase{Kind: "approve_pass", Label: "同意", Count: 1, Detail: "系统默认同意 1 次"}
 		appendAction("reject_no_pass", "不同意", "不同意后回到发起人；重新提交会重新解析条件、并行和人员。", nil, nil)
 		appendAction("draft_save", "暂存", "暂存不推进待办，不能加入静态循环。", nil, nil)
 		if previousID, _ := p.uniquePreviousBusinessNode(nodeID); previousID != "" {
@@ -231,12 +231,6 @@ func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind st
 		}
 		if person, personTarget := addSignNodePersonConfig(nodeID, node); person != nil && personTarget != nil {
 			appendAction("add_sign", "加签", "新增审批节点；不能加入静态循环。", person, personTarget)
-		}
-		if person, personTarget := transferPersonConfig(nodeID, node); person != nil && personTarget != nil {
-			appendAction("transfer_approver", "转办", "转交当前待办；不能加入静态循环。", person, personTarget)
-		}
-		if person, personTarget := transpondPersonConfig(nodeID, node); person != nil && personTarget != nil {
-			appendAction("transpond", "转办", "转交当前待办；不能加入静态循环。", person, personTarget)
 		}
 	}
 	if len(validationTarget.ActionKinds) == 0 {
@@ -376,43 +370,6 @@ func CountStoredPathConfigActionExecutions(values map[string]string) (int, bool)
 	return total, true
 }
 
-// transferPersonConfig 为转办动作建立独立人员目录，不能复用当前节点处理人范围。
-func transferPersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
-	return organizationActionPersonConfig(nodeID, node, "transfer_approver", "转办人员", "候选来自当前账号可配置的组织人员目录")
-}
-
-// transpondPersonConfig 为转办动作建立单人接收人目录。
-func transpondPersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
-	person, personTarget := organizationActionPersonConfig(nodeID, node, "transpond", "转办接收人", "候选来自当前账号可配置的组织人员目录")
-	if person == nil || personTarget == nil {
-		return nil, nil
-	}
-	person.Key, person.Title, person.Multiple, person.MaxCount = PathConfigPersonToken(nodeID+":transpond"), "转办接收人", false, 1
-	person.Strategies = removePathConfigPersonStrategy(person.Strategies, "all")
-	personTarget.Key, personTarget.Name, personTarget.MaxCount = person.Key, person.Title, 1
-	delete(personTarget.AllowedStrategies, "all")
-	return person, personTarget
-}
-
-// organizationActionPersonConfig 使用目标组织人员目录构造动作专用候选。
-func organizationActionPersonConfig(nodeID string, node *target.FlowNodeTemplate, actionKind, title, detail string) (*model.PathConfigPerson, *PathConfigPersonTarget) {
-	if node == nil || len(node.AddSignIssues) > 0 || len(node.AddSignCandidates) == 0 {
-		return nil, nil
-	}
-	return actionCandidatePersonConfig(nodeID, actionKind, title, detail, node.AddSignCandidates, nil)
-}
-
-// removePathConfigPersonStrategy 移除与动作人数边界冲突的人员策略。
-func removePathConfigPersonStrategy(items []model.PathConfigPersonStrategyOption, value string) []model.PathConfigPersonStrategyOption {
-	result := make([]model.PathConfigPersonStrategyOption, 0, len(items))
-	for _, item := range items {
-		if item.Value != value {
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
 // addSignNodePersonConfig 使用目标新审批节点人员目录生成加签人员策略。
 func addSignNodePersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
 	if node == nil || len(node.AddSignIssues) > 0 || len(node.AddSignCandidates) == 0 {
@@ -507,8 +464,6 @@ func pathConfigActionLabel(kind string) string {
 		return "回退上一步"
 	case "add_sign":
 		return "加签"
-	case "transfer_approver", "transpond":
-		return "转办"
 	default:
 		return "节点动作"
 	}

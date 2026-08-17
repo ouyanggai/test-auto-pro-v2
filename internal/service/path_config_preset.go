@@ -156,7 +156,7 @@ func (s *PathConfigService) pathConfigPresetCandidates(ctx context.Context, plan
 	return result, nil
 }
 
-// pathConfigPresetDecisions 只为提交与同意生成默认项；人员没有目标默认时明确交给人工处理。
+// pathConfigPresetDecisions 只预览系统基础动作，基础动作不写入用户动作列表。
 func pathConfigPresetDecisions(candidate pathConfigPresetCandidate) []pathConfigPresetDecision {
 	result := make([]pathConfigPresetDecision, 0)
 	for _, group := range candidate.configuration.Groups {
@@ -171,36 +171,13 @@ func pathConfigPresetDecisions(candidate pathConfigPresetCandidate) []pathConfig
 				result = append(result, pathConfigPresetDecision{item: item})
 				continue
 			}
-			kind := ""
-			switch node.Kind {
-			case "start":
-				kind = "submit"
-			case "common", "synergy":
-				kind = "approve_pass"
-			}
-			if kind == "" || !target.ActionKinds[kind] {
+			if node.ActionConfiguration.Base == nil {
 				item.Status, item.Detail = "skip", "当前节点没有安全默认动作"
 				result = append(result, pathConfigPresetDecision{item: item})
 				continue
 			}
-			item.Action = pathConfigPresetActionLabel(kind)
-			input := model.PathNodeSaveInput{Actions: []model.PathConfigConfiguredActionInput{{Key: "preset", Kind: kind, Count: 1}}}
-			if target.Person != nil {
-				person, ok := pathConfigPresetDefaultPerson(node, target.Person.Key)
-				if !ok {
-					item.Status, item.Detail = "manual", "没有可证明的目标默认处理人"
-					result = append(result, pathConfigPresetDecision{item: item})
-					continue
-				}
-				input.Persons = []model.PathConfigPersonStrategyInput{person}
-			}
-			if len(target.Blockers) > 0 {
-				item.Status, item.Detail = "manual", "当前目标规则需要人工处理"
-				result = append(result, pathConfigPresetDecision{item: item})
-				continue
-			}
-			item.Status, item.Detail = "write", "将写入安全默认动作"
-			result = append(result, pathConfigPresetDecision{item: item, input: input})
+			item.Action, item.Status, item.Detail = node.ActionConfiguration.Base.Label, "keep", "系统基础动作已固定 1 次"
+			result = append(result, pathConfigPresetDecision{item: item})
 		}
 	}
 	return result

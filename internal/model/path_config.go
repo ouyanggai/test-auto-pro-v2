@@ -93,6 +93,14 @@ type PathConfigActionCycleInput struct {
 	Count      int    `json:"count"`
 }
 
+// PathConfigActionBase 是系统自动提供且不可编辑的基础动作。
+type PathConfigActionBase struct {
+	Kind   string `json:"kind"`
+	Label  string `json:"label"`
+	Count  int    `json:"count"`
+	Detail string `json:"detail"`
+}
+
 // PathFormConfig 是与节点配置分离的真实 FormMaking 表单工作区模型。
 type PathFormConfig struct {
 	Revision            uint64                   `json:"revision"`
@@ -313,6 +321,7 @@ type PathConfigGap struct {
 
 // PathConfigActionConfiguration 是当前节点独立动作配置；每项对应一次真实到达。
 type PathConfigActionConfiguration struct {
+	Base     *PathConfigActionBase         `json:"base,omitempty"`
 	Catalog  []PathConfigActionCatalogItem `json:"catalog"`
 	Actions  []PathConfigConfiguredAction  `json:"actions"`
 	Affected bool                          `json:"affected"`

@@ -227,9 +227,17 @@ export interface PathConfigGap {
   reason: string
 }
 
-export type PathConfigActionKind = 'submit' | 'approve_pass' | 'reject_no_pass' | 'draft_save' | 'rollback_previous' | 'add_sign' | 'transfer_approver' | 'transpond'
+export type PathConfigActionKind = 'reject_no_pass' | 'draft_save' | 'rollback_previous' | 'add_sign'
+
+export interface PathConfigActionBase {
+  kind: 'submit' | 'approve_pass'
+  label: string
+  count: 1
+  detail: string
+}
 
 export interface PathConfigActionConfiguration {
+  base?: PathConfigActionBase
   catalog: PathConfigActionCatalogItem[]
   actions: PathConfigConfiguredAction[]
   affected: boolean

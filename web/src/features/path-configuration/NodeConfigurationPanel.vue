@@ -11,12 +11,11 @@ const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, valu
 const actionEditorOpen = ref(false)
 const cycleEditorOpen = ref(false)
 const cycleType = ref<PathConfigActionCycleInput['type']>('restart_from_initiator')
-const cycleCount = ref(1)
 
 // actions 只保留当前节点的 F-008 动作行。
 const actions = computed(() => props.node ? (props.draft.actionConfigurations[props.node.key] ?? pathConfigActionsInput(props.node)) : [])
 // cycleInputs 只回传服务端派生的循环事实。
-const cycleInputs = computed(() => props.actionCycles.map(cycle => ({ key: cycle.key, type: cycle.type, endNodeKey: cycle.endNodeKey, count: cycle.count })))
+const cycleInputs = computed(() => props.actionCycles.map(cycle => ({ key: cycle.key, type: cycle.type, endNodeKey: cycle.endNodeKey, count: 1 as const })))
 // emitActions 复制动作行后更新父级草稿，避免 Vue Proxy 进入请求体。
 function emitActions(next: PathConfigConfiguredActionInput[]) { if (props.node) emit('updateActionConfiguration', props.node.key, copyPathConfigActions(next)) }
 // personDraft 返回当前人员策略草稿。
@@ -42,7 +41,7 @@ function moveAction(index: number, offset: number) { const target = index + offs
 // removeAction 删除一个动作行。
 function removeAction(index: number) { const next = copyPathConfigActions(actions.value); next.splice(index, 1); emitActions(next) }
 // addCycle 以当前节点作为引擎派生终点，不允许传入成员或回退目标。
-function addCycle() { if (!props.node) return; emit('updateActionCycles', [...cycleInputs.value, { key: `cycle-local-${Date.now()}`, type: cycleType.value, endNodeKey: props.node.key, count: Math.max(1, Math.min(10, cycleCount.value || 1)) }]); cycleEditorOpen.value = false }
+function addCycle() { if (!props.node) return; emit('updateActionCycles', [...cycleInputs.value, { key: `cycle-local-${Date.now()}`, type: cycleType.value, endNodeKey: props.node.key, count: 1 }]); cycleEditorOpen.value = false }
 // removeCycle 删除循环草稿，不调用目标平台。
 function removeCycle(key: string) { emit('updateActionCycles', cycleInputs.value.filter(cycle => cycle.key !== key)) }
 // itemCount 汇总已解析人员规则，保持侧栏简短。
@@ -75,8 +74,9 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 
       <section class="node-configuration-panel__section">
         <h3>准备情况</h3>
-        <p>动作配置和循环配置只保存本系统准备，不会调用目标平台。</p>
-        <p v-if="actions.length">已配置 {{ actions.length }} 个动作；每次真实到达只执行一个动作。</p>
+        <p>流程第几次走到这个节点，就执行第几行。第 2 次走到这里，才会用第 2 行；一次到达只执行一行。</p>
+        <p v-if="node.actionConfiguration.base">基础动作：{{ node.actionConfiguration.base.label }} 1 次（系统默认）</p>
+        <p v-if="actions.length">已配置 {{ actions.length }} 个可选动作</p>
         <p v-else>尚未配置动作。</p>
         <n-space>
           <n-button type="primary" :disabled="node.lineBlocked || !node.actionConfiguration.catalog.length" @click="actionEditorOpen = true">动作配置</n-button>
@@ -84,7 +84,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
         </n-space>
         <ul v-if="actionCycles.length" class="cycle-list">
           <li v-for="cycle in actionCycles" :key="cycle.key">
-            <span>{{ cycle.label }} × {{ cycle.count }}：{{ cycle.members.join(' → ') }}</span>
+            <span>{{ cycle.label }}：{{ cycle.members.join(' → ') }}</span>
             <n-popconfirm @positive-click="removeCycle(cycle.key)">
               <template #trigger><n-button text title="删除循环"><CloseOutline /></n-button></template>
               删除这个循环配置？
@@ -103,10 +103,12 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 
     <n-modal v-model:show="actionEditorOpen">
       <n-card title="动作配置" style="width: min(680px, 94vw)">
+        <p class="beginner-hint">流程第几次走到这个节点，就执行第几行；一次到达只执行一行。</p>
         <n-alert type="info" :show-icon="false">次数表示后续真实再次到达时的顺序，不会在同一次任务内连续调用接口。</n-alert>
+        <div v-if="node.actionConfiguration.base" class="action-base-row"><span>系统默认</span><strong>{{ node.actionConfiguration.base.label }}</strong><span>固定 1 次</span></div>
         <div v-for="(action, index) in actions" :key="action.key" class="action-row">
           <div class="action-row__header">
-            <strong>动作 {{ index + 1 }}</strong>
+            <strong>第 {{ index + 1 }} 次到达</strong>
             <n-space>
               <n-button text title="上移动作" :disabled="index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
               <n-button text title="下移动作" :disabled="index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
@@ -132,7 +134,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
     <n-modal v-model:show="cycleEditorOpen">
       <n-card title="循环配置" style="width: min(560px, 94vw)">
         <n-select v-model:value="cycleType" :options="[{ label: '不同意后重新提交', value: 'restart_from_initiator' }, { label: '回退上一步后重做', value: 'redo_previous_task' }]" />
-        <n-input-number v-model:value="cycleCount" :min="1" :max="10" />
+        <p class="cycle-fixed-note">每个循环固定执行一轮。</p>
         <n-alert type="info" :show-icon="false">重新提交会从发起人开始重新解析条件、并行和人员；回退只能由引擎返回真实上一个待办。</n-alert>
         <template #footer><n-space justify="end"><n-button @click="cycleEditorOpen = false">取消</n-button><n-button type="primary" @click="addCycle">加入循环</n-button></n-space></template>
       </n-card>
@@ -143,5 +145,5 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 </template>
 
 <style scoped>
-.node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:16px}.node-configuration-panel__header,.node-configuration-panel__footer,.action-row__header,.cycle-list li{display:flex;align-items:center;justify-content:space-between;gap:12px}.node-configuration-panel__body{overflow:auto;display:flex;flex-direction:column;gap:16px}.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:12px}.person-row,.action-row{display:flex;flex-direction:column;gap:8px;margin-top:10px}.action-row{padding:12px;border:1px solid #e5e7eb;border-radius:6px}.node-configuration-panel__footer{border-top:1px solid #e5e7eb;padding-top:12px}.cycle-list{padding-left:0;list-style:none}.node-configuration-panel h2,.node-configuration-panel h3{margin:0}.node-configuration-panel p,.node-configuration-panel small{color:#64748b}
+.node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:12px}.node-configuration-panel__header,.node-configuration-panel__footer,.action-row__header,.cycle-list li{display:flex;align-items:center;justify-content:space-between;gap:10px}.node-configuration-panel__body{overflow:auto;display:flex;flex-direction:column;gap:12px}.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:10px}.person-row{display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px;margin-top:8px;align-items:center}.action-row{display:grid;grid-template-columns:120px minmax(0,1fr) 88px auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #edf0f3}.action-row__header{display:contents}.action-base-row{display:grid;grid-template-columns:120px 1fr 80px;gap:8px;align-items:center;padding:8px 0;color:#64748b;border-bottom:1px solid #edf0f3}.node-configuration-panel__footer{border-top:1px solid #e5e7eb;padding-top:10px}.cycle-list{padding-left:0;list-style:none}.node-configuration-panel h2,.node-configuration-panel h3{margin:0}.node-configuration-panel p,.node-configuration-panel small{color:#64748b}@media (max-width:680px){.person-row,.action-row,.action-base-row{grid-template-columns:1fr}}
 </style>
