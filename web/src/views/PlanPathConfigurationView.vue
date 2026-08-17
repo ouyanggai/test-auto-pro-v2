@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NSpin, NSwitch, NTag, useThemeVars } from 'naive-ui'
+import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NModal, NSelect, NSpin, NSwitch, NTag, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -27,10 +27,12 @@ import {
   resolveConfirmedNodeSaveDestination,
 } from '../features/path-configuration/logic'
 import {
+	applyPathConfigurationPreset,
   fetchPathConfiguration,
   fetchPathFormRuntimeSession,
   generatePathFormData,
   PathConfigApiError,
+	previewPathConfigurationPreset,
   savePathConfigurationNode,
   savePathConfigurationSelection,
   savePathFormData,
@@ -43,6 +45,8 @@ import type {
   PathConfiguration,
   PathConfigPerson,
   PathConfigPersonStrategyInput,
+	PathConfigPresetPreview,
+	PathConfigPresetScope,
   PathFormRuntimeSession,
 } from '../features/path-configuration/types'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
@@ -86,6 +90,11 @@ const formError = ref('')
 const formErrorDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const nodeSavedSuccessfully = ref(false)
 const formSavedSuccessfully = ref(false)
+const presetModalOpen = ref(false)
+const presetScope = ref<PathConfigPresetScope>('current')
+const presetPreview = ref<PathConfigPresetPreview | null>(null)
+const presetBusy = ref(false)
+const presetError = ref('')
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 const formFrame = ref<FormRuntimeExpose | null>(null)
 let loadVersion = 0
@@ -299,6 +308,43 @@ async function updateIncludedInTest(value: boolean) {
   }
 }
 
+// openPreset 打开一键预设，并每次清除上次范围的预览结果。
+function openPreset() {
+  presetPreview.value = null
+  presetError.value = ''
+  presetModalOpen.value = true
+}
+
+// previewPreset 先由服务端按最新快照逐节点说明写入、保留、跳过或人工处理。
+async function previewPreset() {
+  presetBusy.value = true
+  presetError.value = ''
+  try {
+    presetPreview.value = await previewPathConfigurationPreset(planID.value, pathID.value, presetScope.value)
+  }
+  catch (caught) {
+    presetPreview.value = null
+    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键预设预览失败，请重试'
+  }
+  finally { presetBusy.value = false }
+}
+
+// applyPreset 只在用户确认预览后应用安全默认项，随后刷新当前路径准备情况。
+async function applyPreset() {
+  if (!presetPreview.value || presetBusy.value) return
+  presetBusy.value = true
+  presetError.value = ''
+  try {
+    await applyPathConfigurationPreset(planID.value, pathID.value, presetScope.value)
+    await reloadConfiguration()
+    presetModalOpen.value = false
+  }
+  catch (caught) {
+    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键预设应用失败，请重试'
+  }
+  finally { presetBusy.value = false }
+}
+
 // saveCurrentNode 保存当前节点后立即 GET 对账；请求响应丢失时也以服务端事实为准。
 async function saveCurrentNode() {
   const current = configuration.value
@@ -497,9 +543,47 @@ void loadPage()
           {{ pathConfigurationStatusName(configuration.status) }}
         </n-tag>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
+        <n-button v-if="workspace === 'nodes'" size="small" @click="openPreset">一键预设</n-button>
         <label class="path-configuration-page__include"><span>纳入本次测试</span><n-switch :value="includedInTest" @update:value="updateIncludedInTest" /></label>
       </div>
     </header>
+
+    <n-modal v-model:show="presetModalOpen">
+      <n-card title="一键预设" style="width: min(820px, 94vw)">
+        <n-select
+          v-model:value="presetScope"
+          :options="[
+            { label: '当前路径', value: 'current' },
+            { label: '已选路径', value: 'selected' },
+            { label: '全部兼容路径', value: 'compatible' },
+          ]"
+          @update:value="presetPreview = null"
+        />
+        <n-alert type="info" :show-icon="false">仅填入发起提交一次、普通节点同意一次和目标默认人员；不会覆盖人工配置，也不会创建循环。</n-alert>
+        <n-alert v-if="presetError" type="error" :show-icon="false">{{ presetError }}</n-alert>
+        <div v-if="presetPreview" class="path-configuration-page__preset-preview">
+          <section v-for="path in presetPreview.paths" :key="`${path.path.sequenceNo}-${path.path.name}`">
+            <h3>#{{ path.path.sequenceNo }} {{ path.path.name }}</h3>
+            <ul>
+              <li v-for="item in path.items" :key="item.nodeKey">
+                <n-tag size="small" :type="item.status === 'write' ? 'success' : item.status === 'keep' ? 'info' : item.status === 'manual' ? 'warning' : 'default'">
+                  {{ item.status === 'write' ? '写入' : item.status === 'keep' ? '保留' : item.status === 'manual' ? '需手动处理' : '跳过' }}
+                </n-tag>
+                <strong>{{ item.nodeName }}</strong><span v-if="item.action">：{{ item.action }}</span><small>{{ item.detail }}</small>
+              </li>
+            </ul>
+          </section>
+          <n-empty v-if="!presetPreview.paths.length" description="当前范围没有可处理路径" />
+        </div>
+        <template #footer>
+          <div class="path-configuration-page__preset-actions">
+            <n-button @click="presetModalOpen = false">取消</n-button>
+            <n-button :loading="presetBusy" @click="previewPreset">预览</n-button>
+            <n-button type="primary" :loading="presetBusy" :disabled="!presetPreview" @click="applyPreset">确认应用</n-button>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
 
     <nav v-if="configuration" class="path-configuration-page__switch" aria-label="配置工作区">
       <n-button :type="workspace === 'nodes' ? 'primary' : 'default'" :secondary="workspace !== 'nodes'" @click="returnToNodes">节点配置</n-button>
@@ -664,6 +748,13 @@ void loadPage()
 .path-configuration-page__progress { justify-content: flex-end; gap: 10px; font-size: 13px; color: var(--path-config-text-secondary-color); }
 .path-configuration-page__include { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--path-config-border-color); }
+.path-configuration-page__preset-preview { display: grid; gap: 12px; max-height: 52vh; overflow: auto; margin-top: 14px; }
+.path-configuration-page__preset-preview section { border-top: 1px solid var(--path-config-border-color); padding-top: 10px; }
+.path-configuration-page__preset-preview h3 { margin: 0 0 8px; font-size: 14px; }
+.path-configuration-page__preset-preview ul { display: grid; gap: 6px; list-style: none; padding: 0; margin: 0; }
+.path-configuration-page__preset-preview li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 13px; }
+.path-configuration-page__preset-preview small { color: var(--path-config-text-secondary-color); }
+.path-configuration-page__preset-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .path-configuration-page__stage {
   min-width: 0;

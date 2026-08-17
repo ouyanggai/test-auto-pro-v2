@@ -39,6 +39,36 @@ type PathConfigPreparation struct {
 	Included      bool `json:"included"`
 }
 
+// PathConfigPresetPreview 是一键预设在写入前返回的逐路径、逐节点只读预览。
+type PathConfigPresetPreview struct {
+	Scope string                 `json:"scope"`
+	Paths []PathConfigPresetPath `json:"paths"`
+}
+
+// PathConfigPresetPath 是一条路径的一键预设预览，不包含目标平台标识。
+type PathConfigPresetPath struct {
+	Path  PathConfigPath             `json:"path"`
+	Items []PathConfigPresetNodeItem `json:"items"`
+}
+
+// PathConfigPresetNodeItem 表示默认预设对一个节点的确定处理结果。
+type PathConfigPresetNodeItem struct {
+	NodeKey  string `json:"nodeKey"`
+	NodeName string `json:"nodeName"`
+	Action   string `json:"action"`
+	Status   string `json:"status"`
+	Detail   string `json:"detail"`
+}
+
+// PathConfigPresetApplyResult 返回批量预设后的实际统计，循环和测试选择不在此操作中修改。
+type PathConfigPresetApplyResult struct {
+	Preview PathConfigPresetPreview `json:"preview"`
+	Written int                     `json:"written"`
+	Kept    int                     `json:"kept"`
+	Skipped int                     `json:"skipped"`
+	Manual  int                     `json:"manual"`
+}
+
 // PathConfigActionCycle 是服务端根据当前保存路径派生的只读循环摘要。
 type PathConfigActionCycle struct {
 	Key        string   `json:"key"`

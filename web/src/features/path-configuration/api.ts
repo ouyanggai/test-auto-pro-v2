@@ -1,6 +1,9 @@
 import type {
   PathConfiguration,
   PathConfigNodeSavePayload,
+	PathConfigPresetApplyResult,
+	PathConfigPresetPreview,
+	PathConfigPresetScope,
   PathConfigSaveResult,
   PathFormGenerateResult,
   PathFormSampleSummary,
@@ -39,6 +42,16 @@ export class PathConfigApiError extends Error {
 export async function fetchPathConfiguration(planId: string, pathId: string, signal: AbortSignal): Promise<PathConfiguration> {
   const result = await request<PathConfiguration>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration`, { method: 'GET' }, signal)
   return result
+}
+
+// previewPathConfigurationPreset 计算一键预设逐节点结果，不产生任何写入。
+export function previewPathConfigurationPreset(planId: string, pathId: string, scope: PathConfigPresetScope): Promise<PathConfigPresetPreview> {
+  return request<PathConfigPresetPreview>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/preset/preview`, { method: 'POST', body: JSON.stringify({ scope }) })
+}
+
+// applyPathConfigurationPreset 只应用预览中的安全默认项，不生成循环或覆盖人工配置。
+export function applyPathConfigurationPreset(planId: string, pathId: string, scope: PathConfigPresetScope): Promise<PathConfigPresetApplyResult> {
+  return request<PathConfigPresetApplyResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/preset/apply`, { method: 'POST', body: JSON.stringify({ scope }) })
 }
 
 // savePathConfigurationNode 只保存当前节点人员和动作，避免一次点击覆盖整条路径。
