@@ -20,6 +20,11 @@ test('F-008 动作草稿按顺序保存且不包含旧计划字段', () => {
   assert.deepEqual(payload.actions, [{ key: 'action-1', kind: 'reject_no_pass', count: 2 }])
   assert.equal('actionPlan' in payload, false)
   assert.equal(validPathConfigActions(node, payload.actions), true)
+  assert.equal(validPathConfigActions(node, []), true)
+  assert.equal(validPathConfigActions(node, [
+    { key: 'action-1', kind: 'reject_no_pass', count: 1 },
+    { key: 'action-2', kind: 'reject_no_pass', count: 1 },
+  ]), false)
   assert.equal(validPathConfigActions(node, [{ key: 'approve', kind: 'approve_pass', count: 1 }]), false)
 })
 

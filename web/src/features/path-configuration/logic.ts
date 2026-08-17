@@ -158,10 +158,13 @@ export function normalizedPathConfigSeed(seed: unknown): number { return typeof 
 
 // validPathConfigActions 在提交前校验目录、次数和动作专用人员。
 export function validPathConfigActions(node: PathConfigNode, input: PathConfigConfiguredActionInput[]): boolean {
-  if (!input?.length || input.length > 10) return false
+  if (!input || input.length > 10) return false
   const catalog = new Map(node.actionConfiguration.catalog.filter(item => item.enabled).map(item => [item.kind, item]))
+  const seen = new Set<string>()
   return input.every(action => {
     const definition = catalog.get(action.kind)
+    if (seen.has(action.kind)) return false
+    seen.add(action.kind)
     if (!definition || normalizedActionCount(action.count) !== action.count) return false
     if (!definition.requiresPerson) return !action.person
     return validPathConfigActionPerson(definition.person, action.person)

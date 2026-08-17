@@ -23,8 +23,14 @@ func TestF008ActionConfigurationUsesOneArrivalPerAction(t *testing.T) {
 // TestF008ActionConfigurationRejectsUnsupportedInput 验证动作目录、次数和单节点上限由服务端约束。
 func TestF008ActionConfigurationRejectsUnsupportedInput(t *testing.T) {
 	target := analyzer.PathConfigNodeTarget{ActionKinds: map[string]bool{"reject_no_pass": true}}
+	if encoded, count, reason := analyzer.EncodePathConfigActions(target, nil); reason != "" || count != 0 || !strings.Contains(encoded, `"actions":[]`) {
+		t.Fatalf("默认空动作配置不应失败：count=%d reason=%s encoded=%s", count, reason, encoded)
+	}
 	if _, _, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Kind: "draft_save", Count: 1}}); reason == "" {
 		t.Fatal("不允许的动作没有被拒绝")
+	}
+	if _, _, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Kind: "reject_no_pass", Count: 1}, {Kind: "reject_no_pass", Count: 1}}); reason == "" {
+		t.Fatal("重复动作没有被拒绝")
 	}
 	for _, kind := range []string{"approve_pass", "submit", "transfer_approver", "transpond"} {
 		if _, _, reason := analyzer.EncodePathConfigActions(target, []model.PathConfigConfiguredActionInput{{Kind: kind, Count: 1}}); reason == "" {

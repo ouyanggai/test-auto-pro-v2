@@ -13,6 +13,7 @@ const actionDraft = ref<PathConfigConfiguredActionInput[]>([])
 // actions 只保留当前节点的 F-008 动作行。
 const savedActions = computed(() => props.node ? (props.draft.actionConfigurations[props.node.key] ?? pathConfigActionsInput(props.node)) : [])
 const actions = computed(() => actionDraft.value)
+const canAddAction = computed(() => Boolean(props.node?.actionConfiguration.catalog.some(item => item.enabled && !actions.value.some(action => action.kind === item.kind))) && actions.value.length < 10)
 // cycleInputs 只回传服务端派生的循环事实。
 // emitActions 复制动作行后更新父级草稿，避免 Vue Proxy 进入请求体。
 function emitActions(next: PathConfigConfiguredActionInput[]) { if (props.node) emit('updateActionConfiguration', props.node.key, copyPathConfigActions(next)) }
@@ -32,16 +33,18 @@ function updatePersonStrategy(person: PathConfigPerson, patch: Partial<PathConfi
 function actionDefinition(kind: PathConfigActionKind) { return props.node?.actionConfiguration.catalog.find(item => item.kind === kind && item.enabled) }
 // actionPerson 返回动作专用人员目录。
 function actionPerson(kind: PathConfigActionKind) { return actionDefinition(kind)?.person }
-// updateAction 更新单行的类型、次数和人员参数。
-function updateAction(index: number, patch: Partial<PathConfigConfiguredActionInput>) { const next = copyPathConfigActions(actions.value); const current = next[index]; if (!current) return; const kind = (patch.kind ?? current.kind) as PathConfigActionKind; const definition = actionDefinition(kind); if (!definition) return; current.kind = kind; current.count = normalizedActionCount(patch.count ?? current.count); current.person = definition.requiresPerson ? (patch.person ?? current.person ?? (definition.person ? personDraft(definition.person) : undefined)) : undefined; emitActions(next) }
-// updateActionPerson 更新动作的独立人员策略。
-function updateActionPerson(index: number, person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) { const next = copyPathConfigActions(actions.value); if (!next[index]) return; const updated = { ...(next[index].person ?? personDraft(person)), ...patch, key: person.key }; updated.selected = resolvedPersonStrategySelection(person, updated); next[index].person = updated; emitActions(next) }
-// addAction 追加当前目录中的第一个安全动作；不会自动创建循环。
-function addAction() { const definition = props.node?.actionConfiguration.catalog.find(item => item.enabled); if (!definition || actions.value.length >= 10) return; emitActions([...actions.value, { key: `action-local-${Date.now()}`, kind: definition.kind as PathConfigActionKind, count: 1, person: definition.person ? personDraft(definition.person) : undefined }]) }
+// actionOptions 过滤其他行已经使用的动作，避免同一动作被重复编排。
+function actionOptions(index: number) { return (props.node?.actionConfiguration.catalog ?? []).filter(item => item.enabled && (item.kind === actions.value[index]?.kind || !actions.value.some((action, actionIndex) => actionIndex !== index && action.kind === item.kind))).map(item => ({ label: item.label, value: item.kind })) }
+// updateAction 只更新弹窗草稿，避免用户未确认时污染节点面板。
+function updateAction(index: number, patch: Partial<PathConfigConfiguredActionInput>) { const next = copyPathConfigActions(actions.value); const current = next[index]; if (!current) return; const kind = (patch.kind ?? current.kind) as PathConfigActionKind; if (next.some((action, actionIndex) => actionIndex !== index && action.kind === kind)) return; const definition = actionDefinition(kind); if (!definition) return; current.kind = kind; current.count = normalizedActionCount(patch.count ?? current.count); current.person = definition.requiresPerson ? (patch.person ?? current.person ?? (definition.person ? personDraft(definition.person) : undefined)) : undefined; actionDraft.value = next }
+// updateActionPerson 只更新弹窗草稿中的独立人员策略。
+function updateActionPerson(index: number, person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) { const next = copyPathConfigActions(actions.value); if (!next[index]) return; const updated = { ...(next[index].person ?? personDraft(person)), ...patch, key: person.key }; updated.selected = resolvedPersonStrategySelection(person, updated); next[index].person = updated; actionDraft.value = next }
+// addAction 只添加尚未使用的动作，默认不创建任何额外动作。
+function addAction() { const definition = props.node?.actionConfiguration.catalog.find(item => item.enabled && !actions.value.some(action => action.kind === item.kind)); if (!definition || actions.value.length >= 10) return; actionDraft.value = [...actions.value, { key: `action-local-${Date.now()}`, kind: definition.kind as PathConfigActionKind, count: 1, person: definition.person ? personDraft(definition.person) : undefined }] }
 // moveAction 调整动作对应的真实再次到达顺序。
-function moveAction(index: number, offset: number) { const target = index + offset; if (target < 0 || target >= actions.value.length) return; const next = copyPathConfigActions(actions.value); [next[index], next[target]] = [next[target], next[index]]; emitActions(next) }
+function moveAction(index: number, offset: number) { const target = index + offset; if (target < 0 || target >= actions.value.length) return; const next = copyPathConfigActions(actions.value); [next[index], next[target]] = [next[target], next[index]]; actionDraft.value = next }
 // removeAction 删除一个动作行。
-function removeAction(index: number) { const next = copyPathConfigActions(actions.value); next.splice(index, 1); emitActions(next) }
+function removeAction(index: number) { const next = copyPathConfigActions(actions.value); next.splice(index, 1); actionDraft.value = next }
 // itemCount 汇总已解析人员规则，保持侧栏简短。
 function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonItems(person.items).total }
 </script>
@@ -95,7 +98,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
       <n-card title="动作配置" style="width: min(680px, 94vw)">
         <div v-for="(action, index) in actions" :key="action.key" class="action-row">
           <strong class="action-arrival">第 {{ index + 1 }} 次</strong>
-          <n-select class="action-select" :value="action.kind" :options="node.actionConfiguration.catalog.map(item => ({ label: item.label, value: item.kind }))" @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })" />
+          <n-select class="action-select" :value="action.kind" :options="actionOptions(index)" @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })" />
           <n-input-number class="action-count" :value="action.count" :min="1" :max="10" @update:value="value => updateAction(index, { count: Number(value) || 1 })" />
           <div class="action-row__actions">
             <n-button quaternary circle title="上移动作" aria-label="上移动作" :disabled="index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
@@ -111,7 +114,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           </div>
         </div>
         <template #footer>
-          <n-space justify="end"><n-button @click="actionEditorOpen = false">取消</n-button><n-button :disabled="actions.length >= 10" @click="addAction"><AddOutline /> 添加动作</n-button><n-button type="primary" @click="saveActionEditor">保存动作配置</n-button></n-space>
+          <n-space justify="end"><n-button @click="actionEditorOpen = false">取消</n-button><n-button :disabled="!canAddAction" @click="addAction"><AddOutline /> 添加动作</n-button><n-button type="primary" @click="saveActionEditor">保存动作配置</n-button></n-space>
         </template>
       </n-card>
     </n-modal>

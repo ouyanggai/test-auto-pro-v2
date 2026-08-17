@@ -256,14 +256,16 @@ func (p *pathConfigProjection) projectStoredActionConfiguration(nodeID string, t
 	if json.Unmarshal([]byte(raw), &stored) != nil || stored.Version != pathConfigActionConfigurationVersion {
 		return []model.PathConfigConfiguredAction{}, true, "已保存的动作配置无法解析，请重新配置"
 	}
-	if len(stored.Actions) == 0 || len(stored.Actions) > maxPathConfigConfiguredActions {
+	if len(stored.Actions) > maxPathConfigConfiguredActions {
 		return []model.PathConfigConfiguredAction{}, true, "已保存的动作配置数量不合法，请重新配置"
 	}
 	result := make([]model.PathConfigConfiguredAction, 0, len(stored.Actions))
+	seenKinds := map[string]bool{}
 	for index, action := range stored.Actions {
-		if !target.ActionKinds[action.Kind] || action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
+		if seenKinds[action.Kind] || !target.ActionKinds[action.Kind] || action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
 			return []model.PathConfigConfiguredAction{}, true, "已保存的动作不再适用于当前节点，请重新配置"
 		}
+		seenKinds[action.Kind] = true
 		item := model.PathConfigConfiguredAction{Key: fmt.Sprintf("action-%d", index+1), Kind: action.Kind, Label: pathConfigActionLabel(action.Kind), Count: action.Count}
 		if personTarget := target.ActionPersons[action.Kind]; personTarget != nil {
 			person, reason := projectStoredActionPerson(personTarget, action.Person)
@@ -302,18 +304,20 @@ func invertTokenMap(values map[string]string) map[string]string {
 
 // EncodePathConfigActions 校验一次到达只能安排一个动作的 F-008 列表，并编码为版本化存储。
 func EncodePathConfigActions(target PathConfigNodeTarget, input []model.PathConfigConfiguredActionInput) (string, int, string) {
-	if len(input) == 0 {
-		return "", 0, "请至少配置一个节点动作"
-	}
 	if len(input) > maxPathConfigConfiguredActions {
 		return "", 0, "单个节点最多配置 10 个动作"
 	}
 	stored, total := storedPathConfigActionConfiguration{Version: pathConfigActionConfigurationVersion, Actions: make([]storedPathConfigConfiguredAction, 0, len(input))}, 0
+	seenKinds := map[string]bool{}
 	for _, action := range input {
 		kind := strings.TrimSpace(action.Kind)
+		if seenKinds[kind] {
+			return "", 0, "同一动作只能配置一次"
+		}
 		if !target.ActionKinds[kind] {
 			return "", 0, "动作不属于当前节点允许范围"
 		}
+		seenKinds[kind] = true
 		if action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
 			return "", 0, "动作次数必须在 1 到 10 之间"
 		}
@@ -355,13 +359,15 @@ func CountStoredPathConfigActionExecutions(values map[string]string) (int, bool)
 			continue
 		}
 		var stored storedPathConfigActionConfiguration
-		if json.Unmarshal([]byte(raw), &stored) != nil || stored.Version != pathConfigActionConfigurationVersion || len(stored.Actions) == 0 || len(stored.Actions) > maxPathConfigConfiguredActions {
+		if json.Unmarshal([]byte(raw), &stored) != nil || stored.Version != pathConfigActionConfigurationVersion || len(stored.Actions) > maxPathConfigConfiguredActions {
 			return total, false
 		}
+		seenKinds := map[string]bool{}
 		for _, action := range stored.Actions {
-			if strings.TrimSpace(action.Kind) == "" || action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
+			if seenKinds[action.Kind] || strings.TrimSpace(action.Kind) == "" || action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
 				return total, false
 			}
+			seenKinds[action.Kind] = true
 			total += action.Count
 			if total > maxPathConfigActionExecutions {
 				return total, false

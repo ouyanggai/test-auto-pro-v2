@@ -18,6 +18,7 @@ grep -Fq 'action-select' "${panel}"
 grep -Fq 'action-count' "${panel}"
 grep -Fq 'person-controls' "${panel}"
 grep -Fq 'actionDraft' "${panel}"
+grep -Fq 'actionDraft.value = next' "${panel}"
 grep -Fq '@click="openActionEditor"' "${panel}"
 grep -Fq '@click="saveActionEditor"' "${panel}"
 if grep -Eq 'action-base-row|beginner-hint|保存只更新当前节点|循环配置|cycleEditorOpen|cycle-fixed-note' "${panel}"; then exit 1; fi
