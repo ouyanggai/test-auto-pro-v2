@@ -12,22 +12,14 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
-// PathConfigurationService 提供单条路径配置的读取与整份保存能力。
+// PathConfigurationService 提供单条路径的 F-008 节点、循环、选择和表单配置能力。
 type PathConfigurationService interface {
 	Get(context.Context, uint64, uint64) (model.PathConfiguration, error)
-	Save(context.Context, uint64, uint64, string, uint64, []model.PathConfigFieldValue, []model.PathConfigActionValue) (model.PathConfigSaveResult, error)
 	SaveNode(context.Context, uint64, uint64, string, string, model.PathNodeSaveInput) (model.PathConfigSaveResult, error)
 	SaveSelection(context.Context, uint64, uint64, string, model.PathConfigSelectionInput) (model.PathConfigSaveResult, error)
 	GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error)
 	SaveForm(context.Context, uint64, uint64, string, model.PathFormSaveInput) (model.PathConfigSaveResult, error)
 	RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error)
-}
-
-// pathConfigurationUpdate 是浏览器最小可信回写体，只包含修订号和不透明键值。
-type pathConfigurationUpdate struct {
-	Revision uint64                        `json:"revision"`
-	Fields   []model.PathConfigFieldValue  `json:"fields"`
-	Actions  []model.PathConfigActionValue `json:"actions"`
 }
 
 type pathFormGenerateInput struct {
@@ -40,7 +32,6 @@ type pathFormGenerateInput struct {
 // registerPathConfigurationRoutes 注册同一计划下单条路径的配置读取与保存端点。
 func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConfigurationService) {
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration", handleGetPathConfiguration(configurations))
-	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration", handleSavePathConfiguration(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/nodes/{nodeKey}", handleSavePathConfigurationNode(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/selection", handleSavePathConfigurationSelection(configurations))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/form/generate", handleGeneratePathConfigurationForm(configurations))
@@ -189,33 +180,6 @@ func handleGetPathConfiguration(configurations PathConfigurationService) http.Ha
 	}
 }
 
-// handleSavePathConfiguration 校验修订号与幂等键后整份保存字段值和动作值。
-func handleSavePathConfiguration(configurations PathConfigurationService) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
-		if !ok {
-			return
-		}
-		pathID, ok := parseExecutionPathID(response, request.PathValue("pathId"))
-		if !ok {
-			return
-		}
-		var input pathConfigurationUpdate
-		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
-			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "路径配置请求格式不正确", false)
-			return
-		}
-		result, err := configurations.Save(request.Context(), planID, pathID, strings.TrimSpace(request.Header.Get("Idempotency-Key")), input.Revision, input.Fields, input.Actions)
-		if err != nil {
-			writePathConfigError(response, err)
-			return
-		}
-		writeSuccess(response, result)
-	}
-}
-
 // writePathConfigError 把路径配置错误映射为批准的稳定契约。
 func writePathConfigError(response http.ResponseWriter, err error) {
 	switch {
@@ -254,11 +218,6 @@ type unavailablePathConfigurationService struct{}
 // Get 在未注入配置服务时返回稳定存储不可用错误。
 func (unavailablePathConfigurationService) Get(context.Context, uint64, uint64) (model.PathConfiguration, error) {
 	return model.PathConfiguration{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
-}
-
-// Save 在未注入配置服务时拒绝保存。
-func (unavailablePathConfigurationService) Save(context.Context, uint64, uint64, string, uint64, []model.PathConfigFieldValue, []model.PathConfigActionValue) (model.PathConfigSaveResult, error) {
-	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
 }
 
 // SaveNode 在未注入配置服务时拒绝节点保存。

@@ -148,12 +148,10 @@ type PathFormSaveInput struct {
 
 // PathNodeSaveInput 是单个节点人员与动作的最小回写体。
 type PathNodeSaveInput struct {
-	Revision     uint64                          `json:"revision"`
-	Persons      []PathConfigPersonStrategyInput `json:"persons"`
-	ActionPlan   PathConfigActionPlanInput       `json:"actionPlan"`
-	Actions      []PathConfigActionValue         `json:"actions,omitempty"`
-	ActionCycles []PathConfigActionCycleInput    `json:"actionCycles,omitempty"`
-	Included     *bool                           `json:"included,omitempty"`
+	Revision     uint64                            `json:"revision"`
+	Persons      []PathConfigPersonStrategyInput   `json:"persons"`
+	Actions      []PathConfigConfiguredActionInput `json:"actions"`
+	ActionCycles []PathConfigActionCycleInput      `json:"actionCycles,omitempty"`
 }
 
 // PathConfigSelectionInput 是本次测试路径选择的最小回写体，不携带节点或目标平台动作。
@@ -188,21 +186,20 @@ type PathConfigGroup struct {
 	Nodes []PathConfigNode `json:"nodes"`
 }
 
-// PathConfigNode 是路径顺序上的一个业务节点及其人员、规则和标准动作。
+// PathConfigNode 是路径顺序上的一个业务节点及其人员、规则和 F-008 动作配置。
 type PathConfigNode struct {
-	Key          string               `json:"key"`
-	Name         string               `json:"name"`
-	TypeName     string               `json:"typeName"`
-	Kind         string               `json:"kind"`
-	Status       string               `json:"status"`
-	StatusName   string               `json:"statusName"`
-	Fields       []PathConfigField    `json:"fields"` // 兼容旧响应，节点配置不再投影表单字段。
-	Persons      []PathConfigPerson   `json:"persons"`
-	Gaps         []PathConfigGap      `json:"gaps"` // 兼容旧响应，组件缺口只由表单工作区呈现。
-	Requirements []RequirementItem    `json:"requirements"`
-	Actions      []PathConfigAction   `json:"actions"`
-	ActionPlan   PathConfigActionPlan `json:"actionPlan"`
-	LineBlocked  bool                 `json:"lineBlocked"`
+	Key                 string                        `json:"key"`
+	Name                string                        `json:"name"`
+	TypeName            string                        `json:"typeName"`
+	Kind                string                        `json:"kind"`
+	Status              string                        `json:"status"`
+	StatusName          string                        `json:"statusName"`
+	Fields              []PathConfigField             `json:"fields"` // 兼容旧响应，节点配置不再投影表单字段。
+	Persons             []PathConfigPerson            `json:"persons"`
+	Gaps                []PathConfigGap               `json:"gaps"` // 兼容旧响应，组件缺口只由表单工作区呈现。
+	Requirements        []RequirementItem             `json:"requirements"`
+	ActionConfiguration PathConfigActionConfiguration `json:"actionConfiguration"`
+	LineBlocked         bool                          `json:"lineBlocked"`
 }
 
 // PathConfigPerson 是模板约束下的处理人呈现；只有 editable=true 时浏览器才允许回写候选。
@@ -279,34 +276,12 @@ type PathConfigGap struct {
 	Reason string `json:"reason"`
 }
 
-// PathConfigAction 是发起提交或审批/协同结果的配置项。
-type PathConfigAction struct {
-	Key             string                   `json:"key"`
-	Kind            string                   `json:"kind"`
-	Label           string                   `json:"label"`
-	Current         string                   `json:"current"`
-	Default         string                   `json:"default"`
-	Options         []PathConfigActionOption `json:"options"`
-	DisagreeWarning string                   `json:"disagreeWarning"`
-}
-
-// PathConfigActionOption 是动作的稳定候选与中文标签。
-type PathConfigActionOption struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
-}
-
-// PathConfigActionPlan 是节点配置期可操作的加签节点列表与唯一处理结果。
-// 未显式配置处理结果时 Result.Kind 为空，表示默认同意；同意不进入界面配置。
-type PathConfigActionPlan struct {
-	Catalog          []PathConfigActionCatalogItem `json:"catalog"`
-	RollbackTargets  []PathConfigActionOption      `json:"rollbackTargets"`
-	Actions          []PathConfigConfiguredAction  `json:"actions"`
-	CombinationCount int                           `json:"combinationCount"`
-	AddSignNodes     []PathConfigAddSignNode       `json:"addSignNodes"`
-	Result           PathConfigActionStep          `json:"result"`
-	Affected         bool                          `json:"affected"`
-	Note             string                        `json:"note"`
+// PathConfigActionConfiguration 是当前节点独立动作配置；每项对应一次真实到达。
+type PathConfigActionConfiguration struct {
+	Catalog  []PathConfigActionCatalogItem `json:"catalog"`
+	Actions  []PathConfigConfiguredAction  `json:"actions"`
+	Affected bool                          `json:"affected"`
+	Note     string                        `json:"note"`
 }
 
 // PathConfigConfiguredAction 是配置期动作组合中的一项；Count 只表示该动作重复次数，不是组合循环次数。
@@ -315,7 +290,6 @@ type PathConfigConfiguredAction struct {
 	Kind   string                         `json:"kind"`
 	Label  string                         `json:"label"`
 	Count  int                            `json:"count"`
-	Target string                         `json:"target"`
 	Person *PathConfigPersonStrategyInput `json:"person,omitempty"`
 }
 
@@ -326,34 +300,8 @@ type PathConfigActionCatalogItem struct {
 	Description    string            `json:"description"`
 	Enabled        bool              `json:"enabled"`
 	DisabledReason string            `json:"disabledReason"`
-	AllowsOpinion  bool              `json:"allowsOpinion"`
-	RequiresTarget bool              `json:"requiresTarget"`
 	RequiresPerson bool              `json:"requiresPerson"`
 	Person         *PathConfigPerson `json:"person,omitempty"`
-}
-
-// PathConfigActionStep 是唯一处理结果；目标节点与人员均使用不透明键。Kind 为空表示默认同意。
-type PathConfigActionStep struct {
-	Kind    string                         `json:"kind"`
-	Label   string                         `json:"label"`
-	Opinion string                         `json:"opinion"`
-	Target  string                         `json:"target"`
-	Person  *PathConfigPersonStrategyInput `json:"person,omitempty"`
-}
-
-// PathConfigAddSignNode 是一个独立的新增加签审批节点、其处理人策略与加签次数。
-// 次数按目标平台语义表示加签节点数量，同一行共享同一处理人策略。
-type PathConfigAddSignNode struct {
-	Person PathConfigPersonStrategyInput `json:"person"`
-	Count  int                           `json:"count"`
-}
-
-// PathConfigActionPlanInput 是浏览器保存的语义化动作配置，不暴露内部兼容分组。
-type PathConfigActionPlanInput struct {
-	Actions          []PathConfigConfiguredActionInput `json:"actions"`
-	CombinationCount int                               `json:"combinationCount"`
-	AddSignNodes     []PathConfigAddSignNodeInput      `json:"addSignNodes"`
-	Result           PathConfigActionStepInput         `json:"result"`
 }
 
 // PathConfigConfiguredActionInput 是浏览器保存的一个动作组合项，人员和目标仍为不透明键。
@@ -361,34 +309,13 @@ type PathConfigConfiguredActionInput struct {
 	Key    string                         `json:"key"`
 	Kind   string                         `json:"kind"`
 	Count  int                            `json:"count"`
-	Target string                         `json:"target"`
 	Person *PathConfigPersonStrategyInput `json:"person,omitempty"`
-}
-
-// PathConfigAddSignNodeInput 是一个待保存的加签节点人员策略与次数。
-type PathConfigAddSignNodeInput struct {
-	Person PathConfigPersonStrategyInput `json:"person"`
-	Count  int                           `json:"count"`
-}
-
-// PathConfigActionStepInput 只允许唯一处理结果、不透明回退目标和受约束移交人员策略；Kind 为空表示默认同意。
-type PathConfigActionStepInput struct {
-	Kind    string                         `json:"kind"`
-	Opinion string                         `json:"opinion"`
-	Target  string                         `json:"target"`
-	Person  *PathConfigPersonStrategyInput `json:"person,omitempty"`
 }
 
 // PathConfigFieldValue 是浏览器回写的一个字段值；Key 为不透明回写键。
 type PathConfigFieldValue struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
-}
-
-// PathConfigActionValue 是浏览器回写的一个节点动作；Key 为不透明回写键。
-type PathConfigActionValue struct {
-	Key    string `json:"key"`
-	Action string `json:"action"`
 }
 
 // PathConfigAffectedItem 是保存校验失败时定位到具体字段或动作的安全说明。

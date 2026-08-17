@@ -2,12 +2,9 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
@@ -27,7 +24,7 @@ const (
 	PathConfigErrorStorage          PathConfigErrorKind = "storage"
 )
 
-// PathConfigError 携带业务错误分类与可公开的受影响项目，供 API 定位保存失败位置。
+// PathConfigError 携带可公开的业务错误与受影响项。
 type PathConfigError struct {
 	Kind     PathConfigErrorKind
 	Message  string
@@ -37,7 +34,7 @@ type PathConfigError struct {
 // Error 返回可映射为稳定 API 错误的人类可读说明。
 func (e *PathConfigError) Error() string { return e.Message }
 
-// IsPathConfigErrorKind 判断错误是否属于指定的路径配置业务边界。
+// IsPathConfigErrorKind 判断错误是否属于指定路径配置边界。
 func IsPathConfigErrorKind(err error, kind PathConfigErrorKind) bool {
 	var configErr *PathConfigError
 	return errors.As(err, &configErr) && configErr.Kind == kind
@@ -67,14 +64,10 @@ type PathConfigService struct {
 
 // NewPathConfigService 组装路径配置服务依赖。
 func NewPathConfigService(plans *PlanService, targetReader PathConfigReader, flowAnalyzer FlowAnalyzer, pathAnalyzer ExecutionPathChoiceAnalyzer, configAnalyzer PathConfigAnalyzer, pathRepository repository.ExecutionPathRepository, configRepository repository.PathConfigurationRepository) *PathConfigService {
-	return &PathConfigService{
-		plans: plans, target: targetReader, flowAnalyzer: flowAnalyzer, pathAnalyzer: pathAnalyzer,
-		configAnalyzer: configAnalyzer, pathRepository: pathRepository, configRepository: configRepository,
-		now: time.Now,
-	}
+	return &PathConfigService{plans: plans, target: targetReader, flowAnalyzer: flowAnalyzer, pathAnalyzer: pathAnalyzer, configAnalyzer: configAnalyzer, pathRepository: pathRepository, configRepository: configRepository, now: time.Now}
 }
 
-// Get 校验计划与路径归属后重读当前真实配置，并叠加本路径已保存的值与动作。
+// Get 校验计划与路径归属后重读当前真实配置，并叠加 F-008 工具侧配置。
 func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (model.PathConfiguration, error) {
 	if planID == 0 || pathID == 0 {
 		return model.PathConfiguration{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
@@ -83,7 +76,7 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	if err != nil {
 		return model.PathConfiguration{}, err
 	}
-	if err := s.validateConfigMutablePlan(ctx, planID); err != nil {
+	if err = s.validateConfigMutablePlan(ctx, planID); err != nil {
 		return model.PathConfiguration{}, err
 	}
 	stored, found, err := s.configRepository.FindByPath(ctx, pathID)
@@ -101,15 +94,11 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	if !found {
 		stored = model.StoredPathConfig{PathID: pathID, FieldValues: map[string]map[string]string{}, ActionValues: map[string]string{}}
 	}
-	configuration, _, err := s.configAnalyzer.Analyze(
-		analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis,
-		snapshot.InstanceValues, stored.FieldValues, stored.ActionValues, found,
-	)
+	configuration, _, err := s.configAnalyzer.Analyze(analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis, snapshot.InstanceValues, stored.FieldValues, stored.ActionValues, found)
 	if err != nil {
 		return model.PathConfiguration{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
 	}
-	configuration.Revision = stored.Revision
-	configuration.NodeRevision = stored.NodeRevision
+	configuration.Revision, configuration.NodeRevision = stored.Revision, stored.NodeRevision
 	applyConfirmedNodeState(&configuration, stored.ConfirmedNodeKeys)
 	configuration.ActionCycles = projectPathConfigActionCycles(stored.ActionValues, configuration)
 	plan, err := s.plans.Get(ctx, planID)
@@ -117,77 +106,9 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 		return model.PathConfiguration{}, err
 	}
 	configuration.Form = projectPathForm(plan.FlowSource, snapshot, analysis.pathAnalysis, path.Choices, stored, found)
-	// 整条路径的权威状态必须同时满足表单 valid 与所有必需节点完成；数据库一行存在不再代表配置完成。
 	configuration.Status = derivePathConfigurationStatus(configuration)
-	configuration.Preparation = model.PathConfigPreparation{
-		PreparedNodes: configuration.Progress.Completed,
-		PendingItems:  configuration.Progress.Pending,
-		Included:      stored.ActionValues["f008:test-included"] == "true",
-	}
+	configuration.Preparation = model.PathConfigPreparation{PreparedNodes: configuration.Progress.Completed, PendingItems: configuration.Progress.Pending, Included: stored.ActionValues["f008:test-included"] == "true"}
 	return configuration, nil
-}
-
-// Save 幂等键命中时直接返回已保存结果；新请求重读真实图并校验字段键、类型、选项、必填和动作后整份保存。
-func (s *PathConfigService) Save(ctx context.Context, planID, pathID uint64, idempotencyKey string, revision uint64, fields []model.PathConfigFieldValue, actions []model.PathConfigActionValue) (model.PathConfigSaveResult, error) {
-	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	if planID == 0 || pathID == 0 || !validUUID(idempotencyKey) {
-		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "计划、路径或保存标识不正确，请重试"}
-	}
-	path, err := s.ownedPath(ctx, planID, pathID)
-	if err != nil {
-		return model.PathConfigSaveResult{}, err
-	}
-	if err := s.validateConfigMutablePlan(ctx, planID); err != nil {
-		return model.PathConfigSaveResult{}, err
-	}
-	// 幂等命中必须先于计划和目标读取返回，避免目标随后不可用或变化时把已成功保存误报为失败。
-	if existing, found, err := s.configRepository.FindByPathAndKey(ctx, pathID, idempotencyKey); err != nil {
-		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
-	} else if found {
-		return model.PathConfigSaveResult{Path: model.PathConfigPath{SequenceNo: path.SequenceNo, Name: path.Name}, Revision: existing.Revision, Status: existing.Status}, nil
-	}
-	stored, found, err := s.configRepository.FindByPath(ctx, pathID)
-	if err != nil {
-		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
-	}
-	expectedRevision := uint64(0)
-	if found {
-		expectedRevision = stored.Revision
-	}
-	if revision != expectedRevision {
-		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "配置已被其他操作更新，请刷新后重试"}
-	}
-	snapshot, err := s.readVerifiedSnapshot(ctx, planID)
-	if err != nil {
-		return model.PathConfigSaveResult{}, err
-	}
-	analysis, err := s.analyzeOwnedPath(ctx, planID, snapshot, path)
-	if err != nil {
-		return model.PathConfigSaveResult{}, err
-	}
-	_, validation, err := s.configAnalyzer.Analyze(
-		analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis,
-		snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{},
-	)
-	if err != nil {
-		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
-	}
-	fieldValues, actionValues, err := validatePathConfigSubmission(validation, fields, actions)
-	if err != nil {
-		return model.PathConfigSaveResult{}, err
-	}
-	nextRevision := expectedRevision + 1
-	saved, err := s.configRepository.Save(ctx, model.StoredPathConfig{
-		PathID: pathID, Revision: nextRevision, IdempotencyKey: idempotencyKey, Status: "configured",
-		FieldValues: fieldValues, ActionValues: actionValues,
-	}, expectedRevision, s.now().UTC())
-	if err != nil {
-		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
-	}
-	return model.PathConfigSaveResult{
-		Path:     model.PathConfigPath{SequenceNo: path.SequenceNo, Name: path.Name},
-		Revision: saved.Revision, Status: saved.Status,
-	}, nil
 }
 
 // ownedPath 只从计划内列表查找路径，避免通过路径 ID 探测其他计划的数据。
@@ -251,10 +172,7 @@ func (s *PathConfigService) analyzeOwnedPath(ctx context.Context, planID uint64,
 	if err != nil {
 		return ownedPathAnalysis{}, err
 	}
-	graph := model.FlowGraph{
-		PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
-		EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings,
-	}
+	graph := model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource, EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings}
 	pathAnalysis, err := s.pathAnalyzer.Analyze(graph, path.Choices)
 	if err != nil || !pathAnalysis.Complete {
 		return ownedPathAnalysis{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径选择不完整或已失效"}
@@ -262,124 +180,12 @@ func (s *PathConfigService) analyzeOwnedPath(ctx context.Context, planID uint64,
 	return ownedPathAnalysis{graph: graph, pathAnalysis: pathAnalysis}, nil
 }
 
-// validatePathConfigSubmission 把浏览器回写的字段与动作收敛为按真实节点键控的存储映射。
-func validatePathConfigSubmission(validation analyzer.PathConfigValidation, fields []model.PathConfigFieldValue, actions []model.PathConfigActionValue) (map[string]map[string]string, map[string]string, error) {
-	if len(fields) > 500 || len(actions) > 500 {
-		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "路径配置项目数量过多"}
-	}
-	if len(validation.Blockers) > 0 {
-		// 当前模板存在无法安全配置的字段或人员时整份保存必须拒绝，不能把“部分完成”伪装成已配置。
-		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径节点仍有需要重新核对的配置项", Affected: validation.Blockers}
-	}
-	seenFields := make(map[string]bool, len(fields))
-	fieldValues := make(map[string]map[string]string)
-	affected := make([]model.PathConfigAffectedItem, 0, len(fields))
-	for _, field := range fields {
-		key := strings.TrimSpace(field.Key)
-		if key == "" || seenFields[key] {
-			affected = append(affected, model.PathConfigAffectedItem{Kind: "field", Name: "字段", Reason: "字段回写键重复或为空"})
-			continue
-		}
-		seenFields[key] = true
-		target, exists := validation.FieldTokens[key]
-		if !exists {
-			// 不透明键无法对应当前真实节点时整次拒绝，避免浏览器用过期结构写库。
-			affected = append(affected, model.PathConfigAffectedItem{Kind: "field", Name: "字段", Reason: "字段已不属于当前路径或目标结构已变化"})
-			continue
-		}
-		if reason := validateConfigFieldValue(target, field.Value); reason != "" {
-			affected = append(affected, model.PathConfigAffectedItem{Kind: "field", Name: target.Name, Reason: reason})
-			continue
-		}
-		if fieldValues[target.NodeID] == nil {
-			fieldValues[target.NodeID] = make(map[string]string)
-		}
-		fieldValues[target.NodeID][target.FieldKey] = field.Value
-	}
-	for key, target := range validation.FieldTokens {
-		if !seenFields[key] {
-			affected = append(affected, model.PathConfigAffectedItem{Kind: "field", Name: target.Name, Reason: "缺少该字段的保存值，需要重新选择"})
-		}
-	}
-	if len(affected) > 0 {
-		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径配置不完整或已失效，请重新选择", Affected: affected}
-	}
-
-	seenActions := make(map[string]bool, len(actions))
-	actionValues := make(map[string]string)
-	for _, action := range actions {
-		key := strings.TrimSpace(action.Key)
-		actionValue := strings.TrimSpace(action.Action)
-		if key == "" || seenActions[key] {
-			return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径动作配置不正确，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: "动作", Reason: "动作回写键重复或为空"}}}
-		}
-		seenActions[key] = true
-		target, exists := validation.ActionTokens[key]
-		if !exists {
-			return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径动作配置已失效，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: "动作", Reason: "动作已不属于当前路径或目标结构已变化"}}}
-		}
-		if target.Kind == "person_select" {
-			storedValue, reason := validatePathConfigPersonSelection(target, actionValue)
-			if reason != "" {
-				return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径人员配置不正确，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Name, Reason: reason}}}
-			}
-			actionValues[target.StorageKey] = storedValue
-			continue
-		}
-		if !validPathConfigAction(target.Kind, actionValue) {
-			return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径动作配置不正确，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: target.Name, Reason: "动作候选不合法"}}}
-		}
-		if target.Kind != "submit" {
-			actionValues[target.StorageKey] = actionValue
-		}
-	}
-	// 未显式提交的审批/协同动作按默认推荐同意保存，发起节点固定提交无需落库。
-	for key, target := range validation.ActionTokens {
-		if !seenActions[key] && target.Kind == "agree_disagree" {
-			actionValues[target.StorageKey] = "agree"
-		}
-		if !seenActions[key] && target.Kind == "person_select" && target.Required {
-			return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "路径人员配置不完整，请重新选择", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Name, Reason: "缺少合法处理人选择"}}}
-		}
-	}
-	return fieldValues, actionValues, nil
-}
-
-// validatePathConfigPersonSelection 校验不透明候选、人数下限和会签上限，并转换为内部候选 ID JSON。
-func validatePathConfigPersonSelection(target analyzer.PathConfigActionTarget, raw string) (string, string) {
-	var tokens []string
-	if err := json.Unmarshal([]byte(raw), &tokens); err != nil {
-		return "", "人员选择格式不正确"
-	}
-	selectionCount := len(tokens)
-	// 保存与存量投影复用同一人数规则，避免当前请求和刷新后的节点状态出现相反结论。
-	if issue := analyzer.PathConfigPersonSelectionIssue(target.Required, target.MinCount, target.MaxCount, selectionCount); issue != "" {
-		return "", issue
-	}
-	seen := make(map[string]bool, len(tokens))
-	selectedIDs := make([]string, 0, len(tokens))
-	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		candidateID, exists := target.CandidateTokens[token]
-		if token == "" || !exists || seen[token] {
-			return "", "包含不属于当前模板的人员候选"
-		}
-		seen[token] = true
-		selectedIDs = append(selectedIDs, candidateID)
-	}
-	encoded, err := json.Marshal(selectedIDs)
-	if err != nil {
-		return "", "人员选择无法保存"
-	}
-	return string(encoded), ""
-}
-
-// validatePathConfigNodeSubmission 只校验并编码一个节点的人员策略、加签节点和唯一处理结果，不接受跨节点覆盖。
+// validatePathConfigNodeSubmission 只校验并编码一个节点的人员策略与 F-008 动作列表，不接受跨节点覆盖。
 func validatePathConfigNodeSubmission(target analyzer.PathConfigNodeTarget, input model.PathNodeSaveInput) (map[string]string, error) {
 	if len(target.Blockers) > 0 {
 		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点仍有无法安全确认的配置项", Affected: target.Blockers}
 	}
-	values := make(map[string]string)
+	values := map[string]string{}
 	if target.Person != nil {
 		if len(input.Persons) != 1 || strings.TrimSpace(input.Persons[0].Key) != target.Person.Key {
 			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略不完整", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Person.Name, Reason: "缺少或重复提交人员策略"}}}
@@ -392,149 +198,12 @@ func validatePathConfigNodeSubmission(target analyzer.PathConfigNodeTarget, inpu
 	} else if len(input.Persons) > 0 {
 		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点不允许配置处理人员"}
 	}
-	encoded, _, reason := analyzer.EncodePathConfigActionPlan(target, input.ActionPlan)
+	encoded, _, reason := analyzer.EncodePathConfigActions(target, input.Actions)
 	if reason != "" {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作计划不合法", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: target.Name, Reason: reason}}}
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作配置不合法", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: target.Name, Reason: reason}}}
 	}
-	values[analyzer.PathConfigActionPlanStorageKey(target.NodeID)] = encoded
+	values[analyzer.PathConfigActionConfigurationStorageKey(target.NodeID)] = encoded
 	return values, nil
-}
-
-// validateConfigFieldValue 按字段类型校验必填、类型、选项与值边界，返回可公开的中文原因。
-func validateConfigFieldValue(target analyzer.PathConfigFieldTarget, raw string) string {
-	if utf8.RuneCountInString(raw) > 20000 {
-		return "字段值过长"
-	}
-	var parsed any
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return "字段值格式不正确"
-	}
-	switch target.Type {
-	case analyzer.PathConfigTypeText:
-		text, ok := parsed.(string)
-		if !ok {
-			return "字段值必须是文本"
-		}
-		if target.Required && strings.TrimSpace(text) == "" {
-			return "必填字段不能为空"
-		}
-	case analyzer.PathConfigTypeDate:
-		text, ok := parsed.(string)
-		if !ok || !validConfigDate(text) {
-			return "日期格式必须是 YYYY-MM-DD"
-		}
-		if target.Required && strings.TrimSpace(text) == "" {
-			return "必填字段不能为空"
-		}
-	case analyzer.PathConfigTypeDateTime:
-		text, ok := parsed.(string)
-		if !ok || !validConfigDateTime(text) {
-			return "日期时间格式必须是 YYYY-MM-DD HH:mm:ss"
-		}
-		if target.Required && strings.TrimSpace(text) == "" {
-			return "必填字段不能为空"
-		}
-	case analyzer.PathConfigTypeNumber:
-		_, empty, ok := parseConfigNumber(parsed)
-		if !ok {
-			return "字段值必须是数字"
-		}
-		if target.Required && empty {
-			return "必填字段不能为空"
-		}
-	case analyzer.PathConfigTypeSingleSelect:
-		text, ok := parsed.(string)
-		if !ok {
-			return "单选字段值不正确"
-		}
-		if target.Required && strings.TrimSpace(text) == "" {
-			return "必填字段不能为空"
-		}
-		if text != "" && !configOptionExists(target.Options, text) {
-			return "选项已不在当前目标候选中"
-		}
-	case analyzer.PathConfigTypeMultiSelect:
-		items, ok := parsed.([]any)
-		if !ok {
-			return "多选字段值不正确"
-		}
-		if target.Required && len(items) == 0 {
-			return "必填字段不能为空"
-		}
-		for _, item := range items {
-			text, ok := item.(string)
-			if !ok || !configOptionExists(target.Options, text) {
-				return "多选值包含已不在当前目标候选中的选项"
-			}
-		}
-	case analyzer.PathConfigTypeSwitch:
-		if _, ok := parsed.(bool); !ok {
-			return "开关字段值必须是布尔值"
-		}
-	default:
-		return "字段类型暂不支持保存"
-	}
-	return ""
-}
-
-// validConfigDate 校验保存请求中的日期值，避免任意文本绕过日期控件进入配置表。
-func validConfigDate(value string) bool {
-	if strings.TrimSpace(value) == "" {
-		return true
-	}
-	parsed, err := time.ParseInLocation("2006-01-02", value, time.UTC)
-	return err == nil && parsed.Format("2006-01-02") == value
-}
-
-// validConfigDateTime 校验保存请求中的日期时间值，保持前端控件与后端回写格式一致。
-func validConfigDateTime(value string) bool {
-	if strings.TrimSpace(value) == "" {
-		return true
-	}
-	parsed, err := time.ParseInLocation("2006-01-02 15:04:05", value, time.UTC)
-	return err == nil && parsed.Format("2006-01-02 15:04:05") == value
-}
-
-// parseConfigNumber 解析数字字段值；空字符串允许但标记为空。
-func parseConfigNumber(parsed any) (json.Number, bool, bool) {
-	switch typed := parsed.(type) {
-	case float64:
-		return json.Number(strconv.FormatFloat(typed, 'f', -1, 64)), false, true
-	case string:
-		value := strings.TrimSpace(typed)
-		if value == "" {
-			return json.Number(""), true, true
-		}
-		number := json.Number(value)
-		if _, err := number.Float64(); err != nil {
-			return json.Number(""), false, false
-		}
-		return number, false, true
-	default:
-		return json.Number(""), false, false
-	}
-}
-
-// configOptionExists 判断单选/多选值是否仍属于当前真实选项。
-func configOptionExists(options []model.PathConfigOption, value string) bool {
-	for _, option := range options {
-		if option.Value == value {
-			return true
-		}
-	}
-	return false
-}
-
-// validPathConfigAction 校验动作值属于该动作类型的固定候选。
-func validPathConfigAction(kind, value string) bool {
-	switch kind {
-	case "submit":
-		return value == "submit"
-	case "agree_disagree":
-		return value == "agree" || value == "disagree"
-	default:
-		return false
-	}
 }
 
 // mapPathConfigRepositoryError 把配置仓储错误收敛为稳定业务错误。

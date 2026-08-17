@@ -146,10 +146,9 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	}, nil
 }
 
-// SaveNode 只合并当前节点的人员与动作，并用节点确认键推进权威进度。
+// SaveNode 只合并当前节点的人员、动作和循环；循环与重复次数总在写入前按最新路径复验。
 func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64, nodeKey, idempotencyKey string, input model.PathNodeSaveInput) (model.PathConfigSaveResult, error) {
-	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	nodeKey = strings.TrimSpace(nodeKey)
+	idempotencyKey, nodeKey = strings.TrimSpace(idempotencyKey), strings.TrimSpace(nodeKey)
 	if nodeKey == "" || !validUUID(idempotencyKey) {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "节点或保存标识不正确"}
 	}
@@ -157,12 +156,12 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 	if err != nil {
 		return model.PathConfigSaveResult{}, err
 	}
-	if err := s.validateConfigMutablePlan(ctx, planID); err != nil {
+	if err = s.validateConfigMutablePlan(ctx, planID); err != nil {
 		return model.PathConfigSaveResult{}, err
 	}
-	if existing, found, err := s.configRepository.FindByPathAndKey(ctx, pathID, idempotencyKey); err != nil {
-		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
-	} else if found {
+	if existing, hit, findErr := s.configRepository.FindByPathAndKey(ctx, pathID, idempotencyKey); findErr != nil {
+		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(findErr)
+	} else if hit {
 		return pathConfigSaveResult(path, existing), nil
 	}
 	stored, found, err := s.configRepository.FindByPath(ctx, pathID)
@@ -180,90 +179,54 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 	if err != nil {
 		return model.PathConfigSaveResult{}, err
 	}
-	_, validation, err := s.configAnalyzer.Analyze(
-		owned.graph, snapshot.Tree, snapshot.FormFields, path, owned.pathAnalysis,
-		snapshot.InstanceValues, map[string]map[string]string{}, stored.ActionValues, found,
-	)
+	_, validation, err := s.configAnalyzer.Analyze(owned.graph, snapshot.Tree, snapshot.FormFields, path, owned.pathAnalysis, snapshot.InstanceValues, map[string]map[string]string{}, stored.ActionValues, found)
 	if err != nil {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点无法投影，请重新读取"}
 	}
-	nodeValidation := analyzer.PathConfigValidation{FieldTokens: map[string]analyzer.PathConfigFieldTarget{}, ActionTokens: map[string]analyzer.PathConfigActionTarget{}, NodeTokens: map[string]analyzer.PathConfigNodeTarget{}}
-	for key, action := range validation.ActionTokens {
-		if analyzer.PathConfigNodeToken(action.NodeID) == nodeKey {
-			nodeValidation.ActionTokens[key] = action
+	nodeTarget, exists := validation.NodeTokens[nodeKey]
+	if !exists {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "当前节点没有可保存的动作配置"}
+	}
+	nodeValues, err := validatePathConfigNodeSubmission(nodeTarget, input)
+	if err != nil {
+		return model.PathConfigSaveResult{}, err
+	}
+	// 开发阶段直接清除旧动作计划和旧人员数组，避免任何双读或混合结构继续参与判断。
+	values := copyPathConfigActionValues(stored.ActionValues)
+	for key := range values {
+		if strings.HasPrefix(key, "action-plan:") || strings.HasPrefix(key, "person:") {
+			delete(values, key)
 		}
 	}
-	if nodeTarget, exists := validation.NodeTokens[nodeKey]; exists {
-		nodeValidation.NodeTokens[nodeKey] = nodeTarget
+	for key, value := range nodeValues {
+		values[key] = value
 	}
-	if len(nodeValidation.ActionTokens) == 0 && len(nodeValidation.NodeTokens) == 0 {
-		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "当前节点没有可保存配置"}
+	candidate, _, projectionErr := s.configAnalyzer.Analyze(owned.graph, snapshot.Tree, snapshot.FormFields, path, owned.pathAnalysis, snapshot.InstanceValues, map[string]map[string]string{}, values, true)
+	if projectionErr != nil {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径循环无法核对，请重新读取"}
 	}
-	nodeActions := make(map[string]string)
-	if strings.TrimSpace(input.ActionPlan.Result.Kind) != "" || len(input.ActionPlan.Actions) > 0 || input.ActionPlan.CombinationCount > 0 || len(input.ActionPlan.AddSignNodes) > 0 || len(input.Persons) > 0 {
-		nodeTarget, exists := nodeValidation.NodeTokens[nodeKey]
-		if !exists {
-			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作目录已变化，请重新读取"}
-		}
-		nodeActions, err = validatePathConfigNodeSubmission(nodeTarget, input)
-		if err != nil {
-			return model.PathConfigSaveResult{}, err
-		}
-	} else {
-		// 兼容已部署页面的旧最小动作数组；新页面只使用人员策略和动作列表。
-		_, nodeActions, err = validatePathConfigSubmission(nodeValidation, nil, input.Actions)
-		if err != nil {
-			return model.PathConfigSaveResult{}, err
-		}
-	}
-	if stored.ActionValues == nil {
-		stored.ActionValues = map[string]string{}
-	}
+	cycleInputs := decodePathConfigActionCycleInputs(values)
 	if input.ActionCycles != nil {
-		// 循环只保存服务端从当前路径派生出的事实，浏览器不能拼接节点或指定回退目标。
-		configuration, _, projectionErr := s.configAnalyzer.Analyze(
-			owned.graph, snapshot.Tree, snapshot.FormFields, path, owned.pathAnalysis,
-			snapshot.InstanceValues, map[string]map[string]string{}, stored.ActionValues, found,
-		)
-		if projectionErr != nil {
-			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径循环无法核对，请重新读取"}
-		}
-		cycles, cycleErr := validatePathConfigActionCycles(configuration, nodeKey, input.ActionPlan, input.ActionCycles)
-		if cycleErr != nil {
-			return model.PathConfigSaveResult{}, cycleErr
-		}
-		encodedCycles, marshalErr := json.Marshal(cycles)
-		if marshalErr != nil {
-			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "循环配置暂时无法保存，请重试"}
-		}
-		stored.ActionValues[pathConfigActionCyclesStorageKey] = string(encodedCycles)
+		cycleInputs = input.ActionCycles
 	}
-	if input.Included != nil {
-		// 这是后续运行范围选择，不产生运行记录，也绝不调用目标平台。
-		if *input.Included {
-			stored.ActionValues["f008:test-included"] = "true"
-		} else {
-			delete(stored.ActionValues, "f008:test-included")
-		}
+	cycles, cycleErr := validatePathConfigActionCycles(candidate, cycleInputs)
+	if cycleErr != nil {
+		return model.PathConfigSaveResult{}, cycleErr
 	}
-	for storageKey, value := range nodeActions {
-		stored.ActionValues[storageKey] = value
+	encodedCycles, marshalErr := json.Marshal(cycles)
+	if marshalErr != nil {
+		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "循环配置暂时无法保存，请重试"}
 	}
-	if strings.TrimSpace(input.ActionPlan.Result.Kind) != "" || len(input.ActionPlan.Actions) > 0 || input.ActionPlan.CombinationCount > 0 || len(input.ActionPlan.AddSignNodes) > 0 || len(input.Persons) > 0 {
-		nodeTarget := nodeValidation.NodeTokens[nodeKey]
-		// 新格式成为当前节点的权威值后移除旧键，刷新时不会出现两套语义竞争。
-		delete(stored.ActionValues, nodeTarget.NodeID)
-		delete(stored.ActionValues, analyzer.PathConfigPersonStorageKey(nodeTarget.NodeID))
+	if len(cycleInputs) == 0 {
+		delete(values, pathConfigActionCyclesStorageKey)
+	} else {
+		values[pathConfigActionCyclesStorageKey] = string(encodedCycles)
 	}
-	if _, valid := analyzer.CountStoredPathConfigActionSteps(stored.ActionValues); !valid {
+	if _, valid := analyzer.CountStoredPathConfigActionExecutions(values); !valid {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "整条路径的动作总数不能超过 100 个"}
 	}
-	stored.ConfirmedNodeKeys = appendUnique(stored.ConfirmedNodeKeys, nodeKey)
-	stored.PathID = pathID
-	stored.Revision++
-	stored.NodeRevision++
-	stored.IdempotencyKey = idempotencyKey
-	stored.ConfigVersion = currentPathConfigVersion
+	stored.ActionValues, stored.ConfirmedNodeKeys, stored.PathID = values, appendUnique(stored.ConfirmedNodeKeys, nodeKey), pathID
+	stored.Revision, stored.NodeRevision, stored.IdempotencyKey, stored.ConfigVersion = stored.Revision+1, stored.NodeRevision+1, idempotencyKey, currentPathConfigVersion
 	stored.Status = s.deriveStoredStatus(ctx, planID, path, snapshot, stored)
 	if !found {
 		stored.FormStatus = initialStoredFormStatus(snapshot)
@@ -319,10 +282,10 @@ func (s *PathConfigService) SaveSelection(ctx context.Context, planID, pathID ui
 	return pathConfigSaveResult(path, saved), nil
 }
 
-// projectPathConfigActionCycles 从持久化输入与当前路径投影出公开摘要；旧动作数据不推断循环。
+// projectPathConfigActionCycles 从 F-008 持久化输入与当前路径投影出公开摘要。
 func projectPathConfigActionCycles(values map[string]string, configuration model.PathConfiguration) []model.PathConfigActionCycle {
-	var inputs []model.PathConfigActionCycleInput
-	if raw := values[pathConfigActionCyclesStorageKey]; raw == "" || json.Unmarshal([]byte(raw), &inputs) != nil {
+	inputs := decodePathConfigActionCycleInputs(values)
+	if inputs == nil {
 		return []model.PathConfigActionCycle{}
 	}
 	cycles, err := derivePathConfigActionCycles(configuration, inputs)
@@ -332,17 +295,16 @@ func projectPathConfigActionCycles(values map[string]string, configuration model
 	return cycles
 }
 
-// validatePathConfigActionCycles 校验两种引擎真实回路及重复动作；任何静态循环都不能包含暂存、加签或移交。
-func validatePathConfigActionCycles(configuration model.PathConfiguration, currentNodeKey string, currentPlan model.PathConfigActionPlanInput, inputs []model.PathConfigActionCycleInput) ([]model.PathConfigActionCycleInput, *PathConfigError) {
+// validatePathConfigActionCycles 校验两种引擎真实回路及重复动作；静态循环不能包含暂存、加签或转办。
+func validatePathConfigActionCycles(configuration model.PathConfiguration, inputs []model.PathConfigActionCycleInput) ([]model.PathConfigActionCycleInput, *PathConfigError) {
 	cycles, err := derivePathConfigActionCycles(configuration, inputs)
 	if err != nil {
 		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "循环配置不合法", Affected: []model.PathConfigAffectedItem{{Kind: "cycle", Name: "循环配置", Reason: err.Error()}}}
 	}
 	plans := make(map[string][]model.PathConfigConfiguredAction)
 	for _, node := range pathConfigCycleNodes(configuration) {
-		plans[node.Key] = append([]model.PathConfigConfiguredAction(nil), node.ActionPlan.Actions...)
+		plans[node.Key] = append([]model.PathConfigConfiguredAction(nil), node.ActionConfiguration.Actions...)
 	}
-	plans[currentNodeKey] = actionInputsToConfigured(currentPlan.Actions)
 	for _, cycle := range cycles {
 		endActions := plans[cycleEndNodeKey(configuration, cycle)]
 		if cycle.Type == "restart_from_initiator" && !pathConfigActionsContain(endActions, "reject_no_pass") {
@@ -374,6 +336,28 @@ func validatePathConfigActionCycles(configuration model.PathConfiguration, curre
 		}
 	}
 	return inputs, nil
+}
+
+// decodePathConfigActionCycleInputs 只接受当前循环结构；无值与损坏值由调用方分别处理。
+func decodePathConfigActionCycleInputs(values map[string]string) []model.PathConfigActionCycleInput {
+	raw := strings.TrimSpace(values[pathConfigActionCyclesStorageKey])
+	if raw == "" {
+		return []model.PathConfigActionCycleInput{}
+	}
+	var inputs []model.PathConfigActionCycleInput
+	if json.Unmarshal([]byte(raw), &inputs) != nil {
+		return nil
+	}
+	return inputs
+}
+
+// copyPathConfigActionValues 复制当前路径的工具侧配置，候选校验失败时不会污染已保存记录。
+func copyPathConfigActionValues(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 // cycleEndNodeKey 从服务端派生循环取得不透明终点键，避免用展示名称在重复节点中猜测。
@@ -472,15 +456,6 @@ func pathConfigCycleNodeName(configuration model.PathConfiguration, key string) 
 		}
 	}
 	return "当前节点"
-}
-
-// actionInputsToConfigured 为循环验证转换尚未持久化的当前节点动作草稿。
-func actionInputsToConfigured(input []model.PathConfigConfiguredActionInput) []model.PathConfigConfiguredAction {
-	result := make([]model.PathConfigConfiguredAction, 0, len(input))
-	for _, action := range input {
-		result = append(result, model.PathConfigConfiguredAction{Key: action.Key, Kind: action.Kind, Count: action.Count})
-	}
-	return result
 }
 
 // SaveForm 在真实运行时与服务端双重校验后独立保存完整 getValues 数据和生成元数据。
@@ -648,7 +623,7 @@ func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKe
 				continue
 			}
 			requiresSave := false
-			for _, action := range node.ActionPlan.Catalog {
+			for _, action := range node.ActionConfiguration.Catalog {
 				if action.Enabled {
 					requiresSave = true
 					break

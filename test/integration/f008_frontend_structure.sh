@@ -14,8 +14,8 @@ plans_view="${project_root}/web/src/views/PlansView.vue"
 grep -Fq '>动作配置</n-button>' "${panel}"
 grep -Fq '>循环配置</n-button>' "${panel}"
 grep -Fq '重新提交会从发起人开始重新解析条件、并行和人员' "${panel}"
-grep -Fq '回退目标由引擎按当前待办的真实上一节点决定' "${panel}"
-grep -Fq '动作次数' "${panel}"
+grep -Fq '回退只能由引擎返回真实上一个待办' "${panel}"
+grep -Fq '每次真实到达只执行一个动作' "${panel}"
 grep -Fq 'actionCycles' "${view}"
 grep -Fq '纳入本次测试' "${view}"
 grep -Fq '已准备 {{ configuration.preparation.preparedNodes }} 个节点' "${view}"
@@ -23,15 +23,20 @@ grep -Fq 'PathConfigActionCycle' "${model}"
 grep -Fq 'restart_from_initiator' "${workspace}"
 grep -Fq 'redo_previous_task' "${workspace}"
 grep -Fq '暂存、加签、移交和转发不能加入静态循环' "${workspace}"
-grep -Fq '循环只保存服务端从当前路径派生出的事实' "${workspace}"
+grep -Fq '循环与重复次数总在写入前按最新路径复验' "${workspace}"
 grep -Fq 'configuration/selection' "${api}"
 grep -Fq 'SaveSelection' "${workspace}"
 grep -Fq 'DELETE /api/plans/{id}' "${plans_api}"
 grep -Fq 'NPopconfirm' "${plans_view}"
 grep -Fq '删除后会清除本系统中的路径和配置' "${plans_view}"
 
-if sed -n '/<template>/,/<\/template>/p' "${panel}" | grep -Eq '动作组合循环次数|到达|前置动作|处理结果'; then
+if sed -n '/<template>/,/<\/template>/p' "${panel}" | grep -Eq '动作组合循环次数|前置动作|处理结果|动作计划'; then
   echo 'F-008 节点侧栏或动作弹窗仍暴露旧动作概念' >&2
+  exit 1
+fi
+
+if grep -RInE 'actionPlan|actionPlans|PathConfigActionPlan|rollbackTargets|combinationCount|addSignNodes|requiresTarget' "${project_root}/internal" "${project_root}/web/src" --exclude-dir=node_modules; then
+  echo 'F-008 仍保留旧动作计划契约' >&2
   exit 1
 fi
 

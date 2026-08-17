@@ -120,8 +120,7 @@ export interface PathConfigNode {
   persons: PathConfigPerson[]
   gaps: PathConfigGap[]
   requirements: PathConfigRequirement[]
-  actions: PathConfigAction[]
-  actionPlan: PathConfigActionPlan
+  actionConfiguration: PathConfigActionConfiguration
   lineBlocked: boolean
 }
 
@@ -200,31 +199,11 @@ export interface PathConfigGap {
   reason: string
 }
 
-export interface PathConfigAction {
-  key: string
-  kind: 'submit' | 'agree_disagree'
-  label: string
-  current: string
-  default: string
-  options: PathConfigActionOption[]
-  disagreeWarning: string
-}
-
-export interface PathConfigActionOption {
-  value: string
-  label: string
-}
-
 export type PathConfigActionKind = 'submit' | 'approve_pass' | 'reject_no_pass' | 'draft_save' | 'rollback_previous' | 'add_sign' | 'transfer_approver' | 'transpond'
 
-export interface PathConfigActionPlan {
+export interface PathConfigActionConfiguration {
   catalog: PathConfigActionCatalogItem[]
-  rollbackTargets: PathConfigActionOption[]
   actions: PathConfigConfiguredAction[]
-  combinationCount: number
-  // 后端在节点没有已保存加签节点时返回 null（Go nil 切片），只有 manual/condition 等无动作节点才返回空数组。
-  addSignNodes: PathConfigAddSignNode[] | null
-  result: PathConfigActionStep
   affected: boolean
   note: string
 }
@@ -234,7 +213,6 @@ export interface PathConfigConfiguredAction {
   kind: PathConfigActionKind
   label: string
   count: number
-  target: string
   person?: PathConfigPersonStrategyInput
 }
 
@@ -244,65 +222,20 @@ export interface PathConfigActionCatalogItem {
   description: string
   enabled: boolean
   disabledReason: string
-  allowsOpinion: boolean
-  requiresTarget: boolean
   requiresPerson: boolean
   person?: PathConfigPerson
-}
-
-export interface PathConfigAddSignNode {
-  person: PathConfigPersonStrategyInput
-  // 次数按目标平台语义表示加签节点数量，同一行共享同一处理人策略。
-  count: number
-}
-
-export interface PathConfigActionStep {
-  // Kind 为空表示默认同意；同意不作为界面配置项。
-  kind: PathConfigActionKind | ''
-  label: string
-  opinion: string
-  target: string
-  person?: PathConfigPersonStrategyInput
-}
-
-export interface PathConfigActionPlanInput {
-  actions: PathConfigConfiguredActionInput[]
-  /** @deprecated 仅用于兼容读取旧配置，不再渲染。 */
-  combinationCount: number
-  /** @deprecated 仅用于兼容读取旧配置，不再渲染。 */
-  addSignNodes: PathConfigAddSignNodeInput[]
-  /** @deprecated 仅用于兼容读取旧配置，不再渲染。 */
-  result: PathConfigActionStepInput
 }
 
 export interface PathConfigConfiguredActionInput {
   key: string
   kind: PathConfigActionKind
   count: number
-  target: string
-  person?: PathConfigPersonStrategyInput
-}
-
-export interface PathConfigAddSignNodeInput {
-  person: PathConfigPersonStrategyInput
-  count: number
-}
-
-export interface PathConfigActionStepInput {
-  kind: PathConfigActionKind
-  opinion: string
-  target: string
   person?: PathConfigPersonStrategyInput
 }
 
 export interface PathConfigFieldValue {
   key: string
   value: string
-}
-
-export interface PathConfigActionValue {
-  key: string
-  action: string
 }
 
 export interface PathConfigSaveResult {
@@ -315,17 +248,15 @@ export interface PathConfigSaveResult {
 
 export interface PathConfigDraft {
   fields: Record<string, string>
-  actions: Record<string, string>
   persons: Record<string, string[]>
   personStrategies: Record<string, PathConfigPersonStrategyInput>
-  actionPlans: Record<string, PathConfigActionPlanInput>
+  actionConfigurations: Record<string, PathConfigConfiguredActionInput[]>
 }
 
 export interface PathConfigNodeSavePayload {
   persons: PathConfigPersonStrategyInput[]
-  actionPlan: PathConfigActionPlanInput
+  actions: PathConfigConfiguredActionInput[]
   actionCycles?: PathConfigActionCycleInput[]
-  included?: boolean
 }
 
 export type PathConfigPagePhase =

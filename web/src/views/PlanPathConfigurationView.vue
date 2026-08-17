@@ -14,7 +14,7 @@ import NodeConfigurationPanel from '../features/path-configuration/NodeConfigura
 import {
   bindPathConfigurationNodes,
   buildPathConfigNodeSavePayload,
-  copyPathConfigActionPlan,
+	copyPathConfigActions,
   currentNodeConfigurationComplete,
   hasCurrentNodeDraftChanges,
   initialPathConfigurationNodeID,
@@ -37,7 +37,7 @@ import {
 } from '../features/path-configuration/api'
 import type {
   PathConfigActionCycleInput,
-  PathConfigActionPlanInput,
+	PathConfigConfiguredActionInput,
   PathConfigDraft,
   PathConfigNode,
   PathConfiguration,
@@ -67,7 +67,7 @@ const graph = ref<FlowGraph | null>(null)
 const currentPath = ref<ExecutionPath | null>(null)
 const executionPaths = ref<ExecutionPath[]>([])
 const configuration = ref<PathConfiguration | null>(null)
-const draft = ref<PathConfigDraft>({ fields: {}, actions: {}, persons: {}, personStrategies: {}, actionPlans: {} })
+const draft = ref<PathConfigDraft>({ fields: {}, persons: {}, personStrategies: {}, actionConfigurations: {} })
 const actionCycles = ref<PathConfigActionCycleInput[]>([])
 const includedInTest = ref(false)
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
@@ -269,11 +269,11 @@ function updatePersonStrategy(person: PathConfigPerson, value: PathConfigPersonS
   nodeSavedSuccessfully.value = false
 }
 
-// updateNodeActionPlan 替换当前节点的加签节点与处理结果草稿，不允许面板越过节点边界写其他节点。
-function updateNodeActionPlan(nodeKey: string, value: PathConfigActionPlanInput) {
-  if (selectedNode.value?.key !== nodeKey) return
-  // 子组件事件值仍可能携带 Vue Proxy；父页面只持有逐字段复制后的普通草稿，避免保存前再次触发克隆异常。
-  draft.value.actionPlans[nodeKey] = copyPathConfigActionPlan(value)
+// updateNodeActionConfiguration 替换当前节点独立动作草稿，不允许面板越过节点边界写其他节点。
+function updateNodeActionConfiguration(nodeKey: string, value: PathConfigConfiguredActionInput[]) {
+	if (selectedNode.value?.key !== nodeKey) return
+	// 子组件事件值仍可能携带 Vue Proxy；父页面只持有普通草稿，避免保存前再次触发克隆异常。
+	draft.value.actionConfigurations[nodeKey] = copyPathConfigActions(value)
   nodeSavedSuccessfully.value = false
 }
 
@@ -310,7 +310,7 @@ async function saveCurrentNode() {
   nodeSavedSuccessfully.value = false
   const previousRevision = current.nodeRevision
   try {
-    await savePathConfigurationNode(planID.value, pathID.value, node.key, previousRevision, buildPathConfigNodeSavePayload(node, draft.value, actionCycles.value, includedInTest.value), nodeSaveKey)
+    await savePathConfigurationNode(planID.value, pathID.value, node.key, previousRevision, buildPathConfigNodeSavePayload(node, draft.value, actionCycles.value), nodeSaveKey)
     await reloadConfiguration()
     await finishConfirmedNodeSave()
   }
@@ -539,7 +539,7 @@ void loadPage()
             :form-complete="configuration.form.status === 'valid'"
             :action-cycles="configuration.actionCycles"
             @update-person-strategy="updatePersonStrategy"
-            @update-action-plan="updateNodeActionPlan"
+            @update-action-configuration="updateNodeActionConfiguration"
             @update-action-cycles="updateActionCycles"
             @save="saveCurrentNode"
             @back-to-plan="backToPlan"

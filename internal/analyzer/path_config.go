@@ -66,15 +66,14 @@ type PathConfigPersonTarget struct {
 	MaxCount          int
 }
 
-// PathConfigNodeTarget 保存当前节点动作目录、回退目标和可复用人员范围，不进入公开响应。
+// PathConfigNodeTarget 保存当前节点动作目录和可复用人员范围，不进入公开响应。
 type PathConfigNodeTarget struct {
-	NodeID          string
-	Name            string
-	Person          *PathConfigPersonTarget
-	ActionPersons   map[string]*PathConfigPersonTarget
-	ActionKinds     map[string]bool
-	RollbackTargets map[string]string
-	Blockers        []model.PathConfigAffectedItem
+	NodeID        string
+	Name          string
+	Person        *PathConfigPersonTarget
+	ActionPersons map[string]*PathConfigPersonTarget
+	ActionKinds   map[string]bool
+	Blockers      []model.PathConfigAffectedItem
 }
 
 // PathConfigValidation 是不透明回写键到当前真实节点与字段的内部映射。
@@ -100,11 +99,9 @@ func PathConfigPersonSelectionIssue(required bool, minCount, maxCount, selectedC
 	return ""
 }
 
-const pathConfigPersonStoragePrefix = "person:"
-
 const pathConfigPersonPlanStoragePrefix = "person-plan:"
 
-const pathConfigActionPlanStoragePrefix = "action-plan:"
+const pathConfigActionConfigurationStoragePrefix = "actions:"
 
 // PathConfigNodeToken 生成配置节点与真实流程节点之间的稳定不透明映射键。
 func PathConfigNodeToken(nodeID string) string {
@@ -121,19 +118,14 @@ func PathConfigPersonOptionToken(nodeID, candidateID string) string {
 	return pathConfigToken("person-option", nodeID, candidateID)
 }
 
-// PathConfigPersonStorageKey 生成配置表 action_values 内部的人员命名空间键，避免与节点动作键冲突。
-func PathConfigPersonStorageKey(nodeID string) string {
-	return pathConfigPersonStoragePrefix + strings.TrimSpace(nodeID)
-}
-
 // PathConfigPersonPlanStorageKey 生成版本化人员策略的内部 JSON 键。
 func PathConfigPersonPlanStorageKey(nodeID string) string {
 	return pathConfigPersonPlanStoragePrefix + strings.TrimSpace(nodeID)
 }
 
-// PathConfigActionPlanStorageKey 生成版本化节点动作计划的内部 JSON 键。
-func PathConfigActionPlanStorageKey(nodeID string) string {
-	return pathConfigActionPlanStoragePrefix + strings.TrimSpace(nodeID)
+// PathConfigActionConfigurationStorageKey 生成 F-008 独立节点动作配置的 JSON 键。
+func PathConfigActionConfigurationStorageKey(nodeID string) string {
+	return pathConfigActionConfigurationStoragePrefix + strings.TrimSpace(nodeID)
 }
 
 // PathConfigFieldToken 生成字段的不透明回写键；同一节点同一字段在每次响应中保持稳定。
@@ -411,7 +403,8 @@ func (p *pathConfigProjection) walk(nodeID, groupKey, stopID string, blocked boo
 	groupIndex := p.groupByKey[groupKey]
 	p.groups[groupIndex].Nodes = append(p.groups[groupIndex].Nodes, node)
 
-	nextBlocked := blocked || pathConfigActionPlanBlocksLine(node.ActionPlan)
+	// F-008 的动作只保存未来真实到达时的安排；配置本身不会中断当前路径投影。
+	nextBlocked := blocked
 	edges := p.reachableOutgoing(nodeID)
 	switch graphNode.Type {
 	case "parallel":
@@ -467,19 +460,16 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 	result := model.PathConfigNode{
 		Key: PathConfigNodeToken(graphNode.ID), Name: graphNode.Name, TypeName: graphNode.TypeName, Kind: graphNode.Type,
 		LineBlocked: blocked, Fields: []model.PathConfigField{}, Gaps: []model.PathConfigGap{},
-		Actions: []model.PathConfigAction{}, Persons: []model.PathConfigPerson{}, Requirements: []model.RequirementItem{},
+		Persons: []model.PathConfigPerson{}, Requirements: []model.RequirementItem{},
 	}
 	if p.requirements != nil {
 		result.Requirements = pathConfigNodeRequirements(p.requirements.nodeRequirements(graphNode, node))
 	}
 	switch graphNode.Type {
-	case "start":
-		result.Actions = append(result.Actions, p.submitAction(graphNode.ID))
 	case "common", "synergy":
 		result.Persons = append(result.Persons, p.personConfig(graphNode.ID, node))
-		result.Actions = append(result.Actions, p.approvalAction(graphNode.ID, graphNode.Name))
 	}
-	result.ActionPlan = p.actionPlan(graphNode.ID, graphNode.Name, graphNode.Type, node, result.Persons)
+	result.ActionConfiguration = p.actionConfiguration(graphNode.ID, graphNode.Name, graphNode.Type, node, result.Persons)
 	if !blocked {
 		for _, person := range result.Persons {
 			if person.Mode == "review" {
@@ -513,7 +503,7 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 			return "affected", "部分配置"
 		}
 	}
-	if node.ActionPlan.Affected {
+	if node.ActionConfiguration.Affected {
 		return "affected", "部分配置"
 	}
 	hasRuntime := false
@@ -530,7 +520,7 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 		}
 	}
 	hasEnabledAction := false
-	for _, action := range node.ActionPlan.Catalog {
+	for _, action := range node.ActionConfiguration.Catalog {
 		if action.Enabled {
 			hasEnabledAction = true
 			break
@@ -547,34 +537,6 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 		return "pending", "待配置"
 	}
 	return "configured", "已配置"
-}
-
-// submitAction 发起节点固定提交，不提供其他候选。
-func (p *pathConfigProjection) submitAction(nodeID string) model.PathConfigAction {
-	key := PathConfigActionToken(nodeID, "submit")
-	p.validation.ActionTokens[key] = PathConfigActionTarget{NodeID: nodeID, StorageKey: nodeID, Kind: "submit", Name: "发起动作"}
-	return model.PathConfigAction{
-		Key: key, Kind: "submit", Label: "发起动作", Current: "submit", Default: "submit",
-		Options: []model.PathConfigActionOption{{Value: "submit", Label: "提交"}},
-	}
-}
-
-// approvalAction 审批或协同节点提供同意与不同意，默认推荐同意，不同意明确影响后续线路。
-func (p *pathConfigProjection) approvalAction(nodeID, nodeName string) model.PathConfigAction {
-	key := PathConfigActionToken(nodeID, "agree_disagree")
-	current := strings.TrimSpace(p.storedActions[nodeID])
-	if current == "" {
-		current = "agree"
-	}
-	p.validation.ActionTokens[key] = PathConfigActionTarget{NodeID: nodeID, StorageKey: nodeID, Kind: "agree_disagree", Name: nodeName}
-	return model.PathConfigAction{
-		Key: key, Kind: "agree_disagree", Label: "处理结果", Current: current, Default: "agree",
-		Options: []model.PathConfigActionOption{
-			{Value: "agree", Label: "同意"},
-			{Value: "disagree", Label: "不同意"},
-		},
-		DisagreeWarning: "选择不同意会提前结束或改变后续线路，保存后不再按原路径继续",
-	}
 }
 
 // personConfig 按目标审批类型生成只读规则或受限策略；目录失败不能降级成模糊运行时说明。
@@ -660,24 +622,14 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 	p.personTargets[nodeID] = target
 	strategy, seed, selected, affected, note := projectPathConfigPersonStrategy(nodeID, p.storedActions, target, rawToToken)
 	_, hasStoredPlan := p.storedActions[PathConfigPersonPlanStorageKey(nodeID)]
-	_, hasLegacySelection := p.storedActions[PathConfigPersonStorageKey(nodeID)]
-	if (hasStoredPlan || hasLegacySelection) && !affected {
+	if hasStoredPlan && !affected {
 		if issue := PathConfigPersonSelectionIssue(required, minCount, maxCount, len(selected)); issue != "" {
 			affected = true
 			note = issue + "，需要重新确认"
 		}
 	}
-	if p.storedPresent && !hasStoredPlan && !hasLegacySelection && required {
-		affected = true
-		note = "旧配置缺少人员策略，需要重新确认"
-	}
 	if affected {
 		p.affected = true
-	}
-	// 旧整份保存接口继续接受原人员键；逐节点新接口只使用 NodeTokens 中的策略目标。
-	p.validation.ActionTokens[key] = PathConfigActionTarget{
-		NodeID: nodeID, StorageKey: PathConfigPersonStorageKey(nodeID), Kind: "person_select", Name: title,
-		CandidateTokens: candidateTokens, Required: required, MinCount: minCount, MaxCount: maxCount,
 	}
 	return model.PathConfigPerson{
 		Key: key, Title: title, Mode: "select", Detail: detail, Items: items, Editable: true, Multiple: multiple,

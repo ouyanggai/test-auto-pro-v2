@@ -1,7 +1,5 @@
 import type {
-  PathConfigActionValue,
   PathConfiguration,
-  PathConfigFieldValue,
   PathConfigNodeSavePayload,
   PathConfigSaveResult,
   PathFormGenerateResult,
@@ -41,21 +39,6 @@ export class PathConfigApiError extends Error {
 export async function fetchPathConfiguration(planId: string, pathId: string, signal: AbortSignal): Promise<PathConfiguration> {
   const result = await request<PathConfiguration>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration`, { method: 'GET' }, signal)
   return result
-}
-
-export function savePathConfiguration(
-  planId: string,
-  pathId: string,
-  revision: number,
-  fields: PathConfigFieldValue[],
-  actions: PathConfigActionValue[],
-  idempotencyKey: string,
-): Promise<PathConfigSaveResult> {
-  return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration`, {
-    method: 'PUT',
-    headers: { 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify({ revision, fields, actions }),
-  })
 }
 
 // savePathConfigurationNode 只保存当前节点人员和动作，避免一次点击覆盖整条路径。
