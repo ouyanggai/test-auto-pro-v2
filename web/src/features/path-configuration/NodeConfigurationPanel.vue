@@ -62,9 +62,11 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
         <div v-for="person in node.persons" :key="person.key" class="person-row">
           <strong>{{ person.title }}</strong>
           <template v-if="person.editable">
-            <n-select :value="personDraft(person).strategy" :options="strategyOptions(person)" @update:value="value => updatePersonStrategy(person, { strategy: value })" />
-            <n-input-number v-if="personDraft(person).strategy === 'random'" :value="personDraft(person).seed" :min="1" :max="MAX_SAFE_PERSON_SEED" @update:value="value => updatePersonStrategy(person, { seed: value || 1 })" />
-            <n-select v-if="personDraft(person).strategy === 'manual'" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
+            <div class="person-controls">
+              <n-select :value="personDraft(person).strategy" :options="strategyOptions(person)" @update:value="value => updatePersonStrategy(person, { strategy: value })" />
+              <n-input-number v-if="personDraft(person).strategy === 'random'" :value="personDraft(person).seed" :min="1" :max="MAX_SAFE_PERSON_SEED" @update:value="value => updatePersonStrategy(person, { seed: value || 1 })" />
+              <n-select v-if="personDraft(person).strategy === 'manual'" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
+            </div>
           </template>
           <p v-else>{{ person.detail }}</p>
           <small v-if="itemCount(person)">已解析 {{ itemCount(person) }} 项</small>
@@ -74,10 +76,12 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 
       <section class="node-configuration-panel__section">
         <h3>准备情况</h3>
-        <p>流程第几次走到这个节点，就执行第几行。第 2 次走到这里，才会用第 2 行；一次到达只执行一行。</p>
-        <p v-if="node.actionConfiguration.base">基础动作：{{ node.actionConfiguration.base.label }} 1 次（系统默认）</p>
-        <p v-if="actions.length">已配置 {{ actions.length }} 个可选动作</p>
-        <p v-else>尚未配置动作。</p>
+        <div v-if="actions.length" class="action-summary">
+          <n-tag v-for="action in actions" :key="action.key" size="small">
+            {{ actionDefinition(action.kind)?.label || action.kind }}
+          </n-tag>
+        </div>
+        <span v-else class="muted-text">未添加额外动作</span>
         <n-space>
           <n-button type="primary" :disabled="node.lineBlocked || !node.actionConfiguration.catalog.length" @click="actionEditorOpen = true">动作配置</n-button>
           <n-button :disabled="node.lineBlocked" @click="cycleEditorOpen = true">循环配置</n-button>
@@ -97,33 +101,27 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
     <footer class="node-configuration-panel__footer">
       <n-alert v-if="saveError" type="error" :show-icon="false">{{ pathConfigurationMessage(saveError) }}</n-alert>
       <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足配置要求</span>
-      <span v-else>保存只更新当前节点的人员、动作和循环</span>
       <n-button type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
     </footer>
 
     <n-modal v-model:show="actionEditorOpen">
       <n-card title="动作配置" style="width: min(680px, 94vw)">
-        <p class="beginner-hint">流程第几次走到这个节点，就执行第几行；一次到达只执行一行。</p>
-        <n-alert type="info" :show-icon="false">一次到达只执行一行。</n-alert>
-        <div v-if="node.actionConfiguration.base" class="action-base-row"><span>系统默认</span><strong>{{ node.actionConfiguration.base.label }}</strong><span>固定 1 次</span></div>
         <div v-for="(action, index) in actions" :key="action.key" class="action-row">
-          <div class="action-row__header">
-            <strong>第 {{ index + 1 }} 次到达</strong>
-            <n-space>
-              <n-button text title="上移动作" :disabled="index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
-              <n-button text title="下移动作" :disabled="index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
-              <n-popconfirm @positive-click="removeAction(index)">
-                <template #trigger><n-button text title="删除动作"><CloseOutline /></n-button></template>
-                删除这个动作配置？
-              </n-popconfirm>
-            </n-space>
+          <strong class="action-arrival">第 {{ index + 1 }} 次</strong>
+          <n-select class="action-select" :value="action.kind" :options="node.actionConfiguration.catalog.map(item => ({ label: item.label, value: item.kind }))" @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })" />
+          <n-input-number class="action-count" :value="action.count" :min="1" :max="10" @update:value="value => updateAction(index, { count: Number(value) || 1 })" />
+          <div class="action-row__actions">
+            <n-button quaternary circle title="上移动作" aria-label="上移动作" :disabled="index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
+            <n-button quaternary circle title="下移动作" aria-label="下移动作" :disabled="index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
+            <n-popconfirm @positive-click="removeAction(index)">
+              <template #trigger><n-button quaternary circle type="error" title="删除动作" aria-label="删除动作"><CloseOutline /></n-button></template>
+              删除这个动作配置？
+            </n-popconfirm>
           </div>
-          <n-select :value="action.kind" :options="node.actionConfiguration.catalog.map(item => ({ label: item.label, value: item.kind }))" @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })" />
-          <n-input-number :value="action.count" :min="1" :max="10" @update:value="value => updateAction(index, { count: Number(value) || 1 })" />
-          <template v-if="actionPerson(action.kind)">
+          <div v-if="actionPerson(action.kind)" class="action-person-fields">
             <n-select :value="action.person?.strategy || actionPerson(action.kind)!.strategy" :options="strategyOptions(actionPerson(action.kind)!)" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { strategy: value as PathConfigPersonStrategyInput['strategy'] })" />
             <n-select v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'manual'" :multiple="actionPerson(action.kind)!.multiple" :value="actionPerson(action.kind)!.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(actionPerson(action.kind)!)" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
-          </template>
+          </div>
         </div>
         <template #footer>
           <n-space justify="end"><n-button @click="actionEditorOpen = false">取消</n-button><n-button :disabled="actions.length >= 10" @click="addAction"><AddOutline /> 添加动作</n-button><n-button type="primary" @click="emit('save')">保存动作配置</n-button></n-space>
@@ -145,5 +143,5 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 </template>
 
 <style scoped>
-.node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:12px}.node-configuration-panel__header,.node-configuration-panel__footer,.action-row__header,.cycle-list li{display:flex;align-items:center;justify-content:space-between;gap:10px}.node-configuration-panel__body{overflow:auto;display:flex;flex-direction:column;gap:12px}.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:10px}.person-row{display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px;margin-top:8px;align-items:center}.action-row{display:grid;grid-template-columns:120px minmax(0,1fr) 88px auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #edf0f3}.action-row__header{display:contents}.action-base-row{display:grid;grid-template-columns:120px 1fr 80px;gap:8px;align-items:center;padding:8px 0;color:#64748b;border-bottom:1px solid #edf0f3}.node-configuration-panel__footer{border-top:1px solid #e5e7eb;padding-top:10px}.cycle-list{padding-left:0;list-style:none}.node-configuration-panel h2,.node-configuration-panel h3{margin:0}.node-configuration-panel p,.node-configuration-panel small{color:#64748b}@media (max-width:680px){.person-row,.action-row,.action-base-row{grid-template-columns:1fr}}
+.node-configuration-panel{height:100%;display:flex;flex-direction:column;gap:12px;padding:16px}.node-configuration-panel__header,.node-configuration-panel__footer,.cycle-list li{display:flex;align-items:center;justify-content:space-between;gap:10px}.node-configuration-panel__body{overflow:auto;display:flex;flex-direction:column;gap:16px}.node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:14px}.person-row{display:flex;flex-direction:column;align-items:stretch;gap:7px;margin-top:12px}.person-controls,.action-person-fields{display:flex;flex-direction:column;gap:7px}.action-summary{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 12px}.action-row{display:grid;grid-template-columns:88px minmax(220px,1fr) 78px 112px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #edf0f3}.action-arrival{white-space:nowrap;color:#475569}.action-row__actions{display:flex;justify-content:flex-end;gap:2px}.action-count{width:78px}.action-person-fields{grid-column:2 / -1;max-width:420px}.muted-text,.node-configuration-panel p,.node-configuration-panel small{color:#64748b}.node-configuration-panel__footer{border-top:1px solid #e5e7eb;padding-top:12px}.cycle-list{padding-left:0;list-style:none}.node-configuration-panel h2,.node-configuration-panel h3{margin:0}.node-configuration-panel p{margin:0}@media (max-width:680px){.node-configuration-panel{padding:12px}.action-row{grid-template-columns:1fr 78px 96px}.action-arrival{grid-column:1 / -1}.action-select{grid-column:1 / -1}.action-person-fields{grid-column:1 / -1}.action-row__actions{grid-column:3}.person-row{gap:6px}}
 </style>

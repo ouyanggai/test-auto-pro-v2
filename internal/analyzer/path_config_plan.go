@@ -35,13 +35,14 @@ type storedPathConfigConfiguredAction struct {
 
 // projectPathConfigPersonStrategy 只读取当前人员策略结构；开发阶段的旧数组不再转换或展示。
 func projectPathConfigPersonStrategy(nodeID string, stored map[string]string, target *PathConfigPersonTarget, rawToToken map[string]string) (string, int64, []string, bool, string) {
-	strategy, seed := "manual", stablePathConfigSeed(nodeID)
+	strategy, seed := "random", stablePathConfigSeed(nodeID)
 	planRaw, hasPlan := stored[PathConfigPersonPlanStorageKey(nodeID)]
 	if !hasPlan {
-		if target.AllowedStrategies["target_default"] {
-			return "target_default", seed, rawPersonIDsToTokens(target.DefaultIDs, rawToToken), false, ""
+		resolved, reason := expectedPathConfigPersonIDs(target, strategy, seed, nil)
+		if reason != "" {
+			return strategy, seed, []string{}, true, reason
 		}
-		return strategy, seed, []string{}, false, ""
+		return strategy, seed, rawPersonIDsToTokens(resolved, rawToToken), false, ""
 	}
 	var plan storedPathConfigPersonPlan
 	if json.Unmarshal([]byte(planRaw), &plan) != nil {
@@ -403,7 +404,15 @@ func actionCandidatePersonConfig(nodeID, actionKind, title, detail string, candi
 		strategies, allowed["all"] = append(strategies, model.PathConfigPersonStrategyOption{Value: "all", Label: "全部候选"}), true
 	}
 	personTarget := &PathConfigPersonTarget{Key: key, Name: title, CandidateTokens: candidateTokens, CandidateOrder: candidateOrder(candidates), DefaultIDs: defaultIDs, AllowedStrategies: allowed, Required: true, MinCount: 1, MaxCount: len(options)}
-	person := &model.PathConfigPerson{Key: key, Title: title, Mode: "select", Detail: detail, Editable: true, Multiple: true, Required: true, MinCount: 1, MaxCount: len(options), Selected: []string{}, DefaultSelected: defaultSelected, Options: options, Strategy: "manual", StrategySeed: stablePathConfigSeed(nodeID + ":action"), Strategies: strategies, Items: []model.PathConfigPersonDisplayItem{}}
+	seed := stablePathConfigSeed(nodeID + ":action")
+	randomIDs := deterministicPathConfigPeople(candidateOrder(candidates), seed, 1)
+	randomSelected := make([]string, 0, len(randomIDs))
+	for _, id := range randomIDs {
+		if token := rawToToken[id]; token != "" {
+			randomSelected = append(randomSelected, token)
+		}
+	}
+	person := &model.PathConfigPerson{Key: key, Title: title, Mode: "select", Detail: detail, Editable: true, Multiple: true, Required: true, MinCount: 1, MaxCount: len(options), Selected: randomSelected, DefaultSelected: defaultSelected, Options: options, Strategy: "random", StrategySeed: seed, Strategies: strategies, Items: []model.PathConfigPersonDisplayItem{}}
 	return person, personTarget
 }
 

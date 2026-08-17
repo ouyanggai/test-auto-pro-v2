@@ -13,9 +13,13 @@ plans_view="${project_root}/web/src/views/PlansView.vue"
 
 grep -Fq '>动作配置</n-button>' "${panel}"
 grep -Fq '>循环配置</n-button>' "${panel}"
-grep -Fq 'action-base-row' "${panel}"
 grep -Fq 'cycle-fixed-note' "${panel}"
-grep -Fq 'beginner-hint' "${panel}"
+grep -Fq 'action-row__actions' "${panel}"
+grep -Fq 'aria-label="删除动作"' "${panel}"
+grep -Fq 'action-select' "${panel}"
+grep -Fq 'action-count' "${panel}"
+grep -Fq 'person-controls' "${panel}"
+if grep -Eq 'action-base-row|beginner-hint|保存只更新当前节点' "${panel}"; then exit 1; fi
 if grep -Eq 'transfer_approver|transpond|转办|转发|移交' "${panel}"; then exit 1; fi
 grep -Fq 'actionCycles' "${view}"
 grep -Fq '纳入本次测试' "${view}"
@@ -38,6 +42,8 @@ grep -Fq 'SaveSelection' "${workspace}"
 grep -Fq 'DELETE /api/plans/{id}' "${plans_api}"
 grep -Fq 'NPopconfirm' "${plans_view}"
 grep -Fq '删除后会清除本系统中的路径和配置' "${plans_view}"
+grep -Fq 'Strategy: "random"' "${project_root}/internal/analyzer/path_config_plan.go"
+grep -Fq 'deterministicPathConfigPeople' "${project_root}/internal/analyzer/path_config_plan.go"
 
 if sed -n '/<template>/,/<\/template>/p' "${panel}" | grep -Eq '动作组合循环次数|前置动作|处理结果|动作计划'; then
   echo 'F-008 节点侧栏或动作弹窗仍暴露旧动作概念' >&2
