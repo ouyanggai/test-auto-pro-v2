@@ -17,9 +17,11 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-const currentPathConfigVersion = 3
+const currentPathConfigVersion = 4
 
 const currentPathFormConfigVersion = 2
+
+const pathConfigActionCyclesStorageKey = "f008:action-cycles"
 
 type pathFormRuntimeSessionReader interface {
 	FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error)
@@ -217,6 +219,33 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 	if stored.ActionValues == nil {
 		stored.ActionValues = map[string]string{}
 	}
+	if input.ActionCycles != nil {
+		// 循环只保存服务端从当前路径派生出的事实，浏览器不能拼接节点或指定回退目标。
+		configuration, _, projectionErr := s.configAnalyzer.Analyze(
+			owned.graph, snapshot.Tree, snapshot.FormFields, path, owned.pathAnalysis,
+			snapshot.InstanceValues, map[string]map[string]string{}, stored.ActionValues, found,
+		)
+		if projectionErr != nil {
+			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径循环无法核对，请重新读取"}
+		}
+		cycles, cycleErr := validatePathConfigActionCycles(configuration, nodeKey, input.ActionPlan, input.ActionCycles)
+		if cycleErr != nil {
+			return model.PathConfigSaveResult{}, cycleErr
+		}
+		encodedCycles, marshalErr := json.Marshal(cycles)
+		if marshalErr != nil {
+			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "循环配置暂时无法保存，请重试"}
+		}
+		stored.ActionValues[pathConfigActionCyclesStorageKey] = string(encodedCycles)
+	}
+	if input.Included != nil {
+		// 这是后续运行范围选择，不产生运行记录，也绝不调用目标平台。
+		if *input.Included {
+			stored.ActionValues["f008:test-included"] = "true"
+		} else {
+			delete(stored.ActionValues, "f008:test-included")
+		}
+	}
 	for storageKey, value := range nodeActions {
 		stored.ActionValues[storageKey] = value
 	}
@@ -244,6 +273,170 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
 	}
 	return pathConfigSaveResult(path, saved), nil
+}
+
+// projectPathConfigActionCycles 从持久化输入与当前路径投影出公开摘要；旧动作数据不推断循环。
+func projectPathConfigActionCycles(values map[string]string, configuration model.PathConfiguration) []model.PathConfigActionCycle {
+	var inputs []model.PathConfigActionCycleInput
+	if raw := values[pathConfigActionCyclesStorageKey]; raw == "" || json.Unmarshal([]byte(raw), &inputs) != nil {
+		return []model.PathConfigActionCycle{}
+	}
+	cycles, err := derivePathConfigActionCycles(configuration, inputs)
+	if err != nil {
+		return []model.PathConfigActionCycle{}
+	}
+	return cycles
+}
+
+// validatePathConfigActionCycles 校验两种引擎真实回路及重复动作；任何静态循环都不能包含暂存、加签或移交。
+func validatePathConfigActionCycles(configuration model.PathConfiguration, currentNodeKey string, currentPlan model.PathConfigActionPlanInput, inputs []model.PathConfigActionCycleInput) ([]model.PathConfigActionCycleInput, *PathConfigError) {
+	cycles, err := derivePathConfigActionCycles(configuration, inputs)
+	if err != nil {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "循环配置不合法", Affected: []model.PathConfigAffectedItem{{Kind: "cycle", Name: "循环配置", Reason: err.Error()}}}
+	}
+	plans := make(map[string][]model.PathConfigConfiguredAction)
+	for _, node := range pathConfigCycleNodes(configuration) {
+		plans[node.Key] = append([]model.PathConfigConfiguredAction(nil), node.ActionPlan.Actions...)
+	}
+	plans[currentNodeKey] = actionInputsToConfigured(currentPlan.Actions)
+	for _, cycle := range cycles {
+		endActions := plans[cycleEndNodeKey(configuration, cycle)]
+		if cycle.Type == "restart_from_initiator" && !pathConfigActionsContain(endActions, "reject_no_pass") {
+			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "重新发起循环缺少不同意动作", Affected: []model.PathConfigAffectedItem{{Kind: "cycle", Name: cycle.Label, Reason: "请先在循环最后一个节点配置不同意动作"}}}
+		}
+		if cycle.Type == "redo_previous_task" && !pathConfigActionsContain(endActions, "rollback_previous") {
+			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "上一节点返工缺少回退动作", Affected: []model.PathConfigAffectedItem{{Kind: "cycle", Name: cycle.Label, Reason: "请先在当前节点配置回退上一级动作"}}}
+		}
+	}
+	for nodeKey, actions := range plans {
+		if len(actions) == 0 {
+			continue
+		}
+		contained := false
+		for _, cycle := range cycles {
+			for _, member := range cycle.Members {
+				if member == pathConfigCycleNodeName(configuration, nodeKey) {
+					contained = true
+				}
+			}
+		}
+		for _, action := range actions {
+			if action.Count > 1 && !contained {
+				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作次数需要先建立真实循环", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: pathConfigCycleNodeName(configuration, nodeKey), Reason: "重复动作需要通过重新发起一整轮或上一节点返工再次到达该节点"}}}
+			}
+			if contained && (action.Kind == "draft_save" || action.Kind == "add_sign" || action.Kind == "transfer_approver" || action.Kind == "transpond") {
+				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "循环不能包含当前动作", Affected: []model.PathConfigAffectedItem{{Kind: "cycle", Name: pathConfigCycleNodeName(configuration, nodeKey), Reason: "暂存、加签、移交和转发不能加入静态循环"}}}
+			}
+		}
+	}
+	return inputs, nil
+}
+
+// cycleEndNodeKey 从服务端派生循环取得不透明终点键，避免用展示名称在重复节点中猜测。
+func cycleEndNodeKey(configuration model.PathConfiguration, cycle model.PathConfigActionCycle) string {
+	return cycle.EndNodeKey
+}
+
+// pathConfigActionsContain 判断节点动作草稿是否包含循环所需的状态迁移动作。
+func pathConfigActionsContain(actions []model.PathConfigConfiguredAction, kind string) bool {
+	for _, action := range actions {
+		if action.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// derivePathConfigActionCycles 仅按当前已保存路径的业务节点顺序派生循环成员，不接受浏览器提供成员列表。
+func derivePathConfigActionCycles(configuration model.PathConfiguration, inputs []model.PathConfigActionCycleInput) ([]model.PathConfigActionCycle, error) {
+	nodes := pathConfigCycleNodes(configuration)
+	start := -1
+	for index, node := range nodes {
+		if node.Kind == "start" {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		return nil, fmt.Errorf("当前路径缺少发起节点")
+	}
+	seen := map[string]bool{}
+	result := make([]model.PathConfigActionCycle, 0, len(inputs))
+	for index, input := range inputs {
+		if input.Count < 1 || input.Count > 10 {
+			return nil, fmt.Errorf("循环次数必须在 1 到 10 之间")
+		}
+		key := strings.TrimSpace(input.Key)
+		if key == "" {
+			key = fmt.Sprintf("cycle-%d", index+1)
+		}
+		if seen[key] {
+			return nil, fmt.Errorf("循环不能重复保存")
+		}
+		seen[key] = true
+		end := -1
+		for nodeIndex, node := range nodes {
+			if node.Key == strings.TrimSpace(input.EndNodeKey) {
+				end = nodeIndex
+				break
+			}
+		}
+		if end < 0 {
+			return nil, fmt.Errorf("循环节点已不属于当前路径")
+		}
+		members := make([]string, 0)
+		switch input.Type {
+		case "restart_from_initiator":
+			if end <= start || (nodes[end].Kind != "common" && nodes[end].Kind != "synergy") {
+				return nil, fmt.Errorf("重新发起一整轮必须以路径上的审批或协同节点不同意结束")
+			}
+			for _, node := range nodes[start : end+1] {
+				members = append(members, node.Name)
+			}
+			result = append(result, model.PathConfigActionCycle{Key: key, Type: input.Type, EndNodeKey: input.EndNodeKey, Label: "重新发起一整轮", Count: input.Count, Members: members, Summary: "终点不同意后回到发起人；重新提交时将重新解析条件、并行和人员"})
+		case "redo_previous_task":
+			if end < 2 || nodes[end-1].Kind == "start" {
+				return nil, fmt.Errorf("上一节点返工不能回退到发起节点，请使用不同意后重新提交")
+			}
+			members = []string{nodes[end-1].Name, nodes[end].Name}
+			result = append(result, model.PathConfigActionCycle{Key: key, Type: input.Type, EndNodeKey: input.EndNodeKey, Label: "上一节点返工", Count: input.Count, Members: members, Summary: "引擎只会回到真实上一个待办，不能指定其他目标"})
+		default:
+			return nil, fmt.Errorf("循环方式不属于当前引擎支持范围")
+		}
+	}
+	return result, nil
+}
+
+// pathConfigCycleNodes 按路径投影顺序返回业务节点，路由和结束节点不参与循环。
+func pathConfigCycleNodes(configuration model.PathConfiguration) []model.PathConfigNode {
+	result := make([]model.PathConfigNode, 0)
+	for _, group := range configuration.Groups {
+		for _, node := range group.Nodes {
+			if node.Kind == "start" || node.Kind == "common" || node.Kind == "synergy" {
+				result = append(result, node)
+			}
+		}
+	}
+	return result
+}
+
+// pathConfigCycleNodeName 将不透明节点键转换为当前可读名称，错误信息不泄露内部标识。
+func pathConfigCycleNodeName(configuration model.PathConfiguration, key string) string {
+	for _, node := range pathConfigCycleNodes(configuration) {
+		if node.Key == key {
+			return node.Name
+		}
+	}
+	return "当前节点"
+}
+
+// actionInputsToConfigured 为循环验证转换尚未持久化的当前节点动作草稿。
+func actionInputsToConfigured(input []model.PathConfigConfiguredActionInput) []model.PathConfigConfiguredAction {
+	result := make([]model.PathConfigConfiguredAction, 0, len(input))
+	for _, action := range input {
+		result = append(result, model.PathConfigConfiguredAction{Key: action.Key, Kind: action.Kind, Count: action.Count})
+	}
+	return result
 }
 
 // SaveForm 在真实运行时与服务端双重校验后独立保存完整 getValues 数据和生成元数据。

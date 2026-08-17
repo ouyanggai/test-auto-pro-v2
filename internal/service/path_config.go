@@ -111,6 +111,7 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	configuration.Revision = stored.Revision
 	configuration.NodeRevision = stored.NodeRevision
 	applyConfirmedNodeState(&configuration, stored.ConfirmedNodeKeys)
+	configuration.ActionCycles = projectPathConfigActionCycles(stored.ActionValues, configuration)
 	plan, err := s.plans.Get(ctx, planID)
 	if err != nil {
 		return model.PathConfiguration{}, err
@@ -118,6 +119,11 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	configuration.Form = projectPathForm(plan.FlowSource, snapshot, analysis.pathAnalysis, path.Choices, stored, found)
 	// 整条路径的权威状态必须同时满足表单 valid 与所有必需节点完成；数据库一行存在不再代表配置完成。
 	configuration.Status = derivePathConfigurationStatus(configuration)
+	configuration.Preparation = model.PathConfigPreparation{
+		PreparedNodes: configuration.Progress.Completed,
+		PendingItems:  configuration.Progress.Pending,
+		Included:      stored.ActionValues["f008:test-included"] == "true",
+	}
 	return configuration, nil
 }
 

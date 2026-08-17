@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NSpin, NSwitch, NTag, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -35,6 +35,7 @@ import {
   savePathFormData,
 } from '../features/path-configuration/api'
 import type {
+  PathConfigActionCycleInput,
   PathConfigActionPlanInput,
   PathConfigDraft,
   PathConfigNode,
@@ -66,6 +67,8 @@ const currentPath = ref<ExecutionPath | null>(null)
 const executionPaths = ref<ExecutionPath[]>([])
 const configuration = ref<PathConfiguration | null>(null)
 const draft = ref<PathConfigDraft>({ fields: {}, actions: {}, persons: {}, personStrategies: {}, actionPlans: {} })
+const actionCycles = ref<PathConfigActionCycleInput[]>([])
+const includedInTest = ref(false)
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
@@ -152,6 +155,8 @@ async function applyConfiguration(next: PathConfiguration, preserveSelected = tr
   const bindings = await bindPathConfigurationNodes(graph.value, next)
   configuration.value = next
   draft.value = initPathConfigDraft(next)
+  actionCycles.value = next.actionCycles.map(cycle => ({ key: cycle.key, type: cycle.type, endNodeKey: cycle.endNodeKey, count: cycle.count }))
+  includedInTest.value = next.preparation.included
   configurationByGraphNodeID.value = bindings.byGraphNodeID
   graphNodeIDByConfigurationKey.value = bindings.graphNodeIDByKey
   selectedNodeID.value = preserveSelected && bindings.byGraphNodeID.has(selected)
@@ -271,6 +276,18 @@ function updateNodeActionPlan(nodeKey: string, value: PathConfigActionPlanInput)
   nodeSavedSuccessfully.value = false
 }
 
+// updateActionCycles 保留循环草稿直到当前节点保存成功；成员与前驱仍由服务端重新派生。
+function updateActionCycles(value: PathConfigActionCycleInput[]) {
+  actionCycles.value = value.map(cycle => ({ ...cycle }))
+  nodeSavedSuccessfully.value = false
+}
+
+// updateIncludedInTest 仅标记后续运行范围，不创建运行记录也不执行目标平台动作。
+function updateIncludedInTest(value: boolean) {
+  includedInTest.value = value
+  nodeSavedSuccessfully.value = false
+}
+
 // saveCurrentNode 保存当前节点后立即 GET 对账；请求响应丢失时也以服务端事实为准。
 async function saveCurrentNode() {
   const current = configuration.value
@@ -282,7 +299,7 @@ async function saveCurrentNode() {
   nodeSavedSuccessfully.value = false
   const previousRevision = current.nodeRevision
   try {
-    await savePathConfigurationNode(planID.value, pathID.value, node.key, previousRevision, buildPathConfigNodeSavePayload(node, draft.value), nodeSaveKey)
+    await savePathConfigurationNode(planID.value, pathID.value, node.key, previousRevision, buildPathConfigNodeSavePayload(node, draft.value, actionCycles.value, includedInTest.value), nodeSaveKey)
     await reloadConfiguration()
     await finishConfirmedNodeSave()
   }
@@ -461,12 +478,15 @@ void loadPage()
         </div>
       </div>
       <div v-if="configuration" class="path-configuration-page__progress" aria-label="路径配置进度">
+        <span>已准备 {{ configuration.preparation.preparedNodes }} 个节点</span>
+        <span>还有 {{ configuration.preparation.pendingItems }} 项需要处理</span>
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
         <span>表单：{{ pathConfigurationStatusName(configuration.form.status) }}</span>
         <n-tag size="small" :bordered="false" :type="configuration.status === 'configured' ? 'success' : 'warning'">
           {{ pathConfigurationStatusName(configuration.status) }}
         </n-tag>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
+        <label class="path-configuration-page__include"><span>纳入本次测试</span><n-switch :value="includedInTest" @update:value="updateIncludedInTest" /></label>
       </div>
     </header>
 
@@ -506,8 +526,10 @@ void loadPage()
             :save-details="nodeSaveDetails"
             :saved-successfully="nodeSavedSuccessfully"
             :form-complete="configuration.form.status === 'valid'"
+            :action-cycles="configuration.actionCycles"
             @update-person-strategy="updatePersonStrategy"
             @update-action-plan="updateNodeActionPlan"
+            @update-action-cycles="updateActionCycles"
             @save="saveCurrentNode"
             @back-to-plan="backToPlan"
             @open-form="openFormWorkspace"
@@ -629,6 +651,7 @@ void loadPage()
 .path-configuration-page__identity h1 { margin: 0 0 4px; font-size: 24px; }
 .path-configuration-page__identity p { margin: 0; color: var(--path-config-text-secondary-color); }
 .path-configuration-page__progress { justify-content: flex-end; gap: 10px; font-size: 13px; color: var(--path-config-text-secondary-color); }
+.path-configuration-page__include { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--path-config-border-color); }
 
 .path-configuration-page__stage {

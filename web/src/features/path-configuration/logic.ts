@@ -1,5 +1,6 @@
 import type {
   PathConfigActionPlanInput,
+  PathConfigActionCycleInput,
   PathConfigConfiguredActionInput,
   PathConfigActionStepInput,
   PathConfigActionKind,
@@ -342,7 +343,7 @@ export function copyPathConfigActionPlan(input: PathConfigActionPlanInput): Path
     combinationCount: normalizedAddSignCount(input.combinationCount),
     // 加签节点可能来自后端投影或本地草稿；统一按空数组兜底，避免 null 触发 .map 异常。
     addSignNodes: (input.addSignNodes ?? []).map(item => ({ person: copyPathConfigPersonStrategy(item.person), count: normalizedAddSignCount(item.count) })),
-    result: copyPathConfigActionStep(input.result),
+    result: copyPathConfigActionStep(input.result ?? { kind: 'approve_pass', opinion: '', target: '' }),
   }
 }
 
@@ -371,12 +372,12 @@ export function pathConfigActionPlanInput(node: PathConfigNode): PathConfigActio
 }
 
 // buildPathConfigNodeSavePayload 只收敛当前节点的动作与人员，不允许一次保存覆盖其他节点。
-export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft): PathConfigNodeSavePayload {
+export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft, actionCycles?: PathConfigActionCycleInput[], included?: boolean): PathConfigNodeSavePayload {
   const persons = node.persons
     .filter(person => person.editable)
     .map(person => normalizedPersonStrategy(person, draft.personStrategies[person.key]))
   // 保存前必须脱离 Vue 深响应式对象，否则浏览器会在 fetch 之前抛 DataCloneError，导致节点 PUT 根本没有发出。
-  return { persons, actionPlan: copyPathConfigActionPlan(draft.actionPlans[node.key] ?? pathConfigActionPlanInput(node)) }
+  return { persons, actionPlan: copyPathConfigActionPlan(draft.actionPlans[node.key] ?? pathConfigActionPlanInput(node)), actionCycles, included }
 }
 
 // currentNodeConfigurationComplete 判断当前节点人数约束是否满足；表单字段不再属于节点侧栏。

@@ -19,15 +19,43 @@ type PathConfigSaveResult struct {
 
 // PathConfiguration 是单条已保存路径的完整配置工作台模型。
 type PathConfiguration struct {
-	Path         PathConfigPath     `json:"path"`
-	Revision     uint64             `json:"revision"`
-	NodeRevision uint64             `json:"nodeRevision"`
-	Status       string             `json:"status"`
-	Progress     PathConfigProgress `json:"progress"`
-	NextNodeKey  string             `json:"nextNodeKey"`
-	Groups       []PathConfigGroup  `json:"groups"`
-	Warnings     []string           `json:"warnings"`
-	Form         PathFormConfig     `json:"form"`
+	Path         PathConfigPath          `json:"path"`
+	Revision     uint64                  `json:"revision"`
+	NodeRevision uint64                  `json:"nodeRevision"`
+	Status       string                  `json:"status"`
+	Progress     PathConfigProgress      `json:"progress"`
+	NextNodeKey  string                  `json:"nextNodeKey"`
+	Groups       []PathConfigGroup       `json:"groups"`
+	Warnings     []string                `json:"warnings"`
+	Form         PathFormConfig          `json:"form"`
+	ActionCycles []PathConfigActionCycle `json:"actionCycles"`
+	Preparation  PathConfigPreparation   `json:"preparation"`
+}
+
+// PathConfigPreparation 汇总工具侧准备事实；纳入标记不会启动目标流程。
+type PathConfigPreparation struct {
+	PreparedNodes int  `json:"preparedNodes"`
+	PendingItems  int  `json:"pendingItems"`
+	Included      bool `json:"included"`
+}
+
+// PathConfigActionCycle 是服务端根据当前保存路径派生的只读循环摘要。
+type PathConfigActionCycle struct {
+	Key        string   `json:"key"`
+	Type       string   `json:"type"`
+	EndNodeKey string   `json:"endNodeKey"`
+	Label      string   `json:"label"`
+	Count      int      `json:"count"`
+	Members    []string `json:"members"`
+	Summary    string   `json:"summary"`
+}
+
+// PathConfigActionCycleInput 只接受循环类型、次数和不透明终点键；成员顺序始终由服务端派生。
+type PathConfigActionCycleInput struct {
+	Key        string `json:"key"`
+	Type       string `json:"type"`
+	EndNodeKey string `json:"endNodeKey,omitempty"`
+	Count      int    `json:"count"`
 }
 
 // PathFormConfig 是与节点配置分离的真实 FormMaking 表单工作区模型。
@@ -120,10 +148,12 @@ type PathFormSaveInput struct {
 
 // PathNodeSaveInput 是单个节点人员与动作的最小回写体。
 type PathNodeSaveInput struct {
-	Revision   uint64                          `json:"revision"`
-	Persons    []PathConfigPersonStrategyInput `json:"persons"`
-	ActionPlan PathConfigActionPlanInput       `json:"actionPlan"`
-	Actions    []PathConfigActionValue         `json:"actions,omitempty"`
+	Revision     uint64                          `json:"revision"`
+	Persons      []PathConfigPersonStrategyInput `json:"persons"`
+	ActionPlan   PathConfigActionPlanInput       `json:"actionPlan"`
+	Actions      []PathConfigActionValue         `json:"actions,omitempty"`
+	ActionCycles []PathConfigActionCycleInput    `json:"actionCycles,omitempty"`
+	Included     *bool                           `json:"included,omitempty"`
 }
 
 // PathFormRuntimeSession 是 iframe 当前会话使用的短期目标读取上下文；绝不持久化。

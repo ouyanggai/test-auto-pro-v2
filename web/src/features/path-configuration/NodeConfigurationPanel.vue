@@ -19,6 +19,8 @@ import { computed, ref } from 'vue'
 import { copyPathConfigActionPlan, normalizedPersonStrategy, pathConfigActionPlanInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type {
   PathConfigActionCatalogItem,
+  PathConfigActionCycle,
+  PathConfigActionCycleInput,
   PathConfigActionKind,
   PathConfigActionPlanInput,
   PathConfigDraft,
@@ -33,6 +35,9 @@ const MAX_SAFE_PERSON_SEED = Number.MAX_SAFE_INTEGER
 const personDetailsOpen = ref(false)
 const detailedPerson = ref<PathConfigPerson | null>(null)
 const actionEditorOpen = ref(false)
+const cycleEditorOpen = ref(false)
+const cycleType = ref<PathConfigActionCycleInput['type']>('restart_from_initiator')
+const cycleCount = ref(1)
 
 const props = defineProps<{
   node: PathConfigNode | null
@@ -44,15 +49,34 @@ const props = defineProps<{
   saveDetails: Array<{ kind: string, name: string, reason: string }>
   savedSuccessfully: boolean
   formComplete: boolean
+  actionCycles: PathConfigActionCycle[]
 }>()
 
 const emit = defineEmits<{
   updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]
   updateActionPlan: [nodeKey: string, value: PathConfigActionPlanInput]
+  updateActionCycles: [value: PathConfigActionCycleInput[]]
   save: []
   backToPlan: []
   openForm: []
 }>()
+
+// cycleInputs 保留服务端派生的终点不透明键，仅用于下一次保存，不向用户展示技术标识。
+const cycleInputs = computed<PathConfigActionCycleInput[]>(() => props.actionCycles.map(cycle => ({ key: cycle.key, type: cycle.type, endNodeKey: cycle.endNodeKey, count: cycle.count })))
+
+// addCycle 只允许以当前节点作为引擎派生终点；节点成员与回退前驱由服务端核对。
+function addCycle() {
+  if (!props.node) return
+  const next = [...cycleInputs.value]
+  next.push({ key: `cycle-local-${Date.now()}`, type: cycleType.value, endNodeKey: props.node.key, count: Math.max(1, Math.min(10, cycleCount.value || 1)) })
+  emit('updateActionCycles', next)
+  cycleEditorOpen.value = false
+}
+
+// removeCycle 删除一条已保存或草稿循环；真正保存仍需用户明确点击当前节点保存。
+function removeCycle(key: string) {
+  emit('updateActionCycles', cycleInputs.value.filter(cycle => cycle.key !== key))
+}
 
 // personOptions 转为可搜索的 Naive UI 不透明候选，页面不接触目标业务 ID。
 function personOptions(person: PathConfigPerson): SelectOption[] {
@@ -419,117 +443,17 @@ function removeConfiguredAction(index: number) {
           </div>
         </section>
 
-        <section v-if="node.actionPlan.catalog.length" class="node-configuration-panel__section" aria-labelledby="node-actions-heading">
-          <div class="node-configuration-panel__section-heading">
-            <h3 id="node-actions-heading">动作计划</h3>
-            <n-button size="small" secondary :disabled="node.lineBlocked" @click="actionEditorOpen = true">编辑动作配置</n-button>
-            <n-popover trigger="click" placement="bottom-end" :width="340" scrollable>
-              <template #trigger><n-button class="node-configuration-panel__action-info" circle size="small" aria-label="查看动作规则" title="查看动作规则"><n-icon><InformationCircleOutline /></n-icon></n-button></template>
-              <div class="node-configuration-panel__action-rules">
-                <strong>动作说明</strong>
-                <p class="node-configuration-panel__runtime-note">流程后续再次进入节点时，会重新读取真实实例、待办、权限、分支和人员。当前配置不模拟网络重试或流程循环。</p>
-                <n-scrollbar style="max-height: 320px">
-                  <ul>
-                    <li v-for="item in node.actionPlan.catalog" :key="item.kind">
-                      <div><strong>{{ item.label }}</strong><n-tag size="tiny" :bordered="false" :type="actionRuleReason(item) ? 'default' : 'success'">{{ actionRuleStatus(item) }}</n-tag></div>
-                      <p>{{ item.description }}</p>
-                      <small v-if="actionRuleReason(item)">{{ actionRuleReason(item) }}</small>
-                    </li>
-                  </ul>
-                </n-scrollbar>
-              </div>
-            </n-popover>
+        <section class="node-configuration-panel__section" aria-labelledby="node-actions-heading">
+          <h3 id="node-actions-heading">动作与循环</h3>
+          <p v-if="actionPlan?.actions.length" class="node-configuration-panel__readonly">已配置 {{ actionPlan.actions.length }} 个动作；次数只在节点真实再次到达时按顺序使用。</p>
+          <p v-else class="node-configuration-panel__readonly">尚未配置动作。</p>
+          <div class="node-configuration-panel__commands">
+            <n-button type="primary" size="small" :disabled="node.lineBlocked || !node.actionPlan.catalog.some(item => item.enabled)" @click="actionEditorOpen = true">动作配置</n-button>
+            <n-button size="small" :disabled="node.lineBlocked" @click="cycleEditorOpen = true">循环配置</n-button>
           </div>
-          <n-alert v-if="node.actionPlan.note" type="warning" :show-icon="false" size="small">{{ pathConfigurationMessage(node.actionPlan.note) }}</n-alert>
-          <div v-if="actionPlan" class="node-configuration-panel__action-plan">
-            <!-- 发起节点只有固定提交动作。 -->
-            <div v-if="node.kind === 'start'" class="node-configuration-panel__action-row">
-              <div class="node-configuration-panel__action-row-head">
-                <strong>提交</strong>
-                <n-tag size="tiny" :bordered="false" type="success">发起动作</n-tag>
-              </div>
-              <p class="node-configuration-panel__runtime-note">提交当前发起节点并进入后续流程；执行时仍会核对模板、表单和账号。</p>
-            </div>
-
-            <!-- 审批/协同节点：加签与处理结果统一为动作列表，每个动作一行。 -->
-            <template v-else>
-              <div v-for="(addSign, index) in actionPlan.addSignNodes" :key="`add-sign-${index}`" class="node-configuration-panel__action-row">
-                <div class="node-configuration-panel__action-row-head">
-                  <strong>加签节点 {{ index + 1 }}</strong>
-                  <div class="node-configuration-panel__action-row-tools">
-                    <n-popover v-if="actionPerson('add_sign')" trigger="click" placement="bottom-start" :width="320">
-                      <template #trigger>
-                        <n-button size="tiny" secondary>选择人员</n-button>
-                      </template>
-                      <div class="node-configuration-panel__person-picker">
-                        <span class="node-configuration-panel__parameter-title">加签节点处理人</span>
-                        <n-select :value="addSign.person.strategy" :options="strategyOptions(requiredActionPerson('add_sign'))" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { strategy: value })" />
-                        <n-select
-                          v-if="addSign.person.strategy === 'manual'"
-                          :multiple="requiredActionPerson('add_sign').multiple"
-                          filterable
-                          :value="requiredActionPerson('add_sign').multiple ? addSign.person.selected : (addSign.person.selected[0] ?? null)"
-                          :options="personOptions(requiredActionPerson('add_sign'))"
-                          @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
-                        />
-                        <n-input-number v-if="addSign.person.strategy === 'random'" :value="addSign.person.seed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="加签节点人员随机种子" @update:value="value => updateAddSignPerson(index, requiredActionPerson('add_sign'), { seed: value || 1 })" />
-                      </div>
-                    </n-popover>
-                    <n-button quaternary circle size="tiny" title="上移" aria-label="上移加签节点" :disabled="index === 0" @click="moveAddSignNode(index, -1)"><n-icon><ArrowUpOutline /></n-icon></n-button>
-                    <n-button quaternary circle size="tiny" title="下移" aria-label="下移加签节点" :disabled="index === actionPlan.addSignNodes.length - 1" @click="moveAddSignNode(index, 1)"><n-icon><ArrowDownOutline /></n-icon></n-button>
-                    <n-button quaternary circle size="tiny" title="删除" aria-label="删除加签节点" @click="removeAddSignNode(index)"><n-icon><CloseOutline /></n-icon></n-button>
-                  </div>
-                </div>
-                <div class="node-configuration-panel__action-row-selected">
-                  <template v-if="actionPerson('add_sign') && selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).length">
-                    <n-tag v-for="name in selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
-                    <span v-if="selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).length > PERSON_PREVIEW_LIMIT" class="node-configuration-panel__more">等 {{ selectedPersonNames(requiredActionPerson('add_sign'), addSign.person).length }} 人</span>
-                  </template>
-                  <span v-else class="node-configuration-panel__row-empty">尚未选择处理人</span>
-                </div>
-              </div>
-
-              <!-- 处理结果行 -->
-              <div class="node-configuration-panel__action-row node-configuration-panel__action-row--result">
-                <div class="node-configuration-panel__action-row-head">
-                  <strong>处理结果</strong>
-                  <n-select size="small" class="node-configuration-panel__result-select" :value="resultKind" :options="resultOptions()" :consistent-menu-width="false" aria-label="处理结果" @update:value="updateResult" />
-                </div>
-                <p v-if="actionDefinition(resultKind)?.requiresTarget && node.actionPlan.rollbackTargets.length === 1" class="node-configuration-panel__readonly">回退至：{{ node.actionPlan.rollbackTargets[0].label }}</p>
-                <template v-if="actionDefinition(resultKind)?.requiresPerson && actionPerson(resultKind)">
-                  <div class="node-configuration-panel__action-row-selected">
-                    <n-popover trigger="click" placement="bottom-start" :width="320">
-                      <template #trigger>
-                        <n-button size="tiny" secondary>选择移交人员</n-button>
-                      </template>
-                      <div class="node-configuration-panel__person-picker">
-                        <span class="node-configuration-panel__parameter-title">移交人员</span>
-                        <n-select :value="resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy" :options="strategyOptions(requiredActionPerson(resultKind))" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { strategy: value })" />
-                        <n-select
-                          v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'manual'"
-                          :multiple="requiredActionPerson(resultKind).multiple"
-                          filterable
-                          :value="requiredActionPerson(resultKind).multiple ? (resultPerson()?.selected ?? []) : (resultPerson()?.selected?.[0] ?? null)"
-                          :options="personOptions(requiredActionPerson(resultKind))"
-                          @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { selected: Array.isArray(value) ? value : (value ? [value] : []) })"
-                        />
-                        <n-input-number v-if="(resultPerson()?.strategy ?? requiredActionPerson(resultKind).strategy) === 'random'" :value="resultPerson()?.seed ?? requiredActionPerson(resultKind).strategySeed" :min="1" :max="MAX_SAFE_PERSON_SEED" aria-label="移交人员随机种子" @update:value="value => updateResultPerson(requiredActionPerson(resultKind), { seed: value || 1 })" />
-                      </div>
-                    </n-popover>
-                    <n-tag v-for="name in selectedResultPersonNames(resultKind).slice(0, PERSON_PREVIEW_LIMIT)" :key="name" size="small" :bordered="false" type="success">{{ name }}</n-tag>
-                  </div>
-                </template>
-              </div>
-
-              <!-- 添加动作：只追加新的加签动作，处理结果保持唯一。 -->
-              <div class="node-configuration-panel__action-add">
-                <n-button v-if="actionDefinition('add_sign')?.enabled" dashed size="small" :disabled="actionPlan.addSignNodes.length >= 10" @click="addSignNode">
-                  <template #icon><n-icon><AddOutline /></n-icon></template>添加动作
-                </n-button>
-                <span v-else-if="actionDefinition('add_sign')" class="node-configuration-panel__runtime-note">{{ addSignDisabledReason() }}</span>
-              </div>
-            </template>
-          </div>
+          <ul v-if="actionCycles.length" class="node-configuration-panel__cycle-summary">
+            <li v-for="cycle in actionCycles" :key="cycle.key"><strong>{{ cycle.label }} × {{ cycle.count }}</strong><span>{{ cycle.members.join(' → ') }}</span><n-button quaternary circle size="tiny" title="删除循环" aria-label="删除循环" @click="removeCycle(cycle.key)"><n-icon><CloseOutline /></n-icon></n-button></li>
+          </ul>
         </section>
 
         <n-empty v-if="!node.persons.length && !node.actionPlan.catalog.length" size="small" description="此节点没有需要配置的内容" />
@@ -556,11 +480,7 @@ function removeConfiguredAction(index: number) {
         <n-card v-if="node && actionPlan" class="node-configuration-panel__action-modal" :bordered="false" role="dialog" aria-modal="true" aria-labelledby="action-editor-title">
           <template #header><div class="node-configuration-panel__action-modal-heading"><span>动作配置</span><h3 id="action-editor-title">{{ node.name }}</h3></div></template>
           <template #header-extra><n-button quaternary circle size="small" title="关闭" aria-label="关闭动作配置" @click="actionEditorOpen = false"><n-icon><CloseOutline /></n-icon></n-button></template>
-          <div class="node-configuration-panel__action-modal-loop">
-            <span>动作组合循环次数</span>
-            <n-input-number :value="actionPlan.combinationCount" :min="1" :max="10" :show-button="true" aria-label="动作组合循环次数" @update:value="updateCombinationCount" />
-          </div>
-          <n-alert v-if="!actionPlan.actions.length" type="info" :show-icon="false" size="small">当前没有单独配置的动作，可从目录添加。</n-alert>
+          <n-alert v-if="!actionPlan.actions.length" type="info" :show-icon="false" size="small">当前还没有动作。次数表示后续真实再次到达时的顺序，不会连续调用目标接口。</n-alert>
           <n-scrollbar class="node-configuration-panel__action-modal-scroll" style="max-height: 420px">
             <div v-for="(action, index) in actionPlan.actions" :key="action.key || index" class="node-configuration-panel__action-modal-row">
               <div class="node-configuration-panel__action-modal-row-head">
@@ -573,7 +493,7 @@ function removeConfiguredAction(index: number) {
               </div>
               <n-select :value="action.kind" :options="actionEditorOptions" aria-label="动作类型" @update:value="value => updateConfiguredAction(index, { kind: value as PathConfigActionKind })" />
               <n-input-number :value="action.count" :min="1" :max="10" :show-button="true" aria-label="动作次数" @update:value="value => updateConfiguredAction(index, { count: Number(value) || 1 })" />
-              <n-select v-if="configuredActionDefinition(action.kind)?.requiresTarget" :value="action.target || null" :options="rollbackOptions()" clearable aria-label="回退目标" @update:value="value => updateConfiguredAction(index, { target: String(value || '') })" />
+              <p v-if="configuredActionDefinition(action.kind)?.requiresTarget" class="node-configuration-panel__readonly">回退目标由引擎按当前待办的真实上一节点决定。</p>
               <template v-for="person in [configuredActionPerson(action.kind)]" :key="person?.key || action.key">
                 <template v-if="person">
                   <n-alert v-if="!person.options.length" type="warning" :show-icon="false" size="small">当前动作没有可用候选人员。</n-alert>
@@ -584,7 +504,17 @@ function removeConfiguredAction(index: number) {
               </template>
             </div>
           </n-scrollbar>
-          <template #footer><n-button size="small" :disabled="actionPlan.actions.length >= 10" @click="addConfiguredAction"><n-icon><AddOutline /></n-icon>添加动作</n-button></template>
+          <template #footer><div class="node-configuration-panel__modal-footer"><n-button size="small" @click="actionEditorOpen = false">取消</n-button><n-button size="small" :disabled="actionPlan.actions.length >= 10" @click="addConfiguredAction"><n-icon><AddOutline /></n-icon>添加动作</n-button><n-button size="small" type="primary" :loading="saving" @click="emit('save')">保存动作配置</n-button></div></template>
+        </n-card>
+      </n-modal>
+
+      <n-modal :show="cycleEditorOpen" :mask-closable="true" @update:show="show => cycleEditorOpen = show">
+        <n-card v-if="node" class="node-configuration-panel__action-modal" :bordered="false" role="dialog" aria-modal="true" aria-labelledby="cycle-editor-title">
+          <template #header><div class="node-configuration-panel__action-modal-heading"><span>循环配置</span><h3 id="cycle-editor-title">{{ node.name }}</h3></div></template>
+          <n-select v-model:value="cycleType" :options="[{ label: '不同意后重新提交', value: 'restart_from_initiator' }, { label: '回退上一步后重做', value: 'redo_previous_task' }]" aria-label="循环方式" />
+          <n-input-number v-model:value="cycleCount" :min="1" :max="10" :show-button="true" aria-label="循环次数" />
+          <n-alert type="info" :show-icon="false" size="small">重新提交会从发起人开始重新解析条件、并行和人员；回退只能由引擎返回真实上一个待办。</n-alert>
+          <template #footer><div class="node-configuration-panel__modal-footer"><n-button size="small" @click="cycleEditorOpen = false">取消</n-button><n-button size="small" type="primary" @click="addCycle">加入循环</n-button></div></template>
         </n-card>
       </n-modal>
 
@@ -613,6 +543,11 @@ function removeConfiguredAction(index: number) {
 .node-configuration-panel__action-modal-heading h3 { margin: 2px 0 0; font-size: 16px; }
 .node-configuration-panel__action-modal-loop { margin-bottom: 12px; }
 .node-configuration-panel__action-modal-loop .n-input-number { width: 150px; }
+.node-configuration-panel__commands, .node-configuration-panel__modal-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.node-configuration-panel__cycle-summary { display: grid; gap: 7px; padding: 0; margin: 10px 0 0; list-style: none; }
+.node-configuration-panel__cycle-summary li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 8px; padding: 8px; border: 1px solid var(--flow-edge-color); border-radius: 4px; font-size: 12px; }
+.node-configuration-panel__cycle-summary span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .76; }
+.node-configuration-panel__cycle-summary .n-button { grid-column: 2; grid-row: 1 / span 2; }
 .node-configuration-panel__action-modal-row { display: grid; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--flow-edge-color); }
 .node-configuration-panel__action-modal-row:last-child { border-bottom: 0; }
 .node-configuration-panel__header { border-bottom: 1px solid var(--flow-edge-color); }

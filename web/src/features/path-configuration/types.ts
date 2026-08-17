@@ -15,6 +15,31 @@ export interface PathConfiguration {
   groups: PathConfigGroup[]
   warnings: string[]
   form: PathFormConfiguration
+  actionCycles: PathConfigActionCycle[]
+  preparation: PathConfigPreparation
+}
+
+export interface PathConfigPreparation {
+  preparedNodes: number
+  pendingItems: number
+  included: boolean
+}
+
+export interface PathConfigActionCycle {
+  key: string
+  type: 'restart_from_initiator' | 'redo_previous_task'
+  endNodeKey: string
+  label: string
+  count: number
+  members: string[]
+  summary: string
+}
+
+export interface PathConfigActionCycleInput {
+  key: string
+  type: 'restart_from_initiator' | 'redo_previous_task'
+  endNodeKey: string
+  count: number
 }
 
 export type PathFormStatus = 'empty' | 'draft' | 'valid' | 'affected' | 'unsupported'
@@ -242,8 +267,11 @@ export interface PathConfigActionStep {
 
 export interface PathConfigActionPlanInput {
   actions: PathConfigConfiguredActionInput[]
+  /** @deprecated 仅用于兼容读取旧配置，不再渲染。 */
   combinationCount: number
+  /** @deprecated 仅用于兼容读取旧配置，不再渲染。 */
   addSignNodes: PathConfigAddSignNodeInput[]
+  /** @deprecated 仅用于兼容读取旧配置，不再渲染。 */
   result: PathConfigActionStepInput
 }
 
@@ -296,6 +324,8 @@ export interface PathConfigDraft {
 export interface PathConfigNodeSavePayload {
   persons: PathConfigPersonStrategyInput[]
   actionPlan: PathConfigActionPlanInput
+  actionCycles?: PathConfigActionCycleInput[]
+  included?: boolean
 }
 
 export type PathConfigPagePhase =

@@ -1,6 +1,6 @@
 # F-008 节点动作、循环与批量准备
 
-- 状态：awaiting_approval
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的“节点动作与循环配置行为（F-008）”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-008 节点动作与循环配置”
 - 计划确认时间：2026-08-17
