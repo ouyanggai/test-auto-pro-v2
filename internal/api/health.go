@@ -1,8 +1,10 @@
 package api
 
 import (
+	"compress/gzip"
 	"context"
 	"net/http"
+	"strings"
 
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/formruntimemaintenance"
@@ -58,7 +60,33 @@ func NewHandlerWithMaintenanceServices(reader TargetReader, plans PlanService, g
 	registerPathRequirementRoute(mux, requirements)
 	registerPathConfigurationRoutes(mux, configurations)
 	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
-	return mux
+	return gzipResponses(mux)
+}
+
+// gzipResponses 为声明支持 gzip 的客户端压缩 JSON 响应，避免大路径摘要重复占用传输带宽。
+func gzipResponses(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !strings.Contains(request.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(response, request)
+			return
+		}
+		response.Header().Set("Content-Encoding", "gzip")
+		response.Header().Add("Vary", "Accept-Encoding")
+		writer := gzip.NewWriter(response)
+		defer writer.Close()
+		next.ServeHTTP(gzipResponseWriter{ResponseWriter: response, writer: writer}, request)
+	})
+}
+
+// gzipResponseWriter 将 HTTP 写入委托给 gzip 流，状态码与其他头仍由原响应写入器处理。
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	writer *gzip.Writer
+}
+
+// Write 压缩响应体而不改变上层 JSON 编码和错误处理语义。
+func (w gzipResponseWriter) Write(data []byte) (int, error) {
+	return w.writer.Write(data)
 }
 
 type unavailableFormRuntimeMaintenanceService struct{}

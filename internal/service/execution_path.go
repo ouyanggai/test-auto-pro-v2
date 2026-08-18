@@ -31,6 +31,8 @@ type ExecutionPathError struct {
 	Message string
 }
 
+const maxConcurrentPathGenerations = 2
+
 // Error 返回可映射为稳定 API 错误的人类可读说明。
 func (e *ExecutionPathError) Error() string { return e.Message }
 
@@ -89,7 +91,11 @@ func (s *ExecutionPathService) StartGeneration(_ context.Context, planID uint64,
 		s.generationMu.Unlock()
 		return copy, nil
 	}
-	jobCtx, cancel := context.WithCancel(context.Background())
+	if s.activeGenerationCount() >= maxConcurrentPathGenerations {
+		s.generationMu.Unlock()
+		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "后台路径解析任务繁忙，请稍后重试"}
+	}
+	jobCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	job := &PathGenerationJob{ID: createKey, Status: "queued", UpdatedAt: s.now().UTC(), planID: planID, cancel: cancel}
 	s.generations[createKey] = job
 	s.generationMu.Unlock()
@@ -154,12 +160,27 @@ func (s *ExecutionPathService) ResumeGeneration(_ context.Context, _ uint64, job
 		s.generationMu.Unlock()
 		return copy, nil
 	}
-	jobCtx, cancel := context.WithCancel(context.Background())
+	if s.activeGenerationCount() >= maxConcurrentPathGenerations {
+		s.generationMu.Unlock()
+		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "后台路径解析任务繁忙，请稍后重试"}
+	}
+	jobCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	job.Status, job.Error, job.UpdatedAt, job.cancel = "queued", "", s.now().UTC(), cancel
 	copy := *job
 	s.generationMu.Unlock()
 	go s.runGeneration(jobCtx, jobID)
 	return copy, nil
+}
+
+// activeGenerationCount 仅统计占用后台资源的排队和运行任务，避免把业务路径数量当作限制。
+func (s *ExecutionPathService) activeGenerationCount() int {
+	count := 0
+	for _, job := range s.generations {
+		if job.Status == "queued" || job.Status == "running" {
+			count++
+		}
+	}
+	return count
 }
 
 // updateGeneration 在锁内更新任务快照并刷新时间。
