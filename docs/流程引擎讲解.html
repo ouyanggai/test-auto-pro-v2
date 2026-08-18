@@ -1,0 +1,658 @@
+<!--
+ * @Author: oygsky
+ * @Date: 2026-08-14 10:41:06
+ * @LastEditors: oygdeMac-mini-6.local
+ * @LastEditTime: 2026-08-14 10:56:03
+ * @Description: 唧唧复唧唧
+ * @FilePath: /test-auto-pro-v2/docs/流程引擎讲解.html
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>流程引擎讲解</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/styles/github.min.css">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         color:#1f2328; line-height:1.7; margin:0; }
+  #sidebar { position:fixed; left:0; top:0; width:250px; height:100vh; overflow-y:auto;
+             border-right:1px solid #d0d7de; padding:28px 16px; background:#f6f8fa; }
+  #sidebar .doc-title { font-size:15px; font-weight:700; margin:0 0 4px; padding:0 10px; color:#1f2328; }
+  #sidebar .doc-sub { font-size:12px; color:#8c959f; padding:0 10px; margin-bottom:14px; }
+  #toc a { display:block; padding:6px 10px; color:#57606a; text-decoration:none; font-size:13px;
+           border-radius:6px; border-left:2px solid transparent; }
+  #toc a.toc-h3 { padding-left:26px; font-size:12px; }
+  #toc a:hover { background:#eaeef2; color:#1f2328; }
+  #toc a.active { background:#ddf4ff; color:#0969da; border-left-color:#0969da; font-weight:600; }
+  #content { margin-left:270px; max-width:980px; padding:36px 32px 140px; display:none; }
+  h1 { border-bottom:2px solid #d0d7de; padding-bottom:.3em; }
+  h2 { border-bottom:1px solid #d8dee4; padding-bottom:.3em; margin-top:1.8em; scroll-margin-top:20px; }
+  h3 { margin-top:1.4em; scroll-margin-top:20px; }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th, td { border:1px solid #d0d7de; padding:6px 13px; text-align:left; vertical-align:top; }
+  th { background:#f6f8fa; }
+  tr:nth-child(even) { background:#fbfcfd; }
+  code { background:#eff1f3; padding:2px 6px; border-radius:4px;
+         font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:90%; }
+  pre { background:#f6f8fa; padding:14px; border-radius:8px; overflow-x:auto; }
+  pre code { background:none; padding:0; font-size:13px; }
+  blockquote { border-left:4px solid #d0d7de; padding:4px 14px; color:#57606a; margin:14px 0;
+               background:#f6f8fa; border-radius:0 6px 6px 0; }
+  hr { border:none; border-top:1px solid #d0d7de; margin:36px 0; }
+  .mermaid { text-align:center; margin:22px 0; }
+  @media (max-width:900px){ #sidebar{display:none;} #content{margin-left:0;padding:24px 18px 80px;} }
+</style>
+</head>
+<body>
+<aside id="sidebar">
+  <div class="doc-title">流程引擎讲解</div>
+  <div class="doc-sub">技术分享 · 架构与核心实现</div>
+  <nav id="toc"></nav>
+</aside>
+<div id="content"></div>
+<script type="text/markdown" id="src">
+# 流程引擎代码讲解
+
+> 技术分享 · 架构与核心实现
+> 引擎服务：`rsh-cloud-workflow-center`
+
+> 阅读范围：本文以当前代码主链路为准，重点解释定义、发起、审批、定时任务和业务回调；接口路径会明确区分前端入口与引擎内部入口。
+
+---
+
+## 调用流转架构（前端视角）
+
+一次流程操作（发起 / 审批 / 查询）从前端到引擎的完整链路与扇出：
+
+```mermaid
+graph LR
+    FE(("前端")) -->|"/api HTTP"| GW["网关 gateway"]
+    GW -->|路由| WA["web-api<br/>统一入口"]
+    WA -->|"Feign"| WCA["workflow-center-api<br/>流程 API 编排层"]
+    WCA -->|"Feign"| WC["workflow-center<br/>引擎 :9588"]
+
+    WC --> MySQL[("MySQL<br/>t_flow_*")]
+    WC --> Mongo[("MongoDB<br/>表单")]
+    WC --> Redis[("Redis")]
+
+    WC -->|"同步查询用户 / 审批人"| UC["user-center"]
+    WC -. "推待办 / 消息" .-> MC["message-center"]
+    WC -. "回调业务联动" .-> BIZ["业务子服务<br/>FlowCallBackApi"]
+```
+
+**主链路（实线）：**
+前端 → 网关 → `web-api`（统一入口）→ `workflow-center-api`（Feign）→ `workflow-center`（引擎）→ MySQL / MongoDB / Redis
+
+**运行中依赖与异步扇出：**
+
+- `user-center`：在权限校验和审批人解析过程中同步查询用户信息（`userFeignClient`）。
+- `message-center`：本地待办生成后，异步推送待办消息（`messageFeignClient`）。
+- 业务子服务：流转时异步触发业务回调（`sendTriggerCallback` → `/flow/public/callback` → `FlowCallBackApi`）。
+
+> 共享契约：`rsh-framework-cloud-commons` 提供统一的 VO、枚举和 Protocol，各服务通过 Feign/JSON 传输同一套契约对象，减少跨层字段语义偏差。
+
+---
+
+## 核心设计：三层模型 ⭐
+
+引擎最关键的抽象是 **Template → Proxy → Instance** 三层。
+
+```mermaid
+graph LR
+    subgraph "① 设计态 Template"
+        T["FlowTemplate<br/>流程模板<br/>（实施配置）"]
+    end
+    subgraph "② 运行态快照 Proxy"
+        P["FlowProxy<br/>发起时深拷贝的副本"]
+    end
+    subgraph "③ 实例态 Instance"
+        I["FlowInstance<br/>这一次审批的运行时状态"]
+    end
+
+    T -->|"发起时 整份深拷贝"| P
+    P -.->|"实例引用副本"| I
+```
+
+**三层的本质是"定义—快照—实例"的隔离：**
+- **Template**：可演进的设计态，实施可随时修改。
+- **Proxy**：模板的运行态副本。同一模板**未变更时只 copy 一次**，后续发起复用同一份公共 Proxy（`owner_instance_id` 为空）；模板变更或实例级修改（如加签）时才生成新副本。
+- **Instance**：承载这一次审批的运行时状态（当前节点、批次、状态机）。
+
+**核心收益：模板演进与已发起实例的流程定义稳定性隔离**——模板可以继续修改，运行中的实例仍按已引用的 Proxy 执行。Proxy 并非每次发起都 copy：模板稳定时多实例共用一份公共 Proxy，仅首次发布、模板变更或加签等实例级修改才产生 copy；加签会从公共 Proxy 分离出绑定当前实例的私有 Proxy（`owner_instance_id`），避免污染其他实例。
+
+## 引擎职责
+
+一套自研审批 / 流转引擎，为全系统提供流程能力。对外动作：
+
+| 发起 | 审批 | 并行 | 条件分支 | 驳回 | 加签 | 转办 | 撤销 | 取回 | 重提 | 跟踪 | 定时催办 | 子流程 |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| submit | flowAudit | parallel | condition | rollBack | approverAppend | transpond | revocation | retrieveProcess | reSubmit | tracking | timer/urge | subprocess |
+
+核心抽象：把**流程定义**（怎么走）与**流程实例**（这一次具体走）分离，支持串行 / 并行 / 条件 / 驳回 / 加签等流转语义。
+
+### 流程审批示例
+
+以“员工提交申请，部门经理审批；金额大于 10 万时追加财务审批”为例：
+
+```mermaid
+flowchart LR
+    S([员工提交申请]) --> M[部门经理审批]
+    M -->|驳回| R([退回申请人])
+    M -->|通过| C{金额 > 10 万？}
+    C -->|是| F[财务审批]
+    C -->|否| E([流程结束])
+    F -->|通过| E
+    F -->|驳回| R
+```
+
+1. 实施人员在 **Template** 中配置开始节点、部门经理节点、金额条件和财务节点。
+2. 首次正式发起时，模板复制为公共 **Proxy**；模板未变化时，后续实例复用这份只读运行快照。
+3. 每次提交都会创建独立 **Instance**，保存本次申请的当前节点、批次和运行状态。
+4. 引擎解析部门经理并生成 `t_flow_jobtask_link` 待办；审批通过后，根据表单金额选择是否进入财务节点。
+5. 每次流转保存审核记录和运行线，并异步推送消息、触发已配置的业务回调。
+
+这个例子对应后文的五个核心对象：`FlowTemplate`、`FlowProxy`、`FlowInstance`、`FlowJobTaskLink` 和 `FlowAuditRecord`。
+
+---
+
+## 数据库表结构
+
+引擎结构化数据落在 MySQL，共 **38 张 `t_flow_*` 表**，按三层模型分布。
+
+**①② 设计态 ↔ 运行态快照（成对出现，9 对）**
+
+| Template（设计态） | Proxy（深拷贝副本） | 职责 |
+|---|---|---|
+| `t_flow_template` | `t_flow_proxy` | 流程主体 |
+| `t_flow_node_template` | `t_flow_node_proxy` | 节点 |
+| `t_flow_strategy_template` | `t_flow_strategy_proxy` | 网关策略 |
+| `t_flow_strategy_condition_template` | `t_flow_strategy_condition_proxy` | 策略条件 |
+| `t_flow_node_audit_config_template` | `t_flow_node_audit_config_proxy` | 审批配置 |
+| `t_flow_node_audit_detail_config_template` | `t_flow_node_audit_detail_config_proxy` | 审批明细配置 |
+| `t_flow_node_audit_scope_template` | `t_flow_node_audit_scope_proxy` | 审批范围 |
+| `t_flow_node_field_power_template` | `t_flow_node_field_power_proxy` | 字段权限 |
+| `t_flow_form_scope_template` | `t_flow_form_scope_proxy` | 表单适用范围 |
+
+> `*_template` 与 `*_proxy` 严格成对（9 对），是深拷贝复印关系在 schema 层的直接体现。
+
+**③ 实例态 / 运行时（主干表加粗）**
+
+| 表 | 职责 |
+|---|---|
+| **`t_flow_instance`** | **流程实例，`@Version` 乐观锁防并发覆盖** |
+| **`t_flow_audit_record`** | **审批记录：操作人 / 时间 / 通过或驳回** |
+| **`t_flow_run_line`** | **运行线（连线快照，用于还原流程拓扑）** |
+| `t_flow_jobtask_link` | 流程 ↔ 待办任务关联，待办由此驱动 |
+| `t_flow_batch` | 批次（`batchNo`，串联同一次流转的数据） |
+| `t_flow_parallel_logic_record` | 并行分支记录 |
+| `t_flow_instance_approver_append` | 加签追加人 |
+| `t_flow_instance_attachment` / `t_flow_instance_operation_log` | 附件 / 操作日志 |
+| `t_flow_tracking` | 流转轨迹 / 跟踪 |
+| `t_flow_form_data_storage` | 表单草稿暂存 |
+| `t_flow_timer_job` | 定时 / 催办配置 |
+| `t_flow_statistics` / `t_flow_use_record` / `t_flow_urge_handle_record` | 统计 / 使用记录 / 催办记录 |
+
+**④ 基础组织数据（4 张）**
+
+| 表 | 职责 |
+|---|---|
+| `t_flow_group` | 流程分组 |
+| `t_flow_role` / `t_flow_role_user` | 流程角色 / 角色-用户关系 |
+| `t_flow_standard_tag` | 标准标签 |
+
+> 阅读主线优先关注五张表：`t_flow_proxy`（运行定义）、`t_flow_instance`（实例状态）、`t_flow_jobtask_link`（待办）、`t_flow_audit_record`（审批记录）和 `t_flow_run_line`（运行轨迹）。表名即语义——`*_template` 是设计态，`*_proxy` 是运行快照，其余表承载运行过程或辅助配置。
+
+---
+
+## 节点类型与状态机
+
+**节点类型 `FlowNodeType`：**
+
+| 类型 | 语义 |
+|---|---|
+| `start` / `end` | 起始 / 结束 |
+| `common` | 普通审批节点 |
+| `synergy` | 协同节点（多人共审） |
+| `parallel` | 并行网关（多路同时推进） |
+| `condition` | 条件网关（分支判定） |
+| `empty` | 空节点（透明中转，推进时自动跳过） |
+
+**实例状态 `FlowInstanceStatusEnum`：**
+
+| 状态 | 含义 | 说明 |
+|---|---|---|
+| `await_sent` | 待发 | 已进入待发送阶段，尚未正式运行 |
+| `draft` | 草稿 | 只保存实例和表单，不生成待办 |
+| `run` | 运行中 | 正在审批或流转 |
+| `rejected` | 驳回 | 可修改后通过 `reSubmit` 重提 |
+| `withdraw` | 撤销 | 发起人撤销后的状态 |
+| `termination` | 终止 | 终止当前流程；是否重新发起由具体入口规则控制 |
+| `abandon` | 废弃 | 不再继续流转 |
+| `end` | 完结 | 所有审批节点已正常完成 |
+
+常见主线可以简化为：
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: 保存草稿
+    [*] --> run: 正式发起
+    draft --> run: submit / reSubmit
+    run --> end: 审批完成
+    run --> rejected: 驳回
+    rejected --> run: reSubmit
+    run --> withdraw: 撤销
+    run --> termination: 终止
+    run --> abandon: 废弃
+```
+
+> 这是常见业务主线，不代表每个状态之间都能任意转换；具体入口仍会校验当前状态、操作人和待办状态。
+
+---
+
+## 运转主线：submit
+
+引擎内部入口 `POST /flowInstance/submit` 的逻辑阶段如下。前端实际通过 `POST /api/web/flowInstanceApi/submit` 进入，再经 `workflow-center-api` 转发到引擎。
+
+```mermaid
+sequenceDiagram
+    participant FE as 前端
+    participant ENG as 引擎 submit()
+    participant DB as MySQL
+    participant MG as MongoDB
+    participant TODO as 待办中心
+    participant BIZ as 业务回调服务<br/>FlowCallBackApi
+
+    FE->>ENG: 发起流程
+    Note over ENG: 1. 校验流程 + 发起权限
+    Note over ENG: 2. 模板→代理（复用公共 Proxy / 无则 copy）
+    Note over ENG: 3. 解析下一节点
+    Note over ENG: 4. 并行处理 / 审批人解析
+    ENG->>MG: 5. 存表单
+    ENG->>DB: 6. 存实例 + 批次
+    ENG->>DB: 7. 生成本地待办 + 审批配置 + 审核记录 + 运行线
+    par 异步业务回调
+        ENG-->>BIZ: 按 auditWay POST /flow/public/callback
+        Note over BIZ: FlowCallBackApi.callBack 执行业务联动
+    and 异步消息推送
+        ENG-->>TODO: 查询本地待办并推送消息
+    end
+    ENG-->>FE: 返回发起结果
+```
+
+阶段划分：**校验 → 解析节点 → 持久化 → 生成本地待办 → 异步扇出**。图中异步部分表达逻辑关系，不承诺消息与回调的严格先后顺序。
+
+注意：`batchNo` 串联同一次流转的全部数据；草稿（draft）只落实例与表单，**不生成待办、不推进**，仅正式发起才驱动流程。
+
+---
+
+## 代码：submit() 主线
+
+`FlowSubmitServiceImpl.submit()`——源码以 `StopWatch` 分段，本身就是阶段提纲。以下是便于讲解的**非完整伪代码**，剥离了日志、计时和大部分边界校验，不能直接复制编译：
+
+```java
+public BaseResponseProtocol submit(FlowInstanceProtocol protocol) {
+    validateFlowExist(protocol);                                // 校验流程存在
+    FlowProxyVo proxy = checkProxyData(protocol);               // 模板→代理：复用公共 Proxy，无则 copy（见下）
+    FlowNodeProxyVo startNode = flowOperate.getStartNode(...);  // 起始节点
+    flowOperate.validateAuditPermissions(...);                  // 发起权限
+
+    // 解析下一节点：路由节点（可能为网关）+ 执行节点
+    FlowNodeProxyVo nextData = flowOperate.recursionGetNextNodeProxyData(..., startNode, true);
+    FlowNodeProxyVo next     = flowOperate.getNextFlowNodeProxy(..., startNode, nextData, ...);
+
+    // 并行处理 + 审批人解析 + 自选节点校验
+    ParallelResultBo pr = flowParallelService.parallelNodeBizHandle(...);
+    flowOperate.configAuditPersonnel(next, ...);
+
+    // 持久化：表单(Mongo) + 实例+批次(MySQL)
+    FormDataMongoVo mongo = flowOperate.saveFormData(..., proxy);
+    FlowInstanceVo inst   = saveFlowInstanceData(...);
+    flowOperate.saveFlowBatch(...);
+
+    if (status != draft) {                                      // 非草稿：生成待办 + 推进
+        flowOperate.newFirstGenerateTask(...);                  //   下一节点待办
+        flowOperate.saveFlowNodeAuditConfigProxy(...);          //   存下一节点审核人配置
+        flowOperate.saveAuditRecordVo(...);                     //   审核记录
+        flowOperate.saveAttachmentInfo(...);                    //   附件
+        flowOperate.sendTriggerCallback(...);                   //   触发业务回调（见后文 FlowCallBackApi）
+        flowOperate.saveRunFlowLine(..., ExecuteResultEnum.initiate); // 运行线
+    }
+    countUseFLow(...);                                          // 流程使用次数统计
+    flowOperate.pushFlowPendingInfo(...);                       // 推送待办中心
+    flowStatisticsAspect.submitExecution(...);                  // 统计埋点
+    return success(inst);
+}
+```
+
+**第 2 步 `checkProxyData` 展开**——模板 → 代理，复用优先（非每次发起都 copy）：
+
+```java
+FlowProxyVo proxy = flowOperate.getFlowProxyVo(protocol);    // 按 flowProxyId 查现有公共 Proxy
+if (proxy == null) {                                         // 首次发布或模板变更后才为空
+    flowOperate.copyTemplateDataToProxy(protocol);           //   copy 模板（流程模板 + 表单模板一并）生成公共 Proxy
+    proxy = flowOperate.getFlowProxyVo(protocol);
+}
+// 模板未动过时，多次发起复用同一份公共 Proxy，无重复 copy 开销
+```
+
+> 加签等实例级修改会从公共 Proxy 分离出实例私有 Proxy（`owner_instance_id` 绑定当前实例），不污染其他实例。
+
+> 代码 8 段对应时序图 1~9 步。`if (status != draft)` 是"草稿不推进"的分支边界——草稿态不产生待办、不写运行线。
+
+---
+
+## 引擎内核：节点推进
+
+审批通过一步后，如何确定下一步去向——这是引擎的核心算法。
+
+```mermaid
+flowchart TD
+    A["当前节点"] --> B["沿连线取下一节点"]
+    B --> C{"下一节点类型"}
+    C -->|"empty 空节点"| B
+    C -->|"common / synergy"| D{"可解析到审批人?"}
+    C -->|"condition / parallel 网关"| E["返回，上层判定分支"]
+    D -->|"是"| F["停在此节点，待审批"]
+    D -->|"否"| G{"nodeSkip 允许跳过?"}
+    G -->|"是"| B
+    G -->|"否"| H["返回，交前端处理"]
+```
+
+**两个设计选择：**
+- **递归推进**：用递归而非迭代，空节点 / 无审批人节点自动穿透，调用方无需感知中间节点。
+- **网关判定上抛**：遇到 condition / parallel 不在本层决策分支，返回上层处理（自动按条件判，或人工选）——把"拓扑遍历"与"分支决策"分层。
+
+---
+
+## 代码：节点推进递归
+
+`FlowOperateServiceImpl.recursionGetNextNodeProxyData()`，对应上图每个判定分支：
+
+```java
+public FlowNodeProxyVo recursionGetNextNodeProxyData(..., FlowNodeProxyVo node, ...) {
+    // 并行节点取分支注释，否则沿连线取下一节点
+    FlowNodeProxyVo result = (node.getType() == parallel)
+            ? getBranchCommentNode(node)
+            : getNextNodeProxyData(..., node);
+
+    if (result == null) return null;                        // 无后继 → 流程结束
+    if (status == draft) return result;                     // 草稿态不穿透
+    if (result.getType() == empty)                          // 空节点 → 递归跳过
+        return recursionGetNextNodeProxyData(..., result, ...);
+
+    if (result.getType() == parallel || result.getType() == condition)
+        return result;                                      // 网关 → 上抛，上层判分支
+
+    if (result.getFlowNodeAuditConfig() != null) {          // 校验审批人是否可解析
+        boolean has = validateNodeAndSettingsNodeAuditDetailConfig(result, ...);
+        if (!has)                                           // 无审批人
+            return result.getNodeSkip()                     //   nodeSkip=true 递归跳过
+                ? recursionGetNextNodeProxyData(..., result, ...) : result;  // 否则返回交前端
+    }
+    return result;                                          // 有审批人 → 停此节点
+}
+
+// 兄弟方法 recursionGetNextNodeProxy()：返回"具体执行节点"，骨架同上；
+// 唯一区别：遇到 condition 网关且 branchExecuteType == "custom_choose"（人工选分支）时，
+// 调 validateHandBranchAndReturnExecuteNode，由审批人手动选择走哪条分支
+```
+
+> 两个兄弟方法分工：`recursionGetNextNodeProxyData` 返回"路由 / 虚拟节点"（网关原样上抛，交上层判分支）；`recursionGetNextNodeProxy` 返回"具体执行节点"，额外处理 `custom_choose` 人工选分支。复杂度集中在 `FlowOperateServiceImpl`（引擎最大中枢类），发起、重提和审批通过等向前流转动作复用这套推进能力。
+
+---
+
+## 其他流转动作
+
+下表使用 `workflow-center` 内部相对路径（统一前缀 `/flowInstance`）。前端入口统一为 `/api/web/flowInstanceApi/*`；其中审批的前端入口是 `/audit`，内部入口是 `/flowAudit`。
+
+| 动作 | 引擎内部入口 | 语义 |
+|---|---|---|
+| 审批 | `/flowAudit` | 通过或驳回当前待办；通过时可能推进下一节点 |
+| 回退 | `/rollBackThePreviousLevel` | 将运行中的流程回退到上一级或指定节点 |
+| 重提 | `/reSubmit` | 草稿、驳回或撤销后重新提交 |
+| 转办 | `/transpond` | 把当前待办转交他人处理，不等同于节点推进 |
+| 加签 | `/approverAppend` | 追加审批人；必要时为当前实例创建私有 Proxy |
+| 撤销 | API 编排层 `/revocation` | 发起人撤销运行中的流程，实例进入 `withdraw` |
+| 取回 | `/retrieveProcess` | 已办审批人在下一节点尚未处理时取回该审批步骤 |
+| 直接发起 | `/directInitiation` | 按直接发起规则创建并推进流程 |
+
+发起、重提和审批通过主要复用"节点解析 + 推进"能力；转办、取回、加签、撤销和回退各自还有专门的权限、状态与落库逻辑。
+
+### 术语口径
+
+| 术语 | 含义 |
+|---|---|
+| 驳回 | 当前审批人给出不通过结果，通常使实例进入 `rejected` |
+| 回退 | 将运行中的流程退回上一级或指定节点后继续处理 |
+| 撤销 | 发起人主动取消运行中的流程，实例进入 `withdraw` |
+| 取回 | 已办审批人在后续节点尚未处理时，把审批步骤重新取回 |
+| 终止 | 由规则或管理动作结束实例，状态为 `termination` |
+| 废弃 | 实例不再参与正常流转，状态为 `abandon` |
+
+---
+
+## 代码：audit() 审批主线
+
+`FlowAuditServiceImpl.audit()`——审批一个待办（通过或驳回）。下面是突出主干逻辑的非完整伪代码，不能直接编译：
+
+```java
+public BaseResponseProtocol audit(FlowInstanceProtocol protocol) {
+    FlowJobTaskLinkVo task = findFlowJobTaskLinkByJobTaskId(jobTaskId);  // 待办
+    if (task 状态非 pending) return error;                               // 幂等校验
+
+    // 三层保护：Redis 门禁 + MySQL 实例行锁 + @Version 乐观锁
+    if (redis 已加锁) return error("提交中,请稍后重试");
+    try {
+        findByIdForUpdate(flowInstanceId);                               // SELECT ... FOR UPDATE
+        flowOperate.validateAuditPermissions(...);                       // 审批权限
+        FlowNodeProxyVo currentNode = getNodeById(...);
+        boolean lastCountersign = getLastCountersignFlag(...);           // 会签是否轮至末人
+
+        passLogic(...);                                                  // 通过 → 推进下一节点
+
+        if (auditStatus == no_pass) {                                    // 驳回分支
+            setStatus(rejected);  setCurrentNode(startNode);
+            清除该实例其他并行待办;                                        // 并行未审一并终止
+        }
+        saveFormData(...);  saveAuditRecordVo(...);                      // 表单 + 审核记录
+        updateFLowInstance(...);                                         // 更新实例（乐观锁）
+        if (auditPassLogicFlag && status == run)                         // 仅运行中推下一节点待办
+            flowOperate.pushFlowPendingInfo(...);
+    } finally {
+        redis 释放锁;
+    }
+    return success(inst);
+}
+```
+
+**通过时的推进封装在 `passLogic()`**，与 submit 复用同一套节点解析能力：
+
+```java
+void passLogic(...) {
+    if (auditStatus == pass) {
+        nextData = flowOperate.recursionGetNextNodeProxyData(...);  // 下一路由节点
+        next     = flowOperate.getNextFlowNodeProxy(...);           // 下一执行节点
+        parallelResultBo = flowParallelService.parallelNodeBizHandle(...); // 并行
+        savePassLogicControl(...);                                  // 推进状态 + 生成下一待办
+    }
+}
+```
+
+> 两个工程要点：
+> - **三层并发保护**：Redis 门禁（同用户 + 同待办，秒级）先挡重复点击；MySQL `SELECT ... FOR UPDATE` 串行化同一实例的关键更新；实体 `@Version` 再检测版本冲突。
+> - **终态不产生待办**：`if (status == run)` 保证完结 / 驳回 / 撤销 / 终止时不再生成待办，避免"流程已结束仍收到待办"。
+
+---
+
+## 定时与催办
+
+```mermaid
+flowchart LR
+    WC["WorkCalendar<br/>工作日判断"] -->|"仅 deadlineType=work_day"| CALC["计算 executeDate"]
+    CALC --> JOB[("MySQL<br/>t_flow_timer_job")]
+    JOB --> LOAD["FlowAuditScheduler<br/>启动后 + 每日装载"]
+    LOAD --> TIMER["HashedWheelTimer<br/>JVM 内存定时任务"]
+    LOAD <-->|"任务占用标记"| REDIS[("Redis")]
+    TIMER --> AUDIT["自动审批"]
+    TIMER --> URGE["超期提醒"]
+```
+
+- MySQL 保存定时规则和执行时间；服务启动后延迟装载，`@Scheduled` 每日重新检查并装载任务。
+- 真正到点触发的是 JVM 内的 Netty `HashedWheelTimer`，任务对象保存在本机 `taskMap`，不是注册在 Redis 中。
+- Redis 保存任务占用标记，用于多实例避免重复装载和任务结束后的清理。
+- 仅当 `deadlineType=work_day` 时，执行时间才按工作日历剔除非工作时段；其他类型按自然时间计算。
+- 时间轮适合大量延迟任务的低开销调度，但不应表述为硬实时或高精度定时器。
+
+---
+
+## 业务子服务接入流程回调
+
+引擎在节点流转（发起 / 审批 / 驳回 / 重提）时，通过当前进程创建工作线程回调业务方，供业务侧联动（如审批通过后推进业务状态）。回调机制由框架 `com.rsh.framework.cloud.flow` 统一封装，业务方**无需自建回调 Controller**。
+
+**机制概览：**
+
+- 框架提供 `FlowCallBackBaseController`，统一暴露 `/flow/public/callback` 端点
+- 引擎按 `auditWay` 从 Redis（`flowCallBackMap`）查到目标服务名，OkHttp 回调该端点
+- `FlowCallBackBaseController` 收到后，按 `auditWay` 分发到本服务内实现了 `FlowCallBackApi` 的 Bean
+
+业务方接入**只需两步**：
+
+**① 启动类扫描框架 flow 包**——加载统一回调端点与注册服务：
+
+```java
+@SpringBootApplication
+@ComponentScan(basePackages = {
+        "com.rsh.cloud.*.center.*",            // 替换为本服务实际业务包
+        "com.rsh.framework.cloud.flow"         // 框架回调包：缺少时统一端点不会生效
+})
+public class Application { }
+```
+
+**② 实现 `FlowCallBackApi`**——声明负责的审批方式 + 处理回调：
+
+```java
+@Service
+public class PersonRecruitApprovalCallBack implements FlowCallBackApi {
+
+    @Autowired
+    private ResumeStatisticsService resumeStatisticsService;
+
+    /** 声明本实现负责的审批方式——引擎按它从 Redis 寻址到本服务 */
+    @Override
+    public AuditWayEnum getAuditWay() {
+        return AuditWayEnum.person_recruit_approval;
+    }
+
+    /** 回调业务逻辑：仅在流程完结且通过时推进业务 */
+    @Override
+    public Object callBack(FlowHttpTriggerProtocol requestProtocol) {
+        FlowHttpTriggerVo data = requestProtocol.getData();
+
+        // —— 流程状态：决定是否推进业务 ——
+        FlowInstanceStatusEnum status = data.getStatus();        // 流程状态：end(完结)/run(运行中)/rejected(驳回)/withdraw(撤销)...
+        ExecuteResultEnum auditStatus = data.getAuditStatus();   // 本次审批结果：pass(通过)/no_pass(不通过)/initiate(发起)
+        // 仅完结+通过才推进；驳回/撤回/未完结等状态直接忽略
+        if (status != FlowInstanceStatusEnum.end
+                || auditStatus != ExecuteResultEnum.pass) {
+            return "忽略：流程未完结通过";
+        }
+
+        // —— 业务关联：定位本次审批对应哪些业务单 ——
+        String flowInstanceId = data.getFlowInstanceId();        // 流程实例 ID（建议作为幂等 key 的组成部分）
+        List<String> bizIds = data.getBindingBizList();          // 本次流程绑定的业务 ID 列表（如多个需求一并审批）
+        String initiatorId = data.getInitiatorId();              // 发起人 ID
+
+        // —— 表单数据：发起/审批时填写的内容（存于 MongoDB），按自身表单结构取字段值 ——
+        FormDataMongoVo formData = data.getFormData();
+
+        // 其余可用字段（按需取用）：
+        // data.getFlowName()        流程名称
+        // data.getFlowProxyId()     流程代理 ID
+        // data.getCurrentNode()     当前节点（FlowNodeProxyVo）
+        // data.getCurrentDataId()   当前表单数据 ID
+
+        resumeStatisticsService.callBackNew(requestProtocol);     // 业务联动：统计、状态推进等
+        return "逻辑执行完成";
+    }
+}
+```
+
+**接入要点：**
+
+- `getAuditWay()` 是路由 key：同一 `auditWay` 全局只能归属一个服务；同一服务内的重复实现由 `FlowCallBackBaseController` 拒绝，跨服务冲突由 `FlowRegistrationService` 在注册时拒绝
+- **无需手动注册**：`FlowRegistrationService` 启动时自动把本服务支持的 `auditWay` 集合写入 Redis（`flowCallBackMap`），并清理本服务先前注册、当前已不再提供的映射
+- `callBack` 入参 `FlowHttpTriggerProtocol` 的 `data`（`FlowHttpTriggerVo`）含 `status` / `auditStatus` / `flowInstanceId` / `bindingBizList` / `formData` / `currentNode` 等
+- **不要自己写 `/flow/public/callback` Controller**——该端点由框架 `FlowCallBackBaseController` 提供，实现 `FlowCallBackApi` 即会被自动分发到
+- 回调可能被重复触发，业务处理应使用“流程实例 ID + 业务动作 / 状态”等稳定字段建立幂等约束
+
+### 当前投递边界
+
+- `sendTriggerCallback` 使用原生工作线程发起调用，不阻塞主请求返回；线程内的下游 HTTP 调用仍是同步执行。
+- `FlowCallBackBaseController` 捕获业务异常后返回文本结果，HTTP 层仍可能表现为成功响应，业务方不能依赖引擎自动重试来保证最终成功。
+- 回调实现必须幂等。关键业务建议先在本地事务中写入带唯一约束的接收记录或 Outbox，再由可靠异步任务执行业务联动。
+</script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+<script>
+(function () {
+  var raw = document.getElementById('src').textContent;
+  marked.setOptions({ gfm:true });
+  var out = marked.parse(raw);
+  out = out.replace(/<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g, function (m, c) {
+    var d = document.createElement('div'); d.innerHTML = c;
+    return '<div class="mermaid">' + d.textContent + '</div>';
+  });
+  var content = document.getElementById('content');
+  content.innerHTML = out;
+  content.style.display = 'block';
+
+  // 代码高亮
+  if (window.hljs) {
+    content.querySelectorAll('pre code').forEach(function (b) { try { hljs.highlightElement(b); } catch (e) {} });
+  }
+
+  // 构建左侧目录（h2 / h3）
+  var heads = content.querySelectorAll('h2, h3');
+  var tocHtml = '';
+  heads.forEach(function (h, i) {
+    h.id = 'sec-' + i;
+    var cls = h.tagName.toLowerCase() === 'h3' ? 'toc-h3' : 'toc-h2';
+    tocHtml += '<a class="' + cls + '" href="#sec-' + i + '">' + h.textContent + '</a>';
+  });
+  var nav = document.getElementById('toc');
+  nav.innerHTML = tocHtml;
+
+  // 点击平滑跳转
+  nav.addEventListener('click', function (e) {
+    var a = e.target.closest('a'); if (!a) return;
+    e.preventDefault();
+    var el = document.getElementById(a.getAttribute('href').slice(1));
+    if (el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+  });
+
+  // 滚动时高亮当前章节
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          nav.querySelectorAll('a').forEach(function (a) {
+            a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id);
+          });
+        }
+      });
+    }, { rootMargin:'0px 0px -72% 0px', threshold:0 });
+    heads.forEach(function (h) { io.observe(h); });
+  }
+
+  // Mermaid 渲染
+  if (window.mermaid) {
+    mermaid.initialize({ startOnLoad:false, theme:'default', securityLevel:'loose' });
+    mermaid.run({ querySelector:'.mermaid' });
+  }
+})();
+</script>
+</body>
+</html>
