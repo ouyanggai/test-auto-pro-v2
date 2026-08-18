@@ -5,6 +5,7 @@ import test from 'node:test'
 const configurationView = readFileSync(new URL('../../../web/src/views/PlanPathConfigurationView.vue', import.meta.url), 'utf8')
 const runtimeFrame = readFileSync(new URL('../../../web/src/features/path-configuration/FormRuntimeFrame.vue', import.meta.url), 'utf8')
 const configurationAPI = readFileSync(new URL('../../../web/src/features/path-configuration/api.ts', import.meta.url), 'utf8')
+const configurationRetry = readFileSync(new URL('../../../web/src/features/path-configuration/retry.ts', import.meta.url), 'utf8')
 
 test('表单工作区离开时只失效宿主会话，不重复销毁 iframe', () => {
   assert.match(configurationView, /function invalidateRuntimeSession\(\) \{[\s\S]*runtimeSessionController\?\.abort\(\)[\s\S]*formOperationController\?\.abort\(\)[\s\S]*runtimeSession\.value = null/)
@@ -63,4 +64,29 @@ test('条件绑定 API 将 null 响应归一为可渲染数组和布尔值', asy
 test('路径配置页导入实际使用的 NSpace 组件并保护条件提示长度访问', () => {
   assert.match(configurationView, /import \{[^}]*NSpace[^}]*\} from 'naive-ui'/s)
   assert.match(configurationView, /Array\.isArray\(binding\.fields\) && binding\.fields\.length/)
+})
+
+test('首读初始化只对可重试失败重试并保持 loading 到真实初始化完成', async () => {
+  const { retryPathLoad } = await import('../../../web/src/features/path-configuration/retry.ts')
+  const signal = new AbortController().signal
+  let attempts = 0
+  const transient = Object.assign(new Error('服务暂不可用'), { retryable: true })
+  const result = await retryPathLoad(async () => {
+    attempts += 1
+    if (attempts < 3) throw transient
+    return 'ready'
+  }, signal, [0, 0])
+  assert.equal(result, 'ready')
+  assert.equal(attempts, 3)
+
+  let businessAttempts = 0
+  await assert.rejects(() => retryPathLoad(async () => {
+    businessAttempts += 1
+    throw new Error('当前已保存路径与真实流程不一致，请先编辑路径')
+  }, signal, [0]), /真实流程不一致/)
+  assert.equal(businessAttempts, 1)
+  assert.match(configurationView, /const \[storedPlan, storedGraph, storedPaths\] = await retryPathLoad\([\s\S]*fetchFlowGraph\(planID\.value, signal\)/)
+  assert.match(configurationView, /pageLoading\.value = true[\s\S]*retryPathLoad/)
+  assert.match(configurationRetry, /defaultRetryDelays = \[500, 1200\]/)
+  assert.match(configurationRetry, /retryable.*=== true/)
 })

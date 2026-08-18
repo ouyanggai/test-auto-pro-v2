@@ -36,6 +36,7 @@ import {
   savePathConfigurationNode,
   savePathFormData,
 } from '../features/path-configuration/api'
+import { retryPathLoad } from '../features/path-configuration/retry'
 import type {
   PathConfigActionCycleInput,
 	PathConfigConfiguredActionInput,
@@ -226,11 +227,11 @@ async function loadPage() {
   formSavedSuccessfully.value = false
   workspace.value = 'nodes'
   try {
-    const [storedPlan, storedGraph, storedPaths] = await Promise.all([
-      fetchPlan(planID.value, controller.signal),
-      fetchFlowGraph(planID.value, controller.signal),
-      fetchExecutionPaths(planID.value, controller.signal),
-    ])
+    const [storedPlan, storedGraph, storedPaths] = await retryPathLoad(signal => Promise.all([
+      fetchPlan(planID.value, signal),
+      fetchFlowGraph(planID.value, signal),
+      fetchExecutionPaths(planID.value, signal),
+    ]), controller.signal)
     if (controller.signal.aborted || version !== loadVersion) return
     pathDetailLoading.value = true
     const storedPath = await fetchExecutionPath(planID.value, pathID.value, controller.signal)
