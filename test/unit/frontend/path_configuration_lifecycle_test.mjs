@@ -33,3 +33,34 @@ test('iframe teardown 幂等且旧加载不会终止新会话', () => {
   assert.match(runtimeFrame, /if \(disposed \|\| runtimeActive \|\| !iframeBootPending\) return\s*iframeBootPending = false/)
   assert.match(runtimeFrame, /onBeforeUnmount\(\(\) => \{\s*destroyRuntime\(\)\s*disposed = true/)
 })
+
+test('条件绑定 API 将 null 响应归一为可渲染数组和布尔值', async () => {
+  const originalFetch = globalThis.fetch
+  const responses = [
+    { form: { conditionBindings: [{ key: 'hint', fields: null, selected: null, locked: null, needsReview: null }], conditionReviews: null, fieldRules: null } },
+    { conditionBindings: [{ key: 'generated', fields: null, selected: null, locked: null, needsReview: null }], conditionReviews: null, fieldRules: null },
+  ]
+  globalThis.fetch = async () => new Response(JSON.stringify({ success: true, data: responses.shift() }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  try {
+    const api = await import('../../../web/src/features/path-configuration/api.ts')
+    const configuration = await api.fetchPathConfiguration('1', '1', new AbortController().signal)
+    const binding = configuration.form.conditionBindings[0]
+    assert.deepEqual(binding.fields, [])
+    assert.equal(binding.selected, false)
+    assert.equal(binding.locked, false)
+    assert.equal(binding.needsReview, false)
+    assert.deepEqual(configuration.form.conditionReviews, [])
+    assert.deepEqual(configuration.form.fieldRules, [])
+
+    const generated = await api.generatePathFormData('1', '1', 1, {}, [], false)
+    assert.deepEqual(generated.conditionBindings[0].fields, [])
+    assert.equal(generated.conditionBindings[0].selected, false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('路径配置页导入实际使用的 NSpace 组件并保护条件提示长度访问', () => {
+  assert.match(configurationView, /import \{[^}]*NSpace[^}]*\} from 'naive-ui'/s)
+  assert.match(configurationView, /Array\.isArray\(binding\.fields\) && binding\.fields\.length/)
+})

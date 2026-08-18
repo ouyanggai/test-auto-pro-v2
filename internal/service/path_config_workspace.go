@@ -1210,6 +1210,30 @@ func buildPathFormConditionProjection(tree *target.FlowNodeTemplate, choices []m
 	sort.Slice(projection.FieldRules, func(left, right int) bool {
 		return projection.FieldRules[left].Field < projection.FieldRules[right].Field
 	})
+	return normalizePathFormConditionProjection(projection)
+}
+
+// normalizePathFormConditionProjection 将公开条件 DTO 的切片统一为空数组，禁止 JSON null 穿透到前端渲染层。
+func normalizePathFormConditionProjection(projection pathFormConditionProjection) pathFormConditionProjection {
+	if projection.Bindings == nil {
+		projection.Bindings = []model.PathFormConditionBinding{}
+	}
+	if projection.Reviews == nil {
+		projection.Reviews = []string{}
+	}
+	if projection.FieldRules == nil {
+		projection.FieldRules = []model.PathFormFieldRule{}
+	}
+	for index := range projection.Bindings {
+		if projection.Bindings[index].Fields == nil {
+			projection.Bindings[index].Fields = []string{}
+		}
+	}
+	for index := range projection.FieldRules {
+		if projection.FieldRules[index].ConditionKeys == nil {
+			projection.FieldRules[index].ConditionKeys = []string{}
+		}
+	}
 	return projection
 }
 

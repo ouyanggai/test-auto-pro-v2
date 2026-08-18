@@ -5,6 +5,8 @@ import type {
 	PathConfigPresetPreview,
 	PathConfigPresetScope,
   PathConfigSaveResult,
+  PathFormConditionBinding,
+  PathFormConfiguration,
   PathFormGenerateResult,
   PathFormSampleSummary,
   PathFormRuntimeSession,
@@ -41,7 +43,42 @@ export class PathConfigApiError extends Error {
 
 export async function fetchPathConfiguration(planId: string, pathId: string, signal: AbortSignal): Promise<PathConfiguration> {
   const result = await request<PathConfiguration>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration`, { method: 'GET' }, signal)
-  return result
+  return normalizePathConfiguration(result)
+}
+
+// normalizePathConditionBinding 将外部 JSON 的可选条件字段归一为稳定前端模型，避免 null 进入模板表达式。
+function normalizePathConditionBinding(value: Partial<PathFormConditionBinding> | null | undefined): PathFormConditionBinding {
+  return {
+    key: String(value?.key ?? ''),
+    nodeName: String(value?.nodeName ?? ''),
+    branchName: String(value?.branchName ?? ''),
+    expression: String(value?.expression ?? ''),
+    fields: Array.isArray(value?.fields) ? value.fields.map(String) : [],
+    selected: value?.selected === true,
+    locked: value?.locked === true,
+    needsReview: value?.needsReview === true,
+    verified: value?.verified === true,
+  }
+}
+
+// normalizePathFormConfiguration 统一配置读取与生成回传的条件绑定、字段规则和提示数组默认值。
+function normalizePathFormConfiguration(value: PathFormConfiguration | null | undefined): PathFormConfiguration {
+  const form = value ?? {} as PathFormConfiguration
+  return {
+    ...form,
+    conditionBindings: Array.isArray(form.conditionBindings) ? form.conditionBindings.map(normalizePathConditionBinding) : [],
+    conditionReviews: Array.isArray(form.conditionReviews) ? form.conditionReviews.map(String) : [],
+    fieldRules: Array.isArray(form.fieldRules) ? form.fieldRules.map(rule => ({
+      field: String(rule?.field ?? ''),
+      disabled: rule?.disabled === true,
+      conditionKeys: Array.isArray(rule?.conditionKeys) ? rule.conditionKeys.map(String) : [],
+    })) : [],
+  }
+}
+
+// normalizePathConfiguration 在 API 边界修复条件提示数组，页面只消费归一后的业务模型。
+function normalizePathConfiguration(value: PathConfiguration): PathConfiguration {
+  return { ...value, form: normalizePathFormConfiguration(value?.form) }
 }
 
 // previewPathConfigurationPreset 计算每个节点的随机动作预设结果，不产生任何写入。
@@ -94,7 +131,16 @@ export function generatePathFormData(
 ): Promise<PathFormGenerateResult> {
   return request<PathFormGenerateResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/form/generate`, {
 		method: 'POST', body: JSON.stringify({ seed, values, manualOverridePaths, nextGroup }),
-  }, signal)
+	}, signal).then(result => ({
+    ...result,
+    conditionBindings: Array.isArray(result.conditionBindings) ? result.conditionBindings.map(normalizePathConditionBinding) : [],
+    conditionReviews: Array.isArray(result.conditionReviews) ? result.conditionReviews.map(String) : [],
+    fieldRules: Array.isArray(result.fieldRules) ? result.fieldRules.map(rule => ({
+      field: String(rule?.field ?? ''),
+      disabled: rule?.disabled === true,
+      conditionKeys: Array.isArray(rule?.conditionKeys) ? rule.conditionKeys.map(String) : [],
+    })) : [],
+  }))
 }
 
 // savePathFormData 保存真实 getValues 返回的完整对象与生成元数据。

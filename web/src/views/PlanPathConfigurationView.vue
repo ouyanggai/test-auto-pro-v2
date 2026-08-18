@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, NCollapse, NCollapseItem, NAlert, NButton, NEmpty, NModal, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -826,7 +826,7 @@ void loadPage()
                       <n-tag v-if="binding.needsReview" size="small" type="error" :bordered="false">需要人工核对</n-tag>
                     </div>
                     <p>{{ binding.expression }}</p>
-                    <small v-if="binding.fields.length">{{ binding.fields.join('、') }}{{ binding.locked ? '：由当前路径条件保持' : '' }}</small>
+                    <small v-if="Array.isArray(binding.fields) && binding.fields.length">{{ binding.fields.join('、') }}{{ binding.locked ? '：由当前路径条件保持' : '' }}</small>
                   </li>
                 </ul>
               </div>

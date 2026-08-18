@@ -2,6 +2,7 @@ package backend_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,33 @@ func TestF007FormConditionBindingDrivesGenerationAndSave(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "当前模板或路径条件") {
 		t.Fatalf("能命中其他分支的表单数据没有被保存校验拒绝：%v", err)
+	}
+}
+
+// TestF007ConditionBindingFieldsSerializeAsArrays 验证无条件兜底分支的 fields 也必须编码为空数组而不是 JSON null。
+func TestF007ConditionBindingFieldsSerializeAsArrays(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 9, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusPendingConfiguration}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{
+		ID: 34, PlanID: 9, SequenceNo: 1, Name: "兜底路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-last"}},
+	}}}
+	serviceUnderTest := service.NewPathConfigService(
+		service.NewPlanService(plans),
+		pathConfigSnapshotReader{snapshot: target.PathConfigurationSnapshot{Tree: requirementConditionTree(), EntryNodeIDs: []string{"start"}, Forms: []target.FormRuntimeTemplate{{Name: "申请表", TemplateData: `{"list":[]}`}}}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths, emptyPathConfigRepository{},
+	)
+	configuration, err := serviceUnderTest.Get(context.Background(), 9, 34)
+	if err != nil {
+		t.Fatalf("读取兜底路径配置失败：%v", err)
+	}
+	for _, binding := range configuration.Form.ConditionBindings {
+		if binding.Fields == nil {
+			t.Fatalf("条件绑定 fields 不得为 nil：%+v", binding)
+		}
+	}
+	payload, err := json.Marshal(configuration.Form.ConditionBindings)
+	if err != nil || strings.Contains(string(payload), `"fields":null`) {
+		t.Fatalf("条件绑定 DTO 不得编码为 JSON null：%s", payload)
 	}
 }
 
