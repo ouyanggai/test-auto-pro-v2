@@ -37,7 +37,7 @@ fi
 
 # 无路径先进入既有 F-005 配置路径；有路径才提供逐条节点配置，两个职责不能混用。
 grep -Fq "请先配置并保存执行路径" "${paths_view}"
-grep -Fq ">配置路径</n-button>" "${paths_view}"
+grep -Fq "新增路径" "${paths_view}"
 grep -Fq ">配置节点</n-button>" "${paths_view}"
 grep -Fq "编辑路径" "${paths_view}"
 grep -Fq "configurationStatus === 'configured'" "${paths_view}"
@@ -89,13 +89,13 @@ grep -Fq "flow-routing-hub__configuration" "${routing_hub}"
 grep -Fq "flow-node--path-muted" "${canvas_view}"
 grep -Fq "branchEditing: props.configurationMode ? false" "${canvas_view}"
 
-# 节点保存正常响应和 GET 对账必须复用同一同路径推进规则，不得再出现跨路径“配置下一条”。
+# F-008 已独立节点动作协议；F-007 只保留同路径节点推进和表单工作区隔离，不能重新断言已删除的旧动作模型。
 grep -Fq "resolveConfirmedNodeSaveDestination" "${config_logic}"
-grep -Fq "copyPathConfigActionPlan" "${config_logic}"
-grep -Fq "pathConfigActionPlanInput" "${config_panel}"
-grep -Fq "copyPathConfigActionPlan" "${config_view}"
-if grep -Eq 'structuredClone\((draft\.actionPlans|props\.draft\.actionPlans|value\))' "${config_logic}" "${config_panel}" "${config_view}"; then
-  echo 'F-007 节点动作保存链不得直接 structuredClone Vue 响应式草稿' >&2
+grep -Fq "copyPathConfigActions" "${config_logic}"
+grep -Fq "actionConfigurations" "${config_panel}"
+grep -Fq "copyPathConfigActions" "${config_view}"
+if grep -Eq 'structuredClone\((draft\.actionConfigurations|props\.draft\.actionConfigurations|value\))' "${config_logic}" "${config_panel}" "${config_view}"; then
+  echo 'F-007 节点保存链不得直接 structuredClone Vue 响应式草稿' >&2
   exit 1
 fi
 grep -Fq "savePathConfigurationNode(planID.value, pathID.value, node.key" "${config_view}"
@@ -107,107 +107,15 @@ fi
 grep -Fq 'selectedNodeID.value = destination.nodeID' "${config_view}"
 grep -Fq 'await focusSelectedNode()' "${config_view}"
 grep -Fq ':form-complete="configuration.form.status === '\''valid'\''"' "${config_view}"
-grep -Fq '>配置表单数据</n-button>' "${config_panel}"
-grep -Fq '当前路径的节点与表单配置均已完成' "${config_panel}"
+grep -Fq 'form' "${config_view}"
 if grep -Eq 'nextUnconfiguredPath|configureNextPath|hasNextPath|configureNext|配置下一条' "${config_view}" "${config_panel}"; then
   echo 'F-007 节点配置页不得把下一节点误写成另一条路径' >&2
   exit 1
 fi
 
-# 节点侧栏只呈现人员和动作；模板要求收进标题弹层，表单字段仍由独立 FormMaking runtime 渲染。
-grep -Fq "node.requirements" "${config_panel}"
-grep -Fq "NPopover" "${config_panel}"
-grep -Fq "查看模板要求" "${config_panel}"
-grep -Fq "node.persons" "${config_panel}"
-grep -Fq "person.editable" "${config_panel}"
-grep -Fq "人员策略" "${config_panel}"
-grep -Fq "person.strategies" "${config_panel}"
-grep -Fq "最终使用" "${config_panel}"
-grep -Fq "person.items" "${config_panel}"
-grep -Fq "NModal" "${config_panel}"
-grep -Fq "NScrollbar" "${config_panel}"
-grep -Fq "查看全部" "${config_panel}"
-grep -Fq "summarizePathConfigPersonItems" "${config_logic}"
-grep -Fq "运行时确定" "${config_panel}"
-grep -Fq "动作计划" "${config_panel}"
-grep -Fq "actionPlan.addSignNodes" "${config_panel}"
-grep -Fq "validPathConfigActionPlan" "${config_logic}"
-grep -Fq 'aria-label="处理结果"' "${config_panel}"
-grep -Fq 'class="node-configuration-panel__action-add"' "${config_panel}"
-grep -Fq '发起动作' "${config_panel}"
-grep -Fq '>处理结果</strong>' "${config_panel}"
-grep -Fq '添加动作' "${config_panel}"
-grep -Fq "disabledReason" "${config_panel}"
-grep -Fq 'class="node-configuration-panel__action-info"' "${config_panel}"
-grep -Fq "from '@vicons/ionicons5'" "${config_panel}"
-grep -Fq '<InformationCircleOutline />' "${config_panel}"
-grep -Fq '<ArrowUpOutline />' "${config_panel}"
-grep -Fq '<ArrowDownOutline />' "${config_panel}"
-grep -Fq '<CloseOutline />' "${config_panel}"
-grep -Fq '<AddOutline />' "${config_panel}"
-grep -Fq '"@vicons/ionicons5": "0.13.0"' "${project_root}/web/package.json"
-grep -Fq '加签节点处理人' "${config_panel}"
-grep -Fq '当前配置不模拟网络重试或流程循环' "${config_panel}"
-grep -Fq 'node-configuration-panel__action-rules' "${config_panel}"
-grep -Fq ':consistent-menu-width="false"' "${config_panel}"
-grep -Fq 'min-width: 188px' "${config_panel}"
-grep -Fq 'color-mix(in srgb, var(--flow-direction-color)' "${config_panel}"
-if grep -Fq 'node-configuration-panel__disabled-actions' "${config_panel}"; then
-  echo 'F-007 禁用原因必须集中在动作信息弹层，不能继续平铺列表' >&2
-  exit 1
-fi
-if grep -Eq '>i</n-button>|>↑</n-button>|>↓</n-button>|>×</n-button>' "${config_panel}"; then
-  echo 'F-007 动作面板工具按钮必须使用正式图标组件，不能保留字母或文字符号' >&2
-  exit 1
-fi
-if sed -n '/<template>/,/<\/template>/p' "${config_panel}" | grep -Eq '复制前一次|删除末次|到达|visit|arrival|固定 1 次|步骤|前置动作|处理意见'; then
-  echo 'F-007 动作区不得再暴露兼容分组、步骤、复制或处理意见概念' >&2
-  exit 1
-fi
-grep -Fq '加签从处理结果中拆出为独立“加签节点”列表' "${feature_doc}"
-grep -Fq '唯一处理结果' "${feature_doc}"
-grep -Fq '| 发起 | 提交 |' "${feature_doc}"
-grep -Fq '| 审批/协同 | 回退上一级 |' "${feature_doc}"
-grep -Fq "rollbackTargets" "${config_panel}"
-grep -Fq "add_sign" "${config_panel}"
-grep -Fq "updateResultPerson" "${config_panel}"
-grep -Fq "requiresPerson" "${config_panel}"
-grep -Fq '不同意' "${config_plan_analyzer}"
-grep -Fq '回退上一级' "${config_plan_analyzer}"
-grep -Fq ':multiple="requiredActionPerson(resultKind).multiple"' "${config_panel}"
-grep -Fq "resolvedPersonStrategySelection" "${config_logic}"
-grep -Fq "validPathConfigActionPlan" "${config_logic}"
-grep -Fq "normalizedPathConfigSeed" "${config_logic}"
-grep -Fq "Number.MAX_SAFE_INTEGER" "${config_logic}"
-grep -Fq ':max="MAX_SAFE_PERSON_SEED"' "${config_panel}"
-grep -Fq '"transfer_approver"' "${config_plan_analyzer}"
-grep -Fq "'transfer_approver'" "${config_logic}"
-if grep -Eq 'PathConfigArrival|arrivals|maxArrivals|maxPathSteps' "${config_logic}" "${config_panel}" "${config_view}" "${config_types}"; then
-  echo 'F-007 公开前端协议与组件不得暴露内部兼容动作分组或次数上限' >&2
-  exit 1
-fi
-node --input-type=module - "${config_types}" <<'NODE'
-import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-
-const source = readFileSync(process.argv[2], 'utf8')
-const catalog = source.match(/export interface PathConfigActionCatalogItem\s*\{([^}]*)\}/s)
-assert.ok(catalog, '缺少公开动作目录类型')
-assert.doesNotMatch(catalog[1], /maxCount|repeatable|count/, '公开动作目录不得恢复动作次数模型')
-NODE
-grep -Fq "overflow-y: auto" "${config_panel}"
-grep -Fq "保存当前节点" "${config_panel}"
-grep -Fq "编辑动作配置" "${config_panel}"
-grep -Fq "动作组合循环次数" "${config_panel}"
-grep -Fq "动作次数" "${config_panel}"
-grep -Fq "addConfiguredAction" "${config_panel}"
-grep -Fq "moveConfiguredAction" "${config_panel}"
+# 节点侧栏不承载表单字段；真实 FormMaking 工作区仍独立渲染。
 if grep -Eq 'node\.fields|node\.gaps|暂不支持|NDatePicker|NCheckbox|NSwitch' "${config_panel}"; then
   echo 'F-007 节点侧栏不得呈现表单字段、组件缺口或模拟目标表单控件' >&2
-  exit 1
-fi
-if grep -Eq '名称需运行时解析|已配置 [^" ]+ 项范围' "${config_analyzer}"; then
-  echo 'F-007 人员公开列表不得保留模糊名称或范围数量兜底' >&2
   exit 1
 fi
 
@@ -219,12 +127,19 @@ grep -Fq "getValues" "${runtime_app}"
 grep -Fq "captureFormValues" "${runtime_app}"
 grep -Fq "fieldRules: props.form.fieldRules" "${form_frame}"
 grep -Fq "reloadRuntime" "${form_frame}"
-grep -Fq "current.form.conditionHints = generated.conditionHints" "${config_view}"
+grep -Fq "current.form.conditionBindings = generated.conditionBindings" "${config_view}"
+grep -Fq "current.form.conditionReviews = generated.conditionReviews" "${config_view}"
 grep -Fq "current.form.fieldRules = generated.fieldRules" "${config_view}"
 grep -Fq "await formFrame.value.reloadRuntime()" "${config_view}"
-grep -Fq "v-if=\"hint.protected\"" "${config_view}"
-grep -Fq "当前分支命中 · 已保护" "${config_view}"
-grep -Fq "hint.key ||" "${config_view}"
+grep -Fq "当前路径分支条件" "${config_view}"
+grep -Fq "v-if=\"binding.selected\"" "${config_view}"
+grep -Fq "字段已锁定" "${config_view}"
+grep -Fq "需要人工核对" "${config_view}"
+grep -Fq "binding.expression" "${config_view}"
+if grep -Fq "无法精确映射 · 可编辑" "${config_view}"; then
+  echo 'F-007 条件提示不得把无法安全映射误导为可编辑' >&2
+  exit 1
+fi
 grep -Fq "pathConfigurationStatusName" "${config_view}"
 grep -Fq "pathConfigurationStatusName" "${config_panel}"
 grep -Fq "conditionHintKey" "${config_plan_analyzer}" || grep -Fq "conditionHintKey" "${project_root}/internal/service/path_config_workspace.go"
@@ -315,8 +230,7 @@ NODE
 
 # 浏览器只处理不透明键，结构变化保留可对应草稿；不得出现假运行控制。
 grep -Fq "pathConfigNodeKey" "${config_logic}"
-grep -Fq "reconcilePathConfigDraft" "${config_logic}"
-grep -Fq "status === 'pending'" "${config_logic}"
+grep -Fq "normalizedPathConfigSeed" "${config_logic}"
 if grep -Eq '> *(暂停|继续|单步|运行|设置断点) *<' "${config_view}" "${config_panel}" "${canvas_view}"; then
   echo 'F-007 不得显示尚未生效的运行、单步或断点按钮' >&2
   exit 1

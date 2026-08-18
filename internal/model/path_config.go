@@ -103,47 +103,46 @@ type PathConfigActionBase struct {
 
 // PathFormConfig 是与节点配置分离的真实 FormMaking 表单工作区模型。
 type PathFormConfig struct {
-	Revision            uint64                   `json:"revision"`
-	Status              string                   `json:"status"`
-	StatusName          string                   `json:"statusName"`
-	ReadOnly            bool                     `json:"readOnly"`
-	Template            map[string]any           `json:"template"`
-	Permissions         []PathFormPermission     `json:"permissions"`
-	Values              map[string]any           `json:"values"`
-	Seed                int64                    `json:"seed"`
-	GeneratedFieldPaths []string                 `json:"generatedFieldPaths"`
-	ManualOverridePaths []string                 `json:"manualOverridePaths"`
-	SampleSummary       PathFormSampleSummary    `json:"sampleSummary"`
-	Validated           bool                     `json:"validated"`
-	Unsupported         []string                 `json:"unsupported"`
-	Affected            []PathConfigAffectedItem `json:"affected"`
-	AutoFilled          int                      `json:"autoFilled"`
-	ManualPending       int                      `json:"manualPending"`
-	ConditionHints      []PathFormConditionHint  `json:"conditionHints"`
-	FieldRules          []PathFormFieldRule      `json:"fieldRules"`
+	Revision            uint64                     `json:"revision"`
+	Status              string                     `json:"status"`
+	StatusName          string                     `json:"statusName"`
+	ReadOnly            bool                       `json:"readOnly"`
+	Template            map[string]any             `json:"template"`
+	Permissions         []PathFormPermission       `json:"permissions"`
+	Values              map[string]any             `json:"values"`
+	Seed                int64                      `json:"seed"`
+	GeneratedFieldPaths []string                   `json:"generatedFieldPaths"`
+	ManualOverridePaths []string                   `json:"manualOverridePaths"`
+	SampleSummary       PathFormSampleSummary      `json:"sampleSummary"`
+	Validated           bool                       `json:"validated"`
+	Unsupported         []string                   `json:"unsupported"`
+	Affected            []PathConfigAffectedItem   `json:"affected"`
+	AutoFilled          int                        `json:"autoFilled"`
+	ManualPending       int                        `json:"manualPending"`
+	ConditionBindings   []PathFormConditionBinding `json:"conditionBindings"`
+	ConditionReviews    []string                   `json:"conditionReviews"`
+	FieldRules          []PathFormFieldRule        `json:"fieldRules"`
 }
 
-// PathFormConditionHint 是当前路径已选分支条件的可读信息；Fields 只包含模板精确匹配的模型键，UnmappedFields 保留未映射键供提示说明。
-type PathFormConditionHint struct {
-	Key            string   `json:"key"`
-	NodeName       string   `json:"nodeName"`
-	BranchName     string   `json:"branchName"`
-	Field          string   `json:"field"`
-	Fields         []string `json:"fields"`
-	UnmappedFields []string `json:"unmappedFields"`
-	Text           string   `json:"text"`
-	Protected      bool     `json:"protected"`
-	Active         bool     `json:"active"`
-	ActiveKnown    bool     `json:"activeKnown"`
-	Mapped         bool     `json:"mapped"`
+// PathFormConditionBinding 是当前路径分支条件的单一公开投影，不包含目标字段或分支内部标识。
+type PathFormConditionBinding struct {
+	Key         string   `json:"key"`
+	NodeName    string   `json:"nodeName"`
+	BranchName  string   `json:"branchName"`
+	Expression  string   `json:"expression"`
+	Fields      []string `json:"fields"`
+	Selected    bool     `json:"selected"`
+	Locked      bool     `json:"locked"`
+	NeedsReview bool     `json:"needsReview"`
+	Verified    bool     `json:"verified"`
 }
 
 // PathFormFieldRule 是运行时在真实 FormMaking 组件渲染前应用的字段级适配规则。
 // Field 只能来自模板模型的精确匹配，禁止按显示名称猜测并错误禁用字段。
 type PathFormFieldRule struct {
-	Field          string   `json:"field"`
-	Disabled       bool     `json:"disabled"`
-	ConditionHints []string `json:"conditionHints"`
+	Field         string   `json:"field"`
+	Disabled      bool     `json:"disabled"`
+	ConditionKeys []string `json:"conditionKeys"`
 }
 
 // PathFormPermission 是 iframe 应用字段权限所需的最小字段键与权限。
@@ -163,18 +162,19 @@ type PathFormSampleSummary struct {
 
 // PathFormGenerateResult 是智能生成或换一组返回的权威表单草稿。
 type PathFormGenerateResult struct {
-	Revision            uint64                  `json:"revision"`
-	Status              string                  `json:"status"`
-	Values              map[string]any          `json:"values"`
-	Seed                int64                   `json:"seed"`
-	GeneratedFieldPaths []string                `json:"generatedFieldPaths"`
-	ManualOverridePaths []string                `json:"manualOverridePaths"`
-	SampleSummary       PathFormSampleSummary   `json:"sampleSummary"`
-	AutoFilled          int                     `json:"autoFilled"`
-	ManualPending       int                     `json:"manualPending"`
-	Unsupported         []string                `json:"unsupported"`
-	ConditionHints      []PathFormConditionHint `json:"conditionHints"`
-	FieldRules          []PathFormFieldRule     `json:"fieldRules"`
+	Revision            uint64                     `json:"revision"`
+	Status              string                     `json:"status"`
+	Values              map[string]any             `json:"values"`
+	Seed                int64                      `json:"seed"`
+	GeneratedFieldPaths []string                   `json:"generatedFieldPaths"`
+	ManualOverridePaths []string                   `json:"manualOverridePaths"`
+	SampleSummary       PathFormSampleSummary      `json:"sampleSummary"`
+	AutoFilled          int                        `json:"autoFilled"`
+	ManualPending       int                        `json:"manualPending"`
+	Unsupported         []string                   `json:"unsupported"`
+	ConditionBindings   []PathFormConditionBinding `json:"conditionBindings"`
+	ConditionReviews    []string                   `json:"conditionReviews"`
+	FieldRules          []PathFormFieldRule        `json:"fieldRules"`
 }
 
 // PathFormSaveInput 是表单运行时校验后提交给服务层的完整 values 与生成元数据。

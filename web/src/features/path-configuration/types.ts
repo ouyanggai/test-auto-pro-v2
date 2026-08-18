@@ -72,6 +72,24 @@ export interface PathConfigActionCycleInput {
 
 export type PathFormStatus = 'empty' | 'draft' | 'valid' | 'affected' | 'unsupported'
 
+export interface PathFormConditionBinding {
+  key: string
+  nodeName: string
+  branchName: string
+  expression: string
+  fields: string[]
+  selected: boolean
+  locked: boolean
+  needsReview: boolean
+  verified: boolean
+}
+
+export interface PathFormFieldRule {
+  field: string
+  disabled: boolean
+  conditionKeys: string[]
+}
+
 export interface PathFormConfiguration {
   revision: number
   status: PathFormStatus
@@ -89,8 +107,9 @@ export interface PathFormConfiguration {
   affected: Array<{ kind: string, name: string, reason: string }>
   autoFilled: number
   manualPending: number
-  conditionHints: Array<{ key: string, nodeName: string, branchName: string, field: string, fields: string[], unmappedFields: string[], text: string, protected: boolean, active: boolean, activeKnown: boolean, mapped: boolean }>
-  fieldRules: Array<{ field: string, disabled: boolean, conditionHints: string[] }>
+  conditionBindings: PathFormConditionBinding[]
+  conditionReviews: string[]
+  fieldRules: PathFormFieldRule[]
 }
 
 export interface PathFormSampleSummary {
@@ -111,8 +130,9 @@ export interface PathFormGenerateResult {
   autoFilled: number
   manualPending: number
   unsupported: string[]
-  conditionHints: Array<{ key: string, nodeName: string, branchName: string, field: string, fields: string[], unmappedFields: string[], text: string, protected: boolean, active: boolean, activeKnown: boolean, mapped: boolean }>
-  fieldRules: Array<{ field: string, disabled: boolean, conditionHints: string[] }>
+  conditionBindings: PathFormConditionBinding[]
+  conditionReviews: string[]
+  fieldRules: PathFormFieldRule[]
 }
 
 export interface PathFormRuntimeSession {

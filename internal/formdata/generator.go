@@ -12,11 +12,12 @@ import (
 
 // Constraint 是当前已选路径对表单字段的最小可满足约束。
 type Constraint struct {
-	Field string
-	Op    string
-	Value any
-	Avoid []any
-	Group int
+	Field      string
+	Op         string
+	Value      any
+	ValueField string
+	Avoid      []any
+	Group      int
 }
 
 // DateRangeBinding 是已由调用方精确证明的天数与日期区间字段对应关系。
@@ -36,6 +37,7 @@ type GenerateInput struct {
 	Constraints         []Constraint
 	DateRangeBindings   []DateRangeBinding
 	ManualOverridePaths []string
+	ProtectedPaths      map[string]bool
 	EditablePaths       map[string]bool
 	Identity            IdentityContext
 }
@@ -210,6 +212,13 @@ func Generate(input GenerateInput) GenerateResult {
 		if manual[field.Path] {
 			continue
 		}
+		if input.ProtectedPaths[field.Path] {
+			// 已存在的路径条件字段只能由约束投影调整，不能被普通样本或随机值覆盖。
+			if _, exists := getPath(values, field.Path); exists {
+				manual[field.Path] = true
+				continue
+			}
+		}
 		if input.EditablePaths != nil && !input.EditablePaths[field.Path] {
 			// 目标运行时会禁用未授权字段；生成器只允许保留已有值或模板默认值，不能替用户写入样本/兜底值。
 			if _, exists := getPath(values, field.Path); !exists && usableValue(field, field.Default) && !emptyValue(field.Default) {
@@ -253,7 +262,7 @@ func Generate(input GenerateInput) GenerateResult {
 			result.Pending++
 		}
 	}
-	applyConstraints(values, input.Constraints, manual, rng, &generated)
+	applyConstraints(values, input.Constraints, manual, input.ProtectedPaths, rng, &generated)
 	applyDateRangeBindings(values, input.DateRangeBindings, manual, &generated)
 	addVirtualValues(values, fields, &generated)
 	result.GeneratedFieldPaths = uniqueSorted(generated)
@@ -322,7 +331,7 @@ func ValidateEditable(template, values map[string]any, constraints []Constraint,
 			continue
 		}
 		value, _ := getPath(values, constraint.Field)
-		if !constraintSatisfied(value, constraint) {
+		if !constraintSatisfiedWithValues(values, value, constraint) {
 			errors = append(errors, "表单数据不满足当前已选路径条件")
 		}
 	}
@@ -330,7 +339,7 @@ func ValidateEditable(template, values map[string]any, constraints []Constraint,
 		matched := false
 		for _, constraint := range group {
 			value, _ := getPath(values, constraint.Field)
-			matched = matched || constraintSatisfied(value, constraint)
+			matched = matched || constraintSatisfiedWithValues(values, value, constraint)
 		}
 		if !matched {
 			errors = append(errors, "表单数据不满足当前已选路径条件")
@@ -474,39 +483,47 @@ func formDateRange(values map[string]any, path string) (time.Time, time.Time, bo
 }
 
 // applyConstraints 只覆盖生成器拥有的字段；命中条件字段也纳入生成所有权，供运行时统计准确识别自动值。
-func applyConstraints(values map[string]any, constraints []Constraint, manual map[string]bool, rng *rand.Rand, generated *[]string) {
+func applyConstraints(values map[string]any, constraints []Constraint, manual, protected map[string]bool, rng *rand.Rand, generated *[]string) {
 	appliedGroups := make(map[int]bool)
 	for _, constraint := range constraints {
-		if constraint.Field == "" || manual[constraint.Field] {
+		if constraint.Field == "" || (manual[constraint.Field] && !protected[constraint.Field]) {
 			continue
 		}
 		// OR 组只需选择一个可满足分支；稳定选择列表中的第一项，避免同组后续约束互相覆盖。
 		if constraint.Group > 0 && appliedGroups[constraint.Group] {
 			continue
 		}
-		if current, exists := getPath(values, constraint.Field); exists && constraintSatisfied(current, constraint) {
+		if current, exists := getPath(values, constraint.Field); exists && constraintSatisfiedWithValues(values, current, constraint) {
 			// 近期样本或已有草稿已经满足路径条件时必须保留，不能为了“生成”篡改有效候选。
 			if constraint.Group > 0 {
 				appliedGroups[constraint.Group] = true
 			}
 			continue
 		}
+		value := constraint.Value
+		if constraint.ValueField != "" {
+			var exists bool
+			value, exists = getPath(values, constraint.ValueField)
+			if !exists || emptyValue(value) {
+				continue
+			}
+		}
 		switch strings.ToLower(constraint.Op) {
 		case "eq", "in":
-			setPath(values, constraint.Field, cloneValue(constraint.Value))
+			setPath(values, constraint.Field, cloneValue(value))
 		case "neq":
 			current, _ := getPath(values, constraint.Field)
-			if equalValue(current, constraint.Value) {
+			if equalValue(current, value) {
 				setPath(values, constraint.Field, fmt.Sprintf("其他值-%d", rng.Intn(900)+100))
 			}
 		case "gt":
-			setPath(values, constraint.Field, numberValue(constraint.Value)+1)
+			setPath(values, constraint.Field, numberValue(value)+1)
 		case "gte":
-			setPath(values, constraint.Field, numberValue(constraint.Value))
+			setPath(values, constraint.Field, numberValue(value))
 		case "lt":
-			setPath(values, constraint.Field, numberValue(constraint.Value)-1)
+			setPath(values, constraint.Field, numberValue(value)-1)
 		case "lte":
-			setPath(values, constraint.Field, numberValue(constraint.Value))
+			setPath(values, constraint.Field, numberValue(value))
 		case "default":
 			candidate := fmt.Sprintf("默认分支-%d", rng.Intn(900)+100)
 			for containsValue(constraint.Avoid, candidate) {
@@ -565,6 +582,19 @@ func constraintSatisfied(value any, constraint Constraint) bool {
 	}
 }
 
+// constraintSatisfiedWithValues 在字段对字段比较时从当前完整表单读取右侧值，其余比较沿用固定值约束。
+func constraintSatisfiedWithValues(values map[string]any, value any, constraint Constraint) bool {
+	if constraint.ValueField == "" {
+		return constraintSatisfied(value, constraint)
+	}
+	right, exists := getPath(values, constraint.ValueField)
+	if !exists {
+		return false
+	}
+	constraint.Value = right
+	return constraintSatisfied(value, constraint)
+}
+
 // addVirtualValues 为选项型字段补齐目标条件和展示所需的虚拟名称字段。
 func addVirtualValues(values map[string]any, fields []Field, generated *[]string) {
 	for _, field := range fields {
@@ -582,6 +612,34 @@ func addVirtualValues(values map[string]any, fields []Field, generated *[]string
 		virtualPath := field.Path + "__virtualName"
 		setPath(values, virtualPath, label)
 		*generated = append(*generated, virtualPath)
+	}
+	for _, field := range fields {
+		if field.Type != "infoSelect" {
+			continue
+		}
+		value, ok := getPath(values, field.Path)
+		if !ok {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		var selected map[string]any
+		if json.Unmarshal([]byte(text), &selected) != nil {
+			continue
+		}
+		if name := strings.TrimSpace(fmt.Sprint(selected["name"])); name != "" {
+			virtualPath := field.Path + "__condition"
+			if _, exists := getPath(values, virtualPath); !exists {
+				setPath(values, virtualPath, name)
+				*generated = append(*generated, virtualPath)
+			}
+		}
+		if id := strings.TrimSpace(fmt.Sprint(selected["id"])); id != "" {
+			setPath(values, field.Path+"__formPersonId", id)
+			*generated = append(*generated, field.Path+"__formPersonId")
+		}
 	}
 }
 

@@ -123,6 +123,7 @@ const nodeSaveDisabled = computed(() => pageLoading.value || savingNode.value ||
 const saveAllNodesDisabled = computed(() => pageLoading.value || savingNode.value || !configuration.value)
 const runtimeBlockingReasons = computed(() => [...new Set([
   ...(configuration.value?.form.unsupported ?? []),
+  ...(configuration.value?.form.conditionReviews ?? []),
   ...runtimeUnsupported.value,
 ])])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
@@ -507,7 +508,8 @@ async function generateFormData(nextGroup: boolean) {
     current.form.autoFilled = generated.autoFilled
     current.form.manualPending = generated.manualPending
     current.form.unsupported = generated.unsupported
-    current.form.conditionHints = generated.conditionHints
+    current.form.conditionBindings = generated.conditionBindings
+    current.form.conditionReviews = generated.conditionReviews
     current.form.fieldRules = generated.fieldRules
     // 字段规则只能在 FormMaking 创建组件前生效；重新载入后统计由真实运行时重新对账。
     await nextTick()
@@ -749,17 +751,21 @@ void loadPage()
             </template>
           </div>
         </header>
-        <n-card v-if="configuration.form.conditionHints.length" size="small" class="path-configuration-page__form-hints">
-          <n-collapse :default-expanded-names="['condition-hints']" arrow-placement="right">
-            <n-collapse-item title="分支关键数据提示" name="condition-hints">
+        <n-card v-if="configuration.form.conditionBindings.length" size="small" class="path-configuration-page__form-hints">
+          <n-collapse :default-expanded-names="['path-conditions']" arrow-placement="right">
+            <n-collapse-item title="当前路径分支条件" name="path-conditions">
               <div class="path-configuration-page__form-hints-body">
                 <ul class="path-configuration-page__form-hints-list">
-                  <li v-for="(hint, index) in configuration.form.conditionHints" :key="hint.key || `${hint.field}-${index}`" :class="{ 'path-configuration-page__form-hint--protected': hint.protected, 'path-configuration-page__form-hint--unmapped': !hint.mapped }">
-                    <n-tag v-if="hint.protected && hint.active" size="small" type="warning" :bordered="false">当前分支命中 · 已保护</n-tag>
-                    <n-tag v-else-if="hint.protected" size="small" type="warning" :bordered="false">当前路径选择 · 已保护</n-tag>
-                    <n-tag v-else-if="!hint.mapped" size="small" type="error" :bordered="false">无法精确映射 · 可编辑</n-tag>
-                    <strong v-if="hint.protected">{{ hint.text }}</strong>
-                    <span v-else>{{ hint.text }}</span>
+                  <li v-for="binding in configuration.form.conditionBindings" :key="binding.key" :class="{ 'path-configuration-page__form-hint--selected': binding.selected, 'path-configuration-page__form-hint--review': binding.needsReview }">
+                    <div class="path-configuration-page__form-hint-head">
+                      <strong>{{ binding.nodeName }}</strong>
+                      <span>{{ binding.branchName }}</span>
+                      <n-tag v-if="binding.selected" size="small" type="success" :bordered="false">当前路径</n-tag>
+                      <n-tag v-if="binding.locked" size="small" type="warning" :bordered="false">字段已锁定</n-tag>
+                      <n-tag v-if="binding.needsReview" size="small" type="error" :bordered="false">需要人工核对</n-tag>
+                    </div>
+                    <p>{{ binding.expression }}</p>
+                    <small v-if="binding.fields.length">{{ binding.fields.join('、') }}{{ binding.locked ? '：由当前路径条件保持' : '' }}</small>
                   </li>
                 </ul>
               </div>
@@ -944,7 +950,6 @@ void loadPage()
 }
 .path-configuration-page__form-hints-list li {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
   gap: 6px;
   padding: 7px 8px;
@@ -953,11 +958,15 @@ void loadPage()
 }
 .path-configuration-page__form-hints-list li + li { margin-top: 5px; }
 .path-configuration-page__form-hints-list strong { color: var(--path-config-text-color); font-weight: 600; }
-.path-configuration-page__form-hint--protected {
-  background: color-mix(in srgb, #f0a020 12%, var(--path-config-card-color));
-  border-left-color: #f0a020 !important;
+.path-configuration-page__form-hint-head { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.path-configuration-page__form-hint-head > span { color: var(--path-config-text-secondary-color); }
+.path-configuration-page__form-hints-list p { margin: 0; color: var(--path-config-text-color); }
+.path-configuration-page__form-hints-list small { color: var(--path-config-text-secondary-color); }
+.path-configuration-page__form-hint--selected {
+  background: color-mix(in srgb, #18a058 10%, var(--path-config-card-color));
+  border-left-color: #18a058 !important;
 }
-.path-configuration-page__form-hint--unmapped {
+.path-configuration-page__form-hint--review {
   background: color-mix(in srgb, #d03050 9%, var(--path-config-card-color));
   border-left-color: #d03050 !important;
 }

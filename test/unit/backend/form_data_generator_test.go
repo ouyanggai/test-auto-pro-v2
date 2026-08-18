@@ -82,6 +82,66 @@ func TestFormDataGeneratorNextGroupPreservesManualOverrides(t *testing.T) {
 	}
 }
 
+// TestFormDataGeneratorProtectsPathConditions 验证分支条件字段不接受人工覆盖，普通字段仍可保留人工值。
+func TestFormDataGeneratorProtectsPathConditions(t *testing.T) {
+	template := generatorTemplate()
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: template, Seed: 11,
+		Base:                map[string]any{"kind": "a", "title": "人工标题"},
+		Constraints:         []formdata.Constraint{{Field: "kind", Op: "eq", Value: "b"}},
+		ManualOverridePaths: []string{"kind", "title"},
+		ProtectedPaths:      map[string]bool{"kind": true},
+	})
+	if result.Values["kind"] != "b" || result.Values["title"] != "人工标题" {
+		t.Fatalf("条件字段没有强制保持当前路径、普通人工字段被错误覆盖：%+v", result.Values)
+	}
+	found := false
+	for _, path := range result.GeneratedFieldPaths {
+		if path == "kind" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("受保护条件字段没有记录为路径生成值：%v", result.GeneratedFieldPaths)
+	}
+}
+
+// TestFormDataGeneratorSupportsFieldToFieldConstraint 验证字段对字段条件由同一生成与保存校验语义处理。
+func TestFormDataGeneratorSupportsFieldToFieldConstraint(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "number", "model": "amount", "name": "申请金额", "options": map[string]any{"required": true}},
+		map[string]any{"type": "number", "model": "limit", "name": "对比金额", "options": map[string]any{"required": true}},
+	}}
+	constraints := []formdata.Constraint{{Field: "amount", Op: "gte", ValueField: "limit"}}
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: template, Seed: 12, Base: map[string]any{"amount": float64(1), "limit": float64(9)},
+		Constraints: constraints, ProtectedPaths: map[string]bool{"amount": true, "limit": true},
+	})
+	if result.Values["amount"] != float64(9) {
+		t.Fatalf("字段对字段条件没有以右侧值生成：%+v", result.Values)
+	}
+	if reasons := formdata.ValidateEditable(template, result.Values, constraints, nil); len(reasons) != 0 {
+		t.Fatalf("字段对字段生成结果未通过保存复验：%v", reasons)
+	}
+}
+
+// TestFormDataGeneratorKeepsInfoSelectConditionVirtualValue 验证信息选择组件的条件虚拟值由路径规则优先保持。
+func TestFormDataGeneratorKeepsInfoSelectConditionVirtualValue(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "custom", "el": "custome-info-select", "model": "myUserName", "name": "人员", "options": map[string]any{}},
+	}}
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: template, Seed: 13,
+		Base:           map[string]any{"myUserName": `{"id":"u1","name":"历史人员"}`},
+		Constraints:    []formdata.Constraint{{Field: "myUserName__condition", Op: "eq", Value: "当前路径人员"}},
+		ProtectedPaths: map[string]bool{"myUserName": true, "myUserName__condition": true},
+	})
+	if result.Values["myUserName__condition"] != "当前路径人员" {
+		t.Fatalf("信息选择条件虚拟值被基础组件回填覆盖：%+v", result.Values)
+	}
+}
+
 // TestFormDataGeneratorValidatesDatesAndORGroups 验证日期时间严格格式与 OR 条件组不会被当作全部 AND。
 func TestFormDataGeneratorValidatesDatesAndORGroups(t *testing.T) {
 	template := map[string]any{"list": []any{

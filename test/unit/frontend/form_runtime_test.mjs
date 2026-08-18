@@ -74,9 +74,9 @@ test('路径条件规则在真实组件装载前禁用精确字段，统计按�
     { type: 'number', model: 'mirrorAmount', options: { required: true } },
     { type: 'input', model: 'title', options: { required: true } },
   ] }, [{ field: 'amount', power: 'edit' }, { field: 'mirrorAmount', power: 'edit' }, { field: 'title', power: 'edit' }], false, [
-    { field: 'amount', disabled: true, conditionHints: ['分支「大额」：申请金额 大于等于 3000'] },
-    { field: 'mirrorAmount', disabled: true, conditionHints: ['分支「金额相同」：申请金额 等于 对比金额'] },
-    { field: 'missing', disabled: true, conditionHints: ['不得按名称猜测'] },
+    { field: 'amount', disabled: true, conditionKeys: ['申请金额大于等于 3000'] },
+    { field: 'mirrorAmount', disabled: true, conditionKeys: ['申请金额等于对比金额'] },
+    { field: 'missing', disabled: true, conditionKeys: ['不得按名称猜测'] },
   ])
   assert.equal(prepared.template.list[0].options.disabled, true)
   assert.equal(prepared.template.list[0].options.required, false)

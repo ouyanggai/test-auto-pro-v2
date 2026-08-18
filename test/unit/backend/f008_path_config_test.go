@@ -62,6 +62,37 @@ func TestF008PathConfigReadsDetailChoices(t *testing.T) {
 	}
 }
 
+// TestF007FormConditionBindingDrivesGenerationAndSave 验证同一条件投影锁定字段、生成当前路径值并拒绝改走其他分支的数据。
+func TestF007FormConditionBindingDrivesGenerationAndSave(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 8, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusPendingConfiguration}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{
+		ID: 33, PlanID: 8, SequenceNo: 1, Name: "大额路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}},
+	}}}
+	template := `{"list":[{"type":"number","model":"amount","name":"申请金额","options":{"required":true}}]}`
+	serviceUnderTest := service.NewPathConfigService(
+		service.NewPlanService(plans),
+		pathConfigSnapshotReader{snapshot: target.PathConfigurationSnapshot{Tree: requirementConditionTree(), EntryNodeIDs: []string{"start"}, Forms: []target.FormRuntimeTemplate{{Name: "申请表", TemplateData: template}}}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths, emptyPathConfigRepository{},
+	)
+	generated, err := serviceUnderTest.GenerateForm(context.Background(), 8, 33, 17, nil, nil, false)
+	if err != nil {
+		t.Fatalf("当前路径条件应能生成表单数据：%v", err)
+	}
+	if generated.Values["amount"] != float64(10000) || len(generated.FieldRules) != 1 || !generated.FieldRules[0].Disabled {
+		t.Fatalf("条件生成或字段锁定未由同一投影驱动：%+v", generated)
+	}
+	if len(generated.ConditionBindings) < 2 || !generated.ConditionBindings[0].Selected || !generated.ConditionBindings[0].Locked {
+		t.Fatalf("当前路径条件未高亮锁定或缺少其他分支对照：%+v", generated.ConditionBindings)
+	}
+	_, err = serviceUnderTest.SaveForm(context.Background(), 8, 33, "8d0e872d-82a3-4a1d-9bc8-0728adc2444d", model.PathFormSaveInput{
+		Revision: 0, Validated: true, Values: map[string]any{"amount": float64(10)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "当前模板或路径条件") {
+		t.Fatalf("能命中其他分支的表单数据没有被保存校验拒绝：%v", err)
+	}
+}
+
 // TestF008ActionConfigurationUsesOneArrivalPerAction 验证可配置动作按到达顺序保存，不包含系统基础动作。
 func TestF008ActionConfigurationUsesOneArrivalPerAction(t *testing.T) {
 	target := analyzer.PathConfigNodeTarget{NodeID: "approval-a", Name: "审批", ActionKinds: map[string]bool{"reject_no_pass": true}}

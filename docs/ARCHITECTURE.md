@@ -1,5 +1,11 @@
 # 技术架构
 
+## F-007 条件绑定投影
+
+`PathFormConditionBinding` 是路径条件的单一公开投影。服务层从真实流程条件和完整 FormMaking 模板建立绑定，同时派生中文条件提示、`fieldRules` 锁定规则、生成器 `Constraint` 和保存时的服务端复验。选项型虚拟字段、信息选择组件的 `__condition` 以及字段对字段比较只能按目标平台已定义的后缀和模型精确映射；未知映射进入 `conditionReviews`，不生成猜测值，也不允许保存。
+
+生成器接收 `ProtectedPaths`，先保留已存在的受保护值，再按约束覆盖不满足当前路径的值；字段对字段约束从同一份完整 values 读取右值。前端右侧提示、iframe 禁用规则和保存阻塞均消费同一接口返回，不维护第二套条件判断。
+
 ## 固定选型
 
 - 主前端：Vue 3、Vite、Vue Router、Pinia、Naive UI；F-007 的 `form-runtime/` 是唯一隔离例外，使用目标表单引擎要求的 Vue 2、Element UI 与 FormMaking，并通过 iframe 接入主应用。
