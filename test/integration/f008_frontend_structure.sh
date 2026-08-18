@@ -63,6 +63,15 @@ grep -Fq 'path-generations' "${project_root}/web/src/features/execution-paths/ap
 if grep -Eq '配置下一条|一键生成全部路径|全选运行|generate-all|previewAllExecutionPaths' "${paths_view}" "${project_root}/web/src/features/execution-paths/api.ts"; then exit 1; fi
 grep -Fq 'selectedRunPathIDs' "${paths_view}"
 grep -Fq 'savePathConfigurationSelection' "${paths_view}"
+grep -Fq 'path-preparation__state--loading' "${paths_view}"
+grep -Fq 'path-preparation__state--error' "${paths_view}"
+grep -Fq '>正在加载路径<' "${paths_view}"
+if sed -n '/plan-paths-screen--graph/,/<\/section>/p' "${paths_view}" | grep -Fq 'pathsLoading'; then
+  echo '路径加载状态不得渲染到第二屏流程结构区' >&2
+  exit 1
+fi
+grep -Fq ':deep(.plan-row-actions)' "${plans_view}"
+grep -Fq 'gap: 12px;' "${plans_view}"
 grep -Fq 'Strategy: "random"' "${project_root}/internal/analyzer/path_config_plan.go"
 grep -Fq 'deterministicPathConfigPeople' "${project_root}/internal/analyzer/path_config_plan.go"
 grep -Fq 'choosePathConfigPresetAction' "${project_root}/internal/service/path_config_preset.go"

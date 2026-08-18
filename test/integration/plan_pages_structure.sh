@@ -18,7 +18,7 @@ grep -Fq "import('../views/PlansView.vue')" "${router_file}"
 grep -Fq "import('../views/NewPlanView.vue')" "${router_file}"
 
 grep -Fq '<n-data-table' "${list_file}"
-grep -Fq ':scroll-x="1370"' "${list_file}"
+grep -Fq ':scroll-x="1458"' "${list_file}"
 grep -Fq "router.push('/plans/new')" "${list_file}"
 for column_name in 计划名称 流程名称 发起账号 路径数量 运行方式 定时时间 计划状态 最近运行结果 操作; do
   grep -Fq "${column_name}" "${list_file}"

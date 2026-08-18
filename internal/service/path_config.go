@@ -111,21 +111,16 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	return configuration, nil
 }
 
-// ownedPath 只从计划内列表查找路径，避免通过路径 ID 探测其他计划的数据。
+// ownedPath 先确认计划存在，再按路径 ID 读取完整 choices，列表摘要不能参与线路完整性校验。
 func (s *PathConfigService) ownedPath(ctx context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
 	if _, err := s.plans.Get(ctx, planID); err != nil {
 		return model.ExecutionPath{}, err
 	}
-	paths, err := s.pathRepository.List(ctx, planID)
+	path, err := s.pathRepository.Get(ctx, planID, pathID)
 	if err != nil {
 		return model.ExecutionPath{}, mapExecutionPathRepositoryError(err)
 	}
-	for _, candidate := range paths {
-		if candidate.ID == pathID && candidate.PlanID == planID {
-			return candidate, nil
-		}
-	}
-	return model.ExecutionPath{}, &PathConfigError{Kind: PathConfigErrorNotFound, Message: "执行路径不存在"}
+	return path, nil
 }
 
 // validateConfigMutablePlan 只允许仍处于待配置状态的计划继续保存配置。
@@ -175,7 +170,7 @@ func (s *PathConfigService) analyzeOwnedPath(ctx context.Context, planID uint64,
 	graph := model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource, EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings}
 	pathAnalysis, err := s.pathAnalyzer.Analyze(graph, path.Choices)
 	if err != nil || !pathAnalysis.Complete {
-		return ownedPathAnalysis{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径选择不完整或已失效"}
+		return ownedPathAnalysis{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前已保存路径与真实流程不一致，请先编辑路径"}
 	}
 	return ownedPathAnalysis{graph: graph, pathAnalysis: pathAnalysis}, nil
 }

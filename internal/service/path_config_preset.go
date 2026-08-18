@@ -131,7 +131,7 @@ func (s *PathConfigService) pathConfigPresetCandidates(ctx context.Context, plan
 	if err != nil {
 		return nil, err
 	}
-	paths, err := s.pathRepository.List(ctx, planID)
+	pathSummaries, err := s.pathRepository.List(ctx, planID)
 	if err != nil {
 		return nil, mapExecutionPathRepositoryError(err)
 	}
@@ -139,19 +139,23 @@ func (s *PathConfigService) pathConfigPresetCandidates(ctx context.Context, plan
 	if err != nil {
 		return nil, err
 	}
-	result := make([]pathConfigPresetCandidate, 0, len(paths))
-	for _, path := range paths {
-		if scope == pathConfigPresetCurrent && path.ID != current.ID {
+	result := make([]pathConfigPresetCandidate, 0, len(pathSummaries))
+	for _, summary := range pathSummaries {
+		if scope == pathConfigPresetCurrent && summary.ID != current.ID {
 			continue
 		}
-		if scope == pathConfigPresetCompatible && pathConfigStructuralSignature(path) != pathConfigStructuralSignature(current) {
-			continue
-		}
-		stored, found, findErr := s.configRepository.FindByPath(ctx, path.ID)
+		stored, found, findErr := s.configRepository.FindByPath(ctx, summary.ID)
 		if findErr != nil {
 			return nil, mapPathConfigRepositoryError(findErr)
 		}
 		if scope == pathConfigPresetSelected && stored.ActionValues["f008:test-included"] != "true" {
+			continue
+		}
+		path, pathErr := s.ownedPath(ctx, planID, summary.ID)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		if scope == pathConfigPresetCompatible && pathConfigStructuralSignature(path) != pathConfigStructuralSignature(current) {
 			continue
 		}
 		owned, analysisErr := s.analyzeOwnedPath(ctx, planID, snapshot, path)

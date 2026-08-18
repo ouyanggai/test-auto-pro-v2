@@ -47,22 +47,9 @@ func (s *PathRequirementService) Get(ctx context.Context, planID, pathID uint64)
 	if err != nil {
 		return model.PathRequirements{}, err
 	}
-	paths, err := s.pathRepository.List(ctx, planID)
+	path, err := s.pathRepository.Get(ctx, planID, pathID)
 	if err != nil {
 		return model.PathRequirements{}, mapExecutionPathRepositoryError(err)
-	}
-	var path model.ExecutionPath
-	found := false
-	for _, candidate := range paths {
-		if candidate.ID == pathID && candidate.PlanID == planID {
-			path = candidate
-			found = true
-			break
-		}
-	}
-	// 只从计划内列表查找路径，避免通过路径 ID 探测其他计划的数据。
-	if !found {
-		return model.PathRequirements{}, &ExecutionPathError{Kind: ExecutionPathErrorNotFound, Message: "执行路径不存在"}
 	}
 
 	snapshot, err := s.target.FlowRequirementSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
@@ -86,11 +73,11 @@ func (s *PathRequirementService) Get(ctx context.Context, planID, pathID uint64)
 	}
 	analysis, err := s.pathAnalyzer.Analyze(graph, path.Choices)
 	if err != nil || !analysis.Complete {
-		return model.PathRequirements{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "执行路径选择不完整或已失效"}
+		return model.PathRequirements{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "当前已保存路径与真实流程不一致，请先编辑路径"}
 	}
 	result, err := s.requirements.Analyze(graph, snapshot.Tree, snapshot.FormFields, path, analysis)
 	if err != nil {
-		return model.PathRequirements{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "执行路径选择不完整或已失效"}
+		return model.PathRequirements{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "当前已保存路径与真实流程不一致，请先编辑路径"}
 	}
 	return result, nil
 }

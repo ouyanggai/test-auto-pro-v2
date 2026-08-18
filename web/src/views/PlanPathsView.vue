@@ -747,13 +747,21 @@ onBeforeUnmount(() => {
 			<n-alert v-if="generationError" type="error" :show-icon="false">{{ generationError }}</n-alert>
 					<p v-if="presettingSelected" class="path-preparation__progress">一键配置：{{ presetProgress.completed }}/{{ presetProgress.total }}</p>
 
-            <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
+            <div v-if="pathsLoading" class="path-preparation__state path-preparation__state--loading" role="status">
+              <n-spin size="small" />
+              <span>正在加载路径</span>
+            </div>
+            <div v-else-if="pathsError" class="path-preparation__state path-preparation__state--error" role="alert">
+              <span>{{ pathsError }}</span>
+              <n-button size="small" @click="retryPaths">重试</n-button>
+            </div>
+            <div v-else-if="!paths.length" class="path-preparation__empty">
               <span>{{ generationBusy ? '正在后台解析全部合法路径' : '请先配置并保存执行路径' }}</span>
               <n-button v-if="!generationBusy" type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="startNewPath">
                 新增路径
               </n-button>
             </div>
-            <div v-else-if="!pathsLoading && !pathsError && paths.length" class="path-preparation__list">
+            <div v-else class="path-preparation__list">
               <div v-for="path in paths" :key="path.id" class="path-preparation__item">
                 <n-checkbox
                   :checked="selectedRunPathIDs.has(path.id)"
@@ -784,13 +792,7 @@ onBeforeUnmount(() => {
             <div>
               <h2 id="flow-graph-heading">流程结构</h2>
             </div>
-            <n-spin v-if="pathsLoading" size="small" description="正在读取路径" />
           </div>
-
-          <n-alert v-if="pathsError" class="paths-load-error" type="error" :show-icon="false">
-            {{ pathsError }}
-            <n-button text type="primary" @click="retryPaths">重试</n-button>
-          </n-alert>
 
           <div class="graph-region">
             <div v-if="graphLoading" class="graph-state">
@@ -1126,7 +1128,8 @@ onBeforeUnmount(() => {
 
 .path-preparation__header,
 .path-preparation__item,
-.path-preparation__empty {
+.path-preparation__empty,
+.path-preparation__state {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1156,6 +1159,22 @@ onBeforeUnmount(() => {
   padding-top: 4px;
   color: var(--plan-text-color);
   font-size: 13px;
+}
+
+.path-preparation__state {
+  min-height: 56px;
+  padding: 4px 0;
+  color: var(--plan-text-secondary-color);
+  font-size: 13px;
+}
+
+.path-preparation__state--loading {
+  justify-content: center;
+  gap: 10px;
+}
+
+.path-preparation__state--error {
+  color: var(--plan-text-color);
 }
 
 .path-preparation__list {

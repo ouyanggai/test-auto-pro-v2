@@ -122,7 +122,7 @@ const columns: DataTableColumns<PlanRow> = [
   {
     title: '操作',
     key: 'actions',
-    width: 180,
+    width: 208,
     fixed: 'right',
     render: (row) => {
       const action = getPlanAction(row.status)
@@ -181,7 +181,7 @@ const columns: DataTableColumns<PlanRow> = [
         :data="plans"
         :loading="loading"
         :row-key="(row: PlanRow) => row.id"
-        :scroll-x="1370"
+        :scroll-x="1458"
         :single-line="false"
         striped
       />
@@ -255,5 +255,23 @@ const columns: DataTableColumns<PlanRow> = [
   color: var(--n-text-color-2);
 }
 
-.plan-row-actions { display: inline-flex; align-items: center; gap: 10px; }
+:deep(.plan-row-actions) {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+:deep(.plan-row-actions > *) {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 680px) {
+  :deep(.plan-row-actions) {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+}
 </style>

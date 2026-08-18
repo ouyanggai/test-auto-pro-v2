@@ -30,7 +30,7 @@ func TestPathRequirementServiceUsesPersistedIdentityAndPlanScopedPath(t *testing
 	plans.plans = []model.Plan{{ID: 7, Account: "saved-account", FlowSource: "new", TargetObjectID: "saved-template", TargetObjectName: "流程"}}
 	tree := requirementConditionTree()
 	reader := &requirementSnapshotReader{snapshot: target.FlowRequirementSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}}}
-	repo := &memoryExecutionPathRepository{paths: []model.ExecutionPath{
+	repo := &memoryExecutionPathRepository{listSummaryOnly: true, paths: []model.ExecutionPath{
 		{ID: 31, PlanID: 8, SequenceNo: 1, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}},
 		{ID: 32, PlanID: 7, SequenceNo: 2, Name: "本计划路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}},
 	}}
@@ -44,6 +44,9 @@ func TestPathRequirementServiceUsesPersistedIdentityAndPlanScopedPath(t *testing
 	}
 	if reader.account != "saved-account" || reader.source != "new" || reader.targetID != "saved-template" {
 		t.Fatalf("要求读取没有只使用计划身份：%+v", reader)
+	}
+	if repo.getCalls != 1 {
+		t.Fatalf("要求读取没有按需读取完整路径 choices：calls=%d", repo.getCalls)
 	}
 	_, err = serviceUnderTest.Get(context.Background(), 7, 31)
 	if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorNotFound) {

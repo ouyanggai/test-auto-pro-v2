@@ -26,29 +26,38 @@ func (r *executionPathGraphReader) Get(context.Context, uint64) (model.FlowGraph
 }
 
 type memoryExecutionPathRepository struct {
-	paths         []model.ExecutionPath
-	createKeys    map[string]uint64
-	createErr     error
-	updateErr     error
-	deleteErr     error
-	findCalls     int
-	createCalls   int
-	createStored  chan struct{}
-	createRelease chan struct{}
-	updateCalls   int
-	batch         model.ExecutionPathBatchResult
-	batchKey      string
-	batchErr      error
-	batchCalls    int
+	paths           []model.ExecutionPath
+	createKeys      map[string]uint64
+	createErr       error
+	updateErr       error
+	deleteErr       error
+	findCalls       int
+	createCalls     int
+	createStored    chan struct{}
+	createRelease   chan struct{}
+	updateCalls     int
+	batch           model.ExecutionPathBatchResult
+	batchKey        string
+	batchErr        error
+	batchCalls      int
+	listSummaryOnly bool
+	getCalls        int
 }
 
 // List 返回内存路径副本供服务单元测试使用。
 func (r *memoryExecutionPathRepository) List(context.Context, uint64) ([]model.ExecutionPath, error) {
-	return append([]model.ExecutionPath(nil), r.paths...), nil
+	paths := append([]model.ExecutionPath(nil), r.paths...)
+	if r.listSummaryOnly {
+		for index := range paths {
+			paths[index].Choices = nil
+		}
+	}
+	return paths, nil
 }
 
 // Get 返回计划内单条路径及 choices，模拟进入编辑态的按需读取。
 func (r *memoryExecutionPathRepository) Get(_ context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
+	r.getCalls++
 	for _, path := range r.paths {
 		if path.PlanID == planID && path.ID == pathID {
 			return path, nil
