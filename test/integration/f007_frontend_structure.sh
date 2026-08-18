@@ -130,7 +130,7 @@ grep -Fq "reloadRuntime" "${form_frame}"
 grep -Fq "current.form.conditionBindings = generated.conditionBindings" "${config_view}"
 grep -Fq "current.form.conditionReviews = generated.conditionReviews" "${config_view}"
 grep -Fq "current.form.fieldRules = generated.fieldRules" "${config_view}"
-grep -Fq "await formFrame.value.reloadRuntime()" "${config_view}"
+grep -Fq "await frame.reloadRuntime()" "${config_view}"
 grep -Fq "当前路径分支条件" "${config_view}"
 grep -Fq "v-if=\"binding.selected\"" "${config_view}"
 grep -Fq "字段已锁定" "${config_view}"
@@ -169,6 +169,21 @@ grep -Fq "WRITE_SEGMENT_PREFIXES" "${runtime_policy}"
 grep -Fq "READ_SEGMENT_PREFIXES" "${runtime_policy}"
 grep -Fq "window.fetch = async" "${runtime_policy}"
 grep -Fq "SID" "${runtime_policy}"
+
+# 父页面只失效会话，iframe 子组件独占幂等销毁；离开后不得接受迟到的运行时或 HTTP 回写。
+grep -Fq "function invalidateRuntimeSession()" "${config_view}"
+grep -Fq "runtimeSessionController?.abort()" "${config_view}"
+grep -Fq "formOperationController?.abort()" "${config_view}"
+grep -Fq "function isActiveFormOperation" "${config_view}"
+grep -Fq "function handleRuntimeError" "${config_view}"
+if grep -Fq "formFrame.value?.destroyRuntime()" "${config_view}"; then
+  echo 'F-007 父页面不得和 iframe 子组件重复销毁表单运行时' >&2
+  exit 1
+fi
+grep -Fq "let runtimeGeneration = 0" "${form_frame}"
+grep -Fq "function resetRuntime(notifyFrame: boolean)" "${form_frame}"
+grep -Fq "if (!runtimeActive && pending.size === 0) return" "${form_frame}"
+grep -Fq "generation !== runtimeGeneration" "${form_frame}"
 
 # 表单模式必须用真实视口公式抵消 app-main 留白；不能只声明 class 或零散 flex 字段造成假通过。
 node --input-type=module - "${config_view}" "${form_frame}" <<'NODE'

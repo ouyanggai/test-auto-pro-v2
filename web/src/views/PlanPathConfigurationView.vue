@@ -57,7 +57,6 @@ type FormRuntimeExpose = InstanceType<typeof FormRuntimeFrame> & {
   restoreSaved: () => Promise<Record<string, unknown>>
   getValues: () => Promise<Record<string, unknown>>
   validateAndGetValues: () => Promise<Record<string, unknown>>
-  destroyRuntime: () => void
 }
 
 const route = useRoute()
@@ -103,6 +102,9 @@ const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 const formFrame = ref<FormRuntimeExpose | null>(null)
 let loadVersion = 0
 let loadController: AbortController | null = null
+let runtimeEpoch = 0
+let runtimeSessionController: AbortController | null = null
+let formOperationController: AbortController | null = null
 let nodeSaveKey = ''
 let formSaveKey = ''
 
@@ -138,6 +140,7 @@ const cycleCopyTargets = computed(() => {
 
 // applyRuntimeFormState 只接受 iframe 已核验会话回传的统计与人工覆盖摘要，宿主不自行猜测 FormMaking 当前字段值。
 function applyRuntimeFormState(payload: Record<string, unknown>) {
+  if (workspace.value !== 'form') return
   const form = configuration.value?.form
   if (!form) return
   const stats = payload.stats
@@ -151,8 +154,30 @@ function applyRuntimeFormState(payload: Record<string, unknown>) {
 
 // handleRuntimeReady 接收真实组件注册表与首次字段统计，避免初始化阶段仍显示旧的生成器估算值。
 function handleRuntimeReady(payload: Record<string, unknown>) {
+  if (workspace.value !== 'form' || !runtimeSession.value) return
   runtimeUnsupported.value = Array.isArray(payload.unsupported) ? payload.unsupported.map(String) : []
   applyRuntimeFormState(payload)
+}
+
+// handleRuntimeError 忽略离开表单后的迟到错误，避免旧 iframe 覆盖节点工作区状态。
+function handleRuntimeError(message: string) {
+  if (workspace.value === 'form' && runtimeSession.value) formError.value = message
+}
+
+// invalidateRuntimeSession 只由宿主失效会话和异步代次，iframe 实例的销毁交给它自己的卸载钩子完成。
+function invalidateRuntimeSession() {
+  runtimeEpoch += 1
+  runtimeSessionController?.abort()
+  runtimeSessionController = null
+  formOperationController?.abort()
+  formOperationController = null
+  runtimeSession.value = null
+  runtimeUnsupported.value = []
+}
+
+// isActiveFormOperation 防止返回节点或路由切换后，旧 iframe 请求反写当前页面。
+function isActiveFormOperation(epoch: number, frame: FormRuntimeExpose | null): boolean {
+  return epoch === runtimeEpoch && workspace.value === 'form' && formFrame.value === frame && runtimeSession.value !== null
 }
 
 // publicPageError 把读取链路异常收敛为不含内部标识的稳定页面错误。
@@ -188,8 +213,7 @@ async function applyConfiguration(next: PathConfiguration, preserveSelected = tr
 // loadPage 读取计划、路径摘要、单条路径 choices、真实图和权威节点/表单配置，切换路径时销毁旧 SID 会话。
 async function loadPage() {
   loadController?.abort()
-  formFrame.value?.destroyRuntime()
-  runtimeSession.value = null
+  invalidateRuntimeSession()
   const controller = new AbortController()
   loadController = controller
   const version = ++loadVersion
@@ -464,40 +488,52 @@ async function openFormWorkspace() {
   workspace.value = 'form'
   formError.value = ''
   if (runtimeSession.value) return
+  const epoch = ++runtimeEpoch
+  const controller = new AbortController()
+  runtimeSessionController?.abort()
+  runtimeSessionController = controller
   formRuntimeLoading.value = true
   try {
-    runtimeSession.value = await fetchPathFormRuntimeSession(planID.value, pathID.value)
+    const session = await fetchPathFormRuntimeSession(planID.value, pathID.value, controller.signal)
+    if (controller.signal.aborted || epoch !== runtimeEpoch || workspace.value !== 'form') return
+    runtimeSession.value = session
   }
   catch (caught) {
-    formError.value = publicPageError(caught)
+    if (!controller.signal.aborted && epoch === runtimeEpoch && workspace.value === 'form') formError.value = publicPageError(caught)
   }
   finally {
-    formRuntimeLoading.value = false
+    if (epoch === runtimeEpoch) formRuntimeLoading.value = false
+    if (runtimeSessionController === controller) runtimeSessionController = null
   }
 }
 
-// returnToNodes 销毁 iframe 会话并清除 SID，节点画布保持原有图与选择。
+// returnToNodes 先失效宿主状态再切换工作区，iframe 只通过自身卸载钩子 teardown 一次。
 function returnToNodes() {
-  formFrame.value?.destroyRuntime()
-  runtimeSession.value = null
-  runtimeUnsupported.value = []
+  invalidateRuntimeSession()
   workspace.value = 'nodes'
 }
 
 // generateFormData 首次生成或换一组；换组仅替换生成器拥有字段，人工覆盖由 runtime 返回。
 async function generateFormData(nextGroup: boolean) {
   const current = configuration.value
-  if (!current || current.form.readOnly || formRuntimeLoading.value || formSaving.value || !formFrame.value) return
+  const frame = formFrame.value
+  const epoch = runtimeEpoch
+  if (!current || current.form.readOnly || formRuntimeLoading.value || formSaving.value || !frame || !runtimeSession.value) return
+  const controller = new AbortController()
+  formOperationController?.abort()
+  formOperationController = controller
   formSaving.value = true
   formError.value = ''
   formErrorDetails.value = []
   formSavedSuccessfully.value = false
   try {
-    const captured = await formFrame.value.getValues()
+    const captured = await frame.getValues()
+    if (!isActiveFormOperation(epoch, frame)) return
     const values = (captured.values || current.form.values) as Record<string, unknown>
     const manual = Array.isArray(captured.manualOverridePaths) ? captured.manualOverridePaths.map(String) : current.form.manualOverridePaths
     const seed = nextGroup ? nextFormGenerationSeed(current.form.seed) : current.form.seed
-    const generated = await generatePathFormData(planID.value, pathID.value, seed, values, manual, nextGroup)
+    const generated = await generatePathFormData(planID.value, pathID.value, seed, values, manual, nextGroup, controller.signal)
+    if (!isActiveFormOperation(epoch, frame)) return
     current.form.values = generated.values
     current.form.seed = generated.seed
     current.form.status = 'draft'
@@ -513,37 +549,59 @@ async function generateFormData(nextGroup: boolean) {
     current.form.fieldRules = generated.fieldRules
     // 字段规则只能在 FormMaking 创建组件前生效；重新载入后统计由真实运行时重新对账。
     await nextTick()
-    applyRuntimeFormState(await formFrame.value.reloadRuntime())
+    if (!isActiveFormOperation(epoch, frame)) return
+    applyRuntimeFormState(await frame.reloadRuntime())
   }
   catch (caught) {
-    formError.value = publicPageError(caught)
+    if (isActiveFormOperation(epoch, frame) && !(caught instanceof DOMException && caught.name === 'AbortError')) formError.value = publicPageError(caught)
   }
   finally {
-    formSaving.value = false
+    if (epoch === runtimeEpoch) formSaving.value = false
+    if (formOperationController === controller) formOperationController = null
   }
 }
 
 // restoreSavedForm 恢复本次 GET 装载的服务端 values，不重读或重新生成。
 async function restoreSavedForm() {
-  if (!formFrame.value || formRuntimeLoading.value || formSaving.value) return
+  const frame = formFrame.value
+  const epoch = runtimeEpoch
+  if (!frame || !runtimeSession.value || formRuntimeLoading.value || formSaving.value) return
+  const controller = new AbortController()
+  formOperationController?.abort()
+  formOperationController = controller
   formSaving.value = true
   formError.value = ''
-  try { applyRuntimeFormState(await formFrame.value.restoreSaved()) }
-  catch (caught) { formError.value = publicPageError(caught) }
-  finally { formSaving.value = false }
+  try {
+    const restored = await frame.restoreSaved()
+    if (!isActiveFormOperation(epoch, frame)) return
+    applyRuntimeFormState(restored)
+  }
+  catch (caught) {
+    if (isActiveFormOperation(epoch, frame) && !controller.signal.aborted) formError.value = publicPageError(caught)
+  }
+  finally {
+    if (epoch === runtimeEpoch) formSaving.value = false
+    if (formOperationController === controller) formOperationController = null
+  }
 }
 
 // saveFormData 先经真实 getData(true)/getValues，再由服务端按最新模板与路径复验并独立保存。
 async function saveFormData() {
   const current = configuration.value
-  if (!current || current.form.readOnly || runtimeBlocked.value || formRuntimeLoading.value || formSaving.value || !formFrame.value) return
+  const frame = formFrame.value
+  const epoch = runtimeEpoch
+  if (!current || current.form.readOnly || runtimeBlocked.value || formRuntimeLoading.value || formSaving.value || !frame || !runtimeSession.value) return
+  const controller = new AbortController()
+  formOperationController?.abort()
+  formOperationController = controller
   formSaving.value = true
   formError.value = ''
   formErrorDetails.value = []
   formSavedSuccessfully.value = false
   const previousRevision = current.form.revision
   try {
-    const captured = await formFrame.value.validateAndGetValues()
+    const captured = await frame.validateAndGetValues()
+    if (!isActiveFormOperation(epoch, frame)) return
     await savePathFormData(planID.value, pathID.value, formSaveKey, {
       revision: previousRevision,
       values: captured.values as Record<string, unknown>,
@@ -554,16 +612,20 @@ async function saveFormData() {
       validated: true,
       // 真实运行时注册表是组件支持性的唯一来源；服务端据此阻止未知组件被绕过保存。
       unsupported: Array.isArray(captured.unsupported) ? captured.unsupported.map(String) : runtimeUnsupported.value,
-    })
-    await reloadConfiguration()
+    }, controller.signal)
+    if (!isActiveFormOperation(epoch, frame)) return
+    await reloadConfiguration(controller.signal)
+    if (!isActiveFormOperation(epoch, frame)) return
     formSaveKey = crypto.randomUUID()
     formSavedSuccessfully.value = true
     // 保存成功后自动回到节点画布；发起人节点上会显示“表单已配置”提示。
     returnToNodes()
   }
   catch (caught) {
+    if (!isActiveFormOperation(epoch, frame) || controller.signal.aborted) return
     try {
-      const reconciled = await reloadConfiguration()
+      const reconciled = await reloadConfiguration(controller.signal)
+      if (!isActiveFormOperation(epoch, frame)) return
       if (reconciled.form.revision > previousRevision && reconciled.form.status === 'valid') {
         formSaveKey = crypto.randomUUID()
         formSavedSuccessfully.value = true
@@ -576,14 +638,14 @@ async function saveFormData() {
     formErrorDetails.value = caught instanceof PathConfigApiError ? caught.details : []
   }
   finally {
-    formSaving.value = false
+    if (epoch === runtimeEpoch) formSaving.value = false
+    if (formOperationController === controller) formOperationController = null
   }
 }
 
-// backToPlan 离开页面前销毁短期运行时会话；节点或表单未保存时由各自保存状态保持现场。
+// backToPlan 只失效宿主会话并导航，iframe 卸载由 Vue 子组件生命周期负责。
 function backToPlan() {
-  formFrame.value?.destroyRuntime()
-  runtimeSession.value = null
+  invalidateRuntimeSession()
   router.push('/plans/' + planID.value + '/paths')
 }
 
@@ -591,8 +653,7 @@ watch([planID, pathID], () => { void loadPage() })
 onBeforeUnmount(() => {
   loadVersion++
   loadController?.abort()
-  formFrame.value?.destroyRuntime()
-  runtimeSession.value = null
+  invalidateRuntimeSession()
 })
 
 void loadPage()
@@ -797,7 +858,7 @@ void loadPage()
           :runtime-session="runtimeSession"
           @ready="handleRuntimeReady"
           @state="applyRuntimeFormState"
-          @error="(message) => formError = message"
+          @error="handleRuntimeError"
         />
         <n-empty v-else description="表单运行时会话暂不可用，请返回节点画布后重试" />
       </section>

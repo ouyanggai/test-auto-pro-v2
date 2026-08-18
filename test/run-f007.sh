@@ -28,6 +28,7 @@ fi
 printf '验证 F-007 前端配置逻辑、F-005 路径逻辑与 F-004 图布局必要回归\n'
 node --no-warnings --experimental-strip-types --test test/unit/frontend/path_configuration_test.mjs
 node --no-warnings --experimental-strip-types --test test/unit/frontend/form_runtime_test.mjs
+node --no-warnings --experimental-strip-types --test test/unit/frontend/path_configuration_lifecycle_test.mjs
 node --no-warnings --experimental-strip-types --test test/unit/frontend/execution_path_test.mjs
 node --no-warnings --experimental-strip-types --test test/unit/frontend/flow_graph_test.mjs
 ./test/integration/f004_frontend_structure.sh

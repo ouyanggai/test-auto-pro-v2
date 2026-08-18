@@ -112,10 +112,11 @@ export function savePathFormData(
     validated: boolean
     unsupported: string[]
   },
+  signal?: AbortSignal,
 ): Promise<PathConfigSaveResult> {
   return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/form`, {
     method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(payload),
-  })
+  }, signal)
 }
 
 // fetchPathFormRuntimeSession 取得当前账号缓存的短期 SID；调用方只保存在 iframe 会话内。

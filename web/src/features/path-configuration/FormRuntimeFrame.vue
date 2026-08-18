@@ -21,6 +21,9 @@ const iframeSource = computed(() => import.meta.env.DEV ? 'http://127.0.0.1:1900
 const runtimeOrigin = computed(() => new URL(iframeSource.value, window.location.href).origin)
 const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer: number }>()
 let disposed = false
+let runtimeActive = false
+let runtimeGeneration = 0
+let iframeBootPending = true
 
 // plainPayload 在 postMessage 前移除 Vue Proxy；不使用 structuredClone 处理响应式对象。
 function plainPayload(value: unknown): Record<string, unknown> {
@@ -30,7 +33,7 @@ function plainPayload(value: unknown): Record<string, unknown> {
 // postCommand 绑定当前 iframe、会话、请求号和协议版本，迟到响应无法串到新路径。
 function postCommand(type: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   const target = iframe.value?.contentWindow
-  if (!target || disposed) return Promise.reject(new Error('表单运行时尚未就绪'))
+  if (!target || disposed || !runtimeActive) return Promise.reject(new Error('表单运行时尚未就绪'))
   const requestId = crypto.randomUUID()
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
@@ -44,7 +47,10 @@ function postCommand(type: string, payload: Record<string, unknown> = {}): Promi
 
 // loadRuntime 只把 SID 传给当前 iframe 内存会话，并装载完整模板、权限、字段规则和 values。
 async function loadRuntime(): Promise<Record<string, unknown>> {
-	try {
+  if (disposed) return {}
+  const generation = ++runtimeGeneration
+  runtimeActive = true
+  try {
     const payload = await postCommand('load', {
       sid: props.runtimeSession.sid,
       baseURL: props.runtimeSession.baseURL,
@@ -62,11 +68,14 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       generatedFieldPaths: props.form.generatedFieldPaths,
       manualOverridePaths: props.form.manualOverridePaths,
     })
-		emit('ready', payload)
+    if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
+    emit('ready', payload)
     return payload
   }
   catch (caught) {
-    emit('error', caught instanceof Error ? caught.message : '表单运行时加载失败')
+    if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
+    resetRuntime(false)
+    if (!disposed) emit('error', caught instanceof Error ? caught.message : '表单运行时加载失败')
     return {}
   }
 }
@@ -75,16 +84,18 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
 function handleMessage(event: MessageEvent) {
   if (event.origin !== runtimeOrigin.value || event.source !== iframe.value?.contentWindow) return
   const message = event.data as { version?: string, sessionId?: string, requestId?: string, type?: string, payload?: Record<string, unknown> }
-	if (message.version !== FORM_RUNTIME_VERSION) return
+  if (message.version !== FORM_RUNTIME_VERSION) return
   if (message.type === 'ready' && message.requestId === 'boot') {
+    if (disposed || runtimeActive || !iframeBootPending) return
+    iframeBootPending = false
     void loadRuntime()
     return
   }
-	if (message.sessionId !== sessionId.value || !message.requestId) return
-	if (message.type === 'state') {
-		emit('state', message.payload || {})
-		return
-	}
+  if (message.sessionId !== sessionId.value || !message.requestId) return
+  if (message.type === 'state') {
+    if (runtimeActive && !disposed) emit('state', message.payload || {})
+    return
+  }
   const request = pending.get(message.requestId)
   if (!request) return
   window.clearTimeout(request.timer)
@@ -119,19 +130,27 @@ function validateAndGetValues() {
   return postCommand('validateAndGetValues')
 }
 
-// destroyRuntime 终止当前会话并清空 SID 上下文，所有未完成响应随后都会被丢弃。
-function destroyRuntime() {
-  if (iframe.value?.contentWindow && !disposed) {
+// resetRuntime 统一终止当前会话并拒绝待处理请求；同一会话重复调用不会再次操作 iframe。
+function resetRuntime(notifyFrame: boolean) {
+  if (!runtimeActive && pending.size === 0) return
+  if (notifyFrame && iframe.value?.contentWindow && !disposed) {
     iframe.value.contentWindow.postMessage({
       version: FORM_RUNTIME_VERSION, sessionId: sessionId.value, requestId: crypto.randomUUID(), type: 'destroy', payload: {},
     }, runtimeOrigin.value)
   }
+  runtimeGeneration += 1
+  runtimeActive = false
   sessionId.value = crypto.randomUUID()
   for (const request of pending.values()) {
     window.clearTimeout(request.timer)
     request.reject(new Error('表单工作区已经关闭'))
   }
   pending.clear()
+}
+
+// destroyRuntime 是对外暴露的幂等 teardown；父页面不需要也不应在子组件卸载时重复调用。
+function destroyRuntime() {
+  resetRuntime(true)
 }
 
 watch(() => [props.form.revision, props.runtimeSession.sid], () => {
