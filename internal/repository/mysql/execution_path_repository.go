@@ -31,6 +31,76 @@ func (r *ExecutionPathRepository) Get(ctx context.Context, planID, pathID uint64
 	return path, err
 }
 
+// GetMany 在两个有界查询中读取仍存在的路径和全部 choices，返回顺序与 pathIDs 一致。
+func (r *ExecutionPathRepository) GetMany(ctx context.Context, planID uint64, pathIDs []uint64) ([]model.ExecutionPath, error) {
+	if len(pathIDs) == 0 {
+		return []model.ExecutionPath{}, nil
+	}
+	placeholders, args := uint64QueryArguments(planID, pathIDs)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, plan_id, sequence_no, name, created_at, updated_at FROM test_execution_paths WHERE plan_id = ? AND id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := make(map[uint64]model.ExecutionPath, len(pathIDs))
+	for rows.Next() {
+		path, scanErr := scanExecutionPath(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		byID[path.ID] = path
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	choiceArgs := make([]any, 0, len(pathIDs))
+	choicePlaceholders := make([]string, 0, len(pathIDs))
+	for _, pathID := range pathIDs {
+		choicePlaceholders = append(choicePlaceholders, "?")
+		choiceArgs = append(choiceArgs, pathID)
+	}
+	choiceRows, err := r.db.QueryContext(ctx, `SELECT path_id, route_node_id, branch_id FROM test_execution_path_choices WHERE path_id IN (`+strings.Join(choicePlaceholders, ",")+`) ORDER BY path_id, route_node_id`, choiceArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer choiceRows.Close()
+	for choiceRows.Next() {
+		var pathID uint64
+		var choice model.ExecutionPathChoice
+		if err := choiceRows.Scan(&pathID, &choice.RouteNodeID, &choice.BranchID); err != nil {
+			return nil, err
+		}
+		path := byID[pathID]
+		path.Choices = append(path.Choices, choice)
+		byID[pathID] = path
+	}
+	if err := choiceRows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]model.ExecutionPath, 0, len(pathIDs))
+	for _, pathID := range pathIDs {
+		path, exists := byID[pathID]
+		if !exists {
+			// 任务快照建立后路径可能被人工删除；由批量服务把缺失项单独标为需处理，不能拖垮同批其他路径。
+			continue
+		}
+		result = append(result, path)
+	}
+	return result, nil
+}
+
+// uint64QueryArguments 为计划归属加有界 ID 列表构造参数化 IN 查询。
+func uint64QueryArguments(planID uint64, values []uint64) (string, []any) {
+	placeholders := make([]string, 0, len(values))
+	args := make([]any, 0, len(values)+1)
+	args = append(args, planID)
+	for _, value := range values {
+		placeholders = append(placeholders, "?")
+		args = append(args, value)
+	}
+	return strings.Join(placeholders, ","), args
+}
+
 // NewExecutionPathRepository 创建基于同一计划数据库连接池的路径仓储。
 func NewExecutionPathRepository(db *sql.DB) *ExecutionPathRepository {
 	return &ExecutionPathRepository{db: db}
@@ -48,16 +118,26 @@ func (r *ExecutionPathRepository) List(ctx context.Context, planID uint64) ([]mo
 	rows, err := r.db.QueryContext(ctx, `
 SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at,
        CASE
-         WHEN config.path_id IS NULL OR (config.form_status <> 'valid' AND JSON_LENGTH(config.confirmed_node_keys) = 0) THEN 'pending'
+         WHEN config.path_id IS NULL THEN 'pending'
+         WHEN config.config_status = 'affected' THEN 'affected'
          WHEN config.config_status = 'configured' THEN 'configured'
+         WHEN JSON_LENGTH(config.confirmed_node_keys) = 0 THEN 'pending'
          ELSE 'partial'
        END,
        CASE
-         WHEN config.path_id IS NULL OR (config.form_status <> 'valid' AND JSON_LENGTH(config.confirmed_node_keys) = 0) THEN '节点和表单待配置'
-         WHEN config.config_status = 'configured' THEN '节点和表单已完成'
-         WHEN config.form_status = 'valid' THEN '表单已完成，节点待配置'
-         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN '节点已部分完成，表单待配置'
-         ELSE '节点和表单待配置'
+         WHEN config.path_id IS NULL THEN '节点人员和动作待配置'
+         WHEN config.config_status = 'affected' THEN '节点配置受流程变化影响'
+         WHEN config.config_status = 'configured' THEN '节点人员和动作已配置'
+         WHEN JSON_LENGTH(config.confirmed_node_keys) = 0 THEN '节点人员和动作待配置'
+         ELSE '节点人员和动作已部分配置'
+       END,
+       CASE WHEN config.path_id IS NULL THEN 'not_generated' ELSE config.data_status END,
+       CASE
+         WHEN config.path_id IS NULL OR config.data_status = 'not_generated' THEN '表单数据尚未生成'
+         WHEN config.data_status = 'not_required' THEN '当前路径无需准备表单数据'
+         WHEN config.data_status = 'generated' THEN '表单数据已安全生成'
+         WHEN config.data_status = 'confirmed' THEN '表单数据已人工确认'
+         ELSE '表单数据需要人工处理'
        END,
        COALESCE(JSON_UNQUOTE(JSON_EXTRACT(config.action_values, '$.\"f008:test-included\"')) = 'true', FALSE),
        COALESCE(config.node_revision, 0)
@@ -559,7 +639,11 @@ func scanExecutionPath(row executionPathScanner) (model.ExecutionPath, error) {
 // scanExecutionPathWithStatus 将列表查询中的本地配置状态转换为安全的路径模型，不触发目标平台读取。
 func scanExecutionPathWithStatus(row executionPathScanner) (model.ExecutionPath, error) {
 	var path model.ExecutionPath
-	if err := row.Scan(&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt, &path.ConfigurationStatus, &path.ConfigurationDetail, &path.Included, &path.ConfigurationRevision); err != nil {
+	if err := row.Scan(
+		&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt,
+		&path.ConfigurationStatus, &path.ConfigurationDetail, &path.DataStatus, &path.DataDetail,
+		&path.Included, &path.ConfigurationRevision,
+	); err != nil {
 		return model.ExecutionPath{}, err
 	}
 	path.CreatedAt = path.CreatedAt.UTC()

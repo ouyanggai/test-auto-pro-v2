@@ -22,6 +22,7 @@ import (
 
 var temporaryPlanDatabasePattern = regexp.MustCompile(`^test_auto_pro_v2_test_[a-f0-9]{12}$`)
 
+// TestPlanMySQLConfiguredDatabaseIsIndependentAndMinimal 验证当前开发库仍使用独立计划库并包含 F-003 基础表。
 func TestPlanMySQLConfiguredDatabaseIsIndependentAndMinimal(t *testing.T) {
 	cfg := config.LoadPlanDBConfig()
 	if missing := cfg.MissingRequired(); len(missing) != 0 {
@@ -37,9 +38,10 @@ func TestPlanMySQLConfiguredDatabaseIsIndependentAndMinimal(t *testing.T) {
 		t.Fatalf("本机独立计划数据库迁移失败：%v", err)
 	}
 	defer database.Close()
-	assertOnlyF003Tables(t, database.DB)
+	assertF003TablesPresent(t, database.DB)
 }
 
+// TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead 验证计划迁移、增删改查幂等和重连读取。
 func TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead(t *testing.T) {
 	baseConfig := config.LoadPlanDBConfig()
 	if missing := baseConfig.MissingRequired(); len(missing) != 0 {
@@ -57,7 +59,7 @@ func TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("临时计划数据库迁移失败：%v", err)
 	}
-	assertOnlyF003Tables(t, database.DB)
+	assertF003TablesPresent(t, database.DB)
 	repository := planmysql.NewPlanRepository(database.DB)
 	plans := service.NewPlanService(repository)
 
@@ -81,6 +83,10 @@ func TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead(t *testing.T) {
 	if err != nil || len(filtered) != 1 || filtered[0].ID != first.ID {
 		t.Fatal("MySQL 名称与状态筛选结果不正确")
 	}
+	var initialMigrationCount int
+	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&initialMigrationCount); err != nil || initialMigrationCount < 1 {
+		t.Fatalf("无法读取重连前迁移版本数量：count=%d err=%v", initialMigrationCount, err)
+	}
 	if err := database.Close(); err != nil {
 		t.Fatal("关闭首次数据库连接池失败")
 	}
@@ -95,8 +101,8 @@ func TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead(t *testing.T) {
 		t.Fatal("后端重启语义下未读取到同一条计划")
 	}
 	var migrationCount int
-	if err := reopened.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount); err != nil || migrationCount != 1 {
-		t.Fatal("迁移版本未阻止重复执行")
+	if err := reopened.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount); err != nil || migrationCount != initialMigrationCount {
+		t.Fatalf("重连重复执行了已应用迁移：before=%d after=%d err=%v", initialMigrationCount, migrationCount, err)
 	}
 }
 
@@ -109,7 +115,8 @@ func temporaryPlanDatabaseName(t *testing.T) string {
 	return "test_auto_pro_v2_test_" + hex.EncodeToString(buffer)
 }
 
-func assertOnlyF003Tables(t *testing.T, db *sql.DB) {
+// assertF003TablesPresent 验证后续迁移没有破坏 F-003 的基础表，不禁止已批准切片增加新表。
+func assertF003TablesPresent(t *testing.T, db *sql.DB) {
 	t.Helper()
 	rows, err := db.Query("SHOW TABLES")
 	if err != nil {
@@ -124,8 +131,8 @@ func assertOnlyF003Tables(t *testing.T, db *sql.DB) {
 		}
 		found[table] = true
 	}
-	if len(found) != 2 || !found["schema_migrations"] || !found["test_plans"] {
-		t.Fatalf("计划数据库包含 F-003 范围外的表：%v", found)
+	if !found["schema_migrations"] || !found["test_plans"] {
+		t.Fatalf("计划数据库缺少 F-003 基础表：%v", found)
 	}
 }
 

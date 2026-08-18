@@ -26,13 +26,11 @@ import {
   resolveConfirmedNodeSaveDestination,
 } from '../features/path-configuration/logic'
 import {
-	applyPathConfigurationPreset,
   copyPathConfigurationCycles,
   fetchPathConfiguration,
   fetchPathFormRuntimeSession,
   generatePathFormData,
   PathConfigApiError,
-	previewPathConfigurationPreset,
   savePathConfigurationNode,
   savePathFormData,
 } from '../features/path-configuration/api'
@@ -45,8 +43,6 @@ import type {
   PathConfiguration,
   PathConfigPerson,
   PathConfigPersonStrategyInput,
-	PathConfigPresetPreview,
-	PathConfigPresetScope,
   PathFormRuntimeSession,
 } from '../features/path-configuration/types'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
@@ -93,11 +89,6 @@ const formError = ref('')
 const formErrorDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const nodeSavedSuccessfully = ref(false)
 const formSavedSuccessfully = ref(false)
-const presetModalOpen = ref(false)
-const presetScope = ref<PathConfigPresetScope>('current')
-const presetPreview = ref<PathConfigPresetPreview | null>(null)
-const presetBusy = ref(false)
-const presetError = ref('')
 const cycleCopyModalOpen = ref(false)
 const cycleCopyTargetID = ref('')
 const cycleCopyBusy = ref(false)
@@ -345,13 +336,6 @@ function updateActionCycles(value: PathConfigActionCycleInput[]) {
   nodeSavedSuccessfully.value = false
 }
 
-// openPreset 打开一键配置，并每次清除上次范围的预览结果。
-function openPreset() {
-  presetPreview.value = null
-  presetError.value = ''
-  presetModalOpen.value = true
-}
-
 // openCycleCopy 打开来源路径的安全复制确认，只允许当前已保存循环复制到兼容路径。
 function openCycleCopy() {
   cycleCopyError.value = ''
@@ -373,36 +357,6 @@ async function copyCycles() {
     cycleCopyError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '循环复制失败，请重试'
   }
   finally { cycleCopyBusy.value = false }
-}
-
-// previewPreset 先由服务端按最新快照逐节点说明写入、保留、跳过或人工处理。
-async function previewPreset() {
-  presetBusy.value = true
-  presetError.value = ''
-  try {
-    presetPreview.value = await previewPathConfigurationPreset(planID.value, pathID.value, presetScope.value)
-  }
-  catch (caught) {
-    presetPreview.value = null
-    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键配置预览失败，请重试'
-  }
-  finally { presetBusy.value = false }
-}
-
-// applyPreset 只在用户确认预览后应用随机动作，随后刷新当前路径准备情况。
-async function applyPreset() {
-  if (!presetPreview.value || presetBusy.value) return
-  presetBusy.value = true
-  presetError.value = ''
-  try {
-    await applyPathConfigurationPreset(planID.value, pathID.value, presetScope.value)
-    await reloadConfiguration()
-    presetModalOpen.value = false
-  }
-  catch (caught) {
-    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键配置应用失败，请重试'
-  }
-  finally { presetBusy.value = false }
 }
 
 // saveCurrentNode 保存当前节点后立即 GET 对账；请求响应丢失时也以服务端事实为准。
@@ -557,6 +511,19 @@ async function generateFormData(nextGroup: boolean) {
     current.form.conditionBindings = generated.conditionBindings
     current.form.conditionReviews = generated.conditionReviews
     current.form.fieldRules = generated.fieldRules
+    formErrorDetails.value = generated.issues.map(issue => ({
+      kind: issue.blocking ? 'generation_blocked' : 'generation_notice',
+      name: issue.field,
+      reason: issue.reason,
+    }))
+    if (generated.generationState === 'blocked') {
+      formError.value = '当前路径条件无法自动完成，请按下方原因人工处理'
+    }
+    else if (generated.generationState === 'partial') {
+      formError.value = generated.routeVerification.matched
+        ? '已生成可安全使用的数据，仍有部分内容需要人工核对'
+        : '已保留可安全生成的数据，当前完整路径仍需人工核对'
+    }
     // 字段规则只能在 FormMaking 创建组件前生效；重新载入后统计由真实运行时重新对账。
     await nextTick()
     if (!isActiveFormOperation(epoch, frame)) return
@@ -692,49 +659,9 @@ void loadPage()
         <span>还有 {{ configuration.preparation.pendingItems }} 项需要处理</span>
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
-        <n-button v-if="workspace === 'nodes'" size="small" @click="openPreset">一键配置</n-button>
         <n-button v-if="workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
       </div>
     </header>
-
-    <n-modal v-model:show="presetModalOpen">
-      <n-card title="一键配置" style="width: min(820px, 94vw)">
-        <div class="path-configuration-page__preset-body">
-          <n-select
-            v-model:value="presetScope"
-            :options="[
-              { label: '当前路径', value: 'current' },
-              { label: '已选路径', value: 'selected' },
-              { label: '全部兼容路径', value: 'compatible' },
-            ]"
-            @update:value="presetPreview = null"
-          />
-          <n-alert type="info" :show-icon="false">为每个节点配置一个随机动作，并尽量覆盖不同动作；不会覆盖已有配置，也不会创建循环。</n-alert>
-          <n-alert v-if="presetError" type="error" :show-icon="false">{{ presetError }}</n-alert>
-          <div v-if="presetPreview" class="path-configuration-page__preset-preview">
-            <section v-for="path in presetPreview.paths" :key="`${path.path.sequenceNo}-${path.path.name}`">
-              <h3>#{{ path.path.sequenceNo }} {{ path.path.name }}</h3>
-              <ul>
-                <li v-for="item in path.items" :key="item.nodeKey">
-                  <n-tag size="small" :type="item.status === 'write' ? 'success' : item.status === 'keep' ? 'info' : item.status === 'manual' ? 'warning' : 'default'">
-                    {{ item.status === 'write' ? '写入' : item.status === 'keep' ? '保留' : item.status === 'manual' ? '需手动处理' : '跳过' }}
-                  </n-tag>
-                  <strong>{{ item.nodeName }}</strong><span v-if="item.action">：{{ item.action }}</span><small>{{ item.detail }}</small>
-                </li>
-              </ul>
-            </section>
-            <n-empty v-if="!presetPreview.paths.length" description="当前范围没有可处理路径" />
-          </div>
-        </div>
-        <template #footer>
-          <div class="path-configuration-page__preset-actions">
-            <n-button @click="presetModalOpen = false">取消</n-button>
-            <n-button :loading="presetBusy" @click="previewPreset">预览</n-button>
-            <n-button type="primary" :loading="presetBusy" :disabled="!presetPreview" @click="applyPreset">确认应用</n-button>
-          </div>
-        </template>
-      </n-card>
-    </n-modal>
 
     <n-modal v-model:show="cycleCopyModalOpen">
       <n-card title="复制已保存循环" style="width: min(620px, 94vw)">
@@ -932,15 +859,7 @@ void loadPage()
 .path-configuration-page__progress { flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; max-width: 52%; font-size: 13px; line-height: 1.5; color: var(--path-config-text-secondary-color); }
 .path-configuration-page__progress span { white-space: nowrap; }
 .path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--path-config-border-color); }
-.path-configuration-page__preset-body,
 .path-configuration-page__cycle-body { display: grid; gap: 12px; }
-.path-configuration-page__preset-preview { display: grid; gap: 12px; max-height: 52vh; overflow: auto; margin-top: 14px; }
-.path-configuration-page__preset-preview section { border-top: 1px solid var(--path-config-border-color); padding-top: 10px; }
-.path-configuration-page__preset-preview h3 { margin: 0 0 8px; font-size: 14px; }
-.path-configuration-page__preset-preview ul { display: grid; gap: 6px; list-style: none; padding: 0; margin: 0; }
-.path-configuration-page__preset-preview li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 13px; }
-.path-configuration-page__preset-preview small { color: var(--path-config-text-secondary-color); }
-.path-configuration-page__preset-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .path-configuration-page__stage {
   min-width: 0;

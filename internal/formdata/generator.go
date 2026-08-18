@@ -65,8 +65,10 @@ type Field struct {
 	Default     any
 	Options     []any
 	OptionNames map[string]string
-	Unsupported bool
-	El          string
+	// OptionVirtualUsesValue 表示目标模板显式关闭 showLabel 时，__virtualName 使用选项值而不是展示标签。
+	OptionVirtualUsesValue bool
+	Unsupported            bool
+	El                     string
 }
 
 // IdentityNode 是当前账号在公司目录树中的节点上下文，用于自定义人员/公司组件自动填充。
@@ -143,10 +145,11 @@ func collectList(list []any, prefix string, pendingLabel *string, fields *[]Fiel
 		case supportedTypes[typeName] && model != "":
 			options, _ := component["options"].(map[string]any)
 			values, names := optionValues(options["options"])
+			_, hasShowLabel := options["showLabel"]
 			*fields = append(*fields, Field{
 				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["type"])),
 				Required: anyBool(options["required"]), Default: options["defaultValue"],
-				Options: values, OptionNames: names, El: el,
+				Options: values, OptionNames: names, OptionVirtualUsesValue: hasShowLabel && !anyBool(options["showLabel"]), El: el,
 			})
 			*pendingLabel = ""
 		case typeName == "custom" && el == "custome-info-select" && model != "":
@@ -283,6 +286,23 @@ func ValidateDateRangeBindings(values map[string]any, bindings []DateRangeBindin
 		}
 	}
 	return uniqueSorted(errors)
+}
+
+// SynchronizeDateRangeBindings 在条件求解改变天数后重新同步日期区间，人工覆盖的区间保持原值。
+func SynchronizeDateRangeBindings(values map[string]any, bindings []DateRangeBinding, manualPaths []string) {
+	manual := make(map[string]bool, len(manualPaths))
+	for _, path := range manualPaths {
+		manual[strings.TrimSpace(path)] = true
+	}
+	generated := make([]string, 0, len(bindings))
+	applyDateRangeBindings(values, bindings, manual, &generated)
+}
+
+// ApplyVirtualValues 根据模板真实选项和身份组件值重建目标条件使用的虚拟字段。
+func ApplyVirtualValues(template, values map[string]any) {
+	fields, _ := ParseTemplate(template)
+	generated := make([]string, 0)
+	addVirtualValues(values, fields, &generated)
 }
 
 // MergeGenerated 保留人工覆盖路径，只替换仍由生成器拥有的字段。
@@ -605,9 +625,12 @@ func addVirtualValues(values map[string]any, fields []Field, generated *[]string
 		if !ok {
 			continue
 		}
-		label := field.OptionNames[fmt.Sprint(value)]
-		if label == "" {
+		label, exists := field.OptionNames[fmt.Sprint(value)]
+		if !exists {
 			continue
+		}
+		if field.OptionVirtualUsesValue {
+			label = fmt.Sprint(value)
 		}
 		virtualPath := field.Path + "__virtualName"
 		setPath(values, virtualPath, label)

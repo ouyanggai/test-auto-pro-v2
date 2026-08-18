@@ -1,9 +1,6 @@
 import type {
   PathConfiguration,
   PathConfigNodeSavePayload,
-	PathConfigPresetApplyResult,
-	PathConfigPresetPreview,
-	PathConfigPresetScope,
   PathConfigSaveResult,
   PathFormConditionBinding,
   PathFormConfiguration,
@@ -81,16 +78,6 @@ function normalizePathConfiguration(value: PathConfiguration): PathConfiguration
   return { ...value, form: normalizePathFormConfiguration(value?.form) }
 }
 
-// previewPathConfigurationPreset 计算每个节点的随机动作预设结果，不产生任何写入。
-export function previewPathConfigurationPreset(planId: string, pathId: string, scope: PathConfigPresetScope): Promise<PathConfigPresetPreview> {
-  return request<PathConfigPresetPreview>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/preset/preview`, { method: 'POST', body: JSON.stringify({ scope }) })
-}
-
-// applyPathConfigurationPreset 应用随机动作预设，不生成循环或覆盖人工配置。
-export function applyPathConfigurationPreset(planId: string, pathId: string, scope: PathConfigPresetScope): Promise<PathConfigPresetApplyResult> {
-  return request<PathConfigPresetApplyResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/preset/apply`, { method: 'POST', body: JSON.stringify({ scope }) })
-}
-
 // copyPathConfigurationCycles 复制来源路径已保存的循环，服务端会再次核对完整结构签名。
 export function copyPathConfigurationCycles(planId: string, targetPathId: string, sourcePathId: string, idempotencyKey: string): Promise<PathConfigSaveResult> {
   return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(targetPathId)}/configuration/cycles/copy`, {
@@ -131,7 +118,7 @@ export function generatePathFormData(
 ): Promise<PathFormGenerateResult> {
   return request<PathFormGenerateResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/form/generate`, {
 		method: 'POST', body: JSON.stringify({ seed, values, manualOverridePaths, nextGroup }),
-	}, signal).then(result => ({
+  }, signal).then(result => ({
     ...result,
     conditionBindings: Array.isArray(result.conditionBindings) ? result.conditionBindings.map(normalizePathConditionBinding) : [],
     conditionReviews: Array.isArray(result.conditionReviews) ? result.conditionReviews.map(String) : [],
@@ -140,6 +127,16 @@ export function generatePathFormData(
       disabled: rule?.disabled === true,
       conditionKeys: Array.isArray(rule?.conditionKeys) ? rule.conditionKeys.map(String) : [],
     })) : [],
+    generationState: result.generationState || 'blocked',
+    issues: Array.isArray(result.issues) ? result.issues.map(issue => ({
+      field: String(issue?.field ?? '表单数据'),
+      reason: String(issue?.reason ?? '需要人工核对'),
+      blocking: issue?.blocking === true,
+    })) : [],
+    routeVerification: {
+      matched: result.routeVerification?.matched === true,
+      reason: String(result.routeVerification?.reason ?? ''),
+    },
   }))
 }
 

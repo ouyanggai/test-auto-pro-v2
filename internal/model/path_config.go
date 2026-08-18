@@ -39,36 +39,6 @@ type PathConfigPreparation struct {
 	Included      bool `json:"included"`
 }
 
-// PathConfigPresetPreview 是一键配置在写入前返回的逐路径、逐节点只读预览。
-type PathConfigPresetPreview struct {
-	Scope string                 `json:"scope"`
-	Paths []PathConfigPresetPath `json:"paths"`
-}
-
-// PathConfigPresetPath 是一条路径的一键配置预览，不包含目标平台标识。
-type PathConfigPresetPath struct {
-	Path  PathConfigPath             `json:"path"`
-	Items []PathConfigPresetNodeItem `json:"items"`
-}
-
-// PathConfigPresetNodeItem 表示默认预设对一个节点的确定处理结果。
-type PathConfigPresetNodeItem struct {
-	NodeKey  string `json:"nodeKey"`
-	NodeName string `json:"nodeName"`
-	Action   string `json:"action"`
-	Status   string `json:"status"`
-	Detail   string `json:"detail"`
-}
-
-// PathConfigPresetApplyResult 返回批量预设后的实际统计，循环和测试选择不在此操作中修改。
-type PathConfigPresetApplyResult struct {
-	Preview PathConfigPresetPreview `json:"preview"`
-	Written int                     `json:"written"`
-	Kept    int                     `json:"kept"`
-	Skipped int                     `json:"skipped"`
-	Manual  int                     `json:"manual"`
-}
-
 // PathConfigCycleCopyInput 指定把当前已保存循环复制到目标路径；目标路径由服务端校验结构签名。
 type PathConfigCycleCopyInput struct {
 	SourcePathID uint64 `json:"sourcePathId"`
@@ -175,6 +145,22 @@ type PathFormGenerateResult struct {
 	ConditionBindings   []PathFormConditionBinding `json:"conditionBindings"`
 	ConditionReviews    []string                   `json:"conditionReviews"`
 	FieldRules          []PathFormFieldRule        `json:"fieldRules"`
+	GenerationState     string                     `json:"generationState"`
+	Issues              []PathFormGenerationIssue  `json:"issues"`
+	RouteVerification   PathFormRouteVerification  `json:"routeVerification"`
+}
+
+// PathFormGenerationIssue 说明智能生成无法安全完成的业务字段与原因。
+type PathFormGenerationIssue struct {
+	Field    string `json:"field"`
+	Reason   string `json:"reason"`
+	Blocking bool   `json:"blocking"`
+}
+
+// PathFormRouteVerification 是服务端对完整执行路径的权威复验结果。
+type PathFormRouteVerification struct {
+	Matched bool   `json:"matched"`
+	Reason  string `json:"reason"`
 }
 
 // PathFormSaveInput 是表单运行时校验后提交给服务层的完整 values 与生成元数据。
@@ -383,6 +369,7 @@ type StoredPathConfig struct {
 	ConfirmedNodeKeys   []string
 	FormValues          map[string]any
 	FormStatus          string
+	DataStatus          string
 	FormValidated       bool
 	FormSeed            int64
 	GeneratedFieldPaths []string

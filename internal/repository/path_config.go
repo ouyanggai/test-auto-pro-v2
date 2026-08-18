@@ -19,6 +19,8 @@ var (
 type PathConfigurationRepository interface {
 	// FindByPath 读取指定路径的当前配置；未保存时返回 found=false。
 	FindByPath(context.Context, uint64) (model.StoredPathConfig, bool, error)
+	// FindByPaths 一次读取一个有界批次的配置，未保存路径不出现在结果中。
+	FindByPaths(context.Context, []uint64) (map[uint64]model.StoredPathConfig, error)
 	// FindByPathAndKey 只在指定路径内按幂等键读取已保存结果，不跨路径泄露。
 	FindByPathAndKey(context.Context, uint64, string) (model.StoredPathConfig, bool, error)
 	// Save 在路径行锁内校验期望修订号后整份替换字段值与动作值并推进修订号。

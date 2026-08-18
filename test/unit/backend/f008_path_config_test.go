@@ -29,6 +29,11 @@ func (emptyPathConfigRepository) FindByPath(context.Context, uint64) (model.Stor
 	return model.StoredPathConfig{}, false, nil
 }
 
+// FindByPaths 表示当前测试批次没有保存过路径配置。
+func (emptyPathConfigRepository) FindByPaths(context.Context, []uint64) (map[uint64]model.StoredPathConfig, error) {
+	return map[uint64]model.StoredPathConfig{}, nil
+}
+
 // FindByPathAndKey 表示当前测试没有可复用的幂等保存结果。
 func (emptyPathConfigRepository) FindByPathAndKey(context.Context, uint64, string) (model.StoredPathConfig, bool, error) {
 	return model.StoredPathConfig{}, false, nil

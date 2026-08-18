@@ -25,34 +25,6 @@ export interface PathConfigPreparation {
   included: boolean
 }
 
-export type PathConfigPresetScope = 'current' | 'selected' | 'compatible'
-
-export interface PathConfigPresetNodeItem {
-  nodeKey: string
-  nodeName: string
-  action: string
-  status: 'write' | 'keep' | 'skip' | 'manual'
-  detail: string
-}
-
-export interface PathConfigPresetPath {
-  path: PathConfigPath
-  items: PathConfigPresetNodeItem[]
-}
-
-export interface PathConfigPresetPreview {
-  scope: PathConfigPresetScope
-  paths: PathConfigPresetPath[]
-}
-
-export interface PathConfigPresetApplyResult {
-  preview: PathConfigPresetPreview
-  written: number
-  kept: number
-  skipped: number
-  manual: number
-}
-
 export interface PathConfigActionCycle {
   key: string
   type: 'restart_from_initiator' | 'redo_previous_task'
@@ -133,6 +105,20 @@ export interface PathFormGenerateResult {
   conditionBindings: PathFormConditionBinding[]
   conditionReviews: string[]
   fieldRules: PathFormFieldRule[]
+  generationState: 'complete' | 'partial' | 'blocked'
+  issues: PathFormGenerationIssue[]
+  routeVerification: PathFormRouteVerification
+}
+
+export interface PathFormGenerationIssue {
+  field: string
+  reason: string
+  blocking: boolean
+}
+
+export interface PathFormRouteVerification {
+  matched: boolean
+  reason: string
 }
 
 export interface PathFormRuntimeSession {

@@ -51,6 +51,11 @@ func NewHandlerWithConfigurationServices(reader TargetReader, plans PlanService,
 
 // NewHandlerWithMaintenanceServices 组装 F-007 表单运行时维护端点，仍不允许请求指定来源或命令。
 func NewHandlerWithMaintenanceServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService) http.Handler {
+	return NewHandlerWithPreparationServices(reader, plans, graphs, paths, requirements, configurations, maintenance, unavailablePathPreparationService{})
+}
+
+// NewHandlerWithPreparationServices 组装 F-009 批量准备端点与既有全部能力。
+func NewHandlerWithPreparationServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -60,6 +65,7 @@ func NewHandlerWithMaintenanceServices(reader TargetReader, plans PlanService, g
 	registerPathRequirementRoute(mux, requirements)
 	registerPathConfigurationRoutes(mux, configurations)
 	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
+	registerPathPreparationRoutes(mux, preparations)
 	return gzipResponses(mux)
 }
 

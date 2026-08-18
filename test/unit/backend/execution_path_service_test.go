@@ -42,6 +42,24 @@ type memoryExecutionPathRepository struct {
 	batchCalls      int
 	listSummaryOnly bool
 	getCalls        int
+	getManyCalls    int
+}
+
+// GetMany 批量返回仍存在的测试路径详情，顺序与输入保持一致。
+func (r *memoryExecutionPathRepository) GetMany(_ context.Context, planID uint64, pathIDs []uint64) ([]model.ExecutionPath, error) {
+	r.getManyCalls++
+	result := make([]model.ExecutionPath, 0, len(pathIDs))
+	for _, pathID := range pathIDs {
+		path, err := r.Get(context.Background(), planID, pathID)
+		if errors.Is(err, repository.ErrExecutionPathNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, path)
+	}
+	return result, nil
 }
 
 // List 返回内存路径副本供服务单元测试使用。

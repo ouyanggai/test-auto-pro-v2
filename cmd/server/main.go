@@ -44,6 +44,10 @@ func main() {
 		planService, targetReader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),
 		analyzer.NewPathConfigAnalyzer(), pathRepository, pathConfigRepository,
 	)
+	pathPreparationService := service.NewPathPreparationService(pathConfigService, planmysql.NewPathPreparationRepository(planDatabase.DB))
+	if err := pathPreparationService.Recover(context.Background()); err != nil {
+		log.Printf("恢复批量路径准备任务失败：%v", err)
+	}
 	workspaceRoot := os.Getenv("TEST_AUTO_PRO_WORKSPACE_ROOT")
 	if workspaceRoot == "" {
 		workspaceRoot, err = os.Getwd()
@@ -96,7 +100,7 @@ func main() {
 	})
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithMaintenanceServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService),
+		Handler:           api.NewHandlerWithPreparationServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService, pathPreparationService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -68,7 +68,7 @@ func (s *PathConfigService) CopyCycles(ctx context.Context, planID, targetPathID
 		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
 	}
 	if !targetFound {
-		targetStored = model.StoredPathConfig{PathID: targetPathID, FieldValues: map[string]map[string]string{}, ActionValues: map[string]string{}}
+		targetStored = model.StoredPathConfig{PathID: targetPathID, FieldValues: map[string]map[string]string{}, ActionValues: map[string]string{}, FormStatus: initialStoredFormStatus(snapshot), DataStatus: initialStoredDataStatus(snapshot)}
 	}
 	configuration, _, err := s.configAnalyzer.Analyze(owned.graph, snapshot.Tree, snapshot.FormFields, targetPath, owned.pathAnalysis, snapshot.InstanceValues, targetStored.FieldValues, targetStored.ActionValues, targetFound)
 	if err != nil {
@@ -92,4 +92,13 @@ func (s *PathConfigService) CopyCycles(ctx context.Context, planID, targetPathID
 		return model.PathConfigSaveResult{}, mapPathConfigRepositoryError(err)
 	}
 	return pathConfigSaveResult(targetPath, saved), nil
+}
+
+// pathConfigStructuralSignature 使用完整分支选择序列限定循环复制的路径结构。
+func pathConfigStructuralSignature(path model.ExecutionPath) string {
+	values := make([]string, 0, len(path.Choices))
+	for _, choice := range path.Choices {
+		values = append(values, strings.TrimSpace(choice.RouteNodeID)+":"+strings.TrimSpace(choice.BranchID))
+	}
+	return strings.Join(values, "|")
 }

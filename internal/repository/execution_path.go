@@ -19,6 +19,8 @@ var (
 type ExecutionPathRepository interface {
 	List(context.Context, uint64) ([]model.ExecutionPath, error)
 	Get(context.Context, uint64, uint64) (model.ExecutionPath, error)
+	// GetMany 在一个批次内读取路径及 choices，禁止后台任务逐路径查询。
+	GetMany(context.Context, uint64, []uint64) ([]model.ExecutionPath, error)
 	// FindByCreateKey 只在指定计划内查询已成功的幂等记录。
 	FindByCreateKey(context.Context, uint64, string) (model.ExecutionPath, bool, error)
 	Create(context.Context, uint64, string, string, []model.ExecutionPathChoice, time.Time) (model.ExecutionPath, bool, error)

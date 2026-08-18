@@ -16,6 +16,10 @@ type ExecutionPath struct {
 	ConfigurationStatus string
 	// ConfigurationDetail 是路径摘要中的用户可读完成原因，不暴露节点键或表单内部状态。
 	ConfigurationDetail string
+	// DataStatus 独立表示表单数据准备，不参与节点人员与动作配置完成度。
+	DataStatus string
+	// DataDetail 是数据准备状态的用户可读原因，不暴露表单字段键或分支标识。
+	DataDetail string
 	// Included 表示用户是否已将该路径纳入本次运行准备，不会启动目标流程。
 	Included bool
 	// ConfigurationRevision 是轻量列表中保存纳入标记所需的节点配置修订号，不包含完整节点配置。

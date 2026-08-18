@@ -72,6 +72,20 @@ func TestFormDataGeneratorIsDeterministicAndHonorsPathConstraints(t *testing.T) 
 	}
 }
 
+// TestFormDataGeneratorUsesOptionValueForExplicitHiddenLabel 验证模板显式关闭 showLabel 时虚拟条件字段使用真实选项值。
+func TestFormDataGeneratorUsesOptionValueForExplicitHiddenLabel(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "select", "model": "leaveType", "name": "请假类别",
+		"options": map[string]any{"showLabel": false, "options": []any{
+			map[string]any{"label": "采购供应链管理", "value": "陪产假"},
+		}},
+	}}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Base: map[string]any{"leaveType": "陪产假"}, Seed: 1})
+	if result.Values["leaveType__virtualName"] != "陪产假" {
+		t.Fatalf("关闭 showLabel 后虚拟条件字段仍错误使用展示标签：%#v", result.Values)
+	}
+}
+
 // TestFormDataGeneratorNextGroupPreservesManualOverrides 验证换一组只替换生成器拥有字段，人工修改保持不变。
 func TestFormDataGeneratorNextGroupPreservesManualOverrides(t *testing.T) {
 	current := map[string]any{"title": "人工标题", "amount": float64(12)}

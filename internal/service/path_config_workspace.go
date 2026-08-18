@@ -131,9 +131,6 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	permissions := formPermissions(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))
 	dateRangeBindings := buildPathDateRangeBindings(snapshot.Tree, path.Choices, template)
 	conditions := buildPathFormConditionProjection(snapshot.Tree, path.Choices, template, base)
-	if len(conditions.Reviews) > 0 {
-		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径条件需要人工核对", Affected: affectedFromStrings("form", conditions.Reviews)}
-	}
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: template, Base: base, Samples: samples, Seed: seed, Initiator: initiator,
 		Constraints: conditions.Constraints, ManualOverridePaths: manualPaths, ProtectedPaths: conditions.ProtectedPaths,
@@ -142,19 +139,44 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		Identity:          identity,
 	})
 	generated.Unsupported = append(generated.Unsupported, unsupported...)
-	if reasons := validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values); len(reasons) > 0 {
-		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "生成数据无法命中当前已选分支", Affected: affectedFromStrings("form", reasons)}
+	solved := solveTargetPathValues(snapshot.Tree, path.Choices, template, generated.Values, seed)
+	generated.Values = solved.values
+	formdata.SynchronizeDateRangeBindings(generated.Values, dateRangeBindings, manualPaths)
+	verificationReasons := validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values)
+	dateReasons := formdata.ValidateDateRangeBindings(generated.Values, dateRangeBindings)
+	matched := solved.matched && len(verificationReasons) == 0 && len(dateReasons) == 0
+	issues := append(make([]model.PathFormGenerationIssue, 0, len(solved.issues)), solved.issues...)
+	for _, review := range conditions.Reviews {
+		issues = appendPathSolveIssue(issues, "当前路径条件", review, true)
 	}
-	if reasons := formdata.ValidateDateRangeBindings(generated.Values, dateRangeBindings); len(reasons) > 0 {
-		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "生成日期区间无法满足当前条件天数", Affected: affectedFromStrings("form", reasons)}
+	for _, item := range uniquePublicStrings(generated.Unsupported) {
+		issues = appendPathSolveIssue(issues, "表单字段", item, true)
+	}
+	for _, reason := range append(verificationReasons, dateReasons...) {
+		issues = appendPathSolveIssue(issues, "当前路径条件", reason, true)
 	}
 	conditions = buildPathFormConditionProjection(snapshot.Tree, path.Choices, template, generated.Values)
-	if len(conditions.Reviews) > 0 {
-		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径条件需要人工核对", Affected: affectedFromStrings("form", conditions.Reviews)}
+	for _, review := range conditions.Reviews {
+		issues = appendPathSolveIssue(issues, "当前路径条件", review, true)
 	}
 	if nextGroup && reflect.DeepEqual(base, generated.Values) {
-		// “换一组”只能在当前模板、样本和路径约束能证明产生新值时成功，避免旧值被伪装成新候选。
-		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "没有可切换的下一组有效候选，当前数据已保持不变"}
+		// 没有第二组候选属于可预期求解结果，返回 2xx 让页面直接展示原因。
+		issues = appendPathSolveIssue(issues, "表单数据", "没有可切换的下一组有效候选，当前数据已保持不变", false)
+	}
+	generationState := "complete"
+	if !matched || len(issues) > 0 {
+		generationState = "partial"
+		if len(generated.Values) == 0 {
+			generationState = "blocked"
+		}
+	}
+	verificationReason := solved.reason
+	if len(verificationReasons) > 0 {
+		verificationReason = verificationReasons[0]
+	} else if len(dateReasons) > 0 {
+		verificationReason = dateReasons[0]
+	} else if matched {
+		verificationReason = "生成数据已命中当前完整路径"
 	}
 	return model.PathFormGenerateResult{
 		Revision: stored.FormRevision, Status: "draft", Values: generated.Values, Seed: seed,
@@ -163,6 +185,8 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		AutoFilled:    len(generated.GeneratedFieldPaths), ManualPending: generated.Pending,
 		Unsupported:       uniquePublicStrings(generated.Unsupported),
 		ConditionBindings: conditions.Bindings, ConditionReviews: conditions.Reviews, FieldRules: conditions.FieldRules,
+		GenerationState: generationState, Issues: issues,
+		RouteVerification: model.PathFormRouteVerification{Matched: matched, Reason: verificationReason},
 	}, nil
 }
 
@@ -250,6 +274,7 @@ func (s *PathConfigService) SaveNode(ctx context.Context, planID, pathID uint64,
 	stored.Status = s.deriveStoredStatus(ctx, planID, path, snapshot, stored)
 	if !found {
 		stored.FormStatus = initialStoredFormStatus(snapshot)
+		stored.DataStatus = initialStoredDataStatus(snapshot)
 	}
 	saved, err := s.configRepository.Save(ctx, stored, stored.Revision-1, s.now().UTC())
 	if err != nil {
@@ -293,7 +318,7 @@ func (s *PathConfigService) SaveSelection(ctx context.Context, planID, pathID ui
 	}
 	stored.PathID, stored.Revision, stored.NodeRevision, stored.IdempotencyKey, stored.ConfigVersion = pathID, stored.Revision+1, stored.NodeRevision+1, idempotencyKey, currentPathConfigVersion
 	if !found {
-		stored.Status, stored.FormStatus = "pending", "empty"
+		stored.Status, stored.FormStatus, stored.DataStatus = "pending", "empty", "not_generated"
 	}
 	saved, err := s.configRepository.Save(ctx, stored, stored.Revision-1, s.now().UTC())
 	if err != nil {
@@ -543,6 +568,7 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 	stored.ConfigVersion = currentPathConfigVersion
 	stored.FormValues = cloneFormValues(input.Values)
 	stored.FormStatus = "valid"
+	stored.DataStatus = "confirmed"
 	stored.FormValidated = true
 	stored.FormSeed = input.Seed
 	stored.GeneratedFieldPaths = uniquePublicStrings(input.GeneratedFieldPaths)
@@ -699,11 +725,8 @@ func summarizeConfigurationProgress(groups []model.PathConfigGroup) (model.PathC
 	return progress, next
 }
 
-// derivePathConfigurationStatus 只在表单有效且所有必需节点完成时返回 configured。
+// derivePathConfigurationStatus 只按节点人员和动作配置派生完成度，表单数据状态独立维护。
 func derivePathConfigurationStatus(configuration model.PathConfiguration) string {
-	if configuration.Form.Status == "affected" || configuration.Form.Status == "unsupported" {
-		return "affected"
-	}
 	for _, group := range configuration.Groups {
 		for _, node := range group.Nodes {
 			if node.Status == "affected" {
@@ -711,8 +734,11 @@ func derivePathConfigurationStatus(configuration model.PathConfiguration) string
 			}
 		}
 	}
-	if configuration.Form.Status == "valid" && configuration.Progress.Pending == 0 {
+	if configuration.Progress.Pending == 0 {
 		return "configured"
+	}
+	if configuration.Progress.Completed > 0 {
+		return "partial"
 	}
 	return "pending"
 }
@@ -731,11 +757,6 @@ func (s *PathConfigService) deriveStoredStatus(ctx context.Context, planID uint6
 		return "affected"
 	}
 	applyConfirmedNodeState(&configuration, stored.ConfirmedNodeKeys)
-	plan, err := s.plans.Get(ctx, planID)
-	if err != nil {
-		return "affected"
-	}
-	configuration.Form = projectPathForm(plan.FlowSource, snapshot, owned.pathAnalysis, path.Choices, stored, true)
 	return derivePathConfigurationStatus(configuration)
 }
 
@@ -811,16 +832,17 @@ func buildPathDateRangeBindings(tree *target.FlowNodeTemplate, choices []model.E
 		selected[choice.RouteNodeID] = choice.BranchID
 	}
 	conditionFields := make(map[string]bool)
-	visitTargetTree(tree, map[string]bool{}, func(node *target.FlowNodeTemplate) {
-		for _, branch := range node.ConditionNodes {
-			if selected[node.ID] != branch.ID {
-				continue
-			}
+	visitSelectedPathConditionNodes(tree, selected, func(node *target.FlowNodeTemplate) {
+		for _, branch := range orderedTargetBranches(node.ConditionNodes) {
 			for _, condition := range branch.Conditions {
 				field := normalizeFormFieldPath(condition.FieldA)
 				if field != "" && strings.TrimSpace(condition.FieldB) == "" && isNumericConditionJudge(condition.Judge) {
 					conditionFields[field] = true
 				}
+			}
+			// 日期联动必须覆盖当前分支及所有更靠前分支，兜底路径才能构造避开前置条件的天数。
+			if selected[node.ID] == branch.ID {
+				break
 			}
 		}
 	})
@@ -870,17 +892,47 @@ func validateTargetPathSelection(tree *target.FlowNodeTemplate, choices []model.
 func resolveTargetConditionBranches(tree *target.FlowNodeTemplate, values map[string]any, choices []model.ExecutionPathChoice) (map[string]string, []string) {
 	actual := make(map[string]string)
 	reasons := make([]string, 0)
+	visited := make(map[string]bool)
 	selected := make(map[string]string, len(choices))
 	for _, choice := range choices {
 		selected[choice.RouteNodeID] = choice.BranchID
 	}
 	var visit func(*target.FlowNodeTemplate)
 	visit = func(node *target.FlowNodeTemplate) {
-		if node == nil {
+		if node == nil || visited[node.ID] {
 			return
 		}
+		visited[node.ID] = true
 		branches := orderedTargetBranches(node.ConditionNodes)
 		if len(branches) == 0 {
+			if len(node.ParallelNodes) > 0 {
+				if strings.TrimSpace(node.Type) == "parallel" {
+					// 并行路由的所有分支都属于同一执行路径，必须逐支复验嵌套条件。
+					for index := range node.ParallelNodes {
+						visit(node.ParallelNodes[index].Child)
+					}
+				} else {
+					for index := range node.ParallelNodes {
+						if node.ParallelNodes[index].ID == selected[node.ID] {
+							visit(node.ParallelNodes[index].Child)
+							break
+						}
+					}
+				}
+			}
+			visit(node.Child)
+			return
+		}
+		if isTargetManualBranchNode(node) {
+			for _, branch := range branches {
+				if branch.ID == selected[node.ID] {
+					actual[node.ID] = branch.ID
+					visit(branch.Child)
+					visit(node.Child)
+					return
+				}
+			}
+			reasons = append(reasons, "当前路径缺少手动分支选择")
 			visit(node.Child)
 			return
 		}
@@ -906,9 +958,15 @@ func resolveTargetConditionBranches(tree *target.FlowNodeTemplate, values map[st
 		if selected[node.ID] == "" || actual[node.ID] == selected[node.ID] {
 			visit(selectedChild)
 		}
+		visit(node.Child)
 	}
 	visit(tree)
 	return actual, uniquePublicStrings(reasons)
+}
+
+// isTargetManualBranchNode 识别目标平台以 condition/custom_choose 表示的人工分支，人工选择不由表单值求解。
+func isTargetManualBranchNode(node *target.FlowNodeTemplate) bool {
+	return node != nil && strings.TrimSpace(node.Type) == "condition" && strings.TrimSpace(node.BranchExecuteType) == "custom_choose"
 }
 
 // orderedTargetBranches 按目标策略 sort 保持稳定排序，数据库同序号仍保留读取顺序。
@@ -976,8 +1034,8 @@ func targetConditionMatches(values map[string]any, condition target.FlowConditio
 	case "neq":
 		return !targetValuesEqual(left, right), true
 	case "gt", "gte", "lt", "lte":
-		leftNumber, leftOK := targetNumber(left)
-		rightNumber, rightOK := targetNumber(right)
+		leftNumber, leftOK := targetComparableNumber(left)
+		rightNumber, rightOK := targetComparableNumber(right)
 		if !leftOK || !rightOK {
 			return false, false
 		}
@@ -1081,6 +1139,8 @@ func normalizeConditionJudge(value string) string {
 		return "lte"
 	case "in":
 		return "in"
+	case "contains":
+		return "contains"
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}
@@ -1286,6 +1346,9 @@ func resolvePathFormConditionField(raw string, fields []formdata.Field) (pathFor
 			return pathFormConditionFieldRef{Field: field, Mode: "direct"}, true
 		}
 		if path == field.Path+"__virtualName" && (field.Type == "select" || field.Type == "radio") {
+			if field.OptionVirtualUsesValue {
+				return pathFormConditionFieldRef{Field: field, Mode: "option-value"}, true
+			}
 			return pathFormConditionFieldRef{Field: field, Mode: "option-label"}, true
 		}
 		if path == field.Path+"__condition" && field.Type == "infoSelect" {
@@ -1339,7 +1402,33 @@ func buildPathFormConstraint(condition target.FlowCondition, left, right pathFor
 		}
 		value = mapped
 	}
+	if left.Mode == "option-value" && !pathConditionValueExistsInOptions(left.Field, value, op) {
+		return formdata.Constraint{}, true
+	}
 	return formdata.Constraint{Field: left.Field.Path, Op: op, Value: value, Group: group}, false
+}
+
+// pathConditionValueExistsInOptions 验证目标条件常量确实属于模板选项值，不按显示名猜测。
+func pathConditionValueExistsInOptions(field formdata.Field, value any, op string) bool {
+	values := []any{value}
+	if op == "in" {
+		if list, ok := value.([]any); ok {
+			values = list
+		}
+	}
+	for _, expected := range values {
+		found := false
+		for _, option := range field.Options {
+			if targetValuesEqual(option, expected) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // optionConditionValue 将目标保存的选项显示值反向映射为 FormMaking 的模型值。
@@ -1389,30 +1478,40 @@ func conditionHintKey(nodeID, branchID string, index int) string {
 
 // visitSelectedPathConditionNodes 只沿已保存路径的分支子树投影条件，避免把其他路径节点的提示带进当前表单。
 func visitSelectedPathConditionNodes(tree *target.FlowNodeTemplate, selected map[string]string, call func(*target.FlowNodeTemplate)) {
+	visited := make(map[string]bool)
 	var visit func(*target.FlowNodeTemplate)
 	visit = func(node *target.FlowNodeTemplate) {
-		if node == nil {
+		if node == nil || visited[node.ID] {
 			return
 		}
+		visited[node.ID] = true
 		if len(node.ConditionNodes) > 0 {
 			call(node)
 			branchID := selected[node.ID]
 			for _, branch := range node.ConditionNodes {
 				if branch.ID == branchID {
 					visit(branch.Child)
-					return
+					break
 				}
 			}
+			visit(node.Child)
 			return
 		}
 		if len(node.ParallelNodes) > 0 {
-			call(node)
-			for _, branch := range node.ParallelNodes {
-				if branch.ID == selected[node.ID] {
+			if strings.TrimSpace(node.Type) == "parallel" {
+				for _, branch := range node.ParallelNodes {
 					visit(branch.Child)
-					return
+				}
+			} else {
+				call(node)
+				for _, branch := range node.ParallelNodes {
+					if branch.ID == selected[node.ID] {
+						visit(branch.Child)
+						break
+					}
 				}
 			}
+			visit(node.Child)
 			return
 		}
 		visit(node.Child)
@@ -1502,6 +1601,14 @@ func initialStoredFormStatus(snapshot target.PathConfigurationSnapshot) string {
 		return "valid"
 	}
 	return "empty"
+}
+
+// initialStoredDataStatus 根据真实表单存在性建立独立数据准备初态。
+func initialStoredDataStatus(snapshot target.PathConfigurationSnapshot) string {
+	if len(snapshot.Forms) == 0 {
+		return "not_required"
+	}
+	return "not_generated"
 }
 
 // affectedFromStrings 把内部原因收敛为不含目标标识的公开受影响项。

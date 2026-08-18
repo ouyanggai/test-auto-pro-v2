@@ -226,7 +226,7 @@ func createPathTestPlan(t *testing.T, ctx context.Context, plans *service.PlanSe
 	return plan
 }
 
-// assertF005Tables 精确核对 F-005 临时库表、迁移和内部序号计数器。
+// assertF005Tables 核对后续迁移没有破坏 F-005 路径表、基础迁移和内部序号计数器。
 func assertF005Tables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	want := map[string]bool{
@@ -247,16 +247,13 @@ func assertF005Tables(t *testing.T, db *sql.DB) {
 		}
 		found[name] = true
 	}
-	if len(found) != len(want) {
-		t.Fatalf("F-005 临时库表集合不正确：%v", found)
-	}
 	for name := range want {
 		if !found[name] {
 			t.Fatalf("F-005 临时库缺少表 %s", name)
 		}
 	}
 	var migrations int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations != 7 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil || migrations < 7 {
 		t.Fatalf("F-005 迁移版本数量不正确：%d err=%v", migrations, err)
 	}
 	var counterColumns int

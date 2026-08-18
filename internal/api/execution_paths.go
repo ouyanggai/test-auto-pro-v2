@@ -39,6 +39,8 @@ type executionPathResponse struct {
 	Name                  string                      `json:"name"`
 	ConfigurationStatus   string                      `json:"configurationStatus"`
 	ConfigurationDetail   string                      `json:"configurationDetail"`
+	DataStatus            string                      `json:"dataStatus"`
+	DataDetail            string                      `json:"dataDetail"`
 	Included              bool                        `json:"included"`
 	ConfigurationRevision uint64                      `json:"configurationRevision"`
 	Choices               []model.ExecutionPathChoice `json:"choices"`
@@ -267,9 +269,14 @@ func toExecutionPathResponse(path model.ExecutionPath) executionPathResponse {
 	if configurationStatus == "" {
 		configurationStatus = "pending"
 	}
+	dataStatus := strings.TrimSpace(path.DataStatus)
+	if dataStatus == "" {
+		dataStatus = "not_generated"
+	}
 	return executionPathResponse{
 		ID: strconv.FormatUint(path.ID, 10), SequenceNo: path.SequenceNo,
-		Name: path.Name, ConfigurationStatus: configurationStatus, ConfigurationDetail: path.ConfigurationDetail, Included: path.Included, ConfigurationRevision: path.ConfigurationRevision,
+		Name: path.Name, ConfigurationStatus: configurationStatus, ConfigurationDetail: path.ConfigurationDetail,
+		DataStatus: dataStatus, DataDetail: path.DataDetail, Included: path.Included, ConfigurationRevision: path.ConfigurationRevision,
 		Choices: nonNilSlice(path.Choices), UpdatedAt: path.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }

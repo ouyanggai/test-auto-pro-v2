@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"test-auto-pro-v2/internal/model"
@@ -23,12 +24,41 @@ func NewPathConfigurationRepository(db *sql.DB) *PathConfigurationRepository {
 
 // FindByPath 读取指定路径的当前配置；未保存时返回 false，不把空记录误当配置。
 func (r *PathConfigurationRepository) FindByPath(ctx context.Context, pathID uint64) (model.StoredPathConfig, bool, error) {
-	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ?", pathID))
+	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, data_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ?", pathID))
+}
+
+// FindByPaths 一次读取有界路径批次的配置，供后台准备任务避免 N+1。
+func (r *PathConfigurationRepository) FindByPaths(ctx context.Context, pathIDs []uint64) (map[uint64]model.StoredPathConfig, error) {
+	result := make(map[uint64]model.StoredPathConfig, len(pathIDs))
+	if len(pathIDs) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, 0, len(pathIDs))
+	args := make([]any, 0, len(pathIDs))
+	for _, pathID := range pathIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, pathID)
+	}
+	rows, err := r.db.QueryContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, data_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id IN ("+strings.Join(placeholders, ",")+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		record, found, scanErr := scanStoredPathConfig(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		if found {
+			result[record.PathID] = record
+		}
+	}
+	return result, rows.Err()
 }
 
 // FindByPathAndKey 只在指定路径内按幂等键读取已保存结果，避免跨路径键碰撞。
 func (r *PathConfigurationRepository) FindByPathAndKey(ctx context.Context, pathID uint64, idempotencyKey string) (model.StoredPathConfig, bool, error) {
-	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? AND idempotency_key = ?", pathID, idempotencyKey))
+	return scanStoredPathConfig(r.db.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, data_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? AND idempotency_key = ?", pathID, idempotencyKey))
 }
 
 // Save 在事务中锁定路径配置行，校验期望修订号后整份替换字段值与动作值并推进修订号。
@@ -70,14 +100,14 @@ func (r *PathConfigurationRepository) Save(ctx context.Context, record model.Sto
 	if expectedRevision == 0 {
 		// 首次保存不能先对不存在的主键做 FOR UPDATE：两个事务会同时持有 gap lock，再插入时可能死锁。
 		// no-op upsert 让 InnoDB 直接按 path_id 串行化；胜出记录不被改写，随后只接受同一幂等键。
-		_, err = tx.ExecContext(ctx, "INSERT INTO test_execution_path_configs (path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE path_id = path_id",
+		_, err = tx.ExecContext(ctx, "INSERT INTO test_execution_path_configs (path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, data_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE path_id = path_id",
 			record.PathID, record.Revision, record.NodeRevision, record.FormRevision, record.IdempotencyKey, record.Status, record.ConfigVersion,
-			fieldJSON, actionJSON, confirmedJSON, formJSON, record.FormStatus, record.FormValidated, record.FormSeed,
+			fieldJSON, actionJSON, confirmedJSON, formJSON, record.FormStatus, record.DataStatus, record.FormValidated, record.FormSeed,
 			generatedJSON, manualJSON, string(summaryJSON), record.FormTemplateVersion, now.UTC(), now.UTC())
 		if err != nil {
 			return model.StoredPathConfig{}, err
 		}
-		existing, found, scanErr := scanStoredPathConfig(tx.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? FOR UPDATE", record.PathID))
+		existing, found, scanErr := scanStoredPathConfig(tx.QueryRowContext(ctx, "SELECT path_id, revision, node_revision, form_revision, idempotency_key, config_status, config_version, field_values, action_values, confirmed_node_keys, form_values, form_status, data_status, form_validated, form_seed, generated_field_paths, manual_override_paths, sample_summary, form_template_version, created_at, updated_at FROM test_execution_path_configs WHERE path_id = ? FOR UPDATE", record.PathID))
 		if scanErr != nil {
 			return model.StoredPathConfig{}, scanErr
 		}
@@ -103,9 +133,9 @@ func (r *PathConfigurationRepository) Save(ctx context.Context, record model.Sto
 		// 行锁内二次核对修订号：服务层读取到保存之间的并发保存必须在此处被拒绝。
 		return model.StoredPathConfig{}, repository.ErrPathConfigConflict
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE test_execution_path_configs SET revision = ?, node_revision = ?, form_revision = ?, idempotency_key = ?, config_status = ?, config_version = ?, field_values = ?, action_values = ?, confirmed_node_keys = ?, form_values = ?, form_status = ?, form_validated = ?, form_seed = ?, generated_field_paths = ?, manual_override_paths = ?, sample_summary = ?, form_template_version = ?, updated_at = ? WHERE path_id = ?",
+	_, err = tx.ExecContext(ctx, "UPDATE test_execution_path_configs SET revision = ?, node_revision = ?, form_revision = ?, idempotency_key = ?, config_status = ?, config_version = ?, field_values = ?, action_values = ?, confirmed_node_keys = ?, form_values = ?, form_status = ?, data_status = ?, form_validated = ?, form_seed = ?, generated_field_paths = ?, manual_override_paths = ?, sample_summary = ?, form_template_version = ?, updated_at = ? WHERE path_id = ?",
 		record.Revision, record.NodeRevision, record.FormRevision, record.IdempotencyKey, record.Status, record.ConfigVersion,
-		fieldJSON, actionJSON, confirmedJSON, formJSON, record.FormStatus, record.FormValidated, record.FormSeed,
+		fieldJSON, actionJSON, confirmedJSON, formJSON, record.FormStatus, record.DataStatus, record.FormValidated, record.FormSeed,
 		generatedJSON, manualJSON, string(summaryJSON), record.FormTemplateVersion, now.UTC(), record.PathID)
 	if err != nil {
 		return model.StoredPathConfig{}, err
@@ -119,7 +149,12 @@ func (r *PathConfigurationRepository) Save(ctx context.Context, record model.Sto
 }
 
 // scanStoredPathConfig 解析配置行并统一处理未找到与 JSON 数据损坏。
-func scanStoredPathConfig(row *sql.Row) (model.StoredPathConfig, bool, error) {
+type pathConfigScanner interface {
+	Scan(...any) error
+}
+
+// scanStoredPathConfig 从单行或结果集解析配置，并统一处理未找到与 JSON 数据损坏。
+func scanStoredPathConfig(row pathConfigScanner) (model.StoredPathConfig, bool, error) {
 	var record model.StoredPathConfig
 	var fieldJSON string
 	var actionJSON string
@@ -131,7 +166,7 @@ func scanStoredPathConfig(row *sql.Row) (model.StoredPathConfig, bool, error) {
 	err := row.Scan(
 		&record.PathID, &record.Revision, &record.NodeRevision, &record.FormRevision,
 		&record.IdempotencyKey, &record.Status, &record.ConfigVersion, &fieldJSON, &actionJSON,
-		&confirmedJSON, &formJSON, &record.FormStatus, &record.FormValidated, &record.FormSeed,
+		&confirmedJSON, &formJSON, &record.FormStatus, &record.DataStatus, &record.FormValidated, &record.FormSeed,
 		&generatedJSON, &manualJSON, &summaryJSON, &record.FormTemplateVersion, &record.CreatedAt, &record.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {

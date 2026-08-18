@@ -20,7 +20,6 @@ grep -Fq '一键配置' "${paths_view}"
 grep -Fq 'fetchExecutionPath(planID.value, pathID.value, controller.signal)' "${configuration_view}"
 grep -Fq 'analyzeExecutionPath(storedGraph, storedPath.choices)' "${configuration_view}"
 grep -Fq 'path-configuration-page__error-content' "${configuration_view}"
-grep -Fq 'path-configuration-page__preset-body' "${configuration_view}"
 grep -Fq 'path-configuration-page__cycle-body' "${configuration_view}"
 
 grep -Fq '/path-generations' "${paths_api}"

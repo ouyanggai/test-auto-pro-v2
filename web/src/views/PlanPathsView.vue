@@ -11,6 +11,7 @@ import {
   NInput,
   NModal,
   NPopconfirm,
+  NProgress,
   NSpin,
   NTag,
   NVirtualList,
@@ -45,7 +46,16 @@ import {
   transitionExecutionPathWorkspace,
 } from '../features/execution-paths/logic'
 import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode, PathGenerationJob } from '../features/execution-paths/types'
-import { applyPathConfigurationPreset, savePathConfigurationSelection } from '../features/path-configuration/api'
+import { savePathConfigurationSelection } from '../features/path-configuration/api'
+import {
+  cancelPathPreparation,
+  createPathPreparation,
+  fetchActivePathPreparation,
+  fetchPathPreparation,
+  fetchPathPreparationItems,
+  resumePathPreparation,
+} from '../features/path-preparation/api'
+import type { PathPreparationItem, PathPreparationJob } from '../features/path-preparation/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
@@ -90,9 +100,13 @@ const pathSelectionRevisions = ref<Record<string, number>>({})
 const pathSelectionLoading = ref(false)
 const pathSelectionSaving = ref(false)
 const pathSelectionError = ref('')
-const presettingSelected = ref(false)
-const presetProgress = ref({ completed: 0, total: 0 })
+const preparationJob = ref<PathPreparationJob | null>(null)
+const preparationItems = ref<PathPreparationItem[]>([])
+const preparationNextCursor = ref(0)
+const preparationLoading = ref(false)
+const preparationFilter = ref<'all' | 'needs_attention'>('all')
 const SAVED_PATH_ITEM_SIZE = 44
+const PREPARATION_PATH_ITEM_SIZE = 52
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 const graphScreenRef = ref<HTMLElement | null>(null)
 let loadController: AbortController | null = null
@@ -101,12 +115,18 @@ let draftRecoveryController: AbortController | null = null
 let draftRecoveryVersion = 0
 let pageScrollContainer: HTMLElement | null = null
 let generationTimer: ReturnType<typeof setTimeout> | null = null
+let preparationTimer: ReturnType<typeof setTimeout> | null = null
 
 const planID = computed(() => String(route.params.id || ''))
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
 const configuredPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'configured'))
 const partialPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'partial'))
-const pendingPaths = computed(() => paths.value.filter((path) => path.configurationStatus !== 'configured'))
+const generatedDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'generated' || path.dataStatus === 'confirmed' || path.dataStatus === 'not_required'))
+const attentionDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'needs_attention'))
+const visiblePaths = computed(() => preparationFilter.value === 'needs_attention'
+  ? paths.value.filter(path => path.dataStatus === 'needs_attention')
+  : paths.value)
+const preparationPathListHeight = computed(() => Math.min(visiblePaths.value.length, 5) * PREPARATION_PATH_ITEM_SIZE)
 const pageThemeStyle = computed(() => ({
   '--plan-card-color': themeVars.value.cardColor,
   '--plan-page-color': themeVars.value.bodyColor,
@@ -163,6 +183,7 @@ const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
 const generationBusy = computed(() => generationJob.value?.status === 'queued' || generationJob.value?.status === 'running')
+const preparationBusy = computed(() => preparationJob.value?.status === 'queued' || preparationJob.value?.status === 'running')
 const savedPathListHeight = computed(() => Math.min(paths.value.length, 5) * SAVED_PATH_ITEM_SIZE)
 const allPathsSelectedForRun = computed(() => paths.value.length > 0 && paths.value.every(path => selectedRunPathIDs.value.has(path.id)))
 const pathMoreOptions = computed(() => [
@@ -190,6 +211,9 @@ async function loadPage() {
   selectedRunPathIDs.value = new Set()
   pathSelectionRevisions.value = {}
   pathSelectionError.value = ''
+  preparationJob.value = null
+  preparationItems.value = []
+  preparationNextCursor.value = 0
   pathWorkspaceOpen.value = false
   savedPathsOpen.value = false
   draftRecoveryLoading.value = false
@@ -220,6 +244,7 @@ async function loadPage() {
 		selectedRunPathIDs.value = new Set(pathsResult.value.filter(path => path.included).map(path => path.id))
 		pathSelectionRevisions.value = Object.fromEntries(pathsResult.value.map(path => [path.id, path.configurationRevision]))
 		if (plan.value.flowSource === 'new' && pathsResult.value.length === 0) void startAutomaticGeneration()
+		void restoreActivePreparation(controller.signal)
     }
     else {
       const caught = pathsResult.reason
@@ -324,25 +349,112 @@ async function persistRunPathSelection(path: ExecutionPath, included: boolean) {
   selectedRunPathIDs.value = next
 }
 
-// applySelectedConfiguration 仅对用户勾选的路径应用安全配置，并在本地展示已完成数量。
+// applySelectedConfiguration 只创建当前勾选路径的持久后台任务。
 async function applySelectedConfiguration() {
-  const selected = paths.value.filter(path => selectedRunPathIDs.value.has(path.id))
-  if (presettingSelected.value || selected.length === 0) return
-  presettingSelected.value = true
-  presetProgress.value = { completed: 0, total: selected.length }
+  if (preparationBusy.value || selectedRunPathIDs.value.size === 0) return
+  preparationLoading.value = true
   pathSelectionError.value = ''
   try {
-    // 后端按 selected 范围重新读取当前勾选事实；只发起一次请求，避免浏览器逐条加载配置。
-    await applyPathConfigurationPreset(planID.value, selected[0].id, 'selected')
-    presetProgress.value = { completed: selected.length, total: selected.length }
-    await retryPaths()
-    message.success(`已完成 ${selected.length} 条路径的一键配置`)
+    preparationJob.value = await createPathPreparation(planID.value, crypto.randomUUID())
+    await refreshPreparationItems(true)
+    schedulePreparationPoll()
   }
   catch (caught) {
     pathSelectionError.value = caught instanceof Error ? caught.message : '一键配置失败，请重试'
   }
   finally {
-    presettingSelected.value = false
+    preparationLoading.value = false
+  }
+}
+
+// restoreActivePreparation 恢复刷新前仍在执行的同计划任务。
+async function restoreActivePreparation(signal?: AbortSignal) {
+  try {
+    const active = await fetchActivePathPreparation(planID.value, signal)
+    if (!active) return
+    preparationJob.value = active
+    await refreshPreparationItems(true, signal)
+    schedulePreparationPoll()
+  }
+  catch (caught) {
+    if (signal?.aborted) return
+    pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法读取批量准备进度'
+  }
+}
+
+// refreshPreparationItems 读取首批或下一页单路径结果。
+async function refreshPreparationItems(reset: boolean, signal?: AbortSignal) {
+  const job = preparationJob.value
+  if (!job) return
+  const cursor = reset ? 0 : preparationNextCursor.value
+  const page = await fetchPathPreparationItems(planID.value, job.id, cursor, 20, signal)
+  preparationItems.value = reset ? page.items : [...preparationItems.value, ...page.items]
+	preparationNextCursor.value = page.nextCursor ?? 0
+}
+
+// loadMorePreparationItems 捕获明细翻页失败并只在任务区域显示中文原因。
+async function loadMorePreparationItems() {
+  try {
+    await refreshPreparationItems(false)
+  }
+  catch (caught) {
+    pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法读取更多路径结果'
+  }
+}
+
+// schedulePreparationPoll 按任务真实状态刷新聚合进度，完成后重新读取路径双状态。
+function schedulePreparationPoll() {
+  if (preparationTimer) clearTimeout(preparationTimer)
+  if (!preparationBusy.value || !preparationJob.value) return
+  preparationTimer = setTimeout(async () => {
+    const current = preparationJob.value
+    if (!current) return
+    try {
+      preparationJob.value = await fetchPathPreparation(planID.value, current.id)
+      await refreshPreparationItems(true)
+      if (preparationJob.value.status === 'completed') {
+        await retryPaths()
+        message.success(`已处理 ${preparationJob.value.processed} 条路径`)
+        return
+      }
+      schedulePreparationPoll()
+    }
+    catch (caught) {
+      pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法刷新批量准备进度'
+    }
+  }, 700)
+}
+
+// cancelCurrentPreparation 取消任务并保留当前检查点。
+async function cancelCurrentPreparation() {
+  if (!preparationJob.value || !preparationBusy.value) return
+  preparationLoading.value = true
+	try {
+		preparationJob.value = await cancelPathPreparation(planID.value, preparationJob.value.id)
+		if (preparationTimer) clearTimeout(preparationTimer)
+		await refreshPreparationItems(true)
+	}
+	catch (caught) {
+		pathSelectionError.value = caught instanceof Error ? caught.message : '取消批量准备失败，请重试'
+	}
+	finally {
+    preparationLoading.value = false
+  }
+}
+
+// resumeCurrentPreparation 恢复取消或失败任务。
+async function resumeCurrentPreparation() {
+  if (!preparationJob.value || !['cancelled', 'failed'].includes(preparationJob.value.status)) return
+  preparationLoading.value = true
+	try {
+		preparationJob.value = await resumePathPreparation(planID.value, preparationJob.value.id)
+		schedulePreparationPoll()
+	}
+	catch (caught) {
+		pathSelectionError.value = caught instanceof Error ? caught.message : '恢复批量准备失败，请重试'
+	}
+	finally {
+    preparationLoading.value = false
   }
 }
 
@@ -583,6 +695,23 @@ function pathDisplayName(path: ExecutionPath): string {
   return path.name?.trim() || `路径 ${path.sequenceNo}`
 }
 
+// pathConfigurationLabel 把节点人员与动作状态翻译成独立业务标签。
+function pathConfigurationLabel(path: ExecutionPath): string {
+  if (path.configurationStatus === 'configured') return '节点已配置'
+  if (path.configurationStatus === 'partial') return '节点部分配置'
+  if (path.configurationStatus === 'affected') return '节点受影响'
+  return '节点待配置'
+}
+
+// pathDataLabel 把表单数据准备状态翻译成独立业务标签。
+function pathDataLabel(path: ExecutionPath): string {
+  if (path.dataStatus === 'not_required') return '无需数据'
+  if (path.dataStatus === 'generated') return '数据已生成'
+  if (path.dataStatus === 'confirmed') return '数据已确认'
+  if (path.dataStatus === 'needs_attention') return '数据需处理'
+  return '数据未生成'
+}
+
 // startAutomaticGeneration 新发起计划首次进入详情时自动解析全部合法路径。
 async function startAutomaticGeneration() {
   if (!plan.value || plan.value.flowSource !== 'new' || paths.value.length > 0 || generationBusy.value) return
@@ -687,6 +816,7 @@ onBeforeUnmount(() => {
   loadController?.abort()
   draftRecoveryController?.abort()
 	if (generationTimer) clearTimeout(generationTimer)
+	if (preparationTimer) clearTimeout(preparationTimer)
   pageScrollContainer?.classList.remove('plan-paths-scroll-container')
   pageScrollContainer = null
 })
@@ -729,14 +859,17 @@ onBeforeUnmount(() => {
                 <h2 id="path-preparation-heading">路径准备与运行选择</h2>
                 <p v-if="pathsLoading">正在读取本地路径配置状态</p>
                 <p v-else-if="pathsError">暂时无法读取路径状态，请先重试</p>
-						<p v-else>已保存 {{ paths.length }} 条，已配置 {{ configuredPaths.length }} 条，部分配置 {{ partialPaths.length }} 条，待配置 {{ pendingPaths.length - partialPaths.length }} 条，已选 {{ selectedRunPathIDs.size }} 条</p>
+                <p v-else>共 {{ paths.length }} 条；节点已配置 {{ configuredPaths.length }} 条，部分配置 {{ partialPaths.length }} 条；数据已准备 {{ generatedDataPaths.length }} 条，需处理 {{ attentionDataPaths.length }} 条；已选 {{ selectedRunPathIDs.size }} 条</p>
               </div>
               <div class="path-preparation__header-actions">
 						<n-button v-if="paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
                 <n-button v-if="paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
-						<n-popconfirm v-if="selectedRunPathIDs.size" :show-icon="false" positive-text="确认配置" negative-text="取消" @positive-click="applySelectedConfiguration">
-							<template #trigger><n-button size="small" type="primary" secondary :loading="presettingSelected" :disabled="pathSelectionLoading || pathSelectionSaving">一键配置</n-button></template>
-							仅对已勾选的 {{ selectedRunPathIDs.size }} 条路径应用安全默认动作，不覆盖已保存配置。
+						<n-button size="small" secondary :type="preparationFilter === 'needs_attention' ? 'warning' : 'default'" @click="preparationFilter = preparationFilter === 'needs_attention' ? 'all' : 'needs_attention'">
+							{{ preparationFilter === 'needs_attention' ? '显示全部' : `数据需处理 ${attentionDataPaths.length}` }}
+						</n-button>
+						<n-popconfirm v-if="selectedRunPathIDs.size && !preparationBusy" :show-icon="false" positive-text="确认配置" negative-text="取消" @positive-click="applySelectedConfiguration">
+							<template #trigger><n-button size="small" type="primary" secondary :loading="preparationLoading" :disabled="pathSelectionLoading || pathSelectionSaving">一键配置</n-button></template>
+							仅准备已勾选的 {{ selectedRunPathIDs.size }} 条路径；已保存的节点和人工表单数据会保留。
 						</n-popconfirm>
               </div>
             </div>
@@ -745,7 +878,24 @@ onBeforeUnmount(() => {
 						<n-button text type="primary" @click="retryPaths">重新读取</n-button>
             </n-alert>
 			<n-alert v-if="generationError" type="error" :show-icon="false">{{ generationError }}</n-alert>
-					<p v-if="presettingSelected" class="path-preparation__progress">一键配置：{{ presetProgress.completed }}/{{ presetProgress.total }}</p>
+					<section v-if="preparationJob" class="path-preparation__job" aria-label="批量准备进度">
+						<div class="path-preparation__job-summary">
+							<strong>已处理 {{ preparationJob.processed }} / {{ preparationJob.total }}</strong>
+							<span>节点已配置 {{ preparationJob.nodeConfigured }} · 数据已生成 {{ preparationJob.dataGenerated }} · 需处理 {{ preparationJob.needsAttention }} · 失败 {{ preparationJob.failed }}</span>
+							<div class="path-preparation__job-actions">
+								<n-button v-if="preparationBusy" size="tiny" :loading="preparationLoading" @click="cancelCurrentPreparation">取消</n-button>
+								<n-button v-else-if="preparationJob.status === 'cancelled' || preparationJob.status === 'failed'" size="tiny" type="primary" :loading="preparationLoading" @click="resumeCurrentPreparation">恢复</n-button>
+							</div>
+						</div>
+						<n-progress type="line" :percentage="preparationJob.total ? Math.round(preparationJob.processed * 100 / preparationJob.total) : 0" :show-indicator="false" />
+						<div v-if="preparationItems.length" class="path-preparation__job-items">
+							<div v-for="item in preparationItems" :key="item.id" class="path-preparation__job-item">
+								<span>#{{ item.sequenceNo }} {{ item.pathName }}</span>
+								<span>{{ item.reason || (item.status === 'running' ? '正在准备' : '等待处理') }}</span>
+							</div>
+							<n-button v-if="preparationNextCursor" size="tiny" text type="primary" @click="loadMorePreparationItems">查看更多</n-button>
+						</div>
+					</section>
 
             <div v-if="pathsLoading" class="path-preparation__state path-preparation__state--loading" role="status">
               <n-spin size="small" />
@@ -761,8 +911,20 @@ onBeforeUnmount(() => {
                 新增路径
               </n-button>
             </div>
-            <div v-else class="path-preparation__list">
-              <div v-for="path in paths" :key="path.id" class="path-preparation__item">
+            <div v-else-if="!visiblePaths.length" class="path-preparation__empty">
+              <span>当前没有数据需处理的路径</span>
+              <n-button size="small" secondary @click="preparationFilter = 'all'">显示全部</n-button>
+            </div>
+            <n-virtual-list
+              v-else
+              class="path-preparation__list"
+              :items="visiblePaths"
+              :item-size="PREPARATION_PATH_ITEM_SIZE"
+              :style="{ height: `${preparationPathListHeight}px` }"
+              key-field="id"
+            >
+              <template #default="{ item: path }">
+              <div class="path-preparation__item">
                 <n-checkbox
                   :checked="selectedRunPathIDs.has(path.id)"
                   :disabled="pathSelectionLoading || pathSelectionSaving"
@@ -773,13 +935,17 @@ onBeforeUnmount(() => {
                 <div class="path-preparation__identity">
                   <span class="path-preparation__sequence">#{{ path.sequenceNo }}</span>
                   <span class="path-preparation__name" :title="pathDisplayName(path)">{{ pathDisplayName(path) }}</span>
-						<n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : path.configurationStatus === 'partial' ? 'warning' : 'default'" :title="path.configurationDetail">
-                    {{ path.configurationStatus === 'configured' ? '已配置' : path.configurationStatus === 'partial' ? '部分配置' : '待配置' }}
+						<n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : path.configurationStatus === 'partial' || path.configurationStatus === 'affected' ? 'warning' : 'default'" :title="path.configurationDetail">
+                    {{ pathConfigurationLabel(path) }}
+                  </n-tag>
+						<n-tag size="small" :bordered="false" :type="path.dataStatus === 'confirmed' || path.dataStatus === 'generated' || path.dataStatus === 'not_required' ? 'success' : path.dataStatus === 'needs_attention' ? 'error' : 'default'" :title="path.dataDetail">
+                    {{ pathDataLabel(path) }}
                   </n-tag>
                 </div>
                 <n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">配置节点</n-button>
               </div>
-            </div>
+              </template>
+            </n-virtual-list>
           </section>
 
           <div class="flow-structure-jump">
@@ -1155,6 +1321,55 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.path-preparation__job {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--plan-page-color);
+  border: 1px solid var(--plan-border-color);
+  border-radius: 4px;
+}
+
+.path-preparation__job-summary,
+.path-preparation__job-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.path-preparation__job-summary > span {
+  flex: 1 1 auto;
+  color: var(--plan-text-secondary-color);
+  font-size: 12px;
+}
+
+.path-preparation__job-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.path-preparation__job-items {
+  display: grid;
+  gap: 4px;
+  max-height: 112px;
+  overflow-y: auto;
+}
+
+.path-preparation__job-item {
+  justify-content: space-between;
+  padding-top: 4px;
+  color: var(--plan-text-secondary-color);
+  border-top: 1px solid var(--plan-divider-color);
+  font-size: 12px;
+}
+
+.path-preparation__job-item > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .path-preparation__empty {
   padding-top: 4px;
   color: var(--plan-text-color);
@@ -1178,23 +1393,17 @@ onBeforeUnmount(() => {
 }
 
 .path-preparation__list {
-  display: grid;
   min-height: 0;
-  gap: 6px;
   max-height: clamp(96px, calc(var(--plan-screen-height) - 380px), 280px);
-  overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
 .path-preparation__item {
-  min-height: 40px;
+  box-sizing: border-box;
+  height: 52px;
   padding: 6px 8px;
-  border-top: 1px solid var(--plan-divider-color);
-}
-
-.path-preparation__item:first-child {
-  border-top: 0;
+  border-bottom: 1px solid var(--plan-divider-color);
 }
 
 .path-preparation__identity {

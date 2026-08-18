@@ -31,12 +31,8 @@ grep -Fq 'actionCycles' "${view}"
 grep -Fq '@save-all="saveAllNodes"' "${view}"
 if grep -Fq '纳入本次测试' "${view}"; then exit 1; fi
 grep -Fq '已准备 {{ configuration.preparation.preparedNodes }} 个节点' "${view}"
-grep -Fq '>一键配置</n-button>' "${view}"
 grep -Fq '>复制已保存循环</n-button>' "${view}"
 grep -Fq '当前路径' "${view}"
-grep -Fq '已选路径' "${view}"
-grep -Fq '全部兼容路径' "${view}"
-grep -Fq '为每个节点配置一个随机动作' "${view}"
 grep -Fq 'fetchExecutionPath(planID.value, pathID.value, controller.signal)' "${view}"
 grep -Fq 'const pageLoading = ref(false)' "${view}"
 grep -Fq 'const pathDetailLoading = ref(false)' "${view}"
@@ -52,14 +48,11 @@ if grep -Fq '<n-spin :show="loading || formBusy"' "${view}"; then
   echo '页面初始化、表单会话和保存状态不得复用同一个遮罩' >&2
   exit 1
 fi
-grep -Fq '确认应用' "${view}"
 grep -Fq 'PathConfigActionCycle' "${model}"
 grep -Fq 'restart_from_initiator' "${workspace}"
 grep -Fq 'redo_previous_task' "${workspace}"
 grep -Fq '循环与重复次数总在写入前按最新路径复验' "${workspace}"
 grep -Fq 'configuration/selection' "${api}"
-grep -Fq 'configuration/preset/preview' "${api}"
-grep -Fq 'configuration/preset/apply' "${api}"
 grep -Fq 'configuration/cycles/copy' "${api}"
 grep -Fq 'SaveSelection' "${workspace}"
 grep -Fq 'DELETE /api/plans/{id}' "${plans_api}"
@@ -92,8 +85,6 @@ grep -Fq "class: 'plan-row-actions__delete'" "${plans_view}"
 grep -Fq 'gap: 12px;' "${plans_view}"
 grep -Fq 'Strategy: "random"' "${project_root}/internal/analyzer/path_config_plan.go"
 grep -Fq 'deterministicPathConfigPeople' "${project_root}/internal/analyzer/path_config_plan.go"
-grep -Fq 'choosePathConfigPresetAction' "${project_root}/internal/service/path_config_preset.go"
-grep -Fq '将为该节点添加一个随机动作' "${project_root}/internal/service/path_config_preset.go"
 
 if sed -n '/<template>/,/<\/template>/p' "${panel}" | grep -Eq '动作组合循环次数|前置动作|处理结果|动作计划'; then
   echo 'F-008 节点侧栏或动作弹窗仍暴露旧动作概念' >&2
