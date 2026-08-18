@@ -126,13 +126,18 @@ const columns: DataTableColumns<PlanRow> = [
     fixed: 'right',
     render: (row) => {
       const action = getPlanAction(row.status)
-		return h('div', { class: 'plan-row-actions' }, [
-			h(NButton, { text: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label }),
-			h(NPopconfirm, { positiveText: '删除计划', negativeText: '取消', onPositiveClick: () => void removePlan(row) }, {
-			default: () => '删除后会清除本系统中的路径和配置，不能恢复。',
-			trigger: () => h(NButton, { text: true, type: 'error' }, { default: () => '删除' }),
-		}),
-		])
+      return h('div', {
+        class: 'plan-row-actions',
+        style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' },
+      }, [
+        h(NButton, { size: 'small', secondary: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label }),
+        h('span', { class: 'plan-row-actions__delete' }, [
+          h(NPopconfirm, { positiveText: '删除计划', negativeText: '取消', onPositiveClick: () => void removePlan(row) }, {
+            default: () => '删除后会清除本系统中的路径和配置，不能恢复。',
+            trigger: () => h(NButton, { size: 'small', secondary: true, type: 'error' }, { default: () => '删除' }),
+          }),
+        ]),
+      ])
     },
   },
 ]
@@ -266,6 +271,10 @@ const columns: DataTableColumns<PlanRow> = [
 
 :deep(.plan-row-actions > *) {
   flex: 0 0 auto;
+}
+
+:deep(.plan-row-actions__delete) {
+  display: flex;
 }
 
 @media (max-width: 680px) {

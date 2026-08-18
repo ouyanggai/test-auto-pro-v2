@@ -71,6 +71,10 @@ if sed -n '/plan-paths-screen--graph/,/<\/section>/p' "${paths_view}" | grep -Fq
   exit 1
 fi
 grep -Fq ':deep(.plan-row-actions)' "${plans_view}"
+grep -Fq "style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }" "${plans_view}"
+grep -Fq "secondary: true, type: 'primary'" "${plans_view}"
+grep -Fq "secondary: true, type: 'error'" "${plans_view}"
+grep -Fq "class: 'plan-row-actions__delete'" "${plans_view}"
 grep -Fq 'gap: 12px;' "${plans_view}"
 grep -Fq 'Strategy: "random"' "${project_root}/internal/analyzer/path_config_plan.go"
 grep -Fq 'deterministicPathConfigPeople' "${project_root}/internal/analyzer/path_config_plan.go"
