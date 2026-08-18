@@ -7,7 +7,9 @@ export interface ExecutionPath {
   id: string
   sequenceNo: number
   name: string
-  configurationStatus: 'pending' | 'configured' | 'affected'
+  configurationStatus: 'pending' | 'partial' | 'configured' | 'affected'
+  configurationDetail: string
+  included: boolean
   choices: ExecutionPathChoice[]
   updatedAt: string
 }

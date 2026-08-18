@@ -14,10 +14,11 @@ import type {
 const selectableKinds = new Set(['condition', 'manual'])
 
 // summarizeExecutionPathConfiguration 只按路径列表携带的本地状态统计配置进度，不触发目标平台或完整分析。
-export function summarizeExecutionPathConfiguration(paths: ExecutionPath[]): { total: number, configured: number, pending: number, nextPath: ExecutionPath | null } {
+export function summarizeExecutionPathConfiguration(paths: ExecutionPath[]): { total: number, configured: number, partial: number, pending: number, nextPath: ExecutionPath | null } {
   const configured = paths.filter((path) => path.configurationStatus === 'configured').length
-  const pending = paths.length - configured
-  return { total: paths.length, configured, pending, nextPath: paths.find((path) => path.configurationStatus !== 'configured') ?? null }
+  const partial = paths.filter((path) => path.configurationStatus === 'partial').length
+  const pending = paths.filter((path) => path.configurationStatus === 'pending' || path.configurationStatus === 'affected').length
+  return { total: paths.length, configured, partial, pending, nextPath: paths.find((path) => path.configurationStatus !== 'configured') ?? null }
 }
 
 export function analyzeExecutionPath(graph: FlowGraph, choices: ExecutionPathChoice[]): ExecutionPathAnalysis {

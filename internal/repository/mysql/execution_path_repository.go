@@ -34,7 +34,19 @@ func (r *ExecutionPathRepository) List(ctx context.Context, planID uint64) ([]mo
 	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at,
-       CASE WHEN config.path_id IS NULL THEN 'pending' ELSE config.config_status END
+       CASE
+         WHEN config.path_id IS NULL THEN 'pending'
+         WHEN config.config_status = 'configured' THEN 'configured'
+         ELSE 'partial'
+       END,
+       CASE
+         WHEN config.path_id IS NULL THEN '尚未配置节点和表单'
+         WHEN config.config_status = 'configured' THEN '节点和表单已完成'
+         WHEN config.form_status = 'valid' THEN '表单已完成，节点待配置'
+         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN '节点已部分完成，表单待配置'
+         ELSE '节点和表单待配置'
+       END,
+       COALESCE(JSON_UNQUOTE(JSON_EXTRACT(config.action_values, '$.\"f008:test-included\"')) = 'true', FALSE)
 FROM test_execution_paths path
 LEFT JOIN test_execution_path_configs config ON config.path_id = path.id
 WHERE path.plan_id = ?
@@ -54,13 +66,7 @@ ORDER BY path.sequence_no ASC`, planID)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for index := range paths {
-		choices, err := loadExecutionPathChoices(ctx, r.db, paths[index].ID)
-		if err != nil {
-			return nil, err
-		}
-		paths[index].Choices = choices
-	}
+	// 列表只承担准备状态和导航；分支选择在进入单条详情时再读取，避免数百路径产生 N+1 查询和浏览器内存堆积。
 	return paths, nil
 }
 
@@ -539,7 +545,7 @@ func scanExecutionPath(row executionPathScanner) (model.ExecutionPath, error) {
 // scanExecutionPathWithStatus 将列表查询中的本地配置状态转换为安全的路径模型，不触发目标平台读取。
 func scanExecutionPathWithStatus(row executionPathScanner) (model.ExecutionPath, error) {
 	var path model.ExecutionPath
-	if err := row.Scan(&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt, &path.ConfigurationStatus); err != nil {
+	if err := row.Scan(&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt, &path.ConfigurationStatus, &path.ConfigurationDetail, &path.Included); err != nil {
 		return model.ExecutionPath{}, err
 	}
 	path.CreatedAt = path.CreatedAt.UTC()
