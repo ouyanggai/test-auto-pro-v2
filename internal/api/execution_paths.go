@@ -27,14 +27,15 @@ type executionPathRequest struct {
 }
 
 type executionPathResponse struct {
-	ID                  string                      `json:"id"`
-	SequenceNo          uint                        `json:"sequenceNo"`
-	Name                string                      `json:"name"`
-	ConfigurationStatus string                      `json:"configurationStatus"`
-	ConfigurationDetail string                      `json:"configurationDetail"`
-	Included            bool                        `json:"included"`
-	Choices             []model.ExecutionPathChoice `json:"choices"`
-	UpdatedAt           string                      `json:"updatedAt"`
+	ID                    string                      `json:"id"`
+	SequenceNo            uint                        `json:"sequenceNo"`
+	Name                  string                      `json:"name"`
+	ConfigurationStatus   string                      `json:"configurationStatus"`
+	ConfigurationDetail   string                      `json:"configurationDetail"`
+	Included              bool                        `json:"included"`
+	ConfigurationRevision uint64                      `json:"configurationRevision"`
+	Choices               []model.ExecutionPathChoice `json:"choices"`
+	UpdatedAt             string                      `json:"updatedAt"`
 }
 
 type executionPathBatchResponse struct {
@@ -204,7 +205,7 @@ func toExecutionPathResponse(path model.ExecutionPath) executionPathResponse {
 	}
 	return executionPathResponse{
 		ID: strconv.FormatUint(path.ID, 10), SequenceNo: path.SequenceNo,
-		Name: path.Name, ConfigurationStatus: configurationStatus, ConfigurationDetail: path.ConfigurationDetail, Included: path.Included,
+		Name: path.Name, ConfigurationStatus: configurationStatus, ConfigurationDetail: path.ConfigurationDetail, Included: path.Included, ConfigurationRevision: path.ConfigurationRevision,
 		Choices: nonNilSlice(path.Choices), UpdatedAt: path.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }

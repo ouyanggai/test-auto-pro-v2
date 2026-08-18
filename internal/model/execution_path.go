@@ -17,10 +17,12 @@ type ExecutionPath struct {
 	// ConfigurationDetail 是路径摘要中的用户可读完成原因，不暴露节点键或表单内部状态。
 	ConfigurationDetail string
 	// Included 表示用户是否已将该路径纳入本次运行准备，不会启动目标流程。
-	Included  bool
-	Choices   []ExecutionPathChoice
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Included bool
+	// ConfigurationRevision 是轻量列表中保存纳入标记所需的节点配置修订号，不包含完整节点配置。
+	ConfigurationRevision uint64
+	Choices               []ExecutionPathChoice
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type ExecutionPathBatchResult struct {

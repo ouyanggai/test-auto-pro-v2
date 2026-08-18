@@ -10,6 +10,7 @@ export interface ExecutionPath {
   configurationStatus: 'pending' | 'partial' | 'configured' | 'affected'
   configurationDetail: string
   included: boolean
+	configurationRevision: number
   choices: ExecutionPathChoice[]
   updatedAt: string
 }
