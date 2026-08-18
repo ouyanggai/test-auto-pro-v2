@@ -603,10 +603,6 @@ void loadPage()
         <span>已准备 {{ configuration.preparation.preparedNodes }} 个节点</span>
         <span>还有 {{ configuration.preparation.pendingItems }} 项需要处理</span>
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
-        <span>表单：{{ pathConfigurationStatusName(configuration.form.status) }}</span>
-        <n-tag size="small" :bordered="false" :type="configuration.status === 'configured' ? 'success' : 'warning'">
-          {{ pathConfigurationStatusName(configuration.status) }}
-        </n-tag>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
         <n-button v-if="workspace === 'nodes'" size="small" @click="openPreset">一键预设</n-button>
         <n-button v-if="workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
