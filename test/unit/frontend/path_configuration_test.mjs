@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildPathConfigNodeSavePayload, copyPathConfigActions, initPathConfigDraft, normalizedPersonStrategy, validPathConfigActions } from '../../../web/src/features/path-configuration/logic.ts'
+import { buildPathConfigNodeSavePayload, copyPathConfigActions, currentNodeConfigurationComplete, initPathConfigDraft, normalizedPersonStrategy, validPathConfigActions } from '../../../web/src/features/path-configuration/logic.ts'
 
 const node = {
   key: 'node-approval', name: '审批', kind: 'common', typeName: '审批', status: 'pending', statusName: '待配置', lineBlocked: false,
@@ -44,4 +44,10 @@ test('F-008 人员从范围随机切换手动时保留候选人姓名对应的�
   }
   const manual = normalizedPersonStrategy(person, { key: person.key, strategy: 'manual', seed: 7, selected: ['person-token-b'] })
   assert.deepEqual(manual.selected, ['person-token-b'])
+})
+
+test('F-008 批量保存不把无动作目录的节点误报为待配置', () => {
+  const noActionNode = { ...node, actionConfiguration: { ...node.actionConfiguration, catalog: [], actions: [] } }
+  const draft = initPathConfigDraft({ groups: [{ nodes: [noActionNode] }] })
+  assert.deepEqual(currentNodeConfigurationComplete(noActionNode, draft), { missing: [], complete: true })
 })

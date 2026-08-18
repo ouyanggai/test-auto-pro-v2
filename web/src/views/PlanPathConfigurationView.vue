@@ -117,7 +117,7 @@ const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
   ? projectPathConfigurationNodeStates(graph.value, pathAnalysis.value, configurationByGraphNodeID.value, selectedNodeID.value)
   : {})
 const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(selectedNode.value, draft.value))
-const nodeSaveDisabled = computed(() => loading.value || savingNode.value || !selectedNodeRequirement.value.complete)
+const nodeSaveDisabled = computed(() => loading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
 const saveAllNodesDisabled = computed(() => loading.value || savingNode.value || !configuration.value)
 const runtimeBlockingReasons = computed(() => [...new Set([
   ...(configuration.value?.form.unsupported ?? []),
@@ -408,7 +408,7 @@ async function saveAllNodes() {
   let savedCount = 0
   const skipped: string[] = []
   try {
-    const nodes = current.groups.flatMap(group => group.nodes).filter(node => !node.lineBlocked)
+    const nodes = current.groups.flatMap(group => group.nodes).filter(node => !node.lineBlocked && node.status !== 'not_required' && node.status !== 'runtime')
     for (const node of nodes) {
       const completion = currentNodeConfigurationComplete(node, draft.value)
       if (!completion.complete) {
@@ -430,6 +430,7 @@ async function saveAllNodes() {
     if (skipped.length) {
       nodeSaveError.value = `已保存 ${savedCount} 个节点，还有 ${skipped.length} 个节点需要先补充配置`
     } else {
+      nodeSaveError.value = ''
       nodeSavedSuccessfully.value = savedCount > 0
     }
   }

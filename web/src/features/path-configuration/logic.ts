@@ -117,7 +117,8 @@ export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: Path
 
 // currentNodeConfigurationComplete 仅检查当前节点的人员与独立动作配置。
 export function currentNodeConfigurationComplete(node: PathConfigNode | null, draft: PathConfigDraft): { missing: string[]; complete: boolean } {
-  if (!node || node.lineBlocked) return { missing: [], complete: false }
+  if (!node) return { missing: [], complete: false }
+  if (node.lineBlocked) return { missing: [], complete: true }
   const missing: string[] = []
   for (const person of node.persons) {
     if (person.mode === 'review' || person.affected) { missing.push(person.title); continue }
@@ -127,7 +128,7 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
   }
   const actions = draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)
   if (!validPathConfigActions(node, actions)) missing.push('动作配置')
-  return { missing, complete: node.actionConfiguration.catalog.length > 0 && missing.length === 0 }
+  return { missing, complete: missing.length === 0 }
 }
 
 // hasCurrentNodeDraftChanges 比较当前节点的动作和人员草稿。
