@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
-import { fetchExecutionPaths } from '../features/execution-paths/api'
+import { fetchExecutionPath, fetchExecutionPaths } from '../features/execution-paths/api'
 import type { ExecutionPath } from '../features/execution-paths/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph } from '../features/flow-graph/api'
@@ -182,7 +182,7 @@ async function applyConfiguration(next: PathConfiguration, preserveSelected = tr
     : initialPathConfigurationNodeID(next, bindings.graphNodeIDByKey)
 }
 
-// loadPage 读取计划、路径、真实图和权威节点/表单配置，切换路径时销毁旧 SID 会话。
+// loadPage 读取计划、路径摘要、单条路径 choices、真实图和权威节点/表单配置，切换路径时销毁旧 SID 会话。
 async function loadPage() {
   loadController?.abort()
   formFrame.value?.destroyRuntime()
@@ -198,12 +198,14 @@ async function loadPage() {
   formSavedSuccessfully.value = false
   workspace.value = 'nodes'
   try {
-    const [storedPlan, storedGraph, storedPaths] = await Promise.all([
-      fetchPlan(planID.value, controller.signal), fetchFlowGraph(planID.value, controller.signal), fetchExecutionPaths(planID.value, controller.signal),
+    const [storedPlan, storedGraph, storedPaths, storedPath] = await Promise.all([
+      fetchPlan(planID.value, controller.signal),
+      fetchFlowGraph(planID.value, controller.signal),
+      fetchExecutionPaths(planID.value, controller.signal),
+      fetchExecutionPath(planID.value, pathID.value, controller.signal),
     ])
     if (controller.signal.aborted || version !== loadVersion) return
-    const storedPath = storedPaths.find(path => path.id === pathID.value)
-    if (!storedPath) throw new Error('已保存路径不存在或已删除')
+    if (!storedPaths.some(path => path.id === storedPath.id)) throw new Error('已保存路径不存在或已删除')
     const analysis = analyzeExecutionPath(storedGraph, storedPath.choices)
     if (!analysis.complete || analysis.invalid) throw new Error('当前已保存路径与真实流程不一致，请先编辑路径')
     const storedConfiguration = await fetchPathConfiguration(planID.value, pathID.value, controller.signal)
@@ -300,7 +302,7 @@ function updateActionCycles(value: PathConfigActionCycleInput[]) {
   nodeSavedSuccessfully.value = false
 }
 
-// openPreset 打开一键预设，并每次清除上次范围的预览结果。
+// openPreset 打开一键配置，并每次清除上次范围的预览结果。
 function openPreset() {
   presetPreview.value = null
   presetError.value = ''
@@ -339,7 +341,7 @@ async function previewPreset() {
   }
   catch (caught) {
     presetPreview.value = null
-    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键预设预览失败，请重试'
+    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键配置预览失败，请重试'
   }
   finally { presetBusy.value = false }
 }
@@ -355,7 +357,7 @@ async function applyPreset() {
     presetModalOpen.value = false
   }
   catch (caught) {
-    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键预设应用失败，请重试'
+    presetError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '一键配置应用失败，请重试'
   }
   finally { presetBusy.value = false }
 }
@@ -604,37 +606,39 @@ void loadPage()
         <span>还有 {{ configuration.preparation.pendingItems }} 项需要处理</span>
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
-        <n-button v-if="workspace === 'nodes'" size="small" @click="openPreset">一键预设</n-button>
+        <n-button v-if="workspace === 'nodes'" size="small" @click="openPreset">一键配置</n-button>
         <n-button v-if="workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
       </div>
     </header>
 
     <n-modal v-model:show="presetModalOpen">
-      <n-card title="一键预设" style="width: min(820px, 94vw)">
-        <n-select
-          v-model:value="presetScope"
-          :options="[
-            { label: '当前路径', value: 'current' },
-            { label: '已选路径', value: 'selected' },
-            { label: '全部兼容路径', value: 'compatible' },
-          ]"
-          @update:value="presetPreview = null"
-        />
-        <n-alert type="info" :show-icon="false">为每个节点预设一个随机动作，并尽量覆盖不同动作；不会覆盖已有配置，也不会创建循环。</n-alert>
-        <n-alert v-if="presetError" type="error" :show-icon="false">{{ presetError }}</n-alert>
-        <div v-if="presetPreview" class="path-configuration-page__preset-preview">
-          <section v-for="path in presetPreview.paths" :key="`${path.path.sequenceNo}-${path.path.name}`">
-            <h3>#{{ path.path.sequenceNo }} {{ path.path.name }}</h3>
-            <ul>
-              <li v-for="item in path.items" :key="item.nodeKey">
-                <n-tag size="small" :type="item.status === 'write' ? 'success' : item.status === 'keep' ? 'info' : item.status === 'manual' ? 'warning' : 'default'">
-                  {{ item.status === 'write' ? '写入' : item.status === 'keep' ? '保留' : item.status === 'manual' ? '需手动处理' : '跳过' }}
-                </n-tag>
-                <strong>{{ item.nodeName }}</strong><span v-if="item.action">：{{ item.action }}</span><small>{{ item.detail }}</small>
-              </li>
-            </ul>
-          </section>
-          <n-empty v-if="!presetPreview.paths.length" description="当前范围没有可处理路径" />
+      <n-card title="一键配置" style="width: min(820px, 94vw)">
+        <div class="path-configuration-page__preset-body">
+          <n-select
+            v-model:value="presetScope"
+            :options="[
+              { label: '当前路径', value: 'current' },
+              { label: '已选路径', value: 'selected' },
+              { label: '全部兼容路径', value: 'compatible' },
+            ]"
+            @update:value="presetPreview = null"
+          />
+          <n-alert type="info" :show-icon="false">为每个节点配置一个随机动作，并尽量覆盖不同动作；不会覆盖已有配置，也不会创建循环。</n-alert>
+          <n-alert v-if="presetError" type="error" :show-icon="false">{{ presetError }}</n-alert>
+          <div v-if="presetPreview" class="path-configuration-page__preset-preview">
+            <section v-for="path in presetPreview.paths" :key="`${path.path.sequenceNo}-${path.path.name}`">
+              <h3>#{{ path.path.sequenceNo }} {{ path.path.name }}</h3>
+              <ul>
+                <li v-for="item in path.items" :key="item.nodeKey">
+                  <n-tag size="small" :type="item.status === 'write' ? 'success' : item.status === 'keep' ? 'info' : item.status === 'manual' ? 'warning' : 'default'">
+                    {{ item.status === 'write' ? '写入' : item.status === 'keep' ? '保留' : item.status === 'manual' ? '需手动处理' : '跳过' }}
+                  </n-tag>
+                  <strong>{{ item.nodeName }}</strong><span v-if="item.action">：{{ item.action }}</span><small>{{ item.detail }}</small>
+                </li>
+              </ul>
+            </section>
+            <n-empty v-if="!presetPreview.paths.length" description="当前范围没有可处理路径" />
+          </div>
         </div>
         <template #footer>
           <div class="path-configuration-page__preset-actions">
@@ -648,15 +652,15 @@ void loadPage()
 
     <n-modal v-model:show="cycleCopyModalOpen">
       <n-card title="复制已保存循环" style="width: min(620px, 94vw)">
-        <n-alert type="info" :show-icon="false">只允许复制到流程结构完全一致的路径；复制只影响本系统配置，不会调用目标平台，也不会覆盖源路径。
-        </n-alert>
-        <n-alert v-if="cycleCopyError" type="error" :show-icon="false">{{ cycleCopyError }}
-        </n-alert>
-        <n-select
-          v-model:value="cycleCopyTargetID"
-          :options="cycleCopyTargets.map(path => ({ label: `#${path.sequenceNo} ${path.name}`, value: path.id }))"
-          placeholder="选择结构一致的目标路径"
-        />
+        <div class="path-configuration-page__cycle-body">
+          <n-alert type="info" :show-icon="false">只允许复制到流程结构完全一致的路径；复制只影响本系统配置，不会调用目标平台，也不会覆盖源路径。</n-alert>
+          <n-alert v-if="cycleCopyError" type="error" :show-icon="false">{{ cycleCopyError }}</n-alert>
+          <n-select
+            v-model:value="cycleCopyTargetID"
+            :options="cycleCopyTargets.map(path => ({ label: `#${path.sequenceNo} ${path.name}`, value: path.id }))"
+            placeholder="选择结构一致的目标路径"
+          />
+        </div>
         <template #footer>
           <n-space justify="end"><n-button @click="cycleCopyModalOpen = false">取消</n-button><n-button type="primary" :loading="cycleCopyBusy" :disabled="!cycleCopyTargetID" @click="copyCycles">确认复制</n-button></n-space>
         </template>
@@ -670,8 +674,10 @@ void loadPage()
 
     <n-spin :show="loading || formBusy" class="path-configuration-page__stage">
       <n-alert v-if="pageError" type="error" :show-icon="false" class="path-configuration-page__error">
-        <span>{{ pageError }}</span>
-        <n-button size="small" @click="loadPage">重新读取</n-button>
+        <div class="path-configuration-page__error-content">
+          <span>{{ pageError }}</span>
+          <n-button size="small" @click="loadPage">重新读取</n-button>
+        </div>
       </n-alert>
 
       <flow-graph-canvas
@@ -821,12 +827,16 @@ void loadPage()
   align-items: center;
 }
 
-.path-configuration-page__header { justify-content: space-between; gap: 20px; padding-bottom: 10px; }
-.path-configuration-page__identity { align-items: flex-start; gap: 16px; min-width: 0; }
-.path-configuration-page__identity h1 { margin: 0 0 4px; font-size: 24px; }
-.path-configuration-page__identity p { margin: 0; color: var(--path-config-text-secondary-color); }
-.path-configuration-page__progress { justify-content: flex-end; gap: 10px; font-size: 13px; color: var(--path-config-text-secondary-color); }
+.path-configuration-page__header { justify-content: space-between; gap: 24px; padding: 4px 0 14px; }
+.path-configuration-page__identity { align-items: flex-start; gap: 12px; min-width: 0; }
+.path-configuration-page__identity > :deep(.n-button) { flex: 0 0 auto; margin-top: 2px; }
+.path-configuration-page__identity h1 { margin: 0 0 6px; font-size: 24px; line-height: 1.25; letter-spacing: 0; }
+.path-configuration-page__identity p { margin: 0; color: var(--path-config-text-secondary-color); line-height: 1.5; }
+.path-configuration-page__progress { flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; max-width: 52%; font-size: 13px; line-height: 1.5; color: var(--path-config-text-secondary-color); }
+.path-configuration-page__progress span { white-space: nowrap; }
 .path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--path-config-border-color); }
+.path-configuration-page__preset-body,
+.path-configuration-page__cycle-body { display: grid; gap: 12px; }
 .path-configuration-page__preset-preview { display: grid; gap: 12px; max-height: 52vh; overflow: auto; margin-top: 14px; }
 .path-configuration-page__preset-preview section { border-top: 1px solid var(--path-config-border-color); padding-top: 10px; }
 .path-configuration-page__preset-preview h3 { margin: 0 0 8px; font-size: 14px; }
@@ -854,6 +864,8 @@ void loadPage()
 .path-configuration-page__stage :deep(.n-spin-content) { width: 100%; height: 100%; min-height: 0; }
 .path-configuration-page__canvas { height: 100%; min-height: 0; border-top: 0; }
 .path-configuration-page__error { margin: 20px; }
+.path-configuration-page__error-content { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; line-height: 1.6; }
+.path-configuration-page__error-content > span { flex: 1 1 280px; min-width: 0; }
 
 .path-configuration-page__form-workspace {
   position: relative;
@@ -956,7 +968,7 @@ void loadPage()
     flex-direction: row;
     flex-wrap: wrap;
   }
-  .path-configuration-page__progress { flex-wrap: wrap; justify-content: flex-start; }
+  .path-configuration-page__progress { width: 100%; max-width: none; justify-content: flex-start; }
   .path-configuration-page__stage { min-height: 640px; }
   .path-configuration-page--form > .path-configuration-page__stage,
   .path-configuration-page__form-workspace { min-height: 0; }

@@ -39,13 +39,13 @@ type PathConfigPreparation struct {
 	Included      bool `json:"included"`
 }
 
-// PathConfigPresetPreview 是一键预设在写入前返回的逐路径、逐节点只读预览。
+// PathConfigPresetPreview 是一键配置在写入前返回的逐路径、逐节点只读预览。
 type PathConfigPresetPreview struct {
 	Scope string                 `json:"scope"`
 	Paths []PathConfigPresetPath `json:"paths"`
 }
 
-// PathConfigPresetPath 是一条路径的一键预设预览，不包含目标平台标识。
+// PathConfigPresetPath 是一条路径的一键配置预览，不包含目标平台标识。
 type PathConfigPresetPath struct {
 	Path  PathConfigPath             `json:"path"`
 	Items []PathConfigPresetNodeItem `json:"items"`

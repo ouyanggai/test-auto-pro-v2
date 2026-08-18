@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
@@ -324,8 +324,8 @@ async function persistRunPathSelection(path: ExecutionPath, included: boolean) {
   selectedRunPathIDs.value = next
 }
 
-// applySelectedPreset 仅对用户勾选的路径应用安全预设，并在本地展示已完成数量。
-async function applySelectedPreset() {
+// applySelectedConfiguration 仅对用户勾选的路径应用安全配置，并在本地展示已完成数量。
+async function applySelectedConfiguration() {
   const selected = paths.value.filter(path => selectedRunPathIDs.value.has(path.id))
   if (presettingSelected.value || selected.length === 0) return
   presettingSelected.value = true
@@ -336,10 +336,10 @@ async function applySelectedPreset() {
     await applyPathConfigurationPreset(planID.value, selected[0].id, 'selected')
     presetProgress.value = { completed: selected.length, total: selected.length }
     await retryPaths()
-    message.success(`已完成 ${selected.length} 条路径的一键预设`)
+    message.success(`已完成 ${selected.length} 条路径的一键配置`)
   }
   catch (caught) {
-    pathSelectionError.value = caught instanceof Error ? caught.message : '一键预设失败，请重试'
+    pathSelectionError.value = caught instanceof Error ? caught.message : '一键配置失败，请重试'
   }
   finally {
     presettingSelected.value = false
@@ -666,11 +666,22 @@ function scrollToGraphStructure() {
   graphScreenRef.value?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
 }
 
-watch(planID, () => { void loadPage() }, { immediate: true })
+// resetPageScroll 进入计划配置页始终回到路径准备区，保留用户主动滚动时的吸附效果。
+async function resetPageScroll() {
+  await nextTick()
+  await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
+  pageScrollContainer?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+}
+
+watch(planID, () => {
+  void loadPage()
+  void resetPageScroll()
+}, { immediate: true })
 onMounted(() => {
   // 主内容区是页面唯一滚动容器；组件只挂载吸附样式类，不接管滚轮事件或强制跳屏。
   pageScrollContainer = document.querySelector<HTMLElement>('.app-main > .n-layout-scroll-container')
   pageScrollContainer?.classList.add('plan-paths-scroll-container')
+  void resetPageScroll()
 })
 onBeforeUnmount(() => {
   loadController?.abort()
@@ -723,8 +734,8 @@ onBeforeUnmount(() => {
               <div class="path-preparation__header-actions">
 						<n-button v-if="paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
                 <n-button v-if="paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
-						<n-popconfirm v-if="selectedRunPathIDs.size" :show-icon="false" positive-text="确认预设" negative-text="取消" @positive-click="applySelectedPreset">
-							<template #trigger><n-button size="small" type="primary" secondary :loading="presettingSelected" :disabled="pathSelectionLoading || pathSelectionSaving">一键预设</n-button></template>
+						<n-popconfirm v-if="selectedRunPathIDs.size" :show-icon="false" positive-text="确认配置" negative-text="取消" @positive-click="applySelectedConfiguration">
+							<template #trigger><n-button size="small" type="primary" secondary :loading="presettingSelected" :disabled="pathSelectionLoading || pathSelectionSaving">一键配置</n-button></template>
 							仅对已勾选的 {{ selectedRunPathIDs.size }} 条路径应用安全默认动作，不覆盖已保存配置。
 						</n-popconfirm>
               </div>
@@ -734,7 +745,7 @@ onBeforeUnmount(() => {
 						<n-button text type="primary" @click="retryPaths">重新读取</n-button>
             </n-alert>
 			<n-alert v-if="generationError" type="error" :show-icon="false">{{ generationError }}</n-alert>
-					<p v-if="presettingSelected" class="path-preparation__progress">一键预设：{{ presetProgress.completed }}/{{ presetProgress.total }}</p>
+					<p v-if="presettingSelected" class="path-preparation__progress">一键配置：{{ presetProgress.completed }}/{{ presetProgress.total }}</p>
 
             <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
               <span>{{ generationBusy ? '正在后台解析全部合法路径' : '请先配置并保存执行路径' }}</span>

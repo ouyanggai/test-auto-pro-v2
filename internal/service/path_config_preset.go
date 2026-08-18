@@ -122,7 +122,7 @@ func (s *PathConfigService) ApplyPreset(ctx context.Context, planID, pathID uint
 func (s *PathConfigService) pathConfigPresetCandidates(ctx context.Context, planID, pathID uint64, scope string) ([]pathConfigPresetCandidate, error) {
 	scope = strings.TrimSpace(scope)
 	if scope != pathConfigPresetCurrent && scope != pathConfigPresetSelected && scope != pathConfigPresetCompatible {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "一键预设范围不正确"}
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "一键配置范围不正确"}
 	}
 	if err := s.validateConfigMutablePlan(ctx, planID); err != nil {
 		return nil, err
@@ -160,7 +160,7 @@ func (s *PathConfigService) pathConfigPresetCandidates(ctx context.Context, plan
 		}
 		configuration, validation, projectionErr := s.configAnalyzer.Analyze(owned.graph, snapshot.Tree, snapshot.FormFields, path, owned.pathAnalysis, snapshot.InstanceValues, stored.FieldValues, stored.ActionValues, found)
 		if projectionErr != nil {
-			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径无法生成一键预设"}
+			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径无法生成一键配置"}
 		}
 		result = append(result, pathConfigPresetCandidate{path: path, stored: stored, found: found, configuration: configuration, validation: validation, snapshot: snapshot})
 	}

@@ -83,7 +83,7 @@ func handlePreviewPathConfigurationPreset(configurations PathConfigurationServic
 		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
-			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "一键预设请求格式不正确", false)
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "一键配置请求格式不正确", false)
 			return
 		}
 		result, err := configurations.PreviewPreset(request.Context(), planID, pathID, input.Scope)
@@ -106,7 +106,7 @@ func handleApplyPathConfigurationPreset(configurations PathConfigurationService)
 		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
-			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "一键预设请求格式不正确", false)
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "一键配置请求格式不正确", false)
 			return
 		}
 		result, err := configurations.ApplyPreset(request.Context(), planID, pathID, input.Scope)
@@ -309,12 +309,12 @@ func (unavailablePathConfigurationService) SaveSelection(context.Context, uint64
 	return model.PathConfigSaveResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
 }
 
-// PreviewPreset 在未注入配置服务时拒绝一键预设预览。
+// PreviewPreset 在未注入配置服务时拒绝一键配置预览。
 func (unavailablePathConfigurationService) PreviewPreset(context.Context, uint64, uint64, string) (model.PathConfigPresetPreview, error) {
 	return model.PathConfigPresetPreview{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
 }
 
-// ApplyPreset 在未注入配置服务时拒绝一键预设写入。
+// ApplyPreset 在未注入配置服务时拒绝一键配置写入。
 func (unavailablePathConfigurationService) ApplyPreset(context.Context, uint64, uint64, string) (model.PathConfigPresetApplyResult, error) {
 	return model.PathConfigPresetApplyResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "路径配置服务暂不可用"}
 }
