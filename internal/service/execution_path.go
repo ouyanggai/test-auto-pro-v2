@@ -81,12 +81,19 @@ func NewExecutionPathService(plans *PlanService, graphs CurrentFlowGraphReader, 
 
 // StartGeneration 创建或恢复指定幂等键的后台全路径解析任务。
 func (s *ExecutionPathService) StartGeneration(_ context.Context, planID uint64, createKey string) (PathGenerationJob, error) {
+	if planID == 0 {
+		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划 ID 不正确"}
+	}
 	createKey = strings.TrimSpace(createKey)
 	if !validUUID(createKey) {
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "后台解析请求标识不正确，请重试"}
 	}
 	s.generationMu.Lock()
 	if existing, found := s.generations[createKey]; found {
+		if existing.planID != planID {
+			s.generationMu.Unlock()
+			return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "后台解析请求标识已被其他计划占用"}
+		}
 		copy := *existing
 		s.generationMu.Unlock()
 		return copy, nil
@@ -123,10 +130,10 @@ func (s *ExecutionPathService) runGeneration(ctx context.Context, jobID string) 
 }
 
 // GetGeneration 返回后台解析任务的最新进度。
-func (s *ExecutionPathService) GetGeneration(_ context.Context, _ uint64, jobID string) (PathGenerationJob, error) {
+func (s *ExecutionPathService) GetGeneration(_ context.Context, planID uint64, jobID string) (PathGenerationJob, error) {
 	s.generationMu.RLock()
 	job, found := s.generations[jobID]
-	if found {
+	if found && job.planID == planID {
 		copy := *job
 		s.generationMu.RUnlock()
 		return copy, nil
@@ -136,22 +143,29 @@ func (s *ExecutionPathService) GetGeneration(_ context.Context, _ uint64, jobID 
 }
 
 // CancelGeneration 取消尚未完成的后台解析任务，不回滚已提交路径。
-func (s *ExecutionPathService) CancelGeneration(_ context.Context, _ uint64, jobID string) error {
-	return s.updateGeneration(jobID, func(job *PathGenerationJob) {
-		if job.Status == "queued" || job.Status == "running" {
-			if job.cancel != nil {
-				job.cancel()
-			}
-			job.Status = "cancelled"
+func (s *ExecutionPathService) CancelGeneration(_ context.Context, planID uint64, jobID string) error {
+	s.generationMu.Lock()
+	job, found := s.generations[jobID]
+	if !found || job.planID != planID {
+		s.generationMu.Unlock()
+		return &ExecutionPathError{Kind: ExecutionPathErrorNotFound, Message: "后台解析任务不存在"}
+	}
+	if job.Status == "queued" || job.Status == "running" {
+		if job.cancel != nil {
+			job.cancel()
 		}
-	})
+		job.Status = "cancelled"
+	}
+	job.UpdatedAt = s.now().UTC()
+	s.generationMu.Unlock()
+	return nil
 }
 
 // ResumeGeneration 恢复已取消或失败的任务，仍使用原幂等键避免重复路径。
-func (s *ExecutionPathService) ResumeGeneration(_ context.Context, _ uint64, jobID string) (PathGenerationJob, error) {
+func (s *ExecutionPathService) ResumeGeneration(_ context.Context, planID uint64, jobID string) (PathGenerationJob, error) {
 	s.generationMu.Lock()
 	job, found := s.generations[jobID]
-	if !found {
+	if !found || job.planID != planID {
 		s.generationMu.Unlock()
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorNotFound, Message: "后台解析任务不存在"}
 	}

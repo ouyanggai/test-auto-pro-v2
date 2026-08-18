@@ -295,16 +295,21 @@ async function retryPaths() {
 
 async function selectSavedPath(path: ExecutionPath) {
   if (!graph.value) return
-	const detail = path.choices.length > 0 ? path : await fetchExecutionPath(planID.value, path.id)
-	const reconciled = reconcileExecutionPathChoices(graph.value, detail.choices)
-  activePathID.value = path.id
-  workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'select-saved')
-  draftChoices.value = reconciled.choices
-  draftName.value = detail.name || `路径 ${detail.sequenceNo}`
-  draftChangedByGraph.value = reconciled.changed
-  draftRecoveryError.value = ''
-  createKey.value = ''
-  pathWorkspaceOpen.value = true
+  try {
+    const detail = path.choices.length > 0 ? path : await fetchExecutionPath(planID.value, path.id)
+    const reconciled = reconcileExecutionPathChoices(graph.value, detail.choices)
+    activePathID.value = path.id
+    workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'select-saved')
+    draftChoices.value = reconciled.choices
+    draftName.value = detail.name || `路径 ${detail.sequenceNo}`
+    draftChangedByGraph.value = reconciled.changed
+    draftRecoveryError.value = ''
+    createKey.value = ''
+    pathWorkspaceOpen.value = true
+  }
+  catch (caught) {
+    pathSelectionError.value = caught instanceof ExecutionPathApiError ? caught.message : '暂时无法读取路径详情'
+  }
 }
 
 // persistRunPathSelection 复用现有路径选择接口，只改变当前路径的运行纳入标记。
@@ -433,20 +438,6 @@ function selectBranch(choice: ExecutionPathChoice) {
   if (draftChoices.value.some((item) => item.routeNodeId === choice.routeNodeId && item.branchId === choice.branchId)) return
   draftChoices.value = applyExecutionPathChoice(graph.value, draftChoices.value, choice.routeNodeId, choice.branchId)
   draftChangedByGraph.value = false
-}
-
-// enterPathEditing 让“编辑路径”明确承担线路管理入口；页面全屏按钮本身只负责查看放大。
-async function enterPathEditing() {
-  if (!graph.value || !pathsLoaded.value || pathsError.value || saving.value || deleting.value || draftRecoveryLoading.value) return
-  if (paths.value.length === 0) {
-    await startNewPath()
-    return
-  }
-  clearDraft()
-  pathWorkspaceOpen.value = false
-  closeSavedPaths()
-  await canvasRef.value?.setPageFullscreen(true)
-  savedPathsOpen.value = true
 }
 
 async function editActivePath() {
@@ -746,8 +737,10 @@ onBeforeUnmount(() => {
 					<p v-if="presettingSelected" class="path-preparation__progress">一键预设：{{ presetProgress.completed }}/{{ presetProgress.total }}</p>
 
             <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
-              <span>请先配置并保存执行路径</span>
-              <n-button type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="enterPathEditing">配置路径</n-button>
+              <span>{{ generationBusy ? '正在后台解析全部合法路径' : '请先配置并保存执行路径' }}</span>
+              <n-button v-if="!generationBusy" type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="startNewPath">
+                新增路径
+              </n-button>
             </div>
             <div v-else-if="!pathsLoading && !pathsError && paths.length" class="path-preparation__list">
               <div v-for="path in paths" :key="path.id" class="path-preparation__item">
@@ -779,7 +772,6 @@ onBeforeUnmount(() => {
           <div class="graph-heading">
             <div>
               <h2 id="flow-graph-heading">流程结构</h2>
-              <p>在条件或手动分支上选择线路；并行分支会自动全部纳入。</p>
             </div>
             <n-spin v-if="pathsLoading" size="small" description="正在读取路径" />
           </div>
@@ -816,9 +808,9 @@ onBeforeUnmount(() => {
                     size="small"
                     type="primary"
                     :disabled="!pathsLoaded || Boolean(pathsError) || saving || deleting || generationBusy || draftRecoveryLoading"
-                    @click="enterPathEditing"
+                    @click="startNewPath"
                   >
-                    编辑路径
+                    新增路径
                   </n-button>
                 </template>
                 <template #canvas-actions>
