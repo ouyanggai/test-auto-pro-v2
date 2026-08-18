@@ -4,7 +4,6 @@ import type {
   ExecutionPathAnalysis,
   ExecutionPathChoice,
   ExecutionPathDecisionProgress,
-  ExecutionPathGenerationPreview,
   ExecutionPathSummaryItem,
   ExecutionPathWorkspaceMode,
   ExecutionPathWorkspaceDisposition,
@@ -343,51 +342,6 @@ export function deriveExecutionPathWorkspaceDisposition(
   if (action === 'save-failure') return 'preserve'
   if (action === 'save-success') return 'reset'
   return dirty ? 'confirm' : 'reset'
-}
-
-export function previewAllExecutionPaths(
-  graph: FlowGraph,
-  savedPaths: ExecutionPath[],
-  limit = 128,
-): ExecutionPathGenerationPreview {
-  const outgoing = new Map<string, typeof graph.edges>()
-  for (const edge of graph.edges) {
-    const items = outgoing.get(edge.source) ?? []
-    items.push(edge)
-    outgoing.set(edge.source, items)
-  }
-  const combinations: ExecutionPathChoice[][] = []
-  let exceeded = false
-  const visit = (choices: ExecutionPathChoice[]) => {
-    if (exceeded) return
-    const analysis = analyzeExecutionPath(graph, choices)
-    if (analysis.invalid) return
-    if (analysis.complete) {
-      combinations.push(choices)
-      exceeded = combinations.length > limit
-      return
-    }
-    const routeNodeId = analysis.missingRouteNodeIds[0]
-    if (!routeNodeId) return
-    for (const edge of outgoing.get(routeNodeId) ?? []) {
-      if (edge.kind !== 'condition' && edge.kind !== 'manual') continue
-      // 与后端相同地每次扩展首个待选点，避免前端预览和真实批量结果采用两套组合语义。
-      visit([...choices, { routeNodeId, branchId: edge.branchId }])
-      if (exceeded) return
-    }
-  }
-  visit([])
-  if (exceeded) {
-    return { totalCount: limit + 1, existingCount: 0, pendingCount: 0, exceeded: true }
-  }
-  const savedSignatures = new Set(savedPaths.map((path) => executionPathChoiceSignature(path.choices)))
-  const existingCount = combinations.filter((choices) => savedSignatures.has(executionPathChoiceSignature(choices))).length
-  return {
-    totalCount: combinations.length,
-    existingCount,
-    pendingCount: combinations.length - existingCount,
-    exceeded: false,
-  }
 }
 
 export function canEnterExecutionPathSelection(options: {

@@ -23,8 +23,12 @@ import {
   createExecutionPath,
   deleteExecutionPath,
   ExecutionPathApiError,
+  fetchExecutionPath,
   fetchExecutionPaths,
-  generateAllExecutionPaths,
+  fetchPathGeneration,
+  startPathGeneration,
+  cancelPathGeneration,
+  resumePathGeneration,
   updateExecutionPath,
 } from '../features/execution-paths/api'
 import {
@@ -36,12 +40,11 @@ import {
   deriveExecutionPathWorkspaceDisposition,
   hasExecutionPathDraftChanges,
   projectExecutionPathSummary,
-  previewAllExecutionPaths,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
   transitionExecutionPathWorkspace,
 } from '../features/execution-paths/logic'
-import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode } from '../features/execution-paths/types'
+import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode, PathGenerationJob } from '../features/execution-paths/types'
 import { applyPathConfigurationPreset, savePathConfigurationSelection } from '../features/path-configuration/api'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
@@ -74,8 +77,8 @@ const draftChangedByGraph = ref(false)
 const createKey = ref('')
 const saving = ref(false)
 const deleting = ref(false)
-const generatingAll = ref(false)
-const generateAllKey = ref('')
+const generationJob = ref<PathGenerationJob | null>(null)
+const generationError = ref('')
 const pathWorkspaceOpen = ref(false)
 const savedPathsOpen = ref(false)
 const discardConfirmOpen = ref(false)
@@ -97,6 +100,7 @@ let loadVersion = 0
 let draftRecoveryController: AbortController | null = null
 let draftRecoveryVersion = 0
 let pageScrollContainer: HTMLElement | null = null
+let generationTimer: ReturnType<typeof setTimeout> | null = null
 
 const planID = computed(() => String(route.params.id || ''))
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
@@ -122,7 +126,7 @@ const saveDisabled = computed(() => !workspacePresentation.value.branchEditing
   || !pathAnalysis.value?.complete
   || (workspaceMode.value === 'edit' && !draftHasUnsavedChanges.value && !draftChangedByGraph.value)
   || saving.value
-  || generatingAll.value
+  || generationBusy.value
   || draftRecoveryLoading.value
   || Boolean(draftRecoveryError.value))
 const allowNewPath = computed(() => Boolean(
@@ -153,14 +157,12 @@ const hasDiscardableChanges = computed(() => workspacePresentation.value.branchE
   && (draftHasUnsavedChanges.value || draftChangedByGraph.value))
 const workspaceActionBusy = computed(() => saving.value
   || deleting.value
-  || generatingAll.value
+  || generationBusy.value
   || draftRecoveryLoading.value)
 const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
-const batchPreview = computed(() => graph.value && plan.value?.flowSource === 'new'
-  ? previewAllExecutionPaths(graph.value, paths.value)
-  : { totalCount: 0, existingCount: 0, pendingCount: 0, exceeded: false })
+const generationBusy = computed(() => generationJob.value?.status === 'queued' || generationJob.value?.status === 'running')
 const savedPathListHeight = computed(() => Math.min(paths.value.length, 5) * SAVED_PATH_ITEM_SIZE)
 const allPathsSelectedForRun = computed(() => paths.value.length > 0 && paths.value.every(path => selectedRunPathIDs.value.has(path.id)))
 const pathMoreOptions = computed(() => [
@@ -217,6 +219,7 @@ async function loadPage() {
       pathsLoaded.value = true
 		selectedRunPathIDs.value = new Set(pathsResult.value.filter(path => path.included).map(path => path.id))
 		pathSelectionRevisions.value = Object.fromEntries(pathsResult.value.map(path => [path.id, path.configurationRevision]))
+		if (plan.value.flowSource === 'new' && pathsResult.value.length === 0) void startAutomaticGeneration()
     }
     else {
       const caught = pathsResult.reason
@@ -253,7 +256,7 @@ async function retryGraph() {
   graph.value = null
   try {
     graph.value = await fetchFlowGraph(planID.value, controller.signal)
-    if (activePath.value) selectSavedPath(activePath.value)
+    if (activePath.value) void selectSavedPath(activePath.value)
   }
   catch (caught) {
     if (controller.signal.aborted || version !== loadVersion) return
@@ -290,13 +293,14 @@ async function retryPaths() {
   }
 }
 
-function selectSavedPath(path: ExecutionPath) {
+async function selectSavedPath(path: ExecutionPath) {
   if (!graph.value) return
-  const reconciled = reconcileExecutionPathChoices(graph.value, path.choices)
+	const detail = path.choices.length > 0 ? path : await fetchExecutionPath(planID.value, path.id)
+	const reconciled = reconcileExecutionPathChoices(graph.value, detail.choices)
   activePathID.value = path.id
   workspaceMode.value = transitionExecutionPathWorkspace(workspaceMode.value, 'select-saved')
   draftChoices.value = reconciled.choices
-  draftName.value = path.name || `路径 ${path.sequenceNo}`
+  draftName.value = detail.name || `路径 ${detail.sequenceNo}`
   draftChangedByGraph.value = reconciled.changed
   draftRecoveryError.value = ''
   createKey.value = ''
@@ -379,7 +383,7 @@ function requestSavedPathSwitch(path: ExecutionPath) {
     return
   }
   // 保存列表只在普通或只读详情态开放，因此切换不会跨过未保存编辑草稿。
-  selectSavedPath(path)
+  void selectSavedPath(path)
   closeSavedPaths()
 }
 
@@ -425,7 +429,7 @@ function clearDraft() {
 }
 
 function selectBranch(choice: ExecutionPathChoice) {
-  if (!graph.value || !workspacePresentation.value.branchEditing || !pathWorkspaceOpen.value || saving.value || generatingAll.value) return
+  if (!graph.value || !workspacePresentation.value.branchEditing || !pathWorkspaceOpen.value || saving.value || generationBusy.value) return
   if (draftChoices.value.some((item) => item.routeNodeId === choice.routeNodeId && item.branchId === choice.branchId)) return
   draftChoices.value = applyExecutionPathChoice(graph.value, draftChoices.value, choice.routeNodeId, choice.branchId)
   draftChangedByGraph.value = false
@@ -588,44 +592,41 @@ function pathDisplayName(path: ExecutionPath): string {
   return path.name?.trim() || `路径 ${path.sequenceNo}`
 }
 
-function explainGenerateAllUnavailable() {
-  if (batchPreview.value.exceeded) {
-    message.warning('当前流程超过 128 条路径，请手动建立重点路径')
-    return
+// startAutomaticGeneration 新发起计划首次进入详情时自动解析全部合法路径。
+async function startAutomaticGeneration() {
+  if (!plan.value || plan.value.flowSource !== 'new' || paths.value.length > 0 || generationBusy.value) return
+  generationError.value = ''
+  try {
+    const key = crypto.randomUUID()
+    generationJob.value = await startPathGeneration(planID.value, key)
+    await pollGeneration()
+  } catch (caught) {
+    generationError.value = caught instanceof Error ? caught.message : '路径解析失败，请重试'
   }
-  message.info('当前真实流程的全部路径都已存在')
 }
 
-async function generateAllPaths() {
-  if (!plan.value || plan.value.flowSource !== 'new' || generatingAll.value || batchPreview.value.exceeded || batchPreview.value.pendingCount === 0) return
-  if (!generateAllKey.value) generateAllKey.value = crypto.randomUUID()
-  generatingAll.value = true
-  try {
-    const result = await generateAllExecutionPaths(planID.value, generateAllKey.value)
-    const controller = new AbortController()
-    const refreshed = await fetchExecutionPaths(planID.value, controller.signal)
-    paths.value = refreshed
-    pathsLoaded.value = true
-    pathsError.value = ''
-    plan.value.pathCount = refreshed.length
-		selectedRunPathIDs.value = new Set(refreshed.filter(path => path.included).map(path => path.id))
-		pathSelectionRevisions.value = Object.fromEntries(refreshed.map(path => [path.id, path.configurationRevision]))
-    // 批量生成是旁路管理动作，只刷新持久化列表；当前未保存草稿、名称和单条创建键都不能被新路径覆盖。
-    generateAllKey.value = ''
-    closeSavedPaths()
-    if (result.createdCount === 0) message.info(`全部 ${result.totalCount} 条路径均已存在，无需新增`)
-    else message.success(`已新增 ${result.createdCount} 条路径，跳过 ${result.existingCount} 条已存在路径`)
+// pollGeneration 按轻量任务快照刷新列表，不加载每条路径的完整配置。
+async function pollGeneration() {
+  if (!generationJob.value) return
+  if (generationJob.value.status === 'completed') {
+    await retryPaths()
+    return
   }
-  catch (caught) {
-    const apiError = caught instanceof ExecutionPathApiError
-      ? caught
-      : new ExecutionPathApiError('生成全部路径失败，请重试')
-    // 失败保留同一个批量幂等键，网络响应丢失时再次确认不会生成第二批记录。
-    message.error(apiError.message)
-  }
-  finally {
-    generatingAll.value = false
-  }
+  if (generationJob.value.status === 'failed' || generationJob.value.status === 'cancelled') return
+  generationJob.value = await fetchPathGeneration(planID.value, generationJob.value.id)
+  generationTimer = setTimeout(() => { void pollGeneration() }, 500)
+}
+
+async function cancelGeneration() {
+  if (!generationJob.value || !generationBusy.value) return
+  await cancelPathGeneration(planID.value, generationJob.value.id)
+  generationJob.value = await fetchPathGeneration(planID.value, generationJob.value.id)
+}
+
+async function resumeGeneration() {
+  if (!generationJob.value || (generationJob.value.status !== 'cancelled' && generationJob.value.status !== 'failed')) return
+  generationJob.value = await resumePathGeneration(planID.value, generationJob.value.id)
+  await pollGeneration()
 }
 
 async function removeActivePath() {
@@ -683,6 +684,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   loadController?.abort()
   draftRecoveryController?.abort()
+	if (generationTimer) clearTimeout(generationTimer)
   pageScrollContainer?.classList.remove('plan-paths-scroll-container')
   pageScrollContainer = null
 })
@@ -740,6 +742,7 @@ onBeforeUnmount(() => {
               {{ pathSelectionError }}
 						<n-button text type="primary" @click="retryPaths">重新读取</n-button>
             </n-alert>
+			<n-alert v-if="generationError" type="error" :show-icon="false">{{ generationError }}</n-alert>
 					<p v-if="presettingSelected" class="path-preparation__progress">一键预设：{{ presetProgress.completed }}/{{ presetProgress.total }}</p>
 
             <div v-if="!pathsLoading && !pathsError && !paths.length" class="path-preparation__empty">
@@ -812,7 +815,7 @@ onBeforeUnmount(() => {
                   <n-button
                     size="small"
                     type="primary"
-                    :disabled="!pathsLoaded || Boolean(pathsError) || saving || deleting || generatingAll || draftRecoveryLoading"
+                    :disabled="!pathsLoaded || Boolean(pathsError) || saving || deleting || generationBusy || draftRecoveryLoading"
                     @click="enterPathEditing"
                   >
                     编辑路径
@@ -833,7 +836,7 @@ onBeforeUnmount(() => {
                     v-if="!workspacePresentation.branchEditing && allowNewPath"
                     size="small"
                     type="primary"
-                    :disabled="saving || deleting || generatingAll || draftRecoveryLoading"
+                    :disabled="saving || deleting || generationBusy || draftRecoveryLoading"
                     @click="startNewPath"
                   >
                     新增路径
@@ -891,7 +894,7 @@ onBeforeUnmount(() => {
                         show-count
                         clearable
                         placeholder="留空后按实际序号命名，例如：路径 3"
-                        :disabled="saving || generatingAll || draftRecoveryLoading"
+                        :disabled="saving || generationBusy || draftRecoveryLoading"
                       />
                     </div>
 
@@ -949,25 +952,11 @@ onBeforeUnmount(() => {
                       <h3>已保存的路径</h3>
                       <n-button text size="small" aria-label="关闭已保存路径" @click="closeSavedPaths">关闭</n-button>
                     </header>
-                    <div v-if="plan.flowSource === 'new'" class="saved-paths-popover__generate">
-                      <n-popconfirm
-                        v-if="!batchPreview.exceeded && batchPreview.pendingCount > 0"
-                        :show-icon="false"
-                        positive-text="确认生成"
-                        negative-text="取消"
-                        @positive-click="generateAllPaths"
-                      >
-                        <template #trigger>
-                          <n-button block size="small" secondary :loading="generatingAll" :disabled="saving || deleting || draftRecoveryLoading">
-                            一键生成全部路径
-                          </n-button>
-                        </template>
-                        当前真实流程共 {{ batchPreview.totalCount }} 条完整路径，已存在 {{ batchPreview.existingCount }} 条，本次将新增 {{ batchPreview.pendingCount }} 条。确认继续？
-                      </n-popconfirm>
-                      <n-button v-else block size="small" secondary :disabled="generatingAll" @click="explainGenerateAllUnavailable">
-                        一键生成全部路径
-                      </n-button>
-                    </div>
+					<div v-if="plan.flowSource === 'new' && generationJob" class="saved-paths-popover__generate">
+						<span>路径解析 {{ generationJob.completed }}/{{ generationJob.total || '...' }}</span>
+						<n-button v-if="generationBusy" size="small" secondary @click="cancelGeneration">取消</n-button>
+						<n-button v-else-if="generationJob.status === 'cancelled' || generationJob.status === 'failed'" size="small" secondary @click="resumeGeneration">恢复</n-button>
+					</div>
                     <n-virtual-list
                       v-if="paths.length"
                       class="saved-paths-popover__list"
@@ -982,7 +971,7 @@ onBeforeUnmount(() => {
                         :class="{ 'saved-paths-popover__item--active': activePathID === item.id }"
                         text
                         :title="pathDisplayName(item)"
-                        :disabled="saving || deleting || generatingAll || draftRecoveryLoading"
+                        :disabled="saving || deleting || generationBusy || draftRecoveryLoading"
                         :aria-current="activePathID === item.id ? 'true' : undefined"
                         @click="requestSavedPathSwitch(item)"
                       >

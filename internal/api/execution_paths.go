@@ -15,10 +15,17 @@ import (
 
 type ExecutionPathService interface {
 	List(context.Context, uint64) ([]model.ExecutionPath, error)
+	Get(context.Context, uint64, uint64) (model.ExecutionPath, error)
 	Create(context.Context, uint64, string, string, []model.ExecutionPathChoice) (model.ExecutionPath, bool, error)
 	Update(context.Context, uint64, uint64, string, []model.ExecutionPathChoice) (model.ExecutionPath, error)
 	Delete(context.Context, uint64, uint64) error
-	GenerateAll(context.Context, uint64, string) (model.ExecutionPathBatchResult, bool, error)
+}
+
+type pathGenerationService interface {
+	StartGeneration(context.Context, uint64, string) (service.PathGenerationJob, error)
+	GetGeneration(context.Context, uint64, string) (service.PathGenerationJob, error)
+	CancelGeneration(context.Context, uint64, string) error
+	ResumeGeneration(context.Context, uint64, string) (service.PathGenerationJob, error)
 }
 
 type executionPathRequest struct {
@@ -38,24 +45,45 @@ type executionPathResponse struct {
 	UpdatedAt             string                      `json:"updatedAt"`
 }
 
-type executionPathBatchResponse struct {
-	TotalCount    int                     `json:"totalCount"`
-	ExistingCount int                     `json:"existingCount"`
-	CreatedCount  int                     `json:"createdCount"`
-	Items         []executionPathResponse `json:"items"`
-}
-
 type executionPathListResponse struct {
 	Items []executionPathResponse `json:"items"`
 }
 
-// registerExecutionPathRoutes 注册同一计划下的五个单条与批量路径读写端点。
+// registerExecutionPathRoutes 注册路径列表、单条编辑和后台解析端点。
 func registerExecutionPathRoutes(mux *http.ServeMux, paths ExecutionPathService) {
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths", handleListExecutionPaths(paths))
+	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}", handleGetExecutionPath(paths))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths", handleCreateExecutionPath(paths))
-	mux.HandleFunc("POST /api/plans/{id}/execution-paths/generate-all", handleGenerateAllExecutionPaths(paths))
+	provider, ok := paths.(pathGenerationService)
+	if !ok {
+		provider = unavailablePathGenerationService{}
+	}
+	mux.HandleFunc("POST /api/plans/{id}/path-generations", handleStartPathGeneration(provider))
+	mux.HandleFunc("GET /api/plans/{id}/path-generations/{jobId}", handleGetPathGeneration(provider))
+	mux.HandleFunc("POST /api/plans/{id}/path-generations/{jobId}/cancel", handleCancelPathGeneration(provider))
+	mux.HandleFunc("POST /api/plans/{id}/path-generations/{jobId}/resume", handleResumePathGeneration(provider))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}", handleUpdateExecutionPath(paths))
 	mux.HandleFunc("DELETE /api/plans/{id}/execution-paths/{pathId}", handleDeleteExecutionPath(paths))
+}
+
+// handleGetExecutionPath 按需返回单条路径 choices，避免列表接口产生大响应。
+func handleGetExecutionPath(paths ExecutionPathService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
+		if !ok {
+			return
+		}
+		pathID, ok := parseExecutionPathID(response, request.PathValue("pathId"))
+		if !ok {
+			return
+		}
+		path, err := paths.Get(request.Context(), planID, pathID)
+		if err != nil {
+			writeExecutionPathError(response, err)
+			return
+		}
+		writeSuccess(response, toExecutionPathResponse(path))
+	}
 }
 
 // handleListExecutionPaths 返回按稳定序号排列的最小路径 DTO。
@@ -126,30 +154,66 @@ func handleUpdateExecutionPath(paths ExecutionPathService) http.HandlerFunc {
 	}
 }
 
-// handleGenerateAllExecutionPaths 使用独立持久化幂等键触发新发起计划的全路径原子生成。
-func handleGenerateAllExecutionPaths(paths ExecutionPathService) http.HandlerFunc {
+// handleStartPathGeneration 启动新发起计划的后台全路径解析。
+func handleStartPathGeneration(paths pathGenerationService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
 		if !ok {
 			return
 		}
-		result, created, err := paths.GenerateAll(request.Context(), planID, strings.TrimSpace(request.Header.Get("Idempotency-Key")))
+		job, err := paths.StartGeneration(request.Context(), planID, strings.TrimSpace(request.Header.Get("Idempotency-Key")))
 		if err != nil {
 			writeExecutionPathError(response, err)
 			return
 		}
-		items := make([]executionPathResponse, 0, len(result.Paths))
-		for _, path := range result.Paths {
-			items = append(items, toExecutionPathResponse(path))
+		writeJSON(response, http.StatusAccepted, apiSuccess{Success: true, Data: job})
+	}
+}
+
+// handleGetPathGeneration 返回后台解析任务的轻量进度。
+func handleGetPathGeneration(paths pathGenerationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
+		if !ok {
+			return
 		}
-		status := http.StatusOK
-		if created {
-			status = http.StatusCreated
+		job, err := paths.GetGeneration(request.Context(), planID, strings.TrimSpace(request.PathValue("jobId")))
+		if err != nil {
+			writeExecutionPathError(response, err)
+			return
 		}
-		writeJSON(response, status, apiSuccess{Success: true, Data: executionPathBatchResponse{
-			TotalCount: result.TotalCount, ExistingCount: result.ExistingCount,
-			CreatedCount: result.CreatedCount, Items: items,
-		}})
+		writeSuccess(response, job)
+	}
+}
+
+// handleCancelPathGeneration 取消尚未完成的后台解析任务。
+func handleCancelPathGeneration(paths pathGenerationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
+		if !ok {
+			return
+		}
+		if err := paths.CancelGeneration(request.Context(), planID, strings.TrimSpace(request.PathValue("jobId"))); err != nil {
+			writeExecutionPathError(response, err)
+			return
+		}
+		writeSuccess(response, map[string]bool{"cancelled": true})
+	}
+}
+
+// handleResumePathGeneration 恢复已取消或失败的后台解析任务。
+func handleResumePathGeneration(paths pathGenerationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
+		if !ok {
+			return
+		}
+		job, err := paths.ResumeGeneration(request.Context(), planID, strings.TrimSpace(request.PathValue("jobId")))
+		if err != nil {
+			writeExecutionPathError(response, err)
+			return
+		}
+		writeSuccess(response, job)
 	}
 }
 
@@ -222,9 +286,7 @@ func writeExecutionPathError(response http.ResponseWriter, err error) {
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorLimit):
 		writeFailure(response, http.StatusConflict, "EXECUTION_PATH_LIMIT_REACHED", "当前计划最多只能保存一条执行路径", false)
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorEnumerationLimit):
-		writeFailure(response, http.StatusConflict, "EXECUTION_PATH_ENUMERATION_LIMIT", "当前流程超过 128 条路径，请手动建立重点路径", false)
-	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorGenerateAll):
-		writeFailure(response, http.StatusConflict, "EXECUTION_PATH_GENERATE_ALL_UNAVAILABLE", "只有新发起计划可以一键生成全部路径", false)
+		writeFailure(response, http.StatusConflict, "PATH_GENERATION_RESOURCE_LIMIT", "当前解析任务触及资源保护，请恢复任务继续", true)
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorLocked):
 		writeFailure(response, http.StatusConflict, "PLAN_LOCKED", "计划已经不能修改执行路径", false)
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorStorage):
@@ -239,6 +301,11 @@ type unavailableExecutionPathService struct{}
 // List 在未注入路径存储时返回稳定不可用错误。
 func (unavailableExecutionPathService) List(context.Context, uint64) ([]model.ExecutionPath, error) {
 	return nil, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
+}
+
+// Get 在未注入路径存储时拒绝单条路径读取。
+func (unavailableExecutionPathService) Get(context.Context, uint64, uint64) (model.ExecutionPath, error) {
+	return model.ExecutionPath{}, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
 }
 
 // Create 在未注入路径存储时拒绝创建。
@@ -256,7 +323,24 @@ func (unavailableExecutionPathService) Delete(context.Context, uint64, uint64) e
 	return &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
 }
 
-// GenerateAll 在未注入路径存储时拒绝批量生成。
-func (unavailableExecutionPathService) GenerateAll(context.Context, uint64, string) (model.ExecutionPathBatchResult, bool, error) {
-	return model.ExecutionPathBatchResult{}, false, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径存储暂不可用"}
+type unavailablePathGenerationService struct{}
+
+// StartGeneration 在未注入后台服务时返回稳定不可用错误。
+func (unavailablePathGenerationService) StartGeneration(context.Context, uint64, string) (service.PathGenerationJob, error) {
+	return service.PathGenerationJob{}, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径后台服务暂不可用"}
+}
+
+// GetGeneration 在未注入后台服务时返回稳定不可用错误。
+func (unavailablePathGenerationService) GetGeneration(context.Context, uint64, string) (service.PathGenerationJob, error) {
+	return service.PathGenerationJob{}, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径后台服务暂不可用"}
+}
+
+// CancelGeneration 在未注入后台服务时返回稳定不可用错误。
+func (unavailablePathGenerationService) CancelGeneration(context.Context, uint64, string) error {
+	return &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径后台服务暂不可用"}
+}
+
+// ResumeGeneration 在未注入后台服务时返回稳定不可用错误。
+func (unavailablePathGenerationService) ResumeGeneration(context.Context, uint64, string) (service.PathGenerationJob, error) {
+	return service.PathGenerationJob{}, &service.ExecutionPathError{Kind: service.ExecutionPathErrorStorage, Message: "路径后台服务暂不可用"}
 }

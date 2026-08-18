@@ -12,7 +12,6 @@ import {
   deriveExecutionPathWorkspaceDisposition,
   hasExecutionPathDraftChanges,
   nextExecutionPathRouteID,
-  previewAllExecutionPaths,
   projectExecutionPathSummary,
   summarizeExecutionPathConfiguration,
   projectExecutionPathGuide,
@@ -28,7 +27,8 @@ import {
   deleteExecutionPath,
   ExecutionPathApiError,
   fetchExecutionPaths,
-  generateAllExecutionPaths,
+  fetchPathGeneration,
+  startPathGeneration,
   updateExecutionPath,
 } from '../../../web/src/features/execution-paths/api.ts'
 
@@ -350,25 +350,6 @@ test('画布平移缩放后引导目标使用最新视口坐标', () => {
   assert.deepEqual(moved.visibleCandidates[0], { id: 'branch', x: 390, y: 268 })
 })
 
-test('全路径预览按完整组合过滤已保存线路并在第129条停止', () => {
-  const saved = [{ id: '1', sequenceNo: 1, name: '路径 1', choices: [{ routeNodeId: 'route-a', branchId: 'branch-b' }], updatedAt: '' }]
-  const preview = previewAllExecutionPaths(graph, saved)
-  assert.deepEqual(preview, { totalCount: 3, existingCount: 1, pendingCount: 2, exceeded: false })
-
-  const wideGraph = { planId: '8', targetName: '', flowSource: 'new', entryNodeIds: ['route-0'], nodes: [], edges: [], warnings: [] }
-  for (let index = 0; index < 8; index++) {
-    const source = `route-${index}`
-    const target = index === 7 ? 'end' : `route-${index + 1}`
-    wideGraph.nodes.push({ id: source, name: source, type: 'condition', typeName: '条件' })
-    wideGraph.edges.push(
-      { id: `${source}-a`, source, target, kind: 'condition', label: 'A', branchId: 'a' },
-      { id: `${source}-b`, source, target, kind: 'condition', label: 'B', branchId: 'b' },
-    )
-  }
-  wideGraph.nodes.push({ id: 'end', name: '结束', type: 'end', typeName: '结束' })
-  assert.equal(previewAllExecutionPaths(wideGraph, []).exceeded, true)
-})
-
 test('路径 API 只提交 choices、创建键和归属路径地址', async () => {
   const originalFetch = globalThis.fetch
   const calls = []
@@ -376,7 +357,8 @@ test('路径 API 只提交 choices、创建键和归属路径地址', async () =
     calls.push({ url: String(url), init })
     if (init.method === 'DELETE') return new Response(null, { status: 204 })
     if (init.method === 'GET') return Response.json({ success: true, data: { items: [] } })
-    if (String(url).endsWith('/generate-all')) return Response.json({ success: true, data: { totalCount: 2, existingCount: 1, createdCount: 1, items: [] } })
+    if (String(url).includes('/path-generations/')) return Response.json({ success: true, data: { id: 'job-1', status: 'completed', total: 2, completed: 2, created: 1, updatedAt: '' } })
+    if (String(url).endsWith('/path-generations')) return Response.json({ success: true, data: { id: 'job-1', status: 'queued', total: 0, completed: 0, created: 0, updatedAt: '' } })
     return Response.json({ success: true, data: { id: '31', sequenceNo: 1, name: '路径 1', choices: [], updatedAt: '2026-07-28T00:00:00Z' } })
   }
   try {
@@ -384,13 +366,15 @@ test('路径 API 只提交 choices、创建键和归属路径地址', async () =
     await fetchExecutionPaths('7', signal)
     await createExecutionPath('7', '重点路径', [], '123e4567-e89b-12d3-a456-426614174301')
     await updateExecutionPath('7', '31', '改名路径', [])
-    await generateAllExecutionPaths('7', '123e4567-e89b-12d3-a456-426614174302')
+    await startPathGeneration('7', '123e4567-e89b-12d3-a456-426614174302')
+    await fetchPathGeneration('7', 'job-1', signal)
     await deleteExecutionPath('7', '31')
     assert.deepEqual(calls.map((call) => [call.init.method, call.url]), [
       ['GET', '/api/plans/7/execution-paths'],
       ['POST', '/api/plans/7/execution-paths'],
       ['PUT', '/api/plans/7/execution-paths/31'],
-      ['POST', '/api/plans/7/execution-paths/generate-all'],
+      ['POST', '/api/plans/7/path-generations'],
+      ['GET', '/api/plans/7/path-generations/job-1'],
       ['DELETE', '/api/plans/7/execution-paths/31'],
     ])
     assert.equal(calls[1].init.headers['Idempotency-Key'], '123e4567-e89b-12d3-a456-426614174301')

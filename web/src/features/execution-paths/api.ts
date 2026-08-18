@@ -1,4 +1,4 @@
-import type { ExecutionPath, ExecutionPathBatchResult, ExecutionPathChoice } from './types.ts'
+import type { ExecutionPath, ExecutionPathChoice, PathGenerationJob } from './types.ts'
 
 interface ApiSuccess<T> {
   success: true
@@ -31,6 +31,10 @@ export async function fetchExecutionPaths(planId: string, signal: AbortSignal): 
   return result.items
 }
 
+export function fetchExecutionPath(planId: string, pathId: string, signal?: AbortSignal): Promise<ExecutionPath> {
+  return request<ExecutionPath>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}`, { method: 'GET' }, signal)
+}
+
 export function createExecutionPath(planId: string, name: string, choices: ExecutionPathChoice[], idempotencyKey: string): Promise<ExecutionPath> {
   return request<ExecutionPath>(`/api/plans/${encodeURIComponent(planId)}/execution-paths`, {
     method: 'POST',
@@ -45,11 +49,23 @@ export function updateExecutionPath(planId: string, pathId: string, name: string
   })
 }
 
-export function generateAllExecutionPaths(planId: string, idempotencyKey: string): Promise<ExecutionPathBatchResult> {
-  return request<ExecutionPathBatchResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/generate-all`, {
+export function startPathGeneration(planId: string, idempotencyKey: string): Promise<PathGenerationJob> {
+  return request<PathGenerationJob>(`/api/plans/${encodeURIComponent(planId)}/path-generations`, {
     method: 'POST',
     headers: { 'Idempotency-Key': idempotencyKey },
   })
+}
+
+export function fetchPathGeneration(planId: string, jobId: string, signal?: AbortSignal): Promise<PathGenerationJob> {
+  return request<PathGenerationJob>(`/api/plans/${encodeURIComponent(planId)}/path-generations/${encodeURIComponent(jobId)}`, { method: 'GET' }, signal)
+}
+
+export function cancelPathGeneration(planId: string, jobId: string): Promise<void> {
+  return request<void>(`/api/plans/${encodeURIComponent(planId)}/path-generations/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+}
+
+export function resumePathGeneration(planId: string, jobId: string): Promise<PathGenerationJob> {
+  return request<PathGenerationJob>(`/api/plans/${encodeURIComponent(planId)}/path-generations/${encodeURIComponent(jobId)}/resume`, { method: 'POST' })
 }
 
 export function deleteExecutionPath(planId: string, pathId: string): Promise<void> {

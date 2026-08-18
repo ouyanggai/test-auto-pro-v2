@@ -26,25 +26,35 @@ func (r *executionPathGraphReader) Get(context.Context, uint64) (model.FlowGraph
 }
 
 type memoryExecutionPathRepository struct {
-	paths       []model.ExecutionPath
-	createKeys  map[string]uint64
-	createErr   error
-	updateErr   error
-	deleteErr   error
-	findCalls   int
-	createCalls int
-	createStored chan struct{}
+	paths         []model.ExecutionPath
+	createKeys    map[string]uint64
+	createErr     error
+	updateErr     error
+	deleteErr     error
+	findCalls     int
+	createCalls   int
+	createStored  chan struct{}
 	createRelease chan struct{}
-	updateCalls int
-	batch       model.ExecutionPathBatchResult
-	batchKey    string
-	batchErr    error
-	batchCalls  int
+	updateCalls   int
+	batch         model.ExecutionPathBatchResult
+	batchKey      string
+	batchErr      error
+	batchCalls    int
 }
 
 // List 返回内存路径副本供服务单元测试使用。
 func (r *memoryExecutionPathRepository) List(context.Context, uint64) ([]model.ExecutionPath, error) {
 	return append([]model.ExecutionPath(nil), r.paths...), nil
+}
+
+// Get 返回计划内单条路径及 choices，模拟进入编辑态的按需读取。
+func (r *memoryExecutionPathRepository) Get(_ context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
+	for _, path := range r.paths {
+		if path.PlanID == planID && path.ID == pathID {
+			return path, nil
+		}
+	}
+	return model.ExecutionPath{}, repository.ErrExecutionPathNotFound
 }
 
 // FindByCreateKey 只返回同一计划内已成功写入的内存幂等记录。
@@ -107,8 +117,8 @@ func (r *memoryExecutionPathRepository) FindBatchByCreateKey(_ context.Context, 
 	return model.ExecutionPathBatchResult{}, false, nil
 }
 
-// GenerateAll 模拟批量原子写入并记录服务传入的完整组合数。
-func (r *memoryExecutionPathRepository) GenerateAll(_ context.Context, planID uint64, createKey string, candidates [][]model.ExecutionPathChoice, now time.Time) (model.ExecutionPathBatchResult, bool, error) {
+// GeneratePathsBatch 模拟后台任务的批量原子写入并记录完整组合数。
+func (r *memoryExecutionPathRepository) GeneratePathsBatch(_ context.Context, planID uint64, createKey string, candidates [][]model.ExecutionPathChoice, now time.Time) (model.ExecutionPathBatchResult, bool, error) {
 	r.batchCalls++
 	if r.batchErr != nil {
 		return model.ExecutionPathBatchResult{}, false, r.batchErr
@@ -294,50 +304,6 @@ func TestExecutionPathServiceMapsRepositoryBoundaries(t *testing.T) {
 		if !service.IsExecutionPathErrorKind(err, test.kind) {
 			t.Fatalf("仓储错误映射不正确：source=%v mapped=%v", test.err, err)
 		}
-	}
-}
-
-// TestExecutionPathServiceGenerateAllReadsGraphOnceAndPersistsRetry 验证批量生成只读一次真实图且成功重试不再依赖目标。
-func TestExecutionPathServiceGenerateAllReadsGraphOnceAndPersistsRetry(t *testing.T) {
-	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, FlowSource: "new", Status: model.PlanStatusPendingConfiguration}}
-	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
-	repo := &memoryExecutionPathRepository{}
-	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
-	key := "123e4567-e89b-12d3-a456-426614174399"
-	result, created, err := serviceUnderTest.GenerateAll(context.Background(), 7, key)
-	if err != nil || !created || result.TotalCount != 2 || result.CreatedCount != 2 || len(result.Paths) != 2 {
-		t.Fatalf("批量生成结果不正确：result=%+v created=%v err=%v", result, created, err)
-	}
-	if graphs.calls != 1 || repo.batchCalls != 1 {
-		t.Fatalf("批量生成没有保持单次图读取：graph=%d batch=%d", graphs.calls, repo.batchCalls)
-	}
-	graphs.err = errors.New("目标平台随后不可用")
-	retried, created, err := serviceUnderTest.GenerateAll(context.Background(), 7, key)
-	if err != nil || created || retried.CreatedCount != 2 || graphs.calls != 1 || repo.batchCalls != 1 {
-		t.Fatalf("批量幂等重试仍依赖目标或重复写入：result=%+v created=%v graph=%d batch=%d err=%v", retried, created, graphs.calls, repo.batchCalls, err)
-	}
-}
-
-// TestExecutionPathServiceGenerateAllRejectsSourceAndLimit 验证非新发起与超过 128 条都不会进入批量事务。
-func TestExecutionPathServiceGenerateAllRejectsSourceAndLimit(t *testing.T) {
-	for _, source := range []string{"started", "pending"} {
-		plans := newMemoryPlanRepository()
-		plans.plans = []model.Plan{{ID: 7, FlowSource: source, Status: model.PlanStatusPendingConfiguration}}
-		repo := &memoryExecutionPathRepository{}
-		serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: selectableExecutionPathGraph()}, analyzer.NewExecutionPathAnalyzer(), repo)
-		_, _, err := serviceUnderTest.GenerateAll(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174399")
-		if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorGenerateAll) || repo.batchCalls != 0 {
-			t.Fatalf("来源 %s 错误开放批量生成：err=%v calls=%d", source, err, repo.batchCalls)
-		}
-	}
-	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, FlowSource: "new", Status: model.PlanStatusPendingConfiguration}}
-	repo := &memoryExecutionPathRepository{}
-	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: binaryRouteChain(8)}, analyzer.NewExecutionPathAnalyzer(), repo)
-	_, _, err := serviceUnderTest.GenerateAll(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174399")
-	if !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorEnumerationLimit) || repo.batchCalls != 0 {
-		t.Fatalf("超过上限仍进入批量事务：err=%v calls=%d", err, repo.batchCalls)
 	}
 }
 

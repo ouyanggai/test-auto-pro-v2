@@ -15,18 +15,14 @@ export interface ExecutionPath {
   updatedAt: string
 }
 
-export interface ExecutionPathBatchResult {
-  totalCount: number
-  existingCount: number
-  createdCount: number
-  items: ExecutionPath[]
-}
-
-export interface ExecutionPathGenerationPreview {
-  totalCount: number
-  existingCount: number
-  pendingCount: number
-  exceeded: boolean
+export interface PathGenerationJob {
+  id: string
+  status: 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+  total: number
+  completed: number
+  created: number
+  error?: string
+  updatedAt: string
 }
 
 export type ExecutionPathWorkspaceMode = 'view' | 'edit' | 'new' | 'copy' | null

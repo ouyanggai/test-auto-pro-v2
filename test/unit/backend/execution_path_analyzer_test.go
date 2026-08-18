@@ -173,14 +173,14 @@ func TestExecutionPathAnalyzerEnumeratesStableParallelCombinations(t *testing.T)
 	}
 }
 
-// TestExecutionPathAnalyzerEnumerationLimitIsAllOrNothing 验证第 129 条组合触发明确上限而不是静默截断。
-func TestExecutionPathAnalyzerEnumerationLimitIsAllOrNothing(t *testing.T) {
+// TestExecutionPathAnalyzerEnumerationHasNoBusinessCountLimit 验证大于旧上限的合法组合完整返回。
+func TestExecutionPathAnalyzerEnumerationHasNoBusinessCountLimit(t *testing.T) {
 	graph := binaryRouteChain(8)
-	paths, err := analyzer.NewExecutionPathAnalyzer().EnumerateAll(graph, 128)
-	if !errors.Is(err, analyzer.ErrExecutionPathEnumerationLimit) || paths != nil {
-		t.Fatalf("超过 128 条没有整体拒绝：count=%d err=%v", len(paths), err)
+	paths, err := analyzer.NewExecutionPathAnalyzer().EnumerateAll(graph, 0)
+	if err != nil || len(paths) != 256 {
+		t.Fatalf("大路径组合没有完整返回：count=%d err=%v", len(paths), err)
 	}
-	paths, err = analyzer.NewExecutionPathAnalyzer().EnumerateAll(binaryRouteChain(7), 128)
+	paths, err = analyzer.NewExecutionPathAnalyzer().EnumerateAll(binaryRouteChain(7), 0)
 	if err != nil || len(paths) != 128 {
 		t.Fatalf("128 条边界被错误拒绝：count=%d err=%v", len(paths), err)
 	}

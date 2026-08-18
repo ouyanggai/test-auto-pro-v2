@@ -157,8 +157,8 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 	}
 }
 
-// TestExecutionPathMySQLGenerateAllIsPersistentAndAtomic 验证批量重复过滤、连续序号、持久幂等和失败零写入。
-func TestExecutionPathMySQLGenerateAllIsPersistentAndAtomic(t *testing.T) {
+// TestExecutionPathMySQLGeneratePathsBatchIsPersistentAndAtomic 验证后台批量重复过滤、连续序号、持久幂等和失败零写入。
+func TestExecutionPathMySQLGeneratePathsBatchIsPersistentAndAtomic(t *testing.T) {
 	cfg := config.LoadPlanDBConfig()
 	if missing := cfg.MissingRequired(); len(missing) != 0 {
 		t.Fatalf("F-005 MySQL 集成测试缺少配置名：%v", missing)
@@ -181,14 +181,14 @@ func TestExecutionPathMySQLGenerateAllIsPersistentAndAtomic(t *testing.T) {
 		t.Fatalf("准备已存在路径失败：%v", err)
 	}
 	key := "123e4567-e89b-12d3-a456-426614174299"
-	result, created, err := paths.GenerateAll(ctx, plan.ID, key, [][]model.ExecutionPathChoice{choiceA, choiceB}, time.Now().UTC())
+	result, created, err := paths.GeneratePathsBatch(ctx, plan.ID, key, [][]model.ExecutionPathChoice{choiceA, choiceB}, time.Now().UTC())
 	if err != nil || !created || result.TotalCount != 2 || result.ExistingCount != 1 || result.CreatedCount != 1 || len(result.Paths) != 1 {
 		t.Fatalf("批量重复过滤不正确：result=%+v created=%v err=%v", result, created, err)
 	}
 	if result.Paths[0].SequenceNo != 2 || result.Paths[0].Name != "路径 2" {
 		t.Fatalf("批量路径序号或默认名不正确：%+v", result.Paths[0])
 	}
-	retried, created, err := paths.GenerateAll(ctx, plan.ID, key, [][]model.ExecutionPathChoice{{}}, time.Now().UTC())
+	retried, created, err := paths.GeneratePathsBatch(ctx, plan.ID, key, [][]model.ExecutionPathChoice{{}}, time.Now().UTC())
 	if err != nil || created || retried.CreatedCount != 1 || len(retried.Paths) != 1 || retried.Paths[0].ID != result.Paths[0].ID {
 		t.Fatalf("持久批量幂等结果不稳定：result=%+v created=%v err=%v", retried, created, err)
 	}
@@ -199,7 +199,7 @@ func TestExecutionPathMySQLGenerateAllIsPersistentAndAtomic(t *testing.T) {
 
 	failurePlan := createPathTestPlan(t, ctx, plans, "new", "123e4567-e89b-12d3-a456-426614174112")
 	invalid := []model.ExecutionPathChoice{{RouteNodeID: "same", BranchID: "a"}, {RouteNodeID: "same", BranchID: "b"}}
-	_, _, err = paths.GenerateAll(ctx, failurePlan.ID, "123e4567-e89b-12d3-a456-426614174298", [][]model.ExecutionPathChoice{choiceA, invalid}, time.Now().UTC())
+	_, _, err = paths.GeneratePathsBatch(ctx, failurePlan.ID, "123e4567-e89b-12d3-a456-426614174298", [][]model.ExecutionPathChoice{choiceA, invalid}, time.Now().UTC())
 	if err == nil {
 		t.Fatal("批量中途写入错误没有回滚")
 	}

@@ -131,9 +131,9 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 	}, nil
 }
 
-// EnumerateAll 按真实分支顺序枚举全部合法完整路径，超过上限时立即停止并返回专用错误。
+// EnumerateAll 按真实分支顺序枚举全部合法完整路径；limit 为零表示由调用方的资源预算控制。
 func (a *ExecutionPathAnalyzer) EnumerateAll(graph model.FlowGraph, limit int) ([][]model.ExecutionPathChoice, error) {
-	if limit < 1 {
+	if limit < 0 {
 		return nil, ErrExecutionPathInvalid
 	}
 	outgoing := make(map[string][]model.FlowGraphEdge, len(graph.Nodes))
@@ -148,7 +148,7 @@ func (a *ExecutionPathAnalyzer) EnumerateAll(graph model.FlowGraph, limit int) (
 			return err
 		}
 		if analysis.Complete {
-			if len(results) >= limit {
+			if limit > 0 && len(results) >= limit {
 				return ErrExecutionPathEnumerationLimit
 			}
 			results = append(results, append([]model.ExecutionPathChoice(nil), choices...))

@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -20,7 +22,6 @@ const (
 	ExecutionPathErrorInvalid          ExecutionPathErrorKind = "invalid"
 	ExecutionPathErrorLimit            ExecutionPathErrorKind = "limit"
 	ExecutionPathErrorEnumerationLimit ExecutionPathErrorKind = "enumeration_limit"
-	ExecutionPathErrorGenerateAll      ExecutionPathErrorKind = "generate_all_unavailable"
 	ExecutionPathErrorLocked           ExecutionPathErrorKind = "locked"
 	ExecutionPathErrorStorage          ExecutionPathErrorKind = "storage"
 )
@@ -49,16 +50,129 @@ type ExecutionPathChoiceAnalyzer interface {
 }
 
 type ExecutionPathService struct {
-	plans      *PlanService
-	graphs     CurrentFlowGraphReader
-	analyzer   ExecutionPathChoiceAnalyzer
-	repository repository.ExecutionPathRepository
-	now        func() time.Time
+	plans        *PlanService
+	graphs       CurrentFlowGraphReader
+	analyzer     ExecutionPathChoiceAnalyzer
+	repository   repository.ExecutionPathRepository
+	now          func() time.Time
+	generationMu sync.RWMutex
+	generations  map[string]*PathGenerationJob
+}
+
+// PathGenerationJob 是全路径后台任务的可查询进度快照，路径明细仍通过列表按需读取。
+type PathGenerationJob struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status"`
+	Total     int       `json:"total"`
+	Completed int       `json:"completed"`
+	Created   int       `json:"created"`
+	Error     string    `json:"error,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	planID    uint64
+	cancel    context.CancelFunc
 }
 
 // NewExecutionPathService 组装计划、真实图、路径分析与事务仓储边界。
 func NewExecutionPathService(plans *PlanService, graphs CurrentFlowGraphReader, pathAnalyzer ExecutionPathChoiceAnalyzer, pathRepository repository.ExecutionPathRepository) *ExecutionPathService {
-	return &ExecutionPathService{plans: plans, graphs: graphs, analyzer: pathAnalyzer, repository: pathRepository, now: time.Now}
+	return &ExecutionPathService{plans: plans, graphs: graphs, analyzer: pathAnalyzer, repository: pathRepository, now: time.Now, generations: make(map[string]*PathGenerationJob)}
+}
+
+// StartGeneration 创建或恢复指定幂等键的后台全路径解析任务。
+func (s *ExecutionPathService) StartGeneration(_ context.Context, planID uint64, createKey string) (PathGenerationJob, error) {
+	createKey = strings.TrimSpace(createKey)
+	if !validUUID(createKey) {
+		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "后台解析请求标识不正确，请重试"}
+	}
+	s.generationMu.Lock()
+	if existing, found := s.generations[createKey]; found {
+		copy := *existing
+		s.generationMu.Unlock()
+		return copy, nil
+	}
+	jobCtx, cancel := context.WithCancel(context.Background())
+	job := &PathGenerationJob{ID: createKey, Status: "queued", UpdatedAt: s.now().UTC(), planID: planID, cancel: cancel}
+	s.generations[createKey] = job
+	s.generationMu.Unlock()
+	go s.runGeneration(jobCtx, createKey)
+	return *job, nil
+}
+
+// runGeneration 在后台执行完整路径解析，完成后只刷新任务快照。
+func (s *ExecutionPathService) runGeneration(ctx context.Context, jobID string) {
+	s.updateGeneration(jobID, func(job *PathGenerationJob) { job.Status = "running" })
+	s.generationMu.RLock()
+	planID := s.generations[jobID].planID
+	s.generationMu.RUnlock()
+	result, _, err := s.generatePathsBatch(ctx, planID, jobID)
+	s.updateGeneration(jobID, func(job *PathGenerationJob) {
+		if job.Status == "cancelled" {
+			return
+		}
+		if err != nil {
+			job.Status, job.Error = "failed", err.Error()
+			return
+		}
+		job.Status, job.Total, job.Completed, job.Created = "completed", result.TotalCount, result.TotalCount, result.CreatedCount
+	})
+}
+
+// GetGeneration 返回后台解析任务的最新进度。
+func (s *ExecutionPathService) GetGeneration(_ context.Context, _ uint64, jobID string) (PathGenerationJob, error) {
+	s.generationMu.RLock()
+	job, found := s.generations[jobID]
+	if found {
+		copy := *job
+		s.generationMu.RUnlock()
+		return copy, nil
+	}
+	s.generationMu.RUnlock()
+	return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorNotFound, Message: "后台解析任务不存在"}
+}
+
+// CancelGeneration 取消尚未完成的后台解析任务，不回滚已提交路径。
+func (s *ExecutionPathService) CancelGeneration(_ context.Context, _ uint64, jobID string) error {
+	return s.updateGeneration(jobID, func(job *PathGenerationJob) {
+		if job.Status == "queued" || job.Status == "running" {
+			if job.cancel != nil {
+				job.cancel()
+			}
+			job.Status = "cancelled"
+		}
+	})
+}
+
+// ResumeGeneration 恢复已取消或失败的任务，仍使用原幂等键避免重复路径。
+func (s *ExecutionPathService) ResumeGeneration(_ context.Context, _ uint64, jobID string) (PathGenerationJob, error) {
+	s.generationMu.Lock()
+	job, found := s.generations[jobID]
+	if !found {
+		s.generationMu.Unlock()
+		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorNotFound, Message: "后台解析任务不存在"}
+	}
+	if job.Status != "cancelled" && job.Status != "failed" {
+		copy := *job
+		s.generationMu.Unlock()
+		return copy, nil
+	}
+	jobCtx, cancel := context.WithCancel(context.Background())
+	job.Status, job.Error, job.UpdatedAt, job.cancel = "queued", "", s.now().UTC(), cancel
+	copy := *job
+	s.generationMu.Unlock()
+	go s.runGeneration(jobCtx, jobID)
+	return copy, nil
+}
+
+// updateGeneration 在锁内更新任务快照并刷新时间。
+func (s *ExecutionPathService) updateGeneration(jobID string, update func(*PathGenerationJob)) error {
+	s.generationMu.Lock()
+	defer s.generationMu.Unlock()
+	job, found := s.generations[jobID]
+	if !found {
+		return fmt.Errorf("后台解析任务不存在")
+	}
+	update(job)
+	job.UpdatedAt = s.now().UTC()
+	return nil
 }
 
 // List 读取属于指定计划的持久化路径，不伪造当前图有效性。
@@ -74,6 +188,18 @@ func (s *ExecutionPathService) List(ctx context.Context, planID uint64) ([]model
 		return nil, mapExecutionPathRepositoryError(err)
 	}
 	return paths, nil
+}
+
+// Get 按计划归属读取单条路径 choices，列表摘要不会携带这些线路数据。
+func (s *ExecutionPathService) Get(ctx context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
+	if planID == 0 || pathID == 0 {
+		return model.ExecutionPath{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
+	}
+	path, err := s.repository.Get(ctx, planID, pathID)
+	if err != nil {
+		return model.ExecutionPath{}, mapExecutionPathRepositoryError(err)
+	}
+	return path, nil
 }
 
 // Create 优先返回已成功的幂等记录；新请求才重读真实图并事务创建路径。
@@ -135,8 +261,8 @@ func (s *ExecutionPathService) Update(ctx context.Context, planID, pathID uint64
 	return path, nil
 }
 
-// GenerateAll 优先返回持久化幂等批次；新请求只读取一次真实图并枚举最多 128 条完整线路。
-func (s *ExecutionPathService) GenerateAll(ctx context.Context, planID uint64, createKey string) (model.ExecutionPathBatchResult, bool, error) {
+// generatePathsBatch 在后台任务中读取一次真实图并持久化全部合法完整线路。
+func (s *ExecutionPathService) generatePathsBatch(ctx context.Context, planID uint64, createKey string) (model.ExecutionPathBatchResult, bool, error) {
 	createKey = strings.TrimSpace(createKey)
 	if planID == 0 || !validUUID(createKey) {
 		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "批量请求标识不正确，请重试"}
@@ -155,20 +281,20 @@ func (s *ExecutionPathService) GenerateAll(ctx context.Context, planID uint64, c
 		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "计划已经不能修改执行路径"}
 	}
 	if plan.FlowSource != "new" {
-		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorGenerateAll, Message: "只有新发起计划可以一键生成全部路径"}
+		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "只有新发起计划可以自动解析全部路径"}
 	}
 	graph, err := s.graphs.Get(ctx, planID)
 	if err != nil {
 		return model.ExecutionPathBatchResult{}, false, err
 	}
-	candidates, err := s.analyzer.EnumerateAll(graph, 128)
+	candidates, err := s.analyzer.EnumerateAll(graph, 0)
 	if errors.Is(err, analyzer.ErrExecutionPathEnumerationLimit) {
-		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "当前流程超过 128 条路径，请手动建立重点路径"}
+		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "当前流程路径解析超过资源保护阈值，请恢复任务"}
 	}
 	if err != nil {
 		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "当前流程结构无法生成完整路径"}
 	}
-	result, created, err := s.repository.GenerateAll(ctx, planID, createKey, candidates, s.now().UTC())
+	result, created, err := s.repository.GeneratePathsBatch(ctx, planID, createKey, candidates, s.now().UTC())
 	if err != nil {
 		return model.ExecutionPathBatchResult{}, false, mapExecutionPathRepositoryError(err)
 	}
@@ -247,7 +373,7 @@ func mapExecutionPathRepositoryError(err error) error {
 	case errors.Is(err, repository.ErrExecutionPathLimit):
 		return &ExecutionPathError{Kind: ExecutionPathErrorLimit, Message: "当前计划最多只能保存一条执行路径"}
 	case errors.Is(err, repository.ErrExecutionPathSource):
-		return &ExecutionPathError{Kind: ExecutionPathErrorGenerateAll, Message: "只有新发起计划可以一键生成全部路径"}
+		return &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "只有新发起计划可以自动解析全部路径"}
 	case errors.Is(err, repository.ErrExecutionPathPlanLocked):
 		return &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "计划已经不能修改执行路径"}
 	case errors.Is(err, repository.ErrExecutionPathDataInvalid):

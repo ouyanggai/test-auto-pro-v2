@@ -18,6 +18,19 @@ type ExecutionPathRepository struct {
 	db *sql.DB
 }
 
+// Get 按计划归属读取单条路径及其 choices，供进入编辑态时按需加载。
+func (r *ExecutionPathRepository) Get(ctx context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
+	path, err := scanExecutionPath(r.db.QueryRowContext(ctx, `SELECT id, plan_id, sequence_no, name, created_at, updated_at FROM test_execution_paths WHERE plan_id = ? AND id = ?`, planID, pathID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ExecutionPath{}, repository.ErrExecutionPathNotFound
+	}
+	if err != nil {
+		return model.ExecutionPath{}, err
+	}
+	path.Choices, err = loadExecutionPathChoices(ctx, r.db, pathID)
+	return path, err
+}
+
 // NewExecutionPathRepository 创建基于同一计划数据库连接池的路径仓储。
 func NewExecutionPathRepository(db *sql.DB) *ExecutionPathRepository {
 	return &ExecutionPathRepository{db: db}
@@ -216,8 +229,8 @@ func (r *ExecutionPathRepository) FindBatchByCreateKey(ctx context.Context, plan
 	return result, true, nil
 }
 
-// GenerateAll 在单一计划锁和事务中完成重复过滤、连续序号分配、批量写入与幂等结果登记。
-func (r *ExecutionPathRepository) GenerateAll(ctx context.Context, planID uint64, createKey string, candidates [][]model.ExecutionPathChoice, now time.Time) (model.ExecutionPathBatchResult, bool, error) {
+// GeneratePathsBatch 按资源批次完成重复过滤、连续序号分配、批量写入与幂等结果登记。
+func (r *ExecutionPathRepository) GeneratePathsBatch(ctx context.Context, planID uint64, createKey string, candidates [][]model.ExecutionPathChoice, now time.Time) (model.ExecutionPathBatchResult, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.ExecutionPathBatchResult{}, false, err
