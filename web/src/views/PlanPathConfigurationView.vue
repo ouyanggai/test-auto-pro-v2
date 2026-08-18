@@ -82,6 +82,9 @@ const pageLoading = ref(false)
 const pathDetailLoading = ref(false)
 const savingNode = ref(false)
 const formRuntimeLoading = ref(false)
+const formGenerating = ref(false)
+const formGenerationKind = ref<'smart' | 'next' | null>(null)
+const formRestoring = ref(false)
 const formSaving = ref(false)
 const pageError = ref('')
 const nodeSaveError = ref('')
@@ -174,6 +177,11 @@ function invalidateRuntimeSession() {
   formOperationController = null
   runtimeSession.value = null
   runtimeUnsupported.value = []
+  formRuntimeLoading.value = false
+  formGenerating.value = false
+  formGenerationKind.value = null
+  formRestoring.value = false
+  formSaving.value = false
 }
 
 // isActiveFormOperation 防止返回节点或路由切换后，旧 iframe 请求反写当前页面。
@@ -485,7 +493,7 @@ async function saveAllNodes() {
 
 // openFormWorkspace 获取短期 SID 后切换到全宽真实表单；SID 不进入配置对象或持久状态。
 async function openFormWorkspace() {
-  if (!configuration.value || formRuntimeLoading.value || formSaving.value) return
+  if (!configuration.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value) return
   workspace.value = 'form'
   formError.value = ''
   if (runtimeSession.value) return
@@ -519,11 +527,12 @@ async function generateFormData(nextGroup: boolean) {
   const current = configuration.value
   const frame = formFrame.value
   const epoch = runtimeEpoch
-  if (!current || current.form.readOnly || formRuntimeLoading.value || formSaving.value || !frame || !runtimeSession.value) return
+  if (!current || current.form.readOnly || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
-  formSaving.value = true
+  formGenerating.value = true
+  formGenerationKind.value = nextGroup ? 'next' : 'smart'
   formError.value = ''
   formErrorDetails.value = []
   formSavedSuccessfully.value = false
@@ -557,7 +566,10 @@ async function generateFormData(nextGroup: boolean) {
     if (isActiveFormOperation(epoch, frame) && !(caught instanceof DOMException && caught.name === 'AbortError')) formError.value = publicPageError(caught)
   }
   finally {
-    if (epoch === runtimeEpoch) formSaving.value = false
+    if (epoch === runtimeEpoch) {
+      formGenerating.value = false
+      formGenerationKind.value = null
+    }
     if (formOperationController === controller) formOperationController = null
   }
 }
@@ -566,11 +578,11 @@ async function generateFormData(nextGroup: boolean) {
 async function restoreSavedForm() {
   const frame = formFrame.value
   const epoch = runtimeEpoch
-  if (!frame || !runtimeSession.value || formRuntimeLoading.value || formSaving.value) return
+  if (!frame || !runtimeSession.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
-  formSaving.value = true
+  formRestoring.value = true
   formError.value = ''
   try {
     const restored = await frame.restoreSaved()
@@ -581,7 +593,7 @@ async function restoreSavedForm() {
     if (isActiveFormOperation(epoch, frame) && !controller.signal.aborted) formError.value = publicPageError(caught)
   }
   finally {
-    if (epoch === runtimeEpoch) formSaving.value = false
+    if (epoch === runtimeEpoch) formRestoring.value = false
     if (formOperationController === controller) formOperationController = null
   }
 }
@@ -591,7 +603,7 @@ async function saveFormData() {
   const current = configuration.value
   const frame = formFrame.value
   const epoch = runtimeEpoch
-  if (!current || current.form.readOnly || runtimeBlocked.value || formRuntimeLoading.value || formSaving.value || !frame || !runtimeSession.value) return
+  if (!current || current.form.readOnly || runtimeBlocked.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
@@ -806,14 +818,14 @@ void loadPage()
           <div class="path-configuration-page__form-actions">
             <n-button size="small" @click="returnToNodes">返回节点画布</n-button>
             <template v-if="!configuration.form.readOnly">
-              <n-button size="small" :disabled="formRuntimeLoading || formSaving" @click="generateFormData(false)">智能生成</n-button>
-              <n-button size="small" :disabled="formRuntimeLoading || formSaving" @click="generateFormData(true)">换一组</n-button>
-              <n-button size="small" :disabled="formRuntimeLoading || formSaving" @click="restoreSavedForm">恢复已保存</n-button>
-              <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading" @click="saveFormData">保存表单数据</n-button>
+              <n-button size="small" :loading="formGenerating && formGenerationKind === 'smart'" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(false)">智能生成</n-button>
+              <n-button size="small" :loading="formGenerating && formGenerationKind === 'next'" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(true)">换一组</n-button>
+              <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="restoreSavedForm">恢复已保存</n-button>
+              <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formGenerating || formRestoring" @click="saveFormData">保存表单数据</n-button>
             </template>
           </div>
         </header>
-        <n-card v-if="configuration.form.conditionBindings.length" size="small" class="path-configuration-page__form-hints">
+        <section v-if="configuration.form.conditionBindings.length" class="path-configuration-page__form-hints" aria-label="当前路径分支条件">
           <n-collapse :default-expanded-names="['path-conditions']" arrow-placement="right">
             <n-collapse-item title="当前路径分支条件" name="path-conditions">
               <div class="path-configuration-page__form-hints-body">
@@ -833,7 +845,7 @@ void loadPage()
               </div>
             </n-collapse-item>
           </n-collapse>
-        </n-card>
+        </section>
         <div v-if="formError || formSavedSuccessfully || runtimeBlocked" class="path-configuration-page__form-feedback">
           <n-alert v-if="formError" type="error" :show-icon="false" size="small">
             <div>{{ formError }}</div>
@@ -998,8 +1010,22 @@ void loadPage()
   z-index: 30;
   width: 300px;
   max-width: calc(100% - 28px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  background: #fff;
+  border: 1px solid var(--path-config-border-color);
+  border-radius: 4px;
+  color: #262626;
+  color-scheme: light;
 }
+.path-configuration-page__form-hints :deep(.n-collapse) {
+  --n-text-color: rgba(0, 0, 0, 0.82) !important;
+  --n-divider-color: rgba(0, 0, 0, 0.12) !important;
+  --n-title-text-color: rgba(0, 0, 0, 0.9) !important;
+  --n-arrow-color: rgba(0, 0, 0, 0.7) !important;
+}
+.path-configuration-page__form-hints :deep(.n-collapse-item__header) { padding: 12px 14px; color: #262626 !important; }
+.path-configuration-page__form-hints :deep(.n-collapse-item__header-main) { color: #262626 !important; }
+.path-configuration-page__form-hints :deep(.n-collapse-item__content-wrapper) { padding: 0 14px 12px; }
+.path-configuration-page__form-hints :deep(.n-base-icon) { color: #595959 !important; }
 .path-configuration-page__form-hints-body {
   max-height: 300px;
   overflow-y: auto;
@@ -1015,21 +1041,22 @@ void loadPage()
   align-items: start;
   gap: 6px;
   padding: 7px 8px;
-  border-left: 3px solid color-mix(in srgb, var(--path-config-border-color) 78%, transparent);
+  border-left: 2px solid var(--path-config-border-color);
+  background: #fff;
   line-height: 1.55;
 }
 .path-configuration-page__form-hints-list li + li { margin-top: 5px; }
-.path-configuration-page__form-hints-list strong { color: var(--path-config-text-color); font-weight: 600; }
+.path-configuration-page__form-hints-list strong { color: #262626; font-weight: 600; }
 .path-configuration-page__form-hint-head { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-.path-configuration-page__form-hint-head > span { color: var(--path-config-text-secondary-color); }
-.path-configuration-page__form-hints-list p { margin: 0; color: var(--path-config-text-color); }
-.path-configuration-page__form-hints-list small { color: var(--path-config-text-secondary-color); }
+.path-configuration-page__form-hint-head > span { color: #595959; }
+.path-configuration-page__form-hints-list p { margin: 0; color: #262626; }
+.path-configuration-page__form-hints-list small { color: #737373; }
 .path-configuration-page__form-hint--selected {
-  background: color-mix(in srgb, #18a058 10%, var(--path-config-card-color));
+  background: #f0f9f4;
   border-left-color: #18a058 !important;
 }
 .path-configuration-page__form-hint--review {
-  background: color-mix(in srgb, #d03050 9%, var(--path-config-card-color));
+  background: #fff2f0;
   border-left-color: #d03050 !important;
 }
 .path-configuration-page__form-error-details {

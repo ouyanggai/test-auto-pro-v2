@@ -8,6 +8,8 @@
 
 条件投影的公开切片统一使用 JSON 数组：无条件分支的 `fields`、空 `conditionBindings`、`conditionReviews`、`fieldRules` 和规则 `conditionKeys` 都编码为 `[]`，不得输出 `null`。前端 API 入口再次归一化这些字段及布尔状态，模板只消费稳定模型并保留数组防御检查，避免异常响应演变为 Vue 渲染和卸载错误。
 
+F-007 的 `form-runtime/` 是隔离的浅色表单运行时：入口文档、运行时根节点和宿主 iframe 背景都固定 `color-scheme: light` 与白色表面，不读取主应用深色主题或系统深色媒体查询。表单配置页的生成、恢复、保存分别维护忙碌状态，状态只控制对应按钮和并发禁用边界。
+
 ## 固定选型
 
 - 主前端：Vue 3、Vite、Vue Router、Pinia、Naive UI；F-007 的 `form-runtime/` 是唯一隔离例外，使用目标表单引擎要求的 Vue 2、Element UI 与 FormMaking，并通过 iframe 接入主应用。

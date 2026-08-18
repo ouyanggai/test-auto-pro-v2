@@ -260,8 +260,11 @@ export default {
 html,
 body,
 #app {
+  color-scheme: light;
   min-height: 100%;
   margin: 0;
+  color: #262626 !important;
+  background: #fff !important;
 }
 
 body {
@@ -273,6 +276,9 @@ body {
   box-sizing: border-box;
   min-height: 100vh;
   padding: 18px 22px 32px;
+  color-scheme: light;
+  color: #262626;
+  background: #fff;
 }
 
 .form-runtime__placeholder {
@@ -281,7 +287,4 @@ body {
   text-align: center;
 }
 
-@media (prefers-color-scheme: dark) {
-  body { color: #e5eaf0; background: #18181c; }
-}
 </style>

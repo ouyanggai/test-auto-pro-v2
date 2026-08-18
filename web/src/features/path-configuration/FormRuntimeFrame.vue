@@ -185,7 +185,7 @@ defineExpose({ setGeneratedData, reloadRuntime, restoreSaved, getValues, validat
   width: 100%;
   height: 100%;
   min-height: 0;
-  background: var(--path-config-card-color);
+  background: #fff;
   border: 0;
 }
 </style>
