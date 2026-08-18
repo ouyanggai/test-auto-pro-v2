@@ -38,6 +38,20 @@ grep -Fq '已选路径' "${view}"
 grep -Fq '全部兼容路径' "${view}"
 grep -Fq '为每个节点配置一个随机动作' "${view}"
 grep -Fq 'fetchExecutionPath(planID.value, pathID.value, controller.signal)' "${view}"
+grep -Fq 'const pageLoading = ref(false)' "${view}"
+grep -Fq 'const pathDetailLoading = ref(false)' "${view}"
+grep -Fq 'const formRuntimeLoading = ref(false)' "${view}"
+grep -Fq 'const formSaving = ref(false)' "${view}"
+grep -Fq 'class="path-configuration-page__initial-loading"' "${view}"
+grep -Fq 'v-if="pageLoading"' "${view}"
+grep -Fq "'正在读取路径详情'" "${view}"
+grep -Fq '正在加载路径配置' "${view}"
+grep -Fq 'class="path-configuration-page__form-loading"' "${view}"
+grep -Fq '正在加载表单运行时' "${view}"
+if grep -Fq '<n-spin :show="loading || formBusy"' "${view}"; then
+  echo '页面初始化、表单会话和保存状态不得复用同一个遮罩' >&2
+  exit 1
+fi
 grep -Fq '确认应用' "${view}"
 grep -Fq 'PathConfigActionCycle' "${model}"
 grep -Fq 'restart_from_initiator' "${workspace}"

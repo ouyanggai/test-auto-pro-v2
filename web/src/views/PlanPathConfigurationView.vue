@@ -78,9 +78,11 @@ const selectedNodeID = ref('')
 const workspace = ref<'nodes' | 'form'>('nodes')
 const runtimeSession = ref<PathFormRuntimeSession | null>(null)
 const runtimeUnsupported = ref<string[]>([])
-const loading = ref(false)
+const pageLoading = ref(false)
+const pathDetailLoading = ref(false)
 const savingNode = ref(false)
-const formBusy = ref(false)
+const formRuntimeLoading = ref(false)
+const formSaving = ref(false)
 const pageError = ref('')
 const nodeSaveError = ref('')
 const nodeSaveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
@@ -117,8 +119,8 @@ const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
   ? projectPathConfigurationNodeStates(graph.value, pathAnalysis.value, configurationByGraphNodeID.value, selectedNodeID.value)
   : {})
 const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(selectedNode.value, draft.value))
-const nodeSaveDisabled = computed(() => loading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
-const saveAllNodesDisabled = computed(() => loading.value || savingNode.value || !configuration.value)
+const nodeSaveDisabled = computed(() => pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
+const saveAllNodesDisabled = computed(() => pageLoading.value || savingNode.value || !configuration.value)
 const runtimeBlockingReasons = computed(() => [...new Set([
   ...(configuration.value?.form.unsupported ?? []),
   ...runtimeUnsupported.value,
@@ -190,7 +192,8 @@ async function loadPage() {
   const controller = new AbortController()
   loadController = controller
   const version = ++loadVersion
-  loading.value = true
+  pageLoading.value = true
+  pathDetailLoading.value = false
   pageError.value = ''
   nodeSaveError.value = ''
   formError.value = ''
@@ -198,12 +201,15 @@ async function loadPage() {
   formSavedSuccessfully.value = false
   workspace.value = 'nodes'
   try {
-    const [storedPlan, storedGraph, storedPaths, storedPath] = await Promise.all([
+    const [storedPlan, storedGraph, storedPaths] = await Promise.all([
       fetchPlan(planID.value, controller.signal),
       fetchFlowGraph(planID.value, controller.signal),
       fetchExecutionPaths(planID.value, controller.signal),
-      fetchExecutionPath(planID.value, pathID.value, controller.signal),
     ])
+    if (controller.signal.aborted || version !== loadVersion) return
+    pathDetailLoading.value = true
+    const storedPath = await fetchExecutionPath(planID.value, pathID.value, controller.signal)
+    pathDetailLoading.value = false
     if (controller.signal.aborted || version !== loadVersion) return
     if (!storedPaths.some(path => path.id === storedPath.id)) throw new Error('已保存路径不存在或已删除')
     const analysis = analyzeExecutionPath(storedGraph, storedPath.choices)
@@ -222,7 +228,10 @@ async function loadPage() {
     if (!controller.signal.aborted && version === loadVersion) pageError.value = publicPageError(caught)
   }
   finally {
-    if (version === loadVersion) loading.value = false
+    if (version === loadVersion) {
+      pageLoading.value = false
+      pathDetailLoading.value = false
+    }
   }
   if (version === loadVersion && configuration.value) await focusSelectedNode()
 }
@@ -450,11 +459,11 @@ async function saveAllNodes() {
 
 // openFormWorkspace 获取短期 SID 后切换到全宽真实表单；SID 不进入配置对象或持久状态。
 async function openFormWorkspace() {
-  if (!configuration.value || formBusy.value) return
+  if (!configuration.value || formRuntimeLoading.value || formSaving.value) return
   workspace.value = 'form'
   formError.value = ''
   if (runtimeSession.value) return
-  formBusy.value = true
+  formRuntimeLoading.value = true
   try {
     runtimeSession.value = await fetchPathFormRuntimeSession(planID.value, pathID.value)
   }
@@ -462,7 +471,7 @@ async function openFormWorkspace() {
     formError.value = publicPageError(caught)
   }
   finally {
-    formBusy.value = false
+    formRuntimeLoading.value = false
   }
 }
 
@@ -477,8 +486,8 @@ function returnToNodes() {
 // generateFormData 首次生成或换一组；换组仅替换生成器拥有字段，人工覆盖由 runtime 返回。
 async function generateFormData(nextGroup: boolean) {
   const current = configuration.value
-  if (!current || current.form.readOnly || formBusy.value || !formFrame.value) return
-  formBusy.value = true
+  if (!current || current.form.readOnly || formRuntimeLoading.value || formSaving.value || !formFrame.value) return
+  formSaving.value = true
   formError.value = ''
   formErrorDetails.value = []
   formSavedSuccessfully.value = false
@@ -508,25 +517,25 @@ async function generateFormData(nextGroup: boolean) {
     formError.value = publicPageError(caught)
   }
   finally {
-    formBusy.value = false
+    formSaving.value = false
   }
 }
 
 // restoreSavedForm 恢复本次 GET 装载的服务端 values，不重读或重新生成。
 async function restoreSavedForm() {
-  if (!formFrame.value || formBusy.value) return
-  formBusy.value = true
+  if (!formFrame.value || formRuntimeLoading.value || formSaving.value) return
+  formSaving.value = true
   formError.value = ''
   try { applyRuntimeFormState(await formFrame.value.restoreSaved()) }
   catch (caught) { formError.value = publicPageError(caught) }
-  finally { formBusy.value = false }
+  finally { formSaving.value = false }
 }
 
 // saveFormData 先经真实 getData(true)/getValues，再由服务端按最新模板与路径复验并独立保存。
 async function saveFormData() {
   const current = configuration.value
-  if (!current || current.form.readOnly || runtimeBlocked.value || formBusy.value || !formFrame.value) return
-  formBusy.value = true
+  if (!current || current.form.readOnly || runtimeBlocked.value || formRuntimeLoading.value || formSaving.value || !formFrame.value) return
+  formSaving.value = true
   formError.value = ''
   formErrorDetails.value = []
   formSavedSuccessfully.value = false
@@ -565,7 +574,7 @@ async function saveFormData() {
     formErrorDetails.value = caught instanceof PathConfigApiError ? caught.details : []
   }
   finally {
-    formBusy.value = false
+    formSaving.value = false
   }
 }
 
@@ -592,6 +601,7 @@ void loadPage()
     class="path-configuration-page"
     :class="{ 'path-configuration-page--form': workspace === 'form' }"
     :style="pageThemeStyle"
+    :aria-busy="pageLoading"
   >
     <header class="path-configuration-page__header">
       <div class="path-configuration-page__identity">
@@ -672,8 +682,12 @@ void loadPage()
       <n-button :type="workspace === 'form' ? 'primary' : 'default'" :secondary="workspace !== 'form'" @click="openFormWorkspace">表单数据</n-button>
     </nav>
 
-    <n-spin :show="loading || formBusy" class="path-configuration-page__stage">
-      <n-alert v-if="pageError" type="error" :show-icon="false" class="path-configuration-page__error">
+    <section class="path-configuration-page__stage">
+      <section v-if="pageLoading" class="path-configuration-page__initial-loading" role="status" aria-live="polite">
+        <n-spin :show="true" size="large" :description="pathDetailLoading ? '正在读取路径详情' : '正在加载路径配置'" />
+      </section>
+
+      <n-alert v-else-if="pageError" type="error" :show-icon="false" class="path-configuration-page__error">
         <div class="path-configuration-page__error-content">
           <span>{{ pageError }}</span>
           <n-button size="small" @click="loadPage">重新读取</n-button>
@@ -728,10 +742,10 @@ void loadPage()
           <div class="path-configuration-page__form-actions">
             <n-button size="small" @click="returnToNodes">返回节点画布</n-button>
             <template v-if="!configuration.form.readOnly">
-              <n-button size="small" :disabled="formBusy" @click="generateFormData(false)">智能生成</n-button>
-              <n-button size="small" :disabled="formBusy" @click="generateFormData(true)">换一组</n-button>
-              <n-button size="small" :disabled="formBusy" @click="restoreSavedForm">恢复已保存</n-button>
-              <n-button size="small" type="primary" :loading="formBusy" :disabled="runtimeBlocked" @click="saveFormData">保存表单数据</n-button>
+              <n-button size="small" :disabled="formRuntimeLoading || formSaving" @click="generateFormData(false)">智能生成</n-button>
+              <n-button size="small" :disabled="formRuntimeLoading || formSaving" @click="generateFormData(true)">换一组</n-button>
+              <n-button size="small" :disabled="formRuntimeLoading || formSaving" @click="restoreSavedForm">恢复已保存</n-button>
+              <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading" @click="saveFormData">保存表单数据</n-button>
             </template>
           </div>
         </header>
@@ -766,8 +780,11 @@ void loadPage()
             {{ runtimeBlockingReasons.map(pathConfigurationMessage).join('；') }}
           </n-alert>
         </div>
+        <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
+          <n-spin :show="true" size="large" description="正在加载表单运行时" />
+        </section>
         <form-runtime-frame
-          v-if="runtimeSession"
+          v-else-if="runtimeSession"
           ref="formFrame"
           class="path-configuration-page__form-frame"
           :form="configuration.form"
@@ -776,11 +793,11 @@ void loadPage()
           @state="applyRuntimeFormState"
           @error="(message) => formError = message"
         />
-        <n-empty v-else-if="!formBusy" description="表单运行时会话暂不可用，请返回节点画布后重试" />
+        <n-empty v-else description="表单运行时会话暂不可用，请返回节点画布后重试" />
       </section>
 
-      <n-empty v-else-if="!loading && !pageError" description="暂时没有可配置内容" />
-    </n-spin>
+      <n-empty v-else description="当前路径没有可配置内容" />
+    </section>
   </main>
 </template>
 
@@ -861,7 +878,15 @@ void loadPage()
   border-radius: 0;
 }
 
-.path-configuration-page__stage :deep(.n-spin-content) { width: 100%; height: 100%; min-height: 0; }
+.path-configuration-page__initial-loading,
+.path-configuration-page__form-loading {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.path-configuration-page__initial-loading { min-height: 320px; }
 .path-configuration-page__canvas { height: 100%; min-height: 0; border-top: 0; }
 .path-configuration-page__error { margin: 20px; }
 .path-configuration-page__error-content { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; line-height: 1.6; }
