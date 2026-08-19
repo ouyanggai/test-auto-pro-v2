@@ -54,7 +54,9 @@ type GenerateResult struct {
 	Fallback            int
 	Identity            int
 	Pending             int
-	Unsupported         []string
+	// PendingFields 记录无法安全补齐的真实必填字段，调用方据此给出数据源或人工核对原因。
+	PendingFields []string
+	Unsupported   []string
 }
 
 // Field 是从 FormMaking 模板递归提取的生成与校验元数据。
@@ -230,6 +232,22 @@ func ParseTemplate(template map[string]any) ([]Field, []string) {
 	pendingLabel := ""
 	collectList(anySlice(template["list"]), "", "", &pendingLabel, &fields, &unsupported)
 	return fields, uniqueSorted(unsupported)
+}
+
+// FieldName 返回模板字段路径对应的公开中文名称，目录和生成结果不得向页面暴露内部模型键。
+func FieldName(template map[string]any, path string) string {
+	for _, field := range mustParseTemplate(template) {
+		if field.Path == strings.TrimSpace(path) {
+			return strings.TrimSpace(field.Name)
+		}
+	}
+	return ""
+}
+
+// mustParseTemplate 读取字段清单时丢弃无法安全解析的组件，调用方只用于展示名称回退。
+func mustParseTemplate(template map[string]any) []Field {
+	fields, _ := ParseTemplate(template)
+	return fields
 }
 
 // InventoryTemplateRules 递归盘点模板组件、数据源与脚本能力，统一提供给生成器和覆盖报告。
@@ -636,7 +654,7 @@ func Generate(input GenerateInput) GenerateResult {
 	}
 	generated := make([]string, 0, len(fields))
 	// 复杂组件由真实 FormMaking 负责渲染和校验；生成器只跳过它们并提示人工填写，不能把整张表单误判为不支持。
-	result := GenerateResult{Values: values, ManualOverridePaths: uniqueSorted(input.ManualOverridePaths), Pending: len(skipped), Unsupported: []string{}}
+	result := GenerateResult{Values: values, ManualOverridePaths: uniqueSorted(input.ManualOverridePaths), Pending: len(skipped), PendingFields: append([]string(nil), skipped...), Unsupported: []string{}}
 	for _, field := range fields {
 		if manual[field.Path] {
 			continue
@@ -644,6 +662,7 @@ func Generate(input GenerateInput) GenerateResult {
 		if field.ManualOnly {
 			if field.Required && emptyFieldValue(values, field) {
 				result.Pending++
+				result.PendingFields = append(result.PendingFields, field.Path)
 			}
 			continue
 		}
@@ -672,6 +691,7 @@ func Generate(input GenerateInput) GenerateResult {
 				result.Identity++
 			} else if field.Required {
 				result.Pending++
+				result.PendingFields = append(result.PendingFields, field.Path)
 			}
 			continue
 		}
@@ -704,12 +724,14 @@ func Generate(input GenerateInput) GenerateResult {
 		}
 		if field.Required {
 			result.Pending++
+			result.PendingFields = append(result.PendingFields, field.Path)
 		}
 	}
 	applyConstraints(values, input.Constraints, manual, input.ProtectedPaths, rng, &generated)
 	applyDateRangeBindings(values, input.DateRangeBindings, manual, &generated)
 	addVirtualValues(values, fields, &generated)
 	result.GeneratedFieldPaths = uniqueSorted(generated)
+	result.PendingFields = uniqueSorted(result.PendingFields)
 	return result
 }
 

@@ -70,6 +70,19 @@ function normalizePathFormConfiguration(value: PathFormConfiguration | null | un
       disabled: rule?.disabled === true,
       conditionKeys: Array.isArray(rule?.conditionKeys) ? rule.conditionKeys.map(String) : [],
     })) : [],
+    renderType: form.renderType === 'vue_custom' || form.renderType === 'unknown' ? form.renderType : 'formmaking',
+    vuePage: form.vuePage ? {
+      pageName: String(form.vuePage.pageName ?? ''),
+      componentName: String(form.vuePage.componentName ?? ''),
+      route: String(form.vuePage.route ?? ''),
+      fields: Array.isArray(form.vuePage.fields) ? form.vuePage.fields.map(field => ({
+        path: String(field?.path ?? ''), name: String(field?.name ?? ''), valueType: String(field?.valueType ?? 'input'),
+        required: field?.required === true, readOnly: field?.readOnly === true, candidateKind: String(field?.candidateKind ?? ''),
+        defaultValue: field?.defaultValue, dataSource: String(field?.dataSource ?? ''),
+        options: Array.isArray(field?.options) ? field.options.map(option => ({ label: String(option?.label ?? ''), value: option?.value })) : [],
+      })) : [],
+      issues: Array.isArray(form.vuePage.issues) ? form.vuePage.issues.map(String) : [],
+    } : null,
   }
 }
 

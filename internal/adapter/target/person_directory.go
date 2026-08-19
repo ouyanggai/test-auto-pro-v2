@@ -550,6 +550,10 @@ func (c *Client) FormIdentityContext(ctx context.Context, active Session) (FormI
 		}
 	}
 	walk(tree, "", "", "", "", "")
+	// 部门树偶尔只返回人员的 departmentId 而没有完整父节点，保留登录响应的部门标识，避免表单工作区丢失身份关联。
+	if strings.TrimSpace(result.Department.ID) == "" {
+		result.Department = FormIdentityNode{ID: strings.TrimSpace(active.DepartmentID), Type: "2", CompanyID: companyID}
+	}
 	if !userFound {
 		return result, fmt.Errorf("current user not found in company directory")
 	}

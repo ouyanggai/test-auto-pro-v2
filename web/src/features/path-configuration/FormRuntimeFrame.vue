@@ -45,7 +45,7 @@ function postCommand(type: string, payload: Record<string, unknown> = {}): Promi
   })
 }
 
-// loadRuntime 只把 SID 传给当前 iframe 内存会话，并装载完整模板、权限、字段规则和 values。
+// loadRuntime 只把 SID 传给当前 iframe 内存会话，并装载完整模板、权限、字段规则、Vue 页面规则和 values。
 async function loadRuntime(): Promise<Record<string, unknown>> {
   if (disposed) return {}
   const generation = ++runtimeGeneration
@@ -62,6 +62,8 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       departmentId: props.runtimeSession.departmentId,
       departmentName: props.runtimeSession.departmentName,
       readOnly: props.form.readOnly,
+      renderType: props.form.renderType === 'vue_custom' ? 'vue_custom' : props.form.renderType,
+      vuePage: props.form.vuePage,
       template: props.form.template,
       permissions: props.form.permissions,
       fieldRules: props.form.fieldRules,

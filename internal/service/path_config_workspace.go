@@ -97,6 +97,12 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		return model.PathFormGenerateResult{}, err
 	}
 	template, unsupported := runtimeTemplate(snapshot.Forms)
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		if snapshot.VuePage == nil || len(snapshot.VuePage.Issues) > 0 {
+			return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "Vue 业务页面规则尚未完成分析"}
+		}
+		template = vueCustomTemplate(snapshot.VuePage)
+	}
 	if seed == 0 {
 		// 首次种子只依赖路径与当前修订，重复读取会得到同一组；换一组由浏览器显式推进种子。
 		seed = int64(path.ID*1000003 + uint64(len(path.Choices))*97 + 1)
@@ -128,6 +134,9 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		}
 	}
 	permissions := formPermissions(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		permissions = vueCustomFormPermissions(snapshot.VuePage)
+	}
 	dateRangeBindings := buildPathDateRangeBindings(snapshot.Tree, path.Choices, template)
 	conditions := buildPathFormConditionProjection(snapshot.Tree, path.Choices, template, base)
 	generated := formdata.Generate(formdata.GenerateInput{
@@ -145,6 +154,14 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	dateReasons := formdata.ValidateDateRangeBindings(generated.Values, dateRangeBindings)
 	matched := solved.matched && len(verificationReasons) == 0 && len(dateReasons) == 0
 	issues := append(make([]model.PathFormGenerationIssue, 0, len(solved.issues)), solved.issues...)
+	for _, fieldPath := range generated.PendingFields {
+		fieldName := formdata.FieldName(template, fieldPath)
+		if fieldName == "" {
+			fieldName = fieldPath
+		}
+		// 外部业务对象没有当前账号可见候选时必须保留空值，绝不能编造历史引用或对象 ID。
+		issues = append(issues, model.PathFormGenerationIssue{Field: fieldName, Reason: "当前数据源无可用记录", Blocking: false})
+	}
 	for _, review := range conditions.Reviews {
 		issues = appendPathSolveIssue(issues, "当前路径条件", review, true)
 	}
@@ -544,6 +561,12 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 		return model.PathConfigSaveResult{}, err
 	}
 	template, unsupported := runtimeTemplate(snapshot.Forms)
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		if snapshot.VuePage == nil || len(snapshot.VuePage.Issues) > 0 {
+			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "Vue 业务页面规则尚未完成分析"}
+		}
+		template = vueCustomTemplate(snapshot.VuePage)
+	}
 	if len(unsupported) > 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前表单结构无法载入", Affected: affectedFromStrings("form", unsupported)}
 	}
@@ -551,7 +574,11 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 	if len(conditions.Reviews) > 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径条件需要人工核对", Affected: affectedFromStrings("form", conditions.Reviews)}
 	}
-	if reasons := formdata.ValidateEditable(template, input.Values, conditions.Constraints, editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))); len(reasons) > 0 {
+	editablePaths := editableFormPaths(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		editablePaths = editableFormPathsFromPermissions(vueCustomFormPermissions(snapshot.VuePage))
+	}
+	if reasons := formdata.ValidateEditable(template, input.Values, conditions.Constraints, editablePaths); len(reasons) > 0 {
 		return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据不符合当前模板或路径条件", Affected: affectedFromStrings("form", reasons)}
 	}
 	if reasons := validateTargetPathSelection(snapshot.Tree, path.Choices, input.Values); len(reasons) > 0 {
@@ -586,12 +613,18 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 // projectPathForm 把当前真实模板、权限、实例值和已保存元数据投影为 iframe 工作区。
 func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, analysis model.ExecutionPathAnalysis, choices []model.ExecutionPathChoice, stored model.StoredPathConfig, found bool) model.PathFormConfig {
 	template, unsupported := runtimeTemplate(snapshot.Forms)
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		template = vueCustomTemplate(snapshot.VuePage)
+	}
 	form := model.PathFormConfig{
 		Revision: stored.FormRevision, Status: "empty", StatusName: "待配置",
 		ReadOnly: source != "new", RenderType: string(snapshot.RenderType), Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
 		ConditionBindings: []model.PathFormConditionBinding{}, ConditionReviews: []string{},
+	}
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		form.Permissions = vueCustomFormPermissions(snapshot.VuePage)
 	}
 	if found && len(stored.FormValues) > 0 {
 		form.Values = cloneFormValues(stored.FormValues)
@@ -612,10 +645,6 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 			form.Affected = affectedFromStrings("form", []string{"Vue 业务页面规则尚未完成分析"})
 			return form
 		}
-		if form.ReadOnly {
-			form.Status, form.StatusName, form.Validated = "valid", "已配置", true
-		}
-		return form
 	}
 	if snapshot.RenderType == target.FormRenderTypeUnknown {
 		form.Status, form.StatusName = "affected", "部分配置"
@@ -814,6 +843,73 @@ func runtimeTemplate(forms []target.FormRuntimeTemplate) (map[string]any, []stri
 		}
 	}
 	return template, uniquePublicStrings(unsupported)
+}
+
+// vueCustomTemplate 将已分析的 Vue 页面字段投影为生成器和保存复验共用的最小模板，不猜测字段名称或值形态。
+func vueCustomTemplate(page *target.VueCustomPageRule) map[string]any {
+	template := map[string]any{"list": []any{}, "config": map[string]any{}}
+	if page == nil {
+		return template
+	}
+	list := make([]any, 0, len(page.Fields))
+	for _, field := range page.Fields {
+		options := map[string]any{"required": field.Required, "defaultValue": field.DefaultValue}
+		if len(field.Options) > 0 {
+			values := make([]any, 0, len(field.Options))
+			for _, option := range field.Options {
+				values = append(values, map[string]any{"label": option.Label, "value": option.Value})
+			}
+			options["options"] = values
+		}
+		componentType := vueCustomFieldTemplateType(field.ValueType)
+		// 未知运行时字段和外部业务对象交给宿主真实页面校验，生成器只能保留真实值，不能伪造文本或对象引用。
+		if field.CandidateKind == "external" && componentType != "fileupload" {
+			componentType = "component"
+		}
+		list = append(list, map[string]any{"type": componentType, "model": field.Path, "name": field.Name, "options": options})
+	}
+	template["list"] = list
+	return template
+}
+
+// vueCustomFieldTemplateType 仅把已识别 Vue 字段类型映射为生成器支持的基础值类型。
+func vueCustomFieldTemplateType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "number":
+		return "number"
+	case "date", "datetime", "daterange", "time":
+		return "date"
+	case "select", "radio":
+		return "select"
+	case "checkbox", "multiple":
+		return "checkbox"
+	case "textarea", "input", "text":
+		return "input"
+	case "file", "upload", "fileupload":
+		return "fileupload"
+	default:
+		return "component"
+	}
+}
+
+// vueCustomFormPermissions 将已分析 Vue 页面字段的只读声明转换为运行时统一权限，缺失流程节点权限不再误锁整页。
+func vueCustomFormPermissions(page *target.VueCustomPageRule) []model.PathFormPermission {
+	if page == nil {
+		return []model.PathFormPermission{}
+	}
+	permissions := make([]model.PathFormPermission, 0, len(page.Fields))
+	for _, field := range page.Fields {
+		path := strings.TrimSpace(field.Path)
+		if path == "" {
+			continue
+		}
+		power := "edit"
+		if field.ReadOnly {
+			power = "only_read"
+		}
+		permissions = append(permissions, model.PathFormPermission{Field: path, Power: power})
+	}
+	return permissions
 }
 
 // formPermissions 合并当前路径字段权限；任一可达节点允许编辑时保持 edit，否则只读或隐藏。
@@ -1731,7 +1827,11 @@ func projectVueCustomPage(rule *target.VueCustomPageRule) *model.PathVueCustomPa
 	}
 	result := &model.PathVueCustomPageRule{PageName: rule.PageName, ComponentName: rule.ComponentName, Route: rule.Route, Fields: make([]model.PathVueCustomFieldRule, 0, len(rule.Fields)), Issues: uniquePublicStrings(rule.Issues)}
 	for _, field := range rule.Fields {
-		result.Fields = append(result.Fields, model.PathVueCustomFieldRule{Path: field.Path, Name: field.Name, ValueType: field.ValueType, Required: field.Required, ReadOnly: field.ReadOnly, CandidateKind: field.CandidateKind})
+		options := make([]model.PathVueCustomFieldOption, 0, len(field.Options))
+		for _, option := range field.Options {
+			options = append(options, model.PathVueCustomFieldOption{Label: option.Label, Value: option.Value})
+		}
+		result.Fields = append(result.Fields, model.PathVueCustomFieldRule{Path: field.Path, Name: field.Name, ValueType: field.ValueType, Required: field.Required, ReadOnly: field.ReadOnly, CandidateKind: field.CandidateKind, DefaultValue: field.DefaultValue, DataSource: field.DataSource, Options: options})
 	}
 	return result
 }

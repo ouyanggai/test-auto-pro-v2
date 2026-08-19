@@ -237,6 +237,13 @@ type VueCustomFieldRule struct {
 	DefaultValue  any
 	CandidateKind string
 	DataSource    string
+	Options       []VueCustomFieldOption
+}
+
+// VueCustomFieldOption 是 Vue 页面静态选项的真实值投影，生成器不得凭显示名称猜测候选。
+type VueCustomFieldOption struct {
+	Label string
+	Value any
 }
 
 // PathConfigurationSnapshot 把同一真实流程树、当前入口、表单字段详情和实例现值绑定在一起。

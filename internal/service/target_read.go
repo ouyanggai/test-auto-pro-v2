@@ -622,10 +622,19 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 	if identityErr != nil {
 		return target.FormRuntimeSession{}, identityErr
 	}
+	companyName := strings.TrimSpace(identity.Company.Name)
+	if companyName == "" {
+		companyName = strings.TrimSpace(active.Summary.CompanyName)
+	}
+	departmentID := strings.TrimSpace(identity.Department.ID)
+	if departmentID == "" {
+		departmentID = strings.TrimSpace(active.DepartmentID)
+	}
+	departmentName := strings.TrimSpace(identity.Department.Name)
 	return target.FormRuntimeSession{
 		SID: active.SID, BaseURL: s.client.BaseURL(), AccountName: active.Summary.DisplayName,
-		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: active.Summary.CompanyName,
-		DepartmentID: identity.Department.ID, DepartmentName: identity.Department.Name,
+		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: companyName,
+		DepartmentID: departmentID, DepartmentName: departmentName,
 	}, nil
 }
 

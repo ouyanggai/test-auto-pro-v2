@@ -82,6 +82,28 @@ export interface PathFormConfiguration {
   conditionBindings: PathFormConditionBinding[]
   conditionReviews: string[]
   fieldRules: PathFormFieldRule[]
+  renderType?: 'formmaking' | 'vue_custom' | 'unknown'
+  vuePage?: PathVueCustomPageRule | null
+}
+
+export interface PathVueCustomPageRule {
+  pageName: string
+  componentName: string
+  route: string
+  fields: PathVueCustomFieldRule[]
+  issues: string[]
+}
+
+export interface PathVueCustomFieldRule {
+  path: string
+  name: string
+  valueType: string
+  required: boolean
+  readOnly: boolean
+  candidateKind: string
+  defaultValue?: unknown
+  dataSource?: string
+  options: Array<{ label: string, value: unknown }>
 }
 
 export interface PathFormSampleSummary {

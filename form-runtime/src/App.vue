@@ -1,7 +1,7 @@
 <template>
   <main class="form-runtime" :aria-busy="loading">
     <fm-generate-form
-      v-if="sessionId"
+      v-if="sessionId && renderType === 'formmaking'"
       ref="generateForm"
       :key="sessionId"
       :data="template"
@@ -9,6 +9,7 @@
       :edit="!readOnly"
       @on-change="markDirty"
     />
+    <host-vue-page v-else-if="sessionId && renderType === 'vue_custom'" ref="vueHost" :page="vuePage" :initial-values="values" :permissions="runtimePermissions" :field-rules="runtimeFieldRules" :read-only="readOnly" />
     <div v-else class="form-runtime__placeholder">正在等待表单工作区初始化…</div>
   </main>
 </template>
@@ -19,9 +20,11 @@ import { captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, diffM
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
+import HostVuePage from './HostVuePage.vue'
 
 export default {
   name: 'FormRuntimeApp',
+  components: { HostVuePage },
   data () {
     return {
       parentOrigin: '',
@@ -32,6 +35,10 @@ export default {
       generatedValues: {},
       generatedFieldPaths: [],
       manualOverridePaths: [],
+      renderType: 'formmaking',
+      vuePage: { pageName: '', fields: [], issues: [] },
+      runtimePermissions: [],
+      runtimeFieldRules: [],
       savedGeneratedFieldPaths: [],
       savedManualOverridePaths: [],
       unsupported: [],
@@ -101,6 +108,10 @@ export default {
         this.sessionId = command.sessionId
         this.loading = true
         this.readOnly = Boolean(payload.readOnly)
+        this.renderType = String(payload.renderType || 'formmaking')
+        this.vuePage = payload.vuePage || { pageName: '', fields: [], issues: [] }
+        this.runtimePermissions = Array.isArray(payload.permissions) ? payload.permissions : []
+        this.runtimeFieldRules = Array.isArray(payload.fieldRules) ? payload.fieldRules : []
         const baseURL = String(payload.baseURL || '')
         const targetOrigin = baseURL ? new URL(baseURL).origin : ''
         // 上游 axios 可能已捕获同步源码的旧默认地址；会话环境与请求策略双重收敛到后端核实的当前网关。
@@ -138,18 +149,18 @@ export default {
           if (payload.companyId) window.$store.commit('user/SET_COMPANY_ID', String(payload.companyId))
           if (payload.customerCode) window.$store.commit('user/SET_CUSTOMERCODE', String(payload.customerCode))
           if (payload.companyName) window.$store.commit('user/SET_COMPANY_NAME', String(payload.companyName))
-			if (payload.departmentName && window.$store._mutations['user/SET_DEPARTMENT_NAME']) window.$store.commit('user/SET_DEPARTMENT_NAME', String(payload.departmentName))
-			if (payload.departmentId && window.$store._mutations['user/SET_DEPARTMENTID']) window.$store.commit('user/SET_DEPARTMENTID', String(payload.departmentId))
+          if (payload.departmentName && window.$store._mutations['user/SET_DEPARTMENT_NAME']) window.$store.commit('user/SET_DEPARTMENT_NAME', String(payload.departmentName))
+          if (payload.departmentId && window.$store._mutations['user/SET_DEPARTMENTID']) window.$store.commit('user/SET_DEPARTMENTID', String(payload.departmentId))
         }
-		const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, payload.fieldRules || [])
+        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, payload.fieldRules || [])
         this.template = prepared.template
         this.unsupported = prepared.unsupported
         this.isolatedHooks = prepared.isolatedHooks
         this.allFields = prepared.allFields
         this.editableFields = prepared.editableFields
-		this.hiddenFields = prepared.hiddenFields
-		this.protectedFields = prepared.protectedFields
-		this.requiredEditableFields = prepared.requiredEditableFields
+        this.hiddenFields = prepared.hiddenFields
+        this.protectedFields = prepared.protectedFields
+        this.requiredEditableFields = prepared.requiredEditableFields
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
         this.generatedValues = clonePlain(payload.generatedValues || this.values)
@@ -161,7 +172,7 @@ export default {
         await this.setData(this.values)
         await this.refresh()
         this.loading = false
-		this.result(command, { ready: true, unsupported: this.unsupported, isolatedHooks: this.isolatedHooks, stats: this.stats() })
+        this.result(command, { ready: true, unsupported: this.unsupported, isolatedHooks: this.isolatedHooks, stats: this.stats() })
         return
       }
       if (command.type === 'setData') {
@@ -197,16 +208,32 @@ export default {
       if (command.type === 'validateAndGetValues') this.result(command, await this.capture(true))
     },
     async setData (values) {
+      if (this.renderType === 'vue_custom') {
+        this.values = clonePlain(values)
+        const page = this.$refs.vueHost
+        if (!page || typeof page.setData !== 'function') throw new Error('宿主 Vue 业务页面尚未完成装载')
+        await page.setData(this.values)
+        return
+      }
       const form = this.form()
       if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
       await form.setData(clonePlain(values))
       this.values = clonePlain(values)
     },
     async refresh () {
+      if (this.renderType === 'vue_custom') return
       // 字段权限已在 FormMaking 装载前写入每个组件 options；refresh 后统一调用 disabled 会击穿缺少 disabledElement 的已注册组件。
       await refreshPreparedForm(this.form())
     },
-	async capture (validate) {
+    async capture (validate) {
+      if (this.renderType === 'vue_custom') {
+        const page = this.$refs.vueHost
+        if (!page || typeof page.capture !== 'function') throw new Error('宿主 Vue 业务页面尚未完成装载')
+        const values = await page.capture(validate)
+        if (validate && this.vuePage.fields.some(field => field.required && this.isEmptyCustomValue(this.customPageValue(values, field.path)))) throw new Error('请先完成表单中的必填项')
+        const manualOverridePaths = [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
+        return { values, validated: validate, unsupported: [], dirty: this.dirty, generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths, stats: this.stats(values, manualOverridePaths) }
+      }
       const form = this.form()
       const values = await captureFormValues(form, validate)
       this.values = values
@@ -221,10 +248,16 @@ export default {
 			stats: this.stats(values, manualOverridePaths)
 		}
 	},
-	stats (values = this.values, manualOverridePaths = this.manualOverridePaths) {
-		return formRuntimeStats(values, this.generatedFieldPaths, manualOverridePaths, this.editableFields, this.protectedFields, this.requiredEditableFields)
-	},
-	markDirty () {
+    stats (values = this.values, manualOverridePaths = this.manualOverridePaths) {
+      return formRuntimeStats(values, this.generatedFieldPaths, manualOverridePaths, this.editableFields, this.protectedFields, this.requiredEditableFields)
+    },
+    isEmptyCustomValue (value) {
+      return value == null || String(value).trim() === ''
+    },
+    customPageValue (values, path) {
+      return String(path || '').split('.').filter(Boolean).reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, values)
+    },
+    markDirty () {
 		if (this.loading || this.readOnly) return
 		this.dirty = true
 		if (this.stateTimer) window.clearTimeout(this.stateTimer)
@@ -256,6 +289,10 @@ export default {
       this.generatedValues = {}
       this.generatedFieldPaths = []
       this.manualOverridePaths = []
+      this.renderType = 'formmaking'
+      this.vuePage = { pageName: '', fields: [], issues: [] }
+      this.runtimePermissions = []
+      this.runtimeFieldRules = []
       this.savedGeneratedFieldPaths = []
       this.savedManualOverridePaths = []
       this.unsupported = []

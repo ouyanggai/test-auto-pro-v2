@@ -250,7 +250,8 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 	if err != nil {
 		return pathPreparationAssets{}, err
 	}
-	snapshot, err := s.config.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
+	// 批量准备必须与单条页面使用同一份已持久化规则目录，不能绕过目录重新扫描宿主源码或逐路径读取目标表单。
+	snapshot, err := s.config.readVerifiedSnapshot(ctx, planID)
 	if err != nil {
 		return pathPreparationAssets{}, err
 	}
@@ -263,6 +264,12 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 		return pathPreparationAssets{}, err
 	}
 	template, unsupported := runtimeTemplate(snapshot.Forms)
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		if snapshot.VuePage == nil || len(snapshot.VuePage.Issues) > 0 {
+			return pathPreparationAssets{}, &PathPreparationError{Kind: PathPreparationErrorState, Message: "Vue 业务页面规则尚未完成分析，请先在系统设置重试分析"}
+		}
+		template = vueCustomTemplate(snapshot.VuePage)
+	}
 	assets := pathPreparationAssets{
 		plan: plan, snapshot: snapshot, template: template, unsupported: unsupported,
 		graph:     model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource, EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings},
@@ -434,7 +441,12 @@ func defaultPathNodeInput(node model.PathConfigNode, coverage map[string]int) (m
 // preparePathFormData 保留人工确认值；其余路径使用同一任务资产生成并完整复验。
 func preparePathFormData(assets pathPreparationAssets, path model.ExecutionPath, analysis model.ExecutionPathAnalysis, stored *model.StoredPathConfig) (bool, bool, bool, string) {
 	snapshot := assets.snapshot
-	if len(snapshot.Forms) == 0 {
+	if snapshot.RenderType == target.FormRenderTypeUnknown {
+		changed := stored.DataStatus != "needs_attention" || stored.FormStatus != "affected"
+		stored.DataStatus, stored.FormStatus, stored.FormValidated = "needs_attention", "affected", false
+		return changed, false, false, "当前流程页面规则尚未完成分析"
+	}
+	if snapshot.RenderType == target.FormRenderTypeFormMaking && len(snapshot.Forms) == 0 {
 		changed := stored.DataStatus != "not_required"
 		stored.DataStatus, stored.FormStatus = "not_required", "valid"
 		return changed, false, false, "当前路径无需准备表单数据"
@@ -450,6 +462,9 @@ func preparePathFormData(assets pathPreparationAssets, path model.ExecutionPath,
 	conditions := buildPathFormConditionProjection(snapshot.Tree, path.Choices, assets.template, stored.FormValues)
 	seed := int64(path.ID*1000003 + uint64(len(path.Choices))*97 + 1)
 	permissions := formPermissions(snapshot.Tree, formPermissionNodeIDs(assets.plan.FlowSource, snapshot, analysis.ReachableNodeIDs))
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		permissions = vueCustomFormPermissions(snapshot.VuePage)
+	}
 	bindings := buildPathDateRangeBindings(snapshot.Tree, path.Choices, assets.template)
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: assets.template, Base: stored.FormValues, Samples: assets.samples, Seed: seed, Initiator: assets.initiator,
@@ -460,7 +475,8 @@ func preparePathFormData(assets pathPreparationAssets, path model.ExecutionPath,
 	generated.Values = solved.values
 	formdata.SynchronizeDateRangeBindings(generated.Values, bindings, stored.ManualOverridePaths)
 	reasons := append(validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values), formdata.ValidateDateRangeBindings(generated.Values, bindings)...)
-	blocking := len(conditions.Reviews) > 0 || len(assets.unsupported) > 0 || len(solved.issues) > 0 || len(reasons) > 0
+	// 已识别自定义组件没有真实候选时只将本路径标为需处理，不能虚构对象引用，也不能让其他路径回滚。
+	blocking := len(conditions.Reviews) > 0 || len(assets.unsupported) > 0 || generated.Pending > 0 || len(solved.issues) > 0 || len(reasons) > 0
 	stored.FormValues = generated.Values
 	stored.FormSeed = seed
 	stored.GeneratedFieldPaths = generated.GeneratedFieldPaths

@@ -2,7 +2,11 @@ package backend_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"sync"
@@ -11,6 +15,7 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
+	"test-auto-pro-v2/internal/formdata"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 	"test-auto-pro-v2/internal/service"
@@ -19,7 +24,7 @@ import (
 // TestF010VuePageRuleExtractsNoFormConfiguration 验证配置式 Vue 页面不会因缺少 FormMaking JSON 被当作无需数据。
 func TestF010VuePageRuleExtractsNoFormConfiguration(t *testing.T) {
 	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "contract_review", "noForm")
-	if page.PageName != "合同评审" || len(page.Fields) == 0 {
+	if page.PageName != "合同评审" || page.ComponentName != "ContractReview" || len(page.Fields) == 0 {
 		t.Fatalf("合同评审 Vue 页面规则未识别：%+v", page)
 	}
 	found := false
@@ -30,6 +35,66 @@ func TestF010VuePageRuleExtractsNoFormConfiguration(t *testing.T) {
 	}
 	if !found || len(page.Issues) > 0 {
 		t.Fatalf("Vue 配置字段或发起入口分析不完整：fields=%+v issues=%+v", page.Fields, page.Issues)
+	}
+}
+
+// TestF010VuePageRuleUsesRuntimeRegistry 验证宿主注册名与文件名不同时仍从真实运行时组件提取页面字段。
+func TestF010VuePageRuleUsesRuntimeRegistry(t *testing.T) {
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "company_annual_budget", "noForm")
+	if page.ComponentName != "CompanyBudget" || len(page.Issues) > 0 || len(page.Fields) == 0 {
+		t.Fatalf("公司预算页面没有沿宿主注册表读取真实组件：%+v", page)
+	}
+	foundField := false
+	for _, field := range page.Fields {
+		if field.Path == "form.annual" && field.ValueType == "date" && field.Name == "预算年度：" {
+			foundField = true
+		}
+	}
+	if !foundField {
+		t.Fatalf("宿主页面字段类型和标签没有进入统一规则：%+v", page.Fields)
+	}
+}
+
+// TestF010VuePageRuleKeepsDuplicateEntryComponent 验证 settings 中重复流程展示项不会覆盖前面已确认的真实页面组件。
+func TestF010VuePageRuleKeepsDuplicateEntryComponent(t *testing.T) {
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "request_funds", "noForm")
+	if page.ComponentName != "PaymentBill" || len(page.Issues) > 0 || len(page.Fields) == 0 {
+		t.Fatalf("重复流程映射覆盖了请款页面真实组件：%+v", page)
+	}
+	foundExternal := false
+	for _, field := range page.Fields {
+		if field.Path == "file" && field.ValueType == "file" && field.CandidateKind == "external" {
+			foundExternal = true
+		}
+	}
+	if !foundExternal {
+		t.Fatalf("宿主上传字段没有保持外部真实对象边界：%+v", page.Fields)
+	}
+}
+
+// TestF010AllRegisteredVuePagesHaveRules 验证 settings 中全部已注册宿主页面都能解析真实组件和字段，而非只适配单个流程。
+func TestF010AllRegisteredVuePagesHaveRules(t *testing.T) {
+	root := f010ProjectRoot(t)
+	content, err := os.ReadFile(filepath.Join(root, "form-runtime", "runtime-source", "src", "store", "modules", "settings.js"))
+	if err != nil {
+		t.Fatalf("读取宿主页面注册失败：%v", err)
+	}
+	entryPattern := regexp.MustCompile(`(?ms)^[ \t]{4}([A-Za-z0-9_]+)\s*:\s*\{(.*?)^[ \t]{4}\},?`)
+	componentPattern := regexp.MustCompile(`component\s*:\s*['"]([A-Za-z0-9_]+)['"]`)
+	checked := 0
+	for _, match := range entryPattern.FindAllStringSubmatch(string(content), -1) {
+		component := componentPattern.FindStringSubmatch(match[2])
+		if len(component) < 2 || component[1] == "" {
+			continue
+		}
+		page := service.AnalyzeVueCustomPageRule(root, match[1], "noForm")
+		if page.ComponentName != component[1] || len(page.Fields) == 0 || len(page.Issues) > 0 {
+			t.Fatalf("宿主页面 %s/%s 规则未完整识别：%+v", match[1], component[1], page)
+		}
+		checked++
+	}
+	if checked < 10 {
+		t.Fatalf("宿主页面覆盖数量异常：%d", checked)
 	}
 }
 
@@ -69,6 +134,82 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	}
 	if reader.configurationReads() != 2 {
 		t.Fatalf("未变化模板不应重新读取详情，实际 %d 次", reader.configurationReads())
+	}
+}
+
+// TestF010TemplateCatalogPersistsAllVisibleTemplates 验证目录任务分页保存账号可见的全部 196 个模板，不为单个流程建立特例。
+func TestF010TemplateCatalogPersistsAllVisibleTemplates(t *testing.T) {
+	repository := newF010CatalogRepository()
+	reader := &f010CatalogTarget{configurations: map[string]target.PathConfigurationSnapshot{}}
+	for index := 0; index < 196; index++ {
+		id := fmt.Sprintf("template-%03d", index)
+		flowCode := fmt.Sprintf("flow-%03d", index)
+		reader.templates = append(reader.templates, target.FlowTemplate{ID: id, Code: flowCode, FlowName: "流程 " + flowCode, FormExist: "form", UpdateDate: "2026-08-19"})
+		reader.configurations[id] = target.PathConfigurationSnapshot{FlowCode: flowCode, RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{TemplateData: `{"list":[{"type":"input","model":"title","options":{"required":true}}]}`}}}
+	}
+	catalog := service.NewTemplateCatalogService(reader, repository, f010ProjectRoot(t))
+	job, err := catalog.CreateJob(context.Background(), "欧阳改", "full")
+	if err != nil {
+		t.Fatalf("创建全模板目录任务失败：%v", err)
+	}
+	finished := waitF010CatalogJob(t, catalog, job.ID)
+	if finished.Total != 196 || finished.Completed != 196 || finished.NeedsAttention != 0 || reader.configurationReads() != 196 {
+		t.Fatalf("全模板目录没有完整持久化：job=%+v reads=%d", finished, reader.configurationReads())
+	}
+	summary, err := catalog.Summary(context.Background())
+	if err != nil || summary.Total != 196 || summary.FormMaking != 196 {
+		t.Fatalf("全模板目录汇总不准确：summary=%+v err=%v", summary, err)
+	}
+}
+
+// TestF010TemplateCatalogCountsRealItemStates 验证完成、需处理和详情读取失败分别进入真实任务计数。
+func TestF010TemplateCatalogCountsRealItemStates(t *testing.T) {
+	repository := newF010CatalogRepository()
+	reader := &f010CatalogTarget{
+		templates: []target.FlowTemplate{
+			{ID: "complete", Code: "complete", FlowName: "已覆盖", FormExist: "form", UpdateDate: "v1"},
+			{ID: "attention", Code: "attention", FlowName: "需处理", FormExist: "unknown", UpdateDate: "v1"},
+			{ID: "failed", Code: "failed", FlowName: "失败", FormExist: "form", UpdateDate: "v1"},
+		},
+		configurations: map[string]target.PathConfigurationSnapshot{
+			"complete":  {FlowCode: "complete", RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{TemplateData: `{"list":[]}`}}},
+			"attention": {FlowCode: "attention", RenderType: target.FormRenderTypeUnknown},
+		},
+		configurationErrors: map[string]error{"failed": errors.New("目标详情暂不可用")},
+	}
+	catalog := service.NewTemplateCatalogService(reader, repository, f010ProjectRoot(t))
+	job, err := catalog.CreateJob(context.Background(), "欧阳改", "full")
+	if err != nil {
+		t.Fatalf("创建状态计数任务失败：%v", err)
+	}
+	finished := waitF010CatalogJob(t, catalog, job.ID)
+	if finished.Completed != 1 || finished.NeedsAttention != 1 || finished.Failed != 1 || finished.Processed != 3 {
+		t.Fatalf("规则任务没有按真实条目状态计数：%+v", finished)
+	}
+	incremental, err := catalog.CreateJob(context.Background(), "欧阳改", "incremental")
+	if err != nil {
+		t.Fatalf("创建增量状态计数任务失败：%v", err)
+	}
+	finished = waitF010CatalogJob(t, catalog, incremental.ID)
+	if finished.Completed != 1 || finished.NeedsAttention != 1 || finished.Failed != 1 {
+		t.Fatalf("增量跳过未变化条目时篡改了状态计数：%+v", finished)
+	}
+}
+
+// TestF010RegisteredExternalComponentUsesPartialResult 验证已注册外部对象组件没有候选时不伪造引用，也不进入 unsupported。
+func TestF010RegisteredExternalComponentUsesPartialResult(t *testing.T) {
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: map[string]any{"list": []any{map[string]any{
+			"type": "custom", "el": "custome-select-project", "model": "project", "name": "项目",
+			"options": map[string]any{"required": true},
+		}}},
+		EditablePaths: map[string]bool{"project": true},
+	})
+	if result.Pending != 1 || len(result.PendingFields) != 1 || result.PendingFields[0] != "project" || len(result.Unsupported) != 0 {
+		t.Fatalf("已注册外部对象组件没有正确返回 partial 边界：%+v", result)
+	}
+	if _, exists := result.Values["project"]; exists {
+		t.Fatalf("无真实候选时不得伪造项目引用：%+v", result.Values)
 	}
 }
 
@@ -122,10 +263,11 @@ func waitF010CatalogJob(t *testing.T, catalog *service.TemplateCatalogService, j
 
 // f010CatalogTarget 模拟目标平台只读模板接口，并记录是否发生不必要的详情读取。
 type f010CatalogTarget struct {
-	mu             sync.Mutex
-	templates      []target.FlowTemplate
-	configurations map[string]target.PathConfigurationSnapshot
-	reads          int
+	mu                  sync.Mutex
+	templates           []target.FlowTemplate
+	configurations      map[string]target.PathConfigurationSnapshot
+	configurationErrors map[string]error
+	reads               int
 }
 
 // Templates 返回一次完整但分页的账号可见模板列表。
@@ -146,6 +288,9 @@ func (r *f010CatalogTarget) TemplateConfiguration(_ context.Context, _ string, t
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.reads++
+	if err := r.configurationErrors[templateID]; err != nil {
+		return target.PathConfigurationSnapshot{}, err
+	}
 	return r.configurations[templateID], nil
 }
 

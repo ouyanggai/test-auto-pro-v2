@@ -164,19 +164,14 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 				return
 			}
 			item, skipped := s.analyzeTemplate(ctx, job.Account, job.Mode, template)
-			if skipped {
-				job.Completed++
-				processed++
-				job.Processed, job.UpdatedAt = processed, s.now().UTC()
-				_ = s.repository.UpdateJob(ctx, job)
-				continue
+			var itemErr error
+			if !skipped {
+				_, itemErr = s.repository.Upsert(ctx, item)
 			}
-			if _, err := s.repository.Upsert(ctx, item); err != nil {
+			if itemErr != nil {
 				job.Failed++
-			} else if item.Status == "complete" {
-				job.Completed++
 			} else {
-				job.NeedsAttention++
+				countTemplateCatalogJobItem(&job, item.Status)
 			}
 			processed++
 			job.Processed = processed
@@ -191,6 +186,18 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 	now := s.now().UTC()
 	job.Status, job.Message, job.UpdatedAt, job.FinishedAt = "completed", "模板规则分析已完成", now, &now
 	_ = s.repository.UpdateJob(context.Background(), job)
+}
+
+// countTemplateCatalogJobItem 按规则条目的真实终态累计任务计数，跳过未变化模板时也不得改写状态语义。
+func countTemplateCatalogJobItem(job *model.TemplateRuleAnalysisJob, status string) {
+	switch strings.TrimSpace(status) {
+	case "complete":
+		job.Completed++
+	case "failed":
+		job.Failed++
+	default:
+		job.NeedsAttention++
+	}
 }
 
 // analyzeTemplate 将目标模板和宿主 Vue 页面规则转成不含原始源码的本地快照。
@@ -412,9 +419,10 @@ const (
 
 // vuePageRuleScanner 从宿主实际运行时代码中提取页面入口、配置字段和自定义组件注册表。
 type vuePageRuleScanner struct {
-	root       string
-	components map[string]string
-	pageByCode map[string]vuePageEntry
+	root           string
+	components     map[string]string
+	componentFiles map[string]string
+	pageByCode     map[string]vuePageEntry
 }
 
 type vuePageEntry struct {
@@ -425,7 +433,7 @@ type vuePageEntry struct {
 
 // newVuePageRuleScanner 创建可在分析任务中复用的只读源码扫描器。
 func newVuePageRuleScanner(root string) *vuePageRuleScanner {
-	scanner := &vuePageRuleScanner{root: root, components: map[string]string{}, pageByCode: map[string]vuePageEntry{}}
+	scanner := &vuePageRuleScanner{root: root, components: map[string]string{}, componentFiles: map[string]string{}, pageByCode: map[string]vuePageEntry{}}
 	scanner.load()
 	return scanner
 }
@@ -438,7 +446,7 @@ func (s *vuePageRuleScanner) load() {
 		s.components[match[1]] = match[2]
 	}
 	settings := s.read("form-runtime/runtime-source/src/store/modules/settings.js")
-	entryPattern := regexp.MustCompile(`(?s)(?:^|\n)\s*([A-Za-z0-9_]+)\s*:\s*\{(.*?)\n\s*\}`)
+	entryPattern := regexp.MustCompile(`(?ms)^[ \t]{4}([A-Za-z0-9_]+)\s*:\s*\{(.*?)^[ \t]{4}\},?`)
 	namePattern := regexp.MustCompile(`name\s*:\s*['"]([^'"]+)['"]`)
 	pageComponentPattern := regexp.MustCompile(`component\s*:\s*['"]?([A-Za-z0-9_]+)['"]?`)
 	isShowPattern := regexp.MustCompile(`isShow\s*:\s*true`)
@@ -452,7 +460,50 @@ func (s *vuePageRuleScanner) load() {
 		if len(componentMatch) > 1 {
 			component = componentMatch[1]
 		}
-		s.pageByCode[match[1]] = vuePageEntry{name: nameMatch[1], component: component, isShow: isShowPattern.MatchString(match[2])}
+		entry := s.pageByCode[match[1]]
+		entry.name = nameMatch[1]
+		// settings.js 中存在同编码的补充展示项；补充项没有 component 时不能覆盖前面已经确认的真实页面入口。
+		if component != "" {
+			entry.component = component
+		}
+		entry.isShow = entry.isShow || isShowPattern.MatchString(match[2])
+		s.pageByCode[match[1]] = entry
+	}
+	contractSection := regexp.MustCompile(`(?s)contractPagesName\s*:\s*\{(.*?)\n\s*\}`).FindStringSubmatch(settings)
+	if len(contractSection) > 1 {
+		contractEntryPattern := regexp.MustCompile(`([A-Za-z0-9_]+)\s*:\s*['"]([^'"]+)['"]`)
+		for _, match := range contractEntryPattern.FindAllStringSubmatch(contractSection[1], -1) {
+			entry := s.pageByCode[match[1]]
+			if strings.TrimSpace(entry.name) == "" {
+				entry.name = match[2]
+			}
+			s.pageByCode[match[1]] = entry
+		}
+	}
+	s.loadHostVuePageFiles()
+}
+
+// loadHostVuePageFiles 读取当前运行时实际使用的宿主组件注册表，把公开组件名解析到真实 Vue 文件。
+func (s *vuePageRuleScanner) loadHostVuePageFiles() {
+	registry := s.read("form-runtime/src/runtime/hostVuePages.js")
+	imports := map[string]string{}
+	importPattern := regexp.MustCompile(`(?m)^import\s+([A-Za-z0-9_]+)\s+from\s+['"]@runtime/([^'"]+\.vue)['"]`)
+	for _, match := range importPattern.FindAllStringSubmatch(registry, -1) {
+		imports[match[1]] = filepath.Join(s.root, "form-runtime", "runtime-source", "src", filepath.FromSlash(match[2]))
+	}
+	section := regexp.MustCompile(`(?s)HOST_VUE_PAGES\s*=\s*\{(.*?)\n\}`).FindStringSubmatch(registry)
+	if len(section) < 2 {
+		return
+	}
+	entryPattern := regexp.MustCompile(`(?m)^\s*([A-Za-z0-9_]+)(?:\s*:\s*([A-Za-z0-9_]+))?\s*,?\s*$`)
+	for _, match := range entryPattern.FindAllStringSubmatch(section[1], -1) {
+		variable := match[1]
+		if len(match) > 2 && strings.TrimSpace(match[2]) != "" {
+			variable = match[2]
+		}
+		if path := imports[variable]; path != "" {
+			s.componentFiles[match[1]] = path
+		}
 	}
 }
 
@@ -465,7 +516,10 @@ func (s *vuePageRuleScanner) Rule(flowCode, formExist string) target.VueCustomPa
 		page.Issues = append(page.Issues, "宿主 Vue 页面入口尚未识别")
 		return page
 	}
-	fields, found := s.configFields(flowCode)
+	fields, configComponent, found := s.configFields(flowCode)
+	if found && strings.TrimSpace(page.ComponentName) == "" {
+		page.ComponentName = configComponent
+	}
 	if !found && entry.component != "" {
 		fields, found = s.componentFields(entry.component)
 	}
@@ -489,7 +543,7 @@ func (s *vuePageRuleScanner) Components() map[string]string {
 }
 
 // configFields 从 NoFormFLow 配置式页面提取 prop、类型和 required 规则。
-func (s *vuePageRuleScanner) configFields(flowCode string) ([]target.VueCustomFieldRule, bool) {
+func (s *vuePageRuleScanner) configFields(flowCode string) ([]target.VueCustomFieldRule, string, bool) {
 	configRoot := filepath.Join(s.root, "form-runtime", "runtime-source", "src", "components", "NoFormFLow", "config")
 	var path string
 	_ = filepath.Walk(configRoot, func(candidate string, info os.FileInfo, err error) error {
@@ -504,14 +558,16 @@ func (s *vuePageRuleScanner) configFields(flowCode string) ([]target.VueCustomFi
 		return nil
 	})
 	if path == "" {
-		return nil, false
+		return nil, "", false
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	fields := parseVueConfigFields(string(content))
-	return fields, len(fields) > 0
+	component := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	component = strings.TrimSuffix(component, "Config")
+	return fields, component, len(fields) > 0
 }
 
 // normalizeVueRuleKey 将流程编码和配置文件名归一化后比较，避免为每个流程维护专用映射表。
@@ -524,9 +580,10 @@ func normalizeVueRuleKey(value string) string {
 // parseVueConfigFields 从配置对象中按 prop 边界提取字段，支持 type 与 prop 的任意书写顺序。
 func parseVueConfigFields(content string) []target.VueCustomFieldRule {
 	propPattern := regexp.MustCompile(`prop\s*:\s*['"]([^'"]+)['"]`)
-	typePattern := regexp.MustCompile(`type\s*:\s*['"]([^'"]+)['"]`)
-	titlePattern := regexp.MustCompile(`title\s*:\s*['"]([^'"]+)['"]`)
+	typePattern := regexp.MustCompile(`(?:nodeType|type)\s*:\s*['"]([^'"]+)['"]`)
+	titlePattern := regexp.MustCompile(`(?:title|label)\s*:\s*['"]([^'"]+)['"]`)
 	defaultPattern := regexp.MustCompile(`value\s*:\s*['"]([^'"]*)['"]`)
+	optionPattern := regexp.MustCompile(`(?s)(?:value\s*:\s*['"]([^'"]*)['"]\s*,\s*label\s*:\s*['"]([^'"]*)['"]|label\s*:\s*['"]([^'"]*)['"]\s*,\s*value\s*:\s*['"]([^'"]*)['"])`)
 	fields, seen := make([]target.VueCustomFieldRule, 0), map[string]bool{}
 	matches := propPattern.FindAllStringSubmatchIndex(content, -1)
 	spans := vueObjectSpans(content)
@@ -550,13 +607,38 @@ func parseVueConfigFields(content string) []target.VueCustomFieldRule {
 		if found := defaultPattern.FindStringSubmatch(window); len(found) > 1 {
 			defaultValue = found[1]
 		}
+		options := make([]target.VueCustomFieldOption, 0)
+		for _, option := range optionPattern.FindAllStringSubmatch(window, -1) {
+			value, label := option[1], option[2]
+			if value == "" && len(option) > 4 {
+				label, value = option[3], option[4]
+			}
+			if value != "" || label != "" {
+				options = append(options, target.VueCustomFieldOption{Value: value, Label: label})
+			}
+		}
+		candidateKind := vueCandidateKind(typeName, window, len(options))
 		fields = append(fields, target.VueCustomFieldRule{
-			Path: path, Name: title, ValueType: normalizeVueFieldType(typeName), Required: strings.Contains(window, "required: true"),
+			Path: path, Name: title, ValueType: normalizeVueFieldType(typeName), Required: strings.Contains(window, "required: true") || strings.Contains(window, "isRequire: true"),
 			ReadOnly: strings.Contains(window, "disabled: true"), DefaultValue: defaultValue,
-			CandidateKind: vueCandidateKind(typeName, window),
+			CandidateKind: candidateKind, DataSource: vueFieldDataSource(candidateKind, window), Options: options,
 		})
 	}
 	return fields
+}
+
+// vueFieldDataSource 只记录可证明的候选来源类别，不把源码表达式或目标接口地址暴露到规则目录页面。
+func vueFieldDataSource(candidateKind, window string) string {
+	if candidateKind == "static" {
+		return "static_options"
+	}
+	if strings.Contains(window, "Api.") || strings.Contains(window, "$http") || strings.Contains(window, "axios") {
+		return "target_readonly_api"
+	}
+	if candidateKind == "runtime_source" {
+		return "host_runtime"
+	}
+	return ""
 }
 
 type vueObjectSpan struct{ start, end int }
@@ -611,7 +693,7 @@ func normalizeVueFieldType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "inputnum", "number", "amount":
 		return "number"
-	case "date", "datetime", "daterange", "time":
+	case "date", "datetime", "daterange", "date-picker", "time":
 		return "date"
 	case "select", "radio":
 		return "select"
@@ -619,15 +701,20 @@ func normalizeVueFieldType(value string) string {
 		return "checkbox"
 	case "textarea", "input", "text":
 		return "input"
+	case "upload", "file", "fileupload":
+		return "file"
 	default:
 		return "runtime"
 	}
 }
 
 // vueCandidateKind 标记字段候选来源，动态接口不会被误判为可随机构造。
-func vueCandidateKind(typeName, window string) string {
-	if strings.Contains(window, "options") && strings.Contains(window, "value:") {
+func vueCandidateKind(typeName, window string, optionCount int) string {
+	if optionCount > 0 {
 		return "static"
+	}
+	if normalizeVueFieldType(typeName) == "file" {
+		return "external"
 	}
 	switch normalizeVueFieldType(typeName) {
 	case "select", "checkbox":
@@ -640,31 +727,144 @@ func vueCandidateKind(typeName, window string) string {
 // componentFields 从宿主 Vue 组件提取 v-model 与 data 字段，覆盖非配置式页面的真实状态入口。
 func (s *vuePageRuleScanner) componentFields(component string) ([]target.VueCustomFieldRule, bool) {
 	var content string
-	_ = filepath.Walk(filepath.Join(s.root, "form-runtime", "runtime-source", "src"), func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() || content != "" || !strings.HasSuffix(path, ".vue") {
-			return nil
+	if registeredPath := s.componentFiles[component]; registeredPath != "" {
+		if data, err := os.ReadFile(registeredPath); err == nil {
+			content = string(data)
 		}
-		if strings.EqualFold(strings.TrimSuffix(filepath.Base(path), ".vue"), component) {
-			data, readErr := os.ReadFile(path)
-			if readErr == nil {
-				content = string(data)
+	}
+	if content == "" {
+		_ = filepath.Walk(filepath.Join(s.root, "form-runtime", "runtime-source", "src"), func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil || info.IsDir() || content != "" || !strings.HasSuffix(path, ".vue") {
+				return nil
 			}
-		}
-		return nil
-	})
+			if strings.EqualFold(strings.TrimSuffix(filepath.Base(path), ".vue"), component) {
+				data, readErr := os.ReadFile(path)
+				if readErr == nil {
+					content = string(data)
+				}
+			}
+			return nil
+		})
+	}
 	if content == "" {
 		return nil, false
 	}
 	pattern := regexp.MustCompile(`v-model(?:\.\w+)?\s*=\s*['"]([^'"]+)['"]`)
-	fields, seen := make([]target.VueCustomFieldRule, 0), map[string]bool{}
+	fields := append(parseVueTemplateFields(content), parseVueConfigFields(content)...)
+	if len(fields) == 0 {
+		fields = parseVueStateFields(content)
+	}
+	seen := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		seen[field.Path] = true
+	}
 	for _, match := range pattern.FindAllStringSubmatch(content, -1) {
-		if seen[match[1]] {
+		path := strings.TrimSpace(match[1])
+		if path == "" || strings.Contains(path, "[") || strings.HasPrefix(path, "scope.") || strings.HasPrefix(path, "val.") || seen[path] {
 			continue
 		}
-		seen[match[1]] = true
-		fields = append(fields, target.VueCustomFieldRule{Path: match[1], Name: match[1], ValueType: "runtime", CandidateKind: "runtime"})
+		seen[path] = true
+		fields = append(fields, target.VueCustomFieldRule{Path: path, Name: path, ValueType: "runtime", CandidateKind: "runtime"})
 	}
 	return fields, len(fields) > 0
+}
+
+// parseVueStateFields 识别只读 Vue 业务页通过 detail/rawData 回显并由 getValues 返回的状态字段。
+func parseVueStateFields(content string) []target.VueCustomFieldRule {
+	if !strings.Contains(content, "getValues") {
+		return nil
+	}
+	fieldPattern := regexp.MustCompile(`(?:detail|rawData)\.([A-Za-z0-9_]+)`)
+	fields, seen := make([]target.VueCustomFieldRule, 0), map[string]bool{}
+	dataSource := "host_runtime"
+	if strings.Contains(content, "$axios") || strings.Contains(content, "Api.") {
+		dataSource = "target_readonly_api"
+	}
+	for _, match := range fieldPattern.FindAllStringSubmatch(content, -1) {
+		path := strings.TrimSpace(match[1])
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		requiredPattern := regexp.MustCompile(`!\s*this\.rawData\.` + regexp.QuoteMeta(path) + `\b`)
+		fields = append(fields, target.VueCustomFieldRule{
+			Path: path, Name: path, ValueType: "runtime", Required: requiredPattern.MatchString(content), ReadOnly: true,
+			CandidateKind: "runtime_source", DataSource: dataSource,
+		})
+	}
+	return fields
+}
+
+// parseVueTemplateFields 从 Element 表单项读取实际 v-model、标签、控件类型和 required 规则。
+func parseVueTemplateFields(content string) []target.VueCustomFieldRule {
+	itemPattern := regexp.MustCompile(`(?s)<el-form-item\b([^>]*)>(.*?)</el-form-item>`)
+	labelPattern := regexp.MustCompile(`\blabel\s*=\s*['"]([^'"]+)['"]`)
+	propPattern := regexp.MustCompile(`\bprop\s*=\s*['"]([^'"]+)['"]`)
+	modelPattern := regexp.MustCompile(`v-model(?:\.\w+)?\s*=\s*['"]([^'"]+)['"]`)
+	fields, seen := make([]target.VueCustomFieldRule, 0), map[string]bool{}
+	for _, match := range itemPattern.FindAllStringSubmatch(content, -1) {
+		attributes, body := match[1], match[2]
+		model := modelPattern.FindStringSubmatch(body)
+		if len(model) < 2 {
+			continue
+		}
+		path := strings.TrimSpace(model[1])
+		if path == "" || strings.Contains(path, "[") || strings.HasPrefix(path, "scope.") || strings.HasPrefix(path, "val.") || seen[path] {
+			continue
+		}
+		seen[path] = true
+		name, prop := path, ""
+		if label := labelPattern.FindStringSubmatch(attributes); len(label) > 1 {
+			name = strings.TrimSpace(label[1])
+		}
+		if property := propPattern.FindStringSubmatch(attributes); len(property) > 1 {
+			prop = strings.TrimSpace(property[1])
+		}
+		typeName := vueTemplateControlType(body)
+		options := vueTemplateOptions(body)
+		candidateKind := vueCandidateKind(typeName, body, len(options))
+		fields = append(fields, target.VueCustomFieldRule{
+			Path: path, Name: name, ValueType: normalizeVueFieldType(typeName), Required: vueTemplateFieldRequired(content, attributes, prop),
+			ReadOnly: strings.Contains(body, "disabled") || strings.Contains(body, ":disabled"), CandidateKind: candidateKind,
+			DataSource: vueFieldDataSource(candidateKind, body), Options: options,
+		})
+	}
+	return fields
+}
+
+// vueTemplateControlType 按宿主模板实际控件标签识别统一字段类型，未知控件保持 runtime 交给真实页面。
+func vueTemplateControlType(body string) string {
+	for _, candidate := range []struct{ marker, value string }{
+		{"<el-input-number", "number"}, {"<el-date-picker", "date"}, {"<el-radio-group", "radio"},
+		{"<el-checkbox-group", "checkbox"}, {"<el-select", "select"}, {"<el-upload", "upload"}, {"<el-input", "input"},
+	} {
+		if strings.Contains(body, candidate.marker) {
+			return candidate.value
+		}
+	}
+	return "runtime"
+}
+
+// vueTemplateOptions 只提取模板中直接声明的静态 el-option，不执行动态表达式。
+func vueTemplateOptions(body string) []target.VueCustomFieldOption {
+	optionPattern := regexp.MustCompile(`<el-option\b[^>]*\slabel\s*=\s*['"]([^'"]*)['"][^>]*\svalue\s*=\s*['"]([^'"]*)['"][^>]*>`)
+	result := make([]target.VueCustomFieldOption, 0)
+	for _, match := range optionPattern.FindAllStringSubmatch(body, -1) {
+		result = append(result, target.VueCustomFieldOption{Label: match[1], Value: match[2]})
+	}
+	return result
+}
+
+// vueTemplateFieldRequired 同时识别行内规则和 data 中按 prop 声明的 Element required 规则。
+func vueTemplateFieldRequired(content, attributes, prop string) bool {
+	if strings.Contains(attributes, "required") || strings.Contains(attributes, ":rules") {
+		return true
+	}
+	if prop == "" {
+		return false
+	}
+	pattern := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(prop) + `\s*:\s*\[[^\]]*required\s*:\s*true`)
+	return pattern.MatchString(content)
 }
 
 // read 读取项目内参考运行时文件，缺失只返回空文本并由上层标记规则问题。
