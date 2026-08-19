@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import test from 'node:test'
 
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select'])
@@ -54,6 +55,14 @@ test('隐藏必填字段不计入人工待办且身份 storage 只在当前运�
     globalThis.window = originalWindow
     clearRuntimeAuth()
   }
+})
+
+test('运行时身份覆盖宿主常用公司部门用户键', () => {
+  const source = fs.readFileSync(new URL('../../../form-runtime/src/App.vue', import.meta.url), 'utf8')
+  assert.match(source, /topCompanyId:/)
+  assert.match(source, /user:\s*\{/)
+  assert.match(source, /userDepartmentId:/)
+  assert.match(source, /currentDepName:/)
 })
 
 test('未显式授权字段默认只读且人工覆盖路径递归稳定', () => {

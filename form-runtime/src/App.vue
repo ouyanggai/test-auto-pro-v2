@@ -113,13 +113,19 @@ export default {
         const runtimeIdentity = {
           token: String(payload.sid || ''), sid: String(payload.sid || ''), userName: String(payload.accountName || ''),
           userId: String(payload.userId || ''), companyId: String(payload.companyId || ''), customerCode: String(payload.customerCode || ''),
+          topCompanyId: String(payload.companyId || ''),
           companyName: String(payload.companyName || ''), userDepartmentId: String(payload.departmentId || ''),
           departmentId: String(payload.departmentId || ''), userDepartmentName: String(payload.departmentName || ''),
           currentCompanyName: String(payload.companyName || ''), currentDepartment: String(payload.departmentName || ''),
           currentDepName: String(payload.departmentName || ''), initiatorId: String(payload.userId || ''),
           initiatorName: String(payload.accountName || ''), initiatorCompanyId: String(payload.companyId || ''),
           initiatorCompanyName: String(payload.companyName || ''), initiatorDepartmentId: String(payload.departmentId || ''),
-          initiatorDepartmentName: String(payload.departmentName || '')
+          initiatorDepartmentName: String(payload.departmentName || ''),
+          user: {
+            id: String(payload.userId || ''), name: String(payload.accountName || ''),
+            companyId: String(payload.companyId || ''), departmentId: String(payload.departmentId || ''),
+            companyName: String(payload.companyName || ''), departmentName: String(payload.departmentName || '')
+          }
         }
         // 模板可能绕过认证工具直接读 native localStorage；这里安装仅存活于 iframe 会话的 facade。
         setRuntimeAuth(runtimeIdentity)
