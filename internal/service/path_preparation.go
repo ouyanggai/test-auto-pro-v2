@@ -273,14 +273,13 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 			assets.samples = samples
 		}
 	}
-	if reader, ok := s.config.target.(pathFormRuntimeSessionReader); ok {
-		if session, readErr := reader.FormRuntimeSession(ctx, plan.Account); readErr == nil && strings.TrimSpace(session.AccountName) != "" {
-			assets.initiator = session.AccountName
-		}
-	}
 	if reader, ok := s.config.target.(pathFormIdentityReader); ok {
+		// 批量任务只读取一次可信身份目录，避免运行时会话和身份投影重复访问目标平台。
 		if identity, readErr := reader.FormIdentityContext(ctx, plan.Account); readErr == nil {
 			assets.identity = formdataIdentityContext(identity)
+			if strings.TrimSpace(identity.User.Name) != "" {
+				assets.initiator = identity.User.Name
+			}
 		}
 	}
 	return assets, nil
