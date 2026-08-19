@@ -309,7 +309,8 @@ func TestFormDataGeneratorSupportsCascaderAndCollectionShape(t *testing.T) {
 func TestFormDataGeneratorKeepsFileUploadManualOnly(t *testing.T) {
 	template := map[string]any{"list": []any{map[string]any{"type": "fileupload", "model": "attachment", "name": "附件", "options": map[string]any{"required": true}}}}
 	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 2})
-	if result.Pending != 1 || len(result.Unsupported) != 0 {
+	fields, _ := formdata.ParseTemplate(template)
+	if result.Pending != 1 || len(result.Unsupported) != 0 || len(fields) != 1 || !fields[0].ManualOnly {
 		t.Fatalf("附件应进入人工待补而不是伪造或误报未知组件：%+v", result)
 	}
 }

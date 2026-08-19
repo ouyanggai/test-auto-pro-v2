@@ -282,6 +282,13 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 		case typeName == "text":
 			// 带 model 的文本（审批意见占位等）不是字段标题，避免标题串到后续字段。
 			*pendingLabel = ""
+		case typeName == "fileupload" && model != "":
+			*fields = append(*fields, Field{
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["listType"])),
+				Required: anyBool(options["required"]), Default: options["defaultValue"], CollectionRoot: collectionRoot,
+				ManualOnly: true, DataSourceURL: dataSourceURL, El: el,
+			})
+			*pendingLabel = ""
 		case supportedTypes[typeName] && model != "":
 			values, names := optionValues(options["options"])
 			optionPaths := [][]any(nil)
@@ -294,13 +301,6 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 				Required: anyBool(options["required"]), Default: options["defaultValue"],
 				Options: values, OptionNames: names, OptionPaths: optionPaths, OptionVirtualUsesValue: hasShowLabel && !anyBool(options["showLabel"]),
 				CollectionRoot: collectionRoot, DataSourceURL: dataSourceURL, El: el,
-			})
-			*pendingLabel = ""
-		case typeName == "fileupload" && model != "":
-			*fields = append(*fields, Field{
-				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["listType"])),
-				Required: anyBool(options["required"]), Default: options["defaultValue"], CollectionRoot: collectionRoot,
-				ManualOnly: true, DataSourceURL: dataSourceURL, El: el,
 			})
 			*pendingLabel = ""
 		case typeName == "custom" && el == "custome-info-select" && model != "":
