@@ -5,7 +5,7 @@ import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline } from '@vic
 import { copyPathConfigActions, normalizedActionCount, normalizedPersonStrategy, pathConfigActionsInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type { PathConfigActionCycle, PathConfigActionCycleInput, PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; actionCycles: PathConfigActionCycle[] }>()
+const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; actionCycles: PathConfigActionCycle[] }>()
 const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; updateActionCycles: [value: PathConfigActionCycleInput[]]; save: []; saveAll: []; backToPlan: []; openForm: [] }>()
 const actionEditorOpen = ref(false)
 const actionDraft = ref<PathConfigConfiguredActionInput[]>([])
@@ -64,8 +64,8 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           <strong>{{ person.title }}</strong>
           <template v-if="person.editable">
             <div class="person-controls">
-              <n-select :value="personDraft(person).strategy" :options="strategyOptions(person)" @update:value="value => updatePersonStrategy(person, { strategy: value })" />
-              <n-select v-if="personDraft(person).strategy === 'manual'" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
+								<n-select :value="personDraft(person).strategy" :options="strategyOptions(person)" :disabled="readOnly" @update:value="value => updatePersonStrategy(person, { strategy: value })" />
+								<n-select v-if="personDraft(person).strategy === 'manual'" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" :disabled="readOnly" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
             </div>
           </template>
           <p v-else>{{ person.detail }}</p>
@@ -77,7 +77,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
       <section class="node-configuration-panel__section">
         <div class="action-section__header">
           <h3>已配置的动作</h3>
-          <n-button type="primary" size="small" :disabled="node.lineBlocked || !node.actionConfiguration.catalog.length" @click="openActionEditor">动作配置</n-button>
+					<n-button type="primary" size="small" :disabled="readOnly || node.lineBlocked || !node.actionConfiguration.catalog.length" @click="openActionEditor">动作配置</n-button>
         </div>
         <div v-if="savedActions.length" class="action-summary">
           <n-tag v-for="action in savedActions" :key="action.key" size="small">
@@ -90,10 +90,11 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 
     <footer class="node-configuration-panel__footer">
       <div class="save-status">
+				<n-alert v-if="readOnly" type="info" :show-icon="false">当前计划只能查看</n-alert>
         <n-alert v-if="saveError" type="error" :show-icon="false">{{ pathConfigurationMessage(saveError) }}</n-alert>
         <span v-else-if="missingCount">还有 {{ missingCount }} 项未满足配置要求</span>
       </div>
-      <div class="save-actions">
+			<div v-if="!readOnly" class="save-actions">
         <n-button secondary :loading="saving" :disabled="saveAllDisabled" @click="emit('saveAll')">保存全部节点</n-button>
         <n-button class="save-button" type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
       </div>

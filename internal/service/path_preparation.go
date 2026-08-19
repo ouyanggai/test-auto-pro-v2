@@ -114,6 +114,9 @@ func (s *PathPreparationService) Cancel(ctx context.Context, planID uint64, jobI
 
 // Resume 把已取消或失败任务恢复到原检查点继续处理。
 func (s *PathPreparationService) Resume(ctx context.Context, planID uint64, jobID string) (model.PathPreparationJob, error) {
+	if err := s.config.validateConfigMutablePlan(ctx, planID); err != nil {
+		return model.PathPreparationJob{}, err
+	}
 	job, err := s.repository.Resume(ctx, planID, jobID, s.now().UTC())
 	if err != nil {
 		return model.PathPreparationJob{}, mapPathPreparationRepositoryError(err)

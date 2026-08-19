@@ -8,6 +8,12 @@ export interface PathPreparationJob {
   needsAttention: number
   failed: number
   preservedManual: number
+  currentPath?: {
+    pathId: number
+    sequenceNo: number
+    pathName: string
+    status: 'pending' | 'running' | 'completed' | 'needs_attention' | 'failed'
+  }
   error?: string
   createdAt: string
   updatedAt: string

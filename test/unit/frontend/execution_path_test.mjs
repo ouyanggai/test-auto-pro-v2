@@ -19,6 +19,7 @@ import {
   projectExecutionPathGuide,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
+  selectedUnconfiguredExecutionPaths,
   transitionExecutionPathWorkspace,
   viewportForCandidateGroupCentered,
   viewportForPointNearest,
@@ -41,6 +42,17 @@ test('路径可运行规则只消费节点配置和数据准备双状态', () =>
   assert.equal(executionPathRunReadiness({ ...path, configurationStatus: 'partial' }), 'configuration')
   assert.equal(executionPathRunReadiness({ ...path, dataStatus: 'needs_attention' }), 'data')
   assert.equal(isExecutionPathRunnable({ ...path, dataStatus: 'not_generated' }), false)
+})
+
+test('未配置定位保留勾选并只返回节点配置未完成路径', () => {
+  const paths = [
+    { id: '1', configurationStatus: 'pending', dataStatus: 'generated' },
+    { id: '2', configurationStatus: 'configured', dataStatus: 'needs_attention' },
+    { id: '3', configurationStatus: 'partial', dataStatus: 'confirmed' },
+  ]
+  const selected = new Set(['1', '2', '3'])
+  assert.deepEqual(selectedUnconfiguredExecutionPaths(paths, selected).map(path => path.id), ['1', '3'])
+  assert.deepEqual([...selected], ['1', '2', '3'])
 })
 
 const graph = {

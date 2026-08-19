@@ -80,13 +80,16 @@ func NewExecutionPathService(plans *PlanService, graphs CurrentFlowGraphReader, 
 }
 
 // StartGeneration 创建或恢复指定幂等键的后台全路径解析任务。
-func (s *ExecutionPathService) StartGeneration(_ context.Context, planID uint64, createKey string) (PathGenerationJob, error) {
+func (s *ExecutionPathService) StartGeneration(ctx context.Context, planID uint64, createKey string) (PathGenerationJob, error) {
 	if planID == 0 {
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划 ID 不正确"}
 	}
 	createKey = strings.TrimSpace(createKey)
 	if !validUUID(createKey) {
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "后台解析请求标识不正确，请重试"}
+	}
+	if err := s.validateMutablePlan(ctx, planID); err != nil {
+		return PathGenerationJob{}, err
 	}
 	s.generationMu.Lock()
 	if existing, found := s.generations[createKey]; found {
@@ -162,7 +165,10 @@ func (s *ExecutionPathService) CancelGeneration(_ context.Context, planID uint64
 }
 
 // ResumeGeneration 恢复已取消或失败的任务，仍使用原幂等键避免重复路径。
-func (s *ExecutionPathService) ResumeGeneration(_ context.Context, planID uint64, jobID string) (PathGenerationJob, error) {
+func (s *ExecutionPathService) ResumeGeneration(ctx context.Context, planID uint64, jobID string) (PathGenerationJob, error) {
+	if err := s.validateMutablePlan(ctx, planID); err != nil {
+		return PathGenerationJob{}, err
+	}
 	s.generationMu.Lock()
 	job, found := s.generations[jobID]
 	if !found || job.planID != planID {

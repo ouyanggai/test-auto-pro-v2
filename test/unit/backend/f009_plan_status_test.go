@@ -1,12 +1,14 @@
 package backend_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/service"
 )
 
 // TestF009PlanStatusUsesOnlyPublicThreeStates 验证旧配置完成度不再进入计划公开状态。
@@ -20,6 +22,31 @@ func TestF009PlanStatusUsesOnlyPublicThreeStates(t *testing.T) {
 		if model.ValidPlanStatus(status) {
 			t.Fatalf("旧计划状态仍被公开协议接受：%s", status)
 		}
+	}
+}
+
+// TestF009RunningPlanRejectsPathAndBatchMutations 验证运行中计划只读且不会启动后台工作。
+func TestF009RunningPlanRejectsPathAndBatchMutations(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusRunning}}
+	graph := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
+	paths := &memoryExecutionPathRepository{}
+	executionPaths := service.NewExecutionPathService(service.NewPlanService(plans), graph, nil, paths)
+	if _, err := executionPaths.StartGeneration(context.Background(), 7, "123e4567-e89b-12d3-a456-426614174901"); !service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorLocked) {
+		t.Fatalf("运行中计划仍可启动路径解析：%v", err)
+	}
+	if graph.calls != 0 {
+		t.Fatalf("只读计划仍访问了真实流程：calls=%d", graph.calls)
+	}
+
+	config := service.NewPathConfigService(service.NewPlanService(plans), nil, nil, nil, nil, nil, nil)
+	preparations := &f009BatchPreparationRepository{job: model.PathPreparationJob{ID: "job", PlanID: 7, Status: "cancelled"}}
+	batch := service.NewPathPreparationService(config, preparations)
+	if _, err := batch.Resume(context.Background(), 7, "job"); err == nil {
+		t.Fatal("运行中计划仍可恢复批量准备任务")
+	}
+	if preparations.job.Status != "cancelled" {
+		t.Fatalf("只读校验之后仍修改了任务：%+v", preparations.job)
 	}
 }
 

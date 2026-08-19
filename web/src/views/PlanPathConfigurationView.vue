@@ -110,14 +110,17 @@ const pageThemeStyle = computed(() => ({
   '--path-config-text-color': themeVars.value.textColor1,
   '--path-config-text-secondary-color': themeVars.value.textColor2,
 }))
+const planMutable = computed(() => plan.value?.status === 'not_started')
+const formReadOnly = computed(() => !planMutable.value || Boolean(configuration.value?.form.readOnly))
+const runtimeForm = computed(() => configuration.value ? { ...configuration.value.form, readOnly: formReadOnly.value } : null)
 const pathAnalysis = computed(() => graph.value && currentPath.value ? analyzeExecutionPath(graph.value, currentPath.value.choices) : null)
 const selectedNode = computed(() => configurationByGraphNodeID.value.get(selectedNodeID.value) ?? null)
 const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
   ? projectPathConfigurationNodeStates(graph.value, pathAnalysis.value, configurationByGraphNodeID.value, selectedNodeID.value)
   : {})
 const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(selectedNode.value, draft.value))
-const nodeSaveDisabled = computed(() => pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
-const saveAllNodesDisabled = computed(() => pageLoading.value || savingNode.value || !configuration.value)
+const nodeSaveDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
+const saveAllNodesDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !configuration.value)
 const runtimeBlockingReasons = computed(() => [...new Set([
   ...(configuration.value?.form.unsupported ?? []),
   ...(configuration.value?.form.conditionReviews ?? []),
@@ -128,7 +131,7 @@ const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
 function pathSignature(path: ExecutionPath): string { return path.choices.map(choice => `${choice.routeNodeId.trim()}:${choice.branchId.trim()}`).join('|') }
 const cycleCopyTargets = computed(() => {
   const current = currentPath.value
-  if (!current || !configuration.value?.actionCycles.length) return []
+	if (!planMutable.value || !current || !configuration.value?.actionCycles.length) return []
   const signature = pathSignature(current)
   return executionPaths.value.filter(path => path.id !== current.id && pathSignature(path) === signature)
 })
@@ -316,6 +319,7 @@ async function finishConfirmedNodeSave() {
 
 // updatePersonStrategy 只保留当前模板策略和候选中的不透明值。
 function updatePersonStrategy(person: PathConfigPerson, value: PathConfigPersonStrategyInput) {
+	if (!planMutable.value) return
   const allowed = new Set(person.options.map(option => option.value))
   draft.value.personStrategies[person.key] = { ...value, selected: value.selected.filter(candidate => allowed.has(candidate)) }
   draft.value.persons[person.key] = [...draft.value.personStrategies[person.key].selected]
@@ -324,6 +328,7 @@ function updatePersonStrategy(person: PathConfigPerson, value: PathConfigPersonS
 
 // updateNodeActionConfiguration 替换当前节点独立动作草稿，不允许面板越过节点边界写其他节点。
 function updateNodeActionConfiguration(nodeKey: string, value: PathConfigConfiguredActionInput[]) {
+	if (!planMutable.value) return
 	if (selectedNode.value?.key !== nodeKey) return
 	// 子组件事件值仍可能携带 Vue Proxy；父页面只持有普通草稿，避免保存前再次触发克隆异常。
 	draft.value.actionConfigurations[nodeKey] = copyPathConfigActions(value)
@@ -332,12 +337,14 @@ function updateNodeActionConfiguration(nodeKey: string, value: PathConfigConfigu
 
 // updateActionCycles 保留循环草稿直到当前节点保存成功；成员与前驱仍由服务端重新派生。
 function updateActionCycles(value: PathConfigActionCycleInput[]) {
+	if (!planMutable.value) return
   actionCycles.value = value.map(cycle => ({ ...cycle }))
   nodeSavedSuccessfully.value = false
 }
 
 // openCycleCopy 打开来源路径的安全复制确认，只允许当前已保存循环复制到兼容路径。
 function openCycleCopy() {
+	if (!planMutable.value) return
   cycleCopyError.value = ''
   cycleCopyTargetID.value = cycleCopyTargets.value[0]?.id ?? ''
   cycleCopyModalOpen.value = true
@@ -346,7 +353,7 @@ function openCycleCopy() {
 // copyCycles 确认后只写目标路径的循环命名空间，不触发目标平台接口。
 async function copyCycles() {
   const source = currentPath.value
-  if (!source || !cycleCopyTargetID.value || cycleCopyBusy.value) return
+	if (!planMutable.value || !source || !cycleCopyTargetID.value || cycleCopyBusy.value) return
   cycleCopyBusy.value = true
   cycleCopyError.value = ''
   try {
@@ -481,7 +488,7 @@ async function generateFormData(nextGroup: boolean) {
   const current = configuration.value
   const frame = formFrame.value
   const epoch = runtimeEpoch
-  if (!current || current.form.readOnly || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
+	if (!current || formReadOnly.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
@@ -545,7 +552,7 @@ async function generateFormData(nextGroup: boolean) {
 async function restoreSavedForm() {
   const frame = formFrame.value
   const epoch = runtimeEpoch
-  if (!frame || !runtimeSession.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value) return
+	if (formReadOnly.value || !frame || !runtimeSession.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
@@ -570,7 +577,7 @@ async function saveFormData() {
   const current = configuration.value
   const frame = formFrame.value
   const epoch = runtimeEpoch
-  if (!current || current.form.readOnly || runtimeBlocked.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
+	if (!current || formReadOnly.value || runtimeBlocked.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
@@ -659,7 +666,7 @@ void loadPage()
         <span>还有 {{ configuration.preparation.pendingItems }} 项需要处理</span>
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
-        <n-button v-if="workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
+		<n-button v-if="planMutable && workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
       </div>
     </header>
 
@@ -713,9 +720,10 @@ void loadPage()
       >
         <template #configuration-panel>
           <node-configuration-panel
-            :node="selectedNode"
-            :draft="draft"
-            :saving="savingNode"
+			:node="selectedNode"
+			:draft="draft"
+			:saving="savingNode"
+			:read-only="!planMutable"
             :save-disabled="nodeSaveDisabled"
             :save-all-disabled="saveAllNodesDisabled"
             :missing-count="selectedNodeRequirement.missing.length"
@@ -739,12 +747,12 @@ void loadPage()
         <header class="path-configuration-page__form-toolbar">
           <div>
             <h2>表单数据</h2>
-            <p v-if="configuration.form.readOnly">已发/待发路径使用实例当前值，只读且不会写回目标平台。</p>
+				<p v-if="formReadOnly">当前计划的表单数据只读。</p>
             <p v-else>自动填充 {{ configuration.form.autoFilled }} 项 · 仍需手工 {{ configuration.form.manualPending }} 项</p>
           </div>
           <div class="path-configuration-page__form-actions">
             <n-button size="small" @click="returnToNodes">返回节点画布</n-button>
-            <template v-if="!configuration.form.readOnly">
+			<template v-if="!formReadOnly">
               <n-button size="small" :loading="formGenerating && formGenerationKind === 'smart'" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(false)">智能生成</n-button>
               <n-button size="small" :loading="formGenerating && formGenerationKind === 'next'" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(true)">换一组</n-button>
               <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="restoreSavedForm">恢复已保存</n-button>
@@ -791,10 +799,10 @@ void loadPage()
           <n-spin :show="true" size="large" description="正在加载表单运行时" />
         </section>
         <form-runtime-frame
-          v-else-if="runtimeSession"
+		  v-else-if="runtimeSession && runtimeForm"
           ref="formFrame"
           class="path-configuration-page__form-frame"
-          :form="configuration.form"
+		  :form="runtimeForm"
           :runtime-session="runtimeSession"
           @ready="handleRuntimeReady"
           @state="applyRuntimeFormState"
