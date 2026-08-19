@@ -1,5 +1,7 @@
 package target
 
+import "strings"
+
 type AccountSummary struct {
 	Account     string `json:"account"`
 	DisplayName string `json:"displayName"`
@@ -194,11 +196,56 @@ type FormFieldOption struct {
 	Value string
 }
 
+// FormRenderType 表示目标流程真实使用的表单渲染协议，不能由是否存在 FormMaking JSON 反推是否需要业务数据。
+type FormRenderType string
+
+const (
+	FormRenderTypeFormMaking FormRenderType = "formmaking"
+	FormRenderTypeVueCustom  FormRenderType = "vue_custom"
+	FormRenderTypeUnknown    FormRenderType = "unknown"
+)
+
+// NormalizeFormRenderType 按目标 formExist 与已读取表单正文确定渲染协议；noForm/notForm 均属于 Vue 业务页面。
+func NormalizeFormRenderType(formExist string, formCount int) FormRenderType {
+	switch strings.ToLower(strings.TrimSpace(formExist)) {
+	case "noform", "notform":
+		return FormRenderTypeVueCustom
+	}
+	if formCount > 0 {
+		return FormRenderTypeFormMaking
+	}
+	return FormRenderTypeUnknown
+}
+
+// VueCustomPageRule 是从宿主 Vue 页面静态提取的只读页面规则，不保存或公开目标原始源码。
+type VueCustomPageRule struct {
+	PageKey       string
+	PageName      string
+	ComponentName string
+	Route         string
+	Fields        []VueCustomFieldRule
+	Issues        []string
+}
+
+// VueCustomFieldRule 描述宿主 Vue 页面可静态识别的字段、初值、校验和候选来源。
+type VueCustomFieldRule struct {
+	Path          string
+	Name          string
+	ValueType     string
+	Required      bool
+	ReadOnly      bool
+	DefaultValue  any
+	CandidateKind string
+	DataSource    string
+}
+
 // PathConfigurationSnapshot 把同一真实流程树、当前入口、表单字段详情和实例现值绑定在一起。
 type PathConfigurationSnapshot struct {
 	Tree           *FlowNodeTemplate
 	EntryNodeIDs   []string
 	FlowCode       string
+	RenderType     FormRenderType
+	VuePage        *VueCustomPageRule
 	FormFields     []FormFieldDetail
 	Forms          []FormRuntimeTemplate
 	InstanceValues map[string]any

@@ -629,19 +629,19 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 
 // ReadTemplateTree 按模板 ID 读取新发起的真实节点树。
 func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, error) {
-	tree, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	return tree, err
 }
 
 // ReadProxyTree 按已核实的 flowProxyId 读取既有实例代理树。
 func (c *Client) ReadProxyTree(ctx context.Context, active Session, proxyID string) (*FlowNodeTemplate, error) {
-	tree, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	tree, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
 	return tree, err
 }
 
 // ReadTemplateRequirements 读取模板树及其关联表单字段，供路径要求核对内部使用。
 func (c *Client) ReadTemplateRequirements(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, []FormFieldMetadata, error) {
-	tree, forms, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, forms, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -651,7 +651,7 @@ func (c *Client) ReadTemplateRequirements(ctx context.Context, active Session, t
 
 // ReadProxyRequirements 读取代理树及实例代理表单字段，不回退到模板表单猜测运行态字段。
 func (c *Client) ReadProxyRequirements(ctx context.Context, active Session, proxyID string, formProxyIDs []string) (*FlowNodeTemplate, []FormFieldMetadata, error) {
-	tree, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	tree, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -667,7 +667,7 @@ func (c *Client) ReadProxyRequirements(ctx context.Context, active Session, prox
 
 // ReadTemplateConfiguration 读取模板树、表单字段详情和模板默认值，供新发起路径配置使用。
 func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, templateID string) (PathConfigurationSnapshot, error) {
-	tree, forms, flowCode, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, forms, flowCode, formExist, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
@@ -676,12 +676,12 @@ func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, 
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FormFields: fields, Forms: runtimeForms}, nil
+	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms}, nil
 }
 
 // ReadTemplateRuleSource 读取规则盘点所需的流程树和关联表单正文，不额外解析审批身份目录。
 func (c *Client) ReadTemplateRuleSource(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, []FormRuntimeTemplate, error) {
-	tree, forms, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, forms, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -694,7 +694,7 @@ func (c *Client) ReadTemplateRuleSource(ctx context.Context, active Session, tem
 
 // ReadProxyConfiguration 读取代理树、实例代理表单字段详情和实例当前表单数据，供已发/待发路径配置使用。
 func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, proxyID string, formProxyIDs []string, instanceID string) (PathConfigurationSnapshot, error) {
-	tree, _, flowCode, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	tree, _, flowCode, formExist, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
@@ -713,31 +713,32 @@ func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, pro
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FormFields: fields, Forms: runtimeForms, InstanceValues: values}, nil
+	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms, InstanceValues: values}, nil
 }
 
 // readFlowDetail 调用目标详情端点并转换同一棵流程树和关联表单引用。
-func (c *Client) readFlowDetail(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, []rawFormReference, string, error) {
+func (c *Client) readFlowDetail(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, []rawFormReference, string, string, error) {
 	resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": strings.TrimSpace(id)}})
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", "", err
 	}
 	if !responseSucceeded(resp) {
-		return nil, nil, "", responseError(resp)
+		return nil, nil, "", "", responseError(resp)
 	}
 	var data struct {
 		FlowNodeTemplate *rawFlowNodeTemplate `json:"flowNodeTemplate"`
 		FormTemplateList []rawFormReference   `json:"formTemplateList"`
 		Code             string               `json:"code"`
 		FlowCode         string               `json:"flowCode"`
+		FormExist        string               `json:"formExist"`
 	}
 	if len(resp.Data) == 0 || string(resp.Data) == "null" {
-		return nil, nil, "", nil
+		return nil, nil, "", "", nil
 	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
-		return nil, nil, "", invalidResponse("invalid flow tree data")
+		return nil, nil, "", "", invalidResponse("invalid flow tree data")
 	}
-	return convertFlowNode(data.FlowNodeTemplate), data.FormTemplateList, firstNonEmpty(data.FlowCode, data.Code), nil
+	return convertFlowNode(data.FlowNodeTemplate), data.FormTemplateList, firstNonEmpty(data.FlowCode, data.Code), data.FormExist, nil
 }
 
 // readFormFields 逐个读取已核实表单详情，只保留中文展示所需的名称字典。

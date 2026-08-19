@@ -77,6 +77,8 @@ type PathFormConfig struct {
 	Status              string                     `json:"status"`
 	StatusName          string                     `json:"statusName"`
 	ReadOnly            bool                       `json:"readOnly"`
+	RenderType          string                     `json:"renderType"`
+	VuePage             *PathVueCustomPageRule     `json:"vuePage,omitempty"`
 	Template            map[string]any             `json:"template"`
 	Permissions         []PathFormPermission       `json:"permissions"`
 	Values              map[string]any             `json:"values"`
@@ -92,6 +94,25 @@ type PathFormConfig struct {
 	ConditionBindings   []PathFormConditionBinding `json:"conditionBindings"`
 	ConditionReviews    []string                   `json:"conditionReviews"`
 	FieldRules          []PathFormFieldRule        `json:"fieldRules"`
+}
+
+// PathVueCustomPageRule 是宿主 Vue 页面在表单工作区使用的公开规则投影，不包含源码和内部标识。
+type PathVueCustomPageRule struct {
+	PageName      string                   `json:"pageName"`
+	ComponentName string                   `json:"componentName"`
+	Route         string                   `json:"route"`
+	Fields        []PathVueCustomFieldRule `json:"fields"`
+	Issues        []string                 `json:"issues"`
+}
+
+// PathVueCustomFieldRule 描述可安全生成、回显和保存复验的 Vue 页面字段。
+type PathVueCustomFieldRule struct {
+	Path          string `json:"path"`
+	Name          string `json:"name"`
+	ValueType     string `json:"valueType"`
+	Required      bool   `json:"required"`
+	ReadOnly      bool   `json:"readOnly"`
+	CandidateKind string `json:"candidateKind"`
 }
 
 // PathFormConditionBinding 是当前路径分支条件的单一公开投影，不包含目标字段或分支内部标识。

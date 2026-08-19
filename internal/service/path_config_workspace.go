@@ -588,7 +588,7 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	form := model.PathFormConfig{
 		Revision: stored.FormRevision, Status: "empty", StatusName: "待配置",
-		ReadOnly: source != "new", Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
+		ReadOnly: source != "new", RenderType: string(snapshot.RenderType), Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
 		ConditionBindings: []model.PathFormConditionBinding{}, ConditionReviews: []string{},
@@ -605,8 +605,21 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	if len(form.Values) == 0 && len(snapshot.InstanceValues) > 0 {
 		form.Values = cloneFormValues(snapshot.InstanceValues)
 	}
-	if len(snapshot.Forms) == 0 {
-		form.Status, form.StatusName, form.Validated = "valid", "已配置", true
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		form.VuePage = projectVueCustomPage(snapshot.VuePage)
+		if form.VuePage == nil || len(form.VuePage.Issues) > 0 {
+			form.Status, form.StatusName = "affected", "部分配置"
+			form.Affected = affectedFromStrings("form", []string{"Vue 业务页面规则尚未完成分析"})
+			return form
+		}
+		if form.ReadOnly {
+			form.Status, form.StatusName, form.Validated = "valid", "已配置", true
+		}
+		return form
+	}
+	if snapshot.RenderType == target.FormRenderTypeUnknown {
+		form.Status, form.StatusName = "affected", "部分配置"
+		form.Affected = affectedFromStrings("form", []string{"当前流程表单协议尚未完成分析"})
 		return form
 	}
 	// 条件投影是提示、字段锁定、生成和保存复验的共同来源，任何无法精确对应的条件都不能放行保存。
@@ -1703,18 +1716,24 @@ func pathConfigSaveResult(path model.ExecutionPath, stored model.StoredPathConfi
 
 // initialStoredFormStatus 为首次节点保存建立不冒充完成的表单状态。
 func initialStoredFormStatus(snapshot target.PathConfigurationSnapshot) string {
-	if len(snapshot.Forms) == 0 {
-		return "valid"
-	}
 	return "empty"
 }
 
-// initialStoredDataStatus 根据真实表单存在性建立独立数据准备初态。
+// initialStoredDataStatus 建立待生成初态，缺少 FormMaking JSON 不等于流程不需要业务数据。
 func initialStoredDataStatus(snapshot target.PathConfigurationSnapshot) string {
-	if len(snapshot.Forms) == 0 {
-		return "not_required"
-	}
 	return "not_generated"
+}
+
+// projectVueCustomPage 将目标页面规则限制为表单工作区需要的公开字段，不返回宿主代码或内部键。
+func projectVueCustomPage(rule *target.VueCustomPageRule) *model.PathVueCustomPageRule {
+	if rule == nil {
+		return nil
+	}
+	result := &model.PathVueCustomPageRule{PageName: rule.PageName, ComponentName: rule.ComponentName, Route: rule.Route, Fields: make([]model.PathVueCustomFieldRule, 0, len(rule.Fields)), Issues: uniquePublicStrings(rule.Issues)}
+	for _, field := range rule.Fields {
+		result.Fields = append(result.Fields, model.PathVueCustomFieldRule{Path: field.Path, Name: field.Name, ValueType: field.ValueType, Required: field.Required, ReadOnly: field.ReadOnly, CandidateKind: field.CandidateKind})
+	}
+	return result
 }
 
 // affectedFromStrings 把内部原因收敛为不含目标标识的公开受影响项。
