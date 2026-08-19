@@ -312,6 +312,7 @@ async function retryPaths(): Promise<boolean> {
     if (version !== loadVersion) return false
     paths.value = items
     pathsLoaded.value = true
+		pathSelectionError.value = ''
 		selectedRunPathIDs.value = new Set(items.filter(path => path.included).map(path => path.id))
 		pathSelectionRevisions.value = Object.fromEntries(items.map(path => [path.id, path.configurationRevision]))
 		lastUnconfiguredSelectionSignature = unconfiguredSelectionSignature()
