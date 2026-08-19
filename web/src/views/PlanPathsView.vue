@@ -43,7 +43,6 @@ import {
   projectExecutionPathSummary,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
-  selectedUnconfiguredExecutionPaths,
   transitionExecutionPathWorkspace,
 } from '../features/execution-paths/logic'
 import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode, PathGenerationJob } from '../features/execution-paths/types'
@@ -102,11 +101,9 @@ const pathSelectionError = ref('')
 const preparationJob = ref<PathPreparationJob | null>(null)
 const preparationLoading = ref(false)
 const preparationFilter = ref<'all' | 'needs_attention'>('all')
-const unconfiguredHighlightPathID = ref<string | null>(null)
 const SAVED_PATH_ITEM_SIZE = 44
 const PREPARATION_PATH_ITEM_SIZE = 84
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
-const preparationListRef = ref<{ scrollTo: (options: { index: number }) => void } | null>(null)
 const graphScreenRef = ref<HTMLElement | null>(null)
 let loadController: AbortController | null = null
 let loadVersion = 0
@@ -115,8 +112,6 @@ let draftRecoveryVersion = 0
 let pageScrollContainer: HTMLElement | null = null
 let generationTimer: ReturnType<typeof setTimeout> | null = null
 let preparationTimer: ReturnType<typeof setTimeout> | null = null
-let unconfiguredHighlightTimer: ReturnType<typeof setTimeout> | null = null
-let lastUnconfiguredSelectionSignature = ''
 
 const planID = computed(() => String(route.params.id || ''))
 const planMutable = computed(() => plan.value?.status === 'not_started')
@@ -217,8 +212,6 @@ async function loadPage() {
   pathSelectionRevisions.value = {}
   pathSelectionError.value = ''
   preparationJob.value = null
-  unconfiguredHighlightPathID.value = null
-  lastUnconfiguredSelectionSignature = ''
   pathWorkspaceOpen.value = false
   savedPathsOpen.value = false
   draftRecoveryLoading.value = false
@@ -248,7 +241,6 @@ async function loadPage() {
       pathsLoaded.value = true
 			selectedRunPathIDs.value = new Set(pathsResult.value.filter(path => path.included).map(path => path.id))
 			pathSelectionRevisions.value = Object.fromEntries(pathsResult.value.map(path => [path.id, path.configurationRevision]))
-			lastUnconfiguredSelectionSignature = unconfiguredSelectionSignature()
 			if (planMutable.value && plan.value.flowSource === 'new' && pathsResult.value.length === 0) void startAutomaticGeneration()
 		void restoreActivePreparation(controller.signal)
     }
@@ -315,7 +307,6 @@ async function retryPaths(): Promise<boolean> {
 		pathSelectionError.value = ''
 		selectedRunPathIDs.value = new Set(items.filter(path => path.included).map(path => path.id))
 		pathSelectionRevisions.value = Object.fromEntries(items.map(path => [path.id, path.configurationRevision]))
-		lastUnconfiguredSelectionSignature = unconfiguredSelectionSignature()
 		return true
   }
   catch (caught) {
@@ -459,34 +450,6 @@ async function resumeCurrentPreparation() {
   }
 }
 
-// unconfiguredSelectionSignature 为当前已勾选且未完成节点配置的集合生成稳定签名。
-function unconfiguredSelectionSignature(): string {
-	return selectedUnconfiguredExecutionPaths(paths.value, selectedRunPathIDs.value).map(path => path.id).join('|')
-}
-
-// revealSelectedUnconfiguredPath 在集合首次变化时定位第一条未配置路径并显示三秒提示。
-async function revealSelectedUnconfiguredPath() {
-	const signature = unconfiguredSelectionSignature()
-	if (!signature) {
-		lastUnconfiguredSelectionSignature = ''
-		return
-	}
-	if (signature === lastUnconfiguredSelectionSignature) return
-	lastUnconfiguredSelectionSignature = signature
-	const target = selectedUnconfiguredExecutionPaths(paths.value, selectedRunPathIDs.value)[0]
-	if (!target) return
-	preparationFilter.value = 'all'
-	await nextTick()
-	const index = visiblePaths.value.findIndex(path => path.id === target.id)
-	if (index < 0) return
-	preparationListRef.value?.scrollTo({ index })
-	unconfiguredHighlightPathID.value = target.id
-	if (unconfiguredHighlightTimer) clearTimeout(unconfiguredHighlightTimer)
-	unconfiguredHighlightTimer = setTimeout(() => {
-		if (unconfiguredHighlightPathID.value === target.id) unconfiguredHighlightPathID.value = null
-	}, 3000)
-}
-
 // updateRunPathSelection 保存用户手动勾选的一条运行路径。
 async function updateRunPathSelection(path: ExecutionPath, included: boolean) {
   if (pathSelectionSaving.value || pathSelectionLoading.value) return
@@ -494,7 +457,6 @@ async function updateRunPathSelection(path: ExecutionPath, included: boolean) {
   pathSelectionError.value = ''
   try {
     await persistRunPathSelection(path, included)
-		await revealSelectedUnconfiguredPath()
   }
   catch (caught) {
     pathSelectionError.value = caught instanceof Error ? caught.message : '运行路径选择保存失败，请重试'
@@ -513,7 +475,6 @@ async function setAllRunPathSelections(included: boolean) {
   const results = await Promise.allSettled(targets.map(path => persistRunPathSelection(path, included)))
   const failed = results.find(result => result.status === 'rejected')
   if (failed?.status === 'rejected') pathSelectionError.value = failed.reason instanceof Error ? failed.reason.message : '部分运行路径选择保存失败，请重试'
-	await revealSelectedUnconfiguredPath()
   pathSelectionSaving.value = false
 }
 
@@ -843,12 +804,11 @@ onMounted(() => {
   pageScrollContainer?.classList.add('plan-paths-scroll-container')
   void resetPageScroll()
 })
-onBeforeUnmount(() => {
+	onBeforeUnmount(() => {
   loadController?.abort()
   draftRecoveryController?.abort()
 	if (generationTimer) clearTimeout(generationTimer)
 	if (preparationTimer) clearTimeout(preparationTimer)
-	if (unconfiguredHighlightTimer) clearTimeout(unconfiguredHighlightTimer)
   pageScrollContainer?.classList.remove('plan-paths-scroll-container')
   pageScrollContainer = null
 })
@@ -943,7 +903,6 @@ onBeforeUnmount(() => {
             </div>
             <n-virtual-list
               v-else
-								ref="preparationListRef"
               class="path-preparation__list"
               :items="visiblePaths"
               :item-size="PREPARATION_PATH_ITEM_SIZE"
@@ -951,7 +910,7 @@ onBeforeUnmount(() => {
               key-field="id"
             >
               <template #default="{ item: path }">
-								<div class="path-preparation__item" :class="{ 'path-preparation__item--attention': unconfiguredHighlightPathID === path.id }">
+								<div class="path-preparation__item">
                 <n-checkbox
                   :checked="selectedRunPathIDs.has(path.id)"
 									:disabled="!planMutable || pathSelectionLoading || pathSelectionSaving"
@@ -970,7 +929,6 @@ onBeforeUnmount(() => {
                     {{ pathDataLabel(path) }}
                   </n-tag>
 									</div>
-									<small v-if="unconfiguredHighlightPathID === path.id" class="path-preparation__attention-message">已选择未配置路径，请先配置节点</small>
                 </div>
 								<n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">{{ planMutable ? '配置节点' : '查看配置' }}</n-button>
               </div>
@@ -1438,12 +1396,6 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--plan-divider-color);
 }
 
-.path-preparation__item--attention {
-	background: rgba(240, 160, 32, 0.14);
-	box-shadow: inset 3px 0 0 #f0a020;
-	animation: path-preparation-attention 3s ease-out;
-}
-
 .path-preparation__identity {
 	display: grid;
 	flex: 1 1 auto;
@@ -1457,12 +1409,6 @@ onBeforeUnmount(() => {
 	flex-wrap: wrap;
 	min-width: 0;
 	gap: 8px;
-}
-
-.path-preparation__attention-message {
-	color: #b45309;
-	font-size: 12px;
-	line-height: 16px;
 }
 
 .path-preparation__sequence {
@@ -1874,9 +1820,5 @@ onBeforeUnmount(() => {
   .path-summary__item::after {
     animation: none !important;
   }
-
-	.path-preparation__item--attention {
-		animation: none;
-	}
 }
 </style>

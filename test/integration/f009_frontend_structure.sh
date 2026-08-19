@@ -33,12 +33,12 @@ grep -Fq 'cancelPathPreparation' "${paths_view}"
 grep -Fq 'resumePathPreparation' "${paths_view}"
 grep -Fq ':items="visiblePaths"' "${paths_view}"
 grep -Fq ':item-size="PREPARATION_PATH_ITEM_SIZE"' "${paths_view}"
-grep -Fq 'ref="preparationListRef"' "${paths_view}"
-grep -Fq 'preparationListRef.value?.scrollTo({ index })' "${paths_view}"
-grep -Fq 'unconfiguredHighlightTimer = setTimeout' "${paths_view}"
-grep -Fq '}, 3000)' "${paths_view}"
-grep -Fq '已选择未配置路径，请先配置节点' "${paths_view}"
-grep -Fq 'path-preparation__item--attention' "${paths_view}"
+if grep -Eq 'preparationListRef|unconfiguredHighlight|已选择未配置路径|path-preparation__item--attention|scrollTo\(\{ index \}\)' "${paths_view}"; then
+  echo 'F-009 勾选路径不得触发滚动、高亮或定位提示' >&2
+  exit 1
+fi
+grep -Fq 'findFirstUnrunnableExecutionPath' "${project_root}/web/src/features/execution-paths/logic.ts"
+grep -Fq 'executionPathRunReadiness' "${project_root}/web/src/features/execution-paths/logic.ts"
 grep -Fq 'preparationJob.currentPath' "${paths_view}"
 grep -Fq "preparationJob.value = null" "${paths_view}"
 grep -Fq "message.success(\`批量配置完成" "${paths_view}"

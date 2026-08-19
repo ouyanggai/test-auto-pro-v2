@@ -26,9 +26,14 @@ export function isExecutionPathRunnable(path: ExecutionPath): boolean {
   return executionPathRunReadiness(path) === 'ready'
 }
 
-// selectedUnconfiguredExecutionPaths 返回已勾选且节点尚未配置的路径，保留原列表顺序用于虚拟列表定位。
-export function selectedUnconfiguredExecutionPaths(paths: readonly ExecutionPath[], selectedIDs: ReadonlySet<string>): ExecutionPath[] {
-  return paths.filter(path => selectedIDs.has(path.id) && executionPathRunReadiness(path) === 'configuration')
+// findFirstUnrunnableExecutionPath 只供未来真实运行前检查定位首条不合格路径，选择路径时不得调用它。
+export function findFirstUnrunnableExecutionPath(paths: readonly ExecutionPath[], selectedIDs: ReadonlySet<string>): { path: ExecutionPath, readiness: Exclude<ExecutionPathRunReadiness, 'ready'> } | null {
+  for (const path of paths) {
+    if (!selectedIDs.has(path.id)) continue
+    const readiness = executionPathRunReadiness(path)
+    if (readiness !== 'ready') return { path, readiness }
+  }
+  return null
 }
 
 // summarizeExecutionPathConfiguration 只按路径列表携带的本地状态统计配置进度，不触发目标平台或完整分析。

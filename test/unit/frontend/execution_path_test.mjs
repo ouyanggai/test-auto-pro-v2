@@ -11,6 +11,7 @@ import {
   deriveExecutionPathDecisionProgress,
   deriveExecutionPathWorkspaceDisposition,
   executionPathRunReadiness,
+  findFirstUnrunnableExecutionPath,
   hasExecutionPathDraftChanges,
   isExecutionPathRunnable,
   nextExecutionPathRouteID,
@@ -19,7 +20,6 @@ import {
   projectExecutionPathGuide,
   reconcileExecutionPathChoices,
   refreshExecutionPathDraft,
-  selectedUnconfiguredExecutionPaths,
   transitionExecutionPathWorkspace,
   viewportForCandidateGroupCentered,
   viewportForPointNearest,
@@ -44,14 +44,17 @@ test('路径可运行规则只消费节点配置和数据准备双状态', () =>
   assert.equal(isExecutionPathRunnable({ ...path, dataStatus: 'not_generated' }), false)
 })
 
-test('未配置定位保留勾选并只返回节点配置未完成路径', () => {
+test('运行前检查只定位首条不合格路径且不改变勾选集合', () => {
   const paths = [
     { id: '1', configurationStatus: 'pending', dataStatus: 'generated' },
     { id: '2', configurationStatus: 'configured', dataStatus: 'needs_attention' },
     { id: '3', configurationStatus: 'partial', dataStatus: 'confirmed' },
+    { id: '4', configurationStatus: 'configured', dataStatus: 'generated' },
   ]
   const selected = new Set(['1', '2', '3'])
-  assert.deepEqual(selectedUnconfiguredExecutionPaths(paths, selected).map(path => path.id), ['1', '3'])
+  assert.equal(findFirstUnrunnableExecutionPath(paths, selected)?.path.id, '1')
+  assert.equal(findFirstUnrunnableExecutionPath(paths, new Set(['2'])).readiness, 'data')
+  assert.equal(findFirstUnrunnableExecutionPath(paths, new Set(['4'])), null)
   assert.deepEqual([...selected], ['1', '2', '3'])
 })
 
