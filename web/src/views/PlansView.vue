@@ -89,7 +89,6 @@ watch([() => filters.name, () => filters.status], () => { void loadPlans() }, { 
 onBeforeUnmount(() => loadController?.abort())
 
 function statusTagType(status: PlanStatus): 'default' | 'success' | 'warning' | 'info' {
-  if (status === 'ready') return 'success'
   if (status === 'running') return 'warning'
   if (status === 'completed') return 'info'
   return 'default'
@@ -131,12 +130,12 @@ const columns: DataTableColumns<PlanRow> = [
         style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' },
       }, [
         h(NButton, { size: 'small', secondary: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label }),
-        h('span', { class: 'plan-row-actions__delete' }, [
+        row.status === 'not_started' ? h('span', { class: 'plan-row-actions__delete' }, [
           h(NPopconfirm, { positiveText: '删除计划', negativeText: '取消', onPositiveClick: () => void removePlan(row) }, {
             default: () => '删除后会清除本系统中的路径和配置，不能恢复。',
             trigger: () => h(NButton, { size: 'small', secondary: true, type: 'error' }, { default: () => '删除' }),
           }),
-        ]),
+        ]) : null,
       ])
     },
   },

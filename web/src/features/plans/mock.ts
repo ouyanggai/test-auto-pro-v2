@@ -11,7 +11,7 @@ export const mockPlans: PlanRow[] = [
     pathCount: 0,
     runMode: 'serial',
     scheduledAt: null,
-    status: 'pending_configuration',
+    status: 'not_started',
     lastRunResult: '尚未运行',
   },
   {
@@ -22,7 +22,7 @@ export const mockPlans: PlanRow[] = [
     pathCount: 3,
     runMode: 'parallel',
     scheduledAt: '2026-07-28 09:30',
-    status: 'ready',
+    status: 'not_started',
     lastRunResult: '尚未运行',
   },
   {

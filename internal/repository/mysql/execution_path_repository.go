@@ -447,7 +447,7 @@ func (r *ExecutionPathRepository) Delete(ctx context.Context, planID, pathID uin
 	return tx.Commit()
 }
 
-// lockMutablePlan 锁定计划并返回来源和下一稳定序号，非待配置计划立即拒绝。
+// lockMutablePlan 锁定计划并返回来源和下一稳定序号，非未运行计划立即拒绝。
 func lockMutablePlan(ctx context.Context, tx *sql.Tx, planID uint64) (string, uint, error) {
 	var source string
 	var status model.PlanStatus
@@ -460,7 +460,7 @@ func lockMutablePlan(ctx context.Context, tx *sql.Tx, planID uint64) (string, ui
 	if err != nil {
 		return "", 0, err
 	}
-	if status != model.PlanStatusPendingConfiguration {
+	if status != model.PlanStatusNotStarted {
 		return "", 0, repository.ErrExecutionPathPlanLocked
 	}
 	if nextSequenceNo == 0 {

@@ -71,7 +71,7 @@ test('持久化计划映射真实列表语言且拒绝未知状态', () => {
   const row = toPlanRow({
     id: '42', name: '采购回归', account: 'tester01', accountDisplayName: '测试专员', flowSource: 'new',
     targetObjectId: 'template-id', targetObjectName: '采购申请', runMode: 'serial', maxConcurrency: null,
-    scheduledAt: null, status: 'pending_configuration', pathCount: 0, lastRunResult: '',
+    scheduledAt: null, status: 'not_started', pathCount: 0, lastRunResult: '',
     createdAt: '2026-07-28T00:00:00Z', updatedAt: '2026-07-28T00:00:00Z',
   })
   assert.equal(row.accountName, '测试专员（tester01）')
@@ -90,7 +90,7 @@ test('创建请求携带原幂等键，列表和详情读取真实 API', async (
     const plan = {
       id: '42', name: '采购回归', account: 'tester01', accountDisplayName: '测试专员', flowSource: 'new',
       targetObjectId: 'template-id', targetObjectName: '采购申请', runMode: 'serial', maxConcurrency: null,
-      scheduledAt: null, status: 'pending_configuration', pathCount: 0, lastRunResult: '', createdAt: '', updatedAt: '',
+      scheduledAt: null, status: 'not_started', pathCount: 0, lastRunResult: '', createdAt: '', updatedAt: '',
     }
     const data = String(input).startsWith('/api/plans?') ? { items: [plan] } : plan
     return new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -99,11 +99,11 @@ test('创建请求携带原幂等键，列表和详情读取真实 API', async (
   const controller = new AbortController()
   const payload = { name: '采购回归', account: 'tester01', accountDisplayName: '测试专员', flowSource: 'new', targetObjectId: 'template-id', targetObjectName: '采购申请', runMode: 'serial', maxConcurrency: null, scheduledAt: null }
   await createPlan(payload, '123e4567-e89b-12d3-a456-426614174000', controller.signal)
-  const rows = await fetchPlans({ name: '采购', status: 'pending_configuration' }, controller.signal)
+  const rows = await fetchPlans({ name: '采购', status: 'not_started' }, controller.signal)
   const detail = await fetchPlan('42', controller.signal)
 
   assert.equal(calls[0].init.headers['Idempotency-Key'], '123e4567-e89b-12d3-a456-426614174000')
-  assert.equal(calls[1].input, '/api/plans?name=%E9%87%87%E8%B4%AD&status=pending_configuration')
+  assert.equal(calls[1].input, '/api/plans?name=%E9%87%87%E8%B4%AD&status=not_started')
   assert.equal(calls[2].input, '/api/plans/42')
   assert.equal(rows[0].id, '42')
   assert.equal(detail.targetObjectName, '采购申请')

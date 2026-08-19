@@ -71,7 +71,8 @@ func (r *memoryPlanRepository) Delete(_ context.Context, id uint64) error {
 	return repository.ErrPlanNotFound
 }
 
-func TestPlanServiceCreatesPendingPlanAndReusesIdempotencyKey(t *testing.T) {
+// TestPlanServiceCreatesNotStartedPlanAndReusesIdempotencyKey 验证新计划固定为未运行且幂等复用。
+func TestPlanServiceCreatesNotStartedPlanAndReusesIdempotencyKey(t *testing.T) {
 	repo := newMemoryPlanRepository()
 	plans := service.NewPlanService(repo)
 	concurrency := 3
@@ -89,7 +90,7 @@ func TestPlanServiceCreatesPendingPlanAndReusesIdempotencyKey(t *testing.T) {
 	if err != nil || created || first.ID != second.ID || len(repo.plans) != 1 {
 		t.Fatal("同一幂等键未返回同一条计划")
 	}
-	if first.Name != "采购回归" || first.Account != "tester01" || first.Status != model.PlanStatusPendingConfiguration {
+	if first.Name != "采购回归" || first.Account != "tester01" || first.Status != model.PlanStatusNotStarted {
 		t.Fatal("计划标准化或初始状态不正确")
 	}
 	if first.ScheduledAt == nil || first.ScheduledAt.Location() != time.UTC {
@@ -97,10 +98,10 @@ func TestPlanServiceCreatesPendingPlanAndReusesIdempotencyKey(t *testing.T) {
 	}
 }
 
-// TestPlanServiceDeletesDevelopmentPlan 验证待配置计划可以删除且后续读取返回不存在。
+// TestPlanServiceDeletesDevelopmentPlan 验证未运行计划可以删除且后续读取返回不存在。
 func TestPlanServiceDeletesDevelopmentPlan(t *testing.T) {
 	repo := newMemoryPlanRepository()
-	repo.plans = []model.Plan{{ID: 9, Status: model.PlanStatusPendingConfiguration}}
+	repo.plans = []model.Plan{{ID: 9, Status: model.PlanStatusNotStarted}}
 	plans := service.NewPlanService(repo)
 	if err := plans.Delete(context.Background(), 9); err != nil {
 		t.Fatalf("删除开发计划失败：%v", err)
@@ -110,6 +111,7 @@ func TestPlanServiceDeletesDevelopmentPlan(t *testing.T) {
 	}
 }
 
+// TestPlanServiceValidatesCreateBoundaries 验证创建计划的字段边界。
 func TestPlanServiceValidatesCreateBoundaries(t *testing.T) {
 	parallelOne := 1
 	serialValue := 2
@@ -145,6 +147,7 @@ func TestPlanServiceValidatesCreateBoundaries(t *testing.T) {
 	}
 }
 
+// TestPlanServiceMapsRepositoryErrorsAndListStatus 验证错误脱敏和三态筛选校验。
 func TestPlanServiceMapsRepositoryErrorsAndListStatus(t *testing.T) {
 	repo := newMemoryPlanRepository()
 	repo.err = errors.New("database secret should not escape")

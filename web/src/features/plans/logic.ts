@@ -6,15 +6,13 @@ import type {
 } from './types.ts'
 
 export const planActionByStatus: Record<PlanStatus, PlanAction> = {
-  pending_configuration: { label: '继续配置', intent: 'configure' },
-  ready: { label: '开始运行', intent: 'start' },
+  not_started: { label: '继续配置', intent: 'configure' },
   running: { label: '查看运行', intent: 'view_running' },
   completed: { label: '查看结果', intent: 'view_result' },
 }
 
 export const planStatusLabels: Record<PlanStatus, string> = {
-  pending_configuration: '待配置',
-  ready: '可运行',
+  not_started: '未运行',
   running: '运行中',
   completed: '已完成',
 }

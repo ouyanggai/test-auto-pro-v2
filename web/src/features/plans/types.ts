@@ -1,4 +1,4 @@
-export type PlanStatus = 'pending_configuration' | 'ready' | 'running' | 'completed'
+export type PlanStatus = 'not_started' | 'running' | 'completed'
 export type PlanRunMode = 'serial' | 'parallel'
 export type FlowSource = 'new' | 'started' | 'pending'
 export type AccountVerificationState = 'idle' | 'verifying' | 'verified' | 'invalid' | 'failed'
@@ -41,7 +41,7 @@ export interface PlanFilters {
 
 export interface PlanAction {
   label: string
-  intent: 'configure' | 'start' | 'view_running' | 'view_result'
+  intent: 'configure' | 'view_running' | 'view_result'
 }
 
 export interface PlanFormValue {

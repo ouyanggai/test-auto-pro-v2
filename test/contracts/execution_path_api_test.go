@@ -118,7 +118,7 @@ func TestPlanAPIExposesRealPathCount(t *testing.T) {
 	repo := &contractPlanRepository{found: true, plan: model.Plan{
 		ID: 7, Name: "路径计划", Account: "account", FlowSource: "new",
 		TargetObjectID: "target", TargetObjectName: "流程", RunMode: "serial",
-		Status: model.PlanStatusPendingConfiguration, PathCount: 3,
+		Status: model.PlanStatusNotStarted, PathCount: 3,
 	}}
 	handler := api.NewHandlerWithServices(&stubTargetReader{}, service.NewPlanService(repo))
 	recorder := httptest.NewRecorder()

@@ -26,13 +26,16 @@ type PlanError struct {
 	Message string
 }
 
+// Error 返回面向调用方的稳定计划错误文案。
 func (e *PlanError) Error() string { return e.Message }
 
+// IsPlanErrorKind 判断错误是否属于指定计划错误类别。
 func IsPlanErrorKind(err error, kind PlanErrorKind) bool {
 	var planErr *PlanError
 	return errors.As(err, &planErr) && planErr.Kind == kind
 }
 
+// CreatePlanInput 接收新计划已验证的业务字段。
 type CreatePlanInput struct {
 	Name               string
 	Account            string
@@ -45,15 +48,18 @@ type CreatePlanInput struct {
 	ScheduledAt        *time.Time
 }
 
+// PlanService 管理计划持久化与公开三态边界。
 type PlanService struct {
 	repository repository.PlanRepository
 	now        func() time.Time
 }
 
+// NewPlanService 创建计划服务。
 func NewPlanService(planRepository repository.PlanRepository) *PlanService {
 	return &PlanService{repository: planRepository, now: time.Now}
 }
 
+// Create 创建未运行计划，同一幂等键始终返回同一记录。
 func (s *PlanService) Create(ctx context.Context, createKey string, input CreatePlanInput) (model.Plan, bool, error) {
 	input = normalizeCreateInput(input)
 	if message := validateCreateInput(createKey, input, s.now().UTC()); message != "" {
@@ -70,7 +76,7 @@ func (s *PlanService) Create(ctx context.Context, createKey string, input Create
 		RunMode:            input.RunMode,
 		MaxConcurrency:     input.MaxConcurrency,
 		ScheduledAt:        input.ScheduledAt,
-		Status:             model.PlanStatusPendingConfiguration,
+		Status:             model.PlanStatusNotStarted,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -81,6 +87,7 @@ func (s *PlanService) Create(ctx context.Context, createKey string, input Create
 	return createdPlan, created, nil
 }
 
+// List 按名称和公开三态筛选计划。
 func (s *PlanService) List(ctx context.Context, name string, status model.PlanStatus) ([]model.Plan, error) {
 	name = strings.TrimSpace(name)
 	if utf8.RuneCountInString(name) > 60 {
@@ -96,6 +103,7 @@ func (s *PlanService) List(ctx context.Context, name string, status model.PlanSt
 	return plans, nil
 }
 
+// Get 按主键读取计划。
 func (s *PlanService) Get(ctx context.Context, id uint64) (model.Plan, error) {
 	if id == 0 {
 		return model.Plan{}, &PlanError{Kind: PlanErrorInvalidArgument, Message: "计划 ID 不正确"}
@@ -116,7 +124,7 @@ func (s *PlanService) Delete(ctx context.Context, id uint64) error {
 	if err != nil {
 		return mapRepositoryError(err)
 	}
-	if plan.Status == model.PlanStatusRunning || plan.Status == model.PlanStatusCompleted {
+	if plan.Status != model.PlanStatusNotStarted {
 		return &PlanError{Kind: PlanErrorInvalidArgument, Message: "已有运行记录的计划不能删除"}
 	}
 	if err := s.repository.Delete(ctx, id); err != nil {
@@ -125,6 +133,7 @@ func (s *PlanService) Delete(ctx context.Context, id uint64) error {
 	return nil
 }
 
+// normalizeCreateInput 清理计划文本并统一定时时区。
 func normalizeCreateInput(input CreatePlanInput) CreatePlanInput {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Account = strings.TrimSpace(input.Account)
@@ -140,6 +149,7 @@ func normalizeCreateInput(input CreatePlanInput) CreatePlanInput {
 	return input
 }
 
+// validateCreateInput 校验计划创建边界并返回稳定中文错误。
 func validateCreateInput(createKey string, input CreatePlanInput, now time.Time) string {
 	if !validUUID(createKey) {
 		return "创建请求标识不正确，请重试"
@@ -177,6 +187,7 @@ func validateCreateInput(createKey string, input CreatePlanInput, now time.Time)
 	return ""
 }
 
+// validUUID 校验幂等键是否为标准 UUID 文本。
 func validUUID(value string) bool {
 	if len(value) != 36 {
 		return false
@@ -195,6 +206,7 @@ func validUUID(value string) bool {
 	return true
 }
 
+// mapRepositoryError 把仓储错误收敛为脱敏计划错误。
 func mapRepositoryError(err error) error {
 	switch {
 	case errors.Is(err, repository.ErrPlanNotFound):

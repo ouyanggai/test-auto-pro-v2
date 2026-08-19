@@ -79,7 +79,7 @@ func TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead(t *testing.T) {
 	if err != nil || created || second.ID != first.ID {
 		t.Fatal("MySQL 唯一键未保持创建幂等")
 	}
-	filtered, err := plans.List(ctx, "MySQL", model.PlanStatusPendingConfiguration)
+	filtered, err := plans.List(ctx, "MySQL", model.PlanStatusNotStarted)
 	if err != nil || len(filtered) != 1 || filtered[0].ID != first.ID {
 		t.Fatal("MySQL 名称与状态筛选结果不正确")
 	}
@@ -97,7 +97,7 @@ func TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead(t *testing.T) {
 	}
 	defer reopened.Close()
 	stored, err := service.NewPlanService(planmysql.NewPlanRepository(reopened.DB)).Get(ctx, first.ID)
-	if err != nil || stored.TargetObjectName != "集成流程" || stored.Status != model.PlanStatusPendingConfiguration {
+	if err != nil || stored.TargetObjectName != "集成流程" || stored.Status != model.PlanStatusNotStarted {
 		t.Fatal("后端重启语义下未读取到同一条计划")
 	}
 	var migrationCount int

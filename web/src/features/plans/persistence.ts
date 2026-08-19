@@ -54,7 +54,7 @@ export class PlanApiError extends Error {
   }
 }
 
-const knownPlanStatuses = new Set<PlanStatus>(['pending_configuration', 'ready', 'running', 'completed'])
+const knownPlanStatuses = new Set<PlanStatus>(['not_started', 'running', 'completed'])
 
 export function buildCreatePlanRequest(
   form: PlanFormValue,

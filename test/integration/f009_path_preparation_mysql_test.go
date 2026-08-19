@@ -12,6 +12,31 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
+// TestF009ConfiguredPlanStatusesMigrated 验证当前开发库应用迁移后只保留三态计划状态。
+func TestF009ConfiguredPlanStatusesMigrated(t *testing.T) {
+	cfg := config.LoadPlanDBConfig()
+	if missing := cfg.MissingRequired(); len(missing) != 0 {
+		t.Fatalf("F-009 计划状态迁移测试缺少配置名：%v", missing)
+	}
+	if cfg.Name != "test_auto_pro_v2" {
+		t.Fatal("F-009 拒绝检查批准范围外的开发数据库")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	database, err := planmysql.OpenAndMigrate(ctx, cfg)
+	if err != nil {
+		t.Fatalf("F-009 当前开发库迁移失败：%v", err)
+	}
+	defer database.Close()
+	var invalidCount int
+	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_plans WHERE status NOT IN ('not_started', 'running', 'completed')").Scan(&invalidCount); err != nil {
+		t.Fatalf("读取迁移后计划状态失败：%v", err)
+	}
+	if invalidCount != 0 {
+		t.Fatalf("迁移后仍存在 %d 条旧计划状态", invalidCount)
+	}
+}
+
 // TestF009PathPreparationMySQLCheckpoints 验证独立任务幂等、单活动任务、取消恢复、分页和真实计数。
 func TestF009PathPreparationMySQLCheckpoints(t *testing.T) {
 	cfg := config.LoadPlanDBConfig()

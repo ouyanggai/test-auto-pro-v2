@@ -312,7 +312,7 @@ func (s *ExecutionPathService) generatePathsBatch(ctx context.Context, planID ui
 	if err != nil {
 		return model.ExecutionPathBatchResult{}, false, err
 	}
-	if plan.Status != model.PlanStatusPendingConfiguration {
+	if plan.Status != model.PlanStatusNotStarted {
 		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "计划已经不能修改执行路径"}
 	}
 	if plan.FlowSource != "new" {
@@ -336,7 +336,7 @@ func (s *ExecutionPathService) generatePathsBatch(ctx context.Context, planID ui
 	return result, created, nil
 }
 
-// Delete 只删除本工具中属于待配置计划的路径，不访问目标系统。
+// Delete 只删除本工具中属于未运行计划的路径，不访问目标系统。
 func (s *ExecutionPathService) Delete(ctx context.Context, planID, pathID uint64) error {
 	if planID == 0 || pathID == 0 {
 		return &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
@@ -353,7 +353,7 @@ func (s *ExecutionPathService) validateMutablePlan(ctx context.Context, planID u
 	if err != nil {
 		return err
 	}
-	if plan.Status != model.PlanStatusPendingConfiguration {
+	if plan.Status != model.PlanStatusNotStarted {
 		return &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "计划已经不能修改执行路径"}
 	}
 	return nil

@@ -162,7 +162,7 @@ func (r *memoryExecutionPathRepository) GeneratePathsBatch(_ context.Context, pl
 // TestExecutionPathServiceRejectsChoicesAfterCurrentGraphChanges 验证保存前真实图变化会阻止旧选择写入。
 func TestExecutionPathServiceRejectsChoicesAfterCurrentGraphChanges(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusNotStarted}}
 	reader := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
 	repo := &memoryExecutionPathRepository{}
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), reader, analyzer.NewExecutionPathAnalyzer(), repo)
@@ -189,7 +189,7 @@ func (r *memoryExecutionPathRepository) Delete(context.Context, uint64, uint64, 
 // TestExecutionPathServiceRereadsAndValidatesCurrentGraph 验证每次创建和更新都重读当前图。
 func TestExecutionPathServiceRereadsAndValidatesCurrentGraph(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusNotStarted}}
 	graph := selectableExecutionPathGraph()
 	graphs := &executionPathGraphReader{graph: graph}
 	repo := &memoryExecutionPathRepository{}
@@ -207,7 +207,7 @@ func TestExecutionPathServiceRereadsAndValidatesCurrentGraph(t *testing.T) {
 // TestExecutionPathServiceIdempotentRetrySkipsChangedGraph 验证已成功请求重试不会再次依赖目标图。
 func TestExecutionPathServiceIdempotentRetrySkipsChangedGraph(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusNotStarted}}
 	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
 	repo := &memoryExecutionPathRepository{}
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
@@ -230,7 +230,7 @@ func TestExecutionPathServiceIdempotentRetrySkipsChangedGraph(t *testing.T) {
 // TestExecutionPathServiceLateResponseRetryUsesCommittedPath 验证首次写入已完成但响应迟到时，同键重试直接返回原路径。
 func TestExecutionPathServiceLateResponseRetryUsesCommittedPath(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusNotStarted}}
 	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
 	repo := &memoryExecutionPathRepository{createStored: make(chan struct{}), createRelease: make(chan struct{})}
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), repo)
@@ -272,8 +272,8 @@ func TestExecutionPathServiceLateResponseRetryUsesCommittedPath(t *testing.T) {
 func TestExecutionPathServiceIdempotencyDoesNotLeakAcrossPlans(t *testing.T) {
 	plans := newMemoryPlanRepository()
 	plans.plans = []model.Plan{
-		{ID: 7, Status: model.PlanStatusPendingConfiguration},
-		{ID: 8, Status: model.PlanStatusPendingConfiguration},
+		{ID: 7, Status: model.PlanStatusNotStarted},
+		{ID: 8, Status: model.PlanStatusNotStarted},
 	}
 	graphs := &executionPathGraphReader{graph: selectableExecutionPathGraph()}
 	repo := &memoryExecutionPathRepository{}
@@ -296,7 +296,7 @@ func TestExecutionPathServiceIdempotencyDoesNotLeakAcrossPlans(t *testing.T) {
 // TestExecutionPathServiceRejectsIncompleteAndExtraSelections 验证无效选择不会进入仓储。
 func TestExecutionPathServiceRejectsIncompleteAndExtraSelections(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusNotStarted}}
 	for _, choices := range [][]model.ExecutionPathChoice{
 		{},
 		{{RouteNodeID: "route", BranchID: "missing"}},
@@ -314,7 +314,7 @@ func TestExecutionPathServiceRejectsIncompleteAndExtraSelections(t *testing.T) {
 // TestExecutionPathServiceMapsRepositoryBoundaries 验证事务错误映射为稳定业务种类。
 func TestExecutionPathServiceMapsRepositoryBoundaries(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusNotStarted}}
 	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}
 	tests := []struct {
 		err  error
@@ -337,7 +337,7 @@ func TestExecutionPathServiceMapsRepositoryBoundaries(t *testing.T) {
 // TestExecutionPathServiceNormalizesPathName 验证路径名称去空格、长度边界和空值默认语义。
 func TestExecutionPathServiceNormalizesPathName(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Status: model.PlanStatusNotStarted}}
 	repo := &memoryExecutionPathRepository{}
 	serviceUnderTest := service.NewExecutionPathService(service.NewPlanService(plans), &executionPathGraphReader{graph: selectableExecutionPathGraph()}, analyzer.NewExecutionPathAnalyzer(), repo)
 	choices := []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}}

@@ -213,7 +213,7 @@ func f009LeaveTemplate() string {
 func f009Generate(t *testing.T, tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template string, seed int64) model.PathFormGenerateResult {
 	t.Helper()
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 91, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 91, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusNotStarted}}
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 92, PlanID: 91, SequenceNo: 1, Name: "路径 1", Choices: choices}}}
 	serviceUnderTest := service.NewPathConfigService(
 		service.NewPlanService(plans),

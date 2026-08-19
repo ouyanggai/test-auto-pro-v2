@@ -89,7 +89,7 @@ func TestExecutionPathMySQLMigrationTransactionsAndCounts(t *testing.T) {
 		t.Fatalf("跨计划路径更新没有被归属校验拒绝：%v", err)
 	}
 	storedPlan, err := plans.Get(ctx, newPlan.ID)
-	if err != nil || storedPlan.PathCount != 2 || storedPlan.Status != model.PlanStatusPendingConfiguration {
+	if err != nil || storedPlan.PathCount != 2 || storedPlan.Status != model.PlanStatusNotStarted {
 		t.Fatal("计划详情没有返回真实路径数量或状态被提前改变")
 	}
 	if err := paths.Delete(ctx, newPlan.ID, second.ID, time.Now().UTC()); err != nil {
@@ -213,7 +213,7 @@ func TestExecutionPathMySQLGeneratePathsBatchIsPersistentAndAtomic(t *testing.T)
 	}
 }
 
-// createPathTestPlan 在随机临时库中创建指定来源的待配置计划。
+// createPathTestPlan 在随机临时库中创建指定来源的未运行计划。
 func createPathTestPlan(t *testing.T, ctx context.Context, plans *service.PlanService, source, key string) model.Plan {
 	t.Helper()
 	plan, created, err := plans.Create(ctx, key, service.CreatePlanInput{

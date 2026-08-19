@@ -10,7 +10,9 @@ import {
   deriveExecutionPathWorkspacePresentation,
   deriveExecutionPathDecisionProgress,
   deriveExecutionPathWorkspaceDisposition,
+  executionPathRunReadiness,
   hasExecutionPathDraftChanges,
+  isExecutionPathRunnable,
   nextExecutionPathRouteID,
   projectExecutionPathSummary,
   summarizeExecutionPathConfiguration,
@@ -31,6 +33,15 @@ import {
   startPathGeneration,
   updateExecutionPath,
 } from '../../../web/src/features/execution-paths/api.ts'
+
+test('路径可运行规则只消费节点配置和数据准备双状态', () => {
+  const path = { configurationStatus: 'configured', dataStatus: 'generated' }
+  assert.equal(isExecutionPathRunnable(path), true)
+  assert.equal(executionPathRunReadiness(path), 'ready')
+  assert.equal(executionPathRunReadiness({ ...path, configurationStatus: 'partial' }), 'configuration')
+  assert.equal(executionPathRunReadiness({ ...path, dataStatus: 'needs_attention' }), 'data')
+  assert.equal(isExecutionPathRunnable({ ...path, dataStatus: 'not_generated' }), false)
+})
 
 const graph = {
   planId: '7',

@@ -2,11 +2,20 @@ package model
 
 import "time"
 
+const (
+	ExecutionPathConfigurationConfigured = "configured"
+	ExecutionPathDataNotRequired         = "not_required"
+	ExecutionPathDataGenerated           = "generated"
+	ExecutionPathDataConfirmed           = "confirmed"
+)
+
+// ExecutionPathChoice 记录一个真实路由节点选择的分支。
 type ExecutionPathChoice struct {
 	RouteNodeID string `json:"routeNodeId"`
 	BranchID    string `json:"branchId"`
 }
 
+// ExecutionPath 保存计划下单条执行路径及其轻量准备状态。
 type ExecutionPath struct {
 	ID         uint64
 	PlanID     uint64
@@ -29,6 +38,20 @@ type ExecutionPath struct {
 	UpdatedAt             time.Time
 }
 
+// IsExecutionPathRunnable 只根据路径节点配置和数据准备状态判断未来运行资格。
+func IsExecutionPathRunnable(path ExecutionPath) bool {
+	if path.ConfigurationStatus != ExecutionPathConfigurationConfigured {
+		return false
+	}
+	switch path.DataStatus {
+	case ExecutionPathDataNotRequired, ExecutionPathDataGenerated, ExecutionPathDataConfirmed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ExecutionPathBatchResult 汇总一次路径批量生成结果。
 type ExecutionPathBatchResult struct {
 	TotalCount    int
 	ExistingCount int
@@ -36,6 +59,7 @@ type ExecutionPathBatchResult struct {
 	Paths         []ExecutionPath
 }
 
+// ExecutionPathAnalysis 描述选择集合在真实流程图中的完整性。
 type ExecutionPathAnalysis struct {
 	Complete            bool
 	MissingRouteNodeIDs []string

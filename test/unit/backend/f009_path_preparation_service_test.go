@@ -182,7 +182,7 @@ func (r *f009BatchPreparationRepository) ListItems(context.Context, uint64, stri
 // TestF009BatchPreparationReadsSharedAssetsOnceAndIsolatesFailure 验证目标快照只读一次、路径配置批量读取且单条失败不阻断其他路径。
 func TestF009BatchPreparationReadsSharedAssetsOnceAndIsolatesFailure(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 501, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "请假流程", Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 501, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "请假流程", Status: model.PlanStatusNotStarted}}
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{
 		{ID: 601, PlanID: 501, SequenceNo: 1, Name: "兜底路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "fallback"}}},
 		{ID: 602, PlanID: 501, SequenceNo: 2, Name: "失效路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "removed", BranchID: "missing"}}},

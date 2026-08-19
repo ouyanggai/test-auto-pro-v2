@@ -12,6 +12,20 @@ import type {
 
 const selectableKinds = new Set(['condition', 'manual'])
 
+export type ExecutionPathRunReadiness = 'ready' | 'configuration' | 'data'
+
+// executionPathRunReadiness 只消费路径双状态，供未来运行预检和当前配置提示共用。
+export function executionPathRunReadiness(path: ExecutionPath): ExecutionPathRunReadiness {
+  if (path.configurationStatus !== 'configured') return 'configuration'
+  if (path.dataStatus === 'not_required' || path.dataStatus === 'generated' || path.dataStatus === 'confirmed') return 'ready'
+  return 'data'
+}
+
+// isExecutionPathRunnable 判断路径是否同时满足节点配置和数据准备要求。
+export function isExecutionPathRunnable(path: ExecutionPath): boolean {
+  return executionPathRunReadiness(path) === 'ready'
+}
+
 // summarizeExecutionPathConfiguration 只按路径列表携带的本地状态统计配置进度，不触发目标平台或完整分析。
 export function summarizeExecutionPathConfiguration(paths: ExecutionPath[]): { total: number, configured: number, partial: number, pending: number, nextPath: ExecutionPath | null } {
   const configured = paths.filter((path) => path.configurationStatus === 'configured').length

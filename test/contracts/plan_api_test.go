@@ -70,6 +70,7 @@ func (r *contractPlanRepository) Delete(_ context.Context, id uint64) error {
 	return nil
 }
 
+// TestPlanAPIContractsAndIdempotency 验证计划接口三态协议和创建幂等。
 func TestPlanAPIContractsAndIdempotency(t *testing.T) {
 	repo := &contractPlanRepository{}
 	handler := api.NewHandlerWithServices(&stubTargetReader{}, service.NewPlanService(repo))
@@ -83,7 +84,7 @@ func TestPlanAPIContractsAndIdempotency(t *testing.T) {
 			t.Fatalf("第 %d 次创建状态码 = %d", attempt+1, recorder.Code)
 		}
 		responseBody := recorder.Body.String()
-		for _, field := range []string{"\"id\":\"41\"", "pending_configuration", "targetObjectName", "pathCount", "lastRunResult"} {
+		for _, field := range []string{"\"id\":\"41\"", "not_started", "targetObjectName", "pathCount", "lastRunResult"} {
 			if !strings.Contains(responseBody, field) {
 				t.Fatalf("创建响应缺少 %s", field)
 			}
@@ -91,7 +92,7 @@ func TestPlanAPIContractsAndIdempotency(t *testing.T) {
 		assertPlanResponseSafe(t, recorder.Body.Bytes())
 	}
 
-	for _, path := range []string{"/api/plans?status=pending_configuration", "/api/plans/41"} {
+	for _, path := range []string{"/api/plans?status=not_started", "/api/plans/41"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "采购回归") {
@@ -103,7 +104,7 @@ func TestPlanAPIContractsAndIdempotency(t *testing.T) {
 
 // TestPlanAPIDeletesDevelopmentPlan 验证删除只影响系统计划数据，重复删除稳定返回不存在。
 func TestPlanAPIDeletesDevelopmentPlan(t *testing.T) {
-	repo := &contractPlanRepository{plan: model.Plan{ID: 41, Status: model.PlanStatusPendingConfiguration}, found: true}
+	repo := &contractPlanRepository{plan: model.Plan{ID: 41, Status: model.PlanStatusNotStarted}, found: true}
 	handler := api.NewHandlerWithServices(&stubTargetReader{}, service.NewPlanService(repo))
 	request := httptest.NewRequest(http.MethodDelete, "/api/plans/41", nil)
 	recorder := httptest.NewRecorder()
@@ -118,6 +119,7 @@ func TestPlanAPIDeletesDevelopmentPlan(t *testing.T) {
 	}
 }
 
+// TestPlanAPIParameterAndStableErrorContracts 验证非法输入和存储错误保持稳定脱敏协议。
 func TestPlanAPIParameterAndStableErrorContracts(t *testing.T) {
 	repo := &contractPlanRepository{}
 	handler := api.NewHandlerWithServices(&stubTargetReader{}, service.NewPlanService(repo))
@@ -153,6 +155,7 @@ func TestPlanAPIParameterAndStableErrorContracts(t *testing.T) {
 	}
 }
 
+// assertPlanResponseSafe 验证计划响应不会泄露内部存储和凭证字段。
 func assertPlanResponseSafe(t *testing.T, body []byte) {
 	t.Helper()
 	var value any

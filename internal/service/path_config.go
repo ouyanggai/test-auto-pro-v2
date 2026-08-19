@@ -123,13 +123,13 @@ func (s *PathConfigService) ownedPath(ctx context.Context, planID, pathID uint64
 	return path, nil
 }
 
-// validateConfigMutablePlan 只允许仍处于待配置状态的计划继续保存配置。
+// validateConfigMutablePlan 只允许仍处于未运行状态的计划继续保存配置。
 func (s *PathConfigService) validateConfigMutablePlan(ctx context.Context, planID uint64) error {
 	plan, err := s.plans.Get(ctx, planID)
 	if err != nil {
 		return err
 	}
-	if plan.Status != model.PlanStatusPendingConfiguration {
+	if plan.Status != model.PlanStatusNotStarted {
 		return &PathConfigError{Kind: PathConfigErrorLocked, Message: "计划已经不能修改路径配置"}
 	}
 	return nil

@@ -47,7 +47,7 @@ func (emptyPathConfigRepository) Save(_ context.Context, record model.StoredPath
 // TestF008PathConfigReadsDetailChoices 验证节点尚未配置时仍会使用单条完整路径进入待配置态。
 func TestF008PathConfigReadsDetailChoices(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 7, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 7, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusNotStarted}}
 	paths := &memoryExecutionPathRepository{listSummaryOnly: true, paths: []model.ExecutionPath{{
 		ID: 32, PlanID: 7, SequenceNo: 1, Name: "路径 1", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}},
 	}}}
@@ -71,7 +71,7 @@ func TestF008PathConfigReadsDetailChoices(t *testing.T) {
 // TestF007FormConditionBindingDrivesGenerationAndSave 验证同一条件投影锁定字段、生成当前路径值并拒绝改走其他分支的数据。
 func TestF007FormConditionBindingDrivesGenerationAndSave(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 8, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 8, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusNotStarted}}
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{
 		ID: 33, PlanID: 8, SequenceNo: 1, Name: "大额路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-a"}},
 	}}}
@@ -102,7 +102,7 @@ func TestF007FormConditionBindingDrivesGenerationAndSave(t *testing.T) {
 // TestF007ConditionBindingFieldsSerializeAsArrays 验证无条件兜底分支的 fields 也必须编码为空数组而不是 JSON null。
 func TestF007ConditionBindingFieldsSerializeAsArrays(t *testing.T) {
 	plans := newMemoryPlanRepository()
-	plans.plans = []model.Plan{{ID: 9, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusPendingConfiguration}}
+	plans.plans = []model.Plan{{ID: 9, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusNotStarted}}
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{
 		ID: 34, PlanID: 9, SequenceNo: 1, Name: "兜底路径", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-last"}},
 	}}}
