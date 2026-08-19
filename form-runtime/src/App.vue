@@ -17,7 +17,7 @@
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
 import { captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, diffManualPaths, refreshPreparedForm } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
-import { clearRuntimeAuth, setRuntimeAuth } from './runtime/memoryAuth'
+import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
 
 export default {
@@ -45,6 +45,7 @@ export default {
       loading: false,
       dirty: false,
 		removeRequestPolicy: null,
+		removeStorageFacade: null,
 		stateTimer: null
     }
   },
@@ -109,11 +110,20 @@ export default {
           baseURL
         })
         // 目标组件继续走 rsh-flow-components 原生 Vuex/axios 链；认证只写当前 iframe 内存适配，销毁会话即清除。
-        setRuntimeAuth({
-          token: String(payload.sid || ''),
-          sid: String(payload.sid || ''),
-          userName: String(payload.accountName || '')
-        })
+        const runtimeIdentity = {
+          token: String(payload.sid || ''), sid: String(payload.sid || ''), userName: String(payload.accountName || ''),
+          userId: String(payload.userId || ''), companyId: String(payload.companyId || ''), customerCode: String(payload.customerCode || ''),
+          companyName: String(payload.companyName || ''), userDepartmentId: String(payload.departmentId || ''),
+          departmentId: String(payload.departmentId || ''), userDepartmentName: String(payload.departmentName || ''),
+          currentCompanyName: String(payload.companyName || ''), currentDepartment: String(payload.departmentName || ''),
+          currentDepName: String(payload.departmentName || ''), initiatorId: String(payload.userId || ''),
+          initiatorName: String(payload.accountName || ''), initiatorCompanyId: String(payload.companyId || ''),
+          initiatorCompanyName: String(payload.companyName || ''), initiatorDepartmentId: String(payload.departmentId || ''),
+          initiatorDepartmentName: String(payload.departmentName || '')
+        }
+        // 模板可能绕过认证工具直接读 native localStorage；这里安装仅存活于 iframe 会话的 facade。
+        setRuntimeAuth(runtimeIdentity)
+        this.removeStorageFacade = installRuntimeStorageFacade(runtimeIdentity)
         if (window.$store) {
           window.$store.commit('user/SET_TOKEN', String(payload.sid || ''))
           window.$store.commit('user/SET_USER_NAME', String(payload.accountName || ''))
@@ -122,6 +132,8 @@ export default {
           if (payload.companyId) window.$store.commit('user/SET_COMPANY_ID', String(payload.companyId))
           if (payload.customerCode) window.$store.commit('user/SET_CUSTOMERCODE', String(payload.customerCode))
           if (payload.companyName) window.$store.commit('user/SET_COMPANY_NAME', String(payload.companyName))
+			if (payload.departmentName && window.$store._mutations['user/SET_DEPARTMENT_NAME']) window.$store.commit('user/SET_DEPARTMENT_NAME', String(payload.departmentName))
+			if (payload.departmentId && window.$store._mutations['user/SET_DEPARTMENTID']) window.$store.commit('user/SET_DEPARTMENTID', String(payload.departmentId))
         }
 		const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, payload.fieldRules || [])
         this.template = prepared.template
@@ -229,6 +241,8 @@ export default {
 		this.stateTimer = null
       if (typeof this.removeRequestPolicy === 'function') this.removeRequestPolicy()
       this.removeRequestPolicy = null
+		if (typeof this.removeStorageFacade === 'function') this.removeStorageFacade()
+		this.removeStorageFacade = null
       this.sessionId = ''
       this.template = { list: [], config: {} }
       this.values = {}

@@ -73,14 +73,14 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 			return
 		}
 		name, _ := data["name"].(string)
-		if data["useScope"] != "invest" || (name != "" && name != "sent") || body["pagination"] != true {
+		if data["useScope"] != "invest" || (name != "" && name != "sent" && name != "flow-test") || body["pagination"] != true {
 			f.t.Error("已发流程请求参数不符合已核实协议")
 		}
 		writeTargetJSON(response, map[string]any{
 			"isSuccess": true,
 			"data": []any{
-				map[string]any{"id": "submitted-run", "name": "真实已发流程", "formName": "备用标题", "status": "run", "createDate": "2026-07-27 10:00", "currentNodeName": "部门审批", "currentAuditUserInfo": map[string]any{"node-a": map[string]any{"userList": []any{map[string]any{"name": "处理人甲"}}}}},
-				map[string]any{"id": "submitted-end", "name": "已完结流程", "status": "end"},
+				map[string]any{"id": "submitted-run", "name": "真实已发流程", "flowCode": "flow-test", "formName": "备用标题", "status": "run", "createDate": "2026-07-27 10:00", "currentNodeName": "部门审批", "currentAuditUserInfo": map[string]any{"node-a": map[string]any{"userList": []any{map[string]any{"name": "处理人甲"}}}}},
+				map[string]any{"id": "submitted-end", "name": "已完结流程", "flowCode": "flow-test", "status": "end"},
 				map[string]any{"id": "submitted-rejected", "name": "已驳回流程", "status": "rejected"},
 				map[string]any{"id": "submitted-withdraw", "name": "已撤销流程", "status": "withdraw"},
 				map[string]any{"id": "submitted-await", "name": "待发流程", "status": "await_sent"},
@@ -228,7 +228,7 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 			},
 		}
 	}
-	detailData := map[string]any{"flowNodeTemplate": map[string]any{
+	detailData := map[string]any{"flowCode": "flow-test", "flowNodeTemplate": map[string]any{
 		"id": "start", "nodeName": "发起", "type": "start",
 		"childFlowNodeTemplate": map[string]any{
 			"id": "approval", "nodeName": "审批", "type": "common", "isSkip": true,
@@ -1114,10 +1114,10 @@ func TestPathConfigurationRuntimeSessionAndRecentSamplesUseVerifiedCache(t *test
 		t.Fatalf("预热账号会话失败：%v", err)
 	}
 	runtimeSession, err := reader.FormRuntimeSession(context.Background(), "account-a")
-	if err != nil || runtimeSession.SID == "" || runtimeSession.BaseURL != targetServer.URL {
+	if err != nil || runtimeSession.SID == "" || runtimeSession.BaseURL != targetServer.URL || runtimeSession.DepartmentID != "department-1" || runtimeSession.DepartmentName != "财务部" {
 		t.Fatalf("短期运行时会话没有复用已验证账号缓存：session=%+v err=%v", runtimeSession, err)
 	}
-	first, err := reader.RecentFormSamples(context.Background(), "account-a", 2)
+	first, err := reader.RecentFormSamples(context.Background(), "account-a", "flow-test", 2)
 	if err != nil || len(first) != 2 || first[0]["amount"] != 2500.5 {
 		t.Fatalf("近期表单样本读取失败：samples=%+v err=%v", first, err)
 	}
@@ -1125,7 +1125,7 @@ func TestPathConfigurationRuntimeSessionAndRecentSamplesUseVerifiedCache(t *test
 	callsBeforeCache := len(fake.graphCalls)
 	loginCount := fake.loginCount
 	fake.mu.Unlock()
-	second, err := reader.RecentFormSamples(context.Background(), "account-a", 2)
+	second, err := reader.RecentFormSamples(context.Background(), "account-a", "flow-test", 2)
 	if err != nil || len(second) != 2 {
 		t.Fatalf("近期样本缓存读取失败：samples=%+v err=%v", second, err)
 	}

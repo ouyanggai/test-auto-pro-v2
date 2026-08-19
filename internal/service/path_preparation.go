@@ -269,7 +269,7 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 		initiator: plan.Account, samples: []map[string]any{},
 	}
 	if reader, ok := s.config.target.(pathFormSampleReader); ok {
-		if samples, readErr := reader.RecentFormSamples(ctx, plan.Account, 5); readErr == nil {
+		if samples, readErr := reader.RecentFormSamples(ctx, plan.Account, snapshot.FlowCode, 5); readErr == nil {
 			assets.samples = samples
 		}
 	}

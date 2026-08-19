@@ -1,6 +1,6 @@
 const CONTAINER_TYPES = new Set(['grid', 'report', 'table', 'subform', 'inline', 'dialog', 'card', 'group', 'tabs', 'collapse'])
 const STANDARD_TYPES = new Set([
-  'input', 'textarea', 'number', 'date', 'time', 'select', 'radio', 'checkbox', 'switch',
+  'input', 'textarea', 'number', 'date', 'time', 'select', 'radio', 'checkbox', 'switch', 'cascader', 'fileupload',
   'text', 'html', 'divider', 'blank', 'link', 'button', ...CONTAINER_TYPES
 ])
 const TARGET_COMPONENT_NAMES = new Set(JSON.parse(process.env.VUE_APP_TARGET_COMPONENT_NAMES || '[]'))
@@ -78,16 +78,17 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, fieldRules 
 			const protectedByCondition = ruleByField.get(field) === true
 			if (!readOnly && power === 'edit' && !protectedByCondition) editableFields.add(field)
 			if (protectedByCondition) protectedFields.add(field)
-			if (power === 'hide') hiddenFields.add(field)
+			const staticallyHidden = power === 'hide' || component.hidden === true || component.options && (component.options.hidden === true || component.options.display === false)
+			if (staticallyHidden) hiddenFields.add(field)
 			component.options = component.options || {}
-			component.options.hidden = power === 'hide'
+			component.options.hidden = staticallyHidden
 			// 条件锁定在组件创建前写入 options，不能依赖宿主视觉遮挡或不兼容的运行时 disabled API。
 			component.options.disabled = readOnly || power !== 'edit' || protectedByCondition
 			if (component.options.disabled) {
           component.options.required = false
           // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
 				if (Array.isArray(component.rules)) component.rules = []
-			} else if (component.options.required || Array.isArray(component.rules) && component.rules.some(rule => rule && rule.required)) {
+			} else if (!staticallyHidden && (component.options.required || Array.isArray(component.rules) && component.rules.some(rule => rule && rule.required))) {
 				requiredEditableFields.add(field)
         }
       }

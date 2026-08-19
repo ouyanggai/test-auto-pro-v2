@@ -3,6 +3,7 @@ import test from 'node:test'
 
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select'])
 const { captureFormValues, componentRuntimeName, diffManualPaths, formRuntimeStats, prepareTemplate, refreshPreparedForm } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
 
@@ -31,6 +32,28 @@ test('目标表单模板递归应用权限且复杂组件不降级', () => {
   assert.deepEqual(prepared.allFields.sort(), ['contract', 'hiddenValue', 'title'])
   assert.deepEqual(prepared.editableFields, ['title'])
   assert.deepEqual(prepared.hiddenFields, ['hiddenValue'])
+})
+
+test('隐藏必填字段不计入人工待办且身份 storage 只在当前运行时内存存在', () => {
+  const prepared = prepareTemplate({ list: [
+    { type: 'input', model: 'hiddenRequired', options: { required: true, hidden: true } },
+    { type: 'input', model: 'visibleRequired', options: { required: true } },
+  ] }, [{ field: 'hiddenRequired', power: 'edit' }, { field: 'visibleRequired', power: 'edit' }], false)
+  assert.deepEqual(prepared.hiddenFields, ['hiddenRequired'])
+  assert.deepEqual(prepared.requiredEditableFields, ['visibleRequired'])
+
+  const originalWindow = globalThis.window
+  globalThis.window = {}
+  try {
+    const restore = installRuntimeStorageFacade({ currentDepartment: '财务部', currentCompanyName: '测试公司' })
+    assert.equal(localstorageGet('currentDepartment'), '财务部')
+    restore()
+    clearRuntimeAuth()
+    assert.equal(localstorageGet('currentDepartment'), '')
+  } finally {
+    globalThis.window = originalWindow
+    clearRuntimeAuth()
+  }
 })
 
 test('未显式授权字段默认只读且人工覆盖路径递归稳定', () => {

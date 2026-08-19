@@ -213,6 +213,10 @@ func pathSolveCandidates(field formdata.Field, values map[string]any, constants 
 		result = append(result, float64(0), float64(1), float64(2), float64(100))
 	case "select", "radio":
 		result = append(result, field.Options...)
+	case "cascader":
+		for _, path := range field.OptionPaths {
+			result = append(result, cloneAnyPath(path))
+		}
 	case "checkbox":
 		for _, option := range field.Options {
 			result = append(result, []any{option})
@@ -235,6 +239,13 @@ func pathSolveCandidates(field formdata.Field, values map[string]any, constants 
 		// 身份组件只允许使用生成阶段从真实目录得到的当前值，不编造人员或组织。
 	}
 	return uniquePathSolveValues(result, 10)
+}
+
+// cloneAnyPath 复制级联候选路径，防止搜索回溯修改模板候选数组。
+func cloneAnyPath(path []any) []any {
+	result := make([]any, len(path))
+	copy(result, path)
+	return result
 }
 
 // uniquePathSolveValues 按 JSON 值去重并限制单字段候选数量，保持内存与组合数有界。
@@ -275,16 +286,31 @@ func rotatePathSolveCandidates(values []any, seed int64) {
 // setPathFormValue 设置精确点路径，不跨数组或按展示名称猜测字段。
 func setPathFormValue(values map[string]any, path string, value any) {
 	parts := strings.Split(strings.TrimSpace(path), ".")
-	current := values
-	for index, part := range parts {
-		if index == len(parts)-1 {
-			current[part] = value
+	var current any = values
+	for index, rawPart := range parts {
+		part := strings.TrimSuffix(rawPart, "[]")
+		isCollection := strings.HasSuffix(rawPart, "[]")
+		object, ok := current.(map[string]any)
+		if !ok {
 			return
 		}
-		next, ok := current[part].(map[string]any)
-		if !ok {
+		if index == len(parts)-1 {
+			object[part] = value
+			return
+		}
+		if isCollection {
+			list, listOK := object[part].([]any)
+			if !listOK || len(list) == 0 {
+				list = []any{map[string]any{}}
+				object[part] = list
+			}
+			current = list[0]
+			continue
+		}
+		next, nextOK := object[part].(map[string]any)
+		if !nextOK {
 			next = map[string]any{}
-			current[part] = next
+			object[part] = next
 		}
 		current = next
 	}

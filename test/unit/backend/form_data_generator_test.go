@@ -2,6 +2,7 @@ package backend_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -324,6 +325,25 @@ func TestFormDataGeneratorInventoriesUnknownTemplateCapabilities(t *testing.T) {
 	}
 	if len(inventory.NeedsAttention) == 0 {
 		t.Fatal("未知组件或动态脚本没有进入 needs_attention")
+	}
+}
+
+// TestF009TemplateCoverageReportKeepsAllRealTemplatesAndUnknownCapabilities 检查覆盖报告不会漏计空模板或吞掉未分类能力。
+func TestF009TemplateCoverageReportKeepsAllRealTemplatesAndUnknownCapabilities(t *testing.T) {
+	templates := make([]map[string]any, 196)
+	for index := range templates {
+		typeName := "input"
+		if index == 195 {
+			typeName = "vendor-widget"
+		}
+		templates[index] = map[string]any{"list": []any{map[string]any{"type": typeName, "model": fmt.Sprintf("field-%d", index)}}}
+	}
+	report := formdata.BuildTemplateCoverageReport(templates)
+	if report.TemplateCount != 196 || report.ComponentTypes["input"] != 195 || report.ComponentTypes["vendor-widget"] != 1 {
+		t.Fatalf("196 个模板的组件覆盖统计不准确：%+v", report)
+	}
+	if report.NeedsAttentionTemplates != 1 || len(report.NeedsAttention) == 0 {
+		t.Fatalf("未知能力没有进入覆盖阻断：%+v", report)
 	}
 }
 

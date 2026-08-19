@@ -28,7 +28,7 @@ type pathFormRuntimeSessionReader interface {
 }
 
 type pathFormSampleReader interface {
-	RecentFormSamples(context.Context, string, int) ([]map[string]any, error)
+	RecentFormSamples(context.Context, string, string, int) ([]map[string]any, error)
 }
 
 type pathFormIdentityReader interface {
@@ -68,6 +68,7 @@ func (s *PathConfigService) RuntimeSession(ctx context.Context, planID, pathID u
 	return model.PathFormRuntimeSession{
 		SID: active.SID, BaseURL: active.BaseURL, AccountName: active.AccountName,
 		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: active.CompanyName,
+		DepartmentID: active.DepartmentID, DepartmentName: active.DepartmentName,
 	}, nil
 }
 
@@ -111,7 +112,7 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	samples := make([]map[string]any, 0)
 	if reader, ok := s.target.(pathFormSampleReader); ok {
 		// 样本读取失败不阻断安全兜底，摘要保持 recent=0，页面会明确提示样本不足。
-		if recent, sampleErr := reader.RecentFormSamples(ctx, plan.Account, 5); sampleErr == nil {
+		if recent, sampleErr := reader.RecentFormSamples(ctx, plan.Account, snapshot.FlowCode, 5); sampleErr == nil {
 			samples = recent
 		}
 	}
@@ -1070,14 +1071,29 @@ func targetConditionMatches(values map[string]any, condition target.FlowConditio
 // pathFormValue 读取点分隔表单字段键，不跨数组或显示名称猜测字段。
 func pathFormValue(values map[string]any, path string) (any, bool) {
 	current := any(values)
-	for _, part := range strings.Split(strings.TrimSpace(path), ".") {
+	for _, rawPart := range strings.Split(strings.TrimSpace(path), ".") {
+		part := strings.TrimSuffix(rawPart, "[]")
+		isCollection := strings.HasSuffix(rawPart, "[]")
 		object, ok := current.(map[string]any)
+		if !ok {
+			if list, listOK := current.([]any); listOK && len(list) > 0 {
+				current = list[0]
+				object, ok = current.(map[string]any)
+			}
+		}
 		if !ok {
 			return nil, false
 		}
 		current, ok = object[part]
 		if !ok {
 			return nil, false
+		}
+		if isCollection {
+			list, listOK := current.([]any)
+			if !listOK || len(list) == 0 {
+				return nil, false
+			}
+			current = list[0]
 		}
 	}
 	return current, true
@@ -1345,7 +1361,7 @@ func resolvePathFormConditionField(raw string, fields []formdata.Field) (pathFor
 		if path == field.Path {
 			return pathFormConditionFieldRef{Field: field, Mode: "direct"}, true
 		}
-		if path == field.Path+"__virtualName" && (field.Type == "select" || field.Type == "radio") {
+		if path == field.Path+"__virtualName" && (field.Type == "select" || field.Type == "radio" || field.Type == "cascader") {
 			if field.OptionVirtualUsesValue {
 				return pathFormConditionFieldRef{Field: field, Mode: "option-value"}, true
 			}
@@ -1386,13 +1402,13 @@ func conditionORGroup(conditions []target.FlowCondition, index, current int) int
 func buildPathFormConstraint(condition target.FlowCondition, left, right pathFormConditionFieldRef, rightOK bool, group int) (formdata.Constraint, bool) {
 	op := normalizeConditionJudge(condition.Judge)
 	if left.Mode == "info-condition" {
-		return formdata.Constraint{Field: normalizeFormFieldPath(condition.FieldA), Op: op, Value: pathConditionValue(condition.ValueB), Group: group}, false
+		return formdata.Constraint{Field: normalizeFormFieldPath(condition.FieldA), FieldType: left.Field.Type, Op: op, Value: pathConditionValue(condition.ValueB), Group: group}, false
 	}
 	if strings.TrimSpace(condition.FieldB) != "" {
 		if !rightOK || left.Mode != "direct" || right.Mode != "direct" {
 			return formdata.Constraint{}, true
 		}
-		return formdata.Constraint{Field: left.Field.Path, Op: op, ValueField: right.Field.Path, Group: group}, false
+		return formdata.Constraint{Field: left.Field.Path, FieldType: left.Field.Type, Op: op, ValueField: right.Field.Path, Group: group}, false
 	}
 	value := pathConditionValue(condition.ValueB)
 	if left.Mode == "option-label" {
@@ -1405,7 +1421,49 @@ func buildPathFormConstraint(condition target.FlowCondition, left, right pathFor
 	if left.Mode == "option-value" && !pathConditionValueExistsInOptions(left.Field, value, op) {
 		return formdata.Constraint{}, true
 	}
-	return formdata.Constraint{Field: left.Field.Path, Op: op, Value: value, Group: group}, false
+	if left.Field.Type == "cascader" && left.Mode == "direct" {
+		var ok bool
+		value, ok = cascaderConstraintValue(left.Field, value, op)
+		if !ok {
+			return formdata.Constraint{}, true
+		}
+	}
+	return formdata.Constraint{Field: left.Field.Path, FieldType: left.Field.Type, Op: op, Value: value, Group: group}, false
+}
+
+// cascaderConstraintValue 把级联条件叶值映射为目标组件要求的完整根到叶路径。
+func cascaderConstraintValue(field formdata.Field, value any, op string) (any, bool) {
+	if len(field.OptionPaths) == 0 {
+		return nil, false
+	}
+	if op == "in" {
+		items, ok := value.([]any)
+		if !ok {
+			return nil, false
+		}
+		for _, item := range items {
+			for _, path := range field.OptionPaths {
+				if len(path) > 0 && targetValuesEqual(path[len(path)-1], item) {
+					return path, true
+				}
+			}
+		}
+		return nil, false
+	}
+	if candidate, ok := value.([]any); ok {
+		for _, path := range field.OptionPaths {
+			if targetValuesEqual(path, candidate) {
+				return path, true
+			}
+		}
+		return nil, false
+	}
+	for _, path := range field.OptionPaths {
+		if len(path) > 0 && targetValuesEqual(path[len(path)-1], value) {
+			return path, true
+		}
+	}
+	return nil, false
 }
 
 // pathConditionValueExistsInOptions 验证目标条件常量确实属于模板选项值，不按显示名猜测。

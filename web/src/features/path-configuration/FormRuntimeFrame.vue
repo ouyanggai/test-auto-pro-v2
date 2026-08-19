@@ -59,6 +59,8 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       companyId: props.runtimeSession.companyId,
       customerCode: props.runtimeSession.customerCode,
       companyName: props.runtimeSession.companyName,
+      departmentId: props.runtimeSession.departmentId,
+      departmentName: props.runtimeSession.departmentName,
       readOnly: props.form.readOnly,
       template: props.form.template,
       permissions: props.form.permissions,

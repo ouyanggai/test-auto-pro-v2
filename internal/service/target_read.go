@@ -340,9 +340,14 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 	if err != nil {
 		return target.FormRuntimeSession{}, err
 	}
+	identity, identityErr := s.client.FormIdentityContext(ctx, active)
+	if identityErr != nil {
+		return target.FormRuntimeSession{}, identityErr
+	}
 	return target.FormRuntimeSession{
 		SID: active.SID, BaseURL: s.client.BaseURL(), AccountName: active.Summary.DisplayName,
 		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: active.Summary.CompanyName,
+		DepartmentID: identity.Department.ID, DepartmentName: identity.Department.Name,
 	}, nil
 }
 
@@ -358,8 +363,8 @@ func (s *TargetReadService) FormIdentityContext(ctx context.Context, account str
 	return s.client.FormIdentityContext(ctx, active)
 }
 
-// RecentFormSamples 读取最多五条近期可见已发实例表单值，并用短期内存缓存限制目标请求。
-func (s *TargetReadService) RecentFormSamples(ctx context.Context, account string, limit int) ([]map[string]any, error) {
+// RecentFormSamples 只读取同一真实流程编码的近期样本，缓存键必须隔离账号和流程避免跨模板复用。
+func (s *TargetReadService) RecentFormSamples(ctx context.Context, account, flowCode string, limit int) ([]map[string]any, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
@@ -369,7 +374,11 @@ func (s *TargetReadService) RecentFormSamples(ctx context.Context, account strin
 	if limit > 5 {
 		limit = 5
 	}
-	cacheKey := strings.TrimSpace(account)
+	flowCode = strings.TrimSpace(flowCode)
+	if flowCode == "" {
+		return []map[string]any{}, nil
+	}
+	cacheKey := strings.TrimSpace(account) + "|" + flowCode
 	s.sampleMu.Lock()
 	cached, found := s.sampleCache[cacheKey]
 	s.sampleMu.Unlock()
@@ -378,22 +387,30 @@ func (s *TargetReadService) RecentFormSamples(ctx context.Context, account strin
 	}
 	result := make([]map[string]any, 0, limit)
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
-		page, err := s.client.ListSubmitted(callContext, active, "", 1, limit)
-		if err != nil {
-			return err
-		}
-		// 并发度固定为一，避免智能生成同时放大目标实例与表单读取压力。
-		for _, item := range page.Items {
-			if len(result) >= limit {
+		pageNumber := 1
+		for len(result) < limit {
+			// 列表查询不把流程编码当作实例名称，避免目标端按名称误筛；逐页按真实 flowCode 精确过滤。
+			page, pageErr := s.client.ListSubmitted(callContext, active, "", pageNumber, 20)
+			if pageErr != nil {
+				return pageErr
+			}
+			// 并发度固定为一，避免智能生成同时放大目标实例与表单读取压力。
+			for _, item := range page.Items {
+				if len(result) >= limit || strings.TrimSpace(item.FlowCode) != flowCode {
+					continue
+				}
+				values, readErr := s.client.ReadInstanceCurrentData(callContext, active, item.ID)
+				if readErr != nil {
+					return readErr
+				}
+				if len(values) > 0 {
+					result = append(result, values)
+				}
+			}
+			if !page.HasMore || len(page.Items) == 0 {
 				break
 			}
-			values, readErr := s.client.ReadInstanceCurrentData(callContext, active, item.ID)
-			if readErr != nil {
-				return readErr
-			}
-			if len(values) > 0 {
-				result = append(result, values)
-			}
+			pageNumber++
 		}
 		return nil
 	})

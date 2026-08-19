@@ -46,6 +46,7 @@ type SubmittedFlow struct {
 	FlowProxyID           string   `json:"-"`
 	CurrentNodeProxyID    string   `json:"-"`
 	ActiveNodeProxyIDs    []string `json:"-"`
+	FlowCode              string   `json:"-"`
 }
 
 type DueFlow struct {
@@ -197,6 +198,7 @@ type FormFieldOption struct {
 type PathConfigurationSnapshot struct {
 	Tree           *FlowNodeTemplate
 	EntryNodeIDs   []string
+	FlowCode       string
 	FormFields     []FormFieldDetail
 	Forms          []FormRuntimeTemplate
 	InstanceValues map[string]any
@@ -210,13 +212,15 @@ type FormRuntimeTemplate struct {
 
 // FormRuntimeSession 是当前已验证账号的短期表单读取会话，不得持久化。
 type FormRuntimeSession struct {
-	SID          string
-	BaseURL      string
-	AccountName  string
-	UserID       string
-	CompanyID    string
-	CustomerCode string
-	CompanyName  string
+	SID            string
+	BaseURL        string
+	AccountName    string
+	UserID         string
+	CompanyID      string
+	CustomerCode   string
+	CompanyName    string
+	DepartmentID   string
+	DepartmentName string
 }
 
 // FormIdentityNode 是当前账号在目标公司目录树中的节点上下文，供表单人员/公司组件自动填充。

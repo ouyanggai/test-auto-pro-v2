@@ -192,13 +192,15 @@ type PathConfigSelectionInput struct {
 // PathFormRuntimeSession 是 iframe 当前会话使用的短期目标读取上下文；绝不持久化。
 // 公司/人员选择组件按目标登录上下文读取本地公司树，因此需把已核实账号的公司、用户与租户字段一并透传。
 type PathFormRuntimeSession struct {
-	SID          string `json:"sid"`
-	BaseURL      string `json:"baseURL"`
-	AccountName  string `json:"accountName"`
-	UserID       string `json:"userId"`
-	CompanyID    string `json:"companyId"`
-	CustomerCode string `json:"customerCode"`
-	CompanyName  string `json:"companyName"`
+	SID            string `json:"sid"`
+	BaseURL        string `json:"baseURL"`
+	AccountName    string `json:"accountName"`
+	UserID         string `json:"userId"`
+	CompanyID      string `json:"companyId"`
+	CustomerCode   string `json:"customerCode"`
+	CompanyName    string `json:"companyName"`
+	DepartmentID   string `json:"departmentId"`
+	DepartmentName string `json:"departmentName"`
 }
 
 // PathConfigProgress 汇总当前路径节点配置进度，不把结构上下文节点误计为待处理项。

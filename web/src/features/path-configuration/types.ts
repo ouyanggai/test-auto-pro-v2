@@ -129,6 +129,8 @@ export interface PathFormRuntimeSession {
   companyId: string
   customerCode: string
   companyName: string
+  departmentId: string
+  departmentName: string
 }
 
 export interface PathConfigProgress {

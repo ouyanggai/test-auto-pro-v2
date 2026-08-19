@@ -12,7 +12,9 @@ import (
 
 // Constraint 是当前已选路径对表单字段的最小可满足约束。
 type Constraint struct {
-	Field      string
+	Field string
+	// FieldType 用于保持级联、日期范围等字段的真实值形态，禁止把路径条件常量写成错误标量。
+	FieldType  string
 	Op         string
 	Value      any
 	ValueField string
@@ -111,9 +113,21 @@ type TemplateRuleInventory struct {
 	NeedsAttention     []string
 }
 
+// TemplateCoverageReport 汇总一批真实模板的组件、数据源、脚本和未分类能力覆盖情况。
+type TemplateCoverageReport struct {
+	TemplateCount           int
+	ComponentTypes          map[string]int
+	DataSourceCount         int
+	ScriptCapabilities      map[string]int
+	NeedsAttentionTemplates int
+	NeedsAttention          []string
+	UnsupportedTemplates    int
+}
+
 var supportedTypes = map[string]bool{
 	"input": true, "textarea": true, "number": true, "date": true, "time": true,
 	"select": true, "radio": true, "checkbox": true, "switch": true, "cascader": true,
+	"fileupload": true,
 }
 
 var containerTypes = map[string]bool{
@@ -146,13 +160,19 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 			}
 		case map[string]any:
 			typeName := strings.TrimSpace(anyText(value["type"]))
+			options, _ := value["options"].(map[string]any)
 			if typeName != "" {
 				result.ComponentTypes[typeName]++
-				if !supportedTypes[typeName] && !containerTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" && typeName != "custom" {
+				if !supportedTypes[typeName] && !containerTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" && typeName != "link" && typeName != "button" {
 					result.NeedsAttention = append(result.NeedsAttention, "未知组件："+typeName)
 				}
+				if typeName == "custom" || typeName == "component" {
+					componentName := firstText(anyText(value["el"]), anyText(value["componentName"]), anyText(options["componentName"]))
+					if componentName != "custome-info-select" {
+						result.NeedsAttention = append(result.NeedsAttention, "未知自定义组件："+firstText(componentName, typeName))
+					}
+				}
 			}
-			options, _ := value["options"].(map[string]any)
 			if url := firstText(anyText(options["requestURL"]), anyText(options["url"])); url != "" {
 				result.DataSources = append(result.DataSources, TemplateDataSource{FieldPath: firstText(path, anyText(value["model"])), URL: url, Method: strings.ToUpper(firstText(anyText(options["requestMethod"]), anyText(options["method"]), "GET"))})
 			}
@@ -177,10 +197,46 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 	return result
 }
 
+// BuildTemplateCoverageReport 聚合真实模板规则盘点，不保存模板内容也不把未知能力误报为已覆盖。
+func BuildTemplateCoverageReport(templates []map[string]any) TemplateCoverageReport {
+	report := TemplateCoverageReport{
+		TemplateCount: templatesCount(templates), ComponentTypes: map[string]int{},
+		ScriptCapabilities: map[string]int{}, NeedsAttention: []string{},
+	}
+	seenAttention := map[string]bool{}
+	for _, template := range templates {
+		inventory := InventoryTemplateRules(template)
+		for componentType, count := range inventory.ComponentTypes {
+			report.ComponentTypes[componentType] += count
+		}
+		report.DataSourceCount += len(inventory.DataSources)
+		for _, capability := range inventory.ScriptCapabilities {
+			report.ScriptCapabilities[capability]++
+		}
+		if len(inventory.NeedsAttention) > 0 {
+			report.NeedsAttentionTemplates++
+		}
+		if len(inventory.Unsupported) > 0 {
+			report.UnsupportedTemplates++
+		}
+		for _, item := range append(append([]string{}, inventory.NeedsAttention...), inventory.Unsupported...) {
+			if !seenAttention[item] {
+				seenAttention[item] = true
+				report.NeedsAttention = append(report.NeedsAttention, item)
+			}
+		}
+	}
+	report.NeedsAttention = uniqueSorted(report.NeedsAttention)
+	return report
+}
+
+// templatesCount 保留报告输入的真实模板数量，包括空模板，避免把目标分页结果静默压缩。
+func templatesCount(templates []map[string]any) int { return len(templates) }
+
 // safeScriptCapability 只认可显示隐藏、赋值和选项更新等可静态识别的脚本片段。
 func safeScriptCapability(script string) bool {
 	text := strings.ToLower(script)
-	for _, marker := range []string{"setvisible", "setvalue", "options", "visible", "hidden", "value"} {
+	for _, marker := range []string{"setvisible", "setvalue", "setoptions", "visible =", "hidden =", "options ="} {
 		if strings.Contains(text, marker) {
 			return true
 		}
@@ -650,6 +706,8 @@ func applyConstraints(values map[string]any, constraints []Constraint, manual, p
 			setPath(values, constraint.Field, numberValue(value)-1)
 		case "lte":
 			setPath(values, constraint.Field, numberValue(value))
+		case "contains":
+			setPath(values, constraint.Field, fmt.Sprint(value)+"内容")
 		case "default":
 			candidate := fmt.Sprintf("默认分支-%d", rng.Intn(900)+100)
 			for containsValue(constraint.Avoid, candidate) {
@@ -703,6 +761,8 @@ func constraintSatisfied(value any, constraint Constraint) bool {
 		return numberValue(value) <= numberValue(constraint.Value)
 	case "default":
 		return !containsValue(constraint.Avoid, value)
+	case "contains":
+		return strings.Contains(fmt.Sprint(value), fmt.Sprint(constraint.Value))
 	default:
 		return false
 	}
