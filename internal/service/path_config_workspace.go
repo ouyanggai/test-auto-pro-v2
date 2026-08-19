@@ -117,16 +117,14 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		}
 	}
 	initiator := plan.Account
-	if reader, ok := s.target.(pathFormRuntimeSessionReader); ok {
-		if active, sessionErr := reader.FormRuntimeSession(ctx, plan.Account); sessionErr == nil && strings.TrimSpace(active.AccountName) != "" {
-			initiator = active.AccountName
-		}
-	}
 	identity := formdata.IdentityContext{}
 	if reader, ok := s.target.(pathFormIdentityReader); ok {
-		// 身份目录读取失败只影响选人/选公司自动填充，不阻断其他基础字段生成。
+		// 同一生成请求只读取一次身份目录；发起人显示名和人员/部门/公司字段均从同一可信结果派生。
 		if active, identityErr := reader.FormIdentityContext(ctx, plan.Account); identityErr == nil {
 			identity = formdataIdentityContext(active)
+			if strings.TrimSpace(active.User.Name) != "" {
+				initiator = active.User.Name
+			}
 		}
 	}
 	permissions := formPermissions(snapshot.Tree, formPermissionNodeIDs(plan.FlowSource, snapshot, owned.pathAnalysis.ReachableNodeIDs))
@@ -1054,9 +1052,9 @@ func targetConditionMatches(values map[string]any, condition target.FlowConditio
 	}
 	switch normalizeConditionJudge(condition.Judge) {
 	case "eq":
-		return targetValuesEqual(left, right), true
+		return targetValuesEqual(conditionScalarValue(left), conditionScalarValue(right)), true
 	case "neq":
-		return !targetValuesEqual(left, right), true
+		return !targetValuesEqual(conditionScalarValue(left), conditionScalarValue(right)), true
 	case "gt", "gte", "lt", "lte":
 		leftNumber, leftOK := targetComparableNumber(left)
 		rightNumber, rightOK := targetComparableNumber(right)
@@ -1076,7 +1074,10 @@ func targetConditionMatches(values map[string]any, condition target.FlowConditio
 	case "in":
 		list, ok := right.([]any)
 		if !ok {
-			return targetValuesEqual(left, right), true
+			return targetValuesEqual(conditionScalarValue(left), conditionScalarValue(right)), true
+		}
+		if leftList, leftListOK := left.([]any); leftListOK && len(leftList) > 0 {
+			left = leftList[len(leftList)-1]
 		}
 		for _, value := range list {
 			if targetValuesEqual(left, value) {
@@ -1085,10 +1086,25 @@ func targetConditionMatches(values map[string]any, condition target.FlowConditio
 		}
 		return false, true
 	case "contains":
+		if list, ok := left.([]any); ok {
+			for _, item := range list {
+				if targetValuesEqual(item, right) {
+					return true, true
+				}
+			}
+		}
 		return strings.Contains(fmt.Sprint(left), fmt.Sprint(right)), true
 	default:
 		return false, false
 	}
+}
+
+// conditionScalarValue 读取级联等路径型字段的叶值，兼容目标条件直接比较叶 ID 的语义。
+func conditionScalarValue(value any) any {
+	if list, ok := value.([]any); ok && len(list) > 0 {
+		return list[len(list)-1]
+	}
+	return value
 }
 
 // pathFormValue 读取点分隔表单字段键，不跨数组或显示名称猜测字段。

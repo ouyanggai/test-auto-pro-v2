@@ -791,6 +791,11 @@ func addVirtualValues(values map[string]any, fields []Field, generated *[]string
 		if !ok {
 			continue
 		}
+		if field.Type == "cascader" {
+			if path, pathOK := value.([]any); pathOK && len(path) > 0 {
+				value = path[len(path)-1]
+			}
+		}
 		label, exists := field.OptionNames[fmt.Sprint(value)]
 		if !exists {
 			continue

@@ -91,6 +91,23 @@ func TestF009SolverSupportsEqNeqLtLteAndOr(t *testing.T) {
 	}
 }
 
+// TestF009SolverUsesCascaderLeafForRouteVerification 验证级联真实值保存完整路径，但条件复验使用叶值语义。
+func TestF009SolverUsesCascaderLeafForRouteVerification(t *testing.T) {
+	end := &target.FlowNodeTemplate{ID: "end-cascader", Name: "结束", Type: "end"}
+	tree := &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: &target.FlowNodeTemplate{
+		ID: "route-cascader", Name: "分类条件", Type: "condition", Child: end, ConditionNodes: []target.FlowBranchTemplate{
+			{ID: "selected", Name: "当前分类", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "category", ValueB: "leaf", Judge: "eq"}}, Child: f009RouteLeaf("selected-cascader")},
+			{ID: "fallback", Name: "其他", Sort: 2, Child: f009RouteLeaf("fallback-cascader")},
+		},
+	}, FieldPowers: []target.FlowNodeFieldPower{{EnglishName: "category", Power: "edit"}}}
+	template := `{"list":[{"type":"cascader","model":"category","name":"分类","options":{"required":true,"options":[{"value":"root","label":"根","children":[{"value":"leaf","label":"叶"}]}]}}]}`
+	result := f009Generate(t, tree, []model.ExecutionPathChoice{{RouteNodeID: "route-cascader", BranchID: "selected"}}, template, 31)
+	path, ok := result.Values["category"].([]any)
+	if result.GenerationState != "complete" || !result.RouteVerification.Matched || !ok || len(path) != 2 || path[1] != "leaf" {
+		t.Fatalf("级联叶值没有命中当前路径：result=%+v values=%#v", result, result.Values)
+	}
+}
+
 // TestF009SolverIsStableBySeedAndVariesOnlyWithinRoute 验证同 seed 结果稳定，不同 seed 的候选仍命中同一路径。
 func TestF009SolverIsStableBySeedAndVariesOnlyWithinRoute(t *testing.T) {
 	end := &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}
