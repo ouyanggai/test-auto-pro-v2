@@ -4,20 +4,29 @@ import "time"
 
 // PathPreparationJob 是批量路径准备任务的持久化进度快照。
 type PathPreparationJob struct {
-	ID              string     `json:"id"`
-	PlanID          uint64     `json:"-"`
-	Status          string     `json:"status"`
-	Total           int        `json:"total"`
-	Processed       int        `json:"processed"`
-	NodeConfigured  int        `json:"nodeConfigured"`
-	DataGenerated   int        `json:"dataGenerated"`
-	NeedsAttention  int        `json:"needsAttention"`
-	Failed          int        `json:"failed"`
-	PreservedManual int        `json:"preservedManual"`
-	Error           string     `json:"error,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
-	CompletedAt     *time.Time `json:"completedAt,omitempty"`
+	ID              string                      `json:"id"`
+	PlanID          uint64                      `json:"-"`
+	Status          string                      `json:"status"`
+	Total           int                         `json:"total"`
+	Processed       int                         `json:"processed"`
+	NodeConfigured  int                         `json:"nodeConfigured"`
+	DataGenerated   int                         `json:"dataGenerated"`
+	NeedsAttention  int                         `json:"needsAttention"`
+	Failed          int                         `json:"failed"`
+	PreservedManual int                         `json:"preservedManual"`
+	CurrentPath     *PathPreparationCurrentPath `json:"currentPath,omitempty"`
+	Error           string                      `json:"error,omitempty"`
+	CreatedAt       time.Time                   `json:"createdAt"`
+	UpdatedAt       time.Time                   `json:"updatedAt"`
+	CompletedAt     *time.Time                  `json:"completedAt,omitempty"`
+}
+
+// PathPreparationCurrentPath 是任务当前领取并正在处理的单条路径快照。
+type PathPreparationCurrentPath struct {
+	PathID     uint64 `json:"pathId"`
+	SequenceNo uint   `json:"sequenceNo"`
+	PathName   string `json:"pathName"`
+	Status     string `json:"status"`
 }
 
 // PathPreparationItem 是任务内单条路径的检查点与用户可读结果。

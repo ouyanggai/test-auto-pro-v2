@@ -99,6 +99,13 @@ func TestF009PathPreparationMySQLCheckpoints(t *testing.T) {
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("领取首批检查点失败：items=%+v err=%v", claimed, err)
 	}
+	if err := repository.SetCurrent(ctx, plan.ID, job.ID, claimed[0], time.Now().UTC()); err != nil {
+		t.Fatalf("写入取消前当前路径失败：%v", err)
+	}
+	currentJob, err := repository.Get(ctx, plan.ID, job.ID)
+	if err != nil || currentJob.CurrentPath == nil || currentJob.CurrentPath.PathID != claimed[0].PathID || currentJob.CurrentPath.Status != "running" {
+		t.Fatalf("任务接口没有返回真实当前路径：job=%+v err=%v", currentJob, err)
+	}
 	cancelled, err := repository.Cancel(ctx, plan.ID, job.ID, time.Now().UTC())
 	if err != nil || cancelled.Status != "cancelled" {
 		t.Fatalf("取消任务失败：job=%+v err=%v", cancelled, err)
@@ -114,8 +121,22 @@ func TestF009PathPreparationMySQLCheckpoints(t *testing.T) {
 	if err != nil || len(claimed) != 2 {
 		t.Fatalf("恢复没有从原检查点领取全部未完成路径：items=%+v err=%v", claimed, err)
 	}
+	if err := repository.SetCurrent(ctx, plan.ID, job.ID, claimed[0], time.Now().UTC()); err != nil {
+		t.Fatalf("恢复后写入首条当前路径失败：%v", err)
+	}
 	if err := repository.CompleteItem(ctx, plan.ID, job.ID, claimed[0].ID, model.PathPreparationItemResult{Status: "completed", Reason: "准备完成", NodeConfigured: true, DataGenerated: true}, time.Now().UTC()); err != nil {
 		t.Fatalf("提交成功明细失败：%v", err)
+	}
+	completedCurrent, err := repository.Get(ctx, plan.ID, job.ID)
+	if err != nil || completedCurrent.CurrentPath == nil || completedCurrent.CurrentPath.PathID != claimed[0].PathID || completedCurrent.CurrentPath.Status != "completed" {
+		t.Fatalf("单条完成没有同步当前路径终态：job=%+v err=%v", completedCurrent, err)
+	}
+	if err := repository.SetCurrent(ctx, plan.ID, job.ID, claimed[1], time.Now().UTC()); err != nil {
+		t.Fatalf("写入第二条当前路径失败：%v", err)
+	}
+	secondCurrent, err := repository.Get(ctx, plan.ID, job.ID)
+	if err != nil || secondCurrent.CurrentPath == nil || secondCurrent.CurrentPath.PathID != claimed[1].PathID || secondCurrent.CurrentPath.Status != "running" {
+		t.Fatalf("当前路径没有随逐条处理变化：job=%+v err=%v", secondCurrent, err)
 	}
 	if err := repository.CompleteItem(ctx, plan.ID, job.ID, claimed[1].ID, model.PathPreparationItemResult{Status: "needs_attention", Reason: "条件需要人工核对", NeedsAttention: true, PreservedManual: true}, time.Now().UTC()); err != nil {
 		t.Fatalf("提交需处理明细失败：%v", err)

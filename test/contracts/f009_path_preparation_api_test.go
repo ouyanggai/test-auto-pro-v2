@@ -65,7 +65,8 @@ func f009PreparationJob(planID uint64, jobID, status string) model.PathPreparati
 	return model.PathPreparationJob{
 		ID: jobID, PlanID: planID, Status: status, Total: 5, Processed: 3,
 		NodeConfigured: 2, DataGenerated: 1, NeedsAttention: 1, Failed: 1, PreservedManual: 1,
-		CreatedAt: now, UpdatedAt: now,
+		CurrentPath: &model.PathPreparationCurrentPath{PathID: 9, SequenceNo: 2, PathName: "请假兜底路径", Status: "running"},
+		CreatedAt:   now, UpdatedAt: now,
 	}
 }
 
@@ -87,7 +88,7 @@ func TestF009PathPreparationAPIContract(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/plans/7/path-preparations", nil)
 	request.Header.Set("Idempotency-Key", jobID)
 	handler.ServeHTTP(created, request)
-	if created.Code != http.StatusOK || stub.createdPlanID != 7 || stub.createKey != jobID || !strings.Contains(created.Body.String(), `"processed":3`) {
+	if created.Code != http.StatusOK || stub.createdPlanID != 7 || stub.createKey != jobID || !strings.Contains(created.Body.String(), `"processed":3`) || !strings.Contains(created.Body.String(), `"currentPath":{"pathId":9,"sequenceNo":2,"pathName":"请假兜底路径","status":"running"}`) {
 		t.Fatalf("批量准备创建契约不正确：status=%d plan=%d key=%s body=%s", created.Code, stub.createdPlanID, stub.createKey, created.Body.String())
 	}
 

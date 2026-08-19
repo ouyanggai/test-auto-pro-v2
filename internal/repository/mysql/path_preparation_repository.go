@@ -210,6 +210,23 @@ FROM test_path_preparation_items WHERE job_id = ? AND status = 'pending' ORDER B
 	return items, nil
 }
 
+// SetCurrent 在真正处理单条路径前持久化当前路径；已取消任务拒绝继续执行。
+func (r *PathPreparationRepository) SetCurrent(ctx context.Context, planID uint64, jobID string, item model.PathPreparationItem, now time.Time) error {
+	if item.PathID == 0 || item.SequenceNo == 0 || strings.TrimSpace(item.PathName) == "" {
+		return repository.ErrPathPreparationState
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE test_path_preparation_jobs
+SET current_path_id = ?, current_sequence_no = ?, current_path_name = ?, current_item_status = 'running', updated_at = ?
+WHERE plan_id = ? AND id = ? AND status = 'running'`, item.PathID, item.SequenceNo, item.PathName, now.UTC(), planID, jobID)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed == 0 {
+		return repository.ErrPathPreparationState
+	}
+	return nil
+}
+
 // CompleteItem 原子提交单条终态并累加任务真实计数；取消后迟到结果不会覆盖检查点。
 func (r *PathPreparationRepository) CompleteItem(ctx context.Context, planID uint64, jobID string, itemID uint64, outcome model.PathPreparationItemResult, now time.Time) error {
 	if !validPathPreparationItemStatus(outcome.Status) {
@@ -230,8 +247,11 @@ func (r *PathPreparationRepository) CompleteItem(ctx context.Context, planID uin
 	if jobStatus != "running" {
 		return nil
 	}
-	var itemStatus string
-	if err := tx.QueryRowContext(ctx, "SELECT status FROM test_path_preparation_items WHERE id = ? AND job_id = ? FOR UPDATE", itemID, jobID).Scan(&itemStatus); err != nil {
+	var itemStatus, pathName string
+	var pathID uint64
+	var sequenceNo uint
+	if err := tx.QueryRowContext(ctx, `SELECT status, path_id, sequence_no, path_name
+FROM test_path_preparation_items WHERE id = ? AND job_id = ? FOR UPDATE`, itemID, jobID).Scan(&itemStatus, &pathID, &sequenceNo, &pathName); err != nil {
 		return err
 	}
 	if itemStatus != "running" {
@@ -250,9 +270,11 @@ data_generated = ?, needs_attention = ?, preserved_manual = ?, updated_at = ? WH
 	_, err = tx.ExecContext(ctx, `UPDATE test_path_preparation_jobs SET processed_count = processed_count + 1,
 node_configured_count = node_configured_count + ?, data_generated_count = data_generated_count + ?,
 needs_attention_count = needs_attention_count + ?, failed_count = failed_count + ?,
-preserved_manual_count = preserved_manual_count + ?, updated_at = ? WHERE id = ?`,
+	preserved_manual_count = preserved_manual_count + ?, current_path_id = ?, current_sequence_no = ?,
+	current_path_name = ?, current_item_status = ?, updated_at = ? WHERE id = ?`,
 		boolCount(outcome.NodeConfigured), boolCount(outcome.DataGenerated), boolCount(outcome.NeedsAttention),
-		boolCount(outcome.Status == "failed"), boolCount(outcome.PreservedManual), now.UTC(), jobID)
+		boolCount(outcome.Status == "failed"), boolCount(outcome.PreservedManual), pathID, sequenceNo, pathName,
+		outcome.Status, now.UTC(), jobID)
 	if err != nil {
 		return err
 	}
@@ -282,7 +304,9 @@ func (r *PathPreparationRepository) Cancel(ctx context.Context, planID uint64, j
 		return model.PathPreparationJob{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, "UPDATE test_path_preparation_jobs SET status = 'cancelled', updated_at = ? WHERE plan_id = ? AND id = ? AND status IN ('queued', 'running')", now.UTC(), planID, jobID)
+	result, err := tx.ExecContext(ctx, `UPDATE test_path_preparation_jobs
+SET status = 'cancelled', current_item_status = IF(current_path_id IS NULL, '', 'pending'), updated_at = ?
+WHERE plan_id = ? AND id = ? AND status IN ('queued', 'running')`, now.UTC(), planID, jobID)
 	if err != nil {
 		return model.PathPreparationJob{}, err
 	}
@@ -304,7 +328,10 @@ func (r *PathPreparationRepository) Resume(ctx context.Context, planID uint64, j
 		return model.PathPreparationJob{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, "UPDATE test_path_preparation_jobs SET status = 'queued', failure_reason = '', completed_at = NULL, updated_at = ? WHERE plan_id = ? AND id = ? AND status IN ('cancelled', 'failed')", now.UTC(), planID, jobID)
+	result, err := tx.ExecContext(ctx, `UPDATE test_path_preparation_jobs
+SET status = 'queued', failure_reason = '', completed_at = NULL,
+    current_item_status = IF(current_path_id IS NULL, '', 'pending'), updated_at = ?
+WHERE plan_id = ? AND id = ? AND status IN ('cancelled', 'failed')`, now.UTC(), planID, jobID)
 	if err != nil {
 		return model.PathPreparationJob{}, err
 	}
@@ -331,7 +358,9 @@ func (r *PathPreparationRepository) Fail(ctx context.Context, planID uint64, job
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "UPDATE test_path_preparation_jobs SET status = 'failed', failure_reason = ?, updated_at = ? WHERE plan_id = ? AND id = ? AND status IN ('queued', 'running')", reason, now.UTC(), planID, jobID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE test_path_preparation_jobs
+SET status = 'failed', failure_reason = ?, current_item_status = IF(current_path_id IS NULL, '', 'pending'), updated_at = ?
+WHERE plan_id = ? AND id = ? AND status IN ('queued', 'running')`, reason, now.UTC(), planID, jobID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE test_path_preparation_items SET status = 'pending', updated_at = ? WHERE job_id = ? AND status = 'running'", now.UTC(), jobID); err != nil {
@@ -375,8 +404,9 @@ FROM test_path_preparation_items WHERE job_id = ? AND id > ? ORDER BY id LIMIT ?
 }
 
 const pathPreparationJobSelect = `SELECT id, plan_id, status, total_count, processed_count,
-node_configured_count, data_generated_count, needs_attention_count, failed_count,
-preserved_manual_count, failure_reason, created_at, updated_at, completed_at
+	node_configured_count, data_generated_count, needs_attention_count, failed_count,
+	preserved_manual_count, current_path_id, current_sequence_no, current_path_name, current_item_status,
+	failure_reason, created_at, updated_at, completed_at
 FROM test_path_preparation_jobs`
 
 type pathPreparationScanner interface {
@@ -391,13 +421,22 @@ type pathPreparationQueryer interface {
 func scanPathPreparationJob(scanner pathPreparationScanner) (model.PathPreparationJob, error) {
 	var job model.PathPreparationJob
 	var completed sql.NullTime
+	var currentPathID, currentSequenceNo sql.NullInt64
+	var currentPathName, currentItemStatus string
 	err := scanner.Scan(&job.ID, &job.PlanID, &job.Status, &job.Total, &job.Processed, &job.NodeConfigured,
-		&job.DataGenerated, &job.NeedsAttention, &job.Failed, &job.PreservedManual, &job.Error,
+		&job.DataGenerated, &job.NeedsAttention, &job.Failed, &job.PreservedManual,
+		&currentPathID, &currentSequenceNo, &currentPathName, &currentItemStatus, &job.Error,
 		&job.CreatedAt, &job.UpdatedAt, &completed)
 	if err != nil {
 		return model.PathPreparationJob{}, err
 	}
 	job.CreatedAt, job.UpdatedAt = job.CreatedAt.UTC(), job.UpdatedAt.UTC()
+	if currentPathID.Valid && currentSequenceNo.Valid {
+		job.CurrentPath = &model.PathPreparationCurrentPath{
+			PathID: uint64(currentPathID.Int64), SequenceNo: uint(currentSequenceNo.Int64),
+			PathName: currentPathName, Status: currentItemStatus,
+		}
+	}
 	if completed.Valid {
 		value := completed.Time.UTC()
 		job.CompletedAt = &value

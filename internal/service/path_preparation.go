@@ -200,6 +200,9 @@ func (s *PathPreparationService) run(ctx context.Context, job model.PathPreparat
 		configs, configErr := s.config.configRepository.FindByPaths(ctx, pathIDs)
 		if pathErr != nil || configErr != nil {
 			for _, item := range items {
+				if currentErr := s.repository.SetCurrent(ctx, job.PlanID, job.ID, item, s.now().UTC()); currentErr != nil {
+					return
+				}
 				_ = s.repository.CompleteItem(context.Background(), job.PlanID, job.ID, item.ID, model.PathPreparationItemResult{Status: "failed", Reason: "路径本地配置暂时无法读取"}, s.now().UTC())
 			}
 			continue
@@ -210,6 +213,9 @@ func (s *PathPreparationService) run(ctx context.Context, job model.PathPreparat
 		}
 		for _, item := range items {
 			if ctx.Err() != nil {
+				return
+			}
+			if err := s.repository.SetCurrent(ctx, job.PlanID, job.ID, item, s.now().UTC()); err != nil {
 				return
 			}
 			path, exists := pathsByID[item.PathID]

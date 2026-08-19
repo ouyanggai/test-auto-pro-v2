@@ -73,6 +73,7 @@ type f009BatchPreparationRepository struct {
 	items       []model.PathPreparationItem
 	claimed     bool
 	completedCh chan model.PathPreparationItemResult
+	current     []model.PathPreparationCurrentPath
 }
 
 // Create 返回当前计划的明细检查点。
@@ -119,6 +120,16 @@ func (r *f009BatchPreparationRepository) ClaimBatch(_ context.Context, _ uint64,
 	return append([]model.PathPreparationItem(nil), r.items...), nil
 }
 
+// SetCurrent 记录 Worker 逐条开始处理的真实路径顺序。
+func (r *f009BatchPreparationRepository) SetCurrent(_ context.Context, _ uint64, _ string, item model.PathPreparationItem, now time.Time) error {
+	r.mu.Lock()
+	current := model.PathPreparationCurrentPath{PathID: item.PathID, SequenceNo: item.SequenceNo, PathName: item.PathName, Status: "running"}
+	r.current = append(r.current, current)
+	r.job.CurrentPath, r.job.UpdatedAt = &current, now
+	r.mu.Unlock()
+	return nil
+}
+
 // CompleteItem 收集每条路径结果，验证单条失败不阻断其他路径。
 func (r *f009BatchPreparationRepository) CompleteItem(_ context.Context, _ uint64, _ string, _ uint64, outcome model.PathPreparationItemResult, now time.Time) error {
 	r.mu.Lock()
@@ -134,6 +145,9 @@ func (r *f009BatchPreparationRepository) CompleteItem(_ context.Context, _ uint6
 	}
 	if outcome.Status == "failed" {
 		r.job.Failed++
+	}
+	if r.job.CurrentPath != nil {
+		r.job.CurrentPath.Status = outcome.Status
 	}
 	r.job.UpdatedAt = now
 	r.completedCh <- outcome
@@ -233,6 +247,12 @@ func TestF009BatchPreparationReadsSharedAssetsOnceAndIsolatesFailure(t *testing.
 	configs.mu.Unlock()
 	if snapshotCalls != 1 || paths.getManyCalls != 1 || configManyCalls != 1 {
 		t.Fatalf("批量任务重复读取目标资产或逐路径读取：snapshot=%d getMany=%d configMany=%d", snapshotCalls, paths.getManyCalls, configManyCalls)
+	}
+	preparations.mu.Lock()
+	current := append([]model.PathPreparationCurrentPath(nil), preparations.current...)
+	preparations.mu.Unlock()
+	if len(current) != 3 || current[0].PathID != 601 || current[1].PathID != 602 || current[2].PathID != 603 {
+		t.Fatalf("Worker 没有按路径逐条更新当前进度：%+v", current)
 	}
 	configs.mu.Lock()
 	preserved := configs.configs[603]
