@@ -100,6 +100,20 @@ func (s *TargetReadService) Templates(ctx context.Context, account, query string
 	return result, err
 }
 
+// TemplateConfiguration 读取单个可见流程的完整配置快照，供本地规则目录同步一次分析后持久保存。
+func (s *TargetReadService) TemplateConfiguration(ctx context.Context, account, templateID string) (target.PathConfigurationSnapshot, error) {
+	if err := s.ready(); err != nil {
+		return target.PathConfigurationSnapshot{}, err
+	}
+	var result target.PathConfigurationSnapshot
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		var err error
+		result, err = s.client.ReadTemplateConfiguration(callContext, active, strings.TrimSpace(templateID))
+		return err
+	})
+	return result, err
+}
+
 // TemplateCoverage 分页读取账号当前可见的全部模板并增量盘点规则，不在服务端累计完整模板正文。
 func (s *TargetReadService) TemplateCoverage(ctx context.Context, account string) (formdata.TemplateCoverageReport, error) {
 	if err := s.ready(); err != nil {

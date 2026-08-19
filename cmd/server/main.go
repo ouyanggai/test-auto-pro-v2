@@ -59,6 +59,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	templateCatalogService := service.NewTemplateCatalogService(targetReader, planmysql.NewTemplateCatalogRepository(planDatabase.DB), workspaceRoot)
+	pathConfigService.SetTemplateRuleCatalog(templateCatalogService)
+	if err := templateCatalogService.Recover(context.Background()); err != nil {
+		log.Printf("恢复模板规则目录任务失败：%v", err)
+	}
 	manifestPath := filepath.Join(workspaceRoot, "form-runtime", "sync-manifest.json")
 	manifest, err := formruntimemaintenance.LoadManifest(workspaceRoot, manifestPath)
 	if err != nil {
@@ -100,7 +105,7 @@ func main() {
 	})
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithPreparationServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService, pathPreparationService),
+		Handler:           api.NewHandlerWithTemplateCatalogServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService, pathPreparationService, templateCatalogService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

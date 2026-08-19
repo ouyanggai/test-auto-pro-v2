@@ -80,6 +80,8 @@ type Field struct {
 	DataSourceURL string
 	Unsupported   bool
 	El            string
+	// Capability 是已注册自定义组件的统一能力键；空值表示标准 FormMaking 组件。
+	Capability string
 }
 
 // IdentityNode 是当前账号在公司目录树中的节点上下文，用于自定义人员/公司组件自动填充。
@@ -166,15 +168,59 @@ var containerTypes = map[string]bool{
 
 var metadataTypes = map[string]bool{"js": true, "rule": true, "alert": true, "info": true}
 
-// knownCustomComponents 来源于实际 FormMaking 运行时注册表；已知组件仍可能要求人工填写，但不能再被误报成未知能力。
-var knownCustomComponents = map[string]bool{
-	"custom-upload-excel": true, "out-bound-material-select": true, "in-bound-material-select": true,
-	"custom-weather": true, "custome-select-project": true, "custome-expense-budgetType": true,
-	"general-list-select-show": true, "person-mulSelect": true, "general-flow-list-mulSelect": true,
-	"custome-info-select": true, "ltd-or-dep-select": true, "custome-file-view": true,
-	"custome-file-import": true, "legal-contract-doctable": true, "contract-seal-review-business": true,
-	"flow-list-mul-select": true, "request_payout": true, "city-select": true,
-	"travel-route-planning": true, "travel-order-management": true,
+// customComponentCapability 描述已注册业务组件的值形态和候选边界，组件本身不能成为阻断原因。
+type customComponentCapability struct {
+	ValueType     string
+	CandidateKind string
+	External      bool
+}
+
+// knownCustomComponents 来源于实际 FormMaking 运行时注册表；外部对象只接受真实候选，绝不伪造引用。
+var knownCustomComponents = map[string]customComponentCapability{
+	"custom-upload-excel":           {ValueType: "file", CandidateKind: "external", External: true},
+	"out-bound-material-select":     {ValueType: "object", CandidateKind: "external", External: true},
+	"in-bound-material-select":      {ValueType: "object", CandidateKind: "external", External: true},
+	"custom-weather":                {ValueType: "object", CandidateKind: "runtime_source"},
+	"custome-select-project":        {ValueType: "object", CandidateKind: "external", External: true},
+	"custome-expense-budgetType":    {ValueType: "object", CandidateKind: "runtime_source"},
+	"general-list-select-show":      {ValueType: "object", CandidateKind: "external", External: true},
+	"person-mulSelect":              {ValueType: "array", CandidateKind: "identity"},
+	"general-flow-list-mulSelect":   {ValueType: "array", CandidateKind: "external", External: true},
+	"custome-info-select":           {ValueType: "identity", CandidateKind: "identity"},
+	"ltd-or-dep-select":             {ValueType: "identity", CandidateKind: "identity"},
+	"custome-file-view":             {ValueType: "file", CandidateKind: "external", External: true},
+	"custome-file-import":           {ValueType: "file", CandidateKind: "external", External: true},
+	"legal-contract-doctable":       {ValueType: "array", CandidateKind: "external", External: true},
+	"contract-seal-review-business": {ValueType: "object", CandidateKind: "external", External: true},
+	"flow-list-mul-select":          {ValueType: "array", CandidateKind: "external", External: true},
+	"request_payout":                {ValueType: "object", CandidateKind: "external", External: true},
+	"city-select":                   {ValueType: "array", CandidateKind: "runtime_source"},
+	"travel-route-planning":         {ValueType: "array", CandidateKind: "runtime_source"},
+	"travel-order-management":       {ValueType: "array", CandidateKind: "external", External: true},
+}
+
+// CustomComponentCapabilities 返回运行时注册组件的稳定能力投影，供规则目录和批量生成共享。
+func CustomComponentCapabilities() map[string]map[string]string {
+	result := make(map[string]map[string]string, len(knownCustomComponents))
+	for name, capability := range knownCustomComponents {
+		result[name] = map[string]string{
+			"valueType": capability.ValueType, "candidateKind": capability.CandidateKind,
+			"external": strconv.FormatBool(capability.External),
+		}
+	}
+	return result
+}
+
+// knownCustomComponent 返回已注册组件能力；未知组件必须进入规则目录的问题清单。
+func knownCustomComponent(name string) (customComponentCapability, bool) {
+	capability, ok := knownCustomComponents[strings.TrimSpace(name)]
+	return capability, ok
+}
+
+// isKnownCustomComponent 仅用于盘点分支，避免把实际已注册组件误报为未知能力。
+func isKnownCustomComponent(name string) bool {
+	_, ok := knownCustomComponent(name)
+	return ok
 }
 
 // ParseTemplate 递归解析所有 FormMaking 容器、标准组件、级联和信息选择组件；外部对象保留人工边界。
@@ -207,7 +253,7 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 				result.ComponentTypes[typeName]++
 				componentName := firstText(anyText(value["el"]), anyText(value["componentName"]), anyText(options["componentName"]))
 				switch {
-				case typeName == "custom" && !knownCustomComponents[componentName] && componentName != "":
+				case typeName == "custom" && componentName != "" && !isKnownCustomComponent(componentName):
 					result.NeedsAttention = append(result.NeedsAttention, "未知自定义组件："+componentName)
 				case !supportedTypes[typeName] && !containerTypes[typeName] && !metadataTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" && typeName != "link" && typeName != "button" && typeName != "custom":
 					result.NeedsAttention = append(result.NeedsAttention, "未知组件："+typeName)
@@ -479,11 +525,14 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 				Required: anyBool(options["required"]), Default: options["defaultValue"], El: el,
 			})
 			*pendingLabel = ""
-		case typeName == "custom" && knownCustomComponents[el] && model != "":
-			// 已注册业务组件的真实对象可能依赖目标平台接口，保留人工边界但不再伪造随机对象。
+		case typeName == "custom" && isKnownCustomComponent(el) && model != "":
+			// 已注册组件统一进入能力表：有静态候选时可生成；外部候选为空时只形成 partial，不伪造对象引用。
+			capability, _ := knownCustomComponent(el)
+			values, names := optionValues(options["options"])
 			*fields = append(*fields, Field{
-				Path: path, Name: firstText(*pendingLabel, name, model), Type: "custom", Required: anyBool(options["required"]),
-				Default: options["defaultValue"], CollectionRoot: collectionRoot, ManualOnly: true, DataSourceURL: dataSourceURL, El: el,
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: "custom", Mode: capability.ValueType, Required: anyBool(options["required"]),
+				Default: options["defaultValue"], CollectionRoot: collectionRoot, Options: values, OptionNames: names,
+				DataSourceURL: dataSourceURL, El: el, Capability: el,
 			})
 			*pendingLabel = ""
 		case typeName == "component" && model != "":
@@ -625,6 +674,15 @@ func Generate(input GenerateInput) GenerateResult {
 				result.Pending++
 			}
 			continue
+		}
+		if field.Type == "custom" {
+			// 人员、部门和公司组件的值形态由宿主源码确定；其余已注册组件仅从真实选项、样本或数据源候选取值。
+			if value, ok := customIdentityValue(field, input.Identity); ok {
+				setFieldValue(values, field, value)
+				generated = append(generated, field.Path)
+				result.Identity++
+				continue
+			}
 		}
 		if sample, ok := sampleValue(input.Samples, field, int(seed)); ok {
 			setFieldValue(values, field, sample)
@@ -773,7 +831,7 @@ func sampleValue(samples []map[string]any, field Field, offset int) (any, bool) 
 	return nil, false
 }
 
-// infoSelectValue 把账号目录节点编码为 custome-info-select 组件约定的 JSON 文本值。
+// infoSelectValue 把账号目录节点编码为 custome-info-select 组件约定的 JSON 数组文本值。
 func infoSelectValue(kind string, identity IdentityContext) (string, bool) {
 	var node IdentityNode
 	switch kind {
@@ -789,14 +847,43 @@ func infoSelectValue(kind string, identity IdentityContext) (string, bool) {
 	if strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.Name) == "" {
 		return "", false
 	}
-	encoded, err := json.Marshal(map[string]any{
+	encoded, err := json.Marshal([]map[string]any{{
 		"id": node.ID, "name": node.Name, "type": node.Type,
 		"companyId": node.CompanyID, "parentId": node.ParentID,
-	})
+	}})
 	if err != nil {
 		return "", false
 	}
 	return string(encoded), true
+}
+
+// customIdentityValue 按已注册组件源码的真实 JSON 形态生成当前人员、部门或公司值。
+func customIdentityValue(field Field, identity IdentityContext) (string, bool) {
+	switch field.Capability {
+	case "ltd-or-dep-select":
+		// LtdOrDepSelect 实际复用 CustomeInfoSelect，组件的 MyCompanyList 回传 JSON 数组。
+		kind := infoSelectKind(field.Path)
+		if kind == "" {
+			kind = "department"
+		}
+		return infoSelectValue(kind, identity)
+	case "person-mulSelect":
+		node := identity.User
+		if strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.Name) == "" {
+			return "", false
+		}
+		// PersonMulSelect 的 watch 明确读取 flowList 并投影 __formPersonId，不能使用普通数组替代。
+		encoded, err := json.Marshal(map[string]any{"flowList": []map[string]any{{
+			"id": node.ID, "name": node.Name, "type": node.Type,
+			"departmentId": identity.Department.ID, "companyId": identity.Company.ID,
+		}}})
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	default:
+		return "", false
+	}
 }
 
 // smartTextValue 按字段中文标题生成可读的占位内容，避免出现“组件名-编号”这类无意义文本。
@@ -881,6 +968,10 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 		}
 	case "switch":
 		return rng.Intn(2) == 0, true
+	case "custom":
+		if len(field.Options) > 0 {
+			return cloneValue(field.Options[rng.Intn(len(field.Options))]), true
+		}
 	}
 	return nil, false
 }

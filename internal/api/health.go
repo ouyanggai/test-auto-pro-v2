@@ -56,6 +56,11 @@ func NewHandlerWithMaintenanceServices(reader TargetReader, plans PlanService, g
 
 // NewHandlerWithPreparationServices 组装 F-009 批量准备端点与既有全部能力。
 func NewHandlerWithPreparationServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService) http.Handler {
+	return NewHandlerWithTemplateCatalogServices(reader, plans, graphs, paths, requirements, configurations, maintenance, preparations, unavailableTemplateCatalogService{})
+}
+
+// NewHandlerWithTemplateCatalogServices 组装 F-010 模板规则目录与既有全部能力。
+func NewHandlerWithTemplateCatalogServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -66,6 +71,7 @@ func NewHandlerWithPreparationServices(reader TargetReader, plans PlanService, g
 	registerPathConfigurationRoutes(mux, configurations)
 	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
 	registerPathPreparationRoutes(mux, preparations)
+	registerTemplateCatalogRoutes(mux, catalog)
 	return gzipResponses(mux)
 }
 

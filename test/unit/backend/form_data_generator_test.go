@@ -224,17 +224,47 @@ func TestFormDataGeneratorFillsInfoSelectFromIdentity(t *testing.T) {
 	if result.Identity != 3 || result.Pending != 0 {
 		t.Fatalf("信息选择组件没有按身份填充：%+v", result)
 	}
-	company := map[string]any{}
-	if err := json.Unmarshal([]byte(result.Values["myCompanyName"].(string)), &company); err != nil || company["id"] != "c1" || company["name"] != "测试公司" {
+	company := []map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myCompanyName"].(string)), &company); err != nil || len(company) != 1 || company[0]["id"] != "c1" || company[0]["name"] != "测试公司" {
 		t.Fatalf("公司组件值不符合组件约定：%+v err=%v", result.Values["myCompanyName"], err)
 	}
-	department := map[string]any{}
-	if err := json.Unmarshal([]byte(result.Values["myDepName"].(string)), &department); err != nil || department["id"] != "d1" || department["companyId"] != "c1" {
+	department := []map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myDepName"].(string)), &department); err != nil || len(department) != 1 || department[0]["id"] != "d1" || department[0]["companyId"] != "c1" {
 		t.Fatalf("部门组件值不符合组件约定：%+v err=%v", result.Values["myDepName"], err)
 	}
-	user := map[string]any{}
-	if err := json.Unmarshal([]byte(result.Values["myUserName"].(string)), &user); err != nil || user["id"] != "u1" || user["parentId"] != "d1" {
+	user := []map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myUserName"].(string)), &user); err != nil || len(user) != 1 || user[0]["id"] != "u1" || user[0]["parentId"] != "d1" {
 		t.Fatalf("人员组件值不符合组件约定：%+v err=%v", result.Values["myUserName"], err)
+	}
+}
+
+// TestFormDataGeneratorUsesRegisteredCustomIdentityShape 验证已注册人员组件按宿主源码要求生成 flowList JSON，而非要求用户手填。
+func TestFormDataGeneratorUsesRegisteredCustomIdentityShape(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "person-mulSelect", "model": "reviewers", "options": map[string]any{"required": true},
+	}}}
+	identity := formdata.IdentityContext{Company: formdata.IdentityNode{ID: "c1", Name: "测试公司"}, Department: formdata.IdentityNode{ID: "d1", Name: "测试部"}, User: formdata.IdentityNode{ID: "u1", Name: "测试人", Type: "5"}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 1, Identity: identity})
+	if result.Pending != 0 || result.Identity != 1 || len(result.Unsupported) != 0 {
+		t.Fatalf("已注册人员组件不应成为人工阻断：%+v", result)
+	}
+	value := map[string][]map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["reviewers"].(string)), &value); err != nil || len(value["flowList"]) != 1 || value["flowList"][0]["id"] != "u1" {
+		t.Fatalf("人员组件值形态不符合宿主约定：%+v err=%v", result.Values["reviewers"], err)
+	}
+}
+
+// TestFormDataGeneratorKeepsExternalCustomPartial 验证外部对象组件没有真实候选时只保留待处理项，不误报为未知组件或伪造引用。
+func TestFormDataGeneratorKeepsExternalCustomPartial(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "custome-select-project", "model": "project", "options": map[string]any{"required": true},
+	}}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 1})
+	if result.Pending != 1 || len(result.Unsupported) != 0 {
+		t.Fatalf("外部对象无候选时应是部分待处理：%+v", result)
+	}
+	if _, exists := result.Values["project"]; exists {
+		t.Fatalf("外部对象无真实候选时不能伪造引用：%+v", result.Values)
 	}
 }
 

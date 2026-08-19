@@ -45,6 +45,11 @@ type PathConfigReader interface {
 	PathConfigurationSnapshot(context.Context, string, string, string) (target.PathConfigurationSnapshot, error)
 }
 
+// PathConfigTemplateRuleReader 只读取本地已分析的模板规则，路径配置不得在用户操作中重新扫描宿主源码。
+type PathConfigTemplateRuleReader interface {
+	GetByFlowCode(context.Context, string) (model.TemplateRuleCatalogItem, bool, error)
+}
+
 // PathConfigAnalyzer 把已验证路径投影为配置 DTO 与保存校验索引。
 type PathConfigAnalyzer interface {
 	Analyze(model.FlowGraph, *target.FlowNodeTemplate, []target.FormFieldDetail, model.ExecutionPath, model.ExecutionPathAnalysis, map[string]any, map[string]map[string]string, map[string]string, ...bool) (model.PathConfiguration, analyzer.PathConfigValidation, error)
@@ -59,12 +64,18 @@ type PathConfigService struct {
 	configAnalyzer   PathConfigAnalyzer
 	pathRepository   repository.ExecutionPathRepository
 	configRepository repository.PathConfigurationRepository
+	templateRules    PathConfigTemplateRuleReader
 	now              func() time.Time
 }
 
 // NewPathConfigService 组装路径配置服务依赖。
 func NewPathConfigService(plans *PlanService, targetReader PathConfigReader, flowAnalyzer FlowAnalyzer, pathAnalyzer ExecutionPathChoiceAnalyzer, configAnalyzer PathConfigAnalyzer, pathRepository repository.ExecutionPathRepository, configRepository repository.PathConfigurationRepository) *PathConfigService {
 	return &PathConfigService{plans: plans, target: targetReader, flowAnalyzer: flowAnalyzer, pathAnalyzer: pathAnalyzer, configAnalyzer: configAnalyzer, pathRepository: pathRepository, configRepository: configRepository, now: time.Now}
+}
+
+// SetTemplateRuleCatalog 注入已持久化的规则目录；未同步的 Vue 页面必须保留为需处理而不是临时猜测。
+func (s *PathConfigService) SetTemplateRuleCatalog(catalog PathConfigTemplateRuleReader) {
+	s.templateRules = catalog
 }
 
 // Get 校验计划与路径归属后重读当前真实配置，并叠加 F-008 工具侧配置。
@@ -141,7 +152,11 @@ func (s *PathConfigService) readVerifiedSnapshot(ctx context.Context, planID uin
 	if err != nil {
 		return target.PathConfigurationSnapshot{}, err
 	}
-	return s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
+	snapshot, err := s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
+	if err != nil {
+		return target.PathConfigurationSnapshot{}, err
+	}
+	return s.applyStoredTemplateRules(ctx, snapshot)
 }
 
 // ownedPathAnalysis 是当前真实图与路径分析的组合结果。
