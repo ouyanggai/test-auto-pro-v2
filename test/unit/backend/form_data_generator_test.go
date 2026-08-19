@@ -348,6 +348,40 @@ func TestF009TemplateCoverageReportKeepsAllRealTemplatesAndUnknownCapabilities(t
 	}
 }
 
+// TestF009GeneratorRecognizesRuntimeStandardAndRegisteredComponents 验证目标运行时标准扩展和已注册组件不会被误报为未知能力。
+func TestF009GeneratorRecognizesRuntimeStandardAndRegisteredComponents(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "col", "list": []any{map[string]any{"type": "td", "list": []any{
+			map[string]any{"type": "datetime", "model": "createdAt", "options": map[string]any{"required": true}},
+		}}}},
+		map[string]any{"type": "datetimerange", "model": "period", "options": map[string]any{"required": true}},
+		map[string]any{"type": "imgupload", "model": "photos", "options": map[string]any{"required": true}},
+		map[string]any{"type": "custom", "el": "custome-select-project", "model": "project", "options": map[string]any{"required": true}},
+		map[string]any{"type": "button", "model": "submitButton"},
+	}}
+	fields, unsupported := formdata.ParseTemplate(template)
+	if len(unsupported) != 0 {
+		t.Fatalf("标准扩展或已注册组件被错误列为不支持：%v", unsupported)
+	}
+	var dateModes []string
+	for _, field := range fields {
+		if field.Type == "date" {
+			dateModes = append(dateModes, field.Mode)
+		}
+	}
+	if len(dateModes) != 2 || dateModes[0] != "datetime" || dateModes[1] != "datetimerange" {
+		t.Fatalf("日期扩展没有保持真实值模式：%v", dateModes)
+	}
+	inventory := formdata.InventoryTemplateRules(template)
+	if len(inventory.NeedsAttention) != 0 {
+		t.Fatalf("已注册组件和标准布局不应进入未知能力阻断：%v", inventory.NeedsAttention)
+	}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 9})
+	if result.Pending != 2 {
+		t.Fatalf("附件和外部项目应保留两个必填人工项：%+v", result)
+	}
+}
+
 // TestFormDataGeneratorBindsDateRangeToDuration 验证唯一结构绑定按自然日含首尾同步日期，并拒绝手工改成不匹配区间。
 func TestFormDataGeneratorBindsDateRangeToDuration(t *testing.T) {
 	template := map[string]any{"list": []any{

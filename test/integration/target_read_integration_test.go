@@ -550,6 +550,9 @@ func TestF009RealTemplateCoverage(t *testing.T) {
 		}
 	}
 	t.Logf("真实目标模板盘点完成：模板=%d，类型=%d，流程编码=%d，需处理=%d", report.TemplateCount, report.TemplateTypeCount, report.FlowCodeCount, report.NeedsAttentionTemplates)
+	if os.Getenv("F009_LOG_COVERAGE") == "1" {
+		t.Logf("真实目标需处理类别：%s", strings.Join(report.NeedsAttention, "；"))
+	}
 }
 
 // TestFlowTreeReadUsesExactSourceLookupBeforeDetails 验证三类来源先核对再读详情。

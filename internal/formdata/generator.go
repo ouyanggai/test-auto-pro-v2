@@ -150,13 +150,28 @@ type TemplateCoverageInput struct {
 
 var supportedTypes = map[string]bool{
 	"input": true, "textarea": true, "number": true, "date": true, "time": true,
+	"datetime": true, "daterange": true, "datetimerange": true, "month": true, "year": true,
 	"select": true, "radio": true, "checkbox": true, "switch": true, "cascader": true,
-	"fileupload": true,
+	"fileupload": true, "imgupload": true,
 }
 
 var containerTypes = map[string]bool{
 	"grid": true, "report": true, "table": true, "subform": true, "inline": true,
 	"dialog": true, "card": true, "group": true, "tabs": true, "collapse": true,
+	"col": true, "td": true, "th": true,
+}
+
+var metadataTypes = map[string]bool{"js": true, "rule": true}
+
+// knownCustomComponents 来源于实际 FormMaking 运行时注册表；已知组件仍可能要求人工填写，但不能再被误报成未知能力。
+var knownCustomComponents = map[string]bool{
+	"custom-upload-excel": true, "out-bound-material-select": true, "in-bound-material-select": true,
+	"custom-weather": true, "custome-select-project": true, "custome-expense-budgetType": true,
+	"general-list-select-show": true, "person-mulSelect": true, "general-flow-list-mulSelect": true,
+	"custome-info-select": true, "ltd-or-dep-select": true, "custome-file-view": true,
+	"custome-file-import": true, "legal-contract-doctable": true, "contract-seal-review-business": true,
+	"flow-list-mul-select": true, "request_payout": true, "city-select": true,
+	"travel-route-planning": true, "travel-order-management": true,
 }
 
 // ParseTemplate 递归解析所有 FormMaking 容器、标准组件、级联和信息选择组件；外部对象保留人工边界。
@@ -187,14 +202,17 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 			options, _ := value["options"].(map[string]any)
 			if typeName != "" {
 				result.ComponentTypes[typeName]++
-				if !supportedTypes[typeName] && !containerTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" && typeName != "link" && typeName != "button" {
+				componentName := firstText(anyText(value["el"]), anyText(value["componentName"]), anyText(options["componentName"]))
+				switch {
+				case typeName == "custom" && !knownCustomComponents[componentName] && componentName != "":
+					result.NeedsAttention = append(result.NeedsAttention, "未知自定义组件："+componentName)
+				case typeName == "component":
+					result.NeedsAttention = append(result.NeedsAttention, "未知组件：component")
+				case !supportedTypes[typeName] && !containerTypes[typeName] && !metadataTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" && typeName != "link" && typeName != "button" && typeName != "custom":
 					result.NeedsAttention = append(result.NeedsAttention, "未知组件："+typeName)
 				}
-				if typeName == "custom" || typeName == "component" {
-					componentName := firstText(anyText(value["el"]), anyText(value["componentName"]), anyText(options["componentName"]))
-					if componentName != "custome-info-select" {
-						result.NeedsAttention = append(result.NeedsAttention, "未知自定义组件："+firstText(componentName, typeName))
-					}
+				if typeName == "custom" && componentName == "" {
+					result.NeedsAttention = append(result.NeedsAttention, "未知自定义组件：custom")
 				}
 			}
 			if url := firstText(anyText(options["requestURL"]), anyText(options["url"])); url != "" {
@@ -425,9 +443,9 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 		case typeName == "text":
 			// 带 model 的文本（审批意见占位等）不是字段标题，避免标题串到后续字段。
 			*pendingLabel = ""
-		case typeName == "fileupload" && model != "":
+		case (typeName == "fileupload" || typeName == "imgupload") && model != "":
 			*fields = append(*fields, Field{
-				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["listType"])),
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: "fileupload", Mode: strings.TrimSpace(anyText(options["listType"])),
 				Required: anyBool(options["required"]), Default: options["defaultValue"], CollectionRoot: collectionRoot,
 				ManualOnly: true, DataSourceURL: dataSourceURL, El: el,
 			})
@@ -439,8 +457,9 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 				values, names, optionPaths = cascaderOptionValues(options["options"])
 			}
 			_, hasShowLabel := options["showLabel"]
+			fieldType, fieldMode := normalizeFormMakingFieldType(typeName, options)
 			*fields = append(*fields, Field{
-				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["type"])),
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: fieldType, Mode: fieldMode,
 				Required: anyBool(options["required"]), Default: options["defaultValue"],
 				Options: values, OptionNames: names, OptionPaths: optionPaths, OptionVirtualUsesValue: hasShowLabel && !anyBool(options["showLabel"]),
 				CollectionRoot: collectionRoot, DataSourceURL: dataSourceURL, El: el,
@@ -453,6 +472,16 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 				Path: path, Name: firstText(*pendingLabel, name, model), Type: "infoSelect", Mode: infoSelectKind(model),
 				Required: anyBool(options["required"]), Default: options["defaultValue"], El: el,
 			})
+			*pendingLabel = ""
+		case typeName == "custom" && knownCustomComponents[el] && model != "":
+			// 已注册业务组件的真实对象可能依赖目标平台接口，保留人工边界但不再伪造随机对象。
+			*fields = append(*fields, Field{
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: "custom", Required: anyBool(options["required"]),
+				Default: options["defaultValue"], CollectionRoot: collectionRoot, ManualOnly: true, DataSourceURL: dataSourceURL, El: el,
+			})
+			*pendingLabel = ""
+		case typeName == "button" || typeName == "link" || metadataTypes[typeName] || typeName == "col" || typeName == "td" || typeName == "th":
+			// 布局、按钮和事件元数据不产生表单值，也不能因为携带 model 被计入人工字段。
 			*pendingLabel = ""
 		case model != "" && !containerTypes[typeName] && typeName != "html" && typeName != "divider" && typeName != "blank":
 			// 用 model 作主标识，避免多个同名自定义组件被去重后人工待填计数失真。
@@ -487,6 +516,23 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 				}
 			}
 		}
+	}
+}
+
+// normalizeFormMakingFieldType 把目标平台日期扩展组件归一为生成器支持的真实值形态。
+func normalizeFormMakingFieldType(typeName string, options map[string]any) (string, string) {
+	mode := strings.TrimSpace(anyText(options["type"]))
+	switch typeName {
+	case "datetime":
+		return "date", "datetime"
+	case "daterange":
+		return "date", "daterange"
+	case "datetimerange":
+		return "date", "datetimerange"
+	case "month", "year":
+		return "date", typeName
+	default:
+		return typeName, mode
 	}
 }
 
@@ -748,12 +794,21 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 		return rng.Intn(90) + 10, true
 	case "date":
 		value := time.Date(2024, 1, 1, rng.Intn(8)+9, rng.Intn(12)*5, 0, 0, time.UTC).AddDate(0, 0, rng.Intn(365))
-		if field.Mode == "daterange" {
+		if field.Mode == "daterange" || field.Mode == "datetimerange" {
 			// 目标日期范围组件要求 [开始, 结束] 数组，单日期字符串不会被渲染。
+			if field.Mode == "datetimerange" {
+				return []any{value.Format("2006-01-02 15:04"), value.AddDate(0, 0, 3).Format("2006-01-02 15:04")}, true
+			}
 			return []any{value.Format("2006-01-02"), value.AddDate(0, 0, 3).Format("2006-01-02")}, true
 		}
 		if field.Mode == "datetime" {
 			return value.Format("2006-01-02 15:04:05"), true
+		}
+		if field.Mode == "month" {
+			return value.Format("2006-01"), true
+		}
+		if field.Mode == "year" {
+			return value.Format("2006"), true
 		}
 		return value.Format("2006-01-02"), true
 	case "time":
@@ -993,17 +1048,21 @@ func usableValue(field Field, value any) bool {
 		text, ok := value.(string)
 		return ok && strings.TrimSpace(text) != ""
 	case "date":
-		if field.Mode == "daterange" {
+		if field.Mode == "daterange" || field.Mode == "datetimerange" {
 			list, ok := value.([]any)
 			if !ok || len(list) != 2 {
 				return false
+			}
+			layout := "2006-01-02"
+			if field.Mode == "datetimerange" {
+				layout = "2006-01-02 15:04"
 			}
 			for _, item := range list {
 				text, ok := item.(string)
 				if !ok {
 					return false
 				}
-				if _, err := time.Parse("2006-01-02", text); err != nil {
+				if _, err := time.Parse(layout, text); err != nil {
 					return false
 				}
 			}
@@ -1016,6 +1075,10 @@ func usableValue(field Field, value any) bool {
 		layout := "2006-01-02"
 		if field.Mode == "datetime" {
 			layout = "2006-01-02 15:04:05"
+		} else if field.Mode == "month" {
+			layout = "2006-01"
+		} else if field.Mode == "year" {
+			layout = "2006"
 		}
 		_, err := time.Parse(layout, text)
 		return err == nil
