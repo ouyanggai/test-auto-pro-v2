@@ -327,6 +327,17 @@ async function retryPaths(): Promise<boolean> {
   }
 }
 
+// retryPathsAndFinalizePreparation 在完成任务的路径刷新重试成功后收起进度区。
+async function retryPathsAndFinalizePreparation(): Promise<boolean> {
+  const completedJob = preparationJob.value?.status === 'completed' ? preparationJob.value : null
+  const refreshed = await retryPaths()
+  if (refreshed && completedJob && preparationJob.value === completedJob) {
+    preparationJob.value = null
+    message.success(`批量配置完成，已处理 ${completedJob.processed} 条路径`)
+  }
+  return refreshed
+}
+
 async function selectSavedPath(path: ExecutionPath) {
   if (!graph.value) return
   try {
@@ -890,7 +901,7 @@ onBeforeUnmount(() => {
             </div>
             <n-alert v-if="pathSelectionError" type="error" :show-icon="false">
               {{ pathSelectionError }}
-						<n-button text type="primary" @click="retryPaths">重新读取</n-button>
+						<n-button text type="primary" @click="retryPathsAndFinalizePreparation">重新读取</n-button>
             </n-alert>
 			<n-alert v-if="generationError" type="error" :show-icon="false">{{ generationError }}</n-alert>
 					<section v-if="preparationJob" class="path-preparation__job" aria-label="批量准备进度">
@@ -917,7 +928,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-else-if="pathsError" class="path-preparation__state path-preparation__state--error" role="alert">
               <span>{{ pathsError }}</span>
-              <n-button size="small" @click="retryPaths">重试</n-button>
+              <n-button size="small" @click="retryPathsAndFinalizePreparation">重试</n-button>
             </div>
             <div v-else-if="!paths.length" class="path-preparation__empty">
               <span>{{ generationBusy ? '正在后台解析全部合法路径' : '请先配置并保存执行路径' }}</span>
