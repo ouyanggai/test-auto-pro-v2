@@ -27,31 +27,35 @@ import (
 )
 
 type fakeTarget struct {
-	t               *testing.T
-	password        string
-	loginCode       string
-	mu              sync.Mutex
-	loginCount      int
-	templateCount   int
-	formCount       int
-	expireMode      string
-	sessions        []string
-	graphCalls      []string
-	submittedStatus string
-	duePaged        bool
-	dueUnbounded    bool
-	formFields      []any
-	templateData    string
-	directoryAudit  bool
-	directoryFail   bool
-	directoryFlags  []string
-	coverageTotal   int
+	t                       *testing.T
+	password                string
+	loginCode               string
+	mu                      sync.Mutex
+	loginCount              int
+	templateCount           int
+	formCount               int
+	expireMode              string
+	sessions                []string
+	graphCalls              []string
+	submittedStatus         string
+	duePaged                bool
+	dueUnbounded            bool
+	formFields              []any
+	templateData            string
+	directoryAudit          bool
+	directoryFail           bool
+	directoryFlags          []string
+	coverageTotal           int
+	coverageListFailureCall int
+	coverageUnreadableIndex int
+	coverageActiveDetails   int
+	coverageMaxDetails      int
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
 func newFakeTarget(t *testing.T) *fakeTarget {
 	t.Helper()
-	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), submittedStatus: "run"}
+	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), submittedStatus: "run", coverageUnreadableIndex: -1}
 }
 
 // handler 按已核实只读协议响应登录、列表和流程树请求。
@@ -292,14 +296,29 @@ func (f *fakeTarget) handleFormDetail(response http.ResponseWriter, request *htt
 		f.recordGraphCall("form-detail:" + id)
 		f.mu.Lock()
 		f.formCount++
+		f.coverageActiveDetails++
+		if f.coverageActiveDetails > f.coverageMaxDetails {
+			f.coverageMaxDetails = f.coverageActiveDetails
+		}
 		f.mu.Unlock()
+		defer func() {
+			f.mu.Lock()
+			f.coverageActiveDetails--
+			f.mu.Unlock()
+		}()
+		time.Sleep(2 * time.Millisecond)
 		componentType := "input"
 		if index == f.coverageTotal-1 {
 			componentType = "vendor-widget"
 		}
-		templateData, _ := json.Marshal(map[string]any{"list": []any{map[string]any{
+		fields := []any{map[string]any{
 			"type": componentType, "model": fmt.Sprintf("field_%d", index), "name": "覆盖字段", "options": map[string]any{},
-		}}})
+		}}
+		if index == 0 {
+			// 同一报表里的重复单元格模型不会覆盖其他关联表单，覆盖盘点不得把它误报为跨表单冲突。
+			fields = append(fields, map[string]any{"type": "input", "model": "field_0", "name": "复用单元格", "options": map[string]any{}})
+		}
+		templateData, _ := json.Marshal(map[string]any{"list": fields})
 		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
 			"id": id, "name": formName, "fieldsTemplateList": []any{}, "templateData": string(templateData),
 		}})
@@ -420,6 +439,10 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	call := f.templateCount
 	mode := f.expireMode
 	f.mu.Unlock()
+	if f.coverageListFailureCall > 0 && call == f.coverageListFailureCall {
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	if mode == "business-once" && call == 1 || mode == "business-always" {
 		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "RESP401", "message": "session invalid"})
 		return
@@ -464,6 +487,10 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		if end > f.coverageTotal {
 			end = f.coverageTotal
 		}
+		if f.coverageUnreadableIndex >= start && f.coverageUnreadableIndex < end {
+			response.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		items := make([]any, 0, size)
 		for index := start; index < end; index++ {
 			items = append(items, map[string]any{
@@ -498,10 +525,32 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	})
 }
 
+// TestF009TemplateCoverageIsolatesUnreadableListItem 验证目标单条列表损坏时报告不完整但仍继续盘点后续模板。
+func TestF009TemplateCoverageIsolatesUnreadableListItem(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.coverageTotal = 17
+	fake.coverageUnreadableIndex = 15
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
+
+	report, err := service.NewTargetReadService(config.LoadTargetConfig()).TemplateCoverage(context.Background(), "account-a")
+	if err != nil {
+		t.Fatalf("单条坏数据不应中断整个覆盖盘点：%v", err)
+	}
+	if report.Complete || report.TemplateCount != 17 || report.ScannedTemplateCount != 16 || report.FailedTemplates != 1 {
+		t.Fatalf("坏列表项没有被隔离为一条失败：%+v", report)
+	}
+	if report.FlowCodeCount != 16 || report.ComponentTypes["vendor-widget"] != 1 {
+		t.Fatalf("坏项后的模板没有继续进入规则盘点：%+v", report)
+	}
+}
+
 // TestF009TemplateCoverageReadsAllVisibleTemplates 验证真实分页链逐个盘点 196 个模板且未知能力只阻断对应模板。
 func TestF009TemplateCoverageReadsAllVisibleTemplates(t *testing.T) {
 	fake := newFakeTarget(t)
 	fake.coverageTotal = 196
+	fake.coverageListFailureCall = 2
 	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
 	defer targetServer.Close()
 	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
@@ -513,7 +562,7 @@ func TestF009TemplateCoverageReadsAllVisibleTemplates(t *testing.T) {
 	if !report.Complete || report.TemplateCount != 196 || report.ScannedTemplateCount != 196 {
 		t.Fatalf("全模板分页没有完整读取：%+v", report)
 	}
-	if report.TemplateTypeCount != 54 || report.FlowCodeCount != 196 || report.ComponentTypes["input"] != 195 {
+	if report.TemplateTypeCount != 54 || report.FlowCodeCount != 196 || report.ComponentTypes["input"] != 196 {
 		t.Fatalf("模板类型、流程编码或组件统计不准确：%+v", report)
 	}
 	if report.ConditionOperators["eq"] != 195 || report.ConditionLogic["and"] != 196 || report.FieldComparisonCount != 196 {
@@ -522,8 +571,11 @@ func TestF009TemplateCoverageReadsAllVisibleTemplates(t *testing.T) {
 	if report.NeedsAttentionTemplates != 1 || report.UnsupportedTemplates != 1 || report.FailedTemplates != 0 {
 		t.Fatalf("未知能力没有精确落到单模板需处理：%+v", report)
 	}
-	if fake.templateCount != 4 || fake.formCount != 196 || len(fake.directoryFlags) != 0 {
-		t.Fatalf("覆盖盘点没有保持分页、逐模板一次表单读取或误读了身份目录：pages=%d forms=%d directory=%v", fake.templateCount, fake.formCount, fake.directoryFlags)
+	if fake.templateCount != 8 || fake.formCount != 196 || len(fake.directoryFlags) != 0 {
+		t.Fatalf("覆盖盘点没有保持分页重试、逐模板一次表单读取或误读了身份目录：calls=%d forms=%d directory=%v", fake.templateCount, fake.formCount, fake.directoryFlags)
+	}
+	if fake.coverageMaxDetails != 2 {
+		t.Fatalf("模板详情并发没有保持固定 2 路资源边界：%d", fake.coverageMaxDetails)
 	}
 }
 
@@ -537,8 +589,8 @@ func TestF009RealTemplateCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("真实目标模板盘点失败：%v", err)
 	}
-	if !report.Complete || report.TemplateCount == 0 || report.TemplateCount != report.ScannedTemplateCount {
-		t.Fatalf("真实目标模板未完整盘点：%+v", report)
+	if report.TemplateCount == 0 || report.TemplateCount != report.ScannedTemplateCount+report.FailedTemplates {
+		t.Fatalf("真实目标模板总数与扫描/失败数量不守恒：%+v", report)
 	}
 	if expectedText := strings.TrimSpace(os.Getenv("F009_EXPECTED_TEMPLATE_COUNT")); expectedText != "" {
 		expected, parseErr := strconv.Atoi(expectedText)
@@ -548,6 +600,17 @@ func TestF009RealTemplateCoverage(t *testing.T) {
 		if report.TemplateCount != expected {
 			t.Fatalf("真实目标模板数量 = %d，期望 %d", report.TemplateCount, expected)
 		}
+	}
+	expectedFailures := 0
+	if expectedText := strings.TrimSpace(os.Getenv("F009_EXPECTED_FAILED_TEMPLATES")); expectedText != "" {
+		var parseErr error
+		expectedFailures, parseErr = strconv.Atoi(expectedText)
+		if parseErr != nil || expectedFailures < 0 {
+			t.Fatal("F009_EXPECTED_FAILED_TEMPLATES 必须是非负整数")
+		}
+	}
+	if report.FailedTemplates != expectedFailures || report.Complete != (expectedFailures == 0) {
+		t.Fatalf("真实目标模板失败数或完整性 = %d/%v，期望 %d/%v", report.FailedTemplates, report.Complete, expectedFailures, expectedFailures == 0)
 	}
 	t.Logf("真实目标模板盘点完成：模板=%d，类型=%d，流程编码=%d，需处理=%d", report.TemplateCount, report.TemplateTypeCount, report.FlowCodeCount, report.NeedsAttentionTemplates)
 	if os.Getenv("F009_LOG_COVERAGE") == "1" {

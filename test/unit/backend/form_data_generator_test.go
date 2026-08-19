@@ -36,16 +36,16 @@ func TestFormDataGeneratorParsesNestedTargetTemplate(t *testing.T) {
 	}
 }
 
-// TestFormDataGeneratorSkipsComplexComponentsWithoutBlockingForm 验证复杂组件留给真实表单人工填写，不伪造值或阻断整张表单。
-func TestFormDataGeneratorKeepsComplexComponentsUnsupported(t *testing.T) {
+// TestFormDataGeneratorKeepsRuntimeComponentValue 验证非必填运行时组件保留已有值且不制造人工待办。
+func TestFormDataGeneratorKeepsRuntimeComponentValue(t *testing.T) {
 	template := map[string]any{"list": []any{
 		map[string]any{"type": "grid", "columns": []any{map[string]any{"list": []any{
 			map[string]any{"type": "component", "model": "contract", "name": "合同组件", "options": map[string]any{}},
 		}}}},
 	}}
 	result := formdata.Generate(formdata.GenerateInput{Template: template, Base: map[string]any{"contract": `{"selected":"历史值"}`}, Seed: 7})
-	if len(result.Unsupported) != 0 || result.Pending != 1 {
-		t.Fatalf("复杂组件应只计入人工待填而非阻断表单：%+v", result)
+	if len(result.Unsupported) != 0 || result.Pending != 0 {
+		t.Fatalf("非必填运行时组件不应制造人工待填或未知能力：%+v", result)
 	}
 	if result.Values["contract"] != `{"selected":"历史值"}` {
 		t.Fatalf("复杂组件已有值被生成器覆盖或删除：%+v", result.Values)
@@ -358,6 +358,15 @@ func TestF009GeneratorRecognizesRuntimeStandardAndRegisteredComponents(t *testin
 		map[string]any{"type": "imgupload", "model": "photos", "options": map[string]any{"required": true}},
 		map[string]any{"type": "custom", "el": "custome-select-project", "model": "project", "options": map[string]any{"required": true}},
 		map[string]any{"type": "button", "model": "submitButton"},
+		map[string]any{"type": "rate", "model": "score", "options": map[string]any{"required": true}},
+		map[string]any{"type": "slider", "model": "range", "options": map[string]any{"required": true, "range": true}},
+		map[string]any{"type": "color", "model": "color", "options": map[string]any{"required": true}},
+		map[string]any{"type": "transfer", "model": "members", "options": map[string]any{"required": true, "data": []any{
+			map[string]any{"key": "member-a", "label": "成员甲"},
+		}}},
+		map[string]any{"type": "editor", "model": "content", "options": map[string]any{"required": true}},
+		map[string]any{"type": "alert", "options": map[string]any{"title": "提示"}},
+		map[string]any{"type": "upload", "model": "legacyAttachment", "options": map[string]any{"required": true}},
 	}}
 	fields, unsupported := formdata.ParseTemplate(template)
 	if len(unsupported) != 0 {
@@ -377,8 +386,15 @@ func TestF009GeneratorRecognizesRuntimeStandardAndRegisteredComponents(t *testin
 		t.Fatalf("已注册组件和标准布局不应进入未知能力阻断：%v", inventory.NeedsAttention)
 	}
 	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 9})
-	if result.Pending != 2 {
-		t.Fatalf("附件和外部项目应保留两个必填人工项：%+v", result)
+	if result.Pending != 3 {
+		t.Fatalf("两类附件和外部项目应保留三个必填人工项：%+v", result)
+	}
+	generatedPaths := make(map[string]bool, len(result.GeneratedFieldPaths))
+	for _, fieldPath := range result.GeneratedFieldPaths {
+		generatedPaths[fieldPath] = true
+	}
+	if reasons := formdata.ValidateEditable(template, result.Values, nil, generatedPaths); len(reasons) != 0 {
+		t.Fatalf("运行时标准组件生成值没有保持真实形态：%v values=%+v", reasons, result.Values)
 	}
 }
 

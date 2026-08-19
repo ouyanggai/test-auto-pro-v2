@@ -38,6 +38,10 @@ func solveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.Execut
 	fields, _ := formdata.ParseTemplate(template)
 	fieldByPath := make(map[string]formdata.Field, len(fields)*3)
 	for _, field := range fields {
+		// 人工组件的对象结构由真实运行时决定，不能进入静态候选域或被流程常量替换。
+		if field.ManualOnly {
+			continue
+		}
 		fieldByPath[normalizeFormFieldPath(field.Path)] = field
 		fieldByPath[normalizeFormFieldPath(field.Path+"__virtualName")] = field
 		fieldByPath[normalizeFormFieldPath(field.Path+"__condition")] = field

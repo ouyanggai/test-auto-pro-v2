@@ -785,14 +785,19 @@ func runtimeTemplate(forms []target.FormRuntimeTemplate) (map[string]any, []stri
 			}
 		}
 		fields, _ := formdata.ParseTemplate(fragment)
+		formModels := map[string]bool{}
 		for _, field := range fields {
 			if field.Path == "" || strings.Contains(field.Path, "[]") {
 				continue
 			}
-			if seenModels[field.Path] {
+			// 报表单元格可能在同一表单内复用 model；只有不同关联表单争用同一路径才会覆盖运行时值。
+			if !formModels[field.Path] && seenModels[field.Path] {
 				unsupported = append(unsupported, "多个表单包含重复字段模型「"+field.Path+"」，需要人工核对")
 			}
-			seenModels[field.Path] = true
+			formModels[field.Path] = true
+		}
+		for fieldPath := range formModels {
+			seenModels[fieldPath] = true
 		}
 	}
 	return template, uniquePublicStrings(unsupported)
@@ -1398,6 +1403,10 @@ func resolvePathFormConditionField(raw string, fields []formdata.Field) (pathFor
 	path := normalizeFormFieldPath(raw)
 	for _, field := range fields {
 		if path == field.Path {
+			// 附件和运行时业务组件的真实值形态无法静态证明，禁止把流程常量写成伪造对象。
+			if field.ManualOnly {
+				return pathFormConditionFieldRef{}, false
+			}
 			return pathFormConditionFieldRef{Field: field, Mode: "direct"}, true
 		}
 		if path == field.Path+"__virtualName" && (field.Type == "select" || field.Type == "radio" || field.Type == "cascader") {

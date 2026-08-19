@@ -67,6 +67,8 @@ type Field struct {
 	Default     any
 	Options     []any
 	OptionNames map[string]string
+	Min         *float64
+	Max         *float64
 	// OptionPaths 保存级联组件从根到叶子的真实候选路径，生成值必须使用完整路径数组。
 	OptionPaths [][]any
 	// OptionVirtualUsesValue 表示目标模板显式关闭 showLabel 时，__virtualName 使用选项值而不是展示标签。
@@ -152,7 +154,8 @@ var supportedTypes = map[string]bool{
 	"input": true, "textarea": true, "number": true, "date": true, "time": true,
 	"datetime": true, "daterange": true, "datetimerange": true, "month": true, "year": true,
 	"select": true, "radio": true, "checkbox": true, "switch": true, "cascader": true,
-	"fileupload": true, "imgupload": true,
+	"rate": true, "slider": true, "color": true, "steps": true, "pagination": true,
+	"transfer": true, "editor": true, "component": true, "fileupload": true, "imgupload": true, "upload": true,
 }
 
 var containerTypes = map[string]bool{
@@ -161,7 +164,7 @@ var containerTypes = map[string]bool{
 	"col": true, "td": true, "th": true,
 }
 
-var metadataTypes = map[string]bool{"js": true, "rule": true}
+var metadataTypes = map[string]bool{"js": true, "rule": true, "alert": true, "info": true}
 
 // knownCustomComponents 来源于实际 FormMaking 运行时注册表；已知组件仍可能要求人工填写，但不能再被误报成未知能力。
 var knownCustomComponents = map[string]bool{
@@ -206,8 +209,6 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 				switch {
 				case typeName == "custom" && !knownCustomComponents[componentName] && componentName != "":
 					result.NeedsAttention = append(result.NeedsAttention, "未知自定义组件："+componentName)
-				case typeName == "component":
-					result.NeedsAttention = append(result.NeedsAttention, "未知组件：component")
 				case !supportedTypes[typeName] && !containerTypes[typeName] && !metadataTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" && typeName != "link" && typeName != "button" && typeName != "custom":
 					result.NeedsAttention = append(result.NeedsAttention, "未知组件："+typeName)
 				}
@@ -443,7 +444,7 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 		case typeName == "text":
 			// 带 model 的文本（审批意见占位等）不是字段标题，避免标题串到后续字段。
 			*pendingLabel = ""
-		case (typeName == "fileupload" || typeName == "imgupload") && model != "":
+		case (typeName == "fileupload" || typeName == "imgupload" || typeName == "upload") && model != "":
 			*fields = append(*fields, Field{
 				Path: path, Name: firstText(*pendingLabel, name, model), Type: "fileupload", Mode: strings.TrimSpace(anyText(options["listType"])),
 				Required: anyBool(options["required"]), Default: options["defaultValue"], CollectionRoot: collectionRoot,
@@ -451,7 +452,11 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 			})
 			*pendingLabel = ""
 		case supportedTypes[typeName] && model != "":
-			values, names := optionValues(options["options"])
+			optionSource := options["options"]
+			if typeName == "transfer" {
+				optionSource = options["data"]
+			}
+			values, names := optionValues(optionSource)
 			optionPaths := [][]any(nil)
 			if typeName == "cascader" {
 				values, names, optionPaths = cascaderOptionValues(options["options"])
@@ -463,6 +468,7 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 				Required: anyBool(options["required"]), Default: options["defaultValue"],
 				Options: values, OptionNames: names, OptionPaths: optionPaths, OptionVirtualUsesValue: hasShowLabel && !anyBool(options["showLabel"]),
 				CollectionRoot: collectionRoot, DataSourceURL: dataSourceURL, El: el,
+				Min: numericOption(options["min"]), Max: numericOption(options["max"]),
 			})
 			*pendingLabel = ""
 		case typeName == "custom" && el == "custome-info-select" && model != "":
@@ -478,6 +484,13 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 			*fields = append(*fields, Field{
 				Path: path, Name: firstText(*pendingLabel, name, model), Type: "custom", Required: anyBool(options["required"]),
 				Default: options["defaultValue"], CollectionRoot: collectionRoot, ManualOnly: true, DataSourceURL: dataSourceURL, El: el,
+			})
+			*pendingLabel = ""
+		case typeName == "component" && model != "":
+			// 内嵌 component 是 FormMaking 标准运行时组件；不伪造其值，仅对真实必填空值计人工项。
+			*fields = append(*fields, Field{
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: "component", Required: anyBool(options["required"]),
+				Default: options["defaultValue"], CollectionRoot: collectionRoot, ManualOnly: true,
 			})
 			*pendingLabel = ""
 		case typeName == "button" || typeName == "link" || metadataTypes[typeName] || typeName == "col" || typeName == "td" || typeName == "th":
@@ -519,6 +532,18 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 	}
 }
 
+// numericOption 只接受模板显式声明的有限数值边界，缺失或非法边界保持未设置。
+func numericOption(value any) *float64 {
+	if value == nil {
+		return nil
+	}
+	number, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(value)), 64)
+	if err != nil {
+		return nil
+	}
+	return &number
+}
+
 // normalizeFormMakingFieldType 把目标平台日期扩展组件归一为生成器支持的真实值形态。
 func normalizeFormMakingFieldType(typeName string, options map[string]any) (string, string) {
 	mode := strings.TrimSpace(anyText(options["type"]))
@@ -531,6 +556,17 @@ func normalizeFormMakingFieldType(typeName string, options map[string]any) (stri
 		return "date", "datetimerange"
 	case "month", "year":
 		return "date", typeName
+	case "rate", "steps", "pagination":
+		return "number", typeName
+	case "slider":
+		if anyBool(options["range"]) {
+			return "number", "range"
+		}
+		return "number", "slider"
+	case "transfer":
+		return "checkbox", "transfer"
+	case "editor":
+		return "textarea", "editor"
 	default:
 		return typeName, mode
 	}
@@ -791,7 +827,25 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 	case "input", "textarea":
 		return smartTextValue(field.Name, initiator), true
 	case "number":
-		return rng.Intn(90) + 10, true
+		if field.Mode == "range" {
+			minimum, maximum := numericFallbackBounds(field, 0, 100)
+			middle := minimum + (maximum-minimum)/2
+			return []any{minimum, middle}, true
+		}
+		if field.Mode == "rate" {
+			minimum, maximum := numericFallbackBounds(field, 1, 5)
+			return minimum + float64(rng.Intn(int(maximum-minimum)+1)), true
+		}
+		if field.Mode == "steps" {
+			return 0, true
+		}
+		if field.Mode == "pagination" {
+			return 1, true
+		}
+		minimum, maximum := numericFallbackBounds(field, 10, 99)
+		return minimum + float64(rng.Intn(int(maximum-minimum)+1)), true
+	case "color":
+		return "#409EFF", true
 	case "date":
 		value := time.Date(2024, 1, 1, rng.Intn(8)+9, rng.Intn(12)*5, 0, 0, time.UTC).AddDate(0, 0, rng.Intn(365))
 		if field.Mode == "daterange" || field.Mode == "datetimerange" {
@@ -1090,12 +1144,17 @@ func usableValue(field Field, value any) bool {
 		_, err := time.Parse("15:04:05", text)
 		return err == nil
 	case "number":
-		switch value.(type) {
-		case float64, float32, int, int64, int32, uint, uint64, json.Number:
-			return true
-		default:
-			return false
+		if field.Mode == "range" {
+			list, ok := value.([]any)
+			if !ok || len(list) != 2 {
+				return false
+			}
+			return numericFieldValueValid(field, list[0]) && numericFieldValueValid(field, list[1]) && numberValue(list[0]) <= numberValue(list[1])
 		}
+		return numericFieldValueValid(field, value)
+	case "color":
+		text := strings.TrimSpace(fmt.Sprint(value))
+		return strings.HasPrefix(text, "#") && (len(text) == 4 || len(text) == 7 || len(text) == 9)
 	case "select", "radio":
 		return len(field.Options) == 0 || containsValue(field.Options, value)
 	case "cascader":
@@ -1134,6 +1193,40 @@ func usableValue(field Field, value any) bool {
 	}
 }
 
+// isNumberValue 判断 FormMaking 数值组件允许的 JSON 与 Go 数字形态。
+func isNumberValue(value any) bool {
+	switch value.(type) {
+	case float64, float32, int, int64, int32, uint, uint64, json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+// numericFieldValueValid 同时校验数值形态和模板声明的上下界。
+func numericFieldValueValid(field Field, value any) bool {
+	if !isNumberValue(value) {
+		return false
+	}
+	number := numberValue(value)
+	return (field.Min == nil || number >= *field.Min) && (field.Max == nil || number <= *field.Max)
+}
+
+// numericFallbackBounds 计算安全生成区间，模板边界优先且永远返回非递减范围。
+func numericFallbackBounds(field Field, fallbackMin, fallbackMax float64) (float64, float64) {
+	minimum, maximum := fallbackMin, fallbackMax
+	if field.Min != nil {
+		minimum = *field.Min
+	}
+	if field.Max != nil {
+		maximum = *field.Max
+	}
+	if maximum < minimum {
+		maximum = minimum
+	}
+	return minimum, maximum
+}
+
 // optionValues 读取目标组件 options 的 label/value 或 id，并建立虚拟名称字典。
 func optionValues(raw any) ([]any, map[string]string) {
 	values := make([]any, 0)
@@ -1146,6 +1239,9 @@ func optionValues(raw any) ([]any, map[string]string) {
 		value := option["value"]
 		if value == nil {
 			value = option["id"]
+		}
+		if value == nil {
+			value = option["key"]
 		}
 		if value == nil {
 			continue

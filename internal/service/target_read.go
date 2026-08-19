@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,16 @@ import (
 	"test-auto-pro-v2/internal/session"
 )
 
-const templateCoveragePageSize = 50
+const templateCoverageMaxPageSize = 50
+const templateCoverageWorkers = 2
+const templateCoverageDetailAttempts = 3
+const templateCoveragePageAttempts = 3
+
+type templateCoverageDetailResult struct {
+	item    target.FlowTemplate
+	input   formdata.TemplateCoverageInput
+	failure string
+}
 
 var (
 	ErrTargetFlowNotFound        = errors.New("目标流程当前不可读取")
@@ -95,51 +105,199 @@ func (s *TargetReadService) TemplateCoverage(ctx context.Context, account string
 	if err := s.ready(); err != nil {
 		return formdata.TemplateCoverageReport{}, err
 	}
-	var result formdata.TemplateCoverageReport
-	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
-		report := formdata.NewTemplateCoverageReport()
-		expectedTemplates := -1
-		paginationComplete := true
-		for page := 1; ; page++ {
-			pageResult, readErr := s.client.ListTemplates(callContext, active, "", page, templateCoveragePageSize)
-			if readErr != nil {
-				return readErr
-			}
-			if expectedTemplates < 0 {
-				expectedTemplates = pageResult.Total
-			} else if pageResult.Total != expectedTemplates {
-				paginationComplete = false
-			}
-			// 目标声明仍有下一页却返回空页时立即停止，避免异常分页造成无界请求。
-			if len(pageResult.Items) == 0 && pageResult.HasMore {
-				paginationComplete = false
-				break
-			}
-			for _, item := range pageResult.Items {
-				tree, forms, detailErr := s.client.ReadTemplateRuleSource(callContext, active, item.ID)
-				if target.IsKind(detailErr, target.ErrorSessionExpired) {
-					return detailErr
-				}
-				if detailErr != nil {
-					formdata.AddTemplateCoverageFailure(&report, item.TypeName, item.Code, templateCoverageFailureReason(detailErr))
-					continue
-				}
-				template, mergeIssues := runtimeTemplate(forms)
-				operators, logic, fieldComparisons, conditionIssues := templateConditionRuleCoverage(tree)
-				formdata.AddTemplateCoverage(&report, formdata.TemplateCoverageInput{
-					TemplateType: item.TypeName, FlowCode: item.Code, Template: template, MergeIssues: mergeIssues,
-					ConditionOperators: operators, ConditionLogic: logic, FieldComparisonCount: fieldComparisons, ConditionIssues: conditionIssues,
-				})
-			}
-			if !pageResult.HasMore {
-				break
-			}
+	report := formdata.NewTemplateCoverageReport()
+	metadataPage, err := s.readTemplateCoveragePage(ctx, account, 1, 1)
+	if err != nil {
+		return formdata.TemplateCoverageReport{}, fmt.Errorf("模板列表总数读取失败：%w", err)
+	}
+	expectedTemplates := metadataPage.Total
+	paginationComplete := true
+	seenTemplateIDs := make(map[string]struct{})
+	processedTargetItems := 0
+	for {
+		if expectedTemplates >= 0 && processedTargetItems >= expectedTemplates {
+			break
 		}
-		formdata.FinalizeTemplateCoverageReport(&report, expectedTemplates, paginationComplete)
-		result = report
+		pageSizeLimit := templateCoverageMaxPageSize
+		page, pageSize := templateCoveragePagePosition(processedTargetItems, expectedTemplates, pageSizeLimit)
+		pageResult, readErr := s.readTemplateCoveragePage(ctx, account, page, pageSize)
+		for readErr != nil && pageSize > 1 {
+			pageSizeLimit = pageSize / 2
+			page, pageSize = templateCoveragePagePosition(processedTargetItems, expectedTemplates, pageSizeLimit)
+			pageResult, readErr = s.readTemplateCoveragePage(ctx, account, page, pageSize)
+		}
+		if readErr != nil {
+			// 单条列表数据自身损坏时没有安全方式取得模板 ID；记录失败槽位并继续后续偏移。
+			formdata.AddTemplateCoverageFailure(&report, "", "", "目标模板列表单条无法读取")
+			paginationComplete = false
+			processedTargetItems++
+			continue
+		}
+		if pageResult.Total != expectedTemplates {
+			paginationComplete = false
+		}
+		// 目标声明仍有下一页却返回空页时立即停止，避免异常分页造成无界请求。
+		if len(pageResult.Items) == 0 && pageResult.HasMore {
+			paginationComplete = false
+			break
+		}
+		processedTargetItems += len(pageResult.Items)
+		pageItems := make([]target.FlowTemplate, 0, len(pageResult.Items))
+		for _, item := range pageResult.Items {
+			id := strings.TrimSpace(item.ID)
+			if id == "" {
+				paginationComplete = false
+				formdata.AddTemplateCoverageFailure(&report, item.TypeName, item.Code, "模板标识缺失")
+				continue
+			}
+			if _, exists := seenTemplateIDs[id]; exists {
+				paginationComplete = false
+				continue
+			}
+			seenTemplateIDs[id] = struct{}{}
+			pageItems = append(pageItems, item)
+		}
+		if err := s.scanTemplateCoverageDetails(ctx, account, pageItems, &report); err != nil {
+			return formdata.TemplateCoverageReport{}, err
+		}
+		if !pageResult.HasMore {
+			break
+		}
+	}
+	formdata.FinalizeTemplateCoverageReport(&report, expectedTemplates, paginationComplete)
+	return report, nil
+}
+
+// templateCoveragePagePosition 把已处理数量转换为目标页码，并按当前上限缩页而不改变真实偏移。
+func templateCoveragePagePosition(processed, total, limit int) (int, int) {
+	pageSize := limit
+	if pageSize < 1 || pageSize > templateCoverageMaxPageSize {
+		pageSize = templateCoverageMaxPageSize
+	}
+	if total >= 0 {
+		remaining := total - processed
+		if remaining < 1 {
+			return 1, 1
+		}
+		if remaining < pageSize {
+			pageSize = remaining
+		}
+	}
+	// 目标协议只有页码而没有 offset；页大小必须整除已处理数量才能精确从下一个模板继续。
+	for pageSize > 1 && processed%pageSize != 0 {
+		pageSize--
+	}
+	return processed/pageSize + 1, pageSize
+}
+
+// readTemplateCoveragePage 对单个模板列表页执行有界瞬时故障重试，不会从第一页重新扫描。
+func (s *TargetReadService) readTemplateCoveragePage(ctx context.Context, account string, page, pageSize int) (target.Page[target.FlowTemplate], error) {
+	var result target.Page[target.FlowTemplate]
+	var lastErr error
+	for attempt := 1; attempt <= templateCoveragePageAttempts; attempt++ {
+		lastErr = s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+			pageResult, err := s.client.ListTemplates(callContext, active, "", page, pageSize)
+			if err == nil {
+				result = pageResult
+			}
+			return err
+		})
+		if lastErr == nil || !templateCoverageRetryable(lastErr) || attempt == templateCoveragePageAttempts {
+			break
+		}
+		if err := waitTemplateCoverageRetry(ctx, attempt, time.Second); err != nil {
+			return target.Page[target.FlowTemplate]{}, err
+		}
+	}
+	return result, lastErr
+}
+
+// scanTemplateCoverageDetails 使用固定并发读取单页详情，并在消费结果后立即释放模板正文。
+func (s *TargetReadService) scanTemplateCoverageDetails(ctx context.Context, account string, items []target.FlowTemplate, report *formdata.TemplateCoverageReport) error {
+	if len(items) == 0 {
 		return nil
-	})
-	return result, err
+	}
+	workerCount := templateCoverageWorkers
+	if len(items) < workerCount {
+		workerCount = len(items)
+	}
+	jobs := make(chan target.FlowTemplate)
+	results := make(chan templateCoverageDetailResult, workerCount)
+	var workers sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for item := range jobs {
+				results <- s.readTemplateCoverageDetail(ctx, account, item)
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, item := range items {
+			jobs <- item
+		}
+	}()
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+	for result := range results {
+		if result.failure != "" {
+			formdata.AddTemplateCoverageFailure(report, result.item.TypeName, result.item.Code, result.failure)
+			continue
+		}
+		formdata.AddTemplateCoverage(report, result.input)
+	}
+	return ctx.Err()
+}
+
+// readTemplateCoverageDetail 对单个模板详情执行有界重试，并把目标原文及时转换为轻量规则输入。
+func (s *TargetReadService) readTemplateCoverageDetail(ctx context.Context, account string, item target.FlowTemplate) templateCoverageDetailResult {
+	var tree *target.FlowNodeTemplate
+	var forms []target.FormRuntimeTemplate
+	var lastErr error
+	for attempt := 1; attempt <= templateCoverageDetailAttempts; attempt++ {
+		lastErr = s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+			var err error
+			tree, forms, err = s.client.ReadTemplateRuleSource(callContext, active, item.ID)
+			return err
+		})
+		if lastErr == nil || !templateCoverageRetryable(lastErr) || attempt == templateCoverageDetailAttempts {
+			break
+		}
+		if err := waitTemplateCoverageRetry(ctx, attempt, 250*time.Millisecond); err != nil {
+			lastErr = err
+			break
+		}
+	}
+	if lastErr != nil {
+		return templateCoverageDetailResult{item: item, failure: templateCoverageFailureReason(lastErr)}
+	}
+	template, mergeIssues := runtimeTemplate(forms)
+	operators, logic, fieldComparisons, conditionIssues := templateConditionRuleCoverage(tree)
+	return templateCoverageDetailResult{item: item, input: formdata.TemplateCoverageInput{
+		TemplateType: item.TypeName, FlowCode: item.Code, Template: template, MergeIssues: mergeIssues,
+		ConditionOperators: operators, ConditionLogic: logic, FieldComparisonCount: fieldComparisons, ConditionIssues: conditionIssues,
+	}}
+}
+
+// templateCoverageRetryable 仅重试目标暂不可用和超时，响应结构错误必须直接进入人工核对。
+func templateCoverageRetryable(err error) bool {
+	return target.IsKind(err, target.ErrorUnavailable) || target.IsKind(err, target.ErrorTimeout)
+}
+
+// waitTemplateCoverageRetry 使用有界退避保护目标平台，并允许调用方取消长时间全量盘点。
+func waitTemplateCoverageRetry(ctx context.Context, attempt int, base time.Duration) error {
+	timer := time.NewTimer(time.Duration(attempt) * base)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // templateConditionRuleCoverage 递归提取流程条件能力，只有求解器已验证的比较和连接方式计入覆盖。

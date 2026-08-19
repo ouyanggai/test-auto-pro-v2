@@ -205,6 +205,24 @@ func TestF009UnknownConditionReturnsPartialResult(t *testing.T) {
 	}
 }
 
+// TestF009ManualOnlyConditionDoesNotFabricateValue 验证附件等人工对象参与分支时只返回人工核对，不伪造引用。
+func TestF009ManualOnlyConditionDoesNotFabricateValue(t *testing.T) {
+	end := &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}
+	tree := &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", FieldPowers: []target.FlowNodeFieldPower{{EnglishName: "attachment", Power: "edit"}}, Child: &target.FlowNodeTemplate{
+		ID: "route", Name: "附件条件", Type: "condition", Child: end, ConditionNodes: []target.FlowBranchTemplate{
+			{ID: "selected", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "attachment", ValueB: "file-id", Judge: "eq"}}, Child: f009RouteLeaf("selected-node")},
+			{ID: "fallback", Sort: 2, Child: f009RouteLeaf("fallback-node")},
+		},
+	}}
+	result := f009Generate(t, tree, []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "selected"}}, `{"list":[{"type":"fileupload","model":"attachment","name":"附件","options":{"required":true}}]}`, 37)
+	if result.GenerationState == "complete" || len(result.Issues) == 0 {
+		t.Fatalf("人工对象条件被错误标记为可直接生成：%+v", result)
+	}
+	if _, fabricated := result.Values["attachment"]; fabricated {
+		t.Fatalf("附件条件被伪造成了运行时对象：%#v", result.Values["attachment"])
+	}
+}
+
 // f009SortedRouteTree 构造三段有序请假天数路由，最后一项为真实兜底。
 func f009SortedRouteTree() *target.FlowNodeTemplate {
 	end := &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}
