@@ -282,6 +282,51 @@ func TestFormDataGeneratorFillsDateRange(t *testing.T) {
 	}
 }
 
+// TestFormDataGeneratorSupportsCascaderAndCollectionShape 验证级联使用完整候选路径，子表单字段保持数组行结构。
+func TestFormDataGeneratorSupportsCascaderAndCollectionShape(t *testing.T) {
+	template := map[string]any{"list": []any{
+		map[string]any{"type": "cascader", "model": "category", "name": "分类", "options": map[string]any{"required": true, "options": []any{
+			map[string]any{"value": "a", "label": "甲", "children": []any{map[string]any{"value": "a1", "label": "甲一"}}},
+		}}},
+		map[string]any{"type": "subform", "model": "items", "list": []any{map[string]any{"type": "input", "model": "name", "name": "明细名称", "options": map[string]any{"required": true}}}},
+	}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Base: map[string]any{"items": []any{map[string]any{"name": "已有明细"}}}, ManualOverridePaths: []string{"items[].name"}, Seed: 1})
+	category, ok := result.Values["category"].([]any)
+	if !ok || len(category) != 2 || category[0] != "a" || category[1] != "a1" {
+		t.Fatalf("级联没有生成完整候选路径：%#v", result.Values["category"])
+	}
+	items, ok := result.Values["items"].([]any)
+	if !ok || len(items) != 1 || items[0].(map[string]any)["name"] != "已有明细" {
+		t.Fatalf("子表单行结构或人工值被破坏：%#v", result.Values["items"])
+	}
+	if reasons := formdata.Validate(template, result.Values, nil); len(reasons) != 0 {
+		t.Fatalf("级联和子表单生成结果未通过校验：%v", reasons)
+	}
+}
+
+// TestFormDataGeneratorKeepsFileUploadManualOnly 验证附件字段不伪造外部引用，只返回人工待补。
+func TestFormDataGeneratorKeepsFileUploadManualOnly(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{"type": "fileupload", "model": "attachment", "name": "附件", "options": map[string]any{"required": true}}}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 2})
+	if result.Pending != 1 || len(result.Unsupported) != 0 {
+		t.Fatalf("附件应进入人工待补而不是伪造或误报未知组件：%+v", result)
+	}
+}
+
+// TestFormDataGeneratorInventoriesUnknownTemplateCapabilities 验证规则盘点对未知组件和动态脚本明确阻断。
+func TestFormDataGeneratorInventoriesUnknownTemplateCapabilities(t *testing.T) {
+	inventory := formdata.InventoryTemplateRules(map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "unknown-widget", "model": "customValue", "options": map[string]any{"requestURL": "/api/options"},
+		"eventScript": "doSomethingDangerous()",
+	}}})
+	if inventory.ComponentTypes["custom"] != 1 || len(inventory.DataSources) != 1 {
+		t.Fatalf("模板规则盘点遗漏组件或数据源：%+v", inventory)
+	}
+	if len(inventory.NeedsAttention) == 0 {
+		t.Fatal("未知组件或动态脚本没有进入 needs_attention")
+	}
+}
+
 // TestFormDataGeneratorBindsDateRangeToDuration 验证唯一结构绑定按自然日含首尾同步日期，并拒绝手工改成不匹配区间。
 func TestFormDataGeneratorBindsDateRangeToDuration(t *testing.T) {
 	template := map[string]any{"list": []any{

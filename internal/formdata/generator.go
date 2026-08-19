@@ -65,10 +65,17 @@ type Field struct {
 	Default     any
 	Options     []any
 	OptionNames map[string]string
+	// OptionPaths 保存级联组件从根到叶子的真实候选路径，生成值必须使用完整路径数组。
+	OptionPaths [][]any
 	// OptionVirtualUsesValue 表示目标模板显式关闭 showLabel 时，__virtualName 使用选项值而不是展示标签。
 	OptionVirtualUsesValue bool
-	Unsupported            bool
-	El                     string
+	// CollectionRoot 标记字段位于子表单或表格行中，值读取和写入必须保持数组行结构。
+	CollectionRoot string
+	// ManualOnly 表示附件或外部对象需要真实页面人工提供，生成器不得伪造引用。
+	ManualOnly    bool
+	DataSourceURL string
+	Unsupported   bool
+	El            string
 }
 
 // IdentityNode 是当前账号在公司目录树中的节点上下文，用于自定义人员/公司组件自动填充。
@@ -87,9 +94,26 @@ type IdentityContext struct {
 	User       IdentityNode
 }
 
+// TemplateDataSource 描述模板字段声明的只读数据源，不执行请求也不猜测返回值。
+type TemplateDataSource struct {
+	FieldPath string
+	URL       string
+	Method    string
+}
+
+// TemplateRuleInventory 是全模板规则盘点结果；未分类能力必须进入 NeedsAttention。
+type TemplateRuleInventory struct {
+	Fields             []Field
+	Unsupported        []string
+	ComponentTypes     map[string]int
+	DataSources        []TemplateDataSource
+	ScriptCapabilities []string
+	NeedsAttention     []string
+}
+
 var supportedTypes = map[string]bool{
 	"input": true, "textarea": true, "number": true, "date": true, "time": true,
-	"select": true, "radio": true, "checkbox": true, "switch": true,
+	"select": true, "radio": true, "checkbox": true, "switch": true, "cascader": true,
 }
 
 var containerTypes = map[string]bool{
@@ -97,13 +121,71 @@ var containerTypes = map[string]bool{
 	"dialog": true, "card": true, "group": true, "tabs": true, "collapse": true,
 }
 
-// ParseTemplate 递归解析 list、grid/report 的行列、tableColumns 与嵌套容器，并识别前置 text 标签与可自动填充的信息选择组件。
+// ParseTemplate 递归解析所有 FormMaking 容器、标准组件、级联和信息选择组件；外部对象保留人工边界。
 func ParseTemplate(template map[string]any) ([]Field, []string) {
 	fields := make([]Field, 0)
 	unsupported := make([]string, 0)
 	pendingLabel := ""
-	collectList(anySlice(template["list"]), "", &pendingLabel, &fields, &unsupported)
+	collectList(anySlice(template["list"]), "", "", &pendingLabel, &fields, &unsupported)
 	return fields, uniqueSorted(unsupported)
+}
+
+// InventoryTemplateRules 递归盘点模板组件、数据源与脚本能力，统一提供给生成器和覆盖报告。
+func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
+	fields, unsupported := ParseTemplate(template)
+	result := TemplateRuleInventory{
+		Fields: fields, Unsupported: unsupported, ComponentTypes: map[string]int{},
+		DataSources: []TemplateDataSource{}, ScriptCapabilities: []string{}, NeedsAttention: []string{},
+	}
+	var walk func(any, string)
+	walk = func(raw any, path string) {
+		switch value := raw.(type) {
+		case []any:
+			for index, item := range value {
+				walk(item, fmt.Sprintf("%s[%d]", path, index))
+			}
+		case map[string]any:
+			typeName := strings.TrimSpace(anyText(value["type"]))
+			if typeName != "" {
+				result.ComponentTypes[typeName]++
+				if !supportedTypes[typeName] && !containerTypes[typeName] && typeName != "text" && typeName != "html" && typeName != "divider" && typeName != "blank" && typeName != "custom" {
+					result.NeedsAttention = append(result.NeedsAttention, "未知组件："+typeName)
+				}
+			}
+			options, _ := value["options"].(map[string]any)
+			if url := firstText(anyText(options["requestURL"]), anyText(options["url"])); url != "" {
+				result.DataSources = append(result.DataSources, TemplateDataSource{FieldPath: firstText(path, anyText(value["model"])), URL: url, Method: strings.ToUpper(firstText(anyText(options["requestMethod"]), anyText(options["method"]), "GET"))})
+			}
+			for key, child := range value {
+				if strings.Contains(strings.ToLower(key), "script") || key == "requestFunc" || key == "responseFunc" {
+					text := strings.TrimSpace(anyText(child))
+					if text != "" {
+						result.ScriptCapabilities = append(result.ScriptCapabilities, key)
+						if !safeScriptCapability(text) {
+							result.NeedsAttention = append(result.NeedsAttention, "动态脚本需要人工核对："+key)
+						}
+					}
+				}
+				walk(child, path+"."+key)
+			}
+		}
+	}
+	walk(template, "")
+	result.Unsupported = uniqueSorted(result.Unsupported)
+	result.NeedsAttention = uniqueSorted(result.NeedsAttention)
+	result.ScriptCapabilities = uniqueSorted(result.ScriptCapabilities)
+	return result
+}
+
+// safeScriptCapability 只认可显示隐藏、赋值和选项更新等可静态识别的脚本片段。
+func safeScriptCapability(script string) bool {
+	text := strings.ToLower(script)
+	for _, marker := range []string{"setvisible", "setvalue", "options", "visible", "hidden", "value"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // infoSelectKind 按目标组件字段命名约定识别选公司、选部门、选人、选岗位语义。
@@ -125,7 +207,7 @@ func infoSelectKind(model string) string {
 
 // collectList 深度优先收集字段；复杂组件仅记录缺口，绝不降级成普通文本值。
 // 目标模板的字段标题是独立 text 组件，这里把最近的前置标题作为字段展示名称。
-func collectList(list []any, prefix string, pendingLabel *string, fields *[]Field, unsupported *[]string) {
+func collectList(list []any, prefix, collectionRoot string, pendingLabel *string, fields *[]Field, unsupported *[]string) {
 	for _, raw := range list {
 		component, ok := raw.(map[string]any)
 		if !ok {
@@ -136,6 +218,8 @@ func collectList(list []any, prefix string, pendingLabel *string, fields *[]Fiel
 		name := strings.TrimSpace(anyText(component["name"]))
 		el := strings.TrimSpace(anyText(component["el"]))
 		path := joinPath(prefix, model)
+		options, _ := component["options"].(map[string]any)
+		dataSourceURL := firstText(anyText(options["requestURL"]), anyText(options["url"]))
 		switch {
 		case typeName == "text" && model == "" && name != "":
 			*pendingLabel = name
@@ -143,13 +227,24 @@ func collectList(list []any, prefix string, pendingLabel *string, fields *[]Fiel
 			// 带 model 的文本（审批意见占位等）不是字段标题，避免标题串到后续字段。
 			*pendingLabel = ""
 		case supportedTypes[typeName] && model != "":
-			options, _ := component["options"].(map[string]any)
 			values, names := optionValues(options["options"])
+			optionPaths := [][]any(nil)
+			if typeName == "cascader" {
+				values, names, optionPaths = cascaderOptionValues(options["options"])
+			}
 			_, hasShowLabel := options["showLabel"]
 			*fields = append(*fields, Field{
 				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["type"])),
 				Required: anyBool(options["required"]), Default: options["defaultValue"],
-				Options: values, OptionNames: names, OptionVirtualUsesValue: hasShowLabel && !anyBool(options["showLabel"]), El: el,
+				Options: values, OptionNames: names, OptionPaths: optionPaths, OptionVirtualUsesValue: hasShowLabel && !anyBool(options["showLabel"]),
+				CollectionRoot: collectionRoot, DataSourceURL: dataSourceURL, El: el,
+			})
+			*pendingLabel = ""
+		case typeName == "fileupload" && model != "":
+			*fields = append(*fields, Field{
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: typeName, Mode: strings.TrimSpace(anyText(options["listType"])),
+				Required: anyBool(options["required"]), Default: options["defaultValue"], CollectionRoot: collectionRoot,
+				ManualOnly: true, DataSourceURL: dataSourceURL, El: el,
 			})
 			*pendingLabel = ""
 		case typeName == "custom" && el == "custome-info-select" && model != "":
@@ -160,24 +255,25 @@ func collectList(list []any, prefix string, pendingLabel *string, fields *[]Fiel
 				Required: anyBool(options["required"]), Default: options["defaultValue"], El: el,
 			})
 			*pendingLabel = ""
-		case model != "" && (typeName == "subform" || typeName == "table"):
-			// 明细/子表单的 values 是数组行结构，当前基础生成器不能把它当成点路径对象伪造。
-			*unsupported = append(*unsupported, firstText(*pendingLabel, name, model)+"："+typeName+" 需要独立明细数据适配")
-			*pendingLabel = ""
 		case model != "" && !containerTypes[typeName] && typeName != "html" && typeName != "divider" && typeName != "blank":
 			// 用 model 作主标识，避免多个同名自定义组件被去重后人工待填计数失真。
 			*unsupported = append(*unsupported, firstText(model, *pendingLabel, name)+"："+firstText(typeName, "未知组件"))
 			*pendingLabel = ""
 		}
 		childPrefix := prefix
+		childCollectionRoot := collectionRoot
 		if (typeName == "subform" || typeName == "table" || typeName == "group") && model != "" {
 			childPrefix = path
+			if typeName == "subform" || typeName == "table" {
+				childCollectionRoot = path
+				childPrefix += "[]"
+			}
 		}
-		collectList(anySlice(component["list"]), childPrefix, pendingLabel, fields, unsupported)
-		collectList(anySlice(component["tableColumns"]), childPrefix, pendingLabel, fields, unsupported)
+		collectList(anySlice(component["list"]), childPrefix, childCollectionRoot, pendingLabel, fields, unsupported)
+		collectList(anySlice(component["tableColumns"]), childPrefix, childCollectionRoot, pendingLabel, fields, unsupported)
 		for _, column := range anySlice(component["columns"]) {
 			if item, ok := column.(map[string]any); ok {
-				collectList(anySlice(item["list"]), childPrefix, pendingLabel, fields, unsupported)
+				collectList(anySlice(item["list"]), childPrefix, childCollectionRoot, pendingLabel, fields, unsupported)
 			}
 		}
 		for _, row := range anySlice(component["rows"]) {
@@ -185,10 +281,10 @@ func collectList(list []any, prefix string, pendingLabel *string, fields *[]Fiel
 			if !ok {
 				continue
 			}
-			collectList(anySlice(item["list"]), childPrefix, pendingLabel, fields, unsupported)
+			collectList(anySlice(item["list"]), childPrefix, childCollectionRoot, pendingLabel, fields, unsupported)
 			for _, column := range anySlice(item["columns"]) {
 				if nested, ok := column.(map[string]any); ok {
-					collectList(anySlice(nested["list"]), childPrefix, pendingLabel, fields, unsupported)
+					collectList(anySlice(nested["list"]), childPrefix, childCollectionRoot, pendingLabel, fields, unsupported)
 				}
 			}
 		}
@@ -215,17 +311,23 @@ func Generate(input GenerateInput) GenerateResult {
 		if manual[field.Path] {
 			continue
 		}
+		if field.ManualOnly {
+			if field.Required && emptyFieldValue(values, field) {
+				result.Pending++
+			}
+			continue
+		}
 		if input.ProtectedPaths[field.Path] {
 			// 已存在的路径条件字段只能由约束投影调整，不能被普通样本或随机值覆盖。
-			if _, exists := getPath(values, field.Path); exists {
+			if _, exists := getFieldValue(values, field); exists {
 				manual[field.Path] = true
 				continue
 			}
 		}
 		if input.EditablePaths != nil && !input.EditablePaths[field.Path] {
 			// 目标运行时会禁用未授权字段；生成器只允许保留已有值或模板默认值，不能替用户写入样本/兜底值。
-			if _, exists := getPath(values, field.Path); !exists && usableValue(field, field.Default) && !emptyValue(field.Default) {
-				setPath(values, field.Path, cloneValue(field.Default))
+			if _, exists := getFieldValue(values, field); !exists && usableValue(field, field.Default) && !emptyValue(field.Default) {
+				setFieldValue(values, field, cloneValue(field.Default))
 				generated = append(generated, field.Path)
 				result.Defaults++
 			}
@@ -235,7 +337,7 @@ func Generate(input GenerateInput) GenerateResult {
 		if field.Type == "infoSelect" {
 			// 选公司/部门/人员优先使用当前账号在真实目录树中的节点，无法解析时保留已有值并计入人工待填。
 			if value, ok := infoSelectValue(field.Mode, input.Identity); ok {
-				setPath(values, field.Path, value)
+				setFieldValue(values, field, value)
 				generated = append(generated, field.Path)
 				result.Identity++
 			} else if field.Required {
@@ -244,19 +346,19 @@ func Generate(input GenerateInput) GenerateResult {
 			continue
 		}
 		if sample, ok := sampleValue(input.Samples, field, int(seed)); ok {
-			setPath(values, field.Path, sample)
+			setFieldValue(values, field, sample)
 			generated = append(generated, field.Path)
 			result.Recent++
 			continue
 		}
 		if usableValue(field, field.Default) && !emptyValue(field.Default) {
-			setPath(values, field.Path, cloneValue(field.Default))
+			setFieldValue(values, field, cloneValue(field.Default))
 			generated = append(generated, field.Path)
 			result.Defaults++
 			continue
 		}
 		if generatedValue, ok := safeFallback(field, input.Initiator, rng); ok {
-			setPath(values, field.Path, generatedValue)
+			setFieldValue(values, field, generatedValue)
 			generated = append(generated, field.Path)
 			result.Fallback++
 			continue
@@ -334,7 +436,7 @@ func ValidateEditable(template, values map[string]any, constraints []Constraint,
 	errors := make([]string, 0)
 	// 未被基础生成器识别的组件已经由真实运行时校验；服务端这里只复验可证明的基础字段与路径条件。
 	for _, field := range fields {
-		value, exists := getPath(values, field.Path)
+		value, exists := getFieldValue(values, field)
 		required := field.Required && (editablePaths == nil || editablePaths[field.Path])
 		if required && (!exists || emptyValue(value)) {
 			errors = append(errors, field.Name+"：必填值为空")
@@ -383,7 +485,7 @@ func TemplateVersion(template map[string]any) string {
 func sampleValue(samples []map[string]any, field Field, offset int) (any, bool) {
 	for index := range samples {
 		sample := samples[(index+offset)%len(samples)]
-		if value, ok := getPath(sample, field.Path); ok && !emptyValue(value) && usableValue(field, value) {
+		if value, ok := getFieldValue(sample, field); ok && !emptyValue(value) && usableValue(field, value) {
 			return cloneValue(value), true
 		}
 	}
@@ -460,6 +562,10 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 	case "select", "radio":
 		if len(field.Options) > 0 {
 			return cloneValue(field.Options[rng.Intn(len(field.Options))]), true
+		}
+	case "cascader":
+		if len(field.OptionPaths) > 0 {
+			return cloneValue(field.OptionPaths[rng.Intn(len(field.OptionPaths))]), true
 		}
 	case "checkbox":
 		if len(field.Options) > 0 {
@@ -721,6 +827,20 @@ func usableValue(field Field, value any) bool {
 		}
 	case "select", "radio":
 		return len(field.Options) == 0 || containsValue(field.Options, value)
+	case "cascader":
+		list, ok := value.([]any)
+		if !ok || len(list) == 0 {
+			return false
+		}
+		if len(field.OptionPaths) == 0 {
+			return true
+		}
+		for _, path := range field.OptionPaths {
+			if equalValue(path, list) {
+				return true
+			}
+		}
+		return false
 	case "checkbox":
 		list, ok := value.([]any)
 		if !ok {
@@ -734,6 +854,9 @@ func usableValue(field Field, value any) bool {
 		return true
 	case "switch":
 		_, ok := value.(bool)
+		return ok
+	case "fileupload":
+		_, ok := value.([]any)
 		return ok
 	default:
 		return false
@@ -762,13 +885,75 @@ func optionValues(raw any) ([]any, map[string]string) {
 	return values, names
 }
 
-// getPath 读取点分隔对象路径；数组与复杂明细由真实运行时维护，不在生成器中伪造。
+// cascaderOptionValues 展平真实级联候选，同时保留从根到叶子的完整值路径。
+func cascaderOptionValues(raw any) ([]any, map[string]string, [][]any) {
+	values := make([]any, 0)
+	names := make(map[string]string)
+	paths := make([][]any, 0)
+	var walk func([]any, []any)
+	walk = func(items []any, prefix []any) {
+		for _, item := range items {
+			node, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			value := node["value"]
+			if value == nil {
+				value = node["id"]
+			}
+			if value == nil {
+				continue
+			}
+			current := append(append([]any{}, prefix...), value)
+			children := anySlice(node["children"])
+			if len(children) > 0 {
+				walk(children, current)
+				continue
+			}
+			values = append(values, value)
+			paths = append(paths, current)
+			names[fmt.Sprint(value)] = firstText(anyText(node["label"]), anyText(node["name"]), fmt.Sprint(value))
+		}
+	}
+	walk(anySlice(raw), nil)
+	return values, names, paths
+}
+
+// getFieldValue 读取普通字段或子表单首行字段；集合值只处理真实已有首行，不伪造外部对象。
+func getFieldValue(values map[string]any, field Field) (any, bool) {
+	if !strings.Contains(field.Path, "[]") {
+		return getPath(values, field.Path)
+	}
+	return getPath(values, field.Path)
+}
+
+// setFieldValue 写入普通字段或子表单首行字段，保持 FormMaking 数组行结构。
+func setFieldValue(values map[string]any, field Field, value any) {
+	setPath(values, field.Path, value)
+}
+
+// emptyFieldValue 判断字段在集合路径中是否缺失，供附件和子表单保持人工边界。
+func emptyFieldValue(values map[string]any, field Field) bool {
+	value, exists := getFieldValue(values, field)
+	return !exists || emptyValue(value)
+}
+
+// getPath 读取点分隔对象路径并支持 [] 标记的首个真实数组行。
 func getPath(values map[string]any, path string) (any, bool) {
 	current := any(values)
 	for _, part := range strings.Split(strings.TrimSpace(path), ".") {
+		if strings.HasSuffix(part, "[]") {
+			part = strings.TrimSuffix(part, "[]")
+		}
 		object, ok := current.(map[string]any)
 		if !ok {
-			return nil, false
+			if list, listOK := current.([]any); listOK && len(list) > 0 {
+				current = list[0]
+				object, ok = current.(map[string]any)
+			}
+			if !ok {
+				return nil, false
+			}
 		}
 		current, ok = object[part]
 		if !ok {
@@ -782,8 +967,23 @@ func getPath(values map[string]any, path string) (any, bool) {
 func setPath(values map[string]any, path string, value any) {
 	parts := strings.Split(strings.TrimSpace(path), ".")
 	current := values
-	for _, part := range parts[:len(parts)-1] {
+	for _, rawPart := range parts[:len(parts)-1] {
+		part := strings.TrimSuffix(rawPart, "[]")
 		next, ok := current[part].(map[string]any)
+		if strings.HasSuffix(rawPart, "[]") {
+			list, listOK := current[part].([]any)
+			if !listOK || len(list) == 0 {
+				list = []any{map[string]any{}}
+				current[part] = list
+			}
+			row, rowOK := list[0].(map[string]any)
+			if !rowOK {
+				row = map[string]any{}
+				list[0] = row
+			}
+			current = row
+			continue
+		}
 		if !ok {
 			next = make(map[string]any)
 			current[part] = next
@@ -791,7 +991,7 @@ func setPath(values map[string]any, path string, value any) {
 		current = next
 	}
 	if len(parts) > 0 && parts[len(parts)-1] != "" {
-		current[parts[len(parts)-1]] = value
+		current[strings.TrimSuffix(parts[len(parts)-1], "[]")] = value
 	}
 }
 
@@ -821,7 +1021,12 @@ func anySlice(value any) []any {
 }
 
 // anyText 将模板标量转为去空白字符串。
-func anyText(value any) string { return strings.TrimSpace(fmt.Sprint(value)) }
+func anyText(value any) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
 
 // anyBool 读取模板布尔值。
 func anyBool(value any) bool {
