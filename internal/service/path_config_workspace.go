@@ -761,18 +761,41 @@ func (s *PathConfigService) deriveStoredStatus(ctx context.Context, planID uint6
 	return derivePathConfigurationStatus(configuration)
 }
 
-// runtimeTemplate 只解析单一完整模板；组件兼容性必须以真实 rsh-flow-components 注册表为准。
+// runtimeTemplate 合并同一流程关联的全部 FormMaking 模板，重复字段模型和坏模板进入人工核对而不静默丢表单。
 func runtimeTemplate(forms []target.FormRuntimeTemplate) (map[string]any, []string) {
 	if len(forms) == 0 {
 		return map[string]any{"list": []any{}, "config": map[string]any{}}, nil
 	}
 	unsupported := make([]string, 0)
-	if len(forms) > 1 {
-		unsupported = append(unsupported, "当前路径关联多个表单，尚未建立独立多表单适配")
-	}
-	template := make(map[string]any)
-	if err := json.Unmarshal([]byte(forms[0].TemplateData), &template); err != nil {
-		return map[string]any{"list": []any{}, "config": map[string]any{}}, append(unsupported, "目标 FormMaking 模板无法解析")
+	template := map[string]any{"list": []any{}, "config": map[string]any{}}
+	seenModels := map[string]bool{}
+	for index, form := range forms {
+		fragment := make(map[string]any)
+		if err := json.Unmarshal([]byte(form.TemplateData), &fragment); err != nil {
+			unsupported = append(unsupported, fmt.Sprintf("第 %d 个 FormMaking 模板无法解析", index+1))
+			continue
+		}
+		list, ok := fragment["list"].([]any)
+		if !ok {
+			unsupported = append(unsupported, fmt.Sprintf("第 %d 个 FormMaking 模板缺少字段列表", index+1))
+			continue
+		}
+		template["list"] = append(template["list"].([]any), list...)
+		if index == 0 {
+			if config, configOK := fragment["config"].(map[string]any); configOK {
+				template["config"] = config
+			}
+		}
+		fields, _ := formdata.ParseTemplate(fragment)
+		for _, field := range fields {
+			if field.Path == "" || strings.Contains(field.Path, "[]") {
+				continue
+			}
+			if seenModels[field.Path] {
+				unsupported = append(unsupported, "多个表单包含重复字段模型「"+field.Path+"」，需要人工核对")
+			}
+			seenModels[field.Path] = true
+		}
 	}
 	return template, uniquePublicStrings(unsupported)
 }
