@@ -1,6 +1,6 @@
 # F-009 批量路径准备与智能表单生成
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的路径准备、F-007 表单条件绑定与 F-008 节点动作边界
 - 架构依据：`docs/ARCHITECTURE.md` 的路径配置、表单运行时与 MySQL 持久化边界
 - 计划确认时间：2026-08-18
