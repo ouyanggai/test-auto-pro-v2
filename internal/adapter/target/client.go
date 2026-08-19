@@ -679,6 +679,19 @@ func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, 
 	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FormFields: fields, Forms: runtimeForms}, nil
 }
 
+// ReadTemplateRuleSource 读取规则盘点所需的流程树和关联表单正文，不额外解析审批身份目录。
+func (c *Client) ReadTemplateRuleSource(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, []FormRuntimeTemplate, error) {
+	tree, forms, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	if err != nil {
+		return nil, nil, err
+	}
+	_, runtimeForms, err := c.readFormFieldDetails(ctx, active, "/web/formTemplateApi/findById", forms)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tree, runtimeForms, nil
+}
+
 // ReadProxyConfiguration 读取代理树、实例代理表单字段详情和实例当前表单数据，供已发/待发路径配置使用。
 func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, proxyID string, formProxyIDs []string, instanceID string) (PathConfigurationSnapshot, error) {
 	tree, _, flowCode, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)

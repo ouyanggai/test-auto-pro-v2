@@ -115,13 +115,37 @@ type TemplateRuleInventory struct {
 
 // TemplateCoverageReport 汇总一批真实模板的组件、数据源、脚本和未分类能力覆盖情况。
 type TemplateCoverageReport struct {
-	TemplateCount           int
-	ComponentTypes          map[string]int
-	DataSourceCount         int
-	ScriptCapabilities      map[string]int
-	NeedsAttentionTemplates int
-	NeedsAttention          []string
-	UnsupportedTemplates    int
+	TemplateCount           int            `json:"templateCount"`
+	ScannedTemplateCount    int            `json:"scannedTemplateCount"`
+	TemplateTypeCount       int            `json:"templateTypeCount"`
+	FlowCodeCount           int            `json:"flowCodeCount"`
+	TemplateTypes           map[string]int `json:"templateTypes"`
+	ComponentTypes          map[string]int `json:"componentTypes"`
+	ConditionOperators      map[string]int `json:"conditionOperators"`
+	ConditionLogic          map[string]int `json:"conditionLogic"`
+	FieldComparisonCount    int            `json:"fieldComparisonCount"`
+	DataSourceCount         int            `json:"dataSourceCount"`
+	DataSourceMethods       map[string]int `json:"dataSourceMethods"`
+	ScriptCapabilities      map[string]int `json:"scriptCapabilities"`
+	NeedsAttentionTemplates int            `json:"needsAttentionTemplates"`
+	NeedsAttention          []string       `json:"needsAttention"`
+	UnsupportedTemplates    int            `json:"unsupportedTemplates"`
+	FailedTemplates         int            `json:"failedTemplates"`
+	Complete                bool           `json:"complete"`
+	flowCodes               map[string]struct{}
+	attention               map[string]struct{}
+}
+
+// TemplateCoverageInput 汇总单个目标模板的列表元数据、表单规则和流程条件能力。
+type TemplateCoverageInput struct {
+	TemplateType         string
+	FlowCode             string
+	Template             map[string]any
+	MergeIssues          []string
+	ConditionOperators   []string
+	ConditionLogic       []string
+	FieldComparisonCount int
+	ConditionIssues      []string
 }
 
 var supportedTypes = map[string]bool{
@@ -197,37 +221,156 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 	return result
 }
 
-// BuildTemplateCoverageReport 聚合真实模板规则盘点，不保存模板内容也不把未知能力误报为已覆盖。
-func BuildTemplateCoverageReport(templates []map[string]any) TemplateCoverageReport {
-	report := TemplateCoverageReport{
-		TemplateCount: templatesCount(templates), ComponentTypes: map[string]int{},
-		ScriptCapabilities: map[string]int{}, NeedsAttention: []string{},
+// NewTemplateCoverageReport 创建只保留轻量计数的覆盖报告，调用方可以逐页释放完整模板内容。
+func NewTemplateCoverageReport() TemplateCoverageReport {
+	return TemplateCoverageReport{
+		TemplateTypes: map[string]int{}, ComponentTypes: map[string]int{}, ConditionOperators: map[string]int{}, ConditionLogic: map[string]int{},
+		DataSourceMethods: map[string]int{}, ScriptCapabilities: map[string]int{},
+		NeedsAttention: []string{}, flowCodes: map[string]struct{}{}, attention: map[string]struct{}{},
 	}
-	seenAttention := map[string]bool{}
+}
+
+// AddTemplateCoverage 把一个真实模板及其元数据增量计入覆盖报告，合并问题会与规则盘点问题使用同一阻断口径。
+func AddTemplateCoverage(report *TemplateCoverageReport, input TemplateCoverageInput) {
+	ensureTemplateCoverageReport(report)
+	issues := recordTemplateCoverageMetadata(report, input.TemplateType, input.FlowCode)
+	issues = append(issues, input.MergeIssues...)
+	issues = append(issues, input.ConditionIssues...)
+	for _, operator := range input.ConditionOperators {
+		report.ConditionOperators[operator]++
+	}
+	for _, logic := range input.ConditionLogic {
+		report.ConditionLogic[logic]++
+	}
+	report.FieldComparisonCount += input.FieldComparisonCount
+	addTemplateCoverageInventory(report, input.Template, issues)
+}
+
+// AddTemplateCoverageFailure 记录无法读取详情的模板而不中断其他模板，报告最终必须保持不完整。
+func AddTemplateCoverageFailure(report *TemplateCoverageReport, templateType, flowCode, reason string) {
+	ensureTemplateCoverageReport(report)
+	report.TemplateCount++
+	report.FailedTemplates++
+	report.NeedsAttentionTemplates++
+	issues := recordTemplateCoverageMetadata(report, templateType, flowCode)
+	issues = append(issues, firstText(strings.TrimSpace(reason), "模板详情读取失败"))
+	appendTemplateCoverageIssues(report, issues)
+}
+
+// FinalizeTemplateCoverageReport 根据目标分页总数收口完整性，数量不一致时不能把局部扫描标成全模板覆盖。
+func FinalizeTemplateCoverageReport(report *TemplateCoverageReport, expectedTemplates int, paginationComplete bool) {
+	ensureTemplateCoverageReport(report)
+	report.TemplateTypeCount = len(report.TemplateTypes)
+	report.FlowCodeCount = len(report.flowCodes)
+	if expectedTemplates < 0 {
+		expectedTemplates = 0
+	}
+	if report.TemplateCount != expectedTemplates {
+		appendTemplateCoverageIssues(report, []string{"目标模板分页数量与汇总不一致"})
+	}
+	if !paginationComplete {
+		appendTemplateCoverageIssues(report, []string{"目标模板分页未完整读取"})
+	}
+	report.Complete = paginationComplete && report.FailedTemplates == 0 && report.TemplateCount == expectedTemplates && report.ScannedTemplateCount == expectedTemplates
+}
+
+// BuildTemplateCoverageReport 聚合已在内存中的模板规则，主要供求解器单元测试复用。
+func BuildTemplateCoverageReport(templates []map[string]any) TemplateCoverageReport {
+	report := NewTemplateCoverageReport()
 	for _, template := range templates {
-		inventory := InventoryTemplateRules(template)
-		for componentType, count := range inventory.ComponentTypes {
-			report.ComponentTypes[componentType] += count
+		// 内存聚合没有目标列表元数据，不把测试输入缺失的类型和流程编码误报为模板问题。
+		addTemplateCoverageInventory(&report, template, nil)
+	}
+	FinalizeTemplateCoverageReport(&report, templatesCount(templates), true)
+	return report
+}
+
+// addTemplateCoverageInventory 仅累计模板规则，供不携带目标列表元数据的内存聚合使用。
+func addTemplateCoverageInventory(report *TemplateCoverageReport, template map[string]any, mergeIssues []string) {
+	ensureTemplateCoverageReport(report)
+	report.TemplateCount++
+	report.ScannedTemplateCount++
+	inventory := InventoryTemplateRules(template)
+	for componentType, count := range inventory.ComponentTypes {
+		report.ComponentTypes[componentType] += count
+	}
+	report.DataSourceCount += len(inventory.DataSources)
+	for _, dataSource := range inventory.DataSources {
+		report.DataSourceMethods[dataSource.Method]++
+	}
+	for _, capability := range inventory.ScriptCapabilities {
+		report.ScriptCapabilities[capability]++
+	}
+	issues := append(append(append([]string{}, mergeIssues...), inventory.NeedsAttention...), inventory.Unsupported...)
+	if len(uniqueSorted(issues)) > 0 {
+		report.NeedsAttentionTemplates++
+	}
+	if len(inventory.Unsupported) > 0 {
+		report.UnsupportedTemplates++
+	}
+	appendTemplateCoverageIssues(report, issues)
+}
+
+// ensureTemplateCoverageReport 允许零值报告安全累计，同时保持所有公开集合稳定输出为空对象或数组。
+func ensureTemplateCoverageReport(report *TemplateCoverageReport) {
+	if report.TemplateTypes == nil {
+		report.TemplateTypes = map[string]int{}
+	}
+	if report.ComponentTypes == nil {
+		report.ComponentTypes = map[string]int{}
+	}
+	if report.ConditionOperators == nil {
+		report.ConditionOperators = map[string]int{}
+	}
+	if report.ConditionLogic == nil {
+		report.ConditionLogic = map[string]int{}
+	}
+	if report.DataSourceMethods == nil {
+		report.DataSourceMethods = map[string]int{}
+	}
+	if report.ScriptCapabilities == nil {
+		report.ScriptCapabilities = map[string]int{}
+	}
+	if report.NeedsAttention == nil {
+		report.NeedsAttention = []string{}
+	}
+	if report.flowCodes == nil {
+		report.flowCodes = map[string]struct{}{}
+	}
+	if report.attention == nil {
+		report.attention = map[string]struct{}{}
+		for _, issue := range report.NeedsAttention {
+			report.attention[issue] = struct{}{}
 		}
-		report.DataSourceCount += len(inventory.DataSources)
-		for _, capability := range inventory.ScriptCapabilities {
-			report.ScriptCapabilities[capability]++
+	}
+}
+
+// recordTemplateCoverageMetadata 统计真实模板类型和流程编码，缺失元数据直接进入人工核对。
+func recordTemplateCoverageMetadata(report *TemplateCoverageReport, templateType, flowCode string) []string {
+	issues := make([]string, 0, 2)
+	if templateType = strings.TrimSpace(templateType); templateType == "" {
+		issues = append(issues, "模板类型缺失")
+	} else {
+		report.TemplateTypes[templateType]++
+	}
+	if flowCode = strings.TrimSpace(flowCode); flowCode == "" {
+		issues = append(issues, "流程编码缺失")
+	} else {
+		report.flowCodes[flowCode] = struct{}{}
+	}
+	return issues
+}
+
+// appendTemplateCoverageIssues 去重保存中文问题类别，不保留模板正文、内部标识或目标原始报文。
+func appendTemplateCoverageIssues(report *TemplateCoverageReport, issues []string) {
+	for _, issue := range uniqueSorted(issues) {
+		if _, exists := report.attention[issue]; exists {
+			continue
 		}
-		if len(inventory.NeedsAttention) > 0 {
-			report.NeedsAttentionTemplates++
-		}
-		if len(inventory.Unsupported) > 0 {
-			report.UnsupportedTemplates++
-		}
-		for _, item := range append(append([]string{}, inventory.NeedsAttention...), inventory.Unsupported...) {
-			if !seenAttention[item] {
-				seenAttention[item] = true
-				report.NeedsAttention = append(report.NeedsAttention, item)
-			}
-		}
+		report.attention[issue] = struct{}{}
+		report.NeedsAttention = append(report.NeedsAttention, issue)
 	}
 	report.NeedsAttention = uniqueSorted(report.NeedsAttention)
-	return report
 }
 
 // templatesCount 保留报告输入的真实模板数量，包括空模板，避免把目标分页结果静默压缩。

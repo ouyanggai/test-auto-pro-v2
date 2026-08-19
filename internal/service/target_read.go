@@ -10,8 +10,11 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/formdata"
 	"test-auto-pro-v2/internal/session"
 )
+
+const templateCoveragePageSize = 50
 
 var (
 	ErrTargetFlowNotFound        = errors.New("目标流程当前不可读取")
@@ -85,6 +88,106 @@ func (s *TargetReadService) Templates(ctx context.Context, account, query string
 		return err
 	})
 	return result, err
+}
+
+// TemplateCoverage 分页读取账号当前可见的全部模板并增量盘点规则，不在服务端累计完整模板正文。
+func (s *TargetReadService) TemplateCoverage(ctx context.Context, account string) (formdata.TemplateCoverageReport, error) {
+	if err := s.ready(); err != nil {
+		return formdata.TemplateCoverageReport{}, err
+	}
+	var result formdata.TemplateCoverageReport
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		report := formdata.NewTemplateCoverageReport()
+		expectedTemplates := -1
+		paginationComplete := true
+		for page := 1; ; page++ {
+			pageResult, readErr := s.client.ListTemplates(callContext, active, "", page, templateCoveragePageSize)
+			if readErr != nil {
+				return readErr
+			}
+			if expectedTemplates < 0 {
+				expectedTemplates = pageResult.Total
+			} else if pageResult.Total != expectedTemplates {
+				paginationComplete = false
+			}
+			// 目标声明仍有下一页却返回空页时立即停止，避免异常分页造成无界请求。
+			if len(pageResult.Items) == 0 && pageResult.HasMore {
+				paginationComplete = false
+				break
+			}
+			for _, item := range pageResult.Items {
+				tree, forms, detailErr := s.client.ReadTemplateRuleSource(callContext, active, item.ID)
+				if target.IsKind(detailErr, target.ErrorSessionExpired) {
+					return detailErr
+				}
+				if detailErr != nil {
+					formdata.AddTemplateCoverageFailure(&report, item.TypeName, item.Code, templateCoverageFailureReason(detailErr))
+					continue
+				}
+				template, mergeIssues := runtimeTemplate(forms)
+				operators, logic, fieldComparisons, conditionIssues := templateConditionRuleCoverage(tree)
+				formdata.AddTemplateCoverage(&report, formdata.TemplateCoverageInput{
+					TemplateType: item.TypeName, FlowCode: item.Code, Template: template, MergeIssues: mergeIssues,
+					ConditionOperators: operators, ConditionLogic: logic, FieldComparisonCount: fieldComparisons, ConditionIssues: conditionIssues,
+				})
+			}
+			if !pageResult.HasMore {
+				break
+			}
+		}
+		formdata.FinalizeTemplateCoverageReport(&report, expectedTemplates, paginationComplete)
+		result = report
+		return nil
+	})
+	return result, err
+}
+
+// templateConditionRuleCoverage 递归提取流程条件能力，只有求解器已验证的比较和连接方式计入覆盖。
+func templateConditionRuleCoverage(tree *target.FlowNodeTemplate) ([]string, []string, int, []string) {
+	operators := make([]string, 0)
+	logic := make([]string, 0)
+	fieldComparisons := 0
+	issues := make([]string, 0)
+	visitTargetTree(tree, map[string]bool{}, func(node *target.FlowNodeTemplate) {
+		branches := append(append([]target.FlowBranchTemplate{}, node.ConditionNodes...), node.ParallelNodes...)
+		for _, branch := range branches {
+			for _, condition := range branch.Conditions {
+				operator := normalizeConditionJudge(condition.Judge)
+				switch operator {
+				case "eq", "neq", "gt", "gte", "lt", "lte", "contains", "in":
+					operators = append(operators, operator)
+				default:
+					issues = append(issues, "未知流程条件比较方式")
+				}
+				if strings.TrimSpace(condition.FieldB) != "" {
+					fieldComparisons++
+				}
+				conditionLogic := strings.ToLower(strings.TrimSpace(condition.ConditionType))
+				if conditionLogic == "" {
+					continue
+				}
+				switch conditionLogic {
+				case "and", "or":
+					logic = append(logic, conditionLogic)
+				default:
+					issues = append(issues, "未知流程条件连接方式")
+				}
+			}
+		}
+	})
+	return operators, logic, fieldComparisons, uniquePublicStrings(issues)
+}
+
+// templateCoverageFailureReason 把单模板详情故障收敛为稳定中文类别，不泄露目标原始响应。
+func templateCoverageFailureReason(err error) string {
+	switch {
+	case target.IsKind(err, target.ErrorResponseInvalid):
+		return "模板详情结构无法识别"
+	case target.IsKind(err, target.ErrorTimeout):
+		return "模板详情读取超时"
+	default:
+		return "模板详情暂时无法读取"
+	}
 }
 
 // Submitted 分页读取账号已发流程实例。

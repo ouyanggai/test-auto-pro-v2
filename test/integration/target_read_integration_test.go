@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +45,7 @@ type fakeTarget struct {
 	directoryAudit  bool
 	directoryFail   bool
 	directoryFlags  []string
+	coverageTotal   int
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
@@ -196,6 +199,27 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	id, _ := data["id"].(string)
+	if f.coverageTotal > 0 && strings.HasPrefix(id, "coverage-template-") {
+		index, err := strconv.Atoi(strings.TrimPrefix(id, "coverage-template-"))
+		if err != nil || index < 0 || index >= f.coverageTotal {
+			f.t.Errorf("覆盖盘点读取了非法模板 ID：%s", id)
+		}
+		f.recordGraphCall(callName + ":" + id)
+		judge := "="
+		if index == f.coverageTotal-1 {
+			judge = "custom-judge"
+		}
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
+			"flowCode": fmt.Sprintf("FLOW-%03d", index),
+			"flowNodeTemplate": map[string]any{"id": "condition", "type": "condition", "conditionNodes": []any{map[string]any{
+				"id": "branch", "sort": 1, "conditionList": []any{map[string]any{
+					"fieldaName": "field", "fieldbName": "otherField", "judge": judge, "conditionType": "and",
+				}},
+			}}},
+			"formTemplateList": []any{map[string]any{"id": fmt.Sprintf("coverage-form-%d", index), "name": "覆盖表单"}},
+		}})
+		return
+	}
 	if expectedID != "" && id != expectedID {
 		f.t.Error("模板详情没有使用保存的模板 ID")
 	}
@@ -260,6 +284,27 @@ func (f *fakeTarget) handleFormDetail(response http.ResponseWriter, request *htt
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	id, _ := data["id"].(string)
+	if f.coverageTotal > 0 && strings.HasPrefix(id, "coverage-form-") {
+		index, err := strconv.Atoi(strings.TrimPrefix(id, "coverage-form-"))
+		if err != nil || index < 0 || index >= f.coverageTotal {
+			f.t.Errorf("覆盖盘点读取了非法表单 ID：%s", id)
+		}
+		f.recordGraphCall("form-detail:" + id)
+		f.mu.Lock()
+		f.formCount++
+		f.mu.Unlock()
+		componentType := "input"
+		if index == f.coverageTotal-1 {
+			componentType = "vendor-widget"
+		}
+		templateData, _ := json.Marshal(map[string]any{"list": []any{map[string]any{
+			"type": componentType, "model": fmt.Sprintf("field_%d", index), "name": "覆盖字段", "options": map[string]any{},
+		}}})
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
+			"id": id, "name": formName, "fieldsTemplateList": []any{}, "templateData": string(templateData),
+		}})
+		return
+	}
 	if expectedID != "" && id != expectedID {
 		f.t.Errorf("模板表单详情 ID 不正确：%s", id)
 	}
@@ -407,6 +452,32 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	if f.coverageTotal > 0 && !hasIDs {
+		page, _ := body["pages"].(float64)
+		pageSize, _ := body["size"].(float64)
+		current, size := int(page), int(pageSize)
+		if current < 1 || size < 1 {
+			f.t.Error("覆盖盘点没有使用合法分页参数")
+		}
+		start := (current - 1) * size
+		end := start + size
+		if end > f.coverageTotal {
+			end = f.coverageTotal
+		}
+		items := make([]any, 0, size)
+		for index := start; index < end; index++ {
+			items = append(items, map[string]any{
+				"id": fmt.Sprintf("coverage-template-%d", index), "flowName": fmt.Sprintf("覆盖流程 %d", index+1),
+				"code": fmt.Sprintf("FLOW-%03d", index), "typeName": fmt.Sprintf("模板类型-%02d", index%54),
+				"flowStatus": "enable", "formExist": "withForm", "formTemplateList": []any{map[string]any{"id": fmt.Sprintf("coverage-form-%d", index)}},
+			})
+		}
+		pages := (f.coverageTotal + size - 1) / size
+		writeTargetJSON(response, map[string]any{
+			"isSuccess": true, "data": items, "total": f.coverageTotal, "pages": pages, "current": current, "size": size,
+		})
+		return
+	}
 	items := []any{
 		map[string]any{
 			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
@@ -425,6 +496,60 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		"isSuccess": true, "data": items,
 		"total": len(items), "pages": 1, "current": 1, "size": 20,
 	})
+}
+
+// TestF009TemplateCoverageReadsAllVisibleTemplates 验证真实分页链逐个盘点 196 个模板且未知能力只阻断对应模板。
+func TestF009TemplateCoverageReadsAllVisibleTemplates(t *testing.T) {
+	fake := newFakeTarget(t)
+	fake.coverageTotal = 196
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
+
+	report, err := service.NewTargetReadService(config.LoadTargetConfig()).TemplateCoverage(context.Background(), "account-a")
+	if err != nil {
+		t.Fatalf("全模板覆盖盘点失败：%v", err)
+	}
+	if !report.Complete || report.TemplateCount != 196 || report.ScannedTemplateCount != 196 {
+		t.Fatalf("全模板分页没有完整读取：%+v", report)
+	}
+	if report.TemplateTypeCount != 54 || report.FlowCodeCount != 196 || report.ComponentTypes["input"] != 195 {
+		t.Fatalf("模板类型、流程编码或组件统计不准确：%+v", report)
+	}
+	if report.ConditionOperators["eq"] != 195 || report.ConditionLogic["and"] != 196 || report.FieldComparisonCount != 196 {
+		t.Fatalf("流程条件比较、连接或字段对字段统计不准确：%+v", report)
+	}
+	if report.NeedsAttentionTemplates != 1 || report.UnsupportedTemplates != 1 || report.FailedTemplates != 0 {
+		t.Fatalf("未知能力没有精确落到单模板需处理：%+v", report)
+	}
+	if fake.templateCount != 4 || fake.formCount != 196 || len(fake.directoryFlags) != 0 {
+		t.Fatalf("覆盖盘点没有保持分页、逐模板一次表单读取或误读了身份目录：pages=%d forms=%d directory=%v", fake.templateCount, fake.formCount, fake.directoryFlags)
+	}
+}
+
+// TestF009RealTemplateCoverage 使用显式账号对当前目标平台做真实全模板盘点，默认不接触外部环境。
+func TestF009RealTemplateCoverage(t *testing.T) {
+	account := strings.TrimSpace(os.Getenv("F009_TARGET_ACCOUNT"))
+	if account == "" {
+		t.Skip("未设置 F009_TARGET_ACCOUNT，跳过真实目标模板盘点")
+	}
+	report, err := service.NewTargetReadService(config.LoadTargetConfig()).TemplateCoverage(context.Background(), account)
+	if err != nil {
+		t.Fatalf("真实目标模板盘点失败：%v", err)
+	}
+	if !report.Complete || report.TemplateCount == 0 || report.TemplateCount != report.ScannedTemplateCount {
+		t.Fatalf("真实目标模板未完整盘点：%+v", report)
+	}
+	if expectedText := strings.TrimSpace(os.Getenv("F009_EXPECTED_TEMPLATE_COUNT")); expectedText != "" {
+		expected, parseErr := strconv.Atoi(expectedText)
+		if parseErr != nil || expected < 1 {
+			t.Fatal("F009_EXPECTED_TEMPLATE_COUNT 必须是正整数")
+		}
+		if report.TemplateCount != expected {
+			t.Fatalf("真实目标模板数量 = %d，期望 %d", report.TemplateCount, expected)
+		}
+	}
+	t.Logf("真实目标模板盘点完成：模板=%d，类型=%d，流程编码=%d，需处理=%d", report.TemplateCount, report.TemplateTypeCount, report.FlowCodeCount, report.NeedsAttentionTemplates)
 }
 
 // TestFlowTreeReadUsesExactSourceLookupBeforeDetails 验证三类来源先核对再读详情。
