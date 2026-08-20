@@ -1260,8 +1260,24 @@ func (s *vuePageRuleScanner) vueSubmitRule(flowCode string) *target.VueCustomSub
 	if !found {
 		return &target.VueCustomSubmitRule{Method: "POST", Payload: []string{"data"}, SuccessChecks: []string{"isSuccess"}, Blocked: true, Issues: []string{"宿主保存请求常量「" + name + "」未在 API 表中识别"}}
 	}
+
+	// 识别 Vue 错误回显逻辑
+	configSource := s.configSource(flowCode)
+	componentSource := s.componentSource(s.pageByCode[flowCode].component)
+	fullSource := configSource + "\n" + componentSource + "\n" + mixin
+
+	fieldErrorPaths := s.extractVueFieldErrorPaths(fullSource)
+	issues := []string{}
+	if len(fieldErrorPaths) == 0 {
+		issues = append(issues, "宿主保存响应未证明字段级错误路径")
+	}
+
 	// 工作区只回显协议并交给本地保存接口复验，任何宿主业务写操作都不能通过此规则发起。
-	return &target.VueCustomSubmitRule{Method: "POST", Path: path, Payload: []string{"data"}, SuccessChecks: []string{"isSuccess"}, Blocked: true, Issues: []string{"宿主保存响应未证明字段级错误路径"}}
+	return &target.VueCustomSubmitRule{
+		Method: "POST", Path: path, Payload: []string{"data"},
+		SuccessChecks: []string{"isSuccess"}, FieldErrorPaths: fieldErrorPaths,
+		Blocked: true, Issues: issues,
+	}
 }
 
 // vueIdentityRule 识别页面实际读取的登录上下文键，并按用户、部门、公司投影到本地安全会话。
@@ -1330,6 +1346,11 @@ func (s *vuePageRuleScanner) javaPageRule(requests []target.VueCustomRequestRule
 			if route.Response == "BaseResponseProtocol" {
 				result.SuccessChecks = append(result.SuccessChecks, "isSuccess")
 			}
+			// 识别字段级错误路径
+			if submit != nil && endpoint.path == submit.Path {
+				fieldErrors := s.extractJavaFieldErrorPaths(route, endpoint)
+				result.FieldErrors = append(result.FieldErrors, fieldErrors...)
+			}
 		}
 	}
 	for _, request := range requests {
@@ -1342,12 +1363,14 @@ func (s *vuePageRuleScanner) javaPageRule(requests []target.VueCustomRequestRule
 		result.IdentityReads = append(result.IdentityReads, identity.DepartmentKeys...)
 		result.IdentityReads = append(result.IdentityReads, identity.CompanyKeys...)
 	}
+	// 只有在未识别到字段错误路径时才标记问题
 	if submit != nil && len(result.FieldErrors) == 0 {
 		result.Issues = append(result.Issues, "Java 保存接口未证明字段级错误返回路径")
 	}
 	result.RequestDTO = uniqueCatalogStrings(result.RequestDTO)
 	result.Response = uniqueCatalogStrings(result.Response)
 	result.SuccessChecks = uniqueCatalogStrings(result.SuccessChecks)
+	result.FieldErrors = uniqueCatalogStrings(result.FieldErrors)
 	result.DataSources = uniqueCatalogStrings(result.DataSources)
 	result.IdentityReads = uniqueCatalogStrings(result.IdentityReads)
 	result.Issues = uniqueCatalogStrings(result.Issues)
@@ -1403,6 +1426,94 @@ func javaMappingMarkers(method, suffix string) []string {
 		markers = append(markers, "@"+name+"("+value+")", "@"+name+"(value = "+value+")")
 	}
 	return markers
+}
+
+// extractJavaFieldErrorPaths 从 Java 方法体中识别字段级错误返回路径。
+func (s *vuePageRuleScanner) extractJavaFieldErrorPaths(route target.JavaRouteRule, endpoint struct{ path, method string }) []string {
+	paths := make([]string, 0)
+
+	// 查找包含该方法的源码文件
+	for _, source := range s.javaSources {
+		if !strings.Contains(source.content, route.Handler+"(") {
+			continue
+		}
+
+		// 查找方法体
+		handlerPattern := regexp.MustCompile(`public\s+[A-Za-z0-9_<>?, \t]+\s+` + regexp.QuoteMeta(route.Handler) + `\s*\([^)]*\)\s*\{`)
+		handlerMatch := handlerPattern.FindStringIndex(source.content)
+		if handlerMatch == nil {
+			continue
+		}
+
+		// 提取方法体（简单括号匹配）
+		start := handlerMatch[1]
+		braceCount := 1
+		end := start
+		for i := start; i < len(source.content) && braceCount > 0; i++ {
+			if source.content[i] == '{' {
+				braceCount++
+			} else if source.content[i] == '}' {
+				braceCount--
+			}
+			end = i
+		}
+
+		methodBody := source.content[start:end]
+
+		// 识别常见的字段错误模式
+		fieldErrorPatterns := []struct {
+			pattern *regexp.Regexp
+			path    string
+		}{
+			{regexp.MustCompile(`\.setErrors\s*\(`), "data.errors"},
+			{regexp.MustCompile(`\.setFieldErrors\s*\(`), "data.fieldErrors"},
+			{regexp.MustCompile(`\.setValidationErrors\s*\(`), "data.validationErrors"},
+			{regexp.MustCompile(`new\s+FieldError\s*\(`), "data.errors[].field"},
+			{regexp.MustCompile(`\.addError\s*\(\s*['"]([^'"]+)['"]`), "data.errors"},
+			{regexp.MustCompile(`fieldError\.setField\s*\(`), "data.errors[].field"},
+			{regexp.MustCompile(`error\.put\s*\(\s*['"]field['"]`), "data.errors[].field"},
+		}
+
+		for _, pe := range fieldErrorPatterns {
+			if pe.pattern.MatchString(methodBody) {
+				paths = append(paths, pe.path)
+			}
+		}
+	}
+
+	return uniqueCatalogStrings(paths)
+}
+
+// extractVueFieldErrorPaths 从 Vue 组件源码中识别字段级错误回显逻辑。
+func (s *vuePageRuleScanner) extractVueFieldErrorPaths(source string) []string {
+	paths := make([]string, 0)
+
+	// 识别常见的 Vue 错误回显模式
+	errorPatterns := []struct {
+		pattern *regexp.Regexp
+		path    string
+	}{
+		// Element UI form validation
+		{regexp.MustCompile(`\$refs\.form\.setFieldError\s*\(`), "errors[].field"},
+		{regexp.MustCompile(`this\.errors\s*\[\s*['"]([^'"]+)['"]\s*\]`), "errors[field]"},
+		{regexp.MustCompile(`this\.fieldErrors\s*=`), "fieldErrors"},
+		{regexp.MustCompile(`response\.data\.errors`), "data.errors"},
+		{regexp.MustCompile(`response\.data\.fieldErrors`), "data.fieldErrors"},
+		{regexp.MustCompile(`response\.data\.validationErrors`), "data.validationErrors"},
+		{regexp.MustCompile(`res\.data\.errors\.forEach`), "data.errors[].field"},
+		{regexp.MustCompile(`error\.field\s*&&`), "data.errors[].field"},
+		{regexp.MustCompile(`\.setError\s*\(\s*['"]([^'"]+)['"]`), "errors[field]"},
+		// 通用错误处理
+		{regexp.MustCompile(`this\.\$message\.error\s*\(\s*res\.data\.message`), "data.message"},
+	}
+
+	for _, ep := range errorPatterns {
+		if ep.pattern.MatchString(source) {
+			paths = append(paths, ep.path)
+		}
+	}
+
+	return uniqueCatalogStrings(paths)
 }
 
 // read 读取项目内参考运行时文件，缺失只返回空文本并由上层标记规则问题。
