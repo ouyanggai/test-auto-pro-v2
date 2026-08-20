@@ -618,6 +618,43 @@ func TestF009RealTemplateCoverage(t *testing.T) {
 	}
 }
 
+// TestF010RecentSamplesCacheIncludesRuleDimensions 验证样本缓存同规则命中、模板或组件变化重新读取，避免跨权限对象复用。
+func TestF010RecentSamplesCacheIncludesRuleDimensions(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	ctx := context.Background()
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-a", "project", "rule-v1", 5); err != nil {
+		t.Fatalf("首次规则样本读取失败：%v", err)
+	}
+	fake.mu.Lock()
+	firstCalls := len(fake.graphCalls)
+	fake.mu.Unlock()
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-a", "project", "rule-v1", 5); err != nil {
+		t.Fatalf("同规则样本缓存读取失败：%v", err)
+	}
+	fake.mu.Lock()
+	secondCalls := len(fake.graphCalls)
+	fake.mu.Unlock()
+	if secondCalls != firstCalls {
+		t.Fatalf("同一账号、流程、模板、组件和规则版本未命中缓存：首次=%d 二次=%d", firstCalls, secondCalls)
+	}
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-b", "project", "rule-v1", 5); err != nil {
+		t.Fatalf("模板变化后的规则样本读取失败：%v", err)
+	}
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-b", "identity", "rule-v1", 5); err != nil {
+		t.Fatalf("组件变化后的规则样本读取失败：%v", err)
+	}
+	fake.mu.Lock()
+	thirdCalls := len(fake.graphCalls)
+	fake.mu.Unlock()
+	if thirdCalls <= secondCalls {
+		t.Fatalf("模板或组件维度变化错误复用旧样本缓存：二次=%d 三次=%d", secondCalls, thirdCalls)
+	}
+}
+
 // TestFlowTreeReadUsesExactSourceLookupBeforeDetails 验证三类来源先核对再读详情。
 func TestFlowTreeReadUsesExactSourceLookupBeforeDetails(t *testing.T) {
 	tests := []struct {

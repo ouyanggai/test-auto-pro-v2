@@ -234,14 +234,15 @@ func (s *PathPreparationService) run(ctx context.Context, job model.PathPreparat
 }
 
 type pathPreparationAssets struct {
-	plan        model.Plan
-	snapshot    target.PathConfigurationSnapshot
-	graph       model.FlowGraph
-	template    map[string]any
-	unsupported []string
-	samples     []map[string]any
-	initiator   string
-	identity    formdata.IdentityContext
+	plan                model.Plan
+	snapshot            target.PathConfigurationSnapshot
+	graph               model.FlowGraph
+	template            map[string]any
+	unsupported         []string
+	samples             []map[string]any
+	initiator           string
+	identity            formdata.IdentityContext
+	componentCandidates map[string][]any
 }
 
 // loadPathPreparationAssets 一次读取计划、真实流程快照、模板、身份和有限近期样本。
@@ -272,10 +273,20 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 	}
 	assets := pathPreparationAssets{
 		plan: plan, snapshot: snapshot, template: template, unsupported: unsupported,
-		graph:     model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource, EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings},
-		initiator: plan.Account, samples: []map[string]any{},
+		graph:               model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource, EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings},
+		initiator:           plan.Account,
+		samples:             []map[string]any{},
+		componentCandidates: make(map[string][]any),
 	}
-	if reader, ok := s.config.target.(pathFormSampleReader); ok {
+	if reader, ok := s.config.target.(pathFormRuleSampleReader); ok {
+		componentID := "formmaking"
+		if snapshot.VuePage != nil {
+			componentID = strings.TrimSpace(snapshot.VuePage.ComponentName)
+		}
+		if samples, readErr := reader.RecentFormSamplesForRule(ctx, plan.Account, snapshot.FlowCode, snapshot.TemplateID, componentID, snapshot.RuleVersion, 5); readErr == nil {
+			assets.samples = samples
+		}
+	} else if reader, ok := s.config.target.(pathFormSampleReader); ok {
 		if samples, readErr := reader.RecentFormSamples(ctx, plan.Account, snapshot.FlowCode, 5); readErr == nil {
 			assets.samples = samples
 		}
@@ -287,6 +298,12 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 			if strings.TrimSpace(identity.User.Name) != "" {
 				assets.initiator = identity.User.Name
 			}
+		}
+	}
+	// 预加载组件候选池，供批量任务共享
+	if s.config.candidateCache != nil {
+		if candidateSet, err := s.config.candidateCache.GetCandidateSet(ctx, plan.Account, snapshot.FlowCode, snapshot.RuleVersion); err == nil {
+			assets.componentCandidates = buildComponentCandidatesMap(template, candidateSet)
 		}
 	}
 	return assets, nil
@@ -470,6 +487,7 @@ func preparePathFormData(assets pathPreparationAssets, path model.ExecutionPath,
 		Template: assets.template, Base: stored.FormValues, Samples: assets.samples, Seed: seed, Initiator: assets.initiator,
 		Constraints: conditions.Constraints, DateRangeBindings: bindings, ManualOverridePaths: stored.ManualOverridePaths,
 		ProtectedPaths: conditions.ProtectedPaths, EditablePaths: editableFormPathsFromPermissions(permissions), Identity: assets.identity,
+		ComponentCandidates: assets.componentCandidates,
 	})
 	solved := solveTargetPathValues(snapshot.Tree, path.Choices, assets.template, generated.Values, seed)
 	generated.Values = solved.values

@@ -321,8 +321,11 @@ type JavaRouteRule struct {
 
 // PathConfigurationSnapshot 把同一真实流程树、当前入口、表单字段详情和实例现值绑定在一起。
 type PathConfigurationSnapshot struct {
-	Tree           *FlowNodeTemplate
-	EntryNodeIDs   []string
+	Tree         *FlowNodeTemplate
+	EntryNodeIDs []string
+	// TemplateID 与 RuleVersion 用于把样本和生成规则绑定到同一目标模板版本，禁止跨模板或跨规则缓存复用。
+	TemplateID     string
+	RuleVersion    string
 	FlowCode       string
 	RenderType     FormRenderType
 	VuePage        *VueCustomPageRule

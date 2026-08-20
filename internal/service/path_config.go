@@ -65,6 +65,7 @@ type PathConfigService struct {
 	pathRepository   repository.ExecutionPathRepository
 	configRepository repository.PathConfigurationRepository
 	templateRules    PathConfigTemplateRuleReader
+	candidateCache   *ComponentCandidateCache
 	now              func() time.Time
 }
 
@@ -76,6 +77,11 @@ func NewPathConfigService(plans *PlanService, targetReader PathConfigReader, flo
 // SetTemplateRuleCatalog 注入已持久化的规则目录；未同步的 Vue 页面必须保留为需处理而不是临时猜测。
 func (s *PathConfigService) SetTemplateRuleCatalog(catalog PathConfigTemplateRuleReader) {
 	s.templateRules = catalog
+}
+
+// SetComponentCandidateCache 注入组件候选缓存服务。
+func (s *PathConfigService) SetComponentCandidateCache(cache *ComponentCandidateCache) {
+	s.candidateCache = cache
 }
 
 // Get 校验计划与路径归属后重读当前真实配置，并叠加 F-008 工具侧配置。

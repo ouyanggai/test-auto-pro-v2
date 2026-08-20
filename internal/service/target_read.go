@@ -650,8 +650,18 @@ func (s *TargetReadService) FormIdentityContext(ctx context.Context, account str
 	return s.client.FormIdentityContext(ctx, active)
 }
 
-// RecentFormSamples 只读取同一真实流程编码的近期样本，缓存键必须隔离账号和流程避免跨模板复用。
+// RecentFormSamples 只读取同一真实流程编码的近期样本，保留旧调用边界并使用空规则维度。
 func (s *TargetReadService) RecentFormSamples(ctx context.Context, account, flowCode string, limit int) ([]map[string]any, error) {
+	return s.recentFormSamplesForRule(ctx, account, flowCode, "", "", "", limit)
+}
+
+// RecentFormSamplesForRule 按账号、流程、模板、组件和规则版本隔离近期样本，避免对象值跨权限或跨规则复用。
+func (s *TargetReadService) RecentFormSamplesForRule(ctx context.Context, account, flowCode, templateID, componentID, ruleVersion string, limit int) ([]map[string]any, error) {
+	return s.recentFormSamplesForRule(ctx, account, flowCode, templateID, componentID, ruleVersion, limit)
+}
+
+// recentFormSamplesForRule 读取并缓存同一规则快照的有限样本，目标端分页和实例读取始终沿用单账号会话。
+func (s *TargetReadService) recentFormSamplesForRule(ctx context.Context, account, flowCode, templateID, componentID, ruleVersion string, limit int) ([]map[string]any, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
@@ -665,7 +675,7 @@ func (s *TargetReadService) RecentFormSamples(ctx context.Context, account, flow
 	if flowCode == "" {
 		return []map[string]any{}, nil
 	}
-	cacheKey := strings.TrimSpace(account) + "|" + flowCode
+	cacheKey := recentFormSampleCacheKey(account, flowCode, templateID, componentID, ruleVersion)
 	s.sampleMu.Lock()
 	cached, found := s.sampleCache[cacheKey]
 	s.sampleMu.Unlock()
@@ -708,6 +718,11 @@ func (s *TargetReadService) RecentFormSamples(ctx context.Context, account, flow
 	s.sampleCache[cacheKey] = recentFormSampleCache{expiresAt: time.Now().Add(30 * time.Second), values: cloneRecentSamples(result)}
 	s.sampleMu.Unlock()
 	return cloneRecentSamples(result), nil
+}
+
+// recentFormSampleCacheKey 显式包含所有规则隔离维度，任何一项变化都不会命中旧样本。
+func recentFormSampleCacheKey(account, flowCode, templateID, componentID, ruleVersion string) string {
+	return strings.Join([]string{strings.TrimSpace(account), strings.TrimSpace(flowCode), strings.TrimSpace(templateID), strings.TrimSpace(componentID), strings.TrimSpace(ruleVersion)}, "|")
 }
 
 // cloneRecentSamples 深复制近期样本，生成器修改 values 时不会污染跨请求缓存。

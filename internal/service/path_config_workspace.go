@@ -31,6 +31,10 @@ type pathFormSampleReader interface {
 	RecentFormSamples(context.Context, string, string, int) ([]map[string]any, error)
 }
 
+type pathFormRuleSampleReader interface {
+	RecentFormSamplesForRule(context.Context, string, string, string, string, string, int) ([]map[string]any, error)
+}
+
 type pathFormIdentityReader interface {
 	FormIdentityContext(context.Context, string) (target.FormIdentityContext, error)
 }
@@ -116,7 +120,15 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		base = stored.FormValues
 	}
 	samples := make([]map[string]any, 0)
-	if reader, ok := s.target.(pathFormSampleReader); ok {
+	if reader, ok := s.target.(pathFormRuleSampleReader); ok {
+		componentID := "formmaking"
+		if snapshot.VuePage != nil {
+			componentID = strings.TrimSpace(snapshot.VuePage.ComponentName)
+		}
+		if recent, sampleErr := reader.RecentFormSamplesForRule(ctx, plan.Account, snapshot.FlowCode, snapshot.TemplateID, componentID, snapshot.RuleVersion, 5); sampleErr == nil {
+			samples = recent
+		}
+	} else if reader, ok := s.target.(pathFormSampleReader); ok {
 		// 样本读取失败不阻断安全兜底，摘要保持 recent=0，页面会明确提示样本不足。
 		if recent, sampleErr := reader.RecentFormSamples(ctx, plan.Account, snapshot.FlowCode, 5); sampleErr == nil {
 			samples = recent
@@ -139,12 +151,14 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	}
 	dateRangeBindings := buildPathDateRangeBindings(snapshot.Tree, path.Choices, template)
 	conditions := buildPathFormConditionProjection(snapshot.Tree, path.Choices, template, base)
+	componentCandidates := s.loadComponentCandidates(ctx, plan.Account, snapshot.FlowCode, snapshot.RuleVersion, template)
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: template, Base: base, Samples: samples, Seed: seed, Initiator: initiator,
 		Constraints: conditions.Constraints, ManualOverridePaths: manualPaths, ProtectedPaths: conditions.ProtectedPaths,
-		DateRangeBindings: dateRangeBindings,
-		EditablePaths:     editableFormPathsFromPermissions(permissions),
-		Identity:          identity,
+		DateRangeBindings:    dateRangeBindings,
+		EditablePaths:        editableFormPathsFromPermissions(permissions),
+		Identity:             identity,
+		ComponentCandidates:  componentCandidates,
 	})
 	generated.Unsupported = append(generated.Unsupported, unsupported...)
 	solved := solveTargetPathValues(snapshot.Tree, path.Choices, template, generated.Values, seed)
@@ -1858,6 +1872,22 @@ func uniquePublicStrings(values []string) []string {
 	}
 	return result
 }
+
+// loadComponentCandidates 从缓存或目标平台加载组件候选池。
+func (s *PathConfigService) loadComponentCandidates(ctx context.Context, account, flowCode, ruleVersion string, template map[string]any) map[string][]any {
+	if s.candidateCache == nil {
+		return make(map[string][]any)
+	}
+
+	candidateSet, err := s.candidateCache.GetCandidateSet(ctx, account, flowCode, ruleVersion)
+	if err != nil {
+		// 候选加载失败不阻断生成，只会导致外部对象字段标记为 pending
+		return make(map[string][]any)
+	}
+
+	return buildComponentCandidatesMap(template, candidateSet)
+}
+
 
 // appendUnique 在节点确认列表中保持稳定顺序且不重复。
 func appendUnique(values []string, value string) []string {

@@ -11,6 +11,7 @@ import (
 
 // applyStoredTemplateRules 将规则目录的安全投影覆写到本次真实流程快照，禁止在计划页面扫描宿主源码。
 func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, account, source, targetObjectID string, snapshot target.PathConfigurationSnapshot) (target.PathConfigurationSnapshot, error) {
+	snapshot.TemplateID = strings.TrimSpace(targetObjectID)
 	if s.templateRules == nil || strings.TrimSpace(snapshot.FlowCode) == "" {
 		return snapshot, nil
 	}
@@ -28,6 +29,7 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 		return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前模板规则不可用，请先在系统设置重新分析"}
 	}
 	if item.RenderType == model.TemplateRuleRenderFormMaking {
+		snapshot.RuleVersion = templateRuleVersion(item)
 		encoded, encodeErr := json.Marshal(item.RuleData["template"])
 		if encodeErr != nil {
 			return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "本地 FormMaking 规则数据异常，请重新分析"}
@@ -38,6 +40,7 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 	if item.RenderType != model.TemplateRuleRenderVueCustom {
 		return snapshot, nil
 	}
+	snapshot.RuleVersion = templateRuleVersion(item)
 	page, ok := decodeVueCustomPageRule(item.RuleData["page"])
 	if !ok {
 		snapshot.VuePage = &target.VueCustomPageRule{PageKey: snapshot.FlowCode, PageName: snapshot.FlowCode, Issues: []string{"本地 Vue 页面规则数据异常，请重新分析"}}
@@ -45,6 +48,15 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 	}
 	snapshot.VuePage = &page
 	return snapshot, nil
+}
+
+// templateRuleVersion 以规则目录源指纹和分析器版本作为样本隔离版本，更新任一规则输入都会失效旧缓存。
+func templateRuleVersion(item model.TemplateRuleCatalogItem) string {
+	version := strings.TrimSpace(item.SourceFingerprint)
+	if version == "" {
+		version = strings.TrimSpace(item.AnalyzerVersion)
+	}
+	return version
 }
 
 // CanInitiatorUseRule 使用已由目标平台按计划账号验证的快照二次约束本地目录，目录来源账号不能扩大业务权限。
