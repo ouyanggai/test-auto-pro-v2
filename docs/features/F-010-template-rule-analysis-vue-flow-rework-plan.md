@@ -1,6 +1,6 @@
 # F-010 返工计划：全模板规则分析与 Vue 表单流程支持
 
-- 状态：awaiting_approval
+- 状态：implementing
 - 关联功能：`docs/features/F-010-template-rule-analysis-vue-flow.md`
 - 产品依据：`docs/PRODUCT.md` 的 F-010 规则目录、Vue 业务页面和账号权限边界
 - 架构依据：`docs/ARCHITECTURE.md` 的 F-010 规则快照、运行时和生成器边界
