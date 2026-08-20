@@ -96,6 +96,12 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	if err != nil {
 		return model.PathFormGenerateResult{}, err
 	}
+
+	// 检查规则就绪状态
+	if err := s.checkRuleReadiness(ctx, planID, snapshot); err != nil {
+		return model.PathFormGenerateResult{}, err
+	}
+
 	owned, err := s.analyzeOwnedPath(ctx, planID, snapshot, path)
 	if err != nil {
 		return model.PathFormGenerateResult{}, err
@@ -1886,6 +1892,30 @@ func (s *PathConfigService) loadComponentCandidates(ctx context.Context, account
 	}
 
 	return buildComponentCandidatesMap(template, candidateSet)
+}
+
+// checkRuleReadiness 检查规则完整性，阻断状态禁止生成。
+func (s *PathConfigService) checkRuleReadiness(ctx context.Context, planID uint64, snapshot target.PathConfigurationSnapshot) error {
+	if s.templateRules == nil {
+		return nil
+	}
+
+	item, found, err := s.templateRules.GetByFlowCode(ctx, snapshot.FlowCode)
+	if err != nil || !found {
+		return nil
+	}
+
+	completeness := model.ClassifyRuleIssues(item.Issues)
+	if completeness.Readiness == model.RuleReadinessBlocked {
+		// 汇总阻断问题
+		blockingMsg := "当前模板规则存在阻断问题，无法生成表单数据"
+		if len(completeness.Blocking) > 0 {
+			blockingMsg = completeness.Blocking[0]
+		}
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: blockingMsg}
+	}
+
+	return nil
 }
 
 

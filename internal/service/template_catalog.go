@@ -307,10 +307,16 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 		issues = append(issues, "表单渲染协议尚未识别")
 	}
 	item.RuleData, item.Coverage, item.Issues = ruleData, coverage, uniqueCatalogStrings(issues)
+
+	// 分级规则问题并确定就绪状态
+	completeness := model.ClassifyRuleIssues(item.Issues)
 	item.Status = "complete"
-	if len(item.Issues) > 0 {
+	if completeness.Readiness == model.RuleReadinessBlocked {
+		item.Status = "blocked"
+	} else if len(item.Issues) > 0 {
 		item.Status = "needs_attention"
 	}
+
 	item.SourceFingerprint = catalogFingerprint(item)
 	analyzed := now
 	item.AnalyzedAt = &analyzed

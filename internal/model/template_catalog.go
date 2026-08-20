@@ -46,6 +46,7 @@ type TemplateRuleCatalogSummary struct {
 	Unknown        int            `json:"unknown"`
 	Complete       int            `json:"complete"`
 	NeedsAttention int            `json:"needsAttention"`
+	Blocked        int            `json:"blocked"`
 	Failed         int            `json:"failed"`
 	Components     map[string]int `json:"components"`
 	UpdatedAt      *time.Time     `json:"updatedAt,omitempty"`
