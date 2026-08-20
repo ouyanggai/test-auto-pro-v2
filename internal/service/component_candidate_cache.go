@@ -172,12 +172,15 @@ func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account,
 		err  error
 	}
 	results := make(chan loadResult, 7)
+	var mu sync.Mutex
 
 	// 材料（出库）
 	go func() {
 		materials, err := c.provider.GetMaterialCandidates(ctx, account, flowCode, "out")
 		if err == nil {
+			mu.Lock()
 			set.Materials["out"] = materials
+			mu.Unlock()
 		}
 		results <- loadResult{name: "materials_out", err: err}
 	}()
@@ -186,7 +189,9 @@ func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account,
 	go func() {
 		materials, err := c.provider.GetMaterialCandidates(ctx, account, flowCode, "in")
 		if err == nil {
+			mu.Lock()
 			set.Materials["in"] = materials
+			mu.Unlock()
 		}
 		results <- loadResult{name: "materials_in", err: err}
 	}()
@@ -195,7 +200,9 @@ func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account,
 	go func() {
 		projects, err := c.provider.GetProjectCandidates(ctx, account, flowCode)
 		if err == nil {
+			mu.Lock()
 			set.Projects = projects
+			mu.Unlock()
 		}
 		results <- loadResult{name: "projects", err: err}
 	}()
@@ -204,7 +211,9 @@ func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account,
 	go func() {
 		orders, err := c.provider.GetOrderCandidates(ctx, account, flowCode)
 		if err == nil {
+			mu.Lock()
 			set.Orders = orders
+			mu.Unlock()
 		}
 		results <- loadResult{name: "orders", err: err}
 	}()
@@ -213,7 +222,9 @@ func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account,
 	go func() {
 		flowLists, err := c.provider.GetFlowListCandidates(ctx, account, flowCode)
 		if err == nil {
+			mu.Lock()
 			set.FlowLists = flowLists
+			mu.Unlock()
 		}
 		results <- loadResult{name: "flow_lists", err: err}
 	}()
@@ -222,7 +233,9 @@ func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account,
 	go func() {
 		budgetTypes, err := c.provider.GetExpenseBudgetTypes(ctx, account)
 		if err == nil {
+			mu.Lock()
 			set.ExpenseBudgetTypes = budgetTypes
+			mu.Unlock()
 		}
 		results <- loadResult{name: "expense_budget_types", err: err}
 	}()
@@ -231,7 +244,9 @@ func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account,
 	go func() {
 		cities, err := c.provider.GetCityCandidates(ctx, account)
 		if err == nil {
+			mu.Lock()
 			set.Cities = cities
+			mu.Unlock()
 		}
 		results <- loadResult{name: "cities", err: err}
 	}()
