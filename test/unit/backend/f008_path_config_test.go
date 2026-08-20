@@ -99,6 +99,25 @@ func TestF007FormConditionBindingDrivesGenerationAndSave(t *testing.T) {
 	}
 }
 
+// TestF010KnownCustomComponentSaveRoundTrip 验证已注册外部组件的当前账号候选 JSON 能通过服务端形状校验并完整保存。
+func TestF010KnownCustomComponentSaveRoundTrip(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 10, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusNotStarted}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 35, PlanID: 10, SequenceNo: 1, Name: "直达路径"}}}
+	tree := &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}}
+	serviceUnderTest := service.NewPathConfigService(
+		service.NewPlanService(plans),
+		pathConfigSnapshotReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, Forms: []target.FormRuntimeTemplate{{Name: "申请表", TemplateData: `{"list":[{"type":"custom","el":"custome-select-project","model":"project","name":"项目","options":{"required":true}}]}`}}}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths, emptyPathConfigRepository{},
+	)
+	saved, err := serviceUnderTest.SaveForm(context.Background(), 10, 35, "69bef6ec-9e1b-4df7-8611-0b5a4d6e7283", model.PathFormSaveInput{
+		Revision: 0, Validated: true, Values: map[string]any{"project": `{"id":"p-current","name":"当前账号项目"}`},
+	})
+	if err != nil || saved.FormRevision != 1 {
+		t.Fatalf("已注册自定义组件的生成值未通过保存往返：saved=%+v err=%v", saved, err)
+	}
+}
+
 // TestF007ConditionBindingFieldsSerializeAsArrays 验证无条件兜底分支的 fields 也必须编码为空数组而不是 JSON null。
 func TestF007ConditionBindingFieldsSerializeAsArrays(t *testing.T) {
 	plans := newMemoryPlanRepository()

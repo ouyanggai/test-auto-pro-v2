@@ -42,6 +42,8 @@ type GenerateInput struct {
 	ProtectedPaths      map[string]bool
 	EditablePaths       map[string]bool
 	Identity            IdentityContext
+	// ComponentCandidates 只接受调用方按发起人权限筛选后的真实候选，键为模板字段路径。
+	ComponentCandidates map[string][]any
 }
 
 // GenerateResult 是一次稳定智能填充的完整 values 与所有权摘要。
@@ -172,33 +174,39 @@ var metadataTypes = map[string]bool{"js": true, "rule": true, "alert": true, "in
 
 // customComponentCapability 描述已注册业务组件的值形态和候选边界，组件本身不能成为阻断原因。
 type customComponentCapability struct {
-	ValueType     string
-	CandidateKind string
-	External      bool
+	ValueType       string
+	CandidateKind   string
+	External        bool
+	Serialization   string
+	CandidateSource string
+	DefaultAllowed  bool
+	ConditionValue  string
+	Validation      string
+	Evidence        string
 }
 
 // knownCustomComponents 来源于实际 FormMaking 运行时注册表；外部对象只接受真实候选，绝不伪造引用。
 var knownCustomComponents = map[string]customComponentCapability{
-	"custom-upload-excel":           {ValueType: "file", CandidateKind: "external", External: true},
-	"out-bound-material-select":     {ValueType: "object", CandidateKind: "external", External: true},
-	"in-bound-material-select":      {ValueType: "object", CandidateKind: "external", External: true},
-	"custom-weather":                {ValueType: "object", CandidateKind: "runtime_source"},
-	"custome-select-project":        {ValueType: "object", CandidateKind: "external", External: true},
-	"custome-expense-budgetType":    {ValueType: "object", CandidateKind: "runtime_source"},
-	"general-list-select-show":      {ValueType: "object", CandidateKind: "external", External: true},
-	"person-mulSelect":              {ValueType: "array", CandidateKind: "identity"},
-	"general-flow-list-mulSelect":   {ValueType: "array", CandidateKind: "external", External: true},
-	"custome-info-select":           {ValueType: "identity", CandidateKind: "identity"},
-	"ltd-or-dep-select":             {ValueType: "identity", CandidateKind: "identity"},
-	"custome-file-view":             {ValueType: "file", CandidateKind: "external", External: true},
-	"custome-file-import":           {ValueType: "file", CandidateKind: "external", External: true},
-	"legal-contract-doctable":       {ValueType: "array", CandidateKind: "external", External: true},
-	"contract-seal-review-business": {ValueType: "object", CandidateKind: "external", External: true},
-	"flow-list-mul-select":          {ValueType: "array", CandidateKind: "external", External: true},
-	"request_payout":                {ValueType: "object", CandidateKind: "external", External: true},
-	"city-select":                   {ValueType: "array", CandidateKind: "runtime_source"},
-	"travel-route-planning":         {ValueType: "array", CandidateKind: "runtime_source"},
-	"travel-order-management":       {ValueType: "array", CandidateKind: "external", External: true},
+	"custom-upload-excel":           {ValueType: "file", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "upload", Validation: "json_object", Evidence: "value prop 与 input JSON.stringify"},
+	"out-bound-material-select":     {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "allSelectData JSON.stringify"},
+	"in-bound-material-select":      {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "allSelectData JSON.stringify"},
+	"custom-weather":                {ValueType: "string", CandidateKind: "static", Serialization: "plain", CandidateSource: "static_options", DefaultAllowed: true, ConditionValue: "plain", Validation: "string", Evidence: "el-select dataModel input"},
+	"custome-select-project":        {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
+	"custome-expense-budgetType":    {ValueType: "object", CandidateKind: "runtime_source", Serialization: "json_string", CandidateSource: "initiator_readonly_api", DefaultAllowed: true, Validation: "json_object", Evidence: "currentInfoObj input"},
+	"general-list-select-show":      {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
+	"person-mulSelect":              {ValueType: "array", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "flow_list", Evidence: "flowList 与 __formPersonId"},
+	"general-flow-list-mulSelect":   {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "flow_list", Evidence: "flowList input"},
+	"custome-info-select":           {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_array", Evidence: "currentInfoObj JSON.parse"},
+	"ltd-or-dep-select":             {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_array", Evidence: "currentInfoObj JSON.parse"},
+	"custome-file-view":             {ValueType: "file", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "value JSON clone"},
+	"custome-file-import":           {ValueType: "file", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "upload", Validation: "json_object", Evidence: "upload response data JSON.stringify"},
+	"legal-contract-doctable":       {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "formVal JSON.stringify"},
+	"contract-seal-review-business": {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "contractContend JSON.stringify"},
+	"flow-list-mul-select":          {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "flow_list", Evidence: "flowList input"},
+	"request_payout":                {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
+	"city-select":                   {ValueType: "array", CandidateKind: "runtime_source", Serialization: "json_string", CandidateSource: "initiator_readonly_api", DefaultAllowed: true, Validation: "json_array", Evidence: "selectedCityData JSON.stringify"},
+	"travel-route-planning":         {ValueType: "array", CandidateKind: "runtime_source", Serialization: "json_string", CandidateSource: "initiator_readonly_api", DefaultAllowed: true, Validation: "json_array", Evidence: "data JSON.stringify"},
+	"travel-order-management":       {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "value JSON parse/stringify"},
 }
 
 // CustomComponentCapabilities 返回运行时注册组件的稳定能力投影，供规则目录和批量生成共享。
@@ -207,7 +215,9 @@ func CustomComponentCapabilities() map[string]map[string]string {
 	for name, capability := range knownCustomComponents {
 		result[name] = map[string]string{
 			"valueType": capability.ValueType, "candidateKind": capability.CandidateKind,
-			"external": strconv.FormatBool(capability.External),
+			"external": strconv.FormatBool(capability.External), "serialization": capability.Serialization,
+			"candidateSource": capability.CandidateSource, "defaultAllowed": strconv.FormatBool(capability.DefaultAllowed),
+			"conditionValue": capability.ConditionValue, "validation": capability.Validation, "evidence": capability.Evidence,
 		}
 	}
 	return result
@@ -696,21 +706,45 @@ func Generate(input GenerateInput) GenerateResult {
 			continue
 		}
 		if field.Type == "custom" {
-			// 人员、部门和公司组件的值形态由宿主源码确定；其余已注册组件仅从真实选项、样本或数据源候选取值。
+			// 人员、部门和公司组件的值形态由宿主源码确定；其余组件只接受当前发起人候选或真实静态值。
 			if value, ok := customIdentityValue(field, input.Identity); ok {
 				setFieldValue(values, field, value)
 				generated = append(generated, field.Path)
 				result.Identity++
 				continue
 			}
+			if candidates := input.ComponentCandidates[field.Path]; len(candidates) > 0 {
+				candidate := serializeCustomCandidate(field, candidates[(int(seed)+len(generated))%len(candidates)])
+				if usableValue(field, candidate) {
+					setFieldValue(values, field, cloneValue(candidate))
+					generated = append(generated, field.Path)
+					result.Recent++
+					continue
+				}
+			}
 		}
-		if sample, ok := sampleValue(input.Samples, field, int(seed)); ok {
-			setFieldValue(values, field, sample)
-			generated = append(generated, field.Path)
-			result.Recent++
-			continue
+		allowSample := true
+		if field.Type == "custom" {
+			if capability, known := knownCustomComponent(field.Capability); known {
+				// 外部对象的近期样本可能属于其他发起人或已失效对象，绝不能直接复用其 ID。
+				allowSample = !capability.External
+			}
 		}
-		if usableValue(field, field.Default) && !emptyValue(field.Default) {
+		if allowSample {
+			if sample, ok := sampleValue(input.Samples, field, int(seed)); ok {
+				setFieldValue(values, field, sample)
+				generated = append(generated, field.Path)
+				result.Recent++
+				continue
+			}
+		}
+		defaultAllowed := true
+		if field.Type == "custom" {
+			capability, known := knownCustomComponent(field.Capability)
+			// 外部对象默认值可能携带其他账号或过期对象标识，只有注册表明确允许的组件才能采用模板默认值。
+			defaultAllowed = known && capability.DefaultAllowed
+		}
+		if defaultAllowed && usableValue(field, field.Default) && !emptyValue(field.Default) {
 			setFieldValue(values, field, cloneValue(field.Default))
 			generated = append(generated, field.Path)
 			result.Defaults++
@@ -733,6 +767,22 @@ func Generate(input GenerateInput) GenerateResult {
 	result.GeneratedFieldPaths = uniqueSorted(generated)
 	result.PendingFields = uniqueSorted(result.PendingFields)
 	return result
+}
+
+// serializeCustomCandidate 按组件声明的序列化方式转换候选；无法编码的候选直接留给人工处理。
+func serializeCustomCandidate(field Field, value any) any {
+	capability, known := knownCustomComponent(field.Capability)
+	if !known || capability.Serialization != "json_string" {
+		return value
+	}
+	if _, ok := value.(string); ok {
+		return value
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return string(encoded)
 }
 
 // ValidateDateRangeBindings 校验已声明绑定的日期区间是否以自然日含首尾覆盖对应天数。
@@ -991,7 +1041,9 @@ func safeFallback(field Field, initiator string, rng *rand.Rand) (any, bool) {
 	case "switch":
 		return rng.Intn(2) == 0, true
 	case "custom":
-		if len(field.Options) > 0 {
+		capability, known := knownCustomComponent(field.Capability)
+		// 仅静态组件可从模板内选项回退；其余自定义组件必须等待身份或按发起人过滤的真实候选。
+		if known && capability.DefaultAllowed && capability.CandidateKind == "static" && len(field.Options) > 0 {
 			return cloneValue(field.Options[rng.Intn(len(field.Options))]), true
 		}
 	}
@@ -1301,8 +1353,50 @@ func usableValue(field Field, value any) bool {
 	case "fileupload":
 		_, ok := value.([]any)
 		return ok
+	case "custom":
+		return usableCustomValue(field, value)
 	default:
 		return false
+	}
+}
+
+// usableCustomValue 按已注册组件的真实序列化协议校验值，避免生成成功后被通用默认分支拒绝。
+func usableCustomValue(field Field, value any) bool {
+	capability, known := knownCustomComponent(field.Capability)
+	if !known || value == nil {
+		return false
+	}
+	if len(field.Options) > 0 && containsValue(field.Options, value) {
+		return true
+	}
+	if capability.Serialization == "plain" {
+		_, ok := value.(string)
+		return ok && strings.TrimSpace(fmt.Sprint(value)) != ""
+	}
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return false
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		return false
+	}
+	switch capability.Validation {
+	case "json_array", "flow_list":
+		list, ok := decoded.([]any)
+		if capability.Validation == "flow_list" {
+			object, objectOK := decoded.(map[string]any)
+			list, ok = object["flowList"].([]any)
+			if !objectOK || !ok {
+				return false
+			}
+		}
+		return ok && list != nil
+	case "json_object":
+		_, ok := decoded.(map[string]any)
+		return ok
+	default:
+		return decoded != nil
 	}
 }
 

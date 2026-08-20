@@ -268,6 +268,68 @@ func TestFormDataGeneratorKeepsExternalCustomPartial(t *testing.T) {
 	}
 }
 
+// TestFormDataGeneratorUsesInitiatorCustomCandidates 验证外部组件只消费调用方传入的当前发起人候选，并生成可通过同一规则复验的形状。
+func TestFormDataGeneratorUsesInitiatorCustomCandidates(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "custome-select-project", "model": "project", "options": map[string]any{"required": true},
+	}}}
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: template, Seed: 1,
+		ComponentCandidates: map[string][]any{"project": {map[string]any{"id": "p-current", "name": "当前账号项目"}}},
+	})
+	if result.Pending != 0 || result.Recent != 1 || len(result.GeneratedFieldPaths) != 1 {
+		t.Fatalf("当前发起人候选没有用于自定义组件生成：%+v", result)
+	}
+	value, ok := result.Values["project"].(string)
+	if !ok || !strings.Contains(value, "p-current") || len(formdata.Validate(template, result.Values, nil)) != 0 {
+		t.Fatalf("自定义组件候选值没有按宿主 JSON 形状通过复验：%+v", result.Values)
+	}
+}
+
+// TestFormDataGeneratorDoesNotReuseExternalSample 验证外部对象不会从近期样本复用其他账号可能无权访问的对象标识。
+func TestFormDataGeneratorDoesNotReuseExternalSample(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "custome-select-project", "model": "project", "options": map[string]any{"required": true},
+	}}}
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: template, Seed: 1, Samples: []map[string]any{{"project": `{"id":"historical-project"}`}},
+	})
+	if result.Pending != 1 {
+		t.Fatalf("外部对象不应从近期样本继承：%+v", result)
+	}
+	if _, found := result.Values["project"]; found {
+		t.Fatalf("外部对象样本 ID 泄露到当前账号草稿：%+v", result.Values)
+	}
+}
+
+// TestFormDataGeneratorFallsBackStaticCustomOptions 验证明确声明静态默认能力的组件可在无候选时使用模板选项。
+func TestFormDataGeneratorFallsBackStaticCustomOptions(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "custom-weather", "model": "weather", "options": map[string]any{
+			"required": true, "options": []any{map[string]any{"label": "晴", "value": "sunny"}},
+		},
+	}}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 1})
+	if result.Pending != 0 || result.Values["weather"] != "sunny" || len(formdata.Validate(template, result.Values, nil)) != 0 {
+		t.Fatalf("静态自定义组件没有使用模板选项生成可保存值：%+v", result)
+	}
+}
+
+// TestFormDataCustomCapabilityRegistryCoversRuntimeRegistry 验证实际运行时注册的组件都具有值、候选、序列化、校验和证据能力，而非粗粒度标签。
+func TestFormDataCustomCapabilityRegistryCoversRuntimeRegistry(t *testing.T) {
+	capabilities := formdata.CustomComponentCapabilities()
+	if len(capabilities) != 20 {
+		t.Fatalf("组件能力注册数量与宿主注册表不一致：%d", len(capabilities))
+	}
+	for name, capability := range capabilities {
+		for _, key := range []string{"valueType", "candidateKind", "serialization", "candidateSource", "validation", "evidence"} {
+			if capability[key] == "" {
+				t.Fatalf("组件 %s 缺少能力 %s：%+v", name, key, capability)
+			}
+		}
+	}
+}
+
 // TestFormDataGeneratorUsesLabelsAndSmartText 验证前置 text 标签成为字段名称并生成可读文本值。
 func TestFormDataGeneratorUsesLabelsAndSmartText(t *testing.T) {
 	template := map[string]any{"list": []any{
