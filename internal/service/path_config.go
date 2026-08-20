@@ -156,7 +156,7 @@ func (s *PathConfigService) readVerifiedSnapshot(ctx context.Context, planID uin
 	if err != nil {
 		return target.PathConfigurationSnapshot{}, err
 	}
-	return s.applyStoredTemplateRules(ctx, snapshot)
+	return s.applyStoredTemplateRules(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID, snapshot)
 }
 
 // ownedPathAnalysis 是当前真实图与路径分析的组合结果。

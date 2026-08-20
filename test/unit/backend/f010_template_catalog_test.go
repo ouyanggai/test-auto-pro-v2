@@ -98,7 +98,7 @@ func TestF010AllRegisteredVuePagesHaveRules(t *testing.T) {
 	}
 }
 
-// TestF010TemplateCatalogCachesRulesAndIncrementallySkips 验证规则目录持久化后增量分析只读取变化模板，不在计划操作时重新扫描源码。
+// TestF010TemplateCatalogCachesRulesAndIncrementallySkips 验证增量任务重读目标摘要后只覆盖真实变化模板。
 func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	repository := newF010CatalogRepository()
 	reader := &f010CatalogTarget{templates: []target.FlowTemplate{
@@ -132,8 +132,24 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	if finished = waitF010CatalogJob(t, catalog, second.ID); finished.Status != "completed" || finished.Processed != 2 {
 		t.Fatalf("增量规则目录分析未完成：%+v", finished)
 	}
-	if reader.configurationReads() != 2 {
-		t.Fatalf("未变化模板不应重新读取详情，实际 %d 次", reader.configurationReads())
+	if reader.configurationReads() != 4 {
+		t.Fatalf("增量任务必须重读详情摘要以发现模板正文变化，实际 %d 次", reader.configurationReads())
+	}
+	before, found, err := repository.GetBySourceTemplateID(context.Background(), "fm-1")
+	if err != nil || !found {
+		t.Fatalf("读取增量前规则失败：found=%v err=%v", found, err)
+	}
+	reader.configurations["fm-1"] = target.PathConfigurationSnapshot{FlowCode: "leave", RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{TemplateData: `{"list":[{"type":"input","model":"reason","options":{"required":true}},{"type":"date","model":"leaveDate","options":{}}]}`}}}
+	third, err := catalog.CreateJob(context.Background(), "欧阳改", "incremental")
+	if err != nil {
+		t.Fatalf("创建正文变化增量任务失败：%v", err)
+	}
+	if finished = waitF010CatalogJob(t, catalog, third.ID); finished.Status != "completed" || finished.Processed != 2 {
+		t.Fatalf("正文变化增量任务未完成：%+v", finished)
+	}
+	after, found, err := repository.GetBySourceTemplateID(context.Background(), "fm-1")
+	if err != nil || !found || before.FormMakingDigest == after.FormMakingDigest || before.SourceFingerprint == after.SourceFingerprint {
+		t.Fatalf("FormMaking 正文变化没有触发规则更新：before=%+v after=%+v err=%v", before, after, err)
 	}
 }
 
@@ -153,7 +169,7 @@ func TestF010TemplateCatalogPersistsAllVisibleTemplates(t *testing.T) {
 		t.Fatalf("创建全模板目录任务失败：%v", err)
 	}
 	finished := waitF010CatalogJob(t, catalog, job.ID)
-	if finished.Total != 196 || finished.Completed != 196 || finished.NeedsAttention != 0 || reader.configurationReads() != 196 {
+	if finished.Total != 196 || finished.Listed != 196 || !finished.PaginationComplete || finished.Completed != 196 || finished.NeedsAttention != 0 || reader.configurationReads() != 196 {
 		t.Fatalf("全模板目录没有完整持久化：job=%+v reads=%d", finished, reader.configurationReads())
 	}
 	summary, err := catalog.Summary(context.Background())
@@ -219,7 +235,7 @@ func TestF010PathConfigurationConsumesStoredVueRules(t *testing.T) {
 	plans.plans = []model.Plan{{ID: 71, Account: "欧阳改", FlowSource: "new", TargetObjectID: "vue-1", TargetObjectName: "合同评审", Status: model.PlanStatusNotStarted}}
 	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 72, PlanID: 71, SequenceNo: 1, Name: "路径 1", Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-last"}}}}}
 	reader := pathConfigSnapshotReader{snapshot: target.PathConfigurationSnapshot{Tree: requirementConditionTree(), EntryNodeIDs: []string{"start"}, FlowCode: "contract_review", RenderType: target.FormRenderTypeVueCustom}}
-	catalog := &f010StoredRuleReader{item: model.TemplateRuleCatalogItem{FlowCode: "contract_review", RenderType: model.TemplateRuleRenderVueCustom, RuleData: map[string]any{"page": map[string]any{"pageKey": "contract_review", "pageName": "合同评审", "componentName": "ContractReview", "route": "contract_review", "fields": []map[string]any{{"path": "contractNameId", "name": "合同名称", "valueType": "select", "required": true}}, "issues": []string{}}}}}
+	catalog := &f010StoredRuleReader{item: model.TemplateRuleCatalogItem{SourceTemplateID: "vue-1", FlowCode: "contract_review", RenderType: model.TemplateRuleRenderVueCustom, Status: "complete", RuleData: map[string]any{"page": map[string]any{"pageKey": "contract_review", "pageName": "合同评审", "componentName": "ContractReview", "route": "contract_review", "fields": []map[string]any{{"path": "contractNameId", "name": "合同名称", "valueType": "select", "required": true}}, "issues": []string{}}}}}
 	serviceUnderTest := service.NewPathConfigService(service.NewPlanService(plans), reader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths, emptyPathConfigRepository{})
 	serviceUnderTest.SetTemplateRuleCatalog(catalog)
 	configuration, err := serviceUnderTest.Get(context.Background(), 71, 72)

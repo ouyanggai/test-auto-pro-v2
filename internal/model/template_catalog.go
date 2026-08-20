@@ -22,6 +22,11 @@ type TemplateRuleCatalogItem struct {
 	RenderType        TemplateRuleRenderType `json:"renderType"`
 	SourceAccount     string                 `json:"sourceAccount"`
 	SourceVersion     string                 `json:"sourceVersion"`
+	TargetDigest      string                 `json:"targetDigest"`
+	FormMakingDigest  string                 `json:"formmakingDigest"`
+	VueSourceDigest   string                 `json:"vueSourceDigest"`
+	JavaSourceDigest  string                 `json:"javaSourceDigest"`
+	ComponentDigest   string                 `json:"componentDigest"`
 	SourceFingerprint string                 `json:"sourceFingerprint"`
 	AnalyzerVersion   string                 `json:"analyzerVersion"`
 	Status            string                 `json:"status"`
@@ -48,17 +53,19 @@ type TemplateRuleCatalogSummary struct {
 
 // TemplateRuleAnalysisJob 是规则目录增量、全量或失败重试的后台任务快照。
 type TemplateRuleAnalysisJob struct {
-	ID             string     `json:"id"`
-	Mode           string     `json:"mode"`
-	Account        string     `json:"account"`
-	Status         string     `json:"status"`
-	Total          int        `json:"total"`
-	Processed      int        `json:"processed"`
-	Completed      int        `json:"completed"`
-	NeedsAttention int        `json:"needsAttention"`
-	Failed         int        `json:"failed"`
-	Message        string     `json:"message,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
-	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
+	ID                 string     `json:"id"`
+	Mode               string     `json:"mode"`
+	Account            string     `json:"account"`
+	Status             string     `json:"status"`
+	Total              int        `json:"total"`
+	Listed             int        `json:"listed"`
+	Processed          int        `json:"processed"`
+	Completed          int        `json:"completed"`
+	NeedsAttention     int        `json:"needsAttention"`
+	Failed             int        `json:"failed"`
+	PaginationComplete bool       `json:"paginationComplete"`
+	Message            string     `json:"message,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	FinishedAt         *time.Time `json:"finishedAt,omitempty"`
 }

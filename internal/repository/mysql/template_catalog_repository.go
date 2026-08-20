@@ -44,16 +44,21 @@ func (r *TemplateCatalogRepository) Upsert(ctx context.Context, item model.Templ
 	}
 	_, err = r.db.ExecContext(ctx, `INSERT INTO test_template_rule_catalog
 (source_template_id, flow_code, flow_name, template_type, form_exist, render_type, source_account,
- source_version, source_fingerprint, analyzer_version, status, rule_data, coverage, issues, analyzed_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ source_version, target_digest, formmaking_digest, vue_source_digest, java_source_digest, component_digest,
+ source_fingerprint, analyzer_version, status, rule_data, coverage, issues, analyzed_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE flow_code = VALUES(flow_code), flow_name = VALUES(flow_name), template_type = VALUES(template_type),
  form_exist = VALUES(form_exist), render_type = VALUES(render_type), source_account = VALUES(source_account),
- source_version = VALUES(source_version), source_fingerprint = VALUES(source_fingerprint), analyzer_version = VALUES(analyzer_version),
+ source_version = VALUES(source_version), target_digest = VALUES(target_digest), formmaking_digest = VALUES(formmaking_digest),
+ vue_source_digest = VALUES(vue_source_digest), java_source_digest = VALUES(java_source_digest), component_digest = VALUES(component_digest),
+ source_fingerprint = VALUES(source_fingerprint), analyzer_version = VALUES(analyzer_version),
  status = VALUES(status), rule_data = VALUES(rule_data), coverage = VALUES(coverage), issues = VALUES(issues),
  analyzed_at = VALUES(analyzed_at), updated_at = VALUES(updated_at)`,
 		strings.TrimSpace(item.SourceTemplateID), strings.TrimSpace(item.FlowCode), strings.TrimSpace(item.FlowName),
 		strings.TrimSpace(item.TemplateType), strings.TrimSpace(item.FormExist), string(item.RenderType), strings.TrimSpace(item.SourceAccount),
-		strings.TrimSpace(item.SourceVersion), strings.TrimSpace(item.SourceFingerprint), strings.TrimSpace(item.AnalyzerVersion),
+		strings.TrimSpace(item.SourceVersion), strings.TrimSpace(item.TargetDigest), strings.TrimSpace(item.FormMakingDigest),
+		strings.TrimSpace(item.VueSourceDigest), strings.TrimSpace(item.JavaSourceDigest), strings.TrimSpace(item.ComponentDigest),
+		strings.TrimSpace(item.SourceFingerprint), strings.TrimSpace(item.AnalyzerVersion),
 		strings.TrimSpace(item.Status), ruleData, coverage, issues, item.AnalyzedAt, item.CreatedAt.UTC(), item.UpdatedAt.UTC())
 	if err != nil {
 		return model.TemplateRuleCatalogItem{}, err
@@ -225,7 +230,7 @@ func (r *TemplateCatalogRepository) LatestJob(ctx context.Context, account strin
 
 // UpdateJob 原子替换任务进度和终态字段。
 func (r *TemplateCatalogRepository) UpdateJob(ctx context.Context, job model.TemplateRuleAnalysisJob) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE test_template_rule_analysis_jobs SET status = ?, total_count = ?, processed_count = ?, completed_count = ?, needs_attention_count = ?, failed_count = ?, message = ?, updated_at = ?, finished_at = ? WHERE id = ?`, job.Status, job.Total, job.Processed, job.Completed, job.NeedsAttention, job.Failed, job.Message, job.UpdatedAt.UTC(), job.FinishedAt, job.ID)
+	_, err := r.db.ExecContext(ctx, `UPDATE test_template_rule_analysis_jobs SET status = ?, total_count = ?, listed_count = ?, processed_count = ?, completed_count = ?, needs_attention_count = ?, failed_count = ?, pagination_complete = ?, message = ?, updated_at = ?, finished_at = ? WHERE id = ?`, job.Status, job.Total, job.Listed, job.Processed, job.Completed, job.NeedsAttention, job.Failed, job.PaginationComplete, job.Message, job.UpdatedAt.UTC(), job.FinishedAt, job.ID)
 	return err
 }
 
@@ -276,7 +281,8 @@ func templateCatalogComponentNames(raw any) map[string]struct{} {
 }
 
 const templateCatalogSelect = `SELECT id, source_template_id, flow_code, flow_name, template_type, form_exist, render_type,
-source_account, source_version, source_fingerprint, analyzer_version, status, rule_data, coverage, issues, analyzed_at, created_at, updated_at
+source_account, source_version, target_digest, formmaking_digest, vue_source_digest, java_source_digest, component_digest,
+source_fingerprint, analyzer_version, status, rule_data, coverage, issues, analyzed_at, created_at, updated_at
 FROM test_template_rule_catalog`
 
 type templateCatalogScanner interface {
@@ -287,7 +293,10 @@ type templateCatalogScanner interface {
 func scanTemplateCatalogItem(row templateCatalogScanner) (model.TemplateRuleCatalogItem, bool, error) {
 	var item model.TemplateRuleCatalogItem
 	var renderType, ruleData, coverage, issues string
-	if err := row.Scan(&item.ID, &item.SourceTemplateID, &item.FlowCode, &item.FlowName, &item.TemplateType, &item.FormExist, &renderType, &item.SourceAccount, &item.SourceVersion, &item.SourceFingerprint, &item.AnalyzerVersion, &item.Status, &ruleData, &coverage, &issues, &item.AnalyzedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.SourceTemplateID, &item.FlowCode, &item.FlowName, &item.TemplateType, &item.FormExist, &renderType,
+		&item.SourceAccount, &item.SourceVersion, &item.TargetDigest, &item.FormMakingDigest, &item.VueSourceDigest,
+		&item.JavaSourceDigest, &item.ComponentDigest, &item.SourceFingerprint, &item.AnalyzerVersion, &item.Status,
+		&ruleData, &coverage, &issues, &item.AnalyzedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.TemplateRuleCatalogItem{}, false, nil
 		}
@@ -315,13 +324,13 @@ func scanTemplateCatalogItem(row templateCatalogScanner) (model.TemplateRuleCata
 	return item, true, nil
 }
 
-const templateRuleAnalysisJobSelect = `SELECT id, mode, account, status, total_count, processed_count, completed_count,
-needs_attention_count, failed_count, message, created_at, updated_at, finished_at FROM test_template_rule_analysis_jobs`
+const templateRuleAnalysisJobSelect = `SELECT id, mode, account, status, total_count, listed_count, processed_count, completed_count,
+needs_attention_count, failed_count, pagination_complete, message, created_at, updated_at, finished_at FROM test_template_rule_analysis_jobs`
 
 // scanTemplateRuleAnalysisJob 解析规则分析任务并区分不存在与数据库错误。
 func scanTemplateRuleAnalysisJob(row templateCatalogScanner) (model.TemplateRuleAnalysisJob, bool, error) {
 	var job model.TemplateRuleAnalysisJob
-	if err := row.Scan(&job.ID, &job.Mode, &job.Account, &job.Status, &job.Total, &job.Processed, &job.Completed, &job.NeedsAttention, &job.Failed, &job.Message, &job.CreatedAt, &job.UpdatedAt, &job.FinishedAt); err != nil {
+	if err := row.Scan(&job.ID, &job.Mode, &job.Account, &job.Status, &job.Total, &job.Listed, &job.Processed, &job.Completed, &job.NeedsAttention, &job.Failed, &job.PaginationComplete, &job.Message, &job.CreatedAt, &job.UpdatedAt, &job.FinishedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.TemplateRuleAnalysisJob{}, false, nil
 		}

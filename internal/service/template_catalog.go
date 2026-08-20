@@ -21,7 +21,8 @@ import (
 	"test-auto-pro-v2/internal/repository"
 )
 
-const templateCatalogAnalyzerVersion = "f010-v1"
+const templateCatalogAnalyzerVersion = "f010r-v2"
+const templateCatalogSourceAccount = "欧阳改"
 
 // TemplateCatalogService 提供本地规则目录的查询和可恢复分析任务。
 type TemplateCatalogService struct {
@@ -82,7 +83,7 @@ func (s *TemplateCatalogService) Recover(ctx context.Context) error {
 func (s *TemplateCatalogService) CreateJob(ctx context.Context, account, mode string) (model.TemplateRuleAnalysisJob, error) {
 	account = strings.TrimSpace(account)
 	mode = strings.TrimSpace(mode)
-	if account == "" || !validTemplateCatalogMode(mode) {
+	if account != templateCatalogSourceAccount || !validTemplateCatalogMode(mode) {
 		return model.TemplateRuleAnalysisJob{}, &TemplateCatalogError{Kind: TemplateCatalogErrorInvalid, Message: "模板规则分析参数不正确"}
 	}
 	now := s.now().UTC()
@@ -144,11 +145,12 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 	}
 	page, pageSize := 1, 25
 	processed := 0
+	seen := map[string]bool{}
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		result, err := s.target.Templates(ctx, job.Account, "", page, pageSize)
+		result, err := s.readTemplatePage(ctx, job.Account, page, pageSize)
 		if err != nil {
 			job.Status, job.Message = "failed", "读取目标平台模板列表失败，请重试"
 			job.UpdatedAt = s.now().UTC()
@@ -163,6 +165,12 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 			if ctx.Err() != nil {
 				return
 			}
+			templateID := strings.TrimSpace(template.ID)
+			if templateID == "" || seen[templateID] {
+				continue
+			}
+			seen[templateID] = true
+			job.Listed = len(seen)
 			item, skipped := s.analyzeTemplate(ctx, job.Account, job.Mode, template)
 			var itemErr error
 			if !skipped {
@@ -178,14 +186,50 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 			job.UpdatedAt = s.now().UTC()
 			_ = s.repository.UpdateJob(ctx, job)
 		}
-		if !result.HasMore || len(result.Items) == 0 || processed >= result.Total {
+		if !result.HasMore {
+			job.PaginationComplete = true
 			break
+		}
+		if len(result.Items) == 0 {
+			job.Status, job.Message = "failed", "目标模板分页未完整读取，请重试"
+			job.UpdatedAt = s.now().UTC()
+			job.FinishedAt = &job.UpdatedAt
+			_ = s.repository.UpdateJob(context.Background(), job)
+			return
 		}
 		page++
 	}
 	now := s.now().UTC()
+	if !job.PaginationComplete || job.Listed != job.Total || job.Processed != job.Total {
+		job.Status, job.Message, job.UpdatedAt, job.FinishedAt = "failed", "目标模板分页数量与分析计数不一致，请重试", now, &now
+		_ = s.repository.UpdateJob(context.Background(), job)
+		return
+	}
 	job.Status, job.Message, job.UpdatedAt, job.FinishedAt = "completed", "模板规则分析已完成", now, &now
 	_ = s.repository.UpdateJob(context.Background(), job)
+}
+
+// readTemplatePage 对目标模板分页执行有界重试，连续失败后才终止整次目录任务。
+func (s *TemplateCatalogService) readTemplatePage(ctx context.Context, account string, page, pageSize int) (target.Page[target.FlowTemplate], error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		result, err := s.target.Templates(ctx, account, "", page, pageSize)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if attempt >= 2 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return target.Page[target.FlowTemplate]{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return target.Page[target.FlowTemplate]{}, lastErr
 }
 
 // countTemplateCatalogJobItem 按规则条目的真实终态累计任务计数，跳过未变化模板时也不得改写状态语义。
@@ -202,13 +246,9 @@ func countTemplateCatalogJobItem(job *model.TemplateRuleAnalysisJob, status stri
 
 // analyzeTemplate 将目标模板和宿主 Vue 页面规则转成不含原始源码的本地快照。
 func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, mode string, template target.FlowTemplate) (model.TemplateRuleCatalogItem, bool) {
-	if existing, found, err := s.repository.GetBySourceTemplateID(ctx, template.ID); err == nil && found {
-		if mode == "incremental" && existing.SourceVersion == firstCatalogText(template.UpdateDate, template.CreateDate) && existing.AnalyzerVersion == templateCatalogAnalyzerVersion {
-			return existing, true
-		}
-		if mode == "retry" && existing.Status == "complete" {
-			return existing, true
-		}
+	existing, existingFound, _ := s.repository.GetBySourceTemplateID(ctx, template.ID)
+	if mode == "retry" && existingFound && existing.Status == "complete" {
+		return existing, true
 	}
 	now := s.now().UTC()
 	item := model.TemplateRuleCatalogItem{
@@ -224,6 +264,19 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 	}
 	item.FlowCode = firstCatalogText(snapshot.FlowCode, item.FlowCode)
 	item.RenderType = templateRuleRenderType(snapshot.RenderType)
+	item.TargetDigest = catalogDigest(struct {
+		FlowCode   string
+		RenderType target.FormRenderType
+		Tree       *target.FlowNodeTemplate
+		Fields     []target.FormFieldDetail
+	}{snapshot.FlowCode, snapshot.RenderType, snapshot.Tree, snapshot.FormFields})
+	item.FormMakingDigest = catalogDigest(snapshot.Forms)
+	item.VueSourceDigest = s.pages.vueSourceDigest
+	item.JavaSourceDigest = s.pages.javaSourceDigest
+	item.ComponentDigest = s.pages.componentDigest
+	if mode == "incremental" && existingFound && sameTemplateCatalogSources(existing, item) {
+		return existing, true
+	}
 	ruleData := map[string]any{
 		"flowCode": item.FlowCode, "renderType": item.RenderType,
 		// 流程条件与组件能力作为同一份本地快照持久化，计划页面不能在用户操作时重新分析宿主源码。
@@ -346,11 +399,26 @@ func templateRuleRenderType(value target.FormRenderType) model.TemplateRuleRende
 // catalogFingerprint 为同一模板、来源版本与规则内容生成稳定指纹，支持增量同步判断。
 func catalogFingerprint(item model.TemplateRuleCatalogItem) string {
 	payload, _ := json.Marshal(struct {
-		ID, FlowCode, SourceVersion, AnalyzerVersion string
-		RuleData                                     map[string]any
-	}{item.SourceTemplateID, item.FlowCode, item.SourceVersion, item.AnalyzerVersion, item.RuleData})
+		ID, FlowCode, SourceVersion, TargetDigest, FormMakingDigest, VueSourceDigest, JavaSourceDigest, ComponentDigest, AnalyzerVersion string
+		RuleData                                                                                                                         map[string]any
+	}{item.SourceTemplateID, item.FlowCode, item.SourceVersion, item.TargetDigest, item.FormMakingDigest, item.VueSourceDigest, item.JavaSourceDigest, item.ComponentDigest, item.AnalyzerVersion, item.RuleData})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+// catalogDigest 对可证明的来源对象生成稳定摘要，原始源码和目标响应不会进入目录统计输出。
+func catalogDigest(value any) string {
+	payload, _ := json.Marshal(value)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// sameTemplateCatalogSources 只有六类来源摘要和分析器版本全部一致时才允许增量跳过。
+func sameTemplateCatalogSources(existing, current model.TemplateRuleCatalogItem) bool {
+	return existing.SourceVersion == current.SourceVersion && existing.TargetDigest == current.TargetDigest &&
+		existing.FormMakingDigest == current.FormMakingDigest && existing.VueSourceDigest == current.VueSourceDigest &&
+		existing.JavaSourceDigest == current.JavaSourceDigest && existing.ComponentDigest == current.ComponentDigest &&
+		existing.AnalyzerVersion == current.AnalyzerVersion
 }
 
 // newTemplateCatalogJobID 生成可排序且不暴露账号信息的分析任务 ID。
@@ -419,10 +487,13 @@ const (
 
 // vuePageRuleScanner 从宿主实际运行时代码中提取页面入口、配置字段和自定义组件注册表。
 type vuePageRuleScanner struct {
-	root           string
-	components     map[string]string
-	componentFiles map[string]string
-	pageByCode     map[string]vuePageEntry
+	root             string
+	components       map[string]string
+	componentFiles   map[string]string
+	pageByCode       map[string]vuePageEntry
+	vueSourceDigest  string
+	javaSourceDigest string
+	componentDigest  string
 }
 
 type vuePageEntry struct {
@@ -481,6 +552,34 @@ func (s *vuePageRuleScanner) load() {
 		}
 	}
 	s.loadHostVuePageFiles()
+	s.vueSourceDigest = digestCatalogDirectory(filepath.Join(s.root, "form-runtime", "runtime-source", "src"), map[string]bool{".js": true, ".vue": true, ".json": true})
+	s.javaSourceDigest = digestCatalogDirectory(filepath.Join(s.root, "参考代码", "java-serve"), map[string]bool{".java": true})
+	s.componentDigest = catalogDigest(struct {
+		Registry     map[string]string
+		Capabilities map[string]map[string]string
+		Source       string
+	}{s.components, formdata.CustomComponentCapabilities(), digestCatalogDirectory(filepath.Join(s.root, "form-runtime", "runtime-source", "src", "components", "Custom"), map[string]bool{".js": true, ".vue": true})})
+}
+
+// digestCatalogDirectory 按相对路径和文件内容生成目录摘要，缺失目录以稳定空摘要参与增量判断。
+func digestCatalogDirectory(root string, extensions map[string]bool) string {
+	type sourceFile struct{ Path, Digest string }
+	files := make([]sourceFile, 0)
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() || !extensions[strings.ToLower(filepath.Ext(path))] {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		sum := sha256.Sum256(data)
+		relative, _ := filepath.Rel(root, path)
+		files = append(files, sourceFile{Path: filepath.ToSlash(relative), Digest: hex.EncodeToString(sum[:])})
+		return nil
+	})
+	sort.Slice(files, func(left, right int) bool { return files[left].Path < files[right].Path })
+	return catalogDigest(files)
 }
 
 // loadHostVuePageFiles 读取当前运行时实际使用的宿主组件注册表，把公开组件名解析到真实 Vue 文件。
