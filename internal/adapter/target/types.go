@@ -223,7 +223,13 @@ type VueCustomPageRule struct {
 	PageName      string
 	ComponentName string
 	Route         string
+	InitialState  map[string]any
 	Fields        []VueCustomFieldRule
+	Dependencies  []VueCustomDependencyRule
+	ReadRequests  []VueCustomRequestRule
+	Submit        *VueCustomSubmitRule
+	Identity      *VueCustomIdentityRule
+	Java          *JavaPageRule
 	Issues        []string
 }
 
@@ -234,9 +240,15 @@ type VueCustomFieldRule struct {
 	ValueType     string
 	Required      bool
 	ReadOnly      bool
+	Hidden        bool
+	Disabled      bool
 	DefaultValue  any
 	CandidateKind string
 	DataSource    string
+	Nested        bool
+	Collection    bool
+	Format        string
+	Validation    []string
 	Options       []VueCustomFieldOption
 }
 
@@ -244,6 +256,67 @@ type VueCustomFieldRule struct {
 type VueCustomFieldOption struct {
 	Label string
 	Value any
+}
+
+// VueCustomDependencyRule 描述字段联动和动态候选的已证明依赖，不保存动态脚本正文。
+type VueCustomDependencyRule struct {
+	Field   string
+	Depends []string
+	Kind    string
+	Source  string
+}
+
+// VueCustomRequestRule 描述页面初始化或联动阶段发生的只读请求协议。
+type VueCustomRequestRule struct {
+	Name     string
+	Method   string
+	Path     string
+	Phase    string
+	Response string
+	ReadOnly bool
+	Issues   []string
+}
+
+// VueCustomSubmitRule 描述宿主保存/提交协议；配置工作区只读显示，不执行该写请求。
+type VueCustomSubmitRule struct {
+	Method          string
+	Path            string
+	Payload         []string
+	SuccessChecks   []string `json:"successChecks"`
+	FieldErrorPaths []string
+	Blocked         bool
+	Issues          []string
+}
+
+// VueCustomIdentityRule 描述宿主读取用户、部门、公司等身份上下文的真实键。
+type VueCustomIdentityRule struct {
+	UserKeys       []string
+	DepartmentKeys []string
+	CompanyKeys    []string
+	Source         string
+}
+
+// JavaPageRule 是 Java 后端只读静态分析结果，与宿主 Vue 页面按流程编码和接口契约对齐。
+type JavaPageRule struct {
+	Module        string
+	Controller    string
+	Routes        []JavaRouteRule
+	RequestDTO    []string
+	Response      []string
+	SuccessChecks []string
+	FieldErrors   []string
+	DataSources   []string
+	IdentityReads []string
+	Issues        []string
+}
+
+// JavaRouteRule 是 Java Controller 方法的最小公开接口摘要。
+type JavaRouteRule struct {
+	Method   string
+	Path     string
+	Handler  string
+	Request  string
+	Response string
 }
 
 // PathConfigurationSnapshot 把同一真实流程树、当前入口、表单字段详情和实例现值绑定在一起。

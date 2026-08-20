@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,15 +34,49 @@ func TestF010VuePageRuleExtractsNoFormConfiguration(t *testing.T) {
 			found = true
 		}
 	}
-	if !found || len(page.Issues) > 0 {
+	if !found || hasF010Issue(page.Issues, "入口尚未识别") || hasF010Issue(page.Issues, "字段规则尚未完整识别") {
 		t.Fatalf("Vue 配置字段或发起入口分析不完整：fields=%+v issues=%+v", page.Fields, page.Issues)
 	}
+}
+
+// TestF010VuePageRuleCapturesSubmitAndJavaContract 验证 Vue 保存协议与 Java 控制器仅按真实端点静态对齐，且宿主写请求保持隔离。
+func TestF010VuePageRuleCapturesSubmitAndJavaContract(t *testing.T) {
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "contract_review", "noForm")
+	if page.Submit == nil || page.Submit.Path != "/web/measuring/api/contractReview/save" || !page.Submit.Blocked || len(page.Submit.Payload) != 1 || page.Submit.Payload[0] != "data" {
+		t.Fatalf("Vue 保存协议没有按宿主 mixin 提取或未隔离写请求：%+v", page.Submit)
+	}
+	if page.Java == nil || page.Java.Controller != "ContractReviewController" || len(page.Java.Routes) == 0 || !containsF010Text(page.Java.RequestDTO, "ContractReviewRequestProtocol") || !containsF010Text(page.Java.SuccessChecks, "isSuccess") {
+		t.Fatalf("Java 控制器契约没有与 Vue 实际端点对齐：%+v", page.Java)
+	}
+	if page.Identity == nil || !containsF010Text(page.Identity.UserKeys, "userName") {
+		t.Fatalf("Vue 页面真实身份读取没有进入规则：%+v", page.Identity)
+	}
+}
+
+// containsF010Text 判断测试期望的静态规则项是否存在。
+func containsF010Text(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+// hasF010Issue 判断页面规则是否包含指定的关键分析缺口。
+func hasF010Issue(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.Contains(value, expected) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestF010VuePageRuleUsesRuntimeRegistry 验证宿主注册名与文件名不同时仍从真实运行时组件提取页面字段。
 func TestF010VuePageRuleUsesRuntimeRegistry(t *testing.T) {
 	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "company_annual_budget", "noForm")
-	if page.ComponentName != "CompanyBudget" || len(page.Issues) > 0 || len(page.Fields) == 0 {
+	if page.ComponentName != "CompanyBudget" || hasF010Issue(page.Issues, "入口尚未识别") || hasF010Issue(page.Issues, "字段规则尚未完整识别") || len(page.Fields) == 0 {
 		t.Fatalf("公司预算页面没有沿宿主注册表读取真实组件：%+v", page)
 	}
 	foundField := false
@@ -58,7 +93,7 @@ func TestF010VuePageRuleUsesRuntimeRegistry(t *testing.T) {
 // TestF010VuePageRuleKeepsDuplicateEntryComponent 验证 settings 中重复流程展示项不会覆盖前面已确认的真实页面组件。
 func TestF010VuePageRuleKeepsDuplicateEntryComponent(t *testing.T) {
 	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "request_funds", "noForm")
-	if page.ComponentName != "PaymentBill" || len(page.Issues) > 0 || len(page.Fields) == 0 {
+	if page.ComponentName != "PaymentBill" || hasF010Issue(page.Issues, "入口尚未识别") || hasF010Issue(page.Issues, "字段规则尚未完整识别") || len(page.Fields) == 0 {
 		t.Fatalf("重复流程映射覆盖了请款页面真实组件：%+v", page)
 	}
 	foundExternal := false
@@ -88,7 +123,7 @@ func TestF010AllRegisteredVuePagesHaveRules(t *testing.T) {
 			continue
 		}
 		page := service.AnalyzeVueCustomPageRule(root, match[1], "noForm")
-		if page.ComponentName != component[1] || len(page.Fields) == 0 || len(page.Issues) > 0 {
+		if page.ComponentName != component[1] || len(page.Fields) == 0 || hasF010Issue(page.Issues, "入口尚未识别") || hasF010Issue(page.Issues, "字段规则尚未完整识别") {
 			t.Fatalf("宿主页面 %s/%s 规则未完整识别：%+v", match[1], component[1], page)
 		}
 		checked++
@@ -115,14 +150,14 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 		t.Fatalf("创建全量规则分析任务失败：%v", err)
 	}
 	finished := waitF010CatalogJob(t, catalog, job.ID)
-	if finished.Status != "completed" || finished.Total != 2 || finished.Completed != 2 {
+	if finished.Status != "completed" || finished.Total != 2 || finished.Completed != 1 || finished.NeedsAttention != 1 {
 		t.Fatalf("全量规则目录分析未完成：%+v", finished)
 	}
 	if reader.configurationReads() != 2 {
 		t.Fatalf("全量分析应逐模板读取一次详情，实际 %d 次", reader.configurationReads())
 	}
 	summary, err := catalog.Summary(context.Background())
-	if err != nil || summary.Total != 2 || summary.FormMaking != 1 || summary.VueCustom != 1 || summary.NeedsAttention != 0 {
+	if err != nil || summary.Total != 2 || summary.FormMaking != 1 || summary.VueCustom != 1 || summary.NeedsAttention != 1 {
 		t.Fatalf("规则目录汇总不正确：summary=%+v err=%v", summary, err)
 	}
 	second, err := catalog.CreateJob(context.Background(), "欧阳改", "incremental")

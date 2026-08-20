@@ -491,6 +491,8 @@ type vuePageRuleScanner struct {
 	components       map[string]string
 	componentFiles   map[string]string
 	pageByCode       map[string]vuePageEntry
+	apiPaths         map[string]string
+	javaSources      []javaRuleSource
 	vueSourceDigest  string
 	javaSourceDigest string
 	componentDigest  string
@@ -502,9 +504,16 @@ type vuePageEntry struct {
 	isShow    bool
 }
 
+// javaRuleSource 是 Java 控制器的只读分析输入，只在进程内保存，绝不写入规则目录。
+type javaRuleSource struct {
+	module  string
+	path    string
+	content string
+}
+
 // newVuePageRuleScanner 创建可在分析任务中复用的只读源码扫描器。
 func newVuePageRuleScanner(root string) *vuePageRuleScanner {
-	scanner := &vuePageRuleScanner{root: root, components: map[string]string{}, componentFiles: map[string]string{}, pageByCode: map[string]vuePageEntry{}}
+	scanner := &vuePageRuleScanner{root: root, components: map[string]string{}, componentFiles: map[string]string{}, pageByCode: map[string]vuePageEntry{}, apiPaths: map[string]string{}}
 	scanner.load()
 	return scanner
 }
@@ -552,6 +561,8 @@ func (s *vuePageRuleScanner) load() {
 		}
 	}
 	s.loadHostVuePageFiles()
+	s.loadAPIPaths()
+	s.loadJavaRuleSources()
 	s.vueSourceDigest = digestCatalogDirectory(filepath.Join(s.root, "form-runtime", "runtime-source", "src"), map[string]bool{".js": true, ".vue": true, ".json": true})
 	s.javaSourceDigest = digestCatalogDirectory(filepath.Join(s.root, "参考代码", "java-serve"), map[string]bool{".java": true})
 	s.componentDigest = catalogDigest(struct {
@@ -559,6 +570,70 @@ func (s *vuePageRuleScanner) load() {
 		Capabilities map[string]map[string]string
 		Source       string
 	}{s.components, formdata.CustomComponentCapabilities(), digestCatalogDirectory(filepath.Join(s.root, "form-runtime", "runtime-source", "src", "components", "Custom"), map[string]bool{".js": true, ".vue": true})})
+}
+
+// loadAPIPaths 从宿主真实 API 常量表提取命名端点，静态分析只记录声明路径而不发起请求。
+func (s *vuePageRuleScanner) loadAPIPaths() {
+	content := s.read("form-runtime/runtime-source/src/api/index.js")
+	type apiObject struct {
+		name   string
+		indent int
+	}
+	objects := make([]apiObject, 0)
+	objectPattern := regexp.MustCompile(`^(\s*)([A-Za-z0-9_]+)\s*:\s*\{`)
+	propertyPattern := regexp.MustCompile(`^(\s*)([A-Za-z0-9_]+)\s*:\s*['"]([^'"]+)['"]`)
+	closePattern := regexp.MustCompile(`^(\s*)\}`)
+	for _, line := range strings.Split(content, "\n") {
+		if match := closePattern.FindStringSubmatch(line); len(match) > 1 {
+			indent := len(match[1])
+			for len(objects) > 0 && objects[len(objects)-1].indent >= indent {
+				objects = objects[:len(objects)-1]
+			}
+			continue
+		}
+		if match := objectPattern.FindStringSubmatch(line); len(match) > 2 {
+			indent := len(match[1])
+			for len(objects) > 0 && objects[len(objects)-1].indent >= indent {
+				objects = objects[:len(objects)-1]
+			}
+			objects = append(objects, apiObject{name: match[2], indent: indent})
+			continue
+		}
+		if match := propertyPattern.FindStringSubmatch(line); len(match) > 3 && len(objects) > 0 {
+			parts := make([]string, 0, len(objects)+1)
+			for _, object := range objects {
+				parts = append(parts, object.name)
+			}
+			parts = append(parts, match[2])
+			s.apiPaths[strings.Join(parts, ".")] = match[3]
+		}
+	}
+}
+
+// loadJavaRuleSources 只读取带 Spring 路由注解的控制器，供页面协议与 Java 端点交叉验证。
+func (s *vuePageRuleScanner) loadJavaRuleSources() {
+	root := filepath.Join(s.root, "参考代码", "java-serve")
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() || filepath.Ext(path) != ".java" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || !strings.Contains(string(data), "RequestMapping") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		parts := strings.Split(filepath.ToSlash(relative), "/")
+		module := "java-serve"
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			module = parts[0]
+		}
+		s.javaSources = append(s.javaSources, javaRuleSource{module: module, path: filepath.ToSlash(relative), content: string(data)})
+		return nil
+	})
+	sort.Slice(s.javaSources, func(left, right int) bool { return s.javaSources[left].path < s.javaSources[right].path })
 }
 
 // digestCatalogDirectory 按相对路径和文件内容生成目录摘要，缺失目录以稳定空摘要参与增量判断。
@@ -609,7 +684,11 @@ func (s *vuePageRuleScanner) loadHostVuePageFiles() {
 // Rule 生成一个流程编码对应的 Vue 页面规则；未知入口必须显式进入需处理状态。
 func (s *vuePageRuleScanner) Rule(flowCode, formExist string) target.VueCustomPageRule {
 	entry, exists := s.pageByCode[strings.TrimSpace(flowCode)]
-	page := target.VueCustomPageRule{PageKey: flowCode, PageName: entry.name, ComponentName: entry.component, Route: flowCode, Fields: []target.VueCustomFieldRule{}, Issues: []string{}}
+	page := target.VueCustomPageRule{
+		PageKey: flowCode, PageName: entry.name, ComponentName: entry.component, Route: flowCode,
+		InitialState: map[string]any{}, Fields: []target.VueCustomFieldRule{}, Dependencies: []target.VueCustomDependencyRule{},
+		ReadRequests: []target.VueCustomRequestRule{}, Issues: []string{},
+	}
 	if !exists {
 		page.PageName = firstCatalogText(flowCode)
 		page.Issues = append(page.Issues, "宿主 Vue 页面入口尚未识别")
@@ -623,12 +702,32 @@ func (s *vuePageRuleScanner) Rule(flowCode, formExist string) target.VueCustomPa
 		fields, found = s.componentFields(entry.component)
 	}
 	page.Fields = fields
+	// 配置式页面的字段结构与组件页面的生命周期逻辑分开存放，合并分析但不执行任何宿主脚本。
+	source := s.configSource(flowCode)
+	if componentSource := s.componentSource(page.ComponentName); componentSource != "" {
+		source += "\n" + componentSource
+	}
+	page.InitialState = vueInitialState(page.Fields, source)
+	page.Dependencies = vueFieldDependencies(page.Fields, source)
+	requests, requestIssues := s.vueReadRequests(source)
+	page.ReadRequests = requests
+	page.Issues = append(page.Issues, requestIssues...)
+	page.Submit = s.vueSubmitRule(flowCode)
+	page.Identity = vueIdentityRule(source)
+	page.Java = s.javaPageRule(page.ReadRequests, page.Submit, page.Identity)
+	if page.Submit != nil {
+		page.Issues = append(page.Issues, page.Submit.Issues...)
+	}
+	if page.Java != nil {
+		page.Issues = append(page.Issues, page.Java.Issues...)
+	}
 	if !found {
 		page.Issues = append(page.Issues, "宿主 Vue 页面字段规则尚未完整识别")
 	}
 	if strings.TrimSpace(formExist) == "" {
 		page.Issues = append(page.Issues, "宿主页面缺少渲染标记")
 	}
+	page.Issues = uniqueCatalogStrings(page.Issues)
 	return page
 }
 
@@ -643,6 +742,18 @@ func (s *vuePageRuleScanner) Components() map[string]string {
 
 // configFields 从 NoFormFLow 配置式页面提取 prop、类型和 required 规则。
 func (s *vuePageRuleScanner) configFields(flowCode string) ([]target.VueCustomFieldRule, string, bool) {
+	content := s.configSource(flowCode)
+	if content == "" {
+		return nil, "", false
+	}
+	fields := parseVueConfigFields(content)
+	component := strings.TrimSuffix(filepath.Base(s.configPath(flowCode)), filepath.Ext(s.configPath(flowCode)))
+	component = strings.TrimSuffix(component, "Config")
+	return fields, component, len(fields) > 0
+}
+
+// configPath 按流程编码查找真实 NoFormFlow 配置文件，不为某个合同或页面维护专用表。
+func (s *vuePageRuleScanner) configPath(flowCode string) string {
 	configRoot := filepath.Join(s.root, "form-runtime", "runtime-source", "src", "components", "NoFormFLow", "config")
 	var path string
 	_ = filepath.Walk(configRoot, func(candidate string, info os.FileInfo, err error) error {
@@ -656,17 +767,20 @@ func (s *vuePageRuleScanner) configFields(flowCode string) ([]target.VueCustomFi
 		}
 		return nil
 	})
+	return path
+}
+
+// configSource 读取匹配配置文件的文本，仅供静态规则提取且不把原文带出服务边界。
+func (s *vuePageRuleScanner) configSource(flowCode string) string {
+	path := s.configPath(flowCode)
 	if path == "" {
-		return nil, "", false
+		return ""
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", false
+		return ""
 	}
-	fields := parseVueConfigFields(string(content))
-	component := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	component = strings.TrimSuffix(component, "Config")
-	return fields, component, len(fields) > 0
+	return string(content)
 }
 
 // normalizeVueRuleKey 将流程编码和配置文件名归一化后比较，避免为每个流程维护专用映射表。
@@ -717,11 +831,12 @@ func parseVueConfigFields(content string) []target.VueCustomFieldRule {
 			}
 		}
 		candidateKind := vueCandidateKind(typeName, window, len(options))
-		fields = append(fields, target.VueCustomFieldRule{
+		field := target.VueCustomFieldRule{
 			Path: path, Name: title, ValueType: normalizeVueFieldType(typeName), Required: strings.Contains(window, "required: true") || strings.Contains(window, "isRequire: true"),
-			ReadOnly: strings.Contains(window, "disabled: true"), DefaultValue: defaultValue,
+			ReadOnly: strings.Contains(window, "disabled: true") || strings.Contains(window, "readonly: true"), Disabled: strings.Contains(window, "disabled: true"), Hidden: strings.Contains(window, "hidden: true") || strings.Contains(window, "isShow: false"), DefaultValue: defaultValue,
 			CandidateKind: candidateKind, DataSource: vueFieldDataSource(candidateKind, window), Options: options,
-		})
+		}
+		fields = append(fields, applyVueFieldFacts(field, window))
 	}
 	return fields
 }
@@ -823,8 +938,8 @@ func vueCandidateKind(typeName, window string, optionCount int) string {
 	}
 }
 
-// componentFields 从宿主 Vue 组件提取 v-model 与 data 字段，覆盖非配置式页面的真实状态入口。
-func (s *vuePageRuleScanner) componentFields(component string) ([]target.VueCustomFieldRule, bool) {
+// componentSource 按宿主运行时注册表读取真实 Vue 组件，找不到时才以同名文件作为受限回退。
+func (s *vuePageRuleScanner) componentSource(component string) string {
 	var content string
 	if registeredPath := s.componentFiles[component]; registeredPath != "" {
 		if data, err := os.ReadFile(registeredPath); err == nil {
@@ -845,6 +960,12 @@ func (s *vuePageRuleScanner) componentFields(component string) ([]target.VueCust
 			return nil
 		})
 	}
+	return content
+}
+
+// componentFields 从宿主 Vue 组件提取 v-model 与 data 字段，覆盖非配置式页面的真实状态入口。
+func (s *vuePageRuleScanner) componentFields(component string) ([]target.VueCustomFieldRule, bool) {
+	content := s.componentSource(component)
 	if content == "" {
 		return nil, false
 	}
@@ -859,11 +980,11 @@ func (s *vuePageRuleScanner) componentFields(component string) ([]target.VueCust
 	}
 	for _, match := range pattern.FindAllStringSubmatch(content, -1) {
 		path := strings.TrimSpace(match[1])
-		if path == "" || strings.Contains(path, "[") || strings.HasPrefix(path, "scope.") || strings.HasPrefix(path, "val.") || seen[path] {
+		if path == "" || strings.HasSuffix(path, "[") || strings.HasPrefix(path, "scope.") || strings.HasPrefix(path, "val.") || seen[path] {
 			continue
 		}
 		seen[path] = true
-		fields = append(fields, target.VueCustomFieldRule{Path: path, Name: path, ValueType: "runtime", CandidateKind: "runtime"})
+		fields = append(fields, applyVueFieldFacts(target.VueCustomFieldRule{Path: path, Name: path, ValueType: "runtime", CandidateKind: "runtime"}, content))
 	}
 	return fields, len(fields) > 0
 }
@@ -886,10 +1007,11 @@ func parseVueStateFields(content string) []target.VueCustomFieldRule {
 		}
 		seen[path] = true
 		requiredPattern := regexp.MustCompile(`!\s*this\.rawData\.` + regexp.QuoteMeta(path) + `\b`)
-		fields = append(fields, target.VueCustomFieldRule{
+		field := target.VueCustomFieldRule{
 			Path: path, Name: path, ValueType: "runtime", Required: requiredPattern.MatchString(content), ReadOnly: true,
 			CandidateKind: "runtime_source", DataSource: dataSource,
-		})
+		}
+		fields = append(fields, applyVueFieldFacts(field, content))
 	}
 	return fields
 }
@@ -908,7 +1030,7 @@ func parseVueTemplateFields(content string) []target.VueCustomFieldRule {
 			continue
 		}
 		path := strings.TrimSpace(model[1])
-		if path == "" || strings.Contains(path, "[") || strings.HasPrefix(path, "scope.") || strings.HasPrefix(path, "val.") || seen[path] {
+		if path == "" || strings.HasSuffix(path, "[") || strings.HasPrefix(path, "scope.") || strings.HasPrefix(path, "val.") || seen[path] {
 			continue
 		}
 		seen[path] = true
@@ -922,13 +1044,40 @@ func parseVueTemplateFields(content string) []target.VueCustomFieldRule {
 		typeName := vueTemplateControlType(body)
 		options := vueTemplateOptions(body)
 		candidateKind := vueCandidateKind(typeName, body, len(options))
-		fields = append(fields, target.VueCustomFieldRule{
+		field := target.VueCustomFieldRule{
 			Path: path, Name: name, ValueType: normalizeVueFieldType(typeName), Required: vueTemplateFieldRequired(content, attributes, prop),
-			ReadOnly: strings.Contains(body, "disabled") || strings.Contains(body, ":disabled"), CandidateKind: candidateKind,
+			ReadOnly: strings.Contains(body, "disabled") || strings.Contains(body, ":disabled") || strings.Contains(body, "readonly") || strings.Contains(body, ":readonly"), Disabled: strings.Contains(body, "disabled") || strings.Contains(body, ":disabled"), Hidden: strings.Contains(attributes, "v-if=\"false\"") || strings.Contains(attributes, "v-show=\"false\""), CandidateKind: candidateKind,
 			DataSource: vueFieldDataSource(candidateKind, body), Options: options,
-		})
+		}
+		fields = append(fields, applyVueFieldFacts(field, body))
 	}
 	return fields
+}
+
+// applyVueFieldFacts 为已识别字段补充路径、格式和验证事实；动态表达式只标记为规则，绝不执行或推断其值。
+func applyVueFieldFacts(field target.VueCustomFieldRule, source string) target.VueCustomFieldRule {
+	path := strings.TrimSpace(field.Path)
+	field.Nested = strings.Contains(path, ".")
+	field.Collection = strings.Contains(path, "[") || strings.Contains(path, "[]")
+	validation := make([]string, 0, 3)
+	if field.Required {
+		validation = append(validation, "required")
+	}
+	if strings.Contains(source, "pattern") {
+		validation = append(validation, "pattern")
+	}
+	if strings.Contains(source, "validator") {
+		validation = append(validation, "custom_validator")
+	}
+	if field.ValueType == "date" {
+		field.Format = "date"
+	} else if strings.Contains(source, "type=\"email\"") || strings.Contains(source, "type: 'email'") || strings.Contains(source, "type: \"email\"") {
+		field.Format = "email"
+	} else if strings.Contains(source, "pattern") {
+		field.Format = "pattern"
+	}
+	field.Validation = validation
+	return field
 }
 
 // vueTemplateControlType 按宿主模板实际控件标签识别统一字段类型，未知控件保持 runtime 交给真实页面。
@@ -964,6 +1113,296 @@ func vueTemplateFieldRequired(content, attributes, prop string) bool {
 	}
 	pattern := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(prop) + `\s*:\s*\[[^\]]*required\s*:\s*true`)
 	return pattern.MatchString(content)
+}
+
+// vueInitialState 汇总字段声明中可证明的默认值；未声明初值的字段保持缺席，禁止以空值猜测宿主状态。
+func vueInitialState(fields []target.VueCustomFieldRule, _ string) map[string]any {
+	result := make(map[string]any)
+	for _, field := range fields {
+		if strings.TrimSpace(field.Path) == "" || field.DefaultValue == nil {
+			continue
+		}
+		if value, ok := field.DefaultValue.(string); ok && value == "" {
+			continue
+		}
+		result[field.Path] = field.DefaultValue
+	}
+	return result
+}
+
+// vueFieldDependencies 从实际赋值语句提取字段联动边，无法归属到已识别字段的表达式不会被猜测为业务规则。
+func vueFieldDependencies(fields []target.VueCustomFieldRule, source string) []target.VueCustomDependencyRule {
+	byTerminal := make(map[string]string, len(fields))
+	for _, field := range fields {
+		path := strings.TrimSpace(field.Path)
+		if path == "" {
+			continue
+		}
+		parts := strings.FieldsFunc(path, func(r rune) bool { return r == '.' || r == '[' || r == ']' })
+		if len(parts) > 0 {
+			byTerminal[parts[len(parts)-1]] = path
+		}
+	}
+	pattern := regexp.MustCompile(`this\.([A-Za-z0-9_]+)\s*=\s*[^\n;]*this\.([A-Za-z0-9_]+)`)
+	result := make([]target.VueCustomDependencyRule, 0)
+	for _, match := range pattern.FindAllStringSubmatch(source, -1) {
+		field, fieldOK := byTerminal[match[1]]
+		depends, dependsOK := byTerminal[match[2]]
+		if !fieldOK || !dependsOK || field == depends {
+			continue
+		}
+		result = append(result, target.VueCustomDependencyRule{Field: field, Depends: []string{depends}, Kind: "assignment", Source: "vue_component"})
+	}
+	return uniqueVueDependencies(result)
+}
+
+// uniqueVueDependencies 去重页面字段联动，保持持久化快照在重复模板片段下稳定。
+func uniqueVueDependencies(values []target.VueCustomDependencyRule) []target.VueCustomDependencyRule {
+	seen := make(map[string]bool, len(values))
+	result := make([]target.VueCustomDependencyRule, 0, len(values))
+	for _, value := range values {
+		key := value.Field + "\x00" + strings.Join(value.Depends, "\x00") + "\x00" + value.Kind
+		if value.Field == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, value)
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].Field < result[right].Field })
+	return result
+}
+
+// vueReadRequests 从组件中已声明的 Api 常量提取只读初始化和联动请求，写请求始终留在宿主隔离边界。
+func (s *vuePageRuleScanner) vueReadRequests(source string) ([]target.VueCustomRequestRule, []string) {
+	pattern := regexp.MustCompile(`Api\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+)`)
+	requests := make([]target.VueCustomRequestRule, 0)
+	issues := make([]string, 0)
+	seen := map[string]bool{}
+	for _, match := range pattern.FindAllStringSubmatchIndex(source, -1) {
+		if len(match) < 4 {
+			continue
+		}
+		name := source[match[2]:match[3]]
+		path, found := s.apiPaths[name]
+		if !found {
+			issues = append(issues, "Vue 请求常量「"+name+"」未在宿主 API 表中识别")
+			continue
+		}
+		if !vueEndpointReadOnly(path) {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		requests = append(requests, target.VueCustomRequestRule{
+			Name: name, Method: "POST", Path: path, Phase: vueRequestPhase(source, match[0]),
+			Response: vueRequestResponse(source, match[1]), ReadOnly: true, Issues: []string{},
+		})
+	}
+	sort.Slice(requests, func(left, right int) bool { return requests[left].Name < requests[right].Name })
+	return requests, uniqueCatalogStrings(issues)
+}
+
+// vueEndpointReadOnly 只按端点最后动作词判定只读；无法证明只读的请求不会被规则分析器消费。
+func vueEndpointReadOnly(path string) bool {
+	last := strings.ToLower(strings.TrimSpace(filepath.Base(strings.TrimSuffix(path, "/"))))
+	for _, marker := range []string{"save", "update", "delete", "create", "modify", "increase", "submit", "upload"} {
+		if strings.Contains(last, marker) {
+			return false
+		}
+	}
+	return last != ""
+}
+
+// vueRequestPhase 根据调用所在生命周期片段归类请求阶段，方法内调用保守标记为交互而非初始化。
+func vueRequestPhase(source string, offset int) string {
+	prefix := source[:offset]
+	lastMounted := strings.LastIndex(prefix, "mounted()")
+	lastCreated := strings.LastIndex(prefix, "created()")
+	lastMethods := strings.LastIndex(prefix, "methods:")
+	if (lastMounted >= 0 || lastCreated >= 0) && lastMethods < maxInt(lastMounted, lastCreated) {
+		return "initial"
+	}
+	return "interaction"
+}
+
+// maxInt 返回两个偏移量中的较大值，用于生命周期片段的保守比较。
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+// vueRequestResponse 仅在调用附近有真实 isSuccess 分支时声明成功判定，未证明时保留空字符串。
+func vueRequestResponse(source string, offset int) string {
+	end := offset + 600
+	if end > len(source) {
+		end = len(source)
+	}
+	if strings.Contains(source[offset:end], "isSuccess") {
+		return "isSuccess"
+	}
+	return ""
+}
+
+// vueSubmitRule 从 NoFormFlow 共用 mixin 的精确流程映射提取保存协议，不用组件名或合同名称推断端点。
+func (s *vuePageRuleScanner) vueSubmitRule(flowCode string) *target.VueCustomSubmitRule {
+	mixin := s.read("form-runtime/runtime-source/src/components/NoFormFLow/mixin/mixin.js")
+	pattern := regexp.MustCompile(`['"]` + regexp.QuoteMeta(strings.TrimSpace(flowCode)) + `['"]\s*:\s*\{\s*save\s*:\s*Api\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)`)
+	match := pattern.FindStringSubmatch(mixin)
+	if len(match) < 3 {
+		return nil
+	}
+	name := match[1] + "." + match[2]
+	path, found := s.apiPaths[name]
+	if !found {
+		return &target.VueCustomSubmitRule{Method: "POST", Payload: []string{"data"}, SuccessChecks: []string{"isSuccess"}, Blocked: true, Issues: []string{"宿主保存请求常量「" + name + "」未在 API 表中识别"}}
+	}
+	// 工作区只回显协议并交给本地保存接口复验，任何宿主业务写操作都不能通过此规则发起。
+	return &target.VueCustomSubmitRule{Method: "POST", Path: path, Payload: []string{"data"}, SuccessChecks: []string{"isSuccess"}, Blocked: true, Issues: []string{"宿主保存响应未证明字段级错误路径"}}
+}
+
+// vueIdentityRule 识别页面实际读取的登录上下文键，并按用户、部门、公司投影到本地安全会话。
+func vueIdentityRule(source string) *target.VueCustomIdentityRule {
+	localPattern := regexp.MustCompile(`localstorageGet\(\s*['"]([^'"]+)['"]\s*\)`)
+	storePattern := regexp.MustCompile(`\$store\.state\.user\.([A-Za-z0-9_]+)`)
+	user, department, company := make([]string, 0), make([]string, 0), make([]string, 0)
+	for _, pattern := range []*regexp.Regexp{localPattern, storePattern} {
+		for _, match := range pattern.FindAllStringSubmatch(source, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			key := match[1]
+			lower := strings.ToLower(key)
+			switch {
+			case strings.Contains(lower, "department") || strings.Contains(lower, "dept"):
+				department = append(department, key)
+			case strings.Contains(lower, "company") || strings.Contains(lower, "group"):
+				company = append(company, key)
+			case strings.Contains(lower, "user") || strings.Contains(lower, "initiator"):
+				user = append(user, key)
+			}
+		}
+	}
+	user, department, company = uniqueCatalogStrings(user), uniqueCatalogStrings(department), uniqueCatalogStrings(company)
+	if len(user) == 0 && len(department) == 0 && len(company) == 0 {
+		return nil
+	}
+	return &target.VueCustomIdentityRule{UserKeys: user, DepartmentKeys: department, CompanyKeys: company, Source: "host_session"}
+}
+
+// javaPageRule 用本地 Java 控制器注解复验 Vue 已声明端点，未匹配的请求必须作为具体分析问题保留。
+func (s *vuePageRuleScanner) javaPageRule(requests []target.VueCustomRequestRule, submit *target.VueCustomSubmitRule, identity *target.VueCustomIdentityRule) *target.JavaPageRule {
+	endpoints := make([]struct{ path, method string }, 0, len(requests)+1)
+	for _, request := range requests {
+		endpoints = append(endpoints, struct{ path, method string }{path: request.Path, method: request.Method})
+	}
+	if submit != nil && strings.TrimSpace(submit.Path) != "" {
+		endpoints = append(endpoints, struct{ path, method string }{path: submit.Path, method: submit.Method})
+	}
+	if len(endpoints) == 0 {
+		return nil
+	}
+	result := &target.JavaPageRule{Routes: []target.JavaRouteRule{}, RequestDTO: []string{}, Response: []string{}, SuccessChecks: []string{}, FieldErrors: []string{}, DataSources: []string{}, IdentityReads: []string{}, Issues: []string{}}
+	seen := map[string]bool{}
+	for _, endpoint := range endpoints {
+		if endpoint.path == "" || seen[endpoint.method+"\x00"+endpoint.path] {
+			continue
+		}
+		seen[endpoint.method+"\x00"+endpoint.path] = true
+		route, module, controller, found := s.javaRoute(endpoint.method, endpoint.path)
+		if !found {
+			result.Issues = append(result.Issues, "Java 控制器未识别端点「"+endpoint.path+"」")
+			continue
+		}
+		// 保存端点是页面提交协议的权威后端，优先作为页面 Java 摘要；只读候选端点仍完整保留在 Routes。
+		if result.Module == "" || (submit != nil && endpoint.path == submit.Path && endpoint.method == submit.Method) {
+			result.Module, result.Controller = module, controller
+		}
+		result.Routes = append(result.Routes, route)
+		if route.Request != "" {
+			result.RequestDTO = append(result.RequestDTO, route.Request)
+		}
+		if route.Response != "" {
+			result.Response = append(result.Response, route.Response)
+			if route.Response == "BaseResponseProtocol" {
+				result.SuccessChecks = append(result.SuccessChecks, "isSuccess")
+			}
+		}
+	}
+	for _, request := range requests {
+		if request.ReadOnly {
+			result.DataSources = append(result.DataSources, request.Name)
+		}
+	}
+	if identity != nil {
+		result.IdentityReads = append(result.IdentityReads, identity.UserKeys...)
+		result.IdentityReads = append(result.IdentityReads, identity.DepartmentKeys...)
+		result.IdentityReads = append(result.IdentityReads, identity.CompanyKeys...)
+	}
+	if submit != nil && len(result.FieldErrors) == 0 {
+		result.Issues = append(result.Issues, "Java 保存接口未证明字段级错误返回路径")
+	}
+	result.RequestDTO = uniqueCatalogStrings(result.RequestDTO)
+	result.Response = uniqueCatalogStrings(result.Response)
+	result.SuccessChecks = uniqueCatalogStrings(result.SuccessChecks)
+	result.DataSources = uniqueCatalogStrings(result.DataSources)
+	result.IdentityReads = uniqueCatalogStrings(result.IdentityReads)
+	result.Issues = uniqueCatalogStrings(result.Issues)
+	return result
+}
+
+// javaRoute 在 Spring Controller 的类级和方法级映射中查找一个已声明端点，返回 DTO 和响应形状摘要。
+func (s *vuePageRuleScanner) javaRoute(method, endpoint string) (target.JavaRouteRule, string, string, bool) {
+	classPattern := regexp.MustCompile(`@RequestMapping\s*\(\s*(?:value\s*=\s*)?['"]([^'"]+)['"]`)
+	signaturePattern := regexp.MustCompile(`public\s+([A-Za-z0-9_<>?, \t]+)\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)`)
+	requestPattern := regexp.MustCompile(`@RequestBody\s+([A-Za-z0-9_]+)`)
+	for _, source := range s.javaSources {
+		classMatch := classPattern.FindStringSubmatch(source.content)
+		if len(classMatch) < 2 {
+			continue
+		}
+		base := strings.TrimSuffix(classMatch[1], "/")
+		if endpoint != base && !strings.HasPrefix(endpoint, base+"/") {
+			continue
+		}
+		suffix := strings.TrimPrefix(strings.TrimPrefix(endpoint, base), "/")
+		for _, marker := range javaMappingMarkers(method, suffix) {
+			offset := strings.Index(source.content, marker)
+			if offset < 0 {
+				continue
+			}
+			end := offset + 1400
+			if end > len(source.content) {
+				end = len(source.content)
+			}
+			window := source.content[offset:end]
+			signature := signaturePattern.FindStringSubmatch(window)
+			if len(signature) < 4 {
+				continue
+			}
+			request := ""
+			if match := requestPattern.FindStringSubmatch(signature[3]); len(match) > 1 {
+				request = match[1]
+			}
+			controller := strings.TrimSuffix(filepath.Base(source.path), ".java")
+			return target.JavaRouteRule{Method: strings.ToUpper(method), Path: endpoint, Handler: signature[2], Request: request, Response: strings.TrimSpace(signature[1])}, source.module, controller, true
+		}
+	}
+	return target.JavaRouteRule{}, "", "", false
+}
+
+// javaMappingMarkers 返回 Spring 常用映射注解的精确文本，避免用端点名称跨控制器猜测方法。
+func javaMappingMarkers(method, suffix string) []string {
+	name := strings.Title(strings.ToLower(strings.TrimSpace(method))) + "Mapping"
+	quoted := []string{"\"" + suffix + "\"", "\"/" + suffix + "\""}
+	markers := make([]string, 0, len(quoted)*2)
+	for _, value := range quoted {
+		markers = append(markers, "@"+name+"("+value+")", "@"+name+"(value = "+value+")")
+	}
+	return markers
 }
 
 // read 读取项目内参考运行时文件，缺失只返回空文本并由上层标记规则问题。
