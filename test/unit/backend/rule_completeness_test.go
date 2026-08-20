@@ -8,7 +8,7 @@ import (
 
 func TestClassifyRuleIssues_Blocking(t *testing.T) {
 	issues := []string{
-		"页面入口尚未识别",
+		"表单渲染协议尚未识别",
 		"动态脚本需要人工核对：requestFunc",
 		"宿主页面缺少渲染标记",
 	}

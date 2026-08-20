@@ -49,9 +49,8 @@ func ClassifyRuleIssues(issues []string) RuleCompleteness {
 
 // classifyIssueSeverity 判断单个问题的严重程度。
 func classifyIssueSeverity(issue string) string {
-	// 阻断级别：页面识别失败、未知组件
+	// 阻断级别：表单渲染协议、未知组件、模板读取失败
 	blockingKeywords := []string{
-		"页面入口尚未识别",
 		"表单渲染协议尚未识别",
 		"未知自定义组件：",
 		"页面规则尚未完成分析",
@@ -66,8 +65,9 @@ func classifyIssueSeverity(issue string) string {
 		}
 	}
 
-	// 警告级别：动态脚本、数据源问题、字段错误
+	// 警告级别：页面入口、动态脚本、数据源问题、字段错误
 	warningKeywords := []string{
+		"页面入口尚未识别",
 		"动态脚本需要人工核对",
 		"数据源无可用记录",
 		"字段级错误路径未证明",
