@@ -98,7 +98,8 @@ func (r *TemplateCatalogRepository) List(ctx context.Context, query string, offs
 	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_template_rule_catalog WHERE flow_code LIKE ? OR flow_name LIKE ?", pattern, pattern).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := r.db.QueryContext(ctx, templateCatalogSelect+" WHERE flow_code LIKE ? OR flow_name LIKE ? ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?", pattern, pattern, limit, offset)
+	// 先在窄字段子查询中完成排序和分页，再回表读取规则 JSON；否则 MySQL 会把大段规则正文放入排序缓冲并触发 1038。
+	rows, err := r.db.QueryContext(ctx, templateCatalogPageSelect, pattern, pattern, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -303,6 +304,19 @@ const templateCatalogSelect = `SELECT id, source_template_id, flow_code, flow_na
 source_account, source_version, target_digest, formmaking_digest, vue_source_digest, java_source_digest, component_digest,
 source_fingerprint, analyzer_version, status, rule_data, coverage, issues, analyzed_at, created_at, updated_at
 FROM test_template_rule_catalog`
+
+const templateCatalogPageSelect = `SELECT catalog.id, catalog.source_template_id, catalog.flow_code, catalog.flow_name,
+catalog.template_type, catalog.form_exist, catalog.render_type, catalog.source_account, catalog.source_version,
+catalog.target_digest, catalog.formmaking_digest, catalog.vue_source_digest, catalog.java_source_digest, catalog.component_digest,
+catalog.source_fingerprint, catalog.analyzer_version, catalog.status, catalog.rule_data, catalog.coverage, catalog.issues,
+catalog.analyzed_at, catalog.created_at, catalog.updated_at
+FROM test_template_rule_catalog AS catalog
+INNER JOIN (
+  SELECT id, updated_at FROM test_template_rule_catalog
+  WHERE flow_code LIKE ? OR flow_name LIKE ?
+  ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
+) AS page ON page.id = catalog.id
+ORDER BY page.updated_at DESC, page.id DESC`
 
 type templateCatalogScanner interface {
 	Scan(...any) error

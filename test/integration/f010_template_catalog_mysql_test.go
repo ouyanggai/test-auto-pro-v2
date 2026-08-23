@@ -2,6 +2,8 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,5 +64,41 @@ func TestF010TemplateCatalogMySQLPersistence(t *testing.T) {
 	recovered, err := repository.GetJob(ctx, job.ID)
 	if err != nil || recovered.State != "finished" || recovered.Outcome != "failed" || recovered.Accounted != recovered.Total || recovered.Unlisted != 65 || recovered.FinishedAt == nil || len(recovered.Failures) != 1 || recovered.Failures[0].Stage != "service_recovery" {
 		t.Fatalf("中断任务没有收敛为可重试失败态：job=%+v err=%v", recovered, err)
+	}
+}
+
+// TestF010TemplateCatalogMySQLPaginatesWideRules 验证目录分页先排序窄字段，规则正文较大时不会耗尽 MySQL 排序缓冲。
+func TestF010TemplateCatalogMySQLPaginatesWideRules(t *testing.T) {
+	cfg := config.LoadPlanDBConfig()
+	if missing := cfg.MissingRequired(); len(missing) != 0 {
+		t.Fatalf("F-010 MySQL 集成测试缺少配置名：%v", missing)
+	}
+	cfg.Name = temporaryPlanDatabaseName(t)
+	t.Cleanup(func() { dropTemporaryPlanDatabase(t, cfg) })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := planmysql.OpenAndMigrate(ctx, cfg)
+	if err != nil {
+		t.Fatalf("F-010 宽规则临时数据库迁移失败：%v", err)
+	}
+	defer database.Close()
+	repository := planmysql.NewTemplateCatalogRepository(database.DB)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	wideValue := strings.Repeat("规则", 16*1024)
+	for index := 0; index < 80; index++ {
+		code := fmt.Sprintf("wide-flow-%03d", index)
+		_, err := repository.Upsert(ctx, model.TemplateRuleCatalogItem{
+			SourceTemplateID: code, FlowCode: code, FlowName: "宽规则", RenderType: model.TemplateRuleRenderFormMaking,
+			SourceAccount: "欧阳改", SourceFingerprint: strings.Repeat("a", 64), AnalyzerVersion: "f010-v2", Status: "complete",
+			RuleData: map[string]any{"wide": wideValue}, Coverage: map[string]any{"fieldCount": 1}, Issues: []string{},
+			AnalyzedAt: &now, CreatedAt: now, UpdatedAt: now.Add(time.Duration(index) * time.Millisecond),
+		})
+		if err != nil {
+			t.Fatalf("写入宽规则 %d 失败：%v", index, err)
+		}
+	}
+	items, total, err := repository.List(ctx, "", 0, 20)
+	if err != nil || total != 80 || len(items) != 20 {
+		t.Fatalf("宽规则目录分页失败：total=%d items=%d err=%v", total, len(items), err)
 	}
 }
