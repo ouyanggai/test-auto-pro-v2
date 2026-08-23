@@ -3,6 +3,7 @@
 
 # 本地运行状态与日志
 /.runtime/
+/.plans/
 
 # 前端依赖、缓存与构建产物
 /node_modules/
@@ -14,6 +15,7 @@
 # Go 构建与测试产物
 /bin/
 /server
+/test-auto-pro-v2
 *.test
 *.out
 /coverage/
