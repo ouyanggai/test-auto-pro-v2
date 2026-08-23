@@ -136,6 +136,17 @@ func (f009PartialGenerationStub) GenerateForm(context.Context, uint64, uint64, i
 	}, nil
 }
 
+type f010BlockedGenerationStub struct{ stubPathConfigurationService }
+
+// GenerateForm 返回规则分析预期阻断，HTTP 层必须保留安全现值和具体问题。
+func (f010BlockedGenerationStub) GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error) {
+	return model.PathFormGenerateResult{
+		Status: "draft", Values: map[string]any{"safeField": "人工现值"}, GenerationState: "blocked",
+		Issues:            []model.PathFormGenerationIssue{{Field: "模板规则", Reason: "模板 auditWay 缺失，无法映射宿主 Vue 页面", Blocking: true}},
+		RouteVerification: model.PathFormRouteVerification{Matched: false, Reason: "模板 auditWay 缺失，无法映射宿主 Vue 页面"},
+	}, nil
+}
+
 // TestF009PartialGenerationReturnsBusinessResult 验证预期求解失败仍返回 2xx、部分值、问题和完整路径复验。
 func TestF009PartialGenerationReturnsBusinessResult(t *testing.T) {
 	handler := api.NewHandlerWithConfigurationServices(
@@ -147,5 +158,19 @@ func TestF009PartialGenerationReturnsBusinessResult(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"generationState":"partial"`) || !strings.Contains(response.Body.String(), `"matched":false`) || !strings.Contains(response.Body.String(), "动态条件需要人工核对") {
 		t.Fatalf("部分求解没有作为 2xx 业务结果返回：status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// TestF010BlockedGenerationReturnsBusinessResult 验证 Vue 未知页面等预期阻断返回 2xx blocked，而非普通 HTTP 错误。
+func TestF010BlockedGenerationReturnsBusinessResult(t *testing.T) {
+	handler := api.NewHandlerWithConfigurationServices(
+		&stubTargetReader{}, service.NewPlanService(&contractPlanRepository{}), &stubFlowGraphService{},
+		&stubExecutionPathService{}, &stubPathRequirementService{}, f010BlockedGenerationStub{},
+	)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/9/configuration/form/generate", strings.NewReader(`{"seed":0,"values":{"safeField":"人工现值"},"manualOverridePaths":["safeField"],"nextGroup":false}`))
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"generationState":"blocked"`) || !strings.Contains(response.Body.String(), `"safeField":"人工现值"`) || !strings.Contains(response.Body.String(), "auditWay 缺失") || !strings.Contains(response.Body.String(), `"blocking":true`) {
+		t.Fatalf("规则阻断没有作为 2xx 业务结果返回：status=%d body=%s", response.Code, response.Body.String())
 	}
 }

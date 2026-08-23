@@ -243,6 +243,7 @@ type pathPreparationAssets struct {
 	initiator           string
 	identity            formdata.IdentityContext
 	componentCandidates map[string][]any
+	ruleIssues          []string
 }
 
 // loadPathPreparationAssets 一次读取计划、真实流程快照、模板、身份和有限近期样本。
@@ -266,10 +267,10 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 	}
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	if snapshot.RenderType == target.FormRenderTypeVueCustom {
-		if snapshot.VuePage == nil || len(snapshot.VuePage.Issues) > 0 {
-			return pathPreparationAssets{}, &PathPreparationError{Kind: PathPreparationErrorState, Message: "Vue 业务页面规则尚未完成分析，请先在系统设置重试分析"}
-		}
 		template = vueCustomTemplate(snapshot.VuePage)
+	}
+	if snapshotRuleStatus(snapshot) == model.RuleReadinessBlocked {
+		return pathPreparationAssets{}, &PathPreparationError{Kind: PathPreparationErrorState, Message: firstRuleIssueReason(pathFormRuleIssues(snapshot))}
 	}
 	assets := pathPreparationAssets{
 		plan: plan, snapshot: snapshot, template: template, unsupported: unsupported,
@@ -277,6 +278,7 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 		initiator:           plan.Account,
 		samples:             []map[string]any{},
 		componentCandidates: make(map[string][]any),
+		ruleIssues:          snapshotRuleIssues(snapshot),
 	}
 	if reader, ok := s.config.target.(pathFormRuleSampleReader); ok {
 		componentID := "formmaking"
@@ -496,7 +498,7 @@ func preparePathFormData(assets pathPreparationAssets, path model.ExecutionPath,
 	formdata.SynchronizeDateRangeBindings(generated.Values, bindings, stored.ManualOverridePaths)
 	reasons := append(validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values), formdata.ValidateDateRangeBindings(generated.Values, bindings)...)
 	// 已识别自定义组件没有真实候选时只将本路径标为需处理，不能虚构对象引用，也不能让其他路径回滚。
-	blocking := len(conditions.Reviews) > 0 || len(assets.unsupported) > 0 || generated.Pending > 0 || len(solved.issues) > 0 || len(reasons) > 0
+	blocking := len(assets.ruleIssues) > 0 || len(conditions.Reviews) > 0 || len(assets.unsupported) > 0 || generated.Pending > 0 || len(solved.issues) > 0 || len(reasons) > 0
 	stored.FormValues = generated.Values
 	stored.FormSeed = seed
 	stored.GeneratedFieldPaths = generated.GeneratedFieldPaths
@@ -504,6 +506,9 @@ func preparePathFormData(assets pathPreparationAssets, path model.ExecutionPath,
 	stored.FormTemplateVersion = formdata.TemplateVersion(assets.template)
 	if blocking {
 		stored.DataStatus, stored.FormStatus, stored.FormValidated = "needs_attention", "draft", false
+		if len(assets.ruleIssues) > 0 {
+			return true, false, false, "模板规则需核对：" + assets.ruleIssues[0]
+		}
 		return true, false, false, "表单条件需要人工处理"
 	}
 	stored.DataStatus, stored.FormStatus, stored.FormValidated = "generated", "valid", true

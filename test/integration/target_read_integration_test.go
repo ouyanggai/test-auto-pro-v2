@@ -266,7 +266,7 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 			judge = "custom-judge"
 		}
 		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
-			"flowCode": fmt.Sprintf("FLOW-%03d", index),
+			"flowCode": fmt.Sprintf("FLOW-%03d", index), "auditWay": "contract_review",
 			"flowNodeTemplate": map[string]any{"id": "condition", "type": "condition", "conditionNodes": []any{map[string]any{
 				"id": "branch", "sort": 1, "conditionList": []any{map[string]any{
 					"fieldaName": "field", "fieldbName": "otherField", "judge": judge, "conditionType": "and",
@@ -308,7 +308,7 @@ func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *htt
 			},
 		}
 	}
-	detailData := map[string]any{"flowCode": "flow-test", "flowNodeTemplate": map[string]any{
+	detailData := map[string]any{"flowCode": "flow-test", "auditWay": "contract_review", "flowNodeTemplate": map[string]any{
 		"id": "start", "nodeName": "发起", "type": "start",
 		"childFlowNodeTemplate": map[string]any{
 			"id": "approval", "nodeName": "审批", "type": "common", "isSkip": true,
@@ -548,7 +548,7 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 			items = append(items, map[string]any{
 				"id": fmt.Sprintf("coverage-template-%d", index), "flowName": fmt.Sprintf("覆盖流程 %d", index+1),
 				"code": fmt.Sprintf("FLOW-%03d", index), "typeName": fmt.Sprintf("模板类型-%02d", index%54),
-				"flowStatus": "enable", "formExist": "withForm", "formTemplateList": []any{map[string]any{"id": fmt.Sprintf("coverage-form-%d", index)}},
+				"flowStatus": "enable", "formExist": "withForm", "auditWay": "contract_review", "formTemplateList": []any{map[string]any{"id": fmt.Sprintf("coverage-form-%d", index)}},
 			})
 		}
 		pages := (f.coverageTotal + size - 1) / size
@@ -561,7 +561,7 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		map[string]any{
 			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
 			"flowStatus": "enable", "typeName": "经营管理", "updateDate": "2026-07-27 08:00",
-			"remark": "用于验证采购审批", "formExist": "withForm",
+			"remark": "用于验证采购审批", "formExist": "withForm", "auditWay": "contract_review",
 			"formTemplateList": []any{map[string]any{"id": "form-a"}, map[string]any{"id": "form-b"}},
 		},
 	}
@@ -1093,7 +1093,7 @@ func TestRealReadProtocolAndThreeSourceMappings(t *testing.T) {
 		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=submitted&query=sent&page=1&pageSize=20", "", http.StatusOK),
 		callApp(t, app, http.MethodGet, "/api/target/flow-instances?account=account-a&source=due&query=due&page=1&pageSize=20", "", http.StatusOK),
 	}
-	wants := []string{"displayName", "formTemplateCount\":2", "审批中", "真实待发流程"}
+	wants := []string{"displayName", "\"auditWay\":\"contract_review\"", "审批中", "真实待发流程"}
 	for index, body := range responses {
 		if !bytes.Contains(body, []byte(wants[index])) {
 			t.Fatalf("第 %d 个真实读取响应缺少预期映射", index+1)
@@ -1308,6 +1308,9 @@ func TestPathConfigurationSnapshotReadsTemplateDefaultsAndProxyValues(t *testing
 			snapshot, err := reader.PathConfigurationSnapshot(context.Background(), "account-a", test.source, test.id)
 			if err != nil || snapshot.Tree == nil || len(snapshot.FormFields) != 1 || len(snapshot.Forms) != 1 {
 				t.Fatalf("路径配置快照读取失败：snapshot=%+v err=%v", snapshot, err)
+			}
+			if snapshot.FlowCode != "flow-test" || snapshot.AuditWay != "contract_review" {
+				t.Fatalf("flowCode 与 auditWay 没有按各自真实职责保留：flowCode=%q auditWay=%q", snapshot.FlowCode, snapshot.AuditWay)
 			}
 			if snapshot.Forms[0].Name == "" || !strings.Contains(snapshot.Forms[0].TemplateData, `"model":"amount"`) {
 				t.Fatalf("完整 FormMaking 模板没有随快照返回：%+v", snapshot.Forms)

@@ -87,6 +87,7 @@ export interface PathFormConfiguration {
 }
 
 export interface PathVueCustomPageRule {
+  status: 'complete' | 'partial' | 'blocked'
   pageName: string
   componentName: string
   route: string
@@ -100,9 +101,15 @@ export interface PathVueCustomFieldRule {
   valueType: string
   required: boolean
   readOnly: boolean
+  hidden: boolean
+  disabled: boolean
+  nested: boolean
+  collection: boolean
   candidateKind: string
   defaultValue?: unknown
   dataSource?: string
+  format?: string
+  validation: string[]
   options: Array<{ label: string, value: unknown }>
 }
 

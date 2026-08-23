@@ -118,6 +118,33 @@ func TestF010KnownCustomComponentSaveRoundTrip(t *testing.T) {
 	}
 }
 
+// TestF010BlockedRuleReturnsBusinessResult 验证预期规则阻断以 2xx 业务结果返回并保留现值，保存接口仍权威拒绝。
+func TestF010BlockedRuleReturnsBusinessResult(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 12, Account: "account", FlowSource: "new", TargetObjectID: "template", TargetObjectName: "测试流程", Status: model.PlanStatusNotStarted}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 37, PlanID: 12, SequenceNo: 1, Name: "直达路径"}}}
+	tree := &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}}
+	template := `{"list":[{"type":"input","model":"title","name":"标题","options":{"required":true}}]}`
+	serviceUnderTest := service.NewPathConfigService(
+		service.NewPlanService(plans),
+		pathConfigSnapshotReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow", RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{Name: "申请表", TemplateData: template}}}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths, emptyPathConfigRepository{},
+	)
+	serviceUnderTest.SetTemplateRuleCatalog(&f010StoredRuleReader{item: model.TemplateRuleCatalogItem{
+		SourceTemplateID: "template", FlowCode: "flow", RenderType: model.TemplateRuleRenderFormMaking,
+		Status: "blocked", Issues: []string{"动态脚本需要人工核对：requestFunc"},
+	}})
+	current := map[string]any{"title": "人工现值"}
+	generated, err := serviceUnderTest.GenerateForm(context.Background(), 12, 37, 3, current, []string{"title"}, false)
+	if err != nil || generated.GenerationState != "blocked" || generated.Values["title"] != "人工现值" || generated.RouteVerification.Matched || len(generated.Issues) == 0 || !generated.Issues[0].Blocking {
+		t.Fatalf("规则阻断没有返回保留现值的业务结果：generated=%+v err=%v", generated, err)
+	}
+	_, saveErr := serviceUnderTest.SaveForm(context.Background(), 12, 37, "1b6cdd5f-d207-43a0-a5a4-f3c4162d9795", model.PathFormSaveInput{Validated: true, Values: current})
+	if saveErr == nil || !strings.Contains(saveErr.Error(), "动态脚本") {
+		t.Fatalf("保存接口没有权威拒绝 blocked 规则：%v", saveErr)
+	}
+}
+
 // TestF007ConditionBindingFieldsSerializeAsArrays 验证无条件兜底分支的 fields 也必须编码为空数组而不是 JSON null。
 func TestF007ConditionBindingFieldsSerializeAsArrays(t *testing.T) {
 	plans := newMemoryPlanRepository()

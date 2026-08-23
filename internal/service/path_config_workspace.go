@@ -122,20 +122,12 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		return model.PathFormGenerateResult{}, err
 	}
 
-	// 检查规则就绪状态
-	if err := s.checkRuleReadiness(generationContext, planID, snapshot); err != nil {
-		return model.PathFormGenerateResult{}, err
-	}
-
 	owned, err := s.analyzeOwnedPath(generationContext, planID, snapshot, path)
 	if err != nil {
 		return model.PathFormGenerateResult{}, err
 	}
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	if snapshot.RenderType == target.FormRenderTypeVueCustom {
-		if snapshot.VuePage == nil || len(snapshot.VuePage.Issues) > 0 {
-			return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "Vue 业务页面规则尚未完成分析"}
-		}
 		template = vueCustomTemplate(snapshot.VuePage)
 	}
 	if seed == 0 {
@@ -149,6 +141,10 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	base := current
 	if len(base) == 0 && found {
 		base = stored.FormValues
+	}
+	ruleIssues := pathFormRuleIssues(snapshot)
+	if snapshotRuleStatus(snapshot) == model.RuleReadinessBlocked {
+		return blockedPathFormGenerateResult(stored, base, seed, ruleIssues), nil
 	}
 	optional := s.loadPathFormOptionalInputs(generationContext, plan.Account, snapshot, template)
 	if requestContext.Err() != nil {
@@ -175,7 +171,8 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	verificationReasons := validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values)
 	dateReasons := formdata.ValidateDateRangeBindings(generated.Values, dateRangeBindings)
 	matched := solved.matched && len(verificationReasons) == 0 && len(dateReasons) == 0
-	issues := append(make([]model.PathFormGenerationIssue, 0, len(solved.issues)+len(optional.issues)), solved.issues...)
+	issues := append(make([]model.PathFormGenerationIssue, 0, len(ruleIssues)+len(solved.issues)+len(optional.issues)), ruleIssues...)
+	issues = append(issues, solved.issues...)
 	issues = append(issues, optional.issues...)
 	for _, fieldPath := range generated.PendingFields {
 		fieldName := formdata.FieldName(template, fieldPath)
@@ -202,11 +199,14 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		// 没有第二组候选属于可预期求解结果，返回 2xx 让页面直接展示原因。
 		issues = appendPathSolveIssue(issues, "表单数据", "没有可切换的下一组有效候选，当前数据已保持不变", false)
 	}
-	generationState := "complete"
+	generationState := model.RuleReadinessReady
 	if !matched || len(issues) > 0 {
-		generationState = "partial"
-		if len(generated.Values) == 0 {
-			generationState = "blocked"
+		generationState = model.RuleReadinessPartial
+	}
+	for _, issue := range issues {
+		if issue.Blocking {
+			generationState = model.RuleReadinessBlocked
+			break
 		}
 	}
 	verificationReason := solved.reason
@@ -579,15 +579,15 @@ func (s *PathConfigService) SaveForm(ctx context.Context, planID, pathID uint64,
 	if err != nil {
 		return model.PathConfigSaveResult{}, err
 	}
+	if err := ensureRuleSaveReady(snapshot); err != nil {
+		return model.PathConfigSaveResult{}, err
+	}
 	owned, err := s.analyzeOwnedPath(ctx, planID, snapshot, path)
 	if err != nil {
 		return model.PathConfigSaveResult{}, err
 	}
 	template, unsupported := runtimeTemplate(snapshot.Forms)
 	if snapshot.RenderType == target.FormRenderTypeVueCustom {
-		if snapshot.VuePage == nil || len(snapshot.VuePage.Issues) > 0 {
-			return model.PathConfigSaveResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "Vue 业务页面规则尚未完成分析"}
-		}
 		template = vueCustomTemplate(snapshot.VuePage)
 	}
 	if len(unsupported) > 0 {
@@ -663,15 +663,15 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	}
 	if snapshot.RenderType == target.FormRenderTypeVueCustom {
 		form.VuePage = projectVueCustomPage(snapshot.VuePage)
-		if form.VuePage == nil || len(form.VuePage.Issues) > 0 {
+		if form.VuePage == nil || snapshotRuleStatus(snapshot) == model.RuleReadinessBlocked {
 			form.Status, form.StatusName = "affected", "部分配置"
-			form.Affected = affectedFromStrings("form", []string{"Vue 业务页面规则尚未完成分析"})
+			form.Affected = affectedFromStrings("form", snapshotRuleIssues(snapshot))
 			return form
 		}
 	}
-	if snapshot.RenderType == target.FormRenderTypeUnknown {
+	if snapshot.RenderType == target.FormRenderTypeUnknown || snapshotRuleStatus(snapshot) == model.RuleReadinessBlocked {
 		form.Status, form.StatusName = "affected", "部分配置"
-		form.Affected = affectedFromStrings("form", []string{"当前流程表单协议尚未完成分析"})
+		form.Affected = affectedFromStrings("form", snapshotRuleIssues(snapshot))
 		return form
 	}
 	// 条件投影是提示、字段锁定、生成和保存复验的共同来源，任何无法精确对应的条件都不能放行保存。
@@ -702,6 +702,11 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	}
 	if form.ReadOnly {
 		form.Status, form.StatusName, form.Validated = "valid", "已配置", true
+		return form
+	}
+	if snapshotRuleStatus(snapshot) == model.RuleReadinessPartial {
+		form.Status, form.StatusName = "affected", "部分配置"
+		form.Affected = affectedFromStrings("form", snapshotRuleIssues(snapshot))
 		return form
 	}
 	switch form.Status {
@@ -927,7 +932,9 @@ func vueCustomFormPermissions(page *target.VueCustomPageRule) []model.PathFormPe
 			continue
 		}
 		power := "edit"
-		if field.ReadOnly {
+		if field.Hidden {
+			power = "hide"
+		} else if field.ReadOnly || field.Disabled {
 			power = "only_read"
 		}
 		permissions = append(permissions, model.PathFormPermission{Field: path, Power: power})
@@ -1848,13 +1855,18 @@ func projectVueCustomPage(rule *target.VueCustomPageRule) *model.PathVueCustomPa
 	if rule == nil {
 		return nil
 	}
-	result := &model.PathVueCustomPageRule{PageName: rule.PageName, ComponentName: rule.ComponentName, Route: rule.Route, Fields: make([]model.PathVueCustomFieldRule, 0, len(rule.Fields)), Issues: uniquePublicStrings(rule.Issues)}
+	result := &model.PathVueCustomPageRule{Status: vuePageRuleStatus(rule), PageName: rule.PageName, ComponentName: rule.ComponentName, Route: rule.Route, Fields: make([]model.PathVueCustomFieldRule, 0, len(rule.Fields)), Issues: uniquePublicStrings(rule.Issues)}
 	for _, field := range rule.Fields {
 		options := make([]model.PathVueCustomFieldOption, 0, len(field.Options))
 		for _, option := range field.Options {
 			options = append(options, model.PathVueCustomFieldOption{Label: option.Label, Value: option.Value})
 		}
-		result.Fields = append(result.Fields, model.PathVueCustomFieldRule{Path: field.Path, Name: field.Name, ValueType: field.ValueType, Required: field.Required, ReadOnly: field.ReadOnly, CandidateKind: field.CandidateKind, DefaultValue: field.DefaultValue, DataSource: field.DataSource, Options: options})
+		result.Fields = append(result.Fields, model.PathVueCustomFieldRule{
+			Path: field.Path, Name: field.Name, ValueType: field.ValueType, Required: field.Required, ReadOnly: field.ReadOnly,
+			Hidden: field.Hidden, Disabled: field.Disabled, Nested: field.Nested, Collection: field.Collection,
+			CandidateKind: field.CandidateKind, DefaultValue: field.DefaultValue, DataSource: field.DataSource,
+			Format: field.Format, Validation: append([]string(nil), field.Validation...), Options: options,
+		})
 	}
 	return result
 }
@@ -2009,28 +2021,54 @@ func (s *PathConfigService) loadComponentCandidates(ctx context.Context, account
 	return buildComponentCandidatesMap(template, candidateSet), err
 }
 
-// checkRuleReadiness 检查规则完整性，阻断状态禁止生成。
-func (s *PathConfigService) checkRuleReadiness(ctx context.Context, planID uint64, snapshot target.PathConfigurationSnapshot) error {
-	if s.templateRules == nil {
-		return nil
+// pathFormRuleIssues 把规则目录问题转换为生成接口的字段级业务结果，不通过 HTTP 错误吞掉预期阻断。
+func pathFormRuleIssues(snapshot target.PathConfigurationSnapshot) []model.PathFormGenerationIssue {
+	completeness := model.ClassifyRuleIssues(snapshotRuleIssues(snapshot))
+	result := make([]model.PathFormGenerationIssue, 0, len(completeness.Blocking)+len(completeness.Warning)+len(completeness.Info))
+	for _, reason := range completeness.Blocking {
+		result = append(result, model.PathFormGenerationIssue{Field: "模板规则", Reason: reason, Blocking: true})
 	}
-
-	item, found, err := s.templateRules.GetByFlowCode(ctx, snapshot.FlowCode)
-	if err != nil || !found {
-		return nil
+	for _, reason := range append(completeness.Warning, completeness.Info...) {
+		result = append(result, model.PathFormGenerationIssue{Field: "模板规则", Reason: reason, Blocking: false})
 	}
+	if snapshotRuleStatus(snapshot) == model.RuleReadinessBlocked && len(result) == 0 {
+		result = append(result, model.PathFormGenerationIssue{Field: "模板规则", Reason: "当前模板规则尚未完成分析", Blocking: true})
+	}
+	return result
+}
 
-	completeness := model.ClassifyRuleIssues(item.Issues)
-	if completeness.Readiness == model.RuleReadinessBlocked {
-		// 汇总阻断问题
-		blockingMsg := "当前模板规则存在阻断问题，无法生成表单数据"
-		if len(completeness.Blocking) > 0 {
-			blockingMsg = completeness.Blocking[0]
+// blockedPathFormGenerateResult 保留人工值和已保存修订，并以 2xx blocked 业务结果返回具体规则问题。
+func blockedPathFormGenerateResult(stored model.StoredPathConfig, base map[string]any, seed int64, issues []model.PathFormGenerationIssue) model.PathFormGenerateResult {
+	values := cloneFormValues(base)
+	return model.PathFormGenerateResult{
+		Revision: stored.FormRevision, Status: "draft", Values: values, Seed: seed,
+		GeneratedFieldPaths: []string{}, ManualOverridePaths: append([]string(nil), stored.ManualOverridePaths...),
+		Unsupported: []string{}, ConditionBindings: []model.PathFormConditionBinding{}, ConditionReviews: []string{}, FieldRules: []model.PathFormFieldRule{},
+		GenerationState: model.RuleReadinessBlocked, Issues: issues,
+		RouteVerification: model.PathFormRouteVerification{Matched: false, Reason: firstRuleIssueReason(issues)},
+	}
+}
+
+// firstRuleIssueReason 返回阻断结果首个可展示原因，避免向页面返回空提示。
+func firstRuleIssueReason(issues []model.PathFormGenerationIssue) string {
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.Reason) != "" {
+			return issue.Reason
 		}
-		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: blockingMsg}
 	}
+	return "当前模板规则尚未完成分析"
+}
 
-	return nil
+// ensureRuleSaveReady 保持保存接口权威拒绝：partial 可复验，blocked 绝不写入本地执行配置。
+func ensureRuleSaveReady(snapshot target.PathConfigurationSnapshot) error {
+	if snapshotRuleStatus(snapshot) != model.RuleReadinessBlocked {
+		return nil
+	}
+	reason := "当前模板规则尚未完成分析"
+	if issues := snapshotRuleIssues(snapshot); len(issues) > 0 {
+		reason = issues[0]
+	}
+	return &PathConfigError{Kind: PathConfigErrorInvalid, Message: reason, Affected: affectedFromStrings("form", snapshotRuleIssues(snapshot))}
 }
 
 // appendUnique 在节点确认列表中保持稳定顺序且不重复。

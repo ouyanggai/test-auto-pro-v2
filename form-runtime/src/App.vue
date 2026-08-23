@@ -36,7 +36,7 @@ export default {
       generatedFieldPaths: [],
       manualOverridePaths: [],
       renderType: 'formmaking',
-      vuePage: { pageName: '', fields: [], issues: [] },
+		vuePage: { status: 'blocked', pageName: '', fields: [], issues: [] },
       runtimePermissions: [],
       runtimeFieldRules: [],
       savedGeneratedFieldPaths: [],
@@ -109,7 +109,7 @@ export default {
         this.loading = true
         this.readOnly = Boolean(payload.readOnly)
         this.renderType = String(payload.renderType || 'formmaking')
-        this.vuePage = payload.vuePage || { pageName: '', fields: [], issues: [] }
+		this.vuePage = payload.vuePage || { status: 'blocked', pageName: '', fields: [], issues: [] }
         this.runtimePermissions = Array.isArray(payload.permissions) ? payload.permissions : []
         this.runtimeFieldRules = Array.isArray(payload.fieldRules) ? payload.fieldRules : []
         const baseURL = String(payload.baseURL || '')

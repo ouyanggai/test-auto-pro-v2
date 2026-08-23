@@ -98,6 +98,7 @@ type PathFormConfig struct {
 
 // PathVueCustomPageRule 是宿主 Vue 页面在表单工作区使用的公开规则投影，不包含源码和内部标识。
 type PathVueCustomPageRule struct {
+	Status        string                   `json:"status"`
 	PageName      string                   `json:"pageName"`
 	ComponentName string                   `json:"componentName"`
 	Route         string                   `json:"route"`
@@ -112,9 +113,15 @@ type PathVueCustomFieldRule struct {
 	ValueType     string                     `json:"valueType"`
 	Required      bool                       `json:"required"`
 	ReadOnly      bool                       `json:"readOnly"`
+	Hidden        bool                       `json:"hidden"`
+	Disabled      bool                       `json:"disabled"`
+	Nested        bool                       `json:"nested"`
+	Collection    bool                       `json:"collection"`
 	CandidateKind string                     `json:"candidateKind"`
 	DefaultValue  any                        `json:"defaultValue,omitempty"`
 	DataSource    string                     `json:"dataSource,omitempty"`
+	Format        string                     `json:"format,omitempty"`
+	Validation    []string                   `json:"validation"`
 	Options       []PathVueCustomFieldOption `json:"options"`
 }
 

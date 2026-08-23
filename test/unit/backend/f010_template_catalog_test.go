@@ -24,7 +24,7 @@ import (
 
 // TestF010VuePageRuleExtractsNoFormConfiguration 验证配置式 Vue 页面不会因缺少 FormMaking JSON 被当作无需数据。
 func TestF010VuePageRuleExtractsNoFormConfiguration(t *testing.T) {
-	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "contract_review", "noForm")
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "contract_review", "FLOW-CONTRACT-UUID", "noForm")
 	if page.PageName != "合同评审" || page.ComponentName != "ContractReview" || len(page.Fields) == 0 {
 		t.Fatalf("合同评审 Vue 页面规则未识别：%+v", page)
 	}
@@ -39,9 +39,17 @@ func TestF010VuePageRuleExtractsNoFormConfiguration(t *testing.T) {
 	}
 }
 
+// TestF010VuePageRuleRequiresAuditWay 验证 flowCode 不能冒充宿主页面键，缺少 auditWay 时必须给出具体阻断原因。
+func TestF010VuePageRuleRequiresAuditWay(t *testing.T) {
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "", "contract_review", "noForm")
+	if len(page.Fields) != 0 || !hasF010Issue(page.Issues, "auditWay 缺失") {
+		t.Fatalf("缺少 auditWay 时错误地按 flowCode 猜测页面：%+v", page)
+	}
+}
+
 // TestF010VuePageRuleCapturesSubmitAndJavaContract 验证 Vue 保存协议与 Java 控制器仅按真实端点静态对齐，且宿主写请求保持隔离。
 func TestF010VuePageRuleCapturesSubmitAndJavaContract(t *testing.T) {
-	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "contract_review", "noForm")
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "contract_review", "FLOW-CONTRACT-UUID", "noForm")
 	if page.Submit == nil || page.Submit.Path != "/web/measuring/api/contractReview/save" || !page.Submit.Blocked || len(page.Submit.Payload) != 1 || page.Submit.Payload[0] != "data" {
 		t.Fatalf("Vue 保存协议没有按宿主 mixin 提取或未隔离写请求：%+v", page.Submit)
 	}
@@ -75,7 +83,7 @@ func hasF010Issue(values []string, expected string) bool {
 
 // TestF010VuePageRuleUsesRuntimeRegistry 验证宿主注册名与文件名不同时仍从真实运行时组件提取页面字段。
 func TestF010VuePageRuleUsesRuntimeRegistry(t *testing.T) {
-	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "company_annual_budget", "noForm")
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "company_annual_budget", "FLOW-COMPANY-BUDGET", "noForm")
 	if page.ComponentName != "CompanyBudget" || hasF010Issue(page.Issues, "入口尚未识别") || hasF010Issue(page.Issues, "字段规则尚未完整识别") || len(page.Fields) == 0 {
 		t.Fatalf("公司预算页面没有沿宿主注册表读取真实组件：%+v", page)
 	}
@@ -92,7 +100,7 @@ func TestF010VuePageRuleUsesRuntimeRegistry(t *testing.T) {
 
 // TestF010VuePageRuleKeepsDuplicateEntryComponent 验证 settings 中重复流程展示项不会覆盖前面已确认的真实页面组件。
 func TestF010VuePageRuleKeepsDuplicateEntryComponent(t *testing.T) {
-	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "request_funds", "noForm")
+	page := service.AnalyzeVueCustomPageRule(f010ProjectRoot(t), "request_funds", "FLOW-REQUEST-FUNDS", "noForm")
 	if page.ComponentName != "PaymentBill" || hasF010Issue(page.Issues, "入口尚未识别") || hasF010Issue(page.Issues, "字段规则尚未完整识别") || len(page.Fields) == 0 {
 		t.Fatalf("重复流程映射覆盖了请款页面真实组件：%+v", page)
 	}
@@ -122,7 +130,7 @@ func TestF010AllRegisteredVuePagesHaveRules(t *testing.T) {
 		if len(component) < 2 || component[1] == "" {
 			continue
 		}
-		page := service.AnalyzeVueCustomPageRule(root, match[1], "noForm")
+		page := service.AnalyzeVueCustomPageRule(root, match[1], "FLOW-"+strings.ToUpper(match[1]), "noForm")
 		if page.ComponentName != component[1] || len(page.Fields) == 0 || hasF010Issue(page.Issues, "入口尚未识别") || hasF010Issue(page.Issues, "字段规则尚未完整识别") {
 			t.Fatalf("宿主页面 %s/%s 规则未完整识别：%+v", match[1], component[1], page)
 		}
@@ -138,11 +146,11 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	repository := newF010CatalogRepository()
 	reader := &f010CatalogTarget{templates: []target.FlowTemplate{
 		{ID: "fm-1", Code: "leave", FlowName: "请假", TypeName: "行政", FormExist: "form", UpdateDate: "2026-08-19"},
-		{ID: "vue-1", Code: "contract_review", FlowName: "合同评审", TypeName: "合同", FormExist: "noForm", UpdateDate: "2026-08-19"},
+		{ID: "vue-1", Code: "FLOW-CONTRACT-UUID", AuditWay: "contract_review", FlowName: "合同评审", TypeName: "合同", FormExist: "noForm", UpdateDate: "2026-08-19"},
 	}}
 	reader.configurations = map[string]target.PathConfigurationSnapshot{
 		"fm-1":  {FlowCode: "leave", RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{TemplateData: `{"list":[{"type":"input","model":"reason","options":{"required":true}}]}`}}},
-		"vue-1": {FlowCode: "contract_review", RenderType: target.FormRenderTypeVueCustom},
+		"vue-1": {FlowCode: "FLOW-CONTRACT-UUID", AuditWay: "contract_review", RenderType: target.FormRenderTypeVueCustom},
 	}
 	catalog := service.NewTemplateCatalogService(reader, repository, f010ProjectRoot(t))
 	job, err := catalog.CreateJob(context.Background(), "欧阳改", "full")
@@ -244,6 +252,28 @@ func TestF010TemplateCatalogCountsRealItemStates(t *testing.T) {
 	finished = waitF010CatalogJob(t, catalog, incremental.ID)
 	if finished.Completed != 1 || finished.NeedsAttention != 1 || finished.Failed != 1 {
 		t.Fatalf("增量跳过未变化条目时篡改了状态计数：%+v", finished)
+	}
+}
+
+// TestF010TemplateCatalogBlocksUnknownConditionShape 验证未知比较方式进入具体 blocked 规则，而不是由求解器按名称猜测。
+func TestF010TemplateCatalogBlocksUnknownConditionShape(t *testing.T) {
+	repository := newF010CatalogRepository()
+	tree := &target.FlowNodeTemplate{ID: "route", Type: "route", ConditionNodes: []target.FlowBranchTemplate{{Conditions: []target.FlowCondition{{FieldA: "amount", Judge: "custom-judge", ConditionType: "and"}}}}}
+	reader := &f010CatalogTarget{
+		templates: []target.FlowTemplate{{ID: "condition-unknown", Code: "flow-condition", FlowName: "未知条件流程", FormExist: "form"}},
+		configurations: map[string]target.PathConfigurationSnapshot{
+			"condition-unknown": {Tree: tree, FlowCode: "flow-condition", RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{TemplateData: `{"list":[{"type":"number","model":"amount","options":{}}]}`}}},
+		},
+	}
+	catalog := service.NewTemplateCatalogService(reader, repository, f010ProjectRoot(t))
+	job, err := catalog.CreateJob(context.Background(), "欧阳改", "full")
+	if err != nil {
+		t.Fatalf("创建未知条件分析任务失败：%v", err)
+	}
+	_ = waitF010CatalogJob(t, catalog, job.ID)
+	item, found, readErr := repository.GetByFlowCode(context.Background(), "flow-condition")
+	if readErr != nil || !found || item.Status != "blocked" || !hasF010Issue(item.Issues, "流程条件比较方式尚未识别") {
+		t.Fatalf("未知条件没有进入具体阻断：item=%+v found=%v err=%v", item, found, readErr)
 	}
 }
 

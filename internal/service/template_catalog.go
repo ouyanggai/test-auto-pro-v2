@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,9 +46,9 @@ func NewTemplateCatalogService(targetReader TemplateCatalogTargetReader, reposit
 	return &TemplateCatalogService{target: targetReader, repository: repository, pages: newVuePageRuleScanner(workspaceRoot), now: time.Now, running: map[string]context.CancelFunc{}}
 }
 
-// AnalyzeVueCustomPageRule 读取本地宿主源码并返回单个 Vue 业务页面的规则投影，供目录同步和回归测试共用。
-func AnalyzeVueCustomPageRule(workspaceRoot, flowCode, formExist string) target.VueCustomPageRule {
-	return newVuePageRuleScanner(workspaceRoot).Rule(flowCode, formExist)
+// AnalyzeVueCustomPageRule 使用目标 auditWay 作为宿主页面键分析 Vue 规则，flowCode 只保留给流程条件和样本。
+func AnalyzeVueCustomPageRule(workspaceRoot, auditWay, flowCode, formExist string) target.VueCustomPageRule {
+	return newVuePageRuleScanner(workspaceRoot).Rule(auditWay, flowCode, formExist)
 }
 
 // Summary 返回设置页的规则覆盖汇总。
@@ -266,10 +267,11 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 	item.RenderType = templateRuleRenderType(snapshot.RenderType)
 	item.TargetDigest = catalogDigest(struct {
 		FlowCode   string
+		AuditWay   string
 		RenderType target.FormRenderType
 		Tree       *target.FlowNodeTemplate
 		Fields     []target.FormFieldDetail
-	}{snapshot.FlowCode, snapshot.RenderType, snapshot.Tree, snapshot.FormFields})
+	}{snapshot.FlowCode, firstCatalogText(snapshot.AuditWay, template.AuditWay), snapshot.RenderType, snapshot.Tree, snapshot.FormFields})
 	item.FormMakingDigest = catalogDigest(snapshot.Forms)
 	item.VueSourceDigest = s.pages.vueSourceDigest
 	item.JavaSourceDigest = s.pages.javaSourceDigest
@@ -277,13 +279,14 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 	if mode == "incremental" && existingFound && sameTemplateCatalogSources(existing, item) {
 		return existing, true
 	}
+	flowRules, flowIssues := catalogFlowRules(snapshot.Tree)
 	ruleData := map[string]any{
 		"flowCode": item.FlowCode, "renderType": item.RenderType,
 		// 流程条件与组件能力作为同一份本地快照持久化，计划页面不能在用户操作时重新分析宿主源码。
-		"flow":       catalogFlowRules(snapshot.Tree),
+		"flow":       flowRules,
 		"components": formdata.CustomComponentCapabilities(),
 	}
-	issues := []string{}
+	issues := append([]string(nil), flowIssues...)
 	coverage := map[string]any{}
 	if item.RenderType == model.TemplateRuleRenderFormMaking {
 		forms, mergeIssues := mergeCatalogForms(snapshot.Forms)
@@ -297,7 +300,7 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 		issues = append(issues, mergeIssues...)
 		issues = append(issues, inventory.NeedsAttention...)
 	} else if item.RenderType == model.TemplateRuleRenderVueCustom {
-		pageRule := s.pages.Rule(item.FlowCode, template.FormExist)
+		pageRule := s.pages.Rule(firstCatalogText(snapshot.AuditWay, template.AuditWay), item.FlowCode, template.FormExist)
 		ruleData["page"] = pageRule
 		issues = append(issues, pageRule.Issues...)
 		coverage["pageComponent"] = pageRule.ComponentName
@@ -324,13 +327,14 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 }
 
 // catalogFlowRules 将流程节点、分支排序和条件能力转为不含目标内部标识的规则快照。
-func catalogFlowRules(tree *target.FlowNodeTemplate) map[string]any {
+func catalogFlowRules(tree *target.FlowNodeTemplate) (map[string]any, []string) {
 	result := map[string]any{"nodes": 0, "branches": 0, "operators": map[string]int{}, "logic": map[string]int{}, "fieldComparisons": 0}
 	if tree == nil {
-		return result
+		return result, nil
 	}
 	operators := result["operators"].(map[string]int)
 	logic := result["logic"].(map[string]int)
+	issues := []string{}
 	var visit func(*target.FlowNodeTemplate)
 	visit = func(node *target.FlowNodeTemplate) {
 		if node == nil {
@@ -341,13 +345,22 @@ func catalogFlowRules(tree *target.FlowNodeTemplate) map[string]any {
 			for _, branch := range branches {
 				result["branches"] = result["branches"].(int) + 1
 				for _, condition := range branch.Conditions {
-					operator := strings.ToLower(strings.TrimSpace(condition.Judge))
+					operator := normalizeConditionJudge(condition.Judge)
 					if operator != "" {
 						operators[operator]++
+					}
+					if !catalogKnownConditionOperator(operator) {
+						issues = append(issues, "流程条件比较方式尚未识别")
 					}
 					kind := strings.ToLower(strings.TrimSpace(condition.ConditionType))
 					if kind != "" {
 						logic[kind]++
+					}
+					if kind != "" && kind != "and" && kind != "or" {
+						issues = append(issues, "流程条件连接形态尚未识别")
+					}
+					if strings.TrimSpace(condition.FieldA) == "" {
+						issues = append(issues, "流程条件字段形态尚未识别")
 					}
 					if strings.TrimSpace(condition.FieldB) != "" {
 						result["fieldComparisons"] = result["fieldComparisons"].(int) + 1
@@ -359,7 +372,17 @@ func catalogFlowRules(tree *target.FlowNodeTemplate) map[string]any {
 		visit(node.Child)
 	}
 	visit(tree)
-	return result
+	return result, uniqueCatalogStrings(issues)
+}
+
+// catalogKnownConditionOperator 只放行生成、保存和批量求解器共同支持的比较方式。
+func catalogKnownConditionOperator(operator string) bool {
+	switch operator {
+	case "eq", "neq", "gt", "gte", "lt", "lte", "in", "contains":
+		return true
+	default:
+		return false
+	}
 }
 
 // mergeCatalogForms 合并多个 FormMaking 正文并保留可公开的模板结构，不持久化目标返回元数据。
@@ -687,20 +710,28 @@ func (s *vuePageRuleScanner) loadHostVuePageFiles() {
 	}
 }
 
-// Rule 生成一个流程编码对应的 Vue 页面规则；未知入口必须显式进入需处理状态。
-func (s *vuePageRuleScanner) Rule(flowCode, formExist string) target.VueCustomPageRule {
-	entry, exists := s.pageByCode[strings.TrimSpace(flowCode)]
+// Rule 使用 auditWay/pageKey 生成 Vue 页面规则；flowCode 不能替代宿主页面键。
+func (s *vuePageRuleScanner) Rule(pageKey, flowCode, formExist string) target.VueCustomPageRule {
+	pageKey = strings.TrimSpace(pageKey)
+	entry, exists := s.pageByCode[pageKey]
 	page := target.VueCustomPageRule{
-		PageKey: flowCode, PageName: entry.name, ComponentName: entry.component, Route: flowCode,
+		PageKey: pageKey, PageName: entry.name, ComponentName: entry.component, Route: pageKey,
 		InitialState: map[string]any{}, Fields: []target.VueCustomFieldRule{}, Dependencies: []target.VueCustomDependencyRule{},
 		ReadRequests: []target.VueCustomRequestRule{}, Issues: []string{},
 	}
-	if !exists {
+	if pageKey == "" {
 		page.PageName = firstCatalogText(flowCode)
-		page.Issues = append(page.Issues, "宿主 Vue 页面入口尚未识别")
+		page.Issues = append(page.Issues, "模板 auditWay 缺失，无法映射宿主 Vue 页面")
+		page.Status = model.RuleReadinessBlocked
 		return page
 	}
-	fields, configComponent, found := s.configFields(flowCode)
+	if !exists {
+		page.PageName = firstCatalogText(pageKey)
+		page.Issues = append(page.Issues, "auditWay 对应的宿主 Vue 页面入口尚未识别")
+		page.Status = model.RuleReadinessBlocked
+		return page
+	}
+	fields, configComponent, found := s.configFields(pageKey)
 	if found && strings.TrimSpace(page.ComponentName) == "" {
 		page.ComponentName = configComponent
 	}
@@ -709,7 +740,7 @@ func (s *vuePageRuleScanner) Rule(flowCode, formExist string) target.VueCustomPa
 	}
 	page.Fields = fields
 	// 配置式页面的字段结构与组件页面的生命周期逻辑分开存放，合并分析但不执行任何宿主脚本。
-	source := s.configSource(flowCode)
+	source := s.configSource(pageKey)
 	if componentSource := s.componentSource(page.ComponentName); componentSource != "" {
 		source += "\n" + componentSource
 	}
@@ -718,7 +749,8 @@ func (s *vuePageRuleScanner) Rule(flowCode, formExist string) target.VueCustomPa
 	requests, requestIssues := s.vueReadRequests(source)
 	page.ReadRequests = requests
 	page.Issues = append(page.Issues, requestIssues...)
-	page.Submit = s.vueSubmitRule(flowCode)
+	page.Issues = append(page.Issues, vueFieldCapabilityIssues(page.Fields, requests)...)
+	page.Submit = s.vueSubmitRule(pageKey)
 	page.Identity = vueIdentityRule(source)
 	page.Java = s.javaPageRule(page.ReadRequests, page.Submit, page.Identity)
 	if page.Submit != nil {
@@ -734,7 +766,29 @@ func (s *vuePageRuleScanner) Rule(flowCode, formExist string) target.VueCustomPa
 		page.Issues = append(page.Issues, "宿主页面缺少渲染标记")
 	}
 	page.Issues = uniqueCatalogStrings(page.Issues)
+	page.Status = model.ClassifyRuleIssues(page.Issues).Readiness
 	return page
+}
+
+// vueFieldCapabilityIssues 将无法证明的值形态、动态候选和业务校验落实到具体字段，禁止泛化成整页或组件不支持。
+func vueFieldCapabilityIssues(fields []target.VueCustomFieldRule, requests []target.VueCustomRequestRule) []string {
+	hasReadRequest := len(requests) > 0
+	issues := make([]string, 0)
+	for _, field := range fields {
+		name := firstCatalogText(field.Name, field.Path)
+		if field.ValueType == "runtime" {
+			issues = append(issues, "字段「"+name+"」值形态尚未识别")
+		}
+		if field.CandidateKind == "runtime_source" && len(field.Options) == 0 && !hasReadRequest {
+			issues = append(issues, "字段「"+name+"」动态候选来源尚未识别")
+		}
+		for _, validation := range field.Validation {
+			if validation == "custom_validator" {
+				issues = append(issues, "字段「"+name+"」业务校验脚本需要人工核对")
+			}
+		}
+	}
+	return uniqueCatalogStrings(issues)
 }
 
 // Components 返回已注册自定义组件能力名称，供所有模板覆盖报告共享。
@@ -1122,18 +1176,67 @@ func vueTemplateFieldRequired(content, attributes, prop string) bool {
 }
 
 // vueInitialState 汇总字段声明中可证明的默认值；未声明初值的字段保持缺席，禁止以空值猜测宿主状态。
-func vueInitialState(fields []target.VueCustomFieldRule, _ string) map[string]any {
+func vueInitialState(fields []target.VueCustomFieldRule, source string) map[string]any {
 	result := make(map[string]any)
 	for _, field := range fields {
-		if strings.TrimSpace(field.Path) == "" || field.DefaultValue == nil {
+		path := strings.TrimSpace(field.Path)
+		if path == "" {
 			continue
 		}
-		if value, ok := field.DefaultValue.(string); ok && value == "" {
-			continue
+		value := field.DefaultValue
+		if value == nil || value == "" {
+			parts := strings.FieldsFunc(path, func(character rune) bool { return character == '.' || character == '[' || character == ']' })
+			if len(parts) == 0 {
+				continue
+			}
+			var found bool
+			value, found = vueLiteralInitialValue(source, parts[len(parts)-1])
+			if !found {
+				continue
+			}
 		}
-		result[field.Path] = field.DefaultValue
+		result[path] = value
 	}
 	return result
+}
+
+// vueLiteralInitialValue 只提取字段同名且所有声明一致的字面量初值，动态表达式保持未知。
+func vueLiteralInitialValue(source, field string) (any, bool) {
+	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(field) + `\s*:\s*('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|true|false|null|-?[0-9]+(?:\.[0-9]+)?|\[\s*\]|\{\s*\})`)
+	matches := pattern.FindAllStringSubmatch(source, -1)
+	if len(matches) == 0 {
+		return nil, false
+	}
+	encoded := strings.TrimSpace(matches[0][1])
+	for _, match := range matches[1:] {
+		if strings.TrimSpace(match[1]) != encoded {
+			return nil, false
+		}
+	}
+	switch encoded {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	case "null":
+		return nil, true
+	case "[]":
+		return []any{}, true
+	case "{}":
+		return map[string]any{}, true
+	}
+	if strings.HasPrefix(encoded, "'") {
+		return strings.ReplaceAll(encoded[1:len(encoded)-1], `\'`, `'`), true
+	}
+	if strings.HasPrefix(encoded, `"`) {
+		var value string
+		if json.Unmarshal([]byte(encoded), &value) == nil {
+			return value, true
+		}
+		return nil, false
+	}
+	value, err := strconv.ParseFloat(encoded, 64)
+	return value, err == nil
 }
 
 // vueFieldDependencies 从实际赋值语句提取字段联动边，无法归属到已识别字段的表达式不会被猜测为业务规则。
@@ -1197,12 +1300,34 @@ func (s *vuePageRuleScanner) vueReadRequests(source string) ([]target.VueCustomR
 		if !vueEndpointReadOnly(path) {
 			continue
 		}
-		if seen[name] {
+		key := "POST\x00" + path
+		if seen[key] {
 			continue
 		}
-		seen[name] = true
+		seen[key] = true
 		requests = append(requests, target.VueCustomRequestRule{
 			Name: name, Method: "POST", Path: path, Phase: vueRequestPhase(source, match[0]),
+			Response: vueRequestResponse(source, match[1]), ReadOnly: true, Issues: []string{},
+		})
+	}
+	// 部分宿主页面直接调用 axios/$http 字面量端点；同样只记录可证明只读的请求，写请求继续由 iframe 策略隔离。
+	literalPattern := regexp.MustCompile(`(?m)(?:this\.)?(?:\$axios|\$http|axios)\.(get|post)\(\s*['"]([^'"]+)['"]`)
+	for _, match := range literalPattern.FindAllStringSubmatchIndex(source, -1) {
+		if len(match) < 6 {
+			continue
+		}
+		method := strings.ToUpper(source[match[2]:match[3]])
+		path := strings.TrimSpace(source[match[4]:match[5]])
+		if !strings.HasPrefix(path, "/") || !vueEndpointReadOnly(path) {
+			continue
+		}
+		key := method + "\x00" + path
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		requests = append(requests, target.VueCustomRequestRule{
+			Name: "literal_read", Method: method, Path: path, Phase: vueRequestPhase(source, match[0]),
 			Response: vueRequestResponse(source, match[1]), ReadOnly: true, Issues: []string{},
 		})
 	}

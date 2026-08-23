@@ -80,13 +80,17 @@ export default {
         configVisited.add(value)
         if (value.prop) {
           const path = String(value.prop)
-          value.disabled = this.readOnly || permission.get(path) !== 'edit' || protectedFields.has(path)
+          const power = permission.get(path)
+          value.hidden = power === 'hide' || value.hidden === true
+          value.disabled = this.readOnly || power !== 'edit' || protectedFields.has(path)
           if (value.disabled && Array.isArray(value.rules)) value.rules = value.rules.filter(rule => !rule || !rule.required)
         }
         for (const child of Array.isArray(value) ? value : Object.values(value)) visitConfig(child, configVisited, configDepth + 1)
       }
       visitConfig(instance.$data, new Set(), 0)
       if (instance.$options && instance.$options.name === 'ElFormItem' && instance.prop) {
+        const power = permission.get(String(instance.prop))
+        if (instance.$el && instance.$el.style) instance.$el.style.display = power === 'hide' ? 'none' : ''
         const locked = this.fieldLocked(String(instance.prop), permission, protectedFields)
         this.setDescendantsDisabled(instance, locked, new Set(), 0)
       }

@@ -32,6 +32,7 @@ type FlowTemplate struct {
 	Remark            string `json:"remark"`
 	FlowCreateType    string `json:"flowCreateType"`
 	FormExist         string `json:"formExist"`
+	AuditWay          string `json:"auditWay"`
 	FormTemplateCount int    `json:"formTemplateCount"`
 }
 
@@ -219,6 +220,7 @@ func NormalizeFormRenderType(formExist string, formCount int) FormRenderType {
 
 // VueCustomPageRule 是从宿主 Vue 页面静态提取的只读页面规则，不保存或公开目标原始源码。
 type VueCustomPageRule struct {
+	Status        string
 	PageKey       string
 	PageName      string
 	ComponentName string
@@ -326,7 +328,10 @@ type PathConfigurationSnapshot struct {
 	// TemplateID 与 RuleVersion 用于把样本和生成规则绑定到同一目标模板版本，禁止跨模板或跨规则缓存复用。
 	TemplateID     string
 	RuleVersion    string
+	RuleStatus     string
+	RuleIssues     []string
 	FlowCode       string
+	AuditWay       string
 	RenderType     FormRenderType
 	VuePage        *VueCustomPageRule
 	FormFields     []FormFieldDetail

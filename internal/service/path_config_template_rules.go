@@ -13,6 +13,7 @@ import (
 func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, account, source, targetObjectID string, snapshot target.PathConfigurationSnapshot) (target.PathConfigurationSnapshot, error) {
 	snapshot.TemplateID = strings.TrimSpace(targetObjectID)
 	if s.templateRules == nil || strings.TrimSpace(snapshot.FlowCode) == "" {
+		snapshot.RuleStatus, snapshot.RuleIssues = snapshotRuleStatus(snapshot), snapshotRuleIssues(snapshot)
 		return snapshot, nil
 	}
 	item, found, err := s.templateRules.GetByFlowCode(ctx, snapshot.FlowCode)
@@ -20,19 +21,30 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 		return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "本地模板规则目录暂不可用，请重试"}
 	}
 	if !found {
-		return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前流程尚未建立本地模板规则，请先在系统设置完成分析"}
+		snapshot.RuleStatus = model.RuleReadinessBlocked
+		snapshot.RuleIssues = []string{"当前流程尚未建立本地模板规则，请先在系统设置完成分析"}
+		return snapshot, nil
 	}
 	if !CanInitiatorUseRule(account, source, targetObjectID, snapshot, item) {
 		return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前账号无权使用该流程模板"}
 	}
-	if item.Status == "failed" || item.RenderType != templateRuleRenderType(snapshot.RenderType) {
-		return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前模板规则不可用，请先在系统设置重新分析"}
+	if item.Status == "failed" || item.Status == "blocked" || item.RenderType != templateRuleRenderType(snapshot.RenderType) {
+		snapshot.RuleStatus = model.RuleReadinessBlocked
+		snapshot.RuleIssues = uniquePublicStrings(item.Issues)
+		if len(snapshot.RuleIssues) == 0 {
+			snapshot.RuleIssues = []string{"当前模板规则不可用，请先在系统设置重新分析"}
+		}
+		return snapshot, nil
 	}
+	completeness := model.ClassifyRuleIssues(item.Issues)
+	snapshot.RuleStatus, snapshot.RuleIssues = completeness.Readiness, uniquePublicStrings(item.Issues)
 	if item.RenderType == model.TemplateRuleRenderFormMaking {
 		snapshot.RuleVersion = templateRuleVersion(item)
 		encoded, encodeErr := json.Marshal(item.RuleData["template"])
 		if encodeErr != nil {
-			return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "本地 FormMaking 规则数据异常，请重新分析"}
+			snapshot.RuleStatus = model.RuleReadinessBlocked
+			snapshot.RuleIssues = append(snapshot.RuleIssues, "本地 FormMaking 规则数据异常，请重新分析")
+			return snapshot, nil
 		}
 		snapshot.Forms = []target.FormRuntimeTemplate{{Name: item.FlowName, TemplateData: string(encoded)}}
 		return snapshot, nil
@@ -43,11 +55,55 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 	snapshot.RuleVersion = templateRuleVersion(item)
 	page, ok := decodeVueCustomPageRule(item.RuleData["page"])
 	if !ok {
-		snapshot.VuePage = &target.VueCustomPageRule{PageKey: snapshot.FlowCode, PageName: snapshot.FlowCode, Issues: []string{"本地 Vue 页面规则数据异常，请重新分析"}}
+		snapshot.RuleStatus = model.RuleReadinessBlocked
+		snapshot.RuleIssues = append(snapshot.RuleIssues, "本地 Vue 页面规则数据异常，请重新分析")
+		snapshot.VuePage = &target.VueCustomPageRule{Status: model.RuleReadinessBlocked, PageKey: snapshot.AuditWay, PageName: snapshot.AuditWay, Issues: []string{"本地 Vue 页面规则数据异常，请重新分析"}}
 		return snapshot, nil
+	}
+	page.Status = vuePageRuleStatus(&page)
+	if snapshot.RuleStatus == model.RuleReadinessReady && page.Status != model.RuleReadinessReady {
+		snapshot.RuleStatus = page.Status
 	}
 	snapshot.VuePage = &page
 	return snapshot, nil
+}
+
+// snapshotRuleStatus 汇总本次规则快照的完整性，目录未接入的测试边界仍按真实页面问题判定。
+func snapshotRuleStatus(snapshot target.PathConfigurationSnapshot) string {
+	if status := strings.TrimSpace(snapshot.RuleStatus); status != "" {
+		return status
+	}
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		return vuePageRuleStatus(snapshot.VuePage)
+	}
+	if snapshot.RenderType == target.FormRenderTypeUnknown {
+		return model.RuleReadinessBlocked
+	}
+	return model.RuleReadinessReady
+}
+
+// snapshotRuleIssues 返回规则快照中可公开的字段级原因，并兼容直接注入 Vue 页面规则的测试快照。
+func snapshotRuleIssues(snapshot target.PathConfigurationSnapshot) []string {
+	issues := append([]string(nil), snapshot.RuleIssues...)
+	if snapshot.VuePage != nil {
+		issues = append(issues, snapshot.VuePage.Issues...)
+	}
+	if snapshot.RenderType == target.FormRenderTypeUnknown && len(issues) == 0 {
+		issues = append(issues, "当前流程表单协议尚未完成分析")
+	}
+	return uniquePublicStrings(issues)
+}
+
+// vuePageRuleStatus 把 Vue 页面分析问题收敛为 complete、partial 或 blocked。
+func vuePageRuleStatus(page *target.VueCustomPageRule) string {
+	if page == nil {
+		return model.RuleReadinessBlocked
+	}
+	status := strings.TrimSpace(page.Status)
+	if status == model.RuleReadinessReady || status == model.RuleReadinessPartial || status == model.RuleReadinessBlocked {
+		return status
+	}
+	return model.ClassifyRuleIssues(page.Issues).Readiness
 }
 
 // templateRuleVersion 以规则目录源指纹和分析器版本作为样本隔离版本，更新任一规则输入都会失效旧缓存。

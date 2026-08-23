@@ -174,15 +174,22 @@ var metadataTypes = map[string]bool{"js": true, "rule": true, "alert": true, "in
 
 // customComponentCapability 描述已注册业务组件的值形态和候选边界，组件本身不能成为阻断原因。
 type customComponentCapability struct {
-	ValueType       string
-	CandidateKind   string
-	External        bool
-	Serialization   string
-	CandidateSource string
-	DefaultAllowed  bool
-	ConditionValue  string
-	Validation      string
-	Evidence        string
+	ValueType          string
+	CandidateKind      string
+	External           bool
+	Serialization      string
+	CandidateSource    string
+	DefaultAllowed     bool
+	ConditionValue     string
+	Validation         string
+	RequiredValidation string
+	BusinessValidation string
+	ChangeGroup        string
+	FormMakingPlayback string
+	VuePlayback        string
+	SaveRoundTrip      string
+	PermissionBoundary string
+	Evidence           string
 }
 
 // knownCustomComponents 来源于实际 FormMaking 运行时注册表；外部对象只接受真实候选，绝不伪造引用。
@@ -192,7 +199,7 @@ var knownCustomComponents = map[string]customComponentCapability{
 	"in-bound-material-select":      {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "allSelectData JSON.stringify"},
 	"custom-weather":                {ValueType: "string", CandidateKind: "static", Serialization: "plain", CandidateSource: "static_options", DefaultAllowed: true, ConditionValue: "plain", Validation: "string", Evidence: "el-select dataModel input"},
 	"custome-select-project":        {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
-	"custome-expense-budgetType":    {ValueType: "object", CandidateKind: "runtime_source", Serialization: "json_string", CandidateSource: "initiator_readonly_api", DefaultAllowed: true, Validation: "json_object", Evidence: "currentInfoObj input"},
+	"custome-expense-budgetType":    {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
 	"general-list-select-show":      {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
 	"person-mulSelect":              {ValueType: "array", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "flow_list", Evidence: "flowList 与 __formPersonId"},
 	"general-flow-list-mulSelect":   {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "flow_list", Evidence: "flowList input"},
@@ -204,20 +211,25 @@ var knownCustomComponents = map[string]customComponentCapability{
 	"contract-seal-review-business": {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "contractContend JSON.stringify"},
 	"flow-list-mul-select":          {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "flow_list", Evidence: "flowList input"},
 	"request_payout":                {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
-	"city-select":                   {ValueType: "array", CandidateKind: "runtime_source", Serialization: "json_string", CandidateSource: "initiator_readonly_api", DefaultAllowed: true, Validation: "json_array", Evidence: "selectedCityData JSON.stringify"},
+	"city-select":                   {ValueType: "object_or_array", CandidateKind: "runtime_source", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object_or_array", Evidence: "placeholder 多选决定 object/array JSON.stringify"},
 	"travel-route-planning":         {ValueType: "array", CandidateKind: "runtime_source", Serialization: "json_string", CandidateSource: "initiator_readonly_api", DefaultAllowed: true, Validation: "json_array", Evidence: "data JSON.stringify"},
-	"travel-order-management":       {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "value JSON parse/stringify"},
+	"travel-order-management":       {ValueType: "string", CandidateKind: "external", External: true, Serialization: "plain", CandidateSource: "flow_instance_id", Validation: "string", Evidence: "findDetailByFlowInstanceId 使用 value"},
 }
 
 // CustomComponentCapabilities 返回运行时注册组件的稳定能力投影，供规则目录和批量生成共享。
 func CustomComponentCapabilities() map[string]map[string]string {
 	result := make(map[string]map[string]string, len(knownCustomComponents))
-	for name, capability := range knownCustomComponents {
+	for name, rawCapability := range knownCustomComponents {
+		capability := completeCustomComponentCapability(rawCapability)
 		result[name] = map[string]string{
 			"valueType": capability.ValueType, "candidateKind": capability.CandidateKind,
 			"external": strconv.FormatBool(capability.External), "serialization": capability.Serialization,
 			"candidateSource": capability.CandidateSource, "defaultAllowed": strconv.FormatBool(capability.DefaultAllowed),
-			"conditionValue": capability.ConditionValue, "validation": capability.Validation, "evidence": capability.Evidence,
+			"conditionValue": capability.ConditionValue, "validation": capability.Validation,
+			"requiredValidation": capability.RequiredValidation, "businessValidation": capability.BusinessValidation,
+			"changeGroup": capability.ChangeGroup, "formMakingPlayback": capability.FormMakingPlayback,
+			"vuePlayback": capability.VuePlayback, "saveRoundTrip": capability.SaveRoundTrip,
+			"permissionBoundary": capability.PermissionBoundary, "evidence": capability.Evidence,
 		}
 	}
 	return result
@@ -226,7 +238,45 @@ func CustomComponentCapabilities() map[string]map[string]string {
 // knownCustomComponent 返回已注册组件能力；未知组件必须进入规则目录的问题清单。
 func knownCustomComponent(name string) (customComponentCapability, bool) {
 	capability, ok := knownCustomComponents[strings.TrimSpace(name)]
-	return capability, ok
+	return completeCustomComponentCapability(capability), ok
+}
+
+// completeCustomComponentCapability 补齐所有注册组件共享的回显、换组和保存复验协议，单组件差异仍由源码证据字段约束。
+func completeCustomComponentCapability(capability customComponentCapability) customComponentCapability {
+	if capability.RequiredValidation == "" {
+		capability.RequiredValidation = "formmaking_required"
+	}
+	if capability.BusinessValidation == "" {
+		capability.BusinessValidation = capability.Validation
+	}
+	if capability.ConditionValue == "" {
+		capability.ConditionValue = "serialized_value"
+	}
+	if capability.ChangeGroup == "" {
+		switch capability.CandidateKind {
+		case "static":
+			capability.ChangeGroup = "static_option_rotation"
+		case "identity":
+			capability.ChangeGroup = "identity_fixed"
+		case "external", "runtime_source":
+			capability.ChangeGroup = "initiator_candidate_rotation"
+		default:
+			capability.ChangeGroup = "manual_preserve"
+		}
+	}
+	if capability.FormMakingPlayback == "" {
+		capability.FormMakingPlayback = "value_prop_watch"
+	}
+	if capability.VuePlayback == "" {
+		capability.VuePlayback = "iframe_setData_getValues"
+	}
+	if capability.SaveRoundTrip == "" {
+		capability.SaveRoundTrip = "server_shape_json_roundtrip"
+	}
+	if capability.PermissionBoundary == "" {
+		capability.PermissionBoundary = capability.CandidateSource
+	}
+	return capability
 }
 
 // isKnownCustomComponent 仅用于盘点分支，避免把实际已注册组件误报为未知能力。
@@ -557,8 +607,15 @@ func collectList(list []any, prefix, collectionRoot string, pendingLabel *string
 			// 已注册组件统一进入能力表：有静态候选时可生成；外部候选为空时只形成 partial，不伪造对象引用。
 			capability, _ := knownCustomComponent(el)
 			values, names := optionValues(options["options"])
+			valueMode := capability.ValueType
+			if el == "city-select" {
+				valueMode = "object"
+				if strings.Contains(anyText(options["placeholder"]), "多选") {
+					valueMode = "array"
+				}
+			}
 			*fields = append(*fields, Field{
-				Path: path, Name: firstText(*pendingLabel, name, model), Type: "custom", Mode: capability.ValueType, Required: anyBool(options["required"]),
+				Path: path, Name: firstText(*pendingLabel, name, model), Type: "custom", Mode: valueMode, Required: anyBool(options["required"]),
 				Default: options["defaultValue"], CollectionRoot: collectionRoot, Options: values, OptionNames: names,
 				DataSourceURL: dataSourceURL, El: el, Capability: el,
 			})
@@ -777,6 +834,23 @@ func serializeCustomCandidate(field Field, value any) any {
 	}
 	if _, ok := value.(string); ok {
 		return value
+	}
+	// 目标候选端点返回单条业务对象；数组和 flowList 组件必须先按真实 value 协议装箱，才能通过生成与保存复验。
+	switch capability.Validation {
+	case "json_array":
+		if _, ok := value.([]any); !ok {
+			value = []any{value}
+		}
+	case "flow_list":
+		if object, ok := value.(map[string]any); !ok || object["flowList"] == nil {
+			value = map[string]any{"flowList": []any{value}}
+		}
+	case "json_object_or_array":
+		if field.Mode == "array" {
+			if _, ok := value.([]any); !ok {
+				value = []any{value}
+			}
+		}
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -1395,6 +1469,16 @@ func usableCustomValue(field Field, value any) bool {
 	case "json_object":
 		_, ok := decoded.(map[string]any)
 		return ok
+	case "json_object_or_array":
+		if field.Mode == "array" {
+			_, ok := decoded.([]any)
+			return ok
+		}
+		_, ok := decoded.(map[string]any)
+		return ok
+	case "string":
+		text, ok := value.(string)
+		return ok && strings.TrimSpace(text) != ""
 	default:
 		return decoded != nil
 	}

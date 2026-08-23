@@ -560,6 +560,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 		var forms []target.FormRuntimeTemplate
 		var values map[string]any
 		var flowCode string
+		var auditWay string
 		var renderType target.FormRenderType
 		var vuePage *target.VueCustomPageRule
 		var entries []string
@@ -575,7 +576,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 			}
 			var snapshot target.PathConfigurationSnapshot
 			snapshot, err = s.client.ReadTemplateConfiguration(callContext, active, targetObjectID)
-			tree, fields, forms, flowCode, renderType, vuePage = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.FlowCode, snapshot.RenderType, snapshot.VuePage
+			tree, fields, forms, flowCode, auditWay, renderType, vuePage = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.FlowCode, snapshot.AuditWay, snapshot.RenderType, snapshot.VuePage
 		case "started":
 			var proxyID, status string
 			var formProxyIDs []string
@@ -592,7 +593,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 			}
 			var snapshot target.PathConfigurationSnapshot
 			snapshot, err = s.client.ReadProxyConfiguration(callContext, active, proxyID, formProxyIDs, targetObjectID)
-			tree, fields, forms, values, flowCode, renderType, vuePage = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.InstanceValues, snapshot.FlowCode, snapshot.RenderType, snapshot.VuePage
+			tree, fields, forms, values, flowCode, auditWay, renderType, vuePage = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.InstanceValues, snapshot.FlowCode, snapshot.AuditWay, snapshot.RenderType, snapshot.VuePage
 		case "pending":
 			var proxyID string
 			var formProxyIDs []string
@@ -606,7 +607,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 			}
 			var snapshot target.PathConfigurationSnapshot
 			snapshot, err = s.client.ReadProxyConfiguration(callContext, active, proxyID, formProxyIDs, targetObjectID)
-			tree, fields, forms, values, flowCode, renderType, vuePage = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.InstanceValues, snapshot.FlowCode, snapshot.RenderType, snapshot.VuePage
+			tree, fields, forms, values, flowCode, auditWay, renderType, vuePage = snapshot.Tree, snapshot.FormFields, snapshot.Forms, snapshot.InstanceValues, snapshot.FlowCode, snapshot.AuditWay, snapshot.RenderType, snapshot.VuePage
 		default:
 			return ErrTargetFlowNotFound
 		}
@@ -619,7 +620,7 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 		if strings.TrimSpace(source) == "new" {
 			entries = []string{strings.TrimSpace(tree.ID)}
 		}
-		result = target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: entries, FlowCode: flowCode, RenderType: renderType, VuePage: vuePage, FormFields: fields, Forms: forms, InstanceValues: values}
+		result = target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: entries, FlowCode: flowCode, AuditWay: auditWay, RenderType: renderType, VuePage: vuePage, FormFields: fields, Forms: forms, InstanceValues: values}
 		return nil
 	})
 	return result, err

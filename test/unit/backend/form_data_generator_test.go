@@ -3,7 +3,10 @@ package backend_test
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -284,6 +287,29 @@ func TestFormDataGeneratorUsesInitiatorCustomCandidates(t *testing.T) {
 	if !ok || !strings.Contains(value, "p-current") || len(formdata.Validate(template, result.Values, nil)) != 0 {
 		t.Fatalf("自定义组件候选值没有按宿主 JSON 形状通过复验：%+v", result.Values)
 	}
+	encoded, encodeErr := json.Marshal(result.Values)
+	decoded := map[string]any{}
+	decodeErr := json.Unmarshal(encoded, &decoded)
+	if encodeErr != nil || decodeErr != nil || len(formdata.Validate(template, decoded, nil)) != 0 {
+		t.Fatalf("自定义组件生成值没有通过保存 JSON 往返复验：encoded=%s encodeErr=%v decodeErr=%v", encoded, encodeErr, decodeErr)
+	}
+}
+
+// TestFormDataGeneratorBoxesMaterialCandidate 验证材料端点返回的单条对象按组件协议装箱为 JSON 数组，生成后不会被服务端形状校验拒绝。
+func TestFormDataGeneratorBoxesMaterialCandidate(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "out-bound-material-select", "model": "materials", "options": map[string]any{"required": true},
+	}}}
+	result := formdata.Generate(formdata.GenerateInput{
+		Template: template, Seed: 2,
+		ComponentCandidates: map[string][]any{"materials": {map[string]any{"id": "m-current", "name": "当前账号材料"}}},
+	})
+	value, ok := result.Values["materials"].(string)
+	var decoded []map[string]any
+	decodeErr := json.Unmarshal([]byte(value), &decoded)
+	if !ok || decodeErr != nil || len(decoded) != 1 || decoded[0]["id"] != "m-current" || result.Pending != 0 || len(formdata.Validate(template, result.Values, nil)) != 0 {
+		t.Fatalf("材料候选没有按数组协议生成并复验：result=%+v value=%q err=%v", result, value, decodeErr)
+	}
 }
 
 // TestFormDataGeneratorDoesNotReuseExternalSample 验证外部对象不会从近期样本复用其他账号可能无权访问的对象标识。
@@ -318,11 +344,26 @@ func TestFormDataGeneratorFallsBackStaticCustomOptions(t *testing.T) {
 // TestFormDataCustomCapabilityRegistryCoversRuntimeRegistry 验证实际运行时注册的组件都具有值、候选、序列化、校验和证据能力，而非粗粒度标签。
 func TestFormDataCustomCapabilityRegistryCoversRuntimeRegistry(t *testing.T) {
 	capabilities := formdata.CustomComponentCapabilities()
-	if len(capabilities) != 20 {
-		t.Fatalf("组件能力注册数量与宿主注册表不一致：%d", len(capabilities))
+	mainSource, err := os.ReadFile(filepath.Join(f010ProjectRoot(t), "form-runtime", "runtime-source", "src", "main.js"))
+	if err != nil {
+		t.Fatalf("读取宿主实际组件注册表失败：%v", err)
+	}
+	registrationPattern := regexp.MustCompile(`\{\s*name:\s*'([^']+)'\s*,\s*component:`)
+	registrations := registrationPattern.FindAllStringSubmatch(string(mainSource), -1)
+	if len(capabilities) != len(registrations) || len(registrations) != 20 {
+		t.Fatalf("组件能力注册数量与宿主注册表不一致：capabilities=%d runtime=%d", len(capabilities), len(registrations))
+	}
+	for _, registration := range registrations {
+		if _, exists := capabilities[registration[1]]; !exists {
+			t.Fatalf("宿主实际组件 %s 缺少能力证据", registration[1])
+		}
 	}
 	for name, capability := range capabilities {
-		for _, key := range []string{"valueType", "candidateKind", "serialization", "candidateSource", "validation", "evidence"} {
+		for _, key := range []string{
+			"valueType", "candidateKind", "serialization", "candidateSource", "defaultAllowed", "conditionValue",
+			"validation", "requiredValidation", "businessValidation", "changeGroup", "formMakingPlayback",
+			"vuePlayback", "saveRoundTrip", "permissionBoundary", "evidence",
+		} {
 			if capability[key] == "" {
 				t.Fatalf("组件 %s 缺少能力 %s：%+v", name, key, capability)
 			}
