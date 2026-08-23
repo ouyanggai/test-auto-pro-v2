@@ -114,6 +114,22 @@ func (s *TargetReadService) TemplateConfiguration(ctx context.Context, account, 
 	return result, err
 }
 
+// ComponentCandidates 使用当前计划发起人的独立会话读取单个已验证组件候选类型。
+func (s *TargetReadService) ComponentCandidates(ctx context.Context, account, _ string, componentType string) ([]any, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	var result []any
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		values, readErr := s.client.ListComponentCandidates(callContext, active, componentType)
+		if readErr == nil {
+			result = values
+		}
+		return readErr
+	})
+	return result, err
+}
+
 // TemplateCoverage 分页读取账号当前可见的全部模板并增量盘点规则，不在服务端累计完整模板正文。
 func (s *TargetReadService) TemplateCoverage(ctx context.Context, account string) (formdata.TemplateCoverageReport, error) {
 	if err := s.ready(); err != nil {

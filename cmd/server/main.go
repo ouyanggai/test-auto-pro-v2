@@ -44,6 +44,8 @@ func main() {
 		planService, targetReader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),
 		analyzer.NewPathConfigAnalyzer(), pathRepository, pathConfigRepository,
 	)
+	// 候选提供者与计划读取共用当前发起人会话；缓存按模板实际组件加载且不扩大目标权限。
+	pathConfigService.SetComponentCandidateCache(service.NewComponentCandidateCache(targetReader, 1000, 15*time.Minute))
 	pathPreparationService := service.NewPathPreparationService(pathConfigService, planmysql.NewPathPreparationRepository(planDatabase.DB))
 	if err := pathPreparationService.Recover(context.Background()); err != nil {
 		log.Printf("恢复批量路径准备任务失败：%v", err)

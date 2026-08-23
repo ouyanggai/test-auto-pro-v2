@@ -300,11 +300,13 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 			}
 		}
 	}
-	// 预加载组件候选池，供批量任务共享
+	// 批量任务只预加载当前模板实际使用且已有真实只读入口的组件候选池。
 	if s.config.candidateCache != nil {
-		if candidateSet, err := s.config.candidateCache.GetCandidateSet(ctx, plan.Account, snapshot.FlowCode, snapshot.RuleVersion); err == nil {
-			assets.componentCandidates = buildComponentCandidatesMap(template, candidateSet)
-		}
+		candidateSet, _ := s.config.candidateCache.GetCandidateSet(
+			ctx, plan.Account, snapshot.FlowCode, snapshot.TemplateID, snapshot.RuleVersion, componentCandidateTypes(template),
+		)
+		// 单个候选来源失败只影响对应字段；其他安全候选仍由同批所有路径共享。
+		assets.componentCandidates = buildComponentCandidatesMap(template, candidateSet)
 	}
 	return assets, nil
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ type fakeTarget struct {
 	sessions                []string
 	graphCalls              []string
 	sampleRequests          []string
+	candidateCalls          []string
 	submittedStatus         string
 	duePaged                bool
 	dueUnbounded            bool
@@ -169,7 +171,7 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 	case "/web/user/api/company/children":
 		body := f.requireSession(request)
 		data, _ := body["data"].(map[string]any)
-		flag, _ := data["flag"].(string)
+		flag := fmt.Sprint(data["flag"])
 		f.mu.Lock()
 		f.directoryFlags = append(f.directoryFlags, flag)
 		f.mu.Unlock()
@@ -185,6 +187,33 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 			"7": []any{map[string]any{"id": "company-1", "name": "测试公司"}},
 		}
 		f.handleDirectoryResponse(response, byFlag[flag])
+	case "/web/project/api/getProjectVosOfCompanyAndGroup":
+		body := f.requireSession(request)
+		data, _ := body["data"].(map[string]any)
+		if data["companyId"] != "company-1" {
+			f.t.Errorf("项目候选扩大了当前发起人公司范围：%v", data["companyId"])
+		}
+		f.recordCandidateCall("project")
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{"id": "project-current", "name": "当前账号项目"}}})
+	case "/web/warehouse/center/api/w2/goodsLedger/getSetLedgerGoods":
+		body := f.requireSession(request)
+		if body["pagination"] != false {
+			f.t.Error("材料候选没有复用宿主非分页台账协议")
+		}
+		f.recordCandidateCall("material")
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{
+			map[string]any{"id": "material-positive", "name": "可用材料", "totalCount": 2},
+			map[string]any{"id": "material-empty", "name": "无库存材料", "totalCount": 0},
+		}})
+	case "/web/hesi/city/local/list":
+		body := f.requireSession(request)
+		if fmt.Sprint(body["current"]) != "1" || fmt.Sprint(body["size"]) != "100" {
+			f.t.Error("城市候选没有使用已核实的有界第一页协议")
+		}
+		f.recordCandidateCall("city")
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
+			"count": 1, "current": 1, "size": 100, "items": []any{map[string]any{"id": "city-1", "name": "北京", "code": "110000"}},
+		}})
 	case "/web/user/api/dutyLevel/list":
 		f.handleDirectoryResponse(response, []any{map[string]any{"id": "level-1", "name": "二级岗"}})
 	case "/web/flowRoleApi/list":
@@ -211,6 +240,13 @@ func (f *fakeTarget) recordGraphCall(value string) {
 func (f *fakeTarget) recordSampleRequest(value string) {
 	f.mu.Lock()
 	f.sampleRequests = append(f.sampleRequests, value)
+	f.mu.Unlock()
+}
+
+// recordCandidateCall 记录已验证候选端点，测试模板按需加载边界。
+func (f *fakeTarget) recordCandidateCall(value string) {
+	f.mu.Lock()
+	f.candidateCalls = append(f.candidateCalls, value)
 	f.mu.Unlock()
 }
 
@@ -686,6 +722,38 @@ func TestF010RecentSamplesCacheIncludesRuleDimensions(t *testing.T) {
 		if !strings.HasSuffix(request, ":1:5") {
 			t.Fatalf("样本列表越过第一页五条边界：%v", sampleRequests)
 		}
+	}
+}
+
+// TestF010ComponentCandidatesUseVerifiedInitiatorEndpoints 验证候选只走宿主真实只读端点，并按不同发起人建立独立会话。
+func TestF010ComponentCandidatesUseVerifiedInitiatorEndpoints(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	project, err := reader.ComponentCandidates(context.Background(), "account-a", "flow-a", "custome-select-project")
+	if err != nil || len(project) != 1 {
+		t.Fatalf("当前发起人项目候选读取失败：values=%+v err=%v", project, err)
+	}
+	material, err := reader.ComponentCandidates(context.Background(), "account-a", "flow-a", "out-bound-material-select")
+	if err != nil || len(material) != 1 {
+		t.Fatalf("出库候选没有过滤无库存记录：values=%+v err=%v", material, err)
+	}
+	city, err := reader.ComponentCandidates(context.Background(), "account-b", "flow-a", "city-select")
+	if err != nil || len(city) != 1 {
+		t.Fatalf("另一发起人城市候选读取失败：values=%+v err=%v", city, err)
+	}
+	fake.mu.Lock()
+	loginCount := fake.loginCount
+	calls := append([]string(nil), fake.candidateCalls...)
+	fake.mu.Unlock()
+	if loginCount != 2 {
+		t.Fatalf("不同发起人错误复用了同一目标会话：loginCount=%d", loginCount)
+	}
+	sort.Strings(calls)
+	if strings.Join(calls, ",") != "city,material,project" {
+		t.Fatalf("候选读取调用了未验证端点或漏掉实际类型：%v", calls)
 	}
 }
 

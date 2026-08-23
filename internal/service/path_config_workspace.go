@@ -1904,7 +1904,7 @@ func (s *PathConfigService) loadPathFormOptionalInputs(ctx context.Context, acco
 	go func() {
 		readContext, cancel := context.WithTimeout(ctx, pathFormOptionalReadBudget)
 		defer cancel()
-		candidates, err := s.loadComponentCandidates(readContext, account, snapshot.FlowCode, snapshot.RuleVersion, template)
+		candidates, err := s.loadComponentCandidates(readContext, account, snapshot.FlowCode, snapshot.TemplateID, snapshot.RuleVersion, template)
 		resultChannel <- pathFormOptionalReadResult{kind: "candidates", candidates: candidates, err: err}
 	}()
 
@@ -1953,6 +1953,10 @@ func (s *PathConfigService) readPathFormIdentity(ctx context.Context, account st
 
 // applyPathFormOptionalRead 以固定阶段语义合并可选读取结果，错误只形成非阻断业务问题。
 func (s *PathConfigService) applyPathFormOptionalRead(inputs *pathFormOptionalInputs, read pathFormOptionalReadResult) {
+	if read.kind == "candidates" && len(read.candidates) > 0 {
+		// 一个组件来源失败时仍保留其他组件已经取得的安全候选，不能把局部降级扩大为全量丢弃。
+		inputs.candidates = read.candidates
+	}
 	if read.err != nil {
 		inputs.issues = append(inputs.issues, pathFormOptionalIssue(read.kind, read.err))
 		return
@@ -1993,21 +1997,16 @@ func pathFormOptionalIssue(kind string, err error) model.PathFormGenerationIssue
 }
 
 // loadComponentCandidates 从缓存或目标平台加载组件候选池，并把读取失败交给生成状态显示。
-func (s *PathConfigService) loadComponentCandidates(ctx context.Context, account, flowCode, ruleVersion string, template map[string]any) (map[string][]any, error) {
+func (s *PathConfigService) loadComponentCandidates(ctx context.Context, account, flowCode, templateID, ruleVersion string, template map[string]any) (map[string][]any, error) {
 	if s.candidateCache == nil {
 		return make(map[string][]any), nil
 	}
-
-	candidateSet, err := s.candidateCache.GetCandidateSet(ctx, account, flowCode, ruleVersion)
-	if err != nil {
-		return make(map[string][]any), err
+	types := componentCandidateTypes(template)
+	if len(types) == 0 {
+		return make(map[string][]any), nil
 	}
-	if err := ctx.Err(); err != nil {
-		// 旧候选缓存会吞掉远端超时；在候选注册表重构完成前仍必须把子预算取消暴露为 partial。
-		return make(map[string][]any), err
-	}
-
-	return buildComponentCandidatesMap(template, candidateSet), nil
+	candidateSet, err := s.candidateCache.GetCandidateSet(ctx, account, flowCode, templateID, ruleVersion, types)
+	return buildComponentCandidatesMap(template, candidateSet), err
 }
 
 // checkRuleReadiness 检查规则完整性，阻断状态禁止生成。

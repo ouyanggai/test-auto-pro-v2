@@ -2,230 +2,144 @@ package backend
 
 import (
 	"context"
+	"errors"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/service"
 )
 
-type mockCandidateProvider struct {
-	materials map[string][]target.MaterialCandidate
-	projects  []target.ProjectCandidate
-	orders    []target.OrderCandidate
+type recordingCandidateProvider struct {
+	mu      sync.Mutex
+	calls   []string
+	started chan string
+	release <-chan struct{}
+	fail    map[string]error
 }
 
-func (m *mockCandidateProvider) GetMaterialCandidates(ctx context.Context, account, flowCode, direction string) ([]target.MaterialCandidate, error) {
-	if m.materials == nil {
-		return []target.MaterialCandidate{}, nil
+// ComponentCandidates 记录候选权限维度，并可阻塞以验证单飞和锁边界。
+func (p *recordingCandidateProvider) ComponentCandidates(ctx context.Context, account, flowCode, componentType string) ([]any, error) {
+	key := strings.Join([]string{account, flowCode, componentType}, "/")
+	p.mu.Lock()
+	p.calls = append(p.calls, key)
+	p.mu.Unlock()
+	if p.started != nil {
+		p.started <- key
 	}
-	return m.materials[direction], nil
-}
-
-func (m *mockCandidateProvider) GetProjectCandidates(ctx context.Context, account, flowCode string) ([]target.ProjectCandidate, error) {
-	return m.projects, nil
-}
-
-func (m *mockCandidateProvider) GetOrderCandidates(ctx context.Context, account, flowCode string) ([]target.OrderCandidate, error) {
-	return m.orders, nil
-}
-
-func (m *mockCandidateProvider) GetFlowListCandidates(ctx context.Context, account, flowCode string) ([]target.FlowListCandidate, error) {
-	return []target.FlowListCandidate{}, nil
-}
-
-func (m *mockCandidateProvider) GetExpenseBudgetTypes(ctx context.Context, account string) ([]target.ExpenseBudgetType, error) {
-	return []target.ExpenseBudgetType{}, nil
-}
-
-func (m *mockCandidateProvider) GetCityCandidates(ctx context.Context, account string) ([]target.CityCandidate, error) {
-	return []target.CityCandidate{
-		{Code: "110000", Name: "北京市", Province: "北京", Level: "province"},
-		{Code: "310000", Name: "上海市", Province: "上海", Level: "province"},
-	}, nil
-}
-
-func (m *mockCandidateProvider) GetTravelRoutes(ctx context.Context, account string) ([]target.TravelRoute, error) {
-	return []target.TravelRoute{}, nil
-}
-
-func TestComponentCandidateCache_GetCandidateSet(t *testing.T) {
-	provider := &mockCandidateProvider{
-		materials: map[string][]target.MaterialCandidate{
-			"out": {
-				{ID: "M001", Name: "材料A", Code: "MAT-001", Price: 100.0},
-				{ID: "M002", Name: "材料B", Code: "MAT-002", Price: 200.0},
-			},
-			"in": {
-				{ID: "M003", Name: "材料C", Code: "MAT-003", Price: 150.0},
-			},
-		},
-		projects: []target.ProjectCandidate{
-			{ID: "P001", Name: "项目A", Code: "PROJ-001", Status: "active"},
-			{ID: "P002", Name: "项目B", Code: "PROJ-002", Status: "active"},
-		},
-		orders: []target.OrderCandidate{
-			{ID: "O001", OrderNo: "ORD-001", Amount: 5000.0, Status: "active"},
-		},
-	}
-
-	cache := service.NewComponentCandidateCache(provider, 100, 1*time.Minute)
-	ctx := context.Background()
-
-	// 第一次加载
-	set1, err := cache.GetCandidateSet(ctx, "testuser", "FLOW001", "v1")
-	if err != nil {
-		t.Fatalf("GetCandidateSet failed: %v", err)
-	}
-
-	if len(set1.Materials["out"]) != 2 {
-		t.Errorf("Expected 2 out materials, got %d", len(set1.Materials["out"]))
-	}
-
-	if len(set1.Materials["in"]) != 1 {
-		t.Errorf("Expected 1 in material, got %d", len(set1.Materials["in"]))
-	}
-
-	if len(set1.Projects) != 2 {
-		t.Errorf("Expected 2 projects, got %d", len(set1.Projects))
-	}
-
-	if len(set1.Orders) != 1 {
-		t.Errorf("Expected 1 order, got %d", len(set1.Orders))
-	}
-
-	if len(set1.Cities) != 2 {
-		t.Errorf("Expected 2 cities, got %d", len(set1.Cities))
-	}
-
-	// 第二次加载（应该命中缓存）
-	set2, err := cache.GetCandidateSet(ctx, "testuser", "FLOW001", "v1")
-	if err != nil {
-		t.Fatalf("GetCandidateSet (cached) failed: %v", err)
-	}
-
-	if len(set2.Materials["out"]) != 2 {
-		t.Errorf("Expected 2 out materials from cache, got %d", len(set2.Materials["out"]))
-	}
-
-	// 检查统计
-	stats := cache.Stats()
-	if stats.TotalEntries != 1 {
-		t.Errorf("Expected 1 cache entry, got %d", stats.TotalEntries)
-	}
-}
-
-func TestComponentCandidateCache_Invalidate(t *testing.T) {
-	provider := &mockCandidateProvider{
-		projects: []target.ProjectCandidate{
-			{ID: "P001", Name: "项目A", Code: "PROJ-001", Status: "active"},
-		},
-	}
-
-	cache := service.NewComponentCandidateCache(provider, 100, 1*time.Minute)
-	ctx := context.Background()
-
-	// 加载缓存
-	_, err := cache.GetCandidateSet(ctx, "testuser", "FLOW001", "v1")
-	if err != nil {
-		t.Fatalf("GetCandidateSet failed: %v", err)
-	}
-
-	stats1 := cache.Stats()
-	if stats1.TotalEntries != 1 {
-		t.Errorf("Expected 1 cache entry, got %d", stats1.TotalEntries)
-	}
-
-	// 失效缓存
-	cache.Invalidate("testuser", "FLOW001", "v1")
-
-	stats2 := cache.Stats()
-	if stats2.TotalEntries != 0 {
-		t.Errorf("Expected 0 cache entries after invalidate, got %d", stats2.TotalEntries)
-	}
-}
-
-func TestComponentCandidateCache_GetFieldCandidates(t *testing.T) {
-	provider := &mockCandidateProvider{
-		materials: map[string][]target.MaterialCandidate{
-			"out": {
-				{ID: "M001", Name: "材料A", Code: "MAT-001", Price: 100.0},
-			},
-		},
-	}
-
-	cache := service.NewComponentCandidateCache(provider, 100, 1*time.Minute)
-	ctx := context.Background()
-
-	// 获取材料字段候选
-	candidates, err := cache.GetFieldCandidates(ctx, "testuser", "FLOW001", "v1", "material", "out-bound-material-select")
-	if err != nil {
-		t.Fatalf("GetFieldCandidates failed: %v", err)
-	}
-
-	if len(candidates) != 1 {
-		t.Errorf("Expected 1 material candidate, got %d", len(candidates))
-	}
-
-	if material, ok := candidates[0].(target.MaterialCandidate); ok {
-		if material.ID != "M001" {
-			t.Errorf("Expected material ID M001, got %s", material.ID)
+	if p.release != nil {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-	} else {
-		t.Errorf("Candidate is not a MaterialCandidate")
+	}
+	if err := p.fail[componentType]; err != nil {
+		return nil, err
+	}
+	return []any{map[string]any{"id": key, "name": componentType}}, nil
+}
+
+// snapshotCalls 返回并发安全的调用快照。
+func (p *recordingCandidateProvider) snapshotCalls() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.calls...)
+}
+
+// TestComponentCandidateCacheLoadsOnlyRequestedTypes 验证只加载模板实际组件，并覆盖五个缓存隔离维度。
+func TestComponentCandidateCacheLoadsOnlyRequestedTypes(t *testing.T) {
+	provider := &recordingCandidateProvider{}
+	cache := service.NewComponentCandidateCache(provider, 100, time.Minute)
+	types := []string{"custome-select-project", "custome-select-project"}
+	first, err := cache.GetCandidateSet(context.Background(), "account-a", "flow-a", "template-a", "rule-a", types)
+	if err != nil || len(first.ByComponent["custome-select-project"]) != 1 {
+		t.Fatalf("首次按需候选失败：set=%+v err=%v", first, err)
+	}
+	if _, err := cache.GetCandidateSet(context.Background(), "account-a", "flow-a", "template-a", "rule-a", types); err != nil {
+		t.Fatalf("同键缓存读取失败：%v", err)
+	}
+	for _, dimensions := range [][4]string{
+		{"account-b", "flow-a", "template-a", "rule-a"},
+		{"account-a", "flow-b", "template-a", "rule-a"},
+		{"account-a", "flow-a", "template-b", "rule-a"},
+		{"account-a", "flow-a", "template-a", "rule-b"},
+	} {
+		if _, err := cache.GetCandidateSet(context.Background(), dimensions[0], dimensions[1], dimensions[2], dimensions[3], types); err != nil {
+			t.Fatalf("缓存维度变化后的候选读取失败：%v", err)
+		}
+	}
+	calls := provider.snapshotCalls()
+	if len(calls) != 5 {
+		t.Fatalf("缓存没有覆盖账号、流程、模板、组件和规则版本，或预取了未使用组件：%v", calls)
+	}
+	for _, call := range calls {
+		if !strings.HasSuffix(call, "/custome-select-project") {
+			t.Fatalf("加载了模板未使用的组件：%v", calls)
+		}
 	}
 }
 
-func TestComponentCandidateCache_LRU(t *testing.T) {
-	provider := &mockCandidateProvider{
-		projects: []target.ProjectCandidate{
-			{ID: "P001", Name: "项目A", Code: "PROJ-001", Status: "active"},
-		},
+// TestComponentCandidateCacheSingleflightDoesNotHoldGlobalLock 验证同键单飞且不同键远端请求可并行开始。
+func TestComponentCandidateCacheSingleflightDoesNotHoldGlobalLock(t *testing.T) {
+	release := make(chan struct{})
+	provider := &recordingCandidateProvider{started: make(chan string, 3), release: release}
+	cache := service.NewComponentCandidateCache(provider, 100, time.Minute)
+	var wait sync.WaitGroup
+	for _, componentType := range []string{"custome-select-project", "custome-select-project", "city-select"} {
+		componentType := componentType
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, _ = cache.GetCandidateSet(context.Background(), "account", "flow", "template", "rule", []string{componentType})
+		}()
 	}
-
-	// 创建只能容纳2个条目的缓存
-	cache := service.NewComponentCandidateCache(provider, 2, 1*time.Minute)
-	ctx := context.Background()
-
-	// 加载3个不同的候选集
-	_, _ = cache.GetCandidateSet(ctx, "user1", "FLOW001", "v1")
-	_, _ = cache.GetCandidateSet(ctx, "user2", "FLOW002", "v1")
-	_, _ = cache.GetCandidateSet(ctx, "user3", "FLOW003", "v1")
-
-	stats := cache.Stats()
-	if stats.TotalEntries > 2 {
-		t.Errorf("Expected at most 2 cache entries (LRU), got %d", stats.TotalEntries)
+	started := []string{<-provider.started, <-provider.started}
+	sort.Strings(started)
+	if started[0] == started[1] || !strings.Contains(strings.Join(started, "|"), "city-select") {
+		t.Fatalf("同键没有单飞或全局锁阻塞了不同组件：%v", started)
+	}
+	select {
+	case third := <-provider.started:
+		t.Fatalf("同一组件发起了重复远端请求：%s", third)
+	case <-time.After(80 * time.Millisecond):
+	}
+	close(release)
+	wait.Wait()
+	if calls := provider.snapshotCalls(); len(calls) != 2 {
+		t.Fatalf("单飞调用数不正确：%v", calls)
 	}
 }
 
-func TestComponentCandidateCache_Expiration(t *testing.T) {
-	provider := &mockCandidateProvider{
-		projects: []target.ProjectCandidate{
-			{ID: "P001", Name: "项目A", Code: "PROJ-001", Status: "active"},
-		},
+// TestComponentCandidateCacheKeepsSafePartialResults 验证一个候选来源失败时保留其他组件真实结果并返回降级错误。
+func TestComponentCandidateCacheKeepsSafePartialResults(t *testing.T) {
+	provider := &recordingCandidateProvider{fail: map[string]error{"city-select": errors.New("城市源不可用")}}
+	cache := service.NewComponentCandidateCache(provider, 100, time.Minute)
+	set, err := cache.GetCandidateSet(
+		context.Background(), "account", "flow", "template", "rule", []string{"city-select", "custome-select-project"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "城市源不可用") {
+		t.Fatalf("候选失败没有形成可降级错误：%v", err)
 	}
-
-	// 创建1秒过期的缓存
-	cache := service.NewComponentCandidateCache(provider, 100, 1*time.Second)
-	ctx := context.Background()
-
-	// 加载缓存
-	_, err := cache.GetCandidateSet(ctx, "testuser", "FLOW001", "v1")
-	if err != nil {
-		t.Fatalf("GetCandidateSet failed: %v", err)
+	if len(set.ByComponent["custome-select-project"]) != 1 || len(set.ByComponent["city-select"]) != 0 {
+		t.Fatalf("局部失败丢失了安全候选或伪造了失败候选：%+v", set.ByComponent)
 	}
+}
 
-	// 等待过期
-	time.Sleep(1500 * time.Millisecond)
-
-	// 再次加载（应该重新获取）
-	_, err = cache.GetCandidateSet(ctx, "testuser", "FLOW001", "v1")
-	if err != nil {
-		t.Fatalf("GetCandidateSet after expiration failed: %v", err)
+// TestComponentCandidateCacheInvalidationAndLRU 验证失效和容量驱逐不跨账号删除。
+func TestComponentCandidateCacheInvalidationAndLRU(t *testing.T) {
+	provider := &recordingCandidateProvider{}
+	cache := service.NewComponentCandidateCache(provider, 2, time.Minute)
+	for _, account := range []string{"account-a", "account-b", "account-c"} {
+		_, _ = cache.GetCandidateSet(context.Background(), account, "flow", "template", "rule", []string{"city-select"})
 	}
-
-	stats := cache.Stats()
-	if stats.TotalEntries != 1 {
-		t.Errorf("Expected 1 cache entry after reload, got %d", stats.TotalEntries)
+	if stats := cache.Stats(); stats.TotalEntries != 2 {
+		t.Fatalf("LRU 容量没有生效：%+v", stats)
+	}
+	cache.InvalidateAccount("account-b")
+	if stats := cache.Stats(); stats.TotalEntries > 1 {
+		t.Fatalf("账号失效范围错误：%+v", stats)
 	}
 }

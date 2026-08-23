@@ -2,30 +2,44 @@ package service
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
 )
 
-// ComponentCandidateCache 为组件候选提供内存缓存，按规则版本+账号+流程编码隔离。
+// ComponentCandidateCache 按账号、流程、模板、组件和规则版本隔离真实候选。
 type ComponentCandidateCache struct {
 	provider target.ComponentCandidateProvider
-	mu       sync.RWMutex
-	entries  map[string]*candidateCacheEntry
+	mu       sync.Mutex
+	entries  map[string]candidateCacheEntry
+	flights  map[string]*candidateCacheFlight
 	maxSize  int
 	ttl      time.Duration
 }
 
 type candidateCacheEntry struct {
-	set       target.ComponentCandidateSet
+	values    []any
 	expiresAt time.Time
 	accessAt  time.Time
 }
 
-// NewComponentCandidateCache 创建组件候选缓存服务。
+type candidateCacheFlight struct {
+	done   chan struct{}
+	values []any
+	err    error
+}
+
+type candidateLoadResult struct {
+	componentType string
+	values        []any
+	err           error
+}
+
+// NewComponentCandidateCache 创建有界候选缓存；远端读取始终在全局锁外执行。
 func NewComponentCandidateCache(provider target.ComponentCandidateProvider, maxSize int, ttl time.Duration) *ComponentCandidateCache {
 	if maxSize <= 0 {
 		maxSize = 1000
@@ -34,329 +48,177 @@ func NewComponentCandidateCache(provider target.ComponentCandidateProvider, maxS
 		ttl = 15 * time.Minute
 	}
 	return &ComponentCandidateCache{
-		provider: provider,
-		entries:  make(map[string]*candidateCacheEntry),
-		maxSize:  maxSize,
-		ttl:      ttl,
+		provider: provider, entries: make(map[string]candidateCacheEntry), flights: make(map[string]*candidateCacheFlight),
+		maxSize: maxSize, ttl: ttl,
 	}
 }
 
-// GetCandidateSet 获取或加载一个流程的完整组件候选集合。
-func (c *ComponentCandidateCache) GetCandidateSet(ctx context.Context, account, flowCode, ruleVersion string) (target.ComponentCandidateSet, error) {
-	key := candidateCacheKey(account, flowCode, ruleVersion)
-
-	// 快速路径：读锁检查缓存
-	c.mu.RLock()
-	if entry, exists := c.entries[key]; exists && time.Now().Before(entry.expiresAt) {
-		entry.accessAt = time.Now()
-		set := entry.set
-		c.mu.RUnlock()
+// GetCandidateSet 只并发加载当前模板实际使用且有真实入口的组件类型，单路径失败不丢弃其他安全候选。
+func (c *ComponentCandidateCache) GetCandidateSet(ctx context.Context, account, flowCode, templateID, ruleVersion string, componentTypes []string) (target.ComponentCandidateSet, error) {
+	types := target.SortedComponentCandidateTypes(componentTypes)
+	set := target.ComponentCandidateSet{
+		Account: strings.TrimSpace(account), FlowCode: strings.TrimSpace(flowCode), TemplateID: strings.TrimSpace(templateID),
+		RuleVersion: strings.TrimSpace(ruleVersion), ByComponent: make(map[string][]any, len(types)),
+	}
+	if len(types) == 0 {
 		return set, nil
 	}
-	c.mu.RUnlock()
-
-	// 慢速路径：写锁加载
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 双重检查：可能其他 goroutine 已加载
-	if entry, exists := c.entries[key]; exists && time.Now().Before(entry.expiresAt) {
-		entry.accessAt = time.Now()
-		return entry.set, nil
+	results := make(chan candidateLoadResult, len(types))
+	for _, componentType := range types {
+		componentType := componentType
+		go func() {
+			values, err := c.getComponent(ctx, account, flowCode, templateID, ruleVersion, componentType)
+			results <- candidateLoadResult{componentType: componentType, values: values, err: err}
+		}()
 	}
-
-	// 执行实际加载
-	set, err := c.loadCandidateSet(ctx, account, flowCode, ruleVersion)
-	if err != nil {
-		return target.ComponentCandidateSet{}, err
+	var joined error
+	for range types {
+		result := <-results
+		if len(result.values) > 0 {
+			set.ByComponent[result.componentType] = cloneAnyCandidates(result.values)
+		}
+		if result.err != nil {
+			joined = errors.Join(joined, fmt.Errorf("%s：%w", result.componentType, result.err))
+		}
 	}
+	return set, joined
+}
 
-	// 驱逐过期条目
-	c.evictExpired()
-
-	// LRU 驱逐
-	if len(c.entries) >= c.maxSize {
-		c.evictLRU()
-	}
-
-	// 存入缓存
+// getComponent 以组件级键实现单飞；等待者支持自己的 context 取消。
+func (c *ComponentCandidateCache) getComponent(ctx context.Context, account, flowCode, templateID, ruleVersion, componentType string) ([]any, error) {
+	key := candidateCacheKey(account, flowCode, templateID, componentType, ruleVersion)
 	now := time.Now()
-	c.entries[key] = &candidateCacheEntry{
-		set:       set,
-		expiresAt: now.Add(c.ttl),
-		accessAt:  now,
-	}
-
-	return set, nil
-}
-
-// GetFieldCandidates 按字段路径和组件类型获取候选项。
-func (c *ComponentCandidateCache) GetFieldCandidates(ctx context.Context, account, flowCode, ruleVersion, fieldPath, componentType string) ([]any, error) {
-	set, err := c.GetCandidateSet(ctx, account, flowCode, ruleVersion)
-	if err != nil {
-		return nil, err
-	}
-
-	return extractFieldCandidates(set, fieldPath, componentType), nil
-}
-
-// Invalidate 使指定账号+流程的缓存失效。
-func (c *ComponentCandidateCache) Invalidate(account, flowCode, ruleVersion string) {
-	key := candidateCacheKey(account, flowCode, ruleVersion)
 	c.mu.Lock()
-	delete(c.entries, key)
+	if entry, exists := c.entries[key]; exists && now.Before(entry.expiresAt) {
+		entry.accessAt = now
+		c.entries[key] = entry
+		values := cloneAnyCandidates(entry.values)
+		c.mu.Unlock()
+		return values, nil
+	}
+	if flight, exists := c.flights[key]; exists {
+		c.mu.Unlock()
+		select {
+		case <-flight.done:
+			return cloneAnyCandidates(flight.values), flight.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	flight := &candidateCacheFlight{done: make(chan struct{})}
+	c.flights[key] = flight
 	c.mu.Unlock()
+
+	values, err := c.loadComponent(ctx, account, flowCode, componentType)
+	c.mu.Lock()
+	flight.values = cloneAnyCandidates(values)
+	flight.err = err
+	if err == nil {
+		c.evictExpiredLocked(now)
+		if len(c.entries) >= c.maxSize {
+			c.evictLRULocked()
+		}
+		c.entries[key] = candidateCacheEntry{values: cloneAnyCandidates(values), expiresAt: now.Add(c.ttl), accessAt: now}
+	}
+	delete(c.flights, key)
+	close(flight.done)
+	c.mu.Unlock()
+	return values, err
 }
 
-// InvalidateAccount 使指定账号的全部缓存失效。
-func (c *ComponentCandidateCache) InvalidateAccount(account string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// loadComponent 在互斥锁外调用目标平台；没有提供者时不能伪造空候选成功。
+func (c *ComponentCandidateCache) loadComponent(ctx context.Context, account, flowCode, componentType string) ([]any, error) {
+	if c.provider == nil {
+		return nil, target.ErrComponentCandidatesUnsupported
+	}
+	return c.provider.ComponentCandidates(ctx, account, flowCode, componentType)
+}
 
+// Invalidate 使指定账号、流程、模板和规则版本的全部组件缓存失效。
+func (c *ComponentCandidateCache) Invalidate(account, flowCode, templateID, ruleVersion string) {
+	prefix := candidateCacheScopePrefix(account, flowCode, templateID)
+	suffix := ":" + strings.TrimSpace(ruleVersion)
+	c.mu.Lock()
 	for key := range c.entries {
-		if matchesCacheKeyAccount(key, account) {
+		if strings.HasPrefix(key, prefix) && strings.HasSuffix(key, suffix) {
 			delete(c.entries, key)
 		}
 	}
+	c.mu.Unlock()
 }
 
-// Stats 返回缓存统计信息。
-func (c *ComponentCandidateCache) Stats() ComponentCandidateCacheStats {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// InvalidateAccount 使指定账号的全部候选缓存失效。
+func (c *ComponentCandidateCache) InvalidateAccount(account string) {
+	prefix := strings.TrimSpace(account) + ":"
+	c.mu.Lock()
+	for key := range c.entries {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.entries, key)
+		}
+	}
+	c.mu.Unlock()
+}
 
+// Stats 返回不触发远端读取的缓存统计。
+func (c *ComponentCandidateCache) Stats() ComponentCandidateCacheStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	expired := 0
 	now := time.Now()
 	for _, entry := range c.entries {
-		if now.After(entry.expiresAt) {
+		if !now.Before(entry.expiresAt) {
 			expired++
 		}
 	}
-
-	return ComponentCandidateCacheStats{
-		TotalEntries:   len(c.entries),
-		ExpiredEntries: expired,
-		MaxSize:        c.maxSize,
-		TTL:            c.ttl,
-	}
+	return ComponentCandidateCacheStats{TotalEntries: len(c.entries), ExpiredEntries: expired, InFlight: len(c.flights), MaxSize: c.maxSize, TTL: c.ttl}
 }
 
-// ComponentCandidateCacheStats 是缓存统计信息。
+// ComponentCandidateCacheStats 是候选缓存的非敏感统计。
 type ComponentCandidateCacheStats struct {
 	TotalEntries   int           `json:"totalEntries"`
 	ExpiredEntries int           `json:"expiredEntries"`
+	InFlight       int           `json:"inFlight"`
 	MaxSize        int           `json:"maxSize"`
 	TTL            time.Duration `json:"ttl"`
 }
 
-// loadCandidateSet 从目标平台加载完整候选集合，调用方必须持有写锁。
-func (c *ComponentCandidateCache) loadCandidateSet(ctx context.Context, account, flowCode, ruleVersion string) (target.ComponentCandidateSet, error) {
-	if c.provider == nil {
-		return target.ComponentCandidateSet{
-			FlowCode:    flowCode,
-			Account:     account,
-			RuleVersion: ruleVersion,
-		}, nil
-	}
-
-	set := target.ComponentCandidateSet{
-		FlowCode:    flowCode,
-		Account:     account,
-		RuleVersion: ruleVersion,
-		Materials:   make(map[string][]target.MaterialCandidate),
-	}
-
-	// 并行加载各类候选
-	type loadResult struct {
-		name string
-		err  error
-	}
-	results := make(chan loadResult, 7)
-	var mu sync.Mutex
-
-	// 材料（出库）
-	go func() {
-		materials, err := c.provider.GetMaterialCandidates(ctx, account, flowCode, "out")
-		if err == nil {
-			mu.Lock()
-			set.Materials["out"] = materials
-			mu.Unlock()
-		}
-		results <- loadResult{name: "materials_out", err: err}
-	}()
-
-	// 材料（入库）
-	go func() {
-		materials, err := c.provider.GetMaterialCandidates(ctx, account, flowCode, "in")
-		if err == nil {
-			mu.Lock()
-			set.Materials["in"] = materials
-			mu.Unlock()
-		}
-		results <- loadResult{name: "materials_in", err: err}
-	}()
-
-	// 项目
-	go func() {
-		projects, err := c.provider.GetProjectCandidates(ctx, account, flowCode)
-		if err == nil {
-			mu.Lock()
-			set.Projects = projects
-			mu.Unlock()
-		}
-		results <- loadResult{name: "projects", err: err}
-	}()
-
-	// 订单
-	go func() {
-		orders, err := c.provider.GetOrderCandidates(ctx, account, flowCode)
-		if err == nil {
-			mu.Lock()
-			set.Orders = orders
-			mu.Unlock()
-		}
-		results <- loadResult{name: "orders", err: err}
-	}()
-
-	// 流程列表
-	go func() {
-		flowLists, err := c.provider.GetFlowListCandidates(ctx, account, flowCode)
-		if err == nil {
-			mu.Lock()
-			set.FlowLists = flowLists
-			mu.Unlock()
-		}
-		results <- loadResult{name: "flow_lists", err: err}
-	}()
-
-	// 费用预算类型
-	go func() {
-		budgetTypes, err := c.provider.GetExpenseBudgetTypes(ctx, account)
-		if err == nil {
-			mu.Lock()
-			set.ExpenseBudgetTypes = budgetTypes
-			mu.Unlock()
-		}
-		results <- loadResult{name: "expense_budget_types", err: err}
-	}()
-
-	// 城市
-	go func() {
-		cities, err := c.provider.GetCityCandidates(ctx, account)
-		if err == nil {
-			mu.Lock()
-			set.Cities = cities
-			mu.Unlock()
-		}
-		results <- loadResult{name: "cities", err: err}
-	}()
-
-	// 等待全部完成，记录错误但不终止
-	var firstError error
-	for i := 0; i < 7; i++ {
-		result := <-results
-		if result.err != nil && firstError == nil {
-			firstError = result.err
-		}
-	}
-
-	// 即使部分失败也返回已加载的候选
-	return set, nil
-}
-
-// evictExpired 驱逐已过期条目，调用方必须持有写锁。
-func (c *ComponentCandidateCache) evictExpired() {
-	now := time.Now()
+// evictExpiredLocked 删除过期缓存；调用方必须持有互斥锁。
+func (c *ComponentCandidateCache) evictExpiredLocked(now time.Time) {
 	for key, entry := range c.entries {
-		if now.After(entry.expiresAt) {
+		if !now.Before(entry.expiresAt) {
 			delete(c.entries, key)
 		}
 	}
 }
 
-// evictLRU 驱逐最久未访问的条目，调用方必须持有写锁。
-func (c *ComponentCandidateCache) evictLRU() {
-	if len(c.entries) == 0 {
-		return
-	}
-
+// evictLRULocked 删除最久未访问条目；调用方必须持有互斥锁。
+func (c *ComponentCandidateCache) evictLRULocked() {
 	var oldestKey string
 	var oldestTime time.Time
-	first := true
-
 	for key, entry := range c.entries {
-		if first || entry.accessAt.Before(oldestTime) {
+		if oldestKey == "" || entry.accessAt.Before(oldestTime) {
 			oldestKey = key
 			oldestTime = entry.accessAt
-			first = false
 		}
 	}
-
 	if oldestKey != "" {
 		delete(c.entries, oldestKey)
 	}
 }
 
-// candidateCacheKey 生成缓存键。
-func candidateCacheKey(account, flowCode, ruleVersion string) string {
-	return fmt.Sprintf("%s:%s:%s", account, flowCode, ruleVersion)
+// candidateCacheKey 生成包含全部权限和规则维度的组件级缓存键。
+func candidateCacheKey(account, flowCode, templateID, componentType, ruleVersion string) string {
+	return strings.Join([]string{
+		strings.TrimSpace(account), strings.TrimSpace(flowCode), strings.TrimSpace(templateID), strings.TrimSpace(componentType), strings.TrimSpace(ruleVersion),
+	}, ":")
 }
 
-// matchesCacheKeyAccount 判断缓存键是否属于指定账号。
-func matchesCacheKeyAccount(key, account string) bool {
-	prefix := account + ":"
-	return len(key) > len(prefix) && key[:len(prefix)] == prefix
+// candidateCacheScopePrefix 返回账号、流程和模板的稳定键前缀。
+func candidateCacheScopePrefix(account, flowCode, templateID string) string {
+	return strings.Join([]string{strings.TrimSpace(account), strings.TrimSpace(flowCode), strings.TrimSpace(templateID)}, ":") + ":"
 }
 
-// extractFieldCandidates 从候选集合中提取特定字段的候选项。
-func extractFieldCandidates(set target.ComponentCandidateSet, fieldPath, componentType string) []any {
-	switch componentType {
-	case "out-bound-material-select":
-		return toAnySlice(set.Materials["out"])
-	case "in-bound-material-select":
-		return toAnySlice(set.Materials["in"])
-	case "custome-select-project":
-		return toAnySlice(set.Projects)
-	case "travel-order-management":
-		return toAnySlice(set.Orders)
-	case "general-flow-list-mulSelect", "flow-list-mul-select":
-		return toAnySlice(set.FlowLists)
-	case "custome-expense-budgetType":
-		return toAnySlice(set.ExpenseBudgetTypes)
-	case "city-select":
-		return toAnySlice(set.Cities)
-	case "travel-route-planning":
-		return toAnySlice(set.TravelRoutes)
-	default:
-		return []any{}
-	}
-}
-
-// toAnySlice 将类型化切片转换为 []any。
-func toAnySlice[T any](items []T) []any {
-	result := make([]any, len(items))
-	for i, item := range items {
-		result[i] = item
-	}
-	return result
-}
-
-// SerializeCandidateForComponent 将候选对象序列化为组件要求的 JSON 字符串。
-func SerializeCandidateForComponent(candidate any, componentType string) (any, error) {
-	// 大部分自定义组件使用 JSON 字符串序列化
-	switch componentType {
-	case "custom-weather":
-		// custom-weather 使用纯字符串
-		if str, ok := candidate.(string); ok {
-			return str, nil
-		}
-		return fmt.Sprint(candidate), nil
-	default:
-		// 其他组件使用 JSON 字符串
-		data, err := json.Marshal(candidate)
-		if err != nil {
-			return nil, err
-		}
-		return string(data), nil
-	}
+// cloneAnyCandidates 复制候选切片，避免调用方修改缓存中的集合边界。
+func cloneAnyCandidates(values []any) []any {
+	return append([]any(nil), values...)
 }

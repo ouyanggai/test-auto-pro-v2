@@ -42,38 +42,8 @@ func waitF010CandidateContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// GetMaterialCandidates 模拟材料候选超时。
-func (f010SlowCandidateProvider) GetMaterialCandidates(ctx context.Context, _, _, _ string) ([]target.MaterialCandidate, error) {
-	return nil, waitF010CandidateContext(ctx)
-}
-
-// GetProjectCandidates 模拟项目候选超时。
-func (f010SlowCandidateProvider) GetProjectCandidates(ctx context.Context, _, _ string) ([]target.ProjectCandidate, error) {
-	return nil, waitF010CandidateContext(ctx)
-}
-
-// GetOrderCandidates 模拟订单候选超时。
-func (f010SlowCandidateProvider) GetOrderCandidates(ctx context.Context, _, _ string) ([]target.OrderCandidate, error) {
-	return nil, waitF010CandidateContext(ctx)
-}
-
-// GetFlowListCandidates 模拟流程对象候选超时。
-func (f010SlowCandidateProvider) GetFlowListCandidates(ctx context.Context, _, _ string) ([]target.FlowListCandidate, error) {
-	return nil, waitF010CandidateContext(ctx)
-}
-
-// GetExpenseBudgetTypes 模拟预算类型候选超时。
-func (f010SlowCandidateProvider) GetExpenseBudgetTypes(ctx context.Context, _ string) ([]target.ExpenseBudgetType, error) {
-	return nil, waitF010CandidateContext(ctx)
-}
-
-// GetCityCandidates 模拟城市候选超时。
-func (f010SlowCandidateProvider) GetCityCandidates(ctx context.Context, _ string) ([]target.CityCandidate, error) {
-	return nil, waitF010CandidateContext(ctx)
-}
-
-// GetTravelRoutes 模拟差旅候选超时。
-func (f010SlowCandidateProvider) GetTravelRoutes(ctx context.Context, _ string) ([]target.TravelRoute, error) {
+// ComponentCandidates 模拟模板实际使用的项目候选超时。
+func (f010SlowCandidateProvider) ComponentCandidates(ctx context.Context, _, _, _ string) ([]any, error) {
 	return nil, waitF010CandidateContext(ctx)
 }
 
