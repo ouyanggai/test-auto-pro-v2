@@ -103,6 +103,19 @@ test('表单生成、恢复和保存使用相互独立的忙碌状态', () => {
   assert.doesNotMatch(configurationView, /formSaving\.value = true[\s\S]*generatePathFormData\(/)
 })
 
+test('表单生成共享二十秒期限并原位回填真实 iframe', () => {
+  assert.match(configurationView, /const formGenerationOperationTimeout = 20_000/)
+  assert.match(configurationView, /beginFormGenerationDeadline\(controller, \(\) => stage\)/)
+  assert.match(configurationView, /frame\.getValues\(controller\.signal\)/)
+  assert.match(configurationView, /generatePathFormData\([\s\S]*controller\.signal\)/)
+  assert.match(configurationView, /frame\.setGeneratedData\([\s\S]*generated\.fieldRules, controller\.signal\)/)
+  assert.match(configurationView, /window\.clearTimeout\(deadline\)[\s\S]*formGenerating\.value = false/)
+  assert.match(configurationView, /当前表单值已保留/)
+  assert.doesNotMatch(configurationView, /reloadRuntime/)
+  assert.match(runtimeFrame, /function setGeneratedData\([\s\S]*postCommand\('setData'/)
+  assert.match(runtimeFrame, /signal\?\.addEventListener\('abort'/)
+})
+
 test('表单运行时固定浅色且条件提示使用标准折叠容器', () => {
   const runtimeApp = readFileSync(new URL('../../../form-runtime/src/App.vue', import.meta.url), 'utf8')
   const runtimeIndex = readFileSync(new URL('../../../form-runtime/public/index.html', import.meta.url), 'utf8')

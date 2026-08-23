@@ -177,6 +177,9 @@ export default {
       }
       if (command.type === 'setData') {
         const nextValues = clonePlain(payload.values || {})
+        // 路径规则随生成结果原位更新；同一路径无需销毁宿主页面，已有未提交状态也不会因重建丢失。
+        this.runtimeFieldRules = Array.isArray(payload.fieldRules) ? payload.fieldRules : this.runtimeFieldRules
+        await this.$nextTick()
         await this.setData(nextValues)
         this.generatedValues = clonePlain(nextValues)
         this.generatedFieldPaths = Array.isArray(payload.generatedFieldPaths) ? payload.generatedFieldPaths.map(String) : []

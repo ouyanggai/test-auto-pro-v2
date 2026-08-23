@@ -19,7 +19,7 @@ const iframe = ref<HTMLIFrameElement | null>(null)
 const sessionId = ref(crypto.randomUUID())
 const iframeSource = computed(() => import.meta.env.DEV ? 'http://127.0.0.1:19001/form-runtime/#/test-auto-form' : '/form-runtime/#/test-auto-form')
 const runtimeOrigin = computed(() => new URL(iframeSource.value, window.location.href).origin)
-const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer: number }>()
+const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer: number, cleanup: () => void }>()
 let disposed = false
 let runtimeActive = false
 let runtimeGeneration = 0
@@ -31,16 +31,28 @@ function plainPayload(value: unknown): Record<string, unknown> {
 }
 
 // postCommand 绑定当前 iframe、会话、请求号和协议版本，迟到响应无法串到新路径。
-function postCommand(type: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+function postCommand(type: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const target = iframe.value?.contentWindow
   if (!target || disposed || !runtimeActive) return Promise.reject(new Error('表单运行时尚未就绪'))
+  if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new DOMException('操作已取消', 'AbortError'))
   const requestId = crypto.randomUUID()
   return new Promise((resolve, reject) => {
+    const abort = () => {
+      const request = pending.get(requestId)
+      if (!request) return
+      window.clearTimeout(request.timer)
+      request.cleanup()
+      pending.delete(requestId)
+      reject(signal?.reason instanceof Error ? signal.reason : new DOMException('操作已取消', 'AbortError'))
+    }
+    const cleanup = () => signal?.removeEventListener('abort', abort)
     const timer = window.setTimeout(() => {
+      cleanup()
       pending.delete(requestId)
       reject(new Error('表单运行时响应超时，当前表单数据未丢失'))
     }, 15_000)
-    pending.set(requestId, { resolve, reject, timer })
+    pending.set(requestId, { resolve, reject, timer, cleanup })
+    signal?.addEventListener('abort', abort, { once: true })
     target.postMessage({ version: FORM_RUNTIME_VERSION, sessionId: sessionId.value, requestId, type, payload: plainPayload(payload) }, runtimeOrigin.value)
   })
 }
@@ -103,20 +115,15 @@ function handleMessage(event: MessageEvent) {
   const request = pending.get(message.requestId)
   if (!request) return
   window.clearTimeout(request.timer)
+  request.cleanup()
   pending.delete(message.requestId)
   if (message.type === 'error') request.reject(new Error(String(message.payload?.message || '表单运行时操作失败')))
   else request.resolve(message.payload || {})
 }
 
 // setGeneratedData 把服务端生成结果交给真实 FormMaking setData/refresh。
-function setGeneratedData(values: Record<string, unknown>, generatedFieldPaths: string[], manualOverridePaths: string[]) {
-  return postCommand('setData', { values, generatedFieldPaths, manualOverridePaths })
-}
-
-// reloadRuntime 在新字段规则到达后销毁旧组件实例，再在真实组件创建前应用最新规则和 values。
-async function reloadRuntime() {
-  destroyRuntime()
-  return loadRuntime()
+function setGeneratedData(values: Record<string, unknown>, generatedFieldPaths: string[], manualOverridePaths: string[], fieldRules: PathFormConfiguration['fieldRules'], signal?: AbortSignal) {
+  return postCommand('setData', { values, generatedFieldPaths, manualOverridePaths, fieldRules }, signal)
 }
 
 // restoreSaved 恢复本次载入时的已保存值。
@@ -125,8 +132,8 @@ function restoreSaved() {
 }
 
 // getValues 不触发必填校验，用于换一组前捕获人工修改和生成器所有权。
-function getValues() {
-  return postCommand('getValues')
+function getValues(signal?: AbortSignal) {
+  return postCommand('getValues', {}, signal)
 }
 
 // validateAndGetValues 先执行 getData(true)，再抓取包含虚拟字段的 getValues。
@@ -147,6 +154,7 @@ function resetRuntime(notifyFrame: boolean) {
   sessionId.value = crypto.randomUUID()
   for (const request of pending.values()) {
     window.clearTimeout(request.timer)
+    request.cleanup()
     request.reject(new Error('表单工作区已经关闭'))
   }
   pending.clear()
@@ -170,7 +178,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('message', handleMessage)
 })
 
-defineExpose({ setGeneratedData, reloadRuntime, restoreSaved, getValues, validateAndGetValues, destroyRuntime })
+defineExpose({ setGeneratedData, restoreSaved, getValues, validateAndGetValues, destroyRuntime })
 </script>
 
 <template>

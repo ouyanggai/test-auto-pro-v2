@@ -215,6 +215,16 @@ func (c *Client) ListTemplates(ctx context.Context, session Session, query strin
 
 // ListSubmitted 分页读取已发实例，并保留后端路径入口核对所需的非公开字段。
 func (c *Client) ListSubmitted(ctx context.Context, session Session, query string, page, pageSize int) (Page[SubmittedFlow], error) {
+	return c.listSubmitted(ctx, session, query, "", page, pageSize)
+}
+
+// ListSubmittedByFlowCode 只按目标协议的 data.flowCode 精确读取指定流程实例，供有限近期样本使用。
+func (c *Client) ListSubmittedByFlowCode(ctx context.Context, session Session, flowCode string, page, pageSize int) (Page[SubmittedFlow], error) {
+	return c.listSubmitted(ctx, session, "", strings.TrimSpace(flowCode), page, pageSize)
+}
+
+// listSubmitted 统一拼装已发实例列表请求，名称搜索和流程编码过滤不能混用或相互猜测。
+func (c *Client) listSubmitted(ctx context.Context, session Session, query, flowCode string, page, pageSize int) (Page[SubmittedFlow], error) {
 	data := map[string]any{
 		"useScope":                     "invest",
 		"auditWayList":                 []string{},
@@ -223,6 +233,10 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 	}
 	if value := strings.TrimSpace(query); value != "" {
 		data["name"] = value
+	}
+	if value := strings.TrimSpace(flowCode); value != "" {
+		// Java FlowInstanceRepository 已证明 flowCode 是列表查询字段；样本读取必须让目标端先精确过滤。
+		data["flowCode"] = value
 	}
 	resp, err := c.call(ctx, "/web/flowInstanceApi/list", session.SID, map[string]any{
 		"data": data, "pagination": true, "pages": page, "size": pageSize,

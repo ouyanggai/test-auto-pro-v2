@@ -49,10 +49,9 @@ import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import type { PersistedPlan } from '../features/plans/types'
 
 type FormRuntimeExpose = InstanceType<typeof FormRuntimeFrame> & {
-  setGeneratedData: (values: Record<string, unknown>, paths: string[], manualPaths: string[]) => Promise<Record<string, unknown>>
-  reloadRuntime: () => Promise<Record<string, unknown>>
+  setGeneratedData: (values: Record<string, unknown>, paths: string[], manualPaths: string[], fieldRules: PathConfiguration['form']['fieldRules'], signal?: AbortSignal) => Promise<Record<string, unknown>>
   restoreSaved: () => Promise<Record<string, unknown>>
-  getValues: () => Promise<Record<string, unknown>>
+  getValues: (signal?: AbortSignal) => Promise<Record<string, unknown>>
   validateAndGetValues: () => Promise<Record<string, unknown>>
 }
 
@@ -102,6 +101,26 @@ let runtimeSessionController: AbortController | null = null
 let formOperationController: AbortController | null = null
 let nodeSaveKey = ''
 let formSaveKey = ''
+
+const formGenerationOperationTimeout = 20_000
+
+// beginFormGenerationDeadline 为取值、服务端生成和 iframe 回填建立同一个二十秒期限。
+function beginFormGenerationDeadline(controller: AbortController, stage: () => string): number {
+  return window.setTimeout(() => {
+    controller.abort(new DOMException(`智能生成在${stage()}阶段超过 20 秒，当前表单值已保留`, 'TimeoutError'))
+  }, formGenerationOperationTimeout)
+}
+
+// formGenerationFailureMessage 区分共享期限、阶段运行时失败和普通 API 错误。
+function formGenerationFailureMessage(caught: unknown, signal: AbortSignal, stage: string): string {
+  if (signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError') {
+    return signal.reason.message
+  }
+  if (caught instanceof Error && caught.message.includes('表单运行时响应超时')) {
+    return `智能生成在${stage}阶段未收到表单运行时响应，当前表单值已保留`
+  }
+  return `智能生成在${stage}阶段失败：${publicPageError(caught)}，当前表单值已保留`
+}
 
 const pageThemeStyle = computed(() => ({
   '--path-config-page-color': themeVars.value.bodyColor,
@@ -497,13 +516,19 @@ async function generateFormData(nextGroup: boolean) {
   formError.value = ''
   formErrorDetails.value = []
   formSavedSuccessfully.value = false
+  let stage = '读取当前表单值'
+  const deadline = beginFormGenerationDeadline(controller, () => stage)
   try {
-    const captured = await frame.getValues()
+    const captured = await frame.getValues(controller.signal)
     if (!isActiveFormOperation(epoch, frame)) return
     const values = (captured.values || current.form.values) as Record<string, unknown>
     const manual = Array.isArray(captured.manualOverridePaths) ? captured.manualOverridePaths.map(String) : current.form.manualOverridePaths
     const seed = nextGroup ? nextFormGenerationSeed(current.form.seed) : current.form.seed
+    stage = '读取规则与生成数据'
     const generated = await generatePathFormData(planID.value, pathID.value, seed, values, manual, nextGroup, controller.signal)
+    if (!isActiveFormOperation(epoch, frame)) return
+    stage = '回填真实表单'
+    const runtimeState = await frame.setGeneratedData(generated.values, generated.generatedFieldPaths, generated.manualOverridePaths, generated.fieldRules, controller.signal)
     if (!isActiveFormOperation(epoch, frame)) return
     current.form.values = generated.values
     current.form.seed = generated.seed
@@ -531,15 +556,16 @@ async function generateFormData(nextGroup: boolean) {
         ? '已生成可安全使用的数据，仍有部分内容需要人工核对'
         : '已保留可安全生成的数据，当前完整路径仍需人工核对'
     }
-    // 字段规则只能在 FormMaking 创建组件前生效；重新载入后统计由真实运行时重新对账。
-    await nextTick()
-    if (!isActiveFormOperation(epoch, frame)) return
-    applyRuntimeFormState(await frame.reloadRuntime())
+    // 原位 setData 保留宿主组件实例和页面状态，统计由同一回填响应立即对账。
+    applyRuntimeFormState(runtimeState)
   }
   catch (caught) {
-    if (isActiveFormOperation(epoch, frame) && !(caught instanceof DOMException && caught.name === 'AbortError')) formError.value = publicPageError(caught)
+    if (isActiveFormOperation(epoch, frame) && (!(caught instanceof DOMException) || caught.name !== 'AbortError' || controller.signal.reason?.name === 'TimeoutError')) {
+      formError.value = formGenerationFailureMessage(caught, controller.signal, stage)
+    }
   }
   finally {
+    window.clearTimeout(deadline)
     if (epoch === runtimeEpoch) {
       formGenerating.value = false
       formGenerationKind.value = null

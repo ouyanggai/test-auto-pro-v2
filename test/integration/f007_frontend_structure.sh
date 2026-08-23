@@ -131,11 +131,15 @@ grep -Fq "event.origin !== runtimeOrigin.value" "${form_frame}"
 grep -Fq "getValues" "${runtime_app}"
 grep -Fq "captureFormValues" "${runtime_app}"
 grep -Fq "fieldRules: props.form.fieldRules" "${form_frame}"
-grep -Fq "reloadRuntime" "${form_frame}"
+grep -Fq "setGeneratedData" "${form_frame}"
 grep -Fq "current.form.conditionBindings = generated.conditionBindings" "${config_view}"
 grep -Fq "current.form.conditionReviews = generated.conditionReviews" "${config_view}"
 grep -Fq "current.form.fieldRules = generated.fieldRules" "${config_view}"
-grep -Fq "await frame.reloadRuntime()" "${config_view}"
+grep -Fq "await frame.setGeneratedData" "${config_view}"
+if grep -Fq "reloadRuntime" "${form_frame}" || grep -Fq "reloadRuntime" "${config_view}"; then
+  echo 'F-007 智能生成不得销毁并重建真实表单运行时' >&2
+  exit 1
+fi
 grep -Fq "当前路径分支条件" "${config_view}"
 grep -Fq "v-if=\"binding.selected\"" "${config_view}"
 grep -Fq "字段已锁定" "${config_view}"

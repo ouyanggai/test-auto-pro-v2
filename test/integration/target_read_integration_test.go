@@ -37,6 +37,7 @@ type fakeTarget struct {
 	expireMode              string
 	sessions                []string
 	graphCalls              []string
+	sampleRequests          []string
 	submittedStatus         string
 	duePaged                bool
 	dueUnbounded            bool
@@ -78,6 +79,14 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				"currentAuditUserInfo": map[string]any{"start": map[string]any{"userList": []any{}}},
 			}}})
 			return
+		}
+		if flowCode, _ := data["flowCode"].(string); flowCode != "" {
+			pages := fmt.Sprint(body["pages"])
+			size := fmt.Sprint(body["size"])
+			if pages != "1" || size != "5" || data["name"] != nil {
+				f.t.Errorf("近期样本没有使用 flowCode 第一页至多五条的精确协议：flowCode=%q pages=%s size=%s", flowCode, pages, size)
+			}
+			f.recordSampleRequest(flowCode + ":" + pages + ":" + size)
 		}
 		name, _ := data["name"].(string)
 		if data["useScope"] != "invest" || (name != "" && name != "sent" && name != "flow-test") || body["pagination"] != true {
@@ -195,6 +204,13 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 func (f *fakeTarget) recordGraphCall(value string) {
 	f.mu.Lock()
 	f.graphCalls = append(f.graphCalls, value)
+	f.mu.Unlock()
+}
+
+// recordSampleRequest 记录样本列表的精确流程编码与有界分页参数。
+func (f *fakeTarget) recordSampleRequest(value string) {
+	f.mu.Lock()
+	f.sampleRequests = append(f.sampleRequests, value)
 	f.mu.Unlock()
 }
 
@@ -618,7 +634,7 @@ func TestF009RealTemplateCoverage(t *testing.T) {
 	}
 }
 
-// TestF010RecentSamplesCacheIncludesRuleDimensions 验证样本缓存同规则命中、模板或组件变化重新读取，避免跨权限对象复用。
+// TestF010RecentSamplesCacheIncludesRuleDimensions 验证样本读取使用精确过滤，缓存覆盖账号、流程、模板、组件和规则版本全部权限维度。
 func TestF010RecentSamplesCacheIncludesRuleDimensions(t *testing.T) {
 	fake := newFakeTarget(t)
 	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
@@ -647,11 +663,29 @@ func TestF010RecentSamplesCacheIncludesRuleDimensions(t *testing.T) {
 	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-b", "identity", "rule-v1", 5); err != nil {
 		t.Fatalf("组件变化后的规则样本读取失败：%v", err)
 	}
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-b", "identity", "rule-v2", 5); err != nil {
+		t.Fatalf("规则版本变化后的样本读取失败：%v", err)
+	}
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-b", "flow-test", "template-b", "identity", "rule-v2", 5); err != nil {
+		t.Fatalf("账号变化后的样本读取失败：%v", err)
+	}
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-b", "flow-other", "template-b", "identity", "rule-v2", 5); err != nil {
+		t.Fatalf("流程变化后的样本读取失败：%v", err)
+	}
 	fake.mu.Lock()
 	thirdCalls := len(fake.graphCalls)
+	sampleRequests := append([]string(nil), fake.sampleRequests...)
 	fake.mu.Unlock()
 	if thirdCalls <= secondCalls {
 		t.Fatalf("模板或组件维度变化错误复用旧样本缓存：二次=%d 三次=%d", secondCalls, thirdCalls)
+	}
+	if len(sampleRequests) != 6 {
+		t.Fatalf("账号、流程、模板、组件或规则版本错误复用样本缓存：%v", sampleRequests)
+	}
+	for _, request := range sampleRequests {
+		if !strings.HasSuffix(request, ":1:5") {
+			t.Fatalf("样本列表越过第一页五条边界：%v", sampleRequests)
+		}
 	}
 }
 

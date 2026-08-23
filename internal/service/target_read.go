@@ -684,30 +684,23 @@ func (s *TargetReadService) recentFormSamplesForRule(ctx context.Context, accoun
 	}
 	result := make([]map[string]any, 0, limit)
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
-		pageNumber := 1
-		for len(result) < limit {
-			// 列表查询不把流程编码当作实例名称，避免目标端按名称误筛；逐页按真实 flowCode 精确过滤。
-			page, pageErr := s.client.ListSubmitted(callContext, active, "", pageNumber, 20)
-			if pageErr != nil {
-				return pageErr
+		// 样本只读目标端按 flowCode 过滤后的第一页，限制页大小等于样本上限，禁止扫描全部已发实例。
+		page, pageErr := s.client.ListSubmittedByFlowCode(callContext, active, flowCode, 1, limit)
+		if pageErr != nil {
+			return pageErr
+		}
+		// 实例详情保持固定单并发；本地再次核对 flowCode，防御目标端返回越界记录。
+		for _, item := range page.Items {
+			if len(result) >= limit || strings.TrimSpace(item.FlowCode) != flowCode {
+				continue
 			}
-			// 并发度固定为一，避免智能生成同时放大目标实例与表单读取压力。
-			for _, item := range page.Items {
-				if len(result) >= limit || strings.TrimSpace(item.FlowCode) != flowCode {
-					continue
-				}
-				values, readErr := s.client.ReadInstanceCurrentData(callContext, active, item.ID)
-				if readErr != nil {
-					return readErr
-				}
-				if len(values) > 0 {
-					result = append(result, values)
-				}
+			values, readErr := s.client.ReadInstanceCurrentData(callContext, active, item.ID)
+			if readErr != nil {
+				return readErr
 			}
-			if !page.HasMore || len(page.Items) == 0 {
-				break
+			if len(values) > 0 {
+				result = append(result, values)
 			}
-			pageNumber++
 		}
 		return nil
 	})
