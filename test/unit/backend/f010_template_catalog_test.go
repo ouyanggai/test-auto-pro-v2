@@ -225,7 +225,7 @@ func TestF010TemplateCatalogPersistsAllVisibleTemplates(t *testing.T) {
 // TestF010TemplateCatalogAccountsUnlistedAndRetryRediscovers 验证 725/731 分页失败仍以 100% 对账终止，retry 能重新发现 6 项并跳过未变健康规则。
 func TestF010TemplateCatalogAccountsUnlistedAndRetryRediscovers(t *testing.T) {
 	repository := newF010CatalogRepository()
-	reader := &f010CatalogTarget{configurations: map[string]target.PathConfigurationSnapshot{}, totalOverride: 731, pageErrors: map[int]error{30: errors.New("目标分页暂不可用")}}
+	reader := &f010CatalogTarget{configurations: map[string]target.PathConfigurationSnapshot{}, totalOverride: 731}
 	for index := 0; index < 725; index++ {
 		appendF010HealthyCatalogTemplate(reader, index)
 	}
@@ -235,11 +235,10 @@ func TestF010TemplateCatalogAccountsUnlistedAndRetryRediscovers(t *testing.T) {
 		t.Fatalf("创建分页失败对账任务失败：%v", err)
 	}
 	finished := waitF010CatalogJob(t, catalog, job.ID)
-	if finished.State != "finished" || finished.Outcome != "with_issues" || finished.Total != 731 || finished.Listed != 725 || finished.Unlisted != 6 || finished.Accounted != 731 || finished.Complete != 725 || finished.PaginationComplete || len(finished.Failures) != 1 || finished.Failures[0].Page != 30 {
+	if finished.State != "finished" || finished.Outcome != "with_issues" || finished.Total != 731 || finished.Listed != 725 || finished.Unlisted != 6 || finished.Accounted != 731 || finished.Complete != 725 || finished.PaginationComplete || len(finished.Failures) != 6 {
 		t.Fatalf("分页失败没有以新协议完成有界对账：%+v", finished)
 	}
 	reader.mu.Lock()
-	reader.pageErrors = map[int]error{}
 	for index := 725; index < 731; index++ {
 		appendF010HealthyCatalogTemplateLocked(reader, index)
 	}
@@ -254,6 +253,38 @@ func TestF010TemplateCatalogAccountsUnlistedAndRetryRediscovers(t *testing.T) {
 	}
 	if reader.configurationReads() != 731 {
 		t.Fatalf("retry 没有跳过 725 条未变健康规则：详情读取=%d", reader.configurationReads())
+	}
+}
+
+// TestF010TemplateCatalogIsolatesUnreadSlotAndContinues 验证单个损坏列表槽位不会阻断后续可读模板。
+func TestF010TemplateCatalogIsolatesUnreadSlotAndContinues(t *testing.T) {
+	repository := newF010CatalogRepository()
+	reader := &f010CatalogTarget{configurations: map[string]target.PathConfigurationSnapshot{}, failedOffsets: map[int]bool{27: true}}
+	for index := 0; index < 31; index++ {
+		appendF010HealthyCatalogTemplate(reader, index)
+	}
+	catalog := service.NewTemplateCatalogService(reader, repository, f010ProjectRoot(t))
+	job, err := catalog.CreateJob(context.Background(), "欧阳改", "full")
+	if err != nil {
+		t.Fatalf("创建单槽位失败任务失败：%v", err)
+	}
+	finished := waitF010CatalogJob(t, catalog, job.ID)
+	if finished.Total != 31 || finished.Listed != 30 || finished.Accounted != 31 || finished.Complete != 30 || finished.Unlisted != 1 || finished.PaginationComplete || len(finished.Failures) != 1 || finished.Failures[0].Stage != "template_list" {
+		t.Fatalf("单槽位失败没有隔离并继续：%+v", finished)
+	}
+	if _, found, _ := repository.GetBySourceTemplateID(context.Background(), "bounded-template-030"); !found {
+		t.Fatal("损坏槽位之后的可读模板没有继续保存")
+	}
+	reader.mu.Lock()
+	reader.failedOffsets = map[int]bool{}
+	reader.mu.Unlock()
+	retry, err := catalog.CreateJob(context.Background(), "欧阳改", "retry")
+	if err != nil {
+		t.Fatalf("创建单槽位恢复任务失败：%v", err)
+	}
+	finished = waitF010CatalogJob(t, catalog, retry.ID)
+	if finished.Total != 31 || finished.Listed != 31 || finished.Accounted != 31 || finished.Complete != 31 || finished.Unlisted != 0 || !finished.PaginationComplete {
+		t.Fatalf("单槽位恢复后没有完整对账：%+v", finished)
 	}
 }
 
@@ -405,16 +436,13 @@ type f010CatalogTarget struct {
 	configurationErrors map[string]error
 	reads               int
 	totalOverride       int
-	pageErrors          map[int]error
+	failedOffsets       map[int]bool
 }
 
 // Templates 返回一次完整但分页的账号可见模板列表。
 func (r *f010CatalogTarget) Templates(_ context.Context, _ string, _ string, page, pageSize int) (target.Page[target.FlowTemplate], error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.pageErrors[page]; err != nil {
-		return target.Page[target.FlowTemplate]{}, err
-	}
 	total := len(r.templates)
 	if r.totalOverride > total {
 		total = r.totalOverride
@@ -426,6 +454,11 @@ func (r *f010CatalogTarget) Templates(_ context.Context, _ string, _ string, pag
 	end := start + pageSize
 	if end > len(r.templates) {
 		end = len(r.templates)
+	}
+	for offset := start; offset < end; offset++ {
+		if r.failedOffsets[offset] {
+			return target.Page[target.FlowTemplate]{}, errors.New("目标分页槽位暂不可用")
+		}
 	}
 	return target.Page[target.FlowTemplate]{Items: append([]target.FlowTemplate(nil), r.templates[start:end]...), Page: page, PageSize: pageSize, Total: total, HasMore: end < total}, nil
 }

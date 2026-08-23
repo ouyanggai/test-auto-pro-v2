@@ -148,24 +148,61 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 	if err := s.repository.UpdateJob(ctx, job); err != nil {
 		return
 	}
-	page, pageSize := 1, 25
+	processedSlots, pageSizeLimit := 0, 25
+	totalKnown := false
 	seen := map[string]bool{}
 	listFailed := false
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		result, err := s.readTemplatePage(ctx, job.Account, page, pageSize)
-		if err != nil {
-			job.Failures = appendTemplateJobFailure(job.Failures, page, "template_list", "目标模板列表页读取失败")
-			listFailed = true
+		if totalKnown && processedSlots >= job.Total {
+			job.PaginationComplete = !listFailed
 			break
 		}
-		if page == 1 {
+		page, pageSize := 1, pageSizeLimit
+		if totalKnown {
+			page, pageSize = templateCoveragePagePosition(processedSlots, job.Total, pageSizeLimit)
+		}
+		result, err := s.readTemplatePage(ctx, job.Account, page, pageSize)
+		for err != nil && totalKnown && pageSize > 1 {
+			// 某一目标记录使整页失败时逐级缩页，在不改变偏移的前提下隔离到最小失败槽位。
+			pageSizeLimit = pageSize / 2
+			page, pageSize = templateCoveragePagePosition(processedSlots, job.Total, pageSizeLimit)
+			result, err = s.readTemplatePage(ctx, job.Account, page, pageSize)
+		}
+		if err != nil {
+			listFailed = true
+			job.Failures = appendTemplateJobFailure(job.Failures, page, "template_list", "目标模板列表单条无法读取")
+			if totalKnown && pageSize == 1 {
+				// 目标接口无法返回这个槽位的模板 ID，只能安全记为 unlisted 后继续后续偏移，禁止伪造目录项。
+				processedSlots++
+				pageSizeLimit = 25
+				continue
+			}
+			break
+		}
+		if !totalKnown {
 			job.Total = result.Total
+			totalKnown = true
 		} else if result.Total > job.Total {
 			// 目标目录在分页期间新增模板时采用最新真实总数，终态仍按本次实际发现数量对账。
 			job.Total = result.Total
+		}
+		if len(result.Items) == 0 {
+			if job.Total == 0 {
+				job.PaginationComplete = true
+				break
+			}
+			listFailed = true
+			if pageSize > 1 {
+				pageSizeLimit = pageSize / 2
+				continue
+			}
+			job.Failures = appendTemplateJobFailure(job.Failures, page, "pagination", "目标模板分页单条返回空数据")
+			processedSlots++
+			pageSizeLimit = 25
+			continue
 		}
 		for _, template := range result.Items {
 			if ctx.Err() != nil {
@@ -199,25 +236,8 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 			job.UpdatedAt = s.now().UTC()
 			_ = s.repository.UpdateJob(ctx, job)
 		}
-		if !result.HasMore {
-			job.PaginationComplete = true
-			break
-		}
-		if len(result.Items) == 0 {
-			job.Failures = appendTemplateJobFailure(job.Failures, page, "pagination", "目标模板分页提前返回空页")
-			listFailed = true
-			break
-		}
-		expectedPages := (job.Total + pageSize - 1) / pageSize
-		if expectedPages < 1 {
-			expectedPages = 1
-		}
-		if page >= expectedPages+2 {
-			job.Failures = appendTemplateJobFailure(job.Failures, page, "pagination", "目标模板分页超过有界范围")
-			listFailed = true
-			break
-		}
-		page++
+		processedSlots += len(result.Items)
+		pageSizeLimit = 25
 	}
 	finishTemplateCatalogJob(&job, len(seen), listFailed, s.now().UTC())
 	_ = s.repository.UpdateJob(context.Background(), job)
