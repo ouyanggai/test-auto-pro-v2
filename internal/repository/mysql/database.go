@@ -25,6 +25,12 @@ var (
 	ErrMigration  = errors.New("计划数据库迁移失败")
 )
 
+// migrationFileError 只公开失败迁移文件名，不携带数据库地址、凭证或 SQL 响应原文。
+type migrationFileError struct{ version string }
+
+// Error 返回可定位且不含敏感连接信息的迁移失败摘要。
+func (e *migrationFileError) Error() string { return e.version }
+
 type Database struct {
 	DB *sql.DB
 }
@@ -70,7 +76,7 @@ func OpenAndMigrate(ctx context.Context, cfg config.PlanDBConfig) (*Database, er
 	}
 	if err := migrate(ctx, db); err != nil {
 		db.Close()
-		return nil, ErrMigration
+		return nil, fmt.Errorf("%w：%s", ErrMigration, err.Error())
 	}
 	return &Database{DB: db}, nil
 }
@@ -129,10 +135,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			return err
 		}
 		if _, err := db.ExecContext(ctx, string(statement)); err != nil {
-			return err
+			return &migrationFileError{version: entry.Name()}
 		}
 		if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", entry.Name(), time.Now().UTC()); err != nil {
-			return err
+			return &migrationFileError{version: entry.Name()}
 		}
 	}
 	return nil

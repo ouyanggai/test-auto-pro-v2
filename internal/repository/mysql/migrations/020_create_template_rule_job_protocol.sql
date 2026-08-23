@@ -1,0 +1,23 @@
+CREATE TABLE test_template_rule_analysis_jobs (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  mode VARCHAR(32) NOT NULL,
+  account VARCHAR(255) NOT NULL,
+  state VARCHAR(32) NOT NULL,
+  outcome VARCHAR(32) NOT NULL DEFAULT '',
+  total_count INT NOT NULL DEFAULT 0,
+  listed_count INT NOT NULL DEFAULT 0,
+  accounted_count INT NOT NULL DEFAULT 0,
+  complete_count INT NOT NULL DEFAULT 0,
+  needs_attention_count INT NOT NULL DEFAULT 0,
+  blocked_count INT NOT NULL DEFAULT 0,
+  failed_count INT NOT NULL DEFAULT 0,
+  unlisted_count INT NOT NULL DEFAULT 0,
+  pagination_complete TINYINT(1) NOT NULL DEFAULT 0,
+  failures JSON NOT NULL,
+  message VARCHAR(500) NOT NULL DEFAULT '',
+  created_at DATETIME(3) NOT NULL,
+  updated_at DATETIME(3) NOT NULL,
+  finished_at DATETIME(3) NULL,
+  KEY idx_template_rule_jobs_account (account, created_at),
+  KEY idx_template_rule_jobs_state (state)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

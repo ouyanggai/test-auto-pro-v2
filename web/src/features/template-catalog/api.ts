@@ -1,23 +1,25 @@
 export interface TemplateRuleCatalogSummary {
-  total: number
+  catalogTotal: number
   formmaking: number
   vueCustom: number
   unknown: number
   complete: number
   needsAttention: number
+  blocked: number
   failed: number
   components: Record<string, number>
+  registeredComponents: number
   updatedAt?: string
 }
 
 export interface TemplateRuleCatalogItem {
-  id: number
   flowCode: string
   flowName: string
   templateType: string
   renderType: 'formmaking' | 'vue_custom' | 'unknown'
-  status: 'complete' | 'needs_attention' | 'failed'
-  sourceVersion: string
+  status: 'complete' | 'needs_attention' | 'blocked' | 'failed'
+  fieldCount: number
+  components: string[]
   issues: string[]
   analyzedAt?: string
 }
@@ -26,12 +28,18 @@ export interface TemplateRuleAnalysisJob {
   id: string
   mode: 'incremental' | 'full' | 'retry'
   account: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  state: 'queued' | 'running' | 'finished'
+  outcome?: 'success' | 'with_issues' | 'failed'
   total: number
-  processed: number
-  completed: number
+  listed: number
+  accounted: number
+  complete: number
   needsAttention: number
+  blocked: number
   failed: number
+  unlisted: number
+  paginationComplete: boolean
+  failures: Array<{ page?: number, stage: string, reason: string }>
   message?: string
   updatedAt: string
 }

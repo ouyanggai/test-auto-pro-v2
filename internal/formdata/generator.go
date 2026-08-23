@@ -116,6 +116,7 @@ type TemplateRuleInventory struct {
 	Fields             []Field
 	Unsupported        []string
 	ComponentTypes     map[string]int
+	CustomComponents   map[string]int
 	DataSources        []TemplateDataSource
 	ScriptCapabilities []string
 	NeedsAttention     []string
@@ -315,7 +316,8 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 	fields, unsupported := ParseTemplate(template)
 	result := TemplateRuleInventory{
 		Fields: fields, Unsupported: unsupported, ComponentTypes: map[string]int{},
-		DataSources: []TemplateDataSource{}, ScriptCapabilities: []string{}, NeedsAttention: []string{},
+		CustomComponents: map[string]int{},
+		DataSources:      []TemplateDataSource{}, ScriptCapabilities: []string{}, NeedsAttention: []string{},
 	}
 	var walk func(any, string)
 	walk = func(raw any, path string) {
@@ -330,6 +332,9 @@ func InventoryTemplateRules(template map[string]any) TemplateRuleInventory {
 			if typeName != "" {
 				result.ComponentTypes[typeName]++
 				componentName := firstText(anyText(value["el"]), anyText(value["componentName"]), anyText(options["componentName"]))
+				if typeName == "custom" && componentName != "" {
+					result.CustomComponents[componentName]++
+				}
 				switch {
 				case typeName == "custom" && componentName != "" && !isKnownCustomComponent(componentName):
 					result.NeedsAttention = append(result.NeedsAttention, "未知自定义组件："+componentName)

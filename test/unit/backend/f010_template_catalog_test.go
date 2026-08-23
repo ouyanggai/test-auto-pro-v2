@@ -158,21 +158,21 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 		t.Fatalf("创建全量规则分析任务失败：%v", err)
 	}
 	finished := waitF010CatalogJob(t, catalog, job.ID)
-	if finished.Status != "completed" || finished.Total != 2 || finished.Completed != 1 || finished.NeedsAttention != 1 {
+	if finished.State != "finished" || finished.Outcome != "with_issues" || finished.Total != 2 || finished.Complete != 1 || finished.NeedsAttention != 1 || finished.Accounted != 2 {
 		t.Fatalf("全量规则目录分析未完成：%+v", finished)
 	}
 	if reader.configurationReads() != 2 {
 		t.Fatalf("全量分析应逐模板读取一次详情，实际 %d 次", reader.configurationReads())
 	}
 	summary, err := catalog.Summary(context.Background())
-	if err != nil || summary.Total != 2 || summary.FormMaking != 1 || summary.VueCustom != 1 || summary.NeedsAttention != 1 {
+	if err != nil || summary.CatalogTotal != 2 || summary.FormMaking != 1 || summary.VueCustom != 1 || summary.NeedsAttention != 1 || summary.RegisteredComponents != 20 {
 		t.Fatalf("规则目录汇总不正确：summary=%+v err=%v", summary, err)
 	}
 	second, err := catalog.CreateJob(context.Background(), "欧阳改", "incremental")
 	if err != nil {
 		t.Fatalf("创建增量规则分析任务失败：%v", err)
 	}
-	if finished = waitF010CatalogJob(t, catalog, second.ID); finished.Status != "completed" || finished.Processed != 2 {
+	if finished = waitF010CatalogJob(t, catalog, second.ID); finished.State != "finished" || finished.Accounted != 2 {
 		t.Fatalf("增量规则目录分析未完成：%+v", finished)
 	}
 	if reader.configurationReads() != 4 {
@@ -187,7 +187,7 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建正文变化增量任务失败：%v", err)
 	}
-	if finished = waitF010CatalogJob(t, catalog, third.ID); finished.Status != "completed" || finished.Processed != 2 {
+	if finished = waitF010CatalogJob(t, catalog, third.ID); finished.State != "finished" || finished.Accounted != 2 {
 		t.Fatalf("正文变化增量任务未完成：%+v", finished)
 	}
 	after, found, err := repository.GetBySourceTemplateID(context.Background(), "fm-1")
@@ -196,11 +196,12 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	}
 }
 
-// TestF010TemplateCatalogPersistsAllVisibleTemplates 验证目录任务分页保存账号可见的全部 196 个模板，不为单个流程建立特例。
+// TestF010TemplateCatalogPersistsAllVisibleTemplates 验证目录任务按分页响应的动态总数保存全部账号可见模板，不为单个流程建立特例。
 func TestF010TemplateCatalogPersistsAllVisibleTemplates(t *testing.T) {
 	repository := newF010CatalogRepository()
 	reader := &f010CatalogTarget{configurations: map[string]target.PathConfigurationSnapshot{}}
-	for index := 0; index < 196; index++ {
+	const visibleTotal = 73
+	for index := 0; index < visibleTotal; index++ {
 		id := fmt.Sprintf("template-%03d", index)
 		flowCode := fmt.Sprintf("flow-%03d", index)
 		reader.templates = append(reader.templates, target.FlowTemplate{ID: id, Code: flowCode, FlowName: "流程 " + flowCode, FormExist: "form", UpdateDate: "2026-08-19"})
@@ -212,13 +213,63 @@ func TestF010TemplateCatalogPersistsAllVisibleTemplates(t *testing.T) {
 		t.Fatalf("创建全模板目录任务失败：%v", err)
 	}
 	finished := waitF010CatalogJob(t, catalog, job.ID)
-	if finished.Total != 196 || finished.Listed != 196 || !finished.PaginationComplete || finished.Completed != 196 || finished.NeedsAttention != 0 || reader.configurationReads() != 196 {
+	if finished.State != "finished" || finished.Outcome != "success" || finished.Total != visibleTotal || finished.Listed != visibleTotal || finished.Accounted != visibleTotal || !finished.PaginationComplete || finished.Complete != visibleTotal || finished.NeedsAttention != 0 || reader.configurationReads() != visibleTotal {
 		t.Fatalf("全模板目录没有完整持久化：job=%+v reads=%d", finished, reader.configurationReads())
 	}
 	summary, err := catalog.Summary(context.Background())
-	if err != nil || summary.Total != 196 || summary.FormMaking != 196 {
+	if err != nil || summary.CatalogTotal != visibleTotal || summary.FormMaking != visibleTotal {
 		t.Fatalf("全模板目录汇总不准确：summary=%+v err=%v", summary, err)
 	}
+}
+
+// TestF010TemplateCatalogAccountsUnlistedAndRetryRediscovers 验证 725/731 分页失败仍以 100% 对账终止，retry 能重新发现 6 项并跳过未变健康规则。
+func TestF010TemplateCatalogAccountsUnlistedAndRetryRediscovers(t *testing.T) {
+	repository := newF010CatalogRepository()
+	reader := &f010CatalogTarget{configurations: map[string]target.PathConfigurationSnapshot{}, totalOverride: 731, pageErrors: map[int]error{30: errors.New("目标分页暂不可用")}}
+	for index := 0; index < 725; index++ {
+		appendF010HealthyCatalogTemplate(reader, index)
+	}
+	catalog := service.NewTemplateCatalogService(reader, repository, f010ProjectRoot(t))
+	job, err := catalog.CreateJob(context.Background(), "欧阳改", "full")
+	if err != nil {
+		t.Fatalf("创建分页失败对账任务失败：%v", err)
+	}
+	finished := waitF010CatalogJob(t, catalog, job.ID)
+	if finished.State != "finished" || finished.Outcome != "with_issues" || finished.Total != 731 || finished.Listed != 725 || finished.Unlisted != 6 || finished.Accounted != 731 || finished.Complete != 725 || finished.PaginationComplete || len(finished.Failures) != 1 || finished.Failures[0].Page != 30 {
+		t.Fatalf("分页失败没有以新协议完成有界对账：%+v", finished)
+	}
+	reader.mu.Lock()
+	reader.pageErrors = map[int]error{}
+	for index := 725; index < 731; index++ {
+		appendF010HealthyCatalogTemplateLocked(reader, index)
+	}
+	reader.mu.Unlock()
+	retry, err := catalog.CreateJob(context.Background(), "欧阳改", "retry")
+	if err != nil {
+		t.Fatalf("创建未列出项重试任务失败：%v", err)
+	}
+	finished = waitF010CatalogJob(t, catalog, retry.ID)
+	if finished.State != "finished" || finished.Outcome != "success" || finished.Total != 731 || finished.Listed != 731 || finished.Accounted != 731 || finished.Complete != 731 || finished.Unlisted != 0 || !finished.PaginationComplete {
+		t.Fatalf("retry 没有重新发现未列出项并完整对账：%+v", finished)
+	}
+	if reader.configurationReads() != 731 {
+		t.Fatalf("retry 没有跳过 725 条未变健康规则：详情读取=%d", reader.configurationReads())
+	}
+}
+
+// appendF010HealthyCatalogTemplate 向测试目标追加一条可完整分析的 FormMaking 模板。
+func appendF010HealthyCatalogTemplate(reader *f010CatalogTarget, index int) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	appendF010HealthyCatalogTemplateLocked(reader, index)
+}
+
+// appendF010HealthyCatalogTemplateLocked 在调用方持有目标锁时追加模板和对应详情快照。
+func appendF010HealthyCatalogTemplateLocked(reader *f010CatalogTarget, index int) {
+	id := fmt.Sprintf("bounded-template-%03d", index)
+	flowCode := fmt.Sprintf("bounded-flow-%03d", index)
+	reader.templates = append(reader.templates, target.FlowTemplate{ID: id, Code: flowCode, FlowName: "有界流程 " + flowCode, FormExist: "form"})
+	reader.configurations[id] = target.PathConfigurationSnapshot{FlowCode: flowCode, RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{TemplateData: `{"list":[{"type":"input","model":"title","options":{}}]}`}}}
 }
 
 // TestF010TemplateCatalogCountsRealItemStates 验证完成、需处理和详情读取失败分别进入真实任务计数。
@@ -242,15 +293,19 @@ func TestF010TemplateCatalogCountsRealItemStates(t *testing.T) {
 		t.Fatalf("创建状态计数任务失败：%v", err)
 	}
 	finished := waitF010CatalogJob(t, catalog, job.ID)
-	if finished.Completed != 1 || finished.NeedsAttention != 1 || finished.Failed != 1 || finished.Processed != 3 {
+	if finished.Complete != 1 || finished.Blocked != 1 || finished.Failed != 1 || finished.Accounted != 3 || finished.Outcome != "with_issues" {
 		t.Fatalf("规则任务没有按真实条目状态计数：%+v", finished)
+	}
+	summary, summaryErr := catalog.Summary(context.Background())
+	if summaryErr != nil || summary.CatalogTotal != 3 || summary.Complete+summary.NeedsAttention+summary.Blocked+summary.Failed != summary.CatalogTotal || summary.Blocked != 1 || summary.Failed != 1 {
+		t.Fatalf("目录汇总没有完整计入 blocked/failed：summary=%+v err=%v", summary, summaryErr)
 	}
 	incremental, err := catalog.CreateJob(context.Background(), "欧阳改", "incremental")
 	if err != nil {
 		t.Fatalf("创建增量状态计数任务失败：%v", err)
 	}
 	finished = waitF010CatalogJob(t, catalog, incremental.ID)
-	if finished.Completed != 1 || finished.NeedsAttention != 1 || finished.Failed != 1 {
+	if finished.Complete != 1 || finished.Blocked != 1 || finished.Failed != 1 || finished.Accounted != 3 {
 		t.Fatalf("增量跳过未变化条目时篡改了状态计数：%+v", finished)
 	}
 }
@@ -327,13 +382,13 @@ func (r *f010StoredRuleReader) GetByFlowCode(_ context.Context, _ string) (model
 // waitF010CatalogJob 等待内存任务落到终态，超时直接暴露后台任务无法收口的问题。
 func waitF010CatalogJob(t *testing.T, catalog *service.TemplateCatalogService, jobID string) model.TemplateRuleAnalysisJob {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		job, err := catalog.GetJob(context.Background(), jobID)
 		if err != nil {
 			t.Fatalf("读取规则分析任务失败：%v", err)
 		}
-		if job.Status == "completed" || job.Status == "failed" {
+		if job.State == "finished" {
 			return job
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -349,19 +404,30 @@ type f010CatalogTarget struct {
 	configurations      map[string]target.PathConfigurationSnapshot
 	configurationErrors map[string]error
 	reads               int
+	totalOverride       int
+	pageErrors          map[int]error
 }
 
 // Templates 返回一次完整但分页的账号可见模板列表。
 func (r *f010CatalogTarget) Templates(_ context.Context, _ string, _ string, page, pageSize int) (target.Page[target.FlowTemplate], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.pageErrors[page]; err != nil {
+		return target.Page[target.FlowTemplate]{}, err
+	}
+	total := len(r.templates)
+	if r.totalOverride > total {
+		total = r.totalOverride
+	}
 	start := (page - 1) * pageSize
 	if start >= len(r.templates) {
-		return target.Page[target.FlowTemplate]{Items: []target.FlowTemplate{}, Page: page, PageSize: pageSize, Total: len(r.templates)}, nil
+		return target.Page[target.FlowTemplate]{Items: []target.FlowTemplate{}, Page: page, PageSize: pageSize, Total: total}, nil
 	}
 	end := start + pageSize
 	if end > len(r.templates) {
 		end = len(r.templates)
 	}
-	return target.Page[target.FlowTemplate]{Items: append([]target.FlowTemplate(nil), r.templates[start:end]...), Page: page, PageSize: pageSize, Total: len(r.templates), HasMore: end < len(r.templates)}, nil
+	return target.Page[target.FlowTemplate]{Items: append([]target.FlowTemplate(nil), r.templates[start:end]...), Page: page, PageSize: pageSize, Total: total, HasMore: end < total}, nil
 }
 
 // TemplateConfiguration 返回单模板快照并记录读取次数。
@@ -448,7 +514,7 @@ func (r *f010CatalogRepository) Summary(_ context.Context) (model.TemplateRuleCa
 	defer r.mu.Unlock()
 	result := model.TemplateRuleCatalogSummary{Components: map[string]int{}}
 	for _, item := range r.items {
-		result.Total++
+		result.CatalogTotal++
 		switch item.RenderType {
 		case model.TemplateRuleRenderFormMaking:
 			result.FormMaking++
@@ -461,6 +527,10 @@ func (r *f010CatalogRepository) Summary(_ context.Context) (model.TemplateRuleCa
 			result.Complete++
 		} else if item.Status == "needs_attention" {
 			result.NeedsAttention++
+		} else if item.Status == "blocked" {
+			result.Blocked++
+		} else if item.Status == "failed" {
+			result.Failed++
 		}
 	}
 	return result, nil
@@ -471,7 +541,7 @@ func (r *f010CatalogRepository) CreateJob(_ context.Context, job model.TemplateR
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, current := range r.jobs {
-		if current.Account == job.Account && (current.Status == "queued" || current.Status == "running") {
+		if current.Account == job.Account && (current.State == "queued" || current.State == "running") {
 			return model.TemplateRuleAnalysisJob{}, repository.ErrTemplateCatalogActive
 		}
 	}
@@ -517,8 +587,13 @@ func (r *f010CatalogRepository) MarkInterruptedJobs(_ context.Context, message s
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, job := range r.jobs {
-		if job.Status == "queued" || job.Status == "running" {
-			job.Status, job.Message = "failed", message
+		if job.State == "queued" || job.State == "running" {
+			job.State, job.Outcome, job.Message = "finished", "failed", message
+			job.Unlisted = job.Total - job.Complete - job.NeedsAttention - job.Blocked - job.Failed
+			if job.Unlisted < 0 {
+				job.Unlisted = 0
+			}
+			job.Accounted = job.Complete + job.NeedsAttention + job.Blocked + job.Failed + job.Unlisted
 			r.jobs[id] = job
 		}
 	}

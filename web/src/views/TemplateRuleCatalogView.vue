@@ -28,8 +28,11 @@ const job = ref<TemplateRuleAnalysisJob | null>(null)
 let pollTimer: number | undefined
 let requestVersion = 0
 
-const active = computed(() => job.value?.status === 'queued' || job.value?.status === 'running')
-const progress = computed(() => !job.value?.total ? 0 : Math.floor(job.value.processed * 100 / job.value.total))
+const active = computed(() => job.value?.state === 'queued' || job.value?.state === 'running')
+const progress = computed(() => {
+  if (!job.value?.total) return job.value?.state === 'finished' ? 100 : 0
+  return job.value.state === 'finished' ? 100 : Math.min(99, Math.floor(job.value.accounted * 100 / job.value.total))
+})
 
 // loadCatalog 并行读取本地摘要、分页规则和上次任务；目录读取本身不访问目标平台。
 async function loadCatalog() {
@@ -47,7 +50,7 @@ async function loadCatalog() {
     items.value = page.items
     total.value = page.total
     job.value = latest
-    if (latest && (latest.status === 'queued' || latest.status === 'running')) await refreshJob(latest.id, version)
+    if (latest && (latest.state === 'queued' || latest.state === 'running')) await refreshJob(latest.id, version)
   } catch (caught) {
     if (version === requestVersion) errorMessage.value = caught instanceof Error ? caught.message : '模板规则目录读取失败'
   } finally {
@@ -72,7 +75,7 @@ async function refreshJob(id: string, version = requestVersion) {
   const next = await fetchTemplateRuleAnalysis(id)
   if (version !== requestVersion || next.id !== id) return
   job.value = next
-  if (next.status === 'queued' || next.status === 'running') {
+  if (next.state === 'queued' || next.state === 'running') {
     if (pollTimer) window.clearTimeout(pollTimer)
     pollTimer = window.setTimeout(() => { void refreshJob(id, version).catch(reportError) }, 1000)
     return
@@ -106,7 +109,7 @@ const columns: DataTableColumns<TemplateRuleCatalogItem> = [
   { title: '流程', key: 'flowName', minWidth: 180, ellipsis: { tooltip: true }, render: row => row.flowName || row.flowCode },
   { title: '编码', key: 'flowCode', width: 180, ellipsis: { tooltip: true } },
   { title: '页面类型', key: 'renderType', width: 110, render: row => h(NTag, { size: 'small', bordered: false, type: row.renderType === 'unknown' ? 'warning' : 'default' }, { default: () => ({ formmaking: 'FormMaking', vue_custom: 'Vue 页面', unknown: '待识别' }[row.renderType]) }) },
-  { title: '分析结果', key: 'status', width: 110, render: row => h(NTag, { size: 'small', bordered: false, type: row.status === 'complete' ? 'success' : row.status === 'failed' ? 'error' : 'warning' }, { default: () => ({ complete: '已覆盖', needs_attention: '需处理', failed: '失败' }[row.status]) }) },
+  { title: '分析结果', key: 'status', width: 110, render: row => h(NTag, { size: 'small', bordered: false, type: row.status === 'complete' ? 'success' : row.status === 'failed' || row.status === 'blocked' ? 'error' : 'warning' }, { default: () => ({ complete: '已覆盖', needs_attention: '需处理', blocked: '已阻断', failed: '失败' }[row.status]) }) },
   { title: '问题', key: 'issues', minWidth: 260, ellipsis: { tooltip: true }, render: row => row.issues.length ? row.issues.join('；') : '无' },
 ]
 
@@ -138,21 +141,27 @@ onBeforeUnmount(() => {
       <n-card v-if="job" title="分析进度" size="small">
         <div class="template-catalog__job">
           <span>{{ job.message || '等待分析' }}</span>
-          <strong>已处理 {{ job.processed }} / {{ job.total }}</strong>
+          <strong>已对账 {{ job.accounted }} / {{ job.total }}</strong>
         </div>
         <n-progress type="line" :percentage="progress" :show-indicator="true" />
-        <div class="template-catalog__counts">已覆盖 {{ job.completed }}；需处理 {{ job.needsAttention }}；失败 {{ job.failed }}</div>
+        <div class="template-catalog__counts">已列出 {{ job.listed }}；已覆盖 {{ job.complete }}；需处理 {{ job.needsAttention }}；已阻断 {{ job.blocked }}；失败 {{ job.failed }}；未列出 {{ job.unlisted }}</div>
+        <n-alert v-if="job.state === 'finished' && job.outcome !== 'success'" :type="job.outcome === 'failed' ? 'error' : 'warning'" :show-icon="false">
+          {{ job.outcome === 'failed' ? '分析失败' : '分析已结束，但存在需处理项' }}
+          <span v-if="job.failures.length">：{{ job.failures.map(item => `${item.stage}${item.page ? ` 第${item.page}页` : ''}：${item.reason}`).join('；') }}</span>
+        </n-alert>
       </n-card>
 
       <n-descriptions v-if="summary" class="template-catalog__summary" :column="4" bordered size="small" label-placement="left">
-        <n-descriptions-item label="已分析模板">{{ summary.total }}</n-descriptions-item>
+        <n-descriptions-item label="目录模板">{{ summary.catalogTotal }}</n-descriptions-item>
         <n-descriptions-item label="FormMaking">{{ summary.formmaking }}</n-descriptions-item>
         <n-descriptions-item label="Vue 页面">{{ summary.vueCustom }}</n-descriptions-item>
         <n-descriptions-item label="待识别">{{ summary.unknown }}</n-descriptions-item>
         <n-descriptions-item label="已覆盖">{{ summary.complete }}</n-descriptions-item>
         <n-descriptions-item label="需处理">{{ summary.needsAttention }}</n-descriptions-item>
+        <n-descriptions-item label="已阻断">{{ summary.blocked }}</n-descriptions-item>
         <n-descriptions-item label="失败">{{ summary.failed }}</n-descriptions-item>
-        <n-descriptions-item label="已注册组件">{{ Object.keys(summary.components).length }}</n-descriptions-item>
+        <n-descriptions-item label="模板实际组件">{{ Object.keys(summary.components).length }}</n-descriptions-item>
+        <n-descriptions-item label="全局注册组件">{{ summary.registeredComponents }}</n-descriptions-item>
       </n-descriptions>
 
       <n-card title="已保存规则" size="small">

@@ -128,7 +128,7 @@ func (r *TemplateCatalogRepository) Summary(ctx context.Context) (model.Template
 		if err := rows.Scan(&renderType, &status, &count); err != nil {
 			return result, err
 		}
-		result.Total += count
+		result.CatalogTotal += count
 		switch model.TemplateRuleRenderType(renderType) {
 		case model.TemplateRuleRenderFormMaking:
 			result.FormMaking += count
@@ -142,6 +142,8 @@ func (r *TemplateCatalogRepository) Summary(ctx context.Context) (model.Template
 			result.Complete += count
 		case "needs_attention":
 			result.NeedsAttention += count
+		case "blocked":
+			result.Blocked += count
 		case "failed":
 			result.Failed += count
 		}
@@ -192,16 +194,24 @@ func (r *TemplateCatalogRepository) CreateJob(ctx context.Context, job model.Tem
 	}
 	defer tx.Rollback()
 	var activeID string
-	err = tx.QueryRowContext(ctx, "SELECT id FROM test_template_rule_analysis_jobs WHERE account = ? AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1 FOR UPDATE", job.Account).Scan(&activeID)
+	err = tx.QueryRowContext(ctx, "SELECT id FROM test_template_rule_analysis_jobs WHERE account = ? AND state IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1 FOR UPDATE", job.Account).Scan(&activeID)
 	if err == nil {
 		return model.TemplateRuleAnalysisJob{}, repository.ErrTemplateCatalogActive
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return model.TemplateRuleAnalysisJob{}, err
 	}
+	failures, err := encodeTemplateCatalogJSON(job.Failures, []model.TemplateRuleAnalysisFailure{})
+	if err != nil {
+		return model.TemplateRuleAnalysisJob{}, err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO test_template_rule_analysis_jobs
-(id, mode, account, status, total_count, processed_count, completed_count, needs_attention_count, failed_count, message, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, job.ID, job.Mode, job.Account, job.Status, job.Total, job.Processed, job.Completed, job.NeedsAttention, job.Failed, job.Message, job.CreatedAt.UTC(), job.UpdatedAt.UTC())
+(id, mode, account, state, outcome, total_count, listed_count, accounted_count, complete_count, needs_attention_count,
+ blocked_count, failed_count, unlisted_count, pagination_complete, failures, message, created_at, updated_at, finished_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.ID, job.Mode, job.Account, job.State, job.Outcome, job.Total, job.Listed, job.Accounted, job.Complete,
+		job.NeedsAttention, job.Blocked, job.Failed, job.Unlisted, job.PaginationComplete, failures, job.Message,
+		job.CreatedAt.UTC(), job.UpdatedAt.UTC(), job.FinishedAt)
 	if err != nil {
 		return model.TemplateRuleAnalysisJob{}, err
 	}
@@ -230,7 +240,13 @@ func (r *TemplateCatalogRepository) LatestJob(ctx context.Context, account strin
 
 // UpdateJob 原子替换任务进度和终态字段。
 func (r *TemplateCatalogRepository) UpdateJob(ctx context.Context, job model.TemplateRuleAnalysisJob) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE test_template_rule_analysis_jobs SET status = ?, total_count = ?, listed_count = ?, processed_count = ?, completed_count = ?, needs_attention_count = ?, failed_count = ?, pagination_complete = ?, message = ?, updated_at = ?, finished_at = ? WHERE id = ?`, job.Status, job.Total, job.Listed, job.Processed, job.Completed, job.NeedsAttention, job.Failed, job.PaginationComplete, job.Message, job.UpdatedAt.UTC(), job.FinishedAt, job.ID)
+	failures, encodeErr := encodeTemplateCatalogJSON(job.Failures, []model.TemplateRuleAnalysisFailure{})
+	if encodeErr != nil {
+		return encodeErr
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE test_template_rule_analysis_jobs SET state = ?, outcome = ?, total_count = ?, listed_count = ?, accounted_count = ?, complete_count = ?, needs_attention_count = ?, blocked_count = ?, failed_count = ?, unlisted_count = ?, pagination_complete = ?, failures = ?, message = ?, updated_at = ?, finished_at = ? WHERE id = ?`,
+		job.State, job.Outcome, job.Total, job.Listed, job.Accounted, job.Complete, job.NeedsAttention, job.Blocked,
+		job.Failed, job.Unlisted, job.PaginationComplete, failures, job.Message, job.UpdatedAt.UTC(), job.FinishedAt, job.ID)
 	return err
 }
 
@@ -238,8 +254,11 @@ func (r *TemplateCatalogRepository) UpdateJob(ctx context.Context, job model.Tem
 func (r *TemplateCatalogRepository) MarkInterruptedJobs(ctx context.Context, message string) error {
 	now := time.Now().UTC()
 	_, err := r.db.ExecContext(ctx, `UPDATE test_template_rule_analysis_jobs
-SET status = 'failed', message = ?, updated_at = ?, finished_at = ?
-WHERE status IN ('queued', 'running')`, strings.TrimSpace(message), now, now)
+SET state = 'finished', outcome = 'failed', unlisted_count = GREATEST(total_count - complete_count - needs_attention_count - blocked_count - failed_count, 0),
+	accounted_count = total_count,
+	failures = JSON_ARRAY_APPEND(failures, '$', JSON_OBJECT('stage', 'service_recovery', 'reason', ?)),
+	message = ?, updated_at = ?, finished_at = ?
+WHERE state IN ('queued', 'running')`, strings.TrimSpace(message), strings.TrimSpace(message), now, now)
 	return err
 }
 
@@ -324,17 +343,24 @@ func scanTemplateCatalogItem(row templateCatalogScanner) (model.TemplateRuleCata
 	return item, true, nil
 }
 
-const templateRuleAnalysisJobSelect = `SELECT id, mode, account, status, total_count, listed_count, processed_count, completed_count,
-needs_attention_count, failed_count, pagination_complete, message, created_at, updated_at, finished_at FROM test_template_rule_analysis_jobs`
+const templateRuleAnalysisJobSelect = `SELECT id, mode, account, state, outcome, total_count, listed_count, accounted_count, complete_count,
+needs_attention_count, blocked_count, failed_count, unlisted_count, pagination_complete, failures, message, created_at, updated_at, finished_at FROM test_template_rule_analysis_jobs`
 
 // scanTemplateRuleAnalysisJob 解析规则分析任务并区分不存在与数据库错误。
 func scanTemplateRuleAnalysisJob(row templateCatalogScanner) (model.TemplateRuleAnalysisJob, bool, error) {
 	var job model.TemplateRuleAnalysisJob
-	if err := row.Scan(&job.ID, &job.Mode, &job.Account, &job.Status, &job.Total, &job.Listed, &job.Processed, &job.Completed, &job.NeedsAttention, &job.Failed, &job.PaginationComplete, &job.Message, &job.CreatedAt, &job.UpdatedAt, &job.FinishedAt); err != nil {
+	var failures string
+	if err := row.Scan(&job.ID, &job.Mode, &job.Account, &job.State, &job.Outcome, &job.Total, &job.Listed, &job.Accounted, &job.Complete, &job.NeedsAttention, &job.Blocked, &job.Failed, &job.Unlisted, &job.PaginationComplete, &failures, &job.Message, &job.CreatedAt, &job.UpdatedAt, &job.FinishedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.TemplateRuleAnalysisJob{}, false, nil
 		}
 		return model.TemplateRuleAnalysisJob{}, false, err
+	}
+	if err := json.Unmarshal([]byte(failures), &job.Failures); err != nil {
+		return model.TemplateRuleAnalysisJob{}, false, err
+	}
+	if job.Failures == nil {
+		job.Failures = []model.TemplateRuleAnalysisFailure{}
 	}
 	return job, true, nil
 }

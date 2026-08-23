@@ -40,33 +40,58 @@ type TemplateRuleCatalogItem struct {
 
 // TemplateRuleCatalogSummary 是设置页使用的轻量覆盖汇总，避免加载全部规则正文。
 type TemplateRuleCatalogSummary struct {
-	Total          int            `json:"total"`
-	FormMaking     int            `json:"formmaking"`
-	VueCustom      int            `json:"vueCustom"`
-	Unknown        int            `json:"unknown"`
-	Complete       int            `json:"complete"`
-	NeedsAttention int            `json:"needsAttention"`
-	Blocked        int            `json:"blocked"`
-	Failed         int            `json:"failed"`
-	Components     map[string]int `json:"components"`
-	UpdatedAt      *time.Time     `json:"updatedAt,omitempty"`
+	CatalogTotal         int            `json:"catalogTotal"`
+	FormMaking           int            `json:"formmaking"`
+	VueCustom            int            `json:"vueCustom"`
+	Unknown              int            `json:"unknown"`
+	Complete             int            `json:"complete"`
+	NeedsAttention       int            `json:"needsAttention"`
+	Blocked              int            `json:"blocked"`
+	Failed               int            `json:"failed"`
+	Components           map[string]int `json:"components"`
+	RegisteredComponents int            `json:"registeredComponents"`
+	UpdatedAt            *time.Time     `json:"updatedAt,omitempty"`
+}
+
+// TemplateRuleCatalogPublicItem 是设置页可见的规则摘要，不包含源模板 ID、摘要、规则正文或覆盖原文。
+type TemplateRuleCatalogPublicItem struct {
+	FlowCode     string                 `json:"flowCode"`
+	FlowName     string                 `json:"flowName"`
+	TemplateType string                 `json:"templateType"`
+	RenderType   TemplateRuleRenderType `json:"renderType"`
+	Status       string                 `json:"status"`
+	FieldCount   int                    `json:"fieldCount"`
+	Components   []string               `json:"components"`
+	Issues       []string               `json:"issues"`
+	AnalyzedAt   *time.Time             `json:"analyzedAt,omitempty"`
+}
+
+// TemplateRuleAnalysisFailure 记录任务失败页或阶段的公开原因，不保存目标响应、源码或凭证。
+type TemplateRuleAnalysisFailure struct {
+	Page   int    `json:"page,omitempty"`
+	Stage  string `json:"stage"`
+	Reason string `json:"reason"`
 }
 
 // TemplateRuleAnalysisJob 是规则目录增量、全量或失败重试的后台任务快照。
 type TemplateRuleAnalysisJob struct {
-	ID                 string     `json:"id"`
-	Mode               string     `json:"mode"`
-	Account            string     `json:"account"`
-	Status             string     `json:"status"`
-	Total              int        `json:"total"`
-	Listed             int        `json:"listed"`
-	Processed          int        `json:"processed"`
-	Completed          int        `json:"completed"`
-	NeedsAttention     int        `json:"needsAttention"`
-	Failed             int        `json:"failed"`
-	PaginationComplete bool       `json:"paginationComplete"`
-	Message            string     `json:"message,omitempty"`
-	CreatedAt          time.Time  `json:"createdAt"`
-	UpdatedAt          time.Time  `json:"updatedAt"`
-	FinishedAt         *time.Time `json:"finishedAt,omitempty"`
+	ID                 string                        `json:"id"`
+	Mode               string                        `json:"mode"`
+	Account            string                        `json:"account"`
+	State              string                        `json:"state"`
+	Outcome            string                        `json:"outcome,omitempty"`
+	Total              int                           `json:"total"`
+	Listed             int                           `json:"listed"`
+	Accounted          int                           `json:"accounted"`
+	Complete           int                           `json:"complete"`
+	NeedsAttention     int                           `json:"needsAttention"`
+	Blocked            int                           `json:"blocked"`
+	Failed             int                           `json:"failed"`
+	Unlisted           int                           `json:"unlisted"`
+	PaginationComplete bool                          `json:"paginationComplete"`
+	Failures           []TemplateRuleAnalysisFailure `json:"failures"`
+	Message            string                        `json:"message,omitempty"`
+	CreatedAt          time.Time                     `json:"createdAt"`
+	UpdatedAt          time.Time                     `json:"updatedAt"`
+	FinishedAt         *time.Time                    `json:"finishedAt,omitempty"`
 }

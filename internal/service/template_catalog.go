@@ -53,7 +53,11 @@ func AnalyzeVueCustomPageRule(workspaceRoot, auditWay, flowCode, formExist strin
 
 // Summary 返回设置页的规则覆盖汇总。
 func (s *TemplateCatalogService) Summary(ctx context.Context) (model.TemplateRuleCatalogSummary, error) {
-	return s.repository.Summary(ctx)
+	summary, err := s.repository.Summary(ctx)
+	if err == nil {
+		summary.RegisteredComponents = len(formdata.CustomComponentCapabilities())
+	}
+	return summary, err
 }
 
 // List 返回规则目录的有界分页列表。
@@ -88,7 +92,7 @@ func (s *TemplateCatalogService) CreateJob(ctx context.Context, account, mode st
 		return model.TemplateRuleAnalysisJob{}, &TemplateCatalogError{Kind: TemplateCatalogErrorInvalid, Message: "模板规则分析参数不正确"}
 	}
 	now := s.now().UTC()
-	job := model.TemplateRuleAnalysisJob{ID: newTemplateCatalogJobID(now), Mode: mode, Account: account, Status: "queued", CreatedAt: now, UpdatedAt: now}
+	job := model.TemplateRuleAnalysisJob{ID: newTemplateCatalogJobID(now), Mode: mode, Account: account, State: "queued", Failures: []model.TemplateRuleAnalysisFailure{}, CreatedAt: now, UpdatedAt: now}
 	created, err := s.repository.CreateJob(ctx, job)
 	if err != nil {
 		if errors.Is(err, repository.ErrTemplateCatalogActive) {
@@ -138,28 +142,29 @@ func (s *TemplateCatalogService) launch(job model.TemplateRuleAnalysisJob) {
 	}()
 }
 
-// run 分页读取账号可见模板，单条失败只写入该条 needs_attention，不影响其他模板。
+// run 分页读取账号可见模板并有界对账，任何终态都满足 accounted 等于各结果和与 total。
 func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRuleAnalysisJob) {
-	job.Status, job.Message, job.UpdatedAt = "running", "正在分析模板规则", s.now().UTC()
+	job.State, job.Outcome, job.Message, job.UpdatedAt = "running", "", "正在分析模板规则", s.now().UTC()
 	if err := s.repository.UpdateJob(ctx, job); err != nil {
 		return
 	}
 	page, pageSize := 1, 25
-	processed := 0
 	seen := map[string]bool{}
+	listFailed := false
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		result, err := s.readTemplatePage(ctx, job.Account, page, pageSize)
 		if err != nil {
-			job.Status, job.Message = "failed", "读取目标平台模板列表失败，请重试"
-			job.UpdatedAt = s.now().UTC()
-			job.FinishedAt = &job.UpdatedAt
-			_ = s.repository.UpdateJob(context.Background(), job)
-			return
+			job.Failures = appendTemplateJobFailure(job.Failures, page, "template_list", "目标模板列表页读取失败")
+			listFailed = true
+			break
 		}
 		if page == 1 {
+			job.Total = result.Total
+		} else if result.Total > job.Total {
+			// 目标目录在分页期间新增模板时采用最新真实总数，终态仍按本次实际发现数量对账。
 			job.Total = result.Total
 		}
 		for _, template := range result.Items {
@@ -179,11 +184,18 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 			}
 			if itemErr != nil {
 				job.Failed++
+				job.Failures = appendTemplateJobFailure(job.Failures, 0, "catalog_storage", "单模板规则保存失败")
 			} else {
 				countTemplateCatalogJobItem(&job, item.Status)
+				if item.Status == "failed" {
+					reason := "单模板详情读取失败"
+					if len(item.Issues) > 0 {
+						reason = item.Issues[0]
+					}
+					job.Failures = appendTemplateJobFailure(job.Failures, page, "template_detail", reason)
+				}
 			}
-			processed++
-			job.Processed = processed
+			job.Accounted = templateCatalogJobResultCount(job)
 			job.UpdatedAt = s.now().UTC()
 			_ = s.repository.UpdateJob(ctx, job)
 		}
@@ -192,22 +204,71 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 			break
 		}
 		if len(result.Items) == 0 {
-			job.Status, job.Message = "failed", "目标模板分页未完整读取，请重试"
-			job.UpdatedAt = s.now().UTC()
-			job.FinishedAt = &job.UpdatedAt
-			_ = s.repository.UpdateJob(context.Background(), job)
-			return
+			job.Failures = appendTemplateJobFailure(job.Failures, page, "pagination", "目标模板分页提前返回空页")
+			listFailed = true
+			break
+		}
+		expectedPages := (job.Total + pageSize - 1) / pageSize
+		if expectedPages < 1 {
+			expectedPages = 1
+		}
+		if page >= expectedPages+2 {
+			job.Failures = appendTemplateJobFailure(job.Failures, page, "pagination", "目标模板分页超过有界范围")
+			listFailed = true
+			break
 		}
 		page++
 	}
-	now := s.now().UTC()
-	if !job.PaginationComplete || job.Listed != job.Total || job.Processed != job.Total {
-		job.Status, job.Message, job.UpdatedAt, job.FinishedAt = "failed", "目标模板分页数量与分析计数不一致，请重试", now, &now
-		_ = s.repository.UpdateJob(context.Background(), job)
-		return
-	}
-	job.Status, job.Message, job.UpdatedAt, job.FinishedAt = "completed", "模板规则分析已完成", now, &now
+	finishTemplateCatalogJob(&job, len(seen), listFailed, s.now().UTC())
 	_ = s.repository.UpdateJob(context.Background(), job)
+}
+
+// finishTemplateCatalogJob 统一收口任务终态，未列出的目标项也必须进入 unlisted 并计入 accounted。
+func finishTemplateCatalogJob(job *model.TemplateRuleAnalysisJob, listed int, listFailed bool, now time.Time) {
+	job.Listed = listed
+	resultCount := templateCatalogJobResultCount(*job)
+	if resultCount < listed {
+		job.Failed += listed - resultCount
+		job.Failures = appendTemplateJobFailure(job.Failures, 0, "reconciliation", "已列出模板结果计数不完整")
+		resultCount = templateCatalogJobResultCount(*job)
+	}
+	if job.Total < listed {
+		job.Failures = appendTemplateJobFailure(job.Failures, 0, "reconciliation", "目标模板总数小于实际列出数量")
+		job.Total = listed
+	}
+	job.Unlisted = job.Total - listed
+	if job.Unlisted < 0 {
+		job.Unlisted = 0
+	}
+	job.Accounted = resultCount + job.Unlisted
+	if job.Accounted > job.Total {
+		job.Total = job.Accounted
+		job.Failures = appendTemplateJobFailure(job.Failures, 0, "reconciliation", "规则结果数量超过目标模板总数")
+	}
+	job.State, job.Outcome = "finished", "success"
+	if job.NeedsAttention > 0 || job.Blocked > 0 || job.Failed > 0 || job.Unlisted > 0 || len(job.Failures) > 0 {
+		job.Outcome = "with_issues"
+	}
+	if listFailed && listed == 0 {
+		job.Outcome = "failed"
+	}
+	job.Message = fmt.Sprintf("模板规则分析已结束：已对账 %d/%d，未列出 %d", job.Accounted, job.Total, job.Unlisted)
+	job.UpdatedAt, job.FinishedAt = now, &now
+}
+
+// templateCatalogJobResultCount 返回已产生逐模板结果的总数，不含尚未列出的目标目录项。
+func templateCatalogJobResultCount(job model.TemplateRuleAnalysisJob) int {
+	return job.Complete + job.NeedsAttention + job.Blocked + job.Failed
+}
+
+// appendTemplateJobFailure 去重公开失败阶段，避免分页重试把同一失败重复写入任务响应。
+func appendTemplateJobFailure(values []model.TemplateRuleAnalysisFailure, page int, stage, reason string) []model.TemplateRuleAnalysisFailure {
+	for _, value := range values {
+		if value.Page == page && value.Stage == stage && value.Reason == reason {
+			return values
+		}
+	}
+	return append(values, model.TemplateRuleAnalysisFailure{Page: page, Stage: stage, Reason: reason})
 }
 
 // readTemplatePage 对目标模板分页执行有界重试，连续失败后才终止整次目录任务。
@@ -222,7 +283,8 @@ func (s *TemplateCatalogService) readTemplatePage(ctx context.Context, account s
 		if attempt >= 2 {
 			break
 		}
-		timer := time.NewTimer(time.Duration(attempt+1) * 20 * time.Millisecond)
+		// 目标分页失败使用 250ms、750ms 的短退避，既避免瞬时抖动放大，也保持任务有界可恢复。
+		timer := time.NewTimer(time.Duration(attempt*500+250) * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -237,7 +299,9 @@ func (s *TemplateCatalogService) readTemplatePage(ctx context.Context, account s
 func countTemplateCatalogJobItem(job *model.TemplateRuleAnalysisJob, status string) {
 	switch strings.TrimSpace(status) {
 	case "complete":
-		job.Completed++
+		job.Complete++
+	case "blocked":
+		job.Blocked++
 	case "failed":
 		job.Failed++
 	default:
@@ -275,16 +339,15 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 	item.FormMakingDigest = catalogDigest(snapshot.Forms)
 	item.VueSourceDigest = s.pages.vueSourceDigest
 	item.JavaSourceDigest = s.pages.javaSourceDigest
-	item.ComponentDigest = s.pages.componentDigest
+	item.ComponentDigest = s.templateComponentDigest(snapshot, template)
 	if mode == "incremental" && existingFound && sameTemplateCatalogSources(existing, item) {
 		return existing, true
 	}
 	flowRules, flowIssues := catalogFlowRules(snapshot.Tree)
 	ruleData := map[string]any{
 		"flowCode": item.FlowCode, "renderType": item.RenderType,
-		// 流程条件与组件能力作为同一份本地快照持久化，计划页面不能在用户操作时重新分析宿主源码。
-		"flow":       flowRules,
-		"components": formdata.CustomComponentCapabilities(),
+		// 流程条件作为本地快照持久化，计划页面不能在用户操作时重新分析宿主源码。
+		"flow": flowRules,
 	}
 	issues := append([]string(nil), flowIssues...)
 	coverage := map[string]any{}
@@ -295,6 +358,8 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 		ruleData["fields"] = catalogFields(inventory.Fields)
 		ruleData["dataSources"] = inventory.DataSources
 		coverage["components"] = inventory.ComponentTypes
+		coverage["customComponents"] = inventory.CustomComponents
+		coverage["fieldCount"] = len(inventory.Fields)
 		coverage["scripts"] = inventory.ScriptCapabilities
 		coverage["dataSources"] = len(inventory.DataSources)
 		issues = append(issues, mergeIssues...)
@@ -305,7 +370,9 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 		issues = append(issues, pageRule.Issues...)
 		coverage["pageComponent"] = pageRule.ComponentName
 		coverage["fieldCount"] = len(pageRule.Fields)
-		coverage["customComponents"] = s.pages.Components()
+		if strings.TrimSpace(pageRule.ComponentName) != "" {
+			coverage["components"] = map[string]int{"vue:" + pageRule.ComponentName: 1}
+		}
 	} else {
 		issues = append(issues, "表单渲染协议尚未识别")
 	}
@@ -324,6 +391,28 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 	analyzed := now
 	item.AnalyzedAt = &analyzed
 	return item, false
+}
+
+// templateComponentDigest 只摘要当前模板实际使用的自定义组件或宿主页面组件，全局注册表不复制进单模板规则。
+func (s *TemplateCatalogService) templateComponentDigest(snapshot target.PathConfigurationSnapshot, template target.FlowTemplate) string {
+	if snapshot.RenderType == target.FormRenderTypeFormMaking {
+		forms, _ := mergeCatalogForms(snapshot.Forms)
+		inventory := formdata.InventoryTemplateRules(forms)
+		capabilities := formdata.CustomComponentCapabilities()
+		used := make(map[string]map[string]string, len(inventory.CustomComponents))
+		for name := range inventory.CustomComponents {
+			if capability, exists := capabilities[name]; exists {
+				used[name] = capability
+			}
+		}
+		return catalogDigest(used)
+	}
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		pageKey := firstCatalogText(snapshot.AuditWay, template.AuditWay)
+		entry := s.pages.pageByCode[pageKey]
+		return catalogDigest(struct{ PageKey, Component string }{pageKey, entry.component})
+	}
+	return catalogDigest(map[string]any{})
 }
 
 // catalogFlowRules 将流程节点、分支排序和条件能力转为不含目标内部标识的规则快照。
@@ -517,14 +606,12 @@ const (
 // vuePageRuleScanner 从宿主实际运行时代码中提取页面入口、配置字段和自定义组件注册表。
 type vuePageRuleScanner struct {
 	root             string
-	components       map[string]string
 	componentFiles   map[string]string
 	pageByCode       map[string]vuePageEntry
 	apiPaths         map[string]string
 	javaSources      []javaRuleSource
 	vueSourceDigest  string
 	javaSourceDigest string
-	componentDigest  string
 }
 
 type vuePageEntry struct {
@@ -542,18 +629,13 @@ type javaRuleSource struct {
 
 // newVuePageRuleScanner 创建可在分析任务中复用的只读源码扫描器。
 func newVuePageRuleScanner(root string) *vuePageRuleScanner {
-	scanner := &vuePageRuleScanner{root: root, components: map[string]string{}, componentFiles: map[string]string{}, pageByCode: map[string]vuePageEntry{}, apiPaths: map[string]string{}}
+	scanner := &vuePageRuleScanner{root: root, componentFiles: map[string]string{}, pageByCode: map[string]vuePageEntry{}, apiPaths: map[string]string{}}
 	scanner.load()
 	return scanner
 }
 
-// load 扫描 settings.js 和 runtime main.js；文件缺失时由页面规则标记分析问题。
+// load 扫描 settings.js、宿主页面入口、API 常量和 Java 控制器；文件缺失时由页面规则标记具体问题。
 func (s *vuePageRuleScanner) load() {
-	main := s.read("form-runtime/runtime-source/src/main.js")
-	componentPattern := regexp.MustCompile(`name:\s*['"]([^'"]+)['"]\s*,\s*component:\s*([A-Za-z0-9_]+)`)
-	for _, match := range componentPattern.FindAllStringSubmatch(main, -1) {
-		s.components[match[1]] = match[2]
-	}
 	settings := s.read("form-runtime/runtime-source/src/store/modules/settings.js")
 	entryPattern := regexp.MustCompile(`(?ms)^[ \t]{4}([A-Za-z0-9_]+)\s*:\s*\{(.*?)^[ \t]{4}\},?`)
 	namePattern := regexp.MustCompile(`name\s*:\s*['"]([^'"]+)['"]`)
@@ -594,11 +676,6 @@ func (s *vuePageRuleScanner) load() {
 	s.loadJavaRuleSources()
 	s.vueSourceDigest = digestCatalogDirectory(filepath.Join(s.root, "form-runtime", "runtime-source", "src"), map[string]bool{".js": true, ".vue": true, ".json": true})
 	s.javaSourceDigest = digestCatalogDirectory(filepath.Join(s.root, "参考代码", "java-serve"), map[string]bool{".java": true})
-	s.componentDigest = catalogDigest(struct {
-		Registry     map[string]string
-		Capabilities map[string]map[string]string
-		Source       string
-	}{s.components, formdata.CustomComponentCapabilities(), digestCatalogDirectory(filepath.Join(s.root, "form-runtime", "runtime-source", "src", "components", "Custom"), map[string]bool{".js": true, ".vue": true})})
 }
 
 // loadAPIPaths 从宿主真实 API 常量表提取命名端点，静态分析只记录声明路径而不发起请求。
@@ -789,15 +866,6 @@ func vueFieldCapabilityIssues(fields []target.VueCustomFieldRule, requests []tar
 		}
 	}
 	return uniqueCatalogStrings(issues)
-}
-
-// Components 返回已注册自定义组件能力名称，供所有模板覆盖报告共享。
-func (s *vuePageRuleScanner) Components() map[string]string {
-	result := make(map[string]string, len(s.components))
-	for key, value := range s.components {
-		result[key] = value
-	}
-	return result
 }
 
 // configFields 从 NoFormFLow 配置式页面提取 prop、类型和 required 规则。

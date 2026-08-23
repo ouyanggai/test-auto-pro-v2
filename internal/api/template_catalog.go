@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"test-auto-pro-v2/internal/model"
@@ -27,10 +28,10 @@ type templateCatalogJobInput struct {
 }
 
 type templateCatalogListResponse struct {
-	Items []model.TemplateRuleCatalogItem `json:"items"`
-	Page  int                             `json:"page"`
-	Size  int                             `json:"size"`
-	Total int                             `json:"total"`
+	Items []model.TemplateRuleCatalogPublicItem `json:"items"`
+	Page  int                                   `json:"page"`
+	Size  int                                   `json:"size"`
+	Total int                                   `json:"total"`
 }
 
 // registerTemplateCatalogRoutes 注册规则目录只读查询与受控同步任务入口。
@@ -66,15 +67,58 @@ func handleTemplateCatalogList(catalog TemplateCatalogService) http.HandlerFunc 
 			writeTemplateCatalogError(response, err)
 			return
 		}
-		if items == nil {
-			items = []model.TemplateRuleCatalogItem{}
+		publicItems := make([]model.TemplateRuleCatalogPublicItem, 0, len(items))
+		for _, item := range items {
+			publicItems = append(publicItems, publicTemplateRuleCatalogItem(item))
 		}
-		for index := range items {
-			// 设置页只展示覆盖和问题摘要；完整规则仅在服务端为生成、保存和批量任务复用，不能把内部规则正文送到浏览器。
-			items[index].RuleData = nil
-		}
-		writeSuccess(response, templateCatalogListResponse{Items: items, Page: page, Size: size, Total: total})
+		writeSuccess(response, templateCatalogListResponse{Items: publicItems, Page: page, Size: size, Total: total})
 	}
+}
+
+// publicTemplateRuleCatalogItem 构造设置页专用摘要，禁止源模板 ID、摘要、版本、规则正文和覆盖原文进入响应。
+func publicTemplateRuleCatalogItem(item model.TemplateRuleCatalogItem) model.TemplateRuleCatalogPublicItem {
+	components := append(templateRulePublicComponents(item.Coverage["components"], ""), templateRulePublicComponents(item.Coverage["customComponents"], "custom:")...)
+	sort.Strings(components)
+	return model.TemplateRuleCatalogPublicItem{
+		FlowCode: item.FlowCode, FlowName: item.FlowName, TemplateType: item.TemplateType, RenderType: item.RenderType,
+		Status: item.Status, FieldCount: templateRulePublicCount(item.Coverage["fieldCount"]), Components: components,
+		Issues: append([]string(nil), item.Issues...), AnalyzedAt: item.AnalyzedAt,
+	}
+}
+
+// templateRulePublicComponents 从仓储 JSON 或内存分析结果中提取当前模板实际使用的组件名。
+func templateRulePublicComponents(raw any, prefix string) []string {
+	result := make([]string, 0)
+	switch values := raw.(type) {
+	case map[string]any:
+		for name, count := range values {
+			if templateRulePublicCount(count) > 0 && strings.TrimSpace(name) != "" {
+				result = append(result, prefix+strings.TrimSpace(name))
+			}
+		}
+	case map[string]int:
+		for name, count := range values {
+			if count > 0 && strings.TrimSpace(name) != "" {
+				result = append(result, prefix+strings.TrimSpace(name))
+			}
+		}
+	}
+	return result
+}
+
+// templateRulePublicCount 只接受 JSON 解码后的非负整数，异常覆盖数据不进入公开摘要。
+func templateRulePublicCount(value any) int {
+	switch count := value.(type) {
+	case int:
+		if count >= 0 {
+			return count
+		}
+	case float64:
+		if count >= 0 && count == float64(int(count)) {
+			return int(count)
+		}
+	}
+	return 0
 }
 
 // handleCreateTemplateCatalogJob 创建全量、增量或失败重试任务；请求不能携带目标地址或任意脚本。

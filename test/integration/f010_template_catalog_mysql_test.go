@@ -32,7 +32,7 @@ func TestF010TemplateCatalogMySQLPersistence(t *testing.T) {
 		FormExist: "noForm", RenderType: model.TemplateRuleRenderVueCustom, SourceAccount: "欧阳改",
 		SourceVersion: "v1", SourceFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AnalyzerVersion: "f010-v1",
 		Status: "complete", RuleData: map[string]any{"page": map[string]any{"pageKey": "flow-vue", "fields": []any{map[string]any{"path": "title"}}}},
-		Coverage: map[string]any{"customComponents": map[string]any{"custome-info-select": "CustomeInfoSelect"}}, Issues: []string{},
+		Coverage: map[string]any{"customComponents": map[string]any{"custome-info-select": 1}}, Issues: []string{},
 		AnalyzedAt: &now, CreatedAt: now, UpdatedAt: now,
 	}
 	stored, err := repository.Upsert(ctx, item)
@@ -49,10 +49,10 @@ func TestF010TemplateCatalogMySQLPersistence(t *testing.T) {
 		t.Fatalf("规则目录分页不正确：total=%d items=%+v err=%v", total, items, err)
 	}
 	summary, err := repository.Summary(ctx)
-	if err != nil || summary.Total != 1 || summary.VueCustom != 1 || summary.NeedsAttention != 1 || summary.Components["custom:custome-info-select"] != 1 {
+	if err != nil || summary.CatalogTotal != 1 || summary.VueCustom != 1 || summary.NeedsAttention != 1 || summary.Components["custom:custome-info-select"] != 1 {
 		t.Fatalf("规则目录汇总不正确：summary=%+v err=%v", summary, err)
 	}
-	job := model.TemplateRuleAnalysisJob{ID: "f010-mysql-job", Mode: "full", Account: "欧阳改", Status: "running", Total: 196, Processed: 8, CreatedAt: now, UpdatedAt: now}
+	job := model.TemplateRuleAnalysisJob{ID: "f010-mysql-job", Mode: "full", Account: "欧阳改", State: "running", Total: 73, Listed: 8, Accounted: 8, Complete: 8, Failures: []model.TemplateRuleAnalysisFailure{}, CreatedAt: now, UpdatedAt: now}
 	if _, err := repository.CreateJob(ctx, job); err != nil {
 		t.Fatalf("创建规则分析任务失败：%v", err)
 	}
@@ -60,7 +60,7 @@ func TestF010TemplateCatalogMySQLPersistence(t *testing.T) {
 		t.Fatalf("恢复中断任务失败：%v", err)
 	}
 	recovered, err := repository.GetJob(ctx, job.ID)
-	if err != nil || recovered.Status != "failed" || recovered.FinishedAt == nil {
+	if err != nil || recovered.State != "finished" || recovered.Outcome != "failed" || recovered.Accounted != recovered.Total || recovered.Unlisted != 65 || recovered.FinishedAt == nil || len(recovered.Failures) != 1 || recovered.Failures[0].Stage != "service_recovery" {
 		t.Fatalf("中断任务没有收敛为可重试失败态：job=%+v err=%v", recovered, err)
 	}
 }
