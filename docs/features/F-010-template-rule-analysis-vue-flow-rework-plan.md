@@ -326,3 +326,22 @@
 - FormMaking、Vue、单条生成、保存复验和批量任务消费同一权威规则。
 - 自动验证实际执行成功，工作区无凭证、缓存、依赖、构建产物、参考源码、日志和 PID。
 - 人工检查点仍待用户完成；不得自动进入 `accepted`。
+
+## 十四、2026-08-23 批准的闭环修复门禁
+
+本节是当前 F-010R 剩余实施的唯一台账；与前文旧实现描述冲突时，以本节为准。
+
+1. 单条生成总预算固定 8 秒；样本、身份和候选各自最多 3 秒。可选读取超时形成 `partial` 字段问题，调用方取消必须退出。正常环境 `POST /api/plans/4/execution-paths/529/configuration/form/generate` 在 10 秒内返回。
+2. 近期样本只调用目标 `flowInstanceApi/list` 第一页，以请求 `data.flowCode` 精确过滤并最多读取 5 条；缓存包含账号、流程、模板、组件和规则版本。
+3. 智能生成与换一组共用 20 秒前端操作期限；成功、失败、超时、导航和卸载都清理忙碌态。服务端结果通过现有 iframe `setData` 原位回填，不销毁运行时，失败保留现值并显示阶段原因。
+4. 删除未在参考源码证明的候选接口。候选只从 `GroupApproveManage` 及其直接公共组件、宿主 API 常量和 Java DTO 的只读协议取得；正式服务按当前模板实际组件注入候选池，按 key 单飞且远程等待不持有全局锁。候选失败只产生 `partial`，不伪造引用。
+5. 规则问题统一返回 2xx `complete|partial|blocked`。未知页面、脚本和条件形态返回带字段问题与路径复验的 `blocked` 结果；保存接口继续权威拒绝，Vue 页面不再因任意 `issues` 整页拒绝生成。
+6. 目标模板 DTO 保留真实 `auditWay`。`flowCode` 只用于路径、条件和样本；`auditWay/pageKey` 用于 `settings.js` 与宿主页面映射；`formExist` 只做渲染分类。缺少 `auditWay` 必须具体阻断，禁止按名称或 UUID 猜测。
+7. 分析任务协议直接替换为 `state=queued|running|finished`、`outcome=success|with_issues|failed`，并公开 `total/listed/accounted/complete/needsAttention/blocked/failed/unlisted`。终态必须满足 `accounted=complete+needsAttention+blocked+failed=total` 和进度 100；分页失败记录页码、阶段和原因并有界对账，重试重新发现未列出项且跳过未变化健康项。
+8. 目录汇总必须满足 `complete+needsAttention+blocked+failed=catalogTotal`；后端、前端完整展示 `blocked`。单模板只统计实际使用组件，全局注册表另行汇总；设置 API 只返回公开摘要 DTO，不泄露目标模板标识、摘要或规则正文。
+9. F-010 与 F-010R 在全部自动验证完成前保持 `implementing`，最终统一进入 `ready_for_manual`；F-009 始终保持 `ready_for_manual`。
+10. 开发数据库旧目录和任务不迁移旧状态，按新协议清理后由欧阳改真实全量重建；总数只来自实时分页。整个过程只读目标平台。
+11. 删除未接入 `VueFormRenderer`、`batch_optimization`、虚假候选适配器与无效测试，并移除已提交二进制、`.plans` 临时报告，补充忽略规则；交付不得包含凭证、参考源码、日志、PID、依赖、缓存或构建产物。
+12. 所有测试位于根 `test/` 分类目录；新增或修改 Go 具名函数正上方使用中文注释，关键超时、状态对账、权限和并发规则使用紧邻中文说明。
+
+原子顺序固定为：A 生成超时/样本过滤/iframe 原位回填；B 真实按需候选；C `auditWay` 页面映射与规则三态；D 任务生命周期、计数、公开 DTO 与设置页；E 清理、开发数据重建、真实 API 复验、全量验证和文档交接。每项验证后使用中文提交。
