@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
+import type { NotificationReactive } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -101,6 +102,8 @@ let runtimeSessionController: AbortController | null = null
 let formOperationController: AbortController | null = null
 let nodeSaveKey = ''
 let formSaveKey = ''
+const notification = useNotification()
+let formNotice: NotificationReactive | null = null
 
 const formGenerationOperationTimeout = 20_000
 const templateRuleStaleMessage = '模板已更新，请先到系统设置更新模板规则'
@@ -121,6 +124,45 @@ function formGenerationFailureMessage(caught: unknown, signal: AbortSignal, stag
     return `智能生成在${stage}阶段未收到表单运行时响应，当前表单值已保留`
   }
   return `智能生成在${stage}阶段失败：${publicPageError(caught)}，当前表单值已保留`
+}
+
+// dismissFormNotice 销毁表单工作区悬浮反馈，避免离开路径后旧通知残留到下一条路径。
+function dismissFormNotice() {
+  formNotice?.destroy()
+  formNotice = null
+}
+
+// showFormNotice 统一把生成、保存和规则阻断反馈放到 Naive UI 通知层，不改变 iframe 的布局高度。
+function showFormNotice() {
+  dismissFormNotice()
+  if (workspace.value !== 'form') return
+  const details = formErrorDetails.value.map(item => pathConfigurationMessage(item.reason || item.name)).filter(Boolean)
+  if (formError.value) {
+    formNotice = notification.error({
+      title: '表单处理提示',
+      content: [formError.value, ...details].filter(Boolean).join('；'),
+      duration: 0,
+      closable: true,
+    })
+    return
+  }
+  if (runtimeBlocked.value) {
+    formNotice = notification.warning({
+      title: '当前配置需要处理',
+      content: runtimeBlockingReasons.value.map(pathConfigurationMessage).join('；'),
+      duration: 0,
+      closable: true,
+    })
+    return
+  }
+  if (formSavedSuccessfully.value) {
+    formNotice = notification.success({
+      title: '表单数据已保存',
+      content: '已完成服务端复验，节点仍需逐个完成。',
+      duration: 4500,
+      closable: true,
+    })
+  }
 }
 
 const pageThemeStyle = computed(() => ({
@@ -198,6 +240,7 @@ function invalidateRuntimeSession() {
   formGenerationKind.value = null
   formRestoring.value = false
   formSaving.value = false
+  dismissFormNotice()
 }
 
 // isActiveFormOperation 防止返回节点或路由切换后，旧 iframe 请求反写当前页面。
@@ -673,6 +716,7 @@ function backToPlan() {
   router.push('/plans/' + planID.value + '/paths')
 }
 
+watch([workspace, formError, formSavedSuccessfully, runtimeBlockingReasons, formErrorDetails], showFormNotice, { deep: true })
 watch([planID, pathID], () => { void loadPage() })
 onBeforeUnmount(() => {
   loadVersion++
@@ -818,20 +862,6 @@ void loadPage()
             </n-collapse-item>
           </n-collapse>
         </section>
-        <div v-if="formError || formSavedSuccessfully || runtimeBlocked" class="path-configuration-page__form-feedback">
-          <n-alert v-if="formError" type="error" :show-icon="false" size="small">
-            <div>{{ formError }}</div>
-            <ul v-if="formErrorDetails.length" class="path-configuration-page__form-error-details">
-              <li v-for="(item, index) in formErrorDetails" :key="`${item.kind}-${index}`">{{ pathConfigurationMessage(item.reason || item.name) }}</li>
-            </ul>
-          </n-alert>
-          <n-alert v-else-if="formSavedSuccessfully" type="success" :show-icon="false" size="small">
-            表单数据已保存并完成服务端复验。节点仍需逐个完成，整条路径不会被静默标记。
-          </n-alert>
-          <n-alert v-if="runtimeBlocked" type="warning" :show-icon="false" size="small">
-            {{ runtimeBlockingReasons.map(pathConfigurationMessage).join('；') }}
-          </n-alert>
-        </div>
         <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
           <n-spin :show="true" size="large" description="正在加载表单运行时" />
         </section>
@@ -958,15 +988,6 @@ void loadPage()
 .path-configuration-page__form-toolbar h2 { margin: 0 0 4px; font-size: 18px; }
 .path-configuration-page__form-toolbar p { margin: 0; color: var(--path-config-text-secondary-color); font-size: 12px; }
 .path-configuration-page__form-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.path-configuration-page__form-feedback {
-  position: static;
-  flex: 0 0 auto;
-  display: grid;
-  gap: 6px;
-  max-height: 112px;
-  padding: 8px 12px 0;
-  overflow-y: auto;
-}
 .path-configuration-page__form-hints {
   position: absolute;
   top: 66px;

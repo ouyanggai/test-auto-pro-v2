@@ -116,6 +116,17 @@ test('表单生成共享二十秒期限并原位回填真实 iframe', () => {
   assert.match(runtimeFrame, /signal\?\.addEventListener\('abort'/)
 })
 
+test('表单反馈使用可关闭悬浮通知且不占运行时布局', () => {
+  assert.match(configurationView, /useNotification/)
+  assert.match(configurationView, /function dismissFormNotice\(\)[\s\S]*formNotice\?\.destroy\(\)/)
+  assert.match(configurationView, /function showFormNotice\(\)[\s\S]*notification\.(error|warning|success)/)
+  assert.match(configurationView, /watch\(\[workspace, formError, formSavedSuccessfully, runtimeBlockingReasons, formErrorDetails\], showFormNotice/)
+  assert.match(configurationView, /function invalidateRuntimeSession\(\) \{[\s\S]*dismissFormNotice\(\)/)
+  assert.doesNotMatch(configurationView, /path-configuration-page__form-feedback/)
+  const app = readFileSync(new URL('../../../web/src/App.vue', import.meta.url), 'utf8')
+  assert.match(app, /<n-notification-provider>/)
+})
+
 test('表单运行时固定浅色且条件提示使用标准折叠容器', () => {
   const runtimeApp = readFileSync(new URL('../../../form-runtime/src/App.vue', import.meta.url), 'utf8')
   const runtimeIndex = readFileSync(new URL('../../../form-runtime/public/index.html', import.meta.url), 'utf8')
