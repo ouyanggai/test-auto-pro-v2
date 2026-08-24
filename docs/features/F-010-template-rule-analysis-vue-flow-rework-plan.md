@@ -1,6 +1,6 @@
 # F-010 返工计划：全模板规则分析与 Vue 表单流程支持
 
-- 状态：ready_for_manual
+- 状态：implementing
 - 关联功能：`docs/features/F-010-template-rule-analysis-vue-flow.md`
 - 产品依据：`docs/PRODUCT.md` 的 F-010 规则目录、Vue 业务页面和账号权限边界
 - 架构依据：`docs/ARCHITECTURE.md` 的 F-010 规则快照、运行时和生成器边界
@@ -386,3 +386,12 @@
 - [x] `git diff --check`、公开 DTO、敏感文件与禁止产物检查
 
 全部自动完成标准已经满足。F-010 与 F-010R 统一停在 `ready_for_manual`；F-009 保持 `ready_for_manual`，F-007 保持 `archived`。人工检查点仍按第十二节执行，未经用户确认不得进入 `accepted` 或开始下一功能。
+
+## 十六、2026-08-24 复核返工台账
+
+只读审查确认前一轮自动门禁漏检以下两项批准范围。F-010 与 F-010R 已退回 `implementing`；本节完成前，第十五节的 `ready_for_manual` 结论暂不生效。
+
+1. 近期样本缓存：成功和空结果使用延长但有界的 TTL；受控失败和超时使用较短负缓存 TTL；调用方 `context.Canceled` 不缓存。同一账号、流程、模板、组件和规则版本只允许一次在途读取，远程等待不持有全局锁。负缓存命中继续返回可降级错误，使生成返回 2xx `partial`。
+2. 规则与候选指纹：配置 GET、生成、保存和批量准备共用不泄露内部明文的稳定 `ruleFingerprint/candidateFingerprint`。页面只接受与当前配置指纹一致的生成结果；不一致时保留现值、不替换字段规则并提示重新读取。已生成或已确认数据在规则/候选变化时保留值但进入 `needs_attention`；保存权威拒绝过期外部引用，批量仅影响当前路径。
+3. 根目录测试必须覆盖空结果缓存、失败负缓存、取消不缓存、缓存维度与同键并发；规则指纹变化阻止回填、生成/保存/批量同版本、值保留并失效、候选变化拒绝和 loading 清理。
+4. 完整执行 F-010 门禁、相关 Go/API/MySQL、`go test ./internal/...`、双前端 typecheck/build、`git diff --check` 和现有 19080 生成实测。全部通过后再统一回到 `ready_for_manual`；F-009 不变。

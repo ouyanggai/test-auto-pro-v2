@@ -1,6 +1,6 @@
 # F-010 全模板规则分析与 Vue 表单流程支持
 
-- 状态：ready_for_manual
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的 F-010 模板规则目录与 Vue 业务页面
 - 架构依据：`docs/ARCHITECTURE.md` 的 F-010 全模板规则分析与 Vue 表单流程
 - 计划确认时间：2026-08-19
