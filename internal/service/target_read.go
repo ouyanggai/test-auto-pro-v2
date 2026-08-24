@@ -668,14 +668,13 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 	}, nil
 }
 
-// FormIdentityContext 从已验证账号缓存解析公司目录中的公司、部门与本人节点，供表单选人/选公司组件自动填充。
-func (s *TargetReadService) FormIdentityContext(ctx context.Context, account string) (target.FormIdentityContext, error) {
+// FormIdentityContext 只使用同一次已验证运行时会话解析公司、部门与本人目录，禁止重新按账号登录或混用其他发起人权限。
+func (s *TargetReadService) FormIdentityContext(ctx context.Context, active target.Session) (target.FormIdentityContext, error) {
 	if err := s.ready(); err != nil {
 		return target.FormIdentityContext{}, err
 	}
-	active, err := s.sessions.Current(ctx, account)
-	if err != nil {
-		return target.FormIdentityContext{}, err
+	if strings.TrimSpace(active.SID) == "" || strings.TrimSpace(active.UserID) == "" || strings.TrimSpace(active.CompanyID) == "" {
+		return target.FormIdentityContext{}, errors.New("表单身份会话信息不完整")
 	}
 	return s.client.FormIdentityContext(ctx, active)
 }

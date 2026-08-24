@@ -28,8 +28,13 @@ func (r f010SlowOptionalReader) RecentFormSamplesForRule(ctx context.Context, _,
 	return nil, ctx.Err()
 }
 
+// FormRuntimeSession 返回已验证的最小会话，让生成链路继续进入三个可选读取阶段。
+func (r f010SlowOptionalReader) FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error) {
+	return target.FormRuntimeSession{SID: "sid", UserID: "user", CompanyID: "company", DepartmentID: "department"}, nil
+}
+
 // FormIdentityContext 等待子预算取消，模拟身份目录无响应。
-func (r f010SlowOptionalReader) FormIdentityContext(ctx context.Context, _ string) (target.FormIdentityContext, error) {
+func (r f010SlowOptionalReader) FormIdentityContext(ctx context.Context, _ target.Session) (target.FormIdentityContext, error) {
 	<-ctx.Done()
 	return target.FormIdentityContext{}, ctx.Err()
 }
@@ -65,7 +70,7 @@ func TestF010GenerationOptionalReadsShareThreeSecondBudget(t *testing.T) {
 	issueText := f010GenerationIssueText(result.Issues)
 	for _, expected := range []string{"近期样本读取超时", "发起人身份读取超时", "组件候选读取超时"} {
 		if !strings.Contains(issueText, expected) {
-			t.Fatalf("缺少分阶段超时问题 %q：%s", expected, issueText)
+			t.Fatalf("缺少分阶段超时问题 %q：%s result=%+v", expected, issueText, result)
 		}
 	}
 }

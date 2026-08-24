@@ -8,11 +8,12 @@ import (
 type ErrorKind string
 
 const (
-	ErrorLoginRejected   ErrorKind = "login_rejected"
-	ErrorSessionExpired  ErrorKind = "session_expired"
-	ErrorResponseInvalid ErrorKind = "response_invalid"
-	ErrorUnavailable     ErrorKind = "unavailable"
-	ErrorTimeout         ErrorKind = "timeout"
+	ErrorLoginRejected    ErrorKind = "login_rejected"
+	ErrorSessionExpired   ErrorKind = "session_expired"
+	ErrorResponseInvalid  ErrorKind = "response_invalid"
+	ErrorUnavailable      ErrorKind = "unavailable"
+	ErrorTimeout          ErrorKind = "timeout"
+	ErrorPermissionDenied ErrorKind = "permission_denied"
 )
 
 // Error 对外只暴露稳定分类，不携带目标平台原始报文。
@@ -22,6 +23,7 @@ type Error struct {
 	Cause      error
 }
 
+// Error 返回不含目标原始响应的稳定错误分类。
 func (e *Error) Error() string {
 	if e == nil {
 		return "目标平台请求失败"
@@ -35,6 +37,8 @@ func (e *Error) Error() string {
 		return "目标平台响应格式异常"
 	case ErrorTimeout:
 		return "目标平台请求超时"
+	case ErrorPermissionDenied:
+		return "目标平台拒绝访问"
 	default:
 		return "目标平台暂时不可用"
 	}

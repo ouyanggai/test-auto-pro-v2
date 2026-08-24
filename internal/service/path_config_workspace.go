@@ -42,7 +42,7 @@ type pathFormRuleSampleReader interface {
 }
 
 type pathFormIdentityReader interface {
-	FormIdentityContext(context.Context, string) (target.FormIdentityContext, error)
+	FormIdentityContext(context.Context, target.Session) (target.FormIdentityContext, error)
 }
 
 type pathFormConditionProjection struct {
@@ -59,19 +59,23 @@ type pathFormConditionFieldRef struct {
 }
 
 type pathFormOptionalReadResult struct {
-	kind       string
-	samples    []map[string]any
-	identity   target.FormIdentityContext
-	candidates map[string][]any
-	err        error
+	kind            string
+	samples         []map[string]any
+	identity        target.FormIdentityContext
+	candidates      map[string][]any
+	candidateIssues map[string]string
+	identityReady   bool
+	err             error
 }
 
 type pathFormOptionalInputs struct {
-	samples    []map[string]any
-	initiator  string
-	identity   formdata.IdentityContext
-	candidates map[string][]any
-	issues     []model.PathFormGenerationIssue
+	samples         []map[string]any
+	initiator       string
+	identity        formdata.IdentityContext
+	candidates      map[string][]any
+	candidateIssues map[string]string
+	identityReady   bool
+	issues          []model.PathFormGenerationIssue
 }
 
 // RuntimeSession 校验计划与路径归属后返回当前账号缓存的短期 iframe 会话。
@@ -117,6 +121,14 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	if plan.FlowSource != "new" {
 		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorLocked, Message: "已发或待发表单只能查看实例当前值"}
 	}
+	reader, ok := s.target.(pathFormRuntimeSessionReader)
+	if !ok {
+		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
+	}
+	active, err := reader.FormRuntimeSession(generationContext, plan.Account)
+	if err != nil {
+		return model.PathFormGenerateResult{}, err
+	}
 	snapshot, err := s.readVerifiedSnapshot(generationContext, planID)
 	if err != nil {
 		return model.PathFormGenerateResult{}, err
@@ -146,7 +158,14 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	if snapshotRuleStatus(snapshot) == model.RuleReadinessBlocked {
 		return blockedPathFormGenerateResult(stored, base, seed, ruleIssues), nil
 	}
-	optional := s.loadPathFormOptionalInputs(generationContext, plan.Account, snapshot, template)
+	session := target.Session{
+		SID:          active.SID,
+		CustomerCode: active.CustomerCode,
+		UserID:       active.UserID,
+		CompanyID:    active.CompanyID,
+		DepartmentID: active.DepartmentID,
+	}
+	optional := s.loadPathFormOptionalInputs(generationContext, plan.Account, session, snapshot, template)
 	if requestContext.Err() != nil {
 		return model.PathFormGenerateResult{}, requestContext.Err()
 	}
@@ -175,12 +194,33 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	issues = append(issues, solved.issues...)
 	issues = append(issues, optional.issues...)
 	for _, fieldPath := range generated.PendingFields {
+		reason := strings.TrimSpace(optional.candidateIssues[fieldPath])
+		if reason == "" {
+			fields, _ := formdata.ParseTemplate(template)
+			for _, field := range fields {
+				if field.Path == fieldPath && field.Type == "infoSelect" && optional.identityReady {
+					reason = "当前发起人目录没有可用记录"
+					break
+				}
+			}
+		}
+		if reason == "" {
+			continue
+		}
 		fieldName := formdata.FieldName(template, fieldPath)
 		if fieldName == "" {
 			fieldName = fieldPath
 		}
 		// 外部业务对象没有当前账号可见候选时必须保留空值，绝不能编造历史引用或对象 ID。
-		issues = append(issues, model.PathFormGenerationIssue{Field: fieldName, Reason: "当前数据源无可用记录", Blocking: false})
+		issues = appendUniquePathFormIssue(issues, model.PathFormGenerationIssue{Field: fieldName, Reason: reason, Blocking: false})
+	}
+	for fieldPath, reason := range optional.candidateIssues {
+		fieldName := formdata.FieldName(template, fieldPath)
+		if fieldName == "" {
+			fieldName = fieldPath
+		}
+		// 候选读取失败或为空时，即使字段当前不可编辑也必须留下字段级 partial 原因，不能把权限投影误报成成功。
+		issues = appendUniquePathFormIssue(issues, model.PathFormGenerationIssue{Field: fieldName, Reason: reason, Blocking: false})
 	}
 	for _, review := range conditions.Reviews {
 		issues = appendPathSolveIssue(issues, "当前路径条件", review, true)
@@ -1894,8 +1934,18 @@ func uniquePublicStrings(values []string) []string {
 	return result
 }
 
+// appendUniquePathFormIssue 按字段、原因和阻断状态去重生成问题，避免同一候选故障重复提示。
+func appendUniquePathFormIssue(issues []model.PathFormGenerationIssue, candidate model.PathFormGenerationIssue) []model.PathFormGenerationIssue {
+	for _, existing := range issues {
+		if existing.Field == candidate.Field && existing.Reason == candidate.Reason && existing.Blocking == candidate.Blocking {
+			return issues
+		}
+	}
+	return append(issues, candidate)
+}
+
 // loadPathFormOptionalInputs 并行读取样本、身份和候选；任一可选来源最多等待三秒且不会阻断安全部分生成。
-func (s *PathConfigService) loadPathFormOptionalInputs(ctx context.Context, account string, snapshot target.PathConfigurationSnapshot, template map[string]any) pathFormOptionalInputs {
+func (s *PathConfigService) loadPathFormOptionalInputs(ctx context.Context, account string, session target.Session, snapshot target.PathConfigurationSnapshot, template map[string]any) pathFormOptionalInputs {
 	resultChannel := make(chan pathFormOptionalReadResult, 3)
 	componentID := "formmaking"
 	if snapshot.VuePage != nil && strings.TrimSpace(snapshot.VuePage.ComponentName) != "" {
@@ -1910,14 +1960,14 @@ func (s *PathConfigService) loadPathFormOptionalInputs(ctx context.Context, acco
 	go func() {
 		readContext, cancel := context.WithTimeout(ctx, pathFormOptionalReadBudget)
 		defer cancel()
-		identity, err := s.readPathFormIdentity(readContext, account)
+		identity, err := s.readPathFormIdentity(readContext, session)
 		resultChannel <- pathFormOptionalReadResult{kind: "identity", identity: identity, err: err}
 	}()
 	go func() {
 		readContext, cancel := context.WithTimeout(ctx, pathFormOptionalReadBudget)
 		defer cancel()
-		candidates, err := s.loadComponentCandidates(readContext, account, snapshot.FlowCode, snapshot.TemplateID, snapshot.RuleVersion, template)
-		resultChannel <- pathFormOptionalReadResult{kind: "candidates", candidates: candidates, err: err}
+		candidates, candidateIssues, err := s.loadComponentCandidates(readContext, account, snapshot.FlowCode, snapshot.TemplateID, snapshot.RuleVersion, template)
+		resultChannel <- pathFormOptionalReadResult{kind: "candidates", candidates: candidates, candidateIssues: candidateIssues, err: err}
 	}()
 
 	inputs := pathFormOptionalInputs{samples: []map[string]any{}, initiator: account, candidates: map[string][]any{}, issues: []model.PathFormGenerationIssue{}}
@@ -1955,22 +2005,29 @@ func (s *PathConfigService) readPathFormSamples(ctx context.Context, account str
 }
 
 // readPathFormIdentity 只读取当前计划账号的身份目录；未提供身份能力时返回空身份而不制造错误。
-func (s *PathConfigService) readPathFormIdentity(ctx context.Context, account string) (target.FormIdentityContext, error) {
+func (s *PathConfigService) readPathFormIdentity(ctx context.Context, session target.Session) (target.FormIdentityContext, error) {
 	reader, ok := s.target.(pathFormIdentityReader)
 	if !ok {
 		return target.FormIdentityContext{}, nil
 	}
-	return reader.FormIdentityContext(ctx, account)
+	return reader.FormIdentityContext(ctx, session)
 }
 
 // applyPathFormOptionalRead 以固定阶段语义合并可选读取结果，错误只形成非阻断业务问题。
 func (s *PathConfigService) applyPathFormOptionalRead(inputs *pathFormOptionalInputs, read pathFormOptionalReadResult) {
+	if read.kind == "candidates" {
+		// 候选池允许部分失败；先保存字段级原因，再决定是否追加阶段级读取问题。
+		inputs.candidateIssues = mergeCandidateIssues(inputs.candidateIssues, read.candidateIssues)
+	}
 	if read.kind == "candidates" && len(read.candidates) > 0 {
 		// 一个组件来源失败时仍保留其他组件已经取得的安全候选，不能把局部降级扩大为全量丢弃。
 		inputs.candidates = read.candidates
 	}
 	if read.err != nil {
-		inputs.issues = append(inputs.issues, pathFormOptionalIssue(read.kind, read.err))
+		// 已按字段建立候选问题时不再追加一条重复的全局组件提示；无字段可归属时才保留阶段提示。
+		if read.kind != "candidates" || len(read.candidateIssues) == 0 {
+			inputs.issues = appendUniquePathFormIssue(inputs.issues, pathFormOptionalIssue(read.kind, read.err))
+		}
 		return
 	}
 	switch read.kind {
@@ -1978,6 +2035,7 @@ func (s *PathConfigService) applyPathFormOptionalRead(inputs *pathFormOptionalIn
 		inputs.samples = read.samples
 	case "identity":
 		inputs.identity = formdataIdentityContext(read.identity)
+		inputs.identityReady = true
 		if name := strings.TrimSpace(read.identity.User.Name); name != "" {
 			inputs.initiator = name
 		}
@@ -2009,16 +2067,62 @@ func pathFormOptionalIssue(kind string, err error) model.PathFormGenerationIssue
 }
 
 // loadComponentCandidates 从缓存或目标平台加载组件候选池，并把读取失败交给生成状态显示。
-func (s *PathConfigService) loadComponentCandidates(ctx context.Context, account, flowCode, templateID, ruleVersion string, template map[string]any) (map[string][]any, error) {
+func (s *PathConfigService) loadComponentCandidates(ctx context.Context, account, flowCode, templateID, ruleVersion string, template map[string]any) (map[string][]any, map[string]string, error) {
 	if s.candidateCache == nil {
-		return make(map[string][]any), nil
+		return make(map[string][]any), make(map[string]string), nil
 	}
 	types := componentCandidateTypes(template)
 	if len(types) == 0 {
-		return make(map[string][]any), nil
+		return make(map[string][]any), make(map[string]string), nil
 	}
 	candidateSet, err := s.candidateCache.GetCandidateSet(ctx, account, flowCode, templateID, ruleVersion, types)
-	return buildComponentCandidatesMap(template, candidateSet), err
+	return buildComponentCandidatesMap(template, candidateSet), buildComponentCandidateIssues(template, candidateSet), err
+}
+
+// buildComponentCandidateIssues 将候选读取结果精确投影到字段路径，区分无记录、权限、超时和读取失败。
+func buildComponentCandidateIssues(template map[string]any, set target.ComponentCandidateSet) map[string]string {
+	fields, _ := formdata.ParseTemplate(template)
+	result := make(map[string]string)
+	for _, field := range fields {
+		if field.Type != "custom" || !verifiedRemoteCandidateComponent(field.Capability) {
+			continue
+		}
+		if candidateErr, failed := set.Errors[field.Capability]; failed {
+			result[field.Path] = candidateIssueReason(candidateErr)
+			continue
+		}
+		if len(set.ByComponent[field.Capability]) == 0 {
+			result[field.Path] = "当前数据源无可用记录"
+		}
+	}
+	return result
+}
+
+// candidateIssueReason 把目标候选读取错误转换为稳定字段级中文原因，不暴露端点或原始响应。
+func candidateIssueReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), target.IsKind(err, target.ErrorTimeout):
+		return "组件候选读取超时，当前字段待核对"
+	case target.IsKind(err, target.ErrorPermissionDenied):
+		return "当前账号无权读取该数据源候选"
+	case errors.Is(err, target.ErrComponentCandidatesUnsupported), target.IsKind(err, target.ErrorResponseInvalid):
+		return "组件候选规则未识别，当前字段待人工核对"
+	default:
+		return "组件候选读取失败，当前字段待核对"
+	}
+}
+
+// mergeCandidateIssues 合并字段级候选问题并保持先到结果的稳定顺序。
+func mergeCandidateIssues(existing, incoming map[string]string) map[string]string {
+	if existing == nil {
+		existing = make(map[string]string)
+	}
+	for field, reason := range incoming {
+		if strings.TrimSpace(existing[field]) == "" {
+			existing[field] = reason
+		}
+	}
+	return existing
 }
 
 // pathFormRuleIssues 把规则目录问题转换为生成接口的字段级业务结果，不通过 HTTP 错误吞掉预期阻断。

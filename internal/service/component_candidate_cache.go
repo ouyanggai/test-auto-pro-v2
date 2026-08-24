@@ -58,7 +58,7 @@ func (c *ComponentCandidateCache) GetCandidateSet(ctx context.Context, account, 
 	types := target.SortedComponentCandidateTypes(componentTypes)
 	set := target.ComponentCandidateSet{
 		Account: strings.TrimSpace(account), FlowCode: strings.TrimSpace(flowCode), TemplateID: strings.TrimSpace(templateID),
-		RuleVersion: strings.TrimSpace(ruleVersion), ByComponent: make(map[string][]any, len(types)),
+		RuleVersion: strings.TrimSpace(ruleVersion), ByComponent: make(map[string][]any, len(types)), Errors: make(map[string]error, len(types)),
 	}
 	if len(types) == 0 {
 		return set, nil
@@ -78,6 +78,7 @@ func (c *ComponentCandidateCache) GetCandidateSet(ctx context.Context, account, 
 			set.ByComponent[result.componentType] = cloneAnyCandidates(result.values)
 		}
 		if result.err != nil {
+			set.Errors[result.componentType] = result.err
 			joined = errors.Join(joined, fmt.Errorf("%s：%w", result.componentType, result.err))
 		}
 	}

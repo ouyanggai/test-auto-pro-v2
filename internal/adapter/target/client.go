@@ -1154,6 +1154,9 @@ func (c *Client) call(ctx context.Context, path, sid string, body map[string]any
 	if response.StatusCode == http.StatusUnauthorized {
 		return nil, errorWithStatus(ErrorSessionExpired, response.StatusCode, nil)
 	}
+	if response.StatusCode == http.StatusForbidden {
+		return nil, errorWithStatus(ErrorPermissionDenied, response.StatusCode, nil)
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, errorWithStatus(ErrorUnavailable, response.StatusCode, nil)
 	}
@@ -1200,6 +1203,12 @@ func responseSucceeded(resp *envelope) bool {
 func responseError(resp *envelope) error {
 	if responseSessionExpired(resp) {
 		return NewError(ErrorSessionExpired, nil)
+	}
+	if resp != nil {
+		message := strings.ToLower(strings.TrimSpace(resp.Message))
+		if strings.TrimSpace(resp.Code) == "403" || strings.Contains(message, "forbidden") || strings.Contains(message, "permission") || strings.Contains(message, "无权限") || strings.Contains(message, "没有权限") {
+			return NewError(ErrorPermissionDenied, nil)
+		}
 	}
 	return NewError(ErrorUnavailable, nil)
 }

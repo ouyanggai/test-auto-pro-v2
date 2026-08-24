@@ -295,10 +295,21 @@ func (s *PathPreparationService) loadPathPreparationAssets(ctx context.Context, 
 	}
 	if reader, ok := s.config.target.(pathFormIdentityReader); ok {
 		// 批量任务只读取一次可信身份目录，避免运行时会话和身份投影重复访问目标平台。
-		if identity, readErr := reader.FormIdentityContext(ctx, plan.Account); readErr == nil {
-			assets.identity = formdataIdentityContext(identity)
-			if strings.TrimSpace(identity.User.Name) != "" {
-				assets.initiator = identity.User.Name
+		if sessionReader, sessionOk := s.config.target.(pathFormRuntimeSessionReader); sessionOk {
+			if active, sessionErr := sessionReader.FormRuntimeSession(ctx, plan.Account); sessionErr == nil {
+				session := target.Session{
+					SID:          active.SID,
+					CustomerCode: active.CustomerCode,
+					UserID:       active.UserID,
+					CompanyID:    active.CompanyID,
+					DepartmentID: active.DepartmentID,
+				}
+				if identity, readErr := reader.FormIdentityContext(ctx, session); readErr == nil {
+					assets.identity = formdataIdentityContext(identity)
+					if strings.TrimSpace(identity.User.Name) != "" {
+						assets.initiator = identity.User.Name
+					}
+				}
 			}
 		}
 	}

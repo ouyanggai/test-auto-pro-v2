@@ -1601,7 +1601,14 @@ func TestFormIdentityContextResolvesCompanyDepartmentUser(t *testing.T) {
 	defer targetServer.Close()
 	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
 	reader := service.NewTargetReadService(config.LoadTargetConfig())
-	identity, err := reader.FormIdentityContext(context.Background(), "account-a")
+	runtimeSession, err := reader.FormRuntimeSession(context.Background(), "account-a")
+	if err != nil {
+		t.Fatalf("预热已验证运行时会话失败：%v", err)
+	}
+	identity, err := reader.FormIdentityContext(context.Background(), target.Session{
+		SID: runtimeSession.SID, UserID: runtimeSession.UserID, CompanyID: runtimeSession.CompanyID,
+		DepartmentID: runtimeSession.DepartmentID, CustomerCode: runtimeSession.CustomerCode,
+	})
 	if err != nil {
 		t.Fatalf("身份目录解析失败：%v", err)
 	}

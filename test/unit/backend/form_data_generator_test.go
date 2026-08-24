@@ -227,17 +227,33 @@ func TestFormDataGeneratorFillsInfoSelectFromIdentity(t *testing.T) {
 	if result.Identity != 3 || result.Pending != 0 {
 		t.Fatalf("信息选择组件没有按身份填充：%+v", result)
 	}
-	company := []map[string]any{}
-	if err := json.Unmarshal([]byte(result.Values["myCompanyName"].(string)), &company); err != nil || len(company) != 1 || company[0]["id"] != "c1" || company[0]["name"] != "测试公司" {
+	company := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myCompanyName"].(string)), &company); err != nil || company["id"] != "c1" || company["name"] != "测试公司" {
 		t.Fatalf("公司组件值不符合组件约定：%+v err=%v", result.Values["myCompanyName"], err)
 	}
-	department := []map[string]any{}
-	if err := json.Unmarshal([]byte(result.Values["myDepName"].(string)), &department); err != nil || len(department) != 1 || department[0]["id"] != "d1" || department[0]["companyId"] != "c1" {
+	department := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myDepName"].(string)), &department); err != nil || department["id"] != "d1" || department["companyId"] != "c1" {
 		t.Fatalf("部门组件值不符合组件约定：%+v err=%v", result.Values["myDepName"], err)
 	}
-	user := []map[string]any{}
-	if err := json.Unmarshal([]byte(result.Values["myUserName"].(string)), &user); err != nil || len(user) != 1 || user[0]["id"] != "u1" || user[0]["parentId"] != "d1" {
+	user := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Values["myUserName"].(string)), &user); err != nil || user["id"] != "u1" || user["parentId"] != "d1" {
 		t.Fatalf("人员组件值不符合组件约定：%+v err=%v", result.Values["myUserName"], err)
+	}
+}
+
+// TestFormDataGeneratorFillsLtdOrDepSelectWithArrayShape 验证公司部门多选组件仍使用宿主要求的 JSON 数组，而信息单选组件使用对象。
+func TestFormDataGeneratorFillsLtdOrDepSelectWithArrayShape(t *testing.T) {
+	template := map[string]any{"list": []any{map[string]any{
+		"type": "custom", "el": "ltd-or-dep-select", "model": "handlingDepartment", "name": "办理部门", "options": map[string]any{"required": true},
+	}}}
+	identity := formdata.IdentityContext{Department: formdata.IdentityNode{ID: "d1", Name: "测试部", Type: "2", CompanyID: "c1"}}
+	result := formdata.Generate(formdata.GenerateInput{Template: template, Seed: 1, Identity: identity})
+	var values []map[string]any
+	if result.Pending != 0 || json.Unmarshal([]byte(result.Values["handlingDepartment"].(string)), &values) != nil || len(values) != 1 || values[0]["id"] != "d1" {
+		t.Fatalf("公司部门组件没有按数组协议生成：%+v", result)
+	}
+	if reasons := formdata.Validate(template, result.Values, nil); len(reasons) != 0 {
+		t.Fatalf("公司部门组件数组值未通过保存复验：%v", reasons)
 	}
 }
 

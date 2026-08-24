@@ -204,7 +204,7 @@ var knownCustomComponents = map[string]customComponentCapability{
 	"general-list-select-show":      {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
 	"person-mulSelect":              {ValueType: "array", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "flow_list", Evidence: "flowList 与 __formPersonId"},
 	"general-flow-list-mulSelect":   {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "flow_list", Evidence: "flowList input"},
-	"custome-info-select":           {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_array", Evidence: "currentInfoObj JSON.parse"},
+	"custome-info-select":           {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_object", Evidence: "currentInfoObj JSON.parse"},
 	"ltd-or-dep-select":             {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_array", Evidence: "currentInfoObj JSON.parse"},
 	"custome-file-view":             {ValueType: "file", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "value JSON clone"},
 	"custome-file-import":           {ValueType: "file", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "upload", Validation: "json_object", Evidence: "upload response data JSON.stringify"},
@@ -757,7 +757,7 @@ func Generate(input GenerateInput) GenerateResult {
 		}
 		if field.Type == "infoSelect" {
 			// 选公司/部门/人员优先使用当前账号在真实目录树中的节点，无法解析时保留已有值并计入人工待填。
-			if value, ok := infoSelectValue(field.Mode, input.Identity); ok {
+			if value, ok := customeInfoSelectValue(field.Mode, input.Identity); ok {
 				setFieldValue(values, field, value)
 				generated = append(generated, field.Path)
 				result.Identity++
@@ -982,8 +982,8 @@ func sampleValue(samples []map[string]any, field Field, offset int) (any, bool) 
 	return nil, false
 }
 
-// infoSelectValue 把账号目录节点编码为 custome-info-select 组件约定的 JSON 数组文本值。
-func infoSelectValue(kind string, identity IdentityContext) (string, bool) {
+// identityNodeForKind 从当前发起人已验证目录中选择公司、部门或本人节点，不按字段显示名称猜测身份。
+func identityNodeForKind(kind string, identity IdentityContext) (IdentityNode, bool) {
 	var node IdentityNode
 	switch kind {
 	case "company":
@@ -993,15 +993,42 @@ func infoSelectValue(kind string, identity IdentityContext) (string, bool) {
 	case "user":
 		node = identity.User
 	default:
-		return "", false
+		return IdentityNode{}, false
 	}
 	if strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.Name) == "" {
-		return "", false
+		return IdentityNode{}, false
 	}
-	encoded, err := json.Marshal([]map[string]any{{
+	return node, true
+}
+
+// identityNodeValue 把已验证目录节点编码为运行时统一使用的公开字段形状。
+func identityNodeValue(node IdentityNode) map[string]any {
+	return map[string]any{
 		"id": node.ID, "name": node.Name, "type": node.Type,
 		"companyId": node.CompanyID, "parentId": node.ParentID,
-	}})
+	}
+}
+
+// customeInfoSelectValue 按 CustomeInfoSelect 的 JSON 对象协议写入身份；数组会导致宿主无法回填名称和虚拟条件字段。
+func customeInfoSelectValue(kind string, identity IdentityContext) (string, bool) {
+	node, ok := identityNodeForKind(kind, identity)
+	if !ok {
+		return "", false
+	}
+	encoded, err := json.Marshal(identityNodeValue(node))
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+// ltdOrDepSelectValue 按 LtdOrDepSelect 的 JSON 数组协议写入公司或部门，不复用单选信息组件的对象形状。
+func ltdOrDepSelectValue(kind string, identity IdentityContext) (string, bool) {
+	node, ok := identityNodeForKind(kind, identity)
+	if !ok {
+		return "", false
+	}
+	encoded, err := json.Marshal([]map[string]any{identityNodeValue(node)})
 	if err != nil {
 		return "", false
 	}
@@ -1012,12 +1039,12 @@ func infoSelectValue(kind string, identity IdentityContext) (string, bool) {
 func customIdentityValue(field Field, identity IdentityContext) (string, bool) {
 	switch field.Capability {
 	case "ltd-or-dep-select":
-		// LtdOrDepSelect 实际复用 CustomeInfoSelect，组件的 MyCompanyList 回传 JSON 数组。
+		// LtdOrDepSelect 的 MyCompanyList 直接遍历 JSON 数组，不能复用 CustomeInfoSelect 的单对象协议。
 		kind := infoSelectKind(field.Path)
 		if kind == "" {
 			kind = "department"
 		}
-		return infoSelectValue(kind, identity)
+		return ltdOrDepSelectValue(kind, identity)
 	case "person-mulSelect":
 		node := identity.User
 		if strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.Name) == "" {

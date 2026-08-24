@@ -24,6 +24,7 @@ type ComponentCandidateSet struct {
 	TemplateID  string
 	RuleVersion string
 	ByComponent map[string][]any
+	Errors      map[string]error
 }
 
 type candidateCompanyNode struct {
