@@ -81,7 +81,7 @@ func publicTemplateRuleCatalogItem(item model.TemplateRuleCatalogItem) model.Tem
 	sort.Strings(components)
 	return model.TemplateRuleCatalogPublicItem{
 		FlowCode: item.FlowCode, FlowName: item.FlowName, TemplateType: item.TemplateType, RenderType: item.RenderType,
-		Status: item.Status, FieldCount: templateRulePublicCount(item.Coverage["fieldCount"]), Components: components,
+		Status: item.Status, Stale: item.Stale, FieldCount: templateRulePublicCount(item.Coverage["fieldCount"]), Components: components,
 		Issues: append([]string(nil), item.Issues...), AnalyzedAt: item.AnalyzedAt,
 	}
 }

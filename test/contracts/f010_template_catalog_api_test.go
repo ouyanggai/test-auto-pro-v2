@@ -18,12 +18,12 @@ type f010TemplateCatalogStub struct{}
 
 // Summary 返回 FormMaking、Vue 页面和待识别模板汇总。
 func (f010TemplateCatalogStub) Summary(context.Context) (model.TemplateRuleCatalogSummary, error) {
-	return model.TemplateRuleCatalogSummary{CatalogTotal: 73, FormMaking: 60, VueCustom: 12, Unknown: 1, Complete: 67, NeedsAttention: 4, Blocked: 1, Failed: 1, Components: map[string]int{"input": 60, "vue:ContractReview": 1}, RegisteredComponents: 20}, nil
+	return model.TemplateRuleCatalogSummary{CatalogTotal: 73, FormMaking: 60, VueCustom: 12, Unknown: 1, Complete: 67, NeedsAttention: 4, Blocked: 1, Failed: 1, Stale: 2, Components: map[string]int{"input": 60, "vue:ContractReview": 1}, RegisteredComponents: 20}, nil
 }
 
 // List 返回不含规则正文的目录摘要。
 func (f010TemplateCatalogStub) List(context.Context, string, int, int) ([]model.TemplateRuleCatalogItem, int, error) {
-	return []model.TemplateRuleCatalogItem{{ID: 1, SourceTemplateID: "private-template", FlowCode: "contract_review", FlowName: "合同评审", RenderType: model.TemplateRuleRenderVueCustom, Status: "blocked", SourceFingerprint: "private-digest", RuleData: map[string]any{"private": true}, Coverage: map[string]any{"fieldCount": 12, "components": map[string]any{"vue:ContractReview": float64(1)}}, Issues: []string{"auditWay 缺失"}}}, 73, nil
+	return []model.TemplateRuleCatalogItem{{ID: 1, SourceTemplateID: "private-template", FlowCode: "contract_review", FlowName: "合同评审", RenderType: model.TemplateRuleRenderVueCustom, Status: "blocked", Stale: true, SourceFingerprint: "private-digest", RuleData: map[string]any{"private": true}, Coverage: map[string]any{"fieldCount": 12, "components": map[string]any{"vue:ContractReview": float64(1)}}, Issues: []string{"auditWay 缺失"}}}, 73, nil
 }
 
 // CreateJob 返回已排队的全量目录任务。
@@ -69,10 +69,13 @@ func TestF010TemplateCatalogAPIContract(t *testing.T) {
 	handler := f010TemplateCatalogHandler()
 	for _, test := range []struct{ method, path, body, want string }{
 		{http.MethodGet, "/api/settings/template-rules/summary", "", `"catalogTotal":73`},
+		{http.MethodGet, "/api/settings/template-rules/summary", "", `"stale":2`},
 		{http.MethodGet, "/api/settings/template-rules?page=1&size=50", "", `"vue_custom"`},
+		{http.MethodGet, "/api/settings/template-rules?page=1&size=50", "", `"stale":true`},
 		{http.MethodGet, "/api/settings/template-rules/jobs/latest?account=欧阳改", "", `"state":"finished"`},
 		{http.MethodGet, "/api/settings/template-rules/jobs/f010-job", "", `"accounted":40`},
 		{http.MethodPost, "/api/settings/template-rules/jobs", `{"account":"欧阳改","mode":"full"}`, `"state":"queued"`},
+		{http.MethodPost, "/api/settings/template-rules/jobs", `{"account":"欧阳改","mode":"stale"}`, `"state":"queued"`},
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(test.method, test.path, strings.NewReader(test.body)))

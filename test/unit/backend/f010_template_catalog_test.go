@@ -2,6 +2,7 @@ package backend_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -141,8 +142,8 @@ func TestF010AllRegisteredVuePagesHaveRules(t *testing.T) {
 	}
 }
 
-// TestF010TemplateCatalogCachesRulesAndIncrementallySkips 验证增量任务重读目标摘要后只覆盖真实变化模板。
-func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
+// TestF010TemplateCatalogDetectsAndUpdatesOnlyStale 验证检测只读摘要，一键更新只重分析 stale 并在成功后清除标记。
+func TestF010TemplateCatalogDetectsAndUpdatesOnlyStale(t *testing.T) {
 	repository := newF010CatalogRepository()
 	reader := &f010CatalogTarget{templates: []target.FlowTemplate{
 		{ID: "fm-1", Code: "leave", FlowName: "请假", TypeName: "行政", FormExist: "form", UpdateDate: "2026-08-19"},
@@ -175,14 +176,17 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	if finished = waitF010CatalogJob(t, catalog, second.ID); finished.State != "finished" || finished.Accounted != 2 {
 		t.Fatalf("增量规则目录分析未完成：%+v", finished)
 	}
-	if reader.configurationReads() != 4 {
-		t.Fatalf("增量任务必须重读详情摘要以发现模板正文变化，实际 %d 次", reader.configurationReads())
+	if reader.configurationReads() != 2 {
+		t.Fatalf("模板更新检测不得逐模板读取详情，实际 %d 次", reader.configurationReads())
 	}
 	before, found, err := repository.GetBySourceTemplateID(context.Background(), "fm-1")
 	if err != nil || !found {
 		t.Fatalf("读取增量前规则失败：found=%v err=%v", found, err)
 	}
+	reader.mu.Lock()
+	reader.templates[0].UpdateDate = "2026-08-20"
 	reader.configurations["fm-1"] = target.PathConfigurationSnapshot{FlowCode: "leave", RenderType: target.FormRenderTypeFormMaking, Forms: []target.FormRuntimeTemplate{{TemplateData: `{"list":[{"type":"input","model":"reason","options":{"required":true}},{"type":"date","model":"leaveDate","options":{}}]}`}}}
+	reader.mu.Unlock()
 	third, err := catalog.CreateJob(context.Background(), "欧阳改", "incremental")
 	if err != nil {
 		t.Fatalf("创建正文变化增量任务失败：%v", err)
@@ -190,9 +194,28 @@ func TestF010TemplateCatalogCachesRulesAndIncrementallySkips(t *testing.T) {
 	if finished = waitF010CatalogJob(t, catalog, third.ID); finished.State != "finished" || finished.Accounted != 2 {
 		t.Fatalf("正文变化增量任务未完成：%+v", finished)
 	}
+	stale, found, err := repository.GetBySourceTemplateID(context.Background(), "fm-1")
+	if err != nil || !found || !stale.Stale || stale.FormMakingDigest != before.FormMakingDigest || reader.configurationReads() != 2 {
+		t.Fatalf("摘要变化没有只标记 stale：before=%+v stale=%+v reads=%d err=%v", before, stale, reader.configurationReads(), err)
+	}
+	summary, err = catalog.Summary(context.Background())
+	if err != nil || summary.Stale != 1 {
+		t.Fatalf("待更新模板数量不正确：summary=%+v err=%v", summary, err)
+	}
+	refresh, err := catalog.CreateJob(context.Background(), "欧阳改", "stale")
+	if err != nil {
+		t.Fatalf("创建待更新模板任务失败：%v", err)
+	}
+	if finished = waitF010CatalogJob(t, catalog, refresh.ID); finished.State != "finished" || finished.Accounted != 2 {
+		t.Fatalf("待更新模板任务没有真实收口：%+v", finished)
+	}
 	after, found, err := repository.GetBySourceTemplateID(context.Background(), "fm-1")
-	if err != nil || !found || before.FormMakingDigest == after.FormMakingDigest || before.SourceFingerprint == after.SourceFingerprint {
-		t.Fatalf("FormMaking 正文变化没有触发规则更新：before=%+v after=%+v err=%v", before, after, err)
+	if err != nil || !found || after.Stale || before.FormMakingDigest == after.FormMakingDigest || before.SourceFingerprint == after.SourceFingerprint || reader.configurationReads() != 3 {
+		t.Fatalf("一键更新没有只刷新 stale 并清除标记：before=%+v after=%+v reads=%d err=%v", before, after, reader.configurationReads(), err)
+	}
+	summary, err = catalog.Summary(context.Background())
+	if err != nil || summary.Stale != 0 {
+		t.Fatalf("更新成功后 stale 没有清除：summary=%+v err=%v", summary, err)
 	}
 }
 
@@ -398,10 +421,66 @@ func TestF010PathConfigurationConsumesStoredVueRules(t *testing.T) {
 	}
 }
 
+// TestF010StaleTemplatePreservesValuesAndBlocksMutation 验证过期目录只投影旧规则和值，并阻断生成与保存。
+func TestF010StaleTemplatePreservesValuesAndBlocksMutation(t *testing.T) {
+	plans := newMemoryPlanRepository()
+	plans.plans = []model.Plan{{ID: 81, Account: "欧阳改", FlowSource: "new", TargetObjectID: "fm-stale", TargetObjectName: "已更新模板", Status: model.PlanStatusNotStarted}}
+	paths := &memoryExecutionPathRepository{paths: []model.ExecutionPath{{ID: 82, PlanID: 81, SequenceNo: 1, Name: "路径 1"}}}
+	tree := &target.FlowNodeTemplate{ID: "start", Name: "发起", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Name: "结束", Type: "end"}}
+	reader := pathConfigSnapshotReader{snapshot: target.PathConfigurationSnapshot{
+		Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-stale", RenderType: target.FormRenderTypeFormMaking,
+		Forms: []target.FormRuntimeTemplate{{Name: "目标新模板", TemplateData: `{"list":[{"type":"input","model":"newTitle","options":{}}]}`}},
+	}}
+	storedRepository := &f010StoredPathConfigRepository{stored: model.StoredPathConfig{
+		PathID: 82, Revision: 4, FormRevision: 2, FormValues: map[string]any{"title": "保留的人工值"},
+		FormStatus: "valid", DataStatus: "confirmed", FormValidated: true, FieldValues: map[string]map[string]string{}, ActionValues: map[string]string{},
+	}}
+	catalog := &f010StoredRuleReader{item: model.TemplateRuleCatalogItem{
+		SourceTemplateID: "fm-stale", FlowCode: "flow-stale", FlowName: "旧规则", RenderType: model.TemplateRuleRenderFormMaking,
+		Status: "complete", Stale: true, RuleData: map[string]any{
+			"template": map[string]any{"list": []any{map[string]any{"type": "input", "model": "title", "options": map[string]any{}}}},
+		},
+	}}
+	serviceUnderTest := service.NewPathConfigService(service.NewPlanService(plans), reader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths, storedRepository)
+	serviceUnderTest.SetTemplateRuleCatalog(catalog)
+	configuration, err := serviceUnderTest.Get(context.Background(), 81, 82)
+	if err != nil {
+		t.Fatalf("读取 stale 模板配置失败：%v", err)
+	}
+	encodedTemplate, _ := json.Marshal(configuration.Form.Template)
+	if configuration.Form.Status != "affected" || configuration.Form.Values["title"] != "保留的人工值" || !strings.Contains(string(encodedTemplate), `"model":"title"`) || strings.Contains(string(encodedTemplate), "newTitle") || len(configuration.Form.Affected) != 1 || configuration.Form.Affected[0].Reason != "模板已更新，请先到系统设置更新模板规则" {
+		t.Fatalf("stale 模板没有保留旧规则和值并给出明确提示：form=%+v template=%s", configuration.Form, encodedTemplate)
+	}
+	generated, err := serviceUnderTest.GenerateForm(context.Background(), 81, 82, 9, map[string]any{"title": "保留的人工值"}, []string{"title"}, false)
+	if err != nil || generated.GenerationState != "blocked" || generated.Values["title"] != "保留的人工值" || len(generated.Issues) == 0 || generated.Issues[0].Reason != "模板已更新，请先到系统设置更新模板规则" {
+		t.Fatalf("stale 模板生成没有以 2xx blocked 保留现值：generated=%+v err=%v", generated, err)
+	}
+	_, saveErr := serviceUnderTest.SaveForm(context.Background(), 81, 82, "05e10e8c-3484-424e-8ab3-d9df5ef9f5c4", model.PathFormSaveInput{Revision: 2, Validated: true, Values: map[string]any{"title": "保留的人工值"}})
+	if saveErr == nil || !strings.Contains(saveErr.Error(), "模板已更新") {
+		t.Fatalf("stale 模板保存没有权威拒绝：%v", saveErr)
+	}
+}
+
 // f010StoredRuleReader 提供路径配置读取已持久化规则的最小接口，并记录调用边界。
 type f010StoredRuleReader struct {
 	item  model.TemplateRuleCatalogItem
 	calls int
+}
+
+// f010StoredPathConfigRepository 返回一份已保存表单配置，其他写接口沿用空仓储边界。
+type f010StoredPathConfigRepository struct {
+	emptyPathConfigRepository
+	stored model.StoredPathConfig
+}
+
+// FindByPath 返回已保存配置，验证 stale 投影不会清空 values。
+func (r *f010StoredPathConfigRepository) FindByPath(_ context.Context, _ uint64) (model.StoredPathConfig, bool, error) {
+	return r.stored, true, nil
+}
+
+// FindByPaths 返回同一份已保存配置，满足批量仓储接口。
+func (r *f010StoredPathConfigRepository) FindByPaths(_ context.Context, _ []uint64) (map[uint64]model.StoredPathConfig, error) {
+	return map[uint64]model.StoredPathConfig{r.stored.PathID: r.stored}, nil
 }
 
 // GetByFlowCode 返回已保存的流程规则，不触发目标平台访问。
@@ -522,6 +601,19 @@ func (r *f010CatalogRepository) GetBySourceTemplateID(_ context.Context, templat
 	return item, found, nil
 }
 
+// MarkStale 标记内存目录中的模板待更新，不修改规则正文。
+func (r *f010CatalogRepository) MarkStale(_ context.Context, templateID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	item, found := r.items[templateID]
+	if !found {
+		return repository.ErrTemplateCatalogNotFound
+	}
+	item.Stale = true
+	r.items[templateID] = item
+	return nil
+}
+
 // List 提供稳定排序的目录分页结果。
 func (r *f010CatalogRepository) List(_ context.Context, _ string, offset, limit int) ([]model.TemplateRuleCatalogItem, int, error) {
 	r.mu.Lock()
@@ -564,6 +656,9 @@ func (r *f010CatalogRepository) Summary(_ context.Context) (model.TemplateRuleCa
 			result.Blocked++
 		} else if item.Status == "failed" {
 			result.Failed++
+		}
+		if item.Stale {
+			result.Stale++
 		}
 	}
 	return result, nil

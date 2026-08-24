@@ -7,6 +7,7 @@ export interface TemplateRuleCatalogSummary {
   needsAttention: number
   blocked: number
   failed: number
+  stale: number
   components: Record<string, number>
   registeredComponents: number
   updatedAt?: string
@@ -18,6 +19,7 @@ export interface TemplateRuleCatalogItem {
   templateType: string
   renderType: 'formmaking' | 'vue_custom' | 'unknown'
   status: 'complete' | 'needs_attention' | 'blocked' | 'failed'
+  stale: boolean
   fieldCount: number
   components: string[]
   issues: string[]
@@ -26,7 +28,7 @@ export interface TemplateRuleCatalogItem {
 
 export interface TemplateRuleAnalysisJob {
   id: string
-  mode: 'incremental' | 'full' | 'retry'
+  mode: 'incremental' | 'stale' | 'full' | 'retry'
   account: string
   state: 'queued' | 'running' | 'finished'
   outcome?: 'success' | 'with_issues' | 'failed'
@@ -59,7 +61,7 @@ export async function fetchTemplateRuleCatalog(page: number, size: number, query
   return request<{ items: TemplateRuleCatalogItem[]; total: number }>(`/api/settings/template-rules?${params.toString()}`, { method: 'GET' }, signal)
 }
 
-// createTemplateRuleAnalysis 只允许创建固定三种本地目录分析任务。
+// createTemplateRuleAnalysis 只允许创建固定的检测、待更新刷新、全量和失败重试任务。
 export async function createTemplateRuleAnalysis(account: string, mode: TemplateRuleAnalysisJob['mode']): Promise<TemplateRuleAnalysisJob> {
   return request<TemplateRuleAnalysisJob>('/api/settings/template-rules/jobs', { method: 'POST', body: JSON.stringify({ account, mode }) })
 }

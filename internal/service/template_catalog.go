@@ -84,7 +84,7 @@ func (s *TemplateCatalogService) Recover(ctx context.Context) error {
 	return nil
 }
 
-// CreateJob 创建增量、全量或失败重试分析任务，并立即交给后台 Worker。
+// CreateJob 创建更新检测、待更新刷新、全量或失败重试任务，并立即交给后台 Worker。
 func (s *TemplateCatalogService) CreateJob(ctx context.Context, account, mode string) (model.TemplateRuleAnalysisJob, error) {
 	account = strings.TrimSpace(account)
 	mode = strings.TrimSpace(mode)
@@ -144,7 +144,13 @@ func (s *TemplateCatalogService) launch(job model.TemplateRuleAnalysisJob) {
 
 // run 分页读取账号可见模板并有界对账，任何终态都满足 accounted 等于各结果和与 total。
 func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRuleAnalysisJob) {
-	job.State, job.Outcome, job.Message, job.UpdatedAt = "running", "", "正在分析模板规则", s.now().UTC()
+	message := "正在分析模板规则"
+	if job.Mode == "incremental" {
+		message = "正在检测模板更新"
+	} else if job.Mode == "stale" {
+		message = "正在更新待更新模板"
+	}
+	job.State, job.Outcome, job.Message, job.UpdatedAt = "running", "", message, s.now().UTC()
 	if err := s.repository.UpdateJob(ctx, job); err != nil {
 		return
 	}
@@ -214,9 +220,17 @@ func (s *TemplateCatalogService) run(ctx context.Context, job model.TemplateRule
 			}
 			seen[templateID] = true
 			job.Listed = len(seen)
-			item, skipped := s.analyzeTemplate(ctx, job.Account, job.Mode, template)
+			var item model.TemplateRuleCatalogItem
+			var skipped bool
 			var itemErr error
-			if !skipped {
+			if job.Mode == "incremental" {
+				// 更新检测只读取目标分页摘要并比较本地摘要；逐模板详情只允许在明确刷新 stale 时读取。
+				item, itemErr = s.detectTemplateStale(ctx, template)
+				skipped = true
+			} else {
+				item, skipped = s.analyzeTemplate(ctx, job.Account, job.Mode, template)
+			}
+			if itemErr == nil && !skipped {
 				_, itemErr = s.repository.Upsert(ctx, item)
 			}
 			if itemErr != nil {
@@ -272,7 +286,13 @@ func finishTemplateCatalogJob(job *model.TemplateRuleAnalysisJob, listed int, li
 	if listFailed && listed == 0 {
 		job.Outcome = "failed"
 	}
-	job.Message = fmt.Sprintf("模板规则分析已结束：已对账 %d/%d，未列出 %d", job.Accounted, job.Total, job.Unlisted)
+	prefix := "模板规则分析已结束"
+	if job.Mode == "incremental" {
+		prefix = "模板更新检测已结束"
+	} else if job.Mode == "stale" {
+		prefix = "待更新模板处理已结束"
+	}
+	job.Message = fmt.Sprintf("%s：已对账 %d/%d，未列出 %d", prefix, job.Accounted, job.Total, job.Unlisted)
 	job.UpdatedAt, job.FinishedAt = now, &now
 }
 
@@ -329,11 +349,83 @@ func countTemplateCatalogJobItem(job *model.TemplateRuleAnalysisJob, status stri
 	}
 }
 
+// detectTemplateStale 用目标列表摘要和本地分析输入摘要标记过期规则，不读取单模板正文。
+func (s *TemplateCatalogService) detectTemplateStale(ctx context.Context, template target.FlowTemplate) (model.TemplateRuleCatalogItem, error) {
+	existing, found, err := s.repository.GetBySourceTemplateID(ctx, strings.TrimSpace(template.ID))
+	if err != nil {
+		return model.TemplateRuleCatalogItem{Status: "failed", Issues: []string{"本地模板规则读取失败"}}, err
+	}
+	if !found {
+		return model.TemplateRuleCatalogItem{Status: "needs_attention", Issues: []string{"目标模板尚未建立本地规则，请执行全量重分析"}}, nil
+	}
+	if existing.Stale || !s.templateCatalogCurrent(existing, template) {
+		if !existing.Stale {
+			if err := s.repository.MarkStale(ctx, existing.SourceTemplateID); err != nil {
+				return model.TemplateRuleCatalogItem{Status: "failed", Issues: []string{"模板待更新状态保存失败"}}, err
+			}
+		}
+		existing.Stale = true
+	}
+	return existing, nil
+}
+
+// templateCatalogCurrent 比较目标更新时间、宿主源码、组件能力和分析器摘要，任一变化都要求显式刷新目录规则。
+func (s *TemplateCatalogService) templateCatalogCurrent(existing model.TemplateRuleCatalogItem, template target.FlowTemplate) bool {
+	if strings.TrimSpace(existing.SourceFingerprint) == "" || existing.SourceVersion != firstCatalogText(template.UpdateDate, template.CreateDate) ||
+		existing.VueSourceDigest != s.pages.vueSourceDigest || existing.JavaSourceDigest != s.pages.javaSourceDigest ||
+		existing.AnalyzerVersion != templateCatalogAnalyzerVersion {
+		return false
+	}
+	currentComponentDigest, ok := s.storedTemplateComponentDigest(existing)
+	return ok && existing.ComponentDigest == currentComponentDigest
+}
+
+// storedTemplateComponentDigest 只用已保存规则中的实际组件集合重算当前能力摘要，避免检测阶段重读目标模板详情。
+func (s *TemplateCatalogService) storedTemplateComponentDigest(item model.TemplateRuleCatalogItem) (string, bool) {
+	switch item.RenderType {
+	case model.TemplateRuleRenderFormMaking:
+		encoded, err := json.Marshal(item.RuleData["template"])
+		if err != nil {
+			return "", false
+		}
+		var template map[string]any
+		if err := json.Unmarshal(encoded, &template); err != nil || template == nil {
+			return "", false
+		}
+		inventory := formdata.InventoryTemplateRules(template)
+		capabilities := formdata.CustomComponentCapabilities()
+		used := make(map[string]map[string]string, len(inventory.CustomComponents))
+		for name := range inventory.CustomComponents {
+			if capability, exists := capabilities[name]; exists {
+				used[name] = capability
+			}
+		}
+		return catalogDigest(used), true
+	case model.TemplateRuleRenderVueCustom:
+		page, ok := decodeVueCustomPageRule(item.RuleData["page"])
+		if !ok {
+			return "", false
+		}
+		entry := s.pages.pageByCode[strings.TrimSpace(page.PageKey)]
+		return catalogDigest(struct{ PageKey, Component string }{strings.TrimSpace(page.PageKey), entry.component}), true
+	case model.TemplateRuleRenderUnknown:
+		return catalogDigest(map[string]any{}), true
+	default:
+		return "", false
+	}
+}
+
 // analyzeTemplate 将目标模板和宿主 Vue 页面规则转成不含原始源码的本地快照。
 func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, mode string, template target.FlowTemplate) (model.TemplateRuleCatalogItem, bool) {
 	existing, existingFound, _ := s.repository.GetBySourceTemplateID(ctx, template.ID)
 	if mode == "retry" && existingFound && existing.Status == "complete" {
 		return existing, true
+	}
+	if mode == "stale" && (!existingFound || !existing.Stale) {
+		if existingFound {
+			return existing, true
+		}
+		return model.TemplateRuleCatalogItem{Status: "needs_attention", Issues: []string{"目标模板尚未建立本地规则，请执行全量重分析"}}, true
 	}
 	now := s.now().UTC()
 	item := model.TemplateRuleCatalogItem{
@@ -345,6 +437,10 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 	snapshot, err := s.target.TemplateConfiguration(ctx, account, template.ID)
 	if err != nil {
 		item.Issues = []string{"模板详情读取失败，请重试"}
+		if mode == "stale" && existingFound {
+			// stale 刷新失败必须保留上一版规则和 stale 标记，禁止用失败快照覆盖仍可人工查看的旧规则。
+			return model.TemplateRuleCatalogItem{Status: "failed", Issues: append([]string(nil), item.Issues...)}, true
+		}
 		return item, false
 	}
 	item.FlowCode = firstCatalogText(snapshot.FlowCode, item.FlowCode)
@@ -360,9 +456,6 @@ func (s *TemplateCatalogService) analyzeTemplate(ctx context.Context, account, m
 	item.VueSourceDigest = s.pages.vueSourceDigest
 	item.JavaSourceDigest = s.pages.javaSourceDigest
 	item.ComponentDigest = s.templateComponentDigest(snapshot, template)
-	if mode == "incremental" && existingFound && sameTemplateCatalogSources(existing, item) {
-		return existing, true
-	}
 	flowRules, flowIssues := catalogFlowRules(snapshot.Tree)
 	ruleData := map[string]any{
 		"flowCode": item.FlowCode, "renderType": item.RenderType,
@@ -551,23 +644,15 @@ func catalogDigest(value any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// sameTemplateCatalogSources 只有六类来源摘要和分析器版本全部一致时才允许增量跳过。
-func sameTemplateCatalogSources(existing, current model.TemplateRuleCatalogItem) bool {
-	return existing.SourceVersion == current.SourceVersion && existing.TargetDigest == current.TargetDigest &&
-		existing.FormMakingDigest == current.FormMakingDigest && existing.VueSourceDigest == current.VueSourceDigest &&
-		existing.JavaSourceDigest == current.JavaSourceDigest && existing.ComponentDigest == current.ComponentDigest &&
-		existing.AnalyzerVersion == current.AnalyzerVersion
-}
-
 // newTemplateCatalogJobID 生成可排序且不暴露账号信息的分析任务 ID。
 func newTemplateCatalogJobID(now time.Time) string {
 	return fmt.Sprintf("f010-%d", now.UnixNano())
 }
 
-// validTemplateCatalogMode 限制设置页只能发起批准范围内的三类分析任务。
+// validTemplateCatalogMode 限制设置页只能发起批准范围内的四类目录任务。
 func validTemplateCatalogMode(mode string) bool {
 	switch mode {
-	case "incremental", "full", "retry":
+	case "incremental", "stale", "full", "retry":
 		return true
 	default:
 		return false

@@ -45,21 +45,21 @@ func (r *TemplateCatalogRepository) Upsert(ctx context.Context, item model.Templ
 	_, err = r.db.ExecContext(ctx, `INSERT INTO test_template_rule_catalog
 (source_template_id, flow_code, flow_name, template_type, form_exist, render_type, source_account,
  source_version, target_digest, formmaking_digest, vue_source_digest, java_source_digest, component_digest,
- source_fingerprint, analyzer_version, status, rule_data, coverage, issues, analyzed_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ source_fingerprint, analyzer_version, status, stale, rule_data, coverage, issues, analyzed_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE flow_code = VALUES(flow_code), flow_name = VALUES(flow_name), template_type = VALUES(template_type),
  form_exist = VALUES(form_exist), render_type = VALUES(render_type), source_account = VALUES(source_account),
  source_version = VALUES(source_version), target_digest = VALUES(target_digest), formmaking_digest = VALUES(formmaking_digest),
  vue_source_digest = VALUES(vue_source_digest), java_source_digest = VALUES(java_source_digest), component_digest = VALUES(component_digest),
  source_fingerprint = VALUES(source_fingerprint), analyzer_version = VALUES(analyzer_version),
- status = VALUES(status), rule_data = VALUES(rule_data), coverage = VALUES(coverage), issues = VALUES(issues),
+ status = VALUES(status), stale = VALUES(stale), rule_data = VALUES(rule_data), coverage = VALUES(coverage), issues = VALUES(issues),
  analyzed_at = VALUES(analyzed_at), updated_at = VALUES(updated_at)`,
 		strings.TrimSpace(item.SourceTemplateID), strings.TrimSpace(item.FlowCode), strings.TrimSpace(item.FlowName),
 		strings.TrimSpace(item.TemplateType), strings.TrimSpace(item.FormExist), string(item.RenderType), strings.TrimSpace(item.SourceAccount),
 		strings.TrimSpace(item.SourceVersion), strings.TrimSpace(item.TargetDigest), strings.TrimSpace(item.FormMakingDigest),
 		strings.TrimSpace(item.VueSourceDigest), strings.TrimSpace(item.JavaSourceDigest), strings.TrimSpace(item.ComponentDigest),
 		strings.TrimSpace(item.SourceFingerprint), strings.TrimSpace(item.AnalyzerVersion),
-		strings.TrimSpace(item.Status), ruleData, coverage, issues, item.AnalyzedAt, item.CreatedAt.UTC(), item.UpdatedAt.UTC())
+		strings.TrimSpace(item.Status), item.Stale, ruleData, coverage, issues, item.AnalyzedAt, item.CreatedAt.UTC(), item.UpdatedAt.UTC())
 	if err != nil {
 		return model.TemplateRuleCatalogItem{}, err
 	}
@@ -83,6 +83,36 @@ func (r *TemplateCatalogRepository) GetByFlowCode(ctx context.Context, flowCode 
 func (r *TemplateCatalogRepository) GetBySourceTemplateID(ctx context.Context, templateID string) (model.TemplateRuleCatalogItem, bool, error) {
 	row := r.db.QueryRowContext(ctx, templateCatalogSelect+" WHERE source_template_id = ?", strings.TrimSpace(templateID))
 	return scanTemplateCatalogItem(row)
+}
+
+// MarkStale 原子标记目录规则待更新，并把关联计划的已保存表单值保留为需处理状态。
+func (r *TemplateCatalogRepository) MarkStale(ctx context.Context, templateID string) error {
+	templateID = strings.TrimSpace(templateID)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, "UPDATE test_template_rule_catalog SET stale = 1 WHERE source_template_id = ?", templateID)
+	if err != nil {
+		return err
+	}
+	if affected, affectedErr := result.RowsAffected(); affectedErr != nil {
+		return affectedErr
+	} else if affected == 0 {
+		return repository.ErrTemplateCatalogNotFound
+	}
+	// 模板过期只改变本地准备状态，完整 values 必须保留；目录刷新成功也不能冒充旧值已经重新复验。
+	_, err = tx.ExecContext(ctx, `UPDATE test_execution_path_configs AS config
+JOIN test_execution_paths AS path ON path.id = config.path_id
+JOIN test_plans AS plan ON plan.id = path.plan_id
+SET config.form_status = 'affected', config.data_status = 'needs_attention', config.form_validated = 0,
+    config.updated_at = ?
+WHERE plan.flow_source = 'new' AND plan.target_object_id = ?`, time.Now().UTC(), templateID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // List 按更新时间分页返回规则目录轻量列表，规则正文仍完整返回给设置页按需查看。
@@ -118,15 +148,16 @@ func (r *TemplateCatalogRepository) List(ctx context.Context, query string, offs
 // Summary 汇总渲染类型、状态和组件覆盖数，避免设置页扫描规则正文。
 func (r *TemplateCatalogRepository) Summary(ctx context.Context) (model.TemplateRuleCatalogSummary, error) {
 	result := model.TemplateRuleCatalogSummary{Components: map[string]int{}}
-	rows, err := r.db.QueryContext(ctx, `SELECT render_type, status, COUNT(*) FROM test_template_rule_catalog GROUP BY render_type, status`)
+	rows, err := r.db.QueryContext(ctx, `SELECT render_type, status, stale, COUNT(*) FROM test_template_rule_catalog GROUP BY render_type, status, stale`)
 	if err != nil {
 		return result, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var renderType, status string
+		var stale bool
 		var count int
-		if err := rows.Scan(&renderType, &status, &count); err != nil {
+		if err := rows.Scan(&renderType, &status, &stale, &count); err != nil {
 			return result, err
 		}
 		result.CatalogTotal += count
@@ -147,6 +178,9 @@ func (r *TemplateCatalogRepository) Summary(ctx context.Context) (model.Template
 			result.Blocked += count
 		case "failed":
 			result.Failed += count
+		}
+		if stale {
+			result.Stale += count
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -302,21 +336,21 @@ func templateCatalogComponentNames(raw any) map[string]struct{} {
 
 const templateCatalogSelect = `SELECT id, source_template_id, flow_code, flow_name, template_type, form_exist, render_type,
 source_account, source_version, target_digest, formmaking_digest, vue_source_digest, java_source_digest, component_digest,
-source_fingerprint, analyzer_version, status, rule_data, coverage, issues, analyzed_at, created_at, updated_at
+source_fingerprint, analyzer_version, status, stale, rule_data, coverage, issues, analyzed_at, created_at, updated_at
 FROM test_template_rule_catalog`
 
 const templateCatalogPageSelect = `SELECT catalog.id, catalog.source_template_id, catalog.flow_code, catalog.flow_name,
 catalog.template_type, catalog.form_exist, catalog.render_type, catalog.source_account, catalog.source_version,
 catalog.target_digest, catalog.formmaking_digest, catalog.vue_source_digest, catalog.java_source_digest, catalog.component_digest,
-catalog.source_fingerprint, catalog.analyzer_version, catalog.status, catalog.rule_data, catalog.coverage, catalog.issues,
+catalog.source_fingerprint, catalog.analyzer_version, catalog.status, catalog.stale, catalog.rule_data, catalog.coverage, catalog.issues,
 catalog.analyzed_at, catalog.created_at, catalog.updated_at
 FROM test_template_rule_catalog AS catalog
 INNER JOIN (
-  SELECT id, updated_at FROM test_template_rule_catalog
+  SELECT id, stale, updated_at FROM test_template_rule_catalog
   WHERE flow_code LIKE ? OR flow_name LIKE ?
-  ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
+  ORDER BY stale DESC, updated_at DESC, id DESC LIMIT ? OFFSET ?
 ) AS page ON page.id = catalog.id
-ORDER BY page.updated_at DESC, page.id DESC`
+ORDER BY page.stale DESC, page.updated_at DESC, page.id DESC`
 
 type templateCatalogScanner interface {
 	Scan(...any) error
@@ -328,7 +362,7 @@ func scanTemplateCatalogItem(row templateCatalogScanner) (model.TemplateRuleCata
 	var renderType, ruleData, coverage, issues string
 	if err := row.Scan(&item.ID, &item.SourceTemplateID, &item.FlowCode, &item.FlowName, &item.TemplateType, &item.FormExist, &renderType,
 		&item.SourceAccount, &item.SourceVersion, &item.TargetDigest, &item.FormMakingDigest, &item.VueSourceDigest,
-		&item.JavaSourceDigest, &item.ComponentDigest, &item.SourceFingerprint, &item.AnalyzerVersion, &item.Status,
+		&item.JavaSourceDigest, &item.ComponentDigest, &item.SourceFingerprint, &item.AnalyzerVersion, &item.Status, &item.Stale,
 		&ruleData, &coverage, &issues, &item.AnalyzedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.TemplateRuleCatalogItem{}, false, nil

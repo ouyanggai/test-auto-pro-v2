@@ -103,6 +103,7 @@ let nodeSaveKey = ''
 let formSaveKey = ''
 
 const formGenerationOperationTimeout = 20_000
+const templateRuleStaleMessage = '模板已更新，请先到系统设置更新模板规则'
 
 // beginFormGenerationDeadline 为取值、服务端生成和 iframe 回填建立同一个二十秒期限。
 function beginFormGenerationDeadline(controller: AbortController, stage: () => string): number {
@@ -141,11 +142,13 @@ const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(
 const nodeSaveDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
 const saveAllNodesDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !configuration.value)
 const runtimeBlockingReasons = computed(() => [...new Set([
-  ...(configuration.value?.form.unsupported ?? []),
-  ...(configuration.value?.form.conditionReviews ?? []),
-  ...runtimeUnsupported.value,
+	...(configuration.value?.form.unsupported ?? []),
+	...(configuration.value?.form.conditionReviews ?? []),
+	...((configuration.value?.form.affected ?? []).some(item => item.reason === templateRuleStaleMessage) ? [templateRuleStaleMessage] : []),
+	...runtimeUnsupported.value,
 ])])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
+const templateRuleStale = computed(() => configuration.value?.form.affected.some(item => item.reason === templateRuleStaleMessage) ?? false)
 // pathSignature 与服务端使用同一选择序列，前端只展示可能成功的目标，最终仍由服务端复验。
 function pathSignature(path: ExecutionPath): string { return path.choices.map(choice => `${choice.routeNodeId.trim()}:${choice.branchId.trim()}`).join('|') }
 const cycleCopyTargets = computed(() => {
@@ -507,7 +510,7 @@ async function generateFormData(nextGroup: boolean) {
   const current = configuration.value
   const frame = formFrame.value
   const epoch = runtimeEpoch
-	if (!current || formReadOnly.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
+	if (!current || formReadOnly.value || templateRuleStale.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
@@ -527,6 +530,16 @@ async function generateFormData(nextGroup: boolean) {
     stage = '读取规则与生成数据'
     const generated = await generatePathFormData(planID.value, pathID.value, seed, values, manual, nextGroup, controller.signal)
     if (!isActiveFormOperation(epoch, frame)) return
+		formErrorDetails.value = generated.issues.map(issue => ({
+			kind: issue.blocking ? 'generation_blocked' : 'generation_notice',
+			name: issue.field,
+			reason: issue.reason,
+		}))
+		if (generated.issues.some(issue => issue.reason === templateRuleStaleMessage)) {
+			// 检测与生成之间模板变旧时保留 iframe 当前值，不能把过期规则结果偷偷回填。
+			formError.value = templateRuleStaleMessage
+			return
+		}
     stage = '回填真实表单'
     const runtimeState = await frame.setGeneratedData(generated.values, generated.generatedFieldPaths, generated.manualOverridePaths, generated.fieldRules, controller.signal)
     if (!isActiveFormOperation(epoch, frame)) return
@@ -543,11 +556,6 @@ async function generateFormData(nextGroup: boolean) {
     current.form.conditionBindings = generated.conditionBindings
     current.form.conditionReviews = generated.conditionReviews
     current.form.fieldRules = generated.fieldRules
-    formErrorDetails.value = generated.issues.map(issue => ({
-      kind: issue.blocking ? 'generation_blocked' : 'generation_notice',
-      name: issue.field,
-      reason: issue.reason,
-    }))
     if (generated.generationState === 'blocked') {
       formError.value = '当前路径条件无法自动完成，请按下方原因人工处理'
     }
@@ -779,8 +787,8 @@ void loadPage()
           <div class="path-configuration-page__form-actions">
             <n-button size="small" @click="returnToNodes">返回节点画布</n-button>
 			<template v-if="!formReadOnly">
-              <n-button size="small" :loading="formGenerating && formGenerationKind === 'smart'" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(false)">智能生成</n-button>
-              <n-button size="small" :loading="formGenerating && formGenerationKind === 'next'" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(true)">换一组</n-button>
+              <n-button size="small" :loading="formGenerating && formGenerationKind === 'smart'" :disabled="templateRuleStale || formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(false)">智能生成</n-button>
+              <n-button size="small" :loading="formGenerating && formGenerationKind === 'next'" :disabled="templateRuleStale || formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(true)">换一组</n-button>
               <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="restoreSavedForm">恢复已保存</n-button>
               <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formGenerating || formRestoring" @click="saveFormData">保存表单数据</n-button>
             </template>

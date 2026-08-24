@@ -19,6 +19,7 @@ type TemplateCatalogRepository interface {
 	Upsert(context.Context, model.TemplateRuleCatalogItem) (model.TemplateRuleCatalogItem, error)
 	GetByFlowCode(context.Context, string) (model.TemplateRuleCatalogItem, bool, error)
 	GetBySourceTemplateID(context.Context, string) (model.TemplateRuleCatalogItem, bool, error)
+	MarkStale(context.Context, string) error
 	List(context.Context, string, int, int) ([]model.TemplateRuleCatalogItem, int, error)
 	Summary(context.Context) (model.TemplateRuleCatalogSummary, error)
 	CreateJob(context.Context, model.TemplateRuleAnalysisJob) (model.TemplateRuleAnalysisJob, error)

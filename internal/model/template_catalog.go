@@ -30,6 +30,7 @@ type TemplateRuleCatalogItem struct {
 	SourceFingerprint string                 `json:"sourceFingerprint"`
 	AnalyzerVersion   string                 `json:"analyzerVersion"`
 	Status            string                 `json:"status"`
+	Stale             bool                   `json:"stale"`
 	RuleData          map[string]any         `json:"ruleData"`
 	Coverage          map[string]any         `json:"coverage"`
 	Issues            []string               `json:"issues"`
@@ -48,6 +49,7 @@ type TemplateRuleCatalogSummary struct {
 	NeedsAttention       int            `json:"needsAttention"`
 	Blocked              int            `json:"blocked"`
 	Failed               int            `json:"failed"`
+	Stale                int            `json:"stale"`
 	Components           map[string]int `json:"components"`
 	RegisteredComponents int            `json:"registeredComponents"`
 	UpdatedAt            *time.Time     `json:"updatedAt,omitempty"`
@@ -60,6 +62,7 @@ type TemplateRuleCatalogPublicItem struct {
 	TemplateType string                 `json:"templateType"`
 	RenderType   TemplateRuleRenderType `json:"renderType"`
 	Status       string                 `json:"status"`
+	Stale        bool                   `json:"stale"`
 	FieldCount   int                    `json:"fieldCount"`
 	Components   []string               `json:"components"`
 	Issues       []string               `json:"issues"`
@@ -73,7 +76,7 @@ type TemplateRuleAnalysisFailure struct {
 	Reason string `json:"reason"`
 }
 
-// TemplateRuleAnalysisJob 是规则目录增量、全量或失败重试的后台任务快照。
+// TemplateRuleAnalysisJob 是规则目录更新检测、待更新刷新、全量或失败重试的后台任务快照。
 type TemplateRuleAnalysisJob struct {
 	ID                 string                        `json:"id"`
 	Mode               string                        `json:"mode"`

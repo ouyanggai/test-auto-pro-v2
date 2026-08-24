@@ -9,6 +9,8 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
+const templateRuleStaleMessage = "模板已更新，请先到系统设置更新模板规则"
+
 // applyStoredTemplateRules 将规则目录的安全投影覆写到本次真实流程快照，禁止在计划页面扫描宿主源码。
 func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, account, source, targetObjectID string, snapshot target.PathConfigurationSnapshot) (target.PathConfigurationSnapshot, error) {
 	snapshot.TemplateID = strings.TrimSpace(targetObjectID)
@@ -47,6 +49,7 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 			return snapshot, nil
 		}
 		snapshot.Forms = []target.FormRuntimeTemplate{{Name: item.FlowName, TemplateData: string(encoded)}}
+		markTemplateRuleStale(&snapshot, item.Stale)
 		return snapshot, nil
 	}
 	if item.RenderType != model.TemplateRuleRenderVueCustom {
@@ -65,7 +68,21 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 		snapshot.RuleStatus = page.Status
 	}
 	snapshot.VuePage = &page
+	markTemplateRuleStale(&snapshot, item.Stale)
 	return snapshot, nil
+}
+
+// markTemplateRuleStale 在旧规则已安全投影后覆盖为明确阻断，保留表单值和旧模板供人工查看。
+func markTemplateRuleStale(snapshot *target.PathConfigurationSnapshot, stale bool) {
+	if snapshot == nil || !stale {
+		return
+	}
+	snapshot.RuleStatus = model.RuleReadinessBlocked
+	snapshot.RuleIssues = []string{templateRuleStaleMessage}
+	if snapshot.VuePage != nil {
+		snapshot.VuePage.Status = model.RuleReadinessBlocked
+		snapshot.VuePage.Issues = []string{templateRuleStaleMessage}
+	}
 }
 
 // snapshotRuleStatus 汇总本次规则快照的完整性，目录未接入的测试边界仍按真实页面问题判定。

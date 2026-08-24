@@ -83,7 +83,7 @@ async function refreshJob(id: string, version = requestVersion) {
   await loadCatalog()
 }
 
-// startAnalysis 创建增量、全量或失败重试任务，账号仅用于目标平台已有会话权限范围。
+// startAnalysis 创建更新检测、待更新刷新、全量或失败重试任务，账号仅用于目标平台已有会话权限范围。
 async function startAnalysis(mode: TemplateRuleAnalysisJob['mode']) {
   creating.value = true
   errorMessage.value = ''
@@ -91,7 +91,7 @@ async function startAnalysis(mode: TemplateRuleAnalysisJob['mode']) {
   try {
     const next = await createTemplateRuleAnalysis(account.value.trim(), mode)
     job.value = next
-    message.success('模板规则分析任务已创建')
+    message.success(mode === 'incremental' ? '模板更新检测任务已创建' : mode === 'stale' ? '待更新模板任务已创建' : '模板规则分析任务已创建')
     await refreshJob(next.id, version)
   } catch (caught) {
     errorMessage.value = caught instanceof Error ? caught.message : '模板规则分析任务创建失败'
@@ -109,7 +109,7 @@ const columns: DataTableColumns<TemplateRuleCatalogItem> = [
   { title: '流程', key: 'flowName', minWidth: 180, ellipsis: { tooltip: true }, render: row => row.flowName || row.flowCode },
   { title: '编码', key: 'flowCode', width: 180, ellipsis: { tooltip: true } },
   { title: '页面类型', key: 'renderType', width: 110, render: row => h(NTag, { size: 'small', bordered: false, type: row.renderType === 'unknown' ? 'warning' : 'default' }, { default: () => ({ formmaking: 'FormMaking', vue_custom: 'Vue 页面', unknown: '待识别' }[row.renderType]) }) },
-  { title: '分析结果', key: 'status', width: 110, render: row => h(NTag, { size: 'small', bordered: false, type: row.status === 'complete' ? 'success' : row.status === 'failed' || row.status === 'blocked' ? 'error' : 'warning' }, { default: () => ({ complete: '已覆盖', needs_attention: '需处理', blocked: '已阻断', failed: '失败' }[row.status]) }) },
+  { title: '分析结果', key: 'status', width: 110, render: row => h(NTag, { size: 'small', bordered: false, type: row.stale ? 'warning' : row.status === 'complete' ? 'success' : row.status === 'failed' || row.status === 'blocked' ? 'error' : 'warning' }, { default: () => row.stale ? '待更新' : ({ complete: '已覆盖', needs_attention: '需处理', blocked: '已阻断', failed: '失败' }[row.status]) }) },
   { title: '问题', key: 'issues', minWidth: 260, ellipsis: { tooltip: true }, render: row => row.issues.length ? row.issues.join('；') : '无' },
 ]
 
@@ -130,7 +130,8 @@ onBeforeUnmount(() => {
       </div>
       <div class="template-catalog__actions">
         <n-input v-model:value="account" aria-label="分析账号" :disabled="active || creating" />
-        <n-button :loading="creating" :disabled="loading || active" @click="startAnalysis('incremental')">增量分析</n-button>
+        <n-button :loading="creating" :disabled="loading || active" @click="startAnalysis('incremental')">检测模板更新</n-button>
+        <n-button type="primary" :loading="creating" :disabled="loading || active || !summary?.stale" @click="startAnalysis('stale')">更新待更新模板</n-button>
         <n-button :loading="creating" :disabled="loading || active" @click="startAnalysis('full')">全量重分析</n-button>
         <n-button type="warning" :loading="creating" :disabled="loading || active" @click="startAnalysis('retry')">重试失败项</n-button>
       </div>
@@ -160,6 +161,7 @@ onBeforeUnmount(() => {
         <n-descriptions-item label="需处理">{{ summary.needsAttention }}</n-descriptions-item>
         <n-descriptions-item label="已阻断">{{ summary.blocked }}</n-descriptions-item>
         <n-descriptions-item label="失败">{{ summary.failed }}</n-descriptions-item>
+        <n-descriptions-item label="待更新">{{ summary.stale }}</n-descriptions-item>
         <n-descriptions-item label="模板实际组件">{{ Object.keys(summary.components).length }}</n-descriptions-item>
         <n-descriptions-item label="全局注册组件">{{ summary.registeredComponents }}</n-descriptions-item>
       </n-descriptions>

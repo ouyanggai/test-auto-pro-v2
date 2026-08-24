@@ -17,7 +17,9 @@ grep -Fq "模板规则目录" "${settings}"
 grep -Fq "createTemplateRuleAnalysis" "${catalog_api}"
 grep -Fq "fetchTemplateRuleSummary" "${catalog_api}"
 grep -Fq "fetchTemplateRuleCatalog" "${catalog_api}"
-grep -Fq "增量分析" "${catalog_view}"
+grep -Fq "检测模板更新" "${catalog_view}"
+grep -Fq "更新待更新模板" "${catalog_view}"
+grep -Fq "summary.stale" "${catalog_view}"
 grep -Fq "全量重分析" "${catalog_view}"
 grep -Fq "重试失败项" "${catalog_view}"
 grep -Fq "已对账 {{ job.accounted }} / {{ job.total }}" "${catalog_view}"
@@ -41,6 +43,9 @@ if grep -Eq '<input|<select|<textarea' "${runtime}" "${host_page}"; then
   exit 1
 fi
 grep -Fq "当前数据源无可用记录" "${project_root}/internal/service/path_config_workspace.go"
+grep -Fq "模板已更新，请先到系统设置更新模板规则" "${project_root}/web/src/views/PlanPathConfigurationView.vue"
+grep -Fq "templateRuleStale.value" "${project_root}/web/src/views/PlanPathConfigurationView.vue"
+grep -Fq "generated.issues.some(issue => issue.reason === templateRuleStaleMessage)" "${project_root}/web/src/views/PlanPathConfigurationView.vue"
 if grep -Fq "组件不支持" "${catalog_view}"; then
   echo 'F-010 设置页不得把已识别业务组件泛化为组件不支持' >&2
   exit 1
@@ -56,6 +61,10 @@ const path = require('node:path')
 const root = process.env.PROJECT_ROOT
 const settings = fs.readFileSync(path.join(root, 'form-runtime/runtime-source/src/store/modules/settings.js'), 'utf8')
 const registry = fs.readFileSync(path.join(root, 'form-runtime/src/runtime/hostVuePages.js'), 'utf8')
+const pathView = fs.readFileSync(path.join(root, 'web/src/views/PlanPathConfigurationView.vue'), 'utf8')
+const staleGuard = pathView.indexOf('generated.issues.some(issue => issue.reason === templateRuleStaleMessage)')
+const runtimeRefill = pathView.indexOf("stage = '回填真实表单'")
+if (staleGuard < 0 || runtimeRefill < 0 || staleGuard > runtimeRefill) throw new Error('模板 stale 返回必须在 iframe setData 前阻断')
 const registered = new Set([...settings.matchAll(/component\s*:\s*['"]([A-Za-z0-9_]+)['"]/g)].map(match => match[1]).filter(Boolean))
 const configRoot = path.join(root, 'form-runtime/runtime-source/src/components/NoFormFLow/config')
 for (const file of fs.readdirSync(configRoot).filter(name => name.endsWith('Config.js'))) registered.add(file.replace(/Config\.js$/, ''))
