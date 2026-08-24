@@ -8,7 +8,7 @@ cd "${project_root}"
 printf '验证 F-010 全模板规则目录、Vue 页面分类、自定义组件与生成边界\n'
 go test -count=1 ./test/unit/backend -run '^TestF010'
 go test -count=1 ./test/contracts -run '^TestF010'
-go test -count=1 ./test/integration -run '^TestF009TemplateCoverageReadsAllVisibleTemplates$'
+go test -count=1 ./test/integration -run '^(TestF009TemplateCoverageReadsAllVisibleTemplates|TestF010RecentSamples.*)$'
 if [[ -f "${project_root}/.env.local" ]]; then
   TEST_AUTO_PRO_PLAN_DB_ENV_FILE="${project_root}/.env.local" go test -count=1 ./test/integration -run '^TestF010TemplateCatalogMySQLPersistence$'
 elif [[ -n "${PLAN_DB_HOST:-}" ]] && [[ -n "${PLAN_DB_USER:-}" ]] && [[ -n "${PLAN_DB_PASSWORD:-}" ]]; then

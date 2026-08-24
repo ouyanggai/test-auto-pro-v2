@@ -53,6 +53,8 @@ type fakeTarget struct {
 	coverageUnreadableIndex int
 	coverageActiveDetails   int
 	coverageMaxDetails      int
+	sampleMode              string
+	sampleDelay             time.Duration
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
@@ -89,6 +91,24 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				f.t.Errorf("近期样本没有使用 flowCode 第一页至多五条的精确协议：flowCode=%q pages=%s size=%s", flowCode, pages, size)
 			}
 			f.recordSampleRequest(flowCode + ":" + pages + ":" + size)
+			mode, delay := f.sampleBehavior()
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+				select {
+				case <-request.Context().Done():
+					return
+				case <-timer.C:
+				}
+			}
+			switch mode {
+			case "empty":
+				writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{}, "total": 0, "pages": 1, "current": 1, "size": 5})
+				return
+			case "failure":
+				http.Error(response, "controlled sample failure", http.StatusBadGateway)
+				return
+			}
 		}
 		name, _ := data["name"].(string)
 		if data["useScope"] != "invest" || (name != "" && name != "sent" && name != "flow-test") || body["pagination"] != true {
@@ -241,6 +261,21 @@ func (f *fakeTarget) recordSampleRequest(value string) {
 	f.mu.Lock()
 	f.sampleRequests = append(f.sampleRequests, value)
 	f.mu.Unlock()
+}
+
+// setSampleBehavior 配置近期样本端点的受控空值、失败或延迟行为。
+func (f *fakeTarget) setSampleBehavior(mode string, delay time.Duration) {
+	f.mu.Lock()
+	f.sampleMode = mode
+	f.sampleDelay = delay
+	f.mu.Unlock()
+}
+
+// sampleBehavior 返回近期样本端点当前行为，避免测试并发修改形成数据竞争。
+func (f *fakeTarget) sampleBehavior() (string, time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sampleMode, f.sampleDelay
 }
 
 // recordCandidateCall 记录已验证候选端点，测试模板按需加载边界。
@@ -722,6 +757,94 @@ func TestF010RecentSamplesCacheIncludesRuleDimensions(t *testing.T) {
 		if !strings.HasSuffix(request, ":1:5") {
 			t.Fatalf("样本列表越过第一页五条边界：%v", sampleRequests)
 		}
+	}
+}
+
+// TestF010RecentSamplesCacheEmptyAndControlledFailure 验证空结果使用成功缓存，受控失败使用仍返回错误的负缓存。
+func TestF010RecentSamplesCacheEmptyAndControlledFailure(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+
+	fake.setSampleBehavior("empty", 0)
+	for index := 0; index < 2; index++ {
+		values, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-empty", "template-a", "project", "rule-v1", 5)
+		if err != nil || len(values) != 0 {
+			t.Fatalf("空样本没有作为成功结果返回：values=%+v err=%v", values, err)
+		}
+	}
+	fake.setSampleBehavior("failure", 0)
+	for index := 0; index < 2; index++ {
+		if _, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-failure", "template-a", "project", "rule-v1", 5); err == nil {
+			t.Fatal("受控样本失败被负缓存吞成了成功")
+		}
+	}
+	fake.mu.Lock()
+	requests := append([]string(nil), fake.sampleRequests...)
+	fake.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("空结果或受控失败没有命中缓存：%v", requests)
+	}
+}
+
+// TestF010RecentSamplesCallerCancellationIsNotCached 验证调用方主动取消不污染后续相同规则维度读取。
+func TestF010RecentSamplesCallerCancellationIsNotCached(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	fake.setSampleBehavior("empty", 250*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-cancel", "template-a", "project", "rule-v1", 5); !errors.Is(err, context.Canceled) {
+		t.Fatalf("调用方取消没有原样返回：%v", err)
+	}
+	fake.setSampleBehavior("empty", 0)
+	if values, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-cancel", "template-a", "project", "rule-v1", 5); err != nil || len(values) != 0 {
+		t.Fatalf("取消结果错误进入负缓存：values=%+v err=%v", values, err)
+	}
+	fake.mu.Lock()
+	requests := append([]string(nil), fake.sampleRequests...)
+	fake.mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("调用方取消后没有重新读取目标：%v", requests)
+	}
+}
+
+// TestF010RecentSamplesSingleflight 验证同一权限和规则维度的并发请求只产生一次目标读取。
+func TestF010RecentSamplesSingleflight(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	fake.setSampleBehavior("empty", 100*time.Millisecond)
+	const callers = 8
+	errorsByCaller := make(chan error, callers)
+	var wait sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-singleflight", "template-a", "project", "rule-v1", 5)
+			errorsByCaller <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsByCaller)
+	for err := range errorsByCaller {
+		if err != nil {
+			t.Fatalf("同键并发样本读取失败：%v", err)
+		}
+	}
+	fake.mu.Lock()
+	requests := append([]string(nil), fake.sampleRequests...)
+	fake.mu.Unlock()
+	if len(requests) != 1 {
+		t.Fatalf("同键并发产生重复目标读取：%v", requests)
 	}
 }
 

@@ -147,6 +147,17 @@ func (f010BlockedGenerationStub) GenerateForm(context.Context, uint64, uint64, i
 	}, nil
 }
 
+type f010SampleFailureGenerationStub struct{ stubPathConfigurationService }
+
+// GenerateForm 返回近期样本负缓存命中后的可降级结果，HTTP 层必须保留 partial 业务语义。
+func (f010SampleFailureGenerationStub) GenerateForm(context.Context, uint64, uint64, int64, map[string]any, []string, bool) (model.PathFormGenerateResult, error) {
+	return model.PathFormGenerateResult{
+		Status: "draft", Values: map[string]any{"safeField": "安全值"}, GenerationState: "partial",
+		Issues:            []model.PathFormGenerationIssue{{Field: "近期样本", Reason: "近期样本读取失败，已使用安全规则生成", Blocking: false}},
+		RouteVerification: model.PathFormRouteVerification{Matched: true},
+	}, nil
+}
+
 // TestF009PartialGenerationReturnsBusinessResult 验证预期求解失败仍返回 2xx、部分值、问题和完整路径复验。
 func TestF009PartialGenerationReturnsBusinessResult(t *testing.T) {
 	handler := api.NewHandlerWithConfigurationServices(
@@ -172,5 +183,19 @@ func TestF010BlockedGenerationReturnsBusinessResult(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"generationState":"blocked"`) || !strings.Contains(response.Body.String(), `"safeField":"人工现值"`) || !strings.Contains(response.Body.String(), "auditWay 缺失") || !strings.Contains(response.Body.String(), `"blocking":true`) {
 		t.Fatalf("规则阻断没有作为 2xx 业务结果返回：status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// TestF010SampleFailureReturnsPartialBusinessResult 验证样本失败负缓存不会被 HTTP 层吞成 success 或技术错误。
+func TestF010SampleFailureReturnsPartialBusinessResult(t *testing.T) {
+	handler := api.NewHandlerWithConfigurationServices(
+		&stubTargetReader{}, service.NewPlanService(&contractPlanRepository{}), &stubFlowGraphService{},
+		&stubExecutionPathService{}, &stubPathRequirementService{}, f010SampleFailureGenerationStub{},
+	)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/plans/7/execution-paths/9/configuration/form/generate", strings.NewReader(`{"seed":0,"values":{},"manualOverridePaths":[],"nextGroup":false}`))
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"generationState":"partial"`) || !strings.Contains(response.Body.String(), "近期样本读取失败") {
+		t.Fatalf("样本负缓存降级没有作为 2xx partial 返回：status=%d body=%s", response.Code, response.Body.String())
 	}
 }

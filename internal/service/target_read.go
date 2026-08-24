@@ -19,6 +19,9 @@ const templateCoverageMaxPageSize = 50
 const templateCoverageWorkers = 2
 const templateCoverageDetailAttempts = 3
 const templateCoveragePageAttempts = 3
+const recentFormSampleSuccessTTL = 5 * time.Minute
+const recentFormSampleFailureTTL = 15 * time.Second
+const recentFormSampleMaxItems = 5
 
 type templateCoverageDetailResult struct {
 	item    target.FlowTemplate
@@ -38,11 +41,17 @@ type TargetReadService struct {
 	sessions      *session.Manager
 	sampleMu      sync.Mutex
 	sampleCache   map[string]recentFormSampleCache
+	sampleFlights map[string]*recentFormSampleFlight
 }
 
 type recentFormSampleCache struct {
 	expiresAt time.Time
 	values    []map[string]any
+	err       error
+}
+
+type recentFormSampleFlight struct {
+	done chan struct{}
 }
 
 // NewTargetReadService 从后端运行配置创建只读目标客户端和会话管理器。
@@ -65,15 +74,19 @@ func NewTargetReadService(cfg config.TargetConfig) *TargetReadService {
 		return &TargetReadService{configMissing: []string{"TARGET_API_GATEWAY"}}
 	}
 	return &TargetReadService{
-		client:      client,
-		sessions:    session.NewManager(client, cfg.SessionTTL),
-		sampleCache: make(map[string]recentFormSampleCache),
+		client:        client,
+		sessions:      session.NewManager(client, cfg.SessionTTL),
+		sampleCache:   make(map[string]recentFormSampleCache),
+		sampleFlights: make(map[string]*recentFormSampleFlight),
 	}
 }
 
 // NewTargetReadServiceWithClient 为假目标集成测试注入客户端和会话有效期。
 func NewTargetReadServiceWithClient(client *target.Client, ttl time.Duration) *TargetReadService {
-	return &TargetReadService{client: client, sessions: session.NewManager(client, ttl), sampleCache: make(map[string]recentFormSampleCache)}
+	return &TargetReadService{
+		client: client, sessions: session.NewManager(client, ttl),
+		sampleCache: make(map[string]recentFormSampleCache), sampleFlights: make(map[string]*recentFormSampleFlight),
+	}
 }
 
 // Verify 验证账号并只返回非敏感摘要。
@@ -685,30 +698,72 @@ func (s *TargetReadService) recentFormSamplesForRule(ctx context.Context, accoun
 	if limit < 1 {
 		limit = 1
 	}
-	if limit > 5 {
-		limit = 5
+	if limit > recentFormSampleMaxItems {
+		limit = recentFormSampleMaxItems
 	}
 	flowCode = strings.TrimSpace(flowCode)
 	if flowCode == "" {
 		return []map[string]any{}, nil
 	}
 	cacheKey := recentFormSampleCacheKey(account, flowCode, templateID, componentID, ruleVersion)
-	s.sampleMu.Lock()
-	cached, found := s.sampleCache[cacheKey]
-	s.sampleMu.Unlock()
-	if found && time.Now().Before(cached.expiresAt) {
-		return cloneRecentSamples(cached.values), nil
+	for {
+		now := time.Now()
+		s.sampleMu.Lock()
+		cached, found := s.sampleCache[cacheKey]
+		if found && !now.Before(cached.expiresAt) {
+			delete(s.sampleCache, cacheKey)
+			found = false
+		}
+		if found {
+			s.sampleMu.Unlock()
+			return limitRecentSamples(cached.values, limit), cached.err
+		}
+		if flight, running := s.sampleFlights[cacheKey]; running {
+			s.sampleMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-flight.done:
+				// 发起读取的调用方取消时不写负缓存，其他等待者重新竞争并发起自己的读取。
+				continue
+			}
+		}
+		flight := &recentFormSampleFlight{done: make(chan struct{})}
+		s.sampleFlights[cacheKey] = flight
+		s.sampleMu.Unlock()
+
+		// 远程读取必须在锁外完成，其他账号或规则维度不能被一个慢目标请求阻塞。
+		values, readErr := s.readRecentFormSamples(ctx, account, flowCode)
+		cacheResult := readErr == nil || !errors.Is(readErr, context.Canceled)
+		s.sampleMu.Lock()
+		if cacheResult {
+			ttl := recentFormSampleSuccessTTL
+			if readErr != nil {
+				ttl = recentFormSampleFailureTTL
+			}
+			s.sampleCache[cacheKey] = recentFormSampleCache{
+				expiresAt: time.Now().Add(ttl), values: cloneRecentSamples(values), err: readErr,
+			}
+		}
+		delete(s.sampleFlights, cacheKey)
+		close(flight.done)
+		s.sampleMu.Unlock()
+		return limitRecentSamples(values, limit), readErr
 	}
-	result := make([]map[string]any, 0, limit)
+}
+
+// readRecentFormSamples 从目标精确流程第一页读取最多五条样本，供同键单飞的拥有者调用。
+func (s *TargetReadService) readRecentFormSamples(ctx context.Context, account, flowCode string) ([]map[string]any, error) {
+	result := make([]map[string]any, 0, recentFormSampleMaxItems)
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
-		// 样本只读目标端按 flowCode 过滤后的第一页，限制页大小等于样本上限，禁止扫描全部已发实例。
-		page, pageErr := s.client.ListSubmittedByFlowCode(callContext, active, flowCode, 1, limit)
+		// 固定读取五条后由调用方按 limit 截取，避免不同 limit 绕过同一权限维度的缓存和单飞。
+		page, pageErr := s.client.ListSubmittedByFlowCode(callContext, active, flowCode, 1, recentFormSampleMaxItems)
 		if pageErr != nil {
 			return pageErr
 		}
 		// 实例详情保持固定单并发；本地再次核对 flowCode，防御目标端返回越界记录。
 		for _, item := range page.Items {
-			if len(result) >= limit || strings.TrimSpace(item.FlowCode) != flowCode {
+			if len(result) >= recentFormSampleMaxItems || strings.TrimSpace(item.FlowCode) != flowCode {
 				continue
 			}
 			values, readErr := s.client.ReadInstanceCurrentData(callContext, active, item.ID)
@@ -721,13 +776,7 @@ func (s *TargetReadService) recentFormSamplesForRule(ctx context.Context, accoun
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	s.sampleMu.Lock()
-	s.sampleCache[cacheKey] = recentFormSampleCache{expiresAt: time.Now().Add(30 * time.Second), values: cloneRecentSamples(result)}
-	s.sampleMu.Unlock()
-	return cloneRecentSamples(result), nil
+	return result, err
 }
 
 // recentFormSampleCacheKey 显式包含所有规则隔离维度，任何一项变化都不会命中旧样本。
@@ -741,6 +790,14 @@ func cloneRecentSamples(values []map[string]any) []map[string]any {
 	result := make([]map[string]any, 0)
 	_ = json.Unmarshal(data, &result)
 	return result
+}
+
+// limitRecentSamples 深复制并截取调用方请求数量，缓存始终保存同一流程最多五条完整样本。
+func limitRecentSamples(values []map[string]any, limit int) []map[string]any {
+	if limit > len(values) {
+		limit = len(values)
+	}
+	return cloneRecentSamples(values[:limit])
 }
 
 // submittedFlowConfigurable 只允许参考页面明确展示且仍可继续的已发状态。
