@@ -190,13 +190,14 @@ F-007 的 `form-runtime/` 是隔离的浅色表单运行时：入口文档、运
 ## F-010 全模板规则分析与 Vue 表单流程
 
 - `test_template_rule_catalog` 保存按源模板唯一的本地规则快照，包含流程编码、目标/FormMaking/Vue/Java/组件/分析器摘要、渲染类型、规则 JSON、覆盖摘要、问题和分析时间；`test_template_rule_analysis_jobs` 使用 `queued|running|finished` 状态、`success|with_issues|failed` 结果和 `total/listed/accounted/complete/needsAttention/blocked/failed/unlisted` 严格对账。目录 API 只返回分页公开摘要和问题，不把完整 `rule_data`、源码摘要、宿主源码或目标内部标识下发浏览器。
-- `TemplateCatalogService` 是唯一模板分析入口。Worker 分页读取账号可见模板并逐条读取一次流程配置；单个目标槽位持续不可读时缩小分页隔离该槽位、记录页码/阶段/原因并继续后续模板，终态把未列出项纳入 `accounted` 且进度为 100%。增量任务比较目标模板、FormMaking 正文、Vue/Java 源码、组件能力和分析器摘要；失败重试重新发现未列出项并跳过未变化健康项。同账号只允许一个活动任务。
+- `TemplateCatalogService` 是唯一模板分析入口。Worker 分页读取账号可见模板；单个目标槽位持续不可读时缩小分页隔离该槽位、记录页码/阶段/原因并继续后续模板，终态把未列出项纳入 `accounted` 且进度为 100%。`incremental` 任务只批量读取目标列表摘要，并把目标来源时间、宿主 Vue/Java 摘要、当前模板实际组件能力和分析器摘要任一变化标记为本地 `stale`，不读取单模板详情；`stale` 任务扫描相同有界摘要但只对已标记条目读取详情和重分析，成功后清除标记，健康条目不发生目标详情读取。失败重试重新发现未列出项并跳过未变化健康项。同账号只允许一个活动任务。
+- `test_template_rule_catalog.stale` 是目录当前规则是否需要显式刷新的单一状态，不向路径配置扩张规则、候选或草稿版本协议。标记 stale 的同一事务只把关联路径 `form_status/data_status` 投影为 `affected/needs_attention` 并保留完整 `form_values`；目录刷新不自动把旧值恢复为可运行，仍需用户重新生成或保存复验。
 - 计划配置通过 `TemplateRuleCatalogReader` 按真实流程编码读取已持久化规则，再与当前计划快照合并；批量路径准备调用同一 `readVerifiedSnapshot`，不会在单路径或数百路径循环中重新扫描宿主源码、逐模板拉取规则或跨流程复用样本。
 - 渲染协议固定为 `formmaking`、`vue_custom`、`unknown`。FormMaking 规则递归保存字段、容器、条件、数据源和安全脚本能力；Vue 规则只用目标 `auditWay/pageKey` 对齐宿主 `settings.js`、NoForm 配置、实际组件注册表、真实 `.vue` 页面及 Java DTO/接口，`flowCode` 只用于路径、条件和样本。缺少 `auditWay`、未识别页面或动态协议写入具体阻断问题，不能按流程名或 UUID 猜测，也不能降级为 `not_required`。
 - `form-runtime/src/HostVuePage.vue` 只按规则目录已确认的组件名加载 `hostVuePages.js` 中的真实宿主组件。它递归回填与读取宿主组件状态、应用字段权限和路径锁定、执行实际 `ElForm.validate`，并隐藏宿主自身提交按钮；目标流程提交、草稿、上传和业务写入仍由既有请求策略阻断。
 - FormMaking 与 Vue 页面都投影为生成器可消费的统一字段模型。服务端生成总预算 8 秒，样本、身份和候选各自最多 3 秒；可选读取超时保留安全值并返回 `partial`，取消上下文必须退出。近期样本只以 `data.flowCode` 精确读取第一页最多 5 条；文件和外部对象无当前发起人真实候选时保留空值，不从历史样本复用对象 ID。未知页面、脚本或条件返回 2xx `blocked` 业务结果，服务端保存仍权威复验字段形状、候选权限、关键路径条件和完整线路。
 - 已注册自定义组件能力集中在 `CustomComponentCapabilities`，记录真实值与序列化、候选来源和权限、换组、业务校验、条件比较、FormMaking/Vue 回显及保存往返。候选池只加载当前模板实际使用类型，按账号、流程、模板、组件和规则版本隔离缓存并按键单飞，远程等待不持有全局锁。组件注册名本身不是阻断原因；只有当前数据源无候选或页面协议无法证明时形成字段级问题。用户、部门、公司身份同时来自已验证会话和目录树，iframe 内存认证与 storage facade 在销毁时清理。
-- 设置页使用服务端分页读取规则摘要，默认分析账号为“欧阳改”，支持增量、全量和失败重试及真实任务轮询。规则目录建立不改变计划权限；计划页面继续使用计划自己的账号读取目标实例、身份和候选。
+- 设置页使用服务端分页读取规则摘要，默认分析账号为“欧阳改”，支持“检测模板更新”“更新待更新模板”、全量、失败重试及真实任务轮询，并展示本地待更新数量。计划页只消费本地 stale 状态；规则目录建立不改变计划权限，目标实例、身份和候选仍使用计划自己的账号。
 - F-010 不新增真实运行接口、目标平台写入、LLM、外部队列或参考源码提交。未来运行前检查继续消费 F-009 的路径双状态规则。
 
 ### form-runtime 受控维护流水线

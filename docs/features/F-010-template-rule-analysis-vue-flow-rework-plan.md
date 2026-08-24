@@ -1,6 +1,6 @@
 # F-010 返工计划：全模板规则分析与 Vue 表单流程支持
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 关联功能：`docs/features/F-010-template-rule-analysis-vue-flow.md`
 - 产品依据：`docs/PRODUCT.md` 的 F-010 规则目录、Vue 业务页面和账号权限边界
 - 架构依据：`docs/ARCHITECTURE.md` 的 F-010 规则快照、运行时和生成器边界
@@ -405,3 +405,36 @@
 3. 目录规则 stale 时，计划配置保留现有表单值并投影 `needs_attention/affected`，统一提示“模板已更新，请先到系统设置更新模板规则”；生成、保存和批量准备阻断，不能在生成中偷偷替换字段规则或回填数据。
 4. 设置页提供“更新待更新模板”，只重新分析已经检测为 stale 的条目，跳过未变化和健康模板；展示待更新数量与任务真实进度，单条成功后清除 stale。目录仍由欧阳改建立，计划使用仍按实际发起人过滤。
 5. 根目录测试覆盖 stale 检测、计划提示和阻断、一键只更新 stale、更新成功清除，以及第十六节已经完成的样本缓存边界。完整验证和现有 19080 复验通过后再回到 `ready_for_manual`。
+
+## 十八、2026-08-24 用户覆盖返工结果
+
+本节是第十六、十七节的最终实施对账；第十六节中被用户覆盖的规则/候选指纹和草稿版本方案没有进入代码、数据库或 API。
+
+### 18.1 原子成果
+
+- `ddb8f51`：近期样本成功和空结果 TTL 延长为 5 分钟，受控失败/超时使用 15 秒负缓存；`context.Canceled` 不缓存。缓存键继续包含账号、`flowCode`、模板、组件和规则摘要，同键远程读取使用单飞且不持有全局锁；负缓存命中保留可降级错误，生成仍返回 2xx `partial`。
+- `8620197`：目录增加单一 `stale` 状态和 021 轻量迁移，没有新增规则、候选或草稿版本字段。`incremental` 只分页读取目标模板摘要，并比较目标来源、Vue/Java、实际组件能力和分析器摘要；`stale` 任务只对已标记条目读取详情，健康模板跳过，成功后清除 stale，失败保留旧规则和 stale。
+- stale 标记与关联路径失效在同一 MySQL 事务完成：`form_values` 原样保留，`form_status/data_status` 进入 `affected/needs_attention`，目录刷新后也不自动冒充旧值已复验。配置 GET 继续使用上一版本地安全规则；生成、保存和批量准备统一阻断。
+- 页面使用小白文案“模板已更新，请先到系统设置更新模板规则”。配置进入页面时禁用生成和保存；若检测与生成之间发生 stale，前端在 iframe `setData` 前识别服务端 blocked issue，保留当前表单值并清理 `formGenerating`。设置页显示待更新数，并提供“检测模板更新”和“更新待更新模板”。
+
+### 18.2 根目录回归与真实证据
+
+- 样本回归覆盖成功、空结果、受控失败负缓存、调用方取消不缓存、账号/规则维度隔离、精确 `flowCode` 第一页最多 5 条和同键并发单飞。
+- stale 回归覆盖摘要检测不读详情、只更新 stale、健康模板跳过、成功清除、MySQL 路径状态传播与 values 保留、计划提示、2xx blocked 生成、保存拒绝，以及前端 stale 门禁位于 iframe 回填之前。
+- 现有 19080 的真实欧阳改更新检测任务结束为 `finished/with_issues`：`total=735`、`listed=734`、`accounted=735`、`complete=604`、`needsAttention=23`、`blocked=107`、`failed=0`、`unlisted=1`，终态 100%；目录 `catalogTotal=734`、`stale=0`。
+- 公开目录列表 HTTP 200，条目字段只有 `analyzedAt/components/fieldCount/flowCode/flowName/issues/renderType/stale/status/templateType`。真实 `vue_custom` 公开条目仍可读取到 `fieldCount=15` 和一个实际组件，不泄露源模板 ID、摘要或规则正文。
+- 检测后现有 19080 的 plan 4/path 529 生成在 1.719 秒返回 HTTP 200 `complete`，问题数 0、路径复验通过，模板未 stale 时的加载期限保持闭环。
+
+### 18.3 最终自动门禁
+
+- [x] `./test/run-f010.sh`
+- [x] F-010 Go 单元、API 契约、MySQL 集成和样本集成
+- [x] `go test -count=1 ./internal/...`
+- [x] `pnpm --dir web run typecheck`
+- [x] `pnpm --dir form-runtime run typecheck`
+- [x] `pnpm --dir web run build`
+- [x] `pnpm --dir form-runtime run build`
+- [x] `git diff --check`、公开 DTO、凭证和构建产物检查
+- [x] 现有 19080 更新检测、公开目录、真实 Vue 条目和 plan 4/path 529 生成复验
+
+F-010 与 F-010R 的自动门禁已经重新满足，统一停在 `ready_for_manual`；F-009 保持 `ready_for_manual`，F-007 保持 `archived`。未经用户人工确认不得进入 `accepted` 或开始下一功能。
