@@ -121,14 +121,6 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	if plan.FlowSource != "new" {
 		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorLocked, Message: "已发或待发表单只能查看实例当前值"}
 	}
-	reader, ok := s.target.(pathFormRuntimeSessionReader)
-	if !ok {
-		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
-	}
-	active, err := reader.FormRuntimeSession(generationContext, plan.Account)
-	if err != nil {
-		return model.PathFormGenerateResult{}, err
-	}
 	snapshot, err := s.readVerifiedSnapshot(generationContext, planID)
 	if err != nil {
 		return model.PathFormGenerateResult{}, err
@@ -157,6 +149,14 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 	ruleIssues := pathFormRuleIssues(snapshot)
 	if snapshotRuleStatus(snapshot) == model.RuleReadinessBlocked {
 		return blockedPathFormGenerateResult(stored, base, seed, ruleIssues), nil
+	}
+	reader, ok := s.target.(pathFormRuntimeSessionReader)
+	if !ok {
+		return model.PathFormGenerateResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
+	}
+	active, err := reader.FormRuntimeSession(generationContext, plan.Account)
+	if err != nil {
+		return model.PathFormGenerateResult{}, err
 	}
 	session := target.Session{
 		SID:          active.SID,
