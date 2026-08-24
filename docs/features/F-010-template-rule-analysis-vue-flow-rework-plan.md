@@ -1,6 +1,6 @@
 # F-010 返工计划：全模板规则分析与 Vue 表单流程支持
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 关联功能：`docs/features/F-010-template-rule-analysis-vue-flow.md`
 - 产品依据：`docs/PRODUCT.md` 的 F-010 规则目录、Vue 业务页面和账号权限边界
 - 架构依据：`docs/ARCHITECTURE.md` 的 F-010 规则快照、运行时和生成器边界
@@ -69,7 +69,7 @@
 - `ruleData`：流程条件、页面规则、字段规则、组件规则、候选规则、保存规则和身份规则。
 - `coverage`：节点、分支、条件运算、逻辑连接、字段比较、组件、数据源、脚本和提交协议统计。
 - `issues`：具体页面、字段、数据源、脚本或提交协议缺口；不得只写“组件不支持”。
-- `status`：`complete`、`needs_attention`、`failed`。
+- `status`：`complete`、`needs_attention`、`blocked`、`failed`。
 
 ### 4.2 增量失效规则
 
@@ -337,7 +337,7 @@
 4. 删除未在参考源码证明的候选接口。候选只从 `GroupApproveManage` 及其直接公共组件、宿主 API 常量和 Java DTO 的只读协议取得；正式服务按当前模板实际组件注入候选池，按 key 单飞且远程等待不持有全局锁。候选失败只产生 `partial`，不伪造引用。
 5. 规则问题统一返回 2xx `complete|partial|blocked`。未知页面、脚本和条件形态返回带字段问题与路径复验的 `blocked` 结果；保存接口继续权威拒绝，Vue 页面不再因任意 `issues` 整页拒绝生成。
 6. 目标模板 DTO 保留真实 `auditWay`。`flowCode` 只用于路径、条件和样本；`auditWay/pageKey` 用于 `settings.js` 与宿主页面映射；`formExist` 只做渲染分类。缺少 `auditWay` 必须具体阻断，禁止按名称或 UUID 猜测。
-7. 分析任务协议直接替换为 `state=queued|running|finished`、`outcome=success|with_issues|failed`，并公开 `total/listed/accounted/complete/needsAttention/blocked/failed/unlisted`。终态必须满足 `accounted=complete+needsAttention+blocked+failed=total` 和进度 100；分页失败记录页码、阶段和原因并有界对账，重试重新发现未列出项且跳过未变化健康项。
+7. 分析任务协议直接替换为 `state=queued|running|finished`、`outcome=success|with_issues|failed`，并公开 `total/listed/accounted/complete/needsAttention/blocked/failed/unlisted`。终态必须满足 `accounted=complete+needsAttention+blocked+failed+unlisted=total` 和进度 100；分页失败记录页码、阶段和原因并有界对账，重试重新发现未列出项且跳过未变化健康项。
 8. 目录汇总必须满足 `complete+needsAttention+blocked+failed=catalogTotal`；后端、前端完整展示 `blocked`。单模板只统计实际使用组件，全局注册表另行汇总；设置 API 只返回公开摘要 DTO，不泄露目标模板标识、摘要或规则正文。
 9. F-010 与 F-010R 在全部自动验证完成前保持 `implementing`，最终统一进入 `ready_for_manual`；F-009 始终保持 `ready_for_manual`。
 10. 开发数据库旧目录和任务不迁移旧状态，按新协议清理后由欧阳改真实全量重建；总数只来自实时分页。整个过程只读目标平台。
@@ -345,3 +345,44 @@
 12. 所有测试位于根 `test/` 分类目录；新增或修改 Go 具名函数正上方使用中文注释，关键超时、状态对账、权限和并发规则使用紧邻中文说明。
 
 原子顺序固定为：A 生成超时/样本过滤/iframe 原位回填；B 真实按需候选；C `auditWay` 页面映射与规则三态；D 任务生命周期、计数、公开 DTO 与设置页；E 清理、开发数据重建、真实 API 复验、全量验证和文档交接。每项验证后使用中文提交。
+
+## 十五、2026-08-24 实施结果与现场证据
+
+### 15.1 根因与原子成果
+
+- A（`de20bd5`）：生成链路的样本、身份和候选读取原先没有统一预算，样本还会逐页扫描全部已发实例；前端请求没有操作期限且生成后销毁重建 iframe，任一慢请求都会让加载态长期不结束。现已使用 8 秒服务端总预算、3 秒可选读取预算、`data.flowCode` 第一页最多 5 条精确样本、20 秒前端期限和 iframe `setData` 原位回填。
+- B（`a49310c`）：正式服务未注入候选缓存，原适配器包含参考源码不存在的候选地址。现已删除虚假端点，只保留 `GroupApproveManage` 及其直接公共组件、宿主常量和 Java DTO 能证明的项目、材料和城市只读候选；按当前模板实际组件加载，缓存按账号/流程/模板/组件/规则版本隔离并按键单飞。
+- C（`f0df688`）：目标模板 DTO 丢失 `auditWay`，导致 122 个 `vue_custom` 规则曾全部 `fieldCount=0`；同时任意 Vue issue 都会被误作整页拒绝。现已按 `auditWay/pageKey` 对齐宿主页面和 Java 协议，未知能力返回 2xx `blocked`，保存仍权威拒绝，完整组件能力和 known custom 保存往返已接入。
+- D（`26c0786`、`9a19ff2`、`c1117f0`）：旧任务只用处理数推导进度，列表页失败会中断后续模板并停在 99%；宽规则目录直接排序大 JSON 又触发 MySQL 1038。现已使用严格状态/结果/计数协议，缩小分页隔离单条故障并继续后续模板，终态纳入 `unlisted` 对账；目录先排序窄 ID/时间子查询再关联规则正文。
+- E（`d68733d`）：未接入渲染器、批量优化文件、虚假候选、二进制和 `.plans` 报告形成错误维护面。现已删除并补充忽略，开发目录按 019/020 新协议清空重建；目标平台全程只读。
+
+### 15.2 欧阳改真实全量任务
+
+- 最新任务：`state=finished`、`outcome=with_issues`、`total=735`、`listed=734`、`accounted=735`、`complete=604`、`needsAttention=23`、`blocked=107`、`failed=0`、`unlisted=1`、终态进度 100%。
+- 守恒：`604+23+107+0+1=735`。目录汇总为 `catalogTotal=734`，并满足 `604+23+107+0=734`；渲染类型为 606 个 `formmaking`、124 个 `vue_custom`、4 个 `unknown`，全局注册组件 20 个。
+- 目标零基偏移 733（目标单条页码 734）持续不可读，偏移 730、731、732、734 可正常读取；包含该槽位的较大页同样失败，排除固定页数上限和会话过期。任务记录 `{page:734, stage:template_list, reason:目标模板列表单条无法读取}`，`paginationComplete=false`，但后续模板继续入账。
+- `retry` 再次发现同一未列出槽位，跳过未变化健康条目并以相同守恒结果正常结束；不迁移旧 725/731 状态，不再停在 99%。
+
+### 15.3 发起人权限、Vue 映射和公开协议
+
+- 真实模板可见范围：欧阳改 735，计划 4 的实际发起人“骆蒙恩”199。目录权限没有扩大计划业务权限。
+- 真实候选统计仅保留数量：欧阳改为项目 29、入库材料 23、出库材料 11、城市 100；骆蒙恩为项目 62、入库材料不可用、出库材料不可用、城市 100。候选按实际发起人返回，缺失类别没有回退到欧阳改或伪造引用。
+- 真实 `vue_custom` 项“招标采购流程（斯能）”的目标 `auditWay=buy_plan`，目录 `pageKey=buy_plan`、组件 `BuyPlan`、`fieldCount=15`、状态 `needs_attention`；当前 124 个 `vue_custom` 中 75 个已有非零字段，不再全部错误映射为零字段。
+- 公开目录分页读取 734 项全部返回 200；条目字段只有 `analyzedAt/components/fieldCount/flowCode/flowName/issues/renderType/status/templateType`，不含 `sourceTemplateId`、摘要、分析器版本或规则正文。
+- 现有 19080 实测 `POST /api/plans/4/execution-paths/529/configuration/form/generate` 在 1.983 秒返回 HTTP 200 `complete`，生成 9 个值、0 个问题、路径复验通过；加载态根因链已闭环。
+
+### 15.4 自动验证清单
+
+- [x] `./test/run-f010.sh`
+- [x] F-010 Go 单元、API 契约、MySQL 持久化与宽规则分页集成测试
+- [x] F-009 模板覆盖、真实读取映射和路径快照相关集成测试
+- [x] `go test ./internal/... -count=1`
+- [x] `go test ./test/unit/backend -count=1`
+- [x] `go test ./test/contracts -count=1`
+- [x] `pnpm --dir web run typecheck`
+- [x] `pnpm --dir form-runtime run typecheck`
+- [x] `pnpm --dir web run build`
+- [x] `pnpm --dir form-runtime run build`
+- [x] `git diff --check`、公开 DTO、敏感文件与禁止产物检查
+
+全部自动完成标准已经满足。F-010 与 F-010R 统一停在 `ready_for_manual`；F-009 保持 `ready_for_manual`，F-007 保持 `archived`。人工检查点仍按第十二节执行，未经用户确认不得进入 `accepted` 或开始下一功能。
