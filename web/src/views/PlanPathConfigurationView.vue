@@ -537,6 +537,9 @@ async function generateFormData(nextGroup: boolean) {
 		}))
 		if (generated.issues.some(issue => issue.reason === templateRuleStaleMessage)) {
 			// 检测与生成之间模板变旧时保留 iframe 当前值，不能把过期规则结果偷偷回填。
+			current.form.status = 'affected'
+			current.form.statusName = pathConfigurationStatusName(current.form.status)
+			current.form.affected = [{ kind: 'form', name: '表单数据', reason: templateRuleStaleMessage }]
 			formError.value = templateRuleStaleMessage
 			return
 		}

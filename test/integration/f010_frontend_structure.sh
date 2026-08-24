@@ -46,6 +46,7 @@ grep -Fq "当前数据源无可用记录" "${project_root}/internal/service/path
 grep -Fq "模板已更新，请先到系统设置更新模板规则" "${project_root}/web/src/views/PlanPathConfigurationView.vue"
 grep -Fq "templateRuleStale.value" "${project_root}/web/src/views/PlanPathConfigurationView.vue"
 grep -Fq "generated.issues.some(issue => issue.reason === templateRuleStaleMessage)" "${project_root}/web/src/views/PlanPathConfigurationView.vue"
+grep -Fq "current.form.affected = [{ kind: 'form', name: '表单数据', reason: templateRuleStaleMessage }]" "${project_root}/web/src/views/PlanPathConfigurationView.vue"
 if grep -Fq "组件不支持" "${catalog_view}"; then
   echo 'F-010 设置页不得把已识别业务组件泛化为组件不支持' >&2
   exit 1
