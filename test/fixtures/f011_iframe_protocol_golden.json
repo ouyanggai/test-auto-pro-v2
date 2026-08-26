@@ -7,6 +7,14 @@
       "type": "load",
       "payload": {
         "renderType": "formmaking",
+        "ruleVersion": "rule-v1",
+        "readRequestManifest": [
+          {
+            "method": "POST",
+            "path": "/web/flowProxy/findById",
+            "source": "formmaking_template"
+          }
+        ],
         "values": {
           "title": "已保存标题"
         }
@@ -87,6 +95,8 @@
       "requestId": "request-current",
       "type": "result",
       "payload": {
+        "renderType": "formmaking",
+        "ruleVersion": "rule-v1",
         "values": {
           "title": "人工标题",
           "project": "{\"id\":\"project-1\",\"name\":\"项目一\"}",
@@ -102,6 +112,7 @@
           ]
         },
         "validated": true,
+        "dirty": true,
         "unsupported": [],
         "generatedFieldPaths": [
           "project",
@@ -110,6 +121,7 @@
         "manualOverridePaths": [
           "title"
         ],
+        "issues": [],
         "stats": {
           "autoFilled": 2,
           "manualPending": 0

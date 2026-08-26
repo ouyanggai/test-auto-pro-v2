@@ -67,6 +67,8 @@ export interface PathFormConfiguration {
   status: PathFormStatus
   statusName: string
   readOnly: boolean
+  ruleVersion: string
+  readRequests: PathFormReadRequest[]
   template: Record<string, unknown>
   permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
   values: Record<string, unknown>
@@ -84,6 +86,12 @@ export interface PathFormConfiguration {
   fieldRules: PathFormFieldRule[]
   renderType?: 'formmaking' | 'vue_custom' | 'unknown'
   vuePage?: PathVueCustomPageRule | null
+}
+
+export interface PathFormReadRequest {
+  method: string
+  path: string
+  source: string
 }
 
 export interface PathVueCustomPageRule {
@@ -148,11 +156,23 @@ export interface PathFormGenerationIssue {
   field: string
   reason: string
   blocking: boolean
+  code?: string
+  status?: string
+  source?: string
+  fieldPath?: string
+  fieldLabel?: string
+  operator?: string
+  expected?: unknown
+  actual?: unknown
+  relatedFields?: string[]
+  message?: string
+  canRetry?: boolean
 }
 
 export interface PathFormRouteVerification {
   matched: boolean
   reason: string
+  source?: string
 }
 
 export interface PathFormRuntimeSession {

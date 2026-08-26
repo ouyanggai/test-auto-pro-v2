@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -682,7 +683,8 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 	}
 	form := model.PathFormConfig{
 		Revision: stored.FormRevision, Status: "empty", StatusName: "待配置",
-		ReadOnly: source != "new", RenderType: string(snapshot.RenderType), Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
+		ReadOnly: source != "new", RenderType: string(snapshot.RenderType), RuleVersion: snapshot.RuleVersion,
+		ReadRequests: projectPathFormReadRequests(snapshot, template), Template: template, Permissions: formPermissions(snapshot.Tree, formPermissionNodeIDs(source, snapshot, analysis.ReachableNodeIDs)),
 		Values: map[string]any{}, GeneratedFieldPaths: []string{}, ManualOverridePaths: []string{},
 		Unsupported: uniquePublicStrings(unsupported), Affected: []model.PathConfigAffectedItem{},
 		ConditionBindings: []model.PathFormConditionBinding{}, ConditionReviews: []string{},
@@ -761,6 +763,63 @@ func projectPathForm(source string, snapshot target.PathConfigurationSnapshot, a
 		form.Status, form.StatusName = "empty", "待配置"
 	}
 	return form
+}
+
+// projectPathFormReadRequests 从已验证规则目录和模板数据源投影会话只读请求清单，禁止把提交端点带入 iframe。
+func projectPathFormReadRequests(snapshot target.PathConfigurationSnapshot, template map[string]any) []model.PathFormReadRequest {
+	requests := make([]model.PathFormReadRequest, 0)
+	seen := make(map[string]bool)
+	appendRequest := func(method, rawPath, source string) {
+		method = strings.ToUpper(strings.TrimSpace(method))
+		if method == "" {
+			method = "GET"
+		}
+		path := strings.TrimSpace(rawPath)
+		if parsed, err := url.Parse(path); err == nil && parsed.Path != "" {
+			path = parsed.Path
+		}
+		if path == "" {
+			return
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		key := method + "\x00" + path
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		requests = append(requests, model.PathFormReadRequest{Method: method, Path: path, Source: source})
+	}
+	if snapshot.RenderType == target.FormRenderTypeVueCustom && snapshot.VuePage != nil {
+		for _, request := range snapshot.VuePage.ReadRequests {
+			if request.ReadOnly {
+				appendRequest(request.Method, request.Path, "vue_rule_catalog")
+			}
+		}
+	} else {
+		inventory := formdata.InventoryTemplateRules(template)
+		for _, dataSource := range inventory.DataSources {
+			appendRequest(dataSource.Method, dataSource.URL, "formmaking_template")
+		}
+		componentTypes := make([]string, 0, len(inventory.CustomComponents))
+		for componentType := range inventory.CustomComponents {
+			componentTypes = append(componentTypes, componentType)
+		}
+		for _, request := range target.ComponentReadRequests(componentTypes) {
+			appendRequest(request.Method, request.Path, "component_capability")
+		}
+	}
+	sort.Slice(requests, func(left, right int) bool {
+		if requests[left].Method != requests[right].Method {
+			return requests[left].Method < requests[right].Method
+		}
+		if requests[left].Path != requests[right].Path {
+			return requests[left].Path < requests[right].Path
+		}
+		return requests[left].Source < requests[right].Source
+	})
+	return requests
 }
 
 // formPermissionNodeIDs 为新发起只选择真实入口节点权限；下游审批节点的 edit 不能提前开放到发起表单。

@@ -52,6 +52,61 @@ export function targetRequestAllowed (method, pathname) {
   return classifyTargetRequest(method, pathname).allowed
 }
 
+// canonicalTargetPath 把 /web 与网关重写后的 /api/web 收敛为同一清单键，并丢弃查询串。
+function canonicalTargetPath (rawPath) {
+  let pathname = String(rawPath || '').trim()
+  try {
+    pathname = new URL(pathname, 'http://manifest.local').pathname
+  } catch (_) {
+    pathname = pathname.split(/[?#]/, 1)[0]
+  }
+  pathname = `/${pathname.replace(/^\/+/, '')}`
+  return pathname.replace(/^\/api(?=\/web(?:\/|$))/i, '')
+}
+
+// manifestPathMatches 支持静态路径、:id、{id} 与单段 * 占位，避免清单为了实例标识退化为宽泛前缀。
+function manifestPathMatches (manifestPath, requestPath) {
+  const pattern = canonicalTargetPath(manifestPath)
+    .split('/')
+    .map(segment => segment === '*' || /^:[^/]+$/.test(segment) || /^\{[^/]+\}$/.test(segment)
+      ? '[^/]+'
+      : segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('/')
+  return new RegExp(`^${pattern}/?$`, 'i').test(canonicalTargetPath(requestPath))
+}
+
+// normalizeReadRequestManifest 只保留方法与目标路径完整的清单项，重复项不扩大权限。
+function normalizeReadRequestManifest (manifest) {
+  const seen = new Set()
+  const normalized = []
+  for (const entry of Array.isArray(manifest) ? manifest : []) {
+    const method = String(entry && entry.method || 'GET').toUpperCase()
+    const pathname = canonicalTargetPath(entry && (entry.path || entry.pathname))
+    if (!targetPath(pathname) || !['GET', 'HEAD', 'OPTIONS', 'POST'].includes(method)) continue
+    const key = `${method}\x00${pathname}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    normalized.push({ method, pathname, source: String(entry && entry.source || '') })
+  }
+  return normalized
+}
+
+// classifyRequestWithManifest 对非空清单默认拒绝未列出的目标请求；空清单仅保留有诊断的过渡启发式判定。
+export function classifyRequestWithManifest (method, pathname, manifest) {
+  const normalizedMethod = String(method || 'GET').toUpperCase()
+  const heuristic = classifyTargetRequest(normalizedMethod, pathname)
+  if (heuristic.reason === 'explicit_forbidden' || heuristic.reason === 'write_segment' || heuristic.reason === 'unsupported_method') {
+    return { ...heuristic, source: 'hard_block', manifestStatus: 'present' }
+  }
+  const entries = normalizeReadRequestManifest(manifest)
+  if (entries.length === 0) {
+    return { ...heuristic, source: 'transition_heuristic', manifestStatus: 'empty' }
+  }
+  const matched = entries.find(entry => entry.method === normalizedMethod && manifestPathMatches(entry.pathname, pathname))
+  if (!matched) return { allowed: false, reason: 'manifest_miss', source: 'read_manifest', manifestStatus: 'present' }
+  return { allowed: true, reason: 'manifest_allow', source: matched.source || 'read_manifest', manifestStatus: 'present' }
+}
+
 // targetPath 判断请求是否属于目标平台网关的 /web 或 /api/web 路径。
 function targetPath (pathname) {
   return /^\/?(?:api\/)?web(?:\/|$)/i.test(String(pathname || ''))
@@ -84,15 +139,23 @@ function resolveURL (raw, baseURL) {
   return resolved
 }
 
-// targetURL 只对当前会话核实且已证明只读的目标请求附加 SID，其他源保持浏览器默认行为。
-function targetURL (raw, method, baseURL, sid, onDecision, shadowContext) {
+// requestPolicyIssue 把策略缺口投影为不含查询串、正文和 SID 的结构化诊断。
+function requestPolicyIssue (code, status, message, pathname = '', canRetry = true) {
+  return {
+    code, status, source: 'request_policy', fieldPath: '', fieldLabel: '', operator: '',
+    expected: '只读请求清单命中', actual: canonicalTargetPath(pathname), relatedFields: [], message, canRetry
+  }
+}
+
+// targetURL 改写当前会话核实且已证明只读的目标地址，并保留 SID 查询参数便于内网链路排查。
+function targetURL (raw, method, baseURL, sid, readRequestManifest, onDecision, onIssue, shadowContext) {
   // 目标表单组件大量使用 /web/... 相对地址；独立 iframe 必须把这类请求解析到本次后端核实的目标网关，
   // 但不能把运行时自身的脚本、样式或其他第三方请求错误改写到目标平台。
   const url = resolveURL(raw, baseURL)
   if (!baseURL) return url
   const base = new URL(baseURL)
   if (url.origin !== base.origin) return url
-  const decision = classifyTargetRequest(method, url.pathname)
+  const decision = classifyRequestWithManifest(method, url.pathname, readRequestManifest)
   if (typeof onDecision === 'function') {
     try {
       // 影子记录只使用无查询串路径，禁止把 SID、请求正文或业务响应带入诊断。
@@ -102,6 +165,19 @@ function targetURL (raw, method, baseURL, sid, onDecision, shadowContext) {
     }
   }
   if (!decision.allowed) {
+    if (typeof onIssue === 'function') {
+      try {
+        onIssue(requestPolicyIssue(
+          decision.reason === 'manifest_miss' ? 'request_manifest_miss' : 'request_blocked',
+          'blocked',
+          decision.reason === 'manifest_miss' ? '目标只读请求未列入当前规则清单' : '目标请求命中写操作或不支持的方法边界',
+          url.pathname,
+          decision.reason === 'manifest_miss'
+        ))
+      } catch (_) {
+        // 诊断观察器不能影响真实请求判定。
+      }
+    }
     throw new Error('F-007 配置阶段不支持未证明为只读的目标请求')
   }
   if (sid) url.searchParams.set('sid', sid)
@@ -110,11 +186,20 @@ function targetURL (raw, method, baseURL, sid, onDecision, shadowContext) {
 
 // installReadOnlyRequestPolicy 在会话内给目标读取请求附加 SID，并阻断已知流程/业务写端点。
 // 返回的清理函数会恢复原生网络对象，SID 因而只存在于本 iframe 当前会话闭包中。
-export function installReadOnlyRequestPolicy ({ sid, baseURL, onDecision, shadowContext }) {
+export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifest, onDecision, onIssue, shadowContext }) {
   const originalOpen = XMLHttpRequest.prototype.open
   const originalSend = XMLHttpRequest.prototype.send
   const originalFetch = window.fetch
   const targetOrigin = baseURL ? new URL(baseURL).origin : ''
+  const normalizedManifest = normalizeReadRequestManifest(readRequestManifest)
+
+  if (baseURL && normalizedManifest.length === 0 && typeof onIssue === 'function') {
+    try {
+      onIssue(requestPolicyIssue('request_manifest_empty', 'partial', '只读请求清单为空，当前会话使用过渡启发式判定'))
+    } catch (_) {
+      // 诊断观察器不能阻止会话装载。
+    }
+  }
 
   // withTargetSid 把 SID 并入请求体；目标网关只在请求体携带 SID 时才认可会话（与后端适配层一致）。
   function withTargetSid (body) {
@@ -139,7 +224,7 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, onDecision, shadow
   }
 
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-    const resolved = targetURL(url, method, baseURL, sid, onDecision, shadowContext)
+    const resolved = targetURL(url, method, baseURL, sid, normalizedManifest, onDecision, onIssue, shadowContext)
     this.__f007TargetRequest = Boolean(baseURL) && resolved.origin === new URL(baseURL).origin
     return originalOpen.call(this, method, resolved.toString(), ...rest)
   }
@@ -157,7 +242,7 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, onDecision, shadow
   window.fetch = async function (input, init) {
     const raw = typeof input === 'string' || input instanceof URL ? input : input.url
     const method = (init && init.method) || (input instanceof Request ? input.method : 'GET')
-    const resolved = targetURL(raw, method, baseURL, sid, onDecision, shadowContext)
+    const resolved = targetURL(raw, method, baseURL, sid, normalizedManifest, onDecision, onIssue, shadowContext)
     const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined))
     const nextInit = { ...(init || {}) }
     if (baseURL && resolved.origin === new URL(baseURL).origin && sid) {

@@ -74,6 +74,8 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       departmentName: props.runtimeSession.departmentName,
       readOnly: props.form.readOnly,
       renderType: props.form.renderType === 'vue_custom' ? 'vue_custom' : props.form.renderType,
+      ruleVersion: props.form.ruleVersion,
+      readRequestManifest: props.form.readRequests,
       vuePage: props.form.vuePage,
       template: props.form.template,
       permissions: props.form.permissions,

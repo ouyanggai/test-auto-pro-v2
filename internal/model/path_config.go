@@ -78,6 +78,8 @@ type PathFormConfig struct {
 	StatusName          string                     `json:"statusName"`
 	ReadOnly            bool                       `json:"readOnly"`
 	RenderType          string                     `json:"renderType"`
+	RuleVersion         string                     `json:"ruleVersion"`
+	ReadRequests        []PathFormReadRequest      `json:"readRequests"`
 	VuePage             *PathVueCustomPageRule     `json:"vuePage,omitempty"`
 	Template            map[string]any             `json:"template"`
 	Permissions         []PathFormPermission       `json:"permissions"`
@@ -94,6 +96,13 @@ type PathFormConfig struct {
 	ConditionBindings   []PathFormConditionBinding `json:"conditionBindings"`
 	ConditionReviews    []string                   `json:"conditionReviews"`
 	FieldRules          []PathFormFieldRule        `json:"fieldRules"`
+}
+
+// PathFormReadRequest 是 iframe 会话允许访问的目标只读端点清单；未列入清单的目标请求默认拒绝。
+type PathFormReadRequest struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Source string `json:"source"`
 }
 
 // PathVueCustomPageRule 是宿主 Vue 页面在表单工作区使用的公开规则投影，不包含源码和内部标识。

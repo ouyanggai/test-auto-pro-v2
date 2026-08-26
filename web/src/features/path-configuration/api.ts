@@ -63,6 +63,12 @@ function normalizePathFormConfiguration(value: PathFormConfiguration | null | un
   const form = value ?? {} as PathFormConfiguration
   return {
     ...form,
+    ruleVersion: String(form.ruleVersion ?? ''),
+    readRequests: Array.isArray(form.readRequests) ? form.readRequests.map(request => ({
+      method: String(request?.method ?? 'GET').toUpperCase(),
+      path: String(request?.path ?? ''),
+      source: String(request?.source ?? ''),
+    })).filter(request => request.path) : [],
     conditionBindings: Array.isArray(form.conditionBindings) ? form.conditionBindings.map(normalizePathConditionBinding) : [],
     conditionReviews: Array.isArray(form.conditionReviews) ? form.conditionReviews.map(String) : [],
     fieldRules: Array.isArray(form.fieldRules) ? form.fieldRules.map(rule => ({

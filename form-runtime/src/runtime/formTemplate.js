@@ -149,8 +149,10 @@ export async function captureFormValues (form, validate) {
 }
 
 // buildValuesEnvelope 统一 FormMaking getValues 与 Vue capture 的回传外壳，渲染器只负责提供完整 values。
-export function buildValuesEnvelope ({ values, validated, unsupported, dirty, generatedFieldPaths, manualOverridePaths, stats, issues }) {
+export function buildValuesEnvelope ({ values, validated, unsupported, dirty, generatedFieldPaths, manualOverridePaths, stats, issues, renderType, ruleVersion }) {
   return {
+    renderType: String(renderType || 'formmaking'),
+    ruleVersion: String(ruleVersion || ''),
     values: clonePlain(values || {}),
     validated: Boolean(validated),
     unsupported: Array.isArray(unsupported) ? unsupported.map(String) : [],

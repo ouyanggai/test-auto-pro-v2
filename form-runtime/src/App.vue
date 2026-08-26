@@ -36,6 +36,7 @@ export default {
       generatedFieldPaths: [],
       manualOverridePaths: [],
       renderType: 'formmaking',
+		ruleVersion: '',
 		vuePage: { status: 'blocked', pageName: '', fields: [], issues: [] },
       runtimePermissions: [],
       runtimeFieldRules: [],
@@ -53,6 +54,7 @@ export default {
       dirty: false,
 		removeRequestPolicy: null,
 		requestPolicyObservations: [],
+		requestPolicyIssues: [],
 		runtimeIssues: [],
 		removeStorageFacade: null,
 		stateTimer: null
@@ -89,12 +91,19 @@ export default {
       try {
         await this.execute(command)
       } catch (caught) {
+		const message = caught instanceof Error ? caught.message : '表单运行时操作失败'
         this.post({
           version: FORM_RUNTIME_VERSION,
           sessionId: command.sessionId,
           requestId: command.requestId,
           type: 'error',
-          payload: { message: caught instanceof Error ? caught.message : '表单运行时操作失败' }
+		  payload: {
+			message, renderType: this.renderType, ruleVersion: this.ruleVersion,
+			issues: this.combinedIssues([{
+			  code: 'runtime_command_failed', status: 'blocked', source: 'iframe_runtime', fieldPath: '', fieldLabel: '',
+			  operator: command.type, expected: '命令执行成功', actual: message, relatedFields: [], message, canRetry: true
+			}])
+		  }
         })
       }
     },
@@ -111,6 +120,7 @@ export default {
         this.loading = true
         this.readOnly = Boolean(payload.readOnly)
         this.renderType = String(payload.renderType || 'formmaking')
+		this.ruleVersion = String(payload.ruleVersion || '')
 		this.vuePage = payload.vuePage || { status: 'blocked', pageName: '', fields: [], issues: [] }
         this.runtimePermissions = Array.isArray(payload.permissions) ? payload.permissions : []
         this.runtimeFieldRules = Array.isArray(payload.fieldRules) ? payload.fieldRules : []
@@ -121,10 +131,14 @@ export default {
         this.removeRequestPolicy = installReadOnlyRequestPolicy({
           sid: String(payload.sid || ''),
           baseURL,
+		  readRequestManifest: payload.readRequestManifest,
 		  shadowContext: { renderType: this.renderType, componentName: String(this.vuePage.componentName || '') },
 		  onDecision: observation => {
 			// 影子数据只保留无敏感判定摘要并设置上限，P0 不上传、不持久化也不改变请求结果。
 			this.requestPolicyObservations = [...this.requestPolicyObservations, observation].slice(-200)
+		  },
+		  onIssue: issue => {
+			this.requestPolicyIssues = this.mergeIssues(this.requestPolicyIssues, [issue]).slice(-50)
 		  }
         })
         // 目标组件继续走 rsh-flow-components 原生 Vuex/axios 链；认证只写当前 iframe 内存适配，销毁会话即清除。
@@ -179,7 +193,11 @@ export default {
         await this.setData(this.values)
         await this.refresh()
         this.loading = false
-        this.result(command, { ready: true, unsupported: this.unsupported, isolatedHooks: this.isolatedHooks, stats: this.stats() })
+        this.result(command, {
+		  ready: true, renderType: this.renderType, ruleVersion: this.ruleVersion,
+		  unsupported: this.unsupported, isolatedHooks: this.isolatedHooks,
+		  issues: this.combinedIssues(), stats: this.stats()
+		})
         return
       }
       if (command.type === 'setData') {
@@ -245,7 +263,12 @@ export default {
         this.runtimeIssues = Array.isArray(captured.issues) ? captured.issues : []
         if (validate && this.vuePage.fields.some(field => field.required && this.isEmptyCustomValue(this.customPageValue(values, field.path)))) throw new Error('请先完成表单中的必填项')
         const manualOverridePaths = [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
-        return buildValuesEnvelope({ values, validated: validate, unsupported: [], dirty: this.dirty, generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths, issues: this.runtimeIssues, stats: this.stats(values, manualOverridePaths) })
+        return buildValuesEnvelope({
+		  values, validated: validate, unsupported: [], dirty: this.dirty,
+		  generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths,
+		  issues: this.combinedIssues(), renderType: this.renderType, ruleVersion: this.ruleVersion,
+		  stats: this.stats(values, manualOverridePaths)
+		})
       }
       const form = this.form()
       const values = await captureFormValues(form, validate)
@@ -254,8 +277,24 @@ export default {
 		return buildValuesEnvelope({
         values, validated: validate, unsupported: this.unsupported, dirty: this.dirty,
         generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths,
-        issues: this.runtimeIssues, stats: this.stats(values, manualOverridePaths)
+		issues: this.combinedIssues(), renderType: this.renderType, ruleVersion: this.ruleVersion,
+		stats: this.stats(values, manualOverridePaths)
 		})
+	},
+	mergeIssues (...groups) {
+	  const seen = new Set()
+	  const result = []
+	  for (const issue of groups.flatMap(group => Array.isArray(group) ? group : [])) {
+		if (!issue || typeof issue !== 'object') continue
+		const key = [issue.code, issue.status, issue.source, issue.fieldPath, issue.actual, issue.message].map(value => JSON.stringify(value ?? '')).join('|')
+		if (seen.has(key)) continue
+		seen.add(key)
+		result.push(issue)
+	  }
+	  return result
+	},
+	combinedIssues (additional = []) {
+	  return this.mergeIssues(this.requestPolicyIssues, this.runtimeIssues, additional)
 	},
     stats (values = this.values, manualOverridePaths = this.manualOverridePaths) {
       return formRuntimeStats(values, this.generatedFieldPaths, manualOverridePaths, this.editableFields, this.protectedFields, this.requiredEditableFields)
@@ -299,6 +338,7 @@ export default {
       this.generatedFieldPaths = []
       this.manualOverridePaths = []
       this.renderType = 'formmaking'
+	  this.ruleVersion = ''
       this.vuePage = { pageName: '', fields: [], issues: [] }
       this.runtimePermissions = []
       this.runtimeFieldRules = []
@@ -312,6 +352,7 @@ export default {
 		this.protectedFields = []
 		this.requiredEditableFields = []
 		this.requestPolicyObservations = []
+		this.requestPolicyIssues = []
 		this.runtimeIssues = []
       this.dirty = false
       this.loading = false

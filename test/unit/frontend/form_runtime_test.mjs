@@ -221,6 +221,11 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     const restore = installReadOnlyRequestPolicy({
       sid: 'memory-only-sid',
       baseURL: 'http://target.test/api',
+      readRequestManifest: [
+        { method: 'POST', path: '/web/form/read', source: 'formmaking_template' },
+        { method: 'POST', path: '/web/flowProxy/findById', source: 'formmaking_template' },
+        { method: 'POST', path: '/web/user/api/company/children', source: 'formmaking_template' },
+      ],
       shadowContext: { renderType: 'formmaking', componentName: '' },
       onDecision: observation => observations.push(observation),
     })
@@ -236,6 +241,7 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     assert.throws(() => request.open('POST', '/web/file/api/relationFile/saveBatch'), /不支持未证明为只读/)
     assert.throws(() => request.open('POST', '/web/custom/api/runAction'), /不支持未证明为只读/)
     assert.throws(() => request.open('POST', '/web/custom/api/getOrCreate'), /不支持未证明为只读/)
+    assert.throws(() => request.open('GET', '/web/custom/unlisted'), /不支持未证明为只读/)
     await assert.rejects(window.fetch('/web/measuring/api/contractInvoicing/uploadFile', { method: 'POST' }), /不支持未证明为只读/)
     await assert.rejects(window.fetch('/web/file/api/relationFile/deleteByRelationIdAndFileIds', { method: 'POST' }), /不支持未证明为只读/)
     await window.fetch('/web/flowProxy/findById', { method: 'POST', body: '{}' })

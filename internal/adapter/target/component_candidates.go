@@ -27,6 +27,37 @@ type ComponentCandidateSet struct {
 	Errors      map[string]error
 }
 
+// ComponentReadRequests 返回已由宿主组件源码和目标适配器共同验证的只读请求清单，未知组件不扩大权限。
+func ComponentReadRequests(componentTypes []string) []VueCustomRequestRule {
+	requests := make([]VueCustomRequestRule, 0)
+	seen := make(map[string]bool)
+	appendRequest := func(path string) {
+		key := "POST\x00" + path
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		requests = append(requests, VueCustomRequestRule{Method: "POST", Path: path, ReadOnly: true})
+	}
+	for _, componentType := range SortedComponentCandidateTypes(componentTypes) {
+		switch componentType {
+		case "custome-info-select", "person-mulSelect":
+			appendRequest("/web/user/api/company/children")
+		case "custome-select-project":
+			appendRequest("/web/user/api/company/children")
+			appendRequest("/web/project/api/getProjectVosOfCompanyAndGroup")
+			appendRequest("/web/project/api/findById")
+		case "in-bound-material-select", "out-bound-material-select":
+			appendRequest("/web/warehouse/center/api/w2/warehouseInfo/list")
+			appendRequest("/web/warehouse/center/api/w2/goodsLedger/getSetLedgerGoods")
+		case "city-select":
+			appendRequest("/web/hesi/city/local/list")
+		}
+	}
+	sort.Slice(requests, func(left, right int) bool { return requests[left].Path < requests[right].Path })
+	return requests
+}
+
 type candidateCompanyNode struct {
 	ID           string                 `json:"id"`
 	ChildrenList []candidateCompanyNode `json:"childrenList"`
