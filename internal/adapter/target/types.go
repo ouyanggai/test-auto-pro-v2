@@ -346,6 +346,7 @@ type PathConfigurationSnapshot struct {
 
 // FormRuntimeTemplate 保留目标完整 FormMaking 模板及公开名称，只在后端和隔离运行时之间流转。
 type FormRuntimeTemplate struct {
+	ID           string
 	Name         string
 	TemplateData string
 }

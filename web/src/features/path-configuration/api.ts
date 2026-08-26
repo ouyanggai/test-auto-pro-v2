@@ -4,6 +4,7 @@ import type {
   PathConfigSaveResult,
   PathFormConditionBinding,
   PathFormConfiguration,
+  RunInputPreflightResult,
   PathFormGenerateResult,
   PathFormSampleSummary,
   PathFormRuntimeSession,
@@ -12,6 +13,11 @@ import type {
 interface ApiSuccess<T> {
   success: true
   data: T
+}
+
+// fetchRunInputPreflight 重读当前路径并返回只读运行输入预检，不启动目标流程。
+export function fetchRunInputPreflight(planId: string, pathId: string, signal?: AbortSignal): Promise<RunInputPreflightResult> {
+  return request<RunInputPreflightResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/run-input/preflight`, { method: 'GET' }, signal)
 }
 
 interface ApiFailure {

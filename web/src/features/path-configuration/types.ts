@@ -187,6 +187,44 @@ export interface PathFormRuntimeSession {
   departmentName: string
 }
 
+export interface RunInputSnapshot {
+  version: string
+  planId: number
+  pathId: number
+  sequenceNo: number
+  accountRef: string
+  flowSource: string
+  targetObjectRef: string
+  renderType: 'formmaking' | 'vue_custom' | 'unknown'
+  templateRuleVersion: string
+  formTemplateVersion: string
+  shapeDigest: string
+  snapshotDigest: string
+  configVersion: number
+  configRevision: number
+  nodeRevision: number
+  formRevision: number
+  pathChoices: Array<{ routeNodeId: string, branchId: string }>
+  nodeFieldValues: Record<string, Record<string, string>>
+  actionValues: Record<string, string>
+  confirmedNodeKeys: string[]
+  formValues: Record<string, unknown>
+  capturedAt: string
+}
+
+export interface RunInputPreflightResult {
+  status: 'ready' | 'blocked'
+  snapshot: RunInputSnapshot
+  target: {
+    method: string
+    path: string
+    payloadKeys: string[]
+    payloadDigest: string
+    successChecks: string[]
+  }
+  issues: Array<{ code: string, source: string, fieldPath?: string, message: string, canRetry: boolean }>
+}
+
 export interface PathConfigProgress {
   total: number
   completed: number

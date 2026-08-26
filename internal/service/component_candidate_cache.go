@@ -85,6 +85,12 @@ func (c *ComponentCandidateCache) GetCandidateSet(ctx context.Context, account, 
 	return set, joined
 }
 
+// RefreshCandidateSet 使当前规则范围的旧缓存失效后重新读取候选，供运行前预检核对外部对象仍然可用。
+func (c *ComponentCandidateCache) RefreshCandidateSet(ctx context.Context, account, flowCode, templateID, ruleVersion string, componentTypes []string) (target.ComponentCandidateSet, error) {
+	c.Invalidate(account, flowCode, templateID, ruleVersion)
+	return c.GetCandidateSet(ctx, account, flowCode, templateID, ruleVersion, componentTypes)
+}
+
 // getComponent 以组件级键实现单飞；等待者支持自己的 context 取消。
 func (c *ComponentCandidateCache) getComponent(ctx context.Context, account, flowCode, templateID, ruleVersion, componentType string) ([]any, error) {
 	key := candidateCacheKey(account, flowCode, templateID, componentType, ruleVersion)

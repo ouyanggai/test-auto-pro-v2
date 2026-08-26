@@ -42,13 +42,17 @@ func (s *PathConfigService) applyStoredTemplateRules(ctx context.Context, accoun
 	snapshot.RuleStatus, snapshot.RuleIssues = completeness.Readiness, uniquePublicStrings(item.Issues)
 	if item.RenderType == model.TemplateRuleRenderFormMaking {
 		snapshot.RuleVersion = templateRuleVersion(item)
+		formID := ""
+		if len(snapshot.Forms) > 0 {
+			formID = snapshot.Forms[0].ID
+		}
 		encoded, encodeErr := json.Marshal(item.RuleData["template"])
 		if encodeErr != nil {
 			snapshot.RuleStatus = model.RuleReadinessBlocked
 			snapshot.RuleIssues = append(snapshot.RuleIssues, "本地 FormMaking 规则数据异常，请重新分析")
 			return snapshot, nil
 		}
-		snapshot.Forms = []target.FormRuntimeTemplate{{Name: item.FlowName, TemplateData: string(encoded)}}
+		snapshot.Forms = []target.FormRuntimeTemplate{{ID: formID, Name: item.FlowName, TemplateData: string(encoded)}}
 		markTemplateRuleStale(&snapshot, item.Stale)
 		return snapshot, nil
 	}

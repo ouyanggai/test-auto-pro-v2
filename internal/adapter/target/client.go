@@ -838,7 +838,7 @@ func (c *Client) readFormFieldDetails(ctx context.Context, active Session, path 
 		resolvedFormID := firstNonEmpty(data.ID, formID)
 		resolvedFormName := firstNonEmpty(data.Name, form.Name)
 		if strings.TrimSpace(data.TemplateData) != "" {
-			runtimeForms = append(runtimeForms, FormRuntimeTemplate{Name: resolvedFormName, TemplateData: data.TemplateData})
+			runtimeForms = append(runtimeForms, FormRuntimeTemplate{ID: resolvedFormID, Name: resolvedFormName, TemplateData: data.TemplateData})
 		}
 		for _, field := range data.Fields {
 			component, hasComponent := components[strings.TrimSpace(field.EnglishName)]

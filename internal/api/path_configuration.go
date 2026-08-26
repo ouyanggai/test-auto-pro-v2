@@ -23,6 +23,11 @@ type PathConfigurationService interface {
 	RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error)
 }
 
+// PathRunInputPreflightService 提供 P4 只读运行输入快照和目标适配预检。
+type PathRunInputPreflightService interface {
+	PreflightRunInput(context.Context, uint64, uint64) (model.RunInputPreflightResult, error)
+}
+
 type pathFormGenerateInput struct {
 	Seed                int64          `json:"seed"`
 	Values              map[string]any `json:"values"`
@@ -39,6 +44,27 @@ func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConf
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/form/generate", handleGeneratePathConfigurationForm(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/form", handleSavePathConfigurationForm(configurations))
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration/runtime-session", handlePathConfigurationRuntimeSession(configurations))
+	preflights, ok := configurations.(PathRunInputPreflightService)
+	if !ok {
+		preflights = unavailablePathRunInputPreflightService{}
+	}
+	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/run-input/preflight", handlePathRunInputPreflight(preflights))
+}
+
+// handlePathRunInputPreflight 返回不可变输入和目标请求摘要，不创建运行记录或发送目标请求。
+func handlePathRunInputPreflight(preflights PathRunInputPreflightService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		result, err := preflights.PreflightRunInput(request.Context(), planID, pathID)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
 }
 
 // handleCopyPathConfigurationCycles 只复制工具侧循环配置，并要求目标路径与来源路径结构签名完全一致。
@@ -239,6 +265,13 @@ func writePathConfigError(response http.ResponseWriter, err error) {
 }
 
 type unavailablePathConfigurationService struct{}
+
+type unavailablePathRunInputPreflightService struct{}
+
+// PreflightRunInput 在未注入预检服务时返回稳定存储不可用错误。
+func (unavailablePathRunInputPreflightService) PreflightRunInput(context.Context, uint64, uint64) (model.RunInputPreflightResult, error) {
+	return model.RunInputPreflightResult{}, &service.PathConfigError{Kind: service.PathConfigErrorStorage, Message: "运行输入预检服务暂不可用"}
+}
 
 // Get 在未注入配置服务时返回稳定存储不可用错误。
 func (unavailablePathConfigurationService) Get(context.Context, uint64, uint64) (model.PathConfiguration, error) {
