@@ -189,15 +189,27 @@ type PathFormGenerateResult struct {
 
 // PathFormGenerationIssue 说明智能生成无法安全完成的业务字段与原因。
 type PathFormGenerationIssue struct {
-	Field    string `json:"field"`
-	Reason   string `json:"reason"`
-	Blocking bool   `json:"blocking"`
+	Field         string   `json:"field"`
+	Reason        string   `json:"reason"`
+	Blocking      bool     `json:"blocking"`
+	Code          string   `json:"code,omitempty"`
+	Status        string   `json:"status,omitempty"`
+	Source        string   `json:"source,omitempty"`
+	FieldPath     string   `json:"fieldPath,omitempty"`
+	FieldLabel    string   `json:"fieldLabel,omitempty"`
+	Operator      string   `json:"operator,omitempty"`
+	Expected      any      `json:"expected,omitempty"`
+	Actual        any      `json:"actual,omitempty"`
+	RelatedFields []string `json:"relatedFields,omitempty"`
+	Message       string   `json:"message,omitempty"`
+	CanRetry      bool     `json:"canRetry"`
 }
 
 // PathFormRouteVerification 是服务端对完整执行路径的权威复验结果。
 type PathFormRouteVerification struct {
 	Matched bool   `json:"matched"`
 	Reason  string `json:"reason"`
+	Source  string `json:"source"`
 }
 
 // PathFormSaveInput 是表单运行时校验后提交给服务层的完整 values 与生成元数据。

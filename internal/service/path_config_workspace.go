@@ -184,7 +184,8 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		ComponentCandidates: optional.candidates,
 	})
 	generated.Unsupported = append(generated.Unsupported, unsupported...)
-	solved := solveTargetPathValues(snapshot.Tree, path.Choices, template, generated.Values, seed)
+	editablePaths := editableFormPathsFromPermissions(permissions)
+	solved := solveTargetPathValues(snapshot.Tree, path.Choices, template, generated.Values, conditions.Constraints, dateRangeBindings, editablePaths, seed)
 	generated.Values = solved.values
 	formdata.SynchronizeDateRangeBindings(generated.Values, dateRangeBindings, manualPaths)
 	verificationReasons := validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values)
@@ -265,7 +266,7 @@ func (s *PathConfigService) GenerateForm(ctx context.Context, planID, pathID uin
 		Unsupported:       uniquePublicStrings(generated.Unsupported),
 		ConditionBindings: conditions.Bindings, ConditionReviews: conditions.Reviews, FieldRules: conditions.FieldRules,
 		GenerationState: generationState, Issues: issues,
-		RouteVerification: model.PathFormRouteVerification{Matched: matched, Reason: verificationReason},
+		RouteVerification: model.PathFormRouteVerification{Matched: matched, Reason: verificationReason, Source: solved.source},
 	}, nil
 }
 
@@ -2149,7 +2150,7 @@ func blockedPathFormGenerateResult(stored model.StoredPathConfig, base map[strin
 		GeneratedFieldPaths: []string{}, ManualOverridePaths: append([]string(nil), stored.ManualOverridePaths...),
 		Unsupported: []string{}, ConditionBindings: []model.PathFormConditionBinding{}, ConditionReviews: []string{}, FieldRules: []model.PathFormFieldRule{},
 		GenerationState: model.RuleReadinessBlocked, Issues: issues,
-		RouteVerification: model.PathFormRouteVerification{Matched: false, Reason: firstRuleIssueReason(issues)},
+		RouteVerification: model.PathFormRouteVerification{Matched: false, Reason: firstRuleIssueReason(issues), Source: "rule_catalog"},
 	}
 }
 

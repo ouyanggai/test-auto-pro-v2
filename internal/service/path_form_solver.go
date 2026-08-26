@@ -25,10 +25,38 @@ type pathFormSolveResult struct {
 	issues  []model.PathFormGenerationIssue
 	matched bool
 	reason  string
+	source  string
 }
 
-// solveTargetPathValues 在模板真实候选构成的有界空间内确定性搜索完整路径解。
-func solveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template, base map[string]any, seed int64) pathFormSolveResult {
+// solveTargetPathValues 优先执行统一 IR 传播，无法证明时才进入有界回退，并用同一 IR 复验回退值。
+func solveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template, base map[string]any, constraints []formdata.Constraint, bindings []formdata.DateRangeBinding, editablePaths map[string]bool, seed int64) pathFormSolveResult {
+	fields, _ := formdata.ParseTemplate(template)
+	ir := formdata.CompileConstraintIR(fields, constraints, bindings, editablePaths)
+	propagated := formdata.PropagateConstraintIR(ir, base, seed)
+	propagationIssues := projectConstraintIssues(propagated.Issues)
+	verificationReasons := validateTargetPathSelection(tree, choices, propagated.Values)
+	dateReasons := formdata.ValidateDateRangeBindings(propagated.Values, bindings)
+	if propagated.Status != formdata.ConstraintStatusBlocked && len(verificationReasons) == 0 && len(dateReasons) == 0 {
+		return pathFormSolveResult{values: propagated.Values, issues: propagationIssues, matched: true, reason: "统一约束传播已命中当前完整路径", source: "propagation"}
+	}
+	if ir.Status == formdata.ConstraintStatusBlocked {
+		return pathFormSolveResult{values: propagated.Values, issues: propagationIssues, matched: false, reason: firstConstraintIssueMessage(propagated.Issues), source: "propagation"}
+	}
+	fallback := fallbackSolveTargetPathValues(tree, choices, template, base, seed)
+	fallback.source = "fallback"
+	// 有界搜索只负责路径变量，日期派生值仍必须在统一 IR 复验前按同一绑定规则同步。
+	formdata.SynchronizeDateRangeBindings(fallback.values, bindings, nil)
+	fallbackVerification := formdata.ValidateConstraintIR(ir, fallback.values, "fallback")
+	fallback.issues = appendPathFormIssues(fallback.issues, projectConstraintIssues(fallbackVerification))
+	if hasBlockingConstraintIssue(fallbackVerification) {
+		fallback.matched = false
+		fallback.reason = firstConstraintIssueMessage(fallbackVerification)
+	}
+	return fallback
+}
+
+// fallbackSolveTargetPathValues 在模板真实候选构成的有界空间内确定性搜索完整路径解。
+func fallbackSolveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, template, base map[string]any, seed int64) pathFormSolveResult {
 	values := cloneFormValues(base)
 	selected := make(map[string]string, len(choices))
 	for _, choice := range choices {
@@ -76,7 +104,7 @@ func solveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.Execut
 	}
 	if len(variables) == 0 {
 		reasons := validateTargetPathSelection(tree, choices, values)
-		return pathFormSolveResult{values: values, issues: issues, matched: len(reasons) == 0, reason: firstPathSolveReason(reasons)}
+		return pathFormSolveResult{values: values, issues: issues, matched: len(reasons) == 0, reason: firstPathSolveReason(reasons), source: "fallback"}
 	}
 	keys := make([]string, 0, len(variables))
 	for key := range variables {
@@ -85,7 +113,7 @@ func solveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.Execut
 	sort.Strings(keys)
 	if len(keys) > 8 {
 		issues = appendPathSolveIssue(issues, "当前路径条件", "关联条件字段过多，需要人工核对", true)
-		return pathFormSolveResult{values: values, issues: issues, reason: "条件组合超过安全求解范围"}
+		return pathFormSolveResult{values: values, issues: issues, reason: "条件组合超过安全求解范围", source: "fallback"}
 	}
 	search := make([]pathFormSolveVariable, 0, len(keys))
 	for _, key := range keys {
@@ -99,7 +127,7 @@ func solveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.Execut
 		search = append(search, pathFormSolveVariable{field: field, candidates: candidates})
 	}
 	if len(search) != len(keys) {
-		return pathFormSolveResult{values: values, issues: issues, reason: "部分条件字段没有安全候选值"}
+		return pathFormSolveResult{values: values, issues: issues, reason: "部分条件字段没有安全候选值", source: "fallback"}
 	}
 	attempts := 0
 	assignment := make(map[string]any, len(search))
@@ -131,10 +159,65 @@ func solveTargetPathValues(tree *target.FlowNodeTemplate, choices []model.Execut
 		return false
 	}
 	if visit(0) {
-		return pathFormSolveResult{values: solved, issues: issues, matched: true, reason: "生成数据已命中当前完整路径"}
+		return pathFormSolveResult{values: solved, issues: issues, matched: true, reason: "生成数据已命中当前完整路径", source: "fallback"}
 	}
 	issues = appendPathSolveIssue(issues, "当前路径条件", "现有模板候选无法同时避开更靠前分支并命中当前路径", true)
-	return pathFormSolveResult{values: values, issues: issues, reason: "未找到可安全命中当前完整路径的数据"}
+	return pathFormSolveResult{values: values, issues: issues, reason: "未找到可安全命中当前完整路径的数据", source: "fallback"}
+}
+
+// projectConstraintIssues 把 formdata 结构化问题投影为公开兼容 DTO。
+func projectConstraintIssues(issues []formdata.ConstraintIssue) []model.PathFormGenerationIssue {
+	result := make([]model.PathFormGenerationIssue, 0, len(issues))
+	for _, issue := range issues {
+		field := strings.TrimSpace(issue.FieldLabel)
+		if field == "" {
+			field = strings.TrimSpace(issue.FieldPath)
+		}
+		result = append(result, model.PathFormGenerationIssue{
+			Field: field, Reason: issue.Message, Blocking: issue.Status == formdata.ConstraintStatusBlocked,
+			Code: issue.Code, Status: issue.Status, Source: issue.Source, FieldPath: issue.FieldPath,
+			FieldLabel: issue.FieldLabel, Operator: issue.Operator, Expected: issue.Expected, Actual: issue.Actual,
+			RelatedFields: append([]string(nil), issue.RelatedFields...), Message: issue.Message, CanRetry: issue.CanRetry,
+		})
+	}
+	return result
+}
+
+// appendPathFormIssues 合并公开问题并保持完整结构化字段。
+func appendPathFormIssues(issues []model.PathFormGenerationIssue, candidates []model.PathFormGenerationIssue) []model.PathFormGenerationIssue {
+	for _, candidate := range candidates {
+		duplicate := false
+		for _, issue := range issues {
+			if issue.Code == candidate.Code && issue.Source == candidate.Source && issue.FieldPath == candidate.FieldPath && issue.Reason == candidate.Reason {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			issues = append(issues, candidate)
+		}
+	}
+	return issues
+}
+
+// hasBlockingConstraintIssue 判断同一 IR 复验是否发现已证明阻断。
+func hasBlockingConstraintIssue(issues []formdata.ConstraintIssue) bool {
+	for _, issue := range issues {
+		if issue.Status == formdata.ConstraintStatusBlocked {
+			return true
+		}
+	}
+	return false
+}
+
+// firstConstraintIssueMessage 返回结构化问题中的首个稳定说明。
+func firstConstraintIssueMessage(issues []formdata.ConstraintIssue) string {
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.Message) != "" {
+			return issue.Message
+		}
+	}
+	return "统一约束无法证明当前数据可执行"
 }
 
 // selectedPathSolveConditions 收集当前路径分支及其所有前置分支条件，供候选域构造。
@@ -327,7 +410,14 @@ func appendPathSolveIssue(issues []model.PathFormGenerationIssue, field, reason 
 			return issues
 		}
 	}
-	return append(issues, model.PathFormGenerationIssue{Field: field, Reason: reason, Blocking: blocking})
+	status := formdata.ConstraintStatusNeedsAttention
+	if blocking {
+		status = formdata.ConstraintStatusBlocked
+	}
+	return append(issues, model.PathFormGenerationIssue{
+		Field: field, Reason: reason, Blocking: blocking, Code: "path_fallback_issue", Status: status,
+		Source: "fallback", FieldLabel: field, Message: reason, RelatedFields: []string{}, CanRetry: !blocking,
+	})
 }
 
 // firstPathSolveReason 返回首个用户可读复验原因。

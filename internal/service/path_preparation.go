@@ -497,14 +497,15 @@ func preparePathFormData(assets pathPreparationAssets, path model.ExecutionPath,
 	if snapshot.RenderType == target.FormRenderTypeVueCustom {
 		permissions = vueCustomFormPermissions(snapshot.VuePage)
 	}
+	editablePaths := editableFormPathsFromPermissions(permissions)
 	bindings := buildPathDateRangeBindings(snapshot.Tree, path.Choices, assets.template)
 	generated := formdata.Generate(formdata.GenerateInput{
 		Template: assets.template, Base: stored.FormValues, Samples: assets.samples, Seed: seed, Initiator: assets.initiator,
 		Constraints: conditions.Constraints, DateRangeBindings: bindings, ManualOverridePaths: stored.ManualOverridePaths,
-		ProtectedPaths: conditions.ProtectedPaths, EditablePaths: editableFormPathsFromPermissions(permissions), Identity: assets.identity,
+		ProtectedPaths: conditions.ProtectedPaths, EditablePaths: editablePaths, Identity: assets.identity,
 		ComponentCandidates: assets.componentCandidates,
 	})
-	solved := solveTargetPathValues(snapshot.Tree, path.Choices, assets.template, generated.Values, seed)
+	solved := solveTargetPathValues(snapshot.Tree, path.Choices, assets.template, generated.Values, conditions.Constraints, bindings, editablePaths, seed)
 	generated.Values = solved.values
 	formdata.SynchronizeDateRangeBindings(generated.Values, bindings, stored.ManualOverridePaths)
 	reasons := append(validateTargetPathSelection(snapshot.Tree, path.Choices, generated.Values), formdata.ValidateDateRangeBindings(generated.Values, bindings)...)
