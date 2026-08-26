@@ -16,6 +16,7 @@
 | F-009 | 批量路径准备与智能表单生成 | ready_for_manual |
 | F-010 | 全模板规则目录、Vue 业务表单与自定义组件生成能力 | ready_for_manual |
 | F-010R | F-010 全量目录权限过滤与 Vue/Java 规则适配返工 | ready_for_manual |
+| F-011 | 智能表单字段、约束、iframe 与请求策略契约基线 | ready_for_manual |
 | 后续 | 扩展运行预检、真实执行和运行记录 | 未规划 |
 
 ## 当前与后两项
@@ -61,6 +62,10 @@
 ### F-010R F-010 全量目录权限过滤与 Vue/Java 规则适配返工（返工完成，等待人工验收）
 
 本返工明确“欧阳改只负责建立全量规则目录，计划使用时按发起人账号过滤模板、规则、身份和候选权限”。不建立规则/候选版本或草稿版本：系统设置批量检测目录规则是否过期，计划页只消费本地 `stale` 状态并保留现值、阻断生成/保存/批量，设置页“一键更新待更新模板”只读取 stale 详情并在成功后清除。近期样本成功/空结果延长缓存、失败负缓存、取消不缓存和同键单飞均已验证。现有 19080 检测后 `stale=0`，plan 4/path 529 在 1.719 秒返回 HTTP 200 `complete`；F-010 与 F-010R 停在 `ready_for_manual`，F-009 不变。详细台账见 `docs/features/F-010-template-rule-analysis-vue-flow-rework-plan.md`。
+
+### F-011 智能表单统一契约基线（等待人工验收）
+
+已按破局方案 P0 固定 FormMaking、`vue_custom`、JSON 字符串组件、级联/集合、八操作符、路径冲突和 `f007-form-runtime/v1` 消息 golden，并增加不含 SID 与业务正文的请求影子观察。受控请求清单已证明现有词表同时存在只读漏拦和写端点误放行，因此本切片不切换默认拒绝。详细范围、证据与人工门禁见 `docs/features/F-011-smart-form-contract-baseline.md`。
 
 ### 后续运行预检与真实执行
 

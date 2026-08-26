@@ -103,3 +103,12 @@
 - Go 注释结构测试：F-007 新增或修改的具名函数和方法必须有紧邻中文职责/边界注释，核心字段映射、修订并发、幂等和异常兜底另有说明。
 - `test/run-f007.sh` 只聚合上述 F-007 测试、F-006 要求分析及 F-005/F-004 必要回归、Go build、主前端与 form-runtime 类型/生产构建、固定来源同步校验和 `git diff --check`；不跑无关全量测试，不自动启动浏览器。
 - 用户按 `test/manual/F-007.md` 使用真实 FormMaking 模板、多条已保存路径和可用的近期样本核对表单渲染、智能生成、人工修改、逐节点保存、状态对账、路径隔离和深浅主题。
+
+## F-011 验证范围
+
+- 后端黄金样例：FormMaking 与 `vue_custom` 字段路径、值形态、级联完整路径、子表单行、JSON 字符串组件、当前账号候选和身份值生成后必须通过同规则复验。
+- 操作符矩阵：`eq/neq/gt/gte/lt/lte/contains/in` 各有接受与拒绝样例；无解路径返回非空字段、原因和阻断等级。
+- iframe 契约：冻结 load、setData、refresh、getValues、validateAndGetValues、restore、destroy，以及 boot、state、result、error；验证完整嵌套值、虚拟字段、origin/source/session/request 与迟到响应边界。
+- 请求策略影子报告：当前启发式判定原因可统计，观察项不得包含 SID、查询参数、请求正文或业务响应；受控清单仍有漏判时禁止切换默认拒绝。
+- `test/run-f011.sh` 聚合 F-011 自动测试及 F-009/F-010 相关回归、Go 构建、双前端类型检查和双生产构建；不启动浏览器，不发目标平台写请求。
+- 用户按 `test/manual/F-011.md` 核对既有 FormMaking、`vue_custom`、保存恢复、路径切换和目标写阻断没有回退。
