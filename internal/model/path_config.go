@@ -108,21 +108,26 @@ type PathVueCustomPageRule struct {
 
 // PathVueCustomFieldRule 描述可安全生成、回显和保存复验的 Vue 页面字段。
 type PathVueCustomFieldRule struct {
-	Path          string                     `json:"path"`
-	Name          string                     `json:"name"`
-	ValueType     string                     `json:"valueType"`
-	Required      bool                       `json:"required"`
-	ReadOnly      bool                       `json:"readOnly"`
-	Hidden        bool                       `json:"hidden"`
-	Disabled      bool                       `json:"disabled"`
-	Nested        bool                       `json:"nested"`
-	Collection    bool                       `json:"collection"`
-	CandidateKind string                     `json:"candidateKind"`
-	DefaultValue  any                        `json:"defaultValue,omitempty"`
-	DataSource    string                     `json:"dataSource,omitempty"`
-	Format        string                     `json:"format,omitempty"`
-	Validation    []string                   `json:"validation"`
-	Options       []PathVueCustomFieldOption `json:"options"`
+	Path                 string                     `json:"path"`
+	Name                 string                     `json:"name"`
+	ValueType            string                     `json:"valueType"`
+	ValueShape           string                     `json:"valueShape"`
+	Serialization        string                     `json:"serialization"`
+	Required             bool                       `json:"required"`
+	ReadOnly             bool                       `json:"readOnly"`
+	Hidden               bool                       `json:"hidden"`
+	Disabled             bool                       `json:"disabled"`
+	Nested               bool                       `json:"nested"`
+	Collection           bool                       `json:"collection"`
+	CandidateKind        string                     `json:"candidateKind"`
+	CandidateSource      string                     `json:"candidateSource"`
+	DefaultValue         any                        `json:"defaultValue,omitempty"`
+	DataSource           string                     `json:"dataSource,omitempty"`
+	Format               string                     `json:"format,omitempty"`
+	Validation           []string                   `json:"validation"`
+	ValidationCapability []string                   `json:"validationCapability"`
+	Evidence             string                     `json:"evidence"`
+	Options              []PathVueCustomFieldOption `json:"options"`
 }
 
 // PathVueCustomFieldOption 是 Vue 页面字段真实选项的安全回显投影。

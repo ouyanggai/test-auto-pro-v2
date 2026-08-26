@@ -237,21 +237,26 @@ type VueCustomPageRule struct {
 
 // VueCustomFieldRule 描述宿主 Vue 页面可静态识别的字段、初值、校验和候选来源。
 type VueCustomFieldRule struct {
-	Path          string
-	Name          string
-	ValueType     string
-	Required      bool
-	ReadOnly      bool
-	Hidden        bool
-	Disabled      bool
-	DefaultValue  any
-	CandidateKind string
-	DataSource    string
-	Nested        bool
-	Collection    bool
-	Format        string
-	Validation    []string
-	Options       []VueCustomFieldOption
+	Path                 string
+	Name                 string
+	ValueType            string
+	ValueShape           string
+	Serialization        string
+	Required             bool
+	ReadOnly             bool
+	Hidden               bool
+	Disabled             bool
+	DefaultValue         any
+	CandidateKind        string
+	CandidateSource      string
+	DataSource           string
+	Nested               bool
+	Collection           bool
+	Format               string
+	Validation           []string
+	ValidationCapability []string
+	Evidence             string
+	Options              []VueCustomFieldOption
 }
 
 // VueCustomFieldOption 是 Vue 页面静态选项的真实值投影，生成器不得凭显示名称猜测候选。

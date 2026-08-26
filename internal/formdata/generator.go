@@ -191,6 +191,7 @@ type customComponentCapability struct {
 	SaveRoundTrip      string
 	PermissionBoundary string
 	Evidence           string
+	VirtualFields      string
 }
 
 // knownCustomComponents 来源于实际 FormMaking 运行时注册表；外部对象只接受真实候选，绝不伪造引用。
@@ -202,9 +203,9 @@ var knownCustomComponents = map[string]customComponentCapability{
 	"custome-select-project":        {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
 	"custome-expense-budgetType":    {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
 	"general-list-select-show":      {ValueType: "object", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_object", Evidence: "currentInfoObj input"},
-	"person-mulSelect":              {ValueType: "array", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "flow_list", Evidence: "flowList 与 __formPersonId"},
+	"person-mulSelect":              {ValueType: "array", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "flow_list", VirtualFields: "__formPersonId", Evidence: "flowList 与 __formPersonId"},
 	"general-flow-list-mulSelect":   {ValueType: "array", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "flow_list", Evidence: "flowList input"},
-	"custome-info-select":           {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_object", Evidence: "currentInfoObj JSON.parse"},
+	"custome-info-select":           {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_object", VirtualFields: "__condition", Evidence: "currentInfoObj JSON.parse"},
 	"ltd-or-dep-select":             {ValueType: "identity", CandidateKind: "identity", Serialization: "json_string", CandidateSource: "initiator_identity", Validation: "json_array", Evidence: "currentInfoObj JSON.parse"},
 	"custome-file-view":             {ValueType: "file", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "initiator_readonly_api", Validation: "json_array", Evidence: "value JSON clone"},
 	"custome-file-import":           {ValueType: "file", CandidateKind: "external", External: true, Serialization: "json_string", CandidateSource: "upload", Validation: "json_object", Evidence: "upload response data JSON.stringify"},
@@ -231,6 +232,7 @@ func CustomComponentCapabilities() map[string]map[string]string {
 			"changeGroup": capability.ChangeGroup, "formMakingPlayback": capability.FormMakingPlayback,
 			"vuePlayback": capability.VuePlayback, "saveRoundTrip": capability.SaveRoundTrip,
 			"permissionBoundary": capability.PermissionBoundary, "evidence": capability.Evidence,
+			"virtualFields": capability.VirtualFields,
 		}
 	}
 	return result
@@ -276,6 +278,9 @@ func completeCustomComponentCapability(capability customComponentCapability) cus
 	}
 	if capability.PermissionBoundary == "" {
 		capability.PermissionBoundary = capability.CandidateSource
+	}
+	if capability.VirtualFields == "" {
+		capability.VirtualFields = "none"
 	}
 	return capability
 }

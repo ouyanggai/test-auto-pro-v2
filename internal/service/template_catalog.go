@@ -958,8 +958,11 @@ func vueFieldCapabilityIssues(fields []target.VueCustomFieldRule, requests []tar
 	issues := make([]string, 0)
 	for _, field := range fields {
 		name := firstCatalogText(field.Name, field.Path)
-		if field.ValueType == "runtime" {
+		if field.ValueType == "runtime" || field.ValueShape == "unknown" {
 			issues = append(issues, "字段「"+name+"」值形态尚未识别")
+		}
+		if strings.TrimSpace(field.Serialization) == "" || strings.TrimSpace(field.Evidence) == "" {
+			issues = append(issues, "字段「"+name+"」往返契约证据不完整")
 		}
 		if field.CandidateKind == "runtime_source" && len(field.Options) == 0 && !hasReadRequest {
 			issues = append(issues, "字段「"+name+"」动态候选来源尚未识别")
@@ -1310,7 +1313,52 @@ func applyVueFieldFacts(field target.VueCustomFieldRule, source string) target.V
 		field.Format = "pattern"
 	}
 	field.Validation = validation
+	field.ValueShape = vueFieldValueShape(field)
+	field.Serialization = vueFieldSerialization(field.ValueShape)
+	field.CandidateSource = firstCatalogText(field.DataSource, vueFieldCandidateSource(field))
+	field.ValidationCapability = append([]string{"setData_capture_roundtrip"}, validation...)
+	field.Evidence = "host_vue_source:v-model_or_state"
 	return field
+}
+
+// vueFieldValueShape 把宿主控件类型收敛为字段桥接器可执行的值形态。
+func vueFieldValueShape(field target.VueCustomFieldRule) string {
+	if field.Collection {
+		return "array"
+	}
+	switch field.ValueType {
+	case "number":
+		return "number"
+	case "checkbox", "upload", "file":
+		return "array"
+	case "input", "textarea", "date", "select", "radio", "switch":
+		return "scalar"
+	default:
+		return "unknown"
+	}
+}
+
+// vueFieldSerialization 说明字段在 iframe values 中保持原生标量还是 JSON 结构。
+func vueFieldSerialization(valueShape string) string {
+	switch valueShape {
+	case "array", "object":
+		return "json_value"
+	case "unknown":
+		return "runtime_value"
+	default:
+		return "native"
+	}
+}
+
+// vueFieldCandidateSource 补齐无显式接口字段的候选来源，禁止返回空来源。
+func vueFieldCandidateSource(field target.VueCustomFieldRule) string {
+	if len(field.Options) > 0 || field.CandidateKind == "static" {
+		return "static_options"
+	}
+	if field.CandidateKind == "runtime_source" || field.CandidateKind == "external" {
+		return "host_runtime"
+	}
+	return "field_value"
 }
 
 // vueTemplateControlType 按宿主模板实际控件标签识别统一字段类型，未知控件保持 runtime 交给真实页面。

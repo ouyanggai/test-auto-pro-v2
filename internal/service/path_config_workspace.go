@@ -1903,10 +1903,12 @@ func projectVueCustomPage(rule *target.VueCustomPageRule) *model.PathVueCustomPa
 			options = append(options, model.PathVueCustomFieldOption{Label: option.Label, Value: option.Value})
 		}
 		result.Fields = append(result.Fields, model.PathVueCustomFieldRule{
-			Path: field.Path, Name: field.Name, ValueType: field.ValueType, Required: field.Required, ReadOnly: field.ReadOnly,
+			Path: field.Path, Name: field.Name, ValueType: field.ValueType, ValueShape: field.ValueShape, Serialization: field.Serialization,
+			Required: field.Required, ReadOnly: field.ReadOnly,
 			Hidden: field.Hidden, Disabled: field.Disabled, Nested: field.Nested, Collection: field.Collection,
-			CandidateKind: field.CandidateKind, DefaultValue: field.DefaultValue, DataSource: field.DataSource,
-			Format: field.Format, Validation: append([]string(nil), field.Validation...), Options: options,
+			CandidateKind: field.CandidateKind, CandidateSource: field.CandidateSource, DefaultValue: field.DefaultValue, DataSource: field.DataSource,
+			Format: field.Format, Validation: append([]string(nil), field.Validation...),
+			ValidationCapability: append([]string(nil), field.ValidationCapability...), Evidence: field.Evidence, Options: options,
 		})
 	}
 	return result

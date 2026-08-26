@@ -99,6 +99,8 @@ export interface PathVueCustomFieldRule {
   path: string
   name: string
   valueType: string
+  valueShape: string
+  serialization: string
   required: boolean
   readOnly: boolean
   hidden: boolean
@@ -106,10 +108,13 @@ export interface PathVueCustomFieldRule {
   nested: boolean
   collection: boolean
   candidateKind: string
+  candidateSource: string
   defaultValue?: unknown
   dataSource?: string
   format?: string
   validation: string[]
+  validationCapability: string[]
+  evidence: string
   options: Array<{ label: string, value: unknown }>
 }
 

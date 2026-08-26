@@ -148,6 +148,20 @@ export async function captureFormValues (form, validate) {
   return clonePlain(form.getValues())
 }
 
+// buildValuesEnvelope 统一 FormMaking getValues 与 Vue capture 的回传外壳，渲染器只负责提供完整 values。
+export function buildValuesEnvelope ({ values, validated, unsupported, dirty, generatedFieldPaths, manualOverridePaths, stats, issues }) {
+  return {
+    values: clonePlain(values || {}),
+    validated: Boolean(validated),
+    unsupported: Array.isArray(unsupported) ? unsupported.map(String) : [],
+    dirty: Boolean(dirty),
+    generatedFieldPaths: Array.isArray(generatedFieldPaths) ? [...new Set(generatedFieldPaths.map(String))].sort() : [],
+    manualOverridePaths: Array.isArray(manualOverridePaths) ? [...new Set(manualOverridePaths.map(String))].sort() : [],
+    issues: Array.isArray(issues) ? clonePlain(issues) : [],
+    stats: stats && typeof stats === 'object' ? clonePlain(stats) : { autoFilled: 0, manualPending: 0 }
+  }
+}
+
 // refreshPreparedForm 只刷新已预先写入权限的模板，避免目标自定义组件因缺少 disabledElement 被统一运行时禁用调用击穿。
 // FormMaking 的 refresh 会重新初始化模板并清空 models；因此刷新前捕获当前值、刷新后回填，避免用户已填数据被清空。
 export async function refreshPreparedForm (form) {

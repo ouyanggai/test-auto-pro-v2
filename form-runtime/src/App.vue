@@ -16,7 +16,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, diffManualPaths, refreshPreparedForm } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, diffManualPaths, refreshPreparedForm } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -53,6 +53,7 @@ export default {
       dirty: false,
 		removeRequestPolicy: null,
 		requestPolicyObservations: [],
+		runtimeIssues: [],
 		removeStorageFacade: null,
 		stateTimer: null
     }
@@ -221,7 +222,8 @@ export default {
         this.values = clonePlain(values)
         const page = this.$refs.vueHost
         if (!page || typeof page.setData !== 'function') throw new Error('宿主 Vue 业务页面尚未完成装载')
-        await page.setData(this.values)
+        const result = await page.setData(this.values)
+        this.runtimeIssues = Array.isArray(result && result.issues) ? result.issues : []
         return
       }
       const form = this.form()
@@ -238,24 +240,22 @@ export default {
       if (this.renderType === 'vue_custom') {
         const page = this.$refs.vueHost
         if (!page || typeof page.capture !== 'function') throw new Error('宿主 Vue 业务页面尚未完成装载')
-        const values = await page.capture(validate)
+        const captured = await page.capture(validate)
+        const values = captured.values
+        this.runtimeIssues = Array.isArray(captured.issues) ? captured.issues : []
         if (validate && this.vuePage.fields.some(field => field.required && this.isEmptyCustomValue(this.customPageValue(values, field.path)))) throw new Error('请先完成表单中的必填项')
         const manualOverridePaths = [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
-        return { values, validated: validate, unsupported: [], dirty: this.dirty, generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths, stats: this.stats(values, manualOverridePaths) }
+        return buildValuesEnvelope({ values, validated: validate, unsupported: [], dirty: this.dirty, generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths, issues: this.runtimeIssues, stats: this.stats(values, manualOverridePaths) })
       }
       const form = this.form()
       const values = await captureFormValues(form, validate)
       this.values = values
 		const manualOverridePaths = [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
-		return {
-        values,
-        validated: validate,
-        unsupported: this.unsupported,
-        dirty: this.dirty,
-        generatedFieldPaths: this.generatedFieldPaths,
-			manualOverridePaths,
-			stats: this.stats(values, manualOverridePaths)
-		}
+		return buildValuesEnvelope({
+        values, validated: validate, unsupported: this.unsupported, dirty: this.dirty,
+        generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths,
+        issues: this.runtimeIssues, stats: this.stats(values, manualOverridePaths)
+		})
 	},
     stats (values = this.values, manualOverridePaths = this.manualOverridePaths) {
       return formRuntimeStats(values, this.generatedFieldPaths, manualOverridePaths, this.editableFields, this.protectedFields, this.requiredEditableFields)
@@ -312,6 +312,7 @@ export default {
 		this.protectedFields = []
 		this.requiredEditableFields = []
 		this.requestPolicyObservations = []
+		this.runtimeIssues = []
       this.dirty = false
       this.loading = false
       setRuntimeEnvironment({ baseUrl: '', viewFileUrl: '', onlyOfficeUrl: '' })
