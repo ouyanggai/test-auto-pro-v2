@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
+import { classifyRuntimeMessage, FORM_RUNTIME_VERSION, type RuntimeMessage } from './runtimeProtocol'
 import type { PathFormConfiguration, PathFormRuntimeSession } from './types'
-
-const FORM_RUNTIME_VERSION = 'f007-form-runtime/v1'
 
 const props = defineProps<{
   form: PathFormConfiguration
@@ -99,25 +98,30 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
 // handleMessage 严格核对 origin、source、版本、会话和请求号。
 function handleMessage(event: MessageEvent) {
   if (event.origin !== runtimeOrigin.value || event.source !== iframe.value?.contentWindow) return
-  const message = event.data as { version?: string, sessionId?: string, requestId?: string, type?: string, payload?: Record<string, unknown> }
-  if (message.version !== FORM_RUNTIME_VERSION) return
-  if (message.type === 'ready' && message.requestId === 'boot') {
-    if (disposed || runtimeActive || !iframeBootPending) return
+  const message = event.data as RuntimeMessage
+  const disposition = classifyRuntimeMessage(message, {
+    sessionId: sessionId.value,
+    pendingRequestIds: new Set(pending.keys()),
+    runtimeActive,
+    disposed,
+    bootPending: iframeBootPending,
+  })
+  if (disposition === 'boot') {
     iframeBootPending = false
     void loadRuntime()
     return
   }
-  if (message.sessionId !== sessionId.value || !message.requestId) return
-  if (message.type === 'state') {
-    if (runtimeActive && !disposed) emit('state', message.payload || {})
+  if (disposition === 'state') {
+    emit('state', message.payload || {})
     return
   }
+  if (disposition === 'ignore' || !message.requestId) return
   const request = pending.get(message.requestId)
   if (!request) return
   window.clearTimeout(request.timer)
   request.cleanup()
   pending.delete(message.requestId)
-  if (message.type === 'error') request.reject(new Error(String(message.payload?.message || '表单运行时操作失败')))
+  if (disposition === 'error') request.reject(new Error(String(message.payload?.message || '表单运行时操作失败')))
   else request.resolve(message.payload || {})
 }
 

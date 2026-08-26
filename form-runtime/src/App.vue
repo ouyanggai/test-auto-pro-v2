@@ -52,6 +52,7 @@ export default {
       loading: false,
       dirty: false,
 		removeRequestPolicy: null,
+		requestPolicyObservations: [],
 		removeStorageFacade: null,
 		stateTimer: null
     }
@@ -118,7 +119,12 @@ export default {
         setRuntimeEnvironment({ baseUrl: baseURL, viewFileUrl: targetOrigin })
         this.removeRequestPolicy = installReadOnlyRequestPolicy({
           sid: String(payload.sid || ''),
-          baseURL
+          baseURL,
+		  shadowContext: { renderType: this.renderType, componentName: String(this.vuePage.componentName || '') },
+		  onDecision: observation => {
+			// 影子数据只保留无敏感判定摘要并设置上限，P0 不上传、不持久化也不改变请求结果。
+			this.requestPolicyObservations = [...this.requestPolicyObservations, observation].slice(-200)
+		  }
         })
         // 目标组件继续走 rsh-flow-components 原生 Vuex/axios 链；认证只写当前 iframe 内存适配，销毁会话即清除。
         const runtimeIdentity = {
@@ -305,6 +311,7 @@ export default {
 		this.hiddenFields = []
 		this.protectedFields = []
 		this.requiredEditableFields = []
+		this.requestPolicyObservations = []
       this.dirty = false
       this.loading = false
       setRuntimeEnvironment({ baseUrl: '', viewFileUrl: '', onlyOfficeUrl: '' })

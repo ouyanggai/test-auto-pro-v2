@@ -200,6 +200,7 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
   const sentHeaders = []
   const sentBodies = []
   const fetched = []
+  const observations = []
   class FakeXHR {
     open(method, url) { opened.push([method, url]) }
     setRequestHeader(name, value) { sentHeaders.push([name, value]) }
@@ -217,7 +218,12 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     fetch: nativeFetch,
   }
   try {
-    const restore = installReadOnlyRequestPolicy({ sid: 'memory-only-sid', baseURL: 'http://target.test/api' })
+    const restore = installReadOnlyRequestPolicy({
+      sid: 'memory-only-sid',
+      baseURL: 'http://target.test/api',
+      shadowContext: { renderType: 'formmaking', componentName: '' },
+      onDecision: observation => observations.push(observation),
+    })
     const request = new XMLHttpRequest()
     request.open('POST', '/web/form/read')
     request.send('{"data":{"flag":"3"}}')
@@ -246,6 +252,9 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     await window.fetch('https://cdn.example.test/assets/form.css')
     assert.equal(fetched[2][0], 'https://cdn.example.test/assets/form.css')
     assert.equal(fetched[2][1].headers.has('sid'), false)
+    assert.ok(observations.some(item => item.pathname === '/api/web/form/read' && item.allowed === true))
+    assert.ok(observations.some(item => item.pathname === '/api/web/flowInstanceApi/submit' && item.allowed === false))
+    assert.ok(observations.every(item => item.renderType === 'formmaking' && !Object.hasOwn(item, 'sid') && !Object.hasOwn(item, 'body') && !Object.hasOwn(item, 'url')))
     restore()
     assert.equal(window.fetch, nativeFetch)
     const afterDestroy = new XMLHttpRequest()

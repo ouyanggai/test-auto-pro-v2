@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const configurationView = readFileSync(new URL('../../../web/src/views/PlanPathConfigurationView.vue', import.meta.url), 'utf8')
 const runtimeFrame = readFileSync(new URL('../../../web/src/features/path-configuration/FormRuntimeFrame.vue', import.meta.url), 'utf8')
+const runtimeProtocol = readFileSync(new URL('../../../web/src/features/path-configuration/runtimeProtocol.ts', import.meta.url), 'utf8')
 const configurationAPI = readFileSync(new URL('../../../web/src/features/path-configuration/api.ts', import.meta.url), 'utf8')
 const configurationRetry = readFileSync(new URL('../../../web/src/features/path-configuration/retry.ts', import.meta.url), 'utf8')
 
@@ -31,7 +32,9 @@ test('iframe teardown 幂等且旧加载不会终止新会话', () => {
   assert.match(runtimeFrame, /runtimeGeneration \+= 1\s*runtimeActive = false/)
   assert.match(runtimeFrame, /const generation = \+\+runtimeGeneration/)
   assert.match(runtimeFrame, /generation !== runtimeGeneration/)
-  assert.match(runtimeFrame, /if \(disposed \|\| runtimeActive \|\| !iframeBootPending\) return\s*iframeBootPending = false/)
+  assert.match(runtimeFrame, /const disposition = classifyRuntimeMessage\(message,[\s\S]*bootPending: iframeBootPending/)
+  assert.match(runtimeFrame, /if \(disposition === 'boot'\) \{\s*iframeBootPending = false/)
+  assert.match(runtimeProtocol, /context\.disposed \|\| context\.runtimeActive \|\| !context\.bootPending \? 'ignore' : 'boot'/)
   assert.match(runtimeFrame, /onBeforeUnmount\(\(\) => \{\s*destroyRuntime\(\)\s*disposed = true/)
 })
 

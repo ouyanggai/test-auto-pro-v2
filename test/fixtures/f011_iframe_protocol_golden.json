@@ -1,0 +1,163 @@
+{
+  "commands": [
+    {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-load",
+      "type": "load",
+      "payload": {
+        "renderType": "formmaking",
+        "values": {
+          "title": "已保存标题"
+        }
+      }
+    },
+    {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-set-data",
+      "type": "setData",
+      "payload": {
+        "values": {
+          "title": "新标题"
+        }
+      }
+    },
+    {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-refresh",
+      "type": "refresh",
+      "payload": {}
+    },
+    {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-get-values",
+      "type": "getValues",
+      "payload": {}
+    },
+    {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-validate",
+      "type": "validateAndGetValues",
+      "payload": {}
+    },
+    {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-restore",
+      "type": "restore",
+      "payload": {}
+    },
+    {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-destroy",
+      "type": "destroy",
+      "payload": {}
+    }
+  ],
+  "responses": {
+    "boot": {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "",
+      "requestId": "boot",
+      "type": "ready"
+    },
+    "state": {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "state",
+      "type": "state",
+      "payload": {
+        "stats": {
+          "autoFilled": 3,
+          "manualPending": 0
+        },
+        "manualOverridePaths": [
+          "title"
+        ]
+      }
+    },
+    "result": {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-current",
+      "type": "result",
+      "payload": {
+        "values": {
+          "title": "人工标题",
+          "project": "{\"id\":\"project-1\",\"name\":\"项目一\"}",
+          "project__virtualName": "项目一",
+          "region": [
+            "east",
+            "shanghai"
+          ],
+          "items": [
+            {
+              "name": "明细一"
+            }
+          ]
+        },
+        "validated": true,
+        "unsupported": [],
+        "generatedFieldPaths": [
+          "project",
+          "region"
+        ],
+        "manualOverridePaths": [
+          "title"
+        ],
+        "stats": {
+          "autoFilled": 2,
+          "manualPending": 0
+        }
+      }
+    },
+    "error": {
+      "version": "f007-form-runtime/v1",
+      "sessionId": "session-current",
+      "requestId": "request-error",
+      "type": "error",
+      "payload": {
+        "message": "请先完成表单中的必填项"
+      }
+    }
+  },
+  "requestPolicy": [
+    {
+      "method": "POST",
+      "pathname": "/web/flowProxy/findById",
+      "manifest": "read",
+      "allowed": true
+    },
+    {
+      "method": "POST",
+      "pathname": "/web/custom/options",
+      "manifest": "read",
+      "allowed": true
+    },
+    {
+      "method": "POST",
+      "pathname": "/web/custom/records",
+      "manifest": "read",
+      "allowed": false,
+      "gap": "只读 POST 未命中当前词表"
+    },
+    {
+      "method": "POST",
+      "pathname": "/web/custom/handleList",
+      "manifest": "write",
+      "allowed": true,
+      "gap": "写端点名称被只读后缀误放行"
+    },
+    {
+      "method": "POST",
+      "pathname": "/web/flowInstanceApi/submit",
+      "manifest": "write",
+      "allowed": false
+    }
+  ]
+}

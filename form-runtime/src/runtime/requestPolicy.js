@@ -32,18 +32,24 @@ function pathSegments (pathname) {
   }
 }
 
+// classifyTargetRequest 返回当前启发式策略的判定及命中原因，供影子覆盖率统计使用，不改变现有放行规则。
+export function classifyTargetRequest (method, pathname) {
+  const normalizedMethod = String(method || 'GET').toUpperCase()
+  const segments = pathSegments(pathname)
+  if (EXPLICIT_FORBIDDEN_PATHS.some(pattern => pattern.test(pathname))) return { allowed: false, reason: 'explicit_forbidden' }
+  if (segments.some(segment => WRITE_SEGMENT_PREFIXES.some(prefix => segment.includes(prefix)))) return { allowed: false, reason: 'write_segment' }
+  if (SAFE_HTTP_METHODS.has(normalizedMethod)) return { allowed: true, reason: 'safe_method' }
+  if (normalizedMethod !== 'POST') return { allowed: false, reason: 'unsupported_method' }
+  const action = segments[segments.length - 1] || ''
+  const readAction = READ_SEGMENT_PREFIXES.some(prefix => action.startsWith(prefix)) ||
+    READ_SEGMENT_SUFFIXES.some(suffix => action.endsWith(suffix))
+  return readAction ? { allowed: true, reason: 'read_action' } : { allowed: false, reason: 'unknown_post' }
+}
+
 // targetRequestAllowed 只允许浏览器安全方法和具备明确查询动词的 POST。
 // 目标平台大量查询使用 POST，因此不能按方法一刀切；反过来，未命中查询语义的 POST 也不能因路径未知而静默放行。
 export function targetRequestAllowed (method, pathname) {
-  const normalizedMethod = String(method || 'GET').toUpperCase()
-  const segments = pathSegments(pathname)
-  if (EXPLICIT_FORBIDDEN_PATHS.some(pattern => pattern.test(pathname))) return false
-  if (segments.some(segment => WRITE_SEGMENT_PREFIXES.some(prefix => segment.includes(prefix)))) return false
-  if (SAFE_HTTP_METHODS.has(normalizedMethod)) return true
-  if (normalizedMethod !== 'POST') return false
-  const action = segments[segments.length - 1] || ''
-  return READ_SEGMENT_PREFIXES.some(prefix => action.startsWith(prefix)) ||
-    READ_SEGMENT_SUFFIXES.some(suffix => action.endsWith(suffix))
+  return classifyTargetRequest(method, pathname).allowed
 }
 
 // targetPath 判断请求是否属于目标平台网关的 /web 或 /api/web 路径。
@@ -79,14 +85,23 @@ function resolveURL (raw, baseURL) {
 }
 
 // targetURL 只对当前会话核实且已证明只读的目标请求附加 SID，其他源保持浏览器默认行为。
-function targetURL (raw, method, baseURL, sid) {
+function targetURL (raw, method, baseURL, sid, onDecision, shadowContext) {
   // 目标表单组件大量使用 /web/... 相对地址；独立 iframe 必须把这类请求解析到本次后端核实的目标网关，
   // 但不能把运行时自身的脚本、样式或其他第三方请求错误改写到目标平台。
   const url = resolveURL(raw, baseURL)
   if (!baseURL) return url
   const base = new URL(baseURL)
   if (url.origin !== base.origin) return url
-  if (!targetRequestAllowed(method, url.pathname)) {
+  const decision = classifyTargetRequest(method, url.pathname)
+  if (typeof onDecision === 'function') {
+    try {
+      // 影子记录只使用无查询串路径，禁止把 SID、请求正文或业务响应带入诊断。
+      onDecision({ ...(shadowContext || {}), method: String(method || 'GET').toUpperCase(), pathname: url.pathname, ...decision })
+    } catch (_) {
+      // 诊断观察器不能影响真实请求判定。
+    }
+  }
+  if (!decision.allowed) {
     throw new Error('F-007 配置阶段不支持未证明为只读的目标请求')
   }
   if (sid) url.searchParams.set('sid', sid)
@@ -95,7 +110,7 @@ function targetURL (raw, method, baseURL, sid) {
 
 // installReadOnlyRequestPolicy 在会话内给目标读取请求附加 SID，并阻断已知流程/业务写端点。
 // 返回的清理函数会恢复原生网络对象，SID 因而只存在于本 iframe 当前会话闭包中。
-export function installReadOnlyRequestPolicy ({ sid, baseURL }) {
+export function installReadOnlyRequestPolicy ({ sid, baseURL, onDecision, shadowContext }) {
   const originalOpen = XMLHttpRequest.prototype.open
   const originalSend = XMLHttpRequest.prototype.send
   const originalFetch = window.fetch
@@ -124,7 +139,7 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL }) {
   }
 
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-    const resolved = targetURL(url, method, baseURL, sid)
+    const resolved = targetURL(url, method, baseURL, sid, onDecision, shadowContext)
     this.__f007TargetRequest = Boolean(baseURL) && resolved.origin === new URL(baseURL).origin
     return originalOpen.call(this, method, resolved.toString(), ...rest)
   }
@@ -142,7 +157,7 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL }) {
   window.fetch = async function (input, init) {
     const raw = typeof input === 'string' || input instanceof URL ? input : input.url
     const method = (init && init.method) || (input instanceof Request ? input.method : 'GET')
-    const resolved = targetURL(raw, method, baseURL, sid)
+    const resolved = targetURL(raw, method, baseURL, sid, onDecision, shadowContext)
     const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined))
     const nextInit = { ...(init || {}) }
     if (baseURL && resolved.origin === new URL(baseURL).origin && sid) {
