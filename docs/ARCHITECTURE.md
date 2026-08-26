@@ -66,7 +66,7 @@ F-007 的 `form-runtime/` 是隔离的浅色表单运行时：入口文档、运
 - `TARGET_API_GATEWAY`、`TARGET_LOGIN_PASSWORD`、`TARGET_LOGIN_AES_KEY`、`TARGET_LOGIN_CODE` 必需；本地文件不存在时仍允许纯环境变量运行。本地文件解析失败、关键配置缺失或 AES key 长度非法时，服务和 health 正常启动，三个 target API 稳定返回 `TARGET_CONFIG_MISSING`。
 - `cmd/sync-v1-target-config` 只在维护时读取显式指定的 V1 YAML，将目标网关、平台/租户代码和 AES key 与既有本机登录配置合并，使用 `0600` 临时文件原子替换 `.env.local`，并在清空当前进程 `TARGET_*` 后做完整性检查。命令不含 V1 绝对路径或登录值，不回显配置值；正常启动不依赖 V1 仓库。
 - `TARGET_PLATFORM_CODE` 默认 `200001`、`TARGET_TEMPLATE_PLATFORM_CODES` 默认 `200001,999999`、`TARGET_SESSION_TTL` 默认 `8h`、`TARGET_HTTP_TIMEOUT` 默认 `120s`，均来自用户批准沿用的 V1 非敏感约定；`TARGET_CUSTOMER_CODE` 可为空。敏感配置没有代码默认值。
-- `internal/adapter/target` 是唯一拼装目标 URL、加密登录密码、传递 SID 和解析目标响应的区域。SID 按目标协议进入 body、query、header，但应用不得记录完整出站 URL、header、body 或目标原始报文。
+- `internal/adapter/target` 是唯一拼装目标 URL、加密登录密码、传递 SID 和解析目标响应的区域。SID 按目标协议进入 body、query、header，并允许按内网排障需要记录或持久化 SID 及其请求元数据；登录密码和无关业务原文仍不得写入日志。
 - `internal/session` 使用单进程内存缓存，按去除首尾空白的账号键控，默认绝对 TTL 为 8 小时；每个账号独立锁定登录，不同账号不互相阻塞。会话失效后只允许删除缓存、重登和重放当前只读请求一次。
 - 缓存条目只保存 SID、必要账号摘要和目标代码，不保存密码、AES key 或 code；进程退出自然清空。F-002 不引入 Redis，多实例共享需求出现后再单独评估。
 - 对浏览器提供三个独立边界：`POST /api/target/accounts/verify`、`GET /api/target/flow-templates`、`GET /api/target/flow-instances`。公开响应只含验证摘要、候选 DTO、分页或稳定错误，不含 SID、凭证、customerCode、platformCode 或目标敏感原文。
@@ -142,7 +142,7 @@ F-007 的 `form-runtime/` 是隔离的浅色表单运行时：入口文档、运
 - 后端新增路径配置服务和配置仓储，所有请求先校验计划、路径归属及计划仍处于未运行状态，再按计划保存的账号、流程来源和目标对象重新读取当前真实配置。要求分析、可编辑字段投影和动作目录在同一次目标只读会话中完成，目标会话失效时整条读取链最多重放一次。
 - 公开节点配置 DTO 按真实节点分组，只返回路径摘要、节点顺序与类型、逐节点配置状态、结构化人员规则、已解析的具体对象、合法候选、独立动作目录和缺口状态。路径级循环单独返回服务端派生摘要；人员、岗位、岗级、角色、部门、公司等业务对象只通过不透明写入键回传，公开响应不得暴露目标内部 ID。节点右侧面板不再接收或渲染表单字段；配置键仍由后端生成且只用于本次回写。
 - 独立 `form-runtime/` 前端工作区以 `runtime-source/` 作为唯一实际 dev/build 源码：完整保留 `参考代码/rsh-flow-components` 的 tracked 源码、原生同步资产、真实 `fm-generate-form`、字段权限、刷新、虚拟字段、20 个目标自定义组件、Vuex/router/axios 与样式。`form-runtime/src/`、根 `scripts/`、构建配置和 iframe/SID/写阻断属于本项目保护层；`.npmrc`、Git 元数据、依赖、构建产物与凭证明确排除。
-- 独立入口沿用目标组件依赖的原生 Vuex/router/axios，但主应用只进入本项目追加的 `/test-auto-form` 配置路由；旧登录页和其他工作台页面不作为用户入口，不安全的上游 `postMessage` 初始化被本地适配禁用，也不调用目标流程写接口。主应用以带版本、会话标识和请求标识的协议发送完整模板、权限、初始值、模式及当前已验证账号缓存的 SID/目标只读网关；消息必须核对 origin、source、协议版本和 session，销毁后拒绝迟到消息。SID 只存在于当前会话内存认证与请求策略，不写入数据库、Git 或浏览器长期存储；目标提交、草稿和已知业务写端点在运行时侧再次阻断。
+- 独立入口沿用目标组件依赖的原生 Vuex/router/axios，但主应用只进入本项目追加的 `/test-auto-form` 配置路由；旧登录页和其他工作台页面不作为用户入口，不安全的上游 `postMessage` 初始化被本地适配禁用，也不调用目标流程写接口。主应用以带版本、会话标识和请求标识的协议发送完整模板、权限、初始值、模式及当前已验证账号缓存的 SID/目标只读网关；消息必须核对 origin、source、协议版本和 session，销毁后拒绝迟到消息。当前实现把 SID 放在会话内存认证与请求策略中，但这只是生命周期选择，不是禁止日志或持久化的安全边界；目标提交、草稿和已知业务写端点仍在运行时侧阻断。
 - 开发时根 `pnpm dev:f` 只启动主 Vue 3 页面，`pnpm dev:form` 独立启动监听 `127.0.0.1:19001` 的表单运行时并保持热更新；主页面使用稳定的 `/form-runtime/` 地址加载 iframe。生产构建先构建运行时，再把产物放入主站固定子目录，不依赖旧 `rsh-flow-components` 服务在线。
 - 新发起从当前模板读取完整 FormMaking 模板和默认模型，并叠加该路径工具侧保存的测试数据；已发、待发按精确实例 ID 读取当前 `formDataMongoVo.data`，本切片只读展示。目标 envelope 不进入 postMessage；目标组件只有在独立入口中证明可在受控只读请求策略下运行时才注册，仍依赖旧宿主路由、Vuex、业务写钩子或外部服务的组件明确报告 unsupported，禁止降级为普通控件。
 - FormMaking 会话加载模板后按目标字段权限执行 `refresh`，隐藏或禁用不可编辑字段并移除其必填校验；保存先执行 `getData(true)`，再以 `getValues()` 的完整对象为权威数据。运行时不得执行 `beforeSubmitAndDraft` 等可能产生目标业务写入的钩子。
@@ -207,6 +207,14 @@ F-007 的 `form-runtime/` 是隔离的浅色表单运行时：入口文档、运
 - 候选同步与构建在 `.runtime/form-runtime-maintenance` 隔离目录完成，实际构建显式消费候选 `runtime-source/`。切换时同时替换 19001 Vue CLI 监听的真实源码和生产 `web/dist/form-runtime` 产物；`runtime-health.json` 公开非敏感仓库/分支/HEAD/摘要，运行中的 HTTP 地址必须报告同一快照才能完成。候选失败不影响 current，切换或健康失败恢复源码与产物 previous 并再次核验。
 - `form-runtime/sync-manifest.json` 是唯一项目同步映射：当前来源本身已是独立组件仓库，因此完整镜像其 tracked `src/`、`public/`、原生同步清单/脚本和构建资产；旧 V2/上游的 35 项生成映射继续随源码保留。项目同步执行逐文件 `SYNC_CHECK`、完整目标摘要、本地适配保护和实际运行源码未知修改拒绝。状态通过 `make form-runtime-status`，一键任务通过 `make form-runtime-sync` 或系统设置页触发，两者都不能覆盖参数。
 - `test_form_runtime_sync_jobs` 是维护任务正确性来源，数据库唯一键保证单活动任务。Worker 使用租约续期与 fencing token；旧 Worker 不能推进阶段或完成任务，进程重启后从持久化的 `RESTART/VERIFY` 和 candidate/previous 事实恢复，不能重新同步或覆盖既有候选。在线日志写入运行目录，API 最多返回最新 512 KiB 并标记截断，SID 与表单数据不会进入维护任务或日志。
+
+## P 类智能表单契约与运行预检
+
+- `internal/formdata` 的 `ConstraintIR` 是路径条件、模板校验、静态字段依赖、日期绑定和候选约束的统一复验入口。确定性传播优先，现有有界求解只作为回退，回退值仍必须经过同一 IR 复验并标记来源。
+- FormMaking 和 `vue_custom` 共享字段值形状、结构化问题与完整 values envelope，不共享渲染器。FormMaking 保存 `getValues()` 的深复制结果；Vue 通过已声明字段桥接真实组件状态，路径缺失、歧义或深度超限不得静默成功。
+- iframe 协议保持 `f007-form-runtime/v1`，父子双方校验 origin、source、session 和 request。目标请求采用规则目录生成的只读清单优先策略；非空清单未覆盖请求默认拒绝，空清单保留过渡启发式并显式报告问题。SID 可按内网排障需要进入目标请求链路，不作为方案级禁止字段。
+- `GET /api/plans/{planID}/execution-paths/{pathID}/run-input/preflight` 每次重读流程、模板、规则、权限和外部候选，从当前已确认配置深复制 `RunInputSnapshot`。快照包含路径选择、节点人员/字段值、动作值、表单完整 values、版本和修订摘要；本端点不创建运行记录。
+- `internal/adapter/target.CompileFormSubmission` 是不持有客户端的纯编译边界。FormMaking 只编译已证明的新发起外壳，Vue 必须同时具备提交规则和 Java 路由证据；动态钩子、未知 payload 或 stale 事实返回 blocked。P 类不发送目标提交、审批或业务写请求，真实运行和历史快照持久化必须另行实施。
 
 ## 数据与部署演进
 

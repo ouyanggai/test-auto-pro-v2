@@ -54,6 +54,7 @@ test('Vue 字段路径歧义与深度超限分别 blocked 和 partial', () => {
 test('两种渲染器共享稳定 values envelope', () => {
   const input = {
     values: { nested: [{ id: 1 }], custom: '{"id":"p1"}' }, validated: true,
+    renderType: 'formmaking', ruleVersion: 'rule-p003',
     unsupported: [], dirty: true, generatedFieldPaths: ['custom', 'nested'], manualOverridePaths: ['custom'],
     issues: [{ code: 'sample', status: 'partial' }], stats: { autoFilled: 1, manualPending: 0 }
   }
@@ -61,5 +62,7 @@ test('两种渲染器共享稳定 values envelope', () => {
   const vueCustom = buildValuesEnvelope(input)
   assert.deepEqual(formMaking, vueCustom)
   assert.notEqual(formMaking.values, input.values)
-  assert.deepEqual(Object.keys(formMaking).sort(), ['dirty', 'generatedFieldPaths', 'issues', 'manualOverridePaths', 'stats', 'unsupported', 'validated', 'values'])
+  assert.equal(formMaking.renderType, 'formmaking')
+  assert.equal(formMaking.ruleVersion, 'rule-p003')
+  assert.deepEqual(Object.keys(formMaking).sort(), ['dirty', 'generatedFieldPaths', 'issues', 'manualOverridePaths', 'renderType', 'ruleVersion', 'stats', 'unsupported', 'validated', 'values'])
 })

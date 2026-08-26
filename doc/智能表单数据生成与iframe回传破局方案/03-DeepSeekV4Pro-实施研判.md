@@ -33,7 +33,7 @@ DeepSeek V4 Pro 建议以“统一字段模型 + 约束传播 + 有界回溯 + �
 
 当前 `test_execution_path_configs` 已保存完整 `form_values`、seed、生成/人工字段、模板版本、修订号和幂等键。先利用这些字段完成配置闭环，不为了“看起来完整”提前创建运行快照表。
 
-未来真实执行开始时，再从已确认配置复制不可变 `RunInputSnapshot`（包含 values、renderType、templateRuleVersion、shapeDigest、来源路径和账号引用，不含 SID），由 `internal/adapter/target` 按 FormMaking 或 Vue 的真实提交协议编译目标请求体。编译不在 iframe，不执行未知动态协议；编译失败则运行前阻断并给出具体字段/协议问题。
+未来真实执行开始时，再从已确认配置复制不可变 `RunInputSnapshot`（包含 values、renderType、templateRuleVersion、shapeDigest、来源路径和账号引用；是否包含 SID 由运行记录排障设计决定），由 `internal/adapter/target` 按 FormMaking 或 Vue 的真实提交协议编译目标请求体。编译不在 iframe，不执行未知动态协议；编译失败则运行前阻断并给出具体字段/协议问题。
 
 ## 建议切片与验证
 

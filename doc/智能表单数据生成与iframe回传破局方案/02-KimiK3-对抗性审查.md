@@ -3,7 +3,7 @@
 ## 先纠正三处容易写错的事实
 
 1. `getData(true)` 不在 `form-runtime/src/App.vue` 中直接实现，而在 `form-runtime/src/runtime/formTemplate.js` 的 `captureFormValues` 中封装；方案引用必须指向真实职责。
-2. SID 不会“完全不出 iframe”：`requestPolicy.js` 会把 SID 放入发往目标网关的请求头/请求体。正确边界是只进入当前授权的目标请求通道，不进入持久层、日志、主应用长期状态或浏览器长期存储。
+2. SID 不会“完全不出 iframe”：`requestPolicy.js` 会把 SID 放入发往目标网关的 URL、请求头或请求体。当前内网排障决策允许 SID 进入日志、主应用状态或后续持久化设计，不能再把“不进持久层/日志”当作实施门禁。
 3. `protocol.js` 负责消息结构/版本/会话校验，origin/source 校验由 `FormRuntimeFrame.vue` 与运行时消息处理共同完成；不能把两层责任混成一个模块。
 
 ## 生成成功但流程走不通的反例
