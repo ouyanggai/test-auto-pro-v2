@@ -1,0 +1,224 @@
+package model
+
+import "time"
+
+const (
+	// HistoryDataStatusEmpty 表示路径尚未选择可用的历史来源。
+	HistoryDataStatusEmpty = "empty"
+	// HistoryDataStatusNeedsInput 表示数据或路径证据不足，需要用户补充或确认。
+	HistoryDataStatusNeedsInput = "needs_input"
+	// HistoryDataStatusReady 表示 runtime 校验和当前路径复验均已通过。
+	HistoryDataStatusReady = "ready"
+	// HistoryDataStatusAffected 表示来源、路径或目标运行时变化后需要重新核对。
+	HistoryDataStatusAffected = "affected"
+)
+
+const (
+	// HistorySourceModeNone 表示路径没有历史数据来源。
+	HistorySourceModeNone = "none"
+	// HistorySourceModeDefault 表示路径继承计划默认历史来源。
+	HistorySourceModeDefault = "default"
+	// HistorySourceModeOverride 表示路径使用独立历史来源。
+	HistorySourceModeOverride = "override"
+)
+
+const (
+	// HistoryReplayStatusQueued 表示回放任务已建立但尚未领取明细。
+	HistoryReplayStatusQueued = "queued"
+	// HistoryReplayStatusRunning 表示回放任务正在处理明细。
+	HistoryReplayStatusRunning = "running"
+	// HistoryReplayStatusCompleted 表示任务所有明细均已得到终态。
+	HistoryReplayStatusCompleted = "completed"
+	// HistoryReplayStatusCancelled 表示任务被取消并保留未完成检查点。
+	HistoryReplayStatusCancelled = "cancelled"
+	// HistoryReplayStatusFailed 表示任务无法继续但明细结果仍被保留。
+	HistoryReplayStatusFailed = "failed"
+)
+
+const (
+	// HistoryReplayItemStatusPending 表示路径尚未开始处理。
+	HistoryReplayItemStatusPending = "pending"
+	// HistoryReplayItemStatusRunning 表示路径已领取且正在处理。
+	HistoryReplayItemStatusRunning = "running"
+	// HistoryReplayItemStatusReady 表示路径数据回放已就绪。
+	HistoryReplayItemStatusReady = "ready"
+	// HistoryReplayItemStatusNeedsInput 表示路径无法被确定性回放。
+	HistoryReplayItemStatusNeedsInput = "needs_input"
+	// HistoryReplayItemStatusAffected 表示路径修订变化，需要重新读取。
+	HistoryReplayItemStatusAffected = "affected"
+	// HistoryReplayItemStatusFailed 表示该路径读取或 runtime 校验失败。
+	HistoryReplayItemStatusFailed = "failed"
+)
+
+// HistoryCandidate 是目标历史实例的安全摘要，浏览器只持有不透明候选键。
+type HistoryCandidate struct {
+	CandidateKey      string `json:"candidateKey"`
+	FlowCode          string `json:"flowCode"`
+	FormName          string `json:"formName"`
+	FlowName          string `json:"flowName"`
+	RuntimeType       string `json:"runtimeType"`
+	InstanceTitle     string `json:"instanceTitle"`
+	BusinessSummary   string `json:"businessSummary"`
+	Initiator         string `json:"initiator"`
+	CompanyName       string `json:"companyName"`
+	CreatedAt         string `json:"createdAt"`
+	Status            string `json:"status"`
+	StatusName        string `json:"statusName"`
+	Completeness      string `json:"completeness"`
+	IntegrityNotice   string `json:"integrityNotice"`
+	SnapshotAvailable bool   `json:"snapshotAvailable"`
+}
+
+// HistoryCandidatePage 是历史候选的有界分页响应，不包含完整表单正文。
+type HistoryCandidatePage struct {
+	Items    []HistoryCandidate `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"pageSize"`
+	Total    int                `json:"total"`
+	HasMore  bool               `json:"hasMore"`
+}
+
+// HistorySnapshotSummary 保存候选来源的业务摘要，避免向浏览器透传目标内部标识。
+type HistorySnapshotSummary struct {
+	CandidateKey    string `json:"candidateKey"`
+	FlowCode        string `json:"flowCode"`
+	FormName        string `json:"formName"`
+	FlowName        string `json:"flowName"`
+	InstanceTitle   string `json:"instanceTitle"`
+	BusinessSummary string `json:"businessSummary"`
+	Initiator       string `json:"initiator"`
+	CompanyName     string `json:"companyName"`
+	CreatedAt       string `json:"createdAt"`
+	Status          string `json:"status"`
+	StatusName      string `json:"statusName"`
+	RuntimeType     string `json:"runtimeType"`
+}
+
+// HistorySnapshot 是工具侧不可变的目标原始表单数据副本。
+type HistorySnapshot struct {
+	ID              uint64         `json:"id"`
+	PlanID          uint64         `json:"-"`
+	SourceAccount   string         `json:"-"`
+	CandidateKey    string         `json:"candidateKey"`
+	FlowCode        string         `json:"flowCode"`
+	FormName        string         `json:"formName"`
+	FlowName        string         `json:"flowName"`
+	RuntimeType     string         `json:"runtimeType"`
+	InstanceStatus  string         `json:"instanceStatus"`
+	InstanceSummary map[string]any `json:"instanceSummary"`
+	TemplateSummary map[string]any `json:"templateSummary"`
+	RawFormData     map[string]any `json:"rawFormData"`
+	SourceDigest    string         `json:"sourceDigest"`
+	CreatedAt       time.Time      `json:"createdAt"`
+}
+
+// HistoryDataSource 是路径历史来源的公开投影，正文只在服务端或 runtime 会话内流转。
+type HistoryDataSource struct {
+	Mode       string                  `json:"mode"`
+	SnapshotID uint64                  `json:"snapshotId,omitempty"`
+	Summary    *HistorySnapshotSummary `json:"summary,omitempty"`
+	DataStatus string                  `json:"dataStatus"`
+	Issues     []HistoryDataIssue      `json:"issues"`
+	Revision   uint64                  `json:"revision"`
+}
+
+// HistoryDataIssue 是历史数据差异、必填缺口或运行时拒绝的结构化说明。
+type HistoryDataIssue struct {
+	Code     string `json:"code"`
+	Path     string `json:"path,omitempty"`
+	Message  string `json:"message"`
+	Blocking bool   `json:"blocking"`
+}
+
+// HistoryDefaultSaveInput 是计划默认历史来源的最小回写体。
+type HistoryDefaultSaveInput struct {
+	CandidateKey string `json:"candidateKey"`
+	Revision     uint64 `json:"revision"`
+}
+
+// HistoryPathSourceInput 设置路径继承计划默认值或覆盖为独立候选。
+type HistoryPathSourceInput struct {
+	Mode         string `json:"mode"`
+	CandidateKey string `json:"candidateKey,omitempty"`
+	Revision     uint64 `json:"revision"`
+}
+
+// HistoryReplayJob 是多路径回放任务的真实聚合状态。
+type HistoryReplayJob struct {
+	ID          string     `json:"id"`
+	PlanID      uint64     `json:"-"`
+	Status      string     `json:"status"`
+	Total       int        `json:"total"`
+	Pending     int        `json:"pending"`
+	Running     int        `json:"running"`
+	Ready       int        `json:"ready"`
+	NeedsInput  int        `json:"needsInput"`
+	Affected    int        `json:"affected"`
+	Failed      int        `json:"failed"`
+	Cancelled   int        `json:"cancelled"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
+// HistoryReplayItem 是任务内单路径检查点和回放结果。
+type HistoryReplayItem struct {
+	ID                uint64               `json:"id"`
+	JobID             string               `json:"-"`
+	PathID            uint64               `json:"pathId"`
+	PathRevision      uint64               `json:"pathRevision"`
+	SnapshotID        *uint64              `json:"snapshotId,omitempty"`
+	Status            string               `json:"status"`
+	DataStatus        string               `json:"dataStatus"`
+	Issues            []HistoryDataIssue   `json:"issues"`
+	BranchPatches     []HistoryBranchPatch `json:"branchPatches"`
+	EffectiveFormData map[string]any       `json:"effectiveFormData,omitempty"`
+	UpdatedAt         time.Time            `json:"updatedAt"`
+	CompletedAt       *time.Time           `json:"completedAt,omitempty"`
+}
+
+// HistoryReplayItemPage 是明细游标分页结果。
+type HistoryReplayItemPage struct {
+	Items      []HistoryReplayItem `json:"items"`
+	NextCursor uint64              `json:"nextCursor,omitempty"`
+}
+
+// HistoryReplayCreateInput 指定本次明确勾选的路径，不接受目标内部 ID。
+type HistoryReplayCreateInput struct {
+	PathIDs  []uint64 `json:"pathIds"`
+	Revision uint64   `json:"revision"`
+}
+
+// HistoryBranchPatch 记录系统对条件驱动字段所做的最小修改。
+type HistoryBranchPatch struct {
+	Path      string `json:"path"`
+	Before    any    `json:"before"`
+	After     any    `json:"after"`
+	Reason    string `json:"reason"`
+	BranchKey string `json:"branchKey"`
+}
+
+// HistoryRuntimeValidation 是复制的 form-runtime 返回的结构化校验摘要。
+type HistoryRuntimeValidation struct {
+	Accepted bool               `json:"accepted"`
+	Issues   []HistoryDataIssue `json:"issues"`
+}
+
+// PathConfigurationF012 是 F-012 配置读取接口的统一领域视图。
+type PathConfigurationF012 struct {
+	Path              PathConfigPath           `json:"path"`
+	Revision          uint64                   `json:"revision"`
+	NodeRevision      uint64                   `json:"nodeRevision"`
+	DataRevision      uint64                   `json:"dataRevision"`
+	ActionRevision    uint64                   `json:"actionRevision"`
+	NodeStatus        string                   `json:"nodeStatus"`
+	DataStatus        string                   `json:"dataStatus"`
+	HistorySource     HistoryDataSource        `json:"historySource"`
+	RuntimeType       string                   `json:"runtimeType"`
+	EffectiveFormData map[string]any           `json:"effectiveFormData,omitempty"`
+	BranchPatches     []HistoryBranchPatch     `json:"branchPatches"`
+	RuntimeValidation HistoryRuntimeValidation `json:"runtimeValidation"`
+	Issues            []HistoryDataIssue       `json:"issues"`
+	Actions           []ConfiguredAction       `json:"actions"`
+	CompiledScenario  []CompiledActionStep     `json:"compiledScenario"`
+}
