@@ -67,6 +67,11 @@ func NewHandlerWithTemplateCatalogServices(reader TargetReader, plans PlanServic
 
 // NewHandlerWithHistoryDataServices 组装 F-012 历史候选与来源配置端点及既有全部能力。
 func NewHandlerWithHistoryDataServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService) http.Handler {
+	return NewHandlerWithHistoryReplayServices(reader, plans, graphs, paths, requirements, configurations, maintenance, preparations, catalog, history, unavailableHistoryReplayService{})
+}
+
+// NewHandlerWithHistoryReplayServices 组装历史来源与历史回放任务端点及既有全部能力。
+func NewHandlerWithHistoryReplayServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService, replay HistoryReplayService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -79,6 +84,7 @@ func NewHandlerWithHistoryDataServices(reader TargetReader, plans PlanService, g
 	registerPathPreparationRoutes(mux, preparations)
 	registerTemplateCatalogRoutes(mux, catalog)
 	registerHistoryDataRoutes(mux, history)
+	registerHistoryReplayRoutes(mux, replay)
 	return gzipResponses(mux)
 }
 

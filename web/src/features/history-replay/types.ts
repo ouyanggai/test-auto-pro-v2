@@ -60,3 +60,44 @@ export interface HistoryCandidatePage {
   defaultSource?: HistoryDataSource
   pathSource?: HistoryDataSource
 }
+
+export type HistoryReplayStatus = 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+export type HistoryReplayItemStatus = 'pending' | 'running' | 'ready' | 'needs_input' | 'affected' | 'failed'
+
+// HistoryReplayJob 只呈现后端真实聚合计数，租约、幂等键和 fencing 信息不进入页面状态。
+export interface HistoryReplayJob {
+  id: string
+  status: HistoryReplayStatus
+  total: number
+  pending: number
+  running: number
+  ready: number
+  needsInput: number
+  affected: number
+  failed: number
+  cancelled: number
+  createdAt: string
+  updatedAt: string
+  completedAt?: string
+}
+
+// HistoryReplayItem 是单路径回放检查点的公开投影，正文仍保持目标原始 map。
+export interface HistoryReplayItem {
+  id: number
+  pathId: number
+  pathRevision: number
+  snapshotId?: number
+  status: HistoryReplayItemStatus
+  dataStatus: HistoryDataStatus
+  issues: HistoryDataIssue[]
+  branchPatches: Array<{ path: string, before: unknown, after: unknown, reason: string, branchKey: string }>
+  effectiveFormData?: Record<string, unknown>
+  updatedAt: string
+  completedAt?: string
+}
+
+// HistoryReplayItemPage 以明细自增 ID 作为唯一游标，前端不向后端发送页码。
+export interface HistoryReplayItemPage {
+  items: HistoryReplayItem[]
+  nextCursor?: number
+}

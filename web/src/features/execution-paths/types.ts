@@ -9,7 +9,7 @@ export interface ExecutionPath {
   name: string
   configurationStatus: 'pending' | 'partial' | 'configured' | 'affected'
   configurationDetail: string
-  dataStatus: 'not_required' | 'not_generated' | 'generated' | 'confirmed' | 'needs_attention'
+  dataStatus: 'empty' | 'needs_input' | 'ready' | 'affected' | 'not_required' | 'not_generated' | 'generated' | 'confirmed' | 'needs_attention'
   dataDetail: string
   included: boolean
 	configurationRevision: number

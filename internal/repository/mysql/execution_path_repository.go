@@ -20,7 +20,10 @@ type ExecutionPathRepository struct {
 
 // Get 按计划归属读取单条路径及其 choices，供进入编辑态时按需加载。
 func (r *ExecutionPathRepository) Get(ctx context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
-	path, err := scanExecutionPath(r.db.QueryRowContext(ctx, `SELECT id, plan_id, sequence_no, name, created_at, updated_at FROM test_execution_paths WHERE plan_id = ? AND id = ?`, planID, pathID))
+	path, err := scanExecutionPathWithRevision(r.db.QueryRowContext(ctx, `SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at, COALESCE(config.node_revision, 0)
+FROM test_execution_paths path
+LEFT JOIN test_execution_path_configs config ON config.path_id = path.id
+WHERE path.plan_id = ? AND path.id = ?`, planID, pathID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.ExecutionPath{}, repository.ErrExecutionPathNotFound
 	}
@@ -37,14 +40,17 @@ func (r *ExecutionPathRepository) GetMany(ctx context.Context, planID uint64, pa
 		return []model.ExecutionPath{}, nil
 	}
 	placeholders, args := uint64QueryArguments(planID, pathIDs)
-	rows, err := r.db.QueryContext(ctx, `SELECT id, plan_id, sequence_no, name, created_at, updated_at FROM test_execution_paths WHERE plan_id = ? AND id IN (`+placeholders+`)`, args...)
+	rows, err := r.db.QueryContext(ctx, `SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at, COALESCE(config.node_revision, 0)
+FROM test_execution_paths path
+LEFT JOIN test_execution_path_configs config ON config.path_id = path.id
+WHERE path.plan_id = ? AND path.id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	byID := make(map[uint64]model.ExecutionPath, len(pathIDs))
 	for rows.Next() {
-		path, scanErr := scanExecutionPath(rows)
+		path, scanErr := scanExecutionPathWithRevision(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -625,6 +631,21 @@ type executionPathScanner interface {
 func scanExecutionPath(row executionPathScanner) (model.ExecutionPath, error) {
 	var path model.ExecutionPath
 	if err := row.Scan(&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt); err != nil {
+		return model.ExecutionPath{}, err
+	}
+	path.CreatedAt = path.CreatedAt.UTC()
+	path.UpdatedAt = path.UpdatedAt.UTC()
+	if path.ID == 0 || path.PlanID == 0 || path.SequenceNo < 1 {
+		return model.ExecutionPath{}, repository.ErrExecutionPathDataInvalid
+	}
+	path.Name = storedExecutionPathName(path.Name, path.SequenceNo)
+	return path, nil
+}
+
+// scanExecutionPathWithRevision 读取路径及其当前节点配置修订，供回放任务冻结并复验路径检查点。
+func scanExecutionPathWithRevision(row executionPathScanner) (model.ExecutionPath, error) {
+	var path model.ExecutionPath
+	if err := row.Scan(&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt, &path.ConfigurationRevision); err != nil {
 		return model.ExecutionPath{}, err
 	}
 	path.CreatedAt = path.CreatedAt.UTC()

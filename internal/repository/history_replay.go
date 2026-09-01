@@ -19,6 +19,8 @@ var (
 	ErrHistoryReplayNotFound = errors.New("历史回放任务不存在")
 	// ErrHistoryReplayState 表示任务当前状态不能执行请求的转换。
 	ErrHistoryReplayState = errors.New("历史回放任务状态不允许当前操作")
+	// ErrHistoryReplayIdempotency 表示同一幂等键被复用于不同的路径集合。
+	ErrHistoryReplayIdempotency = errors.New("历史回放幂等键不能复用于不同路径")
 )
 
 // HistoryDefaultRecord 是计划默认来源的工具侧持久化记录。
@@ -56,6 +58,7 @@ type HistoryReplayStore interface {
 	CreateReplay(context.Context, model.HistoryReplayJob, []model.HistoryReplayItem) (model.HistoryReplayJob, bool, error)
 	GetReplay(context.Context, uint64, string) (model.HistoryReplayJob, error)
 	FindActiveReplay(context.Context, uint64) (model.HistoryReplayJob, bool, error)
+	ListRecoverableReplays(context.Context) ([]model.HistoryReplayJob, error)
 	UpdateReplayStatus(context.Context, uint64, string, string, time.Time) (model.HistoryReplayJob, error)
 	ClaimReplayItems(context.Context, string, int, string, time.Time) ([]model.HistoryReplayItem, error)
 	CompleteReplayItem(context.Context, string, uint64, model.HistoryReplayItem, time.Time) error

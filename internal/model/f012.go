@@ -147,20 +147,26 @@ type HistoryPathSourceInput struct {
 
 // HistoryReplayJob 是多路径回放任务的真实聚合状态。
 type HistoryReplayJob struct {
-	ID          string     `json:"id"`
-	PlanID      uint64     `json:"-"`
-	Status      string     `json:"status"`
-	Total       int        `json:"total"`
-	Pending     int        `json:"pending"`
-	Running     int        `json:"running"`
-	Ready       int        `json:"ready"`
-	NeedsInput  int        `json:"needsInput"`
-	Affected    int        `json:"affected"`
-	Failed      int        `json:"failed"`
-	Cancelled   int        `json:"cancelled"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
-	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	ID     string `json:"id"`
+	PlanID uint64 `json:"-"`
+	// IdempotencyKey 只在服务端和仓储事务内使用，浏览器不能把它当作任务身份。
+	IdempotencyKey string     `json:"-"`
+	Status         string     `json:"status"`
+	Total          int        `json:"total"`
+	Pending        int        `json:"pending"`
+	Running        int        `json:"running"`
+	Ready          int        `json:"ready"`
+	NeedsInput     int        `json:"needsInput"`
+	Affected       int        `json:"affected"`
+	Failed         int        `json:"failed"`
+	Cancelled      int        `json:"cancelled"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	CompletedAt    *time.Time `json:"completedAt,omitempty"`
+	// LeaseOwner/LeaseExpiresAt/FencingToken 只用于后台租约与过期 worker 隔离。
+	LeaseOwner     string     `json:"-"`
+	LeaseExpiresAt *time.Time `json:"-"`
+	FencingToken   uint64     `json:"-"`
 }
 
 // HistoryReplayItem 是任务内单路径检查点和回放结果。
@@ -177,6 +183,13 @@ type HistoryReplayItem struct {
 	EffectiveFormData map[string]any       `json:"effectiveFormData,omitempty"`
 	UpdatedAt         time.Time            `json:"updatedAt"`
 	CompletedAt       *time.Time           `json:"completedAt,omitempty"`
+	// LeaseOwner/LeaseExpiresAt 不向页面暴露，仅由仓储核对完成写入者仍持有租约。
+	LeaseOwner     string     `json:"-"`
+	LeaseExpiresAt *time.Time `json:"-"`
+	FencingToken   uint64     `json:"-"`
+	// RuntimeType/RuntimeValidation 只在回放完成事务内更新当前路径配置，不能由浏览器提交或伪造。
+	RuntimeType       string                   `json:"-"`
+	RuntimeValidation HistoryRuntimeValidation `json:"-"`
 }
 
 // HistoryReplayItemPage 是明细游标分页结果。

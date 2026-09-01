@@ -63,6 +63,10 @@ func main() {
 	}
 	templateCatalogService := service.NewTemplateCatalogService(targetReader, planmysql.NewTemplateCatalogRepository(planDatabase.DB), workspaceRoot)
 	historyDataService := service.NewHistoryDataService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
+	historyReplayService := service.NewHistoryReplayService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
+	if err := historyReplayService.Recover(context.Background()); err != nil {
+		log.Printf("恢复历史回放任务失败：%v", err)
+	}
 	pathConfigService.SetTemplateRuleCatalog(templateCatalogService)
 	if err := templateCatalogService.Recover(context.Background()); err != nil {
 		log.Printf("恢复模板规则目录任务失败：%v", err)
@@ -108,7 +112,7 @@ func main() {
 	})
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithHistoryDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService, pathPreparationService, templateCatalogService, historyDataService),
+		Handler:           api.NewHandlerWithHistoryReplayServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService, pathPreparationService, templateCatalogService, historyDataService, historyReplayService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
