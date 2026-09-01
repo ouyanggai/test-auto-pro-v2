@@ -71,11 +71,13 @@ type HistoryCandidate struct {
 
 // HistoryCandidatePage 是历史候选的有界分页响应，不包含完整表单正文。
 type HistoryCandidatePage struct {
-	Items    []HistoryCandidate `json:"items"`
-	Page     int                `json:"page"`
-	PageSize int                `json:"pageSize"`
-	Total    int                `json:"total"`
-	HasMore  bool               `json:"hasMore"`
+	Items         []HistoryCandidate `json:"items"`
+	Page          int                `json:"page"`
+	PageSize      int                `json:"pageSize"`
+	Total         int                `json:"total"`
+	HasMore       bool               `json:"hasMore"`
+	DefaultSource *HistoryDataSource `json:"defaultSource,omitempty"`
+	PathSource    *HistoryDataSource `json:"pathSource,omitempty"`
 }
 
 // HistorySnapshotSummary 保存候选来源的业务摘要，避免向浏览器透传目标内部标识。
@@ -115,7 +117,7 @@ type HistorySnapshot struct {
 // HistoryDataSource 是路径历史来源的公开投影，正文只在服务端或 runtime 会话内流转。
 type HistoryDataSource struct {
 	Mode       string                  `json:"mode"`
-	SnapshotID uint64                  `json:"snapshotId,omitempty"`
+	SnapshotID uint64                  `json:"-"`
 	Summary    *HistorySnapshotSummary `json:"summary,omitempty"`
 	DataStatus string                  `json:"dataStatus"`
 	Issues     []HistoryDataIssue      `json:"issues"`

@@ -58,6 +58,7 @@ import type { PathPreparationJob } from '../features/path-preparation/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
+import HistorySourceSelector from '../features/history-replay/HistorySourceSelector.vue'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import { flowSourceLabels } from '../features/plans/selection'
 import type { PersistedPlan } from '../features/plans/types'
@@ -839,6 +840,12 @@ onMounted(() => {
             <n-descriptions-item label="定时启动">{{ scheduledAtText(plan.scheduledAt) }}</n-descriptions-item>
             <n-descriptions-item label="路径数量">{{ plan.pathCount }}</n-descriptions-item>
           </n-descriptions>
+
+			<history-source-selector
+				:plan-id="planID"
+				scope="default"
+				:disabled="!planMutable"
+			/>
 
           <section class="path-preparation" aria-labelledby="path-preparation-heading">
             <div class="path-preparation__header">

@@ -225,6 +225,114 @@ func (c *Client) ListSubmittedByFlowCode(ctx context.Context, session Session, f
 	return c.listSubmitted(ctx, session, "", strings.TrimSpace(flowCode), page, pageSize)
 }
 
+// ListHistoryInstances 分页读取目标可见历史实例，保留候选筛选和快照读取所需的原始身份字段。
+func (c *Client) ListHistoryInstances(ctx context.Context, session Session, flowCode string, page, pageSize int) (Page[HistoryInstance], error) {
+	data := map[string]any{
+		"useScope":     "invest",
+		"auditWayList": []string{},
+		// 使用目标既有全状态枚举；draft 与 await_sent 都是可选的未完整历史状态。
+		"statusList":                   []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
+		"flowInstanceBizRelevanceList": []map[string]any{{"otherBiz": "company", "otherBizId": ""}},
+	}
+	if value := strings.TrimSpace(flowCode); value != "" {
+		// flowCode 是目标列表协议的原始精确过滤字段，不能由名称或页面标签推导。
+		data["flowCode"] = value
+	}
+	resp, err := c.call(ctx, "/web/flowInstanceApi/list", session.SID, map[string]any{
+		"data": data, "pagination": true, "pages": page, "size": pageSize,
+	})
+	if err != nil {
+		return Page[HistoryInstance]{}, err
+	}
+	if !responseSucceeded(resp) {
+		return Page[HistoryInstance]{}, responseError(resp)
+	}
+	var raw []rawHistoryInstance
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return Page[HistoryInstance]{}, err
+	}
+	items := make([]HistoryInstance, 0, len(raw))
+	resolver := &auditDirectoryResolver{
+		client: c, ctx: ctx, active: session,
+		trees: make(map[string][]rawAuditDirectoryNode), named: make(map[string][]rawAuditNamedItem),
+		roleUsers: make(map[string][]FlowAuditCandidate), positionUsers: make(map[string][]FlowAuditCandidate),
+	}
+	for _, item := range raw {
+		formProxyIDs := make([]string, 0, 1)
+		if formProxyID := strings.TrimSpace(item.FormProxyID); formProxyID != "" {
+			formProxyIDs = append(formProxyIDs, formProxyID)
+		}
+		instance := HistoryInstance{
+			ID: item.ID, FlowProxyID: item.FlowProxyID, FormProxyIDs: formProxyIDs,
+			FlowCode:           strings.TrimSpace(item.FlowCode),
+			FlowName:           strings.TrimSpace(item.FlowName),
+			FormName:           item.FormName,
+			Title:              firstNonEmpty(item.Name, item.FormName, item.FlowName),
+			BusinessSummary:    strings.TrimSpace(item.Name),
+			Initiator:          historyInitiatorName(resolver, session, item.CreaterID),
+			CompanyName:        historyCompanyName(resolver, session, item.CompanyID),
+			CreatedAt:          firstNonEmpty(item.CreateDate, item.CreateTime),
+			Status:             item.Status,
+			StatusName:         submittedStatusText(item.Status),
+			CurrentNodeName:    item.CurrentNodeName,
+			CurrentNodeProxyID: strings.TrimSpace(item.CurrentNodeProxyID),
+			ActiveNodeProxyIDs: []string{},
+		}
+		items = append(items, instance)
+	}
+	return normalizePage(items, resp, page, pageSize)
+}
+
+// rawHistoryInstance 是历史实例列表的最小原始字段集合，未知业务字段不进入工具模型或日志。
+type rawHistoryInstance struct {
+	ID                 string `json:"id"`
+	FlowProxyID        string `json:"flowProxyId"`
+	FormProxyID        string `json:"formProxyId"`
+	Name               string `json:"name"`
+	FlowName           string `json:"flowName"`
+	FormName           string `json:"formName"`
+	Status             string `json:"status"`
+	CreateDate         string `json:"createDate"`
+	CreateTime         string `json:"createTime"`
+	CurrentNodeName    string `json:"currentNodeName"`
+	CurrentNodeProxyID string `json:"currentNodeProxyId"`
+	FlowCode           string `json:"flowCode"`
+	CreaterID          string `json:"createrId"`
+	CompanyID          string `json:"companyId"`
+}
+
+// historyInitiatorName 使用当前会话本人摘要或同公司人员目录解析目标发起人名称。
+func historyInitiatorName(resolver *auditDirectoryResolver, active Session, initiatorID string) string {
+	initiatorID = strings.TrimSpace(initiatorID)
+	if initiatorID == "" {
+		return ""
+	}
+	if initiatorID == strings.TrimSpace(active.UserID) && strings.TrimSpace(active.Summary.DisplayName) != "" {
+		return strings.TrimSpace(active.Summary.DisplayName)
+	}
+	name, err := resolver.nameFromPersonnel(initiatorID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
+
+// historyCompanyName 使用当前登录公司摘要或目标公司目录解析实例所属公司名称。
+func historyCompanyName(resolver *auditDirectoryResolver, active Session, companyID string) string {
+	companyID = strings.TrimSpace(companyID)
+	if companyID == "" {
+		return ""
+	}
+	if companyID == strings.TrimSpace(active.CompanyID) && strings.TrimSpace(active.Summary.CompanyName) != "" {
+		return strings.TrimSpace(active.Summary.CompanyName)
+	}
+	name, err := resolver.nameFromTree("7", companyID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
+
 // listSubmitted 统一拼装已发实例列表请求，名称搜索和流程编码过滤不能混用或相互猜测。
 func (c *Client) listSubmitted(ctx context.Context, session Session, query, flowCode string, page, pageSize int) (Page[SubmittedFlow], error) {
 	data := map[string]any{
@@ -518,7 +626,7 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 		"data": map[string]any{
 			"useScope":                     "invest",
 			"auditWayList":                 []string{},
-			"statusList":                   []string{"await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
+			"statusList":                   []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
 			"flowInstanceBizRelevanceList": []map[string]any{{"otherBiz": "company", "otherBizId": ""}},
 		},
 		"ids": []string{strings.TrimSpace(instanceID)}, "pagination": true, "pages": 1, "size": 100,
@@ -645,19 +753,19 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 
 // ReadTemplateTree 按模板 ID 读取新发起的真实节点树。
 func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, error) {
-	tree, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, _, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	return tree, err
 }
 
 // ReadProxyTree 按已核实的 flowProxyId 读取既有实例代理树。
 func (c *Client) ReadProxyTree(ctx context.Context, active Session, proxyID string) (*FlowNodeTemplate, error) {
-	tree, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	tree, _, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
 	return tree, err
 }
 
 // ReadTemplateRequirements 读取模板树及其关联表单字段，供路径要求核对内部使用。
 func (c *Client) ReadTemplateRequirements(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, []FormFieldMetadata, error) {
-	tree, forms, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, forms, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -667,7 +775,7 @@ func (c *Client) ReadTemplateRequirements(ctx context.Context, active Session, t
 
 // ReadProxyRequirements 读取代理树及实例代理表单字段，不回退到模板表单猜测运行态字段。
 func (c *Client) ReadProxyRequirements(ctx context.Context, active Session, proxyID string, formProxyIDs []string) (*FlowNodeTemplate, []FormFieldMetadata, error) {
-	tree, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	tree, _, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -683,7 +791,7 @@ func (c *Client) ReadProxyRequirements(ctx context.Context, active Session, prox
 
 // ReadTemplateConfiguration 读取模板树、表单字段详情和模板默认值，供新发起路径配置使用。
 func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, templateID string) (PathConfigurationSnapshot, error) {
-	tree, forms, flowCode, auditWay, formExist, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, forms, flowCode, flowName, auditWay, formExist, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
@@ -692,12 +800,12 @@ func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, 
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, AuditWay: auditWay, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms}, nil
+	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms}, nil
 }
 
 // ReadTemplateRuleSource 读取规则盘点所需的流程树和关联表单正文，不额外解析审批身份目录。
 func (c *Client) ReadTemplateRuleSource(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, []FormRuntimeTemplate, error) {
-	tree, forms, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
+	tree, forms, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -710,7 +818,7 @@ func (c *Client) ReadTemplateRuleSource(ctx context.Context, active Session, tem
 
 // ReadProxyConfiguration 读取代理树、实例代理表单字段详情和实例当前表单数据，供已发/待发路径配置使用。
 func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, proxyID string, formProxyIDs []string, instanceID string) (PathConfigurationSnapshot, error) {
-	tree, _, flowCode, auditWay, formExist, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
+	tree, _, flowCode, flowName, auditWay, formExist, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
@@ -729,33 +837,34 @@ func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, pro
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, AuditWay: auditWay, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms, InstanceValues: values}, nil
+	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms, InstanceValues: values}, nil
 }
 
 // readFlowDetail 调用目标详情端点并转换同一棵流程树和关联表单引用。
-func (c *Client) readFlowDetail(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, []rawFormReference, string, string, string, error) {
+func (c *Client) readFlowDetail(ctx context.Context, active Session, path, id string) (*FlowNodeTemplate, []rawFormReference, string, string, string, string, error) {
 	resp, err := c.call(ctx, path, active.SID, map[string]any{"data": map[string]any{"id": strings.TrimSpace(id)}})
 	if err != nil {
-		return nil, nil, "", "", "", err
+		return nil, nil, "", "", "", "", err
 	}
 	if !responseSucceeded(resp) {
-		return nil, nil, "", "", "", responseError(resp)
+		return nil, nil, "", "", "", "", responseError(resp)
 	}
 	var data struct {
 		FlowNodeTemplate *rawFlowNodeTemplate `json:"flowNodeTemplate"`
 		FormTemplateList []rawFormReference   `json:"formTemplateList"`
 		Code             string               `json:"code"`
 		FlowCode         string               `json:"flowCode"`
+		FlowName         string               `json:"flowName"`
 		AuditWay         string               `json:"auditWay"`
 		FormExist        string               `json:"formExist"`
 	}
 	if len(resp.Data) == 0 || string(resp.Data) == "null" {
-		return nil, nil, "", "", "", nil
+		return nil, nil, "", "", "", "", nil
 	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
-		return nil, nil, "", "", "", invalidResponse("invalid flow tree data")
+		return nil, nil, "", "", "", "", invalidResponse("invalid flow tree data")
 	}
-	return convertFlowNode(data.FlowNodeTemplate), data.FormTemplateList, firstNonEmpty(data.FlowCode, data.Code), strings.TrimSpace(data.AuditWay), data.FormExist, nil
+	return convertFlowNode(data.FlowNodeTemplate), data.FormTemplateList, firstNonEmpty(data.FlowCode, data.Code), strings.TrimSpace(data.FlowName), strings.TrimSpace(data.AuditWay), data.FormExist, nil
 }
 
 // readFormFields 逐个读取已核实表单详情，只保留中文展示所需的名称字典。

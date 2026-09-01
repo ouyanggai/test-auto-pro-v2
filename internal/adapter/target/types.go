@@ -52,6 +52,44 @@ type SubmittedFlow struct {
 	FlowCode              string   `json:"-"`
 }
 
+// HistoryInstance 是历史候选读取使用的目标原始实例摘要，目标内部标识只在后端保留。
+type HistoryInstance struct {
+	ID                 string
+	FlowProxyID        string
+	FormProxyIDs       []string
+	FlowCode           string
+	FlowName           string
+	FormName           string
+	Title              string
+	BusinessSummary    string
+	Initiator          string
+	CompanyName        string
+	CreatedAt          string
+	Status             string
+	StatusName         string
+	CurrentNodeName    string
+	CurrentNodeProxyID string
+	ActiveNodeProxyIDs []string
+}
+
+// HistorySnapshotSource 是从目标历史实例读取的原始数据和运行时摘要，不能向浏览器直接透传。
+type HistorySnapshotSource struct {
+	Instance        HistoryInstance
+	RenderType      FormRenderType
+	TemplateSummary map[string]any
+	RawFormData     map[string]any
+	Issues          []string
+}
+
+// HistoryIdentity 是计划目标流程用于历史候选精确筛选的原始身份字段。
+type HistoryIdentity struct {
+	FlowCode        string
+	FormName        string
+	FlowName        string
+	RenderType      FormRenderType
+	TemplateSummary map[string]any
+}
+
 type DueFlow struct {
 	FlowInstanceID   string `json:"flowInstanceId"`
 	FlowInstanceName string `json:"flowInstanceName"`
@@ -336,6 +374,7 @@ type PathConfigurationSnapshot struct {
 	RuleStatus     string
 	RuleIssues     []string
 	FlowCode       string
+	FlowName       string
 	AuditWay       string
 	RenderType     FormRenderType
 	VuePage        *VueCustomPageRule

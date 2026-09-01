@@ -8,6 +8,7 @@ import (
 
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/formruntimemaintenance"
+	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/service"
 )
 
@@ -61,6 +62,11 @@ func NewHandlerWithPreparationServices(reader TargetReader, plans PlanService, g
 
 // NewHandlerWithTemplateCatalogServices 组装 F-010 模板规则目录与既有全部能力。
 func NewHandlerWithTemplateCatalogServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService) http.Handler {
+	return NewHandlerWithHistoryDataServices(reader, plans, graphs, paths, requirements, configurations, maintenance, preparations, catalog, unavailableHistoryDataService{})
+}
+
+// NewHandlerWithHistoryDataServices 组装 F-012 历史候选与来源配置端点及既有全部能力。
+func NewHandlerWithHistoryDataServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -72,7 +78,25 @@ func NewHandlerWithTemplateCatalogServices(reader TargetReader, plans PlanServic
 	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
 	registerPathPreparationRoutes(mux, preparations)
 	registerTemplateCatalogRoutes(mux, catalog)
+	registerHistoryDataRoutes(mux, history)
 	return gzipResponses(mux)
+}
+
+type unavailableHistoryDataService struct{}
+
+// Candidates 在默认测试处理器未注入历史数据服务时返回稳定不可用错误。
+func (unavailableHistoryDataService) Candidates(context.Context, uint64, uint64, string, int, int) (model.HistoryCandidatePage, error) {
+	return model.HistoryCandidatePage{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+}
+
+// SaveDefault 在默认测试处理器未注入历史数据服务时返回稳定不可用错误。
+func (unavailableHistoryDataService) SaveDefault(context.Context, uint64, model.HistoryDefaultSaveInput, string) (model.HistoryDataSource, error) {
+	return model.HistoryDataSource{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+}
+
+// SavePathSource 在默认测试处理器未注入历史数据服务时返回稳定不可用错误。
+func (unavailableHistoryDataService) SavePathSource(context.Context, uint64, uint64, model.HistoryPathSourceInput, string) (model.HistoryDataSource, error) {
+	return model.HistoryDataSource{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
 }
 
 // gzipResponses 为声明支持 gzip 的客户端压缩 JSON 响应，避免大路径摘要重复占用传输带宽。

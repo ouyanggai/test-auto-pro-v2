@@ -62,6 +62,7 @@ func main() {
 		log.Fatal(err)
 	}
 	templateCatalogService := service.NewTemplateCatalogService(targetReader, planmysql.NewTemplateCatalogRepository(planDatabase.DB), workspaceRoot)
+	historyDataService := service.NewHistoryDataService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
 	pathConfigService.SetTemplateRuleCatalog(templateCatalogService)
 	if err := templateCatalogService.Recover(context.Background()); err != nil {
 		log.Printf("恢复模板规则目录任务失败：%v", err)
@@ -107,7 +108,7 @@ func main() {
 	})
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithTemplateCatalogServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService, pathPreparationService, templateCatalogService),
+		Handler:           api.NewHandlerWithHistoryDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, maintenanceService, pathPreparationService, templateCatalogService, historyDataService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

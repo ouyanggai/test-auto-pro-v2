@@ -44,13 +44,15 @@ type HistoryPathSourceRecord struct {
 // HistoryReplayStore 持久化 F-012 历史快照、来源和可恢复回放任务。
 type HistoryReplayStore interface {
 	SaveSnapshot(context.Context, model.HistorySnapshot) (model.HistorySnapshot, error)
+	SaveDefaultWithSnapshot(context.Context, model.HistorySnapshot, HistoryDefaultRecord, uint64, time.Time) (model.HistorySnapshot, HistoryDefaultRecord, error)
+	SavePathSourceWithSnapshot(context.Context, uint64, model.HistorySnapshot, HistoryPathSourceRecord, uint64, time.Time) (model.HistorySnapshot, HistoryPathSourceRecord, error)
 	GetSnapshotByCandidate(context.Context, uint64, string) (model.HistorySnapshot, error)
 	FindSnapshotByCandidate(context.Context, uint64, string) (model.HistorySnapshot, bool, error)
 	GetSnapshot(context.Context, uint64, uint64) (model.HistorySnapshot, error)
 	GetDefault(context.Context, uint64) (HistoryDefaultRecord, bool, error)
 	SaveDefault(context.Context, HistoryDefaultRecord, uint64, time.Time) (HistoryDefaultRecord, error)
 	GetPathSource(context.Context, uint64) (HistoryPathSourceRecord, bool, error)
-	SavePathSource(context.Context, HistoryPathSourceRecord, uint64, time.Time) (HistoryPathSourceRecord, error)
+	SavePathSource(context.Context, uint64, HistoryPathSourceRecord, uint64, time.Time) (HistoryPathSourceRecord, error)
 	CreateReplay(context.Context, model.HistoryReplayJob, []model.HistoryReplayItem) (model.HistoryReplayJob, bool, error)
 	GetReplay(context.Context, uint64, string) (model.HistoryReplayJob, error)
 	FindActiveReplay(context.Context, uint64) (model.HistoryReplayJob, bool, error)

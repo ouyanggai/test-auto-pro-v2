@@ -10,6 +10,7 @@ import type { ExecutionPath } from '../features/execution-paths/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
+import HistorySourceSelector from '../features/history-replay/HistorySourceSelector.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
 import {
@@ -841,6 +842,13 @@ void loadPage()
             </template>
           </div>
         </header>
+		<history-source-selector
+			class="path-configuration-page__history-source"
+			:plan-id="planID"
+			:path-id="pathID"
+			scope="path"
+			:disabled="!planMutable"
+		/>
         <section v-if="configuration.form.conditionBindings.length" class="path-configuration-page__form-hints" aria-label="当前路径分支条件">
           <n-collapse :default-expanded-names="['path-conditions']" arrow-placement="right">
             <n-collapse-item title="当前路径分支条件" name="path-conditions">
@@ -924,6 +932,9 @@ void loadPage()
 .path-configuration-page__form-actions {
   display: flex;
   align-items: center;
+}
+.path-configuration-page__history-source {
+	margin: 0 16px 12px;
 }
 
 .path-configuration-page__header { justify-content: space-between; gap: 24px; padding: 4px 0 14px; }
