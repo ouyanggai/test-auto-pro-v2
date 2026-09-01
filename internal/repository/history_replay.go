@@ -44,6 +44,7 @@ type HistoryPathSourceRecord struct {
 // HistoryReplayStore 持久化 F-012 历史快照、来源和可恢复回放任务。
 type HistoryReplayStore interface {
 	SaveSnapshot(context.Context, model.HistorySnapshot) (model.HistorySnapshot, error)
+	GetSnapshotByCandidate(context.Context, uint64, string) (model.HistorySnapshot, error)
 	FindSnapshotByCandidate(context.Context, uint64, string) (model.HistorySnapshot, bool, error)
 	GetSnapshot(context.Context, uint64, uint64) (model.HistorySnapshot, error)
 	GetDefault(context.Context, uint64) (HistoryDefaultRecord, bool, error)
