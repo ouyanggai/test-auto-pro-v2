@@ -60,6 +60,24 @@ const (
 	ActionFollow ActionKey = "follow"
 	// ActionUnfollow 表示取消关注主实例。
 	ActionUnfollow ActionKey = "unfollow"
+	// ActionSystemAutomatic 表示系统节点的只读自动语义，不是可配置的用户写动作。
+	ActionSystemAutomatic ActionKey = "system_automatic"
+)
+
+// ActionCategory 描述动作目录中的业务分组。
+type ActionCategory string
+
+const (
+	// ActionCategoryLifecycle 表示发起实例生命周期动作。
+	ActionCategoryLifecycle ActionCategory = "lifecycle"
+	// ActionCategoryCurrentTodo 表示当前待办处理动作。
+	ActionCategoryCurrentTodo ActionCategory = "current_todo"
+	// ActionCategoryDoneRecovery 表示已办任务恢复动作。
+	ActionCategoryDoneRecovery ActionCategory = "done_recovery"
+	// ActionCategoryInstanceManagement 表示实例级管理动作。
+	ActionCategoryInstanceManagement ActionCategory = "instance_management"
+	// ActionCategorySystemAutomatic 表示系统节点的只读自动语义。
+	ActionCategorySystemAutomatic ActionCategory = "system_automatic"
 )
 
 // ConfiguredAction 是用户排序保存的一条独立动作记录；重复动作通过多条记录表达。
@@ -83,19 +101,34 @@ type ActionPrecondition struct {
 	Present  bool   `json:"present"`
 }
 
+// ActionParameter 描述目标接口请求中的一个语义参数，不携带目标临时 ID 或表单正文。
+type ActionParameter struct {
+	Name        string `json:"name"`
+	Value       string `json:"value,omitempty"`
+	Required    bool   `json:"required"`
+	Description string `json:"description"`
+}
+
 // ActionCatalogItem 是按目标事实投影的动作能力和中文禁用原因。
 type ActionCatalogItem struct {
-	Action         ActionKey            `json:"action"`
-	Scope          ActionScope          `json:"scope"`
-	Label          string               `json:"label"`
-	Description    string               `json:"description"`
-	Enabled        bool                 `json:"enabled"`
-	DisabledReason string               `json:"disabledReason,omitempty"`
-	Parameters     []string             `json:"parameters"`
-	Preconditions  []ActionPrecondition `json:"preconditions"`
-	ExpectedEffect string               `json:"expectedEffect"`
-	RequiresReload bool                 `json:"requiresReload"`
-	SystemOnly     bool                 `json:"systemOnly"`
+	Action   ActionKey      `json:"action"`
+	Category ActionCategory `json:"category"`
+	Scope    ActionScope    `json:"scope"`
+	// NodeKey 只承载工具侧语义节点键，不应由浏览器传入目标代理或任务 ID。
+	NodeKey            string               `json:"nodeKey,omitempty"`
+	Label              string               `json:"label"`
+	Description        string               `json:"description"`
+	TargetOperation    string               `json:"targetOperation"`
+	Enabled            bool                 `json:"enabled"`
+	DisabledReason     string               `json:"disabledReason"`
+	Parameters         []string             `json:"parameters"`
+	ParameterDetails   []ActionParameter    `json:"parameterDetails"`
+	Preconditions      []ActionPrecondition `json:"preconditions"`
+	ExpectedEffect     string               `json:"expectedEffect"`
+	RequiresReload     bool                 `json:"requiresReload"`
+	ReloadRequirements []string             `json:"reloadRequirements"`
+	SystemOnly         bool                 `json:"systemOnly"`
+	SystemNodeType     string               `json:"systemNodeType,omitempty"`
 }
 
 // ActionContext 是动作门禁服务读取的目标实时上下文投影。
@@ -115,6 +148,23 @@ type ActionContext struct {
 	PreviousTaskExists bool   `json:"previousTaskExists"`
 	CanSwitchActor     bool   `json:"canSwitchActor"`
 	Followed           bool   `json:"followed"`
+	// PreviousNodeType 来自目标流程代理的直接前驱节点；为空时不能安全声称可以回退。
+	PreviousNodeType string `json:"previousNodeType"`
+	// PreviousNodeIsStart 是目标回退实现对发起节点前驱的明确判定。
+	PreviousNodeIsStart bool `json:"previousNodeIsStart"`
+	// HasPendingRecipient 表示当前实例是否存在可催办的真实待办接收人。
+	HasPendingRecipient bool `json:"hasPendingRecipient"`
+	// InstanceVisible 表示当前账号上下文已重读到实例；未设置时由其他实例事实推断。
+	InstanceVisible bool `json:"instanceVisible"`
+	// RetrieveNodeIsStart 表示已办任务所在节点是发起节点；目标引擎明确禁止取回该节点。
+	RetrieveNodeIsStart bool `json:"retrieveNodeIsStart"`
+	// RetrieveAlreadyUsed 表示该已办任务已经产生取回记录，重复取回必须阻止。
+	RetrieveAlreadyUsed bool `json:"retrieveAlreadyUsed"`
+	// CurrentTaskHandledByOther 表示会签/并行当前节点已有其他演员处理，取回不能越过该事实。
+	CurrentTaskHandledByOther bool `json:"currentTaskHandledByOther"`
+	// CurrentTaskCountersign/CurrentTaskParallel 是取回门禁所需的目标节点事实。
+	CurrentTaskCountersign bool `json:"currentTaskCountersign"`
+	CurrentTaskParallel    bool `json:"currentTaskParallel"`
 }
 
 // CompiledActionStep 是未来执行器消费的只读步骤，当前切片不执行该步骤。
