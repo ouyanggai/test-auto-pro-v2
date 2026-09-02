@@ -123,6 +123,9 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	configuration.Revision, configuration.NodeRevision = stored.Revision, stored.NodeRevision
 	applyConfirmedNodeState(&configuration, stored.ConfirmedNodeKeys)
 	configuration.ActionCycles = projectPathConfigActionCycles(stored.ActionValues, configuration)
+	if err := s.applyHistoryActionProjection(ctx, pathID, &configuration); err != nil {
+		return model.PathConfiguration{}, err
+	}
 	plan, err := s.plans.Get(ctx, planID)
 	if err != nil {
 		return model.PathConfiguration{}, err

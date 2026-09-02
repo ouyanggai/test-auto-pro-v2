@@ -79,6 +79,58 @@ export interface PathConfigurationDataResult extends Omit<PathConfigurationDataW
   routeChange?: PathConfigurationRouteChange | null
 }
 
+// PathActionKey 是 F-012 允许编排的稳定动作语义键，不携带目标临时身份。
+export type PathActionKey =
+  | 'save_draft'
+  | 'submit'
+  | 'resubmit'
+  | 'storage_form_data'
+  | 'add_sign'
+  | 'transfer'
+  | 'approve'
+  | 'reject'
+  | 'rollback_previous'
+  | 'retrieve'
+  | 'withdraw'
+  | 'urge'
+  | 'forward'
+  | 'follow'
+  | 'unfollow'
+
+// PathActionScope 描述动作作用于发起实例、当前待办、已办任务或实例旁支的范围。
+export type PathActionScope = 'initiator' | 'task' | 'completed_task' | 'instance'
+
+// PathActionConfigurationInput 是新动作端点的最小请求体，只提交独立动作记录。
+export interface PathActionConfigurationInput {
+  revision: number
+  persons?: PathConfigPersonStrategyInput[]
+  actions: PathConfiguredActionInput[]
+}
+
+// PathConfiguredActionInput 是一条可独立排序、删除和重试的 F-012 动作记录。
+export interface PathConfiguredActionInput {
+  key: string
+  action: PathActionKey
+  scope: PathActionScope
+  nodeKey?: string
+  order: number
+  parameters?: Record<string, unknown>
+  actorPolicy?: string
+  note?: string
+}
+
+// PathActionConfigurationResult 是服务端重编译后的动作保存和只读预览结果。
+export interface PathActionConfigurationResult {
+  path: PathConfigPath
+  revision: number
+  nodeRevision: number
+  actionRevision: number
+  status: string
+  actions: PathConfiguredActionInput[]
+  compiledScenario: unknown[]
+  issues: Array<{ index: number, action?: string, actionId?: string, code: string, message: string, blocking: boolean }>
+}
+
 export interface PathConfigPreparation {
   preparedNodes: number
   pendingItems: number
@@ -410,6 +462,9 @@ export interface PathConfigConfiguredAction {
   label: string
   count: number
   person?: PathConfigPersonStrategyInput
+  parameters?: Record<string, unknown>
+  actorPolicy?: string
+  note?: string
 }
 
 export interface PathConfigActionCatalogItem {
@@ -427,6 +482,9 @@ export interface PathConfigConfiguredActionInput {
   kind: PathConfigActionKind
   count: number
   person?: PathConfigPersonStrategyInput
+  parameters?: Record<string, unknown>
+  actorPolicy?: string
+  note?: string
 }
 
 export interface PathConfigFieldValue {

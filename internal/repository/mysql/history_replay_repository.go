@@ -595,7 +595,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 func normalizeHistoryPathConfigJSON(record *repository.HistoryPathConfigRecord) {
 	objectDefaults := map[*[]byte][]byte{
 		&record.PersonStrategies:  []byte(`{}`),
-		&record.UserActions:       []byte(`{}`),
 		&record.EffectiveFormData: []byte(`{}`),
 		&record.RuntimeValidation: []byte(`{}`),
 		&record.LatestIdempotency: []byte(`{}`),
@@ -606,6 +605,7 @@ func normalizeHistoryPathConfigJSON(record *repository.HistoryPathConfigRecord) 
 		}
 	}
 	arrayDefaults := map[*[]byte][]byte{
+		&record.UserActions:       []byte(`[]`),
 		&record.CompiledSteps:     []byte(`[]`),
 		&record.ConfirmedNodeKeys: []byte(`[]`),
 		&record.BranchPatches:     []byte(`[]`),
@@ -621,8 +621,12 @@ func normalizeHistoryPathConfigJSON(record *repository.HistoryPathConfigRecord) 
 // sameHistoryPathConfigData 判断同一幂等键请求是否完全重复，只比较本次数据域允许覆盖的字段。
 func sameHistoryPathConfigData(current, requested repository.HistoryPathConfigRecord) bool {
 	return current.PathID == requested.PathID && current.SourceMode == requested.SourceMode && current.RuntimeType == requested.RuntimeType &&
-		pointerValue(current.SnapshotID) == pointerValue(requested.SnapshotID) && bytes.Equal(current.EffectiveFormData, requested.EffectiveFormData) &&
-		bytes.Equal(current.BranchPatches, requested.BranchPatches) && bytes.Equal(current.RuntimeValidation, requested.RuntimeValidation) && bytes.Equal(current.Issues, requested.Issues)
+		current.ConfigStatus == requested.ConfigStatus && current.NodeStatus == requested.NodeStatus && current.DataStatus == requested.DataStatus &&
+		pointerValue(current.SnapshotID) == pointerValue(requested.SnapshotID) && bytes.Equal(current.PersonStrategies, requested.PersonStrategies) &&
+		bytes.Equal(current.UserActions, requested.UserActions) && bytes.Equal(current.CompiledSteps, requested.CompiledSteps) &&
+		bytes.Equal(current.ConfirmedNodeKeys, requested.ConfirmedNodeKeys) && bytes.Equal(current.EffectiveFormData, requested.EffectiveFormData) &&
+		bytes.Equal(current.BranchPatches, requested.BranchPatches) && bytes.Equal(current.RuntimeValidation, requested.RuntimeValidation) &&
+		bytes.Equal(current.Issues, requested.Issues)
 }
 
 // pointerValue 将可空快照 ID 转换为可比较的零值。
@@ -716,7 +720,7 @@ INSERT INTO test_execution_path_configs (
   effective_form_data, branch_patches, runtime_validation, issues, latest_idempotency_result,
   created_at, updated_at
 ) VALUES (?, 1, 0, 1, 0, ?, 'pending', 'pending', 'empty', ?, ?, 'unknown',
-  JSON_OBJECT(), JSON_OBJECT(), JSON_ARRAY(), JSON_ARRAY(), JSON_OBJECT(),
+  JSON_OBJECT(), JSON_ARRAY(), JSON_ARRAY(), JSON_ARRAY(), JSON_OBJECT(),
   JSON_ARRAY(), JSON_OBJECT(), JSON_ARRAY(), JSON_OBJECT(), ?, ?)`,
 			record.PathID, record.IdempotencyKey, record.Mode, nullableSnapshotID(record.SnapshotID), record.UpdatedAt, record.UpdatedAt)
 		if err != nil {

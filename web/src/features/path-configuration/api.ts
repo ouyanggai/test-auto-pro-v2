@@ -4,7 +4,8 @@ import type {
   PathConfigurationDataResult,
   PathConfigurationDataWorkspace,
   PathConfigurationRouteChange,
-  PathConfigNodeSavePayload,
+  PathActionConfigurationInput,
+  PathActionConfigurationResult,
   PathConfigSaveResult,
   PathFormConditionBinding,
   PathFormConfiguration,
@@ -162,17 +163,16 @@ export function copyPathConfigurationCycles(planId: string, targetPathId: string
   })
 }
 
-// savePathConfigurationNode 只保存当前节点人员和动作，避免一次点击覆盖整条路径。
-export function savePathConfigurationNode(
+// savePathActionConfiguration 只提交 F-012 独立动作记录，由服务端重编译同一主实例场景。
+export function savePathActionConfiguration(
   planId: string,
   pathId: string,
   nodeKey: string,
-  revision: number,
-  payload: PathConfigNodeSavePayload,
+  payload: PathActionConfigurationInput,
   idempotencyKey: string,
-): Promise<PathConfigSaveResult> {
-  return request<PathConfigSaveResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/nodes/${encodeURIComponent(nodeKey)}`, {
-    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ revision, ...payload }),
+): Promise<PathActionConfigurationResult> {
+  return request<PathActionConfigurationResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/nodes/${encodeURIComponent(nodeKey)}`, {
+    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(payload),
   })
 }
 

@@ -9,6 +9,10 @@ import type {
   PathConfigPersonDisplayItem,
   PathConfigPersonStrategyInput,
   PathConfigNodeSavePayload,
+  PathActionConfigurationInput,
+  PathActionKey,
+  PathActionScope,
+  PathConfiguredActionInput,
   PathFormStatus,
 } from './types.ts'
 import type { FlowConfigurationNodeState, FlowGraph } from '../flow-graph/types.ts'
@@ -100,10 +104,21 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
 }
 
 // copyPathConfigActions 脱离 Vue Proxy 并移除已经废弃的目标与组合字段。
-export function copyPathConfigActions(input: Array<Pick<PathConfigConfiguredActionInput, 'key' | 'kind' | 'count' | 'person'>>): PathConfigConfiguredActionInput[] {
-  return (input ?? []).map(item => item.person
-    ? { key: item.key, kind: item.kind, count: normalizedActionCount(item.count), person: copyPathConfigPersonStrategy(item.person) }
-    : { key: item.key, kind: item.kind, count: normalizedActionCount(item.count) })
+export function copyPathConfigActions(input: Array<Pick<PathConfigConfiguredActionInput, 'key' | 'kind' | 'count' | 'person' | 'parameters' | 'actorPolicy' | 'note'>>): PathConfigConfiguredActionInput[] {
+  return (input ?? []).map(item => ({
+    key: item.key,
+    kind: item.kind,
+    count: normalizedActionCount(item.count),
+    ...(item.person ? { person: copyPathConfigPersonStrategy(item.person) } : {}),
+    ...(item.parameters ? { parameters: cloneActionParameters(item.parameters) } : {}),
+    ...(item.actorPolicy ? { actorPolicy: item.actorPolicy } : {}),
+    ...(item.note ? { note: item.note } : {}),
+  }))
+}
+
+// cloneActionParameters 复制动作参数对象，避免编辑器保留 Vue Proxy 或共享可变引用。
+function cloneActionParameters(input: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(input)) as Record<string, unknown>
 }
 
 // pathConfigActionsInput 从当前节点的独立动作配置取得可保存草稿。
@@ -113,6 +128,51 @@ export function pathConfigActionsInput(node: PathConfigNode): PathConfigConfigur
 export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft, actionCycles?: PathConfigActionCycleInput[]): PathConfigNodeSavePayload {
   const persons = node.persons.filter(person => person.editable).map(person => normalizedPersonStrategy(person, draft.personStrategies[person.key]))
   return { persons, actions: copyPathConfigActions(draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)), actionCycles }
+}
+
+const legacyActionSemantics: Record<string, { action: PathActionKey, scope: PathActionScope }> = {
+  draft_save: { action: 'storage_form_data', scope: 'task' },
+  reject_no_pass: { action: 'reject', scope: 'task' },
+  rollback_previous: { action: 'rollback_previous', scope: 'task' },
+  add_sign: { action: 'add_sign', scope: 'task' },
+}
+
+// buildPathActionConfigurationInput 把页面现有动作草稿转换为 F-012 独立记录，不把旧次数字段发送到后端。
+export function buildPathActionConfigurationInput(node: PathConfigNode, draft: PathConfigDraft, revision: number): PathActionConfigurationInput {
+  const source = draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)
+  const personsByKey = new Map(node.persons
+    .filter(person => person.editable)
+    .map(person => {
+      const value = normalizedPersonStrategy(person, draft.personStrategies[person.key])
+      return [value.key, value] as const
+    }))
+  const actions: PathConfiguredActionInput[] = []
+  let order = 1
+  source.forEach(item => {
+    const semantic = legacyActionSemantics[item.kind]
+    if (!semantic) return
+    const repeatCount = normalizedActionCount(item.count)
+    for (let repeat = 0; repeat < repeatCount; repeat += 1) {
+      const key = repeatCount === 1 ? item.key : `${item.key}#${repeat + 1}`
+      const parameters = {
+        ...(item.parameters ? cloneActionParameters(item.parameters) : {}),
+        ...(item.person?.strategy ? { actorStrategy: item.person.strategy } : {}),
+      }
+      if (item.person) personsByKey.set(item.person.key, { key: item.person.key, strategy: item.person.strategy, seed: item.person.seed, selected: [...item.person.selected] })
+      actions.push({
+        key,
+        action: semantic.action,
+        scope: semantic.scope,
+        nodeKey: semantic.scope === 'instance' ? undefined : node.key,
+        order,
+        ...(Object.keys(parameters).length ? { parameters } : {}),
+        ...((item.actorPolicy || item.person?.strategy) ? { actorPolicy: item.actorPolicy || item.person?.strategy } : {}),
+        ...(item.note ? { note: item.note } : {}),
+      })
+      order += 1
+    }
+  })
+  return { revision, persons: [...personsByKey.values()], actions }
 }
 
 // currentNodeConfigurationComplete 仅检查当前节点的人员与独立动作配置。
@@ -127,7 +187,7 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
     if ((person.required && selected.length === 0) || (selected.length > 0 && selected.length < person.minCount)) missing.push(person.title)
   }
   const actions = draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)
-  if (!validPathConfigActions(node, actions)) missing.push('动作配置')
+  if (!validCurrentNodeActions(node, actions)) missing.push('动作配置')
   return { missing, complete: missing.length === 0 }
 }
 
@@ -166,6 +226,18 @@ export function validPathConfigActions(node: PathConfigNode, input: PathConfigCo
     const definition = catalog.get(action.kind)
     if (seen.has(action.kind)) return false
     seen.add(action.kind)
+    if (!definition || normalizedActionCount(action.count) !== action.count) return false
+    if (!definition.requiresPerson) return !action.person
+    return validPathConfigActionPerson(definition.person, action.person)
+  })
+}
+
+// validCurrentNodeActions 校验新动作编辑器的独立记录，不以 kind 去重；旧 F-008 校验函数保留给兼容测试边界。
+function validCurrentNodeActions(node: PathConfigNode, input: PathConfigConfiguredActionInput[]): boolean {
+  if (!input || input.length > 10) return false
+  const catalog = new Map(node.actionConfiguration.catalog.filter(item => item.enabled).map(item => [item.kind, item]))
+  return input.every(action => {
+    const definition = catalog.get(action.kind)
     if (!definition || normalizedActionCount(action.count) !== action.count) return false
     if (!definition.requiresPerson) return !action.person
     return validPathConfigActionPerson(definition.person, action.person)

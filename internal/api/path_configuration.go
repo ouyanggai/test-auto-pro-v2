@@ -29,6 +29,13 @@ type PathConfigurationDataService interface {
 	SaveData(context.Context, uint64, uint64, string, model.PathConfigurationDataInput) (model.PathConfigurationDataResult, error)
 }
 
+// PathActionConfigurationService 提供 F-012 语义动作保存和同实例只读场景预览。
+type PathActionConfigurationService interface {
+	GetActionConfiguration(context.Context, uint64, uint64) (model.ActionConfigurationResult, error)
+	GetCompiledScenario(context.Context, uint64, uint64) (model.ActionConfigurationResult, error)
+	SaveActionConfiguration(context.Context, uint64, uint64, string, string, model.ActionConfigurationInput) (model.ActionConfigurationResult, error)
+}
+
 // PathRunInputPreflightService 提供 P4 只读运行输入快照和目标适配预检。
 type PathRunInputPreflightService interface {
 	PreflightRunInput(context.Context, uint64, uint64) (model.RunInputPreflightResult, error)
@@ -45,7 +52,11 @@ type pathFormGenerateInput struct {
 // F-012 数据工作区必须由调用方显式注入；未注入时不注册兼容或兜底路由。
 func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConfigurationService, dataServices PathConfigurationDataService) {
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration", handleGetPathConfiguration(configurations))
-	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/nodes/{nodeKey}", handleSavePathConfigurationNode(configurations))
+	if actions, ok := configurations.(PathActionConfigurationService); ok {
+		// F-012 节点保存端点只接收语义动作；未注入新服务时不注册旧接口或兼容路由。
+		mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/nodes/{nodeKey}", handleSaveActionConfiguration(actions))
+		mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration/compiled-scenario", handleGetCompiledScenario(actions))
+	}
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/selection", handleSavePathConfigurationSelection(configurations))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/cycles/copy", handleCopyPathConfigurationCycles(configurations))
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/form/generate", handleGeneratePathConfigurationForm(configurations))
@@ -60,6 +71,48 @@ func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConf
 		preflights = unavailablePathRunInputPreflightService{}
 	}
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/run-input/preflight", handlePathRunInputPreflight(preflights))
+}
+
+// handleGetCompiledScenario 返回服务端重编译的动作场景，不接受浏览器提交的步骤正文。
+func handleGetCompiledScenario(actions PathActionConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		result, err := actions.GetCompiledScenario(request.Context(), planID, pathID)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
+}
+
+// handleSaveActionConfiguration 保存当前语义节点动作并要求服务端重新编译完整主实例场景。
+func handleSaveActionConfiguration(actions PathActionConfigurationService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		var input model.ActionConfigurationInput
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "动作配置请求格式不正确", false)
+			return
+		}
+		result, err := actions.SaveActionConfiguration(
+			request.Context(), planID, pathID, strings.TrimSpace(request.PathValue("nodeKey")),
+			strings.TrimSpace(request.Header.Get("Idempotency-Key")), input,
+		)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
 }
 
 // handleGetPathConfigurationData 返回目标原始表单数据和复制 runtime 的加载协议。

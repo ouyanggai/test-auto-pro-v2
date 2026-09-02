@@ -381,11 +381,14 @@ type PathConfigActionConfiguration struct {
 
 // PathConfigConfiguredAction 是配置期动作组合中的一项；Count 只表示该动作重复次数，不是组合循环次数。
 type PathConfigConfiguredAction struct {
-	Key    string                         `json:"key"`
-	Kind   string                         `json:"kind"`
-	Label  string                         `json:"label"`
-	Count  int                            `json:"count"`
-	Person *PathConfigPersonStrategyInput `json:"person,omitempty"`
+	Key         string                         `json:"key"`
+	Kind        string                         `json:"kind"`
+	Label       string                         `json:"label"`
+	Count       int                            `json:"count"`
+	Person      *PathConfigPersonStrategyInput `json:"person,omitempty"`
+	Parameters  map[string]any                 `json:"parameters,omitempty"`
+	ActorPolicy string                         `json:"actorPolicy,omitempty"`
+	Note        string                         `json:"note,omitempty"`
 }
 
 // PathConfigActionCatalogItem 说明当前节点可静态证明合法的动作及必要参数。

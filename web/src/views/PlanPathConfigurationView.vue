@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { NAlert, NButton, NCard, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
 import type { NotificationReactive } from 'naive-ui'
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
 import { fetchExecutionPath, fetchExecutionPaths } from '../features/execution-paths/api'
@@ -15,9 +15,10 @@ import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vu
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
 import {
   bindPathConfigurationNodes,
-  buildPathConfigNodeSavePayload,
+  buildPathActionConfigurationInput,
 	copyPathConfigActions,
   currentNodeConfigurationComplete,
+  hasCurrentNodeDraftChanges,
   initialPathConfigurationNodeID,
   initPathConfigDraft,
   pathConfigurationMessage,
@@ -32,7 +33,7 @@ import {
   fetchPathConfigurationData,
   fetchPathFormRuntimeSession,
   PathConfigApiError,
-  savePathConfigurationNode,
+  savePathActionConfiguration,
   savePathConfigurationData,
 } from '../features/path-configuration/api'
 import { retryPathLoad } from '../features/path-configuration/retry'
@@ -169,6 +170,7 @@ const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
 const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(selectedNode.value, draft.value))
 const nodeSaveDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
 const saveAllNodesDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !configuration.value)
+const nodeDraftHasUnsavedChanges = computed(() => hasCurrentNodeDraftChanges(selectedNode.value, draft.value))
 const runtimeBlockingReasons = computed(() => [...new Set(runtimeUnsupported.value)])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
 // pathSignature 与服务端使用同一选择序列，前端只展示可能成功的目标，最终仍由服务端复验。
@@ -424,7 +426,7 @@ async function saveCurrentNode() {
   nodeSavedSuccessfully.value = false
   const previousRevision = current.nodeRevision
   try {
-    await savePathConfigurationNode(planID.value, pathID.value, node.key, previousRevision, buildPathConfigNodeSavePayload(node, draft.value, actionCycles.value), nodeSaveKey)
+    await savePathActionConfiguration(planID.value, pathID.value, node.key, buildPathActionConfigurationInput(node, draft.value, previousRevision), nodeSaveKey)
     await reloadConfiguration()
     await finishConfirmedNodeSave()
   }
@@ -468,12 +470,11 @@ async function saveAllNodes() {
         skipped.push(node.name)
         continue
       }
-      const result = await savePathConfigurationNode(
+      const result = await savePathActionConfiguration(
         planID.value,
         pathID.value,
         node.key,
-        revision,
-        buildPathConfigNodeSavePayload(node, draft.value, actionCycles.value),
+        buildPathActionConfigurationInput(node, draft.value, revision),
         crypto.randomUUID(),
       )
       revision = result.nodeRevision
@@ -651,15 +652,31 @@ function cancelRouteChange() {
   routeConfirmationChange.value = null
 }
 
+// confirmDiscardNodeDraft 在离开路径前拦截未保存的人员或动作草稿，避免导航悄悄丢失用户编辑。
+function confirmDiscardNodeDraft() {
+  if (!nodeDraftHasUnsavedChanges.value || savingNode.value) return true
+  return window.confirm('当前节点人员或动作配置尚未保存，确定离开？')
+}
+
+// handleBeforeUnload 浏览器关闭或刷新时复用同一未保存门禁。
+function handleBeforeUnload(event: BeforeUnloadEvent) {
+  if (!nodeDraftHasUnsavedChanges.value || savingNode.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
 // backToPlan 只失效宿主会话并导航，iframe 卸载由 Vue 子组件生命周期负责。
 function backToPlan() {
   invalidateRuntimeSession()
   router.push('/plans/' + planID.value + '/paths')
 }
 
+onBeforeRouteLeave(confirmDiscardNodeDraft)
 watch([workspace, formError, formSavedSuccessfully, runtimeBlockingReasons, formErrorDetails], showFormNotice, { deep: true })
 watch([planID, pathID], () => { void loadPage() })
+onMounted(() => window.addEventListener('beforeunload', handleBeforeUnload))
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
   loadVersion++
   loadController?.abort()
   invalidateRuntimeSession()

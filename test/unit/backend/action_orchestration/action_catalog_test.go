@@ -126,6 +126,24 @@ func TestActionCatalogRecoveryAndInstanceGates(t *testing.T) {
 	if items[model.ActionRetrieve].Enabled || items[model.ActionRetrieve].DisabledReason != "后继任务已经处理，不支持取回" {
 		t.Fatalf("后继已处理却允许取回：%+v", items[model.ActionRetrieve])
 	}
+	for _, context := range []struct {
+		name string
+		set  func(*model.ActionContext)
+	}{
+		{name: "会签", set: func(value *model.ActionContext) {
+			value.CurrentTaskCountersign, value.CurrentTaskHandledByOther = true, true
+		}},
+		{name: "并行", set: func(value *model.ActionContext) {
+			value.CurrentTaskParallel, value.CurrentTaskHandledByOther = true, true
+		}},
+	} {
+		gated := retrieve
+		context.set(&gated)
+		items = indexCatalog(actioncatalog.Build(gated))
+		if items[model.ActionRetrieve].Enabled || items[model.ActionRetrieve].DisabledReason != "会签或并行节点已有其他演员处理，不支持取回" {
+			t.Fatalf("%s其他演员已处理却允许取回：%+v", context.name, items[model.ActionRetrieve])
+		}
+	}
 	initiator := model.ActionContext{FlowSource: "submitted", InstanceStatus: "run", IsInitiator: true, HasPendingRecipient: true}
 	items = indexCatalog(actioncatalog.Build(initiator))
 	for _, key := range []model.ActionKey{model.ActionWithdraw, model.ActionUrge, model.ActionForward, model.ActionFollow} {

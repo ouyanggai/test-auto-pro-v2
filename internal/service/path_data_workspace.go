@@ -377,8 +377,9 @@ func workspaceRecord(snapshot target.PathConfigurationSnapshot, source historyWo
 	if routeChanged {
 		record.ConfigStatus, record.NodeStatus = "affected", "affected"
 	}
-	if record.UserActions == nil {
-		record.UserActions = []byte(`{}`)
+	if len(record.UserActions) == 0 || string(record.UserActions) == `{}` {
+		// 动作列按有序独立记录保存；空值必须是数组，避免后续场景编译把对象误判为损坏正文。
+		record.UserActions = []byte(`[]`)
 	}
 	if record.PersonStrategies == nil {
 		record.PersonStrategies = []byte(`{}`)

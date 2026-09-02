@@ -184,8 +184,32 @@ type CompiledActionStep struct {
 	ReloadRequired  bool             `json:"reloadRequired"`
 }
 
-// ActionConfigurationInput 是保存有序动作的最小回写体，不携带目标 task/proxy ID。
+// ActionConfigurationInput 是保存当前节点人员与有序动作的最小回写体，不携带目标 task/proxy ID。
 type ActionConfigurationInput struct {
 	Revision uint64             `json:"revision"`
+	// Persons 沿用节点人员策略的不透明候选键；服务端按当前真实节点再次校验后写入独立配置列。
+	Persons  []PathConfigPersonStrategyInput `json:"persons,omitempty"`
 	Actions  []ConfiguredAction `json:"actions"`
+}
+
+// ActionConfigurationIssue 定位动作配置中第一个无法恢复的顺序或事实问题。
+type ActionConfigurationIssue struct {
+	Index     int       `json:"index"`
+	ActionKey ActionKey `json:"action"`
+	ActionID  string    `json:"actionId,omitempty"`
+	Code      string    `json:"code"`
+	Message   string    `json:"message"`
+	Blocking  bool      `json:"blocking"`
+}
+
+// ActionConfigurationResult 是节点动作保存与只读场景预览的领域结果。
+type ActionConfigurationResult struct {
+	Path             PathConfigPath             `json:"path"`
+	Revision         uint64                     `json:"revision"`
+	NodeRevision     uint64                     `json:"nodeRevision"`
+	ActionRevision   uint64                     `json:"actionRevision"`
+	Status           string                     `json:"status"`
+	Actions          []ConfiguredAction         `json:"actions"`
+	CompiledScenario []CompiledActionStep       `json:"compiledScenario"`
+	Issues           []ActionConfigurationIssue `json:"issues"`
 }
