@@ -1,5 +1,9 @@
 import type {
   PathConfiguration,
+  PathConfigurationDataInput,
+  PathConfigurationDataResult,
+  PathConfigurationDataWorkspace,
+  PathConfigurationRouteChange,
   PathConfigNodeSavePayload,
   PathConfigSaveResult,
   PathFormConditionBinding,
@@ -26,7 +30,7 @@ interface ApiFailure {
     code: string
     message: string
     retryable: boolean
-    details?: Array<{ kind: string, name: string, reason: string }>
+    details?: unknown
   }
 }
 
@@ -34,19 +38,59 @@ export class PathConfigApiError extends Error {
   readonly code: string
   readonly retryable: boolean
   readonly details: Array<{ kind: string, name: string, reason: string }>
+  readonly routeChange: PathConfigurationRouteChange | null
+  readonly confirmationToken: string
 
-  constructor(message: string, code = 'PLAN_STORAGE_UNAVAILABLE', retryable = false, details: Array<{ kind: string, name: string, reason: string }> = []) {
+  constructor(message: string, code = 'PLAN_STORAGE_UNAVAILABLE', retryable = false, details: unknown = undefined) {
     super(message)
     this.name = 'PathConfigApiError'
     this.code = code
     this.retryable = retryable
-    this.details = details
+    const source = details && typeof details === 'object' && !Array.isArray(details) ? details as Record<string, unknown> : null
+    this.routeChange = source?.routeChange && typeof source.routeChange === 'object' ? source.routeChange as PathConfigurationRouteChange : null
+    this.confirmationToken = typeof source?.confirmationToken === 'string' ? source.confirmationToken : ''
+    this.details = Array.isArray(details) ? details.filter(item => item && typeof item === 'object').map(item => {
+      const value = item as Record<string, unknown>
+      return { kind: String(value.kind ?? ''), name: String(value.name ?? ''), reason: String(value.reason ?? '') }
+    }) : []
   }
 }
 
 export async function fetchPathConfiguration(planId: string, pathId: string, signal: AbortSignal): Promise<PathConfiguration> {
   const result = await request<PathConfiguration>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration`, { method: 'GET' }, signal)
   return normalizePathConfiguration(result)
+}
+
+// fetchPathConfigurationData 读取目标原始表单数据和复制 runtime 的完整加载协议。
+export function fetchPathConfigurationData(planId: string, pathId: string, signal?: AbortSignal): Promise<PathConfigurationDataWorkspace> {
+  return request<PathConfigurationDataWorkspace>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/data`, { method: 'GET' }, signal).then(normalizePathConfigurationData)
+}
+
+// savePathConfigurationData 保存 runtime 捕获的原始 values，服务端负责重算实际路径与换路门禁。
+export function savePathConfigurationData(planId: string, pathId: string, idempotencyKey: string, input: PathConfigurationDataInput, signal?: AbortSignal): Promise<PathConfigurationDataResult> {
+  return request<PathConfigurationDataResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/data`, {
+    method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(input),
+  }, signal).then(normalizePathConfigurationDataResult)
+}
+
+// normalizePathConfigurationData 只为模板渲染补齐数组默认值，不改写目标原始 values。
+function normalizePathConfigurationData(value: PathConfigurationDataWorkspace): PathConfigurationDataWorkspace {
+  return {
+    ...value,
+    template: value?.template && typeof value.template === 'object' ? value.template : {},
+    vuePage: value?.vuePage ?? null,
+    permissions: Array.isArray(value?.permissions) ? value.permissions.map(permission => ({ field: String(permission?.field ?? ''), power: permission?.power === 'edit' || permission?.power === 'hide' ? permission.power : 'only_read' })) : [],
+    readRequests: Array.isArray(value?.readRequests) ? value.readRequests.map(request => ({ method: String(request?.method ?? 'GET').toUpperCase(), path: String(request?.path ?? ''), source: String(request?.source ?? '') })).filter(request => request.path) : [],
+    effectiveFormData: value?.effectiveFormData && typeof value.effectiveFormData === 'object' ? value.effectiveFormData : {},
+    branchPatches: Array.isArray(value?.branchPatches) ? value.branchPatches : [],
+    runtimeValidation: { accepted: value?.runtimeValidation?.accepted === true, issues: Array.isArray(value?.runtimeValidation?.issues) ? value.runtimeValidation.issues : [] },
+    issues: Array.isArray(value?.issues) ? value.issues : [],
+  }
+}
+
+// normalizePathConfigurationDataResult 保留服务端换路结果的路径和原始值，不合并旧表单状态。
+function normalizePathConfigurationDataResult(value: PathConfigurationDataResult): PathConfigurationDataResult {
+  return { ...normalizePathConfigurationData(value as unknown as PathConfigurationDataWorkspace), routeChanged: value?.routeChanged === true, requiresConfirmation: value?.requiresConfirmation === true, confirmationToken: typeof value?.confirmationToken === 'string' ? value.confirmationToken : '', routeChange: value?.routeChange ?? null }
 }
 
 // normalizePathConditionBinding 将外部 JSON 的可选条件字段归一为稳定前端模型，避免 null 进入模板表达式。

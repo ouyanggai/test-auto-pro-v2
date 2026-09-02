@@ -2,10 +2,10 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import { classifyRuntimeMessage, FORM_RUNTIME_VERSION, type RuntimeMessage } from './runtimeProtocol'
-import type { PathFormConfiguration, PathFormRuntimeSession } from './types'
+import type { PathConfigurationDataWorkspace, PathFormRuntimeSession } from './types'
 
 const props = defineProps<{
-  form: PathFormConfiguration
+  form: PathConfigurationDataWorkspace & { readOnly?: boolean }
   runtimeSession: PathFormRuntimeSession
 }>()
 const emit = defineEmits<{
@@ -56,7 +56,7 @@ function postCommand(type: string, payload: Record<string, unknown> = {}, signal
   })
 }
 
-// loadRuntime 只把 SID 传给当前 iframe 内存会话，并装载完整模板、权限、字段规则、Vue 页面规则和 values。
+// loadRuntime 只把 SID 传给当前 iframe 内存会话，并按目标 runtime 协议装载原始模板、权限、页面和 values。
 async function loadRuntime(): Promise<Record<string, unknown>> {
   if (disposed) return {}
   const generation = ++runtimeGeneration
@@ -72,18 +72,14 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       companyName: props.runtimeSession.companyName,
       departmentId: props.runtimeSession.departmentId,
       departmentName: props.runtimeSession.departmentName,
-      readOnly: props.form.readOnly,
-      renderType: props.form.renderType === 'vue_custom' ? 'vue_custom' : props.form.renderType,
+      readOnly: props.form.readOnly === true,
+      renderType: props.form.runtimeType,
       ruleVersion: props.form.ruleVersion,
       readRequestManifest: props.form.readRequests,
       vuePage: props.form.vuePage,
       template: props.form.template,
       permissions: props.form.permissions,
-      fieldRules: props.form.fieldRules,
-      values: props.form.values,
-      generatedValues: props.form.values,
-      generatedFieldPaths: props.form.generatedFieldPaths,
-      manualOverridePaths: props.form.manualOverridePaths,
+      values: props.form.effectiveFormData,
     })
     if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
     emit('ready', payload)
@@ -127,9 +123,9 @@ function handleMessage(event: MessageEvent) {
   else request.resolve(message.payload || {})
 }
 
-// setGeneratedData 把服务端生成结果交给真实 FormMaking setData/refresh。
-function setGeneratedData(values: Record<string, unknown>, generatedFieldPaths: string[], manualOverridePaths: string[], fieldRules: PathFormConfiguration['fieldRules'], signal?: AbortSignal) {
-  return postCommand('setData', { values, generatedFieldPaths, manualOverridePaths, fieldRules }, signal)
+// setValues 把用户明确恢复的原始 values 交给 runtime，不附带生成器元数据或字段映射。
+function setValues(values: Record<string, unknown>, signal?: AbortSignal) {
+  return postCommand('setData', { values }, signal)
 }
 
 // restoreSaved 恢复本次载入时的已保存值。
@@ -137,7 +133,7 @@ function restoreSaved() {
   return postCommand('restore')
 }
 
-// getValues 不触发必填校验，用于换一组前捕获人工修改和生成器所有权。
+// getValues 不触发必填校验，用于保存前捕获 runtime 当前原始 values。
 function getValues(signal?: AbortSignal) {
   return postCommand('getValues', {}, signal)
 }
@@ -184,7 +180,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('message', handleMessage)
 })
 
-defineExpose({ setGeneratedData, restoreSaved, getValues, validateAndGetValues, destroyRuntime })
+defineExpose({ setValues, restoreSaved, getValues, validateAndGetValues, destroyRuntime })
 </script>
 
 <template>
@@ -192,7 +188,7 @@ defineExpose({ setGeneratedData, restoreSaved, getValues, validateAndGetValues, 
     ref="iframe"
     class="form-runtime-frame"
     :src="iframeSource"
-    title="真实 FormMaking 表单数据工作区"
+    title="目标表单原始数据工作区"
     sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
   />
 </template>

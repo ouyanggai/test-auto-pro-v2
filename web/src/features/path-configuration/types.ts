@@ -1,3 +1,5 @@
+import type { HistoryDataIssue, HistoryDataSource } from '../history-replay/types.ts'
+
 export type PathConfigFieldType = 'text' | 'number' | 'date' | 'dateTime' | 'singleSelect' | 'multiSelect' | 'switch'
 
 export interface PathConfigPath {
@@ -17,6 +19,64 @@ export interface PathConfiguration {
   form: PathFormConfiguration
   actionCycles: PathConfigActionCycle[]
   preparation: PathConfigPreparation
+}
+
+export interface PathConfigurationDataWorkspace {
+  path: PathConfigPath
+  revision: number
+  nodeRevision: number
+  dataRevision: number
+  actionRevision: number
+  nodeStatus: string
+  dataStatus: 'empty' | 'needs_input' | 'ready' | 'affected'
+  historySource: HistoryDataSource
+  runtimeType: 'formmaking' | 'vue_custom' | 'unknown'
+  template: Record<string, unknown>
+  vuePage?: PathVueCustomPageRule | null
+  permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
+  readRequests: PathFormReadRequest[]
+  ruleVersion: string
+  effectiveFormData: Record<string, unknown>
+  branchPatches: PathConfigurationBranchPatch[]
+  runtimeValidation: PathConfigurationRuntimeValidation
+  issues: HistoryDataIssue[]
+  actions: unknown[]
+  compiledScenario: unknown[]
+}
+
+export interface PathConfigurationRuntimeValidation {
+  accepted: boolean
+  issues: HistoryDataIssue[]
+}
+
+export interface PathConfigurationBranchPatch {
+  path: string
+  before: unknown
+  after: unknown
+  reason: string
+  branchKey: string
+}
+
+export interface PathConfigurationDataInput {
+  revision: number
+  values: Record<string, unknown>
+  runtimeValidation: PathConfigurationRuntimeValidation
+  confirmationToken?: string
+}
+
+export interface PathConfigurationRouteChange {
+  from: PathConfigPath
+  to: PathConfigPath
+  overwritesData: boolean
+  affected: Array<{ kind: string, name: string, reason: string }>
+  warning: string
+}
+
+export interface PathConfigurationDataResult extends Omit<PathConfigurationDataWorkspace, 'historySource' | 'nodeRevision' | 'actionRevision' | 'nodeStatus' | 'actions' | 'compiledScenario'> {
+  routeChanged: boolean
+  requiresConfirmation: boolean
+  confirmationToken?: string
+  routeChange?: PathConfigurationRouteChange | null
 }
 
 export interface PathConfigPreparation {

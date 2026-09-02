@@ -46,19 +46,15 @@ export function componentRuntimeName (component) {
   ).trim()
 }
 
-// prepareTemplate 在完整模板副本上应用字段权限和宿主投影的精确字段规则，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
-// 条件字段规则只能按模型键匹配；未映射条件不传入这里，不能按标题猜测后误禁用真实组件。
-export function prepareTemplate (rawTemplate, permissions, readOnly, fieldRules = []) {
+// prepareTemplate 在完整模板副本上应用目标权限，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
+// 分支条件由服务端对原始数据重算；runtime 不接收字段映射或生成规则，避免把历史正文改造成工具状态。
+export function prepareTemplate (rawTemplate, permissions, readOnly) {
 	const template = clonePlain(rawTemplate || {})
 	const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [normalizeFieldPath(item.field), item.power]))
-	const ruleByField = new Map((Array.isArray(fieldRules) ? fieldRules : [])
-		.filter(item => item && typeof item === 'object' && String(item.field || '').trim())
-		.map(item => [normalizeFieldPath(item.field), Boolean(item.disabled)]))
   const unsupported = new Set()
   const allFields = new Set()
   const editableFields = new Set()
 	const hiddenFields = new Set()
-	const protectedFields = new Set()
 	const requiredEditableFields = new Set()
   const visit = (list) => {
     for (const component of Array.isArray(list) ? list : []) {
@@ -72,18 +68,15 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, fieldRules 
       }
       if (model) {
         // 目标页面先禁用整张表单，再只开放流程节点明确授权的字段；缺少权限不能默认可编辑。
-        const field = normalizeFieldPath(model)
-        const power = permissionByField.get(field) || 'only_read'
-        allFields.add(field)
-			const protectedByCondition = ruleByField.get(field) === true
-			if (!readOnly && power === 'edit' && !protectedByCondition) editableFields.add(field)
-			if (protectedByCondition) protectedFields.add(field)
+		const field = normalizeFieldPath(model)
+		const power = permissionByField.get(field) || 'only_read'
+		allFields.add(field)
+			if (!readOnly && power === 'edit') editableFields.add(field)
 			const staticallyHidden = power === 'hide' || component.hidden === true || component.options && (component.options.hidden === true || component.options.display === false)
 			if (staticallyHidden) hiddenFields.add(field)
 			component.options = component.options || {}
 			component.options.hidden = staticallyHidden
-			// 条件锁定在组件创建前写入 options，不能依赖宿主视觉遮挡或不兼容的运行时 disabled API。
-			component.options.disabled = readOnly || power !== 'edit' || protectedByCondition
+			component.options.disabled = readOnly || power !== 'edit'
 			if (component.options.disabled) {
           component.options.required = false
           // 未开放字段必须移除整组运行时校验，目标页面也是先按权限清理规则再 refresh。
@@ -110,28 +103,21 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, fieldRules 
     allFields: [...allFields],
 		editableFields: [...editableFields],
 		hiddenFields: [...hiddenFields],
-		protectedFields: [...protectedFields],
 		requiredEditableFields: [...requiredEditableFields]
 	}
 }
 
-// formRuntimeStats 只根据真实 getValues、组件生效后的编辑权限、生成所有权和人工修改计算工具栏统计。
-export function formRuntimeStats (values, generatedFieldPaths, manualOverridePaths, editableFields, protectedFields, requiredEditableFields) {
+// formRuntimeStats 只根据真实 getValues 和组件生效后的编辑权限计算当前填写统计。
+export function formRuntimeStats (values, editableFields, requiredEditableFields) {
 	const getPath = (input, path) => String(path || '').split('.').filter(Boolean).reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, input)
-	const generated = new Set((Array.isArray(generatedFieldPaths) ? generatedFieldPaths : []).map(normalizeFieldPath))
-	const manual = new Set((Array.isArray(manualOverridePaths) ? manualOverridePaths : []).map(normalizeFieldPath))
-	const protectedSet = new Set((Array.isArray(protectedFields) ? protectedFields : []).map(normalizeFieldPath))
 	const editable = new Set((Array.isArray(editableFields) ? editableFields : []).map(normalizeFieldPath))
-	const autoEligible = new Set([...editable, ...protectedSet])
-	let autoFilled = 0
-	for (const field of autoEligible) {
-		if (generated.has(field) && !manual.has(field) && !isEmptyModelValue(getPath(values, field))) autoFilled++
-	}
+	let filledEditable = 0
+	for (const field of editable) if (!isEmptyModelValue(getPath(values, field))) filledEditable++
 	let manualPending = 0
 	for (const field of new Set((Array.isArray(requiredEditableFields) ? requiredEditableFields : []).map(normalizeFieldPath))) {
-		if (editable.has(field) && !protectedSet.has(field) && isEmptyModelValue(getPath(values, field))) manualPending++
+		if (editable.has(field) && isEmptyModelValue(getPath(values, field))) manualPending++
 	}
-	return { autoFilled, manualPending }
+	return { filledEditable, manualPending }
 }
 
 // captureFormValues 使用目标运行时 getData 仅做校验，并以 getValues 返回包含虚拟字段的完整对象。
@@ -148,20 +134,18 @@ export async function captureFormValues (form, validate) {
   return clonePlain(form.getValues())
 }
 
-// buildValuesEnvelope 统一 FormMaking getValues 与 Vue capture 的回传外壳，渲染器只负责提供完整 values。
-export function buildValuesEnvelope ({ values, validated, unsupported, dirty, generatedFieldPaths, manualOverridePaths, stats, issues, renderType, ruleVersion }) {
+// buildValuesEnvelope 只回传 runtime 捕获的原始 values 和结构化校验摘要，不附带生成器或字段映射元数据。
+export function buildValuesEnvelope ({ values, validated, unsupported, dirty, stats, issues, renderType, ruleVersion }) {
   return {
     renderType: String(renderType || 'formmaking'),
     ruleVersion: String(ruleVersion || ''),
     values: clonePlain(values || {}),
-    validated: Boolean(validated),
-    unsupported: Array.isArray(unsupported) ? unsupported.map(String) : [],
-    dirty: Boolean(dirty),
-    generatedFieldPaths: Array.isArray(generatedFieldPaths) ? [...new Set(generatedFieldPaths.map(String))].sort() : [],
-    manualOverridePaths: Array.isArray(manualOverridePaths) ? [...new Set(manualOverridePaths.map(String))].sort() : [],
-    issues: Array.isArray(issues) ? clonePlain(issues) : [],
-    stats: stats && typeof stats === 'object' ? clonePlain(stats) : { autoFilled: 0, manualPending: 0 }
-  }
+		validated: Boolean(validated),
+		unsupported: Array.isArray(unsupported) ? unsupported.map(String) : [],
+		dirty: Boolean(dirty),
+		issues: Array.isArray(issues) ? clonePlain(issues) : [],
+		stats: stats && typeof stats === 'object' ? clonePlain(stats) : { filledEditable: 0, manualPending: 0 }
+	}
 }
 
 // refreshPreparedForm 只刷新已预先写入权限的模板，避免目标自定义组件因缺少 disabledElement 被统一运行时禁用调用击穿。
@@ -180,22 +164,4 @@ function isEmptyModelValue (value) {
   if (Array.isArray(value)) return value.length === 0
   if (typeof value === 'object') return Object.keys(value).length === 0
   return false
-}
-
-// diffManualPaths 递归比较生成基线与 getValues 结果，得到换一组时必须保留的人工覆盖路径。
-// 只有右侧出现非空真实值才视为人工修改，避免 FormMaking 初始默认模型把全部字段误报成人工覆盖。
-export function diffManualPaths (generated, current) {
-  const paths = new Set()
-  const walk = (left, right, prefix) => {
-    if (JSON.stringify(left) === JSON.stringify(right)) return
-    if (isEmptyModelValue(right)) return
-    if (left && right && typeof left === 'object' && typeof right === 'object' && !Array.isArray(left) && !Array.isArray(right)) {
-      const keys = new Set([...Object.keys(left), ...Object.keys(right)])
-      for (const key of keys) walk(left[key], right[key], prefix ? `${prefix}.${key}` : key)
-      return
-    }
-    if (prefix) paths.add(prefix)
-  }
-  walk(generated || {}, current || {}, '')
-  return [...paths].sort()
 }

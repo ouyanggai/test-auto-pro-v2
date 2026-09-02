@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+
+const read = (relative) => readFileSync(new URL(`../../../..${relative}`, import.meta.url), 'utf8')
+
+test('T05 数据工作区按原始 values 协议连接复制 runtime', () => {
+  const view = read('/web/src/views/PlanPathConfigurationView.vue')
+  const frame = read('/web/src/features/path-configuration/FormRuntimeFrame.vue')
+  const runtime = read('/form-runtime/src/App.vue')
+  const api = read('/web/src/features/path-configuration/api.ts')
+
+  assert.match(view, /fetchPathConfigurationData\(/)
+  assert.match(view, /savePathConfigurationData\(/)
+  assert.match(view, /values: captured\.values/)
+  assert.match(frame, /values: props\.form\.effectiveFormData/)
+  assert.match(frame, /function setValues\(/)
+  assert.match(runtime, /this\.values = clonePlain\(payload\.values \|\| \{\}\)/)
+  assert.doesNotMatch(runtime, /generatedValues|generatedFieldPaths|manualOverridePaths/)
+  assert.doesNotMatch(frame, /setGeneratedData|generatedFieldPaths|manualOverridePaths/)
+  assert.doesNotMatch(api, /HistoricalDataPayload|fieldMapping|renderAdapter/)
+})
+
+test('T05 保存换路需要确认令牌且取消不触发写入', () => {
+  const view = read('/web/src/views/PlanPathConfigurationView.vue')
+  const api = read('/web/src/features/path-configuration/api.ts')
+
+  assert.match(view, /routeConfirmationOpen/)
+  assert.match(view, /confirmRouteChange\(\)/)
+  assert.match(view, /cancelRouteChange\(\)/)
+  assert.match(view, /confirmationToken/)
+  assert.match(view, /PATH_ROUTE_CONFIRMATION_REQUIRED/)
+  assert.match(api, /headers: \{ 'Idempotency-Key': idempotencyKey \}/)
+  assert.doesNotMatch(view, /generatePathFormData|智能生成|换一组|nextFormGenerationSeed/)
+})

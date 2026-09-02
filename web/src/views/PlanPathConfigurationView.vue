@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
 import type { NotificationReactive } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -20,7 +20,6 @@ import {
   currentNodeConfigurationComplete,
   initialPathConfigurationNodeID,
   initPathConfigDraft,
-  nextFormGenerationSeed,
   pathConfigurationMessage,
   pathConfigurationStatusName,
   pathConfigurationNodesByGraphID,
@@ -30,11 +29,11 @@ import {
 import {
   copyPathConfigurationCycles,
   fetchPathConfiguration,
+  fetchPathConfigurationData,
   fetchPathFormRuntimeSession,
-  generatePathFormData,
   PathConfigApiError,
   savePathConfigurationNode,
-  savePathFormData,
+  savePathConfigurationData,
 } from '../features/path-configuration/api'
 import { retryPathLoad } from '../features/path-configuration/retry'
 import type {
@@ -45,13 +44,16 @@ import type {
   PathConfiguration,
   PathConfigPerson,
   PathConfigPersonStrategyInput,
+  PathConfigurationDataWorkspace,
+  PathConfigurationRouteChange,
+  PathConfigurationRuntimeValidation,
   PathFormRuntimeSession,
 } from '../features/path-configuration/types'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import type { PersistedPlan } from '../features/plans/types'
 
 type FormRuntimeExpose = InstanceType<typeof FormRuntimeFrame> & {
-  setGeneratedData: (values: Record<string, unknown>, paths: string[], manualPaths: string[], fieldRules: PathConfiguration['form']['fieldRules'], signal?: AbortSignal) => Promise<Record<string, unknown>>
+  setValues: (values: Record<string, unknown>, signal?: AbortSignal) => Promise<Record<string, unknown>>
   restoreSaved: () => Promise<Record<string, unknown>>
   getValues: (signal?: AbortSignal) => Promise<Record<string, unknown>>
   validateAndGetValues: () => Promise<Record<string, unknown>>
@@ -74,15 +76,18 @@ const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
 const workspace = ref<'nodes' | 'form'>('nodes')
 const runtimeSession = ref<PathFormRuntimeSession | null>(null)
+const dataWorkspace = ref<PathConfigurationDataWorkspace | null>(null)
+const runtimeStats = ref<{ filledEditable: number, manualPending: number }>({ filledEditable: 0, manualPending: 0 })
 const runtimeUnsupported = ref<string[]>([])
 const pageLoading = ref(false)
 const pathDetailLoading = ref(false)
 const savingNode = ref(false)
 const formRuntimeLoading = ref(false)
-const formGenerating = ref(false)
-const formGenerationKind = ref<'smart' | 'next' | null>(null)
 const formRestoring = ref(false)
 const formSaving = ref(false)
+const routeConfirmationOpen = ref(false)
+const routeConfirmationToken = ref('')
+const routeConfirmationChange = ref<PathConfigurationRouteChange | null>(null)
 const pageError = ref('')
 const nodeSaveError = ref('')
 const nodeSaveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
@@ -106,26 +111,6 @@ let formSaveKey = ''
 const notification = useNotification()
 let formNotice: NotificationReactive | null = null
 
-const formGenerationOperationTimeout = 20_000
-const templateRuleStaleMessage = '模板已更新，请先到系统设置更新模板规则'
-
-// beginFormGenerationDeadline 为取值、服务端生成和 iframe 回填建立同一个二十秒期限。
-function beginFormGenerationDeadline(controller: AbortController, stage: () => string): number {
-  return window.setTimeout(() => {
-    controller.abort(new DOMException(`智能生成在${stage()}阶段超过 20 秒，当前表单值已保留`, 'TimeoutError'))
-  }, formGenerationOperationTimeout)
-}
-
-// formGenerationFailureMessage 区分共享期限、阶段运行时失败和普通 API 错误。
-function formGenerationFailureMessage(caught: unknown, signal: AbortSignal, stage: string): string {
-  if (signal.aborted && signal.reason instanceof DOMException && signal.reason.name === 'TimeoutError') {
-    return signal.reason.message
-  }
-  if (caught instanceof Error && caught.message.includes('表单运行时响应超时')) {
-    return `智能生成在${stage}阶段未收到表单运行时响应，当前表单值已保留`
-  }
-  return `智能生成在${stage}阶段失败：${publicPageError(caught)}，当前表单值已保留`
-}
 
 // dismissFormNotice 销毁表单工作区悬浮反馈，避免离开路径后旧通知残留到下一条路径。
 function dismissFormNotice() {
@@ -175,7 +160,7 @@ const pageThemeStyle = computed(() => ({
 }))
 const planMutable = computed(() => plan.value?.status === 'not_started')
 const formReadOnly = computed(() => !planMutable.value || Boolean(configuration.value?.form.readOnly))
-const runtimeForm = computed(() => configuration.value ? { ...configuration.value.form, readOnly: formReadOnly.value } : null)
+const runtimeForm = computed(() => dataWorkspace.value ? { ...dataWorkspace.value, readOnly: formReadOnly.value } : null)
 const pathAnalysis = computed(() => graph.value && currentPath.value ? analyzeExecutionPath(graph.value, currentPath.value.choices) : null)
 const selectedNode = computed(() => configurationByGraphNodeID.value.get(selectedNodeID.value) ?? null)
 const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
@@ -184,14 +169,8 @@ const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
 const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(selectedNode.value, draft.value))
 const nodeSaveDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
 const saveAllNodesDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !configuration.value)
-const runtimeBlockingReasons = computed(() => [...new Set([
-	...(configuration.value?.form.unsupported ?? []),
-	...(configuration.value?.form.conditionReviews ?? []),
-	...((configuration.value?.form.affected ?? []).some(item => item.reason === templateRuleStaleMessage) ? [templateRuleStaleMessage] : []),
-	...runtimeUnsupported.value,
-])])
+const runtimeBlockingReasons = computed(() => [...new Set(runtimeUnsupported.value)])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
-const templateRuleStale = computed(() => configuration.value?.form.affected.some(item => item.reason === templateRuleStaleMessage) ?? false)
 // pathSignature 与服务端使用同一选择序列，前端只展示可能成功的目标，最终仍由服务端复验。
 function pathSignature(path: ExecutionPath): string { return path.choices.map(choice => `${choice.routeNodeId.trim()}:${choice.branchId.trim()}`).join('|') }
 const cycleCopyTargets = computed(() => {
@@ -201,18 +180,17 @@ const cycleCopyTargets = computed(() => {
   return executionPaths.value.filter(path => path.id !== current.id && pathSignature(path) === signature)
 })
 
-// applyRuntimeFormState 只接受 iframe 已核验会话回传的统计与人工覆盖摘要，宿主不自行猜测 FormMaking 当前字段值。
+// applyRuntimeFormState 只接受 iframe 已核验会话回传的原始值统计，宿主不持有字段映射或生成所有权。
 function applyRuntimeFormState(payload: Record<string, unknown>) {
   if (workspace.value !== 'form') return
-  const form = configuration.value?.form
-  if (!form) return
   const stats = payload.stats
   if (stats && typeof stats === 'object') {
-    const runtimeStats = stats as { autoFilled?: unknown, manualPending?: unknown }
-    if (typeof runtimeStats.autoFilled === 'number' && Number.isInteger(runtimeStats.autoFilled) && runtimeStats.autoFilled >= 0) form.autoFilled = runtimeStats.autoFilled
-    if (typeof runtimeStats.manualPending === 'number' && Number.isInteger(runtimeStats.manualPending) && runtimeStats.manualPending >= 0) form.manualPending = runtimeStats.manualPending
+    const current = stats as { filledEditable?: unknown, manualPending?: unknown }
+    runtimeStats.value = {
+      filledEditable: typeof current.filledEditable === 'number' && Number.isInteger(current.filledEditable) && current.filledEditable >= 0 ? current.filledEditable : 0,
+      manualPending: typeof current.manualPending === 'number' && Number.isInteger(current.manualPending) && current.manualPending >= 0 ? current.manualPending : 0,
+    }
   }
-  if (Array.isArray(payload.manualOverridePaths)) form.manualOverridePaths = payload.manualOverridePaths.map(String)
 }
 
 // handleRuntimeReady 接收真实组件注册表与首次字段统计，避免初始化阶段仍显示旧的生成器估算值。
@@ -235,10 +213,13 @@ function invalidateRuntimeSession() {
   formOperationController?.abort()
   formOperationController = null
   runtimeSession.value = null
+  dataWorkspace.value = null
+  runtimeStats.value = { filledEditable: 0, manualPending: 0 }
+  routeConfirmationOpen.value = false
+  routeConfirmationToken.value = ''
+  routeConfirmationChange.value = null
   runtimeUnsupported.value = []
   formRuntimeLoading.value = false
-  formGenerating.value = false
-  formGenerationKind.value = null
   formRestoring.value = false
   formSaving.value = false
   dismissFormNotice()
@@ -518,20 +499,24 @@ async function saveAllNodes() {
   }
 }
 
-// openFormWorkspace 获取短期 SID 后切换到全宽真实表单；SID 不进入配置对象或持久状态。
+// openFormWorkspace 获取原始数据工作区和短期 SID 后切换到全宽 runtime；SID 不进入配置对象或持久状态。
 async function openFormWorkspace() {
-  if (!configuration.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value) return
+  if (!configuration.value || formRuntimeLoading.value || formRestoring.value || formSaving.value) return
   workspace.value = 'form'
   formError.value = ''
-  if (runtimeSession.value) return
+  if (runtimeSession.value && dataWorkspace.value) return
   const epoch = ++runtimeEpoch
   const controller = new AbortController()
   runtimeSessionController?.abort()
   runtimeSessionController = controller
   formRuntimeLoading.value = true
   try {
-    const session = await fetchPathFormRuntimeSession(planID.value, pathID.value, controller.signal)
+    const [data, session] = await Promise.all([
+      fetchPathConfigurationData(planID.value, pathID.value, controller.signal),
+      fetchPathFormRuntimeSession(planID.value, pathID.value, controller.signal),
+    ])
     if (controller.signal.aborted || epoch !== runtimeEpoch || workspace.value !== 'form') return
+    dataWorkspace.value = data
     runtimeSession.value = session
   }
   catch (caught) {
@@ -543,97 +528,34 @@ async function openFormWorkspace() {
   }
 }
 
+// handleHistorySourceSaved 重新读取来源摘要和原始 values，并通过既有 runtime setValues 透传，不在页面拼接表单状态。
+async function handleHistorySourceSaved() {
+  if (workspace.value !== 'form' || !runtimeSession.value) return
+  const controller = new AbortController()
+  try {
+    const data = await fetchPathConfigurationData(planID.value, pathID.value, controller.signal)
+    if (workspace.value !== 'form' || !runtimeSession.value) return
+    dataWorkspace.value = data
+    runtimeStats.value = { filledEditable: 0, manualPending: 0 }
+    const frame = formFrame.value
+    if (frame) applyRuntimeFormState(await frame.setValues(data.effectiveFormData, controller.signal))
+  }
+  catch (caught) {
+    if (!controller.signal.aborted) formError.value = publicPageError(caught)
+  }
+}
+
 // returnToNodes 先失效宿主状态再切换工作区，iframe 只通过自身卸载钩子 teardown 一次。
 function returnToNodes() {
   invalidateRuntimeSession()
   workspace.value = 'nodes'
 }
 
-// generateFormData 首次生成或换一组；换组仅替换生成器拥有字段，人工覆盖由 runtime 返回。
-async function generateFormData(nextGroup: boolean) {
-  const current = configuration.value
-  const frame = formFrame.value
-  const epoch = runtimeEpoch
-	if (!current || formReadOnly.value || templateRuleStale.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
-  const controller = new AbortController()
-  formOperationController?.abort()
-  formOperationController = controller
-  formGenerating.value = true
-  formGenerationKind.value = nextGroup ? 'next' : 'smart'
-  formError.value = ''
-  formErrorDetails.value = []
-  formSavedSuccessfully.value = false
-  let stage = '读取当前表单值'
-  const deadline = beginFormGenerationDeadline(controller, () => stage)
-  try {
-    const captured = await frame.getValues(controller.signal)
-    if (!isActiveFormOperation(epoch, frame)) return
-    const values = (captured.values || current.form.values) as Record<string, unknown>
-    const manual = Array.isArray(captured.manualOverridePaths) ? captured.manualOverridePaths.map(String) : current.form.manualOverridePaths
-    const seed = nextGroup ? nextFormGenerationSeed(current.form.seed) : current.form.seed
-    stage = '读取规则与生成数据'
-    const generated = await generatePathFormData(planID.value, pathID.value, seed, values, manual, nextGroup, controller.signal)
-    if (!isActiveFormOperation(epoch, frame)) return
-		formErrorDetails.value = generated.issues.map(issue => ({
-			kind: issue.blocking ? 'generation_blocked' : 'generation_notice',
-			name: issue.field,
-			reason: issue.reason,
-		}))
-		if (generated.issues.some(issue => issue.reason === templateRuleStaleMessage)) {
-			// 检测与生成之间模板变旧时保留 iframe 当前值，不能把过期规则结果偷偷回填。
-			current.form.status = 'affected'
-			current.form.statusName = pathConfigurationStatusName(current.form.status)
-			current.form.affected = [{ kind: 'form', name: '表单数据', reason: templateRuleStaleMessage }]
-			formError.value = templateRuleStaleMessage
-			return
-		}
-    stage = '回填真实表单'
-    const runtimeState = await frame.setGeneratedData(generated.values, generated.generatedFieldPaths, generated.manualOverridePaths, generated.fieldRules, controller.signal)
-    if (!isActiveFormOperation(epoch, frame)) return
-    current.form.values = generated.values
-    current.form.seed = generated.seed
-    current.form.status = 'draft'
-    current.form.statusName = pathConfigurationStatusName(current.form.status)
-    current.form.generatedFieldPaths = generated.generatedFieldPaths
-    current.form.manualOverridePaths = generated.manualOverridePaths
-    current.form.sampleSummary = generated.sampleSummary
-    current.form.autoFilled = generated.autoFilled
-    current.form.manualPending = generated.manualPending
-    current.form.unsupported = generated.unsupported
-    current.form.conditionBindings = generated.conditionBindings
-    current.form.conditionReviews = generated.conditionReviews
-    current.form.fieldRules = generated.fieldRules
-    if (generated.generationState === 'blocked') {
-      formError.value = '当前路径条件无法自动完成，请按下方原因人工处理'
-    }
-    else if (generated.generationState === 'partial') {
-      formError.value = generated.routeVerification.matched
-        ? '已生成可安全使用的数据，仍有部分内容需要人工核对'
-        : '已保留可安全生成的数据，当前完整路径仍需人工核对'
-    }
-    // 原位 setData 保留宿主组件实例和页面状态，统计由同一回填响应立即对账。
-    applyRuntimeFormState(runtimeState)
-  }
-  catch (caught) {
-    if (isActiveFormOperation(epoch, frame) && (!(caught instanceof DOMException) || caught.name !== 'AbortError' || controller.signal.reason?.name === 'TimeoutError')) {
-      formError.value = formGenerationFailureMessage(caught, controller.signal, stage)
-    }
-  }
-  finally {
-    window.clearTimeout(deadline)
-    if (epoch === runtimeEpoch) {
-      formGenerating.value = false
-      formGenerationKind.value = null
-    }
-    if (formOperationController === controller) formOperationController = null
-  }
-}
-
 // restoreSavedForm 恢复本次 GET 装载的服务端 values，不重读或重新生成。
 async function restoreSavedForm() {
   const frame = formFrame.value
   const epoch = runtimeEpoch
-	if (formReadOnly.value || !frame || !runtimeSession.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value) return
+	if (formReadOnly.value || !frame || !runtimeSession.value || formRuntimeLoading.value || formRestoring.value || formSaving.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
@@ -653,12 +575,12 @@ async function restoreSavedForm() {
   }
 }
 
-// saveFormData 先经真实 getData(true)/getValues，再由服务端按最新模板与路径复验并独立保存。
-async function saveFormData() {
-  const current = configuration.value
+// saveFormData 先经复制 runtime 校验并捕获原始 values，再由服务端重算实际路径并执行换路门禁。
+async function saveFormData(confirmationToken = '') {
+  const data = dataWorkspace.value
   const frame = formFrame.value
   const epoch = runtimeEpoch
-	if (!current || formReadOnly.value || runtimeBlocked.value || formRuntimeLoading.value || formGenerating.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
+	if (!data || formReadOnly.value || runtimeBlocked.value || formRuntimeLoading.value || formRestoring.value || formSaving.value || !frame || !runtimeSession.value) return
   const controller = new AbortController()
   formOperationController?.abort()
   formOperationController = controller
@@ -666,42 +588,45 @@ async function saveFormData() {
   formError.value = ''
   formErrorDetails.value = []
   formSavedSuccessfully.value = false
-  const previousRevision = current.form.revision
+  const previousRevision = data.revision
   try {
     const captured = await frame.validateAndGetValues()
     if (!isActiveFormOperation(epoch, frame)) return
-    await savePathFormData(planID.value, pathID.value, formSaveKey, {
+	    const runtimeValidation: PathConfigurationRuntimeValidation = {
+	      accepted: captured.validated === true,
+	      issues: Array.isArray(captured.issues) ? captured.issues.map(issue => ({
+	        code: String(issue?.code ?? 'runtime_validation'),
+	        path: issue?.fieldPath ? String(issue.fieldPath) : undefined,
+	        message: String(issue?.message ?? '表单运行时校验未通过'),
+	        blocking: issue?.status === 'blocked' || issue?.blocking === true,
+	      })) : [],
+	    }
+	    const result = await savePathConfigurationData(planID.value, pathID.value, formSaveKey, {
       revision: previousRevision,
       values: captured.values as Record<string, unknown>,
-      seed: current.form.seed,
-      generatedFieldPaths: Array.isArray(captured.generatedFieldPaths) ? captured.generatedFieldPaths.map(String) : current.form.generatedFieldPaths,
-      manualOverridePaths: Array.isArray(captured.manualOverridePaths) ? captured.manualOverridePaths.map(String) : current.form.manualOverridePaths,
-      sampleSummary: current.form.sampleSummary,
-      validated: true,
-      // 真实运行时注册表是组件支持性的唯一来源；服务端据此阻止未知组件被绕过保存。
-      unsupported: Array.isArray(captured.unsupported) ? captured.unsupported.map(String) : runtimeUnsupported.value,
+      runtimeValidation,
+      ...(confirmationToken ? { confirmationToken } : {}),
     }, controller.signal)
     if (!isActiveFormOperation(epoch, frame)) return
-    await reloadConfiguration(controller.signal)
-    if (!isActiveFormOperation(epoch, frame)) return
+    dataWorkspace.value = { ...data, ...result }
+    runtimeStats.value = { filledEditable: 0, manualPending: 0 }
     formSaveKey = crypto.randomUUID()
     formSavedSuccessfully.value = true
-    // 保存成功后自动回到节点画布；发起人节点上会显示“表单已配置”提示。
-    returnToNodes()
+    if (result.routeChanged) {
+      const target = executionPaths.value.find(path => path.sequenceNo === result.path.sequenceNo && path.name === result.path.name)
+      if (target && target.id !== pathID.value) {
+        await router.replace(`/plans/${encodeURIComponent(planID.value)}/paths/${encodeURIComponent(target.id)}/configure`)
+      } else returnToNodes()
+    } else returnToNodes()
   }
   catch (caught) {
     if (!isActiveFormOperation(epoch, frame) || controller.signal.aborted) return
-    try {
-      const reconciled = await reloadConfiguration(controller.signal)
-      if (!isActiveFormOperation(epoch, frame)) return
-      if (reconciled.form.revision > previousRevision && reconciled.form.status === 'valid') {
-        formSaveKey = crypto.randomUUID()
-        formSavedSuccessfully.value = true
-        returnToNodes()
-        return
-      }
+    if (caught instanceof PathConfigApiError && caught.code === 'PATH_ROUTE_CONFIRMATION_REQUIRED') {
+      routeConfirmationToken.value = caught.confirmationToken
+      routeConfirmationChange.value = caught.routeChange
+      routeConfirmationOpen.value = true
+      return
     }
-    catch { /* 对账失败保留当前 iframe、values 和幂等键。 */ }
     formError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '保存失败，当前表单数据已保留，请重试'
     formErrorDetails.value = caught instanceof PathConfigApiError ? caught.details : []
   }
@@ -709,6 +634,21 @@ async function saveFormData() {
     if (epoch === runtimeEpoch) formSaving.value = false
     if (formOperationController === controller) formOperationController = null
   }
+}
+
+// confirmRouteChange 在用户明确确认覆盖提示后复用原幂等键继续保存，取消不会写入任何路径数据。
+function confirmRouteChange() {
+  const token = routeConfirmationToken.value
+  if (!token || formSaving.value) return
+  routeConfirmationOpen.value = false
+  void saveFormData(token)
+}
+
+// cancelRouteChange 清除一次性换路令牌，确保用户取消后不会隐式重试或改变目标路径。
+function cancelRouteChange() {
+  routeConfirmationOpen.value = false
+  routeConfirmationToken.value = ''
+  routeConfirmationChange.value = null
 }
 
 // backToPlan 只失效宿主会话并导航，iframe 卸载由 Vue 子组件生命周期负责。
@@ -765,6 +705,24 @@ void loadPage()
         </div>
         <template #footer>
           <n-space justify="end"><n-button @click="cycleCopyModalOpen = false">取消</n-button><n-button type="primary" :loading="cycleCopyBusy" :disabled="!cycleCopyTargetID" @click="copyCycles">确认复制</n-button></n-space>
+        </template>
+      </n-card>
+    </n-modal>
+
+    <n-modal v-model:show="routeConfirmationOpen" :mask-closable="false" :closable="false">
+      <n-card title="确认换路并覆盖数据" style="width: min(620px, 94vw)">
+        <div class="path-configuration-page__cycle-body">
+          <n-alert type="warning" :show-icon="false">{{ routeConfirmationChange?.warning || '当前表单数据命中了其他执行路径，请确认后继续保存。' }}</n-alert>
+          <div v-if="routeConfirmationChange" class="path-configuration-page__route-change">
+            <span>当前路径：#{{ routeConfirmationChange.from.sequenceNo }} {{ routeConfirmationChange.from.name }}</span>
+            <span>实际路径：#{{ routeConfirmationChange.to.sequenceNo }} {{ routeConfirmationChange.to.name }}</span>
+          </div>
+          <ul v-if="routeConfirmationChange?.affected.length" class="path-configuration-page__form-summary-list">
+            <li v-for="item in routeConfirmationChange.affected" :key="`${item.kind}-${item.name}`">{{ item.name }}：{{ item.reason }}</li>
+          </ul>
+        </div>
+        <template #footer>
+          <n-space justify="end"><n-button @click="cancelRouteChange">取消</n-button><n-button type="warning" :loading="formSaving" @click="confirmRouteChange">确认换路并保存</n-button></n-space>
         </template>
       </n-card>
     </n-modal>
@@ -830,15 +788,13 @@ void loadPage()
           <div>
             <h2>表单数据</h2>
 				<p v-if="formReadOnly">当前计划的表单数据只读。</p>
-            <p v-else>自动填充 {{ configuration.form.autoFilled }} 项 · 仍需手工 {{ configuration.form.manualPending }} 项</p>
+            <p v-else>已填写 {{ runtimeStats.filledEditable }} 项 · 仍需手工 {{ runtimeStats.manualPending }} 项</p>
           </div>
           <div class="path-configuration-page__form-actions">
             <n-button size="small" @click="returnToNodes">返回节点画布</n-button>
 			<template v-if="!formReadOnly">
-              <n-button size="small" :loading="formGenerating && formGenerationKind === 'smart'" :disabled="templateRuleStale || formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(false)">智能生成</n-button>
-              <n-button size="small" :loading="formGenerating && formGenerationKind === 'next'" :disabled="templateRuleStale || formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="generateFormData(true)">换一组</n-button>
-              <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formGenerating || formRestoring || formSaving" @click="restoreSavedForm">恢复已保存</n-button>
-              <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formGenerating || formRestoring" @click="saveFormData">保存表单数据</n-button>
+              <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formRestoring || formSaving" @click="restoreSavedForm">恢复历史快照</n-button>
+              <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formRestoring" @click="saveFormData()">保存表单数据</n-button>
             </template>
           </div>
         </header>
@@ -848,27 +804,21 @@ void loadPage()
 			:path-id="pathID"
 			scope="path"
 			:disabled="!planMutable"
+			@saved="handleHistorySourceSaved"
 		/>
-        <section v-if="configuration.form.conditionBindings.length" class="path-configuration-page__form-hints" aria-label="当前路径分支条件">
-          <n-collapse :default-expanded-names="['path-conditions']" arrow-placement="right">
-            <n-collapse-item title="当前路径分支条件" name="path-conditions">
-              <div class="path-configuration-page__form-hints-body">
-                <ul class="path-configuration-page__form-hints-list">
-                  <li v-for="binding in configuration.form.conditionBindings" :key="binding.key" :class="{ 'path-configuration-page__form-hint--selected': binding.selected, 'path-configuration-page__form-hint--review': binding.needsReview }">
-                    <div class="path-configuration-page__form-hint-head">
-                      <strong>{{ binding.nodeName }}</strong>
-                      <span>{{ binding.branchName }}</span>
-                      <n-tag v-if="binding.selected" size="small" type="success" :bordered="false">当前路径</n-tag>
-                      <n-tag v-if="binding.locked" size="small" type="warning" :bordered="false">字段已锁定</n-tag>
-                      <n-tag v-if="binding.needsReview" size="small" type="error" :bordered="false">需要人工核对</n-tag>
-                    </div>
-                    <p>{{ binding.expression }}</p>
-                    <small v-if="Array.isArray(binding.fields) && binding.fields.length">{{ binding.fields.join('、') }}{{ binding.locked ? '：由当前路径条件保持' : '' }}</small>
-                  </li>
-                </ul>
-              </div>
-            </n-collapse-item>
-          </n-collapse>
+        <section v-if="dataWorkspace" class="path-configuration-page__form-summary" aria-label="历史数据摘要">
+          <div class="path-configuration-page__form-summary-head">
+            <strong>{{ dataWorkspace.historySource.summary?.flowName || '历史数据来源' }}</strong>
+            <n-tag size="small" :type="dataWorkspace.dataStatus === 'ready' ? 'success' : dataWorkspace.dataStatus === 'affected' ? 'warning' : 'info'" :bordered="false">{{ dataWorkspace.dataStatus }}</n-tag>
+            <span v-if="dataWorkspace.historySource.summary">{{ dataWorkspace.historySource.summary.formName }} · {{ dataWorkspace.historySource.summary.instanceTitle }}</span>
+          </div>
+          <p v-if="dataWorkspace.historySource.summary">来源：{{ dataWorkspace.historySource.summary.businessSummary || dataWorkspace.historySource.summary.candidateKey }}</p>
+          <ul v-if="dataWorkspace.issues.length" class="path-configuration-page__form-summary-list">
+            <li v-for="issue in dataWorkspace.issues" :key="`${issue.code}-${issue.path || ''}-${issue.message}`">{{ issue.message }}</li>
+          </ul>
+          <ul v-if="dataWorkspace.branchPatches.length" class="path-configuration-page__form-summary-list">
+            <li v-for="patch in dataWorkspace.branchPatches" :key="`${patch.branchKey}-${patch.path}`">分支补丁 {{ patch.path }}：{{ patch.reason }}</li>
+          </ul>
         </section>
         <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
           <n-spin :show="true" size="large" description="正在加载表单运行时" />
@@ -936,6 +886,30 @@ void loadPage()
 .path-configuration-page__history-source {
 	margin: 0 16px 12px;
 }
+.path-configuration-page__form-summary {
+  flex: 0 0 auto;
+  margin: 0 16px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--path-config-border-color);
+  border-radius: 4px;
+  color: var(--path-config-text-secondary-color);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.path-configuration-page__form-summary-head,
+.path-configuration-page__route-change {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.path-configuration-page__form-summary-head strong { color: var(--path-config-text-color); }
+.path-configuration-page__form-summary p { margin: 4px 0 0; }
+.path-configuration-page__form-summary-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.path-configuration-page__route-change { flex-direction: column; align-items: flex-start; color: var(--path-config-text-color); }
 
 .path-configuration-page__header { justify-content: space-between; gap: 24px; padding: 4px 0 14px; }
 .path-configuration-page__identity { align-items: flex-start; gap: 12px; min-width: 0; }

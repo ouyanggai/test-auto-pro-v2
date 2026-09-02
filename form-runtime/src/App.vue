@@ -9,14 +9,14 @@
       :edit="!readOnly"
       @on-change="markDirty"
     />
-    <host-vue-page v-else-if="sessionId && renderType === 'vue_custom'" ref="vueHost" :page="vuePage" :initial-values="values" :permissions="runtimePermissions" :field-rules="runtimeFieldRules" :read-only="readOnly" />
+    <host-vue-page v-else-if="sessionId && renderType === 'vue_custom'" ref="vueHost" :page="vuePage" :initial-values="values" :permissions="runtimePermissions" :read-only="readOnly" />
     <div v-else class="form-runtime__placeholder">正在等待表单工作区初始化…</div>
   </main>
 </template>
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { buildValuesEnvelope, captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, diffManualPaths, refreshPreparedForm } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, refreshPreparedForm } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -32,22 +32,15 @@ export default {
       template: { list: [], config: {} },
       values: {},
       savedValues: {},
-      generatedValues: {},
-      generatedFieldPaths: [],
-      manualOverridePaths: [],
       renderType: 'formmaking',
 		ruleVersion: '',
-		vuePage: { status: 'blocked', pageName: '', fields: [], issues: [] },
+      vuePage: { status: 'blocked', pageName: '', fields: [], issues: [] },
       runtimePermissions: [],
-      runtimeFieldRules: [],
-      savedGeneratedFieldPaths: [],
-      savedManualOverridePaths: [],
       unsupported: [],
       isolatedHooks: [],
       allFields: [],
       editableFields: [],
       hiddenFields: [],
-		protectedFields: [],
 		requiredEditableFields: [],
       readOnly: false,
       loading: false,
@@ -123,7 +116,6 @@ export default {
 		this.ruleVersion = String(payload.ruleVersion || '')
 		this.vuePage = payload.vuePage || { status: 'blocked', pageName: '', fields: [], issues: [] }
         this.runtimePermissions = Array.isArray(payload.permissions) ? payload.permissions : []
-        this.runtimeFieldRules = Array.isArray(payload.fieldRules) ? payload.fieldRules : []
         const baseURL = String(payload.baseURL || '')
         const targetOrigin = baseURL ? new URL(baseURL).origin : ''
         // 上游 axios 可能已捕获同步源码的旧默认地址；会话环境与请求策略双重收敛到后端核实的当前网关。
@@ -173,22 +165,16 @@ export default {
           if (payload.departmentName && window.$store._mutations['user/SET_DEPARTMENT_NAME']) window.$store.commit('user/SET_DEPARTMENT_NAME', String(payload.departmentName))
           if (payload.departmentId && window.$store._mutations['user/SET_DEPARTMENTID']) window.$store.commit('user/SET_DEPARTMENTID', String(payload.departmentId))
         }
-        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, payload.fieldRules || [])
+        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly)
         this.template = prepared.template
         this.unsupported = prepared.unsupported
         this.isolatedHooks = prepared.isolatedHooks
         this.allFields = prepared.allFields
         this.editableFields = prepared.editableFields
         this.hiddenFields = prepared.hiddenFields
-        this.protectedFields = prepared.protectedFields
         this.requiredEditableFields = prepared.requiredEditableFields
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
-        this.generatedValues = clonePlain(payload.generatedValues || this.values)
-        this.generatedFieldPaths = Array.isArray(payload.generatedFieldPaths) ? payload.generatedFieldPaths.map(String) : []
-        this.manualOverridePaths = Array.isArray(payload.manualOverridePaths) ? payload.manualOverridePaths.map(String) : []
-        this.savedGeneratedFieldPaths = [...this.generatedFieldPaths]
-        this.savedManualOverridePaths = [...this.manualOverridePaths]
         await this.$nextTick()
         await this.setData(this.values)
         await this.refresh()
@@ -202,23 +188,17 @@ export default {
       }
       if (command.type === 'setData') {
         const nextValues = clonePlain(payload.values || {})
-        // 路径规则随生成结果原位更新；同一路径无需销毁宿主页面，已有未提交状态也不会因重建丢失。
-        this.runtimeFieldRules = Array.isArray(payload.fieldRules) ? payload.fieldRules : this.runtimeFieldRules
         await this.$nextTick()
         await this.setData(nextValues)
-        this.generatedValues = clonePlain(nextValues)
-        this.generatedFieldPaths = Array.isArray(payload.generatedFieldPaths) ? payload.generatedFieldPaths.map(String) : []
-        this.manualOverridePaths = Array.isArray(payload.manualOverridePaths) ? payload.manualOverridePaths.map(String) : []
-        this.dirty = true
+        // setData 只用于来源切换后的整份原始值替换；替换成功即成为新的恢复基线，避免恢复按钮回到旧来源快照。
+        this.savedValues = clonePlain(nextValues)
+        this.dirty = false
         await this.refresh()
         this.result(command, await this.capture(false))
         return
       }
       if (command.type === 'restore') {
         await this.setData(this.savedValues)
-        this.generatedValues = clonePlain(this.savedValues)
-        this.generatedFieldPaths = [...this.savedGeneratedFieldPaths]
-        this.manualOverridePaths = [...this.savedManualOverridePaths]
         this.dirty = false
         await this.refresh()
         this.result(command, await this.capture(false))
@@ -262,23 +242,19 @@ export default {
         const values = captured.values
         this.runtimeIssues = Array.isArray(captured.issues) ? captured.issues : []
         if (validate && this.vuePage.fields.some(field => field.required && this.isEmptyCustomValue(this.customPageValue(values, field.path)))) throw new Error('请先完成表单中的必填项')
-        const manualOverridePaths = [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
         return buildValuesEnvelope({
 		  values, validated: validate, unsupported: [], dirty: this.dirty,
-		  generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths,
 		  issues: this.combinedIssues(), renderType: this.renderType, ruleVersion: this.ruleVersion,
-		  stats: this.stats(values, manualOverridePaths)
+		  stats: this.stats(values)
 		})
       }
       const form = this.form()
       const values = await captureFormValues(form, validate)
       this.values = values
-		const manualOverridePaths = [...new Set([...this.manualOverridePaths, ...diffManualPaths(this.generatedValues, values)])].sort()
 		return buildValuesEnvelope({
         values, validated: validate, unsupported: this.unsupported, dirty: this.dirty,
-        generatedFieldPaths: this.generatedFieldPaths, manualOverridePaths,
 		issues: this.combinedIssues(), renderType: this.renderType, ruleVersion: this.ruleVersion,
-		stats: this.stats(values, manualOverridePaths)
+		stats: this.stats(values)
 		})
 	},
 	mergeIssues (...groups) {
@@ -296,8 +272,9 @@ export default {
 	combinedIssues (additional = []) {
 	  return this.mergeIssues(this.requestPolicyIssues, this.runtimeIssues, additional)
 	},
-    stats (values = this.values, manualOverridePaths = this.manualOverridePaths) {
-      return formRuntimeStats(values, this.generatedFieldPaths, manualOverridePaths, this.editableFields, this.protectedFields, this.requiredEditableFields)
+    // stats 返回当前原始值在可编辑字段中的填写统计，供宿主展示人工待处理数量。
+    stats (values = this.values) {
+      return formRuntimeStats(values, this.editableFields, this.requiredEditableFields)
     },
     isEmptyCustomValue (value) {
       return value == null || String(value).trim() === ''
@@ -315,7 +292,7 @@ export default {
 		if (!this.sessionId || this.loading || this.readOnly) return
 		try {
 			const captured = await this.capture(false)
-			this.post({ version: FORM_RUNTIME_VERSION, sessionId: this.sessionId, requestId: 'state', type: 'state', payload: { stats: captured.stats, manualOverridePaths: captured.manualOverridePaths } })
+			this.post({ version: FORM_RUNTIME_VERSION, sessionId: this.sessionId, requestId: 'state', type: 'state', payload: { stats: captured.stats } })
 		} catch (_) {
 			// 输入过程中的临时组件状态不影响实际保存；下一次稳定变更会重新对账。
 		}
@@ -334,22 +311,15 @@ export default {
       this.template = { list: [], config: {} }
       this.values = {}
       this.savedValues = {}
-      this.generatedValues = {}
-      this.generatedFieldPaths = []
-      this.manualOverridePaths = []
       this.renderType = 'formmaking'
 	  this.ruleVersion = ''
       this.vuePage = { pageName: '', fields: [], issues: [] }
       this.runtimePermissions = []
-      this.runtimeFieldRules = []
-      this.savedGeneratedFieldPaths = []
-      this.savedManualOverridePaths = []
       this.unsupported = []
       this.isolatedHooks = []
       this.allFields = []
       this.editableFields = []
 		this.hiddenFields = []
-		this.protectedFields = []
 		this.requiredEditableFields = []
 		this.requestPolicyObservations = []
 		this.requestPolicyIssues = []

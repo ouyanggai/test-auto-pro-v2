@@ -28,7 +28,6 @@ export default {
     page: { type: Object, required: true },
     initialValues: { type: Object, default: () => ({}) },
     permissions: { type: Array, default: () => [] },
-    fieldRules: { type: Array, default: () => [] },
     readOnly: { type: Boolean, default: false }
   },
   data () {
@@ -60,7 +59,6 @@ export default {
       if (!instance || visited.has(instance) || depth > 7) return
       visited.add(instance)
       const permission = new Map(this.permissions.map(item => [String(item.field || ''), String(item.power || '')]))
-      const protectedFields = new Set(this.fieldRules.filter(item => item && item.disabled).map(item => String(item.field || '')))
       const visitConfig = (value, configVisited, configDepth) => {
         if (!value || typeof value !== 'object' || configVisited.has(value) || configDepth > 10) return
         configVisited.add(value)
@@ -68,7 +66,7 @@ export default {
           const path = String(value.prop)
           const power = permission.get(path)
           value.hidden = power === 'hide' || value.hidden === true
-          value.disabled = this.readOnly || power !== 'edit' || protectedFields.has(path)
+          value.disabled = this.readOnly || power !== 'edit'
           if (value.disabled && Array.isArray(value.rules)) value.rules = value.rules.filter(rule => !rule || !rule.required)
         }
         for (const child of Array.isArray(value) ? value : Object.values(value)) visitConfig(child, configVisited, configDepth + 1)
@@ -77,7 +75,7 @@ export default {
       if (instance.$options && instance.$options.name === 'ElFormItem' && instance.prop) {
         const power = permission.get(String(instance.prop))
         if (instance.$el && instance.$el.style) instance.$el.style.display = power === 'hide' ? 'none' : ''
-        const locked = this.fieldLocked(String(instance.prop), permission, protectedFields)
+        const locked = this.fieldLocked(String(instance.prop), permission)
         this.setDescendantsDisabled(instance, locked, new Set(), 0)
       }
       for (const child of this.childInstances(instance)) this.applyFieldStates(child, visited, depth + 1)
@@ -106,12 +104,11 @@ export default {
     childInstances (instance) {
       return [...new Set([...(Array.isArray(instance && instance.$children) ? instance.$children : []), ...this.refInstances(instance && instance.$refs)])]
     },
-    fieldLocked (prop, permission, protectedFields) {
+    fieldLocked (prop, permission) {
       const exact = permission.get(prop)
       const suffix = [...permission.entries()].filter(([path]) => path.endsWith(`.${prop}`))
       const power = exact || (suffix.length === 1 ? suffix[0][1] : '')
-      const protectedMatch = protectedFields.has(prop) || [...protectedFields].filter(path => path.endsWith(`.${prop}`)).length === 1
-      return this.readOnly || power !== 'edit' || protectedMatch
+      return this.readOnly || power !== 'edit'
     },
     setDescendantsDisabled (instance, disabled, visited, depth) {
       if (!instance || visited.has(instance) || depth > 5) return

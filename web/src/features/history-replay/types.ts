@@ -86,7 +86,6 @@ export interface HistoryReplayItem {
   id: number
   pathId: number
   pathRevision: number
-  snapshotId?: number
   status: HistoryReplayItemStatus
   dataStatus: HistoryDataStatus
   issues: HistoryDataIssue[]
