@@ -1,0 +1,675 @@
+package service
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/formdata/branchoverlay"
+	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/repository"
+)
+
+// PathConfigurationDataService 提供 F-012 原始表单数据工作区的读取与保存能力。
+type PathConfigurationDataService interface {
+	GetData(context.Context, uint64, uint64) (model.PathConfigurationF012, error)
+	SaveData(context.Context, uint64, uint64, string, model.PathConfigurationDataInput) (model.PathConfigurationDataResult, error)
+}
+
+// SetHistoryWorkspaceStores 注入历史来源和迁移 022 路径配置仓储。
+// 数据工作区不从旧路径配置仓储读取或写入生成字段，两个存储边界必须显式提供。
+func (s *PathConfigService) SetHistoryWorkspaceStores(history repository.HistoryReplayStore, configs repository.HistoryPathConfigStore) {
+	s.historyStore = history
+	s.historyConfigStore = configs
+}
+
+// GetData 读取当前路径的数据工作区，并把目标原始表单数据直接投影给复制的 form-runtime。
+func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) (model.PathConfigurationF012, error) {
+	path, snapshot, analysis, stored, found, source, err := s.loadWorkspace(ctx, planID, pathID)
+	if err != nil {
+		return model.PathConfigurationF012{}, err
+	}
+	template, unsupported := workspaceRuntimeTemplate(snapshot)
+	issues := append([]model.HistoryDataIssue(nil), source.dataSource.Issues...)
+	if len(unsupported) > 0 {
+		issues = appendHistoryIssues(issues, historyIssuesFromStrings("HISTORY_RUNTIME_TEMPLATE_INVALID", unsupported))
+	}
+	values := map[string]any{}
+	patches := []model.HistoryBranchPatch{}
+	runtimeValidation := model.HistoryRuntimeValidation{}
+	if found {
+		values = decodeWorkspaceMap(stored.EffectiveFormData)
+		patches = decodeWorkspacePatches(stored.BranchPatches)
+		runtimeValidation = decodeWorkspaceValidation(stored.RuntimeValidation)
+		storedIssues := decodeWorkspaceIssues(stored.Issues)
+		if len(storedIssues) > 0 {
+			issues = storedIssues
+		}
+	}
+	// 来源配置行可能只保存了来源模式而没有有效数据；只有 empty 或未创建配置时才初始化快照，避免把用户明确保存的空对象改回历史正文。
+	if source.snapshot != nil && (!found || strings.TrimSpace(stored.DataStatus) == "" || stored.DataStatus == model.HistoryDataStatusEmpty) {
+		values = cloneWorkspaceMap(source.snapshot.RawFormData)
+		overlay := branchoverlay.Apply(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: values})
+		if overlay.Status == branchoverlay.StatusReady {
+			values = overlay.Values
+			patches = overlay.Patches
+		} else {
+			issues = appendHistoryIssues(issues, historyIssuesFromOverlay(overlay.Issues))
+		}
+	}
+	dataStatus := source.dataStatus
+	if found && strings.TrimSpace(stored.DataStatus) != "" {
+		dataStatus = stored.DataStatus
+	}
+	if source.dataStatus == model.HistoryDataStatusAffected {
+		dataStatus = model.HistoryDataStatusAffected
+	}
+	if len(values) == 0 && dataStatus == "" {
+		dataStatus = model.HistoryDataStatusEmpty
+	}
+	if !found && len(values) > 0 && len(issues) == 0 {
+		dataStatus = model.HistoryDataStatusNeedsInput
+	}
+	if len(issues) == 0 && dataStatus == model.HistoryDataStatusEmpty {
+		issues = []model.HistoryDataIssue{}
+	}
+	return model.PathConfigurationF012{
+		Path: pathConfigPath(path), Revision: stored.Revision, NodeRevision: stored.NodeRevision,
+		DataRevision: stored.DataRevision, ActionRevision: stored.ActionRevision,
+		NodeStatus: defaultWorkspaceStatus(stored.NodeStatus, "pending"), DataStatus: dataStatus,
+		HistorySource: source.dataSource, RuntimeType: string(snapshot.RenderType),
+		RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
+		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template),
+		RuntimeRuleVersion: strings.TrimSpace(snapshot.RuleVersion), EffectiveFormData: values,
+		BranchPatches: patches, RuntimeValidation: runtimeValidation, Issues: issues,
+		Actions: decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
+	}, nil
+}
+
+// SaveData 保存复制 form-runtime 捕获的原始表单数据，并在实际路径变化时要求一次性确认。
+func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64, idempotencyKey string, input model.PathConfigurationDataInput) (model.PathConfigurationDataResult, error) {
+	if err := validateHistoryWriteKey(idempotencyKey); err != nil {
+		return model.PathConfigurationDataResult{}, err
+	}
+	if input.Values == nil {
+		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "目标原始表单数据不能为空", Affected: []model.PathConfigAffectedItem{{Kind: "form", Name: "表单数据", Reason: "runtime 未返回原始 values"}}}
+	}
+	path, snapshot, analysis, current, found, source, err := s.loadWorkspace(ctx, planID, pathID)
+	if err != nil {
+		return model.PathConfigurationDataResult{}, err
+	}
+	if source.snapshot == nil {
+		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "请先选择历史数据来源", Affected: []model.PathConfigAffectedItem{{Kind: "form", Name: "历史来源", Reason: "当前路径尚未绑定可用历史快照"}}}
+	}
+	// 浏览器提交的修订号是保存并发屏障的一部分；先在换路计算前核对，避免旧正文取得新的确认令牌。
+	if input.Revision != current.Revision {
+		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "路径表单数据已被其他操作更新，请刷新后重试"}
+	}
+	actual := branchoverlay.ResolveActualPath(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: input.Values})
+	if actual.Status != branchoverlay.StatusReady {
+		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据无法确定目标实际路径", Affected: affectedFromOverlayIssues(actual.Issues)}
+	}
+	targetPath := path
+	routeChanged := !sameWorkspaceChoices(path.Choices, actual.ActualChoices)
+	var targetStored repository.HistoryPathConfigRecord
+	var targetFound bool
+	if routeChanged {
+		matched, matchedOK, matchErr := s.findWorkspacePath(ctx, planID, actual.ActualChoices)
+		if matchErr != nil {
+			return model.PathConfigurationDataResult{}, matchErr
+		}
+		if !matchedOK {
+			return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前实际路径尚未建立执行路径，不能自动创建新路径", Affected: []model.PathConfigAffectedItem{{Kind: "path", Name: "执行路径", Reason: "请先保存对应的真实分支选择"}}}
+		}
+		targetPath = matched
+		if s.historyConfigStore == nil {
+			return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径数据存储暂不可用"}
+		}
+		targetStored, targetFound, err = s.historyConfigStore.GetPathConfig(ctx, targetPath.ID)
+		if err != nil {
+			return model.PathConfigurationDataResult{}, mapHistoryWorkspaceStoreError(err)
+		}
+		routeChange := workspaceRouteChange(path, targetPath, targetFound, targetStored)
+		token := workspaceConfirmationToken(planID, path.ID, targetPath.ID, input.Values, current.Revision, targetStored.Revision)
+		if strings.TrimSpace(input.ConfirmationToken) != token {
+			return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorRouteConfirmation, Message: "表单数据实际命中其他执行路径，请确认换路和覆盖影响", RouteChange: &routeChange, ConfirmationToken: token}
+		}
+		if targetFound {
+			current = targetStored
+		}
+		analysis, err = s.analyzeOwnedPath(ctx, planID, snapshot, targetPath)
+		if err != nil {
+			return model.PathConfigurationDataResult{}, err
+		}
+	}
+	if !routeChanged {
+		targetFound = found
+		targetStored = current
+	}
+	// 再按最终路径复验一次，保存值只允许来自 runtime 捕获和目标条件窄范围结果。
+	overlay := branchoverlay.Apply(branchoverlay.Input{Tree: snapshot.Tree, Choices: targetPath.Choices, Values: actual.Values})
+	if overlay.Status != branchoverlay.StatusReady {
+		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据未通过目标路径复验", Affected: affectedFromOverlayIssues(overlay.Issues)}
+	}
+	issues := append([]model.HistoryDataIssue{}, historyIssuesFromOverlay(overlay.Issues)...)
+	issues = appendHistoryIssues(issues, input.RuntimeValidation.Issues)
+	dataStatus := workspaceDataStatus(source, input.RuntimeValidation, issues)
+	record, err := workspaceRecord(snapshot, source, targetPath, targetStored, idempotencyKey, input, overlay, dataStatus, routeChanged)
+	if err != nil {
+		return model.PathConfigurationDataResult{}, err
+	}
+	var saved repository.HistoryPathConfigRecord
+	if routeChanged {
+		store, ok := s.historyConfigStore.(repository.HistoryPathDataStore)
+		if !ok {
+			return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径换路事务存储暂不可用"}
+		}
+		saved, err = store.SavePathData(ctx, planID, path.ID, targetPath.ID, record, targetStored.Revision, s.now().UTC())
+	} else {
+		if s.historyConfigStore == nil {
+			return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径数据存储暂不可用"}
+		}
+		saved, err = s.historyConfigStore.SavePathConfig(ctx, record, input.Revision, s.now().UTC())
+	}
+	if err != nil {
+		return model.PathConfigurationDataResult{}, mapHistoryWorkspaceStoreError(err)
+	}
+	return workspaceDataResult(snapshot, analysis, targetPath, saved, routeChanged, input.RuntimeValidation, issues, overlay), nil
+}
+
+type historyWorkspaceSource struct {
+	dataSource model.HistoryDataSource
+	snapshot   *model.HistorySnapshot
+	dataStatus string
+}
+
+// loadWorkspace 统一读取计划、真实路径、目标原始快照和新路径配置行。
+func (s *PathConfigService) loadWorkspace(ctx context.Context, planID, pathID uint64) (model.ExecutionPath, target.PathConfigurationSnapshot, ownedPathAnalysis, repository.HistoryPathConfigRecord, bool, historyWorkspaceSource, error) {
+	if planID == 0 || pathID == 0 {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
+	}
+	path, err := s.ownedPath(ctx, planID, pathID)
+	if err != nil {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
+	}
+	if err := s.validateConfigMutablePlan(ctx, planID); err != nil {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
+	}
+	plan, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
+	}
+	if s.target == nil {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "目标配置读取服务暂不可用"}
+	}
+	// T05 数据工作区直接读取目标原始配置；这里刻意不调用旧模板规则目录或 Vue 页面映射。
+	snapshot, err := s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
+	if err != nil {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
+	}
+	analysis, err := s.analyzeOwnedPath(ctx, planID, snapshot, path)
+	if err != nil {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
+	}
+	var stored repository.HistoryPathConfigRecord
+	found := false
+	if s.historyConfigStore != nil {
+		stored, found, err = s.historyConfigStore.GetPathConfig(ctx, pathID)
+		if err != nil {
+			return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(err)
+		}
+	}
+	source, err := s.workspaceSource(ctx, planID, pathID, stored, found, snapshot)
+	if err != nil {
+		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
+	}
+	return path, snapshot, analysis, stored, found, source, nil
+}
+
+// workspaceSource 解析路径覆盖、计划默认和未选择三种来源，不冻结动态默认快照。
+func (s *PathConfigService) workspaceSource(ctx context.Context, planID, pathID uint64, stored repository.HistoryPathConfigRecord, found bool, snapshot target.PathConfigurationSnapshot) (historyWorkspaceSource, error) {
+	if s.historyStore == nil {
+		return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: model.HistorySourceModeNone, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{}}}, nil
+	}
+	mode := strings.TrimSpace(stored.SourceMode)
+	var pathSource repository.HistoryPathSourceRecord
+	pathSourceFound := false
+	if mode == "" {
+		var err error
+		pathSource, pathSourceFound, err = s.historyStore.GetPathSource(ctx, pathID)
+		if err != nil {
+			return historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(err)
+		}
+		if pathSourceFound {
+			mode = pathSource.Mode
+		}
+	}
+	if mode == "" {
+		mode = model.HistorySourceModeNone
+	}
+	currentSummary := historyTemplateSummary(snapshot)
+	if mode == model.HistorySourceModeNone && !pathSourceFound {
+		// 未保存路径覆盖时沿用计划默认来源；只有明确保存 none 才表示路径不使用历史数据。
+		if defaultRecord, defaultFound, defaultErr := s.historyStore.GetDefault(ctx, planID); defaultErr != nil {
+			return historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(defaultErr)
+		} else if defaultFound {
+			snapshotValue, snapshotErr := s.historyStore.GetSnapshot(ctx, planID, defaultRecord.SnapshotID)
+			if snapshotErr != nil {
+				return historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(snapshotErr)
+			}
+			source := projectHistorySource(model.HistorySourceModeDefault, snapshotValue, defaultRecord.Revision, currentSummary)
+			return historyWorkspaceSource{dataSource: source, snapshot: &snapshotValue, dataStatus: source.DataStatus}, nil
+		}
+	}
+	if mode == model.HistorySourceModeDefault {
+		defaultRecord, defaultFound, err := s.historyStore.GetDefault(ctx, planID)
+		if err != nil {
+			return historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(err)
+		}
+		if !defaultFound {
+			return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_DEFAULT_MISSING", Message: "计划默认历史来源尚未设置", Blocking: true}}}}, nil
+		}
+		snapshotValue, err := s.historyStore.GetSnapshot(ctx, planID, defaultRecord.SnapshotID)
+		if err != nil {
+			return historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(err)
+		}
+		source := projectHistorySource(mode, snapshotValue, defaultRecord.Revision, currentSummary)
+		return historyWorkspaceSource{dataSource: source, snapshot: &snapshotValue, dataStatus: source.DataStatus}, nil
+	}
+	if mode != model.HistorySourceModeOverride {
+		return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: model.HistorySourceModeNone, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{}}}, nil
+	}
+	snapshotID := uint64(0)
+	revision := uint64(0)
+	if found && stored.SnapshotID != nil {
+		snapshotID = *stored.SnapshotID
+		revision = stored.DataRevision
+	} else if pathSourceFound {
+		snapshotID = pathSource.SnapshotID
+		revision = pathSource.Revision
+	}
+	if snapshotID == 0 {
+		return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_OVERRIDE_MISSING", Message: "路径独立历史来源尚未保存", Blocking: true}}, Revision: revision}}, nil
+	}
+	snapshotValue, err := s.historyStore.GetSnapshot(ctx, planID, snapshotID)
+	if err != nil {
+		return historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(err)
+	}
+	source := projectHistorySource(mode, snapshotValue, revision, currentSummary)
+	return historyWorkspaceSource{dataSource: source, snapshot: &snapshotValue, dataStatus: source.DataStatus}, nil
+}
+
+// findWorkspacePath 按目标实际 choices 查找已有执行路径，禁止自动创建或按名称猜测。
+func (s *PathConfigService) findWorkspacePath(ctx context.Context, planID uint64, choices []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
+	if matcher, ok := s.pathRepository.(repository.ExecutionPathChoiceMatcher); ok {
+		path, found, err := matcher.FindByChoices(ctx, planID, choices)
+		if err != nil {
+			return model.ExecutionPath{}, false, &PathConfigError{Kind: PathConfigErrorStorage, Message: "执行路径存储暂不可用"}
+		}
+		return path, found, nil
+	}
+	paths, err := s.pathRepository.List(ctx, planID)
+	if err != nil {
+		return model.ExecutionPath{}, false, &PathConfigError{Kind: PathConfigErrorStorage, Message: "执行路径存储暂不可用"}
+	}
+	for _, candidate := range paths {
+		full, getErr := s.pathRepository.Get(ctx, planID, candidate.ID)
+		if getErr != nil {
+			return model.ExecutionPath{}, false, &PathConfigError{Kind: PathConfigErrorStorage, Message: "执行路径存储暂不可用"}
+		}
+		if sameWorkspaceChoices(full.Choices, choices) {
+			return full, true, nil
+		}
+	}
+	return model.ExecutionPath{}, false, nil
+}
+
+// workspaceRecord 把服务端复验后的原始值编码为迁移 022 的独立数据列。
+func workspaceRecord(snapshot target.PathConfigurationSnapshot, source historyWorkspaceSource, path model.ExecutionPath, current repository.HistoryPathConfigRecord, idempotencyKey string, input model.PathConfigurationDataInput, overlay branchoverlay.Result, dataStatus string, routeChanged bool) (repository.HistoryPathConfigRecord, error) {
+	effective, err := json.Marshal(nonNilWorkspaceMap(overlay.Values))
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "目标原始表单数据无法编码"}
+	}
+	patches, err := json.Marshal(nonNilWorkspacePatches(overlay.Patches))
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "分支补丁无法编码"}
+	}
+	validation, err := json.Marshal(input.RuntimeValidation)
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "runtime 校验结果无法编码"}
+	}
+	issues := appendHistoryIssues(nil, input.RuntimeValidation.Issues)
+	issueJSON, err := json.Marshal(issues)
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单问题无法编码"}
+	}
+	latest, err := json.Marshal(map[string]any{"idempotencyKey": idempotencyKey})
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "幂等结果无法编码"}
+	}
+	record := current
+	record.PathID = path.ID
+	record.IdempotencyKey = idempotencyKey
+	record.SourceMode = source.dataSource.Mode
+	record.RuntimeType = string(snapshot.RenderType)
+	record.DataStatus = dataStatus
+	record.EffectiveFormData, record.BranchPatches = effective, patches
+	record.RuntimeValidation, record.Issues, record.LatestIdempotency = validation, issueJSON, latest
+	if source.dataSource.Mode == model.HistorySourceModeOverride && source.snapshot != nil {
+		id := source.snapshot.ID
+		record.SnapshotID = &id
+	} else {
+		// default 来源必须保持动态继承，不能把当前默认快照 ID 固化到路径配置。
+		record.SnapshotID = nil
+	}
+	if record.ConfigStatus == "" {
+		record.ConfigStatus = "pending"
+	}
+	if record.NodeStatus == "" {
+		record.NodeStatus = "pending"
+	}
+	if routeChanged {
+		record.ConfigStatus, record.NodeStatus = "affected", "affected"
+	}
+	if record.UserActions == nil {
+		record.UserActions = []byte(`{}`)
+	}
+	if record.PersonStrategies == nil {
+		record.PersonStrategies = []byte(`{}`)
+	}
+	if record.CompiledSteps == nil {
+		record.CompiledSteps = []byte(`[]`)
+	}
+	if record.ConfirmedNodeKeys == nil {
+		record.ConfirmedNodeKeys = []byte(`[]`)
+	}
+	return record, nil
+}
+
+// workspaceDataResult 投影保存后的实际路径和 runtime 原始值，不返回目标内部标识。
+func workspaceDataResult(snapshot target.PathConfigurationSnapshot, analysis ownedPathAnalysis, path model.ExecutionPath, stored repository.HistoryPathConfigRecord, routeChanged bool, validation model.HistoryRuntimeValidation, issues []model.HistoryDataIssue, overlay branchoverlay.Result) model.PathConfigurationDataResult {
+	template, _ := workspaceRuntimeTemplate(snapshot)
+	return model.PathConfigurationDataResult{
+		Path: pathConfigPath(path), Revision: stored.Revision, DataRevision: stored.DataRevision, DataStatus: stored.DataStatus,
+		RuntimeType: string(snapshot.RenderType), RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
+		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template), RuntimeRuleVersion: snapshot.RuleVersion,
+		EffectiveFormData: cloneWorkspaceMap(overlay.Values), BranchPatches: append([]model.HistoryBranchPatch(nil), overlay.Patches...), RuntimeValidation: validation,
+		Issues: append([]model.HistoryDataIssue(nil), issues...), RouteChanged: routeChanged,
+	}
+}
+
+// workspaceRouteChange 构造确认框所需的路径摘要与覆盖、人员、动作影响说明。
+func workspaceRouteChange(from, to model.ExecutionPath, targetFound bool, target repository.HistoryPathConfigRecord) model.PathConfigurationRouteChange {
+	affected := []model.PathConfigAffectedItem{
+		{Kind: "person", Name: "目标路径人员", Reason: "换路后需要重新核对人员策略"},
+		{Kind: "action", Name: "目标路径动作", Reason: "换路后需要重新核对动作编排"},
+	}
+	warning := "确认后将把当前编辑数据保存到实际命中的目标路径"
+	if targetFound && len(target.EffectiveFormData) > 2 {
+		warning = "目标路径已有历史表单数据，确认后将覆盖该数据，并把人员和动作标记为受影响"
+	}
+	return model.PathConfigurationRouteChange{From: pathConfigPath(from), To: pathConfigPath(to), OverwritesData: targetFound && len(target.EffectiveFormData) > 2, Affected: affected, Warning: warning}
+}
+
+// workspaceConfirmationToken 为当前计划、路径、正文摘要和双方修订生成一次性确认令牌。
+func workspaceConfirmationToken(planID, fromPathID, toPathID uint64, values map[string]any, fromRevision, toRevision uint64) string {
+	payload, _ := json.Marshal(values)
+	sum := sha256.Sum256(payload)
+	seed := fmt.Sprintf("f012-route-confirm:%d:%d:%d:%d:%d:%s", planID, fromPathID, toPathID, fromRevision, toRevision, hex.EncodeToString(sum[:]))
+	digest := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(digest[:])
+}
+
+// workspaceDataStatus 只在 runtime 接受且目标路径复验通过时报告 ready。
+func workspaceDataStatus(source historyWorkspaceSource, validation model.HistoryRuntimeValidation, issues []model.HistoryDataIssue) string {
+	if source.dataStatus == model.HistoryDataStatusAffected {
+		return model.HistoryDataStatusAffected
+	}
+	if !validation.Accepted || hasBlockingWorkspaceIssue(issues) {
+		return model.HistoryDataStatusNeedsInput
+	}
+	return model.HistoryDataStatusReady
+}
+
+// hasBlockingWorkspaceIssue 检查 runtime 和分支复验返回的问题是否仍阻断保存完成。
+func hasBlockingWorkspaceIssue(issues []model.HistoryDataIssue) bool {
+	for _, issue := range issues {
+		if issue.Blocking {
+			return true
+		}
+	}
+	return false
+}
+
+// workspaceRuntimeTemplate 只解析目标返回的 FormMaking 原文；自定义页面不在工具侧重建模板。
+func workspaceRuntimeTemplate(snapshot target.PathConfigurationSnapshot) (map[string]any, []string) {
+	if snapshot.RenderType != target.FormRenderTypeFormMaking {
+		return map[string]any{}, []string{}
+	}
+	return runtimeTemplate(snapshot.Forms)
+}
+
+// workspacePermissions 将目标流程节点权限或目标页面原始权限交给复制的 runtime。
+func workspacePermissions(snapshot target.PathConfigurationSnapshot, analysis ownedPathAnalysis) []model.PathFormPermission {
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		return vueCustomFormPermissions(snapshot.VuePage)
+	}
+	return formPermissions(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs)
+}
+
+// workspaceReadRequests 仅保留目标运行时声明的只读请求，不把提交接口带入 iframe。
+func workspaceReadRequests(snapshot target.PathConfigurationSnapshot, template map[string]any) []model.PathFormReadRequest {
+	if snapshot.RenderType == target.FormRenderTypeVueCustom {
+		requests := make([]model.PathFormReadRequest, 0)
+		if snapshot.VuePage == nil {
+			return requests
+		}
+		for _, request := range snapshot.VuePage.ReadRequests {
+			if request.ReadOnly && strings.TrimSpace(request.Path) != "" {
+				requests = append(requests, model.PathFormReadRequest{Method: strings.ToUpper(request.Method), Path: request.Path, Source: "target_runtime"})
+			}
+		}
+		return requests
+	}
+	return projectPathFormReadRequests(snapshot, template)
+}
+
+// pathConfigPath 只投影路径序号和名称，避免数据工作区返回内部路径标识。
+func pathConfigPath(path model.ExecutionPath) model.PathConfigPath {
+	return model.PathConfigPath{SequenceNo: path.SequenceNo, Name: path.Name}
+}
+
+// defaultWorkspaceStatus 返回独立节点状态默认值。
+func defaultWorkspaceStatus(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+// sameWorkspaceChoices 按真实路由键比较 choices，忽略目标接口返回顺序差异。
+func sameWorkspaceChoices(left, right []model.ExecutionPathChoice) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	orderedLeft := append([]model.ExecutionPathChoice(nil), left...)
+	orderedRight := append([]model.ExecutionPathChoice(nil), right...)
+	sort.Slice(orderedLeft, func(i, j int) bool {
+		if orderedLeft[i].RouteNodeID == orderedLeft[j].RouteNodeID {
+			return orderedLeft[i].BranchID < orderedLeft[j].BranchID
+		}
+		return orderedLeft[i].RouteNodeID < orderedLeft[j].RouteNodeID
+	})
+	sort.Slice(orderedRight, func(i, j int) bool {
+		if orderedRight[i].RouteNodeID == orderedRight[j].RouteNodeID {
+			return orderedRight[i].BranchID < orderedRight[j].BranchID
+		}
+		return orderedRight[i].RouteNodeID < orderedRight[j].RouteNodeID
+	})
+	for index := range orderedLeft {
+		if orderedLeft[index] != orderedRight[index] {
+			return false
+		}
+	}
+	return true
+}
+
+// mapHistoryWorkspaceStoreError 将新配置仓储错误收敛为稳定路径配置错误。
+func mapHistoryWorkspaceStoreError(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrHistoryPathConfigConflict), errors.Is(err, repository.ErrHistoryPathConfigIdempotency), errors.Is(err, repository.ErrHistoryRevisionConflict):
+		return &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "路径表单数据已被其他操作更新，请刷新后重试"}
+	case errors.Is(err, repository.ErrExecutionPathNotFound):
+		return &PathConfigError{Kind: PathConfigErrorNotFound, Message: "执行路径不存在"}
+	case errors.Is(err, repository.ErrPathConfigDataInvalid):
+		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径表单数据异常，请重试"}
+	default:
+		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径数据存储暂不可用"}
+	}
+}
+
+// decodeWorkspaceMap 解码独立数据列；损坏正文返回空值并由上层标记存储异常。
+func decodeWorkspaceMap(raw []byte) map[string]any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return map[string]any{}
+	}
+	return value
+}
+
+// decodeWorkspacePatches 解码分支补丁列表并保持空数组稳定。
+func decodeWorkspacePatches(raw []byte) []model.HistoryBranchPatch {
+	var value []model.HistoryBranchPatch
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return []model.HistoryBranchPatch{}
+	}
+	return value
+}
+
+// decodeWorkspaceIssues 解码 runtime 问题列表并保持空数组稳定。
+func decodeWorkspaceIssues(raw []byte) []model.HistoryDataIssue {
+	var value []model.HistoryDataIssue
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return []model.HistoryDataIssue{}
+	}
+	return value
+}
+
+// decodeWorkspaceValidation 解码 runtime 结构化校验结果。
+func decodeWorkspaceValidation(raw []byte) model.HistoryRuntimeValidation {
+	var value model.HistoryRuntimeValidation
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return model.HistoryRuntimeValidation{}
+	}
+	return value
+}
+
+// decodeWorkspaceActions 解码保存的有序用户动作，损坏正文不向页面伪造动作。
+func decodeWorkspaceActions(raw []byte) []model.ConfiguredAction {
+	var value []model.ConfiguredAction
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return []model.ConfiguredAction{}
+	}
+	return value
+}
+
+// decodeWorkspaceSteps 解码服务端已编译的动作步骤。
+func decodeWorkspaceSteps(raw []byte) []model.CompiledActionStep {
+	var value []model.CompiledActionStep
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return []model.CompiledActionStep{}
+	}
+	return value
+}
+
+// cloneWorkspaceMap 深复制 runtime 原始值，防止分支复验修改历史快照正文。
+func cloneWorkspaceMap(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return map[string]any{}
+	}
+	result := make(map[string]any)
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return map[string]any{}
+	}
+	return result
+}
+
+// nonNilWorkspaceMap 保证原始 JSON 对象编码为空对象而不是 null。
+func nonNilWorkspaceMap(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	return value
+}
+
+// nonNilWorkspacePatches 保证分支补丁编码为空数组而不是 null。
+func nonNilWorkspacePatches(value []model.HistoryBranchPatch) []model.HistoryBranchPatch {
+	if value == nil {
+		return []model.HistoryBranchPatch{}
+	}
+	return value
+}
+
+// appendHistoryIssues 按 code、path 和 message 去重结构化问题。
+func appendHistoryIssues(base []model.HistoryDataIssue, extra []model.HistoryDataIssue) []model.HistoryDataIssue {
+	result := append([]model.HistoryDataIssue(nil), base...)
+	seen := make(map[string]bool, len(result)+len(extra))
+	for _, issue := range result {
+		seen[issue.Code+"\x00"+issue.Path+"\x00"+issue.Message] = true
+	}
+	for _, issue := range extra {
+		key := issue.Code + "\x00" + issue.Path + "\x00" + issue.Message
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, issue)
+	}
+	return result
+}
+
+// historyIssuesFromStrings 将目标运行时异常转换为可定位的历史数据问题。
+func historyIssuesFromStrings(code string, messages []string) []model.HistoryDataIssue {
+	result := make([]model.HistoryDataIssue, 0, len(messages))
+	for _, message := range messages {
+		if text := strings.TrimSpace(message); text != "" {
+			result = append(result, model.HistoryDataIssue{Code: code, Message: text, Blocking: true})
+		}
+	}
+	return result
+}
+
+// historyIssuesFromOverlay 把分支模块的原始条件问题投影为数据工作区问题。
+func historyIssuesFromOverlay(issues []branchoverlay.Issue) []model.HistoryDataIssue {
+	result := make([]model.HistoryDataIssue, 0, len(issues))
+	for _, issue := range issues {
+		result = append(result, model.HistoryDataIssue{Code: issue.Code, Path: issue.Path, Message: issue.Message, Blocking: true})
+	}
+	return result
+}
+
+// affectedFromOverlayIssues 将分支问题定位到路径或表单数据，而不公开目标内部标识。
+func affectedFromOverlayIssues(issues []branchoverlay.Issue) []model.PathConfigAffectedItem {
+	result := make([]model.PathConfigAffectedItem, 0, len(issues))
+	for _, issue := range issues {
+		name := "表单数据"
+		if strings.TrimSpace(issue.Path) != "" {
+			name = "条件字段"
+		}
+		result = append(result, model.PathConfigAffectedItem{Kind: "form", Name: name, Reason: issue.Message})
+	}
+	return result
+}

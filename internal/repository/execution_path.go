@@ -30,3 +30,9 @@ type ExecutionPathRepository interface {
 	FindBatchByCreateKey(context.Context, uint64, string) (model.ExecutionPathBatchResult, bool, error)
 	GeneratePathsBatch(context.Context, uint64, string, [][]model.ExecutionPathChoice, time.Time) (model.ExecutionPathBatchResult, bool, error)
 }
+
+// ExecutionPathChoiceMatcher 按目标真实分支选择查找已存在路径，供 F-012 换路确认复用。
+// 该接口独立于路径 CRUD，避免把路径匹配实现塞入表单数据服务。
+type ExecutionPathChoiceMatcher interface {
+	FindByChoices(context.Context, uint64, []model.ExecutionPathChoice) (model.ExecutionPath, bool, error)
+}

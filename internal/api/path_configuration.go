@@ -23,6 +23,12 @@ type PathConfigurationService interface {
 	RuntimeSession(context.Context, uint64, uint64) (model.PathFormRuntimeSession, error)
 }
 
+// PathConfigurationDataService 提供 F-012 原始表单数据工作区读写，不接受生成器元数据。
+type PathConfigurationDataService interface {
+	GetData(context.Context, uint64, uint64) (model.PathConfigurationF012, error)
+	SaveData(context.Context, uint64, uint64, string, model.PathConfigurationDataInput) (model.PathConfigurationDataResult, error)
+}
+
 // PathRunInputPreflightService 提供 P4 只读运行输入快照和目标适配预检。
 type PathRunInputPreflightService interface {
 	PreflightRunInput(context.Context, uint64, uint64) (model.RunInputPreflightResult, error)
@@ -36,7 +42,8 @@ type pathFormGenerateInput struct {
 }
 
 // registerPathConfigurationRoutes 注册同一计划下单条路径的配置读取与保存端点。
-func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConfigurationService) {
+// F-012 数据工作区必须由调用方显式注入；未注入时不注册兼容或兜底路由。
+func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConfigurationService, dataServices PathConfigurationDataService) {
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration", handleGetPathConfiguration(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/nodes/{nodeKey}", handleSavePathConfigurationNode(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/selection", handleSavePathConfigurationSelection(configurations))
@@ -44,11 +51,54 @@ func registerPathConfigurationRoutes(mux *http.ServeMux, configurations PathConf
 	mux.HandleFunc("POST /api/plans/{id}/execution-paths/{pathId}/configuration/form/generate", handleGeneratePathConfigurationForm(configurations))
 	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/form", handleSavePathConfigurationForm(configurations))
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration/runtime-session", handlePathConfigurationRuntimeSession(configurations))
+	if dataServices != nil {
+		mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/configuration/data", handleGetPathConfigurationData(dataServices))
+		mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/configuration/data", handleSavePathConfigurationData(dataServices))
+	}
 	preflights, ok := configurations.(PathRunInputPreflightService)
 	if !ok {
 		preflights = unavailablePathRunInputPreflightService{}
 	}
 	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/run-input/preflight", handlePathRunInputPreflight(preflights))
+}
+
+// handleGetPathConfigurationData 返回目标原始表单数据和复制 runtime 的加载协议。
+func handleGetPathConfigurationData(dataServices PathConfigurationDataService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		result, err := dataServices.GetData(request.Context(), planID, pathID)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
+}
+
+// handleSavePathConfigurationData 严格接收 runtime 捕获的原始 values，并在换路时返回确认令牌而不写入。
+func handleSavePathConfigurationData(dataServices PathConfigurationDataService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, pathID, ok := parsePathConfigurationIDs(response, request)
+		if !ok {
+			return
+		}
+		var input model.PathConfigurationDataInput
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "表单数据请求格式不正确", false)
+			return
+		}
+		result, err := dataServices.SaveData(request.Context(), planID, pathID, strings.TrimSpace(request.Header.Get("Idempotency-Key")), input)
+		if err != nil {
+			writePathConfigError(response, err)
+			return
+		}
+		writeSuccess(response, result)
+	}
 }
 
 // handlePathRunInputPreflight 返回不可变输入和目标请求摘要，不创建运行记录或发送目标请求。
@@ -250,6 +300,15 @@ func writePathConfigError(response http.ResponseWriter, err error) {
 		writeJSON(response, http.StatusConflict, apiFailure{Success: false, Error: apiErrorDTO{
 			Code: "CONFIG_INVALID", Message: err.Error(), Retryable: false,
 			Details: nonNilSlice(configErr.Affected),
+		}})
+	case service.IsPathConfigErrorKind(err, service.PathConfigErrorRouteConfirmation):
+		var configErr *service.PathConfigError
+		if !errors.As(err, &configErr) {
+			configErr = &service.PathConfigError{}
+		}
+		writeJSON(response, http.StatusConflict, apiFailure{Success: false, Error: apiErrorDTO{
+			Code: "PATH_ROUTE_CONFIRMATION_REQUIRED", Message: err.Error(), Retryable: false,
+			Details: map[string]any{"routeChange": configErr.RouteChange, "confirmationToken": configErr.ConfirmationToken},
 		}})
 	case service.IsPathConfigErrorKind(err, service.PathConfigErrorStorage):
 		writeFailure(response, http.StatusServiceUnavailable, "PLAN_STORAGE_UNAVAILABLE", "路径配置存储暂不可用，请重试", true)

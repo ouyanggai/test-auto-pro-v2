@@ -144,6 +144,109 @@ func Apply(input Input) Result {
 	return result
 }
 
+// ResolveActualPath 只按目标条件语义计算当前原始表单值实际命中的路径。
+// 自动条件由目标分支顺序决定，手动分支和非并行候选分支必须沿用调用方提交的真实选择。
+func ResolveActualPath(input Input) Result {
+	if input.Values == nil {
+		return needsInputResult(nil, Issue{Code: "raw_data_missing", Message: "目标原始表单数据缺失，不能退回空对象"})
+	}
+	values, err := cloneMap(input.Values)
+	if err != nil {
+		return needsInputResult(nil, Issue{Code: "raw_data_uncloneable", Message: "目标原始表单数据无法完整复制"})
+	}
+	result := Result{Status: StatusNeedsInput, Values: values, ActualChoices: []model.ExecutionPathChoice{}, Patches: []model.HistoryBranchPatch{}, Issues: []Issue{}}
+	if input.Tree == nil {
+		return appendIssue(result, Issue{Code: "flow_tree_missing", Message: "目标流程树缺失，无法计算实际路径"})
+	}
+	selected, choiceIssues := choiceMap(input.Choices)
+	result.Issues = append(result.Issues, choiceIssues...)
+	if len(choiceIssues) > 0 {
+		return result
+	}
+	walk := actualPathWalk{choices: make([]model.ExecutionPathChoice, 0), issues: make([]Issue, 0)}
+	walkActualPath(input.Tree, values, selected, &walk, make(map[string]bool), make(map[string]bool))
+	result.ActualChoices = walk.choices
+	result.Issues = append(result.Issues, walk.issues...)
+	if len(walk.issues) == 0 {
+		result.Status = StatusReady
+	}
+	return result
+}
+
+type actualPathWalk struct {
+	choices []model.ExecutionPathChoice
+	issues  []Issue
+}
+
+// walkActualPath 沿目标流程树递归计算实际分支，循环和不可求值条件均停止并保留原始数据。
+func walkActualPath(node *target.FlowNodeTemplate, values map[string]any, selected map[string]string, result *actualPathWalk, visited, active map[string]bool) {
+	if node == nil || len(result.issues) > 0 {
+		return
+	}
+	key := nodeVisitKey(node)
+	if active[key] {
+		result.issues = append(result.issues, Issue{Code: "flow_cycle", Path: node.ID, Message: "目标流程树存在循环，无法计算实际路径"})
+		return
+	}
+	if visited[key] {
+		return
+	}
+	active[key] = true
+	defer delete(active, key)
+	visited[key] = true
+	if len(node.ConditionNodes) > 0 {
+		branches := orderedBranches(node.ConditionNodes)
+		var branch target.FlowBranchTemplate
+		var evaluation Evaluation
+		if isManualNode(node) {
+			branchID, exists := selected[node.ID]
+			if !exists {
+				result.issues = append(result.issues, Issue{Code: "choice_missing", Path: node.ID, Message: "手动分支需要显式选择"})
+				return
+			}
+			index := branchIndex(branches, branchID)
+			if index < 0 {
+				result.issues = append(result.issues, Issue{Code: "choice_invalid", Path: node.ID, BranchKey: branchID, Message: "路径分支选择不属于当前目标路由"})
+				return
+			}
+			branch, evaluation = branches[index], Evaluation{Satisfied: true, Evaluable: true}
+		} else {
+			branch, evaluation = chooseConditionBranch(branches, values, false)
+		}
+		if !evaluation.Evaluable {
+			result.issues = append(result.issues, Issue{Code: "condition_unavailable", Path: node.ID, Message: evaluation.Reason})
+			return
+		}
+		result.choices = append(result.choices, model.ExecutionPathChoice{RouteNodeID: node.ID, BranchID: branch.ID})
+		walkActualPath(branch.Child, values, selected, result, visited, active)
+		walkActualPath(node.Child, values, selected, result, visited, active)
+		return
+	}
+	if len(node.ParallelNodes) > 0 {
+		if strings.EqualFold(strings.TrimSpace(node.Type), "parallel") {
+			for _, branch := range orderedBranches(node.ParallelNodes) {
+				walkActualPath(branch.Child, values, selected, result, visited, active)
+			}
+		} else {
+			branchID, exists := selected[node.ID]
+			if !exists {
+				result.issues = append(result.issues, Issue{Code: "choice_missing", Path: node.ID, Message: "当前路由缺少候选分支选择"})
+				return
+			}
+			index := branchIndex(node.ParallelNodes, branchID)
+			if index < 0 {
+				result.issues = append(result.issues, Issue{Code: "choice_invalid", Path: node.ID, BranchKey: branchID, Message: "路径分支选择不属于当前目标路由"})
+				return
+			}
+			result.choices = append(result.choices, model.ExecutionPathChoice{RouteNodeID: node.ID, BranchID: node.ParallelNodes[index].ID})
+			walkActualPath(node.ParallelNodes[index].Child, values, selected, result, visited, active)
+		}
+		walkActualPath(node.Child, values, selected, result, visited, active)
+		return
+	}
+	walkActualPath(node.Child, values, selected, result, visited, active)
+}
+
 // mergeCandidates 合并调用方提供的目标真实候选，不引入任何表单数据包装或生成规则。
 func mergeCandidates(primary, secondary map[string][]any) map[string][]any {
 	if len(primary) == 0 && len(secondary) == 0 {

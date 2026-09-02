@@ -221,19 +221,65 @@ type HistoryRuntimeValidation struct {
 
 // PathConfigurationF012 是 F-012 配置读取接口的统一领域视图。
 type PathConfigurationF012 struct {
-	Path              PathConfigPath           `json:"path"`
+	Path           PathConfigPath    `json:"path"`
+	Revision       uint64            `json:"revision"`
+	NodeRevision   uint64            `json:"nodeRevision"`
+	DataRevision   uint64            `json:"dataRevision"`
+	ActionRevision uint64            `json:"actionRevision"`
+	NodeStatus     string            `json:"nodeStatus"`
+	DataStatus     string            `json:"dataStatus"`
+	HistorySource  HistoryDataSource `json:"historySource"`
+	RuntimeType    string            `json:"runtimeType"`
+	// RuntimeTemplate/RuntimePage/RuntimePermissions/RuntimeReadRequests 直接对应复制 form-runtime 的既有加载协议，不承载工具侧字段映射。
+	RuntimeTemplate     map[string]any           `json:"template"`
+	RuntimePage         *PathVueCustomPageRule   `json:"vuePage,omitempty"`
+	RuntimePermissions  []PathFormPermission     `json:"permissions"`
+	RuntimeReadRequests []PathFormReadRequest    `json:"readRequests"`
+	RuntimeRuleVersion  string                   `json:"ruleVersion"`
+	EffectiveFormData   map[string]any           `json:"effectiveFormData,omitempty"`
+	BranchPatches       []HistoryBranchPatch     `json:"branchPatches"`
+	RuntimeValidation   HistoryRuntimeValidation `json:"runtimeValidation"`
+	Issues              []HistoryDataIssue       `json:"issues"`
+	Actions             []ConfiguredAction       `json:"actions"`
+	CompiledScenario    []CompiledActionStep     `json:"compiledScenario"`
+}
+
+// PathConfigurationDataInput 是复制 form-runtime 捕获的原始目标表单数据保存请求。
+// Values 必须保持目标接口原始 JSON 结构；服务端只根据流程条件重算路径，不接受生成元数据或计算结果。
+type PathConfigurationDataInput struct {
 	Revision          uint64                   `json:"revision"`
-	NodeRevision      uint64                   `json:"nodeRevision"`
-	DataRevision      uint64                   `json:"dataRevision"`
-	ActionRevision    uint64                   `json:"actionRevision"`
-	NodeStatus        string                   `json:"nodeStatus"`
-	DataStatus        string                   `json:"dataStatus"`
-	HistorySource     HistoryDataSource        `json:"historySource"`
-	RuntimeType       string                   `json:"runtimeType"`
-	EffectiveFormData map[string]any           `json:"effectiveFormData,omitempty"`
-	BranchPatches     []HistoryBranchPatch     `json:"branchPatches"`
+	Values            map[string]any           `json:"values"`
 	RuntimeValidation HistoryRuntimeValidation `json:"runtimeValidation"`
-	Issues            []HistoryDataIssue       `json:"issues"`
-	Actions           []ConfiguredAction       `json:"actions"`
-	CompiledScenario  []CompiledActionStep     `json:"compiledScenario"`
+	ConfirmationToken string                   `json:"confirmationToken,omitempty"`
+}
+
+// PathConfigurationRouteChange 描述保存前后实际路径变化及目标路径覆盖影响。
+type PathConfigurationRouteChange struct {
+	From           PathConfigPath           `json:"from"`
+	To             PathConfigPath           `json:"to"`
+	OverwritesData bool                     `json:"overwritesData"`
+	Affected       []PathConfigAffectedItem `json:"affected"`
+	Warning        string                   `json:"warning"`
+}
+
+// PathConfigurationDataResult 是原始数据保存后的权威结果；需要确认时只返回令牌和影响摘要，不写入目标路径。
+type PathConfigurationDataResult struct {
+	Path                 PathConfigPath                `json:"path"`
+	Revision             uint64                        `json:"revision"`
+	DataRevision         uint64                        `json:"dataRevision"`
+	DataStatus           string                        `json:"dataStatus"`
+	RuntimeType          string                        `json:"runtimeType"`
+	RuntimeTemplate      map[string]any                `json:"template"`
+	RuntimePage          *PathVueCustomPageRule        `json:"vuePage,omitempty"`
+	RuntimePermissions   []PathFormPermission          `json:"permissions"`
+	RuntimeReadRequests  []PathFormReadRequest         `json:"readRequests"`
+	RuntimeRuleVersion   string                        `json:"ruleVersion"`
+	EffectiveFormData    map[string]any                `json:"effectiveFormData,omitempty"`
+	BranchPatches        []HistoryBranchPatch          `json:"branchPatches"`
+	RuntimeValidation    HistoryRuntimeValidation      `json:"runtimeValidation"`
+	Issues               []HistoryDataIssue            `json:"issues"`
+	RouteChanged         bool                          `json:"routeChanged"`
+	RequiresConfirmation bool                          `json:"requiresConfirmation"`
+	ConfirmationToken    string                        `json:"confirmationToken,omitempty"`
+	RouteChange          *PathConfigurationRouteChange `json:"routeChange,omitempty"`
 }

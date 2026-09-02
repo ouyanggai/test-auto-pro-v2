@@ -16,19 +16,22 @@ import (
 type PathConfigErrorKind string
 
 const (
-	PathConfigErrorInvalidArgument  PathConfigErrorKind = "invalid_argument"
-	PathConfigErrorNotFound         PathConfigErrorKind = "not_found"
-	PathConfigErrorLocked           PathConfigErrorKind = "locked"
-	PathConfigErrorRevisionConflict PathConfigErrorKind = "revision_conflict"
-	PathConfigErrorInvalid          PathConfigErrorKind = "invalid"
-	PathConfigErrorStorage          PathConfigErrorKind = "storage"
+	PathConfigErrorInvalidArgument   PathConfigErrorKind = "invalid_argument"
+	PathConfigErrorNotFound          PathConfigErrorKind = "not_found"
+	PathConfigErrorLocked            PathConfigErrorKind = "locked"
+	PathConfigErrorRevisionConflict  PathConfigErrorKind = "revision_conflict"
+	PathConfigErrorInvalid           PathConfigErrorKind = "invalid"
+	PathConfigErrorRouteConfirmation PathConfigErrorKind = "route_confirmation"
+	PathConfigErrorStorage           PathConfigErrorKind = "storage"
 )
 
 // PathConfigError 携带可公开的业务错误与受影响项。
 type PathConfigError struct {
-	Kind     PathConfigErrorKind
-	Message  string
-	Affected []model.PathConfigAffectedItem
+	Kind              PathConfigErrorKind
+	Message           string
+	Affected          []model.PathConfigAffectedItem
+	RouteChange       *model.PathConfigurationRouteChange
+	ConfirmationToken string
 }
 
 // Error 返回可映射为稳定 API 错误的人类可读说明。
@@ -57,16 +60,18 @@ type PathConfigAnalyzer interface {
 
 // PathConfigService 组织计划身份、路径归属、目标重验、配置投影与事务保存。
 type PathConfigService struct {
-	plans            *PlanService
-	target           PathConfigReader
-	flowAnalyzer     FlowAnalyzer
-	pathAnalyzer     ExecutionPathChoiceAnalyzer
-	configAnalyzer   PathConfigAnalyzer
-	pathRepository   repository.ExecutionPathRepository
-	configRepository repository.PathConfigurationRepository
-	templateRules    PathConfigTemplateRuleReader
-	candidateCache   *ComponentCandidateCache
-	now              func() time.Time
+	plans              *PlanService
+	target             PathConfigReader
+	flowAnalyzer       FlowAnalyzer
+	pathAnalyzer       ExecutionPathChoiceAnalyzer
+	configAnalyzer     PathConfigAnalyzer
+	pathRepository     repository.ExecutionPathRepository
+	configRepository   repository.PathConfigurationRepository
+	historyStore       repository.HistoryReplayStore
+	historyConfigStore repository.HistoryPathConfigStore
+	templateRules      PathConfigTemplateRuleReader
+	candidateCache     *ComponentCandidateCache
+	now                func() time.Time
 }
 
 // NewPathConfigService 组装路径配置服务依赖。

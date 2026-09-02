@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -422,6 +423,219 @@ func (r *HistoryReplayRepository) GetPathSource(ctx context.Context, pathID uint
 	return scanHistoryPathSource(r.db.QueryRowContext(ctx, `
 SELECT path_id, source_mode, snapshot_id, data_revision, idempotency_key, updated_at
 FROM test_execution_path_configs WHERE path_id = ?`, pathID))
+}
+
+// GetPathConfig 读取迁移 022 的路径配置独立领域列，不解释旧配置 JSON 或生成元数据。
+func (r *HistoryReplayRepository) GetPathConfig(ctx context.Context, pathID uint64) (repository.HistoryPathConfigRecord, bool, error) {
+	if r == nil || r.db == nil || pathID == 0 {
+		return repository.HistoryPathConfigRecord{}, false, repository.ErrExecutionPathNotFound
+	}
+	return scanHistoryPathConfig(r.db.QueryRowContext(ctx, historyPathConfigSelect+" WHERE path_id = ?", pathID))
+}
+
+// SavePathConfig 在路径锁内按整体修订保存人员、动作和原始表单数据字段。
+// 同一幂等键只返回完全相同的已保存正文；修订冲突在事务提交前返回，避免半份配置。
+func (r *HistoryReplayRepository) SavePathConfig(ctx context.Context, record repository.HistoryPathConfigRecord, expectedRevision uint64, now time.Time) (repository.HistoryPathConfigRecord, error) {
+	if r == nil || r.db == nil || record.PathID == 0 {
+		return repository.HistoryPathConfigRecord{}, repository.ErrExecutionPathNotFound
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	defer tx.Rollback()
+	if err := lockHistoryPath(ctx, tx, 0, record.PathID); err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	saved, err := saveHistoryPathConfigLocked(ctx, tx, record, expectedRevision, now)
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	return saved, nil
+}
+
+// SavePathData 在计划、来源路径和目标路径锁内原子保存原始表单数据。
+// 来源路径只参与换路确认的并发屏障，目标路径才会被写入；任何修订冲突都会整体回滚。
+func (r *HistoryReplayRepository) SavePathData(ctx context.Context, planID, sourcePathID, targetPathID uint64, record repository.HistoryPathConfigRecord, expectedRevision uint64, now time.Time) (repository.HistoryPathConfigRecord, error) {
+	if r == nil || r.db == nil || planID == 0 || sourcePathID == 0 || targetPathID == 0 || record.PathID != targetPathID {
+		return repository.HistoryPathConfigRecord{}, repository.ErrExecutionPathNotFound
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	defer tx.Rollback()
+	if err := lockHistoryPlan(ctx, tx, planID); err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	// 路径 ID 按数值顺序加锁，避免两个相反方向换路请求互相等待。
+	if sourcePathID < targetPathID {
+		if err := lockHistoryPath(ctx, tx, planID, sourcePathID); err != nil {
+			return repository.HistoryPathConfigRecord{}, err
+		}
+		if err := lockHistoryPath(ctx, tx, planID, targetPathID); err != nil {
+			return repository.HistoryPathConfigRecord{}, err
+		}
+	} else {
+		if err := lockHistoryPath(ctx, tx, planID, targetPathID); err != nil {
+			return repository.HistoryPathConfigRecord{}, err
+		}
+		if sourcePathID != targetPathID {
+			if err := lockHistoryPath(ctx, tx, planID, sourcePathID); err != nil {
+				return repository.HistoryPathConfigRecord{}, err
+			}
+		}
+	}
+	saved, err := saveHistoryPathConfigLocked(ctx, tx, record, expectedRevision, now)
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	return saved, nil
+}
+
+const historyPathConfigSelect = `SELECT path_id, revision, node_revision, data_revision, action_revision,
+idempotency_key, config_status, node_status, data_status, source_mode, snapshot_id, runtime_type,
+person_strategies, user_actions, compiled_steps, confirmed_node_keys, effective_form_data,
+branch_patches, runtime_validation, issues, latest_idempotency_result, created_at, updated_at
+FROM test_execution_path_configs`
+
+// getHistoryPathConfigForUpdate 在已锁定路径事务内读取新配置行。
+func getHistoryPathConfigForUpdate(ctx context.Context, tx *sql.Tx, pathID uint64) (repository.HistoryPathConfigRecord, bool, error) {
+	return scanHistoryPathConfig(tx.QueryRowContext(ctx, historyPathConfigSelect+" WHERE path_id = ? FOR UPDATE", pathID))
+}
+
+// scanHistoryPathConfig 解析独立领域 JSON，并拒绝损坏正文而不是回退为空对象。
+func scanHistoryPathConfig(row rowScanner) (repository.HistoryPathConfigRecord, bool, error) {
+	var record repository.HistoryPathConfigRecord
+	var snapshotID sql.NullInt64
+	var person, actions, steps, confirmed, effective, patches, validation, issues, latest []byte
+	err := row.Scan(&record.PathID, &record.Revision, &record.NodeRevision, &record.DataRevision, &record.ActionRevision,
+		&record.IdempotencyKey, &record.ConfigStatus, &record.NodeStatus, &record.DataStatus, &record.SourceMode,
+		&snapshotID, &record.RuntimeType, &person, &actions, &steps, &confirmed, &effective, &patches, &validation, &issues, &latest,
+		&record.CreatedAt, &record.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return repository.HistoryPathConfigRecord{}, false, nil
+	}
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, false, err
+	}
+	if snapshotID.Valid {
+		value := uint64(snapshotID.Int64)
+		record.SnapshotID = &value
+	}
+	record.PersonStrategies, record.UserActions, record.CompiledSteps = copyJSONBytes(person), copyJSONBytes(actions), copyJSONBytes(steps)
+	record.ConfirmedNodeKeys, record.EffectiveFormData, record.BranchPatches = copyJSONBytes(confirmed), copyJSONBytes(effective), copyJSONBytes(patches)
+	record.RuntimeValidation, record.Issues, record.LatestIdempotency = copyJSONBytes(validation), copyJSONBytes(issues), copyJSONBytes(latest)
+	for _, value := range [][]byte{record.PersonStrategies, record.UserActions, record.CompiledSteps, record.ConfirmedNodeKeys, record.EffectiveFormData, record.BranchPatches, record.RuntimeValidation, record.Issues, record.LatestIdempotency} {
+		if len(value) == 0 || !json.Valid(value) {
+			return repository.HistoryPathConfigRecord{}, false, repository.ErrPathConfigDataInvalid
+		}
+	}
+	record.CreatedAt, record.UpdatedAt = record.CreatedAt.UTC(), record.UpdatedAt.UTC()
+	return record, true, nil
+}
+
+// saveHistoryPathConfigLocked 在路径行已锁定的事务内执行幂等与修订校验并替换独立领域列。
+func saveHistoryPathConfigLocked(ctx context.Context, tx *sql.Tx, record repository.HistoryPathConfigRecord, expectedRevision uint64, now time.Time) (repository.HistoryPathConfigRecord, error) {
+	normalizeHistoryPathConfigJSON(&record)
+	current, found, err := getHistoryPathConfigForUpdate(ctx, tx, record.PathID)
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, err
+	}
+	if found && strings.TrimSpace(record.IdempotencyKey) != "" && current.IdempotencyKey == record.IdempotencyKey {
+		if !sameHistoryPathConfigData(current, record) {
+			return repository.HistoryPathConfigRecord{}, repository.ErrHistoryPathConfigIdempotency
+		}
+		return current, nil
+	}
+	if (!found && expectedRevision != 0) || (found && (expectedRevision == 0 || current.Revision != expectedRevision)) {
+		return repository.HistoryPathConfigRecord{}, repository.ErrHistoryPathConfigConflict
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	if !found {
+		record.Revision = 1
+		if record.DataRevision == 0 {
+			record.DataRevision = 1
+		}
+		record.CreatedAt, record.UpdatedAt = now, now
+		_, err = tx.ExecContext(ctx, `INSERT INTO test_execution_path_configs
+(path_id, revision, node_revision, data_revision, action_revision, idempotency_key, config_status, node_status, data_status, source_mode, snapshot_id, runtime_type, person_strategies, user_actions, compiled_steps, confirmed_node_keys, effective_form_data, branch_patches, runtime_validation, issues, latest_idempotency_result, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			record.PathID, record.Revision, record.NodeRevision, record.DataRevision, record.ActionRevision, record.IdempotencyKey,
+			record.ConfigStatus, record.NodeStatus, record.DataStatus, record.SourceMode, nullableSnapshotID(pointerValue(record.SnapshotID)), record.RuntimeType,
+			string(record.PersonStrategies), string(record.UserActions), string(record.CompiledSteps), string(record.ConfirmedNodeKeys), string(record.EffectiveFormData), string(record.BranchPatches), string(record.RuntimeValidation), string(record.Issues), string(record.LatestIdempotency), record.CreatedAt, record.UpdatedAt)
+	} else {
+		record.Revision = current.Revision + 1
+		if record.DataRevision <= current.DataRevision {
+			record.DataRevision = current.DataRevision + 1
+		}
+		record.CreatedAt, record.UpdatedAt = current.CreatedAt.UTC(), now
+		_, err = tx.ExecContext(ctx, `UPDATE test_execution_path_configs SET revision = ?, node_revision = ?, data_revision = ?, action_revision = ?, idempotency_key = ?, config_status = ?, node_status = ?, data_status = ?, source_mode = ?, snapshot_id = ?, runtime_type = ?, person_strategies = ?, user_actions = ?, compiled_steps = ?, confirmed_node_keys = ?, effective_form_data = ?, branch_patches = ?, runtime_validation = ?, issues = ?, latest_idempotency_result = ?, updated_at = ? WHERE path_id = ?`,
+			record.Revision, record.NodeRevision, record.DataRevision, record.ActionRevision, record.IdempotencyKey,
+			record.ConfigStatus, record.NodeStatus, record.DataStatus, record.SourceMode, nullableSnapshotID(pointerValue(record.SnapshotID)), record.RuntimeType,
+			string(record.PersonStrategies), string(record.UserActions), string(record.CompiledSteps), string(record.ConfirmedNodeKeys), string(record.EffectiveFormData), string(record.BranchPatches), string(record.RuntimeValidation), string(record.Issues), string(record.LatestIdempotency), record.UpdatedAt, record.PathID)
+	}
+	if err != nil {
+		return repository.HistoryPathConfigRecord{}, historyRevisionError(err)
+	}
+	return record, nil
+}
+
+// normalizeHistoryPathConfigJSON 保证独立 JSON 列始终保留对象或数组正文，禁止 SQL NULL 降级。
+func normalizeHistoryPathConfigJSON(record *repository.HistoryPathConfigRecord) {
+	objectDefaults := map[*[]byte][]byte{
+		&record.PersonStrategies:  []byte(`{}`),
+		&record.UserActions:       []byte(`{}`),
+		&record.EffectiveFormData: []byte(`{}`),
+		&record.RuntimeValidation: []byte(`{}`),
+		&record.LatestIdempotency: []byte(`{}`),
+	}
+	for target, fallback := range objectDefaults {
+		if len(*target) == 0 {
+			*target = append([]byte(nil), fallback...)
+		}
+	}
+	arrayDefaults := map[*[]byte][]byte{
+		&record.CompiledSteps:     []byte(`[]`),
+		&record.ConfirmedNodeKeys: []byte(`[]`),
+		&record.BranchPatches:     []byte(`[]`),
+		&record.Issues:            []byte(`[]`),
+	}
+	for target, fallback := range arrayDefaults {
+		if len(*target) == 0 {
+			*target = append([]byte(nil), fallback...)
+		}
+	}
+}
+
+// sameHistoryPathConfigData 判断同一幂等键请求是否完全重复，只比较本次数据域允许覆盖的字段。
+func sameHistoryPathConfigData(current, requested repository.HistoryPathConfigRecord) bool {
+	return current.PathID == requested.PathID && current.SourceMode == requested.SourceMode && current.RuntimeType == requested.RuntimeType &&
+		pointerValue(current.SnapshotID) == pointerValue(requested.SnapshotID) && bytes.Equal(current.EffectiveFormData, requested.EffectiveFormData) &&
+		bytes.Equal(current.BranchPatches, requested.BranchPatches) && bytes.Equal(current.RuntimeValidation, requested.RuntimeValidation) && bytes.Equal(current.Issues, requested.Issues)
+}
+
+// pointerValue 将可空快照 ID 转换为可比较的零值。
+func pointerValue(value *uint64) uint64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+// copyJSONBytes 复制数据库驱动返回的字节，避免后续调用修改扫描缓存。
+func copyJSONBytes(value []byte) []byte {
+	return append([]byte(nil), value...)
 }
 
 // getHistoryPathSourceForUpdate 在路径主键行锁内读取当前来源配置。

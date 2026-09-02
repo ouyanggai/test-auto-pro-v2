@@ -21,6 +21,10 @@ var (
 	ErrHistoryReplayState = errors.New("历史回放任务状态不允许当前操作")
 	// ErrHistoryReplayIdempotency 表示同一幂等键被复用于不同的路径集合。
 	ErrHistoryReplayIdempotency = errors.New("历史回放幂等键不能复用于不同路径")
+	// ErrHistoryPathConfigConflict 表示路径原始数据保存的修订号或幂等请求正文发生冲突。
+	ErrHistoryPathConfigConflict = errors.New("路径历史表单数据修订号冲突")
+	// ErrHistoryPathConfigIdempotency 表示同一幂等键被复用于不同的原始表单数据。
+	ErrHistoryPathConfigIdempotency = errors.New("路径历史表单数据幂等键不能复用于不同正文")
 )
 
 // HistoryDefaultRecord 是计划默认来源的工具侧持久化记录。
@@ -74,6 +78,7 @@ type HistoryPathConfigRecord struct {
 	DataRevision      uint64
 	ActionRevision    uint64
 	IdempotencyKey    string
+	ConfigStatus      string
 	NodeStatus        string
 	DataStatus        string
 	SourceMode        string
@@ -96,4 +101,11 @@ type HistoryPathConfigRecord struct {
 type HistoryPathConfigStore interface {
 	GetPathConfig(context.Context, uint64) (HistoryPathConfigRecord, bool, error)
 	SavePathConfig(context.Context, HistoryPathConfigRecord, uint64, time.Time) (HistoryPathConfigRecord, error)
+}
+
+// HistoryPathDataStore 在同一数据库事务内保存原始表单数据，并在换路时锁定来源与目标路径。
+// 单路径保存沿用 HistoryPathConfigStore；换路必须使用此接口，禁止服务层拆成两次写入。
+type HistoryPathDataStore interface {
+	HistoryPathConfigStore
+	SavePathData(context.Context, uint64, uint64, uint64, HistoryPathConfigRecord, uint64, time.Time) (HistoryPathConfigRecord, error)
 }

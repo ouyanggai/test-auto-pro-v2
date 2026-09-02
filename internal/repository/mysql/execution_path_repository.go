@@ -34,6 +34,37 @@ WHERE path.plan_id = ? AND path.id = ?`, planID, pathID))
 	return path, err
 }
 
+// FindByChoices 按计划内真实分支选择查找路径，换路时不按名称或序号猜测目标。
+func (r *ExecutionPathRepository) FindByChoices(ctx context.Context, planID uint64, choices []model.ExecutionPathChoice) (model.ExecutionPath, bool, error) {
+	if r == nil || r.db == nil || planID == 0 {
+		return model.ExecutionPath{}, false, repository.ErrPlanNotFound
+	}
+	targetSignature := executionPathChoiceSignature(choices)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, plan_id, sequence_no, name, created_at, updated_at
+FROM test_execution_paths WHERE plan_id = ? ORDER BY sequence_no`, planID)
+	if err != nil {
+		return model.ExecutionPath{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		candidate, scanErr := scanExecutionPath(rows)
+		if scanErr != nil {
+			return model.ExecutionPath{}, false, scanErr
+		}
+		candidate.Choices, err = loadExecutionPathChoices(ctx, r.db, candidate.ID)
+		if err != nil {
+			return model.ExecutionPath{}, false, err
+		}
+		if executionPathChoiceSignature(candidate.Choices) == targetSignature {
+			return candidate, true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return model.ExecutionPath{}, false, err
+	}
+	return model.ExecutionPath{}, false, nil
+}
+
 // GetMany 在两个有界查询中读取仍存在的路径和全部 choices，返回顺序与 pathIDs 一致。
 func (r *ExecutionPathRepository) GetMany(ctx context.Context, planID uint64, pathIDs []uint64) ([]model.ExecutionPath, error) {
 	if len(pathIDs) == 0 {

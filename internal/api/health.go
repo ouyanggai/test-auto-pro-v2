@@ -72,6 +72,12 @@ func NewHandlerWithHistoryDataServices(reader TargetReader, plans PlanService, g
 
 // NewHandlerWithHistoryReplayServices 组装历史来源与历史回放任务端点及既有全部能力。
 func NewHandlerWithHistoryReplayServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService, replay HistoryReplayService) http.Handler {
+	return NewHandlerWithHistoryReplayAndDataServices(reader, plans, graphs, paths, requirements, configurations, nil, maintenance, preparations, catalog, history, replay)
+}
+
+// NewHandlerWithHistoryReplayAndDataServices 组装历史回放和显式注入的原始表单数据工作区。
+// dataService 为空时只保留既有配置路由，不注册任何 F-012 数据兼容端点。
+func NewHandlerWithHistoryReplayAndDataServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, dataService PathConfigurationDataService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService, replay HistoryReplayService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -79,7 +85,7 @@ func NewHandlerWithHistoryReplayServices(reader TargetReader, plans PlanService,
 	registerFlowGraphRoute(mux, graphs)
 	registerExecutionPathRoutes(mux, paths)
 	registerPathRequirementRoute(mux, requirements)
-	registerPathConfigurationRoutes(mux, configurations)
+	registerPathConfigurationRoutes(mux, configurations, dataService)
 	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
 	registerPathPreparationRoutes(mux, preparations)
 	registerTemplateCatalogRoutes(mux, catalog)
