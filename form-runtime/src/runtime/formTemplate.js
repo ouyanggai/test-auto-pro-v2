@@ -134,11 +134,10 @@ export async function captureFormValues (form, validate) {
   return clonePlain(form.getValues())
 }
 
-// buildValuesEnvelope 只回传 runtime 捕获的原始 values 和结构化校验摘要，不附带生成器或字段映射元数据。
-export function buildValuesEnvelope ({ values, validated, unsupported, dirty, stats, issues, renderType, ruleVersion }) {
+// buildValuesEnvelope 只回传 runtime 捕获的原始 values 和结构化校验摘要，不附带额外业务元数据。
+export function buildValuesEnvelope ({ values, validated, unsupported, dirty, stats, issues, renderType }) {
   return {
     renderType: String(renderType || 'formmaking'),
-    ruleVersion: String(ruleVersion || ''),
     values: clonePlain(values || {}),
 		validated: Boolean(validated),
 		unsupported: Array.isArray(unsupported) ? unsupported.map(String) : [],

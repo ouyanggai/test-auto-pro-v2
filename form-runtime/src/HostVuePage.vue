@@ -20,7 +20,6 @@
 <script>
 import { clonePlain } from './runtime/formTemplate'
 import { resolveHostVuePage } from './runtime/hostVuePages'
-import { captureVueFieldValues, mergeVueFieldIssues, writeVueFieldValues } from './runtime/vueFieldBridge'
 
 export default {
   name: 'HostVuePage',
@@ -31,7 +30,7 @@ export default {
     readOnly: { type: Boolean, default: false }
   },
   data () {
-    return { values: clonePlain(this.initialValues || {}), bridgeIssues: [] }
+    return { values: clonePlain(this.initialValues || {}) }
   },
   computed: {
     pageComponent () { return resolveHostVuePage(this.page.componentName) }
@@ -40,19 +39,17 @@ export default {
     async setData (values) {
       this.values = clonePlain(values || {})
       await this.$nextTick()
-      const written = writeVueFieldValues(this.$refs.page, this.page.fields, this.values, (owner, key, value) => this.$set(owner, key, value))
-      this.bridgeIssues = written.issues
       this.applyFieldStates(this.$refs.page, new Set(), 0)
-      return { issues: this.bridgeIssues, writtenFieldPaths: written.writtenFieldPaths }
+      return { issues: [] }
     },
     async capture (validate) {
-      const captured = captureVueFieldValues(this.$refs.page, this.page.fields, this.values)
       if (validate) await this.validatePage(this.$refs.page)
-      this.values = captured.values
+      const values = clonePlain(this.values || {})
+      this.values = values
       return {
-        values: captured.values,
-        issues: mergeVueFieldIssues(this.bridgeIssues, captured.issues),
-        capturedFieldPaths: captured.capturedFieldPaths
+        values,
+        issues: [],
+        capturedFieldPaths: []
       }
     },
     applyFieldStates (instance, visited, depth) {

@@ -156,27 +156,26 @@ func (r *ExecutionPathRepository) List(ctx context.Context, planID uint64) ([]mo
 SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at,
        CASE
          WHEN config.path_id IS NULL THEN 'pending'
-         WHEN config.config_status = 'affected' THEN 'affected'
-         WHEN config.config_status = 'configured' THEN 'configured'
-         WHEN JSON_LENGTH(config.confirmed_node_keys) = 0 THEN 'pending'
-         ELSE 'partial'
+         WHEN config.node_status = 'affected' OR config.config_status = 'affected' THEN 'affected'
+         WHEN config.node_status = 'configured' OR config.config_status = 'configured' THEN 'configured'
+         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN 'partial'
+         ELSE 'pending'
        END,
        CASE
          WHEN config.path_id IS NULL THEN '节点人员和动作待配置'
-         WHEN config.config_status = 'affected' THEN '节点配置受流程变化影响'
-         WHEN config.config_status = 'configured' THEN '节点人员和动作已配置'
-         WHEN JSON_LENGTH(config.confirmed_node_keys) = 0 THEN '节点人员和动作待配置'
-         ELSE '节点人员和动作已部分配置'
+         WHEN config.node_status = 'affected' OR config.config_status = 'affected' THEN '节点配置受流程变化影响'
+         WHEN config.node_status = 'configured' OR config.config_status = 'configured' THEN '节点人员和动作已配置'
+         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN '节点人员和动作已部分配置'
+         ELSE '节点人员和动作待配置'
        END,
-       CASE WHEN config.path_id IS NULL THEN 'not_generated' ELSE config.data_status END,
+       CASE WHEN config.path_id IS NULL THEN 'empty' ELSE COALESCE(NULLIF(config.data_status, ''), 'empty') END,
        CASE
-         WHEN config.path_id IS NULL OR config.data_status = 'not_generated' THEN '表单数据尚未生成'
-         WHEN config.data_status = 'not_required' THEN '当前路径无需准备表单数据'
-         WHEN config.data_status = 'generated' THEN '表单数据已安全生成'
-         WHEN config.data_status = 'confirmed' THEN '表单数据已人工确认'
-         ELSE '表单数据需要人工处理'
+         WHEN config.path_id IS NULL OR config.data_status IS NULL OR config.data_status = '' OR config.data_status = 'empty' THEN '尚未选择历史数据来源'
+         WHEN config.data_status = 'ready' THEN '历史原始数据已通过 runtime 校验和路径复验'
+         WHEN config.data_status = 'needs_input' THEN '历史原始数据需要人工补充或确认'
+         WHEN config.data_status = 'affected' THEN '历史来源或路径变化后需要重新核对'
+         ELSE '历史原始数据需要人工处理'
        END,
-       COALESCE(JSON_UNQUOTE(JSON_EXTRACT(config.action_values, '$.\"f008:test-included\"')) = 'true', FALSE),
        COALESCE(config.node_revision, 0)
 FROM test_execution_paths path
 LEFT JOIN test_execution_path_configs config ON config.path_id = path.id
@@ -694,7 +693,7 @@ func scanExecutionPathWithStatus(row executionPathScanner) (model.ExecutionPath,
 	if err := row.Scan(
 		&path.ID, &path.PlanID, &path.SequenceNo, &path.Name, &path.CreatedAt, &path.UpdatedAt,
 		&path.ConfigurationStatus, &path.ConfigurationDetail, &path.DataStatus, &path.DataDetail,
-		&path.Included, &path.ConfigurationRevision,
+		&path.ConfigurationRevision,
 	); err != nil {
 		return model.ExecutionPath{}, err
 	}

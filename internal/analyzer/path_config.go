@@ -101,8 +101,6 @@ func PathConfigPersonSelectionIssue(required bool, minCount, maxCount, selectedC
 
 const pathConfigPersonPlanStoragePrefix = "person-plan:"
 
-const pathConfigActionConfigurationStoragePrefix = "actions:"
-
 // PathConfigNodeToken 生成配置节点与真实流程节点之间的稳定不透明映射键。
 func PathConfigNodeToken(nodeID string) string {
 	return pathConfigToken("node", nodeID, "configuration")
@@ -123,19 +121,9 @@ func PathConfigPersonPlanStorageKey(nodeID string) string {
 	return pathConfigPersonPlanStoragePrefix + strings.TrimSpace(nodeID)
 }
 
-// PathConfigActionConfigurationStorageKey 生成 F-008 独立节点动作配置的 JSON 键。
-func PathConfigActionConfigurationStorageKey(nodeID string) string {
-	return pathConfigActionConfigurationStoragePrefix + strings.TrimSpace(nodeID)
-}
-
 // PathConfigFieldToken 生成字段的不透明回写键；同一节点同一字段在每次响应中保持稳定。
 func PathConfigFieldToken(nodeID, fieldKey string) string {
 	return pathConfigToken("field", nodeID, fieldKey)
-}
-
-// PathConfigActionToken 生成动作的不透明回写键；同一节点同一动作在每次响应中保持稳定。
-func PathConfigActionToken(nodeID, actionKind string) string {
-	return pathConfigToken("action", nodeID, actionKind)
 }
 
 // pathConfigToken 用节点与字段或动作键的哈希派生不透明键，浏览器无法反推出真实标识。
@@ -403,7 +391,7 @@ func (p *pathConfigProjection) walk(nodeID, groupKey, stopID string, blocked boo
 	groupIndex := p.groupByKey[groupKey]
 	p.groups[groupIndex].Nodes = append(p.groups[groupIndex].Nodes, node)
 
-	// F-008 的动作只保存未来真实到达时的安排；配置本身不会中断当前路径投影。
+	// 动作只保存未来真实到达时的安排；配置本身不会中断当前路径投影。
 	nextBlocked := blocked
 	edges := p.reachableOutgoing(nodeID)
 	switch graphNode.Type {

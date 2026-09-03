@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select'])
-const { captureFormValues, componentRuntimeName, diffManualPaths, formRuntimeStats, prepareTemplate, refreshPreparedForm } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, componentRuntimeName, formRuntimeStats, prepareTemplate, refreshPreparedForm } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
@@ -65,7 +65,7 @@ test('运行时身份覆盖宿主常用公司部门用户键', () => {
   assert.match(source, /currentDepName:/)
 })
 
-test('未显式授权字段默认只读且人工覆盖路径递归稳定', () => {
+test('未显式授权字段默认只读且统计只依据真实可编辑值', () => {
   const prepared = prepareTemplate({ list: [
     { type: 'input', model: 'granted', options: {} },
     { type: 'input', model: 'ungranted', options: { required: true } },
@@ -73,10 +73,7 @@ test('未显式授权字段默认只读且人工覆盖路径递归稳定', () =>
   assert.equal(prepared.template.list[0].options.disabled, false)
   assert.equal(prepared.template.list[1].options.disabled, true)
   assert.equal(prepared.template.list[1].options.required, false)
-  assert.deepEqual(diffManualPaths(
-    { title: '生成标题', nested: { amount: 10 }, rows: [{ id: 1 }] },
-    { title: '人工标题', nested: { amount: 10 }, rows: [{ id: 2 }] },
-  ), ['rows', 'title'])
+  assert.deepEqual(formRuntimeStats({ granted: '已填写', ungranted: '不计入' }, prepared.editableFields, prepared.requiredEditableFields), { filledEditable: 1, manualPending: 0 })
 })
 
 test('新发起只开放 edit 字段且已发待发保持全表只读', () => {
@@ -100,26 +97,20 @@ test('新发起只开放 edit 字段且已发待发保持全表只读', () => {
   assert.deepEqual(readonly.editableFields, [])
 })
 
-test('路径条件规则在真实组件装载前禁用精确字段，统计按真实权限和值重算', () => {
+test('路径工作区统计按真实权限和值重算', () => {
   const prepared = prepareTemplate({ list: [
     { type: 'number', model: 'amount', options: { required: true } },
     { type: 'number', model: 'mirrorAmount', options: { required: true } },
     { type: 'input', model: 'title', options: { required: true } },
-  ] }, [{ field: 'amount', power: 'edit' }, { field: 'mirrorAmount', power: 'edit' }, { field: 'title', power: 'edit' }], false, [
-    { field: 'amount', disabled: true, conditionKeys: ['申请金额大于等于 3000'] },
-    { field: 'mirrorAmount', disabled: true, conditionKeys: ['申请金额等于对比金额'] },
-    { field: 'missing', disabled: true, conditionKeys: ['不得按名称猜测'] },
-  ])
+  ] }, [{ field: 'amount', power: 'only_read' }, { field: 'mirrorAmount', power: 'only_read' }, { field: 'title', power: 'edit' }], false)
   assert.equal(prepared.template.list[0].options.disabled, true)
   assert.equal(prepared.template.list[0].options.required, false)
   assert.equal(prepared.template.list[1].options.disabled, true)
   assert.equal(prepared.template.list[1].options.required, false)
   assert.equal(prepared.template.list[2].options.disabled, false)
-  assert.deepEqual(prepared.protectedFields, ['amount', 'mirrorAmount'])
   assert.deepEqual(prepared.editableFields, ['title'])
-  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '自动生成' }, ['amount', 'mirrorAmount', 'title'], [], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 3, manualPending: 0 })
-  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '' }, ['amount', 'mirrorAmount', 'title'], [], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 2, manualPending: 1 })
-  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '人工填写' }, ['amount', 'mirrorAmount', 'title'], ['title'], prepared.editableFields, prepared.protectedFields, prepared.requiredEditableFields), { autoFilled: 2, manualPending: 0 })
+  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '已填写' }, prepared.editableFields, prepared.requiredEditableFields), { filledEditable: 1, manualPending: 0 })
+  assert.deepEqual(formRuntimeStats({ amount: 3000, mirrorAmount: 3000, title: '' }, prepared.editableFields, prepared.requiredEditableFields), { filledEditable: 0, manualPending: 1 })
 })
 
 test('刷新已预置权限的模板不会统一调用自定义组件 disabledElement', async () => {
@@ -165,11 +156,11 @@ test('真实入口已注册的目标组件不再被统一标记为 unsupported',
   assert.equal(prepared.template.list[0].options.disabled, false)
 })
 
-test('初始默认模型的空值不会被误判为人工覆盖，真实非空修改才会', () => {
+test('初始默认模型的空值不计入已填写值', () => {
   const emptyDefaults = { myCompanyName: '', myDepName: '', myUserName: '', time: [], vacateReason: '', vacateType: '', vacateTime: null }
-  assert.deepEqual(diffManualPaths({}, emptyDefaults), [])
+  assert.deepEqual(formRuntimeStats(emptyDefaults, Object.keys(emptyDefaults), ['vacateReason']), { filledEditable: 0, manualPending: 1 })
   const realEdit = { ...emptyDefaults, vacateReason: '个人事务需要处理' }
-  assert.deepEqual(diffManualPaths({}, realEdit), ['vacateReason'])
+  assert.deepEqual(formRuntimeStats(realEdit, Object.keys(realEdit), ['vacateReason']), { filledEditable: 1, manualPending: 0 })
 })
 
 test('目标模板 type custom 优先按 el 匹配真实注册组件', () => {

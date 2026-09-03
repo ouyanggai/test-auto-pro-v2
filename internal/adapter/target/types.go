@@ -267,9 +267,6 @@ type VueCustomPageRule struct {
 	Fields        []VueCustomFieldRule
 	Dependencies  []VueCustomDependencyRule
 	ReadRequests  []VueCustomRequestRule
-	Submit        *VueCustomSubmitRule
-	Identity      *VueCustomIdentityRule
-	Java          *JavaPageRule
 	Issues        []string
 }
 
@@ -297,7 +294,7 @@ type VueCustomFieldRule struct {
 	Options              []VueCustomFieldOption
 }
 
-// VueCustomFieldOption 是 Vue 页面静态选项的真实值投影，生成器不得凭显示名称猜测候选。
+// VueCustomFieldOption 是 Vue 页面运行时协议声明的真实选项值。
 type VueCustomFieldOption struct {
 	Label string
 	Value any
@@ -322,57 +319,10 @@ type VueCustomRequestRule struct {
 	Issues   []string
 }
 
-// VueCustomSubmitRule 描述宿主保存/提交协议；配置工作区只读显示，不执行该写请求。
-type VueCustomSubmitRule struct {
-	Method          string
-	Path            string
-	Payload         []string
-	SuccessChecks   []string `json:"successChecks"`
-	FieldErrorPaths []string
-	Blocked         bool
-	Issues          []string
-}
-
-// VueCustomIdentityRule 描述宿主读取用户、部门、公司等身份上下文的真实键。
-type VueCustomIdentityRule struct {
-	UserKeys       []string
-	DepartmentKeys []string
-	CompanyKeys    []string
-	Source         string
-}
-
-// JavaPageRule 是 Java 后端只读静态分析结果，与宿主 Vue 页面按流程编码和接口契约对齐。
-type JavaPageRule struct {
-	Module        string
-	Controller    string
-	Routes        []JavaRouteRule
-	RequestDTO    []string
-	Response      []string
-	SuccessChecks []string
-	FieldErrors   []string
-	DataSources   []string
-	IdentityReads []string
-	Issues        []string
-}
-
-// JavaRouteRule 是 Java Controller 方法的最小公开接口摘要。
-type JavaRouteRule struct {
-	Method   string
-	Path     string
-	Handler  string
-	Request  string
-	Response string
-}
-
 // PathConfigurationSnapshot 把同一真实流程树、当前入口、表单字段详情和实例现值绑定在一起。
 type PathConfigurationSnapshot struct {
-	Tree         *FlowNodeTemplate
-	EntryNodeIDs []string
-	// TemplateID 与 RuleVersion 用于把样本和生成规则绑定到同一目标模板版本，禁止跨模板或跨规则缓存复用。
-	TemplateID     string
-	RuleVersion    string
-	RuleStatus     string
-	RuleIssues     []string
+	Tree           *FlowNodeTemplate
+	EntryNodeIDs   []string
 	FlowCode       string
 	FlowName       string
 	AuditWay       string

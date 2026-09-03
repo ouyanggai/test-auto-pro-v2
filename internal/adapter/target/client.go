@@ -220,11 +220,6 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 	return c.listSubmitted(ctx, session, query, "", page, pageSize)
 }
 
-// ListSubmittedByFlowCode 只按目标协议的 data.flowCode 精确读取指定流程实例，供有限近期样本使用。
-func (c *Client) ListSubmittedByFlowCode(ctx context.Context, session Session, flowCode string, page, pageSize int) (Page[SubmittedFlow], error) {
-	return c.listSubmitted(ctx, session, "", strings.TrimSpace(flowCode), page, pageSize)
-}
-
 // ListHistoryInstances 分页读取目标可见历史实例，保留候选筛选和快照读取所需的原始身份字段。
 func (c *Client) ListHistoryInstances(ctx context.Context, session Session, flowCode string, page, pageSize int) (Page[HistoryInstance], error) {
 	data := map[string]any{
@@ -801,19 +796,6 @@ func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, 
 		return PathConfigurationSnapshot{}, err
 	}
 	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms}, nil
-}
-
-// ReadTemplateRuleSource 读取规则盘点所需的流程树和关联表单正文，不额外解析审批身份目录。
-func (c *Client) ReadTemplateRuleSource(ctx context.Context, active Session, templateID string) (*FlowNodeTemplate, []FormRuntimeTemplate, error) {
-	tree, forms, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowTemplateApi/findById", templateID)
-	if err != nil {
-		return nil, nil, err
-	}
-	_, runtimeForms, err := c.readFormFieldDetails(ctx, active, "/web/formTemplateApi/findById", forms)
-	if err != nil {
-		return nil, nil, err
-	}
-	return tree, runtimeForms, nil
 }
 
 // ReadProxyConfiguration 读取代理树、实例代理表单字段详情和实例当前表单数据，供已发/待发路径配置使用。

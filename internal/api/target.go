@@ -11,7 +11,6 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
-	"test-auto-pro-v2/internal/formdata"
 )
 
 const maxAPIRequestBytes = 1 << 20
@@ -19,7 +18,6 @@ const maxAPIRequestBytes = 1 << 20
 type TargetReader interface {
 	Verify(context.Context, string) (target.AccountSummary, error)
 	Templates(context.Context, string, string, int, int) (target.Page[target.FlowTemplate], error)
-	TemplateCoverage(context.Context, string) (formdata.TemplateCoverageReport, error)
 	Submitted(context.Context, string, string, int, int) (target.Page[target.SubmittedFlow], error)
 	Due(context.Context, string, string, int, int) (target.Page[target.DueFlow], error)
 }
@@ -59,11 +57,6 @@ type templatePageResponse struct {
 	HasMore  bool                  `json:"hasMore"`
 }
 
-type templateCoverageResponse struct {
-	Account  string                          `json:"account"`
-	Coverage formdata.TemplateCoverageReport `json:"coverage"`
-}
-
 type submittedPageResponse struct {
 	Account  string                 `json:"account"`
 	Source   string                 `json:"source"`
@@ -84,11 +77,10 @@ type duePageResponse struct {
 	HasMore  bool             `json:"hasMore"`
 }
 
-// registerTargetRoutes 注册目标平台只读账号、模板、覆盖报告和实例端点。
+// registerTargetRoutes 注册目标平台只读账号、模板和实例端点。
 func registerTargetRoutes(mux *http.ServeMux, reader TargetReader) {
 	mux.HandleFunc("POST /api/target/accounts/verify", handleVerifyAccount(reader))
 	mux.HandleFunc("GET /api/target/flow-templates", handleFlowTemplates(reader))
-	mux.HandleFunc("GET /api/target/form-template-coverage", handleTemplateCoverage(reader))
 	mux.HandleFunc("GET /api/target/flow-instances", handleFlowInstances(reader))
 }
 
@@ -135,23 +127,6 @@ func handleFlowTemplates(reader TargetReader) http.HandlerFunc {
 			Account: account, Items: nonNilSlice(result.Items), Page: result.Page,
 			PageSize: result.PageSize, Total: result.Total, HasMore: result.HasMore,
 		})
-	}
-}
-
-// handleTemplateCoverage 触发当前账号全部可见模板的真实分页盘点并返回轻量汇总。
-func handleTemplateCoverage(reader TargetReader) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		account := strings.TrimSpace(request.URL.Query().Get("account"))
-		if account == "" {
-			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "缺少真实账号", false)
-			return
-		}
-		report, err := reader.TemplateCoverage(request.Context(), account)
-		if err != nil {
-			writeTargetError(response, err)
-			return
-		}
-		writeSuccess(response, templateCoverageResponse{Account: account, Coverage: report})
 	}
 }
 

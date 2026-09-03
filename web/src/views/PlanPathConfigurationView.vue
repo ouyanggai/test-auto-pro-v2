@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NModal, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
 import type { NotificationReactive } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
@@ -28,7 +28,6 @@ import {
   resolveConfirmedNodeSaveDestination,
 } from '../features/path-configuration/logic'
 import {
-  copyPathConfigurationCycles,
   fetchPathConfiguration,
   fetchPathConfigurationData,
   fetchPathFormRuntimeSession,
@@ -38,7 +37,6 @@ import {
 } from '../features/path-configuration/api'
 import { retryPathLoad } from '../features/path-configuration/retry'
 import type {
-  PathConfigActionCycleInput,
 	PathConfigConfiguredActionInput,
   PathConfigDraft,
   PathConfigNode,
@@ -71,7 +69,6 @@ const currentPath = ref<ExecutionPath | null>(null)
 const executionPaths = ref<ExecutionPath[]>([])
 const configuration = ref<PathConfiguration | null>(null)
 const draft = ref<PathConfigDraft>({ fields: {}, persons: {}, personStrategies: {}, actionConfigurations: {} })
-const actionCycles = ref<PathConfigActionCycleInput[]>([])
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
@@ -96,10 +93,6 @@ const formError = ref('')
 const formErrorDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const nodeSavedSuccessfully = ref(false)
 const formSavedSuccessfully = ref(false)
-const cycleCopyModalOpen = ref(false)
-const cycleCopyTargetID = ref('')
-const cycleCopyBusy = ref(false)
-const cycleCopyError = ref('')
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 const formFrame = ref<FormRuntimeExpose | null>(null)
 let loadVersion = 0
@@ -160,7 +153,7 @@ const pageThemeStyle = computed(() => ({
   '--path-config-text-secondary-color': themeVars.value.textColor2,
 }))
 const planMutable = computed(() => plan.value?.status === 'not_started')
-const formReadOnly = computed(() => !planMutable.value || Boolean(configuration.value?.form.readOnly))
+const formReadOnly = computed(() => !planMutable.value)
 const runtimeForm = computed(() => dataWorkspace.value ? { ...dataWorkspace.value, readOnly: formReadOnly.value } : null)
 const pathAnalysis = computed(() => graph.value && currentPath.value ? analyzeExecutionPath(graph.value, currentPath.value.choices) : null)
 const selectedNode = computed(() => configurationByGraphNodeID.value.get(selectedNodeID.value) ?? null)
@@ -173,15 +166,6 @@ const saveAllNodesDisabled = computed(() => !planMutable.value || pageLoading.va
 const nodeDraftHasUnsavedChanges = computed(() => hasCurrentNodeDraftChanges(selectedNode.value, draft.value))
 const runtimeBlockingReasons = computed(() => [...new Set(runtimeUnsupported.value)])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
-// pathSignature 与服务端使用同一选择序列，前端只展示可能成功的目标，最终仍由服务端复验。
-function pathSignature(path: ExecutionPath): string { return path.choices.map(choice => `${choice.routeNodeId.trim()}:${choice.branchId.trim()}`).join('|') }
-const cycleCopyTargets = computed(() => {
-  const current = currentPath.value
-	if (!planMutable.value || !current || !configuration.value?.actionCycles.length) return []
-  const signature = pathSignature(current)
-  return executionPaths.value.filter(path => path.id !== current.id && pathSignature(path) === signature)
-})
-
 // applyRuntimeFormState 只接受 iframe 已核验会话回传的原始值统计，宿主不持有字段映射或生成所有权。
 function applyRuntimeFormState(payload: Record<string, unknown>) {
   if (workspace.value !== 'form') return
@@ -195,7 +179,7 @@ function applyRuntimeFormState(payload: Record<string, unknown>) {
   }
 }
 
-// handleRuntimeReady 接收真实组件注册表与首次字段统计，避免初始化阶段仍显示旧的生成器估算值。
+// handleRuntimeReady 接收真实组件注册表与首次字段统计，避免初始化阶段显示未经运行时确认的估算值。
 function handleRuntimeReady(payload: Record<string, unknown>) {
   if (workspace.value !== 'form' || !runtimeSession.value) return
   runtimeUnsupported.value = Array.isArray(payload.unsupported) ? payload.unsupported.map(String) : []
@@ -254,7 +238,6 @@ async function applyConfiguration(next: PathConfiguration, preserveSelected = tr
   const bindings = await bindPathConfigurationNodes(graph.value, next)
   configuration.value = next
   draft.value = initPathConfigDraft(next)
-  actionCycles.value = next.actionCycles.map(cycle => ({ key: cycle.key, type: cycle.type, endNodeKey: cycle.endNodeKey, count: cycle.count }))
   configurationByGraphNodeID.value = bindings.byGraphNodeID
   graphNodeIDByConfigurationKey.value = bindings.graphNodeIDByKey
   selectedNodeID.value = preserveSelected && bindings.byGraphNodeID.has(selected)
@@ -349,7 +332,7 @@ async function finishConfirmedNodeSave() {
   const destination = resolveConfirmedNodeSaveDestination(
     current.nextNodeKey,
     graphNodeIDByConfigurationKey.value,
-    current.form.status,
+    dataWorkspace.value?.dataStatus === 'ready' ? 'ready' : 'empty',
   )
   if (destination.kind === 'next-node') {
     // 推进前清除上一节点成功态，侧栏立即成为下一节点的真实草稿和要求。
@@ -382,37 +365,6 @@ function updateNodeActionConfiguration(nodeKey: string, value: PathConfigConfigu
 	// 子组件事件值仍可能携带 Vue Proxy；父页面只持有普通草稿，避免保存前再次触发克隆异常。
 	draft.value.actionConfigurations[nodeKey] = copyPathConfigActions(value)
   nodeSavedSuccessfully.value = false
-}
-
-// updateActionCycles 保留循环草稿直到当前节点保存成功；成员与前驱仍由服务端重新派生。
-function updateActionCycles(value: PathConfigActionCycleInput[]) {
-	if (!planMutable.value) return
-  actionCycles.value = value.map(cycle => ({ ...cycle }))
-  nodeSavedSuccessfully.value = false
-}
-
-// openCycleCopy 打开来源路径的安全复制确认，只允许当前已保存循环复制到兼容路径。
-function openCycleCopy() {
-	if (!planMutable.value) return
-  cycleCopyError.value = ''
-  cycleCopyTargetID.value = cycleCopyTargets.value[0]?.id ?? ''
-  cycleCopyModalOpen.value = true
-}
-
-// copyCycles 确认后只写目标路径的循环命名空间，不触发目标平台接口。
-async function copyCycles() {
-  const source = currentPath.value
-	if (!planMutable.value || !source || !cycleCopyTargetID.value || cycleCopyBusy.value) return
-  cycleCopyBusy.value = true
-  cycleCopyError.value = ''
-  try {
-    await copyPathConfigurationCycles(planID.value, cycleCopyTargetID.value, source.id, crypto.randomUUID())
-    cycleCopyModalOpen.value = false
-  }
-  catch (caught) {
-    cycleCopyError.value = caught instanceof Error ? pathConfigurationMessage(caught.message) : '循环复制失败，请重试'
-  }
-  finally { cycleCopyBusy.value = false }
 }
 
 // saveCurrentNode 保存当前节点后立即 GET 对账；请求响应丢失时也以服务端事实为准。
@@ -701,30 +653,11 @@ void loadPage()
         </div>
       </div>
       <div v-if="configuration" class="path-configuration-page__progress" aria-label="路径配置进度">
-        <span>已准备 {{ configuration.preparation.preparedNodes }} 个节点</span>
-        <span>还有 {{ configuration.preparation.pendingItems }} 项需要处理</span>
+        <span>节点配置状态：{{ pathConfigurationStatusName(configuration.status) }}</span>
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
-		<n-button v-if="planMutable && workspace === 'nodes' && configuration.actionCycles.length" size="small" :disabled="!cycleCopyTargets.length" @click="openCycleCopy">复制已保存循环</n-button>
       </div>
     </header>
-
-    <n-modal v-model:show="cycleCopyModalOpen">
-      <n-card title="复制已保存循环" style="width: min(620px, 94vw)">
-        <div class="path-configuration-page__cycle-body">
-          <n-alert type="info" :show-icon="false">只允许复制到流程结构完全一致的路径；复制只影响本系统配置，不会调用目标平台，也不会覆盖源路径。</n-alert>
-          <n-alert v-if="cycleCopyError" type="error" :show-icon="false">{{ cycleCopyError }}</n-alert>
-          <n-select
-            v-model:value="cycleCopyTargetID"
-            :options="cycleCopyTargets.map(path => ({ label: `#${path.sequenceNo} ${path.name}`, value: path.id }))"
-            placeholder="选择结构一致的目标路径"
-          />
-        </div>
-        <template #footer>
-          <n-space justify="end"><n-button @click="cycleCopyModalOpen = false">取消</n-button><n-button type="primary" :loading="cycleCopyBusy" :disabled="!cycleCopyTargetID" @click="copyCycles">确认复制</n-button></n-space>
-        </template>
-      </n-card>
-    </n-modal>
 
     <n-modal v-model:show="routeConfirmationOpen" :mask-closable="false" :closable="false">
       <n-card title="确认换路并覆盖数据" style="width: min(620px, 94vw)">
@@ -769,8 +702,8 @@ void loadPage()
         :choices="currentPath.choices"
         configuration-mode
         :configuration-node-states="configurationNodeStates"
-        :configuration-form-status="configuration.form.status"
-        :configuration-form-status-name="pathConfigurationStatusName(configuration.form.status)"
+        :configuration-form-status="dataWorkspace?.dataStatus === 'ready' ? 'ready' : dataWorkspace?.dataStatus === 'affected' ? 'affected' : 'empty'"
+        :configuration-form-status-name="pathConfigurationStatusName(dataWorkspace?.dataStatus || 'empty')"
         @select-configuration-node="selectConfigurationNode"
         @open-configuration-form="openFormWorkspace"
         @retry="loadPage"
@@ -787,11 +720,9 @@ void loadPage()
             :save-error="nodeSaveError"
             :save-details="nodeSaveDetails"
             :saved-successfully="nodeSavedSuccessfully"
-            :form-complete="configuration.form.status === 'valid'"
-            :action-cycles="configuration.actionCycles"
+            :form-complete="dataWorkspace?.dataStatus === 'ready'"
             @update-person-strategy="updatePersonStrategy"
             @update-action-configuration="updateNodeActionConfiguration"
-            @update-action-cycles="updateActionCycles"
             @save="saveCurrentNode"
             @save-all="saveAllNodes"
             @back-to-plan="backToPlan"

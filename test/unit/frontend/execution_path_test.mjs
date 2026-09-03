@@ -36,20 +36,20 @@ import {
 } from '../../../web/src/features/execution-paths/api.ts'
 
 test('路径可运行规则只消费节点配置和数据准备双状态', () => {
-  const path = { configurationStatus: 'configured', dataStatus: 'generated' }
+  const path = { configurationStatus: 'configured', dataStatus: 'ready' }
   assert.equal(isExecutionPathRunnable(path), true)
   assert.equal(executionPathRunReadiness(path), 'ready')
   assert.equal(executionPathRunReadiness({ ...path, configurationStatus: 'partial' }), 'configuration')
-  assert.equal(executionPathRunReadiness({ ...path, dataStatus: 'needs_attention' }), 'data')
-  assert.equal(isExecutionPathRunnable({ ...path, dataStatus: 'not_generated' }), false)
+  assert.equal(executionPathRunReadiness({ ...path, dataStatus: 'needs_input' }), 'data')
+  assert.equal(isExecutionPathRunnable({ ...path, dataStatus: 'empty' }), false)
 })
 
 test('运行前检查只定位首条不合格路径且不改变勾选集合', () => {
   const paths = [
-    { id: '1', configurationStatus: 'pending', dataStatus: 'generated' },
-    { id: '2', configurationStatus: 'configured', dataStatus: 'needs_attention' },
-    { id: '3', configurationStatus: 'partial', dataStatus: 'confirmed' },
-    { id: '4', configurationStatus: 'configured', dataStatus: 'generated' },
+    { id: '1', configurationStatus: 'pending', dataStatus: 'ready' },
+    { id: '2', configurationStatus: 'configured', dataStatus: 'needs_input' },
+    { id: '3', configurationStatus: 'partial', dataStatus: 'affected' },
+    { id: '4', configurationStatus: 'configured', dataStatus: 'ready' },
   ]
   const selected = new Set(['1', '2', '3'])
   assert.equal(findFirstUnrunnableExecutionPath(paths, selected)?.path.id, '1')

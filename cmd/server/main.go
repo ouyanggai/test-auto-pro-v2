@@ -39,17 +39,10 @@ func main() {
 		planService, targetReader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),
 		analyzer.NewPathRequirementAnalyzer(), pathRepository,
 	)
-	pathConfigRepository := planmysql.NewPathConfigurationRepository(planDatabase.DB)
 	pathConfigService := service.NewPathConfigService(
 		planService, targetReader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),
-		analyzer.NewPathConfigAnalyzer(), pathRepository, pathConfigRepository,
+		analyzer.NewPathConfigAnalyzer(), pathRepository,
 	)
-	// 候选提供者与计划读取共用当前发起人会话；缓存按模板实际组件加载且不扩大目标权限。
-	pathConfigService.SetComponentCandidateCache(service.NewComponentCandidateCache(targetReader, 1000, 15*time.Minute))
-	pathPreparationService := service.NewPathPreparationService(pathConfigService, planmysql.NewPathPreparationRepository(planDatabase.DB))
-	if err := pathPreparationService.Recover(context.Background()); err != nil {
-		log.Printf("恢复批量路径准备任务失败：%v", err)
-	}
 	workspaceRoot := os.Getenv("TEST_AUTO_PRO_WORKSPACE_ROOT")
 	if workspaceRoot == "" {
 		workspaceRoot, err = os.Getwd()
@@ -61,17 +54,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	templateCatalogService := service.NewTemplateCatalogService(targetReader, planmysql.NewTemplateCatalogRepository(planDatabase.DB), workspaceRoot)
 	historyDataService := service.NewHistoryDataService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
 	historyReplayService := service.NewHistoryReplayService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
 	historyWorkspaceStore := planmysql.NewHistoryReplayRepository(planDatabase.DB)
 	pathConfigService.SetHistoryWorkspaceStores(historyWorkspaceStore, historyWorkspaceStore)
 	if err := historyReplayService.Recover(context.Background()); err != nil {
 		log.Printf("恢复历史回放任务失败：%v", err)
-	}
-	pathConfigService.SetTemplateRuleCatalog(templateCatalogService)
-	if err := templateCatalogService.Recover(context.Background()); err != nil {
-		log.Printf("恢复模板规则目录任务失败：%v", err)
 	}
 	manifestPath := filepath.Join(workspaceRoot, "form-runtime", "sync-manifest.json")
 	manifest, err := formruntimemaintenance.LoadManifest(workspaceRoot, manifestPath)
@@ -114,7 +102,7 @@ func main() {
 	})
 	server := &http.Server{
 		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, pathPreparationService, templateCatalogService, historyDataService, historyReplayService),
+		Handler:           api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

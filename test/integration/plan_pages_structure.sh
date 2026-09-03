@@ -168,7 +168,7 @@ if (!rulesSource.includes("trigger: 'account-verification'")) {
   throw new Error('提交时必须校验账号已完成静态验证')
 }
 if (!/templateId:[\s\S]*?flowSource === 'new'[\s\S]*?: \[\]/.test(rulesSource)) {
-  throw new Error('流程模板规则必须只在账号已验证且来源为新发起时启用')
+  throw new Error('流程模板选择必须只在账号已验证且来源为新发起时启用')
 }
 if (!/scheduledAt:\s*form\.scheduleEnabled[\s\S]*?: \[\]/.test(rulesSource)) {
   throw new Error('启动时间规则必须只在定时启动开启时启用')

@@ -60,28 +60,6 @@ func (r workspaceTargetReader) PathConfigurationSnapshot(context.Context, string
 	return r.snapshot, nil
 }
 
-type workspaceEmptyPathConfigRepository struct{}
-
-// FindByPath 表示 T05 数据工作区测试没有旧配置仓储记录。
-func (workspaceEmptyPathConfigRepository) FindByPath(context.Context, uint64) (model.StoredPathConfig, bool, error) {
-	return model.StoredPathConfig{}, false, nil
-}
-
-// FindByPaths 表示 T05 数据工作区测试不读取旧配置批次。
-func (workspaceEmptyPathConfigRepository) FindByPaths(context.Context, []uint64) (map[uint64]model.StoredPathConfig, error) {
-	return map[uint64]model.StoredPathConfig{}, nil
-}
-
-// FindByPathAndKey 表示 T05 数据工作区测试没有旧配置幂等结果。
-func (workspaceEmptyPathConfigRepository) FindByPathAndKey(context.Context, uint64, string) (model.StoredPathConfig, bool, error) {
-	return model.StoredPathConfig{}, false, nil
-}
-
-// Save 不应被 T05 数据工作区调用，若调用则原样返回以保持服务构造可用。
-func (workspaceEmptyPathConfigRepository) Save(_ context.Context, record model.StoredPathConfig, _ uint64, _ time.Time) (model.StoredPathConfig, error) {
-	return record, nil
-}
-
 type workspaceHistoryStore struct {
 	*historyMemoryStore
 	configs map[uint64]repository.HistoryPathConfigRecord
@@ -163,7 +141,7 @@ func TestPathDataWorkspaceRequiresConfirmationBeforeRouteWrite(t *testing.T) {
 		Forms: []target.FormRuntimeTemplate{{Name: "申请单", TemplateData: `{"list":[{"type":"number","model":"amount"}]}`}},
 	}}
 	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths, workspaceEmptyPathConfigRepository{})
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths)
 	configService.SetHistoryWorkspaceStores(store, store)
 
 	input := model.PathConfigurationDataInput{Revision: 4, Values: map[string]any{"amount": 3, "nested": map[string]any{"memo": "edited"}}, RuntimeValidation: model.HistoryRuntimeValidation{Accepted: true}}
@@ -215,7 +193,7 @@ func TestPathDataWorkspaceRevisionConflictDoesNotPartiallyWrite(t *testing.T) {
 		Forms: []target.FormRuntimeTemplate{{Name: "申请单", TemplateData: `{"list":[{"type":"input","model":"title"}]}`}},
 	}}
 	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), &workspacePathRepository{paths: []model.ExecutionPath{path}}, workspaceEmptyPathConfigRepository{})
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), &workspacePathRepository{paths: []model.ExecutionPath{path}})
 	configService.SetHistoryWorkspaceStores(store, store)
 	_, err := configService.SaveData(context.Background(), plan.ID, path.ID, "f497a5d1-7738-4d7d-94a8-80f4ecf2a002", model.PathConfigurationDataInput{Revision: 8, Values: map[string]any{"title": "new"}, RuntimeValidation: model.HistoryRuntimeValidation{Accepted: true}})
 	if err == nil || !service.IsPathConfigErrorKind(err, service.PathConfigErrorRevisionConflict) {
@@ -239,7 +217,7 @@ func TestCustomWorkspacePassesRawValuesWithoutPageMapping(t *testing.T) {
 		FlowCode: "flow-custom", FlowName: "NoFormFlow 申请页", AuditWay: "NoFormFlow", RenderType: target.FormRenderTypeVueCustom,
 	}}
 	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), &workspacePathRepository{paths: []model.ExecutionPath{path}}, workspaceEmptyPathConfigRepository{})
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), &workspacePathRepository{paths: []model.ExecutionPath{path}})
 	configService.SetHistoryWorkspaceStores(store, store)
 	configuration, err := configService.GetData(context.Background(), plan.ID, path.ID)
 	if err != nil {

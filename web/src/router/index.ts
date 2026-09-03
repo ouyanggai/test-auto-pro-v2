@@ -7,7 +7,6 @@ const PlanPathConfigurationView = () => import('../views/PlanPathConfigurationVi
 const RunsView = () => import('../views/RunsView.vue')
 const SettingsView = () => import('../views/SettingsView.vue')
 const FormRuntimeMaintenanceView = () => import('../views/FormRuntimeMaintenanceView.vue')
-const TemplateRuleCatalogView = () => import('../views/TemplateRuleCatalogView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -20,7 +19,6 @@ const router = createRouter({
     { path: '/runs', component: RunsView },
     { path: '/settings', component: SettingsView },
     { path: '/settings/form-runtime', component: FormRuntimeMaintenanceView },
-    { path: '/settings/template-rules', component: TemplateRuleCatalogView },
   ],
 })
 

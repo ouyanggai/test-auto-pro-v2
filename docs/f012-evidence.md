@@ -4,7 +4,7 @@
 
 | 领域 | 事实/入口 | 当前项目依据 |
 | --- | --- | --- |
-| 历史实例 | `/web/flowInstanceApi/list` 返回 `id`、`flowCode`、`formName`、`name`、`status`、摘要、发起人和时间；列表支持 `flowCode` 精确查询 | `internal/adapter/target/client.go` 的 `ListSubmittedByFlowCode` |
+| 历史实例 | `/web/flowInstanceApi/list` 返回 `id`、`flowCode`、`formName`、`name`、`status`、摘要、发起人和时间；列表支持 `flowCode` 精确查询 | `internal/adapter/target/client.go` 的 `ListSubmitted`，由 `internal/service/target_read.go` 负责服务端过滤 |
 | 待发实例 | `/web/flowJobTaskLink/list` 返回实例/代理/节点入口和 `formName`；只读分页上限 20 页 | `internal/adapter/target/client.go` 的 `ListDue`、`FindDueFlow` |
 | 原始表单 | `/web/flowInstanceApi/getCurrentFromData` 返回 `data` 原始 JSON；不经字段映射 | `internal/adapter/target/client.go` 的 `ReadInstanceCurrentData` |
 | 模板/页面 | `/web/flowTemplateApi/findById`、`/web/flowProxy/findById` 和现有 form-runtime 协议负责模板、页面与数据回显 | `internal/adapter/target/client.go`、`form-runtime/src/runtime` |

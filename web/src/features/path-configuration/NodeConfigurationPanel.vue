@@ -2,45 +2,32 @@
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
 import { computed, ref } from 'vue'
 import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline } from '@vicons/ionicons5'
-import { copyPathConfigActions, normalizedActionCount, normalizedPersonStrategy, pathConfigActionsInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
-import type { PathConfigActionCycle, PathConfigActionCycleInput, PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
+import { copyPathConfigActions, normalizedPersonStrategy, pathConfigActionsInput, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import type { PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; actionCycles: PathConfigActionCycle[] }>()
-const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; updateActionCycles: [value: PathConfigActionCycleInput[]]; save: []; saveAll: []; backToPlan: []; openForm: [] }>()
+const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean }>()
+const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; backToPlan: []; openForm: [] }>()
 const actionEditorOpen = ref(false)
 const actionDraft = ref<PathConfigConfiguredActionInput[]>([])
 const parameterDraft = ref<Record<string, string>>({})
 const parameterErrors = ref<Record<string, string>>({})
 const allowActionEditorClose = ref(false)
 
-// actions 只保留当前节点的 F-008 动作行。
+// actions 只保留当前节点的独立动作记录。
 const savedActions = computed(() => props.node ? (props.draft.actionConfigurations[props.node.key] ?? pathConfigActionsInput(props.node)) : [])
 const actions = computed(() => actionDraft.value)
 const canAddAction = computed(() => Boolean(props.node?.actionConfiguration.catalog.some(item => item.enabled)) && actions.value.length < 10)
 const canSaveActionEditor = computed(() => Object.keys(parameterErrors.value).length === 0)
 const disabledActionDefinitions = computed(() => (props.node?.actionConfiguration.catalog ?? []).filter(item => !item.enabled && item.disabledReason))
 const actionEditorHasChanges = computed(() => {
-  if (JSON.stringify(actionDraft.value) !== JSON.stringify(expandActionRows(savedActions.value))) return true
+  if (JSON.stringify(actionDraft.value) !== JSON.stringify(copyPathConfigActions(savedActions.value))) return true
   return actionDraft.value.some(action => parameterDraft.value[action.key] !== JSON.stringify(action.parameters ?? {}, null, 2))
 })
-// cycleInputs 只回传服务端派生的循环事实。
 // emitActions 复制动作行后更新父级草稿，避免 Vue Proxy 进入请求体。
 function emitActions(next: PathConfigConfiguredActionInput[]) { if (props.node) emit('updateActionConfiguration', props.node.key, copyPathConfigActions(next)) }
-// expandActionRows 将旧数据中的展示次数展开为独立动作记录，编辑器不再聚合同 kind 动作。
-function expandActionRows(input: PathConfigConfiguredActionInput[]): PathConfigConfiguredActionInput[] {
-  const rows: PathConfigConfiguredActionInput[] = []
-  for (const item of copyPathConfigActions(input)) {
-    const count = normalizedActionCount(item.count)
-    for (let index = 0; index < count; index += 1) {
-      rows.push({ ...item, key: count === 1 ? item.key : `${item.key}#${index + 1}`, count: 1 })
-    }
-  }
-  return rows
-}
-
-// openActionEditor 打开弹窗时复制并展开父级草稿，取消不会修改节点面板。
+// openActionEditor 打开弹窗时复制父级草稿，取消不会修改节点面板。
 function openActionEditor() {
-  actionDraft.value = expandActionRows(savedActions.value)
+  actionDraft.value = copyPathConfigActions(savedActions.value)
   parameterDraft.value = Object.fromEntries(actionDraft.value.map(action => [action.key, JSON.stringify(action.parameters ?? {}, null, 2)]))
   parameterErrors.value = {}
   actionEditorOpen.value = true
@@ -83,7 +70,6 @@ function updateAction(index: number, patch: Partial<PathConfigConfiguredActionIn
   const definition = actionDefinition(kind)
   if (!definition) return
   current.kind = kind
-  current.count = 1
   current.person = definition.requiresPerson ? (patch.person ?? current.person ?? (definition.person ? personDraft(definition.person) : undefined)) : undefined
   current.actorPolicy = definition.requiresPerson ? (current.person?.strategy || current.actorPolicy) : undefined
   actionDraft.value = next
@@ -94,7 +80,7 @@ function updateActionPerson(index: number, person: PathConfigPerson, patch: Part
 function newActionKey() { return globalThis.crypto?.randomUUID?.() ?? `action-local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
 
 // addAction 添加一条独立动作记录，允许与已有记录使用相同 kind。
-function addAction() { const definition = props.node?.actionConfiguration.catalog.find(item => item.enabled); if (!definition || actions.value.length >= 10) return; actionDraft.value = [...actions.value, { key: newActionKey(), kind: definition.kind as PathConfigActionKind, count: 1, person: definition.person ? personDraft(definition.person) : undefined }] }
+function addAction() { const definition = props.node?.actionConfiguration.catalog.find(item => item.enabled); if (!definition || actions.value.length >= 10) return; actionDraft.value = [...actions.value, { key: newActionKey(), kind: definition.kind as PathConfigActionKind, person: definition.person ? personDraft(definition.person) : undefined }] }
 // moveAction 调整动作对应的真实再次到达顺序。
 function moveAction(index: number, offset: number) { const target = index + offset; if (target < 0 || target >= actions.value.length) return; const next = copyPathConfigActions(actions.value); [next[index], next[target]] = [next[target], next[index]]; actionDraft.value = next }
 // removeAction 删除一个动作行。

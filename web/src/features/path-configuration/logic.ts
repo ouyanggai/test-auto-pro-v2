@@ -1,5 +1,4 @@
 import type {
-  PathConfigActionCycleInput,
   PathConfigActionKind,
   PathConfigConfiguredActionInput,
   PathConfiguration,
@@ -8,7 +7,6 @@ import type {
   PathConfigPerson,
   PathConfigPersonDisplayItem,
   PathConfigPersonStrategyInput,
-  PathConfigNodeSavePayload,
   PathActionConfigurationInput,
   PathActionKey,
   PathActionScope,
@@ -64,7 +62,7 @@ export type ConfirmedNodeSaveDestination = { kind: 'next-node', nodeID: string }
 // resolveConfirmedNodeSaveDestination 根据服务端配置进度决定保存后的画布定位。
 export function resolveConfirmedNodeSaveDestination(nextNodeKey: string, graphNodeIDByKey: Map<string, string>, formStatus: PathFormStatus): ConfirmedNodeSaveDestination {
   if (nextNodeKey) { const nodeID = graphNodeIDByKey.get(nextNodeKey); return nodeID ? { kind: 'next-node', nodeID } : { kind: 'unmapped' } }
-  return formStatus === 'valid' ? { kind: 'complete' } : { kind: 'form' }
+  return formStatus === 'ready' ? { kind: 'complete' } : { kind: 'form' }
 }
 
 export interface PathConfigPersonItemSummary { preview: PathConfigPersonDisplayItem[]; total: number; hidden: number }
@@ -103,12 +101,11 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
   return { fields: {}, persons, personStrategies, actionConfigurations }
 }
 
-// copyPathConfigActions 脱离 Vue Proxy 并移除已经废弃的目标与组合字段。
-export function copyPathConfigActions(input: Array<Pick<PathConfigConfiguredActionInput, 'key' | 'kind' | 'count' | 'person' | 'parameters' | 'actorPolicy' | 'note'>>): PathConfigConfiguredActionInput[] {
+// copyPathConfigActions 脱离 Vue Proxy，保留每条独立动作记录的目标语义和参数。
+export function copyPathConfigActions(input: Array<Pick<PathConfigConfiguredActionInput, 'key' | 'kind' | 'person' | 'parameters' | 'actorPolicy' | 'note'>>): PathConfigConfiguredActionInput[] {
   return (input ?? []).map(item => ({
     key: item.key,
     kind: item.kind,
-    count: normalizedActionCount(item.count),
     ...(item.person ? { person: copyPathConfigPersonStrategy(item.person) } : {}),
     ...(item.parameters ? { parameters: cloneActionParameters(item.parameters) } : {}),
     ...(item.actorPolicy ? { actorPolicy: item.actorPolicy } : {}),
@@ -124,20 +121,7 @@ function cloneActionParameters(input: Record<string, unknown>): Record<string, u
 // pathConfigActionsInput 从当前节点的独立动作配置取得可保存草稿。
 export function pathConfigActionsInput(node: PathConfigNode): PathConfigConfiguredActionInput[] { return copyPathConfigActions(node.actionConfiguration.actions) }
 
-// buildPathConfigNodeSavePayload 只收敛当前节点，不会覆盖其他节点、路径选择或表单数据。
-export function buildPathConfigNodeSavePayload(node: PathConfigNode, draft: PathConfigDraft, actionCycles?: PathConfigActionCycleInput[]): PathConfigNodeSavePayload {
-  const persons = node.persons.filter(person => person.editable).map(person => normalizedPersonStrategy(person, draft.personStrategies[person.key]))
-  return { persons, actions: copyPathConfigActions(draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)), actionCycles }
-}
-
-const legacyActionSemantics: Record<string, { action: PathActionKey, scope: PathActionScope }> = {
-  draft_save: { action: 'storage_form_data', scope: 'task' },
-  reject_no_pass: { action: 'reject', scope: 'task' },
-  rollback_previous: { action: 'rollback_previous', scope: 'task' },
-  add_sign: { action: 'add_sign', scope: 'task' },
-}
-
-// buildPathActionConfigurationInput 把页面现有动作草稿转换为 F-012 独立记录，不把旧次数字段发送到后端。
+// buildPathActionConfigurationInput 把每条页面动作草稿按原始稳定语义发送到 F-012 服务端。
 export function buildPathActionConfigurationInput(node: PathConfigNode, draft: PathConfigDraft, revision: number): PathActionConfigurationInput {
   const source = draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)
   const personsByKey = new Map(node.persons
@@ -149,28 +133,23 @@ export function buildPathActionConfigurationInput(node: PathConfigNode, draft: P
   const actions: PathConfiguredActionInput[] = []
   let order = 1
   source.forEach(item => {
-    const semantic = legacyActionSemantics[item.kind]
-    if (!semantic) return
-    const repeatCount = normalizedActionCount(item.count)
-    for (let repeat = 0; repeat < repeatCount; repeat += 1) {
-      const key = repeatCount === 1 ? item.key : `${item.key}#${repeat + 1}`
-      const parameters = {
-        ...(item.parameters ? cloneActionParameters(item.parameters) : {}),
-        ...(item.person?.strategy ? { actorStrategy: item.person.strategy } : {}),
-      }
-      if (item.person) personsByKey.set(item.person.key, { key: item.person.key, strategy: item.person.strategy, seed: item.person.seed, selected: [...item.person.selected] })
-      actions.push({
-        key,
-        action: semantic.action,
-        scope: semantic.scope,
-        nodeKey: semantic.scope === 'instance' ? undefined : node.key,
-        order,
-        ...(Object.keys(parameters).length ? { parameters } : {}),
-        ...((item.actorPolicy || item.person?.strategy) ? { actorPolicy: item.actorPolicy || item.person?.strategy } : {}),
-        ...(item.note ? { note: item.note } : {}),
-      })
-      order += 1
+    const action = item.kind as PathActionKey
+    const scope: PathActionScope = action === 'save_draft' || action === 'submit' || action === 'resubmit'
+      ? 'initiator'
+      : action === 'retrieve' ? 'completed_task'
+        : action === 'withdraw' || action === 'urge' || action === 'forward' || action === 'follow' || action === 'unfollow' ? 'instance' : 'task'
+    const parameters = {
+      ...(item.parameters ? cloneActionParameters(item.parameters) : {}),
+      ...(item.person?.strategy ? { actorStrategy: item.person.strategy } : {}),
     }
+    if (item.person) personsByKey.set(item.person.key, { key: item.person.key, strategy: item.person.strategy, seed: item.person.seed, selected: [...item.person.selected] })
+    actions.push({
+      key: item.key, action, scope, nodeKey: scope === 'instance' ? undefined : node.key, order,
+      ...(Object.keys(parameters).length ? { parameters } : {}),
+      ...((item.actorPolicy || item.person?.strategy) ? { actorPolicy: item.actorPolicy || item.person?.strategy } : {}),
+      ...(item.note ? { note: item.note } : {}),
+    })
+    order += 1
   })
   return { revision, persons: [...personsByKey.values()], actions }
 }
@@ -217,35 +196,29 @@ export function normalizedPersonStrategy(person: PathConfigPerson, input?: PathC
 // normalizedPathConfigSeed 保持浏览器 seed 在安全整数范围内。
 export function normalizedPathConfigSeed(seed: unknown): number { return typeof seed === 'number' && Number.isSafeInteger(seed) && seed >= 1 ? seed : 1 }
 
-// validPathConfigActions 在提交前校验目录、次数和动作专用人员。
+// validPathConfigActions 在提交前校验目录和动作专用人员；重复动作记录是合法的。
 export function validPathConfigActions(node: PathConfigNode, input: PathConfigConfiguredActionInput[]): boolean {
   if (!input || input.length > 10) return false
   const catalog = new Map(node.actionConfiguration.catalog.filter(item => item.enabled).map(item => [item.kind, item]))
-  const seen = new Set<string>()
   return input.every(action => {
     const definition = catalog.get(action.kind)
-    if (seen.has(action.kind)) return false
-    seen.add(action.kind)
-    if (!definition || normalizedActionCount(action.count) !== action.count) return false
+    if (!definition) return false
     if (!definition.requiresPerson) return !action.person
     return validPathConfigActionPerson(definition.person, action.person)
   })
 }
 
-// validCurrentNodeActions 校验新动作编辑器的独立记录，不以 kind 去重；旧 F-008 校验函数保留给兼容测试边界。
+// validCurrentNodeActions 校验动作编辑器的独立记录，不按 kind 去重。
 function validCurrentNodeActions(node: PathConfigNode, input: PathConfigConfiguredActionInput[]): boolean {
   if (!input || input.length > 10) return false
   const catalog = new Map(node.actionConfiguration.catalog.filter(item => item.enabled).map(item => [item.kind, item]))
   return input.every(action => {
     const definition = catalog.get(action.kind)
-    if (!definition || normalizedActionCount(action.count) !== action.count) return false
+    if (!definition) return false
     if (!definition.requiresPerson) return !action.person
     return validPathConfigActionPerson(definition.person, action.person)
   })
 }
-
-// normalizedActionCount 把单个动作次数限制为真实可解释的 1 至 10 次。
-export function normalizedActionCount(count: unknown): number { return typeof count === 'number' && Number.isInteger(count) && count >= 1 && count <= 10 ? count : 1 }
 
 // validPathConfigActionPerson 校验动作专用人员策略。
 function validPathConfigActionPerson(person: PathConfigPerson | undefined, input: PathConfigPersonStrategyInput | undefined): boolean {
@@ -253,9 +226,6 @@ function validPathConfigActionPerson(person: PathConfigPerson | undefined, input
   const selected = resolvedPersonStrategySelection(person, input); const allowed = new Set(person.options.map(option => option.value))
   return !selected.some(value => !allowed.has(value)) && !(person.required && selected.length === 0) && !(selected.length > 0 && selected.length < person.minCount) && !(person.maxCount > 0 && selected.length > person.maxCount)
 }
-
-// nextFormGenerationSeed 对表单“换一组”稳定推进种子。
-export function nextFormGenerationSeed(seed: number): number { return !Number.isSafeInteger(seed) || seed < 1 || seed >= Number.MAX_SAFE_INTEGER - 104729 ? 1 : seed + 104729 }
 
 // copyPathConfigPersonStrategy 把可能来自 Vue Proxy 的策略转换为普通对象。
 function copyPathConfigPersonStrategy(input: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput { return { key: input.key, strategy: input.strategy, seed: input.seed, selected: [...input.selected] } }

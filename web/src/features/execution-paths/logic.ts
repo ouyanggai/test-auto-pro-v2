@@ -17,7 +17,7 @@ export type ExecutionPathRunReadiness = 'ready' | 'configuration' | 'data'
 // executionPathRunReadiness 只消费路径双状态，供未来运行预检和当前配置提示共用。
 export function executionPathRunReadiness(path: ExecutionPath): ExecutionPathRunReadiness {
   if (path.configurationStatus !== 'configured') return 'configuration'
-  if (path.dataStatus === 'not_required' || path.dataStatus === 'generated' || path.dataStatus === 'confirmed') return 'ready'
+  if (path.dataStatus === 'ready') return 'ready'
   return 'data'
 }
 

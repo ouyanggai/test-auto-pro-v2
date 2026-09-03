@@ -12,28 +12,13 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/api"
 	"test-auto-pro-v2/internal/config"
-	"test-auto-pro-v2/internal/formdata"
 )
 
 type stubTargetReader struct {
 	verifyErr    error
 	templatesErr error
-	coverageErr  error
 	submittedErr error
 	dueErr       error
-}
-
-// TemplateCoverage 返回不包含模板正文和内部标识的轻量覆盖报告。
-func (s *stubTargetReader) TemplateCoverage(_ context.Context, _ string) (formdata.TemplateCoverageReport, error) {
-	if s.coverageErr != nil {
-		return formdata.TemplateCoverageReport{}, s.coverageErr
-	}
-	return formdata.TemplateCoverageReport{
-		TemplateCount: 196, ScannedTemplateCount: 196, TemplateTypeCount: 54, FlowCodeCount: 196,
-		TemplateTypes: map[string]int{"经营管理": 196}, ComponentTypes: map[string]int{"input": 320},
-		ConditionOperators: map[string]int{"eq": 20}, ConditionLogic: map[string]int{"and": 4}, DataSourceMethods: map[string]int{},
-		ScriptCapabilities: map[string]int{}, NeedsAttention: []string{}, Complete: true,
-	}, nil
 }
 
 func (s *stubTargetReader) Verify(_ context.Context, account string) (target.AccountSummary, error) {
@@ -87,7 +72,6 @@ func TestTargetAPIContracts(t *testing.T) {
 	}{
 		{name: "验证账号", method: http.MethodPost, path: "/api/target/accounts/verify", body: `{"account":"account-a"}`, fields: []string{"verified", "displayName", "companyName"}},
 		{name: "模板列表", method: http.MethodGet, path: "/api/target/flow-templates?account=account-a&query=test&page=1&pageSize=20", fields: []string{"flowName", "code", "typeName", "remark", "formExist", "formTemplateCount", "hasMore"}},
-		{name: "模板覆盖报告", method: http.MethodGet, path: "/api/target/form-template-coverage?account=account-a", fields: []string{"templateCount", "scannedTemplateCount", "templateTypeCount", "flowCodeCount", "componentTypes", "conditionOperators", "conditionLogic", "dataSourceMethods", "complete"}},
 		{name: "已发列表", method: http.MethodGet, path: "/api/target/flow-instances?account=account-a&source=submitted&page=1&pageSize=20", fields: []string{"submitted", "statusName", "currentAuditUserNames", "hasMore"}},
 		{name: "待发列表", method: http.MethodGet, path: "/api/target/flow-instances?account=account-a&source=due&page=1&pageSize=20", fields: []string{"due", "flowInstanceId", "statusName"}},
 	}

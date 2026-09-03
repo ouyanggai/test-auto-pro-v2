@@ -166,7 +166,7 @@ func evaluateBooleanValue(value any) Evaluation {
 	return Evaluation{Satisfied: false, Evaluable: true, Reason: "目标 boolean_value 规则不可满足"}
 }
 
-// normalizeJudge 只保留目标枚举名称，不接受旧生成器的符号或别名。
+// normalizeJudge 只保留目标流程条件枚举名称，不接受未证明的符号或别名。
 func normalizeJudge(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }

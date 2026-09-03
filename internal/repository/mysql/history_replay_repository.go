@@ -534,7 +534,7 @@ func scanHistoryPathConfig(row rowScanner) (repository.HistoryPathConfigRecord, 
 	record.RuntimeValidation, record.Issues, record.LatestIdempotency = copyJSONBytes(validation), copyJSONBytes(issues), copyJSONBytes(latest)
 	for _, value := range [][]byte{record.PersonStrategies, record.UserActions, record.CompiledSteps, record.ConfirmedNodeKeys, record.EffectiveFormData, record.BranchPatches, record.RuntimeValidation, record.Issues, record.LatestIdempotency} {
 		if len(value) == 0 || !json.Valid(value) {
-			return repository.HistoryPathConfigRecord{}, false, repository.ErrPathConfigDataInvalid
+			return repository.HistoryPathConfigRecord{}, false, repository.ErrHistoryPathConfigDataInvalid
 		}
 	}
 	record.CreatedAt, record.UpdatedAt = record.CreatedAt.UTC(), record.UpdatedAt.UTC()

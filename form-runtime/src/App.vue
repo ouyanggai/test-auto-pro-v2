@@ -33,7 +33,6 @@ export default {
       values: {},
       savedValues: {},
       renderType: 'formmaking',
-		ruleVersion: '',
       vuePage: { status: 'blocked', pageName: '', fields: [], issues: [] },
       runtimePermissions: [],
       unsupported: [],
@@ -91,7 +90,7 @@ export default {
           requestId: command.requestId,
           type: 'error',
 		  payload: {
-			message, renderType: this.renderType, ruleVersion: this.ruleVersion,
+			message, renderType: this.renderType,
 			issues: this.combinedIssues([{
 			  code: 'runtime_command_failed', status: 'blocked', source: 'iframe_runtime', fieldPath: '', fieldLabel: '',
 			  operator: command.type, expected: '命令执行成功', actual: message, relatedFields: [], message, canRetry: true
@@ -113,7 +112,6 @@ export default {
         this.loading = true
         this.readOnly = Boolean(payload.readOnly)
         this.renderType = String(payload.renderType || 'formmaking')
-		this.ruleVersion = String(payload.ruleVersion || '')
 		this.vuePage = payload.vuePage || { status: 'blocked', pageName: '', fields: [], issues: [] }
         this.runtimePermissions = Array.isArray(payload.permissions) ? payload.permissions : []
         const baseURL = String(payload.baseURL || '')
@@ -180,7 +178,7 @@ export default {
         await this.refresh()
         this.loading = false
         this.result(command, {
-		  ready: true, renderType: this.renderType, ruleVersion: this.ruleVersion,
+		  ready: true, renderType: this.renderType,
 		  unsupported: this.unsupported, isolatedHooks: this.isolatedHooks,
 		  issues: this.combinedIssues(), stats: this.stats()
 		})
@@ -241,10 +239,9 @@ export default {
         const captured = await page.capture(validate)
         const values = captured.values
         this.runtimeIssues = Array.isArray(captured.issues) ? captured.issues : []
-        if (validate && this.vuePage.fields.some(field => field.required && this.isEmptyCustomValue(this.customPageValue(values, field.path)))) throw new Error('请先完成表单中的必填项')
         return buildValuesEnvelope({
 		  values, validated: validate, unsupported: [], dirty: this.dirty,
-		  issues: this.combinedIssues(), renderType: this.renderType, ruleVersion: this.ruleVersion,
+		  issues: this.combinedIssues(), renderType: this.renderType,
 		  stats: this.stats(values)
 		})
       }
@@ -253,7 +250,7 @@ export default {
       this.values = values
 		return buildValuesEnvelope({
         values, validated: validate, unsupported: this.unsupported, dirty: this.dirty,
-		issues: this.combinedIssues(), renderType: this.renderType, ruleVersion: this.ruleVersion,
+		issues: this.combinedIssues(), renderType: this.renderType,
 		stats: this.stats(values)
 		})
 	},
@@ -275,12 +272,6 @@ export default {
     // stats 返回当前原始值在可编辑字段中的填写统计，供宿主展示人工待处理数量。
     stats (values = this.values) {
       return formRuntimeStats(values, this.editableFields, this.requiredEditableFields)
-    },
-    isEmptyCustomValue (value) {
-      return value == null || String(value).trim() === ''
-    },
-    customPageValue (values, path) {
-      return String(path || '').split('.').filter(Boolean).reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, values)
     },
     markDirty () {
 		if (this.loading || this.readOnly) return
@@ -312,7 +303,6 @@ export default {
       this.values = {}
       this.savedValues = {}
       this.renderType = 'formmaking'
-	  this.ruleVersion = ''
       this.vuePage = { pageName: '', fields: [], issues: [] }
       this.runtimePermissions = []
       this.unsupported = []

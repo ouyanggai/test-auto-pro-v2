@@ -46,7 +46,6 @@ import {
   transitionExecutionPathWorkspace,
 } from '../features/execution-paths/logic'
 import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode, PathGenerationJob } from '../features/execution-paths/types'
-import { savePathConfigurationSelection } from '../features/path-configuration/api'
 import {
   cancelHistoryReplay,
   createHistoryReplay,
@@ -95,9 +94,6 @@ const deleteConfirmOpen = ref(false)
 const draftRecoveryLoading = ref(false)
 const draftRecoveryError = ref('')
 const selectedRunPathIDs = ref(new Set<string>())
-const pathSelectionRevisions = ref<Record<string, number>>({})
-const pathSelectionLoading = ref(false)
-const pathSelectionSaving = ref(false)
 const pathSelectionError = ref('')
 const replayJob = ref<HistoryReplayJob | null>(null)
 const replayLoading = ref(false)
@@ -119,10 +115,10 @@ const planMutable = computed(() => plan.value?.status === 'not_started')
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
 const configuredPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'configured'))
 const partialPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'partial'))
-const generatedDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'ready' || path.dataStatus === 'generated' || path.dataStatus === 'confirmed' || path.dataStatus === 'not_required'))
-const attentionDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'empty' || path.dataStatus === 'needs_input' || path.dataStatus === 'affected' || path.dataStatus === 'needs_attention'))
+const readyDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'ready'))
+const attentionDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'empty' || path.dataStatus === 'needs_input' || path.dataStatus === 'affected'))
 const visiblePaths = computed(() => replayFilter.value === 'needs_attention'
-  ? paths.value.filter(path => path.dataStatus === 'empty' || path.dataStatus === 'needs_input' || path.dataStatus === 'affected' || path.dataStatus === 'needs_attention')
+  ? attentionDataPaths.value
   : paths.value)
 const replayPathListHeight = computed(() => Math.min(visiblePaths.value.length, 5) * HISTORY_REPLAY_PATH_ITEM_SIZE)
 const pageThemeStyle = computed(() => ({
@@ -213,7 +209,6 @@ async function loadPage() {
   graph.value = null
   paths.value = []
   selectedRunPathIDs.value = new Set()
-  pathSelectionRevisions.value = {}
   pathSelectionError.value = ''
   replayJob.value = null
   pathWorkspaceOpen.value = false
@@ -243,8 +238,7 @@ async function loadPage() {
     if (pathsResult.status === 'fulfilled') {
       paths.value = pathsResult.value
       pathsLoaded.value = true
-			selectedRunPathIDs.value = new Set(pathsResult.value.filter(path => path.included).map(path => path.id))
-			pathSelectionRevisions.value = Object.fromEntries(pathsResult.value.map(path => [path.id, path.configurationRevision]))
+			selectedRunPathIDs.value = new Set()
 			if (planMutable.value && plan.value.flowSource === 'new' && pathsResult.value.length === 0) void startAutomaticGeneration()
 		void restoreActiveHistoryReplay(controller.signal)
     }
@@ -309,8 +303,8 @@ async function retryPaths(): Promise<boolean> {
     paths.value = items
     pathsLoaded.value = true
 		pathSelectionError.value = ''
-		selectedRunPathIDs.value = new Set(items.filter(path => path.included).map(path => path.id))
-		pathSelectionRevisions.value = Object.fromEntries(items.map(path => [path.id, path.configurationRevision]))
+		const available = new Set(items.map(path => path.id))
+		selectedRunPathIDs.value = new Set([...selectedRunPathIDs.value].filter(pathID => available.has(pathID)))
 		return true
   }
   catch (caught) {
@@ -354,13 +348,9 @@ async function selectSavedPath(path: ExecutionPath) {
   }
 }
 
-// persistRunPathSelection 复用现有路径选择接口，只改变当前路径的运行纳入标记。
-async function persistRunPathSelection(path: ExecutionPath, included: boolean) {
-	if (!planMutable.value) throw new Error('当前计划只能查看')
-  const revision = pathSelectionRevisions.value[path.id]
-  if (!Number.isInteger(revision)) throw new Error('当前路径选择尚未读取完成')
-  const saved = await savePathConfigurationSelection(planID.value, path.id, revision, included, crypto.randomUUID())
-  pathSelectionRevisions.value = { ...pathSelectionRevisions.value, [path.id]: saved.nodeRevision }
+// updateRunPathSelection 只维护本次历史回放的明确勾选，创建任务时一次提交路径快照。
+function updateRunPathSelection(path: ExecutionPath, included: boolean) {
+	if (!planMutable.value || replayBusy.value) return
   const next = new Set(selectedRunPathIDs.value)
   if (included) next.add(path.id)
   else next.delete(path.id)
@@ -460,32 +450,10 @@ async function resumeCurrentHistoryReplay() {
   }
 }
 
-// updateRunPathSelection 保存用户手动勾选的一条运行路径。
-async function updateRunPathSelection(path: ExecutionPath, included: boolean) {
-  if (pathSelectionSaving.value || pathSelectionLoading.value) return
-  pathSelectionSaving.value = true
-  pathSelectionError.value = ''
-  try {
-    await persistRunPathSelection(path, included)
-  }
-  catch (caught) {
-    pathSelectionError.value = caught instanceof Error ? caught.message : '运行路径选择保存失败，请重试'
-  }
-  finally {
-    pathSelectionSaving.value = false
-  }
-}
-
-// setAllRunPathSelections 批量全选或取消全选当前列表中的所有路径。
-async function setAllRunPathSelections(included: boolean) {
-  if (pathSelectionSaving.value || pathSelectionLoading.value || (included && allPathsSelectedForRun.value) || (!included && selectedRunPathIDs.value.size === 0)) return
-  pathSelectionSaving.value = true
-  pathSelectionError.value = ''
-  const targets = paths.value.filter(path => selectedRunPathIDs.value.has(path.id) !== included)
-  const results = await Promise.allSettled(targets.map(path => persistRunPathSelection(path, included)))
-  const failed = results.find(result => result.status === 'rejected')
-  if (failed?.status === 'rejected') pathSelectionError.value = failed.reason instanceof Error ? failed.reason.message : '部分运行路径选择保存失败，请重试'
-  pathSelectionSaving.value = false
+// setAllRunPathSelections 为本次任务全选或清空路径，不写入配置表。
+function setAllRunPathSelections(included: boolean) {
+  if (!planMutable.value || replayBusy.value) return
+  selectedRunPathIDs.value = included ? new Set(paths.value.map(path => path.id)) : new Set()
 }
 
 function closeSavedPaths() {
@@ -664,8 +632,8 @@ async function savePath() {
       const refreshed = await fetchExecutionPaths(planID.value, new AbortController().signal)
       paths.value = refreshed
       plan.value.pathCount = refreshed.length
-		selectedRunPathIDs.value = new Set(refreshed.filter(path => path.included).map(path => path.id))
-		pathSelectionRevisions.value = Object.fromEntries(refreshed.map(path => [path.id, path.configurationRevision]))
+		const available = new Set(refreshed.map(path => path.id))
+		selectedRunPathIDs.value = new Set([...selectedRunPathIDs.value].filter(pathID => available.has(pathID)))
     }
     catch {
       // 列表刷新失败不影响已成功保存的线路，也不清空当前列表或草稿状态。
@@ -710,11 +678,7 @@ function pathDataLabel(path: ExecutionPath): string {
 	if (path.dataStatus === 'ready') return '数据已就绪'
 	if (path.dataStatus === 'needs_input') return '数据需补充'
 	if (path.dataStatus === 'affected') return '数据受影响'
-	if (path.dataStatus === 'not_required') return '无需数据'
-  if (path.dataStatus === 'generated') return '数据已生成'
-  if (path.dataStatus === 'confirmed') return '数据已确认'
-  if (path.dataStatus === 'needs_attention') return '数据需处理'
-  return '数据未生成'
+	return '数据未选择'
 }
 
 // startAutomaticGeneration 新发起计划首次进入详情时自动解析全部合法路径。
@@ -764,9 +728,6 @@ async function removeActivePath() {
     const selected = new Set(selectedRunPathIDs.value)
     selected.delete(deletingID)
     selectedRunPathIDs.value = selected
-    const revisions = { ...pathSelectionRevisions.value }
-    delete revisions[deletingID]
-    pathSelectionRevisions.value = revisions
     plan.value.pathCount = paths.value.length
     deleteConfirmOpen.value = false
     await completeWorkspaceReset()
@@ -865,16 +826,16 @@ onMounted(() => {
                 <h2 id="history-replay-heading">历史回放与运行选择</h2>
                 <p v-if="pathsLoading">正在读取本地路径配置状态</p>
                 <p v-else-if="pathsError">暂时无法读取路径状态，请先重试</p>
-                <p v-else>共 {{ paths.length }} 条；节点已配置 {{ configuredPaths.length }} 条，部分配置 {{ partialPaths.length }} 条；数据已准备 {{ generatedDataPaths.length }} 条，需处理 {{ attentionDataPaths.length }} 条；已选 {{ selectedRunPathIDs.size }} 条</p>
+                <p v-else>共 {{ paths.length }} 条；节点已配置 {{ configuredPaths.length }} 条，部分配置 {{ partialPaths.length }} 条；数据已准备 {{ readyDataPaths.length }} 条，需处理 {{ attentionDataPaths.length }} 条；已选 {{ selectedRunPathIDs.size }} 条</p>
               </div>
               <div class="history-replay__header-actions">
-							<n-button v-if="planMutable && paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
-                <n-button v-if="planMutable && paths.length" size="small" secondary :disabled="pathSelectionLoading || pathSelectionSaving || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
+							<n-button v-if="planMutable && paths.length" size="small" secondary :disabled="replayBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
+                <n-button v-if="planMutable && paths.length" size="small" secondary :disabled="replayBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
 						<n-button size="small" secondary :type="replayFilter === 'needs_attention' ? 'warning' : 'default'" @click="replayFilter = replayFilter === 'needs_attention' ? 'all' : 'needs_attention'">
 							{{ replayFilter === 'needs_attention' ? '显示全部' : `数据需处理 ${attentionDataPaths.length}` }}
 						</n-button>
 							<n-popconfirm v-if="planMutable && selectedRunPathIDs.size && !replayBusy" :show-icon="false" positive-text="开始回放" negative-text="取消" @positive-click="startSelectedHistoryReplay">
-							<template #trigger><n-button size="small" type="primary" secondary :loading="replayLoading" :disabled="pathSelectionLoading || pathSelectionSaving">开始历史回放</n-button></template>
+							<template #trigger><n-button size="small" type="primary" secondary :loading="replayLoading">开始历史回放</n-button></template>
 							仅回放已勾选的 {{ selectedRunPathIDs.size }} 条路径；历史原始数据会按当前目标流程条件复验。
 						</n-popconfirm>
               </div>
@@ -931,7 +892,7 @@ onMounted(() => {
 								<div class="history-replay__item">
                 <n-checkbox
                   :checked="selectedRunPathIDs.has(path.id)"
-									:disabled="!planMutable || pathSelectionLoading || pathSelectionSaving"
+									:disabled="!planMutable || replayBusy"
                   @update:checked="value => updateRunPathSelection(path, value)"
                 >
                   运行
@@ -943,7 +904,7 @@ onMounted(() => {
 							<n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : path.configurationStatus === 'partial' || path.configurationStatus === 'affected' ? 'warning' : 'default'" :title="path.configurationDetail">
                     {{ pathConfigurationLabel(path) }}
                   </n-tag>
-							<n-tag size="small" :bordered="false" :type="path.dataStatus === 'ready' || path.dataStatus === 'confirmed' || path.dataStatus === 'generated' || path.dataStatus === 'not_required' ? 'success' : path.dataStatus === 'needs_input' || path.dataStatus === 'affected' || path.dataStatus === 'needs_attention' ? 'warning' : 'default'" :title="path.dataDetail">
+							<n-tag size="small" :bordered="false" :type="path.dataStatus === 'ready' ? 'success' : path.dataStatus === 'needs_input' || path.dataStatus === 'affected' ? 'warning' : 'default'" :title="path.dataDetail">
                     {{ pathDataLabel(path) }}
                   </n-tag>
 									</div>

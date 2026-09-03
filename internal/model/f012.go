@@ -235,7 +235,6 @@ type PathConfigurationF012 struct {
 	RuntimePage         *PathVueCustomPageRule   `json:"vuePage,omitempty"`
 	RuntimePermissions  []PathFormPermission     `json:"permissions"`
 	RuntimeReadRequests []PathFormReadRequest    `json:"readRequests"`
-	RuntimeRuleVersion  string                   `json:"ruleVersion"`
 	EffectiveFormData   map[string]any           `json:"effectiveFormData,omitempty"`
 	BranchPatches       []HistoryBranchPatch     `json:"branchPatches"`
 	RuntimeValidation   HistoryRuntimeValidation `json:"runtimeValidation"`
@@ -273,7 +272,6 @@ type PathConfigurationDataResult struct {
 	RuntimePage          *PathVueCustomPageRule        `json:"vuePage,omitempty"`
 	RuntimePermissions   []PathFormPermission          `json:"permissions"`
 	RuntimeReadRequests  []PathFormReadRequest         `json:"readRequests"`
-	RuntimeRuleVersion   string                        `json:"ruleVersion"`
 	EffectiveFormData    map[string]any                `json:"effectiveFormData,omitempty"`
 	BranchPatches        []HistoryBranchPatch          `json:"branchPatches"`
 	RuntimeValidation    HistoryRuntimeValidation      `json:"runtimeValidation"`

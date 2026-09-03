@@ -21,7 +21,7 @@ import BuyDemand from '@runtime/components/NoFormFLow/BuyDemand.vue'
 import BuyOrder from '@runtime/components/NoFormFLow/BuyOrder.vue'
 import Invoice from '@runtime/components/NoFormFLow/Invoice.vue'
 
-// HOST_VUE_PAGES 来自宿主实际发起页注册和 NoFormFLow 目录；这里只建立组件入口，不复制业务规则。
+// HOST_VUE_PAGES 来自复制运行时的真实页面注册和 NoFormFLow 目录；这里只建立组件入口，不复制业务规则。
 export const HOST_VUE_PAGES = {
   CompanyBudget,
   EditCompanyBudget,
@@ -49,7 +49,7 @@ export const HOST_VUE_PAGES = {
   Invoice
 }
 
-// resolveHostVuePage 只按规则目录已确认的组件名解析，不按流程名称猜测页面。
+// resolveHostVuePage 只按运行时提供的组件名解析，不按流程名称猜测页面。
 export function resolveHostVuePage (componentName) {
   return HOST_VUE_PAGES[String(componentName || '').trim()] || null
 }

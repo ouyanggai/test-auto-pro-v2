@@ -85,8 +85,7 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		NodeStatus: defaultWorkspaceStatus(stored.NodeStatus, "pending"), DataStatus: dataStatus,
 		HistorySource: source.dataSource, RuntimeType: string(snapshot.RenderType),
 		RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
-		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template),
-		RuntimeRuleVersion: strings.TrimSpace(snapshot.RuleVersion), EffectiveFormData: values,
+		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template), EffectiveFormData: values,
 		BranchPatches: patches, RuntimeValidation: runtimeValidation, Issues: issues,
 		Actions: decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
 	}, nil
@@ -208,7 +207,7 @@ func (s *PathConfigService) loadWorkspace(ctx context.Context, planID, pathID ui
 	if s.target == nil {
 		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "目标配置读取服务暂不可用"}
 	}
-	// T05 数据工作区直接读取目标原始配置；这里刻意不调用旧模板规则目录或 Vue 页面映射。
+	// T05 数据工作区直接读取目标原始配置；这里刻意不调用工具侧页面规则或映射。
 	snapshot, err := s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
 	if err != nil {
 		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
@@ -399,7 +398,7 @@ func workspaceDataResult(snapshot target.PathConfigurationSnapshot, analysis own
 	return model.PathConfigurationDataResult{
 		Path: pathConfigPath(path), Revision: stored.Revision, DataRevision: stored.DataRevision, DataStatus: stored.DataStatus,
 		RuntimeType: string(snapshot.RenderType), RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
-		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template), RuntimeRuleVersion: snapshot.RuleVersion,
+		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template),
 		EffectiveFormData: cloneWorkspaceMap(overlay.Values), BranchPatches: append([]model.HistoryBranchPatch(nil), overlay.Patches...), RuntimeValidation: validation,
 		Issues: append([]model.HistoryDataIssue(nil), issues...), RouteChanged: routeChanged,
 	}
@@ -528,7 +527,7 @@ func mapHistoryWorkspaceStoreError(err error) error {
 		return &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "路径表单数据已被其他操作更新，请刷新后重试"}
 	case errors.Is(err, repository.ErrExecutionPathNotFound):
 		return &PathConfigError{Kind: PathConfigErrorNotFound, Message: "执行路径不存在"}
-	case errors.Is(err, repository.ErrPathConfigDataInvalid):
+	case errors.Is(err, repository.ErrHistoryPathConfigDataInvalid):
 		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径表单数据异常，请重试"}
 	default:
 		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径数据存储暂不可用"}

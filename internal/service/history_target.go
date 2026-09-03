@@ -35,7 +35,7 @@ func (s *TargetReadService) HistoryIdentity(ctx context.Context, account, source
 	if len(snapshot.Forms) > 0 {
 		formName = strings.TrimSpace(snapshot.Forms[0].Name)
 	}
-	// 历史身份只使用目标详情和目标表单原文；旧模板规则目录或 Vue 页面映射不能参与 F-012。
+	// 历史身份只使用目标详情和目标表单原文；工具侧页面规则不能参与 F-012。
 	templateSummary := historyTemplateSummary(snapshot)
 	return target.HistoryIdentity{
 		FlowCode: strings.TrimSpace(snapshot.FlowCode), FormName: formName,

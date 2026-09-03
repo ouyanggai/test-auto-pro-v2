@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -48,17 +49,12 @@ type PathConfigReader interface {
 	PathConfigurationSnapshot(context.Context, string, string, string) (target.PathConfigurationSnapshot, error)
 }
 
-// PathConfigTemplateRuleReader 只读取本地已分析的模板规则，路径配置不得在用户操作中重新扫描宿主源码。
-type PathConfigTemplateRuleReader interface {
-	GetByFlowCode(context.Context, string) (model.TemplateRuleCatalogItem, bool, error)
-}
-
 // PathConfigAnalyzer 把已验证路径投影为配置 DTO 与保存校验索引。
 type PathConfigAnalyzer interface {
 	Analyze(model.FlowGraph, *target.FlowNodeTemplate, []target.FormFieldDetail, model.ExecutionPath, model.ExecutionPathAnalysis, map[string]any, map[string]map[string]string, map[string]string, ...bool) (model.PathConfiguration, analyzer.PathConfigValidation, error)
 }
 
-// PathConfigService 组织计划身份、路径归属、目标重验、配置投影与事务保存。
+// PathConfigService 组织计划身份、路径归属、目标重读和 F012 配置投影。
 type PathConfigService struct {
 	plans              *PlanService
 	target             PathConfigReader
@@ -66,30 +62,17 @@ type PathConfigService struct {
 	pathAnalyzer       ExecutionPathChoiceAnalyzer
 	configAnalyzer     PathConfigAnalyzer
 	pathRepository     repository.ExecutionPathRepository
-	configRepository   repository.PathConfigurationRepository
 	historyStore       repository.HistoryReplayStore
 	historyConfigStore repository.HistoryPathConfigStore
-	templateRules      PathConfigTemplateRuleReader
-	candidateCache     *ComponentCandidateCache
 	now                func() time.Time
 }
 
-// NewPathConfigService 组装路径配置服务依赖。
-func NewPathConfigService(plans *PlanService, targetReader PathConfigReader, flowAnalyzer FlowAnalyzer, pathAnalyzer ExecutionPathChoiceAnalyzer, configAnalyzer PathConfigAnalyzer, pathRepository repository.ExecutionPathRepository, configRepository repository.PathConfigurationRepository) *PathConfigService {
-	return &PathConfigService{plans: plans, target: targetReader, flowAnalyzer: flowAnalyzer, pathAnalyzer: pathAnalyzer, configAnalyzer: configAnalyzer, pathRepository: pathRepository, configRepository: configRepository, now: time.Now}
+// NewPathConfigService 组装 F012 路径配置服务依赖；持久化统一由历史路径配置仓储负责。
+func NewPathConfigService(plans *PlanService, targetReader PathConfigReader, flowAnalyzer FlowAnalyzer, pathAnalyzer ExecutionPathChoiceAnalyzer, configAnalyzer PathConfigAnalyzer, pathRepository repository.ExecutionPathRepository) *PathConfigService {
+	return &PathConfigService{plans: plans, target: targetReader, flowAnalyzer: flowAnalyzer, pathAnalyzer: pathAnalyzer, configAnalyzer: configAnalyzer, pathRepository: pathRepository, now: time.Now}
 }
 
-// SetTemplateRuleCatalog 注入已持久化的规则目录；未同步的 Vue 页面必须保留为需处理而不是临时猜测。
-func (s *PathConfigService) SetTemplateRuleCatalog(catalog PathConfigTemplateRuleReader) {
-	s.templateRules = catalog
-}
-
-// SetComponentCandidateCache 注入组件候选缓存服务。
-func (s *PathConfigService) SetComponentCandidateCache(cache *ComponentCandidateCache) {
-	s.candidateCache = cache
-}
-
-// Get 校验计划与路径归属后重读当前真实配置，并叠加 F-008 工具侧配置。
+// Get 校验计划和路径归属后重读真实流程，并叠加 F012 独立动作与人员列。
 func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (model.PathConfiguration, error) {
 	if planID == 0 || pathID == 0 {
 		return model.PathConfiguration{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
@@ -101,10 +84,6 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	if err = s.validateConfigMutablePlan(ctx, planID); err != nil {
 		return model.PathConfiguration{}, err
 	}
-	stored, found, err := s.configRepository.FindByPath(ctx, pathID)
-	if err != nil {
-		return model.PathConfiguration{}, mapPathConfigRepositoryError(err)
-	}
 	snapshot, err := s.readVerifiedSnapshot(ctx, planID)
 	if err != nil {
 		return model.PathConfiguration{}, err
@@ -113,33 +92,62 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	if err != nil {
 		return model.PathConfiguration{}, err
 	}
-	if !found {
-		stored = model.StoredPathConfig{PathID: pathID, FieldValues: map[string]map[string]string{}, ActionValues: map[string]string{}}
-	}
-	configuration, _, err := s.configAnalyzer.Analyze(analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis, snapshot.InstanceValues, stored.FieldValues, stored.ActionValues, found)
+	configuration, _, err := s.configAnalyzer.Analyze(
+		analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis,
+		snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{}, false,
+	)
 	if err != nil {
 		return model.PathConfiguration{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
 	}
+	var stored repository.HistoryPathConfigRecord
+	if s.historyConfigStore != nil {
+		stored, _, err = s.historyConfigStore.GetPathConfig(ctx, pathID)
+		if err != nil {
+			return model.PathConfiguration{}, mapHistoryWorkspaceStoreError(err)
+		}
+	}
 	configuration.Revision, configuration.NodeRevision = stored.Revision, stored.NodeRevision
-	applyConfirmedNodeState(&configuration, stored.ConfirmedNodeKeys)
-	configuration.ActionCycles = projectPathConfigActionCycles(stored.ActionValues, configuration)
+	applyConfirmedNodeState(&configuration, decodeConfirmedNodeKeys(stored.ConfirmedNodeKeys))
 	if err := s.applyHistoryActionProjection(ctx, pathID, &configuration); err != nil {
 		return model.PathConfiguration{}, err
 	}
-	plan, err := s.plans.Get(ctx, planID)
-	if err != nil {
-		return model.PathConfiguration{}, err
-	}
-	configuration.Form = projectPathForm(plan.FlowSource, snapshot, analysis.pathAnalysis, path.Choices, stored, found)
 	configuration.Status = derivePathConfigurationStatus(configuration)
-	configuration.Preparation = model.PathConfigPreparation{PreparedNodes: configuration.Progress.Completed, PendingItems: configuration.Progress.Pending, Included: stored.ActionValues["f008:test-included"] == "true"}
 	return configuration, nil
 }
 
-// ownedPath 先确认计划存在，再按路径 ID 读取完整 choices，列表摘要不能参与线路完整性校验。
+// RuntimeSession 校验计划与路径归属后返回当前账号的短期复制 runtime 会话。
+func (s *PathConfigService) RuntimeSession(ctx context.Context, planID, pathID uint64) (model.PathFormRuntimeSession, error) {
+	if _, err := s.ownedPath(ctx, planID, pathID); err != nil {
+		return model.PathFormRuntimeSession{}, err
+	}
+	plan, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		return model.PathFormRuntimeSession{}, err
+	}
+	reader, ok := s.target.(interface {
+		FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error)
+	})
+	if !ok {
+		return model.PathFormRuntimeSession{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
+	}
+	active, err := reader.FormRuntimeSession(ctx, plan.Account)
+	if err != nil {
+		return model.PathFormRuntimeSession{}, err
+	}
+	return model.PathFormRuntimeSession{
+		SID: active.SID, BaseURL: active.BaseURL, AccountName: active.AccountName,
+		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: active.CompanyName,
+		DepartmentID: active.DepartmentID, DepartmentName: active.DepartmentName,
+	}, nil
+}
+
+// ownedPath 先确认计划存在，再读取完整路径选择，防止跨计划访问配置。
 func (s *PathConfigService) ownedPath(ctx context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
+	if s.plans == nil || s.pathRepository == nil {
+		return model.ExecutionPath{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "执行路径存储暂不可用"}
+	}
 	if _, err := s.plans.Get(ctx, planID); err != nil {
-		return model.ExecutionPath{}, err
+		return model.ExecutionPath{}, mapExecutionPathRepositoryError(err)
 	}
 	path, err := s.pathRepository.Get(ctx, planID, pathID)
 	if err != nil {
@@ -148,7 +156,7 @@ func (s *PathConfigService) ownedPath(ctx context.Context, planID, pathID uint64
 	return path, nil
 }
 
-// validateConfigMutablePlan 只允许仍处于未运行状态的计划继续保存配置。
+// validateConfigMutablePlan 只允许尚未运行的计划继续修改配置。
 func (s *PathConfigService) validateConfigMutablePlan(ctx context.Context, planID uint64) error {
 	plan, err := s.plans.Get(ctx, planID)
 	if err != nil {
@@ -160,17 +168,20 @@ func (s *PathConfigService) validateConfigMutablePlan(ctx context.Context, planI
 	return nil
 }
 
-// readVerifiedSnapshot 按计划持久化身份重读当前真实配置，浏览器不能覆盖来源或目标。
+// readVerifiedSnapshot 按计划持久化的目标身份重读流程，不接受浏览器覆盖来源或目标对象。
 func (s *PathConfigService) readVerifiedSnapshot(ctx context.Context, planID uint64) (target.PathConfigurationSnapshot, error) {
 	plan, err := s.plans.Get(ctx, planID)
 	if err != nil {
 		return target.PathConfigurationSnapshot{}, err
 	}
+	if s.target == nil {
+		return target.PathConfigurationSnapshot{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "目标配置读取服务暂不可用"}
+	}
 	snapshot, err := s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
 	if err != nil {
 		return target.PathConfigurationSnapshot{}, err
 	}
-	return s.applyStoredTemplateRules(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID, snapshot)
+	return snapshot, nil
 }
 
 // ownedPathAnalysis 是当前真实图与路径分析的组合结果。
@@ -184,6 +195,9 @@ func (s *PathConfigService) analyzeOwnedPath(ctx context.Context, planID uint64,
 	plan, err := s.plans.Get(ctx, planID)
 	if err != nil {
 		return ownedPathAnalysis{}, err
+	}
+	if s.flowAnalyzer == nil || s.pathAnalyzer == nil || s.configAnalyzer == nil {
+		return ownedPathAnalysis{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径配置分析服务暂不可用"}
 	}
 	nodes, edges, warnings, err := s.flowAnalyzer.Analyze(snapshot.Tree)
 	if err != nil {
@@ -204,42 +218,81 @@ func (s *PathConfigService) analyzeOwnedPath(ctx context.Context, planID uint64,
 	return ownedPathAnalysis{graph: graph, pathAnalysis: pathAnalysis}, nil
 }
 
-// validatePathConfigNodeSubmission 只校验并编码一个节点的人员策略与 F-008 动作列表，不接受跨节点覆盖。
-func validatePathConfigNodeSubmission(target analyzer.PathConfigNodeTarget, input model.PathNodeSaveInput) (map[string]string, error) {
-	if len(target.Blockers) > 0 {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点仍有无法安全确认的配置项", Affected: target.Blockers}
+// decodeConfirmedNodeKeys 解码 F012 节点确认列，损坏内容按未确认处理。
+func decodeConfirmedNodeKeys(raw []byte) []string {
+	if len(raw) == 0 {
+		return []string{}
 	}
-	values := map[string]string{}
-	if target.Person != nil {
-		if len(input.Persons) != 1 || strings.TrimSpace(input.Persons[0].Key) != target.Person.Key {
-			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略不完整", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Person.Name, Reason: "缺少或重复提交人员策略"}}}
-		}
-		encoded, reason := analyzer.EncodePathConfigPersonStrategy(*target.Person, input.Persons[0])
-		if reason != "" {
-			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略不合法", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Person.Name, Reason: reason}}}
-		}
-		values[analyzer.PathConfigPersonPlanStorageKey(target.NodeID)] = encoded
-	} else if len(input.Persons) > 0 {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点不允许配置处理人员"}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil || values == nil {
+		return []string{}
 	}
-	encoded, _, reason := analyzer.EncodePathConfigActions(target, input.Actions)
-	if reason != "" {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点动作配置不合法", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: target.Name, Reason: reason}}}
-	}
-	values[analyzer.PathConfigActionConfigurationStorageKey(target.NodeID)] = encoded
-	return values, nil
+	return values
 }
 
-// mapPathConfigRepositoryError 把配置仓储错误收敛为稳定业务错误。
-func mapPathConfigRepositoryError(err error) error {
-	switch {
-	case errors.Is(err, repository.ErrPathConfigConflict):
-		return &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "配置已被其他操作更新，请刷新后重试"}
-	case errors.Is(err, repository.ErrPathConfigDataInvalid):
-		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径配置数据异常，请重试"}
-	case errors.Is(err, repository.ErrPlanNotFound):
-		return &PathConfigError{Kind: PathConfigErrorNotFound, Message: "计划不存在"}
-	default:
-		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "路径配置存储暂不可用，请重试"}
+// derivePathConfigurationStatus 只按节点人员与动作确认状态派生路径配置状态。
+func derivePathConfigurationStatus(configuration model.PathConfiguration) string {
+	for _, group := range configuration.Groups {
+		for _, node := range group.Nodes {
+			if node.Status == "affected" {
+				return "affected"
+			}
+		}
 	}
+	if configuration.Progress.Pending == 0 {
+		return "configured"
+	}
+	if configuration.Progress.Completed > 0 {
+		return "partial"
+	}
+	return "pending"
+}
+
+// applyConfirmedNodeState 用 F012 独立确认事实覆盖节点配置状态，避免“有记录即完成”。
+func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKeys []string) {
+	confirmed := make(map[string]bool, len(confirmedKeys))
+	for _, key := range confirmedKeys {
+		confirmed[strings.TrimSpace(key)] = true
+	}
+	for groupIndex := range configuration.Groups {
+		for nodeIndex := range configuration.Groups[groupIndex].Nodes {
+			node := &configuration.Groups[groupIndex].Nodes[nodeIndex]
+			if node.Status == "affected" || node.Status == "partial" || node.LineBlocked || node.Status == "not_required" || node.Status == "runtime" {
+				continue
+			}
+			requiresSave := len(node.Persons) > 0 || len(node.ActionConfiguration.Catalog) > 0
+			if !requiresSave {
+				continue
+			}
+			if confirmed[node.Key] {
+				node.Status, node.StatusName = "configured", "已完成"
+			} else {
+				node.Status, node.StatusName = "pending", "待配置"
+			}
+		}
+	}
+	configuration.Progress, configuration.NextNodeKey = summarizeConfigurationProgress(configuration.Groups)
+}
+
+// summarizeConfigurationProgress 重新统计逐节点确认后的权威进度。
+func summarizeConfigurationProgress(groups []model.PathConfigGroup) (model.PathConfigProgress, string) {
+	progress := model.PathConfigProgress{}
+	next := ""
+	for _, group := range groups {
+		for _, node := range group.Nodes {
+			if node.Status == "not_required" || node.Status == "runtime" {
+				continue
+			}
+			progress.Total++
+			if node.Status == "configured" {
+				progress.Completed++
+			} else {
+				progress.Pending++
+				if next == "" {
+					next = node.Key
+				}
+			}
+		}
+	}
+	return progress, next
 }

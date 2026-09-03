@@ -34,17 +34,15 @@ type executionPathRequest struct {
 }
 
 type executionPathResponse struct {
-	ID                    string                      `json:"id"`
-	SequenceNo            uint                        `json:"sequenceNo"`
-	Name                  string                      `json:"name"`
-	ConfigurationStatus   string                      `json:"configurationStatus"`
-	ConfigurationDetail   string                      `json:"configurationDetail"`
-	DataStatus            string                      `json:"dataStatus"`
-	DataDetail            string                      `json:"dataDetail"`
-	Included              bool                        `json:"included"`
-	ConfigurationRevision uint64                      `json:"configurationRevision"`
-	Choices               []model.ExecutionPathChoice `json:"choices"`
-	UpdatedAt             string                      `json:"updatedAt"`
+	ID                  string                      `json:"id"`
+	SequenceNo          uint                        `json:"sequenceNo"`
+	Name                string                      `json:"name"`
+	ConfigurationStatus string                      `json:"configurationStatus"`
+	ConfigurationDetail string                      `json:"configurationDetail"`
+	DataStatus          string                      `json:"dataStatus"`
+	DataDetail          string                      `json:"dataDetail"`
+	Choices             []model.ExecutionPathChoice `json:"choices"`
+	UpdatedAt           string                      `json:"updatedAt"`
 }
 
 type executionPathListResponse struct {
@@ -271,12 +269,12 @@ func toExecutionPathResponse(path model.ExecutionPath) executionPathResponse {
 	}
 	dataStatus := strings.TrimSpace(path.DataStatus)
 	if dataStatus == "" {
-		dataStatus = "not_generated"
+		dataStatus = model.HistoryDataStatusEmpty
 	}
 	return executionPathResponse{
 		ID: strconv.FormatUint(path.ID, 10), SequenceNo: path.SequenceNo,
 		Name: path.Name, ConfigurationStatus: configurationStatus, ConfigurationDetail: path.ConfigurationDetail,
-		DataStatus: dataStatus, DataDetail: path.DataDetail, Included: path.Included, ConfigurationRevision: path.ConfigurationRevision,
+		DataStatus: dataStatus, DataDetail: path.DataDetail,
 		Choices: nonNilSlice(path.Choices), UpdatedAt: path.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }

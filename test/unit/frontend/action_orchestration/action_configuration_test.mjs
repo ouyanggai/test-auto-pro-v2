@@ -9,16 +9,17 @@ const node = {
   actionConfiguration: { catalog: [], actions: [] },
 }
 
-// TestF012ActionPayloadExpandsRepeatedRows 验证重复动作按独立记录发送，不再携带旧 count 字段。
-test('F-012 动作请求把重复行展开为独立语义记录', () => {
+// TestF012ActionPayloadKeepsRepeatedRows 验证重复动作以独立记录发送，不使用隐式次数。
+test('F-012 动作请求保留重复语义记录', () => {
   const payload = buildPathActionConfigurationInput(node, {
     fields: {},
     persons: {},
     personStrategies: {},
     actionConfigurations: {
       [node.key]: [
-        { key: 'draft', kind: 'draft_save', count: 2 },
-        { key: 'reject', kind: 'reject_no_pass', count: 1 },
+        { key: 'storage-1', kind: 'storage_form_data' },
+        { key: 'storage-2', kind: 'storage_form_data' },
+        { key: 'reject', kind: 'reject' },
       ],
     },
   }, 7)
@@ -26,8 +27,8 @@ test('F-012 动作请求把重复行展开为独立语义记录', () => {
   assert.equal(payload.revision, 7)
   assert.deepEqual(payload.persons, [])
   assert.deepEqual(payload.actions, [
-    { key: 'draft#1', action: 'storage_form_data', scope: 'task', nodeKey: 'node-review', order: 1 },
-    { key: 'draft#2', action: 'storage_form_data', scope: 'task', nodeKey: 'node-review', order: 2 },
+    { key: 'storage-1', action: 'storage_form_data', scope: 'task', nodeKey: 'node-review', order: 1 },
+    { key: 'storage-2', action: 'storage_form_data', scope: 'task', nodeKey: 'node-review', order: 2 },
     { key: 'reject', action: 'reject', scope: 'task', nodeKey: 'node-review', order: 3 },
   ])
   assert.equal('count' in payload, false)
@@ -39,7 +40,7 @@ test('F-012 单次动作请求保留稳定键和节点语义', () => {
     fields: {},
     persons: {},
     personStrategies: {},
-    actionConfigurations: { [node.key]: [{ key: 'sign', kind: 'add_sign', count: 1 }] },
+    actionConfigurations: { [node.key]: [{ key: 'sign', kind: 'add_sign' }] },
   }, 3)
   assert.deepEqual(payload.actions, [{ key: 'sign', action: 'add_sign', scope: 'task', nodeKey: node.key, order: 1 }])
 })
@@ -60,7 +61,7 @@ test('F-012 动作请求合并目标参数并透传人员策略', () => {
     personStrategies: { approver: { key: 'approver', strategy: 'manual', seed: 3, selected: ['user-a'] } },
     actionConfigurations: {
       [node.key]: [{
-        key: 'sign', kind: 'add_sign', count: 1,
+        key: 'sign', kind: 'add_sign',
         person: { key: 'approver', strategy: 'manual', seed: 3, selected: ['user-a'] },
         parameters: { remark: '需要会签' },
         note: '按审批规则选择',
@@ -79,15 +80,15 @@ test('F-012 当前节点校验允许同 kind 独立动作记录', () => {
   const configuredNode = {
     ...node,
     actionConfiguration: {
-      catalog: [{ kind: 'reject_no_pass', label: '不同意', description: '', enabled: true, disabledReason: '', requiresPerson: false }],
+      catalog: [{ kind: 'reject', label: '不同意', description: '', enabled: true, disabledReason: '', requiresPerson: false }],
       actions: [], affected: false, note: '',
     },
   }
   const result = currentNodeConfigurationComplete(configuredNode, {
     fields: {}, persons: {}, personStrategies: {}, actionConfigurations: {
       [node.key]: [
-        { key: 'reject-1', kind: 'reject_no_pass', count: 1 },
-        { key: 'reject-2', kind: 'reject_no_pass', count: 1 },
+        { key: 'reject-1', kind: 'reject' },
+        { key: 'reject-2', kind: 'reject' },
       ],
     },
   })

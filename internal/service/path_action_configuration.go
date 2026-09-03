@@ -304,7 +304,7 @@ func (s *PathConfigService) applyHistoryActionProjection(ctx context.Context, pa
 			continue
 		}
 		node.ActionConfiguration.Actions = append(node.ActionConfiguration.Actions, model.PathConfigConfiguredAction{
-			Key: action.Key, Kind: actionDisplayKind(action.Action), Label: actionDisplayLabel(action.Action), Count: 1,
+			Key: action.Key, Kind: actionDisplayKind(action.Action), Label: actionDisplayLabel(action.Action),
 			Person: projectActionPerson(node, action, persons), Parameters: cloneActionParameterMap(action.Parameters), ActorPolicy: action.ActorPolicy, Note: action.Note,
 		})
 	}
@@ -380,13 +380,7 @@ func cloneActionParameterMap(parameters map[string]any) map[string]any {
 func actionDisplayKind(action model.ActionKey) string {
 	switch action {
 	case model.ActionStorageFormData:
-		return "draft_save"
-	case model.ActionReject:
-		return "reject_no_pass"
-	case model.ActionRollback:
-		return "rollback_previous"
-	case model.ActionAddSign:
-		return "add_sign"
+		return "storage_form_data"
 	default:
 		return string(action)
 	}

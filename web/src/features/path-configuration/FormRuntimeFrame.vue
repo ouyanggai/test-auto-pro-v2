@@ -74,7 +74,6 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       departmentName: props.runtimeSession.departmentName,
       readOnly: props.form.readOnly === true,
       renderType: props.form.runtimeType,
-      ruleVersion: props.form.ruleVersion,
       readRequestManifest: props.form.readRequests,
       vuePage: props.form.vuePage,
       template: props.form.template,
@@ -123,7 +122,7 @@ function handleMessage(event: MessageEvent) {
   else request.resolve(message.payload || {})
 }
 
-// setValues 把用户明确恢复的原始 values 交给 runtime，不附带生成器元数据或字段映射。
+// setValues 把用户明确恢复的原始 values 交给 runtime，不附带额外元数据或字段映射。
 function setValues(values: Record<string, unknown>, signal?: AbortSignal) {
   return postCommand('setData', { values }, signal)
 }

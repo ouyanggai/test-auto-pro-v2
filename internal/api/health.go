@@ -15,7 +15,7 @@ import (
 // 健康接口保持固定响应，供本地热更新探针和基础连通性检查使用。
 const healthResponse = `{"status":"ok","service":"test-auto-pro","version":"dev"}`
 
-// NewHandler 创建仅包含基础能力的默认处理器，业务存储缺失时返回稳定错误。
+// NewHandler 创建仅包含基础能力的默认处理器；F-012 业务路由必须由调用方显式注入。
 func NewHandler() http.Handler {
 	return NewHandlerWithServices(service.NewTargetReadService(config.LoadTargetConfig()), unavailablePlanService{})
 }
@@ -42,42 +42,32 @@ func NewHandlerWithExecutionPathServices(reader TargetReader, plans PlanService,
 
 // NewHandlerWithRequirementServices 组装包含 F-006 只读路径要求端点的完整 HTTP 路由。
 func NewHandlerWithRequirementServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService) http.Handler {
-	return NewHandlerWithConfigurationServices(reader, plans, graphs, paths, requirements, unavailablePathConfigurationService{})
+	return NewHandlerWithConfigurationServices(reader, plans, graphs, paths, requirements, nil)
 }
 
-// NewHandlerWithConfigurationServices 组装包含 F-007 路径配置读写端点的完整 HTTP 路由。
+// NewHandlerWithConfigurationServices 组装包含 F-012 路径配置读写端点的完整 HTTP 路由。
 func NewHandlerWithConfigurationServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService) http.Handler {
 	return NewHandlerWithMaintenanceServices(reader, plans, graphs, paths, requirements, configurations, unavailableFormRuntimeMaintenanceService{})
 }
 
 // NewHandlerWithMaintenanceServices 组装 F-007 表单运行时维护端点，仍不允许请求指定来源或命令。
 func NewHandlerWithMaintenanceServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService) http.Handler {
-	return NewHandlerWithPreparationServices(reader, plans, graphs, paths, requirements, configurations, maintenance, unavailablePathPreparationService{})
+	return NewHandlerWithHistoryDataServices(reader, plans, graphs, paths, requirements, configurations, maintenance, unavailableHistoryDataService{})
 }
 
-// NewHandlerWithPreparationServices 组装 F-009 批量准备端点与既有全部能力。
-func NewHandlerWithPreparationServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService) http.Handler {
-	return NewHandlerWithTemplateCatalogServices(reader, plans, graphs, paths, requirements, configurations, maintenance, preparations, unavailableTemplateCatalogService{})
+// NewHandlerWithHistoryDataServices 组装 F-012 历史候选与来源配置端点。
+func NewHandlerWithHistoryDataServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, history HistoryDataService) http.Handler {
+	return NewHandlerWithHistoryReplayServices(reader, plans, graphs, paths, requirements, configurations, maintenance, history, unavailableHistoryReplayService{})
 }
 
-// NewHandlerWithTemplateCatalogServices 组装 F-010 模板规则目录与既有全部能力。
-func NewHandlerWithTemplateCatalogServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService) http.Handler {
-	return NewHandlerWithHistoryDataServices(reader, plans, graphs, paths, requirements, configurations, maintenance, preparations, catalog, unavailableHistoryDataService{})
-}
-
-// NewHandlerWithHistoryDataServices 组装 F-012 历史候选与来源配置端点及既有全部能力。
-func NewHandlerWithHistoryDataServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService) http.Handler {
-	return NewHandlerWithHistoryReplayServices(reader, plans, graphs, paths, requirements, configurations, maintenance, preparations, catalog, history, unavailableHistoryReplayService{})
-}
-
-// NewHandlerWithHistoryReplayServices 组装历史来源与历史回放任务端点及既有全部能力。
-func NewHandlerWithHistoryReplayServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService, replay HistoryReplayService) http.Handler {
-	return NewHandlerWithHistoryReplayAndDataServices(reader, plans, graphs, paths, requirements, configurations, nil, maintenance, preparations, catalog, history, replay)
+// NewHandlerWithHistoryReplayServices 组装历史来源与历史回放任务端点。
+func NewHandlerWithHistoryReplayServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, maintenance FormRuntimeMaintenanceService, history HistoryDataService, replay HistoryReplayService) http.Handler {
+	return NewHandlerWithHistoryReplayAndDataServices(reader, plans, graphs, paths, requirements, configurations, nil, maintenance, history, replay)
 }
 
 // NewHandlerWithHistoryReplayAndDataServices 组装历史回放和显式注入的原始表单数据工作区。
-// dataService 为空时只保留既有配置路由，不注册任何 F-012 数据兼容端点。
-func NewHandlerWithHistoryReplayAndDataServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, dataService PathConfigurationDataService, maintenance FormRuntimeMaintenanceService, preparations PathPreparationService, catalog TemplateCatalogService, history HistoryDataService, replay HistoryReplayService) http.Handler {
+// dataService 为空时只保留配置路由，不注册数据工作区端点。
+func NewHandlerWithHistoryReplayAndDataServices(reader TargetReader, plans PlanService, graphs FlowGraphService, paths ExecutionPathService, requirements PathRequirementService, configurations PathConfigurationService, dataService PathConfigurationDataService, maintenance FormRuntimeMaintenanceService, history HistoryDataService, replay HistoryReplayService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	registerTargetRoutes(mux, reader)
@@ -87,8 +77,6 @@ func NewHandlerWithHistoryReplayAndDataServices(reader TargetReader, plans PlanS
 	registerPathRequirementRoute(mux, requirements)
 	registerPathConfigurationRoutes(mux, configurations, dataService)
 	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
-	registerPathPreparationRoutes(mux, preparations)
-	registerTemplateCatalogRoutes(mux, catalog)
 	registerHistoryDataRoutes(mux, history)
 	registerHistoryReplayRoutes(mux, replay)
 	return gzipResponses(mux)

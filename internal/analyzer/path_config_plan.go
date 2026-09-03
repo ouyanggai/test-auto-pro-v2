@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -12,25 +11,13 @@ import (
 )
 
 const (
-	pathConfigActionConfigurationVersion = 1
-	maxPathConfigConfiguredActions       = 10
-	maxPathConfigActionExecutions        = 100
-	maxPathConfigSafeSeed                = int64(9007199254740991)
+	maxPathConfigSafeSeed = int64(9007199254740991)
 )
 
 type storedPathConfigPersonPlan struct {
 	Strategy string   `json:"strategy"`
 	Seed     int64    `json:"seed"`
 	Selected []string `json:"selected"`
-}
-type storedPathConfigActionConfiguration struct {
-	Version int                                `json:"version"`
-	Actions []storedPathConfigConfiguredAction `json:"actions"`
-}
-type storedPathConfigConfiguredAction struct {
-	Kind   string                      `json:"kind"`
-	Count  int                         `json:"count"`
-	Person *storedPathConfigPersonPlan `json:"person,omitempty"`
 }
 
 // projectPathConfigPersonStrategy 只读取当前人员策略结构；开发阶段的旧数组不再转换或展示。
@@ -204,7 +191,7 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
-// actionConfiguration 投影 F-008 独立动作目录；每一项仅代表一次真实到达后的一个动作。
+// actionConfiguration 投影当前目标节点的可配置动作目录；每一项仅代表一次真实到达后的一个动作。
 func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind string, node *target.FlowNodeTemplate, persons []model.PathConfigPerson) model.PathConfigActionConfiguration {
 	result := model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{}, Actions: []model.PathConfigConfiguredAction{}}
 	validationTarget := PathConfigNodeTarget{NodeID: nodeID, Name: nodeName, Person: p.personTargets[nodeID], ActionPersons: map[string]*PathConfigPersonTarget{}, ActionKinds: map[string]bool{}}
@@ -222,11 +209,12 @@ func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind st
 	}
 	switch nodeKind {
 	case "start":
-		result.Base = &model.PathConfigActionBase{Kind: "submit", Label: "提交", Count: 1, Detail: "发起节点固定提交 1 次"}
+		result.Base = &model.PathConfigActionBase{Kind: "submit", Label: "提交", Detail: "发起节点固定提交"}
+		appendAction("save_draft", "保存草稿", "发起端保存草稿，不创建待办或推进流程。", nil, nil)
 	case "common", "synergy":
-		result.Base = &model.PathConfigActionBase{Kind: "approve_pass", Label: "同意", Count: 1, Detail: "系统默认同意 1 次"}
-		appendAction("reject_no_pass", "不同意", "不同意后回到发起人；重新提交会重新解析条件、并行和人员。", nil, nil)
-		appendAction("draft_save", "暂存", "暂存不推进待办，不能加入静态循环。", nil, nil)
+		result.Base = &model.PathConfigActionBase{Kind: "approve", Label: "同意", Detail: "系统默认同意"}
+		appendAction("reject", "不同意", "不同意后回到发起人；重新提交会重新解析条件、并行和人员。", nil, nil)
+		appendAction("storage_form_data", "暂存当前表单", "暂存不推进待办，不能改变当前节点。", nil, nil)
 		if previousID, _ := p.uniquePreviousBusinessNode(nodeID); previousID != "" {
 			appendAction("rollback_previous", "回退上一步", "引擎只会回到真实上一待办，不能指定其他目标。", nil, nil)
 		}
@@ -237,144 +225,8 @@ func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind st
 	if len(validationTarget.ActionKinds) == 0 {
 		return result
 	}
-	actions, affected, note := p.projectStoredActionConfiguration(nodeID, validationTarget)
-	result.Actions, result.Affected, result.Note = actions, affected, note
-	if affected {
-		p.affected = true
-	}
 	p.validation.NodeTokens[PathConfigNodeToken(nodeID)] = validationTarget
 	return result
-}
-
-// projectStoredActionConfiguration 只读取 F-008 actions 命名空间，旧动作计划不会进入新 DTO。
-func (p *pathConfigProjection) projectStoredActionConfiguration(nodeID string, target PathConfigNodeTarget) ([]model.PathConfigConfiguredAction, bool, string) {
-	raw, exists := p.storedActions[PathConfigActionConfigurationStorageKey(nodeID)]
-	if !exists || strings.TrimSpace(raw) == "" {
-		return []model.PathConfigConfiguredAction{}, false, ""
-	}
-	var stored storedPathConfigActionConfiguration
-	if json.Unmarshal([]byte(raw), &stored) != nil || stored.Version != pathConfigActionConfigurationVersion {
-		return []model.PathConfigConfiguredAction{}, true, "已保存的动作配置无法解析，请重新配置"
-	}
-	if len(stored.Actions) > maxPathConfigConfiguredActions {
-		return []model.PathConfigConfiguredAction{}, true, "已保存的动作配置数量不合法，请重新配置"
-	}
-	result := make([]model.PathConfigConfiguredAction, 0, len(stored.Actions))
-	seenKinds := map[string]bool{}
-	for index, action := range stored.Actions {
-		if seenKinds[action.Kind] || !target.ActionKinds[action.Kind] || action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
-			return []model.PathConfigConfiguredAction{}, true, "已保存的动作不再适用于当前节点，请重新配置"
-		}
-		seenKinds[action.Kind] = true
-		item := model.PathConfigConfiguredAction{Key: fmt.Sprintf("action-%d", index+1), Kind: action.Kind, Label: pathConfigActionLabel(action.Kind), Count: action.Count}
-		if personTarget := target.ActionPersons[action.Kind]; personTarget != nil {
-			person, reason := projectStoredActionPerson(personTarget, action.Person)
-			if reason != "" {
-				return []model.PathConfigConfiguredAction{}, true, reason
-			}
-			item.Person = person
-		} else if action.Person != nil {
-			return []model.PathConfigConfiguredAction{}, true, "已保存的动作人员参数不再适用，请重新配置"
-		}
-		result = append(result, item)
-	}
-	return result, false, ""
-}
-
-// projectStoredActionPerson 将内部动作人员策略按当前候选重新投影。
-func projectStoredActionPerson(target *PathConfigPersonTarget, stored *storedPathConfigPersonPlan) (*model.PathConfigPersonStrategyInput, string) {
-	if target == nil || stored == nil {
-		return nil, "动作缺少必要人员配置，请重新配置"
-	}
-	resolved, reason := resolveStoredPersonStrategy(target, strings.TrimSpace(stored.Strategy), normalizePathConfigSeed(stored.Seed), stored.Selected)
-	if reason != "" {
-		return nil, reason
-	}
-	return &model.PathConfigPersonStrategyInput{Key: target.Key, Strategy: stored.Strategy, Seed: normalizePathConfigSeed(stored.Seed), Selected: rawPersonIDsToTokens(resolved, invertTokenMap(target.CandidateTokens))}, ""
-}
-
-// invertTokenMap 把公开候选 token 索引反转为内部 ID 到 token 的只读映射。
-func invertTokenMap(values map[string]string) map[string]string {
-	result := make(map[string]string, len(values))
-	for token, value := range values {
-		result[value] = token
-	}
-	return result
-}
-
-// EncodePathConfigActions 校验一次到达只能安排一个动作的 F-008 列表，并编码为版本化存储。
-func EncodePathConfigActions(target PathConfigNodeTarget, input []model.PathConfigConfiguredActionInput) (string, int, string) {
-	if len(input) > maxPathConfigConfiguredActions {
-		return "", 0, "单个节点最多配置 10 个动作"
-	}
-	stored, total := storedPathConfigActionConfiguration{Version: pathConfigActionConfigurationVersion, Actions: make([]storedPathConfigConfiguredAction, 0, len(input))}, 0
-	seenKinds := map[string]bool{}
-	for _, action := range input {
-		kind := strings.TrimSpace(action.Kind)
-		if seenKinds[kind] {
-			return "", 0, "同一动作只能配置一次"
-		}
-		if !target.ActionKinds[kind] {
-			return "", 0, "动作不属于当前节点允许范围"
-		}
-		seenKinds[kind] = true
-		if action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
-			return "", 0, "动作次数必须在 1 到 10 之间"
-		}
-		item := storedPathConfigConfiguredAction{Kind: kind, Count: action.Count}
-		if personTarget := target.ActionPersons[kind]; personTarget != nil {
-			if action.Person == nil || strings.TrimSpace(action.Person.Key) != personTarget.Key {
-				return "", 0, "动作缺少必要人员配置"
-			}
-			encoded, reason := EncodePathConfigPersonStrategy(*personTarget, *action.Person)
-			if reason != "" {
-				return "", 0, "动作人员：" + reason
-			}
-			var person storedPathConfigPersonPlan
-			if json.Unmarshal([]byte(encoded), &person) != nil {
-				return "", 0, "动作人员配置暂时无法保存"
-			}
-			item.Person = &person
-		} else if action.Person != nil {
-			return "", 0, "当前动作不需要人员参数"
-		}
-		total += action.Count
-		if total > maxPathConfigActionExecutions {
-			return "", 0, "整条路径的动作总数不能超过 100 个"
-		}
-		stored.Actions = append(stored.Actions, item)
-	}
-	encoded, err := json.Marshal(stored)
-	if err != nil {
-		return "", 0, "动作配置暂时无法保存"
-	}
-	return string(encoded), total, ""
-}
-
-// CountStoredPathConfigActionExecutions 统计新动作配置的总真实到达次数，并拒绝损坏数据。
-func CountStoredPathConfigActionExecutions(values map[string]string) (int, bool) {
-	total := 0
-	for key, raw := range values {
-		if !strings.HasPrefix(key, pathConfigActionConfigurationStoragePrefix) {
-			continue
-		}
-		var stored storedPathConfigActionConfiguration
-		if json.Unmarshal([]byte(raw), &stored) != nil || stored.Version != pathConfigActionConfigurationVersion || len(stored.Actions) > maxPathConfigConfiguredActions {
-			return total, false
-		}
-		seenKinds := map[string]bool{}
-		for _, action := range stored.Actions {
-			if seenKinds[action.Kind] || strings.TrimSpace(action.Kind) == "" || action.Count < 1 || action.Count > maxPathConfigConfiguredActions {
-				return total, false
-			}
-			seenKinds[action.Kind] = true
-			total += action.Count
-			if total > maxPathConfigActionExecutions {
-				return total, false
-			}
-		}
-	}
-	return total, true
 }
 
 // addSignNodePersonConfig 使用目标新审批节点人员目录生成加签人员策略。
@@ -469,12 +321,12 @@ func pathConfigActionLabel(kind string) string {
 	switch strings.TrimSpace(kind) {
 	case "submit":
 		return "提交"
-	case "approve_pass":
+	case "approve":
 		return "同意"
-	case "reject_no_pass":
+	case "reject":
 		return "不同意"
-	case "draft_save":
-		return "暂存"
+	case "storage_form_data":
+		return "暂存当前表单"
 	case "rollback_previous":
 		return "回退上一步"
 	case "add_sign":

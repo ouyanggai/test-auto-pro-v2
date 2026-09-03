@@ -11,9 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,39 +25,30 @@ import (
 )
 
 type fakeTarget struct {
-	t                       *testing.T
-	password                string
-	loginCode               string
-	mu                      sync.Mutex
-	loginCount              int
-	templateCount           int
-	formCount               int
-	expireMode              string
-	sessions                []string
-	graphCalls              []string
-	sampleRequests          []string
-	candidateCalls          []string
-	submittedStatus         string
-	duePaged                bool
-	dueUnbounded            bool
-	formFields              []any
-	templateData            string
-	directoryAudit          bool
-	directoryFail           bool
-	directoryFlags          []string
-	coverageTotal           int
-	coverageListFailureCall int
-	coverageUnreadableIndex int
-	coverageActiveDetails   int
-	coverageMaxDetails      int
-	sampleMode              string
-	sampleDelay             time.Duration
+	t               *testing.T
+	password        string
+	loginCode       string
+	mu              sync.Mutex
+	loginCount      int
+	templateCount   int
+	formCount       int
+	expireMode      string
+	sessions        []string
+	graphCalls      []string
+	submittedStatus string
+	duePaged        bool
+	dueUnbounded    bool
+	formFields      []any
+	templateData    string
+	directoryAudit  bool
+	directoryFail   bool
+	directoryFlags  []string
 }
 
 // newFakeTarget 创建不含固定凭证的假目标服务状态。
 func newFakeTarget(t *testing.T) *fakeTarget {
 	t.Helper()
-	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), submittedStatus: "run", coverageUnreadableIndex: -1}
+	return &fakeTarget{t: t, password: runtimeValue(t, 12), loginCode: runtimeValue(t, 6), submittedStatus: "run"}
 }
 
 // handler 按已核实只读协议响应登录、列表和流程树请求。
@@ -83,32 +71,6 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 				"currentAuditUserInfo": map[string]any{"start": map[string]any{"userList": []any{}}},
 			}}})
 			return
-		}
-		if flowCode, _ := data["flowCode"].(string); flowCode != "" {
-			pages := fmt.Sprint(body["pages"])
-			size := fmt.Sprint(body["size"])
-			if pages != "1" || size != "5" || data["name"] != nil {
-				f.t.Errorf("近期样本没有使用 flowCode 第一页至多五条的精确协议：flowCode=%q pages=%s size=%s", flowCode, pages, size)
-			}
-			f.recordSampleRequest(flowCode + ":" + pages + ":" + size)
-			mode, delay := f.sampleBehavior()
-			if delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-request.Context().Done():
-					return
-				case <-timer.C:
-				}
-			}
-			switch mode {
-			case "empty":
-				writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{}, "total": 0, "pages": 1, "current": 1, "size": 5})
-				return
-			case "failure":
-				http.Error(response, "controlled sample failure", http.StatusBadGateway)
-				return
-			}
 		}
 		name, _ := data["name"].(string)
 		if data["useScope"] != "invest" || (name != "" && name != "sent" && name != "flow-test") || body["pagination"] != true {
@@ -207,33 +169,6 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 			"7": []any{map[string]any{"id": "company-1", "name": "测试公司"}},
 		}
 		f.handleDirectoryResponse(response, byFlag[flag])
-	case "/web/project/api/getProjectVosOfCompanyAndGroup":
-		body := f.requireSession(request)
-		data, _ := body["data"].(map[string]any)
-		if data["companyId"] != "company-1" {
-			f.t.Errorf("项目候选扩大了当前发起人公司范围：%v", data["companyId"])
-		}
-		f.recordCandidateCall("project")
-		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{map[string]any{"id": "project-current", "name": "当前账号项目"}}})
-	case "/web/warehouse/center/api/w2/goodsLedger/getSetLedgerGoods":
-		body := f.requireSession(request)
-		if body["pagination"] != false {
-			f.t.Error("材料候选没有复用宿主非分页台账协议")
-		}
-		f.recordCandidateCall("material")
-		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": []any{
-			map[string]any{"id": "material-positive", "name": "可用材料", "totalCount": 2},
-			map[string]any{"id": "material-empty", "name": "无库存材料", "totalCount": 0},
-		}})
-	case "/web/hesi/city/local/list":
-		body := f.requireSession(request)
-		if fmt.Sprint(body["current"]) != "1" || fmt.Sprint(body["size"]) != "100" {
-			f.t.Error("城市候选没有使用已核实的有界第一页协议")
-		}
-		f.recordCandidateCall("city")
-		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
-			"count": 1, "current": 1, "size": 100, "items": []any{map[string]any{"id": "city-1", "name": "北京", "code": "110000"}},
-		}})
 	case "/web/user/api/dutyLevel/list":
 		f.handleDirectoryResponse(response, []any{map[string]any{"id": "level-1", "name": "二级岗"}})
 	case "/web/flowRoleApi/list":
@@ -256,61 +191,11 @@ func (f *fakeTarget) recordGraphCall(value string) {
 	f.mu.Unlock()
 }
 
-// recordSampleRequest 记录样本列表的精确流程编码与有界分页参数。
-func (f *fakeTarget) recordSampleRequest(value string) {
-	f.mu.Lock()
-	f.sampleRequests = append(f.sampleRequests, value)
-	f.mu.Unlock()
-}
-
-// setSampleBehavior 配置近期样本端点的受控空值、失败或延迟行为。
-func (f *fakeTarget) setSampleBehavior(mode string, delay time.Duration) {
-	f.mu.Lock()
-	f.sampleMode = mode
-	f.sampleDelay = delay
-	f.mu.Unlock()
-}
-
-// sampleBehavior 返回近期样本端点当前行为，避免测试并发修改形成数据竞争。
-func (f *fakeTarget) sampleBehavior() (string, time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.sampleMode, f.sampleDelay
-}
-
-// recordCandidateCall 记录已验证候选端点，测试模板按需加载边界。
-func (f *fakeTarget) recordCandidateCall(value string) {
-	f.mu.Lock()
-	f.candidateCalls = append(f.candidateCalls, value)
-	f.mu.Unlock()
-}
-
 // handleFlowDetail 验证模板或代理树详情只能使用已核实的真实 ID。
 func (f *fakeTarget) handleFlowDetail(response http.ResponseWriter, request *http.Request, expectedID, callName string) {
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	id, _ := data["id"].(string)
-	if f.coverageTotal > 0 && strings.HasPrefix(id, "coverage-template-") {
-		index, err := strconv.Atoi(strings.TrimPrefix(id, "coverage-template-"))
-		if err != nil || index < 0 || index >= f.coverageTotal {
-			f.t.Errorf("覆盖盘点读取了非法模板 ID：%s", id)
-		}
-		f.recordGraphCall(callName + ":" + id)
-		judge := "="
-		if index == f.coverageTotal-1 {
-			judge = "custom-judge"
-		}
-		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
-			"flowCode": fmt.Sprintf("FLOW-%03d", index), "auditWay": "contract_review",
-			"flowNodeTemplate": map[string]any{"id": "condition", "type": "condition", "conditionNodes": []any{map[string]any{
-				"id": "branch", "sort": 1, "conditionList": []any{map[string]any{
-					"fieldaName": "field", "fieldbName": "otherField", "judge": judge, "conditionType": "and",
-				}},
-			}}},
-			"formTemplateList": []any{map[string]any{"id": fmt.Sprintf("coverage-form-%d", index), "name": "覆盖表单"}},
-		}})
-		return
-	}
 	if expectedID != "" && id != expectedID {
 		f.t.Error("模板详情没有使用保存的模板 ID")
 	}
@@ -375,42 +260,6 @@ func (f *fakeTarget) handleFormDetail(response http.ResponseWriter, request *htt
 	body := f.requireSession(request)
 	data, _ := body["data"].(map[string]any)
 	id, _ := data["id"].(string)
-	if f.coverageTotal > 0 && strings.HasPrefix(id, "coverage-form-") {
-		index, err := strconv.Atoi(strings.TrimPrefix(id, "coverage-form-"))
-		if err != nil || index < 0 || index >= f.coverageTotal {
-			f.t.Errorf("覆盖盘点读取了非法表单 ID：%s", id)
-		}
-		f.recordGraphCall("form-detail:" + id)
-		f.mu.Lock()
-		f.formCount++
-		f.coverageActiveDetails++
-		if f.coverageActiveDetails > f.coverageMaxDetails {
-			f.coverageMaxDetails = f.coverageActiveDetails
-		}
-		f.mu.Unlock()
-		defer func() {
-			f.mu.Lock()
-			f.coverageActiveDetails--
-			f.mu.Unlock()
-		}()
-		time.Sleep(2 * time.Millisecond)
-		componentType := "input"
-		if index == f.coverageTotal-1 {
-			componentType = "vendor-widget"
-		}
-		fields := []any{map[string]any{
-			"type": componentType, "model": fmt.Sprintf("field_%d", index), "name": "覆盖字段", "options": map[string]any{},
-		}}
-		if index == 0 {
-			// 同一报表里的重复单元格模型不会覆盖其他关联表单，覆盖盘点不得把它误报为跨表单冲突。
-			fields = append(fields, map[string]any{"type": "input", "model": "field_0", "name": "复用单元格", "options": map[string]any{}})
-		}
-		templateData, _ := json.Marshal(map[string]any{"list": fields})
-		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{
-			"id": id, "name": formName, "fieldsTemplateList": []any{}, "templateData": string(templateData),
-		}})
-		return
-	}
 	if expectedID != "" && id != expectedID {
 		f.t.Errorf("模板表单详情 ID 不正确：%s", id)
 	}
@@ -526,10 +375,6 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 	call := f.templateCount
 	mode := f.expireMode
 	f.mu.Unlock()
-	if f.coverageListFailureCall > 0 && call == f.coverageListFailureCall {
-		response.WriteHeader(http.StatusInternalServerError)
-		return
-	}
 	if mode == "business-once" && call == 1 || mode == "business-always" {
 		writeTargetJSON(response, map[string]any{"isSuccess": false, "code": "RESP401", "message": "session invalid"})
 		return
@@ -562,36 +407,6 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		response.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	if f.coverageTotal > 0 && !hasIDs {
-		page, _ := body["pages"].(float64)
-		pageSize, _ := body["size"].(float64)
-		current, size := int(page), int(pageSize)
-		if current < 1 || size < 1 {
-			f.t.Error("覆盖盘点没有使用合法分页参数")
-		}
-		start := (current - 1) * size
-		end := start + size
-		if end > f.coverageTotal {
-			end = f.coverageTotal
-		}
-		if f.coverageUnreadableIndex >= start && f.coverageUnreadableIndex < end {
-			response.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		items := make([]any, 0, size)
-		for index := start; index < end; index++ {
-			items = append(items, map[string]any{
-				"id": fmt.Sprintf("coverage-template-%d", index), "flowName": fmt.Sprintf("覆盖流程 %d", index+1),
-				"code": fmt.Sprintf("FLOW-%03d", index), "typeName": fmt.Sprintf("模板类型-%02d", index%54),
-				"flowStatus": "enable", "formExist": "withForm", "auditWay": "contract_review", "formTemplateList": []any{map[string]any{"id": fmt.Sprintf("coverage-form-%d", index)}},
-			})
-		}
-		pages := (f.coverageTotal + size - 1) / size
-		writeTargetJSON(response, map[string]any{
-			"isSuccess": true, "data": items, "total": f.coverageTotal, "pages": pages, "current": current, "size": size,
-		})
-		return
-	}
 	items := []any{
 		map[string]any{
 			"id": "template-id", "flowName": "真实流程模板", "code": "FLOW-CODE", "groupName": "业务流程",
@@ -610,274 +425,6 @@ func (f *fakeTarget) handleTemplates(response http.ResponseWriter, request *http
 		"isSuccess": true, "data": items,
 		"total": len(items), "pages": 1, "current": 1, "size": 20,
 	})
-}
-
-// TestF009TemplateCoverageIsolatesUnreadableListItem 验证目标单条列表损坏时报告不完整但仍继续盘点后续模板。
-func TestF009TemplateCoverageIsolatesUnreadableListItem(t *testing.T) {
-	fake := newFakeTarget(t)
-	fake.coverageTotal = 17
-	fake.coverageUnreadableIndex = 15
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
-
-	report, err := service.NewTargetReadService(config.LoadTargetConfig()).TemplateCoverage(context.Background(), "account-a")
-	if err != nil {
-		t.Fatalf("单条坏数据不应中断整个覆盖盘点：%v", err)
-	}
-	if report.Complete || report.TemplateCount != 17 || report.ScannedTemplateCount != 16 || report.FailedTemplates != 1 {
-		t.Fatalf("坏列表项没有被隔离为一条失败：%+v", report)
-	}
-	if report.FlowCodeCount != 16 || report.ComponentTypes["vendor-widget"] != 1 {
-		t.Fatalf("坏项后的模板没有继续进入规则盘点：%+v", report)
-	}
-}
-
-// TestF009TemplateCoverageReadsAllVisibleTemplates 验证真实分页链逐个盘点 196 个模板且未知能力只阻断对应模板。
-func TestF009TemplateCoverageReadsAllVisibleTemplates(t *testing.T) {
-	fake := newFakeTarget(t)
-	fake.coverageTotal = 196
-	fake.coverageListFailureCall = 2
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
-
-	report, err := service.NewTargetReadService(config.LoadTargetConfig()).TemplateCoverage(context.Background(), "account-a")
-	if err != nil {
-		t.Fatalf("全模板覆盖盘点失败：%v", err)
-	}
-	if !report.Complete || report.TemplateCount != 196 || report.ScannedTemplateCount != 196 {
-		t.Fatalf("全模板分页没有完整读取：%+v", report)
-	}
-	if report.TemplateTypeCount != 54 || report.FlowCodeCount != 196 || report.ComponentTypes["input"] != 196 {
-		t.Fatalf("模板类型、流程编码或组件统计不准确：%+v", report)
-	}
-	if report.ConditionOperators["eq"] != 195 || report.ConditionLogic["and"] != 196 || report.FieldComparisonCount != 196 {
-		t.Fatalf("流程条件比较、连接或字段对字段统计不准确：%+v", report)
-	}
-	if report.NeedsAttentionTemplates != 1 || report.UnsupportedTemplates != 1 || report.FailedTemplates != 0 {
-		t.Fatalf("未知能力没有精确落到单模板需处理：%+v", report)
-	}
-	if fake.templateCount != 8 || fake.formCount != 196 || len(fake.directoryFlags) != 0 {
-		t.Fatalf("覆盖盘点没有保持分页重试、逐模板一次表单读取或误读了身份目录：calls=%d forms=%d directory=%v", fake.templateCount, fake.formCount, fake.directoryFlags)
-	}
-	if fake.coverageMaxDetails != 2 {
-		t.Fatalf("模板详情并发没有保持固定 2 路资源边界：%d", fake.coverageMaxDetails)
-	}
-}
-
-// TestF009RealTemplateCoverage 使用显式账号对当前目标平台做真实全模板盘点，默认不接触外部环境。
-func TestF009RealTemplateCoverage(t *testing.T) {
-	account := strings.TrimSpace(os.Getenv("F009_TARGET_ACCOUNT"))
-	if account == "" {
-		t.Skip("未设置 F009_TARGET_ACCOUNT，跳过真实目标模板盘点")
-	}
-	report, err := service.NewTargetReadService(config.LoadTargetConfig()).TemplateCoverage(context.Background(), account)
-	if err != nil {
-		t.Fatalf("真实目标模板盘点失败：%v", err)
-	}
-	if report.TemplateCount == 0 || report.TemplateCount != report.ScannedTemplateCount+report.FailedTemplates {
-		t.Fatalf("真实目标模板总数与扫描/失败数量不守恒：%+v", report)
-	}
-	if expectedText := strings.TrimSpace(os.Getenv("F009_EXPECTED_TEMPLATE_COUNT")); expectedText != "" {
-		expected, parseErr := strconv.Atoi(expectedText)
-		if parseErr != nil || expected < 1 {
-			t.Fatal("F009_EXPECTED_TEMPLATE_COUNT 必须是正整数")
-		}
-		if report.TemplateCount != expected {
-			t.Fatalf("真实目标模板数量 = %d，期望 %d", report.TemplateCount, expected)
-		}
-	}
-	expectedFailures := 0
-	if expectedText := strings.TrimSpace(os.Getenv("F009_EXPECTED_FAILED_TEMPLATES")); expectedText != "" {
-		var parseErr error
-		expectedFailures, parseErr = strconv.Atoi(expectedText)
-		if parseErr != nil || expectedFailures < 0 {
-			t.Fatal("F009_EXPECTED_FAILED_TEMPLATES 必须是非负整数")
-		}
-	}
-	if report.FailedTemplates != expectedFailures || report.Complete != (expectedFailures == 0) {
-		t.Fatalf("真实目标模板失败数或完整性 = %d/%v，期望 %d/%v", report.FailedTemplates, report.Complete, expectedFailures, expectedFailures == 0)
-	}
-	t.Logf("真实目标模板盘点完成：模板=%d，类型=%d，流程编码=%d，需处理=%d", report.TemplateCount, report.TemplateTypeCount, report.FlowCodeCount, report.NeedsAttentionTemplates)
-	if os.Getenv("F009_LOG_COVERAGE") == "1" {
-		t.Logf("真实目标需处理类别：%s", strings.Join(report.NeedsAttention, "；"))
-	}
-}
-
-// TestF010RecentSamplesCacheIncludesRuleDimensions 验证样本读取使用精确过滤，缓存覆盖账号、流程、模板、组件和规则版本全部权限维度。
-func TestF010RecentSamplesCacheIncludesRuleDimensions(t *testing.T) {
-	fake := newFakeTarget(t)
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
-	reader := service.NewTargetReadService(config.LoadTargetConfig())
-	ctx := context.Background()
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-a", "project", "rule-v1", 5); err != nil {
-		t.Fatalf("首次规则样本读取失败：%v", err)
-	}
-	fake.mu.Lock()
-	firstCalls := len(fake.graphCalls)
-	fake.mu.Unlock()
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-a", "project", "rule-v1", 5); err != nil {
-		t.Fatalf("同规则样本缓存读取失败：%v", err)
-	}
-	fake.mu.Lock()
-	secondCalls := len(fake.graphCalls)
-	fake.mu.Unlock()
-	if secondCalls != firstCalls {
-		t.Fatalf("同一账号、流程、模板、组件和规则版本未命中缓存：首次=%d 二次=%d", firstCalls, secondCalls)
-	}
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-b", "project", "rule-v1", 5); err != nil {
-		t.Fatalf("模板变化后的规则样本读取失败：%v", err)
-	}
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-b", "identity", "rule-v1", 5); err != nil {
-		t.Fatalf("组件变化后的规则样本读取失败：%v", err)
-	}
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-test", "template-b", "identity", "rule-v2", 5); err != nil {
-		t.Fatalf("规则版本变化后的样本读取失败：%v", err)
-	}
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-b", "flow-test", "template-b", "identity", "rule-v2", 5); err != nil {
-		t.Fatalf("账号变化后的样本读取失败：%v", err)
-	}
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-b", "flow-other", "template-b", "identity", "rule-v2", 5); err != nil {
-		t.Fatalf("流程变化后的样本读取失败：%v", err)
-	}
-	fake.mu.Lock()
-	thirdCalls := len(fake.graphCalls)
-	sampleRequests := append([]string(nil), fake.sampleRequests...)
-	fake.mu.Unlock()
-	if thirdCalls <= secondCalls {
-		t.Fatalf("模板或组件维度变化错误复用旧样本缓存：二次=%d 三次=%d", secondCalls, thirdCalls)
-	}
-	if len(sampleRequests) != 6 {
-		t.Fatalf("账号、流程、模板、组件或规则版本错误复用样本缓存：%v", sampleRequests)
-	}
-	for _, request := range sampleRequests {
-		if !strings.HasSuffix(request, ":1:5") {
-			t.Fatalf("样本列表越过第一页五条边界：%v", sampleRequests)
-		}
-	}
-}
-
-// TestF010RecentSamplesCacheEmptyAndControlledFailure 验证空结果使用成功缓存，受控失败使用仍返回错误的负缓存。
-func TestF010RecentSamplesCacheEmptyAndControlledFailure(t *testing.T) {
-	fake := newFakeTarget(t)
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
-	reader := service.NewTargetReadService(config.LoadTargetConfig())
-
-	fake.setSampleBehavior("empty", 0)
-	for index := 0; index < 2; index++ {
-		values, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-empty", "template-a", "project", "rule-v1", 5)
-		if err != nil || len(values) != 0 {
-			t.Fatalf("空样本没有作为成功结果返回：values=%+v err=%v", values, err)
-		}
-	}
-	fake.setSampleBehavior("failure", 0)
-	for index := 0; index < 2; index++ {
-		if _, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-failure", "template-a", "project", "rule-v1", 5); err == nil {
-			t.Fatal("受控样本失败被负缓存吞成了成功")
-		}
-	}
-	fake.mu.Lock()
-	requests := append([]string(nil), fake.sampleRequests...)
-	fake.mu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("空结果或受控失败没有命中缓存：%v", requests)
-	}
-}
-
-// TestF010RecentSamplesCallerCancellationIsNotCached 验证调用方主动取消不污染后续相同规则维度读取。
-func TestF010RecentSamplesCallerCancellationIsNotCached(t *testing.T) {
-	fake := newFakeTarget(t)
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
-	reader := service.NewTargetReadService(config.LoadTargetConfig())
-	fake.setSampleBehavior("empty", 250*time.Millisecond)
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(20*time.Millisecond, cancel)
-	if _, err := reader.RecentFormSamplesForRule(ctx, "account-a", "flow-cancel", "template-a", "project", "rule-v1", 5); !errors.Is(err, context.Canceled) {
-		t.Fatalf("调用方取消没有原样返回：%v", err)
-	}
-	fake.setSampleBehavior("empty", 0)
-	if values, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-cancel", "template-a", "project", "rule-v1", 5); err != nil || len(values) != 0 {
-		t.Fatalf("取消结果错误进入负缓存：values=%+v err=%v", values, err)
-	}
-	fake.mu.Lock()
-	requests := append([]string(nil), fake.sampleRequests...)
-	fake.mu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("调用方取消后没有重新读取目标：%v", requests)
-	}
-}
-
-// TestF010RecentSamplesSingleflight 验证同一权限和规则维度的并发请求只产生一次目标读取。
-func TestF010RecentSamplesSingleflight(t *testing.T) {
-	fake := newFakeTarget(t)
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
-	reader := service.NewTargetReadService(config.LoadTargetConfig())
-	fake.setSampleBehavior("empty", 100*time.Millisecond)
-	const callers = 8
-	errorsByCaller := make(chan error, callers)
-	var wait sync.WaitGroup
-	for index := 0; index < callers; index++ {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			_, err := reader.RecentFormSamplesForRule(context.Background(), "account-a", "flow-singleflight", "template-a", "project", "rule-v1", 5)
-			errorsByCaller <- err
-		}()
-	}
-	wait.Wait()
-	close(errorsByCaller)
-	for err := range errorsByCaller {
-		if err != nil {
-			t.Fatalf("同键并发样本读取失败：%v", err)
-		}
-	}
-	fake.mu.Lock()
-	requests := append([]string(nil), fake.sampleRequests...)
-	fake.mu.Unlock()
-	if len(requests) != 1 {
-		t.Fatalf("同键并发产生重复目标读取：%v", requests)
-	}
-}
-
-// TestF010ComponentCandidatesUseVerifiedInitiatorEndpoints 验证候选只走宿主真实只读端点，并按不同发起人建立独立会话。
-func TestF010ComponentCandidatesUseVerifiedInitiatorEndpoints(t *testing.T) {
-	fake := newFakeTarget(t)
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "5s")
-	reader := service.NewTargetReadService(config.LoadTargetConfig())
-	project, err := reader.ComponentCandidates(context.Background(), "account-a", "flow-a", "custome-select-project")
-	if err != nil || len(project) != 1 {
-		t.Fatalf("当前发起人项目候选读取失败：values=%+v err=%v", project, err)
-	}
-	material, err := reader.ComponentCandidates(context.Background(), "account-a", "flow-a", "out-bound-material-select")
-	if err != nil || len(material) != 1 {
-		t.Fatalf("出库候选没有过滤无库存记录：values=%+v err=%v", material, err)
-	}
-	city, err := reader.ComponentCandidates(context.Background(), "account-b", "flow-a", "city-select")
-	if err != nil || len(city) != 1 {
-		t.Fatalf("另一发起人城市候选读取失败：values=%+v err=%v", city, err)
-	}
-	fake.mu.Lock()
-	loginCount := fake.loginCount
-	calls := append([]string(nil), fake.candidateCalls...)
-	fake.mu.Unlock()
-	if loginCount != 2 {
-		t.Fatalf("不同发起人错误复用了同一目标会话：loginCount=%d", loginCount)
-	}
-	sort.Strings(calls)
-	if strings.Join(calls, ",") != "city,material,project" {
-		t.Fatalf("候选读取调用了未验证端点或漏掉实际类型：%v", calls)
-	}
 }
 
 // TestFlowTreeReadUsesExactSourceLookupBeforeDetails 验证三类来源先核对再读详情。
@@ -1556,41 +1103,6 @@ func TestPathConfigurationSnapshotClassifiesAuditDirectoryFailure(t *testing.T) 
 	approval := configuration.Groups[0].Nodes[1]
 	if len(approval.Persons) != 1 || approval.Persons[0].Mode != "review" || len(validation.Blockers) == 0 || !strings.Contains(approval.Persons[0].Detail, "读取失败") {
 		t.Fatalf("目录失败被错误降级：person=%+v blockers=%+v", approval.Persons, validation.Blockers)
-	}
-}
-
-// TestPathConfigurationRuntimeSessionAndRecentSamplesUseVerifiedCache 验证 SID 只从现有账号会话取得，近期样本有限读取并命中短期缓存。
-func TestPathConfigurationRuntimeSessionAndRecentSamplesUseVerifiedCache(t *testing.T) {
-	fake := newFakeTarget(t)
-	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
-	defer targetServer.Close()
-	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
-	reader := service.NewTargetReadService(config.LoadTargetConfig())
-	if _, err := reader.PathConfigurationSnapshot(context.Background(), "account-a", "new", "template-id"); err != nil {
-		t.Fatalf("预热账号会话失败：%v", err)
-	}
-	runtimeSession, err := reader.FormRuntimeSession(context.Background(), "account-a")
-	if err != nil || runtimeSession.SID == "" || runtimeSession.BaseURL != targetServer.URL || runtimeSession.DepartmentID != "department-1" || runtimeSession.DepartmentName != "财务部" {
-		t.Fatalf("短期运行时会话没有复用已验证账号缓存：session=%+v err=%v", runtimeSession, err)
-	}
-	first, err := reader.RecentFormSamples(context.Background(), "account-a", "flow-test", 2)
-	if err != nil || len(first) != 2 || first[0]["amount"] != 2500.5 {
-		t.Fatalf("近期表单样本读取失败：samples=%+v err=%v", first, err)
-	}
-	fake.mu.Lock()
-	callsBeforeCache := len(fake.graphCalls)
-	loginCount := fake.loginCount
-	fake.mu.Unlock()
-	second, err := reader.RecentFormSamples(context.Background(), "account-a", "flow-test", 2)
-	if err != nil || len(second) != 2 {
-		t.Fatalf("近期样本缓存读取失败：samples=%+v err=%v", second, err)
-	}
-	fake.mu.Lock()
-	callsAfterCache := len(fake.graphCalls)
-	loginCountAfterCache := fake.loginCount
-	fake.mu.Unlock()
-	if callsAfterCache != callsBeforeCache || loginCountAfterCache != loginCount || loginCount != 1 {
-		t.Fatalf("短期缓存或 SID 会话产生重复目标读取：calls=%d/%d login=%d/%d", callsBeforeCache, callsAfterCache, loginCount, loginCountAfterCache)
 	}
 }
 

@@ -56,6 +56,31 @@ CREATE TABLE test_execution_path_choices (
   CONSTRAINT fk_test_execution_path_choices_path FOREIGN KEY (path_id) REFERENCES test_execution_paths (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- F-005 的批量路径结果仍是路径拓扑的一部分；清空旧业务数据后重建表结构，不能因删除旧路径准备任务而一并删除。
+CREATE TABLE test_execution_path_batches (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  plan_id BIGINT UNSIGNED NOT NULL,
+  create_key CHAR(36) NOT NULL,
+  total_count INT UNSIGNED NOT NULL,
+  existing_count INT UNSIGNED NOT NULL,
+  created_count INT UNSIGNED NOT NULL,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_execution_path_batch_create_key (create_key),
+  KEY idx_execution_path_batches_plan (plan_id),
+  CONSTRAINT fk_execution_path_batches_plan FOREIGN KEY (plan_id) REFERENCES test_plans (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE test_execution_path_batch_items (
+  batch_id BIGINT UNSIGNED NOT NULL,
+  item_order INT UNSIGNED NOT NULL,
+  path_id BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (batch_id, item_order),
+  UNIQUE KEY uk_execution_path_batch_path (batch_id, path_id),
+  CONSTRAINT fk_execution_path_batch_items_batch FOREIGN KEY (batch_id) REFERENCES test_execution_path_batches (id) ON DELETE CASCADE,
+  CONSTRAINT fk_execution_path_batch_items_path FOREIGN KEY (path_id) REFERENCES test_execution_paths (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
 CREATE TABLE test_history_data_snapshots (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   plan_id BIGINT UNSIGNED NOT NULL,

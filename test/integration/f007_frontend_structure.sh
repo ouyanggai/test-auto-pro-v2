@@ -51,15 +51,14 @@ grep -Fq "FlowGraphCanvas" "${config_view}"
 grep -Fq "FormRuntimeFrame" "${config_view}"
 grep -Fq "workspace === 'nodes'" "${config_view}"
 grep -Fq "workspace === 'form'" "${config_view}"
-grep -Fq "智能生成" "${config_view}"
-grep -Fq "换一组" "${config_view}"
 grep -Fq "恢复已保存" "${config_view}"
 grep -Fq "保存表单数据" "${config_view}"
-grep -Fq "const formGenerating = ref(false)" "${config_view}"
 grep -Fq "const formSaving = ref(false)" "${config_view}"
-grep -Fq ":loading=\"formGenerating && formGenerationKind === 'smart'\"" "${config_view}"
-grep -Fq ":loading=\"formGenerating && formGenerationKind === 'next'\"" "${config_view}"
 grep -Fq ":loading=\"formSaving\"" "${config_view}"
+if grep -Eq '智能生成|换一组|formGenerating|setGeneratedData|generatedValues|generatedFieldPaths|manualOverridePaths' "${config_view}" "${form_frame}" "${runtime_app}"; then
+  echo 'F-012 工作区不得保留智能生成或 generated 状态桥接' >&2
+  exit 1
+fi
 grep -Fq "configuration-mode" "${config_view}"
 grep -Fq "configuration-node-states" "${config_view}"
 grep -Fq 'name="configuration-panel"' "${canvas_view}"
@@ -111,7 +110,7 @@ if [[ "$(grep -Fc 'await finishConfirmedNodeSave()' "${config_view}")" -ne 2 ]];
 fi
 grep -Fq 'selectedNodeID.value = destination.nodeID' "${config_view}"
 grep -Fq 'await focusSelectedNode()' "${config_view}"
-grep -Fq ':form-complete="configuration.form.status === '\''valid'\''"' "${config_view}"
+grep -Fq ':form-complete="dataWorkspace?.dataStatus === '\''ready'\''"' "${config_view}"
 grep -Fq 'form' "${config_view}"
 if grep -Eq 'nextUnconfiguredPath|configureNextPath|hasNextPath|configureNext|配置下一条' "${config_view}" "${config_panel}"; then
   echo 'F-007 节点配置页不得把下一节点误写成另一条路径' >&2
@@ -130,23 +129,8 @@ grep -Fq "event.source !== iframe.value?.contentWindow" "${form_frame}"
 grep -Fq "event.origin !== runtimeOrigin.value" "${form_frame}"
 grep -Fq "getValues" "${runtime_app}"
 grep -Fq "captureFormValues" "${runtime_app}"
-grep -Fq "fieldRules: props.form.fieldRules" "${form_frame}"
-grep -Fq "setGeneratedData" "${form_frame}"
-grep -Fq "current.form.conditionBindings = generated.conditionBindings" "${config_view}"
-grep -Fq "current.form.conditionReviews = generated.conditionReviews" "${config_view}"
-grep -Fq "current.form.fieldRules = generated.fieldRules" "${config_view}"
-grep -Fq "await frame.setGeneratedData" "${config_view}"
 if grep -Fq "reloadRuntime" "${form_frame}" || grep -Fq "reloadRuntime" "${config_view}"; then
-  echo 'F-007 智能生成不得销毁并重建真实表单运行时' >&2
-  exit 1
-fi
-grep -Fq "当前路径分支条件" "${config_view}"
-grep -Fq "v-if=\"binding.selected\"" "${config_view}"
-grep -Fq "字段已锁定" "${config_view}"
-grep -Fq "需要人工核对" "${config_view}"
-grep -Fq "binding.expression" "${config_view}"
-if grep -Fq "无法精确映射 · 可编辑" "${config_view}"; then
-  echo 'F-007 条件提示不得把无法安全映射误导为可编辑' >&2
+  echo 'F-012 数据工作区不得销毁并重建真实表单运行时' >&2
   exit 1
 fi
 grep -Fq "pathConfigurationStatusName" "${config_view}"

@@ -16,9 +16,6 @@ export interface PathConfiguration {
   nextNodeKey: string
   groups: PathConfigGroup[]
   warnings: string[]
-  form: PathFormConfiguration
-  actionCycles: PathConfigActionCycle[]
-  preparation: PathConfigPreparation
 }
 
 export interface PathConfigurationDataWorkspace {
@@ -35,7 +32,6 @@ export interface PathConfigurationDataWorkspace {
   vuePage?: PathVueCustomPageRule | null
   permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
   readRequests: PathFormReadRequest[]
-  ruleVersion: string
   effectiveFormData: Record<string, unknown>
   branchPatches: PathConfigurationBranchPatch[]
   runtimeValidation: PathConfigurationRuntimeValidation
@@ -131,74 +127,7 @@ export interface PathActionConfigurationResult {
   issues: Array<{ index: number, action?: string, actionId?: string, code: string, message: string, blocking: boolean }>
 }
 
-export interface PathConfigPreparation {
-  preparedNodes: number
-  pendingItems: number
-  included: boolean
-}
-
-export interface PathConfigActionCycle {
-  key: string
-  type: 'restart_from_initiator' | 'redo_previous_task'
-  endNodeKey: string
-  label: string
-  count: number
-  members: string[]
-  summary: string
-}
-
-export interface PathConfigActionCycleInput {
-  key: string
-  type: 'restart_from_initiator' | 'redo_previous_task'
-  endNodeKey: string
-  count: number
-}
-
-export type PathFormStatus = 'empty' | 'draft' | 'valid' | 'affected' | 'unsupported'
-
-export interface PathFormConditionBinding {
-  key: string
-  nodeName: string
-  branchName: string
-  expression: string
-  fields: string[]
-  selected: boolean
-  locked: boolean
-  needsReview: boolean
-  verified: boolean
-}
-
-export interface PathFormFieldRule {
-  field: string
-  disabled: boolean
-  conditionKeys: string[]
-}
-
-export interface PathFormConfiguration {
-  revision: number
-  status: PathFormStatus
-  statusName: string
-  readOnly: boolean
-  ruleVersion: string
-  readRequests: PathFormReadRequest[]
-  template: Record<string, unknown>
-  permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
-  values: Record<string, unknown>
-  seed: number
-  generatedFieldPaths: string[]
-  manualOverridePaths: string[]
-  sampleSummary: PathFormSampleSummary
-  validated: boolean
-  unsupported: string[]
-  affected: Array<{ kind: string, name: string, reason: string }>
-  autoFilled: number
-  manualPending: number
-  conditionBindings: PathFormConditionBinding[]
-  conditionReviews: string[]
-  fieldRules: PathFormFieldRule[]
-  renderType?: 'formmaking' | 'vue_custom' | 'unknown'
-  vuePage?: PathVueCustomPageRule | null
-}
+export type PathFormStatus = 'empty' | 'affected' | 'ready'
 
 export interface PathFormReadRequest {
   method: string
@@ -238,55 +167,6 @@ export interface PathVueCustomFieldRule {
   options: Array<{ label: string, value: unknown }>
 }
 
-export interface PathFormSampleSummary {
-  saved: boolean
-  defaults: number
-  recent: number
-  fallback: number
-}
-
-export interface PathFormGenerateResult {
-  revision: number
-  status: 'draft'
-  values: Record<string, unknown>
-  seed: number
-  generatedFieldPaths: string[]
-  manualOverridePaths: string[]
-  sampleSummary: PathFormSampleSummary
-  autoFilled: number
-  manualPending: number
-  unsupported: string[]
-  conditionBindings: PathFormConditionBinding[]
-  conditionReviews: string[]
-  fieldRules: PathFormFieldRule[]
-  generationState: 'complete' | 'partial' | 'blocked'
-  issues: PathFormGenerationIssue[]
-  routeVerification: PathFormRouteVerification
-}
-
-export interface PathFormGenerationIssue {
-  field: string
-  reason: string
-  blocking: boolean
-  code?: string
-  status?: string
-  source?: string
-  fieldPath?: string
-  fieldLabel?: string
-  operator?: string
-  expected?: unknown
-  actual?: unknown
-  relatedFields?: string[]
-  message?: string
-  canRetry?: boolean
-}
-
-export interface PathFormRouteVerification {
-  matched: boolean
-  reason: string
-  source?: string
-}
-
 export interface PathFormRuntimeSession {
   sid: string
   baseURL: string
@@ -297,44 +177,6 @@ export interface PathFormRuntimeSession {
   companyName: string
   departmentId: string
   departmentName: string
-}
-
-export interface RunInputSnapshot {
-  version: string
-  planId: number
-  pathId: number
-  sequenceNo: number
-  accountRef: string
-  flowSource: string
-  targetObjectRef: string
-  renderType: 'formmaking' | 'vue_custom' | 'unknown'
-  templateRuleVersion: string
-  formTemplateVersion: string
-  shapeDigest: string
-  snapshotDigest: string
-  configVersion: number
-  configRevision: number
-  nodeRevision: number
-  formRevision: number
-  pathChoices: Array<{ routeNodeId: string, branchId: string }>
-  nodeFieldValues: Record<string, Record<string, string>>
-  actionValues: Record<string, string>
-  confirmedNodeKeys: string[]
-  formValues: Record<string, unknown>
-  capturedAt: string
-}
-
-export interface RunInputPreflightResult {
-  status: 'ready' | 'blocked'
-  snapshot: RunInputSnapshot
-  target: {
-    method: string
-    path: string
-    payloadKeys: string[]
-    payloadDigest: string
-    successChecks: string[]
-  }
-  issues: Array<{ code: string, source: string, fieldPath?: string, message: string, canRetry: boolean }>
 }
 
 export interface PathConfigProgress {
@@ -439,12 +281,11 @@ export interface PathConfigGap {
   reason: string
 }
 
-export type PathConfigActionKind = 'reject_no_pass' | 'draft_save' | 'rollback_previous' | 'add_sign'
+export type PathConfigActionKind = PathActionKey
 
 export interface PathConfigActionBase {
-  kind: 'submit' | 'approve_pass'
+  kind: PathActionKey
   label: string
-  count: 1
   detail: string
 }
 
@@ -460,7 +301,6 @@ export interface PathConfigConfiguredAction {
   key: string
   kind: PathConfigActionKind
   label: string
-  count: number
   person?: PathConfigPersonStrategyInput
   parameters?: Record<string, unknown>
   actorPolicy?: string
@@ -480,24 +320,10 @@ export interface PathConfigActionCatalogItem {
 export interface PathConfigConfiguredActionInput {
   key: string
   kind: PathConfigActionKind
-  count: number
   person?: PathConfigPersonStrategyInput
   parameters?: Record<string, unknown>
   actorPolicy?: string
   note?: string
-}
-
-export interface PathConfigFieldValue {
-  key: string
-  value: string
-}
-
-export interface PathConfigSaveResult {
-  path: PathConfigPath
-  revision: number
-  nodeRevision: number
-  formRevision: number
-  status: string
 }
 
 export interface PathConfigDraft {
@@ -505,12 +331,6 @@ export interface PathConfigDraft {
   persons: Record<string, string[]>
   personStrategies: Record<string, PathConfigPersonStrategyInput>
   actionConfigurations: Record<string, PathConfigConfiguredActionInput[]>
-}
-
-export interface PathConfigNodeSavePayload {
-  persons: PathConfigPersonStrategyInput[]
-  actions: PathConfigConfiguredActionInput[]
-  actionCycles?: PathConfigActionCycleInput[]
 }
 
 export type PathConfigPagePhase =

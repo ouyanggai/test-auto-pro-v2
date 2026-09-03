@@ -18,6 +18,9 @@ test('T05 数据工作区按原始 values 协议连接复制 runtime', () => {
   assert.match(runtime, /this\.values = clonePlain\(payload\.values \|\| \{\}\)/)
   assert.doesNotMatch(runtime, /generatedValues|generatedFieldPaths|manualOverridePaths/)
   assert.doesNotMatch(frame, /setGeneratedData|generatedFieldPaths|manualOverridePaths/)
+  assert.doesNotMatch(runtime, /ruleVersion/)
+  assert.doesNotMatch(frame, /ruleVersion/)
+  assert.doesNotMatch(read('/form-runtime/src/HostVuePage.vue'), /vueFieldBridge|page\.fields/)
   assert.doesNotMatch(api, /HistoricalDataPayload|fieldMapping|renderAdapter/)
 })
 

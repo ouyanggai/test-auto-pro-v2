@@ -10,7 +10,7 @@ import (
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
 )
 
-// TestF012HistoryReplaySchemaRebuild 验证 F-012 迁移只保留运行时维护表并重建五类业务表。
+// TestF012HistoryReplaySchemaRebuild 验证 F-012 迁移重建历史回放表并保留 F-005 路径拓扑表。
 func TestF012HistoryReplaySchemaRebuild(t *testing.T) {
 	cfg := config.LoadPlanDBConfig()
 	if missing := cfg.MissingRequired(); len(missing) != 0 {
@@ -32,6 +32,8 @@ func TestF012HistoryReplaySchemaRebuild(t *testing.T) {
 		"test_plans",
 		"test_execution_paths",
 		"test_execution_path_choices",
+		"test_execution_path_batches",
+		"test_execution_path_batch_items",
 		"test_execution_path_configs",
 		"test_history_data_snapshots",
 		"test_plan_history_data_defaults",
@@ -48,8 +50,6 @@ func TestF012HistoryReplaySchemaRebuild(t *testing.T) {
 		"test_path_preparation_items",
 		"test_template_rule_catalog",
 		"test_template_rule_analysis_jobs",
-		"test_execution_path_batches",
-		"test_execution_path_batch_items",
 	} {
 		if tables[removed] {
 			t.Fatalf("F-012 迁移仍保留旧业务表：%s", removed)

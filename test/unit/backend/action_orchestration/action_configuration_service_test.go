@@ -57,28 +57,6 @@ type actionHistoryStore struct {
 	writes int
 }
 
-type actionConfigurationRepository struct{}
-
-// FindByPath 表示动作场景投影没有旧路径配置正文，历史动作由 F-012 独立存储提供。
-func (actionConfigurationRepository) FindByPath(context.Context, uint64) (model.StoredPathConfig, bool, error) {
-	return model.StoredPathConfig{}, false, nil
-}
-
-// FindByPaths 表示动作场景投影没有旧路径配置批量正文。
-func (actionConfigurationRepository) FindByPaths(context.Context, []uint64) (map[uint64]model.StoredPathConfig, error) {
-	return map[uint64]model.StoredPathConfig{}, nil
-}
-
-// FindByPathAndKey 表示动作场景投影没有旧路径幂等正文。
-func (actionConfigurationRepository) FindByPathAndKey(context.Context, uint64, string) (model.StoredPathConfig, bool, error) {
-	return model.StoredPathConfig{}, false, nil
-}
-
-// Save 返回旧路径配置输入，测试只验证读取投影，不触发旧配置写入。
-func (actionConfigurationRepository) Save(_ context.Context, record model.StoredPathConfig, _ uint64, _ time.Time) (model.StoredPathConfig, error) {
-	return record, nil
-}
-
 // GetPathConfig 返回当前路径的动作领域配置记录。
 func (s *actionHistoryStore) GetPathConfig(_ context.Context, pathID uint64) (repository.HistoryPathConfigRecord, bool, error) {
 	if !s.found || s.record.PathID != pathID {
@@ -137,7 +115,7 @@ func TestSaveActionConfigurationPersistsCompiledScenario(t *testing.T) {
 	store := &actionHistoryStore{record: repository.HistoryPathConfigRecord{PathID: path.ID, Issues: []byte(`[{"code":"runtime_validation","message":"表单需要复核","blocking":true}]`)}}
 	store.found = true
 	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}), reader,
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path}, nil)
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
 	config.SetHistoryWorkspaceStores(store, store)
 	reviewKey := analyzer.PathConfigNodeToken("review")
 	result, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174801", model.ActionConfigurationInput{
@@ -192,7 +170,7 @@ func TestSaveActionConfigurationRetainsActionPersonStrategy(t *testing.T) {
 	reader := &actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: actionConfigurationTree(), EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "审批流程", RenderType: target.FormRenderTypeFormMaking}}
 	store := &actionHistoryStore{}
 	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}), reader,
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path}, nil)
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
 	config.SetHistoryWorkspaceStores(store, store)
 	reviewKey := analyzer.PathConfigNodeToken("review")
 	personKey := analyzer.PathConfigPersonToken("review:add_sign")
@@ -223,7 +201,7 @@ func TestGetPathConfigurationProjectsActionPersonStrategy(t *testing.T) {
 	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 2, NodeRevision: 2, ActionRevision: 1, UserActions: []byte(actions), PersonStrategies: []byte(persons)}}
 	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}),
 		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: actionConfigurationTree(), EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "审批流程", RenderType: target.FormRenderTypeFormMaking}},
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path}, actionConfigurationRepository{})
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
 	config.SetHistoryWorkspaceStores(store, store)
 	configuration, err := config.Get(context.Background(), plan.ID, path.ID)
 	if err != nil {

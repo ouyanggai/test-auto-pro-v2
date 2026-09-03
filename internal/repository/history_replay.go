@@ -25,6 +25,8 @@ var (
 	ErrHistoryPathConfigConflict = errors.New("路径历史表单数据修订号冲突")
 	// ErrHistoryPathConfigIdempotency 表示同一幂等键被复用于不同的原始表单数据。
 	ErrHistoryPathConfigIdempotency = errors.New("路径历史表单数据幂等键不能复用于不同正文")
+	// ErrHistoryPathConfigDataInvalid 表示 F-012 路径配置 JSON 无法解析或缺少必要字段。
+	ErrHistoryPathConfigDataInvalid = errors.New("路径历史配置数据异常")
 )
 
 // HistoryDefaultRecord 是计划默认来源的工具侧持久化记录。

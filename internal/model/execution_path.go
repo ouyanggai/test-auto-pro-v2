@@ -4,9 +4,6 @@ import "time"
 
 const (
 	ExecutionPathConfigurationConfigured = "configured"
-	ExecutionPathDataNotRequired         = "not_required"
-	ExecutionPathDataGenerated           = "generated"
-	ExecutionPathDataConfirmed           = "confirmed"
 )
 
 // ExecutionPathChoice 记录一个真实路由节点选择的分支。
@@ -29,9 +26,7 @@ type ExecutionPath struct {
 	DataStatus string
 	// DataDetail 是数据准备状态的用户可读原因，不暴露表单字段键或分支标识。
 	DataDetail string
-	// Included 表示用户是否已将该路径纳入本次运行准备，不会启动目标流程。
-	Included bool
-	// ConfigurationRevision 是轻量列表中保存纳入标记所需的节点配置修订号，不包含完整节点配置。
+	// ConfigurationRevision 冻结路径配置修订，供历史回放任务复验检查点。
 	ConfigurationRevision uint64
 	Choices               []ExecutionPathChoice
 	CreatedAt             time.Time
@@ -43,12 +38,7 @@ func IsExecutionPathRunnable(path ExecutionPath) bool {
 	if path.ConfigurationStatus != ExecutionPathConfigurationConfigured {
 		return false
 	}
-	switch path.DataStatus {
-	case ExecutionPathDataNotRequired, ExecutionPathDataGenerated, ExecutionPathDataConfirmed:
-		return true
-	default:
-		return false
-	}
+	return path.DataStatus == HistoryDataStatusReady
 }
 
 // ExecutionPathBatchResult 汇总一次路径批量生成结果。
