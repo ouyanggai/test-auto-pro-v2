@@ -144,7 +144,10 @@ func TestPathDataWorkspaceRequiresConfirmationBeforeRouteWrite(t *testing.T) {
 		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), paths)
 	configService.SetHistoryWorkspaceStores(store, store)
 
-	input := model.PathConfigurationDataInput{Revision: 4, Values: map[string]any{"amount": 3, "nested": map[string]any{"memo": "edited"}}, RuntimeValidation: model.HistoryRuntimeValidation{Accepted: true}}
+	input := model.PathConfigurationDataInput{Revision: 4, Values: map[string]any{
+		"amount": 3, "nested": map[string]any{"memo": "edited"},
+		"auto_audit_info_1": "【同意】 历史审批人", "auto_audit_info_obj_1": map[string]any{"auditStatus": "同意"},
+	}, RuntimeValidation: model.HistoryRuntimeValidation{Accepted: true}}
 	_, err := configService.SaveData(context.Background(), plan.ID, 611, "4b1a93f0-b3b1-49f8-9be7-3e86c1d8e001", input)
 	if err == nil || !service.IsPathConfigErrorKind(err, service.PathConfigErrorRouteConfirmation) {
 		t.Fatalf("实际路径变化未返回确认错误：%v", err)
@@ -176,6 +179,22 @@ func TestPathDataWorkspaceRequiresConfirmationBeforeRouteWrite(t *testing.T) {
 	}
 	if got := result.EffectiveFormData["nested"].(map[string]any)["memo"]; got != "edited" {
 		t.Fatalf("目标原始嵌套数据没有透传：%v", got)
+	}
+	if result.EffectiveFormData["auto_audit_info_1"] != "" {
+		t.Fatalf("保存结果仍带有历史审批意见：%+v", result.EffectiveFormData)
+	}
+	if _, exists := result.EffectiveFormData["auto_audit_info_obj_1"]; exists {
+		t.Fatalf("保存结果仍带有历史审批对象：%+v", result.EffectiveFormData)
+	}
+	var savedValues map[string]any
+	if err := json.Unmarshal(store.configs[612].EffectiveFormData, &savedValues); err != nil {
+		t.Fatalf("解析保存后的表单数据失败：%v", err)
+	}
+	if savedValues["auto_audit_info_1"] != "" {
+		t.Fatalf("历史审批意见被写入工作区：%+v", savedValues)
+	}
+	if _, exists := savedValues["auto_audit_info_obj_1"]; exists {
+		t.Fatalf("历史审批对象被写入工作区：%+v", savedValues)
 	}
 }
 
@@ -212,6 +231,10 @@ func TestCustomWorkspacePassesRawValuesWithoutPageMapping(t *testing.T) {
 	raw := map[string]any{"custom": map[string]any{"rows": []any{map[string]any{"code": "A", "amount": float64(7)}}}, "virtual": "keep"}
 	store.snapshots[703] = model.HistorySnapshot{ID: 703, PlanID: plan.ID, CandidateKey: "candidate-custom", FlowCode: "flow-custom", FlowName: "NoFormFlow 申请页", RuntimeType: string(target.FormRenderTypeVueCustom), TemplateSummary: map[string]any{"pageKey": "NoFormFlow"}, RawFormData: raw}
 	store.defaults[plan.ID] = repository.HistoryDefaultRecord{PlanID: plan.ID, SnapshotID: 703, Revision: 1}
+	store.configs[path.ID] = repository.HistoryPathConfigRecord{
+		PathID: path.ID, Revision: 2, DataRevision: 2, SourceMode: model.HistorySourceModeDefault,
+		EffectiveFormData: []byte(`{"custom":{"rows":[{"code":"A","amount":7}]},"virtual":"keep","auto_audit_info_1":"【同意】 历史审批人","auto_audit_info_obj_1":{"auditStatus":"同意"}}`),
+	}
 	reader := workspaceTargetReader{snapshot: target.PathConfigurationSnapshot{
 		Tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Type: "end"}}, EntryNodeIDs: []string{"start"},
 		FlowCode: "flow-custom", FlowName: "NoFormFlow 申请页", AuditWay: "NoFormFlow", RenderType: target.FormRenderTypeVueCustom,
@@ -299,21 +322,24 @@ func TestClearAuditInfoValuesRemovesApprovalOpinions(t *testing.T) {
 	}
 }
 
-// TestKeyFieldLabelsUseTargetFieldNames 验证关键字段带上目标表单的中文名称，缺失时留空由前端回退。
+// TestKeyFieldLabelsUseTargetFieldNames 验证报表布局中的中文标签覆盖通用组件名，并映射到虚拟字段路径。
 func TestKeyFieldLabelsUseTargetFieldNames(t *testing.T) {
-	labels := service.KeyFieldLabelsForTest(target.PathConfigurationSnapshot{FormFields: []target.FormFieldDetail{
-		{EnglishName: "vacateDayNum", Name: "请假天数"},
-		{EnglishName: "vacateType__virtualName", Name: "请假类别"},
-		{EnglishName: "  ", Name: "无效字段"},
-		{EnglishName: "noName", Name: ""},
-	}})
+	labels := service.KeyFieldLabelsForTest(target.PathConfigurationSnapshot{
+		FormFields: []target.FormFieldDetail{
+			{EnglishName: "vacateDayNum", Name: "计数器"},
+			{EnglishName: "vacateType", Name: "下拉选择框"},
+			{EnglishName: "  ", Name: "无效字段"},
+			{EnglishName: "noName", Name: ""},
+		},
+		Forms: []target.FormRuntimeTemplate{{Name: "请假单", TemplateData: `{"list":[{"type":"report","rows":[{"columns":[{"list":[{"type":"text","name":"请假类别","model":""}]},{"list":[{"type":"select","name":"下拉选择框","model":"vacateType","options":{"hideLabel":true}}]}]},{"columns":[{"list":[{"type":"text","name":"请假天数","model":""}]},{"list":[{"type":"number","name":"计数器","model":"vacateDayNum","options":{"hideLabel":true}}]}]}]}]}`}},
+	})
 	if labels["vacateDayNum"] != "请假天数" || labels["vacateType__virtualName"] != "请假类别" {
-		t.Fatalf("字段中文名称没有从目标原文建立映射：%+v", labels)
+		t.Fatalf("字段中文标签没有从目标模板布局建立映射：%+v", labels)
 	}
 	if _, exists := labels["noName"]; exists {
 		t.Fatalf("没有名称的字段不应进入映射：%+v", labels)
 	}
-	if len(labels) != 2 {
-		t.Fatalf("映射包含了无效字段：%+v", labels)
+	if labels["vacateType"] != "请假类别" || labels["vacateDayNum__virtualName"] != "请假天数" {
+		t.Fatalf("基础字段与虚拟字段标签不一致：%+v", labels)
 	}
 }

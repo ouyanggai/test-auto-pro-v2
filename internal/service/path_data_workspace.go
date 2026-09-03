@@ -45,7 +45,8 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	patches := []model.HistoryBranchPatch{}
 	runtimeValidation := model.HistoryRuntimeValidation{}
 	if found {
-		values = decodeWorkspaceMap(stored.EffectiveFormData)
+		// 已保存的旧工作区数据也必须在读取边界清理，否则修复上线前落盘的历史审批意见仍会回显。
+		values = clearAuditInfoValues(decodeWorkspaceMap(stored.EffectiveFormData))
 		patches = decodeWorkspacePatches(stored.BranchPatches)
 		runtimeValidation = decodeWorkspaceValidation(stored.RuntimeValidation)
 		storedIssues := decodeWorkspaceIssues(stored.Issues)
@@ -112,7 +113,8 @@ func clearAuditInfoValues(values map[string]any) map[string]any {
 	return values
 }
 
-// keyFieldLabels 从目标表单字段详情建立"字段路径 → 中文名称"映射，只用目标原文，不猜测。
+// keyFieldLabels 从目标字段详情和 FormMaking 可见标签建立"字段路径 → 中文名称"映射。
+// 报表布局把标签与输入组件拆在相邻单元格中，因此需要用模板原始布局覆盖组件的通用名称。
 func keyFieldLabels(snapshot target.PathConfigurationSnapshot) map[string]string {
 	labels := make(map[string]string, len(snapshot.FormFields))
 	for _, field := range snapshot.FormFields {
@@ -123,7 +125,140 @@ func keyFieldLabels(snapshot target.PathConfigurationSnapshot) map[string]string
 		}
 		labels[path] = name
 	}
+	for _, form := range snapshot.Forms {
+		var template any
+		if json.Unmarshal([]byte(form.TemplateData), &template) != nil {
+			continue
+		}
+		collectTemplateFieldLabels(template, labels)
+	}
+	for path, label := range labels {
+		if strings.HasSuffix(path, "__virtualName") {
+			continue
+		}
+		virtualPath := path + "__virtualName"
+		if _, exists := labels[virtualPath]; !exists {
+			labels[virtualPath] = label
+		}
+	}
 	return labels
+}
+
+// collectTemplateFieldLabels 递归读取模板中组件自身可见标签，以及报表行里紧邻输入组件之前的文本标签。
+func collectTemplateFieldLabels(node any, labels map[string]string) {
+	object, ok := node.(map[string]any)
+	if !ok {
+		if items, isList := node.([]any); isList {
+			for _, item := range items {
+				collectTemplateFieldLabels(item, labels)
+			}
+		}
+		return
+	}
+	modelName := strings.TrimSpace(templateString(object["model"]))
+	componentName := strings.TrimSpace(templateString(object["name"]))
+	if modelName != "" && componentName != "" && !templateComponentHidesLabel(object) {
+		labels[modelName] = componentName
+	}
+	if rows, ok := object["rows"].([]any); ok {
+		for _, rowValue := range rows {
+			row, isRow := rowValue.(map[string]any)
+			if !isRow {
+				continue
+			}
+			columns, isColumns := row["columns"].([]any)
+			if !isColumns {
+				continue
+			}
+			pendingLabel := ""
+			for _, column := range columns {
+				models := templateModels(column)
+				if len(models) > 0 {
+					if pendingLabel != "" {
+						for _, model := range models {
+							labels[model] = pendingLabel
+						}
+					}
+					pendingLabel = ""
+					continue
+				}
+				if label := templateTextLabel(column); label != "" {
+					pendingLabel = label
+				}
+			}
+		}
+	}
+	for _, child := range object {
+		collectTemplateFieldLabels(child, labels)
+	}
+}
+
+// templateModels 返回一个模板片段内声明的全部字段模型，保持首次出现顺序并去重。
+func templateModels(node any) []string {
+	models := []string{}
+	seen := map[string]struct{}{}
+	var visit func(any)
+	visit = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			modelName := strings.TrimSpace(templateString(typed["model"]))
+			if modelName != "" {
+				if _, exists := seen[modelName]; !exists {
+					seen[modelName] = struct{}{}
+					models = append(models, modelName)
+				}
+			}
+			for _, child := range typed {
+				visit(child)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		}
+	}
+	visit(node)
+	return models
+}
+
+// templateTextLabel 提取没有绑定字段模型的可见文本组件名称，作为相邻输入单元格的标签。
+func templateTextLabel(node any) string {
+	switch typed := node.(type) {
+	case map[string]any:
+		if strings.TrimSpace(templateString(typed["type"])) == "text" && strings.TrimSpace(templateString(typed["model"])) == "" {
+			if name := strings.TrimSpace(templateString(typed["name"])); name != "" {
+				return name
+			}
+		}
+		for _, child := range typed {
+			if label := templateTextLabel(child); label != "" {
+				return label
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if label := templateTextLabel(child); label != "" {
+				return label
+			}
+		}
+	}
+	return ""
+}
+
+// templateComponentHidesLabel 判断组件是否明确隐藏自身标签。
+func templateComponentHidesLabel(component map[string]any) bool {
+	options, ok := component["options"].(map[string]any)
+	if !ok {
+		return false
+	}
+	hideLabel, _ := options["hideLabel"].(bool)
+	return hideLabel
+}
+
+// templateString 安全读取模板字符串字段，拒绝把其他 JSON 类型格式化为标签。
+func templateString(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 // workspaceKeyFields 投影决定当前路径的条件字段，让界面直接告诉用户先核对哪些字段。
@@ -159,7 +294,9 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	if input.Revision != current.Revision {
 		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "路径表单数据已被其他操作更新，请刷新后重试"}
 	}
-	actual := branchoverlay.ResolveActualPath(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: input.Values})
+	// 保存入口再次清理浏览器回传值，避免旧页面或运行时脚本把历史审批意见重新写回工作区。
+	values := clearAuditInfoValues(cloneWorkspaceMap(input.Values))
+	actual := branchoverlay.ResolveActualPath(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: values})
 	if actual.Status != branchoverlay.StatusReady {
 		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据无法确定目标实际路径", Affected: affectedFromOverlayIssues(actual.Issues)}
 	}
@@ -184,7 +321,7 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 			return model.PathConfigurationDataResult{}, mapHistoryWorkspaceStoreError(err)
 		}
 		routeChange := workspaceRouteChange(path, targetPath, targetFound, targetStored)
-		token := workspaceConfirmationToken(planID, path.ID, targetPath.ID, input.Values, current.Revision, targetStored.Revision)
+		token := workspaceConfirmationToken(planID, path.ID, targetPath.ID, values, current.Revision, targetStored.Revision)
 		if strings.TrimSpace(input.ConfirmationToken) != token {
 			return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorRouteConfirmation, Message: "表单数据实际命中其他执行路径，请确认换路和覆盖影响", RouteChange: &routeChange, ConfirmationToken: token}
 		}
