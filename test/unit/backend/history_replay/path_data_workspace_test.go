@@ -249,3 +249,30 @@ func workspaceChoicesEqual(left, right []model.ExecutionPathChoice) bool {
 	rightJSON, rightErr := json.Marshal(right)
 	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
 }
+
+// TestWorkspacePermissionsUseInitiatorNodeOnly 锁定配置阶段的表单权限只来自发起节点：
+// 审批节点放开的编辑权限不能提前生效，否则发起时不可填的字段会被渲染成可填。
+func TestWorkspacePermissionsUseInitiatorNodeOnly(t *testing.T) {
+	audit := &target.FlowNodeTemplate{ID: "audit", Type: "common", FieldPowers: []target.FlowNodeFieldPower{
+		{EnglishName: "amount", Power: "edit"},
+		{EnglishName: "auditRemark", Power: "edit"},
+	}}
+	start := &target.FlowNodeTemplate{ID: "start", Type: "start", Child: audit, FieldPowers: []target.FlowNodeFieldPower{
+		{EnglishName: "amount", Power: "only_read"},
+		{EnglishName: "leaveType", Power: "edit"},
+	}}
+	permissions := service.ProjectFormPermissionsForTest(start, []string{"start", "audit"})
+	powers := map[string]string{}
+	for _, permission := range permissions {
+		powers[permission.Field] = permission.Power
+	}
+	if powers["amount"] != "only_read" {
+		t.Fatalf("审批节点的编辑权限提前生效了：%v", powers)
+	}
+	if powers["leaveType"] != "edit" {
+		t.Fatalf("发起节点声明的可填字段丢失：%v", powers)
+	}
+	if _, exists := powers["auditRemark"]; exists {
+		t.Fatalf("审核节点专用字段不应进入发起态权限：%v", powers)
+	}
+}

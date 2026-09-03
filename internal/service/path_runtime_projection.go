@@ -150,6 +150,11 @@ func formPermissions(tree *target.FlowNodeTemplate, reachable []string) []model.
 		visit(node.Child, visited)
 	}
 	visit(tree, map[string]bool{})
+	// 配置阶段的表单永远处于发起态：发起节点声明了字段权限时只用它，
+	// 审批节点放开的编辑权限不能提前生效，否则发起时不可填的字段会被渲染成可填。
+	if initiator := initiatorFieldPowers(tree); len(initiator) > 0 {
+		powers = initiator
+	}
 	result := make([]model.PathFormPermission, 0, len(powers))
 	for field, power := range powers {
 		if power != "edit" && power != "hide" {
@@ -159,6 +164,45 @@ func formPermissions(tree *target.FlowNodeTemplate, reachable []string) []model.
 	}
 	sort.Slice(result, func(left, right int) bool { return result[left].Field < result[right].Field })
 	return result
+}
+
+// initiatorFieldPowers 只返回目标发起节点声明的字段权限；没有发起节点或没有声明时返回空。
+func initiatorFieldPowers(tree *target.FlowNodeTemplate) map[string]string {
+	start := findInitiatorNode(tree, map[string]bool{})
+	if start == nil {
+		return nil
+	}
+	powers := make(map[string]string, len(start.FieldPowers))
+	for _, power := range start.FieldPowers {
+		field := normalizeRuntimeFieldPath(power.EnglishName)
+		if field == "" {
+			continue
+		}
+		powers[field] = power.Power
+	}
+	return powers
+}
+
+// findInitiatorNode 按目标节点类型定位发起节点，不按名称或位置猜测。
+func findInitiatorNode(node *target.FlowNodeTemplate, visited map[string]bool) *target.FlowNodeTemplate {
+	if node == nil || visited[node.ID] {
+		return nil
+	}
+	visited[node.ID] = true
+	if strings.TrimSpace(node.Type) == "start" {
+		return node
+	}
+	for _, branch := range node.ConditionNodes {
+		if found := findInitiatorNode(branch.Child, visited); found != nil {
+			return found
+		}
+	}
+	for _, branch := range node.ParallelNodes {
+		if found := findInitiatorNode(branch.Child, visited); found != nil {
+			return found
+		}
+	}
+	return findInitiatorNode(node.Child, visited)
 }
 
 // normalizeRuntimeFieldPath 仅归一目标节点返回的嵌套字段分隔符，不按名称相似度映射。
@@ -244,4 +288,9 @@ func projectPathFormReadRequests(snapshot target.PathConfigurationSnapshot, temp
 		return requests[left].Path < requests[right].Path
 	})
 	return requests
+}
+
+// ProjectFormPermissionsForTest 暴露发起态字段权限投影，供 test 目录下的定向用例锁定行为。
+func ProjectFormPermissionsForTest(tree *target.FlowNodeTemplate, reachable []string) []model.PathFormPermission {
+	return formPermissions(tree, reachable)
 }
