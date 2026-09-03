@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -23,7 +24,20 @@ type TargetReadService struct {
 	client        *target.Client
 	sessions      *session.Manager
 	candidates    repository.TargetHistoryCandidateStore
+	snapshotMu    sync.Mutex
+	snapshotCache map[string]cachedPathConfigurationSnapshot
 }
+
+// cachedPathConfigurationSnapshot 是一次流程读取结果的短期缓存。
+// 一次页面加载会连续请求流程图、路径配置、编译场景和数据工作区，每个都要完整读一遍目标流程；
+// 同一账号的读取在会话层串行，叠加起来足以让后面的请求撞上目标网关超时。
+// 这里只缓存"投影用"的流程结构，有效期很短；真正的动作执行仍然必须按 F-012 规则重读事实。
+type cachedPathConfigurationSnapshot struct {
+	snapshot target.PathConfigurationSnapshot
+	expires  time.Time
+}
+
+const pathConfigurationSnapshotTTL = 15 * time.Second
 
 // NewTargetReadService 从后端运行配置创建只读目标客户端和会话管理器。
 func NewTargetReadService(cfg config.TargetConfig) *TargetReadService {
@@ -261,6 +275,10 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 	if err := s.ready(); err != nil {
 		return target.PathConfigurationSnapshot{}, err
 	}
+	cacheKey := strings.Join([]string{strings.TrimSpace(account), strings.TrimSpace(source), strings.TrimSpace(targetObjectID)}, "\x00")
+	if cached, ok := s.cachedSnapshot(cacheKey); ok {
+		return cached, nil
+	}
 	var result target.PathConfigurationSnapshot
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
 		var tree *target.FlowNodeTemplate
@@ -332,7 +350,38 @@ func (s *TargetReadService) PathConfigurationSnapshot(ctx context.Context, accou
 		result = target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: entries, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: renderType, VuePage: vuePage, FormFields: fields, Forms: forms, InstanceValues: values}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return target.PathConfigurationSnapshot{}, err
+	}
+	s.storeSnapshot(cacheKey, result)
+	return result, nil
+}
+
+// cachedSnapshot 返回仍在有效期内的流程结构缓存。
+func (s *TargetReadService) cachedSnapshot(key string) (target.PathConfigurationSnapshot, bool) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	cached, exists := s.snapshotCache[key]
+	if !exists || time.Now().After(cached.expires) {
+		return target.PathConfigurationSnapshot{}, false
+	}
+	return cached.snapshot, true
+}
+
+// storeSnapshot 写入短期流程结构缓存，并顺带清掉已过期条目，避免长时间运行后无界增长。
+func (s *TargetReadService) storeSnapshot(key string, snapshot target.PathConfigurationSnapshot) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	if s.snapshotCache == nil {
+		s.snapshotCache = make(map[string]cachedPathConfigurationSnapshot, 4)
+	}
+	now := time.Now()
+	for existing, cached := range s.snapshotCache {
+		if now.After(cached.expires) {
+			delete(s.snapshotCache, existing)
+		}
+	}
+	s.snapshotCache[key] = cachedPathConfigurationSnapshot{snapshot: snapshot, expires: now.Add(pathConfigurationSnapshotTTL)}
 }
 
 // FormRuntimeSession 从现有账号验证缓存建立短期 iframe 上下文，不额外持久化或复制 SID。

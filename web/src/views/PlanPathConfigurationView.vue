@@ -303,13 +303,14 @@ async function loadPage() {
     ]), controller.signal)
     if (controller.signal.aborted || version !== loadVersion) return
     pathDetailLoading.value = true
-    const storedPath = await fetchExecutionPath(planID.value, pathID.value, controller.signal)
+    const storedPath = await retryPathLoad(signal => fetchExecutionPath(planID.value, pathID.value, signal), controller.signal)
     pathDetailLoading.value = false
     if (controller.signal.aborted || version !== loadVersion) return
     if (!storedPaths.some(path => path.id === storedPath.id)) throw new Error('已保存路径不存在或已删除')
     const analysis = analyzeExecutionPath(storedGraph, storedPath.choices)
     if (!analysis.complete || analysis.invalid) throw new Error('当前已保存路径与真实流程不一致，请先编辑路径')
-    const storedConfiguration = await fetchPathConfiguration(planID.value, pathID.value, controller.signal)
+    // 目标流程读取偶发超时不该让整页失败：与计划、流程图同一套受控重试。
+    const storedConfiguration = await retryPathLoad(signal => fetchPathConfiguration(planID.value, pathID.value, signal), controller.signal)
     if (controller.signal.aborted || version !== loadVersion) return
     plan.value = storedPlan
     graph.value = storedGraph
