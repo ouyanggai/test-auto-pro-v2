@@ -132,7 +132,7 @@ func Apply(input Input) Result {
 	}
 	selected, ambiguous := chooseSolution(solutions)
 	if ambiguous {
-		return appendIssue(result, Issue{Code: "ambiguous_solution", Message: "存在多个同等最小补丁，无法安全选择"})
+		return appendIssue(result, Issue{Code: "ambiguous_solution", Message: "有多个字段取值都能进入当前路径，请在表单里自己确认关键字段的值"})
 	}
 	finalWalk := walkTree(input.Tree, selected.values, choices)
 	if !finalWalk.complete || !finalWalk.matches {
@@ -1251,4 +1251,72 @@ func parsePath(path string) ([]pathToken, bool) {
 func asAnySlice(value any) ([]any, bool) {
 	list, ok := value.([]any)
 	return list, ok
+}
+
+// KeyField 是决定当前执行路径的条件字段：字段路径、现值、目标条件真实候选值和它影响的分支。
+// 只来自目标流程条件声明，不按标签、名称或组件类型推导。
+type KeyField struct {
+	Path       string   `json:"path"`
+	HasCurrent bool     `json:"hasCurrent"`
+	Current    any      `json:"current,omitempty"`
+	Candidates []any    `json:"candidates,omitempty"`
+	Operators  []string `json:"operators,omitempty"`
+	Branches   []string `json:"branches,omitempty"`
+	Decisive   bool     `json:"decisive"`
+}
+
+// KeyFields 只投影当前路径涉及的条件字段供界面参考，不执行补丁搜索也不修改任何值。
+func KeyFields(input Input) []KeyField {
+	if input.Tree == nil {
+		return []KeyField{}
+	}
+	values := input.Values
+	if values == nil {
+		values = map[string]any{}
+	}
+	choices, choiceIssues := choiceMap(input.Choices)
+	if len(choiceIssues) > 0 {
+		return []KeyField{}
+	}
+	references, collectIssues := collectReferences(input.Tree, choices)
+	if len(collectIssues) > 0 {
+		return []KeyField{}
+	}
+	byPath := make(map[string]*KeyField)
+	ordered := make([]string, 0, len(references))
+	for _, reference := range references {
+		for _, path := range reference.Paths {
+			path = strings.TrimSpace(path)
+			if path == "" {
+				continue
+			}
+			field, exists := byPath[path]
+			if !exists {
+				current, currentOK := getPath(values, path)
+				field = &KeyField{Path: path, HasCurrent: currentOK, Current: current, Operators: []string{}, Branches: []string{}, Candidates: []any{}}
+				byPath[path] = field
+				ordered = append(ordered, path)
+			}
+			field.Decisive = field.Decisive || reference.Selected
+			if operator := normalizeJudge(reference.Condition.Judge); operator != "" && !containsPath(field.Operators, operator) {
+				field.Operators = append(field.Operators, operator)
+			}
+			if branch := strings.TrimSpace(reference.BranchID); branch != "" && !containsPath(field.Branches, branch) {
+				field.Branches = append(field.Branches, branch)
+			}
+		}
+	}
+	// 候选值只取目标条件真实声明的常量与边界，缺少声明时留空，由用户按目标表单选项自行决定。
+	variables, _ := buildVariables(values, mergeCandidates(input.Candidates, input.TargetCandidates), references)
+	for _, variable := range variables {
+		if field, exists := byPath[variable.path]; exists {
+			field.Candidates = dedupeCandidates(variable.candidates)
+		}
+	}
+	sort.Strings(ordered)
+	result := make([]KeyField, 0, len(ordered))
+	for _, path := range ordered {
+		result = append(result, *byPath[path])
+	}
+	return result
 }

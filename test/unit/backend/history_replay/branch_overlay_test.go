@@ -2,6 +2,7 @@ package history_replay_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -245,4 +246,46 @@ func hasIssue(issues []branchoverlay.Issue, code string) bool {
 		}
 	}
 	return false
+}
+
+// TestKeyFieldsProjectDecisiveConditionFields 验证决定路径的关键字段投影：
+// 只来自目标条件声明的真实字段路径，带现值、目标真实候选值和它影响的分支。
+func TestKeyFieldsProjectDecisiveConditionFields(t *testing.T) {
+	tree := &target.FlowNodeTemplate{
+		ID: "start", Type: "start",
+		Child: &target.FlowNodeTemplate{
+			ID: "route", Type: "condition",
+			ConditionNodes: []target.FlowBranchTemplate{
+				{
+					ID: "branch-long", Child: &target.FlowNodeTemplate{ID: "manager", Type: "common"},
+					Conditions: []target.FlowCondition{{FieldA: "days", Judge: "gt", ValueB: "3"}},
+				},
+				{
+					ID: "branch-short", Child: &target.FlowNodeTemplate{ID: "leader", Type: "common"},
+					Conditions: []target.FlowCondition{{FieldA: "days", Judge: "lte", ValueB: "3"}},
+				},
+			},
+		},
+	}
+	fields := branchoverlay.KeyFields(branchoverlay.Input{
+		Tree:    tree,
+		Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-long"}},
+		Values:  map[string]any{"days": json.Number("2"), "remark": "无关字段"},
+	})
+	if len(fields) != 1 || fields[0].Path != "days" {
+		t.Fatalf("关键字段只应包含条件声明的真实字段路径：%+v", fields)
+	}
+	field := fields[0]
+	if !field.HasCurrent || fmt.Sprint(field.Current) != "2" {
+		t.Fatalf("关键字段没有带上现值：%+v", field)
+	}
+	if !field.Decisive {
+		t.Fatalf("已选分支涉及的字段必须标记为决定性字段：%+v", field)
+	}
+	if len(field.Candidates) == 0 {
+		t.Fatalf("关键字段没有给出目标条件真实候选值：%+v", field)
+	}
+	if len(field.Operators) == 0 || len(field.Branches) == 0 {
+		t.Fatalf("关键字段没有说明操作符和影响分支：%+v", field)
+	}
 }

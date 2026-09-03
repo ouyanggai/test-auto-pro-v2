@@ -452,7 +452,7 @@ func historyCandidateSummaryComplete(identity target.HistoryIdentity, instance t
 
 // projectHistorySource 投影历史来源摘要，永不包含完整表单正文。
 func projectHistorySource(mode string, snapshot model.HistorySnapshot, revision uint64, currentTemplateSummary map[string]any) model.HistoryDataSource {
-	issues := []model.HistoryDataIssue{{Code: "HISTORY_REPLAY_REQUIRED", Message: "需要完成当前路径回放和 form-runtime 校验", Blocking: true}}
+	issues := []model.HistoryDataIssue{{Code: "HISTORY_REPLAY_REQUIRED", Message: "业务数据尚未按当前路径核对完成，请检查关键字段后保存表单数据", Blocking: true}}
 	// 来源选择本身不能宣称 ready；只有后续路径回放和复制 runtime 校验都通过才能转为 ready。
 	status := model.HistoryDataStatusNeedsInput
 	if len(snapshot.RawFormData) == 0 {

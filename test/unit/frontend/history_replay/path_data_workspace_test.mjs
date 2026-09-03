@@ -24,6 +24,22 @@ test('T05 数据工作区按原始 values 协议连接复制 runtime', () => {
   assert.doesNotMatch(api, /HistoricalDataPayload|fieldMapping|renderAdapter/)
 })
 
+test('T05 表单提示改为右侧可收起悬浮面板并给出决定路径的关键字段', () => {
+  const view = read('/web/src/views/PlanPathConfigurationView.vue')
+  const panel = read('/web/src/features/path-configuration/FormDataHintsPanel.vue')
+
+  assert.match(view, /<form-data-hints-panel/)
+  assert.match(view, /:key-fields="dataWorkspace\.keyFields \?\? \[\]"/)
+  assert.match(panel, /决定当前路径的字段/)
+  assert.match(panel, /position: absolute/)
+  assert.match(panel, /open = !open/)
+  assert.match(panel, /useThemeVars\(\)/)
+  // 提示面板不再把内部术语直接摊在页面上。
+  for (const forbidden of ['最小补丁', 'form-runtime 校验', 'needs_input']) {
+    assert.equal(panel.includes(forbidden), false, `提示面板不应出现 ${forbidden}`)
+  }
+})
+
 test('T05 保存换路需要确认令牌且取消不触发写入', () => {
   const view = read('/web/src/views/PlanPathConfigurationView.vue')
   const api = read('/web/src/features/path-configuration/api.ts')

@@ -38,8 +38,20 @@ export interface PathConfigurationDataWorkspace {
   branchPatches: PathConfigurationBranchPatch[]
   runtimeValidation: PathConfigurationRuntimeValidation
   issues: HistoryDataIssue[]
+  keyFields: PathConfigKeyField[]
   actions: unknown[]
   compiledScenario: PathCompiledActionStep[]
+}
+
+// PathConfigKeyField 是决定当前执行路径的条件字段，只用于界面提示，不参与保存。
+export interface PathConfigKeyField {
+  path: string
+  hasCurrent: boolean
+  current?: unknown
+  candidates?: unknown[]
+  operators?: string[]
+  branches?: string[]
+  decisive: boolean
 }
 
 export interface PathConfigurationRuntimeValidation {

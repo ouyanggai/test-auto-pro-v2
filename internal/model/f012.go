@@ -220,6 +220,18 @@ type HistoryRuntimeValidation struct {
 }
 
 // PathConfigurationF012 是 F-012 配置读取接口的统一领域视图。
+// HistoryKeyField 是决定当前执行路径的条件字段投影：只包含目标条件声明的真实字段路径、
+// 现值、目标真实候选值和它影响的分支，不包含目标内部标识。
+type HistoryKeyField struct {
+	Path       string   `json:"path"`
+	HasCurrent bool     `json:"hasCurrent"`
+	Current    any      `json:"current,omitempty"`
+	Candidates []any    `json:"candidates,omitempty"`
+	Operators  []string `json:"operators,omitempty"`
+	Branches   []string `json:"branches,omitempty"`
+	Decisive   bool     `json:"decisive"`
+}
+
 type PathConfigurationF012 struct {
 	Path           PathConfigPath    `json:"path"`
 	Revision       uint64            `json:"revision"`
@@ -239,8 +251,10 @@ type PathConfigurationF012 struct {
 	BranchPatches       []HistoryBranchPatch     `json:"branchPatches"`
 	RuntimeValidation   HistoryRuntimeValidation `json:"runtimeValidation"`
 	Issues              []HistoryDataIssue       `json:"issues"`
-	Actions             []ConfiguredAction       `json:"actions"`
-	CompiledScenario    []CompiledActionStep     `json:"compiledScenario"`
+	// KeyFields 是决定当前执行路径的条件字段，供界面提示用户优先核对哪些字段。
+	KeyFields        []HistoryKeyField    `json:"keyFields"`
+	Actions          []ConfiguredAction   `json:"actions"`
+	CompiledScenario []CompiledActionStep `json:"compiledScenario"`
 }
 
 // PathConfigurationDataInput 是复制 form-runtime 捕获的原始目标表单数据保存请求。

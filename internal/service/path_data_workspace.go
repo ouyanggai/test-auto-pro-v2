@@ -88,8 +88,22 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
 		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template), EffectiveFormData: values,
 		BranchPatches: patches, RuntimeValidation: runtimeValidation, Issues: issues,
-		Actions: decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
+		KeyFields: workspaceKeyFields(snapshot.Tree, path.Choices, values),
+		Actions:   decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
 	}, nil
+}
+
+// workspaceKeyFields 投影决定当前路径的条件字段，让界面直接告诉用户先核对哪些字段。
+func workspaceKeyFields(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, values map[string]any) []model.HistoryKeyField {
+	fields := branchoverlay.KeyFields(branchoverlay.Input{Tree: tree, Choices: choices, Values: values})
+	result := make([]model.HistoryKeyField, 0, len(fields))
+	for _, field := range fields {
+		result = append(result, model.HistoryKeyField{
+			Path: field.Path, HasCurrent: field.HasCurrent, Current: field.Current,
+			Candidates: field.Candidates, Operators: field.Operators, Branches: field.Branches, Decisive: field.Decisive,
+		})
+	}
+	return result
 }
 
 // SaveData 保存复制 form-runtime 捕获的原始表单数据，并在实际路径变化时要求一次性确认。

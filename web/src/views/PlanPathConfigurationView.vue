@@ -13,6 +13,7 @@ import type { FlowGraph } from '../features/flow-graph/types'
 import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
 import ActionOrchestrationEditor from '../features/path-configuration/ActionOrchestrationEditor.vue'
 import CompiledScenarioPreview from '../features/path-configuration/CompiledScenarioPreview.vue'
+import FormDataHintsPanel from '../features/path-configuration/FormDataHintsPanel.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
 import {
@@ -913,14 +914,12 @@ void loadPage()
           :disabled="!planMutable"
           @saved="handleBaseFormDataSaved"
         />
-        <section v-if="dataWorkspace && (dataWorkspace.issues.length || dataWorkspace.branchPatches.length)" class="path-configuration-page__form-summary" aria-label="表单数据提示">
-          <ul v-if="dataWorkspace.issues.length" class="path-configuration-page__form-summary-list">
-            <li v-for="issue in dataWorkspace.issues" :key="`${issue.code}-${issue.path || ''}-${issue.message}`">{{ issue.message }}</li>
-          </ul>
-          <ul v-if="dataWorkspace.branchPatches.length" class="path-configuration-page__form-summary-list">
-            <li v-for="patch in dataWorkspace.branchPatches" :key="`${patch.branchKey}-${patch.path}`">已按当前路径调整 {{ patch.path }}：{{ patch.reason }}</li>
-          </ul>
-        </section>
+        <form-data-hints-panel
+          v-if="dataWorkspace"
+          :key-fields="dataWorkspace.keyFields ?? []"
+          :issues="dataWorkspace.issues"
+          :branch-patches="dataWorkspace.branchPatches"
+        />
         <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
           <n-spin :show="true" size="large" description="正在加载表单运行时" />
         </section>
