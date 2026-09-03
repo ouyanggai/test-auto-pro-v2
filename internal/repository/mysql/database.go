@@ -25,11 +25,19 @@ var (
 	ErrMigration  = errors.New("计划数据库迁移失败")
 )
 
-// migrationFileError 只公开失败迁移文件名，不携带数据库地址、凭证或 SQL 响应原文。
-type migrationFileError struct{ version string }
+// migrationFileError 只公开失败迁移文件名与语句序号，不携带数据库地址、凭证或 SQL 响应原文。
+type migrationFileError struct {
+	version   string
+	statement int
+}
 
 // Error 返回可定位且不含敏感连接信息的迁移失败摘要。
-func (e *migrationFileError) Error() string { return e.version }
+func (e *migrationFileError) Error() string {
+	if e.statement > 0 {
+		return fmt.Sprintf("%s（第 %d 条语句）", e.version, e.statement)
+	}
+	return e.version
+}
 
 type Database struct {
 	DB *sql.DB
@@ -130,16 +138,37 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if applied != 0 {
 			continue
 		}
-		statement, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
 		if err != nil {
 			return err
 		}
-		if _, err := db.ExecContext(ctx, string(statement)); err != nil {
-			return &migrationFileError{version: entry.Name()}
+		if err := applyMigrationFile(ctx, db, entry.Name(), string(content)); err != nil {
+			return err
 		}
-		if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", entry.Name(), time.Now().UTC()); err != nil {
-			return &migrationFileError{version: entry.Name()}
+	}
+	return nil
+}
+
+// applyMigrationFile 在同一连接上按顺序执行单个迁移文件的全部语句。
+// 独占连接是必需的：会话级 SET（如 FOREIGN_KEY_CHECKS）只对当前连接生效，
+// 连接池轮换会让后续语句落到未设置的连接上。
+func applyMigrationFile(ctx context.Context, db *sql.DB, version string, content string) error {
+	statements := SplitMigrationStatements(content)
+	if len(statements) == 0 {
+		return &migrationFileError{version: version}
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return ErrConnection
+	}
+	defer conn.Close()
+	for ordinal, statement := range statements {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			return &migrationFileError{version: version, statement: ordinal + 1}
 		}
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", version, time.Now().UTC()); err != nil {
+		return &migrationFileError{version: version}
 	}
 	return nil
 }
