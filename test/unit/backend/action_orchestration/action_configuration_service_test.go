@@ -2,6 +2,7 @@ package action_orchestration_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +266,31 @@ func TestAutoNodeActionPrefersUncoveredEnabledActions(t *testing.T) {
 	repeat, _ := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-a", []string{"approve", "reject"}), map[string]bool{})
 	if repeat.Action != first.Action || repeat.Key != first.Key {
 		t.Fatalf("同一节点重复自动配置结果不稳定：%+v / %+v", first, repeat)
+	}
+}
+
+// TestConfirmedNodeKeysCoverSavedActionNodes 锁定节点确认列真的会被写入：
+// 这一列原来从来没有人写，节点状态永远停在待配置，一键配置和手工保存都看不到已配置。
+func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {
+	raw, err := service.ConfirmedNodeKeysJSONForTest([]byte(`["node-old"]`),
+		[]model.ConfiguredAction{{NodeKey: "node-a"}, {NodeKey: "node-a"}, {NodeKey: ""}}, "node-person-only", " ")
+	if err != nil {
+		t.Fatalf("编码已确认节点失败：%v", err)
+	}
+	var keys []string
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("已确认节点不是合法 JSON 数组：%v", err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("已确认节点没有去重或漏掉节点：%v", keys)
+	}
+	found := map[string]bool{}
+	for _, key := range keys {
+		found[key] = true
+	}
+	for _, expected := range []string{"node-old", "node-a", "node-person-only"} {
+		if !found[expected] {
+			t.Fatalf("已确认节点缺少 %s：%v", expected, keys)
+		}
 	}
 }

@@ -157,8 +157,9 @@ func (s *PathConfigService) SaveActionConfiguration(ctx context.Context, planID,
 			return model.ActionConfigurationResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "人员策略无法编码"}
 		}
 	}
-	if len(record.ConfirmedNodeKeys) == 0 {
-		record.ConfirmedNodeKeys = []byte(`[]`)
+	record.ConfirmedNodeKeys, err = confirmedNodeKeysJSON(current.ConfirmedNodeKeys, compiled.Actions, nodeKey)
+	if err != nil {
+		return model.ActionConfigurationResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "已确认节点无法编码"}
 	}
 	if len(record.EffectiveFormData) == 0 {
 		record.EffectiveFormData = []byte(`{}`)
@@ -715,6 +716,34 @@ func lastString(values []string) string {
 	return values[len(values)-1]
 }
 
+// confirmedNodeKeysJSON 把已确认节点列写成 confirmed_node_keys：
+// 已保存动作绑定的语义节点即视为已确认，另外并入显式传入的节点键（人员已保存但没有动作的节点）。
+// 这一列原来从来没有人写入，导致节点状态永远停在待配置。
+func confirmedNodeKeysJSON(current []byte, actions []model.ConfiguredAction, extra ...string) ([]byte, error) {
+	confirmed := make(map[string]bool)
+	for _, key := range decodeConfirmedNodeKeys(current) {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			confirmed[trimmed] = true
+		}
+	}
+	for _, action := range actions {
+		if key := strings.TrimSpace(action.NodeKey); key != "" {
+			confirmed[key] = true
+		}
+	}
+	for _, key := range extra {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			confirmed[trimmed] = true
+		}
+	}
+	keys := make([]string, 0, len(confirmed))
+	for key := range confirmed {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return json.Marshal(keys)
+}
+
 // AutoConfigurePathActions 一键配置时按真实门禁为路径上待配置节点补齐人员与动作。
 // 只读取一次目标事实、只写一次配置行：逐节点调用保存接口会对同一账号发起十几次
 // 目标流程读取，把目标只读网关打满，页面同时请求就会超时。
@@ -755,6 +784,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 		used[string(action.Action)] = true
 	}
 	changed := false
+	confirmedNodes := make([]string, 0, 8)
 	for _, group := range configuration.Groups {
 		for _, node := range group.Nodes {
 			if node.LineBlocked || configuredNodes[node.Key] {
@@ -769,8 +799,13 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			}
 			action, ok := autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
 			if !ok {
+				// 没有可编排动作的节点，只要人员已按目标默认或随机策略填好就算配置完成。
+				if changed {
+					confirmedNodes = append(confirmedNodes, node.Key)
+				}
 				continue
 			}
+			confirmedNodes = append(confirmedNodes, node.Key)
 			used[string(action.Action)] = true
 			merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{action}, node.Key, analysis.graph, analysis.pathAnalysis)
 			if mergeErr != nil {
@@ -787,11 +822,11 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	if compileErr != nil {
 		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "自动动作配置无法编译为可恢复场景"}
 	}
-	return s.persistAutoConfiguredActions(ctx, pathID, current, compiled, personStrategies)
+	return s.persistAutoConfiguredActions(ctx, pathID, current, compiled, personStrategies, confirmedNodes)
 }
 
 // persistAutoConfiguredActions 用与手工保存相同的落盘规则一次性写入自动配置结果。
-func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pathID uint64, current repository.HistoryPathConfigRecord, compiled scenario.Result, personStrategies map[string]model.PathConfigPersonStrategyInput) error {
+func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pathID uint64, current repository.HistoryPathConfigRecord, compiled scenario.Result, personStrategies map[string]model.PathConfigPersonStrategyInput, confirmedNodes []string) error {
 	nextActionRevision := current.ActionRevision + 1
 	for index := range compiled.Actions {
 		compiled.Actions[index].Revision = nextActionRevision
@@ -838,10 +873,12 @@ func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pa
 	if strings.TrimSpace(record.DataStatus) == "" {
 		record.DataStatus = model.HistoryDataStatusEmpty
 	}
-	for _, empty := range []*[]byte{&record.ConfirmedNodeKeys, &record.BranchPatches} {
-		if len(*empty) == 0 {
-			*empty = []byte(`[]`)
-		}
+	record.ConfirmedNodeKeys, err = confirmedNodeKeysJSON(current.ConfirmedNodeKeys, compiled.Actions, confirmedNodes...)
+	if err != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "已确认节点无法编码"}
+	}
+	if len(record.BranchPatches) == 0 {
+		record.BranchPatches = []byte(`[]`)
 	}
 	for _, empty := range []*[]byte{&record.EffectiveFormData, &record.RuntimeValidation} {
 		if len(*empty) == 0 {
@@ -920,4 +957,9 @@ func autoConfigureActionKey(nodeKey, kind string) string {
 // AutoNodeActionForTest 暴露自动动作选择，供 test 目录下的定向用例锁定覆盖与可复现行为。
 func AutoNodeActionForTest(planID, pathID uint64, node model.PathConfigNode, used map[string]bool) (model.ConfiguredAction, bool) {
 	return autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
+}
+
+// ConfirmedNodeKeysJSONForTest 暴露已确认节点编码，供 test 目录下的定向用例锁定行为。
+func ConfirmedNodeKeysJSONForTest(current []byte, actions []model.ConfiguredAction, extra ...string) ([]byte, error) {
+	return confirmedNodeKeysJSON(current, actions, extra...)
 }
