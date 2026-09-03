@@ -715,55 +715,143 @@ func lastString(values []string) string {
 	return values[len(values)-1]
 }
 
-// AutoConfigurePathActions 一键配置时按真实门禁为路径上每个待配置节点补齐人员与动作。
-// 只从目标动作目录里已启用、非系统语义、非编译器插入的动作中选择，不发明任何动作；
-// 选择用计划、路径和节点键派生的确定性种子，并跨节点优先挑选尚未用过的动作，
-// 让一次一键配置尽量覆盖更多目标能力；节点已配置或线路被阻断时跳过。
+// AutoConfigurePathActions 一键配置时按真实门禁为路径上待配置节点补齐人员与动作。
+// 只读取一次目标事实、只写一次配置行：逐节点调用保存接口会对同一账号发起十几次
+// 目标流程读取，把目标只读网关打满，页面同时请求就会超时。
+// 只从目录里已启用、非系统语义、非编译器插入、且不需要显式选人的动作中选择，不发明动作；
+// 选择用计划、路径和节点键派生的确定性种子，并跨节点优先挑尚未用过的动作。
 func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID, pathID uint64) error {
-	configuration, err := s.Get(ctx, planID, pathID)
+	if s.historyConfigStore == nil {
+		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "动作配置存储暂不可用"}
+	}
+	path, snapshot, analysis, current, found, _, err := s.loadWorkspace(ctx, planID, pathID)
 	if err != nil {
 		return err
 	}
-	revision := configuration.Revision
+	// 节点、人员和动作目录直接从这次已经读到的目标事实投影，不再额外读一遍目标流程。
+	configuration, _, err := s.configAnalyzer.Analyze(
+		analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis,
+		snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{}, false,
+	)
+	if err != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "执行路径配置无法投影，请重新核对路径"}
+	}
+	validation, err := s.pathActionGates(snapshot, path, analysis, found)
+	if err != nil {
+		return err
+	}
+	existing := []model.ConfiguredAction{}
+	if found {
+		existing = decodeWorkspaceActions(current.UserActions)
+	}
+	configuredNodes := make(map[string]bool)
+	for _, action := range existing {
+		configuredNodes[strings.TrimSpace(action.NodeKey)] = true
+	}
+	personStrategies := decodeHistoryPersonStrategies(current.PersonStrategies)
+	actions := append([]model.ConfiguredAction(nil), existing...)
 	used := make(map[string]bool)
+	for _, action := range existing {
+		used[string(action.Action)] = true
+	}
+	changed := false
 	for _, group := range configuration.Groups {
 		for _, node := range group.Nodes {
-			if node.LineBlocked || node.Status == "configured" {
+			if node.LineBlocked || configuredNodes[node.Key] {
 				continue
 			}
-			input, ok := autoNodeActionInput(planID, pathID, node, revision, used)
+			for _, person := range node.Persons {
+				if !person.Editable {
+					continue
+				}
+				personStrategies[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
+				changed = true
+			}
+			action, ok := autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
 			if !ok {
 				continue
 			}
-			result, saveErr := s.SaveActionConfiguration(ctx, planID, pathID, node.Key, autoConfigureIdempotencyKey(planID, pathID, node.Key, revision), input)
-			if saveErr != nil {
-				return saveErr
+			used[string(action.Action)] = true
+			merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{action}, node.Key, analysis.graph, analysis.pathAnalysis)
+			if mergeErr != nil {
+				continue
 			}
-			revision = result.Revision
+			actions = merged
+			changed = true
 		}
 	}
-	return nil
+	if !changed {
+		return nil
+	}
+	compiled, compileErr := compilePathActions(actions, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation))
+	if compileErr != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "自动动作配置无法编译为可恢复场景"}
+	}
+	return s.persistAutoConfiguredActions(ctx, pathID, current, compiled, personStrategies)
 }
 
-// autoNodeActionInput 组装一个节点的自动配置请求；没有可配置人员也没有可用动作时返回 false。
-func autoNodeActionInput(planID, pathID uint64, node model.PathConfigNode, revision uint64, used map[string]bool) (model.ActionConfigurationInput, bool) {
-	persons := make([]model.PathConfigPersonStrategyInput, 0, len(node.Persons))
-	for _, person := range node.Persons {
-		if !person.Editable {
-			continue
+// persistAutoConfiguredActions 用与手工保存相同的落盘规则一次性写入自动配置结果。
+func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pathID uint64, current repository.HistoryPathConfigRecord, compiled scenario.Result, personStrategies map[string]model.PathConfigPersonStrategyInput) error {
+	nextActionRevision := current.ActionRevision + 1
+	for index := range compiled.Actions {
+		compiled.Actions[index].Revision = nextActionRevision
+	}
+	actionJSON, err := json.Marshal(compiled.Actions)
+	if err != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作配置无法编码"}
+	}
+	stepJSON, err := json.Marshal(compiled.Steps)
+	if err != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作场景无法编码"}
+	}
+	issueJSON, err := mergeActionConfigurationIssues(current.Issues, compiled.Issues)
+	if err != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作问题无法编码"}
+	}
+	personJSON, err := json.Marshal(personStrategies)
+	if err != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "人员策略无法编码"}
+	}
+	latestJSON, err := json.Marshal(map[string]any{"idempotencyKey": "", "actionRevision": nextActionRevision})
+	if err != nil {
+		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "幂等结果无法编码"}
+	}
+	record := current
+	record.PathID = pathID
+	record.IdempotencyKey = ""
+	record.UserActions = actionJSON
+	record.CompiledSteps = stepJSON
+	record.Issues = issueJSON
+	record.PersonStrategies = personJSON
+	record.LatestIdempotency = latestJSON
+	record.ActionRevision = nextActionRevision
+	record.NodeRevision = current.NodeRevision + 1
+	record.Revision = current.Revision + 1
+	record.ConfigStatus = actionConfigStatus(len(compiled.Actions))
+	record.NodeStatus = record.ConfigStatus
+	if strings.TrimSpace(record.SourceMode) == "" {
+		record.SourceMode = model.HistorySourceModeNone
+	}
+	if strings.TrimSpace(record.RuntimeType) == "" {
+		record.RuntimeType = string(target.FormRenderTypeUnknown)
+	}
+	if strings.TrimSpace(record.DataStatus) == "" {
+		record.DataStatus = model.HistoryDataStatusEmpty
+	}
+	for _, empty := range []*[]byte{&record.ConfirmedNodeKeys, &record.BranchPatches} {
+		if len(*empty) == 0 {
+			*empty = []byte(`[]`)
 		}
-		persons = append(persons, autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key)))
 	}
-	action, found := autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
-	actions := make([]model.ConfiguredAction, 0, 1)
-	if found {
-		used[string(action.Action)] = true
-		actions = append(actions, action)
+	for _, empty := range []*[]byte{&record.EffectiveFormData, &record.RuntimeValidation} {
+		if len(*empty) == 0 {
+			*empty = []byte(`{}`)
+		}
 	}
-	if len(persons) == 0 && len(actions) == 0 {
-		return model.ActionConfigurationInput{}, false
+	if _, err := s.historyConfigStore.SavePathConfig(ctx, record, current.Revision, s.now().UTC()); err != nil {
+		return mapHistoryWorkspaceStoreError(err)
 	}
-	return model.ActionConfigurationInput{Revision: revision, Persons: persons, Actions: actions}, true
+	return nil
 }
 
 // autoNodeAction 在节点可用动作里按覆盖优先、其次确定性种子挑一个动作。
@@ -827,13 +915,6 @@ func autoConfigureSeed(planID, pathID uint64, token string) uint64 {
 func autoConfigureActionKey(nodeKey, kind string) string {
 	digest := sha256.Sum256([]byte("auto-action:" + nodeKey + ":" + kind))
 	return hex.EncodeToString(digest[:16])
-}
-
-// autoConfigureIdempotencyKey 由节点键和当前修订派生 UUID 形态幂等键，重试不会重复写入。
-func autoConfigureIdempotencyKey(planID, pathID uint64, nodeKey string, revision uint64) string {
-	digest := sha256.Sum256([]byte(fmt.Sprintf("auto-save:%d:%d:%s:%d", planID, pathID, nodeKey, revision)))
-	value := hex.EncodeToString(digest[:16])
-	return fmt.Sprintf("%s-%s-4%s-8%s-%s", value[0:8], value[8:12], value[13:16], value[17:20], value[20:32])
 }
 
 // AutoNodeActionForTest 暴露自动动作选择，供 test 目录下的定向用例锁定覆盖与可复现行为。
