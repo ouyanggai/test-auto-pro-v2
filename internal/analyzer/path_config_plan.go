@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/engine/actioncatalog"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -194,39 +195,214 @@ func sameStrings(left, right []string) bool {
 // actionConfiguration 投影当前目标节点的可配置动作目录；每一项仅代表一次真实到达后的一个动作。
 func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind string, node *target.FlowNodeTemplate, persons []model.PathConfigPerson) model.PathConfigActionConfiguration {
 	result := model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{}, Actions: []model.PathConfigConfiguredAction{}}
-	validationTarget := PathConfigNodeTarget{NodeID: nodeID, Name: nodeName, Person: p.personTargets[nodeID], ActionPersons: map[string]*PathConfigPersonTarget{}, ActionKinds: map[string]bool{}}
+	scope := nodeActionScope(nodeKind)
+	validationTarget := PathConfigNodeTarget{
+		NodeID: nodeID, Name: nodeName, Scope: scope, Person: p.personTargets[nodeID],
+		ActionPersons: map[string]*PathConfigPersonTarget{}, ActionKinds: map[string]bool{},
+		Catalog: []model.ActionCatalogItem{},
+	}
 	for _, person := range persons {
 		if person.Mode == "review" || person.Affected {
 			validationTarget.Blockers = append(validationTarget.Blockers, model.PathConfigAffectedItem{Kind: "person", Name: person.Title, Reason: firstNonEmptyPathConfig(person.Note, person.Detail)})
 		}
 	}
-	appendAction := func(kind, label, description string, person *model.PathConfigPerson, personTarget *PathConfigPersonTarget) {
-		result.Catalog = append(result.Catalog, model.PathConfigActionCatalogItem{Kind: kind, Label: label, Description: description, Enabled: true, RequiresPerson: person != nil, Person: person})
-		validationTarget.ActionKinds[kind] = true
-		if personTarget != nil {
-			validationTarget.ActionPersons[kind] = personTarget
-		}
-	}
 	switch nodeKind {
 	case "start":
 		result.Base = &model.PathConfigActionBase{Kind: "submit", Label: "提交", Detail: "发起节点固定提交"}
-		appendAction("save_draft", "保存草稿", "发起端保存草稿，不创建待办或推进流程。", nil, nil)
 	case "common", "synergy":
 		result.Base = &model.PathConfigActionBase{Kind: "approve", Label: "同意", Detail: "系统默认同意"}
-		appendAction("reject", "不同意", "不同意后回到发起人；重新提交会重新解析条件、并行和人员。", nil, nil)
-		appendAction("storage_form_data", "暂存当前表单", "暂存不推进待办，不能改变当前节点。", nil, nil)
-		if previousID, _ := p.uniquePreviousBusinessNode(nodeID); previousID != "" {
-			appendAction("rollback_previous", "回退上一步", "引擎只会回到真实上一待办，不能指定其他目标。", nil, nil)
-		}
-		if person, personTarget := addSignNodePersonConfig(nodeID, node); person != nil && personTarget != nil {
-			appendAction("add_sign", "加签", "新增审批节点；不能加入静态循环。", person, personTarget)
-		}
 	}
+	actionPersons := map[model.ActionKey]*model.PathConfigPerson{}
+	if person, personTarget := addSignNodePersonConfig(nodeID, node); person != nil && personTarget != nil {
+		actionPersons[model.ActionAddSign] = person
+		validationTarget.ActionPersons[string(model.ActionAddSign)] = personTarget
+	}
+	ctx, previousReason := p.nodeActionContext(nodeID, nodeKind, node)
+	result.Catalog = projectActionCatalog(ctx, scope, actionPersons, previousReason, &validationTarget)
 	if len(validationTarget.ActionKinds) == 0 {
 		return result
 	}
 	p.validation.NodeTokens[PathConfigNodeToken(nodeID)] = validationTarget
 	return result
+}
+
+// instanceActionConfiguration 投影实例级动作容器；这些动作不绑定语义节点，由场景编译器排在节点动作之后。
+func (p *pathConfigProjection) instanceActionConfiguration() model.PathConfigActionConfiguration {
+	result := model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{}, Actions: []model.PathConfigConfiguredAction{}}
+	validationTarget := PathConfigNodeTarget{
+		Name: "实例动作", Scope: model.ActionScopeInstance,
+		ActionPersons: map[string]*PathConfigPersonTarget{}, ActionKinds: map[string]bool{},
+		Catalog: []model.ActionCatalogItem{},
+	}
+	result.Catalog = projectActionCatalog(instanceActionContext(), model.ActionScopeInstance, nil, "", &validationTarget)
+	if len(validationTarget.ActionKinds) == 0 {
+		return result
+	}
+	result.Note = "实例动作作用于同一主流程实例，不绑定语义节点。"
+	p.validation.NodeTokens[PathConfigInstanceActionKey()] = validationTarget
+	return result
+}
+
+// projectActionCatalog 使用动作目录门禁服务投影当前上下文可编排的动作，并登记保存时复用的门禁事实。
+func projectActionCatalog(
+	ctx model.ActionContext,
+	scope model.ActionScope,
+	persons map[model.ActionKey]*model.PathConfigPerson,
+	previousReason string,
+	validationTarget *PathConfigNodeTarget,
+) []model.PathConfigActionCatalogItem {
+	items := actioncatalog.Build(ctx)
+	result := make([]model.PathConfigActionCatalogItem, 0, len(items))
+	for _, item := range items {
+		if item.SystemOnly {
+			// 系统自动语义只在真实系统节点上只读展示，不进入可保存目录。
+			if item.Enabled {
+				result = append(result, projectedCatalogItem(item, nil, systemActionRuntimeNote()))
+			}
+			continue
+		}
+		if !catalogScopeAllowed(scope, item.Scope) {
+			continue
+		}
+		item = resolveOrderDependentGate(item, ctx)
+		person := persons[item.Action]
+		result = append(result, projectedCatalogItem(item, person, actionRuntimeNote(item.Action, previousReason)))
+		validationTarget.Catalog = append(validationTarget.Catalog, item)
+		if item.Enabled {
+			validationTarget.ActionKinds[string(item.Action)] = true
+		}
+	}
+	return result
+}
+
+// nodeActionScope 按真实节点类型确定该配置位置可编排的动作作用域。
+func nodeActionScope(nodeKind string) model.ActionScope {
+	switch strings.TrimSpace(nodeKind) {
+	case "start":
+		return model.ActionScopeInitiator
+	case "common", "synergy":
+		return model.ActionScopeTask
+	default:
+		return ""
+	}
+}
+
+// catalogScopeAllowed 判断动作作用域是否属于当前配置位置；已办恢复与当前待办共用同一审批节点。
+func catalogScopeAllowed(context, item model.ActionScope) bool {
+	switch context {
+	case model.ActionScopeInitiator:
+		return item == model.ActionScopeInitiator
+	case model.ActionScopeTask:
+		return item == model.ActionScopeTask || item == model.ActionScopeCompletedTask
+	case model.ActionScopeInstance:
+		return item == model.ActionScopeInstance
+	default:
+		return false
+	}
+}
+
+// nodeActionContext 投影“按当前路径真实到达该节点时”的目标上下文；未证明的事实一律保持 false。
+func (p *pathConfigProjection) nodeActionContext(nodeID, nodeKind string, node *target.FlowNodeTemplate) (model.ActionContext, string) {
+	nodeKey, kind := PathConfigNodeToken(nodeID), strings.TrimSpace(nodeKind)
+	switch kind {
+	case "start":
+		return model.ActionContext{FlowSource: "new", CurrentNodeKey: nodeKey, CurrentNodeType: kind, IsInitiator: true}, ""
+	case "common", "synergy":
+		ctx := model.ActionContext{
+			FlowSource: "pending", InstanceStatus: "run", CurrentNodeKey: nodeKey, CurrentNodeType: kind,
+			HasCurrentTask: true, InstanceVisible: true, HasCompletedTask: true,
+			HasEditableProxy: node != nil && len(node.AddSignIssues) == 0 && len(node.AddSignCandidates) > 0,
+			CanSwitchActor:   nodeActorSwitchable(node),
+		}
+		previousID, previousReason := p.singlePreviousBusinessNode(nodeID)
+		if previousID != "" {
+			previousType := strings.TrimSpace(p.graphNodes[previousID].Type)
+			ctx.PreviousTaskExists, ctx.PreviousNodeType, ctx.PreviousNodeIsStart = true, previousType, previousType == "start"
+		}
+		return ctx, previousReason
+	default:
+		return model.ActionContext{CurrentNodeKey: nodeKey, CurrentNodeType: kind}, ""
+	}
+}
+
+// instanceActionContext 投影实例级动作容器上下文：主实例已发起、运行中且由当前账号可见。
+func instanceActionContext() model.ActionContext {
+	return model.ActionContext{
+		FlowSource: "pending", InstanceStatus: "run", IsInitiator: true,
+		InstanceVisible: true, HasPendingRecipient: true,
+	}
+}
+
+// nodeActorSwitchable 只在目标节点人员目录已完整解析且存在候选时认为可以切换演员。
+func nodeActorSwitchable(node *target.FlowNodeTemplate) bool {
+	if node == nil || node.AuditConfig == nil {
+		return false
+	}
+	return len(node.AuditConfig.Candidates) > 0 && len(node.AuditConfig.ResolutionIssues) == 0
+}
+
+// resolveOrderDependentGate 用“前置动作已执行”的等价上下文重算顺序依赖动作，真实顺序由场景编译器强制。
+func resolveOrderDependentGate(item model.ActionCatalogItem, ctx model.ActionContext) model.ActionCatalogItem {
+	if item.Enabled {
+		return item
+	}
+	variant := ctx
+	switch item.Action {
+	case model.ActionResubmit:
+		variant.InstanceStatus = "draft"
+	case model.ActionUnfollow:
+		variant.Followed = true
+	default:
+		return item
+	}
+	for _, candidate := range actioncatalog.Build(variant) {
+		if candidate.Action == item.Action {
+			return candidate
+		}
+	}
+	return item
+}
+
+// actionRuntimeNote 说明动作的顺序前置条件与运行时重读要求，页面不能只显示可用性。
+func actionRuntimeNote(action model.ActionKey, previousReason string) string {
+	switch action {
+	case model.ActionResubmit:
+		return "重新提交必须排在保存草稿、不同意或撤回之后，否则保存时会被阻止。"
+	case model.ActionUnfollow:
+		return "取消关注必须排在关注之后，否则保存时会被阻止。"
+	case model.ActionRetrieve:
+		return "取回需要当前节点已有已办任务；缺少已办事实时编译器会插入一次准备同意。"
+	case model.ActionTransfer:
+		return "移交演员只能来自目标运行时实时受限候选，保存时只记录演员策略。"
+	case model.ActionAddSign:
+		return "加签必要时会创建实例私有代理并重映射任务，后续步骤必须重读代理与待办。"
+	case model.ActionRollback:
+		if strings.TrimSpace(previousReason) != "" {
+			return strings.TrimSpace(previousReason)
+		}
+		return "回退只会回到目标引擎的真实直接前一待办，不能指定其他节点。"
+	case model.ActionForward:
+		return "转发创建独立辅助流程，主实例游标不移动。"
+	default:
+		return ""
+	}
+}
+
+// systemActionRuntimeNote 说明系统自动语义只用于只读核对。
+func systemActionRuntimeNote() string {
+	return "系统自动节点由目标引擎执行，工具侧只读核对，不能编排。"
+}
+
+// projectedCatalogItem 把动作门禁结果投影为配置项，不携带目标实例、任务或代理标识。
+func projectedCatalogItem(item model.ActionCatalogItem, person *model.PathConfigPerson, note string) model.PathConfigActionCatalogItem {
+	return model.PathConfigActionCatalogItem{
+		Kind: string(item.Action), Category: string(item.Category), Scope: string(item.Scope),
+		Label: item.Label, Description: item.Description, Enabled: item.Enabled, DisabledReason: item.DisabledReason,
+		RequiresPerson: person != nil, Person: person, TargetOperation: item.TargetOperation,
+		Parameters: item.Parameters, ParameterDetails: item.ParameterDetails, Preconditions: item.Preconditions,
+		ExpectedEffect: item.ExpectedEffect, RequiresReload: item.RequiresReload, ReloadRequirements: item.ReloadRequirements,
+		SystemOnly: item.SystemOnly, SystemNodeType: item.SystemNodeType, RuntimeNote: note,
+	}
 }
 
 // addSignNodePersonConfig 使用目标新审批节点人员目录生成加签人员策略。
@@ -274,8 +450,8 @@ func actionCandidatePersonConfig(nodeID, actionKind, title, detail string, candi
 	return person, personTarget
 }
 
-// uniquePreviousBusinessNode 只接受当前已选路径上的唯一真实业务前驱，发起节点永不作为回退目标。
-func (p *pathConfigProjection) uniquePreviousBusinessNode(nodeID string) (string, string) {
+// singlePreviousBusinessNode 只接受当前已选路径上的唯一真实业务前驱；发起节点也返回，由动作门禁决定能否回退。
+func (p *pathConfigProjection) singlePreviousBusinessNode(nodeID string) (string, string) {
 	queue, seen, candidates := []string{nodeID}, map[string]bool{nodeID: true}, map[string]bool{}
 	for len(queue) > 0 {
 		current := queue[0]
@@ -298,9 +474,6 @@ func (p *pathConfigProjection) uniquePreviousBusinessNode(nodeID string) (string
 		return "", "无法从当前路径确定唯一真实上一待办"
 	}
 	for candidateID := range candidates {
-		if p.graphNodes[candidateID].Type == "start" {
-			return "", "上一步为发起人，请使用不同意"
-		}
 		return candidateID, ""
 	}
 	return "", "无法从当前路径确定唯一真实上一待办"
@@ -314,24 +487,4 @@ func firstNonEmptyPathConfig(values ...string) string {
 		}
 	}
 	return "当前配置需要重新核对"
-}
-
-// pathConfigActionLabel 将动作键固定映射为用户可见中文名称。
-func pathConfigActionLabel(kind string) string {
-	switch strings.TrimSpace(kind) {
-	case "submit":
-		return "提交"
-	case "approve":
-		return "同意"
-	case "reject":
-		return "不同意"
-	case "storage_form_data":
-		return "暂存当前表单"
-	case "rollback_previous":
-		return "回退上一步"
-	case "add_sign":
-		return "加签"
-	default:
-		return "节点动作"
-	}
 }

@@ -73,6 +73,8 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 	lastNodeIndex := -1
 	transferred := false
 	seenCompleted := false
+	resubmitReady := false
+	followed := false
 	for index, action := range actions {
 		position := nodeIndex(sequence, action.NodeKey)
 		if action.NodeKey != "" && position < 0 {
@@ -85,6 +87,9 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
 		if issue := validateRollbackTarget(action, index, position, sequence, nodeTypes); issue != nil {
+			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
+		}
+		if issue := validateActionState(action, index, resubmitReady, followed); issue != nil {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
 		for _, key := range sequence[:boundedIndex(position, len(sequence))] {
@@ -103,6 +108,17 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			seenCompleted = true
 		}
 		steps = appendStep(steps, userStep(action))
+		switch action.Action {
+		case model.ActionSaveDraft, model.ActionReject, model.ActionWithdraw:
+			// 这三个动作让目标实例进入草稿、驳回或撤回状态，为后续重新提交提供来源。
+			resubmitReady = true
+		case model.ActionResubmit:
+			resubmitReady = false
+		case model.ActionFollow:
+			followed = true
+		case model.ActionUnfollow:
+			followed = false
+		}
 		if action.Action == model.ActionApprove {
 			seenCompleted = true
 		}
@@ -119,11 +135,13 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			if nextAction := nextAction(actions, index); nextAction != nil && nextAction.Action != model.ActionResubmit {
 				// 草稿后仍有动作时必须重新提交同一主实例，不能把草稿直接当作运行态待办。
 				steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "草稿保存后仍有后续动作", "目标实例按当前原始表单值重新提交并解析当前路径"))
+				resubmitReady = false
 			}
 		}
 		if action.Action == model.ActionReject || action.Action == model.ActionWithdraw {
 			if nextAction := nextAction(actions, index); nextAction != nil && nextAction.Action != model.ActionResubmit {
 				steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "驳回或撤回后重新提交", "目标实例恢复 run 后重新解析当前路径"))
+				resubmitReady = false
 			}
 		}
 		if action.Action == model.ActionApprove {
@@ -231,7 +249,7 @@ func normalizeInput(input Input) ([]model.ConfiguredAction, map[string]model.Flo
 }
 
 // validateAction 校验动作键、作用域、节点类型和已知目录门禁，不接受系统动作作为用户配置。
-func validateAction(action model.ConfiguredAction, index int, nodes map[string]string, catalog map[model.ActionKey]model.ActionCatalogItem) *model.ActionConfigurationIssue {
+func validateAction(action model.ConfiguredAction, index int, nodes map[string]string, catalog map[catalogKey]model.ActionCatalogItem) *model.ActionConfigurationIssue {
 	if action.Action == "" || action.Action == model.ActionSystemAutomatic {
 		return issue(index, action, "ACTION_NOT_CONFIGURABLE", "系统自动语义只能只读展示，不能作为用户动作保存")
 	}
@@ -267,7 +285,7 @@ func validateAction(action model.ConfiguredAction, index int, nodes map[string]s
 		return issue(index, action, "ACTION_PARAMETER_TARGET_ID", "动作参数不能携带目标实例、任务、代理或人员临时标识："+parameter)
 	}
 	if len(catalog) > 0 {
-		catalogItem, exists := catalog[action.Action]
+		catalogItem, exists := catalogGate(catalog, action)
 		if !exists {
 			return issue(index, action, "ACTION_NOT_IN_CATALOG", "动作未出现在当前实时动作目录，不能绕过门禁保存")
 		}
@@ -277,6 +295,25 @@ func validateAction(action model.ConfiguredAction, index int, nodes map[string]s
 				reason = "当前动作门禁未通过"
 			}
 			return issue(index, action, "ACTION_DISABLED", reason)
+		}
+	}
+	return nil
+}
+
+// validateActionState 阻止目标状态必然不满足的顺序：没有来源的重新提交与关注状态矛盾的动作。
+func validateActionState(action model.ConfiguredAction, index int, resubmitReady, followed bool) *model.ActionConfigurationIssue {
+	switch action.Action {
+	case model.ActionResubmit:
+		if !resubmitReady {
+			return issue(index, action, "ACTION_RESUBMIT_WITHOUT_SOURCE", "重新提交必须排在保存草稿、不同意或撤回之后，目标实例才会进入可重新提交状态")
+		}
+	case model.ActionUnfollow:
+		if !followed {
+			return issue(index, action, "ACTION_UNFOLLOW_WITHOUT_FOLLOW", "取消关注必须排在关注之后，当前用户尚未关注该实例")
+		}
+	case model.ActionFollow:
+		if followed {
+			return issue(index, action, "ACTION_FOLLOW_ALREADY_ACTIVE", "当前用户已经关注该实例，不能重复关注")
 		}
 	}
 	return nil
@@ -338,13 +375,28 @@ func actionScope(action model.ActionKey) (model.ActionScope, bool) {
 	}
 }
 
+// catalogKey 用语义节点键与动作键共同定位门禁项；实例动作与整路径回退目录使用空节点键。
+type catalogKey struct {
+	node   string
+	action model.ActionKey
+}
+
 // catalogIndex 将可选目录复制为门禁索引，不改变目录顺序或持有调用方切片。
-func catalogIndex(items []model.ActionCatalogItem) map[model.ActionKey]model.ActionCatalogItem {
-	result := make(map[model.ActionKey]model.ActionCatalogItem, len(items))
+func catalogIndex(items []model.ActionCatalogItem) map[catalogKey]model.ActionCatalogItem {
+	result := make(map[catalogKey]model.ActionCatalogItem, len(items))
 	for _, item := range items {
-		result[item.Action] = item
+		result[catalogKey{node: strings.TrimSpace(item.NodeKey), action: item.Action}] = item
 	}
 	return result
+}
+
+// catalogGate 优先按动作所在语义节点取门禁，缺少节点级目录时回退到无节点键目录。
+func catalogGate(catalog map[catalogKey]model.ActionCatalogItem, action model.ConfiguredAction) (model.ActionCatalogItem, bool) {
+	if item, exists := catalog[catalogKey{node: strings.TrimSpace(action.NodeKey), action: action.Action}]; exists {
+		return item, true
+	}
+	item, exists := catalog[catalogKey{action: action.Action}]
+	return item, exists
 }
 
 // userStep 将一条语义动作投影为只读用户步骤，永远不表示目标请求已发送。

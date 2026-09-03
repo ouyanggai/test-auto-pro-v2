@@ -70,10 +70,13 @@ type PathConfigPersonTarget struct {
 type PathConfigNodeTarget struct {
 	NodeID        string
 	Name          string
+	Scope         model.ActionScope
 	Person        *PathConfigPersonTarget
 	ActionPersons map[string]*PathConfigPersonTarget
 	ActionKinds   map[string]bool
-	Blockers      []model.PathConfigAffectedItem
+	// Catalog 是该上下文的动作门禁投影，供保存时编译整条场景，不下发给浏览器以外的目标标识。
+	Catalog  []model.ActionCatalogItem
+	Blockers []model.PathConfigAffectedItem
 }
 
 // PathConfigValidation 是不透明回写键到当前真实节点与字段的内部映射。
@@ -104,6 +107,11 @@ const pathConfigPersonPlanStoragePrefix = "person-plan:"
 // PathConfigNodeToken 生成配置节点与真实流程节点之间的稳定不透明映射键。
 func PathConfigNodeToken(nodeID string) string {
 	return pathConfigToken("node", nodeID, "configuration")
+}
+
+// PathConfigInstanceActionKey 生成实例级动作容器的不透明回写键；实例动作不绑定语义节点。
+func PathConfigInstanceActionKey() string {
+	return pathConfigToken("instance", "configuration", "actions")
 }
 
 // PathConfigPersonToken 生成节点人员选择的不透明回写键。
@@ -189,10 +197,12 @@ func (a *PathConfigAnalyzer) Analyze(
 		return model.PathConfiguration{}, PathConfigValidation{}, err
 	}
 	result := model.PathConfiguration{
-		Path:     model.PathConfigPath{SequenceNo: path.SequenceNo, Name: path.Name},
-		Status:   "configured",
-		Groups:   projection.groups,
-		Warnings: nonNilStrings(projection.warnings),
+		Path:              model.PathConfigPath{SequenceNo: path.SequenceNo, Name: path.Name},
+		Status:            "configured",
+		Groups:            projection.groups,
+		Warnings:          nonNilStrings(projection.warnings),
+		InstanceActionKey: PathConfigInstanceActionKey(),
+		InstanceActions:   projection.instanceActionConfiguration(),
 	}
 	result.Progress, result.NextNodeKey = summarizePathConfigProgress(result.Groups)
 	if projection.affected {
@@ -509,7 +519,7 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 	}
 	hasEnabledAction := false
 	for _, action := range node.ActionConfiguration.Catalog {
-		if action.Enabled {
+		if action.Enabled && !action.SystemOnly {
 			hasEnabledAction = true
 			break
 		}

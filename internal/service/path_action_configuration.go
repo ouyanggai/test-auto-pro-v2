@@ -23,7 +23,7 @@ type PathActionConfigurationService interface {
 
 // GetActionConfiguration 重读当前目标路径并返回已保存动作及其编译场景。
 func (s *PathConfigService) GetActionConfiguration(ctx context.Context, planID, pathID uint64) (model.ActionConfigurationResult, error) {
-	path, _, analysis, stored, found, _, err := s.loadWorkspace(ctx, planID, pathID)
+	path, snapshot, analysis, stored, found, _, err := s.loadWorkspace(ctx, planID, pathID)
 	if err != nil {
 		return model.ActionConfigurationResult{}, err
 	}
@@ -31,7 +31,11 @@ func (s *PathConfigService) GetActionConfiguration(ctx context.Context, planID, 
 	if found {
 		actions = decodeWorkspaceActions(stored.UserActions)
 	}
-	compiled, compileErr := compilePathActions(actions, analysis.graph, analysis.pathAnalysis)
+	validation, err := s.pathActionGates(snapshot, path, analysis, found)
+	if err != nil {
+		return model.ActionConfigurationResult{}, err
+	}
+	compiled, compileErr := compilePathActions(actions, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation))
 	result := actionConfigurationResult(path, stored, compiled)
 	if compileErr != nil {
 		result.Issues = compileIssues(compileErr)
@@ -65,7 +69,11 @@ func (s *PathConfigService) SaveActionConfiguration(ctx context.Context, planID,
 	if found {
 		existing = decodeWorkspaceActions(current.UserActions)
 	}
-	if err := s.validateActionPersons(ctx, snapshot, path, analysis, found, nodeKey, input.Persons, input.Actions); err != nil {
+	validation, err := s.pathActionGates(snapshot, path, analysis, found)
+	if err != nil {
+		return model.ActionConfigurationResult{}, err
+	}
+	if err := validateActionPersons(validation, nodeKey, input.Persons, input.Actions); err != nil {
 		return model.ActionConfigurationResult{}, err
 	}
 	personStrategies := decodeHistoryPersonStrategies(current.PersonStrategies)
@@ -78,7 +86,7 @@ func (s *PathConfigService) SaveActionConfiguration(ctx context.Context, planID,
 	if mergeErr != nil {
 		return model.ActionConfigurationResult{}, mergeErr
 	}
-	compiled, compileErr := compilePathActions(actions, analysis.graph, analysis.pathAnalysis)
+	compiled, compileErr := compilePathActions(actions, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation))
 	if compileErr != nil {
 		result := actionConfigurationResult(path, current, compiled)
 		result.Issues = compileIssues(compileErr)
@@ -164,17 +172,36 @@ func (s *PathConfigService) SaveActionConfiguration(ctx context.Context, planID,
 	return actionConfigurationResult(path, saved, compiled), nil
 }
 
-// validateActionPersons 按当前真实节点的人员候选和人数边界复验动作保存附带的人员策略。
-func (s *PathConfigService) validateActionPersons(ctx context.Context, snapshot target.PathConfigurationSnapshot, path model.ExecutionPath, analysis ownedPathAnalysis, found bool, nodeKey string, persons []model.PathConfigPersonStrategyInput, actions []model.ConfiguredAction) error {
-	if len(persons) == 0 && !actionNeedsPerson(actions) {
-		return nil
-	}
+// pathActionGates 重读当前真实路径的动作门禁与人员目录投影，保存和预览共用同一份事实。
+func (s *PathConfigService) pathActionGates(snapshot target.PathConfigurationSnapshot, path model.ExecutionPath, analysis ownedPathAnalysis, found bool) (analyzer.PathConfigValidation, error) {
 	if s.configAnalyzer == nil {
-		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "人员策略校验服务暂不可用"}
+		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "动作门禁校验服务暂不可用"}
 	}
 	_, validation, err := s.configAnalyzer.Analyze(analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis, snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{}, found)
 	if err != nil {
-		return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略无法核对"}
+		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径动作门禁无法核对"}
+	}
+	return validation, nil
+}
+
+// actionCatalogGates 汇总全部配置位置的动作门禁项，按稳定键排序供场景编译器逐条复验。
+func actionCatalogGates(validation analyzer.PathConfigValidation) []model.ActionCatalogItem {
+	keys := make([]string, 0, len(validation.NodeTokens))
+	for key := range validation.NodeTokens {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	items := []model.ActionCatalogItem{}
+	for _, key := range keys {
+		items = append(items, validation.NodeTokens[key].Catalog...)
+	}
+	return items
+}
+
+// validateActionPersons 按当前真实节点的人员候选和人数边界复验动作保存附带的人员策略。
+func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey string, persons []model.PathConfigPersonStrategyInput, actions []model.ConfiguredAction) error {
+	if len(persons) == 0 && !actionNeedsPerson(actions) {
+		return nil
 	}
 	target, ok := validation.NodeTokens[strings.TrimSpace(nodeKey)]
 	if !ok {
@@ -297,10 +324,20 @@ func (s *PathConfigService) applyHistoryActionProjection(ctx context.Context, pa
 			node.ActionConfiguration.Actions = []model.PathConfigConfiguredAction{}
 		}
 	}
+	configuration.InstanceActions.Actions = []model.PathConfigConfiguredAction{}
 	for _, action := range actions {
-		node := byNode[strings.TrimSpace(action.NodeKey)]
+		key := strings.TrimSpace(action.NodeKey)
+		if key == "" {
+			// 实例动作作用于同一主实例，投影回独立容器而不是伪造节点归属。
+			configuration.InstanceActions.Actions = append(configuration.InstanceActions.Actions, model.PathConfigConfiguredAction{
+				Key: action.Key, Kind: actionDisplayKind(action.Action), Label: actionDisplayLabel(action.Action),
+				Parameters: cloneActionParameterMap(action.Parameters), ActorPolicy: action.ActorPolicy, Note: action.Note,
+			})
+			continue
+		}
+		node := byNode[key]
 		if node == nil {
-			// 实例级动作没有节点容器，仍由编译场景端点完整返回；节点工作台不伪造归属。
+			// 节点已不在当前路径上时不伪造归属，由编译场景端点完整返回。
 			continue
 		}
 		node.ActionConfiguration.Actions = append(node.ActionConfiguration.Actions, model.PathConfigConfiguredAction{
@@ -405,10 +442,16 @@ func actionDisplayLabel(action model.ActionKey) string {
 // mergeNodeActions 将当前节点动作替换为本次独立记录并保留其他节点动作。
 func mergeNodeActions(existing, submitted []model.ConfiguredAction, nodeKey string, graph model.FlowGraph, analysis model.ExecutionPathAnalysis) ([]model.ConfiguredAction, error) {
 	nodeKey = strings.TrimSpace(nodeKey)
+	// 实例动作容器使用独立不透明键保存，落盘时统一为空节点键，避免把实例动作绑定到语义节点。
+	instanceContainer := nodeKey == analyzer.PathConfigInstanceActionKey()
+	storedKey := nodeKey
+	if instanceContainer {
+		storedKey = ""
+	}
 	merged := make([]model.ConfiguredAction, 0, len(existing)+len(submitted))
 	submittedOrders := make(map[int]string, len(submitted))
 	for _, action := range existing {
-		if strings.TrimSpace(action.NodeKey) == nodeKey {
+		if strings.TrimSpace(action.NodeKey) == storedKey {
 			continue
 		}
 		merged = append(merged, cloneConfiguredAction(action))
@@ -425,10 +468,17 @@ func mergeNodeActions(existing, submitted []model.ConfiguredAction, nodeKey stri
 			submittedOrders[action.Order] = action.Key
 		}
 		if action.Scope == model.ActionScopeInstance {
-			if strings.TrimSpace(action.NodeKey) != "" {
+			if !instanceContainer {
+				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作只能在实例动作容器保存", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作不属于当前语义节点"}}}
+			}
+			if key := strings.TrimSpace(action.NodeKey); key != "" && key != nodeKey {
 				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作不能绑定节点", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作必须使用空节点键"}}}
 			}
+			action.NodeKey = ""
 		} else {
+			if instanceContainer {
+				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作容器只能保存实例作用域动作", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "节点动作必须在对应语义节点保存"}}}
+			}
 			if strings.TrimSpace(action.NodeKey) == "" {
 				action.NodeKey = nodeKey
 			}
@@ -456,10 +506,10 @@ func mergeNodeActions(existing, submitted []model.ConfiguredAction, nodeKey stri
 	return merged, nil
 }
 
-// compilePathActions 将真实图节点转换为不透明语义键并调用纯场景编译器。
-func compilePathActions(actions []model.ConfiguredAction, graph model.FlowGraph, analysis model.ExecutionPathAnalysis) (scenario.Result, error) {
+// compilePathActions 将真实图节点转换为不透明语义键并调用纯场景编译器，同时带上当前动作门禁。
+func compilePathActions(actions []model.ConfiguredAction, graph model.FlowGraph, analysis model.ExecutionPathAnalysis, catalog []model.ActionCatalogItem) (scenario.Result, error) {
 	nodes, sequence := semanticScenarioNodes(graph, analysis)
-	return scenario.Compile(scenario.Input{Actions: actions, Nodes: nodes, NodeSequence: sequence, FinalNodeKey: lastString(sequence)})
+	return scenario.Compile(scenario.Input{Actions: actions, Nodes: nodes, NodeSequence: sequence, FinalNodeKey: lastString(sequence), Catalog: catalog})
 }
 
 // semanticScenarioNodes 为场景编译器建立目标节点到工具语义键的内部索引。

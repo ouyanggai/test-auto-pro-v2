@@ -8,14 +8,16 @@ type PathConfigPath struct {
 
 // PathConfiguration 是节点人员与动作配置工作台模型；表单原始数据由 F-012 数据工作区独立承载。
 type PathConfiguration struct {
-	Path         PathConfigPath     `json:"path"`
-	Revision     uint64             `json:"revision"`
-	NodeRevision uint64             `json:"nodeRevision"`
-	Status       string             `json:"status"`
-	Progress     PathConfigProgress `json:"progress"`
-	NextNodeKey  string             `json:"nextNodeKey"`
-	Groups       []PathConfigGroup  `json:"groups"`
-	Warnings     []string           `json:"warnings"`
+	Path              PathConfigPath                `json:"path"`
+	Revision          uint64                        `json:"revision"`
+	NodeRevision      uint64                        `json:"nodeRevision"`
+	Status            string                        `json:"status"`
+	Progress          PathConfigProgress            `json:"progress"`
+	NextNodeKey       string                        `json:"nextNodeKey"`
+	Groups            []PathConfigGroup             `json:"groups"`
+	Warnings          []string                      `json:"warnings"`
+	InstanceActionKey string                        `json:"instanceActionKey"`
+	InstanceActions   PathConfigActionConfiguration `json:"instanceActions"`
 }
 
 // PathConfigActionBase 是系统自动提供且不可编辑的基础动作。
@@ -216,15 +218,27 @@ type PathConfigConfiguredAction struct {
 	Note        string                         `json:"note,omitempty"`
 }
 
-// PathConfigActionCatalogItem 说明当前节点可静态证明合法的动作及必要参数。
+// PathConfigActionCatalogItem 说明当前上下文的目标动作、真实门禁结论及编排所需事实。
 type PathConfigActionCatalogItem struct {
-	Kind           string            `json:"kind"`
-	Label          string            `json:"label"`
-	Description    string            `json:"description"`
-	Enabled        bool              `json:"enabled"`
-	DisabledReason string            `json:"disabledReason"`
-	RequiresPerson bool              `json:"requiresPerson"`
-	Person         *PathConfigPerson `json:"person,omitempty"`
+	Kind               string               `json:"kind"`
+	Category           string               `json:"category"`
+	Scope              string               `json:"scope"`
+	Label              string               `json:"label"`
+	Description        string               `json:"description"`
+	Enabled            bool                 `json:"enabled"`
+	DisabledReason     string               `json:"disabledReason"`
+	RequiresPerson     bool                 `json:"requiresPerson"`
+	Person             *PathConfigPerson    `json:"person,omitempty"`
+	TargetOperation    string               `json:"targetOperation"`
+	Parameters         []string             `json:"parameters"`
+	ParameterDetails   []ActionParameter    `json:"parameterDetails"`
+	Preconditions      []ActionPrecondition `json:"preconditions"`
+	ExpectedEffect     string               `json:"expectedEffect"`
+	RequiresReload     bool                 `json:"requiresReload"`
+	ReloadRequirements []string             `json:"reloadRequirements"`
+	SystemOnly         bool                 `json:"systemOnly"`
+	SystemNodeType     string               `json:"systemNodeType"`
+	RuntimeNote        string               `json:"runtimeNote"`
 }
 
 // PathConfigConfiguredActionInput 是浏览器保存的一条独立动作记录，人员和目标仍为不透明键。
