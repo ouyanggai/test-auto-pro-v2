@@ -223,7 +223,9 @@ type HistoryRuntimeValidation struct {
 // HistoryKeyField 是决定当前执行路径的条件字段投影：只包含目标条件声明的真实字段路径、
 // 现值、目标真实候选值和它影响的分支，不包含目标内部标识。
 type HistoryKeyField struct {
-	Path       string   `json:"path"`
+	Path string `json:"path"`
+	// Label 是目标表单字段的中文名称，缺失时前端回退显示字段路径。
+	Label      string   `json:"label,omitempty"`
 	HasCurrent bool     `json:"hasCurrent"`
 	Current    any      `json:"current,omitempty"`
 	Candidates []any    `json:"candidates,omitempty"`

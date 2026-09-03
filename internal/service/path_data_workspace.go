@@ -55,7 +55,7 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	}
 	// 来源配置行可能只保存了来源模式而没有有效数据；只有 empty 或未创建配置时才初始化快照，避免把用户明确保存的空对象改回历史正文。
 	if source.snapshot != nil && (!found || strings.TrimSpace(stored.DataStatus) == "" || stored.DataStatus == model.HistoryDataStatusEmpty) {
-		values = cloneWorkspaceMap(source.snapshot.RawFormData)
+		values = clearAuditInfoValues(cloneWorkspaceMap(source.snapshot.RawFormData))
 		overlay := branchoverlay.Apply(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: values})
 		if overlay.Status == branchoverlay.StatusReady {
 			values = overlay.Values
@@ -88,18 +88,52 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
 		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template), EffectiveFormData: values,
 		BranchPatches: patches, RuntimeValidation: runtimeValidation, Issues: issues,
-		KeyFields: workspaceKeyFields(snapshot.Tree, path.Choices, values),
+		KeyFields: workspaceKeyFields(snapshot, path.Choices, values),
 		Actions:   decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
 	}, nil
 }
 
+// targetAuditInfoModelPrefix 是目标表单里自动回填审批意见的模型前缀（auto_audit_info_1、auto_audit_info_2 …）。
+// 配置阶段的表单永远处于发起态，历史实例上的审批意见不属于这一次要提交的业务数据。
+const targetAuditInfoModelPrefix = "auto_audit_info_"
+
+// clearAuditInfoValues 清空历史业务数据里的审批意见字段，保留键与结构，不生成任何内容。
+func clearAuditInfoValues(values map[string]any) map[string]any {
+	for key, value := range values {
+		if !strings.HasPrefix(strings.TrimSpace(key), targetAuditInfoModelPrefix) {
+			continue
+		}
+		if _, isString := value.(string); isString || value == nil {
+			values[key] = ""
+			continue
+		}
+		delete(values, key)
+	}
+	return values
+}
+
+// keyFieldLabels 从目标表单字段详情建立"字段路径 → 中文名称"映射，只用目标原文，不猜测。
+func keyFieldLabels(snapshot target.PathConfigurationSnapshot) map[string]string {
+	labels := make(map[string]string, len(snapshot.FormFields))
+	for _, field := range snapshot.FormFields {
+		path := strings.TrimSpace(field.EnglishName)
+		name := strings.TrimSpace(field.Name)
+		if path == "" || name == "" {
+			continue
+		}
+		labels[path] = name
+	}
+	return labels
+}
+
 // workspaceKeyFields 投影决定当前路径的条件字段，让界面直接告诉用户先核对哪些字段。
-func workspaceKeyFields(tree *target.FlowNodeTemplate, choices []model.ExecutionPathChoice, values map[string]any) []model.HistoryKeyField {
-	fields := branchoverlay.KeyFields(branchoverlay.Input{Tree: tree, Choices: choices, Values: values})
+func workspaceKeyFields(snapshot target.PathConfigurationSnapshot, choices []model.ExecutionPathChoice, values map[string]any) []model.HistoryKeyField {
+	fields := branchoverlay.KeyFields(branchoverlay.Input{Tree: snapshot.Tree, Choices: choices, Values: values})
+	labels := keyFieldLabels(snapshot)
 	result := make([]model.HistoryKeyField, 0, len(fields))
 	for _, field := range fields {
 		result = append(result, model.HistoryKeyField{
-			Path: field.Path, HasCurrent: field.HasCurrent, Current: field.Current,
+			Path: field.Path, Label: labels[field.Path], HasCurrent: field.HasCurrent, Current: field.Current,
 			Candidates: field.Candidates, Operators: field.Operators, Branches: field.Branches, Decisive: field.Decisive,
 		})
 	}
@@ -680,4 +714,14 @@ func affectedFromOverlayIssues(issues []branchoverlay.Issue) []model.PathConfigA
 		result = append(result, model.PathConfigAffectedItem{Kind: "form", Name: name, Reason: issue.Message})
 	}
 	return result
+}
+
+// ClearAuditInfoValuesForTest 暴露审批意见清理，供 test 目录下的定向用例锁定行为。
+func ClearAuditInfoValuesForTest(values map[string]any) map[string]any {
+	return clearAuditInfoValues(values)
+}
+
+// KeyFieldLabelsForTest 暴露字段中文名称映射，供 test 目录下的定向用例锁定行为。
+func KeyFieldLabelsForTest(snapshot target.PathConfigurationSnapshot) map[string]string {
+	return keyFieldLabels(snapshot)
 }

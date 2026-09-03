@@ -447,7 +447,7 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 		return result
 	}
 	if s.target == nil {
-		result.EffectiveFormData = snapshot.RawFormData
+		result.EffectiveFormData = clearAuditInfoValues(cloneWorkspaceMap(snapshot.RawFormData))
 		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_TARGET_UNAVAILABLE", Message: "目标流程结构暂时无法读取，不能复验当前路径", Blocking: true})
 		return result
 	}
@@ -458,18 +458,19 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 	}
 	current, err := s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
 	if err != nil {
-		result.EffectiveFormData = snapshot.RawFormData
+		result.EffectiveFormData = clearAuditInfoValues(cloneWorkspaceMap(snapshot.RawFormData))
 		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_TARGET_READ_FAILED", Message: "目标流程结构暂时无法读取", Blocking: true})
 		return result
 	}
 	if snapshot.RuntimeType != string(current.RenderType) {
-		result.EffectiveFormData = snapshot.RawFormData
+		result.EffectiveFormData = clearAuditInfoValues(cloneWorkspaceMap(snapshot.RawFormData))
 		result.Status, result.DataStatus = model.HistoryReplayItemStatusAffected, model.HistoryDataStatusAffected
 		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_CHANGED", Message: "目标表单运行时类型已变化，需要重新核对", Blocking: true})
 		return result
 	}
 	result.RuntimeType = string(current.RenderType)
-	overlay := branchoverlay.Apply(branchoverlay.Input{Tree: current.Tree, Choices: path.Choices, Values: snapshot.RawFormData})
+	// 配置阶段是发起态：历史实例上的审批意见不带入本次业务数据。
+	overlay := branchoverlay.Apply(branchoverlay.Input{Tree: current.Tree, Choices: path.Choices, Values: clearAuditInfoValues(cloneWorkspaceMap(snapshot.RawFormData))})
 	result.EffectiveFormData = overlay.Values
 	result.BranchPatches = overlay.Patches
 	result.Issues = append(result.Issues, historyReplayOverlayIssues(overlay.Issues)...)

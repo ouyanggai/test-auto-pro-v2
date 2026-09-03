@@ -276,3 +276,44 @@ func TestWorkspacePermissionsUseInitiatorNodeOnly(t *testing.T) {
 		t.Fatalf("审核节点专用字段不应进入发起态权限：%v", powers)
 	}
 }
+
+// TestClearAuditInfoValuesRemovesApprovalOpinions 锁定配置阶段不带入审批意见：
+// 目标表单用 auto_audit_info_* 模型自动回填审批意见（部门领导、部门主管领导等），
+// 配置阶段永远是发起态，这些历史意见不属于本次要提交的业务数据。
+func TestClearAuditInfoValuesRemovesApprovalOpinions(t *testing.T) {
+	cleared := service.ClearAuditInfoValuesForTest(map[string]any{
+		"auto_audit_info_1":  "【同意】 张佳 2026-01-23 17:37",
+		"auto_audit_info_20": "【同意】 孙佳慷 2026-01-30 14:14",
+		"auto_audit_info_9":  map[string]any{"opinion": "同意"},
+		"vacateDayNum":       "8.0",
+		"vacateReason":       "家中有事",
+	})
+	if cleared["auto_audit_info_1"] != "" || cleared["auto_audit_info_20"] != "" {
+		t.Fatalf("字符串审批意见没有被清空：%+v", cleared)
+	}
+	if _, exists := cleared["auto_audit_info_9"]; exists {
+		t.Fatalf("非字符串审批意见字段没有被移除：%+v", cleared)
+	}
+	if cleared["vacateDayNum"] != "8.0" || cleared["vacateReason"] != "家中有事" {
+		t.Fatalf("普通业务字段被误改：%+v", cleared)
+	}
+}
+
+// TestKeyFieldLabelsUseTargetFieldNames 验证关键字段带上目标表单的中文名称，缺失时留空由前端回退。
+func TestKeyFieldLabelsUseTargetFieldNames(t *testing.T) {
+	labels := service.KeyFieldLabelsForTest(target.PathConfigurationSnapshot{FormFields: []target.FormFieldDetail{
+		{EnglishName: "vacateDayNum", Name: "请假天数"},
+		{EnglishName: "vacateType__virtualName", Name: "请假类别"},
+		{EnglishName: "  ", Name: "无效字段"},
+		{EnglishName: "noName", Name: ""},
+	}})
+	if labels["vacateDayNum"] != "请假天数" || labels["vacateType__virtualName"] != "请假类别" {
+		t.Fatalf("字段中文名称没有从目标原文建立映射：%+v", labels)
+	}
+	if _, exists := labels["noName"]; exists {
+		t.Fatalf("没有名称的字段不应进入映射：%+v", labels)
+	}
+	if len(labels) != 2 {
+		t.Fatalf("映射包含了无效字段：%+v", labels)
+	}
+}

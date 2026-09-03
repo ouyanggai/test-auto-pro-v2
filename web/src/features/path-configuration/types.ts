@@ -46,6 +46,7 @@ export interface PathConfigurationDataWorkspace {
 // PathConfigKeyField 是决定当前执行路径的条件字段，只用于界面提示，不参与保存。
 export interface PathConfigKeyField {
   path: string
+  label?: string
   hasCurrent: boolean
   current?: unknown
   candidates?: unknown[]

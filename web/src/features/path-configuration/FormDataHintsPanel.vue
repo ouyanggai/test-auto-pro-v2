@@ -63,6 +63,7 @@ function candidateText(candidates: unknown[] | undefined): string {
           <ul class="form-hints__list">
             <li v-for="field in decisiveFields" :key="field.path">
               <div class="form-hints__field-head">
+                <strong v-if="field.label">{{ field.label }}</strong>
                 <code>{{ field.path }}</code>
                 <n-tag size="tiny" :bordered="false" type="info">{{ fieldValueText(field.current) }}</n-tag>
               </div>
@@ -90,6 +91,7 @@ function candidateText(candidates: unknown[] | undefined): string {
         <n-collapse-item v-if="otherFields.length" name="other" :title="`其他条件字段（${otherFields.length}）`">
           <ul class="form-hints__list">
             <li v-for="field in otherFields" :key="field.path">
+              <strong v-if="field.label">{{ field.label }}</strong>
               <code>{{ field.path }}</code> {{ fieldValueText(field.current) }}
             </li>
           </ul>
@@ -135,6 +137,9 @@ function candidateText(candidates: unknown[] | undefined): string {
   padding: 0 3px;
   font-size: 11px;
   word-break: break-all;
+}
+.form-hints__field-head strong {
+  font-size: 12px;
 }
 .form-hints small {
   display: block;

@@ -31,6 +31,8 @@ test('T05 表单提示改为右侧可收起悬浮面板并给出决定路径的�
   assert.match(view, /<form-data-hints-panel/)
   assert.match(view, /:key-fields="dataWorkspace\.keyFields \?\? \[\]"/)
   assert.match(panel, /决定当前路径的字段/)
+  // 字段有中文名称时优先显示名称，用户不必猜英文字段路径。
+  assert.match(panel, /v-if="field\.label"/)
   assert.match(panel, /position: absolute/)
   assert.match(panel, /open = !open/)
   // 收起后切换按钮必须常驻，否则用户无法再次展开。
