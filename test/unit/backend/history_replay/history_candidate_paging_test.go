@@ -114,7 +114,7 @@ func TestHistoryCandidatesFindInstancesWithoutFlowCodeAndBoundReads(t *testing.T
 		t.Fatalf("创建目标测试客户端失败：%v", err)
 	}
 	reader := service.NewTargetReadServiceWithClient(client, time.Hour)
-	page, err := reader.HistoryCandidates(context.Background(), "account-a", "653a5a1170da4f9faca9afab96d32649", fixture.formName, fixture.flowName, 1, 20)
+	page, err := reader.HistoryCandidates(context.Background(), "account-a", "653a5a1170da4f9faca9afab96d32649", fixture.formName, fixture.flowName, "", 1, 20)
 	if err != nil {
 		t.Fatalf("读取业务数据候选失败：%v", err)
 	}
@@ -135,7 +135,7 @@ func TestHistoryCandidatesFindInstancesWithoutFlowCodeAndBoundReads(t *testing.T
 	if firstPageCalls > 4 {
 		t.Fatalf("读取一页候选发起了过多目标列表请求：%d", firstPageCalls)
 	}
-	third, err := reader.HistoryCandidates(context.Background(), "account-a", "", fixture.formName, fixture.flowName, 3, 20)
+	third, err := reader.HistoryCandidates(context.Background(), "account-a", "", fixture.formName, fixture.flowName, "", 3, 20)
 	if err != nil {
 		t.Fatalf("读取第三页候选失败：%v", err)
 	}
@@ -153,7 +153,7 @@ func TestHistoryCandidatesRejectConflictingFlowCode(t *testing.T) {
 	fixture := newTargetHistoryFixture(t, false)
 	reader, server := newTargetHistoryReader(t, fixture)
 	defer server.Close()
-	page, err := reader.HistoryCandidates(context.Background(), "account-a", fixture.flowCode, fixture.formName, fixture.flowName, 1, 20)
+	page, err := reader.HistoryCandidates(context.Background(), "account-a", fixture.flowCode, fixture.formName, fixture.flowName, "", 1, 20)
 	if err != nil {
 		t.Fatalf("读取业务数据候选失败：%v", err)
 	}

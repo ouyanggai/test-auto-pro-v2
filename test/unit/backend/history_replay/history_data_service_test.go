@@ -44,6 +44,7 @@ type historyTargetReader struct {
 	identity   target.HistoryIdentity
 	candidates []target.HistoryInstance
 	sources    map[string]target.HistorySnapshotSource
+	lastQuery  string
 	lastFlow   string
 	lastForm   string
 	lastPage   string
@@ -55,8 +56,8 @@ func (r *historyTargetReader) HistoryIdentity(context.Context, string, string, s
 }
 
 // HistoryCandidates 记录精确身份过滤参数并返回目标候选摘要。
-func (r *historyTargetReader) HistoryCandidates(_ context.Context, _ string, flowCode, formName, flowName string, page, pageSize int) (target.Page[target.HistoryInstance], error) {
-	r.lastFlow, r.lastForm, r.lastPage = flowCode, formName, flowName
+func (r *historyTargetReader) HistoryCandidates(_ context.Context, _ string, flowCode, formName, flowName, query string, page, pageSize int) (target.Page[target.HistoryInstance], error) {
+	r.lastFlow, r.lastForm, r.lastPage, r.lastQuery = flowCode, formName, flowName, query
 	return target.Page[target.HistoryInstance]{Items: append([]target.HistoryInstance(nil), r.candidates...), Page: page, PageSize: pageSize, Total: len(r.candidates)}, nil
 }
 

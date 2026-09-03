@@ -246,3 +246,41 @@ type MissingPlanDBConfigError struct {
 func (e *MissingPlanDBConfigError) Error() string {
 	return fmt.Sprintf("计划数据库配置不完整：%s", strings.Join(e.Names, "、"))
 }
+
+// TargetBizDBConfig 是目标业务库的只读连接配置：候选列表只查询关键列，不读取表单正文。
+// 缺省为空表示不启用快速候选查询，候选仍回落到目标只读 API。
+type TargetBizDBConfig struct {
+	Host               string
+	Port               int
+	User               string
+	Password           string
+	Name               string
+	UserCenterName     string
+	localConfigInvalid bool
+}
+
+const (
+	defaultTargetBizDBPort           = 3306
+	defaultTargetBizDBName           = "rsh_cloud_workflow_center"
+	defaultTargetBizDBUserCenterName = "rsh_cloud_user_center"
+)
+
+// LoadTargetBizDBConfig 读取目标业务库只读配置；未配置主机时视为未启用。
+func LoadTargetBizDBConfig() TargetBizDBConfig {
+	localValues, localErr := loadTargetLocalValues(targetLocalEnvFile())
+	return TargetBizDBConfig{
+		Host:               strings.TrimSpace(targetConfigValue("TARGET_DB_HOST", localValues)),
+		Port:               positiveIntFromValue(targetConfigValue("TARGET_DB_PORT", localValues), defaultTargetBizDBPort),
+		User:               strings.TrimSpace(targetConfigValue("TARGET_DB_USER", localValues)),
+		Password:           targetConfigValue("TARGET_DB_PASSWORD", localValues),
+		Name:               firstNonEmpty(strings.TrimSpace(targetConfigValue("TARGET_DB_NAME", localValues)), defaultTargetBizDBName),
+		UserCenterName:     firstNonEmpty(strings.TrimSpace(targetConfigValue("TARGET_DB_USER_CENTER_NAME", localValues)), defaultTargetBizDBUserCenterName),
+		localConfigInvalid: localErr != nil,
+	}
+}
+
+// Enabled 只在主机、账号和库名都合法时启用快速候选查询，库名必须通过标识符白名单。
+func (c TargetBizDBConfig) Enabled() bool {
+	return !c.localConfigInvalid && c.Host != "" && c.User != "" && c.Port > 0 && c.Port <= 65535 &&
+		ValidDatabaseName(c.Name) && ValidDatabaseName(c.UserCenterName)
+}

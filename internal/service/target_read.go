@@ -8,6 +8,7 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/repository"
 	"test-auto-pro-v2/internal/session"
 )
 
@@ -21,6 +22,7 @@ type TargetReadService struct {
 	configMissing []string
 	client        *target.Client
 	sessions      *session.Manager
+	candidates    repository.TargetHistoryCandidateStore
 }
 
 // NewTargetReadService 从后端运行配置创建只读目标客户端和会话管理器。
@@ -53,6 +55,11 @@ func NewTargetReadServiceWithClient(client *target.Client, ttl time.Duration) *T
 	return &TargetReadService{
 		client: client, sessions: session.NewManager(client, ttl),
 	}
+}
+
+// SetHistoryCandidateStore 注入目标业务库只读候选来源；未注入时候选回落到目标只读 API。
+func (s *TargetReadService) SetHistoryCandidateStore(store repository.TargetHistoryCandidateStore) {
+	s.candidates = store
 }
 
 // Verify 验证账号并只返回非敏感摘要。

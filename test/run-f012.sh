@@ -28,6 +28,8 @@ go test -count=1 ./internal/...
 go test -count=1 ./test/unit/backend/history_replay ./test/unit/backend/action_orchestration ./test/contracts/f012
 
 printf '%s\n' '[F-012] 真实数据库集成测试'
+# 目标业务库只读连接是候选列表的可选加速路径；配置了 TARGET_DB_* 时该用例必须真实执行。
+export TEST_AUTO_PRO_TARGET_ENV_FILE="${TEST_AUTO_PRO_TARGET_ENV_FILE:-${project_root}/.env.local}"
 integration_log="$(mktemp -t f012-integration)"
 trap 'rm -f "${integration_log}"' EXIT
 if ! go test -count=1 -v ./test/integration/f012 2>&1 | tee "${integration_log}"; then

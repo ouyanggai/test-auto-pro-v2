@@ -4,6 +4,7 @@ import {
   NButton,
   NCard,
   NEmpty,
+  NInput,
   NModal,
   NPagination,
   NRadioButton,
@@ -41,7 +42,9 @@ const page = ref(1)
 const selectedKey = ref('')
 const pathMode = ref<'default' | 'override'>('override')
 const error = ref('')
+const search = ref('')
 let controller: AbortController | null = null
+let searchTimer: ReturnType<typeof setTimeout> | null = null
 let saveKey = crypto.randomUUID()
 
 const currentSource = computed(() => props.scope === 'path'
@@ -53,6 +56,7 @@ const pickerStyle = computed(() => ({
   '--picker-border-color': themeVars.value.borderColor,
   '--picker-active-color': themeVars.value.primaryColor,
   '--picker-secondary-text-color': themeVars.value.textColor3,
+  '--picker-notice-color': themeVars.value.warningColor,
 }))
 
 // loadCandidates 读取可选业务数据；请求切换时中止旧调用，避免跨路径回写。
@@ -65,6 +69,7 @@ async function loadCandidates(nextPage = 1) {
   try {
     const result = await fetchHistoryCandidates(props.planId, {
       pathId: props.scope === 'path' ? props.pathId : undefined,
+      query: search.value.trim(),
       page: nextPage,
       pageSize: 20,
       signal: active.signal,
@@ -132,17 +137,30 @@ function changePage(value: number) {
   void loadCandidates(value)
 }
 
+// applySearch 输入停止后再向服务端查询，避免逐字符发起请求。
+function applySearch() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => void loadCandidates(1), 300)
+}
+
 watch(() => [props.planId, props.pathId, props.scope], () => {
   pageState.value = null
   selectedKey.value = ''
   saveKey = crypto.randomUUID()
 })
 watch(() => props.show, (open) => {
-  if (open) void loadCandidates(1)
-  else controller?.abort()
+  if (open) {
+    void loadCandidates(1)
+    return
+  }
+  if (searchTimer) clearTimeout(searchTimer)
+  controller?.abort()
 }, { immediate: true })
 
-onBeforeUnmount(() => controller?.abort())
+onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer)
+  controller?.abort()
+})
 </script>
 
 <template>
@@ -153,6 +171,13 @@ onBeforeUnmount(() => controller?.abort())
           <n-radio-button value="default">沿用计划统一数据</n-radio-button>
           <n-radio-button value="override">本路径单独指定</n-radio-button>
         </n-radio-group>
+        <n-input
+          v-if="scope === 'default' || pathMode === 'override'"
+          v-model:value="search"
+          clearable
+          placeholder="搜索单据名称、发起人或公司"
+          @update:value="applySearch"
+        />
         <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
         <div v-if="loading" class="base-form-data-picker__loading"><n-spin size="small" />正在读取可选业务数据</div>
         <template v-else-if="scope === 'default' || pathMode === 'override'">
@@ -171,12 +196,11 @@ onBeforeUnmount(() => controller?.abort())
                 <strong>{{ candidate.instanceTitle || candidate.businessSummary || candidate.formName || candidate.flowName }}</strong>
                 <n-tag size="small" :bordered="false" :type="candidate.completeness === 'complete' ? 'success' : 'warning'">{{ candidate.statusName || candidate.status }}</n-tag>
               </div>
-              <p>{{ candidate.formName || candidate.flowName }}</p>
               <small>{{ [candidate.initiator, candidate.companyName, candidate.createdAt].filter(Boolean).join(' · ') || '目标摘要字段不完整' }}</small>
-              <n-alert v-if="candidate.integrityNotice" type="warning" :show-icon="false">{{ candidate.integrityNotice }}</n-alert>
+              <small v-if="candidate.integrityNotice" class="base-form-data-picker__notice">{{ candidate.integrityNotice }}</small>
             </button>
           </div>
-          <n-empty v-else description="请先在目标平台发起一次该流程并填写业务数据，再回来刷新" />
+          <n-empty v-else :description="search.trim() ? '没有匹配的业务数据，换个关键词再试' : '请先在目标平台发起一次该流程并填写业务数据，再回来刷新'" />
           <n-pagination v-if="pageCount > 1" :page="page" :page-count="pageCount" @update:page="changePage" />
         </template>
         <n-alert v-else type="info" :show-icon="false">当前路径将沿用计划统一的基础表单数据。</n-alert>
@@ -212,11 +236,13 @@ onBeforeUnmount(() => controller?.abort())
 }
 .base-form-data-picker__candidates {
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 .base-form-data-picker__candidate {
+  display: grid;
+  gap: 3px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 8px 12px;
   color: inherit;
   font: inherit;
   text-align: left;
@@ -230,11 +256,11 @@ onBeforeUnmount(() => controller?.abort())
   align-items: center;
   gap: 8px;
 }
-.base-form-data-picker__candidate p {
-  margin: 5px 0 2px;
-}
 .base-form-data-picker__candidate small {
   color: var(--picker-secondary-text-color);
+}
+.base-form-data-picker__notice {
+  color: var(--picker-notice-color);
 }
 .base-form-data-picker__candidate:hover,
 .base-form-data-picker__candidate--selected {

@@ -28,7 +28,20 @@ func main() {
 	}
 	defer planDatabase.Close()
 
-	targetReader := service.NewTargetReadService(config.LoadTargetConfig())
+	targetConfig := config.LoadTargetConfig()
+	targetReader := service.NewTargetReadService(targetConfig)
+	// 目标业务库只读连接可选：配置后基础表单数据候选走一次联表查询，未配置时回落到目标只读 API。
+	if bizDBConfig := config.LoadTargetBizDBConfig(); bizDBConfig.Enabled() {
+		bizContext, cancelBiz := context.WithTimeout(context.Background(), 10*time.Second)
+		candidateStore, bizErr := planmysql.NewTargetHistoryRepository(bizContext, bizDBConfig, targetConfig.CustomerCode)
+		cancelBiz()
+		if bizErr != nil {
+			log.Printf("目标业务库只读候选查询未启用：%v", bizErr)
+		} else {
+			defer candidateStore.Close()
+			targetReader.SetHistoryCandidateStore(candidateStore)
+		}
+	}
 	planService := service.NewPlanService(planmysql.NewPlanRepository(planDatabase.DB))
 	flowGraphService := service.NewFlowGraphService(planService, targetReader, analyzer.NewFlowGraphAnalyzer())
 	pathRepository := planmysql.NewExecutionPathRepository(planDatabase.DB)

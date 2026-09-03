@@ -1496,3 +1496,6 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+// SubmittedStatusText 暴露目标实例状态的中文名称映射，供快速候选查询复用同一套状态文案。
+func SubmittedStatusText(status string) string { return submittedStatusText(strings.TrimSpace(status)) }

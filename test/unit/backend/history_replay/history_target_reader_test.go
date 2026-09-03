@@ -17,20 +17,21 @@ import (
 )
 
 type targetHistoryFixture struct {
-	t           *testing.T
-	mu          sync.Mutex
-	noForm      bool
-	expireFirst bool
-	loginCount  int
-	listCount   int
-	paths       []string
-	listBodies  []map[string]any
-	raw         map[string]any
-	formName    string
-	flowName    string
-	flowCode    string
-	userID      string
-	companyID   string
+	t             *testing.T
+	mu            sync.Mutex
+	noForm        bool
+	expireFirst   bool
+	automationRow bool
+	loginCount    int
+	listCount     int
+	paths         []string
+	listBodies    []map[string]any
+	raw           map[string]any
+	formName      string
+	flowName      string
+	flowCode      string
+	userID        string
+	companyID     string
 }
 
 // newTargetHistoryFixture 创建仅实现目标只读历史协议的假网关。
@@ -132,12 +133,19 @@ func (f *targetHistoryFixture) historyListRows() []map[string]any {
 			{"id": "noform-missing-name", "flowProxyId": "proxy-missing", "flowName": "", "formName": "", "name": "名称证据缺失", "status": "run", "createTime": "2026-08-29 12:00:00", "createrId": f.userID, "companyId": f.companyID},
 		}
 	}
-	return []map[string]any{
+	rows := []map[string]any{
 		{"id": "form-run", "flowProxyId": "proxy-run", "formProxyId": "form-proxy-run", "flowName": f.flowName, "formName": f.formName, "name": "运行中数据", "status": "run", "createDate": "2026-09-01 09:00:00", "createrId": f.userID, "companyId": f.companyID},
 		{"id": "form-end", "flowProxyId": "proxy-end", "formProxyId": "form-proxy-end", "flowName": f.flowName, "formName": f.formName, "name": "已完成数据", "status": "end", "createDate": "2026-08-31 10:00:00", "createrId": f.userID, "companyId": f.companyID},
 		{"id": "wrong-form", "flowProxyId": "proxy-wrong-form", "flowName": f.flowName, "formName": "费用单（其他公司）", "name": "错误表单", "status": "end", "createDate": "2026-08-30 10:00:00", "createrId": f.userID, "companyId": f.companyID},
 		{"id": "wrong-flow", "flowProxyId": "proxy-wrong-flow", "flowCode": "other-flow", "flowName": "其他流程", "formName": f.formName, "name": "错误流程", "status": "end", "createDate": "2026-08-29 10:00:00", "createrId": f.userID, "companyId": f.companyID},
 	}
+	if f.automationRow {
+		// 旧版本自动回归产生的实例：结构与当前目标表单不一致，必须被剔除。
+		rows = append(rows, map[string]any{"id": "auto-regression", "flowProxyId": "proxy-auto", "formProxyId": "form-proxy-auto",
+			"flowName": f.flowName, "formName": f.formName, "name": f.flowName + "-自动回归-分支01-动作链", "status": "end",
+			"createDate": "2026-09-02 10:00:00", "createrId": f.userID, "companyId": f.companyID})
+	}
+	return rows
 }
 
 // newTargetHistoryReader 创建真实目标客户端与会话管理器，测试重登和读取边界。
@@ -161,7 +169,7 @@ func TestTargetHistoryReaderFiltersSortsRelogsAndPreservesRawData(t *testing.T) 
 	fixture.expireFirst = true
 	reader, server := newTargetHistoryReader(t, fixture)
 	defer server.Close()
-	page, err := reader.HistoryCandidates(context.Background(), "account-a", fixture.flowCode, fixture.formName, fixture.flowName, 1, 20)
+	page, err := reader.HistoryCandidates(context.Background(), "account-a", fixture.flowCode, fixture.formName, fixture.flowName, "", 1, 20)
 	if err != nil {
 		t.Fatalf("读取 FormMaking 历史候选失败：%v", err)
 	}
@@ -194,7 +202,7 @@ func TestTargetNoFormHistoryUsesRawIdentityWithoutVuePageMapping(t *testing.T) {
 	fixture.flowName = "NoFormFlow 请款页"
 	reader, server := newTargetHistoryReader(t, fixture)
 	defer server.Close()
-	page, err := reader.HistoryCandidates(context.Background(), "account-a", fixture.flowCode, "", fixture.flowName, 1, 20)
+	page, err := reader.HistoryCandidates(context.Background(), "account-a", fixture.flowCode, "", fixture.flowName, "", 1, 20)
 	if err != nil {
 		t.Fatalf("读取 NoFormFlow 历史候选失败：%v", err)
 	}

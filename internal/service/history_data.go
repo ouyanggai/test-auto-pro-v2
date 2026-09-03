@@ -75,25 +75,28 @@ func (s *HistoryDataManager) Candidates(ctx context.Context, planID, pathID uint
 	if err != nil {
 		return model.HistoryCandidatePage{}, err
 	}
-	result, err := s.target.HistoryCandidates(ctx, plan.Account, identity.FlowCode, identity.FormName, identity.FlowName, page, pageSize)
+	result, err := s.target.HistoryCandidates(ctx, plan.Account, identity.FlowCode, identity.FormName, identity.FlowName, query, page, pageSize)
 	if err != nil {
 		return model.HistoryCandidatePage{}, mapHistoryTargetError(err)
 	}
+	// 搜索谓词始终复核一次：目标业务库来源已按同样的名称/发起人/公司字段过滤，不会被丢弃行，
+	// 因此保留真实总数；只读 API 回落路径没有远端搜索，丢弃行后退化为已读窗口内的计数。
 	items := make([]model.HistoryCandidate, 0, len(result.Items))
+	dropped := 0
 	for _, instance := range result.Items {
 		if query != "" && !historyCandidateMatchesQuery(instance, query) {
+			dropped++
 			continue
 		}
 		items = append(items, projectHistoryCandidate(plan.Account, identity, instance))
 	}
-	total := result.Total
-	if query != "" {
-		// 搜索只在已经按目标原始字段筛选的有限页内执行，避免把名称猜测当作目标身份匹配。
-		total = len(items)
+	total, hasMore := result.Total, result.HasMore
+	if dropped > 0 {
+		total, hasMore = len(items), false
 	}
 	return model.HistoryCandidatePage{
 		Items: items, Page: result.Page, PageSize: result.PageSize, Total: total,
-		HasMore: result.HasMore && query == "", DefaultSource: defaultSource, PathSource: pathSource,
+		HasMore: hasMore, DefaultSource: defaultSource, PathSource: pathSource,
 	}, nil
 }
 

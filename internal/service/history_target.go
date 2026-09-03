@@ -10,12 +10,28 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/jsonvalues"
+	"test-auto-pro-v2/internal/repository"
 )
 
 const (
 	historyCandidateRemotePageSize = 100
 	historyCandidateMaxRemotePages = 20
 )
+
+// historyCandidateExcludedNameKeywords 剔除历史自动化回归产生的实例：这些数据来自旧版本，
+// 结构与当前目标表单不一致，不能作为基础表单数据。
+var historyCandidateExcludedNameKeywords = []string{"自动"}
+
+// historyCandidateNameAllowed 判定实例名称是否属于可用的真实业务数据。
+func historyCandidateNameAllowed(name string) bool {
+	name = strings.TrimSpace(name)
+	for _, keyword := range historyCandidateExcludedNameKeywords {
+		if strings.Contains(name, keyword) {
+			return false
+		}
+	}
+	return true
+}
 
 // historyCandidateStatusGroups 按目标状态枚举分组读取候选：已完成实例整体排在前面，
 // 其余状态保持目标列表返回顺序；分组读取让"已完成优先"不再依赖把全部历史读进内存。
@@ -27,7 +43,7 @@ var historyCandidateStatusGroups = [][]string{
 // HistoryTargetReader 是历史数据服务依赖的目标只读边界，不暴露目标会话或内部标识。
 type HistoryTargetReader interface {
 	HistoryIdentity(context.Context, string, string, string) (target.HistoryIdentity, error)
-	HistoryCandidates(context.Context, string, string, string, string, int, int) (target.Page[target.HistoryInstance], error)
+	HistoryCandidates(context.Context, string, string, string, string, string, int, int) (target.Page[target.HistoryInstance], error)
 	ReadHistorySnapshot(context.Context, string, string, string, string, string) (target.HistorySnapshotSource, error)
 }
 
@@ -61,10 +77,13 @@ func historyFormNames(forms []target.FormRuntimeTemplate) []map[string]string {
 	return result
 }
 
-// HistoryCandidates 读取计划账号可见的同流程业务实例，已完成实例整体优先于其他状态。
-func (s *TargetReadService) HistoryCandidates(ctx context.Context, account, flowCode, formName, flowName string, page, pageSize int) (target.Page[target.HistoryInstance], error) {
-	if err := s.ready(); err != nil {
-		return target.Page[target.HistoryInstance]{}, err
+// HistoryCandidates 读取同流程的全部业务实例，已完成实例整体优先于其他状态。
+// 配置了目标业务库只读连接时走一次联表查询；否则回落到目标只读 API 的分组分页读取。
+func (s *TargetReadService) HistoryCandidates(ctx context.Context, account, flowCode, formName, flowName, query string, page, pageSize int) (target.Page[target.HistoryInstance], error) {
+	if s.candidates == nil {
+		if err := s.ready(); err != nil {
+			return target.Page[target.HistoryInstance]{}, err
+		}
 	}
 	if page < 1 {
 		page = 1
@@ -81,6 +100,9 @@ func (s *TargetReadService) HistoryCandidates(ctx context.Context, account, flow
 	// 实例列表行不返回 flowCode，身份只能由目标返回的表单/流程名称构成；两者都缺失时不猜测。
 	if formName == "" && flowName == "" {
 		return target.Page[target.HistoryInstance]{Page: page, PageSize: pageSize, Items: []target.HistoryInstance{}}, nil
+	}
+	if s.candidates != nil {
+		return s.candidatesFromBizDB(ctx, flowCode, formName, flowName, query, page, pageSize)
 	}
 	need := page * pageSize
 	matched := make([]target.HistoryInstance, 0, need)
@@ -138,6 +160,51 @@ func historyCandidateStatusAccepted(status string, groupIndex int) bool {
 	return false
 }
 
+// candidatesFromBizDB 用一次目标业务库联表查询取回候选关键列；不读取任何表单正文。
+func (s *TargetReadService) candidatesFromBizDB(ctx context.Context, flowCode, formName, flowName, query string, page, pageSize int) (target.Page[target.HistoryInstance], error) {
+	rows, total, err := s.candidates.TargetHistoryCandidates(ctx, repository.TargetHistoryCandidateFilter{
+		FlowCode: flowCode, FlowName: flowName, FormName: formName, Query: query,
+		ExcludeNameKeywords: historyCandidateExcludedNameKeywords,
+	}, page, pageSize)
+	if err != nil {
+		return target.Page[target.HistoryInstance]{}, target.NewError(target.ErrorResponseInvalid, err)
+	}
+	items := make([]target.HistoryInstance, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, historyInstanceFromCandidateRow(row))
+	}
+	return target.Page[target.HistoryInstance]{
+		Items: items, Page: page, PageSize: pageSize, Total: total, HasMore: page*pageSize < total,
+	}, nil
+}
+
+// historyInstanceFromCandidateRow 把业务库关键列投影为与目标只读 API 相同的实例摘要模型。
+func historyInstanceFromCandidateRow(row repository.TargetHistoryCandidateRow) target.HistoryInstance {
+	formProxyIDs := make([]string, 0, 1)
+	if strings.TrimSpace(row.FormProxyID) != "" {
+		formProxyIDs = append(formProxyIDs, strings.TrimSpace(row.FormProxyID))
+	}
+	return target.HistoryInstance{
+		ID: row.InstanceID, FlowProxyID: row.FlowProxyID, FormProxyIDs: formProxyIDs,
+		FlowCode: row.FlowCode, FlowName: row.FlowName, FormName: row.FormName,
+		Title:           firstHistoryValue(row.Name, row.FormName, row.FlowName),
+		BusinessSummary: strings.TrimSpace(row.Name),
+		Initiator:       row.InitiatorName, CompanyName: row.CompanyName, CreatedAt: row.CreatedAt,
+		Status: row.Status, StatusName: target.SubmittedStatusText(row.Status),
+		ActiveNodeProxyIDs: []string{},
+	}
+}
+
+// firstHistoryValue 返回第一个非空摘要字段，避免候选标题为空。
+func firstHistoryValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 // historyCandidateIdentityMatch 只用目标返回的原始身份字段判定候选归属，不拼装新的身份键。
 func historyCandidateIdentityMatch(item target.HistoryInstance, flowCode, formName, flowName string) bool {
 	// 目标只在部分实例上写入 flowCode；提供时按精确值校验，缺失时不能据此排除候选。
@@ -190,7 +257,7 @@ func (s *TargetReadService) collectHistoryInstances(ctx context.Context, active 
 			if !historyCandidateStatusAccepted(item.Status, groupIndex) {
 				continue
 			}
-			if !match(item) {
+			if !historyCandidateNameAllowed(item.BusinessSummary) || !match(item) {
 				continue
 			}
 			collected = append(collected, item)
@@ -203,8 +270,31 @@ func (s *TargetReadService) collectHistoryInstances(ctx context.Context, active 
 	return collected, total, nil
 }
 
+// findCandidateInBizDB 在业务库候选窗口内按同一候选键定位实例，命中即停止翻页。
+func (s *TargetReadService) findCandidateInBizDB(ctx context.Context, account, flowCode, formName, flowName, candidateKey string) (*target.HistoryInstance, error) {
+	for page := 1; page <= historyCandidateMaxRemotePages; page++ {
+		result, err := s.candidatesFromBizDB(ctx, flowCode, formName, flowName, "", page, historyCandidateRemotePageSize)
+		if err != nil {
+			return nil, err
+		}
+		for index := range result.Items {
+			item := result.Items[index]
+			if HistoryCandidateKey(account, item) == candidateKey {
+				return &item, nil
+			}
+		}
+		if !result.HasMore || len(result.Items) == 0 {
+			break
+		}
+	}
+	return nil, ErrTargetFlowNotFound
+}
+
 // findHistoryInstanceByKey 按同一组身份规则在目标分页内定位候选键对应实例，找到即停止读取。
 func (s *TargetReadService) findHistoryInstanceByKey(ctx context.Context, active target.Session, account, flowCode, formName, flowName, candidateKey string) (*target.HistoryInstance, error) {
+	if s.candidates != nil {
+		return s.findCandidateInBizDB(ctx, account, flowCode, formName, flowName, candidateKey)
+	}
 	for groupIndex := range historyCandidateStatusGroups {
 		query := target.HistoryInstanceQuery{FlowName: flowName, StatusList: historyCandidateStatusGroups[groupIndex]}
 		for page := 1; page <= historyCandidateMaxRemotePages; page++ {

@@ -97,7 +97,7 @@ func TestHistoryChainNeverCallsTargetWriteOperations(t *testing.T) {
 	}
 	reader := service.NewTargetReadServiceWithClient(client, time.Hour)
 
-	page, err := reader.HistoryCandidates(context.Background(), "account-a", "expense-flow", "费用单（测试公司）", "费用审批", 1, 20)
+	page, err := reader.HistoryCandidates(context.Background(), "account-a", "expense-flow", "费用单（测试公司）", "费用审批", "", 1, 20)
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("读取历史候选失败：err=%v items=%d", err, len(page.Items))
 	}
