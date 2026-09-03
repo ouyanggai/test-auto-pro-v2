@@ -797,22 +797,29 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				personStrategies[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
 				changed = true
 			}
-			action, ok := autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
-			if !ok {
+			candidates := autoNodeActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used)
+			if len(candidates) == 0 {
 				// 没有可编排动作的节点，只要人员已按目标默认或随机策略填好就算配置完成。
 				if changed {
 					confirmedNodes = append(confirmedNodes, node.Key)
 				}
 				continue
 			}
-			confirmedNodes = append(confirmedNodes, node.Key)
-			used[string(action.Action)] = true
-			merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{action}, node.Key, analysis.graph, analysis.pathAnalysis)
-			if mergeErr != nil {
-				continue
+			// 逐个候选试编译：动作顺序必须能被场景编译器恢复，无法恢复的候选直接换下一个。
+			for _, action := range candidates {
+				merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{action}, node.Key, analysis.graph, analysis.pathAnalysis)
+				if mergeErr != nil {
+					continue
+				}
+				if _, compileErr := compilePathActions(merged, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation)); compileErr != nil {
+					continue
+				}
+				actions = merged
+				used[string(action.Action)] = true
+				confirmedNodes = append(confirmedNodes, node.Key)
+				changed = true
+				break
 			}
-			actions = merged
-			changed = true
 		}
 	}
 	if !changed {
@@ -891,32 +898,35 @@ func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pa
 	return nil
 }
 
-// autoNodeAction 在节点可用动作里按覆盖优先、其次确定性种子挑一个动作。
-func autoNodeAction(node model.PathConfigNode, seed uint64, used map[string]bool) (model.ConfiguredAction, bool) {
+// autoNodeActionCandidates 按覆盖优先、其次确定性种子给出该节点可尝试的动作顺序。
+// 只取已启用、非系统语义、非编译器插入、且不需要显式选人的动作；参数由执行器运行时填充，不影响可选性。
+func autoNodeActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool) []model.ConfiguredAction {
 	available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
 	for _, item := range node.ActionConfiguration.Catalog {
-		// 动作参数由执行器在运行时按目标事实填充，不是配置阶段的用户输入，因此不影响可选性；
-		// 需要人员的动作留给用户显式选人，自动配置不替用户挑处理人。
 		if !item.Enabled || item.SystemOnly || item.SystemInserted || item.RequiresPerson {
 			continue
 		}
 		available = append(available, item)
 	}
 	if len(available) == 0 {
-		return model.ConfiguredAction{}, false
+		return nil
 	}
 	sort.Slice(available, func(left, right int) bool { return available[left].Kind < available[right].Kind })
-	chosen := available[int(seed%uint64(len(available)))]
-	for _, item := range available {
-		if !used[item.Kind] {
-			chosen = item
-			break
-		}
+	offset := int(seed % uint64(len(available)))
+	ordered := make([]model.PathConfigActionCatalogItem, 0, len(available))
+	for index := range available {
+		ordered = append(ordered, available[(offset+index)%len(available)])
 	}
-	return model.ConfiguredAction{
-		Key: autoConfigureActionKey(node.Key, chosen.Kind), Action: model.ActionKey(chosen.Kind),
-		Scope: model.ActionScope(chosen.Scope), NodeKey: node.Key, Order: 1,
-	}, true
+	// 尚未被本路径用过的动作优先，让一次一键配置尽量覆盖更多目标能力。
+	sort.SliceStable(ordered, func(left, right int) bool { return !used[ordered[left].Kind] && used[ordered[right].Kind] })
+	candidates := make([]model.ConfiguredAction, 0, len(ordered))
+	for _, item := range ordered {
+		candidates = append(candidates, model.ConfiguredAction{
+			Key: autoConfigureActionKey(node.Key, item.Kind), Action: model.ActionKey(item.Kind),
+			Scope: model.ActionScope(item.Scope), NodeKey: node.Key, Order: 1,
+		})
+	}
+	return candidates
 }
 
 // autoPersonStrategy 优先沿用目标默认名单，没有默认值时按确定性种子随机取够最少人数。
@@ -954,9 +964,13 @@ func autoConfigureActionKey(nodeKey, kind string) string {
 	return hex.EncodeToString(digest[:16])
 }
 
-// AutoNodeActionForTest 暴露自动动作选择，供 test 目录下的定向用例锁定覆盖与可复现行为。
+// AutoNodeActionForTest 暴露自动动作选择的首选项，供 test 目录下的定向用例锁定覆盖与可复现行为。
 func AutoNodeActionForTest(planID, pathID uint64, node model.PathConfigNode, used map[string]bool) (model.ConfiguredAction, bool) {
-	return autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
+	candidates := autoNodeActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used)
+	if len(candidates) == 0 {
+		return model.ConfiguredAction{}, false
+	}
+	return candidates[0], true
 }
 
 // ConfirmedNodeKeysJSONForTest 暴露已确认节点编码，供 test 目录下的定向用例锁定行为。

@@ -294,3 +294,21 @@ func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {
 		}
 	}
 }
+
+// TestAutoNodeActionCandidatesOrderCoversThenSeeds 验证自动动作候选顺序：
+// 未覆盖的动作排在前面，同一节点重复计算顺序稳定，需要显式选人和编译器插入的动作不参与。
+func TestAutoNodeActionCandidatesOrderCoversThenSeeds(t *testing.T) {
+	node := autoConfigureNode("node-a", []string{"approve", "reject", "storage_form_data"})
+	first, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
+	if !ok {
+		t.Fatal("节点应至少给出一个候选动作")
+	}
+	skipped, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{string(first.Action): true})
+	if !ok || skipped.Action == first.Action {
+		t.Fatalf("已覆盖动作没有让位给未覆盖动作：first=%s next=%s", first.Action, skipped.Action)
+	}
+	repeat, _ := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
+	if repeat.Action != first.Action {
+		t.Fatalf("同一节点候选顺序不稳定：%s / %s", first.Action, repeat.Action)
+	}
+}

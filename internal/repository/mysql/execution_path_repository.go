@@ -19,8 +19,36 @@ type ExecutionPathRepository struct {
 }
 
 // Get 按计划归属读取单条路径及其 choices，供进入编辑态时按需加载。
+// executionPathStatusColumns 是路径本地配置状态的唯一派生来源：
+// 列表和单条详情共用同一段表达式，避免两处各算一套导致状态互相矛盾。
+const executionPathStatusColumns = `
+       CASE
+         WHEN config.path_id IS NULL THEN 'pending'
+         WHEN config.node_status = 'affected' OR config.config_status = 'affected' THEN 'affected'
+         WHEN config.node_status = 'configured' OR config.config_status = 'configured' THEN 'configured'
+         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN 'partial'
+         ELSE 'pending'
+       END,
+       CASE
+         WHEN config.path_id IS NULL THEN '节点人员和动作待配置'
+         WHEN config.node_status = 'affected' OR config.config_status = 'affected' THEN '节点配置受流程变化影响'
+         WHEN config.node_status = 'configured' OR config.config_status = 'configured' THEN '节点人员和动作已配置'
+         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN '节点人员和动作已部分配置'
+         ELSE '节点人员和动作待配置'
+       END,
+       CASE WHEN config.path_id IS NULL THEN 'empty' ELSE COALESCE(NULLIF(config.data_status, ''), 'empty') END,
+       CASE
+         WHEN config.path_id IS NULL OR config.data_status IS NULL OR config.data_status = '' OR config.data_status = 'empty' THEN '尚未选择历史数据来源'
+         WHEN config.data_status = 'ready' THEN '历史原始数据已通过 runtime 校验和路径复验'
+         WHEN config.data_status = 'needs_input' THEN '历史原始数据需要人工补充或确认'
+         WHEN config.data_status = 'affected' THEN '历史来源或路径变化后需要重新核对'
+         ELSE '历史原始数据需要人工处理'
+       END,
+       COALESCE(config.node_revision, 0)
+`
+
 func (r *ExecutionPathRepository) Get(ctx context.Context, planID, pathID uint64) (model.ExecutionPath, error) {
-	path, err := scanExecutionPathWithRevision(r.db.QueryRowContext(ctx, `SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at, COALESCE(config.node_revision, 0)
+	path, err := scanExecutionPathWithStatus(r.db.QueryRowContext(ctx, `SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at,`+executionPathStatusColumns+`
 FROM test_execution_paths path
 LEFT JOIN test_execution_path_configs config ON config.path_id = path.id
 WHERE path.plan_id = ? AND path.id = ?`, planID, pathID))
@@ -153,30 +181,7 @@ func (r *ExecutionPathRepository) List(ctx context.Context, planID uint64) ([]mo
 		return nil, repository.ErrPlanNotFound
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at,
-       CASE
-         WHEN config.path_id IS NULL THEN 'pending'
-         WHEN config.node_status = 'affected' OR config.config_status = 'affected' THEN 'affected'
-         WHEN config.node_status = 'configured' OR config.config_status = 'configured' THEN 'configured'
-         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN 'partial'
-         ELSE 'pending'
-       END,
-       CASE
-         WHEN config.path_id IS NULL THEN '节点人员和动作待配置'
-         WHEN config.node_status = 'affected' OR config.config_status = 'affected' THEN '节点配置受流程变化影响'
-         WHEN config.node_status = 'configured' OR config.config_status = 'configured' THEN '节点人员和动作已配置'
-         WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN '节点人员和动作已部分配置'
-         ELSE '节点人员和动作待配置'
-       END,
-       CASE WHEN config.path_id IS NULL THEN 'empty' ELSE COALESCE(NULLIF(config.data_status, ''), 'empty') END,
-       CASE
-         WHEN config.path_id IS NULL OR config.data_status IS NULL OR config.data_status = '' OR config.data_status = 'empty' THEN '尚未选择历史数据来源'
-         WHEN config.data_status = 'ready' THEN '历史原始数据已通过 runtime 校验和路径复验'
-         WHEN config.data_status = 'needs_input' THEN '历史原始数据需要人工补充或确认'
-         WHEN config.data_status = 'affected' THEN '历史来源或路径变化后需要重新核对'
-         ELSE '历史原始数据需要人工处理'
-       END,
-       COALESCE(config.node_revision, 0)
+SELECT path.id, path.plan_id, path.sequence_no, path.name, path.created_at, path.updated_at,`+executionPathStatusColumns+`
 FROM test_execution_paths path
 LEFT JOIN test_execution_path_configs config ON config.path_id = path.id
 WHERE path.plan_id = ?
