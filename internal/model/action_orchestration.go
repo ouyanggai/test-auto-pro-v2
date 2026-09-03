@@ -129,6 +129,10 @@ type ActionCatalogItem struct {
 	ReloadRequirements []string             `json:"reloadRequirements"`
 	SystemOnly         bool                 `json:"systemOnly"`
 	SystemNodeType     string               `json:"systemNodeType,omitempty"`
+	// SystemInserted 表示该动作由场景编译器在恢复步骤中自动插入，用户不需要也不应该手工编排。
+	SystemInserted bool `json:"systemInserted,omitempty"`
+	// SystemInsertedReason 说明编译器会在什么时候插入它，供目录说明展示。
+	SystemInsertedReason string `json:"systemInsertedReason,omitempty"`
 }
 
 // ActionContext 是动作门禁服务读取的目标实时上下文投影。

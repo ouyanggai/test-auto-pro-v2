@@ -238,7 +238,11 @@ type PathConfigActionCatalogItem struct {
 	ReloadRequirements []string             `json:"reloadRequirements"`
 	SystemOnly         bool                 `json:"systemOnly"`
 	SystemNodeType     string               `json:"systemNodeType"`
-	RuntimeNote        string               `json:"runtimeNote"`
+	// SystemInserted 表示该动作由场景编译器自动插入，浏览器不把它列为可选动作。
+	SystemInserted bool `json:"systemInserted"`
+	// SystemInsertedReason 说明编译器会在什么时候插入它。
+	SystemInsertedReason string `json:"systemInsertedReason,omitempty"`
+	RuntimeNote          string `json:"runtimeNote"`
 }
 
 // PathConfigConfiguredActionInput 是浏览器保存的一条独立动作记录，人员和目标仍为不透明键。

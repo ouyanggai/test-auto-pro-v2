@@ -1,189 +1,215 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NInput, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
-import { computed, ref } from 'vue'
 import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline, ReorderTwoOutline } from '@vicons/ionicons5'
-import { copyPathConfigActions, normalizedPersonStrategy, resolvedPersonStrategySelection } from './logic'
+import { NAlert, NButton, NCard, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
+import { computed, h, ref } from 'vue'
+
+import { copyPathConfigActions, normalizedPersonStrategy } from './logic'
 import type { PathActionContainer, PathConfigActionCatalogItem, PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ container: PathActionContainer; title: string; savedActions: PathConfigConfiguredActionInput[]; readOnly: boolean; blocked: boolean; personStrategies: Record<string, PathConfigPersonStrategyInput> }>()
+const props = defineProps<{
+  container: PathActionContainer
+  title: string
+  savedActions: PathConfigConfiguredActionInput[]
+  readOnly: boolean
+  blocked: boolean
+  personStrategies: Record<string, PathConfigPersonStrategyInput>
+  instanceContainer?: PathActionContainer | null
+  instanceSavedActions?: PathConfigConfiguredActionInput[]
+}>()
 const emit = defineEmits<{ update: [containerKey: string, value: PathConfigConfiguredActionInput[]] }>()
 
 const MAX_ACTIONS = 10
+const MAX_REPEAT = 9
 const editorOpen = ref(false)
 const actionDraft = ref<PathConfigConfiguredActionInput[]>([])
-const parameterDraft = ref<Record<string, string>>({})
-const parameterErrors = ref<Record<string, string>>({})
+const repeatDraft = ref<Record<string, number>>({})
 const allowClose = ref(false)
 const dragIndex = ref(-1)
 const dropIndex = ref(-1)
 
-const catalog = computed(() => props.container.actionConfiguration.catalog ?? [])
-// selectableCatalog 排除系统自动语义项，只有真实用户动作可以进入编排。
-const selectableCatalog = computed(() => catalog.value.filter(item => !item.systemOnly))
+const nodeCatalog = computed(() => props.container.actionConfiguration.catalog ?? [])
+const instanceCatalog = computed(() => props.instanceContainer?.actionConfiguration.catalog ?? [])
+const catalog = computed(() => [...nodeCatalog.value, ...instanceCatalog.value])
+// 可编排动作排除两类：系统自动节点语义，以及由场景编译器自动插入的恢复动作（如重新提交）。
+const selectableCatalog = computed(() => catalog.value.filter(item => !item.systemOnly && !item.systemInserted))
 const enabledCatalog = computed(() => selectableCatalog.value.filter(item => item.enabled))
 const systemCatalog = computed(() => catalog.value.filter(item => item.systemOnly))
+const insertedCatalog = computed(() => catalog.value.filter(item => item.systemInserted))
 const disabledCatalog = computed(() => selectableCatalog.value.filter(item => !item.enabled && item.disabledReason))
 const actions = computed(() => actionDraft.value)
+const savedSummary = computed(() => collapseActions([...props.savedActions, ...(props.instanceSavedActions ?? [])]))
 const canAddAction = computed(() => enabledCatalog.value.length > 0 && actions.value.length < MAX_ACTIONS)
-const canSave = computed(() => Object.keys(parameterErrors.value).length === 0)
 const editorDisabled = computed(() => props.readOnly || props.blocked || !selectableCatalog.value.length)
-const hasChanges = computed(() => {
-  if (JSON.stringify(actionDraft.value) !== JSON.stringify(copyPathConfigActions(props.savedActions))) return true
-  return actionDraft.value.some(action => parameterDraft.value[action.key] !== JSON.stringify(action.parameters ?? {}, null, 2))
-})
+const hasChanges = computed(() => JSON.stringify(expandActions()) !== JSON.stringify([...props.savedActions, ...(props.instanceSavedActions ?? [])]))
 
-// catalogItem 按动作键定位当前上下文的目录项，禁用项也要能显示真实门禁原因。
+// instanceKinds 记录哪些动作属于实例级容器，保存时据此拆分到对应容器。
+const instanceKinds = computed(() => new Set(instanceCatalog.value.map(item => item.kind)))
+
 function catalogItem(kind: PathConfigActionKind): PathConfigActionCatalogItem | undefined { return catalog.value.find(item => item.kind === kind) }
-// enabledCatalogItem 只返回当前允许编排的目录项。
-function enabledCatalogItem(kind: PathConfigActionKind): PathConfigActionCatalogItem | undefined { return enabledCatalog.value.find(item => item.kind === kind) }
-// actionPerson 返回动作专用人员目录。
-function actionPerson(kind: PathConfigActionKind) { return enabledCatalogItem(kind)?.person }
-// actionOptions 返回所有可用动作，允许同一语义按多条独立记录重复编排。
-function actionOptions() { return enabledCatalog.value.map(item => ({ label: item.label, value: item.kind })) }
-// personDraft 返回当前人员策略草稿。
-function personDraft(person: PathConfigPerson) { return normalizedPersonStrategy(person, props.personStrategies[person.key]) }
-// personOptions 生成不透明人员候选。
-function personOptions(person: PathConfigPerson) { return person.options.map(option => ({ label: option.label, value: option.value })) }
-// strategyOptions 生成当前模板允许的策略候选。
-function strategyOptions(person: PathConfigPerson) { return person.strategies.map(option => ({ label: option.label, value: option.value })) }
-// newActionKey 为每条动作记录生成独立键，键只用于本系统配置幂等，不承载目标临时身份。
-function newActionKey() { return globalThis.crypto?.randomUUID?.() ?? `action-local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
-// emitActions 复制动作行后更新父级草稿，避免 Vue Proxy 进入请求体。
-function emitActions(next: PathConfigConfiguredActionInput[]) { emit('update', props.container.key, copyPathConfigActions(next)) }
 
-// openEditor 打开弹窗时复制父级草稿，取消不会修改已确认配置。
+function enabledCatalogItem(kind: PathConfigActionKind): PathConfigActionCatalogItem | undefined { return enabledCatalog.value.find(item => item.kind === kind) }
+
+function actionPerson(kind: PathConfigActionKind) { return enabledCatalogItem(kind)?.person }
+
+// requiredParameters 只渲染目标真正要求填写的参数，没有必填参数时不出现任何输入框。
+function requiredParameters(kind: PathConfigActionKind) { return (catalogItem(kind)?.parameterDetails ?? []).filter(item => item.required) }
+
+// actionOptions 分组展示：上半部分当前节点动作，下半部分实例级动作，每项附一句会发生什么。
+function actionOptions() {
+  const groups = [
+    { label: '当前节点动作', items: nodeCatalog.value.filter(item => !item.systemOnly && !item.systemInserted) },
+    { label: '实例级动作（作用于整个流程实例）', items: instanceCatalog.value.filter(item => !item.systemOnly && !item.systemInserted) },
+  ]
+  return groups.filter(group => group.items.length).map(group => ({
+    type: 'group' as const,
+    label: group.label,
+    key: group.label,
+    children: group.items.map(item => ({
+      label: item.label,
+      value: item.kind,
+      disabled: !item.enabled,
+      detail: item.enabled ? (item.expectedEffect || item.description) : item.disabledReason,
+    })),
+  }))
+}
+
+// renderActionOption 让下拉每一项都带简短说明，用户不必打开目录也知道会发生什么。
+function renderActionOption(option: { label?: string, detail?: string }) {
+  return h('div', { class: 'action-option' }, [
+    h('span', { class: 'action-option__label' }, String(option.label ?? '')),
+    option.detail ? h('small', { class: 'action-option__detail' }, String(option.detail)) : null,
+  ])
+}
+
+function personDraft(person: PathConfigPerson) { return normalizedPersonStrategy(person, props.personStrategies[person.key]) }
+
+function personOptions(person: PathConfigPerson) { return person.options.map(option => ({ label: option.label, value: option.value })) }
+
+function strategyOptions(person: PathConfigPerson) { return person.strategies.map(option => ({ label: option.label, value: option.value })) }
+
+function newActionKey() { return globalThis.crypto?.randomUUID?.() ?? `action-local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }
+
+// collapseActions 把连续同类且配置一致的动作折叠为一行并记录次数，界面只显示"动作 ×N"。
+function collapseActions(input: PathConfigConfiguredActionInput[]): Array<{ action: PathConfigConfiguredActionInput, count: number }> {
+  const result: Array<{ action: PathConfigConfiguredActionInput, count: number }> = []
+  for (const action of copyPathConfigActions(input)) {
+    const previous = result[result.length - 1]
+    if (previous && sameActionShape(previous.action, action)) { previous.count += 1; continue }
+    result.push({ action, count: 1 })
+  }
+  return result
+}
+
+// sameActionShape 只有动作语义、人员和参数完全一致时才折叠，避免把不同配置混成次数。
+function sameActionShape(left: PathConfigConfiguredActionInput, right: PathConfigConfiguredActionInput) {
+  return left.kind === right.kind
+    && JSON.stringify(left.person ?? null) === JSON.stringify(right.person ?? null)
+    && JSON.stringify(left.parameters ?? null) === JSON.stringify(right.parameters ?? null)
+}
+
+// expandActions 把"动作 ×N"展开成 N 条独立记录：执行器逐条执行、逐条重读事实，不在运行时展开次数。
+function expandActions(): PathConfigConfiguredActionInput[] {
+  const result: PathConfigConfiguredActionInput[] = []
+  for (const action of actionDraft.value) {
+    const count = Math.max(1, Math.min(MAX_REPEAT, repeatDraft.value[action.key] ?? 1))
+    for (let index = 0; index < count; index += 1) {
+      result.push({ ...copyPathConfigActions([action])[0], key: index === 0 ? action.key : newActionKey() })
+    }
+  }
+  return result
+}
+
+function emitActions() {
+  const expanded = expandActions()
+  emit('update', props.container.key, expanded.filter(action => !instanceKinds.value.has(action.kind)))
+  if (props.instanceContainer) emit('update', props.instanceContainer.key, expanded.filter(action => instanceKinds.value.has(action.kind)))
+}
+
+// openEditor 从已保存动作还原草稿，并把连续同类动作折叠回次数。
 function openEditor() {
-  actionDraft.value = copyPathConfigActions(props.savedActions)
-  parameterDraft.value = Object.fromEntries(actionDraft.value.map(action => [action.key, JSON.stringify(action.parameters ?? {}, null, 2)]))
-  parameterErrors.value = {}
-  dragIndex.value = -1
-  dropIndex.value = -1
+  const collapsed = collapseActions([...props.savedActions, ...(props.instanceSavedActions ?? [])])
+  actionDraft.value = collapsed.map(item => item.action)
+  repeatDraft.value = Object.fromEntries(collapsed.map(item => [item.action.key, item.count]))
+  allowClose.value = false
   editorOpen.value = true
 }
-// saveEditor 只提交已经确认的弹窗草稿，页面保存按钮负责后端持久化。
-function saveEditor() { if (!canSave.value) return; emitActions(actionDraft.value); allowClose.value = true; editorOpen.value = false }
-// closeEditor 关闭前确认未保存的独立记录，避免取消误丢排序或参数。
-function closeEditor() {
-  if (hasChanges.value && !window.confirm('动作配置尚未保存，确定关闭？')) return
-  allowClose.value = true
-  editorOpen.value = false
-}
-// handleVisibility 拦截 ESC 或点击遮罩触发的关闭请求。
+
+function saveEditor() { emitActions(); allowClose.value = true; editorOpen.value = false }
+
+function closeEditor() { allowClose.value = true; editorOpen.value = false }
+
 function handleVisibility(show: boolean) {
-  if (show) { editorOpen.value = true; return }
-  if (allowClose.value) { allowClose.value = false; editorOpen.value = false; return }
-  closeEditor()
+  if (show || allowClose.value || !hasChanges.value) { editorOpen.value = show; return }
+  editorOpen.value = true
 }
-// addAction 添加一条独立动作记录，允许与已有记录使用相同动作。
+
 function addAction() {
-  const definition = enabledCatalog.value[0]
-  if (!definition || actions.value.length >= MAX_ACTIONS) return
-  actionDraft.value = [...actions.value, { key: newActionKey(), kind: definition.kind, person: definition.person ? personDraft(definition.person) : undefined }]
+  const first = enabledCatalog.value[0]
+  if (!first || actionDraft.value.length >= MAX_ACTIONS) return
+  const key = newActionKey()
+  actionDraft.value = [...actionDraft.value, { key, kind: first.kind }]
+  repeatDraft.value = { ...repeatDraft.value, [key]: 1 }
 }
-// updateAction 只更新弹窗草稿，避免用户未确认时污染已确认配置。
+
 function updateAction(index: number, patch: Partial<PathConfigConfiguredActionInput>) {
-  const next = copyPathConfigActions(actions.value)
+  const next = [...actionDraft.value]
   const current = next[index]
   if (!current) return
-  const kind = (patch.kind ?? current.kind) as PathConfigActionKind
-  const definition = enabledCatalogItem(kind)
-  if (!definition) return
-  current.kind = kind
-  current.person = definition.requiresPerson ? (patch.person ?? current.person ?? (definition.person ? personDraft(definition.person) : undefined)) : undefined
-  current.actorPolicy = definition.requiresPerson ? (current.person?.strategy || current.actorPolicy) : undefined
+  next[index] = { ...current, ...patch }
+  if (patch.kind && patch.kind !== current.kind) { delete next[index].person; delete next[index].parameters }
   actionDraft.value = next
 }
-// updateActionPerson 只更新弹窗草稿中的独立人员策略。
+
+function updateRepeat(action: PathConfigConfiguredActionInput, value: number | null) {
+  repeatDraft.value = { ...repeatDraft.value, [action.key]: Math.max(1, Math.min(MAX_REPEAT, Number(value) || 1)) }
+}
+
+function updateActionParameter(index: number, name: string, value: string) {
+  const current = actionDraft.value[index]
+  if (!current) return
+  const parameters = { ...(current.parameters ?? {}) }
+  if (value.trim()) parameters[name] = value
+  else delete parameters[name]
+  updateAction(index, { parameters: Object.keys(parameters).length ? parameters : undefined })
+}
+
 function updateActionPerson(index: number, person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) {
-  const next = copyPathConfigActions(actions.value)
-  if (!next[index]) return
-  const updated = { ...(next[index].person ?? personDraft(person)), ...patch, key: person.key }
-  updated.selected = resolvedPersonStrategySelection(person, updated)
-  next[index].person = updated
-  next[index].actorPolicy = updated.strategy
-  actionDraft.value = next
+  const current = actionDraft.value[index]
+  if (!current) return
+  const base = current.person ?? personDraft(person)
+  updateAction(index, { person: normalizedPersonStrategy(person, { ...base, ...patch, key: person.key }) })
 }
-// moveAction 调整动作在同一主实例上的真实执行顺序。
-function moveAction(index: number, offset: number) {
-  const target = index + offset
-  if (target < 0 || target >= actions.value.length) return
-  const next = copyPathConfigActions(actions.value)
-  ;[next[index], next[target]] = [next[target], next[index]]
-  actionDraft.value = next
-}
-// reorderAction 把拖拽记录移动到目标位置，保持其余记录的相对顺序。
+
+function moveAction(index: number, offset: number) { reorderAction(index, index + offset) }
+
 function reorderAction(from: number, to: number) {
-  if (from === to || from < 0 || to < 0 || from >= actions.value.length || to >= actions.value.length) return
-  const next = copyPathConfigActions(actions.value)
+  if (from === to || from < 0 || to < 0 || from >= actionDraft.value.length || to >= actionDraft.value.length) return
+  const next = [...actionDraft.value]
   const [moved] = next.splice(from, 1)
   next.splice(to, 0, moved)
   actionDraft.value = next
 }
-// handleDragStart 记录被拖拽的动作行，只读或阻断时不启动拖拽。
+
 function handleDragStart(index: number, event: DragEvent) {
-  if (props.readOnly) { event.preventDefault(); return }
+  if (props.readOnly) return
   dragIndex.value = index
-  dropIndex.value = index
   event.dataTransfer?.setData('text/plain', String(index))
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
 }
-// handleDragOver 高亮当前放置位置。
+
 function handleDragOver(index: number) { if (dragIndex.value >= 0) dropIndex.value = index }
-// handleDrop 按拖拽结果重排动作顺序。
+
 function handleDrop(index: number) {
-  if (dragIndex.value < 0) return
-  reorderAction(dragIndex.value, index)
-  dragIndex.value = -1
-  dropIndex.value = -1
+  if (dragIndex.value >= 0) reorderAction(dragIndex.value, index)
+  handleDragEnd()
 }
-// handleDragEnd 清除拖拽高亮状态。
+
 function handleDragEnd() { dragIndex.value = -1; dropIndex.value = -1 }
-// removeAction 删除一个动作行。
+
 function removeAction(index: number) {
-  const removed = actions.value[index]
-  const next = copyPathConfigActions(actions.value)
-  next.splice(index, 1)
-  actionDraft.value = next
-  if (!removed) return
-  const { [removed.key]: _draft, ...draftRest } = parameterDraft.value
-  const { [removed.key]: _error, ...errorRest } = parameterErrors.value
-  parameterDraft.value = draftRest
-  parameterErrors.value = errorRest
-}
-// parametersText 返回当前动作的 JSON 参数草稿，参数仅对应目标接口语义字段。
-function parametersText(action: PathConfigConfiguredActionInput) { return parameterDraft.value[action.key] ?? JSON.stringify(action.parameters ?? {}, null, 2) }
-// parameterPlaceholder 用目标接口真实参数名提示当前动作需要填写的内容。
-function parameterPlaceholder(kind: PathConfigActionKind) {
-  const item = catalogItem(kind)
-  if (!item?.parameters.length) return '动作参数 JSON'
-  return `动作参数 JSON，目标参数：${item.parameters.join('、')}`
-}
-// updateActionParameters 解析独立动作参数，非法 JSON 会阻止弹窗保存而不污染已确认草稿。
-function updateActionParameters(index: number, value: string) {
-  const current = actionDraft.value[index]
-  if (!current) return
-  parameterDraft.value = { ...parameterDraft.value, [current.key]: value }
-  const trimmed = value.trim()
-  if (!trimmed) {
-    const next = copyPathConfigActions(actions.value)
-    delete next[index].parameters
-    actionDraft.value = next
-    const { [current.key]: _removed, ...rest } = parameterErrors.value
-    parameterErrors.value = rest
-    return
-  }
-  try {
-    const parsed: unknown = JSON.parse(trimmed)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('动作参数必须是 JSON 对象')
-    const next = copyPathConfigActions(actions.value)
-    next[index].parameters = parsed as Record<string, unknown>
-    actionDraft.value = next
-    const { [current.key]: _removed, ...rest } = parameterErrors.value
-    parameterErrors.value = rest
-  }
-  catch (error) {
-    parameterErrors.value = { ...parameterErrors.value, [current.key]: error instanceof Error ? error.message : '动作参数 JSON 无效' }
-  }
+  const removed = actionDraft.value[index]
+  actionDraft.value = actionDraft.value.filter((_, current) => current !== index)
+  if (removed) { const next = { ...repeatDraft.value }; delete next[removed.key]; repeatDraft.value = next }
 }
 </script>
 
@@ -194,13 +220,11 @@ function updateActionParameters(index: number, value: string) {
       <n-button type="primary" size="small" :disabled="editorDisabled" @click="openEditor">动作配置</n-button>
     </div>
     <p v-if="container.actionConfiguration.note" class="action-orchestration__note">{{ container.actionConfiguration.note }}</p>
-    <n-alert v-if="container.actionConfiguration.base" type="info" :show-icon="false">
-      系统默认动作：{{ container.actionConfiguration.base.label }}（{{ container.actionConfiguration.base.detail }}）
-    </n-alert>
+    <p v-if="instanceContainer" class="action-orchestration__note">动作下拉分两组：当前节点动作作用于这个审批节点，实例级动作作用于整个流程实例。</p>
 
-    <div v-if="savedActions.length" class="action-orchestration__summary">
-      <n-tag v-for="(action, index) in savedActions" :key="action.key" size="small">
-        {{ index + 1 }}. {{ catalogItem(action.kind)?.label || action.kind }}
+    <div v-if="savedSummary.length" class="action-orchestration__summary">
+      <n-tag v-for="(item, index) in savedSummary" :key="item.action.key" size="small">
+        {{ index + 1 }}. {{ catalogItem(item.action.kind)?.label || item.action.kind }}{{ item.count > 1 ? ` ×${item.count}` : '' }}
       </n-tag>
     </div>
     <span v-else class="action-orchestration__muted">未添加动作</span>
@@ -226,13 +250,16 @@ function updateActionParameters(index: number, value: string) {
       </ul>
     </details>
 
+    <n-alert v-for="item in insertedCatalog" :key="item.kind" type="info" :show-icon="false">
+      {{ item.label }}：{{ item.systemInsertedReason || '由系统自动插入' }}
+    </n-alert>
     <div v-if="disabledCatalog.length" class="action-orchestration__reasons">
       <n-alert v-for="item in disabledCatalog" :key="item.kind" type="warning" :show-icon="false">{{ item.label }}：{{ item.disabledReason }}</n-alert>
     </div>
     <n-alert v-for="item in systemCatalog" :key="item.kind" type="info" :show-icon="false">{{ item.label }}：{{ item.description }}</n-alert>
 
     <n-modal :show="editorOpen" @update:show="handleVisibility">
-      <n-card :title="`${title}（可拖拽调整顺序）`" style="width: min(720px, 94vw)">
+      <n-card :title="`${title}（拖动整张卡片调整顺序）`" style="width: min(720px, 94vw)">
         <div
           v-for="(action, index) in actions"
           :key="action.key"
@@ -244,41 +271,65 @@ function updateActionParameters(index: number, value: string) {
           @drop.prevent="handleDrop(index)"
           @dragend="handleDragEnd"
         >
-          <strong class="action-arrival" :title="readOnly ? '' : '按住拖动可调整顺序'">
-            <ReorderTwoOutline v-if="!readOnly" class="action-drag-handle" aria-hidden="true" />第 {{ index + 1 }} 步
-          </strong>
-          <n-select class="action-select" :value="action.kind" :options="actionOptions()" :disabled="readOnly" @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })" />
-          <div class="action-row__actions">
-            <n-button quaternary circle title="上移动作" aria-label="上移动作" :disabled="readOnly || index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
-            <n-button quaternary circle title="下移动作" aria-label="下移动作" :disabled="readOnly || index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
-            <n-popconfirm :disabled="readOnly" @positive-click="removeAction(index)">
-              <template #trigger><n-button type="error" secondary size="small" title="删除动作" aria-label="删除动作" :disabled="readOnly"><CloseOutline /> 删除</n-button></template>
-              删除这个动作配置？
-            </n-popconfirm>
-          </div>
-          <small v-if="catalogItem(action.kind)?.runtimeNote" class="action-row__hint">{{ catalogItem(action.kind)?.runtimeNote }}</small>
-          <div class="action-parameters">
-            <n-input
-              type="textarea"
-              :value="parametersText(action)"
-              :autosize="{ minRows: 2, maxRows: 4 }"
+          <div class="action-row__head">
+            <strong class="action-arrival" :title="readOnly ? '' : '按住拖动可调整顺序'">
+              <ReorderTwoOutline v-if="!readOnly" class="action-drag-handle" aria-hidden="true" />第 {{ index + 1 }} 步
+            </strong>
+            <n-select
+              class="action-select"
+              :value="action.kind"
+              :options="actionOptions()"
+              :render-label="renderActionOption"
               :disabled="readOnly"
-              :placeholder="parameterPlaceholder(action.kind)"
-              @update:value="value => updateActionParameters(index, value)"
+              @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })"
             />
-            <small v-if="parameterErrors[action.key]" class="action-parameter-error">{{ parameterErrors[action.key] }}</small>
+            <label class="action-repeat">
+              执行
+              <n-input-number
+                size="small"
+                :value="repeatDraft[action.key] ?? 1"
+                :min="1"
+                :max="MAX_REPEAT"
+                :show-button="false"
+                :disabled="readOnly"
+                @update:value="value => updateRepeat(action, value)"
+              />
+              次
+            </label>
+            <div class="action-row__actions">
+              <n-button quaternary circle title="上移动作" aria-label="上移动作" :disabled="readOnly || index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
+              <n-button quaternary circle title="下移动作" aria-label="下移动作" :disabled="readOnly || index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
+              <n-popconfirm :disabled="readOnly" @positive-click="removeAction(index)">
+                <template #trigger><n-button type="error" quaternary circle title="删除动作" aria-label="删除动作" :disabled="readOnly"><CloseOutline /></n-button></template>
+                删除这个动作配置？
+              </n-popconfirm>
+            </div>
+          </div>
+          <small class="action-row__hint">{{ catalogItem(action.kind)?.expectedEffect || catalogItem(action.kind)?.description }}</small>
+          <small v-if="catalogItem(action.kind)?.runtimeNote" class="action-row__hint">{{ catalogItem(action.kind)?.runtimeNote }}</small>
+          <div v-if="requiredParameters(action.kind).length" class="action-parameters">
+            <label v-for="parameter in requiredParameters(action.kind)" :key="parameter.name">
+              <span>{{ parameter.description || parameter.name }}</span>
+              <n-input
+                size="small"
+                :value="String(action.parameters?.[parameter.name] ?? '')"
+                :disabled="readOnly"
+                :placeholder="parameter.name"
+                @update:value="value => updateActionParameter(index, parameter.name, value)"
+              />
+            </label>
           </div>
           <div v-if="actionPerson(action.kind)" class="action-person-fields">
             <n-select :value="action.person?.strategy || actionPerson(action.kind)!.strategy" :options="strategyOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { strategy: value as PathConfigPersonStrategyInput['strategy'] })" />
             <n-select v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'manual'" :multiple="actionPerson(action.kind)!.multiple" :value="actionPerson(action.kind)!.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
           </div>
         </div>
-        <n-alert v-if="!actions.length" type="info" :show-icon="false">尚未添加动作，添加后可拖拽或使用上下按钮调整顺序。</n-alert>
+        <n-alert v-if="!actions.length" type="info" :show-icon="false">尚未添加动作，添加后可拖动整张卡片或使用上下按钮调整顺序。</n-alert>
         <template #footer>
           <n-space justify="end">
             <n-button @click="closeEditor">取消</n-button>
             <n-button :disabled="readOnly || !canAddAction" @click="addAction"><AddOutline /> 添加动作</n-button>
-            <n-button type="primary" :disabled="readOnly || !canSave" @click="saveEditor">保存动作配置</n-button>
+            <n-button type="primary" :disabled="readOnly" @click="saveEditor">保存动作配置</n-button>
           </n-space>
         </template>
       </n-card>
@@ -289,26 +340,32 @@ function updateActionParameters(index: number, value: string) {
 <style scoped>
 .action-orchestration{display:flex;flex-direction:column;gap:8px}
 .action-orchestration__header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.action-orchestration h3{margin:0}
-.action-orchestration p{margin:0}
-.action-orchestration__note,.action-orchestration__muted,.action-orchestration__hint{color:#64748b}
-.action-orchestration__blocked{color:#b42318}
+.action-orchestration__header h3{margin:0;font-size:15px}
+.action-orchestration__note,.action-orchestration__hint{margin:0;font-size:12px;opacity:.75}
+.action-orchestration__muted{font-size:12px;opacity:.6}
 .action-orchestration__summary{display:flex;flex-wrap:wrap;gap:6px}
-.action-orchestration__reasons{display:flex;flex-direction:column;gap:6px}
-.action-orchestration__catalog{border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px}
-.action-orchestration__catalog summary{cursor:pointer;color:#334155}
-.action-orchestration__catalog ul{list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:10px}
-.action-orchestration__catalog li{border-top:1px solid #edf0f3;padding-top:8px;font-size:12px;color:#475569;display:flex;flex-direction:column;gap:3px}
+.action-orchestration__catalog{font-size:12px}
+.action-orchestration__catalog ul{display:grid;gap:8px;margin:8px 0 0;padding-left:16px}
 .action-orchestration__catalog-head{display:flex;align-items:center;gap:6px}
-.action-row{display:grid;grid-template-columns:112px minmax(220px,1fr) 148px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #edf0f3}
-.action-row--dragging{opacity:.5}
-.action-row--drop{background:#f1f5f9}
-.action-arrival{white-space:nowrap;color:#475569;display:flex;align-items:center;gap:4px;cursor:grab}
+.action-orchestration__catalog p{margin:2px 0}
+.action-orchestration__blocked{color:var(--path-config-warning-color,#d97706)}
+.action-orchestration__reasons{display:grid;gap:6px}
+.action-row{display:grid;gap:6px;padding:10px 12px;margin-bottom:10px;border:1px solid var(--path-config-border-color,#e5e7eb);border-radius:6px;cursor:grab}
+.action-row--dragging{opacity:.6}
+.action-row--drop{border-color:var(--path-config-primary-color,#2080f0)}
+.action-row__head{display:flex;align-items:center;gap:10px}
+.action-arrival{display:flex;align-items:center;gap:4px;flex:0 0 auto;font-size:13px}
 .action-drag-handle{width:14px;height:14px}
-.action-row__actions{display:flex;justify-content:flex-end;gap:4px;align-items:center}
-.action-row__hint{grid-column:1 / -1;color:#64748b}
-.action-parameters,.action-person-fields{grid-column:2 / -1;max-width:520px}
-.action-person-fields{display:flex;flex-direction:column;gap:7px}
-.action-parameter-error{display:block;color:#b42318;margin-top:4px}
-@media (max-width:680px){.action-row{grid-template-columns:1fr}.action-arrival,.action-select,.action-parameters,.action-person-fields{grid-column:1 / -1}.action-row__actions{grid-column:1 / -1;justify-content:flex-start}}
+.action-select{flex:1 1 auto;min-width:0}
+.action-repeat{display:flex;align-items:center;gap:4px;flex:0 0 auto;font-size:12px;opacity:.85}
+.action-repeat :deep(.n-input-number){width:56px}
+.action-row__actions{display:flex;flex:0 0 auto;gap:4px}
+.action-row__hint{font-size:12px;opacity:.7}
+.action-parameters{display:grid;gap:6px}
+.action-parameters label{display:grid;gap:2px;font-size:12px}
+.action-person-fields{display:flex;flex-wrap:wrap;gap:8px}
+.action-person-fields :deep(.n-select){min-width:180px}
+.action-option{display:grid;gap:1px;padding:2px 0}
+.action-option__label{font-size:13px}
+.action-option__detail{font-size:11px;opacity:.65;white-space:normal}
 </style>

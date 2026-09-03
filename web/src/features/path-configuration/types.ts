@@ -354,6 +354,8 @@ export interface PathConfigActionCatalogItem {
   reloadRequirements: string[]
   systemOnly: boolean
   systemNodeType: string
+  systemInserted?: boolean
+  systemInsertedReason?: string
   runtimeNote: string
 }
 

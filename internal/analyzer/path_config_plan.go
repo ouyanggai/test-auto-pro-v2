@@ -357,9 +357,20 @@ func resolveOrderDependentGate(item model.ActionCatalogItem, ctx model.ActionCon
 	}
 	for _, candidate := range actioncatalog.Build(variant) {
 		if candidate.Action == item.Action {
-			return candidate
+			return markSystemInsertedAction(candidate)
 		}
 	}
+	return markSystemInsertedAction(item)
+}
+
+// markSystemInsertedAction 标注由场景编译器自动插入的恢复动作：重新提交只在保存草稿、不同意
+// 或撤回之后由编译器插入，作为用户可选动作没有意义，也无法单独执行。
+func markSystemInsertedAction(item model.ActionCatalogItem) model.ActionCatalogItem {
+	if item.Action != model.ActionResubmit {
+		return item
+	}
+	item.SystemInserted = true
+	item.SystemInsertedReason = "保存草稿、不同意或撤回之后由系统自动插入，不需要单独编排"
 	return item
 }
 
@@ -402,6 +413,7 @@ func projectedCatalogItem(item model.ActionCatalogItem, person *model.PathConfig
 		Parameters: item.Parameters, ParameterDetails: item.ParameterDetails, Preconditions: item.Preconditions,
 		ExpectedEffect: item.ExpectedEffect, RequiresReload: item.RequiresReload, ReloadRequirements: item.ReloadRequirements,
 		SystemOnly: item.SystemOnly, SystemNodeType: item.SystemNodeType, RuntimeNote: note,
+		SystemInserted: item.SystemInserted, SystemInsertedReason: item.SystemInsertedReason,
 	}
 }
 

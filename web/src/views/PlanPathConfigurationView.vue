@@ -82,7 +82,7 @@ const draft = ref<PathConfigDraft>({ fields: {}, persons: {}, personStrategies: 
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
-const workspace = ref<'nodes' | 'form' | 'scenario'>('nodes')
+const workspace = ref<'nodes' | 'form'>('nodes')
 const runtimeSession = ref<PathFormRuntimeSession | null>(null)
 const dataWorkspace = ref<PathConfigurationDataWorkspace | null>(null)
 const runtimeStats = ref<{ filledEditable: number, manualPending: number }>({ filledEditable: 0, manualPending: 0 })
@@ -432,12 +432,10 @@ async function loadCompiledScenario() {
   }
 }
 
-// openScenarioWorkspace 切换到实例动作与编译预览工作区；离开表单时同时失效短期 SID 会话。
-async function openScenarioWorkspace() {
-  if (!configuration.value) return
-  if (workspace.value === 'form') invalidateRuntimeSession()
-  workspace.value = 'scenario'
-  await loadCompiledScenario()
+// handleScenarioToggle 只在用户展开步骤预览时读取服务端编译结果，不在进入页面时额外请求。
+async function handleScenarioToggle(event: Event) {
+  const details = event.target as HTMLDetailsElement | null
+  if (details?.open && !compiledScenario.value.length && !compiledLoading.value) await loadCompiledScenario()
 }
 
 // updateInstanceActionConfiguration 只接受实例动作容器草稿，禁止实例编辑器越界写语义节点。
@@ -499,6 +497,8 @@ async function saveInstanceActions() {
 // updateNodeActionConfiguration 替换当前节点独立动作草稿，不允许面板越过节点边界写其他节点。
 function updateNodeActionConfiguration(nodeKey: string, value: PathConfigConfiguredActionInput[]) {
 	if (!planMutable.value) return
+	// 节点编辑器同时编排实例级动作：实例容器键仍按实例容器保存，不越界写语义节点。
+	if (instanceContainer.value && nodeKey === instanceContainer.value.key) { updateInstanceActionConfiguration(nodeKey, value); return }
 	if (selectedNode.value?.key !== nodeKey) return
 	// 子组件事件值仍可能携带 Vue Proxy；父页面只持有普通草稿，避免保存前再次触发克隆异常。
 	draft.value.actionConfigurations[nodeKey] = copyPathConfigActions(value)
@@ -522,6 +522,8 @@ async function saveCurrentNode() {
     compiledScenario.value = result.compiledScenario
     compiledIssues.value = result.issues
     compiledError.value = ''
+    // 节点编辑器里同时编排的实例级动作在同一次保存里落盘，避免用户以为已保存却只写了节点。
+    if (instanceDraftHasUnsavedChanges.value) await saveInstanceActions()
     await finishConfirmedNodeSave()
   }
   catch (caught) {
@@ -826,7 +828,6 @@ void loadPage()
 
     <nav v-if="configuration" class="path-configuration-page__switch" aria-label="配置工作区">
       <n-button :type="workspace === 'nodes' ? 'primary' : 'default'" :secondary="workspace !== 'nodes'" @click="returnToNodes">节点配置</n-button>
-      <n-button :type="workspace === 'scenario' ? 'primary' : 'default'" :secondary="workspace !== 'scenario'" @click="openScenarioWorkspace">动作场景</n-button>
       <n-button :type="workspace === 'form' ? 'primary' : 'default'" :secondary="workspace !== 'form'" @click="openFormWorkspace">表单数据</n-button>
     </nav>
 
@@ -869,6 +870,8 @@ void loadPage()
             :save-details="nodeSaveDetails"
             :saved-successfully="nodeSavedSuccessfully"
             :form-complete="dataWorkspace?.dataStatus === 'ready'"
+            :instance-container="instanceContainer"
+            :instance-saved-actions="instanceActionsSaved"
             @update-person-strategy="updatePersonStrategy"
             @update-action-configuration="updateNodeActionConfiguration"
             @save="saveCurrentNode"
@@ -879,47 +882,11 @@ void loadPage()
         </template>
       </flow-graph-canvas>
 
-      <section v-else-if="workspace === 'scenario' && configuration" class="path-configuration-page__scenario-workspace">
-        <header class="path-configuration-page__scenario-toolbar">
-          <div>
-            <h2>动作场景</h2>
-            <p>实例作用域动作单独编排；编译步骤由服务端按当前路径、人员和真实门禁生成，只用于核对。</p>
-          </div>
-          <div class="path-configuration-page__form-actions">
-            <n-button size="small" :loading="compiledLoading" @click="loadCompiledScenario">重新读取编译场景</n-button>
-            <n-button
-              v-if="instanceContainer && planMutable"
-              size="small"
-              type="primary"
-              :loading="savingInstanceActions"
-              :disabled="instanceSaveDisabled"
-              @click="saveInstanceActions"
-            >保存实例动作</n-button>
-          </div>
-        </header>
-        <div class="path-configuration-page__scenario-body">
-          <n-alert v-if="instanceSaveError" type="error" :show-icon="false">
-            <span>{{ instanceSaveError }}</span>
-            <ul v-if="instanceSaveDetails.length" class="path-configuration-page__form-summary-list">
-              <li v-for="detail in instanceSaveDetails" :key="`${detail.kind}-${detail.name}`">{{ detail.name }}：{{ pathConfigurationMessage(detail.reason) }}</li>
-            </ul>
-          </n-alert>
-          <n-alert v-else-if="instanceSavedSuccessfully" type="success" :show-icon="false">实例动作已保存，编译场景已按同一次服务端结果刷新。</n-alert>
-          <n-alert v-else-if="instanceDraftHasUnsavedChanges" type="warning" :show-icon="false">实例动作草稿尚未保存，编译预览仍是上一次保存结果。</n-alert>
-          <action-orchestration-editor
-            v-if="instanceContainer"
-            :container="instanceContainer"
-            title="实例动作"
-            :saved-actions="instanceActionsSaved"
-            :read-only="!planMutable"
-            :blocked="false"
-            :person-strategies="draft.personStrategies"
-            @update="updateInstanceActionConfiguration"
-          />
-          <n-alert v-else type="info" :show-icon="false">当前路径没有可配置的实例作用域动作。</n-alert>
-          <compiled-scenario-preview :steps="compiledScenario" :issues="compiledIssues" :loading="compiledLoading" :error="compiledError" />
-        </div>
-      </section>
+      <details v-if="configuration" class="path-configuration-page__scenario" @toggle="handleScenarioToggle">
+        <summary>将要执行的步骤（含系统自动插入的恢复步骤）</summary>
+        <compiled-scenario-preview :steps="compiledScenario" :issues="compiledIssues" :loading="compiledLoading" :error="compiledError" />
+      </details>
+
 
       <section v-else-if="workspace === 'form' && configuration" class="path-configuration-page__form-workspace">
         <header class="path-configuration-page__form-toolbar">
@@ -1082,6 +1049,15 @@ void loadPage()
 .path-configuration-page__error-content { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; line-height: 1.6; }
 .path-configuration-page__error-content > span { flex: 1 1 280px; min-width: 0; }
 
+.path-configuration-page__scenario {
+  flex: 0 0 auto;
+  margin: 0 16px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--path-config-border-color);
+  border-radius: 4px;
+  font-size: 13px;
+}
+.path-configuration-page__scenario summary { cursor: pointer; }
 .path-configuration-page__scenario-workspace {
   display: flex;
   flex-direction: column;

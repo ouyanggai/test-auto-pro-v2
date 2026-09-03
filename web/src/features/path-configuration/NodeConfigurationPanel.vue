@@ -3,9 +3,9 @@ import { NAlert, NButton, NEmpty, NSelect, NTag } from 'naive-ui'
 import { computed } from 'vue'
 import ActionOrchestrationEditor from './ActionOrchestrationEditor.vue'
 import { containerActionsDraft, nodeActionContainer, normalizedPersonStrategy, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
-import type { PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
+import type { PathActionContainer, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean }>()
+const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; instanceContainer?: PathActionContainer | null; instanceSavedActions?: PathConfigConfiguredActionInput[] }>()
 const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; backToPlan: []; openForm: [] }>()
 
 const container = computed(() => props.node ? nodeActionContainer(props.node) : null)
@@ -58,6 +58,8 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           :read-only="readOnly"
           :blocked="node.lineBlocked"
           :person-strategies="draft.personStrategies"
+          :instance-container="instanceContainer"
+          :instance-saved-actions="instanceSavedActions"
           @update="(key, value) => emit('updateActionConfiguration', key, value)"
         />
       </section>
