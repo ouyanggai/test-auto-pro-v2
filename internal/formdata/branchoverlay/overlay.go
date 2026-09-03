@@ -130,10 +130,7 @@ func Apply(input Input) Result {
 		}
 		return appendIssue(result, Issue{Code: code, Message: message})
 	}
-	selected, ambiguous := chooseSolution(solutions)
-	if ambiguous {
-		return appendIssue(result, Issue{Code: "ambiguous_solution", Message: "有多个字段取值都能进入当前路径，请在表单里自己确认关键字段的值"})
-	}
+	selected := chooseSolution(solutions)
 	finalWalk := walkTree(input.Tree, selected.values, choices)
 	if !finalWalk.complete || !finalWalk.matches {
 		return appendIssue(result, Issue{Code: "path_recheck_failed", Message: "最小补丁未通过完整目标路径复验"})
@@ -826,10 +823,13 @@ func patchRank(original, values map[string]any, variables []patchVariable) (int,
 }
 
 // chooseSolution 选择最少字段、最小偏移并按字段路径稳定排序的解。
-func chooseSolution(solutions []patchSolution) (patchSolution, bool) {
+func chooseSolution(solutions []patchSolution) patchSolution {
 	if len(solutions) == 0 {
-		return patchSolution{}, false
+		return patchSolution{}
 	}
+	// 排序键完全确定：改动字段数最少 → 值偏移最小 → 字段路径稳定排序 → 取值编码稳定排序。
+	// 最后一级保证同字段多个取值都能命中时也有唯一结果，不再退回 needs_input；
+	// 实际改了哪些字段会作为分支补丁明细展示，用户仍可在表单里改成别的合法取值。
 	sort.SliceStable(solutions, func(left, right int) bool {
 		if solutions[left].changedCount != solutions[right].changedCount {
 			return solutions[left].changedCount < solutions[right].changedCount
@@ -837,18 +837,12 @@ func chooseSolution(solutions []patchSolution) (patchSolution, bool) {
 		if comparison := solutions[left].offset.Cmp(solutions[right].offset); comparison != 0 {
 			return comparison < 0
 		}
-		return strings.Join(solutions[left].paths, "\x00") < strings.Join(solutions[right].paths, "\x00")
+		if leftPaths, rightPaths := strings.Join(solutions[left].paths, "\x00"), strings.Join(solutions[right].paths, "\x00"); leftPaths != rightPaths {
+			return leftPaths < rightPaths
+		}
+		return solutions[left].encoded < solutions[right].encoded
 	})
-	best := solutions[0]
-	for _, candidate := range solutions[1:] {
-		if candidate.changedCount != best.changedCount || candidate.offset.Cmp(best.offset) != 0 {
-			break
-		}
-		if strings.Join(candidate.paths, "\x00") == strings.Join(best.paths, "\x00") && candidate.encoded != best.encoded {
-			return patchSolution{}, true
-		}
-	}
-	return best, false
+	return solutions[0]
 }
 
 // dedupeSolutions 按完整原始 JSON 结果去重，避免相同补丁被不同候选来源重复计数。

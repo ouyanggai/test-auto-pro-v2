@@ -12,7 +12,6 @@ import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
 import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
 import ActionOrchestrationEditor from '../features/path-configuration/ActionOrchestrationEditor.vue'
-import CompiledScenarioPreview from '../features/path-configuration/CompiledScenarioPreview.vue'
 import FormDataHintsPanel from '../features/path-configuration/FormDataHintsPanel.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
@@ -433,12 +432,6 @@ async function loadCompiledScenario() {
   }
 }
 
-// handleScenarioToggle 只在用户展开步骤预览时读取服务端编译结果，不在进入页面时额外请求。
-async function handleScenarioToggle(event: Event) {
-  const details = event.target as HTMLDetailsElement | null
-  if (details?.open && !compiledScenario.value.length && !compiledLoading.value) await loadCompiledScenario()
-}
-
 // updateInstanceActionConfiguration 只接受实例动作容器草稿，禁止实例编辑器越界写语义节点。
 function updateInstanceActionConfiguration(containerKey: string, value: PathConfigConfiguredActionInput[]) {
   if (!planMutable.value) return
@@ -844,8 +837,8 @@ void loadPage()
         </div>
       </n-alert>
 
-      <section v-else-if="workspace === 'nodes' && graph && currentPath && configuration" class="path-configuration-page__nodes-workspace">
       <flow-graph-canvas
+        v-else-if="workspace === 'nodes' && graph && currentPath && configuration"
         ref="canvasRef"
         class="path-configuration-page__canvas"
         :graph="graph"
@@ -873,6 +866,11 @@ void loadPage()
             :form-complete="dataWorkspace?.dataStatus === 'ready'"
             :instance-container="instanceContainer"
             :instance-saved-actions="instanceActionsSaved"
+            :compiled-steps="compiledScenario"
+            :compiled-issues="compiledIssues"
+            :compiled-loading="compiledLoading"
+            :compiled-error="compiledError"
+            @request-compiled="loadCompiledScenario"
             @update-person-strategy="updatePersonStrategy"
             @update-action-configuration="updateNodeActionConfiguration"
             @save="saveCurrentNode"
@@ -882,11 +880,6 @@ void loadPage()
           />
         </template>
       </flow-graph-canvas>
-      <details class="path-configuration-page__scenario" @toggle="handleScenarioToggle">
-        <summary>将要执行的步骤（含系统自动插入的恢复步骤）</summary>
-        <compiled-scenario-preview :steps="compiledScenario" :issues="compiledIssues" :loading="compiledLoading" :error="compiledError" />
-      </details>
-      </section>
 
 
       <section v-else-if="workspace === 'form' && configuration" class="path-configuration-page__form-workspace">
@@ -914,6 +907,7 @@ void loadPage()
           :disabled="!planMutable"
           @saved="handleBaseFormDataSaved"
         />
+        <div class="path-configuration-page__form-body">
         <form-data-hints-panel
           v-if="dataWorkspace"
           :key-fields="dataWorkspace.keyFields ?? []"
@@ -934,6 +928,7 @@ void loadPage()
           @error="handleRuntimeError"
         />
         <n-empty v-else description="表单运行时会话暂不可用，请返回节点画布后重试" />
+        </div>
       </section>
 
       <n-empty v-else description="当前路径没有可配置内容" />
@@ -1043,18 +1038,11 @@ void loadPage()
   min-height: 0;
 }
 .path-configuration-page__initial-loading { min-height: 320px; }
-.path-configuration-page__canvas { flex: 1 1 auto; height: auto; min-height: 0; border-top: 0; }
+.path-configuration-page__canvas { height: 100%; min-height: 0; border-top: 0; }
 .path-configuration-page__error { margin: 20px; }
 .path-configuration-page__error-content { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; line-height: 1.6; }
 .path-configuration-page__error-content > span { flex: 1 1 280px; min-width: 0; }
 
-.path-configuration-page__nodes-workspace {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
 .path-configuration-page__scenario {
   flex: 0 0 auto;
   margin: 0 16px 12px;
@@ -1093,6 +1081,13 @@ void loadPage()
   overflow-y: auto;
 }
 
+.path-configuration-page__form-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
 .path-configuration-page__form-workspace {
   position: relative;
   display: flex;

@@ -33,6 +33,10 @@ test('T05 表单提示改为右侧可收起悬浮面板并给出决定路径的�
   assert.match(panel, /决定当前路径的字段/)
   assert.match(panel, /position: absolute/)
   assert.match(panel, /open = !open/)
+  // 收起后切换按钮必须常驻，否则用户无法再次展开。
+  assert.match(panel, /:aria-expanded="open"/)
+  assert.doesNotMatch(panel, /v-if="!open"/)
+  assert.match(view, /path-configuration-page__form-body/)
   // 提示面板使用组件库的卡片与折叠面板，不自绘容器样式。
   assert.match(panel, /<n-card/)
   assert.match(panel, /<n-collapse/)

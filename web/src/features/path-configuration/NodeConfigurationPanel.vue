@@ -2,15 +2,22 @@
 import { NAlert, NButton, NEmpty, NSelect, NTag } from 'naive-ui'
 import { computed } from 'vue'
 import ActionOrchestrationEditor from './ActionOrchestrationEditor.vue'
+import CompiledScenarioPreview from './CompiledScenarioPreview.vue'
 import { containerActionsDraft, nodeActionContainer, normalizedPersonStrategy, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
-import type { PathActionContainer, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
+import type { PathActionConfigurationIssue, PathActionContainer, PathCompiledActionStep, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; instanceContainer?: PathActionContainer | null; instanceSavedActions?: PathConfigConfiguredActionInput[] }>()
-const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; backToPlan: []; openForm: [] }>()
+const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; instanceContainer?: PathActionContainer | null; instanceSavedActions?: PathConfigConfiguredActionInput[]; compiledSteps?: PathCompiledActionStep[]; compiledIssues?: PathActionConfigurationIssue[]; compiledLoading?: boolean; compiledError?: string }>()
+const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; backToPlan: []; openForm: []; requestCompiled: [] }>()
 
 const container = computed(() => props.node ? nodeActionContainer(props.node) : null)
 // savedActions 只保留当前节点已确认的独立动作记录。
 const savedActions = computed(() => container.value ? containerActionsDraft(container.value, props.draft) : [])
+
+// handleScenarioToggle 只在用户展开步骤预览时请求服务端编译结果。
+function handleScenarioToggle(event: Event) {
+  const details = event.target as HTMLDetailsElement | null
+  if (details?.open && !(props.compiledSteps?.length) && !props.compiledLoading) emit('requestCompiled')
+}
 
 // personDraft 返回当前人员策略草稿。
 function personDraft(person: PathConfigPerson) { return normalizedPersonStrategy(person, props.draft.personStrategies[person.key]) }
@@ -63,6 +70,18 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           @update="(key, value) => emit('updateActionConfiguration', key, value)"
         />
       </section>
+
+      <section class="node-configuration-panel__section">
+        <details class="node-configuration-panel__scenario" @toggle="handleScenarioToggle">
+          <summary>将要执行的步骤（含系统自动插入的恢复步骤）</summary>
+          <compiled-scenario-preview
+            :steps="compiledSteps ?? []"
+            :issues="compiledIssues ?? []"
+            :loading="Boolean(compiledLoading)"
+            :error="compiledError ?? ''"
+          />
+        </details>
+      </section>
     </div>
 
     <footer class="node-configuration-panel__footer">
@@ -100,4 +119,6 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 .node-configuration-panel p{margin:0}
 .save-actions{display:flex;justify-content:flex-end;gap:8px}
 @media (max-width:680px){.node-configuration-panel{padding:12px}.save-button{width:100%}.node-configuration-panel__footer{margin:0 -12px -12px;padding:12px}.save-actions{flex-direction:column-reverse}.save-actions :deep(.n-button){width:100%}}
+.node-configuration-panel__scenario { font-size: 12px; }
+.node-configuration-panel__scenario summary { cursor: pointer; }
 </style>

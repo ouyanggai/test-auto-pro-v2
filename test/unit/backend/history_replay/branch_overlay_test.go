@@ -211,9 +211,14 @@ func TestBranchOverlayNeedsInputCases(t *testing.T) {
 		{ID: "different", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "amount", FieldB: "baseline", Judge: "neq"}}},
 		{ID: "default", Sort: 2},
 	})
-	ambiguous := branchoverlay.Apply(branchoverlay.Input{Tree: ambiguousTree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "different"}}, Values: map[string]any{"amount": 10, "baseline": 10}, Candidates: map[string][]any{"amount": []any{9, 11}}})
-	if ambiguous.Status != branchoverlay.StatusNeedsInput || !hasIssue(ambiguous.Issues, "ambiguous_solution") {
-		t.Fatalf("同字段同等偏移的多解未进入 needs_input：%#v", ambiguous)
+	// 同字段多个取值都能命中时按稳定排序取唯一结果并给出补丁明细，用户仍可在表单里改成别的合法取值。
+	multi := branchoverlay.Apply(branchoverlay.Input{Tree: ambiguousTree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "different"}}, Values: map[string]any{"amount": 10, "baseline": 10}, Candidates: map[string][]any{"amount": []any{9, 11}}})
+	if multi.Status != branchoverlay.StatusReady || len(multi.Patches) != 1 || multi.Patches[0].Path != "amount" {
+		t.Fatalf("同字段多解没有按稳定排序给出唯一补丁：%#v", multi)
+	}
+	again := branchoverlay.Apply(branchoverlay.Input{Tree: ambiguousTree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "different"}}, Values: map[string]any{"amount": 10, "baseline": 10}, Candidates: map[string][]any{"amount": []any{11, 9}}})
+	if len(again.Patches) != 1 || again.Patches[0].After != multi.Patches[0].After {
+		t.Fatalf("候选顺序变化后补丁结果不稳定：%#v / %#v", multi.Patches, again.Patches)
 	}
 
 	invalid := branchoverlay.Apply(branchoverlay.Input{Tree: ambiguousTree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "missing"}}, Values: map[string]any{"amount": 1, "baseline": 1}})

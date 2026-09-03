@@ -41,16 +41,21 @@ function candidateText(candidates: unknown[] | undefined): string {
 
 <template>
   <div class="form-hints" data-testid="form-data-hints">
-    <n-badge v-if="!open" :value="attentionCount" :max="99" :show="attentionCount > 0">
-      <n-button secondary circle size="small" title="展开路径关键信息" aria-label="展开路径关键信息" @click="open = true">
-        <span aria-hidden="true">‹</span>
+    <n-badge class="form-hints__toggle" :value="attentionCount" :max="99" :show="!open && attentionCount > 0">
+      <n-button
+        secondary
+        circle
+        size="small"
+        :title="open ? '收起路径关键信息' : '展开路径关键信息'"
+        :aria-label="open ? '收起路径关键信息' : '展开路径关键信息'"
+        :aria-expanded="open"
+        @click="open = !open"
+      >
+        <span aria-hidden="true">{{ open ? '›' : '‹' }}</span>
       </n-button>
     </n-badge>
 
-    <n-card v-else size="small" class="form-hints__card" title="路径关键信息" :bordered="true">
-      <template #header-extra>
-        <n-button quaternary size="tiny" title="收起路径关键信息" aria-label="收起路径关键信息" @click="open = !open">›</n-button>
-      </template>
+    <n-card v-if="open" size="small" class="form-hints__card" title="路径关键信息" :bordered="true">
 
       <n-empty v-if="empty" size="small" description="当前路径没有需要优先核对的字段" />
       <n-collapse v-else :default-expanded-names="expandedNames">
@@ -97,10 +102,16 @@ function candidateText(candidates: unknown[] | undefined): string {
 <style scoped>
 .form-hints {
   position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 2;
-  max-height: calc(100% - 24px);
+  top: 8px;
+  right: 8px;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-height: calc(100% - 16px);
+}
+.form-hints__toggle {
+  flex: 0 0 auto;
 }
 .form-hints__card {
   width: min(300px, 42vw);

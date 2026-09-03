@@ -10,8 +10,9 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 editor="${project_root}/web/src/features/path-configuration/ActionOrchestrationEditor.vue"
 preview="${project_root}/web/src/features/path-configuration/CompiledScenarioPreview.vue"
 view="${project_root}/web/src/views/PlanPathConfigurationView.vue"
+panel="${project_root}/web/src/features/path-configuration/NodeConfigurationPanel.vue"
 
-for required_file in "${editor}" "${preview}" "${view}"; do
+for required_file in "${editor}" "${preview}" "${view}" "${panel}"; do
   if [[ ! -f "${required_file}" ]]; then
     printf '%s\n' "[F-012] 缺少动作编排界面文件：${required_file}" >&2
     exit 1
@@ -68,10 +69,10 @@ require "${preview}" 'step.recoveryPolicy' '编译预览缺少恢复策略'
 
 # 配置页必须挂载动作编辑器与只读预览，并提供独立的实例动作工作区。
 require "${view}" 'ActionOrchestrationEditor' '配置页未挂载动作编排编辑器'
-require "${view}" 'CompiledScenarioPreview' '配置页未挂载只读编译预览'
+require "${panel}" 'CompiledScenarioPreview' '节点配置面板未挂载只读编译预览'
 require "${view}" "workspace = ref<'nodes' | 'form'>" '配置页工作区应只保留节点配置与表单数据'
-require "${view}" 'path-configuration-page__scenario' '节点配置页缺少可折叠的编译步骤预览'
-require "${view}" 'function handleScenarioToggle' '编译步骤预览没有按需读取服务端结果'
+require "${panel}" 'node-configuration-panel__scenario' '节点配置面板缺少可折叠的编译步骤预览'
+require "${panel}" 'function handleScenarioToggle' '编译步骤预览没有按需读取服务端结果'
 forbid "${view}" '动作场景' '独立的动作场景工作区应已删除'
 require "${view}" 'function loadCompiledScenario' '配置页未读取服务端编译场景'
 require "${view}" 'function saveInstanceActions' '配置页无法保存实例作用域动作'
