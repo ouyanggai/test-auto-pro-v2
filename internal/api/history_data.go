@@ -2,12 +2,12 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/service"
 )
@@ -136,7 +136,7 @@ func parseHistoryPlanID(response http.ResponseWriter, raw string) (uint64, bool)
 
 // decodeHistoryJSON 严格解析一个历史来源对象并拒绝未知字段或尾随 JSON。
 func decodeHistoryJSON[T any](response http.ResponseWriter, request *http.Request, input *T, message string) bool {
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+	decoder := jsonvalues.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(input); err != nil || ensureJSONEnd(decoder) != nil {
 		writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", message, false)

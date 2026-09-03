@@ -186,10 +186,10 @@ type CompiledActionStep struct {
 
 // ActionConfigurationInput 是保存当前节点人员与有序动作的最小回写体，不携带目标 task/proxy ID。
 type ActionConfigurationInput struct {
-	Revision uint64             `json:"revision"`
+	Revision uint64 `json:"revision"`
 	// Persons 沿用节点人员策略的不透明候选键；服务端按当前真实节点再次校验后写入独立配置列。
-	Persons  []PathConfigPersonStrategyInput `json:"persons,omitempty"`
-	Actions  []ConfiguredAction `json:"actions"`
+	Persons []PathConfigPersonStrategyInput `json:"persons,omitempty"`
+	Actions []ConfiguredAction              `json:"actions"`
 }
 
 // ActionConfigurationIssue 定位动作配置中第一个无法恢复的顺序或事实问题。

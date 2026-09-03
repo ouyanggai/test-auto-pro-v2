@@ -2,6 +2,7 @@ package history_replay_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sync"
 	"testing"
@@ -455,7 +456,7 @@ func TestHistoryReplayServiceReplaysVueCustomRawSnapshot(t *testing.T) {
 	replay, store, validator, targetReader := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
 	store.mu.Lock()
 	store.snapshot.RawFormData = map[string]any{
-		"pageState": map[string]any{"rows": []any{map[string]any{"amount": 2, "customValue": map[string]any{"code": "X"}}}},
+		"pageState": map[string]any{"rows": []any{map[string]any{"amount": json.Number("2"), "customValue": map[string]any{"code": "X"}}}},
 	}
 	store.mu.Unlock()
 	targetReader.snapshot.Tree.ConditionNodes[0].Conditions[0].FieldA = "pageState.rows[].amount"
@@ -483,8 +484,8 @@ func TestHistoryReplayServiceReplaysVueCustomRawSnapshot(t *testing.T) {
 		return value, ok
 	}()
 	customValue, customOK := row["customValue"].(map[string]any)
-	amount, amountOK := row["amount"].(float64)
-	if !ok || !rowsOK || !rowOK || !amountOK || amount != 2 || !customOK || customValue["code"] != "X" {
+	amount, amountOK := row["amount"].(json.Number)
+	if !ok || !rowsOK || !rowOK || !amountOK || amount != json.Number("2") || !customOK || customValue["code"] != "X" {
 		t.Fatalf("自定义页面原始正文未完整透传：ok=%v rows=%v row=%v amount=%#v(%T) custom=%v customCode=%#v values=%#v", ok, rowsOK, rowOK, row["amount"], row["amount"], customOK, customValue["code"], gotValues)
 	}
 	if targetReader.calls != 1 {

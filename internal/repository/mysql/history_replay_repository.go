@@ -12,6 +12,7 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -1405,7 +1406,7 @@ func decodeHistoryPatches(raw string, target *[]model.HistoryBranchPatch) error 
 		return nil
 	}
 	var values []model.HistoryBranchPatch
-	if err := json.Unmarshal([]byte(raw), &values); err != nil || values == nil {
+	if err := jsonvalues.Decode([]byte(raw), &values); err != nil || values == nil {
 		return errors.New("历史回放补丁 JSON 格式不正确")
 	}
 	*target = values
@@ -1519,8 +1520,8 @@ func decodeJSONMap(raw string, target *map[string]any) error {
 		*target = map[string]any{}
 		return nil
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil || decoded == nil {
+	decoded, err := jsonvalues.DecodeObject([]byte(raw))
+	if err != nil {
 		return fmt.Errorf("历史快照 JSON 不是对象")
 	}
 	*target = decoded

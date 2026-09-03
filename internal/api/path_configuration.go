@@ -2,12 +2,12 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
 
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/service"
 )
@@ -75,7 +75,7 @@ func handleSaveActionConfiguration(actions PathActionConfigurationService) http.
 			return
 		}
 		var input model.ActionConfigurationInput
-		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder := jsonvalues.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
 			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "动作配置请求格式不正确", false)
@@ -117,7 +117,7 @@ func handleSavePathConfigurationData(dataServices PathConfigurationDataService) 
 			return
 		}
 		var input model.PathConfigurationDataInput
-		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder := jsonvalues.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&input); err != nil || ensureJSONEnd(decoder) != nil {
 			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "表单数据请求格式不正确", false)

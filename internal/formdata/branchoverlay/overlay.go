@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -1051,32 +1052,14 @@ func nodeVisitKey(node *target.FlowNodeTemplate) string {
 }
 
 // cloneMap 通过 JSON 深复制原始业务数据，复制失败时不降级为空对象。
+// 复制使用 UseNumber，避免 float64 抹掉目标数字字面量的小数位而改变 eq 结果。
 func cloneMap(values map[string]any) (map[string]any, error) {
-	if values == nil {
-		return map[string]any{}, nil
-	}
-	encoded, err := json.Marshal(values)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]any)
-	if err := json.Unmarshal(encoded, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return jsonvalues.DeepCopyObject(values)
 }
 
 // cloneAny 深复制补丁前后值，无法 JSON 编码的值按 nil 处理以避免共享引用。
 func cloneAny(value any) any {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var result any
-	if json.Unmarshal(encoded, &result) != nil {
-		return nil
-	}
-	return result
+	return jsonvalues.DeepCopyValue(value)
 }
 
 // valuesEqual 按原始 JSON 结构比较值，类型变化也必须记录为字段改动。

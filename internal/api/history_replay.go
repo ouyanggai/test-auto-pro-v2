@@ -2,12 +2,12 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/service"
 )
@@ -175,7 +175,7 @@ func parseHistoryReplayPagination(response http.ResponseWriter, request *http.Re
 
 // decodeHistoryReplayJSON 严格解析回放请求并拒绝浏览器提交的派生或目标字段。
 func decodeHistoryReplayJSON[T any](response http.ResponseWriter, request *http.Request, input *T, message string) bool {
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+	decoder := jsonvalues.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(input); err != nil || ensureJSONEnd(decoder) != nil {
 		writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", message, false)

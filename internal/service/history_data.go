@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -540,18 +541,7 @@ func historySourceDigest(raw map[string]any, flowCode, instanceID string) string
 
 // cloneHistoryMap 深复制目标原始 JSON，任何复制失败都向上返回，禁止降级为空对象。
 func cloneHistoryMap(value map[string]any) (map[string]any, error) {
-	if value == nil {
-		return map[string]any{}, nil
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]any)
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return jsonvalues.DeepCopyObject(value)
 }
 
 // historyCandidateMatchesQuery 仅在目标原始摘要字段上做可见搜索，不改变流程身份匹配。

@@ -39,7 +39,7 @@ func newTargetHistoryFixture(t *testing.T, noForm bool) *targetHistoryFixture {
 	return &targetHistoryFixture{
 		t: t, noForm: noForm, flowCode: "expense-flow", flowName: "费用审批", formName: "费用单（测试公司）",
 		userID: "user-current", companyID: "company-current",
-		raw: map[string]any{"nested": map[string]any{"rows": []any{map[string]any{"amount": float64(128), "custom": "kept"}}}},
+		raw: map[string]any{"nested": map[string]any{"rows": []any{map[string]any{"amount": json.Number("128.00"), "custom": "kept"}}}},
 	}
 }
 

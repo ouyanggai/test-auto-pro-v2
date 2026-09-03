@@ -12,6 +12,7 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/formdata/branchoverlay"
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -539,8 +540,8 @@ func decodeWorkspaceMap(raw []byte) map[string]any {
 	if len(raw) == 0 {
 		return map[string]any{}
 	}
-	var value map[string]any
-	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+	value, err := jsonvalues.DecodeObject(raw)
+	if err != nil {
 		return map[string]any{}
 	}
 	return value
@@ -549,7 +550,7 @@ func decodeWorkspaceMap(raw []byte) map[string]any {
 // decodeWorkspacePatches 解码分支补丁列表并保持空数组稳定。
 func decodeWorkspacePatches(raw []byte) []model.HistoryBranchPatch {
 	var value []model.HistoryBranchPatch
-	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+	if err := jsonvalues.Decode(raw, &value); err != nil || value == nil {
 		return []model.HistoryBranchPatch{}
 	}
 	return value
@@ -593,15 +594,8 @@ func decodeWorkspaceSteps(raw []byte) []model.CompiledActionStep {
 
 // cloneWorkspaceMap 深复制 runtime 原始值，防止分支复验修改历史快照正文。
 func cloneWorkspaceMap(value map[string]any) map[string]any {
-	if value == nil {
-		return map[string]any{}
-	}
-	encoded, err := json.Marshal(value)
+	result, err := jsonvalues.DeepCopyObject(value)
 	if err != nil {
-		return map[string]any{}
-	}
-	result := make(map[string]any)
-	if err := json.Unmarshal(encoded, &result); err != nil {
 		return map[string]any{}
 	}
 	return result

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/jsonvalues"
 )
 
 const (
@@ -314,18 +315,7 @@ func historyRuntimeVersionDigest(snapshot target.PathConfigurationSnapshot) stri
 
 // cloneMap 通过 JSON 编解码断开远程响应和持久化/调用方之间的对象引用，失败时拒绝降级为空数据。
 func cloneMap(value map[string]any) (map[string]any, error) {
-	if value == nil {
-		return map[string]any{}, nil
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]any)
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return jsonvalues.DeepCopyObject(value)
 }
 
 // historyStatusRank 将目标状态归一为排序优先级，不改变目标状态文本或业务语义。

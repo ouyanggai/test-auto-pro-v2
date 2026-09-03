@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"test-auto-pro-v2/internal/jsonvalues"
 )
 
 const maxResponseBytes = 8 << 20
@@ -1098,7 +1100,8 @@ func (c *Client) readInstanceCurrentData(ctx context.Context, active Session, in
 	var data struct {
 		Data map[string]any `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Data, &data); err != nil {
+	// 使用 UseNumber 保留目标数字字面量的小数位，条件 eq 依赖 BigDecimal 的 scale。
+	if err := jsonvalues.Decode(resp.Data, &data); err != nil {
 		return nil, invalidResponse("invalid instance form data")
 	}
 	if data.Data == nil {
