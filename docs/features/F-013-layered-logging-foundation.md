@@ -28,14 +28,14 @@
 ### 包含
 
 - 新增 `internal/logging` 包：日志根解析、日志作用域、统一单行格式、写入器（返回写入行号）、容量轮转、按日期清理。
-- 全局程序日志 `logs/app.log` 与全局程序错误日志 `logs/app-error.log`，按日归档到 `logs/archive/`。
+- 全局程序日志与全局程序错误日志按天分文件：`logs/app-<YYYY-MM-DD>.log` 与 `logs/app-error-<YYYY-MM-DD>.log`，配合保留期滚动删除。
 - 配置阶段日志桶 `logs/config/<YYYY-MM-DD>/`，包含 `network.log`、`network-error.log`、`curl.log`、`program.log`、`program-error.log`。
 - 运行目录路由分支 `logs/runs/<计划名>/<路径名>/<运行号>/` 的实现与单元验证（用合成作用域验证，本切片没有真实运行）。
 - 目标请求日志在 `internal/adapter/target` 的 `Client.call` 单点接入，覆盖当前全部只读请求。
 - `curl.log` 写入可直接复制重放的完整命令，含真实会话值与完整请求响应正文（内网裁决，见 `docs/EXECUTION_PROGRAM.md` 第 6.5 节）。
 - API 中间件：请求日志、失败响应日志（记录实际返回给用户的稳定错误码与中文文案）、panic 恢复并落程序错误日志。
 - 程序错误日志字段：`error_class`、`error_chain`、`source`、`stack`（仅 panic）、`run_terminated`、`user_message`。
-- `make logs-viewer`：一条命令起 code-server，挂载本机 `logs/`，可读写，内网直接访问。
+- `logs-viewer/` 目录内的零依赖日志浏览服务：`pnpm dev:l` 直接在本机启动（端口 19002），只读展示 `logs/` 下的分层日志，支持关键词过滤与自动刷新；`make logs-viewer` 等价转发。开发阶段不用 Docker，统一容器化留到发布编排切片。
 - `.gitignore` 增加 `/logs/`。
 
 ### 不包含
@@ -43,7 +43,7 @@
 - 任何目标写请求。本切片的写端点白名单为空，测试断言实际发出的写请求集合为空集（延续 F-012 的零写入断言，改为白名单形式）。
 - `step.log`、`control.log`、`recovery.log` 三个文件的写入器。它们分别属于 F-016、F-017、F-018，本切片不预先实现。
 - 运行记录表、运行相关 API、`RunsView.vue` 的任何改动。
-- Docker Compose 整套编排。属于 F-023，本切片只给单容器启动方式。
+- Docker 与 Docker Compose 编排。开发阶段一律本机直接启动，容器化属于 F-023。
 - 系统设置页里的日志配置项。保留期与容量本切片只用环境变量控制，`docs/EXECUTION_PROGRAM.md` 第 6.6 节提到的“可在系统设置里调整”留到有实际需要时再单独立项。
 - 脱敏过滤器、日志级别开关矩阵、正文摘要化。用户已明确不做。
 - Loki、Promtail、Grafana 一类外部可观测栈。
@@ -133,15 +133,15 @@ time=2026-09-03 18:56:31 level=error ...
 
 ### T05：保留期清理与容量轮转
 
-按日期清理 `logs/config/` 与 `logs/runs/`，默认保留 14 天，`TEST_AUTO_PRO_LOG_RETENTION_DAYS` 可覆盖。清理只删过期目录，绝不触碰数据库运行事实，也不删当天目录。`.gitignore` 增加 `/logs/`。
+按天分文件的全局日志、`logs/config/` 与 `logs/runs/` 一起按日期清理，默认保留 7 天，`TEST_AUTO_PRO_LOG_RETENTION_DAYS` 可覆盖。清理只删过期目录，绝不触碰数据库运行事实，也不删当天目录。`.gitignore` 增加 `/logs/`。
 
 完成判据：单元测试构造过期与当天目录，断言只删过期项；`git status` 在产生日志后保持干净。
 
-### T06：code-server 启动方式与全范围验证
+### T06：本机日志浏览服务与全范围验证
 
-新增 `make logs-viewer`（固定镜像版本、挂载 `logs/`、端口 19002、无登录、可读写）与 `make logs-viewer-stop`。容器内用户对挂载目录的写权限需实测确认，必要时在目标里显式指定用户，不猜。新增 `test/run-f013.sh` 聚合本切片测试。
+新增 `logs-viewer/`：零依赖 Node 服务，`pnpm dev:l` 启动，端口 19002，只读列出并查看 `logs/` 下的日志，支持关键词过滤、自动刷新与尾部有界读取，路径解析限制在日志根内。新增 `test/run-f013.sh` 聚合本切片测试。
 
-完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`make logs-viewer` 实际起得来且能在浏览器里打开日志目录。
+完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`pnpm dev:l` 实际起得来且能在浏览器里看到日志文件与内容。
 
 ## 自动验证
 
@@ -157,10 +157,10 @@ time=2026-09-03 18:56:31 level=error ...
 ## 人工验收
 
 1. 启动后端与前端，在浏览器里依次做：验证账号、打开流程图、进入一条路径的节点配置、打开历史业务数据工作区。
-2. 执行 `make logs-viewer`，浏览器打开 code-server，确认能看到 `logs/app.log` 与 `logs/config/<今天>/` 下的五个文件。
+2. 在 `logs-viewer/` 目录执行 `pnpm dev:l`，浏览器打开 http://127.0.0.1:19002 ，确认能看到 `logs/app-<今天>.log` 与 `logs/config/<今天>/` 下的四个文件。
 3. 打开 `logs/config/<今天>/network.log`，确认上一步的每个操作都有对应请求行，字段可读、中文可读、没有乱码。
 4. 打开 `curl.log`，复制任意一条 `curl=` 命令到终端执行，确认能拿到与当时一致的响应。
-5. 把目标平台地址临时改成一个不可达地址，重复一次账号验证。确认：界面给出中文错误提示；`network-error.log` 出现对应失败行；`app-error.log` 出现一行 `error_class=network`，其 `user_message` 与界面上那句提示完全一致。
+5. 把目标平台地址临时改成一个不可达地址，重复一次账号验证。确认：界面给出中文错误提示；`network-error.log` 出现对应失败行；`app-error-<今天>.log` 出现一行 `error_class=network`，其 `user_message` 与界面上那句提示完全一致。
 6. 确认 `git status` 干净，`logs/` 没有进入待提交列表。
 
 ## 完成标准
@@ -178,6 +178,10 @@ time=2026-09-03 18:56:31 level=error ...
 
 ## 状态记录
 
+- 2026-09-04：按用户要求调整三处：开发阶段一律本机直接启动（去掉 code-server 容器方案），
+  全局日志改为按天分文件并把默认保留期从 14 天收到 7 天，日志浏览服务独立成 `logs-viewer/` 目录用 `pnpm dev:l` 启动。
+  实测：后端 19013、浏览服务 19002 同时在本机运行，`logs/app-<当天>.log` 与 `logs/config/<当天>/` 四个文件都在，
+  浏览服务能列文件、按关键词过滤，并拒绝日志根之外的路径。
 - 2026-09-04：T01 至 T06 实施完成，`test/run-f013.sh` 全量通过，状态进入 `ready_for_manual`。
   实际运行证据（本机 19013 端口起新构建，接真实目标与真实数据库）：
   - `logs/config/<当天>/network.log` 出现真实目标请求行，含 `trace_id`、`request_class=read`、

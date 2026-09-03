@@ -16,8 +16,8 @@ const (
 	LogRootEnv = "TEST_AUTO_PRO_LOG_ROOT"
 	// RetentionDaysEnv 覆盖配置桶与运行目录的保留天数。
 	RetentionDaysEnv = "TEST_AUTO_PRO_LOG_RETENTION_DAYS"
-	// DefaultRetentionDays 是配置桶与运行目录默认保留天数。
-	DefaultRetentionDays = 14
+	// DefaultRetentionDays 是按天日志文件、配置桶与运行目录的默认保留天数。
+	DefaultRetentionDays = 7
 	// DefaultMaxFileBytes 是单个日志文件的默认上限。
 	DefaultMaxFileBytes int64 = 8 << 20
 	// DefaultMaxBackups 是轮转后保留的历史文件个数。

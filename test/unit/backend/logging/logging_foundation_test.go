@@ -123,6 +123,52 @@ func TestBucketRoutingSeparatesConfigAndRun(t *testing.T) {
 	}
 }
 
+// TestCleanupExpiredRemovesExpiredDailyFiles 验证按天分文件的全局日志按保留期滚动删除，
+// 当天文件与解析不出日期的文件一律保留。
+func TestCleanupExpiredRemovesExpiredDailyFiles(t *testing.T) {
+	root := t.TempDir()
+	now := fixedTime()
+	today := filepath.Join(root, logging.DailyFileName("app.log", now))
+	expired := filepath.Join(root, logging.DailyFileName("app.log", now.AddDate(0, 0, -9)))
+	expiredError := filepath.Join(root, logging.DailyFileName("app-error.log", now.AddDate(0, 0, -9)))
+	kept := filepath.Join(root, logging.DailyFileName("app.log", now.AddDate(0, 0, -2)))
+	unrelated := filepath.Join(root, "app-notes.txt")
+	for _, path := range []string{today, expired, expiredError, kept, unrelated} {
+		if err := os.WriteFile(path, []byte("time=1 level=info message=x\n"), 0o644); err != nil {
+			t.Fatalf("准备日志文件失败：%v", err)
+		}
+	}
+	removed := logging.CleanupExpired(root, logging.DefaultRetentionDays, now)
+	if len(removed) != 2 {
+		t.Fatalf("按天日志没有按保留期删除：%v", removed)
+	}
+	for _, path := range []string{today, kept, unrelated} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("文件被误删：%s", path)
+		}
+	}
+	for _, path := range []string{expired, expiredError} {
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("过期文件没有被删除：%s", path)
+		}
+	}
+}
+
+// TestDefaultRetentionIsSevenDays 锁定默认保留七天，避免日志目录无限增长。
+func TestDefaultRetentionIsSevenDays(t *testing.T) {
+	if logging.DefaultRetentionDays != 7 {
+		t.Fatalf("默认保留天数应为 7，实际 %d", logging.DefaultRetentionDays)
+	}
+	t.Setenv(logging.RetentionDaysEnv, "3")
+	if days := logging.RetentionDays(); days != 3 {
+		t.Fatalf("环境变量没有覆盖保留天数：%d", days)
+	}
+	t.Setenv(logging.RetentionDaysEnv, "abc")
+	if days := logging.RetentionDays(); days != logging.DefaultRetentionDays {
+		t.Fatalf("非法保留天数没有回落默认值：%d", days)
+	}
+}
+
 // TestCleanupExpiredRemovesOnlyExpiredDirs 验证保留期清理只删过期目录，当天目录一律保留。
 func TestCleanupExpiredRemovesOnlyExpiredDirs(t *testing.T) {
 	root := t.TempDir()

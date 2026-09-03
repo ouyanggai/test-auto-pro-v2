@@ -48,14 +48,15 @@ func TestErrorLogWritesClassChainSourceAndUserMessage(t *testing.T) {
 			t.Fatalf("%s 缺少错误链：%s", name, content)
 		}
 	}
+	// 全局日志按天分文件，配合保留期滚动删除，避免单文件无限增长。
 	for _, name := range []string{"app.log", "app-error.log"} {
-		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
-			t.Fatalf("全局 %s 没有写入：%v", name, err)
+		daily := logging.DailyFileName(name, fixedTime())
+		if !strings.Contains(daily, "2026-09-03") {
+			t.Fatalf("全局日志没有按天命名：%s", daily)
 		}
-	}
-	archive := filepath.Join(root, "archive", fixedTime().Format("2006-01-02"), "app-error.log")
-	if _, err := os.Stat(archive); err != nil {
-		t.Fatalf("按日归档没有写入：%v", err)
+		if _, err := os.Stat(filepath.Join(root, daily)); err != nil {
+			t.Fatalf("全局 %s 没有写入：%v", daily, err)
+		}
 	}
 }
 

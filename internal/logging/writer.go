@@ -159,11 +159,16 @@ func NewRouter(root string, now func() time.Time) *Router {
 func (r *Router) Root() string { return r.root }
 
 // Global 返回全局程序日志或程序错误日志的写入器。
-func (r *Router) Global(name string) *Writer { return r.writer(filepath.Join(r.root, name)) }
+// 全局日志按天分文件（app-2026-09-04.log），配合保留期滚动删除，避免单文件无限增长。
+func (r *Router) Global(name string) *Writer {
+	return r.writer(filepath.Join(r.root, DailyFileName(name, r.now())))
+}
 
-// Archive 返回按日归档目录下的写入器，供全局日志按日切分。
-func (r *Router) Archive(name string, day time.Time) *Writer {
-	return r.writer(filepath.Join(r.root, "archive", day.Format("2006-01-02"), name))
+// DailyFileName 把基础文件名转成按天文件名，保留原扩展名。
+func DailyFileName(name string, day time.Time) string {
+	extension := filepath.Ext(name)
+	base := strings.TrimSuffix(name, extension)
+	return fmt.Sprintf("%s-%s%s", base, day.Format("2006-01-02"), extension)
 }
 
 // Bucket 按作用域返回该日志文件所在的桶写入器：

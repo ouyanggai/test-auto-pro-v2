@@ -5,7 +5,9 @@
 - F-013 已完成：新增 `internal/logging`（日志根、作用域注入、统一单行格式、有界写入器与行号、配置桶与运行目录路由、保留期清理）；
   目标请求日志在传输层单点接入，成功与失败分流到 `network.log` / `network-error.log`，可重放命令与完整响应写入 `curl.log`；
   API 中间件记录请求、失败响应的稳定错误码与界面同源中文提示，并恢复 panic 返回稳定中文 500；
-  `make logs-viewer` 用固定版本 code-server 挂载本机 `logs/`；`.gitignore` 已忽略 `/logs/`。
+  全局日志按天分文件（`app-<日期>.log`）并按保留期滚动删除，默认保留 7 天；
+  `logs-viewer/` 目录内零依赖日志浏览服务用 `pnpm dev:l` 在本机启动（端口 19002）；`.gitignore` 已忽略 `/logs/`。
+  开发阶段一律本机直接启动，容器化统一留到发布编排切片。
 - F-013 实测：本机新构建接真实目标与真实数据库，`network.log` 出现真实请求行，`curl.log` 的命令直接重放成功，
   请求不存在的计划后 `program-error.log` 的 `user_message` 与接口响应体 `error.message` 完全一致。
 - F-012（上一切片）状态：`ready_for_manual`，等待用户按其人工验收清单核对。

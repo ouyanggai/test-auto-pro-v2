@@ -111,7 +111,6 @@ func (l *Logger) Error(scope Scope, record ErrorRecord) {
 	line := FormatLine(at, "error", fields)
 	for _, writer := range []*Writer{
 		l.router.Global("app.log"), l.router.Global("app-error.log"),
-		l.router.Archive("app.log", at), l.router.Archive("app-error.log", at),
 		l.router.Bucket(scope, "program.log"), l.router.Bucket(scope, "program-error.log"),
 	} {
 		writer.WriteLine(line)
@@ -140,7 +139,7 @@ func (l *Logger) write(scope Scope, level, message string, extra []Field, alsoEr
 	at := l.now()
 	line := FormatLine(at, level, fields)
 	writers := []*Writer{
-		l.router.Global("app.log"), l.router.Archive("app.log", at), l.router.Bucket(scope, "program.log"),
+		l.router.Global("app.log"), l.router.Bucket(scope, "program.log"),
 	}
 	if alsoError {
 		writers = append(writers, l.router.Global("app-error.log"), l.router.Bucket(scope, "program-error.log"))

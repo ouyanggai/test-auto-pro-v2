@@ -20,10 +20,56 @@ func CleanupExpired(root string, retentionDays int, now time.Time) []string {
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	today := now.Format("2006-01-02")
 	removed := make([]string, 0, 4)
+	removed = append(removed, cleanupDailyFiles(root, cutoff, today)...)
 	removed = append(removed, cleanupConfigBuckets(filepath.Join(root, "config"), cutoff, today)...)
 	removed = append(removed, cleanupArchive(filepath.Join(root, "archive"), cutoff, today)...)
 	removed = append(removed, cleanupRunBuckets(filepath.Join(root, "runs"), cutoff)...)
 	return removed
+}
+
+// cleanupDailyFiles 删除按天分文件的全局日志（app-<日期>.log、app-error-<日期>.log）里已过期的文件，
+// 连带它们的轮转副本；当天文件一律保留，文件名解析不出日期的一律不动。
+func cleanupDailyFiles(root string, cutoff time.Time, today string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	removed := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "app") || strings.Contains(name, today) {
+			continue
+		}
+		day, ok := dailyFileDate(name)
+		if !ok || !day.Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(root, name)
+		if err := os.Remove(path); err == nil {
+			removed = append(removed, path)
+		}
+	}
+	return removed
+}
+
+// dailyFileDate 从按天文件名里取出日期，形如 app-2026-09-04.log 或其轮转副本 app-2026-09-04.log.1。
+func dailyFileDate(name string) (time.Time, bool) {
+	fields := strings.Split(name, "-")
+	if len(fields) < 4 {
+		return time.Time{}, false
+	}
+	dayPart := strings.Join(fields[len(fields)-3:], "-")
+	if index := strings.Index(dayPart, ".log"); index >= 0 {
+		dayPart = dayPart[:index]
+	}
+	day, err := time.Parse("2006-01-02", dayPart)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return day, true
 }
 
 // cleanupConfigBuckets 删除 logs/config/<日期> 里已经过期的日期目录。

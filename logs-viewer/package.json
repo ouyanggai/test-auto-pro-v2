@@ -1,0 +1,10 @@
+{
+  "name": "test-auto-pro-v2-logs-viewer",
+  "private": true,
+  "version": "0.0.0",
+  "description": "本机日志浏览服务：只读展示 logs/ 下的分层日志，零依赖。",
+  "type": "module",
+  "scripts": {
+    "dev:l": "node server.mjs"
+  }
+}
