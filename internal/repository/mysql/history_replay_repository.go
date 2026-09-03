@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -545,6 +546,9 @@ func scanHistoryPathConfig(row rowScanner) (repository.HistoryPathConfigRecord, 
 // saveHistoryPathConfigLocked 在路径行已锁定的事务内执行幂等与修订校验并替换独立领域列。
 func saveHistoryPathConfigLocked(ctx context.Context, tx *sql.Tx, record repository.HistoryPathConfigRecord, expectedRevision uint64, now time.Time) (repository.HistoryPathConfigRecord, error) {
 	normalizeHistoryPathConfigJSON(&record)
+	if !validHistoryPathConfigJSON(record) {
+		return repository.HistoryPathConfigRecord{}, repository.ErrHistoryPathConfigDataInvalid
+	}
 	current, found, err := getHistoryPathConfigForUpdate(ctx, tx, record.PathID)
 	if err != nil {
 		return repository.HistoryPathConfigRecord{}, err
@@ -620,14 +624,60 @@ func normalizeHistoryPathConfigJSON(record *repository.HistoryPathConfigRecord) 
 }
 
 // sameHistoryPathConfigData 判断同一幂等键请求是否完全重复，只比较本次数据域允许覆盖的字段。
+// 载荷按 JSON 语义比较：数据库读回的文本可能与写入文本存在空白或键顺序差异，重试同一正文不能被当成换正文；
+// 数字仍按 json.Number 字面量比较，12.30 与 12.3 依然判定为不同正文。
 func sameHistoryPathConfigData(current, requested repository.HistoryPathConfigRecord) bool {
-	return current.PathID == requested.PathID && current.SourceMode == requested.SourceMode && current.RuntimeType == requested.RuntimeType &&
-		current.ConfigStatus == requested.ConfigStatus && current.NodeStatus == requested.NodeStatus && current.DataStatus == requested.DataStatus &&
-		pointerValue(current.SnapshotID) == pointerValue(requested.SnapshotID) && bytes.Equal(current.PersonStrategies, requested.PersonStrategies) &&
-		bytes.Equal(current.UserActions, requested.UserActions) && bytes.Equal(current.CompiledSteps, requested.CompiledSteps) &&
-		bytes.Equal(current.ConfirmedNodeKeys, requested.ConfirmedNodeKeys) && bytes.Equal(current.EffectiveFormData, requested.EffectiveFormData) &&
-		bytes.Equal(current.BranchPatches, requested.BranchPatches) && bytes.Equal(current.RuntimeValidation, requested.RuntimeValidation) &&
-		bytes.Equal(current.Issues, requested.Issues)
+	if current.PathID != requested.PathID || current.SourceMode != requested.SourceMode || current.RuntimeType != requested.RuntimeType ||
+		current.ConfigStatus != requested.ConfigStatus || current.NodeStatus != requested.NodeStatus || current.DataStatus != requested.DataStatus ||
+		pointerValue(current.SnapshotID) != pointerValue(requested.SnapshotID) {
+		return false
+	}
+	payloads := [][2][]byte{
+		{current.PersonStrategies, requested.PersonStrategies},
+		{current.UserActions, requested.UserActions},
+		{current.CompiledSteps, requested.CompiledSteps},
+		{current.ConfirmedNodeKeys, requested.ConfirmedNodeKeys},
+		{current.EffectiveFormData, requested.EffectiveFormData},
+		{current.BranchPatches, requested.BranchPatches},
+		{current.RuntimeValidation, requested.RuntimeValidation},
+		{current.Issues, requested.Issues},
+	}
+	for _, payload := range payloads {
+		if !sameHistoryJSONPayload(payload[0], payload[1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameHistoryJSONPayload 比较两段 JSON 文本的语义内容；任一侧无法解析时退回字节比较，不放宽判定。
+func sameHistoryJSONPayload(current, requested []byte) bool {
+	if bytes.Equal(current, requested) {
+		return true
+	}
+	var currentValue, requestedValue any
+	if err := jsonvalues.Decode(current, &currentValue); err != nil {
+		return false
+	}
+	if err := jsonvalues.Decode(requested, &requestedValue); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(currentValue, requestedValue)
+}
+
+// validHistoryPathConfigJSON 在写入前校验载荷仍是合法 JSON。
+// 载荷列改为 LONGTEXT 以保留目标数字字面量后，数据库不再代替仓储做 JSON 校验。
+func validHistoryPathConfigJSON(record repository.HistoryPathConfigRecord) bool {
+	payloads := [][]byte{
+		record.PersonStrategies, record.UserActions, record.CompiledSteps, record.ConfirmedNodeKeys,
+		record.EffectiveFormData, record.BranchPatches, record.RuntimeValidation, record.Issues, record.LatestIdempotency,
+	}
+	for _, payload := range payloads {
+		if !json.Valid(payload) {
+			return false
+		}
+	}
+	return true
 }
 
 // pointerValue 将可空快照 ID 转换为可比较的零值。
