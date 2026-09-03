@@ -1,10 +1,10 @@
 # F-013 分层日志与追踪底座
 
-- 状态：awaiting_approval
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明）与「明确不做」中的“独立技术状态与 JSON 配置页面”
 - 架构依据：`docs/ARCHITECTURE.md` 的包边界与目标适配层条文（已按内网裁决同步日志条文）
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6 节全部，第 9 节 F-013 行
-- 计划确认时间：待确认
+- 计划确认时间：2026-09-04（用户在 F-012 之后明确要求开始实施 F-013）
 - 前置条件：F-012 已由用户明确验收
 
 ## 目标
@@ -165,17 +165,30 @@ time=2026-09-03 18:56:31 level=error ...
 
 ## 完成标准
 
-- [ ] 行为已实现并实际运行。
-- [ ] 当前范围测试、`go vet` 与构建已通过。
-- [ ] 已检查同一范围内的相似问题（其余目标请求出口、其余错误响应出口）。
-- [ ] 所有新增具名函数与方法有中文注释，导出符号注释以符号名开头。
-- [ ] 文档状态已更新为 `ready_for_manual`。
-- [ ] 已列出用户手工核对步骤。
+- [x] 行为已实现并实际运行。
+- [x] 当前范围测试、`go vet` 与构建已通过。
+- [x] 已检查同一范围内的相似问题（其余目标请求出口、其余错误响应出口）。
+- [x] 所有新增具名函数与方法有中文注释，导出符号注释以符号名开头。
+- [x] 文档状态已更新为 `ready_for_manual`。
+- [x] 已列出用户手工核对步骤。
 
 ## 回退边界
 
 日志设施失效不得阻塞主流程：日志根不可写、磁盘满、轮转失败时降级为一次标准错误输出并继续服务。不因为写不了日志就让配置操作失败。
 
 ## 状态记录
+
+- 2026-09-04：T01 至 T06 实施完成，`test/run-f013.sh` 全量通过，状态进入 `ready_for_manual`。
+  实际运行证据（本机 19013 端口起新构建，接真实目标与真实数据库）：
+  - `logs/config/<当天>/network.log` 出现真实目标请求行，含 `trace_id`、`request_class=read`、
+    `status_code=200`、`duration_s`、`outcome_kind=business_success`。
+  - `logs/config/<当天>/curl.log` 的命令直接复制到终端执行，返回与当时一致的登录成功响应。
+  - 请求一个不存在的计划后，`program-error.log` 出现 `error_class=tool_config`、
+    `error_code=PLAN_NOT_FOUND`、`user_message=计划不存在`，与接口响应体的 `error.message` 完全一致。
+  - `logs/` 已被 `.gitignore` 忽略，`git status` 保持干净。
+- 实施期间发现并修正的偏差：`source` 字段原按固定调用层数定位，内联后会漂移到 `testing.go`；
+  改为用 `runtime.CallersFrames` 逐帧过滤日志包自身与运行时帧后定位。
+- 写端点白名单检查只扫描 `internal/adapter/target`：`internal/engine/actioncatalog` 里的
+  `targetOperation` 是动作目录的说明元数据，描述未来执行时会调用哪个接口，不构成一次请求。
 
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `awaiting_approval`：范围已按 `docs/EXECUTION_PROGRAM.md` 收敛，等待用户明确批准，且必须在 F-012 获得明确验收之后才能进入 `implementing`。

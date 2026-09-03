@@ -9,6 +9,7 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/repository"
 	"test-auto-pro-v2/internal/session"
 )
@@ -440,4 +441,12 @@ func (s *TargetReadService) ready() error {
 		return &config.MissingTargetConfigError{Names: append([]string(nil), s.configMissing...)}
 	}
 	return nil
+}
+
+// SetNetworkLogger 在唯一目标出口接入请求日志；未注入时目标客户端行为完全不变。
+func (s *TargetReadService) SetNetworkLogger(logger *logging.Logger) {
+	if s == nil || s.client == nil || logger == nil {
+		return
+	}
+	s.client.SetNetworkLogger(logger)
 }

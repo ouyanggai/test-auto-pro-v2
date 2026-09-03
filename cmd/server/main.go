@@ -14,6 +14,7 @@ import (
 	"test-auto-pro-v2/internal/api"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/formruntimemaintenance"
+	"test-auto-pro-v2/internal/logging"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
 	"test-auto-pro-v2/internal/service"
 )
@@ -67,6 +68,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// F-013 日志底座：目标请求日志、程序日志与程序错误日志共用同一份目录路由。
+	logRouter := logging.NewRouter(logging.Root(workspaceRoot), time.Now)
+	appLogger := logging.NewLogger(logRouter, time.Now)
+	targetReader.SetNetworkLogger(appLogger)
+	if removed := logging.CleanupExpired(logRouter.Root(), logging.RetentionDays(), time.Now()); len(removed) > 0 {
+		log.Printf("已清理过期日志目录 %d 个", len(removed))
+	}
+
 	historyDataService := service.NewHistoryDataService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
 	historyReplayService := service.NewHistoryReplayService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
 	historyWorkspaceStore := planmysql.NewHistoryReplayRepository(planDatabase.DB)
@@ -116,14 +125,29 @@ func main() {
 		WorkerID: "server-maintenance-worker", LeaseDuration: 2 * time.Minute, RenewalInterval: 30 * time.Second,
 	})
 	server := &http.Server{
-		Addr:              config.ServerAddress(),
-		Handler:           api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
+		Addr: config.ServerAddress(),
+		Handler: api.WithRequestLogging(
+			api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
+			appLogger,
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	log.Printf("后端服务监听 %s", server.Addr)
 	shutdownContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-shutdownContext.Done():
+				return
+			case <-ticker.C:
+				logging.CleanupExpired(logRouter.Root(), logging.RetentionDays(), time.Now())
+			}
+		}
+	}()
 	maintenanceRunner := formruntimemaintenance.NewRunner(maintenancePipeline, time.Second).WithErrorHandler(func(runErr error) {
 		log.Printf("表单运行时维护任务失败: %v", runErr)
 	})
