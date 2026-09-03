@@ -45,7 +45,7 @@ func NewHistoryReplayStore(db *sql.DB) repository.HistoryReplayStore {
 // SaveSnapshot 按计划和候选键保存不可变目标原始数据，重复请求只返回相同摘要。
 func (r *HistoryReplayRepository) SaveSnapshot(ctx context.Context, snapshot model.HistorySnapshot) (model.HistorySnapshot, error) {
 	if r == nil || r.db == nil {
-		return model.HistorySnapshot{}, errors.New("历史快照数据库未配置")
+		return model.HistorySnapshot{}, errors.New("基础表单数据数据库未配置")
 	}
 	return saveHistorySnapshot(ctx, r.db, snapshot)
 }
@@ -1443,7 +1443,7 @@ func decodeHistoryIssues(raw string, target *[]model.HistoryDataIssue) error {
 	}
 	var values []model.HistoryDataIssue
 	if err := json.Unmarshal([]byte(raw), &values); err != nil || values == nil {
-		return errors.New("历史回放问题 JSON 格式不正确")
+		return errors.New("批量准备问题 JSON 格式不正确")
 	}
 	*target = values
 	return nil
@@ -1457,7 +1457,7 @@ func decodeHistoryPatches(raw string, target *[]model.HistoryBranchPatch) error 
 	}
 	var values []model.HistoryBranchPatch
 	if err := jsonvalues.Decode([]byte(raw), &values); err != nil || values == nil {
-		return errors.New("历史回放补丁 JSON 格式不正确")
+		return errors.New("批量准备补丁 JSON 格式不正确")
 	}
 	*target = values
 	return nil
@@ -1572,7 +1572,7 @@ func decodeJSONMap(raw string, target *map[string]any) error {
 	}
 	decoded, err := jsonvalues.DecodeObject([]byte(raw))
 	if err != nil {
-		return fmt.Errorf("历史快照 JSON 不是对象")
+		return fmt.Errorf("基础表单数据 JSON 不是对象")
 	}
 	*target = decoded
 	return nil

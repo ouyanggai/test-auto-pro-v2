@@ -117,19 +117,19 @@ async function request<T>(path: string, init: RequestInit, signal?: AbortSignal)
   }
   catch (caught) {
     if (signal?.aborted) throw caught
-    throw new HistoryDataApiError('历史数据服务暂不可用，请重试', 'HISTORY_STORAGE_UNAVAILABLE', true)
+    throw new HistoryDataApiError('业务数据服务暂不可用，请重试', 'HISTORY_STORAGE_UNAVAILABLE', true)
   }
   let envelope: ApiSuccess<T> | ApiFailure
   try {
     envelope = await response.json() as ApiSuccess<T> | ApiFailure
   }
   catch {
-    throw new HistoryDataApiError('历史数据响应格式异常，请重试', 'HISTORY_STORAGE_UNAVAILABLE', true)
+    throw new HistoryDataApiError('业务数据响应格式异常，请重试', 'HISTORY_STORAGE_UNAVAILABLE', true)
   }
   if (!response.ok || !envelope.success) {
     const failure = envelope as ApiFailure
     throw new HistoryDataApiError(
-      failure.error?.message || '历史数据操作失败，请重试',
+      failure.error?.message || '业务数据操作失败，请重试',
       failure.error?.code,
       failure.error?.retryable,
     )
@@ -157,18 +157,18 @@ async function requestReplay<T>(path: string, init: RequestInit, signal?: AbortS
   }
   catch (caught) {
     if (signal?.aborted) throw caught
-    throw new HistoryReplayApiError('历史回放服务暂不可用，请重试', 'HISTORY_REPLAY_STORAGE_UNAVAILABLE', true)
+    throw new HistoryReplayApiError('批量准备服务暂不可用，请重试', 'HISTORY_REPLAY_STORAGE_UNAVAILABLE', true)
   }
   let envelope: ApiSuccess<T> | ApiFailure
   try {
     envelope = await response.json() as ApiSuccess<T> | ApiFailure
   }
   catch {
-    throw new HistoryReplayApiError('历史回放响应格式异常，请重试', 'HISTORY_REPLAY_STORAGE_UNAVAILABLE', true)
+    throw new HistoryReplayApiError('批量准备响应格式异常，请重试', 'HISTORY_REPLAY_STORAGE_UNAVAILABLE', true)
   }
   if (!response.ok || !envelope.success) {
     const failure = envelope as ApiFailure
-    throw new HistoryReplayApiError(failure.error?.message || '历史回放操作失败，请重试', failure.error?.code, failure.error?.retryable)
+    throw new HistoryReplayApiError(failure.error?.message || '批量准备操作失败，请重试', failure.error?.code, failure.error?.retryable)
   }
   return envelope.data
 }

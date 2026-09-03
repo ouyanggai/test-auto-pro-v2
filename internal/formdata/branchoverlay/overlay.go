@@ -112,7 +112,7 @@ func Apply(input Input) Result {
 	}
 	if len(variables) == 0 {
 		result.Issues = append(result.Issues, currentWalk.issues...)
-		return appendIssue(result, Issue{Code: "no_solution", Message: "历史数据无法命中当前目标路径"})
+		return appendIssue(result, Issue{Code: "no_solution", Message: "业务数据无法命中当前目标路径"})
 	}
 
 	solutions, attempts := searchSolutions(input.Tree, original, choices, variables)
@@ -660,7 +660,7 @@ func buildVariables(values map[string]any, provided map[string][]any, references
 			candidates = candidates[:maxCandidatesPerPath]
 		}
 		if len(candidates) == 0 {
-			issues = append(issues, Issue{Code: "candidate_missing", Path: path, Message: "条件字段没有历史值或目标真实候选值"})
+			issues = append(issues, Issue{Code: "candidate_missing", Path: path, Message: "条件字段没有业务值或目标真实候选值"})
 			continue
 		}
 		variables = append(variables, patchVariable{path: path, current: current, currentOK: currentOK, candidates: candidates})

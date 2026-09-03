@@ -146,7 +146,7 @@ func (s *TargetReadService) readAllHistoryInstances(ctx context.Context, active 
 			break
 		}
 		if page == historyCandidateMaxRemotePages {
-			return nil, target.NewError(target.ErrorResponseInvalid, errors.New("历史候选分页超过安全上限"))
+			return nil, target.NewError(target.ErrorResponseInvalid, errors.New("业务数据分页超过安全上限"))
 		}
 	}
 	return result, nil
@@ -239,7 +239,7 @@ func (s *TargetReadService) ReadHistorySnapshot(ctx context.Context, account, fl
 				result.RenderType = snapshot.RenderType
 				result.TemplateSummary = historyTemplateSummary(snapshot)
 				if formName != "" && len(snapshot.Forms) == 0 {
-					result.Issues = append(result.Issues, "目标历史表单模板版本无法确认")
+					result.Issues = append(result.Issues, "目标业务表单模板版本无法确认")
 				}
 				if len(result.RawFormData) == 0 && len(snapshot.InstanceValues) > 0 {
 					copiedValues, valuesCopyErr := cloneMap(snapshot.InstanceValues)

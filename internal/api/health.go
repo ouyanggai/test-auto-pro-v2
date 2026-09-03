@@ -86,17 +86,17 @@ type unavailableHistoryDataService struct{}
 
 // Candidates 在默认测试处理器未注入历史数据服务时返回稳定不可用错误。
 func (unavailableHistoryDataService) Candidates(context.Context, uint64, uint64, string, int, int) (model.HistoryCandidatePage, error) {
-	return model.HistoryCandidatePage{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+	return model.HistoryCandidatePage{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "业务数据存储暂不可用"}
 }
 
 // SaveDefault 在默认测试处理器未注入历史数据服务时返回稳定不可用错误。
 func (unavailableHistoryDataService) SaveDefault(context.Context, uint64, model.HistoryDefaultSaveInput, string) (model.HistoryDataSource, error) {
-	return model.HistoryDataSource{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+	return model.HistoryDataSource{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "业务数据存储暂不可用"}
 }
 
 // SavePathSource 在默认测试处理器未注入历史数据服务时返回稳定不可用错误。
 func (unavailableHistoryDataService) SavePathSource(context.Context, uint64, uint64, model.HistoryPathSourceInput, string) (model.HistoryDataSource, error) {
-	return model.HistoryDataSource{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+	return model.HistoryDataSource{}, &service.HistoryDataError{Kind: service.HistoryDataErrorStorage, Message: "业务数据存储暂不可用"}
 }
 
 // gzipResponses 为声明支持 gzip 的客户端压缩 JSON 响应，避免大路径摘要重复占用传输带宽。

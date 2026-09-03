@@ -65,7 +65,7 @@ func validateHistoryCandidateQuery(response http.ResponseWriter, request *http.R
 	allowed := map[string]bool{"pathId": true, "query": true, "page": true, "pageSize": true}
 	for key := range request.URL.Query() {
 		if !allowed[key] {
-			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "历史候选查询参数不正确", false)
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "业务数据查询参数不正确", false)
 			return false
 		}
 	}
@@ -88,7 +88,7 @@ func handleSaveHistoryDefault(history HistoryDataService) http.HandlerFunc {
 			return
 		}
 		var input model.HistoryDefaultSaveInput
-		if !decodeHistoryJSON(response, request, &input, "历史默认来源请求格式不正确") {
+		if !decodeHistoryJSON(response, request, &input, "计划默认基础表单数据请求格式不正确") {
 			return
 		}
 		result, err := history.SaveDefault(request.Context(), planID, input, strings.TrimSpace(request.Header.Get("Idempotency-Key")))
@@ -112,7 +112,7 @@ func handleSaveHistoryPathSource(history HistoryDataService) http.HandlerFunc {
 			return
 		}
 		var input model.HistoryPathSourceInput
-		if !decodeHistoryJSON(response, request, &input, "路径历史来源请求格式不正确") {
+		if !decodeHistoryJSON(response, request, &input, "路径基础表单数据请求格式不正确") {
 			return
 		}
 		result, err := history.SavePathSource(request.Context(), planID, pathID, input, strings.TrimSpace(request.Header.Get("Idempotency-Key")))
@@ -157,6 +157,6 @@ func writeHistoryDataError(response http.ResponseWriter, err error) {
 	case service.IsHistoryDataErrorKind(err, service.HistoryDataErrorTarget):
 		writeFailure(response, http.StatusBadGateway, "TARGET_HISTORY_UNAVAILABLE", err.Error(), true)
 	default:
-		writeFailure(response, http.StatusServiceUnavailable, "HISTORY_STORAGE_UNAVAILABLE", "历史数据存储暂不可用，请重试", true)
+		writeFailure(response, http.StatusServiceUnavailable, "HISTORY_STORAGE_UNAVAILABLE", "业务数据存储暂不可用，请重试", true)
 	}
 }

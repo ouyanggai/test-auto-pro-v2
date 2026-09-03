@@ -111,7 +111,7 @@ func (s *HistoryReplayService) Create(ctx context.Context, planID uint64, input 
 	}
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if !validUUID(idempotencyKey) {
-		return model.HistoryReplayJob{}, historyReplayInvalid("历史回放请求标识不正确，请重试")
+		return model.HistoryReplayJob{}, historyReplayInvalid("批量准备请求标识不正确，请重试")
 	}
 	pathIDs, err := normalizeReplayPathIDs(input.PathIDs)
 	if err != nil {
@@ -122,7 +122,7 @@ func (s *HistoryReplayService) Create(ctx context.Context, planID uint64, input 
 		return model.HistoryReplayJob{}, mapHistoryReplayRepositoryError(err)
 	}
 	if plan.Status != model.PlanStatusNotStarted {
-		return model.HistoryReplayJob{}, &HistoryReplayError{Kind: HistoryReplayErrorConflict, Message: "计划已经不能执行历史回放"}
+		return model.HistoryReplayJob{}, &HistoryReplayError{Kind: HistoryReplayErrorConflict, Message: "计划已经不能执行批量准备"}
 	}
 	paths, err := s.paths.GetMany(ctx, planID, pathIDs)
 	if err != nil {
@@ -272,14 +272,14 @@ func (s *HistoryReplayService) resolveReplaySnapshot(ctx context.Context, planID
 	}
 	switch mode {
 	case model.HistorySourceModeNone:
-		return nil, historyReplayIssue("HISTORY_SOURCE_MISSING", "路径尚未选择历史数据来源", true), nil
+		return nil, historyReplayIssue("HISTORY_SOURCE_MISSING", "路径尚未选择基础表单数据", true), nil
 	case model.HistorySourceModeOverride:
 		if pathSource.SnapshotID == 0 {
-			return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "路径独立历史快照不存在", true), nil
+			return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "路径独立基础表单数据不存在", true), nil
 		}
 		if _, err := s.store.GetSnapshot(ctx, planID, pathSource.SnapshotID); err != nil {
 			if errors.Is(err, repository.ErrHistorySnapshotNotFound) {
-				return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "路径历史快照不存在", true), nil
+				return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "路径基础表单数据不存在", true), nil
 			}
 			return nil, nil, mapHistoryReplayRepositoryError(err)
 		}
@@ -291,18 +291,18 @@ func (s *HistoryReplayService) resolveReplaySnapshot(ctx context.Context, planID
 			return nil, nil, mapHistoryReplayRepositoryError(defaultErr)
 		}
 		if !defaultFound || defaultRecord.SnapshotID == 0 {
-			return nil, historyReplayIssue("HISTORY_DEFAULT_MISSING", "计划默认历史来源尚未设置", true), nil
+			return nil, historyReplayIssue("HISTORY_DEFAULT_MISSING", "计划默认基础表单数据尚未设置", true), nil
 		}
 		if _, err := s.store.GetSnapshot(ctx, planID, defaultRecord.SnapshotID); err != nil {
 			if errors.Is(err, repository.ErrHistorySnapshotNotFound) {
-				return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "计划默认历史快照不存在", true), nil
+				return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "计划默认基础表单数据不存在", true), nil
 			}
 			return nil, nil, mapHistoryReplayRepositoryError(err)
 		}
 		value := defaultRecord.SnapshotID
 		return &value, nil, nil
 	default:
-		return nil, historyReplayIssue("HISTORY_SOURCE_INVALID", "路径历史来源模式不正确", true), nil
+		return nil, historyReplayIssue("HISTORY_SOURCE_INVALID", "路径基础表单数据来源模式不正确", true), nil
 	}
 }
 
@@ -415,17 +415,17 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 		return result
 	}
 	if item.SnapshotID == nil || *item.SnapshotID == 0 {
-		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_SOURCE_MISSING", Message: "历史数据来源快照不存在，不能退回空数据", Blocking: true})
+		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_SOURCE_MISSING", Message: "基础表单数据不存在，不能退回空数据", Blocking: true})
 		return result
 	}
 	snapshot, err := s.store.GetSnapshot(ctx, planID, *item.SnapshotID)
 	if err != nil {
-		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_SNAPSHOT_READ_FAILED", Message: "历史数据快照暂时无法读取", Blocking: true})
+		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_SNAPSHOT_READ_FAILED", Message: "基础表单数据暂时无法读取", Blocking: true})
 		return result
 	}
 	if s.target == nil {
 		result.EffectiveFormData = snapshot.RawFormData
-		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_TARGET_UNAVAILABLE", Message: "目标流程结构暂时无法读取，不能复验历史路径", Blocking: true})
+		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_TARGET_UNAVAILABLE", Message: "目标流程结构暂时无法读取，不能复验当前路径", Blocking: true})
 		return result
 	}
 	plan, err := s.plans.Get(ctx, planID)
@@ -522,21 +522,21 @@ func historyReplayInvalid(message string) error {
 
 // historyReplayStorageError 构造存储不可用错误。
 func historyReplayStorageError() error {
-	return &HistoryReplayError{Kind: HistoryReplayErrorStorage, Message: "历史回放存储暂不可用"}
+	return &HistoryReplayError{Kind: HistoryReplayErrorStorage, Message: "批量准备存储暂不可用"}
 }
 
 // mapHistoryReplayRepositoryError 映射仓储错误并隐藏 SQL 和目标内部细节。
 func mapHistoryReplayRepositoryError(err error) error {
 	switch {
 	case errors.Is(err, repository.ErrHistoryReplayActive), errors.Is(err, repository.ErrHistoryReplayIdempotency):
-		return &HistoryReplayError{Kind: HistoryReplayErrorConflict, Message: "当前计划已有历史回放任务或幂等键已被复用"}
+		return &HistoryReplayError{Kind: HistoryReplayErrorConflict, Message: "当前计划已有批量准备任务或幂等键已被复用"}
 	case errors.Is(err, repository.ErrHistoryReplayNotFound):
-		return &HistoryReplayError{Kind: HistoryReplayErrorNotFound, Message: "历史回放任务不存在"}
+		return &HistoryReplayError{Kind: HistoryReplayErrorNotFound, Message: "批量准备任务不存在"}
 	case errors.Is(err, repository.ErrHistoryReplayState):
-		return &HistoryReplayError{Kind: HistoryReplayErrorState, Message: "历史回放任务状态不允许当前操作"}
+		return &HistoryReplayError{Kind: HistoryReplayErrorState, Message: "批量准备任务状态不允许当前操作"}
 	case errors.Is(err, repository.ErrHistorySnapshotNotFound), errors.Is(err, repository.ErrExecutionPathNotFound), errors.Is(err, repository.ErrPlanNotFound):
-		return &HistoryReplayError{Kind: HistoryReplayErrorNotFound, Message: "历史回放来源或执行路径不存在"}
+		return &HistoryReplayError{Kind: HistoryReplayErrorNotFound, Message: "批量准备来源或执行路径不存在"}
 	default:
-		return &HistoryReplayError{Kind: HistoryReplayErrorStorage, Message: "历史回放存储暂不可用"}
+		return &HistoryReplayError{Kind: HistoryReplayErrorStorage, Message: "批量准备存储暂不可用"}
 	}
 }

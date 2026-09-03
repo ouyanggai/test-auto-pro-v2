@@ -47,7 +47,7 @@ func handleCreateHistoryReplay(replay HistoryReplayService) http.HandlerFunc {
 			return
 		}
 		var input model.HistoryReplayCreateInput
-		if !decodeHistoryReplayJSON(response, request, &input, "历史回放请求格式不正确") {
+		if !decodeHistoryReplayJSON(response, request, &input, "批量准备请求格式不正确") {
 			return
 		}
 		job, err := replay.Create(request.Context(), planID, input, strings.TrimSpace(request.Header.Get("Idempotency-Key")))
@@ -198,7 +198,7 @@ func writeHistoryReplayError(response http.ResponseWriter, err error) {
 	case service.IsHistoryReplayErrorKind(err, service.HistoryReplayErrorTarget):
 		writeFailure(response, http.StatusBadGateway, "TARGET_HISTORY_UNAVAILABLE", err.Error(), true)
 	default:
-		writeFailure(response, http.StatusServiceUnavailable, "HISTORY_REPLAY_STORAGE_UNAVAILABLE", "历史回放存储暂不可用，请重试", true)
+		writeFailure(response, http.StatusServiceUnavailable, "HISTORY_REPLAY_STORAGE_UNAVAILABLE", "批量准备存储暂不可用，请重试", true)
 	}
 }
 
@@ -206,30 +206,30 @@ type unavailableHistoryReplayService struct{}
 
 // Create 在默认处理器未注入回放服务时返回稳定不可用错误。
 func (unavailableHistoryReplayService) Create(context.Context, uint64, model.HistoryReplayCreateInput, string) (model.HistoryReplayJob, error) {
-	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "历史回放服务暂不可用"}
+	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "批量准备服务暂不可用"}
 }
 
 // Active 在默认处理器未注入回放服务时返回稳定不可用错误。
 func (unavailableHistoryReplayService) Active(context.Context, uint64) (model.HistoryReplayJob, bool, error) {
-	return model.HistoryReplayJob{}, false, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "历史回放服务暂不可用"}
+	return model.HistoryReplayJob{}, false, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "批量准备服务暂不可用"}
 }
 
 // Get 在默认处理器未注入回放服务时返回稳定不可用错误。
 func (unavailableHistoryReplayService) Get(context.Context, uint64, string) (model.HistoryReplayJob, error) {
-	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "历史回放服务暂不可用"}
+	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "批量准备服务暂不可用"}
 }
 
 // ListItems 在默认处理器未注入回放服务时返回稳定不可用错误。
 func (unavailableHistoryReplayService) ListItems(context.Context, uint64, string, uint64, int) (model.HistoryReplayItemPage, error) {
-	return model.HistoryReplayItemPage{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "历史回放服务暂不可用"}
+	return model.HistoryReplayItemPage{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "批量准备服务暂不可用"}
 }
 
 // Cancel 在默认处理器未注入回放服务时返回稳定不可用错误。
 func (unavailableHistoryReplayService) Cancel(context.Context, uint64, string) (model.HistoryReplayJob, error) {
-	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "历史回放服务暂不可用"}
+	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "批量准备服务暂不可用"}
 }
 
 // Resume 在默认处理器未注入回放服务时返回稳定不可用错误。
 func (unavailableHistoryReplayService) Resume(context.Context, uint64, string) (model.HistoryReplayJob, error) {
-	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "历史回放服务暂不可用"}
+	return model.HistoryReplayJob{}, &service.HistoryReplayError{Kind: service.HistoryReplayErrorStorage, Message: "批量准备服务暂不可用"}
 }

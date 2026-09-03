@@ -34,5 +34,9 @@ test('T05 保存换路需要确认令牌且取消不触发写入', () => {
   assert.match(view, /confirmationToken/)
   assert.match(view, /PATH_ROUTE_CONFIRMATION_REQUIRED/)
   assert.match(api, /headers: \{ 'Idempotency-Key': idempotencyKey \}/)
-  assert.doesNotMatch(view, /generatePathFormData|智能生成|换一组|nextFormGenerationSeed/)
+  assert.doesNotMatch(view, /generatePathFormData|换一组|nextFormGenerationSeed/)
+  // 智能生成数据只是打开基础表单数据弹窗，真实分支补丁由服务端在读取数据工作区时完成。
+  assert.match(view, /智能生成数据/)
+  assert.match(view, /dataPickerOpen = true/)
+  assert.match(view, /handleBaseFormDataSaved/)
 })

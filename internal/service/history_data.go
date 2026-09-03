@@ -65,7 +65,7 @@ func (s *HistoryDataManager) Candidates(ctx context.Context, planID, pathID uint
 		return model.HistoryCandidatePage{}, err
 	}
 	if s.target == nil {
-		return model.HistoryCandidatePage{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史数据读取暂不可用"}
+		return model.HistoryCandidatePage{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标业务数据读取暂不可用"}
 	}
 	identity, err := s.target.HistoryIdentity(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *HistoryDataManager) Candidates(ctx context.Context, planID, pathID uint
 // selectionSources 读取候选弹窗所需的默认和路径来源摘要，路径未保存来源时实时继承计划默认值。
 func (s *HistoryDataManager) selectionSources(ctx context.Context, planID, pathID uint64, currentTemplateSummary map[string]any) (*model.HistoryDataSource, *model.HistoryDataSource, error) {
 	if s.store == nil {
-		return nil, nil, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+		return nil, nil, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "业务数据存储暂不可用"}
 	}
 	defaultRecord, defaultFound, err := s.store.GetDefault(ctx, planID)
 	if err != nil {
@@ -156,7 +156,7 @@ func (s *HistoryDataManager) SaveDefault(ctx context.Context, planID uint64, inp
 		return model.HistoryDataSource{}, err
 	}
 	if s.store == nil {
-		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "业务数据存储暂不可用"}
 	}
 	plan, err := s.getMutablePlan(ctx, planID)
 	if err != nil {
@@ -172,12 +172,12 @@ func (s *HistoryDataManager) SaveDefault(ctx context.Context, planID uint64, inp
 			return model.HistoryDataSource{}, sourceErr
 		}
 		if result.Summary == nil || result.Summary.CandidateKey != input.CandidateKey {
-			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "相同请求标识不能用于不同历史候选"}
+			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "相同请求标识不能用于不同业务数据"}
 		}
 		return result, nil
 	}
 	if s.target == nil {
-		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史数据读取暂不可用"}
+		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标业务数据读取暂不可用"}
 	}
 	identity, err := s.target.HistoryIdentity(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
 	if err != nil {
@@ -213,17 +213,17 @@ func (s *HistoryDataManager) SavePathSource(ctx context.Context, planID, pathID 
 	switch input.Mode {
 	case model.HistorySourceModeDefault:
 		if input.CandidateKey != "" {
-			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "继承计划默认来源时不能指定历史候选"}
+			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "继承计划默认来源时不能指定业务数据"}
 		}
 	case model.HistorySourceModeOverride:
 		if err := validateHistoryCandidateKey(input.CandidateKey); err != nil {
 			return model.HistoryDataSource{}, err
 		}
 	default:
-		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "历史来源模式只允许继承默认或独立覆盖"}
+		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "基础表单数据来源模式只允许继承默认或独立覆盖"}
 	}
 	if s.store == nil {
-		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "业务数据存储暂不可用"}
 	}
 	plan, err := s.getMutablePlan(ctx, planID)
 	if err != nil {
@@ -244,14 +244,14 @@ func (s *HistoryDataManager) SavePathSource(ctx context.Context, planID, pathID 
 	}
 	if found && current.IdempotencyKey == idempotencyKey {
 		if current.Mode != input.Mode {
-			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "相同请求标识不能用于不同历史来源"}
+			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "相同请求标识不能用于不同基础表单数据"}
 		}
 		result, sourceErr := s.sourceFromPathRecord(ctx, planID, current, nil)
 		if sourceErr != nil {
 			return model.HistoryDataSource{}, sourceErr
 		}
 		if input.Mode == model.HistorySourceModeOverride && (result.Summary == nil || result.Summary.CandidateKey != input.CandidateKey) {
-			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "相同请求标识不能用于不同历史候选"}
+			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "相同请求标识不能用于不同业务数据"}
 		}
 		return result, nil
 	}
@@ -264,7 +264,7 @@ func (s *HistoryDataManager) SavePathSource(ctx context.Context, planID, pathID 
 			return model.HistoryDataSource{}, mapHistoryStoreError(defaultErr)
 		}
 		if !defaultFound {
-			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "请先设置计划默认历史来源"}
+			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "请先设置计划默认基础表单数据"}
 		}
 		snapshot, err = s.store.GetSnapshot(ctx, planID, defaultRecord.SnapshotID)
 		if err != nil {
@@ -272,7 +272,7 @@ func (s *HistoryDataManager) SavePathSource(ctx context.Context, planID, pathID 
 		}
 	case model.HistorySourceModeOverride:
 		if s.target == nil {
-			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史数据读取暂不可用"}
+			return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标业务数据读取暂不可用"}
 		}
 		identity, identityErr := s.target.HistoryIdentity(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
 		if identityErr != nil {
@@ -331,7 +331,7 @@ func (s *HistoryDataManager) getMutablePlan(ctx context.Context, planID uint64) 
 		return model.Plan{}, err
 	}
 	if plan.Status != model.PlanStatusNotStarted {
-		return model.Plan{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "计划已经不能修改历史来源"}
+		return model.Plan{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "计划已经不能修改基础表单数据"}
 	}
 	return plan, nil
 }
@@ -340,14 +340,14 @@ func (s *HistoryDataManager) getMutablePlan(ctx context.Context, planID uint64) 
 func (s *HistoryDataManager) buildSnapshot(plan model.Plan, identity target.HistoryIdentity, source target.HistorySnapshotSource) (model.HistorySnapshot, error) {
 	raw, err := cloneHistoryMap(source.RawFormData)
 	if err != nil {
-		return model.HistorySnapshot{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史表单数据无法完整复制"}
+		return model.HistorySnapshot{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标业务表单数据无法完整复制"}
 	}
 	template, err := cloneHistoryMap(source.TemplateSummary)
 	if err != nil {
-		return model.HistorySnapshot{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史模板摘要无法完整复制"}
+		return model.HistorySnapshot{}, &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标模板摘要无法完整复制"}
 	}
 	if len(template) == 0 {
-		source.Issues = append(source.Issues, "目标历史模板或页面版本无法确认")
+		source.Issues = append(source.Issues, "目标模板或页面版本无法确认")
 	}
 	if len(source.Issues) > 0 {
 		template["issues"] = append([]string(nil), source.Issues...)
@@ -364,7 +364,7 @@ func (s *HistoryDataManager) buildSnapshot(plan model.Plan, identity target.Hist
 		SourceDigest: digest, CreatedAt: s.now().UTC(),
 	}
 	if snapshot.CandidateKey == strings.Repeat("0", 64) {
-		return model.HistorySnapshot{}, &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "历史候选标识不正确"}
+		return model.HistorySnapshot{}, &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "业务数据标识不正确"}
 	}
 	return snapshot, nil
 }
@@ -389,12 +389,12 @@ func (s *HistoryDataManager) sourceFromPathRecord(ctx context.Context, planID ui
 			return model.HistoryDataSource{}, mapHistoryStoreError(err)
 		}
 		if !found {
-			return model.HistoryDataSource{Mode: record.Mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_DEFAULT_MISSING", Message: "计划默认历史来源尚未设置", Blocking: true}}, Revision: record.Revision}, nil
+			return model.HistoryDataSource{Mode: record.Mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_DEFAULT_MISSING", Message: "计划默认基础表单数据尚未设置", Blocking: true}}, Revision: record.Revision}, nil
 		}
 		return s.sourceFromSnapshot(ctx, planID, record.Mode, defaultRecord.SnapshotID, record.Revision, currentTemplateSummary)
 	}
 	if record.SnapshotID == 0 {
-		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "路径历史来源数据异常"}
+		return model.HistoryDataSource{}, &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "路径基础表单数据数据异常"}
 	}
 	snapshot, err := s.store.GetSnapshot(ctx, planID, record.SnapshotID)
 	if err != nil {
@@ -454,7 +454,7 @@ func projectHistorySource(mode string, snapshot model.HistorySnapshot, revision 
 	status := model.HistoryDataStatusNeedsInput
 	if len(snapshot.RawFormData) == 0 {
 		status = model.HistoryDataStatusNeedsInput
-		issues = append(issues, model.HistoryDataIssue{Code: "HISTORY_DATA_EMPTY", Message: "目标历史表单数据为空，需要人工补充", Blocking: true})
+		issues = append(issues, model.HistoryDataIssue{Code: "HISTORY_DATA_EMPTY", Message: "目标业务表单数据为空，需要人工补充", Blocking: true})
 	}
 	if snapshot.RuntimeType != string(target.FormRenderTypeFormMaking) && snapshot.RuntimeType != string(target.FormRenderTypeVueCustom) {
 		status = model.HistoryDataStatusNeedsInput
@@ -466,14 +466,14 @@ func projectHistorySource(mode string, snapshot model.HistorySnapshot, revision 
 	}
 	sourceVersion := stringMapValue(snapshot.TemplateSummary, "runtimeVersionDigest")
 	if sourceVersion == "" {
-		issues = append(issues, model.HistoryDataIssue{Code: "HISTORY_SOURCE_VERSION_UNVERIFIED", Message: "目标历史模板或页面版本无法完整确认", Blocking: true})
+		issues = append(issues, model.HistoryDataIssue{Code: "HISTORY_SOURCE_VERSION_UNVERIFIED", Message: "目标模板或页面版本无法完整确认", Blocking: true})
 	} else if currentTemplateSummary != nil {
 		currentVersion := stringMapValue(currentTemplateSummary, "runtimeVersionDigest")
 		if currentVersion == "" {
 			issues = append(issues, model.HistoryDataIssue{Code: "HISTORY_CURRENT_VERSION_UNVERIFIED", Message: "当前目标模板或页面版本无法完整确认", Blocking: true})
 		} else if currentVersion != sourceVersion {
 			status = model.HistoryDataStatusAffected
-			issues = append(issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VERSION_CHANGED", Message: "历史来源与当前目标模板或页面版本不同，需要重新核对", Blocking: true})
+			issues = append(issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VERSION_CHANGED", Message: "基础表单数据与当前目标模板或页面版本不同，需要重新核对", Blocking: true})
 		}
 	}
 	return model.HistoryDataSource{
@@ -561,7 +561,7 @@ func historyCandidateMatchesQuery(instance target.HistoryInstance, query string)
 // validateHistoryWriteKey 要求所有历史来源写入带标准幂等键。
 func validateHistoryWriteKey(value string) error {
 	if !validUUID(strings.TrimSpace(value)) {
-		return &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "历史数据写入请求标识不正确，请重试"}
+		return &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "业务数据写入请求标识不正确，请重试"}
 	}
 	return nil
 }
@@ -570,11 +570,11 @@ func validateHistoryWriteKey(value string) error {
 func validateHistoryCandidateKey(value string) error {
 	value = strings.TrimSpace(value)
 	if len(value) != 64 {
-		return &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "历史候选标识不正确"}
+		return &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "业务数据标识不正确"}
 	}
 	decoded, err := hex.DecodeString(value)
 	if err != nil || len(decoded) != sha256.Size {
-		return &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "历史候选标识不正确"}
+		return &HistoryDataError{Kind: HistoryDataErrorInvalidArgument, Message: "业务数据标识不正确"}
 	}
 	return nil
 }
@@ -582,21 +582,21 @@ func validateHistoryCandidateKey(value string) error {
 // validateHistorySnapshotSource 复核目标读取结果仍属于计划身份和用户选择，防止候选变化后错绑快照。
 func validateHistorySnapshotSource(account, candidateKey string, identity target.HistoryIdentity, source *target.HistorySnapshotSource) error {
 	if source == nil || strings.TrimSpace(source.Instance.ID) == "" || HistoryCandidateKey(account, source.Instance) != candidateKey {
-		return &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "历史候选不存在或已发生变化"}
+		return &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "业务数据不存在或已发生变化"}
 	}
 	if strings.TrimSpace(source.Instance.FlowCode) != strings.TrimSpace(identity.FlowCode) {
-		return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史候选流程身份不一致"}
+		return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标业务数据流程身份不一致"}
 	}
 	if expectedForm := strings.TrimSpace(identity.FormName); expectedForm != "" {
 		if strings.TrimSpace(source.Instance.FormName) != expectedForm {
-			return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史候选表单身份不一致"}
+			return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标业务数据表单身份不一致"}
 		}
 		return nil
 	}
 	expectedFlowName := strings.TrimSpace(identity.FlowName)
 	actualFlowName := strings.TrimSpace(source.Instance.FlowName)
 	if expectedFlowName != "" && actualFlowName != "" && actualFlowName != expectedFlowName {
-		return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标历史候选页面身份不一致"}
+		return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "目标业务数据页面身份不一致"}
 	}
 	if expectedFlowName == "" || actualFlowName == "" {
 		source.Issues = append(source.Issues, "目标无表单流程缺少稳定流程或页面名称")
@@ -607,9 +607,9 @@ func validateHistorySnapshotSource(account, candidateKey string, identity target
 // mapHistoryTargetError 隐藏目标响应原文并保持会话/超时语义。
 func mapHistoryTargetError(err error) error {
 	if errors.Is(err, ErrTargetFlowNotFound) {
-		return &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "历史候选不存在或已不可见"}
+		return &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "业务数据不存在或已不可见"}
 	}
-	return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "暂时无法读取目标历史数据，请重试"}
+	return &HistoryDataError{Kind: HistoryDataErrorTarget, Message: "暂时无法读取目标业务数据，请重试"}
 }
 
 // mapHistoryStoreError 将仓储错误收敛为历史来源稳定错误。
@@ -620,11 +620,11 @@ func mapHistoryStoreError(err error) error {
 	case errors.Is(err, repository.ErrExecutionPathNotFound):
 		return &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "执行路径不存在"}
 	case errors.Is(err, repository.ErrHistorySnapshotNotFound):
-		return &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "历史数据快照不存在"}
+		return &HistoryDataError{Kind: HistoryDataErrorNotFound, Message: "基础表单数据不存在"}
 	case errors.Is(err, repository.ErrHistoryRevisionConflict):
-		return &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "历史数据来源已被其他请求更新，请刷新后重试"}
+		return &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "基础表单数据已被其他请求更新，请刷新后重试"}
 	default:
-		return &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "历史数据存储暂不可用"}
+		return &HistoryDataError{Kind: HistoryDataErrorStorage, Message: "业务数据存储暂不可用"}
 	}
 }
 

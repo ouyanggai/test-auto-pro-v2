@@ -10,7 +10,6 @@ import {
   NEmpty,
   NInput,
   NModal,
-  NPopconfirm,
   NProgress,
   NSpin,
   NTag,
@@ -57,7 +56,7 @@ import type { HistoryReplayJob } from '../features/history-replay/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
-import HistorySourceSelector from '../features/history-replay/HistorySourceSelector.vue'
+import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import { flowSourceLabels } from '../features/plans/selection'
 import type { PersistedPlan } from '../features/plans/types'
@@ -95,11 +94,12 @@ const draftRecoveryLoading = ref(false)
 const draftRecoveryError = ref('')
 const selectedRunPathIDs = ref(new Set<string>())
 const pathSelectionError = ref('')
-const replayJob = ref<HistoryReplayJob | null>(null)
-const replayLoading = ref(false)
-const replayFilter = ref<'all' | 'needs_attention'>('all')
+const preparationJob = ref<HistoryReplayJob | null>(null)
+const preparationLoading = ref(false)
+const preparationFilter = ref<'all' | 'needs_attention'>('all')
+const dataPickerOpen = ref(false)
 const SAVED_PATH_ITEM_SIZE = 44
-const HISTORY_REPLAY_PATH_ITEM_SIZE = 84
+const PREPARATION_PATH_ITEM_SIZE = 84
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 const graphScreenRef = ref<HTMLElement | null>(null)
 let loadController: AbortController | null = null
@@ -108,19 +108,16 @@ let draftRecoveryController: AbortController | null = null
 let draftRecoveryVersion = 0
 let pageScrollContainer: HTMLElement | null = null
 let generationTimer: ReturnType<typeof setTimeout> | null = null
-let replayTimer: ReturnType<typeof setTimeout> | null = null
+let preparationTimer: ReturnType<typeof setTimeout> | null = null
 
 const planID = computed(() => String(route.params.id || ''))
 const planMutable = computed(() => plan.value?.status === 'not_started')
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
-const configuredPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'configured'))
-const partialPaths = computed(() => paths.value.filter((path) => path.configurationStatus === 'partial'))
-const readyDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'ready'))
 const attentionDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'empty' || path.dataStatus === 'needs_input' || path.dataStatus === 'affected'))
-const visiblePaths = computed(() => replayFilter.value === 'needs_attention'
+const visiblePaths = computed(() => preparationFilter.value === 'needs_attention'
   ? attentionDataPaths.value
   : paths.value)
-const replayPathListHeight = computed(() => Math.min(visiblePaths.value.length, 5) * HISTORY_REPLAY_PATH_ITEM_SIZE)
+const preparationPathListHeight = computed(() => Math.min(visiblePaths.value.length, 5) * PREPARATION_PATH_ITEM_SIZE)
 const pageThemeStyle = computed(() => ({
   '--plan-card-color': themeVars.value.cardColor,
   '--plan-page-color': themeVars.value.bodyColor,
@@ -180,9 +177,9 @@ const pathSummary = computed(() => graph.value && pathAnalysis.value
   ? projectExecutionPathSummary(graph.value, pathAnalysis.value, draftChoices.value)
   : [])
 const generationBusy = computed(() => generationJob.value?.status === 'queued' || generationJob.value?.status === 'running')
-const replayBusy = computed(() => replayJob.value?.status === 'queued' || replayJob.value?.status === 'running')
-const replayProcessed = computed(() => replayJob.value
-  ? replayJob.value.total - replayJob.value.pending - replayJob.value.running
+const preparationBusy = computed(() => preparationJob.value?.status === 'queued' || preparationJob.value?.status === 'running')
+const preparationProcessed = computed(() => preparationJob.value
+  ? preparationJob.value.total - preparationJob.value.pending - preparationJob.value.running
   : 0)
 const savedPathListHeight = computed(() => Math.min(paths.value.length, 5) * SAVED_PATH_ITEM_SIZE)
 const allPathsSelectedForRun = computed(() => paths.value.length > 0 && paths.value.every(path => selectedRunPathIDs.value.has(path.id)))
@@ -210,7 +207,7 @@ async function loadPage() {
   paths.value = []
   selectedRunPathIDs.value = new Set()
   pathSelectionError.value = ''
-  replayJob.value = null
+  preparationJob.value = null
   pathWorkspaceOpen.value = false
   savedPathsOpen.value = false
   draftRecoveryLoading.value = false
@@ -240,7 +237,7 @@ async function loadPage() {
       pathsLoaded.value = true
 			selectedRunPathIDs.value = new Set()
 			if (planMutable.value && plan.value.flowSource === 'new' && pathsResult.value.length === 0) void startAutomaticGeneration()
-		void restoreActiveHistoryReplay(controller.signal)
+		void restoreActivePreparation(controller.signal)
     }
     else {
       const caught = pathsResult.reason
@@ -317,14 +314,14 @@ async function retryPaths(): Promise<boolean> {
   }
 }
 
-// retryPathsAndFinalizeReplay 在完成任务的路径刷新重试成功后收起进度区。
-async function retryPathsAndFinalizeReplay(): Promise<boolean> {
-  const completedJob = replayJob.value?.status === 'completed' ? replayJob.value : null
+// retryPathsAndFinalizePreparation 在完成任务的路径刷新重试成功后收起进度区。
+async function retryPathsAndFinalizePreparation(): Promise<boolean> {
+  const completedJob = preparationJob.value?.status === 'completed' ? preparationJob.value : null
   const refreshed = await retryPaths()
-  if (refreshed && completedJob && replayJob.value === completedJob) {
-    const processed = replayProcessed.value
-    replayJob.value = null
-    message.success(`历史回放完成，已处理 ${processed} 条路径`)
+  if (refreshed && completedJob && preparationJob.value === completedJob) {
+    const processed = preparationProcessed.value
+    preparationJob.value = null
+    message.success(`一键配置完成，已处理 ${processed} 条路径`)
   }
   return refreshed
 }
@@ -348,111 +345,111 @@ async function selectSavedPath(path: ExecutionPath) {
   }
 }
 
-// updateRunPathSelection 只维护本次历史回放的明确勾选，创建任务时一次提交路径快照。
+// updateRunPathSelection 只维护本次一键配置的明确勾选，创建任务时一次提交路径快照。
 function updateRunPathSelection(path: ExecutionPath, included: boolean) {
-	if (!planMutable.value || replayBusy.value) return
+	if (!planMutable.value || preparationBusy.value) return
   const next = new Set(selectedRunPathIDs.value)
   if (included) next.add(path.id)
   else next.delete(path.id)
   selectedRunPathIDs.value = next
 }
 
-// startSelectedHistoryReplay 只创建当前勾选路径的持久历史回放任务。
-async function startSelectedHistoryReplay() {
-  if (!planMutable.value || replayBusy.value || selectedRunPathIDs.value.size === 0) return
-  replayLoading.value = true
+// startSelectedPreparation 用户确认基础表单数据后，只为当前勾选路径创建持久批量准备任务。
+async function startSelectedPreparation() {
+  if (!planMutable.value || preparationBusy.value || selectedRunPathIDs.value.size === 0) return
+  preparationLoading.value = true
   pathSelectionError.value = ''
   try {
-    replayJob.value = await createHistoryReplay(
+    preparationJob.value = await createHistoryReplay(
       planID.value,
       [...selectedRunPathIDs.value].map(pathID => Number(pathID)),
       0,
       crypto.randomUUID(),
     )
-    scheduleHistoryReplayPoll()
+    schedulePreparationPoll()
   }
   catch (caught) {
-    pathSelectionError.value = caught instanceof Error ? caught.message : '历史回放启动失败，请重试'
+    pathSelectionError.value = caught instanceof Error ? caught.message : '一键配置失败，请重试'
   }
   finally {
-    replayLoading.value = false
+    preparationLoading.value = false
   }
 }
 
-// restoreActiveHistoryReplay 恢复刷新前仍在执行的同计划任务。
-async function restoreActiveHistoryReplay(signal?: AbortSignal) {
+// restoreActivePreparation 恢复刷新前仍在执行的同计划任务。
+async function restoreActivePreparation(signal?: AbortSignal) {
   try {
     const active = await fetchActiveHistoryReplay(planID.value, signal)
     if (!active) return
-    replayJob.value = active
-    scheduleHistoryReplayPoll()
+    preparationJob.value = active
+    schedulePreparationPoll()
   }
   catch (caught) {
     if (signal?.aborted) return
-    pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法读取历史回放进度'
+    pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法读取批量准备进度'
   }
 }
 
-// scheduleHistoryReplayPoll 按任务真实状态刷新聚合进度，完成后重新读取路径双状态。
-function scheduleHistoryReplayPoll() {
-  if (replayTimer) clearTimeout(replayTimer)
-  if (!replayBusy.value || !replayJob.value) return
-  replayTimer = setTimeout(async () => {
-    const current = replayJob.value
+// schedulePreparationPoll 按任务真实状态刷新聚合进度，完成后重新读取路径双状态。
+function schedulePreparationPoll() {
+  if (preparationTimer) clearTimeout(preparationTimer)
+  if (!preparationBusy.value || !preparationJob.value) return
+  preparationTimer = setTimeout(async () => {
+    const current = preparationJob.value
     if (!current) return
     try {
       const refreshedJob = await fetchHistoryReplay(planID.value, current.id)
-      replayJob.value = refreshedJob
+      preparationJob.value = refreshedJob
       if (refreshedJob.status === 'completed') {
         if (await retryPaths()) {
-          replayJob.value = null
-          message.success(`历史回放完成，已处理 ${refreshedJob.total - refreshedJob.pending - refreshedJob.running} 条路径`)
+          preparationJob.value = null
+          message.success(`一键配置完成，已处理 ${refreshedJob.total - refreshedJob.pending - refreshedJob.running} 条路径`)
         }
         return
       }
-      scheduleHistoryReplayPoll()
+      schedulePreparationPoll()
     }
     catch (caught) {
-      pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法刷新历史回放进度'
+      pathSelectionError.value = caught instanceof Error ? caught.message : '暂时无法刷新批量准备进度'
     }
   }, 700)
 }
 
-// cancelCurrentHistoryReplay 取消任务并保留当前检查点。
-async function cancelCurrentHistoryReplay() {
-  if (!planMutable.value || !replayJob.value || !replayBusy.value) return
-  replayLoading.value = true
+// cancelCurrentPreparation 取消任务并保留当前检查点。
+async function cancelCurrentPreparation() {
+  if (!planMutable.value || !preparationJob.value || !preparationBusy.value) return
+  preparationLoading.value = true
   try {
-		replayJob.value = await cancelHistoryReplay(planID.value, replayJob.value.id)
-		if (replayTimer) clearTimeout(replayTimer)
+		preparationJob.value = await cancelHistoryReplay(planID.value, preparationJob.value.id)
+		if (preparationTimer) clearTimeout(preparationTimer)
 	}
 	catch (caught) {
-		pathSelectionError.value = caught instanceof Error ? caught.message : '取消历史回放失败，请重试'
+		pathSelectionError.value = caught instanceof Error ? caught.message : '取消批量准备失败，请重试'
 	}
 	finally {
-    replayLoading.value = false
+    preparationLoading.value = false
   }
 }
 
-// resumeCurrentHistoryReplay 恢复取消或失败任务。
-async function resumeCurrentHistoryReplay() {
-  if (!planMutable.value || !replayJob.value || !['cancelled', 'failed'].includes(replayJob.value.status)) return
-  replayLoading.value = true
+// resumeCurrentPreparation 恢复取消或失败任务。
+async function resumeCurrentPreparation() {
+  if (!planMutable.value || !preparationJob.value || !['cancelled', 'failed'].includes(preparationJob.value.status)) return
+  preparationLoading.value = true
   try {
-		replayJob.value = await resumeHistoryReplay(planID.value, replayJob.value.id)
-		scheduleHistoryReplayPoll()
+		preparationJob.value = await resumeHistoryReplay(planID.value, preparationJob.value.id)
+		schedulePreparationPoll()
 	}
 	catch (caught) {
-		pathSelectionError.value = caught instanceof Error ? caught.message : '恢复历史回放失败，请重试'
+		pathSelectionError.value = caught instanceof Error ? caught.message : '恢复批量准备失败，请重试'
 	}
 	finally {
-    replayLoading.value = false
+    preparationLoading.value = false
   }
 }
 
 // setAllRunPathSelections 为本次任务全选或清空路径，不写入配置表。
 function setAllRunPathSelections(included: boolean) {
-  if (!planMutable.value || replayBusy.value) return
+  if (!planMutable.value || preparationBusy.value) return
   selectedRunPathIDs.value = included ? new Set(paths.value.map(path => path.id)) : new Set()
 }
 
@@ -782,7 +779,7 @@ onMounted(() => {
   loadController?.abort()
   draftRecoveryController?.abort()
 	if (generationTimer) clearTimeout(generationTimer)
-	if (replayTimer) clearTimeout(replayTimer)
+	if (preparationTimer) clearTimeout(preparationTimer)
   pageScrollContainer?.classList.remove('plan-paths-scroll-container')
   pageScrollContainer = null
 })
@@ -814,93 +811,102 @@ onMounted(() => {
             <n-descriptions-item label="路径数量">{{ plan.pathCount }}</n-descriptions-item>
           </n-descriptions>
 
-			<history-source-selector
-				:plan-id="planID"
-				scope="default"
-				:disabled="!planMutable"
-			/>
-
-          <section class="history-replay" aria-labelledby="history-replay-heading">
-            <div class="history-replay__header">
+          <section class="path-prepare" aria-labelledby="path-prepare-heading">
+            <div class="path-prepare__header">
               <div>
-                <h2 id="history-replay-heading">历史回放与运行选择</h2>
+                <h2 id="path-prepare-heading">路径准备与运行选择</h2>
                 <p v-if="pathsLoading">正在读取本地路径配置状态</p>
                 <p v-else-if="pathsError">暂时无法读取路径状态，请先重试</p>
-                <p v-else>共 {{ paths.length }} 条；节点已配置 {{ configuredPaths.length }} 条，部分配置 {{ partialPaths.length }} 条；数据已准备 {{ readyDataPaths.length }} 条，需处理 {{ attentionDataPaths.length }} 条；已选 {{ selectedRunPathIDs.size }} 条</p>
+                <p v-else>共 {{ paths.length }} 条 · 已选 {{ selectedRunPathIDs.size }} 条</p>
               </div>
-              <div class="history-replay__header-actions">
-							<n-button v-if="planMutable && paths.length" size="small" secondary :disabled="replayBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
-                <n-button v-if="planMutable && paths.length" size="small" secondary :disabled="replayBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
-						<n-button size="small" secondary :type="replayFilter === 'needs_attention' ? 'warning' : 'default'" @click="replayFilter = replayFilter === 'needs_attention' ? 'all' : 'needs_attention'">
-							{{ replayFilter === 'needs_attention' ? '显示全部' : `数据需处理 ${attentionDataPaths.length}` }}
+              <div class="path-prepare__header-actions">
+							<n-button v-if="planMutable && paths.length" size="small" secondary :disabled="preparationBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
+                <n-button v-if="planMutable && paths.length" size="small" secondary :disabled="preparationBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
+						<n-button size="small" secondary :type="preparationFilter === 'needs_attention' ? 'warning' : 'default'" @click="preparationFilter = preparationFilter === 'needs_attention' ? 'all' : 'needs_attention'">
+							{{ preparationFilter === 'needs_attention' ? '显示全部' : `数据需处理 ${attentionDataPaths.length}` }}
 						</n-button>
-							<n-popconfirm v-if="planMutable && selectedRunPathIDs.size && !replayBusy" :show-icon="false" positive-text="开始回放" negative-text="取消" @positive-click="startSelectedHistoryReplay">
-							<template #trigger><n-button size="small" type="primary" secondary :loading="replayLoading">开始历史回放</n-button></template>
-							仅回放已勾选的 {{ selectedRunPathIDs.size }} 条路径；历史原始数据会按当前目标流程条件复验。
-						</n-popconfirm>
+							<n-button
+								v-if="planMutable && paths.length"
+								size="small"
+								type="primary"
+								secondary
+								:loading="preparationLoading"
+								:disabled="preparationBusy || selectedRunPathIDs.size === 0"
+								@click="dataPickerOpen = true"
+							>
+								一键配置
+							</n-button>
               </div>
             </div>
+            <base-form-data-picker
+              v-model:show="dataPickerOpen"
+              :plan-id="planID"
+              scope="default"
+              confirm-text="开始配置"
+              :disabled="!planMutable"
+              @saved="startSelectedPreparation"
+            />
             <n-alert v-if="pathSelectionError" type="error" :show-icon="false">
               {{ pathSelectionError }}
-						<n-button text type="primary" @click="retryPathsAndFinalizeReplay">重新读取</n-button>
+						<n-button text type="primary" @click="retryPathsAndFinalizePreparation">重新读取</n-button>
             </n-alert>
 			<n-alert v-if="generationError" type="error" :show-icon="false">{{ generationError }}</n-alert>
-					<section v-if="replayJob" class="history-replay__job" aria-label="历史回放进度">
-						<div class="history-replay__job-summary">
-							<strong>已处理 {{ replayProcessed }} / {{ replayJob.total }}</strong>
-							<span>数据就绪 {{ replayJob.ready }} · 需补充 {{ replayJob.needsInput }} · 受影响 {{ replayJob.affected }} · 失败 {{ replayJob.failed }}</span>
-							<div class="history-replay__job-actions">
-								<n-button v-if="planMutable && replayBusy" size="tiny" :loading="replayLoading" @click="cancelCurrentHistoryReplay">取消</n-button>
-								<n-button v-else-if="planMutable && (replayJob.status === 'cancelled' || replayJob.status === 'failed')" size="tiny" type="primary" :loading="replayLoading" @click="resumeCurrentHistoryReplay">恢复</n-button>
+					<section v-if="preparationJob" class="path-prepare__job" aria-label="批量准备进度">
+						<div class="path-prepare__job-summary">
+							<strong>已处理 {{ preparationProcessed }} / {{ preparationJob.total }}</strong>
+							<span>数据就绪 {{ preparationJob.ready }} · 需补充 {{ preparationJob.needsInput }} · 受影响 {{ preparationJob.affected }} · 失败 {{ preparationJob.failed }}</span>
+							<div class="path-prepare__job-actions">
+								<n-button v-if="planMutable && preparationBusy" size="tiny" :loading="preparationLoading" @click="cancelCurrentPreparation">取消</n-button>
+								<n-button v-else-if="planMutable && (preparationJob.status === 'cancelled' || preparationJob.status === 'failed')" size="tiny" type="primary" :loading="preparationLoading" @click="resumeCurrentPreparation">恢复</n-button>
 							</div>
 						</div>
-						<div class="history-replay__job-current">
-							<span>{{ replayJob.status === 'queued' ? '等待开始处理' : replayBusy ? '正在处理已选路径' : '任务已停止，可查看回放结果' }}</span>
-							<small v-if="replayJob.status === 'failed'">任务暂停，请恢复后重试</small>
-							<small v-else-if="replayJob.status === 'cancelled'">任务已取消，可从未完成路径继续</small>
+						<div class="path-prepare__job-current">
+							<span>{{ preparationJob.status === 'queued' ? '等待开始处理' : preparationBusy ? '正在处理已选路径' : '任务已停止，可查看回放结果' }}</span>
+							<small v-if="preparationJob.status === 'failed'">任务暂停，请恢复后重试</small>
+							<small v-else-if="preparationJob.status === 'cancelled'">任务已取消，可从未完成路径继续</small>
 						</div>
-						<n-progress type="line" :percentage="replayJob.total ? Math.round(replayProcessed * 100 / replayJob.total) : 0" :show-indicator="false" />
+						<n-progress type="line" :percentage="preparationJob.total ? Math.round(preparationProcessed * 100 / preparationJob.total) : 0" :show-indicator="false" />
 					</section>
 
-            <div v-if="pathsLoading" class="history-replay__state history-replay__state--loading" role="status">
+            <div v-if="pathsLoading" class="path-prepare__state path-prepare__state--loading" role="status">
               <n-spin size="small" />
               <span>正在加载路径</span>
             </div>
-            <div v-else-if="pathsError" class="history-replay__state history-replay__state--error" role="alert">
+            <div v-else-if="pathsError" class="path-prepare__state path-prepare__state--error" role="alert">
               <span>{{ pathsError }}</span>
-              <n-button size="small" @click="retryPathsAndFinalizeReplay">重试</n-button>
+              <n-button size="small" @click="retryPathsAndFinalizePreparation">重试</n-button>
             </div>
-            <div v-else-if="!paths.length" class="history-replay__empty">
+            <div v-else-if="!paths.length" class="path-prepare__empty">
               <span>{{ generationBusy ? '正在后台解析全部合法路径' : '请先配置并保存执行路径' }}</span>
 							<n-button v-if="planMutable && !generationBusy" type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="startNewPath">
                 新增路径
               </n-button>
             </div>
-            <div v-else-if="!visiblePaths.length" class="history-replay__empty">
+            <div v-else-if="!visiblePaths.length" class="path-prepare__empty">
               <span>当前没有数据需处理的路径</span>
-              <n-button size="small" secondary @click="replayFilter = 'all'">显示全部</n-button>
+              <n-button size="small" secondary @click="preparationFilter = 'all'">显示全部</n-button>
             </div>
             <n-virtual-list
               v-else
-              class="history-replay__list"
+              class="path-prepare__list"
               :items="visiblePaths"
-              :item-size="HISTORY_REPLAY_PATH_ITEM_SIZE"
-              :style="{ height: `${replayPathListHeight}px` }"
+              :item-size="PREPARATION_PATH_ITEM_SIZE"
+              :style="{ height: `${preparationPathListHeight}px` }"
               key-field="id"
             >
               <template #default="{ item: path }">
-								<div class="history-replay__item">
+								<div class="path-prepare__item">
                 <n-checkbox
                   :checked="selectedRunPathIDs.has(path.id)"
-									:disabled="!planMutable || replayBusy"
+									:disabled="!planMutable || preparationBusy"
                   @update:checked="value => updateRunPathSelection(path, value)"
                 >
                   运行
                 </n-checkbox>
-								<div class="history-replay__identity">
-									<div class="history-replay__identity-main">
-										<span class="history-replay__sequence">#{{ path.sequenceNo }}</span>
-										<span class="history-replay__name" :title="pathDisplayName(path)">{{ pathDisplayName(path) }}</span>
+								<div class="path-prepare__identity">
+									<div class="path-prepare__identity-main">
+										<span class="path-prepare__sequence">#{{ path.sequenceNo }}</span>
+										<span class="path-prepare__name" :title="pathDisplayName(path)">{{ pathDisplayName(path) }}</span>
 							<n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : path.configurationStatus === 'partial' || path.configurationStatus === 'affected' ? 'warning' : 'default'" :title="path.configurationDetail">
                     {{ pathConfigurationLabel(path) }}
                   </n-tag>
@@ -1247,7 +1253,7 @@ onMounted(() => {
   font-size: 28px;
 }
 
-.history-replay {
+.path-prepare {
   display: grid;
   flex: 0 1 auto;
   gap: 12px;
@@ -1260,17 +1266,17 @@ onMounted(() => {
   border-radius: 4px;
 }
 
-.history-replay__header,
-.history-replay__item,
-.history-replay__empty,
-.history-replay__state {
+.path-prepare__header,
+.path-prepare__item,
+.path-prepare__empty,
+.path-prepare__state {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
 
-.history-replay__header-actions {
+.path-prepare__header-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1278,18 +1284,18 @@ onMounted(() => {
   gap: 8px;
 }
 
-.history-replay__header h2 {
+.path-prepare__header h2 {
   margin: 0 0 4px;
   font-size: 15px;
 }
 
-.history-replay__header p {
+.path-prepare__header p {
   margin: 0;
   color: var(--plan-text-secondary-color);
   font-size: 13px;
 }
 
-.history-replay__job {
+.path-prepare__job {
   display: grid;
   gap: 8px;
 	padding: 10px 0;
@@ -1297,14 +1303,14 @@ onMounted(() => {
 	border-bottom: 1px solid var(--plan-border-color);
 }
 
-.history-replay__job-summary {
+.path-prepare__job-summary {
   display: flex;
   align-items: center;
 	flex-wrap: wrap;
   gap: 10px;
 }
 
-.history-replay__job-current {
+.path-prepare__job-current {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -1315,58 +1321,58 @@ onMounted(() => {
 	flex-wrap: wrap;
 }
 
-.history-replay__job-current > span {
+.path-prepare__job-current > span {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.history-replay__job-current > small {
+.path-prepare__job-current > small {
 	flex: 0 0 auto;
 }
 
-.history-replay__job-summary > span {
+.path-prepare__job-summary > span {
   flex: 1 1 auto;
   color: var(--plan-text-secondary-color);
   font-size: 12px;
 }
 
-.history-replay__job-actions {
+.path-prepare__job-actions {
   display: flex;
   flex: 0 0 auto;
   gap: 8px;
 }
 
-.history-replay__empty {
+.path-prepare__empty {
   padding-top: 4px;
   color: var(--plan-text-color);
   font-size: 13px;
 }
 
-.history-replay__state {
+.path-prepare__state {
   min-height: 56px;
   padding: 4px 0;
   color: var(--plan-text-secondary-color);
   font-size: 13px;
 }
 
-.history-replay__state--loading {
+.path-prepare__state--loading {
   justify-content: center;
   gap: 10px;
 }
 
-.history-replay__state--error {
+.path-prepare__state--error {
   color: var(--plan-text-color);
 }
 
-.history-replay__list {
+.path-prepare__list {
   min-height: 0;
   max-height: clamp(96px, calc(var(--plan-screen-height) - 380px), 280px);
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
-.history-replay__item {
+.path-prepare__item {
 	position: relative;
   box-sizing: border-box;
 	height: 84px;
@@ -1375,14 +1381,14 @@ onMounted(() => {
   border-bottom: 1px solid var(--plan-divider-color);
 }
 
-.history-replay__identity {
+.path-prepare__identity {
 	display: grid;
 	flex: 1 1 auto;
 	min-width: 0;
 	gap: 3px;
 }
 
-.history-replay__identity-main {
+.path-prepare__identity-main {
 	display: flex;
 	align-items: center;
 	flex-wrap: wrap;
@@ -1390,13 +1396,13 @@ onMounted(() => {
 	gap: 8px;
 }
 
-.history-replay__sequence {
+.path-prepare__sequence {
   flex: 0 0 auto;
   color: var(--plan-text-secondary-color);
   font-variant-numeric: tabular-nums;
 }
 
-.history-replay__name {
+.path-prepare__name {
 	flex: 1 1 120px;
   min-width: 0;
   overflow: hidden;
@@ -1404,7 +1410,7 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-@keyframes history-replay-attention {
+@keyframes path-prepare-attention {
 	0%, 35% { background: rgba(240, 160, 32, 0.22); }
 	100% { background: rgba(240, 160, 32, 0.04); }
 }

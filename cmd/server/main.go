@@ -59,7 +59,7 @@ func main() {
 	historyWorkspaceStore := planmysql.NewHistoryReplayRepository(planDatabase.DB)
 	pathConfigService.SetHistoryWorkspaceStores(historyWorkspaceStore, historyWorkspaceStore)
 	if err := historyReplayService.Recover(context.Background()); err != nil {
-		log.Printf("恢复历史回放任务失败：%v", err)
+		log.Printf("恢复批量准备任务失败：%v", err)
 	}
 	manifestPath := filepath.Join(workspaceRoot, "form-runtime", "sync-manifest.json")
 	manifest, err := formruntimemaintenance.LoadManifest(workspaceRoot, manifestPath)

@@ -10,7 +10,7 @@ import type { ExecutionPath } from '../features/execution-paths/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
-import HistorySourceSelector from '../features/history-replay/HistorySourceSelector.vue'
+import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
 import ActionOrchestrationEditor from '../features/path-configuration/ActionOrchestrationEditor.vue'
 import CompiledScenarioPreview from '../features/path-configuration/CompiledScenarioPreview.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
@@ -100,6 +100,7 @@ const instanceSaveDetails = ref<Array<{ kind: string, name: string, reason: stri
 const instanceSavedSuccessfully = ref(false)
 const formRuntimeLoading = ref(false)
 const formRestoring = ref(false)
+const dataPickerOpen = ref(false)
 const formSaving = ref(false)
 const routeConfirmationOpen = ref(false)
 const routeConfirmationToken = ref('')
@@ -626,8 +627,8 @@ async function openFormWorkspace() {
   }
 }
 
-// handleHistorySourceSaved 重新读取来源摘要和原始 values，并通过既有 runtime setValues 透传，不在页面拼接表单状态。
-async function handleHistorySourceSaved() {
+// handleBaseFormDataSaved 重新读取服务端按当前路径分支补丁处理后的 values，并通过既有 runtime setValues 透传，不在页面拼接表单状态。
+async function handleBaseFormDataSaved() {
   if (workspace.value !== 'form' || !runtimeSession.value) return
   const controller = new AbortController()
   try {
@@ -930,31 +931,27 @@ void loadPage()
           <div class="path-configuration-page__form-actions">
             <n-button size="small" @click="returnToNodes">返回节点画布</n-button>
 			<template v-if="!formReadOnly">
-              <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formRestoring || formSaving" @click="restoreSavedForm">恢复历史快照</n-button>
+              <n-button size="small" type="primary" secondary :disabled="formRuntimeLoading || formRestoring || formSaving" @click="dataPickerOpen = true">智能生成数据</n-button>
+              <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formRestoring || formSaving" @click="restoreSavedForm">恢复已保存数据</n-button>
               <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formRestoring" @click="saveFormData()">保存表单数据</n-button>
             </template>
           </div>
         </header>
-		<history-source-selector
-			class="path-configuration-page__history-source"
-			:plan-id="planID"
-			:path-id="pathID"
-			scope="path"
-			:disabled="!planMutable"
-			@saved="handleHistorySourceSaved"
-		/>
-        <section v-if="dataWorkspace" class="path-configuration-page__form-summary" aria-label="历史数据摘要">
-          <div class="path-configuration-page__form-summary-head">
-            <strong>{{ dataWorkspace.historySource.summary?.flowName || '历史数据来源' }}</strong>
-            <n-tag size="small" :type="dataWorkspace.dataStatus === 'ready' ? 'success' : dataWorkspace.dataStatus === 'affected' ? 'warning' : 'info'" :bordered="false">{{ dataWorkspace.dataStatus }}</n-tag>
-            <span v-if="dataWorkspace.historySource.summary">{{ dataWorkspace.historySource.summary.formName }} · {{ dataWorkspace.historySource.summary.instanceTitle }}</span>
-          </div>
-          <p v-if="dataWorkspace.historySource.summary">来源：{{ dataWorkspace.historySource.summary.businessSummary || dataWorkspace.historySource.summary.candidateKey }}</p>
+        <base-form-data-picker
+          v-model:show="dataPickerOpen"
+          :plan-id="planID"
+          :path-id="pathID"
+          scope="path"
+          confirm-text="生成数据"
+          :disabled="!planMutable"
+          @saved="handleBaseFormDataSaved"
+        />
+        <section v-if="dataWorkspace && (dataWorkspace.issues.length || dataWorkspace.branchPatches.length)" class="path-configuration-page__form-summary" aria-label="表单数据提示">
           <ul v-if="dataWorkspace.issues.length" class="path-configuration-page__form-summary-list">
             <li v-for="issue in dataWorkspace.issues" :key="`${issue.code}-${issue.path || ''}-${issue.message}`">{{ issue.message }}</li>
           </ul>
           <ul v-if="dataWorkspace.branchPatches.length" class="path-configuration-page__form-summary-list">
-            <li v-for="patch in dataWorkspace.branchPatches" :key="`${patch.branchKey}-${patch.path}`">分支补丁 {{ patch.path }}：{{ patch.reason }}</li>
+            <li v-for="patch in dataWorkspace.branchPatches" :key="`${patch.branchKey}-${patch.path}`">已按当前路径调整 {{ patch.path }}：{{ patch.reason }}</li>
           </ul>
         </section>
         <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
@@ -1019,9 +1016,6 @@ void loadPage()
 .path-configuration-page__form-actions {
   display: flex;
   align-items: center;
-}
-.path-configuration-page__history-source {
-	margin: 0 16px 12px;
 }
 .path-configuration-page__form-summary {
   flex: 0 0 auto;

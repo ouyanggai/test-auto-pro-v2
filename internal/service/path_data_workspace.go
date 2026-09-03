@@ -105,7 +105,7 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 		return model.PathConfigurationDataResult{}, err
 	}
 	if source.snapshot == nil {
-		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "请先选择历史数据来源", Affected: []model.PathConfigAffectedItem{{Kind: "form", Name: "历史来源", Reason: "当前路径尚未绑定可用历史快照"}}}
+		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "请先选择基础表单数据", Affected: []model.PathConfigAffectedItem{{Kind: "form", Name: "基础表单数据", Reason: "当前路径尚未绑定可用基础表单数据"}}}
 	}
 	// 浏览器提交的修订号是保存并发屏障的一部分；先在换路计算前核对，避免旧正文取得新的确认令牌。
 	if input.Revision != current.Revision {
@@ -273,7 +273,7 @@ func (s *PathConfigService) workspaceSource(ctx context.Context, planID, pathID 
 			return historyWorkspaceSource{}, mapHistoryWorkspaceStoreError(err)
 		}
 		if !defaultFound {
-			return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_DEFAULT_MISSING", Message: "计划默认历史来源尚未设置", Blocking: true}}}}, nil
+			return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_DEFAULT_MISSING", Message: "计划默认基础表单数据尚未设置", Blocking: true}}}}, nil
 		}
 		snapshotValue, err := s.historyStore.GetSnapshot(ctx, planID, defaultRecord.SnapshotID)
 		if err != nil {
@@ -295,7 +295,7 @@ func (s *PathConfigService) workspaceSource(ctx context.Context, planID, pathID 
 		revision = pathSource.Revision
 	}
 	if snapshotID == 0 {
-		return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_OVERRIDE_MISSING", Message: "路径独立历史来源尚未保存", Blocking: true}}, Revision: revision}}, nil
+		return historyWorkspaceSource{dataSource: model.HistoryDataSource{Mode: mode, DataStatus: model.HistoryDataStatusEmpty, Issues: []model.HistoryDataIssue{{Code: "HISTORY_OVERRIDE_MISSING", Message: "路径独立基础表单数据尚未保存", Blocking: true}}, Revision: revision}}, nil
 	}
 	snapshotValue, err := s.historyStore.GetSnapshot(ctx, planID, snapshotID)
 	if err != nil {
@@ -413,7 +413,7 @@ func workspaceRouteChange(from, to model.ExecutionPath, targetFound bool, target
 	}
 	warning := "确认后将把当前编辑数据保存到实际命中的目标路径"
 	if targetFound && len(target.EffectiveFormData) > 2 {
-		warning = "目标路径已有历史表单数据，确认后将覆盖该数据，并把人员和动作标记为受影响"
+		warning = "目标路径已有业务表单数据，确认后将覆盖该数据，并把人员和动作标记为受影响"
 	}
 	return model.PathConfigurationRouteChange{From: pathConfigPath(from), To: pathConfigPath(to), OverwritesData: targetFound && len(target.EffectiveFormData) > 2, Affected: affected, Warning: warning}
 }

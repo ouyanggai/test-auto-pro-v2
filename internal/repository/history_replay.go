@@ -10,23 +10,23 @@ import (
 
 var (
 	// ErrHistorySnapshotNotFound 表示候选快照不属于当前计划或已经不存在。
-	ErrHistorySnapshotNotFound = errors.New("历史数据快照不存在")
+	ErrHistorySnapshotNotFound = errors.New("基础表单数据不存在")
 	// ErrHistoryRevisionConflict 表示默认来源或路径来源发生并发修订。
-	ErrHistoryRevisionConflict = errors.New("历史数据来源修订号冲突")
+	ErrHistoryRevisionConflict = errors.New("基础表单数据修订号冲突")
 	// ErrHistoryReplayActive 表示同一计划已有活动历史回放任务。
-	ErrHistoryReplayActive = errors.New("历史回放任务已经存在")
+	ErrHistoryReplayActive = errors.New("批量准备任务已经存在")
 	// ErrHistoryReplayNotFound 表示任务不属于当前计划或已经不存在。
-	ErrHistoryReplayNotFound = errors.New("历史回放任务不存在")
+	ErrHistoryReplayNotFound = errors.New("批量准备任务不存在")
 	// ErrHistoryReplayState 表示任务当前状态不能执行请求的转换。
-	ErrHistoryReplayState = errors.New("历史回放任务状态不允许当前操作")
+	ErrHistoryReplayState = errors.New("批量准备任务状态不允许当前操作")
 	// ErrHistoryReplayIdempotency 表示同一幂等键被复用于不同的路径集合。
-	ErrHistoryReplayIdempotency = errors.New("历史回放幂等键不能复用于不同路径")
+	ErrHistoryReplayIdempotency = errors.New("批量准备幂等键不能复用于不同路径")
 	// ErrHistoryPathConfigConflict 表示路径原始数据保存的修订号或幂等请求正文发生冲突。
-	ErrHistoryPathConfigConflict = errors.New("路径历史表单数据修订号冲突")
+	ErrHistoryPathConfigConflict = errors.New("路径业务表单数据修订号冲突")
 	// ErrHistoryPathConfigIdempotency 表示同一幂等键被复用于不同的原始表单数据。
-	ErrHistoryPathConfigIdempotency = errors.New("路径历史表单数据幂等键不能复用于不同正文")
+	ErrHistoryPathConfigIdempotency = errors.New("路径业务表单数据幂等键不能复用于不同正文")
 	// ErrHistoryPathConfigDataInvalid 表示 F-012 路径配置 JSON 无法解析或缺少必要字段。
-	ErrHistoryPathConfigDataInvalid = errors.New("路径历史配置数据异常")
+	ErrHistoryPathConfigDataInvalid = errors.New("路径业务配置数据异常")
 )
 
 // HistoryDefaultRecord 是计划默认来源的工具侧持久化记录。
