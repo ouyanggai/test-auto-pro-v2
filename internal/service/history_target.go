@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"sort"
 	"strings"
 
@@ -17,6 +16,13 @@ const (
 	historyCandidateRemotePageSize = 100
 	historyCandidateMaxRemotePages = 20
 )
+
+// historyCandidateStatusGroups 按目标状态枚举分组读取候选：已完成实例整体排在前面，
+// 其余状态保持目标列表返回顺序；分组读取让"已完成优先"不再依赖把全部历史读进内存。
+var historyCandidateStatusGroups = [][]string{
+	{"end"},
+	{"run", "await_sent", "draft", "withdraw", "rejected", "termination", "abandon"},
+}
 
 // HistoryTargetReader 是历史数据服务依赖的目标只读边界，不暴露目标会话或内部标识。
 type HistoryTargetReader interface {
@@ -55,7 +61,7 @@ func historyFormNames(forms []target.FormRuntimeTemplate) []map[string]string {
 	return result
 }
 
-// HistoryCandidates 读取计划账号可见的同流程历史实例，并按已完成状态优先排序。
+// HistoryCandidates 读取计划账号可见的同流程业务实例，已完成实例整体优先于其他状态。
 func (s *TargetReadService) HistoryCandidates(ctx context.Context, account, flowCode, formName, flowName string, page, pageSize int) (target.Page[target.HistoryInstance], error) {
 	if err := s.ready(); err != nil {
 		return target.Page[target.HistoryInstance]{}, err
@@ -72,65 +78,105 @@ func (s *TargetReadService) HistoryCandidates(ctx context.Context, account, flow
 	flowCode = strings.TrimSpace(flowCode)
 	formName = strings.TrimSpace(formName)
 	flowName = strings.TrimSpace(flowName)
-	if flowCode == "" {
+	// 实例列表行不返回 flowCode，身份只能由目标返回的表单/流程名称构成；两者都缺失时不猜测。
+	if formName == "" && flowName == "" {
 		return target.Page[target.HistoryInstance]{Page: page, PageSize: pageSize, Items: []target.HistoryInstance{}}, nil
 	}
-	var all []target.HistoryInstance
+	need := page * pageSize
+	matched := make([]target.HistoryInstance, 0, need)
+	total := 0
+	seen := make(map[string]struct{})
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
-		instances, readErr := s.readAllHistoryInstances(callContext, active, flowCode)
-		if readErr == nil {
-			all = instances
+		for index := range historyCandidateStatusGroups {
+			group, groupTotal, groupErr := s.collectHistoryInstances(callContext, active, flowName, index, need-len(matched), seen, func(item target.HistoryInstance) bool {
+				return historyCandidateIdentityMatch(item, flowCode, formName, flowName)
+			})
+			if groupErr != nil {
+				return groupErr
+			}
+			total += groupTotal
+			matched = append(matched, group...)
 		}
-		return readErr
+		return nil
 	})
 	if err != nil {
 		return target.Page[target.HistoryInstance]{}, err
 	}
-	filtered := make([]target.HistoryInstance, 0, len(all))
-	for _, item := range all {
-		if strings.TrimSpace(item.FlowCode) != flowCode {
-			continue
-		}
-		// 有表单时只接受目标返回的完整表单名称；无表单流程没有可拼装的名称约束。
-		if formName != "" && strings.TrimSpace(item.FormName) != formName {
-			continue
-		}
-		// 无表单流程使用目标返回的流程/页面名称；字段缺失时保留候选并在来源状态中提示人工核对。
-		if formName == "" && flowName != "" && strings.TrimSpace(item.FlowName) != "" && strings.TrimSpace(item.FlowName) != flowName {
-			continue
-		}
-		filtered = append(filtered, item)
-	}
-	sort.SliceStable(filtered, func(left, right int) bool {
-		leftRank, rightRank := historyStatusRank(filtered[left].Status), historyStatusRank(filtered[right].Status)
-		if leftRank != rightRank {
-			return leftRank < rightRank
-		}
-		return filtered[left].CreatedAt > filtered[right].CreatedAt
-	})
-	total := len(filtered)
 	start := (page - 1) * pageSize
-	if start >= total {
+	if start >= len(matched) {
 		return target.Page[target.HistoryInstance]{Items: []target.HistoryInstance{}, Page: page, PageSize: pageSize, Total: total, HasMore: false}, nil
 	}
 	end := start + pageSize
-	if end > total {
-		end = total
+	if end > len(matched) {
+		end = len(matched)
 	}
-	items := append([]target.HistoryInstance(nil), filtered[start:end]...)
+	items := append([]target.HistoryInstance(nil), matched[start:end]...)
 	return target.Page[target.HistoryInstance]{
 		Items: items, Page: page, PageSize: pageSize, Total: total, HasMore: end < total,
 	}, nil
 }
 
-// readAllHistoryInstances 在单账号会话内建立有界分页，防止目标异常分页造成无界读取。
-func (s *TargetReadService) readAllHistoryInstances(ctx context.Context, active target.Session, flowCode string) ([]target.HistoryInstance, error) {
-	result := make([]target.HistoryInstance, 0)
-	seen := make(map[string]struct{})
-	for page := 1; page <= historyCandidateMaxRemotePages; page++ {
-		response, err := s.client.ListHistoryInstances(ctx, active, flowCode, page, historyCandidateRemotePageSize)
+// historyCandidateStatusAccepted 判定目标返回行属于哪个状态分组；最后一个分组兼容目标新增状态，
+// 保证任何状态的实例都仍然可选，只是不会抢占已完成实例的位置。
+func historyCandidateStatusAccepted(status string, groupIndex int) bool {
+	status = strings.TrimSpace(status)
+	if groupIndex == len(historyCandidateStatusGroups)-1 {
+		for index := 0; index < groupIndex; index++ {
+			for _, value := range historyCandidateStatusGroups[index] {
+				if value == status {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	for _, value := range historyCandidateStatusGroups[groupIndex] {
+		if value == status {
+			return true
+		}
+	}
+	return false
+}
+
+// historyCandidateIdentityMatch 只用目标返回的原始身份字段判定候选归属，不拼装新的身份键。
+func historyCandidateIdentityMatch(item target.HistoryInstance, flowCode, formName, flowName string) bool {
+	// 目标只在部分实例上写入 flowCode；提供时按精确值校验，缺失时不能据此排除候选。
+	if flowCode != "" && strings.TrimSpace(item.FlowCode) != "" && strings.TrimSpace(item.FlowCode) != flowCode {
+		return false
+	}
+	itemFormName, itemFlowName := strings.TrimSpace(item.FormName), strings.TrimSpace(item.FlowName)
+	// 有表单时只接受目标返回的完整表单名称；该行没有表单名称时退回同样由目标返回的流程名称。
+	if formName != "" {
+		if itemFormName != "" {
+			return itemFormName == formName
+		}
+		return flowName != "" && itemFlowName == flowName
+	}
+	// 无表单流程使用目标返回的流程/页面名称；字段缺失时保留候选并在来源状态中提示人工核对。
+	return itemFlowName == "" || itemFlowName == flowName
+}
+
+// collectHistoryInstances 在一个目标状态分组内按目标分页顺序收集匹配候选，够用即停，
+// 避免账号业务实例达到数千条时把整个列表读进内存。
+func (s *TargetReadService) collectHistoryInstances(ctx context.Context, active target.Session, flowName string, groupIndex, limit int, seen map[string]struct{}, match func(target.HistoryInstance) bool) ([]target.HistoryInstance, int, error) {
+	query := target.HistoryInstanceQuery{FlowName: flowName, StatusList: historyCandidateStatusGroups[groupIndex]}
+	if limit <= 0 {
+		// 已经收集到足够候选：只读一条用于取回该分组的目标总数，保持分页器计数真实。
+		response, err := s.client.ListHistoryInstances(ctx, active, query, 1, 1)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
+		}
+		return nil, response.Total, nil
+	}
+	collected := make([]target.HistoryInstance, 0, limit)
+	total := 0
+	for page := 1; page <= historyCandidateMaxRemotePages; page++ {
+		response, err := s.client.ListHistoryInstances(ctx, active, query, page, historyCandidateRemotePageSize)
+		if err != nil {
+			return nil, 0, err
+		}
+		if page == 1 {
+			total = response.Total
 		}
 		for _, item := range response.Items {
 			key := strings.TrimSpace(item.ID)
@@ -140,16 +186,47 @@ func (s *TargetReadService) readAllHistoryInstances(ctx context.Context, active 
 				}
 				seen[key] = struct{}{}
 			}
-			result = append(result, item)
+			// 本地复核目标状态归组，既保证已完成优先，又让分组读取不依赖目标是否真的应用了 statusList。
+			if !historyCandidateStatusAccepted(item.Status, groupIndex) {
+				continue
+			}
+			if !match(item) {
+				continue
+			}
+			collected = append(collected, item)
 		}
-		if !response.HasMore || len(response.Items) == 0 {
+		if !response.HasMore || len(response.Items) == 0 || len(collected) >= limit {
 			break
 		}
-		if page == historyCandidateMaxRemotePages {
-			return nil, target.NewError(target.ErrorResponseInvalid, errors.New("业务数据分页超过安全上限"))
+	}
+	sort.SliceStable(collected, func(left, right int) bool { return collected[left].CreatedAt > collected[right].CreatedAt })
+	return collected, total, nil
+}
+
+// findHistoryInstanceByKey 按同一组身份规则在目标分页内定位候选键对应实例，找到即停止读取。
+func (s *TargetReadService) findHistoryInstanceByKey(ctx context.Context, active target.Session, account, flowCode, formName, flowName, candidateKey string) (*target.HistoryInstance, error) {
+	for groupIndex := range historyCandidateStatusGroups {
+		query := target.HistoryInstanceQuery{FlowName: flowName, StatusList: historyCandidateStatusGroups[groupIndex]}
+		for page := 1; page <= historyCandidateMaxRemotePages; page++ {
+			response, err := s.client.ListHistoryInstances(ctx, active, query, page, historyCandidateRemotePageSize)
+			if err != nil {
+				return nil, err
+			}
+			for index := range response.Items {
+				item := response.Items[index]
+				if !historyCandidateStatusAccepted(item.Status, groupIndex) || !historyCandidateIdentityMatch(item, flowCode, formName, flowName) {
+					continue
+				}
+				if HistoryCandidateKey(account, item) == candidateKey {
+					return &item, nil
+				}
+			}
+			if !response.HasMore || len(response.Items) == 0 {
+				break
+			}
 		}
 	}
-	return result, nil
+	return nil, ErrTargetFlowNotFound
 }
 
 // HistoryCandidateKey 生成只携带摘要可计算的不透明候选键，不把目标实例 ID 返回给浏览器。
@@ -174,34 +251,14 @@ func (s *TargetReadService) ReadHistorySnapshot(ctx context.Context, account, fl
 	formName = strings.TrimSpace(formName)
 	flowName = strings.TrimSpace(flowName)
 	candidateKey = strings.TrimSpace(candidateKey)
-	if flowCode == "" || candidateKey == "" {
+	if (formName == "" && flowName == "") || candidateKey == "" {
 		return target.HistorySnapshotSource{}, ErrTargetFlowNotFound
 	}
 	var result target.HistorySnapshotSource
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
-		instances, readErr := s.readAllHistoryInstances(callContext, active, flowCode)
-		if readErr != nil {
-			return readErr
-		}
-		var selected *target.HistoryInstance
-		for index := range instances {
-			item := &instances[index]
-			if strings.TrimSpace(item.FlowCode) != flowCode {
-				continue
-			}
-			if formName != "" && strings.TrimSpace(item.FormName) != formName {
-				continue
-			}
-			if formName == "" && flowName != "" && strings.TrimSpace(item.FlowName) != "" && strings.TrimSpace(item.FlowName) != flowName {
-				continue
-			}
-			if HistoryCandidateKey(account, *item) == candidateKey {
-				selected = item
-				break
-			}
-		}
-		if selected == nil {
-			return ErrTargetFlowNotFound
+		selected, findErr := s.findHistoryInstanceByKey(callContext, active, account, flowCode, formName, flowName, candidateKey)
+		if findErr != nil {
+			return findErr
 		}
 		rawData, rawErr := s.client.ReadInstanceCurrentData(callContext, active, selected.ID)
 		if rawErr != nil {

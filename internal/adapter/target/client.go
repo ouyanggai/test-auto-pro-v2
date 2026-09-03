@@ -222,18 +222,35 @@ func (c *Client) ListSubmitted(ctx context.Context, session Session, query strin
 	return c.listSubmitted(ctx, session, query, "", page, pageSize)
 }
 
-// ListHistoryInstances 分页读取目标可见历史实例，保留候选筛选和快照读取所需的原始身份字段。
-func (c *Client) ListHistoryInstances(ctx context.Context, session Session, flowCode string, page, pageSize int) (Page[HistoryInstance], error) {
+// HistoryInstanceQuery 是目标实例列表协议支持的原始过滤字段；工具不新增身份字段。
+type HistoryInstanceQuery struct {
+	// FlowName 是目标流程列表页实际使用的过滤字段，取值只能来自目标流程详情返回的流程名称。
+	FlowName string
+	// StatusList 为空时使用目标全状态枚举；按分组传入可让已完成实例优先返回。
+	StatusList []string
+}
+
+// historyInstanceAllStatuses 是目标实例列表的全状态枚举；draft 与 await_sent 都是可选的未完整业务状态。
+func historyInstanceAllStatuses() []string {
+	return []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"}
+}
+
+// ListHistoryInstances 分页读取目标可见业务实例，保留候选筛选和快照读取所需的原始身份字段。
+// 过滤字段使用目标平台自己在流程列表页使用的 flowName：实例列表返回的行不携带 flowCode，
+// 按 flowCode 过滤会在真实环境返回空结果（FlowInstanceServiceImpl.save 只在新建实例时写入 flow_code）。
+func (c *Client) ListHistoryInstances(ctx context.Context, session Session, query HistoryInstanceQuery, page, pageSize int) (Page[HistoryInstance], error) {
+	statusList := query.StatusList
+	if len(statusList) == 0 {
+		statusList = historyInstanceAllStatuses()
+	}
 	data := map[string]any{
-		"useScope":     "invest",
-		"auditWayList": []string{},
-		// 使用目标既有全状态枚举；draft 与 await_sent 都是可选的未完整历史状态。
-		"statusList":                   []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
+		"useScope":                     "invest",
+		"auditWayList":                 []string{},
+		"statusList":                   statusList,
 		"flowInstanceBizRelevanceList": []map[string]any{{"otherBiz": "company", "otherBizId": ""}},
 	}
-	if value := strings.TrimSpace(flowCode); value != "" {
-		// flowCode 是目标列表协议的原始精确过滤字段，不能由名称或页面标签推导。
-		data["flowCode"] = value
+	if value := strings.TrimSpace(query.FlowName); value != "" {
+		data["flowName"] = value
 	}
 	resp, err := c.call(ctx, "/web/flowInstanceApi/list", session.SID, map[string]any{
 		"data": data, "pagination": true, "pages": page, "size": pageSize,

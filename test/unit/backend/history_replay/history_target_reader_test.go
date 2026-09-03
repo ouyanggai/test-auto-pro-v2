@@ -72,7 +72,8 @@ func (f *targetHistoryFixture) handler(response http.ResponseWriter, request *ht
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeHistoryTargetJSON(response, f.historyListResponse())
+		data, _ := body["data"].(map[string]any)
+		writeHistoryTargetJSON(response, f.historyListResponse(stringSlice(data["statusList"])))
 	case "/web/flowInstanceApi/getCurrentFromData":
 		body := decodeHistoryTargetBody(f.t, request)
 		data, _ := body["data"].(map[string]any)
@@ -105,21 +106,38 @@ func (f *targetHistoryFixture) handler(response http.ResponseWriter, request *ht
 	}
 }
 
-// historyListResponse 构造包含匹配项和应被精确过滤项的目标原始列表。
-func (f *targetHistoryFixture) historyListResponse() map[string]any {
-	if f.noForm {
-		return map[string]any{"isSuccess": true, "total": 3, "pages": 1, "current": 1, "size": 100, "data": []any{
-			map[string]any{"id": "noform-end", "flowProxyId": "proxy-noform", "flowCode": f.flowCode, "flowName": f.flowName, "formName": "", "name": "请款历史数据", "status": "end", "createDate": "2026-08-31 12:00:00", "createrId": f.userID, "companyId": f.companyID},
-			map[string]any{"id": "noform-mismatch", "flowProxyId": "proxy-other", "flowCode": f.flowCode, "flowName": "其他页面", "formName": "", "name": "不匹配页面", "status": "end", "createDate": "2026-08-30 12:00:00", "createrId": f.userID, "companyId": f.companyID},
-			map[string]any{"id": "noform-missing-name", "flowProxyId": "proxy-missing", "flowCode": f.flowCode, "flowName": "", "formName": "", "name": "名称证据缺失", "status": "run", "createTime": "2026-08-29 12:00:00", "createrId": f.userID, "companyId": f.companyID},
-		}}
+// historyListResponse 按目标 statusList 分组返回原始列表，并保留真实环境事实：
+// 实例列表行大多不携带 flowCode，只能由目标返回的表单/流程名称构成身份。
+func (f *targetHistoryFixture) historyListResponse(statuses []string) map[string]any {
+	rows := f.historyListRows()
+	matched := make([]any, 0, len(rows))
+	for _, row := range rows {
+		status := stringValue(row["status"])
+		for _, value := range statuses {
+			if value == status {
+				matched = append(matched, row)
+				break
+			}
+		}
 	}
-	return map[string]any{"isSuccess": true, "total": 4, "pages": 1, "current": 1, "size": 100, "data": []any{
-		map[string]any{"id": "form-run", "flowProxyId": "proxy-run", "formProxyId": "form-proxy-run", "flowCode": f.flowCode, "flowName": f.flowName, "formName": f.formName, "name": "运行中数据", "status": "run", "createDate": "2026-09-01 09:00:00", "createrId": f.userID, "companyId": f.companyID},
-		map[string]any{"id": "form-end", "flowProxyId": "proxy-end", "formProxyId": "form-proxy-end", "flowCode": f.flowCode, "flowName": f.flowName, "formName": f.formName, "name": "已完成数据", "status": "end", "createDate": "2026-08-31 10:00:00", "createrId": f.userID, "companyId": f.companyID},
-		map[string]any{"id": "wrong-form", "flowProxyId": "proxy-wrong-form", "flowCode": f.flowCode, "flowName": f.flowName, "formName": "费用单（其他公司）", "name": "错误表单", "status": "end", "createDate": "2026-08-30 10:00:00", "createrId": f.userID, "companyId": f.companyID},
-		map[string]any{"id": "wrong-flow", "flowProxyId": "proxy-wrong-flow", "flowCode": "other-flow", "flowName": f.flowName, "formName": f.formName, "name": "错误流程", "status": "end", "createDate": "2026-08-29 10:00:00", "createrId": f.userID, "companyId": f.companyID},
-	}}
+	return map[string]any{"isSuccess": true, "total": len(matched), "pages": 1, "current": 1, "size": 100, "data": matched}
+}
+
+// historyListRows 返回该流程下全部原始行，含应被精确过滤掉的其他表单和其他流程行。
+func (f *targetHistoryFixture) historyListRows() []map[string]any {
+	if f.noForm {
+		return []map[string]any{
+			{"id": "noform-end", "flowProxyId": "proxy-noform", "flowName": f.flowName, "formName": "", "name": "请款业务数据", "status": "end", "createDate": "2026-08-31 12:00:00", "createrId": f.userID, "companyId": f.companyID},
+			{"id": "noform-mismatch", "flowProxyId": "proxy-other", "flowName": "其他页面", "formName": "", "name": "不匹配页面", "status": "end", "createDate": "2026-08-30 12:00:00", "createrId": f.userID, "companyId": f.companyID},
+			{"id": "noform-missing-name", "flowProxyId": "proxy-missing", "flowName": "", "formName": "", "name": "名称证据缺失", "status": "run", "createTime": "2026-08-29 12:00:00", "createrId": f.userID, "companyId": f.companyID},
+		}
+	}
+	return []map[string]any{
+		{"id": "form-run", "flowProxyId": "proxy-run", "formProxyId": "form-proxy-run", "flowName": f.flowName, "formName": f.formName, "name": "运行中数据", "status": "run", "createDate": "2026-09-01 09:00:00", "createrId": f.userID, "companyId": f.companyID},
+		{"id": "form-end", "flowProxyId": "proxy-end", "formProxyId": "form-proxy-end", "flowName": f.flowName, "formName": f.formName, "name": "已完成数据", "status": "end", "createDate": "2026-08-31 10:00:00", "createrId": f.userID, "companyId": f.companyID},
+		{"id": "wrong-form", "flowProxyId": "proxy-wrong-form", "flowName": f.flowName, "formName": "费用单（其他公司）", "name": "错误表单", "status": "end", "createDate": "2026-08-30 10:00:00", "createrId": f.userID, "companyId": f.companyID},
+		{"id": "wrong-flow", "flowProxyId": "proxy-wrong-flow", "flowCode": "other-flow", "flowName": "其他流程", "formName": f.formName, "name": "错误流程", "status": "end", "createDate": "2026-08-29 10:00:00", "createrId": f.userID, "companyId": f.companyID},
+	}
 }
 
 // newTargetHistoryReader 创建真实目标客户端与会话管理器，测试重登和读取边界。
@@ -217,17 +235,25 @@ func assertTargetHistoryReadOnlyCalls(t *testing.T, fixture *targetHistoryFixtur
 			t.Fatalf("历史链路调用了未批准或写入端点：%s", path)
 		}
 	}
+	covered := map[string]bool{}
 	for _, body := range bodies {
 		data, _ := body["data"].(map[string]any)
-		if stringValue(data["flowCode"]) != fixture.flowCode || data["name"] != nil {
-			t.Fatalf("历史候选没有只用目标 flowCode 原字段：%+v", data)
+		// 实例列表按目标自己使用的 flowName 过滤；flowCode 在实例行上不可靠，不能作为查询字段。
+		if stringValue(data["flowName"]) != fixture.flowName || data["flowCode"] != nil || data["name"] != nil {
+			t.Fatalf("业务数据候选没有只用目标 flowName 原字段：%+v", data)
 		}
-		statuses := stringSlice(data["statusList"])
-		sort.Strings(statuses)
-		expected := []string{"abandon", "await_sent", "draft", "end", "rejected", "run", "termination", "withdraw"}
-		if !reflect.DeepEqual(statuses, expected) {
-			t.Fatalf("历史候选没有覆盖目标全部实例状态：%v", statuses)
+		for _, status := range stringSlice(data["statusList"]) {
+			covered[status] = true
 		}
+	}
+	statuses := make([]string, 0, len(covered))
+	for status := range covered {
+		statuses = append(statuses, status)
+	}
+	sort.Strings(statuses)
+	expected := []string{"abandon", "await_sent", "draft", "end", "rejected", "run", "termination", "withdraw"}
+	if !reflect.DeepEqual(statuses, expected) {
+		t.Fatalf("业务数据候选没有覆盖目标全部实例状态：%v", statuses)
 	}
 }
 
