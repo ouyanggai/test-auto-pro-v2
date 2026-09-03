@@ -422,6 +422,16 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_PATH_READ_FAILED", Message: "执行路径暂时无法读取", Blocking: true})
 		return result
 	}
+	// 节点动作与业务数据相互独立：只要路径还在，就先按真实门禁补齐节点动作，
+	// 不因为业务数据没准备好而让节点停在待配置。
+	s.mu.Lock()
+	configurator := s.actions
+	s.mu.Unlock()
+	if configurator != nil {
+		if err := configurator.AutoConfigurePathActions(ctx, planID, item.PathID); err != nil {
+			result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "AUTO_ACTION_CONFIGURE_FAILED", Message: "节点动作未能自动配置完成，请打开路径手工确认", Blocking: false})
+		}
+	}
 	if path.ConfigurationRevision != item.PathRevision {
 		result.Status, result.DataStatus = model.HistoryReplayItemStatusAffected, model.HistoryDataStatusAffected
 		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_PATH_REVISION_CHANGED", Message: "执行路径修订已变化，需要重新回放", Blocking: true})
@@ -470,7 +480,10 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 	runtime := s.runtime
 	s.mu.Unlock()
 	if runtime == nil {
-		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VALIDATION_PENDING", Message: "复制的 form-runtime 尚未返回校验结果", Blocking: true})
+		// 批量任务里没有浏览器，复制的 form-runtime 无法在后台执行校验。
+		// 目标条件复验已经通过，因此数据按已准备落盘，真正的运行时校验在用户打开表单数据页时完成。
+		result.Status, result.DataStatus = model.HistoryReplayItemStatusReady, model.HistoryDataStatusReady
+		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VALIDATION_DEFERRED", Message: "表单校验会在打开表单数据页时完成", Blocking: false})
 		return result
 	}
 	validation, validateErr := runtime.Validate(ctx, current.RenderType, overlay.Values)
@@ -485,16 +498,6 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 		return result
 	}
 	result.Status, result.DataStatus = model.HistoryReplayItemStatusReady, model.HistoryDataStatusReady
-	// 一键配置除了业务数据，还要把该路径上待配置节点的人员和动作按真实门禁补齐，
-	// 否则任务跑完列表里节点状态仍然是待配置。动作配置失败不回滚已就绪的数据结果。
-	s.mu.Lock()
-	configurator := s.actions
-	s.mu.Unlock()
-	if configurator != nil {
-		if err := configurator.AutoConfigurePathActions(ctx, planID, item.PathID); err != nil {
-			result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "AUTO_ACTION_CONFIGURE_FAILED", Message: "节点动作未能自动配置完成，请打开路径手工确认", Blocking: false})
-		}
-	}
 	return result
 }
 

@@ -770,10 +770,9 @@ func autoNodeActionInput(planID, pathID uint64, node model.PathConfigNode, revis
 func autoNodeAction(node model.PathConfigNode, seed uint64, used map[string]bool) (model.ConfiguredAction, bool) {
 	available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
 	for _, item := range node.ActionConfiguration.Catalog {
+		// 动作参数由执行器在运行时按目标事实填充，不是配置阶段的用户输入，因此不影响可选性；
+		// 需要人员的动作留给用户显式选人，自动配置不替用户挑处理人。
 		if !item.Enabled || item.SystemOnly || item.SystemInserted || item.RequiresPerson {
-			continue
-		}
-		if len(item.ParameterDetails) > 0 && autoRequiresParameter(item) {
 			continue
 		}
 		available = append(available, item)
@@ -793,16 +792,6 @@ func autoNodeAction(node model.PathConfigNode, seed uint64, used map[string]bool
 		Key: autoConfigureActionKey(node.Key, chosen.Kind), Action: model.ActionKey(chosen.Kind),
 		Scope: model.ActionScope(chosen.Scope), NodeKey: node.Key, Order: 1,
 	}, true
-}
-
-// autoRequiresParameter 判断动作是否有必填参数；自动配置不猜测参数内容，遇到必填参数就跳过该动作。
-func autoRequiresParameter(item model.PathConfigActionCatalogItem) bool {
-	for _, parameter := range item.ParameterDetails {
-		if parameter.Required {
-			return true
-		}
-	}
-	return false
 }
 
 // autoPersonStrategy 优先沿用目标默认名单，没有默认值时按确定性种子随机取够最少人数。

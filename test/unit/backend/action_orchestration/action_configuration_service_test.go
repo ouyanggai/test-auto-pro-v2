@@ -232,8 +232,8 @@ func autoConfigureNode(key string, kinds []string) model.PathConfigNode {
 	}
 	catalog = append(catalog,
 		model.PathConfigActionCatalogItem{Kind: "resubmit", Scope: "initiator", Label: "重新提交", Enabled: true, SystemInserted: true},
-		model.PathConfigActionCatalogItem{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true,
-			ParameterDetails: []model.ActionParameter{{Name: "receiverId", Required: true}}},
+		// 需要显式选人的动作不由自动配置替用户挑处理人。
+		model.PathConfigActionCatalogItem{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true, RequiresPerson: true},
 	)
 	return model.PathConfigNode{
 		Key: key, Name: key, Kind: "common", Status: "pending",
@@ -259,7 +259,7 @@ func TestAutoNodeActionPrefersUncoveredEnabledActions(t *testing.T) {
 			t.Fatalf("编译器自动插入的动作不应被自动编排：%+v", action)
 		}
 		if action.Action == "transfer" {
-			t.Fatalf("必填参数动作不应被自动编排：%+v", action)
+			t.Fatalf("需要显式选人的动作不应被自动编排：%+v", action)
 		}
 	}
 	repeat, _ := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-a", []string{"approve", "reject"}), map[string]bool{})

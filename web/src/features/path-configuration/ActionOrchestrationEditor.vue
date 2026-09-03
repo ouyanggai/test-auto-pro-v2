@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline, ReorderTwoOutline } from '@vicons/ionicons5'
-import { NAlert, NButton, NCard, NInput, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
-import { computed, h, ref } from 'vue'
+import { NAlert, NButton, NCard, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
+import { computed, ref } from 'vue'
 
 import { copyPathConfigActions, normalizedPersonStrategy } from './logic'
 import type { PathActionContainer, PathConfigActionCatalogItem, PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
@@ -51,9 +51,6 @@ function enabledCatalogItem(kind: PathConfigActionKind): PathConfigActionCatalog
 
 function actionPerson(kind: PathConfigActionKind) { return enabledCatalogItem(kind)?.person }
 
-// requiredParameters 只渲染目标真正要求填写的参数，没有必填参数时不出现任何输入框。
-function requiredParameters(kind: PathConfigActionKind) { return (catalogItem(kind)?.parameterDetails ?? []).filter(item => item.required) }
-
 // actionOptions 分组展示：上半部分当前节点动作，下半部分实例级动作，每项附一句会发生什么。
 function actionOptions() {
   const groups = [
@@ -64,21 +61,15 @@ function actionOptions() {
     type: 'group' as const,
     label: group.label,
     key: group.label,
-    children: group.items.map(item => ({
-      label: item.label,
-      value: item.kind,
-      disabled: !item.enabled,
-      detail: item.enabled ? (item.expectedEffect || item.description) : item.disabledReason,
-    })),
+    children: group.items.map(item => ({ label: item.label, value: item.kind, disabled: !item.enabled })),
   }))
 }
 
-// renderActionOption 让下拉每一项都带简短说明，用户不必打开目录也知道会发生什么。
-function renderActionOption(option: { label?: string, detail?: string }) {
-  return h('div', { class: 'action-option' }, [
-    h('span', { class: 'action-option__label' }, String(option.label ?? '')),
-    option.detail ? h('small', { class: 'action-option__detail' }, String(option.detail)) : null,
-  ])
+// actionHint 在卡片里展示当前选中动作会发生什么，说明不进下拉选项。
+function actionHint(kind: PathConfigActionKind): string {
+  const item = catalogItem(kind)
+  if (!item) return ''
+  return item.enabled ? (item.expectedEffect || item.description) : item.disabledReason
 }
 
 function personDraft(person: PathConfigPerson) { return normalizedPersonStrategy(person, props.personStrategies[person.key]) }
@@ -162,15 +153,6 @@ function updateAction(index: number, patch: Partial<PathConfigConfiguredActionIn
 
 function updateRepeat(action: PathConfigConfiguredActionInput, value: number | null) {
   repeatDraft.value = { ...repeatDraft.value, [action.key]: Math.max(1, Math.min(MAX_REPEAT, Number(value) || 1)) }
-}
-
-function updateActionParameter(index: number, name: string, value: string) {
-  const current = actionDraft.value[index]
-  if (!current) return
-  const parameters = { ...(current.parameters ?? {}) }
-  if (value.trim()) parameters[name] = value
-  else delete parameters[name]
-  updateAction(index, { parameters: Object.keys(parameters).length ? parameters : undefined })
 }
 
 function updateActionPerson(index: number, person: PathConfigPerson, patch: Partial<PathConfigPersonStrategyInput>) {
@@ -286,7 +268,6 @@ function removeAction(index: number) {
               class="action-select"
               :value="action.kind"
               :options="actionOptions()"
-              :render-label="renderActionOption"
               :disabled="readOnly"
               @update:value="value => updateAction(index, { kind: value as PathConfigActionKind })"
             />
@@ -312,20 +293,7 @@ function removeAction(index: number) {
               </n-popconfirm>
             </div>
           </div>
-          <small class="action-row__hint">{{ catalogItem(action.kind)?.expectedEffect || catalogItem(action.kind)?.description }}</small>
-          <small v-if="catalogItem(action.kind)?.runtimeNote" class="action-row__hint">{{ catalogItem(action.kind)?.runtimeNote }}</small>
-          <div v-if="requiredParameters(action.kind).length" class="action-parameters">
-            <label v-for="parameter in requiredParameters(action.kind)" :key="parameter.name">
-              <span>{{ parameter.description || parameter.name }}</span>
-              <n-input
-                size="small"
-                :value="String(action.parameters?.[parameter.name] ?? '')"
-                :disabled="readOnly"
-                :placeholder="parameter.name"
-                @update:value="value => updateActionParameter(index, parameter.name, value)"
-              />
-            </label>
-          </div>
+          <small class="action-row__hint">{{ actionHint(action.kind) }}</small>
           <div v-if="actionPerson(action.kind)" class="action-person-fields">
             <n-select :value="action.person?.strategy || actionPerson(action.kind)!.strategy" :options="strategyOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { strategy: value as PathConfigPersonStrategyInput['strategy'] })" />
             <n-select v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'manual'" :multiple="actionPerson(action.kind)!.multiple" :value="actionPerson(action.kind)!.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
@@ -368,11 +336,6 @@ function removeAction(index: number) {
 .action-repeat :deep(.n-input-number){width:56px}
 .action-row__actions{display:flex;flex:0 0 auto;gap:4px}
 .action-row__hint{font-size:12px;opacity:.7}
-.action-parameters{display:grid;gap:6px}
-.action-parameters label{display:grid;gap:2px;font-size:12px}
 .action-person-fields{display:flex;flex-wrap:wrap;gap:8px}
 .action-person-fields :deep(.n-select){min-width:180px}
-.action-option{display:grid;gap:1px;padding:2px 0}
-.action-option__label{font-size:13px}
-.action-option__detail{font-size:11px;opacity:.65;white-space:normal}
 </style>
