@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildPathActionConfigurationInput, currentNodeConfigurationComplete } from '../../../../web/src/features/path-configuration/logic.ts'
+import {
+  buildPathActionConfigurationInput,
+  currentNodeConfigurationComplete,
+  hasCurrentNodeDraftChanges,
+  initPathConfigDraft,
+  resolvedPersonStrategySelection,
+} from '../../../../web/src/features/path-configuration/logic.ts'
 
 const node = {
   key: 'node-review',
@@ -93,4 +99,24 @@ test('F-012 当前节点校验允许同 kind 独立动作记录', () => {
     },
   })
   assert.equal(result.complete, true)
+})
+
+test('路径配置把服务端 null 人员集合收敛为空数组并继续初始化', () => {
+  const person = {
+    key: 'approver', title: '审批人', mode: 'select', detail: '', items: [], editable: true, multiple: false,
+    required: true, minCount: 1, maxCount: 1, selected: null, defaultSelected: null,
+    options: [{ label: '用户 A', value: 'user-a' }], strategy: 'random', strategySeed: 1,
+    strategies: [{ value: 'random', label: '范围随机' }], affected: false, note: '',
+  }
+  const draft = initPathConfigDraft({
+    groups: [{ nodes: [{ ...node, persons: [person] }] }],
+    instanceActionKey: '',
+    instanceActions: { catalog: [], actions: [] },
+  })
+
+  assert.deepEqual(draft.persons.approver, [])
+  assert.deepEqual(draft.personStrategies.approver.selected, [])
+  assert.deepEqual(resolvedPersonStrategySelection(person), ['user-a'])
+  assert.deepEqual(resolvedPersonStrategySelection({ ...person, strategy: 'target_default' }), [])
+  assert.equal(hasCurrentNodeDraftChanges({ ...node, persons: [person] }, draft), false)
 })

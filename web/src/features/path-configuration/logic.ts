@@ -27,6 +27,11 @@ export function pathConfigurationStatusName(status: string): '待配置' | '部�
 // pathConfigurationMessage 不显示内部状态术语，只提示用户补齐当前配置。
 export function pathConfigurationMessage(message: string): string { return String(message || '').replace(/配置失效|需要重新确认|受影响需确认|需要重新核对/g, '请补充配置') }
 
+// copyPersonSelection 把服务端空人员集合统一收敛为空数组，避免历史配置中的 null 中断整页初始化。
+function copyPersonSelection(values: readonly string[] | null | undefined): string[] {
+  return Array.isArray(values) ? [...values] : []
+}
+
 // pathConfigNodeKey 使用与后端相同的稳定哈希绑定图节点与配置节点。
 export async function pathConfigNodeKey(nodeID: string): Promise<string> {
   const bytes = new TextEncoder().encode(`node:${nodeID.trim()}:configuration`)
@@ -94,7 +99,7 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
   for (const group of configuration.groups) for (const node of group.nodes) {
     for (const person of node.persons) {
       if (!person.editable) continue
-      const value = { key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: [...person.selected] }
+      const value = { key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: copyPersonSelection(person.selected) }
       persons[person.key] = [...value.selected]; personStrategies[person.key] = value
     }
     if (node.actionConfiguration.actions.length) actionConfigurations[node.key] = copyPathConfigActions(node.actionConfiguration.actions)
@@ -159,7 +164,7 @@ export function buildPathActionConfigurationInput(container: PathActionContainer
       ...(item.parameters ? cloneActionParameters(item.parameters) : {}),
       ...(item.person?.strategy ? { actorStrategy: item.person.strategy } : {}),
     }
-    if (item.person) personsByKey.set(item.person.key, { key: item.person.key, strategy: item.person.strategy, seed: item.person.seed, selected: [...item.person.selected] })
+    if (item.person) personsByKey.set(item.person.key, { key: item.person.key, strategy: item.person.strategy, seed: item.person.seed, selected: copyPersonSelection(item.person.selected) })
     actions.push({
       key: item.key, action, scope, nodeKey: scope === 'instance' ? undefined : container.key, order,
       ...(Object.keys(parameters).length ? { parameters } : {}),
@@ -201,22 +206,22 @@ export function hasContainerDraftChanges(container: PathActionContainer | null, 
 // hasCurrentNodeDraftChanges 比较当前节点的动作和人员草稿。
 export function hasCurrentNodeDraftChanges(node: PathConfigNode | null, draft: PathConfigDraft): boolean {
   if (!node) return false
-  for (const person of node.persons) if (person.editable && JSON.stringify(normalizedPersonStrategy(person, draft.personStrategies[person.key])) !== JSON.stringify({ key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected })) return true
+  for (const person of node.persons) if (person.editable && JSON.stringify(normalizedPersonStrategy(person, draft.personStrategies[person.key])) !== JSON.stringify({ key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: resolvedPersonStrategySelection(person) })) return true
   return hasContainerDraftChanges(nodeActionContainer(node), draft)
 }
 
 // resolvedPersonStrategySelection 在浏览器内按公开候选顺序投影最终名单。
 export function resolvedPersonStrategySelection(person: PathConfigPerson, input?: PathConfigPersonStrategyInput): string[] {
   const strategy = input?.strategy ?? person.strategy ?? 'manual'
-  if (strategy === 'target_default') return [...person.defaultSelected]
+  if (strategy === 'target_default') return copyPersonSelection(person.defaultSelected)
   if (strategy === 'all') return person.options.map(option => option.value)
   if (strategy === 'random') { if (!person.options.length) return []; const count = Math.min(person.options.length, Math.max(1, person.minCount || 1)); const start = normalizedPathConfigSeed(input?.seed ?? person.strategySeed) % person.options.length; return Array.from({ length: count }, (_, index) => person.options[(start + index) % person.options.length].value) }
-  return [...(input?.selected ?? person.selected)]
+  return copyPersonSelection(input?.selected ?? person.selected)
 }
 
 // normalizedPersonStrategy 生成可保存人员策略，并把前端计算的最终名单一并提交供服务端复验。
 export function normalizedPersonStrategy(person: PathConfigPerson, input?: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput {
-  const current = input ?? { key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected }
+  const current = input ?? { key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: copyPersonSelection(person.selected) }
   const seed = normalizedPathConfigSeed(current.seed)
   return { ...current, key: person.key, seed, selected: resolvedPersonStrategySelection(person, { ...current, seed }) }
 }
@@ -244,4 +249,4 @@ function validPathConfigActionPerson(person: PathConfigPerson | undefined, input
 }
 
 // copyPathConfigPersonStrategy 把可能来自 Vue Proxy 的策略转换为普通对象。
-function copyPathConfigPersonStrategy(input: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput { return { key: input.key, strategy: input.strategy, seed: input.seed, selected: [...input.selected] } }
+function copyPathConfigPersonStrategy(input: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput { return { key: input.key, strategy: input.strategy, seed: input.seed, selected: copyPersonSelection(input.selected) } }

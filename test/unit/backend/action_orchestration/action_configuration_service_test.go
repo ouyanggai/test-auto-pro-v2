@@ -225,6 +225,61 @@ func TestGetPathConfigurationProjectsActionPersonStrategy(t *testing.T) {
 	}
 }
 
+// selectableApproverTree 创建含静态自选审批人的最小流程，用于验证人员策略回显。
+func selectableApproverTree() *target.FlowNodeTemplate {
+	return &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
+		ID: "review", Type: "common", AuditConfig: &target.FlowNodeAuditConfig{
+			AuditType: "run_node_choose", Mode: "scramble",
+			Candidates: []target.FlowAuditCandidate{{ID: "user-a", Name: "用户 A"}, {ID: "user-b", Name: "用户 B"}},
+		},
+		Child: &target.FlowNodeTemplate{ID: "end", Type: "end"},
+	}}
+}
+
+// TestGetPathConfigurationRestoresRandomPersonSelection 验证自动配置保存的空选择不会投影为 null 或导致页面初始化失败。
+func TestGetPathConfigurationRestoresRandomPersonSelection(t *testing.T) {
+	plan := model.Plan{ID: 804, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 814, PlanID: plan.ID, SequenceNo: 1, Name: "审批路径"}
+	personKey := analyzer.PathConfigPersonToken("review")
+	personJSON, err := json.Marshal(map[string]model.PathConfigPersonStrategyInput{
+		personKey: {Key: personKey, Strategy: "random", Seed: 2, Selected: nil},
+	})
+	if err != nil {
+		t.Fatalf("构造人员策略失败：%v", err)
+	}
+	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{
+		PathID: path.ID, Revision: 1, NodeRevision: 1, PersonStrategies: personJSON,
+	}}
+	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}),
+		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: selectableApproverTree(), EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "审批流程", RenderType: target.FormRenderTypeFormMaking}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
+	config.SetHistoryWorkspaceStores(store, store)
+	configuration, err := config.Get(context.Background(), plan.ID, path.ID)
+	if err != nil {
+		t.Fatalf("读取随机人员配置失败：%v", err)
+	}
+	var selected []string
+	for _, group := range configuration.Groups {
+		for _, node := range group.Nodes {
+			for _, person := range node.Persons {
+				if person.Key == personKey {
+					selected = person.Selected
+				}
+			}
+		}
+	}
+	if selected == nil || len(selected) != 1 {
+		t.Fatalf("随机人员选择未恢复为非空数组：%v", selected)
+	}
+	encoded, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatalf("编码路径配置失败：%v", err)
+	}
+	if strings.Contains(string(encoded), `"selected":null`) {
+		t.Fatalf("路径配置仍返回 null 人员集合：%s", encoded)
+	}
+}
+
 // autoConfigureNode 构造一个待配置节点：两个可用动作、一个可编辑人员和一个必填参数动作。
 func autoConfigureNode(key string, kinds []string) model.PathConfigNode {
 	catalog := make([]model.PathConfigActionCatalogItem, 0, len(kinds)+2)

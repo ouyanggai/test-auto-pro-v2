@@ -324,7 +324,7 @@ func (s *PathConfigService) applyHistoryActionProjection(ctx context.Context, pa
 					continue
 				}
 				person.Strategy, person.StrategySeed = strategy.Strategy, strategy.Seed
-				person.Selected = append([]string(nil), strategy.Selected...)
+				person.Selected = projectedPersonSelection(*person, strategy)
 			}
 			node.ActionConfiguration.Actions = []model.PathConfigConfiguredAction{}
 		}
@@ -370,9 +370,9 @@ func projectActionPerson(node *model.PathConfigNode, action model.ConfiguredActi
 	if source == nil {
 		return nil
 	}
-	result := &model.PathConfigPersonStrategyInput{Key: source.Key, Strategy: source.Strategy, Seed: source.StrategySeed, Selected: append([]string(nil), source.Selected...)}
+	result := &model.PathConfigPersonStrategyInput{Key: source.Key, Strategy: source.Strategy, Seed: source.StrategySeed, Selected: append([]string{}, source.Selected...)}
 	if saved, ok := persons[source.Key]; ok {
-		result = &model.PathConfigPersonStrategyInput{Key: saved.Key, Strategy: saved.Strategy, Seed: saved.Seed, Selected: append([]string(nil), saved.Selected...)}
+		result = &model.PathConfigPersonStrategyInput{Key: saved.Key, Strategy: saved.Strategy, Seed: saved.Seed, Selected: projectedPersonSelection(*source, saved)}
 	}
 	if strings.TrimSpace(action.ActorPolicy) != "" {
 		result.Strategy = strings.TrimSpace(action.ActorPolicy)
@@ -381,6 +381,46 @@ func projectActionPerson(node *model.PathConfigNode, action model.ConfiguredActi
 		result.Selected = selected
 	}
 	return result
+}
+
+// projectedPersonSelection 按当前候选和已保存策略恢复公开选中项，并保证空集合编码为 JSON 数组。
+func projectedPersonSelection(person model.PathConfigPerson, strategy model.PathConfigPersonStrategyInput) []string {
+	switch strings.TrimSpace(strategy.Strategy) {
+	case "target_default":
+		return append([]string{}, person.DefaultSelected...)
+	case "all":
+		selected := make([]string, 0, len(person.Options))
+		for _, option := range person.Options {
+			selected = append(selected, option.Value)
+		}
+		return selected
+	case "random":
+		if len(person.Options) == 0 {
+			return []string{}
+		}
+		count := person.MinCount
+		if count < 1 {
+			count = 1
+		}
+		if person.MaxCount > 0 && count > person.MaxCount {
+			count = person.MaxCount
+		}
+		if count > len(person.Options) {
+			count = len(person.Options)
+		}
+		seed := strategy.Seed
+		if seed < 1 {
+			seed = 1
+		}
+		start := int(uint64(seed) % uint64(len(person.Options)))
+		selected := make([]string, 0, count)
+		for index := 0; index < count; index++ {
+			selected = append(selected, person.Options[(start+index)%len(person.Options)].Value)
+		}
+		return selected
+	default:
+		return append([]string{}, strategy.Selected...)
+	}
 }
 
 // actionPersonSelected 读取目标加签/移交接口的候选键集合，不把参数正文转换为新的数据模型。
@@ -939,7 +979,9 @@ func autoPersonStrategy(person model.PathConfigPerson, seed uint64) model.PathCo
 		return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "target_default", Seed: 1, Selected: append([]string(nil), person.DefaultSelected...)}
 	}
 	if strategies["random"] && len(person.Options) > 0 {
-		return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "random", Seed: int64(seed%1_000_000) + 1}
+		strategy := model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "random", Seed: int64(seed%1_000_000) + 1}
+		strategy.Selected = projectedPersonSelection(person, strategy)
+		return strategy
 	}
 	selected := make([]string, 0, len(person.Options))
 	count := person.MinCount
