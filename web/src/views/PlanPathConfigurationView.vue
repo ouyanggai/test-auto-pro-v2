@@ -844,8 +844,8 @@ void loadPage()
         </div>
       </n-alert>
 
+      <section v-else-if="workspace === 'nodes' && graph && currentPath && configuration" class="path-configuration-page__nodes-workspace">
       <flow-graph-canvas
-        v-else-if="workspace === 'nodes' && graph && currentPath && configuration"
         ref="canvasRef"
         class="path-configuration-page__canvas"
         :graph="graph"
@@ -882,11 +882,11 @@ void loadPage()
           />
         </template>
       </flow-graph-canvas>
-
-      <details v-if="configuration" class="path-configuration-page__scenario" @toggle="handleScenarioToggle">
+      <details class="path-configuration-page__scenario" @toggle="handleScenarioToggle">
         <summary>将要执行的步骤（含系统自动插入的恢复步骤）</summary>
         <compiled-scenario-preview :steps="compiledScenario" :issues="compiledIssues" :loading="compiledLoading" :error="compiledError" />
       </details>
+      </section>
 
 
       <section v-else-if="workspace === 'form' && configuration" class="path-configuration-page__form-workspace">
@@ -1043,11 +1043,18 @@ void loadPage()
   min-height: 0;
 }
 .path-configuration-page__initial-loading { min-height: 320px; }
-.path-configuration-page__canvas { height: 100%; min-height: 0; border-top: 0; }
+.path-configuration-page__canvas { flex: 1 1 auto; height: auto; min-height: 0; border-top: 0; }
 .path-configuration-page__error { margin: 20px; }
 .path-configuration-page__error-content { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; line-height: 1.6; }
 .path-configuration-page__error-content > span { flex: 1 1 280px; min-width: 0; }
 
+.path-configuration-page__nodes-workspace {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
 .path-configuration-page__scenario {
   flex: 0 0 auto;
   margin: 0 16px 12px;
