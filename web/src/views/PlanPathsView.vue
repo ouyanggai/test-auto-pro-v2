@@ -96,7 +96,6 @@ const selectedRunPathIDs = ref(new Set<string>())
 const pathSelectionError = ref('')
 const preparationJob = ref<HistoryReplayJob | null>(null)
 const preparationLoading = ref(false)
-const preparationFilter = ref<'all' | 'needs_attention'>('all')
 const dataPickerOpen = ref(false)
 const SAVED_PATH_ITEM_SIZE = 44
 const PREPARATION_PATH_ITEM_SIZE = 84
@@ -113,10 +112,7 @@ let preparationTimer: ReturnType<typeof setTimeout> | null = null
 const planID = computed(() => String(route.params.id || ''))
 const planMutable = computed(() => plan.value?.status === 'not_started')
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
-const attentionDataPaths = computed(() => paths.value.filter((path) => path.dataStatus === 'empty' || path.dataStatus === 'needs_input' || path.dataStatus === 'affected'))
-const visiblePaths = computed(() => preparationFilter.value === 'needs_attention'
-  ? attentionDataPaths.value
-  : paths.value)
+const visiblePaths = computed(() => paths.value)
 const preparationPathListHeight = computed(() => Math.min(visiblePaths.value.length, 5) * PREPARATION_PATH_ITEM_SIZE)
 const pageThemeStyle = computed(() => ({
   '--plan-card-color': themeVars.value.cardColor,
@@ -822,9 +818,6 @@ onMounted(() => {
               <div class="path-prepare__header-actions">
 							<n-button v-if="planMutable && paths.length" size="small" secondary :disabled="preparationBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
                 <n-button v-if="planMutable && paths.length" size="small" secondary :disabled="preparationBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
-						<n-button size="small" secondary :type="preparationFilter === 'needs_attention' ? 'warning' : 'default'" @click="preparationFilter = preparationFilter === 'needs_attention' ? 'all' : 'needs_attention'">
-							{{ preparationFilter === 'needs_attention' ? '显示全部' : `数据需处理 ${attentionDataPaths.length}` }}
-						</n-button>
 							<n-button
 								v-if="planMutable && paths.length"
 								size="small"
@@ -881,10 +874,6 @@ onMounted(() => {
 							<n-button v-if="planMutable && !generationBusy" type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="startNewPath">
                 新增路径
               </n-button>
-            </div>
-            <div v-else-if="!visiblePaths.length" class="path-prepare__empty">
-              <span>当前没有数据需处理的路径</span>
-              <n-button size="small" secondary @click="preparationFilter = 'all'">显示全部</n-button>
             </div>
             <n-virtual-list
               v-else

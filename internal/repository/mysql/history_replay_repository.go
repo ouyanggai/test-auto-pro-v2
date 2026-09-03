@@ -1152,19 +1152,53 @@ WHERE id = ? AND job_id = ? AND status = 'running' AND lease_owner = ?`,
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE test_execution_path_configs
+	dataStatus := normalizeReplayDataStatus(item.DataStatus, item.Status)
+	updated, err := tx.ExecContext(ctx, `UPDATE test_execution_path_configs
 SET data_revision = data_revision + 1,
     data_status = ?,
     runtime_type = CASE WHEN ? <> '' THEN ? ELSE runtime_type END,
     effective_form_data = ?, branch_patches = ?, runtime_validation = ?, issues = ?, updated_at = ?
-WHERE path_id = ?`, normalizeReplayDataStatus(item.DataStatus, item.Status), item.RuntimeType, item.RuntimeType,
-		string(effective), string(patches), string(runtimeValidation), string(issues), now, item.PathID); err != nil {
+WHERE path_id = ?`, dataStatus, item.RuntimeType, item.RuntimeType,
+		string(effective), string(patches), string(runtimeValidation), string(issues), now, item.PathID)
+	if err != nil {
 		return err
+	}
+	// 路径继承计划统一数据时还没有配置行，只更新会命中零行，任务完成后列表仍显示"未选择"。
+	// 这里补建配置行并写入本次回放结果，保持"任务完成即列表可见"。
+	affected, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		runtimeType := strings.TrimSpace(item.RuntimeType)
+		if runtimeType == "" {
+			runtimeType = "unknown"
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO test_execution_path_configs (
+  path_id, revision, node_revision, data_revision, action_revision, idempotency_key,
+  config_status, node_status, data_status, source_mode, snapshot_id, runtime_type,
+  person_strategies, user_actions, compiled_steps, confirmed_node_keys,
+  effective_form_data, branch_patches, runtime_validation, issues, latest_idempotency_result,
+  created_at, updated_at
+) VALUES (?, 1, 0, 1, 0, '', 'pending', 'pending', ?, 'default', ?, ?,
+  '{}', '[]', '[]', '[]', ?, ?, ?, ?, '{}', ?, ?)`,
+			item.PathID, dataStatus, nullableSnapshotID(replayItemSnapshotID(item)), runtimeType,
+			string(effective), string(patches), string(runtimeValidation), string(issues), now, now); err != nil {
+			return err
+		}
 	}
 	if _, err := recountHistoryReplayLocked(ctx, tx, jobID, now); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// replayItemSnapshotID 返回回放明细使用的快照主键；继承计划统一数据时为 0 表示不绑定独立快照。
+func replayItemSnapshotID(item model.HistoryReplayItem) uint64 {
+	if item.SnapshotID == nil {
+		return 0
+	}
+	return *item.SnapshotID
 }
 
 // RecountReplay 从明细真实状态重算任务聚合计数，并在没有未完成项时落为 completed。

@@ -2,6 +2,7 @@ package f012_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,5 +233,54 @@ func seedHistoryPathConfig(t *testing.T, store *planmysql.HistoryReplayRepositor
 		SourceMode: model.HistorySourceModeNone, RuntimeType: "unknown",
 	}, 0, now); err != nil {
 		t.Fatalf("初始化路径配置失败：%v", err)
+	}
+}
+
+// TestHistoryReplayCreatesPathConfigForInheritedSource 锁定回归：路径继承计划统一数据时还没有配置行，
+// 回放完成必须补建配置行并写入数据状态，否则任务完成后列表仍然显示"未选择"。
+func TestHistoryReplayCreatesPathConfigForInheritedSource(t *testing.T) {
+	database, _, ctx := openHistoryIntegrationDatabase(t, "继承统一数据补建路径配置")
+	store := planmysql.NewHistoryReplayRepository(database.DB)
+	planID, pathIDs := insertHistoryPlanWithPaths(t, database.DB, 20911, "template-a", "new", 1)
+	now := time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
+	// 模拟一键配置只保存了计划统一数据、路径本身还没有任何配置行的真实状态。
+	if _, err := database.DB.ExecContext(ctx, "DELETE FROM test_execution_path_configs WHERE path_id = ?", pathIDs[0]); err != nil {
+		t.Fatalf("清理路径配置行失败：%v", err)
+	}
+	if _, found, err := store.GetPathConfig(ctx, pathIDs[0]); err != nil || found {
+		t.Fatalf("前置条件不成立，路径仍存在配置行：err=%v found=%t", err, found)
+	}
+	job, created, err := store.CreateReplay(ctx,
+		model.HistoryReplayJob{ID: "job-inherited", PlanID: planID, IdempotencyKey: historyIntegrationKey(20912), CreatedAt: now, UpdatedAt: now},
+		[]model.HistoryReplayItem{{PathID: pathIDs[0], UpdatedAt: now}})
+	if err != nil || !created {
+		t.Fatalf("创建回放任务失败：err=%v created=%t", err, created)
+	}
+	claimed, err := store.ClaimReplayItems(ctx, job.ID, 1, "worker-inherited", now)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("领取回放明细失败：err=%v claimed=%d", err, len(claimed))
+	}
+	item := claimed[0]
+	item.Status = model.HistoryReplayItemStatusReady
+	item.DataStatus = model.HistoryDataStatusReady
+	item.RuntimeType = "formmaking"
+	item.RuntimeValidation = model.HistoryRuntimeValidation{Accepted: true}
+	item.EffectiveFormData = map[string]any{"leaveType": "事假"}
+	if err := store.CompleteReplayItem(ctx, job.ID, item.ID, item, now.Add(time.Minute)); err != nil {
+		t.Fatalf("完成回放明细失败：%v", err)
+	}
+	config, found, err := store.GetPathConfig(ctx, pathIDs[0])
+	if err != nil || !found {
+		t.Fatalf("回放完成没有补建路径配置行：err=%v found=%t", err, found)
+	}
+	if config.DataStatus != model.HistoryDataStatusReady || config.RuntimeType != "formmaking" || config.SourceMode != "default" {
+		t.Fatalf("补建的路径配置没有写入回放结果：%+v", config)
+	}
+	if !strings.Contains(string(config.EffectiveFormData), "事假") {
+		t.Fatalf("补建的路径配置没有保存有效业务数据：%s", string(config.EffectiveFormData))
+	}
+	aggregated, err := store.GetReplay(ctx, planID, job.ID)
+	if err != nil || aggregated.Ready != 1 || aggregated.Status != model.HistoryReplayStatusCompleted {
+		t.Fatalf("任务聚合状态不正确：err=%v job=%+v", err, aggregated)
 	}
 }
