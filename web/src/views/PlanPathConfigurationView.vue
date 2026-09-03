@@ -11,16 +11,23 @@ import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
 import HistorySourceSelector from '../features/history-replay/HistorySourceSelector.vue'
+import ActionOrchestrationEditor from '../features/path-configuration/ActionOrchestrationEditor.vue'
+import CompiledScenarioPreview from '../features/path-configuration/CompiledScenarioPreview.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
 import {
   bindPathConfigurationNodes,
   buildPathActionConfigurationInput,
+  containerActionsDraft,
 	copyPathConfigActions,
   currentNodeConfigurationComplete,
+  hasContainerDraftChanges,
   hasCurrentNodeDraftChanges,
   initialPathConfigurationNodeID,
   initPathConfigDraft,
+  instanceActionContainer,
+  instanceActionsComplete,
+  nodeActionContainer,
   pathConfigurationMessage,
   pathConfigurationStatusName,
   pathConfigurationNodesByGraphID,
@@ -28,6 +35,7 @@ import {
   resolveConfirmedNodeSaveDestination,
 } from '../features/path-configuration/logic'
 import {
+  fetchPathCompiledScenario,
   fetchPathConfiguration,
   fetchPathConfigurationData,
   fetchPathFormRuntimeSession,
@@ -37,6 +45,8 @@ import {
 } from '../features/path-configuration/api'
 import { retryPathLoad } from '../features/path-configuration/retry'
 import type {
+  PathActionConfigurationIssue,
+  PathCompiledActionStep,
 	PathConfigConfiguredActionInput,
   PathConfigDraft,
   PathConfigNode,
@@ -72,7 +82,7 @@ const draft = ref<PathConfigDraft>({ fields: {}, persons: {}, personStrategies: 
 const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
-const workspace = ref<'nodes' | 'form'>('nodes')
+const workspace = ref<'nodes' | 'form' | 'scenario'>('nodes')
 const runtimeSession = ref<PathFormRuntimeSession | null>(null)
 const dataWorkspace = ref<PathConfigurationDataWorkspace | null>(null)
 const runtimeStats = ref<{ filledEditable: number, manualPending: number }>({ filledEditable: 0, manualPending: 0 })
@@ -80,6 +90,14 @@ const runtimeUnsupported = ref<string[]>([])
 const pageLoading = ref(false)
 const pathDetailLoading = ref(false)
 const savingNode = ref(false)
+const savingInstanceActions = ref(false)
+const compiledScenario = ref<PathCompiledActionStep[]>([])
+const compiledIssues = ref<PathActionConfigurationIssue[]>([])
+const compiledLoading = ref(false)
+const compiledError = ref('')
+const instanceSaveError = ref('')
+const instanceSaveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
+const instanceSavedSuccessfully = ref(false)
 const formRuntimeLoading = ref(false)
 const formRestoring = ref(false)
 const formSaving = ref(false)
@@ -101,7 +119,10 @@ let runtimeEpoch = 0
 let runtimeSessionController: AbortController | null = null
 let formOperationController: AbortController | null = null
 let nodeSaveKey = ''
+let instanceSaveKey = ''
 let formSaveKey = ''
+let compiledVersion = 0
+let compiledController: AbortController | null = null
 const notification = useNotification()
 let formNotice: NotificationReactive | null = null
 
@@ -164,6 +185,15 @@ const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(
 const nodeSaveDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
 const saveAllNodesDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !configuration.value)
 const nodeDraftHasUnsavedChanges = computed(() => hasCurrentNodeDraftChanges(selectedNode.value, draft.value))
+const instanceContainer = computed(() => configuration.value ? instanceActionContainer(configuration.value) : null)
+const instanceActionsSaved = computed(() => instanceContainer.value ? containerActionsDraft(instanceContainer.value, draft.value) : [])
+const instanceDraftHasUnsavedChanges = computed(() => hasContainerDraftChanges(instanceContainer.value, draft.value))
+const instanceSaveDisabled = computed(() => !planMutable.value
+  || pageLoading.value
+  || savingInstanceActions.value
+  || !instanceContainer.value
+  || !instanceActionsComplete(instanceContainer.value, draft.value))
+const draftHasUnsavedChanges = computed(() => nodeDraftHasUnsavedChanges.value || instanceDraftHasUnsavedChanges.value)
 const runtimeBlockingReasons = computed(() => [...new Set(runtimeUnsupported.value)])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
 // applyRuntimeFormState 只接受 iframe 已核验会话回传的原始值统计，宿主不持有字段映射或生成所有权。
@@ -259,6 +289,10 @@ async function loadPage() {
   formError.value = ''
   nodeSavedSuccessfully.value = false
   formSavedSuccessfully.value = false
+  instanceSaveError.value = ''
+  instanceSaveDetails.value = []
+  instanceSavedSuccessfully.value = false
+  resetCompiledScenario()
   workspace.value = 'nodes'
   try {
     const [storedPlan, storedGraph, storedPaths] = await retryPathLoad(signal => Promise.all([
@@ -282,6 +316,7 @@ async function loadPage() {
     executionPaths.value = storedPaths
     await applyConfiguration(storedConfiguration, false)
     nodeSaveKey = crypto.randomUUID()
+    instanceSaveKey = crypto.randomUUID()
     formSaveKey = crypto.randomUUID()
   }
   catch (caught) {
@@ -358,6 +393,108 @@ function updatePersonStrategy(person: PathConfigPerson, value: PathConfigPersonS
   nodeSavedSuccessfully.value = false
 }
 
+// resetCompiledScenario 失效编译预览的异步代次，避免旧路径的只读步骤留在新路径页面。
+function resetCompiledScenario() {
+  compiledVersion += 1
+  compiledController?.abort()
+  compiledController = null
+  compiledScenario.value = []
+  compiledIssues.value = []
+  compiledLoading.value = false
+  compiledError.value = ''
+}
+
+// loadCompiledScenario 只读取服务端编译结果；浏览器不推导、不补齐、不提交任何步骤。
+async function loadCompiledScenario() {
+  if (!configuration.value) return
+  compiledController?.abort()
+  const controller = new AbortController()
+  compiledController = controller
+  const version = ++compiledVersion
+  compiledLoading.value = true
+  compiledError.value = ''
+  try {
+    const result = await fetchPathCompiledScenario(planID.value, pathID.value, controller.signal)
+    if (controller.signal.aborted || version !== compiledVersion) return
+    compiledScenario.value = result.compiledScenario
+    compiledIssues.value = result.issues
+  }
+  catch (caught) {
+    if (controller.signal.aborted || version !== compiledVersion) return
+    compiledScenario.value = []
+    compiledIssues.value = []
+    compiledError.value = publicPageError(caught)
+  }
+  finally {
+    if (version === compiledVersion) compiledLoading.value = false
+    if (compiledController === controller) compiledController = null
+  }
+}
+
+// openScenarioWorkspace 切换到实例动作与编译预览工作区；离开表单时同时失效短期 SID 会话。
+async function openScenarioWorkspace() {
+  if (!configuration.value) return
+  if (workspace.value === 'form') invalidateRuntimeSession()
+  workspace.value = 'scenario'
+  await loadCompiledScenario()
+}
+
+// updateInstanceActionConfiguration 只接受实例动作容器草稿，禁止实例编辑器越界写语义节点。
+function updateInstanceActionConfiguration(containerKey: string, value: PathConfigConfiguredActionInput[]) {
+  if (!planMutable.value) return
+  if (instanceContainer.value?.key !== containerKey) return
+  draft.value.actionConfigurations[containerKey] = copyPathConfigActions(value)
+  instanceSavedSuccessfully.value = false
+}
+
+// saveInstanceActions 保存实例作用域动作，并用服务端同一次重编译结果刷新只读预览。
+async function saveInstanceActions() {
+  const current = configuration.value
+  const container = instanceContainer.value
+  if (!current || !container || instanceSaveDisabled.value) return
+  savingInstanceActions.value = true
+  instanceSaveError.value = ''
+  instanceSaveDetails.value = []
+  instanceSavedSuccessfully.value = false
+  const previousRevision = current.nodeRevision
+  try {
+    const result = await savePathActionConfiguration(
+      planID.value,
+      pathID.value,
+      container.key,
+      buildPathActionConfigurationInput(container, draft.value, previousRevision),
+      instanceSaveKey,
+    )
+    instanceSaveKey = crypto.randomUUID()
+    await reloadConfiguration()
+    compiledVersion += 1
+    compiledScenario.value = result.compiledScenario
+    compiledIssues.value = result.issues
+    compiledError.value = ''
+    instanceSavedSuccessfully.value = true
+  }
+  catch (caught) {
+    try {
+      const reconciled = await reloadConfiguration()
+      if (reconciled.nodeRevision > previousRevision) {
+        instanceSaveKey = crypto.randomUUID()
+        instanceSavedSuccessfully.value = true
+        await loadCompiledScenario()
+        return
+      }
+    }
+    catch { /* 对账失败保留原草稿和幂等键，用户重试不会重复写入。 */ }
+    if (caught instanceof PathConfigApiError) {
+      instanceSaveError.value = pathConfigurationMessage(caught.message)
+      instanceSaveDetails.value = caught.details
+    }
+    else instanceSaveError.value = '保存失败，当前实例动作草稿已保留，请重试'
+  }
+  finally {
+    savingInstanceActions.value = false
+  }
+}
+
 // updateNodeActionConfiguration 替换当前节点独立动作草稿，不允许面板越过节点边界写其他节点。
 function updateNodeActionConfiguration(nodeKey: string, value: PathConfigConfiguredActionInput[]) {
 	if (!planMutable.value) return
@@ -378,8 +515,12 @@ async function saveCurrentNode() {
   nodeSavedSuccessfully.value = false
   const previousRevision = current.nodeRevision
   try {
-    await savePathActionConfiguration(planID.value, pathID.value, node.key, buildPathActionConfigurationInput(node, draft.value, previousRevision), nodeSaveKey)
+    const result = await savePathActionConfiguration(planID.value, pathID.value, node.key, buildPathActionConfigurationInput(nodeActionContainer(node), draft.value, previousRevision), nodeSaveKey)
     await reloadConfiguration()
+    compiledVersion += 1
+    compiledScenario.value = result.compiledScenario
+    compiledIssues.value = result.issues
+    compiledError.value = ''
     await finishConfirmedNodeSave()
   }
   catch (caught) {
@@ -426,10 +567,14 @@ async function saveAllNodes() {
         planID.value,
         pathID.value,
         node.key,
-        buildPathActionConfigurationInput(node, draft.value, revision),
+        buildPathActionConfigurationInput(nodeActionContainer(node), draft.value, revision),
         crypto.randomUUID(),
       )
       revision = result.nodeRevision
+      compiledVersion += 1
+      compiledScenario.value = result.compiledScenario
+      compiledIssues.value = result.issues
+      compiledError.value = ''
       savedCount += 1
     }
     await reloadConfiguration()
@@ -604,15 +749,15 @@ function cancelRouteChange() {
   routeConfirmationChange.value = null
 }
 
-// confirmDiscardNodeDraft 在离开路径前拦截未保存的人员或动作草稿，避免导航悄悄丢失用户编辑。
+// confirmDiscardNodeDraft 在离开路径前拦截未保存的人员、节点动作或实例动作草稿，避免导航悄悄丢失用户编辑。
 function confirmDiscardNodeDraft() {
-  if (!nodeDraftHasUnsavedChanges.value || savingNode.value) return true
-  return window.confirm('当前节点人员或动作配置尚未保存，确定离开？')
+  if (!draftHasUnsavedChanges.value || savingNode.value || savingInstanceActions.value) return true
+  return window.confirm('当前人员、节点动作或实例动作配置尚未保存，确定离开？')
 }
 
 // handleBeforeUnload 浏览器关闭或刷新时复用同一未保存门禁。
 function handleBeforeUnload(event: BeforeUnloadEvent) {
-  if (!nodeDraftHasUnsavedChanges.value || savingNode.value) return
+  if (!draftHasUnsavedChanges.value || savingNode.value || savingInstanceActions.value) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -631,6 +776,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   loadVersion++
   loadController?.abort()
+  resetCompiledScenario()
   invalidateRuntimeSession()
 })
 
@@ -679,6 +825,7 @@ void loadPage()
 
     <nav v-if="configuration" class="path-configuration-page__switch" aria-label="配置工作区">
       <n-button :type="workspace === 'nodes' ? 'primary' : 'default'" :secondary="workspace !== 'nodes'" @click="returnToNodes">节点配置</n-button>
+      <n-button :type="workspace === 'scenario' ? 'primary' : 'default'" :secondary="workspace !== 'scenario'" @click="openScenarioWorkspace">动作场景</n-button>
       <n-button :type="workspace === 'form' ? 'primary' : 'default'" :secondary="workspace !== 'form'" @click="openFormWorkspace">表单数据</n-button>
     </nav>
 
@@ -730,6 +877,48 @@ void loadPage()
           />
         </template>
       </flow-graph-canvas>
+
+      <section v-else-if="workspace === 'scenario' && configuration" class="path-configuration-page__scenario-workspace">
+        <header class="path-configuration-page__scenario-toolbar">
+          <div>
+            <h2>动作场景</h2>
+            <p>实例作用域动作单独编排；编译步骤由服务端按当前路径、人员和真实门禁生成，只用于核对。</p>
+          </div>
+          <div class="path-configuration-page__form-actions">
+            <n-button size="small" :loading="compiledLoading" @click="loadCompiledScenario">重新读取编译场景</n-button>
+            <n-button
+              v-if="instanceContainer && planMutable"
+              size="small"
+              type="primary"
+              :loading="savingInstanceActions"
+              :disabled="instanceSaveDisabled"
+              @click="saveInstanceActions"
+            >保存实例动作</n-button>
+          </div>
+        </header>
+        <div class="path-configuration-page__scenario-body">
+          <n-alert v-if="instanceSaveError" type="error" :show-icon="false">
+            <span>{{ instanceSaveError }}</span>
+            <ul v-if="instanceSaveDetails.length" class="path-configuration-page__form-summary-list">
+              <li v-for="detail in instanceSaveDetails" :key="`${detail.kind}-${detail.name}`">{{ detail.name }}：{{ pathConfigurationMessage(detail.reason) }}</li>
+            </ul>
+          </n-alert>
+          <n-alert v-else-if="instanceSavedSuccessfully" type="success" :show-icon="false">实例动作已保存，编译场景已按同一次服务端结果刷新。</n-alert>
+          <n-alert v-else-if="instanceDraftHasUnsavedChanges" type="warning" :show-icon="false">实例动作草稿尚未保存，编译预览仍是上一次保存结果。</n-alert>
+          <action-orchestration-editor
+            v-if="instanceContainer"
+            :container="instanceContainer"
+            title="实例动作"
+            :saved-actions="instanceActionsSaved"
+            :read-only="!planMutable"
+            :blocked="false"
+            :person-strategies="draft.personStrategies"
+            @update="updateInstanceActionConfiguration"
+          />
+          <n-alert v-else type="info" :show-icon="false">当前路径没有可配置的实例作用域动作。</n-alert>
+          <compiled-scenario-preview :steps="compiledScenario" :issues="compiledIssues" :loading="compiledLoading" :error="compiledError" />
+        </div>
+      </section>
 
       <section v-else-if="workspace === 'form' && configuration" class="path-configuration-page__form-workspace">
         <header class="path-configuration-page__form-toolbar">
@@ -899,6 +1088,35 @@ void loadPage()
 .path-configuration-page__error-content { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; line-height: 1.6; }
 .path-configuration-page__error-content > span { flex: 1 1 280px; min-width: 0; }
 
+.path-configuration-page__scenario-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--path-config-card-color);
+}
+.path-configuration-page__scenario-toolbar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--path-config-border-color);
+}
+.path-configuration-page__scenario-toolbar h2 { margin: 0 0 4px; font-size: 18px; }
+.path-configuration-page__scenario-toolbar p { margin: 0; color: var(--path-config-text-secondary-color); font-size: 12px; }
+.path-configuration-page__scenario-body {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+}
+
 .path-configuration-page__form-workspace {
   position: relative;
   display: flex;
@@ -1002,7 +1220,7 @@ void loadPage()
     max-height: none;
     overflow: hidden;
   }
-  .path-configuration-page__header, .path-configuration-page__form-toolbar { align-items: flex-start; flex-direction: column; }
+  .path-configuration-page__header, .path-configuration-page__form-toolbar, .path-configuration-page__scenario-toolbar { align-items: flex-start; flex-direction: column; }
   .path-configuration-page--form .path-configuration-page__form-toolbar {
     height: auto;
     min-height: var(--path-config-form-toolbar-height);

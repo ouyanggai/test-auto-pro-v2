@@ -1,4 +1,5 @@
 import type {
+  PathActionContainer,
   PathConfigActionKind,
   PathConfigConfiguredActionInput,
   PathConfiguration,
@@ -98,8 +99,19 @@ export function initPathConfigDraft(configuration: PathConfiguration): PathConfi
     }
     if (node.actionConfiguration.actions.length) actionConfigurations[node.key] = copyPathConfigActions(node.actionConfiguration.actions)
   }
+  const instance = instanceActionContainer(configuration)
+  if (instance && instance.actionConfiguration.actions.length) actionConfigurations[instance.key] = copyPathConfigActions(instance.actionConfiguration.actions)
   return { fields: {}, persons, personStrategies, actionConfigurations }
 }
+
+// instanceActionContainer 把实例作用域动作投影为独立容器，实例动作不挂在任何语义节点上。
+export function instanceActionContainer(configuration: PathConfiguration): PathActionContainer | null {
+  if (!configuration.instanceActionKey || !configuration.instanceActions?.catalog?.length) return null
+  return { key: configuration.instanceActionKey, persons: [], actionConfiguration: configuration.instanceActions }
+}
+
+// nodeActionContainer 把语义节点投影为动作容器，与实例容器共用同一套编辑与校验逻辑。
+export function nodeActionContainer(node: PathConfigNode): PathActionContainer { return { key: node.key, persons: node.persons, actionConfiguration: node.actionConfiguration } }
 
 // copyPathConfigActions 脱离 Vue Proxy，保留每条独立动作记录的目标语义和参数。
 export function copyPathConfigActions(input: Array<Pick<PathConfigConfiguredActionInput, 'key' | 'kind' | 'person' | 'parameters' | 'actorPolicy' | 'note'>>): PathConfigConfiguredActionInput[] {
@@ -118,13 +130,18 @@ function cloneActionParameters(input: Record<string, unknown>): Record<string, u
   return JSON.parse(JSON.stringify(input)) as Record<string, unknown>
 }
 
-// pathConfigActionsInput 从当前节点的独立动作配置取得可保存草稿。
-export function pathConfigActionsInput(node: PathConfigNode): PathConfigConfiguredActionInput[] { return copyPathConfigActions(node.actionConfiguration.actions) }
+// pathConfigActionsInput 从当前容器的独立动作配置取得可保存草稿。
+export function pathConfigActionsInput(container: PathActionContainer): PathConfigConfiguredActionInput[] { return copyPathConfigActions(container.actionConfiguration.actions) }
+
+// containerActionsDraft 优先使用页面草稿，未编辑时回落到服务端已保存动作。
+export function containerActionsDraft(container: PathActionContainer, draft: PathConfigDraft): PathConfigConfiguredActionInput[] {
+  return draft.actionConfigurations[container.key] ?? pathConfigActionsInput(container)
+}
 
 // buildPathActionConfigurationInput 把每条页面动作草稿按原始稳定语义发送到 F-012 服务端。
-export function buildPathActionConfigurationInput(node: PathConfigNode, draft: PathConfigDraft, revision: number): PathActionConfigurationInput {
-  const source = draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)
-  const personsByKey = new Map(node.persons
+export function buildPathActionConfigurationInput(container: PathActionContainer, draft: PathConfigDraft, revision: number): PathActionConfigurationInput {
+  const source = containerActionsDraft(container, draft)
+  const personsByKey = new Map(container.persons
     .filter(person => person.editable)
     .map(person => {
       const value = normalizedPersonStrategy(person, draft.personStrategies[person.key])
@@ -144,7 +161,7 @@ export function buildPathActionConfigurationInput(node: PathConfigNode, draft: P
     }
     if (item.person) personsByKey.set(item.person.key, { key: item.person.key, strategy: item.person.strategy, seed: item.person.seed, selected: [...item.person.selected] })
     actions.push({
-      key: item.key, action, scope, nodeKey: scope === 'instance' ? undefined : node.key, order,
+      key: item.key, action, scope, nodeKey: scope === 'instance' ? undefined : container.key, order,
       ...(Object.keys(parameters).length ? { parameters } : {}),
       ...((item.actorPolicy || item.person?.strategy) ? { actorPolicy: item.actorPolicy || item.person?.strategy } : {}),
       ...(item.note ? { note: item.note } : {}),
@@ -165,16 +182,27 @@ export function currentNodeConfigurationComplete(node: PathConfigNode | null, dr
     const selected = resolvedPersonStrategySelection(person, draft.personStrategies[person.key])
     if ((person.required && selected.length === 0) || (selected.length > 0 && selected.length < person.minCount)) missing.push(person.title)
   }
-  const actions = draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)
-  if (!validCurrentNodeActions(node, actions)) missing.push('动作配置')
+  if (!validPathConfigActions(nodeActionContainer(node), containerActionsDraft(nodeActionContainer(node), draft))) missing.push('动作配置')
   return { missing, complete: missing.length === 0 }
+}
+
+// instanceActionsComplete 校验实例动作容器的独立记录是否仍然合法。
+export function instanceActionsComplete(container: PathActionContainer | null, draft: PathConfigDraft): boolean {
+  if (!container) return true
+  return validPathConfigActions(container, containerActionsDraft(container, draft))
+}
+
+// hasContainerDraftChanges 比较任意动作容器的未保存改动。
+export function hasContainerDraftChanges(container: PathActionContainer | null, draft: PathConfigDraft): boolean {
+  if (!container) return false
+  return JSON.stringify(containerActionsDraft(container, draft)) !== JSON.stringify(pathConfigActionsInput(container))
 }
 
 // hasCurrentNodeDraftChanges 比较当前节点的动作和人员草稿。
 export function hasCurrentNodeDraftChanges(node: PathConfigNode | null, draft: PathConfigDraft): boolean {
   if (!node) return false
   for (const person of node.persons) if (person.editable && JSON.stringify(normalizedPersonStrategy(person, draft.personStrategies[person.key])) !== JSON.stringify({ key: person.key, strategy: person.strategy || 'manual', seed: person.strategySeed || 1, selected: person.selected })) return true
-  return JSON.stringify(draft.actionConfigurations[node.key] ?? pathConfigActionsInput(node)) !== JSON.stringify(pathConfigActionsInput(node))
+  return hasContainerDraftChanges(nodeActionContainer(node), draft)
 }
 
 // resolvedPersonStrategySelection 在浏览器内按公开候选顺序投影最终名单。
@@ -196,22 +224,10 @@ export function normalizedPersonStrategy(person: PathConfigPerson, input?: PathC
 // normalizedPathConfigSeed 保持浏览器 seed 在安全整数范围内。
 export function normalizedPathConfigSeed(seed: unknown): number { return typeof seed === 'number' && Number.isSafeInteger(seed) && seed >= 1 ? seed : 1 }
 
-// validPathConfigActions 在提交前校验目录和动作专用人员；重复动作记录是合法的。
-export function validPathConfigActions(node: PathConfigNode, input: PathConfigConfiguredActionInput[]): boolean {
+// validPathConfigActions 在提交前校验目录和动作专用人员；重复动作记录是合法的，被门禁禁用的动作不合法。
+export function validPathConfigActions(container: PathActionContainer, input: PathConfigConfiguredActionInput[]): boolean {
   if (!input || input.length > 10) return false
-  const catalog = new Map(node.actionConfiguration.catalog.filter(item => item.enabled).map(item => [item.kind, item]))
-  return input.every(action => {
-    const definition = catalog.get(action.kind)
-    if (!definition) return false
-    if (!definition.requiresPerson) return !action.person
-    return validPathConfigActionPerson(definition.person, action.person)
-  })
-}
-
-// validCurrentNodeActions 校验动作编辑器的独立记录，不按 kind 去重。
-function validCurrentNodeActions(node: PathConfigNode, input: PathConfigConfiguredActionInput[]): boolean {
-  if (!input || input.length > 10) return false
-  const catalog = new Map(node.actionConfiguration.catalog.filter(item => item.enabled).map(item => [item.kind, item]))
+  const catalog = new Map(container.actionConfiguration.catalog.filter(item => item.enabled && !item.systemOnly).map(item => [item.kind, item]))
   return input.every(action => {
     const definition = catalog.get(action.kind)
     if (!definition) return false

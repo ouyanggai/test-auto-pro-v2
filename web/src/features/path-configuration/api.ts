@@ -1,4 +1,5 @@
 import type {
+  PathConfigActionConfiguration,
   PathConfiguration,
   PathConfigurationDataInput,
   PathConfigurationDataResult,
@@ -89,6 +90,34 @@ function normalizePathConfiguration(value: PathConfiguration): PathConfiguration
     ...value,
     groups: Array.isArray(value?.groups) ? value.groups : [],
     warnings: Array.isArray(value?.warnings) ? value.warnings : [],
+    instanceActionKey: typeof value?.instanceActionKey === 'string' ? value.instanceActionKey : '',
+    instanceActions: normalizePathActionConfiguration(value?.instanceActions),
+  }
+}
+
+// normalizePathActionConfiguration 补齐动作容器数组，缺失目录时页面显示空目录而不是崩溃。
+function normalizePathActionConfiguration(value: PathConfigActionConfiguration | undefined): PathConfigActionConfiguration {
+  return {
+    ...(value?.base ? { base: value.base } : {}),
+    catalog: Array.isArray(value?.catalog) ? value.catalog : [],
+    actions: Array.isArray(value?.actions) ? value.actions : [],
+    affected: value?.affected === true,
+    note: typeof value?.note === 'string' ? value.note : '',
+  }
+}
+
+// fetchPathCompiledScenario 只读取服务端编译的完整场景步骤，浏览器不提交任何步骤正文。
+export function fetchPathCompiledScenario(planId: string, pathId: string, signal?: AbortSignal): Promise<PathActionConfigurationResult> {
+  return request<PathActionConfigurationResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/compiled-scenario`, { method: 'GET' }, signal).then(normalizePathActionConfigurationResult)
+}
+
+// normalizePathActionConfigurationResult 补齐编译预览数组，保存返回和只读预览共用同一投影。
+function normalizePathActionConfigurationResult(value: PathActionConfigurationResult): PathActionConfigurationResult {
+  return {
+    ...value,
+    actions: Array.isArray(value?.actions) ? value.actions : [],
+    compiledScenario: Array.isArray(value?.compiledScenario) ? value.compiledScenario : [],
+    issues: Array.isArray(value?.issues) ? value.issues : [],
   }
 }
 
@@ -102,7 +131,7 @@ export function savePathActionConfiguration(
 ): Promise<PathActionConfigurationResult> {
   return request<PathActionConfigurationResult>(`/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/configuration/nodes/${encodeURIComponent(nodeKey)}`, {
     method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(payload),
-  })
+  }).then(normalizePathActionConfigurationResult)
 }
 
 // fetchPathFormRuntimeSession 取得当前账号缓存的短期 SID；调用方只保存在 iframe 会话内。

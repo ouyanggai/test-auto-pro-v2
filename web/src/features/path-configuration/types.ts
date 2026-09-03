@@ -16,6 +16,8 @@ export interface PathConfiguration {
   nextNodeKey: string
   groups: PathConfigGroup[]
   warnings: string[]
+  instanceActionKey: string
+  instanceActions: PathConfigActionConfiguration
 }
 
 export interface PathConfigurationDataWorkspace {
@@ -37,7 +39,7 @@ export interface PathConfigurationDataWorkspace {
   runtimeValidation: PathConfigurationRuntimeValidation
   issues: HistoryDataIssue[]
   actions: unknown[]
-  compiledScenario: unknown[]
+  compiledScenario: PathCompiledActionStep[]
 }
 
 export interface PathConfigurationRuntimeValidation {
@@ -123,8 +125,17 @@ export interface PathActionConfigurationResult {
   actionRevision: number
   status: string
   actions: PathConfiguredActionInput[]
-  compiledScenario: unknown[]
-  issues: Array<{ index: number, action?: string, actionId?: string, code: string, message: string, blocking: boolean }>
+  compiledScenario: PathCompiledActionStep[]
+  issues: PathActionConfigurationIssue[]
+}
+
+export interface PathActionConfigurationIssue {
+  index: number
+  action?: string
+  actionId?: string
+  code: string
+  message: string
+  blocking: boolean
 }
 
 export type PathFormStatus = 'empty' | 'affected' | 'ready'
@@ -281,7 +292,7 @@ export interface PathConfigGap {
   reason: string
 }
 
-export type PathConfigActionKind = PathActionKey
+export type PathConfigActionKind = PathActionKey | 'system_automatic'
 
 export interface PathConfigActionBase {
   kind: PathActionKey
@@ -307,14 +318,70 @@ export interface PathConfigConfiguredAction {
   note?: string
 }
 
+// PathActionCategory 是目标平台动作分类，系统自动项只读展示。
+export type PathActionCategory = 'lifecycle' | 'current_todo' | 'done_recovery' | 'instance_management' | 'system_automatic'
+
+export interface PathConfigActionParameter {
+  name: string
+  value?: string
+  required: boolean
+  description: string
+}
+
+export interface PathConfigActionPrecondition {
+  key: string
+  label: string
+  required: boolean
+  present: boolean
+}
+
 export interface PathConfigActionCatalogItem {
   kind: PathConfigActionKind
+  category: PathActionCategory
+  scope: PathActionScope
   label: string
   description: string
   enabled: boolean
   disabledReason: string
   requiresPerson: boolean
   person?: PathConfigPerson
+  targetOperation: string
+  parameters: string[]
+  parameterDetails: PathConfigActionParameter[]
+  preconditions: PathConfigActionPrecondition[]
+  expectedEffect: string
+  requiresReload: boolean
+  reloadRequirements: string[]
+  systemOnly: boolean
+  systemNodeType: string
+  runtimeNote: string
+}
+
+// PathActionStepSource 区分用户配置动作、系统恢复步骤和系统导航步骤。
+export type PathActionStepSource = 'user' | 'system_recovery' | 'system_navigation'
+
+// PathCompiledActionStep 是服务端编译的只读场景步骤，浏览器不能提交。
+export interface PathCompiledActionStep {
+  sequence: number
+  source: PathActionStepSource
+  sourceActionKey?: string
+  action: PathActionKey | 'system_automatic'
+  scope: PathActionScope
+  actorPolicy?: string
+  nodeKey?: string
+  parameters?: Record<string, unknown>
+  precondition: string
+  expectedEffect: string
+  stopOnFailure: string
+  recoveryPolicy: string
+  reloadRequired: boolean
+}
+
+// PathActionContainer 是一个可独立编排的动作容器：语义节点或实例上下文。
+export interface PathActionContainer {
+  key: string
+  persons: PathConfigPerson[]
+  actionConfiguration: PathConfigActionConfiguration
 }
 
 export interface PathConfigConfiguredActionInput {

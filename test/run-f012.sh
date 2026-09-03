@@ -51,6 +51,9 @@ node --no-warnings --experimental-strip-types --test \
   test/unit/frontend/execution_path_test.mjs \
   test/unit/frontend/form_runtime_test.mjs
 
+printf '%s\n' '[F-012] 动作编排界面结构检查'
+./test/unit/frontend/action_orchestration/action_orchestration_structure.sh
+
 printf '%s\n' '[F-012] 旧入口静态清理'
 ./test/contracts/f012/legacy_system_removal.sh
 
