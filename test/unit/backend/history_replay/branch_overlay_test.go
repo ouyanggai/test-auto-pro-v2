@@ -75,15 +75,17 @@ func TestBranchOverlayFieldRightAndOrderedLogic(t *testing.T) {
 	}
 }
 
-// TestBranchOverlayMinimalPatchPreservesRawData 验证嵌套路径只改条件字段，其他原始正文保持深复制。
+// TestBranchOverlayMinimalPatchPreservesRawData 验证最小补丁只改目标条件真正读取的顶层键，
+// 其他原始正文（含嵌套对象和子表）保持深复制不动。
 func TestBranchOverlayMinimalPatchPreservesRawData(t *testing.T) {
 	tree := conditionTree([]target.FlowBranchTemplate{
-		{ID: "branch-yes", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "invoice.amount", ValueB: "10", Judge: "gt"}}},
+		{ID: "branch-yes", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "expenseDetailList_total", ValueB: "10", Judge: "gt"}}},
 		{ID: "branch-default", Sort: 2},
 	})
 	values := map[string]any{
-		"invoice": map[string]any{"amount": 5.0, "memo": "keep"},
-		"rows":    []any{map[string]any{"code": "A", "values": []any{1.0, 2.0, 3.0}}},
+		"expenseDetailList_total": 5.0,
+		"invoice":                 map[string]any{"amount": 5.0, "memo": "keep"},
+		"rows":                    []any{map[string]any{"code": "A", "values": []any{1.0, 2.0, 3.0}}},
 	}
 	result := branchoverlay.Apply(branchoverlay.Input{
 		Tree: tree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "branch-yes"}}, Values: values,
@@ -91,11 +93,13 @@ func TestBranchOverlayMinimalPatchPreservesRawData(t *testing.T) {
 	if result.Status != branchoverlay.StatusReady {
 		t.Fatalf("最小补丁未就绪：%#v", result)
 	}
-	amount, ok := result.Values["invoice"].(map[string]any)["amount"]
-	if !ok || amount != 11.0 {
+	if amount := result.Values["expenseDetailList_total"]; amount != 11.0 {
 		t.Fatalf("目标边界候选未命中，得到 %#v", amount)
 	}
-	if len(result.Patches) != 1 || result.Patches[0].Path != "invoice.amount" || result.Patches[0].BranchKey != "branch-yes" {
+	if nested, ok := result.Values["invoice"].(map[string]any); !ok || nested["amount"] != 5.0 || nested["memo"] != "keep" {
+		t.Fatalf("非条件字段的嵌套正文被改动：%#v", result.Values["invoice"])
+	}
+	if len(result.Patches) != 1 || result.Patches[0].Path != "expenseDetailList_total" || result.Patches[0].BranchKey != "branch-yes" {
 		t.Fatalf("补丁明细错误：%#v", result.Patches)
 	}
 	if got := result.Values["invoice"].(map[string]any)["memo"]; got != "keep" {
@@ -110,37 +114,32 @@ func TestBranchOverlayMinimalPatchPreservesRawData(t *testing.T) {
 	}
 }
 
-// TestBranchOverlayNestedArrayPath 验证条件声明的显式数组首行路径可读写且不扩展数组结构。
-func TestBranchOverlayNestedArrayPath(t *testing.T) {
-	tree := conditionTree([]target.FlowBranchTemplate{
-		{ID: "first-row", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "rows[].amount", ValueB: "10", Judge: "gt"}}},
-		{ID: "fallback", Sort: 2},
-	})
-	result := branchoverlay.Apply(branchoverlay.Input{
-		Tree: tree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "first-row"}},
-		Values: map[string]any{"rows": []any{map[string]any{"amount": 5.0}, map[string]any{"amount": 99.0}}},
-	})
-	if result.Status != branchoverlay.StatusReady {
-		t.Fatalf("数组首行路径未能补丁：%#v", result)
-	}
-	rows := result.Values["rows"].([]any)
-	if rows[0].(map[string]any)["amount"] != 11.0 || rows[1].(map[string]any)["amount"] != 99.0 {
-		t.Fatalf("数组补丁越界或未命中：%#v", rows)
-	}
-}
-
-// TestBranchOverlayJSONPointerPath 验证目标字段若以 JSON Pointer 声明仍只按精确下标读写。
-func TestBranchOverlayJSONPointerPath(t *testing.T) {
-	tree := conditionTree([]target.FlowBranchTemplate{
-		{ID: "first-row", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "/rows/0/amount", ValueB: "10", Judge: "gt"}}},
-		{ID: "fallback", Sort: 2},
-	})
-	result := branchoverlay.Apply(branchoverlay.Input{
-		Tree: tree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "first-row"}},
-		Values: map[string]any{"rows": []any{map[string]any{"amount": 5.0}}},
-	})
-	if result.Status != branchoverlay.StatusReady || result.Values["rows"].([]any)[0].(map[string]any)["amount"] != 11.0 {
-		t.Fatalf("JSON Pointer 字段路径未按目标边界补丁：%#v", result)
+// TestBranchOverlayRejectsNonFlatConditionField 锁定与目标一致的条件字段语义：
+// 目标 FlowNodeProxyServiceImpl.getDataValue 只做一层 map.get(fieldaName)，
+// 不解析嵌套路径、数组下标或 JSON Pointer；工具遇到这类字段名必须判为取不到值，
+// 不能自行走进嵌套结构并声称能满足目标算不出来的条件。
+func TestBranchOverlayRejectsNonFlatConditionField(t *testing.T) {
+	for _, field := range []string{"rows[].amount", "/rows/0/amount", "invoice.amount"} {
+		tree := conditionTree([]target.FlowBranchTemplate{
+			{ID: "first-row", Sort: 1, Conditions: []target.FlowCondition{{FieldA: field, ValueB: "10", Judge: "gt"}}},
+			{ID: "fallback", Sort: 2},
+		})
+		result := branchoverlay.Apply(branchoverlay.Input{
+			Tree: tree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "first-row"}},
+			Values: map[string]any{
+				"rows":    []any{map[string]any{"amount": 5.0}, map[string]any{"amount": 99.0}},
+				"invoice": map[string]any{"amount": 5.0},
+			},
+		})
+		if result.Status == branchoverlay.StatusReady {
+			t.Fatalf("字段 %s 不是目标可读取的顶层键，不应判定为可满足：%#v", field, result)
+		}
+		if len(result.Issues) == 0 {
+			t.Fatalf("字段 %s 取不到值时必须给出证据缺口说明", field)
+		}
+		if rows, ok := result.Values["rows"].([]any); !ok || rows[0].(map[string]any)["amount"] != 5.0 {
+			t.Fatalf("字段 %s 的原始子表被改动：%#v", field, result.Values["rows"])
+		}
 	}
 }
 
@@ -170,10 +169,10 @@ func TestBranchOverlayRouteSemantics(t *testing.T) {
 	}
 
 	parallel := &target.FlowNodeTemplate{ID: "parallel", Type: "parallel", ParallelNodes: []target.FlowBranchTemplate{
-		{ID: "p-a", Sort: 1, Child: conditionTreeID("nested-route", []target.FlowBranchTemplate{{ID: "nested", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "nested.value", ValueB: "1", Judge: "eq"}}}, {ID: "nested-default", Sort: 2}})},
+		{ID: "p-a", Sort: 1, Child: conditionTreeID("nested-route", []target.FlowBranchTemplate{{ID: "nested", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "nestedValue", ValueB: "1", Judge: "eq"}}}, {ID: "nested-default", Sort: 2}})},
 		{ID: "p-b", Sort: 2},
 	}}
-	parallelResult := branchoverlay.Apply(branchoverlay.Input{Tree: parallel, Choices: []model.ExecutionPathChoice{{RouteNodeID: "nested-route", BranchID: "nested"}}, Values: map[string]any{"nested": map[string]any{"value": 1}}})
+	parallelResult := branchoverlay.Apply(branchoverlay.Input{Tree: parallel, Choices: []model.ExecutionPathChoice{{RouteNodeID: "nested-route", BranchID: "nested"}}, Values: map[string]any{"nestedValue": 1, "nested": map[string]any{"kept": true}}})
 	if parallelResult.Status != branchoverlay.StatusReady {
 		t.Fatalf("并行全部分支遍历失败：%#v", parallelResult)
 	}

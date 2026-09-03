@@ -16,6 +16,8 @@ const historyFormDataJSON = `{
   "count": 128,
   "ratio": 1.500,
   "scientific": 1.28E2,
+  "invoiceAmount": 99.90,
+  "expenseDetailList_total": 10.50,
   "invoice": {"amount": 99.90},
   "rows": [{"amount": 10.50}]
 }`
@@ -72,11 +74,12 @@ func TestHistoryFormDataConditionMatchesJavaScale(t *testing.T) {
 		t.Fatalf("解码目标原始表单数据失败：%v", err)
 	}
 	tests := []struct {
-		name      string
-		field     string
-		valueB    string
-		judge     string
-		satisfied bool
+		name        string
+		field       string
+		valueB      string
+		unevaluable bool
+		judge       string
+		satisfied   bool
 	}{
 		{name: "eq-同字面量命中", field: "amount", valueB: "128.0", judge: "eq", satisfied: true},
 		{name: "eq-小数位不同不命中", field: "amount", valueB: "128", judge: "eq", satisfied: false},
@@ -86,8 +89,11 @@ func TestHistoryFormDataConditionMatchesJavaScale(t *testing.T) {
 		{name: "eq-保留原小数位命中", field: "ratio", valueB: "1.500", judge: "eq", satisfied: true},
 		{name: "eq-指数字面量按指数折算小数位", field: "scientific", valueB: "128", judge: "eq", satisfied: true},
 		{name: "eq-指数字面量小数位不为原文位数", field: "scientific", valueB: "128.00", judge: "eq", satisfied: false},
-		{name: "eq-嵌套字段命中", field: "invoice.amount", valueB: "99.90", judge: "eq", satisfied: true},
-		{name: "eq-子表字段命中", field: "rows[].amount", valueB: "10.50", judge: "eq", satisfied: true},
+		{name: "eq-顶层小数字段命中", field: "invoiceAmount", valueB: "99.90", judge: "eq", satisfied: true},
+		{name: "eq-目标聚合顶层字段命中", field: "expenseDetailList_total", valueB: "10.50", judge: "eq", satisfied: true},
+		// 目标 getDataValue 只做一层 map.get：嵌套路径写法取不到值，条件不成立。
+		{name: "eq-嵌套路径取不到值", field: "invoice.amount", valueB: "99.90", judge: "eq", unevaluable: true},
+		{name: "eq-子表路径取不到值", field: "rows[].amount", valueB: "10.50", judge: "eq", unevaluable: true},
 		{name: "neq-小数位不同视为不等", field: "amount", valueB: "128", judge: "neq", satisfied: true},
 		{name: "gt-比较忽略小数位", field: "amount", valueB: "127.99", judge: "gt", satisfied: true},
 		{name: "gte-比较忽略小数位", field: "amount", valueB: "128", judge: "gte", satisfied: true},
@@ -98,6 +104,13 @@ func TestHistoryFormDataConditionMatchesJavaScale(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			condition := target.FlowCondition{FieldA: test.field, ValueB: test.valueB, Judge: test.judge}
 			got := branchoverlay.EvaluateCondition(condition, values)
+			if test.unevaluable {
+				// 目标只做一层 map.get：字段取不到值时不能假装条件成立，必须留给用户补齐。
+				if got.Evaluable || got.Satisfied {
+					t.Fatalf("非顶层键必须判为取不到值：%#v", got)
+				}
+				return
+			}
 			if !got.Evaluable {
 				t.Fatalf("条件不可求值：%#v", got)
 			}

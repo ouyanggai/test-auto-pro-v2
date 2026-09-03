@@ -627,10 +627,14 @@ func buildVariables(values map[string]any, provided map[string][]any, references
 	issues := make([]Issue, 0)
 	for _, path := range orderedPaths {
 		current, currentOK := getPath(values, path)
-		candidates := make([]any, 0, maxCandidatesPerPath)
-		if currentOK {
-			candidates = append(candidates, current)
+		if !currentOK {
+			// 目标只按顶层键读取条件字段：业务数据里没有这个键时目标算出来是 null，
+			// 工具不能凭空写入一个目标表单并不拥有的键来"满足"条件，只能请用户在表单中补齐。
+			issues = append(issues, Issue{Code: "condition_field_missing", Path: path, Message: "条件字段在业务数据里没有取到值，请在表单中填写后再复验"})
+			continue
 		}
+		candidates := make([]any, 0, maxCandidatesPerPath)
+		candidates = append(candidates, current)
 		for _, value := range provided[path] {
 			candidates = append(candidates, value)
 		}
@@ -1069,64 +1073,13 @@ func valuesEqual(left, right any) bool {
 
 // setPath 只写入条件声明的精确 JSON 路径，不创建缺失的嵌套对象或数组行。
 func setPath(values map[string]any, path string, value any) bool {
-	tokens, ok := parsePath(path)
-	if !ok || len(tokens) == 0 {
+	// 最小补丁只能改写目标真正读取的顶层键，与 getPath 保持同一语义。
+	key := strings.TrimSpace(path)
+	if values == nil || key == "" {
 		return false
 	}
-	var current any = values
-	for index, token := range tokens {
-		last := index == len(tokens)-1
-		switch typed := current.(type) {
-		case map[string]any:
-			next, exists := typed[token.key]
-			if token.index != nil {
-				if !exists {
-					return false
-				}
-				list, listOK := asAnySlice(next)
-				if !listOK || *token.index < 0 || *token.index >= len(list) {
-					return false
-				}
-				if last {
-					list[*token.index] = cloneAny(value)
-					return true
-				}
-				current = list[*token.index]
-				continue
-			}
-			if last {
-				typed[token.key] = cloneAny(value)
-				return true
-			}
-			if !exists {
-				return false
-			}
-			current = next
-		case []any:
-			if token.first {
-				if len(typed) == 0 {
-					return false
-				}
-				if last {
-					typed[0] = cloneAny(value)
-					return true
-				}
-				current = typed[0]
-				continue
-			}
-			if token.index == nil || *token.index < 0 || *token.index >= len(typed) {
-				return false
-			}
-			if last {
-				typed[*token.index] = cloneAny(value)
-				return true
-			}
-			current = typed[*token.index]
-		default:
-			return false
-		}
-	}
-	return false
+	values[key] = value
+	return true
 }
 
 type pathToken struct {
@@ -1137,44 +1090,15 @@ type pathToken struct {
 
 // getPath 读取点路径、JSON 指针和显式数组下标，严格区分缺失与 null。
 func getPath(values map[string]any, path string) (any, bool) {
-	tokens, ok := parsePath(path)
-	if !ok || len(tokens) == 0 {
+	// 目标 FlowNodeProxyServiceImpl.getDataValue 把整份表单数据反序列化成一层 Map 后直接
+	// map.get(fieldaName)，不解析嵌套路径；工具必须用同一语义读取条件字段，
+	// 否则会声称能满足目标实际算不出来的条件。目标库 129446 条条件记录中字段名没有一个带点或分隔符。
+	key := strings.TrimSpace(path)
+	if values == nil || key == "" {
 		return nil, false
 	}
-	var current any = values
-	for _, token := range tokens {
-		switch typed := current.(type) {
-		case map[string]any:
-			next, exists := typed[token.key]
-			if !exists {
-				return nil, false
-			}
-			if token.index != nil {
-				list, listOK := asAnySlice(next)
-				if !listOK || *token.index < 0 || *token.index >= len(list) {
-					return nil, false
-				}
-				current = list[*token.index]
-				continue
-			}
-			current = next
-		case []any:
-			if token.first {
-				if len(typed) == 0 {
-					return nil, false
-				}
-				current = typed[0]
-				continue
-			}
-			if token.index == nil || *token.index < 0 || *token.index >= len(typed) {
-				return nil, false
-			}
-			current = typed[*token.index]
-		default:
-			return nil, false
-		}
-	}
-	return current, true
+	value, exists := values[key]
+	return value, exists
 }
 
 // parsePath 解析目标字段的精确路径表示，不把标签或相似名称转换为字段键。

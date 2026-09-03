@@ -455,11 +455,13 @@ func TestHistoryReplayServiceMarksPathRevisionChangeAffected(t *testing.T) {
 func TestHistoryReplayServiceReplaysVueCustomRawSnapshot(t *testing.T) {
 	replay, store, validator, targetReader := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
 	store.mu.Lock()
+	// 目标只按顶层键读取条件字段；自定义页面的深层结构原样保留，不参与条件求值。
 	store.snapshot.RawFormData = map[string]any{
-		"pageState": map[string]any{"rows": []any{map[string]any{"amount": json.Number("2"), "customValue": map[string]any{"code": "X"}}}},
+		"pageStateRowsAmount": json.Number("2"),
+		"pageState":           map[string]any{"rows": []any{map[string]any{"amount": json.Number("2"), "customValue": map[string]any{"code": "X"}}}},
 	}
 	store.mu.Unlock()
-	targetReader.snapshot.Tree.ConditionNodes[0].Conditions[0].FieldA = "pageState.rows[].amount"
+	targetReader.snapshot.Tree.ConditionNodes[0].Conditions[0].FieldA = "pageStateRowsAmount"
 	job, err := replay.Create(context.Background(), 91, model.HistoryReplayCreateInput{PathIDs: []uint64{101}}, "123e4567-e89b-12d3-a456-426614174702")
 	if err != nil {
 		t.Fatalf("创建自定义页面回放任务失败：%v", err)

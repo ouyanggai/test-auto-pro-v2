@@ -97,7 +97,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 - `TARGET_API_GATEWAY`、`TARGET_LOGIN_PASSWORD`、`TARGET_LOGIN_AES_KEY`、`TARGET_LOGIN_CODE` 必需；本地文件不存在时仍允许纯环境变量运行。本地文件解析失败、关键配置缺失或 AES key 长度非法时，服务和 health 正常启动，三个 target API 稳定返回 `TARGET_CONFIG_MISSING`。
 - `cmd/sync-v1-target-config` 只在维护时读取显式指定的 V1 YAML，将目标网关、平台/租户代码和 AES key 与既有本机登录配置合并，使用 `0600` 临时文件原子替换 `.env.local`，并在清空当前进程 `TARGET_*` 后做完整性检查。命令不含 V1 绝对路径或登录值，不回显配置值；正常启动不依赖 V1 仓库。
 - `TARGET_PLATFORM_CODE` 默认 `200001`、`TARGET_TEMPLATE_PLATFORM_CODES` 默认 `200001,999999`、`TARGET_SESSION_TTL` 默认 `8h`、`TARGET_HTTP_TIMEOUT` 默认 `120s`，均来自用户批准沿用的 V1 非敏感约定；`TARGET_CUSTOMER_CODE` 可为空。敏感配置没有代码默认值。
-- `internal/adapter/target` 是唯一拼装目标 URL、加密登录密码、传递 SID 和解析目标响应的区域。SID 只在当前已验证会话内存中按目标协议进入 body、query、header；不得写入日志、配置数据库、历史快照或浏览器长期存储。
+- `internal/adapter/target` 是唯一拼装目标 URL、加密登录密码、传递 SID 和解析目标响应的区域。SID 只在当前已验证会话内存中按目标协议进入 body、query、header；不写入配置数据库、历史快照或浏览器长期存储。运行与调试日志按 `docs/EXECUTION_PROGRAM.md` 第 6.5 节原样记录，用于内网复现请求；日志文件不进 Git。
 - `internal/session` 使用单进程内存缓存，按去除首尾空白的账号键控，默认绝对 TTL 为 8 小时；每个账号独立锁定登录，不同账号不互相阻塞。会话失效后只允许删除缓存、重登和重放当前只读请求一次。
 - 缓存条目只保存 SID、必要账号摘要和目标代码，不保存密码、AES key 或 code；进程退出自然清空。F-002 不引入 Redis，多实例共享需求出现后再单独评估。
 - 对浏览器提供三个独立边界：`POST /api/target/accounts/verify`、`GET /api/target/flow-templates`、`GET /api/target/flow-instances`。公开响应只含验证摘要、候选 DTO、分页或稳定错误，不含 SID、凭证、customerCode、platformCode 或目标敏感原文。
@@ -197,7 +197,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 ### 事务与安全
 
 - 候选读取、快照创建、路径换路和动作保存分离目标只读会话与工具数据库事务；目标读失败不得提交半份配置。
-- 目标表单数据和快照按数据边界深复制，禁止日志输出完整业务正文、SID、凭证和目标内部 ID；公开 DTO 只给不透明键和业务摘要。
+- 目标表单数据和快照按数据边界深复制；公开 DTO 只给不透明键和业务摘要。运行与调试日志按 `docs/EXECUTION_PROGRAM.md` 第 6.5 节原样记录完整请求、响应、会话值和目标标识，只为内网排查服务，不进 Git、不经 API 返回正文。
 - 同计划历史回放任务使用唯一活动约束；任务明细和配置保存使用修订号、幂等键与行锁，保证重复请求不重复写入。
 - 当前切片只允许目标读取；任何目标写调用、运行记录或调度入口出现即视为越界并在测试中失败。
 
