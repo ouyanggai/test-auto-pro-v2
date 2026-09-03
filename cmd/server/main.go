@@ -71,6 +71,8 @@ func main() {
 	historyReplayService := service.NewHistoryReplayService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
 	historyWorkspaceStore := planmysql.NewHistoryReplayRepository(planDatabase.DB)
 	pathConfigService.SetHistoryWorkspaceStores(historyWorkspaceStore, historyWorkspaceStore)
+	// 一键配置在业务数据回放后按真实门禁补齐节点动作配置，让节点状态与列表一致。
+	historyReplayService.SetActionConfigurator(pathConfigService)
 	if err := historyReplayService.Recover(context.Background()); err != nil {
 		log.Printf("恢复批量准备任务失败：%v", err)
 	}

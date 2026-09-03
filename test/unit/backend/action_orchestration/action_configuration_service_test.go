@@ -223,3 +223,47 @@ func TestGetPathConfigurationProjectsActionPersonStrategy(t *testing.T) {
 		t.Fatalf("刷新后动作人员或参数丢失：%+v", action)
 	}
 }
+
+// autoConfigureNode 构造一个待配置节点：两个可用动作、一个可编辑人员和一个必填参数动作。
+func autoConfigureNode(key string, kinds []string) model.PathConfigNode {
+	catalog := make([]model.PathConfigActionCatalogItem, 0, len(kinds)+2)
+	for _, kind := range kinds {
+		catalog = append(catalog, model.PathConfigActionCatalogItem{Kind: kind, Scope: "task", Label: kind, Enabled: true})
+	}
+	catalog = append(catalog,
+		model.PathConfigActionCatalogItem{Kind: "resubmit", Scope: "initiator", Label: "重新提交", Enabled: true, SystemInserted: true},
+		model.PathConfigActionCatalogItem{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true,
+			ParameterDetails: []model.ActionParameter{{Name: "receiverId", Required: true}}},
+	)
+	return model.PathConfigNode{
+		Key: key, Name: key, Kind: "common", Status: "pending",
+		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: catalog},
+	}
+}
+
+// TestAutoNodeActionPrefersUncoveredEnabledActions 验证一键配置的自动动作选择：
+// 只取已启用且不需要人员和必填参数的动作，跨节点优先覆盖尚未用过的动作，且结果可复现。
+func TestAutoNodeActionPrefersUncoveredEnabledActions(t *testing.T) {
+	used := map[string]bool{}
+	first, ok := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-a", []string{"approve", "reject"}), used)
+	if !ok || first.NodeKey != "node-a" {
+		t.Fatalf("第一个节点没有自动选出动作：%+v", first)
+	}
+	used[string(first.Action)] = true
+	second, ok := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-b", []string{"approve", "reject"}), used)
+	if !ok || second.Action == first.Action {
+		t.Fatalf("第二个节点没有优先覆盖尚未用过的动作：first=%s second=%s", first.Action, second.Action)
+	}
+	for _, action := range []model.ConfiguredAction{first, second} {
+		if action.Action == "resubmit" {
+			t.Fatalf("编译器自动插入的动作不应被自动编排：%+v", action)
+		}
+		if action.Action == "transfer" {
+			t.Fatalf("必填参数动作不应被自动编排：%+v", action)
+		}
+	}
+	repeat, _ := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-a", []string{"approve", "reject"}), map[string]bool{})
+	if repeat.Action != first.Action || repeat.Key != first.Key {
+		t.Fatalf("同一节点重复自动配置结果不稳定：%+v / %+v", first, repeat)
+	}
+}

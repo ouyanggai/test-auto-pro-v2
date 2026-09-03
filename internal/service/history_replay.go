@@ -75,12 +75,18 @@ type HistoryReplayService struct {
 	target  HistoryReplayTargetReader
 	store   repository.HistoryReplayStore
 	runtime HistoryReplayRuntimeValidator
+	actions HistoryReplayActionConfigurator
 	now     func() time.Time
 	worker  string
 	mu      sync.Mutex
 	running map[string]struct{}
 	cancel  map[string]context.CancelFunc
 	done    map[string]chan struct{}
+}
+
+// HistoryReplayActionConfigurator 在一键配置时按真实门禁为路径补齐节点动作配置。
+type HistoryReplayActionConfigurator interface {
+	AutoConfigurePathActions(ctx context.Context, planID, pathID uint64) error
 }
 
 // NewHistoryReplayService 组装历史回放任务的计划、路径、目标只读和持久化边界。
@@ -92,6 +98,13 @@ func NewHistoryReplayService(plans *PlanService, paths repository.ExecutionPathR
 }
 
 // SetRuntimeValidator 注入复制 form-runtime 的校验桥接；未注入时任务必须明确落 needs_input。
+// SetActionConfigurator 注入一键配置时的自动动作配置协作者；未注入时只做业务数据回放。
+func (s *HistoryReplayService) SetActionConfigurator(configurator HistoryReplayActionConfigurator) {
+	s.mu.Lock()
+	s.actions = configurator
+	s.mu.Unlock()
+}
+
 func (s *HistoryReplayService) SetRuntimeValidator(validator HistoryReplayRuntimeValidator) {
 	if s == nil {
 		return
@@ -472,6 +485,16 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 		return result
 	}
 	result.Status, result.DataStatus = model.HistoryReplayItemStatusReady, model.HistoryDataStatusReady
+	// 一键配置除了业务数据，还要把该路径上待配置节点的人员和动作按真实门禁补齐，
+	// 否则任务跑完列表里节点状态仍然是待配置。动作配置失败不回滚已就绪的数据结果。
+	s.mu.Lock()
+	configurator := s.actions
+	s.mu.Unlock()
+	if configurator != nil {
+		if err := configurator.AutoConfigurePathActions(ctx, planID, item.PathID); err != nil {
+			result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "AUTO_ACTION_CONFIGURE_FAILED", Message: "节点动作未能自动配置完成，请打开路径手工确认", Blocking: false})
+		}
+	}
 	return result
 }
 

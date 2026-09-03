@@ -220,7 +220,7 @@ function removeAction(index: number) {
       <n-button type="primary" size="small" :disabled="editorDisabled" @click="openEditor">动作配置</n-button>
     </div>
     <p v-if="container.actionConfiguration.note" class="action-orchestration__note">{{ container.actionConfiguration.note }}</p>
-    <p v-if="instanceContainer" class="action-orchestration__note">动作下拉分两组：当前节点动作作用于这个审批节点，实例级动作作用于整个流程实例。</p>
+    <p v-if="instanceContainer" class="action-orchestration__note">下拉上半是当前节点动作，下半是作用于整个实例的动作。</p>
 
     <div v-if="savedSummary.length" class="action-orchestration__summary">
       <n-tag v-for="(item, index) in savedSummary" :key="item.action.key" size="small">
@@ -230,8 +230,22 @@ function removeAction(index: number) {
     <span v-else class="action-orchestration__muted">未添加动作</span>
 
     <details v-if="selectableCatalog.length" class="action-orchestration__catalog">
-      <summary>动作目录与门禁（{{ enabledCatalog.length }} / {{ selectableCatalog.length }} 可配置）</summary>
+      <summary>动作目录（{{ enabledCatalog.length }} / {{ selectableCatalog.length }} 可配置，含不可配置原因）</summary>
       <ul>
+        <li v-for="item in insertedCatalog" :key="item.kind">
+          <div class="action-orchestration__catalog-head">
+            <strong>{{ item.label }}</strong>
+            <n-tag size="tiny">系统自动插入</n-tag>
+          </div>
+          <p>{{ item.systemInsertedReason || '由场景编译器在需要时自动插入' }}</p>
+        </li>
+        <li v-for="item in systemCatalog" :key="item.kind">
+          <div class="action-orchestration__catalog-head">
+            <strong>{{ item.label }}</strong>
+            <n-tag size="tiny">引擎自动执行</n-tag>
+          </div>
+          <p>{{ item.description }}</p>
+        </li>
         <li v-for="item in selectableCatalog" :key="item.kind">
           <div class="action-orchestration__catalog-head">
             <strong>{{ item.label }}</strong>
@@ -250,13 +264,6 @@ function removeAction(index: number) {
       </ul>
     </details>
 
-    <n-alert v-for="item in insertedCatalog" :key="item.kind" type="info" :show-icon="false">
-      {{ item.label }}：{{ item.systemInsertedReason || '由系统自动插入' }}
-    </n-alert>
-    <div v-if="disabledCatalog.length" class="action-orchestration__reasons">
-      <n-alert v-for="item in disabledCatalog" :key="item.kind" type="warning" :show-icon="false">{{ item.label }}：{{ item.disabledReason }}</n-alert>
-    </div>
-    <n-alert v-for="item in systemCatalog" :key="item.kind" type="info" :show-icon="false">{{ item.label }}：{{ item.description }}</n-alert>
 
     <n-modal :show="editorOpen" @update:show="handleVisibility">
       <n-card :title="`${title}（拖动整张卡片调整顺序）`" style="width: min(720px, 94vw)">

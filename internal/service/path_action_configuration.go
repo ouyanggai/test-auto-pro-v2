@@ -3,7 +3,11 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -709,4 +713,141 @@ func lastString(values []string) string {
 		return ""
 	}
 	return values[len(values)-1]
+}
+
+// AutoConfigurePathActions 一键配置时按真实门禁为路径上每个待配置节点补齐人员与动作。
+// 只从目标动作目录里已启用、非系统语义、非编译器插入的动作中选择，不发明任何动作；
+// 选择用计划、路径和节点键派生的确定性种子，并跨节点优先挑选尚未用过的动作，
+// 让一次一键配置尽量覆盖更多目标能力；节点已配置或线路被阻断时跳过。
+func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID, pathID uint64) error {
+	configuration, err := s.Get(ctx, planID, pathID)
+	if err != nil {
+		return err
+	}
+	revision := configuration.Revision
+	used := make(map[string]bool)
+	for _, group := range configuration.Groups {
+		for _, node := range group.Nodes {
+			if node.LineBlocked || node.Status == "configured" {
+				continue
+			}
+			input, ok := autoNodeActionInput(planID, pathID, node, revision, used)
+			if !ok {
+				continue
+			}
+			result, saveErr := s.SaveActionConfiguration(ctx, planID, pathID, node.Key, autoConfigureIdempotencyKey(planID, pathID, node.Key, revision), input)
+			if saveErr != nil {
+				return saveErr
+			}
+			revision = result.Revision
+		}
+	}
+	return nil
+}
+
+// autoNodeActionInput 组装一个节点的自动配置请求；没有可配置人员也没有可用动作时返回 false。
+func autoNodeActionInput(planID, pathID uint64, node model.PathConfigNode, revision uint64, used map[string]bool) (model.ActionConfigurationInput, bool) {
+	persons := make([]model.PathConfigPersonStrategyInput, 0, len(node.Persons))
+	for _, person := range node.Persons {
+		if !person.Editable {
+			continue
+		}
+		persons = append(persons, autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key)))
+	}
+	action, found := autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
+	actions := make([]model.ConfiguredAction, 0, 1)
+	if found {
+		used[string(action.Action)] = true
+		actions = append(actions, action)
+	}
+	if len(persons) == 0 && len(actions) == 0 {
+		return model.ActionConfigurationInput{}, false
+	}
+	return model.ActionConfigurationInput{Revision: revision, Persons: persons, Actions: actions}, true
+}
+
+// autoNodeAction 在节点可用动作里按覆盖优先、其次确定性种子挑一个动作。
+func autoNodeAction(node model.PathConfigNode, seed uint64, used map[string]bool) (model.ConfiguredAction, bool) {
+	available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
+	for _, item := range node.ActionConfiguration.Catalog {
+		if !item.Enabled || item.SystemOnly || item.SystemInserted || item.RequiresPerson {
+			continue
+		}
+		if len(item.ParameterDetails) > 0 && autoRequiresParameter(item) {
+			continue
+		}
+		available = append(available, item)
+	}
+	if len(available) == 0 {
+		return model.ConfiguredAction{}, false
+	}
+	sort.Slice(available, func(left, right int) bool { return available[left].Kind < available[right].Kind })
+	chosen := available[int(seed%uint64(len(available)))]
+	for _, item := range available {
+		if !used[item.Kind] {
+			chosen = item
+			break
+		}
+	}
+	return model.ConfiguredAction{
+		Key: autoConfigureActionKey(node.Key, chosen.Kind), Action: model.ActionKey(chosen.Kind),
+		Scope: model.ActionScope(chosen.Scope), NodeKey: node.Key, Order: 1,
+	}, true
+}
+
+// autoRequiresParameter 判断动作是否有必填参数；自动配置不猜测参数内容，遇到必填参数就跳过该动作。
+func autoRequiresParameter(item model.PathConfigActionCatalogItem) bool {
+	for _, parameter := range item.ParameterDetails {
+		if parameter.Required {
+			return true
+		}
+	}
+	return false
+}
+
+// autoPersonStrategy 优先沿用目标默认名单，没有默认值时按确定性种子随机取够最少人数。
+func autoPersonStrategy(person model.PathConfigPerson, seed uint64) model.PathConfigPersonStrategyInput {
+	strategies := make(map[string]bool, len(person.Strategies))
+	for _, item := range person.Strategies {
+		strategies[item.Value] = true
+	}
+	if len(person.DefaultSelected) > 0 && strategies["target_default"] {
+		return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "target_default", Seed: 1, Selected: append([]string(nil), person.DefaultSelected...)}
+	}
+	if strategies["random"] && len(person.Options) > 0 {
+		return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "random", Seed: int64(seed%1_000_000) + 1}
+	}
+	selected := make([]string, 0, len(person.Options))
+	count := person.MinCount
+	if count < 1 {
+		count = 1
+	}
+	for index := 0; index < len(person.Options) && len(selected) < count; index++ {
+		selected = append(selected, person.Options[(int(seed)+index)%len(person.Options)].Value)
+	}
+	return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "manual", Seed: 1, Selected: selected}
+}
+
+// autoConfigureSeed 由计划、路径和节点键派生确定性种子，保证同一计划重复一键配置结果一致。
+func autoConfigureSeed(planID, pathID uint64, token string) uint64 {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("auto:%d:%d:%s", planID, pathID, token)))
+	return binary.BigEndian.Uint64(digest[:8])
+}
+
+// autoConfigureActionKey 生成稳定动作记录键，重复一键配置不会产生新记录键。
+func autoConfigureActionKey(nodeKey, kind string) string {
+	digest := sha256.Sum256([]byte("auto-action:" + nodeKey + ":" + kind))
+	return hex.EncodeToString(digest[:16])
+}
+
+// autoConfigureIdempotencyKey 由节点键和当前修订派生 UUID 形态幂等键，重试不会重复写入。
+func autoConfigureIdempotencyKey(planID, pathID uint64, nodeKey string, revision uint64) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("auto-save:%d:%d:%s:%d", planID, pathID, nodeKey, revision)))
+	value := hex.EncodeToString(digest[:16])
+	return fmt.Sprintf("%s-%s-4%s-8%s-%s", value[0:8], value[8:12], value[13:16], value[17:20], value[20:32])
+}
+
+// AutoNodeActionForTest 暴露自动动作选择，供 test 目录下的定向用例锁定覆盖与可复现行为。
+func AutoNodeActionForTest(planID, pathID uint64, node model.PathConfigNode, used map[string]bool) (model.ConfiguredAction, bool) {
+	return autoNodeAction(node, autoConfigureSeed(planID, pathID, node.Key), used)
 }
