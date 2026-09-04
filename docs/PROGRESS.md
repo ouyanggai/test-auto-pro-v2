@@ -49,6 +49,14 @@
   F-012 与 F-013 均停在 `ready_for_manual`；两者未获明确验收前不进入 `accepted`。
   用户 2026-09-04 已按裁决要求修订 F-014 计划（纯只读、探针只列不跑、未实测结论标待实测、端点加精确文案联合判定、
   未覆盖组合默认不确定、写路径样本按源码构造），并明确等 F-012 返工通过人工验收后再批准 F-014。
+- 2026-09-04 参考仓库锚定分支调整：按用户裁决把 `rsh-cloud-workflow-center` 由 `test` 改为 `master`。
+  `scripts/reference-repositories.tsv` 已改；旧克隆经洁净核对（无改动、无未跟踪文件、无 stash、未领先远端）后移除，
+  由 `make refs-sync` 按 `master` 干净克隆，未使用 reset 或 checkout。
+  切换时 `master` `37c01d04` 相对原 `test` `0c6c7f0e` 只多一个把 test 合入 master 的合并提交、内容差异为空，
+  既有语义证据不受影响，已在新 HEAD 上逐条复核通过。
+  `make refs-sync` 13/13、`make refs-status` 13/13 全部「正常」；`rsh-flow-components` 按裁决保持 `test` `24f3a280`。
+- 2026-09-04 用户裁决：`GroupApproveManage/CaseManage/index.vue`「我的案件」操作列不渲染是明确需求，不是缺陷。
+  不恢复 `operation` 列，不作为 F-012 阻断项，也不为此修改表单渲染或补测试。
 - 2026-09-04 参考仓库同步：按用户要求执行 `make refs-sync`（13/13 快进）。`rsh-cloud-workflow-center` `test` 到 `0c6c7f0e`、
   `rsh-cloud-workflow-center-api` `master` 到 `088aed79`、`rsh-framework-all` `test` 到 `84bb1973`。
   `rsh-flow-components` 规范分支维持 `test`（`24f3a280`）；不改用另一条语义基线 `master`。旧 `master` 工作树已移入

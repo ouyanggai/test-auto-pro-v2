@@ -5,7 +5,7 @@ rsh-cloud-measuring-center-api	java-serve/rsh-cloud-measuring-center-api	git@192
 rsh-cloud-user-center	java-serve/rsh-cloud-user-center	http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-user-center.git	master
 rsh-cloud-user-center-api	java-serve/rsh-cloud-user-center-api	http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-user-center-api.git	master
 rsh-cloud-web-api	java-serve/rsh-cloud-web-api	http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-web-api.git	master
-rsh-cloud-workflow-center	java-serve/rsh-cloud-workflow-center	git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center.git	test
+rsh-cloud-workflow-center	java-serve/rsh-cloud-workflow-center	git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center.git	master
 rsh-cloud-workflow-center-api	java-serve/rsh-cloud-workflow-center-api	git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center-api.git	master
 rsh-framework-all	rsh-framework-all	git@192.168.1.155:rsh-cloud/cloud-framework/rsh-framework-all.git	test
 rsh-cloud-invest-power-system	rsh-cloud-invest-power-system	git@192.168.1.155:rsh-cloud/cloud-web/business-system/rsh-cloud-invest-power-system.git	test

@@ -98,7 +98,9 @@
 
 ## 参考仓库同步影响（2026-09-04）
 
-用户告知后台有更新，已用 `make refs-sync` 按清单分支快进同步 13/13。与本切片相关的三个仓库新 HEAD：`rsh-cloud-workflow-center` `test` `0c6c7f0e`、`rsh-cloud-workflow-center-api` `master` `088aed79`、`rsh-framework-all` `test` `84bb1973`。
+用户告知后台有更新，已用 `make refs-sync` 按清单分支同步 13/13。与本切片相关的三个仓库当前 HEAD：`rsh-cloud-workflow-center` `master` `37c01d04`、`rsh-cloud-workflow-center-api` `master` `088aed79`、`rsh-framework-all` `test` `84bb1973`。
+
+用户随后裁决把 `rsh-cloud-workflow-center` 的锚定分支由 `test` 改为 `master`：清单已改，旧克隆经洁净核对后移除并按 `master` 干净克隆，未使用 reset 或 checkout。切换时 `master`（`37c01d04`）相对原 `test`（`0c6c7f0e`）只多一个把 test 合入 master 的合并提交，`git diff` 内容差异为空，因此本节结论与全部引用证据不受分支切换影响，已在新 HEAD 上逐条复核通过。`rsh-flow-components` 按裁决保持 `test`。
 
 本次同步用事实证明了第 8.4 节漂移检测的必要性：一次同步就动了四处与本切片证据直接相关的符号。
 
@@ -109,7 +111,7 @@
 - **`AuditWayEnum` 新增 8 项**：供应商入库、年度评估、清退、工商信息变更、黑名单重新入库、股转款登记、合同补充协议变更、合同终止。
 - **目标库结构迁移**：`sql/20260828_flow_trigger_audit_way_ordinal_migration.sql` 把 `flow_trigger_config_relevance.audit_way` 由数字 ordinal 改为 `VARCHAR(100)` 编码名，附 `20260828_audit_way_dynamic_precheck.sql` 预检。脚本要求先停旧版服务，因此目标环境是否已执行必须实测确认，不能从源码推断。
 - **写路径本身没有改动**：`FlowInstanceApiServiceImpl` 的 5 处改动全部落在 `list` 与 `getUserMap`（第 815 行之后），`submit`、`audit`、`reSubmit` 未被触及；`FlowInstanceServiceImpl` 只改了一行 `auditWay` 取值，乐观锁与 `CONCURRENT_UPDATE_MESSAGE` 证据仍在 `:70`、`:526`。
-- **已逐条复核未变的证据**：`GlobalExceptionHandler:48/63/73/79`、`ProtocolCode:10/199`、`CenterExceptionHandler:86/90`、`InvokeCenterFeignErrorDecoder:16/21`、`RshCloudApiApplication:23`、`WebApiApplication:29`、`ConsistencyInterceptor:104/130/143`、`FlowSubmitVerifyAspect:104/109/115`、`FlowInstance.java:31`。只有 `api/index.js` 的 `submitTask` 由 `:495` 移到 `:498`，本文件已更正。
+- **已逐条复核未变的证据**（最近一次复核在 `rsh-cloud-workflow-center` 切到 `master` `37c01d04` 之后）：`GlobalExceptionHandler:48/63/73/79`、`ProtocolCode:10/199`、`CenterExceptionHandler:86/90`、`InvokeCenterFeignErrorDecoder:16/21`、`RshCloudApiApplication:23`、`WebApiApplication:29`、`ConsistencyInterceptor:104/130/143`、`FlowSubmitVerifyAspect:104/109/115`、`FlowInstance.java:31`、`FlowInstanceServiceImpl:70/526`，以及跨存储写入点 `FlowInstanceServiceImpl:584`。只有 `api/index.js` 的 `submitTask` 由 `:495` 移到 `:498`，本文件已更正。
 - **新增可用证据**：`GlobalExceptionHandler:79` 的 `FlowBusinessException` 与 `BusinessException` 同形状，而 `FlowProxyServiceImpl.findById` 缺代理 ID 时抛的正是它，属于工具已在调用的读路径。
 
 ### 记入其它切片，本切片只记录不改动
@@ -242,6 +244,7 @@
   4. 判定矩阵补齐重读「无法读取」「自相矛盾」与响应冲突组合，未覆盖或矛盾一律「不确定」，并写为不可放宽的兜底规则。
   5. 写路径样本改为按源码证据构造并标注待 F-016 复核或替换，只读样本才要求真实抓取。
 - 2026-09-04 门禁：用户明确 F-012 人工验收未通过（已由另一线程返工，状态 `implementing`），F-013 暂不视为明确验收；F-014 继续停在 `awaiting_approval`，等 F-012 返工通过人工验收后由用户明确批准才进入 `implementing`。
+- 2026-09-04 锚定分支调整（状态保持 `awaiting_approval`）：按用户裁决把 `rsh-cloud-workflow-center` 由 `test` 改为 `master`，`make refs-sync` 与 `make refs-status` 均通过（13/13 正常）；切换时两分支内容完全一致，证据已在 `master` `37c01d04` 上复核，本切片范围、任务与判定规则不变。`rsh-flow-components` 保持 `test`。
 - 2026-09-04 参考仓库同步（状态保持 `awaiting_approval`）：按用户要求执行 `make refs-sync`（13/13 快进），核对 `rsh-cloud-workflow-center`、`rsh-cloud-workflow-center-api`、`rsh-framework-all` 的新提交。结论：写路径未变，本切片方向不变；审批方式动态化改变了前置门禁的失败形状与放行条件，已按此调整 T02、T03、T04、T07、T08 与完成标准，并新增「参考仓库同步影响」一节。四条属于 F-012 返工或 F-015 的连带影响只记录、不在本切片改动。
 
 ## 人工验收
