@@ -25,6 +25,9 @@ type TargetClient interface {
 // SessionProvider 取得指定账号的目标会话。登录与会话获取属只读阶段（纲领第 4.4.1 节），可安全重试。
 type SessionProvider interface {
 	Current(ctx context.Context, account string) (target.Session, error)
+	// Refresh 作废缓存并强制重新登录；写步骤的 prepare 阶段必须用最新会话，
+	// 因为 submit 一旦发出就没有任何重试或重登的机会。
+	Refresh(ctx context.Context, account string) (target.Session, error)
 }
 
 // RunStateControl 是执行器对路径运行状态机的推进面（internal/engine/run.Service 满足）。

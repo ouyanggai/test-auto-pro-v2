@@ -114,6 +114,11 @@ func (stubSessions) Current(context.Context, string) (target.Session, error) {
 	return target.Session{}, nil
 }
 
+// Refresh 不会被调用；被调用即视为装配错误。
+func (stubSessions) Refresh(context.Context, string) (target.Session, error) {
+	return target.Session{}, nil
+}
+
 // strconvUint 输出无符号整数文本。
 func strconvUint(value uint64) string {
 	return strconv.FormatUint(value, 10)

@@ -66,6 +66,14 @@ func (m *Manager) Current(ctx context.Context, account string) (target.Session, 
 	return m.getOrLogin(ctx, account)
 }
 
+// Refresh 作废缓存并强制重新登录，返回全新会话。
+// 写路径的 prepare 阶段使用它：目标会话可能随时失效（RESP401），而 submit 前是最后一次
+// 只读刷新机会；一旦写请求发出就不再有任何自动重登或重发。
+func (m *Manager) Refresh(ctx context.Context, account string) (target.Session, error) {
+	m.invalidate(account, "")
+	return m.Current(ctx, account)
+}
+
 // DoRead 只对会话失效执行一次重登和一次只读重放。
 func (m *Manager) DoRead(ctx context.Context, account string, call func(context.Context, target.Session) error) error {
 	session, err := m.getOrLogin(ctx, account)

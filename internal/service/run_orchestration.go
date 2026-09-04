@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -272,8 +273,13 @@ func (s *RunOrchestrationService) StartRun(ctx context.Context, input StartRunIn
 }
 
 // Approve 放行当前步并返回放行后的最新详情。
+// 请求上下文注入运行作用域：写请求的 network.log/curl.log 因此落进运行目录。
 func (s *RunOrchestrationService) Approve(ctx context.Context, pathRunID uint64) (*PathRunDetailDTO, error) {
-	if _, err := s.control.Approve(ctx, pathRunID); err != nil {
+	scoped, err := s.withRunScope(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.control.Approve(scoped, pathRunID); err != nil {
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
@@ -281,10 +287,45 @@ func (s *RunOrchestrationService) Approve(ctx context.Context, pathRunID uint64)
 
 // Stop 停止路径运行并返回最新详情。
 func (s *RunOrchestrationService) Stop(ctx context.Context, pathRunID uint64) (*PathRunDetailDTO, error) {
-	if _, err := s.control.Stop(ctx, pathRunID); err != nil {
+	scoped, err := s.withRunScope(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.control.Stop(scoped, pathRunID); err != nil {
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// withRunScope 按路径运行的真实身份构造日志作用域并注入上下文。
+func (s *RunOrchestrationService) withRunScope(ctx context.Context, pathRunID uint64) (context.Context, error) {
+	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return ctx, err
+	}
+	run, err := s.store.GetRun(ctx, pathRun.RunID)
+	if err != nil {
+		return ctx, err
+	}
+	plan, err := s.plans.Get(ctx, run.PlanID)
+	if err != nil {
+		return ctx, err
+	}
+	path, pathErr := s.paths.Get(ctx, run.PlanID, pathRun.ExecutionPathID)
+	pathName := plan.Name
+	if pathErr == nil && strings.TrimSpace(path.Name) != "" {
+		pathName = path.Name
+	}
+	scope := logging.Scope{
+		PlanID:            strconv.FormatUint(run.PlanID, 10),
+		PlanName:          plan.Name,
+		ExecutionPathID:   strconv.FormatUint(pathRun.ExecutionPathID, 10),
+		ExecutionPathName: pathName,
+		RunID:             strconv.FormatUint(run.ID, 10),
+		RunSeq:            strconv.FormatUint(run.RunNo, 10),
+		PathRunID:         strconv.FormatUint(pathRun.ID, 10),
+	}
+	return logging.WithScope(ctx, scope), nil
 }
 
 // ListRuns 列出计划下的运行（最新在前）。

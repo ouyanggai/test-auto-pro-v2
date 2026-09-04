@@ -1593,3 +1593,14 @@ func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, 
 	}
 	return matched[0], nil
 }
+
+// Ping 用一次轻量只读请求探活会话：会话有效时无论业务结果如何都返回 nil；
+// 只有会话失效（RESP401/HTTP 401）或传输失败才返回错误。
+// 用途：执行器 prepare 阶段在登录后立即验证 sid 可用——实测目标存在
+// “首次登录的 sid 立即失效、重新登录后才有效”的现象（纲领第 4.4.1 节抖动家族）。
+func (c *Client) Ping(ctx context.Context, session Session) error {
+	_, err := c.call(ctx, "/web/flowTemplateApi/list", session.SID, map[string]any{
+		"data": map[string]any{}, "pagination": false, "pages": 1, "size": 1,
+	})
+	return err
+}

@@ -88,6 +88,12 @@ func (f *fakeSessions) Current(_ context.Context, account string) (target.Sessio
 	return target.Session{Summary: target.AccountSummary{Account: account, DisplayName: "测试账号"}}, nil
 }
 
+// Refresh 与 Current 同形：假件不区分缓存语义。
+func (f *fakeSessions) Refresh(_ context.Context, account string) (target.Session, error) {
+	f.calls++
+	return target.Session{Summary: target.AccountSummary{Account: account, DisplayName: "测试账号"}}, nil
+}
+
 // fakeTargetView 是假件里一次目标事实读取的预设视图。
 type fakeTargetView struct {
 	Found        bool

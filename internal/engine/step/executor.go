@@ -207,7 +207,23 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err != nil {
 		return outcome, 0, err
 	}
-	session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "prepare")
+	// 写步骤的会话必须现场刷新并探活：submit 发出后不允许任何重登，
+	// 过期会话只会白白浪费唯一一次写机会。实测目标存在“首次登录的 sid 立即失效”的现象，
+	// 因此刷新后立刻做一次只读探活，失效则在只读重试预算内重新登录。
+	session, sessionErr := RunWithRetry(ctx, e.policy, "会话刷新", func() (target.Session, error) {
+		fresh, err := e.sessions.Refresh(ctx, runCtx.PlanAccount)
+		if err != nil {
+			return fresh, err
+		}
+		if pinger, ok := e.target.(interface{ Ping(context.Context, target.Session) error }); ok {
+			if err := pinger.Ping(ctx, fresh); err != nil {
+				return fresh, err
+			}
+		}
+		return fresh, nil
+	}, func(attempt int, nextDelay time.Duration) {
+		log.Phase("prepare", step.Sequence, 1, fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay))
+	})
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
 		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
@@ -225,7 +241,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 
 	// 发起成功后尽早落库主实例引用（独占不可改写）：即使核验前崩溃，
 	// 恢复出的待对账路径运行仍有实例引用可供对账。
-	if result, ok := preview.writeResult.(*target.SubmitFlowInstanceResult); ok && result.InstanceID != "" {
+	if result, ok := preview.writeResult.(*target.SubmitFlowInstanceResult); ok && result != nil && result.InstanceID != "" {
 		if err := e.runState.SetMainInstanceRef(ctx, runCtx.PathRun.ID, result.InstanceID); err != nil {
 			return outcome, 0, err
 		}
