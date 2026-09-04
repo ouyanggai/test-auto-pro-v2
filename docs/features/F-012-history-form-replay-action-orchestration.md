@@ -1,6 +1,6 @@
 # F-012 历史业务数据回放与节点动作编排
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“F-012 历史业务数据回放与节点动作编排”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-012 历史业务数据回放与动作场景编译”
 - 规划时间：2026-09-01
@@ -407,6 +407,7 @@ pnpm --dir form-runtime build
 - 2026-09-04：用户人工复验确认当前运行时直接挂载 FormMaking，未经过目标 `GroupApproveManage/Submitted/components/OtherSteps2.vue` 完整宿主，原生 `component` 节点还被误判为未适配的业务自定义组件。用户批准改为“目标完整宿主渲染 + 单一数据回显桥接”：复用目标宿主的自定义组件、附件和选择弹窗，只由桥接层注入当前路径模板、有效数据与权限并继续沿用既有 iframe 消息协议；状态返回 `implementing`。
 - 2026-09-04：完成完整宿主返工：`form-runtime` 通过 `HostedFormMaking` 直接复用目标 `OtherSteps2`，由桥接层注入模板、权限和有效值，并把宿主 FormMaking 的 `on-change` 回传到既有 iframe 状态协议；删除运行时重复维护的人员/公司/岗位弹窗适配。FormMaking 原生 `type=component` 现按内置模板片段处理，不再误报宿主业务依赖；针对目标宿主 `editData` 异步 refresh 可能覆盖回放值的时序，再增加一次稳定回填。`./test/run-f012.sh` 实测通过（21 个真实 MySQL 集成用例、89 个前端用例、类型检查、Web/form-runtime 构建和 Go 构建均通过），状态进入 `ready_for_manual`，等待用户人工核对付款单位、请款金额、自定义组件、附件和选择弹窗。
 - 2026-09-04：用户复验指出上一版仍是本地组件包装，不符合统一工作台直接运行目标平台代码的方式。当前返工改为运行时路由直接加载 `runtime-source` 的 `OtherSteps2.vue`，本地只保留 postMessage 数据协议、数据回显和操作区隐藏适配，不再导入该宿主组件；状态返回 `implementing`。
+- 2026-09-04：完成直接宿主改造：`form-runtime` 继续以目标 `runtime-source` 作为根运行时，通过隔离路由直接加载目标 `OtherSteps2.vue`，不再使用本地 `HostedFormMaking` 包装；本地 App 仅注入 `jsonData`、`editData`、字段权限并桥接 `on-change`，目标宿主自身负责 FormMaking、附件、自定义组件和选择弹窗渲染，路由入口不挂载提交/保存操作区。针对宿主 `editData` 异步刷新增加稳定回填，原生 `component` 模板节点继续按目标运行时注册规则处理。`./test/run-f012.sh` 实测 21 个集成用例、89 个前端用例全部通过且无跳过，Web/form-runtime/Go 构建均通过；状态进入 `ready_for_manual`，等待人工核对付款单位、请款金额、自定义组件、附件和选择弹窗。
 - 当前没有遗留产品决策。实施中如参考源码出现与本文件不一致且会改变用户行为、动作范围、数据清理边界或公共接口，实施线程必须停止并由主任务向用户询问，不能自行选择。
 - 实施线程如发现会改变用户行为、动作范围、数据清理边界或公共接口的冲突，必须停止并由主任务向用户询问，不能自行选择。
 - 自动验证完成后必须停在 `ready_for_manual`；只有用户明确验收后才能进入 `accepted`，不得自动开始真实执行切片。
