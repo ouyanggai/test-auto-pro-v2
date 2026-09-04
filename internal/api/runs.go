@@ -145,6 +145,8 @@ func writeRunControlError(response http.ResponseWriter, err error) {
 		switch orchestrationErr.Kind {
 		case service.RunOrchestrationNotFound:
 			writeFailure(response, http.StatusNotFound, "RUN_NOT_FOUND", orchestrationErr.Error(), false)
+		case service.RunOrchestrationStorage:
+			writeFailure(response, http.StatusServiceUnavailable, "RUN_TARGET_UNAVAILABLE", orchestrationErr.Error(), true)
 		default:
 			writeFailure(response, http.StatusConflict, "RUN_CONFLICT", orchestrationErr.Error(), false)
 		}

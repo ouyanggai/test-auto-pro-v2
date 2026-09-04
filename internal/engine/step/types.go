@@ -69,6 +69,12 @@ type RunContext struct {
 	// Nodes 是路径配置快照里这条路径的目标节点表（键=目标代理节点 Key），
 	// 供节点名称与节点类型查表。编译场景的 nodeKey 用的是这一套键，不是流程图节点 ID。
 	Nodes map[string]NodeInfo
+	// BranchSelections 是这条路径已保存的分支选择（分支节点 ID -> 所选分支的目标节点 ID）。
+	// 手动条件分支在提交/审批时必须显式携带所选节点，否则目标以“手动条件分支,请选择”拒绝。
+	BranchSelections map[string]string
+	// SubmitBranchTargetNodeID 是路线第一个手动分支所选的目标节点 ID，
+	// 提交请求以 fixedExecuteNodeId 顶层字段携带（FlowSubmitServiceImpl 的 custom_choose 校验所需）。
+	SubmitBranchTargetNodeID string
 	// Steps 是编译场景（用户步骤），执行器按序号推进。
 	Steps []model.CompiledActionStep
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。

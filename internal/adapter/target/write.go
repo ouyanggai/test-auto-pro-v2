@@ -63,6 +63,8 @@ type SubmitFlowInstanceRequest struct {
 	FormProxyID string
 	// CompanyID 是目标公司 ID（发起人所属公司上下文）。
 	CompanyID string
+	// FixedExecuteNodeID 是手动条件分支所选的目标节点 ID（FlowInstanceProtocol.fixedExecuteNodeId）。
+	FixedExecuteNodeID string
 	// FormData 是表单数据容器 formDataMongoVo.data 的原始 JSON。
 	// 必须按原始文本透传，不得重新序列化（避免数字字面量被改写）。
 	FormData json.RawMessage
@@ -101,6 +103,10 @@ func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 		data["flowInstanceBizRelevanceList"] = request.BizRelevance
 	}
 	body := map[string]any{"data": data}
+	if id := strings.TrimSpace(request.FixedExecuteNodeID); id != "" {
+		// 条件分支手动指定节点是协议的顶层字段，不属于 data 容器（FlowInstanceProtocol:47）。
+		body["fixedExecuteNodeId"] = id
+	}
 	if len(request.FormData) > 0 {
 		body["formDataMongoVo"] = map[string]any{"data": request.FormData}
 	}

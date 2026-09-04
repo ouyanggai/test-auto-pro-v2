@@ -35,6 +35,7 @@ type RunOrchestrationErrorKind string
 const (
 	RunOrchestrationNotFound RunOrchestrationErrorKind = "not_found"
 	RunOrchestrationConflict RunOrchestrationErrorKind = "conflict"
+	RunOrchestrationStorage  RunOrchestrationErrorKind = "storage"
 )
 
 // RunOrchestrationError 携带中文结论与错误种类。
@@ -221,17 +222,46 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 			}
 		}
 	}
+	// 分支选择：把路径已保存的 choice（分支节点+分支ID）解析为该分支的目标节点 ID。
+	// 目标提交校验手动条件分支时要求显式携带所选节点（custom_choose），这是语义清单第 4 条的落点。
+	branchSelections := map[string]string{}
+	submitBranchTarget := ""
+	graph, graphErr := s.graphs.Get(ctx, planID)
+	if graphErr != nil {
+		// 分支选择解析依赖真实结构；结构读不到时不能静默跳过——
+		// 否则提交载荷缺失分支参数，会在目标侧以“手动条件分支,请选择”失败。
+		return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "暂时无法读取真实流程结构，请重试"}
+	}
+	for index, choice := range path.Choices {
+		matched := ""
+		for _, edge := range graph.Edges {
+			if edge.Source != choice.RouteNodeID || edge.BranchID != choice.BranchID {
+				continue
+			}
+			matched = edge.Target
+			break
+		}
+		if matched == "" {
+			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "分支选择与当前真实结构不一致，请重新校验执行路径"}
+		}
+		branchSelections[choice.RouteNodeID] = matched
+		if index == 0 {
+			submitBranchTarget = matched
+		}
+	}
 	return step.RunContext{
-		Run:               model.Run{PlanID: planID},
-		PathRun:           model.PathRun{ExecutionPathID: pathID},
-		PlanName:          plan.Name,
-		PathName:          path.Name,
-		PlanAccount:       plan.Account,
-		FlowProxyID:       plan.TargetObjectID,
-		Source:            plan.FlowSource,
-		Nodes:             nodes,
-		Steps:             steps,
-		EffectiveFormData: config.EffectiveFormData,
+		Run:                      model.Run{PlanID: planID},
+		PathRun:                  model.PathRun{ExecutionPathID: pathID},
+		PlanName:                 plan.Name,
+		PathName:                 path.Name,
+		PlanAccount:              plan.Account,
+		FlowProxyID:              plan.TargetObjectID,
+		Source:                   plan.FlowSource,
+		Nodes:                    nodes,
+		BranchSelections:         branchSelections,
+		SubmitBranchTargetNodeID: submitBranchTarget,
+		Steps:                    steps,
+		EffectiveFormData:        config.EffectiveFormData,
 	}, nil
 }
 

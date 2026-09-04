@@ -2,6 +2,7 @@ package step
 
 import (
 	"context"
+	"errors"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/verdict"
@@ -103,7 +104,12 @@ func buildObservation(endpoint string, writeErr error, response target.WriteResp
 }
 
 // targetTransportOf 把适配层的传输阶段事实转换为判定包的传输枚举；两侧取值一一对应。
+// 目标业务拒绝（isSuccess=false 的完整响应）在传输层属于 responded，判定按响应侧初判走。
 func targetTransportOf(err error) verdict.Transport {
+	var rejection *target.BusinessRejection
+	if errors.As(err, &rejection) {
+		return verdict.TransportResponded
+	}
 	switch target.TransportOf(err) {
 	case target.TransportResponded:
 		return verdict.TransportResponded
