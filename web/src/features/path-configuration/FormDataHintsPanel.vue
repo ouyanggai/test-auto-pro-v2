@@ -37,6 +37,11 @@ function candidateText(candidates: unknown[] | undefined): string {
   if (!candidates?.length) return ''
   return candidates.slice(0, 4).map(fieldValueText).join(' / ')
 }
+
+// fieldLabel 优先显示目标中文标签，没有标签时使用不泄露内部路径的通用名称。
+function fieldLabel(field: PathConfigKeyField): string {
+  return field.label?.trim() || '条件字段'
+}
 </script>
 
 <template>
@@ -63,8 +68,7 @@ function candidateText(candidates: unknown[] | undefined): string {
           <ul class="form-hints__list">
             <li v-for="field in decisiveFields" :key="field.path">
               <div class="form-hints__field-head">
-                <strong v-if="field.label">{{ field.label }}</strong>
-                <code>{{ field.path }}</code>
+                <strong>{{ fieldLabel(field) }}</strong>
                 <n-tag size="tiny" :bordered="false" type="info">{{ fieldValueText(field.current) }}</n-tag>
               </div>
               <small v-if="candidateText(field.candidates)">可选：{{ candidateText(field.candidates) }}</small>
@@ -75,7 +79,7 @@ function candidateText(candidates: unknown[] | undefined): string {
         <n-collapse-item v-if="issues.length" name="issues" :title="`需要处理（${issues.length}）`">
           <ul class="form-hints__list">
             <li v-for="issue in issues" :key="`${issue.code}-${issue.path || ''}-${issue.message}`">
-              {{ issue.message }}<code v-if="issue.path">{{ issue.path }}</code>
+              {{ issue.message }}
             </li>
           </ul>
         </n-collapse-item>
@@ -83,7 +87,7 @@ function candidateText(candidates: unknown[] | undefined): string {
         <n-collapse-item v-if="branchPatches.length" name="patches" :title="`已按当前路径调整（${branchPatches.length}）`">
           <ul class="form-hints__list">
             <li v-for="patch in branchPatches" :key="`${patch.branchKey}-${patch.path}`">
-              <code>{{ patch.path }}</code> {{ patch.reason }}
+              {{ patch.reason }}
             </li>
           </ul>
         </n-collapse-item>
@@ -91,8 +95,7 @@ function candidateText(candidates: unknown[] | undefined): string {
         <n-collapse-item v-if="otherFields.length" name="other" :title="`其他条件字段（${otherFields.length}）`">
           <ul class="form-hints__list">
             <li v-for="field in otherFields" :key="field.path">
-              <strong v-if="field.label">{{ field.label }}</strong>
-              <code>{{ field.path }}</code> {{ fieldValueText(field.current) }}
+              <strong>{{ fieldLabel(field) }}</strong> {{ fieldValueText(field.current) }}
             </li>
           </ul>
         </n-collapse-item>

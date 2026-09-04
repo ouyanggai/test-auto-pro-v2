@@ -814,7 +814,8 @@ func (c *Client) ReadTemplateConfiguration(ctx context.Context, active Session, 
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms}, nil
+	renderType := NormalizeFormRenderType(formExist, len(runtimeForms))
+	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: renderType, VuePage: ResolveVueCustomPage(renderType, auditWay, flowName), FormFields: fields, Forms: runtimeForms}, nil
 }
 
 // ReadProxyConfiguration 读取代理树、实例代理表单字段详情和实例当前表单数据，供已发/待发路径配置使用。
@@ -838,7 +839,8 @@ func (c *Client) ReadProxyConfiguration(ctx context.Context, active Session, pro
 	if err != nil {
 		return PathConfigurationSnapshot{}, err
 	}
-	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: NormalizeFormRenderType(formExist, len(runtimeForms)), FormFields: fields, Forms: runtimeForms, InstanceValues: values}, nil
+	renderType := NormalizeFormRenderType(formExist, len(runtimeForms))
+	return PathConfigurationSnapshot{Tree: tree, FlowCode: flowCode, FlowName: flowName, AuditWay: auditWay, RenderType: renderType, VuePage: ResolveVueCustomPage(renderType, auditWay, flowName), FormFields: fields, Forms: runtimeForms, InstanceValues: values}, nil
 }
 
 // readFlowDetail 调用目标详情端点并转换同一棵流程树和关联表单引用。

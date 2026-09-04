@@ -223,13 +223,13 @@ func TestPathDataWorkspaceRevisionConflictDoesNotPartiallyWrite(t *testing.T) {
 	}
 }
 
-// TestCustomWorkspacePassesRawValuesWithoutPageMapping 验证 NoFormFlow 不依赖 VuePage 映射也能原样进入数据工作区。
-func TestCustomWorkspacePassesRawValuesWithoutPageMapping(t *testing.T) {
+// TestCustomWorkspacePassesRawValuesWithPageEntry 验证无表单页面入口和原始数据一起进入数据工作区。
+func TestCustomWorkspacePassesRawValuesWithPageEntry(t *testing.T) {
 	plan := model.Plan{ID: 603, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-custom", Status: model.PlanStatusNotStarted}
 	path := model.ExecutionPath{ID: 631, PlanID: plan.ID, SequenceNo: 1, Name: "自定义页路径"}
 	store := newWorkspaceHistoryStore()
 	raw := map[string]any{"custom": map[string]any{"rows": []any{map[string]any{"code": "A", "amount": float64(7)}}}, "virtual": "keep"}
-	store.snapshots[703] = model.HistorySnapshot{ID: 703, PlanID: plan.ID, CandidateKey: "candidate-custom", FlowCode: "flow-custom", FlowName: "NoFormFlow 申请页", RuntimeType: string(target.FormRenderTypeVueCustom), TemplateSummary: map[string]any{"pageKey": "NoFormFlow"}, RawFormData: raw}
+	store.snapshots[703] = model.HistorySnapshot{ID: 703, PlanID: plan.ID, CandidateKey: "candidate-custom", FlowCode: "flow-custom", FlowName: "合同评审表", RuntimeType: string(target.FormRenderTypeVueCustom), TemplateSummary: map[string]any{"pageKey": "contract_review"}, RawFormData: raw}
 	store.defaults[plan.ID] = repository.HistoryDefaultRecord{PlanID: plan.ID, SnapshotID: 703, Revision: 1}
 	store.configs[path.ID] = repository.HistoryPathConfigRecord{
 		PathID: path.ID, Revision: 2, DataRevision: 2, SourceMode: model.HistorySourceModeDefault,
@@ -237,7 +237,8 @@ func TestCustomWorkspacePassesRawValuesWithoutPageMapping(t *testing.T) {
 	}
 	reader := workspaceTargetReader{snapshot: target.PathConfigurationSnapshot{
 		Tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Type: "end"}}, EntryNodeIDs: []string{"start"},
-		FlowCode: "flow-custom", FlowName: "NoFormFlow 申请页", AuditWay: "NoFormFlow", RenderType: target.FormRenderTypeVueCustom,
+		FlowCode: "flow-custom", FlowName: "合同评审表", AuditWay: "contract_review", RenderType: target.FormRenderTypeVueCustom,
+		VuePage: target.ResolveVueCustomPage(target.FormRenderTypeVueCustom, "contract_review", "合同评审表"),
 	}}
 	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
 		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), &workspacePathRepository{paths: []model.ExecutionPath{path}})
@@ -246,8 +247,8 @@ func TestCustomWorkspacePassesRawValuesWithoutPageMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取自定义表单数据工作区失败：%v", err)
 	}
-	if configuration.RuntimeType != string(target.FormRenderTypeVueCustom) || configuration.RuntimePage != nil || !reflect.DeepEqual(configuration.EffectiveFormData, raw) {
-		t.Fatalf("NoFormFlow 数据被映射或丢失：%+v", configuration)
+	if configuration.RuntimeType != string(target.FormRenderTypeVueCustom) || configuration.RuntimePage == nil || configuration.RuntimePage.ComponentName != "contract_review" || !reflect.DeepEqual(configuration.EffectiveFormData, raw) {
+		t.Fatalf("无表单页面入口或数据被映射、丢失：%+v", configuration)
 	}
 	configuration.EffectiveFormData["custom"].(map[string]any)["rows"].([]any)[0].(map[string]any)["code"] = "changed"
 	if raw["custom"].(map[string]any)["rows"].([]any)[0].(map[string]any)["code"] != "A" {
@@ -341,6 +342,18 @@ func TestKeyFieldLabelsUseTargetFieldNames(t *testing.T) {
 	}
 	if labels["vacateType"] != "请假类别" || labels["vacateDayNum__virtualName"] != "请假天数" {
 		t.Fatalf("基础字段与虚拟字段标签不一致：%+v", labels)
+	}
+}
+
+// TestKeyFieldLabelsUseVueCustomPageNames 验证自定义页面提供中文字段元数据时同样优先显示中文标签。
+func TestKeyFieldLabelsUseVueCustomPageNames(t *testing.T) {
+	labels := service.KeyFieldLabelsForTest(target.PathConfigurationSnapshot{
+		VuePage: &target.VueCustomPageRule{Fields: []target.VueCustomFieldRule{
+			{Path: "userInfo", Name: "用户姓名"},
+		}},
+	})
+	if labels["userInfo"] != "用户姓名" || labels["userInfo__virtualName"] != "用户姓名" {
+		t.Fatalf("自定义页面中文标签没有进入字段提示：%+v", labels)
 	}
 }
 

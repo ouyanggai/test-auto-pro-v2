@@ -39,7 +39,7 @@ export default {
         return ''
       }
       return {
-        operaType: this.readOnly ? 'preview' : 'create',
+        operaType: this.readOnly ? 'preview' : (Object.keys(values).length ? 'edit' : 'create'),
         actionType: this.readOnly ? 'view' : 'create',
         showType: this.readOnly ? 'preview' : 'init',
         selectFlowType: this.page.route,
@@ -70,18 +70,50 @@ export default {
       this.values = clonePlain(values || {})
       this.valuesVersion += 1
       await this.$nextTick()
+      // 目标页面的 created/mounted 初始化可能还要经过一轮子组件挂载，第二次 tick 后再回填内部模型。
+      await this.$nextTick()
+      this.hydrateInitialValues(this.$refs.page, this.values, new Set(), 0)
       this.applyFieldStates(this.$refs.page, new Set(), 0)
       return { issues: [] }
     },
     async capture (validate) {
       if (validate) await this.validatePage(this.$refs.page)
-      const values = clonePlain(this.values || {})
+      const values = this.collectPageValues(this.$refs.page, clonePlain(this.values || {}), new Set(), 0)
       this.values = values
       return {
         values,
         issues: [],
         capturedFieldPaths: []
       }
+    },
+    // hydrateInitialValues 在目标组件完成既有初始化后按同名字段回填快照，不改变目标页面的字段结构和请求逻辑。
+    hydrateInitialValues (instance, source, visited, depth) {
+      if (!instance || visited.has(instance) || depth > 8) return
+      visited.add(instance)
+      if (source && typeof source === 'object') {
+        Object.keys(source).forEach(key => {
+          const incoming = source[key]
+          if (!Object.prototype.hasOwnProperty.call(instance, key)) return
+          const current = instance[key]
+          if (current && typeof current === 'object' && incoming && typeof incoming === 'object' && !Array.isArray(current) && !Array.isArray(incoming)) {
+            Object.assign(current, clonePlain(incoming))
+          } else {
+            this.$set(instance, key, clonePlain(incoming))
+          }
+        })
+      }
+      for (const child of this.childInstances(instance)) this.hydrateInitialValues(child, source, visited, depth + 1)
+    },
+    // collectPageValues 优先读取目标页面公开的 getValues，保留无表单页面编辑后的内部模型。
+    collectPageValues (instance, values, visited, depth) {
+      if (!instance || visited.has(instance) || depth > 8) return values
+      visited.add(instance)
+      if (typeof instance.getValues === 'function') {
+        const pageValues = instance.getValues()
+        if (pageValues && typeof pageValues === 'object' && Object.keys(pageValues).length) values = { ...values, ...clonePlain(pageValues) }
+      }
+      for (const child of this.childInstances(instance)) values = this.collectPageValues(child, values, visited, depth + 1)
+      return values
     },
     applyFieldStates (instance, visited, depth) {
       if (!instance || visited.has(instance) || depth > 7) return

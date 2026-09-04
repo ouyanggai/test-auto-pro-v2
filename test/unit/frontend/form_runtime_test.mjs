@@ -218,6 +218,30 @@ test('宿主 Vue 页面透传统一快照别名并在 setData 后重新初始化
   assert.match(source, /this\.valuesVersion \+= 1/)
 })
 
+test('无表单审批方式使用复制运行时的真实页面注册入口', () => {
+  const source = fs.readFileSync(new URL('../../../form-runtime/src/runtime/hostVuePages.js', import.meta.url), 'utf8')
+  for (const key of ['contract_review', 'contract_pay_request', 'buy_plan', 'buy_demand', 'buy_order', 'invoice_apply', 'travel_expense', 'request_funds', 'loan']) {
+    assert.match(source, new RegExp(`${key}:`))
+  }
+  assert.match(source, /NoFormFlow:\s*HostNoFormPage/)
+  assert.match(source, /CompanyAmountAdjustForm/)
+  assert.match(source, /ManagePerformence/)
+  assert.match(source, /HOST_VUE_PAGES\.NoFormFlow/)
+})
+
+test('无表单页面回显通过统一宿主模型注入且支持页面 getValues', () => {
+  const source = fs.readFileSync(new URL('../../../form-runtime/src/HostVuePage.vue', import.meta.url), 'utf8')
+  assert.match(source, /hydrateInitialValues\(this\.\$refs\.page, this\.values/)
+  assert.match(source, /collectPageValues\(this\.\$refs\.page/)
+  assert.match(source, /Object\.keys\(values\)\.length \? 'edit' : 'create'/)
+})
+
+test('路径字段提示有中文标签时不显示技术字段路径', () => {
+  const source = fs.readFileSync(new URL('../../../web/src/features/path-configuration/FormDataHintsPanel.vue', import.meta.url), 'utf8')
+  assert.match(source, /function fieldLabel\(field: PathConfigKeyField\)/)
+  assert.doesNotMatch(source, /<code>\{\{ field\.path \}\}<\/code>/)
+})
+
 test('初始默认模型的空值不计入已填写值', () => {
   const emptyDefaults = { myCompanyName: '', myDepName: '', myUserName: '', time: [], vacateReason: '', vacateType: '', vacateTime: null }
   assert.deepEqual(formRuntimeStats(emptyDefaults, Object.keys(emptyDefaults), ['vacateReason']), { filledEditable: 0, manualPending: 1 })

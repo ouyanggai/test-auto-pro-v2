@@ -125,6 +125,16 @@ func keyFieldLabels(snapshot target.PathConfigurationSnapshot) map[string]string
 		}
 		labels[path] = name
 	}
+	if snapshot.VuePage != nil {
+		for _, field := range snapshot.VuePage.Fields {
+			path := strings.TrimSpace(field.Path)
+			name := strings.TrimSpace(field.Name)
+			if path == "" || name == "" {
+				continue
+			}
+			labels[path] = name
+		}
+	}
 	for _, form := range snapshot.Forms {
 		var template any
 		if json.Unmarshal([]byte(form.TemplateData), &template) != nil {
