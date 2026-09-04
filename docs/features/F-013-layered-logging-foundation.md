@@ -265,8 +265,8 @@ time=2026-09-03 18:56:31 level=error ...
   - code-server 内可逐层点开 计划 → `configuration` → `执行路径 1__path-13` → `2026-09-04`，
     资源接口读取含中文与空格的嵌套路径，字节数与宿主完全一致；`make logs-viewer-stop` 与再次 `make logs-viewer` 均正常。
   - `./test/run-f013.sh` 全量通过，`git status` 无 `logs/` 产物。
-  说明：改动前产生的 `logs/app-<日期>.log` 与 `logs/config/<日期>/` 仍在磁盘上（按要求不删除既有日志），
-  新代码已不再写入也不再清理这两处，需要清空顶层时由用户自行删除。
+  说明：改动前产生的 `logs/app-<日期>.log` 与 `logs/config/<日期>/` 已由用户永久删除，
+  当前日志根下只有 `application/` 与 `plans/` 两棵新目录树，新代码也不会再写入旧位置。
 
 - 2026-09-04：代码审查发现两个 P1 问题，均已修复并实测，状态保持 `ready_for_manual`。
   1. 后台任务丢失计划日志作用域：`internal/service/execution_path.go` 的后台全路径解析与
@@ -287,5 +287,18 @@ time=2026-09-03 18:56:31 level=error ...
   `logs/plans/oyg测试002__plan-2/configuration/路径 1__path-13/2026-09-04/network.log`，
   带完整归属字段；后台全路径解析落在同一计划的 `configuration/_plan/2026-09-04/`；
   `application` 目录没有混入任何目标请求。`go test -race ./test/unit/...` 与 `./test/run-f013.sh` 全量通过。
+
+- 2026-09-04：复审提出两个 P2，均已修复，状态保持 `ready_for_manual`。
+  1. 后台 worker 持锁查库：`startWorker` 在持有 `s.mu` 时调用 `backgroundLogScope`，
+     计划名缺失时会访问数据库，数据库慢会连带阻塞取消、恢复与 worker 状态管理。
+     修复：作用域解析移到取锁之前，锁内只做"任务是否已运行"的最终判断。
+     同一问题在 `ExecutionPathService` 的 `StartGeneration` 与 `ResumeGeneration` 里也存在
+     （`generationMu` 护着任务查询、取消与恢复），一并移到锁外；恢复路径改为先在锁外解析请求作用域，
+     锁内只做与任务已存作用域的字段合并。
+     新增两个用例：让计划仓储在计划名回补那次读取上阻塞，断言此时任务查询与取消仍能立刻返回；
+     把解析放回锁内则用例失败（已做变异验证）。
+  2. 文档与实际清理结果矛盾：本文件与 `docs/PROGRESS.md` 仍写着旧日志"按要求未删除"，
+     而旧的 `logs/app-<日期>.log` 与 `logs/config/<日期>/` 已由用户永久删除，
+     当前日志根下只有 `application/` 与 `plans/`。两处记录已更正。
 
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `ready_for_manual`：T01 至 T06 已实施，日志查看方式与日志归档方式两轮反馈均已修复并实测通过，等待用户按上面「人工验收」七步确认后再推进到 `accepted`。
