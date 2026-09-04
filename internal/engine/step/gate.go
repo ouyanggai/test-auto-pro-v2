@@ -33,8 +33,8 @@ func nodeTable(nodes []model.FlowGraphNode) map[string]nodeInfo {
 //     缺一不可，不得凭配置推断。
 func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts, info nodeInfo) model.ActionContext {
 	ctx := model.ActionContext{
-		FlowSource:     runCtx.Source,
-		CurrentNodeKey: step.NodeKey,
+		FlowSource:      runCtx.Source,
+		CurrentNodeKey:  step.NodeKey,
 		CurrentNodeType: info.Type,
 	}
 	if step.Action == model.ActionSubmit {

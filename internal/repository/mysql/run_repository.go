@@ -71,9 +71,9 @@ func (r *RunRepository) tryCreateRun(ctx context.Context, planID uint64, executi
 		return model.Run{}, model.PathRun{}, err
 	}
 	if err := appendRunEvent(ctx, tx, model.RunEvent{
-		RunID:  uint64(runID),
-		Kind:   "run_created",
-		Label:  fmt.Sprintf("运行 %d 已创建（%s）", nextRunNo, model.RunModeName(mode)),
+		RunID: uint64(runID),
+		Kind:  "run_created",
+		Label: fmt.Sprintf("运行 %d 已创建（%s）", nextRunNo, model.RunModeName(mode)),
 	}, now); err != nil {
 		return model.Run{}, model.PathRun{}, err
 	}

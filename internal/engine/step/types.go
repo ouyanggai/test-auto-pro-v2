@@ -101,7 +101,7 @@ type StepPreview struct {
 	// Facts 是此刻的目标事实（发起前实例不存在则 Found=false）。
 	Facts InstanceFacts
 	// BlockReason 非空表示本步无法继续（门禁不通过/演员不可解析等），路径必须停止。
-	BlockReason     string
+	BlockReason       string
 	BlockFailureClass model.FailureClass
 	// RequestPayload 是放行后将要发出的请求载荷（与预览同源），只在内存流转，含会话无关字段。
 	RequestPayload map[string]any

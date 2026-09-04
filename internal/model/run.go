@@ -44,16 +44,16 @@ func RunStatusName(status RunStatus) string {
 type PathRunStatus string
 
 const (
-	PathRunStatusNotStarted           PathRunStatus = "not_started"            // 未开始
-	PathRunStatusWaiting              PathRunStatus = "waiting"                // 等待运行
-	PathRunStatusRunning              PathRunStatus = "running"                // 运行中
-	PathRunStatusVerifying            PathRunStatus = "verifying"              // 核验中
-	PathRunStatusCompleted            PathRunStatus = "completed"              // 已完成
-	PathRunStatusFailed               PathRunStatus = "failed"                 // 失败
-	PathRunStatusPaused               PathRunStatus = "paused"                 // 暂停
+	PathRunStatusNotStarted             PathRunStatus = "not_started"             // 未开始
+	PathRunStatusWaiting                PathRunStatus = "waiting"                 // 等待运行
+	PathRunStatusRunning                PathRunStatus = "running"                 // 运行中
+	PathRunStatusVerifying              PathRunStatus = "verifying"               // 核验中
+	PathRunStatusCompleted              PathRunStatus = "completed"               // 已完成
+	PathRunStatusFailed                 PathRunStatus = "failed"                  // 失败
+	PathRunStatusPaused                 PathRunStatus = "paused"                  // 暂停
 	PathRunStatusAwaitingReconciliation PathRunStatus = "awaiting_reconciliation" // 待对账
-	PathRunStatusStopped              PathRunStatus = "stopped"                // 已停止
-	PathRunStatusCancelled            PathRunStatus = "cancelled"              // 已取消
+	PathRunStatusStopped                PathRunStatus = "stopped"                 // 已停止
+	PathRunStatusCancelled              PathRunStatus = "cancelled"               // 已取消
 )
 
 // pathRunTransitions 是路径运行的合法前进表。
@@ -165,20 +165,20 @@ const RunTriggerManual RunTriggerKind = "manual"
 type RunResult string
 
 const (
-	RunResultSucceeded            RunResult = "succeeded"              // 路径结果：成功
-	RunResultFailed               RunResult = "failed"                 // 路径结果：失败
-	RunResultAwaitingReconcile    RunResult = "awaiting_reconciliation" // 路径结果：待对账
+	RunResultSucceeded         RunResult = "succeeded"               // 路径结果：成功
+	RunResultFailed            RunResult = "failed"                  // 路径结果：失败
+	RunResultAwaitingReconcile RunResult = "awaiting_reconciliation" // 路径结果：待对账
 )
 
 // FailureClass 是路径失败的中文可解释分类（纲领第 7.4 节），与日志 error_class 同名同义。
 type FailureClass string
 
 const (
-	FailureClassGateBlocked     FailureClass = "gate_blocked"      // 门禁不通过
-	FailureClassActorUnresolved FailureClass = "actor_unresolved"  // 演员不可解析
-	FailureClassTargetRejected  FailureClass = "target_rejected"   // 目标拒绝
-	FailureClassWriteUncertain  FailureClass = "write_uncertain"   // 写结果不确定
-	FailureClassToolBug         FailureClass = "tool_bug"          // 工具缺陷
+	FailureClassGateBlocked     FailureClass = "gate_blocked"     // 门禁不通过
+	FailureClassActorUnresolved FailureClass = "actor_unresolved" // 演员不可解析
+	FailureClassTargetRejected  FailureClass = "target_rejected"  // 目标拒绝
+	FailureClassWriteUncertain  FailureClass = "write_uncertain"  // 写结果不确定
+	FailureClassToolBug         FailureClass = "tool_bug"         // 工具缺陷
 )
 
 // FailureClassName 返回失败分类的中文显示名。
@@ -219,21 +219,21 @@ type Run struct {
 // 一条路径运行独占一个真实主实例：MainInstanceRef 只存不透明引用，
 // 首步发起创建实例后写入，此后该路径运行的所有写动作都作用于同一实例。
 type PathRun struct {
-	ID                  uint64
-	RunID               uint64
-	ExecutionPathID     uint64
-	Status              PathRunStatus
-	Result              *RunResult
-	FailureClass        *FailureClass
-	MainInstanceRef     string
-	FinalTargetSummary  string
-	LeaseOwner          string
-	LeaseExpiresAt      *time.Time
-	FencingToken        uint64
-	StartedAt           *time.Time
-	FinishedAt          *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                 uint64
+	RunID              uint64
+	ExecutionPathID    uint64
+	Status             PathRunStatus
+	Result             *RunResult
+	FailureClass       *FailureClass
+	MainInstanceRef    string
+	FinalTargetSummary string
+	LeaseOwner         string
+	LeaseExpiresAt     *time.Time
+	FencingToken       uint64
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // RunEvent 是运行事件流的一行（run_events 表）：聚合表每次状态前进在同一事务内追加一行。
@@ -284,21 +284,21 @@ type RunStep struct {
 // RunStepAttempt 是一次尝试的判定事实（run_step_attempts 表），与所属步骤同事务 INSERT。
 // trace_id 与 curl_trace_id 使本记录与 network.log/curl.log 双向可达；LogPath/LogLine 指向 step.log 具体行。
 type RunStepAttempt struct {
-	PathRunID   uint64
-	StepID      uint64
-	AttemptNo   int
-	Verdict     string
-	SideEffect  string
-	Transport   string
-	StatusCode  int
-	Initial     string
-	Reread      string
+	PathRunID    uint64
+	StepID       uint64
+	AttemptNo    int
+	Verdict      string
+	SideEffect   string
+	Transport    string
+	StatusCode   int
+	Initial      string
+	Reread       string
 	FailureClass *FailureClass
-	Reason      string
-	Basis       string
-	TraceID     string
-	CurlTraceID string
-	LogPath     string
-	LogLine     uint64
-	DurationMs  int64
+	Reason       string
+	Basis        string
+	TraceID      string
+	CurlTraceID  string
+	LogPath      string
+	LogLine      uint64
+	DurationMs   int64
 }

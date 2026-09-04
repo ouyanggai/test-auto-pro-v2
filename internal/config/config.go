@@ -304,12 +304,12 @@ type RunConfig struct {
 
 // 运行参数的环境变量名与兜底默认值。
 const (
-	runLeaseDurationEnv        = "TEST_AUTO_PRO_RUN_LEASE_DURATION"
-	runReadRetryAttemptsEnv    = "TEST_AUTO_PRO_READ_RETRY_ATTEMPTS"
-	runReadRetryBaseDelayEnv   = "TEST_AUTO_PRO_READ_RETRY_BASE_DELAY"
-	runReadRetryMaxDelayEnv    = "TEST_AUTO_PRO_READ_RETRY_MAX_DELAY"
-	runStepStaleAfterEnv       = "TEST_AUTO_PRO_STEP_STALE_AFTER"
-	runStatusPollIntervalEnv   = "TEST_AUTO_PRO_STATUS_POLL_INTERVAL"
+	runLeaseDurationEnv      = "TEST_AUTO_PRO_RUN_LEASE_DURATION"
+	runReadRetryAttemptsEnv  = "TEST_AUTO_PRO_READ_RETRY_ATTEMPTS"
+	runReadRetryBaseDelayEnv = "TEST_AUTO_PRO_READ_RETRY_BASE_DELAY"
+	runReadRetryMaxDelayEnv  = "TEST_AUTO_PRO_READ_RETRY_MAX_DELAY"
+	runStepStaleAfterEnv     = "TEST_AUTO_PRO_STEP_STALE_AFTER"
+	runStatusPollIntervalEnv = "TEST_AUTO_PRO_STATUS_POLL_INTERVAL"
 
 	defaultRunLeaseDuration      = 5 * time.Minute
 	defaultRunReadRetryAttempts  = 8
