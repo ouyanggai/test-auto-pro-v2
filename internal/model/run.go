@@ -257,3 +257,48 @@ type PathRunStatusChangeError struct {
 func (e *PathRunStatusChangeError) Error() string {
 	return fmt.Sprintf("路径运行状态不允许从 %s 前进到 %s", PathRunStatusName(e.From), PathRunStatusName(e.To))
 }
+
+// RunStepStatus 是步骤落账时的事实结论，与三值判定一一对应。
+type RunStepStatus string
+
+const (
+	RunStepSucceeded RunStepStatus = "succeeded" // 确定成功
+	RunStepFailed    RunStepStatus = "failed"    // 确定失败
+	RunStepUncertain RunStepStatus = "uncertain" // 写结果不确定
+)
+
+// RunStep 是一个编译步骤的执行事实（run_steps 表），落账时一次性 INSERT。
+type RunStep struct {
+	PathRunID    uint64
+	StepNo       int
+	Source       string
+	Action       string
+	NodeKey      string
+	ActorSummary string
+	GateSnapshot string
+	Status       RunStepStatus
+	StartedAt    time.Time
+	FinishedAt   time.Time
+}
+
+// RunStepAttempt 是一次尝试的判定事实（run_step_attempts 表），与所属步骤同事务 INSERT。
+// trace_id 与 curl_trace_id 使本记录与 network.log/curl.log 双向可达；LogPath/LogLine 指向 step.log 具体行。
+type RunStepAttempt struct {
+	PathRunID   uint64
+	StepID      uint64
+	AttemptNo   int
+	Verdict     string
+	SideEffect  string
+	Transport   string
+	StatusCode  int
+	Initial     string
+	Reread      string
+	FailureClass *FailureClass
+	Reason      string
+	Basis       string
+	TraceID     string
+	CurlTraceID string
+	LogPath     string
+	LogLine     uint64
+	DurationMs  int64
+}

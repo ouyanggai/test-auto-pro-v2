@@ -48,6 +48,12 @@ type RunStore interface {
 	RenewPathRunLease(ctx context.Context, pathRunID uint64, workerID string, fencingToken uint64, leaseDuration time.Duration, now time.Time) error
 	// ReleasePathRunLease 在一步走完落账后释放租约；未命中返回 ErrStaleLease。
 	ReleasePathRunLease(ctx context.Context, pathRunID uint64, workerID string, fencingToken uint64, now time.Time) error
+	// SetMainInstanceRef 首次落库路径运行独占的主实例引用。
+	// 一条路径运行独占一个真实主实例：引用已存在时拒绝改写，避免把后续写引到别的实例上。
+	SetMainInstanceRef(ctx context.Context, pathRunID uint64, instanceRef string, now time.Time) error
+	// RecordStepAttempt 把步骤事实与尝试事实在同一事务内 INSERT（事实表只 INSERT，永不改写）。
+	// 返回新建步骤行的 ID；两行要么同时存在，要么都不存在，不存在“先占位再补写”的中间态。
+	RecordStepAttempt(ctx context.Context, step model.RunStep, attempt model.RunStepAttempt, now time.Time) (uint64, error)
 	// RecoverInterruptedPathRuns 把处于运行中/核验中的路径运行一律置为待对账并写事件行。
 	// 运行聚合保持原状留给对账切片（F-018）裁决；进程启动时调用，绝不自动继续执行。
 	RecoverInterruptedPathRuns(ctx context.Context, now time.Time) ([]uint64, error)

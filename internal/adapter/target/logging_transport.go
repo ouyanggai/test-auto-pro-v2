@@ -42,14 +42,14 @@ func (t *loggingTransport) RoundTrip(request *http.Request) (*http.Response, err
 		next = http.DefaultTransport
 	}
 	scope := logging.ScopeFrom(request.Context())
-	traceID := logging.NewTraceID()
+	traceID := requestTraceIDFromContext(request.Context())
 	requestBody := readRequestBody(request)
 	record := logging.NetworkRecord{
 		TraceID: traceID, CurlTraceID: traceID,
 		Method:   request.Method,
 		Endpoint: request.URL.Path,
-		// 当前工具只发只读请求；写端点白名单为空，所以分类固定为 read。
-		RequestClass: "read",
+		// 分类由唯一请求出口标记；未标记的历史只读调用按 read 落盘。
+		RequestClass: RequestClassFromContext(request.Context()),
 		Curl:         logging.CurlCommand(request.Method, request.URL.String(), requestHeaders(request), requestBody),
 	}
 	started := time.Now()

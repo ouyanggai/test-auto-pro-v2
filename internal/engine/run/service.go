@@ -79,6 +79,12 @@ func (s *Service) ReleaseExecution(ctx context.Context, pathRunID uint64, fencin
 	return s.store.ReleasePathRunLease(ctx, pathRunID, s.workerID, fencingToken, s.now())
 }
 
+// SetMainInstanceRef 在发起成功后首次落库主实例引用（独占，不可改写）。
+// 尽早落库的意义：若进程在核验前崩溃，恢复出的待对账路径运行仍有实例引用可供对账。
+func (s *Service) SetMainInstanceRef(ctx context.Context, pathRunID uint64, instanceRef string) error {
+	return s.store.SetMainInstanceRef(ctx, pathRunID, instanceRef, s.now())
+}
+
 // MarkVerifying 在发出写请求、进入事实重读前把路径运行置为核验中。
 // 这一步先行落库：进程若在此后崩溃，启动恢复会把该路径运行置为待对账，
 // 因为写请求可能已在目标生效（纲领第 4.2 节）。

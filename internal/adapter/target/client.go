@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"test-auto-pro-v2/internal/jsonvalues"
+	"test-auto-pro-v2/internal/logging"
 )
 
 const maxResponseBytes = 8 << 20
@@ -1238,6 +1239,20 @@ func convertFlowFieldPowers(raw []rawFlowNodeFieldPower) []FlowNodeFieldPower {
 
 // call 按已核实协议传递后端会话，并限制响应体、超时和公开错误内容。
 func (c *Client) call(ctx context.Context, path, sid string, body map[string]any) (*envelope, error) {
+	return c.callOfClass(ctx, path, sid, body, "read", "")
+}
+
+// CallWrite 发出唯一一次写请求，返回本次请求的 trace_id。
+// trace_id 由本出口生成并贯穿 network.log/curl.log 与运行事实的尝试记录，实现记录与日志双向可达。
+// 本方法不内建任何重试：调用方（执行器 submit 阶段）保证一次尝试只调用一次。
+func (c *Client) CallWrite(ctx context.Context, path, sid string, body map[string]any) (*envelope, string, error) {
+	traceID := logging.NewTraceID()
+	result, err := c.callOfClass(ctx, path, sid, body, "write", traceID)
+	return result, traceID, err
+}
+
+// callOfClass 是全部目标请求的唯一出口；class 标记读写分类，traceID 非空时作为日志关联键。
+func (c *Client) callOfClass(ctx context.Context, path, sid string, body map[string]any, class, traceID string) (*envelope, error) {
 	payload := make(map[string]any, len(body)+1)
 	for key, value := range body {
 		payload[key] = value
@@ -1274,7 +1289,7 @@ func (c *Client) call(ctx context.Context, path, sid string, body map[string]any
 	// 传输层失败分档是安全判定的前提：连接阶段未完成（确定失败、无副作用）与
 	// 响应丢失（不确定）结论完全相反，必须在发出请求前挂上 httptrace 才能拿到判据。
 	probe := &transportProbe{}
-	req = req.WithContext(httptrace.WithClientTrace(req.Context(), probe.trace()))
+	req = req.WithContext(withRequestMetadata(httptrace.WithClientTrace(req.Context(), probe.trace()), class, traceID))
 	response, err := c.httpClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1526,3 +1541,55 @@ func firstNonEmpty(values ...string) string {
 
 // SubmittedStatusText 暴露目标实例状态的中文名称映射，供快速候选查询复用同一套状态文案。
 func SubmittedStatusText(status string) string { return submittedStatusText(strings.TrimSpace(status)) }
+
+// FindDueTaskID 精确重查当前账号在指定实例、指定节点上的活动待办任务链接 ID。
+// 审批写请求的 data.jobTaskId 是目标硬性必填项；本方法只读、可安全重试。
+// 同一节点存在多个活动任务时无法证明唯一归属，必须报错而不是任选一个。
+func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, nodeProxyID string) (string, error) {
+	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
+		"data": map[string]any{
+			"flowInstanceId":               strings.TrimSpace(instanceID),
+			"taskStatus":                   "waiting_send",
+			"auditWayList":                 []string{},
+			"useScope":                     "invest",
+			"flowInstanceBizRelevance":     map[string]any{},
+			"flowInstanceBizRelevanceList": []any{},
+		},
+		"pagination": true, "pages": 1, "size": 100,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !responseSucceeded(resp) {
+		return "", responseError(resp)
+	}
+	var raw []struct {
+		ID              string `json:"id"`
+		FlowInstanceID  string `json:"flowInstanceId"`
+		FlowNodeProxyID string `json:"flowNodeProxyId"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return "", err
+	}
+	wantInstance := strings.TrimSpace(instanceID)
+	wantNode := strings.TrimSpace(nodeProxyID)
+	matched := make([]string, 0, 1)
+	for _, item := range raw {
+		if strings.TrimSpace(item.FlowInstanceID) != wantInstance {
+			continue
+		}
+		if wantNode != "" && strings.TrimSpace(item.FlowNodeProxyID) != wantNode {
+			continue
+		}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			matched = append(matched, id)
+		}
+	}
+	if len(matched) == 0 {
+		return "", nil
+	}
+	if len(matched) > 1 {
+		return "", invalidResponse("multiple due tasks on the same node")
+	}
+	return matched[0], nil
+}

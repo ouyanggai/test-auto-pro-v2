@@ -273,3 +273,62 @@ func newF016RunDatabase(t *testing.T) *planmysql.Database {
 	t.Cleanup(func() { database.Close() })
 	return database
 }
+
+// TestF016StepFactsAreInsertOnlyAndInstanceRefExclusive 用真实 MySQL 验证：
+// 步骤与尝试事实成对落账且只增不改；主实例引用首次落库后不可改绑（一条路径运行独占一个实例）。
+func TestF016StepFactsAreInsertOnlyAndInstanceRefExclusive(t *testing.T) {
+	database := newF016RunDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	now := time.Now()
+
+	_, pathRun, err := store.CreateRun(ctx, 6, 66, model.RunModeSingleStep, model.RunTriggerManual, nil, now)
+	if err != nil {
+		t.Fatalf("创建路径运行失败：%v", err)
+	}
+	stepID, err := store.RecordStepAttempt(ctx, model.RunStep{
+		PathRunID: pathRun.ID, StepNo: 1, Source: "user", Action: "submit", NodeKey: "node-start",
+		ActorSummary: "测试账号", Status: model.RunStepSucceeded, StartedAt: now, FinishedAt: now,
+	}, model.RunStepAttempt{
+		PathRunID: pathRun.ID, AttemptNo: 1, Verdict: "confirmed_success", SideEffect: "none",
+		Transport: "responded", Initial: "success_claim", Reread: "advanced",
+		Reason: "响应成功且实例已前进", Basis: "isSuccess=true;重读已前进",
+		TraceID: "trace-1", CurlTraceID: "trace-1", LogPath: "plans/x/runs/y/1/step.log", LogLine: 3, DurationMs: 42,
+	}, now)
+	if err != nil {
+		t.Fatalf("步骤事实落账失败：%v", err)
+	}
+	if stepID == 0 {
+		t.Fatal("步骤行 ID 不应为 0")
+	}
+	// 第二步再落一次：事实表只增，两行并存。
+	if _, err := store.RecordStepAttempt(ctx, model.RunStep{
+		PathRunID: pathRun.ID, StepNo: 2, Source: "user", Action: "approve", NodeKey: "node-audit",
+		Status: model.RunStepFailed, StartedAt: now, FinishedAt: now,
+	}, model.RunStepAttempt{
+		PathRunID: pathRun.ID, AttemptNo: 1, Verdict: "confirmed_failure", SideEffect: "none",
+		Transport: "connect_refused", Reason: "连接阶段未完成", Basis: "dial 失败",
+		TraceID: "trace-2", CurlTraceID: "trace-2", LogPath: "plans/x/runs/y/1/step.log", LogLine: 5, DurationMs: 7,
+	}, now); err != nil {
+		t.Fatalf("第二步事实落账失败：%v", err)
+	}
+	var stepCount, attemptCount int
+	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM run_steps WHERE path_run_id = ?", pathRun.ID).Scan(&stepCount); err != nil || stepCount != 2 {
+		t.Fatalf("应有 2 行步骤事实：count=%d err=%v", stepCount, err)
+	}
+	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM run_step_attempts WHERE path_run_id = ?", pathRun.ID).Scan(&attemptCount); err != nil || attemptCount != 2 {
+		t.Fatalf("应有 2 行尝试事实：count=%d err=%v", attemptCount, err)
+	}
+
+	if err := store.SetMainInstanceRef(ctx, pathRun.ID, "instance-1", now); err != nil {
+		t.Fatalf("首次落库主实例引用失败：%v", err)
+	}
+	if err := store.SetMainInstanceRef(ctx, pathRun.ID, "instance-2", now); !errors.Is(err, repository.ErrRunStatusConflict) {
+		t.Fatalf("主实例引用不可改绑，实际 err=%v", err)
+	}
+	var ref string
+	if err := database.DB.QueryRowContext(ctx, "SELECT main_instance_ref FROM path_runs WHERE id = ?", pathRun.ID).Scan(&ref); err != nil || ref != "instance-1" {
+		t.Fatalf("主实例引用应保持首次落库值：ref=%s err=%v", ref, err)
+	}
+}

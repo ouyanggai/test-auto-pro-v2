@@ -679,3 +679,84 @@ func nullableFailureClass(class *model.FailureClass) any {
 	}
 	return string(*class)
 }
+
+// SetMainInstanceRef 首次落库主实例引用；引用已存在且不同时拒绝，
+// 保证一条路径运行自始至终只指向一个真实主实例。
+func (r *RunRepository) SetMainInstanceRef(ctx context.Context, pathRunID uint64, instanceRef string, now time.Time) error {
+	now = now.UTC()
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE path_runs SET main_instance_ref = ?, updated_at = ?
+		WHERE id = ? AND (main_instance_ref IS NULL OR main_instance_ref = '')
+	`, instanceRef, now, pathRunID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		var current string
+		if err := r.db.QueryRowContext(ctx, "SELECT main_instance_ref FROM path_runs WHERE id = ?", pathRunID).Scan(&current); err != nil {
+			return err
+		}
+		if current == instanceRef {
+			return nil
+		}
+		return fmt.Errorf("%w：路径运行已绑定其他主实例", repository.ErrRunStatusConflict)
+	}
+	return nil
+}
+
+// RecordStepAttempt 把步骤事实与尝试事实在同一事务内 INSERT。
+// 先插步骤行取得 ID，再插尝试行引用它；任何一步失败即整体回滚，保证事实只以完整形态存在。
+func (r *RunRepository) RecordStepAttempt(ctx context.Context, step model.RunStep, attempt model.RunStepAttempt, now time.Time) (uint64, error) {
+	now = now.UTC()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	stepResult, err := tx.ExecContext(ctx, `
+		INSERT INTO run_steps (path_run_id, step_no, source, action, node_key, actor_summary, gate_snapshot, status, started_at, finished_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, step.PathRunID, step.StepNo, step.Source, step.Action, step.NodeKey, nullableString(step.ActorSummary),
+		nullableString(step.GateSnapshot), string(step.Status), step.StartedAt, step.FinishedAt, now)
+	if err != nil {
+		return 0, err
+	}
+	stepID, err := stepResult.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_step_attempts (path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code,
+			initial, reread, failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, step.PathRunID, stepID, attempt.AttemptNo, attempt.Verdict, attempt.SideEffect, attempt.Transport,
+		nullableInt(attempt.StatusCode), attempt.Initial, attempt.Reread, nullableFailureClass(attempt.FailureClass),
+		attempt.Reason, attempt.Basis, attempt.TraceID, attempt.CurlTraceID, attempt.LogPath, attempt.LogLine,
+		attempt.DurationMs, now); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return uint64(stepID), nil
+}
+
+// nullableString 把空字符串转为 NULL，保持事实表没有空串噪音。
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+// nullableInt 把零值整数转为 NULL（HTTP 状态码缺省表示未收到状态行）。
+func nullableInt(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
