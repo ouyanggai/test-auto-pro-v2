@@ -1,7 +1,7 @@
 # 当前进度
 
 - 当前功能：F-013 分层日志与追踪底座。
-- 当前状态：`ready_for_manual`（日志查看方式与日志归档方式两轮人工验收反馈均已修复并实测通过，等待重新验收）。
+- 当前状态：`ready_for_manual`（日志查看方式与日志归档方式两轮人工验收反馈均已修复并实测通过，等待重新验收）。用户 2026-09-04 明确：暂未发现问题，但不视为明确验收。
 - F-013 人工验收反馈（已修复）：“日志没有按计划和执行路径归档，配置日志集中在日期目录，无法从业务对象定位。”
   现在顶层只有 `logs/application/<日期>/` 与 `logs/plans/<计划显示名>__plan-<ID>/`：
   配置阶段落 `configuration/<执行路径显示名>__path-<ID>/<日期>/`（`meta.json`、`operation.log`、`operation-error.log`
@@ -45,6 +45,8 @@
 - 下一步：F-014 目标错误语义与幂等勘定已按用户要求产出计划文档 `docs/features/F-014-target-error-semantics-idempotency.md`，
   状态 `awaiting_approval`，只读、不发写请求，写端点白名单为空；等用户明确批准范围后才进入 `implementing`。
   F-012 正按人工验收反馈处于 `implementing`，F-013 仍停在 `ready_for_manual`；两者未获明确验收前不进入 `accepted`。
+  用户 2026-09-04 已按裁决要求修订 F-014 计划（纯只读、探针只列不跑、未实测结论标待实测、端点加精确文案联合判定、
+  未覆盖组合默认不确定、写路径样本按源码构造），并明确等 F-012 返工通过人工验收后再批准 F-014。
 - 已产出后续工作纲领 `docs/EXECUTION_PROGRAM.md`（执行器、调试器、运行记录与分层日志，F-013 至 F-023），只界定边界与顺序，不构成实施授权。用户已裁决：内网日志原样记录、code-server 随 Docker 交付、发布用 Docker Compose、真实写使用已指定测试账号（账号值不入仓库）；`docs/ARCHITECTURE.md` 的日志条文已同步。
 
 ## 当前决策摘要
