@@ -1,6 +1,6 @@
 # F-013 分层日志与追踪底座
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明）与「明确不做」中的“独立技术状态与 JSON 配置页面”
 - 架构依据：`docs/ARCHITECTURE.md` 的包边界与目标适配层条文（已按内网裁决同步日志条文）
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6 节全部，第 9 节 F-013 行
@@ -28,9 +28,16 @@
 ### 包含
 
 - 新增 `internal/logging` 包：日志根解析、日志作用域、统一单行格式、写入器（返回写入行号）、容量轮转、按日期清理。
-- 全局程序日志与全局程序错误日志按天分文件：`logs/app-<YYYY-MM-DD>.log` 与 `logs/app-error-<YYYY-MM-DD>.log`，配合保留期滚动删除。
-- 配置阶段日志桶 `logs/config/<YYYY-MM-DD>/`，包含 `network.log`、`network-error.log`、`curl.log`、`program.log`、`program-error.log`。
-- 运行目录路由分支 `logs/runs/<计划名>/<路径名>/<运行号>/` 的实现与单元验证（用合成作用域验证，本切片没有真实运行）。
+- 日志根下只有两棵树：`logs/application/` 放系统级事件，`logs/plans/` 放全部能归属到计划的业务日志。
+- 应用程序日志 `logs/application/<YYYY-MM-DD>/application.log` 与 `application-error.log`：只放启动停止、
+  服务监听、保留期清理这类系统事件和无法归属业务对象的基础设施异常，不作为业务日志的汇总文件。
+- 配置阶段业务日志 `logs/plans/<计划显示名>__plan-<计划ID>/configuration/<执行路径显示名>__path-<路径ID>/<YYYY-MM-DD>/`，
+  内含 `meta.json`、`operation.log`、`operation-error.log`、`network.log`、`network-error.log`、`curl.log`。
+- 执行阶段业务日志 `logs/plans/<计划显示名>__plan-<计划ID>/runs/<执行路径显示名>__path-<路径ID>/<运行号>/`，
+  内含 `meta.json`、`execution.log`、`execution-error.log` 与同样三个网络日志文件；本切片只实现路由，不创建运行记录。
+- 已知计划但还不知道执行路径的计划级操作进 `configuration/_plan/<YYYY-MM-DD>/`。
+- 中间件从路由取计划与执行路径的不可变 ID，显示名由 `service.LogScopeService` 从真实业务记录读取并完成归属校验，
+  每次请求只解析一次；作用域随 `context` 传给目标站点客户端，网络日志与可重放命令因此落在同一个计划目录。
 - 目标请求日志在 `internal/adapter/target` 的 `Client.call` 单点接入，覆盖当前全部只读请求。
 - `curl.log` 写入可直接复制重放的完整命令，含真实会话值与完整请求响应正文（内网裁决，见 `docs/EXECUTION_PROGRAM.md` 第 6.5 节）。
 - API 中间件：请求日志、失败响应日志（记录实际返回给用户的稳定错误码与中文文案）、panic 恢复并落程序错误日志。
@@ -110,13 +117,13 @@ time=2026-09-03 18:56:31 level=error ...
 
 ### T01：日志包骨架与写入器
 
-新增 `internal/logging`：日志根解析、`LogScope` 与 `context` 注入、统一行格式化、值清洗、写入器（返回行号、有界轮转、并发串行）、目录路由（配置桶与运行目录两个分支）。
+新增 `internal/logging`：日志根解析、`Scope` 与 `context` 注入（合并语义）、统一行格式化、值清洗、写入器（返回行号、有界轮转、并发串行）、目录路由（应用程序、配置阶段、执行阶段三个分支）与 `meta.json` 归属说明。
 
-完成判据：单元测试覆盖行号返回、轮转、并发无交错、路径清洗、空值占位、作用域字段注入与运行目录路由（合成作用域）。
+完成判据：单元测试覆盖行号返回、轮转、并发无交错、目录段清洗（保留中文括号横线空格、拦下路径穿越）、空值占位、作用域合并不丢 `RequestID`、三个目录分支的路由结果，以及同名不同 ID 的计划与执行路径不共用目录。
 
 ### T02：程序日志与程序错误日志
 
-`app.log` 与 `app-error.log` 双写，按日归档；配置桶内同时写 `program.log` 与 `program-error.log`。实现 `error_class` 映射、错误链展开、`source` 定位、panic 栈有界截断、`run_terminated` 与 `user_message`。
+按作用域选择落点：配置阶段写 `operation.log` 与 `operation-error.log`，执行阶段写 `execution.log` 与 `execution-error.log`，无业务归属时才写 `application.log` 与 `application-error.log`，同一条日志只落一处目录。实现 `error_class` 映射、错误链展开、`source` 定位、panic 栈有界截断、`run_terminated` 与 `user_message`。
 
 完成判据：单元测试覆盖八类分类与错误链展开；panic 用例产生带 `stack` 块的记录且截断生效。
 
@@ -130,11 +137,11 @@ time=2026-09-03 18:56:31 level=error ...
 
 新增请求中间件：生成 `request_id`、记录请求与响应、捕获失败响应的稳定错误码与中文文案、recover panic 并返回稳定的中文 500 响应。在 `cmd/server/main.go` 包装现有 handler，与既有 `gzipResponses` 组合。
 
-完成判据：集成测试断言一次失败请求在 `program-error.log` 里的 `user_message` 与 API 响应体的 `error.message` 完全一致；panic 处理器返回 500 且不泄漏栈到响应体，栈只进日志。
+完成判据：集成测试断言一次失败请求在该计划目录 `operation-error.log` 里的 `user_message` 与 API 响应体的 `error.message` 完全一致，且这条业务异常不出现在 `application-error.log`；panic 处理器返回 500 且不泄漏栈到响应体，栈只进日志；分别访问两个计划与执行路径的配置接口后日志不串目录。
 
 ### T05：保留期清理与容量轮转
 
-按天分文件的全局日志、`logs/config/` 与 `logs/runs/` 一起按日期清理，默认保留 7 天，`TEST_AUTO_PRO_LOG_RETENTION_DAYS` 可覆盖。清理只删过期目录，绝不触碰数据库运行事实，也不删当天目录。`.gitignore` 增加 `/logs/`。
+`logs/application/<日期>/` 与 `logs/plans/<计划>/configuration/<执行路径>/<日期>/` 按目录名日期清理，`logs/plans/<计划>/runs/<执行路径>/<运行号>/` 按最后修改时间清理，并收掉因此空掉的父目录，默认保留 7 天，`TEST_AUTO_PRO_LOG_RETENTION_DAYS` 可覆盖。清理只删过期目录，绝不触碰数据库运行事实，也不删当天目录。`.gitignore` 增加 `/logs/`。
 
 完成判据：单元测试构造过期与当天目录，断言只删过期项；`git status` 在产生日志后保持干净。
 
@@ -142,7 +149,7 @@ time=2026-09-03 18:56:31 level=error ...
 
 新增 `make logs-viewer`（固定镜像 `codercom/code-server:4.96.4`、挂载 `logs/`、端口 19002、无登录、可读写、以当前本机用户 UID/GID 运行）与 `make logs-viewer-stop`（只停止并删除该容器）。Docker 未启动时两个目标都直接报错退出，不提供任何替代方案。容器内对挂载目录的读写权限需实测确认。启动后追加一次挂载双向自检，因为 `docker inspect` 里的 `RW=true` 只说明声明了可写，并不证明宿主目录真的映射进容器：Colima、Rancher Desktop 一类虚拟机方案还需要先把项目 `logs/` 目录挂进虚拟机，否则容器里只会出现一个空的可写目录。新增 `test/run-f013.sh` 聚合本切片测试。
 
-完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`make logs-viewer` 实际起得来，`http://127.0.0.1:19002` 能打开 code-server，文件树能看到当天的 `app-<日期>.log` 与 `config/<日期>/`，容器内能读取日志且挂载目录可写（容器内新建的文件宿主 `logs/` 能立刻看到），挂载自检在挂载未生效时能拦下并报错，`make logs-viewer-stop` 能正常停止。
+完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`make logs-viewer` 实际起得来，`http://127.0.0.1:19002` 能打开 code-server，文件树能按计划 → 配置或运行 → 执行路径 → 日期或运行号逐层找到日志，容器内能读取日志且挂载目录可写（容器内新建的文件宿主 `logs/` 能立刻看到），挂载自检在挂载未生效时能拦下并报错，`make logs-viewer-stop` 能正常停止。
 
 ## 自动验证
 
@@ -158,11 +165,19 @@ time=2026-09-03 18:56:31 level=error ...
 ## 人工验收
 
 1. 启动后端与前端，在浏览器里依次做：验证账号、打开流程图、进入一条路径的节点配置、打开历史业务数据工作区。
-2. 执行 `make logs-viewer`。使用 Colima 等虚拟机方案时，需先在 `~/.colima/default/colima.yaml` 的 `mounts` 中加入本项目 `logs/` 目录并设为 `writable: true`，再 `colima restart`；挂载没生效时该命令会直接报错并停掉容器。浏览器打开 http://127.0.0.1:19002 ，确认 code-server 直接停在 `/home/coder/logs`，文件树能看到 `app-<今天>.log`、`app-error-<今天>.log` 与 `config/<今天>/` 下的四个文件；核对完成后执行 `make logs-viewer-stop`。
-3. 打开 `logs/config/<今天>/network.log`，确认上一步的每个操作都有对应请求行，字段可读、中文可读、没有乱码。
-4. 打开 `curl.log`，复制任意一条 `curl=` 命令到终端执行，确认能拿到与当时一致的响应。
-5. 把目标平台地址临时改成一个不可达地址，重复一次账号验证。确认：界面给出中文错误提示；`network-error.log` 出现对应失败行；`app-error-<今天>.log` 出现一行 `error_class=network`，其 `user_message` 与界面上那句提示完全一致。
-6. 确认 `git status` 干净，`logs/` 没有进入待提交列表。
+2. 执行 `make logs-viewer`。使用 Colima 等虚拟机方案时，需先在 `~/.colima/default/colima.yaml` 的 `mounts` 中加入本项目 `logs/` 目录并设为 `writable: true`，再 `colima restart`；挂载没生效时该命令会直接报错并停掉容器。浏览器打开 http://127.0.0.1:19002 ，确认 code-server 直接停在 `/home/coder/logs`，
+   顶层只有 `application/` 与 `plans/` 两棵新目录树，并能按计划 → `configuration` → 执行路径 → 日期逐层点到日志；
+   核对完成后执行 `make logs-viewer-stop`。
+3. 打开 `logs/plans/<计划显示名>__plan-<ID>/configuration/<执行路径显示名>__path-<ID>/<今天>/network.log`，
+   确认上一步的每个操作都有对应请求行，每行都带 `plan_id`、`plan_name`、`execution_path_id`、`execution_path_name`，
+   字段可读、中文可读、没有乱码；同目录的 `meta.json` 与目录名指向同一个计划和执行路径。
+4. 打开 `logs/application/<今天>/application.log`，确认里面只有服务启动、监听、停止这类系统事件，
+   没有计划配置、表单读取、节点配置等业务操作日志。跨计划接口（如计划列表）没有计划 ID，其请求行按规则留在这里。
+5. 打开同目录的 `curl.log`，复制任意一条命令到终端执行，确认能拿到与当时一致的响应。
+6. 把目标平台地址临时改成一个不可达地址，重复一次账号验证。确认：界面给出中文错误提示；
+   该计划目录的 `network-error.log` 出现对应失败行；同目录 `operation-error.log` 出现一行 `error_class=network`，
+   其 `user_message` 与界面上那句提示完全一致，且这条业务异常没有写进 `application-error.log`。
+7. 确认 `git status` 干净，`logs/` 没有进入待提交列表。
 
 ## 完成标准
 
@@ -231,4 +246,26 @@ time=2026-09-03 18:56:31 level=error ...
   计划 → 配置/运行 → 执行路径 → 日期或运行号逐层归档，配置阶段用 `operation.log`，执行阶段用 `execution.log`，
   `application` 只保留启动停止与无法归属业务对象的系统级事件，且不得与业务日志重复写入。
 
-正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `ready_for_manual`：T01 至 T06 已实施并实测通过，等待用户按上面「人工验收」六步确认后再推进到 `accepted`。
+- 2026-09-04：按人工验收反馈重构日志归档，状态回到 `ready_for_manual`。落地内容：
+  顶层只保留 `logs/application/` 与 `logs/plans/`，删除所有计划共用的 `logs/config/<日期>` 路由，不留兼容层；
+  `logging.Scope` 扩展出 `PlanID`、`PlanName`、`ExecutionPathID`、`ExecutionPathName` 并进日志字段；
+  `WithScope` 改为合并语义；中间件只从路由取不可变 ID，显示名由 `service.LogScopeService` 从真实业务记录读取
+  （按计划 ID 读执行路径顺带完成归属校验，每请求解析一次并带 30 秒缓存）；作用域随 `context` 传给目标站点客户端，
+  网络日志与可重放命令因此与业务日志落在同一个计划目录；配置阶段改用 `operation.log`，执行阶段用 `execution.log`；
+  已归属的业务日志不再重复写进根目录聚合文件，业务异常也不改写进 `application-error.log`。
+  真实数据实测证据（本机 19013 端口接真实目标与真实数据库，计划 2 名为 `oyg测试002`，路径 13 名为 `路径 1`）：
+  - 访问 `/api/plans/2/execution-paths/13/configuration` 后，`operation.log`、`network.log`、`curl.log` 与 `meta.json`
+    全部落在 `logs/plans/oyg测试002__plan-2/configuration/路径 1__path-13/2026-09-04/`，每行都带
+    `plan_id=2 plan_name=oyg测试002 execution_path_id=13 execution_path_name=路径_1`。
+  - 同时访问路径 13 与路径 14 的配置接口，两个目录互不出现对方的 `execution_path_id`，没有串目录。
+  - 只带计划 ID 的 `/api/plans/2/flow-graph` 与业务数据候选接口进 `configuration/_plan/2026-09-04/`。
+  - `logs/application/2026-09-04/application.log` 里只有服务开始监听、服务已停止和无计划 ID 的跨计划接口请求行，
+    没有计划配置、表单读取、节点配置这类业务操作日志。
+  - `meta.json` 的 `planId`、`planName`、`executionPathId`、`executionPathName` 与目录名一致，运行目录另有 `runId` 与 `startedAt`。
+  - code-server 内可逐层点开 计划 → `configuration` → `执行路径 1__path-13` → `2026-09-04`，
+    资源接口读取含中文与空格的嵌套路径，字节数与宿主完全一致；`make logs-viewer-stop` 与再次 `make logs-viewer` 均正常。
+  - `./test/run-f013.sh` 全量通过，`git status` 无 `logs/` 产物。
+  说明：改动前产生的 `logs/app-<日期>.log` 与 `logs/config/<日期>/` 仍在磁盘上（按要求不删除既有日志），
+  新代码已不再写入也不再清理这两处，需要清空顶层时由用户自行删除。
+
+正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `ready_for_manual`：T01 至 T06 已实施，日志查看方式与日志归档方式两轮反馈均已修复并实测通过，等待用户按上面「人工验收」七步确认后再推进到 `accepted`。

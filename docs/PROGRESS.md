@@ -1,11 +1,21 @@
 # 当前进度
 
 - 当前功能：F-013 分层日志与追踪底座。
-- 当前状态：`implementing`（日志查看方式已验收通过；日志归档方式人工验收未通过，正在按计划/执行路径重构目录）。
-- F-013 人工验收反馈：“日志没有按计划和执行路径归档，配置日志集中在日期目录，无法从业务对象定位。”
-  正在按新规则重构：顶层只保留 `logs/application/<日期>/` 与 `logs/plans/<计划显示名>__plan-<ID>/`，
-  业务日志按计划 → 配置或运行 → 执行路径 → 日期或运行号归档，配置阶段写 `operation.log`，执行阶段写 `execution.log`，
-  `application` 只留启动停止与无法归属业务对象的系统级事件，业务日志不再重复写入根目录。
+- 当前状态：`ready_for_manual`（日志查看方式与日志归档方式两轮人工验收反馈均已修复并实测通过，等待重新验收）。
+- F-013 人工验收反馈（已修复）：“日志没有按计划和执行路径归档，配置日志集中在日期目录，无法从业务对象定位。”
+  现在顶层只有 `logs/application/<日期>/` 与 `logs/plans/<计划显示名>__plan-<ID>/`：
+  配置阶段落 `configuration/<执行路径显示名>__path-<ID>/<日期>/`（`meta.json`、`operation.log`、`operation-error.log`
+  与三个网络日志文件），执行阶段落 `runs/<执行路径显示名>__path-<ID>/<运行号>/`（`execution.log`、`execution-error.log`
+  与同样三个网络日志文件），只知道计划时落 `configuration/_plan/<日期>/`。
+  `logging.Scope` 增加计划与执行路径的 ID 与显示名并进日志字段，`WithScope` 改为合并语义；
+  中间件只从路由取不可变 ID，显示名由 `service.LogScopeService` 从真实业务记录读取并完成归属校验，每请求解析一次；
+  作用域随 context 传给目标站点客户端，`network.log`、`curl.log` 与业务错误日志因此都落进同一个计划目录；
+  `application` 只保留启动停止与无法归属业务对象的系统级事件，业务日志不再重复写入根目录。
+- F-013 归档实测（真实数据）：计划 2（`oyg测试002`）路径 13（`路径 1`）的配置接口日志落在
+  `logs/plans/oyg测试002__plan-2/configuration/路径 1__path-13/2026-09-04/`，每行带 `plan_id`/`plan_name`/
+  `execution_path_id`/`execution_path_name`；路径 13 与路径 14 互不串目录；只带计划 ID 的接口进 `_plan`；
+  `application.log` 只有服务监听与停止等系统事件；code-server 可逐层点到含中文与空格的嵌套目录。
+  改动前的 `logs/app-<日期>.log` 与 `logs/config/<日期>/` 按要求未删除，新代码不再写入这两处。
 - F-013 已完成：新增 `internal/logging`（日志根、作用域注入、统一单行格式、有界写入器与行号、配置桶与运行目录路由、保留期清理）；
   目标请求日志在传输层单点接入，成功与失败分流到 `network.log` / `network-error.log`，可重放命令与完整响应写入 `curl.log`；
   API 中间件记录请求、失败响应的稳定错误码与界面同源中文提示，并恢复 panic 返回稳定中文 500；
