@@ -32,6 +32,22 @@ logs-viewer:
 		-v "$$(pwd)/logs:/home/coder/logs" \
 		codercom/code-server:4.96.4 \
 		--auth none --bind-addr 0.0.0.0:8080 /home/coder/logs >/dev/null
+# 挂载自检：docker inspect 里的 RW=true 只说明声明了可写，并不证明宿主目录真的映射进容器。
+# Colima 等虚拟机方案还需要先把项目 logs/ 目录挂进虚拟机，否则容器只会看到一个空的可写目录。
+# 这里用一次双向探针实际验证：宿主写入容器能读到，容器写入宿主也能读到；不通过就停容器并明确报错。
+	@probe=".mount-check-$$$$"; printf 'host-ok\n' > "logs/$$probe"; \
+		if ! docker exec test-auto-pro-logs-viewer sh -c "grep -q host-ok '/home/coder/logs/$$probe' && printf 'container-ok\n' >> '/home/coder/logs/$$probe'" >/dev/null 2>&1; then \
+			rm -f "logs/$$probe"; docker rm -f test-auto-pro-logs-viewer >/dev/null 2>&1 || true; \
+			echo "日志目录挂载未生效：容器内读不到或写不了项目 logs/ 目录，已停止容器。" >&2; \
+			echo "使用 Colima 时需在 ~/.colima/default/colima.yaml 的 mounts 中加入本项目 logs/ 目录并设为 writable: true，然后执行 colima restart。" >&2; \
+			exit 1; \
+		fi; \
+		if ! grep -q container-ok "logs/$$probe"; then \
+			rm -f "logs/$$probe"; docker rm -f test-auto-pro-logs-viewer >/dev/null 2>&1 || true; \
+			echo "日志目录挂载未生效：容器内写入没有同步回宿主 logs/ 目录，已停止容器。" >&2; \
+			exit 1; \
+		fi; \
+		rm -f "logs/$$probe"
 	@echo "日志查看器已启动：http://127.0.0.1:19002 （目录 /home/coder/logs）"
 
 # logs-viewer-stop 只停止并删除日志查看容器，不动其他容器与日志文件。

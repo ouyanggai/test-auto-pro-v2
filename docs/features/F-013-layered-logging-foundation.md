@@ -1,6 +1,6 @@
 # F-013 分层日志与追踪底座
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明）与「明确不做」中的“独立技术状态与 JSON 配置页面”
 - 架构依据：`docs/ARCHITECTURE.md` 的包边界与目标适配层条文（已按内网裁决同步日志条文）
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6 节全部，第 9 节 F-013 行
@@ -36,6 +36,7 @@
 - API 中间件：请求日志、失败响应日志（记录实际返回给用户的稳定错误码与中文文案）、panic 恢复并落程序错误日志。
 - 程序错误日志字段：`error_class`、`error_chain`、`source`、`stack`（仅 panic）、`run_terminated`、`user_message`。
 - `make logs-viewer`：一条命令起固定版本 code-server（`codercom/code-server:4.96.4`），本机 19002 映射容器 8080，挂载本项目 `logs/` 到 `/home/coder/logs` 并直接打开该目录，内网使用不设登录，挂载目录可读写，容器以当前本机用户 UID/GID 运行。`make logs-viewer-stop` 只停止并删除该容器。
+- `make logs-viewer` 启动后做一次挂载双向自检：宿主写入的探针容器必须能读到，容器写入的内容宿主也必须能读到；任一方向不通就停掉容器并明确报错，不允许把一个空的可写目录当成挂载成功。
 - `.gitignore` 增加 `/logs/`。
 
 ### 不包含
@@ -139,9 +140,9 @@ time=2026-09-03 18:56:31 level=error ...
 
 ### T06：code-server 启动方式与全范围验证
 
-新增 `make logs-viewer`（固定镜像 `codercom/code-server:4.96.4`、挂载 `logs/`、端口 19002、无登录、可读写、以当前本机用户 UID/GID 运行）与 `make logs-viewer-stop`（只停止并删除该容器）。Docker 未启动时两个目标都直接报错退出，不提供任何替代方案。容器内对挂载目录的读写权限需实测确认。新增 `test/run-f013.sh` 聚合本切片测试。
+新增 `make logs-viewer`（固定镜像 `codercom/code-server:4.96.4`、挂载 `logs/`、端口 19002、无登录、可读写、以当前本机用户 UID/GID 运行）与 `make logs-viewer-stop`（只停止并删除该容器）。Docker 未启动时两个目标都直接报错退出，不提供任何替代方案。容器内对挂载目录的读写权限需实测确认。启动后追加一次挂载双向自检，因为 `docker inspect` 里的 `RW=true` 只说明声明了可写，并不证明宿主目录真的映射进容器：Colima、Rancher Desktop 一类虚拟机方案还需要先把项目 `logs/` 目录挂进虚拟机，否则容器里只会出现一个空的可写目录。新增 `test/run-f013.sh` 聚合本切片测试。
 
-完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`make logs-viewer` 实际起得来，`http://127.0.0.1:19002` 能打开 code-server，文件树能看到当天的 `app-<日期>.log` 与 `config/<日期>/`，容器内能读取日志且挂载目录可写，`make logs-viewer-stop` 能正常停止。
+完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`make logs-viewer` 实际起得来，`http://127.0.0.1:19002` 能打开 code-server，文件树能看到当天的 `app-<日期>.log` 与 `config/<日期>/`，容器内能读取日志且挂载目录可写（容器内新建的文件宿主 `logs/` 能立刻看到），挂载自检在挂载未生效时能拦下并报错，`make logs-viewer-stop` 能正常停止。
 
 ## 自动验证
 
@@ -157,7 +158,7 @@ time=2026-09-03 18:56:31 level=error ...
 ## 人工验收
 
 1. 启动后端与前端，在浏览器里依次做：验证账号、打开流程图、进入一条路径的节点配置、打开历史业务数据工作区。
-2. 执行 `make logs-viewer`，浏览器打开 http://127.0.0.1:19002 ，确认 code-server 直接停在 `/home/coder/logs`，文件树能看到 `app-<今天>.log`、`app-error-<今天>.log` 与 `config/<今天>/` 下的四个文件；核对完成后执行 `make logs-viewer-stop`。
+2. 执行 `make logs-viewer`。使用 Colima 等虚拟机方案时，需先在 `~/.colima/default/colima.yaml` 的 `mounts` 中加入本项目 `logs/` 目录并设为 `writable: true`，再 `colima restart`；挂载没生效时该命令会直接报错并停掉容器。浏览器打开 http://127.0.0.1:19002 ，确认 code-server 直接停在 `/home/coder/logs`，文件树能看到 `app-<今天>.log`、`app-error-<今天>.log` 与 `config/<今天>/` 下的四个文件；核对完成后执行 `make logs-viewer-stop`。
 3. 打开 `logs/config/<今天>/network.log`，确认上一步的每个操作都有对应请求行，字段可读、中文可读、没有乱码。
 4. 打开 `curl.log`，复制任意一条 `curl=` 命令到终端执行，确认能拿到与当时一致的响应。
 5. 把目标平台地址临时改成一个不可达地址，重复一次账号验证。确认：界面给出中文错误提示；`network-error.log` 出现对应失败行；`app-error-<今天>.log` 出现一行 `error_class=network`，其 `user_message` 与界面上那句提示完全一致。
@@ -193,6 +194,17 @@ time=2026-09-03 18:56:31 level=error ...
   释放空间需要删除本机既有镜像或构建缓存（`docker system df`：镜像 117 个共 60.64GB，
   构建缓存 43.29GB），属于用户数据，未获明确授权前不执行。
   待用户释放空间或明确授权清理后，按 T06 完成判据重新验证并把状态推进到 `ready_for_manual`。
+- 2026-09-04：Docker 磁盘已由用户自行恢复（`/dev/vdb1` 59G 已用 19G、可用 37G、35%），未执行任何 `prune`，用户镜像、构建缓存与卷全部保留。磁盘阻塞解除后暴露出真正的挂载阻塞：
+  colima 只挂载了 `/Volumes/oygsky/bigsys`（只读），本项目在外接盘 `/Volumes/oygsky/AIstudy/test-auto-pro-v2`，  虚拟机里根本看不到该路径，所以 `docker run -v` 只是在虚拟机内新建了一个空的可写目录，  容器内 `/home/coder/logs` 是空目录。`docker inspect` 的 `RW=true` 在这种情况下依然为真，不能作为挂载成功的判据。
+- 2026-09-04：本机基础设施变更（仓库外，已先向用户说明）。在 `~/.colima/default/colima.yaml` 的 `mounts` 中新增
+  `- location: /Volumes/oygsky/AIstudy/test-auto-pro-v2/logs` 且 `writable: true`，保留原有 bigsys 只读挂载，  改动前备份为 `colima.yaml.bak-20260904`，随后 `colima restart` 使挂载生效（重启前运行中的容器为 0，无工作负载受影响）。  只挂载 `logs/` 一个目录，项目源码不进入虚拟机。仓库内配套修复：`make logs-viewer` 增加挂载双向自检。
+- 2026-09-04：T06 容器验证实测通过，状态推进到 `ready_for_manual`。证据：
+  - 虚拟机内 `/Volumes/oygsky/AIstudy/test-auto-pro-v2/logs` 为 `virtiofs (rw)`；宿主 501:20 与虚拟机 501 属主一致，容器内以 501 读写正常。
+  - 容器内 `ls /home/coder/logs` 实际列出 `app-2026-09-04.log`、`app-error-2026-09-04.log`、`config/`，并读出 `config/2026-09-04/network.log` 的真实请求行。
+  - 容器内写入探针文件，宿主 `logs/` 立刻可见同一内容；随后删除，宿主同步消失。
+  - `http://127.0.0.1:19002/` 返回 302 到 `./?folder=/home/coder/logs`，code-server 资源接口读取两个日志文件的字节数与宿主完全一致（1460 与 1174），即文件树读到的就是挂载进来的真实文件。
+  - 反向验证：用 `--tmpfs` 造出"空的可写目录"这一失败形态，挂载自检能识别并拦下，不会误判为成功。
+  - `make logs-viewer-stop` 后容器被删除、19002 端口释放；`./test/run-f013.sh` 全量通过；`git status` 只有 `Makefile` 一处改动。
 - 2026-09-04：修复日志查看方式。删除 `logs-viewer/` 自建网页及其全部入口，不保留兼容层；
   恢复 `make logs-viewer` 与 `make logs-viewer-stop`，只提供单个 code-server 容器启动方式，
   Docker 未启动时明确报错退出。日志采集、错误分类与 curl 重放未改动。
@@ -210,4 +222,4 @@ time=2026-09-03 18:56:31 level=error ...
 - 写端点白名单检查只扫描 `internal/adapter/target`：`internal/engine/actioncatalog` 里的
   `targetOperation` 是动作目录的说明元数据，描述未来执行时会调用哪个接口，不构成一次请求。
 
-正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `awaiting_approval`：范围已按 `docs/EXECUTION_PROGRAM.md` 收敛，等待用户明确批准，且必须在 F-012 获得明确验收之后才能进入 `implementing`。
+正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `ready_for_manual`：T01 至 T06 已实施并实测通过，等待用户按上面「人工验收」六步确认后再推进到 `accepted`。
