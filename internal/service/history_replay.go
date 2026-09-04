@@ -328,12 +328,14 @@ func (s *HistoryReplayService) startWorker(requestContext context.Context, job m
 	if s == nil || strings.TrimSpace(job.ID) == "" {
 		return
 	}
+	// 作用域解析在计划名缺失时会查库，必须放在取锁之前：s.mu 还护着取消、恢复与 worker 状态，
+	// 数据库慢的时候不能把这些一起堵住。任务是否已经在跑仍由锁内的判断最终裁决。
+	scope := backgroundLogScope(requestContext, s.plans, job.PlanID)
 	s.mu.Lock()
 	if _, exists := s.running[job.ID]; exists {
 		s.mu.Unlock()
 		return
 	}
-	scope := backgroundLogScope(requestContext, s.plans, job.PlanID)
 	ctx, cancel := context.WithTimeout(logging.WithScope(context.Background(), scope), historyReplayWorkerTimeout)
 	done := make(chan struct{})
 	s.running[job.ID] = struct{}{}

@@ -3,6 +3,7 @@ package history_replay_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,6 +91,71 @@ func TestReplayWorkerKeepsPlanAndPathLogScope(t *testing.T) {
 	if scope.ExecutionPathID != "101" || scope.ExecutionPathName != "路径 1" {
 		t.Fatalf("后台 worker 没有补上执行路径归属：%+v", scope)
 	}
+}
+
+// blockingReplayPlanRepo 从第二次读取计划起阻塞：第一次留给任务创建校验，第二次才是 worker 的计划名回补。
+type blockingReplayPlanRepo struct {
+	repository.PlanRepository
+	plan    model.Plan
+	calls   int64
+	block   chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+// Get 在计划名回补那次读取上阻塞，模拟数据库变慢。
+func (r *blockingReplayPlanRepo) Get(_ context.Context, id uint64) (model.Plan, error) {
+	if atomic.AddInt64(&r.calls, 1) >= 2 {
+		r.once.Do(func() { close(r.entered) })
+		<-r.block
+	}
+	if id != r.plan.ID {
+		return model.Plan{}, repository.ErrPlanNotFound
+	}
+	return r.plan, nil
+}
+
+// TestReplayWorkerResolvesLogScopeOutsideLock 验证解析日志作用域不占用 worker 状态锁。
+// s.mu 还护着取消、恢复与 worker 登记，计划名回补要查库，放在锁内会让数据库一慢就连带堵住取消。
+func TestReplayWorkerResolvesLogScopeOutsideLock(t *testing.T) {
+	plan := model.Plan{
+		ID: 91, Name: "员工请假单（集团）", Account: "tester", FlowSource: "flow-source",
+		TargetObjectID: "target-1", Status: model.PlanStatusNotStarted,
+	}
+	path := model.ExecutionPath{
+		ID: 101, PlanID: plan.ID, Name: "路径 1", ConfigurationRevision: 4,
+		Choices: []model.ExecutionPathChoice{{RouteNodeID: "route-1", BranchID: "branch-a"}},
+	}
+	plans := &blockingReplayPlanRepo{plan: plan, block: make(chan struct{}), entered: make(chan struct{})}
+	store := &replayStore{
+		snapshot:  model.HistorySnapshot{ID: 9, PlanID: plan.ID, RuntimeType: string(target.FormRenderTypeFormMaking), RawFormData: map[string]any{"amount": 2}},
+		defaultAt: repository.HistoryDefaultRecord{PlanID: plan.ID, SnapshotID: 9},
+	}
+	replay := service.NewHistoryReplayService(
+		service.NewPlanService(plans), &replayPathRepo{created: path, current: path},
+		&replayTargetReader{snapshot: target.PathConfigurationSnapshot{RenderType: target.FormRenderTypeFormMaking}}, store,
+	)
+	const jobKey = "123e4567-e89b-12d3-a456-426614174912"
+	go func() {
+		_, _ = replay.Create(context.Background(), 91, model.HistoryReplayCreateInput{PathIDs: []uint64{101}}, jobKey)
+	}()
+	select {
+	case <-plans.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("没有进入计划名回补读取")
+	}
+	cancelled := make(chan struct{})
+	go func() {
+		_, _ = replay.Cancel(context.Background(), 91, jobKey)
+		close(cancelled)
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		close(plans.block)
+		t.Fatal("解析日志作用域时占用了 worker 状态锁，取消被阻塞")
+	}
+	close(plans.block)
 }
 
 // TestReplayWorkerRecoversPlanScopeWithoutRequestContext 验证启动恢复这类没有请求作用域的场景，

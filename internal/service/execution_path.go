@@ -95,6 +95,9 @@ func (s *ExecutionPathService) StartGeneration(ctx context.Context, planID uint6
 	if err := s.validateMutablePlan(ctx, planID); err != nil {
 		return PathGenerationJob{}, err
 	}
+	// 作用域解析在计划名缺失时会查库，必须放在取锁之前：generationMu 还护着任务查询、取消与恢复，
+	// 数据库慢的时候不能把这些一起堵住。
+	scope := backgroundLogScope(ctx, s.plans, planID)
 	s.generationMu.Lock()
 	if existing, found := s.generations[createKey]; found {
 		if existing.planID != planID {
@@ -109,7 +112,6 @@ func (s *ExecutionPathService) StartGeneration(ctx context.Context, planID uint6
 		s.generationMu.Unlock()
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "后台路径解析任务繁忙，请稍后重试"}
 	}
-	scope := backgroundLogScope(ctx, s.plans, planID)
 	jobCtx, cancel := context.WithTimeout(logging.WithScope(context.Background(), scope), 5*time.Minute)
 	job := &PathGenerationJob{ID: createKey, Status: "queued", UpdatedAt: s.now().UTC(), planID: planID, cancel: cancel, logScope: scope}
 	s.generations[createKey] = job
@@ -176,6 +178,8 @@ func (s *ExecutionPathService) ResumeGeneration(ctx context.Context, planID uint
 	if err := s.validateMutablePlan(ctx, planID); err != nil {
 		return PathGenerationJob{}, err
 	}
+	// 同样先在锁外解析请求作用域，锁内只做任务状态判断与字段合并。
+	requestScope := backgroundLogScope(ctx, s.plans, planID)
 	s.generationMu.Lock()
 	job, found := s.generations[jobID]
 	if !found || job.planID != planID {
@@ -192,7 +196,7 @@ func (s *ExecutionPathService) ResumeGeneration(ctx context.Context, planID uint
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "后台路径解析任务繁忙，请稍后重试"}
 	}
 	// 恢复时以本次请求的作用域为准，缺失的字段回落到任务创建时保存的那份。
-	scope := job.logScope.Merge(backgroundLogScope(ctx, s.plans, planID))
+	scope := job.logScope.Merge(requestScope)
 	jobCtx, cancel := context.WithTimeout(logging.WithScope(context.Background(), scope), 5*time.Minute)
 	job.Status, job.Error, job.UpdatedAt, job.cancel, job.logScope = "queued", "", s.now().UTC(), cancel, scope
 	copy := *job

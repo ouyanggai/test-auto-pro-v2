@@ -3,12 +3,14 @@ package backend_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/repository"
 	"test-auto-pro-v2/internal/service"
 )
 
@@ -76,6 +78,63 @@ func TestPathGenerationWorkerKeepsRequestLogScope(t *testing.T) {
 	if !scope.HasPlan() {
 		t.Fatalf("后台任务日志会降级到应用程序目录：%+v", scope)
 	}
+}
+
+// blockingPlanRepo 从第二次读取计划起阻塞，用来观察后台任务解析日志作用域时是否还占着服务内部锁。
+// 第一次读取留给 validateMutablePlan，第二次才是计划名回补那一次。
+type blockingPlanRepo struct {
+	repository.PlanRepository
+	plan    model.Plan
+	calls   int64
+	block   chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+// Get 在计划名回补那次读取上阻塞，模拟数据库变慢。
+func (r *blockingPlanRepo) Get(_ context.Context, id uint64) (model.Plan, error) {
+	if atomic.AddInt64(&r.calls, 1) >= 2 {
+		r.once.Do(func() { close(r.entered) })
+		<-r.block
+	}
+	if id != r.plan.ID {
+		return model.Plan{}, repository.ErrPlanNotFound
+	}
+	return r.plan, nil
+}
+
+// TestPathGenerationResolvesLogScopeOutsideLock 验证解析日志作用域不占用任务状态锁。
+// 计划名缺失时回补要查库，如果在 generationMu 里做，数据库一慢就会连带堵住任务查询、取消与恢复。
+func TestPathGenerationResolvesLogScopeOutsideLock(t *testing.T) {
+	plans := &blockingPlanRepo{
+		plan:  model.Plan{ID: 7, Name: "员工请假单（集团）", FlowSource: "new", Status: model.PlanStatusNotStarted},
+		block: make(chan struct{}), entered: make(chan struct{}),
+	}
+	graphs := &scopeCapturingGraphReader{graph: selectableExecutionPathGraph(), seen: make(chan struct{})}
+	serviceUnderTest := service.NewExecutionPathService(
+		service.NewPlanService(plans), graphs, analyzer.NewExecutionPathAnalyzer(), &memoryExecutionPathRepository{},
+	)
+	const jobKey = "123e4567-e89b-12d3-a456-426614174903"
+	go func() { _, _ = serviceUnderTest.StartGeneration(context.Background(), 7, jobKey) }()
+	select {
+	case <-plans.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("没有进入计划名回补读取")
+	}
+	queried := make(chan struct{})
+	go func() {
+		_, _ = serviceUnderTest.GetGeneration(context.Background(), 7, jobKey)
+		close(queried)
+	}()
+	select {
+	case <-queried:
+	case <-time.After(2 * time.Second):
+		close(plans.block)
+		t.Fatal("解析日志作用域时占用了任务状态锁，任务查询被阻塞")
+	}
+	close(plans.block)
+	graphs.captured(t)
+	_ = serviceUnderTest.CancelGeneration(context.Background(), 7, jobKey)
 }
 
 // TestPathGenerationWorkerRecoversPlanNameWithoutRequestScope 验证请求作用域缺失时
