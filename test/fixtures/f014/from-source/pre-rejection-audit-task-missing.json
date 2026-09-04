@@ -1,0 +1,13 @@
+{
+  "name": "pre-rejection-audit-task-missing",
+  "source": "参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowAuditServiceImpl.java:122",
+  "endpoint": "/flowInstanceApi/audit",
+  "statusCode": 200,
+  "response": {
+    "isSuccess": false,
+    "code": "ERROR_99999",
+    "message": "该待办记录不存在"
+  },
+  "expectedInitial": "pre_rejected",
+  "note": "按源码证据构造，本切片不发写请求，待 F-016 首次真实写复核或替换"
+}

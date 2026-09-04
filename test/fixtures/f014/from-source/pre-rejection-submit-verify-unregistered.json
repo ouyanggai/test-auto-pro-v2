@@ -1,0 +1,13 @@
+{
+  "name": "pre-rejection-submit-verify-unregistered",
+  "source": "参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/framework/cloud/flow/FlowSubmitVerifyBaseController.java:52",
+  "endpoint": "/web/flowInstanceApi/revocation",
+  "statusCode": 200,
+  "response": {
+    "isSuccess": false,
+    "code": "",
+    "message": "未发现实例"
+  },
+  "expectedInitial": "pre_rejected",
+  "note": "按源码证据构造，本切片不发写请求，待 F-016 首次真实写复核或替换"
+}

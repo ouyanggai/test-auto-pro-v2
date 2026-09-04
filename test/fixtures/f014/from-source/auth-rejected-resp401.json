@@ -1,0 +1,13 @@
+{
+  "name": "auth-rejected-resp401",
+  "source": "参考代码/rsh-framework-all/rsh-framework-core/src/com/rsh/framework/core/protocol/ProtocolCode.java:10",
+  "endpoint": "/flowInstanceApi/audit",
+  "statusCode": 200,
+  "response": {
+    "isSuccess": false,
+    "code": "RESP401",
+    "message": "SID已失效!"
+  },
+  "expectedInitial": "auth_rejected",
+  "note": "按源码证据构造，本切片不发写请求，待 F-016 首次真实写复核或替换"
+}

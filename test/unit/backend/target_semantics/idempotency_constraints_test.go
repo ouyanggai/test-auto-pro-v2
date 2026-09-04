@@ -1,0 +1,171 @@
+package target_semantics_test
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"test-auto-pro-v2/internal/engine/verdict"
+)
+
+// sourceSample 是按源码证据构造的写路径样本；本切片不发写请求，样本必须自带来源与待复核标注。
+type sourceSample struct {
+	Name       string `json:"name"`
+	Source     string `json:"source"`
+	Note       string `json:"note"`
+	Endpoint   string `json:"endpoint"`
+	StatusCode int    `json:"statusCode"`
+	Response   struct {
+		IsSuccess bool   `json:"isSuccess"`
+		Code      string `json:"code"`
+		Message   string `json:"message"`
+	} `json:"response"`
+	ExpectedInitial string `json:"expectedInitial"`
+}
+
+// TestFallbackCoversUnknownShapesAndContradictions 验证兜底规则：未覆盖形状与矛盾输入一律不确定。
+func TestFallbackCoversUnknownShapesAndContradictions(t *testing.T) {
+	cases := map[string]verdict.Observation{
+		"传输结果取值未知": {Transport: verdict.Transport("brand_new"), Reread: verdict.RereadUnchanged},
+		"重读结论取值未知": {Transport: verdict.TransportResponded, StatusCode: 200, Reread: verdict.Reread("maybe"),
+			Response: &verdict.Response{IsSuccess: true}},
+		"声明收到响应但既无响应包也无状态码": {Transport: verdict.TransportResponded, Reread: verdict.RereadUnchanged},
+		"声明没收到响应却带回响应包": {Transport: verdict.TransportInterrupted, Reread: verdict.RereadUnchanged,
+			Response: &verdict.Response{IsSuccess: true}},
+		"声明没收到响应却带回状态码": {Transport: verdict.TransportInterrupted, StatusCode: 200, Reread: verdict.RereadUnchanged},
+		"响应体不可解析": {Transport: verdict.TransportResponded, StatusCode: 200, Reread: verdict.RereadAdvanced,
+			Response: &verdict.Response{Unparsable: true}},
+		"HTTP 5xx": {Transport: verdict.TransportResponded, StatusCode: 502, Reread: verdict.RereadAdvanced,
+			Response: &verdict.Response{IsSuccess: false, Message: "网关错误"}},
+		"声明成功但状态码不是 200": {Transport: verdict.TransportResponded, StatusCode: 302, Reread: verdict.RereadAdvanced,
+			Response: &verdict.Response{IsSuccess: true}},
+	}
+	for name, observation := range cases {
+		result := verdict.Evaluate(observation)
+		if result.Outcome != verdict.OutcomeUncertain || result.SideEffect != verdict.SideEffectPossible {
+			t.Fatalf("%s 没有落兜底不确定：%+v", name, result)
+		}
+		if result.Reason == "" || result.Basis == "" {
+			t.Fatalf("%s 缺少中文原因或依据：%+v", name, result)
+		}
+	}
+}
+
+// TestPreRejectionMatchesEndpointAndExactMessage 验证前置拒绝清单按「端点 + 文案全等」匹配：
+// 不做关键字包含，也不跨端点复用文案。
+func TestPreRejectionMatchesEndpointAndExactMessage(t *testing.T) {
+	base := verdict.Observation{
+		Action: "retrieve", Endpoint: "/web/flowInstanceApi/retrieveProcess",
+		Transport: verdict.TransportResponded, StatusCode: 200, Reread: verdict.RereadUnchanged,
+	}
+	hit := base
+	hit.Response = &verdict.Response{Code: "ERROR_99999", Message: "流程已完结,不支持取回"}
+	if result := verdict.Evaluate(hit); result.Initial != verdict.InitialPreRejected || result.Outcome != verdict.OutcomeFailed {
+		t.Fatalf("清单内文案没有判为前置拒绝：%+v", result)
+	}
+	// 同一条文案换到没有登记它的端点上必须落不可解释失败。
+	crossEndpoint := hit
+	crossEndpoint.Endpoint = "/web/flowInstanceApi/submit"
+	if result := verdict.Evaluate(crossEndpoint); result.Initial != verdict.InitialUnexplained {
+		t.Fatalf("文案跨端点被复用了：%+v", result)
+	}
+	// 关键字包含不算命中：多一个字就不是清单里那条文案。
+	fuzzy := hit
+	fuzzy.Response = &verdict.Response{Code: "ERROR_99999", Message: "流程已完结,不支持取回。"}
+	if result := verdict.Evaluate(fuzzy); result.Initial != verdict.InitialUnexplained {
+		t.Fatalf("文案被模糊匹配了：%+v", result)
+	}
+	// 目标源码里带空格的那条文案必须原样全等匹配。
+	spaced := hit
+	spaced.Response = &verdict.Response{Code: "ERROR_99999", Message: "当前已办任务, 不支持取回"}
+	if result := verdict.Evaluate(spaced); result.Initial != verdict.InitialPreRejected {
+		t.Fatalf("带空格的清单文案没有命中：%+v", result)
+	}
+	if len(verdict.PreRejectionEndpoints()) == 0 {
+		t.Fatal("前置拒绝清单不能为空")
+	}
+}
+
+// TestAuthRejectionCoversAllThreeShapes 验证会话失效三种形状都被识别，含现有读路径漏认的 AUTH_401。
+func TestAuthRejectionCoversAllThreeShapes(t *testing.T) {
+	shapes := []verdict.Observation{
+		{Transport: verdict.TransportResponded, StatusCode: 401, Reread: verdict.RereadUnchanged,
+			Response: &verdict.Response{IsSuccess: false, Message: "未授权"}},
+		{Transport: verdict.TransportResponded, StatusCode: 200, Reread: verdict.RereadUnchanged,
+			Response: &verdict.Response{IsSuccess: false, Code: "RESP401", Message: "SID已失效!"}},
+		{Transport: verdict.TransportResponded, StatusCode: 200, Reread: verdict.RereadUnchanged,
+			Response: &verdict.Response{IsSuccess: false, Code: "AUTH_401", Message: "当前登录用户会话过期或在其他设备登录，请重新登录"}},
+	}
+	for index, observation := range shapes {
+		observation.Action, observation.Endpoint = "approve", "/flowInstanceApi/audit"
+		result := verdict.Evaluate(observation)
+		if result.Initial != verdict.InitialAuthRejected {
+			t.Fatalf("第 %d 种会话失效形状没有被识别：%+v", index+1, result)
+		}
+		if result.Outcome != verdict.OutcomeFailed || result.SideEffect != verdict.SideEffectNone {
+			t.Fatalf("第 %d 种会话失效形状配合明确未变应判确定失败无副作用：%+v", index+1, result)
+		}
+	}
+}
+
+// TestWritePayloadRejectsBatchCode 锁定 batchCode 禁令：它是批次补偿开关，不是幂等键，
+// 带上它会让一次失败触发目标平台的额外删除写入。
+func TestWritePayloadRejectsBatchCode(t *testing.T) {
+	if err := verdict.ValidateWritePayload([]string{"id", "flowProxyId", "formDataMongoVo.data"}); err != nil {
+		t.Fatalf("正常写载荷被误拒：%v", err)
+	}
+	err := verdict.ValidateWritePayload([]string{"id", "batchCode"})
+	if err == nil {
+		t.Fatal("携带 batchCode 的写载荷必须被拒绝")
+	}
+	if !strings.Contains(err.Error(), "TARGET_SEMANTICS") {
+		t.Fatalf("拒绝原因必须指回语义清单：%v", err)
+	}
+	// batchNo 是另一个业务字段，不受禁令影响。
+	if err := verdict.ValidateWritePayload([]string{"batchNo"}); err != nil {
+		t.Fatalf("batchNo 被误判为禁止字段：%v", err)
+	}
+}
+
+// TestSourceConstructedSamplesClassifyAsDocumented 验证按源码证据构造的写路径样本分类与文档一致，
+// 并强制每个样本都带来源位置与待 F-016 复核标注。
+func TestSourceConstructedSamplesClassifyAsDocumented(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "fixtures", "f014", "from-source")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("读取源码构造样本目录失败：%v", err)
+	}
+	checked := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		content, readErr := os.ReadFile(filepath.Join(root, entry.Name()))
+		if readErr != nil {
+			t.Fatalf("读取 %s 失败：%v", entry.Name(), readErr)
+		}
+		var sample sourceSample
+		if err := json.Unmarshal(content, &sample); err != nil {
+			t.Fatalf("%s 不是合法样本：%v", entry.Name(), err)
+		}
+		if strings.TrimSpace(sample.Source) == "" || !strings.Contains(sample.Note, "F-016") {
+			t.Fatalf("%s 缺少来源位置或待 F-016 复核标注", entry.Name())
+		}
+		result := verdict.Evaluate(verdict.Observation{
+			Action: sample.Name, Endpoint: sample.Endpoint, Transport: verdict.TransportResponded,
+			StatusCode: sample.StatusCode, Reread: verdict.RereadUnchanged,
+			Response: &verdict.Response{
+				IsSuccess: sample.Response.IsSuccess, Code: sample.Response.Code, Message: sample.Response.Message,
+			},
+		})
+		if string(result.Initial) != sample.ExpectedInitial {
+			t.Fatalf("%s 初判与文档不一致：期望 %s 实际 %s", entry.Name(), sample.ExpectedInitial, result.Initial)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("源码构造样本目录不能为空")
+	}
+}

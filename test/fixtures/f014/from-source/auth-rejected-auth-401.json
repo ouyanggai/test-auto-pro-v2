@@ -1,0 +1,13 @@
+{
+  "name": "auth-rejected-auth-401",
+  "source": "参考代码/rsh-framework-all/rsh-framework-core/src/com/rsh/framework/core/protocol/ProtocolCode.java:199",
+  "endpoint": "/flowInstanceApi/audit",
+  "statusCode": 200,
+  "response": {
+    "isSuccess": false,
+    "code": "AUTH_401",
+    "message": "当前登录用户会话过期或在其他设备登录，请重新登录"
+  },
+  "expectedInitial": "auth_rejected",
+  "note": "按源码证据构造，本切片不发写请求，待 F-016 首次真实写复核或替换"
+}

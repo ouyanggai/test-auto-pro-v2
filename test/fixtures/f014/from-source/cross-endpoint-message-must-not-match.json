@@ -1,0 +1,13 @@
+{
+  "name": "cross-endpoint-message-must-not-match",
+  "source": "参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowInstanceServiceImpl.java:768",
+  "endpoint": "/web/flowInstanceApi/submit",
+  "statusCode": 200,
+  "response": {
+    "isSuccess": false,
+    "code": "ERROR_99999",
+    "message": "流程已完结,不支持取回"
+  },
+  "expectedInitial": "unexplained",
+  "note": "按源码证据构造，本切片不发写请求，待 F-016 首次真实写复核或替换"
+}

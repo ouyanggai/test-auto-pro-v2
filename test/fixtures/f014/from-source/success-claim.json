@@ -1,0 +1,13 @@
+{
+  "name": "success-claim",
+  "source": "参考代码/rsh-cloud-invest-power-system/src/utils/axios.js:226",
+  "endpoint": "/flowInstanceApi/audit",
+  "statusCode": 200,
+  "response": {
+    "isSuccess": true,
+    "code": "RESP200",
+    "message": "success"
+  },
+  "expectedInitial": "success_claim",
+  "note": "按源码证据构造，本切片不发写请求，待 F-016 首次真实写复核或替换"
+}
