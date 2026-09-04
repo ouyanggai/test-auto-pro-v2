@@ -75,6 +75,15 @@ export interface PathRunDetail {
   nodeStates: Record<string, RunNodeState>
   pollIntervalMs: number
   staleAfterMs: number
+  // 控制现场（F-017）：版本、当前步、生效断点、为什么停在这里、可用命令。
+  controlVersion: number
+  currentStepNo: number
+  breakpoints: RunBreakpoint[]
+  stopReason?: string
+  commands: RunCommand[]
+  loopRunning: boolean
+  stopRequested: boolean
+  pauseRequested: boolean
 }
 
 export interface RunSummary {
@@ -139,19 +148,70 @@ export function fetchRunDetail(runId: string, signal?: AbortSignal): Promise<Pat
   return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}`, { method: 'GET' }, signal)
 }
 
-// startRun 启动一次单步运行：模式由后端强制为单步，前端不提供切换。
-export function startRun(planId: string, executionPathId: string): Promise<PathRunDetail> {
+// RunCommand 是后端给出的可用命令（含中文停止条件说明）。
+export interface RunCommand {
+  command: string
+  label: string
+}
+
+// RunBreakpoint 是生效断点的公开形态。
+export interface RunBreakpoint {
+  type: string
+  typeName: string
+  nodeName?: string
+  stepNo?: number
+  action?: string
+}
+
+// BreakpointInput 是启动预置/增删断点的请求体。
+export interface BreakpointInput {
+  type: string
+  stepNo?: number
+  nodeKey?: string
+  action?: string
+}
+
+// startRun 按模式与预置断点启动一次运行（F-017：模式三选一，默认单步由后端兜底）。
+export function startRun(planId: string, executionPathId: string, mode = 'single_step', breakpoints: BreakpointInput[] = []): Promise<PathRunDetail> {
   return requestOnce<PathRunDetail>(`/api/plans/${encodeURIComponent(planId)}/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ planId: Number(planId), executionPathId: Number(executionPathId) }),
+    body: JSON.stringify({ planId: Number(planId), executionPathId: Number(executionPathId), mode, breakpoints }),
   })
 }
 
-// approveRun 放行当前步：真实写请求在这一次调用里执行，按钮不绑单键快捷键。
-export function approveRun(runId: string): Promise<PathRunDetail> {
-  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/approve`, { method: 'POST' })
+// approveRun 按命令放行：命令携带步游标与控制版本（条件写、幂等：重复点击只产生一次效果）。
+export function approveRun(runId: string, command = 'step', cursor = 0, controlVersion = 0): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command, cursor, controlVersion }),
+  })
 }
+
+// setBreakpoint / removeBreakpoint 运行中增删断点，即时生效并即时可见。
+export function setBreakpoint(runId: string, bp: BreakpointInput): Promise<BreakpointInput[]> {
+  return requestOnce<BreakpointInput[]>(`/api/runs/${encodeURIComponent(runId)}/breakpoints`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bp),
+  })
+}
+
+export function removeBreakpoint(runId: string, bp: BreakpointInput): Promise<BreakpointInput[]> {
+  return requestOnce<BreakpointInput[]>(`/api/runs/${encodeURIComponent(runId)}/breakpoints`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bp),
+  })
+}
+
+// requestPause 提交暂停请求（本步走完核验与落账后生效）。
+export function requestPause(runId: string): Promise<unknown> {
+  return requestOnce<unknown>(`/api/runs/${encodeURIComponent(runId)}/pause`, { method: 'POST' })
+}
+
+
 
 // stopRun 停止路径运行。
 export function stopRun(runId: string): Promise<PathRunDetail> {

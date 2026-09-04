@@ -14,6 +14,28 @@ const router = useRouter()
 const starting = ref(false)
 const startError = ref('')
 
+// F-017：模式三选一（默认单步——最保守），启动前断点预置。
+// 首次写断点默认开启可关闭；路径偏离断点强制开启不可关闭（不上 preset，由后端强制内置）。
+const mode = ref<string>('single_step')
+const modeOptions = [
+  { label: '单步运行（每一步执行前都停）', value: 'single_step' },
+  { label: '自动运行（连续执行，首个写请求之前必停）', value: 'auto' },
+  { label: '人工控制（停在第一步之前，随时放行或连续）', value: 'manual_control' },
+]
+const firstWriteBreakpoint = ref(true)
+const nodeBreakpointInput = ref('')
+const presetBreakpoints = ref<Array<{ type: string; stepNo?: number; nodeKey?: string; action?: string }>>([])
+
+function addNodeBreakpoint() {
+  const key = nodeBreakpointInput.value.trim()
+  if (!key) return
+  presetBreakpoints.value.push({ type: 'node', nodeKey: key })
+  nodeBreakpointInput.value = ''
+}
+function removePreset(index: number) {
+  presetBreakpoints.value.splice(index, 1)
+}
+
 const themeVars = useThemeVars()
 const readiness = ref<PlanRunReadiness | null>(null)
 const loading = ref(false)
@@ -66,7 +88,10 @@ async function startSingleRun() {
   starting.value = true
   startError.value = ''
   try {
-    const detail = await startRun(props.planId, String(target.pathId))
+    const detail = await startRun(props.planId, String(target.pathId), mode.value, [
+      ...(firstWriteBreakpoint.value ? [{ type: 'first_write' }] : []),
+      ...presetBreakpoints.value,
+    ])
     emit('update:show', false)
     router.push(`/runs/${detail.runId}`)
   }
@@ -158,6 +183,28 @@ watch(() => props.show, (open) => {
       </n-space>
     </n-spin>
     <template #footer>
+      <div class="run-preflight__mode-section">
+        <h4>运行模式</h4>
+        <n-radio-group v-model:value="mode">
+          <n-radio v-for="option in modeOptions" :key="option.value" :value="option.value">{{ option.label }}</n-radio>
+        </n-radio-group>
+        <h4>启动前断点</h4>
+        <label>
+          <input type="checkbox" v-model="firstWriteBreakpoint" />
+          首次写断点（默认开启）：第一个写请求之前必停——这是安全阀
+        </label>
+        <p>路径偏离断点强制开启：实际命中分支与已配置路径不一致时强制停下，不可关闭。</p>
+        <div>
+          <input v-model="nodeBreakpointInput" placeholder="可选：输入节点键，在该节点前停下" />
+          <n-button size="tiny" @click="addNodeBreakpoint">添加节点断点</n-button>
+        </div>
+        <ul>
+          <li v-for="(bp, index) in presetBreakpoints" :key="index">
+            节点断点：{{ bp.nodeKey }}
+            <n-button size="tiny" @click="removePreset(index)">删除</n-button>
+          </li>
+        </ul>
+      </div>
       <n-space justify="end">
         <n-button size="small" :loading="loading" @click="runCheck">重新检查</n-button>
         <n-button size="small" @click="emit('update:show', false)">关闭</n-button>
@@ -167,9 +214,9 @@ watch(() => props.show, (open) => {
           type="primary"
           :loading="starting"
           :disabled="!allClear"
-          :title="allClear ? '以单步模式启动第一条可执行路径' : '存在阻塞项，不能启动'"
+          :title="allClear ? '按所选模式启动第一条可执行路径' : '存在阻塞项，不能启动'"
           @click="startSingleRun"
-        >开始运行（单步）</n-button>
+        >开始运行</n-button>
       </n-space>
     </template>
   </n-modal>

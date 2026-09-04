@@ -5,9 +5,9 @@ import { useRoute } from 'vue-router'
 
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import type { FlowGraph } from '../features/flow-graph/types'
-import { approveRun, fetchRunDetail, formatElapsed, RunApiError, stopRun } from '../features/runs/api'
+import { approveRun, fetchRunDetail, formatElapsed, removeBreakpoint, requestPause, RunApiError, setBreakpoint, stopRun } from '../features/runs/api'
 import { fetchFlowGraph } from '../features/flow-graph/api'
-import type { PathRunDetail } from '../features/runs/api'
+import type { BreakpointInput, PathRunDetail } from '../features/runs/api'
 import RunNodePanel from '../features/runs/RunNodePanel.vue'
 import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
 
@@ -41,6 +41,84 @@ const selectedNodeKey = ref('')
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 
 const pathChoices = computed(() => [])
+
+// 放行命令与条件写参数：命令集合由后端给出，游标与版本取自详情（重复点击只产生一次效果）。
+const approveCommand = ref('step')
+const approveCursor = ref(0)
+const approveVersion = ref(0)
+const breakpointInput = ref('')
+
+// syncControl 从最新详情同步命令与条件写参数。
+function syncControl(next: PathRunDetail): void {
+  approveCommand.value = next.commands.length > 0 ? next.commands[0].command : 'step'
+  approveCursor.value = next.currentStepNo
+  approveVersion.value = next.controlVersion
+}
+
+// runCommand 执行一个非 step 的连续命令（执行到下一节点/继续运行），随后交给轮询刷新。
+const looping = ref(false)
+async function runCommand(command: string): Promise<void> {
+  if (looping.value || !detail.value) return
+  looping.value = true
+  errorText.value = ''
+  try {
+    detail.value = await approveRun(runId, command, detail.value.currentStepNo, detail.value.controlVersion)
+    syncControl(detail.value)
+    lastUpdateAt.value = Date.now()
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '命令执行失败，请查看日志'
+  } finally {
+    looping.value = false
+    schedulePoll()
+  }
+}
+
+// pauseNow 提交暂停请求（本步走完核验与落账后生效）。
+const pausing = ref(false)
+async function pauseNow(): Promise<void> {
+  if (pausing.value) return
+  pausing.value = true
+  try {
+    await requestPause(runId)
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '暂停请求失败，请重试'
+  } finally {
+    pausing.value = false
+  }
+}
+
+// addNodeBreakpoint 在当前选中节点上就地挂节点断点。
+async function addNodeBreakpoint(): Promise<void> {
+  if (!selectedNodeKey.value) return
+  try {
+    const list = await setBreakpoint(runId, { type: 'node', nodeKey: selectedNodeKey.value })
+    applyBreakpoints(list)
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '设置断点失败'
+  }
+}
+
+// deleteBreakpoint 删除一个断点（路径偏离断点由后端拒绝并给中文原因）。
+async function deleteBreakpoint(bp: BreakpointInput): Promise<void> {
+  try {
+    const list = await removeBreakpoint(runId, bp)
+    applyBreakpoints(list)
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '删除断点失败'
+  }
+}
+
+// applyBreakpoints 把后端返回的断点列表同步进详情（即时可见，不需要刷新页面）。
+function applyBreakpoints(list: BreakpointInput[]): void {
+  if (!detail.value) return
+  detail.value.breakpoints = list.map((bp) => ({
+    type: bp.type,
+    typeName: bp.type === 'node' ? '节点断点' : bp.type === 'step' ? '步骤断点' : bp.type === 'action' ? '动作断点' : bp.type,
+    nodeName: bp.nodeKey,
+    stepNo: bp.stepNo,
+    action: bp.action,
+  }))
+}
 
 // currentNodeKey 是当前步所在节点（预览给出），画布据此高亮与居中。
 const currentNodeKey = computed(() => detail.value?.currentPreview?.nodeKey || '')
@@ -96,6 +174,7 @@ async function loadDetail(): Promise<void> {
   try {
     const next = await fetchRunDetail(runId)
     detail.value = next
+    syncControl(next)
     lastUpdateAt.value = Date.now()
     if (!graph.value) {
       graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
@@ -125,6 +204,7 @@ function schedulePoll(): void {
     try {
       const next = await fetchRunDetail(runId)
       detail.value = next
+      syncControl(next)
       lastUpdateAt.value = Date.now()
       if (currentNodeKey.value && !followPaused.value) {
         centerCurrentNode()
@@ -245,13 +325,21 @@ onBeforeUnmount(() => {
       </div>
       <div class="run-detail__actions">
         <NButton
-          type="primary"
-          :disabled="acting || !detail.currentPreview || overviewDone"
-          title="放行将发出真实写请求，请确认预览内容"
-          @click="approve"
+          v-for="command in detail.commands"
+          :key="command.command"
+          :type="command.command === 'step' ? 'primary' : 'info'"
+          :disabled="acting || looping || overviewDone"
+          :title="command.label"
+          @click="command.command === 'step' ? approve() : runCommand(command.command)"
         >
-          放行
+          {{ command.command === 'step' ? '放行（执行一步）' : command.label.split('（')[0] }}
         </NButton>
+        <NButton
+          v-if="detail.loopRunning"
+          :disabled="pausing"
+          title="暂停请求只在本步走完核验与落账后生效"
+          @click="pauseNow"
+        >暂停（本步结束后生效）</NButton>
         <NButton :disabled="acting || overviewDone" title="停止将在当前步骤结束后生效" @click="stopRunAction">停止</NButton>
       </div>
       <RunStatusIndicator
@@ -263,6 +351,7 @@ onBeforeUnmount(() => {
         :note="acting && staleBudgetElapsed ? '超过预算未收到状态更新' : ''"
       />
     </header>
+    <p v-if="detail && detail.stopReason" class="run-detail__stop-reason" role="status">为什么停在这里：{{ detail.stopReason }}</p>
     <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
     <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
     <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
@@ -294,9 +383,26 @@ onBeforeUnmount(() => {
           回到当前步
         </NButton>
       </div>
-      <RunNodePanel v-if="selectedNodeKey" :detail="detail" :node-key="selectedNodeKey" @close="selectedNodeKey = ''" />
-      <div v-else class="run-detail__panel-placeholder">
-        <p>点击画布上的节点，查看该节点的运行信息与错误。</p>
+      <div class="run-detail__side">
+        <div class="run-detail__breakpoints">
+          <h4>生效断点（{{ detail.breakpoints.length }}）</h4>
+          <p v-if="detail.breakpoints.length === 0" class="run-detail__empty">暂无断点；路径偏离断点始终生效。</p>
+          <ul>
+            <li v-for="(bp, index) in detail.breakpoints" :key="index">
+              {{ bp.typeName }}{{ bp.nodeName ? `（${bp.nodeName}）` : '' }}{{ bp.stepNo ? `（第 ${bp.stepNo} 步）` : '' }}
+              <button v-if="bp.type !== 'path_deviation'" class="run-detail__bp-remove" @click="deleteBreakpoint(bp)">删除</button>
+            </li>
+          </ul>
+          <button
+            v-if="selectedNodeKey"
+            class="run-detail__bp-add"
+            @click="addNodeBreakpoint"
+          >在当前选中节点设断点</button>
+        </div>
+        <RunNodePanel v-if="selectedNodeKey" :detail="detail" :node-key="selectedNodeKey" @close="selectedNodeKey = ''" />
+        <div v-else class="run-detail__panel-placeholder">
+          <p>点击画布上的节点，查看该节点的运行信息与错误。</p>
+        </div>
       </div>
     </div>
   </section>
@@ -354,6 +460,35 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr 336px;
   gap: 12px;
   align-items: start;
+}
+
+.run-detail__side {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.run-detail__breakpoints {
+  padding: 10px;
+  font-size: 13px;
+  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
+  border-radius: 8px;
+}
+.run-detail__breakpoints h4 { margin: 0 0 6px; }
+.run-detail__breakpoints ul { margin: 0; padding-left: 18px; }
+.run-detail__empty { opacity: 0.7; }
+.run-detail__bp-remove, .run-detail__bp-add {
+  padding: 1px 8px;
+  cursor: pointer;
+  background: none;
+  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
+  border-radius: 4px;
+}
+.run-detail__stop-reason {
+  margin: 0;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--warning-color, #f0a020) 14%, transparent);
+  border-radius: 6px;
 }
 
 .run-detail__canvas { position: relative; }

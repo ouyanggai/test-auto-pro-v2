@@ -18,7 +18,7 @@ const iframe = ref<HTMLIFrameElement | null>(null)
 const sessionId = ref(crypto.randomUUID())
 const iframeSource = computed(() => import.meta.env.DEV ? 'http://127.0.0.1:19001/form-runtime/#/test-auto-form' : '/form-runtime/#/test-auto-form')
 const runtimeOrigin = computed(() => new URL(iframeSource.value, window.location.href).origin)
-const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer: number, cleanup: () => void }>()
+const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer?: number, cleanup: () => void }>()
 let disposed = false
 let runtimeActive = false
 let runtimeGeneration = 0
@@ -31,6 +31,8 @@ function plainPayload(value: unknown): Record<string, unknown> {
 
 // postCommand 绑定当前 iframe、会话、请求号和协议版本，迟到响应无法串到新路径。
 function postCommand(type: string, payload: Record<string, unknown> = {}, signal?: AbortSignal, timeoutMs = 15_000): Promise<Record<string, unknown>> {
+  // timeoutMs <= 0 表示不设超时：宿主页面装载要等目标表单自身的异步初始化与数据源请求，
+  // 目标服务抖动时耗时不可预估；真失败会由 iframe 以 error 消息回报，离开页面由 AbortController 兜底。
   const target = iframe.value?.contentWindow
   if (!target || disposed || !runtimeActive) return Promise.reject(new Error('表单运行时尚未就绪'))
   if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new DOMException('操作已取消', 'AbortError'))
@@ -45,12 +47,19 @@ function postCommand(type: string, payload: Record<string, unknown> = {}, signal
       reject(signal?.reason instanceof Error ? signal.reason : new DOMException('操作已取消', 'AbortError'))
     }
     const cleanup = () => signal?.removeEventListener('abort', abort)
-    const timer = window.setTimeout(() => {
-      cleanup()
-      pending.delete(requestId)
-      reject(new Error('表单运行时响应超时，当前表单数据未丢失'))
-    }, timeoutMs)
-    pending.set(requestId, { resolve, reject, timer, cleanup })
+    let timer: number | undefined
+    if (timeoutMs > 0) {
+      timer = window.setTimeout(() => {
+        cleanup()
+        pending.delete(requestId)
+        reject(new Error('表单运行时响应超时，当前表单数据未丢失'))
+      }, timeoutMs)
+    }
+    if (timer === undefined) {
+      pending.set(requestId, { resolve, reject, cleanup })
+    } else {
+      pending.set(requestId, { resolve, reject, timer, cleanup })
+    }
     signal?.addEventListener('abort', abort, { once: true })
     target.postMessage({ version: FORM_RUNTIME_VERSION, sessionId: sessionId.value, requestId, type, payload: plainPayload(payload) }, runtimeOrigin.value)
   })
@@ -81,7 +90,7 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       permissions: props.form.permissions,
       values: props.form.effectiveFormData,
       changedFields: props.form.branchPatches.map(patch => patch.path),
-    }, undefined, 30_000)
+    })
     if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
     emit('ready', payload)
     return payload
