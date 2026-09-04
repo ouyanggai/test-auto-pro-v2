@@ -99,3 +99,55 @@ func TestStatusOptionsComeFromTargetEnum(t *testing.T) {
 		t.Fatal("集合外的自造状态必须被拒绝")
 	}
 }
+
+// realShapeGraph 复刻真实目标模板的形态：没有任何 end 类型节点，流程直接终止在审批节点上，
+// 并且带一个尚未选择分支的路由。实测本机目标环境的节点类型只有
+// start、manual、condition、common、empty、synergy。
+func realShapeGraph() model.FlowGraph {
+	return model.FlowGraph{
+		EntryNodeIDs: []string{"start"},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Name: "发起人", Type: "start"},
+			{ID: "audit", Name: "发起人部门领导", Type: "common"},
+			{ID: "route", Name: "路由", Type: "condition"},
+			{ID: "tail", Name: "财资部-会计", Type: "common"},
+			{ID: "unreached", Name: "未走到的审批", Type: "common"},
+		},
+		Edges: []model.FlowGraphEdge{
+			{ID: "start-audit", Source: "start", Target: "audit", Kind: "sequence"},
+			{ID: "audit-route", Source: "audit", Target: "route", Kind: "sequence"},
+			{ID: "route-tail", Source: "route", Target: "tail", Kind: "condition", BranchID: "pass"},
+			{ID: "route-other", Source: "route", Target: "unreached", Kind: "condition", BranchID: "other"},
+		},
+	}
+}
+
+// TestCandidatesFallBackToTerminalNodesWhenTargetHasNoEndType 锁定实测发现的现实：
+// 真实模板可能一个 end 类型节点都没有，只认类型会让候选永远为空、断言在真实数据上没法配。
+// 因此结束节点按结构事实判断——走到就没有可达后继的节点。
+func TestCandidatesFallBackToTerminalNodesWhenTargetHasNoEndType(t *testing.T) {
+	graph := realShapeGraph()
+	for _, node := range graph.Nodes {
+		if node.Type == "end" {
+			t.Fatal("这个夹具刻意不含 end 类型节点")
+		}
+	}
+	candidates := candidatesFor(t, graph, []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "pass"}})
+	if len(candidates) != 1 || candidates[0].NodeKey != "tail" {
+		t.Fatalf("应把没有可达后继的审批节点当成结束节点：%+v", candidates)
+	}
+	if candidates[0].Name != "财资部-会计" {
+		t.Fatalf("候选应带上真实中文节点名：%+v", candidates[0])
+	}
+}
+
+// TestPendingRouteIsNeverOfferedAsEndNode 验证尚未选择分支的路由节点不会被当成结束节点。
+// 遍历在待选路由处停住，它同样没有可达后继，必须排除。
+func TestPendingRouteIsNeverOfferedAsEndNode(t *testing.T) {
+	candidates := candidatesFor(t, realShapeGraph(), nil)
+	for _, candidate := range candidates {
+		if candidate.NodeKey == "route" {
+			t.Fatalf("待选路由被当成了结束节点：%+v", candidates)
+		}
+	}
+}

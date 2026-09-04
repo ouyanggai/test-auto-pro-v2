@@ -7,11 +7,19 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-// successAssertionEndNodeType 是目标真实流程结构里结束节点的类型值，与分析器识别的取值保持一致。
+// successAssertionEndNodeType 是目标显式结束节点的类型值。
+// 实测发现真实模板并不一定产出这个类型：本机目标环境读到的节点类型只有
+// start、manual、condition、common、empty、synergy，一个 end 都没有，流程直接终止在没有后继的节点上。
+// 因此结束节点必须按结构事实判断（见 SuccessAssertionCandidates），这个类型只作为目标显式给出时的补充。
 const successAssertionEndNodeType = "end"
 
 // SuccessAssertionCandidates 从该路径已保存的真实线路与当前真实流程结构推导可选结束节点。
 // 只接受分析器判定为可达的节点，不接受自由输入的节点键，也不猜测未选择路由之后的下游。
+//
+// 结束节点按结构事实判断：这条路径上走到就再没有可达后继的节点即为结束节点；
+// 目标显式标了 end 类型的节点也一并收下。之所以不能只认 end 类型，是实测结果——
+// 真实目标模板一个 end 节点都没有，流程直接终止在没有后继的审批节点上，只认类型会让候选永远为空。
+// 尚未选择分支的路由节点同样没有可达后继，必须排除，否则会被误当成结束节点。
 //
 // ArrivalCount 取"本路径上真实通向该结束节点的可达边数量"：
 // 顺序线路只有一条边进入，计 1；并行分支汇入同一个结束节点时每条支线各算一次到达，
@@ -31,9 +39,24 @@ func SuccessAssertionCandidates(graph model.FlowGraph, analysis model.ExecutionP
 			arrivals[edge.Target]++
 		}
 	}
+	// 待选路由也没有可达出边（遍历在它那里停住了），必须排除，否则会把没选分支的路由当成结束节点。
+	pendingRoutes := make(map[string]bool, len(analysis.MissingRouteNodeIDs))
+	for _, nodeID := range analysis.MissingRouteNodeIDs {
+		pendingRoutes[nodeID] = true
+	}
+	hasOutgoing := make(map[string]bool, len(reachableNodes))
+	for _, edge := range graph.Edges {
+		if reachableEdges[edge.ID] {
+			hasOutgoing[edge.Source] = true
+		}
+	}
 	candidates := make([]model.SuccessAssertionEndNodeCandidate, 0, 4)
 	for _, node := range graph.Nodes {
-		if node.Type != successAssertionEndNodeType || !reachableNodes[node.ID] {
+		if !reachableNodes[node.ID] || pendingRoutes[node.ID] {
+			continue
+		}
+		// 结束节点 = 这条路径上走到就再没有后继的节点，或目标显式标了结束类型的节点。
+		if hasOutgoing[node.ID] && node.Type != successAssertionEndNodeType {
 			continue
 		}
 		count := arrivals[node.ID]
