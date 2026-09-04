@@ -84,6 +84,9 @@ const configurationByGraphNodeID = ref(new Map<string, PathConfigNode>())
 const graphNodeIDByConfigurationKey = ref(new Map<string, string>())
 const selectedNodeID = ref('')
 const workspace = ref<'nodes' | 'form'>('nodes')
+// assertionOpen 控制成功断言弹窗。断言不放画布侧栏：那是固定高度的绝对定位浮层且 overflow hidden，
+// 卡片排在节点面板之后会被直接裁掉，用户根本看不到。
+const assertionOpen = ref(false)
 const runtimeSession = ref<PathFormRuntimeSession | null>(null)
 const dataWorkspace = ref<PathConfigurationDataWorkspace | null>(null)
 const runtimeStats = ref<{ filledEditable: number, manualPending: number }>({ filledEditable: 0, manualPending: 0 })
@@ -801,8 +804,18 @@ void loadPage()
         <span>节点配置状态：{{ pathConfigurationStatusName(configuration.status) }}</span>
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
         <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
+        <n-button size="small" secondary data-testid="open-success-assertion" @click="assertionOpen = true">成功断言</n-button>
       </div>
     </header>
+
+    <n-modal v-model:show="assertionOpen" :style="{ width: '560px', maxWidth: 'calc(100vw - 48px)' }">
+      <success-assertion-card
+        v-if="planID && pathID"
+        :plan-id="planID"
+        :path-id="pathID"
+        :disabled="!planMutable"
+      />
+    </n-modal>
 
     <n-modal v-model:show="routeConfirmationOpen" :mask-closable="false" :closable="false">
       <n-card title="确认换路并覆盖数据" style="width: min(620px, 94vw)">
@@ -879,13 +892,6 @@ void loadPage()
             @save-all="saveAllNodes"
             @back-to-plan="backToPlan"
             @open-form="openFormWorkspace"
-          />
-          <success-assertion-card
-            v-if="planID && pathID"
-            class="path-configuration-page__assertion"
-            :plan-id="planID"
-            :path-id="pathID"
-            :disabled="!planMutable"
           />
         </template>
       </flow-graph-canvas>

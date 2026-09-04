@@ -45,6 +45,8 @@ grep -qF 'n-modal' "${panel}" || fail '预检弹窗必须使用组件库的 NMod
 grep -qF 'data-testid="run-readiness-blocks"' "${panel}" || fail '预检弹窗缺少阻塞分区'
 grep -qF 'data-testid="run-readiness-reminders"' "${panel}" || fail '预检弹窗缺少提醒分区'
 grep -qF 'data-testid="plan-run-button"' web/src/views/PlanPathsView.vue || fail '计划页缺少运行按钮'
+# 断言入口必须在路径配置页顶部可见，不能只挂在固定高度的画布侧栏里被裁掉。
+grep -qF 'data-testid="open-success-assertion"' web/src/views/PlanPathConfigurationView.vue || fail '路径配置页缺少成功断言入口'
 grep -qF 'pathIds' web/src/features/run-readiness/api.ts || fail '预检必须只检查勾选路径'
 grep -qF 'data-testid="success-assertion-card"' "${card}" || fail '成功断言卡片缺少测试标记'
 # 本切片不交付启动运行：弹窗里只允许出现明确禁用的占位按钮，不得有可点击的启动入口。
