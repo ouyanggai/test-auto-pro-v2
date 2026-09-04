@@ -8,8 +8,32 @@ import (
 
 // OptimisticLockMessage 是目标流程实例乐观锁失败的固定提示，来自中心
 // FlowInstanceServiceImpl 的 CONCURRENT_UPDATE_MESSAGE 常量，证据见语义清单第 1.8 节。
-// 该文案不绑定端点：任何会更新流程实例的端点都可能返回它。
 const OptimisticLockMessage = "流程状态已发生变化，请刷新后重试"
+
+// optimisticLockEndpoints 登记能证明会走到中心 FlowInstanceServiceImpl.update 或 .save
+// 从而可能返回乐观锁提示的端点。与前置拒绝清单一样按「端点 + 精确文案」全等匹配。
+// 清单刻意保守：没有登记的端点即使返回同一文案也落不可解释失败，结论只会更保守而不会更乐观。
+var optimisticLockEndpoints = map[string]bool{
+	// 中心 FlowSubmitServiceImpl:320 调 flowInstanceService.save，save 内部走乐观锁保存。
+	"/web/flowInstanceApi/submit": true,
+	// 中心 FlowAuditServiceImpl 经 updateFLowInstance:348 调 flowInstanceService.update。
+	"/flowInstanceApi/audit": true,
+}
+
+// isOptimisticLock 判断「端点 + 精确文案」是否命中乐观锁提示，全等匹配。
+func isOptimisticLock(endpoint, message string) bool {
+	return message == OptimisticLockMessage && optimisticLockEndpoints[normalizeMessage(endpoint)]
+}
+
+// OptimisticLockEndpoints 返回登记过的端点，按字典序排列，供测试与文档核对使用。
+func OptimisticLockEndpoints() []string {
+	endpoints := make([]string, 0, len(optimisticLockEndpoints))
+	for endpoint := range optimisticLockEndpoints {
+		endpoints = append(endpoints, endpoint)
+	}
+	sort.Strings(endpoints)
+	return endpoints
+}
 
 // AuthRejectedCodes 是会话失效的两个目标错误码。HTTP 401 单独识别。
 // AUTH_401 是现有只读路径漏认的那一个，本包必须认，依据见语义清单第 1.5 节。

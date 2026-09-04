@@ -1,27 +1,41 @@
 package verdict
 
 // classifyResponse 是判定第二步：把响应包收敛为五类初判。
-// 只认 isSuccess 判成功，code 只用于识别会话失效，绝不参与成败判断。
+// 顺序不可调换：先确认响应形状本身站得住脚，再看鉴权码与文案清单。
+// 否则「isSuccess=true 却带鉴权码」这种矛盾包、以及 HTTP 3xx/4xx 的失败包，
+// 都会被文案清单命中并进而得出「确定失败、无副作用」，违背冲突与新形状一律不确定的兜底规则。
 func classifyResponse(observation Observation) Initial {
-	response := observation.Response
-	if isAuthRejected(observation.StatusCode, response) {
+	// HTTP 401 本身就是完整的鉴权拒绝信号，语义清单第 1.3 节把它与两个错误码并列，
+	// 这种响应通常没有业务包络，必须在形状校验之前先认掉。
+	if observation.StatusCode == 401 {
 		return InitialAuthRejected
 	}
+	response := observation.Response
 	if response == nil || response.Unparsable {
 		return InitialUnexplained
 	}
-	if observation.StatusCode >= 500 {
+	// 成功判据必须显式存在。响应包里没有 isSuccess 时不允许用 code 或文案补判，
+	// 否则缺字段与 isSuccess=false 无法区分。
+	if !response.IsSuccessPresent {
+		return InitialUnexplained
+	}
+	// 除 401 外，只有 HTTP 200 的业务包络是语义清单第 1.2 节勘定过的形状。
+	// 3xx、4xx、5xx 一律按新出现的形状处理，不进文案清单。
+	if observation.StatusCode != 200 {
 		return InitialUnexplained
 	}
 	if response.IsSuccess {
-		if observation.StatusCode == 200 {
-			return InitialSuccessClaim
+		// 声明成功却同时带着明确的失败标记，是响应包自相矛盾，不是成功。
+		if carriesFailureMarker(observation.Endpoint, response) {
+			return InitialUnexplained
 		}
-		// 声明成功但状态码不是 200，属于新出现的形状，按不可解释失败处理。
-		return InitialUnexplained
+		return InitialSuccessClaim
+	}
+	if isAuthCode(response.Code) {
+		return InitialAuthRejected
 	}
 	message := normalizeMessage(response.Message)
-	if message == OptimisticLockMessage {
+	if isOptimisticLock(observation.Endpoint, message) {
 		return InitialOptimisticLock
 	}
 	if isPreRejection(observation.Endpoint, message) {
@@ -30,17 +44,22 @@ func classifyResponse(observation Observation) Initial {
 	return InitialUnexplained
 }
 
-// isAuthRejected 识别会话失效的三种形状：HTTP 401、code=RESP401、code=AUTH_401。
-// 目标侧 AUTH_401 是现有只读路径漏认的那一种，本包必须认，依据见语义清单第 1.5 节。
-func isAuthRejected(statusCode int, response *Response) bool {
-	if statusCode == 401 {
+// carriesFailureMarker 判断一个声明成功的响应包是否同时带着明确的失败标记：
+// 鉴权错误码、乐观锁提示，或该端点登记过的前置拒绝文案。
+func carriesFailureMarker(endpoint string, response *Response) bool {
+	if isAuthCode(response.Code) {
 		return true
 	}
-	if response == nil {
-		return false
-	}
-	for _, code := range AuthRejectedCodes {
-		if normalizeMessage(response.Code) == code {
+	message := normalizeMessage(response.Message)
+	return isOptimisticLock(endpoint, message) || isPreRejection(endpoint, message)
+}
+
+// isAuthCode 判断响应码是否属于会话失效的两个目标错误码。
+// AUTH_401 是现有只读路径漏认的那一个，本包必须认，依据见语义清单第 1.5 节。
+func isAuthCode(code string) bool {
+	normalized := normalizeMessage(code)
+	for _, candidate := range AuthRejectedCodes {
+		if normalized == candidate {
 			return true
 		}
 	}

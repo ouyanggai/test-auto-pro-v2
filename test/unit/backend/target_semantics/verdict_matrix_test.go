@@ -14,15 +14,15 @@ func observationFor(initial verdict.Initial, reread verdict.Reread) verdict.Obse
 	}
 	switch initial {
 	case verdict.InitialSuccessClaim:
-		observation.Response = &verdict.Response{IsSuccess: true, Code: "RESP200", Message: "success"}
+		observation.Response = &verdict.Response{IsSuccess: true, IsSuccessPresent: true, Code: "RESP200", Message: "success"}
 	case verdict.InitialAuthRejected:
-		observation.Response = &verdict.Response{Code: "AUTH_401", Message: "当前登录用户会话过期或在其他设备登录，请重新登录"}
+		observation.Response = &verdict.Response{IsSuccessPresent: true, Code: "AUTH_401", Message: "当前登录用户会话过期或在其他设备登录，请重新登录"}
 	case verdict.InitialPreRejected:
-		observation.Response = &verdict.Response{Code: "ERROR_99999", Message: "该待办记录不存在"}
+		observation.Response = &verdict.Response{IsSuccessPresent: true, Code: "ERROR_99999", Message: "该待办记录不存在"}
 	case verdict.InitialOptimisticLock:
-		observation.Response = &verdict.Response{Code: "ERROR_99999", Message: verdict.OptimisticLockMessage}
+		observation.Response = &verdict.Response{IsSuccessPresent: true, Code: "ERROR_99999", Message: verdict.OptimisticLockMessage}
 	default:
-		observation.Response = &verdict.Response{Code: "RESP200", Message: "发生空指针异常"}
+		observation.Response = &verdict.Response{IsSuccessPresent: true, Code: "RESP200", Message: "发生空指针异常"}
 	}
 	return observation
 }
@@ -69,7 +69,7 @@ func TestResponseStepClassifiesFiveInitials(t *testing.T) {
 	resp200 := verdict.Evaluate(verdict.Observation{
 		Action: "submit", Endpoint: "/web/flowInstanceApi/submit", Transport: verdict.TransportResponded,
 		StatusCode: 200, Reread: verdict.RereadAdvanced,
-		Response: &verdict.Response{IsSuccess: false, Code: "RESP200", Message: "发生空指针异常"},
+		Response: &verdict.Response{IsSuccessPresent: true, Code: "RESP200", Message: "发生空指针异常"},
 	})
 	if resp200.Initial != verdict.InitialUnexplained || resp200.Outcome != verdict.OutcomeUncertain {
 		t.Fatalf("code=RESP200 的异常包被误判：%+v", resp200)

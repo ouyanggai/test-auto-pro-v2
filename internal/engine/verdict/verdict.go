@@ -81,6 +81,9 @@ const (
 type Response struct {
 	// IsSuccess 是目标业务包络的唯一成功判据。
 	IsSuccess bool
+	// IsSuccessPresent 表示响应包里确实出现了 isSuccess 字段。
+	// 缺字段与 isSuccess=false 含义不同，缺字段说明成功判据不存在，只能按不可解释失败处理。
+	IsSuccessPresent bool
 	// Code 只用于识别会话失效，绝不用来判成败。
 	Code string
 	// Message 参与「端点 + 精确文案」全等匹配。
