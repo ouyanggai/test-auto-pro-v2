@@ -33,14 +33,6 @@ type ExecutionPath struct {
 	UpdatedAt             time.Time
 }
 
-// IsExecutionPathRunnable 只根据路径节点配置和数据准备状态判断未来运行资格。
-func IsExecutionPathRunnable(path ExecutionPath) bool {
-	if path.ConfigurationStatus != ExecutionPathConfigurationConfigured {
-		return false
-	}
-	return path.DataStatus == HistoryDataStatusReady
-}
-
 // ExecutionPathBatchResult 汇总一次路径批量生成结果。
 type ExecutionPathBatchResult struct {
 	TotalCount    int
