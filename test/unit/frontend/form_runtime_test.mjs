@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 
-process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select', 'contract-seal-review-business'])
+const runtimeSource = fs.readFileSync(new URL('../../../form-runtime/runtime-source/src/main.js', import.meta.url), 'utf8')
+const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
+process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
 const { captureFormValues, componentRuntimeName, formRuntimeStats, prepareTemplate, refreshPreparedForm } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
@@ -180,6 +182,40 @@ test('业务自定义组件获得目标发起态上下文且不携带历史业�
     companyId: 'company-a',
     pageTemplateId: 'template-a',
   })
+})
+
+test('所有已注册自定义组件共享运行时身份且不误用合同发起态标识', () => {
+  const registeredNames = registeredRuntimeComponentNames
+  assert.ok(registeredNames.length > 0)
+  const prepared = prepareTemplate({ list: registeredNames.map((name, index) => ({
+    type: 'custom', el: name, model: `custom_${index}`, options: {}
+  })) }, registeredNames.map((_, index) => ({ field: `custom_${index}`, power: 'edit' })), false, {
+    companyId: 'company-a', companyName: '测试公司', departmentId: 'department-a',
+    departmentName: '测试部门', userId: 'user-a', accountName: '测试用户', customerCode: 'customer-a'
+  })
+  assert.deepEqual(prepared.unsupported, [])
+  for (const [index, name] of registeredNames.entries()) {
+    const props = prepared.template.list[index].options.extendProps
+    assert.equal(props.companyId, 'company-a')
+    assert.equal(props.userId, 'user-a')
+    assert.equal(props.departmentId, 'department-a')
+    if (name === 'legal-contract-doctable' || name === 'contract-seal-review-business') {
+      assert.equal(props.isFlowInitiate, true)
+      assert.equal(props.businessId, '')
+    } else {
+      assert.equal(Object.hasOwn(props, 'isFlowInitiate'), false)
+      assert.equal(Object.hasOwn(props, 'businessId'), false)
+    }
+  }
+})
+
+test('宿主 Vue 页面透传统一快照别名并在 setData 后重新初始化', () => {
+  const source = fs.readFileSync(new URL('../../../form-runtime/src/HostVuePage.vue', import.meta.url), 'utf8')
+  for (const prop of ['value: values', 'propData: values', 'params: values', 'paramsInfo: values', 'param: values', 'initialValues: values']) {
+    assert.match(source, new RegExp(prop.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')))
+  }
+  assert.match(source, /:key="`\$\{page\.componentName\}:\$\{valuesVersion\}`"/)
+  assert.match(source, /this\.valuesVersion \+= 1/)
 })
 
 test('初始默认模型的空值不计入已填写值', () => {

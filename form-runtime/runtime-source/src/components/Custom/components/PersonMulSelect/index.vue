@@ -36,6 +36,7 @@
 import Api from '@/api';
 import MySendFlowList from './MySendFlowList.vue';
 import draggable from 'vuedraggable';
+import { parseJsonArray, parseJsonObject } from '@/utils/parse-value';
 export default {
   name: 'PersonMulSelect',
   components: {
@@ -76,25 +77,21 @@ export default {
   },
   mounted() {
     console.log('this',this)
-    if (this.currentInfoObj) {
-      this.dataShowList = JSON.parse(this.currentInfoObj).flowList;
-    }
+    this.dataShowList = parseJsonArray(parseJsonObject(this.currentInfoObj).flowList);
    },
   watch: {
     value(val) {
       console.log('val-人员多选-传值',val)
       this.currentInfoObj = val;
-      if (JSON.parse(val)?.flowList){
-        this.dataShowList = JSON.parse(val).flowList;
-      }
+      this.dataShowList = parseJsonArray(parseJsonObject(val).flowList);
     },
     placeholder(val) {
       // console.log('======placeholder======',val)
     },
     currentInfoObj(val){
       console.log('emit-人员多选-控件赋值',val)
-      console.log(typeof JSON.parse(val).flowList)
-      let arr = JSON.parse(val).flowList.map(x=>x.id)
+      const flowList = parseJsonArray(parseJsonObject(val).flowList)
+      let arr = flowList.map(x=>x.id)
       console.log('arr--currentInfoObj', arr)
       this.$parent.$set(this.$parent.dataModels,this.$parent.modelName+'__formPersonId',arr) // 指定表单人员虚拟字段（表单指定人员要的是id）
 
@@ -121,7 +118,7 @@ export default {
     selectFlow(data) { // 选择赋值
       console.log('selectFlow-data',data)
       this.currentInfoObj = data;
-      this.dataShowList = JSON.parse(data).flowList;
+      this.dataShowList = parseJsonArray(parseJsonObject(data).flowList);
       // 去重
       // const newArr = JSON.parse(data).flowList.reduce((item, next) => {
       //   obj[next.name] ? '' : obj[next.name] = true && item.push(next);

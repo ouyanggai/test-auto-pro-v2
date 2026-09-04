@@ -46,6 +46,7 @@
 <script>
 import Api from '@/api';
 import { localstorageGet,localstorageSet } from '@/utils/auth';
+import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: '',
@@ -112,7 +113,7 @@ export default {
       // console.log('oldVal', oldVal);
       // if (!oldVal) return;
       var fidNum = 0;
-      let newValId = newVal ? JSON.parse(newVal).id : '';
+      let newValId = parseJsonObject(newVal).id || '';
       console.log(22,newValId)
       if (this.treedata.length) {
         const fn = (sr) => {
@@ -154,8 +155,9 @@ export default {
       console.log('handleLiClick-val',val)
       console.log('handleLiClick-val2',this.myValue)
       this.selectItem = val.id;
-      if (this.myValue && JSON.parse(this.myValue).selectCompany) {
-        this.$emit('changeMyValue', JSON.stringify(Object.assign({}, JSON.parse(this.myValue), {
+      const currentValue = parseJsonObject(this.myValue)
+      if (currentValue.selectCompany) {
+        this.$emit('changeMyValue', JSON.stringify(Object.assign({}, currentValue, {
           id: val.id,
           name: val.name
         })));
@@ -177,7 +179,8 @@ export default {
     },
     handleInitTree() {
       console.log('handleInitTree2',this.myValue)
-      let companyId = this.myValue && JSON.parse(this.myValue).selectCompany ? JSON.parse(this.myValue).selectCompanyId : localstorageGet('companyId');
+      const currentValue = parseJsonObject(this.myValue)
+      let companyId = currentValue.selectCompany ? currentValue.selectCompanyId : localstorageGet('companyId');
       // this.$axios.post('/web/user/api/company/getCompanyTree', { }, // 更换了下面的接口，通过公司id过滤
       this.$axios.post('/web/user/api/company/children', {
         data:{

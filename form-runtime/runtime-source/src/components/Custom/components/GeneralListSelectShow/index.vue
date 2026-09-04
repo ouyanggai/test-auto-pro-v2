@@ -21,12 +21,12 @@
       <template scope="scope">
         <span v-if="printRead" class="print-read-label">
           <!-- <span>333</span> -->
-          <span>{{ JSON.parse(currentInfoObj).name }}</span>
+          <span>{{ parsedInfo.name }}</span>
           <!-- <span>{{ JSON.parse(currentInfoObj) }}</span> -->
         </span>
 
         <template v-else>
-          <el-input v-if="JSON.parse(currentInfoObj).name" readonly v-model="scope.viewName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
+          <el-input v-if="parsedInfo.name" readonly v-model="scope.viewName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
             <el-button slot="append" icon="el-icon-search" @click="checkDetail"></el-button>
           </el-input>
           <el-button v-else type="primary" :disabled="disabled" @click="openInfoDialog" style="margin-left:5px;">{{ placeholder }}</el-button>
@@ -50,6 +50,7 @@ import mixin from './mixin.js';
 import MySendFlowList from './MySendFlowList.vue';
 import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/EnterpriseExamineDialog';
 import CheckFlowNodeDetail from '@/views/GroupApproveManage/components/CheckFlowNodeDetail.vue';
+import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: 'GeneralListSelectShow',
@@ -124,6 +125,10 @@ export default {
     },
   },
   computed: {
+    // parsedInfo 统一处理单选组件的空值，避免模板表达式直接解析空字符串导致整张表单渲染失败。
+    parsedInfo () {
+      return parseJsonObject(this.currentInfoObj)
+    },
     fieldType(){
       console.log('this.fieldSelectType',this.fieldSelectType)
       let copyType = JSON.parse(JSON.stringify(this.fieldSelectType))
@@ -142,15 +147,17 @@ export default {
     checkDetail(){
       // console.log(111)
       console.log(111,this.currentInfoObj)
-      let row = JSON.parse(JSON.parse(this.currentInfoObj).rowData);
-      this.previewHandle(row, false);
+      const rowData = parseJsonObject(this.currentInfoObj).rowData
+      const row = parseJsonObject(rowData)
+      if (Object.keys(row).length) this.previewHandle(row, false)
     },
     openInfoDialog(data){
       console.log('openInfoDialog-data',this.currentInfoObj)
-      let selectCompanyId = this.currentInfoObj != '' && JSON.parse(this.currentInfoObj).selectCompanyId ? JSON.parse(this.currentInfoObj).selectCompanyId : '';
+      const info = parseJsonObject(this.currentInfoObj)
+      let selectCompanyId = info.selectCompanyId || '';
       console.log('selectCompanyId',selectCompanyId)
-      console.log('this.currentInfoObj.formType',JSON.parse(this.currentInfoObj).formType)
-      if (JSON.parse(this.currentInfoObj) && JSON.parse(this.currentInfoObj).formType == 'contract_receipt_form') {
+      console.log('this.currentInfoObj.formType', info.formType)
+      if (info.formType == 'contract_receipt_form') {
         if (selectCompanyId) {
           this.flowListVisible = true;
         } else {

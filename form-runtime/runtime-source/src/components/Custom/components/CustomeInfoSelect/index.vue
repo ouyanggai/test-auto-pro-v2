@@ -16,7 +16,7 @@
     <IndicatorHeaderDialog :visible.sync="indicatorHeaderVisible" v-model="currentInfoObj" @selectHeader="selectHeader" :fieldSelectType="fieldSelectType">
       <template scope="scope">
         <span v-if="printRead && currentInfoObj" class="print-read-label">
-          <span>{{ JSON.parse(currentInfoObj).name }}</span>
+          <span>{{ parsedInfo.name }}</span>
         </span>
         <span v-else-if="printRead && !currentInfoObj" class="print-read-label">
           <span></span>
@@ -31,6 +31,7 @@
 import Api from '@/api';
 import { localstorageGet } from '@/utils/auth';
 import IndicatorHeaderDialog from './IndicatorHeaderDialog.vue';
+import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: 'CustomeInfoSelect',
@@ -93,7 +94,7 @@ export default {
         return;
       }
       try {
-        const parsed = JSON.parse(val);
+        const parsed = parseJsonObject(val);
         // 添加后缀'__condition'的虚拟字段，并赋值选中的name
         this.$parent.$set(this.$parent.dataModels, this.$parent.modelName + '__condition', parsed.name);
         this.$parent.$set(this.$parent.dataModels, this.$parent.modelName + '__formPersonId', parsed.id);
@@ -114,7 +115,12 @@ export default {
     //   console.log('====printRead===',this.printRead)
     // },
   },
-  computed: {},
+  computed: {
+    // parsedInfo 为展示层提供稳定对象，空值和异常历史值都按未选择处理。
+    parsedInfo () {
+      return parseJsonObject(this.currentInfoObj)
+    }
+  },
   methods: {
     openInfoDialog(data){
       this.indicatorHeaderVisible = true;

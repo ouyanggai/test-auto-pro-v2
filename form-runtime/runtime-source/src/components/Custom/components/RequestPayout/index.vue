@@ -15,6 +15,7 @@
 </template>
 <script>
 import MySendFlowList from './MySendFlowList.vue';
+import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: 'CustomeSelect',
@@ -76,7 +77,7 @@ export default {
             return this.$message.warning('请先选择报销单位！');
           }
         } else if (values.RequestPayoutList) { // 请款单
-          const companyId = values.myCompanyName && JSON.parse(values.myCompanyName) ? JSON.parse(values.myCompanyName).id : '';
+          const companyId = parseJsonObject(values.myCompanyName).id || '';
           console.log('companyId', companyId);
           if (!companyId) {
             console.log('111111111');

@@ -30,6 +30,7 @@ import Api from '@/api';
 import store from '@/store';
 import { localstorageGet } from '@/utils/auth';
 import { getObjById } from '@/utils';
+import { parseJsonArray } from '@/utils/parse-value';
 
 export default {
   name: '',
@@ -102,7 +103,7 @@ export default {
     visible(val){
       if (val) {
         this.$nextTick(x=>{
-          let getMyNewVal = JSON.parse(this.myValue);
+          const getMyNewVal = parseJsonArray(this.myValue);
           // if (getMyNewVal.flowList) {
           if (getMyNewVal) {
             // console.log('getMyNewVal.flowList',getMyNewVal.flowList)

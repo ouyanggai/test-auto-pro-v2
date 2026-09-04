@@ -8,9 +8,28 @@
       :value="values"
       :edit="!readOnly"
       @on-change="markDirty"
+      @openCompanyPersonFramwork="openCompanyPersonFramwork"
+      @openRelationOrganizationDialog="openRelationOrganizationDialog"
     />
     <host-vue-page v-else-if="sessionId && renderType === 'vue_custom'" ref="vueHost" :page="vuePage" :initial-values="values" :permissions="runtimePermissions" :read-only="readOnly" />
     <div v-else class="form-runtime__placeholder">正在等待表单工作区初始化…</div>
+    <IndicatorHeaderDialog
+      v-if="indicatorHeaderVisible"
+      :visible.sync="indicatorHeaderVisible"
+      :fielSelectType="fielSelectType"
+      :companyId="companyId"
+      :selectUserCompanyId="selectUserCompanyId"
+      :departmentId="departmentId"
+      :relDepartmentId="relDepartmentId"
+      :isRelative="isRelative"
+      @selectHeader="selectHeader"
+    />
+    <RelationOrganizationDialog
+      v-if="relationOrganizationVisible"
+      :visible.sync="relationOrganizationVisible"
+      :fielSelectType="fielSelectType"
+      @selectValue="selectValue"
+    />
   </main>
 </template>
 
@@ -21,10 +40,12 @@ import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
 import HostVuePage from './HostVuePage.vue'
+import IndicatorHeaderDialog from '@runtime/components/IndicatorHeaderDialog.vue'
+import RelationOrganizationDialog from '@runtime/components/RelationOrganizationDialog.vue'
 
 export default {
   name: 'FormRuntimeApp',
-  components: { HostVuePage },
+  components: { HostVuePage, IndicatorHeaderDialog, RelationOrganizationDialog },
   data () {
     return {
       parentOrigin: '',
@@ -48,6 +69,26 @@ export default {
 		requestPolicyObservations: [],
 		requestPolicyIssues: [],
 		runtimeIssues: [],
+		indicatorHeaderVisible: false,
+		relationOrganizationVisible: false,
+		fielSelectType: '',
+		companyId: '',
+		selectUserCompanyId: '',
+		departmentId: '',
+		relDepartmentId: '',
+		isRelative: true,
+		currentField: '',
+		currentRowIndex: null,
+		currentTable: '',
+		setDataProps: '',
+		setId: {
+			user_name: 'user_id',
+			company_name: 'company_id',
+			department_name: 'department_id',
+			post_name: 'post_id',
+			mentor_name: 'mentor_id',
+			department_manager_name: 'department_manager_id'
+		},
 		removeStorageFacade: null,
 		stateTimer: null
     }
@@ -164,7 +205,13 @@ export default {
           if (payload.departmentId && window.$store._mutations['user/SET_DEPARTMENTID']) window.$store.commit('user/SET_DEPARTMENTID', String(payload.departmentId))
         }
         const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, {
-          companyId: String(payload.companyId || '')
+          companyId: payload.companyId,
+          companyName: payload.companyName,
+          departmentId: payload.departmentId,
+          departmentName: payload.departmentName,
+          userId: payload.userId,
+          accountName: payload.accountName,
+          customerCode: payload.customerCode
         })
         this.template = prepared.template
         this.unsupported = prepared.unsupported
@@ -233,6 +280,128 @@ export default {
       if (this.renderType === 'vue_custom') return
       // 字段权限已在 FormMaking 装载前写入每个组件 options；refresh 后统一调用 disabled 会击穿缺少 disabledElement 的已注册组件。
       await refreshPreparedForm(this.form())
+    },
+    // normalizeEventData 兼容 FormMaking 事件传对象或 JSON 字符串，确保所有表单组件共享同一事件入口。
+    normalizeEventData (data) {
+      if (data && typeof data === 'object') return data
+      if (typeof data !== 'string' || !data.trim()) return {}
+      try {
+        const parsed = JSON.parse(data)
+        return parsed && typeof parsed === 'object' ? parsed : {}
+      } catch (_) {
+        return {}
+      }
+    },
+    // openCompanyPersonFramwork 对齐目标 OtherSteps2 的人员、公司、部门、岗位选择事件。
+    openCompanyPersonFramwork (data) {
+      const event = this.normalizeEventData(data)
+      const argument = this.normalizeEventData(event.argument)
+      this.selectUserCompanyId = String(event.userCompanyId || '')
+      this.fielSelectType = String(event.fielSelectType || '')
+      this.companyId = String(this.form() && typeof this.form().getValue === 'function' ? this.form().getValue('currentCompanyId') || event.companyId || '' : event.companyId || '')
+      this.departmentId = ''
+      this.relDepartmentId = ''
+      this.setDataProps = String(event.setData || '')
+      this.currentField = String(argument.field || '')
+      this.currentRowIndex = Number.isInteger(argument.rowIndex) ? argument.rowIndex : null
+      this.currentTable = String(argument.table || argument.group || '')
+      if (this.fielSelectType === 'duty' && this.currentTable && this.currentRowIndex !== null) {
+        const rows = this.form() && this.form().getValue(this.currentTable)
+        this.departmentId = String(rows && rows[this.currentRowIndex] && rows[this.currentRowIndex].department_id || '')
+      }
+      this.isRelative = event.isRelative !== false
+      this.indicatorHeaderVisible = true
+    },
+    // openRelationOrganizationDialog 打开目标岗位关联选择，并保存本次回写上下文。
+    openRelationOrganizationDialog (data) {
+      const event = this.normalizeEventData(data)
+      const argument = this.normalizeEventData(event.argument)
+      this.selectUserCompanyId = String(event.userCompanyId || '')
+      this.fielSelectType = String(event.fielSelectType || '')
+      this.companyId = String(event.companyId || '')
+      this.setDataProps = String(event.setData || '')
+      this.currentField = String(argument.field || '')
+      this.currentRowIndex = Number.isInteger(argument.rowIndex) ? argument.rowIndex : null
+      this.currentTable = String(argument.table || argument.group || '')
+      this.relationOrganizationVisible = true
+    },
+    // setFormValues 只通过 FormMaking 的公开 setData 回写，保持虚拟字段和变更统计一致。
+    async setFormValues (values) {
+      const form = this.form()
+      if (!form || typeof form.setData !== 'function' || !values || typeof values !== 'object') return
+      await form.setData(values)
+      this.markDirty()
+    },
+    // selectHeader 将人员、公司或部门选择结果回填到当前字段及其关联 ID 字段。
+    selectHeader (data, selectCompany, depart) {
+      data = this.normalizeEventData(data)
+      selectCompany = this.normalizeEventData(selectCompany)
+      depart = this.normalizeEventData(depart)
+      if (!Object.keys(data).length) return
+      const field = this.currentField
+      if (!field) return
+      if (field === 'company_dept') {
+        const values = data.type === 1 && selectCompany && selectCompany.type === 1
+          ? { type: 'company', userName_dept: '', userName_deptid: '', userName_company: data.name, userName_companyid: data.id }
+          : { type: 'dep', userName_dept: data.name, userName_deptid: data.id, userName_company: selectCompany && selectCompany.name || '', userName_companyid: selectCompany && selectCompany.id || '' }
+        void this.setFormValues(values)
+        this.indicatorHeaderVisible = false
+        return
+      }
+      const values = {}
+      if (this.currentTable && this.currentRowIndex !== null) {
+        const rows = clonePlain(this.form() && this.form().getValue(this.currentTable) || [])
+        if (Array.isArray(rows) && rows[this.currentRowIndex]) {
+          rows[this.currentRowIndex][field] = data.name
+          rows[this.currentRowIndex][`${field}_id`] = data.id
+          if (depart) {
+            rows[this.currentRowIndex][`${field}_dept`] = depart.name
+            rows[this.currentRowIndex][`${field}_deptid`] = depart.id
+          }
+          if (this.setId[field]) rows[this.currentRowIndex][this.setId[field]] = data.id
+          if (field === 'company_name' || field === 'department_name') {
+            rows[this.currentRowIndex].post_name = ''
+            rows[this.currentRowIndex].post_id = ''
+          }
+          values[this.currentTable] = rows
+        }
+      } else {
+        values[field] = data.name
+        values[`${field}_id`] = data.id
+        if (this.fielSelectType === 'company') {
+          const prefix = field.split('_')[0]
+          values[`${prefix}_name`] = data.name
+          values[`${prefix}_id`] = data.id
+          values[`${prefix}_dept`] = depart && depart.name || ''
+          values[`${prefix}_deptid`] = depart && depart.id || ''
+          values[`${prefix}_company`] = selectCompany && selectCompany.name || ''
+          values[`${prefix}_companyid`] = selectCompany && selectCompany.id || ''
+        } else if (this.fielSelectType === 'department' && field.includes('_dept')) {
+          const prefix = field.replace('_dept', '')
+          values[prefix] = ''
+          values[`${prefix}_id`] = ''
+          values[`${prefix}_dept`] = data.name
+          values[`${prefix}_deptid`] = data.id
+          values[`${prefix}_company`] = selectCompany && selectCompany.name || ''
+          values[`${prefix}_companyid`] = selectCompany && selectCompany.id || ''
+        }
+        if (this.setId[field]) values[this.setId[field]] = data.id
+      }
+      void this.setFormValues(values)
+      this.indicatorHeaderVisible = false
+    },
+    // selectValue 将岗位、部门和公司三联结果回填到目标表单的标准字段。
+    selectValue (post, department, company) {
+      post = this.normalizeEventData(post)
+      department = this.normalizeEventData(department)
+      company = this.normalizeEventData(company)
+      if (!Object.keys(post).length || !Object.keys(department).length || !Object.keys(company).length) return
+      if (this.currentField === 'post_name') {
+        void this.setFormValues({ post_name: post.name, post_id: post.id, department_name: department.name, department_id: department.id, company_name: company.name, company_id: company.id })
+      } else if (this.currentField === 'company_department_post_name') {
+        void this.setFormValues({ company_department_post_name: `${company.name}/${department.name}/${post.name}`, post_id: post.id, department_id: department.id, company_name: company.name, department_name: department.name })
+      }
+      this.relationOrganizationVisible = false
     },
     async capture (validate) {
       if (this.renderType === 'vue_custom') {
@@ -315,7 +484,19 @@ export default {
 		this.requiredEditableFields = []
 		this.requestPolicyObservations = []
 		this.requestPolicyIssues = []
-		this.runtimeIssues = []
+      this.runtimeIssues = []
+		this.indicatorHeaderVisible = false
+		this.relationOrganizationVisible = false
+		this.fielSelectType = ''
+		this.companyId = ''
+		this.selectUserCompanyId = ''
+		this.departmentId = ''
+		this.relDepartmentId = ''
+		this.isRelative = true
+		this.currentField = ''
+		this.currentRowIndex = null
+		this.currentTable = ''
+		this.setDataProps = ''
       this.dirty = false
       this.loading = false
       setRuntimeEnvironment({ baseUrl: '', viewFileUrl: '', onlyOfficeUrl: '' })

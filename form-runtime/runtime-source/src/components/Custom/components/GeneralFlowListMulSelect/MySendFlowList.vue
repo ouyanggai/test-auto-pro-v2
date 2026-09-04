@@ -56,6 +56,7 @@ import { approveManageFlowStatus, deepClone } from '@/utils';
 import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/EnterpriseExamineDialog';
 import CheckFlowNodeDetail from '@/views/GroupApproveManage/components/CheckFlowNodeDetail.vue';
 import DyTable from '@/components/DyTable';
+import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: '',
@@ -166,7 +167,7 @@ export default {
             this.$refs[this.fieldType].doLayout(); // 解决宽度偶尔缩小
           }
 
-          let getMyNewVal = JSON.parse(this.myValue);
+          const getMyNewVal = parseJsonObject(this.myValue);
           if (getMyNewVal.flowList) {
             let selectTableIdList = getMyNewVal.flowList.map(x=>x.id);
             let selectFlowList = [];
@@ -226,12 +227,13 @@ export default {
       this.myFlowList = await this.getList();
     },
     getList() { // 获取列表数据
-      console.log('getList************',JSON.parse(this.myValue),this)
+      const myValue = parseJsonObject(this.myValue)
+      console.log('getList************', myValue, this)
       return new Promise((resolve,reject)=>{
         let url='',data = {};
         if  (this.fieldType == 'flow'){ // 流程
           console.log(223344,this.myValue)
-          let flowType = JSON.parse(this.myValue).flowType;
+          let flowType = myValue.flowType || '';
           console.log('获取流程列表',flowType)
           url = Api.schedule.getFlowInstanceList;
           data = {
@@ -283,7 +285,7 @@ export default {
       }))
       this.$emit('selectFlow', JSON.stringify({
         flowList: newSelectData,
-        flowType: JSON.parse(this.myValue).flowType ? JSON.parse(this.myValue).flowType :''
+        flowType: parseJsonObject(this.myValue).flowType || ''
       }));
       // return;
       this.handleClose();

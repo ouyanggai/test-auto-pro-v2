@@ -4,14 +4,8 @@
       :is="pageComponent"
       v-if="pageComponent"
       ref="page"
-      :key="page.componentName"
-      :opera-type="readOnly ? 'preview' : 'create'"
-      :action-type="readOnly ? 'view' : 'create'"
-      :show-type="readOnly ? 'preview' : 'init'"
-      :select-flow-type="page.route"
-      :select-flow-name="page.pageName"
-      :params-info="values"
-      :param="values"
+      :key="`${page.componentName}:${valuesVersion}`"
+      v-bind="pageProps"
     />
     <div v-else class="host-vue-page__error">当前 Vue 业务页面没有可加载的宿主组件</div>
   </section>
@@ -30,14 +24,51 @@ export default {
     readOnly: { type: Boolean, default: false }
   },
   data () {
-    return { values: clonePlain(this.initialValues || {}) }
+    return { values: clonePlain(this.initialValues || {}), valuesVersion: 0 }
   },
   computed: {
-    pageComponent () { return resolveHostVuePage(this.page.componentName) }
+    pageComponent () { return resolveHostVuePage(this.page.componentName) },
+    // 同一份快照按目标页面既有的参数命名透传，避免不同表单因参数名差异丢失初始值。
+    pageProps () {
+      const values = this.values || {}
+      const firstValue = (...keys) => {
+        for (const key of keys) {
+          const value = values[key]
+          if (value !== undefined && value !== null && value !== '') return value
+        }
+        return ''
+      }
+      return {
+        operaType: this.readOnly ? 'preview' : 'create',
+        actionType: this.readOnly ? 'view' : 'create',
+        showType: this.readOnly ? 'preview' : 'init',
+        selectFlowType: this.page.route,
+        selectFlowName: this.page.pageName,
+        value: values,
+        propData: values,
+        params: values,
+        paramsInfo: values,
+        param: values,
+        initialValues: values,
+        data: values,
+        id: firstValue('id', 'bizId', 'biz_id', 'otherBizId', 'other_biz_id'),
+        bizId: firstValue('bizId', 'biz_id', 'otherBizId', 'other_biz_id', 'id'),
+        otherBizId: firstValue('otherBizId', 'other_biz_id', 'bizId', 'biz_id', 'id'),
+        flowInstanceId: firstValue('flowInstanceId', 'flow_instance_id'),
+        flowProxyId: firstValue('flowProxyId', 'flow_proxy_id'),
+        flowNodeProxyId: firstValue('flowNodeProxyId', 'flow_node_proxy_id'),
+        createrId: firstValue('createrId', 'creatorId', 'creator_id', 'userId', 'user_id'),
+        isExamine: Boolean(values.isExamine || values.is_examine),
+        isReInitiate: Boolean(values.isReInitiate || values.is_re_initiate),
+        logTableData: values.logTableData || values.log_table_data || []
+      }
+    }
   },
   methods: {
+    // 更新快照后递增版本，强制目标页面重新走既有 created 初始化流程。
     async setData (values) {
       this.values = clonePlain(values || {})
+      this.valuesVersion += 1
       await this.$nextTick()
       this.applyFieldStates(this.$refs.page, new Set(), 0)
       return { issues: [] }

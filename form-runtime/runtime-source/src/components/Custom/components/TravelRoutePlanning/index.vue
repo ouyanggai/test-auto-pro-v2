@@ -147,6 +147,7 @@
 
 <script>
 import CitySelect from '@/components/Custom/components/CitySelect/index.vue';
+import { parseJsonArray } from '@/utils/parse-value';
 
 const CITY_PICKER_TYPES = ['飞机', '火车'];
 
@@ -263,14 +264,7 @@ export default {
           this.routeList.push(this.createEmptyRoute());
           return;
         }
-        let parsedVal = val;
-        if (typeof val === 'string') {
-          try {
-            parsedVal = JSON.parse(val);
-          } catch (e) {
-            parsedVal = [];
-          }
-        }
+        let parsedVal = parseJsonArray(val);
 
         if (Array.isArray(parsedVal) && parsedVal.length > 0) {
           this.routeList = [...parsedVal];
@@ -485,4 +479,3 @@ export default {
   }
 }
 </style>
-

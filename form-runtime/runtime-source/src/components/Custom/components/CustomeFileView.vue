@@ -25,6 +25,7 @@
 //
 import { localstorageGet } from '@/utils/auth';
 import { viewFile } from '@/utils';
+import { parseJsonObject } from '@/utils/parse-value';
 
 /* eslint-disable */
 export default {
@@ -77,7 +78,7 @@ export default {
   computed: {},
   methods: {
     init(val){
-      let file = JSON.parse(JSON.stringify(val));
+      let file = parseJsonObject(val);
       let fileObj = Object.keys(file).length > 0 ? file : {name:'',url:''}
       this.fileDataObj = Object.assign({},this.fileDataObj,fileObj)
       console.log('表单文件组件-this.fileDataObj',this.fileDataObj)

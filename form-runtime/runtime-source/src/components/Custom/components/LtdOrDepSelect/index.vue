@@ -37,6 +37,7 @@
 import Api from '@/api';
 import { localstorageGet } from '@/utils/auth';
 import MyCompanyList from './MyCompanyList.vue';
+import { parseJsonArray } from '@/utils/parse-value';
 
 export default {
   name: 'CustomeInfoSelect',
@@ -77,15 +78,13 @@ export default {
   created() {
    },
   mounted() {
-    if (this.currentInfoObj) {
-      this.dataShowList = JSON.parse(this.currentInfoObj);
-    }
+    this.dataShowList = parseJsonArray(this.currentInfoObj);
    },
   watch: {
     value(val) {
       console.log('val-公司和部门多选-传值',val)
       this.currentInfoObj = val;
-      this.dataShowList = JSON.parse(val);
+      this.dataShowList = parseJsonArray(val);
     },
     placeholder(val) {
       // console.log('======placeholder======',val)
@@ -110,7 +109,7 @@ export default {
     selectHeader(data) { // 选择赋值
       console.log('selectHeader-data',data)
       this.currentInfoObj = data;
-      this.dataShowList = JSON.parse(data);
+      this.dataShowList = parseJsonArray(data);
       console.log('this.dataShowList',this.dataShowList)
       this.indicatorHeaderVisible = false;
 

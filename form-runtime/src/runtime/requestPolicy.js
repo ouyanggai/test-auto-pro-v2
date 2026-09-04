@@ -16,13 +16,6 @@ const EXPLICIT_FORBIDDEN_PATHS = [
   /\/web\/flowOperate(?:Api|Service)?(?:\/|$)/i,
   /\/web\/user\/api\/login\/user\/(?:login|loginOut|switchLinkage)(?:\/|$)/i
 ]
-const KNOWN_TARGET_ORIGINS = new Set([
-  'http://192.168.1.220:8081',
-  'http://192.168.1.220:28081',
-  'http://192.168.1.220:38081',
-  'http://192.168.1.218:8077',
-  'https://iserver.runshihua.com'
-])
 
 // pathSegments 统一解码目标路径并保留层级，供写语义优先判断。
 function pathSegments (pathname) {
@@ -133,11 +126,8 @@ function resolveURL (raw, baseURL) {
   }
   const resolved = new URL(text, window.location.href)
   if (!targetPath(resolved.pathname)) return resolved
-  // 同步源码的开发环境可能在 axios 初始化时捕获旧 28081；同主机旧端口和已知目标网关都必须改写，不能绕过会话只读策略。
-  if (resolved.hostname === base.hostname || KNOWN_TARGET_ORIGINS.has(resolved.origin)) {
-    return rewriteTargetPath(resolved, base)
-  }
-  return resolved
+  // 模板中的目标接口可能固化任意历史网关；凡 /web 路径都必须收敛到本次核实的会话网关，不能因旧来源地址绕过只读清单。
+  return rewriteTargetPath(resolved, base)
 }
 
 // requestPolicyIssue 把策略缺口投影为不含查询串、正文和 SID 的结构化诊断。

@@ -176,6 +176,7 @@
 <script>
 /* eslint-disable */
 import { domesticTabs, overseasTabs, domesticCities, overseasCities } from './baseData';
+import { parseJsonArray, parseJsonObject } from '@/utils/parse-value';
 export default {
   name: 'CitySelect',
   components: {},
@@ -254,34 +255,15 @@ export default {
         try {
           if (this.isMultiple) {
             // 多选模式
-            let arr = [];
-            if (Array.isArray(val)) {
-              arr = val;
-            } else if (typeof val === 'string') {
-              try {
-                arr = JSON.parse(val);
-              } catch {
-                arr = val.split(',').filter(Boolean).map(item => {
-                  try { return JSON.parse(item); } catch { return { name: item, code: '' }; }
-                });
-              }
+            let arr = parseJsonArray(val, null);
+            if (!arr) {
+              arr = String(val).split(',').filter(Boolean).map(item => parseJsonObject(item, { name: item, code: '' }));
             }
             this.selectedCityData = arr;
           } else {
             // 单选模式
-            let obj = val;
-            if (typeof val === 'string') {
-              if (!val || val === '[]' || val === '{}') {
-                obj = null;
-              } else {
-                try {
-                  obj = JSON.parse(val);
-                } catch {
-                  obj = null;
-                }
-              }
-            }
-            this.selectedCityData = (obj && typeof obj === 'object' && Object.keys(obj).length > 0) ? [obj] : [];
+            const obj = parseJsonObject(val, null);
+            this.selectedCityData = obj && Object.keys(obj).length > 0 ? [obj] : [];
           }
         } catch (e) {
           this.selectedCityData = [];

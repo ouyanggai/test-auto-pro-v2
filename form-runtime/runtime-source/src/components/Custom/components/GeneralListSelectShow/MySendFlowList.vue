@@ -14,7 +14,7 @@
     <el-dialog :visible="visible" :title="'选择'+typeList[fieldType]['name']" width="80%" top="100px" fullscreen :close-on-click-modal="false"
      :append-to-body="true" class="adjust-department-dialog" @close='handleClose'>
      <div>
-        <el-input v-if="JSON.parse(myValue)&&JSON.parse(myValue).flowType=='government_dock_need'" clearable style="width:180px;margin-right: 10px;" v-model.trim="searchForm.name" placeholder="查询标题名称"></el-input>
+        <el-input v-if="parsedMyValue.flowType=='government_dock_need'" clearable style="width:180px;margin-right: 10px;" v-model.trim="searchForm.name" placeholder="查询标题名称"></el-input>
         <el-input v-else style="width:180px;margin-right: 10px;" v-model.trim="searchForm.name" :placeholder="'查询'+typeList[fieldType]['name']+'名称'"></el-input>
         <el-input v-if="fieldType == 'contract'" style="width:180px;margin-right: 10px;" v-model.trim="searchForm.number" :placeholder="'查询'+typeList[fieldType]['name']+'编号'"></el-input>
         <el-input v-if="fieldType == 'contract'" style="width:180px;margin-right: 10px;" v-model.trim="searchForm.contractBody" :placeholder="'查询'+typeList[fieldType]['name']+'主体'"></el-input>
@@ -78,6 +78,7 @@ import EnterpriseExamineDialog from '@/views/GroupApproveManage/components/Enter
 import CheckFlowNodeDetail from '@/views/GroupApproveManage/components/CheckFlowNodeDetail.vue';
 import DyTable from '@/components/DyTable';
 import { localstorageSet,localstorageGet } from '@/utils/auth';
+import { parseJsonObject } from '@/utils/parse-value';
 
 export default {
   name: '',
@@ -208,6 +209,10 @@ export default {
     };
   },
   computed: {
+    // parsedMyValue 让列表弹窗在字段尚未配置值时仍能完成初始化和查询。
+    parsedMyValue () {
+      return parseJsonObject(this.myValue)
+    },
     fieldType(){
       console.log('this.fieldSelectType',this.fieldSelectType)
       let copyType = JSON.parse(JSON.stringify(this.fieldSelectType))
@@ -228,14 +233,14 @@ export default {
     visible(val){
       if (val) {
         console.log('visible-流程列表',val)
-        console.log(123,JSON.parse(this.myValue))
+        console.log(123, this.parsedMyValue)
         this.$nextTick(async x=>{
           console.log('2222111',this.$refs[this.fieldType])
           if (this.$refs[this.fieldType]){
             this.$refs[this.fieldType].doLayout();
           }
 
-          if (JSON.parse(this.myValue) && JSON.parse(this.myValue).formType == 'contract_receipt_form') { // 收款登记表特殊处理
+          if (this.parsedMyValue.formType == 'contract_receipt_form') { // 收款登记表特殊处理
             this.myFlowList = await this.getList();
             if (this.fieldType == 'contract'){
               this.myFlowList.forEach(item=>{
@@ -250,7 +255,7 @@ export default {
     },
     async myValue(newVal, oldVal) {
       console.log('w====atch',newVal)
-      let getMyNewVal = newVal == '' ? newVal : JSON.parse(newVal);
+      let getMyNewVal = parseJsonObject(newVal);
       
       if (!this.myFlowList.length) {
         this.myFlowList = await this.getList();
@@ -308,7 +313,7 @@ export default {
     async init() {
       console.log('init')
       if(!this.fieldSelectType) return;
-      let getMyNewVal = this.myValue == '' ? this.myValue : JSON.parse(this.myValue);
+      let getMyNewVal = parseJsonObject(this.myValue);
       if (!this.myFlowList.length) {
         this.myFlowList = await this.getList();
         console.log('this.myFlowList2',this.myFlowList)
@@ -386,16 +391,17 @@ export default {
       // console.log('await this.getList()',await this.getList())
     },
     getList() { // 获取列表数据
-      console.log('getList************',JSON.parse(this.myValue),this)
+      const myValue = this.parsedMyValue
+      console.log('getList************', myValue, this)
       // console.log('getList2',this.myValue)
       // console.log('getList22',typeof this.myValue)
       // console.log('this.fieldType',this.fieldType)
       return new Promise(async (resolve,reject)=>{
         let url='',data = {};
         // initiatorCompanyId = ''
-        let selectCompanyId = this.myValue != '' && JSON.parse(this.myValue).selectCompanyId ? JSON.parse(this.myValue).selectCompanyId : '';
-        let initiatorCompanyId = this.myValue != '' && JSON.parse(this.myValue).initiatorCompanyId ? JSON.parse(this.myValue).initiatorCompanyId : this.$store.state.user.companyId;
-        let initiatorId = this.myValue != '' && JSON.parse(this.myValue).initiatorId ? JSON.parse(this.myValue).initiatorId : '';
+        let selectCompanyId = myValue.selectCompanyId || '';
+        let initiatorCompanyId = myValue.initiatorCompanyId || this.$store.state.user.companyId;
+        let initiatorId = myValue.initiatorId || '';
         let fcqParameterList = []
         if (this.fieldType == 'contract') { // 合同(没有传paymentType是查已通过盖章评审的合同，传了paymentType查收款和付款合同，并且已通过盖章评审)
           url = Api.contractManage.contractInfo.getContractList;
@@ -427,11 +433,11 @@ export default {
           } else {
             data.companyId = initiatorCompanyId;
           }
-          if (JSON.parse(this.myValue).paymentType){
-            data.contractSubtableVo.paymentType = JSON.parse(this.myValue).paymentType; // 收付款分类 0收 1付 2其它 3收付款合同
+          if (myValue.paymentType){
+            data.contractSubtableVo.paymentType = myValue.paymentType; // 收付款分类 0收 1付 2其它 3收付款合同
           }
         } else if  (this.fieldType == 'flow'){ // 流程
-          let flowType = JSON.parse(this.myValue).flowType;
+          let flowType = myValue.flowType || '';
           // console.log('获取流程列表',flowType)
           url = Api.schedule.getFlowInstanceList;
           data = {
@@ -449,7 +455,7 @@ export default {
             ],
             initiator: "all",
           };
-          const userId = JSON.parse(this.myValue).userId
+          const userId = myValue.userId || ''
           if (userId) {
             if(flowType&&flowType=='government_dock_need'){
               // 政务对接需求统计流程移除这个请求中fcqParameterList数据
@@ -536,6 +542,7 @@ export default {
         this.$message.warning('请选择一条数据！')
         return;
       }
+      const myValue = this.parsedMyValue
       // flowName
       if (this.rowData) {
         let data = {
@@ -556,16 +563,16 @@ export default {
             projectId:this.rowData.projectId || '', // 合同项目id
             initiatorCompanyId:this.rowData.companyId, // 发起人公司id(也可以拿this.value的值)
             cumulativeCollectMoney: this.rowData.contractLedgerDataVo?.cumulativeCollectMoney || 0, // 累计已收款
-            paymentType: JSON.parse(this.myValue).paymentType ? JSON.parse(this.myValue).paymentType :'', // 付款类型
-            formType: JSON.parse(this.myValue).formType ? JSON.parse(this.myValue).formType :'',
-            initiatorId: this.myValue != '' && JSON.parse(this.myValue).initiatorId ? JSON.parse(this.myValue).initiatorId : '',
-            selectCompanyId:this.myValue != '' && JSON.parse(this.myValue).selectCompanyId ? JSON.parse(this.myValue).selectCompanyId : '',
+            paymentType: myValue.paymentType || '', // 付款类型
+            formType: myValue.formType || '',
+            initiatorId: myValue.initiatorId || '',
+            selectCompanyId: myValue.selectCompanyId || '',
             rowData:JSON.stringify(flowData[0])
           }}
         } else if (this.fieldType == 'flow'){
           let flowObj = { // 这个发起人公司暂时无用，先留着
-            initiatorCompanyId: this.myValue != '' && JSON.parse(this.myValue).initiatorCompanyId ? JSON.parse(this.myValue).initiatorCompanyId : this.$store.state.user.companyId,
-            flowType: JSON.parse(this.myValue).flowType ? JSON.parse(this.myValue).flowType :'',
+            initiatorCompanyId: myValue.initiatorCompanyId || this.$store.state.user.companyId,
+            flowType: myValue.flowType || '',
             rowData:JSON.stringify(this.rowData)
           }
           data = {...data,...flowObj}
