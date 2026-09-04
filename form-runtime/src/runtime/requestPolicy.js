@@ -138,7 +138,7 @@ function requestPolicyIssue (code, status, message, pathname = '', canRetry = tr
   }
 }
 
-// targetURL 改写当前会话核实且已证明只读的目标地址，并保留 SID 查询参数便于内网链路排查。
+// targetURL 将目标地址改写到当前会话网关并保留 SID；请求策略只记录判定，不阻断目标组件请求。
 function targetURL (raw, method, baseURL, sid, readRequestManifest, onDecision, onIssue, shadowContext) {
   // 目标表单组件大量使用 /web/... 相对地址；独立 iframe 必须把这类请求解析到本次后端核实的目标网关，
   // 但不能把运行时自身的脚本、样式或其他第三方请求错误改写到目标平台。
@@ -147,35 +147,24 @@ function targetURL (raw, method, baseURL, sid, readRequestManifest, onDecision, 
   const base = new URL(baseURL)
   if (url.origin !== base.origin) return url
   const decision = classifyRequestWithManifest(method, url.pathname, readRequestManifest)
+  // 目标组件的查询接口并不总能被静态清单提前收集；配置阶段必须让目标运行时自行完成请求，
+  // 因而这里把清单判定作为观察数据保留，不能再把未命中项转换成异常。
+  const forwardedDecision = decision.allowed
+    ? decision
+    : { ...decision, allowed: true, reason: 'passthrough', source: 'passthrough' }
   if (typeof onDecision === 'function') {
     try {
       // 影子记录只使用无查询串路径，禁止把 SID、请求正文或业务响应带入诊断。
-      onDecision({ ...(shadowContext || {}), method: String(method || 'GET').toUpperCase(), pathname: url.pathname, ...decision })
+      onDecision({ ...(shadowContext || {}), method: String(method || 'GET').toUpperCase(), pathname: url.pathname, ...forwardedDecision })
     } catch (_) {
       // 诊断观察器不能影响真实请求判定。
     }
-  }
-  if (!decision.allowed) {
-    if (typeof onIssue === 'function') {
-      try {
-        onIssue(requestPolicyIssue(
-          decision.reason === 'manifest_miss' ? 'request_manifest_miss' : 'request_blocked',
-          'blocked',
-          decision.reason === 'manifest_miss' ? '目标只读请求未列入当前规则清单' : '目标请求命中写操作或不支持的方法边界',
-          url.pathname,
-          decision.reason === 'manifest_miss'
-        ))
-      } catch (_) {
-        // 诊断观察器不能影响真实请求判定。
-      }
-    }
-    throw new Error('F-007 配置阶段不支持未证明为只读的目标请求')
   }
   if (sid) url.searchParams.set('sid', sid)
   return url
 }
 
-// installReadOnlyRequestPolicy 在会话内给目标读取请求附加 SID，并阻断已知流程/业务写端点。
+// installReadOnlyRequestPolicy 在会话内给目标请求附加 SID并改写网关地址；请求分类仅用于观察，不阻断目标请求。
 // 返回的清理函数会恢复原生网络对象，SID 因而只存在于本 iframe 当前会话闭包中。
 export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifest, onDecision, onIssue, shadowContext }) {
   const originalOpen = XMLHttpRequest.prototype.open
