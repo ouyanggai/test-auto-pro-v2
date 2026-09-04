@@ -110,3 +110,20 @@ func (s *LogScopeService) cachedName(key string, load func() string) string {
 	s.mu.Unlock()
 	return name
 }
+
+// backgroundLogScope 为后台任务构造日志作用域：以任务自己的计划 ID 兜底，请求作用域优先，
+// 计划名缺失时再从计划记录补一次。后台任务用 context.Background() 起协程，
+// 不这样显式传递就会丢掉计划归属，让本属于某个计划的目标请求日志掉进应用程序目录。
+func backgroundLogScope(ctx context.Context, plans *PlanService, planID uint64) logging.Scope {
+	if planID == 0 {
+		return logging.ScopeFrom(ctx)
+	}
+	scope := logging.Scope{PlanID: strconv.FormatUint(planID, 10)}.Merge(logging.ScopeFrom(ctx))
+	if strings.TrimSpace(scope.PlanName) != "" || plans == nil {
+		return scope
+	}
+	if plan, err := plans.Get(ctx, planID); err == nil {
+		scope.PlanName = strings.TrimSpace(plan.Name)
+	}
+	return scope
+}

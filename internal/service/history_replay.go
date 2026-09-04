@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/formdata/branchoverlay"
+	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -171,7 +173,7 @@ func (s *HistoryReplayService) Create(ctx context.Context, planID uint64, input 
 	if err != nil {
 		return model.HistoryReplayJob{}, mapHistoryReplayRepositoryError(err)
 	}
-	s.startWorker(persisted)
+	s.startWorker(ctx, persisted)
 	return publicHistoryReplayJob(persisted), nil
 }
 
@@ -205,7 +207,7 @@ func (s *HistoryReplayService) Active(ctx context.Context, planID uint64) (model
 	if !found {
 		return model.HistoryReplayJob{}, false, nil
 	}
-	s.startWorker(job)
+	s.startWorker(ctx, job)
 	return publicHistoryReplayJob(job), true, nil
 }
 
@@ -239,7 +241,7 @@ func (s *HistoryReplayService) Resume(ctx context.Context, planID uint64, jobID 
 	if err != nil {
 		return model.HistoryReplayJob{}, mapHistoryReplayRepositoryError(err)
 	}
-	s.startWorker(job)
+	s.startWorker(ctx, job)
 	return publicHistoryReplayJob(job), nil
 }
 
@@ -268,7 +270,7 @@ func (s *HistoryReplayService) Recover(ctx context.Context) error {
 		return mapHistoryReplayRepositoryError(err)
 	}
 	for _, job := range jobs {
-		s.startWorker(job)
+		s.startWorker(ctx, job)
 	}
 	return nil
 }
@@ -320,7 +322,9 @@ func (s *HistoryReplayService) resolveReplaySnapshot(ctx context.Context, planID
 }
 
 // startWorker 为每个任务只启动一个进程内 worker，持久化租约仍是跨进程的最终约束。
-func (s *HistoryReplayService) startWorker(job model.HistoryReplayJob) {
+// requestContext 只用来取日志作用域和补计划名，worker 的生命周期仍与请求解绑，
+// 否则请求一结束后台任务就会被取消。
+func (s *HistoryReplayService) startWorker(requestContext context.Context, job model.HistoryReplayJob) {
 	if s == nil || strings.TrimSpace(job.ID) == "" {
 		return
 	}
@@ -329,7 +333,8 @@ func (s *HistoryReplayService) startWorker(job model.HistoryReplayJob) {
 		s.mu.Unlock()
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), historyReplayWorkerTimeout)
+	scope := backgroundLogScope(requestContext, s.plans, job.PlanID)
+	ctx, cancel := context.WithTimeout(logging.WithScope(context.Background(), scope), historyReplayWorkerTimeout)
 	done := make(chan struct{})
 	s.running[job.ID] = struct{}{}
 	s.cancel[job.ID] = cancel
@@ -412,6 +417,13 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 		RuntimeType: item.RuntimeType,
 	}
 	path, err := s.paths.Get(ctx, planID, item.PathID)
+	if err == nil {
+		// 这条明细之后的目标读取与动作配置都属于这条执行路径，补上路径归属，
+		// 让本项目产生的日志落进该执行路径自己的目录，而不是停在计划级目录。
+		ctx = logging.WithScope(ctx, logging.Scope{
+			ExecutionPathID: strconv.FormatUint(item.PathID, 10), ExecutionPathName: path.Name,
+		})
+	}
 	if err != nil {
 		if errors.Is(err, repository.ErrExecutionPathNotFound) {
 			result.Status, result.DataStatus = model.HistoryReplayItemStatusAffected, model.HistoryDataStatusAffected

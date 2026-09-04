@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"test-auto-pro-v2/internal/analyzer"
+	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -72,6 +73,9 @@ type PathGenerationJob struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 	planID    uint64
 	cancel    context.CancelFunc
+	// logScope 保存发起该任务的日志作用域。后台协程用 context.Background() 起，
+	// 只传 planID 会丢掉计划名与请求标识，让后台产生的目标请求日志落错目录。
+	logScope logging.Scope
 }
 
 // NewExecutionPathService 组装计划、真实图、路径分析与事务仓储边界。
@@ -105,12 +109,15 @@ func (s *ExecutionPathService) StartGeneration(ctx context.Context, planID uint6
 		s.generationMu.Unlock()
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "后台路径解析任务繁忙，请稍后重试"}
 	}
-	jobCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	job := &PathGenerationJob{ID: createKey, Status: "queued", UpdatedAt: s.now().UTC(), planID: planID, cancel: cancel}
+	scope := backgroundLogScope(ctx, s.plans, planID)
+	jobCtx, cancel := context.WithTimeout(logging.WithScope(context.Background(), scope), 5*time.Minute)
+	job := &PathGenerationJob{ID: createKey, Status: "queued", UpdatedAt: s.now().UTC(), planID: planID, cancel: cancel, logScope: scope}
 	s.generations[createKey] = job
+	// 快照必须在解锁前取：后台协程会立刻改写 Status 与 UpdatedAt，解锁后再读整个结构体是数据竞争。
+	snapshot := *job
 	s.generationMu.Unlock()
 	go s.runGeneration(jobCtx, createKey)
-	return *job, nil
+	return snapshot, nil
 }
 
 // runGeneration 在后台执行完整路径解析，完成后只刷新任务快照。
@@ -184,8 +191,10 @@ func (s *ExecutionPathService) ResumeGeneration(ctx context.Context, planID uint
 		s.generationMu.Unlock()
 		return PathGenerationJob{}, &ExecutionPathError{Kind: ExecutionPathErrorEnumerationLimit, Message: "后台路径解析任务繁忙，请稍后重试"}
 	}
-	jobCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	job.Status, job.Error, job.UpdatedAt, job.cancel = "queued", "", s.now().UTC(), cancel
+	// 恢复时以本次请求的作用域为准，缺失的字段回落到任务创建时保存的那份。
+	scope := job.logScope.Merge(backgroundLogScope(ctx, s.plans, planID))
+	jobCtx, cancel := context.WithTimeout(logging.WithScope(context.Background(), scope), 5*time.Minute)
+	job.Status, job.Error, job.UpdatedAt, job.cancel, job.logScope = "queued", "", s.now().UTC(), cancel, scope
 	copy := *job
 	s.generationMu.Unlock()
 	go s.runGeneration(jobCtx, jobID)
