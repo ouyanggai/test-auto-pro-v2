@@ -46,13 +46,39 @@ func (w *Writer) WriteLine(line string) int64 {
 	if w == nil {
 		return 0
 	}
+	return w.append(strings.TrimRight(line, "\n") + "\n")
+}
+
+// WriteBlock 追加一个多行块，返回块首行号；只有 curl 日志与 panic 栈允许多行。
+// 整块必须在同一次加锁内一次写出：逐行写入时多个请求的 begin/正文/end 会互相穿插，把日志块写坏。
+func (w *Writer) WriteBlock(header, body, footer string) int64 {
+	if w == nil {
+		return 0
+	}
+	builder := strings.Builder{}
+	builder.WriteString(strings.TrimRight(header, "\n"))
+	builder.WriteString("\n")
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		builder.WriteString(line)
+		builder.WriteString("\n")
+	}
+	builder.WriteString(strings.TrimRight(footer, "\n"))
+	builder.WriteString("\n")
+	return w.append(builder.String())
+}
+
+// append 在同一把锁内完成轮转判断与一次写入，返回本次写入的首行号。
+// 单行与多行块共用这条路径，保证同一文件的任何一次写入都不会被其他写入切开。
+func (w *Writer) append(payload string) int64 {
+	if payload == "" {
+		return 0
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.prepare(); err != nil {
 		reportWriteFailure(w.path, err)
 		return 0
 	}
-	payload := strings.TrimRight(line, "\n") + "\n"
 	if w.maxFileBytes > 0 && w.size+int64(len(payload)) > w.maxFileBytes && w.size > 0 {
 		if err := w.rotate(); err != nil {
 			reportWriteFailure(w.path, err)
@@ -70,27 +96,8 @@ func (w *Writer) WriteLine(line string) int64 {
 		return 0
 	}
 	w.size += int64(written)
+	first := w.lines + 1
 	w.lines += int64(strings.Count(payload, "\n"))
-	return w.lines
-}
-
-// WriteBlock 追加一个多行块，返回块首行号；只有 curl 日志与 panic 栈允许多行。
-func (w *Writer) WriteBlock(header, body, footer string) int64 {
-	if w == nil {
-		return 0
-	}
-	lines := []string{header}
-	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
-		lines = append(lines, line)
-	}
-	lines = append(lines, footer)
-	first := int64(0)
-	for index, line := range lines {
-		lineNumber := w.WriteLine(line)
-		if index == 0 {
-			first = lineNumber
-		}
-	}
 	return first
 }
 

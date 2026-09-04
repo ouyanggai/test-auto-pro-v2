@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -62,6 +63,64 @@ func TestWriterKeepsConcurrentLinesIntact(t *testing.T) {
 		if line != "time=1 level=info message=并发写入的一整行内容" {
 			t.Fatalf("出现半行交错：%q", line)
 		}
+	}
+}
+
+// TestWriterKeepsConcurrentBlocksIntact 验证多行块并发写入不会互相穿插。
+// curl.log 与 panic 栈都是多行块，逐行加锁会让两个请求的 begin、正文、end 交错，把日志块写坏。
+func TestWriterKeepsConcurrentBlocksIntact(t *testing.T) {
+	writer := logging.NewWriter(filepath.Join(t.TempDir(), "curl.log"))
+	const blocks, blockLines = 40, 5
+	group := sync.WaitGroup{}
+	for index := 0; index < blocks; index++ {
+		group.Add(1)
+		go func(id int) {
+			defer group.Done()
+			trace := "trace-" + strconv.Itoa(id)
+			writer.WriteBlock(
+				"--- begin curl trace_id="+trace+" ---",
+				"curl -sS -X POST '"+trace+"'\n--- response ---\n{\"id\":\""+trace+"\"}",
+				"--- end curl trace_id="+trace+" ---",
+			)
+		}(index)
+	}
+	group.Wait()
+	content, err := os.ReadFile(writer.Path())
+	if err != nil {
+		t.Fatalf("读取日志失败：%v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(content), "\n"), "\n")
+	if len(lines) != blocks*blockLines {
+		t.Fatalf("块总行数不正确：%d", len(lines))
+	}
+	seen := map[string]bool{}
+	for index := 0; index < len(lines); index += blockLines {
+		header := lines[index]
+		if !strings.HasPrefix(header, "--- begin curl trace_id=") {
+			t.Fatalf("第 %d 行不是块首，说明块被切开了：%q", index+1, header)
+		}
+		trace := strings.TrimSuffix(strings.TrimPrefix(header, "--- begin curl trace_id="), " ---")
+		if seen[trace] {
+			t.Fatalf("同一个块出现了两次：%s", trace)
+		}
+		seen[trace] = true
+		for offset, expected := range []string{
+			"curl -sS -X POST '" + trace + "'",
+			"--- response ---",
+			"{\"id\":\"" + trace + "\"}",
+			"--- end curl trace_id=" + trace + " ---",
+		} {
+			if actual := lines[index+1+offset]; actual != expected {
+				t.Fatalf("块 %s 被其他块穿插：第 %d 行是 %q，应为 %q", trace, index+offset+2, actual, expected)
+			}
+		}
+	}
+	if len(seen) != blocks {
+		t.Fatalf("块数量不正确：%d", len(seen))
+	}
+	// 块首行号必须接着已写入的行继续，后续切片要用它做日志深链。
+	if first := writer.WriteBlock("--- begin curl trace_id=trace-last ---", "curl", "--- end curl trace_id=trace-last ---"); first != blocks*blockLines+1 {
+		t.Fatalf("块首行号不正确：%d", first)
 	}
 }
 
