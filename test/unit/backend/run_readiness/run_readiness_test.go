@@ -190,3 +190,45 @@ func TestNonActionableFactsAreRemindersNotBlocks(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigUnreadableBlocksInsteadOfPassing 锁定人工复审的 P1：路径配置读取失败必须阻塞。
+// 路径摘要恰好是「配置完成、数据就绪」时，如果把读失败当成「没有配置记录」，
+// 这条其实无法判断的路径会被判成可以运行，这正是数据库故障时最危险的方向。
+func TestConfigUnreadableBlocksInsteadOfPassing(t *testing.T) {
+	input := readyInput()
+	input.ConfigFound = false
+	input.ConfigUnreadable = true
+	input.CompiledStepCount = 0
+
+	readiness := service.EvaluatePathReadiness(input)
+	if readiness.Runnable {
+		t.Fatalf("配置读取失败时不得判为可运行：%+v", readiness)
+	}
+	found := false
+	for _, block := range readiness.Blocks {
+		if block.Kind != model.RunReadinessConfigUnreadable {
+			continue
+		}
+		found = true
+		if block.Reason == "" || block.Anchor == "" {
+			t.Fatalf("读取失败阻塞缺少中文原因或锚点：%+v", block)
+		}
+	}
+	if !found {
+		t.Fatalf("缺少配置读取失败这一类阻塞：%+v", readiness.Blocks)
+	}
+}
+
+// TestConfigMissingIsNotReportedAsUnreadable 区分「确实还没配」与「读不到」两种含义，
+// 避免修复 P1 时把没有配置记录的正常路径也标成读取失败。
+func TestConfigMissingIsNotReportedAsUnreadable(t *testing.T) {
+	input := readyInput()
+	input.ConfigFound = false
+	input.CompiledStepCount = 0
+
+	for _, block := range service.EvaluatePathReadiness(input).Blocks {
+		if block.Kind == model.RunReadinessConfigUnreadable {
+			t.Fatalf("没有配置记录被误报为读取失败：%+v", block)
+		}
+	}
+}

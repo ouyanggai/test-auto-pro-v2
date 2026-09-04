@@ -8,6 +8,9 @@ const (
 	RunReadinessFormData = "form_data"
 	// RunReadinessConfigIssue 路径配置里已记录的问题，原样透出不改写文案。
 	RunReadinessConfigIssue = "config_issue"
+	// RunReadinessConfigUnreadable 表示路径配置读取失败。读不到配置不等于没有配置，
+	// 必须阻塞而不是放行，否则数据库故障会让一条其实无法运行的路径被判成可以运行。
+	RunReadinessConfigUnreadable = "config_unreadable"
 	// RunReadinessCompiledScenarioEmpty 编译场景为空，没有可执行步骤。
 	RunReadinessCompiledScenarioEmpty = "compiled_scenario_empty"
 	// RunReadinessActionNotVerified 路径包含尚未由真实写验证过的动作。

@@ -34,6 +34,10 @@ type PathReadinessInput struct {
 	Path model.ExecutionPath
 	// ConfigFound 为 false 表示这条路径还没有任何配置记录。
 	ConfigFound bool
+	// ConfigUnreadable 为 true 表示配置读取本身失败（数据库故障、载荷损坏）。
+	// 它与 ConfigFound=false 含义完全不同：后者是"确实还没配"，前者是"不知道配没配"，
+	// 必须单独阻塞，不能与"没有配置记录"合并后依赖路径摘要状态兜底。
+	ConfigUnreadable bool
 	// ConfigIssues 是路径配置里已记录且标记为阻塞的问题，原样透出，不改写文案。
 	ConfigIssues []model.PathConfigAffectedItem
 	// ConfigNotices 是路径配置里记录的说明性提示（blocking=false），只提醒不阻塞。
@@ -73,6 +77,13 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 			Kind: model.RunReadinessFormData, Name: pathName,
 			Reason: firstNonEmptyText(input.Path.DataDetail, "基础表单数据尚未就绪"),
 			Anchor: runReadinessAnchorFormData,
+		})
+	}
+	if input.ConfigUnreadable {
+		blocks = append(blocks, model.RunReadinessItem{
+			Kind: model.RunReadinessConfigUnreadable, Name: pathName,
+			Reason: "暂时无法读取这条路径的配置，无法判断能否运行，请重试",
+			Anchor: runReadinessAnchorNodes,
 		})
 	}
 	blocks = append(blocks, itemsFrom(input.ConfigIssues, model.RunReadinessConfigIssue, runReadinessAnchorNodes)...)

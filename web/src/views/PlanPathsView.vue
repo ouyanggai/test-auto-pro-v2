@@ -232,7 +232,9 @@ async function loadPage() {
     if (pathsResult.status === 'fulfilled') {
       paths.value = pathsResult.value
       pathsLoaded.value = true
-			selectedRunPathIDs.value = new Set()
+			// 首次读到路径就套用默认勾选：已配置且数据就绪的路径默认勾上，用户点运行时通常就是要跑这些。
+			// 这里必须走 defaultRunSelection 而不是清空，否则每次进页面都要重新勾一遍。
+			selectedRunPathIDs.value = defaultRunSelection([])
 			if (planMutable.value && plan.value.flowSource === 'new' && pathsResult.value.length === 0) void startAutomaticGeneration()
 		void restoreActivePreparation(controller.signal)
     }

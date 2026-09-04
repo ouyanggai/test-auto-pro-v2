@@ -73,7 +73,16 @@ func NewRunReadinessService(plans *PlanService, paths repository.ExecutionPathRe
 // 运行只运行勾选路径，预检也必须只检查勾选路径，否则用户看到的阻塞与本次要跑的东西不是一回事。
 func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, selectedPathIDs []uint64) (model.PlanRunReadiness, error) {
 	if _, err := s.plans.Get(ctx, planID); err != nil {
-		return model.PlanRunReadiness{}, notFoundError("计划不存在")
+		// 只有真的查不到计划才是 404。存储故障或数据异常必须给可重试的中文提示，
+		// 否则界面会把"数据库不可用"说成"计划不存在"，用户重试一次都不会去做。
+		switch {
+		case IsPlanErrorKind(err, PlanErrorNotFound):
+			return model.PlanRunReadiness{}, notFoundError("计划不存在")
+		case IsPlanErrorKind(err, PlanErrorInvalidArgument):
+			return model.PlanRunReadiness{}, invalidError("计划 ID 不正确")
+		default:
+			return model.PlanRunReadiness{}, storageError("暂时无法读取计划，请重试")
+		}
 	}
 	summaries, err := s.paths.List(ctx, planID)
 	if err != nil {
@@ -136,8 +145,14 @@ func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGra
 	input := PathReadinessInput{Path: path}
 	input.TopologyIssues = s.topologyIssues(graph, path)
 	config, found, err := s.configs.GetPathConfig(ctx, path.ID)
-	if err != nil || !found {
-		// 读不到配置就按"没有配置记录"处理：节点配置与数据两项本身已由路径状态阻塞。
+	if err != nil {
+		// 读取失败不等于没有配置：此时既不知道有没有阻塞问题，也不知道编译场景是否为空，
+		// 只能显式阻塞。若沿用"当成没配置"的处理，路径摘要恰好是已配置且数据就绪时会被误判为可以运行。
+		input.ConfigUnreadable = true
+		return input
+	}
+	if !found {
+		// 确实还没有配置记录：节点配置与数据两项本身已由路径摘要状态阻塞。
 		return input
 	}
 	input.ConfigFound = true
@@ -291,6 +306,10 @@ func uintDecimal(value uint64) string {
 // notFoundError 与 storageError 统一构造稳定错误，避免各处自造文案。
 func notFoundError(message string) error {
 	return &RunReadinessError{Kind: RunReadinessErrorNotFound, Message: message}
+}
+
+func invalidError(message string) error {
+	return &RunReadinessError{Kind: RunReadinessErrorInvalid, Message: message}
 }
 
 func storageError(message string) error {
