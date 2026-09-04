@@ -312,6 +312,10 @@ func (s *HistoryReplayService) resolveReplaySnapshot(ctx context.Context, planID
 			mode = pathSource.Mode
 		}
 	}
+	// 新路径配置行的初始 none 不是用户的路径覆盖选择；没有独立来源记录时与工作台一致地继承计划默认。
+	if mode == model.HistorySourceModeNone && !pathSourceFound {
+		mode = model.HistorySourceModeDefault
+	}
 	switch mode {
 	case model.HistorySourceModeNone:
 		return nil, historyReplayIssue("HISTORY_SOURCE_MISSING", "路径尚未选择基础表单数据", true), nil

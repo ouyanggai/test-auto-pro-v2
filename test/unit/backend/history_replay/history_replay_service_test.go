@@ -443,7 +443,7 @@ func TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation(t *testing.T
 // 不会因为历史数据暂时进入其他分支而把下游缺少选择错误地留给用户。
 func TestHistoryReplayServiceRepairsPathBeforeDetourChoiceMissing(t *testing.T) {
 	replay, store, validator, targetReader := replayServiceFixture(4, 4, target.FormRenderTypeFormMaking)
-	store.config = repository.HistoryPathConfigRecord{PathID: 101, SourceMode: model.HistorySourceModeDefault}
+	store.config = repository.HistoryPathConfigRecord{PathID: 101, SourceMode: model.HistorySourceModeNone}
 	store.source = repository.HistoryPathSourceRecord{PathID: 101, Mode: model.HistorySourceModeNone}
 	store.mu.Lock()
 	store.snapshot.RawFormData["amount"] = 3
