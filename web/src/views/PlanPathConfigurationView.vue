@@ -15,6 +15,7 @@ import ActionOrchestrationEditor from '../features/path-configuration/ActionOrch
 import FormDataHintsPanel from '../features/path-configuration/FormDataHintsPanel.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
+import SuccessAssertionCard from '../features/run-readiness/SuccessAssertionCard.vue'
 import {
   bindPathConfigurationNodes,
   buildPathActionConfigurationInput,
@@ -878,6 +879,13 @@ void loadPage()
             @save-all="saveAllNodes"
             @back-to-plan="backToPlan"
             @open-form="openFormWorkspace"
+          />
+          <success-assertion-card
+            v-if="planID && pathID"
+            class="path-configuration-page__assertion"
+            :plan-id="planID"
+            :path-id="pathID"
+            :disabled="!planMutable"
           />
         </template>
       </flow-graph-canvas>

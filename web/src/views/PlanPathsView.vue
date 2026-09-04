@@ -57,6 +57,7 @@ import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
 import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
+import RunReadinessPanel from '../features/run-readiness/RunReadinessPanel.vue'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import { flowSourceLabels } from '../features/plans/selection'
 import type { PersistedPlan } from '../features/plans/types'
@@ -522,6 +523,13 @@ async function editActivePath() {
   await canvasRef.value?.setPageFullscreen(true)
 }
 
+// locateReadinessItem 把运行准备面板里的阻塞项定位到那条路径的对应面板。
+// 面板只负责给出路径与锚点，跳转由页面统一处理，避免组件内部各自拼路由。
+function locateReadinessItem(pathId: string, anchor: string) {
+  const query = anchor ? '?panel=' + encodeURIComponent(anchor) : ''
+  router.push('/plans/' + planID.value + '/paths/' + pathId + '/configure' + query)
+}
+
 // openPathConfiguration 从只读路径详情进入 F-007 单条路径节点配置画布。
 function openPathConfiguration(path: ExecutionPath | null = activePath.value) {
   if (!path) return
@@ -909,6 +917,13 @@ onMounted(() => {
               </template>
             </n-virtual-list>
           </section>
+
+          <run-readiness-panel
+            v-if="planID"
+            class="plan-paths-screen__readiness"
+            :plan-id="planID"
+            @locate="locateReadinessItem"
+          />
 
           <div class="flow-structure-jump">
             <n-button size="small" secondary @click="scrollToGraphStructure">查看流程结构 ↓</n-button>
