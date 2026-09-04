@@ -14,7 +14,7 @@ router="${project_root}/web/src/router/index.ts"
 settings="${project_root}/web/src/views/SettingsView.vue"
 
 grep -Fq '"repository": "rsh-flow-components"' "${manifest}"
-grep -Fq '"sourceBranch": "master"' "${manifest}"
+grep -Fq '"sourceBranch": "test"' "${manifest}"
 if grep -Fq '"sourceHead"' "${manifest}"; then
   echo 'F-007 不得把历史来源 HEAD 永久编译进同步清单' >&2
   exit 1

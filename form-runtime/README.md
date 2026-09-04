@@ -6,7 +6,7 @@
 
 - `runtime-source/`：受控同步后的实际构建源码，不是闲置快照。它包含完整 tracked `rsh-flow-components`、原生 `scripts/sync*.js`/清单，以及参考仓库未跟踪但目标运行必需的 `src/lib/vue-form-making/dist/`。
 - `src/`：本项目保护的 iframe 配置适配层，只负责版本化消息、SID 内存会话、目标只读请求、字段权限和 unsupported 边界；同步不得覆盖。
-- `scripts/` 与 `sync-manifest.json`：当前项目维护流水线适配。来源仓库、远端和 `master` 固定；HEAD 在创建任务时记录，Worker 执行前复核，不永久锁死历史提交。
+- `scripts/` 与 `sync-manifest.json`：当前项目维护流水线适配。来源仓库、远端和 `test` 固定；该分支对应当前目标测试环境，HEAD 在创建任务时记录，Worker 执行前复核，不永久锁死历史提交。
 - `build/`、`babel.config.js`、`vue.config.js`：让本地适配入口以完整 `runtime-source/` 为真实依赖完成 Vue CLI dev/build，并输出可经 HTTP 核验的源码快照。
 
 目标自定义组件保持真实注册。仅当模板引用的组件不在实际入口注册表中，或依赖配置阶段禁止执行的业务写钩子时，才明确标记 `unsupported`；不得降级为普通输入框。

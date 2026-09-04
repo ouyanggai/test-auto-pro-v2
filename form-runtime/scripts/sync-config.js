@@ -84,7 +84,7 @@ function git (root, args) {
   return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
 }
 
-// inspectSource 校验固定远端、master、干净状态与任务创建时 HEAD。
+// inspectSource 校验固定远端、test 分支、干净状态与任务创建时 HEAD。
 function inspectSource (manifest, environment = process.env) {
   const sourceRoot = path.join(workspaceRoot, manifest.sourceRoot)
   const remote = git(sourceRoot, ['remote', 'get-url', 'origin'])

@@ -2,7 +2,7 @@
   "repository": "rsh-flow-components",
   "sourceRoot": "参考代码/rsh-flow-components",
   "sourceRemote": "git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git",
-  "sourceBranch": "master",
+  "sourceBranch": "test",
   "mappings": [
     { "source": "src", "target": "runtime-source/src", "type": "directory" },
     { "source": "public", "target": "runtime-source/public", "type": "directory" },

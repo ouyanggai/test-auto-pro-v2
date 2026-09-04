@@ -51,6 +51,8 @@
   未覆盖组合默认不确定、写路径样本按源码构造），并明确等 F-012 返工通过人工验收后再批准 F-014。
 - 2026-09-04 参考仓库同步：按用户要求执行 `make refs-sync`（13/13 快进）。`rsh-cloud-workflow-center` `test` 到 `0c6c7f0e`、
   `rsh-cloud-workflow-center-api` `master` 到 `088aed79`、`rsh-framework-all` `test` 到 `84bb1973`。
+  `rsh-flow-components` 规范分支维持 `test`（`24f3a280`）；不改用另一条语义基线 `master`。旧 `master` 工作树已移入
+  `参考代码/.branch-backups/rsh-flow-components-master-3ffb41ba`，当前运行快照仍保留历史 `master` 基线，后续维护任务才按清单生成候选同步。
   目标平台上了「审批方式动态化」：`auditWay` 不再受 `AuditWayEnum` 约束，提交校验路由改为字符串键并支持动态注册，
   未注册或无健康实例时前置门禁静默放行，未注册 `auditWay` 由抛异常改为返回 `未发现实例` 失败包；
   另有 `flow_trigger_config_relevance.audit_way` 由数字 ordinal 迁移为 `VARCHAR(100)` 的脚本（目标环境是否已执行需实测）。

@@ -174,7 +174,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 ## form-runtime 受控维护流水线
 
 - 维护语义迁移自旧 V2 ADR-0016，固定状态机为 `INSPECT → SYNC → SYNC_CHECK → BUILD → RESTART → VERIFY → COMPLETED`。当前项目不复制旧 Docker/Colima 部署：`PnpmOperator` 在任务工作区同步完整候选源码，并构建到 `.runtime/form-runtime-maintenance/versions/candidate-job-N`；静态健康完成前不触碰 current。切换同时替换 `runtime-source/` 与 `web/dist/form-runtime` 并持久化 current 指针，切换或最终 HTTP 健康失败时从 previous 源码/产物版本恢复并再次核验。
-- 同步来源固定为 `参考代码/rsh-flow-components` 的规范仓库、远端和 `master`，但不把历史 HEAD 永久写死在代码中。更新参考仓库仍先经过 `make refs-sync`/`make refs-status` 的干净、分支和快进约束；维护任务创建时持久化当刻 HEAD，Worker 执行前复核同一快照。维护 API 不接受路径、分支、HEAD、构建命令或环境选择，任务中途来源变脏或变化即失败。
+- 同步来源固定为 `参考代码/rsh-flow-components` 的规范仓库、远端和 `test`，但不把历史 HEAD 永久写死在代码中；该分支对应当前目标测试环境，包含 `GroupApproveManage` 的测试环境同步结果。更新参考仓库仍先经过 `make refs-sync`/`make refs-status` 的干净、分支和快进约束；维护任务创建时持久化当刻 HEAD，Worker 执行前复核同一快照。维护 API 不接受路径、分支、HEAD、构建命令或环境选择，任务中途来源变脏或变化即失败。
 - 候选同步与构建在 `.runtime/form-runtime-maintenance` 隔离目录完成，实际构建显式消费候选 `runtime-source/`。切换时同时替换 19001 Vue CLI 监听的真实源码和生产 `web/dist/form-runtime` 产物；`runtime-health.json` 公开非敏感仓库/分支/HEAD/摘要，运行中的 HTTP 地址必须报告同一快照才能完成。候选失败不影响 current，切换或健康失败恢复源码与产物 previous 并再次核验。
 - `form-runtime/sync-manifest.json` 是唯一项目同步映射：当前来源本身已是独立组件仓库，因此完整镜像其 tracked `src/`、`public/`、原生同步清单/脚本和构建资产；旧 V2/上游的 35 项生成映射继续随源码保留。项目同步执行逐文件 `SYNC_CHECK`、完整目标摘要、本地适配保护和实际运行源码未知修改拒绝。状态通过 `make form-runtime-status`，一键任务通过 `make form-runtime-sync` 或系统设置页触发，两者都不能覆盖参数。
 - `test_form_runtime_sync_jobs` 是维护任务正确性来源，数据库唯一键保证单活动任务。Worker 使用租约续期与 fencing token；旧 Worker 不能推进阶段或完成任务，进程重启后从持久化的 `RESTART/VERIFY` 和 candidate/previous 事实恢复，不能重新同步或覆盖既有候选。在线日志写入运行目录，API 最多返回最新 512 KiB 并标记截断，SID 与表单数据不会进入维护任务或日志。

@@ -9,6 +9,6 @@ rsh-cloud-workflow-center	java-serve/rsh-cloud-workflow-center	git@192.168.1.155
 rsh-cloud-workflow-center-api	java-serve/rsh-cloud-workflow-center-api	git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center-api.git	master
 rsh-framework-all	rsh-framework-all	git@192.168.1.155:rsh-cloud/cloud-framework/rsh-framework-all.git	test
 rsh-cloud-invest-power-system	rsh-cloud-invest-power-system	git@192.168.1.155:rsh-cloud/cloud-web/business-system/rsh-cloud-invest-power-system.git	test
-rsh-flow-components	rsh-flow-components	git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git	master
+rsh-flow-components	rsh-flow-components	git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git	test
 rsh-cloud-vue-form-making	rsh-cloud-vue-form-making	http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-vue-form-making.git	oygdev
 rsh-cloud-saas-implementation-web	rsh-cloud-saas-implementation-web	http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-saas-implementation-web	test
