@@ -229,11 +229,17 @@ test('无表单审批方式使用复制运行时的真实页面注册入口', ()
   assert.match(source, /HOST_VUE_PAGES\.NoFormFlow/)
 })
 
-test('无表单页面回显通过统一宿主模型注入且支持页面 getValues', () => {
+test('无表单页面以数据工作区模式回显模型并隐藏目标操作栏', () => {
   const source = fs.readFileSync(new URL('../../../form-runtime/src/HostVuePage.vue', import.meta.url), 'utf8')
   assert.match(source, /hydrateInitialValues\(this\.\$refs\.page, this\.values/)
   assert.match(source, /collectPageValues\(this\.\$refs\.page/)
-  assert.match(source, /Object\.keys\(values\)\.length \? 'edit' : 'create'/)
+  assert.match(source, /const FORM_MODEL_KEYS = new Set\(/)
+  assert.match(source, /const workspaceMode = this\.readOnly \? 'preview' : 'edit'/)
+  assert.match(source, /selectFlowType: ''/)
+  assert.match(source, /function isVueInstance \(value\)/)
+  assert.match(source, /function hasOwnPropertySafe \(value, key\)/)
+  assert.match(source, /function isConfigObject \(value\)/)
+  assert.match(source, /\.host-vue-page \.footer-bt, \.host-vue-page \.botton-group/)
 })
 
 test('路径字段提示有中文标签时不显示技术字段路径', () => {
@@ -311,6 +317,7 @@ test('目标请求统一透传并保留网关改写与 SID', async () => {
     request.send('{"data":{"flag":"3"}}')
     assert.match(opened[0][1], /^http:\/\/target\.test\/api\/web\/api\/measuring\/contract\/type\/enableTreeList\?sid=memory-only-sid$/)
     assert.deepEqual(sentHeaders[0], ['sid', 'memory-only-sid'])
+    assert.equal(sentHeaders.some(([name]) => /^(origin|referer)$/i.test(name)), false)
     // 目标网关只在请求体携带 SID 时才认可会话；JSON 请求体必须合并 SID。
     assert.deepEqual(JSON.parse(sentBodies[0]), { data: { flag: '3' }, sid: 'memory-only-sid' })
     request.open('POST', '/web/flowInstanceApi/submit')
@@ -331,6 +338,8 @@ test('目标请求统一透传并保留网关改写与 SID', async () => {
     assert.equal(fetched.length, 3)
     assert.equal(fetched[0][0], 'http://target.test/api/web/measuring/api/contractInvoicing/uploadFile?sid=memory-only-sid')
     assert.equal(fetched[0][1].headers.get('sid'), 'memory-only-sid')
+    assert.equal(fetched[0][1].headers.has('origin'), false)
+    assert.equal(fetched[0][1].headers.has('referer'), false)
     assert.equal(fetched[1][0], 'http://target.test/api/web/file/api/relationFile/deleteByRelationIdAndFileIds?sid=memory-only-sid')
     assert.equal(fetched[1][1].headers.get('sid'), 'memory-only-sid')
     assert.equal(fetched[2][0], 'http://target.test/api/web/flowProxy/findById?sid=memory-only-sid')

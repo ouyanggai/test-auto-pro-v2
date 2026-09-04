@@ -170,7 +170,6 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifes
   const originalOpen = XMLHttpRequest.prototype.open
   const originalSend = XMLHttpRequest.prototype.send
   const originalFetch = window.fetch
-  const targetOrigin = baseURL ? new URL(baseURL).origin : ''
   const normalizedManifest = normalizeReadRequestManifest(readRequestManifest)
 
   if (baseURL && normalizedManifest.length === 0 && typeof onIssue === 'function') {
@@ -211,10 +210,6 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifes
   XMLHttpRequest.prototype.send = function (body) {
     if (this.__f007TargetRequest && sid) {
       this.setRequestHeader('sid', sid)
-      if (targetOrigin) {
-        this.setRequestHeader('origin', targetOrigin)
-        this.setRequestHeader('Referer', targetOrigin + '/')
-      }
       body = withTargetSid(body)
     }
     return originalSend.call(this, body)
@@ -227,10 +222,6 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifes
     const nextInit = { ...(init || {}) }
     if (baseURL && resolved.origin === new URL(baseURL).origin && sid) {
       headers.set('sid', sid)
-      if (targetOrigin) {
-        headers.set('origin', targetOrigin)
-        headers.set('Referer', targetOrigin + '/')
-      }
       nextInit.body = withTargetSid(init && init.body)
     }
     if (input instanceof Request) {

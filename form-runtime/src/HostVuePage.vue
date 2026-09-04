@@ -15,6 +15,40 @@
 import { clonePlain } from './runtime/formTemplate'
 import { resolveHostVuePage } from './runtime/hostVuePages'
 
+const FORM_MODEL_KEYS = new Set([
+  'form', 'formData', 'dataForm', 'model', 'initForm', 'initMainForm', 'initContentForm',
+  'infoForm', 'quarterData', 'workTargetData', 'originData', 'mainFormData', 'baseInfo',
+  'detailForm', 'companyDeta', 'departmentData'
+])
+
+// isVueInstance 只允许递归进入 Vue 组件实例，避免把跨域 Window 或 DOM ref 当成业务对象访问。
+function isVueInstance (value) {
+  try {
+    return Boolean(value && typeof value === 'object' && value._isVue === true)
+  } catch (_) {
+    // 跨域 Window 读取非白名单属性会抛 SecurityError，ref 过滤必须把它当作非 Vue 对象。
+    return false
+  }
+}
+
+// hasOwnPropertySafe 读取第三方对象属性时吞掉跨域 Window 的安全异常，避免诊断递归反过来破坏渲染。
+function hasOwnPropertySafe (value, key) {
+  try {
+    return Object.prototype.hasOwnProperty.call(value, key)
+  } catch (_) {
+    return false
+  }
+}
+
+// isConfigObject 限制字段配置递归只进入普通对象或数组，不枚举 Window、DOM 等宿主对象。
+function isConfigObject (value) {
+  try {
+    return Array.isArray(value) || Object.prototype.toString.call(value) === '[object Object]'
+  } catch (_) {
+    return false
+  }
+}
+
 export default {
   name: 'HostVuePage',
   props: {
@@ -38,11 +72,13 @@ export default {
         }
         return ''
       }
+      const workspaceMode = this.readOnly ? 'preview' : 'edit'
       return {
-        operaType: this.readOnly ? 'preview' : (Object.keys(values).length ? 'edit' : 'create'),
-        actionType: this.readOnly ? 'view' : 'create',
-        showType: this.readOnly ? 'preview' : 'init',
-        selectFlowType: this.page.route,
+        // 宿主只负责数据工作区；禁止目标页面进入新建/提交流程，也不触发按流程类型读取模板。
+        operaType: workspaceMode,
+        actionType: workspaceMode,
+        showType: workspaceMode,
+        selectFlowType: '',
         selectFlowName: this.page.pageName,
         value: values,
         propData: values,
@@ -51,12 +87,13 @@ export default {
         param: values,
         initialValues: values,
         data: values,
-        id: firstValue('id', 'bizId', 'biz_id', 'otherBizId', 'other_biz_id'),
-        bizId: firstValue('bizId', 'biz_id', 'otherBizId', 'other_biz_id', 'id'),
-        otherBizId: firstValue('otherBizId', 'other_biz_id', 'bizId', 'biz_id', 'id'),
-        flowInstanceId: firstValue('flowInstanceId', 'flow_instance_id'),
-        flowProxyId: firstValue('flowProxyId', 'flow_proxy_id'),
-        flowNodeProxyId: firstValue('flowNodeProxyId', 'flow_node_proxy_id'),
+        // 业务快照中的 id 不是目标页面初始化所需的代理 id，不能再驱动目标接口覆盖已传入的数据。
+        id: '',
+        bizId: '',
+        otherBizId: '',
+        flowInstanceId: '',
+        flowProxyId: '',
+        flowNodeProxyId: '',
         createrId: firstValue('createrId', 'creatorId', 'creator_id', 'userId', 'user_id'),
         isExamine: Boolean(values.isExamine || values.is_examine),
         isReInitiate: Boolean(values.isReInitiate || values.is_re_initiate),
@@ -88,12 +125,12 @@ export default {
     },
     // hydrateInitialValues 在目标组件完成既有初始化后按同名字段回填快照，不改变目标页面的字段结构和请求逻辑。
     hydrateInitialValues (instance, source, visited, depth) {
-      if (!instance || visited.has(instance) || depth > 8) return
+      if (!isVueInstance(instance) || visited.has(instance) || depth > 8) return
       visited.add(instance)
       if (source && typeof source === 'object') {
         Object.keys(source).forEach(key => {
           const incoming = source[key]
-          if (!Object.prototype.hasOwnProperty.call(instance, key)) return
+          if (!hasOwnPropertySafe(instance, key)) return
           const current = instance[key]
           if (current && typeof current === 'object' && incoming && typeof incoming === 'object' && !Array.isArray(current) && !Array.isArray(incoming)) {
             Object.assign(current, clonePlain(incoming))
@@ -101,12 +138,20 @@ export default {
             this.$set(instance, key, clonePlain(incoming))
           }
         })
+        // 复制页面通常把字段放在 initForm/formData 等模型对象中，快照是扁平字段时要回填这些模型。
+        for (const key of FORM_MODEL_KEYS) {
+          const current = instance[key]
+          if (!current || typeof current !== 'object' || Array.isArray(current)) continue
+          const modelKeys = Object.keys(current)
+          const matching = modelKeys.filter(modelKey => hasOwnPropertySafe(source, modelKey))
+          if (matching.length) matching.forEach(modelKey => this.$set(current, modelKey, clonePlain(source[modelKey])))
+        }
       }
       for (const child of this.childInstances(instance)) this.hydrateInitialValues(child, source, visited, depth + 1)
     },
     // collectPageValues 优先读取目标页面公开的 getValues，保留无表单页面编辑后的内部模型。
     collectPageValues (instance, values, visited, depth) {
-      if (!instance || visited.has(instance) || depth > 8) return values
+      if (!isVueInstance(instance) || visited.has(instance) || depth > 8) return values
       visited.add(instance)
       if (typeof instance.getValues === 'function') {
         const pageValues = instance.getValues()
@@ -116,13 +161,13 @@ export default {
       return values
     },
     applyFieldStates (instance, visited, depth) {
-      if (!instance || visited.has(instance) || depth > 7) return
+      if (!isVueInstance(instance) || visited.has(instance) || depth > 7) return
       visited.add(instance)
       const permission = new Map(this.permissions.map(item => [String(item.field || ''), String(item.power || '')]))
       const visitConfig = (value, configVisited, configDepth) => {
-        if (!value || typeof value !== 'object' || configVisited.has(value) || configDepth > 10) return
+        if (!isConfigObject(value) || configVisited.has(value) || configDepth > 10) return
         configVisited.add(value)
-        if (value.prop) {
+        if (hasOwnPropertySafe(value, 'prop') && value.prop) {
           const path = String(value.prop)
           const power = permission.get(path)
           value.hidden = power === 'hide' || value.hidden === true
@@ -132,7 +177,7 @@ export default {
         for (const child of Array.isArray(value) ? value : Object.values(value)) visitConfig(child, configVisited, configDepth + 1)
       }
       visitConfig(instance.$data, new Set(), 0)
-      if (instance.$options && instance.$options.name === 'ElFormItem' && instance.prop) {
+      if (instance.$options && instance.$options.name === 'ElFormItem' && hasOwnPropertySafe(instance, 'prop') && instance.prop) {
         const power = permission.get(String(instance.prop))
         if (instance.$el && instance.$el.style) instance.$el.style.display = power === 'hide' ? 'none' : ''
         const locked = this.fieldLocked(String(instance.prop), permission)
@@ -148,7 +193,7 @@ export default {
       }
     },
     collectForms (instance, forms, visited, depth) {
-      if (!instance || visited.has(instance) || depth > 7) return
+      if (!isVueInstance(instance) || visited.has(instance) || depth > 7) return
       visited.add(instance)
       if (instance.$options && instance.$options.name === 'ElForm' && typeof instance.validate === 'function') forms.push(instance)
       for (const child of this.childInstances(instance)) this.collectForms(child, forms, visited, depth + 1)
@@ -156,13 +201,16 @@ export default {
     refInstances (refs) {
       const result = []
       for (const value of Object.values(refs || {})) {
-        if (Array.isArray(value)) result.push(...value.filter(Boolean))
-        else if (value) result.push(value)
+        if (Array.isArray(value)) result.push(...value.filter(isVueInstance))
+        else if (isVueInstance(value)) result.push(value)
       }
       return result
     },
     childInstances (instance) {
-      return [...new Set([...(Array.isArray(instance && instance.$children) ? instance.$children : []), ...this.refInstances(instance && instance.$refs)])]
+      return [...new Set([
+        ...(Array.isArray(instance && instance.$children) ? instance.$children.filter(isVueInstance) : []),
+        ...this.refInstances(instance && instance.$refs)
+      ])]
     },
     fieldLocked (prop, permission) {
       const exact = permission.get(prop)
@@ -171,17 +219,17 @@ export default {
       return this.readOnly || power !== 'edit'
     },
     setDescendantsDisabled (instance, disabled, visited, depth) {
-      if (!instance || visited.has(instance) || depth > 5) return
+      if (!isVueInstance(instance) || visited.has(instance) || depth > 5) return
       visited.add(instance)
-      if (instance._props && Object.prototype.hasOwnProperty.call(instance._props, 'disabled')) this.$set(instance._props, 'disabled', disabled)
+      if (instance._props && hasOwnPropertySafe(instance._props, 'disabled')) this.$set(instance._props, 'disabled', disabled)
       for (const child of this.childInstances(instance)) this.setDescendantsDisabled(child, disabled, visited, depth + 1)
     }
   }
 }
 </script>
 
-<style scoped>
+<style>
 .host-vue-page { min-height: 100%; background: #fff; }
 .host-vue-page__error { padding: 48px 20px; color: #8c8c8c; text-align: center; }
-.host-vue-page :deep(.footer-bt), .host-vue-page :deep(.dialog-footer) { display: none !important; }
+.host-vue-page .footer-bt, .host-vue-page .botton-group { display: none !important; }
 </style>
