@@ -157,7 +157,7 @@ test('分支补丁按真实下拉选项同步名称对应的 ID 和虚拟显示�
     getComponent() { return { value: 'old-id' } },
     formItemContexts: {
       paymentId: {
-        widget: { type: 'select', model: 'paymentId' },
+        widget: { type: 'select', model: 'paymentId', options: { remote: true } },
         $refs: { generateElementItem: { remoteOptions: [{ value: 'new-id', label: '新付款单位' }] } },
       },
     },
@@ -170,6 +170,27 @@ test('分支补丁按真实下拉选项同步名称对应的 ID 和虚拟显示�
   assert.equal(values.paymentName, '新付款单位')
 })
 
+test('远程下拉选项为空时先刷新数据源再同步分支值', async () => {
+  const select = { remoteOptions: [] }
+  const form = {
+    model: { paymentId: 'old-id', paymentId__virtualName: '旧付款单位', paymentName: '新付款单位' },
+    formItemContexts: {
+      paymentId: {
+        widget: { type: 'select', model: 'paymentId', options: { remote: true } },
+        $refs: { generateElementItem: select },
+      },
+    },
+    async refreshFieldOptionData () {
+      select.remoteOptions = [{ value: 'new-id', label: '新付款单位' }]
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+
+  const values = await reconcileLinkedSelectValues(form, form.model, 1)
+  assert.equal(values.paymentId, 'new-id')
+})
+
 test('分支补丁字段会重放目标 onChange 以刷新派生值', async () => {
   let changed = ''
   const component = { widget: { events: { onChange: 'amountChanged' } }, currentOptions: { fieldNode: 'amount' } }
@@ -180,6 +201,33 @@ test('分支补丁字段会重放目标 onChange 以刷新派生值', async () =
   }
   await replayFieldChangeEvents(form, ['amount'])
   assert.equal(changed, 'amount')
+})
+
+test('重放异步 setData 后才能读取最新派生值', async () => {
+  const form = {
+    model: { amount: 1999, amountText: '旧金额' },
+    formItemContexts: {
+      amount: { widget: { events: { onChange: 'amountChanged' } }, currentOptions: { fieldNode: 'amount' } },
+    },
+    $nextTick () {
+      return new Promise(resolve => setTimeout(resolve, 0))
+    },
+    setData (values) {
+      return this.$nextTick().then(() => Object.assign(this.model, values))
+    },
+    getValues () {
+      return this.model
+    },
+    eventFunction: {
+      amountChanged () {
+        // 目标模板脚本不会返回 setData 的 Promise，运行时必须主动等待 Vue 更新。
+        void this.setData({ amountText: '壹仟玖佰玖拾玖元整' })
+      },
+    },
+  }
+
+  await replayFieldChangeEvents(form, ['amount'])
+  assert.equal(form.getValues().amountText, '壹仟玖佰玖拾玖元整')
 })
 
 test('校验只使用 getData 而完整保存值来自 getValues 人工输入与虚拟字段', async () => {

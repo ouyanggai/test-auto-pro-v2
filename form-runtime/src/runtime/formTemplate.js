@@ -185,6 +185,18 @@ export async function refreshPreparedForm (form) {
   if (current != null && typeof form.setData === 'function') await form.setData(current)
 }
 
+// waitForFormUpdate 等待 FormMaking 内部 setData 通过 Vue 更新模型，避免事件脚本刚返回就读取到旧派生值。
+async function waitForFormUpdate (form) {
+  if (typeof form?.$nextTick === 'function') {
+    const result = form.$nextTick()
+    if (result && typeof result.then === 'function') {
+      await result
+      return
+    }
+  }
+  await new Promise(resolve => setTimeout(resolve, 0))
+}
+
 // reconcileLinkedSelectValues 在目标下拉选项就绪后按显示名称回填对应 ID，
 // 解决分支补丁只改变名称字段时，FormMaking 仍按历史 ID 显示旧选项的问题。
 export async function reconcileLinkedSelectValues (form, values, retries = 20) {
@@ -192,7 +204,9 @@ export async function reconcileLinkedSelectValues (form, values, retries = 20) {
   const current = clonePlain(values || {})
   if (!hasLinkedSelectCandidate(form, current)) return current
   const attempts = Math.max(1, Number(retries) || 1)
+  let optionsRequested = false
   for (let attempt = 0; attempt < attempts; attempt++) {
+    if (!optionsRequested) optionsRequested = await refreshLinkedSelectOptions(form)
     const patches = linkedSelectPatches(form, current)
     if (Object.keys(patches).length > 0) {
       await form.setData(patches)
@@ -206,6 +220,24 @@ export async function reconcileLinkedSelectValues (form, values, retries = 20) {
   return current
 }
 
+// refreshLinkedSelectOptions 主动等待远程下拉数据源，避免首次刷新只完成表单挂载而选项仍为空。
+async function refreshLinkedSelectOptions (form) {
+  if (typeof form?.refreshFieldOptionData !== 'function') return false
+  const fields = formItemContextEntries(form)
+    .filter(({ field, context }) => {
+      return String(context?.widget?.type || '').trim() === 'select' &&
+        field.endsWith('Id') && context?.widget?.options?.remote === true
+    })
+    .map(({ field }) => field)
+  if (fields.length === 0) return false
+  try {
+    await form.refreshFieldOptionData(fields)
+  } catch (_) {
+    // 选项接口失败时保留原始值，不能让只读历史回放因辅助显示数据不可用而白屏。
+  }
+  return true
+}
+
 // replayFieldChangeEvents 重放目标模板为指定字段声明的 onChange 脚本，补齐 setData 不会触发的派生字段计算。
 export async function replayFieldChangeEvents (form, fields) {
   if (!form || !form.eventFunction) return
@@ -214,7 +246,9 @@ export async function replayFieldChangeEvents (form, fields) {
     const eventKey = component?.widget?.events?.onChange
     const handler = eventKey && form.eventFunction[eventKey]
     if (typeof handler !== 'function') continue
-    await handler(component.currentOptions || {})
+    // 目标事件脚本通过 this.getValue/this.setData 访问 FormMaking 实例，不能以裸函数调用丢失上下文。
+    await handler.call(form, component.currentOptions || {})
+    await waitForFormUpdate(form)
   }
 }
 
