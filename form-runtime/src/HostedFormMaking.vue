@@ -72,6 +72,9 @@ export default {
       const form = this.form()
       if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
       await form.setData(clonePlain(values))
+      // OtherSteps2 的 editData 监听会异步 refresh；监听完成后再写一次，避免宿主刷新把回放值重置成历史默认值。
+      await this.$nextTick()
+      await form.setData(clonePlain(values))
       return form
     },
     // setData 同步宿主 editData 与 FormMaking，保证附件区和字段区看到同一份回放值。
@@ -80,6 +83,8 @@ export default {
       if (host) host.editData = clonePlain(values)
       const form = this.form()
       if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
+      await form.setData(clonePlain(values))
+      await this.$nextTick()
       await form.setData(clonePlain(values))
       this.bindChange()
       return form
