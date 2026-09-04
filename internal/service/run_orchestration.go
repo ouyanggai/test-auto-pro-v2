@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -417,6 +418,63 @@ func (s *RunOrchestrationService) Stop(ctx context.Context, pathRunID uint64) (*
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// ControlLogWriter 暴露 control.log 写入函数供控制服务装配（复用 F-013 的运行目录路由）。
+func (s *RunOrchestrationService) ControlLogWriter() func(pathRunID uint64, fields []fmt.Stringer) {
+	return func(pathRunID uint64, fields []fmt.Stringer) {
+		s.controlLogWriter()(pathRunID, fields)
+	}
+}
+
+// controlLogWriter 把控制事实写进运行目录的 control.log（复用 F-013 的运行目录路由）。
+// 每次写入按路径运行身份现算作用域：控制事实频率低，查库代价可接受。
+func (s *RunOrchestrationService) controlLogWriter() func(pathRunID uint64, fields []fmt.Stringer) {
+	return func(pathRunID uint64, fields []fmt.Stringer) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+		if err != nil {
+			return
+		}
+		run, err := s.store.GetRun(ctx, pathRun.RunID)
+		if err != nil {
+			return
+		}
+		plan, err := s.plans.Get(ctx, run.PlanID)
+		if err != nil {
+			return
+		}
+		pathName := plan.Name
+		if path, pathErr := s.paths.Get(ctx, run.PlanID, pathRun.ExecutionPathID); pathErr == nil && strings.TrimSpace(path.Name) != "" {
+			pathName = path.Name
+		}
+		scope := logging.Scope{
+			PlanID:            strconv.FormatUint(run.PlanID, 10),
+			PlanName:          plan.Name,
+			ExecutionPathID:   strconv.FormatUint(pathRun.ExecutionPathID, 10),
+			ExecutionPathName: pathName,
+			RunID:             strconv.FormatUint(run.ID, 10),
+			RunSeq:            strconv.FormatUint(run.RunNo, 10),
+			PathRunID:         strconv.FormatUint(pathRun.ID, 10),
+		}
+		line := logging.FormatLine(time.Now().UTC(), "info", append(scope.Fields(), toLoggingFields(fields)...))
+		s.router.Bucket(scope, "control.log").WriteLine(line)
+	}
+}
+
+// toLoggingFields 把控制日志字段转为 logging 字段。
+func toLoggingFields(fields []fmt.Stringer) []logging.Field {
+	result := make([]logging.Field, 0, len(fields))
+	for _, field := range fields {
+		if f, ok := field.(interface{ String() string }); ok {
+			text := f.String()
+			if index := strings.Index(text, "="); index > 0 {
+				result = append(result, logging.Field{Key: text[:index], Value: text[index+1:]})
+			}
+		}
+	}
+	return result
 }
 
 // withRunScope 按路径运行的真实身份构造日志作用域并注入上下文。

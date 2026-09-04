@@ -169,6 +169,8 @@ func main() {
 		planService, pathRepository, flowGraphService, historyWorkspaceStore,
 		runReadinessService, controlService, runStore, logRouter, runConfig, pathConfigService, time.Now,
 	)
+	// F-017 control.log：控制事实与 step.log 同目录逐行可查。
+	controlService.SetControlLog(control.NewControlLog(runOrchestrationService.ControlLogWriter()))
 	// 启动恢复是纲领第 4.2 节的不可破坏约束：崩溃前可能已发出写请求，重启后绝不自动继续。
 	if recovered, recoverErr := runStateService.Recover(context.Background()); recoverErr != nil {
 		log.Printf("运行恢复失败：%v", recoverErr)

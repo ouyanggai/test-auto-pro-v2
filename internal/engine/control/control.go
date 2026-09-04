@@ -98,6 +98,8 @@ type Service struct {
 	steps *step.Executor
 	store repository.RunStore
 	now   func() time.Time
+	// controlLog 把控制事实同步写进运行目录的 control.log；未注入时只落库。
+	controlLog *ControlLog
 
 	mu     sync.Mutex
 	active map[uint64]*activeStep
@@ -109,6 +111,16 @@ func NewService(runs *run.Service, steps *step.Executor, store repository.RunSto
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{runs: runs, steps: steps, store: store, now: now, active: map[uint64]*activeStep{}}
+}
+
+// SetControlLog 注入 control.log 写入器；必须在首次控制动作前调用。
+func (s *Service) SetControlLog(log *ControlLog) {
+	s.controlLog = log
+}
+
+// logFact 把控制事实同步写一行 control.log（日志失败不影响事实落库）。
+func (s *Service) logFact(pathRunID uint64, control model.RunControl, stepNo int) {
+	s.controlLog.LogFact(pathRunID, control, stepNo)
 }
 
 // Start 按默认单步模式启动（F-016 兼容入口，行为与已验收的完全一致）。
@@ -126,13 +138,15 @@ func (s *Service) startSession(ctx context.Context, runCtx step.RunContext, mode
 	runCtx.PathRun = startedPathRun
 
 	// 模式选定事实与中文事件（control.log 由 T06 写入器同步落盘）。
-	if err := s.store.AppendRunControl(ctx, model.RunControl{
+	modeFact := model.RunControl{
 		RunID: startedRun.ID, PathRunID: startedPathRun.ID,
 		Kind: model.ControlFactModeSelected, Action: model.RunControlAction(mode),
 		Source: model.RunControlSourceUI, CreatedAt: s.now(),
-	}, s.now()); err != nil {
+	}
+	if err := s.store.AppendRunControl(ctx, modeFact, s.now()); err != nil {
 		return nil, nil, err
 	}
+	s.logFact(startedPathRun.ID, modeFact, 0)
 	_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 		RunID: startedRun.ID, PathRunID: &startedPathRun.ID,
 		Kind: "mode_selected", Label: fmt.Sprintf("运行模式选定：%s", model.RunModeName(mode)),
@@ -150,14 +164,16 @@ func (s *Service) startSession(ctx context.Context, runCtx step.RunContext, mode
 		}
 		session.breakpoints.Add(bp)
 		objectKind, objectKey := BreakpointToObject(bp)
-		if err := s.store.AppendRunControl(ctx, model.RunControl{
+		setFact := model.RunControl{
 			RunID: startedRun.ID, PathRunID: startedPathRun.ID,
 			Kind: model.ControlFactBreakpointSet, BreakpointType: bp.Type,
 			ObjectKind: objectKind, ObjectKey: objectKey,
 			Source: model.RunControlSourceUI, CreatedAt: s.now(),
-		}, s.now()); err != nil {
+		}
+		if err := s.store.AppendRunControl(ctx, setFact, s.now()); err != nil {
 			return nil, nil, err
 		}
+		s.logFact(startedPathRun.ID, setFact, 0)
 		_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 			RunID: startedRun.ID, PathRunID: &startedPathRun.ID,
 			Kind: "breakpoint_set", Label: fmt.Sprintf("断点已设置：%s", bp.Label()),
@@ -263,14 +279,16 @@ func (s *Service) SetBreakpoint(ctx context.Context, pathRunID uint64, bp Breakp
 		return nil, err
 	}
 	objectKind, objectKey := BreakpointToObject(bp)
-	if err := s.store.AppendRunControl(ctx, model.RunControl{
+	setFact := model.RunControl{
 		RunID: pathRun.RunID, PathRunID: pathRunID,
 		Kind: model.ControlFactBreakpointSet, BreakpointType: bp.Type,
 		ObjectKind: objectKind, ObjectKey: objectKey,
 		Source: model.RunControlSourceUI, CreatedAt: s.now(),
-	}, s.now()); err != nil {
+	}
+	if err := s.store.AppendRunControl(ctx, setFact, s.now()); err != nil {
 		return nil, err
 	}
+	s.logFact(pathRunID, setFact, previewStepNo(session))
 	_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 		RunID: pathRun.RunID, PathRunID: &pathRunID,
 		Kind: "breakpoint_set", Label: fmt.Sprintf("断点已设置：%s", bp.Label()),
@@ -297,14 +315,16 @@ func (s *Service) RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp Bre
 		return nil, err
 	}
 	objectKind, objectKey := BreakpointToObject(bp)
-	if err := s.store.AppendRunControl(ctx, model.RunControl{
+	removeFact := model.RunControl{
 		RunID: pathRun.RunID, PathRunID: pathRunID,
 		Kind: model.ControlFactBreakpointRemove, BreakpointType: bp.Type,
 		ObjectKind: objectKind, ObjectKey: objectKey,
 		Source: model.RunControlSourceUI, CreatedAt: s.now(),
-	}, s.now()); err != nil {
+	}
+	if err := s.store.AppendRunControl(ctx, removeFact, s.now()); err != nil {
 		return nil, err
 	}
+	s.logFact(pathRunID, removeFact, previewStepNo(session))
 	_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 		RunID: pathRun.RunID, PathRunID: &pathRunID,
 		Kind: "breakpoint_removed", Label: fmt.Sprintf("断点已删除：%s", bp.Label()),
@@ -398,13 +418,15 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 	if pathRun.Status != model.PathRunStatusRunning {
 		return nil, fmt.Errorf("路径运行当前为 %s，不能放行", model.PathRunStatusName(pathRun.Status))
 	}
-	if err := s.store.AppendRunControl(ctx, model.RunControl{
+	approveFact := model.RunControl{
 		RunID: pathRun.RunID, PathRunID: pathRunID,
 		Kind: model.ControlFactApproved, Action: model.RunControlApprove,
 		Command: command, Source: model.RunControlSourceUI, CreatedAt: s.now(),
-	}, s.now()); err != nil {
+	}
+	if err := s.store.AppendRunControl(ctx, approveFact, s.now()); err != nil {
 		return nil, err
 	}
+	s.logFact(pathRunID, approveFact, previewStepNo(session))
 
 	if command == model.CommandStep {
 		return s.approveOneStep(ctx, pathRunID, session)
@@ -567,4 +589,12 @@ func (s *Service) clear(pathRunID uint64) {
 // runResultOf 返回路径结果的指针形态。
 func runResultOf(result model.RunResult) *model.RunResult {
 	return &result
+}
+
+// previewStepNo 返回会话当前预览的步骤序号（control.log 关联键）；无现场时为 0。
+func previewStepNo(session *activeStep) int {
+	if session == nil || session.preview == nil {
+		return 0
+	}
+	return session.preview.StepNo
 }

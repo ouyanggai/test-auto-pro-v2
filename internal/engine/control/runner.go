@@ -66,12 +66,14 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		}
 		hits := EvaluateBreakpointHits(facts, session.breakpoints)
 		for _, hit := range hits {
-			_ = s.store.AppendRunControl(ctx, model.RunControl{
+			hitFact := model.RunControl{
 				RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
 				Kind: model.ControlFactBreakpointHit, BreakpointType: hit.Breakpoint.Type,
 				ObjectKind: "step", ObjectKey: fmt.Sprintf("%d", preview.StepNo),
 				Reason: hit.Reason, Source: model.RunControlSourceUI, CreatedAt: s.now(),
-			}, s.now())
+			}
+			_ = s.store.AppendRunControl(ctx, hitFact, s.now())
+			s.logFact(pathRunID, hitFact, preview.StepNo)
 			_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 				RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
 				Kind: "breakpoint_hit", Label: fmt.Sprintf("断点命中：%s（%s）", hit.Breakpoint.Label(), hit.Reason),
@@ -105,11 +107,13 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		}
 
 		// 每一步的放行事实（命令种类随循环命令），随后执行本步。
-		_ = s.store.AppendRunControl(ctx, model.RunControl{
+		approveFact := model.RunControl{
 			RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
 			Kind: model.ControlFactApproved, Action: model.RunControlApprove,
 			Command: command, Source: model.RunControlSourceUI, CreatedAt: s.now(),
-		}, s.now())
+		}
+		_ = s.store.AppendRunControl(ctx, approveFact, s.now())
+		s.logFact(pathRunID, approveFact, preview.StepNo)
 		result, err := s.approveOneStep(ctx, pathRunID, session)
 		if err != nil {
 			s.mu.Lock()
@@ -126,10 +130,12 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		pauseRequested := session.pauseRequested
 		s.mu.Unlock()
 		if pauseRequested {
-			_ = s.store.AppendRunControl(ctx, model.RunControl{
+			pausedFact := model.RunControl{
 				RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
 				Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now(),
-			}, s.now())
+			}
+			_ = s.store.AppendRunControl(ctx, pausedFact, s.now())
+			s.logFact(pathRunID, pausedFact, preview.StepNo)
 			s.mu.Lock()
 			session.stopReason = "暂停请求已生效（本步已走完核验与落账）"
 			s.mu.Unlock()
@@ -141,10 +147,12 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 // applyStop 在循环内执行停止：停止是终态，已发生的事实全部保留。
 func (s *Service) applyStop(ctx context.Context, pathRunID uint64) {
 	_, _ = s.runs.Stop(ctx, pathRunID)
-	_ = s.store.AppendRunControl(ctx, model.RunControl{
+	stoppedFact := model.RunControl{
 		PathRunID: pathRunID, Kind: model.ControlFactStopped,
 		Source: model.RunControlSourceUI, CreatedAt: s.now(),
-	}, s.now())
+	}
+	_ = s.store.AppendRunControl(ctx, stoppedFact, s.now())
+	s.logFact(pathRunID, stoppedFact, 0)
 	s.mu.Lock()
 	session := s.active[pathRunID]
 	if session != nil {
