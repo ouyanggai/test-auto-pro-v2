@@ -1,6 +1,6 @@
 # F-012 历史业务数据回放与节点动作编排
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的“F-012 历史业务数据回放与节点动作编排”
 - 架构依据：`docs/ARCHITECTURE.md` 的“F-012 历史业务数据回放与动作场景编译”
 - 规划时间：2026-09-01
@@ -395,6 +395,7 @@ pnpm --dir form-runtime build
 - 2026-09-04：用户人工验收发现复杂 FormMaking 表单的基础数据没有按目标页面初始化，合同分类级联显示“暂无数据”，当前部门只回显原始 ID；当前功能由 `ready_for_manual` 返回 `implementing`。对照同步的 `rsh-flow-components` 与 `rsh-unified-vue3-web-test` 后确认：本工具错误删除了目标模板 `config.eventScript`，同时后端运行时请求清单又丢弃了 FormMaking 数据源中语义明确为查询的 POST 请求，导致目标原生初始化事件没有执行、即使执行也会被只读请求清单拒绝。整改只恢复目标既有初始化行为和已证明只读的数据源请求，提交、保存、删除等写请求仍保持隔离与阻断。
 - 2026-09-04：基础数据初始化整改完成。runtime 现保留目标 `eventScript`，仅隔离 `beforeSubmitAndDraft`/`beforeSubmit`；后端与 iframe 统一允许模板明确声明且动作名具备查询语义的 POST，同时仍硬拦截提交、保存、上传、删除及未知 POST；内存认证恢复目标源码 `invest-power-system-*` 命名空间，并支持模板直接读取和遍历 `localStorage`。真实计划 4 路径 37 的配置接口现返回合同分类 `enableTreeList/treeList`、用户详情、公司与字典共 5 条目标查询 POST，目标模板初始化事件保持原文；`./test/run-f012.sh` 实测 19 个集成用例无跳过、前端 59 个用例通过，Web 与 form-runtime 构建通过，状态重新进入 `ready_for_manual`。
 - 2026-09-04：进入最终交接前继续按截图中的合同分类请求脚本核对，发现目标 `OtherSteps2` 在挂载 FormMaking 后还会为业务自定义组件补充发起态 `extendProps`；本工具直接挂载 FormMaking，没有经过该包装层，导致请求脚本读取 `extendProps.businessId` 时仍可能在发请求前报错。当前状态保持 `implementing`，继续补齐只包含 `isFlowInitiate=true`、空业务 ID 和当前公司 ID 的通用发起态上下文；不调用目标包装层的业务读取方法，避免覆盖已传入的历史表单数据。
+- 2026-09-04：自定义组件发起态上下文已补齐：保留模板已有扩展参数，同时强制使用 `isFlowInitiate=true`、空 `businessId` 和当前会话公司 ID，与目标 `OtherSteps2` 的发起态设置一致；因此合同分类脚本可安全读取 `extendProps.businessId` 并走 `enableTreeList`，但不会触发目标业务详情读取覆盖历史数据。`./test/run-f012.sh` 再次实测 19 个集成用例无跳过、前端 60 个用例通过，Web、form-runtime 与 Go 服务构建通过，状态重新进入 `ready_for_manual`。
 - 当前没有遗留产品决策。实施中如参考源码出现与本文件不一致且会改变用户行为、动作范围、数据清理边界或公共接口，实施线程必须停止并由主任务向用户询问，不能自行选择。
 - 实施线程如发现会改变用户行为、动作范围、数据清理边界或公共接口的冲突，必须停止并由主任务向用户询问，不能自行选择。
 - 自动验证完成后必须停在 `ready_for_manual`；只有用户明确验收后才能进入 `accepted`，不得自动开始真实执行切片。
