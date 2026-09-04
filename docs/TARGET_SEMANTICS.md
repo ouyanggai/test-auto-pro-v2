@@ -56,12 +56,22 @@ strength=源码可证明
 | `rsh-cloud-web-api` | `master` `16410b5e7315` | 同上 |
 | `rsh-framework-all` | `test` `84bb19736a8a` | 同上 |
 | `rsh-cloud-invest-power-system` | `test` `8a00cb9995df` | 同上 |
-| 目标平台部署版本 | **未取得**。目标平台不提供版本接口，本切片纯只读也无法反推部署提交。 | 见下 |
+| 目标平台部署版本 | **提交号未取得**（目标平台不提供版本接口），但已由只读探测取得两条部署事实，见下 | `test/integration/f014_error_semantics_readonly_test.go` 2026-09-04 实跑 |
 
 部署版本未取得的后果，必须在读本文件时始终记住：
 
 - 凡结论依赖「某段源码已经上线」，都只能标注部署未确认。
-- 已知两处结论强依赖部署状态：动态审批方式的注册情况、`flow_trigger_config_relevance.audit_way` 迁移是否执行。两者由 `test/integration/f014_error_semantics_readonly_test.go` 的只读探测给出间接结论，见第 1.5 节与第 2.5 节。
+- 已知两处结论强依赖部署状态：动态审批方式的注册情况、`flow_trigger_config_relevance.audit_way` 迁移是否执行。
+
+只读探测已取得的部署事实（2026-09-04 实跑，样本存 `test/fixtures/f014/readonly/`）：
+
+| 事实 | 观测结果 | 含义 |
+| --- | --- | --- |
+| 流程模板详情返回的 `auditWay` | 字符串编码名 | 目标环境**已执行** `20260828_flow_trigger_audit_way_ordinal_migration.sql`。因此审批方式动态化那一版源码已上线，第 1.4 节的静默放行分支与第 1.7 节的 `未发现实例` 对当前环境有效。 |
+| 失效会话的真实响应 | HTTP **200** + `code=RESP401` + `message=SID已失效!` | 会话失效不一定伴随 HTTP 401，判定必须按 `code` 识别。三种形状中 `RESP401` 已实测确认。 |
+| 只读业务失败的真实响应 | HTTP 200 + `code=ERROR_99999` + 业务文案 | 与第 1.2 节一致；该文案不在前置拒绝清单内，判定落不可解释失败，符合预期。 |
+
+动态审批方式的**注册情况**仍未确认：只读接口无法观察 Redis 注册表，需要 F-016 的探针 P5 覆盖。
 
 ## 语义清单总览
 

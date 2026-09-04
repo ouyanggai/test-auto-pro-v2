@@ -1,0 +1,7 @@
+{
+  "name": "session-expired-invalid-sid",
+  "endpoint": "/web/flowTemplateApi/list",
+  "statusCode": 200,
+  "body": "{\"code\":\"RESP401\",\"isSuccess\":false,\"message\":\"SID已失效!\"}",
+  "note": "真实目标只读抓取：失效会话形状"
+}

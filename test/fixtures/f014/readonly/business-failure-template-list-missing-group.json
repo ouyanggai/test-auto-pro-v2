@@ -1,0 +1,7 @@
+{
+  "name": "business-failure-template-list-missing-group",
+  "endpoint": "/web/flowTemplateApi/list",
+  "statusCode": 200,
+  "body": "{\"message\":\"分组id不存在:fb5ed500c48f429aa67e1c9590ff234a\",\"isSuccess\":false,\"data\":null,\"sid\":null,\"code\":\"ERROR_99999\",\"platformCode\":null,\"total\":0,\"size\":0,\"pages\":0,\"current\":0,\"pagination\":true}",
+  "note": "真实目标只读抓取：无效参数触发的业务失败包形状"
+}

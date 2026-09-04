@@ -1,0 +1,7 @@
+{
+  "name": "deployment-audit-way-migration",
+  "endpoint": "/web/flowTemplateApi/findById",
+  "statusCode": 200,
+  "body": "auditWay 为字符串编码名，说明目标环境已执行 20260828 迁移",
+  "note": "真实目标只读探测：审批方式迁移部署状态的间接结论"
+}

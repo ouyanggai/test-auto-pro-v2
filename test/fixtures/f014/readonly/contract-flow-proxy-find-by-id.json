@@ -1,0 +1,7 @@
+{
+  "name": "contract-flow-proxy-find-by-id",
+  "endpoint": "/web/flowProxy/findById",
+  "statusCode": 200,
+  "body": "{\"message\":\"success\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}",
+  "note": "真实目标只读抓取：不存在的代理 ID 触发的失败形状"
+}
