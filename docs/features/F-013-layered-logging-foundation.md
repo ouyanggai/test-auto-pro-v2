@@ -1,6 +1,6 @@
 # F-013 分层日志与追踪底座
 
-- 状态：ready_for_manual
+- 状态：accepted
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明）与「明确不做」中的“独立技术状态与 JSON 配置页面”
 - 架构依据：`docs/ARCHITECTURE.md` 的包边界与目标适配层条文（已按内网裁决同步日志条文）
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6 节全部，第 9 节 F-013 行
@@ -194,6 +194,11 @@ time=2026-09-03 18:56:31 level=error ...
 
 ## 状态记录
 
+- 2026-09-04：用户明确验收通过（“013 可以标记为完成了”），状态由 `ready_for_manual` 进入 `accepted`。
+  验收范围为本文件「包含」条目的全部交付：`internal/logging` 日志底座、按计划与执行路径归档的目录结构、
+  目标请求在传输层单点接入的网络与可重放命令日志、API 中间件的请求与失败日志且界面文案同源、
+  按天分文件与保留期清理，以及 `make logs-viewer` / `make logs-viewer-stop` 的 code-server 单容器查看方式。
+  后续切片可直接依赖该底座；如需改动其行为需另行立项，不在本切片内继续修改。
 - 2026-09-04：人工验收未通过，状态从 `ready_for_manual` 退回 `implementing`。
   未通过原因：日志查看方式被错误地实现成自建 Node 网页（`logs-viewer/` + `pnpm dev:l`），
   与本文件"包含"条目以及 `docs/EXECUTION_PROGRAM.md` 第 6.7 节已批准的裁决（沿用 code-server、不另造日志页面）冲突。
