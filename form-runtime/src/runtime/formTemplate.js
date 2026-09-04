@@ -4,7 +4,7 @@ const STANDARD_TYPES = new Set([
   'text', 'html', 'divider', 'blank', 'link', 'button', ...CONTAINER_TYPES
 ])
 const TARGET_COMPONENT_NAMES = new Set(JSON.parse(process.env.VUE_APP_TARGET_COMPONENT_NAMES || '[]'))
-const SUBMIT_HOOK_NAMES = ['beforeSubmitAndDraft', 'beforeSubmit', 'eventScript']
+const SUBMIT_HOOK_NAMES = ['beforeSubmitAndDraft', 'beforeSubmit']
 
 // clonePlain 在 postMessage 与 Vue 观察对象边界复制纯数据，禁止代理对象进入 FormMaking。
 export function clonePlain (value) {
@@ -93,7 +93,7 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
   const isolatedHooks = []
   for (const hook of SUBMIT_HOOK_NAMES) {
     if (config[hook]) isolatedHooks.push(hook)
-    // F-007 只保存 V2 配置，提交/草稿/业务事件钩子必须在 FormMaking 装载前清除，不能执行也不能误判成不支持。
+    // F-007 只保存 V2 配置，提交与草稿钩子必须在 FormMaking 装载前清除；eventScript 是目标表单初始化与字段联动的一部分，必须保留。
     delete config[hook]
   }
   return {

@@ -10,6 +10,21 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
+var pathFormWriteSegmentPrefixes = []string{
+	"submit", "draft", "save", "update", "delete", "remove", "upload", "import",
+	"create", "insert", "modify", "edit", "bind", "unbind", "operate", "approve",
+	"reject", "withdraw", "terminate", "abandon", "complete", "execute", "publish",
+	"cancel", "trigger", "send", "reset", "copy", "move", "rename", "change",
+	"switch", "close", "replace",
+}
+
+var pathFormReadSegmentPrefixes = []string{
+	"find", "get", "list", "query", "search", "read", "load", "fetch", "select",
+	"lookup", "count", "check", "validate", "preview", "download", "statistical", "statistics",
+}
+
+var pathFormReadSegmentSuffixes = []string{"list", "tree", "detail", "details", "options", "children", "page"}
+
 // uniquePublicStrings 按首次出现顺序去除空白摘要，避免把目标端重复问题暴露给工作区。
 func uniquePublicStrings(values []string) []string {
 	seen := make(map[string]bool, len(values))
@@ -221,7 +236,59 @@ func vuePageRuleStatus(page *target.VueCustomPageRule) string {
 	return "complete"
 }
 
-// projectPathFormReadRequests 仅提取目标模板显式声明的只读请求，拒绝写方法和提交端点。
+// pathFormRequestSegments 解码目标请求路径并按层级归一，用于先识别写语义再判断查询动作。
+func pathFormRequestSegments(path string) []string {
+	if decoded, err := url.PathUnescape(path); err == nil {
+		path = decoded
+	}
+	parts := strings.Split(path, "/")
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.ToLower(strings.TrimSpace(part)); part != "" {
+			segments = append(segments, part)
+		}
+	}
+	return segments
+}
+
+// pathFormReadRequestAllowed 对齐 iframe 运行时的只读边界：安全方法直接可读，POST 只接受明确查询动作。
+func pathFormReadRequestAllowed(method, path string) bool {
+	segments := pathFormRequestSegments(path)
+	joined := "/" + strings.Join(segments, "/")
+	if strings.Contains(joined, "/web/flowoperate") ||
+		strings.Contains(joined, "/web/user/api/login/user/login") ||
+		strings.Contains(joined, "/web/user/api/login/user/loginout") ||
+		strings.Contains(joined, "/web/user/api/login/user/switchlinkage") {
+		return false
+	}
+	for _, segment := range segments {
+		for _, prefix := range pathFormWriteSegmentPrefixes {
+			if strings.Contains(segment, prefix) {
+				return false
+			}
+		}
+	}
+	if method == "GET" || method == "HEAD" || method == "OPTIONS" {
+		return true
+	}
+	if method != "POST" || len(segments) == 0 {
+		return false
+	}
+	action := segments[len(segments)-1]
+	for _, prefix := range pathFormReadSegmentPrefixes {
+		if strings.HasPrefix(action, prefix) {
+			return true
+		}
+	}
+	for _, suffix := range pathFormReadSegmentSuffixes {
+		if strings.HasSuffix(action, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// projectPathFormReadRequests 仅提取目标模板显式声明且具备明确只读语义的请求，拒绝写动作和未知 POST。
 func projectPathFormReadRequests(snapshot target.PathConfigurationSnapshot, template map[string]any) []model.PathFormReadRequest {
 	requests := make([]model.PathFormReadRequest, 0)
 	seen := make(map[string]bool)
@@ -229,9 +296,6 @@ func projectPathFormReadRequests(snapshot target.PathConfigurationSnapshot, temp
 		method = strings.ToUpper(strings.TrimSpace(method))
 		if method == "" {
 			method = "GET"
-		}
-		if method != "GET" && method != "HEAD" && method != "OPTIONS" {
-			return
 		}
 		path := strings.TrimSpace(rawPath)
 		if parsed, err := url.Parse(path); err == nil && parsed.Path != "" {
@@ -242,6 +306,9 @@ func projectPathFormReadRequests(snapshot target.PathConfigurationSnapshot, temp
 		}
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
+		}
+		if !pathFormReadRequestAllowed(method, path) {
+			return
 		}
 		key := method + "\x00" + path
 		if seen[key] {
@@ -293,4 +360,9 @@ func projectPathFormReadRequests(snapshot target.PathConfigurationSnapshot, temp
 // ProjectFormPermissionsForTest 暴露发起态字段权限投影，供 test 目录下的定向用例锁定行为。
 func ProjectFormPermissionsForTest(tree *target.FlowNodeTemplate, reachable []string) []model.PathFormPermission {
 	return formPermissions(tree, reachable)
+}
+
+// ProjectPathFormReadRequestsForTest 暴露表单只读请求投影，供 test 目录锁定查询 POST 与写请求的安全边界。
+func ProjectPathFormReadRequestsForTest(snapshot target.PathConfigurationSnapshot, template map[string]any) []model.PathFormReadRequest {
+	return projectPathFormReadRequests(snapshot, template)
 }

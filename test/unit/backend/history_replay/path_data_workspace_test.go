@@ -343,3 +343,45 @@ func TestKeyFieldLabelsUseTargetFieldNames(t *testing.T) {
 		t.Fatalf("基础字段与虚拟字段标签不一致：%+v", labels)
 	}
 }
+
+// TestPathFormReadRequestsKeepQueryPosts 锁定目标 FormMaking 的查询型 POST 数据源进入运行时清单，
+// 同时确保提交、保存和语义不明的 POST 不会因来自模板而被放行。
+func TestPathFormReadRequestsKeepQueryPosts(t *testing.T) {
+	template := map[string]any{"config": map[string]any{"dataSource": []any{
+		map[string]any{"method": "post", "url": "/api/web/api/measuring/contract/type/enableTreeList?platformCode=200001"},
+		map[string]any{"method": "POST", "url": "/api/web/user/api/user/getUserInfoById"},
+		map[string]any{"method": "POST", "url": "/api/web/user/api/company/queryCompanyListByNameForRelatedParty"},
+		map[string]any{"method": "POST", "url": "/api/web/dict/api/dictData/findByDictCode"},
+		map[string]any{"method": "GET", "url": "/api/web/options"},
+		map[string]any{"method": "POST", "url": "/api/web/flowInstanceApi/submit"},
+		map[string]any{"method": "POST", "url": "/api/web/file/api/relationFile/saveBatch"},
+		map[string]any{"method": "POST", "url": "/api/web/custom/getOrCreate"},
+		map[string]any{"method": "POST", "url": "/api/web/custom/process"},
+	}}}
+	requests := service.ProjectPathFormReadRequestsForTest(target.PathConfigurationSnapshot{}, template)
+	got := make(map[string]bool, len(requests))
+	for _, request := range requests {
+		got[request.Method+" "+request.Path] = true
+	}
+	for _, expected := range []string{
+		"GET /api/web/options",
+		"POST /api/web/api/measuring/contract/type/enableTreeList",
+		"POST /api/web/user/api/user/getUserInfoById",
+		"POST /api/web/user/api/company/queryCompanyListByNameForRelatedParty",
+		"POST /api/web/dict/api/dictData/findByDictCode",
+	} {
+		if !got[expected] {
+			t.Fatalf("查询请求没有进入只读清单：%s，实际：%+v", expected, requests)
+		}
+	}
+	for _, forbidden := range []string{
+		"POST /api/web/flowInstanceApi/submit",
+		"POST /api/web/file/api/relationFile/saveBatch",
+		"POST /api/web/custom/getOrCreate",
+		"POST /api/web/custom/process",
+	} {
+		if got[forbidden] {
+			t.Fatalf("写请求或语义不明的 POST 被错误放行：%s", forbidden)
+		}
+	}
+}

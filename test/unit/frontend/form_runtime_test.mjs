@@ -17,7 +17,11 @@ test('目标表单模板递归应用权限且复杂组件不降级', () => {
       ] }] },
       { type: 'component', model: 'contract', name: '合同业务组件', options: { componentName: 'contract-seal-review' } },
     ],
-    config: { beforeSubmitAndDraft: 'writeBusinessData()', eventScript: [{ name: 'beforeSubmit', func: 'saveTarget()' }] },
+    config: {
+      beforeSubmitAndDraft: 'writeBusinessData()',
+      beforeSubmit: 'submitTarget()',
+      eventScript: [{ name: 'refresh', func: 'setOptionData("currentDepartment", departments)' }],
+    },
   }, [{ field: 'title', power: 'edit' }, { field: 'hiddenValue', power: 'hide' }], false)
   const fields = prepared.template.list[0].columns[0].list
   assert.equal(fields[0].options.disabled, false)
@@ -27,9 +31,10 @@ test('目标表单模板递归应用权限且复杂组件不降级', () => {
   assert.equal(fields[1].options.required, false)
   assert.ok(prepared.unsupported.some(item => item.includes('合同业务组件')))
   assert.equal(prepared.unsupported.some(item => item.includes('业务提交钩子')), false)
-  assert.deepEqual(prepared.isolatedHooks, ['beforeSubmitAndDraft', 'eventScript'])
+  assert.deepEqual(prepared.isolatedHooks, ['beforeSubmitAndDraft', 'beforeSubmit'])
   assert.equal(Object.hasOwn(prepared.template.config, 'beforeSubmitAndDraft'), false)
-  assert.equal(Object.hasOwn(prepared.template.config, 'eventScript'), false)
+  assert.equal(Object.hasOwn(prepared.template.config, 'beforeSubmit'), false)
+  assert.deepEqual(prepared.template.config.eventScript, [{ name: 'refresh', func: 'setOptionData("currentDepartment", departments)' }])
   assert.deepEqual(prepared.allFields.sort(), ['contract', 'hiddenValue', 'title'])
   assert.deepEqual(prepared.editableFields, ['title'])
   assert.deepEqual(prepared.hiddenFields, ['hiddenValue'])
@@ -48,6 +53,11 @@ test('隐藏必填字段不计入人工待办且身份 storage 只在当前运�
   try {
     const restore = installRuntimeStorageFacade({ currentDepartment: '财务部', currentCompanyName: '测试公司' })
     assert.equal(localstorageGet('currentDepartment'), '财务部')
+    assert.equal(window.localStorage.getItem('invest-power-system-currentDepartment'), '财务部')
+    assert.deepEqual(Object.keys(window.localStorage).sort(), [
+      'invest-power-system-currentCompanyName',
+      'invest-power-system-currentDepartment',
+    ])
     restore()
     clearRuntimeAuth()
     assert.equal(localstorageGet('currentDepartment'), '')
@@ -213,7 +223,7 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
       sid: 'memory-only-sid',
       baseURL: 'http://target.test/api',
       readRequestManifest: [
-        { method: 'POST', path: '/web/form/read', source: 'formmaking_template' },
+        { method: 'POST', path: '/web/api/measuring/contract/type/enableTreeList', source: 'formmaking_template' },
         { method: 'POST', path: '/web/flowProxy/findById', source: 'formmaking_template' },
         { method: 'POST', path: '/web/user/api/company/children', source: 'formmaking_template' },
       ],
@@ -221,9 +231,9 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
       onDecision: observation => observations.push(observation),
     })
     const request = new XMLHttpRequest()
-    request.open('POST', '/web/form/read')
+    request.open('POST', '/web/api/measuring/contract/type/enableTreeList')
     request.send('{"data":{"flag":"3"}}')
-    assert.match(opened[0][1], /^http:\/\/target\.test\/api\/web\/form\/read\?sid=memory-only-sid$/)
+    assert.match(opened[0][1], /^http:\/\/target\.test\/api\/web\/api\/measuring\/contract\/type\/enableTreeList\?sid=memory-only-sid$/)
     assert.deepEqual(sentHeaders[0], ['sid', 'memory-only-sid'])
     // 目标网关只在请求体携带 SID 时才认可会话；JSON 请求体必须合并 SID。
     assert.deepEqual(JSON.parse(sentBodies[0]), { data: { flag: '3' }, sid: 'memory-only-sid' })
@@ -249,14 +259,14 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     await window.fetch('https://cdn.example.test/assets/form.css')
     assert.equal(fetched[2][0], 'https://cdn.example.test/assets/form.css')
     assert.equal(fetched[2][1].headers.has('sid'), false)
-    assert.ok(observations.some(item => item.pathname === '/api/web/form/read' && item.allowed === true))
+    assert.ok(observations.some(item => item.pathname === '/api/web/api/measuring/contract/type/enableTreeList' && item.allowed === true))
     assert.ok(observations.some(item => item.pathname === '/api/web/flowInstanceApi/submit' && item.allowed === false))
     assert.ok(observations.every(item => item.renderType === 'formmaking' && !Object.hasOwn(item, 'sid') && !Object.hasOwn(item, 'body') && !Object.hasOwn(item, 'url')))
     restore()
     assert.equal(window.fetch, nativeFetch)
     const afterDestroy = new XMLHttpRequest()
-    afterDestroy.open('GET', '/web/form/read')
-    assert.equal(opened.at(-1)[1], '/web/form/read')
+    afterDestroy.open('GET', '/web/api/measuring/contract/type/enableTreeList')
+    assert.equal(opened.at(-1)[1], '/web/api/measuring/contract/type/enableTreeList')
   }
   finally {
     globalThis.window = originalWindow
