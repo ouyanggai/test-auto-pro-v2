@@ -1,6 +1,6 @@
 # F-013 分层日志与追踪底座
 
-- 状态：ready_for_manual
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明）与「明确不做」中的“独立技术状态与 JSON 配置页面”
 - 架构依据：`docs/ARCHITECTURE.md` 的包边界与目标适配层条文（已按内网裁决同步日志条文）
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6 节全部，第 9 节 F-013 行
@@ -35,7 +35,7 @@
 - `curl.log` 写入可直接复制重放的完整命令，含真实会话值与完整请求响应正文（内网裁决，见 `docs/EXECUTION_PROGRAM.md` 第 6.5 节）。
 - API 中间件：请求日志、失败响应日志（记录实际返回给用户的稳定错误码与中文文案）、panic 恢复并落程序错误日志。
 - 程序错误日志字段：`error_class`、`error_chain`、`source`、`stack`（仅 panic）、`run_terminated`、`user_message`。
-- `logs-viewer/` 目录内的零依赖日志浏览服务：`pnpm dev:l` 直接在本机启动（端口 19002），只读展示 `logs/` 下的分层日志，支持关键词过滤与自动刷新；`make logs-viewer` 等价转发。开发阶段不用 Docker，统一容器化留到发布编排切片。
+- `make logs-viewer`：一条命令起固定版本 code-server（`codercom/code-server:4.96.4`），本机 19002 映射容器 8080，挂载本项目 `logs/` 到 `/home/coder/logs` 并直接打开该目录，内网使用不设登录，挂载目录可读写，容器以当前本机用户 UID/GID 运行。`make logs-viewer-stop` 只停止并删除该容器。
 - `.gitignore` 增加 `/logs/`。
 
 ### 不包含
@@ -43,7 +43,7 @@
 - 任何目标写请求。本切片的写端点白名单为空，测试断言实际发出的写请求集合为空集（延续 F-012 的零写入断言，改为白名单形式）。
 - `step.log`、`control.log`、`recovery.log` 三个文件的写入器。它们分别属于 F-016、F-017、F-018，本切片不预先实现。
 - 运行记录表、运行相关 API、`RunsView.vue` 的任何改动。
-- Docker 与 Docker Compose 编排。开发阶段一律本机直接启动，容器化属于 F-023。
+- Docker Compose 整套编排。属于 F-023，本切片只给单个 code-server 容器启动方式。
 - 系统设置页里的日志配置项。保留期与容量本切片只用环境变量控制，`docs/EXECUTION_PROGRAM.md` 第 6.6 节提到的“可在系统设置里调整”留到有实际需要时再单独立项。
 - 脱敏过滤器、日志级别开关矩阵、正文摘要化。用户已明确不做。
 - Loki、Promtail、Grafana 一类外部可观测栈。
@@ -137,11 +137,11 @@ time=2026-09-03 18:56:31 level=error ...
 
 完成判据：单元测试构造过期与当天目录，断言只删过期项；`git status` 在产生日志后保持干净。
 
-### T06：本机日志浏览服务与全范围验证
+### T06：code-server 启动方式与全范围验证
 
-新增 `logs-viewer/`：零依赖 Node 服务，`pnpm dev:l` 启动，端口 19002，只读列出并查看 `logs/` 下的日志，支持关键词过滤、自动刷新与尾部有界读取，路径解析限制在日志根内。新增 `test/run-f013.sh` 聚合本切片测试。
+新增 `make logs-viewer`（固定镜像 `codercom/code-server:4.96.4`、挂载 `logs/`、端口 19002、无登录、可读写、以当前本机用户 UID/GID 运行）与 `make logs-viewer-stop`（只停止并删除该容器）。Docker 未启动时两个目标都直接报错退出，不提供任何替代方案。容器内对挂载目录的读写权限需实测确认。新增 `test/run-f013.sh` 聚合本切片测试。
 
-完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`pnpm dev:l` 实际起得来且能在浏览器里看到日志文件与内容。
+完成判据：`go build ./...` 通过；`test/run-f013.sh` 全量通过；`make logs-viewer` 实际起得来，`http://127.0.0.1:19002` 能打开 code-server，文件树能看到当天的 `app-<日期>.log` 与 `config/<日期>/`，容器内能读取日志且挂载目录可写，`make logs-viewer-stop` 能正常停止。
 
 ## 自动验证
 
@@ -157,7 +157,7 @@ time=2026-09-03 18:56:31 level=error ...
 ## 人工验收
 
 1. 启动后端与前端，在浏览器里依次做：验证账号、打开流程图、进入一条路径的节点配置、打开历史业务数据工作区。
-2. 在 `logs-viewer/` 目录执行 `pnpm dev:l`，浏览器打开 http://127.0.0.1:19002 ，确认能看到 `logs/app-<今天>.log` 与 `logs/config/<今天>/` 下的四个文件。
+2. 执行 `make logs-viewer`，浏览器打开 http://127.0.0.1:19002 ，确认 code-server 直接停在 `/home/coder/logs`，文件树能看到 `app-<今天>.log`、`app-error-<今天>.log` 与 `config/<今天>/` 下的四个文件；核对完成后执行 `make logs-viewer-stop`。
 3. 打开 `logs/config/<今天>/network.log`，确认上一步的每个操作都有对应请求行，字段可读、中文可读、没有乱码。
 4. 打开 `curl.log`，复制任意一条 `curl=` 命令到终端执行，确认能拿到与当时一致的响应。
 5. 把目标平台地址临时改成一个不可达地址，重复一次账号验证。确认：界面给出中文错误提示；`network-error.log` 出现对应失败行；`app-error-<今天>.log` 出现一行 `error_class=network`，其 `user_message` 与界面上那句提示完全一致。
@@ -178,10 +178,25 @@ time=2026-09-03 18:56:31 level=error ...
 
 ## 状态记录
 
-- 2026-09-04：按用户要求调整三处：开发阶段一律本机直接启动（去掉 code-server 容器方案），
-  全局日志改为按天分文件并把默认保留期从 14 天收到 7 天，日志浏览服务独立成 `logs-viewer/` 目录用 `pnpm dev:l` 启动。
-  实测：后端 19013、浏览服务 19002 同时在本机运行，`logs/app-<当天>.log` 与 `logs/config/<当天>/` 四个文件都在，
-  浏览服务能列文件、按关键词过滤，并拒绝日志根之外的路径。
+- 2026-09-04：人工验收未通过，状态从 `ready_for_manual` 退回 `implementing`。
+  未通过原因：日志查看方式被错误地实现成自建 Node 网页（`logs-viewer/` + `pnpm dev:l`），
+  与本文件"包含"条目以及 `docs/EXECUTION_PROGRAM.md` 第 6.7 节已批准的裁决（沿用 code-server、不另造日志页面）冲突。
+  产品明确不做独立技术状态页，日志查看必须复用用户已经认可的 code-server。
+- 2026-09-04：容器验证被本机 Docker 磁盘占满阻塞，状态保持 `implementing`。
+  本机 Docker 运行时是 colima（已由本次实施启动，profile `default`），其数据盘
+  `/dev/vdb1` 挂载在 `/var/lib/containerd`，59G 已用 58G、可用 0，使用率 100%。
+  表现：`docker pull codercom/code-server:4.96.4` 报
+  `failed to extract layer ... no space left on device`；改用本机已有的
+  `codercom/code-server:4.126.0` 同参数试启动，容器也在启动阶段退出，
+  容器日志为 `error ENOSPC: no space left on device, mkdir '/home/coder/.config'`。
+  已确认这不是 Makefile 目标的问题：Docker 未启动时两个目标都按预期直接报错退出。
+  释放空间需要删除本机既有镜像或构建缓存（`docker system df`：镜像 117 个共 60.64GB，
+  构建缓存 43.29GB），属于用户数据，未获明确授权前不执行。
+  待用户释放空间或明确授权清理后，按 T06 完成判据重新验证并把状态推进到 `ready_for_manual`。
+- 2026-09-04：修复日志查看方式。删除 `logs-viewer/` 自建网页及其全部入口，不保留兼容层；
+  恢复 `make logs-viewer` 与 `make logs-viewer-stop`，只提供单个 code-server 容器启动方式，
+  Docker 未启动时明确报错退出。日志采集、错误分类与 curl 重放未改动。
+  全局日志按天分文件与默认保留 7 天两项按用户要求保留。
 - 2026-09-04：T01 至 T06 实施完成，`test/run-f013.sh` 全量通过，状态进入 `ready_for_manual`。
   实际运行证据（本机 19013 端口起新构建，接真实目标与真实数据库）：
   - `logs/config/<当天>/network.log` 出现真实目标请求行，含 `trace_id`、`request_class=read`、
