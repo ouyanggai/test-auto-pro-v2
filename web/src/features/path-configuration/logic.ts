@@ -88,7 +88,13 @@ export function projectPathConfigurationNodeStates(graph: FlowGraph, analysis: E
   for (const node of graph.nodes) {
     const configured = configurationByGraphNodeID.get(node.id)
     const onCurrentPath = analysis.reachableNodeIds.has(node.id)
-    states[node.id] = { status: configured?.status ?? 'not_required', statusName: configured ? pathConfigurationStatusName(configured.status) : '路径外上下文', interactive: Boolean(onCurrentPath && configured), selected: Boolean(onCurrentPath && configured && node.id === selectedNodeID) }
+    // 路由与并行拆分节点在当前路径上，但它们不执行任何动作，服务端不会给出配置投影。
+    // 这类节点既不能点开配置，也不该显示"路径外上下文"——那会让用户以为它不在本路径上。
+    const routeNode = node.type === 'condition' || node.type === 'manual' || node.type === 'parallel'
+    const statusName = configured
+      ? pathConfigurationStatusName(configured.status)
+      : (onCurrentPath && routeNode ? '分支节点，无需配置' : '路径外上下文')
+    states[node.id] = { status: configured?.status ?? 'not_required', statusName, interactive: Boolean(onCurrentPath && configured), selected: Boolean(onCurrentPath && configured && node.id === selectedNodeID) }
   }
   return states
 }

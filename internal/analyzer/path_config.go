@@ -397,10 +397,31 @@ func (p *pathConfigProjection) walk(nodeID, groupKey, stopID string, blocked boo
 		return ErrExecutionPathInvalid
 	}
 	p.visited[nodeID] = true
+	// 路由与并行拆分节点不是执行节点：它们只决定往哪条分支走，没有处理人也没有可执行动作。
+	// 以前把它们也投影成可配置节点，界面上分支就会显示配置状态、还能点进去配动作，这是错的。
+	if !isConfigurableNodeType(graphNode.Type) {
+		return p.walkFrom(nodeID, graphNode, groupKey, stopID, blocked)
+	}
 	node := p.nodeConfig(graphNode, targetNode, blocked)
 	groupIndex := p.groupByKey[groupKey]
 	p.groups[groupIndex].Nodes = append(p.groups[groupIndex].Nodes, node)
 
+	return p.walkFrom(nodeID, graphNode, groupKey, stopID, blocked)
+}
+
+// isConfigurableNodeType 判断该节点类型是否需要配置处理人与动作。
+// 只有真正会执行的节点才需要；condition 与 manual 是路由选择，parallel 是并行拆分，都不执行任何动作。
+func isConfigurableNodeType(nodeType string) bool {
+	switch strings.TrimSpace(nodeType) {
+	case "condition", "manual", "parallel":
+		return false
+	default:
+		return true
+	}
+}
+
+// walkFrom 继续沿当前已选路径向下投影，与该节点自身是否需要配置无关。
+func (p *pathConfigProjection) walkFrom(nodeID string, graphNode model.FlowGraphNode, groupKey, stopID string, blocked bool) error {
 	// 动作只保存未来真实到达时的安排；配置本身不会中断当前路径投影。
 	nextBlocked := blocked
 	edges := p.reachableOutgoing(nodeID)
