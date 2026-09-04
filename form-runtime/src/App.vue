@@ -251,6 +251,12 @@ export default {
         this.runtimeIssues = Array.isArray(result && result.issues) ? result.issues : []
         return
       }
+      const host = this.$refs.formHost
+      if (host && typeof host.setData === 'function') {
+        await host.setData(values)
+        this.values = clonePlain(values)
+        return
+      }
       const form = this.form()
       if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
       await form.setData(clonePlain(values))
