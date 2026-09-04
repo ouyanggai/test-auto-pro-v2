@@ -39,11 +39,15 @@ file=参考代码/<仓库>/<文件路径>
 line=<行号>
 contains=<该文件中必须存在的字符串>
 strength=源码可证明
+head=<仓库键>@<该结论勘定时的仓库 HEAD>
+deployment=<该结论对应的目标平台部署版本，未取得就写「未取得」并说明原因>
 ```
 
 真实证据块用 `evidence` 围栏，字段与上面一致。
 
 `line` 只作人工定位用，漂移检测按 `contains` 判断证据是否还在；`file` 不存在或 `contains` 消失即判漂移。
+
+`head` 与 `deployment` 是逐条绑定的，不靠本文件的全局基线代替：`head` 由漂移检测与该仓库当前 HEAD 逐条比对，对不上即说明这条证据是在另一个版本上勘定的，必须重新核对；`deployment` 记录该结论对应的目标平台部署版本，目标平台不提供版本接口，因此绝大多数条目写「未取得」，只有被只读探测确认过的条目写实测结论。
 
 ## 证据基线
 
@@ -125,6 +129,8 @@ file=参考代码/java-serve/rsh-cloud-web-api/src/main/java/com/rsh/cloud/web/a
 line=38
 contains=@RequestMapping("/web/flowInstanceApi")
 strength=源码可证明
+head=java-serve/rsh-cloud-web-api@16410b5e7315
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ```evidence
@@ -132,6 +138,8 @@ file=参考代码/java-serve/rsh-cloud-workflow-center-api/src/main/java/com/rsh
 line=70
 contains=@PostMapping("/audit")
 strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center-api@088aed79ad0b
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 必须写清的三件事：
@@ -145,6 +153,8 @@ file=参考代码/java-serve/rsh-cloud-web-api/src/main/java/com/rsh/cloud/web/a
 line=71
 contains=deleteMethodName = "delete"
 strength=源码可证明
+head=java-serve/rsh-cloud-web-api@16410b5e7315
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ### 1.2 异常到失败形状的映射
@@ -164,6 +174,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=48
 contains=return new ExceptionResponseProtocol("发生空指针异常", false, null, ProtocolCode.RESP200);
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ```evidence
@@ -171,6 +183,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=63
 contains=!StringUtils.isEmpty(e.getMessage()) ? e.getMessage() : "程序异常"
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 这张表带出四条不可绕过的判定约束：
@@ -187,6 +201,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=90
 contains=response.addHeader("code", "exception_500");
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ```evidence
@@ -194,6 +210,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=21
 contains=return new BusinessException(msg);
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 结论：中心侧的 HTTP 500 不会穿透到工具，工具看到的仍是 HTTP 200 的失败包。**但这条链把中心程序异常伪装成了业务异常**，这是「不可解释失败」这一类必须存在的根本原因。
@@ -211,6 +229,8 @@ file=参考代码/rsh-framework-all/rsh-framework-core/src/com/rsh/framework/cor
 line=199
 contains=AUTH_401("当前登录用户会话过期或在其他设备登录，请重新登录")
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ### 1.4 `@FlowSubmitVerify` 的两种相反含义
@@ -227,6 +247,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=109
 contains=return joinPoint.proceed();
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ```evidence
@@ -234,6 +256,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=115
 contains=return new ExceptionResponseProtocol(throwable.getMessage(), false, null);
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 **门禁会静默放行。** 切面改用 Redis 查注册表后新增两条放行分支：`auditWay` 未注册校验服务（`:142` 只写一行 info 日志后放行）、已注册但无健康实例（`:153` 只写一行 warn 日志后放行）。
@@ -243,6 +267,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=139
 contains=redisServer.hashGetNormalizedOwner(FlowSubmitVerifyBaseController.REDIS_HASH_KEY
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=已实测：auditWay 返回字符串编码名，说明 20260828 迁移已执行；注册状态仍未取得
 ```
 
 **工具不得把「没有被拒绝」当成「通过了业务校验」。** 这条与判定无关（放行不产生失败响应），但直接影响 F-016 之后对「提交成功」的解读：成功可能只是因为校验服务不在线。
@@ -254,6 +280,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=52
 contains=return new BaseResponseProtocol("未发现实例",false,null);
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=已实测：auditWay 返回字符串编码名，说明 20260828 迁移已执行；注册状态仍未取得
 ```
 
 ### 1.5 已知差异与部署依赖
@@ -296,6 +324,17 @@ strength=源码可证明
 
 清单匹配按「端点 + 文案全等」，禁止模糊匹配、关键字包含或跨端点复用文案。
 
+**校验顺序不可调换**，`internal/engine/verdict/classify.go` 按此实现：
+
+1. HTTP 401 先认掉——它本身就是完整的鉴权拒绝信号，这类响应通常没有业务包络。
+2. 响应包必须可解析，且 `isSuccess` 字段必须**显式存在**。缺字段与 `isSuccess=false` 含义不同，
+   缺字段说明成功判据不存在，只能落不可解释失败，不允许用 `code` 或文案补判。
+3. 除 401 外只接受 HTTP 200 的业务包络。3xx、4xx、5xx 一律按新出现的形状处理，**不进文案清单**，
+   否则「4xx + 清单文案 + 重读明确未变」会得出「确定失败、无副作用」。
+4. 声明成功的包若同时带着鉴权错误码、乐观锁提示或该端点登记过的前置拒绝文案，
+   属响应包自相矛盾，落不可解释失败，绝不能识别成拒绝——那三类配合「明确未变」会得出确定失败。
+5. 以上都通过后，才按鉴权码与文案清单收敛。
+
 第三步，与事实重读结论组合：
 
 | 响应侧初判 | 重读=已前进 | 重读=明确未变 | 重读=无法读取 | 重读=自相矛盾 |
@@ -315,6 +354,8 @@ file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/clo
 line=112
 contains=@Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
 strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ```evidence
@@ -322,6 +363,8 @@ file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/clo
 line=225
 contains=flowOperate.saveFormData(requestProtocol, flowInstanceVo, flowProxyVo)
 strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 其余几格的理由：
@@ -356,6 +399,8 @@ file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/clo
 line=768
 contains=throw new BusinessException("流程已完结,不支持取回");
 strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ```evidence
@@ -363,6 +408,8 @@ file=参考代码/java-serve/rsh-cloud-workflow-center-api/src/main/java/com/rsh
 line=1184
 contains=return BaseResponseProtocol.error("该待办记录不存在");
 strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center-api@088aed79ad0b
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 明确**不进**清单的两条，理由是它们发生在写之后：
@@ -372,15 +419,27 @@ strength=源码可证明
 
 ### 1.8 乐观锁提示
 
-| 端点 | 精确文案 | 位置 |
+乐观锁提示与前置拒绝清单一样按「端点 + 精确文案」全等匹配。端点清单只登记能证明会走到
+中心 `FlowInstanceServiceImpl.update`（`:426`）或 `.save`（`:541`）的端点，两者内部都调
+`saveAndFlushWithOptimisticLockMessage`。
+
+| 端点 | 精确文案 | 可达性证据 |
 | --- | --- | --- |
-| 全部会更新流程实例的端点 | `流程状态已发生变化，请刷新后重试` | 中心 `FlowInstanceServiceImpl:70` 常量、`:526` 抛出 |
+| `/web/flowInstanceApi/submit` | `流程状态已发生变化，请刷新后重试` | 中心 `FlowSubmitServiceImpl:320` 调 `flowInstanceService.save` |
+| `/flowInstanceApi/audit` | 同上 | 中心 `FlowAuditServiceImpl` 经 `updateFLowInstance:348` 调 `flowInstanceService.update` |
+
+清单刻意保守：`reSubmit`、`approverAppend`、`retrieveProcess` 等端点没有在源码里读到直达
+中心实例保存的调用（`retrieveProcess` 用的是 `findByIdForUpdate` 悲观锁，不是乐观锁那条路径），
+因此不登记。未登记端点返回同一文案时落不可解释失败——两者结论都是「不确定」，
+登记与否只影响原因说明，不会让结论变乐观。
 
 ```evidence
 file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowInstanceServiceImpl.java
 line=526
 contains=throw new BusinessException(CONCURRENT_UPDATE_MESSAGE);
 strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 命中该文案说明目标检测到并发更新，本次关系库写入被回滚。但按第 1.6 节的源码确认，它**不足以判定「什么都没写」**，因此仍需事实重读，且与「明确未变」组合后结论是「不确定」。
@@ -411,6 +470,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=104
 contains=result instanceof BaseResponseProtocol && !StringUtils.isEmpty(batchCode)
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 ```evidence
@@ -418,6 +479,8 @@ file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/frame
 line=130
 contains=this.invokeRollBackMethod(batchCode, req);
 strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 `/web/flowInstanceApi/submit` 是 11 个端点中唯一带 `@Consistency` 的，其 `deleteMethodName = "delete"`，即回滚动作是删除流程实例。禁令由 `test/unit/backend/target_semantics/idempotency_constraints_test.go` 与 `test/contracts/f014/target_write_whitelist.sh` 双向锁定。
@@ -436,6 +499,8 @@ file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/clo
 line=31
 contains=@Version
 strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
 ```
 
 浏览器侧另有 `utils/RequestQueue.js` 级别的重复请求抑制，属于前端行为，不构成服务端保证，**工具不能依赖它**。

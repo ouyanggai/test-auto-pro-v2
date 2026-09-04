@@ -32,11 +32,18 @@ type f014Probe struct {
 }
 
 // f014Envelope 只解析判定需要的三项，不关心目标返回的其余字段。
+// isSuccess 用指针解析：缺字段与显式 false 含义不同，前者说明成功判据不存在。
+// 这里刻意不读别名字段 success：语义清单第 1.2 节的硬约束是只认 isSuccess，
+// 现有只读路径对别名的兼容不属于 F-014 范围，也不参与本切片的任何断言。
 type f014Envelope struct {
-	IsSuccess bool   `json:"isSuccess"`
-	Success   bool   `json:"success"`
+	IsSuccess *bool  `json:"isSuccess"`
 	Code      string `json:"code"`
 	Message   string `json:"message"`
+}
+
+// claimsSuccess 只按 isSuccess 判断目标是否声明成功。
+func (e f014Envelope) claimsSuccess() bool {
+	return e.IsSuccess != nil && *e.IsSuccess
 }
 
 // requireF014Target 读取真实目标配置与测试账号；缺配置直接失败，不静默跳过。
@@ -54,8 +61,30 @@ func requireF014Target(t *testing.T) (target.ClientConfig, string) {
 		BaseURL: cfg.APIGateway, LoginPassword: cfg.LoginPassword, LoginAESKey: cfg.LoginAESKey,
 		LoginCode: cfg.LoginCode, PlatformCode: cfg.PlatformCode,
 		TemplatePlatformCodes: cfg.TemplatePlatformCodes, CustomerCode: cfg.CustomerCode,
-		Timeout: 30 * time.Second,
+		// 沿用配置里的目标超时（默认 120 秒）。真实目标登录本身要十几秒，
+		// 这里写死一个更短的值会让只读用例在目标慢的时候偶发超时失败。
+		Timeout: cfg.HTTPTimeout,
 	}, account
+}
+
+// requireF014Session 为调用方单独登录一次并返回目标客户端与会话；失败直接让用例失败，不静默跳过。
+// 这里刻意不共用会话：测试账号是共享账号，目标平台在同账号别处登录时会让旧会话失效，
+// 共用一个长会话反而会让后面的用例偶发「会话已失效」。每个用例各自登录，一次抖动只影响一个用例。
+func requireF014Session(t *testing.T) (target.ClientConfig, *target.Client, target.Session) {
+	t.Helper()
+	clientConfig, account := requireF014Target(t)
+	client, err := target.NewClient(clientConfig)
+	if err != nil {
+		t.Fatalf("创建目标客户端失败：%v", err)
+	}
+	session, err := client.Login(context.Background(), account)
+	if err != nil {
+		t.Fatalf("真实目标登录失败：%v", err)
+	}
+	if strings.TrimSpace(session.SID) == "" {
+		t.Fatal("真实目标登录没有返回会话标识")
+	}
+	return clientConfig, client, session
 }
 
 // f014Post 按目标协议发一次只读 POST：路径拼在网关后，platformCode 与 sid 同时进查询串与请求体。
@@ -129,8 +158,8 @@ func f014Initial(endpoint string, statusCode int, body string) (verdict.Initial,
 		Action: "readonly_probe", Endpoint: endpoint, Transport: verdict.TransportResponded,
 		StatusCode: statusCode, Reread: verdict.RereadUnreadable,
 		Response: &verdict.Response{
-			IsSuccess: envelope.IsSuccess || envelope.Success, Code: envelope.Code,
-			Message: envelope.Message, Unparsable: unparsable,
+			IsSuccess: envelope.claimsSuccess(), IsSuccessPresent: envelope.IsSuccess != nil,
+			Code: envelope.Code, Message: envelope.Message, Unparsable: unparsable,
 		},
 	})
 	return result.Initial, envelope

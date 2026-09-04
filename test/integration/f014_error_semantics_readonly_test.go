@@ -6,25 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/verdict"
 )
 
 // TestF014ReadonlySuccessAndFailureShapes 连真实目标，用只读接口确认三种响应形状与判定包分类一致：
 // 成功包、无效参数触发的业务失败包、失效会话触发的会话失效包。抓到的响应写入只读 fixture。
 func TestF014ReadonlySuccessAndFailureShapes(t *testing.T) {
-	clientConfig, account := requireF014Target(t)
-	client, err := target.NewClient(clientConfig)
-	if err != nil {
-		t.Fatalf("创建目标客户端失败：%v", err)
-	}
-	session, err := client.Login(context.Background(), account)
-	if err != nil {
-		t.Fatalf("真实目标登录失败：%v", err)
-	}
-	if strings.TrimSpace(session.SID) == "" {
-		t.Fatal("真实目标登录没有返回会话标识")
-	}
+	clientConfig, client, session := requireF014Session(t)
 
 	// 成功形状：取一个真实可见模板，读它的只读详情。
 	templates, err := client.ListTemplates(context.Background(), session, "", 1, 5)
@@ -61,7 +49,7 @@ func TestF014ReadonlySuccessAndFailureShapes(t *testing.T) {
 	if statusCode != 200 {
 		t.Fatalf("目标业务失败没有按 HTTP 200 返回，与语义清单第 1.2 节不一致：%d body=%.200s", statusCode, body)
 	}
-	if envelope.IsSuccess || envelope.Success {
+	if envelope.claimsSuccess() {
 		t.Fatalf("缺分组 ID 的模板列表不应声明成功：%.200s", body)
 	}
 	if envelope.Code != "ERROR_99999" {
@@ -111,15 +99,7 @@ func TestF014ReadonlyTimeoutClassifiesAsUncertain(t *testing.T) {
 // TestF014ReadonlyContractRegression 确认目标改走无 Redis 快速查询链路后，
 // 工具已在调用的两个只读详情端点响应契约未变，并探测 auditWay 是编码名还是数字 ordinal。
 func TestF014ReadonlyContractRegression(t *testing.T) {
-	clientConfig, account := requireF014Target(t)
-	client, err := target.NewClient(clientConfig)
-	if err != nil {
-		t.Fatalf("创建目标客户端失败：%v", err)
-	}
-	session, err := client.Login(context.Background(), account)
-	if err != nil {
-		t.Fatalf("真实目标登录失败：%v", err)
-	}
+	clientConfig, client, session := requireF014Session(t)
 	templates, err := client.ListTemplates(context.Background(), session, "", 1, 5)
 	if err != nil {
 		t.Fatalf("读取模板列表失败：%v", err)

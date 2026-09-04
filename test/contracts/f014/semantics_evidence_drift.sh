@@ -34,7 +34,7 @@ done
 
 # 逐条校验 evidence 块。file 不存在或 contains 消失即判漂移。
 python3 - "${semantics}" <<'PY'
-import io, os, re, sys
+import io, os, re, subprocess, sys
 
 text = io.open(sys.argv[1], encoding='utf-8').read()
 blocks = re.findall(r'```evidence\n(.*?)```', text, re.S)
@@ -45,11 +45,27 @@ failures = []
 for block in blocks:
     fields = dict(line.split('=', 1) for line in block.strip().split('\n') if '=' in line)
     path, needle, strength = fields.get('file', ''), fields.get('contains', ''), fields.get('strength', '')
+    head, deployment = fields.get('head', ''), fields.get('deployment', '')
     if not path or not needle:
         failures.append('证据块缺少 file 或 contains：%s' % block.strip().replace('\n', ' / '))
         continue
     if strength not in ('源码可证明', '源码推断、待 F-016 实测'):
         failures.append('证据块的 strength 取值不合法：%s' % strength)
+    # head 与 deployment 逐条绑定，全局基线不能替代：head 必须与该仓库当前 HEAD 一致，
+    # deployment 必须显式登记，部署版本未知时也要写「未取得」。
+    if '@' not in head:
+        failures.append('证据块缺少 head=<仓库键>@<HEAD>：%s' % path)
+    else:
+        repo, expected = head.split('@', 1)
+        actual = subprocess.run(['git', '-C', os.path.join('参考代码', repo), 'rev-parse', '--short=12', 'HEAD'],
+                                capture_output=True, text=True)
+        if actual.returncode != 0:
+            failures.append('证据块的仓库不可读：%s' % repo)
+        elif actual.stdout.strip() != expected:
+            failures.append('证据 %s 记录的 HEAD 是 %s，仓库 %s 当前是 %s，需重新勘定'
+                            % (path, expected, repo, actual.stdout.strip()))
+    if not deployment.strip():
+        failures.append('证据块缺少 deployment 登记（未取得也要写明）：%s' % path)
     if not os.path.isfile(path):
         failures.append('证据文件已不存在：%s' % path)
         continue
