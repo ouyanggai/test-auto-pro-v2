@@ -61,6 +61,8 @@ func TestF016RunsAPIGuards(t *testing.T) {
 		ReadOnlyRetryBaseDelay: time.Millisecond, ReadOnlyRetryMaxDelay: 2 * time.Millisecond,
 		StatusPollInterval: time.Second,
 	}
+	// 分支选择解析依赖路径配置快照；API 门面用例只验证阻塞路径，快照服务传 nil 即可。
+	var pathConfigService *service.PathConfigService
 	logRouter := logging.NewRouter(t.TempDir(), time.Now)
 	runStore := planmysql.NewRunRepository(database.DB)
 	runState := run.NewService(runStore, "worker-api-test", time.Minute, time.Now)
@@ -68,7 +70,7 @@ func TestF016RunsAPIGuards(t *testing.T) {
 	controlService := control.NewService(runState, executor, runStore, time.Now)
 	orchestrator := service.NewRunOrchestrationService(
 		planService, pathRepository, graphReader, historyWorkspaceStore,
-		readiness, controlService, runStore, logRouter, runConfig, time.Now,
+		readiness, controlService, runStore, logRouter, runConfig, pathConfigService, time.Now,
 	)
 	handler := api.NewHandlerWithRunControl(http.NewServeMux(), orchestrator)
 
