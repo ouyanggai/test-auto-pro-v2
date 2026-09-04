@@ -545,13 +545,14 @@ test('宿主 Vue 页面透传统一快照别名并在 setData 后重新初始化
 
 test('FormMaking 通过目标 OtherSteps2 宿主和单一数据桥接渲染', () => {
   const app = fs.readFileSync(new URL('../../../form-runtime/src/App.vue', import.meta.url), 'utf8')
-  const bridge = fs.readFileSync(new URL('../../../form-runtime/src/HostedFormMaking.vue', import.meta.url), 'utf8')
-  assert.match(app, /<HostedFormMaking[\s\S]*ref="formHost"/)
+  const main = fs.readFileSync(new URL('../../../form-runtime/src/main.js', import.meta.url), 'utf8')
+  assert.match(app, /<router-view[\s\S]*ref="formHost"/)
   assert.doesNotMatch(app, /<fm-generate-form/)
-  assert.match(bridge, /import OtherSteps2 from '@runtime\/views\/GroupApproveManage\/Submitted\/components\/OtherSteps2\.vue'/)
-  assert.match(bridge, /host\.jsonData = clonePlain\(template\)/)
-  assert.match(bridge, /host\.editData = clonePlain\(values\)/)
-  assert.match(bridge, /form\.\$on\('on-change'/)
+  assert.doesNotMatch(app, /HostedFormMaking/)
+  assert.match(main, /import\('@runtime\/views\/GroupApproveManage\/Submitted\/components\/OtherSteps2\.vue'\)/)
+  assert.match(app, /host\.jsonData = clonePlain\(this\.template\)/)
+  assert.match(app, /host\.editData = clonePlain\(this\.values\)/)
+  assert.match(app, /form\.\$on\('on-change'/)
 })
 
 test('无表单审批方式使用复制运行时的真实页面注册入口', () => {

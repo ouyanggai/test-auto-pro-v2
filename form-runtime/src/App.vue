@@ -1,11 +1,9 @@
 <template>
   <main class="form-runtime" :aria-busy="loading">
-    <HostedFormMaking
+    <router-view
       v-if="sessionId && renderType === 'formmaking'"
       ref="formHost"
       :key="sessionId"
-      :company-id="companyId"
-      @change="markDirty"
     />
     <host-vue-page v-else-if="sessionId && renderType === 'vue_custom'" ref="vueHost" :page="vuePage" :initial-values="values" :permissions="runtimePermissions" :read-only="readOnly" />
     <div v-else class="form-runtime__placeholder">正在等待表单工作区初始化…</div>
@@ -19,11 +17,10 @@ import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
 import HostVuePage from './HostVuePage.vue'
-import HostedFormMaking from './HostedFormMaking.vue'
 
 export default {
   name: 'FormRuntimeApp',
-  components: { HostVuePage, HostedFormMaking },
+  components: { HostVuePage },
   data () {
     return {
       parentOrigin: '',
@@ -49,6 +46,8 @@ export default {
 		requestPolicyIssues: [],
 		runtimeIssues: [],
 		companyId: '',
+		boundForm: null,
+		formChangeHandler: null,
 		removeStorageFacade: null,
 		stateTimer: null,
 		// 选项型字段补丁协调：补丁触及的字段集合与最近一次协调产生的阻断问题。
@@ -75,7 +74,7 @@ export default {
     },
     form () {
       const host = this.$refs.formHost
-      return host && typeof host.form === 'function' ? host.form() : null
+      return host && host.$refs && host.$refs.generateForm ? host.$refs.generateForm : null
     },
     post (message) {
       if (!this.parentOrigin || window.parent === window) return
@@ -192,11 +191,20 @@ export default {
         await this.$nextTick()
         if (this.renderType === 'formmaking') {
           const host = this.$refs.formHost
-          if (!host || typeof host.load !== 'function') throw new Error('目标表单宿主尚未完成装载')
-          await host.load(this.template, this.values, {
-            editableFields: this.editableFields,
-            disabledFields: this.allFields.filter(field => !this.editableFields.includes(field))
-          })
+          if (!host) throw new Error('目标表单宿主尚未完成装载')
+          // 适配层只注入目标宿主已有的数据模型和权限，不复制宿主组件或业务交互。
+          host.enableData = [...this.editableFields]
+          host.disabledData = this.allFields.filter(field => !this.editableFields.includes(field))
+          host.jsonData = clonePlain(this.template)
+          host.editData = clonePlain(this.values)
+          await this.$nextTick()
+          this.bindFormChange()
+          const form = this.form()
+          if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
+          await form.setData(clonePlain(this.values))
+          // runtime-source 宿主监听 editData 会异步 refresh，必须在该刷新完成后再落一次回放值。
+          await this.$nextTick()
+          await form.setData(clonePlain(this.values))
         } else {
           await this.setData(this.values)
         }
@@ -252,8 +260,14 @@ export default {
         return
       }
       const host = this.$refs.formHost
-      if (host && typeof host.setData === 'function') {
-        await host.setData(values)
+      if (host) {
+        host.editData = clonePlain(values)
+        const form = this.form()
+        if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
+        await form.setData(clonePlain(values))
+        await this.$nextTick()
+        await form.setData(clonePlain(values))
+        this.bindFormChange()
         this.values = clonePlain(values)
         return
       }
@@ -275,6 +289,23 @@ export default {
       await replayFieldChangeEvents(form, this.changedFields)
       if (this.changedFields.length > 0 && typeof form.getValues === 'function') this.values = clonePlain(form.getValues() || {})
       this.changedFields = []
+    },
+    // bindFormChange 监听 runtime-source 宿主里的 FormMaking 实例，继续沿用 iframe 状态回报协议。
+    bindFormChange () {
+      const form = this.form()
+      if (!form || typeof form.$on !== 'function' || this.boundForm === form) return
+      this.unbindFormChange()
+      this.boundForm = form
+      this.formChangeHandler = () => this.markDirty()
+      form.$on('on-change', this.formChangeHandler)
+    },
+    // unbindFormChange 在切换路径或销毁会话前解除运行时实例监听，避免旧表单继续污染新会话状态。
+    unbindFormChange () {
+      if (this.boundForm && this.formChangeHandler && typeof this.boundForm.$off === 'function') {
+        this.boundForm.$off('on-change', this.formChangeHandler)
+      }
+      this.boundForm = null
+      this.formChangeHandler = null
     },
     async capture (validate) {
       if (this.renderType === 'vue_custom') {
@@ -344,6 +375,7 @@ export default {
 	destroySession () {
 		if (this.stateTimer) window.clearTimeout(this.stateTimer)
 		this.stateTimer = null
+		this.unbindFormChange()
       if (typeof this.removeRequestPolicy === 'function') this.removeRequestPolicy()
       this.removeRequestPolicy = null
 		if (typeof this.removeStorageFacade === 'function') this.removeStorageFacade()

@@ -11,6 +11,15 @@ window.$router.beforeEach((to, from, next) => {
   next()
 })
 
-// 完整 rsh-flow-components 入口先注册真实 FormMaking、自定义组件、Vuex 与原生路由；本地只追加隔离的配置路由。
-window.$router.addRoutes([{ path: '/test-auto-form', name: 'testAutoFormRuntime', component: App }])
+// 完整 rsh-flow-components 入口先注册真实 FormMaking、自定义组件、Vuex 与原生路由；配置协议只把目标宿主页面挂到隔离路由下。
+// 表单页面由 runtime-source 自己渲染，本地 App 只作为数据协议适配层，不导入或复制宿主表单组件。
+window.$router.addRoutes([{
+  path: '/test-auto-form',
+  name: 'testAutoFormRuntime',
+  component: App,
+  children: [{
+    path: '',
+    component: () => import('@runtime/views/GroupApproveManage/Submitted/components/OtherSteps2.vue')
+  }]
+}])
 window.$router.replace('/test-auto-form').catch(() => {})
