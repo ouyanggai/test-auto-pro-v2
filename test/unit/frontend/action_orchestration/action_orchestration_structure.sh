@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 
 # F-012 动作编排界面结构检查：node 的类型剥离运行器无法解析 .vue，改用结构断言覆盖
-# 拖拽排序、门禁原因展示、实例动作工作区和只读编译预览。
+# 拖拽排序、门禁原因展示、实例动作工作区和只读执行流程弹窗。
 
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 
 editor="${project_root}/web/src/features/path-configuration/ActionOrchestrationEditor.vue"
-preview="${project_root}/web/src/features/path-configuration/CompiledScenarioPreview.vue"
+dialog="${project_root}/web/src/features/path-configuration/ActionFlowDialog.vue"
+logic="${project_root}/web/src/features/path-configuration/logic.ts"
 view="${project_root}/web/src/views/PlanPathConfigurationView.vue"
 panel="${project_root}/web/src/features/path-configuration/NodeConfigurationPanel.vue"
 
-for required_file in "${editor}" "${preview}" "${view}" "${panel}"; do
+for required_file in "${editor}" "${dialog}" "${logic}" "${view}" "${panel}"; do
   if [[ ! -f "${required_file}" ]]; then
     printf '%s\n' "[F-012] 缺少动作编排界面文件：${required_file}" >&2
     exit 1
@@ -59,21 +60,30 @@ require "${editor}" 'item.preconditions.length' '动作目录未展示前置事�
 require "${editor}" 'item.reloadRequirements.length' '动作目录未展示运行时重读要求'
 require "${editor}" 'item.systemOnly' '动作目录未区分系统只读语义'
 
-# 只读编译预览必须区分用户动作、系统恢复和系统导航三类来源。
-require "${preview}" "user: '用户动作'" '编译预览缺少用户动作来源'
-require "${preview}" "system_recovery: '系统恢复'" '编译预览缺少系统恢复来源'
-require "${preview}" "system_navigation: '系统导航'" '编译预览缺少系统导航来源'
-require "${preview}" '编译场景预览（只读）' '编译预览未声明只读'
-require "${preview}" 'step.reloadRequired' '编译预览缺少重读事实屏障'
-require "${preview}" 'step.stopOnFailure' '编译预览缺少失败停止条件'
-require "${preview}" 'step.recoveryPolicy' '编译预览缺少恢复策略'
+# 只读执行流程弹窗必须区分用户动作、系统恢复和系统导航三类来源，并保留执行器要遵守的门禁。
+require "${dialog}" "user: '用户动作'" '执行流程缺少用户动作来源'
+require "${dialog}" "system_recovery: '系统恢复'" '执行流程缺少系统恢复来源'
+require "${dialog}" "system_navigation: '系统导航'" '执行流程缺少系统导航来源'
+require "${dialog}" '只读执行顺序' '执行流程未声明只读'
+require "${dialog}" 'step.reloadRequired' '执行流程缺少重读事实屏障'
+require "${dialog}" 'step.stopOnFailure' '执行流程缺少失败停止条件'
+require "${dialog}" 'step.recoveryPolicy' '执行流程缺少恢复策略'
+forbid "${dialog}" 'step.nodeKey' '流程图不得显示内部节点键'
+forbid "${dialog}" 'step.sourceActionKey' '流程图不得显示内部动作记录键'
+
+# 步骤落在哪个节点、动作叫什么名字都由纯逻辑解析，弹窗只负责显示。
+require "${logic}" 'export function pathActionFlowSegments' '执行流程缺少按语义节点分段'
+require "${logic}" 'export function pathActionFlowLabels' '执行流程缺少节点与动作中文名映射'
+require "${logic}" 'export function pathActionFlowStepName' '执行流程缺少中文动作名解析'
 
 # 配置页必须挂载动作编辑器与只读预览，并提供独立的实例动作工作区。
 require "${view}" 'ActionOrchestrationEditor' '配置页未挂载动作编排编辑器'
-require "${panel}" 'CompiledScenarioPreview' '节点配置面板未挂载只读编译预览'
+require "${panel}" 'ActionFlowDialog' '节点配置面板未挂载动作执行流程弹窗'
 require "${view}" "workspace = ref<'nodes' | 'form'>" '配置页工作区应只保留节点配置与表单数据'
-require "${panel}" 'node-configuration-panel__scenario' '节点配置面板缺少可折叠的编译步骤预览'
-require "${panel}" 'function handleScenarioToggle' '编译步骤预览没有按需读取服务端结果'
+require "${panel}" 'data-testid="open-action-flow"' '节点配置面板缺少动作执行流程入口'
+require "${panel}" 'function openActionFlow' '动作执行流程没有按需读取服务端编译结果'
+require "${panel}" ':current-node-key="node.key"' '流程图未标出当前节点所在段落'
+forbid "${panel}" 'node-configuration-panel__scenario' '侧栏不应再平铺编译步骤清单'
 forbid "${view}" '动作场景' '独立的动作场景工作区应已删除'
 require "${view}" 'function loadCompiledScenario' '配置页未读取服务端编译场景'
 require "${view}" 'function saveInstanceActions' '配置页无法保存实例作用域动作'

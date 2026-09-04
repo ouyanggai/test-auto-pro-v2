@@ -29,6 +29,7 @@ import {
   instanceActionContainer,
   instanceActionsComplete,
   nodeActionContainer,
+  pathActionFlowLabels,
   pathConfigurationMessage,
   pathConfigurationStatusName,
   pathConfigurationNodesByGraphID,
@@ -187,6 +188,8 @@ const selectedNodeRequirement = computed(() => currentNodeConfigurationComplete(
 const nodeSaveDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !selectedNode.value || selectedNode.value.lineBlocked || selectedNode.value.status === 'not_required' || selectedNode.value.status === 'runtime' || !selectedNodeRequirement.value.complete)
 const saveAllNodesDisabled = computed(() => !planMutable.value || pageLoading.value || savingNode.value || !configuration.value)
 const nodeDraftHasUnsavedChanges = computed(() => hasCurrentNodeDraftChanges(selectedNode.value, draft.value))
+// actionFlowLabels 让只读流程图显示节点与动作的中文名，编译步骤里带的都是内部键。
+const actionFlowLabels = computed(() => pathActionFlowLabels(configuration.value, graph.value, graphNodeIDByConfigurationKey.value))
 const instanceContainer = computed(() => configuration.value ? instanceActionContainer(configuration.value) : null)
 const instanceActionsSaved = computed(() => instanceContainer.value ? containerActionsDraft(instanceContainer.value, draft.value) : [])
 const instanceDraftHasUnsavedChanges = computed(() => hasContainerDraftChanges(instanceContainer.value, draft.value))
@@ -881,6 +884,7 @@ void loadPage()
             :form-complete="dataWorkspace?.dataStatus === 'ready'"
             :instance-container="instanceContainer"
             :instance-saved-actions="instanceActionsSaved"
+            :flow-labels="actionFlowLabels"
             :compiled-steps="compiledScenario"
             :compiled-issues="compiledIssues"
             :compiled-loading="compiledLoading"

@@ -1,6 +1,7 @@
 import type {
   PathActionContainer,
   PathConfigActionKind,
+  PathCompiledActionStep,
   PathConfigConfiguredActionInput,
   PathConfiguration,
   PathConfigDraft,
@@ -256,3 +257,54 @@ function validPathConfigActionPerson(person: PathConfigPerson | undefined, input
 
 // copyPathConfigPersonStrategy 把可能来自 Vue Proxy 的策略转换为普通对象。
 function copyPathConfigPersonStrategy(input: PathConfigPersonStrategyInput): PathConfigPersonStrategyInput { return { key: input.key, strategy: input.strategy, seed: input.seed, selected: copyPersonSelection(input.selected) } }
+
+// PathActionFlowLabels 保存流程图需要的中文名：动作键与语义节点键都是内部标识，不能直接显示。
+export interface PathActionFlowLabels { actions: Record<string, string>; nodes: Record<string, string> }
+
+// PathActionFlowSegment 是流程图里的一段连续步骤，同一段内的步骤属于同一个语义节点。
+export interface PathActionFlowSegment { nodeKey: string; title: string; current: boolean; steps: PathCompiledActionStep[] }
+
+// pathActionFlowLabels 汇总当前路径的中文名供只读流程图显示：分支与并行拆分节点不在可配置节点里，
+// 它们的系统导航步骤只能从画布节点取名字，否则流程图上只剩一个没有出处的兜底文案。
+export function pathActionFlowLabels(configuration: PathConfiguration | null, graph: FlowGraph | null, graphNodeIDByConfigurationKey: Map<string, string>): PathActionFlowLabels {
+  const actions: Record<string, string> = {}; const nodes: Record<string, string> = {}
+  if (!configuration) return { actions, nodes }
+  const graphNameByID = new Map((graph?.nodes ?? []).map(node => [node.id, node.name]))
+  for (const [nodeKey, graphNodeID] of graphNodeIDByConfigurationKey) { const name = graphNameByID.get(graphNodeID); if (name) nodes[nodeKey] = name }
+  const collect = (items: Array<{ kind: PathConfigActionKind; label: string }>) => { for (const item of items) if (item.label && !actions[item.kind]) actions[item.kind] = item.label }
+  collect(configuration.instanceActions?.catalog ?? []); collect(configuration.instanceActions?.actions ?? [])
+  if (configuration.instanceActionKey) nodes[configuration.instanceActionKey] = '实例级动作'
+  for (const group of configuration.groups) for (const node of group.nodes) {
+    if (node.name) nodes[node.key] = node.name
+    collect(node.actionConfiguration?.catalog ?? []); collect(node.actionConfiguration?.actions ?? [])
+  }
+  return { actions, nodes }
+}
+
+// pathActionFlowSegments 把只读编译步骤按 sequence 排序后切成连续节点段，让流程图能显示步骤落在哪个节点。
+export function pathActionFlowSegments(steps: PathCompiledActionStep[], labels: PathActionFlowLabels, currentNodeKey: string): PathActionFlowSegment[] {
+  const ordered = [...(steps ?? [])].sort((left, right) => left.sequence - right.sequence)
+  return ordered.reduce<PathActionFlowSegment[]>((segments, step) => {
+    const nodeKey = String(step.nodeKey ?? '')
+    const last = segments[segments.length - 1]
+    if (last && last.nodeKey === nodeKey) return [...segments.slice(0, -1), { ...last, steps: [...last.steps, step] }]
+    return [...segments, { nodeKey, title: pathActionFlowSegmentTitle(nodeKey, labels), current: Boolean(nodeKey) && nodeKey === currentNodeKey, steps: [step] }]
+  }, [])
+}
+
+// pathActionFlowSegmentTitle 只显示节点中文名；未在当前路径投影里的键退回通用说明，不暴露内部键。
+function pathActionFlowSegmentTitle(nodeKey: string, labels: PathActionFlowLabels): string {
+  if (!nodeKey) return '整个流程实例'
+  return labels.nodes[nodeKey] || '流程中的其他节点'
+}
+
+// pathActionFlowStepName 优先用目录里的中文动作名，系统自动步骤没有用户动作语义。
+export function pathActionFlowStepName(step: PathCompiledActionStep, labels: PathActionFlowLabels): string {
+  if (step.action === 'system_automatic') return '目标引擎自动处理'
+  return labels.actions[step.action] || step.action
+}
+
+// pathActionFlowParameters 把服务端编译出的参数展平成可读文本，浏览器不提交任何步骤正文。
+export function pathActionFlowParameters(step: PathCompiledActionStep): string[] {
+  return Object.entries(step.parameters ?? {}).map(([name, value]) => `${name}=${value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value)}`)
+}

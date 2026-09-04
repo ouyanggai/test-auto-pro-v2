@@ -1,22 +1,31 @@
 <script setup lang="ts">
 import { NAlert, NButton, NEmpty, NSelect, NTag } from 'naive-ui'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import ActionOrchestrationEditor from './ActionOrchestrationEditor.vue'
-import CompiledScenarioPreview from './CompiledScenarioPreview.vue'
+import ActionFlowDialog from './ActionFlowDialog.vue'
 import { containerActionsDraft, nodeActionContainer, normalizedPersonStrategy, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import type { PathActionFlowLabels } from './logic'
 import type { PathActionConfigurationIssue, PathActionContainer, PathCompiledActionStep, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; instanceContainer?: PathActionContainer | null; instanceSavedActions?: PathConfigConfiguredActionInput[]; compiledSteps?: PathCompiledActionStep[]; compiledIssues?: PathActionConfigurationIssue[]; compiledLoading?: boolean; compiledError?: string }>()
+const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; instanceContainer?: PathActionContainer | null; instanceSavedActions?: PathConfigConfiguredActionInput[]; flowLabels?: PathActionFlowLabels; compiledSteps?: PathCompiledActionStep[]; compiledIssues?: PathActionConfigurationIssue[]; compiledLoading?: boolean; compiledError?: string }>()
 const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; backToPlan: []; openForm: []; requestCompiled: [] }>()
 
 const container = computed(() => props.node ? nodeActionContainer(props.node) : null)
 // savedActions 只保留当前节点已确认的独立动作记录。
 const savedActions = computed(() => container.value ? containerActionsDraft(container.value, props.draft) : [])
 
-// handleScenarioToggle 只在用户展开步骤预览时请求服务端编译结果。
-function handleScenarioToggle(event: Event) {
-  const details = event.target as HTMLDetailsElement | null
-  if (details?.open && !(props.compiledSteps?.length) && !props.compiledLoading) emit('requestCompiled')
+// flowDialogOpen 控制动作执行流程弹窗。
+const flowDialogOpen = ref(false)
+
+// openActionFlow 点击时才请求服务端编译结果，避免每次进节点都白跑一次编译。
+function openActionFlow() {
+  if (!(props.compiledSteps?.length) && !props.compiledLoading) emit('requestCompiled')
+  flowDialogOpen.value = true
+}
+
+// reloadActionFlow 在弹窗里重新读取编译结果：保存动作后流程会变，用户不必关掉弹窗再进来。
+function reloadActionFlow() {
+  if (!props.compiledLoading) emit('requestCompiled')
 }
 
 // personDraft 返回当前人员策略草稿。
@@ -72,15 +81,10 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
       </section>
 
       <section class="node-configuration-panel__section">
-        <details class="node-configuration-panel__scenario" @toggle="handleScenarioToggle">
-          <summary>将要执行的步骤（含系统自动插入的恢复步骤）</summary>
-          <compiled-scenario-preview
-            :steps="compiledSteps ?? []"
-            :issues="compiledIssues ?? []"
-            :loading="Boolean(compiledLoading)"
-            :error="compiledError ?? ''"
-          />
-        </details>
+        <!-- 原来在这里平铺一长串步骤文字，信息密度低又占满侧栏；改为按钮点开流程图弹窗。 -->
+        <n-button size="small" secondary block data-testid="open-action-flow" @click="openActionFlow">
+          查看动作执行流程
+        </n-button>
       </section>
     </div>
 
@@ -100,6 +104,17 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
     </footer>
 
     <n-empty v-if="!node.persons.length && !node.actionConfiguration.catalog.length" description="此节点没有需要配置的内容" />
+
+    <action-flow-dialog
+      v-model:show="flowDialogOpen"
+      :steps="compiledSteps ?? []"
+      :issues="compiledIssues ?? []"
+      :labels="flowLabels ?? { actions: {}, nodes: {} }"
+      :current-node-key="node.key"
+      :loading="Boolean(compiledLoading)"
+      :error="compiledError ?? ''"
+      @reload="reloadActionFlow"
+    />
   </section>
 </template>
 
@@ -119,6 +134,4 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 .node-configuration-panel p{margin:0}
 .save-actions{display:flex;justify-content:flex-end;gap:8px}
 @media (max-width:680px){.node-configuration-panel{padding:12px}.save-button{width:100%}.node-configuration-panel__footer{margin:0 -12px -12px;padding:12px}.save-actions{flex-direction:column-reverse}.save-actions :deep(.n-button){width:100%}}
-.node-configuration-panel__scenario { font-size: 12px; }
-.node-configuration-panel__scenario summary { cursor: pointer; }
 </style>
