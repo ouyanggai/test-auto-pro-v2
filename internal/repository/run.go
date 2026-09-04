@@ -48,6 +48,10 @@ type RunStore interface {
 	RenewPathRunLease(ctx context.Context, pathRunID uint64, workerID string, fencingToken uint64, leaseDuration time.Duration, now time.Time) error
 	// ReleasePathRunLease 在一步走完落账后释放租约；未命中返回 ErrStaleLease。
 	ReleasePathRunLease(ctx context.Context, pathRunID uint64, workerID string, fencingToken uint64, now time.Time) error
+	// AppendRunControl 追加一行人工控制事实（只 INSERT，可审计）。
+	AppendRunControl(ctx context.Context, control model.RunControl, now time.Time) error
+	// SetFinalTargetSummary 落库最终目标事实摘要（收尾重读产物），与路径结果是两个独立字段。
+	SetFinalTargetSummary(ctx context.Context, pathRunID uint64, summary string, now time.Time) error
 	// SetMainInstanceRef 首次落库路径运行独占的主实例引用。
 	// 一条路径运行独占一个真实主实例：引用已存在时拒绝改写，避免把后续写引到别的实例上。
 	SetMainInstanceRef(ctx context.Context, pathRunID uint64, instanceRef string, now time.Time) error

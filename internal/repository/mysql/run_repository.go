@@ -680,6 +680,33 @@ func nullableFailureClass(class *model.FailureClass) any {
 	return string(*class)
 }
 
+// AppendRunControl 追加一行人工控制事实。
+func (r *RunRepository) AppendRunControl(ctx context.Context, control model.RunControl, now time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO run_controls (run_id, path_run_id, action, source, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, control.RunID, control.PathRunID, string(control.Action), string(control.Source), now.UTC())
+	return err
+}
+
+// SetFinalTargetSummary 落库最终目标事实摘要；路径运行未绑定实例时不允许写摘要。
+func (r *RunRepository) SetFinalTargetSummary(ctx context.Context, pathRunID uint64, summary string, now time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE path_runs SET final_target_summary = ?, updated_at = ? WHERE id = ?
+	`, summary, now.UTC(), pathRunID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return repository.ErrRunNotFound
+	}
+	return nil
+}
+
 // SetMainInstanceRef 首次落库主实例引用；引用已存在且不同时拒绝，
 // 保证一条路径运行自始至终只指向一个真实主实例。
 func (r *RunRepository) SetMainInstanceRef(ctx context.Context, pathRunID uint64, instanceRef string, now time.Time) error {

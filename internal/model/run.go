@@ -302,3 +302,25 @@ type RunStepAttempt struct {
 	LogLine      uint64
 	DurationMs   int64
 }
+
+// RunControlAction 是人工控制事实的动作类别；本切片只承载放行与停止两类。
+type RunControlAction string
+
+const (
+	RunControlApprove RunControlAction = "approve" // 放行
+	RunControlStop    RunControlAction = "stop"    // 停止
+)
+
+// RunControlSource 是人工控制事实的来源。
+type RunControlSource string
+
+const RunControlSourceUI RunControlSource = "ui" // 界面按钮（放行与停止不绑单键快捷键，只接受明确点击）
+
+// RunControl 是一次人工控制事实（run_controls 表），只 INSERT，可审计。
+type RunControl struct {
+	RunID     uint64
+	PathRunID uint64
+	Action    RunControlAction
+	Source    RunControlSource
+	CreatedAt time.Time
+}

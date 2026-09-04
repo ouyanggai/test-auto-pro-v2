@@ -101,7 +101,9 @@ type fakeTargetView struct {
 type fakeTarget struct {
 	instance         fakeTargetView
 	afterSubmit      *fakeTargetView
-	switched         bool
+	afterAudit       *fakeTargetView
+	submitted        bool
+	audited          bool
 	dueTaskID        string
 	submitResult     *target.SubmitFlowInstanceResult
 	submitErr        error
@@ -113,19 +115,24 @@ type fakeTarget struct {
 }
 
 func (f *fakeTarget) FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error) {
-	view := f.instance
-	if f.switched && f.afterSubmit != nil {
-		view = *f.afterSubmit
-	}
+	view := f.currentView()
 	return "flow-proxy-1", view.CurrentNodes, view.Status, nil, view.Found, nil
 }
 
 func (f *fakeTarget) FindDueFlow(context.Context, target.Session, string) (string, []string, []string, bool, error) {
-	view := f.instance
-	if f.switched && f.afterSubmit != nil {
-		view = *f.afterSubmit
-	}
+	view := f.currentView()
 	return "flow-proxy-1", view.DueNodes, nil, view.Found, nil
+}
+
+// currentView 返回当前应呈现的目标事实视图：按已发生的写动作切换到对应阶段。
+func (f *fakeTarget) currentView() fakeTargetView {
+	if f.audited && f.afterAudit != nil {
+		return *f.afterAudit
+	}
+	if f.submitted && f.afterSubmit != nil {
+		return *f.afterSubmit
+	}
+	return f.instance
 }
 
 func (f *fakeTarget) FindDueTaskID(context.Context, target.Session, string, string) (string, error) {
@@ -135,7 +142,7 @@ func (f *fakeTarget) FindDueTaskID(context.Context, target.Session, string, stri
 
 func (f *fakeTarget) SubmitFlowInstance(context.Context, target.Session, target.SubmitFlowInstanceRequest) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
 	f.submitCalls++
-	f.switched = true
+	f.submitted = true
 	if f.submitErr != nil {
 		return nil, target.WriteResponse{}, "trace-fail", f.submitErr
 	}
@@ -144,6 +151,7 @@ func (f *fakeTarget) SubmitFlowInstance(context.Context, target.Session, target.
 
 func (f *fakeTarget) AuditCurrentTask(context.Context, target.Session, target.AuditCurrentTaskRequest) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
 	f.auditCalls++
+	f.audited = true
 	if f.auditErr != nil {
 		return nil, target.WriteResponse{}, "trace-fail", f.auditErr
 	}

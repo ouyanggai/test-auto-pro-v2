@@ -363,3 +363,72 @@ func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, se
 		return e.readInstanceFacts(ctx, session, runCtx.PathRun.MainInstanceRef, step.NodeKey)
 	}, nil)
 }
+
+// FinalTargetFacts 是收尾重读产出的最终目标事实摘要。
+// 与「路径结果」是两件分开的事：本结构只如实描述目标现状，不做成立与否的判定（纲领第 7.4 节）。
+type FinalTargetFacts struct {
+	InstanceRef     string   `json:"instanceRef"`
+	Status          string   `json:"status"`
+	StatusName      string   `json:"statusName"`
+	CurrentNodeNames []string `json:"currentNodeNames"`
+	DueNodeNames    []string `json:"dueNodeNames"`
+}
+
+// FinalReview 场景走完后的收尾重读：回到目标读实例状态、当前节点与当前待办，
+// 用业务名称呈现。读取属只读阶段，允许有界重试；读不到时如实返回错误，不伪造事实。
+func (e *Executor) FinalReview(ctx context.Context, runCtx RunContext) (FinalTargetFacts, error) {
+	log := e.stepLogFor(runCtx)
+	session, err := e.sessionWithRetry(ctx, runCtx, log, 0, "verify")
+	if err != nil {
+		return FinalTargetFacts{}, err
+	}
+	facts, err := e.readFactsWithRetry(ctx, runCtx, session, model.CompiledActionStep{})
+	if err != nil {
+		return FinalTargetFacts{}, err
+	}
+	table := nodeTable(runCtx.GraphNodes)
+	result := FinalTargetFacts{
+		InstanceRef: runCtx.PathRun.MainInstanceRef,
+		Status:      facts.Status,
+		StatusName:  targetStatusName(facts.Status),
+	}
+	for _, nodeKey := range facts.CurrentNodes {
+		result.CurrentNodeNames = append(result.CurrentNodeNames, nodeNameOf(table, nodeKey))
+	}
+	for _, nodeKey := range facts.DueNodes {
+		result.DueNodeNames = append(result.DueNodeNames, nodeNameOf(table, nodeKey))
+	}
+	return result, nil
+}
+
+// nodeNameOf 查节点业务名称；真实结构里查不到的键原样返回，不静默丢弃事实。
+func nodeNameOf(table map[string]nodeInfo, nodeKey string) string {
+	if info, ok := table[nodeKey]; ok && info.Name != "" {
+		return info.Name
+	}
+	return nodeKey
+}
+
+// targetStatusName 把目标实例状态编码名翻译为中文；未知编码原样保留，不猜测。
+func targetStatusName(status string) string {
+	switch status {
+	case "draft":
+		return "草稿"
+	case "await_sent":
+		return "待发"
+	case "run":
+		return "运行中"
+	case "withdraw":
+		return "已撤回"
+	case "termination":
+		return "已终止"
+	case "abandon":
+		return "已作废"
+	case "rejected":
+		return "已驳回"
+	case "end":
+		return "已结束"
+	default:
+		return status
+	}
+}
