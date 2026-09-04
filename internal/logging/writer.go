@@ -145,6 +145,8 @@ type Router struct {
 	root    string
 	now     func() time.Time
 	writers map[string]*Writer
+	// metaWritten 记录已经补过 meta.json 的目录，避免每条日志都做一次文件判断。
+	metaWritten map[string]bool
 }
 
 // NewRouter 创建目录路由；now 可注入以固定测试时间。
@@ -152,38 +154,41 @@ func NewRouter(root string, now func() time.Time) *Router {
 	if now == nil {
 		now = time.Now
 	}
-	return &Router{root: filepath.Clean(root), now: now, writers: map[string]*Writer{}}
+	return &Router{root: filepath.Clean(root), now: now, writers: map[string]*Writer{}, metaWritten: map[string]bool{}}
 }
 
 // Root 返回日志根目录。
 func (r *Router) Root() string { return r.root }
 
-// Global 返回全局程序日志或程序错误日志的写入器。
-// 全局日志按天分文件（app-2026-09-04.log），配合保留期滚动删除，避免单文件无限增长。
-func (r *Router) Global(name string) *Writer {
-	return r.writer(filepath.Join(r.root, DailyFileName(name, r.now())))
-}
-
-// DailyFileName 把基础文件名转成按天文件名，保留原扩展名。
-func DailyFileName(name string, day time.Time) string {
-	extension := filepath.Ext(name)
-	base := strings.TrimSuffix(name, extension)
-	return fmt.Sprintf("%s-%s%s", base, day.Format("2006-01-02"), extension)
-}
-
-// Bucket 按作用域返回该日志文件所在的桶写入器：
-// 运行作用域进 logs/runs/<计划名>/<路径名>/<运行号>/，其余进 logs/config/<日期>/。
+// Bucket 按作用域返回日志文件写入器，并在业务日志目录首次使用时补齐 meta.json。
 func (r *Router) Bucket(scope Scope, name string) *Writer {
-	return r.writer(filepath.Join(r.BucketDir(scope), name))
+	dir := r.BucketDir(scope)
+	r.ensureMeta(scope, dir)
+	return r.writer(filepath.Join(dir, name))
 }
 
-// BucketDir 返回当前作用域对应的日志桶目录，目录段全部经过清洗。
+// BucketDir 返回当前作用域对应的日志目录，目录段全部经过清洗。
+// 能确定计划就进该计划目录：配置阶段按执行路径与日期分层，执行阶段按执行路径与运行号分层；
+// 只知道计划不知道执行路径时进计划级目录；确实无法归属业务对象时才进当天的应用程序目录。
 func (r *Router) BucketDir(scope Scope) string {
-	if scope.IsRun() {
-		return filepath.Join(r.root, "runs",
-			SanitizePathSegment(scope.PlanName), SanitizePathSegment(scope.PathName), SanitizePathSegment(scope.RunSeq))
+	if !scope.HasPlan() {
+		return r.ApplicationDir()
 	}
-	return filepath.Join(r.root, "config", r.now().Format("2006-01-02"))
+	planDir := filepath.Join(r.root, plansDirName, scope.PlanDirName())
+	if scope.IsRun() {
+		return filepath.Join(planDir, runsDirName, scope.ExecutionPathDirName(), SanitizePathSegment(scope.RunFolder()))
+	}
+	return filepath.Join(planDir, configurationDirName, scope.ExecutionPathDirName(), r.Day())
+}
+
+// ApplicationDir 返回当天的应用程序日志目录，只放启动停止与无法归属业务对象的系统级事件。
+func (r *Router) ApplicationDir() string {
+	return filepath.Join(r.root, applicationDirName, r.Day())
+}
+
+// Day 返回当天的日期目录名，供目录路由与 meta.json 共用同一个时间源。
+func (r *Router) Day() string {
+	return r.now().Format("2006-01-02")
 }
 
 // writer 复用同一文件的写入器，保证并发写入串行且行号连续。

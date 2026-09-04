@@ -20,14 +20,14 @@ go test -race -count=1 ./test/unit/backend/logging/...
 printf '%s\n' '[F-013] 日志集成测试'
 integration_log="$(mktemp -t f013-integration)"
 trap 'rm -f "${integration_log}"' EXIT
-if ! go test -count=1 -v -run 'TestTargetRequestLogging|TestAPIFailureLog|TestAPIPanicReturns' ./test/integration 2>&1 | tee "${integration_log}"; then
+if ! go test -count=1 -v -run 'TestTargetRequestLogging|TestAPIFailureLog|TestAPIPanicReturns|TestRequestScopeKeeps' ./test/integration 2>&1 | tee "${integration_log}"; then
   exit 1
 fi
 if grep -Eq -- '^[[:space:]]*--- SKIP' "${integration_log}"; then
   printf '%s\n' '[F-013] 日志集成测试存在跳过用例，判定为失败' >&2
   exit 1
 fi
-for required in TestTargetRequestLoggingRecordsFailureAndReplayableCurl TestAPIFailureLogMatchesResponseMessage TestAPIPanicReturnsStableChineseErrorWithoutStack; do
+for required in TestTargetRequestLoggingRecordsFailureAndReplayableCurl TestAPIFailureLogMatchesResponseMessage TestAPIPanicReturnsStableChineseErrorWithoutStack TestRequestScopeKeepsPlansAndPathsSeparated; do
   if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${integration_log}"; then
     printf '%s\n' "[F-013] 缺少必需的集成用例通过记录：${required}" >&2
     exit 1

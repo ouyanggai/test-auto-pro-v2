@@ -84,17 +84,21 @@ func TestFormatLineUsesPlaceholderAndSingleLine(t *testing.T) {
 }
 
 // TestScopeFieldsInjectFromContext 验证作用域由 context 携带并按固定顺序展开，调用方不逐处传参。
+// 业务归属键必须排在最前，方便按计划或执行路径直接 grep。
 func TestScopeFieldsInjectFromContext(t *testing.T) {
 	ctx := logging.WithScope(context.Background(), logging.Scope{RequestID: "req-1", RunID: "run-1"})
 	scope := logging.ScopeFrom(ctx)
 	if scope.RequestID != "req-1" || scope.RunID != "run-1" {
 		t.Fatalf("作用域没有从 context 读回：%+v", scope)
 	}
-	keys := make([]string, 0, 6)
+	keys := make([]string, 0, 10)
 	for _, field := range scope.Fields() {
 		keys = append(keys, field.Key)
 	}
-	expected := []string{"request_id", "run_id", "path_run_id", "step_id", "attempt", "phase"}
+	expected := []string{
+		"plan_id", "plan_name", "execution_path_id", "execution_path_name",
+		"request_id", "run_id", "path_run_id", "step_id", "attempt", "phase",
+	}
 	if strings.Join(keys, ",") != strings.Join(expected, ",") {
 		t.Fatalf("关联键顺序不固定：%v", keys)
 	}
@@ -103,53 +107,104 @@ func TestScopeFieldsInjectFromContext(t *testing.T) {
 	}
 }
 
-// TestBucketRoutingSeparatesConfigAndRun 验证目录路由：运行作用域进运行目录，其余进配置桶，
-// 目录段全部经过清洗，不接受目标返回的原始名称直接落盘。
-func TestBucketRoutingSeparatesConfigAndRun(t *testing.T) {
-	root := t.TempDir()
-	router := logging.NewRouter(root, fixedTime)
-	configDir := router.BucketDir(logging.Scope{RequestID: "req-1"})
-	if configDir != filepath.Join(root, "config", "2026-09-03") {
-		t.Fatalf("配置桶目录不正确：%s", configDir)
+// TestWithScopeMergesInsteadOfOverwriting 验证补充计划与执行路径后 RequestID 等既有字段不丢失。
+// 中间件先注入请求标识，随后才能从数据库拿到显示名，覆盖式写入会把请求标识丢掉。
+func TestWithScopeMergesInsteadOfOverwriting(t *testing.T) {
+	ctx := logging.WithScope(context.Background(), logging.Scope{RequestID: "req-1", RunID: "run-1"})
+	ctx = logging.WithScope(ctx, logging.Scope{PlanID: "7", PlanName: "员工请假单（集团）", ExecutionPathID: "13"})
+	merged := logging.ScopeFrom(ctx)
+	if merged.RequestID != "req-1" || merged.RunID != "run-1" {
+		t.Fatalf("合并作用域丢失了既有字段：%+v", merged)
 	}
-	runDir := router.BucketDir(logging.Scope{
-		RequestID: "req-1", PlanName: "oyg测试/001", PathName: "../路径 1", RunSeq: "run 7",
-	})
-	if strings.Contains(runDir, "..") || strings.Contains(runDir, " ") {
-		t.Fatalf("运行目录没有清洗路径段：%s", runDir)
+	if merged.PlanID != "7" || merged.PlanName != "员工请假单（集团）" || merged.ExecutionPathID != "13" {
+		t.Fatalf("合并作用域没有补上业务归属：%+v", merged)
 	}
-	if !strings.HasPrefix(runDir, filepath.Join(root, "runs")) {
-		t.Fatalf("运行作用域没有路由到运行目录：%s", runDir)
+	// 空值不得覆盖已有值，否则一次空补充就会把归属清掉。
+	cleared := logging.ScopeFrom(logging.WithScope(ctx, logging.Scope{}))
+	if cleared.PlanID != "7" || cleared.RequestID != "req-1" {
+		t.Fatalf("空作用域覆盖了已有字段：%+v", cleared)
 	}
 }
 
-// TestCleanupExpiredRemovesExpiredDailyFiles 验证按天分文件的全局日志按保留期滚动删除，
-// 当天文件与解析不出日期的文件一律保留。
-func TestCleanupExpiredRemovesExpiredDailyFiles(t *testing.T) {
+// TestBucketRoutingSeparatesApplicationConfigurationAndRun 验证顶层只有 application 与 plans 两棵树，
+// 业务日志先按计划与执行路径归档再按日期或运行号分层，只有确实无法归属业务对象的日志才进 application。
+func TestBucketRoutingSeparatesApplicationConfigurationAndRun(t *testing.T) {
+	root := t.TempDir()
+	router := logging.NewRouter(root, fixedTime)
+	applicationDir := router.BucketDir(logging.Scope{RequestID: "req-1"})
+	if applicationDir != filepath.Join(root, "application", "2026-09-03") {
+		t.Fatalf("无业务归属的日志目录不正确：%s", applicationDir)
+	}
+	configurationDir := router.BucketDir(logging.Scope{
+		RequestID: "req-1", PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
+		ExecutionPathID: "13", ExecutionPathName: "执行路径 1",
+	})
+	expected := filepath.Join(root, "plans", "员工请假单（集团）-自动回归__plan-7", "configuration", "执行路径 1__path-13", "2026-09-03")
+	if configurationDir != expected {
+		t.Fatalf("配置阶段目录不正确：\n实际 %s\n期望 %s", configurationDir, expected)
+	}
+	runDir := router.BucketDir(logging.Scope{
+		RequestID: "req-1", PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
+		ExecutionPathID: "13", ExecutionPathName: "执行路径 1", RunSeq: "run-1782741614477351000-1",
+	})
+	expectedRun := filepath.Join(root, "plans", "员工请假单（集团）-自动回归__plan-7", "runs", "执行路径 1__path-13", "run-1782741614477351000-1")
+	if runDir != expectedRun {
+		t.Fatalf("执行阶段目录不正确：\n实际 %s\n期望 %s", runDir, expectedRun)
+	}
+}
+
+// TestSanitizePathSegmentKeepsChineseAndBlocksTraversal 验证目录段只替换斜杠、反斜杠、控制字符与路径穿越，
+// 中文、括号、普通横线与空格必须原样保留，目录名要能对上界面上的名称。
+func TestSanitizePathSegmentKeepsChineseAndBlocksTraversal(t *testing.T) {
+	if kept := logging.SanitizePathSegment("员工请假单（集团）-自动回归 1"); kept != "员工请假单（集团）-自动回归 1" {
+		t.Fatalf("中文、括号、横线与空格被误改：%s", kept)
+	}
+	for _, dangerous := range []string{"../路径 1", "oyg测试/001", `目录\子目录`, "时间 18:56"} {
+		cleaned := logging.SanitizePathSegment(dangerous)
+		for _, forbidden := range []string{"..", "/", "\\", ":"} {
+			if strings.Contains(cleaned, forbidden) {
+				t.Fatalf("清洗后仍包含 %q：%s -> %s", forbidden, dangerous, cleaned)
+			}
+		}
+	}
+	if empty := logging.SanitizePathSegment("  "); empty != "unknown" {
+		t.Fatalf("空目录段没有回落占位：%s", empty)
+	}
+}
+
+// TestCleanupExpiredRemovesExpiredPlanBuckets 验证保留期清理按新目录结构工作：
+// 计划配置目录按日期删，运行目录按最后修改时间删，当天目录一律保留，并顺带收掉空掉的父目录。
+func TestCleanupExpiredRemovesExpiredPlanBuckets(t *testing.T) {
 	root := t.TempDir()
 	now := fixedTime()
-	today := filepath.Join(root, logging.DailyFileName("app.log", now))
-	expired := filepath.Join(root, logging.DailyFileName("app.log", now.AddDate(0, 0, -9)))
-	expiredError := filepath.Join(root, logging.DailyFileName("app-error.log", now.AddDate(0, 0, -9)))
-	kept := filepath.Join(root, logging.DailyFileName("app.log", now.AddDate(0, 0, -2)))
-	unrelated := filepath.Join(root, "app-notes.txt")
-	for _, path := range []string{today, expired, expiredError, kept, unrelated} {
-		if err := os.WriteFile(path, []byte("time=1 level=info message=x\n"), 0o644); err != nil {
-			t.Fatalf("准备日志文件失败：%v", err)
+	pathDir := filepath.Join(root, "plans", "员工请假单（集团）__plan-7", "configuration", "执行路径 1__path-13")
+	today := filepath.Join(pathDir, now.Format("2006-01-02"))
+	expired := filepath.Join(pathDir, now.AddDate(0, 0, -9).Format("2006-01-02"))
+	kept := filepath.Join(pathDir, now.AddDate(0, 0, -2).Format("2006-01-02"))
+	runsPathDir := filepath.Join(root, "plans", "员工请假单（集团）__plan-7", "runs", "执行路径 1__path-13")
+	expiredRun := filepath.Join(runsPathDir, "run-old")
+	keptRun := filepath.Join(runsPathDir, "run-new")
+	for _, dir := range []string{today, expired, kept, expiredRun, keptRun} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("准备目录失败：%v", err)
 		}
+	}
+	// 运行目录名是运行号不含日期，只能按最后修改时间判断过期。
+	if err := os.Chtimes(expiredRun, now.AddDate(0, 0, -20), now.AddDate(0, 0, -20)); err != nil {
+		t.Fatalf("设置运行目录时间失败：%v", err)
 	}
 	removed := logging.CleanupExpired(root, logging.DefaultRetentionDays, now)
 	if len(removed) != 2 {
-		t.Fatalf("按天日志没有按保留期删除：%v", removed)
+		t.Fatalf("只应删除一个过期配置日期目录和一个过期运行目录：%v", removed)
 	}
-	for _, path := range []string{today, kept, unrelated} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("文件被误删：%s", path)
+	for _, dir := range []string{today, kept, keptRun} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("目录被误删：%s", dir)
 		}
 	}
-	for _, path := range []string{expired, expiredError} {
-		if _, err := os.Stat(path); err == nil {
-			t.Fatalf("过期文件没有被删除：%s", path)
+	for _, dir := range []string{expired, expiredRun} {
+		if _, err := os.Stat(dir); err == nil {
+			t.Fatalf("过期目录没有被删除：%s", dir)
 		}
 	}
 }
@@ -169,14 +224,15 @@ func TestDefaultRetentionIsSevenDays(t *testing.T) {
 	}
 }
 
-// TestCleanupExpiredRemovesOnlyExpiredDirs 验证保留期清理只删过期目录，当天目录一律保留。
-func TestCleanupExpiredRemovesOnlyExpiredDirs(t *testing.T) {
+// TestCleanupExpiredRemovesOnlyExpiredApplicationDirs 验证应用程序日志按日期目录清理，
+// 当天目录与解析不出日期的目录一律保留。
+func TestCleanupExpiredRemovesOnlyExpiredApplicationDirs(t *testing.T) {
 	root := t.TempDir()
 	now := fixedTime()
-	today := filepath.Join(root, "config", now.Format("2006-01-02"))
-	expired := filepath.Join(root, "config", now.AddDate(0, 0, -20).Format("2006-01-02"))
-	kept := filepath.Join(root, "config", now.AddDate(0, 0, -3).Format("2006-01-02"))
-	unparsable := filepath.Join(root, "config", "not-a-date")
+	today := filepath.Join(root, "application", now.Format("2006-01-02"))
+	expired := filepath.Join(root, "application", now.AddDate(0, 0, -20).Format("2006-01-02"))
+	kept := filepath.Join(root, "application", now.AddDate(0, 0, -3).Format("2006-01-02"))
+	unparsable := filepath.Join(root, "application", "not-a-date")
 	for _, dir := range []string{today, expired, kept, unparsable} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("准备目录失败：%v", err)

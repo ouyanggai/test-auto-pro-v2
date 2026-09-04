@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -72,8 +73,11 @@ func main() {
 	logRouter := logging.NewRouter(logging.Root(workspaceRoot), time.Now)
 	appLogger := logging.NewLogger(logRouter, time.Now)
 	targetReader.SetNetworkLogger(appLogger)
+	// 日志归属解析器按路由里的计划与执行路径 ID 读取真实显示名，让业务日志落进对应的计划目录。
+	logScopeResolver := service.NewLogScopeService(planmysql.NewPlanRepository(planDatabase.DB), pathRepository, time.Now)
 	if removed := logging.CleanupExpired(logRouter.Root(), logging.RetentionDays(), time.Now()); len(removed) > 0 {
 		log.Printf("已清理过期日志目录 %d 个", len(removed))
+		appLogger.Info(logging.Scope{}, "已清理过期日志目录", logging.Field{Key: "removed", Value: strconv.Itoa(len(removed))})
 	}
 
 	historyDataService := service.NewHistoryDataService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
@@ -129,11 +133,14 @@ func main() {
 		Handler: api.WithRequestLogging(
 			api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
 			appLogger,
+			logScopeResolver,
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	log.Printf("后端服务监听 %s", server.Addr)
+	// 启动、监听与停止属于无业务归属的系统事件，用零值作用域落进 logs/application/<日期>/。
+	appLogger.Info(logging.Scope{}, "后端服务开始监听", logging.Field{Key: "address", Value: server.Addr})
 	shutdownContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -170,6 +177,10 @@ func main() {
 		defer cancel()
 		if err := server.Shutdown(gracefulContext); err != nil {
 			log.Printf("后端服务停止失败")
+			appLogger.Error(logging.Scope{}, logging.ErrorRecord{
+				Message: "后端服务停止失败", Class: logging.ClassToolBug, Err: err,
+			})
 		}
+		appLogger.Info(logging.Scope{}, "后端服务已停止")
 	}
 }

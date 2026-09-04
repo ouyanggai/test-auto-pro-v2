@@ -11,13 +11,35 @@ import (
 	"test-auto-pro-v2/internal/logging"
 )
 
-// readBucketFile 读取配置桶内指定日志文件的全部内容，缺失时直接失败。
+// businessScope 是一次真实配置操作的作用域：既有请求标识，也有计划与执行路径归属。
+func businessScope(requestID string) logging.Scope {
+	return logging.Scope{
+		RequestID: requestID, PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
+		ExecutionPathID: "13", ExecutionPathName: "执行路径 1",
+	}
+}
+
+// businessBucketDir 返回该作用域对应的配置阶段日志目录。
+func businessBucketDir(root string) string {
+	return filepath.Join(root, "plans", "员工请假单（集团）-自动回归__plan-7", "configuration", "执行路径 1__path-13",
+		fixedTime().Format("2006-01-02"))
+}
+
+// readBucketFile 读取计划配置目录内指定日志文件的全部内容，缺失时直接失败。
 func readBucketFile(t *testing.T, root, name string) string {
 	t.Helper()
-	path := filepath.Join(root, "config", fixedTime().Format("2006-01-02"), name)
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(filepath.Join(businessBucketDir(root), name))
 	if err != nil {
 		t.Fatalf("读取 %s 失败：%v", name, err)
+	}
+	return string(content)
+}
+
+// readApplicationFile 读取当天应用程序日志文件，缺失时返回空串，便于断言"不应出现"。
+func readApplicationFile(root, name string) string {
+	content, err := os.ReadFile(filepath.Join(root, "application", fixedTime().Format("2006-01-02"), name))
+	if err != nil {
+		return ""
 	}
 	return string(content)
 }
@@ -27,13 +49,13 @@ func readBucketFile(t *testing.T, root, name string) string {
 func TestErrorLogWritesClassChainSourceAndUserMessage(t *testing.T) {
 	root := t.TempDir()
 	logger := logging.NewLogger(logging.NewRouter(root, fixedTime), fixedTime)
-	scope := logging.Scope{RequestID: "req-err"}
+	scope := businessScope("req-err")
 	inner := os.ErrPermission
 	logger.Error(scope, logging.ErrorRecord{
 		Message: "读取计划失败", Class: logging.ClassToolStorage, Err: inner,
 		UserMessage: "暂时无法读取计划，请重试",
 	})
-	for _, name := range []string{"program.log", "program-error.log"} {
+	for _, name := range []string{"operation.log", "operation-error.log"} {
 		content := readBucketFile(t, root, name)
 		if !strings.Contains(content, "error_class=tool_storage") {
 			t.Fatalf("%s 缺少错误分类：%s", name, content)
@@ -48,15 +70,15 @@ func TestErrorLogWritesClassChainSourceAndUserMessage(t *testing.T) {
 			t.Fatalf("%s 缺少错误链：%s", name, content)
 		}
 	}
-	// 全局日志按天分文件，配合保留期滚动删除，避免单文件无限增长。
-	for _, name := range []string{"app.log", "app-error.log"} {
-		daily := logging.DailyFileName(name, fixedTime())
-		if !strings.Contains(daily, "2026-09-03") {
-			t.Fatalf("全局日志没有按天命名：%s", daily)
+	// 已经归属到计划与执行路径的业务异常只落该计划目录，绝不重复写进应用程序日志。
+	for _, name := range []string{"application.log", "application-error.log"} {
+		if content := readApplicationFile(root, name); strings.Contains(content, "读取计划失败") {
+			t.Fatalf("业务日志重复写进了 %s：%s", name, content)
 		}
-		if _, err := os.Stat(filepath.Join(root, daily)); err != nil {
-			t.Fatalf("全局 %s 没有写入：%v", daily, err)
-		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "plans", "员工请假单（集团）-自动回归__plan-7", "configuration",
+		"执行路径 1__path-13", fixedTime().Format("2006-01-02"), "program.log")); err == nil {
+		t.Fatal("配置阶段不应再写 program.log")
 	}
 }
 
@@ -64,8 +86,8 @@ func TestErrorLogWritesClassChainSourceAndUserMessage(t *testing.T) {
 func TestUnknownClassFollowsToolIssue(t *testing.T) {
 	root := t.TempDir()
 	logging.NewLogger(logging.NewRouter(root, fixedTime), fixedTime).
-		Error(logging.Scope{RequestID: "req-unknown"}, logging.ErrorRecord{Message: "未分类失败"})
-	content := readBucketFile(t, root, "program-error.log")
+		Error(businessScope("req-unknown"), logging.ErrorRecord{Message: "未分类失败"})
+	content := readBucketFile(t, root, "operation-error.log")
 	if !strings.Contains(content, "level=error") || !strings.Contains(content, "error_class=unknown") {
 		t.Fatalf("未分类错误没有按 error 级别落盘：%s", content)
 	}
@@ -78,11 +100,11 @@ func TestUnknownClassFollowsToolIssue(t *testing.T) {
 func TestPanicStackWritesBoundedBlock(t *testing.T) {
 	root := t.TempDir()
 	logging.NewLogger(logging.NewRouter(root, fixedTime), fixedTime).
-		Error(logging.Scope{RequestID: "req-panic"}, logging.ErrorRecord{
+		Error(businessScope("req-panic"), logging.ErrorRecord{
 			Message: "请求处理发生未预期错误", Class: logging.ClassToolBug,
 			Stack: strings.Repeat("goroutine 1 [running]:\n", 2000),
 		})
-	content := readBucketFile(t, root, "program-error.log")
+	content := readBucketFile(t, root, "operation-error.log")
 	if !strings.Contains(content, "--- begin stack trace_id=req-panic ---") || !strings.Contains(content, "--- end stack trace_id=req-panic ---") {
 		t.Fatalf("panic 栈没有按块包裹：%s", content[:200])
 	}
@@ -122,7 +144,7 @@ func TestTargetKindClassCoversAllEightClasses(t *testing.T) {
 func TestNetworkLogSplitsSuccessAndFailureAndLinksCurl(t *testing.T) {
 	root := t.TempDir()
 	logger := logging.NewLogger(logging.NewRouter(root, fixedTime), fixedTime)
-	scope := logging.Scope{RequestID: "req-net"}
+	scope := businessScope("req-net")
 	logger.Network(scope, logging.NetworkRecord{
 		TraceID: "trace-ok", Method: "POST", Endpoint: "/web/flowProxy/findById", StatusCode: 200,
 		Duration: 1500 * time.Millisecond, Result: "success", OutcomeKind: "business_success",
@@ -185,7 +207,7 @@ func TestCurlCommandMatchesActualRequest(t *testing.T) {
 func TestNetworkLogUsesContextScope(t *testing.T) {
 	root := t.TempDir()
 	logger := logging.NewLogger(logging.NewRouter(root, fixedTime), fixedTime)
-	ctx := logging.WithScope(context.Background(), logging.Scope{RequestID: "req-from-context"})
+	ctx := logging.WithScope(context.Background(), businessScope("req-from-context"))
 	logger.Network(logging.ScopeFrom(ctx), logging.NetworkRecord{
 		Method: "POST", Endpoint: "/web/x", StatusCode: 200, Result: "success",
 	})

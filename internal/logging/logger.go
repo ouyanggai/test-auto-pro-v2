@@ -79,13 +79,16 @@ func (l *Logger) Router() *Router {
 	return l.router
 }
 
-// Info 记录一条普通程序日志：全局 app.log 与当前桶内 program.log 双写。
+// Info 记录一条普通日志，落点由作用域决定：配置阶段 operation.log、执行阶段 execution.log、
+// 无业务归属时才写 application.log，不做跨目录重复写入。
 func (l *Logger) Info(scope Scope, message string, extra ...Field) {
 	l.write(scope, "info", message, extra, false)
 }
 
-// Error 记录一条程序错误日志：先写普通日志双写位置，再写错误日志双写位置。
+// Error 记录一条错误日志：同一目录内的普通日志与错误日志各写一份。
 // 错误链、错误类别、来源定位、用户可见提示和 panic 栈都在这里落盘。
+// 已经归属到计划或执行路径的业务异常写进该目录的 operation-error.log 或 execution-error.log，
+// 不因为发生错误就改写进 application-error.log。
 func (l *Logger) Error(scope Scope, record ErrorRecord) {
 	if l == nil || l.router == nil {
 		return
@@ -109,22 +112,31 @@ func (l *Logger) Error(scope Scope, record ErrorRecord) {
 	fields = append(fields, record.Extra...)
 	at := l.now()
 	line := FormatLine(at, "error", fields)
-	for _, writer := range []*Writer{
-		l.router.Global("app.log"), l.router.Global("app-error.log"),
-		l.router.Bucket(scope, "program.log"), l.router.Bucket(scope, "program-error.log"),
-	} {
-		writer.WriteLine(line)
+	normal, failure := ProgramFileNames(scope)
+	for _, name := range []string{normal, failure} {
+		l.router.Bucket(scope, name).WriteLine(line)
 	}
 	if stack := strings.TrimSpace(record.Stack); stack != "" {
 		traceID := SanitizeValue(scope.RequestID)
-		block := truncateStack(stack)
-		for _, writer := range []*Writer{l.router.Global("app-error.log"), l.router.Bucket(scope, "program-error.log")} {
-			writer.WriteBlock(
-				fmt.Sprintf("--- begin stack trace_id=%s ---", traceID),
-				block,
-				fmt.Sprintf("--- end stack trace_id=%s ---", traceID),
-			)
-		}
+		l.router.Bucket(scope, failure).WriteBlock(
+			fmt.Sprintf("--- begin stack trace_id=%s ---", traceID),
+			truncateStack(stack),
+			fmt.Sprintf("--- end stack trace_id=%s ---", traceID),
+		)
+	}
+}
+
+// ProgramFileNames 按作用域返回该目录里普通日志与错误日志的文件名。
+// 配置阶段写 operation.log，执行阶段写 execution.log，无法归属业务对象时写 application.log。
+// 同一条日志只落一处目录，业务日志绝不再重复写进 application。
+func ProgramFileNames(scope Scope) (string, string) {
+	switch {
+	case !scope.HasPlan():
+		return "application.log", "application-error.log"
+	case scope.IsRun():
+		return "execution.log", "execution-error.log"
+	default:
+		return "operation.log", "operation-error.log"
 	}
 }
 
@@ -138,14 +150,13 @@ func (l *Logger) write(scope Scope, level, message string, extra []Field, alsoEr
 	fields = append(fields, extra...)
 	at := l.now()
 	line := FormatLine(at, level, fields)
-	writers := []*Writer{
-		l.router.Global("app.log"), l.router.Bucket(scope, "program.log"),
-	}
+	normal, failure := ProgramFileNames(scope)
+	names := []string{normal}
 	if alsoError {
-		writers = append(writers, l.router.Global("app-error.log"), l.router.Bucket(scope, "program-error.log"))
+		names = append(names, failure)
 	}
-	for _, writer := range writers {
-		writer.WriteLine(line)
+	for _, name := range names {
+		l.router.Bucket(scope, name).WriteLine(line)
 	}
 }
 

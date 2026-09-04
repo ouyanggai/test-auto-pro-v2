@@ -17,15 +17,17 @@ type requestLogger interface {
 	Error(scope logging.Scope, record logging.ErrorRecord)
 }
 
-// WithRequestLogging 包装现有 handler：生成请求标识并注入作用域、记录请求与响应、
-// 把失败响应实际写出的稳定错误码与中文文案落进程序错误日志、恢复 panic 并返回稳定中文 500。
+// WithRequestLogging 包装现有 handler：生成请求标识、从真实业务记录补上计划与执行路径归属并注入作用域、
+// 记录请求与响应、把失败响应实际写出的稳定错误码与中文文案落进错误日志、恢复 panic 并返回稳定中文 500。
+// 注入的作用域同时决定日志落盘目录，并且随 context 传给目标站点客户端，
+// 所以目标请求日志与可重放命令也会落在同一个计划与执行路径目录下。
 // 不改 writeFailure 签名，也不加长构造链，只在组装处包一层。
-func WithRequestLogging(next http.Handler, logger requestLogger) http.Handler {
+func WithRequestLogging(next http.Handler, logger requestLogger, resolver LogScopeResolver) http.Handler {
 	if logger == nil {
 		return next
 	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		scope := logging.Scope{RequestID: logging.NewTraceID()}
+		scope := requestScope(request.Context(), request.URL.Path, resolver)
 		ctx := logging.WithScope(request.Context(), scope)
 		recorder := &failureCapturingWriter{ResponseWriter: response}
 		started := time.Now()

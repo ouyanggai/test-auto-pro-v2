@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,16 +29,33 @@ func loggingHarness(t *testing.T) (*logging.Logger, *logging.Router, string) {
 	return logging.NewLogger(router, time.Now), router, root
 }
 
-// readConfigBucket 读取当天配置桶内的日志文件内容，缺失时返回空串而不是失败，
+// planBucketDir 返回某个计划在配置阶段的日志目录；pathDir 传 "_plan" 表示只知道计划的操作。
+func planBucketDir(root, planDir, pathDir string) string {
+	return filepath.Join(root, "plans", planDir, "configuration", pathDir, time.Now().Format("2006-01-02"))
+}
+
+// readLogFile 读取日志文件内容，缺失时返回空串而不是失败，
 // 便于同一个用例同时断言"应该出现"和"不应该出现"。
-func readConfigBucket(t *testing.T, root, name string) string {
-	t.Helper()
-	path := filepath.Join(root, "config", time.Now().Format("2006-01-02"), name)
-	content, err := os.ReadFile(path)
+func readLogFile(dir, name string) string {
+	content, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
 		return ""
 	}
 	return string(content)
+}
+
+// stubLogScopeResolver 用固定显示名模拟从真实业务记录解析归属的结果，
+// 让集成用例可以只验证中间件的注入与落盘规则，不依赖真实数据库。
+type stubLogScopeResolver struct{}
+
+// ResolveLogScope 返回计划与执行路径的显示名；路径 ID 为 0 表示计划级操作。
+func (stubLogScopeResolver) ResolveLogScope(_ context.Context, planID, pathID uint64) logging.Scope {
+	scope := logging.Scope{PlanID: strconv.FormatUint(planID, 10), PlanName: "计划" + strconv.FormatUint(planID, 10)}
+	if pathID != 0 {
+		scope.ExecutionPathID = strconv.FormatUint(pathID, 10)
+		scope.ExecutionPathName = "执行路径 " + strconv.FormatUint(pathID, 10)
+	}
+	return scope
 }
 
 // TestTargetRequestLoggingRecordsFailureAndReplayableCurl 用不可达目标地址触发一次真实失败，
@@ -53,13 +71,18 @@ func TestTargetRequestLoggingRecordsFailureAndReplayableCurl(t *testing.T) {
 		t.Fatalf("创建目标客户端失败：%v", err)
 	}
 	client.SetNetworkLogger(logger)
-	ctx := logging.WithScope(context.Background(), logging.Scope{RequestID: "req-unreachable"})
+	ctx := logging.WithScope(context.Background(), logging.Scope{
+		RequestID: "req-unreachable", PlanID: "7", PlanName: "员工请假单（集团）",
+		ExecutionPathID: "13", ExecutionPathName: "执行路径 1",
+	})
 	if _, err := client.Login(ctx, "account-a"); err == nil {
 		t.Fatal("不可达目标地址必须返回错误")
 	}
-	network := readConfigBucket(t, root, "network.log")
-	failure := readConfigBucket(t, root, "network-error.log")
-	curl := readConfigBucket(t, root, "curl.log")
+	// 目标请求即使由 HTTP 客户端底层发出，只要属于某个计划就必须落进该计划目录。
+	bucket := planBucketDir(root, "员工请假单（集团）__plan-7", "执行路径 1__path-13")
+	network := readLogFile(bucket, "network.log")
+	failure := readLogFile(bucket, "network-error.log")
+	curl := readLogFile(bucket, "curl.log")
 	if network == "" || failure == "" || curl == "" {
 		t.Fatalf("三个网络日志文件都必须落盘：network=%d error=%d curl=%d", len(network), len(failure), len(curl))
 	}
@@ -105,7 +128,7 @@ func TestAPIFailureLogMatchesResponseMessage(t *testing.T) {
 			"success": false,
 			"error":   map[string]any{"code": "TARGET_TIMEOUT", "message": message, "retryable": true},
 		})
-	}), logger)
+	}), logger, stubLogScopeResolver{})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/plans/1/flow-graph", nil))
 	if recorder.Code != http.StatusGatewayTimeout {
@@ -120,9 +143,11 @@ func TestAPIFailureLogMatchesResponseMessage(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("响应体不是统一失败包络：%v", err)
 	}
-	content := readConfigBucket(t, root, "program-error.log")
+	// 流程图接口只带计划 ID，日志进该计划的计划级目录，不进所有计划共用的目录。
+	bucket := planBucketDir(root, "计划1__plan-1", "_plan")
+	content := readLogFile(bucket, "operation-error.log")
 	if content == "" {
-		t.Fatal("失败响应没有写入程序错误日志")
+		t.Fatal("失败响应没有写入该计划的错误日志")
 	}
 	if !strings.Contains(content, "user_message="+logging.SanitizeValue(body.Error.Message)) {
 		t.Fatalf("日志里的界面提示与响应体不一致：body=%s log=%s", body.Error.Message, content)
@@ -130,8 +155,18 @@ func TestAPIFailureLogMatchesResponseMessage(t *testing.T) {
 	if !strings.Contains(content, "error_code=TARGET_TIMEOUT") || !strings.Contains(content, "error_class=network") {
 		t.Fatalf("失败日志缺少稳定错误码或错误分类：%s", content)
 	}
-	if program := readConfigBucket(t, root, "program.log"); !strings.Contains(program, "route=/api/plans/1/flow-graph") {
-		t.Fatalf("请求日志没有记录路由：%s", program)
+	if operation := readLogFile(bucket, "operation.log"); !strings.Contains(operation, "route=/api/plans/1/flow-graph") {
+		t.Fatalf("请求日志没有记录路由：%s", operation)
+	}
+	if !strings.Contains(content, "plan_id=1") || !strings.Contains(content, "plan_name=计划1") {
+		t.Fatalf("失败日志没有带上业务归属：%s", content)
+	}
+	// 已经归属到计划的业务异常不能改写进应用程序错误日志。
+	applicationDir := filepath.Join(root, "application", time.Now().Format("2006-01-02"))
+	for _, name := range []string{"application.log", "application-error.log"} {
+		if leaked := readLogFile(applicationDir, name); strings.Contains(leaked, "/api/plans/1/flow-graph") {
+			t.Fatalf("业务日志泄漏到 %s：%s", name, leaked)
+		}
 	}
 }
 
@@ -141,7 +176,7 @@ func TestAPIPanicReturnsStableChineseErrorWithoutStack(t *testing.T) {
 	logger, _, root := loggingHarness(t)
 	handler := api.WithRequestLogging(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("配置投影出现空指针")
-	}), logger)
+	}), logger, stubLogScopeResolver{})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/plans/1/execution-paths", nil))
 	if recorder.Code != http.StatusInternalServerError {
@@ -154,12 +189,57 @@ func TestAPIPanicReturnsStableChineseErrorWithoutStack(t *testing.T) {
 	if !strings.Contains(body, "工具内部发生错误") {
 		t.Fatalf("panic 响应缺少稳定中文提示：%s", body)
 	}
-	content := readConfigBucket(t, root, "program-error.log")
+	content := readLogFile(planBucketDir(root, "计划1__plan-1", "_plan"), "operation-error.log")
 	if !strings.Contains(content, "--- begin stack trace_id=") || !strings.Contains(content, "goroutine") {
 		t.Fatalf("panic 栈没有写入程序错误日志：%s", content)
 	}
 	if !strings.Contains(content, "error_class=tool_bug") {
 		t.Fatalf("panic 没有归类为工具缺陷：%s", content)
+	}
+}
+
+// TestRequestScopeKeepsPlansAndPathsSeparated 分别访问两个不同计划与执行路径的配置接口，
+// 断言日志各自落在自己的目录里不串目录，业务日志也不会只出现在共享目录或应用程序日志里。
+func TestRequestScopeKeepsPlansAndPathsSeparated(t *testing.T) {
+	logger, _, root := loggingHarness(t)
+	handler := api.WithRequestLogging(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		// 业务处理器直接复用 context 里的作用域，等价于调用目标站点时携带同一份归属。
+		logger.Info(logging.ScopeFrom(request.Context()), "读取路径配置")
+		response.WriteHeader(http.StatusOK)
+	}), logger, stubLogScopeResolver{})
+	for _, route := range []string{
+		"/api/plans/1/execution-paths/11/configuration",
+		"/api/plans/2/execution-paths/22/configuration/data",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, route, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("请求 %s 失败：%d", route, recorder.Code)
+		}
+	}
+	firstDir := planBucketDir(root, "计划1__plan-1", "执行路径 11__path-11")
+	secondDir := planBucketDir(root, "计划2__plan-2", "执行路径 22__path-22")
+	first, second := readLogFile(firstDir, "operation.log"), readLogFile(secondDir, "operation.log")
+	if first == "" || second == "" {
+		t.Fatalf("两个计划的日志都必须落进各自目录：first=%d second=%d", len(first), len(second))
+	}
+	if strings.Contains(first, "plan_id=2") || strings.Contains(second, "plan_id=1") {
+		t.Fatalf("两个计划的日志串目录了：\nfirst=%s\nsecond=%s", first, second)
+	}
+	if strings.Contains(first, "execution_path_id=22") || strings.Contains(second, "execution_path_id=11") {
+		t.Fatalf("两条执行路径的日志串目录了：\nfirst=%s\nsecond=%s", first, second)
+	}
+	for _, dir := range []string{firstDir, secondDir} {
+		if readLogFile(dir, "meta.json") == "" {
+			t.Fatalf("目录 %s 缺少 meta.json", dir)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "config")); err == nil {
+		t.Fatal("不应再出现所有计划共用的 logs/config 目录")
+	}
+	applicationDir := filepath.Join(root, "application", time.Now().Format("2006-01-02"))
+	if leaked := readLogFile(applicationDir, "application.log"); strings.Contains(leaked, "读取路径配置") {
+		t.Fatalf("业务日志重复写进了应用程序日志：%s", leaked)
 	}
 }
 
