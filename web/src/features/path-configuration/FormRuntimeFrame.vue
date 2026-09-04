@@ -79,6 +79,7 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       template: props.form.template,
       permissions: props.form.permissions,
       values: props.form.effectiveFormData,
+      changedFields: props.form.branchPatches.map(patch => patch.path),
     })
     if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
     emit('ready', payload)
@@ -124,7 +125,10 @@ function handleMessage(event: MessageEvent) {
 
 // setValues 把用户明确恢复的原始 values 交给 runtime，不附带额外元数据或字段映射。
 function setValues(values: Record<string, unknown>, signal?: AbortSignal) {
-  return postCommand('setData', { values }, signal)
+  return postCommand('setData', {
+    values,
+    changedFields: props.form.branchPatches.map(patch => patch.path),
+  }, signal)
 }
 
 // restoreSaved 恢复本次载入时的已保存值。

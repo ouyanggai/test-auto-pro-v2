@@ -5,7 +5,7 @@ import test from 'node:test'
 const runtimeSource = fs.readFileSync(new URL('../../../form-runtime/runtime-source/src/main.js', import.meta.url), 'utf8')
 const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
-const { captureFormValues, componentRuntimeName, formRuntimeStats, prepareTemplate, refreshPreparedForm } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, componentRuntimeName, formRuntimeStats, prepareTemplate, reconcileLinkedSelectValues, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
@@ -148,6 +148,36 @@ test('刷新会回填已填数据，避免 FormMaking 重新初始化清空 mode
   }
   await refreshPreparedForm(form)
   assert.deepEqual(form.model, { title: '人工填写', amount: 2500 })
+})
+
+test('分支补丁按真实下拉选项同步名称对应的 ID 和虚拟显示值', async () => {
+  const form = {
+    model: { paymentId: 'old-id', paymentId__virtualName: '旧付款单位', paymentName: '新付款单位' },
+    getComponent() {
+      return {
+        paymentId: {
+          widget: { model: 'paymentId', options: { props: { label: 'name', value: 'id' } } },
+          remoteOptions: [{ id: 'new-id', name: '新付款单位' }],
+        },
+      }
+    },
+    async setData(values) { Object.assign(this.model, values) },
+  }
+  const values = await reconcileLinkedSelectValues(form, form.model, 1)
+  assert.equal(values.paymentId, 'new-id')
+  assert.equal(values.paymentId__virtualName, '新付款单位')
+  assert.equal(values.paymentName, '新付款单位')
+})
+
+test('分支补丁字段会重放目标 onChange 以刷新派生值', async () => {
+  let changed = ''
+  const component = { widget: { events: { onChange: 'amountChanged' } }, currentOptions: { fieldNode: 'amount' } }
+  const form = {
+    getComponent() { return component },
+    eventFunction: { amountChanged(options) { changed = options.fieldNode } },
+  }
+  await replayFieldChangeEvents(form, ['amount'])
+  assert.equal(changed, 'amount')
 })
 
 test('校验只使用 getData 而完整保存值来自 getValues 人工输入与虚拟字段', async () => {

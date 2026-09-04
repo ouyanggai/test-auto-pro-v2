@@ -139,8 +139,33 @@ func Apply(input Input) Result {
 	result.Status = StatusReady
 	result.Values = selected.values
 	result.ActualChoices = finalWalk.choices
+	synchronizeLinkedSelectDisplay(original, result.Values)
 	result.Patches = buildPatches(original, selected.values, references)
 	return result
+}
+
+// synchronizeLinkedSelectDisplay 同步目标表单约定的 Name/Id 下拉虚拟字段，
+// 只改写原始数据中已存在的虚拟键，不猜测新的 ID 或新增业务字段。
+func synchronizeLinkedSelectDisplay(original, values map[string]any) {
+	for path, after := range values {
+		if strings.HasSuffix(path, "__virtualName") || !strings.HasSuffix(path, "Name") {
+			continue
+		}
+		before, existed := original[path]
+		if !existed || valuesEqual(before, after) {
+			continue
+		}
+		base := strings.TrimSuffix(path, "Name")
+		idPath := base + "Id"
+		virtualPath := idPath + "__virtualName"
+		if _, idExists := values[idPath]; !idExists {
+			continue
+		}
+		if _, virtualExists := original[virtualPath]; !virtualExists {
+			continue
+		}
+		values[virtualPath] = cloneAny(after)
+	}
 }
 
 // ResolveActualPath 只按目标条件语义计算当前原始表单值实际命中的路径。

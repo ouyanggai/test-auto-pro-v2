@@ -114,6 +114,32 @@ func TestBranchOverlayMinimalPatchPreservesRawData(t *testing.T) {
 	}
 }
 
+// TestBranchOverlaySynchronizesLinkedSelectDisplay 验证名称条件补丁会同步目标下拉框的虚拟显示值，
+// 避免 ID 下拉仍显示历史名称而与右侧调整记录不一致。
+func TestBranchOverlaySynchronizesLinkedSelectDisplay(t *testing.T) {
+	tree := conditionTree([]target.FlowBranchTemplate{
+		{ID: "target", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "paymentName", ValueB: "新付款单位", Judge: "eq"}}},
+		{ID: "fallback", Sort: 2},
+	})
+	result := branchoverlay.Apply(branchoverlay.Input{
+		Tree: tree, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "target"}}, Values: map[string]any{
+			"paymentName":            "旧付款单位",
+			"paymentId":              "old-id",
+			"paymentId__virtualName": "旧付款单位",
+			"unrelated":              "keep",
+		},
+	})
+	if result.Status != branchoverlay.StatusReady {
+		t.Fatalf("名称条件补丁未就绪：%#v", result)
+	}
+	if result.Values["paymentName"] != "新付款单位" || result.Values["paymentId__virtualName"] != "新付款单位" {
+		t.Fatalf("关联下拉显示值未同步：%#v", result.Values)
+	}
+	if result.Values["paymentId"] != "old-id" || result.Values["unrelated"] != "keep" {
+		t.Fatalf("非条件 ID 或普通字段被错误改写：%#v", result.Values)
+	}
+}
+
 // TestBranchOverlayRejectsNonFlatConditionField 锁定与目标一致的条件字段语义：
 // 目标 FlowNodeProxyServiceImpl.getDataValue 只做一层 map.get(fieldaName)，
 // 不解析嵌套路径、数组下标或 JSON Pointer；工具遇到这类字段名必须判为取不到值，

@@ -185,6 +185,82 @@ export async function refreshPreparedForm (form) {
   if (current != null && typeof form.setData === 'function') await form.setData(current)
 }
 
+// reconcileLinkedSelectValues 在目标下拉选项就绪后按显示名称回填对应 ID，
+// 解决分支补丁只改变名称字段时，FormMaking 仍按历史 ID 显示旧选项的问题。
+export async function reconcileLinkedSelectValues (form, values, retries = 20) {
+  if (!form || typeof form.getComponent !== 'function' || typeof form.setData !== 'function') return clonePlain(values || {})
+  const current = clonePlain(values || {})
+  if (!hasLinkedSelectCandidate(form, current)) return current
+  const attempts = Math.max(1, Number(retries) || 1)
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const patches = linkedSelectPatches(form, current)
+    if (Object.keys(patches).length > 0) {
+      await form.setData(patches)
+      await replayFieldChangeEvents(form, Object.keys(patches))
+      Object.assign(current, patches)
+      if (typeof form.getValues === 'function') Object.assign(current, clonePlain(form.getValues() || {}))
+      return current
+    }
+    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  return current
+}
+
+// replayFieldChangeEvents 重放目标模板为指定字段声明的 onChange 脚本，补齐 setData 不会触发的派生字段计算。
+export async function replayFieldChangeEvents (form, fields) {
+  if (!form || typeof form.getComponent !== 'function' || !form.eventFunction) return
+  for (const field of Array.isArray(fields) ? fields : []) {
+    const component = form.getComponent(String(field || '').trim())
+    const eventKey = component?.widget?.events?.onChange
+    const handler = eventKey && form.eventFunction[eventKey]
+    if (typeof handler !== 'function') continue
+    await handler(component.currentOptions || {})
+  }
+}
+
+// hasLinkedSelectCandidate 判断当前模板是否存在需要等待真实远程选项的 ID 下拉字段，普通表单不增加等待开销。
+function hasLinkedSelectCandidate (form, values) {
+  const components = form.getComponent()
+  if (!components || typeof components !== 'object') return false
+  return Object.values(components).some(component => {
+    const widget = component && (component.widget || component.element)
+    const model = String(widget && widget.model || '').trim()
+    if (!model.endsWith('Id')) return false
+    const nameModel = `${model.slice(0, -2)}Name`
+    return values[nameModel] !== undefined || values[`${model}__virtualName`] !== undefined
+  })
+}
+
+// linkedSelectPatches 仅使用 FormMaking 已加载的真实选项建立 Name/Id 关联，找不到唯一标签时保持原值。
+function linkedSelectPatches (form, values) {
+  const components = form.getComponent()
+  if (!components || typeof components !== 'object') return {}
+  const patches = {}
+  for (const component of Object.values(components)) {
+    const widget = component && (component.widget || component.element)
+    const model = String(widget && widget.model || '').trim()
+    if (!model.endsWith('Id')) continue
+    const nameModel = `${model.slice(0, -2)}Name`
+    const virtualModel = `${model}__virtualName`
+    const desired = values[nameModel] ?? values[virtualModel]
+    if (desired === undefined || desired === null || desired === '') continue
+    const options = component.remoteOptions || widget?.options?.remoteOptions || widget?.options?.options
+    if (!Array.isArray(options)) continue
+    const props = widget?.options?.props && typeof widget.options.props === 'object' ? widget.options.props : {}
+    const labelKey = String(props.label || 'label')
+    const valueKey = String(props.value || 'value')
+    const matches = options.filter(option => option && String(option[labelKey] ?? option.name ?? option.label ?? '') === String(desired))
+    if (matches.length !== 1) continue
+    const option = matches[0]
+    const nextID = option[valueKey] ?? option.id ?? option.value
+    if (nextID === undefined || nextID === null || nextID === '') continue
+    patches[model] = nextID
+    patches[virtualModel] = String(option[labelKey] ?? option.name ?? option.label ?? desired)
+    if (Object.prototype.hasOwnProperty.call(values, nameModel)) patches[nameModel] = patches[virtualModel]
+  }
+  return patches
+}
+
 // isEmptyModelValue 判断值是否为空形态；初始默认模型里的空键不能误判为人工覆盖。
 function isEmptyModelValue (value) {
   if (value === undefined || value === null) return true

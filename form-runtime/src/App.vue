@@ -35,7 +35,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { buildValuesEnvelope, captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, refreshPreparedForm } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, reconcileLinkedSelectValues, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -61,7 +61,8 @@ export default {
       allFields: [],
       editableFields: [],
       hiddenFields: [],
-		requiredEditableFields: [],
+      requiredEditableFields: [],
+      changedFields: [],
       readOnly: false,
       loading: false,
       dirty: false,
@@ -220,11 +221,13 @@ export default {
         this.editableFields = prepared.editableFields
         this.hiddenFields = prepared.hiddenFields
         this.requiredEditableFields = prepared.requiredEditableFields
+        this.changedFields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
         await this.$nextTick()
         await this.setData(this.values)
         await this.refresh()
+        this.savedValues = clonePlain(this.values)
         this.loading = false
         this.result(command, {
 		  ready: true, renderType: this.renderType,
@@ -235,12 +238,14 @@ export default {
       }
       if (command.type === 'setData') {
         const nextValues = clonePlain(payload.values || {})
+        this.changedFields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : this.changedFields
         await this.$nextTick()
         await this.setData(nextValues)
         // setData 只用于来源切换后的整份原始值替换；替换成功即成为新的恢复基线，避免恢复按钮回到旧来源快照。
         this.savedValues = clonePlain(nextValues)
         this.dirty = false
         await this.refresh()
+        this.savedValues = clonePlain(this.values)
         this.result(command, await this.capture(false))
         return
       }
@@ -279,7 +284,12 @@ export default {
     async refresh () {
       if (this.renderType === 'vue_custom') return
       // 字段权限已在 FormMaking 装载前写入每个组件 options；refresh 后统一调用 disabled 会击穿缺少 disabledElement 的已注册组件。
-      await refreshPreparedForm(this.form())
+      const form = this.form()
+      await refreshPreparedForm(form)
+      this.values = await reconcileLinkedSelectValues(form, this.values)
+      await replayFieldChangeEvents(form, this.changedFields)
+      if (this.changedFields.length > 0 && typeof form.getValues === 'function') this.values = clonePlain(form.getValues() || {})
+      this.changedFields = []
     },
     // normalizeEventData 兼容 FormMaking 事件传对象或 JSON 字符串，确保所有表单组件共享同一事件入口。
     normalizeEventData (data) {
