@@ -1,6 +1,6 @@
 # F-013 分层日志与追踪底座
 
-- 状态：ready_for_manual
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明）与「明确不做」中的“独立技术状态与 JSON 配置页面”
 - 架构依据：`docs/ARCHITECTURE.md` 的包边界与目标适配层条文（已按内网裁决同步日志条文）
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6 节全部，第 9 节 F-013 行
@@ -221,5 +221,14 @@ time=2026-09-03 18:56:31 level=error ...
   改为用 `runtime.CallersFrames` 逐帧过滤日志包自身与运行时帧后定位。
 - 写端点白名单检查只扫描 `internal/adapter/target`：`internal/engine/actioncatalog` 里的
   `targetOperation` 是动作目录的说明元数据，描述未来执行时会调用哪个接口，不构成一次请求。
+
+- 2026-09-04：人工验收未通过，状态从 `ready_for_manual` 退回 `implementing`。
+  未通过原因：“日志没有按计划和执行路径归档，配置日志集中在日期目录，无法从业务对象定位。”
+  具体表现：所有配置阶段日志都落在 `logs/config/<日期>/`；`internal/api/request_logging.go` 只注入了 `RequestID`；
+  `logging.Scope` 虽然有 `PlanName`、`PathName`、`RunSeq`，但没有从真实业务请求接入，`logs/runs` 路由只在合成测试里生效；
+  根目录 `app-<日期>.log` 又把所有内容聚合一遍，用户无法从计划和执行路径快速定位日志。
+  用户同时给出新的目录规则：顶层只有 `application` 与 `plans` 两棵树，业务日志按
+  计划 → 配置/运行 → 执行路径 → 日期或运行号逐层归档，配置阶段用 `operation.log`，执行阶段用 `execution.log`，
+  `application` 只保留启动停止与无法归属业务对象的系统级事件，且不得与业务日志重复写入。
 
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `ready_for_manual`：T01 至 T06 已实施并实测通过，等待用户按上面「人工验收」六步确认后再推进到 `accepted`。
