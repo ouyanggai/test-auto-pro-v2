@@ -71,10 +71,12 @@ export function saveSuccessAssertion(
   )
 }
 
-// fetchPlanRunReadiness 读取一个计划的运行准备结论，只读，不启动任何运行。
-export function fetchPlanRunReadiness(planId: string, signal?: AbortSignal): Promise<PlanRunReadiness> {
+// fetchPlanRunReadiness 读取运行前检查结论，只读，不启动任何运行。
+// pathIds 为空表示检查全部路径；传了就只检查这些勾选路径，与"运行只运行勾选路径"保持同一范围。
+export function fetchPlanRunReadiness(planId: string, pathIds: string[] = [], signal?: AbortSignal): Promise<PlanRunReadiness> {
+  const search = pathIds.length ? `?pathIds=${encodeURIComponent(pathIds.join(','))}` : ''
   return request<PlanRunReadiness>(
-    `/api/plans/${encodeURIComponent(planId)}/run-readiness`,
+    `/api/plans/${encodeURIComponent(planId)}/run-readiness${search}`,
     { method: 'GET' },
     signal,
   )

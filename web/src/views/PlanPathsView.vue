@@ -57,7 +57,7 @@ import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
 import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
-import RunReadinessPanel from '../features/run-readiness/RunReadinessPanel.vue'
+import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import { flowSourceLabels } from '../features/plans/selection'
 import type { PersistedPlan } from '../features/plans/types'
@@ -298,7 +298,7 @@ async function retryPaths(): Promise<boolean> {
     pathsLoaded.value = true
 		pathSelectionError.value = ''
 		const available = new Set(items.map(path => path.id))
-		selectedRunPathIDs.value = new Set([...selectedRunPathIDs.value].filter(pathID => available.has(pathID)))
+		selectedRunPathIDs.value = defaultRunSelection([...selectedRunPathIDs.value].filter(pathID => available.has(pathID)))
 		return true
   }
   catch (caught) {
@@ -523,7 +523,29 @@ async function editActivePath() {
   await canvasRef.value?.setPageFullscreen(true)
 }
 
-// locateReadinessItem 把运行准备面板里的阻塞项定位到那条路径的对应面板。
+// defaultRunSelection 已配置好的路径默认被勾选：用户点运行时通常就是要跑这些。
+// 只在用户还没做过任何勾选时套用默认值，已有勾选一律尊重用户的选择。
+function defaultRunSelection(existing: string[]): Set<string> {
+  if (existing.length > 0) return new Set(existing)
+  return new Set(paths.value
+    .filter(path => path.configurationStatus === 'configured' && path.dataStatus === 'ready')
+    .map(path => path.id))
+}
+
+// preflightOpen 控制运行前检查弹窗；检查只覆盖本次勾选的路径。
+const preflightOpen = ref(false)
+
+// openPreflight 点击运行时先做预检，勾选为空时直接提示，不打开一个空弹窗。
+function openPreflight() {
+  if (selectedRunPathIDs.value.size === 0) {
+    pathSelectionError.value = '请先勾选要运行的执行路径'
+    return
+  }
+  pathSelectionError.value = ''
+  preflightOpen.value = true
+}
+
+// locateReadinessItem 把运行前检查里的阻塞项定位到那条路径的对应面板。
 // 面板只负责给出路径与锚点，跳转由页面统一处理，避免组件内部各自拼路由。
 function locateReadinessItem(pathId: string, anchor: string) {
   const query = anchor ? '?panel=' + encodeURIComponent(anchor) : ''
@@ -634,7 +656,7 @@ async function savePath() {
       paths.value = refreshed
       plan.value.pathCount = refreshed.length
 		const available = new Set(refreshed.map(path => path.id))
-		selectedRunPathIDs.value = new Set([...selectedRunPathIDs.value].filter(pathID => available.has(pathID)))
+		selectedRunPathIDs.value = defaultRunSelection([...selectedRunPathIDs.value].filter(pathID => available.has(pathID)))
     }
     catch {
       // 列表刷新失败不影响已成功保存的线路，也不清空当前列表或草稿状态。
@@ -802,6 +824,10 @@ onMounted(() => {
               <h1 id="plan-paths-heading">{{ plan.name }}</h1>
 							<p>{{ planMutable ? '从当前入口选择执行线路，并保存为计划路径。' : '当前计划已进入只读状态。' }}</p>
             </div>
+            <n-space class="page-heading__actions" align="center" size="small">
+              <span class="page-heading__selection">已勾选 {{ selectedRunPathIDs.size }} / {{ paths.length }} 条路径</span>
+              <n-button type="primary" data-testid="plan-run-button" @click="openPreflight">运行</n-button>
+            </n-space>
           </header>
 
           <n-descriptions label-placement="left" :column="3" bordered size="small">
@@ -917,13 +943,6 @@ onMounted(() => {
               </template>
             </n-virtual-list>
           </section>
-
-          <run-readiness-panel
-            v-if="planID"
-            class="plan-paths-screen__readiness"
-            :plan-id="planID"
-            @locate="locateReadinessItem"
-          />
 
           <div class="flow-structure-jump">
             <n-button size="small" secondary @click="scrollToGraphStructure">查看流程结构 ↓</n-button>
@@ -1180,6 +1199,12 @@ onMounted(() => {
     >
       只删除当前工具中的路径记录，确认继续？
     </n-modal>
+    <run-preflight-dialog
+      v-model:show="preflightOpen"
+      :plan-id="planID"
+      :path-ids="[...selectedRunPathIDs]"
+      @locate="locateReadinessItem"
+    />
   </section>
 </template>
 
@@ -1237,6 +1262,11 @@ onMounted(() => {
 .page-heading {
   flex: 0 0 auto;
   margin-bottom: 18px;
+}
+
+.page-heading__selection {
+  color: var(--paths-secondary-text-color, inherit);
+  white-space: nowrap;
 }
 
 .page-heading__actions {

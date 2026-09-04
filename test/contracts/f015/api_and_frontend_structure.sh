@@ -35,16 +35,24 @@ fi
 grep -qF 'OutcomeUndecidable' "${assert_dir}/assert.go" || fail '断言判定包缺少无法判定这一档'
 
 # 前端：两个组件必须存在，且阻塞与提醒分区、没有启动入口。
-panel='web/src/features/run-readiness/RunReadinessPanel.vue'
+panel='web/src/features/run-readiness/RunPreflightDialog.vue'
 card='web/src/features/run-readiness/SuccessAssertionCard.vue'
 for file in "${panel}" "${card}"; do
   [ -f "${file}" ] || fail "缺少前端组件：${file}"
 done
-grep -qF 'data-testid="run-readiness-blocks"' "${panel}" || fail '运行准备面板缺少阻塞分区'
-grep -qF 'data-testid="run-readiness-reminders"' "${panel}" || fail '运行准备面板缺少提醒分区'
+grep -qF 'data-testid="run-preflight-dialog"' "${panel}" || fail '预检结果必须用组件库弹窗承载'
+grep -qF 'n-modal' "${panel}" || fail '预检弹窗必须使用组件库的 NModal，不自造弹层'
+grep -qF 'data-testid="run-readiness-blocks"' "${panel}" || fail '预检弹窗缺少阻塞分区'
+grep -qF 'data-testid="run-readiness-reminders"' "${panel}" || fail '预检弹窗缺少提醒分区'
+grep -qF 'data-testid="plan-run-button"' web/src/views/PlanPathsView.vue || fail '计划页缺少运行按钮'
+grep -qF 'pathIds' web/src/features/run-readiness/api.ts || fail '预检必须只检查勾选路径'
 grep -qF 'data-testid="success-assertion-card"' "${card}" || fail '成功断言卡片缺少测试标记'
-if grep -qE '开始运行|启动运行|运行模式|单步|运行记录' "${panel}" "${card}"; then
-  fail '本切片界面不得出现启动运行、运行模式或运行记录入口'
+# 本切片不交付启动运行：弹窗里只允许出现明确禁用的占位按钮，不得有可点击的启动入口。
+if grep -qE '运行模式|单步|运行记录' "${panel}" "${card}"; then
+  fail '本切片界面不得出现运行模式、单步或运行记录入口'
+fi
+if grep -q '开始运行' "${panel}" && ! grep -q 'disabled' "${panel}"; then
+  fail '开始运行按钮必须是禁用占位，本切片不交付启动运行'
 fi
 # 界面只出现业务语言：不允许把内部稳定键当文案，也不允许出现内部术语。
 if grep -qE '历史来源|历史回放|success_claim|confirmed_failure' "${panel}" "${card}"; then
