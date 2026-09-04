@@ -355,10 +355,12 @@ func (s *RunOrchestrationService) StartRunWithMode(ctx context.Context, input St
 	if len(runCtx.Steps) == 0 {
 		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "编译场景为空，不能启动；请先完成动作编排"}
 	}
-	if _, err := s.control.StartWithMode(ctx, runCtx, mode, breakpoints); err != nil {
+	started, err := s.control.StartWithMode(ctx, runCtx, mode, breakpoints)
+	if err != nil {
 		return nil, err
 	}
-	return s.RunDetailByPathRun(ctx, runCtx.PathRun.ID)
+	// RunContext 是值传递：真实运行身份以控制服务返回值为准。
+	return s.RunDetailByPathRun(ctx, started.PathRun.ID)
 }
 
 // SetBreakpoint / RemoveBreakpoint / RequestPause / ListBreakpoints / ControlView 是控制面转发。

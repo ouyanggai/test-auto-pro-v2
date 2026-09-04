@@ -309,6 +309,8 @@ func writeRunControlError(response http.ResponseWriter, err error) {
 	case errors.Is(err, control.ErrLoopRunning), errors.Is(err, control.ErrVersionConflict),
 		errors.Is(err, control.ErrCursorConflict), errors.Is(err, control.ErrCommandNotAllowed):
 		writeFailure(response, http.StatusConflict, "RUN_CONTROL_CONFLICT", err.Error(), false)
+	case errors.Is(err, control.ErrNotRunnable):
+		writeFailure(response, http.StatusConflict, "RUN_NOT_RUNNABLE", err.Error(), false)
 	case errors.Is(err, control.ErrStopDeferred):
 		writeFailure(response, http.StatusConflict, "RUN_STOP_DEFERRED", err.Error(), false)
 	case errors.Is(err, control.ErrNoActiveStep), errors.Is(err, control.ErrRunAlreadyFinished):

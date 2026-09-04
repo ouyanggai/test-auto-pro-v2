@@ -34,6 +34,8 @@ var (
 	ErrCursorConflict = errors.New("当前等待放行的步骤已变化，请以最新预览为准")
 	// ErrCommandNotAllowed 表示当前模式或状态下该命令不可用。
 	ErrCommandNotAllowed = errors.New("当前状态下该命令不可用")
+	// ErrNotRunnable 表示路径运行当前状态不接受该控制动作（如待对账、已结束）。
+	ErrNotRunnable = errors.New("路径运行当前状态不接受该操作")
 )
 
 // StartResult 是启动后的初始状态：运行、路径运行与第一步预览。
@@ -557,7 +559,7 @@ func (s *Service) Stop(ctx context.Context, pathRunID uint64) (model.PathRun, er
 		return pathRun, ErrStopDeferred
 	}
 	if pathRun.Status != model.PathRunStatusRunning {
-		return pathRun, fmt.Errorf("路径运行当前为 %s，不能停止", model.PathRunStatusName(pathRun.Status))
+		return pathRun, fmt.Errorf("%w：路径运行当前为 %s，不能停止", ErrNotRunnable, model.PathRunStatusName(pathRun.Status))
 	}
 	if err := s.store.AppendRunControl(ctx, model.RunControl{
 		RunID: pathRun.RunID, PathRunID: pathRunID,
