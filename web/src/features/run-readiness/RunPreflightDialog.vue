@@ -17,7 +17,11 @@ let controller: AbortController | null = null
 const blockedPaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => !path.runnable))
 const reminderPaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => path.reminders.length > 0))
 const allClear = computed(() => Boolean(readiness.value) && blockedPaths.value.length === 0)
+// 宽度必须写成行内样式：NModal 的卡片是 teleport 出去渲染的，scoped 样式选不中它，
+// 只靠 class 设宽度会退化成撑满整屏。
 const dialogStyle = computed(() => ({
+  width: '620px',
+  maxWidth: 'calc(100vw - 48px)',
   '--preflight-border-color': themeVars.value.borderColor,
   '--preflight-secondary-text-color': themeVars.value.textColor3,
 }))
@@ -80,7 +84,7 @@ watch(() => props.show, (open) => {
     :mask-closable="!loading"
     @update:show="value => emit('update:show', value)"
   >
-    <n-spin :show="loading">
+    <n-spin :show="loading" class="run-preflight__body">
       <n-space vertical size="small">
         <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
         <p v-if="readiness" class="run-preflight__summary" data-testid="run-preflight-summary">
@@ -138,9 +142,9 @@ watch(() => props.show, (open) => {
 </template>
 
 <style scoped>
-.run-preflight {
-  width: 640px;
-  max-width: calc(100vw - 32px);
+.run-preflight__body {
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
 .run-preflight__summary {
