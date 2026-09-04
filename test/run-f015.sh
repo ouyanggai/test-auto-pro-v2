@@ -17,31 +17,10 @@ fi
 
 printf '%s\n' '[F-015] 编译与静态检查'
 go build ./...
-go vet ./internal/engine/assert/... ./internal/service/... ./internal/api/... ./test/unit/backend/run_readiness ./test/integration
+go vet ./internal/service/... ./internal/api/... ./test/unit/backend/run_readiness ./test/integration
 
-printf '%s\n' '[F-015] 断言与运行准备单元测试（含竞态检测）'
+printf '%s\n' '[F-015] 运行前检查单元测试（含竞态检测）'
 go test -race -count=1 ./test/unit/backend/run_readiness/...
-
-printf '%s\n' '[F-015] 真实 MySQL 与真实目标集成测试'
-integration_log="$(mktemp -t f015-integration)"
-trap 'rm -f "${integration_log}"' EXIT
-if ! go test -count=1 -v -run 'TestF015' ./test/integration 2>&1 | tee "${integration_log}"; then
-  exit 1
-fi
-if grep -Eq -- '^[[:space:]]*--- SKIP' "${integration_log}"; then
-  printf '%s\n' '[F-015] 集成测试存在跳过用例，判定为失败' >&2
-  exit 1
-fi
-for required in \
-  TestF015AssertionMigrationAndPersistence \
-  TestF015AssertionRevisionAndIdempotency \
-  TestF015AssertionCascadesWithPath \
-  TestF015CandidatesComeFromRealTargetStructure; do
-  if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${integration_log}"; then
-    printf '%s\n' "[F-015] 缺少必需的集成用例通过记录：${required}" >&2
-    exit 1
-  fi
-done
 
 printf '%s\n' '[F-015] 写端点白名单为空'
 ./test/contracts/f015/target_write_whitelist.sh

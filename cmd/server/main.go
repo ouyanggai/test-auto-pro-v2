@@ -132,10 +132,9 @@ func main() {
 	maintenancePipeline := formruntimemaintenance.NewPipeline(maintenanceStore, inspector, operator, maintenanceLogs, formruntimemaintenance.WorkerOptions{
 		WorkerID: "server-maintenance-worker", LeaseDuration: 2 * time.Minute, RenewalInterval: 30 * time.Second,
 	})
-	// F-015 成功断言与运行准备：只读聚合，真实结构读一次，断言一次取齐，路径配置按路径读数据库。
+	// F-015 运行前检查：只读聚合，真实结构每个计划读一次，路径配置按路径读数据库。
 	runReadinessService := service.NewRunReadinessService(
-		planService, pathRepository, flowGraphService,
-		planmysql.NewPathSuccessAssertionRepository(planDatabase.DB), historyWorkspaceStore,
+		planService, pathRepository, flowGraphService, historyWorkspaceStore,
 		analyzer.NewExecutionPathAnalyzer(), time.Now,
 	)
 	server := &http.Server{

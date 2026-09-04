@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,8 +13,6 @@ import (
 // RunReadinessService 是成功断言与运行准备的只读服务面。
 // 本切片不启动运行，因此这里只有读取、保存断言与读取运行准备结论三个动作。
 type RunReadinessService interface {
-	AssertionWorkspace(ctx context.Context, planID, pathID uint64) (model.SuccessAssertionWorkspace, error)
-	SaveAssertion(ctx context.Context, planID, pathID uint64, input service.SuccessAssertionInput, idempotencyKey string) (model.PathSuccessAssertion, error)
 	PlanReadiness(ctx context.Context, planID uint64, selectedPathIDs []uint64) (model.PlanRunReadiness, error)
 }
 
@@ -23,47 +20,7 @@ type RunReadinessService interface {
 // 路径形如 /api/plans/{id}/execution-paths/{pathId}/...，与 F-013 的日志作用域中间件约定一致，
 // 因此这些请求产生的日志会自动落进对应计划与执行路径的目录。
 func registerRunReadinessRoutes(mux *http.ServeMux, readiness RunReadinessService) {
-	mux.HandleFunc("GET /api/plans/{id}/execution-paths/{pathId}/success-assertion", handleGetSuccessAssertion(readiness))
-	mux.HandleFunc("PUT /api/plans/{id}/execution-paths/{pathId}/success-assertion", handleSaveSuccessAssertion(readiness))
 	mux.HandleFunc("GET /api/plans/{id}/run-readiness", handlePlanRunReadiness(readiness))
-}
-
-// handleGetSuccessAssertion 返回断言卡片所需的真实候选、目标真实状态与已保存断言。
-func handleGetSuccessAssertion(readiness RunReadinessService) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		planID, pathID, ok := parseRunReadinessPathIDs(response, request)
-		if !ok {
-			return
-		}
-		workspace, err := readiness.AssertionWorkspace(request.Context(), planID, pathID)
-		if err != nil {
-			writeRunReadinessError(response, err)
-			return
-		}
-		writeSuccess(response, workspace)
-	}
-}
-
-// handleSaveSuccessAssertion 保存单条路径的成功断言；校验不通过时按 400 给中文原因。
-func handleSaveSuccessAssertion(readiness RunReadinessService) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		planID, pathID, ok := parseRunReadinessPathIDs(response, request)
-		if !ok {
-			return
-		}
-		var input service.SuccessAssertionInput
-		if err := json.NewDecoder(http.MaxBytesReader(response, request.Body, 1<<16)).Decode(&input); err != nil {
-			writeFailure(response, http.StatusBadRequest, "RUN_READINESS_INVALID", "成功断言请求格式不正确", false)
-			return
-		}
-		saved, err := readiness.SaveAssertion(request.Context(), planID, pathID, input,
-			strings.TrimSpace(request.Header.Get("Idempotency-Key")))
-		if err != nil {
-			writeRunReadinessError(response, err)
-			return
-		}
-		writeSuccess(response, saved)
-	}
 }
 
 // handlePlanRunReadiness 返回一个计划的运行准备结论：一句总结论加逐条路径的阻塞与提醒。
@@ -106,19 +63,6 @@ func parseSelectedPathIDs(response http.ResponseWriter, raw string) ([]uint64, b
 	return selected, true
 }
 
-// parseRunReadinessPathIDs 解析并校验计划与路径主键，两者都必须是正整数。
-func parseRunReadinessPathIDs(response http.ResponseWriter, request *http.Request) (uint64, uint64, bool) {
-	planID, ok := parseExecutionPathID(response, request.PathValue("id"))
-	if !ok {
-		return 0, 0, false
-	}
-	pathID, ok := parseExecutionPathID(response, request.PathValue("pathId"))
-	if !ok {
-		return 0, 0, false
-	}
-	return planID, pathID, true
-}
-
 // writeRunReadinessError 把服务层稳定错误映射为状态码与稳定错误码，中文文案与日志同源。
 func writeRunReadinessError(response http.ResponseWriter, err error) {
 	switch {
@@ -149,18 +93,6 @@ func firstNonEmptyMessage(err error, fallback string) string {
 
 // unavailableRunReadinessService 在未注入真实服务时返回稳定不可用错误，不静默放行。
 type unavailableRunReadinessService struct{}
-
-// AssertionWorkspace 返回稳定不可用错误。
-func (unavailableRunReadinessService) AssertionWorkspace(context.Context, uint64, uint64) (model.SuccessAssertionWorkspace, error) {
-	return model.SuccessAssertionWorkspace{}, &service.RunReadinessError{
-		Kind: service.RunReadinessErrorStorage, Message: "运行准备服务暂不可用"}
-}
-
-// SaveAssertion 返回稳定不可用错误。
-func (unavailableRunReadinessService) SaveAssertion(context.Context, uint64, uint64, service.SuccessAssertionInput, string) (model.PathSuccessAssertion, error) {
-	return model.PathSuccessAssertion{}, &service.RunReadinessError{
-		Kind: service.RunReadinessErrorStorage, Message: "运行准备服务暂不可用"}
-}
 
 // PlanReadiness 返回稳定不可用错误。
 func (unavailableRunReadinessService) PlanReadiness(context.Context, uint64, []uint64) (model.PlanRunReadiness, error) {

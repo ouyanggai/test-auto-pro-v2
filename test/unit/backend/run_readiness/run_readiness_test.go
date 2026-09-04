@@ -20,10 +20,6 @@ func readyPath() model.ExecutionPath {
 func readyInput() service.PathReadinessInput {
 	return service.PathReadinessInput{
 		Path: readyPath(), ConfigFound: true, CompiledStepCount: 3,
-		Assertion: &model.PathSuccessAssertion{
-			EndNodeKey: "end-a", EndNodeName: "同意结束",
-			ExpectedStatus: model.FlowInstanceStatusEnd, ArrivalOrdinal: 1,
-		},
 	}
 }
 
@@ -56,8 +52,6 @@ func TestEachBlockSourceIsReported(t *testing.T) {
 		"配置已记录的问题": {func(in *service.PathReadinessInput) { in.ConfigIssues = issue }, model.RunReadinessConfigIssue},
 		"人员解析不唯一":  {func(in *service.PathReadinessInput) { in.PersonIssues = issue }, model.RunReadinessPersonNotUnique},
 		"路径拓扑已变":   {func(in *service.PathReadinessInput) { in.TopologyIssues = issue }, model.RunReadinessTopologyChanged},
-		"成功断言失效": {func(in *service.PathReadinessInput) { in.AssertionIssues = issue },
-			model.RunReadinessAssertionInvalid},
 		"编译场景为空": {func(in *service.PathReadinessInput) { in.CompiledStepCount = 0 },
 			model.RunReadinessCompiledScenarioEmpty},
 	}
@@ -168,7 +162,6 @@ func TestNonActionableFactsAreRemindersNotBlocks(t *testing.T) {
 		mutate   func(*service.PathReadinessInput)
 		wantKind string
 	}{
-		"未指定成功节点": {func(in *service.PathReadinessInput) { in.Assertion = nil }, model.RunReadinessAssertionMissing},
 		"动作尚未被真实写验证过": {func(in *service.PathReadinessInput) {
 			in.ConfiguredActions = []model.ActionKey{model.ActionSubmit}
 		}, model.RunReadinessActionNotVerified},

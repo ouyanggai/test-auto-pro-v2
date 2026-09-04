@@ -1,4 +1,4 @@
-import type { PathSuccessAssertion, PlanRunReadiness, SuccessAssertionWorkspace } from './types'
+import type { PlanRunReadiness } from './types'
 
 interface ApiSuccess<T> {
   success: true
@@ -47,28 +47,6 @@ async function request<T>(url: string, init: RequestInit, signal?: AbortSignal):
     throw new RunReadinessApiError(failure.error?.message || '运行准备操作失败，请重试', failure.error?.code, failure.error?.retryable)
   }
   return envelope.data
-}
-
-// fetchSuccessAssertion 读取单条路径的断言工作区：真实候选、目标真实状态与已保存断言。
-export function fetchSuccessAssertion(planId: string, pathId: string, signal?: AbortSignal): Promise<SuccessAssertionWorkspace> {
-  return request<SuccessAssertionWorkspace>(
-    `/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/success-assertion`,
-    { method: 'GET' },
-    signal,
-  )
-}
-
-// saveSuccessAssertion 保存单条路径的成功断言；revision 用于并发保存冲突检测，首次保存传 0。
-export function saveSuccessAssertion(
-  planId: string,
-  pathId: string,
-  payload: { endNodeKey: string, expectedStatus: string, arrivalOrdinal: number, revision: number },
-  idempotencyKey: string,
-): Promise<PathSuccessAssertion> {
-  return request<PathSuccessAssertion>(
-    `/api/plans/${encodeURIComponent(planId)}/execution-paths/${encodeURIComponent(pathId)}/success-assertion`,
-    { method: 'PUT', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(payload) },
-  )
 }
 
 // fetchPlanRunReadiness 读取运行前检查结论，只读，不启动任何运行。

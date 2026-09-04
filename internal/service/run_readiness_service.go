@@ -48,71 +48,23 @@ type runReadinessPathAnalyzer interface {
 // RunReadinessService 组装成功断言工作区与计划运行准备结论。
 // 它只读目标与数据库既有事实，不发写请求，也不自动修正任何已保存配置。
 type RunReadinessService struct {
-	plans      *PlanService
-	paths      repository.ExecutionPathRepository
-	graphs     runReadinessGraphReader
-	assertions repository.PathSuccessAssertionStore
-	configs    repository.HistoryPathConfigStore
-	analyzer   runReadinessPathAnalyzer
-	now        func() time.Time
+	plans    *PlanService
+	paths    repository.ExecutionPathRepository
+	graphs   runReadinessGraphReader
+	configs  repository.HistoryPathConfigStore
+	analyzer runReadinessPathAnalyzer
+	now      func() time.Time
 }
 
 // NewRunReadinessService 组装计划、路径、真实结构、断言与路径配置的只读边界。
 func NewRunReadinessService(plans *PlanService, paths repository.ExecutionPathRepository, graphs runReadinessGraphReader,
-	assertions repository.PathSuccessAssertionStore, configs repository.HistoryPathConfigStore,
+	configs repository.HistoryPathConfigStore,
 	pathAnalyzer runReadinessPathAnalyzer, now func() time.Time) *RunReadinessService {
 	if now == nil {
 		now = time.Now
 	}
 	return &RunReadinessService{plans: plans, paths: paths, graphs: graphs,
-		assertions: assertions, configs: configs, analyzer: pathAnalyzer, now: now}
-}
-
-// AssertionWorkspace 返回断言卡片一次读取所需的全部内容：真实候选、目标真实状态与已保存断言。
-func (s *RunReadinessService) AssertionWorkspace(ctx context.Context, planID, pathID uint64) (model.SuccessAssertionWorkspace, error) {
-	candidates, _, err := s.pathCandidates(ctx, planID, pathID)
-	if err != nil {
-		return model.SuccessAssertionWorkspace{}, err
-	}
-	workspace := model.SuccessAssertionWorkspace{
-		EndNodeCandidates: candidates,
-		StatusOptions:     model.FlowInstanceStatusOptions(),
-		Issues:            []model.PathConfigAffectedItem{},
-	}
-	assertion, err := s.assertions.Get(ctx, planID, pathID)
-	switch {
-	case errors.Is(err, repository.ErrPathSuccessAssertionNotFound):
-		return workspace, nil
-	case err != nil:
-		return model.SuccessAssertionWorkspace{}, storageError("暂时无法读取成功断言，请重试")
-	}
-	workspace.Assertion = &assertion
-	workspace.Issues = RevalidateSuccessAssertion(candidates, assertion)
-	return workspace, nil
-}
-
-// SaveAssertion 校验并保存单条路径的成功断言；校验不通过时给中文原因，绝不自动修正取值。
-func (s *RunReadinessService) SaveAssertion(ctx context.Context, planID, pathID uint64, input SuccessAssertionInput, idempotencyKey string) (model.PathSuccessAssertion, error) {
-	candidates, _, err := s.pathCandidates(ctx, planID, pathID)
-	if err != nil {
-		return model.PathSuccessAssertion{}, err
-	}
-	assertion, reason := ValidateSuccessAssertion(candidates, input)
-	if reason != "" {
-		return model.PathSuccessAssertion{}, &RunReadinessError{Kind: RunReadinessErrorInvalid, Message: reason}
-	}
-	assertion.PathID = pathID
-	saved, err := s.assertions.Save(ctx, planID, assertion, input.Revision, idempotencyKey, s.now().UTC())
-	switch {
-	case errors.Is(err, repository.ErrPathSuccessAssertionPathNotFound):
-		return model.PathSuccessAssertion{}, notFoundError("执行路径不存在")
-	case errors.Is(err, repository.ErrPathSuccessAssertionRevisionConflict):
-		return model.PathSuccessAssertion{}, &RunReadinessError{
-			Kind: RunReadinessErrorConflict, Message: "成功断言已被其他人改过，请刷新后重新配置"}
-	case err != nil:
-		return model.PathSuccessAssertion{}, storageError("成功断言保存失败，请重试")
-	}
-	return saved, nil
+		configs: configs, analyzer: pathAnalyzer, now: now}
 }
 
 // PlanReadiness 聚合一个计划下每条路径的运行准备结论。
@@ -166,10 +118,6 @@ func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, 
 		summary.Choices = choicesByPath[summary.ID]
 		paths = append(paths, summary)
 	}
-	assertions, err := s.assertions.ListByPlan(ctx, planID)
-	if err != nil {
-		return model.PlanRunReadiness{}, storageError("暂时无法读取成功断言，请重试")
-	}
 	// 真实结构读失败不掩盖：整份结论直接给目标错误，不允许悄悄退化成"没有拓扑问题"。
 	graph, err := s.graphs.Get(ctx, planID)
 	if err != nil {
@@ -178,21 +126,15 @@ func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, 
 	}
 	results := make([]model.PathRunReadiness, 0, len(paths))
 	for _, path := range paths {
-		results = append(results, EvaluatePathReadiness(s.pathInput(ctx, graph, path, assertions)))
+		results = append(results, EvaluatePathReadiness(s.pathInput(ctx, graph, path)))
 	}
 	return AggregatePlanReadiness(results), nil
 }
 
 // pathInput 把一条路径的既有事实读齐后交给纯聚合函数。
-func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGraph, path model.ExecutionPath, assertions map[uint64]model.PathSuccessAssertion) PathReadinessInput {
+func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGraph, path model.ExecutionPath) PathReadinessInput {
 	input := PathReadinessInput{Path: path}
-	candidates, topologyIssues := s.candidatesFromGraph(graph, path)
-	input.TopologyIssues = topologyIssues
-	if assertion, ok := assertions[path.ID]; ok {
-		stored := assertion
-		input.Assertion = &stored
-		input.AssertionIssues = RevalidateSuccessAssertion(candidates, stored)
-	}
+	input.TopologyIssues = s.topologyIssues(graph, path)
 	config, found, err := s.configs.GetPathConfig(ctx, path.ID)
 	if err != nil || !found {
 		// 读不到配置就按"没有配置记录"处理：节点配置与数据两项本身已由路径状态阻塞。
@@ -205,40 +147,22 @@ func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGra
 	return input
 }
 
-// candidatesFromGraph 推导结束节点候选；分析失败或选择不完整都算路径拓扑与真实结构不一致。
-func (s *RunReadinessService) candidatesFromGraph(graph model.FlowGraph, path model.ExecutionPath) ([]model.SuccessAssertionEndNodeCandidate, []model.PathConfigAffectedItem) {
+// topologyIssues 复验路径与当前真实流程结构是否仍然一致；分析失败或选择不完整都算不一致。
+func (s *RunReadinessService) topologyIssues(graph model.FlowGraph, path model.ExecutionPath) []model.PathConfigAffectedItem {
 	analysis, err := s.analyzer.Analyze(graph, path.Choices)
 	if err != nil {
-		return nil, []model.PathConfigAffectedItem{{
+		return []model.PathConfigAffectedItem{{
 			Kind: "topology", Name: pathDisplayName(path),
 			Reason: "这条路径的分支选择在当前真实流程结构里已不成立，请重新确认路径",
 		}}
 	}
 	if !analysis.Complete {
-		return SuccessAssertionCandidates(graph, analysis), []model.PathConfigAffectedItem{{
+		return []model.PathConfigAffectedItem{{
 			Kind: "topology", Name: pathDisplayName(path),
 			Reason: "当前真实流程结构里还有路由节点没有对应的分支选择，请重新确认路径",
 		}}
 	}
-	return SuccessAssertionCandidates(graph, analysis), nil
-}
-
-// pathCandidates 读取单条路径的真实候选，供断言卡片与保存校验共用同一份来源。
-func (s *RunReadinessService) pathCandidates(ctx context.Context, planID, pathID uint64) ([]model.SuccessAssertionEndNodeCandidate, model.ExecutionPath, error) {
-	path, err := s.paths.Get(ctx, planID, pathID)
-	if err != nil {
-		if errors.Is(err, repository.ErrExecutionPathNotFound) {
-			return nil, model.ExecutionPath{}, notFoundError("执行路径不存在")
-		}
-		return nil, model.ExecutionPath{}, storageError("暂时无法读取执行路径，请重试")
-	}
-	graph, err := s.graphs.Get(ctx, planID)
-	if err != nil {
-		return nil, model.ExecutionPath{}, &RunReadinessError{
-			Kind: RunReadinessErrorTarget, Message: "暂时无法读取目标流程结构，请重试"}
-	}
-	candidates, _ := s.candidatesFromGraph(graph, path)
-	return candidates, path, nil
+	return nil
 }
 
 // pathDisplayName 给出路径的界面名称，缺名时用序号兜底。

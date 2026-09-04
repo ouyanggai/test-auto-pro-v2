@@ -8,10 +8,6 @@ const (
 	RunReadinessFormData = "form_data"
 	// RunReadinessConfigIssue 路径配置里已记录的问题，原样透出不改写文案。
 	RunReadinessConfigIssue = "config_issue"
-	// RunReadinessAssertionMissing 这条路径还没有配置成功断言。
-	RunReadinessAssertionMissing = "assertion_missing"
-	// RunReadinessAssertionInvalid 已保存的成功断言复验不通过。
-	RunReadinessAssertionInvalid = "assertion_invalid"
 	// RunReadinessCompiledScenarioEmpty 编译场景为空，没有可执行步骤。
 	RunReadinessCompiledScenarioEmpty = "compiled_scenario_empty"
 	// RunReadinessActionNotVerified 路径包含尚未由真实写验证过的动作。

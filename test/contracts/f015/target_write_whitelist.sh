@@ -24,12 +24,8 @@ write_endpoints=(
 )
 
 f015_sources=(
-  internal/engine/assert
   internal/service/run_readiness.go
   internal/service/run_readiness_service.go
-  internal/service/path_success_assertion.go
-  internal/repository/path_success_assertion.go
-  internal/repository/mysql/path_success_assertion_repository.go
   internal/api/run_readiness.go
   web/src/features/run-readiness
 )

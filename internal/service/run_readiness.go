@@ -10,10 +10,9 @@ import (
 
 // 运行准备面板的锚点，与前端面板一一对应；只用固定取值，前端不自造锚点。
 const (
-	runReadinessAnchorNodes     = "node-configuration"
-	runReadinessAnchorFormData  = "form-data"
-	runReadinessAnchorAssertion = "success-assertion"
-	runReadinessAnchorPath      = "path"
+	runReadinessAnchorNodes    = "node-configuration"
+	runReadinessAnchorFormData = "form-data"
+	runReadinessAnchorPath     = "path"
 )
 
 // verifiedRunnableActions 是"已被真实写验证过、允许执行器执行"的动作子集。
@@ -48,10 +47,6 @@ type PathReadinessInput struct {
 	PersonIssues []model.PathConfigAffectedItem
 	// TopologyIssues 是路径与当前真实流程结构复验的问题。
 	TopologyIssues []model.PathConfigAffectedItem
-	// Assertion 为空表示这条路径还没有配置成功断言。
-	Assertion *model.PathSuccessAssertion
-	// AssertionIssues 是成功断言只读复验的问题。
-	AssertionIssues []model.PathConfigAffectedItem
 	// PendingSemanticsEntries 是本路径动作涉及、但在语义清单里仍标"待实测"的条目名。
 	PendingSemanticsEntries []string
 	// Reminders 是只提醒不阻塞的事项，由调用方按计划与部署事实给出。
@@ -84,16 +79,6 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 	blocks = append(blocks, itemsFrom(input.PersonIssues, model.RunReadinessPersonNotUnique, runReadinessAnchorNodes)...)
 	blocks = append(blocks, itemsFrom(input.TopologyIssues, model.RunReadinessTopologyChanged, runReadinessAnchorPath)...)
 	reminders := append([]model.RunReadinessItem{}, input.Reminders...)
-	// 成功断言默认就是"把流程走完"，指定成功节点是可选能力（像断点一样）。
-	// 因此未配置断言不是阻塞，只提醒用户当前按默认口径判定。
-	if input.Assertion == nil {
-		reminders = append(reminders, model.RunReadinessItem{
-			Kind: model.RunReadinessAssertionMissing, Name: pathName,
-			Reason: "没有指定成功节点，默认按跑完整个流程判定成功",
-			Anchor: runReadinessAnchorAssertion,
-		})
-	}
-	blocks = append(blocks, itemsFrom(input.AssertionIssues, model.RunReadinessAssertionInvalid, runReadinessAnchorAssertion)...)
 	if input.ConfigFound && input.CompiledStepCount == 0 {
 		blocks = append(blocks, model.RunReadinessItem{
 			Kind: model.RunReadinessCompiledScenarioEmpty, Name: pathName,
