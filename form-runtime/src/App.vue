@@ -35,7 +35,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { buildValuesEnvelope, captureFormValues, clonePlain, formRuntimeStats, prepareTemplate, reconcileLinkedSelectValues, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -91,7 +91,10 @@ export default {
 			department_manager_name: 'department_manager_id'
 		},
 		removeStorageFacade: null,
-		stateTimer: null
+		stateTimer: null,
+		// 选项型字段补丁协调：补丁触及的字段集合与最近一次协调产生的阻断问题。
+		optionPatchTriggers: [],
+		optionCoordinationIssues: []
     }
   },
   mounted () {
@@ -222,6 +225,7 @@ export default {
         this.hiddenFields = prepared.hiddenFields
         this.requiredEditableFields = prepared.requiredEditableFields
         this.changedFields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
+        this.optionPatchTriggers = [...this.changedFields]
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
         await this.$nextTick()
@@ -239,6 +243,7 @@ export default {
       if (command.type === 'setData') {
         const nextValues = clonePlain(payload.values || {})
         this.changedFields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : this.changedFields
+        this.optionPatchTriggers = [...this.changedFields]
         await this.$nextTick()
         await this.setData(nextValues)
         // setData 只用于来源切换后的整份原始值替换；替换成功即成为新的恢复基线，避免恢复按钮回到旧来源快照。
@@ -286,7 +291,11 @@ export default {
       // 字段权限已在 FormMaking 装载前写入每个组件 options；refresh 后统一调用 disabled 会击穿缺少 disabledElement 的已注册组件。
       const form = this.form()
       await refreshPreparedForm(form)
-      this.values = await reconcileLinkedSelectValues(form, this.values)
+      // 选项型字段补丁协调：等待控件自己的远程选项就绪，按名称唯一匹配回填绑定值并重放联动；
+      // 无法唯一匹配且显示仍停留在历史值的字段产生阻断问题。
+      const coordination = await coordinateOptionPatches(form, this.template, this.values, this.optionPatchTriggers)
+      this.values = coordination.values
+      this.optionCoordinationIssues = coordination.issues
       await replayFieldChangeEvents(form, this.changedFields)
       if (this.changedFields.length > 0 && typeof form.getValues === 'function') this.values = clonePlain(form.getValues() || {})
       this.changedFields = []
@@ -429,6 +438,7 @@ export default {
       const form = this.form()
       const values = await captureFormValues(form, validate)
       this.values = values
+      this.optionCoordinationIssues = optionCoordinationIssues(form, this.template, this.values, this.optionPatchTriggers)
 		return buildValuesEnvelope({
         values, validated: validate, unsupported: this.unsupported, dirty: this.dirty,
 		issues: this.combinedIssues(), renderType: this.renderType,
@@ -448,7 +458,7 @@ export default {
 	  return result
 	},
 	combinedIssues (additional = []) {
-	  return this.mergeIssues(this.requestPolicyIssues, this.runtimeIssues, additional)
+	  return this.mergeIssues(this.requestPolicyIssues, this.runtimeIssues, this.optionCoordinationIssues, additional)
 	},
     // stats 返回当前原始值在可编辑字段中的填写统计，供宿主展示人工待处理数量。
     stats (values = this.values) {
@@ -495,6 +505,8 @@ export default {
 		this.requestPolicyObservations = []
 		this.requestPolicyIssues = []
       this.runtimeIssues = []
+      this.optionPatchTriggers = []
+      this.optionCoordinationIssues = []
 		this.indicatorHeaderVisible = false
 		this.relationOrganizationVisible = false
 		this.fielSelectType = ''

@@ -157,7 +157,8 @@ func TestGetDataKeepsDataWhenDirectoryMissing(t *testing.T) {
 	}
 }
 
-// TestGetDataReportsUnresolvedCompanyLink 锁定同名多家公司时保留原值并给出非阻断问题。
+// TestGetDataReportsUnresolvedCompanyLink 锁定同名多家公司时保留原值并给出阻断问题：
+// 保留即意味着控件继续显示并提交历史公司，这种矛盾状态必须阻断并提示用户处理。
 func TestGetDataReportsUnresolvedCompanyLink(t *testing.T) {
 	directory := &fakeCompanyDirectory{
 		byID:   map[string]string{"old-company-id": "广西润兴电力有限公司"},
@@ -175,8 +176,8 @@ func TestGetDataReportsUnresolvedCompanyLink(t *testing.T) {
 	for _, issue := range configuration.Issues {
 		if issue.Code == "COMPANY_LINK_UNRESOLVED" {
 			found = true
-			if issue.Blocking {
-				t.Fatalf("解析失败是非阻断问题，不应阻断保存与执行：%+v", issue)
+			if !issue.Blocking {
+				t.Fatalf("无法完成补丁映射必须是阻断问题：%+v", issue)
 			}
 			if issue.Path != "applicationFundsVo_payCompanyId" {
 				t.Fatalf("问题没有定位到下拉字段：%+v", issue)
@@ -184,11 +185,11 @@ func TestGetDataReportsUnresolvedCompanyLink(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("同名多家公司时没有记录非阻断问题：%+v", configuration.Issues)
+		t.Fatalf("同名多家公司时没有记录阻断问题：%+v", configuration.Issues)
 	}
 }
 
-// TestGetDataReportsCompanyDirectoryFailure 锁定目录读取失败时保留原值并给出非阻断问题。
+// TestGetDataReportsCompanyDirectoryFailure 锁定目录读取失败时保留原值并给出阻断问题。
 func TestGetDataReportsCompanyDirectoryFailure(t *testing.T) {
 	directory := &fakeCompanyDirectory{
 		byID:      map[string]string{"old-company-id": "广西润兴电力有限公司"},
@@ -204,12 +205,12 @@ func TestGetDataReportsCompanyDirectoryFailure(t *testing.T) {
 	}
 	found := false
 	for _, issue := range configuration.Issues {
-		if issue.Code == "COMPANY_LINK_UNRESOLVED" && !issue.Blocking {
+		if issue.Code == "COMPANY_LINK_UNRESOLVED" && issue.Blocking {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("目录读取失败时没有记录非阻断问题：%+v", configuration.Issues)
+		t.Fatalf("目录读取失败时没有记录阻断问题：%+v", configuration.Issues)
 	}
 }
 
@@ -252,4 +253,89 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatalf("JSON 编码失败：%v", err)
 	}
 	return raw
+}
+
+// identityTargetReader 在固定快照读取器上补充目标运行时会话身份，模拟计划账号登录成功。
+type identityTargetReader struct {
+	workspaceTargetReader
+}
+
+// FormRuntimeSession 返回固定的计划账号身份。
+func (r identityTargetReader) FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error) {
+	return target.FormRuntimeSession{
+		SID: "session-a", BaseURL: "http://target.example", AccountName: "计划账号",
+		UserID: "user-plan", CompanyID: "company-plan", CompanyName: "计划公司",
+		DepartmentID: "dept-plan", DepartmentName: "计划部门",
+	}, nil
+}
+
+// TestRepaceUserIdentityValuesOnlyTouchesGlobalContextField 锁定替换只作用于目标登录人上下文字段本身。
+func TestReplaceUserIdentityValuesOnlyTouchesGlobalContextField(t *testing.T) {
+	values := map[string]any{
+		"global_user_basic_information": map[string]any{"userId": "old-user", "userName": "原发起人", "dutyId": "旧岗位"},
+		"expenseUserName":               "原发起人",
+	}
+	replaced := service.RuntimeUserIdentityForTest("user-plan", "计划账号", "company-plan", "计划公司", "dept-plan", "计划部门")
+	service.ReplaceUserIdentityValuesForTest(values, replaced)
+	identity := values["global_user_basic_information"].(map[string]any)
+	if identity["userId"] != "user-plan" || identity["userName"] != "计划账号" || identity["companyId"] != "company-plan" {
+		t.Fatalf("登录人上下文没有替换为计划账号：%+v", identity)
+	}
+	if identity["departmentId"] != "dept-plan" || identity["departmentName"] != "计划部门" {
+		t.Fatalf("部门身份没有替换为计划账号：%+v", identity)
+	}
+	if identity["dutyId"] != "" || identity["dutyName"] != "" {
+		t.Fatalf("运行时会话不含岗位信息，不允许伪造岗位值：%+v", identity)
+	}
+	if values["expenseUserName"] != "原发起人" {
+		t.Fatalf("业务选择字段被误当作登录人上下文替换：%v", values["expenseUserName"])
+	}
+	absent := map[string]any{"amount": 1}
+	service.ReplaceUserIdentityValuesForTest(absent, service.RuntimeUserIdentityForTest("user-plan", "计划账号", "company-plan", "计划公司", "dept-plan", "计划部门"))
+	if _, exists := absent["global_user_basic_information"]; exists {
+		t.Fatalf("历史数据没有该字段时不应新增：%+v", absent)
+	}
+}
+
+// TestGetDataReplacesUserIdentityWithPlanAccount 锁定读取边界的身份替换：打开表单数据页看到的就是计划账号身份。
+func TestGetDataReplacesUserIdentityWithPlanAccount(t *testing.T) {
+	plan := model.Plan{ID: 671, Account: "account-plan", FlowSource: "new", TargetObjectID: "flow-pay", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 671, PlanID: plan.ID, SequenceNo: 1, Name: "身份路径"}
+	store := newWorkspaceHistoryStore()
+	store.snapshots[901] = model.HistorySnapshot{
+		ID: 901, PlanID: plan.ID, CandidateKey: "candidate-identity", FlowCode: "flow-pay", FormName: "请款单", FlowName: "请款单流程",
+		RuntimeType: string(target.FormRenderTypeFormMaking), TemplateSummary: map[string]any{}, RawFormData: map[string]any{},
+	}
+	store.defaults[plan.ID] = repository.HistoryDefaultRecord{PlanID: plan.ID, SnapshotID: 901, Revision: 1}
+	store.configs[path.ID] = repository.HistoryPathConfigRecord{
+		PathID: path.ID, Revision: 3, DataRevision: 3, SourceMode: model.HistorySourceModeDefault,
+		DataStatus:        model.HistoryDataStatusReady,
+		EffectiveFormData: []byte(`{"global_user_basic_information":{"userId":"old-user","userName":"原发起人","companyId":"old-company","companyName":"原公司","departmentId":"old-dept","departmentName":"原部门","dutyId":"旧岗位","dutyName":"旧岗位名"},"amount":1}`),
+	}
+	reader := identityTargetReader{workspaceTargetReader: workspaceTargetReader{snapshot: target.PathConfigurationSnapshot{
+		Tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Type: "end"}}, EntryNodeIDs: []string{"start"},
+		FlowCode: "flow-pay", FlowName: "请款单流程", RenderType: target.FormRenderTypeFormMaking,
+		Forms: []target.FormRuntimeTemplate{{Name: "请款单", TemplateData: `{"list":[{"type":"number","model":"amount"}]}`}},
+	}}}
+	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(),
+		&workspacePathRepository{paths: []model.ExecutionPath{path}})
+	configService.SetHistoryWorkspaceStores(store, store)
+	configuration, err := configService.GetData(context.Background(), plan.ID, path.ID)
+	if err != nil {
+		t.Fatalf("读取数据工作区失败：%v", err)
+	}
+	identity, ok := configuration.EffectiveFormData["global_user_basic_information"].(map[string]any)
+	if !ok {
+		t.Fatalf("登录人上下文字段丢失：%+v", configuration.EffectiveFormData)
+	}
+	if identity["userId"] != "user-plan" || identity["userName"] != "计划账号" || identity["departmentName"] != "计划部门" {
+		t.Fatalf("读取边界没有替换为计划账号身份：%+v", identity)
+	}
+	if identity["dutyId"] != "" {
+		t.Fatalf("岗位信息被伪造：%+v", identity)
+	}
+	if fmt.Sprintf("%v", configuration.EffectiveFormData["amount"]) != "1" {
+		t.Fatalf("业务字段被身份替换波及：%v", configuration.EffectiveFormData["amount"])
+	}
 }

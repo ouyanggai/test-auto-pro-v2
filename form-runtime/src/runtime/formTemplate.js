@@ -197,45 +197,342 @@ async function waitForFormUpdate (form) {
   await new Promise(resolve => setTimeout(resolve, 0))
 }
 
-// reconcileLinkedSelectValues 在目标下拉选项就绪后按显示名称回填对应 ID，
-// 解决分支补丁只改变名称字段时，FormMaking 仍按历史 ID 显示旧选项的问题。
-export async function reconcileLinkedSelectValues (form, values, retries = 20) {
-  if (!form || typeof form.setData !== 'function') return clonePlain(values || {})
-  const current = clonePlain(values || {})
-  if (!hasLinkedSelectCandidate(form, current)) return current
-  const attempts = Math.max(1, Number(retries) || 1)
-  let optionsRequested = false
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    if (!optionsRequested) optionsRequested = await refreshLinkedSelectOptions(form)
-    const patches = linkedSelectPatches(form, current)
-    if (Object.keys(patches).length > 0) {
-      await form.setData(patches)
-      await replayFieldChangeEvents(form, Object.keys(patches))
-      Object.assign(current, patches)
-      if (typeof form.getValues === 'function') Object.assign(current, clonePlain(form.getValues() || {}))
-      return current
+// ============ 选项型字段补丁协调 ============
+// 目标平台的分支条件常按"显示名称"声明，最小补丁只改名称字段；而选项型控件真正绑定的是取值
+// （Id、路径数组或选项值），不同步就会保留历史绑定值，控件按选项匹配继续显示旧名称。
+// 这里的协调逻辑对所有选项型控件通用：枚举模板声明的控件与绑定路径，等待各自远程选项就绪，
+// 通过 FormMaking 公共选项 API 读取真实选项，按名称唯一匹配后回填绑定值并同步名称与虚拟显示字段，
+// 再重放原模板声明的 onChange 联动；无法唯一匹配时产生阻断问题，绝不猜测绑定值。
+
+const OPTION_WIDGET_TYPES = new Set(['select', 'radio', 'checkbox', 'cascader'])
+// 子表单是唯一把行数组写进模型值的容器；grid/report/table/tabs 等只是布局容器，不改变取值路径。
+const VALUE_GROUP_TYPES = new Set(['subform'])
+// 目标约定选项型控件绑定 Id 后缀字段，同前缀 Name 字段保存显示名称；这是平台级结构约定而非业务字段名。
+const ID_SUFFIX_PATTERN = /Id$/
+// 多选控件的名称字段可能以数组或分隔符文本保存，逐名解析后按顺序同步完整取值数组。
+const MULTI_NAME_SEPARATOR = /[、,，;；]/
+
+// optionFieldDescriptors 枚举模板中全部选项型控件及其实际绑定路径，含嵌套布局与子表单列。
+export function optionFieldDescriptors (template) {
+  const descriptors = []
+  const visit = (list, group) => {
+    for (const component of Array.isArray(list) ? list : []) {
+      const type = String(component && component.type || '').trim()
+      const model = String(component && component.model || '').trim()
+      if (VALUE_GROUP_TYPES.has(type)) {
+        visit(component.list, model || group)
+        continue
+      }
+      const options = (component && component.options) || {}
+      if (OPTION_WIDGET_TYPES.has(type) && model && options.dataBind !== false) {
+        descriptors.push({
+          model,
+          type,
+          group,
+          label: String(component.name || ''),
+          multiple: options.multiple === true,
+          remote: options.remote === true,
+          staticOptions: buildStaticOptions(options, type),
+        })
+      }
+      for (const children of componentLists(component)) visit(children, group)
     }
-    if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 100))
   }
-  return current
+  visit(template && template.list, '')
+  return descriptors
 }
 
-// refreshLinkedSelectOptions 主动等待远程下拉数据源，避免首次刷新只完成表单挂载而选项仍为空。
-async function refreshLinkedSelectOptions (form) {
-  if (typeof form?.refreshFieldOptionData !== 'function') return false
-  const fields = formItemContextEntries(form)
-    .filter(({ field, context }) => {
-      return String(context?.widget?.type || '').trim() === 'select' &&
-        field.endsWith('Id') && context?.widget?.options?.remote === true
-    })
-    .map(({ field }) => field)
-  if (fields.length === 0) return false
+// buildStaticOptions 归一化模板静态选项；展示口径与渲染层一致：showLabel 时显示 label，否则直接显示 value。
+// 级联的静态选项是取值/名称/子级的树，按声明 props 归一化后与远程选项同构。
+function buildStaticOptions (options, type) {
+  if (!options || !Array.isArray(options.options)) return []
+  if (type === 'cascader') {
+    const props = options.props && typeof options.props === 'object' ? options.props : { value: 'value', label: 'label' }
+    const walk = nodes => (Array.isArray(nodes) ? nodes : []).filter(Boolean).map(node => ({
+      value: node[props.value || 'value'],
+      label: node[props.label || 'label'],
+      children: walk(node.children),
+    }))
+    return walk(options.options)
+  }
+  const showLabel = options.showLabel === true || options.remote === true
+  return options.options.filter(Boolean).map(option => ({
+    value: option.value,
+    label: showLabel ? (option.label == null ? option.value : option.label) : option.value,
+  }))
+}
+
+// displayNameField 按目标"控件绑 Id、名称存同前缀 Name 字段"的结构约定推导成对名称字段；
+// 多选控件按平台惯例使用复数 Ids/Names，同样成对出现。
+function displayNameField (model) {
+  if (/Ids$/.test(model) && model.length > 3) return model.slice(0, -3) + 'Names'
+  if (ID_SUFFIX_PATTERN.test(model) && model.length > 2) return model.slice(0, -2) + 'Name'
+  return ''
+}
+
+// virtualNameField 是 FormMaking 为每个选项型控件维护的虚拟显示字段，也是兜底渲染选项的标签来源。
+function virtualNameField (model) {
+  return model + '__virtualName'
+}
+
+// descriptorTriggered 判断补丁是否触及该控件的名称或虚拟显示字段；只有被补丁波及的控件才需要协调，
+// 未被补丁波及的历史字段本身自洽，不做多余检查也不产生误导性问题。
+function descriptorTriggered (descriptor, triggers) {
+  if (!Array.isArray(triggers) || triggers.length === 0) return false
+  const nameField = displayNameField(descriptor.model)
+  const virtualField = virtualNameField(descriptor.model)
+  const prefix = descriptor.group ? descriptor.group + '.' : ''
+  return triggers.some(trigger => {
+    const path = String(trigger || '').trim()
+    return path !== '' && (path === prefix + nameField || path === prefix + virtualField)
+  })
+}
+
+// optionEntries 展开一个控件绑定路径下的全部绑定点：普通字段一个，子表单列按行展开。
+function optionEntries (values, descriptor) {
+  if (!descriptor.group) {
+    return [{ path: descriptor.model, container: values }]
+  }
+  const rows = values[descriptor.group]
+  if (!Array.isArray(rows)) return []
+  return rows.map((row, index) => (row && typeof row === 'object'
+    ? { path: descriptor.group + '.' + descriptor.model + '[' + index + ']', container: row }
+    : null)).filter(Boolean)
+}
+
+// entryValue 读取容器内字段值，兼容顶层键与嵌套路径两种形态。
+function entryValue (container, key) {
+  if (!container || !key) return undefined
+  if (Object.prototype.hasOwnProperty.call(container, key)) return container[key]
+  return modelValue(container, key)
+}
+
+// fieldOptions 读取控件当前真实选项：优先 FormMaking 公共选项 API（getOptionData 深拷贝，
+// 异步刷新后总是最新），静态选项回落模板声明，最后才是包装层组件引用，避免空选项误判。
+function fieldOptions (form, descriptor) {
   try {
-    await form.refreshFieldOptionData(fields)
+    const options = form && typeof form.getOptionData === 'function' ? form.getOptionData(descriptor.model) : null
+    if (Array.isArray(options) && options.length > 0) return options
+  } catch (_) {
+    // 字段实例尚未完成挂载时静默回落，不能中断只读历史回放。
+  }
+  if (!descriptor.remote && descriptor.staticOptions.length > 0) return descriptor.staticOptions
+  const context = formItemContext(form, descriptor.model)
+  const nested = context && context.$refs && context.$refs.generateElementItem
+  const remoteOptions = nested && nested.remoteOptions
+  return Array.isArray(remoteOptions) ? remoteOptions : []
+}
+
+// optionEntryState 计算一个绑定点的当前一致性状态。
+// consistent：绑定值按真实选项显示出的名称就是补丁目标名称（含"值不在选项里按虚拟名称兜底显示"）；
+// contradiction：显示出的仍是历史名称或绑定值为空；空选项时不能下结论，交由等待循环继续等数据源。
+function optionEntryState (descriptor, bound, virtual, options, desired) {
+  const expected = String(desired)
+  if (descriptor.type === 'cascader') return cascaderEntryState(bound, options, expected)
+  if (descriptor.multiple) return multipleEntryState(bound, options, expected)
+  if (isEmptyModelValue(bound)) return { state: 'contradiction', actual: '' }
+  const matched = options.find(option => option && String(option.value) === String(bound))
+  if (matched) {
+    return String(matched.label ?? '') === expected
+      ? { state: 'consistent', actual: String(matched.label ?? '') }
+      : { state: 'contradiction', actual: String(matched.label ?? '') }
+  }
+  return String(virtual ?? '') === expected
+    ? { state: 'consistent', actual: String(virtual ?? '') }
+    : { state: 'contradiction', actual: String(virtual ?? '') }
+}
+
+// multipleEntryState 多选按标签顺序整体比对：el-select 多选没有虚拟名称兜底，任一元素解析不出标签即显示异常。
+function multipleEntryState (bound, options, expected) {
+  const boundArray = Array.isArray(bound) ? bound : []
+  if (boundArray.length === 0) return { state: 'contradiction', actual: '' }
+  const labels = []
+  for (const value of boundArray) {
+    const matched = options.find(option => option && String(option.value) === String(value))
+    if (!matched) return { state: 'contradiction', actual: labels.join('、') }
+    labels.push(String(matched.label ?? ''))
+  }
+  return labels.join('、') === expected
+    ? { state: 'consistent', actual: labels.join('、') }
+    : { state: 'contradiction', actual: labels.join('、') }
+}
+
+// cascaderEntryState 级联按完整取值路径逐级解析标签；级联提交的是路径数组，只看叶子名称不够。
+function cascaderEntryState (bound, options, expected) {
+  if (isEmptyModelValue(bound)) return { state: 'contradiction', actual: '' }
+  const trail = Array.isArray(bound) ? bound.map(String) : [String(bound)]
+  const labels = []
+  let nodes = options
+  for (const value of trail) {
+    const node = Array.isArray(nodes) ? nodes.find(item => item && String(item.value) === value) : null
+    if (!node) break
+    labels.push(String(node.label ?? ''))
+    nodes = Array.isArray(node.children) ? node.children : []
+  }
+  if (labels.length !== trail.length) return { state: 'contradiction', actual: labels.join('/') }
+  return labels[labels.length - 1] === expected
+    ? { state: 'consistent', actual: expected }
+    : { state: 'contradiction', actual: labels.join('/') }
+}
+
+// desiredNameList 把补丁写入的显示名称展开为待匹配列表：单选一个，多选按数组或分隔符文本展开保持顺序。
+function desiredNameList (descriptor, desired) {
+  if (!descriptor.multiple) return [String(desired)]
+  if (Array.isArray(desired)) return desired.map(item => String(item).trim()).filter(Boolean)
+  return String(desired).split(MULTI_NAME_SEPARATOR).map(item => item.trim()).filter(Boolean)
+}
+
+// resolveOptionEntry 在当前真实选项中按名称唯一匹配补丁目标：单选与多选查平铺选项，
+// 级联查叶子并还原完整取值路径；找不到或多条同名一律拒绝解析，绝不猜测绑定值。
+function resolveOptionEntry (descriptor, options, desiredNames) {
+  if (descriptor.type === 'cascader') {
+    const leaves = cascaderLeafPaths(options, [])
+    const trails = []
+    for (const name of desiredNames) {
+      const matches = leaves.filter(leaf => leaf.label === name)
+      if (matches.length !== 1) return { resolved: false, reason: matches.length === 0 ? 'not-found' : 'ambiguous' }
+      trails.push(matches[0].trail)
+    }
+    return { resolved: true, value: descriptor.multiple ? trails : trails[0] }
+  }
+  const values = []
+  for (const name of desiredNames) {
+    const matches = options.filter(option => option && String(option.label ?? '') === name)
+    if (matches.length !== 1) return { resolved: false, reason: matches.length === 0 ? 'not-found' : 'ambiguous' }
+    values.push(matches[0].value)
+  }
+  return { resolved: true, value: descriptor.multiple ? values : values[0] }
+}
+
+// cascaderLeafPaths 深度收集叶子名称到取值路径的映射，供级联按名称还原完整路径。
+function cascaderLeafPaths (nodes, prefix) {
+  const paths = []
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (!node) continue
+    const trail = prefix.concat([node.value])
+    if (Array.isArray(node.children) && node.children.length > 0) {
+      paths.push(...cascaderLeafPaths(node.children, trail))
+    } else {
+      paths.push({ label: String(node.label ?? ''), trail })
+    }
+  }
+  return paths
+}
+
+// evaluateOptionPatches 只读评估全部被补丁波及的选项型绑定点。
+// apply=true 时把可唯一解析项写进 values（根字段进 patches，子表单列原地写行对象），否则只产出阻断问题。
+// 返回 waiting 表示仍有远程选项未就绪，需要外层继续等待后重新评估。
+function evaluateOptionPatches (form, descriptors, triggers, values, apply) {
+  const issues = []
+  const rootPatch = {}
+  const replayModels = new Set()
+  const touchedGroups = new Set()
+  let waiting = false
+  for (const descriptor of descriptors) {
+    if (!descriptorTriggered(descriptor, triggers)) continue
+    const options = fieldOptions(form, descriptor)
+    const nameField = displayNameField(descriptor.model)
+    const virtualField = virtualNameField(descriptor.model)
+    for (const entry of optionEntries(values, descriptor)) {
+      const nameRaw = entryValue(entry.container, nameField)
+      const virtual = entryValue(entry.container, virtualField)
+      const desired = (nameRaw == null || nameRaw === '') ? virtual : nameRaw
+      if (desired == null || desired === '') continue
+      const bound = entryValue(entry.container, descriptor.model)
+      const state = optionEntryState(descriptor, bound, virtual, options, desired)
+      if (state.state === 'consistent') continue
+      if (options.length === 0 && descriptor.remote) {
+        waiting = true
+        continue
+      }
+      const resolution = resolveOptionEntry(descriptor, options, desiredNameList(descriptor, desired))
+      if (!resolution.resolved) {
+        issues.push({
+          code: 'OPTION_PATCH_UNRESOLVED', status: 'blocked', source: 'iframe_runtime',
+          fieldPath: entry.path, fieldLabel: descriptor.label, operator: '',
+          expected: String(desired), actual: state.actual,
+          relatedFields: [nameField, virtualField].filter(Boolean),
+          message: resolution.reason === 'ambiguous'
+            ? '选项中存在多个同名项，无法唯一确定该字段绑定值，请手工核对该字段'
+            : '选项中找不到该名称对应的选项，无法完成补丁映射，请手工核对该字段',
+          canRetry: true,
+        })
+        continue
+      }
+      if (!apply) continue
+      entry.container[descriptor.model] = resolution.value
+      entry.container[virtualField] = desired
+      if (nameField && nameRaw !== undefined) entry.container[nameField] = desired
+      if (descriptor.group) {
+        touchedGroups.add(descriptor.group)
+      } else {
+        rootPatch[descriptor.model] = resolution.value
+        rootPatch[virtualField] = desired
+        if (nameField && nameRaw !== undefined) rootPatch[nameField] = desired
+        replayModels.add(descriptor.model)
+      }
+    }
+  }
+  return { issues, waiting, rootPatch, replayModels: [...replayModels], touchedGroups: [...touchedGroups] }
+}
+
+// refreshOptionFields 主动刷新被协调控件自己的远程选项数据源，避免首次刷新只完成挂载而选项仍为空。
+async function refreshOptionFields (form, descriptors) {
+  if (typeof form?.refreshFieldOptionData !== 'function') return false
+  const models = descriptors.filter(descriptor => descriptor.remote).map(descriptor => descriptor.model)
+  if (models.length === 0) return false
+  try {
+    await form.refreshFieldOptionData(models)
   } catch (_) {
     // 选项接口失败时保留原始值，不能让只读历史回放因辅助显示数据不可用而白屏。
   }
   return true
+}
+
+// coordinateOptionPatches 是选项型字段补丁协调入口：等待控件自己的远程选项、数据源加载完成后，
+// 在真实选项里按名称唯一匹配并回填绑定值，重放原模板声明的 onChange 联动并等待异步派生完成，
+// 再读取最终表单值。无法唯一匹配且显示仍停留在历史值的字段产生阻断问题：
+// 绝不猜测绑定值，也不保留"路径提示已是新名称、控件显示历史值"的矛盾状态。
+export async function coordinateOptionPatches (form, template, values, triggers = [], retries = 20) {
+  const current = clonePlain(values || {})
+  const patchTriggers = Array.isArray(triggers) ? triggers : []
+  if (!form || typeof form.setData !== 'function') return { values: current, issues: [] }
+  const descriptors = optionFieldDescriptors(template)
+  if (descriptors.length === 0 || patchTriggers.length === 0) return { values: current, issues: [] }
+  const attempts = Math.max(1, Number(retries) || 1)
+  let refreshed = false
+  let issues = []
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (!refreshed) refreshed = await refreshOptionFields(form, descriptors)
+    const evaluation = evaluateOptionPatches(form, descriptors, patchTriggers, current, true)
+    if (evaluation.replayModels.length > 0 || evaluation.touchedGroups.length > 0) {
+      const patch = clonePlain(evaluation.rootPatch)
+      for (const group of evaluation.touchedGroups) patch[group] = clonePlain(current[group])
+      if (Object.keys(patch).length > 0) await form.setData(patch)
+      // 回填绑定值后必须重放目标模板为该字段声明的 onChange 联动，补齐 setData 不会触发的派生字段计算。
+      await replayFieldChangeEvents(form, evaluation.replayModels)
+      await waitForFormUpdate(form)
+      if (typeof form.getValues === 'function') Object.assign(current, clonePlain(form.getValues() || {}))
+      continue
+    }
+    issues = evaluation.issues
+    if (evaluation.waiting && attempt + 1 < attempts) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      continue
+    }
+    break
+  }
+  return { values: current, issues }
+}
+
+// optionCoordinationIssues 只做只读一致性检查，不等待也不写入，供每次捕获值时刷新阻断问题：
+// 用户手工把字段改成一致取值后，阻断应立即解除而不是残留旧问题。
+export function optionCoordinationIssues (form, template, values, triggers = []) {
+  const patchTriggers = Array.isArray(triggers) ? triggers : []
+  if (!form || patchTriggers.length === 0) return []
+  const descriptors = optionFieldDescriptors(template)
+  if (descriptors.length === 0) return []
+  return evaluateOptionPatches(form, descriptors, patchTriggers, clonePlain(values || {}), false).issues
 }
 
 // replayFieldChangeEvents 重放目标模板为指定字段声明的 onChange 脚本，补齐 setData 不会触发的派生字段计算。
@@ -266,55 +563,11 @@ function formItemContextEntries (form) {
     .filter(Boolean).map(context => ({ field, context })))
 }
 
+// modelValue 读取嵌套路径值，兼容顶层键与点分路径两种取值口径。
 function modelValue (values, path) {
   if (values && Object.prototype.hasOwnProperty.call(values, path)) return values[path]
   return String(path || '').split('.').filter(Boolean)
     .reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, values)
-}
-
-// hasLinkedSelectCandidate 判断当前模板是否存在需要等待真实远程选项的 ID 下拉字段，普通表单不增加等待开销。
-function hasLinkedSelectCandidate (form, values) {
-  return formItemContextEntries(form).some(({ field, context }) => {
-    if (String(context?.widget?.type || '').trim() !== 'select' || !field.endsWith('Id')) return false
-    const nameModel = `${field.slice(0, -2)}Name`
-    return modelValue(values, nameModel) !== undefined || modelValue(values, `${field}__virtualName`) !== undefined
-  })
-}
-
-// linkedSelectPatches 仅使用 FormMaking 已加载的真实选项建立 Name/Id 关联，找不到唯一标签时保持原值。
-function linkedSelectPatches (form, values) {
-  const patches = {}
-  for (const { field, context } of formItemContextEntries(form)) {
-    const widget = context?.widget
-    if (String(widget?.type || '').trim() !== 'select' || !field.endsWith('Id')) continue
-    const nameModel = `${field.slice(0, -2)}Name`
-    const virtualModel = `${field}__virtualName`
-    const desired = modelValue(values, nameModel) ?? modelValue(values, virtualModel)
-    if (desired === undefined || desired === null || desired === '') continue
-    const options = linkedSelectOptions(form, field, context)
-    if (options.length === 0) continue
-    const matches = options.filter(option => option && String(option.label ?? '') === String(desired))
-    if (matches.length !== 1) continue
-    const option = matches[0]
-    const nextID = option.value
-    if (nextID === undefined || nextID === null || nextID === '') continue
-    patches[field] = nextID
-    patches[virtualModel] = String(option.label ?? desired)
-    if (modelValue(values, nameModel) !== undefined) patches[nameModel] = patches[virtualModel]
-  }
-  return patches
-}
-
-// linkedSelectOptions 优先读取 FormMaking 对字段实例公开的真实选项，避免包装组件的 ref 在异步刷新后仍停留在旧值。
-function linkedSelectOptions (form, field, context) {
-  try {
-    const options = form?.getOptionData?.(field)
-    if (Array.isArray(options) && options.length > 0) return options
-  } catch (_) {
-    // 字段实例尚未完成挂载时退回包装层，不能中断只读历史表单回放。
-  }
-  const options = context?.$refs?.generateElementItem?.remoteOptions
-  return Array.isArray(options) ? options : []
 }
 
 // isEmptyModelValue 判断值是否为空形态；初始默认模型里的空键不能误判为人工覆盖。

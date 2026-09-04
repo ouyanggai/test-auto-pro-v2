@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -36,7 +37,8 @@ type linkedCompanySelectPair struct {
 // 分支条件只按名称字段命中，最小补丁不会改动 ID 字段，历史 ID 残留会让下拉框显示旧公司：
 // FormMaking 按值匹配选项标签，匹配不到时才用 __virtualName 兜底显示。因此必须在服务端按目标公司表
 // 解析名称对应的真实 ID 并补齐虚拟显示值，界面回显、提交数据与路径提示才能三者一致。
-// 只读目录不可用时保持历史行为；检测到不一致但解析失败时保留原值并记录非阻断问题。
+// 目录不可用或无法唯一解析时保留原值并记录阻断问题：保留即意味着控件继续显示历史公司，
+// 这正是需要用户处理（改选公司或修正路径数据）的阻断场景，不能静默放过。
 func (s *PathConfigService) syncLinkedCompanySelects(ctx context.Context, template map[string]any, values map[string]any) []model.HistoryDataIssue {
 	if s == nil || s.companyDirectory == nil || len(values) == 0 {
 		return nil
@@ -54,14 +56,14 @@ func (s *PathConfigService) syncLinkedCompanySelects(ctx context.Context, templa
 		}
 		ids, err := s.companyDirectory.CompanyIDByName(ctx, nameValue)
 		if err != nil {
-			issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{Code: "COMPANY_LINK_UNRESOLVED", Path: pair.idField,
-				Message: "按名称解析公司真实 ID 失败，表单仍提交历史公司 ID：" + nameValue}})
+			issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{Code: "COMPANY_LINK_UNRESOLVED", Path: pair.idField, Blocking: true,
+				Message: "按名称解析公司真实 ID 失败，控件仍会显示并提交历史公司：" + nameValue}})
 			continue
 		}
 		// 同名多家公司无法确定目标身份，宁可保留历史 ID 也不能猜测，否则会写入错误的业务归属。
 		if len(ids) != 1 {
-			issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{Code: "COMPANY_LINK_UNRESOLVED", Path: pair.idField,
-				Message: "目标公司目录未能唯一匹配该公司，表单仍提交历史公司 ID：" + nameValue}})
+			issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{Code: "COMPANY_LINK_UNRESOLVED", Path: pair.idField, Blocking: true,
+				Message: "目标公司目录未能唯一匹配该公司，控件仍会显示并提交历史公司：" + nameValue}})
 			continue
 		}
 		values[pair.idField] = ids[0]
@@ -129,4 +131,77 @@ func templateNodeList(value any) []any {
 		return list
 	}
 	return nil
+}
+
+// targetGlobalUserIdentityField 是目标发起页提交表单时统一注入的登录人上下文字段名。
+// 目标 FlowDialog 在每次提交前用登录态覆盖该字段（userId/userName/companyId/companyName/
+// departmentId/departmentName/dutyId/dutyName），历史实例里保存的是原发起人身份。
+const targetGlobalUserIdentityField = "global_user_basic_information"
+
+// runtimeUserIdentity 是数据工作区替换登录人上下文所需的当前计划账号身份。
+type runtimeUserIdentity struct {
+	UserID         string
+	UserName       string
+	CompanyID      string
+	CompanyName    string
+	DepartmentID   string
+	DepartmentName string
+}
+
+// currentUserIdentity 读取计划账号在目标平台的当前身份；会话由会话管理器缓存，不额外触发登录。
+func (s *PathConfigService) currentUserIdentity(ctx context.Context, planID uint64) (runtimeUserIdentity, error) {
+	plan, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		return runtimeUserIdentity{}, err
+	}
+	reader, ok := s.target.(interface {
+		FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error)
+	})
+	if !ok {
+		return runtimeUserIdentity{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
+	}
+	active, err := reader.FormRuntimeSession(ctx, plan.Account)
+	if err != nil {
+		return runtimeUserIdentity{}, err
+	}
+	return runtimeUserIdentity{
+		UserID: active.UserID, UserName: active.AccountName,
+		CompanyID: active.CompanyID, CompanyName: active.CompanyName,
+		DepartmentID: active.DepartmentID, DepartmentName: active.DepartmentName,
+	}, nil
+}
+
+// replaceUserIdentityValues 把历史表单数据里目标提交时注入的登录人上下文字段替换为当前计划账号身份。
+// 目标在每次提交时都会用登录态覆盖该字段，回放值若保留原发起人身份，提交出去的数据会冒用他人身份；
+// 岗位信息由目标登录态携带而运行时会话不含岗位，保持为空，不伪造岗位值。
+func replaceUserIdentityValues(values map[string]any, identity runtimeUserIdentity) {
+	if values == nil {
+		return
+	}
+	if _, exists := values[targetGlobalUserIdentityField]; !exists {
+		return
+	}
+	values[targetGlobalUserIdentityField] = map[string]any{
+		"userId":         identity.UserID,
+		"userName":       identity.UserName,
+		"companyId":      identity.CompanyID,
+		"companyName":    identity.CompanyName,
+		"departmentId":   identity.DepartmentID,
+		"departmentName": identity.DepartmentName,
+		"dutyId":         "",
+		"dutyName":       "",
+	}
+}
+
+// ReplaceUserIdentityValuesForTest 暴露登录人上下文替换，供 test 目录下的定向用例锁定行为。
+func ReplaceUserIdentityValuesForTest(values map[string]any, identity runtimeUserIdentity) {
+	replaceUserIdentityValues(values, identity)
+}
+
+// RuntimeUserIdentityForTest 构造测试用登录人身份，避免为测试导出内部结构。
+func RuntimeUserIdentityForTest(userID, userName, companyID, companyName, departmentID, departmentName string) runtimeUserIdentity {
+	return runtimeUserIdentity{
+		UserID: userID, UserName: userName, CompanyID: companyID,
+		CompanyName: companyName, DepartmentID: departmentID, DepartmentName: departmentName,
+	}
 }

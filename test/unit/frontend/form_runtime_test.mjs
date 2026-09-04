@@ -5,7 +5,7 @@ import test from 'node:test'
 const runtimeSource = fs.readFileSync(new URL('../../../form-runtime/runtime-source/src/main.js', import.meta.url), 'utf8')
 const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
-const { captureFormValues, componentRuntimeName, formRuntimeStats, prepareTemplate, reconcileLinkedSelectValues, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
@@ -150,7 +150,8 @@ test('刷新会回填已填数据，避免 FormMaking 重新初始化清空 mode
   assert.deepEqual(form.model, { title: '人工填写', amount: 2500 })
 })
 
-test('分支补丁按真实下拉选项同步名称对应的 ID 和虚拟显示值', async () => {
+test('远程下拉按真实选项同步名称对应的绑定值、虚拟显示与名称字段', async () => {
+  const template = { list: [{ type: 'select', model: 'paymentId', name: '付款单位', options: { remote: true } }] }
   const form = {
     model: { paymentId: 'old-id', paymentId__virtualName: '旧付款单位', paymentName: '新付款单位' },
     // 真实 FormMaking 的 getComponent 返回 el-select；字段定义和选项属于 formItemContexts 包装组件。
@@ -164,13 +165,15 @@ test('分支补丁按真实下拉选项同步名称对应的 ID 和虚拟显示�
     async setData(values) { Object.assign(this.model, values) },
     getValues() { return this.model },
   }
-  const values = await reconcileLinkedSelectValues(form, form.model, 1)
-  assert.equal(values.paymentId, 'new-id')
-  assert.equal(values.paymentId__virtualName, '新付款单位')
-  assert.equal(values.paymentName, '新付款单位')
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['paymentName'], 1)
+  assert.equal(coordination.issues.length, 0)
+  assert.equal(coordination.values.paymentId, 'new-id')
+  assert.equal(coordination.values.paymentId__virtualName, '新付款单位')
+  assert.equal(coordination.values.paymentName, '新付款单位')
 })
 
 test('远程下拉选项为空时先刷新数据源再同步分支值', async () => {
+  const template = { list: [{ type: 'select', model: 'paymentId', options: { remote: true } }] }
   const select = { remoteOptions: [] }
   const form = {
     model: { paymentId: 'old-id', paymentId__virtualName: '旧付款单位', paymentName: '新付款单位' },
@@ -187,17 +190,18 @@ test('远程下拉选项为空时先刷新数据源再同步分支值', async ()
     getValues () { return this.model },
   }
 
-  const values = await reconcileLinkedSelectValues(form, form.model, 1)
-  assert.equal(values.paymentId, 'new-id')
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['paymentName'], 2)
+  assert.equal(coordination.values.paymentId, 'new-id')
 })
 
-test('付款单位优先使用 FormMaking 公共选项 API 同步真实远程选项', async () => {
+test('选项读取优先 FormMaking 公共选项 API 而非包装层引用', async () => {
   let refreshed = 0
+  const template = { list: [{ type: 'select', model: 'applicationFundsVo_payCompanyId', options: { remote: true } }] }
   const form = {
     model: {
       applicationFundsVo_payCompanyId: 'old-company-id',
-      applicationFundsVo_payCompanyId__virtualName: '广西润兴电力有限公司',
-      applicationFundsVo_payCompanyName: '临猗县斯能电力有限公司',
+      applicationFundsVo_payCompanyId__virtualName: '旧公司',
+      applicationFundsVo_payCompanyName: '新公司',
     },
     formItemContexts: {
       applicationFundsVo_payCompanyId: {
@@ -207,16 +211,222 @@ test('付款单位优先使用 FormMaking 公共选项 API 同步真实远程选
     async refreshFieldOptionData () { refreshed++ },
     getOptionData (field) {
       assert.equal(field, 'applicationFundsVo_payCompanyId')
-      return [{ value: 'new-company-id', label: '临猗县斯能电力有限公司' }]
+      return [{ value: 'new-company-id', label: '新公司' }]
     },
     async setData (values) { Object.assign(this.model, values) },
     getValues () { return this.model },
   }
 
-  const values = await reconcileLinkedSelectValues(form, form.model, 1)
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['applicationFundsVo_payCompanyName'], 1)
   assert.equal(refreshed, 1)
-  assert.equal(values.applicationFundsVo_payCompanyId, 'new-company-id')
-  assert.equal(values.applicationFundsVo_payCompanyId__virtualName, '临猗县斯能电力有限公司')
+  assert.equal(coordination.values.applicationFundsVo_payCompanyId, 'new-company-id')
+  assert.equal(coordination.values.applicationFundsVo_payCompanyId__virtualName, '新公司')
+})
+
+test('服务端已按主数据回填且值不在选项里时靠虚拟名称兜底，不产生问题也不改写', async () => {
+  const template = { list: [{ type: 'select', model: 'payCompanyId', options: { remote: true } }] }
+  let optionReads = 0
+  const form = {
+    model: {
+      payCompanyId: 'real-new-id',
+      payCompanyId__virtualName: '新公司',
+      payCompanyName: '新公司',
+    },
+    formItemContexts: { payCompanyId: { widget: { type: 'select', model: 'payCompanyId', options: { remote: true } } } },
+    async refreshFieldOptionData () {},
+    getOptionData () { optionReads++; return [{ value: 'other-id', label: '其他公司' }] },
+    async setData () { throw new Error('一致状态不允许写值') },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['payCompanyName'], 1)
+  assert.equal(optionReads, 1)
+  assert.equal(coordination.issues.length, 0)
+  assert.equal(coordination.values.payCompanyId, 'real-new-id')
+})
+
+test('多选按名称顺序同步完整取值数组', async () => {
+  const template = { list: [{ type: 'select', model: 'budgetIds', name: '预算项', options: { multiple: true, showLabel: true, options: [
+    { value: 'b1', label: '甲项' }, { value: 'b2', label: '乙项' }, { value: 'b3', label: '丙项' },
+  ] } }] }
+  const form = {
+    model: { budgetIds: ['b3'], budgetIds__virtualName: '丙项', budgetNames: ['甲项', '乙项'] },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['budgetNames'], 1)
+  assert.deepEqual(coordination.values.budgetIds, ['b1', 'b2'])
+  assert.deepEqual(coordination.values.budgetIds__virtualName, ['甲项', '乙项'])
+  assert.deepEqual(coordination.values.budgetNames, ['甲项', '乙项'])
+})
+
+test('级联按叶子名称唯一匹配并同步完整取值路径', async () => {
+  const template = { list: [{ type: 'cascader', model: 'regionPath', options: { options: [
+    { value: 'gd', label: '广东', children: [
+      { value: 'gza', label: '广州' },
+      { value: 'sz', label: '深圳' },
+    ] },
+    { value: 'sx', label: '山西', children: [{ value: 'ymsn', label: '深圳' }] },
+  ] } }] }
+  const form = {
+    model: { regionPath: ['gd', 'gza'], regionPath__virtualName: '广州' },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  // 补丁把虚拟名称改为“深圳”：树里“深圳”叶子出现两次，同名歧义必须阻断且绝不能猜测路径。
+  const patched = { regionPath: ['gd', 'gza'], regionPath__virtualName: '深圳' }
+  const ambiguous = await coordinateOptionPatches(form, template, patched, ['regionPath__virtualName'], 1)
+  assert.equal(ambiguous.issues.length, 1)
+  assert.equal(ambiguous.issues[0].code, 'OPTION_PATCH_UNRESOLVED')
+  assert.equal(ambiguous.issues[0].status, 'blocked')
+  assert.deepEqual(ambiguous.values.regionPath, ['gd', 'gza'], '歧义时保留原路径等待人工处理')
+
+  // 同一名称在树里唯一时，级联按完整取值路径回填。
+  const template2 = { list: [{ type: 'cascader', model: 'regionPath', options: { options: [
+    { value: 'gd', label: '广东', children: [
+      { value: 'gza', label: '广州' },
+      { value: 'sz', label: '深圳' },
+    ] },
+  ] } }] }
+  const resolved = await coordinateOptionPatches(form, template2, { regionPath: ['gd', 'gza'], regionPath__virtualName: '深圳' }, ['regionPath__virtualName'], 1)
+  assert.equal(resolved.issues.length, 0)
+  assert.deepEqual(resolved.values.regionPath, ['gd', 'sz'])
+  assert.equal(resolved.values.regionPath__virtualName, '深圳')
+})
+
+test('选项里找不到补丁名称且控件仍显示历史值时明确阻断', async () => {
+  const template = { list: [{ type: 'select', model: 'payCompanyId', options: { remote: true } }] }
+  const form = {
+    model: {
+      payCompanyId: 'old-id',
+      payCompanyId__virtualName: '旧公司',
+      payCompanyName: '不在选项里的公司',
+    },
+    formItemContexts: { payCompanyId: { widget: { type: 'select', model: 'payCompanyId', options: { remote: true } } } },
+    async refreshFieldOptionData () {},
+    getOptionData () { return [{ value: 'old-id', label: '旧公司' }] },
+    async setData () { throw new Error('找不到选项时绝不能写值') },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['payCompanyName'], 1)
+  assert.equal(coordination.issues.length, 1)
+  assert.equal(coordination.issues[0].code, 'OPTION_PATCH_UNRESOLVED')
+  assert.equal(coordination.issues[0].status, 'blocked')
+  assert.equal(coordination.issues[0].expected, '不在选项里的公司')
+  assert.equal(coordination.issues[0].actual, '旧公司')
+  assert.equal(coordination.values.payCompanyId, 'old-id', '阻断时必须保留原值等待人工处理')
+})
+
+test('选项中存在多个同名项时阻断且不猜测绑定值', async () => {
+  const template = { list: [{ type: 'select', model: 'companyId', options: { options: [
+    { value: 'c1', label: '同名公司' }, { value: 'c2', label: '同名公司' },
+  ] } }] }
+  const form = {
+    model: { companyId: 'c1', companyId__virtualName: '旧公司', companyName: '同名公司' },
+    async setData () { throw new Error('同名歧义时绝不能写值') },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['companyName'], 1)
+  assert.equal(coordination.issues.length, 1)
+  assert.equal(coordination.issues[0].status, 'blocked')
+  assert.equal(coordination.values.companyId, 'c1')
+})
+
+test('阻断问题随当前取值状态实时刷新', async () => {
+  const template = { list: [{ type: 'select', model: 'payCompanyId', options: { remote: true } }] }
+  const form = {
+    formItemContexts: { payCompanyId: { widget: { type: 'select', model: 'payCompanyId', options: { remote: true } } } },
+    async refreshFieldOptionData () {},
+    getOptionData () { return [{ value: 'old-id', label: '旧公司' }] },
+    getValues () { return this.model },
+  }
+  // 补丁名称在选项里不存在且绑定值仍显示历史公司：只读检查必须报阻断。
+  const blocked = optionCoordinationIssues(form, template, {
+    payCompanyId: 'old-id', payCompanyId__virtualName: '旧公司', payCompanyName: '新公司',
+  }, ['payCompanyName'])
+  assert.equal(blocked.length, 1)
+  assert.equal(blocked[0].status, 'blocked')
+  assert.equal(blocked[0].code, 'OPTION_PATCH_UNRESOLVED')
+  // 用户把名称改回选项里存在的历史公司后，显示与绑定值重新一致，阻断立即解除。
+  const cleared = optionCoordinationIssues(form, template, {
+    payCompanyId: 'old-id', payCompanyId__virtualName: '旧公司', payCompanyName: '旧公司',
+  }, ['payCompanyName'])
+  assert.equal(cleared.length, 0)
+})
+
+test('子表单列按行协调且补丁波及行字段才触发', async () => {
+  const template = { list: [{ type: 'subform', model: 'expenseBudgetList', list: [
+    { type: 'select', model: 'expenseCompanyId', options: { remote: true } },
+  ] }] }
+  const form = {
+    model: { expenseBudgetList: [
+      { expenseCompanyId: 'old-id', expenseCompanyId__virtualName: '旧公司', expenseCompanyName: '新公司' },
+      { expenseCompanyId: 'new-id', expenseCompanyId__virtualName: '新公司', expenseCompanyName: '新公司' },
+    ] },
+    getOptionData (field) {
+      assert.equal(field, 'expenseCompanyId')
+      return [{ value: 'new-id', label: '新公司' }, { value: 'keep-id', label: '保留公司' }]
+    },
+    async setData (values) { this.model.expenseBudgetList = values.expenseBudgetList },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['expenseBudgetList.expenseCompanyName'], 1)
+  assert.equal(coordination.values.expenseBudgetList[0].expenseCompanyId, 'new-id')
+  assert.equal(coordination.values.expenseBudgetList[1].expenseCompanyId, 'new-id', '已一致行保持原值')
+})
+
+test('回填绑定值后重放目标 onChange 联动并等待异步派生完成', async () => {
+  const template = { list: [{ type: 'select', model: 'payCompanyId', options: { remote: true } }] }
+  const replayed = []
+  const form = {
+    model: { payCompanyId: 'old-id', payCompanyName: '新公司' },
+    formItemContexts: {
+      payCompanyId: {
+        widget: { type: 'select', model: 'payCompanyId', options: { remote: true }, events: { onChange: 'companyChanged' } },
+        currentOptions: { fieldNode: 'payCompanyId' },
+      },
+    },
+    async refreshFieldOptionData () {},
+    getOptionData () { return [{ value: 'new-id', label: '新公司' }] },
+    $nextTick () { return new Promise(resolve => setTimeout(resolve, 0)) },
+    async setData (values) {
+      Object.assign(this.model, values)
+      // 模拟异步派生：联动脚本改写派生字段的时机晚于 setData 返回。
+      await new Promise(resolve => setTimeout(resolve, 0))
+      this.model.derivedFromCompany = '已联动'
+    },
+    getValues () { return this.model },
+    eventFunction: { companyChanged () { replayed.push(this.getValue ? this.getValue('payCompanyId') : 'missing') } },
+    getValue (key) { return this.model[key] },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['payCompanyName'], 1)
+  assert.deepEqual(replayed, ['new-id'])
+  assert.equal(coordination.values.derivedFromCompany, '已联动')
+})
+
+test('未波及的选项字段不参与协调', async () => {
+  const template = { list: [
+    { type: 'select', model: 'payCompanyId', options: { remote: true } },
+    { type: 'select', model: 'typeId', name: '类型', options: { remote: true } },
+  ] }
+  let optionReads = 0
+  const form = {
+    model: { payCompanyId: 'old-id', payCompanyName: '新公司', typeId: 't1', typeId__virtualName: '类型一', typeName: '类型一' },
+    formItemContexts: {
+      payCompanyId: { widget: { type: 'select', model: 'payCompanyId', options: { remote: true } } },
+      typeId: { widget: { type: 'select', model: 'typeId', options: { remote: true } } },
+    },
+    async refreshFieldOptionData () {},
+    getOptionData (field) {
+      optionReads++
+      return field === 'payCompanyId' ? [{ value: 'new-id', label: '新公司' }] : [{ value: 't1', label: '类型一' }]
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['payCompanyName'], 1)
+  assert.equal(coordination.issues.length, 0)
+  assert.equal(optionReads, 1, '只读取被补丁波及控件的选项')
+  assert.equal(coordination.values.typeId, 't1')
 })
 
 test('分支补丁字段会重放目标 onChange 以刷新派生值', async () => {

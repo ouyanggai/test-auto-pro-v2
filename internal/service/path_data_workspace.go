@@ -86,6 +86,10 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	if syncIssues := s.syncLinkedCompanySelects(ctx, template, values); len(syncIssues) > 0 {
 		issues = appendHistoryIssues(issues, syncIssues)
 	}
+	// 登录人上下文字段跟随当前计划账号：目标提交时总会用登录态覆盖该字段，历史发起人身份不能带进回放。
+	if identity, identityErr := s.currentUserIdentity(ctx, planID); identityErr == nil {
+		replaceUserIdentityValues(values, identity)
+	}
 	return model.PathConfigurationF012{
 		Path: pathConfigPath(path), Revision: stored.Revision, NodeRevision: stored.NodeRevision,
 		DataRevision: stored.DataRevision, ActionRevision: stored.ActionRevision,
@@ -363,6 +367,10 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	// 同步只改 ID 与虚拟显示值，不改分支条件读取的名称字段，因此不影响已经完成的路径复验结论。
 	if template, _ := workspaceRuntimeTemplate(snapshot); len(template) > 0 {
 		issues = appendHistoryIssues(issues, s.syncLinkedCompanySelects(ctx, template, overlay.Values))
+	}
+	// 落盘前把登录人上下文字段替换为当前计划账号身份，历史发起人身份不允许进入工作区正文。
+	if identity, identityErr := s.currentUserIdentity(ctx, planID); identityErr == nil {
+		replaceUserIdentityValues(overlay.Values, identity)
 	}
 	dataStatus := workspaceDataStatus(source, input.RuntimeValidation, issues)
 	record, err := workspaceRecord(snapshot, source, targetPath, targetStored, idempotencyKey, input, overlay, dataStatus, routeChanged)
