@@ -1,10 +1,10 @@
 # F-015 成功断言与运行准备
 
-- 状态：awaiting_approval
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的「计划与运行主线」第 2、3 条（成功断言属于运行切片；运行准备按路径说明阻塞与提醒）、产品原则第 7 条（失败反馈必须显示真实状态，不用虚假进度或内部技术术语阻塞用户）与「明确不做」中的「跳过失败写动作」
 - 架构依据：`docs/ARCHITECTURE.md` 的「系统边界」（`internal/engine` 承载执行状态机，`internal/adapter/target` 是唯一可直接调用目标平台的区域）
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 4.1 节 `internal/engine/assert` 包边界（不用工具推断代替目标事实）、第 7.4 节成功断言与路径结果、第 9 节 F-015 行与「F-019 之前其余动作在运行准备阶段直接阻塞，不做静默降级」
-- 计划确认时间：待确认（用户于 2026-09-04 要求产出 F-015 任务）
+- 计划确认时间：2026-09-04（用户明确「开始 F-015 任务」，视为门禁要求的明确批准）
 - 前置条件：F-012 人工验收未通过、由另一线程返工中（`implementing`）；F-013 `ready_for_manual`；F-014 已由另一线程实施完成并进入 `ready_for_manual`，产出 `docs/TARGET_SEMANTICS.md` 与 `internal/engine/verdict`。本切片不发写请求，按门禁需用户明确批准后才能进入 `implementing`。
 
 ## 目标
@@ -171,6 +171,12 @@
 - 2026-09-04 计划文档随并行线程的提交 `1c45ec6` 一并入库（该线程当时在提交 F-014 收尾改动），内容与本线程写入的版本一致，未被改写。
 - 2026-09-04 `preparing` -> `awaiting_approval`：用户要求开始 F-015。已读 `AGENTS.md`、`CONTEXT.md`、`docs/PRODUCT.md` 运行主线、`docs/EXECUTION_PROGRAM.md` 第 4.1、7.2、7.4、9 节，以及 F-014 已交付的 `docs/TARGET_SEMANTICS.md` 与 `internal/engine/verdict`；核对了现有 `test_execution_paths`、`test_execution_path_configs`、`model.IsExecutionPathRunnable`、`internal/analyzer/flow_graph.go` 的结束节点识别与目标 `FlowInstanceStatusEnum` 八个真实状态，据此产出本范围等待用户批准。
 - 门禁：本切片不发写请求；未获用户明确批准前不进入 `implementing`，实施与自动验证完成后停在 `ready_for_manual`。
+
+- 2026-09-04 `awaiting_approval` -> `implementing`：用户明确要求开始 F-015 任务，按门禁视为明确批准。
+  同时用户明确 F-014 验收通过（已置 `accepted`）；F-013 亦为 `accepted`；F-012 仍在另一线程返工，状态 `ready_for_manual`。
+  需要记录的协作风险：本计划文档由并行线程产出，若该线程也在实施 F-015，两边会在迁移、模型、仓储、
+  服务、API 与前端同一批文件上冲突。本线程按用户指令开始实施，并在第一条汇报里把这一点提示给用户。
+  实施边界仍按计划：不发任何写请求，不实现启动运行与运行记录，不改 F-014 已定结论。
 
 ## 人工验收
 
