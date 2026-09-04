@@ -304,6 +304,15 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	case verdict.OutcomeSucceeded:
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		// 路径偏离判据（T04）：只用重读到的真实事实——实际当前节点集合里没有已配置路径的下一个预期节点。
+		// 判定保守：实例不可见或没有当前节点事实时不声称偏离。
+		if !outcome.NoMoreSteps {
+			expectedNext := runCtx.Steps[approved.NextIndex+1].NodeKey
+			if after.Found && len(after.CurrentNodes) > 0 && !containsNode(after.CurrentNodes, expectedNext) {
+				outcome.DeviationDetected = true
+				log.Phase("settle", step.Sequence, 1, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNext))
+			}
+		}
 		if !outcome.NoMoreSteps {
 			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
 				return outcome, lineNo, err
@@ -361,6 +370,16 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 	default:
 		preview.writeErr = errors.New("写请求载荷缺失，拒绝发送")
 	}
+}
+
+// containsNode 判断节点键集合是否包含目标节点。
+func containsNode(nodes []string, nodeKey string) bool {
+	for _, node := range nodes {
+		if node == nodeKey {
+			return true
+		}
+	}
+	return false
 }
 
 // sessionWithRetry 取得演员会话：登录与会话获取属只读阶段，允许有界重试与退避。

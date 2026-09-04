@@ -89,7 +89,7 @@ func TestF016SingleStepControlLoop(t *testing.T) {
 	}
 
 	// 第一次放行：发起，停在同意之前。
-	first, err := controller.Approve(ctx, started.PathRun.ID)
+	first, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, started.Preview.StepNo, 1)
 	if err != nil {
 		t.Fatalf("第一次放行失败：%v", err)
 	}
@@ -100,8 +100,10 @@ func TestF016SingleStepControlLoop(t *testing.T) {
 		t.Fatalf("发起后应停在同意之前：finished=%v", first.PathFinished)
 	}
 
-	// 第二次放行：同意，场景走完并收尾重读。
-	second, err := controller.Approve(ctx, started.PathRun.ID)
+	// 第二次放行：同意，场景走完并收尾重读。游标与版本取自第一步之后的现场。
+	secondCursor := first.NextPreview.StepNo
+	secondVersion := int64(2)
+	second, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, secondCursor, secondVersion)
 	if err != nil {
 		t.Fatalf("第二次放行失败：%v", err)
 	}
@@ -139,9 +141,10 @@ func TestF016SingleStepControlLoop(t *testing.T) {
 		t.Fatalf("运行应已完成：%s", finishedRun.Status)
 	}
 	var controlCount int
+	// F-017 起控制事实含模式选定：模式选定 1 行 + 两次放行（带命令）2 行。
 	if err := database.DB.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM run_controls WHERE path_run_id = ?", started.PathRun.ID).Scan(&controlCount); err != nil || controlCount != 2 {
-		t.Fatalf("两次放行应有两行控制事实：count=%d err=%v", controlCount, err)
+		"SELECT COUNT(*) FROM run_controls WHERE path_run_id = ? AND kind IN ('mode_selected','approved')", started.PathRun.ID).Scan(&controlCount); err != nil || controlCount != 3 {
+		t.Fatalf("模式选定与两次放行应有三行控制事实：count=%d err=%v", controlCount, err)
 	}
 	var stepCount int
 	if err := database.DB.QueryRowContext(ctx,
@@ -150,7 +153,7 @@ func TestF016SingleStepControlLoop(t *testing.T) {
 	}
 
 	// 场景已走完：再放行必须被拒绝。
-	if _, err := controller.Approve(ctx, started.PathRun.ID); !errors.Is(err, control.ErrNoActiveStep) && err == nil {
+	if _, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, 1, 1); !errors.Is(err, control.ErrNoActiveStep) && err == nil {
 		t.Fatalf("场景走完后放行应被拒绝，实际 err=%v", err)
 	}
 }
@@ -186,9 +189,10 @@ func TestF016StopControl(t *testing.T) {
 		t.Fatalf("路径运行应为已停止：%s", stopped.Status)
 	}
 	var controlCount int
+	// F-017 起停止落「请求停止+停止生效」两行事实。
 	if err := database.DB.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM run_controls WHERE path_run_id = ? AND action = 'stop'", started.PathRun.ID).Scan(&controlCount); err != nil || controlCount != 1 {
-		t.Fatalf("停止应有一行控制事实：count=%d err=%v", controlCount, err)
+		"SELECT COUNT(*) FROM run_controls WHERE path_run_id = ? AND kind IN ('stop_requested','stopped')", started.PathRun.ID).Scan(&controlCount); err != nil || controlCount != 2 {
+		t.Fatalf("停止应有两行控制事实：count=%d err=%v", controlCount, err)
 	}
 	if _, err := controller.Stop(ctx, started.PathRun.ID); !errors.Is(err, control.ErrRunAlreadyFinished) {
 		t.Fatalf("终态不可再停止，实际 err=%v", err)

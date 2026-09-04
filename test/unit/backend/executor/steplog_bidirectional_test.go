@@ -103,7 +103,7 @@ func TestF016StepLogBidirectionalReachability(t *testing.T) {
 		RunSeq:            strconv.FormatUint(started.Run.RunNo, 10),
 		PathRunID:         strconv.FormatUint(started.PathRun.ID, 10),
 	}
-	if _, err := controller.Approve(logging.WithScope(ctx, runScope), started.PathRun.ID); err != nil {
+	if _, err := controller.ApproveWithCommand(logging.WithScope(ctx, runScope), started.PathRun.ID, model.CommandStep, started.Preview.StepNo, 1); err != nil {
 		t.Fatalf("放行失败：%v", err)
 	}
 

@@ -191,6 +191,31 @@ type PathRunDetailDTO struct {
 	PollIntervalMs int64 `json:"pollIntervalMs"`
 	// StaleAfterMs 是超过该时长仍无状态更新即视为疑似无响应的预算（来自配置）。
 	StaleAfterMs int64 `json:"staleAfterMs"`
+
+	// 控制现场（F-017）：生效断点、为什么停在这里、可用命令集合、条件写版本。
+	ControlVersion  int64              `json:"controlVersion"`
+	CurrentStepNo   int                `json:"currentStepNo"`
+	Breakpoints     []BreakpointDTO    `json:"breakpoints"`
+	StopReason      string             `json:"stopReason,omitempty"`
+	Commands        []CommandDTO       `json:"commands"`
+	LoopRunning     bool               `json:"loopRunning"`
+	StopRequested   bool               `json:"stopRequested"`
+	PauseRequested  bool               `json:"pauseRequested"`
+}
+
+// BreakpointDTO 是断点的公开形态：类型、挂载对象种类与业务名称，不暴露内部键。
+type BreakpointDTO struct {
+	Type      string `json:"type"`
+	TypeName  string `json:"typeName"`
+	NodeName  string `json:"nodeName,omitempty"`
+	StepNo    int    `json:"stepNo,omitempty"`
+	Action    string `json:"action,omitempty"`
+}
+
+// CommandDTO 是可用命令的公开形态（含中文停止条件说明）。
+type CommandDTO struct {
+	Command string `json:"command"`
+	Label   string `json:"label"`
 }
 
 // buildRunContext 从真实业务记录装配执行上下文：只读，不触碰目标写接口。
@@ -304,17 +329,82 @@ func (s *RunOrchestrationService) StartRun(ctx context.Context, input StartRunIn
 	return s.RunDetailByPathRun(ctx, started.PathRun.ID)
 }
 
-// Approve 放行当前步并返回放行后的最新详情。
+// ApproveWithCommand 按命令放行（F-017）：命令携带步游标与控制版本，条件写幂等。
 // 请求上下文注入运行作用域：写请求的 network.log/curl.log 因此落进运行目录。
-func (s *RunOrchestrationService) Approve(ctx context.Context, pathRunID uint64) (*PathRunDetailDTO, error) {
+func (s *RunOrchestrationService) ApproveWithCommand(ctx context.Context, pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*PathRunDetailDTO, error) {
 	scoped, err := s.withRunScope(ctx, pathRunID)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.control.Approve(scoped, pathRunID); err != nil {
+	if _, err := s.control.ApproveWithCommand(scoped, pathRunID, command, cursor, version); err != nil {
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// StartRunWithMode 按模式与预置断点启动（F-017）。
+func (s *RunOrchestrationService) StartRunWithMode(ctx context.Context, input StartRunInput, mode model.RunMode, breakpoints []control.Breakpoint) (*PathRunDetailDTO, error) {
+	if err := s.validateReadiness(ctx, input.PlanID, input.ExecutionPathID); err != nil {
+		return nil, err
+	}
+	runCtx, err := s.buildRunContext(ctx, input.PlanID, input.ExecutionPathID)
+	if err != nil {
+		return nil, err
+	}
+	if len(runCtx.Steps) == 0 {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "编译场景为空，不能启动；请先完成动作编排"}
+	}
+	if _, err := s.control.StartWithMode(ctx, runCtx, mode, breakpoints); err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, runCtx.PathRun.ID)
+}
+
+// SetBreakpoint / RemoveBreakpoint / RequestPause / ListBreakpoints / ControlView 是控制面转发。
+func (s *RunOrchestrationService) SetBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+	return s.control.SetBreakpoint(ctx, pathRunID, bp)
+}
+
+func (s *RunOrchestrationService) RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+	return s.control.RemoveBreakpoint(ctx, pathRunID, bp)
+}
+
+func (s *RunOrchestrationService) RequestPause(ctx context.Context, pathRunID uint64) error {
+	return s.control.RequestPause(ctx, pathRunID)
+}
+
+func (s *RunOrchestrationService) ListBreakpoints(ctx context.Context, pathRunID uint64) ([]control.Breakpoint, error) {
+	return s.control.ListBreakpoints(ctx, pathRunID)
+}
+
+func (s *RunOrchestrationService) ControlView(pathRunID uint64) *control.SessionView {
+	return s.control.View(pathRunID)
+}
+
+// validateReadiness 抽出启动前的运行准备复验（模式启动与 F-016 启动共用）。
+func (s *RunOrchestrationService) validateReadiness(ctx context.Context, planID, executionPathID uint64) error {
+	readiness, err := s.readiness.PlanReadiness(ctx, planID, []uint64{executionPathID})
+	if err != nil {
+		return err
+	}
+	var pathReadiness *model.PathRunReadiness
+	for i := range readiness.Paths {
+		if readiness.Paths[i].PathID == executionPathID {
+			pathReadiness = &readiness.Paths[i]
+			break
+		}
+	}
+	if pathReadiness == nil {
+		return &RunOrchestrationError{Kind: RunOrchestrationNotFound, Message: "执行路径不存在或不属于该计划"}
+	}
+	if !pathReadiness.Runnable {
+		reasons := make([]string, 0, len(pathReadiness.Blocks))
+		for _, block := range pathReadiness.Blocks {
+			reasons = append(reasons, block.Name+"："+block.Reason)
+		}
+		return &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "运行前检查未通过，不能启动：" + strings.Join(reasons, "；")}
+	}
+	return nil
 }
 
 // Stop 停止路径运行并返回最新详情。
@@ -459,9 +549,69 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, s.router)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
+		detail.CurrentStepNo = preview.StepNo
 	}
 	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview)
+	if view := s.control.View(pathRun.ID); view != nil {
+		detail.ModeName = model.RunModeName(view.Mode)
+		detail.ControlVersion = view.Version
+		detail.StopReason = view.StopReason
+		detail.LoopRunning = view.LoopRunning
+		detail.StopRequested = view.StopRequested
+		detail.PauseRequested = view.PauseRequested
+		for _, command := range view.Commands {
+			detail.Commands = append(detail.Commands, CommandDTO{Command: string(command), Label: CommandLabel(command)})
+		}
+		nodeTable := nodeNamesOf(graph)
+		for _, bp := range view.Breakpoints {
+			dto := BreakpointDTO{Type: string(bp.Type), TypeName: breakpointTypeName(string(bp.Type)), StepNo: bp.StepNo, Action: bp.Action}
+			if bp.NodeKey != "" {
+				dto.NodeName = nodeNameFromTable(nodeTable, bp.NodeKey)
+			}
+			detail.Breakpoints = append(detail.Breakpoints, dto)
+		}
+	}
 	return detail, nil
+}
+
+// nodeNamesOf 把真实结构节点表转为键到名称的映射。
+func nodeNamesOf(graph model.FlowGraph) map[string]string {
+	names := map[string]string{}
+	for _, node := range graph.Nodes {
+		names[node.ID] = node.Name
+	}
+	return names
+}
+
+// nodeNameFromTable 查节点业务名称；查不到原样返回键。
+func nodeNameFromTable(names map[string]string, nodeKey string) string {
+	if name := names[nodeKey]; name != "" {
+		return name
+	}
+	return nodeKey
+}
+
+// breakpointTypeName 返回断点类型的中文显示名。
+func breakpointTypeName(t string) string {
+	switch model.BreakpointType(t) {
+	case model.BreakpointFirstWrite:
+		return "首次写断点"
+	case model.BreakpointStep:
+		return "步骤断点"
+	case model.BreakpointNode:
+		return "节点断点"
+	case model.BreakpointAction:
+		return "动作断点"
+	case model.BreakpointPathDeviation:
+		return "路径偏离断点"
+	default:
+		return t
+	}
+}
+
+// CommandLabel 返回命令的中文说明（含停止条件）。
+func CommandLabel(command model.ControlCommand) string {
+	return control.CommandLabel(command)
 }
 
 // pathNameOf 读取执行路径名称；读取失败时回退到计划级占位，不阻塞详情展示。

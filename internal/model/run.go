@@ -137,12 +137,16 @@ func IsTerminalPathRunStatus(status PathRunStatus) bool {
 	}
 }
 
-// RunMode 是运行的执行模式；本切片只交付单步模式，其余模式属于 F-017。
+// RunMode 是运行的执行模式（纲领第 5.1 节）：模式在启动时确定并落 runs，运行中不可切换。
 type RunMode string
 
 const (
-	// RunModeSingleStep 单步运行：每一步执行前都停下等待用户放行。
+	// RunModeSingleStep 单步运行：每一步执行前都停下，只有「执行一步」一条命令。
 	RunModeSingleStep RunMode = "single_step"
+	// RunModeAuto 自动运行：连续执行，首个写步骤与断点命中处必停（首次写断点默认开启）。
+	RunModeAuto RunMode = "auto"
+	// RunModeManual 人工控制：停在第一步之前，暂停时拥有全部三条命令。
+	RunModeManual RunMode = "manual_control"
 )
 
 // RunModeName 返回运行模式的中文显示名。
@@ -150,10 +154,49 @@ func RunModeName(mode RunMode) string {
 	switch mode {
 	case RunModeSingleStep:
 		return "单步"
+	case RunModeAuto:
+		return "自动"
+	case RunModeManual:
+		return "人工控制"
 	default:
 		return string(mode)
 	}
 }
+
+// ControlFactKind 是控制事实的九种类别（纲领第 7.2 节，F-017 补齐）。
+type ControlFactKind string
+
+const (
+	ControlFactModeSelected     ControlFactKind = "mode_selected"     // 启动模式选定
+	ControlFactBreakpointSet    ControlFactKind = "breakpoint_set"    // 增加断点
+	ControlFactBreakpointRemove ControlFactKind = "breakpoint_remove" // 删除断点
+	ControlFactPauseRequested   ControlFactKind = "pause_requested"   // 请求暂停（阶段 3 生效）
+	ControlFactPaused           ControlFactKind = "paused"            // 暂停生效
+	ControlFactApproved         ControlFactKind = "approved"          // 放行（带命令种类）
+	ControlFactStopRequested    ControlFactKind = "stop_requested"    // 请求停止（submit 期间延后生效）
+	ControlFactStopped          ControlFactKind = "stopped"           // 停止生效
+	ControlFactBreakpointHit    ControlFactKind = "breakpoint_hit"    // 断点命中
+)
+
+// BreakpointType 是五类断点（纲领第 5.2 节）。
+type BreakpointType string
+
+const (
+	BreakpointFirstWrite    BreakpointType = "first_write"    // 首次写断点（安全阀，默认开启）
+	BreakpointStep          BreakpointType = "step"           // 步骤断点（编译步骤序号）
+	BreakpointNode          BreakpointType = "node"           // 节点断点（语义节点）
+	BreakpointAction        BreakpointType = "action"         // 动作断点（动作类型）
+	BreakpointPathDeviation BreakpointType = "path_deviation" // 路径偏离断点（强制开启不可关闭）
+)
+
+// ControlCommand 是暂停时可用的控制命令（纲领第 5.3 节）。
+type ControlCommand string
+
+const (
+	CommandStep      ControlCommand = "step"       // 执行一步
+	CommandNextNode  ControlCommand = "next_node"  // 执行到下一节点
+	CommandContinue  ControlCommand = "continue"   // 继续运行（到下一断点/需人工/路径结束）
+)
 
 // RunTriggerKind 是启动来源；本切片只支持手动启动。
 type RunTriggerKind string
@@ -319,9 +362,15 @@ const RunControlSourceUI RunControlSource = "ui" // 界面按钮（放行与停�
 
 // RunControl 是一次人工控制事实（run_controls 表），只 INSERT，可审计。
 type RunControl struct {
-	RunID     uint64
-	PathRunID uint64
-	Action    RunControlAction
-	Source    RunControlSource
-	CreatedAt time.Time
+	RunID          uint64
+	PathRunID      uint64
+	Kind           ControlFactKind
+	Action         RunControlAction // F-016 兼容列：approve/stop
+	Source         RunControlSource
+	BreakpointType BreakpointType
+	ObjectKind     string // 断点挂载对象种类：run/step/node/action
+	ObjectKey      string // 断点挂载对象键（步骤序号、节点键、动作键）
+	Command        ControlCommand
+	Reason         string
+	CreatedAt      time.Time
 }

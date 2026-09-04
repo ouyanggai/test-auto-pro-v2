@@ -141,4 +141,7 @@ type StepOutcome struct {
 	NoMoreSteps bool
 	// MainInstanceRef 是本步之后的主实例引用（发起成功时写入）。
 	MainInstanceRef string
+	// DeviationDetected 表示核验重读的实际当前节点与已配置路径的下一个预期节点不一致
+	//（纲领第 7.4 节：偏离是独立事实，停止在下一步阶段 3 生效）。
+	DeviationDetected bool
 }

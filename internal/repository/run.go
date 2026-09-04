@@ -54,6 +54,10 @@ type RunStore interface {
 	ReleasePathRunLease(ctx context.Context, pathRunID uint64, workerID string, fencingToken uint64, now time.Time) error
 	// AppendRunControl 追加一行人工控制事实（只 INSERT，可审计）。
 	AppendRunControl(ctx context.Context, control model.RunControl, now time.Time) error
+	// ListRunControls 按路径运行按时间正序列出控制事实，供断点集合回放与审计。
+	ListRunControls(ctx context.Context, pathRunID uint64) ([]model.RunControl, error)
+	// AppendRunEvent 追加一行运行事件（如路径偏离、断点命中），与聚合状态变更解耦的独立事实。
+	AppendRunEvent(ctx context.Context, event model.RunEvent, now time.Time) error
 	// SetFinalTargetSummary 落库最终目标事实摘要（收尾重读产物），与路径结果是两个独立字段。
 	SetFinalTargetSummary(ctx context.Context, pathRunID uint64, summary string, now time.Time) error
 	// SetMainInstanceRef 首次落库路径运行独占的主实例引用。

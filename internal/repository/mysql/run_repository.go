@@ -738,13 +738,59 @@ func nullableFailureClass(class *model.FailureClass) any {
 	return string(*class)
 }
 
-// AppendRunControl 追加一行人工控制事实。
+// AppendRunControl 追加一行人工控制事实；kind/breakpoint/command 等列按事实类别填充。
 func (r *RunRepository) AppendRunControl(ctx context.Context, control model.RunControl, now time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO run_controls (run_id, path_run_id, action, source, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, control.RunID, control.PathRunID, string(control.Action), string(control.Source), now.UTC())
+		INSERT INTO run_controls (run_id, path_run_id, kind, action, source, breakpoint_type, object_kind, object_key, command, reason, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, control.RunID, control.PathRunID, string(control.Kind), string(control.Action), string(control.Source),
+		nullableString(string(control.BreakpointType)), nullableString(control.ObjectKind), nullableString(control.ObjectKey),
+		nullableString(string(control.Command)), nullableString(control.Reason), now.UTC())
 	return err
+}
+
+// ListRunControls 按路径运行按时间正序列出控制事实。
+func (r *RunRepository) ListRunControls(ctx context.Context, pathRunID uint64) ([]model.RunControl, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT run_id, path_run_id, kind, action, source, breakpoint_type, object_kind, object_key, command, reason, created_at
+		FROM run_controls WHERE path_run_id = ? ORDER BY id ASC
+	`, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	controls := []model.RunControl{}
+	for rows.Next() {
+		var control model.RunControl
+		var kind, action, source, breakpointType, objectKind, objectKey, command, reason sql.NullString
+		if err := rows.Scan(&control.RunID, &control.PathRunID, &kind, &action, &source, &breakpointType,
+			&objectKind, &objectKey, &command, &reason, &control.CreatedAt); err != nil {
+			return nil, err
+		}
+		control.Kind = model.ControlFactKind(kind.String)
+		control.Action = model.RunControlAction(action.String)
+		control.Source = model.RunControlSource(source.String)
+		control.BreakpointType = model.BreakpointType(breakpointType.String)
+		control.ObjectKind = objectKind.String
+		control.ObjectKey = objectKey.String
+		control.Command = model.ControlCommand(command.String)
+		control.Reason = reason.String
+		controls = append(controls, control)
+	}
+	return controls, rows.Err()
+}
+
+// AppendRunEvent 追加一行运行事件。
+func (r *RunRepository) AppendRunEvent(ctx context.Context, event model.RunEvent, now time.Time) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := appendRunEvent(ctx, tx, event, now.UTC()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetFinalTargetSummary 落库最终目标事实摘要；路径运行未绑定实例时不允许写摘要。

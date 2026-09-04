@@ -30,20 +30,24 @@ func NewService(store repository.RunStore, workerID string, leaseDuration time.D
 	return &Service{store: store, now: now, workerID: workerID, leaseDuration: leaseDuration}
 }
 
-// StartRun 创建一次单步运行与它唯一的路径运行，并把两者推进到运行中。
-// 本切片只交付单步与手动启动：模式与触发方式是固定值，不是可选项（避免出现“看起来能选自动”的假象）；
-// 一次运行只跑一条路径，最大并发固定为 1。
+// StartRun 创建一次单步运行（默认最保守模式）。
 func (s *Service) StartRun(ctx context.Context, planID uint64, executionPathID uint64) (model.Run, model.PathRun, error) {
+	return s.StartRunWithMode(ctx, planID, executionPathID, model.RunModeSingleStep)
+}
+
+// StartRunWithMode 按指定模式创建一次运行与它唯一的路径运行，并把两者推进到运行中。
+// 模式在启动时确定并落 runs，运行中不可切换；一次运行只跑一条路径，最大并发固定为 1。
+func (s *Service) StartRunWithMode(ctx context.Context, planID uint64, executionPathID uint64, mode model.RunMode) (model.Run, model.PathRun, error) {
 	singleConcurrency := 1
 	createdRun, createdPathRun, err := s.store.CreateRun(ctx, planID, executionPathID,
-		model.RunModeSingleStep, model.RunTriggerManual, &singleConcurrency, s.now())
+		mode, model.RunTriggerManual, &singleConcurrency, s.now())
 	if err != nil {
 		return model.Run{}, model.PathRun{}, err
 	}
 	startedRun, err := s.store.AdvanceRunStatus(ctx, createdRun.ID,
 		model.RunStatusPending, model.RunStatusRunning, model.RunEvent{
 			Kind:  "run_started",
-			Label: fmt.Sprintf("运行开始（%s，手动启动）", model.RunModeName(model.RunModeSingleStep)),
+			Label: fmt.Sprintf("运行开始（%s，手动启动）", model.RunModeName(mode)),
 		}, s.now())
 	if err != nil {
 		return startedRun, createdPathRun, err
