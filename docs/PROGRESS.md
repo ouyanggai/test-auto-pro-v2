@@ -74,7 +74,8 @@
   状态 `awaiting_approval`，未获明确批准前不进入 `implementing`。这是本项目第一次真实写。
   范围：运行与路径运行状态机、一步七阶段（plan/gate/control/prepare/submit/verify/settle）、
   强制单步且每步用户放行、一次尝试最多一次写请求且 submit 内部零重试、写结果不确定即停在 `待对账` 且界面不给重试入口、
-  成功断言接入真实事实重读、迁移 `025` 与七张运行记录表（事实表只 INSERT）、`step.log` 与记录日志双向可达、
+  场景走完后的收尾重读并把「路径结果」与「最终目标事实」分开表述、迁移 `026` 与六张运行记录表（事实表只 INSERT）、
+  `step.log` 与记录日志双向可达、
   最小启动与路径运行详情页。
   写端点白名单只有两个：`/web/flowInstanceApi/submit` 与 `/flowInstanceApi/audit`；其余九个写端点仍由运行准备阻塞。
   同时按纲领第 4.4.1 节补齐两项基础缺口：传输层区分「连接阶段未完成」与「请求已发出但响应丢失」以喂给判定包，
@@ -93,15 +94,8 @@
   submit 阶段明确显示写请求已发出且停止只能在本步结束后生效、结束时收敛为最终结果不留孤儿动画、超预算无更新转为疑似无响应；
   执行中不加整页遮罩，进度由当前步节点上的指示器承载。
   断点管理、执行到下一节点、事件流时间线与 F-021 完整分析视图仍不在本切片。
-- F-015 成功断言与运行准备：已按用户要求产出计划文档 `docs/features/F-015-success-assertion-run-readiness.md`，
-  状态 `awaiting_approval`，未获明确批准前不进入 `implementing`。范围为每条路径一个可判定的成功断言
-  （结束节点来自真实候选、期望状态取目标真实的八个实例状态、重复到达按出现次数强制指定）、
-  纯判定包 `internal/engine/assert`（成立 / 不成立 / 无法判定，三值不合并）、
-  按计划聚合的运行准备结论（十类阻塞、两类提醒，阻塞项可点击定位到具体路径与面板），
-  以及删除只返回布尔值的 `model.IsExecutionPathRunnable`，不留兼容层。
-  本切片不发写请求、不启动运行、不建运行记录表；F-019 之前未验证可执行的动作在运行准备阶段直接阻塞，不做静默降级。
-  计划已按 F-014 的实测事实对齐：断言判定不读 `auditWay`，会话失效可能是 HTTP 200 加 `code=RESP401`，
-  此时事实重读按「无法判定」处理。
+- F-015 计划产出与后续收敛的完整过程见 `docs/features/F-015-success-assertion-run-readiness.md` 的状态记录：
+  初版计划包含成功断言，成功断言随后按用户决定整体移除，当前范围只有运行前检查。
 - 2026-09-04 参考仓库锚定分支调整：按用户裁决把 `rsh-cloud-workflow-center` 由 `test` 改为 `master`。
   `scripts/reference-repositories.tsv` 已改；旧克隆经洁净核对（无改动、无未跟踪文件、无 stash、未领先远端）后移除，
   由 `make refs-sync` 按 `master` 干净克隆，未使用 reset 或 checkout。
