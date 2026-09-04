@@ -42,7 +42,9 @@
 - 已完成人工验收反馈修复：配置工作区读取与保存均清理目标 `auto_audit_info_*` 历史审批意见；路径关键字段从目标 FormMaking 报表布局提取真实可见中文标签，并兼容 `__virtualName` 虚拟字段。计划 2 的路径 13 已实测不再返回非空审批意见，“请假天数/请假类别”标签正确。
 - 阻塞：无。F-013 先后遇到的两个本机阻塞已解除——Docker 数据盘由用户自行恢复（现 59G 已用 19G、可用 37G，全程未执行 `prune`，镜像、构建缓存与卷均保留）；Colima 未挂载外接盘项目目录的问题已通过在 `mounts` 中新增本项目 `logs/`（`writable: true`）并 `colima restart` 解决，仓库内配套增加挂载自检。MySQL 真实迁移需配置独立测试库（`PLAN_DB_*`），目标平台和浏览器行为保留人工验收边界。
 - 待用户判断：迁移 `023` 把 15 个载荷列由 `JSON` 改为 `LONGTEXT`，属于授权范围内的模型变更；另有两处待用户裁决的差异见 F-012 功能文档状态记录。
-- 下一步：等待用户按 F-012 与 F-013 的人工验收清单核对；未获明确验收前不进入 `accepted`，也不开始 F-014。
+- 下一步：F-014 目标错误语义与幂等勘定已按用户要求产出计划文档 `docs/features/F-014-target-error-semantics-idempotency.md`，
+  状态 `awaiting_approval`，只读、不发写请求，写端点白名单为空；等用户明确批准范围后才进入 `implementing`。
+  F-012 与 F-013 仍停在 `ready_for_manual`，未获明确验收前不进入 `accepted`。
 - 已产出后续工作纲领 `docs/EXECUTION_PROGRAM.md`（执行器、调试器、运行记录与分层日志，F-013 至 F-023），只界定边界与顺序，不构成实施授权。用户已裁决：内网日志原样记录、code-server 随 Docker 交付、发布用 Docker Compose、真实写使用已指定测试账号（账号值不入仓库）；`docs/ARCHITECTURE.md` 的日志条文已同步。
 
 ## 当前决策摘要
