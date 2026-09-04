@@ -160,8 +160,15 @@ func (s *PathConfigService) currentUserIdentity(ctx context.Context, planID uint
 	if !ok {
 		return runtimeUserIdentity{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
 	}
-	active, err := reader.FormRuntimeSession(ctx, plan.Account)
-	if err != nil {
+	var active target.FormRuntimeSession
+	if err := retryTransientTargetRead(ctx, 3, func(ctx context.Context) error {
+		session, sessionErr := reader.FormRuntimeSession(ctx, plan.Account)
+		if sessionErr != nil {
+			return sessionErr
+		}
+		active = session
+		return nil
+	}); err != nil {
 		return runtimeUserIdentity{}, err
 	}
 	return runtimeUserIdentity{
@@ -204,4 +211,9 @@ func RuntimeUserIdentityForTest(userID, userName, companyID, companyName, depart
 		UserID: userID, UserName: userName, CompanyID: companyID,
 		CompanyName: companyName, DepartmentID: departmentID, DepartmentName: departmentName,
 	}
+}
+
+// RetryTransientTargetReadForTest 暴露目标读取瞬断重试，供 test 目录下的定向用例锁定行为。
+func RetryTransientTargetReadForTest(ctx context.Context, attempts int, call func(context.Context) error) error {
+	return retryTransientTargetRead(ctx, attempts, call)
 }

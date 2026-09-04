@@ -339,3 +339,39 @@ func TestGetDataReplacesUserIdentityWithPlanAccount(t *testing.T) {
 		t.Fatalf("业务字段被身份替换波及：%v", configuration.EffectiveFormData["amount"])
 	}
 }
+
+// TestRetryTransientTargetReadRecoversWithinBoundedAttempts 锁定瞬断重试：可重试错误在窗口内恢复即成功，
+// 非瞬断错误立即原样返回，持续故障重试耗尽后返回末次错误且不被掩盖。
+func TestRetryTransientTargetReadRecoversWithinBoundedAttempts(t *testing.T) {
+	transient := target.NewError(target.ErrorUnavailable, errors.New("目标暂不可用"))
+	calls := 0
+	err := service.RetryTransientTargetReadForTest(context.Background(), 3, func(context.Context) error {
+		calls++
+		if calls < 3 {
+			return transient
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("窗口内恢复的重试没有成功：err=%v calls=%d", err, calls)
+	}
+
+	fatal := target.NewError(target.ErrorPermissionDenied, errors.New("无权限"))
+	calls = 0
+	err = service.RetryTransientTargetReadForTest(context.Background(), 3, func(context.Context) error {
+		calls++
+		return fatal
+	})
+	if calls != 1 || !target.IsKind(err, target.ErrorPermissionDenied) {
+		t.Fatalf("非瞬断错误没有立即返回：calls=%d err=%v", calls, err)
+	}
+
+	calls = 0
+	err = service.RetryTransientTargetReadForTest(context.Background(), 3, func(context.Context) error {
+		calls++
+		return transient
+	})
+	if calls != 3 || !target.IsKind(err, target.ErrorUnavailable) {
+		t.Fatalf("持续瞬断应重试耗尽并返回末次错误：calls=%d err=%v", calls, err)
+	}
+}

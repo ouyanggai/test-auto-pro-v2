@@ -136,14 +136,62 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
 	}
 }
 
-// formRuntimeStats 只根据真实 getValues 和组件生效后的编辑权限计算当前填写统计。
-export function formRuntimeStats (values, editableFields, requiredEditableFields) {
+// fieldAncestors 建立"字段模型 → 祖先容器模型链"映射：联动脚本按容器键整体显隐，
+// 判断字段可见性必须沿祖先链回溯，而不是只看字段自身的 hidden 标记。
+export function fieldAncestors (template) {
+  const ancestors = new Map()
+  const visit = (list, chain) => {
+    for (const component of Array.isArray(list) ? list : []) {
+      if (!component || typeof component !== 'object') continue
+      const model = String(component.model || '').trim()
+      const next = model ? chain.concat([model]) : chain
+      if (model && !ancestors.has(model)) ancestors.set(model, next)
+      for (const children of componentLists(component)) visit(children, next)
+      if (Array.isArray(component.rows)) {
+        for (const row of component.rows) {
+          for (const column of Array.isArray(row && row.columns) ? row.columns : []) visit([column], next)
+        }
+      }
+    }
+  }
+  visit(template && template.list, [])
+  return ancestors
+}
+
+// hiddenFieldKeys 汇总静态隐藏字段与联动隐藏容器，返回当前实际不可见的字段模型集合。
+// 动态显隐由目标模板脚本通过 FormMaking 的 dynamicHideFields 按容器键控制，祖先链上任一容器被隐藏即视为不可见。
+export function hiddenFieldKeys (form, template, staticHiddenFields = []) {
+  const hiddenContainers = new Set(Array.isArray(staticHiddenFields) ? staticHiddenFields : [])
+  const dynamic = form && form.dynamicHideFields
+  if (dynamic && typeof dynamic === 'object') {
+    for (const [key, value] of Object.entries(dynamic)) {
+      if (value === true && key) hiddenContainers.add(key)
+    }
+  }
+  if (hiddenContainers.size === 0) return new Set()
+  const hidden = new Set(hiddenContainers)
+  for (const [field, chain] of fieldAncestors(template)) {
+    if (chain.some(key => hiddenContainers.has(key))) hidden.add(field)
+  }
+  return hidden
+}
+
+// formRuntimeStats 只根据真实 getValues 和组件生效后的编辑权限计算当前填写统计；
+// 隐藏字段（静态隐藏容器或联动隐藏区域内）用户既看不到也无法填写，必须从两项统计中剔除，
+// 否则其他合同类型封面页的必填附件会被误报成"仍需手工"。
+export function formRuntimeStats (values, editableFields, requiredEditableFields, hiddenFields = []) {
 	const getPath = (input, path) => String(path || '').split('.').filter(Boolean).reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, input)
 	const editable = new Set((Array.isArray(editableFields) ? editableFields : []).map(normalizeFieldPath))
+	// hiddenFieldKeys 返回 Set，这里同时兼容数组与集合入参，避免调用方额外展开。
+	const hidden = new Set([...(Array.isArray(hiddenFields) ? hiddenFields : (hiddenFields instanceof Set ? hiddenFields : []))].map(normalizeFieldPath))
 	let filledEditable = 0
-	for (const field of editable) if (!isEmptyModelValue(getPath(values, field))) filledEditable++
+	for (const field of editable) {
+		if (hidden.has(field)) continue
+		if (!isEmptyModelValue(getPath(values, field))) filledEditable++
+	}
 	let manualPending = 0
 	for (const field of new Set((Array.isArray(requiredEditableFields) ? requiredEditableFields : []).map(normalizeFieldPath))) {
+		if (hidden.has(field)) continue
 		if (editable.has(field) && isEmptyModelValue(getPath(values, field))) manualPending++
 	}
 	return { filledEditable, manualPending }
@@ -427,6 +475,7 @@ function evaluateOptionPatches (form, descriptors, triggers, values, apply) {
   const rootPatch = {}
   const replayModels = new Set()
   const touchedGroups = new Set()
+  const unavailable = []
   let waiting = false
   for (const descriptor of descriptors) {
     if (!descriptorTriggered(descriptor, triggers)) continue
@@ -443,6 +492,8 @@ function evaluateOptionPatches (form, descriptors, triggers, values, apply) {
       if (state.state === 'consistent') continue
       if (options.length === 0 && descriptor.remote) {
         waiting = true
+        // 远程选项始终为空时数据源大概率故障；先记入待报清单，等待重试用尽后统一阻断提示。
+        unavailable.push({ path: entry.path, label: descriptor.label, desired: String(desired), actual: String(virtual ?? '') })
         continue
       }
       const resolution = resolveOptionEntry(descriptor, options, desiredNameList(descriptor, desired))
@@ -473,7 +524,7 @@ function evaluateOptionPatches (form, descriptors, triggers, values, apply) {
       }
     }
   }
-  return { issues, waiting, rootPatch, replayModels: [...replayModels], touchedGroups: [...touchedGroups] }
+  return { issues, waiting, unavailable, rootPatch, replayModels: [...replayModels], touchedGroups: [...touchedGroups] }
 }
 
 // refreshOptionFields 主动刷新被协调控件自己的远程选项数据源，避免首次刷新只完成挂载而选项仍为空。
@@ -520,6 +571,16 @@ export async function coordinateOptionPatches (form, template, values, triggers 
       await new Promise(resolve => setTimeout(resolve, 100))
       continue
     }
+    // 重试用尽后远程选项仍为空：数据源故障会让"按名称映射"永远无法核对，必须阻断而不是静默留空。
+    for (const item of evaluation.unavailable) {
+      issues.push({
+        code: 'OPTION_SOURCE_UNAVAILABLE', status: 'blocked', source: 'iframe_runtime',
+        fieldPath: item.path, fieldLabel: item.label, operator: '',
+        expected: item.desired, actual: item.actual, relatedFields: [],
+        message: '该字段的选项数据源未加载出任何选项，无法完成补丁映射，请检查目标平台对应服务后重试',
+        canRetry: true,
+      })
+    }
     break
   }
   return { values: current, issues }
@@ -532,7 +593,19 @@ export function optionCoordinationIssues (form, template, values, triggers = [])
   if (!form || patchTriggers.length === 0) return []
   const descriptors = optionFieldDescriptors(template)
   if (descriptors.length === 0) return []
-  return evaluateOptionPatches(form, descriptors, patchTriggers, clonePlain(values || {}), false).issues
+  const evaluation = evaluateOptionPatches(form, descriptors, patchTriggers, clonePlain(values || {}), false)
+  const issues = [...evaluation.issues]
+  // 只读检查不等待数据源，远程选项此刻为空即视为暂不可用，与装载期阻断口径一致。
+  for (const item of evaluation.unavailable) {
+    issues.push({
+      code: 'OPTION_SOURCE_UNAVAILABLE', status: 'blocked', source: 'iframe_runtime',
+      fieldPath: item.path, fieldLabel: item.label, operator: '',
+      expected: item.desired, actual: item.actual, relatedFields: [],
+      message: '该字段的选项数据源尚未加载出选项，无法核对该字段的补丁映射，请稍后重试或检查目标平台服务',
+      canRetry: true,
+    })
+  }
+  return issues
 }
 
 // replayFieldChangeEvents 重放目标模板为指定字段声明的 onChange 脚本，补齐 setData 不会触发的派生字段计算。

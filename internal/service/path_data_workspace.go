@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/formdata/branchoverlay"
@@ -422,8 +423,16 @@ func (s *PathConfigService) loadWorkspace(ctx context.Context, planID, pathID ui
 		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "目标配置读取服务暂不可用"}
 	}
 	// T05 数据工作区直接读取目标原始配置；这里刻意不调用工具侧页面规则或映射。
-	snapshot, err := s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
-	if err != nil {
+	// 目标平台存在瞬断窗口（服务重启、会话互踢），读取失败先做有界重试再暴露错误。
+	var snapshot target.PathConfigurationSnapshot
+	if err := retryTransientTargetRead(ctx, 3, func(ctx context.Context) error {
+		read, readErr := s.target.PathConfigurationSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
+		if readErr != nil {
+			return readErr
+		}
+		snapshot = read
+		return nil
+	}); err != nil {
 		return model.ExecutionPath{}, target.PathConfigurationSnapshot{}, ownedPathAnalysis{}, repository.HistoryPathConfigRecord{}, false, historyWorkspaceSource{}, err
 	}
 	analysis, err := s.analyzeOwnedPath(ctx, planID, snapshot, path)
@@ -889,4 +898,37 @@ func ClearAuditInfoValuesForTest(values map[string]any) map[string]any {
 // KeyFieldLabelsForTest 暴露字段中文名称映射，供 test 目录下的定向用例锁定行为。
 func KeyFieldLabelsForTest(snapshot target.PathConfigurationSnapshot) map[string]string {
 	return keyFieldLabels(snapshot)
+}
+
+// retryTransientTargetRead 对目标平台读取做有界重试：目标服务重启或会话重登的短暂窗口内，
+// 读取会以不可用、超时、会话失效甚至登录被拒失败（目标网关在互踢/重启窗口会短暂返回错误凭据类业务失败，
+// 稍后同一凭据即可成功），立即暴露给用户就是一次"暂时无法读取"的无效阻断。只读调用最多重试
+// attempts-1 次，间隔线性增长；持续故障仍在末次失败后原样返回，不被重试掩盖。
+func retryTransientTargetRead(ctx context.Context, attempts int, call func(context.Context) error) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var last error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(400*attempt) * time.Millisecond):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		last = call(ctx)
+		if last == nil || !isTransientTargetReadError(last) {
+			return last
+		}
+	}
+	return last
+}
+
+// isTransientTargetReadError 判定目标读取错误是否属于可重试的瞬断窗口。
+func isTransientTargetReadError(err error) bool {
+	return target.IsKind(err, target.ErrorUnavailable) ||
+		target.IsKind(err, target.ErrorTimeout) ||
+		target.IsKind(err, target.ErrorSessionExpired) ||
+		target.IsKind(err, target.ErrorLoginRejected)
 }

@@ -35,7 +35,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -462,7 +462,8 @@ export default {
 	},
     // stats 返回当前原始值在可编辑字段中的填写统计，供宿主展示人工待处理数量。
     stats (values = this.values) {
-      return formRuntimeStats(values, this.editableFields, this.requiredEditableFields)
+      // 隐藏字段（静态隐藏容器或联动隐藏区域）不计入填写统计，避免其他合同类型封面页必填项被误报成待手工。
+      return formRuntimeStats(values, this.editableFields, this.requiredEditableFields, hiddenFieldKeys(this.form(), this.template, this.hiddenFields))
     },
     markDirty () {
 		if (this.loading || this.readOnly) return
@@ -474,7 +475,11 @@ export default {
 		if (!this.sessionId || this.loading || this.readOnly) return
 		try {
 			const captured = await this.capture(false)
-			this.post({ version: FORM_RUNTIME_VERSION, sessionId: this.sessionId, requestId: 'state', type: 'state', payload: { stats: captured.stats } })
+			// 状态回报同时携带阻断问题，宿主面板可以实时展示选项协调等待人工处理的字段。
+			this.post({
+				version: FORM_RUNTIME_VERSION, sessionId: this.sessionId, requestId: 'state', type: 'state',
+				payload: { stats: captured.stats, issues: captured.issues.filter(issue => issue.status === 'blocked' || issue.blocking === true) },
+			})
 		} catch (_) {
 			// 输入过程中的临时组件状态不影响实际保存；下一次稳定变更会重新对账。
 		}

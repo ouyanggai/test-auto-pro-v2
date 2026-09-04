@@ -6,6 +6,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
 import { fetchExecutionPath, fetchExecutionPaths } from '../features/execution-paths/api'
+import type { HistoryDataIssue } from '../features/history-replay/types'
 import type { ExecutionPath } from '../features/execution-paths/types'
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph } from '../features/flow-graph/api'
@@ -197,9 +198,21 @@ const instanceSaveDisabled = computed(() => !planMutable.value
 const draftHasUnsavedChanges = computed(() => nodeDraftHasUnsavedChanges.value || instanceDraftHasUnsavedChanges.value)
 const runtimeBlockingReasons = computed(() => [...new Set(runtimeUnsupported.value)])
 const runtimeBlocked = computed(() => runtimeBlockingReasons.value.length > 0)
+// runtimeCoordinationIssues 是复制运行时实时回报的选项协调阻断问题，与脚本问题同面板展示。
+const runtimeCoordinationIssues = ref<HistoryDataIssue[]>([])
+function applyRuntimeIssues(payload: Record<string, unknown>) {
+  if (!Array.isArray(payload.issues)) return
+  runtimeCoordinationIssues.value = payload.issues.map(issue => ({
+    code: String(issue?.code ?? 'runtime_issue'),
+    path: issue?.fieldPath ? String(issue.fieldPath) : undefined,
+    message: String(issue?.message ?? ''),
+    blocking: issue?.status === 'blocked' || issue?.blocking === true,
+  }))
+}
 // applyRuntimeFormState 只接受 iframe 已核验会话回传的原始值统计，宿主不持有字段映射或生成所有权。
 function applyRuntimeFormState(payload: Record<string, unknown>) {
   if (workspace.value !== 'form') return
+  applyRuntimeIssues(payload)
   const stats = payload.stats
   if (stats && typeof stats === 'object') {
     const current = stats as { filledEditable?: unknown, manualPending?: unknown }
@@ -214,6 +227,7 @@ function applyRuntimeFormState(payload: Record<string, unknown>) {
 function handleRuntimeReady(payload: Record<string, unknown>) {
   if (workspace.value !== 'form' || !runtimeSession.value) return
   runtimeUnsupported.value = Array.isArray(payload.unsupported) ? payload.unsupported.map(String) : []
+  applyRuntimeIssues(payload)
   applyRuntimeFormState(payload)
 }
 
@@ -912,7 +926,7 @@ void loadPage()
         <form-data-hints-panel
           v-if="dataWorkspace"
           :key-fields="dataWorkspace.keyFields ?? []"
-          :issues="dataWorkspace.issues"
+          :issues="[...(dataWorkspace.issues ?? []), ...runtimeCoordinationIssues]"
           :branch-patches="dataWorkspace.branchPatches"
         />
         <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">

@@ -5,7 +5,7 @@ import test from 'node:test'
 const runtimeSource = fs.readFileSync(new URL('../../../form-runtime/runtime-source/src/main.js', import.meta.url), 'utf8')
 const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
-const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
@@ -685,4 +685,54 @@ test('目标请求统一透传并保留网关改写与 SID', async () => {
     globalThis.window = originalWindow
     globalThis.XMLHttpRequest = originalXHR
   }
+})
+
+
+test('统计剔除静态隐藏容器与联动隐藏区域内的字段', () => {
+  const template = { list: [
+    { type: 'report', model: 'report_zhiqian_showIfPermission', options: { hidden: true }, list: [
+      { type: 'fileupload', model: 'zhiqian_file1', options: { required: true } },
+    ] },
+    { type: 'report', model: 'report_GKzhaobiao_showIfPermission', list: [
+      { type: 'fileupload', model: 'GKzhaobiao_file1', options: { required: true } },
+    ] },
+    { type: 'input', model: 'contractName', options: { required: true } },
+  ] }
+  const prepared = prepareTemplate(template, [
+    { field: 'zhiqian_file1', power: 'edit' },
+    { field: 'GKzhaobiao_file1', power: 'edit' },
+    { field: 'contractName', power: 'edit' },
+  ], false)
+  const form = { dynamicHideFields: { report_GKzhaobiao_showIfPermission: false, report_zhiqian_showIfPermission: true } }
+  // 直签封面页被联动隐藏，公开招标封面页可见但没填，合同名称已填。
+  const hidden = hiddenFieldKeys(form, template, prepared.hiddenFields)
+  const stats = formRuntimeStats(
+    { zhiqian_file1: [{ name: '直签文件' }], contractName: '某合同' },
+    prepared.editableFields,
+    prepared.requiredEditableFields,
+    hidden,
+  )
+  assert.deepEqual(stats, { filledEditable: 1, manualPending: 1 }, '隐藏区域剔除后只统计可见字段')
+})
+
+test('被补丁波及的远程字段选项数据源未加载时明确阻断', async () => {
+  const template = { list: [{ type: 'select', model: 'classificationId', name: '合同分类', options: { remote: true } }] }
+  const form = {
+    model: {
+      classificationId: ['old-category-id'],
+      classificationId__virtualName: '施工类',
+      classificationName: '工程服务类',
+    },
+    formItemContexts: { classificationId: { widget: { type: 'select', model: 'classificationId', options: { remote: true } } } },
+    async refreshFieldOptionData () {},
+    getOptionData () { return [] },
+    async setData () { throw new Error('数据源不可用时绝不能写值') },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['classificationId__virtualName'], 2)
+  assert.equal(coordination.issues.length, 1)
+  assert.equal(coordination.issues[0].code, 'OPTION_SOURCE_UNAVAILABLE')
+  assert.equal(coordination.issues[0].status, 'blocked')
+  assert.equal(coordination.issues[0].fieldPath, 'classificationId')
+  assert.deepEqual(coordination.values.classificationId, ['old-category-id'], '数据源不可用时保留原值，不改动模型')
 })

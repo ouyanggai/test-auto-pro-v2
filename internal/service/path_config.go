@@ -131,8 +131,15 @@ func (s *PathConfigService) RuntimeSession(ctx context.Context, planID, pathID u
 	if !ok {
 		return model.PathFormRuntimeSession{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "表单运行时会话暂不可用"}
 	}
-	active, err := reader.FormRuntimeSession(ctx, plan.Account)
-	if err != nil {
+	var active target.FormRuntimeSession
+	if err := retryTransientTargetRead(ctx, 3, func(ctx context.Context) error {
+		session, sessionErr := reader.FormRuntimeSession(ctx, plan.Account)
+		if sessionErr != nil {
+			return sessionErr
+		}
+		active = session
+		return nil
+	}); err != nil {
 		return model.PathFormRuntimeSession{}, err
 	}
 	return model.PathFormRuntimeSession{
