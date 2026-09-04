@@ -23,7 +23,22 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 </script>
 
 <template>
-  <div v-if="data.configurationMode" class="flow-node-shell">
+  <div v-if="data.runMode" class="flow-node-shell">
+    <div
+      class="flow-node flow-node--run"
+      :class="[data.runStatus ? `flow-node--run-${data.runStatus}` : '', { 'flow-node--run-current': data.runCurrent }]"
+      :aria-label="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runCurrent ? '，当前步' : ''}`"
+      :title="`${data.name}，运行态：${data.runStatusName || '未开始'}`"
+    >
+      <handle type="target" :position="Position.Top" :connectable="false" />
+      <span class="flow-node__type">{{ data.typeName }}</span>
+      <span class="flow-node__name">{{ data.name }}</span>
+      <span class="flow-node__run-status">{{ data.runStatusName || '未开始' }}</span>
+      <span v-if="data.runCurrent" class="flow-node__run-current-badge" role="status">▶ 当前步</span>
+      <handle type="source" :position="Position.Bottom" :connectable="false" />
+    </div>
+  </div>
+  <div v-else-if="data.configurationMode" class="flow-node-shell">
     <button
       type="button"
       class="flow-node flow-node--configuration"
@@ -212,6 +227,63 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   border: 1px solid currentcolor;
   background: currentcolor;
   pointer-events: none;
+}
+
+.flow-node--run {
+  display: grid;
+  position: relative;
+  height: 100%;
+  align-content: center;
+  justify-items: center;
+  gap: 2px;
+  color: var(--flow-label-color);
+  cursor: pointer;
+  background: var(--flow-surface-color);
+  border: 1px solid var(--flow-edge-color);
+}
+
+/* 九个中文运行态各有视觉档：颜色之外节点上必须有中文文字（run-status），不靠颜色单独表意。 */
+.flow-node--run-not_started { opacity: 0.55; }
+.flow-node--run-waiting { border-style: dashed; }
+.flow-node--run-running { border-color: var(--info-color, #2080f0); border-width: 2px; }
+.flow-node--run-running .flow-node__run-status { color: var(--info-color, #2080f0); }
+.flow-node--run-verifying { border-color: var(--info-color, #2080f0); border-style: dotted; }
+.flow-node--run-verifying .flow-node__run-status { color: var(--info-color, #2080f0); }
+.flow-node--run-completed { border-color: var(--success-color, #18a058); }
+.flow-node--run-completed .flow-node__run-status { color: var(--success-color, #18a058); }
+.flow-node--run-failed { border-color: var(--error-color, #d03050); border-width: 2px; }
+.flow-node--run-failed .flow-node__run-status { color: var(--error-color, #d03050); }
+.flow-node--run-awaiting_reconciliation {
+  border-color: var(--error-color, #d03050);
+  border-width: 2px;
+  border-style: double;
+}
+.flow-node--run-awaiting_reconciliation .flow-node__run-status { color: var(--error-color, #d03050); }
+.flow-node--run-paused { border-color: var(--warning-color, #f0a020); }
+.flow-node--run-paused .flow-node__run-status { color: var(--warning-color, #f0a020); }
+.flow-node--run-stopped,
+.flow-node--run-cancelled { opacity: 0.7; }
+.flow-node--run-stopped .flow-node__run-status,
+.flow-node--run-cancelled .flow-node__run-status { color: var(--warning-color, #f0a020); }
+
+.flow-node__run-status {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.flow-node__run-current-badge {
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  padding: 1px 8px;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  background: var(--info-color, #2080f0);
+  border-radius: 9px;
+  transform: translateX(-50%);
 }
 
 @media (prefers-reduced-motion: reduce) {

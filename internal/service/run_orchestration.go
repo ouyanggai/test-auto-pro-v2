@@ -135,6 +135,8 @@ type RunStepAttemptDTO struct {
 	// LogPath 与 LogLine 让界面每一行都能落到 step.log 的具体行（记录到日志可达）。
 	LogPath string `json:"logPath"`
 	LogLine uint64 `json:"logLine"`
+	// CurlBlock 是该次尝试在 curl.log 里的完整可重放命令与响应正文块，与日志文件同源。
+	CurlBlock string `json:"curlBlock,omitempty"`
 	// PhaseDurations 是七个阶段各自的耗时（毫秒），来自 step.log 的阶段时间轴。
 	PhaseDurations     map[string]int64 `json:"phaseDurations,omitempty"`
 	PhaseDurationsNote string           `json:"phaseDurationsNote,omitempty"`
@@ -181,7 +183,9 @@ type PathRunDetailDTO struct {
 	CurrentPreview    *RunPreviewDTO             `json:"currentPreview,omitempty"`
 	NodeStates        map[string]RunNodeStateDTO `json:"nodeStates"`
 	// PollIntervalMs 提示前端轮询间隔（来自配置），状态只在放行后变化。
-	PollIntervalMs    int64                      `json:"pollIntervalMs"`
+	PollIntervalMs int64 `json:"pollIntervalMs"`
+	// StaleAfterMs 是超过该时长仍无状态更新即视为疑似无响应的预算（来自配置）。
+	StaleAfterMs int64 `json:"staleAfterMs"`
 }
 
 // buildRunContext 从真实业务记录装配执行上下文：只读，不触碰目标写接口。
@@ -359,6 +363,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		PathName:          pathNameOf(ctx, s.paths, run.PlanID, pathRun.ExecutionPathID, plan.Name),
 		NodeStates:        map[string]RunNodeStateDTO{},
 		PollIntervalMs:    s.runConfig.StatusPollInterval.Milliseconds(),
+		StaleAfterMs:      s.runConfig.StepProgressStaleAfter.Milliseconds(),
 	}
 	if pathRun.Result != nil {
 		detail.ResultName = resultName(*pathRun.Result)
@@ -370,7 +375,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.FinalTarget = json.RawMessage(pathRun.FinalTargetSummary)
 	}
 	phaseTimings := s.readPhaseTimings(pathRun.ID, attempts)
-	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings)
+	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, s.router)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
 	}
@@ -388,7 +393,7 @@ func pathNameOf(ctx context.Context, paths repository.ExecutionPathRepository, p
 }
 
 // buildStepDTOs 把步骤与尝试事实组装为公开 DTO，并附上 step.log 解析出的阶段耗时。
-func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64) []RunStepDTO {
+func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64, router *logging.Router) []RunStepDTO {
 	attemptsByStep := map[uint64][]model.RunStepAttempt{}
 	for _, attempt := range attempts {
 		attemptsByStep[attempt.StepID] = append(attemptsByStep[attempt.StepID], attempt)
@@ -421,6 +426,7 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 			} else {
 				attemptDTO.PhaseDurationsNote = "step.log 阶段时间轴缺失，无法给出七阶段耗时"
 			}
+			attemptDTO.CurlBlock = curlBlockFor(router, attempt.TraceID)
 			dto.Attempts = append(dto.Attempts, attemptDTO)
 		}
 		dtos = append(dtos, dto)
@@ -565,6 +571,43 @@ func (s *RunOrchestrationService) readPhaseTimings(pathRunID uint64, attempts []
 		}
 	}
 	return result
+}
+
+// curlBlockFor 从 curl.log 提取指定 trace_id 的完整请求块（begin 到 end），与日志文件逐字同源。
+func curlBlockFor(router *logging.Router, traceID string) string {
+	if router == nil || traceID == "" {
+		return ""
+	}
+	matches, err := filepath.Glob(filepath.Join(router.Root(), "plans", "*", "runs", "*", "*", "curl.log*"))
+	if err != nil {
+		return ""
+	}
+	// 运行目录数量有限，逐个扫描直到命中 trace_id；找不到就返回空，界面给中文说明。
+	for _, path := range matches {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if block := extractCurlBlock(string(content), traceID); block != "" {
+			return block
+		}
+	}
+	return ""
+}
+
+// extractCurlBlock 在日志文本里定位指定 trace 的 curl 块。
+func extractCurlBlock(content, traceID string) string {
+	begin := "--- begin curl trace_id=" + traceID + " ---"
+	end := "--- end curl trace_id=" + traceID + " ---"
+	start := strings.Index(content, begin)
+	if start < 0 {
+		return ""
+	}
+	stop := strings.Index(content[start:], end)
+	if stop < 0 {
+		return ""
+	}
+	return content[start : start+stop+len(end)]
 }
 
 // parseLogLine 解析统一单行日志的 key=value 字段。

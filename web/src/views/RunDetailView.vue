@@ -1,0 +1,379 @@
+<script setup lang="ts">
+import { NButton, NEmpty, NSpin, useThemeVars } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+
+import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
+import type { FlowGraph } from '../features/flow-graph/types'
+import { approveRun, fetchRunDetail, formatElapsed, RunApiError, stopRun } from '../features/runs/api'
+import { fetchFlowGraph } from '../features/flow-graph/api'
+import type { PathRunDetail } from '../features/runs/api'
+import RunNodePanel from '../features/runs/RunNodePanel.vue'
+import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
+
+// RunDetailView 是路径运行详情：运行画布为主体，顶部固定条控制放行与停止。
+// 放行会发出真实写请求：只接受明确点击，不绑定单键快捷键。
+const route = useRoute()
+const runId = String(route.params.runId || '')
+const themeVars = useThemeVars()
+
+const detail = ref<PathRunDetail | null>(null)
+const graph = ref<FlowGraph | null>(null)
+const loading = ref(false)
+const errorText = ref('')
+const actionText = ref('')
+const acting = ref(false)
+
+// 本地时钟：执行中的已耗时以本地时钟连续插值，不被轮询节奏带跳，读数单调不减。
+const clockTick = ref(0)
+let clockTimer: number | null = null
+const approveStartedAt = ref<number | null>(null)
+const lastUpdateAt = ref<number>(Date.now())
+
+// 轮询：状态只在放行后变化，间隔来自后端配置。
+let pollTimer: number | null = null
+
+// 自动跟随：默认把当前步平移到操作区中央；用户手动平移后暂停并显示「回到当前步」。
+const followPaused = ref(false)
+const programmaticMove = ref(false)
+const selectedNodeKey = ref('')
+
+const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
+
+const pathChoices = computed(() => [])
+
+// currentNodeKey 是当前步所在节点（预览给出），画布据此高亮与居中。
+const currentNodeKey = computed(() => detail.value?.currentPreview?.nodeKey || '')
+
+// runNodeStates 把九个中文运行态与当前步标记交给画布。
+const runNodeStates = computed(() => {
+  const states: Record<string, { status: string; statusName: string }> = {}
+  for (const [nodeKey, state] of Object.entries(detail.value?.nodeStates || {})) {
+    states[nodeKey] = { status: state.status, statusName: state.statusName }
+  }
+  return states
+})
+
+// isActing 表示一次放行或停止请求在途：指示器进入执行中状态。
+const isActing = computed(() => acting.value)
+
+// staleBudgetElapsed 判断是否超过疑似无响应预算。
+const staleBudgetElapsed = computed(() => {
+  if (!isActing.value || !detail.value) return false
+  void clockTick.value
+  return Date.now() - lastUpdateAt.value > detail.value.staleAfterMs
+})
+
+// elapsedText 是三处同源的耗时读数：执行中以放行点击时刻为起点本地插值，读数单调不减。
+const elapsedText = computed(() => {
+  void clockTick.value
+  if (isActing.value && approveStartedAt.value !== null) {
+    return formatElapsed(Math.max(0, Date.now() - approveStartedAt.value))
+  }
+  const steps = detail.value?.steps || []
+  if (steps.length > 0) {
+    const last = steps[steps.length - 1]
+    return formatElapsed(last.durationMs)
+  }
+  return formatElapsed(0)
+})
+
+// phaseDurations 取最后一步最近一次尝试的七阶段耗时（已落账时展示）。
+const phaseDurations = computed(() => {
+  const steps = detail.value?.steps || []
+  if (steps.length === 0) return undefined
+  const attempts = steps[steps.length - 1].attempts
+  return attempts.length > 0 ? attempts[attempts.length - 1].phaseDurations : undefined
+})
+
+// loadDetail 拉取详情并刷新结构（结构只按计划取一次）。
+async function loadDetail(): Promise<void> {
+  if (!runId) {
+    errorText.value = '运行标识缺失，无法打开详情。'
+    return
+  }
+  loading.value = !detail.value
+  try {
+    const next = await fetchRunDetail(runId)
+    detail.value = next
+    lastUpdateAt.value = Date.now()
+    if (!graph.value) {
+      graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
+    }
+    await nextTick()
+    if (currentNodeKey.value && !followPaused.value) {
+      centerCurrentNode()
+    }
+    schedulePoll()
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行详情，请重试'
+  } finally {
+    loading.value = false
+  }
+}
+
+// schedulePoll 按配置间隔轮询；路径运行进入终态后停止。
+function schedulePoll(): void {
+  if (pollTimer !== null) {
+    window.clearTimeout(pollTimer)
+    pollTimer = null
+  }
+  if (!detail.value) return
+  const terminalStatuses = ['已完成', '失败', '待对账', '已停止', '已取消']
+  if (terminalStatuses.includes(detail.value.pathRunStatusName)) return
+  pollTimer = window.setTimeout(async () => {
+    try {
+      const next = await fetchRunDetail(runId)
+      detail.value = next
+      lastUpdateAt.value = Date.now()
+      if (currentNodeKey.value && !followPaused.value) {
+        centerCurrentNode()
+      }
+    } catch {
+      // 单次轮询失败不打断页面：下一次轮询会继续。
+    }
+    schedulePoll()
+  }, Math.max(500, detail.value.pollIntervalMs || 2000))
+}
+
+// centerCurrentNode 把当前步节点平移到操作区中央。
+function centerCurrentNode(): void {
+  if (!currentNodeKey.value) return
+  programmaticMove.value = true
+  canvasRef.value?.focusNode(currentNodeKey.value)
+  window.setTimeout(() => { programmaticMove.value = false }, 320)
+}
+
+// handleRunViewportChange 在用户手动平移/缩放时暂停自动跟随。
+function handleRunViewportChange(): void {
+  if (programmaticMove.value) return
+  if (isActing.value || currentNodeKey.value) {
+    followPaused.value = true
+  }
+}
+
+// resumeFollow 恢复自动跟随并立即回到当前步。
+function resumeFollow(): void {
+  followPaused.value = false
+  centerCurrentNode()
+}
+
+// approve 放行当前步：等待响应期间指示器进入执行中，写请求不可中断。
+async function approve(): Promise<void> {
+  if (acting.value || !detail.value?.currentPreview) return
+  acting.value = true
+  approveStartedAt.value = Date.now()
+  actionText.value = ''
+  errorText.value = ''
+  try {
+    detail.value = await approveRun(runId)
+    lastUpdateAt.value = Date.now()
+    await nextTick()
+    if (currentNodeKey.value && !followPaused.value) {
+      centerCurrentNode()
+    }
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '放行执行失败，请查看日志'
+  } finally {
+    acting.value = false
+    approveStartedAt.value = null
+    schedulePoll()
+  }
+}
+
+// stopRunAction 停止路径运行。
+async function stopRunAction(): Promise<void> {
+  if (acting.value) return
+  acting.value = true
+  actionText.value = ''
+  errorText.value = ''
+  try {
+    detail.value = await stopRun(runId)
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '停止失败，请重试'
+  } finally {
+    acting.value = false
+    schedulePoll()
+  }
+}
+
+// handleSelectRunNode 记录侧栏选中的节点。
+function handleSelectRunNode(nodeID: string): void {
+  selectedNodeKey.value = nodeID
+}
+
+// overviewDone 表示整图进入结果总览（路径运行终态）。
+const overviewDone = computed(() => {
+  const status = detail.value?.pathRunStatusName || ''
+  return ['已完成', '失败', '待对账', '已停止', '已取消'].includes(status)
+})
+
+// topConclusion 把路径结果与最终目标事实分开表述。
+const topConclusion = computed(() => {
+  if (!detail.value) return ''
+  if (!overviewDone.value) return ''
+  const parts: string[] = []
+  parts.push(`路径结果：${detail.value.resultName || '—'}`)
+  const finalTarget = detail.value.finalTarget as { statusName?: string; currentNodeNames?: string[]; dueNodeNames?: string[] } | undefined
+  if (finalTarget) {
+    const due = finalTarget.dueNodeNames || []
+    parts.push(`最终目标事实：实例${finalTarget.statusName || '状态未知'}${finalTarget.currentNodeNames?.length ? `，当前节点 ${finalTarget.currentNodeNames.join('、')}` : ''}，待办 ${due.length} 个`)
+  }
+  return parts.join('；')
+})
+
+onMounted(() => {
+  void loadDetail()
+  clockTimer = window.setInterval(() => { clockTick.value++ }, 250)
+})
+
+onBeforeUnmount(() => {
+  if (pollTimer !== null) window.clearTimeout(pollTimer)
+  if (clockTimer !== null) window.clearInterval(clockTimer)
+})
+</script>
+
+<template>
+  <section class="run-detail" :style="{ '--run-surface-color': themeVars.cardColor, '--run-border-color': themeVars.dividerColor }">
+    <header v-if="detail" class="run-detail__topbar">
+      <div class="run-detail__meta">
+        <strong>运行 #{{ detail.runNo }}</strong>
+        <span>{{ detail.planName }} / {{ detail.pathName }}</span>
+        <span class="run-detail__mode">模式：{{ detail.modeName }}（固定）</span>
+        <span>路径运行：{{ detail.pathRunStatusName }}</span>
+        <span v-if="detail.failureClassName" class="run-detail__failure">{{ detail.failureClassName }}</span>
+      </div>
+      <div class="run-detail__actions">
+        <NButton
+          type="primary"
+          :disabled="acting || !detail.currentPreview || overviewDone"
+          title="放行将发出真实写请求，请确认预览内容"
+          @click="approve"
+        >
+          放行
+        </NButton>
+        <NButton :disabled="acting || overviewDone" title="停止将在当前步骤结束后生效" @click="stopRunAction">停止</NButton>
+      </div>
+      <RunStatusIndicator
+        class="run-detail__indicator"
+        :running="isActing"
+        :stale="staleBudgetElapsed"
+        :elapsed-text="elapsedText"
+        :phase-durations="phaseDurations"
+        :note="acting && staleBudgetElapsed ? '超过预算未收到状态更新' : ''"
+      />
+    </header>
+    <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
+    <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
+    <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
+
+    <div v-if="loading" class="run-detail__loading"><NSpin size="small" /><span>正在读取运行详情……</span></div>
+    <NEmpty v-else-if="!detail" :description="errorText || '未找到该运行记录。'" />
+
+    <div v-else class="run-detail__body">
+      <div class="run-detail__canvas">
+        <FlowGraphCanvas
+          ref="canvasRef"
+          v-if="graph"
+          :graph="graph"
+          :choices="pathChoices"
+          run-mode
+          :run-node-states="runNodeStates"
+          :current-run-node-key="currentNodeKey"
+          @select-run-node="handleSelectRunNode"
+          @run-viewport-change="handleRunViewportChange"
+        />
+        <NEmpty v-else description="真实流程结构尚未加载，无法渲染运行画布。" />
+        <NButton
+          v-if="followPaused && currentNodeKey"
+          class="run-detail__follow"
+          size="small"
+          type="info"
+          @click="resumeFollow"
+        >
+          回到当前步
+        </NButton>
+      </div>
+      <RunNodePanel v-if="selectedNodeKey" :detail="detail" :node-key="selectedNodeKey" @close="selectedNodeKey = ''" />
+      <div v-else class="run-detail__panel-placeholder">
+        <p>点击画布上的节点，查看该节点的运行信息与错误。</p>
+      </div>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.run-detail {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 14px 18px;
+}
+
+.run-detail__topbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
+  border-radius: 8px;
+}
+
+.run-detail__meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 13px;
+}
+
+.run-detail__mode {
+  padding: 1px 8px;
+  background: color-mix(in srgb, var(--info-color, #2080f0) 12%, transparent);
+  border-radius: 8px;
+}
+
+.run-detail__failure { color: var(--error-color, #d03050); }
+.run-detail__actions { display: flex; gap: 10px; }
+.run-detail__indicator { min-width: 380px; }
+
+.run-detail__conclusion {
+  margin: 0;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--success-color, #18a058) 10%, transparent);
+  border-radius: 6px;
+}
+
+.run-detail__error { margin: 0; color: var(--error-color, #d03050); }
+.run-detail__notice { margin: 0; opacity: 0.8; }
+.run-detail__loading { display: flex; gap: 10px; align-items: center; }
+
+.run-detail__body {
+  display: grid;
+  grid-template-columns: 1fr 336px;
+  gap: 12px;
+  align-items: start;
+}
+
+.run-detail__canvas { position: relative; }
+
+.run-detail__follow {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+}
+
+.run-detail__panel-placeholder {
+  padding: 12px;
+  font-size: 13px;
+  opacity: 0.7;
+  border: 1px dashed var(--run-border-color, rgba(128,128,128,0.35));
+  border-radius: 8px;
+}
+
+@media (max-width: 1100px) {
+  .run-detail__body { grid-template-columns: 1fr; }
+}
+</style>

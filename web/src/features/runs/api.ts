@@ -1,0 +1,178 @@
+// 运行主线（F-016）前端类型：与后端 DTO 字段一一对应，不制造第二份语义。
+export interface RunNodeState {
+  status: string
+  statusName: string
+}
+
+export interface RunGateItem {
+  key: string
+  description: string
+  passed: boolean
+}
+
+export interface RunPreview {
+  stepNo: number
+  totalSteps: number
+  action: string
+  actionName: string
+  nodeKey: string
+  nodeName: string
+  actorName: string
+  expectedEffect: string
+  endpoint: string
+  requestPreview: string
+  gateAllowed: boolean
+  gateReason?: string
+  gateItems: RunGateItem[]
+  facts: Record<string, unknown>
+  blockReason?: string
+}
+
+export interface RunStepAttempt {
+  attemptNo: number
+  verdictName: string
+  reason: string
+  basis: string
+  traceId: string
+  durationMs: number
+  logPath: string
+  logLine: number
+  phaseDurations?: Record<string, number>
+  phaseDurationsNote?: string
+  curlBlock?: string
+}
+
+export interface RunStep {
+  stepNo: number
+  actionName: string
+  nodeKey: string
+  nodeName: string
+  actorName: string
+  statusName: string
+  startedAt: string
+  finishedAt: string
+  durationMs: number
+  attempts: RunStepAttempt[]
+}
+
+export interface PathRunDetail {
+  runId: number
+  runNo: number
+  modeName: string
+  runStatusName: string
+  pathRunId: number
+  pathRunStatus: string
+  pathRunStatusName: string
+  resultName?: string
+  failureClassName?: string
+  finalTarget?: unknown
+  planId: number
+  planName: string
+  pathId: number
+  pathName: string
+  steps: RunStep[]
+  currentPreview?: RunPreview
+  nodeStates: Record<string, RunNodeState>
+  pollIntervalMs: number
+  staleAfterMs: number
+}
+
+export interface RunSummary {
+  runId: number
+  runNo: number
+  modeName: string
+  statusName: string
+  resultName?: string
+  startedAt?: string
+  finishedAt?: string
+  pathRunId: number
+  pathRunStatusName: string
+}
+
+// 运行 API 错误：文案与后端同源，只在网络层失败时给前端兜底中文。
+export class RunApiError extends Error {
+  readonly code: string
+  readonly retryable: boolean
+  readonly status: number
+
+  constructor(message: string, options: { code: string; retryable: boolean; status: number }) {
+    super(message)
+    this.name = 'RunApiError'
+    this.code = options.code
+    this.retryable = options.retryable
+    this.status = options.status
+  }
+}
+
+// requestOnce 是运行模块的统一请求出口：解析后端统一包络，不在前端另造提示。
+async function requestOnce<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(path, { ...init, signal })
+  } catch {
+    throw new RunApiError('暂时无法连接后端服务，请重试', { code: 'NETWORK', retryable: true, status: 0 })
+  }
+  let envelope: unknown
+  try {
+    envelope = await response.json()
+  } catch {
+    throw new RunApiError('后端响应格式异常，请重试', { code: 'INVALID_RESPONSE', retryable: true, status: response.status })
+  }
+  const parsed = envelope as { success?: boolean; data?: T; error?: { code?: string; message?: string; retryable?: boolean } }
+  if (!parsed.success) {
+    throw new RunApiError(parsed.error?.message || '运行服务请求失败', {
+      code: parsed.error?.code || 'RUN_FAILED',
+      retryable: parsed.error?.retryable ?? false,
+      status: response.status,
+    })
+  }
+  return parsed.data as T
+}
+
+// fetchPlanRuns 列出计划下的运行（最新在前）。
+export function fetchPlanRuns(planId: string, signal?: AbortSignal): Promise<RunSummary[]> {
+  return requestOnce<RunSummary[]>(`/api/plans/${encodeURIComponent(planId)}/runs`, { method: 'GET' }, signal)
+}
+
+// fetchRunDetail 读取路径运行详情。
+export function fetchRunDetail(runId: string, signal?: AbortSignal): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}`, { method: 'GET' }, signal)
+}
+
+// startRun 启动一次单步运行：模式由后端强制为单步，前端不提供切换。
+export function startRun(planId: string, executionPathId: string): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/plans/${encodeURIComponent(planId)}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ planId: Number(planId), executionPathId: Number(executionPathId) }),
+  })
+}
+
+// approveRun 放行当前步：真实写请求在这一次调用里执行，按钮不绑单键快捷键。
+export function approveRun(runId: string): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/approve`, { method: 'POST' })
+}
+
+// stopRun 停止路径运行。
+export function stopRun(runId: string): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' })
+}
+
+// formatElapsed 把毫秒格式化为中文可读时长。
+export function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return `${Math.round(ms)} 毫秒`
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return `${minutes} 分 ${rest} 秒`
+}
+
+// formatTime 把服务端时间格式化为本地中文时间。
+export function formatTime(value?: string): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '时间异常'
+  return date.toLocaleString('zh-CN', { hour12: false })
+}

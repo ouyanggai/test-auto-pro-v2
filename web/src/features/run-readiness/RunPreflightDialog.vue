@@ -2,11 +2,17 @@
 import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NModal, NResult, NSpace, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
+import { useRouter } from 'vue-router'
+
+import { startRun } from '../runs/api'
 import { fetchPlanRunReadiness, RunReadinessApiError } from './api'
 import type { PathRunReadiness, PlanRunReadiness, RunReadinessItem } from './types'
 
 const props = defineProps<{ show: boolean, planId: string, pathIds: string[] }>()
 const emit = defineEmits<{ 'update:show': [value: boolean], locate: [pathId: string, anchor: string] }>()
+const router = useRouter()
+const starting = ref(false)
+const startError = ref('')
 
 const themeVars = useThemeVars()
 const readiness = ref<PlanRunReadiness | null>(null)
@@ -48,6 +54,27 @@ async function runCheck() {
       controller = null
       loading.value = false
     }
+  }
+}
+
+// startSingleRun 启动第一条可执行路径的单步运行（F-016）：
+// 模式由后端强制为单步；启动前服务端会再次复验运行准备结论。
+// 只启动勾选路径里的第一条可执行路径，本切片一次运行只跑一条路径。
+async function startSingleRun() {
+  const target = (readiness.value?.paths ?? []).find(path => path.runnable)
+  if (!target || starting.value) return
+  starting.value = true
+  startError.value = ''
+  try {
+    const detail = await startRun(props.planId, String(target.pathId))
+    emit('update:show', false)
+    router.push(`/runs/${detail.runId}`)
+  }
+  catch (caught) {
+    startError.value = caught instanceof RunReadinessApiError || caught instanceof Error ? caught.message : '启动失败，请重试'
+  }
+  finally {
+    starting.value = false
   }
 }
 
@@ -134,8 +161,15 @@ watch(() => props.show, (open) => {
       <n-space justify="end">
         <n-button size="small" :loading="loading" @click="runCheck">重新检查</n-button>
         <n-button size="small" @click="emit('update:show', false)">关闭</n-button>
-        <!-- 真正的启动属于 F-016，这里明确说明当前只做检查，不给一个点了没反应的按钮。 -->
-        <n-button size="small" type="primary" disabled>开始运行（执行器切片交付后可用）</n-button>
+        <!-- F-016 交付：运行前检查通过后可启动单步运行，启动后进入路径运行详情。 -->
+        <n-button
+          size="small"
+          type="primary"
+          :loading="starting"
+          :disabled="!allClear"
+          :title="allClear ? '以单步模式启动第一条可执行路径' : '存在阻塞项，不能启动'"
+          @click="startSingleRun"
+        >开始运行（单步）</n-button>
       </n-space>
     </template>
   </n-modal>

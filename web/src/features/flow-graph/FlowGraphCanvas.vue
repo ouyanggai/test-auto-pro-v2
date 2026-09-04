@@ -40,9 +40,14 @@ const props = withDefaults(defineProps<{
   configurationNodeStates?: Record<string, FlowConfigurationNodeState>
   configurationFormStatus?: string
   configurationFormStatusName?: string
+  // runMode 是 F-016 的运行画布变体：真实节点承载九个中文运行态与当前步指示器。
+  runMode?: boolean
+  runNodeStates?: Record<string, { status: string; statusName: string }>
+  currentRunNodeKey?: string
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
-  configurationMode: false, configurationNodeStates: () => ({}),
+  configurationMode: false, configurationNodeStates: () => ({}), configurationFormStatus: '', configurationFormStatusName: '',
+  runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '',
 })
 const emit = defineEmits<{
   retry: []
@@ -51,6 +56,8 @@ const emit = defineEmits<{
   requestWorkspaceExit: []
   selectConfigurationNode: [nodeID: string]
   openConfigurationForm: []
+  selectRunNode: [nodeID: string]
+  runViewportChange: [viewport: { x: number, y: number, zoom: number }]
 }>()
 const themeVars = useThemeVars()
 const canvasRoot = ref<HTMLElement | null>(null)
@@ -69,34 +76,43 @@ const layoutResult = computed(() => safeLayoutFlowGraph(props.graph))
 const laidOut = computed(() => layoutResult.value.layout)
 const pathAnalysis = computed(() => analyzeExecutionPath(props.graph, props.choices))
 const displayedLayout = computed(() => {
-  if (!laidOut.value || (!props.workspaceOpen && !props.configurationMode)) return laidOut.value
+  if (!laidOut.value || (!props.workspaceOpen && !props.configurationMode && !props.runMode)) return laidOut.value
   const analysis = pathAnalysis.value
   const edgeStates = classifyExecutionPathEdges(props.graph, analysis, props.choices)
   return {
     nodes: laidOut.value.nodes.map((node) => {
       const configurationState = props.configurationNodeStates[node.id]
       const configurationInteractive = Boolean(props.configurationMode && configurationState?.interactive)
+      // 运行模式：路径内节点可点开侧栏，路径外节点弱化只读。
+      const runState = props.runNodeStates[node.id]
+      const runInteractive = Boolean(props.runMode && analysis.reachableNodeIds.has(node.id))
       return {
         ...node,
-        // Vue Flow 会用节点自身的 selectable/focusable 覆盖全局只读值；仅当前路径可配置节点进入官方事件链。
-        selectable: configurationInteractive,
-        focusable: configurationInteractive,
+        // Vue Flow 会用节点自身的 selectable/focusable 覆盖全局只读值；仅当前路径节点进入官方事件链。
+        selectable: props.runMode ? runInteractive : configurationInteractive,
+        focusable: props.runMode ? runInteractive : configurationInteractive,
         draggable: false,
         connectable: false,
         deletable: false,
-        ariaLabel: configurationInteractive
-          ? `${node.data?.name || '流程节点'}，${configurationState?.statusName || '待配置'}，按回车或空格选择节点`
-          : `${node.data?.name || '流程节点'}，不可配置`,
+        ariaLabel: props.runMode
+          ? `${node.data?.name || '流程节点'}，${runState?.statusName || '未开始'}${node.id === props.currentRunNodeKey ? '，当前步' : ''}`
+          : configurationInteractive
+            ? `${node.data?.name || '流程节点'}，${configurationState?.statusName || '待配置'}，按回车或空格选择节点`
+            : `${node.data?.name || '流程节点'}，不可配置`,
         class: analysis.reachableNodeIds.has(node.id) ? 'flow-node--path-active' : 'flow-node--path-muted',
         data: {
           ...node.data,
-          configurationMode: props.configurationMode,
+          configurationMode: props.configurationMode && !props.runMode,
           configurationStatus: configurationState?.status,
           configurationStatusName: configurationState?.statusName,
           configurationInteractive,
           configurationSelected: configurationState?.selected ?? false,
           configurationFormStatus: props.configurationFormStatus,
           configurationFormStatusName: props.configurationFormStatusName,
+          runMode: props.runMode,
+          runStatus: runState?.status,
+          runStatusName: runState?.statusName,
+          runCurrent: props.runMode && node.id === props.currentRunNodeKey,
         },
       }
     }),
@@ -245,6 +261,10 @@ function toggleSelectionPanel() {
 function handleViewportChange(viewport: { x: number, y: number, zoom: number }) {
   // 引导端点必须跟随 Vue Flow 当前变换，拖动或缩放后不能继续指向旧屏幕坐标。
   viewportState.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
+  if (props.runMode) {
+    // 运行画布把视口变化交给详情页判断"自动跟随是否被用户接管"。
+    emit('runViewportChange', viewport)
+  }
 }
 
 function guideArrowPath(candidate: ExecutionPathGuideCandidate): string {
@@ -355,6 +375,11 @@ function handleSelectConfigurationNode(nodeID: string) {
 
 // handleConfigurationNodeClick 使用 Vue Flow 官方节点点击事件，确保包装层而非内部样式承担 pointer 边界。
 function handleConfigurationNodeClick({ node }: NodeMouseEvent) {
+  // 运行模式下节点点击交给运行侧栏；配置模式维持原行为。
+  if (props.runMode) {
+    emit('selectRunNode', node.id)
+    return
+  }
   handleSelectConfigurationNode(node.id)
 }
 

@@ -40,6 +40,11 @@ export interface FlowNodeData extends Record<string, unknown> {
   configurationSelected?: boolean
   configurationFormStatus?: string
   configurationFormStatusName?: string
+  // runMode 是 F-016 运行画布的节点变体：九个中文运行态 + 当前步标记。
+  runMode?: boolean
+  runStatus?: string
+  runStatusName?: string
+  runCurrent?: boolean
 }
 
 export interface FlowConfigurationNodeState {
