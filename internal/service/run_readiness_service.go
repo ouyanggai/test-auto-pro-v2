@@ -180,7 +180,7 @@ func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGra
 		return input
 	}
 	input.ConfigFound = true
-	input.ConfigIssues = decodeConfigIssues(config.Issues)
+	input.ConfigIssues = decodeConfigIssues(config.Issues, graphNodeNames(graph))
 	input.CompiledStepCount = countJSONArray(config.CompiledSteps)
 	input.ConfiguredActions = decodeConfiguredActions(config.UserActions)
 	return input
@@ -234,7 +234,7 @@ func pathDisplayName(path model.ExecutionPath) string {
 // 该列是异构对象数组：F-012 的路径问题与动作问题字段名不同（reason 与 message、name 与 action），
 // 因此按几种已知键取值，并且**只保留有可读中文原因的条目**——
 // 没有原因的条目在界面上就是一条空白阻塞，比不显示更糟。解析不了就当没有，不编造问题。
-func decodeConfigIssues(payload []byte) []model.PathConfigAffectedItem {
+func decodeConfigIssues(payload []byte, nodeNames map[string]string) []model.PathConfigAffectedItem {
 	if len(payload) == 0 {
 		return nil
 	}
@@ -248,13 +248,30 @@ func decodeConfigIssues(payload []byte) []model.PathConfigAffectedItem {
 		if reason == "" {
 			continue
 		}
+		name := firstStringValue(object, "name", "nodeName")
+		if name == "" {
+			// 问题里带的是目标结构节点键，界面不显示这类标识：能查到中文节点名就用它，
+			// 查不到就留空，由中文原因承载信息。产品规则要求界面只出现业务语言。
+			name = nodeNames[firstStringValue(object, "path", "nodeKey")]
+		}
 		issues = append(issues, model.PathConfigAffectedItem{
 			Kind:   firstStringValue(object, "kind", "code"),
-			Name:   firstStringValue(object, "name", "nodeName", "action", "actionId", "path", "branchKey"),
+			Name:   name,
 			Reason: reason,
 		})
 	}
 	return issues
+}
+
+// graphNodeNames 把真实结构里的节点键映射为中文节点名，供问题条目显示业务语言。
+func graphNodeNames(graph model.FlowGraph) map[string]string {
+	names := make(map[string]string, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		if name := strings.TrimSpace(node.Name); name != "" {
+			names[node.ID] = name
+		}
+	}
+	return names
 }
 
 // firstStringValue 按给定键顺序取第一个非空字符串值。
