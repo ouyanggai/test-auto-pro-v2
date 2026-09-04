@@ -161,13 +161,16 @@ func (f *fakeTarget) AuditCurrentTask(context.Context, target.Session, target.Au
 // newRunContext 构造一条「新发起」单步场景：发起后接同意。
 func newRunContext(steps []model.CompiledActionStep) step.RunContext {
 	return step.RunContext{
-		Run:               model.Run{ID: 1, PlanID: 1, RunNo: 1},
-		PathRun:           model.PathRun{ID: 11, RunID: 1, Status: model.PathRunStatusRunning},
-		PathName:          "路径 1",
-		PlanAccount:       "oyg-test",
-		FlowProxyID:       "flow-proxy-1",
-		Source:            "new",
-		GraphNodes:        []model.FlowGraphNode{{ID: "node-start", Name: "发起人", Type: "start"}, {ID: "node-audit", Name: "部门审批", Type: "common"}},
+		Run:         model.Run{ID: 1, PlanID: 1, RunNo: 1},
+		PathRun:     model.PathRun{ID: 11, RunID: 1, Status: model.PathRunStatusRunning},
+		PathName:    "路径 1",
+		PlanAccount: "oyg-test",
+		FlowProxyID: "flow-proxy-1",
+		Source:      "new",
+		Nodes: map[string]step.NodeInfo{
+			"node-start": {Name: "发起人", Type: "start"},
+			"node-audit": {Name: "部门审批", Type: "审批"},
+		},
 		Steps:             steps,
 		EffectiveFormData: []byte(`{"amount":"12.30"}`),
 	}

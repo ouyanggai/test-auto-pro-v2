@@ -43,6 +43,12 @@ type RunFactsStore interface {
 	RecordStepAttempt(ctx context.Context, step model.RunStep, attempt model.RunStepAttempt, now time.Time) (uint64, error)
 }
 
+// NodeInfo 是执行器查表用的节点信息：目标节点名称与类型名（如「审批」，可被门禁归一化识别）。
+type NodeInfo struct {
+	Name string
+	Type string
+}
+
 // RunContext 是一次路径运行的静态上下文：执行期间不变的标识、场景与数据。
 type RunContext struct {
 	Run     model.Run
@@ -57,8 +63,9 @@ type RunContext struct {
 	FlowProxyID string
 	// Source 是这条路径的流程来源（如“新发起”）；门禁投影与来源相关。
 	Source string
-	// GraphNodes 是这条路径所在真实结构的节点表，供节点名称与节点类型查表。
-	GraphNodes []model.FlowGraphNode
+	// Nodes 是路径配置快照里这条路径的目标节点表（键=目标代理节点 Key），
+	// 供节点名称与节点类型查表。编译场景的 nodeKey 用的是这一套键，不是流程图节点 ID。
+	Nodes map[string]NodeInfo
 	// Steps 是编译场景（用户步骤），执行器按序号推进。
 	Steps []model.CompiledActionStep
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。

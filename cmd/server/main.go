@@ -11,18 +11,18 @@ import (
 	"syscall"
 	"time"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/api"
-	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/control"
 	"test-auto-pro-v2/internal/engine/run"
 	"test-auto-pro-v2/internal/engine/step"
-	"test-auto-pro-v2/internal/session"
 	"test-auto-pro-v2/internal/formruntimemaintenance"
 	"test-auto-pro-v2/internal/logging"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
 	"test-auto-pro-v2/internal/service"
+	"test-auto-pro-v2/internal/session"
 )
 
 // main 在监听端口前完成向前迁移并组装目标读取、计划、流程图和路径服务。
@@ -167,7 +167,7 @@ func main() {
 	controlService := control.NewService(runStateService, stepExecutor, runStore, time.Now)
 	runOrchestrationService := service.NewRunOrchestrationService(
 		planService, pathRepository, flowGraphService, historyWorkspaceStore,
-		runReadinessService, controlService, runStore, logRouter, runConfig, time.Now,
+		runReadinessService, controlService, runStore, logRouter, runConfig, pathConfigService, time.Now,
 	)
 	// 启动恢复是纲领第 4.2 节的不可破坏约束：崩溃前可能已发出写请求，重启后绝不自动继续。
 	if recovered, recoverErr := runStateService.Recover(context.Background()); recoverErr != nil {

@@ -10,28 +10,13 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-// nodeInfo 是查表用的节点信息：路径画布上的真实节点名称与类型。
-type nodeInfo struct {
-	Name string
-	Type string
-}
-
-// nodeTable 把真实结构节点表转为按键索引的查表结构。
-func nodeTable(nodes []model.FlowGraphNode) map[string]nodeInfo {
-	table := make(map[string]nodeInfo, len(nodes))
-	for _, node := range nodes {
-		table[node.ID] = nodeInfo{Name: node.Name, Type: node.Type}
-	}
-	return table
-}
-
 // buildGateContext 把目标实时事实投影为动作目录可判定的上下文。
 // 投影规则：
 //   - 发起步骤：实例尚未持久化，状态留空即“新建”事实（actioncatalog 的 sourceIsNew 判据），
 //     发起人就是计划账号；
 //   - 审批步骤：实例事实来自发起人会话的重读，待办事实来自演员会话的重读，
 //     缺一不可，不得凭配置推断。
-func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts, info nodeInfo) model.ActionContext {
+func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts, info NodeInfo) model.ActionContext {
 	ctx := model.ActionContext{
 		FlowSource:      runCtx.Source,
 		CurrentNodeKey:  step.NodeKey,

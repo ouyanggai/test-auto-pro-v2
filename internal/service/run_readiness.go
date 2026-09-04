@@ -28,6 +28,46 @@ func IsVerifiedRunnableAction(action model.ActionKey) bool {
 	return verifiedRunnableActions[action]
 }
 
+// ActionSemanticsRequirement 记录一个动作涉及的目标语义清单条目（docs/TARGET_SEMANTICS.md）及其状态。
+// 状态快照与文档逐字对应，由契约脚本核对漂移；条目状态变化时必须同步这里。
+type ActionSemanticsRequirement struct {
+	EntryID string
+	Title   string
+	Status  string
+}
+
+// actionSemanticsRequirements 是动作到语义清单条目的映射：semantics_pending 提醒的真实数据源。
+// 未涉及的动作不凭空编造映射——映射缺失就不产生语义提醒，而不是猜条目。
+// F-016 覆盖的两个动作只涉及第 1、2 条（F-014 已勘定）：写路径的错误语义与幂等，
+// 这正是纲领第 8.2 节要求“第一次真实写之前必须掌握”的两条。
+var actionSemanticsRequirements = map[model.ActionKey][]ActionSemanticsRequirement{
+	model.ActionSubmit: {
+		{EntryID: "1", Title: "错误语义", Status: "已勘定"},
+		{EntryID: "2", Title: "幂等与重复提交", Status: "已勘定"},
+	},
+	model.ActionApprove: {
+		{EntryID: "1", Title: "错误语义", Status: "已勘定"},
+		{EntryID: "2", Title: "幂等与重复提交", Status: "已勘定"},
+	},
+}
+
+// pendingSemanticsFor 汇总一组已配置动作涉及的、语义清单里还不是「已勘定」的条目名。
+func pendingSemanticsFor(actions []model.ActionKey) []string {
+	pending := []string{}
+	seen := map[string]bool{}
+	for _, action := range actions {
+		for _, requirement := range actionSemanticsRequirements[action] {
+			if requirement.Status == "已勘定" || seen[requirement.EntryID] {
+				continue
+			}
+			seen[requirement.EntryID] = true
+			pending = append(pending, "第 "+requirement.EntryID+" 条 "+requirement.Title)
+		}
+	}
+	sort.Strings(pending)
+	return pending
+}
+
 // PathReadinessInput 是判断一条路径能否启动所需的全部事实，全部由调用方先读齐再传入。
 // 这里刻意不放仓储与目标客户端：十类阻塞的判断必须是纯函数，才能逐类写用例。
 type PathReadinessInput struct {

@@ -101,7 +101,7 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		return e.blockedPreview(runCtx, step, actorName,
 			"无法读取目标实时事实："+readErr.Error(), model.FailureClassGateBlocked), false, nil
 	}
-	info := nodeTable(runCtx.GraphNodes)[step.NodeKey]
+	info := runCtx.Nodes[step.NodeKey]
 	catalogItem, allowed := evaluateGate(step, buildGateContext(runCtx, step, facts, info))
 	log.Phase("gate", step.Sequence, 1, gateSummary(catalogItem, allowed))
 
@@ -157,7 +157,7 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 
 // blockedPreview 构造被阻塞的预览：说明中文原因与失败分类，路径必须停止。
 func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionStep, actorName, reason string, class model.FailureClass) *StepPreview {
-	info := nodeTable(runCtx.GraphNodes)[step.NodeKey]
+	info := runCtx.Nodes[step.NodeKey]
 	return &StepPreview{
 		PathRunID:         runCtx.PathRun.ID,
 		StepNo:            step.Sequence,
@@ -367,11 +367,11 @@ func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, se
 // FinalTargetFacts 是收尾重读产出的最终目标事实摘要。
 // 与「路径结果」是两件分开的事：本结构只如实描述目标现状，不做成立与否的判定（纲领第 7.4 节）。
 type FinalTargetFacts struct {
-	InstanceRef     string   `json:"instanceRef"`
-	Status          string   `json:"status"`
-	StatusName      string   `json:"statusName"`
+	InstanceRef      string   `json:"instanceRef"`
+	Status           string   `json:"status"`
+	StatusName       string   `json:"statusName"`
 	CurrentNodeNames []string `json:"currentNodeNames"`
-	DueNodeNames    []string `json:"dueNodeNames"`
+	DueNodeNames     []string `json:"dueNodeNames"`
 }
 
 // FinalReview 场景走完后的收尾重读：回到目标读实例状态、当前节点与当前待办，
@@ -386,7 +386,7 @@ func (e *Executor) FinalReview(ctx context.Context, runCtx RunContext) (FinalTar
 	if err != nil {
 		return FinalTargetFacts{}, err
 	}
-	table := nodeTable(runCtx.GraphNodes)
+	table := runCtx.Nodes
 	result := FinalTargetFacts{
 		InstanceRef: runCtx.PathRun.MainInstanceRef,
 		Status:      facts.Status,
@@ -401,8 +401,8 @@ func (e *Executor) FinalReview(ctx context.Context, runCtx RunContext) (FinalTar
 	return result, nil
 }
 
-// nodeNameOf 查节点业务名称；真实结构里查不到的键原样返回，不静默丢弃事实。
-func nodeNameOf(table map[string]nodeInfo, nodeKey string) string {
+// nodeNameOf 查节点业务名称；路径配置快照里查不到的键原样返回，不静默丢弃事实。
+func nodeNameOf(table map[string]NodeInfo, nodeKey string) string {
 	if info, ok := table[nodeKey]; ok && info.Name != "" {
 		return info.Name
 	}

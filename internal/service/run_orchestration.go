@@ -61,6 +61,8 @@ type RunOrchestrationService struct {
 	router    *logging.Router
 	runConfig config.RunConfig
 	now       func() time.Time
+	// pathNodes 提供路径配置快照的目标节点表（键=编译场景 nodeKey 的同一套键）。
+	pathNodes *PathConfigService
 }
 
 // NewRunOrchestrationService 组装运行编排服务；router 用于读取 step.log 的阶段耗时。
@@ -74,6 +76,7 @@ func NewRunOrchestrationService(
 	store repository.RunStore,
 	router *logging.Router,
 	runConfig config.RunConfig,
+	pathNodes *PathConfigService,
 	now func() time.Time,
 ) *RunOrchestrationService {
 	if now == nil {
@@ -82,7 +85,7 @@ func NewRunOrchestrationService(
 	return &RunOrchestrationService{
 		plans: plans, paths: paths, graphs: graphs, configs: configs,
 		readiness: readiness, control: controlSvc, store: store, router: router,
-		runConfig: runConfig, now: now,
+		runConfig: runConfig, pathNodes: pathNodes, now: now,
 	}
 }
 
@@ -164,24 +167,24 @@ type RunNodeStateDTO struct {
 
 // PathRunDetailDTO 是路径运行详情页的数据主体。
 type PathRunDetailDTO struct {
-	RunID             uint64                     `json:"runId"`
-	RunNo             uint64                     `json:"runNo"`
-	ModeName          string                     `json:"modeName"`
-	RunStatusName     string                     `json:"runStatusName"`
-	PathRunID         uint64                     `json:"pathRunId"`
-	PathRunStatus     string                     `json:"pathRunStatus"`
-	PathRunStatusName string                     `json:"pathRunStatusName"`
+	RunID             uint64 `json:"runId"`
+	RunNo             uint64 `json:"runNo"`
+	ModeName          string `json:"modeName"`
+	RunStatusName     string `json:"runStatusName"`
+	PathRunID         uint64 `json:"pathRunId"`
+	PathRunStatus     string `json:"pathRunStatus"`
+	PathRunStatusName string `json:"pathRunStatusName"`
 	// Result 与 FinalTarget 是两件分开的事：路径结果只看步骤事实，最终目标事实如实描述目标现状。
-	ResultName        string                     `json:"resultName,omitempty"`
-	FailureClassName  string                     `json:"failureClassName,omitempty"`
-	FinalTarget       json.RawMessage            `json:"finalTarget,omitempty"`
-	PlanID            uint64                     `json:"planId"`
-	PlanName          string                     `json:"planName"`
-	PathID            uint64                     `json:"pathId"`
-	PathName          string                     `json:"pathName"`
-	Steps             []RunStepDTO               `json:"steps"`
-	CurrentPreview    *RunPreviewDTO             `json:"currentPreview,omitempty"`
-	NodeStates        map[string]RunNodeStateDTO `json:"nodeStates"`
+	ResultName       string                     `json:"resultName,omitempty"`
+	FailureClassName string                     `json:"failureClassName,omitempty"`
+	FinalTarget      json.RawMessage            `json:"finalTarget,omitempty"`
+	PlanID           uint64                     `json:"planId"`
+	PlanName         string                     `json:"planName"`
+	PathID           uint64                     `json:"pathId"`
+	PathName         string                     `json:"pathName"`
+	Steps            []RunStepDTO               `json:"steps"`
+	CurrentPreview   *RunPreviewDTO             `json:"currentPreview,omitempty"`
+	NodeStates       map[string]RunNodeStateDTO `json:"nodeStates"`
 	// PollIntervalMs 提示前端轮询间隔（来自配置），状态只在放行后变化。
 	PollIntervalMs int64 `json:"pollIntervalMs"`
 	// StaleAfterMs 是超过该时长仍无状态更新即视为疑似无响应的预算（来自配置）。
@@ -198,10 +201,6 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 	if err != nil {
 		return step.RunContext{}, err
 	}
-	graph, err := s.graphs.Get(ctx, planID)
-	if err != nil {
-		return step.RunContext{}, err
-	}
 	config, found, err := s.configs.GetPathConfig(ctx, pathID)
 	if err != nil {
 		return step.RunContext{}, err
@@ -212,6 +211,15 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "编译场景读取失败，请重新保存动作编排"}
 		}
 	}
+	nodes := map[string]step.NodeInfo{}
+	snapshot, snapshotErr := s.pathNodes.Get(ctx, planID, pathID)
+	if snapshotErr == nil {
+		for _, group := range snapshot.Groups {
+			for _, node := range group.Nodes {
+				nodes[node.Key] = step.NodeInfo{Name: node.Name, Type: node.TypeName}
+			}
+		}
+	}
 	return step.RunContext{
 		Run:               model.Run{PlanID: planID},
 		PathRun:           model.PathRun{ExecutionPathID: pathID},
@@ -220,7 +228,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		PlanAccount:       plan.Account,
 		FlowProxyID:       plan.TargetObjectID,
 		Source:            plan.FlowSource,
-		GraphNodes:        graph.Nodes,
+		Nodes:             nodes,
 		Steps:             steps,
 		EffectiveFormData: config.EffectiveFormData,
 	}, nil

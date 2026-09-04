@@ -159,6 +159,8 @@ func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGra
 	input.ConfigIssues, input.ConfigNotices = decodeConfigIssues(config.Issues, graphNodeNames(graph))
 	input.CompiledStepCount = countJSONArray(config.CompiledSteps)
 	input.ConfiguredActions = decodeConfiguredActions(config.UserActions)
+	// semantics_pending 的真实数据源：按动作到语义条目的映射汇总未勘定条目。
+	input.PendingSemanticsEntries = pendingSemanticsFor(input.ConfiguredActions)
 	return input
 }
 

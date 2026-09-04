@@ -74,14 +74,16 @@ func TestF016StepLogBidirectionalReachability(t *testing.T) {
 	executor.SetLogFactory(step.NewRouterStepLogFactory(router))
 
 	runCtx := step.RunContext{
-		Run:               model.Run{PlanID: 21},
-		PathRun:           model.PathRun{ExecutionPathID: 22, Status: model.PathRunStatusRunning},
-		PlanName:          "日志测试计划",
-		PathName:          "日志路径",
-		PlanAccount:       "oyg-test",
-		FlowProxyID:       "flow-proxy-1",
-		Source:            "new",
-		GraphNodes:        []model.FlowGraphNode{{ID: "node-start", Name: "发起人", Type: "start"}},
+		Run:         model.Run{PlanID: 21},
+		PathRun:     model.PathRun{ExecutionPathID: 22, Status: model.PathRunStatusRunning},
+		PlanName:    "日志测试计划",
+		PathName:    "日志路径",
+		PlanAccount: "oyg-test",
+		FlowProxyID: "flow-proxy-1",
+		Source:      "new",
+		Nodes: map[string]step.NodeInfo{
+			"node-start": {Name: "发起人", Type: "start"},
+		},
 		Steps:             []model.CompiledActionStep{submitStep()},
 		EffectiveFormData: []byte(`{"amount":"12.30"}`),
 	}
