@@ -30,7 +30,7 @@ function plainPayload(value: unknown): Record<string, unknown> {
 }
 
 // postCommand 绑定当前 iframe、会话、请求号和协议版本，迟到响应无法串到新路径。
-function postCommand(type: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): Promise<Record<string, unknown>> {
+function postCommand(type: string, payload: Record<string, unknown> = {}, signal?: AbortSignal, timeoutMs = 15_000): Promise<Record<string, unknown>> {
   const target = iframe.value?.contentWindow
   if (!target || disposed || !runtimeActive) return Promise.reject(new Error('表单运行时尚未就绪'))
   if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new DOMException('操作已取消', 'AbortError'))
@@ -49,7 +49,7 @@ function postCommand(type: string, payload: Record<string, unknown> = {}, signal
       cleanup()
       pending.delete(requestId)
       reject(new Error('表单运行时响应超时，当前表单数据未丢失'))
-    }, 15_000)
+    }, timeoutMs)
     pending.set(requestId, { resolve, reject, timer, cleanup })
     signal?.addEventListener('abort', abort, { once: true })
     target.postMessage({ version: FORM_RUNTIME_VERSION, sessionId: sessionId.value, requestId, type, payload: plainPayload(payload) }, runtimeOrigin.value)
@@ -62,6 +62,7 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
   const generation = ++runtimeGeneration
   runtimeActive = true
   try {
+    // 宿主页面装载包含目标表单自身的异步初始化与数据源请求，超时预算比其他命令更长。
     const payload = await postCommand('load', {
       sid: props.runtimeSession.sid,
       baseURL: props.runtimeSession.baseURL,
@@ -80,7 +81,7 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
       permissions: props.form.permissions,
       values: props.form.effectiveFormData,
       changedFields: props.form.branchPatches.map(patch => patch.path),
-    })
+    }, undefined, 30_000)
     if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
     emit('ready', payload)
     return payload

@@ -287,8 +287,8 @@ func TestReplaceUserIdentityValuesOnlyTouchesGlobalContextField(t *testing.T) {
 	if identity["dutyId"] != "" || identity["dutyName"] != "" {
 		t.Fatalf("运行时会话不含岗位信息，不允许伪造岗位值：%+v", identity)
 	}
-	if values["expenseUserName"] != "原发起人" {
-		t.Fatalf("业务选择字段被误当作登录人上下文替换：%v", values["expenseUserName"])
+	if values["expenseUserName"] != "计划账号" {
+		t.Fatalf("费用归属人是发起人个人信息，应替换为计划账号：%v", values["expenseUserName"])
 	}
 	absent := map[string]any{"amount": 1}
 	service.ReplaceUserIdentityValuesForTest(absent, service.RuntimeUserIdentityForTest("user-plan", "计划账号", "company-plan", "计划公司", "dept-plan", "计划部门"))
@@ -487,5 +487,64 @@ func TestGetDataFallsBackWithoutInstanceIdentifiers(t *testing.T) {
 	}
 	if configuration.RuntimeTemplate == nil {
 		t.Fatalf("回落时运行时模板缺失")
+	}
+}
+
+// TestReplaceUserIdentityCoversLoginContextFields 锁定登录人约定字段的替换边界：
+// 公司/部门/姓名及个人相关 ID 换成计划账号；人员选择器 JSON 与 __condition/__formPersonId 伴生键同步；
+// 岗位与业务人员（合同相对方）不属于登录人信息，必须保持原值。
+func TestReplaceUserIdentityCoversLoginContextFields(t *testing.T) {
+	identity := service.RuntimeUserIdentityForTest("user-plan", "计划账号", "company-plan", "计划公司", "dept-plan", "计划部门")
+	values := map[string]any{
+		"global_user_basic_information":  map[string]any{"userId": "old"},
+		"handledBy":                      "old-user",
+		"handlingCompany":                "old-company",
+		"handlingDepartment":             "old-dept",
+		"initiatorDepartmentId":          "old-dept",
+		"currentDepartment":              "d37124bc39614d718166d0253a7f7479",
+		"currentDepName":                 "别人的部门",
+		"currentCompanyId":               "old-company",
+		"expenseUserId":                  "old-user",
+		"expenseUserName":                "原发起人",
+		"expenseCompanyId":               "old-company",
+		"expenseCompanyName":             "原公司",
+		"myUserName":                     `{"id":"old-user","name":"原发起人"}`,
+		"myUserName__condition":          "原发起人",
+		"myUserName__formPersonId":       "old-user",
+		"myDepName":                      `{"id":"old-dept","name":"原部门"}`,
+		"myDepName__condition":           "原部门",
+		"myCompanyName":                  `{"id":"old-company","name":"原公司"}`,
+		"contractUserName":               `{"id":"zhang","name":"张秋月"}`,
+		"contractUserName__condition":    "张秋月",
+		"contractUserName__formPersonId": "zhang",
+		"myDutyName":                     `{"id":"duty","name":"前端工程师"}`,
+	}
+	service.ReplaceUserIdentityValuesForTest(values, identity)
+	if values["handledBy"] != "user-plan" || values["handlingCompany"] != "company-plan" || values["handlingDepartment"] != "dept-plan" {
+		t.Fatalf("登录人赋值三件套没有替换：%+v", values)
+	}
+	if values["initiatorDepartmentId"] != "dept-plan" || values["currentDepartment"] != "dept-plan" || values["currentDepName"] != "计划部门" || values["currentCompanyId"] != "company-plan" {
+		t.Fatalf("当前部门/公司字段没有替换为计划账号：%+v", values)
+	}
+	if values["expenseUserId"] != "user-plan" || values["expenseUserName"] != "计划账号" || values["expenseCompanyName"] != "计划公司" {
+		t.Fatalf("费用归属人字段没有替换：%+v", values)
+	}
+	if values["myUserName"] != `{"id":"user-plan","name":"计划账号"}` {
+		t.Fatalf("人员选择器 JSON 没有替换：%v", values["myUserName"])
+	}
+	if values["myUserName__condition"] != "计划账号" || values["myUserName__formPersonId"] != "user-plan" {
+		t.Fatalf("人员选择器伴生键没有同步：%+v", values)
+	}
+	if values["myDepName"] != `{"id":"dept-plan","name":"计划部门"}` || values["myCompanyName"] != `{"id":"company-plan","name":"计划公司"}` {
+		t.Fatalf("部门/公司选择器 JSON 没有替换：%+v", values)
+	}
+	if values["contractUserName"] != `{"id":"zhang","name":"张秋月"}` || values["contractUserName__condition"] != "张秋月" {
+		t.Fatalf("合同相对方人员属于业务数据，不能按登录人替换：%+v", values["contractUserName"])
+	}
+	if values["myDutyName"] != `{"id":"duty","name":"前端工程师"}` {
+		t.Fatalf("岗位信息运行时会话不含，必须保持原值：%+v", values["myDutyName"])
+	}
+	if values["global_user_basic_information"].(map[string]any)["userId"] != "user-plan" {
+		t.Fatalf("全局登录人上下文没有替换：%+v", values["global_user_basic_information"])
 	}
 }

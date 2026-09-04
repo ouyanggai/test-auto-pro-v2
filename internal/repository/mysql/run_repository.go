@@ -214,6 +214,64 @@ func (r *RunRepository) ListRunsByPlan(ctx context.Context, planID uint64, limit
 	return runs, rows.Err()
 }
 
+// ListRunSteps 按路径运行列出已落账步骤（步骤序号升序）。
+func (r *RunRepository) ListRunSteps(ctx context.Context, pathRunID uint64) ([]model.RunStep, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, path_run_id, step_no, source, action, node_key, actor_summary, gate_snapshot, status, started_at, finished_at
+		FROM run_steps WHERE path_run_id = ? ORDER BY step_no ASC
+	`, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	steps := []model.RunStep{}
+	for rows.Next() {
+		var step model.RunStep
+		var actorSummary, gateSnapshot sql.NullString
+		if err := rows.Scan(&step.ID, &step.PathRunID, &step.StepNo, &step.Source, &step.Action, &step.NodeKey,
+			&actorSummary, &gateSnapshot, &step.Status, &step.StartedAt, &step.FinishedAt); err != nil {
+			return nil, err
+		}
+		step.ActorSummary = actorSummary.String
+		step.GateSnapshot = gateSnapshot.String
+		steps = append(steps, step)
+	}
+	return steps, rows.Err()
+}
+
+// ListRunAttempts 按路径运行列出已落账尝试，按步骤与尝试序号升序。
+func (r *RunRepository) ListRunAttempts(ctx context.Context, pathRunID uint64) ([]model.RunStepAttempt, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code, initial, reread,
+		       failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms
+		FROM run_step_attempts WHERE path_run_id = ? ORDER BY id ASC
+	`, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	attempts := []model.RunStepAttempt{}
+	for rows.Next() {
+		var attempt model.RunStepAttempt
+		var failureClass sql.NullString
+		var statusCode sql.NullInt64
+		if err := rows.Scan(&attempt.PathRunID, &attempt.StepID, &attempt.AttemptNo, &attempt.Verdict, &attempt.SideEffect,
+			&attempt.Transport, &statusCode, &attempt.Initial, &attempt.Reread, &failureClass, &attempt.Reason, &attempt.Basis,
+			&attempt.TraceID, &attempt.CurlTraceID, &attempt.LogPath, &attempt.LogLine, &attempt.DurationMs); err != nil {
+			return nil, err
+		}
+		if statusCode.Valid {
+			attempt.StatusCode = int(statusCode.Int64)
+		}
+		if failureClass.Valid {
+			value := model.FailureClass(failureClass.String)
+			attempt.FailureClass = &value
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, rows.Err()
+}
+
 // AdvanceRunStatus 校验运行状态迁移后与事件行同事务落库；非法迁移返回 ErrRunStatusConflict 且不落任何行。
 func (r *RunRepository) AdvanceRunStatus(ctx context.Context, runID uint64, from, to model.RunStatus, event model.RunEvent, now time.Time) (model.Run, error) {
 	now = now.UTC()

@@ -13,7 +13,12 @@ import (
 
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/api"
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/engine/control"
+	"test-auto-pro-v2/internal/engine/run"
+	"test-auto-pro-v2/internal/engine/step"
+	"test-auto-pro-v2/internal/session"
 	"test-auto-pro-v2/internal/formruntimemaintenance"
 	"test-auto-pro-v2/internal/logging"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
@@ -137,12 +142,48 @@ func main() {
 		planService, pathRepository, flowGraphService, historyWorkspaceStore,
 		analyzer.NewExecutionPathAnalyzer(), time.Now,
 	)
+	// F-016 执行器最小真实闭环：目标写客户端、会话管理、运行状态机、一步执行器与单步控制。
+	// 写请求只能由 internal/adapter/target 发出；超时与重试预算全部来自配置。
+	runConfig := config.LoadRunConfig()
+	engineTargetClient, err := target.NewClient(target.ClientConfig{
+		BaseURL:               targetConfig.APIGateway,
+		LoginPassword:         targetConfig.LoginPassword,
+		LoginAESKey:           targetConfig.LoginAESKey,
+		LoginCode:             targetConfig.LoginCode,
+		PlatformCode:          targetConfig.PlatformCode,
+		TemplatePlatformCodes: targetConfig.TemplatePlatformCodes,
+		CustomerCode:          targetConfig.CustomerCode,
+		Timeout:               targetConfig.HTTPTimeout,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	engineTargetClient.SetNetworkLogger(appLogger)
+	sessionManager := session.NewManager(engineTargetClient, targetConfig.SessionTTL)
+	runStore := planmysql.NewRunRepository(planDatabase.DB)
+	runStateService := run.NewService(runStore, "server-run-worker", runConfig.LeaseDuration, time.Now)
+	stepExecutor := step.NewExecutor(engineTargetClient, sessionManager, runStateService, runStore, runConfig, time.Now)
+	stepExecutor.SetLogFactory(step.NewRouterStepLogFactory(logRouter))
+	controlService := control.NewService(runStateService, stepExecutor, runStore, time.Now)
+	runOrchestrationService := service.NewRunOrchestrationService(
+		planService, pathRepository, flowGraphService, historyWorkspaceStore,
+		runReadinessService, controlService, runStore, logRouter, runConfig, time.Now,
+	)
+	// 启动恢复是纲领第 4.2 节的不可破坏约束：崩溃前可能已发出写请求，重启后绝不自动继续。
+	if recovered, recoverErr := runStateService.Recover(context.Background()); recoverErr != nil {
+		log.Printf("运行恢复失败：%v", recoverErr)
+	} else if len(recovered) > 0 {
+		log.Printf("已把 %d 条未完成的路径运行置为待对账", len(recovered))
+	}
 	server := &http.Server{
 		Addr: config.ServerAddress(),
 		Handler: api.WithRequestLogging(
-			api.NewHandlerWithRunReadiness(
-				api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
-				runReadinessService,
+			api.NewHandlerWithRunControl(
+				api.NewHandlerWithRunReadiness(
+					api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
+					runReadinessService,
+				),
+				runOrchestrationService,
 			),
 			appLogger,
 			logScopeResolver,

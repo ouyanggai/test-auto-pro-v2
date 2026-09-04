@@ -269,6 +269,7 @@ const (
 
 // RunStep 是一个编译步骤的执行事实（run_steps 表），落账时一次性 INSERT。
 type RunStep struct {
+	ID           uint64
 	PathRunID    uint64
 	StepNo       int
 	Source       string

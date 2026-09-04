@@ -177,3 +177,20 @@ func health(response http.ResponseWriter, _ *http.Request) {
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write([]byte(healthResponse))
 }
+
+// NewHandlerWithRunControl 在既有组装之上注入运行主线端点（F-016）。
+// 沿用"在组装处包一层"的方式：未命中本切片端点的请求原样交给既有 handler。
+func NewHandlerWithRunControl(base http.Handler, orchestrator RunOrchestrator) http.Handler {
+	if orchestrator == nil {
+		return base
+	}
+	mux := http.NewServeMux()
+	registerRunControlRoutes(mux, orchestrator)
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if _, pattern := mux.Handler(request); pattern != "" {
+			mux.ServeHTTP(response, request)
+			return
+		}
+		base.ServeHTTP(response, request)
+	})
+}

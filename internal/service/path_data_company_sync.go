@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -138,6 +139,28 @@ func templateNodeList(value any) []any {
 // departmentId/departmentName/dutyId/dutyName），历史实例里保存的是原发起人身份。
 const targetGlobalUserIdentityField = "global_user_basic_information"
 
+// targetLoginIdentityFieldRules 是目标平台登录人字段约定的唯一登记处：键为目标表单里的字段模型，
+// 值为身份属性（userId/userName/companyId/companyName/departmentId/departmentName），
+// 或 "json:user"/"json:department"/"json:company"，表示人员选择器写入的 {"id":..,"name":..} JSON 文本。
+// 这些字段承载发起人的公司、部门、姓名与个人相关 ID，回放时必须换成当前计划账号；
+// 新表单出现新的登录人字段约定时在此补充一条即全局生效，不做逐表特殊处理。
+var targetLoginIdentityFieldRules = map[string]string{
+	"handledBy":             "userId",
+	"handlingCompany":       "companyId",
+	"handlingDepartment":    "departmentId",
+	"initiatorDepartmentId": "departmentId",
+	"currentDepartment":     "departmentId",
+	"currentCompanyId":      "companyId",
+	"currentDepName":        "departmentName",
+	"expenseUserId":         "userId",
+	"expenseUserName":       "userName",
+	"expenseCompanyId":      "companyId",
+	"expenseCompanyName":    "companyName",
+	"myUserName":            "json:user",
+	"myDepName":             "json:department",
+	"myCompanyName":         "json:company",
+}
+
 // runtimeUserIdentity 是数据工作区替换登录人上下文所需的当前计划账号身份。
 type runtimeUserIdentity struct {
 	UserID         string
@@ -198,6 +221,34 @@ func replaceUserIdentityValues(values map[string]any, identity runtimeUserIdenti
 		"dutyId":         "",
 		"dutyName":       "",
 	}
+	// 登录人约定字段按登记表逐项替换；键不存在（表单没这个字段）自然跳过，身份属性为空不伪造。
+	for field, rule := range targetLoginIdentityFieldRules {
+		if _, exists := values[field]; !exists {
+			continue
+		}
+		if strings.HasPrefix(rule, "json:") {
+			encoded, ok := identityJSONValue(identity, strings.TrimPrefix(rule, "json:"))
+			if !ok {
+				continue
+			}
+			values[field] = encoded
+			idAttr, nameAttr := identityPickerCompanions(rule)
+			if _, exists := values[field+"__formPersonId"]; exists {
+				if idValue, ok := identityAttrValue(identity, idAttr); ok {
+					values[field+"__formPersonId"] = idValue
+				}
+			}
+			if _, exists := values[field+"__condition"]; exists {
+				if nameValue, ok := identityAttrValue(identity, nameAttr); ok {
+					values[field+"__condition"] = nameValue
+				}
+			}
+			continue
+		}
+		if value, ok := identityAttrValue(identity, rule); ok {
+			values[field] = value
+		}
+	}
 }
 
 // ReplaceUserIdentityValuesForTest 暴露登录人上下文替换，供 test 目录下的定向用例锁定行为。
@@ -216,4 +267,59 @@ func RuntimeUserIdentityForTest(userID, userName, companyID, companyName, depart
 // RetryTransientTargetReadForTest 暴露目标读取瞬断重试，供 test 目录下的定向用例锁定行为。
 func RetryTransientTargetReadForTest(ctx context.Context, attempts int, call func(context.Context) error) error {
 	return retryTransientTargetRead(ctx, attempts, call)
+}
+
+// identityAttrValue 按属性名取当前计划账号的身份值。
+func identityAttrValue(identity runtimeUserIdentity, attr string) (string, bool) {
+	switch attr {
+	case "userId":
+		return identity.UserID, true
+	case "userName":
+		return identity.UserName, true
+	case "companyId":
+		return identity.CompanyID, true
+	case "companyName":
+		return identity.CompanyName, true
+	case "departmentId":
+		return identity.DepartmentID, true
+	case "departmentName":
+		return identity.DepartmentName, true
+	}
+	return "", false
+}
+
+// identityJSONValue 按人员选择器约定写出 {"id":..,"name":..} JSON 文本；两项都为空时不产出。
+func identityJSONValue(identity runtimeUserIdentity, kind string) (string, bool) {
+	var id, name string
+	switch kind {
+	case "user":
+		id, name = identity.UserID, identity.UserName
+	case "department":
+		id, name = identity.DepartmentID, identity.DepartmentName
+	case "company":
+		id, name = identity.CompanyID, identity.CompanyName
+	default:
+		return "", false
+	}
+	if id == "" && name == "" {
+		return "", false
+	}
+	encoded, err := json.Marshal(map[string]any{"id": id, "name": name})
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+// identityPickerCompanions 返回人员选择器 JSON 键对应的伴生属性：__formPersonId 用 ID，__condition 用名称。
+func identityPickerCompanions(rule string) (string, string) {
+	switch strings.TrimPrefix(rule, "json:") {
+	case "user":
+		return "userId", "userName"
+	case "department":
+		return "departmentId", "departmentName"
+	case "company":
+		return "companyId", "companyName"
+	}
+	return "", ""
 }

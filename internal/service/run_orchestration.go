@@ -1,0 +1,658 @@
+package service
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/engine/control"
+	"test-auto-pro-v2/internal/engine/step"
+	"test-auto-pro-v2/internal/logging"
+	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/repository"
+)
+
+// readinessReader 是启动前复验运行准备结论的最小依赖（F-015 服务满足）。
+type readinessReader interface {
+	PlanReadiness(ctx context.Context, planID uint64, pathIDs []uint64) (model.PlanRunReadiness, error)
+}
+
+// runGraphReader 提供真实流程结构投影。
+type runGraphReader interface {
+	Get(ctx context.Context, planID uint64) (model.FlowGraph, error)
+}
+
+// RunOrchestrationErrorKind 是运行编排服务的错误种类，API 层映射为稳定状态码。
+type RunOrchestrationErrorKind string
+
+const (
+	RunOrchestrationNotFound RunOrchestrationErrorKind = "not_found"
+	RunOrchestrationConflict RunOrchestrationErrorKind = "conflict"
+)
+
+// RunOrchestrationError 携带中文结论与错误种类。
+type RunOrchestrationError struct {
+	Kind    RunOrchestrationErrorKind
+	Message string
+}
+
+// Error 返回中文结论。
+func (e *RunOrchestrationError) Error() string {
+	return e.Message
+}
+
+// RunOrchestrationService 是运行主线的应用服务：启动、详情、放行、停止、列表。
+// 它负责装配执行上下文（计划、路径、结构、场景与数据）并复验运行准备结论；
+// 目标交互与状态机分别交给 engine/step 与 engine/run、engine/control。
+type RunOrchestrationService struct {
+	plans     *PlanService
+	paths     repository.ExecutionPathRepository
+	graphs    runGraphReader
+	configs   repository.HistoryPathConfigStore
+	readiness readinessReader
+	control   *control.Service
+	store     repository.RunStore
+	router    *logging.Router
+	runConfig config.RunConfig
+	now       func() time.Time
+}
+
+// NewRunOrchestrationService 组装运行编排服务；router 用于读取 step.log 的阶段耗时。
+func NewRunOrchestrationService(
+	plans *PlanService,
+	paths repository.ExecutionPathRepository,
+	graphs runGraphReader,
+	configs repository.HistoryPathConfigStore,
+	readiness readinessReader,
+	controlSvc *control.Service,
+	store repository.RunStore,
+	router *logging.Router,
+	runConfig config.RunConfig,
+	now func() time.Time,
+) *RunOrchestrationService {
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	return &RunOrchestrationService{
+		plans: plans, paths: paths, graphs: graphs, configs: configs,
+		readiness: readiness, control: controlSvc, store: store, router: router,
+		runConfig: runConfig, now: now,
+	}
+}
+
+// StartRunInput 是启动一次运行的最小请求。
+type StartRunInput struct {
+	PlanID          uint64 `json:"planId"`
+	ExecutionPathID uint64 `json:"executionPathId"`
+}
+
+// RunPreviewDTO 是下一步预览的公开形态：中文为主，不含会话等目标敏感信息。
+type RunPreviewDTO struct {
+	StepNo         int                        `json:"stepNo"`
+	TotalSteps     int                        `json:"totalSteps"`
+	Action         string                     `json:"action"`
+	ActionName     string                     `json:"actionName"`
+	NodeKey        string                     `json:"nodeKey"`
+	NodeName       string                     `json:"nodeName"`
+	ActorName      string                     `json:"actorName"`
+	ExpectedEffect string                     `json:"expectedEffect"`
+	Endpoint       string                     `json:"endpoint"`
+	RequestPreview string                     `json:"requestPreview"`
+	GateAllowed    bool                       `json:"gateAllowed"`
+	GateReason     string                     `json:"gateReason,omitempty"`
+	GateItems      []model.ActionPrecondition `json:"gateItems"`
+	Facts          map[string]any             `json:"facts"`
+	BlockReason    string                     `json:"blockReason,omitempty"`
+}
+
+// RunSummaryDTO 是运行列表条目。
+type RunSummaryDTO struct {
+	RunID             uint64     `json:"runId"`
+	RunNo             uint64     `json:"runNo"`
+	ModeName          string     `json:"modeName"`
+	StatusName        string     `json:"statusName"`
+	ResultName        string     `json:"resultName,omitempty"`
+	StartedAt         *time.Time `json:"startedAt,omitempty"`
+	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
+	PathRunID         uint64     `json:"pathRunId"`
+	PathRunStatusName string     `json:"pathRunStatusName"`
+}
+
+// RunStepAttemptDTO 是一次尝试的公开事实。
+type RunStepAttemptDTO struct {
+	AttemptNo   int    `json:"attemptNo"`
+	VerdictName string `json:"verdictName"`
+	Reason      string `json:"reason"`
+	Basis       string `json:"basis"`
+	TraceID     string `json:"traceId"`
+	DurationMs  int64  `json:"durationMs"`
+	// LogPath 与 LogLine 让界面每一行都能落到 step.log 的具体行（记录到日志可达）。
+	LogPath string `json:"logPath"`
+	LogLine uint64 `json:"logLine"`
+	// PhaseDurations 是七个阶段各自的耗时（毫秒），来自 step.log 的阶段时间轴。
+	PhaseDurations     map[string]int64 `json:"phaseDurations,omitempty"`
+	PhaseDurationsNote string           `json:"phaseDurationsNote,omitempty"`
+}
+
+// RunStepDTO 是一个已落账步骤的公开事实。
+type RunStepDTO struct {
+	StepNo     int                 `json:"stepNo"`
+	ActionName string              `json:"actionName"`
+	NodeKey    string              `json:"nodeKey"`
+	NodeName   string              `json:"nodeName"`
+	ActorName  string              `json:"actorName"`
+	StatusName string              `json:"statusName"`
+	StartedAt  time.Time           `json:"startedAt"`
+	FinishedAt time.Time           `json:"finishedAt"`
+	DurationMs int64               `json:"durationMs"`
+	Attempts   []RunStepAttemptDTO `json:"attempts"`
+}
+
+// RunNodeStateDTO 是画布节点的运行态（纲领九个中文状态）。
+type RunNodeStateDTO struct {
+	Status     string `json:"status"`
+	StatusName string `json:"statusName"`
+}
+
+// PathRunDetailDTO 是路径运行详情页的数据主体。
+type PathRunDetailDTO struct {
+	RunID             uint64                     `json:"runId"`
+	RunNo             uint64                     `json:"runNo"`
+	ModeName          string                     `json:"modeName"`
+	RunStatusName     string                     `json:"runStatusName"`
+	PathRunID         uint64                     `json:"pathRunId"`
+	PathRunStatus     string                     `json:"pathRunStatus"`
+	PathRunStatusName string                     `json:"pathRunStatusName"`
+	// Result 与 FinalTarget 是两件分开的事：路径结果只看步骤事实，最终目标事实如实描述目标现状。
+	ResultName        string                     `json:"resultName,omitempty"`
+	FailureClassName  string                     `json:"failureClassName,omitempty"`
+	FinalTarget       json.RawMessage            `json:"finalTarget,omitempty"`
+	PlanID            uint64                     `json:"planId"`
+	PlanName          string                     `json:"planName"`
+	PathID            uint64                     `json:"pathId"`
+	PathName          string                     `json:"pathName"`
+	Steps             []RunStepDTO               `json:"steps"`
+	CurrentPreview    *RunPreviewDTO             `json:"currentPreview,omitempty"`
+	NodeStates        map[string]RunNodeStateDTO `json:"nodeStates"`
+	// PollIntervalMs 提示前端轮询间隔（来自配置），状态只在放行后变化。
+	PollIntervalMs    int64                      `json:"pollIntervalMs"`
+}
+
+// buildRunContext 从真实业务记录装配执行上下文：只读，不触碰目标写接口。
+func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, pathID uint64) (step.RunContext, error) {
+	plan, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		return step.RunContext{}, err
+	}
+	path, err := s.paths.Get(ctx, planID, pathID)
+	if err != nil {
+		return step.RunContext{}, err
+	}
+	graph, err := s.graphs.Get(ctx, planID)
+	if err != nil {
+		return step.RunContext{}, err
+	}
+	config, found, err := s.configs.GetPathConfig(ctx, pathID)
+	if err != nil {
+		return step.RunContext{}, err
+	}
+	steps := []model.CompiledActionStep{}
+	if found && len(config.CompiledSteps) > 0 {
+		if err := json.Unmarshal(config.CompiledSteps, &steps); err != nil {
+			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "编译场景读取失败，请重新保存动作编排"}
+		}
+	}
+	return step.RunContext{
+		Run:               model.Run{PlanID: planID},
+		PathRun:           model.PathRun{ExecutionPathID: pathID},
+		PlanName:          plan.Name,
+		PathName:          path.Name,
+		PlanAccount:       plan.Account,
+		FlowProxyID:       plan.TargetObjectID,
+		Source:            plan.FlowSource,
+		GraphNodes:        graph.Nodes,
+		Steps:             steps,
+		EffectiveFormData: config.EffectiveFormData,
+	}, nil
+}
+
+// StartRun 启动一次单步运行：复验运行准备、装配执行上下文、交控制服务停在第一步之前。
+func (s *RunOrchestrationService) StartRun(ctx context.Context, input StartRunInput) (*PathRunDetailDTO, error) {
+	readiness, err := s.readiness.PlanReadiness(ctx, input.PlanID, []uint64{input.ExecutionPathID})
+	if err != nil {
+		return nil, err
+	}
+	var pathReadiness *model.PathRunReadiness
+	for i := range readiness.Paths {
+		if readiness.Paths[i].PathID == input.ExecutionPathID {
+			pathReadiness = &readiness.Paths[i]
+			break
+		}
+	}
+	if pathReadiness == nil {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationNotFound, Message: "执行路径不存在或不属于该计划"}
+	}
+	if !pathReadiness.Runnable {
+		reasons := make([]string, 0, len(pathReadiness.Blocks))
+		for _, block := range pathReadiness.Blocks {
+			reasons = append(reasons, block.Name+"："+block.Reason)
+		}
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "运行前检查未通过，不能启动：" + strings.Join(reasons, "；")}
+	}
+
+	runCtx, err := s.buildRunContext(ctx, input.PlanID, input.ExecutionPathID)
+	if err != nil {
+		return nil, err
+	}
+	if len(runCtx.Steps) == 0 {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "编译场景为空，不能启动；请先完成动作编排"}
+	}
+	if _, err := s.control.Start(ctx, runCtx); err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, runCtx.PathRun.ID)
+}
+
+// Approve 放行当前步并返回放行后的最新详情。
+func (s *RunOrchestrationService) Approve(ctx context.Context, pathRunID uint64) (*PathRunDetailDTO, error) {
+	if _, err := s.control.Approve(ctx, pathRunID); err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// Stop 停止路径运行并返回最新详情。
+func (s *RunOrchestrationService) Stop(ctx context.Context, pathRunID uint64) (*PathRunDetailDTO, error) {
+	if _, err := s.control.Stop(ctx, pathRunID); err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// ListRuns 列出计划下的运行（最新在前）。
+func (s *RunOrchestrationService) ListRuns(ctx context.Context, planID uint64) ([]RunSummaryDTO, error) {
+	if _, err := s.plans.Get(ctx, planID); err != nil {
+		return nil, err
+	}
+	runs, err := s.store.ListRunsByPlan(ctx, planID, 100)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]RunSummaryDTO, 0, len(runs))
+	for _, run := range runs {
+		item := RunSummaryDTO{
+			RunID:      run.ID,
+			RunNo:      run.RunNo,
+			ModeName:   model.RunModeName(run.Mode),
+			StatusName: model.RunStatusName(run.Status),
+			StartedAt:  run.StartedAt,
+			FinishedAt: run.FinishedAt,
+		}
+		if run.Result != nil {
+			item.ResultName = resultName(*run.Result)
+		}
+		if pathRun, err := s.store.GetPathRunByRun(ctx, run.ID); err == nil {
+			item.PathRunID = pathRun.ID
+			item.PathRunStatusName = model.PathRunStatusName(pathRun.Status)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// RunDetail 按运行 ID 读取详情（一次运行只跑一条路径）。
+func (s *RunOrchestrationService) RunDetail(ctx context.Context, runID uint64) (*PathRunDetailDTO, error) {
+	pathRun, err := s.store.GetPathRunByRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, pathRun.ID)
+}
+
+// RunDetailByPathRun 按路径运行 ID 读取详情。
+func (s *RunOrchestrationService) RunDetailByPathRun(ctx context.Context, pathRunID uint64) (*PathRunDetailDTO, error) {
+	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	run, err := s.store.GetRun(ctx, pathRun.RunID)
+	if err != nil {
+		return nil, err
+	}
+	return s.detail(ctx, run, pathRun)
+}
+
+// detail 聚合路径运行详情：运行事实、节点状态、当前预览、最终目标事实。
+func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pathRun model.PathRun) (*PathRunDetailDTO, error) {
+	plan, err := s.plans.Get(ctx, run.PlanID)
+	if err != nil {
+		return nil, err
+	}
+	graph, err := s.graphs.Get(ctx, run.PlanID)
+	if err != nil {
+		return nil, err
+	}
+	steps, err := s.store.ListRunSteps(ctx, pathRun.ID)
+	if err != nil {
+		return nil, err
+	}
+	attempts, err := s.store.ListRunAttempts(ctx, pathRun.ID)
+	if err != nil {
+		return nil, err
+	}
+	detail := &PathRunDetailDTO{
+		RunID: run.ID, RunNo: run.RunNo,
+		ModeName:          model.RunModeName(run.Mode),
+		RunStatusName:     model.RunStatusName(run.Status),
+		PathRunID:         pathRun.ID,
+		PathRunStatus:     string(pathRun.Status),
+		PathRunStatusName: model.PathRunStatusName(pathRun.Status),
+		PlanID:            run.PlanID,
+		PlanName:          plan.Name,
+		PathID:            pathRun.ExecutionPathID,
+		PathName:          pathNameOf(ctx, s.paths, run.PlanID, pathRun.ExecutionPathID, plan.Name),
+		NodeStates:        map[string]RunNodeStateDTO{},
+		PollIntervalMs:    s.runConfig.StatusPollInterval.Milliseconds(),
+	}
+	if pathRun.Result != nil {
+		detail.ResultName = resultName(*pathRun.Result)
+	}
+	if pathRun.FailureClass != nil {
+		detail.FailureClassName = model.FailureClassName(*pathRun.FailureClass)
+	}
+	if pathRun.FinalTargetSummary != "" {
+		detail.FinalTarget = json.RawMessage(pathRun.FinalTargetSummary)
+	}
+	phaseTimings := s.readPhaseTimings(pathRun.ID, attempts)
+	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings)
+	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
+		detail.CurrentPreview = previewDTO(preview)
+	}
+	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview)
+	return detail, nil
+}
+
+// pathNameOf 读取执行路径名称；读取失败时回退到计划级占位，不阻塞详情展示。
+func pathNameOf(ctx context.Context, paths repository.ExecutionPathRepository, planID, pathID uint64, fallback string) string {
+	path, err := paths.Get(ctx, planID, pathID)
+	if err != nil || strings.TrimSpace(path.Name) == "" {
+		return fallback
+	}
+	return path.Name
+}
+
+// buildStepDTOs 把步骤与尝试事实组装为公开 DTO，并附上 step.log 解析出的阶段耗时。
+func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64) []RunStepDTO {
+	attemptsByStep := map[uint64][]model.RunStepAttempt{}
+	for _, attempt := range attempts {
+		attemptsByStep[attempt.StepID] = append(attemptsByStep[attempt.StepID], attempt)
+	}
+	dtos := make([]RunStepDTO, 0, len(steps))
+	for _, stepRecord := range steps {
+		dto := RunStepDTO{
+			StepNo:     stepRecord.StepNo,
+			ActionName: actionNameOf(stepRecord.Action),
+			NodeKey:    stepRecord.NodeKey,
+			ActorName:  stepRecord.ActorSummary,
+			StatusName: stepStatusName(stepRecord.Status),
+			StartedAt:  stepRecord.StartedAt,
+			FinishedAt: stepRecord.FinishedAt,
+			DurationMs: stepRecord.FinishedAt.Sub(stepRecord.StartedAt).Milliseconds(),
+		}
+		for _, attempt := range attemptsByStep[stepRecord.ID] {
+			attemptDTO := RunStepAttemptDTO{
+				AttemptNo:   attempt.AttemptNo,
+				VerdictName: verdictName(attempt.Verdict),
+				Reason:      attempt.Reason,
+				Basis:       attempt.Basis,
+				TraceID:     attempt.TraceID,
+				DurationMs:  attempt.DurationMs,
+				LogPath:     attempt.LogPath,
+				LogLine:     attempt.LogLine,
+			}
+			if timings, ok := phaseTimings[attempt.TraceID]; ok {
+				attemptDTO.PhaseDurations = timings
+			} else {
+				attemptDTO.PhaseDurationsNote = "step.log 阶段时间轴缺失，无法给出七阶段耗时"
+			}
+			dto.Attempts = append(dto.Attempts, attemptDTO)
+		}
+		dtos = append(dtos, dto)
+	}
+	return dtos
+}
+
+// buildNodeStates 推导画布节点的九个中文运行态：
+// 已落账步骤的节点已完成；失败/待对账的收尾节点单独标出；当前步节点运行中；
+// 场景内尚未到达的节点等待运行；场景外节点未开始。状态不只靠颜色，界面必须渲染中文。
+func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO) map[string]RunNodeStateDTO {
+	states := map[string]RunNodeStateDTO{}
+	for _, node := range graph.Nodes {
+		states[node.ID] = RunNodeStateDTO{Status: string(model.PathRunStatusNotStarted), StatusName: model.PathRunStatusName(model.PathRunStatusNotStarted)}
+	}
+	settled := map[string]bool{}
+	for _, stepRecord := range steps {
+		settled[stepRecord.NodeKey] = true
+		states[stepRecord.NodeKey] = nodeState(model.PathRunStatusCompleted)
+	}
+	// 收尾节点：失败或待对账时把最后一步的节点标成对应状态。
+	if pathRun.FailureClass != nil {
+		last := lastNodeOf(steps)
+		switch *pathRun.FailureClass {
+		case model.FailureClassWriteUncertain:
+			if last != "" {
+				states[last] = nodeState(model.PathRunStatusAwaitingReconciliation)
+			}
+		case model.FailureClassGateBlocked, model.FailureClassActorUnresolved, model.FailureClassTargetRejected, model.FailureClassToolBug:
+			if last != "" {
+				states[last] = nodeState(model.PathRunStatusFailed)
+			}
+		}
+	}
+	if pathRun.Status == model.PathRunStatusStopped {
+		if last := lastNodeOf(steps); last != "" {
+			states[last] = nodeState(model.PathRunStatusStopped)
+		}
+	}
+	// 场景内尚未到达的节点：等待运行。
+	for _, stepRecord := range steps {
+		if !settled[stepRecord.NodeKey] {
+			states[stepRecord.NodeKey] = nodeState(model.PathRunStatusWaiting)
+		}
+	}
+	if preview != nil && preview.NodeKey != "" && pathRun.Status == model.PathRunStatusRunning {
+		states[preview.NodeKey] = nodeState(model.PathRunStatusRunning)
+	}
+	return states
+}
+
+// lastNodeOf 返回最后一步所在的节点键。
+func lastNodeOf(steps []model.RunStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	return steps[len(steps)-1].NodeKey
+}
+
+// nodeState 生成节点运行态。
+func nodeState(status model.PathRunStatus) RunNodeStateDTO {
+	return RunNodeStateDTO{Status: string(status), StatusName: model.PathRunStatusName(status)}
+}
+
+// readPhaseTimings 从 step.log 的阶段时间轴计算每个尝试的七阶段耗时（毫秒）。
+// 耗时来自日志行的 time=（服务端记录的事实），不做界面估算；
+// key 为尝试的 trace_id；phase 耗时 = 下一阶段开始时间 − 本阶段开始时间。
+func (s *RunOrchestrationService) readPhaseTimings(pathRunID uint64, attempts []model.RunStepAttempt) map[string]map[string]int64 {
+	result := map[string]map[string]int64{}
+	logPath := ""
+	for _, attempt := range attempts {
+		if attempt.LogPath != "" {
+			logPath = attempt.LogPath
+			break
+		}
+	}
+	if logPath == "" || s.router == nil {
+		return result
+	}
+	file, err := os.Open(filepath.Join(s.router.Root(), filepath.FromSlash(logPath)))
+	if err != nil {
+		return result
+	}
+	defer file.Close()
+
+	type phaseMoment struct {
+		phase string
+		at    time.Time
+	}
+	type timeline struct {
+		steps map[string][]phaseMoment
+	}
+	timelines := map[string]*timeline{}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		fields := parseLogLine(scanner.Text())
+		stepID := fields["step_id"]
+		phase := fields["phase"]
+		traceID := fields["trace_id"]
+		at, err := time.ParseInLocation("2006-01-02_15:04:05", fields["time"], time.Local)
+		if stepID == "" || phase == "" || err != nil {
+			continue
+		}
+		key := traceID
+		if key == "" {
+			key = stepID + ":" + fields["attempt"]
+		}
+		entry, ok := timelines[key]
+		if !ok {
+			entry = &timeline{steps: map[string][]phaseMoment{}}
+			timelines[key] = entry
+		}
+		entry.steps[stepID] = append(entry.steps[stepID], phaseMoment{phase: phase, at: at})
+	}
+	phaseOrder := []string{"plan", "gate", "control", "prepare", "submit", "verify", "settle"}
+	for key, entry := range timelines {
+		for _, moments := range entry.steps {
+			sort.Slice(moments, func(i, j int) bool { return moments[i].at.Before(moments[j].at) })
+			seen := map[string]bool{}
+			durations := map[string]int64{}
+			for index, moment := range moments {
+				if seen[moment.phase] {
+					continue
+				}
+				seen[moment.phase] = true
+				if index+1 < len(moments) {
+					durations[moment.phase] = moments[index+1].at.Sub(moment.at).Milliseconds()
+				} else {
+					durations[moment.phase] = 0
+				}
+			}
+			ordered := map[string]int64{}
+			for _, phase := range phaseOrder {
+				if value, ok := durations[phase]; ok {
+					ordered[phase] = value
+				}
+			}
+			if len(ordered) > 0 {
+				result[key] = ordered
+			}
+		}
+	}
+	return result
+}
+
+// parseLogLine 解析统一单行日志的 key=value 字段。
+func parseLogLine(line string) map[string]string {
+	fields := map[string]string{}
+	for _, part := range strings.Fields(line) {
+		if index := strings.Index(part, "="); index > 0 {
+			fields[part[:index]] = part[index+1:]
+		}
+	}
+	return fields
+}
+
+// actionNameOf 返回动作的中文名（落账事实里只有动作键）。
+func actionNameOf(action string) string {
+	switch model.ActionKey(action) {
+	case model.ActionSubmit:
+		return "发起"
+	case model.ActionApprove:
+		return "同意"
+	default:
+		return action
+	}
+}
+
+// stepStatusName 返回步骤事实状态的中文显示名。
+func stepStatusName(status model.RunStepStatus) string {
+	switch status {
+	case model.RunStepSucceeded:
+		return "确定成功"
+	case model.RunStepFailed:
+		return "确定失败"
+	case model.RunStepUncertain:
+		return "不确定"
+	default:
+		return string(status)
+	}
+}
+
+// verdictName 返回三值结论的中文显示名。
+func verdictName(verdict string) string {
+	switch verdict {
+	case "confirmed_success":
+		return "确定成功"
+	case "confirmed_failure":
+		return "确定失败"
+	case "uncertain":
+		return "不确定"
+	default:
+		return verdict
+	}
+}
+
+// resultName 返回路径结果的中文显示名。
+func resultName(result model.RunResult) string {
+	switch result {
+	case model.RunResultSucceeded:
+		return "成功"
+	case model.RunResultFailed:
+		return "失败"
+	case model.RunResultAwaitingReconcile:
+		return "待对账"
+	default:
+		return string(result)
+	}
+}
+
+// previewDTO 把执行器的下一步预览转为公开形态。
+func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
+	if preview == nil {
+		return nil
+	}
+	facts := map[string]any{
+		"instanceFound":  preview.Facts.Found,
+		"instanceStatus": preview.Facts.Status,
+		"currentNodes":   preview.Facts.CurrentNodes,
+		"dueNodes":       preview.Facts.DueNodes,
+	}
+	if preview.Facts.ReadError != "" {
+		facts["readError"] = preview.Facts.ReadError
+	}
+	return &RunPreviewDTO{
+		StepNo: preview.StepNo, TotalSteps: preview.TotalSteps,
+		Action: string(preview.Action), ActionName: preview.ActionName,
+		NodeKey: preview.NodeKey, NodeName: preview.NodeName,
+		ActorName: preview.ActorName, ExpectedEffect: preview.ExpectedEffect,
+		Endpoint: preview.Endpoint, RequestPreview: preview.RequestPreview,
+		GateAllowed: preview.GateAllowed, GateReason: preview.GateReason,
+		GateItems: preview.GateItems, Facts: facts, BlockReason: preview.BlockReason,
+	}
+}

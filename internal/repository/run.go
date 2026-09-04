@@ -33,6 +33,10 @@ type RunStore interface {
 	GetPathRunByRun(ctx context.Context, runID uint64) (model.PathRun, error)
 	// ListRunsByPlan 按计划列出运行（运行号倒序），供运行列表使用。
 	ListRunsByPlan(ctx context.Context, planID uint64, limit int) ([]model.Run, error)
+	// ListRunSteps 按路径运行列出已落账步骤（按步骤序号升序）。
+	ListRunSteps(ctx context.Context, pathRunID uint64) ([]model.RunStep, error)
+	// ListRunAttempts 按路径运行列出已落账尝试（按步骤序号与尝试序号升序）。
+	ListRunAttempts(ctx context.Context, pathRunID uint64) ([]model.RunStepAttempt, error)
 	// AdvanceRunStatus 在同一事务内校验并推进运行聚合状态、追加事件行；
 	// 状态迁移非法或终态不可离开时返回 ErrRunStatusConflict，绝不落库。
 	AdvanceRunStatus(ctx context.Context, runID uint64, from, to model.RunStatus, event model.RunEvent, now time.Time) (model.Run, error)
