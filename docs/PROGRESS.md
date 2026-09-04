@@ -16,6 +16,10 @@
   `execution_path_id`/`execution_path_name`；路径 13 与路径 14 互不串目录；只带计划 ID 的接口进 `_plan`；
   `application.log` 只有服务监听与停止等系统事件；code-server 可逐层点到含中文与空格的嵌套目录。
   改动前的 `logs/app-<日期>.log` 与 `logs/config/<日期>/` 按要求未删除，新代码不再写入这两处。
+- F-013 代码审查两个 P1 问题已修复：后台全路径解析与一键配置 worker 原来用 `context.Background()` 起协程只传 planID，
+  日志会掉进 `application` 目录，现在按任务的计划 ID 兜底并继承请求作用域，明细处理时再补上执行路径归属；
+  `WriteBlock` 原来逐行加锁导致并发 `curl.log` 块互相穿插，现在整块在同一把锁内一次写入。
+  顺带修掉 `StartGeneration` 解锁后复制任务结构体的数据竞争。三处修复均有用例并做过变异验证。
 - F-013 已完成：新增 `internal/logging`（日志根、作用域注入、统一单行格式、有界写入器与行号、配置桶与运行目录路由、保留期清理）；
   目标请求日志在传输层单点接入，成功与失败分流到 `network.log` / `network-error.log`，可重放命令与完整响应写入 `curl.log`；
   API 中间件记录请求、失败响应的稳定错误码与界面同源中文提示，并恢复 panic 返回稳定中文 500；

@@ -268,4 +268,24 @@ time=2026-09-03 18:56:31 level=error ...
   说明：改动前产生的 `logs/app-<日期>.log` 与 `logs/config/<日期>/` 仍在磁盘上（按要求不删除既有日志），
   新代码已不再写入也不再清理这两处，需要清空顶层时由用户自行删除。
 
+- 2026-09-04：代码审查发现两个 P1 问题，均已修复并实测，状态保持 `ready_for_manual`。
+  1. 后台任务丢失计划日志作用域：`internal/service/execution_path.go` 的后台全路径解析与
+     `internal/service/history_replay.go` 的一键配置 worker 都用 `context.Background()` 起协程，
+     只传 `planID`，因此拿不到 `plan_id`、`plan_name` 与 `request_id`，它们发出的目标请求日志会掉进
+     `logs/application/<日期>/`。修复：新增 `service.backgroundLogScope`（任务自己的计划 ID 兜底、
+     请求作用域优先、计划名缺失时再从计划记录补一次），`PathGenerationJob` 保存发起时的作用域并注入后台 context；
+     `startWorker` 接收请求 context 只为取作用域和补计划名，worker 生命周期仍与请求解绑；
+     `replayItem` 读到执行路径后把路径归属接回 `ctx`，每条明细都落进该路径自己的目录。
+  2. 多行日志块并发写入交错：`WriteBlock` 原来逐行调用 `WriteLine`，各自加解锁，
+     两个请求同时写 `curl.log` 时块与块互相穿插。修复：单行与块统一走 `append`，
+     在同一把锁内完成轮转判断与一次写入，行号语义不变。
+  修复过程中还发现并修掉 `StartGeneration` 的数据竞争：返回值原来在解锁后才复制整个任务结构体，
+  而后台协程已经在改写 `Status` 与 `UpdatedAt`，`go test -race` 可复现；改为在锁内取快照。
+  新增用例：并发多行块不穿插（40 个五行块）、后台路径解析与一键配置 worker 的作用域继承与计划名回补，
+  三处都做过变异验证——去掉修复后对应用例失败。
+  实测：一键配置计划 2 路径 13 后，后台 worker 的目标请求日志落在
+  `logs/plans/oyg测试002__plan-2/configuration/路径 1__path-13/2026-09-04/network.log`，
+  带完整归属字段；后台全路径解析落在同一计划的 `configuration/_plan/2026-09-04/`；
+  `application` 目录没有混入任何目标请求。`go test -race ./test/unit/...` 与 `./test/run-f013.sh` 全量通过。
+
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。当前为 `ready_for_manual`：T01 至 T06 已实施，日志查看方式与日志归档方式两轮反馈均已修复并实测通过，等待用户按上面「人工验收」七步确认后再推进到 `accepted`。
