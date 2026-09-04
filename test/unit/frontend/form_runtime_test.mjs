@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 
-process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select'])
+process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(['person-mulSelect', 'custom-upload-excel', 'custome-info-select', 'contract-seal-review-business'])
 const { captureFormValues, componentRuntimeName, formRuntimeStats, prepareTemplate, refreshPreparedForm } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
@@ -164,6 +164,22 @@ test('真实入口已注册的目标组件不再被统一标记为 unsupported',
   ] }, [{ field: 'members', power: 'edit' }], false)
   assert.deepEqual(prepared.unsupported, [])
   assert.equal(prepared.template.list[0].options.disabled, false)
+})
+
+test('业务自定义组件获得目标发起态上下文且不携带历史业务标识', () => {
+  const prepared = prepareTemplate({ list: [
+    {
+      type: 'custom', el: 'contract-seal-review-business', model: 'custom_contractSealField',
+      options: { extendProps: { pageTemplateId: 'template-a', businessId: 'historical-business', companyId: 'historical-company' } },
+    },
+  ] }, [{ field: 'custom_contractSealField', power: 'only_read' }], false, { companyId: 'company-a' })
+  assert.deepEqual(prepared.unsupported, [])
+  assert.deepEqual(prepared.template.list[0].options.extendProps, {
+    isFlowInitiate: true,
+    businessId: '',
+    companyId: 'company-a',
+    pageTemplateId: 'template-a',
+  })
 })
 
 test('初始默认模型的空值不计入已填写值', () => {

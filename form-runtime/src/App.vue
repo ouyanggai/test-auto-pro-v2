@@ -163,7 +163,9 @@ export default {
           if (payload.departmentName && window.$store._mutations['user/SET_DEPARTMENT_NAME']) window.$store.commit('user/SET_DEPARTMENT_NAME', String(payload.departmentName))
           if (payload.departmentId && window.$store._mutations['user/SET_DEPARTMENTID']) window.$store.commit('user/SET_DEPARTMENTID', String(payload.departmentId))
         }
-        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly)
+        const prepared = prepareTemplate(payload.template || {}, payload.permissions || [], this.readOnly, {
+          companyId: String(payload.companyId || '')
+        })
         this.template = prepared.template
         this.unsupported = prepared.unsupported
         this.isolatedHooks = prepared.isolatedHooks

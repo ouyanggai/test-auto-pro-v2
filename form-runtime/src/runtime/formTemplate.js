@@ -48,7 +48,7 @@ export function componentRuntimeName (component) {
 
 // prepareTemplate 在完整模板副本上应用目标权限，并把尚未独立适配的目标自定义组件明确标记为 unsupported。
 // 分支条件由服务端对原始数据重算；runtime 不接收字段映射或生成规则，避免把历史正文改造成工具状态。
-export function prepareTemplate (rawTemplate, permissions, readOnly) {
+export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeContext = {}) {
 	const template = clonePlain(rawTemplate || {})
 	const permissionByField = new Map((Array.isArray(permissions) ? permissions : []).map(item => [normalizeFieldPath(item.field), item.power]))
   const unsupported = new Set()
@@ -65,6 +65,16 @@ export function prepareTemplate (rawTemplate, permissions, readOnly) {
       // 真实上游 main.js 已注册的目标组件交给原生 FormMaking 渲染；只有未注册组件才阻止错误宣称支持。
       if (needsTargetRegistration && !TARGET_COMPONENT_NAMES.has(targetComponentName)) {
         unsupported.add(`${component.name || model || type || '未知组件'}：依赖 rsh-flow-components 宿主业务适配`)
+      }
+      if (needsTargetRegistration) {
+        component.options = component.options || {}
+        // 目标业务页包装层会在发起态为自定义组件补 extendProps；配置工作区不携带目标业务 ID，避免组件读取目标业务数据覆盖历史表单值。
+        component.options.extendProps = {
+          ...(component.options.extendProps && typeof component.options.extendProps === 'object' ? component.options.extendProps : {}),
+          isFlowInitiate: true,
+          businessId: '',
+          companyId: String(runtimeContext.companyId || '')
+        }
       }
       if (model) {
         // 目标页面先禁用整张表单，再只开放流程节点明确授权的字段；缺少权限不能默认可编辑。
