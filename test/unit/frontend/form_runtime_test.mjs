@@ -191,6 +191,34 @@ test('远程下拉选项为空时先刷新数据源再同步分支值', async ()
   assert.equal(values.paymentId, 'new-id')
 })
 
+test('付款单位优先使用 FormMaking 公共选项 API 同步真实远程选项', async () => {
+  let refreshed = 0
+  const form = {
+    model: {
+      applicationFundsVo_payCompanyId: 'old-company-id',
+      applicationFundsVo_payCompanyId__virtualName: '广西润兴电力有限公司',
+      applicationFundsVo_payCompanyName: '临猗县斯能电力有限公司',
+    },
+    formItemContexts: {
+      applicationFundsVo_payCompanyId: {
+        widget: { type: 'select', model: 'applicationFundsVo_payCompanyId', options: { remote: true } },
+      },
+    },
+    async refreshFieldOptionData () { refreshed++ },
+    getOptionData (field) {
+      assert.equal(field, 'applicationFundsVo_payCompanyId')
+      return [{ value: 'new-company-id', label: '临猗县斯能电力有限公司' }]
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+
+  const values = await reconcileLinkedSelectValues(form, form.model, 1)
+  assert.equal(refreshed, 1)
+  assert.equal(values.applicationFundsVo_payCompanyId, 'new-company-id')
+  assert.equal(values.applicationFundsVo_payCompanyId__virtualName, '临猗县斯能电力有限公司')
+})
+
 test('分支补丁字段会重放目标 onChange 以刷新派生值', async () => {
   let changed = ''
   const component = { widget: { events: { onChange: 'amountChanged' } }, currentOptions: { fieldNode: 'amount' } }

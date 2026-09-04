@@ -291,9 +291,8 @@ function linkedSelectPatches (form, values) {
     const virtualModel = `${field}__virtualName`
     const desired = modelValue(values, nameModel) ?? modelValue(values, virtualModel)
     if (desired === undefined || desired === null || desired === '') continue
-    // generate-form-item 只是字段包装层，远程选项实际保存在它的 generate-element-item 子组件中，且已统一为 value/label。
-    const options = context?.$refs?.generateElementItem?.remoteOptions
-    if (!Array.isArray(options)) continue
+    const options = linkedSelectOptions(form, field, context)
+    if (options.length === 0) continue
     const matches = options.filter(option => option && String(option.label ?? '') === String(desired))
     if (matches.length !== 1) continue
     const option = matches[0]
@@ -304,6 +303,18 @@ function linkedSelectPatches (form, values) {
     if (modelValue(values, nameModel) !== undefined) patches[nameModel] = patches[virtualModel]
   }
   return patches
+}
+
+// linkedSelectOptions 优先读取 FormMaking 对字段实例公开的真实选项，避免包装组件的 ref 在异步刷新后仍停留在旧值。
+function linkedSelectOptions (form, field, context) {
+  try {
+    const options = form?.getOptionData?.(field)
+    if (Array.isArray(options) && options.length > 0) return options
+  } catch (_) {
+    // 字段实例尚未完成挂载时退回包装层，不能中断只读历史表单回放。
+  }
+  const options = context?.$refs?.generateElementItem?.remoteOptions
+  return Array.isArray(options) ? options : []
 }
 
 // isEmptyModelValue 判断值是否为空形态；初始默认模型里的空键不能误判为人工覆盖。
