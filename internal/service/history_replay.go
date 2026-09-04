@@ -70,6 +70,11 @@ type HistoryReplayTargetReader interface {
 	PathConfigurationSnapshot(context.Context, string, string, string) (target.PathConfigurationSnapshot, error)
 }
 
+// historyReplayPathConfigReader 读取路径配置记录中的来源模式，保证批量任务与数据工作区使用同一来源事实。
+type historyReplayPathConfigReader interface {
+	GetPathConfig(context.Context, uint64) (repository.HistoryPathConfigRecord, bool, error)
+}
+
 // HistoryReplayService 创建和驱动可恢复的历史回放任务。
 type HistoryReplayService struct {
 	plans   *PlanService
@@ -78,6 +83,7 @@ type HistoryReplayService struct {
 	store   repository.HistoryReplayStore
 	runtime HistoryReplayRuntimeValidator
 	actions HistoryReplayActionConfigurator
+	config  historyReplayPathConfigReader
 	now     func() time.Time
 	worker  string
 	mu      sync.Mutex
@@ -93,8 +99,12 @@ type HistoryReplayActionConfigurator interface {
 
 // NewHistoryReplayService 组装历史回放任务的计划、路径、目标只读和持久化边界。
 func NewHistoryReplayService(plans *PlanService, paths repository.ExecutionPathRepository, targetReader HistoryReplayTargetReader, store repository.HistoryReplayStore) *HistoryReplayService {
+	var config historyReplayPathConfigReader
+	if reader, ok := store.(historyReplayPathConfigReader); ok {
+		config = reader
+	}
 	return &HistoryReplayService{
-		plans: plans, paths: paths, target: targetReader, store: store, now: time.Now,
+		plans: plans, paths: paths, target: targetReader, store: store, config: config, now: time.Now,
 		worker: "history-replay-worker", running: make(map[string]struct{}), cancel: make(map[string]context.CancelFunc), done: make(map[string]chan struct{}),
 	}
 }
@@ -277,28 +287,49 @@ func (s *HistoryReplayService) Recover(ctx context.Context) error {
 
 // resolveReplaySnapshot 在创建事务前解析路径覆盖或计划默认来源，明细保存的是明确快照 ID。
 func (s *HistoryReplayService) resolveReplaySnapshot(ctx context.Context, planID, pathID uint64) (*uint64, *model.HistoryDataIssue, error) {
-	pathSource, found, err := s.store.GetPathSource(ctx, pathID)
-	if err != nil {
-		return nil, nil, mapHistoryReplayRepositoryError(err)
-	}
 	mode := model.HistorySourceModeDefault
-	if found {
-		mode = pathSource.Mode
+	var pathSource repository.HistoryPathSourceRecord
+	pathSourceFound := false
+	var configSource repository.HistoryPathConfigRecord
+	configFound := false
+	if s.config != nil {
+		var err error
+		configSource, configFound, err = s.config.GetPathConfig(ctx, pathID)
+		if err != nil {
+			return nil, nil, mapHistoryReplayRepositoryError(err)
+		}
+	}
+	// 路径配置记录是工作台当前来源的最高优先级；只有没有明确来源时才读取路径来源覆盖记录。
+	if configFound && strings.TrimSpace(configSource.SourceMode) != "" {
+		mode = configSource.SourceMode
+	} else {
+		var err error
+		pathSource, pathSourceFound, err = s.store.GetPathSource(ctx, pathID)
+		if err != nil {
+			return nil, nil, mapHistoryReplayRepositoryError(err)
+		}
+		if pathSourceFound {
+			mode = pathSource.Mode
+		}
 	}
 	switch mode {
 	case model.HistorySourceModeNone:
 		return nil, historyReplayIssue("HISTORY_SOURCE_MISSING", "路径尚未选择基础表单数据", true), nil
 	case model.HistorySourceModeOverride:
-		if pathSource.SnapshotID == 0 {
+		snapshotID := pathSource.SnapshotID
+		if configFound && configSource.SnapshotID != nil {
+			snapshotID = *configSource.SnapshotID
+		}
+		if snapshotID == 0 {
 			return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "路径独立基础表单数据不存在", true), nil
 		}
-		if _, err := s.store.GetSnapshot(ctx, planID, pathSource.SnapshotID); err != nil {
+		if _, err := s.store.GetSnapshot(ctx, planID, snapshotID); err != nil {
 			if errors.Is(err, repository.ErrHistorySnapshotNotFound) {
 				return nil, historyReplayIssue("HISTORY_SNAPSHOT_MISSING", "路径基础表单数据不存在", true), nil
 			}
 			return nil, nil, mapHistoryReplayRepositoryError(err)
 		}
-		value := pathSource.SnapshotID
+		value := snapshotID
 		return &value, nil, nil
 	case model.HistorySourceModeDefault:
 		defaultRecord, defaultFound, defaultErr := s.store.GetDefault(ctx, planID)

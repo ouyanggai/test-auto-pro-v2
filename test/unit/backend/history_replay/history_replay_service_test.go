@@ -84,11 +84,21 @@ type replayStore struct {
 	defaultAt repository.HistoryDefaultRecord
 	job       model.HistoryReplayJob
 	items     []model.HistoryReplayItem
+	config    repository.HistoryPathConfigRecord
+	source    repository.HistoryPathSourceRecord
+}
+
+// GetPathConfig 返回路径工作区来源记录，覆盖一键配置读取来源的优先级。
+func (s *replayStore) GetPathConfig(_ context.Context, pathID uint64) (repository.HistoryPathConfigRecord, bool, error) {
+	if s.config.PathID != pathID {
+		return repository.HistoryPathConfigRecord{}, false, nil
+	}
+	return s.config, true, nil
 }
 
 // GetPathSource 返回未设置独立覆盖，任务因此继承计划默认来源。
 func (s *replayStore) GetPathSource(context.Context, uint64) (repository.HistoryPathSourceRecord, bool, error) {
-	return repository.HistoryPathSourceRecord{}, false, nil
+	return s.source, s.source.PathID != 0, nil
 }
 
 // GetDefault 返回计划默认快照绑定。
@@ -433,6 +443,8 @@ func TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation(t *testing.T
 // 不会因为历史数据暂时进入其他分支而把下游缺少选择错误地留给用户。
 func TestHistoryReplayServiceRepairsPathBeforeDetourChoiceMissing(t *testing.T) {
 	replay, store, validator, targetReader := replayServiceFixture(4, 4, target.FormRenderTypeFormMaking)
+	store.config = repository.HistoryPathConfigRecord{PathID: 101, SourceMode: model.HistorySourceModeDefault}
+	store.source = repository.HistoryPathSourceRecord{PathID: 101, Mode: model.HistorySourceModeNone}
 	store.mu.Lock()
 	store.snapshot.RawFormData["amount"] = 3
 	store.mu.Unlock()
