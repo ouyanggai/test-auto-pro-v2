@@ -18,7 +18,16 @@
 | F-011 | 旧智能表单契约与运行预检基线 | superseded |
 | F-012 | 历史业务数据回放与同实例动作场景编排 | implementing（人工验收未通过，返工中） |
 | F-013 | 分层日志与追踪底座 | accepted |
-| 后续 | 执行器、调试器、运行记录与日志 | 已有纲领，未获批准 |
+| F-014 | 目标错误语义与幂等勘定 | accepted |
+| F-015 | 运行前检查 | ready_for_manual |
+| F-016 | 执行器最小真实闭环 | implementing（已批准，实施中） |
+| F-017 | 调试器：模式、断点与控制 | awaiting_approval |
+| F-018 | 对账与安全重试 | awaiting_approval |
+| F-019 | 全动作与恢复步骤执行 | awaiting_approval |
+| F-020 | 多路径调度与单次定时启动 | awaiting_approval |
+| F-021 | 运行记录分析视图 | awaiting_approval |
+| F-022 | 目标语义一致性套件 | awaiting_approval |
+| F-023 | Docker Compose 发布编排 | awaiting_approval |
 
 `superseded` 表示该方案不再是产品或架构依据；实施 F-012 时删除其代码、接口、表、测试和旧任务文件，不做迁移、兼容或兜底。
 
@@ -34,11 +43,11 @@
 
 详细任务、接口、数据表、测试分类和人工门禁见上述功能文件。
 
-### 后续真实执行（已有纲领，未获批准）
+### 后续真实执行（计划已拆分，仍按依赖等待批准）
 
-剩余核心工作的范围、顺序和完成标准见 `docs/EXECUTION_PROGRAM.md`：分层日志与追踪底座、目标错误语义与幂等勘定、运行前检查、执行器最小真实闭环、调试器（自动/单步/人工控制与断点）、对账与安全重试、全动作执行、多路径调度与单次定时启动、运行记录分析视图、目标语义一致性套件、Docker Compose 发布编排（F-013 至 F-023）。
+剩余核心工作的纲领见 `docs/EXECUTION_PROGRAM.md`，逐项计划见 F-016 `docs/features/F-016-executor-minimal-real-loop.md`、F-017 `docs/features/F-017-debugger-modes-breakpoints-control.md`、F-018 `docs/features/F-018-reconciliation-safe-retry.md`、F-019 `docs/features/F-019-full-action-and-recovery-execution.md`、F-020 `docs/features/F-020-multi-path-scheduling.md`、F-021 `docs/features/F-021-run-record-analysis-view.md`、F-022 `docs/features/F-022-target-semantics-consistency-suite.md`、F-023 `docs/features/F-023-docker-compose-release.md`。这些文档均已写明范围、任务、完成标准、测试分类和人工门禁，但只有用户明确批准且前置切片验收后才能进入 `implementing`。
 
-该纲领只界定边界和顺序，不构成实施授权。F-012 未获用户明确验收前不得开始其中任何一项；每项进入 `implementing` 仍需单独立功能文档并获用户明确批准。不得在 F-012 中提前实现或规划为可执行接口。
+该纲领和计划文档只界定边界和完成标准，不构成实施授权。F-012 返工、F-016 实施及其依赖必须按各自文档门禁推进；未获用户明确批准不得把 `awaiting_approval` 改为 `implementing`。不得在当前切片中提前实现后续接口。
 
 ### F-003 最小计划持久化（已验收）
 
@@ -76,4 +85,4 @@ F-008、F-009、F-010、F-010R 和 F-011 的旧方案已从当前工作区删除
 
 F-013 分层日志与追踪底座已于 2026-09-04 由用户明确验收，进入 `accepted`，后续切片直接依赖该日志底座。F-014 目标错误语义与幂等勘定已由用户明确验收为 `accepted`。F-015 已按用户决定收敛为运行前检查：成功断言整体移除（表、领域类型、`internal/engine/assert`、只读端点、前端卡片与相关测试全部删除，迁移 025 删表，契约脚本锁定不得回归），跑到哪里算成功改由后续断点功能表达。当前交付为只读的运行前检查：五类用户能直接处理的阻塞加读取失败与动作未验证两类安全阻塞、提醒与阻塞分区、阻塞可点击定位、只检查勾选路径。用户人工复审提出的 5 个问题（配置读取失败错误放行、首次进入未默认勾选、文档与实现不一致、汇总测试未执行宣称的集成验证、存储故障被报成计划不存在）已全部修复并重新验证，状态重新进入 `ready_for_manual`。
 
-F-016 执行器最小真实闭环与 F-017 调试器（运行模式、断点与运行控制）已分别产出计划文档 `docs/features/F-016-executor-minimal-real-loop.md` 与 `docs/features/F-017-debugger-modes-breakpoints-control.md`。F-016 已于 2026-09-04 获用户明确批准，进入 `implementing`；F-017 停在 `awaiting_approval`，未获用户明确批准前不进入 `implementing`。F-016 是本项目第一次真实写；F-017 只在 F-016 的运行状态机、七阶段、运行记录与运行画布之上补齐控制能力，因此它必须等 F-016 实施完成并由用户验收后才能开工，其第一个任务就是按 F-016 的实际实现校准计划文件。成功断言已于 2026-09-04 整体移除后，「跑到哪里算成功」由 F-017 的断点表达，F-017 因此是用户表达运行期望的唯一手段，不是体验增强。
+F-016 执行器最小真实闭环与 F-017 调试器（运行模式、断点与运行控制）已分别产出计划文档。F-016 已于 2026-09-04 获用户明确批准，进入 `implementing`；F-017 停在 `awaiting_approval`，必须等 F-016 实施完成并由用户验收后才能开工。F-018 至 F-023 的独立计划已于 2026-09-05 补齐并全部停在 `awaiting_approval`：F-018 依赖 F-016/F-017，F-019 依赖 F-018，F-020 依赖 F-019，F-021 依赖 F-020，F-022 依赖 F-021，F-023 依赖 F-022。每项实施完成后仍必须停在 `ready_for_manual`，不得自动接受或开始下一项。成功断言已于 2026-09-04 整体移除后，「跑到哪里算成功」由 F-017 的断点表达。
