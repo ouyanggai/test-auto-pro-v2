@@ -21,7 +21,13 @@ const (
 // 执行已验证过的动作子集，其余动作在运行准备阶段**直接阻塞，不做静默降级**。F-016 是第一次真实写，
 // 它跑通哪个动作才把哪个动作登记进来。因此在 F-016 之前，任何已配置动作的路径都会因本项被阻塞，
 // 这是设计要求的结果，不是缺陷。
-var verifiedRunnableActions = map[model.ActionKey]bool{}
+// 2026-09-05 F-016 T09 首次真实写实测登记：在计划 11（oyg00）路径 1121 的真实主实例上，
+// 提交动作经七阶段全流程发出唯一一次写请求，目标受理（isSuccess=true，实例 caf2046d896f477c81c819153fc7d52f，
+// status=run，trace 5ad3ab3454cce08d，运行 8）。核验重读未见实例可见性，按矩阵判不确定并停止（F-018 对账）。
+// 同意（approve）尚未在真实目标上执行过，不登记；其余动作继续阻塞。
+var verifiedRunnableActions = map[model.ActionKey]bool{
+	model.ActionSubmit: true,
+}
 
 // IsVerifiedRunnableAction 判断该动作是否已被真实写验证过，可以交给执行器执行。
 func IsVerifiedRunnableAction(action model.ActionKey) bool {

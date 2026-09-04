@@ -587,3 +587,37 @@ deployment=未取得（目标平台不提供版本接口）
 ## 14. 通知与催办语义
 
 状态：未开始。
+
+## 15. 手动分支的提交传参
+
+状态：勘定中（F-016 实测，接受侧已证实的部分见下；其余仍标注待实测）。
+
+实测问题：提交（`/web/flowInstanceApi/submit`）遇到手动条件分支节点时，所选分支如何随请求传递。
+
+实测结论（2026-09-05，计划 11 路径 1121 真实提交）：
+
+1. 不携带分支选择时，提交被目标以 `isSuccess=false`、`errorType=custom_choose`、`message=手动条件分支,请选择` 拒绝，
+   拒绝包 `data.branchNodes` 携带全部候选分支节点记录（含 id 与 nodeName）。
+   该拒绝发生在节点分派校验阶段，**没有任何写入发生**。
+2. 源码证据：`FlowOperateServiceImpl.validateHandBranchAndReturnExecuteNode` 要求
+   `flowInstanceProtocol.getNextAuditorList()` 非空，且某项的 `nodeProxyId` 等于候选分支节点之一的 `id`，
+   匹配成功即以该分支节点为执行节点。`fixedExecuteNodeId` 是并行条件分支的另一机制，与手动分支无关。
+3. 按此传参（`nextAuditorList[].nodeProxyId = 所选分支目标节点ID`）后，同一流程的提交被目标受理
+   （`isSuccess=true`，返回实例 id 与 `status=run`，实例移动到所选分支的首个审批节点）。
+4. 工具实现：`internal/engine/step` 的提交载荷把路径已保存的分支选择解析为
+   `nextAuditorList[].nodeProxyId`（`internal/service` 从真实结构与路径选择解析）。
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowOperateServiceImpl.java
+line=1069
+contains=validateHandBranchAndReturnExecuteNode
+strength=源码可证明
+head=rsh-cloud-workflow-center@37c01d04eb10
+deployment=2026-09-05 真实提交实测（计划 11 路径 1121，运行 6 拒绝、运行 8 受理，trace 84f9669d11f6a3b4）
+```
+
+待实测残余：
+
+- `fixedExecuteNodeId` 的并行条件分支行为（本切片未触发并行分支）。
+- 受理后实例在已发列表的可见性延迟：2026-09-05 实测受理成功后即时重读已发列表为空
+  （成功声明 + 明确未变 → 按矩阵判不确定 → 待对账），实例可见性与异步落库时序待人工在目标平台核对。
