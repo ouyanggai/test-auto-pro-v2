@@ -468,20 +468,31 @@ func actionDisplayKind(action model.ActionKey) string {
 	}
 }
 
-// actionDisplayLabel 返回动作在节点工作台中的中文标签；未知稳定键保留原值供定位。
+// actionDisplayLabel 返回动作在节点工作台与运行准备面板中的中文标签。
+// 覆盖动作目录当前全部 15 条动作：界面必须用业务语言，不允许把稳定键当文案显示。
+// 未知稳定键保留原值只作为定位兜底，出现即说明目录新增了动作而这里没跟上。
 func actionDisplayLabel(action model.ActionKey) string {
-	switch action {
-	case model.ActionStorageFormData:
-		return "暂存当前表单"
-	case model.ActionReject:
-		return "不同意"
-	case model.ActionRollback:
-		return "回退上一节点"
-	case model.ActionAddSign:
-		return "加签"
-	default:
-		return string(action)
+	labels := map[model.ActionKey]string{
+		model.ActionSaveDraft:       "保存草稿",
+		model.ActionSubmit:          "提交",
+		model.ActionResubmit:        "重新提交",
+		model.ActionStorageFormData: "暂存当前表单",
+		model.ActionAddSign:         "加签",
+		model.ActionTransfer:        "移交",
+		model.ActionApprove:         "同意",
+		model.ActionReject:          "不同意",
+		model.ActionRollback:        "回退上一节点",
+		model.ActionRetrieve:        "取回",
+		model.ActionWithdraw:        "撤回",
+		model.ActionUrge:            "催办",
+		model.ActionForward:         "转发",
+		model.ActionFollow:          "关注",
+		model.ActionUnfollow:        "取消关注",
 	}
+	if label, ok := labels[action]; ok {
+		return label
+	}
+	return string(action)
 }
 
 // mergeNodeActions 将当前节点动作替换为本次独立记录并保留其他节点动作。

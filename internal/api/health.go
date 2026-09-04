@@ -79,7 +79,26 @@ func NewHandlerWithHistoryReplayAndDataServices(reader TargetReader, plans PlanS
 	registerFormRuntimeMaintenanceRoutes(mux, maintenance)
 	registerHistoryDataRoutes(mux, history)
 	registerHistoryReplayRoutes(mux, replay)
+	registerRunReadinessRoutes(mux, unavailableRunReadinessService{})
 	return gzipResponses(mux)
+}
+
+// NewHandlerWithRunReadiness 在既有组装之上注入成功断言与运行准备服务。
+// 沿用 F-013 已确立的"在组装处包一层"的方式：不改已有构造函数的语义，也不再加长旧重载链。
+func NewHandlerWithRunReadiness(base http.Handler, readiness RunReadinessService) http.Handler {
+	if readiness == nil {
+		return base
+	}
+	mux := http.NewServeMux()
+	registerRunReadinessRoutes(mux, readiness)
+	// 未命中本切片端点的请求原样交给既有 handler，避免重复组装全部路由。
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if _, pattern := mux.Handler(request); pattern != "" {
+			mux.ServeHTTP(response, request)
+			return
+		}
+		base.ServeHTTP(response, request)
+	})
 }
 
 type unavailableHistoryDataService struct{}
