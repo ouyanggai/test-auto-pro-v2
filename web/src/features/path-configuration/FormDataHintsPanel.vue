@@ -15,14 +15,15 @@ const open = ref(true)
 
 const decisiveFields = computed(() => props.keyFields.filter(field => field.decisive))
 const otherFields = computed(() => props.keyFields.filter(field => !field.decisive))
-const attentionCount = computed(() => props.issues.length + decisiveFields.value.length)
+const blockingIssues = computed(() => props.issues.filter(issue => issue.blocking))
+const attentionCount = computed(() => blockingIssues.value.length + decisiveFields.value.length)
 const expandedNames = computed(() => {
   const names: string[] = []
   if (decisiveFields.value.length) names.push('key')
-  if (props.issues.length) names.push('issues')
+  if (blockingIssues.value.length) names.push('issues')
   return names.length ? names : ['key']
 })
-const empty = computed(() => !decisiveFields.value.length && !props.issues.length
+const empty = computed(() => !decisiveFields.value.length && !blockingIssues.value.length
   && !props.branchPatches.length && !otherFields.value.length)
 
 // fieldValueText 只展示目标返回的原值，空值明确写成未填写，不猜测默认值。
@@ -93,9 +94,9 @@ function patchText(patch: PathConfigurationBranchPatch): string {
           </ul>
         </n-collapse-item>
 
-        <n-collapse-item v-if="issues.length" name="issues" :title="`需要处理（${issues.length}）`">
+        <n-collapse-item v-if="blockingIssues.length" name="issues" :title="`需要处理（${blockingIssues.length}）`">
           <ul class="form-hints__list">
-            <li v-for="issue in issues" :key="`${issue.code}-${issue.path || ''}-${issue.message}`">
+            <li v-for="issue in blockingIssues" :key="`${issue.code}-${issue.path || ''}-${issue.message}`">
               {{ issue.message }}
               <small v-if="issueFieldText(issue)">相关字段：{{ issueFieldText(issue) }}</small>
             </li>

@@ -188,7 +188,7 @@ export async function refreshPreparedForm (form) {
 // reconcileLinkedSelectValues 在目标下拉选项就绪后按显示名称回填对应 ID，
 // 解决分支补丁只改变名称字段时，FormMaking 仍按历史 ID 显示旧选项的问题。
 export async function reconcileLinkedSelectValues (form, values, retries = 20) {
-  if (!form || typeof form.getComponent !== 'function' || typeof form.setData !== 'function') return clonePlain(values || {})
+  if (!form || typeof form.setData !== 'function') return clonePlain(values || {})
   const current = clonePlain(values || {})
   if (!hasLinkedSelectCandidate(form, current)) return current
   const attempts = Math.max(1, Number(retries) || 1)
@@ -208,9 +208,9 @@ export async function reconcileLinkedSelectValues (form, values, retries = 20) {
 
 // replayFieldChangeEvents 重放目标模板为指定字段声明的 onChange 脚本，补齐 setData 不会触发的派生字段计算。
 export async function replayFieldChangeEvents (form, fields) {
-  if (!form || typeof form.getComponent !== 'function' || !form.eventFunction) return
+  if (!form || !form.eventFunction) return
   for (const field of Array.isArray(fields) ? fields : []) {
-    const component = form.getComponent(String(field || '').trim())
+    const component = formItemContext(form, String(field || '').trim())
     const eventKey = component?.widget?.events?.onChange
     const handler = eventKey && form.eventFunction[eventKey]
     if (typeof handler !== 'function') continue
@@ -218,45 +218,56 @@ export async function replayFieldChangeEvents (form, fields) {
   }
 }
 
+// formItemContext 读取 FormMaking 为字段包装组件维护的真实上下文；getComponent 返回的是 el-select 等控件实例，不含字段定义。
+function formItemContext (form, field) {
+  const context = form?.formItemContexts?.[field]
+  return Array.isArray(context) ? context[0] : context
+}
+
+// formItemContextEntries 展平子表单可能生成的同名字段上下文，并保留根模型路径。
+function formItemContextEntries (form) {
+  const contexts = form?.formItemContexts
+  if (!contexts || typeof contexts !== 'object') return []
+  return Object.entries(contexts).flatMap(([field, value]) => (Array.isArray(value) ? value : [value])
+    .filter(Boolean).map(context => ({ field, context })))
+}
+
+function modelValue (values, path) {
+  if (values && Object.prototype.hasOwnProperty.call(values, path)) return values[path]
+  return String(path || '').split('.').filter(Boolean)
+    .reduce((current, key) => current && typeof current === 'object' ? current[key] : undefined, values)
+}
+
 // hasLinkedSelectCandidate 判断当前模板是否存在需要等待真实远程选项的 ID 下拉字段，普通表单不增加等待开销。
 function hasLinkedSelectCandidate (form, values) {
-  const components = form.getComponent()
-  if (!components || typeof components !== 'object') return false
-  return Object.values(components).some(component => {
-    const widget = component && (component.widget || component.element)
-    const model = String(widget && widget.model || '').trim()
-    if (!model.endsWith('Id')) return false
-    const nameModel = `${model.slice(0, -2)}Name`
-    return values[nameModel] !== undefined || values[`${model}__virtualName`] !== undefined
+  return formItemContextEntries(form).some(({ field, context }) => {
+    if (String(context?.widget?.type || '').trim() !== 'select' || !field.endsWith('Id')) return false
+    const nameModel = `${field.slice(0, -2)}Name`
+    return modelValue(values, nameModel) !== undefined || modelValue(values, `${field}__virtualName`) !== undefined
   })
 }
 
 // linkedSelectPatches 仅使用 FormMaking 已加载的真实选项建立 Name/Id 关联，找不到唯一标签时保持原值。
 function linkedSelectPatches (form, values) {
-  const components = form.getComponent()
-  if (!components || typeof components !== 'object') return {}
   const patches = {}
-  for (const component of Object.values(components)) {
-    const widget = component && (component.widget || component.element)
-    const model = String(widget && widget.model || '').trim()
-    if (!model.endsWith('Id')) continue
-    const nameModel = `${model.slice(0, -2)}Name`
-    const virtualModel = `${model}__virtualName`
-    const desired = values[nameModel] ?? values[virtualModel]
+  for (const { field, context } of formItemContextEntries(form)) {
+    const widget = context?.widget
+    if (String(widget?.type || '').trim() !== 'select' || !field.endsWith('Id')) continue
+    const nameModel = `${field.slice(0, -2)}Name`
+    const virtualModel = `${field}__virtualName`
+    const desired = modelValue(values, nameModel) ?? modelValue(values, virtualModel)
     if (desired === undefined || desired === null || desired === '') continue
-    const options = component.remoteOptions || widget?.options?.remoteOptions || widget?.options?.options
+    // generate-form-item 只是字段包装层，远程选项实际保存在它的 generate-element-item 子组件中，且已统一为 value/label。
+    const options = context?.$refs?.generateElementItem?.remoteOptions
     if (!Array.isArray(options)) continue
-    const props = widget?.options?.props && typeof widget.options.props === 'object' ? widget.options.props : {}
-    const labelKey = String(props.label || 'label')
-    const valueKey = String(props.value || 'value')
-    const matches = options.filter(option => option && String(option[labelKey] ?? option.name ?? option.label ?? '') === String(desired))
+    const matches = options.filter(option => option && String(option.label ?? '') === String(desired))
     if (matches.length !== 1) continue
     const option = matches[0]
-    const nextID = option[valueKey] ?? option.id ?? option.value
+    const nextID = option.value
     if (nextID === undefined || nextID === null || nextID === '') continue
-    patches[model] = nextID
-    patches[virtualModel] = String(option[labelKey] ?? option.name ?? option.label ?? desired)
-    if (Object.prototype.hasOwnProperty.call(values, nameModel)) patches[nameModel] = patches[virtualModel]
+    patches[field] = nextID
+    patches[virtualModel] = String(option.label ?? desired)
+    if (modelValue(values, nameModel) !== undefined) patches[nameModel] = patches[virtualModel]
   }
   return patches
 }

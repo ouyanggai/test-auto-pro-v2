@@ -153,15 +153,16 @@ test('刷新会回填已填数据，避免 FormMaking 重新初始化清空 mode
 test('分支补丁按真实下拉选项同步名称对应的 ID 和虚拟显示值', async () => {
   const form = {
     model: { paymentId: 'old-id', paymentId__virtualName: '旧付款单位', paymentName: '新付款单位' },
-    getComponent() {
-      return {
-        paymentId: {
-          widget: { model: 'paymentId', options: { props: { label: 'name', value: 'id' } } },
-          remoteOptions: [{ id: 'new-id', name: '新付款单位' }],
-        },
-      }
+    // 真实 FormMaking 的 getComponent 返回 el-select；字段定义和选项属于 formItemContexts 包装组件。
+    getComponent() { return { value: 'old-id' } },
+    formItemContexts: {
+      paymentId: {
+        widget: { type: 'select', model: 'paymentId' },
+        $refs: { generateElementItem: { remoteOptions: [{ value: 'new-id', label: '新付款单位' }] } },
+      },
     },
     async setData(values) { Object.assign(this.model, values) },
+    getValues() { return this.model },
   }
   const values = await reconcileLinkedSelectValues(form, form.model, 1)
   assert.equal(values.paymentId, 'new-id')
@@ -173,7 +174,8 @@ test('分支补丁字段会重放目标 onChange 以刷新派生值', async () =
   let changed = ''
   const component = { widget: { events: { onChange: 'amountChanged' } }, currentOptions: { fieldNode: 'amount' } }
   const form = {
-    getComponent() { return component },
+    getComponent() { return { value: 1999 } },
+    formItemContexts: { amount: component },
     eventFunction: { amountChanged(options) { changed = options.fieldNode } },
   }
   await replayFieldChangeEvents(form, ['amount'])
