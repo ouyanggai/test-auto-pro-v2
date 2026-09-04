@@ -23,7 +23,7 @@ func TestF014ReadonlySuccessAndFailureShapes(t *testing.T) {
 		t.Fatal("真实目标没有返回任何可见流程模板，无法抓取成功包形状")
 	}
 	statusCode, body, err := f014Post(clientConfig.BaseURL, "/web/flowTemplateApi/findById", session.SID,
-		map[string]any{"data": map[string]any{"id": templates.Items[0].ID}}, 30*time.Second)
+		map[string]any{"data": map[string]any{"id": templates.Items[0].ID}}, clientConfig.Timeout)
 	if err != nil {
 		t.Fatalf("读取模板详情失败：%v", err)
 	}
@@ -39,7 +39,7 @@ func TestF014ReadonlySuccessAndFailureShapes(t *testing.T) {
 
 	// 业务失败形状：模板列表缺分组 ID 时目标返回 ERROR_99999 加业务文案，属清单外文案。
 	statusCode, body, err = f014Post(clientConfig.BaseURL, "/web/flowTemplateApi/list", session.SID,
-		map[string]any{"data": map[string]any{}, "pages": 1, "size": 1}, 30*time.Second)
+		map[string]any{"data": map[string]any{}, "pages": 1, "size": 1}, clientConfig.Timeout)
 	if err != nil {
 		t.Fatalf("业务失败探针请求失败：%v", err)
 	}
@@ -61,7 +61,7 @@ func TestF014ReadonlySuccessAndFailureShapes(t *testing.T) {
 
 	// 会话失效形状：换一个必然无效的 sid。
 	statusCode, body, err = f014Post(clientConfig.BaseURL, "/web/flowTemplateApi/list", "f014-invalid-sid",
-		map[string]any{"data": map[string]any{}, "pages": 1, "size": 1}, 30*time.Second)
+		map[string]any{"data": map[string]any{}, "pages": 1, "size": 1}, clientConfig.Timeout)
 	if err != nil {
 		t.Fatalf("失效会话探针请求失败：%v", err)
 	}
@@ -109,7 +109,7 @@ func TestF014ReadonlyContractRegression(t *testing.T) {
 	}
 	templateID := templates.Items[0].ID
 	statusCode, body, err := f014Post(clientConfig.BaseURL, "/web/flowTemplateApi/findById", session.SID,
-		map[string]any{"data": map[string]any{"id": templateID}}, 30*time.Second)
+		map[string]any{"data": map[string]any{"id": templateID}}, clientConfig.Timeout)
 	if err != nil {
 		t.Fatalf("读取模板详情失败：%v", err)
 	}
@@ -142,7 +142,7 @@ func TestF014ReadonlyContractRegression(t *testing.T) {
 	t.Logf("部署状态探测结论：%s", conclusion)
 	// 流程代理详情端点用无效 ID 探形状，正向读取由 F-012 的只读用例覆盖，本切片不构造实例 ID。
 	statusCode, body, err = f014Post(clientConfig.BaseURL, "/web/flowProxy/findById", session.SID,
-		map[string]any{"data": map[string]any{"id": "f014-not-exist"}}, 30*time.Second)
+		map[string]any{"data": map[string]any{"id": "f014-not-exist"}}, clientConfig.Timeout)
 	if err != nil {
 		t.Fatalf("流程代理详情探针失败：%v", err)
 	}
