@@ -37,8 +37,27 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	if err != nil {
 		return model.PathConfigurationF012{}, err
 	}
-	template, unsupported := workspaceRuntimeTemplate(snapshot)
+	// 历史来源绑定时必须按"实例绑定的流程代理版本"渲染 FormMaking 模板：历史数据键与实例当时的
+	// 表单模板一致，用当前已发布模板回显会在模板改版后整表对不上（宿主平台渲染旧实例也正是用
+	// 实例绑定版本）。读取失败回落当前模板并如实记录问题，不让用户面对静默错版。
+	runtimeSnapshot, resolved, runtimeErr := s.resolveInstanceBoundSnapshot(ctx, planID, source)
+	var (
+		template    map[string]any
+		unsupported []string
+	)
+	switch {
+	case runtimeErr != nil:
+		template, unsupported = workspaceRuntimeTemplate(snapshot)
+	case resolved:
+		template, unsupported = workspaceRuntimeTemplate(runtimeSnapshot)
+	default:
+		template, unsupported = workspaceRuntimeTemplate(snapshot)
+	}
 	issues := append([]model.HistoryDataIssue(nil), source.dataSource.Issues...)
+	if runtimeErr != nil {
+		issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{Code: "HISTORY_TEMPLATE_INSTANCE_FALLBACK",
+			Message: "实例绑定表单版本读取失败，已按当前模板回显，字段可能对不上，请重试或重新核对字段", Blocking: false}})
+	}
 	if len(unsupported) > 0 {
 		issues = appendHistoryIssues(issues, historyIssuesFromStrings("HISTORY_RUNTIME_TEMPLATE_INVALID", unsupported))
 	}
@@ -931,4 +950,88 @@ func isTransientTargetReadError(err error) bool {
 		target.IsKind(err, target.ErrorTimeout) ||
 		target.IsKind(err, target.ErrorSessionExpired) ||
 		target.IsKind(err, target.ErrorLoginRejected)
+}
+
+// historyInstanceIdentifiers 是按实例绑定版本重读宿主配置所需的实例标识。
+type historyInstanceIdentifiers struct {
+	InstanceID   string
+	FlowProxyID  string
+	FormProxyIDs []string
+}
+
+// historyInstanceIdentifiersFromSummary 从快照实例摘要读取实例标识；旧快照没有这些键时返回 false，
+// 保持按当前模板渲染的既有行为。
+func historyInstanceIdentifiersFromSummary(summary map[string]any) (historyInstanceIdentifiers, bool) {
+	if summary == nil {
+		return historyInstanceIdentifiers{}, false
+	}
+	instanceID := strings.TrimSpace(templateString(summary["instanceId"]))
+	flowProxyID := strings.TrimSpace(templateString(summary["flowProxyId"]))
+	formProxyIDs := []string{}
+	switch typed := summary["formProxyIds"].(type) {
+	case []any:
+		for _, item := range typed {
+			if id := strings.TrimSpace(templateString(item)); id != "" {
+				formProxyIDs = append(formProxyIDs, id)
+			}
+		}
+	case []string:
+		for _, id := range typed {
+			if id = strings.TrimSpace(id); id != "" {
+				formProxyIDs = append(formProxyIDs, id)
+			}
+		}
+	}
+	if instanceID == "" || flowProxyID == "" || len(formProxyIDs) == 0 {
+		return historyInstanceIdentifiers{}, false
+	}
+	return historyInstanceIdentifiers{InstanceID: instanceID, FlowProxyID: flowProxyID, FormProxyIDs: formProxyIDs}, true
+}
+
+// resolveInstanceBoundSnapshot 在历史来源绑定时按快照携带的实例标识重读实例绑定的宿主配置。
+// resolved=false 表示没有历史来源、缺少标识或非 FormMaking 运行时，保持当前模板行为；
+// 读取失败返回错误，由调用方回落当前模板并记录问题。
+func (s *PathConfigService) resolveInstanceBoundSnapshot(ctx context.Context, planID uint64, source historyWorkspaceSource) (target.PathConfigurationSnapshot, bool, error) {
+	if source.snapshot == nil || !strings.EqualFold(strings.TrimSpace(source.snapshot.RuntimeType), string(target.FormRenderTypeFormMaking)) {
+		return target.PathConfigurationSnapshot{}, false, nil
+	}
+	plan, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		return target.PathConfigurationSnapshot{}, false, err
+	}
+	reader, readerOK := s.target.(interface {
+		ReadProxyConfigurationForInstance(context.Context, string, string, []string, string) (target.PathConfigurationSnapshot, error)
+		ResolveHistoryInstanceForSnapshot(context.Context, string, string, string, string, string) (target.HistoryInstance, error)
+	})
+	if !readerOK {
+		return target.PathConfigurationSnapshot{}, false, &PathConfigError{Kind: PathConfigErrorStorage, Message: "目标配置读取服务暂不可用"}
+	}
+	identity, hasIdentity := historyInstanceIdentifiersFromSummary(source.snapshot.InstanceSummary)
+	if !hasIdentity {
+		// 旧快照没有实例标识：按候选键重新解析实例身份（与快照采集同一匹配规则），不要求用户重新绑定来源。
+		resolved, resolveErr := reader.ResolveHistoryInstanceForSnapshot(ctx, plan.Account,
+			source.snapshot.FlowCode, source.snapshot.FormName, source.snapshot.FlowName, source.snapshot.CandidateKey)
+		if resolveErr != nil {
+			return target.PathConfigurationSnapshot{}, false, resolveErr
+		}
+		identity = historyInstanceIdentifiers{
+			InstanceID: strings.TrimSpace(resolved.ID), FlowProxyID: strings.TrimSpace(resolved.FlowProxyID),
+			FormProxyIDs: resolved.FormProxyIDs,
+		}
+		if identity.InstanceID == "" || identity.FlowProxyID == "" || len(identity.FormProxyIDs) == 0 {
+			return target.PathConfigurationSnapshot{}, false, nil
+		}
+	}
+	var result target.PathConfigurationSnapshot
+	if err := retryTransientTargetRead(ctx, 3, func(ctx context.Context) error {
+		proxySnapshot, snapshotErr := reader.ReadProxyConfigurationForInstance(ctx, plan.Account, identity.FlowProxyID, identity.FormProxyIDs, identity.InstanceID)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		result = proxySnapshot
+		return nil
+	}); err != nil {
+		return target.PathConfigurationSnapshot{}, false, err
+	}
+	return result, true, nil
 }

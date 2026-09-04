@@ -450,3 +450,40 @@ func (s *TargetReadService) SetNetworkLogger(logger *logging.Logger) {
 	}
 	s.client.SetNetworkLogger(logger)
 }
+
+// ReadProxyConfigurationForInstance 按历史实例绑定的流程/表单代理读取该实例当时的宿主配置
+//（流程树、表单模板原文与实例当前数据），供数据工作区按实例版本回显，避免当前已发布模板
+// 与历史数据键不一致导致整表对不上。只读取，不写目标。
+func (s *TargetReadService) ReadProxyConfigurationForInstance(ctx context.Context, account, flowProxyID string, formProxyIDs []string, instanceID string) (target.PathConfigurationSnapshot, error) {
+	if err := s.ready(); err != nil {
+		return target.PathConfigurationSnapshot{}, err
+	}
+	var result target.PathConfigurationSnapshot
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		snapshot, err := s.client.ReadProxyConfiguration(callContext, active, flowProxyID, formProxyIDs, instanceID)
+		if err != nil {
+			return err
+		}
+		result = snapshot
+		return nil
+	})
+	return result, err
+}
+
+// ResolveHistoryInstanceForSnapshot 按候选键重新解析历史实例身份，供旧快照补齐实例绑定版本
+// 重读所需的实例/流程代理/表单代理标识；匹配规则与快照采集完全一致。
+func (s *TargetReadService) ResolveHistoryInstanceForSnapshot(ctx context.Context, account, flowCode, formName, flowName, candidateKey string) (target.HistoryInstance, error) {
+	if err := s.ready(); err != nil {
+		return target.HistoryInstance{}, err
+	}
+	var result target.HistoryInstance
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		selected, err := s.findHistoryInstanceByKey(callContext, active, account, flowCode, formName, flowName, candidateKey)
+		if err != nil {
+			return err
+		}
+		result = *selected
+		return nil
+	})
+	return result, err
+}

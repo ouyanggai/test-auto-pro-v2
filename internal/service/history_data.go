@@ -523,11 +523,14 @@ func snapshotSummary(snapshot model.HistorySnapshot) *model.HistorySnapshotSumma
 
 // historyInstanceSummary 只保存目标实例摘要字段，不把目标 ID 写入工具数据库。
 func historyInstanceSummary(instance target.HistoryInstance) map[string]any {
+	// 实例与流程/表单代理标识一并入摘要：数据工作区按实例绑定版本的宿主配置回显时需要它们重新读取。
 	return map[string]any{
 		"instanceTitle": strings.TrimSpace(instance.Title), "businessSummary": strings.TrimSpace(instance.BusinessSummary),
 		"initiator": strings.TrimSpace(instance.Initiator), "companyName": strings.TrimSpace(instance.CompanyName),
 		"createdAt": strings.TrimSpace(instance.CreatedAt), "status": strings.TrimSpace(instance.Status),
 		"statusName": strings.TrimSpace(instance.StatusName), "currentNodeName": strings.TrimSpace(instance.CurrentNodeName),
+		"instanceId": strings.TrimSpace(instance.ID), "flowProxyId": strings.TrimSpace(instance.FlowProxyID),
+		"formProxyIds": instance.FormProxyIDs,
 	}
 }
 

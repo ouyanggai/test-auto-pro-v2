@@ -375,3 +375,117 @@ func TestRetryTransientTargetReadRecoversWithinBoundedAttempts(t *testing.T) {
 		t.Fatalf("持续瞬断应重试耗尽并返回末次错误：calls=%d err=%v", calls, err)
 	}
 }
+
+// proxyTemplateTargetReader 记录实例绑定配置的读取次数，并返回与当前发布模板不同字段的实例版本。
+type proxyTemplateTargetReader struct {
+	workspaceTargetReader
+	proxyCalled int
+	resolveErr  error
+}
+
+// ResolveHistoryInstanceForSnapshot 按候选键返回实例标识；注入错误时模拟解析失败。
+func (r *proxyTemplateTargetReader) ResolveHistoryInstanceForSnapshot(context.Context, string, string, string, string, string) (target.HistoryInstance, error) {
+	if r.resolveErr != nil {
+		return target.HistoryInstance{}, r.resolveErr
+	}
+	return target.HistoryInstance{ID: "instance-a", FlowProxyID: "flow-proxy-a", FormProxyIDs: []string{"form-proxy-a"}}, nil
+}
+
+// ReadProxyConfigurationForInstance 返回实例绑定版本的表单模板（字段模型与当前发布版不同）。
+func (r *proxyTemplateTargetReader) ReadProxyConfigurationForInstance(context.Context, string, string, []string, string) (target.PathConfigurationSnapshot, error) {
+	r.proxyCalled++
+	return target.PathConfigurationSnapshot{
+		Tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Type: "end"}}, EntryNodeIDs: []string{"start"},
+		FlowCode: "flow-pay", FlowName: "请款单流程", RenderType: target.FormRenderTypeFormMaking,
+		Forms: []target.FormRuntimeTemplate{{Name: "请款单(实例绑定)", TemplateData: `{"list":[{"type":"input","model":"writeTime"}]}`}},
+	}, nil
+}
+
+// TestGetDataUsesInstanceBoundTemplate 锁定：历史来源绑定并携带实例标识时，数据工作区按实例绑定
+// 版本的表单模板渲染——历史数据键与实例当时的模板一致，当前模板改版后回显才不会整表对不上。
+func TestGetDataUsesInstanceBoundTemplate(t *testing.T) {
+	plan := model.Plan{ID: 681, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-pay", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 681, PlanID: plan.ID, SequenceNo: 1, Name: "实例绑定路径"}
+	store := newWorkspaceHistoryStore()
+	store.snapshots[910] = model.HistorySnapshot{
+		ID: 910, PlanID: plan.ID, CandidateKey: "candidate-bound", FlowCode: "flow-pay", FormName: "出差申请单", FlowName: "出差申请单流程",
+		RuntimeType: string(target.FormRenderTypeFormMaking), TemplateSummary: map[string]any{},
+		RawFormData: map[string]any{"writeTime": "2026-05-14"},
+		InstanceSummary: map[string]any{
+			"instanceId": "instance-a", "flowProxyId": "flow-proxy-a", "formProxyIds": []any{"form-proxy-a"},
+		},
+	}
+	store.defaults[plan.ID] = repository.HistoryDefaultRecord{PlanID: plan.ID, SnapshotID: 910, Revision: 1}
+	store.configs[path.ID] = repository.HistoryPathConfigRecord{
+		PathID: path.ID, Revision: 1, DataRevision: 1, SourceMode: model.HistorySourceModeDefault,
+		DataStatus:        model.HistoryDataStatusReady,
+		EffectiveFormData: []byte(`{"writeTime":"2026-05-14"}`),
+	}
+	reader := &proxyTemplateTargetReader{workspaceTargetReader: workspaceTargetReader{snapshot: target.PathConfigurationSnapshot{
+		Tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Type: "end"}}, EntryNodeIDs: []string{"start"},
+		FlowCode: "flow-pay", FlowName: "请款单流程", RenderType: target.FormRenderTypeFormMaking,
+		Forms: []target.FormRuntimeTemplate{{Name: "请款单(当前发布)", TemplateData: `{"list":[{"type":"input","model":"travelDate"}]}`}},
+	}}}
+	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(),
+		&workspacePathRepository{paths: []model.ExecutionPath{path}})
+	configService.SetHistoryWorkspaceStores(store, store)
+
+	configuration, err := configService.GetData(context.Background(), plan.ID, path.ID)
+	if err != nil {
+		t.Fatalf("读取数据工作区失败：%v", err)
+	}
+	if reader.proxyCalled != 1 {
+		t.Fatalf("实例绑定宿主配置没有被读取：called=%d", reader.proxyCalled)
+	}
+	models := []string{}
+	for _, item := range configuration.RuntimeTemplate["list"].([]any) {
+		models = append(models, item.(map[string]any)["model"].(string))
+	}
+	if len(models) != 1 || models[0] != "writeTime" {
+		t.Fatalf("运行时模板没有切换到实例绑定版本：%v", models)
+	}
+	for _, issue := range configuration.Issues {
+		if issue.Code == "HISTORY_TEMPLATE_INSTANCE_FALLBACK" {
+			t.Fatalf("实例绑定读取成功时不应回落：%+v", issue)
+		}
+	}
+}
+
+// TestGetDataFallsBackWithoutInstanceIdentifiers 锁定旧快照没有实例标识时保持当前模板行为。
+func TestGetDataFallsBackWithoutInstanceIdentifiers(t *testing.T) {
+	plan := model.Plan{ID: 682, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-pay", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 682, PlanID: plan.ID, SequenceNo: 1, Name: "旧快照路径"}
+	store := newWorkspaceHistoryStore()
+	store.snapshots[911] = model.HistorySnapshot{
+		ID: 911, PlanID: plan.ID, CandidateKey: "candidate-legacy", FlowCode: "flow-pay", FormName: "请款单", FlowName: "请款单流程",
+		RuntimeType: string(target.FormRenderTypeFormMaking), TemplateSummary: map[string]any{}, RawFormData: map[string]any{"amount": 1},
+		InstanceSummary: map[string]any{"instanceTitle": "旧快照，没有实例标识"},
+	}
+	store.defaults[plan.ID] = repository.HistoryDefaultRecord{PlanID: plan.ID, SnapshotID: 911, Revision: 1}
+	store.configs[path.ID] = repository.HistoryPathConfigRecord{
+		PathID: path.ID, Revision: 1, DataRevision: 1, SourceMode: model.HistorySourceModeDefault,
+		DataStatus:        model.HistoryDataStatusReady,
+		EffectiveFormData: []byte(`{"amount":1}`),
+	}
+	reader := &proxyTemplateTargetReader{resolveErr: errors.New("旧快照实例已不可解析"), workspaceTargetReader: workspaceTargetReader{snapshot: target.PathConfigurationSnapshot{
+		Tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Type: "end"}}, EntryNodeIDs: []string{"start"},
+		FlowCode: "flow-pay", FlowName: "请款单流程", RenderType: target.FormRenderTypeFormMaking,
+		Forms: []target.FormRuntimeTemplate{{Name: "请款单(当前发布)", TemplateData: `{"list":[{"type":"input","model":"amount"}]}`}},
+	}}}
+	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(),
+		&workspacePathRepository{paths: []model.ExecutionPath{path}})
+	configService.SetHistoryWorkspaceStores(store, store)
+
+	configuration, err := configService.GetData(context.Background(), plan.ID, path.ID)
+	if err != nil {
+		t.Fatalf("读取数据工作区失败：%v", err)
+	}
+	if reader.proxyCalled != 0 {
+		t.Fatalf("实例解析失败后不应继续读取实例绑定配置：called=%d", reader.proxyCalled)
+	}
+	if configuration.RuntimeTemplate == nil {
+		t.Fatalf("回落时运行时模板缺失")
+	}
+}
