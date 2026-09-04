@@ -17,7 +17,7 @@ test('目标表单模板递归应用权限且复杂组件不降级', () => {
         { type: 'input', model: 'title', name: '标题', options: { required: true } },
         { type: 'input', model: 'hiddenValue', name: '隐藏值', options: { required: true } },
       ] }] },
-      { type: 'component', model: 'contract', name: '合同业务组件', options: { componentName: 'contract-seal-review' } },
+      { type: 'custom', model: 'contract', name: '合同业务组件', options: { componentName: 'contract-seal-review' } },
     ],
     config: {
       beforeSubmitAndDraft: 'writeBusinessData()',
@@ -486,6 +486,13 @@ test('真实入口已注册的目标组件不再被统一标记为 unsupported',
   assert.equal(prepared.template.list[0].options.disabled, false)
 })
 
+test('FormMaking 原生 component 节点不依赖宿主业务注册', () => {
+  const prepared = prepareTemplate({ list: [
+    { type: 'component', model: 'spacer', name: '自定义组件', options: { template: '<p> </p>' } },
+  ] }, [{ field: 'spacer', power: 'only_read' }], false)
+  assert.deepEqual(prepared.unsupported, [])
+})
+
 test('业务自定义组件获得目标发起态上下文且不携带历史业务标识', () => {
   const prepared = prepareTemplate({ list: [
     {
@@ -534,6 +541,17 @@ test('宿主 Vue 页面透传统一快照别名并在 setData 后重新初始化
   }
   assert.match(source, /:key="`\$\{page\.componentName\}:\$\{valuesVersion\}`"/)
   assert.match(source, /this\.valuesVersion \+= 1/)
+})
+
+test('FormMaking 通过目标 OtherSteps2 宿主和单一数据桥接渲染', () => {
+  const app = fs.readFileSync(new URL('../../../form-runtime/src/App.vue', import.meta.url), 'utf8')
+  const bridge = fs.readFileSync(new URL('../../../form-runtime/src/HostedFormMaking.vue', import.meta.url), 'utf8')
+  assert.match(app, /<HostedFormMaking[\s\S]*ref="formHost"/)
+  assert.doesNotMatch(app, /<fm-generate-form/)
+  assert.match(bridge, /import OtherSteps2 from '@runtime\/views\/GroupApproveManage\/Submitted\/components\/OtherSteps2\.vue'/)
+  assert.match(bridge, /host\.jsonData = clonePlain\(template\)/)
+  assert.match(bridge, /host\.editData = clonePlain\(values\)/)
+  assert.match(bridge, /form\.\$on\('on-change'/)
 })
 
 test('无表单审批方式使用复制运行时的真实页面注册入口', () => {

@@ -1,7 +1,7 @@
 const CONTAINER_TYPES = new Set(['grid', 'report', 'table', 'subform', 'inline', 'dialog', 'card', 'group', 'tabs', 'collapse'])
 const STANDARD_TYPES = new Set([
   'input', 'textarea', 'number', 'date', 'time', 'select', 'radio', 'checkbox', 'switch', 'cascader', 'fileupload',
-  'text', 'html', 'divider', 'blank', 'link', 'button', ...CONTAINER_TYPES
+  'text', 'html', 'divider', 'blank', 'link', 'button', 'component', ...CONTAINER_TYPES
 ])
 const TARGET_COMPONENT_NAMES = new Set(JSON.parse(process.env.VUE_APP_TARGET_COMPONENT_NAMES || '[]'))
 const SUBMIT_HOOK_NAMES = ['beforeSubmitAndDraft', 'beforeSubmit']
@@ -83,7 +83,8 @@ export function prepareTemplate (rawTemplate, permissions, readOnly, runtimeCont
       const type = String(component && component.type || '').trim()
       const model = String(component && component.model || '').trim()
       const targetComponentName = componentRuntimeName(component) || (!STANDARD_TYPES.has(type) ? type : '')
-      const needsTargetRegistration = type === 'custom' || type === 'component' || !STANDARD_TYPES.has(type)
+      // FormMaking 的 component 是内置模板片段（options.template），只有 custom 或未知 type 才需要目标组件注册。
+      const needsTargetRegistration = type === 'custom' || !STANDARD_TYPES.has(type)
       // 真实上游 main.js 已注册的目标组件交给原生 FormMaking 渲染；只有未注册组件才阻止错误宣称支持。
       if (needsTargetRegistration && !TARGET_COMPONENT_NAMES.has(targetComponentName)) {
         unsupported.add(`${component.name || model || type || '未知组件'}：依赖 rsh-flow-components 宿主业务适配`)
