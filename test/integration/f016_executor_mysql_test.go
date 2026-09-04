@@ -2,10 +2,13 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/repository"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
 )
 
@@ -73,4 +76,200 @@ func TestF016MigrationCreatesRunRecordTables(t *testing.T) {
 	if reopenedRunCount != runCount {
 		t.Fatalf("重复迁移破坏了运行记录：before=%d after=%d", runCount, reopenedRunCount)
 	}
+}
+
+// TestF016RunStateAllocatesMonotonicRunNumbersAndGuardsStatus 用真实 MySQL 验证：
+// 运行号在计划内单调递增、跨计划互不影响；状态只前进且每次前进同事务追加事件行；
+// 非法回退被拒绝且不产生事件行。
+func TestF016RunStateAllocatesMonotonicRunNumbersAndGuardsStatus(t *testing.T) {
+	database := newF016RunDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+
+	first, firstPath, err := store.CreateRun(ctx, 1, 11, model.RunModeSingleStep, model.RunTriggerManual, nil, time.Now())
+	if err != nil {
+		t.Fatalf("创建第一次运行失败：%v", err)
+	}
+	second, _, err := store.CreateRun(ctx, 1, 11, model.RunModeSingleStep, model.RunTriggerManual, nil, time.Now())
+	if err != nil {
+		t.Fatalf("创建第二次运行失败：%v", err)
+	}
+	otherPlan, _, err := store.CreateRun(ctx, 2, 22, model.RunModeSingleStep, model.RunTriggerManual, nil, time.Now())
+	if err != nil {
+		t.Fatalf("创建其他计划运行失败：%v", err)
+	}
+	if !(first.RunNo == 1 && second.RunNo == 2 && otherPlan.RunNo == 1) {
+		t.Fatalf("运行号必须在计划内单调递增：plan1=%d,%d plan2=%d", first.RunNo, second.RunNo, otherPlan.RunNo)
+	}
+
+	if _, err := store.AdvancePathRunStatus(ctx, firstPath.ID,
+		model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{}, time.Now()); err != nil {
+		t.Fatalf("等待运行 -> 运行中应被允许：%v", err)
+	}
+	if _, err := store.AdvancePathRunStatus(ctx, firstPath.ID,
+		model.PathRunStatusRunning, model.PathRunStatusVerifying, model.RunEvent{}, time.Now()); err != nil {
+		t.Fatalf("运行中 -> 核验中应被允许：%v", err)
+	}
+	if _, err := store.AdvancePathRunStatus(ctx, firstPath.ID,
+		model.PathRunStatusVerifying, model.PathRunStatusRunning, model.RunEvent{}, time.Now()); err != nil {
+		t.Fatalf("核验中 -> 运行中（步骤循环）应被允许：%v", err)
+	}
+	if _, err := store.AdvancePathRunStatus(ctx, firstPath.ID,
+		model.PathRunStatusRunning, model.PathRunStatusWaiting, model.RunEvent{}, time.Now()); !errors.Is(err, repository.ErrRunStatusConflict) {
+		t.Fatalf("运行中 -> 等待运行必须被拒绝，实际 err=%v", err)
+	}
+
+	// 事件行只随成功迁移追加：1 条路径创建事件 + 3 次成功迁移，被拒的迁移不产生事件。
+	var eventCount int
+	if err := database.DB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM run_events WHERE path_run_id = ?", firstPath.ID).Scan(&eventCount); err != nil {
+		t.Fatalf("统计路径运行事件失败：%v", err)
+	}
+	if eventCount != 4 {
+		t.Fatalf("路径运行事件行数应为 4（1 创建 + 3 迁移），实际 %d", eventCount)
+	}
+}
+
+// TestF016LeaseMutexAndFencing 用真实 MySQL 验证租约互斥与 fencing token：
+// 同一路径运行同时只有一个执行者；旧执行者凭旧 token 的续租与释放一律失效。
+func TestF016LeaseMutexAndFencing(t *testing.T) {
+	database := newF016RunDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	now := time.Now()
+
+	_, pathRun, err := store.CreateRun(ctx, 3, 33, model.RunModeSingleStep, model.RunTriggerManual, nil, now)
+	if err != nil {
+		t.Fatalf("创建路径运行失败：%v", err)
+	}
+	if _, err := store.AdvancePathRunStatus(ctx, pathRun.ID,
+		model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{}, now); err != nil {
+		t.Fatalf("进入运行中失败：%v", err)
+	}
+
+	tokenA, err := store.ClaimPathRunLease(ctx, pathRun.ID, "worker-a", time.Minute, now)
+	if err != nil {
+		t.Fatalf("worker-a 领取租约失败：%v", err)
+	}
+	if tokenA != 1 {
+		t.Fatalf("首次领取后 fencing token 应为 1，实际 %d", tokenA)
+	}
+	if _, err := store.ClaimPathRunLease(ctx, pathRun.ID, "worker-b", time.Minute, now); !errors.Is(err, repository.ErrLeaseHeld) {
+		t.Fatalf("worker-b 在有效租约期内领取必须被拒绝，实际 err=%v", err)
+	}
+	if err := store.RenewPathRunLease(ctx, pathRun.ID, "worker-a", tokenA+999, time.Minute, now); !errors.Is(err, repository.ErrStaleLease) {
+		t.Fatalf("错误 token 的续租必须被拒绝，实际 err=%v", err)
+	}
+	if err := store.RenewPathRunLease(ctx, pathRun.ID, "worker-a", tokenA, time.Minute, now); err != nil {
+		t.Fatalf("正确 token 续租失败：%v", err)
+	}
+
+	// 租约到期后 worker-b 可接管，fencing token 递增；worker-a 凭旧 token 释放必须失效。
+	if _, err := store.ClaimPathRunLease(ctx, pathRun.ID, "worker-b", time.Minute, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("租约过期后接管失败：%v", err)
+	}
+	if err := store.ReleasePathRunLease(ctx, pathRun.ID, "worker-a", tokenA, now); !errors.Is(err, repository.ErrStaleLease) {
+		t.Fatalf("旧执行者凭旧 token 释放必须被拒绝，实际 err=%v", err)
+	}
+	if err := store.ReleasePathRunLease(ctx, pathRun.ID, "worker-b", tokenA+1, now); err != nil {
+		t.Fatalf("现执行者释放租约失败：%v", err)
+	}
+}
+
+// TestF016CrashRecoveryForcesAwaitingReconciliation 用真实 MySQL 验证崩溃恢复：
+// 处于运行中/核验中的路径运行一律置为待对账并写事件行；运行聚合保持原状留给对账切片；
+// 待对账是终态，任何继续推进都被拒绝。
+func TestF016CrashRecoveryForcesAwaitingReconciliation(t *testing.T) {
+	database := newF016RunDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	now := time.Now()
+
+	_, runningPath, err := store.CreateRun(ctx, 4, 44, model.RunModeSingleStep, model.RunTriggerManual, nil, now)
+	if err != nil {
+		t.Fatalf("创建运行中路径失败：%v", err)
+	}
+	if _, err := store.AdvanceRunStatus(ctx, runningPath.RunID,
+		model.RunStatusPending, model.RunStatusRunning, model.RunEvent{}, now); err != nil {
+		t.Fatalf("运行聚合进入运行中失败：%v", err)
+	}
+	if _, err := store.AdvancePathRunStatus(ctx, runningPath.ID,
+		model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{}, now); err != nil {
+		t.Fatalf("进入运行中失败：%v", err)
+	}
+	_, verifyingPath, err := store.CreateRun(ctx, 5, 55, model.RunModeSingleStep, model.RunTriggerManual, nil, now)
+	if err != nil {
+		t.Fatalf("创建核验中路径失败：%v", err)
+	}
+	if _, err := store.AdvanceRunStatus(ctx, verifyingPath.RunID,
+		model.RunStatusPending, model.RunStatusRunning, model.RunEvent{}, now); err != nil {
+		t.Fatalf("运行聚合进入运行中失败：%v", err)
+	}
+	if _, err := store.AdvancePathRunStatus(ctx, verifyingPath.ID,
+		model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{}, now); err != nil {
+		t.Fatalf("进入运行中失败：%v", err)
+	}
+	if _, err := store.AdvancePathRunStatus(ctx, verifyingPath.ID,
+		model.PathRunStatusRunning, model.PathRunStatusVerifying, model.RunEvent{}, now); err != nil {
+		t.Fatalf("进入核验中失败：%v", err)
+	}
+
+	recovered, err := store.RecoverInterruptedPathRuns(ctx, now)
+	if err != nil {
+		t.Fatalf("崩溃恢复失败：%v", err)
+	}
+	if len(recovered) != 2 {
+		t.Fatalf("应恢复 2 条路径运行，实际 %v", recovered)
+	}
+	for _, pathRunID := range recovered {
+		pathRun, err := store.GetPathRun(ctx, pathRunID)
+		if err != nil {
+			t.Fatalf("读取恢复后的路径运行失败：%v", err)
+		}
+		if pathRun.Status != model.PathRunStatusAwaitingReconciliation {
+			t.Fatalf("路径运行 %d 应为待对账，实际 %s", pathRunID, pathRun.Status)
+		}
+		if pathRun.LeaseOwner != "" {
+			t.Fatalf("恢复时应释放租约，实际 owner=%s", pathRun.LeaseOwner)
+		}
+		run, err := store.GetRun(ctx, pathRun.RunID)
+		if err != nil {
+			t.Fatalf("读取运行聚合失败：%v", err)
+		}
+		if run.Status != model.RunStatusRunning {
+			t.Fatalf("运行聚合应保持运行中留给对账切片，实际 %s", run.Status)
+		}
+		if _, err := store.AdvancePathRunStatus(ctx, pathRunID,
+			model.PathRunStatusAwaitingReconciliation, model.PathRunStatusRunning, model.RunEvent{}, now); !errors.Is(err, repository.ErrRunStatusConflict) {
+			t.Fatalf("待对账后继续推进必须被拒绝，实际 err=%v", err)
+		}
+	}
+
+	// 再次恢复是无操作：待对账是终态，重复恢复不产生新事实。
+	recoveredAgain, err := store.RecoverInterruptedPathRuns(ctx, now)
+	if err != nil || len(recoveredAgain) != 0 {
+		t.Fatalf("重复恢复应为无操作：recovered=%v err=%v", recoveredAgain, err)
+	}
+}
+
+// newF016RunDatabase 建立一次性临时计划数据库并应用全部迁移，用例结束后销毁。
+func newF016RunDatabase(t *testing.T) *planmysql.Database {
+	t.Helper()
+	cfg := config.LoadPlanDBConfig()
+	if missing := cfg.MissingRequired(); len(missing) != 0 {
+		t.Fatalf("F-016 MySQL 集成测试缺少配置名：%v", missing)
+	}
+	cfg.Name = temporaryPlanDatabaseName(t)
+	t.Cleanup(func() { dropTemporaryPlanDatabase(t, cfg) })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := planmysql.OpenAndMigrate(ctx, cfg)
+	if err != nil {
+		t.Fatalf("临时计划数据库迁移失败：%v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return database
 }

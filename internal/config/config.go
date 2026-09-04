@@ -284,3 +284,66 @@ func (c TargetBizDBConfig) Enabled() bool {
 	return !c.localConfigInvalid && c.Host != "" && c.User != "" && c.Port > 0 && c.Port <= 65535 &&
 		ValidDatabaseName(c.Name) && ValidDatabaseName(c.UserCenterName)
 }
+
+// RunConfig 是执行器的运行参数。全部预算走配置不写死：目标存在稳定约 30 秒的真实慢请求，
+// 且只读阶段的重试预算按分钟级设计（纲领第 4.4.1 节），测试与部署都可以按环境覆盖。
+type RunConfig struct {
+	// LeaseDuration 是路径运行推进租约时长；租约用于保证同一路径运行同时只有一个 Worker 推进。
+	LeaseDuration time.Duration
+	// ReadOnlyRetryAttempts 是只读阶段（门禁复验、演员与会话、事实重读、会话获取）的最大尝试次数。
+	ReadOnlyRetryAttempts int
+	// ReadOnlyRetryBaseDelay 是只读阶段重试的指数退避基准间隔。
+	ReadOnlyRetryBaseDelay time.Duration
+	// ReadOnlyRetryMaxDelay 是只读阶段单次退避的间隔上限，防止预算膨胀到不可接受。
+	ReadOnlyRetryMaxDelay time.Duration
+	// StepProgressStaleAfter 是一步执行期间超过该时长仍无状态更新即视为疑似无响应的预算。
+	StepProgressStaleAfter time.Duration
+	// StatusPollInterval 是前端状态轮询间隔；强制单步下状态只在放行后变化，轮询够用。
+	StatusPollInterval time.Duration
+}
+
+// 运行参数的环境变量名与兜底默认值。
+const (
+	runLeaseDurationEnv        = "TEST_AUTO_PRO_RUN_LEASE_DURATION"
+	runReadRetryAttemptsEnv    = "TEST_AUTO_PRO_READ_RETRY_ATTEMPTS"
+	runReadRetryBaseDelayEnv   = "TEST_AUTO_PRO_READ_RETRY_BASE_DELAY"
+	runReadRetryMaxDelayEnv    = "TEST_AUTO_PRO_READ_RETRY_MAX_DELAY"
+	runStepStaleAfterEnv       = "TEST_AUTO_PRO_STEP_STALE_AFTER"
+	runStatusPollIntervalEnv   = "TEST_AUTO_PRO_STATUS_POLL_INTERVAL"
+
+	defaultRunLeaseDuration      = 5 * time.Minute
+	defaultRunReadRetryAttempts  = 8
+	defaultRunReadRetryBaseDelay = 3 * time.Second
+	defaultRunReadRetryMaxDelay  = 2 * time.Minute
+	defaultRunStepStaleAfter     = 10 * time.Minute
+	defaultRunStatusPollInterval = 2 * time.Second
+)
+
+// LoadRunConfig 读取执行器运行参数；非法或缺省时使用上述默认值。
+func LoadRunConfig() RunConfig {
+	return RunConfig{
+		LeaseDuration:          durationFromEnv(runLeaseDurationEnv, defaultRunLeaseDuration),
+		ReadOnlyRetryAttempts:  intFromEnv(runReadRetryAttemptsEnv, defaultRunReadRetryAttempts),
+		ReadOnlyRetryBaseDelay: durationFromEnv(runReadRetryBaseDelayEnv, defaultRunReadRetryBaseDelay),
+		ReadOnlyRetryMaxDelay:  durationFromEnv(runReadRetryMaxDelayEnv, defaultRunReadRetryMaxDelay),
+		StepProgressStaleAfter: durationFromEnv(runStepStaleAfterEnv, defaultRunStepStaleAfter),
+		StatusPollInterval:     durationFromEnv(runStatusPollIntervalEnv, defaultRunStatusPollInterval),
+	}
+}
+
+// durationFromEnv 读取时长型环境变量，空值或非法值回退默认值。
+func durationFromEnv(name string, fallback time.Duration) time.Duration {
+	return durationFromValue(os.Getenv(name), fallback)
+}
+
+// intFromEnv 读取正整数环境变量，空值或非法值回退默认值。
+func intFromEnv(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+		return parsed
+	}
+	return fallback
+}
