@@ -17,6 +17,7 @@ const EXPLICIT_FORBIDDEN_PATHS = [
   /\/web\/user\/api\/login\/user\/(?:login|loginOut|switchLinkage)(?:\/|$)/i
 ]
 const KNOWN_TARGET_ORIGINS = new Set([
+  'http://192.168.1.220:8081',
   'http://192.168.1.220:28081',
   'http://192.168.1.220:38081',
   'http://192.168.1.218:8077',

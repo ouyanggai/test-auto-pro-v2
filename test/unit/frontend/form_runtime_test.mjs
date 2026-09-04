@@ -267,8 +267,8 @@ test('目标写请求由 XHR 和 fetch 统一阻断，已证明只读 POST 仍�
     assert.equal(fetched[0][1].headers.get('sid'), 'memory-only-sid')
     assert.deepEqual(JSON.parse(fetched[0][1].body), { sid: 'memory-only-sid' })
 
-    await window.fetch('http://192.168.1.220:28081/api/web/user/api/company/children?flag=3', { method: 'POST', body: '{}' })
-    assert.equal(fetched[1][0], 'http://target.test/api/web/user/api/company/children?flag=3&sid=memory-only-sid')
+    await window.fetch('http://192.168.1.220:8081/api/web/api/measuring/contract/type/enableTreeList?platformCode=200001', { method: 'POST', body: '{}' })
+    assert.equal(fetched[1][0], 'http://target.test/api/web/api/measuring/contract/type/enableTreeList?platformCode=200001&sid=memory-only-sid')
     assert.equal(fetched[1][1].headers.get('sid'), 'memory-only-sid')
     await assert.rejects(window.fetch('http://192.168.1.220:28081/api/web/file/api/relationFile/saveBatchFile', { method: 'POST' }), /不支持未证明为只读/)
 
