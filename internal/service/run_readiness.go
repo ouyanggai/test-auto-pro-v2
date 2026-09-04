@@ -35,8 +35,11 @@ type PathReadinessInput struct {
 	Path model.ExecutionPath
 	// ConfigFound 为 false 表示这条路径还没有任何配置记录。
 	ConfigFound bool
-	// ConfigIssues 是路径配置里已记录的问题，原样透出，不改写文案。
+	// ConfigIssues 是路径配置里已记录且标记为阻塞的问题，原样透出，不改写文案。
 	ConfigIssues []model.PathConfigAffectedItem
+	// ConfigNotices 是路径配置里记录的说明性提示（blocking=false），只提醒不阻塞。
+	// F-012 会把"表单校验会在打开表单数据页时完成"这类说明写进同一列，当阻塞显示用户看不懂也无法处理。
+	ConfigNotices []model.PathConfigAffectedItem
 	// CompiledStepCount 是编译场景里的步骤数，为 0 表示没有可执行步骤。
 	CompiledStepCount int
 	// ConfiguredActions 是这条路径已配置的动作标识，用于与已验证子集比对。
@@ -80,10 +83,13 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 	blocks = append(blocks, itemsFrom(input.ConfigIssues, model.RunReadinessConfigIssue, runReadinessAnchorNodes)...)
 	blocks = append(blocks, itemsFrom(input.PersonIssues, model.RunReadinessPersonNotUnique, runReadinessAnchorNodes)...)
 	blocks = append(blocks, itemsFrom(input.TopologyIssues, model.RunReadinessTopologyChanged, runReadinessAnchorPath)...)
+	reminders := append([]model.RunReadinessItem{}, input.Reminders...)
+	// 成功断言默认就是"把流程走完"，指定成功节点是可选能力（像断点一样）。
+	// 因此未配置断言不是阻塞，只提醒用户当前按默认口径判定。
 	if input.Assertion == nil {
-		blocks = append(blocks, model.RunReadinessItem{
+		reminders = append(reminders, model.RunReadinessItem{
 			Kind: model.RunReadinessAssertionMissing, Name: pathName,
-			Reason: "这条路径还没有配置成功断言，运行结果无法判定",
+			Reason: "没有指定成功节点，默认按跑完整个流程判定成功",
 			Anchor: runReadinessAnchorAssertion,
 		})
 	}
@@ -95,10 +101,13 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 			Anchor: runReadinessAnchorNodes,
 		})
 	}
+	// 动作是否被真实写验证过、语义条目是否已实测，都是工具自身的进度，用户在这里无法处理。
+	// 把它们当阻塞会形成死锁：第一次真实写要先能跑起来才可能验证动作，而阻塞又不让跑。
+	// 因此降为提醒，如实告诉用户风险，由用户决定是否继续。
 	for _, action := range unverifiedActions(input.ConfiguredActions) {
-		blocks = append(blocks, model.RunReadinessItem{
+		reminders = append(reminders, model.RunReadinessItem{
 			Kind: model.RunReadinessActionNotVerified, Name: actionDisplayLabel(action),
-			Reason: "这个动作还没有被真实写验证过，按纲领要求直接阻塞，不做静默降级",
+			Reason: "这个动作还没有被真实写验证过，第一次执行请留意目标平台的实际结果",
 			Anchor: runReadinessAnchorNodes,
 		})
 	}
@@ -106,13 +115,13 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 		if strings.TrimSpace(entry) == "" {
 			continue
 		}
-		blocks = append(blocks, model.RunReadinessItem{
+		reminders = append(reminders, model.RunReadinessItem{
 			Kind: model.RunReadinessSemanticsPending, Name: entry,
-			Reason: "本路径动作涉及的目标语义条目仍待实测，先补勘定再启动",
+			Reason: "这条路径涉及的目标行为还没有实测勘定，结果需要人工复核",
 			Anchor: runReadinessAnchorPath,
 		})
 	}
-	reminders := append([]model.RunReadinessItem{}, input.Reminders...)
+	reminders = append(reminders, itemsFrom(input.ConfigNotices, model.RunReadinessConfigIssue, runReadinessAnchorNodes)...)
 	return model.PathRunReadiness{
 		PathID: input.Path.ID, PathName: pathName, SequenceNo: input.Path.SequenceNo,
 		Runnable: len(blocks) == 0, Summary: pathSummary(pathName, len(blocks)),

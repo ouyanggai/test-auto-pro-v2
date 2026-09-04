@@ -73,7 +73,6 @@ func TestUndecidableIsNeverMergedIntoFails(t *testing.T) {
 		assertion model.PathSuccessAssertion
 		fact      assert.Fact
 	}{
-		"路径没有配置断言": {model.PathSuccessAssertion{}, readableFact(model.FlowInstanceStatusEnd, "end-a")},
 		"事实自相矛盾": {savedAssertion(), assert.Fact{
 			Readable: true, InstanceStatusPresent: true, InstanceStatus: model.FlowInstanceStatusEnd,
 			Contradictory: true, ContradictionReason: "状态是完结但流程仍在推进",
@@ -113,5 +112,36 @@ func TestTerminalStatusSetIsExplicit(t *testing.T) {
 		if assert.IsTerminalStatus(status) {
 			t.Fatalf("%s 不应被当成终态", status)
 		}
+	}
+}
+
+// TestDefaultAssertionIsRunToCompletion 锁定人工验收反馈：没有指定成功节点时默认按"把流程走完"判定。
+// 指定成功节点是可选能力（像断点一样），不是必填项，因此这里不能判无法判定。
+func TestDefaultAssertionIsRunToCompletion(t *testing.T) {
+	none := model.PathSuccessAssertion{}
+	// 流程走完（完结）即成立，不要求到达任何指定节点。
+	holds := assert.Evaluate(none, readableFact(model.FlowInstanceStatusEnd))
+	if holds.Outcome != assert.OutcomeHolds {
+		t.Fatalf("流程走完应判成立：%+v", holds)
+	}
+	// 进了终态但不是完结（撤销、驳回一类）说明没跑完，判不成立并提示可以指定成功节点。
+	for _, status := range []string{
+		model.FlowInstanceStatusWithdraw, model.FlowInstanceStatusRejected,
+		model.FlowInstanceStatusAbandon, model.FlowInstanceStatusTermination,
+	} {
+		result := assert.Evaluate(none, readableFact(status))
+		if result.Outcome != assert.OutcomeFails {
+			t.Fatalf("%s 不是跑完流程，应判不成立：%+v", status, result)
+		}
+		if !strings.Contains(result.Reason, "指定成功节点") {
+			t.Fatalf("%s 的原因应提示可以指定成功节点：%s", status, result.Reason)
+		}
+	}
+	// 仍未进终态、事实读不到这些情况依然是无法判定。
+	if running := assert.Evaluate(none, readableFact(model.FlowInstanceStatusRun)); running.Outcome != assert.OutcomeUndecidable {
+		t.Fatalf("未进终态应判无法判定：%+v", running)
+	}
+	if unreadable := assert.Evaluate(none, assert.Fact{Readable: false, UnreadableReason: "会话失效"}); unreadable.Outcome != assert.OutcomeUndecidable {
+		t.Fatalf("事实读不到应判无法判定：%+v", unreadable)
 	}
 }

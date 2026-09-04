@@ -83,8 +83,14 @@ type Verdict struct {
 // Evaluate 按 F-015 的三值规则判定断言，任何拿不准的情况都落「无法判定」。
 // 判定顺序不可调换：先确认事实本身站得住脚，再看实例是否已进终态，最后才比对结束节点与状态。
 func Evaluate(assertion model.PathSuccessAssertion, fact Fact) Verdict {
-	if strings.TrimSpace(assertion.EndNodeKey) == "" || strings.TrimSpace(assertion.ExpectedStatus) == "" {
-		return undecidable("这条路径没有配置可判定的成功断言", "F-015：断言缺失时不判成立也不判失败，先补配置")
+	// 没有指定成功节点时按默认口径判定：把流程走完就算成功。
+	// 指定成功节点是可选能力（像断点一样），不是必填项，因此这里不判无法判定。
+	usesDefault := strings.TrimSpace(assertion.EndNodeKey) == ""
+	if usesDefault {
+		assertion = defaultAssertion()
+	}
+	if strings.TrimSpace(assertion.ExpectedStatus) == "" {
+		return undecidable("这条路径的成功断言没有指定期望状态", "F-015：断言取值不完整时不判成立也不判失败，先补配置")
 	}
 	if fact.Contradictory {
 		reason := strings.TrimSpace(fact.ContradictionReason)
@@ -113,12 +119,28 @@ func Evaluate(assertion model.PathSuccessAssertion, fact Fact) Verdict {
 		return undecidable("目标实例还没有进入终态，当前状态是"+model.FlowInstanceStatusLabel(status),
 			"F-015：实例未进终态时不算成立也不算失败，等它跑完再判")
 	}
+	statusMatched := status == strings.TrimSpace(assertion.ExpectedStatus)
+	// 默认口径只看流程是否走完，不要求到达某个指定节点。
+	if usesDefault {
+		if statusMatched {
+			return Verdict{
+				Outcome: OutcomeHolds,
+				Reason:  "流程已经跑完，实例状态是" + model.FlowInstanceStatusLabel(status),
+				Basis:   "F-015：没有指定成功节点时按默认口径判定，跑完整个流程即成功",
+			}
+		}
+		return Verdict{
+			Outcome: OutcomeFails,
+			Reason: "实例已进入终态" + model.FlowInstanceStatusLabel(status) +
+				"，但没有跑完整个流程；如需按这个状态算成功，请在路径配置里指定成功节点",
+			Basis: "F-015：默认口径要求流程走完；这是断言不成立，不是执行出错",
+		}
+	}
 	arrivals := countArrivals(fact.ArrivedEndNodeKeys, assertion.EndNodeKey)
 	expectedOrdinal := assertion.ArrivalOrdinal
 	if expectedOrdinal == 0 {
 		expectedOrdinal = 1
 	}
-	statusMatched := status == strings.TrimSpace(assertion.ExpectedStatus)
 	arrivalMatched := arrivals >= expectedOrdinal
 	if statusMatched && arrivalMatched {
 		return Verdict{
@@ -132,6 +154,12 @@ func Evaluate(assertion model.PathSuccessAssertion, fact Fact) Verdict {
 		Reason:  failureReason(assertion, status, arrivals, expectedOrdinal, statusMatched, arrivalMatched),
 		Basis:   "F-015：实例已进终态但断言三项不全相符即断言不成立；这是断言不成立，不是执行出错",
 	}
+}
+
+// defaultAssertion 是"把流程走完"这个默认口径：只要求实例最终状态为完结。
+// 目标平台的完结状态是流程正常走到底的唯一标志，其余终态都是撤销、终止、废弃、驳回。
+func defaultAssertion() model.PathSuccessAssertion {
+	return model.PathSuccessAssertion{ExpectedStatus: model.FlowInstanceStatusEnd, ArrivalOrdinal: 1}
 }
 
 // countArrivals 统计实例事实里到达指定结束节点的次数。

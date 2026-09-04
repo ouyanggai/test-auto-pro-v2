@@ -117,7 +117,9 @@ func (s *RunReadinessService) SaveAssertion(ctx context.Context, planID, pathID 
 
 // PlanReadiness 聚合一个计划下每条路径的运行准备结论。
 // 真实流程结构只读一次；断言一次取齐；路径配置按路径逐条读数据库，不读目标。
-func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64) (model.PlanRunReadiness, error) {
+// selectedPathIDs 为空表示检查该计划下全部路径；非空时只检查勾选的那些路径。
+// 运行只运行勾选路径，预检也必须只检查勾选路径，否则用户看到的阻塞与本次要跑的东西不是一回事。
+func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, selectedPathIDs []uint64) (model.PlanRunReadiness, error) {
 	if _, err := s.plans.Get(ctx, planID); err != nil {
 		return model.PlanRunReadiness{}, notFoundError("计划不存在")
 	}
@@ -127,6 +129,23 @@ func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64) 
 	}
 	if len(summaries) == 0 {
 		return AggregatePlanReadiness(nil), nil
+	}
+	if len(selectedPathIDs) > 0 {
+		wanted := make(map[uint64]bool, len(selectedPathIDs))
+		for _, pathID := range selectedPathIDs {
+			wanted[pathID] = true
+		}
+		filtered := make([]model.ExecutionPath, 0, len(selectedPathIDs))
+		for _, path := range summaries {
+			if wanted[path.ID] {
+				filtered = append(filtered, path)
+			}
+		}
+		if len(filtered) == 0 {
+			return model.PlanRunReadiness{}, &RunReadinessError{
+				Kind: RunReadinessErrorInvalid, Message: "勾选的执行路径不属于这个计划，请重新选择"}
+		}
+		summaries = filtered
 	}
 	pathIDs := make([]uint64, 0, len(summaries))
 	for _, path := range summaries {
@@ -180,7 +199,7 @@ func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGra
 		return input
 	}
 	input.ConfigFound = true
-	input.ConfigIssues = decodeConfigIssues(config.Issues, graphNodeNames(graph))
+	input.ConfigIssues, input.ConfigNotices = decodeConfigIssues(config.Issues, graphNodeNames(graph))
 	input.CompiledStepCount = countJSONArray(config.CompiledSteps)
 	input.ConfiguredActions = decodeConfiguredActions(config.UserActions)
 	return input
@@ -234,15 +253,16 @@ func pathDisplayName(path model.ExecutionPath) string {
 // 该列是异构对象数组：F-012 的路径问题与动作问题字段名不同（reason 与 message、name 与 action），
 // 因此按几种已知键取值，并且**只保留有可读中文原因的条目**——
 // 没有原因的条目在界面上就是一条空白阻塞，比不显示更糟。解析不了就当没有，不编造问题。
-func decodeConfigIssues(payload []byte, nodeNames map[string]string) []model.PathConfigAffectedItem {
+func decodeConfigIssues(payload []byte, nodeNames map[string]string) (blocking, notices []model.PathConfigAffectedItem) {
 	if len(payload) == 0 {
-		return nil
+		return nil, nil
 	}
 	var objects []map[string]any
 	if err := json.Unmarshal(payload, &objects); err != nil {
-		return nil
+		return nil, nil
 	}
-	issues := make([]model.PathConfigAffectedItem, 0, len(objects))
+	blocking = make([]model.PathConfigAffectedItem, 0, len(objects))
+	notices = make([]model.PathConfigAffectedItem, 0, len(objects))
 	for _, object := range objects {
 		reason := firstStringValue(object, "reason", "message", "detail")
 		if reason == "" {
@@ -254,13 +274,30 @@ func decodeConfigIssues(payload []byte, nodeNames map[string]string) []model.Pat
 			// 查不到就留空，由中文原因承载信息。产品规则要求界面只出现业务语言。
 			name = nodeNames[firstStringValue(object, "path", "nodeKey")]
 		}
-		issues = append(issues, model.PathConfigAffectedItem{
+		item := model.PathConfigAffectedItem{
 			Kind:   firstStringValue(object, "kind", "code"),
 			Name:   name,
 			Reason: reason,
-		})
+		}
+		// F-012 把说明性提示和真正的阻塞写在同一列，只有 blocking=true 才是用户必须先处理的事。
+		// 把说明当阻塞显示，用户看不懂也无从下手，这是人工验收明确指出的问题。
+		if isBlockingIssue(object) {
+			blocking = append(blocking, item)
+			continue
+		}
+		notices = append(notices, item)
 	}
-	return issues
+	return blocking, notices
+}
+
+// isBlockingIssue 读取问题的 blocking 标记；没有该字段的条目按阻塞处理，宁严不宽。
+func isBlockingIssue(object map[string]any) bool {
+	value, present := object["blocking"]
+	if !present {
+		return true
+	}
+	flag, ok := value.(bool)
+	return !ok || flag
 }
 
 // graphNodeNames 把真实结构里的节点键映射为中文节点名，供问题条目显示业务语言。

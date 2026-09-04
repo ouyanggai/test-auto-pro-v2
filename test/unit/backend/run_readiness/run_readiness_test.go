@@ -56,17 +56,10 @@ func TestEachBlockSourceIsReported(t *testing.T) {
 		"配置已记录的问题": {func(in *service.PathReadinessInput) { in.ConfigIssues = issue }, model.RunReadinessConfigIssue},
 		"人员解析不唯一":  {func(in *service.PathReadinessInput) { in.PersonIssues = issue }, model.RunReadinessPersonNotUnique},
 		"路径拓扑已变":   {func(in *service.PathReadinessInput) { in.TopologyIssues = issue }, model.RunReadinessTopologyChanged},
-		"成功断言缺失":   {func(in *service.PathReadinessInput) { in.Assertion = nil }, model.RunReadinessAssertionMissing},
 		"成功断言失效": {func(in *service.PathReadinessInput) { in.AssertionIssues = issue },
 			model.RunReadinessAssertionInvalid},
 		"编译场景为空": {func(in *service.PathReadinessInput) { in.CompiledStepCount = 0 },
 			model.RunReadinessCompiledScenarioEmpty},
-		"动作尚未验证可执行": {func(in *service.PathReadinessInput) {
-			in.ConfiguredActions = []model.ActionKey{model.ActionSubmit}
-		}, model.RunReadinessActionNotVerified},
-		"语义条目待实测": {func(in *service.PathReadinessInput) {
-			in.PendingSemanticsEntries = []string{"回退语义"}
-		}, model.RunReadinessSemanticsPending},
 	}
 	for name, testCase := range cases {
 		input := readyInput()
@@ -129,8 +122,17 @@ func TestVerifiedRunnableActionsIsEmptyBeforeFirstRealWrite(t *testing.T) {
 			blocked++
 		}
 	}
-	if blocked != 2 {
-		t.Fatalf("重复动作应去重后逐个报出，期望 2 条实际 %d 条：%+v", blocked, readiness.Blocks)
+	if blocked != 0 {
+		t.Fatalf("动作未验证只应提醒不应阻塞：%+v", readiness.Blocks)
+	}
+	reminded := 0
+	for _, reminder := range readiness.Reminders {
+		if reminder.Kind == model.RunReadinessActionNotVerified {
+			reminded++
+		}
+	}
+	if reminded != 2 {
+		t.Fatalf("重复动作应去重后逐个提醒，期望 2 条实际 %d 条：%+v", reminded, readiness.Reminders)
 	}
 }
 
@@ -138,7 +140,7 @@ func TestVerifiedRunnableActionsIsEmptyBeforeFirstRealWrite(t *testing.T) {
 func TestAggregatePlanReadinessSummarizesAndSorts(t *testing.T) {
 	blockedInput := readyInput()
 	blockedInput.Path.ID, blockedInput.Path.SequenceNo, blockedInput.Path.Name = 14, 2, "路径 2"
-	blockedInput.Assertion = nil
+	blockedInput.CompiledStepCount = 0
 	plan := service.AggregatePlanReadiness([]model.PathRunReadiness{
 		service.EvaluatePathReadiness(blockedInput),
 		service.EvaluatePathReadiness(readyInput()),
@@ -155,5 +157,43 @@ func TestAggregatePlanReadinessSummarizesAndSorts(t *testing.T) {
 	empty := service.AggregatePlanReadiness(nil)
 	if empty.Summary == "" || empty.TotalCount != 0 {
 		t.Fatalf("没有路径时也要给出中文结论：%+v", empty)
+	}
+}
+
+// TestNonActionableFactsAreRemindersNotBlocks 锁定人工验收反馈：
+// 用户在预检里处理不了的事一律只提醒、不阻塞——否则会形成"要先能跑才能验证、阻塞又不让跑"的死锁。
+// 未指定成功节点同样不阻塞：默认口径就是把流程走完。
+func TestNonActionableFactsAreRemindersNotBlocks(t *testing.T) {
+	cases := map[string]struct {
+		mutate   func(*service.PathReadinessInput)
+		wantKind string
+	}{
+		"未指定成功节点": {func(in *service.PathReadinessInput) { in.Assertion = nil }, model.RunReadinessAssertionMissing},
+		"动作尚未被真实写验证过": {func(in *service.PathReadinessInput) {
+			in.ConfiguredActions = []model.ActionKey{model.ActionSubmit}
+		}, model.RunReadinessActionNotVerified},
+		"目标行为尚未实测勘定": {func(in *service.PathReadinessInput) {
+			in.PendingSemanticsEntries = []string{"回退语义"}
+		}, model.RunReadinessSemanticsPending},
+		"配置里的说明性提示": {func(in *service.PathReadinessInput) {
+			in.ConfigNotices = []model.PathConfigAffectedItem{{Reason: "表单校验会在打开表单数据页时完成"}}
+		}, model.RunReadinessConfigIssue},
+	}
+	for name, testCase := range cases {
+		input := readyInput()
+		testCase.mutate(&input)
+		readiness := service.EvaluatePathReadiness(input)
+		if !readiness.Runnable {
+			t.Fatalf("%s 不应阻塞启动：%+v", name, readiness.Blocks)
+		}
+		found := false
+		for _, reminder := range readiness.Reminders {
+			if reminder.Kind == testCase.wantKind && reminder.Reason != "" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s 没有作为提醒报出：%+v", name, readiness.Reminders)
+		}
 	}
 }
