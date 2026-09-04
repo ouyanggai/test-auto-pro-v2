@@ -17,9 +17,12 @@ const (
 )
 
 // Error 对外只暴露稳定分类，不携带目标平台原始报文。
+// Transport 是传输层失败阶段的独立事实（见 transport.go），仅在传输层失败或完整响应后填充，
+// 供执行器构造判定包输入；未经过传输的配置类错误保持空值。
 type Error struct {
 	Kind       ErrorKind
 	HTTPStatus int
+	Transport  TransportPhase
 	Cause      error
 }
 

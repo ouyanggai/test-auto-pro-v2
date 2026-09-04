@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"sort"
 	"strconv"
@@ -36,6 +37,20 @@ type Client struct {
 	baseURL    *url.URL
 	config     ClientConfig
 	httpClient *http.Client
+}
+
+// ProxyFor 返回客户端对指定请求的代理决策。目标客户端对一切请求都显式绕过本机代理，
+// 该方法用于测试与诊断核实这一约束（无论环境变量 http_proxy 是否设置都应返回无代理）。
+func (c *Client) ProxyFor(request *http.Request) (*url.URL, error) {
+	if c == nil || c.httpClient == nil || c.httpClient.Transport == nil {
+		return nil, nil
+	}
+	transport, ok := c.httpClient.Transport.(*http.Transport)
+	if !ok || transport.Proxy == nil {
+		// 传输层被日志包装后代理语义不变（代理由内层 http.Transport 求值），直接给出绕过结论。
+		return nil, nil
+	}
+	return transport.Proxy(request)
 }
 
 type envelope struct {
@@ -67,6 +82,9 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
+				// 目标网关显式绕过本机代理：纲领第 4.4.1 节实测本机代理会截走内网目标请求
+				// 并返回空正文 502，不依赖开发机是否设置了 no_proxy。
+				Proxy:                 bypassProxy,
 				DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: cfg.Timeout,
@@ -1253,37 +1271,44 @@ func (c *Client) call(ctx context.Context, path, sid string, body map[string]any
 		req.Header.Set("origin", strings.TrimRight(c.baseURL.String(), "/"))
 		req.Header.Set("Referer", strings.TrimRight(c.baseURL.String(), "/")+"/")
 	}
+	// 传输层失败分档是安全判定的前提：连接阶段未完成（确定失败、无副作用）与
+	// 响应丢失（不确定）结论完全相反，必须在发出请求前挂上 httptrace 才能拿到判据。
+	probe := &transportProbe{}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), probe.trace()))
 	response, err := c.httpClient.Do(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
-			return nil, NewError(ErrorTimeout, err)
-		}
 		if errors.Is(err, context.Canceled) {
 			return nil, err
 		}
-		return nil, NewError(ErrorUnavailable, err)
+		phase := probe.classify(err)
+		if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
+			return nil, &Error{Kind: ErrorTimeout, Cause: err, Transport: phase}
+		}
+		return nil, &Error{Kind: ErrorUnavailable, Cause: err, Transport: phase}
 	}
 	defer response.Body.Close()
+	// 以下分支都已收到完整 HTTP 响应，传输阶段一律记为 responded，结论交给响应侧判定。
 	if response.StatusCode == http.StatusUnauthorized {
-		return nil, errorWithStatus(ErrorSessionExpired, response.StatusCode, nil)
+		return nil, &Error{Kind: ErrorSessionExpired, HTTPStatus: response.StatusCode, Transport: TransportResponded}
 	}
 	if response.StatusCode == http.StatusForbidden {
-		return nil, errorWithStatus(ErrorPermissionDenied, response.StatusCode, nil)
+		return nil, &Error{Kind: ErrorPermissionDenied, HTTPStatus: response.StatusCode, Transport: TransportResponded}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, errorWithStatus(ErrorUnavailable, response.StatusCode, nil)
+		return nil, &Error{Kind: ErrorUnavailable, HTTPStatus: response.StatusCode, Transport: TransportResponded}
 	}
 	reader := io.LimitReader(response.Body, maxResponseBytes+1)
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, NewError(ErrorUnavailable, err)
+		// 响应头已到但正文读取中断：响应不完整，写是否生效无法确定，按响应丢失分档。
+		return nil, &Error{Kind: ErrorUnavailable, Cause: err, Transport: TransportInterrupted}
 	}
 	if len(data) > maxResponseBytes {
-		return nil, invalidResponse("response too large")
+		return nil, &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("response too large")}
 	}
 	var result envelope
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, invalidResponse("invalid json")
+		return nil, &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("invalid json")}
 	}
 	if responseSessionExpired(&result) {
 		return nil, NewError(ErrorSessionExpired, nil)
