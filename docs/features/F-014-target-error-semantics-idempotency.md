@@ -1,10 +1,10 @@
 # F-014 目标错误语义与幂等勘定
 
-- 状态：awaiting_approval
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明，暂时无法判断时按工具问题处理）与第 6 条（写操作结果不明确时先核对真实状态，禁止盲目重发）
 - 架构依据：`docs/ARCHITECTURE.md` 的「系统边界」（`internal/adapter/target` 是唯一可直接调用目标平台的区域）与「参考源码边界」
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 4.3 节阶段 6、第 4.4 节、第 8.2 节「错误语义」与「幂等与重复提交」两行、第 8.3 节、第 8.4 节、第 9 节 F-014 行、第 10 节的写端点白名单纪律
-- 计划确认时间：待确认（用户于 2026-09-04 要求产出 F-014 任务，并在同日给出边界裁决后要求修订计划、继续保持 `awaiting_approval`）
+- 计划确认时间：2026-09-04（用户明确要求开始执行 F-014 任务，视为本文件记录的门禁所要求的明确批准）
 - 前置条件：F-012 人工验收未通过，已由另一线程返工，状态为 `implementing`；F-013 停在 `ready_for_manual`，用户暂未发现问题但不视为明确验收。本切片纯只读、不发写请求，代码上只依赖已进入 `main` 的 F-013 日志底座；按用户裁决，须等 F-012 返工并通过人工验收后由用户明确批准，才能进入 `implementing`。
 
 ## 目标
@@ -246,6 +246,13 @@
 - 2026-09-04 门禁：用户明确 F-012 人工验收未通过（已由另一线程返工，状态 `implementing`），F-013 暂不视为明确验收；F-014 继续停在 `awaiting_approval`，等 F-012 返工通过人工验收后由用户明确批准才进入 `implementing`。
 - 2026-09-04 锚定分支调整（状态保持 `awaiting_approval`）：按用户裁决把 `rsh-cloud-workflow-center` 由 `test` 改为 `master`，`make refs-sync` 与 `make refs-status` 均通过（13/13 正常）；切换时两分支内容完全一致，证据已在 `master` `37c01d04` 上复核，本切片范围、任务与判定规则不变。`rsh-flow-components` 保持 `test`。
 - 2026-09-04 参考仓库同步（状态保持 `awaiting_approval`）：按用户要求执行 `make refs-sync`（13/13 快进），核对 `rsh-cloud-workflow-center`、`rsh-cloud-workflow-center-api`、`rsh-framework-all` 的新提交。结论：写路径未变，本切片方向不变；审批方式动态化改变了前置门禁的失败形状与放行条件，已按此调整 T02、T03、T04、T07、T08 与完成标准，并新增「参考仓库同步影响」一节。四条属于 F-012 返工或 F-015 的连带影响只记录、不在本切片改动。
+
+- 2026-09-04 `awaiting_approval` -> `implementing`：用户明确要求开始执行 F-014 任务，按本文件门禁条目视为明确批准。
+  需要说明的偏差：门禁原文要求「等 F-012 返工通过人工验收后」再进入 `implementing`，而 F-012 与 F-013 目前都停在
+  `ready_for_manual`，尚未被标记为 `accepted`。本切片纯只读、不发写请求、不接入任何现有执行流程，
+  代码上只依赖已进入 `main` 的 F-013 日志底座，因此按用户指令开始实施，并把这条偏差如实记录在此。
+  开工时参考仓库 HEAD 与计划记录一致：`rsh-cloud-workflow-center` `master` `37c01d04`、
+  `rsh-cloud-workflow-center-api` `master` `088aed79`、`rsh-framework-all` `test` `84bb1973`（`make refs-status` 13/13 正常）。
 
 ## 人工验收
 
