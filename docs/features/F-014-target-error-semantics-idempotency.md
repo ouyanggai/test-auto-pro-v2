@@ -68,7 +68,7 @@
 | `/web/flowInstanceApi/*` | 提交、重新发起、暂存、加签移交、回退、取回、撤销、转发、催办、关注 | `GlobalExceptionHandler`（`WebApiApplication.java:29` 显式 `@Import`） | HTTP 200 + `isSuccess=false`；`BusinessException` 走 `:76` 得 `code=ERROR_99999`，空指针走 `:48`、未知异常走 `:63` 得 `code=RESP200` |
 | `/flowInstanceApi/audit` | 同意、不同意 | 同一个 `GlobalExceptionHandler`（`RshCloudApiApplication.java:23` 组合注解导入，`WorkflowCenterApiApplication` 用该注解） | 同上；但**不经过** `@FlowSubmitVerify`，因为该注解只声明在 web 层控制器上 |
 
-- 审批走无 `/web` 前缀的路径不是工具的臆造：真实前端 `参考代码/rsh-cloud-invest-power-system/src/api/index.js:495` 就是 `submitTask: '/flowInstanceApi/audit'`，与动作目录 `catalog.go:127`、`:143` 一致。
+- 审批走无 `/web` 前缀的路径不是工具的臆造：真实前端 `参考代码/rsh-cloud-invest-power-system/src/api/index.js:498` 就是 `submitTask: '/flowInstanceApi/audit'`，与动作目录 `catalog.go:127`、`:143` 一致。
 - 更下游的中心服务（`rsh-cloud-workflow-center`）用的是另一个处理器 `CenterExceptionHandler`：`BusinessException` 被渲染成 HTTP 500 + 响应头 `code=exception_500` + URL 编码的 `errorMsg`（`:86`-`:97`）。api 层通过 `InvokeCenterFeignErrorDecoder:16`-`:21` 把 `errorMsg` 头解码还原成 `BusinessException`，于是最终又变回 HTTP 200 的失败包。这条链决定了「中心侧业务拒绝」在工具眼里长什么样，T02 必须确认没有 500 直接穿透到工具。
 - 会话失效有三种表现：HTTP 401、`code=RESP401`（`ProtocolCode.java:10`）、`code=AUTH_401`（`:199`）。真实前端 `utils/axios.js:186`-`:187` 三者并列处理，且 `:226`-`:231` 用 `res.isSuccess` 作为唯一成功判据。工具当前 `client.go:1309` 的 `responseSucceeded` 只看 `isSuccess`/`success`，方向正确；`responseSessionExpired` 只认 `RESP401` 与 `-1`，漏认 `AUTH_401`。**本切片不修改它**，只把该差异写入语义文档，并要求新判定包与用例覆盖 `AUTH_401`。
 
@@ -95,6 +95,31 @@
 - 重复提交同一动作时这两道防线是否真的命中、命中时返回哪一条精确文案、返回的是 `ERROR_99999` 还是 `code=RESP200` 的异常包。
 - 乐观锁失败时是否已经有其它存储（Mongo 表单数据）完成写入，即该场景能否判「确定失败」。T02 必须先用源码确认写入顺序与事务边界；确认不成立时，判定矩阵中该行降级为「不确定」。
 - 各动作重复写的实际后果分级（会被拦住 / 会写第二次）。
+
+## 参考仓库同步影响（2026-09-04）
+
+用户告知后台有更新，已用 `make refs-sync` 按清单分支快进同步 13/13。与本切片相关的三个仓库新 HEAD：`rsh-cloud-workflow-center` `test` `0c6c7f0e`、`rsh-cloud-workflow-center-api` `master` `088aed79`、`rsh-framework-all` `test` `84bb1973`。
+
+本次同步用事实证明了第 8.4 节漂移检测的必要性：一次同步就动了四处与本切片证据直接相关的符号。
+
+### 与本切片直接相关
+
+- **审批方式动态化（`feature/dynamic-audit-way`，三个仓库联动）**：`auditWay` 不再受 `AuditWayEnum` 约束。`FlowSubmitVerifyBaseController` 的路由表由 `Map<AuditWayEnum, …>` 改为 `Map<String, …>`，`doVerify` 不再调用 `AuditWayEnum.valueOf`；未注册的 `auditWay` 现在返回 `BaseResponseProtocol("未发现实例", false, null)`，旧版本则抛 `IllegalArgumentException`。同一场景在新旧部署上分别落「前置拒绝」和「不可解释失败」，所以每条证据必须同时记录源码版本与目标平台部署版本。
+- **门禁会静默放行**：`FlowSubmitVerifyAspect` 改用 `RshRedisServer.hashGetNormalizedOwner(REDIS_HASH_KEY, auditWay)`，并新增两条放行分支——`auditWay` 未注册校验服务、已注册但无健康实例，都直接放行且只写一行日志。工具不能把「没有被拒绝」当成「通过了业务校验」。
+- **`AuditWayEnum` 新增 8 项**：供应商入库、年度评估、清退、工商信息变更、黑名单重新入库、股转款登记、合同补充协议变更、合同终止。
+- **目标库结构迁移**：`sql/20260828_flow_trigger_audit_way_ordinal_migration.sql` 把 `flow_trigger_config_relevance.audit_way` 由数字 ordinal 改为 `VARCHAR(100)` 编码名，附 `20260828_audit_way_dynamic_precheck.sql` 预检。脚本要求先停旧版服务，因此目标环境是否已执行必须实测确认，不能从源码推断。
+- **写路径本身没有改动**：`FlowInstanceApiServiceImpl` 的 5 处改动全部落在 `list` 与 `getUserMap`（第 815 行之后），`submit`、`audit`、`reSubmit` 未被触及；`FlowInstanceServiceImpl` 只改了一行 `auditWay` 取值，乐观锁与 `CONCURRENT_UPDATE_MESSAGE` 证据仍在 `:70`、`:526`。
+- **已逐条复核未变的证据**：`GlobalExceptionHandler:48/63/73/79`、`ProtocolCode:10/199`、`CenterExceptionHandler:86/90`、`InvokeCenterFeignErrorDecoder:16/21`、`RshCloudApiApplication:23`、`WebApiApplication:29`、`ConsistencyInterceptor:104/130/143`、`FlowSubmitVerifyAspect:104/109/115`、`FlowInstance.java:31`。只有 `api/index.js` 的 `submitTask` 由 `:495` 移到 `:498`，本文件已更正。
+- **新增可用证据**：`GlobalExceptionHandler:79` 的 `FlowBusinessException` 与 `BusinessException` 同形状，而 `FlowProxyServiceImpl.findById` 缺代理 ID 时抛的正是它，属于工具已在调用的读路径。
+
+### 记入其它切片，本切片只记录不改动
+
+- 待办列表（`taskStatus=pending`）不再查询流程实例，返回记录不带实例运行态字段。工具当前只用 `waiting_send`，暂不受影响；F-015/F-016 定义事实重读时必须单独读实例，不能指望待办列表带状态。
+- 已发/待发列表的当前处理人只对 `status=run` 的实例解析，终态实例不再返回 `currentAuditUserNames`。
+- 流程图详情改走无 Redis 的快速查询链路（`FlowProxyServiceImpl`、`FlowTemplateServiceImpl`、`FlowTemplateFastTreeAssembler`），源码声明契约不变，需要一次只读回归确认。
+- `auditWay` 迁移未在目标环境执行前，工具读到的可能仍是数字，而 `internal/service/history_target.go:419` 用它作 `vue_custom` 页面键。
+
+以上四条属于 F-012 返工线程或 F-015 的检查范围。
 
 ## 三值判定规则
 
@@ -163,15 +188,15 @@
 
 ### T02：错误语义证据勘定
 
-按动作目录 15 条动作、11 个不同写端点逐条落表：路由族、异常处理器、是否经过 `@FlowSubmitVerify`、是否声明 `@Consistency`、失败形状、可判定性。补齐 `ProtocolCode`、`GlobalExceptionHandler`、`CenterExceptionHandler`、`InvokeCenterFeignErrorDecoder`、`FlowSubmitVerifyAspect` 的行级证据与中文说明。同时确认审批路径中流程侧与表单侧的写入顺序与事务边界，据此确定判定矩阵「乐观锁冲突 + 明确未变」一格是「确定失败」还是降级为「不确定」。把 `responseSessionExpired` 漏认 `AUTH_401` 记为已知差异，写明本切片不修改、影响范围与后续另行立项。
+按动作目录 15 条动作、11 个不同写端点逐条落表：路由族、异常处理器、是否经过 `@FlowSubmitVerify`、是否声明 `@Consistency`、失败形状、可判定性。补齐 `ProtocolCode`、`GlobalExceptionHandler`、`CenterExceptionHandler`、`InvokeCenterFeignErrorDecoder`、`FlowSubmitVerifyAspect` 的行级证据与中文说明。同时确认审批路径中流程侧与表单侧的写入顺序与事务边界，据此确定判定矩阵「乐观锁冲突 + 明确未变」一格是「确定失败」还是降级为「不确定」。把 `responseSessionExpired` 漏认 `AUTH_401` 记为已知差异，写明本切片不修改、影响范围与后续另行立项。每条证据必须同时记录三个仓库的源码 HEAD 与该结论对应的目标平台部署版本；源码可证明与部署已验证是两件事，不得混写。补记本次同步暴露的两条新事实：`FlowSubmitVerifyAspect` 在 `auditWay` 未注册或无健康实例时静默放行（工具不得把未被拒绝当成通过校验），以及 `FlowBusinessException` 与 `BusinessException` 同形状且出现在工具已调用的读路径上。
 
 ### T03：前置拒绝清单
 
-从目标源码枚举各写接口在写事务开始前抛出的 `BusinessException` 文案，按「端点 + 精确文案」成对登记，逐条标注所属接口与代码位置。无法确认发生在写之前的文案不进清单，落「不可解释失败」并在文档中说明原因。清单不做跨端点合并，同一文案出现在不同端点时分别登记。
+从目标源码枚举各写接口在写事务开始前抛出的 `BusinessException` 文案，按「端点 + 精确文案」成对登记，逐条标注所属接口与代码位置。无法确认发生在写之前的文案不进清单，落「不可解释失败」并在文档中说明原因。清单不做跨端点合并，同一文案出现在不同端点时分别登记。审批方式动态化后新增的 `未发现实例`（提交校验服务未注册该 `auditWay` 时由 `FlowSubmitVerifyBaseController.doVerify` 返回）必须登记，并标注它依赖动态注册状态、旧部署上同场景会变成不可解释失败。
 
 ### T04：幂等与重复提交勘定
 
-写清「没有幂等键」的证据、`@Consistency` 的真实语义与 `batchCode` 禁令、两道防线的源码位置，以及跨存储非原子导致的部分生效风险。每条结论标注证据强度；凡属运行时行为的结论一律标 `源码推断、待 F-016 实测`，不表述为目标平台的真实反应。产出重复写实测探针清单：每条待实测结论对应一条探针，写明前置条件、最小步骤、期望观察点和将由 F-016 哪一步覆盖。本切片不执行探针。
+写清「没有幂等键」的证据、`@Consistency` 的真实语义与 `batchCode` 禁令、两道防线的源码位置，以及跨存储非原子导致的部分生效风险。每条结论标注证据强度；凡属运行时行为的结论一律标 `源码推断、待 F-016 实测`，不表述为目标平台的真实反应。产出重复写实测探针清单：每条待实测结论对应一条探针，写明前置条件、最小步骤、期望观察点和将由 F-016 哪一步覆盖。本切片不执行探针。探针清单必须包含一条确认目标环境的动态审批方式注册状态与 `flow_trigger_config_relevance.audit_way` 迁移是否已执行，因为前置状态校验这道防线是否触发取决于它。
 
 ### T05：三值判定包
 
@@ -186,11 +211,11 @@
 
 ### T07：真实环境只读集成测试
 
-新增 `test/integration/f014_error_semantics_readonly_test.go`：连真实目标，用只读接口验证成功包形状、无效参数触发的业务失败包形状、缺失或失效会话触发的会话失效形状、极短超时触发的超时分类，并确认判定包对这些真实响应的分类与文档一致。抓到的响应写入只读 fixture 目录。用例不得静默跳过，缺配置直接失败。
+新增 `test/integration/f014_error_semantics_readonly_test.go`：连真实目标，用只读接口验证成功包形状、无效参数触发的业务失败包形状、缺失或失效会话触发的会话失效形状、极短超时触发的超时分类，并确认判定包对这些真实响应的分类与文档一致。抓到的响应写入只读 fixture 目录。另加两条只读回归：确认 `/web/flowTemplateApi/findById` 与 `/web/flowProxy/findById` 在目标改走无 Redis 快速查询链路后响应契约未变；确认目标返回的 `auditWay` 是编码名还是数字 ordinal，据此判定目标环境是否已执行 `20260828` 迁移，并把结论写进语义文档的部署版本一栏。用例不得静默跳过，缺配置直接失败。
 
 ### T08：写端点白名单与漂移检测
 
-新增 `test/contracts/f014/target_write_whitelist.sh`（沿用 F-013 形式，断言本切片写端点集合为空）与 `test/contracts/f014/semantics_evidence_drift.sh`（解析 `docs/TARGET_SEMANTICS.md` 的证据块，断言引用的类、方法、常量与关键分支数量在参考仓库中仍存在）；新增 `test/run-f014.sh` 汇总编译、静态检查、单测、只读集成测试与两个契约脚本，并检查每条 `源码推断、待 F-016 实测` 结论都配有探针条目、每个源码构造样本都带来源标注。
+新增 `test/contracts/f014/target_write_whitelist.sh`（沿用 F-013 形式，断言本切片写端点集合为空）与 `test/contracts/f014/semantics_evidence_drift.sh`（解析 `docs/TARGET_SEMANTICS.md` 的证据块，断言引用的类、方法、常量与关键分支数量在参考仓库中仍存在）；新增 `test/run-f014.sh` 汇总编译、静态检查、单测、只读集成测试与两个契约脚本，并检查每条 `源码推断、待 F-016 实测` 结论都配有探针条目、每个源码构造样本都带来源标注。漂移检测除了断言引用符号存在，还必须固定断言本次同步已证明会变动的几处：`FlowSubmitVerifyBaseController.REDIS_HASH_KEY`、`RshRedisServer.hashGetNormalizedOwner`、`GlobalExceptionHandler` 的异常处理器数量、`AuditWayEnum` 的枚举项数，并把三个仓库的 HEAD 记入检测输出，便于对照证据失效范围。
 
 ## 完成标准
 
@@ -201,6 +226,8 @@
 - [ ] `test/run-f014.sh` 在本机实际跑通：编译、`go vet`、单测、真实目标只读集成测试全部通过且无跳过用例。
 - [ ] 写端点白名单为空的契约断言通过；本切片未发出任何写请求，未执行任何重复写探针；证据漂移检测脚本在当前参考仓库 HEAD 下通过。
 - [ ] `responseSessionExpired` 漏认 `AUTH_401` 已作为已知差异写入语义文档，现有读路径未被修改。
+- [ ] 每条证据同时记录源码 HEAD 与目标平台部署版本；凡依赖部署状态的结论（动态审批方式注册、`audit_way` 迁移）已实测确认或明确标注未确认。
+- [ ] 漂移检测固定覆盖本次同步已证明会变动的符号，并输出三个仓库的 HEAD。
 - [ ] 已检查同一范围内的相似问题：动作目录路由族与真实前端是否一致、是否还有其它按 `code` 判成败的位置，结论写入文档，不在本切片扩张改动。
 - [ ] 文档状态更新为 `ready_for_manual`，`docs/PROGRESS.md` 与 `docs/ROADMAP.md` 同步。
 - [ ] 已列出用户手工核对步骤。
@@ -215,6 +242,7 @@
   4. 判定矩阵补齐重读「无法读取」「自相矛盾」与响应冲突组合，未覆盖或矛盾一律「不确定」，并写为不可放宽的兜底规则。
   5. 写路径样本改为按源码证据构造并标注待 F-016 复核或替换，只读样本才要求真实抓取。
 - 2026-09-04 门禁：用户明确 F-012 人工验收未通过（已由另一线程返工，状态 `implementing`），F-013 暂不视为明确验收；F-014 继续停在 `awaiting_approval`，等 F-012 返工通过人工验收后由用户明确批准才进入 `implementing`。
+- 2026-09-04 参考仓库同步（状态保持 `awaiting_approval`）：按用户要求执行 `make refs-sync`（13/13 快进），核对 `rsh-cloud-workflow-center`、`rsh-cloud-workflow-center-api`、`rsh-framework-all` 的新提交。结论：写路径未变，本切片方向不变；审批方式动态化改变了前置门禁的失败形状与放行条件，已按此调整 T02、T03、T04、T07、T08 与完成标准，并新增「参考仓库同步影响」一节。四条属于 F-012 返工或 F-015 的连带影响只记录、不在本切片改动。
 
 ## 人工验收
 

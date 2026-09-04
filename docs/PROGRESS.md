@@ -49,6 +49,14 @@
   F-012 与 F-013 均停在 `ready_for_manual`；两者未获明确验收前不进入 `accepted`。
   用户 2026-09-04 已按裁决要求修订 F-014 计划（纯只读、探针只列不跑、未实测结论标待实测、端点加精确文案联合判定、
   未覆盖组合默认不确定、写路径样本按源码构造），并明确等 F-012 返工通过人工验收后再批准 F-014。
+- 2026-09-04 参考仓库同步：按用户要求执行 `make refs-sync`（13/13 快进）。`rsh-cloud-workflow-center` `test` 到 `0c6c7f0e`、
+  `rsh-cloud-workflow-center-api` `master` 到 `088aed79`、`rsh-framework-all` `test` 到 `84bb1973`。
+  目标平台上了「审批方式动态化」：`auditWay` 不再受 `AuditWayEnum` 约束，提交校验路由改为字符串键并支持动态注册，
+  未注册或无健康实例时前置门禁静默放行，未注册 `auditWay` 由抛异常改为返回 `未发现实例` 失败包；
+  另有 `flow_trigger_config_relevance.audit_way` 由数字 ordinal 迁移为 `VARCHAR(100)` 的脚本（目标环境是否已执行需实测）。
+  写路径（`submit`/`audit`/`reSubmit`）未改动，F-014 方向不变，已按此调整其任务与完成标准。
+  连带影响记入其它切片、本次不改动：待办列表不再带实例运行态字段、终态实例不再返回当前处理人、
+  流程图详情改走无 Redis 快速查询链路需只读回归、`auditWay` 迁移前工具读到的可能仍是数字而它被用作 `vue_custom` 页面键。
 - 已产出后续工作纲领 `docs/EXECUTION_PROGRAM.md`（执行器、调试器、运行记录与分层日志，F-013 至 F-023），只界定边界与顺序，不构成实施授权。用户已裁决：内网日志原样记录、code-server 随 Docker 交付、发布用 Docker Compose、真实写使用已指定测试账号（账号值不入仓库）；`docs/ARCHITECTURE.md` 的日志条文已同步。
 
 ## 当前决策摘要

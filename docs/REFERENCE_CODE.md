@@ -4,19 +4,19 @@
 
 | 仓库 | 本地目录 | 远端 | 分支 | HEAD | 同步时间 |
 | --- | --- | --- | --- | --- | --- |
-| `rsh-cloud-gateway` | `参考代码/java-serve/rsh-cloud-gateway` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-gateway.git` | `chenqiuyu` | `79dda259f48df7b625cabf0bb5c62d0ae9759413` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-measuring-center` | `参考代码/java-serve/rsh-cloud-measuring-center` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-measuring-center.git` | `master` | `01e4088c0e0e1394664058cb9edac3c21bdf4859` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-measuring-center-api` | `参考代码/java-serve/rsh-cloud-measuring-center-api` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-measuring-center-api.git` | `master` | `34776b6b96ea4da31f536e07bf8be9d9673ab366` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-user-center` | `参考代码/java-serve/rsh-cloud-user-center` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-user-center.git` | `master` | `a3c6bd520e107c19a93071b7b25ef09eddb8b306` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-user-center-api` | `参考代码/java-serve/rsh-cloud-user-center-api` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-user-center-api.git` | `master` | `eac9358e11d5505c0446a53b7aa789f9d19c74fd` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-web-api` | `参考代码/java-serve/rsh-cloud-web-api` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-web-api.git` | `master` | `51537a8bff8b88242ec63e5aabb34bfe419ef56b` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-workflow-center` | `参考代码/java-serve/rsh-cloud-workflow-center` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center.git` | `test` | `38446f6f126973951f2a0cbf7cd25aacd805e63a` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-workflow-center-api` | `参考代码/java-serve/rsh-cloud-workflow-center-api` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center-api.git` | `master` | `e65b095ca31f347e087690c71003af32b1b899bb` | 2026-08-20 09:44:57 +0800 |
-| `rsh-framework-all` | `参考代码/rsh-framework-all` | `git@192.168.1.155:rsh-cloud/cloud-framework/rsh-framework-all.git` | `test` | `9dfbf7255a156d340b4aedc53bed4983d19acb5e` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-invest-power-system` | `参考代码/rsh-cloud-invest-power-system` | `git@192.168.1.155:rsh-cloud/cloud-web/business-system/rsh-cloud-invest-power-system.git` | `test` | `2133d79e831038306dea70ad98b746d427bbf557` | 2026-08-20 09:44:57 +0800 |
-| `rsh-flow-components` | `参考代码/rsh-flow-components` | `git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git` | `master` | `bef5f59c69cc81d773975059a0182b018fb2b7f9` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-vue-form-making` | `参考代码/rsh-cloud-vue-form-making` | `http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-vue-form-making.git` | `oygdev` | `f7470d1f2f9ece31cd309fdb94edf0c2318f003e` | 2026-08-20 09:44:57 +0800 |
-| `rsh-cloud-saas-implementation-web` | `参考代码/rsh-cloud-saas-implementation-web` | `http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-saas-implementation-web` | `test` | `c4bc3234ee43e75ed4d24cbdddd9045106b2806f` | 2026-08-20 09:44:57 +0800 |
+| `rsh-cloud-gateway` | `参考代码/java-serve/rsh-cloud-gateway` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-gateway.git` | `chenqiuyu` | `79dda259f48df7b625cabf0bb5c62d0ae9759413` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-measuring-center` | `参考代码/java-serve/rsh-cloud-measuring-center` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-measuring-center.git` | `master` | `3b8720466e7cebf047800daf7548c54189e6c6b1` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-measuring-center-api` | `参考代码/java-serve/rsh-cloud-measuring-center-api` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-measuring-center-api.git` | `master` | `93bd5e77c367a0702159635398b6ca5a072450ab` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-user-center` | `参考代码/java-serve/rsh-cloud-user-center` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-user-center.git` | `master` | `1d9775b7c570ba76b402c0e34220673c5f74dfb9` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-user-center-api` | `参考代码/java-serve/rsh-cloud-user-center-api` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-user-center-api.git` | `master` | `059bb75ca055ebb760903dd883e64f812f87b889` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-web-api` | `参考代码/java-serve/rsh-cloud-web-api` | `http://192.168.1.155/rsh-cloud/cloud-server-full/rsh-cloud-web-api.git` | `master` | `16410b5e731565f64ffabf1e2720616127d6f2de` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-workflow-center` | `参考代码/java-serve/rsh-cloud-workflow-center` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center.git` | `test` | `0c6c7f0e6933d3924153686df05fe34bfd006b16` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-workflow-center-api` | `参考代码/java-serve/rsh-cloud-workflow-center-api` | `git@192.168.1.155:rsh-cloud/cloud-server-full/rsh-cloud-workflow-center-api.git` | `master` | `088aed79ad0b7d3cca09f38a0325724a8d685cd7` | 2026-09-04 11:51:12 +0800 |
+| `rsh-framework-all` | `参考代码/rsh-framework-all` | `git@192.168.1.155:rsh-cloud/cloud-framework/rsh-framework-all.git` | `test` | `84bb19736a8abf78a7ad71b2f714f0e2aec35758` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-invest-power-system` | `参考代码/rsh-cloud-invest-power-system` | `git@192.168.1.155:rsh-cloud/cloud-web/business-system/rsh-cloud-invest-power-system.git` | `test` | `8a00cb9995dfc030d3aa88fe3d2bcc94aabce76f` | 2026-09-04 11:51:12 +0800 |
+| `rsh-flow-components` | `参考代码/rsh-flow-components` | `git@192.168.1.155:rsh-cloud/portal/rsh-flow-components.git` | `master` | `3ffb41ba3b32776b6e466a44335eb55c8f2179c3` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-vue-form-making` | `参考代码/rsh-cloud-vue-form-making` | `http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-vue-form-making.git` | `oygdev` | `695b2783e226606548eb86aa4ab84ca7bca99140` | 2026-09-04 11:51:12 +0800 |
+| `rsh-cloud-saas-implementation-web` | `参考代码/rsh-cloud-saas-implementation-web` | `http://192.168.1.155/rsh-cloud/cloud-web/cloud-system/rsh-cloud-saas-implementation-web` | `test` | `89947a923e7d204c7e11ba75192183397370fde4` | 2026-09-04 11:51:12 +0800 |
 
 ## 使用边界
 
