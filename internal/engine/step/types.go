@@ -45,8 +45,10 @@ type RunFactsStore interface {
 
 // RunContext 是一次路径运行的静态上下文：执行期间不变的标识、场景与数据。
 type RunContext struct {
-	Run      model.Run
-	PathRun  model.PathRun
+	Run     model.Run
+	PathRun model.PathRun
+	// PlanName 与 PathName 是日志目录里使用的计划与执行路径显示名。
+	PlanName string
 	PathName string
 	// PlanAccount 是计划账号：目标登录账号，同时是「新发起」流程的发起人。
 	// 本切片的演员候选就是该账号；演员最终成立还必须通过目标待办/发起事实核验，绝不静默替换处理人。
