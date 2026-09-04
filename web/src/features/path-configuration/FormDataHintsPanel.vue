@@ -42,6 +42,23 @@ function candidateText(candidates: unknown[] | undefined): string {
 function fieldLabel(field: PathConfigKeyField): string {
   return field.label?.trim() || '条件字段'
 }
+
+// issueFieldText 把问题涉及的内部字段路径换成页面已有的中文名称和当前值。
+function issueFieldText(issue: HistoryDataIssue): string {
+  if (!issue.fields?.length) return ''
+  return issue.fields.map(path => {
+    const field = props.keyFields.find(item => item.path === path)
+    if (!field) return '条件字段'
+    return `${fieldLabel(field)}=${fieldValueText(field.current)}`
+  }).join('；')
+}
+
+// patchText 展示系统自动调整的中文字段、调整前值和调整后值。
+function patchText(patch: PathConfigurationBranchPatch): string {
+  const field = props.keyFields.find(item => item.path === patch.path)
+  const label = field ? fieldLabel(field) : '条件字段'
+  return `${label}：${fieldValueText(patch.before)} → ${fieldValueText(patch.after)}`
+}
 </script>
 
 <template>
@@ -80,6 +97,7 @@ function fieldLabel(field: PathConfigKeyField): string {
           <ul class="form-hints__list">
             <li v-for="issue in issues" :key="`${issue.code}-${issue.path || ''}-${issue.message}`">
               {{ issue.message }}
+              <small v-if="issueFieldText(issue)">相关字段：{{ issueFieldText(issue) }}</small>
             </li>
           </ul>
         </n-collapse-item>
@@ -87,7 +105,7 @@ function fieldLabel(field: PathConfigKeyField): string {
         <n-collapse-item v-if="branchPatches.length" name="patches" :title="`已按当前路径调整（${branchPatches.length}）`">
           <ul class="form-hints__list">
             <li v-for="patch in branchPatches" :key="`${patch.branchKey}-${patch.path}`">
-              {{ patch.reason }}
+              {{ patchText(patch) }}
             </li>
           </ul>
         </n-collapse-item>

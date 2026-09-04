@@ -540,7 +540,7 @@ func normalizeReplayPathIDs(pathIDs []uint64) ([]uint64, error) {
 func historyReplayOverlayIssues(issues []branchoverlay.Issue) []model.HistoryDataIssue {
 	result := make([]model.HistoryDataIssue, 0, len(issues))
 	for _, issue := range issues {
-		result = append(result, model.HistoryDataIssue{Code: "HISTORY_BRANCH_" + strings.ToUpper(strings.TrimSpace(issue.Code)), Path: issue.Path, Message: issue.Message, Blocking: true})
+		result = append(result, model.HistoryDataIssue{Code: "HISTORY_BRANCH_" + strings.ToUpper(strings.TrimSpace(issue.Code)), Path: issue.Path, Fields: append([]string(nil), issue.Fields...), Message: issue.Message, Blocking: true})
 	}
 	return result
 }

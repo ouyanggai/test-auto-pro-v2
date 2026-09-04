@@ -429,6 +429,39 @@ func TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation(t *testing.T
 	}
 }
 
+// TestHistoryReplayServiceRepairsPathBeforeDetourChoiceMissing 验证一键配置会先修复当前路径条件，
+// 不会因为历史数据暂时进入其他分支而把下游缺少选择错误地留给用户。
+func TestHistoryReplayServiceRepairsPathBeforeDetourChoiceMissing(t *testing.T) {
+	replay, store, validator, targetReader := replayServiceFixture(4, 4, target.FormRenderTypeFormMaking)
+	store.mu.Lock()
+	store.snapshot.RawFormData["amount"] = 3
+	store.mu.Unlock()
+	targetReader.snapshot.Tree.ConditionNodes[0].Child = nil
+	targetReader.snapshot.Tree.ConditionNodes[1].Child = conditionTreeID("detour-route", []target.FlowBranchTemplate{
+		{ID: "detour-a", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "detour", ValueB: "yes", Judge: "eq"}}},
+		{ID: "detour-default", Sort: 2},
+	})
+	job, err := replay.Create(context.Background(), 91, model.HistoryReplayCreateInput{PathIDs: []uint64{101}}, "123e4567-e89b-12d3-a456-426614174705")
+	if err != nil {
+		t.Fatalf("创建分支修复回放任务失败：%v", err)
+	}
+	completed := waitReplayCompletion(t, replay, 91, job.ID)
+	if completed.Ready != 1 || completed.NeedsInput != 0 {
+		t.Fatalf("历史数据偏离后未自动修复当前路径：%#v", completed)
+	}
+	store.mu.Lock()
+	item := cloneReplayItem(store.items[0])
+	store.mu.Unlock()
+	if item.EffectiveFormData["amount"] != "2" || len(item.BranchPatches) != 1 || item.BranchPatches[0].Path != "amount" {
+		t.Fatalf("一键配置没有记录条件字段最小调整：%#v", item)
+	}
+	validator.mu.Lock()
+	defer validator.mu.Unlock()
+	if validator.values["amount"] != "2" {
+		t.Fatalf("修复后的原始表单数据未交给 runtime：%#v", validator.values)
+	}
+}
+
 // TestHistoryReplayServiceMarksPathRevisionChangeAffected 验证路径修订变化落确定受影响终态，不伪造数据。
 func TestHistoryReplayServiceMarksPathRevisionChangeAffected(t *testing.T) {
 	replay, store, _, _ := replayServiceFixture(8, 9, target.FormRenderTypeVueCustom)

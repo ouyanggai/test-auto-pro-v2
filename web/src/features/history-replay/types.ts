@@ -39,6 +39,7 @@ export interface HistorySnapshotSummary {
 export interface HistoryDataIssue {
   code: string
   path?: string
+  fields?: string[]
   message: string
   blocking: boolean
 }

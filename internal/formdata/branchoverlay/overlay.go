@@ -52,11 +52,12 @@ type Result struct {
 
 // Issue 是无法确定分支或补丁时的稳定说明，不包含目标响应原文。
 type Issue struct {
-	Code      string `json:"code"`
-	Path      string `json:"path,omitempty"`
-	BranchKey string `json:"branchKey,omitempty"`
-	Operator  string `json:"operator,omitempty"`
-	Message   string `json:"message"`
+	Code      string   `json:"code"`
+	Path      string   `json:"path,omitempty"`
+	BranchKey string   `json:"branchKey,omitempty"`
+	Operator  string   `json:"operator,omitempty"`
+	Fields    []string `json:"fields,omitempty"`
+	Message   string   `json:"message"`
 }
 
 // Apply 在目标原始表单数据上计算实际路径并应用唯一的最小字段补丁。
@@ -348,7 +349,7 @@ func collectReferences(tree *target.FlowNodeTemplate, selected map[string]string
 			branches := orderedBranches(node.ConditionNodes)
 			branchID, exists := selected[node.ID]
 			if !exists {
-				issues = append(issues, Issue{Code: "choice_missing", Path: node.ID, Message: "当前路径缺少条件分支选择"})
+				issues = append(issues, missingChoiceIssue(node, branches, "当前路径缺少条件分支选择"))
 				return
 			}
 			index := branchIndex(branches, branchID)
@@ -377,7 +378,7 @@ func collectReferences(tree *target.FlowNodeTemplate, selected map[string]string
 			} else {
 				branchID, exists := selected[node.ID]
 				if !exists {
-					issues = append(issues, Issue{Code: "choice_missing", Path: node.ID, Message: "当前路径缺少并行候选分支选择"})
+					issues = append(issues, missingChoiceIssue(node, node.ParallelNodes, "当前路径缺少并行候选分支选择"))
 					return
 				}
 				index := branchIndex(node.ParallelNodes, branchID)
@@ -482,7 +483,7 @@ func walkTree(tree *target.FlowNodeTemplate, values map[string]any, selected map
 			if !selectedOK {
 				result.complete = false
 				result.matches = false
-				result.issues = append(result.issues, Issue{Code: "choice_missing", Path: node.ID, Message: "当前路径缺少条件分支选择"})
+				result.issues = append(result.issues, missingChoiceIssue(node, branches, "当前路径缺少条件分支选择"))
 				return
 			}
 			branchIndex := branchIndex(branches, branchID)
@@ -508,7 +509,7 @@ func walkTree(tree *target.FlowNodeTemplate, values map[string]any, selected map
 			}
 			if branch.ID != branchID {
 				result.matches = false
-				result.issues = append(result.issues, Issue{Code: "branch_mismatch", Path: node.ID, BranchKey: branchID, Message: "目标实际命中分支与路径选择不一致"})
+				result.issues = append(result.issues, branchMismatchIssue(node, branches, branchIndex, branch))
 			}
 			result.choices = append(result.choices, model.ExecutionPathChoice{RouteNodeID: node.ID, BranchID: branch.ID})
 			visit(branch.Child)
@@ -525,7 +526,7 @@ func walkTree(tree *target.FlowNodeTemplate, values map[string]any, selected map
 				if !selectedOK {
 					result.complete = false
 					result.matches = false
-					result.issues = append(result.issues, Issue{Code: "choice_missing", Path: node.ID, Message: "当前路径缺少候选分支选择"})
+					result.issues = append(result.issues, missingChoiceIssue(node, node.ParallelNodes, "当前路径缺少候选分支选择"))
 					return
 				}
 				index := branchIndex(node.ParallelNodes, branchID)
@@ -545,6 +546,65 @@ func walkTree(tree *target.FlowNodeTemplate, values map[string]any, selected map
 	}
 	visit(tree)
 	return result
+}
+
+// missingChoiceIssue 用路由名称和可选分支名称说明缺失项，避免界面只显示内部节点 ID。
+func missingChoiceIssue(node *target.FlowNodeTemplate, branches []target.FlowBranchTemplate, fallback string) Issue {
+	name := strings.TrimSpace(node.Name)
+	if name == "" {
+		name = "未命名路由"
+	}
+	options := make([]string, 0, len(branches))
+	for index, branch := range branches {
+		options = append(options, branchDisplayName(branch, index))
+	}
+	message := fmt.Sprintf("路由“%s”缺少分支选择", name)
+	if len(options) > 0 {
+		message += "，可选：“" + strings.Join(options, "” / “") + "”"
+	} else if strings.TrimSpace(fallback) != "" {
+		message = fallback
+	}
+	return Issue{Code: "choice_missing", Path: node.ID, Message: message}
+}
+
+// branchMismatchIssue 说明当前路径要求和历史数据实际命中的分支，并携带相关条件字段供界面展示中文名和值。
+func branchMismatchIssue(node *target.FlowNodeTemplate, branches []target.FlowBranchTemplate, expectedIndex int, actual target.FlowBranchTemplate) Issue {
+	expected := branchDisplayName(branches[expectedIndex], expectedIndex)
+	actualName := branchDisplayName(actual, branchIndex(branches, actual.ID))
+	routeName := strings.TrimSpace(node.Name)
+	if routeName == "" {
+		routeName = "未命名路由"
+	}
+	fields := make([]string, 0)
+	lastConditionIndex := expectedIndex
+	if lastConditionIndex >= len(branches)-1 {
+		lastConditionIndex = len(branches) - 2
+	}
+	for index := 0; index <= lastConditionIndex; index++ {
+		for _, condition := range branches[index].Conditions {
+			for _, field := range []string{condition.FieldA, condition.FieldB} {
+				field = strings.TrimSpace(field)
+				if field != "" && !containsPath(fields, field) {
+					fields = append(fields, field)
+				}
+			}
+		}
+	}
+	return Issue{
+		Code: "branch_mismatch", Path: node.ID, BranchKey: branches[expectedIndex].ID, Fields: fields,
+		Message: fmt.Sprintf("路由“%s”要求“%s”，当前数据实际命中“%s”", routeName, expected, actualName),
+	}
+}
+
+// branchDisplayName 返回目标分支可见名称，缺少名称时使用稳定序号而不是内部 ID。
+func branchDisplayName(branch target.FlowBranchTemplate, index int) string {
+	if name := strings.TrimSpace(branch.Name); name != "" {
+		return name
+	}
+	if index >= 0 {
+		return fmt.Sprintf("分支 %d", index+1)
+	}
+	return "实际分支"
 }
 
 // chooseConditionBranch 执行首个命中和最后分支兜底，手动分支只接受显式选择。
@@ -597,8 +657,14 @@ func walkCanBecomeEvaluable(walk treeWalk, references []conditionReference) bool
 	if len(references) == 0 {
 		return false
 	}
+	hasBranchMismatch := false
 	for _, issue := range walk.issues {
-		if issue.Code == "flow_cycle" || issue.Code == "choice_missing" || issue.Code == "choice_invalid" {
+		if issue.Code == "branch_mismatch" {
+			hasBranchMismatch = true
+		}
+	}
+	for _, issue := range walk.issues {
+		if issue.Code == "flow_cycle" || issue.Code == "choice_invalid" || issue.Code == "choice_missing" && !hasBranchMismatch {
 			return false
 		}
 	}

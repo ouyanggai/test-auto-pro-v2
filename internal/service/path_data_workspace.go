@@ -845,7 +845,7 @@ func historyIssuesFromStrings(code string, messages []string) []model.HistoryDat
 func historyIssuesFromOverlay(issues []branchoverlay.Issue) []model.HistoryDataIssue {
 	result := make([]model.HistoryDataIssue, 0, len(issues))
 	for _, issue := range issues {
-		result = append(result, model.HistoryDataIssue{Code: issue.Code, Path: issue.Path, Message: issue.Message, Blocking: true})
+		result = append(result, model.HistoryDataIssue{Code: issue.Code, Path: issue.Path, Fields: append([]string(nil), issue.Fields...), Message: issue.Message, Blocking: true})
 	}
 	return result
 }

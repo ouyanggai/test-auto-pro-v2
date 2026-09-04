@@ -178,6 +178,42 @@ func TestBranchOverlayRouteSemantics(t *testing.T) {
 	}
 }
 
+// TestBranchOverlayRepairsSelectedPathBeforeFollowingActualDetour 验证历史数据偏离当前路径后，
+// 实际线路进入其他路径专属的下游路由时，不能把该下游缺少选择误判为当前路径不可调整。
+func TestBranchOverlayRepairsSelectedPathBeforeFollowingActualDetour(t *testing.T) {
+	highAmountRoute := conditionTreeID("high-amount-route", []target.FlowBranchTemplate{
+		{ID: "very-high", Name: "请款金额不少于 20000", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "amount", ValueB: "20000", Judge: "gte"}}},
+		{ID: "normal-high", Name: "请款金额低于 20000", Sort: 2},
+	})
+	amountRoute := conditionTreeID("amount-route", []target.FlowBranchTemplate{
+		{ID: "low", Name: "请款金额低于 2000", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "amount", ValueB: "2000", Judge: "lt"}}},
+		{ID: "high", Name: "请款金额不少于 2000", Sort: 2, Child: highAmountRoute},
+	})
+	tree := conditionTreeID("company-route", []target.FlowBranchTemplate{
+		{ID: "guangdong", Name: "广东斯能", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "company", ValueB: "广东斯能", Judge: "eq"}}},
+		{ID: "other", Name: "其他公司", Sort: 2},
+	})
+	tree.Name = "付款单位路由"
+	tree.Child = amountRoute
+	result := branchoverlay.Apply(branchoverlay.Input{
+		Tree: tree,
+		Choices: []model.ExecutionPathChoice{
+			{RouteNodeID: "company-route", BranchID: "guangdong"},
+			{RouteNodeID: "amount-route", BranchID: "low"},
+		},
+		Values: map[string]any{"company": "广西润兴", "amount": 26014.89},
+	})
+	if result.Status != branchoverlay.StatusReady {
+		t.Fatalf("当前路径可通过两个条件字段调整，却被实际线路的下游路由阻断：%#v", result)
+	}
+	if result.Values["company"] != "广东斯能" || result.Values["amount"] != 1999.0 {
+		t.Fatalf("条件字段没有调整到当前路径：%#v", result.Values)
+	}
+	if len(result.Patches) != 2 {
+		t.Fatalf("应明确记录两个自动调整字段：%#v", result.Patches)
+	}
+}
+
 // TestBranchOverlayNeedsInputCases 覆盖布尔不可满足、字段循环、无解和同一路径等偏移的歧义。
 func TestBranchOverlayNeedsInputCases(t *testing.T) {
 	missing := branchoverlay.Apply(branchoverlay.Input{Tree: conditionTree(nil), Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "default"}}})

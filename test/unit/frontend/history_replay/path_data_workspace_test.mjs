@@ -44,6 +44,9 @@ test('T05 表单提示改为右侧可收起悬浮面板并给出决定路径的�
   assert.match(panel, /<n-card/)
   assert.match(panel, /<n-collapse/)
   assert.match(panel, /<n-empty/)
+  assert.match(panel, /function issueFieldText\(issue: HistoryDataIssue\)/)
+  assert.match(panel, /function patchText\(patch: PathConfigurationBranchPatch\)/)
+  assert.match(panel, /相关字段：/)
   // 提示面板不再把内部术语直接摊在页面上。
   for (const forbidden of ['最小补丁', 'form-runtime 校验', 'needs_input']) {
     assert.equal(panel.includes(forbidden), false, `提示面板不应出现 ${forbidden}`)

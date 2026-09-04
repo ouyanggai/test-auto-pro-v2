@@ -126,10 +126,11 @@ type HistoryDataSource struct {
 
 // HistoryDataIssue 是历史数据差异、必填缺口或运行时拒绝的结构化说明。
 type HistoryDataIssue struct {
-	Code     string `json:"code"`
-	Path     string `json:"path,omitempty"`
-	Message  string `json:"message"`
-	Blocking bool   `json:"blocking"`
+	Code     string   `json:"code"`
+	Path     string   `json:"path,omitempty"`
+	Fields   []string `json:"fields,omitempty"`
+	Message  string   `json:"message"`
+	Blocking bool     `json:"blocking"`
 }
 
 // HistoryDefaultSaveInput 是计划默认历史来源的最小回写体。
