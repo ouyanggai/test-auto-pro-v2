@@ -36,3 +36,13 @@ type TargetHistoryCandidateFilter struct {
 type TargetHistoryCandidateStore interface {
 	TargetHistoryCandidates(ctx context.Context, filter TargetHistoryCandidateFilter, page, pageSize int) ([]TargetHistoryCandidateRow, int, error)
 }
+
+// TargetCompanyDirectory 读取目标用户中心公司主数据，供数据工作区把公司下拉的名称与真实 ID 同步一致。
+// 目标公司下拉的真实来源是 t_company 主数据与 t_project_company 项目公司的并集，实现方必须两处都查；
+// 实现方只允许执行 SELECT，且查询必须绑定租户编码，禁止跨租户解析公司身份。
+type TargetCompanyDirectory interface {
+	// CompanyNameByID 按公司 ID 查询未删除公司名称；found=false 表示公司在两处来源中都不存在或已删除。
+	CompanyNameByID(ctx context.Context, companyID string) (name string, found bool, err error)
+	// CompanyIDByName 按公司名称查询全部未删除公司 ID；同名多家时由调用方拒绝解析，不猜测唯一公司。
+	CompanyIDByName(ctx context.Context, name string) ([]string, error)
+}

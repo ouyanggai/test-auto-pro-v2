@@ -64,6 +64,7 @@ type PathConfigService struct {
 	pathRepository     repository.ExecutionPathRepository
 	historyStore       repository.HistoryReplayStore
 	historyConfigStore repository.HistoryPathConfigStore
+	companyDirectory   PathDataCompanyDirectory
 	now                func() time.Time
 }
 

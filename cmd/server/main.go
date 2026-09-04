@@ -33,6 +33,7 @@ func main() {
 	targetConfig := config.LoadTargetConfig()
 	targetReader := service.NewTargetReadService(targetConfig)
 	// 目标业务库只读连接可选：配置后基础表单数据候选走一次联表查询，未配置时回落到目标只读 API。
+	var targetCompanyDirectory service.PathDataCompanyDirectory
 	if bizDBConfig := config.LoadTargetBizDBConfig(); bizDBConfig.Enabled() {
 		bizContext, cancelBiz := context.WithTimeout(context.Background(), 10*time.Second)
 		candidateStore, bizErr := planmysql.NewTargetHistoryRepository(bizContext, bizDBConfig, targetConfig.CustomerCode)
@@ -42,6 +43,8 @@ func main() {
 		} else {
 			defer candidateStore.Close()
 			targetReader.SetHistoryCandidateStore(candidateStore)
+			// 数据工作区同步公司下拉真实 ID 复用同一条只读连接；目标库未配置时工作区保持历史行为。
+			targetCompanyDirectory = candidateStore
 		}
 	}
 	planService := service.NewPlanService(planmysql.NewPlanRepository(planDatabase.DB))
@@ -84,6 +87,7 @@ func main() {
 	historyReplayService := service.NewHistoryReplayService(planService, pathRepository, targetReader, planmysql.NewHistoryReplayStore(planDatabase.DB))
 	historyWorkspaceStore := planmysql.NewHistoryReplayRepository(planDatabase.DB)
 	pathConfigService.SetHistoryWorkspaceStores(historyWorkspaceStore, historyWorkspaceStore)
+	pathConfigService.SetCompanyDirectory(targetCompanyDirectory)
 	// 一键配置在业务数据回放后按真实门禁补齐节点动作配置，让节点状态与列表一致。
 	historyReplayService.SetActionConfigurator(pathConfigService)
 	if err := historyReplayService.Recover(context.Background()); err != nil {

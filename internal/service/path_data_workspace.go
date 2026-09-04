@@ -81,6 +81,11 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	if len(issues) == 0 && dataStatus == model.HistoryDataStatusEmpty {
 		issues = []model.HistoryDataIssue{}
 	}
+	// 读取边界同步公司下拉真实 ID：已保存的数据或旧补丁可能只改了名称字段，必须在这里补齐 ID 才能保证回显一致。
+	// 同步放在状态推导之后，新增的非阻断问题不改变数据状态语义。
+	if syncIssues := s.syncLinkedCompanySelects(ctx, template, values); len(syncIssues) > 0 {
+		issues = appendHistoryIssues(issues, syncIssues)
+	}
 	return model.PathConfigurationF012{
 		Path: pathConfigPath(path), Revision: stored.Revision, NodeRevision: stored.NodeRevision,
 		DataRevision: stored.DataRevision, ActionRevision: stored.ActionRevision,
@@ -354,6 +359,11 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	}
 	issues := append([]model.HistoryDataIssue{}, historyIssuesFromOverlay(overlay.Issues)...)
 	issues = appendHistoryIssues(issues, input.RuntimeValidation.Issues)
+	// 保存边界同样同步公司下拉真实 ID：浏览器捕获值和直接接口保存都必须落成名称与 ID 一致的数据。
+	// 同步只改 ID 与虚拟显示值，不改分支条件读取的名称字段，因此不影响已经完成的路径复验结论。
+	if template, _ := workspaceRuntimeTemplate(snapshot); len(template) > 0 {
+		issues = appendHistoryIssues(issues, s.syncLinkedCompanySelects(ctx, template, overlay.Values))
+	}
 	dataStatus := workspaceDataStatus(source, input.RuntimeValidation, issues)
 	record, err := workspaceRecord(snapshot, source, targetPath, targetStored, idempotencyKey, input, overlay, dataStatus, routeChanged)
 	if err != nil {

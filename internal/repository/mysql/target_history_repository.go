@@ -191,3 +191,63 @@ func escapeTargetHistoryLike(value string) string {
 	replaced = strings.ReplaceAll(replaced, "%", "\\%")
 	return strings.ReplaceAll(replaced, "_", "\\_")
 }
+
+// CompanyNameByID 按公司 ID 读取目标用户中心的未删除公司名称；查询绑定租户编码，禁止跨租户解析。
+// 目标公司下拉的真实来源是 t_company 主数据与 t_project_company 项目公司的并集（目标
+// getSingleCompanyVosWithinProjectCompany 的实现如此），只查主数据会把项目公司误判为不存在。
+func (r *TargetHistoryRepository) CompanyNameByID(ctx context.Context, companyID string) (string, bool, error) {
+	if r == nil || r.db == nil {
+		return "", false, errors.New("目标业务库只读连接不可用")
+	}
+	companyID = strings.TrimSpace(companyID)
+	if companyID == "" {
+		return "", false, nil
+	}
+	var name string
+	err := r.db.QueryRowContext(ctx, `
+SELECT name FROM (
+  SELECT name FROM `+r.userCenter+`.t_company WHERE id = ? AND customer_code = ? AND is_delete = 0
+  UNION ALL
+  SELECT name FROM `+r.userCenter+`.t_project_company WHERE id = ? AND customer_code = ? AND is_delete = 0
+) company_directory LIMIT 1`,
+		companyID, r.customerCode, companyID, r.customerCode).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return name, true, nil
+}
+
+// CompanyIDByName 按公司名称读取目标用户中心全部未删除公司 ID（主数据与项目公司并集）；
+// 同名多条时由调用方拒绝解析，不猜测唯一公司。
+func (r *TargetHistoryRepository) CompanyIDByName(ctx context.Context, name string) ([]string, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("目标业务库只读连接不可用")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return []string{}, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id FROM (
+  SELECT id FROM `+r.userCenter+`.t_company WHERE name = ? AND customer_code = ? AND is_delete = 0
+  UNION ALL
+  SELECT id FROM `+r.userCenter+`.t_project_company WHERE name = ? AND customer_code = ? AND is_delete = 0
+) company_directory`,
+		name, r.customerCode, name, r.customerCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
