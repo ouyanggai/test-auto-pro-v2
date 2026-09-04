@@ -49,11 +49,16 @@
 - 已完成人工验收反馈修复：无表单/自定义表单补齐参考运行时页面注册和统一回显注入，缺失页面标识回落到通用业务数据页；宿主页面初始化后回填 `initForm/detail/rawData` 等同名模型，并读取页面 `getValues`；路径侧栏只显示中文字段标签，不再展示内部字段 ID。定向 Go/Node 测试 20 项、form-runtime 类型检查与生产构建通过，F-012 状态保持 `ready_for_manual`。
 - 阻塞：无。F-013 先后遇到的两个本机阻塞已解除——Docker 数据盘由用户自行恢复（现 59G 已用 19G、可用 37G，全程未执行 `prune`，镜像、构建缓存与卷均保留）；Colima 未挂载外接盘项目目录的问题已通过在 `mounts` 中新增本项目 `logs/`（`writable: true`）并 `colima restart` 解决，仓库内配套增加挂载自检。MySQL 真实迁移需配置独立测试库（`PLAN_DB_*`），目标平台和浏览器行为保留人工验收边界。
 - 待用户判断：迁移 `023` 把 15 个载荷列由 `JSON` 改为 `LONGTEXT`，属于授权范围内的模型变更；另有两处待用户裁决的差异见 F-012 功能文档状态记录。
-- 下一步：F-014 目标错误语义与幂等勘定已按用户要求产出计划文档 `docs/features/F-014-target-error-semantics-idempotency.md`，
-  状态 `awaiting_approval`，只读、不发写请求，写端点白名单为空；等用户明确批准范围后才进入 `implementing`。
-  F-012 与 F-013 均停在 `ready_for_manual`；两者未获明确验收前不进入 `accepted`。
-  用户 2026-09-04 已按裁决要求修订 F-014 计划（纯只读、探针只列不跑、未实测结论标待实测、端点加精确文案联合判定、
-  未覆盖组合默认不确定、写路径样本按源码构造），并明确等 F-012 返工通过人工验收后再批准 F-014。
+- 下一步：等用户按清单人工验收 F-013 与 F-014；两者未获明确验收前不进入 `accepted`。F-012 由另一线程返工中。
+- F-015 成功断言与运行准备：已按用户要求产出计划文档 `docs/features/F-015-success-assertion-run-readiness.md`，
+  状态 `awaiting_approval`，未获明确批准前不进入 `implementing`。范围为每条路径一个可判定的成功断言
+  （结束节点来自真实候选、期望状态取目标真实的八个实例状态、重复到达按出现次数强制指定）、
+  纯判定包 `internal/engine/assert`（成立 / 不成立 / 无法判定，三值不合并）、
+  按计划聚合的运行准备结论（十类阻塞、两类提醒，阻塞项可点击定位到具体路径与面板），
+  以及删除只返回布尔值的 `model.IsExecutionPathRunnable`，不留兼容层。
+  本切片不发写请求、不启动运行、不建运行记录表；F-019 之前未验证可执行的动作在运行准备阶段直接阻塞，不做静默降级。
+  计划已按 F-014 的实测事实对齐：断言判定不读 `auditWay`，会话失效可能是 HTTP 200 加 `code=RESP401`，
+  此时事实重读按「无法判定」处理。
 - 2026-09-04 参考仓库锚定分支调整：按用户裁决把 `rsh-cloud-workflow-center` 由 `test` 改为 `master`。
   `scripts/reference-repositories.tsv` 已改；旧克隆经洁净核对（无改动、无未跟踪文件、无 stash、未领先远端）后移除，
   由 `make refs-sync` 按 `master` 干净克隆，未使用 reset 或 checkout。

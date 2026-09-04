@@ -83,8 +83,9 @@
 
 - 实例状态与当前节点只能读实例本身。待办列表在 `taskStatus=pending` 时不再查询流程实例，返回记录不带实例运行态字段。
 - 不依赖终态实例的当前处理人字段，目标已改为只对运行态实例解析当前处理人。
-- 不假设 `auditWay` 是编码名还是数字，目标的 ordinal 迁移是否执行取决于部署。
+- 不把 `auditWay` 作为断言事实的输入。F-014 已实测当前部署返回的是字符串编码名（`20260828` 迁移已执行），但它属于流程配置而不是运行事实，断言判定不读它，也不为它写死数字兼容分支。
 - 判定只用目标事实，不用工具侧推断补齐缺失字段；字段缺失就是「无法判定」。
+- 会话失效不一定伴随 HTTP 401：F-014 实测真实响应是 HTTP 200 加 `code=RESP401`。事实重读因会话失效而失败时按「无法判定」处理，不得当成实例未到达终态。
 
 ### 运行准备的结论结构
 
@@ -167,6 +168,7 @@
 
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。
 
+- 2026-09-04 计划文档随并行线程的提交 `1c45ec6` 一并入库（该线程当时在提交 F-014 收尾改动），内容与本线程写入的版本一致，未被改写。
 - 2026-09-04 `preparing` -> `awaiting_approval`：用户要求开始 F-015。已读 `AGENTS.md`、`CONTEXT.md`、`docs/PRODUCT.md` 运行主线、`docs/EXECUTION_PROGRAM.md` 第 4.1、7.2、7.4、9 节，以及 F-014 已交付的 `docs/TARGET_SEMANTICS.md` 与 `internal/engine/verdict`；核对了现有 `test_execution_paths`、`test_execution_path_configs`、`model.IsExecutionPathRunnable`、`internal/analyzer/flow_graph.go` 的结束节点识别与目标 `FlowInstanceStatusEnum` 八个真实状态，据此产出本范围等待用户批准。
 - 门禁：本切片不发写请求；未获用户明确批准前不进入 `implementing`，实施与自动验证完成后停在 `ready_for_manual`。
 
