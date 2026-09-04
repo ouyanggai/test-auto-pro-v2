@@ -1,6 +1,6 @@
 # F-014 目标错误语义与幂等勘定
 
-- 状态：ready_for_manual
+- 状态：accepted
 - 产品依据：`docs/PRODUCT.md` 的产品原则第 2 条（工具问题与目标平台问题必须分开说明，暂时无法判断时按工具问题处理）与第 6 条（写操作结果不明确时先核对真实状态，禁止盲目重发）
 - 架构依据：`docs/ARCHITECTURE.md` 的「系统边界」（`internal/adapter/target` 是唯一可直接调用目标平台的区域）与「参考源码边界」
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 4.3 节阶段 6、第 4.4 节、第 8.2 节「错误语义」与「幂等与重复提交」两行、第 8.3 节、第 8.4 节、第 9 节 F-014 行、第 10 节的写端点白名单纪律
@@ -296,6 +296,10 @@
      `FlowInstanceServiceImpl.update`/`.save` 的两个端点（`/web/flowInstanceApi/submit`、`/flowInstanceApi/audit`），
      未登记端点返回同一文案落不可解释失败。清单刻意保守，两种结论都是不确定，不会让结论变乐观。
      语义清单第 1.8 节补上可达性证据与不登记的理由。
+
+- 2026-09-04 `ready_for_manual` -> `accepted`：用户明确「F-14 也可以标记完成了」，本切片验收通过。
+  交付以 `docs/TARGET_SEMANTICS.md` 的错误语义与幂等两条、纯判定包 `internal/engine/verdict`、
+  真实目标只读对照测试与两个契约脚本为准；写路径样本仍按源码构造，待 F-016 首次真实写复核或替换。
 
 ## 人工验收
 
