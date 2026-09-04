@@ -35,7 +35,7 @@
   请求不存在的计划后 `program-error.log` 的 `user_message` 与接口响应体 `error.message` 完全一致。
 - F-013 容器实测：`make logs-viewer` 起容器后，容器内实际列出并读到当天 `app-<日期>.log` 与 `config/<日期>/network.log`；容器内写入的探针文件宿主 `logs/` 立刻可见、删除后同步消失；19002 重定向到 `./?folder=/home/coder/logs`，code-server 读到的文件字节数与宿主完全一致；`make logs-viewer-stop` 后容器删除、端口释放。
   外接盘项目在 Colima 下需先把 `logs/` 挂进虚拟机（`~/.colima/default/colima.yaml` 的 `mounts` 加 `writable: true` 后 `colima restart`），否则容器只会看到一个空的可写目录；`make logs-viewer` 已内置挂载双向自检，挂载没生效时直接报错并停容器，不把 `docker inspect` 的 `RW=true` 当成挂载成功。
-- F-012（上一切片）状态：`ready_for_manual`，等待用户按其人工验收清单核对。
+- F-012（上一切片）状态：`implementing`。用户人工验收发现复杂 FormMaking 表单的基础数据未按目标页面初始化；已定位为 runtime 错误删除目标 `config.eventScript`，且后端只读请求清单错误丢弃查询语义 POST 数据源，正在按目标源码既有行为整改。
 - 已完成：T01 至 T08 已按批准范围实施并完成中文原子提交；已验证 FormMaking 与 `vue_custom`/NoFormFlow 原始数据链路、分支窄补丁、真实动作目录、同一主实例场景编译、数据库重建、旧体系删除和前后端构建。
 - 已完成复核修复轮：修复迁移执行器（服务可启动）、条件求值数字保真、动作门禁目录接入产品与实例动作编排、编译场景预览与拖拽排序、集成门禁真实执行；并修复复核中实测发现的 MySQL `JSON` 列改写目标数字和幂等重试按字节比较两个新缺陷。
 - 已完成人工验收反馈修复：路径配置接口中的随机人员空选择由 `null` 收敛为按当前候选恢复的数组，前端保留旧响应防护；计划 2 的路径 13 已实测恢复节点配置画布。
@@ -44,7 +44,7 @@
 - 待用户判断：迁移 `023` 把 15 个载荷列由 `JSON` 改为 `LONGTEXT`，属于授权范围内的模型变更；另有两处待用户裁决的差异见 F-012 功能文档状态记录。
 - 下一步：F-014 目标错误语义与幂等勘定已按用户要求产出计划文档 `docs/features/F-014-target-error-semantics-idempotency.md`，
   状态 `awaiting_approval`，只读、不发写请求，写端点白名单为空；等用户明确批准范围后才进入 `implementing`。
-  F-012 与 F-013 仍停在 `ready_for_manual`，未获明确验收前不进入 `accepted`。
+  F-012 正按人工验收反馈处于 `implementing`，F-013 仍停在 `ready_for_manual`；两者未获明确验收前不进入 `accepted`。
 - 已产出后续工作纲领 `docs/EXECUTION_PROGRAM.md`（执行器、调试器、运行记录与分层日志，F-013 至 F-023），只界定边界与顺序，不构成实施授权。用户已裁决：内网日志原样记录、code-server 随 Docker 交付、发布用 Docker Compose、真实写使用已指定测试账号（账号值不入仓库）；`docs/ARCHITECTURE.md` 的日志条文已同步。
 
 ## 当前决策摘要
