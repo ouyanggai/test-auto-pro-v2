@@ -10,20 +10,24 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
-// RunReadinessService 是成功断言与运行准备的只读服务面。
-// 本切片不启动运行，因此这里只有读取、保存断言与读取运行准备结论三个动作。
+// RunReadinessService 是运行前检查的只读服务面。
 type RunReadinessService interface {
 	PlanReadiness(ctx context.Context, planID uint64, selectedPathIDs []uint64) (model.PlanRunReadiness, error)
 }
 
-// registerRunReadinessRoutes 注册成功断言与运行准备端点。
-// 路径形如 /api/plans/{id}/execution-paths/{pathId}/...，与 F-013 的日志作用域中间件约定一致，
-// 因此这些请求产生的日志会自动落进对应计划与执行路径的目录。
+// registerRunReadinessRoutes 注册运行前检查端点。
+// 路径挂在 /api/plans/{id}/run-readiness，与 F-013 的日志作用域中间件约定一致，
+// 因此这些请求产生的日志会自动落进对应计划的目录。
 func registerRunReadinessRoutes(mux *http.ServeMux, readiness RunReadinessService) {
 	mux.HandleFunc("GET /api/plans/{id}/run-readiness", handlePlanRunReadiness(readiness))
 }
 
-// handlePlanRunReadiness 返回一个计划的运行准备结论：一句总结论加逐条路径的阻塞与提醒。
+// PlanRunReadinessHandler 返回运行前检查端点的处理函数，供路由注册与行为测试复用。
+func PlanRunReadinessHandler(readiness RunReadinessService) http.HandlerFunc {
+	return handlePlanRunReadiness(readiness)
+}
+
+// handlePlanRunReadiness 返回一个计划的运行前检查结论：一句总结论加逐条路径的阻塞与提醒。
 func handlePlanRunReadiness(readiness RunReadinessService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("id"))
@@ -70,8 +74,9 @@ func writeRunReadinessError(response http.ResponseWriter, err error) {
 		writeFailure(response, http.StatusNotFound, "RUN_READINESS_NOT_FOUND", err.Error(), false)
 	case service.IsRunReadinessErrorKind(err, service.RunReadinessErrorInvalid):
 		writeFailure(response, http.StatusBadRequest, "RUN_READINESS_INVALID", err.Error(), false)
-	case service.IsRunReadinessErrorKind(err, service.RunReadinessErrorConflict):
-		writeFailure(response, http.StatusConflict, "RUN_READINESS_CONFLICT", err.Error(), false)
+	case service.IsRunReadinessErrorKind(err, service.RunReadinessErrorAuth):
+		// 账号与会话问题重试无效：必须让用户去重新验证账号，而不是反复点重试。
+		writeFailure(response, http.StatusUnauthorized, "RUN_READINESS_TARGET_AUTH", err.Error(), false)
 	case service.IsRunReadinessErrorKind(err, service.RunReadinessErrorTarget):
 		writeFailure(response, http.StatusBadGateway, "RUN_READINESS_TARGET_UNAVAILABLE", err.Error(), true)
 	default:

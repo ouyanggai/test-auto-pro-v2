@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/analyzer"
+	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -15,9 +18,10 @@ import (
 const (
 	RunReadinessErrorNotFound = "not_found"
 	RunReadinessErrorInvalid  = "invalid"
-	RunReadinessErrorConflict = "conflict"
 	RunReadinessErrorStorage  = "storage"
 	RunReadinessErrorTarget   = "target"
+	// RunReadinessErrorAuth 表示目标账号验证或会话问题：重试无效，用户必须重新验证账号。
+	RunReadinessErrorAuth = "auth"
 )
 
 // RunReadinessError 是本切片对外的稳定错误，Message 直接作为界面提示，与日志同源。
@@ -53,22 +57,18 @@ type RunReadinessService struct {
 	graphs   runReadinessGraphReader
 	configs  repository.HistoryPathConfigStore
 	analyzer runReadinessPathAnalyzer
-	now      func() time.Time
 }
 
-// NewRunReadinessService 组装计划、路径、真实结构、断言与路径配置的只读边界。
+// NewRunReadinessService 组装计划、路径、真实结构与路径配置的只读边界。
 func NewRunReadinessService(plans *PlanService, paths repository.ExecutionPathRepository, graphs runReadinessGraphReader,
 	configs repository.HistoryPathConfigStore,
-	pathAnalyzer runReadinessPathAnalyzer, now func() time.Time) *RunReadinessService {
-	if now == nil {
-		now = time.Now
-	}
+	pathAnalyzer runReadinessPathAnalyzer) *RunReadinessService {
 	return &RunReadinessService{plans: plans, paths: paths, graphs: graphs,
-		configs: configs, analyzer: pathAnalyzer, now: now}
+		configs: configs, analyzer: pathAnalyzer}
 }
 
 // PlanReadiness 聚合一个计划下每条路径的运行准备结论。
-// 真实流程结构只读一次；断言一次取齐；路径配置按路径逐条读数据库，不读目标。
+// 真实流程结构只读一次；路径配置按路径逐条读数据库，不读目标。
 // selectedPathIDs 为空表示检查该计划下全部路径；非空时只检查勾选的那些路径。
 // 运行只运行勾选路径，预检也必须只检查勾选路径，否则用户看到的阻塞与本次要跑的东西不是一回事。
 func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, selectedPathIDs []uint64) (model.PlanRunReadiness, error) {
@@ -86,6 +86,10 @@ func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, 
 	}
 	summaries, err := s.paths.List(ctx, planID)
 	if err != nil {
+		// 计划在两次读取之间被删除是确定事实，不能说成"请重试"。
+		if errors.Is(err, repository.ErrPlanNotFound) {
+			return model.PlanRunReadiness{}, notFoundError("计划不存在")
+		}
 		return model.PlanRunReadiness{}, storageError("暂时无法读取执行路径，请重试")
 	}
 	if len(summaries) == 0 {
@@ -102,9 +106,15 @@ func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, 
 				filtered = append(filtered, path)
 			}
 		}
-		if len(filtered) == 0 {
+		// 勾选的路径部分已被删除时必须报错而不是静默收窄：
+		// 用户勾了 3 条，界面却说"勾选的 2 条都可以运行"会让用户以为 3 条都过了预检。
+		if len(filtered) != len(selectedPathIDs) {
+			if len(filtered) == 0 {
+				return model.PlanRunReadiness{}, &RunReadinessError{
+					Kind: RunReadinessErrorInvalid, Message: "勾选的执行路径不属于这个计划，请重新选择"}
+			}
 			return model.PlanRunReadiness{}, &RunReadinessError{
-				Kind: RunReadinessErrorInvalid, Message: "勾选的执行路径不属于这个计划，请重新选择"}
+				Kind: RunReadinessErrorInvalid, Message: "部分勾选的执行路径已被删除，请返回路径列表重新勾选"}
 		}
 		summaries = filtered
 	}
@@ -128,10 +138,10 @@ func (s *RunReadinessService) PlanReadiness(ctx context.Context, planID uint64, 
 		paths = append(paths, summary)
 	}
 	// 真实结构读失败不掩盖：整份结论直接给目标错误，不允许悄悄退化成"没有拓扑问题"。
-	graph, err := s.graphs.Get(ctx, planID)
+	// 目标抖动是常态（纲领第 4.4.1 节），只读阶段按有界次数重试，失败后按根因分类给可执行的中文提示。
+	graph, err := s.readGraphWithRetry(ctx, planID)
 	if err != nil {
-		return model.PlanRunReadiness{}, &RunReadinessError{
-			Kind: RunReadinessErrorTarget, Message: "暂时无法读取目标流程结构，运行准备结论不完整，请重试"}
+		return model.PlanRunReadiness{}, err
 	}
 	results := make([]model.PathRunReadiness, 0, len(paths))
 	for _, path := range paths {
@@ -316,4 +326,67 @@ func invalidError(message string) error {
 
 func storageError(message string) error {
 	return &RunReadinessError{Kind: RunReadinessErrorStorage, Message: message}
+}
+
+// readGraphWithRetry 读取当前真实流程结构：抖动类失败按有界次数重试，其余失败立即按根因分类返回。
+// 目标抖动的实测结论（纲领第 4.4.1 节）是坏窗口可达分钟级，但预检是用户点开的同步接口，
+// 这里只做短重试消化瞬断（口径与数据工作区的 isTransientTargetReadError 一致），持续故障如实返回、由用户决定何时重试。
+func (s *RunReadinessService) readGraphWithRetry(ctx context.Context, planID uint64) (model.FlowGraph, error) {
+	const attempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		graph, err := s.graphs.Get(ctx, planID)
+		if err == nil {
+			return graph, nil
+		}
+		lastErr = err
+		if !isTransientTargetReadError(err) {
+			break
+		}
+		if attempt < attempts {
+			select {
+			case <-ctx.Done():
+				return model.FlowGraph{}, targetGraphReadError(ctx.Err())
+			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			}
+		}
+	}
+	return model.FlowGraph{}, targetGraphReadError(lastErr)
+}
+
+// targetGraphReadError 把真实结构读取失败按根因分类，不把账号、配置、结构问题收敛成一句"请重试"。
+// 预检是运行主线的门禁：会话失效或账号验证失败时，唯一有用的下一步是重新验证账号，反复重试永远不会成功。
+func targetGraphReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var configErr *config.MissingTargetConfigError
+	switch {
+	case IsPlanErrorKind(err, PlanErrorNotFound):
+		return notFoundError("计划不存在")
+	case IsPlanErrorKind(err, PlanErrorInvalidArgument):
+		return invalidError("计划 ID 不正确")
+	case IsPlanErrorKind(err, PlanErrorStorage):
+		return storageError("暂时无法读取计划，请重试")
+	case errors.Is(err, ErrTargetFlowNotFound):
+		return &RunReadinessError{Kind: RunReadinessErrorTarget, Message: "目标流程当前不可读取"}
+	case errors.Is(err, ErrTargetFlowStructureEmpty):
+		return &RunReadinessError{Kind: RunReadinessErrorTarget, Message: "目标流程暂未配置节点"}
+	case errors.Is(err, ErrTargetFlowNotConfigurable):
+		return &RunReadinessError{Kind: RunReadinessErrorTarget, Message: "当前流程已经不能配置执行路径"}
+	case errors.Is(err, analyzer.ErrFlowStructureInvalid):
+		return &RunReadinessError{Kind: RunReadinessErrorTarget, Message: "目标流程结构异常，运行准备结论不完整"}
+	case errors.As(err, &configErr):
+		return &RunReadinessError{Kind: RunReadinessErrorStorage, Message: "目标环境尚未配置完整，无法读取流程结构"}
+	case target.IsKind(err, target.ErrorLoginRejected):
+		return &RunReadinessError{Kind: RunReadinessErrorAuth, Message: "账号验证失败，请核对计划账号后重新验证"}
+	case target.IsKind(err, target.ErrorSessionExpired):
+		return &RunReadinessError{Kind: RunReadinessErrorAuth, Message: "账号会话已失效，请重新验证账号后再运行预检"}
+	case target.IsKind(err, target.ErrorResponseInvalid):
+		return &RunReadinessError{Kind: RunReadinessErrorTarget, Message: "流程数据格式异常，请重试"}
+	case target.IsKind(err, target.ErrorTimeout):
+		return &RunReadinessError{Kind: RunReadinessErrorTarget, Message: "读取目标流程超时，请稍后重试"}
+	default:
+		return &RunReadinessError{Kind: RunReadinessErrorTarget, Message: "暂时无法读取目标流程结构，运行准备结论不完整，请重试"}
+	}
 }

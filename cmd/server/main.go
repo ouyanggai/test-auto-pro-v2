@@ -140,7 +140,7 @@ func main() {
 	// F-015 运行前检查：只读聚合，真实结构每个计划读一次，路径配置按路径读数据库。
 	runReadinessService := service.NewRunReadinessService(
 		planService, pathRepository, flowGraphService, historyWorkspaceStore,
-		analyzer.NewExecutionPathAnalyzer(), time.Now,
+		analyzer.NewExecutionPathAnalyzer(),
 	)
 	// F-016 执行器最小真实闭环：目标写客户端、会话管理、运行状态机、一步执行器与单步控制。
 	// 写请求只能由 internal/adapter/target 发出；超时与重试预算全部来自配置。

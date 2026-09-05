@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NModal, NResult, NSpace, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCheckbox, NCollapse, NCollapseItem, NEmpty, NInput, NModal, NRadio, NRadioGroup, NResult, NSpace, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
 import { useRouter } from 'vue-router'
@@ -23,18 +23,6 @@ const modeOptions = [
   { label: '人工控制（停在第一步之前，随时放行或连续）', value: 'manual_control' },
 ]
 const firstWriteBreakpoint = ref(true)
-const nodeBreakpointInput = ref('')
-const presetBreakpoints = ref<Array<{ type: string; stepNo?: number; nodeKey?: string; action?: string }>>([])
-
-function addNodeBreakpoint() {
-  const key = nodeBreakpointInput.value.trim()
-  if (!key) return
-  presetBreakpoints.value.push({ type: 'node', nodeKey: key })
-  nodeBreakpointInput.value = ''
-}
-function removePreset(index: number) {
-  presetBreakpoints.value.splice(index, 1)
-}
 
 const themeVars = useThemeVars()
 const readiness = ref<PlanRunReadiness | null>(null)
@@ -44,7 +32,8 @@ let controller: AbortController | null = null
 
 const blockedPaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => !path.runnable))
 const reminderPaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => path.reminders.length > 0))
-const allClear = computed(() => Boolean(readiness.value) && blockedPaths.value.length === 0)
+// allClear 要求确实有勾选路径且全部可运行：空计划与全部阻塞一样不能启动，也不能显示成功结论。
+const allClear = computed(() => Boolean(readiness.value) && blockedPaths.value.length === 0 && (readiness.value?.totalCount ?? 0) > 0)
 // 宽度必须写成行内样式：NModal 的卡片是 teleport 出去渲染的，scoped 样式选不中它，
 // 只靠 class 设宽度会退化成撑满整屏。
 const dialogStyle = computed(() => ({
@@ -79,9 +68,8 @@ async function runCheck() {
   }
 }
 
-// startSingleRun 启动第一条可执行路径的单步运行（F-016）：
-// 模式由后端强制为单步；启动前服务端会再次复验运行准备结论。
-// 只启动勾选路径里的第一条可执行路径，本切片一次运行只跑一条路径。
+// startSingleRun 启动第一条可执行路径的运行（F-016 交付，F-017 扩为三模式）：
+// 启动前服务端会再次复验运行准备结论。只启动勾选路径里的第一条可执行路径，多路径调度属 F-020。
 async function startSingleRun() {
   const target = (readiness.value?.paths ?? []).find(path => path.runnable)
   if (!target || starting.value) return
@@ -90,7 +78,6 @@ async function startSingleRun() {
   try {
     const detail = await startRun(props.planId, String(target.pathId), mode.value, [
       ...(firstWriteBreakpoint.value ? [{ type: 'first_write' }] : []),
-      ...presetBreakpoints.value,
     ])
     emit('update:show', false)
     router.push(`/runs/${detail.runId}`)
@@ -185,30 +172,21 @@ watch(() => props.show, (open) => {
     <template #footer>
       <div class="run-preflight__mode-section">
         <h4>运行模式</h4>
-        <n-radio-group v-model:value="mode">
+        <n-radio-group v-model:value="mode" class="run-preflight__modes" name="run-mode">
           <n-radio v-for="option in modeOptions" :key="option.value" :value="option.value">{{ option.label }}</n-radio>
         </n-radio-group>
         <h4>启动前断点</h4>
-        <label>
-          <input type="checkbox" v-model="firstWriteBreakpoint" />
+        <n-checkbox v-model:checked="firstWriteBreakpoint">
           首次写断点（默认开启）：第一个写请求之前必停——这是安全阀
-        </label>
+        </n-checkbox>
         <p>路径偏离断点强制开启：实际命中分支与已配置路径不一致时强制停下，不可关闭。</p>
-        <div>
-          <input v-model="nodeBreakpointInput" placeholder="可选：输入节点键，在该节点前停下" />
-          <n-button size="tiny" @click="addNodeBreakpoint">添加节点断点</n-button>
-        </div>
-        <ul>
-          <li v-for="(bp, index) in presetBreakpoints" :key="index">
-            节点断点：{{ bp.nodeKey }}
-            <n-button size="tiny" @click="removePreset(index)">删除</n-button>
-          </li>
-        </ul>
+        <p>节点、步骤与动作断点在启动后的运行画布上就地挂载：点击画布节点即可挂节点断点。</p>
       </div>
+      <n-alert v-if="startError" type="error" :show-icon="false">{{ startError }}</n-alert>
       <n-space justify="end">
         <n-button size="small" :loading="loading" @click="runCheck">重新检查</n-button>
         <n-button size="small" @click="emit('update:show', false)">关闭</n-button>
-        <!-- F-016 交付：运行前检查通过后可启动单步运行，启动后进入路径运行详情。 -->
+        <!-- F-016 交付：运行前检查通过后可启动运行，启动后进入路径运行详情。 -->
         <n-button
           size="small"
           type="primary"
@@ -243,6 +221,32 @@ watch(() => props.show, (open) => {
 .run-preflight__group h4 {
   margin: 0;
   font-weight: 500;
+  color: var(--preflight-secondary-text-color);
+}
+
+/* 模式三选一纵向排列：三个说明都很长，横排会挤成一行读不下去。 */
+.run-preflight__modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-preflight__mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.run-preflight__mode-section h4 {
+  margin: 0;
+  font-weight: 500;
+  color: var(--preflight-secondary-text-color);
+}
+
+.run-preflight__mode-section p {
+  margin: 0;
+  line-height: 1.6;
   color: var(--preflight-secondary-text-color);
 }
 

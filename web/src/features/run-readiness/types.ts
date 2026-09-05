@@ -1,4 +1,4 @@
-// F-015 成功断言与运行准备的前端类型，字段与后端 DTO 一一对应，前端不自造取值。
+// F-015 运行前检查的前端类型，字段与后端 DTO 一一对应，前端不自造取值。
 
 // RunReadinessItem 是一条阻塞或提醒；anchor 让界面能定位到具体面板。
 export interface RunReadinessItem {

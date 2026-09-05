@@ -94,6 +94,9 @@ const deleteConfirmOpen = ref(false)
 const draftRecoveryLoading = ref(false)
 const draftRecoveryError = ref('')
 const selectedRunPathIDs = ref(new Set<string>())
+// runSelectionTouched 记录用户是否做过任何明确勾选：做过之后后台刷新一律尊重现状，
+// 不再把"已配置且就绪"的路径悄悄勾回来（空选择也是一种明确的选择）。
+const runSelectionTouched = ref(false)
 const pathSelectionError = ref('')
 const preparationJob = ref<HistoryReplayJob | null>(null)
 const preparationLoading = ref(false)
@@ -203,6 +206,7 @@ async function loadPage() {
   graph.value = null
   paths.value = []
   selectedRunPathIDs.value = new Set()
+  runSelectionTouched.value = false
   pathSelectionError.value = ''
   preparationJob.value = null
   pathWorkspaceOpen.value = false
@@ -347,6 +351,7 @@ async function selectSavedPath(path: ExecutionPath) {
 // updateRunPathSelection 只维护本次一键配置的明确勾选，创建任务时一次提交路径快照。
 function updateRunPathSelection(path: ExecutionPath, included: boolean) {
 	if (!planMutable.value || preparationBusy.value) return
+  runSelectionTouched.value = true
   const next = new Set(selectedRunPathIDs.value)
   if (included) next.add(path.id)
   else next.delete(path.id)
@@ -449,6 +454,7 @@ async function resumeCurrentPreparation() {
 // setAllRunPathSelections 为本次任务全选或清空路径，不写入配置表。
 function setAllRunPathSelections(included: boolean) {
   if (!planMutable.value || preparationBusy.value) return
+  runSelectionTouched.value = true
   selectedRunPathIDs.value = included ? new Set(paths.value.map(path => path.id)) : new Set()
 }
 
@@ -526,9 +532,9 @@ async function editActivePath() {
 }
 
 // defaultRunSelection 已配置好的路径默认被勾选：用户点运行时通常就是要跑这些。
-// 只在用户还没做过任何勾选时套用默认值，已有勾选一律尊重用户的选择。
+// 只在用户还没做过任何勾选时套用默认值；用户一旦做过勾选（包括取消全选后的空选择）一律尊重。
 function defaultRunSelection(existing: string[]): Set<string> {
-  if (existing.length > 0) return new Set(existing)
+  if (runSelectionTouched.value || existing.length > 0) return new Set(existing)
   return new Set(paths.value
     .filter(path => path.configurationStatus === 'configured' && path.dataStatus === 'ready')
     .map(path => path.id))

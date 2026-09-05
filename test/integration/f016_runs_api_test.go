@@ -47,7 +47,7 @@ func TestF016RunsAPIGuards(t *testing.T) {
 	historyWorkspaceStore := planmysql.NewHistoryReplayRepository(database.DB)
 	readiness := service.NewRunReadinessService(
 		planService, pathRepository, graphReader, historyWorkspaceStore,
-		analyzer.NewExecutionPathAnalyzer(), time.Now,
+		analyzer.NewExecutionPathAnalyzer(),
 	)
 
 	stubTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))

@@ -111,7 +111,7 @@ type PathReadinessInput struct {
 	Reminders []model.RunReadinessItem
 }
 
-// EvaluatePathReadiness 按十类阻塞与两类提醒给出一条路径的运行准备结论。
+// EvaluatePathReadiness 按七类阻塞与两类提醒给出一条路径的运行准备结论（另有调用方注入的计划级提醒）。
 // 阻塞与提醒严格分开：提醒不影响能否启动，绝不允许把提醒混成阻塞。
 func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 	blocks := make([]model.RunReadinessItem, 0, 8)
@@ -137,6 +137,17 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 		blocks = append(blocks, model.RunReadinessItem{
 			Kind: model.RunReadinessConfigUnreadable, Name: pathName,
 			Reason: "暂时无法读取这条路径的配置，无法判断能否运行，请重试",
+			Anchor: runReadinessAnchorNodes,
+		})
+	}
+	// 摘要说"已配置、数据就绪"，却读不到任何配置记录：两边事实矛盾，按读不到配置处理。
+	// 纯函数不能把安全判断托付给远处仓储的 SQL 细节——摘要恰好正常时，这条路必须拦下。
+	// 摘要本来就是未配置时两边一致，由上面的状态阻塞承载，不重复报。
+	if !input.ConfigFound && (input.Path.ConfigurationStatus == model.ExecutionPathConfigurationConfigured ||
+		input.Path.DataStatus == model.HistoryDataStatusReady) {
+		blocks = append(blocks, model.RunReadinessItem{
+			Kind: model.RunReadinessConfigUnreadable, Name: pathName,
+			Reason: "路径状态显示配置已完成，却读取不到配置记录，无法确认能否运行，请重试",
 			Anchor: runReadinessAnchorNodes,
 		})
 	}

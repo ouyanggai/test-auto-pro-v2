@@ -15,7 +15,7 @@ fail() {
 api='internal/api/run_readiness.go'
 [ -f "${api}" ] || fail "缺少运行准备接口文件：${api}"
 
-# 三个只读端点必须注册，且不得出现启动运行一类的写端点。
+# 只读端点必须注册；本文件不得出现启动运行一类的写端点（启动入口由 F-016 起的前端经运行模块 API 承担）。
 for route in 'GET /api/plans/{id}/run-readiness'; do
   grep -qF "${route}" "${api}" || fail "接口未注册：${route}"
 done
@@ -42,6 +42,20 @@ grep -qF 'data-testid="plan-run-button"' web/src/views/PlanPathsView.vue || fail
 grep -qF 'pathIds' web/src/features/run-readiness/api.ts || fail '预检必须只检查勾选路径'
 # 2026-09-05 更新：F-016 已交付启动运行、F-017 已交付运行模式三选一，预检弹窗包含运行模式与开始运行
 # 属现行产品行为；本脚本不再把「本切片当时未交付启动」当成永久边界反向锁定。
+# 纲领 12.1 硬性禁止的反向断言：本弹窗内不得出现裸 input/select，必须用既有组件库控件。
+if grep -qE '<input|<select' "${panel}"; then
+  fail '预检弹窗出现了裸 input/select，必须改用组件库控件（纲领 12.1）'
+fi
+# 模式三选一必须是真实控件：n-radio-group 与对应导入必须同时存在，防止模板退化为死文本。
+grep -qF '<n-radio-group' "${panel}" || fail '运行模式必须是 NRadioGroup 控件'
+grep -qF 'NRadioGroup' "${panel}" || fail '运行模式组件未导入 NRadioGroup，模板会退化为未知元素'
+grep -qF 'NCheckbox' "${panel}" || fail '首次写断点必须使用 NCheckbox'
+# 界面不得出现目标内部标识：节点键既不能让用户输入，也不能回显。
+if grep -qE '节点键|nodeBreakpointInput|bp\.nodeKey' "${panel}"; then
+  fail '界面出现了内部标识（节点键），纲领 12.1 禁止'
+fi
+# 启动失败必须有界面反馈：startError 必须在模板里被渲染。
+grep -qE 'v-if="startError"' "${panel}" || fail '启动失败信息没有在界面显示'
 # 界面只出现业务语言：不允许把内部稳定键当文案，也不允许出现内部术语。
 if grep -qE '历史来源|历史回放|success_claim|confirmed_failure' "${panel}"; then
   fail '界面出现了内部术语或内部稳定键'

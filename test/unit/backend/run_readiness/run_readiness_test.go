@@ -34,7 +34,7 @@ func TestReadyPathHasNoBlocks(t *testing.T) {
 	}
 }
 
-// TestEachBlockSourceIsReported 验证十类阻塞每一类都能单独触发，且都带中文原因与可点击锚点。
+// TestEachBlockSourceIsReported 验证每一类阻塞都能单独触发，且都带中文原因与可点击锚点。
 func TestEachBlockSourceIsReported(t *testing.T) {
 	issue := []model.PathConfigAffectedItem{{Kind: "x", Name: "节点 A", Reason: "解析不出唯一真实处理人"}}
 	cases := map[string]struct {
@@ -226,15 +226,43 @@ func TestConfigUnreadableBlocksInsteadOfPassing(t *testing.T) {
 }
 
 // TestConfigMissingIsNotReportedAsUnreadable 区分「确实还没配」与「读不到」两种含义，
-// 避免修复 P1 时把没有配置记录的正常路径也标成读取失败。
+// 避免把没有配置记录的正常路径也标成读取失败：摘要本来就是未配置时两边一致，不报读取失败。
 func TestConfigMissingIsNotReportedAsUnreadable(t *testing.T) {
 	input := readyInput()
 	input.ConfigFound = false
 	input.CompiledStepCount = 0
+	input.Path.ConfigurationStatus = "pending"
+	input.Path.DataStatus = model.HistoryDataStatusEmpty
 
-	for _, block := range service.EvaluatePathReadiness(input).Blocks {
+	readiness := service.EvaluatePathReadiness(input)
+	for _, block := range readiness.Blocks {
 		if block.Kind == model.RunReadinessConfigUnreadable {
 			t.Fatalf("没有配置记录被误报为读取失败：%+v", block)
 		}
+	}
+	if readiness.Runnable {
+		t.Fatalf("未配置路径仍不可运行：%+v", readiness)
+	}
+}
+
+// TestConfiguredSummaryWithoutConfigRecordBlocks 摘要说"已配置、数据就绪"却读不到配置记录：
+// 两边事实矛盾，必须阻塞，不能因为摘要恰好正常就放行一条无法确认的路径。
+func TestConfiguredSummaryWithoutConfigRecordBlocks(t *testing.T) {
+	input := readyInput()
+	input.ConfigFound = false
+	input.CompiledStepCount = 0
+
+	readiness := service.EvaluatePathReadiness(input)
+	if readiness.Runnable {
+		t.Fatalf("矛盾状态被判为可运行：%+v", readiness)
+	}
+	found := false
+	for _, block := range readiness.Blocks {
+		if block.Kind == model.RunReadinessConfigUnreadable && block.Reason != "" && block.Anchor != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("矛盾状态缺少配置读取失败类阻塞：%+v", readiness.Blocks)
 	}
 }

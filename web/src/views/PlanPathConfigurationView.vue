@@ -375,6 +375,19 @@ async function loadPage() {
     }
   }
   if (version === loadVersion && configuration.value) await focusSelectedNode()
+  if (version === loadVersion) consumePanelAnchor()
+}
+
+// consumePanelAnchor 消费运行前检查阻塞项带来的面板锚点（?panel=…）：
+// 表单数据类阻塞直接打开数据工作区，其余锚点对应的节点配置就是默认工作区。
+// 消费后立刻清掉查询参数，刷新页面不会重复触发跳转。
+function consumePanelAnchor() {
+  const anchor = typeof route.query.panel === 'string' ? route.query.panel : ''
+  if (!anchor) return
+  const query = { ...route.query }
+  delete query.panel
+  void router.replace({ query })
+  if (anchor === 'form-data') void openFormWorkspace()
 }
 
 // reloadConfiguration 只刷新权威配置和路径轻量状态，保持图视口与当前工作区。

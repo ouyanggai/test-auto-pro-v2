@@ -31,7 +31,6 @@ func newF015Readiness(t *testing.T, database *planmysql.Database) *service.RunRe
 		f015StubGraphReader{},
 		planmysql.NewHistoryReplayRepository(database.DB),
 		analyzer.NewExecutionPathAnalyzer(),
-		time.Now,
 	)
 }
 

@@ -32,7 +32,7 @@ type RunReadinessItem struct {
 	Kind   string `json:"kind"`
 	Name   string `json:"name"`
 	Reason string `json:"reason"`
-	// Anchor 是目标面板锚点，例如节点配置面板或成功断言卡片；空串表示只能定位到路径本身。
+	// Anchor 是目标面板锚点，例如节点配置面板或表单数据面板；空串表示只能定位到路径本身。
 	Anchor string `json:"anchor"`
 }
 

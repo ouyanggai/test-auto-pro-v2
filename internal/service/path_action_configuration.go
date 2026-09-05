@@ -469,7 +469,7 @@ func actionDisplayKind(action model.ActionKey) string {
 }
 
 // actionDisplayLabel 返回动作在节点工作台与运行准备面板中的中文标签。
-// 覆盖动作目录当前全部 15 条动作：界面必须用业务语言，不允许把稳定键当文案显示。
+// 覆盖动作目录当前全部 15 条动作与系统自动语义：界面必须用业务语言，不允许把稳定键当文案显示。
 // 未知稳定键保留原值只作为定位兜底，出现即说明目录新增了动作而这里没跟上。
 func actionDisplayLabel(action model.ActionKey) string {
 	labels := map[model.ActionKey]string{
@@ -488,6 +488,7 @@ func actionDisplayLabel(action model.ActionKey) string {
 		model.ActionForward:         "转发",
 		model.ActionFollow:          "关注",
 		model.ActionUnfollow:        "取消关注",
+		model.ActionSystemAutomatic: "系统自动动作",
 	}
 	if label, ok := labels[action]; ok {
 		return label
