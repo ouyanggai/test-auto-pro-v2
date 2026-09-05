@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/control"
 	engine_reconcile "test-auto-pro-v2/internal/engine/reconcile"
@@ -260,11 +261,15 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		}
 	}
 	nodes := map[string]step.NodeInfo{}
+	nodeEditableFields := map[string][]string{}
 	snapshot, snapshotErr := s.pathNodes.Get(ctx, planID, pathID)
 	if snapshotErr == nil {
 		for _, group := range snapshot.Groups {
 			for _, node := range group.Nodes {
-				nodes[node.Key] = step.NodeInfo{Name: node.Name, Type: node.TypeName}
+				nodes[node.Key] = step.NodeInfo{
+					Name: node.Name, Type: node.TypeName, EditableFields: node.EditableFieldKeys,
+				}
+				nodeEditableFields[node.Key] = node.EditableFieldKeys
 			}
 		}
 	}
@@ -277,6 +282,17 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		// 分支选择解析依赖真实结构；结构读不到时不能静默跳过——
 		// 否则提交载荷缺失分支参数，会在目标侧以“手动条件分支,请选择”失败。
 		return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "暂时无法读取真实流程结构，请重试"}
+	}
+	// 配置快照与编译场景用的 nodeKey 是不透明派生键，发给目标匹配不上任何数据；
+	// 这里按同一派生规则把真实节点标识补回节点表，供待办读取、按节点写参数与对账对照使用。
+	for _, graphNode := range graph.Nodes {
+		key := analyzer.PathConfigNodeToken(graphNode.ID)
+		info, exists := nodes[key]
+		if !exists {
+			continue
+		}
+		info.TargetNodeID = graphNode.ID
+		nodes[key] = info
 	}
 	for index, choice := range path.Choices {
 		matched := ""
@@ -308,6 +324,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		SubmitBranchTargetNodeID: submitBranchTarget,
 		Steps:                    steps,
 		EffectiveFormData:        config.EffectiveFormData,
+		NodeEditableFields:       nodeEditableFields,
 	}, nil
 }
 

@@ -29,6 +29,11 @@ func (r *reviewTarget) FindDueFlow(context.Context, target.Session, string) (str
 	return "flow-proxy-1", []string{"node-audit"}, nil, true, nil
 }
 
+// ReadInstanceCurrentData 复核用假件不预设实例表单数据。
+func (r *reviewTarget) ReadInstanceCurrentData(context.Context, target.Session, string) (map[string]any, error) {
+	return nil, nil
+}
+
 // FindDueTaskID 按预设返回待办任务 ID 或读取错误（只读，发生在写请求之前）。
 func (r *reviewTarget) FindDueTaskID(context.Context, target.Session, string, string) (string, error) {
 	return r.dueTaskID, r.dueTaskErr

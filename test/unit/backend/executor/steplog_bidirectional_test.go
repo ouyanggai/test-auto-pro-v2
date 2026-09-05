@@ -82,7 +82,7 @@ func TestF016StepLogBidirectionalReachability(t *testing.T) {
 		FlowProxyID: "flow-proxy-1",
 		Source:      "new",
 		Nodes: map[string]step.NodeInfo{
-			"node-start": {Name: "发起人", Type: "start"},
+			"node-start": {Name: "发起人", Type: "start", TargetNodeID: "node-start"},
 		},
 		Steps:             []model.CompiledActionStep{submitStep()},
 		EffectiveFormData: []byte(`{"amount":"12.30"}`),

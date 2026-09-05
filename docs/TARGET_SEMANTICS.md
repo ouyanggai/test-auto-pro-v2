@@ -574,7 +574,63 @@ deployment=未取得（目标平台不提供版本接口）
 
 ## 11. 表单权限与可见性
 
-状态：未开始。
+状态：已勘定（源码可证明 + 目标库数据分布，2026-09-05 F-024 勘定）。
+
+问题：节点级字段可见与可编辑如何声明，以及一个节点上「用户真实能填哪些字段」如何判定。
+
+结论：
+
+1. **声明位置**：`t_flow_node_field_power_template` 与 `_proxy`，按「节点 × 表单字段」存 `field_power`。
+   枚举是 `FieldPower{only_read, edit, hide}`；目标库实测只出现 `edit`（94454 行）与 `hide`（714 行）。
+   节点树读取接口以 `flowNodeFieldPowerTemplateList` 返回，元素带 `formFieldTemplateEnglishName` 与 `fieldPower`。
+2. **可编辑集合**：目标审批页按 `nodeProxyId` 取本节点权限，`fieldPower != 'hide'` 的字段构成 `enableData`；
+   整张表单先全禁用，再 `generateForm.disabled(enableData, false)` 只放开这批。**未声明的字段保持禁用**，
+   所以「能填什么」由声明决定，不是由字段本身决定。
+3. **必填按权限清理**：不在 `enableData` 里的字段一律去掉 `required` 与 `rules`；本身没设必填的字段
+   即使有权限也不会变必填。
+4. **两条路径约定**：权限里的嵌套字段用 `_$$_` 作分隔符，消费时替换为 `.`；子表单每列权限用
+   `<model>_col` 这个额外字段承载。
+5. **隐藏是累积的**：本节点 `hide` 加上此前已审批节点设过的 `hide`，只影响显示，不影响该节点能编辑什么。
+6. **版本取用**：实例绑定的是代理版本，执行期必须取代理版（按节点），模板改动不影响在跑实例；
+   配置期没有实例，用模板版。
+7. **覆盖面**：目标库 2732 个流程模板中 1718 个存在「某审批节点可编辑、发起节点不可编辑」的字段，
+   因此「配置阶段一次性回填全部数据」在多数流程上都不符合真实用户能做到的事。
+
+```evidence
+file=参考代码/rsh-framework-all/rsh-framework-cloud-commons/src/com/rsh/framework/cloud/commons/workflow/web/model/enums/FieldPower.java
+line=7
+contains=only_read,
+strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=2026-09-05 已核对目标库取值分布（仅 edit 与 hide 出现）
+```
+
+```evidence
+file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/components/EnterpriseExamineDialog.vue
+line=1723
+contains=filter(x=> x.fieldPower != 'hide')
+strength=源码可证明
+head=rsh-cloud-invest-power-system@8a00cb9995df
+deployment=2026-09-05 未取得（前端部署版本未核对）
+```
+
+```evidence
+file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/components/EnterpriseExamineDialog.vue
+line=1620
+contains=this.enableData?.includes(y.model + '_col')
+strength=源码可证明
+head=rsh-cloud-invest-power-system@8a00cb9995df
+deployment=2026-09-05 未取得（前端部署版本未核对）
+```
+
+```evidence
+file=参考代码/rsh-cloud-vue-form-making/src/components/GenerateForm.vue
+line=1575
+contains=disabled (fields, disabled)
+strength=源码可证明
+head=rsh-cloud-vue-form-making@695b2783e226
+deployment=2026-09-05 未取得（前端部署版本未核对）
+```
 
 ## 12. 子流程语义
 
@@ -621,3 +677,80 @@ deployment=2026-09-05 真实提交实测（计划 11 路径 1121，运行 6 拒�
 - `fixedExecuteNodeId` 的并行条件分支行为（本切片未触发并行分支）。
 - 受理后实例在已发列表的可见性延迟：2026-09-05 实测受理成功后即时重读已发列表为空
   （成功声明 + 明确未变 → 按矩阵判不确定 → 待对账），实例可见性与异步落库时序待人工在目标平台核对。
+
+## 16. 表单数据的保存语义（整份覆盖）
+
+状态：已勘定（源码可证明，2026-09-05 F-024 勘定）。
+
+问题：一次写请求携带的 `formDataMongoVo.data` 与实例已存表单数据是合并还是覆盖。
+
+结论：
+
+1. **整份覆盖，不合并。** `FormDataServiceImpl.saveFormData` 在 `dataId` 非空时读出原文档后直接
+   `query.setData(formDataVo.getData())` 再 save；`dataId` 为空时新建一份文档。两条路径都不会把
+   请求缺失的字段从旧数据里补回来。
+2. **审批必定触发保存。** `FlowAuditServiceImpl` 无条件调用 `flowOperate.saveFormData`，随后把返回的
+   `dataId` 写进审核记录与实例。因此审批请求带什么，实例之后的表单数据就是什么。
+3. **目标前端每次提交整份表单模型。** 审批弹窗取 `generateForm.getValues()`（注释说明改用 getValues
+   是为了带上虚拟字段）整份放进 `formDataMongoVo.data`，且不携带 `dataId`。
+4. **对工具的硬约束**：任何携带表单数据的写请求都必须提交「实例当前完整表单数据 + 本节点应改字段」。
+   只带部分字段等于把其余字段清空，这是不可逆的真实数据损坏。
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FormDataServiceImpl.java
+line=404
+contains=query.setData(formDataVo.getData());
+strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=2026-09-05 未在真实环境触发过（工具的同意动作此前从未真实执行）
+```
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowAuditServiceImpl.java
+line=225
+contains=FormDataMongoVo formDataMongoVo = flowOperate.saveFormData(requestProtocol, flowInstanceVo, flowProxyVo);
+strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=2026-09-05 未在真实环境触发过
+```
+
+```evidence
+file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/components/EnterpriseExamineDialog.vue
+line=1804
+contains=let value = this.$refs.generateForm.getValues();
+strength=源码可证明
+head=rsh-cloud-invest-power-system@8a00cb9995df
+deployment=2026-09-05 未取得（前端部署版本未核对）
+```
+
+## 17. 条件求值读取的表单数据来源
+
+状态：已勘定（源码可证明，2026-09-05 F-024 勘定）。
+
+问题：分支条件求值用的是库里已存的表单数据，还是本次写请求带上来的表单数据。
+
+结论：用**本次请求带上来的**。`FlowOperateServiceImpl` 把 `flowInstanceProtocol.getFormDataMongoVo()`
+原样塞进节点分派协议，`FlowNodeProxyServiceImpl.getDataValue` 只对这份数据做一层 `map.get(fieldaName)`
+（不解析嵌套路径，见第 3 节）。请求没带表单数据时目标会构造一个空的 `FormDataMongoVo`，
+于是所有条件字段都取不到值。
+
+对工具的直接含义：发起人无权编辑的条件字段，可以由路线上后续有编辑权限的节点在自己的写请求里带上，
+分支走向会按那次请求的值重新计算。这就是 F-024「分段填写」成立的依据。
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowOperateServiceImpl.java
+line=515
+contains=flowNodeProxyProtocol.setFormDataMongoVo(flowInstanceProtocol.getFormDataMongoVo());
+strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=2026-09-05 已在真实环境间接证实（运行 8 提交携带条件字段后实例移动到所选分支）
+```
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowNodeProxyServiceImpl.java
+line=351
+contains=public Object getDataValue(FormDataMongoVo formDataMongoVo, String key)
+strength=源码可证明
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
+deployment=2026-09-05 已在真实环境间接证实
+```

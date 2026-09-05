@@ -105,18 +105,24 @@ type fakeTargetView struct {
 // fakeTarget 是目标能力的假件：读写调用计数与预设事实都可配置；
 // afterSubmit 用于模拟发起成功后目标事实已经前进。
 type fakeTarget struct {
-	instance         fakeTargetView
-	afterSubmit      *fakeTargetView
-	afterAudit       *fakeTargetView
-	submitted        bool
-	audited          bool
-	dueTaskID        string
-	submitResult     *target.SubmitFlowInstanceResult
-	submitErr        error
-	auditResult      *target.AuditCurrentTaskResult
-	auditErr         error
-	submitCalls      int
-	auditCalls       int
+	instance     fakeTargetView
+	afterSubmit  *fakeTargetView
+	afterAudit   *fakeTargetView
+	submitted    bool
+	audited      bool
+	dueTaskID    string
+	submitResult *target.SubmitFlowInstanceResult
+	submitErr    error
+	auditResult  *target.AuditCurrentTaskResult
+	auditErr     error
+	submitCalls  int
+	auditCalls   int
+	// instanceFormData 是目标实例当前的完整表单数据；instanceDataReads 记录只读读取次数。
+	instanceFormData  map[string]any
+	instanceDataErr   error
+	instanceDataReads int
+	// dueTaskNodeID 记录待办读取实际收到的节点标识，用于锁定"发给目标的是真实标识"。
+	dueTaskNodeID    string
 	findDueTaskCalls int
 }
 
@@ -141,8 +147,18 @@ func (f *fakeTarget) currentView() fakeTargetView {
 	return f.instance
 }
 
-func (f *fakeTarget) FindDueTaskID(context.Context, target.Session, string, string) (string, error) {
+// ReadInstanceCurrentData 返回预设的实例当前表单数据；未预设时按实例尚无数据处理。
+func (f *fakeTarget) ReadInstanceCurrentData(context.Context, target.Session, string) (map[string]any, error) {
+	f.instanceDataReads++
+	if f.instanceDataErr != nil {
+		return nil, f.instanceDataErr
+	}
+	return f.instanceFormData, nil
+}
+
+func (f *fakeTarget) FindDueTaskID(_ context.Context, _ target.Session, _ string, nodeProxyID string) (string, error) {
 	f.findDueTaskCalls++
+	f.dueTaskNodeID = nodeProxyID
 	return f.dueTaskID, nil
 }
 
@@ -177,9 +193,11 @@ func newRunContext(steps []model.CompiledActionStep) step.RunContext {
 		PlanAccount: "oyg-test",
 		FlowProxyID: "flow-proxy-1",
 		Source:      "new",
+		// TargetNodeID 与键同值：真实装配里键是不透明派生键、TargetNodeID 是目标真实节点标识，
+		// 用例只需要保证两者都存在，凡是与目标事实对照的地方都走 TargetNodeID。
 		Nodes: map[string]step.NodeInfo{
-			"node-start": {Name: "发起人", Type: "start"},
-			"node-audit": {Name: "部门审批", Type: "审批"},
+			"node-start": {Name: "发起人", Type: "start", TargetNodeID: "node-start"},
+			"node-audit": {Name: "部门审批", Type: "审批", TargetNodeID: "node-audit"},
 		},
 		Steps:             steps,
 		EffectiveFormData: []byte(`{"amount":"12.30"}`),

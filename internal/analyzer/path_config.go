@@ -480,6 +480,7 @@ func (p *pathConfigProjection) nodeConfig(graphNode model.FlowGraphNode, node *t
 		Key: PathConfigNodeToken(graphNode.ID), Name: graphNode.Name, TypeName: graphNode.TypeName, Kind: graphNode.Type,
 		LineBlocked: blocked, Fields: []model.PathConfigField{}, Gaps: []model.PathConfigGap{},
 		Persons: []model.PathConfigPerson{}, Requirements: []model.RequirementItem{},
+		EditableFieldKeys: nodeEditableFieldKeys(node),
 	}
 	if p.requirements != nil {
 		result.Requirements = pathConfigNodeRequirements(p.requirements.nodeRequirements(graphNode, node))
@@ -760,6 +761,32 @@ func pathConfigStoredPersonSelection(raw string, rawToToken map[string]string) (
 		selected = append(selected, token)
 	}
 	return selected, false, ""
+}
+
+// nodeEditableFieldKeys 原样投影目标在该节点声明为可编辑的表单字段英文名。
+// 与 fieldConfig 的区别是刻意的：这里不做可渲染性过滤也不产生缺口，因为它回答的是
+// "真实用户在这个节点能改哪些字段"（语义清单第 11 条），执行器据此决定写载荷允许覆盖哪些字段；
+// 工具能不能渲染这个字段是另一件事，不能因为渲染不了就当作用户不能改。
+// 嵌套字段的 _$$_ 分隔符归一为 . ，与目标前端消费权限时的处理一致；结果去重并按字典序稳定输出。
+func nodeEditableFieldKeys(node *target.FlowNodeTemplate) []string {
+	if node == nil {
+		return []string{}
+	}
+	seen := make(map[string]bool, len(node.FieldPowers))
+	keys := make([]string, 0, len(node.FieldPowers))
+	for _, power := range node.FieldPowers {
+		if strings.TrimSpace(power.Power) != "edit" {
+			continue
+		}
+		key := strings.TrimSpace(strings.ReplaceAll(power.EnglishName, "_$$_", "."))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // fieldConfig 投影节点字段权限允许编辑且可可靠映射的基础字段，其余项目转为明确缺口。

@@ -18,6 +18,9 @@ type TargetClient interface {
 	FindSubmittedFlow(ctx context.Context, active target.Session, instanceID string) (string, []string, string, []string, bool, error)
 	FindDueFlow(ctx context.Context, active target.Session, instanceID string) (string, []string, []string, bool, error)
 	FindDueTaskID(ctx context.Context, active target.Session, instanceID, nodeProxyID string) (string, error)
+	// ReadInstanceCurrentData 读取实例当前的完整表单数据（只读，可重试）。
+	// 目标保存表单数据是整份覆盖，写请求必须以这份数据为基线（语义清单第 16 条）。
+	ReadInstanceCurrentData(ctx context.Context, active target.Session, instanceID string) (map[string]any, error)
 	SubmitFlowInstance(ctx context.Context, session target.Session, request target.SubmitFlowInstanceRequest) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error)
 	AuditCurrentTask(ctx context.Context, session target.Session, request target.AuditCurrentTaskRequest) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error)
 	// ExecuteActionWrite 是 F-019 全动作写出口：按动作分派端点与载荷。
@@ -52,6 +55,13 @@ type RunFactsStore interface {
 type NodeInfo struct {
 	Name string
 	Type string
+	// TargetNodeID 是这个节点在目标平台的真实节点标识。
+	// 编译场景与配置快照用的 nodeKey 是工具侧的不透明键（哈希派生），不能直接发给目标：
+	// 待办新鲜读取、按节点的写参数都必须用这个真实标识，否则永远匹配不上目标数据。
+	TargetNodeID string
+	// EditableFields 是目标在这个节点声明为可编辑（fieldPower=edit）的表单字段英文名。
+	// 它是本节点写载荷唯一允许覆盖的字段集合（语义清单第 11 条）。
+	EditableFields []string
 }
 
 // RunContext 是一次路径运行的静态上下文：执行期间不变的标识、场景与数据。
@@ -85,6 +95,9 @@ type RunContext struct {
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。
 	// 必须按原始字节透传到写请求，禁止先解码再重新序列化（数字字面量会被改写）。
 	EffectiveFormData []byte
+	// NodeEditableFields 是路线上每个节点声明的可编辑字段（键=编译场景的 nodeKey）。
+	// 与 Nodes 里的同名字段同源，单独留一份是为了在没有节点信息时也能判断"这个字段属于哪个节点"。
+	NodeEditableFields map[string][]string
 }
 
 // InstanceFacts 是一次目标事实读取的快照，用于门禁复验与事实重读对照。
@@ -107,6 +120,9 @@ type StepPreview struct {
 	ActionName string
 	NodeKey    string
 	NodeName   string
+	// TargetNodeID 是本步节点在目标平台的真实标识。NodeKey 是工具侧不透明键，
+	// 凡是要与目标返回的节点集合对照（待办、当前节点、对账）都必须用这个字段。
+	TargetNodeID string
 	// ActorAccount 与 ActorName 是解析出的唯一真实演员；SID 绝不进入本结构或任何展示。
 	ActorAccount string
 	ActorName    string
@@ -130,6 +146,10 @@ type StepPreview struct {
 	Navigation bool
 	// RequestPayload 是放行后将要发出的请求载荷（与预览同源），只在内存流转，含会话无关字段。
 	RequestPayload map[string]any
+	// FormOverlaid 与 FormWithheld 是本步表单数据按节点权限构造的结果：
+	// 覆盖了哪些字段、按权限没带哪些字段。进日志与门禁快照，让"少带了什么"可追溯。
+	FormOverlaid []string
+	FormWithheld []string
 	// request 是构造载荷的那份类型化请求本体；发送时直接使用它，保证预览与实际发出严格同源。
 	request any
 

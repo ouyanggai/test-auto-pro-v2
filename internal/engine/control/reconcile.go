@@ -47,7 +47,8 @@ func (s *Service) ReconcileNow(ctx context.Context, pathRunID uint64) (*Reconcil
 		return nil, err
 	}
 	input := reconcile.Collect(reconcile.FactInput{
-		StepNodeKey:       preview.NodeKey,
+		// 对账要与目标返回的真实节点集合对照，传真实节点标识而不是工具侧不透明键。
+		StepNodeKey:       preview.TargetNodeID,
 		BeforeStatus:      facts.BeforeStatus,
 		BeforeHadInstance: facts.BeforeHadInstance,
 		NowFound:          facts.NowFound,

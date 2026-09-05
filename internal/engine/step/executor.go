@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -102,7 +103,7 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		}
 		preview := &StepPreview{
 			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
-			Action: step.Action, ActionName: "导航校验", NodeKey: step.NodeKey,
+			Action: step.Action, ActionName: "导航校验", NodeKey: step.NodeKey, TargetNodeID: runCtx.Nodes[step.NodeKey].TargetNodeID,
 			NodeName: runCtx.Nodes[step.NodeKey].Name, ActorAccount: runCtx.PlanAccount, ActorName: actorName,
 			GateAllowed: true, Facts: facts, Navigation: true,
 			GateItems: []model.ActionPrecondition{},
@@ -141,6 +142,7 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		Action:         step.Action,
 		ActionName:     catalogItem.Label,
 		NodeKey:        step.NodeKey,
+		TargetNodeID:   info.TargetNodeID,
 		NodeName:       info.Name,
 		ActorAccount:   runCtx.PlanAccount,
 		ActorName:      actorName,
@@ -161,9 +163,34 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		return preview, false, nil
 	}
 
-	// 门禁通过：构造与实际发出的请求严格同源的类型化请求与载荷预览（不含 SID），
+	// 任务级动作必须拿到目标真实节点标识：待办读取、按节点写参数与事实重读都靠它。
+	// 拿不到就停下——空标识会让"待办是否仍在"永远比不上，把没生效的写误判成已前进。
+	if requiresTargetNodeID(step) && strings.TrimSpace(info.TargetNodeID) == "" {
+		preview.BlockReason = "无法解析该节点在目标平台的真实标识，不能安全执行本步"
+		preview.BlockFailureClass = model.FailureClassToolBug
+		log.Phase("gate", step.Sequence, 1, "节点真实标识缺失，拒绝构造写请求："+step.NodeKey)
+		return preview, false, nil
+	}
+
+	// 门禁通过：先按节点权限算出本步要提交的完整表单数据。
+	// 目标保存表单数据是整份覆盖（语义清单第 16 条），基线必须是实例当前数据；
+	// 只覆盖本节点声明可编辑的配置字段，绝不用历史快照盖掉上游处理人填过的内容。
+	formPlan, formErr := e.nodeFormData(ctx, runCtx, step, session)
+	if formErr != nil {
+		log.Phase("gate", step.Sequence, 1, "读取实例当前表单数据失败："+formErr.Error())
+		return e.blockedPreview(runCtx, step, actorName,
+			"无法读取实例当前表单数据，不能构造写请求："+formErr.Error(), model.FailureClassGateBlocked), false, nil
+	}
+	if len(formPlan.Withheld) > 0 || len(formPlan.Overlaid) > 0 {
+		log.Phase("gate", step.Sequence, 1, fmt.Sprintf("表单数据按节点权限构造：基线=%s，覆盖 %d 个字段 %v，按权限未带 %d 个字段 %v",
+			formBaseName(formPlan.BaseFromInstance), len(formPlan.Overlaid), formPlan.Overlaid, len(formPlan.Withheld), formPlan.Withheld))
+	}
+	preview.FormOverlaid = formPlan.Overlaid
+	preview.FormWithheld = formPlan.Withheld
+
+	// 构造与实际发出的请求严格同源的类型化请求与载荷预览（不含 SID），
 	// 并在发送前校验禁用字段（batchCode 禁令）。
-	request, endpoint, payload, requestErr := buildRequest(runCtx, step, session)
+	request, endpoint, payload, requestErr := buildRequest(runCtx, step, session, formPlan.Payload)
 	if requestErr != nil {
 		preview.BlockReason = "构造写请求失败：" + requestErr.Error()
 		preview.BlockFailureClass = model.FailureClassToolBug
@@ -184,6 +211,40 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	return preview, false, nil
 }
 
+// requiresTargetNodeID 判断这一步是否必须拿到目标真实节点标识。
+// 发起作用于整个实例、没有节点级参数也没有待办可对照，因此不要求；
+// 其余动作要么带节点级参数，要么要按本节点待办判定写是否生效，缺标识一律不许执行。
+func requiresTargetNodeID(compiled model.CompiledActionStep) bool {
+	return compiled.Action != model.ActionSubmit
+}
+
+// nodeFormData 读取实例当前表单数据并按节点权限构造本步要提交的完整表单数据。
+// 读取属只读阶段，允许有界重试；不携带表单数据的动作直接返回空计划，不做无意义的读取。
+func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled model.CompiledActionStep, session target.Session) (FormDataPlan, error) {
+	if !ActionCarriesFormData(compiled.Action) {
+		return FormDataPlan{}, nil
+	}
+	var current map[string]any
+	if instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef); instanceRef != "" {
+		read, err := RunWithRetry(ctx, e.policy, "实例表单数据读取", func() (map[string]any, error) {
+			return e.target.ReadInstanceCurrentData(ctx, session, instanceRef)
+		}, nil)
+		if err != nil {
+			return FormDataPlan{}, err
+		}
+		current = read
+	}
+	return BuildNodeFormData(runCtx, compiled, current)
+}
+
+// formBaseName 返回表单数据基线的中文说明，供 step.log 一眼看出这份载荷是从哪来的。
+func formBaseName(fromInstance bool) string {
+	if fromInstance {
+		return "目标实例当前数据"
+	}
+	return "发起态完整表单模型"
+}
+
 // blockedPreview 构造被阻塞的预览：说明中文原因与失败分类，路径必须停止。
 func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionStep, actorName, reason string, class model.FailureClass) *StepPreview {
 	info := runCtx.Nodes[step.NodeKey]
@@ -193,6 +254,7 @@ func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionSt
 		TotalSteps:        len(runCtx.Steps),
 		Action:            step.Action,
 		NodeKey:           step.NodeKey,
+		TargetNodeID:      info.TargetNodeID,
 		NodeName:          info.Name,
 		ActorAccount:      runCtx.PlanAccount,
 		ActorName:         actorName,
@@ -405,11 +467,14 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, 0, err
 	}
 	reportPhase(approved, "verify", "正在重读目标事实并做三值判定")
+	// 重读对照一律用目标真实节点标识：目标返回的当前节点与待办都是真实标识，
+	// 拿工具侧不透明键去比会永远"待办已消失"，把没生效的写误判成已前进。
+	stepTargetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
 	before := preview.Facts
-	before.StepNodeKey = step.NodeKey
+	before.StepNodeKey = stepTargetNodeID
 	after, _ := e.readFactsWithRetry(ctx, runCtx, session, step)
-	after.StepNodeKey = step.NodeKey
-	reread := ClassifyReread(string(step.Action), step.NodeKey, before, after)
+	after.StepNodeKey = stepTargetNodeID
+	reread := ClassifyReread(string(step.Action), stepTargetNodeID, before, after)
 	observation := buildObservation(preview.Endpoint, preview.writeErr, preview.writeResponse, reread)
 	observation.Action = string(step.Action)
 	verdictResult := verdict.Evaluate(observation)
@@ -508,7 +573,8 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
 	case *target.AuditCurrentTaskRequest:
 		started := e.now()
-		jobTaskID, err := e.target.FindDueTaskID(ctx, session, runCtx.PathRun.MainInstanceRef, step.NodeKey)
+		// 待办按目标真实节点标识精确定位：step.NodeKey 是工具侧不透明键，发给目标永远匹配不上。
+		jobTaskID, err := e.target.FindDueTaskID(ctx, session, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
 		if err != nil {
 			// 待办读取失败（目标抖动或响应形状不符）：写请求未发出，按演员/待办解析失败如实归类。
 			preview.writeErr = err
@@ -564,7 +630,8 @@ func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log 
 // readFactsWithRetry 重读目标实时事实（只读，可重试）；重试预算耗尽后返回最后的读取错误。
 func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep) (InstanceFacts, error) {
 	return RunWithRetry(ctx, e.policy, "事实重读", func() (InstanceFacts, error) {
-		return e.readInstanceFacts(ctx, session, runCtx.PathRun.MainInstanceRef, step.NodeKey)
+		// 事实重读要与目标返回的真实节点标识对照，因此传真实标识而不是工具侧不透明键。
+		return e.readInstanceFacts(ctx, session, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
 	}, nil)
 }
 

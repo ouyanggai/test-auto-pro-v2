@@ -56,8 +56,12 @@ func evaluateGate(step model.CompiledActionStep, ctx model.ActionContext) (model
 // buildRequest 构造本步的类型化写请求与其协议载荷（载荷由适配层导出的构造器生成，
 // 与实际发出的请求严格同源）。审批任务 ID 不在此处填写：它必须在发送前现场新鲜读取。
 // 端点必须落在白名单内；未验证动作直接拒绝，绝不静默换端点。
-func buildRequest(runCtx RunContext, step model.CompiledActionStep, session target.Session) (any, string, map[string]any, error) {
+//
+// formData 是 BuildNodeFormData 已按节点权限算好的完整表单数据：目标保存是整份覆盖，
+// 所以除了明确不带表单数据的动作，这里一律提交这一份，不再直接透传历史快照。
+func buildRequest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage) (any, string, map[string]any, error) {
 	nextAuditors := nextAuditorsOf(step)
+	targetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
 	switch step.Action {
 	case model.ActionSubmit:
 		// 手动条件分支（custom_choose）的选择必须随提交以 nextAuditorList[].nodeProxyId 传递
@@ -71,7 +75,7 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 			Name:         instanceName(runCtx, step),
 			FlowProxyID:  runCtx.FlowProxyID,
 			CompanyID:    session.CompanyID,
-			FormData:     json.RawMessage(runCtx.EffectiveFormData),
+			FormData:     formData,
 			NextAuditors: auditors,
 		}
 		return &request, target.WriteEndpointSubmit, target.BuildSubmitBody(request), nil
@@ -81,7 +85,7 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 			FlowProxyID:  runCtx.FlowProxyID,
 			AuditStatus:  "pass",
 			ExecuteDesc:  auditMessage(runCtx, step),
-			FormData:     branchFormData(step),
+			FormData:     formData,
 			NextAuditors: nextAuditors,
 		}
 		return &request, target.WriteEndpointAudit, target.BuildAuditBody(request), nil
@@ -92,17 +96,17 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 			Action:       string(step.Action),
 			InstanceID:   runCtx.PathRun.MainInstanceRef,
 			FlowProxyID:  runCtx.FlowProxyID,
-			FormData:     json.RawMessage(runCtx.EffectiveFormData),
+			FormData:     formData,
 			NextAuditors: nextAuditors,
 		}
 		switch step.Action {
 		case model.ActionReject, model.ActionTransfer, model.ActionAddSign:
 			request.AuditStatus = auditStatusOf(step.Action)
 			request.ExecuteDesc = auditMessage(runCtx, step)
-			request.NodeProxyID = step.NodeKey
+			request.NodeProxyID = targetNodeID
 		case model.ActionStorageFormData:
 			request.ExecuteDesc = auditMessage(runCtx, step)
-			request.NodeProxyID = step.NodeKey
+			request.NodeProxyID = targetNodeID
 		case model.ActionRollback:
 			request.JobTaskID = "" // 发送前按待办现场新鲜读取
 			request.ExecuteDesc = auditMessage(runCtx, step)
@@ -184,16 +188,6 @@ func auditMessage(runCtx RunContext, step model.CompiledActionStep) string {
 		}
 	}
 	return "流程自动化测试平台代为同意（运行" + formatUint(runCtx.Run.RunNo) + "）"
-}
-
-// branchFormData 提取分支判断字段：条件字段在放行前可能被人工调整，参数里的 branchFormData
-// 是控制层确认过的最终值，按原始 JSON 透传。
-func branchFormData(step model.CompiledActionStep) json.RawMessage {
-	raw, err := json.Marshal(step.Parameters["branchFormData"])
-	if err != nil || len(raw) == 0 || string(raw) == "null" {
-		return nil
-	}
-	return raw
 }
 
 // validateWritePayloadKeys 递归收集载荷里的全部键名并交给判定包校验，

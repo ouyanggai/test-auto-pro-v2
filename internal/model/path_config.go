@@ -122,6 +122,11 @@ type PathConfigNode struct {
 	Requirements        []RequirementItem             `json:"requirements"`
 	ActionConfiguration PathConfigActionConfiguration `json:"actionConfiguration"`
 	LineBlocked         bool                          `json:"lineBlocked"`
+	// EditableFieldKeys 是目标在这个节点上声明为可编辑（fieldPower=edit）的表单字段英文名，
+	// 直接来自目标节点声明，不做可渲染性过滤：它决定"真实用户在这个节点能改哪些字段"，
+	// 也是执行器构造写载荷时唯一允许覆盖的字段集合（语义清单第 11 条）。
+	// 嵌套字段的 _$$_ 分隔符已归一为 . ，与目标前端消费权限时的处理一致。
+	EditableFieldKeys []string `json:"editableFieldKeys"`
 }
 
 // PathConfigPerson 是模板约束下的处理人呈现；只有 editable=true 时浏览器才允许回写候选。
