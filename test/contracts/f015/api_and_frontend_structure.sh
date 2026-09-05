@@ -40,13 +40,8 @@ grep -qF 'data-testid="run-readiness-blocks"' "${panel}" || fail '预检弹窗�
 grep -qF 'data-testid="run-readiness-reminders"' "${panel}" || fail '预检弹窗缺少提醒分区'
 grep -qF 'data-testid="plan-run-button"' web/src/views/PlanPathsView.vue || fail '计划页缺少运行按钮'
 grep -qF 'pathIds' web/src/features/run-readiness/api.ts || fail '预检必须只检查勾选路径'
-# 本切片不交付启动运行：弹窗里只允许出现明确禁用的占位按钮，不得有可点击的启动入口。
-if grep -qE '运行模式|单步|运行记录' "${panel}"; then
-  fail '本切片界面不得出现运行模式、单步或运行记录入口'
-fi
-if grep -q '开始运行' "${panel}" && ! grep -q 'disabled' "${panel}"; then
-  fail '开始运行按钮必须是禁用占位，本切片不交付启动运行'
-fi
+# 2026-09-05 更新：F-016 已交付启动运行、F-017 已交付运行模式三选一，预检弹窗包含运行模式与开始运行
+# 属现行产品行为；本脚本不再把「本切片当时未交付启动」当成永久边界反向锁定。
 # 界面只出现业务语言：不允许把内部稳定键当文案，也不允许出现内部术语。
 if grep -qE '历史来源|历史回放|success_claim|confirmed_failure' "${panel}"; then
   fail '界面出现了内部术语或内部稳定键'
