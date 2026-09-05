@@ -12,6 +12,8 @@ import (
 var (
 	// ErrRunNotFound 表示运行或路径运行不存在。
 	ErrRunNotFound = errors.New("运行记录不存在")
+	// ErrRunInvalidInput 表示启动输入不合法（如未勾选任何路径）。
+	ErrRunInvalidInput = errors.New("运行启动输入不合法")
 	// ErrRunStatusConflict 表示状态迁移被拒绝：状态只前进不回退，终态不可离开。
 	ErrRunStatusConflict = errors.New("运行状态不允许该变更")
 	// ErrLeaseHeld 表示同一路径运行已被其他 Worker 持有有效租约。
@@ -22,6 +24,19 @@ var (
 
 // RunStore 是运行记录（runs、path_runs、run_events）的持久化边界。
 // 纪律：事实表只 INSERT；聚合表状态列单向前进，且每次更新与事件行在同一事务内提交。
+// CreateRunInput 是一次启动的持久化输入：勾选路径集合在创建时固化（F-020 调度约束）。
+type CreateRunInput struct {
+	PlanID           uint64
+	ExecutionPathIDs []uint64
+	Mode             model.RunMode
+	Trigger          model.RunTriggerKind
+	MaxConcurrency   *int
+	// IdempotencyKey 非空时按（计划, 键）唯一约束幂等：同键重试返回已有运行，绝不创建第二份。
+	IdempotencyKey string
+	// PresetBreakpoints 是预置断点集合的原始 JSON：每条路径运行开始时重放同一预置。
+	PresetBreakpoints string
+}
+
 type RunStore interface {
 	// CreateRun 创建一次运行并在计划内单调递增分配运行号；本切片同时创建唯一的路径运行（等待运行）。
 	CreateRun(ctx context.Context, planID uint64, executionPathID uint64, mode model.RunMode, trigger model.RunTriggerKind, maxConcurrency *int, now time.Time) (model.Run, model.PathRun, error)
@@ -29,8 +44,19 @@ type RunStore interface {
 	GetRun(ctx context.Context, runID uint64) (model.Run, error)
 	// GetPathRun 读取路径运行聚合。
 	GetPathRun(ctx context.Context, pathRunID uint64) (model.PathRun, error)
-	// GetPathRunByRun 读取一次运行下的路径运行（本切片一次运行只跑一条路径）。
+	// GetPathRunByRun 读取一次运行下的路径运行（单路径运行；多路径下作为兼容回退取第一条）。
 	GetPathRunByRun(ctx context.Context, runID uint64) (model.PathRun, error)
+	// CreateRunWithPaths 创建一次运行并按勾选路径集合批量创建路径运行（F-020）。
+	// 幂等键非空且命中已有运行时原样返回那次运行，绝不创建第二份运行或路径实例。
+	CreateRunWithPaths(ctx context.Context, input CreateRunInput) (model.Run, []model.PathRun, error)
+	// ListPathRunsByRun 按运行列出全部路径运行（按创建顺序）。
+	ListPathRunsByRun(ctx context.Context, runID uint64) ([]model.PathRun, error)
+	// ListRunIDsNeedingScheduling 列出仍在运行中且带等待路径的运行 ID（调度器输入）。
+	ListRunIDsNeedingScheduling(ctx context.Context) ([]uint64, error)
+	// ListDueScheduledPlans 列出到点尚未消费的计划（数据库时间为准，F-020 定时触发）。
+	ListDueScheduledPlans(ctx context.Context, now time.Time) ([]model.Plan, error)
+	// ClaimScheduledPlan 原子领取到点计划的一次性消费标记；返回是否领取成功。
+	ClaimScheduledPlan(ctx context.Context, planID uint64, now time.Time) (bool, error)
 	// ListRunsByPlan 按计划列出运行（运行号倒序），供运行列表使用。
 	ListRunsByPlan(ctx context.Context, planID uint64, limit int) ([]model.Run, error)
 	// ListRunSteps 按路径运行列出已落账步骤（按步骤序号升序）。

@@ -94,6 +94,10 @@ export interface PathRunDetail {
   pauseRequested: boolean
   // pathChoices 是这条路径已保存的分支选择（分支节点 ID + 分支 ID），画布遍历分析的输入。
   pathChoices?: Array<{ routeNodeId: string; branchId: string }>
+  // 运行级信息（F-020）：调度方式、并发说明与全部路径运行摘要。
+  runScheduleName?: string
+  runConcurrencyLabel?: string
+  paths?: RunPathSummary[]
   // currentPhase/currentPhaseNote 是当前步实时阶段与中文补充；currentPhaseSince 是进入时刻。
   currentPhase?: string
   currentPhaseNote?: string
@@ -110,6 +114,10 @@ export interface RunSummary {
   finishedAt?: string
   pathRunId: number
   pathRunStatusName: string
+  // 运行级摘要（F-020）：调度方式与路径状态中文汇总。
+  scheduleName?: string
+  pathsSummary?: string
+  pathRunCount?: number
 }
 
 // 运行 API 错误：文案与后端同源，只在网络层失败时给前端兜底中文。
@@ -158,8 +166,9 @@ export function fetchPlanRuns(planId: string, signal?: AbortSignal): Promise<Run
 }
 
 // fetchRunDetail 读取路径运行详情。
-export function fetchRunDetail(runId: string, signal?: AbortSignal): Promise<PathRunDetail> {
-  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}`, { method: 'GET' }, signal)
+export function fetchRunDetail(runId: string, signal?: AbortSignal, pathRunId?: number): Promise<PathRunDetail> {
+  const query = pathRunId ? `?pathRunId=${pathRunId}` : ''
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}${query}`, { method: 'GET' }, signal)
 }
 
 // ReconcileView 是只读对账的结论：三值、唯一动作与逐维度依据。
@@ -198,18 +207,44 @@ export interface BreakpointInput {
   action?: string
 }
 
-// startRun 按模式与预置断点启动一次运行（F-017：模式三选一，默认单步由后端兜底）。
-export function startRun(planId: string, executionPathId: string, mode = 'single_step', breakpoints: BreakpointInput[] = []): Promise<PathRunDetail> {
-  return requestOnce<PathRunDetail>(`/api/plans/${encodeURIComponent(planId)}/runs`, {
+// RunPathSummary 是一条路径运行在运行级视图里的摘要。
+export interface RunPathSummary {
+  pathRunId: number
+  pathId: number
+  pathName: string
+  statusName: string
+  resultName?: string
+  mainInstanceRef?: string
+}
+
+// RunStartResult 是多路径启动的公开结果（F-020）。
+export interface RunStartResult {
+  runId: number
+  runNo: number
+  modeName: string
+  scheduleName: string
+  concurrencyLabel: string
+  paths: RunPathSummary[]
+}
+
+// startRun 按勾选路径集合启动一次运行（F-020 多路径；F-017 模式三选一，默认单步由后端兜底）。
+// idempotencyKey 由调用方生成：同键重试返回同一次运行，绝不创建第二个运行。
+export function startRun(planId: string, pathIds: string[], mode = 'single_step', breakpoints: BreakpointInput[] = [], idempotencyKey = ''): Promise<RunStartResult> {
+  return requestOnce<RunStartResult>(`/api/plans/${encodeURIComponent(planId)}/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ planId: Number(planId), executionPathId: Number(executionPathId), mode, breakpoints }),
+    body: JSON.stringify({ planId: Number(planId), pathIds: pathIds.map(Number), mode, breakpoints, idempotencyKey }),
   })
 }
 
+// pathRunQuery 把可选的路径运行身份拼成查询串（多路径运行的控制寻址）。
+function pathRunQuery(pathRunId?: number): string {
+  return pathRunId ? `?pathRunId=${pathRunId}` : ''
+}
+
 // approveRun 按命令放行：命令携带步游标与控制版本（条件写、幂等：重复点击只产生一次效果）。
-export function approveRun(runId: string, command = 'step', cursor = 0, controlVersion = 0): Promise<PathRunDetail> {
-  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/approve`, {
+export function approveRun(runId: string, command = 'step', cursor = 0, controlVersion = 0, pathRunId?: number): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/approve${pathRunQuery(pathRunId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ command, cursor, controlVersion }),
@@ -217,16 +252,16 @@ export function approveRun(runId: string, command = 'step', cursor = 0, controlV
 }
 
 // setBreakpoint / removeBreakpoint 运行中增删断点，即时生效并即时可见。
-export function setBreakpoint(runId: string, bp: BreakpointInput): Promise<BreakpointInput[]> {
-  return requestOnce<BreakpointInput[]>(`/api/runs/${encodeURIComponent(runId)}/breakpoints`, {
+export function setBreakpoint(runId: string, bp: BreakpointInput, pathRunId?: number): Promise<BreakpointInput[]> {
+  return requestOnce<BreakpointInput[]>(`/api/runs/${encodeURIComponent(runId)}/breakpoints${pathRunQuery(pathRunId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bp),
   })
 }
 
-export function removeBreakpoint(runId: string, bp: BreakpointInput): Promise<BreakpointInput[]> {
-  return requestOnce<BreakpointInput[]>(`/api/runs/${encodeURIComponent(runId)}/breakpoints`, {
+export function removeBreakpoint(runId: string, bp: BreakpointInput, pathRunId?: number): Promise<BreakpointInput[]> {
+  return requestOnce<BreakpointInput[]>(`/api/runs/${encodeURIComponent(runId)}/breakpoints${pathRunQuery(pathRunId)}`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bp),
@@ -234,13 +269,13 @@ export function removeBreakpoint(runId: string, bp: BreakpointInput): Promise<Br
 }
 
 // reconcileNow 触发只读对账（可重复调用，安全）。
-export function reconcileNow(runId: string): Promise<ReconcileView> {
-  return requestOnce<ReconcileView>(`/api/runs/${encodeURIComponent(runId)}/reconcile`, { method: 'POST' })
+export function reconcileNow(runId: string, pathRunId?: number): Promise<ReconcileView> {
+  return requestOnce<ReconcileView>(`/api/runs/${encodeURIComponent(runId)}/reconcile${pathRunQuery(pathRunId)}`, { method: 'POST' })
 }
 
 // recoveryAction 执行对账给出的唯一合法动作。
-export function recoveryAction(runId: string, action: string, manual?: { instanceStatus: string; currentNode: string; note: string; reporter: string }): Promise<PathRunDetail> {
-  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/recovery`, {
+export function recoveryAction(runId: string, action: string, manual?: { instanceStatus: string; currentNode: string; note: string; reporter: string }, pathRunId?: number): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/recovery${pathRunQuery(pathRunId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, ...(manual || {}) }),
@@ -248,15 +283,15 @@ export function recoveryAction(runId: string, action: string, manual?: { instanc
 }
 
 // requestPause 提交暂停请求（本步走完核验与落账后生效）。
-export function requestPause(runId: string): Promise<unknown> {
-  return requestOnce<unknown>(`/api/runs/${encodeURIComponent(runId)}/pause`, { method: 'POST' })
+export function requestPause(runId: string, pathRunId?: number): Promise<unknown> {
+  return requestOnce<unknown>(`/api/runs/${encodeURIComponent(runId)}/pause${pathRunQuery(pathRunId)}`, { method: 'POST' })
 }
 
 
 
 // stopRun 停止路径运行。
-export function stopRun(runId: string): Promise<PathRunDetail> {
-  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' })
+export function stopRun(runId: string, pathRunId?: number): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/stop${pathRunQuery(pathRunId)}`, { method: 'POST' })
 }
 
 // formatElapsed 把毫秒格式化为中文可读时长。

@@ -68,19 +68,24 @@ async function runCheck() {
   }
 }
 
-// startSingleRun 启动第一条可执行路径的运行（F-016 交付，F-017 扩为三模式）：
-// 启动前服务端会再次复验运行准备结论。只启动勾选路径里的第一条可执行路径，多路径调度属 F-020。
-async function startSingleRun() {
-  const target = (readiness.value?.paths ?? []).find(path => path.runnable)
-  if (!target || starting.value) return
+// startSelectedRun 启动全部勾选且可执行的路径（F-020 多路径）：
+// 串并方式来自计划配置，调度与失败隔离由后端负责；启动前服务端会再次复验运行准备结论。
+// 幂等键每次启动生成一次：同一次点击的重试不会创建第二个运行。
+async function startSelectedRun() {
+  const targets = (readiness.value?.paths ?? []).filter(path => path.runnable)
+  if (targets.length === 0 || starting.value) return
   starting.value = true
   startError.value = ''
   try {
-    const detail = await startRun(props.planId, String(target.pathId), mode.value, [
-      ...(firstWriteBreakpoint.value ? [{ type: 'first_write' }] : []),
-    ])
+    const result = await startRun(
+      props.planId,
+      targets.map(path => String(path.pathId)),
+      mode.value,
+      [...(firstWriteBreakpoint.value ? [{ type: 'first_write' }] : [])],
+      crypto.randomUUID(),
+    )
     emit('update:show', false)
-    router.push(`/runs/${detail.runId}`)
+    router.push(`/runs/${result.runId}`)
   }
   catch (caught) {
     startError.value = caught instanceof RunReadinessApiError || caught instanceof Error ? caught.message : '启动失败，请重试'
@@ -186,14 +191,14 @@ watch(() => props.show, (open) => {
       <n-space justify="end">
         <n-button size="small" :loading="loading" @click="runCheck">重新检查</n-button>
         <n-button size="small" @click="emit('update:show', false)">关闭</n-button>
-        <!-- F-016 交付：运行前检查通过后可启动运行，启动后进入路径运行详情。 -->
+        <!-- F-016/F-020：运行前检查通过后启动全部勾选的可执行路径，多路径按计划配置串行或并行。 -->
         <n-button
           size="small"
           type="primary"
           :loading="starting"
           :disabled="!allClear"
-          :title="allClear ? '按所选模式启动第一条可执行路径' : '存在阻塞项，不能启动'"
-          @click="startSingleRun"
+          :title="allClear ? '按所选模式启动全部勾选的可执行路径' : '存在阻塞项，不能启动'"
+          @click="startSelectedRun"
         >开始运行</n-button>
       </n-space>
     </template>

@@ -70,7 +70,7 @@ func TestF016RunsAPIGuards(t *testing.T) {
 	controlService := control.NewService(runState, executor, runStore, time.Now)
 	orchestrator := service.NewRunOrchestrationService(
 		planService, pathRepository, graphReader, historyWorkspaceStore,
-		readiness, controlService, runStore, logRouter, runConfig, pathConfigService, time.Now,
+		readiness, controlService, runStore, runState, logRouter, runConfig, pathConfigService, time.Now,
 	)
 	handler := api.NewHandlerWithRunControl(http.NewServeMux(), orchestrator)
 

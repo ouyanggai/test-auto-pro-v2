@@ -2,7 +2,7 @@
 import { NButton, NEmpty, NForm, NFormItem, NInput, NInputNumber, NPopconfirm, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
 import type { FormInst, FormRules } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import type { FlowGraph } from '../features/flow-graph/types'
@@ -27,7 +27,19 @@ import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
 // RunDetailView 是路径运行详情：运行画布为主体，顶部固定条控制放行与停止。
 // 放行会发出真实写请求：只接受明确点击，不绑定单键快捷键。
 const route = useRoute()
+const router = useRouter()
 const runId = String(route.params.runId || '')
+// selectedPathRunID 是多路径运行里当前查看的路径运行（路由查询 ?path=）；缺省由后端取第一条。
+const selectedPathRunID = ref<number>(Number(route.query.path || 0) || 0)
+
+// switchPathRun 切换查看的路径运行：写回路由让刷新与分享保留选择，随后重读详情。
+function switchPathRun(pathRunID: number) {
+  if (pathRunID === selectedPathRunID.value) return
+  selectedPathRunID.value = pathRunID
+  reconcileView.value = null
+  void router.replace({ query: { ...route.query, path: pathRunID ? String(pathRunID) : undefined } })
+  void loadDetail()
+}
 const themeVars = useThemeVars()
 
 const detail = ref<PathRunDetail | null>(null)
@@ -98,7 +110,7 @@ async function doReconcile(): Promise<void> {
   reconciling.value = true
   errorText.value = ''
   try {
-    reconcileView.value = await reconcileNow(runId)
+    reconcileView.value = await reconcileNow(runId, detail.value?.pathRunId)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '对账失败，请重试'
   } finally {
@@ -112,7 +124,7 @@ async function runRecovery(action: string): Promise<void> {
   reconciling.value = true
   try {
     const manual = action === 'manual_end' ? manualForm.value : undefined
-    detail.value = await recoveryAction(runId, action, manual)
+    detail.value = await recoveryAction(runId, action, manual, detail.value?.pathRunId)
     reconcileView.value = null
     lastUpdateAt.value = Date.now()
   } catch (error) {
@@ -153,7 +165,7 @@ async function runCommand(command: string): Promise<void> {
   looping.value = true
   errorText.value = ''
   try {
-    detail.value = await approveRun(runId, command, detail.value.currentStepNo, detail.value.controlVersion)
+    detail.value = await approveRun(runId, command, detail.value.currentStepNo, detail.value.controlVersion, detail.value?.pathRunId)
     syncControl(detail.value)
     lastUpdateAt.value = Date.now()
   } catch (error) {
@@ -172,7 +184,7 @@ async function pauseNow(): Promise<void> {
   if (pausing.value) return
   pausing.value = true
   try {
-    await requestPause(runId)
+    await requestPause(runId, detail.value?.pathRunId)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '暂停请求失败，请重试'
   } finally {
@@ -184,7 +196,7 @@ async function pauseNow(): Promise<void> {
 async function addNodeBreakpoint(): Promise<void> {
   if (!selectedNodeKey.value) return
   try {
-    const list = await setBreakpoint(runId, { type: 'node', nodeKey: selectedNodeKey.value })
+    const list = await setBreakpoint(runId, { type: 'node', nodeKey: selectedNodeKey.value }, detail.value?.pathRunId)
     applyBreakpoints(list)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '设置断点失败'
@@ -194,7 +206,7 @@ async function addNodeBreakpoint(): Promise<void> {
 // deleteBreakpoint 删除一个断点（路径偏离断点由后端拒绝并给中文原因）。
 async function deleteBreakpoint(bp: BreakpointInput): Promise<void> {
   try {
-    const list = await removeBreakpoint(runId, bp)
+    const list = await removeBreakpoint(runId, bp, detail.value?.pathRunId)
     applyBreakpoints(list)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '删除断点失败'
@@ -255,7 +267,7 @@ function actionLabel(action: string): string {
 async function addStepBreakpoint(): Promise<void> {
   if (!newBreakpointStep.value) return
   try {
-    applyBreakpoints(await setBreakpoint(runId, { type: 'step', stepNo: newBreakpointStep.value }))
+    applyBreakpoints(await setBreakpoint(runId, { type: 'step', stepNo: newBreakpointStep.value }, detail.value?.pathRunId))
     newBreakpointStep.value = null
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '设置步骤断点失败'
@@ -265,7 +277,7 @@ async function addStepBreakpoint(): Promise<void> {
 async function addActionBreakpoint(): Promise<void> {
   if (!newBreakpointAction.value) return
   try {
-    applyBreakpoints(await setBreakpoint(runId, { type: 'action', action: newBreakpointAction.value }))
+    applyBreakpoints(await setBreakpoint(runId, { type: 'action', action: newBreakpointAction.value }, detail.value?.pathRunId))
     newBreakpointAction.value = null
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '设置动作断点失败'
@@ -373,7 +385,7 @@ async function loadDetail(): Promise<void> {
   }
   loading.value = !detail.value
   try {
-    const next = await fetchRunDetail(runId)
+    const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
     detail.value = next
     syncControl(next)
     lastUpdateAt.value = Date.now()
@@ -411,7 +423,7 @@ function schedulePoll(): void {
   if (terminalStatuses.includes(detail.value.pathRunStatusName)) return
   pollTimer = window.setTimeout(async () => {
     try {
-      const next = await fetchRunDetail(runId)
+      const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
       detail.value = next
       syncControl(next)
       lastUpdateAt.value = Date.now()
@@ -455,7 +467,7 @@ async function approve(): Promise<void> {
   actionText.value = ''
   errorText.value = ''
   try {
-    detail.value = await approveRun(runId)
+    detail.value = await approveRun(runId, 'step', detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
     lastUpdateAt.value = Date.now()
     await nextTick()
     if (currentNodeKey.value && !followPaused.value) {
@@ -477,7 +489,7 @@ async function stopRunAction(): Promise<void> {
   actionText.value = ''
   errorText.value = ''
   try {
-    detail.value = await stopRun(runId)
+    detail.value = await stopRun(runId, detail.value?.pathRunId)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '停止失败，请重试'
   } finally {
@@ -616,6 +628,25 @@ onBeforeUnmount(() => {
         :current-phase-note="detail?.currentPhaseNote"
       />
     </header>
+    <!-- F-020 多路径运行：路径切换区。每条路径独立状态与结果，点击切换画布与侧栏，不新建第二套详情页。 -->
+    <div v-if="detail && (detail.paths?.length ?? 0) > 1" class="run-detail__paths" role="tablist" aria-label="路径运行列表">
+      <button
+        v-for="path in detail.paths"
+        :key="path.pathRunId"
+        type="button"
+        class="run-detail__path"
+        :class="{ 'run-detail__path--active': path.pathRunId === (detail.pathRunId || selectedPathRunID) }"
+        role="tab"
+        :aria-selected="path.pathRunId === (detail.pathRunId || selectedPathRunID)"
+        @click="switchPathRun(path.pathRunId)"
+      >
+        <span class="run-detail__path-name">{{ path.pathName }}</span>
+        <span class="run-detail__path-status">{{ path.statusName }}<template v-if="path.resultName"> · {{ path.resultName }}</template></span>
+      </button>
+    </div>
+    <p v-if="detail && detail.runConcurrencyLabel && (detail.paths?.length ?? 0) > 1" class="run-detail__schedule" role="status">
+      调度方式：{{ detail.runScheduleName }}（{{ detail.runConcurrencyLabel }}）
+    </p>
     <p v-if="detail && detail.stopReason" class="run-detail__stop-reason" role="status">为什么停在这里：{{ detail.stopReason }}</p>
     <p v-if="detail && detail.structureNote" class="run-detail__structure-note" role="status">{{ detail.structureNote }}</p>
     <div
@@ -953,6 +984,40 @@ onBeforeUnmount(() => {
 .run-detail__reconcile-verdict { font-weight: 600; }
 .run-detail__reconcile-note { color: var(--warning-color, #f0a020); }
 .run-detail__manual-form { display: grid; gap: 6px; max-width: 420px; }
+
+.run-detail__paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.run-detail__path {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid v-bind('themeVars.borderColor');
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 6px 10px;
+}
+
+.run-detail__path--active {
+  border-color: v-bind('themeVars.primaryColor');
+  color: v-bind('themeVars.primaryColor');
+}
+
+.run-detail__path-name { font-weight: 500; }
+.run-detail__path-status { font-size: 12px; opacity: 0.8; }
+
+.run-detail__schedule {
+  margin: 0 0 8px;
+  color: v-bind('themeVars.textColor3');
+}
 
 .run-detail__structure-note {
   margin: 0;

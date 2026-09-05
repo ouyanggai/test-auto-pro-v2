@@ -63,7 +63,7 @@ func TestF016RunControlResolvesRunIDToPathRun(t *testing.T) {
 	controlService := control.NewService(runState, executor, runStore, time.Now)
 	orchestrator := service.NewRunOrchestrationService(
 		planService, pathRepository, graphReader, historyWorkspaceStore,
-		readiness, controlService, runStore, logging.NewRouter(t.TempDir(), time.Now), runConfig, nil, time.Now,
+		readiness, controlService, runStore, runState, logging.NewRouter(t.TempDir(), time.Now), runConfig, nil, time.Now,
 	)
 
 	// 第一次运行（run 1 / path_run 1），再补一条同运行下的额外路径运行（path_run 2）制造序列错位。
@@ -104,7 +104,7 @@ func TestF016RunControlResolvesRunIDToPathRun(t *testing.T) {
 		t.Fatalf("预置错位断点事实失败：%v", err)
 	}
 
-	breakpoints, err := orchestrator.ListBreakpoints(ctx, secondRun.ID)
+	breakpoints, err := orchestrator.ListBreakpoints(ctx, secondRun.ID, 0)
 	if err != nil {
 		t.Fatalf("按运行 ID 读取断点失败：%v", err)
 	}

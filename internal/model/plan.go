@@ -33,10 +33,12 @@ type Plan struct {
 	RunMode            string
 	MaxConcurrency     *int
 	ScheduledAt        *time.Time
-	Status             PlanStatus
-	PathCount          int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// ScheduledConsumedAt 是单次定时启动的消费时刻：非空表示已触发过，绝不再扫描触发（F-020）。
+	ScheduledConsumedAt *time.Time
+	Status              PlanStatus
+	PathCount           int
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // PlanListFilter 约束计划列表的名称、状态和数量。

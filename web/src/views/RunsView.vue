@@ -100,7 +100,10 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
           <td>#{{ run.runNo }}</td>
           <td>{{ run.modeName }}</td>
           <td>{{ run.statusName }}</td>
-          <td>{{ run.pathRunStatusName }}</td>
+          <td>
+            <template v-if="(run.pathRunCount ?? 0) > 1">{{ run.pathsSummary }}</template>
+            <template v-else>{{ run.pathRunStatusName }}</template>
+          </td>
           <td>{{ run.resultName || '—' }}</td>
           <td>{{ formatTime(run.startedAt) }}</td>
           <td>{{ formatTime(run.finishedAt) }}</td>

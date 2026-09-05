@@ -17,6 +17,7 @@ import (
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/control"
 	engine_reconcile "test-auto-pro-v2/internal/engine/reconcile"
+	"test-auto-pro-v2/internal/engine/run"
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
@@ -40,7 +41,20 @@ const (
 	RunOrchestrationNotFound RunOrchestrationErrorKind = "not_found"
 	RunOrchestrationConflict RunOrchestrationErrorKind = "conflict"
 	RunOrchestrationStorage  RunOrchestrationErrorKind = "storage"
+	RunOrchestrationInvalid  RunOrchestrationErrorKind = "invalid"
 )
+
+// mapPlanError 把计划存储错误映射为运行编排的稳定错误：不存在与存储故障严格分开。
+func mapPlanError(err error) error {
+	switch {
+	case IsPlanErrorKind(err, PlanErrorNotFound):
+		return &RunOrchestrationError{Kind: RunOrchestrationNotFound, Message: "计划不存在"}
+	case IsPlanErrorKind(err, PlanErrorInvalidArgument):
+		return &RunOrchestrationError{Kind: RunOrchestrationInvalid, Message: "计划 ID 不正确"}
+	default:
+		return &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "暂时无法读取计划，请重试"}
+	}
+}
 
 // RunOrchestrationError 携带中文结论与错误种类。
 type RunOrchestrationError struct {
@@ -64,6 +78,8 @@ type RunOrchestrationService struct {
 	readiness readinessReader
 	control   *control.Service
 	store     repository.RunStore
+	// runState 提供运行级状态推进与收尾（F-020 调度与聚合收尾需要）。
+	runState  *run.Service
 	router    *logging.Router
 	runConfig config.RunConfig
 	now       func() time.Time
@@ -80,6 +96,7 @@ func NewRunOrchestrationService(
 	readiness readinessReader,
 	controlSvc *control.Service,
 	store repository.RunStore,
+	runState *run.Service,
 	router *logging.Router,
 	runConfig config.RunConfig,
 	pathNodes *PathConfigService,
@@ -90,8 +107,8 @@ func NewRunOrchestrationService(
 	}
 	return &RunOrchestrationService{
 		plans: plans, paths: paths, graphs: graphs, configs: configs,
-		readiness: readiness, control: controlSvc, store: store, router: router,
-		runConfig: runConfig, pathNodes: pathNodes, now: now,
+		readiness: readiness, control: controlSvc, store: store, runState: runState,
+		router: router, runConfig: runConfig, pathNodes: pathNodes, now: now,
 	}
 }
 
@@ -103,11 +120,11 @@ type StartRunInput struct {
 
 // RunPreviewDTO 是下一步预览的公开形态：中文为主，不含会话等目标敏感信息。
 type RunPreviewDTO struct {
-	StepNo         int                        `json:"stepNo"`
-	TotalSteps     int                        `json:"totalSteps"`
-	Action         string                     `json:"action"`
-	ActionName     string                     `json:"actionName"`
-	NodeKey        string                     `json:"nodeKey"`
+	StepNo     int    `json:"stepNo"`
+	TotalSteps int    `json:"totalSteps"`
+	Action     string `json:"action"`
+	ActionName string `json:"actionName"`
+	NodeKey    string `json:"nodeKey"`
 	// NodeID 是当前步节点的图上标识：画布据此平移与高亮当前步（与 nodeKey 是两套键空间）。
 	NodeID         string                     `json:"nodeId,omitempty"`
 	NodeName       string                     `json:"nodeName"`
@@ -133,6 +150,10 @@ type RunSummaryDTO struct {
 	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
 	PathRunID         uint64     `json:"pathRunId"`
 	PathRunStatusName string     `json:"pathRunStatusName"`
+	// 运行级摘要（F-020）：调度方式、路径总数与中文汇总（如「3 条路径：2 已完成、1 失败」）。
+	ScheduleName string `json:"scheduleName,omitempty"`
+	PathsSummary string `json:"pathsSummary,omitempty"`
+	PathRunCount int    `json:"pathRunCount"`
 }
 
 // RunStepAttemptDTO 是一次尝试的公开事实。
@@ -194,12 +215,12 @@ func recoveryActionName(action string) string {
 
 // RunStepDTO 是一个已落账步骤的公开事实。
 type RunStepDTO struct {
-	StepNo     int       `json:"stepNo"`
-	ActionName string    `json:"actionName"`
-	NodeKey    string    `json:"nodeKey"`
+	StepNo     int    `json:"stepNo"`
+	ActionName string `json:"actionName"`
+	NodeKey    string `json:"nodeKey"`
 	// NodeID 是该节点在图上的真实标识：画布与侧栏按它取运行状态与步骤（与 nodeKey 是两套键空间）。
-	NodeID    string    `json:"nodeId,omitempty"`
-	NodeName  string    `json:"nodeName"`
+	NodeID     string    `json:"nodeId,omitempty"`
+	NodeName   string    `json:"nodeName"`
 	ActorName  string    `json:"actorName"`
 	StatusName string    `json:"statusName"`
 	StartedAt  time.Time `json:"startedAt"`
@@ -227,6 +248,10 @@ type PathRunDetailDTO struct {
 	PathRunStatusName string `json:"pathRunStatusName"`
 	// StructureNote 是真实结构读取失败时的中文降级说明；为空表示结构读取正常。
 	StructureNote string `json:"structureNote,omitempty"`
+	// 运行级信息（F-020）：调度方式、并发说明与全部路径运行摘要，供运行详情的路径切换区。
+	RunScheduleName     string              `json:"runScheduleName,omitempty"`
+	RunConcurrencyLabel string              `json:"runConcurrencyLabel,omitempty"`
+	Paths               []RunPathSummaryDTO `json:"paths"`
 	// Result 与 FinalTarget 是两件分开的事：路径结果只看步骤事实，最终目标事实如实描述目标现状。
 	ResultName       string                     `json:"resultName,omitempty"`
 	FailureClassName string                     `json:"failureClassName,omitempty"`
@@ -416,20 +441,39 @@ func (s *RunOrchestrationService) StartRun(ctx context.Context, input StartRunIn
 
 // ApproveWithCommand 按命令放行（F-017）：命令携带步游标与控制版本，条件写幂等。
 // 请求上下文注入运行作用域：写请求的 network.log/curl.log 因此落进运行目录。
-// resolvePathRunID 把 API 层的运行 ID 解析为路径运行 ID（一次运行只跑一条路径）。
-// 控制端点全部以运行 ID 寻址；绝不把运行 ID 直接当路径运行 ID 使用——
+// resolvePathRunID 把 API 层的运行寻址解析为路径运行 ID。
+// 控制端点全部以运行 ID（+可选路径运行 ID）寻址；绝不把运行 ID 直接当路径运行 ID 使用——
 // 两个自增序列一旦错位，放行或对账就会作用到另一条路径运行上（评审缺陷 6）。
-func (s *RunOrchestrationService) resolvePathRunID(ctx context.Context, runID uint64) (uint64, error) {
+// 多路径运行（F-020）必须携带路径运行身份；单路径运行兼容不带。
+func (s *RunOrchestrationService) resolvePathRunID(ctx context.Context, runID uint64, pathRunID uint64) (uint64, error) {
+	if pathRunID != 0 {
+		pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+		if err != nil {
+			return 0, err
+		}
+		if pathRun.RunID != runID {
+			return 0, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "该路径运行不属于这次运行"}
+		}
+		return pathRun.ID, nil
+	}
 	pathRun, err := s.store.GetPathRunByRun(ctx, runID)
 	if err != nil {
 		return 0, err
 	}
+	siblings, err := s.store.ListPathRunsByRun(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
+	if len(siblings) > 1 {
+		return 0, &RunOrchestrationError{Kind: RunOrchestrationConflict,
+			Message: "这次运行有多条路径，请先选择要操作的路径"}
+	}
 	return pathRun.ID, nil
 }
 
-// ApproveWithCommand 放行当前步。runID 是运行 ID，进入服务即解析为路径运行 ID。
-func (s *RunOrchestrationService) ApproveWithCommand(ctx context.Context, runID uint64, command model.ControlCommand, cursor int, version int64) (*PathRunDetailDTO, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+// ApproveWithCommand 放行当前步。runID 是运行 ID，pathRunID 非零时按路径运行寻址（F-020）。
+func (s *RunOrchestrationService) ApproveWithCommand(ctx context.Context, runID uint64, pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -511,8 +555,8 @@ func (s *RunOrchestrationService) ensureReconcileSession(ctx context.Context, pa
 }
 
 // ReconcileNow 对待对账路径运行执行只读对账并返回结论。runID 是运行 ID。
-func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64) (*ReconcileViewDTO, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64, pathRunID uint64) (*ReconcileViewDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -539,8 +583,8 @@ func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64
 }
 
 // RecoveryAction 执行对账给出的唯一合法动作并返回最新详情。runID 是运行 ID。
-func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, runID uint64, action string, manual model.RunManualConclusion) (*PathRunDetailDTO, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, runID uint64, pathRunID uint64, action string, manual model.RunManualConclusion) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -565,32 +609,32 @@ func reconcile_action(action string) engine_reconcile.RecoveryAction {
 
 // SetBreakpoint / RemoveBreakpoint / RequestPause / ListBreakpoints / ControlView 是控制面转发。
 // 除 ControlView 外都以运行 ID 寻址，进入服务即解析为路径运行 ID。
-func (s *RunOrchestrationService) SetBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+func (s *RunOrchestrationService) SetBreakpoint(ctx context.Context, runID uint64, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
 	}
 	return s.control.SetBreakpoint(ctx, pathRunID, bp)
 }
 
-func (s *RunOrchestrationService) RemoveBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+func (s *RunOrchestrationService) RemoveBreakpoint(ctx context.Context, runID uint64, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
 	}
 	return s.control.RemoveBreakpoint(ctx, pathRunID, bp)
 }
 
-func (s *RunOrchestrationService) RequestPause(ctx context.Context, runID uint64) error {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+func (s *RunOrchestrationService) RequestPause(ctx context.Context, runID uint64, pathRunID uint64) error {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return err
 	}
 	return s.control.RequestPause(ctx, pathRunID)
 }
 
-func (s *RunOrchestrationService) ListBreakpoints(ctx context.Context, runID uint64) ([]control.Breakpoint, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+func (s *RunOrchestrationService) ListBreakpoints(ctx context.Context, runID uint64, pathRunID uint64) ([]control.Breakpoint, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -627,9 +671,9 @@ func (s *RunOrchestrationService) validateReadiness(ctx context.Context, planID,
 	return nil
 }
 
-// Stop 停止路径运行并返回最新详情。runID 是运行 ID。
-func (s *RunOrchestrationService) Stop(ctx context.Context, runID uint64) (*PathRunDetailDTO, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID)
+// Stop 停止路径运行并返回最新详情。runID 是运行 ID；pathRunID 非零时按路径运行寻址（F-020）。
+func (s *RunOrchestrationService) Stop(ctx context.Context, runID uint64, pathRunID uint64) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -798,13 +842,50 @@ func (s *RunOrchestrationService) ListRuns(ctx context.Context, planID uint64) (
 		if run.Result != nil {
 			item.ResultName = resultName(*run.Result)
 		}
-		if pathRun, err := s.store.GetPathRunByRun(ctx, run.ID); err == nil {
-			item.PathRunID = pathRun.ID
-			item.PathRunStatusName = model.PathRunStatusName(pathRun.Status)
+		pathRuns, err := s.store.ListPathRunsByRun(ctx, run.ID)
+		if err == nil && len(pathRuns) > 0 {
+			item.PathRunID = pathRuns[0].ID
+			item.PathRunStatusName = model.PathRunStatusName(pathRuns[0].Status)
+			item.PathRunCount = len(pathRuns)
+			item.ScheduleName = runScheduleName(run)
+			item.PathsSummary = runPathsSummary(pathRuns)
 		}
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+// runPathsSummary 把一次运行的路径状态汇成一句中文：按状态分组计数，失败在前。
+func runPathsSummary(pathRuns []model.PathRun) string {
+	// 展示顺序：失败、待对账、已停止、已取消、运行中/核验中、等待运行、已完成（用户最该先看的在前）。
+	order := []struct {
+		status model.PathRunStatus
+		label  string
+	}{
+		{model.PathRunStatusFailed, "失败"},
+		{model.PathRunStatusAwaitingReconciliation, "待对账"},
+		{model.PathRunStatusStopped, "已停止"},
+		{model.PathRunStatusCancelled, "已取消"},
+		{model.PathRunStatusRunning, "运行中"},
+		{model.PathRunStatusVerifying, "核验中"},
+		{model.PathRunStatusPaused, "暂停"},
+		{model.PathRunStatusWaiting, "等待运行"},
+		{model.PathRunStatusCompleted, "已完成"},
+	}
+	counts := map[model.PathRunStatus]int{}
+	for _, pathRun := range pathRuns {
+		counts[pathRun.Status]++
+	}
+	parts := make([]string, 0, len(order))
+	for _, entry := range order {
+		if counts[entry.status] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[entry.status], entry.label))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("共 %d 条：%s", len(pathRuns), strings.Join(parts, "、"))
 }
 
 // RunDetail 按运行 ID 读取详情（一次运行只跑一条路径）。
@@ -814,6 +895,19 @@ func (s *RunOrchestrationService) RunDetail(ctx context.Context, runID uint64) (
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRun.ID)
+}
+
+// RunDetailByRunAndPathRun 读取指定路径运行的详情（F-020 多路径运行按路径切换）。
+// pathRunID 必须属于该运行；不属于时给中文冲突错误，绝不跨运行读取。
+func (s *RunOrchestrationService) RunDetailByRunAndPathRun(ctx context.Context, runID, pathRunID uint64) (*PathRunDetailDTO, error) {
+	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	if pathRun.RunID != runID {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "该路径运行不属于这次运行"}
+	}
+	return s.RunDetailByPathRun(ctx, pathRunID)
 }
 
 // RunDetailByPathRun 按路径运行 ID 读取详情。
@@ -853,7 +947,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	}
 	detail := &PathRunDetailDTO{
 		StructureNote: structureNoteOf(structureDegraded),
-		RunID: run.ID, RunNo: run.RunNo,
+		RunID:         run.ID, RunNo: run.RunNo,
 		ModeName:          model.RunModeName(run.Mode),
 		RunStatusName:     model.RunStatusName(run.Status),
 		PathRunID:         pathRun.ID,
@@ -865,11 +959,14 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		PathName:          pathNameOf(ctx, s.paths, run.PlanID, pathRun.ExecutionPathID, plan.Name),
 		NodeStates:        map[string]RunNodeStateDTO{},
 		// 数组型字段一律以空数组起步：nil 切片会序列化成 JSON null，前端按数组读取会整页崩溃。
-		Steps:          []RunStepDTO{},
-		Breakpoints:    []BreakpointDTO{},
-		Commands:       []CommandDTO{},
-		PollIntervalMs: s.runConfig.StatusPollInterval.Milliseconds(),
-		StaleAfterMs:   s.runConfig.StepProgressStaleAfter.Milliseconds(),
+		Steps:               []RunStepDTO{},
+		Breakpoints:         []BreakpointDTO{},
+		Commands:            []CommandDTO{},
+		Paths:               []RunPathSummaryDTO{},
+		RunScheduleName:     runScheduleName(run),
+		RunConcurrencyLabel: runConcurrencyLabel(run),
+		PollIntervalMs:      s.runConfig.StatusPollInterval.Milliseconds(),
+		StaleAfterMs:        s.runConfig.StepProgressStaleAfter.Milliseconds(),
 	}
 	if pathRun.Result != nil {
 		detail.ResultName = resultName(*pathRun.Result)
@@ -926,7 +1023,41 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Breakpoints = append(detail.Breakpoints, dto)
 		}
 	}
+	if err := s.fillRunPathSummaries(ctx, run, detail); err != nil {
+		return nil, err
+	}
 	return detail, nil
+}
+
+// runConcurrencyLabel 返回运行的中文并发说明。
+func runConcurrencyLabel(runRow model.Run) string {
+	if runCapacityOf(runRow) <= 1 {
+		return "逐条依次运行"
+	}
+	return "最多同时运行 " + strconv.Itoa(runCapacityOf(runRow)) + " 条路径"
+}
+
+// fillRunPathSummaries 填充运行级路径摘要：运行详情的路径切换区据此展示全部路径运行的独立状态。
+func (s *RunOrchestrationService) fillRunPathSummaries(ctx context.Context, runRow model.Run, detail *PathRunDetailDTO) error {
+	pathRuns, err := s.store.ListPathRunsByRun(ctx, runRow.ID)
+	if err != nil {
+		return err
+	}
+	detail.Paths = make([]RunPathSummaryDTO, 0, len(pathRuns))
+	for _, pathRun := range pathRuns {
+		summary := RunPathSummaryDTO{
+			PathRunID:  pathRun.ID,
+			PathID:     pathRun.ExecutionPathID,
+			PathName:   pathNameOf(ctx, s.paths, runRow.PlanID, pathRun.ExecutionPathID, ""),
+			StatusName: model.PathRunStatusName(pathRun.Status),
+		}
+		if pathRun.Result != nil {
+			summary.ResultName = resultName(*pathRun.Result)
+		}
+		summary.MainInstanceRef = pathRun.MainInstanceRef
+		detail.Paths = append(detail.Paths, summary)
+	}
+	return nil
 }
 
 // nodeNamesOf 把真实结构节点表转为键到名称的映射。

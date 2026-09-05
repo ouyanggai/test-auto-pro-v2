@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"test-auto-pro-v2/internal/engine/control"
 	"test-auto-pro-v2/internal/model"
@@ -28,18 +30,19 @@ func decodeRunBody(request *http.Request, target any) error {
 
 // RunOrchestrator 是运行主线的处理器的服务面：启动（模式与断点）、详情、放行命令、断点、暂停、停止、列表。
 type RunOrchestrator interface {
-	StartRun(ctx context.Context, input service.StartRunInput) (*service.PathRunDetailDTO, error)
-	StartRunWithMode(ctx context.Context, input service.StartRunInput, mode model.RunMode, breakpoints []control.Breakpoint) (*service.PathRunDetailDTO, error)
+	// StartRunWithPaths 按勾选路径集合启动（F-020）：多路径一次运行，串并方式来自计划配置。
+	StartRunWithPaths(ctx context.Context, planID uint64, pathIDs []uint64, mode model.RunMode, breakpoints []control.Breakpoint, idempotencyKey string) (*service.RunStartDTO, error)
 	RunDetail(ctx context.Context, runID uint64) (*service.PathRunDetailDTO, error)
-	// 控制端点全部以运行 ID（runId）寻址，服务层入口统一解析为路径运行 ID（评审缺陷 6 的修复点）。
-	ApproveWithCommand(ctx context.Context, runID uint64, command model.ControlCommand, cursor int, version int64) (*service.PathRunDetailDTO, error)
-	SetBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
-	RemoveBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
-	ListBreakpoints(ctx context.Context, runID uint64) ([]control.Breakpoint, error)
-	RequestPause(ctx context.Context, runID uint64) error
-	ReconcileNow(ctx context.Context, runID uint64) (*service.ReconcileViewDTO, error)
-	RecoveryAction(ctx context.Context, runID uint64, action string, manual model.RunManualConclusion) (*service.PathRunDetailDTO, error)
-	Stop(ctx context.Context, runID uint64) (*service.PathRunDetailDTO, error)
+	RunDetailByRunAndPathRun(ctx context.Context, runID, pathRunID uint64) (*service.PathRunDetailDTO, error)
+	// 控制端点以运行 ID 寻址；多路径运行必须携带路径运行身份（pathRunId），单路径可省略。
+	ApproveWithCommand(ctx context.Context, runID uint64, pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*service.PathRunDetailDTO, error)
+	SetBreakpoint(ctx context.Context, runID uint64, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
+	RemoveBreakpoint(ctx context.Context, runID uint64, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
+	ListBreakpoints(ctx context.Context, runID uint64, pathRunID uint64) ([]control.Breakpoint, error)
+	RequestPause(ctx context.Context, runID uint64, pathRunID uint64) error
+	ReconcileNow(ctx context.Context, runID uint64, pathRunID uint64) (*service.ReconcileViewDTO, error)
+	RecoveryAction(ctx context.Context, runID uint64, pathRunID uint64, action string, manual model.RunManualConclusion) (*service.PathRunDetailDTO, error)
+	Stop(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	ListRuns(ctx context.Context, planID uint64) ([]service.RunSummaryDTO, error)
 }
 
@@ -59,12 +62,14 @@ func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) 
 	mux.HandleFunc("POST /api/runs/{runId}/recovery", handleRecoveryAction(orchestrator))
 }
 
-// startRunRequest 是启动请求体：模式三选一（默认单步）+ 启动前断点预置。
+// startRunRequest 是启动请求体：勾选路径集合（F-020 多路径）+ 模式三选一（默认单步）+ 启动前断点预置。
 type startRunRequest struct {
-	PlanID          uint64            `json:"planId"`
-	ExecutionPathID uint64            `json:"executionPathId"`
-	Mode            string            `json:"mode"`
-	Breakpoints     []breakpointInput `json:"breakpoints"`
+	PlanID      uint64            `json:"planId"`
+	PathIDs     []uint64          `json:"pathIds"`
+	Mode        string            `json:"mode"`
+	Breakpoints []breakpointInput `json:"breakpoints"`
+	// IdempotencyKey 是本次启动的幂等键：同键重试返回同一次运行，绝不创建第二个运行。
+	IdempotencyKey string `json:"idempotencyKey"`
 }
 
 // breakpointInput 是断点预置/增删请求的最小体。
@@ -109,8 +114,8 @@ func handleStartRun(orchestrator RunOrchestrator) http.HandlerFunc {
 		if body.PlanID == 0 {
 			body.PlanID = planID
 		}
-		if body.PlanID != planID || body.ExecutionPathID == 0 {
-			writeFailure(response, http.StatusBadRequest, "RUN_START_INVALID", "启动请求必须指明该计划下的执行路径", false)
+		if body.PlanID != planID || len(body.PathIDs) == 0 {
+			writeFailure(response, http.StatusBadRequest, "RUN_START_INVALID", "启动请求必须指明该计划下要运行的执行路径", false)
 			return
 		}
 		mode := model.RunModeSingleStep
@@ -126,14 +131,12 @@ func handleStartRun(orchestrator RunOrchestrator) http.HandlerFunc {
 			}
 			breakpoints = append(breakpoints, bp)
 		}
-		detail, err := orchestrator.StartRunWithMode(request.Context(), service.StartRunInput{
-			PlanID: body.PlanID, ExecutionPathID: body.ExecutionPathID,
-		}, mode, breakpoints)
+		result, err := orchestrator.StartRunWithPaths(request.Context(), body.PlanID, body.PathIDs, mode, breakpoints, body.IdempotencyKey)
 		if err != nil {
 			writeRunControlError(response, err)
 			return
 		}
-		writeSuccess(response, detail)
+		writeSuccess(response, result)
 	}
 }
 
@@ -153,14 +156,33 @@ func handleListRuns(orchestrator RunOrchestrator) http.HandlerFunc {
 	}
 }
 
+// parsePathRunIDQuery 解析 pathRunId 查询参数（F-020 多路径运行的控制寻址）；缺省返回 0。
+func parsePathRunIDQuery(request *http.Request) uint64 {
+	value, err := strconv.ParseUint(strings.TrimSpace(request.URL.Query().Get("pathRunId")), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
 // handleRunDetail 返回路径运行详情：运行事实、节点状态、当前预览与最终目标事实。
+// 多路径运行可用 pathRunId 查询参数选择要查看的路径运行。
 func handleRunDetail(orchestrator RunOrchestrator) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
 		if !ok {
 			return
 		}
-		detail, err := orchestrator.RunDetail(request.Context(), runID)
+		pathRunID := parsePathRunIDQuery(request)
+		var (
+			detail *service.PathRunDetailDTO
+			err    error
+		)
+		if pathRunID != 0 {
+			detail, err = orchestrator.RunDetailByRunAndPathRun(request.Context(), runID, pathRunID)
+		} else {
+			detail, err = orchestrator.RunDetail(request.Context(), runID)
+		}
 		if err != nil {
 			writeRunControlError(response, err)
 			return
@@ -192,7 +214,7 @@ func handleApproveRun(orchestrator RunOrchestrator) http.HandlerFunc {
 		if command == "" {
 			command = model.CommandStep
 		}
-		detail, err := orchestrator.ApproveWithCommand(request.Context(), runID, command, body.Cursor, body.ControlVersion)
+		detail, err := orchestrator.ApproveWithCommand(request.Context(), runID, parsePathRunIDQuery(request), command, body.Cursor, body.ControlVersion)
 		if err != nil {
 			writeRunControlError(response, err)
 			return
@@ -218,7 +240,7 @@ func handleSetBreakpoint(orchestrator RunOrchestrator) http.HandlerFunc {
 			writeFailure(response, http.StatusBadRequest, "RUN_BREAKPOINT_INVALID", err.Error(), false)
 			return
 		}
-		breakpoints, err := orchestrator.SetBreakpoint(request.Context(), runID, bp)
+		breakpoints, err := orchestrator.SetBreakpoint(request.Context(), runID, parsePathRunIDQuery(request), bp)
 		if err != nil {
 			writeRunControlError(response, err)
 			return
@@ -244,7 +266,7 @@ func handleRemoveBreakpoint(orchestrator RunOrchestrator) http.HandlerFunc {
 			writeFailure(response, http.StatusBadRequest, "RUN_BREAKPOINT_INVALID", err.Error(), false)
 			return
 		}
-		breakpoints, err := orchestrator.RemoveBreakpoint(request.Context(), runID, bp)
+		breakpoints, err := orchestrator.RemoveBreakpoint(request.Context(), runID, parsePathRunIDQuery(request), bp)
 		if err != nil {
 			writeRunControlError(response, err)
 			return
@@ -260,7 +282,7 @@ func handleReconcile(orchestrator RunOrchestrator) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		view, err := orchestrator.ReconcileNow(request.Context(), runID)
+		view, err := orchestrator.ReconcileNow(request.Context(), runID, parsePathRunIDQuery(request))
 		if err != nil {
 			writeRunControlError(response, err)
 			return
@@ -294,7 +316,7 @@ func handleRecoveryAction(orchestrator RunOrchestrator) http.HandlerFunc {
 			InstanceStatus: body.InstanceStatus, CurrentNode: body.CurrentNode,
 			Note: body.Note, Reporter: body.Reporter,
 		}
-		detail, err := orchestrator.RecoveryAction(request.Context(), runID, body.Action, manual)
+		detail, err := orchestrator.RecoveryAction(request.Context(), runID, parsePathRunIDQuery(request), body.Action, manual)
 		if err != nil {
 			writeRunControlError(response, err)
 			return
@@ -324,7 +346,7 @@ func handlePause(orchestrator RunOrchestrator) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := orchestrator.RequestPause(request.Context(), runID); err != nil {
+		if err := orchestrator.RequestPause(request.Context(), runID, parsePathRunIDQuery(request)); err != nil {
 			writeRunControlError(response, err)
 			return
 		}
@@ -339,7 +361,7 @@ func handleStopRun(orchestrator RunOrchestrator) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		detail, err := orchestrator.Stop(request.Context(), runID)
+		detail, err := orchestrator.Stop(request.Context(), runID, parsePathRunIDQuery(request))
 		if err != nil {
 			writeRunControlError(response, err)
 			return

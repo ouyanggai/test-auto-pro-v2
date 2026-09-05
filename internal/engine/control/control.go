@@ -173,6 +173,43 @@ func (s *Service) startSession(ctx context.Context, runCtx step.RunContext, mode
 	}
 	runCtx.Run = startedRun
 	runCtx.PathRun = startedPathRun
+	return s.initSession(ctx, runCtx, mode, preset)
+}
+
+// BeginPathRun 在调度器已创建的等待路径运行上开始执行会话（F-020）：
+// 推进等待→运行中，其余与 startSession 完全同一条链路——模式与断点事实、第一步预览、自动模式进循环。
+// runCtx.Run / runCtx.PathRun 必须已由编排层填充且路径运行处于等待运行。
+func (s *Service) BeginPathRun(ctx context.Context, runCtx step.RunContext, mode model.RunMode, preset []Breakpoint) (*StartResult, error) {
+	startedPathRun, err := s.runs.AdvancePathRun(ctx, runCtx.PathRun.ID,
+		model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{
+			Kind:  "path_run_started",
+			Label: "调度器启动路径运行，准备第一步预览",
+		})
+	if err != nil {
+		return nil, err
+	}
+	runCtx.PathRun = startedPathRun
+	result, session, err := s.initSession(ctx, runCtx, mode, preset)
+	if err != nil {
+		return nil, err
+	}
+	if result.PathFinished {
+		return result, nil
+	}
+	s.mu.Lock()
+	s.active[result.PathRun.ID] = session
+	s.mu.Unlock()
+	if mode == model.RunModeAuto {
+		s.startLoop(ctx, result.PathRun.ID, session, model.CommandContinue)
+	}
+	return result, nil
+}
+
+// initSession 是启动的公共主体：模式选定事实、预置断点逐条落事实、构建第一步预览并停在阶段 3。
+// 调用方负责创建/推进运行与路径运行并把真实身份填进 runCtx。
+func (s *Service) initSession(ctx context.Context, runCtx step.RunContext, mode model.RunMode, preset []Breakpoint) (*StartResult, *activeStep, error) {
+	startedRun := runCtx.Run
+	startedPathRun := runCtx.PathRun
 
 	// 模式选定事实与中文事件（control.log 由 T06 写入器同步落盘）。
 	modeFact := model.RunControl{

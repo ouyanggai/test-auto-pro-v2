@@ -125,6 +125,16 @@ func (s *Service) BackFromReconciliation(ctx context.Context, pathRunID uint64, 
 	return err
 }
 
+// AdvanceRunStatus 在同事务内校验并推进运行聚合状态、追加事件行（多路径启动后进入运行中）。
+func (s *Service) AdvanceRunStatus(ctx context.Context, runID uint64, from, to model.RunStatus, event model.RunEvent) (model.Run, error) {
+	return s.store.AdvanceRunStatus(ctx, runID, from, to, event, s.now())
+}
+
+// AdvancePathRun 在同事务内校验并推进路径运行状态、追加事件行（调度器启动等待路径时使用）。
+func (s *Service) AdvancePathRun(ctx context.Context, pathRunID uint64, from, to model.PathRunStatus, event model.RunEvent) (model.PathRun, error) {
+	return s.store.AdvancePathRunStatus(ctx, pathRunID, from, to, event, s.now())
+}
+
 // Finish 把路径运行推进到终态并镜像收尾运行聚合。
 // 待对账不镜像运行状态：运行保持运行中，唯一合法恢复动作属于对账切片（F-018）。
 func (s *Service) Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label string) (model.PathRun, error) {

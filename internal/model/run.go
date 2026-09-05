@@ -64,7 +64,9 @@ const (
 // 暂停只在步骤的阶段 3（控制判定）生效，因此暂停只能从运行中进入。
 var pathRunTransitions = map[PathRunStatus][]PathRunStatus{
 	PathRunStatusNotStarted: {PathRunStatusWaiting},
-	PathRunStatusWaiting:    {PathRunStatusRunning, PathRunStatusCancelled},
+	// 等待运行 -> 失败 是 F-020 调度启动阶段的合法终点：路径在构建执行上下文时失败
+	// （编译场景为空、真实结构读取失败等），如实置失败并参与聚合，绝不静默跳过。
+	PathRunStatusWaiting: {PathRunStatusRunning, PathRunStatusCancelled, PathRunStatusFailed},
 	PathRunStatusRunning: {
 		PathRunStatusVerifying,
 		PathRunStatusCompleted,
@@ -270,6 +272,10 @@ type Run struct {
 	FinishedAt     *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// IdempotencyKey 是启动请求的幂等键：同键重试返回同一次运行，绝不创建第二个运行（F-020）。
+	IdempotencyKey string
+	// PresetBreakpoints 是启动时预置的断点集合原始 JSON：调度器在每条路径运行开始时重放同一预置。
+	PresetBreakpoints string
 }
 
 // PathRun 是一条执行路径的运行聚合（path_runs 表）。
