@@ -1,6 +1,6 @@
 # F-023 Docker Compose 发布编排
 
-- 状态：awaiting_approval
+- 状态：ready_for_manual（2026-09-06 按用户全自动指令实施完成；Compose 冷启动实测被本机镜像仓库不可达阻断，已如实记录并保留显式启用开关）
 - 产品依据：`docs/PRODUCT.md` 设置行为（表单运行时维护与日志查看）、产品原则第 2、4、6 条和“正式发布用 Docker Compose”裁决
 - 架构依据：`docs/ARCHITECTURE.md` 固定选型、本地端口、服务边界、日志挂载和 form-runtime 维护流水线
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6.6、6.7、9、10、11 节，以及 F-013、F-016 至 F-022 已验收能力
@@ -160,6 +160,12 @@
 
 - 2026-09-05 `preparing` -> `awaiting_approval`：依据纲领第 6.6、6.7、9、10、11 节和 F-013 日志查看实测补齐服务边界、卷、健康检查、配置、测试和人工门禁。本次只写计划。
 - 门禁：必须在 F-022 完成并经用户验收后实施；本切片不改变业务语义，完成后停在 `ready_for_manual`，不得自动标记发布完成。
+
+## 状态记录（2026-09-06 实施完成）
+
+- T01/T02/T04：`deploy/Dockerfile.backend`（golang:1.25 构建；运行层按用户「一体维护」裁决自带 git + Node 22 + pnpm 10 + 完整 form-runtime 工作区含 runtime-source）、`deploy/Dockerfile.web` 与 `deploy/Dockerfile.form-runtime`（Node 构建 + nginx 1.27 服务）、`deploy/docker-compose.yml` 五服务编排（mysql 8.4 仅内网、健康依赖、logs 双向挂载、fr-live 共享卷承接维护切换、参考代码只读挂载供容器内维护同步）、`deploy/nginx.*.conf`、`deploy/.env.example`（区分 TARGET_*/PLAN_DB_*/端口/保留期，凭证只经环境注入）与根 `.dockerignore`。
+- T05/T06：`test/contracts/f023/compose_structure.sh`（五服务、端口 19000/19080/19001/19002、健康条件、MySQL 不发布宿主端口、凭证不落编排文件、code-server 4.96.4 锁版、docker compose config 解析）与 `test/run-f023.sh`（结构契约 + 构建上下文卫生 + 冷启动实测以 F023_COMPOSE_UP=1 显式启用，避免在缺 docker 或无外网的环境里静默跳过）。`./test/run-f023.sh` 本机实跑通过。
+- 如实记录的环境阻断：本机当前拉不到 Docker Hub 基础镜像（auth.docker.io 超时），`F023_COMPOSE_UP=1` 冷启动实测在镜像拉取阶段失败；本地已有 mysql:8.4 与 golang:1.25-alpine，但 node:22 / nginx:1.27 缺失且无法拉取。冷启动验证需在可访问镜像仓库的环境执行（凭据经 deploy/.env 注入，该文件已入 .gitignore 不进仓库）。
 
 ## 人工验收
 

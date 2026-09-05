@@ -1,0 +1,19 @@
+# 表单运行时镜像（F-023）：构建 form-runtime 生产包并由 nginx 提供 19001。
+# 注意：正式运行时以「维护流水线」产出的 live 卷为准，本镜像只提供首次启动的固定版本；
+# 后端维护切换时写入共享卷 fr-live，本容器即时读到新版本（一份产物两处消费）。
+
+FROM node:22-bookworm-slim AS build
+WORKDIR /src
+RUN corepack enable && corepack prepare pnpm@10.25.0 --activate
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY form-runtime/package.json ./form-runtime/package.json
+COPY web/package.json ./web/package.json
+RUN pnpm install --frozen-lockfile
+COPY form-runtime ./form-runtime
+RUN pnpm --dir form-runtime build
+
+FROM nginx:1.27-alpine AS runtime
+COPY deploy/nginx.form-runtime.conf /etc/nginx/conf.d/default.conf
+# 固定版本先落到 live 卷；后端维护流水线随后接管同一份卷。
+COPY --from=build /src/form-runtime/dist /usr/share/nginx/html
+EXPOSE 19001

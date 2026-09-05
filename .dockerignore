@@ -1,0 +1,16 @@
+# 构建上下文卫生（F-023）：凭证、日志、参考源码、缓存与构建产物一律不进镜像层。
+.env.local
+.env.*
+!.deploy/.env.example
+参考代码/
+重构指南/
+logs/
+.git/
+.runtime/
+node_modules/
+web/node_modules/
+form-runtime/node_modules/
+web/dist/
+test/
+docs/
+*.log

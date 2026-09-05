@@ -1,0 +1,30 @@
+# 后端镜像（F-023，按用户裁决做成一体）：
+# 表单运行时维护在容器内执行 git + pnpm，因此运行层必须自带 git、Node 与 pnpm，
+# 并包含完整 form-runtime 工作区（含入库的 runtime-source/）。镜像变大是裁决接受的代价。
+# 版本锁定：golang 1.25、Node 22、pnpm 10——与开发机一致，保证候选构建可复现。
+
+FROM golang:1.25 AS build
+WORKDIR /src
+ENV GOPATH=/go GOCACHE=/go-cache
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
+
+FROM node:22-bookworm-slim AS runtime
+# git 与 ca-certificates 供表单运行时维护流水线在容器内同步候选源码；
+# bash 供健康探针与维护脚本使用。
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates bash \
+  && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && corepack prepare pnpm@10.25.0 --activate
+WORKDIR /app
+COPY --from=build /out/server ./server
+# 完整 form-runtime 工作区（含 runtime-source/）：维护流水线的同步与隔离构建都消费它。
+COPY form-runtime ./form-runtime
+# 维护产物的运行时目录：候选、current 与 previous 都写在运行时卷上。
+ENV FORM_RUNTIME_MAINTENANCE_ROOT=/var/lib/test-auto-pro/form-runtime-maintenance
+VOLUME ["/var/lib/test-auto-pro/form-runtime-maintenance", "/app/logs"]
+EXPOSE 19080
+ENTRYPOINT ["/app/server"]

@@ -1,0 +1,111 @@
+# F-023 一条命令起全套：MySQL、后端、前端、表单运行时与 code-server。
+# 纪律：目标地址与凭证只经外部环境注入；MySQL 仅在 Compose 网络可达；
+# logs/ 双向挂载给后端与 code-server；表单运行时 live 卷由后端维护流水线接管。
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${PLAN_DB_NAME:-test_auto_pro_v2}
+      MYSQL_USER: ${PLAN_DB_USER:-test_auto_pro}
+      MYSQL_PASSWORD: ${PLAN_DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${PLAN_DB_ROOT_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${PLAN_DB_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    # 不发布 3306 到宿主：工具库只在 Compose 网络内可达。
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # 目标平台地址与凭证只来自外部环境；缺必需变量时后端启动即失败并给中文说明。
+      TARGET_API_GATEWAY: ${TARGET_API_GATEWAY}
+      TARGET_LOGIN_PASSWORD: ${TARGET_LOGIN_PASSWORD}
+      TARGET_LOGIN_AES_KEY: ${TARGET_LOGIN_AES_KEY}
+      TARGET_LOGIN_CODE: ${TARGET_LOGIN_CODE}
+      TARGET_PLATFORM_CODE: ${TARGET_PLATFORM_CODE:-200001}
+      TARGET_TEMPLATE_PLATFORM_CODES: ${TARGET_TEMPLATE_PLATFORM_CODES:-200001,999999}
+      PLAN_DB_HOST: mysql
+      PLAN_DB_PORT: 3306
+      PLAN_DB_NAME: ${PLAN_DB_NAME:-test_auto_pro_v2}
+      PLAN_DB_USER: ${PLAN_DB_USER:-test_auto_pro}
+      PLAN_DB_PASSWORD: ${PLAN_DB_PASSWORD}
+      TEST_AUTO_PRO_WORKSPACE_ROOT: /app
+      FORM_RUNTIME_HEALTH_URL: ${FORM_RUNTIME_HEALTH_URL:-http://form-runtime:19001/}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-7}
+    volumes:
+      - ./logs:/app/logs
+      - fr-live:/app/web/dist/form-runtime
+      - fr-maintenance:/app/.runtime/form-runtime-maintenance
+      # 表单运行时维护的同步来源：宿主已通过 make refs-sync 维护的参考仓库（只读）。
+      - ../参考代码:/app/参考代码:ro
+    ports:
+      - "${BACKEND_PORT:-19080}:19080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:19080/api/health || wget -qO- http://127.0.0.1:19080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-19000}:19000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:19000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  form-runtime:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.form-runtime
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      # 与后端共享 live 卷：维护流水线切换版本，这里即时提供新产物。
+      - fr-live:/usr/share/nginx/html:ro
+    ports:
+      - "${FORM_RUNTIME_PORT:-19001}:19001"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:19001/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  code-server:
+    image: codercom/code-server:4.96.4
+    restart: unless-stopped
+    command: --auth=none --user-data-dir=/home/coder/.config /home/coder/logs
+    environment:
+      DOCKER_USER: ${CODE_SERVER_UID:-1000}
+    volumes:
+      - ./logs:/home/coder/logs
+    ports:
+      - "${CODE_SERVER_PORT:-19002}:8080"
+
+volumes:
+  mysql-data:
+  fr-live:
+  fr-maintenance:
