@@ -72,7 +72,12 @@ async function loadRuntime(retry = true): Promise<Record<string, unknown>> {
   const generation = ++runtimeGeneration
   runtimeActive = true
   try {
-    // 宿主页面装载包含目标表单自身的异步初始化与数据源请求，超时预算比其他命令更长。
+    // 宿主页面装载不设超时：它包含目标表单自身的异步初始化、多个远程选项数据源请求，
+    // 以及选项型字段补丁协调（要等数据源到齐才能按真实选项回填绑定值）。目标是共享内网服务，
+    // 实测有稳定 30 秒级慢请求，还存在数据源链式依赖，耗时不可预估。
+    // 这里此前虽然写着"预算更长"却没传超时值，实际用的是 15 秒默认值：装载稍慢就会两次超时后
+    // resetRuntime 把会话置为未就绪，于是出现"数据已经正确显示、却提示响应超时且保存说运行时未就绪"。
+    // 真失败由 iframe 主动以 error 消息回报，离开页面由 AbortController 兜底，不依赖超时。
     const payload = await postCommand('load', {
       sid: props.runtimeSession.sid,
       baseURL: props.runtimeSession.baseURL,
@@ -91,7 +96,7 @@ async function loadRuntime(retry = true): Promise<Record<string, unknown>> {
       permissions: props.form.permissions,
       values: props.form.effectiveFormData,
       changedFields: props.form.branchPatches.map(patch => patch.path),
-    })
+    }, undefined, 0)
     if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
     emit('ready', payload)
     return payload

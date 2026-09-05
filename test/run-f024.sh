@@ -61,6 +61,23 @@ if grep -nE 'FindDueTaskID\(ctx, session, [^,]+, step\.NodeKey\)|NodeProxyID = s
   exit 1
 fi
 
+printf '%s\n' '[F-024] 表单装载命令不设超时'
+# 装载要等目标数据源与选项协调（分钟级），一旦沿用 15 秒默认超时就会两次超时后把会话置为未就绪，
+# 出现"数据已正确显示却提示响应超时、保存说运行时未就绪"。这里反向锁定必须显式传 0。
+python3 - <<'PYCHECK'
+import io, re, sys
+text = io.open('web/src/features/path-configuration/FormRuntimeFrame.vue', encoding='utf-8').read()
+start = text.find("postCommand('load'")
+if start < 0:
+    print('[F-024] 找不到装载命令调用', file=sys.stderr); raise SystemExit(1)
+segment = text[start:start + 2000]
+end = segment.find('\n    if (disposed')
+if end < 0:
+    print('[F-024] 装载命令调用形状变了，需重新核对超时参数', file=sys.stderr); raise SystemExit(1)
+if 'undefined, 0)' not in segment[:end]:
+    print('[F-024] 装载命令必须显式不设超时（undefined, 0）', file=sys.stderr); raise SystemExit(1)
+PYCHECK
+
 printf '%s\n' '[F-024] 语义清单证据未漂移'
 ./test/contracts/f014/semantics_evidence_drift.sh >/dev/null
 
