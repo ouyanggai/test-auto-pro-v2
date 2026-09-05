@@ -74,6 +74,18 @@ type PathVueCustomFieldOption struct {
 	Value any    `json:"value"`
 }
 
+// PathFormNodeView 是按节点切换的表单权限视图。
+// 目标按节点声明字段权限（语义清单第 11 条），真实用户在一个节点上只能改该节点声明为 edit 的字段；
+// 配置阶段按同一口径分节点渲染，用户才能看清"这个字段到底由谁在哪一步填"。
+type PathFormNodeView struct {
+	// NodeName 是节点的中文业务名称；界面按名称切换视图，不暴露目标内部标识。
+	NodeName string `json:"nodeName"`
+	// IsInitiator 标记发起人视图；发起态是配置阶段的默认视图。
+	IsInitiator bool `json:"isInitiator"`
+	// Permissions 是该节点声明可编辑的字段清单。
+	Permissions []PathFormPermission `json:"permissions"`
+}
+
 // PathFormPermission 是 iframe 应用字段权限所需的最小字段键与权限。
 type PathFormPermission struct {
 	Field string `json:"field"`

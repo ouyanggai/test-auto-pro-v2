@@ -39,6 +39,8 @@ export interface PathConfigurationDataWorkspace {
   runtimeValidation: PathConfigurationRuntimeValidation
   issues: HistoryDataIssue[]
   keyFields: PathConfigKeyField[]
+  // nodeViews 是按节点切换的表单权限视图：同一份数据，按该节点声明的可编辑字段渲染。
+  nodeViews: PathConfigNodeView[]
   actions: unknown[]
   compiledScenario: PathCompiledActionStep[]
 }
@@ -53,6 +55,16 @@ export interface PathConfigKeyField {
   operators?: string[]
   branches?: string[]
   decisive: boolean
+  // fillNodeName 是这条路线上第一个有权编辑该字段的节点；fillableAtStart 为真表示发起人就能填。
+  fillNodeName?: string
+  fillableAtStart: boolean
+}
+
+// PathConfigNodeView 是按节点切换的表单权限视图；节点只用中文名称标识。
+export interface PathConfigNodeView {
+  nodeName: string
+  isInitiator: boolean
+  permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
 }
 
 export interface PathConfigurationRuntimeValidation {

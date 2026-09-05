@@ -233,6 +233,11 @@ type HistoryKeyField struct {
 	Operators  []string `json:"operators,omitempty"`
 	Branches   []string `json:"branches,omitempty"`
 	Decisive   bool     `json:"decisive"`
+	// FillNodeName 是这条路线上第一个有权编辑该字段的节点名称；为空表示没有任何节点能填。
+	// FillableAtStart 为真表示发起人就能填，否则这个值会在 FillNodeName 那个节点执行时自动带上
+	//（目标条件求值只认本次写请求带上来的表单数据，见语义清单第 17 条）。
+	FillNodeName    string `json:"fillNodeName,omitempty"`
+	FillableAtStart bool   `json:"fillableAtStart"`
 }
 
 type PathConfigurationF012 struct {
@@ -254,6 +259,9 @@ type PathConfigurationF012 struct {
 	BranchPatches       []HistoryBranchPatch     `json:"branchPatches"`
 	RuntimeValidation   HistoryRuntimeValidation `json:"runtimeValidation"`
 	Issues              []HistoryDataIssue       `json:"issues"`
+	// NodeViews 是按节点切换的表单权限视图：同一份表单数据，按该节点声明的可编辑字段渲染。
+	// 默认展示发起人视图（与 RuntimePermissions 同源），切到审批节点即该节点能改的字段。
+	NodeViews []PathFormNodeView `json:"nodeViews"`
 	// KeyFields 是决定当前执行路径的条件字段，供界面提示用户优先核对哪些字段。
 	KeyFields        []HistoryKeyField    `json:"keyFields"`
 	Actions          []ConfiguredAction   `json:"actions"`

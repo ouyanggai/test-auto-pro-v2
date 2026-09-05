@@ -114,6 +114,12 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	if identity, identityErr := s.currentUserIdentity(ctx, planID); identityErr == nil {
 		replaceUserIdentityValues(values, identity)
 	}
+	// 条件字段的填写时机按节点权限算出；一个节点都填不了的决定性条件字段必须阻断，
+	// 否则运行到那一步只能听天由命地走目标现有数据决定的分支。
+	keyFields := workspaceKeyFields(snapshot, path.Choices, values, analysis.pathAnalysis.ReachableNodeIDs)
+	if unfillable := unfillableKeyFieldIssues(keyFields, routeNodePowers(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs)); len(unfillable) > 0 {
+		issues = appendHistoryIssues(issues, unfillable)
+	}
 	return model.PathConfigurationF012{
 		Path: pathConfigPath(path), Revision: stored.Revision, NodeRevision: stored.NodeRevision,
 		DataRevision: stored.DataRevision, ActionRevision: stored.ActionRevision,
@@ -122,8 +128,8 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
 		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template), EffectiveFormData: values,
 		BranchPatches: patches, RuntimeValidation: runtimeValidation, Issues: issues,
-		KeyFields: workspaceKeyFields(snapshot, path.Choices, values),
-		Actions:   decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
+		KeyFields: keyFields, NodeViews: nodeFormViews(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs),
+		Actions: decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
 	}, nil
 }
 
@@ -304,8 +310,9 @@ func templateString(value any) string {
 	return text
 }
 
-// workspaceKeyFields 投影决定当前路径的条件字段，让界面直接告诉用户先核对哪些字段。
-func workspaceKeyFields(snapshot target.PathConfigurationSnapshot, choices []model.ExecutionPathChoice, values map[string]any) []model.HistoryKeyField {
+// workspaceKeyFields 投影决定当前路径的条件字段，让界面直接告诉用户先核对哪些字段，
+// 并按节点字段权限标出每个字段的填写时机：发起人能填，还是要等到某个节点执行时自动带上。
+func workspaceKeyFields(snapshot target.PathConfigurationSnapshot, choices []model.ExecutionPathChoice, values map[string]any, reachable []string) []model.HistoryKeyField {
 	fields := branchoverlay.KeyFields(branchoverlay.Input{Tree: snapshot.Tree, Choices: choices, Values: values})
 	labels := keyFieldLabels(snapshot)
 	result := make([]model.HistoryKeyField, 0, len(fields))
@@ -315,7 +322,7 @@ func workspaceKeyFields(snapshot target.PathConfigurationSnapshot, choices []mod
 			Candidates: field.Candidates, Operators: field.Operators, Branches: field.Branches, Decisive: field.Decisive,
 		})
 	}
-	return result
+	return keyFieldFillHints(result, routeNodePowers(snapshot.Tree, reachable))
 }
 
 // SaveData 保存复制 form-runtime 捕获的原始表单数据，并在实际路径变化时要求一次性确认。

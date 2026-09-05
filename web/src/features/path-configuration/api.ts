@@ -76,6 +76,19 @@ function normalizePathConfigurationData(value: PathConfigurationDataWorkspace): 
     branchPatches: Array.isArray(value?.branchPatches) ? value.branchPatches : [],
     runtimeValidation: { accepted: value?.runtimeValidation?.accepted === true, issues: Array.isArray(value?.runtimeValidation?.issues) ? value.runtimeValidation.issues : [] },
     issues: Array.isArray(value?.issues) ? value.issues : [],
+    keyFields: Array.isArray(value?.keyFields)
+      ? value.keyFields.map(field => ({ ...field, fillNodeName: typeof field?.fillNodeName === 'string' ? field.fillNodeName : '', fillableAtStart: field?.fillableAtStart === true }))
+      : [],
+    // 节点视图只在服务端按目标节点声明生成；前端不猜权限，缺失时退化为只有发起人视图。
+    nodeViews: Array.isArray(value?.nodeViews)
+      ? value.nodeViews.map(view => ({
+        nodeName: String(view?.nodeName ?? ''),
+        isInitiator: view?.isInitiator === true,
+        permissions: Array.isArray(view?.permissions)
+          ? view.permissions.map(permission => ({ field: String(permission?.field ?? ''), power: permission?.power === 'edit' || permission?.power === 'hide' ? permission.power : 'only_read' }))
+          : [],
+      }))
+      : [],
   }
 }
 

@@ -3,8 +3,8 @@ package step
 import (
 	"encoding/json"
 	"sort"
-	"strings"
 
+	"test-auto-pro-v2/internal/formdata/fieldpower"
 	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 )
@@ -23,53 +23,6 @@ import (
 //	      只覆盖本节点声明可编辑且我们配置过的字段，其余字段保持实例现状，
 //	      绝不用历史快照覆盖上游处理人已经填过的内容。
 
-// companionFieldSuffixes 是目标表单为选项型与人员型控件维护的伴生键后缀。
-// 目标只对控件本体声明权限，这些伴生键不单独声明，但必须跟随本体一起提交：
-// 例如条件求值读的就是 classificationId__virtualName（语义清单第 15 条），漏掉它分支就算不出来。
-var companionFieldSuffixes = []string{"__virtualName", "__condition", "__formPersonId"}
-
-// fieldIdentities 返回一个表单数据键在权限判断上等价的字段身份集合：
-// 键本身、去掉伴生后缀的本体，以及名称字段对应的同前缀 Id 字段（目标只对 Id 控件声明权限）。
-func fieldIdentities(key string) []string {
-	identities := []string{key}
-	body := key
-	for _, suffix := range companionFieldSuffixes {
-		if strings.HasSuffix(body, suffix) && len(body) > len(suffix) {
-			body = strings.TrimSuffix(body, suffix)
-			identities = append(identities, body)
-			break
-		}
-	}
-	switch {
-	case strings.HasSuffix(body, "Names") && len(body) > 5:
-		identities = append(identities, strings.TrimSuffix(body, "Names")+"Ids")
-	case strings.HasSuffix(body, "Name") && len(body) > 4:
-		identities = append(identities, strings.TrimSuffix(body, "Name")+"Id")
-	}
-	return identities
-}
-
-// editableCoversKey 判断一个可编辑字段集合是否覆盖某个表单数据键。
-// 除等值匹配外还认两种目标约定：伴生键跟随本体；子表单容器键由它的列权限（`容器.列`）覆盖。
-func editableCoversKey(editable []string, key string) bool {
-	if key == "" {
-		return false
-	}
-	identities := fieldIdentities(key)
-	prefix := key + "."
-	for _, field := range editable {
-		for _, identity := range identities {
-			if field == identity {
-				return true
-			}
-		}
-		if strings.HasPrefix(field, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // nodeEditableFields 取某个节点声明的可编辑字段；节点信息缺失时回落到上下文里的同源映射。
 func nodeEditableFields(runCtx RunContext, nodeKey string) []string {
 	if info, ok := runCtx.Nodes[nodeKey]; ok && len(info.EditableFields) > 0 {
@@ -81,14 +34,14 @@ func nodeEditableFields(runCtx RunContext, nodeKey string) []string {
 // ownedByOtherNodeOnly 判断这个键只有路线上的其他节点才能编辑，本节点不能。
 // 只看本条路线上的节点：路线外节点这次运行不会执行，它的声明与本次提交无关。
 func ownedByOtherNodeOnly(runCtx RunContext, currentNodeKey, key string) bool {
-	if editableCoversKey(nodeEditableFields(runCtx, currentNodeKey), key) {
+	if fieldpower.Covers(nodeEditableFields(runCtx, currentNodeKey), key) {
 		return false
 	}
 	for nodeKey, editable := range runCtx.NodeEditableFields {
 		if nodeKey == currentNodeKey {
 			continue
 		}
-		if editableCoversKey(editable, key) {
+		if fieldpower.Covers(editable, key) {
 			return true
 		}
 	}
@@ -129,7 +82,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		plan.BaseFromInstance = true
 		// 实例已存在：只覆盖本节点声明可编辑的配置字段，其余保持实例现状。
 		for key, value := range configured {
-			if editableCoversKey(editable, key) {
+			if fieldpower.Covers(editable, key) {
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
 				continue
@@ -152,7 +105,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 				continue
 			}
 			merged[key] = value
-			if editableCoversKey(editable, key) {
+			if fieldpower.Covers(editable, key) {
 				plan.Overlaid = append(plan.Overlaid, key)
 			}
 		}

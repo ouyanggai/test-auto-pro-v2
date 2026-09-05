@@ -54,6 +54,14 @@ function issueFieldText(issue: HistoryDataIssue): string {
   }).join('；')
 }
 
+// fillHintText 说明这个条件字段由谁填：发起人自己填，还是要等到某个节点执行时自动带上。
+// 目标条件求值只认本次写请求带上来的表单数据，所以后续节点填进去同样能决定分支走向。
+function fillHintText(field: PathConfigKeyField): string {
+  if (field.fillableAtStart) return '发起时由本页数据提交'
+  if (field.fillNodeName) return `发起人无编辑权限，将在「${field.fillNodeName}」节点执行时自动填写`
+  return '这条路线上没有节点有编辑权限，工具填不出这个值，需要人工确认'
+}
+
 // patchText 展示系统自动调整的中文字段、调整前值和调整后值。
 function patchText(patch: PathConfigurationBranchPatch): string {
   const field = props.keyFields.find(item => item.path === patch.path)
@@ -90,6 +98,7 @@ function patchText(patch: PathConfigurationBranchPatch): string {
                 <n-tag size="tiny" :bordered="false" type="info">{{ fieldValueText(field.current) }}</n-tag>
               </div>
               <small v-if="candidateText(field.candidates)">可选：{{ candidateText(field.candidates) }}</small>
+              <small class="form-hints__fill">{{ fillHintText(field) }}</small>
             </li>
           </ul>
         </n-collapse-item>
@@ -115,6 +124,7 @@ function patchText(patch: PathConfigurationBranchPatch): string {
           <ul class="form-hints__list">
             <li v-for="field in otherFields" :key="field.path">
               <strong>{{ fieldLabel(field) }}</strong> {{ fieldValueText(field.current) }}
+              <small class="form-hints__fill">{{ fillHintText(field) }}</small>
             </li>
           </ul>
         </n-collapse-item>
@@ -124,6 +134,12 @@ function patchText(patch: PathConfigurationBranchPatch): string {
 </template>
 
 <style scoped>
+.form-hints__fill {
+  display: block;
+  margin-top: 2px;
+  opacity: 0.75;
+}
+
 .form-hints {
   position: absolute;
   top: 8px;
