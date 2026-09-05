@@ -42,7 +42,10 @@ for required in \
   TestF024KeyFieldFillHintsPointAtTheNodeThatCanFillIt \
   TestF024UnfillableDecisiveConditionFieldBlocks \
   TestF024NodeFormViewsFollowTargetDeclaration \
-  TestF024FieldPowerCoversTargetConventions; do
+  TestF024FieldPowerCoversTargetConventions \
+  TestF024SaveRestoresFieldsOutsideCurrentView \
+  TestF024NoFieldPowerDeclarationDegradesInsteadOfBlocking \
+  TestF024InitiatorWithoutDeclarationIsExplained; do
   if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${unit_log}"; then
     printf '[F-024] 缺少必需用例的通过记录：%s\n' "${required}" >&2
     exit 1
@@ -58,6 +61,13 @@ grep -qF 'BuildNodeFormData' internal/engine/step/executor.go
 printf '%s\n' '[F-024] 目标节点标识不再用工具侧不透明键'
 if grep -nE 'FindDueTaskID\(ctx, session, [^,]+, step\.NodeKey\)|NodeProxyID = step\.NodeKey' internal/engine/step/*.go; then
   printf '%s\n' '[F-024] 发给目标的节点标识必须是真实标识，不能用编译场景的不透明键' >&2
+  exit 1
+fi
+
+printf '%s\n' '[F-024] 权限判据保持通用：不得按具体表单或字段名写死'
+if grep -rnE '"(classificationId|contractSum|closeResult|accountantOpinion|paymentId)"|合同盖章|应诉案件' \
+  internal/formdata/fieldpower internal/engine/step/formdata.go internal/service/path_node_field_power.go; then
+  printf '%s\n' '[F-024] 节点权限与写载荷构造只允许依据目标平台级约定，不得出现具体表单或字段名' >&2
   exit 1
 fi
 

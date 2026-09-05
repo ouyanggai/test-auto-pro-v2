@@ -120,6 +120,11 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	if unfillable := unfillableKeyFieldIssues(keyFields, routeNodePowers(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs)); len(unfillable) > 0 {
 		issues = appendHistoryIssues(issues, unfillable)
 	}
+	// 字段权限声明缺失时如实说明（不阻断）：目标库里确实有整条路线没有任何声明的流程，
+	// 这类流程按整份数据提交、不做分段填写，必须让用户知道而不是默默换一套行为。
+	if degraded := fieldPowerDegradationIssues(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs); len(degraded) > 0 {
+		issues = appendHistoryIssues(issues, degraded)
+	}
 	return model.PathConfigurationF012{
 		Path: pathConfigPath(path), Revision: stored.Revision, NodeRevision: stored.NodeRevision,
 		DataRevision: stored.DataRevision, ActionRevision: stored.ActionRevision,

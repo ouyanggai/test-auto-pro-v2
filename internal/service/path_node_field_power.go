@@ -82,6 +82,19 @@ func nodeAcceptsHumanInput(nodeType string) bool {
 	}
 }
 
+// routeDeclaresFieldPowers 判断这条路线上是否存在任何节点级字段权限声明。
+// 目标库里有 280 个流程模板一条声明都没有（另有 329 个流程的发起节点没有声明）。
+// 没有声明就没有"谁能填什么"的数据源，此时不能按权限收窄任何东西——
+// 既不按节点分视图，也不产生"没有节点能填"的阻断，否则这些流程会被工具凭空判死。
+func routeDeclaresFieldPowers(powers []routeNodePower) bool {
+	for _, power := range powers {
+		if len(power.Editable) > 0 || len(power.Hidden) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // fieldFillNode 返回路线上第一个能编辑该字段的节点；一个都没有时返回 false。
 func fieldFillNode(powers []routeNodePower, field string) (routeNodePower, bool) {
 	for _, power := range powers {
@@ -96,7 +109,7 @@ func fieldFillNode(powers []routeNodePower, field string) (routeNodePower, bool)
 // 目标条件求值只认本次写请求带上来的表单数据（语义清单第 17 条），
 // 所以发起人无权编辑的条件字段可以由后续有权节点在自己的写请求里带上，分支按那次请求重新计算。
 func keyFieldFillHints(fields []model.HistoryKeyField, powers []routeNodePower) []model.HistoryKeyField {
-	if len(powers) == 0 {
+	if len(powers) == 0 || !routeDeclaresFieldPowers(powers) {
 		return fields
 	}
 	initiator := powers[0]
@@ -123,7 +136,7 @@ func keyFieldFillHints(fields []model.HistoryKeyField, powers []routeNodePower) 
 // 这类字段我们在这条路线上填不出来，分支走向完全由目标现有数据决定：
 // 必须如实告诉用户而不是让运行到那一步再莫名走错分支。
 func unfillableKeyFieldIssues(fields []model.HistoryKeyField, powers []routeNodePower) []model.HistoryDataIssue {
-	if len(powers) == 0 {
+	if len(powers) == 0 || !routeDeclaresFieldPowers(powers) {
 		return nil
 	}
 	issues := make([]model.HistoryDataIssue, 0)
@@ -162,6 +175,11 @@ func unfillableKeyFieldIssues(fields []model.HistoryKeyField, powers []routeNode
 func nodeFormViews(tree *target.FlowNodeTemplate, reachable []string, values map[string]any) []model.PathFormNodeView {
 	powers := routeNodePowers(tree, reachable)
 	views := make([]model.PathFormNodeView, 0, len(powers))
+	if !routeDeclaresFieldPowers(powers) {
+		// 这条路线一条字段权限声明都没有：没有依据分节点，返回空清单让界面沿用既有权限投影，
+		// 不显示切换器也不收窄任何字段。
+		return views
+	}
 	for index, power := range powers {
 		permissions := make([]model.PathFormPermission, 0, len(power.Editable)+len(power.Hidden))
 		for _, field := range power.Editable {
@@ -275,4 +293,35 @@ func valuesLooselyEqual(left, right any) bool {
 // RestoreFieldsOutsideViewForTest 暴露按视图恢复无权限字段，供 test 目录下的定向用例锁定行为。
 func RestoreFieldsOutsideViewForTest(submitted, baseline map[string]any, editable []string) []string {
 	return restoreFieldsOutsideView(submitted, baseline, editable)
+}
+
+// fieldPowerDegradationIssues 在字段权限声明缺失时给出中文说明，不阻断。
+// 分两种：整条路线一条声明都没有（分段填写整体不生效）；只有发起节点没有声明
+// （按目标口径发起态没有任何可填字段，用户会看到整张表单只读，必须解释原因而不是让人困惑）。
+func fieldPowerDegradationIssues(tree *target.FlowNodeTemplate, reachable []string) []model.HistoryDataIssue {
+	powers := routeNodePowers(tree, reachable)
+	if len(powers) == 0 {
+		return nil
+	}
+	if !routeDeclaresFieldPowers(powers) {
+		return []model.HistoryDataIssue{{
+			Code:     "NODE_FIELD_POWER_NOT_DECLARED",
+			Message:  "这条路线上的节点都没有声明字段权限，工具无法按节点判断谁能填哪些字段：表单按整份数据提交，不做分段填写",
+			Blocking: false,
+		}}
+	}
+	initiator := powers[0]
+	if initiator.Type == "start" && len(initiator.Editable) == 0 {
+		return []model.HistoryDataIssue{{
+			Code:     "INITIATOR_FIELD_POWER_EMPTY",
+			Message:  "目标没有为发起节点声明任何可编辑字段，因此发起态表单全部只读；需要在这一步填写请先在目标平台配置发起节点的字段权限",
+			Blocking: false,
+		}}
+	}
+	return nil
+}
+
+// FieldPowerDegradationIssuesForTest 暴露字段权限缺失说明，供 test 目录下的定向用例锁定行为。
+func FieldPowerDegradationIssuesForTest(tree *target.FlowNodeTemplate, reachable []string) []model.HistoryDataIssue {
+	return fieldPowerDegradationIssues(tree, reachable)
 }

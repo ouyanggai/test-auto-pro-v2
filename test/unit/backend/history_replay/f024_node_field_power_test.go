@@ -213,3 +213,46 @@ func TestF024SaveRestoresFieldsOutsideCurrentView(t *testing.T) {
 		t.Fatalf("没有变化的可编辑字段不该记为恢复：%v", restored)
 	}
 }
+
+// f024TreeWithoutPowers 构造一条完全没有字段权限声明的路线：目标库里有 280 个流程模板就是这样。
+func f024TreeWithoutPowers() *target.FlowNodeTemplate {
+	audit := &target.FlowNodeTemplate{ID: "audit", Type: "common", Name: "部门审批"}
+	return &target.FlowNodeTemplate{ID: "start", Type: "start", Name: "发起人", Child: audit}
+}
+
+// TestF024NoFieldPowerDeclarationDegradesInsteadOfBlocking 锁定通用性：
+// 一条声明都没有的流程不能被工具凭空判死——不分节点视图、不产生不可填阻断，
+// 只给一条中文说明告诉用户分段填写在这条路线上不生效。
+func TestF024NoFieldPowerDeclarationDegradesInsteadOfBlocking(t *testing.T) {
+	tree := f024TreeWithoutPowers()
+	reachable := []string{"start", "audit"}
+	fields := []model.HistoryKeyField{{Path: "anyField", Label: "任意字段", Decisive: true}}
+
+	if views := service.NodeFormViewsForTest(tree, reachable, map[string]any{"anyField": "值"}); len(views) != 0 {
+		t.Fatalf("没有字段权限声明时不应产生按节点视图：%+v", views)
+	}
+	if issues := service.UnfillableKeyFieldIssuesForTest(tree, reachable, fields); len(issues) != 0 {
+		t.Fatalf("没有字段权限声明时不得产生不可填阻断：%+v", issues)
+	}
+	hinted := service.KeyFieldFillHintsForTest(tree, reachable, fields)
+	if len(hinted) != 1 || hinted[0].FillNodeName != "" || hinted[0].FillableAtStart {
+		t.Fatalf("没有依据时不得凭空给出填写节点：%+v", hinted)
+	}
+	degraded := service.FieldPowerDegradationIssuesForTest(tree, reachable)
+	if len(degraded) != 1 || degraded[0].Code != "NODE_FIELD_POWER_NOT_DECLARED" || degraded[0].Blocking {
+		t.Fatalf("必须给出一条不阻断的中文说明：%+v", degraded)
+	}
+}
+
+// TestF024InitiatorWithoutDeclarationIsExplained 锁定另一种缺失：只有发起节点没有声明。
+// 按目标口径发起态整张表单只读，用户会困惑"为什么什么都填不了"，必须给出原因说明。
+func TestF024InitiatorWithoutDeclarationIsExplained(t *testing.T) {
+	audit := &target.FlowNodeTemplate{ID: "audit", Type: "common", Name: "部门审批", FieldPowers: []target.FlowNodeFieldPower{
+		{EnglishName: "accountantOpinion", Power: "edit"},
+	}}
+	tree := &target.FlowNodeTemplate{ID: "start", Type: "start", Name: "发起人", Child: audit}
+	degraded := service.FieldPowerDegradationIssuesForTest(tree, []string{"start", "audit"})
+	if len(degraded) != 1 || degraded[0].Code != "INITIATOR_FIELD_POWER_EMPTY" || degraded[0].Blocking {
+		t.Fatalf("发起节点没有声明时必须给出不阻断的原因说明：%+v", degraded)
+	}
+}
