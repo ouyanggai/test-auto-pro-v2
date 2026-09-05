@@ -24,3 +24,26 @@ grep -qF 'PartialEffect' internal/engine/reconcile/reconcile.go
 grep -qF 'missing' internal/engine/reconcile/reconcile.go
 
 printf '%s\n' '[F-018] 对账只读契约通过'
+
+printf '%s\n' '[F-018] 人工结论登记按纲领第 12 节基线'
+# 唯一的人工输入点：必须走组件库表单、三项必填、提交前二次确认，不允许裸 input 拼。
+if grep -nE '<input |<select ' web/src/views/RunDetailView.vue; then
+  printf '%s\n' '[F-018] 人工结论登记不得使用裸 input/select' >&2
+  exit 1
+fi
+for token in 'NForm' 'manualRules' 'NPopconfirm' '登记人' '实例状态' '当前节点'; do
+  grep -qF "${token}" web/src/views/RunDetailView.vue || {
+    printf '[F-018] 人工结论表单缺少「%s」\n' "${token}" >&2
+    exit 1
+  }
+done
+grep -qF 'manualFormRef.value?.validate()' web/src/views/RunDetailView.vue || {
+  printf '%s\n' '[F-018] 人工结论必须先过表单校验再提交' >&2
+  exit 1
+}
+
+printf '%s\n' '[F-018] 五维证据必须真的读到：已办与审核记录有真实只读实现'
+grep -qF 'FindDoneTaskOnNode' internal/adapter/target/client_fact_reads.go
+grep -qF 'FindAuditTraceOnNode' internal/adapter/target/client_fact_reads.go
+grep -qF 'DoneRecordsRead' internal/engine/control/reconcile.go
+grep -qF 'ActionTraceRead' internal/engine/control/reconcile.go

@@ -156,6 +156,32 @@
 8. **既有实现必须先读后写。** 实施前先用 `git log --oneline` 与目录清单确认本切片是否已有落库实现，
    已有实现按「补齐与返工」推进，不重建第二套；重复实现属于交付缺陷。
 
+### 评审修复与界面返工（2026-09-05 核查线程，已提交）
+
+**对账原先永远只能得出「仍无法判定」——已生效与未生效都是死代码。**
+`Collect` 里已办记录维度只在 `DoneRecordsRead` 为真时才有证据，动作痕迹维度只在 `ActionTraceFound`
+为真时才算变化、否则一律标 `missing`，而收集器（`internal/engine/control/reconcile.go`）两个字段都没填，
+于是五维必然缺失、强证据规则必然降级：`ActionAdvance`（确认前进）与 `ActionReplay`（重放）从未可达，
+每次对账都只剩「登记人工核对结论」。单元用例直接喂 `Dims`，把这个缺口完全遮住。
+
+修复方式是把两个维度真的读起来，而不是放宽判据：
+
+- 新增 `Client.FindDoneTaskOnNode`：已办与待办同表同端点（`/web/flowJobTaskLink/list`），
+  只是 `taskStatus` 取 `done`（`TaskStatusEnum.done`=已办），按实例与节点精确匹配。
+- 新增 `Client.FindAuditTraceOnNode`：读 `/web/flowAuditRecord/list`（与目标自己的流程日志同源，
+  请求只带 `flowInstanceId`），按 `flowNodeProxyId` 判断本节点是否已留下动作痕迹，并回报该实例的记录条数进依据说明。
+- 两个读取都走只读有界重试；读不到时如实标缺失并写 `step.log`，绝不把「没读到」当成「没有痕迹」。
+- 判定器区分 `ActionTraceRead`（读到了但没有痕迹→未变化）与读不到（→缺失降级）。
+  「未生效」仍然要求五维全部读到且全部未变——它是唯一会导致重放（再写一次）的结论，这条不放宽。
+- 新增 3 个用例锁定：五维齐备才允许重放、任一维度读不到即降级且不给重放、读取失败只能重新对账。
+
+**人工结论登记从四个裸 `<input>` 改为真正的表单**：实例状态改为目标真实状态集合的下拉
+（含「目标平台上看不到这条实例」），当前节点与登记人为必填文本，补充说明为多行选填；
+三项必填带中文校验文案与失焦校验，提交前先过 `validate()`，再经 `NPopconfirm` 二次确认
+（说明登记后路径运行进入终态、不能再放行或重放）。顶部补一句中文引导，说明这是在登记「你亲眼看到的事实」。
+`test/contracts/f018/reconcile_readonly.sh` 增加反向断言：不得裸 `input`/`select`、必须有校验与二次确认、
+两个新维度必须有真实只读实现并被收集器填入。
+
 ### 本切片现状（核查线程如实记录）
 
 后端与最小界面已落库（提交 `d8c11ad`）：`internal/engine/reconcile/reconcile.go`、

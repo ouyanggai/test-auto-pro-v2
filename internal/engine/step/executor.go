@@ -713,6 +713,15 @@ type ReconcileFacts struct {
 	NowCurrentNodes   []string
 	NowDueNodes       []string
 	NowReadError      string
+	// DoneRecordsRead 为真表示已办记录维度真的读到了（不是"未接入"）；
+	// DoneRecordFound 表示本步节点上已经有本账号的已办记录。
+	DoneRecordsRead bool
+	DoneRecordFound bool
+	// ActionTraceRead 为真表示审核记录维度真的读到了；ActionTraceFound 表示本步节点已留下动作痕迹；
+	// ActionTraceTotal 是该实例的审核记录条数，只进依据说明供人工核对。
+	ActionTraceRead  bool
+	ActionTraceFound bool
+	ActionTraceTotal int
 }
 
 // ReconcileFacts 重读目标事实供对账判定：只读、可重试。
@@ -732,12 +741,58 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 	if err != nil {
 		return ReconcileFacts{BeforeStatus: before.Status, BeforeHadInstance: before.Found, NowReadError: after.ReadError}, nil
 	}
-	return ReconcileFacts{
+	facts := ReconcileFacts{
 		BeforeStatus:      before.Status,
 		BeforeHadInstance: before.Found,
 		NowFound:          after.Found,
 		NowStatus:         after.Status,
 		NowCurrentNodes:   after.CurrentNodes,
 		NowDueNodes:       after.DueNodes,
-	}, nil
+	}
+	// 已办记录与动作痕迹两个维度必须真的去读：只有五维都有证据，「未生效」才允许成立，
+	// 而「未生效」是唯一会导致重放（再写一次）的结论。读不到就如实留空，由判定器降级。
+	instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	nodeID := ""
+	if stepNo >= 1 && stepNo <= len(runCtx.Steps) {
+		nodeID = runCtx.Nodes[runCtx.Steps[stepNo-1].NodeKey].TargetNodeID
+	}
+	if instanceRef != "" {
+		if reader, ok := e.target.(doneRecordReader); ok {
+			if found, readErr := RunWithRetry(ctx, e.policy, "已办记录读取", func() (bool, error) {
+				return reader.FindDoneTaskOnNode(ctx, session, instanceRef, nodeID)
+			}, nil); readErr == nil {
+				facts.DoneRecordsRead, facts.DoneRecordFound = true, found
+			} else {
+				log.Phase("verify", stepNo, 1, "已办记录读取失败，对账按证据缺失降级："+readErr.Error())
+			}
+		}
+		if reader, ok := e.target.(auditTraceReader); ok {
+			trace, readErr := RunWithRetry(ctx, e.policy, "审核记录读取", func() (auditTrace, error) {
+				found, total, err := reader.FindAuditTraceOnNode(ctx, session, instanceRef, nodeID)
+				return auditTrace{found: found, total: total}, err
+			}, nil)
+			if readErr == nil {
+				facts.ActionTraceRead, facts.ActionTraceFound, facts.ActionTraceTotal = true, trace.found, trace.total
+			} else {
+				log.Phase("verify", stepNo, 1, "审核记录读取失败，对账按证据缺失降级："+readErr.Error())
+			}
+		}
+	}
+	return facts, nil
+}
+
+// doneRecordReader 与 auditTraceReader 是对账两个新增维度的最小能力面。
+// 用接口断言而不是加进 TargetClient：假件与既有装配不必被迫实现它们，读不到时对账如实降级。
+type doneRecordReader interface {
+	FindDoneTaskOnNode(ctx context.Context, active target.Session, instanceID, nodeProxyID string) (bool, error)
+}
+
+type auditTraceReader interface {
+	FindAuditTraceOnNode(ctx context.Context, active target.Session, instanceID, nodeProxyID string) (bool, int, error)
+}
+
+// auditTrace 是审核记录维度的读取结果。
+type auditTrace struct {
+	found bool
+	total int
 }

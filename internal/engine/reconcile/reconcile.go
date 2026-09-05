@@ -184,9 +184,12 @@ type FactInput struct {
 	// NowReadError 非空表示重读失败：唯一动作是重新对账。
 	NowReadError string
 	// DoneRecordsRead 表示已办记录维度是否成功读取（当前工具尚未接入该读取时为 false）。
-	DoneRecordsRead  bool
-	DoneRecordFound  bool   // 已办记录里是否已有本次动作痕迹
+	DoneRecordsRead bool
+	DoneRecordFound bool // 已办记录里是否已有本次动作痕迹
+	// ActionTraceRead 为真表示审核记录维度真的读到了；读不到时该维度按缺失降级，不当作"没有痕迹"。
+	ActionTraceRead  bool
 	ActionTraceFound bool   // 动作痕迹里是否已有本次写迹象
+	ActionTraceTotal int    // 该实例的审核记录条数，只进依据说明
 	FormChanged      bool   // 表单数据相对写之前发生变化
 	FormChangedNote  string // 表单变化的中文说明（部分生效警告用）
 }
@@ -259,10 +262,15 @@ func Collect(f FactInput) Input {
 	} else {
 		dims[DimDoneRecords] = DimensionEvidence{State: DimMissing, Note: "已办记录读取未接入"}
 	}
-	if f.ActionTraceFound {
-		dims[DimActionTraces] = DimensionEvidence{State: DimChanged, Note: "动作痕迹出现本次写迹象"}
-	} else {
-		dims[DimActionTraces] = DimensionEvidence{State: DimMissing, Note: "动作痕迹读取未接入"}
+	switch {
+	case !f.ActionTraceRead:
+		dims[DimActionTraces] = DimensionEvidence{State: DimMissing, Note: "审核记录读取失败或未接入"}
+	case f.ActionTraceFound:
+		dims[DimActionTraces] = DimensionEvidence{State: DimChanged,
+			Note: fmt.Sprintf("审核记录里已出现本步节点的动作痕迹（该实例共 %d 条）", f.ActionTraceTotal)}
+	default:
+		dims[DimActionTraces] = DimensionEvidence{State: DimUnchanged,
+			Note: fmt.Sprintf("审核记录里没有本步节点的动作痕迹（该实例共 %d 条）", f.ActionTraceTotal)}
 	}
 	return Input{
 		StepNodeKey: f.StepNodeKey, BeforeStatus: f.BeforeStatus, BeforeHadInstance: f.BeforeHadInstance,

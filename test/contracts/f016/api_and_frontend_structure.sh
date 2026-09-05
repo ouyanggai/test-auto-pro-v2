@@ -42,8 +42,11 @@ grep -qF 'FlowGraphCanvas' web/src/views/RunDetailView.vue
 printf '%s\n' '[F-016] 详情页有放行与停止，写结果不确定不渲染重试入口'
 grep -qF 'approveRun' web/src/views/RunDetailView.vue
 grep -qF 'stopRun' web/src/views/RunDetailView.vue
-# 禁止的是针对不确定写的重试/重新提交「按钮入口」；网络错误的「请重试」提示不属于恢复入口。
-if grep -rnE '>(\s*)重试|重试本步|重新提交|继续执行|重发' web/src/features/runs/*.vue web/src/views/RunDetailView.vue | grep -v '不渲染任何重试'; then
+# 禁止的是针对不确定写的重试/重新提交「按钮入口」：因此只匹配渲染为按钮或链接文本的形态
+#（`>文案` 或 `文案<`）。网络错误的「请重试」提示、以及动作断点选项里的动作中文名
+#（例如「重新提交」是目标的一个真实动作，挂断点要按名字选）都不是恢复入口，不在禁止范围内。
+if grep -rnE '>[[:space:]]*(重试|重试本步|重新提交|继续执行|重发)|(重试本步|重新提交|继续执行|重发)[[:space:]]*<' \
+  web/src/features/runs/*.vue web/src/views/RunDetailView.vue | grep -v '不渲染任何重试'; then
   printf '%s\n' '[F-016] 运行界面不得出现重试或重新提交入口' >&2
   exit 1
 fi

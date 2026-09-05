@@ -56,7 +56,14 @@ func (s *Service) ReconcileNow(ctx context.Context, pathRunID uint64) (*Reconcil
 		NowCurrentNodes:   facts.NowCurrentNodes,
 		NowDueNodes:       facts.NowDueNodes,
 		NowReadError:      facts.NowReadError,
-		FormChanged:       false,
+		// 已办记录与动作痕迹按真实读取结果填入：读到才算证据，读不到由判定器按缺失降级。
+		// 「未生效」是唯一会导致重放（再写一次）的结论，因此这两维必须来自真实读取而不是默认值。
+		DoneRecordsRead:  facts.DoneRecordsRead,
+		DoneRecordFound:  facts.DoneRecordFound,
+		ActionTraceRead:  facts.ActionTraceRead,
+		ActionTraceFound: facts.ActionTraceFound,
+		ActionTraceTotal: facts.ActionTraceTotal,
+		FormChanged:      false,
 	})
 	result := reconcile.Reconcile(input)
 

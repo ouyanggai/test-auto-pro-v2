@@ -633,3 +633,88 @@ func convertFlowFieldPowers(raw []rawFlowNodeFieldPower) []FlowNodeFieldPower {
 	}
 	return result
 }
+
+// FindDoneTaskOnNode 读取指定实例、指定节点上是否已有本账号的已办记录（对账「已办记录」维度）。
+// 只读，可安全重试。已办任务与待办同表同端点，只是 taskStatus 取 done（TaskStatusEnum.done=已办）。
+// 节点标识为空时只按实例判断"这个实例上是否已经有已办"。
+func (c *Client) FindDoneTaskOnNode(ctx context.Context, active Session, instanceID, nodeProxyID string) (bool, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return false, nil
+	}
+	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
+		"data": map[string]any{
+			"flowInstanceId":               instanceID,
+			"taskStatus":                   "done",
+			"auditWayList":                 []string{},
+			"useScope":                     "invest",
+			"flowInstanceBizRelevance":     map[string]any{},
+			"flowInstanceBizRelevanceList": []any{},
+		},
+		"pagination": true, "pages": 1, "size": 100,
+	})
+	if err != nil {
+		return false, err
+	}
+	if !responseSucceeded(resp) {
+		return false, responseError(resp)
+	}
+	var raw []struct {
+		FlowInstanceID  string `json:"flowInstanceId"`
+		FlowNodeProxyID string `json:"flowNodeProxyId"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return false, err
+	}
+	wantNode := strings.TrimSpace(nodeProxyID)
+	for _, item := range raw {
+		if strings.TrimSpace(item.FlowInstanceID) != instanceID {
+			continue
+		}
+		if wantNode != "" && strings.TrimSpace(item.FlowNodeProxyID) != wantNode {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// FindAuditTraceOnNode 读取指定实例上的审核记录，判断本节点是否已留下动作痕迹（对账「动作痕迹」维度）。
+// 只读，可安全重试。端点与目标自己的流程日志同源（/web/flowAuditRecord/list，请求只带 flowInstanceId）。
+// 返回：本节点是否有痕迹、该实例审核记录总条数（条数进对账依据说明，便于人工核对）。
+func (c *Client) FindAuditTraceOnNode(ctx context.Context, active Session, instanceID, nodeProxyID string) (bool, int, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return false, 0, nil
+	}
+	resp, err := c.call(ctx, "/web/flowAuditRecord/list", active.SID, map[string]any{
+		"data": map[string]any{"flowInstanceId": instanceID},
+	})
+	if err != nil {
+		return false, 0, err
+	}
+	if !responseSucceeded(resp) {
+		return false, 0, responseError(resp)
+	}
+	var raw []struct {
+		FlowInstanceID  string `json:"flowInstanceId"`
+		FlowNodeProxyID string `json:"flowNodeProxyId"`
+		AuditStatus     string `json:"auditStatus"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return false, 0, err
+	}
+	wantNode := strings.TrimSpace(nodeProxyID)
+	found := false
+	total := 0
+	for _, item := range raw {
+		if strings.TrimSpace(item.FlowInstanceID) != instanceID {
+			continue
+		}
+		total++
+		if wantNode != "" && strings.TrimSpace(item.FlowNodeProxyID) == wantNode {
+			found = true
+		}
+	}
+	return found, total, nil
+}

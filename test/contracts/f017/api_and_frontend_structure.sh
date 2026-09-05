@@ -41,4 +41,25 @@ if grep -rnE '跳过|跳节点|重置实例|重置目标' web/src/views/RunDetai
   exit 1
 fi
 
+printf '%s\n' '[F-017] 界面按纲领第 12 节基线：无裸控件、无陈旧文案、断点五类可区分'
+# 12.1 禁止裸 input／select 拼界面：运行详情页的输入必须走组件库并带中文标签。
+if grep -nE '<input |<select ' web/src/views/RunDetailView.vue web/src/features/runs/*.vue; then
+  printf '%s\n' '[F-017] 运行详情页不得使用裸 input/select，必须用组件库并带中文标签' >&2
+  exit 1
+fi
+# 12.1 禁止陈旧文案：模式已三选一，界面不得再宣称固定。
+if grep -nF '（固定）' web/src/views/RunDetailView.vue; then
+  printf '%s\n' '[F-017] 模式已支持三选一，界面不得再显示"（固定）"' >&2
+  exit 1
+fi
+# 五类断点都要能在界面上区分，强制断点与可删断点分区。
+for token in 节点断点 步骤断点 动作断点 首次写断点 路径偏离断点 强制生效 已挂载; do
+  grep -qF "${token}" web/src/views/RunDetailView.vue || {
+    printf '[F-017] 断点区缺少「%s」的中文表达\n' "${token}" >&2
+    exit 1
+  }
+done
+# 不可逆操作必须有前置确认：停止与人工结论登记都走二次确认。
+grep -qF 'NPopconfirm' web/src/views/RunDetailView.vue
+
 printf '%s\n' '[F-017] 接口与前端结构契约通过'

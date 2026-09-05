@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NSpin, useThemeVars } from 'naive-ui'
+import { NButton, NEmpty, NForm, NFormItem, NInput, NInputNumber, NPopconfirm, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
+import type { FormInst, FormRules } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -116,6 +117,13 @@ async function runRecovery(action: string): Promise<void> {
 
 // registerManual 登记人工核对结论（仍无法判定的唯一出路）。
 async function registerManual(): Promise<void> {
+  // 先过表单校验：三项必填缺一不可，校验不通过就地提示，不发请求。
+  try {
+    await manualFormRef.value?.validate()
+  } catch {
+    errorText.value = '请先补全人工核对结论里的必填项'
+    return
+  }
   await runRecovery('manual_end')
 }
 
@@ -123,7 +131,6 @@ async function registerManual(): Promise<void> {
 const approveCommand = ref('step')
 const approveCursor = ref(0)
 const approveVersion = ref(0)
-const breakpointInput = ref('')
 
 // syncControl 从最新详情同步命令与条件写参数。
 function syncControl(next: PathRunDetail): void {
@@ -187,12 +194,115 @@ async function deleteBreakpoint(bp: BreakpointInput): Promise<void> {
   }
 }
 
+// 断点分区：强制生效（不可删）与手工挂载（可删）分开，避免把"删不掉的"和"能删的"混在一张列表里。
+const forcedBreakpoints = computed(() => (detail.value?.breakpoints ?? []).filter(bp => bp.type === 'path_deviation' || bp.type === 'first_write'))
+const userBreakpoints = computed(() => (detail.value?.breakpoints ?? []).filter(bp => bp.type !== 'path_deviation' && bp.type !== 'first_write'))
+
+// forcedBreakpointNote 说明强制断点为什么在这里、能不能关。
+function forcedBreakpointNote(type: string): string {
+  if (type === 'path_deviation') return '始终生效且不可关闭：实际走向与已配置路径不一致时强制停下'
+  if (type === 'first_write') return '默认开启：拦住本次运行的第一个写请求，可删除'
+  return ''
+}
+
+// breakpointTargetText 把断点挂载对象写成中文，不显示内部键。
+function breakpointTargetText(bp: { type: string, nodeName?: string, stepNo?: number, action?: string }): string {
+  if (bp.type === 'node') return bp.nodeName ? `节点：${bp.nodeName}` : '节点：未指定'
+  if (bp.type === 'step') return bp.stepNo ? `第 ${bp.stepNo} 步` : '步骤：未指定'
+  if (bp.type === 'action') return bp.action ? `动作：${actionLabel(bp.action)}` : '动作：未指定'
+  return ''
+}
+
+// 新增断点的三种挂载方式：节点取画布选中项，步骤取序号，动作取动作类型。
+const newBreakpointType = ref<'node' | 'step' | 'action'>('node')
+const newBreakpointStep = ref<number | null>(null)
+const newBreakpointAction = ref<string | null>(null)
+const breakpointTypeOptions = [
+  { label: '节点断点', value: 'node' },
+  { label: '步骤断点', value: 'step' },
+  { label: '动作断点', value: 'action' },
+]
+const actionBreakpointOptions = [
+  { label: '发起', value: 'submit' },
+  { label: '同意', value: 'approve' },
+  { label: '不同意', value: 'reject' },
+  { label: '暂存表单', value: 'storage_form_data' },
+  { label: '重新提交', value: 'resubmit' },
+  { label: '回退上一级', value: 'rollback_previous' },
+  { label: '取回', value: 'retrieve' },
+  { label: '撤回', value: 'withdraw' },
+  { label: '转发', value: 'forward' },
+]
+const breakpointTypeHint = computed(() => {
+  if (newBreakpointType.value === 'node') return '挂在尚未执行的节点上，运行到该节点前停下'
+  if (newBreakpointType.value === 'step') return '挂在尚未执行的步骤序号上；已执行过的步骤会被后端拒绝并说明原因'
+  return '挂在动作类型上：本次运行里每次要执行该动作前都停下'
+})
+
+// actionLabel 把动作键转成中文；未登记的键原样显示，不猜。
+function actionLabel(action: string): string {
+  return actionBreakpointOptions.find(option => option.value === action)?.label ?? action
+}
+
+// addStepBreakpoint / addActionBreakpoint 与节点断点走同一条即时生效链路。
+async function addStepBreakpoint(): Promise<void> {
+  if (!newBreakpointStep.value) return
+  try {
+    applyBreakpoints(await setBreakpoint(runId, { type: 'step', stepNo: newBreakpointStep.value }))
+    newBreakpointStep.value = null
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '设置步骤断点失败'
+  }
+}
+
+async function addActionBreakpoint(): Promise<void> {
+  if (!newBreakpointAction.value) return
+  try {
+    applyBreakpoints(await setBreakpoint(runId, { type: 'action', action: newBreakpointAction.value }))
+    newBreakpointAction.value = null
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '设置动作断点失败'
+  }
+}
+
+// breakpointTypeName 把断点类型转成中文名，五类都要覆盖，不允许把内部键漏到界面上。
+function breakpointTypeName(type: string): string {
+  switch (type) {
+    case 'node': return '节点断点'
+    case 'step': return '步骤断点'
+    case 'action': return '动作断点'
+    case 'first_write': return '首次写断点'
+    case 'path_deviation': return '路径偏离断点'
+    default: return type
+  }
+}
+
+// 人工结论表单：三项必填（实例状态、当前节点、登记人），说明选填。
+// 实例状态用目标的真实状态集合做选项，避免自由文本写出目标没有的状态。
+const manualFormRef = ref<FormInst | null>(null)
+const instanceStatusOptions = [
+  { label: '运行中（run）', value: 'run' },
+  { label: '已结束（end）', value: 'end' },
+  { label: '已驳回（rejected）', value: 'rejected' },
+  { label: '已撤回（withdraw）', value: 'withdraw' },
+  { label: '已终止（termination）', value: 'termination' },
+  { label: '已作废（abandon）', value: 'abandon' },
+  { label: '草稿（draft）', value: 'draft' },
+  { label: '待发（await_sent）', value: 'await_sent' },
+  { label: '目标平台上看不到这条实例', value: 'not_visible' },
+]
+const manualRules: FormRules = {
+  instanceStatus: [{ required: true, message: '请选择你在目标平台上看到的实例状态', trigger: ['change', 'blur'] }],
+  currentNode: [{ required: true, message: '请填写目标平台上显示的当前节点', trigger: ['input', 'blur'] }],
+  reporter: [{ required: true, message: '请填写登记人，人工结论要可追溯', trigger: ['input', 'blur'] }],
+}
+
 // applyBreakpoints 把后端返回的断点列表同步进详情（即时可见，不需要刷新页面）。
 function applyBreakpoints(list: BreakpointInput[]): void {
   if (!detail.value) return
   detail.value.breakpoints = list.map((bp) => ({
     type: bp.type,
-    typeName: bp.type === 'node' ? '节点断点' : bp.type === 'step' ? '步骤断点' : bp.type === 'action' ? '动作断点' : bp.type,
+    typeName: breakpointTypeName(bp.type),
     nodeName: bp.nodeKey,
     stepNo: bp.stepNo,
     action: bp.action,
@@ -365,6 +475,44 @@ function handleSelectRunNode(nodeID: string): void {
   selectedNodeKey.value = nodeID
 }
 
+// modeHint 用中文解释当前模式意味着什么，避免只给一个模式名。
+const modeHint = computed(() => {
+  switch (detail.value?.modeName) {
+    case '单步': return '每一步执行前都停下等放行，只有「执行一步」一条命令'
+    case '自动': return '连续执行，首个写步骤与断点命中处必停'
+    case '人工控制': return '停在第一步之前，暂停时拥有全部三条命令'
+    default: return '运行模式在启动时确定，运行中不可切换'
+  }
+})
+
+// statusTagType 让状态标签的颜色与语义一致；颜色之外始终有中文文字，不靠颜色单独表意。
+const statusTagType = computed<'default' | 'info' | 'success' | 'warning' | 'error'>(() => {
+  switch (detail.value?.pathRunStatusName) {
+    case '已完成': return 'success'
+    case '失败': return 'error'
+    case '待对账': return 'warning'
+    case '运行中':
+    case '核验中': return 'info'
+    default: return 'default'
+  }
+})
+
+// commandButtonText 把命令写成"点下去会发生什么"，写请求类命令明确标出。
+function commandButtonText(command: { command: string, label: string }): string {
+  if (command.command === 'step') return '放行（执行一步，会发真实写请求）'
+  if (command.command === 'next_node') return '执行到下一节点'
+  if (command.command === 'continue') return '继续运行（直到断点或结束）'
+  return command.label.split('（')[0]
+}
+
+// noCommandReason 解释为什么现在没有任何可用命令：状态本身就是结论，不留空白。
+const noCommandReason = computed(() => {
+  if (!detail.value) return ''
+  if (detail.value.loopRunning) return '正在连续执行，命令在停下后可用'
+  if (detail.value.pathRunStatusName === '待对账') return '写结果不确定，先在下方待对账区完成对账，这里不提供重试或继续'
+  return '当前状态下没有可用命令，请查看上方停止原因'
+})
+
 // overviewDone 表示整图进入结果总览（路径运行终态）。
 const overviewDone = computed(() => {
   const status = detail.value?.pathRunStatusName || ''
@@ -402,28 +550,44 @@ onBeforeUnmount(() => {
       <div class="run-detail__meta">
         <strong>运行 #{{ detail.runNo }}</strong>
         <span>{{ detail.planName }} / {{ detail.pathName }}</span>
-        <span class="run-detail__mode">模式：{{ detail.modeName }}（固定）</span>
-        <span>路径运行：{{ detail.pathRunStatusName }}</span>
-        <span v-if="detail.failureClassName" class="run-detail__failure">{{ detail.failureClassName }}</span>
+        <NTag size="small" :bordered="false" type="info" :title="modeHint">{{ detail.modeName }}模式</NTag>
+        <NTag size="small" :bordered="false" :type="statusTagType">{{ detail.pathRunStatusName }}</NTag>
+        <NTag v-if="detail.failureClassName" size="small" :bordered="false" type="error">{{ detail.failureClassName }}</NTag>
+        <span v-if="detail.stopReason" class="run-detail__stop-reason" role="status">{{ detail.stopReason }}</span>
       </div>
       <div class="run-detail__actions">
-        <NButton
-          v-for="command in detail.commands"
-          :key="command.command"
-          :type="command.command === 'step' ? 'primary' : 'info'"
-          :disabled="acting || looping || overviewDone"
-          :title="command.label"
-          @click="command.command === 'step' ? approve() : runCommand(command.command)"
-        >
-          {{ command.command === 'step' ? '放行（执行一步）' : command.label.split('（')[0] }}
-        </NButton>
-        <NButton
-          v-if="detail.loopRunning"
-          :disabled="pausing"
-          title="暂停请求只在本步走完核验与落账后生效"
-          @click="pauseNow"
-        >暂停（本步结束后生效）</NButton>
-        <NButton :disabled="acting || overviewDone" title="停止将在当前步骤结束后生效" @click="stopRunAction">停止</NButton>
+        <!-- 主操作：一屏只有一个 primary，其余命令为次级；下一步会发真实写请求，按钮上写清这一点。 -->
+        <div class="run-detail__actions-primary">
+          <NButton
+            v-for="(command, index) in detail.commands"
+            :key="command.command"
+            :type="index === 0 ? 'primary' : 'default'"
+            :disabled="acting || looping || overviewDone"
+            :title="command.label"
+            @click="command.command === 'step' ? approve() : runCommand(command.command)"
+          >
+            {{ commandButtonText(command) }}
+          </NButton>
+          <span v-if="detail.commands.length === 0 && !overviewDone" class="run-detail__actions-empty">
+            {{ noCommandReason }}
+          </span>
+        </div>
+        <!-- 次级与不可逆操作与主操作分开：暂停只在阶段 3 生效，停止是终态。 -->
+        <div class="run-detail__actions-secondary">
+          <NButton
+            v-if="detail.loopRunning"
+            size="small"
+            :disabled="pausing || detail.pauseRequested"
+            :title="detail.pauseRequested ? '暂停请求已提交，本步走完核验与落账后生效' : '暂停请求只在本步走完核验与落账后生效，不会打断已发出的写请求'"
+            @click="pauseNow"
+          >{{ detail.pauseRequested ? '暂停已请求' : '暂停' }}</NButton>
+          <NPopconfirm :disabled="acting || overviewDone" @positive-click="stopRunAction">
+            <template #trigger>
+              <NButton size="small" type="error" ghost :disabled="acting || overviewDone">停止</NButton>
+            </template>
+            停止是终态，之后这条路径不能再前进；已发出的写请求不会被打断，已发生的事实全部保留。确定停止？
+          </NPopconfirm>
+        </div>
       </div>
       <RunStatusIndicator
         class="run-detail__indicator"
@@ -469,13 +633,48 @@ onBeforeUnmount(() => {
         >重放这一步</NButton>
         <NButton v-else-if="reconcileView.action === 'reconcile_again'" size="small" :disabled="reconciling" @click="doReconcile">重新对账</NButton>
         <div v-else-if="reconcileView.action === 'manual_end'" class="run-detail__manual-form">
-          <input v-model="manualForm.instanceStatus" placeholder="实例状态（目标平台上看到）" />
-          <input v-model="manualForm.currentNode" placeholder="当前节点" />
-          <input v-model="manualForm.note" placeholder="说明（可选）" />
-          <input v-model="manualForm.reporter" placeholder="登记人" />
-          <NButton type="warning" size="small" :disabled="!manualForm.instanceStatus || reconciling" @click="registerManual">
-            登记人工核对结论并结束
-          </NButton>
+          <p class="run-detail__manual-lead">
+            请登记你在目标平台上亲眼看到的事实。登记后这条路径运行进入终态、不能再前进，
+            人工结论会作为运行事实永久保留。
+          </p>
+          <NForm
+            ref="manualFormRef"
+            :model="manualForm"
+            :rules="manualRules"
+            label-placement="left"
+            :label-width="96"
+            size="small"
+            require-mark-placement="left"
+          >
+            <NFormItem label="实例状态" path="instanceStatus">
+              <NSelect
+                v-model:value="manualForm.instanceStatus"
+                :options="instanceStatusOptions"
+                placeholder="选择目标平台上这条实例的当前状态"
+                aria-label="实例状态"
+              />
+            </NFormItem>
+            <NFormItem label="当前节点" path="currentNode">
+              <NInput v-model:value="manualForm.currentNode" placeholder="目标平台上显示的当前节点名称" />
+            </NFormItem>
+            <NFormItem label="登记人" path="reporter">
+              <NInput v-model:value="manualForm.reporter" placeholder="你的姓名或账号，事后可追溯" />
+            </NFormItem>
+            <NFormItem label="补充说明" path="note">
+              <NInput
+                v-model:value="manualForm.note"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 4 }"
+                placeholder="选填：你据以判断的依据，例如在目标平台看到的待办或已办"
+              />
+            </NFormItem>
+          </NForm>
+          <NPopconfirm :disabled="reconciling" @positive-click="registerManual">
+            <template #trigger>
+              <NButton type="warning" size="small" :disabled="reconciling">登记人工核对结论并结束</NButton>
+            </template>
+            登记后本路径运行进入终态，不能再放行或重放。确认你登记的是目标平台上的真实状态？
+          </NPopconfirm>
         </div>
       </template>
       <template v-else>
@@ -516,21 +715,67 @@ onBeforeUnmount(() => {
         </NButton>
       </div>
       <div class="run-detail__side">
-        <div class="run-detail__breakpoints">
-          <h4>生效断点（{{ detail.breakpoints.length }}）</h4>
-          <p v-if="detail.breakpoints.length === 0" class="run-detail__empty">暂无断点；路径偏离断点始终生效。</p>
-          <ul>
-            <li v-for="(bp, index) in detail.breakpoints" :key="index">
-              {{ bp.typeName }}{{ bp.nodeName ? `（${bp.nodeName}）` : '' }}{{ bp.stepNo ? `（第 ${bp.stepNo} 步）` : '' }}
-              <button v-if="bp.type !== 'path_deviation'" class="run-detail__bp-remove" @click="deleteBreakpoint(bp)">删除</button>
-            </li>
-          </ul>
-          <button
-            v-if="selectedNodeKey"
-            class="run-detail__bp-add"
-            @click="addNodeBreakpoint"
-          >在当前选中节点设断点</button>
-        </div>
+        <section class="run-detail__breakpoints" aria-label="断点">
+          <header class="run-detail__bp-head">
+            <h4>断点（{{ detail.breakpoints.length }}）</h4>
+            <span class="run-detail__bp-hint">断点只对本次运行生效，命中都在放行之前判定</span>
+          </header>
+
+          <div class="run-detail__bp-group">
+            <span class="run-detail__bp-group-title">强制生效</span>
+            <ul>
+              <li v-for="bp in forcedBreakpoints" :key="bp.type">
+                <NTag size="tiny" :bordered="false" type="warning">{{ bp.typeName }}</NTag>
+                <span class="run-detail__bp-note">{{ forcedBreakpointNote(bp.type) }}</span>
+              </li>
+              <li v-if="forcedBreakpoints.length === 0" class="run-detail__empty">当前没有强制断点</li>
+            </ul>
+          </div>
+
+          <div class="run-detail__bp-group">
+            <span class="run-detail__bp-group-title">已挂载（{{ userBreakpoints.length }}）</span>
+            <ul>
+              <li v-for="(bp, index) in userBreakpoints" :key="`${bp.type}-${index}`">
+                <NTag size="tiny" :bordered="false">{{ bp.typeName }}</NTag>
+                <span>{{ breakpointTargetText(bp) }}</span>
+                <NButton text size="tiny" type="error" :title="`删除${bp.typeName}`" @click="deleteBreakpoint(bp)">删除</NButton>
+              </li>
+              <li v-if="userBreakpoints.length === 0" class="run-detail__empty">还没有手工挂载的断点</li>
+            </ul>
+          </div>
+
+          <div class="run-detail__bp-add-form">
+            <span class="run-detail__bp-group-title">新增断点</span>
+            <NSelect
+              v-model:value="newBreakpointType"
+              size="small"
+              :options="breakpointTypeOptions"
+              aria-label="选择断点类型"
+            />
+            <NButton
+              v-if="newBreakpointType === 'node'"
+              size="small"
+              :disabled="!selectedNodeKey || overviewDone"
+              :title="selectedNodeKey ? '在画布上选中的节点挂节点断点' : '先在画布上点选一个节点'"
+              @click="addNodeBreakpoint"
+            >挂到选中节点</NButton>
+            <template v-else-if="newBreakpointType === 'step'">
+              <NInputNumber v-model:value="newBreakpointStep" size="small" :min="1" placeholder="步骤序号" aria-label="步骤序号" />
+              <NButton size="small" :disabled="!newBreakpointStep || overviewDone" @click="addStepBreakpoint">挂到该步骤</NButton>
+            </template>
+            <template v-else>
+              <NSelect
+                v-model:value="newBreakpointAction"
+                size="small"
+                :options="actionBreakpointOptions"
+                placeholder="选择动作"
+                aria-label="动作类型"
+              />
+              <NButton size="small" :disabled="!newBreakpointAction || overviewDone" @click="addActionBreakpoint">挂到该动作</NButton>
+            </template>
+            <small class="run-detail__bp-note">{{ breakpointTypeHint }}</small>
+          </div>
+        </section>
         <RunNodePanel v-if="selectedNodeKey" :detail="detail" :node-key="selectedNodeKey" @close="selectedNodeKey = ''" />
         <div v-else class="run-detail__panel-placeholder">
           <p>点击画布上的节点，查看该节点的运行信息与错误。</p>
@@ -541,6 +786,78 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 断点区与命令区按主次分组：一屏只有一个主操作，不可逆操作与常规操作在视觉上分开。 */
+.run-detail__actions {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.run-detail__actions-primary,
+.run-detail__actions-secondary {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.run-detail__actions-empty {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.run-detail__bp-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.run-detail__bp-hint,
+.run-detail__bp-note {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.run-detail__bp-group {
+  display: grid;
+  gap: 4px;
+  padding: 6px 0;
+  border-top: 1px solid var(--run-border-color);
+}
+
+.run-detail__bp-group-title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.run-detail__bp-group ul {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.run-detail__bp-group li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.run-detail__bp-add-form {
+  display: grid;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--run-border-color);
+}
+
+.run-detail__manual-lead {
+  margin: 0 0 8px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
 .run-detail {
   display: grid;
   gap: 10px;
@@ -566,11 +883,6 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-.run-detail__mode {
-  padding: 1px 8px;
-  background: color-mix(in srgb, var(--info-color, #2080f0) 12%, transparent);
-  border-radius: 8px;
-}
 
 .run-detail__failure { color: var(--error-color, #d03050); }
 .run-detail__actions { display: flex; gap: 10px; }
@@ -609,13 +921,6 @@ onBeforeUnmount(() => {
 .run-detail__breakpoints h4 { margin: 0 0 6px; }
 .run-detail__breakpoints ul { margin: 0; padding-left: 18px; }
 .run-detail__empty { opacity: 0.7; }
-.run-detail__bp-remove, .run-detail__bp-add {
-  padding: 1px 8px;
-  cursor: pointer;
-  background: none;
-  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
-  border-radius: 4px;
-}
 .run-detail__reconcile {
   padding: 10px 12px;
   border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
