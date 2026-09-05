@@ -135,11 +135,11 @@ func breakpointPriority(t model.BreakpointType) int {
 
 // StepFacts 是阶段 3 命中判定所需的当前步骤事实。
 type StepFacts struct {
-	StepNo        int
-	NodeKey       string
-	Action        string
-	IsWriteStep   bool // 由动作目录的 TargetOperation 是否落在写端点白名单判定，不硬编码动作名
-	DeviationHit  bool // 上一步 verify 认定的路径偏离事实
+	StepNo       int
+	NodeKey      string
+	Action       string
+	IsWriteStep  bool // 由动作目录的 TargetOperation 是否落在写端点白名单判定，不硬编码动作名
+	DeviationHit bool // 上一步 verify 认定的路径偏离事实
 }
 
 // BreakpointHit 是一次断点命中。

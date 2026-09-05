@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"test-auto-pro-v2/internal/config"
-	engine_reconcile "test-auto-pro-v2/internal/engine/reconcile"
 	"test-auto-pro-v2/internal/engine/control"
+	engine_reconcile "test-auto-pro-v2/internal/engine/reconcile"
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
@@ -152,18 +152,18 @@ type RunStepAttemptDTO struct {
 
 // RunStepDTO 是一个已落账步骤的公开事实。
 type RunStepDTO struct {
-	StepNo     int                 `json:"stepNo"`
-	ActionName string              `json:"actionName"`
-	NodeKey    string              `json:"nodeKey"`
-	NodeName   string              `json:"nodeName"`
-	ActorName  string              `json:"actorName"`
-	StatusName string              `json:"statusName"`
-	StartedAt  time.Time           `json:"startedAt"`
-	FinishedAt time.Time           `json:"finishedAt"`
-	DurationMs int64               `json:"durationMs"`
+	StepNo     int       `json:"stepNo"`
+	ActionName string    `json:"actionName"`
+	NodeKey    string    `json:"nodeKey"`
+	NodeName   string    `json:"nodeName"`
+	ActorName  string    `json:"actorName"`
+	StatusName string    `json:"statusName"`
+	StartedAt  time.Time `json:"startedAt"`
+	FinishedAt time.Time `json:"finishedAt"`
+	DurationMs int64     `json:"durationMs"`
 	// GateSnapshot 是放行时的门禁结论快照（逐项中文条件 JSON），侧栏据此还原当时的门禁判定。
 	GateSnapshot string              `json:"gateSnapshot,omitempty"`
-	Attempts   []RunStepAttemptDTO `json:"attempts"`
+	Attempts     []RunStepAttemptDTO `json:"attempts"`
 }
 
 // RunNodeStateDTO 是画布节点的运行态（纲领九个中文状态）。
@@ -198,19 +198,19 @@ type PathRunDetailDTO struct {
 	StaleAfterMs int64 `json:"staleAfterMs"`
 
 	// 控制现场（F-017）：生效断点、为什么停在这里、可用命令集合、条件写版本。
-	ControlVersion  int64              `json:"controlVersion"`
-	Reconcile       *ReconcileViewDTO  `json:"reconcile,omitempty"`
-	CurrentStepNo   int                `json:"currentStepNo"`
-	Breakpoints     []BreakpointDTO    `json:"breakpoints"`
-	StopReason      string             `json:"stopReason,omitempty"`
-	Commands        []CommandDTO       `json:"commands"`
-	LoopRunning     bool               `json:"loopRunning"`
-	StopRequested   bool               `json:"stopRequested"`
-	PauseRequested  bool               `json:"pauseRequested"`
+	ControlVersion int64             `json:"controlVersion"`
+	Reconcile      *ReconcileViewDTO `json:"reconcile,omitempty"`
+	CurrentStepNo  int               `json:"currentStepNo"`
+	Breakpoints    []BreakpointDTO   `json:"breakpoints"`
+	StopReason     string            `json:"stopReason,omitempty"`
+	Commands       []CommandDTO      `json:"commands"`
+	LoopRunning    bool              `json:"loopRunning"`
+	StopRequested  bool              `json:"stopRequested"`
+	PauseRequested bool              `json:"pauseRequested"`
 
-	// PathChoices 是这条路径已保存的分支选择（分支节点 ID -> 所选分支目标节点 ID），
-	// 画布据此区分路径内/路径外节点并推导实际走向连线（评审缺陷 8）。
-	PathChoices map[string]string `json:"pathChoices,omitempty"`
+	// PathChoices 是这条路径已保存的分支选择（分支节点 ID + 所选分支 ID），
+	// 是画布遍历分析的直接输入，用于区分路径内/路径外节点（评审缺陷 8）。
+	PathChoices []PathChoiceDTO `json:"pathChoices,omitempty"`
 	// CurrentPhase/CurrentPhaseNote 是当前步实时阶段与中文补充，CurrentPhaseSince 是进入时刻；
 	// 数据来自执行器的阶段上报，指示器据此推进（评审缺陷 7）。
 	CurrentPhase      string    `json:"currentPhase,omitempty"`
@@ -220,11 +220,17 @@ type PathRunDetailDTO struct {
 
 // BreakpointDTO 是断点的公开形态：类型、挂载对象种类与业务名称，不暴露内部键。
 type BreakpointDTO struct {
-	Type      string `json:"type"`
-	TypeName  string `json:"typeName"`
-	NodeName  string `json:"nodeName,omitempty"`
-	StepNo    int    `json:"stepNo,omitempty"`
-	Action    string `json:"action,omitempty"`
+	Type     string `json:"type"`
+	TypeName string `json:"typeName"`
+	NodeName string `json:"nodeName,omitempty"`
+	StepNo   int    `json:"stepNo,omitempty"`
+	Action   string `json:"action,omitempty"`
+}
+
+// PathChoiceDTO 是分支选择的公开形态：分支节点 ID 与所选分支 ID。
+type PathChoiceDTO struct {
+	RouteNodeID string `json:"routeNodeId"`
+	BranchID    string `json:"branchId"`
 }
 
 // CommandDTO 是可用命令的公开形态（含中文停止条件说明）。
@@ -762,7 +768,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Reconcile = &ReconcileViewDTO{
 				Verdict: view.Reconcile.Verdict, VerdictName: view.Reconcile.VerdictName,
 				Action: view.Reconcile.Action, Headline: view.Reconcile.Headline,
-				Reasons: view.Reconcile.Reasons,
+				Reasons:     view.Reconcile.Reasons,
 				ReplaysUsed: view.Reconcile.ReplaysUsed, ReplaysMax: view.Reconcile.ReplaysMax,
 			}
 		}
@@ -884,18 +890,30 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 	return dtos
 }
 
-// configuredRouteOf 读取这条路径的已配置路线：编译场景的节点序列与已保存的分支选择。
-// 复用启动时的编译逻辑；配置读取或编译失败（如配置已被修改）返回空，调用方退化为不标注。
-func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run model.Run, executionPathID uint64) ([]string, map[string]string) {
-	runCtx, err := s.buildRunContext(ctx, run.PlanID, executionPathID)
+// configuredRouteOf 读取这条路径的已保存配置：编译场景的节点序列与分支选择。
+// 只读存储快照，不做真实结构校验（校验属启动流程）；读取或解析失败返回空，画布退化为不标注。
+func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run model.Run, executionPathID uint64) ([]string, []PathChoiceDTO) {
+	path, err := s.paths.Get(ctx, run.PlanID, executionPathID)
 	if err != nil {
 		return nil, nil
 	}
-	keys := make([]string, 0, len(runCtx.Steps))
-	for _, compiled := range runCtx.Steps {
+	choices := make([]PathChoiceDTO, 0, len(path.Choices))
+	for _, choice := range path.Choices {
+		choices = append(choices, PathChoiceDTO{RouteNodeID: choice.RouteNodeID, BranchID: choice.BranchID})
+	}
+	config, found, err := s.configs.GetPathConfig(ctx, executionPathID)
+	if err != nil || !found || len(config.CompiledSteps) == 0 {
+		return nil, choices
+	}
+	steps := []model.CompiledActionStep{}
+	if err := json.Unmarshal(config.CompiledSteps, &steps); err != nil {
+		return nil, choices
+	}
+	keys := make([]string, 0, len(steps))
+	for _, compiled := range steps {
 		keys = append(keys, compiled.NodeKey)
 	}
-	return keys, runCtx.BranchSelections
+	return keys, choices
 }
 
 // buildNodeStates 推导画布节点的九个中文运行态：
@@ -991,7 +1009,7 @@ func stepPhaseKey(stepNo, attemptNo int) string {
 // parsePhaseTimings 从 step.log 内容计算每个尝试的七阶段耗时（毫秒）。
 // 归组键固定为 step_id:attempt：plan..prepare 各阶段行先于写请求、天生没有 trace_id，
 // 若按 trace_id 归组会把同一次尝试的行拆到两个键里，界面将永远拿不到完整阶段耗时
-//（评审缺陷 5）；写请求之后的行另带 trace_id/curl_trace_id，只用于跨日志互查，不参与归组。
+// （评审缺陷 5）；写请求之后的行另带 trace_id/curl_trace_id，只用于跨日志互查，不参与归组。
 func parsePhaseTimings(rd io.Reader) map[string]map[string]int64 {
 	result := map[string]map[string]int64{}
 	type phaseMoment struct {

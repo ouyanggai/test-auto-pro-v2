@@ -50,6 +50,9 @@ var actionSemanticsRequirements = map[model.ActionKey][]ActionSemanticsRequireme
 	model.ActionSubmit: {
 		{EntryID: "1", Title: "错误语义", Status: "已勘定"},
 		{EntryID: "2", Title: "幂等与重复提交", Status: "已勘定"},
+		// 第 15 条（手动分支的提交传参）：载荷接线已落地（gate.go 以 nextAuditorList[].nodeProxyId 传递），
+		// 状态维持「勘定中」直到修复后的真实运行给出受理证据，再升为「已勘定」（用户裁决：维持并补证）。
+		{EntryID: "15", Title: "手动分支的提交传参", Status: "勘定中"},
 	},
 	model.ActionApprove: {
 		{EntryID: "1", Title: "错误语义", Status: "已勘定"},

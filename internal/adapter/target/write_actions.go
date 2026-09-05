@@ -12,15 +12,15 @@ import (
 
 // F-019 写端点白名单（动作目录声明的全部 11 个端点）。
 const (
-	WriteEndpointReSubmit     = "/web/flowInstanceApi/reSubmit"
-	WriteEndpointStorageForm  = "/web/flowInstanceApi/storageFormData"
+	WriteEndpointReSubmit       = "/web/flowInstanceApi/reSubmit"
+	WriteEndpointStorageForm    = "/web/flowInstanceApi/storageFormData"
 	WriteEndpointApproverAppend = "/web/flowInstanceApi/approverAppend"
-	WriteEndpointRollBack     = "/web/flowInstanceApi/rollBackThePreviousLevel"
-	WriteEndpointRetrieve     = "/web/flowInstanceApi/retrieveProcess"
-	WriteEndpointRevocation   = "/web/flowInstanceApi/revocation"
-	WriteEndpointUrge         = "/web/urgeHandleRecord/sendUrgeMessage"
-	WriteEndpointTranspond    = "/web/flowInstanceApi/transpond"
-	WriteEndpointFlowTracking = "/web/flowInstanceApi/flowTracking"
+	WriteEndpointRollBack       = "/web/flowInstanceApi/rollBackThePreviousLevel"
+	WriteEndpointRetrieve       = "/web/flowInstanceApi/retrieveProcess"
+	WriteEndpointRevocation     = "/web/flowInstanceApi/revocation"
+	WriteEndpointUrge           = "/web/urgeHandleRecord/sendUrgeMessage"
+	WriteEndpointTranspond      = "/web/flowInstanceApi/transpond"
+	WriteEndpointFlowTracking   = "/web/flowInstanceApi/flowTracking"
 )
 
 // ActionWriteRequest 是动作写请求的统一意图：执行器按动作填充，适配层负责协议。
@@ -102,7 +102,7 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 		return body, WriteEndpointStorageForm, nil
 	case "transfer", "add_sign":
 		data := map[string]any{
-			"id":      request.InstanceID,
+			"id":        request.InstanceID,
 			"jobTaskId": request.JobTaskID,
 			"auditRecord": map[string]any{
 				"auditStatus": request.AuditStatus,

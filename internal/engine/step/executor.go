@@ -224,12 +224,13 @@ func reportPhase(approved ApprovedStep, phase, note string) {
 
 // gateSnapshotJSON 把放行时的门禁结论固化为快照 JSON：逐项条件的中文名与满足情况随步骤落账，
 // 侧栏才能对「已执行的步骤」给出当时的门禁结论（纲领第 7.1 节）。
-func gateSnapshotJSON(preview *StepPreview) string {
+func gateSnapshotJSON(preview *StepPreview, branchTarget string) string {
 	snapshot := struct {
-		Allowed bool                       `json:"allowed"`
-		Reason  string                     `json:"reason,omitempty"`
-		Items   []model.ActionPrecondition `json:"items"`
-	}{Allowed: preview.GateAllowed, Reason: preview.GateReason, Items: preview.GateItems}
+		Allowed      bool                       `json:"allowed"`
+		Reason       string                     `json:"reason,omitempty"`
+		Items        []model.ActionPrecondition `json:"items"`
+		BranchTarget string                     `json:"branchTarget,omitempty"`
+	}{Allowed: preview.GateAllowed, Reason: preview.GateReason, Items: preview.GateItems, BranchTarget: branchTarget}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return ""
@@ -258,7 +259,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
 			Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
 			Status: model.RunStepSucceeded, StartedAt: startedAt, FinishedAt: e.now(),
-			GateSnapshot: gateSnapshotJSON(preview),
+			GateSnapshot: gateSnapshotJSON(preview, approved.RunCtx.SubmitBranchTargetNodeID),
 		}
 		attempt := model.RunStepAttempt{
 			PathRunID: runCtx.PathRun.ID, AttemptNo: 1, Verdict: string(verdict.OutcomeSucceeded),
@@ -361,7 +362,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			Status:       model.RunStepFailed,
 			StartedAt:    startedAt,
 			FinishedAt:   e.now(),
-			GateSnapshot: gateSnapshotJSON(preview),
+			GateSnapshot: gateSnapshotJSON(preview, approved.RunCtx.SubmitBranchTargetNodeID),
 		}
 		attempt := model.RunStepAttempt{
 			PathRunID:  runCtx.PathRun.ID,
@@ -430,7 +431,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		Status:       statusOfVerdict(verdictResult.Outcome),
 		StartedAt:    startedAt,
 		FinishedAt:   e.now(),
-		GateSnapshot: gateSnapshotJSON(preview),
+		GateSnapshot: gateSnapshotJSON(preview, approved.RunCtx.SubmitBranchTargetNodeID),
 	}
 	attempt := model.RunStepAttempt{
 		PathRunID:   runCtx.PathRun.ID,

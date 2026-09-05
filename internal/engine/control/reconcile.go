@@ -15,13 +15,13 @@ import (
 
 // ReconcileResultView 是对账结论的公开形态（进 DTO 与内存现场）。
 type ReconcileResultView struct {
-	Verdict       string   `json:"verdict"`
-	VerdictName   string   `json:"verdictName"`
-	Action        string   `json:"action"`
-	Headline      string   `json:"headline"`
-	Reasons       []string `json:"reasons"`
-	ReplaysUsed   int      `json:"replaysUsed"`
-	ReplaysMax    int      `json:"replaysMax"`
+	Verdict     string   `json:"verdict"`
+	VerdictName string   `json:"verdictName"`
+	Action      string   `json:"action"`
+	Headline    string   `json:"headline"`
+	Reasons     []string `json:"reasons"`
+	ReplaysUsed int      `json:"replaysUsed"`
+	ReplaysMax  int      `json:"replaysMax"`
 }
 
 // reconciliation 配额：重放次数上限走配置，默认 1（本服务用固定默认，超限固定人工结论）。
@@ -173,7 +173,7 @@ func (s *Service) RecoveryAction(ctx context.Context, pathRunID uint64, action r
 		// 登记人工核对结论并结束：人工事实 append-only 落库，路径进入终态。
 		conclusion := model.RunManualConclusion{
 			RunID: pathRun.RunID, PathRunID: pathRunID,
-			StepNo: session.preview.StepNo,
+			StepNo:         session.preview.StepNo,
 			InstanceStatus: manual.InstanceStatus, CurrentNode: manual.CurrentNode,
 			Note: manual.Note, Reporter: manual.Reporter,
 		}

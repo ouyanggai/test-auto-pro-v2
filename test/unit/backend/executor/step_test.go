@@ -260,7 +260,7 @@ func TestF016SubmitHappyPath(t *testing.T) {
 		t.Fatalf("尝试事实应落账且结论为确定成功：%+v", facts.attempts)
 	}
 	if facts.attempts[0].LogPath != "" || facts.attempts[0].TraceID == "" {
-		t.Fatalf("尝试事实应携带日志引用与 trace_id：%+v", facts.attempts[0])
+		t.Fatalf("单测假件未接装配层的相对路径注入，LogPath 应为空、由装配层填充；trace_id 必须存在：%+v", facts.attempts[0])
 	}
 }
 

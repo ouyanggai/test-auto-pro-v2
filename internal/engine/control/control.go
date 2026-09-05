@@ -227,7 +227,7 @@ func (s *Service) startSession(ctx context.Context, runCtx step.RunContext, mode
 }
 
 // StartWithMode 按模式启动：单步/人工控制停在第一步之前；自动运行立即进入连续执行
-//（首个写步骤被默认开启的首次写断点拦下——这是安全阀，不是可选项）。
+// （首个写步骤被默认开启的首次写断点拦下——这是安全阀，不是可选项）。
 func (s *Service) StartWithMode(ctx context.Context, runCtx step.RunContext, mode model.RunMode, preset []Breakpoint) (*StartResult, error) {
 	result, session, err := s.startSession(ctx, runCtx, mode, preset)
 	if err != nil {

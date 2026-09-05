@@ -22,7 +22,9 @@ func newF016ControlDatabase(t *testing.T) *planmysql.Database {
 	t.Helper()
 	cfg := config.LoadPlanDBConfig()
 	if missing := cfg.MissingRequired(); len(missing) != 0 {
-		t.Fatalf("控制闭环集成测试缺少数据库配置名：%v", missing)
+		// 这些用例的真实语义是集成用例（真实 MySQL）；run-f016.sh 带配置实跑、禁止跳过，
+		// 只有脱离脚本单独跑包时才允许跳过，不再以 FAIL 干扰纯单测结果（评审低优先级 16）。
+		t.Skipf("控制闭环集成测试缺少数据库配置名 %v，已跳过；请通过 test/run-f016.sh 实跑", missing)
 	}
 	buffer := make([]byte, 6)
 	if _, err := rand.Read(buffer); err != nil {

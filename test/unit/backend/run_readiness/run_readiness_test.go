@@ -97,14 +97,18 @@ func TestRemindersNeverBlock(t *testing.T) {
 	}
 }
 
-// TestVerifiedRunnableActionsIsEmptyBeforeFirstRealWrite 锁定纲领第 9 节的要求：
-// F-016 之前没有任何动作被真实写验证过，因此已配置动作的路径必须直接阻塞，不做静默降级。
-func TestVerifiedRunnableActionsIsEmptyBeforeFirstRealWrite(t *testing.T) {
+// TestVerifiedRunnableActionsMatchesRealWriteEvidence 锁定纲领第 9 节的要求：
+// 已验证动作集合必须与真实写证据一一对应。F-016 运行 8 登记了提交；
+// 同意、驳回与撤回尚未在真实目标执行过，必须保持未登记，已配置动作的路径只提醒不阻塞。
+func TestVerifiedRunnableActionsMatchesRealWriteEvidence(t *testing.T) {
+	if !service.IsVerifiedRunnableAction(model.ActionSubmit) {
+		t.Fatal("提交已按运行 8 的真实写证据登记，不得为空集")
+	}
 	for _, action := range []model.ActionKey{
-		model.ActionSubmit, model.ActionApprove, model.ActionReject, model.ActionWithdraw,
+		model.ActionApprove, model.ActionReject, model.ActionWithdraw,
 	} {
 		if service.IsVerifiedRunnableAction(action) {
-			t.Fatalf("F-016 之前不应有任何已验证动作：%s", action)
+			t.Fatalf("该动作尚未在真实目标执行过，不得登记：%s", action)
 		}
 	}
 	input := readyInput()
@@ -125,8 +129,9 @@ func TestVerifiedRunnableActionsIsEmptyBeforeFirstRealWrite(t *testing.T) {
 			reminded++
 		}
 	}
-	if reminded != 2 {
-		t.Fatalf("重复动作应去重后逐个提醒，期望 2 条实际 %d 条：%+v", reminded, readiness.Reminders)
+	// 提交已登记不再提醒；未登记的只有同意（重复出现已去重）。
+	if reminded != 1 {
+		t.Fatalf("未验证动作应去重后逐个提醒，期望 1 条实际 %d 条：%+v", reminded, readiness.Reminders)
 	}
 }
 
@@ -163,7 +168,8 @@ func TestNonActionableFactsAreRemindersNotBlocks(t *testing.T) {
 		wantKind string
 	}{
 		"动作尚未被真实写验证过": {func(in *service.PathReadinessInput) {
-			in.ConfiguredActions = []model.ActionKey{model.ActionSubmit}
+			// 提交已按 F-016 运行 8 登记为已验证；未登记的同意动作才会触发本提醒。
+			in.ConfiguredActions = []model.ActionKey{model.ActionApprove}
 		}, model.RunReadinessActionNotVerified},
 		"目标行为尚未实测勘定": {func(in *service.PathReadinessInput) {
 			in.PendingSemanticsEntries = []string{"回退语义"}

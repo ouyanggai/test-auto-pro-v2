@@ -171,9 +171,9 @@ func handleRunDetail(orchestrator RunOrchestrator) http.HandlerFunc {
 
 // approveRunRequest 是放行命令请求体：命令种类 + 步游标 + 控制版本（条件写、幂等）。
 type approveRunRequest struct {
-	Command      string `json:"command"`
-	Cursor       int    `json:"cursor"`
-	ControlVersion int64 `json:"controlVersion"`
+	Command        string `json:"command"`
+	Cursor         int    `json:"cursor"`
+	ControlVersion int64  `json:"controlVersion"`
 }
 
 // handleApproveRun 按命令放行：只作用于这一条路径运行，没有批量入口，不绑单键快捷键。
@@ -308,10 +308,10 @@ func breakpointsToDTO(breakpoints []control.Breakpoint) []map[string]any {
 	result := make([]map[string]any, 0, len(breakpoints))
 	for _, bp := range breakpoints {
 		result = append(result, map[string]any{
-			"type":   string(bp.Type),
-			"stepNo": bp.StepNo,
+			"type":    string(bp.Type),
+			"stepNo":  bp.StepNo,
 			"nodeKey": bp.NodeKey,
-			"action": bp.Action,
+			"action":  bp.Action,
 		})
 	}
 	return result

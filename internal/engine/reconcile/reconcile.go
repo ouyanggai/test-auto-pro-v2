@@ -43,18 +43,18 @@ type DimensionEvidence struct {
 type Verdict string
 
 const (
-	VerdictEffective     Verdict = "effective"      // 已生效
-	VerdictNotEffective  Verdict = "not_effective"  // 未生效
-	VerdictIndeterminate Verdict = "indeterminate"  // 仍无法判定
+	VerdictEffective     Verdict = "effective"     // 已生效
+	VerdictNotEffective  Verdict = "not_effective" // 未生效
+	VerdictIndeterminate Verdict = "indeterminate" // 仍无法判定
 )
 
 // RecoveryAction 是唯一合法后续动作（与结论一一对应，不得并列）。
 type RecoveryAction string
 
 const (
-	ActionAdvance       RecoveryAction = "advance"       // 确认并前进到下一步（仅 effective）
-	ActionReplay        RecoveryAction = "replay"        // 重放这一步（仅 not_effective）
-	ActionManualEnd     RecoveryAction = "manual_end"    // 登记人工核对结论并结束（仅 indeterminate）
+	ActionAdvance        RecoveryAction = "advance"         // 确认并前进到下一步（仅 effective）
+	ActionReplay         RecoveryAction = "replay"          // 重放这一步（仅 not_effective）
+	ActionManualEnd      RecoveryAction = "manual_end"      // 登记人工核对结论并结束（仅 indeterminate）
 	ActionReconcileAgain RecoveryAction = "reconcile_again" // 重新对账（仅对账读取失败）
 )
 
@@ -77,10 +77,10 @@ type Input struct {
 
 // Result 是对账结论：三值结论、唯一合法动作、逐维度依据与中文结论。
 type Result struct {
-	Verdict   Verdict
-	Action    RecoveryAction
-	Reasons   []string
-	Headline  string
+	Verdict  Verdict
+	Action   RecoveryAction
+	Reasons  []string
+	Headline string
 }
 
 // Reconcile 是纯判定函数：

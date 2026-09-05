@@ -76,8 +76,8 @@ func TestF018ConflictDegrades(t *testing.T) {
 // TestF018PartialEffectNeverReplays 部分生效固定判仍无法判定，绝不允许重放（语义第 2.4 节）。
 func TestF018PartialEffectNeverReplays(t *testing.T) {
 	result := reconcile.Reconcile(reconcile.Input{
-		Dims:          allChanged(),
-		PartialEffect: true,
+		Dims:              allChanged(),
+		PartialEffect:     true,
 		PartialEffectNote: "表单数据已变化但流程未推进",
 	})
 	if result.Verdict != reconcile.VerdictIndeterminate || result.Action != reconcile.ActionManualEnd {

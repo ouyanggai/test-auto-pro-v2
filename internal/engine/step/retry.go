@@ -44,7 +44,7 @@ func (p RetryPolicy) backoff(attempt int) time.Duration {
 	return delay
 }
 
-// withRetry 执行一次只读操作，失败且可重试时按预算退避重试。
+// RunWithRetry 执行一次只读操作，失败且可重试时按预算退避重试。
 // onRetry 会在每次决定重试时被调用（次数与下次间隔），供调用方把重试如实写进 step.log，
 // 不允许出现“看起来只调了一次”的日志。
 func RunWithRetry[T any](ctx context.Context, policy RetryPolicy, operation string, call func() (T, error), onRetry func(attempt int, nextDelay time.Duration)) (T, error) {

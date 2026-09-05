@@ -193,9 +193,9 @@ const (
 type ControlCommand string
 
 const (
-	CommandStep      ControlCommand = "step"       // 执行一步
-	CommandNextNode  ControlCommand = "next_node"  // 执行到下一节点
-	CommandContinue  ControlCommand = "continue"   // 继续运行（到下一断点/需人工/路径结束）
+	CommandStep     ControlCommand = "step"      // 执行一步
+	CommandNextNode ControlCommand = "next_node" // 执行到下一节点
+	CommandContinue ControlCommand = "continue"  // 继续运行（到下一断点/需人工/路径结束）
 )
 
 // RunTriggerKind 是启动来源；本切片只支持手动启动。

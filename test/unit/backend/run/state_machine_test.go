@@ -68,15 +68,15 @@ func TestF016PathRunStatusMachineOnlyAdvances(t *testing.T) {
 // 界面必须使用这些中文而不是颜色或英文键单独表意。
 func TestF016NineChinesePathRunStates(t *testing.T) {
 	expected := map[model.PathRunStatus]string{
-		model.PathRunStatusNotStarted:           "未开始",
-		model.PathRunStatusWaiting:              "等待运行",
-		model.PathRunStatusRunning:              "运行中",
-		model.PathRunStatusVerifying:            "核验中",
-		model.PathRunStatusPaused:               "暂停",
-		model.PathRunStatusCompleted:            "已完成",
-		model.PathRunStatusFailed:               "失败",
-		model.PathRunStatusStopped:              "已停止",
-		model.PathRunStatusCancelled:            "已取消",
+		model.PathRunStatusNotStarted:             "未开始",
+		model.PathRunStatusWaiting:                "等待运行",
+		model.PathRunStatusRunning:                "运行中",
+		model.PathRunStatusVerifying:              "核验中",
+		model.PathRunStatusPaused:                 "暂停",
+		model.PathRunStatusCompleted:              "已完成",
+		model.PathRunStatusFailed:                 "失败",
+		model.PathRunStatusStopped:                "已停止",
+		model.PathRunStatusCancelled:              "已取消",
 		model.PathRunStatusAwaitingReconciliation: "待对账",
 	}
 	for status, name := range expected {

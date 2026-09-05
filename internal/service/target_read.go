@@ -452,7 +452,7 @@ func (s *TargetReadService) SetNetworkLogger(logger *logging.Logger) {
 }
 
 // ReadProxyConfigurationForInstance 按历史实例绑定的流程/表单代理读取该实例当时的宿主配置
-//（流程树、表单模板原文与实例当前数据），供数据工作区按实例版本回显，避免当前已发布模板
+// （流程树、表单模板原文与实例当前数据），供数据工作区按实例版本回显，避免当前已发布模板
 // 与历史数据键不一致导致整表对不上。只读取，不写目标。
 func (s *TargetReadService) ReadProxyConfigurationForInstance(ctx context.Context, account, flowProxyID string, formProxyIDs []string, instanceID string) (target.PathConfigurationSnapshot, error) {
 	if err := s.ready(); err != nil {
