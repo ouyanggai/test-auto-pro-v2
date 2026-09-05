@@ -3,6 +3,7 @@ package run_orchestration_test
 import (
 	"testing"
 
+	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/service"
 )
@@ -14,9 +15,12 @@ func TestF016WaitingNodesDerivedFromConfiguredRoute(t *testing.T) {
 	graph := model.FlowGraph{Nodes: []model.FlowGraphNode{
 		{ID: "node-start"}, {ID: "node-audit"}, {ID: "node-next"}, {ID: "node-outside"},
 	}}
-	steps := []model.RunStep{{NodeKey: "node-start", Status: model.RunStepSucceeded}}
+	// 步骤与配置序列携带的是配置令牌键（与图节点 ID 不同键空间）：
+	// 状态必须被翻译回图节点 ID 输出，否则画布永远读不到（评审 P1 的回归锁定）。
+	token := analyzer.PathConfigNodeToken("node-start")
+	steps := []model.RunStep{{NodeKey: token, Status: model.RunStepSucceeded}}
 	pathRun := model.PathRun{Status: model.PathRunStatusRunning}
-	configured := []string{"node-start", "node-audit", "node-next"}
+	configured := []string{token, analyzer.PathConfigNodeToken("node-audit"), analyzer.PathConfigNodeToken("node-next")}
 
 	states := service.BuildNodeStatesForTest(graph, steps, pathRun, nil, configured)
 

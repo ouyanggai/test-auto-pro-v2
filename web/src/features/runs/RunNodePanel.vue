@@ -14,7 +14,8 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>()
 
 // nodeSteps 是该节点上已落账的步骤。
-const nodeSteps = computed<RunStep[]>(() => props.detail.steps.filter((step) => step.nodeKey === props.nodeKey))
+// nodeSteps 按图节点 ID 过滤（步骤的 nodeId；旧数据回退 nodeKey）。
+const nodeSteps = computed<RunStep[]>(() => props.detail.steps.filter((step) => (step.nodeId || step.nodeKey) === props.nodeKey))
 
 // nodeStateName 是该节点的运行态中文。
 const nodeStateName = computed(() => props.detail.nodeStates[props.nodeKey]?.statusName || '未开始')

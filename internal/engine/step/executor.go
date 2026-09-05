@@ -534,12 +534,18 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
 		// 路径偏离判据（T04）：只用重读到的真实事实——实际当前节点集合里没有已配置路径的下一个预期节点。
-		// 判定保守：实例不可见或没有当前节点事实时不声称偏离。
+		// 两边必须在同一键空间比较：CurrentNodes 是目标 nodeProxyId，预期节点必须取节点表反查出的
+		// TargetNodeID，拿编译场景的哈希键比较永远不相等，会把每一步都误判成偏离（评审 P1）。
+		// 判定保守：实例不可见、没有当前节点事实、或预期节点拿不到真实标识时不声称偏离。
 		if !outcome.NoMoreSteps {
-			expectedNext := runCtx.Steps[approved.NextIndex+1].NodeKey
-			if after.Found && len(after.CurrentNodes) > 0 && !containsNode(after.CurrentNodes, expectedNext) {
+			expectedNextKey := runCtx.Steps[approved.NextIndex+1].NodeKey
+			expectedNextTarget := ""
+			if nodeInfo, ok := runCtx.Nodes[expectedNextKey]; ok {
+				expectedNextTarget = strings.TrimSpace(nodeInfo.TargetNodeID)
+			}
+			if after.Found && len(after.CurrentNodes) > 0 && expectedNextTarget != "" && !containsNode(after.CurrentNodes, expectedNextTarget) {
 				outcome.DeviationDetected = true
-				log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNext))
+				log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNextTarget))
 			}
 		}
 		if !outcome.NoMoreSteps {
@@ -594,7 +600,8 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		}
 		if jobTaskID == "" {
 			// 目标上已无本演员在本节点的活动待办：演员或待办已变化，绝不冒名发送。
-			preview.writeErr = &UnverifiedActionError{Action: model.ActionApprove}
+			// 用如实的原因，不复用「未验证动作」的话术——那是另一回事，且文案已过时（评审 P2）。
+			preview.writeErr = fmt.Errorf("目标上已无本演员在本节点的活动待办，无法执行%s；请核对目标平台的真实状态", preview.ActionName)
 			preview.writeErrClass = model.FailureClassActorUnresolved
 			return
 		}

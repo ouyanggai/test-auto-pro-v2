@@ -108,6 +108,8 @@ type RunPreviewDTO struct {
 	Action         string                     `json:"action"`
 	ActionName     string                     `json:"actionName"`
 	NodeKey        string                     `json:"nodeKey"`
+	// NodeID 是当前步节点的图上标识：画布据此平移与高亮当前步（与 nodeKey 是两套键空间）。
+	NodeID         string                     `json:"nodeId,omitempty"`
 	NodeName       string                     `json:"nodeName"`
 	ActorName      string                     `json:"actorName"`
 	ExpectedEffect string                     `json:"expectedEffect"`
@@ -195,7 +197,9 @@ type RunStepDTO struct {
 	StepNo     int       `json:"stepNo"`
 	ActionName string    `json:"actionName"`
 	NodeKey    string    `json:"nodeKey"`
-	NodeName   string    `json:"nodeName"`
+	// NodeID 是该节点在图上的真实标识：画布与侧栏按它取运行状态与步骤（与 nodeKey 是两套键空间）。
+	NodeID    string    `json:"nodeId,omitempty"`
+	NodeName  string    `json:"nodeName"`
 	ActorName  string    `json:"actorName"`
 	StatusName string    `json:"statusName"`
 	StartedAt  time.Time `json:"startedAt"`
@@ -221,6 +225,8 @@ type PathRunDetailDTO struct {
 	PathRunID         uint64 `json:"pathRunId"`
 	PathRunStatus     string `json:"pathRunStatus"`
 	PathRunStatusName string `json:"pathRunStatusName"`
+	// StructureNote 是真实结构读取失败时的中文降级说明；为空表示结构读取正常。
+	StructureNote string `json:"structureNote,omitempty"`
 	// Result 与 FinalTarget 是两件分开的事：路径结果只看步骤事实，最终目标事实如实描述目标现状。
 	ResultName       string                     `json:"resultName,omitempty"`
 	FailureClassName string                     `json:"failureClassName,omitempty"`
@@ -831,9 +837,10 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	}
 	// 真实结构只用于节点中文名与节点状态渲染；运行事实全部在本地库。
 	// 目标抖动是常态，结构读失败时降级为空结构继续返回详情，绝不让整份运行事实被一句
-	// 「运行服务暂不可用」挡住——画布由前端另行读取，失败时界面自有无结构空态。
+	// 「运行服务暂不可用」挡住——降级必须如实告诉用户，不悄悄把「什么都没跑过」当事实展示。
 	graph, graphErr := s.graphs.Get(ctx, run.PlanID)
-	if graphErr != nil {
+	structureDegraded := graphErr != nil
+	if structureDegraded {
 		graph = model.FlowGraph{PlanID: run.PlanID}
 	}
 	steps, err := s.store.ListRunSteps(ctx, pathRun.ID)
@@ -845,6 +852,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		return nil, err
 	}
 	detail := &PathRunDetailDTO{
+		StructureNote: structureNoteOf(structureDegraded),
 		RunID: run.ID, RunNo: run.RunNo,
 		ModeName:          model.RunModeName(run.Mode),
 		RunStatusName:     model.RunStatusName(run.Status),
@@ -873,9 +881,13 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.FinalTarget = json.RawMessage(pathRun.FinalTargetSummary)
 	}
 	phaseTimings := s.readPhaseTimings(pathRun.ID, attempts)
-	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, s.router)
+	// 步骤与预览携带的是配置令牌键（编译场景的 nodeKey），画布与侧栏按图节点 ID 取值。
+	// 这里统一翻译出图节点 ID，键空间对齐后九个运行态、当前步标记与侧栏才真实可用（评审 P1）。
+	tokenToGraphID := tokenToGraphNodeID(graph)
+	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, s.router, tokenToGraphID)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
+		detail.CurrentPreview.NodeID = tokenToGraphID[preview.NodeKey]
 		detail.CurrentStepNo = preview.StepNo
 	}
 	// 已配置路线（编译场景节点序列与分支选择）：画布据此标注「等待运行」并区分路径内外；
@@ -967,7 +979,7 @@ func pathNameOf(ctx context.Context, paths repository.ExecutionPathRepository, p
 }
 
 // buildStepDTOs 把步骤与尝试事实组装为公开 DTO，并附上 step.log 解析出的阶段耗时。
-func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64, router *logging.Router) []RunStepDTO {
+func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64, router *logging.Router, tokenToGraphID map[string]string) []RunStepDTO {
 	attemptsByStep := map[uint64][]model.RunStepAttempt{}
 	for _, attempt := range attempts {
 		attemptsByStep[attempt.StepID] = append(attemptsByStep[attempt.StepID], attempt)
@@ -978,6 +990,7 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 			StepNo:       stepRecord.StepNo,
 			ActionName:   actionNameOf(stepRecord.Action),
 			NodeKey:      stepRecord.NodeKey,
+			NodeID:       tokenToGraphID[stepRecord.NodeKey],
 			ActorName:    stepRecord.ActorSummary,
 			StatusName:   stepStatusName(stepRecord.Status),
 			StartedAt:    stepRecord.StartedAt,
@@ -1047,18 +1060,27 @@ func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run mod
 // 已落账步骤的节点已完成；失败/待对账的收尾节点单独标出；当前步节点运行中；
 // 已配置路线上尚未到达的节点等待运行；路线外节点未开始。状态不只靠颜色，界面必须渲染中文。
 func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
+	tokenToGraphID := tokenToGraphNodeID(graph)
 	states := map[string]RunNodeStateDTO{}
 	for _, node := range graph.Nodes {
 		states[node.ID] = RunNodeStateDTO{Status: string(model.PathRunStatusNotStarted), StatusName: model.PathRunStatusName(model.PathRunStatusNotStarted)}
 	}
+	// graphNodeKey 把令牌键翻译回图节点 ID；翻译不出（结构变化等）保留原键兜底，绝不丢状态。
+	graphNodeKey := func(key string) string {
+		if mapped := tokenToGraphID[key]; mapped != "" {
+			return mapped
+		}
+		return key
+	}
 	settled := map[string]bool{}
 	for _, stepRecord := range steps {
-		settled[stepRecord.NodeKey] = true
-		states[stepRecord.NodeKey] = nodeState(model.PathRunStatusCompleted)
+		key := graphNodeKey(stepRecord.NodeKey)
+		settled[key] = true
+		states[key] = nodeState(model.PathRunStatusCompleted)
 	}
 	// 收尾节点：失败或待对账时把最后一步的节点标成对应状态。
 	if pathRun.FailureClass != nil {
-		last := lastNodeOf(steps)
+		last := graphNodeKey(lastNodeOf(steps))
 		switch *pathRun.FailureClass {
 		case model.FailureClassWriteUncertain:
 			if last != "" {
@@ -1071,7 +1093,7 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 		}
 	}
 	if pathRun.Status == model.PathRunStatusStopped {
-		if last := lastNodeOf(steps); last != "" {
+		if last := graphNodeKey(lastNodeOf(steps)); last != "" {
 			states[last] = nodeState(model.PathRunStatusStopped)
 		}
 	}
@@ -1079,7 +1101,7 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 	// 旧实现遍历已落账步骤并检查自身是否未落账，条件恒不成立，「等待运行」从未出现过。
 	configured := map[string]bool{}
 	for _, nodeKey := range configuredNodeKeys {
-		configured[nodeKey] = true
+		configured[graphNodeKey(nodeKey)] = true
 	}
 	for nodeID, state := range states {
 		if configured[nodeID] && !settled[nodeID] && state.Status == string(model.PathRunStatusNotStarted) {
@@ -1087,9 +1109,27 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 		}
 	}
 	if preview != nil && preview.NodeKey != "" && pathRun.Status == model.PathRunStatusRunning {
-		states[preview.NodeKey] = nodeState(model.PathRunStatusRunning)
+		states[graphNodeKey(preview.NodeKey)] = nodeState(model.PathRunStatusRunning)
 	}
 	return states
+}
+
+// structureNoteOf 生成结构读取降级的中文说明；读取正常时为空。
+func structureNoteOf(degraded bool) string {
+	if !degraded {
+		return ""
+	}
+	return "目标流程结构暂时读取失败，节点运行状态可能不完整；可稍后刷新重试"
+}
+
+// tokenToGraphNodeID 从真实结构推导「配置令牌键 -> 图节点 ID」映射：
+// 编译场景、步骤事实与预览都用令牌键，而画布与侧栏以图节点 ID 为准，键空间必须在这里对齐。
+func tokenToGraphNodeID(graph model.FlowGraph) map[string]string {
+	mapping := make(map[string]string, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		mapping[analyzer.PathConfigNodeToken(node.ID)] = node.ID
+	}
+	return mapping
 }
 
 // lastNodeOf 返回最后一步所在的节点键。

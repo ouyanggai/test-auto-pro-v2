@@ -62,7 +62,7 @@ const runPathAnalysis = computed(() => (graph.value ? analyzeExecutionPath(graph
 // runTakenEdgeIds 是实际走过的连线：按已落账步骤顺序连接相邻节点（连线表达实际走向，T08）。
 const runTakenEdgeIds = computed<string[]>(() => {
   if (!graph.value || !detail.value) return []
-  const settledKeys = detail.value.steps.map((step) => step.nodeKey)
+  const settledKeys = detail.value.steps.map((step) => step.nodeId || step.nodeKey)
   if (settledKeys.length < 2) return []
   const ids: string[] = []
   for (let index = 0; index + 1 < settledKeys.length; index += 1) {
@@ -317,7 +317,8 @@ function applyBreakpoints(list: BreakpointInput[]): void {
 }
 
 // currentNodeKey 是当前步所在节点（预览给出），画布据此高亮与居中。
-const currentNodeKey = computed(() => detail.value?.currentPreview?.nodeKey || '')
+// currentNodeKey 用图节点 ID（画布键空间）；旧后端没有 nodeId 时回退 nodeKey。
+const currentNodeKey = computed(() => detail.value?.currentPreview?.nodeId || detail.value?.currentPreview?.nodeKey || '')
 
 // runNodeStates 把九个中文运行态与当前步标记交给画布。
 const runNodeStates = computed(() => {
@@ -393,6 +394,9 @@ async function loadDetail(): Promise<void> {
     errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行详情，请重试'
   } finally {
     loading.value = false
+    // 轮询链不因首次加载失败而断：详情已在（或结构读失败但运行事实还在）时，
+    // 后续推进与恢复仍按配置间隔刷新，用户不需要手动刷新页面（纲领 12.2）。
+    if (detail.value) schedulePoll()
   }
 }
 
@@ -613,6 +617,7 @@ onBeforeUnmount(() => {
       />
     </header>
     <p v-if="detail && detail.stopReason" class="run-detail__stop-reason" role="status">为什么停在这里：{{ detail.stopReason }}</p>
+    <p v-if="detail && detail.structureNote" class="run-detail__structure-note" role="status">{{ detail.structureNote }}</p>
     <div
       v-if="detail && detail.pathRunStatusName === '待对账'"
       class="run-detail__reconcile"
@@ -948,6 +953,12 @@ onBeforeUnmount(() => {
 .run-detail__reconcile-verdict { font-weight: 600; }
 .run-detail__reconcile-note { color: var(--warning-color, #f0a020); }
 .run-detail__manual-form { display: grid; gap: 6px; max-width: 420px; }
+
+.run-detail__structure-note {
+  margin: 0;
+  color: var(--run-detail-warning-text, #d48806);
+  line-height: 1.6;
+}
 
 .run-detail__stop-reason {
   margin: 0;

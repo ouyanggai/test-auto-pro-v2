@@ -296,7 +296,9 @@ func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body
 		return nil, &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("invalid json")}
 	}
 	if responseSessionExpired(&result) {
-		return nil, NewError(ErrorSessionExpired, nil)
+		// 完整响应里带会话失效包络：传输事实是「已收到完整响应」，
+		// 丢掉它会把可判确定失败的鉴权拒绝升级成待对账（评审 P2）。
+		return nil, &Error{Kind: ErrorSessionExpired, Transport: TransportResponded}
 	}
 	return &result, nil
 }

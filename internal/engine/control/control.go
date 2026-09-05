@@ -76,6 +76,9 @@ type activeStep struct {
 	awaitingReconciliation bool
 	// loopRunning 表示连续执行循环存活。
 	loopRunning bool
+	// stepInFlight 表示一步正在执行（从取步租约到落账）：这期间停止必须延后到本步
+	// 走完 verify 与 settle，绝不能立刻终结路径运行——否则写请求返回后事实无处落账（纲领第 4.5 节）。
+	stepInFlight bool
 	// stopReason 是「为什么停在这里」的中文主因。
 	stopReason string
 	// version 是控制命令条件写的版本（每次控制状态变化自增）。
@@ -474,7 +477,19 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 	s.logFact(pathRunID, approveFact, previewStepNo(session))
 
 	if command == model.CommandStep {
-		return s.approveOneStep(ctx, pathRunID, session, 1, false)
+		result, err := s.approveOneStep(ctx, pathRunID, session, 1, false)
+		if err != nil {
+			return result, err
+		}
+		// 本步走完 verify 与 settle 后，放行期间收到的停止请求在这里生效（纲领第 4.5 节）。
+		s.mu.Lock()
+		deferredStop := session.stopRequested && !session.finished &&
+			result.Outcome.Verdict == string(verdict.OutcomeSucceeded) && !result.PathFinished
+		s.mu.Unlock()
+		if deferredStop {
+			s.applyStop(ctx, pathRunID)
+		}
+		return result, err
 	}
 	// next_node / continue：启动连续执行循环并立即返回当前状态（前端按配置轮询）。
 	s.startLoop(ctx, pathRunID, session, command)
@@ -484,6 +499,14 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 // approveOneStep 执行一步（单步模式、step 命令与对账重放共用），随后停在下一步之前或收尾。
 // attemptNo 是本次尝试序号（对账重放时递增，作为新的一次尝试记录）。
 func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session *activeStep, attemptNo int, isReplay bool) (*ApproveResult, error) {
+	s.mu.Lock()
+	session.stepInFlight = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		session.stepInFlight = false
+		s.mu.Unlock()
+	}()
 	// 保存写之前的目标事实基准，供对账收集器对照；同时标记基准确实取到了。
 	// 这份基准随后会随尝试行落库（before_facts），进程重启后按它还原。
 	session.runCtx.LastBeforeFacts = session.preview.Facts
@@ -609,12 +632,15 @@ func (s *Service) Stop(ctx context.Context, pathRunID uint64) (model.PathRun, er
 	s.mu.Lock()
 	session := s.active[pathRunID]
 	loopRunning := session != nil && session.loopRunning
+	stepInFlight := session != nil && session.stepInFlight
 	if session != nil {
 		session.stopRequested = true
 	}
 	s.mu.Unlock()
-	if loopRunning {
-		// 循环存活：落请求事实，由循环在本步走完 verify 与 settle 后执行停止。
+	if loopRunning || stepInFlight {
+		// 循环存活或一步正在执行：落请求事实，由它在本步走完 verify 与 settle 后执行停止。
+		// 单步放行与写请求在途的窗口里状态仍是运行中，绝不在这里直接 FinishPathRun——
+		// 那会让已发出的写请求返回后无处落账（评审 P1）。
 		if err := s.store.AppendRunControl(ctx, model.RunControl{
 			RunID: pathRun.RunID, PathRunID: pathRunID,
 			Kind: model.ControlFactStopRequested, Source: model.RunControlSourceUI, CreatedAt: s.now(),

@@ -16,6 +16,8 @@ export interface RunPreview {
   action: string
   actionName: string
   nodeKey: string
+  // nodeId 是当前步节点的图上标识：画布据此平移与高亮当前步。
+  nodeId?: string
   nodeName: string
   actorName: string
   expectedEffect: string
@@ -46,6 +48,8 @@ export interface RunStep {
   stepNo: number
   actionName: string
   nodeKey: string
+  // nodeId 是节点在图上的真实标识：画布与侧栏按它取状态（nodeKey 是配置令牌键，另一套键空间）。
+  nodeId?: string
   nodeName: string
   actorName: string
   statusName: string
@@ -68,6 +72,8 @@ export interface PathRunDetail {
   resultName?: string
   failureClassName?: string
   finalTarget?: unknown
+  // structureNote 是真实结构读取失败时的降级说明；为空表示结构读取正常。
+  structureNote?: string
   planId: number
   planName: string
   pathId: number
