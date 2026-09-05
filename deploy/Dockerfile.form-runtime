@@ -10,10 +10,12 @@ COPY form-runtime/package.json ./form-runtime/package.json
 COPY web/package.json ./web/package.json
 RUN pnpm install --frozen-lockfile
 COPY form-runtime ./form-runtime
+# 构建产物按 vue.config.js 输出到 ../web/dist/form-runtime（相对 form-runtime 目录）。
 RUN pnpm --dir form-runtime build
 
 FROM nginx:1.27-alpine AS runtime
 COPY deploy/nginx.form-runtime.conf /etc/nginx/conf.d/default.conf
 # 固定版本先落到 live 卷；后端维护流水线随后接管同一份卷。
-COPY --from=build /src/form-runtime/dist /usr/share/nginx/html
+# 产物 publicPath 是 /form-runtime/，nginx 按子路径 alias 服务（评审 P1）。
+COPY --from=build /src/web/dist/form-runtime /usr/share/nginx/html/form-runtime
 EXPOSE 19001

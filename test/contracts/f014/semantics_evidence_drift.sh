@@ -49,7 +49,7 @@ for block in blocks:
     if not path or not needle:
         failures.append('证据块缺少 file 或 contains：%s' % block.strip().replace('\n', ' / '))
         continue
-    if strength not in ('源码可证明', '源码推断、待 F-016 实测'):
+    if strength not in ('源码可证明', '源码推断、待实测', '部署已验证'):
         failures.append('证据块的 strength 取值不合法：%s' % strength)
     # head 与 deployment 逐条绑定，全局基线不能替代：head 必须与该仓库当前 HEAD 一致，
     # deployment 必须显式登记，部署版本未知时也要写「未取得」。

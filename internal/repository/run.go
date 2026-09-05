@@ -57,8 +57,8 @@ type RunStore interface {
 	FinishRunIfAllPathsClosed(ctx context.Context, runID uint64, now time.Time) (bool, error)
 	// HasManualConclusion 判断该路径运行是否已登记人工核对结论（登记即终局守卫）。
 	HasManualConclusion(ctx context.Context, pathRunID uint64) (bool, error)
-	// ListRunEvents 读取一次运行的事件流（afterID 游标增量，F-021 只读）。
-	ListRunEvents(ctx context.Context, runID uint64, afterID uint64, limit int) ([]model.RunEvent, error)
+	// ListRunEvents 读取一次运行的事件流（afterID 游标增量，pathRunID 非零时按路径过滤，F-021 只读）。
+	ListRunEvents(ctx context.Context, runID uint64, afterID uint64, limit int, pathRunID uint64) ([]model.RunEvent, error)
 	// ListRunsFiltered 按状态与游标筛选计划下的运行（F-021 列表）。
 	ListRunsFiltered(ctx context.Context, planID uint64, status string, beforeID uint64, limit int) ([]model.Run, error)
 	// ListDueScheduledPlans 列出到点尚未消费的计划（数据库时间为准，F-020 定时触发）。

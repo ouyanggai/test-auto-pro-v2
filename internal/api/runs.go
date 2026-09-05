@@ -44,7 +44,7 @@ type RunOrchestrator interface {
 	RecoveryAction(ctx context.Context, runID uint64, pathRunID uint64, action string, manual model.RunManualConclusion) (*service.PathRunDetailDTO, error)
 	Stop(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	ListRuns(ctx context.Context, planID uint64) ([]service.RunSummaryDTO, error)
-	ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int) ([]service.RunEventDTO, error)
+	ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int, pathRunID uint64) ([]service.RunEventDTO, error)
 	ListRunsWithFilters(ctx context.Context, planID uint64, status string) ([]service.RunSummaryDTO, error)
 }
 
@@ -75,7 +75,8 @@ func handleRunEvents(orchestrator RunOrchestrator) http.HandlerFunc {
 		}
 		afterID, _ := strconv.ParseUint(strings.TrimSpace(request.URL.Query().Get("afterEventId")), 10, 64)
 		limit, _ := strconv.Atoi(strings.TrimSpace(request.URL.Query().Get("limit")))
-		events, err := orchestrator.ListRunEvents(request.Context(), runID, afterID, limit)
+		pathRunID, _ := strconv.ParseUint(strings.TrimSpace(request.URL.Query().Get("pathRunId")), 10, 64)
+		events, err := orchestrator.ListRunEvents(request.Context(), runID, afterID, limit, pathRunID)
 		if err != nil {
 			writeRunControlError(response, err)
 			return

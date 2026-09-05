@@ -24,9 +24,13 @@ grep -qF 'ListRunsFiltered' internal/repository/run.go || fail '缺少状态筛�
 panel='web/src/views/RunDetailView.vue'
 grep -qF 'run-detail__events' "${panel}" || fail '运行详情缺少事件流时间线'
 grep -qF 'copyLogRef' web/src/features/runs/RunNodePanel.vue || fail '尝试行缺少日志位置复制'
-# 事件流必须按游标增量：只能 push 追加，不能整体覆盖历史。
-if grep -E 'runEvents\.value =' "${panel}" | grep -v 'runEvents.value.push' >/dev/null 2>&1; then
-  fail '事件流被整体覆盖，违背增量追加语义'
+# 事件流必须按游标增量：轮询只允许 push 追加；
+# 唯一允许的整体赋值是切换路径时的清空重置（runEvents.value = []，换游标后重拉当前路径）。
+if ! grep -qF 'runEvents.value.push' "${panel}"; then
+  fail '事件流未按游标增量追加'
+fi
+if grep -E 'runEvents\.value[[:space:]]*=' "${panel}" | grep -vE 'runEvents\.value[[:space:]]*= \[\]' >/dev/null 2>&1; then
+  fail '事件流被整体覆盖成别的列表，违背增量追加语义'
 fi
 
 printf '%s\n' 'F-021 只读契约检查通过'

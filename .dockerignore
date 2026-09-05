@@ -1,7 +1,7 @@
-# 构建上下文卫生（F-023）：凭证、日志、参考源码、缓存与构建产物一律不进镜像层。
+.dockerignore（F-023 构建上下文卫生）：凭证、日志、参考源码、缓存与构建产物一律不进镜像层。
 .env.local
 .env.*
-!.deploy/.env.example
+deploy/.env
 参考代码/
 重构指南/
 logs/

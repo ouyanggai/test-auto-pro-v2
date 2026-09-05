@@ -42,6 +42,9 @@ function switchPathRun(pathRunID: number) {
   if (pathRunID === selectedPathRunID.value) return
   selectedPathRunID.value = pathRunID
   reconcileView.value = null
+  // 事件流按路径过滤：切换后清空并重置游标，重新只追加当前路径的事件。
+  runEvents.value = []
+  lastEventID = 0
   void router.replace({ query: { ...route.query, path: pathRunID ? String(pathRunID) : undefined } })
   void loadDetail()
 }
@@ -430,7 +433,9 @@ function schedulePoll(): void {
   }
   if (!detail.value) return
   const terminalStatuses = ['已完成', '失败', '待对账', '已停止', '已取消']
-  if (terminalStatuses.includes(detail.value.pathRunStatusName)) return
+  // 多路径运行：当前路径终态但还有未终态兄弟路径时继续轮询，切换区的状态不能停滞（评审 P2）。
+  const siblingActive = (detail.value.paths ?? []).some((path) => !terminalStatuses.includes(path.statusName) && path.statusName !== '暂停')
+  if (terminalStatuses.includes(detail.value.pathRunStatusName) && !siblingActive) return
   pollTimer = window.setTimeout(async () => {
     try {
       const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)

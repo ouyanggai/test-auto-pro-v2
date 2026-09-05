@@ -387,6 +387,13 @@ func (r *RunRepository) AdvancePathRunStatus(ctx context.Context, pathRunID uint
 	var runID uint64
 	var current string
 	err = tx.QueryRowContext(ctx, "SELECT run_id, status FROM path_runs WHERE id = ? FOR UPDATE", pathRunID).Scan(&runID, &current)
+	if err == nil {
+		// 锁住运行行再读兄弟路径：两条路径同时收尾的事务在此串行化，
+		// 后者一定能看到前者已提交的终态，聚合不会因读视图互相不可见而永久丢失（评审 P1）。
+		if _, lockErr := tx.ExecContext(ctx, "SELECT id FROM runs WHERE id = ? FOR UPDATE", runID); lockErr != nil {
+			return model.PathRun{}, lockErr
+		}
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.PathRun{}, repository.ErrRunNotFound
 	}
@@ -438,6 +445,13 @@ func (r *RunRepository) FinishPathRun(ctx context.Context, pathRunID uint64, to 
 	var runID uint64
 	var current string
 	err = tx.QueryRowContext(ctx, "SELECT run_id, status FROM path_runs WHERE id = ? FOR UPDATE", pathRunID).Scan(&runID, &current)
+	if err == nil {
+		// 锁住运行行再读兄弟路径：两条路径同时收尾的事务在此串行化，
+		// 后者一定能看到前者已提交的终态，聚合不会因读视图互相不可见而永久丢失（评审 P1）。
+		if _, lockErr := tx.ExecContext(ctx, "SELECT id FROM runs WHERE id = ? FOR UPDATE", runID); lockErr != nil {
+			return model.PathRun{}, lockErr
+		}
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.PathRun{}, repository.ErrRunNotFound
 	}
@@ -470,10 +484,11 @@ func (r *RunRepository) FinishPathRun(ctx context.Context, pathRunID uint64, to 
 	// 聚合优先级：任一失败即失败 > 任一停止即停止 > 任一取消即取消 > 全部完成为完成。
 	// 待对账与暂停不算终态：运行保持运行中，等对账或继续推进（与既有单路径行为一致）。
 	if aggregate, ok := aggregateRunTerminal(ctx, tx, runID); ok {
-		runFinishedAt := any(now)
+		// 聚合收尾同样只允许从运行中前进，带状态守卫；空结果显式置 NULL，
+		// 与 FinishRunIfAllPathsClosed 的表示保持一致（评审 P2）。
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE runs SET status = ?, result = ?, finished_at = COALESCE(?, finished_at), updated_at = ? WHERE id = ?
-		`, string(aggregate.status), string(aggregate.result), runFinishedAt, now, runID); err != nil {
+			UPDATE runs SET status = ?, result = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = ?
+		`, string(aggregate.status), nullableRunResultOf(aggregate.result), now, now, runID, string(model.RunStatusRunning)); err != nil {
 			return model.PathRun{}, err
 		}
 		if err := appendRunEvent(ctx, tx, model.RunEvent{

@@ -27,10 +27,10 @@ if [ "${evidence_count}" -lt 34 ]; then
   fail "证据块不足：期望 >=34，实际 ${evidence_count}"
 fi
 
-# 写端点合并口径：11 个端点常量必须齐备（超出即先补语义再扩端点）。
-endpoint_count=$(grep -h -c 'WriteEndpoint' internal/adapter/target/write.go internal/adapter/target/write_actions.go | awk '{sum+=$1} END {print sum}')
-if [ "${endpoint_count}" -lt 11 ]; then
-  fail "写端点常量数量异常：期望 >=11，实际 ${endpoint_count}"
+# 写端点合并口径：常量声明必须恰好 11 个（新增端点先补语义证据再扩白名单）。
+endpoint_count=$(grep -hE '^\s*WriteEndpoint[A-Za-z]+ ' internal/adapter/target/write.go internal/adapter/target/write_actions.go | wc -l | tr -d ' ')
+if [ "${endpoint_count}" != "11" ]; then
+  fail "写端点常量数量异常：期望 11，实际 ${endpoint_count}"
 fi
 
 # 漂移检测脚本必须存在且可执行（T04 扩展它而不是另造）。

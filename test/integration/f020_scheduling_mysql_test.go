@@ -255,7 +255,7 @@ func TestF021RunEventsIncrementalAndStatusFilter(t *testing.T) {
 		model.RunEvent{Kind: "run_started", Label: "开始"}, now); err != nil {
 		t.Fatalf("推进运行失败：%v", err)
 	}
-	all, err := store.runs.ListRunEvents(ctx, runRow.ID, 0, 100)
+	all, err := store.runs.ListRunEvents(ctx, runRow.ID, 0, 100, 0)
 	if err != nil {
 		t.Fatalf("读取事件失败：%v", err)
 	}
@@ -263,7 +263,7 @@ func TestF021RunEventsIncrementalAndStatusFilter(t *testing.T) {
 		t.Fatalf("至少应有创建与开始两条事件，实际 %d", len(all))
 	}
 	cursor := all[0].ID
-	rest, err := store.runs.ListRunEvents(ctx, runRow.ID, cursor, 100)
+	rest, err := store.runs.ListRunEvents(ctx, runRow.ID, cursor, 100, 0)
 	if err != nil {
 		t.Fatalf("增量读取失败：%v", err)
 	}

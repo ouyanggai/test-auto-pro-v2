@@ -96,8 +96,8 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
     <div v-if="loading" class="runs-view__loading"><NSpin size="small" /><span>正在读取运行列表……</span></div>
 
     <NEmpty
-      v-else-if="runs.length === 0"
-      description="该计划还没有运行记录；在计划路径页通过运行前检查后即可启动单步运行。"
+      v-else-if="runs.length === 0 && !errorText"
+      :description="runStatusFilter ? '没有匹配筛选状态的运行记录。' : '该计划还没有运行记录；在计划路径页勾选路径并通过运行前检查后即可启动运行。'"
     />
 
     <table v-else class="runs-view__table">

@@ -50,8 +50,8 @@ type RunEventDTO struct {
 
 // ListRunEvents 增量读取一次运行的事件流：afterEventID 为游标，只返回其后的事件。
 // 只读，不触发目标调用，不改变任何运行事实。
-func (s *RunOrchestrationService) ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int) ([]RunEventDTO, error) {
-	events, err := s.store.ListRunEvents(ctx, runID, afterEventID, limit)
+func (s *RunOrchestrationService) ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int, pathRunID uint64) ([]RunEventDTO, error) {
+	events, err := s.store.ListRunEvents(ctx, runID, afterEventID, limit, pathRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -244,8 +244,14 @@ func (s *RunOrchestrationService) NewScheduler(interval time.Duration) *schedule
 }
 
 // kickScheduler 立即做一轮调度：Tick 内的数据库条件写保证并发安全，多做一轮不会重复启动。
+// 必须与请求上下文脱钩：请求返回会取消 ctx，若定时触发在消费标记已写、运行未建之间被打断，
+// 一次性定时就被静默吞掉且没有任何事实（评审 P2）。
 func (s *RunOrchestrationService) kickScheduler(ctx context.Context) {
-	s.NewScheduler(s.runConfig.StatusPollInterval).Tick(ctx)
+	detached, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	go func() {
+		defer cancel()
+		s.NewScheduler(s.runConfig.StatusPollInterval).Tick(detached)
+	}()
 }
 
 // runStartDTO 汇总一次运行的调度视图。

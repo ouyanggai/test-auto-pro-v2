@@ -23,8 +23,7 @@ WORKDIR /app
 COPY --from=build /out/server ./server
 # 完整 form-runtime 工作区（含 runtime-source/）：维护流水线的同步与隔离构建都消费它。
 COPY form-runtime ./form-runtime
-# 维护产物的运行时目录：候选、current 与 previous 都写在运行时卷上。
-ENV FORM_RUNTIME_MAINTENANCE_ROOT=/var/lib/test-auto-pro/form-runtime-maintenance
-VOLUME ["/var/lib/test-auto-pro/form-runtime-maintenance", "/app/logs"]
+# 维护产物写在 ${TEST_AUTO_PRO_WORKSPACE_ROOT}/.runtime/form-runtime-maintenance，
+# 由 Compose 的 fr-maintenance 卷承接；应用不读取其他维护根变量。
 EXPOSE 19080
 ENTRYPOINT ["/app/server"]

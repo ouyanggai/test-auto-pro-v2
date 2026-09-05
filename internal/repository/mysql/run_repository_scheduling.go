@@ -201,14 +201,16 @@ func (r *RunRepository) ListPathRunsByRun(ctx context.Context, runID uint64) ([]
 
 // ListRunEvents 读取一次运行的事件流（F-021 增量读取）：afterID 为游标，只返回其后的事件。
 // 按数据库自增键升序，前端轮询只追加，历史不重排。
-func (r *RunRepository) ListRunEvents(ctx context.Context, runID uint64, afterID uint64, limit int) ([]model.RunEvent, error) {
+func (r *RunRepository) ListRunEvents(ctx context.Context, runID uint64, afterID uint64, limit int, pathRunID uint64) ([]model.RunEvent, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
+	// pathRunID 非零时按路径过滤：多路径运行查看某条路径时只看它自己的事件（路径隔离）。
+	pathFilter := "AND (? = 0 OR path_run_id = ?)"
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, run_id, path_run_id, kind, label, detail, created_at
-		FROM run_events WHERE run_id = ? AND id > ? ORDER BY id ASC LIMIT ?
-	`, runID, afterID, limit)
+		FROM run_events WHERE run_id = ? AND id > ? `+pathFilter+` ORDER BY id ASC LIMIT ?
+	`, runID, afterID, pathRunID, pathRunID, limit)
 	if err != nil {
 		return nil, err
 	}
