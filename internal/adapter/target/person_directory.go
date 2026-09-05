@@ -40,6 +40,9 @@ type rawAuditPersonnelPage struct {
 }
 
 type auditDirectoryResolver struct {
+	// platformCode 是当前节点审批配置所属平台码：角色等目录挂在其创建平台下，
+	// 名称解析按它查询才能命中；为空时回落统一网关平台码。
+	platformCode  string
 	client        *Client
 	ctx           context.Context
 	active        Session
@@ -63,6 +66,10 @@ func (c *Client) resolveFlowAuditMetadata(ctx context.Context, active Session, t
 			return
 		}
 		visited[node.ID] = true
+		if node.AuditConfig != nil {
+			// 角色等目录挂在其创建平台码下，与统一网关平台码可能不同；逐节点取审批配置自己的平台码。
+			resolver.platformCode = node.AuditConfig.PlatformCode
+		}
 		resolver.resolve(node.AuditConfig)
 		resolver.resolveAddSignCandidates(node)
 		walk(node.Child)
@@ -328,7 +335,7 @@ func (r *auditDirectoryResolver) namedItems(cacheKey, path string, body map[stri
 	if cached, exists := r.named[cacheKey]; exists {
 		return cached, nil
 	}
-	resp, err := r.client.call(r.ctx, path, r.active.SID, body)
+	resp, err := r.client.callWithPlatform(r.ctx, path, r.active.SID, body, r.platformCode)
 	if err != nil || !responseSucceeded(resp) {
 		return nil, fmt.Errorf("audit directory unavailable")
 	}
@@ -558,4 +565,9 @@ func (c *Client) FormIdentityContext(ctx context.Context, active Session) (FormI
 		return result, fmt.Errorf("current user not found in company directory")
 	}
 	return result, nil
+}
+
+// ResolveFlowAuditMetadataForTest 暴露人员目录解析，供 test 目录下的定向用例锁定平台码行为。
+func (c *Client) ResolveFlowAuditMetadataForTest(ctx context.Context, active Session, tree *FlowNodeTemplate) {
+	c.resolveFlowAuditMetadata(ctx, active, tree)
 }

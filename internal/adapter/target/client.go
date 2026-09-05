@@ -521,6 +521,7 @@ type rawFlowCondition struct {
 
 type rawFlowNodeAuditConfig struct {
 	AuditType         string               `json:"auditType"`
+	PlatformCode      string               `json:"platformCode"`
 	Mode              string               `json:"type"`
 	CountersignNum    *int                 `json:"countersignNum"`
 	FormPersonField   string               `json:"formPersonFields"`
@@ -1196,6 +1197,7 @@ func convertFlowAuditConfig(raw *rawFlowNodeAuditConfig) *FlowNodeAuditConfig {
 	result := &FlowNodeAuditConfig{
 		AuditType: raw.AuditType, Mode: raw.Mode, CountersignNum: raw.CountersignNum,
 		FormPersonField: raw.FormPersonField, AuditCondition: raw.AuditCondition,
+		PlatformCode: strings.TrimSpace(raw.PlatformCode),
 	}
 	for _, detail := range raw.Details {
 		result.Details = append(result.Details, FlowAuditDetail{ID: strings.TrimSpace(detail.BizID), Name: detail.Name, Type: detail.Type})
@@ -1253,6 +1255,17 @@ func (c *Client) CallWrite(ctx context.Context, path, sid string, body map[strin
 
 // callOfClass 是全部目标请求的唯一出口；class 标记读写分类，traceID 非空时作为日志关联键。
 func (c *Client) callOfClass(ctx context.Context, path, sid string, body map[string]any, class, traceID string) (*envelope, error) {
+	return c.callOfClassPlatform(ctx, path, sid, body, class, traceID, "")
+}
+
+// callWithPlatform 以指定平台码发出只读请求：目标不同目录数据挂在不同平台码下
+// （固定角色在 999999，而流程模板等在 200001），统一网关参数会查空导致解析失败。
+func (c *Client) callWithPlatform(ctx context.Context, path, sid string, body map[string]any, platformCode string) (*envelope, error) {
+	return c.callOfClassPlatform(ctx, path, sid, body, "read", "", platformCode)
+}
+
+// callOfClassPlatform 是带平台码覆盖的统一出口；platformCode 为空时回落全局配置。
+func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body map[string]any, class, traceID, platformCode string) (*envelope, error) {
 	payload := make(map[string]any, len(body)+1)
 	for key, value := range body {
 		payload[key] = value
@@ -1268,8 +1281,12 @@ func (c *Client) callOfClass(ctx context.Context, path, sid string, body map[str
 	endpoint.Path = strings.TrimRight(c.baseURL.Path, "/") + "/" + strings.TrimLeft(path, "/")
 	endpoint.RawPath = ""
 	query := endpoint.Query()
-	if c.config.PlatformCode != "" {
-		query.Set("platformCode", c.config.PlatformCode)
+	platform := platformCode
+	if platform == "" {
+		platform = c.config.PlatformCode
+	}
+	if platform != "" {
+		query.Set("platformCode", platform)
 	}
 	if sid != "" {
 		query.Set("sid", sid)

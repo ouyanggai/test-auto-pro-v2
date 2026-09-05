@@ -155,6 +155,9 @@ type FlowCondition struct {
 
 // FlowNodeAuditConfig 是审批节点的内部只读配置。
 type FlowNodeAuditConfig struct {
+	// PlatformCode 是该节点审批配置在目标侧所属的平台码：固定角色等目录数据挂在其创建平台下，
+	// 名称解析必须按此平台码查询，统一网关平台码会查空。
+	PlatformCode      string
 	AuditType         string
 	Mode              string
 	CountersignNum    *int
