@@ -33,14 +33,16 @@ test('选择请求只回传不透明键、模式、修订号和幂等键', () =>
   }
 })
 
-test('一键配置与智能生成数据共用同一个基础表单数据弹窗', () => {
+test('一键配置与更换历史数据共用同一个基础表单数据弹窗', () => {
   assert.match(planPathsView, /BaseFormDataPicker/)
   assert.match(planPathsView, /一键配置/)
   assert.match(planPathsView, /scope="default"/)
   assert.match(planPathsView, /@click="dataPickerOpen = true"/)
   assert.match(planPathsView, /@saved="startSelectedPreparation"/)
   assert.match(pathConfigurationView, /BaseFormDataPicker/)
-  assert.match(pathConfigurationView, /智能生成数据/)
+  // 智能生成已按产品决定退出产品，入口文案必须与真实功能（选择历史数据）一致。
+  assert.match(pathConfigurationView, /更换历史数据/)
+  assert.doesNotMatch(pathConfigurationView, /智能生成/)
   assert.match(pathConfigurationView, /scope="path"/)
   assert.match(pathConfigurationView, /@saved="handleBaseFormDataSaved"/)
 })

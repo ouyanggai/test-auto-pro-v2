@@ -941,7 +941,7 @@ void loadPage()
           <div class="path-configuration-page__form-actions">
             <n-button size="small" @click="returnToNodes">返回节点画布</n-button>
 			<template v-if="!formReadOnly">
-              <n-button size="small" type="primary" secondary :disabled="formRuntimeLoading || formRestoring || formSaving" @click="dataPickerOpen = true">智能生成数据</n-button>
+              <n-button size="small" type="primary" secondary :disabled="formRuntimeLoading || formRestoring || formSaving" @click="dataPickerOpen = true">更换历史数据</n-button>
               <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formRestoring || formSaving" @click="restoreSavedForm">恢复已保存数据</n-button>
               <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formRestoring" @click="saveFormData()">保存表单数据</n-button>
             </template>
@@ -952,7 +952,7 @@ void loadPage()
           :plan-id="planID"
           :path-id="pathID"
           scope="path"
-          confirm-text="生成数据"
+          confirm-text="使用这份数据"
           :disabled="!planMutable"
           @saved="handleBaseFormDataSaved"
         />
