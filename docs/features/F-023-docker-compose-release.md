@@ -82,7 +82,15 @@
 
 ### 必须先裁决的一项与一处提醒（核查线程已核对）
 
-- **需要用户裁决：表单运行时维护在容器里怎么办。** 该功能是在**后端进程内**执行 `git` 与 `pnpm build`
+- **已裁决（用户 2026-09-05）：做成一体的。** 表单运行时维护随后端一起交付：系统设置里点按钮即可同步最新代码
+  并切换版本，Compose 部署下这个能力必须可用，不接受「只交付固定快照」。
+  因此后端镜像必须自带 `git`、Node 与 pnpm，并包含完整 `form-runtime` 工作区（含入库的 `runtime-source/`）；
+  候选同步、隔离构建、current/previous 切换与回滚全部在后端容器内完成，产物写进运行时卷，
+  由 `form-runtime` 服务直接提供。镜像体积与构建期网络依赖是这次裁决接受的代价，
+  实施时把 Node／pnpm 版本与 Go 版本一样锁定，并在 `.env.example` 与发布说明里写明这一点。
+  原分析（下条）保留为背景。
+
+- **背景：为什么需要这项裁决。** 该功能是在**后端进程内**执行 `git` 与 `pnpm build`
   （`internal/formruntimemaintenance/pnpm_operator.go`、`sync.go`，`pipeline.go` 的七阶段含「使用 pnpm 构建隔离候选」）。
   而本计划把后端描述为 Go 多阶段精简镜像、`form-runtime` 是另一个服务，全程未涉及这件事。二选一：
   ① 后端镜像带上 node／pnpm／git 与完整 `form-runtime` 工作区（镜像显著变大且构建期需要网络）；
