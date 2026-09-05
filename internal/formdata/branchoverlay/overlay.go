@@ -139,20 +139,45 @@ func Apply(input Input) Result {
 	result.Status = StatusReady
 	result.Values = selected.values
 	result.ActualChoices = finalWalk.choices
-	synchronizeLinkedSelectDisplay(original, result.Values)
+	synced := synchronizeLinkedSelectDisplay(original, result.Values)
 	result.Patches = buildPatches(original, selected.values, references)
+	result.Patches = appendDisplaySyncPatches(result.Patches, original, result.Values, synced)
 	return result
 }
 
-// synchronizeLinkedSelectDisplay 同步目标表单约定的 Name/Id 下拉虚拟字段，
-// 只改写原始数据中已存在的虚拟键，不猜测新的 ID 或新增业务字段。
-func synchronizeLinkedSelectDisplay(original, values map[string]any) {
+// synchronizeLinkedSelectDisplay 同步目标表单约定的 Name/Id 下拉显示字段，两个方向都要同步，
+// 只改写原始数据中已存在的键，不猜测新的 ID 也不新增业务字段：
+//   - 条件声明在同前缀名称字段上（如 paymentName）：把 <Id>__virtualName 同步成同一显示名，
+//     否则 FormMaking 按历史虚拟名兜底显示，界面停在旧选项；
+//   - 条件直接声明虚拟显示字段（如 classificationId__virtualName，t_flow_strategy_condition_proxy 实测的
+//     常见形态）：把同前缀名称字段同步成同一显示名，否则实例上"路由按新分类走、业务名称还是旧分类"，
+//     提交出去是一条自相矛盾的真实数据。
+//
+// 绑定 ID 两个方向都不改：它只能由运行时按目标真实选项按名称唯一匹配后回填，服务端没有选项来源，猜不得。
+func synchronizeLinkedSelectDisplay(original, values map[string]any) []displaySync {
+	synced := make([]displaySync, 0, 2)
 	for path, after := range values {
-		if strings.HasSuffix(path, "__virtualName") || !strings.HasSuffix(path, "Name") {
-			continue
-		}
 		before, existed := original[path]
 		if !existed || valuesEqual(before, after) {
+			continue
+		}
+		if strings.HasSuffix(path, "__virtualName") {
+			idPath := strings.TrimSuffix(path, "__virtualName")
+			namePath := pairedDisplayNamePath(idPath)
+			if namePath == "" {
+				continue
+			}
+			if _, idExists := values[idPath]; !idExists {
+				continue
+			}
+			if _, nameExists := original[namePath]; !nameExists {
+				continue
+			}
+			values[namePath] = cloneAny(after)
+			synced = append(synced, displaySync{Path: namePath, Source: path})
+			continue
+		}
+		if !strings.HasSuffix(path, "Name") {
 			continue
 		}
 		base := strings.TrimSuffix(path, "Name")
@@ -165,7 +190,53 @@ func synchronizeLinkedSelectDisplay(original, values map[string]any) {
 			continue
 		}
 		values[virtualPath] = cloneAny(after)
+		synced = append(synced, displaySync{Path: virtualPath, Source: path})
 	}
+	sort.Slice(synced, func(left, right int) bool { return synced[left].Path < synced[right].Path })
+	return synced
+}
+
+// displaySync 记录一次显示名同步：跟随哪个条件字段、同步了哪个显示字段。
+type displaySync struct {
+	// Path 是被同步的显示字段路径；Source 是触发同步的条件字段路径。
+	Path   string
+	Source string
+}
+
+// appendDisplaySyncPatches 把同步出来的显示名并入补丁明细，让用户看到工具到底改了哪些字段。
+// 分支键沿用它跟随的那个条件字段，因为这次同步是为了命中同一个分支。
+func appendDisplaySyncPatches(patches []model.HistoryBranchPatch, original, values map[string]any, synced []displaySync) []model.HistoryBranchPatch {
+	for _, item := range synced {
+		before, beforeOK := getPath(original, item.Path)
+		after, afterOK := getPath(values, item.Path)
+		if beforeOK == afterOK && valuesEqual(before, after) {
+			continue
+		}
+		branchKey := ""
+		for _, patch := range patches {
+			if patch.Path == item.Source {
+				branchKey = patch.BranchKey
+				break
+			}
+		}
+		patches = append(patches, model.HistoryBranchPatch{
+			Path: item.Path, Before: cloneAny(before), After: cloneAny(after),
+			Reason: "随条件字段同步的同一字段显示名", BranchKey: branchKey,
+		})
+	}
+	return patches
+}
+
+// pairedDisplayNamePath 按目标"控件绑 Id、名称存同前缀 Name 字段"的结构约定推导成对名称字段，
+// 与运行时 displayNameField 同一套规则：复数 Ids 对 Names，单数 Id 对 Name；其余形态没有约定，不推导。
+func pairedDisplayNamePath(idPath string) string {
+	if strings.HasSuffix(idPath, "Ids") && len(idPath) > 3 {
+		return strings.TrimSuffix(idPath, "Ids") + "Names"
+	}
+	if strings.HasSuffix(idPath, "Id") && len(idPath) > 2 {
+		return strings.TrimSuffix(idPath, "Id") + "Name"
+	}
+	return ""
 }
 
 // ResolveActualPath 只按目标条件语义计算当前原始表单值实际命中的路径。

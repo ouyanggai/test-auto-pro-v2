@@ -328,17 +328,42 @@ function virtualNameField (model) {
   return model + '__virtualName'
 }
 
-// descriptorTriggered 判断补丁是否触及该控件的名称或虚拟显示字段；只有被补丁波及的控件才需要协调，
-// 未被补丁波及的历史字段本身自洽，不做多余检查也不产生误导性问题。
-function descriptorTriggered (descriptor, triggers) {
-  if (!Array.isArray(triggers) || triggers.length === 0) return false
+// triggeredNameSource 判断补丁触及了该控件的哪个显示名字段，只有被波及的控件才需要协调：
+// 'virtual' 只改了 FormMaking 虚拟显示字段（目标条件常直接声明它，实测 classificationId__virtualName）、
+// 'name' 只改了同前缀名称字段、'both' 两者都被改、'' 未被波及。
+// 返回来源而不是布尔值是关键：期望名称必须取自补丁真正写过的那个字段，
+// 另一个仍是历史值，拿它当期望名称会把"控件仍显示历史选项"误判成一致，字段永远协调不过来。
+function triggeredNameSource (descriptor, triggers) {
+  if (!Array.isArray(triggers) || triggers.length === 0) return ''
   const nameField = displayNameField(descriptor.model)
   const virtualField = virtualNameField(descriptor.model)
   const prefix = descriptor.group ? descriptor.group + '.' : ''
-  return triggers.some(trigger => {
+  let nameTriggered = false
+  let virtualTriggered = false
+  for (const trigger of triggers) {
     const path = String(trigger || '').trim()
-    return path !== '' && (path === prefix + nameField || path === prefix + virtualField)
-  })
+    if (path === '') continue
+    if (nameField && path === prefix + nameField) nameTriggered = true
+    if (path === prefix + virtualField) virtualTriggered = true
+  }
+  if (nameTriggered && virtualTriggered) return 'both'
+  if (virtualTriggered) return 'virtual'
+  if (nameTriggered) return 'name'
+  return ''
+}
+
+// desiredDisplayName 取补丁真正写入的那个显示名作为期望名称，原样返回不做字符串化
+//（多选的名称字段可能本身就是数组，交给 desiredNameList 逐项解析）。空值回落到另一个显示名。
+// 两个显示名都被补丁改过且取值不一致时返回 null：两个都可能是对的，绝不猜，由调用方阻断。
+function desiredDisplayName (source, nameRaw, virtual) {
+  const nameEmpty = isEmptyModelValue(nameRaw)
+  const virtualEmpty = isEmptyModelValue(virtual)
+  if (source === 'both') {
+    if (!nameEmpty && !virtualEmpty && String(nameRaw) !== String(virtual)) return null
+    return nameEmpty ? virtual : nameRaw
+  }
+  if (source === 'virtual') return virtualEmpty ? nameRaw : virtual
+  return nameEmpty ? virtual : nameRaw
 }
 
 // optionEntries 展开一个控件绑定路径下的全部绑定点：普通字段一个，子表单列按行展开。
@@ -379,7 +404,10 @@ function fieldOptions (form, descriptor) {
 // optionEntryState 计算一个绑定点的当前一致性状态。
 // consistent：绑定值按真实选项显示出的名称就是补丁目标名称（含"值不在选项里按虚拟名称兜底显示"）；
 // contradiction：显示出的仍是历史名称或绑定值为空；空选项时不能下结论，交由等待循环继续等数据源。
-function optionEntryState (descriptor, bound, virtual, options, desired) {
+// trustVirtualFallback 表示"值不在选项里、按虚拟名称兜底显示"能否当作一致的证据：
+// 只有补丁改的是同前缀名称字段时才能——那时虚拟名称由服务端按目标真实记录补齐（选项列表可能被权限过滤掉该项）。
+// 补丁改的就是虚拟名称本身时，它与期望名称必然相等，证明不了绑定值正确，必须回到真实选项里解析。
+function optionEntryState (descriptor, bound, virtual, options, desired, trustVirtualFallback) {
   const expected = String(desired)
   if (descriptor.type === 'cascader') return cascaderEntryState(bound, options, expected)
   if (descriptor.multiple) return multipleEntryState(bound, options, expected)
@@ -390,7 +418,7 @@ function optionEntryState (descriptor, bound, virtual, options, desired) {
       ? { state: 'consistent', actual: String(matched.label ?? '') }
       : { state: 'contradiction', actual: String(matched.label ?? '') }
   }
-  return String(virtual ?? '') === expected
+  return trustVirtualFallback && String(virtual ?? '') === expected
     ? { state: 'consistent', actual: String(virtual ?? '') }
     : { state: 'contradiction', actual: String(virtual ?? '') }
 }
@@ -442,7 +470,12 @@ function resolveOptionEntry (descriptor, options, desiredNames) {
     const leaves = cascaderLeafPaths(options, [])
     const trails = []
     for (const name of desiredNames) {
-      const matches = leaves.filter(leaf => leaf.label === name)
+      let matches = leaves.filter(leaf => leaf.label === name)
+      if (matches.length === 0) {
+        // 目标级联允许选中非叶子节点（历史取值就是一段只有一级的短路径），
+        // 叶子里匹配不到时按全树同名节点还原路径；仍然要求全树唯一，重名一律阻断不猜。
+        matches = cascaderNodePaths(options, []).filter(node => node.label === name)
+      }
       if (matches.length !== 1) return { resolved: false, reason: matches.length === 0 ? 'not-found' : 'ambiguous' }
       trails.push(matches[0].trail)
     }
@@ -455,6 +488,21 @@ function resolveOptionEntry (descriptor, options, desiredNames) {
     values.push(matches[0].value)
   }
   return { resolved: true, value: descriptor.multiple ? values : values[0] }
+}
+
+// cascaderNodePaths 深度收集全部节点（含非叶子）名称到取值路径的映射，
+// 供目标允许选中父级节点时按名称还原短路径。
+function cascaderNodePaths (nodes, prefix) {
+  const paths = []
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (!node) continue
+    const trail = prefix.concat([node.value])
+    paths.push({ label: String(node.label ?? ''), trail })
+    if (Array.isArray(node.children) && node.children.length > 0) {
+      paths.push(...cascaderNodePaths(node.children, trail))
+    }
+  }
+  return paths
 }
 
 // cascaderLeafPaths 深度收集叶子名称到取值路径的映射，供级联按名称还原完整路径。
@@ -483,17 +531,30 @@ function evaluateOptionPatches (form, descriptors, triggers, values, apply) {
   const unavailable = []
   let waiting = false
   for (const descriptor of descriptors) {
-    if (!descriptorTriggered(descriptor, triggers)) continue
+    const nameSource = triggeredNameSource(descriptor, triggers)
+    if (!nameSource) continue
     const options = fieldOptions(form, descriptor)
     const nameField = displayNameField(descriptor.model)
     const virtualField = virtualNameField(descriptor.model)
     for (const entry of optionEntries(values, descriptor)) {
       const nameRaw = entryValue(entry.container, nameField)
       const virtual = entryValue(entry.container, virtualField)
-      const desired = (nameRaw == null || nameRaw === '') ? virtual : nameRaw
-      if (desired == null || desired === '') continue
+      const desired = desiredDisplayName(nameSource, nameRaw, virtual)
+      if (desired === null) {
+        // 两个显示名都被补丁改过却互相矛盾：不能替用户选一个，如实阻断并给出两个取值。
+        issues.push({
+          code: 'OPTION_PATCH_CONTRADICTION', status: 'blocked', source: 'iframe_runtime',
+          fieldPath: entry.path, fieldLabel: descriptor.label, operator: '',
+          expected: String(virtual ?? ''), actual: String(nameRaw ?? ''),
+          relatedFields: [nameField, virtualField].filter(Boolean),
+          message: '该字段的名称字段与显示字段被改成了不同取值，无法确定应按哪个名称匹配选项，请手工核对该字段',
+          canRetry: true,
+        })
+        continue
+      }
+      if (desired === '') continue
       const bound = entryValue(entry.container, descriptor.model)
-      const state = optionEntryState(descriptor, bound, virtual, options, desired)
+      const state = optionEntryState(descriptor, bound, virtual, options, desired, nameSource !== 'virtual')
       if (state.state === 'consistent') continue
       if (options.length === 0 && descriptor.remote) {
         waiting = true

@@ -755,3 +755,56 @@ test('被补丁波及的远程字段选项数据源未加载时明确阻断', as
   assert.equal(coordination.issues[0].fieldPath, 'classificationId')
   assert.deepEqual(coordination.values.classificationId, ['old-category-id'], '数据源不可用时保留原值，不改动模型')
 })
+
+test('条件补丁只改虚拟显示名时，级联控件按补丁值回填绑定值并同步同前缀名称字段', async () => {
+  // 真实目标条件按 classificationId__virtualName 声明（t_flow_strategy_condition_proxy 实测），
+  // 补丁只改虚拟显示名；此时同前缀 classificationName 仍是历史值，不能拿它当期望名称，
+  // 否则控件按历史绑定值显示历史选项，界面永远停在旧选项。
+  const template = { list: [{ type: 'cascader', model: 'classificationId', name: '施工分类', options: { remote: true } }] }
+  const form = {
+    model: {
+      classificationId: ['old-id'],
+      classificationId__virtualName: '施工类',
+      classificationName: '行政综合类',
+    },
+    formItemContexts: {
+      classificationId: {
+        widget: { type: 'cascader', model: 'classificationId', options: { remote: true } },
+        $refs: { generateElementItem: { remoteOptions: [
+          { value: 'old-id', label: '行政综合类' },
+          { value: 'new-id', label: '施工类' },
+        ] } },
+      },
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['classificationId__virtualName'], 1)
+  assert.deepEqual(coordination.issues, [])
+  assert.deepEqual(coordination.values.classificationId, ['new-id'])
+  assert.equal(coordination.values.classificationId__virtualName, '施工类')
+  assert.equal(coordination.values.classificationName, '施工类')
+})
+
+test('虚拟显示名与同前缀名称字段同时被补丁但取值矛盾时产生阻断问题，绝不猜测绑定值', async () => {
+  const template = { list: [{ type: 'select', model: 'paymentId', name: '付款单位', options: { remote: true } }] }
+  const form = {
+    model: { paymentId: 'old-id', paymentId__virtualName: '甲方', paymentName: '乙方' },
+    formItemContexts: {
+      paymentId: {
+        widget: { type: 'select', model: 'paymentId', options: { remote: true } },
+        $refs: { generateElementItem: { remoteOptions: [
+          { value: 'old-id', label: '旧付款单位' },
+          { value: 'a-id', label: '甲方' },
+          { value: 'b-id', label: '乙方' },
+        ] } },
+      },
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['paymentName', 'paymentId__virtualName'], 1)
+  assert.equal(coordination.issues.length, 1)
+  assert.equal(coordination.issues[0].code, 'OPTION_PATCH_CONTRADICTION')
+  assert.equal(coordination.values.paymentId, 'old-id')
+})

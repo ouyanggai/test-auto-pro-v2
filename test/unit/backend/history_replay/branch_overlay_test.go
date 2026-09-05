@@ -355,3 +355,59 @@ func TestKeyFieldsProjectDecisiveConditionFields(t *testing.T) {
 		t.Fatalf("关键字段没有说明操作符和影响分支：%+v", field)
 	}
 }
+
+// TestBranchOverlaySyncsPairedNameWhenVirtualNameIsConditionField 锁定与目标一致的显示名同步方向：
+// 目标条件常直接声明 FormMaking 虚拟显示字段（实测 t_flow_strategy_condition_proxy 的
+// classificationId__virtualName eq 施工类），补丁改的是虚拟显示名。
+// 此时同前缀名称字段仍是历史值，必须一起同步，否则实例上"路由按施工类走、业务字段写着行政综合类"，
+// 提交出去就是一条自相矛盾的真实数据。绑定 ID 只能由运行时按目标真实选项解析，服务端绝不猜。
+func TestBranchOverlaySyncsPairedNameWhenVirtualNameIsConditionField(t *testing.T) {
+	tree := conditionTree([]target.FlowBranchTemplate{
+		{ID: "target", Sort: 1, Conditions: []target.FlowCondition{
+			{FieldA: "classificationId__virtualName", ValueB: "施工类", Judge: "eq"},
+		}},
+		{ID: "fallback", Sort: 2},
+	})
+	result := branchoverlay.Apply(branchoverlay.Input{
+		Tree:    tree,
+		Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "target"}},
+		Values: map[string]any{
+			"classificationId":              []any{"old-id"},
+			"classificationId__virtualName": "行政综合类",
+			"classificationName":            "行政综合类",
+			"unrelated":                     "keep",
+		},
+	})
+	if result.Status != branchoverlay.StatusReady {
+		t.Fatalf("虚拟显示名条件补丁未就绪：%#v", result)
+	}
+	if result.Values["classificationId__virtualName"] != "施工类" {
+		t.Fatalf("条件字段未被补丁改写：%#v", result.Values)
+	}
+	if result.Values["classificationName"] != "施工类" {
+		t.Fatalf("同前缀名称字段未同步为补丁后的显示名：%#v", result.Values)
+	}
+	if !reflect.DeepEqual(result.Values["classificationId"], []any{"old-id"}) {
+		t.Fatalf("绑定 ID 只能由运行时按真实选项解析，服务端不得改写：%#v", result.Values)
+	}
+	if result.Values["unrelated"] != "keep" {
+		t.Fatalf("无关字段被改写：%#v", result.Values)
+	}
+	var patched []string
+	for _, patch := range result.Patches {
+		patched = append(patched, patch.Path)
+	}
+	if !containsPatchPath(patched, "classificationName") {
+		t.Fatalf("同步出来的显示名必须出现在补丁明细里，供用户看到：%v", patched)
+	}
+}
+
+// containsPatchPath 判断补丁明细里是否包含指定字段路径。
+func containsPatchPath(paths []string, want string) bool {
+	for _, path := range paths {
+		if path == want {
+			return true
+		}
+	}
+	return false
+}
