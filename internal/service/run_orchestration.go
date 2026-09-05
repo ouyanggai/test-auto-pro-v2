@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"test-auto-pro-v2/internal/config"
+	engine_reconcile "test-auto-pro-v2/internal/engine/reconcile"
 	"test-auto-pro-v2/internal/engine/control"
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/logging"
@@ -195,6 +196,7 @@ type PathRunDetailDTO struct {
 
 	// 控制现场（F-017）：生效断点、为什么停在这里、可用命令集合、条件写版本。
 	ControlVersion  int64              `json:"controlVersion"`
+	Reconcile       *ReconcileViewDTO  `json:"reconcile,omitempty"`
 	CurrentStepNo   int                `json:"currentStepNo"`
 	Breakpoints     []BreakpointDTO    `json:"breakpoints"`
 	StopReason      string             `json:"stopReason,omitempty"`
@@ -363,6 +365,43 @@ func (s *RunOrchestrationService) StartRunWithMode(ctx context.Context, input St
 	return s.RunDetailByPathRun(ctx, started.PathRun.ID)
 }
 
+// ReconcileViewDTO 是对账结论的公开形态。
+type ReconcileViewDTO struct {
+	Verdict     string   `json:"verdict"`
+	VerdictName string   `json:"verdictName"`
+	Action      string   `json:"action"`
+	Headline    string   `json:"headline"`
+	Reasons     []string `json:"reasons"`
+	ReplaysUsed int      `json:"replaysUsed"`
+	ReplaysMax  int      `json:"replaysMax"`
+}
+
+// ReconcileNow 对待对账路径运行执行只读对账并返回结论。
+func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, pathRunID uint64) (*ReconcileViewDTO, error) {
+	view, err := s.control.ReconcileNow(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	return &ReconcileViewDTO{
+		Verdict: view.Verdict, VerdictName: view.VerdictName, Action: view.Action,
+		Headline: view.Headline, Reasons: view.Reasons,
+		ReplaysUsed: view.ReplaysUsed, ReplaysMax: view.ReplaysMax,
+	}, nil
+}
+
+// RecoveryAction 执行对账给出的唯一合法动作并返回最新详情。
+func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, pathRunID uint64, action string, manual model.RunManualConclusion) (*PathRunDetailDTO, error) {
+	if err := s.control.RecoveryAction(ctx, pathRunID, reconcile_action(action), manual); err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// reconcile_action 把字符串转为恢复动作。
+func reconcile_action(action string) engine_reconcile.RecoveryAction {
+	return engine_reconcile.RecoveryAction(action)
+}
+
 // SetBreakpoint / RemoveBreakpoint / RequestPause / ListBreakpoints / ControlView 是控制面转发。
 func (s *RunOrchestrationService) SetBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
 	return s.control.SetBreakpoint(ctx, pathRunID, bp)
@@ -420,6 +459,49 @@ func (s *RunOrchestrationService) Stop(ctx context.Context, pathRunID uint64) (*
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// RecoveryLogWriter 暴露 recovery.log 写入函数供控制服务装配。
+func (s *RunOrchestrationService) RecoveryLogWriter() func(pathRunID uint64, message string) {
+	return func(pathRunID uint64, message string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		scope, scopeErr := s.runLogScope(ctx, pathRunID)
+		if scopeErr != nil {
+			return
+		}
+		line := logging.FormatLine(time.Now().UTC(), "info", append(scope.Fields(), logging.Field{Key: "message", Value: strings.ReplaceAll(message, " ", "_")}))
+		s.router.Bucket(scope, "recovery.log").WriteLine(line)
+	}
+}
+
+// runLogScope 按路径运行身份构造日志作用域。
+func (s *RunOrchestrationService) runLogScope(ctx context.Context, pathRunID uint64) (logging.Scope, error) {
+	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return logging.Scope{}, err
+	}
+	run, err := s.store.GetRun(ctx, pathRun.RunID)
+	if err != nil {
+		return logging.Scope{}, err
+	}
+	plan, err := s.plans.Get(ctx, run.PlanID)
+	if err != nil {
+		return logging.Scope{}, err
+	}
+	pathName := plan.Name
+	if path, pathErr := s.paths.Get(ctx, run.PlanID, pathRun.ExecutionPathID); pathErr == nil && strings.TrimSpace(path.Name) != "" {
+		pathName = path.Name
+	}
+	return logging.Scope{
+		PlanID:            strconv.FormatUint(run.PlanID, 10),
+		PlanName:          plan.Name,
+		ExecutionPathID:   strconv.FormatUint(pathRun.ExecutionPathID, 10),
+		ExecutionPathName: pathName,
+		RunID:             strconv.FormatUint(run.ID, 10),
+		RunSeq:            strconv.FormatUint(run.RunNo, 10),
+		PathRunID:         strconv.FormatUint(pathRun.ID, 10),
+	}, nil
 }
 
 // ControlLogWriter 暴露 control.log 写入函数供控制服务装配（复用 F-013 的运行目录路由）。
@@ -613,6 +695,14 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	}
 	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview)
 	if view := s.control.View(pathRun.ID); view != nil {
+		if view.Reconcile != nil {
+			detail.Reconcile = &ReconcileViewDTO{
+				Verdict: view.Reconcile.Verdict, VerdictName: view.Reconcile.VerdictName,
+				Action: view.Reconcile.Action, Headline: view.Reconcile.Headline,
+				Reasons: view.Reconcile.Reasons,
+				ReplaysUsed: view.Reconcile.ReplaysUsed, ReplaysMax: view.Reconcile.ReplaysMax,
+			}
+		}
 		detail.ModeName = model.RunModeName(view.Mode)
 		detail.ControlVersion = view.Version
 		detail.StopReason = view.StopReason

@@ -179,6 +179,8 @@ type ApprovedStep struct {
 	RunCtx    RunContext
 	Preview   *StepPreview
 	NextIndex int
+	// Attempt 是本次执行的尝试序号（对账重放时递增）；0 视为 1。
+	Attempt int
 }
 
 // RunApprovedStep 执行阶段 3（放行）、4（prepare）、5（submit）、6（verify）、7（settle）。
@@ -189,6 +191,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	step := runCtx.Steps[approved.NextIndex]
 	log := e.stepLogFor(runCtx)
 	startedAt := e.now()
+	attemptNo := approved.Attempt
+	if attemptNo <= 0 {
+		attemptNo = 1
+	}
 	outcome := StepOutcome{Verdict: string(verdict.OutcomeUncertain)}
 
 	if preview.BlockReason != "" {
@@ -198,7 +204,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			"路径在第 "+formatUint(uint64(step.Sequence))+" 步失败："+preview.BlockReason); err != nil {
 			return outcome, 0, err
 		}
-		log.Phase("control", step.Sequence, 1, "放行被拒绝（"+preview.BlockReason+"），路径运行置为失败")
+		log.Phase("control", step.Sequence, attemptNo, "放行被拒绝（"+preview.BlockReason+"），路径运行置为失败")
 		return outcome, 0, nil
 	}
 
@@ -222,7 +228,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		return fresh, nil
 	}, func(attempt int, nextDelay time.Duration) {
-		log.Phase("prepare", step.Sequence, 1, fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay))
+		log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay))
 	})
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
@@ -230,14 +236,14 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			"演员登录失败："+sessionErr.Error()); finishErr != nil {
 			return outcome, 0, finishErr
 		}
-		log.Phase("prepare", step.Sequence, 1, "演员会话获取失败："+sessionErr.Error())
+		log.Phase("prepare", step.Sequence, attemptNo, "演员会话获取失败："+sessionErr.Error())
 		return outcome, 0, nil
 	}
-	log.Phase("prepare", step.Sequence, 1, fmt.Sprintf("演员 %s（%s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
+	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("演员 %s（%s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
 
 	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（演员与待办的新鲜复验）。
 	e.refreshAndSubmit(ctx, runCtx, step, session, preview)
-	log.Phase("submit", step.Sequence, 1, submitSummary(preview.writeErr, preview.writeTraceID, preview.writeDurationMs))
+	log.Phase("submit", step.Sequence, attemptNo, submitSummary(preview.writeErr, preview.writeTraceID, preview.writeDurationMs))
 
 	// 发起成功后尽早落库主实例引用（独占不可改写）：即使核验前崩溃，
 	// 恢复出的待对账路径运行仍有实例引用可供对账。
@@ -261,10 +267,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	observation := buildObservation(preview.Endpoint, preview.writeErr, preview.writeResponse, reread)
 	observation.Action = string(step.Action)
 	verdictResult := verdict.Evaluate(observation)
-	log.Phase("verify", step.Sequence, 1, fmt.Sprintf("三值判定：%s（%s）", verdictChinese(verdictResult.Outcome), verdictResult.Reason))
+	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("三值判定：%s（%s）", verdictChinese(verdictResult.Outcome), verdictResult.Reason))
 
 	// 阶段 7：落账。事实表只 INSERT；随后按结论推进路径运行状态。
-	lineNo := log.Phase("settle", step.Sequence, 1, "落账："+settleSummary(verdictResult))
+	lineNo := log.Phase("settle", step.Sequence, attemptNo, "落账："+settleSummary(verdictResult))
 	durationMs := preview.writeDurationMs
 	if durationMs == 0 {
 		durationMs = e.now().Sub(startedAt).Milliseconds()
@@ -282,7 +288,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	attempt := model.RunStepAttempt{
 		PathRunID:   runCtx.PathRun.ID,
-		AttemptNo:   1,
+		AttemptNo:   attemptNo,
 		Verdict:     string(verdictResult.Outcome),
 		SideEffect:  string(verdictResult.SideEffect),
 		Transport:   string(target.TransportOf(preview.writeErr)),
@@ -310,7 +316,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			expectedNext := runCtx.Steps[approved.NextIndex+1].NodeKey
 			if after.Found && len(after.CurrentNodes) > 0 && !containsNode(after.CurrentNodes, expectedNext) {
 				outcome.DeviationDetected = true
-				log.Phase("settle", step.Sequence, 1, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNext))
+				log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNext))
 			}
 		}
 		if !outcome.NoMoreSteps {
@@ -320,7 +326,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		// 落账后释放推进权是尽力而为：释放失败只影响下一次领取的即时性，不影响已落账事实。
 		_ = e.runState.ReleaseExecution(ctx, runCtx.PathRun.ID, fencingToken)
-		log.Phase("settle", step.Sequence, 1, "本步确定成功")
+		log.Phase("settle", step.Sequence, attemptNo, "本步确定成功")
 	case verdict.OutcomeFailed:
 		outcome.Verdict = string(verdict.OutcomeFailed)
 		class := model.FailureClassTargetRejected
@@ -328,7 +334,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			"路径在第 "+formatUint(uint64(step.Sequence))+" 步被目标拒绝："+verdictResult.Reason); err != nil {
 			return outcome, lineNo, err
 		}
-		log.Phase("settle", step.Sequence, 1, "本步确定失败且无副作用，路径运行置为失败")
+		log.Phase("settle", step.Sequence, attemptNo, "本步确定失败且无副作用，路径运行置为失败")
 	default:
 		// 写结果不确定：路径运行进入待对账并停止；唯一合法恢复动作属于对账切片（F-018）。
 		outcome.Verdict = string(verdict.OutcomeUncertain)
@@ -337,7 +343,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			"第 "+formatUint(uint64(step.Sequence))+" 步写结果不确定："+verdictResult.Reason); err != nil {
 			return outcome, lineNo, err
 		}
-		log.Phase("settle", step.Sequence, 1, "写结果不确定，路径运行进入待对账并停止")
+		log.Phase("settle", step.Sequence, attemptNo, "写结果不确定，路径运行进入待对账并停止")
 	}
 	return outcome, lineNo, nil
 }
@@ -466,4 +472,42 @@ func targetStatusName(status string) string {
 	default:
 		return status
 	}
+}
+
+// ReconcileFacts 是对账所需的只读事实集合（T02 收集器的执行器侧实现）。
+type ReconcileFacts struct {
+	BeforeStatus      string
+	BeforeHadInstance bool
+	NowFound          bool
+	NowStatus         string
+	NowCurrentNodes   []string
+	NowDueNodes       []string
+	NowReadError      string
+}
+
+// ReconcileFacts 重读目标事实供对账判定：只读、可重试。
+// before 事实以本步预览里保存的目标事实为准（写之前的状态）。
+func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo int) (ReconcileFacts, error) {
+	log := e.stepLogFor(runCtx)
+	session, err := e.sessionWithRetry(ctx, runCtx, log, 0, "verify")
+	if err != nil {
+		return ReconcileFacts{}, err
+	}
+	before := InstanceFacts{}
+	if stepNo >= 1 && stepNo <= len(runCtx.Steps) {
+		// 写之前的基准：本步预览阶段保存的事实（在 approve 现场由调用方回填）。
+		before = runCtx.LastBeforeFacts
+	}
+	after, err := e.readFactsWithRetry(ctx, runCtx, session, model.CompiledActionStep{})
+	if err != nil {
+		return ReconcileFacts{BeforeStatus: before.Status, BeforeHadInstance: before.Found, NowReadError: after.ReadError}, nil
+	}
+	return ReconcileFacts{
+		BeforeStatus:      before.Status,
+		BeforeHadInstance: before.Found,
+		NowFound:          after.Found,
+		NowStatus:         after.Status,
+		NowCurrentNodes:   after.CurrentNodes,
+		NowDueNodes:       after.DueNodes,
+	}, nil
 }

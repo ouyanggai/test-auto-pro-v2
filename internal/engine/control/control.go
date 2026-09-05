@@ -81,6 +81,12 @@ type activeStep struct {
 	executedNodeKeys map[string]bool
 	// finished 表示路径运行已到终态，现场可回收。
 	finished bool
+	// reconcile 是最近一次只读对账的结论（待对账工作区数据源）。
+	reconcile *ReconcileResultView
+	// replaysUsed 是已执行的重放次数。
+	replaysUsed int
+	// recoveryLog 把对账过程写进运行目录的 recovery.log。
+	recoveryLog *RecoveryLog
 }
 
 // pauseState 推导当前控制状态分类（供可用命令集合计算）。
@@ -102,6 +108,8 @@ type Service struct {
 	now   func() time.Time
 	// controlLog 把控制事实同步写进运行目录的 control.log；未注入时只落库。
 	controlLog *ControlLog
+	// recoveryLog 把对账过程写进运行目录的 recovery.log；未注入时只落库。
+	recoveryLog *RecoveryLog
 
 	mu     sync.Mutex
 	active map[uint64]*activeStep
@@ -118,6 +126,11 @@ func NewService(runs *run.Service, steps *step.Executor, store repository.RunSto
 // SetControlLog 注入 control.log 写入器；必须在首次控制动作前调用。
 func (s *Service) SetControlLog(log *ControlLog) {
 	s.controlLog = log
+}
+
+// SetRecoveryLog 注入 recovery.log 写入器；必须在首次对账前调用。
+func (s *Service) SetRecoveryLog(log *RecoveryLog) {
+	s.recoveryLog = log
 }
 
 // logFact 把控制事实同步写一行 control.log（日志失败不影响事实落库）。
@@ -158,6 +171,7 @@ func (s *Service) startSession(ctx context.Context, runCtx step.RunContext, mode
 		runCtx: runCtx, mode: mode,
 		breakpoints:     NewBreakpointSet(),
 		version:         1,
+		recoveryLog:     s.recoveryLog,
 		executedStepNos: map[int]bool{}, executedNodeKeys: map[string]bool{},
 	}
 	for _, bp := range preset {
@@ -242,6 +256,8 @@ type SessionView struct {
 	LoopRunning    bool
 	StopRequested  bool
 	PauseRequested bool
+	// Reconcile 是最近一次只读对账的结论；待对账工作区的数据源。
+	Reconcile *ReconcileResultView
 }
 
 // View 返回当前控制现场摘要；无现场时返回 nil。
@@ -260,6 +276,7 @@ func (s *Service) View(pathRunID uint64) *SessionView {
 	}
 	view.PauseState = session.pauseState()
 	view.Commands = AvailableCommands(session.mode, view.PauseState)
+	view.Reconcile = session.reconcile
 	s.mu.Unlock()
 	return view
 }
@@ -431,17 +448,21 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 	s.logFact(pathRunID, approveFact, previewStepNo(session))
 
 	if command == model.CommandStep {
-		return s.approveOneStep(ctx, pathRunID, session)
+		return s.approveOneStep(ctx, pathRunID, session, 1)
 	}
 	// next_node / continue：启动连续执行循环并立即返回当前状态（前端按配置轮询）。
 	s.startLoop(ctx, pathRunID, session, command)
 	return &ApproveResult{}, nil
 }
 
-// approveOneStep 执行一步（单步模式与 step 命令共用），随后停在下一步之前或收尾。
-func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session *activeStep) (*ApproveResult, error) {
+// approveOneStep 执行一步（单步模式、step 命令与对账重放共用），随后停在下一步之前或收尾。
+// attemptNo 是本次尝试序号（对账重放时递增，作为新的一次尝试记录）。
+func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session *activeStep, attemptNo int) (*ApproveResult, error) {
+	// 保存写之前的目标事实基准，供对账收集器对照。
+	session.runCtx.LastBeforeFacts = session.preview.Facts
 	outcome, _, err := s.steps.RunApprovedStep(ctx, step.ApprovedStep{
 		RunCtx: session.runCtx, Preview: session.preview, NextIndex: session.nextIndex,
+		Attempt: attemptNo,
 	})
 	if err != nil {
 		return nil, err

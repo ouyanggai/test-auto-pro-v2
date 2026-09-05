@@ -114,7 +114,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		}
 		_ = s.store.AppendRunControl(ctx, approveFact, s.now())
 		s.logFact(pathRunID, approveFact, preview.StepNo)
-		result, err := s.approveOneStep(ctx, pathRunID, session)
+		result, err := s.approveOneStep(ctx, pathRunID, session, 1)
 		if err != nil {
 			s.mu.Lock()
 			session.stopReason = "执行失败：" + err.Error()

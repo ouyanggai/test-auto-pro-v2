@@ -77,6 +77,8 @@ type RunContext struct {
 	SubmitBranchTargetNodeID string
 	// Steps 是编译场景（用户步骤），执行器按序号推进。
 	Steps []model.CompiledActionStep
+	// LastBeforeFacts 是最近一步写之前保存的目标事实基准（对账对照用，内存流转）。
+	LastBeforeFacts InstanceFacts
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。
 	// 必须按原始字节透传到写请求，禁止先解码再重新序列化（数字字面量会被改写）。
 	EffectiveFormData []byte

@@ -328,6 +328,7 @@ type RunStep struct {
 // RunStepAttempt 是一次尝试的判定事实（run_step_attempts 表），与所属步骤同事务 INSERT。
 // trace_id 与 curl_trace_id 使本记录与 network.log/curl.log 双向可达；LogPath/LogLine 指向 step.log 具体行。
 type RunStepAttempt struct {
+	ID           uint64
 	PathRunID    uint64
 	StepID       uint64
 	AttemptNo    int
@@ -359,6 +360,19 @@ const (
 type RunControlSource string
 
 const RunControlSourceUI RunControlSource = "ui" // 界面按钮（放行与停止不绑单键快捷键，只接受明确点击）
+
+// RunManualConclusion 是用户登记的人工核对结论事实（run_manual_conclusions 表），
+// append-only：与机器判定并存，不更新、不覆盖任何既有事实。
+type RunManualConclusion struct {
+	RunID          uint64
+	PathRunID      uint64
+	StepNo         int
+	InstanceStatus string
+	CurrentNode    string
+	Note           string
+	Reporter       string
+	CreatedAt      time.Time
+}
 
 // RunControl 是一次人工控制事实（run_controls 表），只 INSERT，可审计。
 type RunControl struct {

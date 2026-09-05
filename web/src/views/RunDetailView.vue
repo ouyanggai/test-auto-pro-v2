@@ -5,9 +5,20 @@ import { useRoute } from 'vue-router'
 
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import type { FlowGraph } from '../features/flow-graph/types'
-import { approveRun, fetchRunDetail, formatElapsed, removeBreakpoint, requestPause, RunApiError, setBreakpoint, stopRun } from '../features/runs/api'
+import {
+  approveRun,
+  fetchRunDetail,
+  formatElapsed,
+  recoveryAction,
+  reconcileNow,
+  removeBreakpoint,
+  requestPause,
+  RunApiError,
+  setBreakpoint,
+  stopRun,
+} from '../features/runs/api'
 import { fetchFlowGraph } from '../features/flow-graph/api'
-import type { BreakpointInput, PathRunDetail } from '../features/runs/api'
+import type { BreakpointInput, PathRunDetail, ReconcileView } from '../features/runs/api'
 import RunNodePanel from '../features/runs/RunNodePanel.vue'
 import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
 
@@ -42,6 +53,45 @@ const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 
 const pathChoices = computed(() => [])
 
+// 待对账工作区（F-018）：对账结论与唯一合法动作。
+const reconciling = ref(false)
+const reconcileView = ref<ReconcileView | null>(null)
+const manualForm = ref({ instanceStatus: '', currentNode: '', note: '', reporter: '' })
+
+async function doReconcile(): Promise<void> {
+  if (reconciling.value) return
+  reconciling.value = true
+  errorText.value = ''
+  try {
+    reconcileView.value = await reconcileNow(runId)
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '对账失败，请重试'
+  } finally {
+    reconciling.value = false
+  }
+}
+
+// runRecovery 执行对账给出的唯一动作；完成后以服务端重读结果刷新。
+async function runRecovery(action: string): Promise<void> {
+  if (reconciling.value) return
+  reconciling.value = true
+  try {
+    const manual = action === 'manual_end' ? manualForm.value : undefined
+    detail.value = await recoveryAction(runId, action, manual)
+    reconcileView.value = null
+    lastUpdateAt.value = Date.now()
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '恢复动作失败，请重试'
+  } finally {
+    reconciling.value = false
+  }
+}
+
+// registerManual 登记人工核对结论（仍无法判定的唯一出路）。
+async function registerManual(): Promise<void> {
+  await runRecovery('manual_end')
+}
+
 // 放行命令与条件写参数：命令集合由后端给出，游标与版本取自详情（重复点击只产生一次效果）。
 const approveCommand = ref('step')
 const approveCursor = ref(0)
@@ -75,6 +125,8 @@ async function runCommand(command: string): Promise<void> {
 
 // pauseNow 提交暂停请求（本步走完核验与落账后生效）。
 const pausing = ref(false)
+// 待对账运行自动触发一次只读对账（安全）。
+
 async function pauseNow(): Promise<void> {
   if (pausing.value) return
   pausing.value = true
@@ -352,6 +404,51 @@ onBeforeUnmount(() => {
       />
     </header>
     <p v-if="detail && detail.stopReason" class="run-detail__stop-reason" role="status">为什么停在这里：{{ detail.stopReason }}</p>
+    <div
+      v-if="detail && detail.pathRunStatusName === '待对账'"
+      class="run-detail__reconcile"
+      role="region"
+      aria-label="待对账工作区"
+    >
+      <h4>待对账</h4>
+      <p v-if="reconciling">正在只读对账……</p>
+      <template v-else-if="reconcileView">
+        <p class="run-detail__reconcile-verdict">对账结论：{{ reconcileView.verdictName }}</p>
+        <p>{{ reconcileView.headline }}</p>
+        <ul>
+          <li v-for="(reason, index) in reconcileView.reasons" :key="index">{{ reason }}</li>
+        </ul>
+        <p v-if="reconcileView.verdict === 'not_effective'" class="run-detail__reconcile-note">
+          唯一动作是重放这一步：它是一次新的尝试，会重新走门禁与七阶段；一次尝试仍然只发一次写请求。
+        </p>
+        <p v-if="reconcileView.verdict === 'indeterminate'" class="run-detail__reconcile-note">
+          表单数据可能已经写进去了，重放会再写一次；请登记你在目标平台上看到的事实。
+        </p>
+        <NButton
+          v-if="reconcileView.action === 'advance'"
+          type="primary" size="small" :disabled="reconciling"
+          @click="runRecovery('advance')"
+        >确认并前进到下一步</NButton>
+        <NButton
+          v-else-if="reconcileView.action === 'replay'"
+          type="primary" size="small" :disabled="reconciling"
+          @click="runRecovery('replay')"
+        >重放这一步</NButton>
+        <NButton v-else-if="reconcileView.action === 'reconcile_again'" size="small" :disabled="reconciling" @click="doReconcile">重新对账</NButton>
+        <div v-else-if="reconcileView.action === 'manual_end'" class="run-detail__manual-form">
+          <input v-model="manualForm.instanceStatus" placeholder="实例状态（目标平台上看到）" />
+          <input v-model="manualForm.currentNode" placeholder="当前节点" />
+          <input v-model="manualForm.note" placeholder="说明（可选）" />
+          <input v-model="manualForm.reporter" placeholder="登记人" />
+          <NButton type="warning" size="small" :disabled="!manualForm.instanceStatus || reconciling" @click="registerManual">
+            登记人工核对结论并结束
+          </NButton>
+        </div>
+      </template>
+      <template v-else>
+        <NButton size="small" type="info" :disabled="reconciling" @click="doReconcile">对账</NButton>
+      </template>
+    </div>
     <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
     <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
     <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
@@ -484,6 +581,17 @@ onBeforeUnmount(() => {
   border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
   border-radius: 4px;
 }
+.run-detail__reconcile {
+  padding: 10px 12px;
+  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
+  border-radius: 8px;
+}
+.run-detail__reconcile h4 { margin: 0 0 6px; }
+.run-detail__reconcile p, .run-detail__reconcile ul { margin: 4px 0; font-size: 13px; }
+.run-detail__reconcile-verdict { font-weight: 600; }
+.run-detail__reconcile-note { color: var(--warning-color, #f0a020); }
+.run-detail__manual-form { display: grid; gap: 6px; max-width: 420px; }
+
 .run-detail__stop-reason {
   margin: 0;
   padding: 8px 12px;

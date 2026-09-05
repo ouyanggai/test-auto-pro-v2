@@ -148,6 +148,17 @@ export function fetchRunDetail(runId: string, signal?: AbortSignal): Promise<Pat
   return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}`, { method: 'GET' }, signal)
 }
 
+// ReconcileView 是只读对账的结论：三值、唯一动作与逐维度依据。
+export interface ReconcileView {
+  verdict: string
+  verdictName: string
+  action: string
+  headline: string
+  reasons: string[]
+  replaysUsed: number
+  replaysMax: number
+}
+
 // RunCommand 是后端给出的可用命令（含中文停止条件说明）。
 export interface RunCommand {
   command: string
@@ -203,6 +214,20 @@ export function removeBreakpoint(runId: string, bp: BreakpointInput): Promise<Br
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bp),
+  })
+}
+
+// reconcileNow 触发只读对账（可重复调用，安全）。
+export function reconcileNow(runId: string): Promise<ReconcileView> {
+  return requestOnce<ReconcileView>(`/api/runs/${encodeURIComponent(runId)}/reconcile`, { method: 'POST' })
+}
+
+// recoveryAction 执行对账给出的唯一合法动作。
+export function recoveryAction(runId: string, action: string, manual?: { instanceStatus: string; currentNode: string; note: string; reporter: string }): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/recovery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...(manual || {}) }),
   })
 }
 

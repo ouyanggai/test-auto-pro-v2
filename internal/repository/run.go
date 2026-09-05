@@ -58,6 +58,12 @@ type RunStore interface {
 	ListRunControls(ctx context.Context, pathRunID uint64) ([]model.RunControl, error)
 	// AppendRunEvent 追加一行运行事件（如路径偏离、断点命中），与聚合状态变更解耦的独立事实。
 	AppendRunEvent(ctx context.Context, event model.RunEvent, now time.Time) error
+	// LatestStepAttempt 返回路径运行最近一次落账的步骤与尝试事实（对账三列写回目标）。
+	LatestStepAttempt(ctx context.Context, pathRunID uint64) (model.RunStep, model.RunStepAttempt, error)
+	// RecordReconcileOutcome 把对账结论与恢复动作写回尝试行的对账三列（仅这三列可更新）。
+	RecordReconcileOutcome(ctx context.Context, attemptID uint64, verdict string, action string, isReplay bool, now time.Time) error
+	// AppendManualConclusion 登记人工核对结论事实（只 INSERT），使路径进入终态的依据可回放。
+	AppendManualConclusion(ctx context.Context, conclusion model.RunManualConclusion, now time.Time) error
 	// SetFinalTargetSummary 落库最终目标事实摘要（收尾重读产物），与路径结果是两个独立字段。
 	SetFinalTargetSummary(ctx context.Context, pathRunID uint64, summary string, now time.Time) error
 	// SetMainInstanceRef 首次落库路径运行独占的主实例引用。

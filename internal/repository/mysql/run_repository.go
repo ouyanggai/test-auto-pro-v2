@@ -793,6 +793,49 @@ func (r *RunRepository) AppendRunEvent(ctx context.Context, event model.RunEvent
 	return tx.Commit()
 }
 
+// LatestStepAttempt 返回路径运行最近一次落账的步骤与尝试事实。
+func (r *RunRepository) LatestStepAttempt(ctx context.Context, pathRunID uint64) (model.RunStep, model.RunStepAttempt, error) {
+	var step model.RunStep
+	var attempt model.RunStepAttempt
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, path_run_id, step_no, source, action, node_key, status FROM run_steps
+		WHERE path_run_id = ? ORDER BY step_no DESC LIMIT 1
+	`, pathRunID).Scan(&step.ID, &step.PathRunID, &step.StepNo, &step.Source, &step.Action, &step.NodeKey, &step.Status)
+	if err != nil {
+		return step, attempt, err
+	}
+	attempts, err := r.ListRunAttempts(ctx, pathRunID)
+	if err != nil {
+		return step, attempt, err
+	}
+	for index := len(attempts) - 1; index >= 0; index-- {
+		if attempts[index].StepID == step.ID {
+			return step, attempts[index], nil
+		}
+	}
+	return step, attempt, sql.ErrNoRows
+}
+
+// RecordReconcileOutcome 把对账结论与恢复动作写回尝试行的对账三列。
+// 这是事实表上唯一被允许的 UPDATE：仅覆盖纲领第 7.2 节明确归属本表的三个对账字段，不触碰任何既有事实。
+func (r *RunRepository) RecordReconcileOutcome(ctx context.Context, attemptID uint64, verdict string, action string, isReplay bool, now time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE run_step_attempts SET reconcile_verdict = ?, recovery_action = ?, is_replay = ?
+		WHERE id = ?
+	`, verdict, action, isReplay, attemptID)
+	return err
+}
+
+// AppendManualConclusion 登记人工核对结论事实（只 INSERT）。
+func (r *RunRepository) AppendManualConclusion(ctx context.Context, conclusion model.RunManualConclusion, now time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO run_manual_conclusions (run_id, path_run_id, step_no, instance_status, current_node, note, reporter, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, conclusion.RunID, conclusion.PathRunID, conclusion.StepNo, conclusion.InstanceStatus,
+		conclusion.CurrentNode, nullableString(conclusion.Note), nullableString(conclusion.Reporter), now.UTC())
+	return err
+}
+
 // SetFinalTargetSummary 落库最终目标事实摘要；路径运行未绑定实例时不允许写摘要。
 func (r *RunRepository) SetFinalTargetSummary(ctx context.Context, pathRunID uint64, summary string, now time.Time) error {
 	result, err := r.db.ExecContext(ctx, `

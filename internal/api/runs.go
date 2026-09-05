@@ -36,6 +36,8 @@ type RunOrchestrator interface {
 	RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
 	ListBreakpoints(ctx context.Context, pathRunID uint64) ([]control.Breakpoint, error)
 	RequestPause(ctx context.Context, pathRunID uint64) error
+	ReconcileNow(ctx context.Context, pathRunID uint64) (*service.ReconcileViewDTO, error)
+	RecoveryAction(ctx context.Context, pathRunID uint64, action string, manual model.RunManualConclusion) (*service.PathRunDetailDTO, error)
 	Stop(ctx context.Context, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	ListRuns(ctx context.Context, planID uint64) ([]service.RunSummaryDTO, error)
 }
@@ -52,6 +54,8 @@ func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) 
 	mux.HandleFunc("POST /api/runs/{runId}/breakpoints", handleSetBreakpoint(orchestrator))
 	mux.HandleFunc("DELETE /api/runs/{runId}/breakpoints", handleRemoveBreakpoint(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/pause", handlePause(orchestrator))
+	mux.HandleFunc("POST /api/runs/{runId}/reconcile", handleReconcile(orchestrator))
+	mux.HandleFunc("POST /api/runs/{runId}/recovery", handleRecoveryAction(orchestrator))
 }
 
 // startRunRequest 是启动请求体：模式三选一（默认单步）+ 启动前断点预置。
@@ -245,6 +249,56 @@ func handleRemoveBreakpoint(orchestrator RunOrchestrator) http.HandlerFunc {
 			return
 		}
 		writeSuccess(response, breakpointsToDTO(breakpoints))
+	}
+}
+
+// handleReconcile 触发只读对账（可重复调用，安全）。
+func handleReconcile(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
+		if !ok {
+			return
+		}
+		view, err := orchestrator.ReconcileNow(request.Context(), runID)
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, view)
+	}
+}
+
+// recoveryRequest 是恢复动作请求体：动作名 + 人工结论登记（仅 manual_end 需要）。
+type recoveryRequest struct {
+	Action         string `json:"action"`
+	InstanceStatus string `json:"instanceStatus"`
+	CurrentNode    string `json:"currentNode"`
+	Note           string `json:"note"`
+	Reporter       string `json:"reporter"`
+}
+
+// handleRecoveryAction 执行对账给出的唯一合法动作；重复/过期请求返回当前真实状态。
+func handleRecoveryAction(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
+		if !ok {
+			return
+		}
+		var body recoveryRequest
+		if err := decodeRunBody(request, &body); err != nil {
+			writeFailure(response, http.StatusBadRequest, "RUN_RECOVERY_INVALID", "恢复请求体格式不正确", false)
+			return
+		}
+		manual := model.RunManualConclusion{
+			InstanceStatus: body.InstanceStatus, CurrentNode: body.CurrentNode,
+			Note: body.Note, Reporter: body.Reporter,
+		}
+		detail, err := orchestrator.RecoveryAction(request.Context(), runID, body.Action, manual)
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, detail)
 	}
 }
 
