@@ -238,6 +238,8 @@ type PathRunDetailDTO struct {
 	StaleAfterMs int64 `json:"staleAfterMs"`
 
 	// 控制现场（F-017）：生效断点、为什么停在这里、可用命令集合、条件写版本。
+	// 这两个切片必须始终输出 JSON 数组而不是 null：Go 的 nil 切片会序列化成 null，
+	// 前端模板按数组读取，null 会让整页渲染崩溃、永远停在加载态（实测运行 12 复现）。
 	ControlVersion int64             `json:"controlVersion"`
 	Reconcile      *ReconcileViewDTO `json:"reconcile,omitempty"`
 	CurrentStepNo  int               `json:"currentStepNo"`
@@ -827,9 +829,12 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	if err != nil {
 		return nil, err
 	}
-	graph, err := s.graphs.Get(ctx, run.PlanID)
-	if err != nil {
-		return nil, err
+	// 真实结构只用于节点中文名与节点状态渲染；运行事实全部在本地库。
+	// 目标抖动是常态，结构读失败时降级为空结构继续返回详情，绝不让整份运行事实被一句
+	// 「运行服务暂不可用」挡住——画布由前端另行读取，失败时界面自有无结构空态。
+	graph, graphErr := s.graphs.Get(ctx, run.PlanID)
+	if graphErr != nil {
+		graph = model.FlowGraph{PlanID: run.PlanID}
 	}
 	steps, err := s.store.ListRunSteps(ctx, pathRun.ID)
 	if err != nil {
@@ -851,8 +856,12 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		PathID:            pathRun.ExecutionPathID,
 		PathName:          pathNameOf(ctx, s.paths, run.PlanID, pathRun.ExecutionPathID, plan.Name),
 		NodeStates:        map[string]RunNodeStateDTO{},
-		PollIntervalMs:    s.runConfig.StatusPollInterval.Milliseconds(),
-		StaleAfterMs:      s.runConfig.StepProgressStaleAfter.Milliseconds(),
+		// 数组型字段一律以空数组起步：nil 切片会序列化成 JSON null，前端按数组读取会整页崩溃。
+		Steps:          []RunStepDTO{},
+		Breakpoints:    []BreakpointDTO{},
+		Commands:       []CommandDTO{},
+		PollIntervalMs: s.runConfig.StatusPollInterval.Milliseconds(),
+		StaleAfterMs:   s.runConfig.StepProgressStaleAfter.Milliseconds(),
 	}
 	if pathRun.Result != nil {
 		detail.ResultName = resultName(*pathRun.Result)
@@ -975,6 +984,7 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 			FinishedAt:   stepRecord.FinishedAt,
 			DurationMs:   stepRecord.FinishedAt.Sub(stepRecord.StartedAt).Milliseconds(),
 			GateSnapshot: stepRecord.GateSnapshot,
+			Attempts:     []RunStepAttemptDTO{},
 		}
 		for _, attempt := range attemptsByStep[stepRecord.ID] {
 			attemptDTO := RunStepAttemptDTO{

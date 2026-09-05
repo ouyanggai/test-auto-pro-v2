@@ -141,7 +141,7 @@ const approveVersion = ref(0)
 
 // syncControl 从最新详情同步命令与条件写参数。
 function syncControl(next: PathRunDetail): void {
-  approveCommand.value = next.commands.length > 0 ? next.commands[0].command : 'step'
+  approveCommand.value = (next.commands?.length ?? 0) > 0 ? next.commands[0].command : 'step'
   approveCursor.value = next.currentStepNo
   approveVersion.value = next.controlVersion
 }
@@ -580,7 +580,7 @@ onBeforeUnmount(() => {
           >
             {{ commandButtonText(command) }}
           </NButton>
-          <span v-if="detail.commands.length === 0 && !overviewDone" class="run-detail__actions-empty">
+          <span v-if="(detail.commands?.length ?? 0) === 0 && !overviewDone" class="run-detail__actions-empty">
             {{ noCommandReason }}
           </span>
         </div>
@@ -734,7 +734,7 @@ onBeforeUnmount(() => {
       <div class="run-detail__side">
         <section class="run-detail__breakpoints" aria-label="断点">
           <header class="run-detail__bp-head">
-            <h4>断点（{{ detail.breakpoints.length }}）</h4>
+            <h4>断点（{{ detail.breakpoints?.length ?? 0 }}）</h4>
             <span class="run-detail__bp-hint">断点只对本次运行生效，命中都在放行之前判定</span>
           </header>
 
