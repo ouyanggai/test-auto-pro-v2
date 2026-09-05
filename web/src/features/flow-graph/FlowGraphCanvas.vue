@@ -44,10 +44,14 @@ const props = withDefaults(defineProps<{
   runMode?: boolean
   runNodeStates?: Record<string, { status: string; statusName: string }>
   currentRunNodeKey?: string
+  // runTakenEdgeIds 是运行中真实走过的连线（按步骤顺序相邻节点连接）；
+  // runDeviationEdgeIds 是其中偏离已配置路径的连线（标红显示）。
+  runTakenEdgeIds?: string[]
+  runDeviationEdgeIds?: string[]
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
   configurationMode: false, configurationNodeStates: () => ({}), configurationFormStatus: '', configurationFormStatusName: '',
-  runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '',
+  runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '', runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
 })
 const emit = defineEmits<{
   retry: []
@@ -79,6 +83,10 @@ const displayedLayout = computed(() => {
   if (!laidOut.value || (!props.workspaceOpen && !props.configurationMode && !props.runMode)) return laidOut.value
   const analysis = pathAnalysis.value
   const edgeStates = classifyExecutionPathEdges(props.graph, analysis, props.choices)
+  // 运行态叠加：真实走过的连线加粗带流向，偏离已配置路径的连线标红（T08 要求）。
+  const takenIds = new Set(props.runTakenEdgeIds || [])
+  const deviatedIds = new Set(props.runDeviationEdgeIds || [])
+  const showRunEdges = props.runMode && (takenIds.size > 0 || deviatedIds.size > 0)
   return {
     nodes: laidOut.value.nodes.map((node) => {
       const configurationState = props.configurationNodeStates[node.id]
@@ -118,7 +126,19 @@ const displayedLayout = computed(() => {
     }),
     edges: laidOut.value.edges.map((edge) => {
       const kind = edge.data?.kind
-      const state = edgeStates.get(edge.id) ?? { selected: false, candidate: false, dimmed: true, active: false }
+      let state: { selected: boolean; candidate: boolean; dimmed: boolean; active: boolean; taken?: boolean; deviated?: boolean }
+        = edgeStates.get(edge.id) ?? { selected: false, candidate: false, dimmed: true, active: false }
+      if (showRunEdges) {
+        const taken = takenIds.has(edge.id)
+        const deviated = deviatedIds.has(edge.id)
+        state = {
+          ...state,
+          taken,
+          deviated,
+          // 被走过的边不再弱化；偏离边以独立红色表达。
+          dimmed: state.dimmed && !taken && !deviated,
+        }
+      }
       return {
         ...edge,
         data: edge.data

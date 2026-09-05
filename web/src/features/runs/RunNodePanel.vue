@@ -64,6 +64,46 @@ const phaseOrder: Array<[string, string]> = [
   ['submit', '提交'], ['verify', '核验'], ['settle', '落账'],
 ]
 
+// gateSnapshotLines 解析门禁结论快照为中文行（评审缺陷 10 的修复点）：
+// 对已执行的步骤还原放行当时的门禁判定与逐项条件满足情况，不出现内部字段英文名。
+interface GateSnapshotShape {
+  allowed?: boolean
+  reason?: string
+  items?: Array<{ label?: string; key?: string; required?: boolean; present?: boolean }>
+}
+
+function gateSnapshotLines(step: RunStep): string[] {
+  if (!step.gateSnapshot) return []
+  let snapshot: GateSnapshotShape
+  try {
+    snapshot = JSON.parse(step.gateSnapshot) as GateSnapshotShape
+  } catch {
+    return []
+  }
+  const lines: string[] = [snapshot.allowed ? '门禁：放行时已通过' : `门禁：放行时未通过${snapshot.reason ? `（${snapshot.reason}）` : ''}`]
+  for (const item of snapshot.items || []) {
+    const name = item.label || item.key || '条件'
+    if (item.present) lines.push(`${name}：已满足`)
+    else if (item.required) lines.push(`${name}：未满足`)
+    else lines.push(`${name}：未提供（非必填）`)
+  }
+  return lines
+}
+
+// finalFactsText 把最终目标事实摘要渲染为中文行，不再直接输出英文键 JSON（评审低优先级 20 的修复点）。
+const finalFactsText = computed<string[]>(() => {
+  const facts = (props.detail.finalTarget ?? {}) as Record<string, unknown>
+  const lines: string[] = []
+  if (facts.instanceRef) lines.push(`主实例：${String(facts.instanceRef)}`)
+  if (facts.statusName) lines.push(`实例状态：${String(facts.statusName)}`)
+  else if (facts.status) lines.push(`实例状态：${String(facts.status)}`)
+  const current = facts.currentNodeNames as string[] | undefined
+  lines.push(current && current.length > 0 ? `当前节点：${current.join('、')}` : '当前节点：无')
+  const due = facts.dueNodeNames as string[] | undefined
+  lines.push(due && due.length > 0 ? `当前待办：${due.join('、')}` : '当前待办：无')
+  return lines
+})
+
 // previewFactsText 把当前目标事实渲染为中文行。
 const previewFactsText = computed<string[]>(() => {
   const facts = currentPreview.value?.facts || {}
@@ -121,6 +161,9 @@ const previewFactsText = computed<string[]>(() => {
           <span>{{ step.statusName }}，总耗时 {{ formatElapsed(step.durationMs) }}</span>
         </header>
         <p>演员：{{ step.actorName || '—' }}；开始于 {{ formatTime(step.startedAt) }}</p>
+        <ul v-if="gateSnapshotLines(step).length > 0" class="run-panel__gate">
+          <li v-for="(line, index) in gateSnapshotLines(step)" :key="index">{{ line }}</li>
+        </ul>
         <div v-for="attempt in step.attempts" :key="attempt.attemptNo" class="run-panel__attempt">
           <p>判定：{{ attempt.verdictName }}（耗时 {{ formatElapsed(attempt.durationMs) }}）</p>
           <p class="run-panel__reason">{{ attempt.reason }}</p>
@@ -147,7 +190,7 @@ const previewFactsText = computed<string[]>(() => {
 
     <div v-if="detail.finalTarget" class="run-panel__section">
       <h4 class="run-panel__section-title">最终目标事实</h4>
-      <pre class="run-panel__pre">{{ JSON.stringify(detail.finalTarget, null, 2) }}</pre>
+      <p v-for="line in finalFactsText" :key="line">{{ line }}</p>
     </div>
   </aside>
 </template>
@@ -227,6 +270,7 @@ const previewFactsText = computed<string[]>(() => {
 }
 
 .run-panel__reason { font-weight: 600; }
+.run-panel__gate { margin: 4px 0; padding-left: 18px; }
 .run-panel__basis { opacity: 0.8; }
 
 .run-panel__phases { display: flex; flex-wrap: wrap; gap: 6px; }

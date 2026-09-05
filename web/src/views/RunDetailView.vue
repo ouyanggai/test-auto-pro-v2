@@ -19,6 +19,7 @@ import {
 } from '../features/runs/api'
 import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { BreakpointInput, PathRunDetail, ReconcileView } from '../features/runs/api'
+import { analyzeExecutionPath } from '../features/execution-paths/logic'
 import RunNodePanel from '../features/runs/RunNodePanel.vue'
 import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
 
@@ -51,7 +52,33 @@ const selectedNodeKey = ref('')
 
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 
-const pathChoices = computed(() => [])
+// pathChoices 是这条路径已保存的分支选择：画布据此区分路径内/路径外节点（评审缺陷 8 的修复点）。
+const pathChoices = computed(() => detail.value?.pathChoices ?? [])
+
+// runPathAnalysis 按已保存分支选择遍历真实结构，得到已配置路线经过的节点与连线。
+const runPathAnalysis = computed(() => (graph.value ? analyzeExecutionPath(graph.value, pathChoices.value) : null))
+
+// runTakenEdgeIds 是实际走过的连线：按已落账步骤顺序连接相邻节点（连线表达实际走向，T08）。
+const runTakenEdgeIds = computed<string[]>(() => {
+  if (!graph.value || !detail.value) return []
+  const settledKeys = detail.value.steps.map((step) => step.nodeKey)
+  if (settledKeys.length < 2) return []
+  const ids: string[] = []
+  for (let index = 0; index + 1 < settledKeys.length; index += 1) {
+    for (const edge of graph.value.edges) {
+      if (edge.source === settledKeys[index] && edge.target === settledKeys[index + 1]) {
+        ids.push(edge.id)
+      }
+    }
+  }
+  return ids
+})
+
+// runDeviationEdgeIds 是走过但不在已配置路线里的连线（偏离标红）。
+const runDeviationEdgeIds = computed<string[]>(() => {
+  if (!runPathAnalysis.value) return []
+  return runTakenEdgeIds.value.filter((edgeID) => !runPathAnalysis.value!.reachableEdgeIds.has(edgeID))
+})
 
 // 待对账工作区（F-018）：对账结论与唯一合法动作。
 const reconciling = ref(false)
@@ -186,6 +213,10 @@ const runNodeStates = computed(() => {
 
 // isActing 表示一次放行或停止请求在途：指示器进入执行中状态。
 const isActing = computed(() => acting.value)
+
+// indicatorRunning 让连续执行循环里的实时阶段也能驱动指示器：
+// 循环存活且后端上报了当前阶段时，即使没有放行请求在途也应显示阶段推进而不是等待放行。
+const indicatorRunning = computed(() => Boolean(detail.value?.loopRunning && detail.value?.currentPhase))
 
 // staleBudgetElapsed 判断是否超过疑似无响应预算。
 const staleBudgetElapsed = computed(() => {
@@ -396,11 +427,13 @@ onBeforeUnmount(() => {
       </div>
       <RunStatusIndicator
         class="run-detail__indicator"
-        :running="isActing"
+        :running="isActing || indicatorRunning"
         :stale="staleBudgetElapsed"
         :elapsed-text="elapsedText"
         :phase-durations="phaseDurations"
         :note="acting && staleBudgetElapsed ? '超过预算未收到状态更新' : ''"
+        :current-phase="detail?.currentPhase"
+        :current-phase-note="detail?.currentPhaseNote"
       />
     </header>
     <p v-if="detail && detail.stopReason" class="run-detail__stop-reason" role="status">为什么停在这里：{{ detail.stopReason }}</p>
@@ -466,6 +499,8 @@ onBeforeUnmount(() => {
           run-mode
           :run-node-states="runNodeStates"
           :current-run-node-key="currentNodeKey"
+          :run-taken-edge-ids="runTakenEdgeIds"
+          :run-deviation-edge-ids="runDeviationEdgeIds"
           @select-run-node="handleSelectRunNode"
           @run-viewport-change="handleRunViewportChange"
         />

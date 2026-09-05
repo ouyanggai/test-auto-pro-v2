@@ -25,25 +25,43 @@ const props = defineProps<{
   phaseDurations?: Record<string, number>
   // note 是重试等状态的补充说明（如「重试中，第 N 次」）。
   note?: string
+  // currentPhase 是执行器实时上报的当前阶段键；为空表示没有实时数据，退化为整段执行中。
+  currentPhase?: string
+  // currentPhaseNote 是与实时阶段一起上报的中文补充（如「写请求发送中，同步等待目标响应」）。
+  currentPhaseNote?: string
 }>()
 
-// activeIndex 计算执行中应高亮到哪个阶段：本地时钟推进，等待放行时停在控制段。
+// activeIndex 计算执行中应高亮到哪个阶段：优先用执行器实时上报的当前阶段推进；
+// 没有上报数据时退化为执行中高亮到落账段（旧形态），等待放行时停在控制段。
 const activeIndex = computed(() => {
   if (props.stale) return -1
   if (!props.running) return 2
-  return 6
+  const index = phases.findIndex((phase) => phase.key === props.currentPhase)
+  return index >= 0 ? index : 6
 })
 
-// segments 生成每段的状态文案与耗时。
-const segments = computed(() => phases.map((phase) => ({
-  ...phase,
-  duration: props.phaseDurations?.[phase.key],
-  done: !props.running && props.phaseDurations?.[phase.key] !== undefined,
-})))
+// currentPhaseLabel 是实时阶段的中文段名。
+const currentPhaseLabel = computed(() => phases.find((phase) => phase.key === props.currentPhase)?.name || '')
+
+// activeNote 汇总两路补充说明：实时阶段说明优先，其次重试/预算提示。
+const activeNote = computed(() => props.currentPhaseNote || props.note || '')
+
+// segments 生成每段的状态文案与耗时：已落账按实测耗时展示；
+// 执行中把当前阶段之前的段标记为已走过，当前段随本地时钟推进。
+const segments = computed(() => {
+  const active = activeIndex.value
+  return phases.map((phase, index) => ({
+    ...phase,
+    duration: props.phaseDurations?.[phase.key],
+    done: !props.running
+      ? props.phaseDurations?.[phase.key] !== undefined
+      : !props.stale && index < active,
+  }))
+})
 </script>
 
 <template>
-  <div class="run-indicator" role="status" :aria-label="`当前步指示器，${stale ? '疑似无响应' : running ? '执行中' : '等待放行'}，已耗时 ${elapsedText}`">
+  <div class="run-indicator" role="status" :aria-label="`当前步指示器，${stale ? '疑似无响应' : running ? (currentPhaseLabel ? `执行中：${currentPhaseLabel}` : '执行中') : '等待放行'}，已耗时 ${elapsedText}`">
     <div class="run-indicator__segments">
       <div
         v-for="(segment, index) in segments"
@@ -61,10 +79,12 @@ const segments = computed(() => phases.map((phase) => ({
     </div>
     <div class="run-indicator__meta">
       <span v-if="stale" class="run-indicator__state run-indicator__state--stale">疑似无响应，请查看日志</span>
-      <span v-else-if="running" class="run-indicator__state run-indicator__state--running">执行中<span class="run-indicator__pulse" aria-hidden="true" /></span>
+      <span v-else-if="running" class="run-indicator__state run-indicator__state--running">
+        {{ currentPhaseLabel ? `执行中：${currentPhaseLabel}` : '执行中' }}<span class="run-indicator__pulse" aria-hidden="true" />
+      </span>
       <span v-else class="run-indicator__state">等待放行</span>
       <span class="run-indicator__elapsed">已耗时 {{ elapsedText }}</span>
-      <span v-if="note" class="run-indicator__note">{{ note }}</span>
+      <span v-if="activeNote" class="run-indicator__note">{{ activeNote }}</span>
     </div>
   </div>
 </template>

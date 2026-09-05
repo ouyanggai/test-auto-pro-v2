@@ -70,4 +70,7 @@ export interface FlowTreeEdgeData extends Record<string, unknown> {
   dimmed?: boolean
   active?: boolean
   parallelRequired?: boolean
+  // taken 表示运行画布上本条边被真实走过；deviated 表示走过但偏离已配置路径（标红）。
+  taken?: boolean
+  deviated?: boolean
 }

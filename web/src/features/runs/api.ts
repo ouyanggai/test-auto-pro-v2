@@ -52,6 +52,8 @@ export interface RunStep {
   startedAt: string
   finishedAt: string
   durationMs: number
+  // gateSnapshot 是放行时的门禁结论快照 JSON（逐项中文条件与满足情况）。
+  gateSnapshot?: string
   attempts: RunStepAttempt[]
 }
 
@@ -84,6 +86,12 @@ export interface PathRunDetail {
   loopRunning: boolean
   stopRequested: boolean
   pauseRequested: boolean
+  // pathChoices 是这条路径已保存的分支选择（分支节点 ID + 分支 ID），画布遍历分析的输入。
+  pathChoices?: Array<{ routeNodeId: string; branchId: string }>
+  // currentPhase/currentPhaseNote 是当前步实时阶段与中文补充；currentPhaseSince 是进入时刻。
+  currentPhase?: string
+  currentPhaseNote?: string
+  currentPhaseSince?: string
 }
 
 export interface RunSummary {

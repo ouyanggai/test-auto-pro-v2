@@ -16,6 +16,8 @@ const emit = defineEmits<{
 	  'flow-tree-edge__base--selected': data.selected,
 	  'flow-tree-edge__base--candidate': data.candidate,
 	  'flow-tree-edge__base--dimmed': data.workspaceOpen && data.dimmed,
+	  'flow-tree-edge__base--taken': Boolean(data.taken),
+	  'flow-tree-edge__base--deviated': Boolean(data.deviated),
 	}"
     :path="data.path"
     :marker-start="markerStart"
@@ -34,8 +36,10 @@ const emit = defineEmits<{
 	class="flow-tree-edge__direction"
 	:class="{
 	  'flow-tree-edge__direction--selected': data.selected,
-	  'flow-tree-edge__direction--animated': !data.workspaceOpen || data.selected,
-	  'flow-tree-edge__direction--dimmed': data.workspaceOpen && data.dimmed,
+	  'flow-tree-edge__direction--animated': !data.workspaceOpen || data.selected || Boolean(data.taken),
+	  'flow-tree-edge__direction--dimmed': data.workspaceOpen && data.dimmed && !data.taken && !data.deviated,
+	  'flow-tree-edge__direction--taken': Boolean(data.taken),
+	  'flow-tree-edge__direction--deviated': Boolean(data.deviated),
 	}"
 	:d="data.path"
 	aria-hidden="true"
@@ -109,6 +113,28 @@ const emit = defineEmits<{
 
 :deep(.flow-tree-edge__base--dimmed) {
   opacity: 0.34;
+}
+
+/* 运行画布：真实走过的连线加粗并带流向动画；偏离已配置路径的连线标红。 */
+:deep(.flow-tree-edge__base--taken) {
+  stroke: var(--flow-direction-color);
+  stroke-width: 3;
+}
+
+:deep(.flow-tree-edge__base--deviated) {
+  stroke: #d03050;
+  stroke-width: 3;
+}
+
+.flow-tree-edge__direction--taken {
+  stroke-width: 3.2;
+  opacity: 0.9;
+}
+
+.flow-tree-edge__direction--deviated {
+  stroke: #d03050;
+  stroke-width: 3.2;
+  opacity: 0.95;
 }
 
 .flow-tree-edge__direction--selected {
