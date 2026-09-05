@@ -138,22 +138,22 @@ function setValues(values: Record<string, unknown>, signal?: AbortSignal) {
   return postCommand('setData', {
     values,
     changedFields: props.form.branchPatches.map(patch => patch.path),
-  }, signal)
+  }, signal, 60_000)
 }
 
 // restoreSaved 恢复本次载入时的已保存值。
 function restoreSaved() {
-  return postCommand('restore')
+  return postCommand('restore', {}, undefined, 60_000)
 }
 
 // getValues 不触发必填校验，用于保存前捕获 runtime 当前原始 values。
 function getValues(signal?: AbortSignal) {
-  return postCommand('getValues', {}, signal)
+  return postCommand('getValues', {}, signal, 60_000)
 }
 
 // validateAndGetValues 先执行 getData(true)，再抓取包含虚拟字段的 getValues。
 function validateAndGetValues() {
-  return postCommand('validateAndGetValues')
+  return postCommand('validateAndGetValues', {}, undefined, 60_000)
 }
 
 // resetRuntime 统一终止当前会话并拒绝待处理请求；同一会话重复调用不会再次操作 iframe。
