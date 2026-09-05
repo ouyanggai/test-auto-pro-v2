@@ -161,6 +161,8 @@ type RunStepDTO struct {
 	StartedAt  time.Time           `json:"startedAt"`
 	FinishedAt time.Time           `json:"finishedAt"`
 	DurationMs int64               `json:"durationMs"`
+	// GateSnapshot 是放行时的门禁结论快照（逐项中文条件 JSON），侧栏据此还原当时的门禁判定。
+	GateSnapshot string              `json:"gateSnapshot,omitempty"`
 	Attempts   []RunStepAttemptDTO `json:"attempts"`
 }
 
@@ -205,6 +207,15 @@ type PathRunDetailDTO struct {
 	LoopRunning     bool               `json:"loopRunning"`
 	StopRequested   bool               `json:"stopRequested"`
 	PauseRequested  bool               `json:"pauseRequested"`
+
+	// PathChoices 是这条路径已保存的分支选择（分支节点 ID -> 所选分支目标节点 ID），
+	// 画布据此区分路径内/路径外节点并推导实际走向连线（评审缺陷 8）。
+	PathChoices map[string]string `json:"pathChoices,omitempty"`
+	// CurrentPhase/CurrentPhaseNote 是当前步实时阶段与中文补充，CurrentPhaseSince 是进入时刻；
+	// 数据来自执行器的阶段上报，指示器据此推进（评审缺陷 7）。
+	CurrentPhase      string    `json:"currentPhase,omitempty"`
+	CurrentPhaseNote  string    `json:"currentPhaseNote,omitempty"`
+	CurrentPhaseSince time.Time `json:"currentPhaseSince,omitempty"`
 }
 
 // BreakpointDTO 是断点的公开形态：类型、挂载对象种类与业务名称，不暴露内部键。
@@ -741,7 +752,11 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.CurrentPreview = previewDTO(preview)
 		detail.CurrentStepNo = preview.StepNo
 	}
-	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview)
+	// 已配置路线（编译场景节点序列与分支选择）：画布据此标注「等待运行」并区分路径内外；
+	// 配置读取或编译失败时退化为不标注，绝不阻塞详情展示。
+	configuredNodeKeys, pathChoices := s.configuredRouteOf(ctx, run, pathRun.ExecutionPathID)
+	detail.PathChoices = pathChoices
+	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	if view := s.control.View(pathRun.ID); view != nil {
 		if view.Reconcile != nil {
 			detail.Reconcile = &ReconcileViewDTO{
@@ -757,6 +772,9 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.LoopRunning = view.LoopRunning
 		detail.StopRequested = view.StopRequested
 		detail.PauseRequested = view.PauseRequested
+		detail.CurrentPhase = view.CurrentPhase
+		detail.CurrentPhaseNote = view.CurrentPhaseNote
+		detail.CurrentPhaseSince = view.CurrentPhaseSince
 		for _, command := range view.Commands {
 			detail.Commands = append(detail.Commands, CommandDTO{Command: string(command), Label: CommandLabel(command)})
 		}
@@ -830,14 +848,15 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 	dtos := make([]RunStepDTO, 0, len(steps))
 	for _, stepRecord := range steps {
 		dto := RunStepDTO{
-			StepNo:     stepRecord.StepNo,
-			ActionName: actionNameOf(stepRecord.Action),
-			NodeKey:    stepRecord.NodeKey,
-			ActorName:  stepRecord.ActorSummary,
-			StatusName: stepStatusName(stepRecord.Status),
-			StartedAt:  stepRecord.StartedAt,
-			FinishedAt: stepRecord.FinishedAt,
-			DurationMs: stepRecord.FinishedAt.Sub(stepRecord.StartedAt).Milliseconds(),
+			StepNo:       stepRecord.StepNo,
+			ActionName:   actionNameOf(stepRecord.Action),
+			NodeKey:      stepRecord.NodeKey,
+			ActorName:    stepRecord.ActorSummary,
+			StatusName:   stepStatusName(stepRecord.Status),
+			StartedAt:    stepRecord.StartedAt,
+			FinishedAt:   stepRecord.FinishedAt,
+			DurationMs:   stepRecord.FinishedAt.Sub(stepRecord.StartedAt).Milliseconds(),
+			GateSnapshot: stepRecord.GateSnapshot,
 		}
 		for _, attempt := range attemptsByStep[stepRecord.ID] {
 			attemptDTO := RunStepAttemptDTO{
@@ -865,10 +884,24 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 	return dtos
 }
 
+// configuredRouteOf 读取这条路径的已配置路线：编译场景的节点序列与已保存的分支选择。
+// 复用启动时的编译逻辑；配置读取或编译失败（如配置已被修改）返回空，调用方退化为不标注。
+func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run model.Run, executionPathID uint64) ([]string, map[string]string) {
+	runCtx, err := s.buildRunContext(ctx, run.PlanID, executionPathID)
+	if err != nil {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(runCtx.Steps))
+	for _, compiled := range runCtx.Steps {
+		keys = append(keys, compiled.NodeKey)
+	}
+	return keys, runCtx.BranchSelections
+}
+
 // buildNodeStates 推导画布节点的九个中文运行态：
 // 已落账步骤的节点已完成；失败/待对账的收尾节点单独标出；当前步节点运行中；
-// 场景内尚未到达的节点等待运行；场景外节点未开始。状态不只靠颜色，界面必须渲染中文。
-func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO) map[string]RunNodeStateDTO {
+// 已配置路线上尚未到达的节点等待运行；路线外节点未开始。状态不只靠颜色，界面必须渲染中文。
+func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
 	states := map[string]RunNodeStateDTO{}
 	for _, node := range graph.Nodes {
 		states[node.ID] = RunNodeStateDTO{Status: string(model.PathRunStatusNotStarted), StatusName: model.PathRunStatusName(model.PathRunStatusNotStarted)}
@@ -897,10 +930,15 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 			states[last] = nodeState(model.PathRunStatusStopped)
 		}
 	}
-	// 场景内尚未到达的节点：等待运行。
-	for _, stepRecord := range steps {
-		if !settled[stepRecord.NodeKey] {
-			states[stepRecord.NodeKey] = nodeState(model.PathRunStatusWaiting)
+	// 场景内尚未到达的节点：等待运行。依据是已配置路线的节点序列（评审缺陷 5 的修复点）——
+	// 旧实现遍历已落账步骤并检查自身是否未落账，条件恒不成立，「等待运行」从未出现过。
+	configured := map[string]bool{}
+	for _, nodeKey := range configuredNodeKeys {
+		configured[nodeKey] = true
+	}
+	for nodeID, state := range states {
+		if configured[nodeID] && !settled[nodeID] && state.Status == string(model.PathRunStatusNotStarted) {
+			states[nodeID] = nodeState(model.PathRunStatusWaiting)
 		}
 	}
 	if preview != nil && preview.NodeKey != "" && pathRun.Status == model.PathRunStatusRunning {
@@ -1141,6 +1179,11 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 		GateAllowed: preview.GateAllowed, GateReason: preview.GateReason,
 		GateItems: preview.GateItems, Facts: facts, BlockReason: preview.BlockReason,
 	}
+}
+
+// BuildNodeStatesForTest 暴露画布节点运行态推导，供 test 目录下的定向用例锁定「等待运行」语义。
+func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
+	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys)
 }
 
 // ParsePhaseTimingsForTest 暴露 step.log 阶段时间轴解析，供 test 目录下的定向用例锁定归组键与耗时口径。

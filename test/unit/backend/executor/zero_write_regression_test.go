@@ -51,11 +51,12 @@ func (r *reviewTarget) ExecuteActionWrite(context.Context, target.Session, targe
 	return target.WriteResponse{}, "", nil
 }
 
-// runReviewApprove 跑一次同意步骤的放行，返回状态机假件与目标假件。
-func runReviewApprove(t *testing.T, targetFake *reviewTarget) (*fakeRunState, *reviewTarget) {
+// runReviewApprove 跑一次同意步骤的放行，返回状态机假件、事实假件与目标假件。
+func runReviewApprove(t *testing.T, targetFake *reviewTarget) (*fakeRunState, *fakeFacts, *reviewTarget) {
 	t.Helper()
 	state := &fakeRunState{}
-	executor := step.NewExecutor(targetFake, &fakeSessions{}, state, &fakeFacts{}, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
+	facts := &fakeFacts{}
+	executor := step.NewExecutor(targetFake, &fakeSessions{}, state, facts, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
 	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
 	runCtx.PathRun.MainInstanceRef = "i-1"
 	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
@@ -68,14 +69,18 @@ func runReviewApprove(t *testing.T, targetFake *reviewTarget) (*fakeRunState, *r
 	if _, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0}); err != nil {
 		t.Fatalf("放行失败：%v", err)
 	}
-	return state, targetFake
+	return state, facts, targetFake
 }
 
 // TestF016PreWriteReadFailureSettlesAsZeroWriteFailure 复核评审缺陷 3 的修复回归：
 // 同意步骤在写请求之前的待办新鲜读取失败时，写请求从未发出，
 // 路径运行必须按「演员不可解析」确定失败，绝不进入待对账（零写入不存在写结果不确定）。
 func TestF016PreWriteReadFailureSettlesAsZeroWriteFailure(t *testing.T) {
-	state, fake := runReviewApprove(t, &reviewTarget{dueTaskErr: target.NewError(target.ErrorTimeout, nil)})
+	state, facts, fake := runReviewApprove(t, &reviewTarget{dueTaskErr: target.NewError(target.ErrorTimeout, nil)})
+	// 门禁结论快照必须随步骤落账（评审缺陷 10）：侧栏据此还原当时的门禁判定。
+	if len(facts.steps) != 1 || facts.steps[0].GateSnapshot == "" {
+		t.Fatalf("步骤记录应携带门禁快照，实际 %+v", facts.steps)
+	}
 	if fake.auditCalls != 0 {
 		t.Fatalf("本用例前提是写请求从未发出，实际调用 %d 次", fake.auditCalls)
 	}
@@ -92,7 +97,7 @@ func TestF016PreWriteReadFailureSettlesAsZeroWriteFailure(t *testing.T) {
 // TestF016MissingDueTaskSettlesAsZeroWriteFailure 复核：目标上已无本节点待办时
 // 执行器正确地不发写请求，路径运行同样按零写入确定失败而不是待对账。
 func TestF016MissingDueTaskSettlesAsZeroWriteFailure(t *testing.T) {
-	state, fake := runReviewApprove(t, &reviewTarget{dueTaskID: ""})
+	state, _, fake := runReviewApprove(t, &reviewTarget{dueTaskID: ""})
 	if fake.auditCalls != 0 {
 		t.Fatalf("没有待办时绝不能发写请求，实际调用 %d 次", fake.auditCalls)
 	}

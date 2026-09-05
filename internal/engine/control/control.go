@@ -87,6 +87,17 @@ type activeStep struct {
 	replaysUsed int
 	// recoveryLog 把对账过程写进运行目录的 recovery.log。
 	recoveryLog *RecoveryLog
+	// progress 是当前步的实时阶段进度（执行器上报，指示器轮询的数据源）。
+	progress stepPhaseProgress
+}
+
+// stepPhaseProgress 是一次尝试内执行器上报的阶段进度快照。
+type stepPhaseProgress struct {
+	// phase 取七阶段名；note 是给用户看的中文补充（如重试退避说明）。
+	phase string
+	note  string
+	// since 是进入该阶段的时刻，供界面计算阶段内已耗时。
+	since time.Time
 }
 
 // pauseState 推导当前控制状态分类（供可用命令集合计算）。
@@ -258,6 +269,10 @@ type SessionView struct {
 	PauseRequested bool
 	// Reconcile 是最近一次只读对账的结论；待对账工作区的数据源。
 	Reconcile *ReconcileResultView
+	// CurrentPhase/CurrentPhaseNote 是当前步的实时阶段与中文补充；CurrentPhaseSince 是进入时刻。
+	CurrentPhase      string
+	CurrentPhaseNote  string
+	CurrentPhaseSince time.Time
 }
 
 // View 返回当前控制现场摘要；无现场时返回 nil。
@@ -277,6 +292,9 @@ func (s *Service) View(pathRunID uint64) *SessionView {
 	view.PauseState = session.pauseState()
 	view.Commands = AvailableCommands(session.mode, view.PauseState)
 	view.Reconcile = session.reconcile
+	view.CurrentPhase = session.progress.phase
+	view.CurrentPhaseNote = session.progress.note
+	view.CurrentPhaseSince = session.progress.since
 	s.mu.Unlock()
 	return view
 }
@@ -460,9 +478,15 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session *activeStep, attemptNo int) (*ApproveResult, error) {
 	// 保存写之前的目标事实基准，供对账收集器对照。
 	session.runCtx.LastBeforeFacts = session.preview.Facts
+	// 阶段进度上报：执行器在各阶段边界回调，写进会话现场供详情轮询读取。
+	reporter := func(phase, note string) {
+		s.mu.Lock()
+		session.progress = stepPhaseProgress{phase: phase, note: note, since: s.now()}
+		s.mu.Unlock()
+	}
 	outcome, _, err := s.steps.RunApprovedStep(ctx, step.ApprovedStep{
 		RunCtx: session.runCtx, Preview: session.preview, NextIndex: session.nextIndex,
-		Attempt: attemptNo,
+		Attempt: attemptNo, ReportProgress: reporter,
 	})
 	if err != nil {
 		return nil, err

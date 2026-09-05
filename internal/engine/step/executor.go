@@ -2,6 +2,7 @@ package step
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -209,6 +210,31 @@ type ApprovedStep struct {
 	NextIndex int
 	// Attempt 是本次执行的尝试序号（对账重放时递增）；0 视为 1。
 	Attempt int
+	// ReportProgress 把阶段进度实时上报给控制现场（运行画布指示器的数据源），可为 nil。
+	// phase 取七阶段名；note 是给用户看的中文补充（如重试退避说明）。
+	ReportProgress func(phase, note string)
+}
+
+// reportPhase 把阶段进度上报给控制现场（指示器实时推进的数据源）；未接收集方时是空操作。
+func reportPhase(approved ApprovedStep, phase, note string) {
+	if approved.ReportProgress != nil {
+		approved.ReportProgress(phase, note)
+	}
+}
+
+// gateSnapshotJSON 把放行时的门禁结论固化为快照 JSON：逐项条件的中文名与满足情况随步骤落账，
+// 侧栏才能对「已执行的步骤」给出当时的门禁结论（纲领第 7.1 节）。
+func gateSnapshotJSON(preview *StepPreview) string {
+	snapshot := struct {
+		Allowed bool                       `json:"allowed"`
+		Reason  string                     `json:"reason,omitempty"`
+		Items   []model.ActionPrecondition `json:"items"`
+	}{Allowed: preview.GateAllowed, Reason: preview.GateReason, Items: preview.GateItems}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // RunApprovedStep 执行阶段 3（放行）、4（prepare）、5（submit）、6（verify）、7（settle）。
@@ -232,6 +258,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
 			Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
 			Status: model.RunStepSucceeded, StartedAt: startedAt, FinishedAt: e.now(),
+			GateSnapshot: gateSnapshotJSON(preview),
 		}
 		attempt := model.RunStepAttempt{
 			PathRunID: runCtx.PathRun.ID, AttemptNo: 1, Verdict: string(verdict.OutcomeSucceeded),
@@ -260,6 +287,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			return outcome, 0, err
 		}
 		log.Phase("control", step.Sequence, attemptNo, "放行被拒绝（"+preview.BlockReason+"），路径运行置为失败")
+		reportPhase(approved, "control", "放行被拒绝："+preview.BlockReason)
 		return outcome, 0, nil
 	}
 
@@ -268,6 +296,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err != nil {
 		return outcome, 0, err
 	}
+	reportPhase(approved, "prepare", "正在就绪演员会话")
 	// 写步骤的会话必须现场刷新并探活：submit 发出后不允许任何重登，
 	// 过期会话只会白白浪费唯一一次写机会。实测目标存在“首次登录的 sid 立即失效”的现象，
 	// 因此刷新后立刻做一次只读探活，失效则在只读重试预算内重新登录。
@@ -276,14 +305,18 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		if err != nil {
 			return fresh, err
 		}
-		if pinger, ok := e.target.(interface{ Ping(context.Context, target.Session) error }); ok {
+		if pinger, ok := e.target.(interface {
+			Ping(context.Context, target.Session) error
+		}); ok {
 			if err := pinger.Ping(ctx, fresh); err != nil {
 				return fresh, err
 			}
 		}
 		return fresh, nil
 	}, func(attempt int, nextDelay time.Duration) {
-		log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay))
+		note := fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay)
+		log.Phase("prepare", step.Sequence, attemptNo, note)
+		reportPhase(approved, "prepare", note)
 	})
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
@@ -295,8 +328,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, 0, nil
 	}
 	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("演员 %s（%s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
+	reportPhase(approved, "prepare", fmt.Sprintf("演员 %s 会话就绪", preview.ActorName))
 
 	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（演员与待办的新鲜复验）。
+	// 上报发生在发出之前：本次调用同步阻塞到目标响应返回，指示器在窗口内如实表达 submit 进行中。
+	reportPhase(approved, "submit", "写请求发送中，同步等待目标响应")
 	e.refreshAndSubmit(ctx, runCtx, step, session, preview)
 	if !preview.writeSent {
 		// 零写入：写请求没有发出（发送前的待办新鲜复验失败或载荷缺失）。
@@ -319,6 +355,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			Status:       model.RunStepFailed,
 			StartedAt:    startedAt,
 			FinishedAt:   e.now(),
+			GateSnapshot: gateSnapshotJSON(preview),
 		}
 		attempt := model.RunStepAttempt{
 			PathRunID:  runCtx.PathRun.ID,
@@ -360,6 +397,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err := e.runState.MarkVerifying(ctx, runCtx.PathRun.ID); err != nil {
 		return outcome, 0, err
 	}
+	reportPhase(approved, "verify", "正在重读目标事实并做三值判定")
 	before := preview.Facts
 	before.StepNodeKey = step.NodeKey
 	after, _ := e.readFactsWithRetry(ctx, runCtx, session, step)
@@ -386,6 +424,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		Status:       statusOfVerdict(verdictResult.Outcome),
 		StartedAt:    startedAt,
 		FinishedAt:   e.now(),
+		GateSnapshot: gateSnapshotJSON(preview),
 	}
 	attempt := model.RunStepAttempt{
 		PathRunID:   runCtx.PathRun.ID,
