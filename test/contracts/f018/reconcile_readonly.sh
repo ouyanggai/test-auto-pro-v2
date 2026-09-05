@@ -5,7 +5,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${project_root}"
 
 printf '%s\n' '[F-018] 对账包不引用写端点与写出口'
-if grep -rnE 'flowInstanceApi/submit|flowInstanceApi/audit|CallWrite|WriteEndpoint' internal/engine/reconcile/; then
+if grep -rnE 'flowInstanceApi|urgeHandleRecord|CallWrite|WriteEndpoint' internal/engine/reconcile/; then
   printf '%s\n' '[F-018] 对账包禁止出现写端点与写出口' >&2
   exit 1
 fi

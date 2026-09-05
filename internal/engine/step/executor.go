@@ -83,6 +83,34 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	log := e.stepLogFor(runCtx)
 	log.Phase("plan", step.Sequence, 1, fmt.Sprintf("取第 %d 步：来源 %s，动作 %s，节点 %s", step.Sequence, step.Source, string(step.Action), step.NodeKey))
 
+	// 导航步骤（system_navigation）：只读校验步骤，不发出写请求。
+	// 真实执行语义 = 实例事实可读即视为通过（目标引擎自动推进实例经过系统节点）。
+	if step.Source == model.ActionStepSourceNavigation {
+		actorName := runCtx.PlanAccount
+		session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "gate")
+		if sessionErr != nil {
+			return e.blockedPreview(runCtx, step, actorName, "演员登录失败："+sessionErr.Error(), model.FailureClassActorUnresolved), false, nil
+		}
+		if session.Summary.DisplayName != "" {
+			actorName = session.Summary.DisplayName
+		}
+		facts, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
+		if readErr != nil {
+			log.Phase("gate", step.Sequence, 1, "导航校验目标事实读取失败："+readErr.Error())
+			return e.blockedPreview(runCtx, step, actorName, "无法读取目标实时事实："+readErr.Error(), model.FailureClassGateBlocked), false, nil
+		}
+		preview := &StepPreview{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
+			Action: step.Action, ActionName: "导航校验", NodeKey: step.NodeKey,
+			NodeName: runCtx.Nodes[step.NodeKey].Name, ActorAccount: runCtx.PlanAccount, ActorName: actorName,
+			GateAllowed: true, Facts: facts, Navigation: true,
+			GateItems: []model.ActionPrecondition{},
+		}
+		log.Phase("gate", step.Sequence, 1, "导航步骤无需写请求，仅校验实例事实")
+		log.Phase("control", step.Sequence, 1, "导航步骤就绪（只读）")
+		return preview, false, nil
+	}
+
 	// 阶段 2：演员候选（计划账号）取得会话后重读目标实时事实，投影为门禁上下文重新计算门禁。
 	// 配置时通过、此刻不通过就停止：门禁不通过绝不跳过。
 	actorName := runCtx.PlanAccount
@@ -197,6 +225,33 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	outcome := StepOutcome{Verdict: string(verdict.OutcomeUncertain)}
 
+	if preview.Navigation {
+		// 导航步骤：只读校验后直接落账成功（无写请求、无三值判定对象）。
+		lineNo := log.Phase("settle", step.Sequence, 1, "落账：导航步骤只读校验通过")
+		record := model.RunStep{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
+			Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
+			Status: model.RunStepSucceeded, StartedAt: startedAt, FinishedAt: e.now(),
+		}
+		attempt := model.RunStepAttempt{
+			PathRunID: runCtx.PathRun.ID, AttemptNo: 1, Verdict: string(verdict.OutcomeSucceeded),
+			SideEffect: string(verdict.SideEffectNone), Reason: "导航步骤只读校验通过", Basis: "实例事实可读",
+			LogPath: log.RelativePath(), LogLine: lineNo,
+		}
+		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
+			return StepOutcome{Verdict: string(verdict.OutcomeFailed)}, lineNo, err
+		}
+		outcome.Verdict = string(verdict.OutcomeSucceeded)
+		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		if !outcome.NoMoreSteps {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+				return outcome, lineNo, err
+			}
+		}
+		// 导航步骤是只读的，没有领取推进权，也就无需释放。
+		log.Phase("settle", step.Sequence, 1, "导航步骤完成")
+		return outcome, lineNo, nil
+	}
 	if preview.BlockReason != "" {
 		// 被阻塞的步骤不允许放行：路径运行在这里失败，而不是带病前进。
 		class := preview.BlockFailureClass
@@ -374,6 +429,14 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
 	default:
+		// 其余已登记动作经统一动作写出口（F-019）：载荷由 buildRequest 构造，端点在白名单内。
+		if actionRequest, ok := preview.request.(*target.ActionWriteRequest); ok {
+			started := e.now()
+			response, traceID, err := e.target.ExecuteActionWrite(ctx, session, *actionRequest)
+			preview.writeResponse, preview.writeTraceID, preview.writeErr = response, traceID, err
+			preview.writeDurationMs = e.now().Sub(started).Milliseconds()
+			return
+		}
 		preview.writeErr = errors.New("写请求载荷缺失，拒绝发送")
 	}
 }

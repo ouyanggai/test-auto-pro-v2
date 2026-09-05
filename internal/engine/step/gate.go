@@ -86,8 +86,74 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 		}
 		return &request, target.WriteEndpointAudit, target.BuildAuditBody(request), nil
 	default:
-		return nil, "", nil, &UnverifiedActionError{Action: step.Action}
+		// F-019 全动作分派：不同意(no_pass)、暂存、重新提交、回退、取回、撤回、催办、转发、
+		// 加签/移交、关注/取消关注全部经动作目录语义走统一载荷构造器（端点在白名单内）。
+		request := target.ActionWriteRequest{
+			Action:       string(step.Action),
+			InstanceID:   runCtx.PathRun.MainInstanceRef,
+			FlowProxyID:  runCtx.FlowProxyID,
+			FormData:     json.RawMessage(runCtx.EffectiveFormData),
+			NextAuditors: nextAuditors,
+		}
+		switch step.Action {
+		case model.ActionReject, model.ActionTransfer, model.ActionAddSign:
+			request.AuditStatus = auditStatusOf(step.Action)
+			request.ExecuteDesc = auditMessage(runCtx, step)
+			request.NodeProxyID = step.NodeKey
+		case model.ActionStorageFormData:
+			request.ExecuteDesc = auditMessage(runCtx, step)
+			request.NodeProxyID = step.NodeKey
+		case model.ActionRollback:
+			request.JobTaskID = "" // 发送前按待办现场新鲜读取
+			request.ExecuteDesc = auditMessage(runCtx, step)
+		case model.ActionRetrieve, model.ActionUrge:
+			request.JobTaskID = ""
+		case model.ActionWithdraw:
+			request.ExecuteDesc = auditMessage(runCtx, step)
+		case model.ActionForward:
+			request.ReceiverID = parameterString(step, "receiverId")
+			request.Name = instanceName(runCtx, step) + "（转发）"
+		case model.ActionFollow:
+			request.Tracking = boolPtr(true)
+		case model.ActionUnfollow:
+			request.Tracking = boolPtr(false)
+		default:
+			return nil, "", nil, &UnverifiedActionError{Action: step.Action}
+		}
+		body, endpoint, err := target.BuildActionBody(request)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return &request, endpoint, body, nil
 	}
+}
+
+// auditStatusOf 返回动作对应的目标 ExecuteResultEnum 编码名。
+// 加签的枚举值源码未见明确定义，按「源码推断、待实测」标注（F-019 实施记录）。
+func auditStatusOf(action model.ActionKey) string {
+	switch action {
+	case model.ActionReject:
+		return "no_pass"
+	case model.ActionTransfer:
+		return "transfer"
+	case model.ActionAddSign:
+		return "add_sign"
+	default:
+		return string(action)
+	}
+}
+
+// parameterString 读取动作参数里的字符串值。
+func parameterString(step model.CompiledActionStep, key string) string {
+	if value, ok := step.Parameters[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+// boolPtr 返回布尔指针。
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 // nextAuditorsOf 提取分支选择参数 fixedExecuteNodeId：条件分支的手动指定节点，

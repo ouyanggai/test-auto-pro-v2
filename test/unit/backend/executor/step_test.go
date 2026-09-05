@@ -155,6 +155,10 @@ func (f *fakeTarget) SubmitFlowInstance(context.Context, target.Session, target.
 	return f.submitResult, target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-submit", nil
 }
 
+func (f *fakeTarget) ExecuteActionWrite(_ context.Context, _ target.Session, request target.ActionWriteRequest) (target.WriteResponse, string, error) {
+	return target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-action", nil
+}
+
 func (f *fakeTarget) AuditCurrentTask(context.Context, target.Session, target.AuditCurrentTaskRequest) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
 	f.auditCalls++
 	f.audited = true

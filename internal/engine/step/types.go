@@ -20,6 +20,8 @@ type TargetClient interface {
 	FindDueTaskID(ctx context.Context, active target.Session, instanceID, nodeProxyID string) (string, error)
 	SubmitFlowInstance(ctx context.Context, session target.Session, request target.SubmitFlowInstanceRequest) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error)
 	AuditCurrentTask(ctx context.Context, session target.Session, request target.AuditCurrentTaskRequest) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error)
+	// ExecuteActionWrite 是 F-019 全动作写出口：按动作分派端点与载荷。
+	ExecuteActionWrite(ctx context.Context, session target.Session, request target.ActionWriteRequest) (target.WriteResponse, string, error)
 }
 
 // SessionProvider 取得指定账号的目标会话。登录与会话获取属只读阶段（纲领第 4.4.1 节），可安全重试。
@@ -123,6 +125,8 @@ type StepPreview struct {
 	// BlockReason 非空表示本步无法继续（门禁不通过/演员不可解析等），路径必须停止。
 	BlockReason       string
 	BlockFailureClass model.FailureClass
+	// Navigation 表示本步是只读导航步骤：不发出写请求，仅校验实例事实。
+	Navigation bool
 	// RequestPayload 是放行后将要发出的请求载荷（与预览同源），只在内存流转，含会话无关字段。
 	RequestPayload map[string]any
 	// request 是构造载荷的那份类型化请求本体；发送时直接使用它，保证预览与实际发出严格同源。
