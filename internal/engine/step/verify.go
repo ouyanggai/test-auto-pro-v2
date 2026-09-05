@@ -71,7 +71,17 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 	if after.Found {
 		switch after.Status {
 		case "withdraw", "termination", "abandon", "rejected":
-			// 同意动作不可能造成撤回类状态，事实与动作矛盾。
+			// 不同意成功实例即 rejected、撤回成功实例即 withdraw——这是动作的预期效果而非矛盾；
+			// 只有同意类动作遇到撤回类状态才是「事实与动作矛盾」（评审 P1）。
+			if action == string(model.ActionApprove) {
+				return verdict.RereadContradictory
+			}
+			if action == string(model.ActionReject) && after.Status == "rejected" {
+				return verdict.RereadAdvanced
+			}
+			if action == string(model.ActionWithdraw) && after.Status == "withdraw" {
+				return verdict.RereadAdvanced
+			}
 			return verdict.RereadContradictory
 		}
 	}

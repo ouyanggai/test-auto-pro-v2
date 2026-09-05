@@ -217,3 +217,29 @@ type ActionConfigurationResult struct {
 	CompiledScenario []CompiledActionStep       `json:"compiledScenario"`
 	Issues           []ActionConfigurationIssue `json:"issues"`
 }
+
+// actionChineseNames 是动作稳定键到中文名的唯一映射：
+// 目录、执行器与运行事实展示都从这里取，消除多处各自翻译造成的第二套动作定义。
+var actionChineseNames = map[ActionKey]string{
+	ActionSaveDraft:       "保存草稿",
+	ActionSubmit:          "提交",
+	ActionResubmit:        "重新提交",
+	ActionStorageFormData: "暂存当前表单",
+	ActionAddSign:         "加签",
+	ActionTransfer:        "移交",
+	ActionApprove:         "同意",
+	ActionReject:          "不同意",
+	ActionRollback:        "回退上一节点",
+	ActionRetrieve:        "取回",
+	ActionWithdraw:        "撤回",
+	ActionUrge:            "催办",
+	ActionForward:         "转发",
+	ActionFollow:          "关注",
+	ActionUnfollow:        "取消关注",
+	ActionSystemAutomatic: "系统自动动作",
+}
+
+// ActionChineseName 返回动作的中文显示名；未知动作返回空串，由调用方决定兜底方式。
+func ActionChineseName(action ActionKey) string {
+	return actionChineseNames[action]
+}

@@ -21,7 +21,7 @@ go vet ./internal/engine/step/... ./internal/adapter/target/... ./test/unit/back
 printf '%s\n' '[F-019] 回归：F-016/F-017/F-018 单元与集成（真实 MySQL，无跳过）'
 integration_log="$(mktemp -t f019-integration)"
 trap 'rm -f "${integration_log}"' EXIT
-if ! go test -count=1 -v -run 'TestF01[678]' ./test/unit/backend/executor ./test/unit/backend/debugger ./test/unit/backend/reconcile ./test/unit/backend/run ./test/unit/backend/target ./test/integration 2>&1 | tee "${integration_log}"; then
+if ! go test -count=1 -v -run 'TestF01[6789]' ./test/unit/backend/executor ./test/unit/backend/debugger ./test/unit/backend/reconcile ./test/unit/backend/run ./test/unit/backend/target ./test/integration 2>&1 | tee "${integration_log}"; then
   exit 1
 fi
 if grep -Eq -- '^[[:space:]]*--- SKIP' "${integration_log}"; then

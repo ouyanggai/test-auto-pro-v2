@@ -1452,14 +1452,10 @@ func parseLogLine(line string) map[string]string {
 
 // actionNameOf 返回动作的中文名（落账事实里只有动作键）。
 func actionNameOf(action string) string {
-	switch model.ActionKey(action) {
-	case model.ActionSubmit:
-		return "发起"
-	case model.ActionApprove:
-		return "同意"
-	default:
-		return action
+	if name := model.ActionChineseName(model.ActionKey(action)); name != "" {
+		return name
 	}
+	return action
 }
 
 // stepStatusName 返回步骤事实状态的中文显示名。

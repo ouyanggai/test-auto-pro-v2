@@ -215,7 +215,16 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 // 发起作用于整个实例、没有节点级参数也没有待办可对照，因此不要求；
 // 其余动作要么带节点级参数，要么要按本节点待办判定写是否生效，缺标识一律不许执行。
 func requiresTargetNodeID(compiled model.CompiledActionStep) bool {
-	return compiled.Action != model.ActionSubmit
+	// 发起与实例级动作的目标载荷本来就不含节点参数（撤回/催办/转发/关注/取消关注/重新提交/保存草稿），
+	// 强求节点标识会把这批动作 100% 挡在「无法解析真实标识」上（评审 P1）；
+	// 任务级动作要么带节点级参数、要么要按本节点待办判定写是否生效，缺标识一律不许执行。
+	switch compiled.Action {
+	case model.ActionSubmit, model.ActionSaveDraft, model.ActionResubmit,
+		model.ActionWithdraw, model.ActionUrge, model.ActionForward,
+		model.ActionFollow, model.ActionUnfollow:
+		return false
+	}
+	return true
 }
 
 // nodeFormData 读取实例当前表单数据并按节点权限构造本步要提交的完整表单数据。
