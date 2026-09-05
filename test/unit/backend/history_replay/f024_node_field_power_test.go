@@ -82,7 +82,12 @@ func TestF024UnfillableDecisiveConditionFieldBlocks(t *testing.T) {
 // 发起人在最前；每个视图只放开该节点声明为 edit 的字段，hide 与未声明字段都不放开；
 // 条件、并行等结构节点没有表单也没有待办，不产生视图。
 func TestF024NodeFormViewsFollowTargetDeclaration(t *testing.T) {
-	views := service.NodeFormViewsForTest(f024Tree(), f024Reachable())
+	views := service.NodeFormViewsForTest(f024Tree(), f024Reachable(), map[string]any{
+		"classificationId":  []any{"c-1"},
+		"contractSum":       12,
+		"accountantOpinion": "上游还没填",
+		"systemField":       "表单自己维护",
+	})
 	if len(views) != 2 {
 		t.Fatalf("只有人工节点才有填写视图，实际 %d 个：%+v", len(views), views)
 	}
@@ -99,8 +104,8 @@ func TestF024NodeFormViewsFollowTargetDeclaration(t *testing.T) {
 	if _, exists := initiator["legalOpinion"]; exists {
 		t.Fatalf("hide 字段不得出现在可编辑清单里：%+v", views[0].Permissions)
 	}
-	if _, exists := initiator["accountantOpinion"]; exists {
-		t.Fatalf("审批节点独占字段不得在发起人视图里放开：%+v", views[0].Permissions)
+	if initiator["accountantOpinion"] == "edit" {
+		t.Fatalf("审批节点独占字段不得在发起人视图里放开为可编辑：%+v", views[0].Permissions)
 	}
 	audit := map[string]string{}
 	for _, permission := range views[1].Permissions {
@@ -111,6 +116,17 @@ func TestF024NodeFormViewsFollowTargetDeclaration(t *testing.T) {
 	}
 	if _, exists := audit["classificationId"]; exists {
 		t.Fatalf("审批节点不能改的字段不得放开：%+v", views[1].Permissions)
+	}
+	// 只有后续节点才能编辑的字段在发起人视图里必须隐藏：它这一步既不会被提交，
+	// 也不该带着历史值显示出来，否则用户会以为这一步就会生效（hide 只影响显示，取值仍完整保留）。
+	if initiator["accountantOpinion"] != "hide" {
+		t.Fatalf("只有审批节点能填的字段应在发起人视图隐藏：%+v", views[0].Permissions)
+	}
+	if _, exists := initiator["systemField"]; exists {
+		t.Fatalf("没有任何节点声明的表单自身字段不得被隐藏：%+v", views[0].Permissions)
+	}
+	if power, exists := audit["accountantOpinion"]; !exists || power != "edit" {
+		t.Fatalf("字段在真正拥有它的节点视图里必须可编辑：%+v", views[1].Permissions)
 	}
 }
 

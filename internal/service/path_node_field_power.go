@@ -144,13 +144,22 @@ func unfillableKeyFieldIssues(fields []model.HistoryKeyField, powers []routeNode
 // nodeFormViews 投影按节点切换的表单权限视图：发起人视图在最前，其余按路线顺序。
 // 数据仍是同一份表单数据，视图只切换"这个节点能改哪些字段"，与目标审批页的渲染口径一致：
 // 整张表单先禁用，再只放开该节点声明可编辑的字段。
-func nodeFormViews(tree *target.FlowNodeTemplate, reachable []string) []model.PathFormNodeView {
+//
+// 除此之外还要解决"看到的和会提交的不一致"：只有后续节点才能编辑的字段，在这个视图里
+// 既不会被提交（写载荷按同一套权限过滤），也不该带着历史值显示出来，否则用户会以为它这一步就会生效。
+// 这类字段按目标自己的 hide 语义隐藏——权限声明里 hide 只影响显示，不影响取值，
+// 因此保存时它们的值仍然完整保留，切到真正拥有它的节点视图就能看到。
+// values 只用来决定"哪些键需要隐藏"，不参与任何改写。
+func nodeFormViews(tree *target.FlowNodeTemplate, reachable []string, values map[string]any) []model.PathFormNodeView {
 	powers := routeNodePowers(tree, reachable)
 	views := make([]model.PathFormNodeView, 0, len(powers))
-	for _, power := range powers {
+	for index, power := range powers {
 		permissions := make([]model.PathFormPermission, 0, len(power.Editable))
 		for _, field := range power.Editable {
 			permissions = append(permissions, model.PathFormPermission{Field: field, Power: "edit"})
+		}
+		for _, field := range laterOnlyFields(powers, index, values) {
+			permissions = append(permissions, model.PathFormPermission{Field: field, Power: "hide"})
 		}
 		views = append(views, model.PathFormNodeView{
 			NodeName:    power.Name,
@@ -159,6 +168,37 @@ func nodeFormViews(tree *target.FlowNodeTemplate, reachable []string) []model.Pa
 		})
 	}
 	return views
+}
+
+// laterOnlyFields 返回在第 index 个节点视图里必须隐藏的表单数据键：
+// 只有它之后的节点才有编辑权限的字段。到这一步为止（含本节点）有任何节点能编辑的字段都要显示，
+// 因为运行到这一步时那些值确实已经在表单上了。
+func laterOnlyFields(powers []routeNodePower, index int, values map[string]any) []string {
+	if index < 0 || index >= len(powers) {
+		return nil
+	}
+	upto := make([]string, 0)
+	for position := 0; position <= index; position++ {
+		upto = append(upto, powers[position].Editable...)
+	}
+	later := make([]string, 0)
+	for position := index + 1; position < len(powers); position++ {
+		later = append(later, powers[position].Editable...)
+	}
+	if len(later) == 0 || len(values) == 0 {
+		return nil
+	}
+	hidden := make([]string, 0)
+	for key := range values {
+		if fieldpower.Covers(upto, key) {
+			continue
+		}
+		if fieldpower.Covers(later, key) {
+			hidden = append(hidden, key)
+		}
+	}
+	sort.Strings(hidden)
+	return hidden
 }
 
 // KeyFieldFillHintsForTest 暴露条件字段填写时机投影，供 test 目录下的定向用例锁定行为。
@@ -173,6 +213,6 @@ func UnfillableKeyFieldIssuesForTest(tree *target.FlowNodeTemplate, reachable []
 }
 
 // NodeFormViewsForTest 暴露按节点表单权限视图，供 test 目录下的定向用例锁定行为。
-func NodeFormViewsForTest(tree *target.FlowNodeTemplate, reachable []string) []model.PathFormNodeView {
-	return nodeFormViews(tree, reachable)
+func NodeFormViewsForTest(tree *target.FlowNodeTemplate, reachable []string, values map[string]any) []model.PathFormNodeView {
+	return nodeFormViews(tree, reachable, values)
 }

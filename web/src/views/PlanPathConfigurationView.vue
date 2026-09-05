@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NEmpty, NModal, NSelect, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NModal, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
 import type { NotificationReactive } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
@@ -182,19 +182,26 @@ const formReadOnly = computed(() => !planMutable.value)
 // 默认发起人视图；切到审批节点视图后只放开那个节点能改的字段，数据仍是同一份表单数据。
 const selectedFormViewName = ref('')
 const formNodeViews = computed(() => dataWorkspace.value?.nodeViews ?? [])
-const formViewOptions = computed(() => formNodeViews.value.map(view => ({
-  label: view.isInitiator ? `${view.nodeName}（发起）` : view.nodeName,
-  value: view.nodeName,
-})))
 const selectedFormView = computed(() => formNodeViews.value.find(view => view.nodeName === selectedFormViewName.value) ?? null)
 const runtimeForm = computed(() => {
   if (!dataWorkspace.value) return null
   const base = { ...dataWorkspace.value, readOnly: formReadOnly.value, viewName: selectedFormViewName.value }
   const view = selectedFormView.value
-  if (!view || view.isInitiator) return base
-  // 非发起视图：只按该节点声明的可编辑字段渲染，其余字段禁用（与目标审批页同一口径）。
+  if (!view) return base
+  // 按视图权限渲染：该节点声明可编辑的字段放开，只有后续节点才能填的字段隐藏，
+  // 其余保持只读。发起人视图同样走这条路径，否则会出现"这一步填不了却带着历史值显示"的矛盾。
   return { ...base, permissions: view.permissions }
 })
+
+// 节点视图默认选中发起人（配置阶段的表单永远处于发起态）；换路径重载后重新归位。
+watch(formNodeViews, views => {
+  if (views.length === 0) {
+    selectedFormViewName.value = ''
+    return
+  }
+  if (views.some(view => view.nodeName === selectedFormViewName.value)) return
+  selectedFormViewName.value = (views.find(view => view.isInitiator) ?? views[0]).nodeName
+}, { immediate: true })
 const pathAnalysis = computed(() => graph.value && currentPath.value ? analyzeExecutionPath(graph.value, currentPath.value.choices) : null)
 const selectedNode = computed(() => configurationByGraphNodeID.value.get(selectedNodeID.value) ?? null)
 const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
@@ -945,21 +952,12 @@ void loadPage()
         <div class="path-configuration-page__form-body">
         <form-data-hints-panel
           v-if="dataWorkspace"
+          v-model:selected-view="selectedFormViewName"
           :key-fields="dataWorkspace.keyFields ?? []"
           :issues="[...(dataWorkspace.issues ?? []), ...runtimeCoordinationIssues]"
           :branch-patches="dataWorkspace.branchPatches"
+          :node-views="formNodeViews"
         />
-        <div v-if="formViewOptions.length > 1" class="path-configuration-page__form-view">
-          <span class="path-configuration-page__form-view-label">按节点填写</span>
-          <n-select
-            v-model:value="selectedFormViewName"
-            size="small"
-            :options="formViewOptions"
-            :consistent-menu-width="false"
-            aria-label="选择按哪个节点的字段权限填写"
-          />
-          <small>切换后只放开该节点有编辑权限的字段，表单会按新权限重新装载；数据始终是同一份。</small>
-        </div>
         <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
           <n-spin :show="true" size="large" description="正在加载表单运行时" />
         </section>
@@ -983,22 +981,6 @@ void loadPage()
 </template>
 
 <style scoped>
-.path-configuration-page__form-view {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 8px;
-}
-
-.path-configuration-page__form-view-label {
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.path-configuration-page__form-view small {
-  color: var(--path-config-text-secondary-color);
-}
-
 .path-configuration-page {
   --path-config-app-header-height: 64px;
   --path-config-main-block-padding: 40px;

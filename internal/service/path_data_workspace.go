@@ -128,7 +128,7 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		RuntimeTemplate: template, RuntimePage: projectVueCustomPage(snapshot.VuePage),
 		RuntimePermissions: workspacePermissions(snapshot, analysis), RuntimeReadRequests: workspaceReadRequests(snapshot, template), EffectiveFormData: values,
 		BranchPatches: patches, RuntimeValidation: runtimeValidation, Issues: issues,
-		KeyFields: keyFields, NodeViews: nodeFormViews(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs),
+		KeyFields: keyFields, NodeViews: nodeFormViews(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs, values),
 		Actions: decodeWorkspaceActions(stored.UserActions), CompiledScenario: decodeWorkspaceSteps(stored.CompiledSteps),
 	}, nil
 }

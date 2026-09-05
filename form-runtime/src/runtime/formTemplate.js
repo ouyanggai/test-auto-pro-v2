@@ -247,6 +247,15 @@ async function waitForFormUpdate (form) {
   await new Promise(resolve => setTimeout(resolve, 0))
 }
 
+// 选项数据源就绪的等待预算：目标是共享内网服务，实测存在稳定 30 秒级的慢请求
+// （纲领第 4.4.1 节），选项数据源还可能链式依赖别的字段先加载完。
+// 原来的 20 次 × 100 毫秒（2 秒）远小于真实加载时间，会在选项还没到齐时就判"数据源不可用"并阻断，
+// 于是补丁映射永远完不成、控件一直显示历史选项。这里按分钟级预算等待。
+const OPTION_WAIT_ATTEMPTS = 120
+const OPTION_WAIT_INTERVAL_MS = 500
+// 每隔若干轮重新触发一次数据源刷新，应对链式依赖在中途才具备条件的情况。
+const OPTION_REFRESH_EVERY = 10
+
 // ============ 选项型字段补丁协调 ============
 // 目标平台的分支条件常按"显示名称"声明，最小补丁只改名称字段；而选项型控件真正绑定的是取值
 // （Id、路径数组或选项值），不同步就会保留历史绑定值，控件按选项匹配继续显示旧名称。
@@ -610,7 +619,7 @@ async function refreshOptionFields (form, descriptors) {
 // 在真实选项里按名称唯一匹配并回填绑定值，重放原模板声明的 onChange 联动并等待异步派生完成，
 // 再读取最终表单值。无法唯一匹配且显示仍停留在历史值的字段产生阻断问题：
 // 绝不猜测绑定值，也不保留"路径提示已是新名称、控件显示历史值"的矛盾状态。
-export async function coordinateOptionPatches (form, template, values, triggers = [], retries = 20) {
+export async function coordinateOptionPatches (form, template, values, triggers = [], retries = OPTION_WAIT_ATTEMPTS) {
   const current = clonePlain(values || {})
   const patchTriggers = Array.isArray(triggers) ? triggers : []
   if (!form || typeof form.setData !== 'function') return { values: current, issues: [] }
@@ -620,7 +629,10 @@ export async function coordinateOptionPatches (form, template, values, triggers 
   let refreshed = false
   let issues = []
   for (let attempt = 0; attempt < attempts; attempt++) {
-    if (!refreshed) refreshed = await refreshOptionFields(form, descriptors)
+    // 选项数据源不是一次刷新就一定就绪：目标的数据源请求本身是分钟级慢请求，
+    // 而合同分类这类数据源的 requestFunc 还依赖另一个字段的选项先加载完（链式依赖）。
+    // 因此在整个等待窗口内周期性重新触发刷新，而不是只在第一轮触发一次。
+    if (!refreshed || attempt % OPTION_REFRESH_EVERY === 0) refreshed = await refreshOptionFields(form, descriptors)
     const evaluation = evaluateOptionPatches(form, descriptors, patchTriggers, current, true)
     if (evaluation.replayModels.length > 0 || evaluation.touchedGroups.length > 0) {
       const patch = clonePlain(evaluation.rootPatch)
@@ -634,7 +646,7 @@ export async function coordinateOptionPatches (form, template, values, triggers 
     }
     issues = evaluation.issues
     if (evaluation.waiting && attempt + 1 < attempts) {
-      await new Promise(resolve => setTimeout(resolve, 100))
+      await new Promise(resolve => setTimeout(resolve, OPTION_WAIT_INTERVAL_MS))
       continue
     }
     // 重试用尽后远程选项仍为空：数据源故障会让"按名称映射"永远无法核对，必须阻断而不是静默留空。

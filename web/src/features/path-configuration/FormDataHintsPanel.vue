@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { NBadge, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NTag } from 'naive-ui'
+import { NBadge, NButton, NCard, NCollapse, NCollapseItem, NEmpty, NSelect, NTag } from 'naive-ui'
 import { computed, ref } from 'vue'
 
 import type { HistoryDataIssue } from '../history-replay/types'
-import type { PathConfigurationBranchPatch, PathConfigKeyField } from './types'
+import type { PathConfigNodeView, PathConfigurationBranchPatch, PathConfigKeyField } from './types'
 
 const props = defineProps<{
   keyFields: PathConfigKeyField[]
   issues: HistoryDataIssue[]
   branchPatches: PathConfigurationBranchPatch[]
+  // nodeViews 是按节点切换的填写视图；selectedView 是当前视图的节点名称。
+  nodeViews?: PathConfigNodeView[]
+  selectedView?: string
 }>()
+const emit = defineEmits<{ 'update:selectedView': [value: string] }>()
+
+// viewOptions 按路线顺序给出可切换的填写视图；只有一个视图时不展示切换器。
+const viewOptions = computed(() => (props.nodeViews ?? []).map(view => ({
+  label: view.isInitiator ? `${view.nodeName}（发起）` : view.nodeName,
+  value: view.nodeName,
+})))
 
 const open = ref(true)
 
@@ -87,6 +97,17 @@ function patchText(patch: PathConfigurationBranchPatch): string {
     </n-badge>
 
     <n-card v-if="open" size="small" class="form-hints__card" title="路径关键信息" :bordered="true">
+      <div v-if="viewOptions.length > 1" class="form-hints__view">
+        <span class="form-hints__view-label">按节点填写</span>
+        <n-select
+          size="small"
+          :value="props.selectedView ?? ''"
+          :options="viewOptions"
+          aria-label="选择按哪个节点的字段权限填写"
+          @update:value="value => emit('update:selectedView', String(value ?? ''))"
+        />
+        <small>只放开该节点有编辑权限的字段；只有后续节点才能填的字段在这个视图里隐藏，取值不会丢。</small>
+      </div>
 
       <n-empty v-if="empty" size="small" description="当前路径没有需要优先核对的字段" />
       <n-collapse v-else :default-expanded-names="expandedNames">
@@ -134,6 +155,22 @@ function patchText(patch: PathConfigurationBranchPatch): string {
 </template>
 
 <style scoped>
+.form-hints__view {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--n-border-color, #eee);
+}
+
+.form-hints__view-label {
+  font-weight: 600;
+}
+
+.form-hints__view small {
+  opacity: 0.75;
+}
+
 .form-hints__fill {
   display: block;
   margin-top: 2px;
