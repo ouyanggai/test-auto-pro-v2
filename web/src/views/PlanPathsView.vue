@@ -557,6 +557,11 @@ function locateReadinessItem(pathId: string, anchor: string) {
 // openPathConfiguration 从只读路径详情进入 F-007 单条路径节点配置画布。
 function openPathConfiguration(path: ExecutionPath | null = activePath.value) {
   if (!path) return
+  // 一键配置仍在后台写入路径数据时禁止打开表单工作区，避免人工保存与回放完成写入互相覆盖。
+  if (preparationBusy.value) {
+    message.warning('一键配置正在进行，请等待完成后再打开路径')
+    return
+  }
   router.push('/plans/' + planID.value + '/paths/' + path.id + '/configure')
 }
 
@@ -940,7 +945,7 @@ onMounted(() => {
                   </n-tag>
 									</div>
                 </div>
-								<n-button size="small" type="primary" secondary @click="openPathConfiguration(path)">{{ planMutable ? '配置节点' : '查看配置' }}</n-button>
+                <n-button size="small" type="primary" secondary :disabled="preparationBusy" @click="openPathConfiguration(path)">{{ planMutable ? '配置节点' : '查看配置' }}</n-button>
               </div>
               </template>
             </n-virtual-list>
@@ -1093,7 +1098,7 @@ onMounted(() => {
                     </div>
                     <footer class="path-selection-panel__footer">
                       <template v-if="workspaceMode === 'view'">
-												<n-button :disabled="!activePath || workspaceActionBusy" @click="() => openPathConfiguration()">{{ planMutable ? '配置节点' : '查看配置' }}</n-button>
+												<n-button :disabled="!activePath || workspaceActionBusy || preparationBusy" @click="() => openPathConfiguration()">{{ planMutable ? '配置节点' : '查看配置' }}</n-button>
 												<n-button v-if="planMutable" type="primary" :disabled="!activePath || workspaceActionBusy" @click="editActivePath">编辑路径</n-button>
 												<n-dropdown v-if="planMutable" trigger="click" :options="pathMoreOptions" :disabled="workspaceActionBusy" @select="handlePathMoreAction">
                           <n-button secondary :disabled="!activePath || workspaceActionBusy">更多</n-button>

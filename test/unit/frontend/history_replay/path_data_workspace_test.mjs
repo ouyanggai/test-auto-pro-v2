@@ -71,3 +71,11 @@ test('T05 保存换路需要确认令牌且取消不触发写入', () => {
   assert.match(view, /dataPickerOpen = true/)
   assert.match(view, /handleBaseFormDataSaved/)
 })
+
+test('一键配置进行中禁止打开路径表单，避免回放结果覆盖人工保存', () => {
+  const view = read('/web/src/views/PlanPathsView.vue')
+
+  assert.match(view, /:disabled="preparationBusy" @click="openPathConfiguration\(path\)"/)
+  assert.match(view, /if \(preparationBusy\.value\)/)
+  assert.match(view, /一键配置正在进行，请等待完成后再打开路径/)
+})

@@ -54,6 +54,13 @@ func TestHistorySourceRepositoryPersistsRawPayloadsAndRollsBackConflicts(t *test
 		t.Fatalf("默认来源与 FormMaking 快照事务失败：snapshot=%+v record=%+v err=%v", persistedForm, defaultRecord, err)
 	}
 	assertHistorySnapshotRaw(t, store, ctx, planID, persistedForm.ID, formRaw)
+	unchangedSnapshot, unchangedRecord, err := store.SaveDefaultWithSnapshot(ctx, formSnapshot, repository.HistoryDefaultRecord{
+		PlanID: planID, IdempotencyKey: "123e4567-e89b-12d3-a456-426614174408",
+	}, 1, now.Add(30*time.Second))
+	if err != nil || unchangedSnapshot.ID != persistedForm.ID || unchangedRecord.Revision != 1 {
+		t.Fatalf("相同默认来源重复保存不应创建新快照或推进修订：snapshot=%+v record=%+v err=%v", unchangedSnapshot, unchangedRecord, err)
+	}
+	assertHistorySnapshotCount(t, database.DB, planID, 1)
 
 	customRaw := map[string]any{
 		"pageState": map[string]any{"lines": []any{map[string]any{"amount": float64(88), "customComponentValue": map[string]any{"code": "X"}}}},
@@ -116,6 +123,46 @@ func TestHistorySourceRepositoryPersistsRawPayloadsAndRollsBackConflicts(t *test
 	var replayJobs int
 	if err := database.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM test_history_replay_jobs").Scan(&replayJobs); err != nil || replayJobs != 0 {
 		t.Fatalf("T02 错误创建了历史回放运行记录：count=%d err=%v", replayJobs, err)
+	}
+}
+
+// TestExecutionPathListTreatsValidatedSavedDataAsReady 验证旧版错误标记为 affected 但正文和 runtime 证据完整时，路径列表仍显示已就绪。
+func TestExecutionPathListTreatsValidatedSavedDataAsReady(t *testing.T) {
+	database, _, ctx := openHistoryIntegrationDatabase(t, "路径列表数据状态兼容投影")
+	planID, pathIDs := insertHistoryPlanWithPaths(t, database.DB, 20951, "template-a", "new", 1)
+	store := planmysql.NewHistoryReplayRepository(database.DB)
+	now := time.Date(2026, 9, 3, 11, 0, 0, 0, time.UTC)
+	if _, err := store.SavePathConfig(ctx, repository.HistoryPathConfigRecord{
+		PathID: pathIDs[0], IdempotencyKey: historyIntegrationKey(20952),
+		ConfigStatus: "pending", NodeStatus: "pending", DataStatus: model.HistoryDataStatusAffected,
+		SourceMode: model.HistorySourceModeDefault, RuntimeType: "formmaking",
+		EffectiveFormData: []byte(`{"amount":88.00}`), RuntimeValidation: []byte(`{"accepted":true,"issues":[]}`), Issues: []byte(`[]`),
+	}, 0, now); err != nil {
+		t.Fatalf("准备旧版受影响路径配置失败：%v", err)
+	}
+	paths := planmysql.NewExecutionPathRepository(database.DB)
+	listed, err := paths.List(ctx, planID)
+	if err != nil || len(listed) != 1 || listed[0].DataStatus != model.HistoryDataStatusReady {
+		t.Fatalf("完整已保存数据在路径列表中仍显示受影响：paths=%+v err=%v", listed, err)
+	}
+	if listed[0].DataDetail != "历史原始数据已通过 runtime 校验和路径复验" {
+		t.Fatalf("路径列表数据状态说明未同步：%q", listed[0].DataDetail)
+	}
+	if _, err := database.DB.ExecContext(ctx, `UPDATE test_execution_path_configs SET source_mode = 'override' WHERE path_id = ?`, pathIDs[0]); err != nil {
+		t.Fatalf("准备独立来源受影响状态失败：%v", err)
+	}
+	listed, err = paths.List(ctx, planID)
+	if err != nil || len(listed) != 1 || listed[0].DataStatus != model.HistoryDataStatusAffected {
+		t.Fatalf("独立来源的受影响状态被错误投影为 ready：paths=%+v err=%v", listed, err)
+	}
+	if _, err := database.DB.ExecContext(ctx, `UPDATE test_execution_path_configs
+SET source_mode = 'default', effective_form_data = '{}', runtime_validation = '{"accepted":false,"issues":[]}'
+WHERE path_id = ?`, pathIDs[0]); err != nil {
+		t.Fatalf("准备真正受影响路径状态失败：%v", err)
+	}
+	listed, err = paths.List(ctx, planID)
+	if err != nil || len(listed) != 1 || listed[0].DataStatus != model.HistoryDataStatusAffected {
+		t.Fatalf("缺少完整正文或 runtime 证据时没有保留受影响状态：paths=%+v err=%v", listed, err)
 	}
 }
 

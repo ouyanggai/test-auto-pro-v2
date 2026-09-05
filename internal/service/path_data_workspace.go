@@ -90,9 +90,11 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	dataStatus := source.dataStatus
 	if found && strings.TrimSpace(stored.DataStatus) != "" {
 		dataStatus = stored.DataStatus
-	}
-	if source.dataStatus == model.HistoryDataStatusAffected {
-		dataStatus = model.HistoryDataStatusAffected
+		// 旧版本在默认来源重复确认时会把数据标为 affected，但同时保留完整正文和已通过的 runtime 证据。
+		// 读取时恢复这类可证明的 ready 状态，避免历史脏状态继续把已保存数据显示为待处理。
+		if stored.DataStatus == model.HistoryDataStatusAffected && stored.SourceMode == model.HistorySourceModeDefault && stored.SnapshotID == nil && len(values) > 0 && runtimeValidation.Accepted {
+			dataStatus = model.HistoryDataStatusReady
+		}
 	}
 	if len(values) == 0 && dataStatus == "" {
 		dataStatus = model.HistoryDataStatusEmpty
@@ -394,7 +396,7 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	if identity, identityErr := s.currentUserIdentity(ctx, planID); identityErr == nil {
 		replaceUserIdentityValues(overlay.Values, identity)
 	}
-	dataStatus := workspaceDataStatus(source, input.RuntimeValidation, issues)
+	dataStatus := workspaceDataStatus(input.RuntimeValidation, issues)
 	record, err := workspaceRecord(snapshot, source, targetPath, targetStored, idempotencyKey, input, overlay, dataStatus, routeChanged)
 	if err != nil {
 		return model.PathConfigurationDataResult{}, err
@@ -671,10 +673,7 @@ func workspaceConfirmationToken(planID, fromPathID, toPathID uint64, values map[
 }
 
 // workspaceDataStatus 只在 runtime 接受且目标路径复验通过时报告 ready。
-func workspaceDataStatus(source historyWorkspaceSource, validation model.HistoryRuntimeValidation, issues []model.HistoryDataIssue) string {
-	if source.dataStatus == model.HistoryDataStatusAffected {
-		return model.HistoryDataStatusAffected
-	}
+func workspaceDataStatus(validation model.HistoryRuntimeValidation, issues []model.HistoryDataIssue) string {
 	if !validation.Accepted || hasBlockingWorkspaceIssue(issues) {
 		return model.HistoryDataStatusNeedsInput
 	}

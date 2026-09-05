@@ -196,6 +196,13 @@ func TestPathDataWorkspaceRequiresConfirmationBeforeRouteWrite(t *testing.T) {
 	if _, exists := savedValues["auto_audit_info_obj_1"]; exists {
 		t.Fatalf("历史审批对象被写入工作区：%+v", savedValues)
 	}
+	reloaded, err := configService.GetData(context.Background(), plan.ID, 612)
+	if err != nil {
+		t.Fatalf("重新打开目标路径数据工作区失败：%v", err)
+	}
+	if got := reloaded.EffectiveFormData["nested"].(map[string]any)["memo"]; got != "edited" {
+		t.Fatalf("保存后的人工调整值没有在重新打开时保留：%v", got)
+	}
 }
 
 // TestPathDataWorkspaceRevisionConflictDoesNotPartiallyWrite 验证修订冲突不会留下半份配置或增加写计数。
@@ -253,6 +260,42 @@ func TestCustomWorkspacePassesRawValuesWithPageEntry(t *testing.T) {
 	configuration.EffectiveFormData["custom"].(map[string]any)["rows"].([]any)[0].(map[string]any)["code"] = "changed"
 	if raw["custom"].(map[string]any)["rows"].([]any)[0].(map[string]any)["code"] != "A" {
 		t.Fatal("工作区读取没有深复制历史原始数据")
+	}
+}
+
+// TestPathDataWorkspaceRepairsAffectedStatusWithoutRevertingSavedValues 验证旧版 affected 状态不会把完整的人工调整值退回历史快照。
+func TestPathDataWorkspaceRepairsAffectedStatusWithoutRevertingSavedValues(t *testing.T) {
+	plan := model.Plan{ID: 604, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-d", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 641, PlanID: plan.ID, SequenceNo: 1, Name: "已保存调整路径"}
+	store := newWorkspaceHistoryStore()
+	store.snapshots[704] = model.HistorySnapshot{
+		ID: 704, PlanID: plan.ID, CandidateKey: "candidate-d", FlowCode: "flow-d", FormName: "申请单", FlowName: "申请流程",
+		// 使用自定义运行时快照，避免该单元测试依赖实例绑定的目标读取接口；本例只验证已保存正文和状态投影。
+		RuntimeType: string(target.FormRenderTypeVueCustom), TemplateSummary: map[string]any{}, RawFormData: map[string]any{"amount": float64(12)},
+	}
+	store.configs[path.ID] = repository.HistoryPathConfigRecord{
+		PathID: path.ID, Revision: 5, DataRevision: 5, SourceMode: model.HistorySourceModeDefault,
+		DataStatus: model.HistoryDataStatusAffected, EffectiveFormData: []byte(`{"amount":88,"memo":"人工调整"}`),
+		RuntimeValidation: []byte(`{"accepted":true,"issues":[]}`), Issues: []byte(`[]`),
+	}
+	reader := workspaceTargetReader{snapshot: target.PathConfigurationSnapshot{
+		Tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "end", Type: "end"}}, EntryNodeIDs: []string{"start"},
+		FlowCode: "flow-d", FlowName: "申请流程", RenderType: target.FormRenderTypeFormMaking,
+		Forms: []target.FormRuntimeTemplate{{Name: "申请单", TemplateData: `{"list":[{"type":"input","model":"memo"}]}`}},
+	}}
+	configService := service.NewPathConfigService(service.NewPlanService(&historyPlanRepository{plan: plan}), reader,
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), &workspacePathRepository{paths: []model.ExecutionPath{path}})
+	configService.SetHistoryWorkspaceStores(store, store)
+	configuration, err := configService.GetData(context.Background(), plan.ID, path.ID)
+	if err != nil {
+		t.Fatalf("读取旧版 affected 数据工作区失败：%v", err)
+	}
+	if configuration.DataStatus != model.HistoryDataStatusReady {
+		t.Fatalf("完整人工调整值没有恢复为 ready：%q", configuration.DataStatus)
+	}
+	amount, amountOK := configuration.EffectiveFormData["amount"].(json.Number)
+	if !amountOK || amount != json.Number("88") || configuration.EffectiveFormData["memo"] != "人工调整" {
+		t.Fatalf("重新打开时没有保留已保存人工调整值：%+v", configuration.EffectiveFormData)
 	}
 }
 

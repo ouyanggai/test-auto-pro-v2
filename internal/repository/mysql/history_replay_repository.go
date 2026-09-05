@@ -135,6 +135,22 @@ func (r *HistoryReplayRepository) SaveDefaultWithSnapshot(ctx context.Context, s
 		}
 		return existing, current, nil
 	}
+	if found {
+		// 同一业务实例和正文再次选择默认来源时只是重复确认，不是来源变化。
+		// 若继续创建新快照，会误把所有继承默认来源的路径清空并标记为 affected。
+		existing, snapshotErr := getHistorySnapshot(ctx, tx, record.PlanID, current.SnapshotID)
+		if snapshotErr != nil {
+			return model.HistorySnapshot{}, repository.HistoryDefaultRecord{}, snapshotErr
+		}
+		if existing.CandidateKey == snapshot.CandidateKey &&
+			strings.TrimSpace(existing.SourceDigest) != "" &&
+			strings.TrimSpace(existing.SourceDigest) == strings.TrimSpace(snapshot.SourceDigest) {
+			if err := tx.Commit(); err != nil {
+				return model.HistorySnapshot{}, repository.HistoryDefaultRecord{}, err
+			}
+			return existing, current, nil
+		}
+	}
 	if (!found && expectedRevision != 0) || (found && (expectedRevision == 0 || current.Revision != expectedRevision)) {
 		return model.HistorySnapshot{}, repository.HistoryDefaultRecord{}, repository.ErrHistoryRevisionConflict
 	}

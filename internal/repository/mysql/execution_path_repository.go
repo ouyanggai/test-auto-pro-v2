@@ -36,10 +36,25 @@ const executionPathStatusColumns = `
          WHEN JSON_LENGTH(config.confirmed_node_keys) > 0 THEN '节点人员和动作已部分配置'
          ELSE '节点人员和动作待配置'
        END,
-       CASE WHEN config.path_id IS NULL THEN 'empty' ELSE COALESCE(NULLIF(config.data_status, ''), 'empty') END,
+       CASE
+         WHEN config.path_id IS NULL THEN 'empty'
+         WHEN config.data_status = 'affected'
+           AND config.source_mode = 'default'
+           AND config.snapshot_id IS NULL
+           AND JSON_LENGTH(config.effective_form_data) > 0
+           AND JSON_UNQUOTE(JSON_EXTRACT(config.runtime_validation, '$.accepted')) = 'true'
+           THEN 'ready'
+         ELSE COALESCE(NULLIF(config.data_status, ''), 'empty')
+       END,
        CASE
          WHEN config.path_id IS NULL OR config.data_status IS NULL OR config.data_status = '' OR config.data_status = 'empty' THEN '尚未选择历史数据来源'
-         WHEN config.data_status = 'ready' THEN '历史原始数据已通过 runtime 校验和路径复验'
+         WHEN config.data_status = 'ready'
+           OR (config.data_status = 'affected'
+             AND config.source_mode = 'default'
+             AND config.snapshot_id IS NULL
+             AND JSON_LENGTH(config.effective_form_data) > 0
+             AND JSON_UNQUOTE(JSON_EXTRACT(config.runtime_validation, '$.accepted')) = 'true')
+           THEN '历史原始数据已通过 runtime 校验和路径复验'
          WHEN config.data_status = 'needs_input' THEN '历史原始数据需要人工补充或确认'
          WHEN config.data_status = 'affected' THEN '历史来源或路径变化后需要重新核对'
          ELSE '历史原始数据需要人工处理'
