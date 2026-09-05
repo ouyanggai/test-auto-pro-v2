@@ -60,6 +60,7 @@ func (s *Service) ReconcileNow(ctx context.Context, pathRunID uint64) (*Reconcil
 		StepNodeKey:       preview.TargetNodeID,
 		BeforeStatus:      facts.BeforeStatus,
 		BeforeHadInstance: facts.BeforeHadInstance,
+		BeforeUnknown:     !facts.BeforeKnown,
 		NowFound:          facts.NowFound,
 		NowStatus:         facts.NowStatus,
 		NowCurrentNodes:   facts.NowCurrentNodes,
@@ -176,6 +177,9 @@ func (s *Service) RecoveryAction(ctx context.Context, pathRunID uint64, action r
 		nextIndex := session.nextIndex + 1
 		session.nextIndex = nextIndex
 		session.version++
+		// 已经回到运行中：现场不再停在待对账，可用命令恢复（否则后续步骤永远等不到放行入口）。
+		session.awaitingReconciliation = false
+		session.stopReason = ""
 		s.mu.Unlock()
 		preview, finished, previewErr := s.steps.BuildPreview(ctx, session.runCtx, nextIndex)
 		if previewErr != nil {
@@ -217,6 +221,10 @@ func (s *Service) RecoveryAction(ctx context.Context, pathRunID uint64, action r
 		s.mu.Lock()
 		session.replaysUsed++
 		session.version++
+		// 同上：重放已经把路径带回运行中，现场不再是待对账态。
+		// 若这次重放的结果仍然不确定，approveOneStep 会重新把它标回待对账。
+		session.awaitingReconciliation = false
+		session.stopReason = ""
 		currentIndex := session.nextIndex
 		s.mu.Unlock()
 		// 重放是一次完整的新尝试，不是重发：预览必须重建，让 plan/gate/prepare 用此刻的真实事实

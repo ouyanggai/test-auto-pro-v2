@@ -175,6 +175,10 @@ type FactInput struct {
 	// BeforeStatus/BeforeHadInstance 是写之前的实例状态基准。
 	BeforeStatus      string
 	BeforeHadInstance bool
+	// BeforeUnknown 为真表示这份基准没有取到（尝试行早于基准落库版本，或崩溃在落账之前）。
+	// 此时由实例事实派生的三个维度一律按缺失处理：零值基准会被读成
+	// "写之前实例不存在"这个确定事实，从而造出一条与事实相反的依据。
+	BeforeUnknown bool
 	// NowFound/NowStatus/NowCurrentNodes 是现在重读到的实例事实。
 	NowFound        bool
 	NowStatus       string
@@ -205,6 +209,18 @@ func Collect(f FactInput) Input {
 		dims[DimDoneRecords] = DimensionEvidence{State: DimMissing, Note: f.NowReadError}
 		dims[DimActionTraces] = DimensionEvidence{State: DimMissing, Note: f.NowReadError}
 		return Input{StepNodeKey: f.StepNodeKey, BeforeStatus: f.BeforeStatus, BeforeHadInstance: f.BeforeHadInstance, Dims: dims}
+	}
+	if f.BeforeUnknown {
+		// 基准丢失：三个由实例事实派生的维度都要与"写之前"比较，没有基准就无从比较。
+		// 已办记录与动作痕迹不依赖基准（问的是"现在有没有本次动作的痕迹"），照常给真实读数。
+		const note = "写之前的目标事实基准没有落库，无从比较"
+		dims[DimInstanceStatus] = DimensionEvidence{State: DimMissing, Note: note}
+		dims[DimCurrentNode] = DimensionEvidence{State: DimMissing, Note: note}
+		dims[DimCurrentTask] = DimensionEvidence{State: DimMissing, Note: note}
+		dims[DimDoneRecords] = doneRecordEvidence(f)
+		dims[DimActionTraces] = actionTraceEvidence(f)
+		return Input{StepNodeKey: f.StepNodeKey, BeforeStatus: f.BeforeStatus, BeforeHadInstance: f.BeforeHadInstance,
+			Dims: dims, PartialEffect: f.FormChanged, PartialEffectNote: f.FormChangedNote}
 	}
 	if !f.NowFound {
 		// 实例现在读不到：三个由实例事实派生的维度只能标缺失（读不到不等于未变化）。

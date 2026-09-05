@@ -21,9 +21,9 @@ go vet ./internal/engine/reconcile/... ./internal/engine/control/... ./test/unit
 printf '%s\n' '[F-018] 对账判定单元测试（含竞态检测）'
 go test -race -count=1 ./test/unit/backend/reconcile/...
 
-printf '%s\n' '[F-018] 恢复链路真实 MySQL 集成测试（待对账 → 对账 → 三个唯一动作 → 重放为新尝试）'
+printf '%s\n' '[F-018] 恢复链路真实 MySQL 集成测试（待对账 → 对账 → 三个唯一动作 → 重放为新尝试 → 重启后仍可对账）'
 recovery_log="$(mktemp -t f018-recovery)"
-if ! go test -count=1 -v -run 'TestF018NotEffectiveLeadsToReplay|TestF018ReplayLimitIsEnforced|TestF018EffectiveLeadsToAdvanceOnly|TestF018MissingDimensionDegradesToManualEnd' ./test/unit/backend/executor 2>&1 | tee "${recovery_log}"; then
+if ! go test -count=1 -v -run 'TestF018NotEffectiveLeadsToReplay|TestF018ReplayLimitIsEnforced|TestF018EffectiveLeadsToAdvanceOnly|TestF018MissingDimensionDegradesToManualEnd|TestF018AwaitingReconciliationSurvivesRestart|TestF018RestartWithoutBaselineDegradesHonestly|TestF018AwaitingReconciliationOffersNoApprovalCommand' ./test/unit/backend/executor 2>&1 | tee "${recovery_log}"; then
   rm -f "${recovery_log}"
   exit 1
 fi
@@ -32,7 +32,9 @@ if grep -Eq -- '^[[:space:]]*--- SKIP' "${recovery_log}"; then
   rm -f "${recovery_log}"
   exit 1
 fi
-for required in TestF018NotEffectiveLeadsToReplay TestF018ReplayLimitIsEnforced TestF018EffectiveLeadsToAdvanceOnly TestF018MissingDimensionDegradesToManualEnd; do
+for required in TestF018NotEffectiveLeadsToReplay TestF018ReplayLimitIsEnforced TestF018EffectiveLeadsToAdvanceOnly \
+  TestF018MissingDimensionDegradesToManualEnd TestF018AwaitingReconciliationSurvivesRestart \
+  TestF018RestartWithoutBaselineDegradesHonestly TestF018AwaitingReconciliationOffersNoApprovalCommand; do
   if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${recovery_log}"; then
     printf '[F-018] 缺少必需的恢复链路用例通过记录：%s\n' "${required}" >&2
     rm -f "${recovery_log}"

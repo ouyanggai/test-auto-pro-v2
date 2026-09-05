@@ -201,12 +201,12 @@ func (r *RunRepository) RecordStepAttempt(ctx context.Context, step model.RunSte
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO run_step_attempts (path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code,
 			initial, reread, failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms,
-			is_replay, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			is_replay, before_facts, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, step.PathRunID, stepID, attempt.AttemptNo, attempt.Verdict, attempt.SideEffect, attempt.Transport,
 		nullableInt(attempt.StatusCode), attempt.Initial, attempt.Reread, nullableFailureClass(attempt.FailureClass),
 		attempt.Reason, attempt.Basis, attempt.TraceID, attempt.CurlTraceID, attempt.LogPath, attempt.LogLine,
-		attempt.DurationMs, attempt.IsReplay, now); err != nil {
+		attempt.DurationMs, attempt.IsReplay, nullableString(attempt.BeforeFacts), now); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

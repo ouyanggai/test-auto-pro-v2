@@ -365,6 +365,10 @@ type RunStepAttempt struct {
 	RecoveryAction   string
 	// IsReplay 表示本次尝试本身是一次重放（由对账判「未生效」后新建的尝试），不是首次执行。
 	IsReplay bool
+	// BeforeFacts 是发出这次写之前读到的目标事实快照（JSON 文本，run_step_attempts.before_facts）。
+	// 它是对账判定的另一半输入：没有它就没有"写之前什么样"的基准，重启后对账只能按证据缺失降级。
+	// 与其他尝试事实一样只在插入时写一次，永不更新。
+	BeforeFacts string
 }
 
 // RunControlAction 是人工控制事实的动作类别；本切片只承载放行与停止两类。

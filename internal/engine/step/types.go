@@ -6,6 +6,8 @@ package step
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -90,8 +92,13 @@ type RunContext struct {
 	SubmitBranchTargetNodeID string
 	// Steps 是编译场景（用户步骤），执行器按序号推进。
 	Steps []model.CompiledActionStep
-	// LastBeforeFacts 是最近一步写之前保存的目标事实基准（对账对照用，内存流转）。
+	// LastBeforeFacts 是最近一步写之前保存的目标事实基准（对账对照用）。
+	// 执行时由控制现场填入，重启后由 run_step_attempts.before_facts 还原。
 	LastBeforeFacts InstanceFacts
+	// LastBeforeFactsKnown 表示上面那份基准是不是真的取到了。
+	// 零值不等于"写之前实例不存在"：把丢失的基准当成确定事实用，会让对账把审批类写的
+	// 实例状态维度说成"写之前实例不存在、现在存在"，凭空造出一条与事实相反的依据。
+	LastBeforeFactsKnown bool
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。
 	// 必须按原始字节透传到写请求，禁止先解码再重新序列化（数字字面量会被改写）。
 	EffectiveFormData []byte
@@ -102,13 +109,39 @@ type RunContext struct {
 
 // InstanceFacts 是一次目标事实读取的快照，用于门禁复验与事实重读对照。
 type InstanceFacts struct {
-	ReadError    string
-	Found        bool
-	Status       string
-	CurrentNodes []string
-	DueNodes     []string
+	ReadError    string   `json:"readError,omitempty"`
+	Found        bool     `json:"found"`
+	Status       string   `json:"status,omitempty"`
+	CurrentNodes []string `json:"currentNodes,omitempty"`
+	DueNodes     []string `json:"dueNodes,omitempty"`
 	// StepNodeKey 记录本次关心的是哪个节点上的待办（审批步骤对照用）。
-	StepNodeKey string
+	StepNodeKey string `json:"stepNodeKey,omitempty"`
+}
+
+// EncodeInstanceFacts 把目标事实快照序列化为落库文本（run_step_attempts.before_facts）。
+// 只在尝试行插入时写一次：它是"这次写之前目标什么样"的事实，不是可变状态。
+// 序列化失败返回空串——宁可让对账按证据缺失降级，也不落一段解不开的文本。
+func EncodeInstanceFacts(facts InstanceFacts) string {
+	encoded, err := json.Marshal(facts)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+// DecodeInstanceFacts 从落库文本还原写之前的目标事实；空串或解析失败返回零值。
+// 零值意味着"没有基准"，调用方必须按证据缺失处理（BeforeHadInstance=false 会让对账降级），
+// 绝不能把解析失败当成"写之前实例不存在"这个确定事实来用。
+func DecodeInstanceFacts(raw string) (InstanceFacts, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return InstanceFacts{}, false
+	}
+	var facts InstanceFacts
+	if err := json.Unmarshal([]byte(trimmed), &facts); err != nil {
+		return InstanceFacts{}, false
+	}
+	return facts, true
 }
 
 // StepPreview 是控制阶段停下时给用户的下一步预览。

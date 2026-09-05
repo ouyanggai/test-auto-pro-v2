@@ -71,6 +71,9 @@ type activeStep struct {
 	stopRequested  bool
 	// deviationStalled 表示路径偏离断点已强制停止：不产出放行类命令。
 	deviationStalled bool
+	// awaitingReconciliation 表示这条路径运行停在待对账：现场保留是为了对账与恢复动作，
+	// 但绝不能产出放行类命令——界面上出现「执行一步」会与「唯一合法动作」直接冲突。
+	awaitingReconciliation bool
 	// loopRunning 表示连续执行循环存活。
 	loopRunning bool
 	// stopReason 是「为什么停在这里」的中文主因。
@@ -108,6 +111,10 @@ func (sess *activeStep) pauseState() PauseState {
 	}
 	if sess.finished {
 		return PauseStateFinished
+	}
+	if sess.awaitingReconciliation {
+		// 写结果不确定：只有对账给出的那一个动作，没有任何放行类命令（F-016 已定，不得回退）。
+		return PauseStateUncertain
 	}
 	return PauseStateWaiting
 }
@@ -477,8 +484,10 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 // approveOneStep 执行一步（单步模式、step 命令与对账重放共用），随后停在下一步之前或收尾。
 // attemptNo 是本次尝试序号（对账重放时递增，作为新的一次尝试记录）。
 func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session *activeStep, attemptNo int, isReplay bool) (*ApproveResult, error) {
-	// 保存写之前的目标事实基准，供对账收集器对照。
+	// 保存写之前的目标事实基准，供对账收集器对照；同时标记基准确实取到了。
+	// 这份基准随后会随尝试行落库（before_facts），进程重启后按它还原。
 	session.runCtx.LastBeforeFacts = session.preview.Facts
+	session.runCtx.LastBeforeFactsKnown = true
 	// 阶段进度上报：执行器在各阶段边界回调，写进会话现场供详情轮询读取。
 	reporter := func(phase, note string) {
 		s.mu.Lock()
@@ -494,7 +503,13 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	}
 	result := &ApproveResult{Outcome: outcome}
 	if outcome.Verdict == string(verdict.OutcomeUncertain) {
-		// 写结果不确定：路径运行停在待对账，但内存现场必须保留。
+		// 写结果不确定：现场标记为待对账，可用命令集合随即变成空集（不给放行入口）。
+		s.mu.Lock()
+		session.awaitingReconciliation = true
+		session.stopReason = "写结果不确定：路径运行停在待对账，只提供只读对账与对账给出的唯一动作"
+		session.version++
+		s.mu.Unlock()
+		// 路径运行停在待对账，但内存现场必须保留。
 		// 对账与三个恢复动作全靠这份现场（本步预览、步骤游标、写之前的基准事实、重放次数）；
 		// 在这里清掉现场，只读对账就会以“当前没有等待放行的步骤”失败，F-018 整层变成不可达的死代码。
 		// 现场保留不等于还能放行：ApproveWithCommand 会因路径运行不在运行中而拒绝。

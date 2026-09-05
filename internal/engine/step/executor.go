@@ -518,6 +518,9 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		LogLine:     lineNo,
 		DurationMs:  durationMs,
 		IsReplay:    approved.IsReplay,
+		// 写之前的目标事实随尝试行落库：这是对账判定的另一半输入，
+		// 只留在内存里会让进程重启后停在待对账的路径运行永远拿不到基准（F-018 根治项）。
+		BeforeFacts: EncodeInstanceFacts(before),
 	}
 	if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 		return outcome, lineNo, err
@@ -713,11 +716,15 @@ func targetStatusName(status string) string {
 type ReconcileFacts struct {
 	BeforeStatus      string
 	BeforeHadInstance bool
-	NowFound          bool
-	NowStatus         string
-	NowCurrentNodes   []string
-	NowDueNodes       []string
-	NowReadError      string
+	// BeforeKnown 表示"写之前的目标事实"这份基准真的取到了。
+	// 为假时对账不得使用 BeforeStatus/BeforeHadInstance：那两个零值会被读成
+	// "写之前实例不存在"这个确定事实，凭空造出与事实相反的依据。
+	BeforeKnown     bool
+	NowFound        bool
+	NowStatus       string
+	NowCurrentNodes []string
+	NowDueNodes     []string
+	NowReadError    string
 	// DoneRecordsRead 为真表示已办记录维度真的读到了（不是"未接入"）；
 	// DoneRecordFound 表示本步节点上已经有本账号的已办记录。
 	DoneRecordsRead bool
@@ -738,17 +745,20 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 		return ReconcileFacts{}, err
 	}
 	before := InstanceFacts{}
+	beforeKnown := false
 	if stepNo >= 1 && stepNo <= len(runCtx.Steps) {
-		// 写之前的基准：本步预览阶段保存的事实（在 approve 现场由调用方回填）。
-		before = runCtx.LastBeforeFacts
+		// 写之前的基准：执行时由控制现场回填，重启后由 run_step_attempts.before_facts 还原。
+		before, beforeKnown = runCtx.LastBeforeFacts, runCtx.LastBeforeFactsKnown
 	}
 	after, err := e.readFactsWithRetry(ctx, runCtx, session, model.CompiledActionStep{})
 	if err != nil {
-		return ReconcileFacts{BeforeStatus: before.Status, BeforeHadInstance: before.Found, NowReadError: after.ReadError}, nil
+		return ReconcileFacts{BeforeStatus: before.Status, BeforeHadInstance: before.Found,
+			BeforeKnown: beforeKnown, NowReadError: after.ReadError}, nil
 	}
 	facts := ReconcileFacts{
 		BeforeStatus:      before.Status,
 		BeforeHadInstance: before.Found,
+		BeforeKnown:       beforeKnown,
 		NowFound:          after.Found,
 		NowStatus:         after.Status,
 		NowCurrentNodes:   after.CurrentNodes,

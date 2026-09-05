@@ -376,6 +376,11 @@ async function loadDetail(): Promise<void> {
     detail.value = next
     syncControl(next)
     lastUpdateAt.value = Date.now()
+    // 进入待对账后自动做一次只读对账（纲领第 4.4 节）：用户不需要先点一下才看到依据。
+    // 只在还没有结论时触发一次；对账是只读的，服务重启后它会顺带按运行事实重建现场。
+    if (next.pathRunStatusName === '待对账' && !reconcileView.value && !reconciling.value) {
+      void doReconcile()
+    }
     if (!graph.value) {
       graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
     }

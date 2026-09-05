@@ -86,4 +86,17 @@ grep -qF 'partialEffectWarned' web/src/views/RunDetailView.vue || {
   exit 1
 }
 
+printf '%s\n' '[F-018] 待对账现场可按运行事实重建，且不提供放行入口'
+# 根治「对账现场只在内存里」：写前基准随尝试行落库，现场可按运行事实重建；
+# 保留现场不等于还能放行——待对账的可用命令必须是空集。
+grep -qF 'before_facts' internal/repository/mysql/migrations/029_f018_attempt_before_facts.sql
+grep -qF 'BeforeFacts' internal/engine/step/executor.go
+grep -qF 'func (s *Service) Rehydrate' internal/engine/control/rehydrate.go
+grep -qF 'ensureReconcileSession' internal/service/run_orchestration.go
+grep -qF 'awaitingReconciliation' internal/engine/control/control.go
+grep -qF 'PauseStateUncertain' internal/engine/control/control.go
+# 基准缺失必须如实降级，不得把零值读成「写之前实例不存在」。
+grep -qF 'BeforeUnknown' internal/engine/reconcile/reconcile.go
+grep -qF '写之前的目标事实基准没有落库' internal/engine/reconcile/reconcile.go
+
 printf '%s\n' '[F-018] 对账契约全部通过'

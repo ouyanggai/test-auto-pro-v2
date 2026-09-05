@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,25 @@ import (
 // 为什么必须走两步而不是直接给一个同意步骤：主实例引用只在发起成功后才落库并回填内存现场，
 // 恢复场景（对已有实例直接动手）的接线属 F-019，当前实现拿不到它。
 func f018Session(t *testing.T) (*control.Service, *planmysql.RunRepository, uint64, *fakeTarget) {
+	harness := f018Harness(t)
+	return harness.controller, harness.store, harness.pathRunID, harness.fake
+}
+
+// f018Fixture 是 F-018 恢复链路用例的完整装配句柄：
+// 除控制服务外还带上仓储与执行器，便于用例另建一个控制服务模拟"服务重启"。
+type f018Fixture struct {
+	controller *control.Service
+	store      *planmysql.RunRepository
+	runService *run.Service
+	executor   *step.Executor
+	// database 只给需要直接构造异常数据的用例用（如把写前基准列清空模拟旧版本数据）。
+	database  *planmysql.Database
+	pathRunID uint64
+	fake      *fakeTarget
+}
+
+// f018Harness 把一条路径运行推进到「待对账」并返回完整装配句柄。
+func f018Harness(t *testing.T) f018Fixture {
 	t.Helper()
 	database := newF016ControlDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -71,7 +91,10 @@ func f018Session(t *testing.T) (*control.Service, *planmysql.RunRepository, uint
 	if fake.auditCalls != 1 {
 		t.Fatalf("一次尝试只允许一次写请求，实际同意调用 %d 次", fake.auditCalls)
 	}
-	return controller, store, pathRunID, fake
+	return f018Fixture{
+		controller: controller, store: store, runService: runService,
+		executor: executor, database: database, pathRunID: pathRunID, fake: fake,
+	}
 }
 
 // approveCurrentStep 放行当前等待放行的一步；取不到现场即失败，不静默跳过。
@@ -132,6 +155,15 @@ func TestF018NotEffectiveLeadsToReplay(t *testing.T) {
 	}
 	if fake.auditCalls != 2 {
 		t.Fatalf("重放应当只多发一次写请求（共 2 次），实际同意调用 %d 次", fake.auditCalls)
+	}
+	// 重放成功后现场必须真的离开待对账：本场景第 2 步是最后一步，因此路径运行收尾为已完成。
+	// 这一条同时锁住"重放后忘记清掉待对账标记"这个卡死缺陷——那会让后续步骤永远等不到放行入口。
+	pathRun, err := store.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		t.Fatalf("读取路径运行失败：%v", err)
+	}
+	if pathRun.Status != model.PathRunStatusCompleted {
+		t.Fatalf("重放确定成功且已是最后一步，路径运行应收尾为已完成，实际 %s", model.PathRunStatusName(pathRun.Status))
 	}
 
 	// 尝试事实：同一步两次尝试，第二次标记为重放；第一次尝试行落了对账结论与恢复动作。
@@ -316,5 +348,190 @@ func TestF018MissingDimensionDegradesToManualEnd(t *testing.T) {
 		InstanceStatus: "run", CurrentNode: "部门审批", Reporter: "自动化用例",
 	}); err == nil {
 		t.Fatal("人工结论登记后不应再接受恢复动作")
+	}
+}
+
+// TestF018AwaitingReconciliationSurvivesRestart 锁定根治项：服务重启后，
+// 停在待对账的路径运行仍然能对账、仍然能执行对账给出的唯一动作。
+//
+// 此前对账现场（本步预览、步骤游标、写之前的基准事实、已用重放次数）只在进程内存里，
+// 重启即丢失，这条路径运行就永远没有出路了——界面上待对账区域直接消失。
+// 现在这些事实都在库里：本用例用「另建一个控制服务」表达重启，全程不碰第一个服务的内存。
+func TestF018AwaitingReconciliationSurvivesRestart(t *testing.T) {
+	harness := f018Harness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// 写之前的基准必须已经随尝试行落库，否则重启后无从比较。
+	attempts, err := harness.store.ListRunAttempts(ctx, harness.pathRunID)
+	if err != nil {
+		t.Fatalf("读取尝试事实失败：%v", err)
+	}
+	uncertain := model.RunStepAttempt{}
+	for _, attempt := range attempts {
+		if attempt.Verdict == "uncertain" {
+			uncertain = attempt
+		}
+	}
+	if uncertain.ID == 0 {
+		t.Fatalf("前提不成立：没有不确定的尝试行：%+v", attempts)
+	}
+	if uncertain.BeforeFacts == "" {
+		t.Fatal("写之前的目标事实必须随尝试行落库，否则重启后对账没有基准")
+	}
+	t.Logf("落库的写前基准：%s", uncertain.BeforeFacts)
+
+	// 模拟重启：另建一个控制服务，内存现场是空的。
+	restarted := control.NewService(harness.runService, harness.executor, harness.store, time.Now)
+	if restarted.HasSession(harness.pathRunID) {
+		t.Fatal("新建的控制服务不应该已经有现场")
+	}
+	if _, err := restarted.ReconcileNow(ctx, harness.pathRunID); err == nil {
+		t.Fatal("未重建现场时对账应当失败，不能凭空对账")
+	}
+
+	// 按运行事实重建现场：调用方只提供计划与路径配置装配出的执行上下文。
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.PathRun.ID = harness.pathRunID
+	if err := restarted.Rehydrate(ctx, runCtx); err != nil {
+		t.Fatalf("按运行事实重建对账现场失败：%v", err)
+	}
+	if !restarted.HasSession(harness.pathRunID) {
+		t.Fatal("重建后必须有现场")
+	}
+	preview := restarted.CurrentPreview(harness.pathRunID)
+	if preview == nil || preview.StepNo != approveStep().Sequence {
+		t.Fatalf("重建出的游标必须指向那个不确定的步骤，实际 %+v", preview)
+	}
+
+	// 五维证据必须与重启前一致：基准是从库里还原的，不是猜的。
+	view, err := restarted.ReconcileNow(ctx, harness.pathRunID)
+	if err != nil {
+		t.Fatalf("重建后只读对账失败：%v", err)
+	}
+	t.Logf("重建后对账：结论=%s 动作=%s", view.Verdict, view.Action)
+	for _, reason := range view.Reasons {
+		t.Logf("  依据：%s", reason)
+	}
+	if view.Verdict != string(reconcile.VerdictNotEffective) || view.Action != string(reconcile.ActionReplay) {
+		t.Fatalf("重启前五维齐备且全部未变，重启后必须得到同样的结论：结论=%s 动作=%s", view.Verdict, view.Action)
+	}
+
+	// 对账给出的唯一动作必须真的可执行：重放为新尝试，并且只多发一次写请求。
+	if err := restarted.RecoveryAction(ctx, harness.pathRunID, reconcile.ActionReplay, model.RunManualConclusion{}); err != nil {
+		t.Fatalf("重建后重放必须可执行：%v", err)
+	}
+	if harness.fake.auditCalls != 2 {
+		t.Fatalf("重放应当只多发一次写请求（共 2 次），实际 %d 次", harness.fake.auditCalls)
+	}
+	after, err := harness.store.ListRunAttempts(ctx, harness.pathRunID)
+	if err != nil {
+		t.Fatalf("读取尝试事实失败：%v", err)
+	}
+	replayed := false
+	for _, attempt := range after {
+		if attempt.AttemptNo == 2 && attempt.IsReplay {
+			replayed = true
+		}
+	}
+	if !replayed {
+		t.Fatalf("重建后的重放必须落成 attempt=2 且标记重放的新尝试：%+v", after)
+	}
+}
+
+// TestF018RestartWithoutBaselineDegradesHonestly 锁定基准缺失时的诚实降级：
+// 尝试行没有写前基准（早于基准落库版本，或崩溃在落账之前）时，
+// 由实例事实派生的三个维度必须按缺失处理，结论只能是仍无法判定——
+// 绝不允许把零值基准读成「写之前实例不存在」，那会凭空造出一条与事实相反的依据。
+func TestF018RestartWithoutBaselineDegradesHonestly(t *testing.T) {
+	harness := f018Harness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// 模拟"这条尝试是旧版本落的"：把基准列清空（只有本用例这样做，产品代码永不更新该列）。
+	if _, err := harness.database.DB.ExecContext(ctx,
+		"UPDATE run_step_attempts SET before_facts = NULL WHERE path_run_id = ?", harness.pathRunID); err != nil {
+		t.Fatalf("构造基准缺失失败：%v", err)
+	}
+
+	restarted := control.NewService(harness.runService, harness.executor, harness.store, time.Now)
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.PathRun.ID = harness.pathRunID
+	if err := restarted.Rehydrate(ctx, runCtx); err != nil {
+		t.Fatalf("重建对账现场失败：%v", err)
+	}
+	view, err := restarted.ReconcileNow(ctx, harness.pathRunID)
+	if err != nil {
+		t.Fatalf("只读对账失败：%v", err)
+	}
+	t.Logf("基准缺失时对账：结论=%s 动作=%s", view.Verdict, view.Action)
+	for _, reason := range view.Reasons {
+		t.Logf("  依据：%s", reason)
+	}
+	if view.Verdict != string(reconcile.VerdictIndeterminate) || view.Action != string(reconcile.ActionManualEnd) {
+		t.Fatalf("基准缺失必须降级为仍无法判定且只给人工登记：结论=%s 动作=%s", view.Verdict, view.Action)
+	}
+	joined := strings.Join(view.Reasons, "；")
+	if !strings.Contains(joined, "写之前的目标事实基准没有落库") {
+		t.Fatalf("降级理由必须点明基准缺失，而不是含糊其辞：%v", view.Reasons)
+	}
+	if strings.Contains(joined, "写之前实例不存在") {
+		t.Fatalf("基准缺失时绝不能声称写之前实例不存在：%v", view.Reasons)
+	}
+	if err := restarted.RecoveryAction(ctx, harness.pathRunID, reconcile.ActionReplay, model.RunManualConclusion{}); err == nil {
+		t.Fatal("基准缺失时不允许重放")
+	}
+	if harness.fake.auditCalls != 1 {
+		t.Fatalf("被拒绝的重放绝不允许发出写请求，实际 %d 次", harness.fake.auditCalls)
+	}
+}
+
+// TestF018AwaitingReconciliationOffersNoApprovalCommand 锁定待对账现场不得出现放行入口。
+// 现场在不确定写之后被刻意保留（对账要用它），但保留现场不等于还能放行：
+// 界面上出现「执行一步」会与「一个结论只对应一个动作」直接冲突，点下去也必然被状态守卫拒绝，
+// 属纲领第 12 节的陈旧文案。重建出来的现场同样如此。
+func TestF018AwaitingReconciliationOffersNoApprovalCommand(t *testing.T) {
+	harness := f018Harness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	live := harness.controller.View(harness.pathRunID)
+	if live == nil {
+		t.Fatal("待对账后现场必须保留，否则无法对账")
+	}
+	if len(live.Commands) != 0 {
+		t.Fatalf("待对账现场不得提供任何放行类命令，实际 %v", live.Commands)
+	}
+	if live.PauseState != control.PauseStateUncertain {
+		t.Fatalf("待对账现场的控制状态应为写结果不确定，实际 %s", live.PauseState)
+	}
+	if live.StopReason == "" {
+		t.Fatal("待对账必须给出「为什么停在这里」的中文原因")
+	}
+	t.Logf("待对账现场：命令=%v 状态=%s 原因=%s", live.Commands, live.PauseState, live.StopReason)
+
+	// 直接尝试放行必须被拒绝，且不产生任何写请求。
+	preview := harness.controller.CurrentPreview(harness.pathRunID)
+	if preview == nil {
+		t.Fatal("待对账现场应当仍能给出本步预览")
+	}
+	if _, err := harness.controller.ApproveWithCommand(ctx, harness.pathRunID,
+		model.CommandStep, preview.StepNo, live.Version); err == nil {
+		t.Fatal("待对账的路径运行不允许放行")
+	}
+	if harness.fake.auditCalls != 1 {
+		t.Fatalf("被拒绝的放行绝不允许发出写请求，实际 %d 次", harness.fake.auditCalls)
+	}
+
+	// 重建出来的现场同样不给放行入口。
+	restarted := control.NewService(harness.runService, harness.executor, harness.store, time.Now)
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.PathRun.ID = harness.pathRunID
+	if err := restarted.Rehydrate(ctx, runCtx); err != nil {
+		t.Fatalf("重建对账现场失败：%v", err)
+	}
+	rebuilt := restarted.View(harness.pathRunID)
+	if rebuilt == nil || len(rebuilt.Commands) != 0 || rebuilt.PauseState != control.PauseStateUncertain {
+		t.Fatalf("重建现场不得提供放行类命令：%+v", rebuilt)
 	}
 }

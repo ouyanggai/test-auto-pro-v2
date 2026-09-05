@@ -468,6 +468,40 @@ type ReconcileViewDTO struct {
 	ReplayExhausted bool `json:"replayExhausted"`
 }
 
+// ensureReconcileSession 保证待对账路径运行有可用的控制现场：现场还在就直接用，
+// 不在（典型是服务重启过）就按已落库的运行事实重建一次。
+//
+// 为什么放在应用服务层：重建要用计划、路径配置、编译场景与节点真实标识装配执行上下文，
+// 这些只有本层能读到；控制层负责按运行事实补齐游标、写前基准、已用重放次数与断点。
+func (s *RunOrchestrationService) ensureReconcileSession(ctx context.Context, pathRunID uint64) error {
+	if s.control.HasSession(pathRunID) {
+		return nil
+	}
+	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return err
+	}
+	if !model.CanRecoverPathRunStatus(pathRun.Status) {
+		return &RunOrchestrationError{Kind: RunOrchestrationConflict,
+			Message: "路径运行当前为" + model.PathRunStatusName(pathRun.Status) + "，没有可对账的现场"}
+	}
+	run, err := s.store.GetRun(ctx, pathRun.RunID)
+	if err != nil {
+		return err
+	}
+	runCtx, err := s.buildRunContext(ctx, run.PlanID, pathRun.ExecutionPathID)
+	if err != nil {
+		return err
+	}
+	runCtx.PathRun = pathRun
+	runCtx.Run = run
+	if len(runCtx.Steps) == 0 {
+		return &RunOrchestrationError{Kind: RunOrchestrationConflict,
+			Message: "这条路径的编译场景为空，无法重建对账现场；请先完成动作编排后新建一次运行"}
+	}
+	return s.control.Rehydrate(ctx, runCtx)
+}
+
 // ReconcileNow 对待对账路径运行执行只读对账并返回结论。runID 是运行 ID。
 func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64) (*ReconcileViewDTO, error) {
 	pathRunID, err := s.resolvePathRunID(ctx, runID)
@@ -478,6 +512,10 @@ func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64
 	// 否则 recovery.log 有结论、network.log 与 curl.log 里却找不到对应请求，日志与记录无法互查。
 	scoped, err := s.withRunScope(ctx, pathRunID)
 	if err != nil {
+		return nil, err
+	}
+	// 现场可能因为服务重启而不在了：按运行事实重建，重建同样只读。
+	if err := s.ensureReconcileSession(scoped, pathRunID); err != nil {
 		return nil, err
 	}
 	view, err := s.control.ReconcileNow(scoped, pathRunID)
@@ -501,6 +539,9 @@ func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, runID uint
 	// 恢复动作要重新对账、可能重走七阶段（含真实写请求），同样必须带运行日志作用域。
 	scoped, err := s.withRunScope(ctx, pathRunID)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureReconcileSession(scoped, pathRunID); err != nil {
 		return nil, err
 	}
 	if err := s.control.RecoveryAction(scoped, pathRunID, reconcile_action(action), manual); err != nil {
