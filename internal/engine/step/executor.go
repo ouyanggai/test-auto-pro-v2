@@ -333,6 +333,12 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（演员与待办的新鲜复验）。
 	// 上报发生在发出之前：本次调用同步阻塞到目标响应返回，指示器在窗口内如实表达 submit 进行中。
 	reportPhase(approved, "submit", "写请求发送中，同步等待目标响应")
+	// 写请求前的租约续期：目标存在约 30 秒的慢请求，租约若在写请求期间过期，
+	// 另一执行者可能在核验未完成时领取推进权（评审缺陷 12：RenewLease 此前无调用方）。
+	// 续期失败说明推进权已易主，本步必须放弃且绝不发出写请求。
+	if err := e.runState.RenewLease(ctx, runCtx.PathRun.ID, fencingToken); err != nil {
+		return outcome, 0, err
+	}
 	e.refreshAndSubmit(ctx, runCtx, step, session, preview)
 	if !preview.writeSent {
 		// 零写入：写请求没有发出（发送前的待办新鲜复验失败或载荷缺失）。

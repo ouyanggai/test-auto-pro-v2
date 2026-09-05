@@ -46,12 +46,23 @@ func (c *Client) ProxyFor(request *http.Request) (*url.URL, error) {
 	if c == nil || c.httpClient == nil || c.httpClient.Transport == nil {
 		return nil, nil
 	}
-	transport, ok := c.httpClient.Transport.(*http.Transport)
-	if !ok || transport.Proxy == nil {
-		// 传输层被日志包装后代理语义不变（代理由内层 http.Transport 求值），直接给出绕过结论。
-		return nil, nil
+	// 传输层可能被日志包装（SetNetworkLogger）：沿包装链找到内层 *http.Transport 再求值，
+	// 绝不凭“链路不可识别”直接下“无代理”的结论——那会掩盖代理绕过被破坏的回归（评审缺陷 19）。
+	transport := c.httpClient.Transport
+	for transport != nil {
+		switch typed := transport.(type) {
+		case *http.Transport:
+			if typed.Proxy == nil {
+				return nil, nil
+			}
+			return typed.Proxy(request)
+		case *loggingTransport:
+			transport = typed.next
+		default:
+			return nil, nil
+		}
 	}
-	return transport.Proxy(request)
+	return nil, nil
 }
 
 type envelope struct {
