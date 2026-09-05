@@ -499,9 +499,13 @@ type runAggregate struct {
 
 // aggregateRunTerminal 在同事务内检查一次运行下的全部路径运行：
 // 还有任何非终态（等待/运行/核验/暂停/待对账）路径时返回 false，运行保持运行中；
-// 全部终态时按失败 > 停止 > 取消 > 完成的优先级给出聚合结论与中文汇总。
+// 待对账路径若已登记人工结论视为已闭合（按已停止计入，F-018 的结论语义保留在路径上）；
+// 全部闭合时按失败 > 停止 > 取消 > 完成的优先级给出聚合结论与中文汇总。
 func aggregateRunTerminal(ctx context.Context, tx *sql.Tx, runID uint64) (runAggregate, bool) {
-	rows, err := tx.QueryContext(ctx, "SELECT status FROM path_runs WHERE run_id = ?", runID)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT p.status, EXISTS(SELECT 1 FROM run_manual_conclusions m WHERE m.path_run_id = p.id) AS concluded
+		FROM path_runs p WHERE p.run_id = ?
+	`, runID)
 	if err != nil {
 		return runAggregate{}, false
 	}
@@ -510,8 +514,13 @@ func aggregateRunTerminal(ctx context.Context, tx *sql.Tx, runID uint64) (runAgg
 	total := 0
 	for rows.Next() {
 		var status string
-		if err := rows.Scan(&status); err != nil {
+		var concluded bool
+		if err := rows.Scan(&status, &concluded); err != nil {
 			return runAggregate{}, false
+		}
+		if model.PathRunStatus(status) == model.PathRunStatusAwaitingReconciliation && concluded {
+			// 人工结论已登记：待对账即终局，按停止计入运行聚合。
+			status = string(model.PathRunStatusStopped)
 		}
 		counts[model.PathRunStatus(status)]++
 		total++
@@ -561,6 +570,45 @@ func aggregateRunTerminal(ctx context.Context, tx *sql.Tx, runID uint64) (runAgg
 		}, true
 	}
 	return runAggregate{}, false
+}
+
+// FinishRunIfAllPathsClosed 在人工结论登记后尝试收尾运行聚合（同事务）：
+// 全部路径闭合（终态，或待对账且已登记人工结论）时按聚合优先级收尾并返回 true；
+// 还有未闭合路径时什么都不做并返回 false，运行保持运行中等其他路径收尾。
+func (r *RunRepository) FinishRunIfAllPathsClosed(ctx context.Context, runID uint64, now time.Time) (bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	aggregate, ok := aggregateRunTerminal(ctx, tx, runID)
+	if !ok {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE runs SET status = ?, result = COALESCE(result, ?), finished_at = COALESCE(finished_at, ?), updated_at = ? WHERE id = ? AND status = ?
+	`, string(aggregate.status), nullableRunResultOf(aggregate.result), now, now, runID, string(model.RunStatusRunning)); err != nil {
+		return false, err
+	}
+	if err := appendRunEvent(ctx, tx, model.RunEvent{
+		RunID: runID,
+		Kind:  "run_finished",
+		Label: fmt.Sprintf("运行收尾：%s（%s）", model.RunStatusName(aggregate.status), aggregate.summary),
+	}, now); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// nullableRunResultOf 把运行结果转可空存储形态。
+func nullableRunResultOf(result model.RunResult) any {
+	if result == "" {
+		return nil
+	}
+	return string(result)
 }
 
 // ClaimPathRunLease 领取路径运行的推进权：仅当未到终态且没有其他 Worker 的有效租约时成功。

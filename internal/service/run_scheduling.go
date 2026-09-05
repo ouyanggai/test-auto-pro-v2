@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -184,11 +185,16 @@ func (s *RunOrchestrationService) beginPathRunOnScheduler(ctx context.Context, r
 		s.finishPathRunFailed(ctx, pathRun.ID, "编译场景为空，路径运行置为失败")
 		return nil
 	}
+	// buildRunContext 留下的 PathRun/Run 只有占位身份（创建前的 ID 未知），
+	// 调度时真实身份已知，必须先填进上下文，否则 BeginPathRun 会按 0 号 ID 推进（实测踩坑）。
+	runCtx.Run = runRow
+	runCtx.PathRun = pathRun
 	// 预置断点随运行落库：每条路径开始时重放同一预置，重启恢复后同样生效。
 	presets := decodePresetBreakpoints(runRow.PresetBreakpoints)
 	if _, err := s.control.BeginPathRun(ctx, runCtx, runRow.Mode, presets); err != nil {
+		log.Printf("[schedule] BeginPathRun 失败 run=%d path_run=%d: %v", runRow.ID, pathRun.ID, err)
 		// 状态冲突说明并发调度已把它启动或它已到终态，不算失败；其余错误交回调度器下一轮重试。
-		if !errors.Is(err, repository.ErrRunStatusConflict) && !errors.Is(err, repository.ErrRunNotFound) {
+		if !errors.Is(err, repository.ErrRunStatusConflict) {
 			return err
 		}
 	}

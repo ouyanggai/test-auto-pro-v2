@@ -171,6 +171,72 @@ func TestF020WaitingPathCanBeCancelledForRunStop(t *testing.T) {
 	}
 }
 
+// TestF020ManualConclusionClosesRunAggregation 锁定 F-018×F-020 交界：
+// 待对账路径登记人工结论后即视为闭合；全部闭合时运行才收尾，未闭合时运行保持运行中。
+func TestF020ManualConclusionClosesRunAggregation(t *testing.T) {
+	store := openF020Store(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	runRow, pathRuns, err := store.runs.CreateRunWithPaths(ctx, repository.CreateRunInput{
+		PlanID: 4, ExecutionPathIDs: []uint64{41, 42},
+		Mode: model.RunModeSingleStep, Trigger: model.RunTriggerManual, MaxConcurrency: f020MaxConcurrency(1),
+	})
+	if err != nil {
+		t.Fatalf("创建运行失败：%v", err)
+	}
+	if _, err := store.runs.AdvanceRunStatus(ctx, runRow.ID, model.RunStatusPending, model.RunStatusRunning,
+		model.RunEvent{Kind: "run_started", Label: "测试"}, now); err != nil {
+		t.Fatalf("推进运行失败：%v", err)
+	}
+	for _, pathRun := range pathRuns {
+		if _, err := store.runs.AdvancePathRunStatus(ctx, pathRun.ID,
+			model.PathRunStatusWaiting, model.PathRunStatusRunning,
+			model.RunEvent{Kind: "path_run_started", Label: "开始"}, now); err != nil {
+			t.Fatalf("启动路径失败：%v", err)
+		}
+		if _, err := store.runs.AdvancePathRunStatus(ctx, pathRun.ID,
+			model.PathRunStatusRunning, model.PathRunStatusAwaitingReconciliation,
+			model.RunEvent{Kind: "path_run_awaiting", Label: "写结果不确定"}, now); err != nil {
+			t.Fatalf("置待对账失败：%v", err)
+		}
+	}
+	// 只登记第一条路径的结论：另一条仍未闭合，运行不得收尾。
+	if err := store.runs.AppendManualConclusion(ctx, model.RunManualConclusion{
+		RunID: runRow.ID, PathRunID: pathRuns[0].ID,
+		InstanceStatus: "none", CurrentNode: "无", Note: "验证", Reporter: "自动验证",
+	}, now); err != nil {
+		t.Fatalf("登记结论失败：%v", err)
+	}
+	closed, err := store.runs.FinishRunIfAllPathsClosed(ctx, runRow.ID, now)
+	if err != nil {
+		t.Fatalf("收尾检查失败：%v", err)
+	}
+	if closed {
+		t.Fatal("还有未闭合路径时运行不得收尾")
+	}
+	if err := store.runs.AppendManualConclusion(ctx, model.RunManualConclusion{
+		RunID: runRow.ID, PathRunID: pathRuns[1].ID,
+		InstanceStatus: "none", CurrentNode: "无", Note: "验证", Reporter: "自动验证",
+	}, now); err != nil {
+		t.Fatalf("登记第二条结论失败：%v", err)
+	}
+	closed, err = store.runs.FinishRunIfAllPathsClosed(ctx, runRow.ID, now)
+	if err != nil {
+		t.Fatalf("收尾检查失败：%v", err)
+	}
+	if !closed {
+		t.Fatal("全部闭合后运行应收尾")
+	}
+	final, err := store.runs.GetRun(ctx, runRow.ID)
+	if err != nil {
+		t.Fatalf("读取运行失败：%v", err)
+	}
+	if final.Status != model.RunStatusStopped {
+		t.Fatalf("人工结论闭合的运行应聚合为已停止，实际 %s", model.RunStatusName(final.Status))
+	}
+}
+
 // TestF020ScheduledClaimConsumedOnce 锁定定时一次性消费：并发/重复领取只有一个赢家。
 func TestF020ScheduledClaimConsumedOnce(t *testing.T) {
 	store := openF020Store(t)

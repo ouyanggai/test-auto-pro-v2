@@ -7,6 +7,7 @@ package schedule
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"test-auto-pro-v2/internal/model"
@@ -108,9 +109,11 @@ func (s *Scheduler) scheduleWaitingPaths(ctx context.Context) {
 				// 槽位已满：本运行的等待路径继续排队，处理下一个运行。
 				break
 			}
+			log.Printf("[schedule] 启动路径运行 run=%d path_run=%d", run.ID, pathRun.ID)
 			if err := s.startPathRun(ctx, run, pathRun); err != nil {
 				// 启动失败如实交给下一轮 Tick：路径运行仍在等待，数据库状态没有被破坏；
 				// 本运行停止补位，继续处理其他运行。
+				log.Printf("[schedule] 启动失败 run=%d path_run=%d: %v", run.ID, pathRun.ID, err)
 				break
 			}
 			active++

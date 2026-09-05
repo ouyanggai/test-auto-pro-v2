@@ -265,14 +265,10 @@ func (s *Service) RecoveryAction(ctx context.Context, pathRunID uint64, action r
 			Kind: "manual_conclusion", Label: "已登记人工核对结论，路径运行结束",
 		}, s.now())
 		// 路径运行按设计留在待对账（那本身就是它的结论），但运行聚合必须收尾：
-		// 待对账时运行故意保持"运行中"是为了把出路留给对账；人工结论一登记就再没有后续动作了，
-		// 运行还挂在"运行中"会让运行列表长期显示一个不会再动的陈旧状态（纲领第 12 节禁止陈旧文案）。
+		// 待对账时运行故意保持"运行中"是为了把出路留给对账；人工结论一登记，这条路径就闭合了。
+		// 多路径运行（F-020）只有全部路径闭合才收尾；单路径运行等价于立即收尾。
 		// 收尾取"已停止"：场景没有走完，成功与失败都不成立，而已发生的事实全部保留。
-		if _, err := s.store.AdvanceRunStatus(ctx, pathRun.RunID,
-			model.RunStatusRunning, model.RunStatusStopped, model.RunEvent{
-				Kind:  "run_finished",
-				Label: "写结果不确定且已登记人工核对结论，运行结束（已发生的事实全部保留）",
-			}, s.now()); err != nil {
+		if _, err := s.store.FinishRunIfAllPathsClosed(ctx, pathRun.RunID, s.now()); err != nil {
 			return err
 		}
 		s.recoveryLog.LogFact(pathRunID, fmt.Sprintf(

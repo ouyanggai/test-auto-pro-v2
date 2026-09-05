@@ -53,6 +53,8 @@ type RunStore interface {
 	ListPathRunsByRun(ctx context.Context, runID uint64) ([]model.PathRun, error)
 	// ListRunIDsNeedingScheduling 列出仍在运行中且带等待路径的运行 ID（调度器输入）。
 	ListRunIDsNeedingScheduling(ctx context.Context) ([]uint64, error)
+	// FinishRunIfAllPathsClosed 在人工结论登记后尝试收尾运行聚合；未全部闭合时不动作（F-020）。
+	FinishRunIfAllPathsClosed(ctx context.Context, runID uint64, now time.Time) (bool, error)
 	// ListDueScheduledPlans 列出到点尚未消费的计划（数据库时间为准，F-020 定时触发）。
 	ListDueScheduledPlans(ctx context.Context, now time.Time) ([]model.Plan, error)
 	// ClaimScheduledPlan 原子领取到点计划的一次性消费标记；返回是否领取成功。

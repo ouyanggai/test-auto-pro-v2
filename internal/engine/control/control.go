@@ -689,6 +689,26 @@ func (s *Service) Stop(ctx context.Context, pathRunID uint64) (model.PathRun, er
 	if pathRun.Status == model.PathRunStatusVerifying {
 		return pathRun, ErrStopDeferred
 	}
+	// 多路径串行排队中的等待路径没有在执行任何步骤：停止语义对它是「取消排队」，
+	// 直接进入已取消终态并释放队列位（F-020 失败隔离的对称操作）。
+	if pathRun.Status == model.PathRunStatusWaiting {
+		if _, err := s.runs.AdvancePathRun(ctx, pathRunID,
+			model.PathRunStatusWaiting, model.PathRunStatusCancelled, model.RunEvent{
+				Kind:  "path_run_cancelled",
+				Label: "用户取消排队中的路径运行",
+			}); err != nil {
+			return model.PathRun{}, err
+		}
+		if err := s.store.AppendRunControl(ctx, model.RunControl{
+			PathRunID: pathRunID, Kind: model.ControlFactStopped,
+			Source: model.RunControlSourceUI, CreatedAt: s.now(),
+		}, s.now()); err != nil {
+			return model.PathRun{}, err
+		}
+		s.clear(pathRunID)
+		pathRun.Status = model.PathRunStatusCancelled
+		return pathRun, nil
+	}
 	if pathRun.Status != model.PathRunStatusRunning {
 		return pathRun, fmt.Errorf("%w：路径运行当前为 %s，不能停止", ErrNotRunnable, model.PathRunStatusName(pathRun.Status))
 	}
