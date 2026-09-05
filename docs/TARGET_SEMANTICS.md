@@ -612,7 +612,7 @@ file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/clo
 line=1069
 contains=validateHandBranchAndReturnExecuteNode
 strength=源码可证明
-head=rsh-cloud-workflow-center@37c01d04eb10
+head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
 deployment=2026-09-05 真实提交实测（计划 11 路径 1121，运行 6 拒绝、运行 8 受理，trace 84f9669d11f6a3b4）
 ```
 
