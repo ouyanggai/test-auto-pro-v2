@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -515,7 +516,8 @@ func (s *RunOrchestrationService) RecoveryLogWriter() func(pathRunID uint64, mes
 		if scopeErr != nil {
 			return
 		}
-		line := logging.FormatLine(time.Now().UTC(), "info", append(scope.Fields(), logging.Field{Key: "message", Value: strings.ReplaceAll(message, " ", "_")}))
+		// 同一运行目录内的日志统一用本地时间：step.log、network.log 与 recovery.log 按时间对照才不错位。
+		line := logging.FormatLine(time.Now(), "info", append(scope.Fields(), logging.Field{Key: "message", Value: strings.ReplaceAll(message, " ", "_")}))
 		s.router.Bucket(scope, "recovery.log").WriteLine(line)
 	}
 }
@@ -587,7 +589,8 @@ func (s *RunOrchestrationService) controlLogWriter() func(pathRunID uint64, fiel
 			RunSeq:            strconv.FormatUint(run.RunNo, 10),
 			PathRunID:         strconv.FormatUint(pathRun.ID, 10),
 		}
-		line := logging.FormatLine(time.Now().UTC(), "info", append(scope.Fields(), toLoggingFields(fields)...))
+		// 同一运行目录内的日志统一用本地时间（与 step.log、network.log 一致，按时间对照不错位）。
+		line := logging.FormatLine(time.Now(), "info", append(scope.Fields(), toLoggingFields(fields)...))
 		s.router.Bucket(scope, "control.log").WriteLine(line)
 	}
 }
@@ -847,12 +850,14 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 				LogPath:     attempt.LogPath,
 				LogLine:     attempt.LogLine,
 			}
-			if timings, ok := phaseTimings[attempt.TraceID]; ok {
+			// 阶段时间轴按 step_id:attempt 归组（与 parsePhaseTimings 的键一致）。
+			timings, ok := phaseTimings[stepPhaseKey(stepRecord.StepNo, attempt.AttemptNo)]
+			if ok {
 				attemptDTO.PhaseDurations = timings
 			} else {
 				attemptDTO.PhaseDurationsNote = "step.log 阶段时间轴缺失，无法给出七阶段耗时"
 			}
-			attemptDTO.CurlBlock = curlBlockFor(router, attempt.TraceID)
+			attemptDTO.CurlBlock = curlBlockFor(router, attempt.TraceID, attempt.LogPath)
 			dto.Attempts = append(dto.Attempts, attemptDTO)
 		}
 		dtos = append(dtos, dto)
@@ -919,7 +924,7 @@ func nodeState(status model.PathRunStatus) RunNodeStateDTO {
 
 // readPhaseTimings 从 step.log 的阶段时间轴计算每个尝试的七阶段耗时（毫秒）。
 // 耗时来自日志行的 time=（服务端记录的事实），不做界面估算；
-// key 为尝试的 trace_id；phase 耗时 = 下一阶段开始时间 − 本阶段开始时间。
+// key 为 step_id:attempt（评审缺陷 5 的修复点）；phase 耗时 = 下一阶段开始时间 − 本阶段开始时间。
 func (s *RunOrchestrationService) readPhaseTimings(pathRunID uint64, attempts []model.RunStepAttempt) map[string]map[string]int64 {
 	result := map[string]map[string]int64{}
 	logPath := ""
@@ -937,7 +942,20 @@ func (s *RunOrchestrationService) readPhaseTimings(pathRunID uint64, attempts []
 		return result
 	}
 	defer file.Close()
+	return parsePhaseTimings(file)
+}
 
+// stepPhaseKey 生成阶段耗时表的归组键：step_id:attempt，与 step.log 行内两列一一对应。
+func stepPhaseKey(stepNo, attemptNo int) string {
+	return strconv.Itoa(stepNo) + ":" + strconv.Itoa(attemptNo)
+}
+
+// parsePhaseTimings 从 step.log 内容计算每个尝试的七阶段耗时（毫秒）。
+// 归组键固定为 step_id:attempt：plan..prepare 各阶段行先于写请求、天生没有 trace_id，
+// 若按 trace_id 归组会把同一次尝试的行拆到两个键里，界面将永远拿不到完整阶段耗时
+//（评审缺陷 5）；写请求之后的行另带 trace_id/curl_trace_id，只用于跨日志互查，不参与归组。
+func parsePhaseTimings(rd io.Reader) map[string]map[string]int64 {
+	result := map[string]map[string]int64{}
 	type phaseMoment struct {
 		phase string
 		at    time.Time
@@ -946,21 +964,17 @@ func (s *RunOrchestrationService) readPhaseTimings(pathRunID uint64, attempts []
 		steps map[string][]phaseMoment
 	}
 	timelines := map[string]*timeline{}
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(rd)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		fields := parseLogLine(scanner.Text())
 		stepID := fields["step_id"]
 		phase := fields["phase"]
-		traceID := fields["trace_id"]
 		at, err := time.ParseInLocation("2006-01-02_15:04:05", fields["time"], time.Local)
 		if stepID == "" || phase == "" || err != nil {
 			continue
 		}
-		key := traceID
-		if key == "" {
-			key = stepID + ":" + fields["attempt"]
-		}
+		key := stepID + ":" + fields["attempt"]
 		entry, ok := timelines[key]
 		if !ok {
 			entry = &timeline{steps: map[string][]phaseMoment{}}
@@ -999,16 +1013,19 @@ func (s *RunOrchestrationService) readPhaseTimings(pathRunID uint64, attempts []
 	return result
 }
 
-// curlBlockFor 从 curl.log 提取指定 trace_id 的完整请求块（begin 到 end），与日志文件逐字同源。
-func curlBlockFor(router *logging.Router, traceID string) string {
-	if router == nil || traceID == "" {
+// curlBlockFor 从本次运行目录的 curl.log 提取指定 trace_id 的完整请求块（begin 到 end），与日志逐字同源。
+// 运行目录由尝试记录里的 step.log 相对路径推导（step.log 与三个网络日志同目录）——
+// 绝不扫描全部计划与运行目录：详情页轮询会随历史运行数量线性变慢（评审缺陷 11）。
+func curlBlockFor(router *logging.Router, traceID, stepLogPath string) string {
+	if router == nil || traceID == "" || stepLogPath == "" {
 		return ""
 	}
-	matches, err := filepath.Glob(filepath.Join(router.Root(), "plans", "*", "runs", "*", "*", "curl.log*"))
+	runDir := filepath.Join(router.Root(), filepath.Dir(filepath.FromSlash(stepLogPath)))
+	matches, err := filepath.Glob(filepath.Join(runDir, "curl.log*"))
 	if err != nil {
 		return ""
 	}
-	// 运行目录数量有限，逐个扫描直到命中 trace_id；找不到就返回空，界面给中文说明。
+	// 目录里至多两三个 curl 日志文件，逐个扫描直到命中 trace_id；找不到就返回空，界面给中文说明。
 	for _, path := range matches {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -1124,4 +1141,9 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 		GateAllowed: preview.GateAllowed, GateReason: preview.GateReason,
 		GateItems: preview.GateItems, Facts: facts, BlockReason: preview.BlockReason,
 	}
+}
+
+// ParsePhaseTimingsForTest 暴露 step.log 阶段时间轴解析，供 test 目录下的定向用例锁定归组键与耗时口径。
+func ParsePhaseTimingsForTest(rd io.Reader) map[string]map[string]int64 {
+	return parsePhaseTimings(rd)
 }

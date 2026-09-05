@@ -340,6 +340,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		log.Phase("settle", step.Sequence, attemptNo, "零写入失败已落账，路径运行置为失败")
 		return outcome, lineNo, nil
 	}
+	// 写请求已发出：从这一行起 step.log 携带链路 ID，submit 之后的阶段行可与 network.log、curl.log 互查。
+	if preview.writeTraceID != "" {
+		log.SetTraceID(preview.writeTraceID)
+	}
 	log.Phase("submit", step.Sequence, attemptNo, submitSummary(preview.writeErr, preview.writeTraceID, preview.writeDurationMs))
 
 	// 发起成功后尽早落库主实例引用（独占不可改写）：即使核验前崩溃，
