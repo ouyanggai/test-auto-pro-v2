@@ -66,7 +66,7 @@ function postCommand(type: string, payload: Record<string, unknown> = {}, signal
 }
 
 // loadRuntime 只把 SID 传给当前 iframe 内存会话，并按目标 runtime 协议装载原始模板、权限、页面和 values。
-async function loadRuntime(): Promise<Record<string, unknown>> {
+async function loadRuntime(retry = true): Promise<Record<string, unknown>> {
   if (disposed) return {}
   const generation = ++runtimeGeneration
   runtimeActive = true
@@ -97,6 +97,13 @@ async function loadRuntime(): Promise<Record<string, unknown>> {
   }
   catch (caught) {
     if (disposed || !runtimeActive || generation !== runtimeGeneration) return {}
+    // 目标表单初始化包含多个远程选项请求，单次瞬断不应让已能回显的数据被清空。
+    // load 是幂等初始化，保留当前 iframe 会话并只重试一次，避免无限重试掩盖真实错误。
+    if (retry) {
+      await new Promise(resolve => window.setTimeout(resolve, 300))
+      if (!disposed && runtimeActive && generation === runtimeGeneration) return loadRuntime(false)
+      return {}
+    }
     resetRuntime(false)
     if (!disposed) emit('error', caught instanceof Error ? caught.message : '表单运行时加载失败')
     return {}

@@ -54,13 +54,6 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		template, unsupported = workspaceRuntimeTemplate(snapshot)
 	}
 	issues := append([]model.HistoryDataIssue(nil), source.dataSource.Issues...)
-	if runtimeErr != nil {
-		issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{Code: "HISTORY_TEMPLATE_INSTANCE_FALLBACK",
-			Message: "实例绑定表单版本读取失败，已按当前模板回显，字段可能对不上，请重试或重新核对字段", Blocking: false}})
-	}
-	if len(unsupported) > 0 {
-		issues = appendHistoryIssues(issues, historyIssuesFromStrings("HISTORY_RUNTIME_TEMPLATE_INVALID", unsupported))
-	}
 	values := map[string]any{}
 	patches := []model.HistoryBranchPatch{}
 	runtimeValidation := model.HistoryRuntimeValidation{}
@@ -70,9 +63,18 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		patches = decodeWorkspacePatches(stored.BranchPatches)
 		runtimeValidation = decodeWorkspaceValidation(stored.RuntimeValidation)
 		storedIssues := decodeWorkspaceIssues(stored.Issues)
-		if len(storedIssues) > 0 {
+		// 保存成功后，来源投影仍会带有“尚未按当前路径核对”的初始占位问题。
+		// 已存在的配置行才是本路径最后一次服务端复验事实；即使问题数组为空，也必须覆盖该占位问题。
+		if strings.TrimSpace(stored.DataStatus) != "" {
 			issues = storedIssues
 		}
+	}
+	if runtimeErr != nil {
+		issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{Code: "HISTORY_TEMPLATE_INSTANCE_FALLBACK",
+			Message: "实例绑定表单版本读取失败，已按当前模板回显，字段可能对不上，请重试或重新核对字段", Blocking: false}})
+	}
+	if len(unsupported) > 0 {
+		issues = appendHistoryIssues(issues, historyIssuesFromStrings("HISTORY_RUNTIME_TEMPLATE_INVALID", unsupported))
 	}
 	// 来源配置行可能只保存了来源模式而没有有效数据；只有 empty 或未创建配置时才初始化快照，避免把用户明确保存的空对象改回历史正文。
 	if source.snapshot != nil && (!found || strings.TrimSpace(stored.DataStatus) == "" || stored.DataStatus == model.HistoryDataStatusEmpty) {
