@@ -165,8 +165,25 @@ async function requestOnce<T>(path: string, init?: RequestInit, signal?: AbortSi
 }
 
 // fetchPlanRuns 列出计划下的运行（最新在前）。
-export function fetchPlanRuns(planId: string, signal?: AbortSignal): Promise<RunSummary[]> {
-  return requestOnce<RunSummary[]>(`/api/plans/${encodeURIComponent(planId)}/runs`, { method: 'GET' }, signal)
+export function fetchPlanRuns(planId: string, signal?: AbortSignal, status = ''): Promise<RunSummary[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  return requestOnce<RunSummary[]>(`/api/plans/${encodeURIComponent(planId)}/runs${query}`, { method: 'GET' }, signal)
+}
+
+// RunEventItem 是一条运行事件的公开形态（F-021 事件流时间线）。
+export interface RunEventItem {
+  id: number
+  pathRunId?: number
+  kind: string
+  label: string
+  createdAt: string
+}
+
+// fetchRunEvents 增量读取事件流：afterEventId 为游标，只返回其后的事件。
+export function fetchRunEvents(runId: string, afterEventId: number, pathRunId?: number): Promise<RunEventItem[]> {
+  const params = new URLSearchParams({ afterEventId: String(afterEventId) })
+  if (pathRunId) params.set('pathRunId', String(pathRunId))
+  return requestOnce<RunEventItem[]>(`/api/runs/${encodeURIComponent(runId)}/events?${params.toString()}`, { method: 'GET' })
 }
 
 // fetchRunDetail 读取路径运行详情。

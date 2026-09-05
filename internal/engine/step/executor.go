@@ -298,7 +298,11 @@ func gateSnapshotJSON(preview *StepPreview, branchTarget string) string {
 		Reason       string                     `json:"reason,omitempty"`
 		Items        []model.ActionPrecondition `json:"items"`
 		BranchTarget string                     `json:"branchTarget,omitempty"`
-	}{Allowed: preview.GateAllowed, Reason: preview.GateReason, Items: preview.GateItems, BranchTarget: branchTarget}
+		// 按节点权限构造表单数据的两个清单：用户据此解释"这个字段为什么没被提交/为什么变了"。
+		FormOverlaid []string `json:"formOverlaid,omitempty"`
+		FormWithheld []string `json:"formWithheld,omitempty"`
+	}{Allowed: preview.GateAllowed, Reason: preview.GateReason, Items: preview.GateItems,
+		BranchTarget: branchTarget, FormOverlaid: preview.FormOverlaid, FormWithheld: preview.FormWithheld}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return ""

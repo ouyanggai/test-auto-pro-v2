@@ -20,6 +20,7 @@ import {
 } from '../features/runs/api'
 import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { BreakpointInput, PathRunDetail, ReconcileView } from '../features/runs/api'
+import { fetchRunEvents, type RunEventItem } from '../features/runs/api'
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
 import { pathConfigNodeKey } from '../features/path-configuration/logic'
 import RunNodePanel from '../features/runs/RunNodePanel.vue'
@@ -30,6 +31,9 @@ import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
 const route = useRoute()
 const router = useRouter()
 const runId = String(route.params.runId || '')
+// 事件流（F-021）：按数据库自增键增量追加，轮询只取新事件，历史不重排。
+const runEvents = ref<RunEventItem[]>([])
+let lastEventID = 0
 // selectedPathRunID 是多路径运行里当前查看的路径运行（路由查询 ?path=）；缺省由后端取第一条。
 const selectedPathRunID = ref<number>(Number(route.query.path || 0) || 0)
 
@@ -394,6 +398,7 @@ async function loadDetail(): Promise<void> {
     detail.value = next
     syncControl(next)
     lastUpdateAt.value = Date.now()
+    void pollEvents()
     // 进入待对账后自动做一次只读对账（纲领第 4.4 节）：用户不需要先点一下才看到依据。
     // 只在还没有结论时触发一次；对账是只读的，服务重启后它会顺带按运行事实重建现场。
     if (next.pathRunStatusName === '待对账' && !reconcileView.value && !reconciling.value) {
@@ -435,11 +440,27 @@ function schedulePoll(): void {
       if (currentNodeKey.value && !followPaused.value) {
         centerCurrentNode()
       }
+      void pollEvents()
     } catch {
       // 单次轮询失败不打断页面：下一次轮询会继续。
     }
     schedulePoll()
   }, Math.max(500, detail.value.pollIntervalMs || 2000))
+}
+
+// pollEvents 增量拉取事件流：游标为已取到的最大事件 ID，只追加不重排（F-021）。
+async function pollEvents(): Promise<void> {
+  try {
+    const fresh = await fetchRunEvents(runId, lastEventID, selectedPathRunID.value || undefined)
+    for (const event of fresh) {
+      if (event.id > lastEventID) {
+        runEvents.value.push(event)
+        lastEventID = event.id
+      }
+    }
+  } catch {
+    // 事件流拉取失败不打断页面：下一次轮询会带游标重试，已有事件不丢失。
+  }
 }
 
 // centerCurrentNode 把当前步节点平移到操作区中央。
@@ -743,6 +764,16 @@ onBeforeUnmount(() => {
     <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
     <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
 
+    <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放“状态怎么变的”。 -->
+    <section v-if="runEvents.length" class="run-detail__events" aria-label="事件流">
+      <h4>事件流（{{ runEvents.length }}）</h4>
+      <ol class="run-detail__event-list">
+        <li v-for="event in runEvents" :key="event.id">
+          <span class="run-detail__event-time">{{ event.createdAt }}</span>
+          <span>{{ event.label }}</span>
+        </li>
+      </ol>
+    </section>
     <div v-if="loading" class="run-detail__loading"><NSpin size="small" /><span>正在读取运行详情……</span></div>
     <NEmpty v-else-if="!detail" :description="errorText || '未找到该运行记录。'" />
 
@@ -989,6 +1020,37 @@ onBeforeUnmount(() => {
 .run-detail__reconcile-verdict { font-weight: 600; }
 .run-detail__reconcile-note { color: var(--warning-color, #f0a020); }
 .run-detail__manual-form { display: grid; gap: 6px; max-width: 420px; }
+
+.run-detail__events {
+  margin: 0 0 8px;
+  border: 1px solid v-bind('themeVars.borderColor');
+  border-radius: 4px;
+  padding: 8px 12px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.run-detail__events h4 {
+  margin: 0 0 6px;
+  font-weight: 500;
+  color: v-bind('themeVars.textColor3');
+}
+
+.run-detail__event-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.run-detail__event-time {
+  color: v-bind('themeVars.textColor3');
+  margin-right: 8px;
+  font-variant-numeric: tabular-nums;
+}
 
 .run-detail__paths {
   display: flex;

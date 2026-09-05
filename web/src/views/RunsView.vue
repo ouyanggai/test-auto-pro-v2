@@ -30,13 +30,24 @@ async function loadPlans(): Promise<void> {
   }
 }
 
-// loadRuns 拉取所选计划的运行列表。
+// runStatusFilter 是运行状态筛选：空串表示全部；筛选在服务端完成，空结果与读取失败语义分开。
+const runStatusFilter = ref('')
+const runStatusOptions = [
+  { label: '全部状态', value: '' },
+  { label: '运行中', value: 'running' },
+  { label: '已完成', value: 'completed' },
+  { label: '失败', value: 'failed' },
+  { label: '已停止', value: 'stopped' },
+  { label: '已取消', value: 'cancelled' },
+]
+
+// loadRuns 拉取所选计划的运行列表（可按状态筛选）。
 async function loadRuns(): Promise<void> {
   if (!selectedPlanId.value) return
   loading.value = true
   errorText.value = ''
   try {
-    runs.value = await fetchPlanRuns(selectedPlanId.value)
+    runs.value = await fetchPlanRuns(selectedPlanId.value, undefined, runStatusFilter.value)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行列表，请重试'
     runs.value = []
@@ -62,6 +73,13 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
     </header>
 
     <div class="runs-view__toolbar">
+      <NSelect
+        v-model:value="runStatusFilter"
+        class="runs-view__status-select"
+        :options="runStatusOptions"
+        placeholder="全部状态"
+        @update:value="loadRuns"
+      />
       <NSelect
         v-model:value="selectedPlanId"
         class="runs-view__plan-select"
@@ -138,6 +156,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 }
 
 .runs-view__plan-select { width: 280px; }
+.runs-view__status-select { width: 160px; }
 .runs-view__error { color: var(--error-color, #d03050); }
 .runs-view__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
 

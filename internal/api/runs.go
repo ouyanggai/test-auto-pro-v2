@@ -44,6 +44,8 @@ type RunOrchestrator interface {
 	RecoveryAction(ctx context.Context, runID uint64, pathRunID uint64, action string, manual model.RunManualConclusion) (*service.PathRunDetailDTO, error)
 	Stop(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	ListRuns(ctx context.Context, planID uint64) ([]service.RunSummaryDTO, error)
+	ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int) ([]service.RunEventDTO, error)
+	ListRunsWithFilters(ctx context.Context, planID uint64, status string) ([]service.RunSummaryDTO, error)
 }
 
 // registerRunControlRoutes 注册启动、详情、放行与停止端点。
@@ -60,6 +62,26 @@ func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) 
 	mux.HandleFunc("POST /api/runs/{runId}/pause", handlePause(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/reconcile", handleReconcile(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/recovery", handleRecoveryAction(orchestrator))
+	// F-021 事件流时间线：只读增量读取，afterEventID 为游标。
+	mux.HandleFunc("GET /api/runs/{runId}/events", handleRunEvents(orchestrator))
+}
+
+// handleRunEvents 增量读取一次运行的事件流：afterEventID 之后的按数据库顺序返回。
+func handleRunEvents(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
+		if !ok {
+			return
+		}
+		afterID, _ := strconv.ParseUint(strings.TrimSpace(request.URL.Query().Get("afterEventId")), 10, 64)
+		limit, _ := strconv.Atoi(strings.TrimSpace(request.URL.Query().Get("limit")))
+		events, err := orchestrator.ListRunEvents(request.Context(), runID, afterID, limit)
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, events)
+	}
 }
 
 // startRunRequest 是启动请求体：勾选路径集合（F-020 多路径）+ 模式三选一（默认单步）+ 启动前断点预置。
@@ -140,14 +162,23 @@ func handleStartRun(orchestrator RunOrchestrator) http.HandlerFunc {
 	}
 }
 
-// handleListRuns 列出计划下的运行，供运行列表页进入详情。
+// handleListRuns 列出计划下的运行，供运行列表页进入详情；status 查询参数可选筛选。
 func handleListRuns(orchestrator RunOrchestrator) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		planID, ok := parseExecutionPathID(response, request.PathValue("planId"))
 		if !ok {
 			return
 		}
-		items, err := orchestrator.ListRuns(request.Context(), planID)
+		status := strings.TrimSpace(request.URL.Query().Get("status"))
+		var (
+			items []service.RunSummaryDTO
+			err   error
+		)
+		if status == "" {
+			items, err = orchestrator.ListRuns(request.Context(), planID)
+		} else {
+			items, err = orchestrator.ListRunsWithFilters(request.Context(), planID, status)
+		}
 		if err != nil {
 			writeRunControlError(response, err)
 			return

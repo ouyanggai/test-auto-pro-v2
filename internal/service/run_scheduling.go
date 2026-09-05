@@ -39,6 +39,34 @@ type RunStartDTO struct {
 	Paths            []RunPathSummaryDTO `json:"paths"`
 }
 
+// RunEventDTO 是一条运行事件的公开形态（F-021 事件流时间线）。
+type RunEventDTO struct {
+	ID        uint64 `json:"id"`
+	PathRunID uint64 `json:"pathRunId,omitempty"`
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// ListRunEvents 增量读取一次运行的事件流：afterEventID 为游标，只返回其后的事件。
+// 只读，不触发目标调用，不改变任何运行事实。
+func (s *RunOrchestrationService) ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int) ([]RunEventDTO, error) {
+	events, err := s.store.ListRunEvents(ctx, runID, afterEventID, limit)
+	if err != nil {
+		return nil, err
+	}
+	dtos := make([]RunEventDTO, 0, len(events))
+	for _, event := range events {
+		dto := RunEventDTO{ID: event.ID, Kind: event.Kind, Label: event.Label}
+		if event.PathRunID != nil {
+			dto.PathRunID = *event.PathRunID
+		}
+		dto.CreatedAt = event.CreatedAt.Local().Format("2006-01-02 15:04:05")
+		dtos = append(dtos, dto)
+	}
+	return dtos, nil
+}
+
 // RunPathSummaryDTO 是一条路径运行在运行级视图里的摘要。
 type RunPathSummaryDTO struct {
 	PathRunID  uint64 `json:"pathRunId"`

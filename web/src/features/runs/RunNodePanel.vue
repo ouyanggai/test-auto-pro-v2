@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
-import type { RunStep, PathRunDetail, RunPreview } from './api'
+import type { RunStep, RunStepAttempt, PathRunDetail, RunPreview } from './api'
 
 // RunNodePanel 是固定侧栏：展示一个节点上已发生的运行事实。
 // 写结果不确定只给结论与依据，不渲染任何重试或继续入口（纲领第 4.4 节）。
@@ -48,6 +48,15 @@ function toggleCurl(stepNo: number): void {
   expandedCurl.value = expandedCurl.value === String(stepNo) ? '' : String(stepNo)
 }
 
+// copyLogRef 复制日志相对路径与行号：粘贴到 code-server 搜索即可直达（三次点击标准）。
+async function copyLogRef(attempt: RunStepAttempt): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(`${attempt.logPath} 第 ${attempt.logLine} 行`)
+  } catch {
+    // 剪贴板不可用时静默失败：用户仍可在日志文件里定位。
+  }
+}
+
 // copyCurl 复制原始字节内容（不做界面美化），供直接重放。
 async function copyCurl(step: RunStep): Promise<void> {
   const block = step.attempts[0]?.curlBlock || ''
@@ -71,6 +80,9 @@ interface GateSnapshotShape {
   allowed?: boolean
   reason?: string
   items?: Array<{ label?: string; key?: string; required?: boolean; present?: boolean }>
+  // 按节点权限构造表单数据的两个清单（F-024）：解释“这个字段为什么没提交/为什么变了”。
+  formOverlaid?: string[]
+  formWithheld?: string[]
 }
 
 function gateSnapshotLines(step: RunStep): string[] {
@@ -87,6 +99,12 @@ function gateSnapshotLines(step: RunStep): string[] {
     if (item.present) lines.push(`${name}：已满足`)
     else if (item.required) lines.push(`${name}：未满足`)
     else lines.push(`${name}：未提供（非必填）`)
+  }
+  if (snapshot.formOverlaid && snapshot.formOverlaid.length > 0) {
+    lines.push(`按本节点权限覆盖的字段：${snapshot.formOverlaid.join('、')}`)
+  }
+  if (snapshot.formWithheld && snapshot.formWithheld.length > 0) {
+    lines.push(`按本节点权限未携带的字段：${snapshot.formWithheld.join('、')}`)
   }
   return lines
 }
@@ -176,7 +194,10 @@ const previewFactsText = computed<string[]>(() => {
             </span>
           </div>
           <p v-else class="run-panel__phase-note">{{ attempt.phaseDurationsNote || '暂无阶段耗时' }}</p>
-          <p class="run-panel__log">日志：{{ attempt.logPath }} 第 {{ attempt.logLine }} 行</p>
+          <p class="run-panel__log">
+            日志：{{ attempt.logPath }} 第 {{ attempt.logLine }} 行
+            <button type="button" class="run-panel__link" @click="copyLogRef(attempt)">复制日志位置</button>
+          </p>
           <div class="run-panel__curl-actions">
             <button type="button" class="run-panel__link" @click="toggleCurl(step.stepNo)">
               {{ expandedCurl === String(step.stepNo) ? '收起请求与响应正文' : '展开请求与响应正文' }}

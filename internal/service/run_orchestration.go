@@ -843,6 +843,23 @@ func (s *RunOrchestrationService) ListRuns(ctx context.Context, planID uint64) (
 	if err != nil {
 		return nil, err
 	}
+	return s.runSummaries(ctx, runs)
+}
+
+// ListRunsWithFilters 按状态筛选计划下的运行（F-021 列表筛选）。
+func (s *RunOrchestrationService) ListRunsWithFilters(ctx context.Context, planID uint64, status string) ([]RunSummaryDTO, error) {
+	if _, err := s.plans.Get(ctx, planID); err != nil {
+		return nil, err
+	}
+	runs, err := s.store.ListRunsFiltered(ctx, planID, status, 0, 100)
+	if err != nil {
+		return nil, err
+	}
+	return s.runSummaries(ctx, runs)
+}
+
+// runSummaries 把运行行聚合成列表摘要：路径数量、调度方式与中文状态汇总。
+func (s *RunOrchestrationService) runSummaries(ctx context.Context, runs []model.Run) ([]RunSummaryDTO, error) {
 	items := make([]RunSummaryDTO, 0, len(runs))
 	for _, run := range runs {
 		item := RunSummaryDTO{

@@ -237,6 +237,51 @@ func TestF020ManualConclusionClosesRunAggregation(t *testing.T) {
 	}
 }
 
+// TestF021RunEventsIncrementalAndStatusFilter 锁定 F-021 增量语义：
+// 事件按自增键升序且游标只取其后；状态筛选只返回匹配的运行。
+func TestF021RunEventsIncrementalAndStatusFilter(t *testing.T) {
+	store := openF020Store(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	runRow, _, err := store.runs.CreateRunWithPaths(ctx, repository.CreateRunInput{
+		PlanID: 5, ExecutionPathIDs: []uint64{51},
+		Mode: model.RunModeSingleStep, Trigger: model.RunTriggerManual, MaxConcurrency: f020MaxConcurrency(1),
+	})
+	if err != nil {
+		t.Fatalf("创建运行失败：%v", err)
+	}
+	if _, err := store.runs.AdvanceRunStatus(ctx, runRow.ID, model.RunStatusPending, model.RunStatusRunning,
+		model.RunEvent{Kind: "run_started", Label: "开始"}, now); err != nil {
+		t.Fatalf("推进运行失败：%v", err)
+	}
+	all, err := store.runs.ListRunEvents(ctx, runRow.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("读取事件失败：%v", err)
+	}
+	if len(all) < 2 {
+		t.Fatalf("至少应有创建与开始两条事件，实际 %d", len(all))
+	}
+	cursor := all[0].ID
+	rest, err := store.runs.ListRunEvents(ctx, runRow.ID, cursor, 100)
+	if err != nil {
+		t.Fatalf("增量读取失败：%v", err)
+	}
+	for _, event := range rest {
+		if event.ID <= cursor {
+			t.Fatalf("增量读取返回了游标之前的事件 %d", event.ID)
+		}
+	}
+	filtered, err := store.runs.ListRunsFiltered(ctx, 5, string(model.RunStatusRunning), 0, 100)
+	if err != nil || len(filtered) != 1 {
+		t.Fatalf("状态筛选应返回运行中的 1 条：%v %v", filtered, err)
+	}
+	none, err := store.runs.ListRunsFiltered(ctx, 5, string(model.RunStatusCompleted), 0, 100)
+	if err != nil || len(none) != 0 {
+		t.Fatalf("已完成筛选应为空：%v %v", none, err)
+	}
+}
+
 // TestF020ScheduledClaimConsumedOnce 锁定定时一次性消费：并发/重复领取只有一个赢家。
 func TestF020ScheduledClaimConsumedOnce(t *testing.T) {
 	store := openF020Store(t)

@@ -199,6 +199,67 @@ func (r *RunRepository) ListPathRunsByRun(ctx context.Context, runID uint64) ([]
 	return pathRuns, rows.Err()
 }
 
+// ListRunEvents 读取一次运行的事件流（F-021 增量读取）：afterID 为游标，只返回其后的事件。
+// 按数据库自增键升序，前端轮询只追加，历史不重排。
+func (r *RunRepository) ListRunEvents(ctx context.Context, runID uint64, afterID uint64, limit int) ([]model.RunEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, run_id, path_run_id, kind, label, detail, created_at
+		FROM run_events WHERE run_id = ? AND id > ? ORDER BY id ASC LIMIT ?
+	`, runID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := make([]model.RunEvent, 0)
+	for rows.Next() {
+		var event model.RunEvent
+		var pathRunID sql.NullInt64
+		var detail sql.NullString
+		if err := rows.Scan(&event.ID, &event.RunID, &pathRunID, &event.Kind, &event.Label, &detail, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		if pathRunID.Valid {
+			value := uint64(pathRunID.Int64)
+			event.PathRunID = &value
+		}
+		event.Detail = detail.String
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+// ListRunsFiltered 按状态筛选计划下的运行（最新在前，游标分页：beforeID 为上一页最后一行运行 ID）。
+func (r *RunRepository) ListRunsFiltered(ctx context.Context, planID uint64, status string, beforeID uint64, limit int) ([]model.Run, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if beforeID == 0 {
+		beforeID = ^uint64(0)
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, status, result, started_at, finished_at, created_at, updated_at
+		FROM runs
+		WHERE plan_id = ? AND (? = '' OR status = ?) AND id < ?
+		ORDER BY id DESC LIMIT ?
+	`, planID, status, status, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := make([]model.Run, 0)
+	for rows.Next() {
+		run, scanErr := scanRun(rows.Scan)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
+
 // ClaimScheduledPlan 原子领取到点的单次定时启动：只有 scheduled_consumed_at 仍为空的行会置为已消费。
 // 返回是否领取成功：并发扫描或重启后的重复扫描只有一个赢家，其余全部落空（一次性消费）。
 func (r *RunRepository) ClaimScheduledPlan(ctx context.Context, planID uint64, now time.Time) (bool, error) {
