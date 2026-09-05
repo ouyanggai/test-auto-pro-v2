@@ -58,6 +58,40 @@ func TestF024KeyFieldFillHintsPointAtTheNodeThatCanFillIt(t *testing.T) {
 	}
 }
 
+// TestF024FillAfterConditionBlocks 锁定位置矛盾阻断（评审 P1）：
+// 条件字段唯一能填的节点排在引用它的条件节点之后时，条件判定发生时工具还没有机会填这个值，
+// 分支只能按目标现有数据走——决定性字段必须阻断，而不是给出一个误导性的"稍后自动填写"提示。
+func TestF024FillAfterConditionBlocks(t *testing.T) {
+	fields := []model.HistoryKeyField{
+		{Path: "accountantOpinion", Label: "会计意见", Decisive: true, ConditionNodeIDs: []string{"branch"}},
+		{Path: "outsideField", Label: "外部字段", Decisive: true},
+	}
+	hinted := service.KeyFieldFillHintsForTest(f024Tree(), f024Reachable(), fields)
+	byPath := map[string]model.HistoryKeyField{}
+	for _, field := range hinted {
+		byPath[field.Path] = field
+	}
+	if got := byPath["accountantOpinion"]; !got.FillAfterCondition {
+		t.Fatalf("唯一可填节点在条件节点之后的字段必须标出位置矛盾：%+v", got)
+	}
+	issues := service.UnfillableKeyFieldIssuesForTest(f024Tree(), f024Reachable(), fields)
+	found := false
+	for _, issue := range issues {
+		if issue.Code == "CONDITION_FIELD_FILL_AFTER_CONDITION" {
+			found = true
+			if issue.Path != "accountantOpinion" || !issue.Blocking {
+				t.Fatalf("位置矛盾阻断的字段或标记不对：%+v", issue)
+			}
+		}
+		if issue.Code == "CONDITION_FIELD_NOT_FILLABLE" && issue.Path == "accountantOpinion" {
+			t.Fatalf("位置矛盾字段不应再按不可填阻断：%+v", issue)
+		}
+	}
+	if !found {
+		t.Fatalf("缺少位置矛盾类阻断：%+v", issues)
+	}
+}
+
 // TestF024UnfillableDecisiveConditionFieldBlocks 锁定阻断：决定性条件字段在这条路线上
 // 一个节点都填不了时必须阻断，不能让运行到那一步再按目标现有数据莫名走分支。
 func TestF024UnfillableDecisiveConditionFieldBlocks(t *testing.T) {

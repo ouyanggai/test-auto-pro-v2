@@ -180,12 +180,12 @@ const planMutable = computed(() => plan.value?.status === 'not_started')
 const formReadOnly = computed(() => !planMutable.value)
 // 表单权限视图：目标按节点声明字段权限，真实用户在一个节点上只能改该节点声明可编辑的字段。
 // 默认发起人视图；切到审批节点视图后只放开那个节点能改的字段，数据仍是同一份表单数据。
-const selectedFormViewName = ref('')
+const selectedFormViewKey = ref('')
 const formNodeViews = computed(() => dataWorkspace.value?.nodeViews ?? [])
-const selectedFormView = computed(() => formNodeViews.value.find(view => view.nodeName === selectedFormViewName.value) ?? null)
+const selectedFormView = computed(() => formNodeViews.value.find(view => view.viewKey === selectedFormViewKey.value) ?? null)
 const runtimeForm = computed(() => {
   if (!dataWorkspace.value) return null
-  const base = { ...dataWorkspace.value, readOnly: formReadOnly.value, viewName: selectedFormViewName.value }
+  const base = { ...dataWorkspace.value, readOnly: formReadOnly.value, viewKey: selectedFormViewKey.value }
   const view = selectedFormView.value
   if (!view) return base
   // 按视图权限渲染：该节点声明可编辑的字段放开，目标自己声明隐藏的字段隐藏，其余按只读显示。
@@ -200,11 +200,11 @@ const runtimeForm = computed(() => {
 // 节点视图默认选中发起人（配置阶段的表单永远处于发起态）；换路径重载后重新归位。
 watch(formNodeViews, views => {
   if (views.length === 0) {
-    selectedFormViewName.value = ''
+    selectedFormViewKey.value = ''
     return
   }
-  if (views.some(view => view.nodeName === selectedFormViewName.value)) return
-  selectedFormViewName.value = (views.find(view => view.isInitiator) ?? views[0]).nodeName
+  if (views.some(view => view.viewKey === selectedFormViewKey.value)) return
+  selectedFormViewKey.value = (views.find(view => view.isInitiator) ?? views[0]).viewKey
 }, { immediate: true })
 const pathAnalysis = computed(() => graph.value && currentPath.value ? analyzeExecutionPath(graph.value, currentPath.value.choices) : null)
 const selectedNode = computed(() => configurationByGraphNodeID.value.get(selectedNodeID.value) ?? null)
@@ -691,7 +691,15 @@ async function handleBaseFormDataSaved() {
     dataWorkspace.value = data
     runtimeStats.value = { filledEditable: 0, manualPending: 0 }
     const frame = formFrame.value
-    if (frame) applyRuntimeFormState(await frame.setValues(data.effectiveFormData, controller.signal))
+    if (frame) {
+      // 与 runtimeForm 同一口径：当前视图不回显的字段（只有后续节点才能填）不推给运行时，
+      // 否则"更换历史数据"会把整份样本值重新回显到本应留空的视图里。
+      const view = selectedFormView.value
+      const values = view && view.blankFields.length > 0
+        ? Object.fromEntries(Object.entries(data.effectiveFormData ?? {}).filter(([key]) => !view.blankFields.includes(key)))
+        : data.effectiveFormData
+      applyRuntimeFormState(await frame.setValues(values, controller.signal))
+    }
   }
   catch (caught) {
     if (!controller.signal.aborted) formError.value = publicPageError(caught)
@@ -760,7 +768,7 @@ async function saveFormData(confirmationToken = '') {
       runtimeValidation,
       // 带上当前视图：服务端只接受该节点有编辑权限的字段，其余恢复为基线值，
       // 避免"没回显的样本数据"被这次保存清空。
-      viewNodeName: selectedFormViewName.value,
+      viewKey: selectedFormViewKey.value,
       ...(confirmationToken ? { confirmationToken } : {}),
     }, controller.signal)
     if (!isActiveFormOperation(epoch, frame)) return
@@ -972,7 +980,7 @@ void loadPage()
         <div class="path-configuration-page__form-body">
         <form-data-hints-panel
           v-if="dataWorkspace"
-          v-model:selected-view="selectedFormViewName"
+          v-model:selected-view="selectedFormViewKey"
           :key-fields="dataWorkspace.keyFields ?? []"
           :issues="[...(dataWorkspace.issues ?? []), ...runtimeCoordinationIssues]"
           :branch-patches="dataWorkspace.branchPatches"

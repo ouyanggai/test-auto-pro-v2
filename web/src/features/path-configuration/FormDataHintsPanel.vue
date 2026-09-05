@@ -9,7 +9,7 @@ const props = defineProps<{
   keyFields: PathConfigKeyField[]
   issues: HistoryDataIssue[]
   branchPatches: PathConfigurationBranchPatch[]
-  // nodeViews 是按节点切换的填写视图；selectedView 是当前视图的节点名称。
+  // nodeViews 是按节点切换的填写视图；selectedView 是当前视图的节点键（视图身份）。
   nodeViews?: PathConfigNodeView[]
   selectedView?: string
 }>()
@@ -18,7 +18,7 @@ const emit = defineEmits<{ 'update:selectedView': [value: string] }>()
 // viewOptions 按路线顺序给出可切换的填写视图；只有一个视图时不展示切换器。
 const viewOptions = computed(() => (props.nodeViews ?? []).map(view => ({
   label: view.isInitiator ? `${view.nodeName}（发起）` : view.nodeName,
-  value: view.nodeName,
+  value: view.viewKey,
 })))
 
 const open = ref(true)

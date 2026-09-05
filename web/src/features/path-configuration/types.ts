@@ -63,6 +63,8 @@ export interface PathConfigKeyField {
 // PathConfigNodeView 是按节点切换的表单权限视图；节点只用中文名称标识。
 export interface PathConfigNodeView {
   nodeName: string
+  // viewKey 是视图身份（真实节点键）：同名节点各自成视图，切换与保存按键匹配。
+  viewKey: string
   isInitiator: boolean
   permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
   // blankFields 是在这个视图里不回显样本数据的字段：只有后续节点才有编辑权限的字段。
@@ -88,8 +90,8 @@ export interface PathConfigurationDataInput {
   values: Record<string, unknown>
   runtimeValidation: PathConfigurationRuntimeValidation
   confirmationToken?: string
-  // viewNodeName 是保存时所处的按节点填写视图；服务端据此把该视图无权限的字段恢复为基线值。
-  viewNodeName?: string
+  // viewKey 是保存时所处的按节点填写视图；服务端据此把该视图无权限的字段恢复为基线值。
+  viewKey?: string
 }
 
 export interface PathConfigurationRouteChange {

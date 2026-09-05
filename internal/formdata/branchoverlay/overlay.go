@@ -1343,6 +1343,9 @@ type KeyField struct {
 	Operators  []string `json:"operators,omitempty"`
 	Branches   []string `json:"branches,omitempty"`
 	Decisive   bool     `json:"decisive"`
+	// ConditionNodeIDs 是引用该字段的条件路由节点：填写时机必须与条件判定位置对照，
+	// 否则会提示用户“在条件判定之后的节点自动填写”，而分支其实已按缺值判定。
+	ConditionNodeIDs []string `json:"conditionNodeIds,omitempty"`
 }
 
 // KeyFields 只投影当前路径涉及的条件字段供界面参考，不执行补丁搜索也不修改任何值。
@@ -1383,6 +1386,9 @@ func KeyFields(input Input) []KeyField {
 			}
 			if branch := strings.TrimSpace(reference.BranchID); branch != "" && !containsPath(field.Branches, branch) {
 				field.Branches = append(field.Branches, branch)
+			}
+			if routeNode := strings.TrimSpace(reference.RouteNodeID); routeNode != "" && !containsPath(field.ConditionNodeIDs, routeNode) {
+				field.ConditionNodeIDs = append(field.ConditionNodeIDs, routeNode)
 			}
 		}
 	}

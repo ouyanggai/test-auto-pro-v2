@@ -100,7 +100,7 @@ type RunContext struct {
 	// 实例状态维度说成"写之前实例不存在、现在存在"，凭空造出一条与事实相反的依据。
 	LastBeforeFactsKnown bool
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。
-	// 必须按原始字节透传到写请求，禁止先解码再重新序列化（数字字面量会被改写）。
+	// 以 json.Number 解码后再序列化，数字字面量保持原样（原生 JSON 列会改写数字的教训见迁移 023）。
 	EffectiveFormData []byte
 	// NodeEditableFields 是路线上每个节点声明的可编辑字段（键=编译场景的 nodeKey）。
 	// 与 Nodes 里的同名字段同源，单独留一份是为了在没有节点信息时也能判断"这个字段属于哪个节点"。

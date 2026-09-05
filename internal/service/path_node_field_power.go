@@ -105,14 +105,20 @@ func fieldFillNode(powers []routeNodePower, field string) (routeNodePower, bool)
 	return routeNodePower{}, false
 }
 
-// keyFieldFillHints 为每个条件字段算出填写时机：谁能填、是不是发起人。
+// keyFieldFillHints 为每个条件字段算出填写时机：谁能填、是不是发起人、最早填写点是否在条件判定之后。
 // 目标条件求值只认本次写请求带上来的表单数据（语义清单第 17 条），
-// 所以发起人无权编辑的条件字段可以由后续有权节点在自己的写请求里带上，分支按那次请求重新计算。
-func keyFieldFillHints(fields []model.HistoryKeyField, powers []routeNodePower) []model.HistoryKeyField {
+// 所以发起人无权编辑的条件字段可以由后续有权节点在自己的写请求里带上，分支按那次请求重新计算；
+// 但如果第一个有权节点排在引用该字段的条件节点之后，条件判定发生时工具还没有机会填这个值，
+// 这种位置矛盾必须如实标出（FillAfterCondition），决定性字段据此阻断。
+func keyFieldFillHints(fields []model.HistoryKeyField, powers []routeNodePower, reachable []string) []model.HistoryKeyField {
 	if len(powers) == 0 || !routeDeclaresFieldPowers(powers) {
 		return fields
 	}
 	initiator := powers[0]
+	position := make(map[string]int, len(reachable))
+	for index, id := range reachable {
+		position[id] = index
+	}
 	result := make([]model.HistoryKeyField, 0, len(fields))
 	for _, field := range fields {
 		node, found := fieldFillNode(powers, field.Path)
@@ -126,6 +132,16 @@ func keyFieldFillHints(fields []model.HistoryKeyField, powers []routeNodePower) 
 		default:
 			field.FillNodeName = node.Name
 			field.FillableAtStart = false
+		}
+		if found && !field.FillableAtStart {
+			fillPos, fillOK := position[node.NodeID]
+			for _, conditionNode := range field.ConditionNodeIDs {
+				conditionPos, conditionOK := position[conditionNode]
+				if fillOK && conditionOK && fillPos > conditionPos {
+					field.FillAfterCondition = true
+					break
+				}
+			}
 		}
 		result = append(result, field)
 	}
@@ -141,21 +157,35 @@ func unfillableKeyFieldIssues(fields []model.HistoryKeyField, powers []routeNode
 	}
 	issues := make([]model.HistoryDataIssue, 0)
 	for _, field := range fields {
-		if !field.Decisive || field.FillNodeName != "" {
+		if !field.Decisive {
 			continue
 		}
-		label := field.Label
-		if strings.TrimSpace(label) == "" {
-			label = field.Path
+		// 中文标签缺失时用通用名称，绝不把内部字段路径当文案显示（纲领 12.1）。
+		label := strings.TrimSpace(field.Label)
+		if label == "" {
+			label = "条件字段"
 		}
-		issues = append(issues, model.HistoryDataIssue{
-			Code:    "CONDITION_FIELD_NOT_FILLABLE",
-			Path:    field.Path,
-			Fields:  []string{field.Path},
-			Message: "条件字段「" + label + "」在这条路线上没有任何节点有编辑权限，工具填不出这个值，分支走向只能由目标现有数据决定，请人工确认",
-			// 阻断：这条路线的分支命中无法由工具保证，继续跑等于把结果交给运气。
-			Blocking: true,
-		})
+		if field.FillNodeName == "" {
+			issues = append(issues, model.HistoryDataIssue{
+				Code:    "CONDITION_FIELD_NOT_FILLABLE",
+				Path:    field.Path,
+				Fields:  []string{field.Path},
+				Message: "条件字段「" + label + "」在这条路线上没有任何节点有编辑权限，工具填不出这个值，分支走向只能由目标现有数据决定，请人工确认",
+				// 阻断：这条路线的分支命中无法由工具保证，继续跑等于把结果交给运气。
+				Blocking: true,
+			})
+			continue
+		}
+		// 第一个有权节点在条件判定之后：分支早已按当时表单数据走完，配置值无法影响走向。
+		if field.FillAfterCondition {
+			issues = append(issues, model.HistoryDataIssue{
+				Code:     "CONDITION_FIELD_FILL_AFTER_CONDITION",
+				Path:     field.Path,
+				Fields:   []string{field.Path},
+				Message:  "条件字段「" + label + "」最早要等到「" + field.FillNodeName + "」节点才有编辑权限，但分支条件在那之前就会按当时的表单数据判定，工具无法用它影响分支走向，请人工确认或调整路径",
+				Blocking: true,
+			})
+		}
 	}
 	if len(issues) == 0 {
 		return nil
@@ -191,6 +221,7 @@ func nodeFormViews(tree *target.FlowNodeTemplate, reachable []string, values map
 		}
 		views = append(views, model.PathFormNodeView{
 			NodeName:    power.Name,
+			ViewKey:     power.NodeID,
 			IsInitiator: power.Type == "start",
 			Permissions: permissions,
 			BlankFields: laterOnlyFields(powers, index, values),
@@ -232,13 +263,13 @@ func laterOnlyFields(powers []routeNodePower, index int, values map[string]any) 
 
 // KeyFieldFillHintsForTest 暴露条件字段填写时机投影，供 test 目录下的定向用例锁定行为。
 func KeyFieldFillHintsForTest(tree *target.FlowNodeTemplate, reachable []string, fields []model.HistoryKeyField) []model.HistoryKeyField {
-	return keyFieldFillHints(fields, routeNodePowers(tree, reachable))
+	return keyFieldFillHints(fields, routeNodePowers(tree, reachable), reachable)
 }
 
 // UnfillableKeyFieldIssuesForTest 暴露不可填条件字段的阻断问题，供 test 目录下的定向用例锁定行为。
 func UnfillableKeyFieldIssuesForTest(tree *target.FlowNodeTemplate, reachable []string, fields []model.HistoryKeyField) []model.HistoryDataIssue {
 	powers := routeNodePowers(tree, reachable)
-	return unfillableKeyFieldIssues(keyFieldFillHints(fields, powers), powers)
+	return unfillableKeyFieldIssues(keyFieldFillHints(fields, powers, reachable), powers)
 }
 
 // NodeFormViewsForTest 暴露按节点表单权限视图，供 test 目录下的定向用例锁定行为。
@@ -246,15 +277,16 @@ func NodeFormViewsForTest(tree *target.FlowNodeTemplate, reachable []string, val
 	return nodeFormViews(tree, reachable, values)
 }
 
-// viewEditableFields 返回指定节点视图（按中文节点名称匹配）声明可编辑的字段。
+// viewEditableFields 返回指定节点视图（按视图节点键匹配）声明可编辑的字段。
+// 用节点键而不是中文名称做身份：同一流程里同名节点很常见，按名匹配会命中第一个并让后面的视图失效。
 // 找不到视图时返回 false：调用方据此判断"这次保存没有按节点视图编辑"，不做任何权限收窄。
-func viewEditableFields(tree *target.FlowNodeTemplate, reachable []string, viewNodeName string) ([]string, bool) {
-	name := strings.TrimSpace(viewNodeName)
-	if name == "" {
+func viewEditableFields(tree *target.FlowNodeTemplate, reachable []string, viewKey string) ([]string, bool) {
+	key := strings.TrimSpace(viewKey)
+	if key == "" {
 		return nil, false
 	}
 	for _, power := range routeNodePowers(tree, reachable) {
-		if strings.TrimSpace(power.Name) == name {
+		if power.NodeID == key {
 			return power.Editable, true
 		}
 	}

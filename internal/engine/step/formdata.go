@@ -62,9 +62,11 @@ type FormDataPlan struct {
 }
 
 // BuildNodeFormData 按上述规则构造本步写请求的表单数据。
-// instanceCurrent 是目标实例当前的完整表单数据（发起时为 nil）；它已由适配层以 json.Number 解码，
-// 重新编码不会改写数字字面量，因此可以安全地合并后再序列化。
-func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, instanceCurrent map[string]any) (FormDataPlan, error) {
+// hasInstance 区分「发起（主实例还不存在）」与「实例存在但表单数据为空」：
+// 后者必须以空对象为基线走实例分支，绝不能退回发起分支把整份历史配置当载荷——
+// 那正是本函数要根治的"历史快照覆盖上游已填内容"（评审 P2：读空静默换基线）。
+// instanceCurrent 已由适配层以 json.Number 解码，重新编码不会改写数字字面量。
+func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, instanceCurrent map[string]any, hasInstance bool) (FormDataPlan, error) {
 	configured, err := decodeConfiguredFormData(runCtx.EffectiveFormData)
 	if err != nil {
 		return FormDataPlan{}, err
@@ -73,7 +75,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 	editable := nodeEditableFields(runCtx, compiled.NodeKey)
 
 	var merged map[string]any
-	if len(instanceCurrent) > 0 {
+	if hasInstance {
 		copied, err := jsonvalues.DeepCopyObject(instanceCurrent)
 		if err != nil {
 			return FormDataPlan{}, err

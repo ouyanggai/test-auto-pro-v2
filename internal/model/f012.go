@@ -233,11 +233,16 @@ type HistoryKeyField struct {
 	Operators  []string `json:"operators,omitempty"`
 	Branches   []string `json:"branches,omitempty"`
 	Decisive   bool     `json:"decisive"`
+	// ConditionNodeIDs 是引用该字段的条件路由节点真实标识：填写时机要与条件判定位置对照。
+	ConditionNodeIDs []string `json:"conditionNodeIds,omitempty"`
 	// FillNodeName 是这条路线上第一个有权编辑该字段的节点名称；为空表示没有任何节点能填。
 	// FillableAtStart 为真表示发起人就能填，否则这个值会在 FillNodeName 那个节点执行时自动带上
 	//（目标条件求值只认本次写请求带上来的表单数据，见语义清单第 17 条）。
 	FillNodeName    string `json:"fillNodeName,omitempty"`
 	FillableAtStart bool   `json:"fillableAtStart"`
+	// FillAfterCondition 为真表示第一个有权节点在引用该字段的条件节点之后：
+	// 条件判定发生时工具还没有机会填这个值，分支只能按目标现有数据走，决定性字段必须阻断。
+	FillAfterCondition bool `json:"fillAfterCondition,omitempty"`
 }
 
 type PathConfigurationF012 struct {
@@ -275,10 +280,11 @@ type PathConfigurationDataInput struct {
 	Values            map[string]any           `json:"values"`
 	RuntimeValidation HistoryRuntimeValidation `json:"runtimeValidation"`
 	ConfirmationToken string                   `json:"confirmationToken,omitempty"`
-	// ViewNodeName 是保存时所处的按节点填写视图（节点中文名称，空串表示未按节点视图编辑）。
+	// ViewKey 是保存时所处的按节点填写视图标识（视图的真实节点键，空串表示未按节点视图编辑）。
+	// 用节点键而不是中文名称做身份：同名节点的视图必须能各自选中与保存（评审 P2）。
 	// 一个视图只能改该节点有编辑权限的字段：其余字段一律以服务端已有基线为准，
 	// 因此在没有权限的视图里"不回显样本值"不会把样本数据保存成空。
-	ViewNodeName string `json:"viewNodeName,omitempty"`
+	ViewKey string `json:"viewKey,omitempty"`
 }
 
 // PathConfigurationRouteChange 描述保存前后实际路径变化及目标路径覆盖影响。

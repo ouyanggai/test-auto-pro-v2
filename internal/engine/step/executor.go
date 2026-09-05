@@ -225,7 +225,9 @@ func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled
 		return FormDataPlan{}, nil
 	}
 	var current map[string]any
+	hasInstance := false
 	if instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef); instanceRef != "" {
+		hasInstance = true
 		read, err := RunWithRetry(ctx, e.policy, "实例表单数据读取", func() (map[string]any, error) {
 			return e.target.ReadInstanceCurrentData(ctx, session, instanceRef)
 		}, nil)
@@ -234,7 +236,8 @@ func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled
 		}
 		current = read
 	}
-	return BuildNodeFormData(runCtx, compiled, current)
+	// 实例存在但数据为空时必须保持实例分支（空基线），不得退回发起分支提交整份历史配置。
+	return BuildNodeFormData(runCtx, compiled, current, hasInstance)
 }
 
 // formBaseName 返回表单数据基线的中文说明，供 step.log 一眼看出这份载荷是从哪来的。

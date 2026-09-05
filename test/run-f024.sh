@@ -52,6 +52,9 @@ for required in \
   fi
 done
 
+printf '%s\n' '[F-024] 界面结构契约（纲领 12.1 反向断言）'
+./test/contracts/f024/ui_structure.sh
+
 printf '%s\n' '[F-024] 写载荷不再直接透传历史快照'
 if grep -n 'FormData:.*runCtx.EffectiveFormData' internal/engine/step/gate.go; then
   printf '%s\n' '[F-024] 写请求不得直接透传整份历史表单数据，必须经 BuildNodeFormData 按节点权限构造' >&2

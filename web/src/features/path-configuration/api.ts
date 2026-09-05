@@ -83,6 +83,7 @@ function normalizePathConfigurationData(value: PathConfigurationDataWorkspace): 
     nodeViews: Array.isArray(value?.nodeViews)
       ? value.nodeViews.map(view => ({
         nodeName: String(view?.nodeName ?? ''),
+        viewKey: String(view?.viewKey ?? ''),
         isInitiator: view?.isInitiator === true,
         permissions: Array.isArray(view?.permissions)
           ? view.permissions.map(permission => ({ field: String(permission?.field ?? ''), power: permission?.power === 'edit' || permission?.power === 'hide' ? permission.power : 'only_read' }))

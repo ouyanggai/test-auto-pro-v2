@@ -78,8 +78,10 @@ type PathVueCustomFieldOption struct {
 // 目标按节点声明字段权限（语义清单第 11 条），真实用户在一个节点上只能改该节点声明为 edit 的字段；
 // 配置阶段按同一口径分节点渲染，用户才能看清"这个字段到底由谁在哪一步填"。
 type PathFormNodeView struct {
-	// NodeName 是节点的中文业务名称；界面按名称切换视图，不暴露目标内部标识。
+	// NodeName 是节点的中文业务名称；界面用它做选项文字，不暴露目标内部标识。
 	NodeName string `json:"nodeName"`
+	// ViewKey 是视图身份（该视图节点的真实节点键）：同名节点各自成视图，切换与保存按键匹配。
+	ViewKey string `json:"viewKey"`
 	// IsInitiator 标记发起人视图；发起态是配置阶段的默认视图。
 	IsInitiator bool `json:"isInitiator"`
 	// Permissions 是该节点的字段权限清单：edit 为该节点声明可编辑，hide 为该节点声明隐藏。

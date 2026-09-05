@@ -46,7 +46,7 @@ func decodeFormPayload(t *testing.T, payload json.RawMessage) map[string]json.Ra
 // 发起人可编辑字段、以及没有任何节点声明的表单自身伴生键照常提交。
 func TestF024SubmitDropsFieldsOnlyLaterNodesCanEdit(t *testing.T) {
 	runCtx := f024RunContext(`{"contractSum":12.30,"classificationId":["c-1"],"classificationId__virtualName":"施工类","classificationName":"施工类","accountantOpinion":"历史意见","initiatorId":"u-1"}`)
-	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil)
+	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false)
 	if err != nil {
 		t.Fatalf("构造发起表单数据失败：%v", err)
 	}
@@ -83,7 +83,7 @@ func TestF024ApproveMergesInstanceDataAndOverlaysOnlyNodeEditable(t *testing.T) 
 		"classificationName": "施工类",
 		"legalOpinion":       "法务已经填过的内容",
 	}
-	plan, err := step.BuildNodeFormData(runCtx, approveStep(), instanceCurrent)
+	plan, err := step.BuildNodeFormData(runCtx, approveStep(), instanceCurrent, true)
 	if err != nil {
 		t.Fatalf("构造审批表单数据失败：%v", err)
 	}
@@ -108,6 +108,32 @@ func TestF024ApproveMergesInstanceDataAndOverlaysOnlyNodeEditable(t *testing.T) 
 	}
 }
 
+// TestF024EmptyInstanceDataKeepsInstanceBaseline 锁定评审 P2 缺陷的回归：
+// 实例存在但表单数据为空（目标返回 data=null）时，基线必须是空对象，
+// 绝不能退回发起分支把整份历史配置当载荷提交覆盖上游数据。
+func TestF024EmptyInstanceDataKeepsInstanceBaseline(t *testing.T) {
+	runCtx := f024RunContext(`{"contractSum":500001,"accountantOpinion":"配置意见","classificationId":["c-1"],"classificationName":"施工类"}`)
+	runCtx.PathRun.MainInstanceRef = "instance-1"
+	plan, err := step.BuildNodeFormData(runCtx, approveStep(), nil, true)
+	if err != nil {
+		t.Fatalf("构造审批表单数据失败：%v", err)
+	}
+	if !plan.BaseFromInstance {
+		t.Fatal("实例存在但数据为空时基线仍属于实例分支")
+	}
+	values := decodeFormPayload(t, plan.Payload)
+	// 本节点可编辑的配置值照常携带（真实审批人在这一步也填得出它们）；
+	// 非本节点可编辑的配置值（classificationId）必须被挡住，历史整份配置不得借道进入。
+	for _, key := range []string{"classificationId", "classificationName"} {
+		if _, exists := values[key]; exists {
+			t.Fatalf("空基线下非本节点可编辑的配置值不得携带，字段 %s 不应出现：%v", key, values)
+		}
+	}
+	if _, exists := values["accountantOpinion"]; !exists {
+		t.Fatalf("本节点可编辑字段应按配置值携带：%v", values)
+	}
+}
+
 // TestF024CompanionKeysFollowTheirOwnControl 锁定伴生键跟随本体：
 // 目标只对控件本体声明权限，而条件求值读的是 classificationId__virtualName（语义清单第 15 条），
 // 伴生键漏掉分支就算不出来，因此本体可编辑时伴生键必须一起提交。
@@ -117,7 +143,7 @@ func TestF024CompanionKeysFollowTheirOwnControl(t *testing.T) {
 		EditableFields: []string{"classificationId"}}
 	runCtx.NodeEditableFields["node-start"] = []string{"classificationId"}
 	runCtx.NodeEditableFields["node-audit"] = []string{"accountantUserName"}
-	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil)
+	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false)
 	if err != nil {
 		t.Fatalf("构造发起表单数据失败：%v", err)
 	}

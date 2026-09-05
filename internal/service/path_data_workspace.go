@@ -325,9 +325,10 @@ func workspaceKeyFields(snapshot target.PathConfigurationSnapshot, choices []mod
 		result = append(result, model.HistoryKeyField{
 			Path: field.Path, Label: labels[field.Path], HasCurrent: field.HasCurrent, Current: field.Current,
 			Candidates: field.Candidates, Operators: field.Operators, Branches: field.Branches, Decisive: field.Decisive,
+			ConditionNodeIDs: field.ConditionNodeIDs,
 		})
 	}
-	return keyFieldFillHints(result, routeNodePowers(snapshot.Tree, reachable))
+	return keyFieldFillHints(result, routeNodePowers(snapshot.Tree, reachable), reachable)
 }
 
 // SaveData 保存复制 form-runtime 捕获的原始表单数据，并在实际路径变化时要求一次性确认。
@@ -354,7 +355,7 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	// 按节点视图保存时收窄写入范围：一个节点上真实用户只能改该节点声明可编辑的字段。
 	// 其余字段一律恢复为服务端基线值——这些字段在没有编辑权限的视图里刻意不回显样本值，
 	// 若照浏览器回传原样落盘就会把样本数据保存成空，执行到真正拥有它的节点时就没得可填了。
-	if editable, ok := viewEditableFields(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs, input.ViewNodeName); ok {
+	if editable, ok := viewEditableFields(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs, input.ViewKey); ok {
 		restoreFieldsOutsideView(values, s.workspaceBaselineValues(current, found, source, snapshot, path), editable)
 	}
 	actual := branchoverlay.ResolveActualPath(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: values})
@@ -414,6 +415,12 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	if identity, identityErr := s.currentUserIdentity(ctx, planID); identityErr == nil {
 		replaceUserIdentityValues(overlay.Values, identity)
 	}
+	// 决定性条件字段填不出或填了也影响不了分支时，必须把阻断问题落进配置行：
+	// 运行前检查读的是已落库的 issues，只在读取响应里显示挡不住启动（评审 P1）。
+	keyFields := workspaceKeyFields(snapshot, targetPath.Choices, overlay.Values, analysis.pathAnalysis.ReachableNodeIDs)
+	if unfillable := unfillableKeyFieldIssues(keyFields, routeNodePowers(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs)); len(unfillable) > 0 {
+		issues = appendHistoryIssues(issues, unfillable)
+	}
 	dataStatus := workspaceDataStatus(input.RuntimeValidation, issues)
 	record, err := workspaceRecord(snapshot, source, targetPath, targetStored, idempotencyKey, input, overlay, dataStatus, routeChanged)
 	if err != nil {
@@ -448,9 +455,11 @@ type historyWorkspaceSource struct {
 // 没有已保存正文时按与读取入口完全相同的口径由基础表单数据快照加分支补丁得出。
 // 口径必须与读取一致，否则"界面上没回显的字段"会被恢复成另一份值。
 func (s *PathConfigService) workspaceBaselineValues(current repository.HistoryPathConfigRecord, found bool, source historyWorkspaceSource, snapshot target.PathConfigurationSnapshot, path model.ExecutionPath) map[string]any {
+	// 基线与提交值走同一条清理边界：已保存正文里若有历史审批意见残留，
+	// 不清理就会在"恢复视图外字段"时被原样带回正文，绕过读写的审批意见清理约定。
 	if found && len(current.EffectiveFormData) > 0 {
 		if stored, err := jsonvalues.DecodeObject(current.EffectiveFormData); err == nil && len(stored) > 0 {
-			return stored
+			return clearAuditInfoValues(stored)
 		}
 	}
 	if source.snapshot == nil {
