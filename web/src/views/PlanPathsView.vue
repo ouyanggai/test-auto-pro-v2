@@ -57,7 +57,6 @@ import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
 import { fetchFlowGraph, FlowGraphApiError } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
 import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
-import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import { flowSourceLabels } from '../features/plans/selection'
 import type { PersistedPlan } from '../features/plans/types'
@@ -540,26 +539,6 @@ function defaultRunSelection(existing: string[]): Set<string> {
     .map(path => path.id))
 }
 
-// preflightOpen 控制运行前检查弹窗；检查只覆盖本次勾选的路径。
-const preflightOpen = ref(false)
-
-// openPreflight 点击运行时先做预检，勾选为空时直接提示，不打开一个空弹窗。
-function openPreflight() {
-  if (selectedRunPathIDs.value.size === 0) {
-    pathSelectionError.value = '请先勾选要运行的执行路径'
-    return
-  }
-  pathSelectionError.value = ''
-  preflightOpen.value = true
-}
-
-// locateReadinessItem 把运行前检查里的阻塞项定位到那条路径的对应面板。
-// 面板只负责给出路径与锚点，跳转由页面统一处理，避免组件内部各自拼路由。
-function locateReadinessItem(pathId: string, anchor: string) {
-  const query = anchor ? '?panel=' + encodeURIComponent(anchor) : ''
-  router.push('/plans/' + planID.value + '/paths/' + pathId + '/configure' + query)
-}
-
 // openPathConfiguration 从只读路径详情进入 F-007 单条路径节点配置画布。
 function openPathConfiguration(path: ExecutionPath | null = activePath.value) {
   if (!path) return
@@ -839,7 +818,6 @@ onMounted(() => {
             </div>
             <n-space class="page-heading__actions" align="center" size="small">
               <span class="page-heading__selection">已勾选 {{ selectedRunPathIDs.size }} / {{ paths.length }} 条路径</span>
-              <n-button type="primary" data-testid="plan-run-button" @click="openPreflight">运行</n-button>
             </n-space>
           </header>
 
@@ -1212,12 +1190,6 @@ onMounted(() => {
     >
       只删除当前工具中的路径记录，确认继续？
     </n-modal>
-    <run-preflight-dialog
-      v-model:show="preflightOpen"
-      :plan-id="planID"
-      :path-ids="[...selectedRunPathIDs]"
-      @locate="locateReadinessItem"
-    />
   </section>
 </template>
 

@@ -7,15 +7,19 @@ import {
 	NPopconfirm,
   NSelect,
   NTag,
+  useMessage,
   type DataTableColumns,
   type SelectOption,
 } from 'naive-ui'
 import { useRouter } from 'vue-router'
 
+import { fetchExecutionPaths } from '../features/execution-paths/api'
 import { getPlanAction, planStatusLabels, planStatusOptions } from '../features/plans/logic'
 import { deletePlan, fetchPlans, PlanApiError } from '../features/plans/persistence'
 import type { PlanFilters, PlanRow, PlanStatus } from '../features/plans/types'
+import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
 
+const message = useMessage()
 const router = useRouter()
 const filters = reactive<PlanFilters>({ name: '', status: null })
 const prototypeNotice = ref('')
@@ -40,6 +44,40 @@ function handlePlanAction(plan: PlanRow) {
     return
   }
   prototypeNotice.value = `“${plan.name}”的“${action.label}”当前仅用于静态原型展示，真实业务将在后续功能接入。`
+}
+
+// runFromList 从计划列表直接发起一次运行：默认勾选「已配置且数据就绪」的路径，
+// 与路径页此前的默认口径一致；运行前检查弹窗只检查这些路径。
+const runPreflightOpen = ref(false)
+const runTarget = ref<{ planId: string; planName: string; pathIds: string[] } | null>(null)
+const runPreparing = ref<string>('')
+
+async function runFromList(plan: PlanRow): Promise<void> {
+  runPreparing.value = plan.id
+  prototypeNotice.value = ''
+  try {
+    const paths = await fetchExecutionPaths(plan.id, new AbortController().signal)
+    const selected = paths
+      .filter(path => path.configurationStatus === 'configured' && path.dataStatus === 'ready')
+      .map(path => path.id)
+    if (selected.length === 0) {
+      message.warning('该计划还没有可执行的路径：请先完成节点配置与基础表单数据')
+      return
+    }
+    runTarget.value = { planId: plan.id, planName: plan.name, pathIds: selected }
+    runPreflightOpen.value = true
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '暂时无法读取执行路径，请重试')
+  } finally {
+    runPreparing.value = ''
+  }
+}
+
+// locateReadinessItem 把运行前检查里的阻塞项定位到那条路径的对应面板。
+function locateReadinessItem(pathId: string, anchor: string) {
+  if (!runTarget.value) return
+  const query = anchor ? '?panel=' + encodeURIComponent(anchor) : ''
+  void router.push('/plans/' + runTarget.value.planId + '/paths/' + pathId + '/configure' + query)
 }
 
 // removePlan 删除本系统开发计划后重读列表；当前目标平台不会收到任何写请求。
@@ -121,7 +159,7 @@ const columns: DataTableColumns<PlanRow> = [
   {
     title: '操作',
     key: 'actions',
-    width: 208,
+    width: 260,
     fixed: 'right',
     render: (row) => {
       const action = getPlanAction(row.status)
@@ -129,6 +167,17 @@ const columns: DataTableColumns<PlanRow> = [
         class: 'plan-row-actions',
         style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' },
       }, [
+        h(
+          NButton,
+          {
+            size: 'small',
+            type: 'primary',
+            'data-testid': 'plan-run-button',
+            loading: runPreparing.value === row.id,
+            onClick: () => void runFromList(row),
+          },
+          { default: () => '运行' },
+        ),
         h(NButton, { size: 'small', secondary: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label }),
         row.status === 'not_started' ? h('span', { class: 'plan-row-actions__delete' }, [
           h(NPopconfirm, { positiveText: '删除计划', negativeText: '取消', onPositiveClick: () => void removePlan(row) }, {
@@ -191,6 +240,13 @@ const columns: DataTableColumns<PlanRow> = [
       />
     </div>
   </section>
+  <run-preflight-dialog
+    :show="runPreflightOpen"
+    :plan-id="runTarget?.planId ?? ''"
+    :path-ids="runTarget?.pathIds ?? []"
+    @update:show="value => (runPreflightOpen = value)"
+    @locate="locateReadinessItem"
+  />
 </template>
 
 <style scoped>

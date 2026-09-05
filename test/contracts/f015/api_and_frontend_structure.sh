@@ -38,7 +38,16 @@ grep -qF 'data-testid="run-preflight-dialog"' "${panel}" || fail '预检结果�
 grep -qF 'n-modal' "${panel}" || fail '预检弹窗必须使用组件库的 NModal，不自造弹层'
 grep -qF 'data-testid="run-readiness-blocks"' "${panel}" || fail '预检弹窗缺少阻塞分区'
 grep -qF 'data-testid="run-readiness-reminders"' "${panel}" || fail '预检弹窗缺少提醒分区'
-grep -qF 'data-testid="plan-run-button"' web/src/views/PlanPathsView.vue || fail '计划页缺少运行按钮'
+# 运行按钮在计划列表：模板形态或 h() 渲染形态任一即可。
+if ! grep -qF "'data-testid': 'plan-run-button'" web/src/views/PlansView.vue; then
+  if ! grep -qF 'data-testid="plan-run-button"' web/src/views/PlansView.vue; then
+    fail '计划列表缺少运行按钮'
+  fi
+fi
+# 2026-09-06 用户裁决：运行入口改放到计划列表；路径页不得再出现第二套运行发起入口。
+if grep -qE 'data-testid="plan-run-button"|openPreflight' web/src/views/PlanPathsView.vue; then
+  fail '路径页仍残留运行发起入口，应只保留计划列表一处'
+fi
 grep -qF 'pathIds' web/src/features/run-readiness/api.ts || fail '预检必须只检查勾选路径'
 # 2026-09-05 更新：F-016 已交付启动运行、F-017 已交付运行模式三选一，预检弹窗包含运行模式与开始运行
 # 属现行产品行为；本脚本不再把「本切片当时未交付启动」当成永久边界反向锁定。
