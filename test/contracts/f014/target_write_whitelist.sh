@@ -24,17 +24,16 @@ write_endpoints=(
   '/web/flowInstanceApi/flowTracking'
 )
 
+# 适配层全局的“零写端点”断言已被用户批准的写能力扩张取代：
+# 写端点必须恰好落在 write.go（F-016 两个直连端点）与 write_actions.go（F-019 动作目录分派）内，
+# 由 test/contracts/f016 与 f019 的白名单契约逐端点守住；本契约继续锁定 batchCode 禁令。
 for endpoint in "${write_endpoints[@]}"; do
-  if grep -RInF "${endpoint}" internal/adapter/target >/dev/null 2>&1; then
-    printf '%s\n' "[F-014] 目标适配层出现了写端点：${endpoint}" >&2
+  leaks=$(grep -RIlF "${endpoint}" internal/adapter/target | grep -v 'write.go' | grep -v 'write_actions.go' || true)
+  if [ -n "${leaks}" ]; then
+    printf '%s\n' "[F-014] 写端点泄漏到适配层白名单文件之外：${endpoint} -> ${leaks}" >&2
     exit 1
   fi
 done
-
-if grep -RInE 'RequestClass:[[:space:]]*"write"' internal cmd >/dev/null 2>&1; then
-  printf '%s\n' '[F-014] 出现了写请求分类，但当前白名单为空' >&2
-  exit 1
-fi
 
 # batchCode 只允许作为禁令常量出现在判定包里，任何请求载荷构造处都不得出现它。
 if grep -RInF 'batchCode' internal/adapter/target internal/engine/actioncatalog cmd >/dev/null 2>&1; then
@@ -47,4 +46,4 @@ if ! grep -qF 'ForbiddenWriteField = "batchCode"' internal/engine/verdict/catalo
   exit 1
 fi
 
-printf '%s\n' 'F-014 目标写端点白名单检查通过（白名单为空，batchCode 禁令在位）'
+printf '%s\n' 'F-014 契约检查通过（写端点仅存在于两份白名单文件，batchCode 禁令在位）'

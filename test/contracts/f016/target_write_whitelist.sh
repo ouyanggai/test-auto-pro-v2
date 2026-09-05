@@ -20,6 +20,11 @@ write_callers=$(grep -rn 'CallWrite(' internal/adapter/target/ | grep -v '_test'
 [ -n "${write_callers}" ]
 while IFS= read -r line; do
   file="${line%%:*}"
+  # F-019 的统一动作写出口按动作目录分派端点（已获批扩张），由 test/contracts/f019/action_whitelist.sh 单独守住；
+  # 本契约继续保证 F-016 自己的两个直连写路径（write.go）不扩张。
+  if [ "${file}" = "internal/adapter/target/write_actions.go" ]; then
+    continue
+  fi
   grep -qF "WriteEndpointSubmit" "${file}" || grep -qF "WriteEndpointAudit" "${file}" || {
     printf '[F-016] 非白名单文件调用了写出口：%s\n' "${file}" >&2
     exit 1

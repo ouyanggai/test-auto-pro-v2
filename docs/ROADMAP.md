@@ -20,7 +20,7 @@
 | F-013 | 分层日志与追踪底座 | accepted |
 | F-014 | 目标错误语义与幂等勘定 | accepted |
 | F-015 | 运行前检查 | ready_for_manual |
-| F-016 | 执行器最小真实闭环 | ready_for_manual（T01-T10 完成，首次真实写实测见功能文档；待人工验收） |
+| F-016 | 执行器最小真实闭环 | ready_for_manual（补做评审未通过后按用户裁决完成全量修复轮，见功能文档 2026-09-05 状态记录；待人工验收） |
 | F-017 | 调试器：模式、断点与控制 | awaiting_approval |
 | F-018 | 对账与安全重试 | awaiting_approval |
 | F-019 | 全动作与恢复步骤执行 | awaiting_approval |
