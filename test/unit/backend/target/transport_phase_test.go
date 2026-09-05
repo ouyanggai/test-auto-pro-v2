@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/engine/verdict"
+	"test-auto-pro-v2/internal/model"
 )
 
 // newF016Client 用配置化的超时构造目标客户端；超时预算全部来自配置值，不在用例里写死全局行为。
@@ -167,5 +169,53 @@ func TestF016ClientBypassesLocalProxy(t *testing.T) {
 	}
 	if proxyURL != nil {
 		t.Fatalf("目标请求必须显式绕过本机代理，实际决策为 %s", proxyURL)
+	}
+}
+
+// TestF016AuditWriteResponseCarriesNoStatusWhenConnectRefused 复核评审缺陷 1 的回归：
+// 审批写请求在连接建立阶段即失败时，响应事实必须保持零值。伪造 HTTP 200 会让判定包看到
+// 「声明没有收到响应却带回状态码」的矛盾，把可判确定失败的抖动升级成待对账（发起路径无此问题）。
+func TestF016AuditWriteResponseCarriesNoStatusWhenConnectRefused(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("无法分配本地端口：%v", err)
+	}
+	closedAddr := listener.Addr().String()
+	listener.Close()
+
+	client := newF016Client(t, "http://"+closedAddr, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	session := target.Session{SID: "unused", CompanyID: "unused"}
+	request := target.AuditCurrentTaskRequest{InstanceID: "instance-1", JobTaskID: "task-1", FlowProxyID: "proxy-1", AuditStatus: "pass"}
+	_, response, _, writeErr := client.AuditCurrentTask(ctx, session, request)
+	if writeErr == nil {
+		t.Fatal("连接被拒必须返回错误")
+	}
+	if got := target.TransportOf(writeErr); got != target.TransportConnectFailed {
+		t.Fatalf("连接被拒应归入 connect_refused，实际 %s", got)
+	}
+	if response.StatusCode != 0 {
+		t.Fatalf("请求未到达目标进程时响应事实不得携带状态码，实际 %d", response.StatusCode)
+	}
+
+	// 判定包看到的事实必须是「确定失败、无副作用」，而不是矛盾兜底的不确定。
+	result := verdict.Evaluate(verdict.Observation{
+		Action:     string(model.ActionApprove),
+		Endpoint:   target.WriteEndpointAudit,
+		Transport:  verdict.Transport(target.TransportOf(writeErr)),
+		StatusCode: response.StatusCode,
+		Reread:     verdict.RereadUnreadable,
+	})
+	if result.Outcome != verdict.OutcomeFailed || result.SideEffect != verdict.SideEffectNone {
+		t.Fatalf("连接被拒应判确定失败且无副作用，实际 %s/%s（%s）", result.Outcome, result.SideEffect, result.Reason)
+	}
+
+	// 发起路径必须保持同样的事实形状：传输失败时状态码为零值。
+	submitRequest := target.SubmitFlowInstanceRequest{Name: "复核", FlowProxyID: "proxy-1"}
+	_, submitResponse, _, submitErr := client.SubmitFlowInstance(ctx, session, submitRequest)
+	if submitErr == nil || submitResponse.StatusCode != 0 {
+		t.Fatalf("发起路径传输失败时响应事实也应为零值：%v", submitErr)
 	}
 }

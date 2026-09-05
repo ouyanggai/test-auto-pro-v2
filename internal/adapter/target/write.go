@@ -217,13 +217,17 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 func (c *Client) AuditCurrentTask(ctx context.Context, session Session, request AuditCurrentTaskRequest) (*AuditCurrentTaskResult, WriteResponse, string, error) {
 	body := BuildAuditBody(request)
 	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointAudit, session.SID, body)
-	response := WriteResponse{StatusCode: http.StatusOK}
+	// 传输失败时响应事实必须保持零值：连接被拒时伪造 200 会让判定包看到
+	// 「声明没有收到响应却带回状态码」的矛盾，把可判确定失败的抖动升级成待对账。
+	response := WriteResponse{}
 	if err != nil {
+		// 传输层失败没有可信状态码；只有“完整响应被拒收”的少数错误才带 HTTP 状态。
 		if targetErr := asError(err); targetErr != nil && targetErr.Transport == TransportResponded {
 			response.StatusCode = targetErr.HTTPStatus
 		}
 		return nil, response, traceID, err
 	}
+	response.StatusCode = http.StatusOK
 	response.IsSuccessPresent = true
 	response.IsSuccess = responseSucceeded(envelope)
 	response.Code = envelope.Code

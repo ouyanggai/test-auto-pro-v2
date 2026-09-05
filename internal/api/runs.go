@@ -31,14 +31,15 @@ type RunOrchestrator interface {
 	StartRun(ctx context.Context, input service.StartRunInput) (*service.PathRunDetailDTO, error)
 	StartRunWithMode(ctx context.Context, input service.StartRunInput, mode model.RunMode, breakpoints []control.Breakpoint) (*service.PathRunDetailDTO, error)
 	RunDetail(ctx context.Context, runID uint64) (*service.PathRunDetailDTO, error)
-	ApproveWithCommand(ctx context.Context, pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*service.PathRunDetailDTO, error)
-	SetBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
-	RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
-	ListBreakpoints(ctx context.Context, pathRunID uint64) ([]control.Breakpoint, error)
-	RequestPause(ctx context.Context, pathRunID uint64) error
-	ReconcileNow(ctx context.Context, pathRunID uint64) (*service.ReconcileViewDTO, error)
-	RecoveryAction(ctx context.Context, pathRunID uint64, action string, manual model.RunManualConclusion) (*service.PathRunDetailDTO, error)
-	Stop(ctx context.Context, pathRunID uint64) (*service.PathRunDetailDTO, error)
+	// 控制端点全部以运行 ID（runId）寻址，服务层入口统一解析为路径运行 ID（评审缺陷 6 的修复点）。
+	ApproveWithCommand(ctx context.Context, runID uint64, command model.ControlCommand, cursor int, version int64) (*service.PathRunDetailDTO, error)
+	SetBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
+	RemoveBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
+	ListBreakpoints(ctx context.Context, runID uint64) ([]control.Breakpoint, error)
+	RequestPause(ctx context.Context, runID uint64) error
+	ReconcileNow(ctx context.Context, runID uint64) (*service.ReconcileViewDTO, error)
+	RecoveryAction(ctx context.Context, runID uint64, action string, manual model.RunManualConclusion) (*service.PathRunDetailDTO, error)
+	Stop(ctx context.Context, runID uint64) (*service.PathRunDetailDTO, error)
 	ListRuns(ctx context.Context, planID uint64) ([]service.RunSummaryDTO, error)
 }
 

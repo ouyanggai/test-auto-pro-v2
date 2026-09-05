@@ -334,7 +334,23 @@ func (s *RunOrchestrationService) StartRun(ctx context.Context, input StartRunIn
 
 // ApproveWithCommand 按命令放行（F-017）：命令携带步游标与控制版本，条件写幂等。
 // 请求上下文注入运行作用域：写请求的 network.log/curl.log 因此落进运行目录。
-func (s *RunOrchestrationService) ApproveWithCommand(ctx context.Context, pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*PathRunDetailDTO, error) {
+// resolvePathRunID 把 API 层的运行 ID 解析为路径运行 ID（一次运行只跑一条路径）。
+// 控制端点全部以运行 ID 寻址；绝不把运行 ID 直接当路径运行 ID 使用——
+// 两个自增序列一旦错位，放行或对账就会作用到另一条路径运行上（评审缺陷 6）。
+func (s *RunOrchestrationService) resolvePathRunID(ctx context.Context, runID uint64) (uint64, error) {
+	pathRun, err := s.store.GetPathRunByRun(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
+	return pathRun.ID, nil
+}
+
+// ApproveWithCommand 放行当前步。runID 是运行 ID，进入服务即解析为路径运行 ID。
+func (s *RunOrchestrationService) ApproveWithCommand(ctx context.Context, runID uint64, command model.ControlCommand, cursor int, version int64) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
 	scoped, err := s.withRunScope(ctx, pathRunID)
 	if err != nil {
 		return nil, err
@@ -376,8 +392,12 @@ type ReconcileViewDTO struct {
 	ReplaysMax  int      `json:"replaysMax"`
 }
 
-// ReconcileNow 对待对账路径运行执行只读对账并返回结论。
-func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, pathRunID uint64) (*ReconcileViewDTO, error) {
+// ReconcileNow 对待对账路径运行执行只读对账并返回结论。runID 是运行 ID。
+func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64) (*ReconcileViewDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
 	view, err := s.control.ReconcileNow(ctx, pathRunID)
 	if err != nil {
 		return nil, err
@@ -389,8 +409,12 @@ func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, pathRunID ui
 	}, nil
 }
 
-// RecoveryAction 执行对账给出的唯一合法动作并返回最新详情。
-func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, pathRunID uint64, action string, manual model.RunManualConclusion) (*PathRunDetailDTO, error) {
+// RecoveryAction 执行对账给出的唯一合法动作并返回最新详情。runID 是运行 ID。
+func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, runID uint64, action string, manual model.RunManualConclusion) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.control.RecoveryAction(ctx, pathRunID, reconcile_action(action), manual); err != nil {
 		return nil, err
 	}
@@ -403,19 +427,36 @@ func reconcile_action(action string) engine_reconcile.RecoveryAction {
 }
 
 // SetBreakpoint / RemoveBreakpoint / RequestPause / ListBreakpoints / ControlView 是控制面转发。
-func (s *RunOrchestrationService) SetBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+// 除 ControlView 外都以运行 ID 寻址，进入服务即解析为路径运行 ID。
+func (s *RunOrchestrationService) SetBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
 	return s.control.SetBreakpoint(ctx, pathRunID, bp)
 }
 
-func (s *RunOrchestrationService) RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+func (s *RunOrchestrationService) RemoveBreakpoint(ctx context.Context, runID uint64, bp control.Breakpoint) ([]control.Breakpoint, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
 	return s.control.RemoveBreakpoint(ctx, pathRunID, bp)
 }
 
-func (s *RunOrchestrationService) RequestPause(ctx context.Context, pathRunID uint64) error {
+func (s *RunOrchestrationService) RequestPause(ctx context.Context, runID uint64) error {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return err
+	}
 	return s.control.RequestPause(ctx, pathRunID)
 }
 
-func (s *RunOrchestrationService) ListBreakpoints(ctx context.Context, pathRunID uint64) ([]control.Breakpoint, error) {
+func (s *RunOrchestrationService) ListBreakpoints(ctx context.Context, runID uint64) ([]control.Breakpoint, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
 	return s.control.ListBreakpoints(ctx, pathRunID)
 }
 
@@ -449,8 +490,12 @@ func (s *RunOrchestrationService) validateReadiness(ctx context.Context, planID,
 	return nil
 }
 
-// Stop 停止路径运行并返回最新详情。
-func (s *RunOrchestrationService) Stop(ctx context.Context, pathRunID uint64) (*PathRunDetailDTO, error) {
+// Stop 停止路径运行并返回最新详情。runID 是运行 ID。
+func (s *RunOrchestrationService) Stop(ctx context.Context, runID uint64) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
 	scoped, err := s.withRunScope(ctx, pathRunID)
 	if err != nil {
 		return nil, err

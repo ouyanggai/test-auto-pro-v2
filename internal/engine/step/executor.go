@@ -298,6 +298,48 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 
 	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（演员与待办的新鲜复验）。
 	e.refreshAndSubmit(ctx, runCtx, step, session, preview)
+	if !preview.writeSent {
+		// 零写入：写请求没有发出（发送前的待办新鲜复验失败或载荷缺失）。
+		// 没有发出的请求不存在“结果不确定”——把零写入判成不确定会把无副作用的失败
+		// 说成“可能已经写进目标”，还会把用户引向对账；这里按真实分类如实置败。
+		outcome.Verdict = string(verdict.OutcomeFailed)
+		class := preview.writeErrClass
+		if class == "" {
+			class = model.FailureClassToolBug
+		}
+		reason := "第 " + formatUint(uint64(step.Sequence)) + " 步在写请求发出前失败（零写入）：" + preview.writeErr.Error()
+		lineNo := log.Phase("settle", step.Sequence, attemptNo, "落账：确定失败且无副作用（"+reason+"）")
+		record := model.RunStep{
+			PathRunID:    runCtx.PathRun.ID,
+			StepNo:       step.Sequence,
+			Source:       string(step.Source),
+			Action:       string(step.Action),
+			NodeKey:      step.NodeKey,
+			ActorSummary: preview.ActorName,
+			Status:       model.RunStepFailed,
+			StartedAt:    startedAt,
+			FinishedAt:   e.now(),
+		}
+		attempt := model.RunStepAttempt{
+			PathRunID:  runCtx.PathRun.ID,
+			AttemptNo:  attemptNo,
+			Verdict:    string(verdict.OutcomeFailed),
+			SideEffect: string(verdict.SideEffectNone),
+			Reason:     reason,
+			Basis:      "写请求没有发出，不存在写结果，也无传输结果可归类",
+			LogPath:    log.RelativePath(),
+			LogLine:    lineNo,
+			DurationMs: e.now().Sub(startedAt).Milliseconds(),
+		}
+		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
+			return outcome, lineNo, err
+		}
+		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); err != nil {
+			return outcome, lineNo, err
+		}
+		log.Phase("settle", step.Sequence, attemptNo, "零写入失败已落账，路径运行置为失败")
+		return outcome, lineNo, nil
+	}
 	log.Phase("submit", step.Sequence, attemptNo, submitSummary(preview.writeErr, preview.writeTraceID, preview.writeDurationMs))
 
 	// 发起成功后尽早落库主实例引用（独占不可改写）：即使核验前崩溃，
@@ -405,9 +447,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 
 // refreshAndSubmit 在发送前完成待办任务 ID 的新鲜读取，然后发出唯一一次写请求。
 // 请求本体与预览同源（preview.request）；本方法及其调用路径不存在任何重试。
+// 只有真正发出写请求的路径才置 preview.writeSent：发送前的任何失败都停留在零写入分支。
 func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview) {
 	switch request := preview.request.(type) {
 	case *target.SubmitFlowInstanceRequest:
+		preview.writeSent = true
 		started := e.now()
 		result, response, traceID, err := e.target.SubmitFlowInstance(ctx, session, *request)
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
@@ -416,21 +460,26 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		started := e.now()
 		jobTaskID, err := e.target.FindDueTaskID(ctx, session, runCtx.PathRun.MainInstanceRef, step.NodeKey)
 		if err != nil {
+			// 待办读取失败（目标抖动或响应形状不符）：写请求未发出，按演员/待办解析失败如实归类。
 			preview.writeErr = err
+			preview.writeErrClass = model.FailureClassActorUnresolved
 			return
 		}
 		if jobTaskID == "" {
 			// 目标上已无本演员在本节点的活动待办：演员或待办已变化，绝不冒名发送。
 			preview.writeErr = &UnverifiedActionError{Action: model.ActionApprove}
+			preview.writeErrClass = model.FailureClassActorUnresolved
 			return
 		}
 		request.JobTaskID = jobTaskID
+		preview.writeSent = true
 		result, response, traceID, err := e.target.AuditCurrentTask(ctx, session, *request)
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
 	default:
 		// 其余已登记动作经统一动作写出口（F-019）：载荷由 buildRequest 构造，端点在白名单内。
 		if actionRequest, ok := preview.request.(*target.ActionWriteRequest); ok {
+			preview.writeSent = true
 			started := e.now()
 			response, traceID, err := e.target.ExecuteActionWrite(ctx, session, *actionRequest)
 			preview.writeResponse, preview.writeTraceID, preview.writeErr = response, traceID, err
@@ -438,6 +487,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 			return
 		}
 		preview.writeErr = errors.New("写请求载荷缺失，拒绝发送")
+		preview.writeErrClass = model.FailureClassToolBug
 	}
 }
 

@@ -138,6 +138,11 @@ type StepPreview struct {
 	writeTraceID    string
 	writeErr        error
 	writeDurationMs int64
+	// writeSent 表示写请求已经真正发出（或已尝试发出）。发送前的待办新鲜复验失败时保持 false：
+	// 没有发出的请求不存在“写结果不确定”，绝不能进三值判定的写判定路径。
+	writeSent bool
+	// writeErrClass 是零写入失败的归属分类（演员/待办解析失败或工具缺陷），供落账时如实归类。
+	writeErrClass model.FailureClass
 }
 
 // StepOutcome 是一步走完后的结果，供控制层决定路径去向。
