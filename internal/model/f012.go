@@ -275,6 +275,10 @@ type PathConfigurationDataInput struct {
 	Values            map[string]any           `json:"values"`
 	RuntimeValidation HistoryRuntimeValidation `json:"runtimeValidation"`
 	ConfirmationToken string                   `json:"confirmationToken,omitempty"`
+	// ViewNodeName 是保存时所处的按节点填写视图（节点中文名称，空串表示未按节点视图编辑）。
+	// 一个视图只能改该节点有编辑权限的字段：其余字段一律以服务端已有基线为准，
+	// 因此在没有权限的视图里"不回显样本值"不会把样本数据保存成空。
+	ViewNodeName string `json:"viewNodeName,omitempty"`
 }
 
 // PathConfigurationRouteChange 描述保存前后实际路径变化及目标路径覆盖影响。

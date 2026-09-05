@@ -188,9 +188,13 @@ const runtimeForm = computed(() => {
   const base = { ...dataWorkspace.value, readOnly: formReadOnly.value, viewName: selectedFormViewName.value }
   const view = selectedFormView.value
   if (!view) return base
-  // 按视图权限渲染：该节点声明可编辑的字段放开，只有后续节点才能填的字段隐藏，
-  // 其余保持只读。发起人视图同样走这条路径，否则会出现"这一步填不了却带着历史值显示"的矛盾。
-  return { ...base, permissions: view.permissions }
+  // 按视图权限渲染：该节点声明可编辑的字段放开，目标自己声明隐藏的字段隐藏，其余按只读显示。
+  // 只有后续节点才能填的字段组件照常显示，但不回显我们的样本数据——它这一步不会被提交，
+  // 提前填上会让人以为这一步就生效；执行到真正拥有它的节点时自动填入，也可以切到那个节点视图改。
+  const values = view.blankFields.length > 0
+    ? Object.fromEntries(Object.entries(base.effectiveFormData ?? {}).filter(([key]) => !view.blankFields.includes(key)))
+    : base.effectiveFormData
+  return { ...base, permissions: view.permissions, effectiveFormData: values }
 })
 
 // 节点视图默认选中发起人（配置阶段的表单永远处于发起态）；换路径重载后重新归位。
@@ -741,6 +745,9 @@ async function saveFormData(confirmationToken = '') {
       revision: previousRevision,
       values: captured.values as Record<string, unknown>,
       runtimeValidation,
+      // 带上当前视图：服务端只接受该节点有编辑权限的字段，其余恢复为基线值，
+      // 避免"没回显的样本数据"被这次保存清空。
+      viewNodeName: selectedFormViewName.value,
       ...(confirmationToken ? { confirmationToken } : {}),
     }, controller.signal)
     if (!isActiveFormOperation(epoch, frame)) return

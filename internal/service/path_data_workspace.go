@@ -346,6 +346,12 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	}
 	// 保存入口再次清理浏览器回传值，避免旧页面或运行时脚本把历史审批意见重新写回工作区。
 	values := clearAuditInfoValues(cloneWorkspaceMap(input.Values))
+	// 按节点视图保存时收窄写入范围：一个节点上真实用户只能改该节点声明可编辑的字段。
+	// 其余字段一律恢复为服务端基线值——这些字段在没有编辑权限的视图里刻意不回显样本值，
+	// 若照浏览器回传原样落盘就会把样本数据保存成空，执行到真正拥有它的节点时就没得可填了。
+	if editable, ok := viewEditableFields(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs, input.ViewNodeName); ok {
+		restoreFieldsOutsideView(values, s.workspaceBaselineValues(current, found, source, snapshot, path), editable)
+	}
 	actual := branchoverlay.ResolveActualPath(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: values})
 	if actual.Status != branchoverlay.StatusReady {
 		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "表单数据无法确定目标实际路径", Affected: affectedFromOverlayIssues(actual.Issues)}
@@ -431,6 +437,26 @@ type historyWorkspaceSource struct {
 	dataSource model.HistoryDataSource
 	snapshot   *model.HistorySnapshot
 	dataStatus string
+}
+
+// workspaceBaselineValues 返回这次保存的服务端基线表单数据：已保存的正文优先，
+// 没有已保存正文时按与读取入口完全相同的口径由基础表单数据快照加分支补丁得出。
+// 口径必须与读取一致，否则"界面上没回显的字段"会被恢复成另一份值。
+func (s *PathConfigService) workspaceBaselineValues(current repository.HistoryPathConfigRecord, found bool, source historyWorkspaceSource, snapshot target.PathConfigurationSnapshot, path model.ExecutionPath) map[string]any {
+	if found && len(current.EffectiveFormData) > 0 {
+		if stored, err := jsonvalues.DecodeObject(current.EffectiveFormData); err == nil && len(stored) > 0 {
+			return stored
+		}
+	}
+	if source.snapshot == nil {
+		return map[string]any{}
+	}
+	baseline := clearAuditInfoValues(cloneWorkspaceMap(source.snapshot.RawFormData))
+	overlay := branchoverlay.Apply(branchoverlay.Input{Tree: snapshot.Tree, Choices: path.Choices, Values: baseline})
+	if overlay.Status == branchoverlay.StatusReady {
+		return overlay.Values
+	}
+	return baseline
 }
 
 // loadWorkspace 统一读取计划、真实路径、目标原始快照和新路径配置行。

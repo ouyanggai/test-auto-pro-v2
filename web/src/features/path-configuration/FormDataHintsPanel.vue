@@ -106,7 +106,7 @@ function patchText(patch: PathConfigurationBranchPatch): string {
           aria-label="选择按哪个节点的字段权限填写"
           @update:value="value => emit('update:selectedView', String(value ?? ''))"
         />
-        <small>只放开该节点有编辑权限的字段；只有后续节点才能填的字段在这个视图里隐藏，取值不会丢。</small>
+        <small>只放开该节点有编辑权限的字段；只有后续节点才能填的字段照常显示但不回显样本数据，执行到那个节点时自动填入。</small>
       </div>
 
       <n-empty v-if="empty" size="small" description="当前路径没有需要优先核对的字段" />

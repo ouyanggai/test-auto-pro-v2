@@ -82,8 +82,13 @@ type PathFormNodeView struct {
 	NodeName string `json:"nodeName"`
 	// IsInitiator 标记发起人视图；发起态是配置阶段的默认视图。
 	IsInitiator bool `json:"isInitiator"`
-	// Permissions 是该节点声明可编辑的字段清单。
+	// Permissions 是该节点的字段权限清单：edit 为该节点声明可编辑，hide 为该节点声明隐藏。
+	// 未列出的字段按只读渲染（可见但不可改），与目标审批页"整张表单先禁用、再放开本节点字段"一致。
 	Permissions []PathFormPermission `json:"permissions"`
+	// BlankFields 是在这个视图里不回显样本数据的字段：只有后续节点才有编辑权限的字段。
+	// 组件照常显示（真实用户在这一步也看得见这个只读字段），只是不把我们的样本值提前填上去，
+	// 避免用户以为这一步就会提交它；执行到真正拥有它的节点时再自动填入，用户也可以切到那个节点视图改。
+	BlankFields []string `json:"blankFields"`
 }
 
 // PathFormPermission 是 iframe 应用字段权限所需的最小字段键与权限。

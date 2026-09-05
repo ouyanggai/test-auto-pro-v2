@@ -65,6 +65,9 @@ export interface PathConfigNodeView {
   nodeName: string
   isInitiator: boolean
   permissions: Array<{ field: string, power: 'edit' | 'only_read' | 'hide' }>
+  // blankFields 是在这个视图里不回显样本数据的字段：只有后续节点才有编辑权限的字段。
+  // 组件照常显示（按只读渲染），只是不提前填我们的样本值；执行到那个节点时再自动填入。
+  blankFields: string[]
 }
 
 export interface PathConfigurationRuntimeValidation {
@@ -85,6 +88,8 @@ export interface PathConfigurationDataInput {
   values: Record<string, unknown>
   runtimeValidation: PathConfigurationRuntimeValidation
   confirmationToken?: string
+  // viewNodeName 是保存时所处的按节点填写视图；服务端据此把该视图无权限的字段恢复为基线值。
+  viewNodeName?: string
 }
 
 export interface PathConfigurationRouteChange {

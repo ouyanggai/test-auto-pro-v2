@@ -87,6 +87,7 @@ function normalizePathConfigurationData(value: PathConfigurationDataWorkspace): 
         permissions: Array.isArray(view?.permissions)
           ? view.permissions.map(permission => ({ field: String(permission?.field ?? ''), power: permission?.power === 'edit' || permission?.power === 'hide' ? permission.power : 'only_read' }))
           : [],
+        blankFields: Array.isArray(view?.blankFields) ? view.blankFields.map(String) : [],
       }))
       : [],
   }

@@ -101,8 +101,8 @@ func TestF024NodeFormViewsFollowTargetDeclaration(t *testing.T) {
 	if initiator["classificationId"] != "edit" || initiator["contractSum"] != "edit" {
 		t.Fatalf("发起人视图缺少声明可编辑字段：%+v", views[0].Permissions)
 	}
-	if _, exists := initiator["legalOpinion"]; exists {
-		t.Fatalf("hide 字段不得出现在可编辑清单里：%+v", views[0].Permissions)
+	if initiator["legalOpinion"] == "edit" {
+		t.Fatalf("目标声明隐藏的字段不得被放开为可编辑：%+v", views[0].Permissions)
 	}
 	if initiator["accountantOpinion"] == "edit" {
 		t.Fatalf("审批节点独占字段不得在发起人视图里放开为可编辑：%+v", views[0].Permissions)
@@ -117,16 +117,29 @@ func TestF024NodeFormViewsFollowTargetDeclaration(t *testing.T) {
 	if _, exists := audit["classificationId"]; exists {
 		t.Fatalf("审批节点不能改的字段不得放开：%+v", views[1].Permissions)
 	}
-	// 只有后续节点才能编辑的字段在发起人视图里必须隐藏：它这一步既不会被提交，
-	// 也不该带着历史值显示出来，否则用户会以为这一步就会生效（hide 只影响显示，取值仍完整保留）。
-	if initiator["accountantOpinion"] != "hide" {
-		t.Fatalf("只有审批节点能填的字段应在发起人视图隐藏：%+v", views[0].Permissions)
+	// 只有后续节点才能编辑的字段：组件照常显示（不隐藏、按只读渲染），但不回显样本值，
+	// 否则用户会以为这一步就会提交它；执行到真正拥有它的节点时再自动填入。
+	if _, exists := initiator["accountantOpinion"]; exists {
+		t.Fatalf("只有后续节点能填的字段不得出现在权限清单里（应按只读渲染）：%+v", views[0].Permissions)
 	}
-	if _, exists := initiator["systemField"]; exists {
-		t.Fatalf("没有任何节点声明的表单自身字段不得被隐藏：%+v", views[0].Permissions)
+	if !containsField(views[0].BlankFields, "accountantOpinion") {
+		t.Fatalf("只有后续节点能填的字段应在发起人视图不回显样本值：%+v", views[0].BlankFields)
+	}
+	if containsField(views[0].BlankFields, "systemField") {
+		t.Fatalf("没有任何节点声明的表单自身字段照常回显：%+v", views[0].BlankFields)
+	}
+	if containsField(views[0].BlankFields, "contractSum") {
+		t.Fatalf("本节点可编辑的字段必须照常回显：%+v", views[0].BlankFields)
 	}
 	if power, exists := audit["accountantOpinion"]; !exists || power != "edit" {
 		t.Fatalf("字段在真正拥有它的节点视图里必须可编辑：%+v", views[1].Permissions)
+	}
+	if len(views[1].BlankFields) != 0 {
+		t.Fatalf("最后一个节点之后没有别的节点，不该有不回显字段：%+v", views[1].BlankFields)
+	}
+	// 目标自己声明 hide 的字段照旧隐藏：hide 是目标的显示约定，不是我们的样本数据策略。
+	if initiator["legalOpinion"] != "hide" {
+		t.Fatalf("目标声明隐藏的字段必须沿用隐藏：%+v", views[0].Permissions)
 	}
 }
 
@@ -152,5 +165,51 @@ func TestF024FieldPowerCoversTargetConventions(t *testing.T) {
 	}
 	if got := fieldpower.NormalizeFieldPath("expenseDetailList_$$_amount"); got != "expenseDetailList.amount" {
 		t.Fatalf("嵌套字段分隔符必须与目标前端一致地归一，实际 %s", got)
+	}
+}
+
+// containsField 判断字段清单是否包含目标字段。
+func containsField(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestF024SaveRestoresFieldsOutsideCurrentView 锁定保存边界：一个节点视图只能改该节点有编辑权限的字段。
+// 没有权限的字段在这个视图里刻意不回显样本值，若照浏览器回传原样落盘就会把样本数据存成空，
+// 执行到真正拥有它的节点时就没得可填了。因此这些键一律恢复为服务端基线值。
+func TestF024SaveRestoresFieldsOutsideCurrentView(t *testing.T) {
+	submitted := map[string]any{
+		"contractSum":       500001,       // 本视图可编辑：用户改过，保留
+		"accountantOpinion": "",           // 本视图无权限且未回显：必须恢复
+		"classificationId":  []any{"c-9"}, // 本视图无权限：必须恢复
+		"extraCompanion":    "表单自己新增的键",   // 基线里没有：保留提交值，不误删
+	}
+	baseline := map[string]any{
+		"contractSum":       10000,
+		"accountantOpinion": "样本里的会计意见",
+		"classificationId":  []any{"c-1"},
+	}
+	restored := service.RestoreFieldsOutsideViewForTest(submitted, baseline, []string{"contractSum"})
+	if submitted["contractSum"] != 500001 {
+		t.Fatalf("本视图可编辑字段不得被基线覆盖：%v", submitted["contractSum"])
+	}
+	if submitted["accountantOpinion"] != "样本里的会计意见" {
+		t.Fatalf("无权限字段必须恢复为基线值，实际 %v", submitted["accountantOpinion"])
+	}
+	if got, ok := submitted["classificationId"].([]any); !ok || len(got) != 1 || got[0] != "c-1" {
+		t.Fatalf("无权限字段的数组取值必须恢复为基线值，实际 %v", submitted["classificationId"])
+	}
+	if submitted["extraCompanion"] != "表单自己新增的键" {
+		t.Fatalf("基线里没有的键必须保留提交值：%v", submitted["extraCompanion"])
+	}
+	if !containsField(restored, "accountantOpinion") || !containsField(restored, "classificationId") {
+		t.Fatalf("恢复过的字段必须如实返回：%v", restored)
+	}
+	if containsField(restored, "contractSum") {
+		t.Fatalf("没有变化的可编辑字段不该记为恢复：%v", restored)
 	}
 }

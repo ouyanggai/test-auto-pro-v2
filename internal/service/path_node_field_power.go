@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 
@@ -16,6 +17,8 @@ type routeNodePower struct {
 	Name     string
 	Type     string
 	Editable []string
+	// Hidden 是该节点声明隐藏（fieldPower=hide）的字段；隐藏只影响显示，不影响取值。
+	Hidden []string
 }
 
 // routeNodePowers 沿目标流程树按路线顺序投影可达节点的字段权限。
@@ -36,17 +39,23 @@ func routeNodePowers(tree *target.FlowNodeTemplate, reachable []string) []routeN
 		visited[node.ID] = true
 		if reachableSet[node.ID] && nodeAcceptsHumanInput(node.Type) {
 			editable := make([]string, 0, len(node.FieldPowers))
+			hidden := make([]string, 0)
 			for _, power := range node.FieldPowers {
-				if strings.TrimSpace(power.Power) != "edit" {
+				field := fieldpower.NormalizeFieldPath(power.EnglishName)
+				if field == "" {
 					continue
 				}
-				if field := fieldpower.NormalizeFieldPath(power.EnglishName); field != "" {
+				switch strings.TrimSpace(power.Power) {
+				case "edit":
 					editable = append(editable, field)
+				case "hide":
+					hidden = append(hidden, field)
 				}
 			}
 			sort.Strings(editable)
+			sort.Strings(hidden)
 			powers = append(powers, routeNodePower{
-				NodeID: node.ID, Name: node.Name, Type: node.Type, Editable: editable,
+				NodeID: node.ID, Name: node.Name, Type: node.Type, Editable: editable, Hidden: hidden,
 			})
 		}
 		for _, branch := range node.ConditionNodes {
@@ -154,28 +163,30 @@ func nodeFormViews(tree *target.FlowNodeTemplate, reachable []string, values map
 	powers := routeNodePowers(tree, reachable)
 	views := make([]model.PathFormNodeView, 0, len(powers))
 	for index, power := range powers {
-		permissions := make([]model.PathFormPermission, 0, len(power.Editable))
+		permissions := make([]model.PathFormPermission, 0, len(power.Editable)+len(power.Hidden))
 		for _, field := range power.Editable {
 			permissions = append(permissions, model.PathFormPermission{Field: field, Power: "edit"})
 		}
-		for _, field := range laterOnlyFields(powers, index, values) {
+		// 只沿用目标自己声明的隐藏；"只有后续节点能填"的字段不隐藏组件，只是不回显样本值。
+		for _, field := range power.Hidden {
 			permissions = append(permissions, model.PathFormPermission{Field: field, Power: "hide"})
 		}
 		views = append(views, model.PathFormNodeView{
 			NodeName:    power.Name,
 			IsInitiator: power.Type == "start",
 			Permissions: permissions,
+			BlankFields: laterOnlyFields(powers, index, values),
 		})
 	}
 	return views
 }
 
-// laterOnlyFields 返回在第 index 个节点视图里必须隐藏的表单数据键：
+// laterOnlyFields 返回在第 index 个节点视图里不回显样本值的表单数据键：
 // 只有它之后的节点才有编辑权限的字段。到这一步为止（含本节点）有任何节点能编辑的字段都要显示，
 // 因为运行到这一步时那些值确实已经在表单上了。
 func laterOnlyFields(powers []routeNodePower, index int, values map[string]any) []string {
 	if index < 0 || index >= len(powers) {
-		return nil
+		return []string{}
 	}
 	upto := make([]string, 0)
 	for position := 0; position <= index; position++ {
@@ -186,7 +197,7 @@ func laterOnlyFields(powers []routeNodePower, index int, values map[string]any) 
 		later = append(later, powers[position].Editable...)
 	}
 	if len(later) == 0 || len(values) == 0 {
-		return nil
+		return []string{}
 	}
 	hidden := make([]string, 0)
 	for key := range values {
@@ -215,4 +226,53 @@ func UnfillableKeyFieldIssuesForTest(tree *target.FlowNodeTemplate, reachable []
 // NodeFormViewsForTest 暴露按节点表单权限视图，供 test 目录下的定向用例锁定行为。
 func NodeFormViewsForTest(tree *target.FlowNodeTemplate, reachable []string, values map[string]any) []model.PathFormNodeView {
 	return nodeFormViews(tree, reachable, values)
+}
+
+// viewEditableFields 返回指定节点视图（按中文节点名称匹配）声明可编辑的字段。
+// 找不到视图时返回 false：调用方据此判断"这次保存没有按节点视图编辑"，不做任何权限收窄。
+func viewEditableFields(tree *target.FlowNodeTemplate, reachable []string, viewNodeName string) ([]string, bool) {
+	name := strings.TrimSpace(viewNodeName)
+	if name == "" {
+		return nil, false
+	}
+	for _, power := range routeNodePowers(tree, reachable) {
+		if strings.TrimSpace(power.Name) == name {
+			return power.Editable, true
+		}
+	}
+	return nil, false
+}
+
+// restoreFieldsOutsideView 把不属于该视图编辑权限的键恢复为服务端基线值。
+// 一个节点上真实用户只能改该节点声明可编辑的字段，其余字段的取值不该因为"在这个视图里没回显"
+// 或浏览器侧任何漂移而改变；基线里没有的键保持提交值，避免把新增的伴生键误删。
+func restoreFieldsOutsideView(submitted, baseline map[string]any, editable []string) []string {
+	restored := make([]string, 0)
+	for key, value := range baseline {
+		if fieldpower.Covers(editable, key) {
+			continue
+		}
+		if existing, ok := submitted[key]; ok && valuesLooselyEqual(existing, value) {
+			continue
+		}
+		submitted[key] = value
+		restored = append(restored, key)
+	}
+	sort.Strings(restored)
+	return restored
+}
+
+// valuesLooselyEqual 只用于判断"要不要恢复"，按 JSON 文本比较即可，不参与任何写入决策。
+func valuesLooselyEqual(left, right any) bool {
+	leftText, leftErr := json.Marshal(left)
+	rightText, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return string(leftText) == string(rightText)
+}
+
+// RestoreFieldsOutsideViewForTest 暴露按视图恢复无权限字段，供 test 目录下的定向用例锁定行为。
+func RestoreFieldsOutsideViewForTest(submitted, baseline map[string]any, editable []string) []string {
+	return restoreFieldsOutsideView(submitted, baseline, editable)
 }
