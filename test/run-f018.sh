@@ -38,6 +38,25 @@ for required in TestF016MigrationCreatesRunRecordTables TestF016StepFactsAreInse
   fi
 done
 
+printf '%s\n' '[F-018] 真实目标只读维度验证（已办记录与动作痕迹）'
+# 这两维决定「未生效 → 允许重放」是否成立，而重放会再写一次：必须用真实账号证明读得到，
+# 不能只靠源码推断响应形状。全程只读，不发任何写请求。
+readonly_log="$(mktemp -t f018-readonly)"
+trap 'rm -f "${readonly_log}"' EXIT
+if ! go test -count=1 -v -run 'TestF018DimensionReadsAgainstRealTarget|TestF018AuditTraceMatchesRealNode|TestF018DoneRecordMatchesRealDoneTask' ./test/integration 2>&1 | tee "${readonly_log}"; then
+  exit 1
+fi
+if grep -Eq -- '^[[:space:]]*--- SKIP' "${readonly_log}"; then
+  printf '%s\n' '[F-018] 真实目标只读用例被跳过，判定为失败' >&2
+  exit 1
+fi
+for required in TestF018DimensionReadsAgainstRealTarget TestF018AuditTraceMatchesRealNode TestF018DoneRecordMatchesRealDoneTask; do
+  if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${readonly_log}"; then
+    printf '[F-018] 缺少必需的真实目标只读用例通过记录：%s\n' "${required}" >&2
+    exit 1
+  fi
+done
+
 printf '%s\n' '[F-018] 对账只读契约'
 ./test/contracts/f018/reconcile_readonly.sh
 printf '%s\n' '[F-018] 写端点白名单未扩张'

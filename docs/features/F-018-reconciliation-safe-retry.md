@@ -182,6 +182,22 @@
 `test/contracts/f018/reconcile_readonly.sh` 增加反向断言：不得裸 `input`/`select`、必须有校验与二次确认、
 两个新维度必须有真实只读实现并被收集器填入。
 
+### 真实目标实测（2026-09-05，用户指定账号，全程只读）
+
+两个新增维度已用真实账号跑通，不再是源码推断：
+
+- 已办记录：`/web/flowJobTaskLink/list` + `taskStatus=done` 实测 HTTP 200、`isSuccess=true`，
+  返回记录带 `flowInstanceId` 与 `flowNodeProxyId`（同端点 `waiting_send`／`has_been_sent` 形状一致）。
+  从该账号自己的已办列表取一条记录回读必然命中（实例 `03b9a7a6…` 节点 `4b3b3591…`）。
+- 动作痕迹：`/web/flowAuditRecord/list`（请求只带 `flowInstanceId`）实测返回数组，
+  元素带 `flowInstanceId`、`flowNodeProxyId`、`auditStatus`；用响应里真实出现的节点标识回读必然命中
+  （实例 `312c3f31…` 节点 `993daf28…`，该实例 1 条记录）。
+- 节点过滤真的生效：两个维度传不存在的节点标识都返回未命中而不是报错；空实例标识不发请求。
+
+三个真实只读用例（`test/integration/f018_dimension_reads_test.go`）已纳入 `test/run-f018.sh`，
+逐条核对通过记录、禁止跳过。结论同步为 `docs/TARGET_SEMANTICS.md` 第 18 条并通过证据漂移检测（32 个证据块）。
+仍未取得的只有一件：「未生效 → 重放」的端到端真实证据，需要一次真实的不确定写才能构造，属 F-018 人工验收范围。
+
 ### 本切片现状（核查线程如实记录）
 
 后端与最小界面已落库（提交 `d8c11ad`）：`internal/engine/reconcile/reconcile.go`、

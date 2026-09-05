@@ -754,3 +754,43 @@ strength=源码可证明
 head=java-serve/rsh-cloud-workflow-center@37c01d04eb10
 deployment=2026-09-05 已在真实环境间接证实
 ```
+
+## 18. 对账两个只读维度：已办记录与动作痕迹
+
+状态：已勘定（2026-09-05 用真实账号实测，全程只读）。
+
+问题：写结果不确定时，「已办记录」与「动作痕迹」两个对账维度从哪读、字段名是什么、按节点怎么过滤。
+这两维决定「未生效 → 允许重放」是否成立，而重放会再写一次，因此必须实测而不是源码推断。
+
+实测结论（2026-09-05，用户指定测试账号，只调读端点）：
+
+1. **已办记录**与待办同表同端点：`/web/flowJobTaskLink/list`，`data.taskStatus` 取 `done`
+   （`TaskStatusEnum.done`=已办）。实测 HTTP 200、`isSuccess=true`，返回记录带 `flowInstanceId`
+   与 `flowNodeProxyId`；同一端点的 `waiting_send`（待发）与 `has_been_sent`（已发）也都返回同形状记录。
+   从该账号自己的已办列表取一条记录，用它的实例与节点回读必然命中（实例 `03b9a7a6…` 节点 `4b3b3591…`）。
+2. **动作痕迹**读 `/web/flowAuditRecord/list`，请求只带 `data.flowInstanceId`（与目标自己的流程日志同源）。
+   实测返回数组，元素带 `flowInstanceId`、`flowNodeProxyId`、`auditStatus`；
+   取响应里真实出现过的 `flowNodeProxyId` 回读必然命中（实例 `312c3f31…` 节点 `993daf28…`，该实例共 1 条记录）。
+3. **节点过滤真的生效**：两个维度传一个不存在的节点标识都返回未命中而不是报错。
+4. 空实例标识按「没有事实」处理，不发请求也不报错；对账收集器据此标缺失并降级。
+
+对工具的约束：读不到（端点失败、字段名不符、响应形状变化）一律按证据缺失降级为「仍无法判定」，
+绝不把「没读到」当成「没有痕迹」——「未生效」是唯一会导致重放的结论，必须五维全部真的读到且全部未变。
+
+```evidence
+file=参考代码/rsh-framework-all/rsh-framework-cloud-commons/src/com/rsh/framework/cloud/commons/workflow/web/model/enums/TaskStatusEnum.java
+line=15
+contains=done("done","已办")
+strength=源码可证明
+head=rsh-framework-all@84bb19736a8a
+deployment=2026-09-05 真实账号实测：taskStatus=done 返回 10 条记录且带 flowNodeProxyId
+```
+
+```evidence
+file=参考代码/rsh-cloud-invest-power-system/src/api/index.js
+line=742
+contains=findRecord: '/web/flowAuditRecord/list'
+strength=源码可证明
+head=rsh-cloud-invest-power-system@8a00cb9995df
+deployment=2026-09-05 真实账号实测：按 flowInstanceId 读到审核记录并按 flowNodeProxyId 过滤命中
+```
