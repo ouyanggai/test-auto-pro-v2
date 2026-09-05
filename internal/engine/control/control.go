@@ -355,10 +355,15 @@ func (s *Service) SetBreakpoint(ctx context.Context, pathRunID uint64, bp Breakp
 	if session == nil {
 		return nil, ErrNoActiveStep
 	}
+	s.mu.Lock()
+	// 断点集合会被轮询（View）与执行循环并发读取：增删与校验必须整体持锁，
+	// 否则 map 并发读写会直接带走整个进程（评审 P1）。
 	if err := ValidateBreakpointTarget(bp, session.executedStepNos, session.executedNodeKeys); err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
 	session.breakpoints.Add(bp)
+	s.mu.Unlock()
 	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
 	if err != nil {
 		return nil, err
@@ -392,7 +397,10 @@ func (s *Service) RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp Bre
 	if bp.Type == model.BreakpointPathDeviation {
 		return nil, fmt.Errorf("路径偏离断点强制开启，不能关闭")
 	}
-	if !session.breakpoints.Remove(bp) {
+	s.mu.Lock()
+	removed := session.breakpoints.Remove(bp)
+	s.mu.Unlock()
+	if !removed {
 		return session.breakpoints.List(), nil
 	}
 	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
@@ -728,6 +736,11 @@ func (s *Service) Stop(ctx context.Context, pathRunID uint64) (model.PathRun, er
 	}, s.now()); err != nil {
 		return model.PathRun{}, err
 	}
+	// 停止生效写 control.log：暂停/停止的完整流水是本切片的完成标准（评审 P1）。
+	s.logFact(pathRunID, model.RunControl{
+		RunID: pathRun.RunID, PathRunID: pathRunID,
+		Kind: model.ControlFactStopped, Source: model.RunControlSourceUI, CreatedAt: s.now(),
+	}, 0)
 	s.clear(pathRunID)
 	return stopped, nil
 }

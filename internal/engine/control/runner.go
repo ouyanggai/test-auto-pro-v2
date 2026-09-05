@@ -181,6 +181,15 @@ func (s *Service) applyStop(ctx context.Context, pathRunID uint64) {
 		return
 	}
 	stoppedFact := model.RunControl{
+		// run_id 是 NOT NULL 外键：漏填会让停止事实必然插入失败（评审 P1）。
+		RunID: func() uint64 {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if session := s.active[pathRunID]; session != nil {
+				return session.runCtx.Run.ID
+			}
+			return 0
+		}(),
 		PathRunID: pathRunID, Kind: model.ControlFactStopped,
 		Source: model.RunControlSourceUI, CreatedAt: s.now(),
 	}

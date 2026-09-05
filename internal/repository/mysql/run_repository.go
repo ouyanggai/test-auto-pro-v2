@@ -241,7 +241,7 @@ func (r *RunRepository) ListRunsByPlan(ctx context.Context, planID uint64, limit
 func (r *RunRepository) ListRunSteps(ctx context.Context, pathRunID uint64) ([]model.RunStep, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, path_run_id, step_no, source, action, node_key, actor_summary, gate_snapshot, status, started_at, finished_at
-		FROM run_steps WHERE path_run_id = ? ORDER BY step_no ASC
+		FROM run_steps WHERE path_run_id = ? ORDER BY step_no ASC, id ASC
 	`, pathRunID)
 	if err != nil {
 		return nil, err

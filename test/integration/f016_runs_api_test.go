@@ -82,7 +82,7 @@ func TestF016RunsAPIGuards(t *testing.T) {
 	}
 
 	// FlowGraphService 依赖真实目标读取，这里为 nil 会 panic：详情/启动走不到图读取即被阻塞，安全。
-	body := []byte(`{"executionPathId":1}`)
+	body := []byte(`{"pathIds": [1]}`)
 	request := httptest.NewRequest(http.MethodPost, "/api/plans/"+strconvUint(plan.ID)+"/runs", bytes.NewReader(body))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)

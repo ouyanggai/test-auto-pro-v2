@@ -647,10 +647,17 @@ func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log 
 
 // readFactsWithRetry 重读目标实时事实（只读，可重试）；重试预算耗尽后返回最后的读取错误。
 func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep) (InstanceFacts, error) {
-	return RunWithRetry(ctx, e.policy, "事实重读", func() (InstanceFacts, error) {
+	facts, err := RunWithRetry(ctx, e.policy, "事实重读", func() (InstanceFacts, error) {
 		// 事实重读要与目标返回的真实节点标识对照，因此传真实标识而不是工具侧不透明键。
 		return e.readInstanceFacts(ctx, session, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
 	}, nil)
+	if err != nil {
+		// 预算耗尽仍读不到：把读取失败随事实带回（ReadError 非空 → 核验判不可读、对账走读取失败降级），
+		// 绝不把零值事实当「读到了且无痕迹」用——那会把读取失败误判成「已前进」或「明确未变」（评审 P1）。
+		facts.ReadError = err.Error()
+		return facts, err
+	}
+	return facts, nil
 }
 
 // FinalTargetFacts 是收尾重读产出的最终目标事实摘要。

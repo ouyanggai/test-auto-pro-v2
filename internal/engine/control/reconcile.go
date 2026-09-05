@@ -76,6 +76,15 @@ func (s *Service) ReconcileNow(ctx context.Context, pathRunID uint64) (*Reconcil
 		FormChanged:      false,
 	})
 	result := reconcile.Reconcile(input)
+	// 目标读取失败（抖动是常态，纲领第 4.4.1 节）时唯一合法动作是「重新对账」：
+	// 把用户推向不可撤销的人工终态，等于用一次抖动锁死整条路径（评审 P1）。
+	if facts.NowReadError != "" {
+		result.Action = reconcile.ActionReconcileAgain
+		result.Headline = "对账读取失败（目标暂时不可用）：请重新对账；不要重放，也不要结束本路径运行"
+		if len(result.Reasons) > 0 {
+			result.Reasons = append([]string{"目标读取失败：" + facts.NowReadError}, result.Reasons...)
+		}
+	}
 
 	s.mu.Lock()
 	// 已用重放次数必须取会话真实计数：每次对账都重新构造结论视图，
@@ -183,6 +192,18 @@ func (s *Service) RecoveryAction(ctx context.Context, pathRunID uint64, action r
 		s.mu.Unlock()
 		preview, finished, previewErr := s.steps.BuildPreview(ctx, session.runCtx, nextIndex)
 		if previewErr != nil {
+			// 预览失败不能留下“已回运行中、可放行旧现场”的中间态：
+			// 把路径运行送回待对账并恢复现场标志，等下一次对账重新给出唯一动作（评审 P1）。
+			if _, advErr := s.runs.AdvancePathRun(ctx, pathRunID,
+				model.PathRunStatusRunning, model.PathRunStatusAwaitingReconciliation,
+				model.RunEvent{Kind: "path_run_recover_stalled", Label: "恢复动作执行失败，退回待对账"}); advErr != nil {
+				return previewErr
+			}
+			s.mu.Lock()
+			session.awaitingReconciliation = true
+			session.nextIndex--
+			session.reconcile = fresh
+			s.mu.Unlock()
 			return previewErr
 		}
 		s.recoveryLog.LogFact(pathRunID, fmt.Sprintf("恢复动作=advance 游标推进到第 %d 个步骤（只推进一次）", nextIndex+1))
@@ -230,11 +251,23 @@ func (s *Service) RecoveryAction(ctx context.Context, pathRunID uint64, action r
 		// 重放是一次完整的新尝试，不是重发：预览必须重建，让 plan/gate/prepare 用此刻的真实事实
 		// 重新算一遍（门禁此刻不通过就停止，绝不拿旧快照硬发）。
 		preview, finished, previewErr := s.steps.BuildPreview(ctx, session.runCtx, currentIndex)
-		if previewErr != nil {
-			return previewErr
-		}
-		if finished || preview == nil {
-			return fmt.Errorf("重放失败：本步已不在编译场景内，请重新启动一次运行")
+		if previewErr != nil || finished || preview == nil {
+			// 预览失败不能留下“已回运行中、重放计数已加、可放行旧现场”的中间态：
+			// 退回待对账、回滚计数与现场标志，等下一次对账重新给出唯一动作（评审 P1）。
+			if _, advErr := s.runs.AdvancePathRun(ctx, pathRunID,
+				model.PathRunStatusRunning, model.PathRunStatusAwaitingReconciliation,
+				model.RunEvent{Kind: "path_run_recover_stalled", Label: "重放执行失败，退回待对账"}); advErr != nil {
+				return previewErr
+			}
+			s.mu.Lock()
+			session.replaysUsed--
+			session.awaitingReconciliation = true
+			session.reconcile = fresh
+			s.mu.Unlock()
+			if previewErr != nil {
+				return previewErr
+			}
+			return fmt.Errorf("重放失败：本步已不在编译场景内，请重新对账或登记人工结论")
 		}
 		s.mu.Lock()
 		session.preview = preview
@@ -248,6 +281,13 @@ func (s *Service) RecoveryAction(ctx context.Context, pathRunID uint64, action r
 		if _, err := s.approveOneStep(ctx, pathRunID, session, nextAttempt, true); err != nil {
 			return err
 		}
+		return nil
+	case reconcile.ActionReconcileAgain:
+		// 重新对账：只读重跑一次对账并给出最新唯一动作（对账读取失败时的合法出路）。
+		if _, err := s.ReconcileNow(ctx, pathRunID); err != nil {
+			return err
+		}
+		s.recoveryLog.LogFact(pathRunID, "恢复动作=reconcile_again 重新只读对账完成")
 		return nil
 	case reconcile.ActionManualEnd:
 		// 登记人工核对结论并结束：人工事实 append-only 落库，路径进入终态。

@@ -83,6 +83,24 @@ type Result struct {
 	Headline string
 }
 
+// dimensionLabel 把维度稳定键翻译成界面可读的中文名（纲领 12.1：界面不暴露内部标识）。
+func dimensionLabel(dim Dimension) string {
+	switch dim {
+	case DimInstanceStatus:
+		return "实例状态"
+	case DimCurrentNode:
+		return "当前节点"
+	case DimCurrentTask:
+		return "当前待办"
+	case DimDoneRecords:
+		return "已办记录"
+	case DimActionTraces:
+		return "审核记录"
+	default:
+		return string(dim)
+	}
+}
+
 // Reconcile 是纯判定函数：
 //   - 部分生效 → 一律 indeterminate（重放会把表单数据再写一次，绝不给重放）；
 //   - 五个维度全部读到且全部“写已生效”的证据一致 → effective；
@@ -110,22 +128,22 @@ func Reconcile(input Input) Result {
 		evidence, ok := input.Dims[dim]
 		if !ok || strings.TrimSpace(string(evidence.State)) == "" {
 			missing = true
-			reasons = append(reasons, fmt.Sprintf("维度 %s：无证据（缺失按无法判定处理，绝不当成未变化）", dim))
+			reasons = append(reasons, fmt.Sprintf("维度 %s：无证据（缺失按无法判定处理，绝不当成未变化）", dimensionLabel(dim)))
 			continue
 		}
 		switch evidence.State {
 		case DimMissing:
 			missing = true
-			reasons = append(reasons, fmt.Sprintf("维度 %s：读不到（%s）", dim, evidence.Note))
+			reasons = append(reasons, fmt.Sprintf("维度 %s：读不到（%s）", dimensionLabel(dim), evidence.Note))
 		case DimConflict:
 			missing = true
-			reasons = append(reasons, fmt.Sprintf("维度 %s：读数互相矛盾（%s）", dim, evidence.Note))
+			reasons = append(reasons, fmt.Sprintf("维度 %s：读数互相矛盾（%s）", dimensionLabel(dim), evidence.Note))
 		case DimChanged:
 			changedCount++
-			reasons = append(reasons, fmt.Sprintf("维度 %s：与写之前不同（%s）", dim, evidence.Note))
+			reasons = append(reasons, fmt.Sprintf("维度 %s：与写之前不同（%s）", dimensionLabel(dim), evidence.Note))
 		case DimUnchanged:
 			unchangedCount++
-			reasons = append(reasons, fmt.Sprintf("维度 %s：与写之前一致（%s）", dim, evidence.Note))
+			reasons = append(reasons, fmt.Sprintf("维度 %s：与写之前一致（%s）", dimensionLabel(dim), evidence.Note))
 		}
 	}
 	if missing {

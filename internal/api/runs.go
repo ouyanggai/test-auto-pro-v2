@@ -316,6 +316,16 @@ func handleRecoveryAction(orchestrator RunOrchestrator) http.HandlerFunc {
 			InstanceStatus: body.InstanceStatus, CurrentNode: body.CurrentNode,
 			Note: body.Note, Reporter: body.Reporter,
 		}
+		// 人工结论是永久的运行事实：必填项缺失必须 400 拒绝，不能落成空事实，
+		// 更不能让非空校验只在浏览器一侧（纲领 12.1、评审 P2）。
+		if body.Action == "manual_end" {
+			for field, value := range map[string]string{"实例状态": body.InstanceStatus, "当前节点": body.CurrentNode, "登记人": body.Reporter} {
+				if strings.TrimSpace(value) == "" {
+					writeFailure(response, http.StatusBadRequest, "RUN_RECOVERY_INVALID", "请补全人工核对结论的必填项："+field, false)
+					return
+				}
+			}
+		}
 		detail, err := orchestrator.RecoveryAction(request.Context(), runID, parsePathRunIDQuery(request), body.Action, manual)
 		if err != nil {
 			writeRunControlError(response, err)

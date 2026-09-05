@@ -55,6 +55,8 @@ type RunStore interface {
 	ListRunIDsNeedingScheduling(ctx context.Context) ([]uint64, error)
 	// FinishRunIfAllPathsClosed 在人工结论登记后尝试收尾运行聚合；未全部闭合时不动作（F-020）。
 	FinishRunIfAllPathsClosed(ctx context.Context, runID uint64, now time.Time) (bool, error)
+	// HasManualConclusion 判断该路径运行是否已登记人工核对结论（登记即终局守卫）。
+	HasManualConclusion(ctx context.Context, pathRunID uint64) (bool, error)
 	// ListDueScheduledPlans 列出到点尚未消费的计划（数据库时间为准，F-020 定时触发）。
 	ListDueScheduledPlans(ctx context.Context, now time.Time) ([]model.Plan, error)
 	// ClaimScheduledPlan 原子领取到点计划的一次性消费标记；返回是否领取成功。

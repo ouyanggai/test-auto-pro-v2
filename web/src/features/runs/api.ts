@@ -42,6 +42,10 @@ export interface RunStepAttempt {
   phaseDurations?: Record<string, number>
   phaseDurationsNote?: string
   curlBlock?: string
+  // 对账三列（F-018）：对账结论、唯一恢复动作、这次尝试本身是否重放。
+  reconcileVerdictName?: string
+  recoveryActionName?: string
+  isReplay?: boolean
 }
 
 export interface RunStep {
@@ -195,6 +199,8 @@ export interface RunBreakpoint {
   type: string
   typeName: string
   nodeName?: string
+  // nodeKey 是节点断点的挂载键：删除断点必须原样带回。
+  nodeKey?: string
   stepNo?: number
   action?: string
 }
@@ -205,6 +211,8 @@ export interface BreakpointInput {
   stepNo?: number
   nodeKey?: string
   action?: string
+  // nodeName 是服务端翻译好的业务名称（仅展示用，不参与增删匹配）。
+  nodeName?: string
 }
 
 // RunPathSummary 是一条路径运行在运行级视图里的摘要。

@@ -296,8 +296,10 @@ type BreakpointDTO struct {
 	Type     string `json:"type"`
 	TypeName string `json:"typeName"`
 	NodeName string `json:"nodeName,omitempty"`
-	StepNo   int    `json:"stepNo,omitempty"`
-	Action   string `json:"action,omitempty"`
+	// NodeKey 是节点断点的挂载键（配置令牌）：删除断点必须原样带回，否则删除静默无效（评审 P1）。
+	NodeKey string `json:"nodeKey,omitempty"`
+	StepNo  int    `json:"stepNo,omitempty"`
+	Action  string `json:"action,omitempty"`
 }
 
 // PathChoiceDTO 是分支选择的公开形态：分支节点 ID 与所选分支 ID。
@@ -560,6 +562,11 @@ func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64
 	if err != nil {
 		return nil, err
 	}
+	// 人工结论一登记，这条路径运行就是终局：禁止再对账，更不可能重放或前进（评审 P1）。
+	if concluded, err := s.store.HasManualConclusion(ctx, pathRunID); err == nil && concluded {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict,
+			Message: "已登记人工核对结论并结束，不能再对账或重放"}
+	}
 	// 对账要回目标重读五维事实，这些请求必须落进本次运行的日志目录，
 	// 否则 recovery.log 有结论、network.log 与 curl.log 里却找不到对应请求，日志与记录无法互查。
 	scoped, err := s.withRunScope(ctx, pathRunID)
@@ -587,6 +594,13 @@ func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, runID uint
 	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
 	if err != nil {
 		return nil, err
+	}
+	if action != string(engine_reconcile.ActionReconcileAgain) {
+		// 人工结论登记后的终局守卫：唯一例外是重新对账（只读，不改变任何状态）。
+		if concluded, err := s.store.HasManualConclusion(ctx, pathRunID); err == nil && concluded {
+			return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict,
+				Message: "已登记人工核对结论并结束，不能再执行恢复动作"}
+		}
 	}
 	// 恢复动作要重新对账、可能重走七阶段（含真实写请求），同样必须带运行日志作用域。
 	scoped, err := s.withRunScope(ctx, pathRunID)
@@ -1016,7 +1030,8 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		}
 		nodeTable := nodeNamesOf(graph)
 		for _, bp := range view.Breakpoints {
-			dto := BreakpointDTO{Type: string(bp.Type), TypeName: breakpointTypeName(string(bp.Type)), StepNo: bp.StepNo, Action: bp.Action}
+			dto := BreakpointDTO{Type: string(bp.Type), TypeName: breakpointTypeName(string(bp.Type)),
+				NodeKey: bp.NodeKey, StepNo: bp.StepNo, Action: bp.Action}
 			if bp.NodeKey != "" {
 				dto.NodeName = nodeNameFromTable(nodeTable, bp.NodeKey)
 			}

@@ -131,6 +131,15 @@ func (r *RunRepository) AppendManualConclusion(ctx context.Context, conclusion m
 	return err
 }
 
+// HasManualConclusion 判断该路径运行是否已登记人工核对结论（F-018×F-020 守卫数据源）。
+// 结论一行即终局：登记后不再允许对账或恢复动作，防止已结束的运行被拉回运行中再发真实写。
+func (r *RunRepository) HasManualConclusion(ctx context.Context, pathRunID uint64) (bool, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM run_manual_conclusions WHERE path_run_id = ?", pathRunID).Scan(&count)
+	return count > 0, err
+}
+
 // SetFinalTargetSummary 落库最终目标事实摘要；路径运行未绑定实例时不允许写摘要。
 func (r *RunRepository) SetFinalTargetSummary(ctx context.Context, pathRunID uint64, summary string, now time.Time) error {
 	result, err := r.db.ExecContext(ctx, `

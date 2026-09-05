@@ -21,6 +21,7 @@ import {
 import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { BreakpointInput, PathRunDetail, ReconcileView } from '../features/runs/api'
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
+import { pathConfigNodeKey } from '../features/path-configuration/logic'
 import RunNodePanel from '../features/runs/RunNodePanel.vue'
 import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
 
@@ -193,10 +194,12 @@ async function pauseNow(): Promise<void> {
 }
 
 // addNodeBreakpoint 在当前选中节点上就地挂节点断点。
+// 画布给的是图节点 ID，命中判定用的是配置令牌键：挂载前必须换键，否则断点永不命中（评审 P1）。
 async function addNodeBreakpoint(): Promise<void> {
   if (!selectedNodeKey.value) return
   try {
-    const list = await setBreakpoint(runId, { type: 'node', nodeKey: selectedNodeKey.value }, detail.value?.pathRunId)
+    const tokenKey = await pathConfigNodeKey(selectedNodeKey.value)
+    const list = await setBreakpoint(runId, { type: 'node', nodeKey: tokenKey }, detail.value?.pathRunId)
     applyBreakpoints(list)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '设置断点失败'
@@ -322,7 +325,9 @@ function applyBreakpoints(list: BreakpointInput[]): void {
   detail.value.breakpoints = list.map((bp) => ({
     type: bp.type,
     typeName: breakpointTypeName(bp.type),
-    nodeName: bp.nodeKey,
+    // nodeKey 是挂载键（删除断点要原样带回）；nodeName 是服务端翻译好的业务名称（不显示内部键）。
+    nodeKey: bp.nodeKey,
+    nodeName: bp.nodeName,
     stepNo: bp.stepNo,
     action: bp.action,
   }))
