@@ -199,3 +199,78 @@ func TestF017PausedPathRunSurvivesRestart(t *testing.T) {
 		t.Fatalf("暂停后继续应被允许：%v", err)
 	}
 }
+
+// TestF017ContinueLoopSurvivesRequestContextCancel 复核自动运行与「继续运行」的连续执行：
+// 控制 API 是立即返回、循环在后台 goroutine 里跑的，而 HTTP 请求上下文在处理器返回后就被取消。
+// 如果循环直接沿用请求上下文，第一步的目标调用会立刻拿到 context.Canceled，
+// 传输档归类不出来即按不确定处理，于是"点继续运行"会把路径推进待对账，一次写都没发出。
+func TestF017ContinueLoopSurvivesRequestContextCancel(t *testing.T) {
+	database := newF016ControlDatabase(t)
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer setupCancel()
+	store := planmysql.NewRunRepository(database.DB)
+	runService := run.NewService(store, "worker-f017-loop", time.Minute, time.Now)
+
+	fake := &fakeTarget{
+		submitResult: &target.SubmitFlowInstanceResult{InstanceID: "instance-loop", Status: "run"},
+		afterSubmit:  &fakeTargetView{Found: true, Status: "run"},
+	}
+	executor := step.NewExecutor(fake, &fakeSessions{}, runService, store, fixedRunConfig(), nil)
+	controller := control.NewService(runService, executor, store, time.Now)
+
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep()})
+	started, err := controller.StartWithMode(setupCtx, runCtx, model.RunModeAuto, nil)
+	if err != nil {
+		t.Fatalf("自动启动失败：%v", err)
+	}
+	pathRunID := started.PathRun.ID
+	waitLoopIdle(t, controller, pathRunID)
+	if fake.submitCalls != 0 {
+		t.Fatalf("首次写断点应先拦住写请求，实际已发出 %d 次", fake.submitCalls)
+	}
+
+	// 用户看过预览后删除首次写断点并点「继续运行」：这是自动模式的正常用法。
+	if _, err := controller.RemoveBreakpoint(setupCtx, pathRunID, control.Breakpoint{Type: model.BreakpointFirstWrite}); err != nil {
+		t.Fatalf("删除首次写断点失败：%v", err)
+	}
+	view := controller.View(pathRunID)
+	preview := controller.CurrentPreview(pathRunID)
+	if view == nil || preview == nil {
+		t.Fatal("控制现场丢失")
+	}
+
+	// 复刻真实调用形态：处理器返回即取消请求上下文。
+	requestCtx, requestCancel := context.WithCancel(context.Background())
+	if _, err := controller.ApproveWithCommand(requestCtx, pathRunID, model.CommandContinue, preview.StepNo, view.Version); err != nil {
+		requestCancel()
+		t.Fatalf("继续运行命令失败：%v", err)
+	}
+	requestCancel()
+	waitLoopIdle(t, controller, pathRunID)
+
+	pathRun, err := store.GetPathRun(setupCtx, pathRunID)
+	if err != nil {
+		t.Fatalf("读取路径运行失败：%v", err)
+	}
+	if fake.submitCalls != 1 {
+		t.Fatalf("继续运行必须真实执行这一步，实际发出 %d 次写请求（路径运行状态 %s）",
+			fake.submitCalls, model.PathRunStatusName(pathRun.Status))
+	}
+	if pathRun.Status == model.PathRunStatusAwaitingReconciliation {
+		t.Fatalf("零写入或请求上下文取消不得把路径推进待对账：%s", model.PathRunStatusName(pathRun.Status))
+	}
+}
+
+// waitLoopIdle 等待后台连续执行循环结束，上限 5 秒。
+func waitLoopIdle(t *testing.T, controller *control.Service, pathRunID uint64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		view := controller.View(pathRunID)
+		if view == nil || !view.LoopRunning {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("后台循环 5 秒内未结束")
+}

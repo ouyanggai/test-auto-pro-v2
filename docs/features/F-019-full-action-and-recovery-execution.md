@@ -80,6 +80,14 @@
 8. **既有实现必须先读后写。** 实施前先用 `git log --oneline` 与目录清单确认本切片是否已有落库实现，
    已有实现按「补齐与返工」推进，不重建第二套；重复实现属于交付缺陷。
 
+### 评审修复（2026-09-05 核查线程，已提交）
+
+- **不同意（`reject`）此前必然失败。** `BuildActionBody` 的 switch 没有 `reject` 分支，
+  会落到 `default` 返回 `UNSUPPORTED_ACTION`（失败安全，不会误写，但动作全集并未齐备）。
+  已补上分支：与同意共用 `/flowInstanceApi/audit`，差别只在 `auditRecord.auditStatus=no_pass`，
+  表单数据同样整份提交（审批必调 `saveFormData` 且是整份覆盖，语义清单第 16 条）。
+  写端点数量未变（仍是 11 个），白名单契约通过。新增用例 `TestF019RejectHasWritePayload`。
+
 ### 本切片现状（核查线程如实记录）
 
 后端已落库（提交 `14cf365`）：`internal/adapter/target/write_actions.go` 提供 9 个写端点

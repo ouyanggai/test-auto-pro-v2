@@ -10,6 +10,12 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
+// loopFailureReason 把循环内必须落库却失败的事实转成中文停止原因。
+// 控制事实是真实写之前的审计记录：落不下去就不能继续往下发写请求，只能停在这里让人看到。
+func loopFailureReason(what string, err error) string {
+	return what + "落库失败，为避免出现没有审计记录的真实写，连续执行已停止：" + err.Error()
+}
+
 // startLoop 启动连续执行循环（自动运行 / 执行到下一节点 / 继续运行）。
 // 循环在后台 goroutine 里跑：API 立即返回当前状态，前端按配置轮询。
 func (s *Service) startLoop(ctx context.Context, pathRunID uint64, session *activeStep, command model.ControlCommand) {
@@ -20,7 +26,10 @@ func (s *Service) startLoop(ctx context.Context, pathRunID uint64, session *acti
 	}
 	session.loopRunning = true
 	s.mu.Unlock()
-	go s.runLoop(ctx, pathRunID, session, command)
+	// 循环在后台跑，而控制 API 立即返回：HTTP 处理器一返回，请求上下文就被取消。
+	// 必须切断取消信号只保留取值（日志作用域等）——否则第一步的目标调用立刻拿到 context.Canceled，
+	// 传输档归类不出来即按不确定处理，"继续运行"会变成一次写都没发就把路径推进待对账。
+	go s.runLoop(context.WithoutCancel(ctx), pathRunID, session, command)
 }
 
 // runLoop 是连续执行的主体。每轮：阶段 3 判定（停止请求/门禁/断点命中/下一节点边界/暂停）→ 执行一步。
@@ -72,12 +81,17 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 				ObjectKind: "step", ObjectKey: fmt.Sprintf("%d", preview.StepNo),
 				Reason: hit.Reason, Source: model.RunControlSourceUI, CreatedAt: s.now(),
 			}
-			_ = s.store.AppendRunControl(ctx, hitFact, s.now())
+			if err := s.store.AppendRunControl(ctx, hitFact, s.now()); err != nil {
+				s.mu.Lock()
+				session.stopReason = loopFailureReason("断点命中事实", err)
+				s.mu.Unlock()
+				return
+			}
 			s.logFact(pathRunID, hitFact, preview.StepNo)
-			_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+			s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{
 				RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
 				Kind: "breakpoint_hit", Label: fmt.Sprintf("断点命中：%s（%s）", hit.Breakpoint.Label(), hit.Reason),
-			}, s.now())
+			}, preview.StepNo)
 		}
 		// 执行到下一节点的边界：语义节点变化，在阶段 3 暂停（先落断点事实再停）。
 		if command == model.CommandNextNode && fromNode != "" && NextNodeBoundary(fromNode, preview.NodeKey) {
@@ -94,10 +108,10 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 				session.deviationStalled = true
 				session.stopReason = "路径偏离：" + primary.Reason + "；后续步骤不提供放行，只能停止或查看"
 				s.mu.Unlock()
-				_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+				s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{
 					RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
 					Kind: "path_deviation_stopped", Label: "路径偏离断点强制停止，不提供放行",
-				}, s.now())
+				}, preview.StepNo)
 				return
 			}
 			s.mu.Lock()
@@ -112,7 +126,12 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			Kind: model.ControlFactApproved, Action: model.RunControlApprove,
 			Command: command, Source: model.RunControlSourceUI, CreatedAt: s.now(),
 		}
-		_ = s.store.AppendRunControl(ctx, approveFact, s.now())
+		if err := s.store.AppendRunControl(ctx, approveFact, s.now()); err != nil {
+			s.mu.Lock()
+			session.stopReason = loopFailureReason("放行事实", err)
+			s.mu.Unlock()
+			return
+		}
 		s.logFact(pathRunID, approveFact, preview.StepNo)
 		result, err := s.approveOneStep(ctx, pathRunID, session, 1)
 		if err != nil {
@@ -134,10 +153,14 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 				RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
 				Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now(),
 			}
-			_ = s.store.AppendRunControl(ctx, pausedFact, s.now())
-			s.logFact(pathRunID, pausedFact, preview.StepNo)
+			reason := "暂停请求已生效（本步已走完核验与落账）"
+			if err := s.store.AppendRunControl(ctx, pausedFact, s.now()); err != nil {
+				reason = loopFailureReason("暂停事实", err)
+			} else {
+				s.logFact(pathRunID, pausedFact, preview.StepNo)
+			}
 			s.mu.Lock()
-			session.stopReason = "暂停请求已生效（本步已走完核验与落账）"
+			session.stopReason = reason
 			s.mu.Unlock()
 			return
 		}
@@ -145,14 +168,27 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 }
 
 // applyStop 在循环内执行停止：停止是终态，已发生的事实全部保留。
+// 状态迁移失败时绝不声称已停止：保留现场与中文原因，让用户能再次停止，
+// 否则路径运行在库里还是运行中，而工具已经把现场清掉，谁都收不了尾。
 func (s *Service) applyStop(ctx context.Context, pathRunID uint64) {
-	_, _ = s.runs.Stop(ctx, pathRunID)
+	if _, err := s.runs.Stop(ctx, pathRunID); err != nil {
+		s.mu.Lock()
+		if session := s.active[pathRunID]; session != nil {
+			session.stopRequested = false
+			session.stopReason = "停止未生效：" + err.Error() + "；已发生的事实全部保留，可再次停止"
+		}
+		s.mu.Unlock()
+		return
+	}
 	stoppedFact := model.RunControl{
 		PathRunID: pathRunID, Kind: model.ControlFactStopped,
 		Source: model.RunControlSourceUI, CreatedAt: s.now(),
 	}
-	_ = s.store.AppendRunControl(ctx, stoppedFact, s.now())
-	s.logFact(pathRunID, stoppedFact, 0)
+	if err := s.store.AppendRunControl(ctx, stoppedFact, s.now()); err == nil {
+		s.logFact(pathRunID, stoppedFact, 0)
+	} else {
+		s.warnFactFailure(pathRunID, "停止事实", err)
+	}
 	s.mu.Lock()
 	session := s.active[pathRunID]
 	if session != nil {
@@ -160,4 +196,20 @@ func (s *Service) applyStop(ctx context.Context, pathRunID uint64) {
 	}
 	s.mu.Unlock()
 	s.clear(pathRunID)
+}
+
+// appendEventOrWarn 追加运行事件；事件只服务于界面与回放，数据库事实表才是权威，
+// 因此失败不中断执行，但必须留下痕迹而不是静默丢弃（纲领第 6.4 节：被吞掉的错误算缺陷）。
+func (s *Service) appendEventOrWarn(ctx context.Context, pathRunID uint64, event model.RunEvent, stepNo int) {
+	if err := s.store.AppendRunEvent(ctx, event, s.now()); err != nil {
+		s.warnFactFailure(pathRunID, "运行事件（"+event.Kind+"）", err)
+	}
+}
+
+// warnFactFailure 把非致命的落库失败写进 control.log，保证事后能查到它发生过。
+func (s *Service) warnFactFailure(pathRunID uint64, what string, err error) {
+	s.logFact(pathRunID, model.RunControl{
+		Kind:   model.ControlFactKind("append_failed"),
+		Reason: what + "落库失败：" + err.Error(),
+	}, 0)
 }

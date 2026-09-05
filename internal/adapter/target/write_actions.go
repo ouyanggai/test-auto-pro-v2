@@ -63,6 +63,7 @@ type ActionWriteRequest struct {
 //   - retrieve: data{jobTaskId, id}
 //   - revocation: data{id, withdrawDesc}
 //   - urge: 顶层 flowInstanceId + data{}（与其他动作不同，不走 data 容器）
+//   - audit(不同意): data{id, jobTaskId, flowProxyId, auditRecord{auditStatus=no_pass, executeDesc}} + formDataMongoVo
 //   - transpond: data{name, flowInstanceBizRelevanceList} + receiverId + formDataMongoVo
 //   - flow_tracking: data{id} + 顶层 tracking 布尔
 func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error) {
@@ -100,6 +101,30 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 			body["formDataMongoVo"] = map[string]any{"data": request.FormData}
 		}
 		return body, WriteEndpointStorageForm, nil
+	case "reject":
+		// 不同意与同意共用审批端点，差别只在 auditRecord.auditStatus=no_pass
+		// （FlowAuditServiceImpl 按 ExecuteResultEnum 分派）。表单数据同样整份提交：
+		// 审批必调 saveFormData 且是整份覆盖（语义清单第 16 条），少带字段等于把其余字段清空。
+		data := map[string]any{
+			"id":        strings.TrimSpace(request.InstanceID),
+			"jobTaskId": strings.TrimSpace(request.JobTaskID),
+		}
+		if id := strings.TrimSpace(request.FlowProxyID); id != "" {
+			data["flowProxyId"] = id
+		}
+		auditRecord := map[string]any{"auditStatus": strings.TrimSpace(request.AuditStatus)}
+		if desc := strings.TrimSpace(request.ExecuteDesc); desc != "" {
+			auditRecord["executeDesc"] = desc
+		}
+		data["auditRecord"] = auditRecord
+		body := map[string]any{"data": data}
+		if len(request.FormData) > 0 {
+			body["formDataMongoVo"] = map[string]any{"data": request.FormData}
+		}
+		if len(request.NextAuditors) > 0 {
+			body["nextAuditorList"] = request.NextAuditors
+		}
+		return body, WriteEndpointAudit, nil
 	case "transfer", "add_sign":
 		data := map[string]any{
 			"id":        request.InstanceID,
