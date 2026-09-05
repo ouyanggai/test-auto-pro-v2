@@ -256,6 +256,21 @@ const OPTION_WAIT_INTERVAL_MS = 500
 // 每隔若干轮重新触发一次数据源刷新，应对链式依赖在中途才具备条件的情况。
 const OPTION_REFRESH_EVERY = 10
 
+// formValuesFingerprint 生成表单值的稳定指纹（键按字典序），用于判断协调是否真的改动了取值。
+// 不用 JSON.stringify 直接比较：键顺序会随赋值顺序变化，会把"没改"误判成"改了"。
+export function formValuesFingerprint (values) {
+  if (!values || typeof values !== 'object') return ''
+  const stable = value => {
+    if (Array.isArray(value)) return value.map(stable)
+    if (value && typeof value === 'object') {
+      const entries = Object.keys(value).sort().map(key => [key, stable(value[key])])
+      return Object.fromEntries(entries)
+    }
+    return value
+  }
+  return JSON.stringify(stable(values))
+}
+
 // ============ 选项型字段补丁协调 ============
 // 目标平台的分支条件常按"显示名称"声明，最小补丁只改名称字段；而选项型控件真正绑定的是取值
 // （Id、路径数组或选项值），不同步就会保留历史绑定值，控件按选项匹配继续显示旧名称。

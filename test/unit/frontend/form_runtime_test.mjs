@@ -5,7 +5,7 @@ import test from 'node:test'
 const runtimeSource = fs.readFileSync(new URL('../../../form-runtime/runtime-source/src/main.js', import.meta.url), 'utf8')
 const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
-const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
@@ -807,4 +807,96 @@ test('虚拟显示名与同前缀名称字段同时被补丁但取值矛盾时�
   assert.equal(coordination.issues.length, 1)
   assert.equal(coordination.issues[0].code, 'OPTION_PATCH_CONTRADICTION')
   assert.equal(coordination.values.paymentId, 'old-id')
+})
+
+test('两个显示名都被补丁改过时，选项还没加载出来也不许判为一致', async () => {
+  // 实测场景：服务端把条件字段 classificationId__virtualName 与同前缀 classificationName 一起同步成「施工类」，
+  // 于是两个显示名都在补丁清单里。此时若因为"虚拟名称已等于期望名称"就判一致，
+  // 绑定值 classificationId 会继续指向历史分类（行政综合类），控件按它渲染，界面永远停在旧选项。
+  // 选项没加载出来时什么都证明不了，必须继续等待并在等到后按真实选项回填。
+  const options = []
+  const template = { list: [{ type: 'cascader', model: 'classificationId', name: '合同分类', options: { remote: true } }] }
+  const form = {
+    model: {
+      classificationId: ['old-id'],
+      classificationId__virtualName: '施工类',
+      classificationName: '施工类',
+    },
+    formItemContexts: {
+      classificationId: {
+        widget: { type: 'cascader', model: 'classificationId', options: { remote: true } },
+        $refs: { generateElementItem: { get remoteOptions () { return options } } },
+      },
+    },
+    async refreshFieldOptionData () {
+      // 首轮刷新还拿不到选项，第二轮才到齐：复现目标数据源的链式依赖与慢请求。
+      if (options.length === 0) { options.push({ value: 'old-id', label: '行政综合类' }, { value: 'new-id', label: '施工类' }) }
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['classificationId__virtualName', 'classificationName'], 3)
+  assert.deepEqual(coordination.issues, [])
+  assert.deepEqual(coordination.values.classificationId, ['new-id'], '选项到齐后必须按真实选项回填绑定值')
+  assert.equal(coordination.values.classificationId__virtualName, '施工类')
+  assert.equal(coordination.values.classificationName, '施工类')
+})
+
+test('两个显示名都被补丁改过且选项始终加载不出来时必须阻断，不能静默判一致', async () => {
+  const template = { list: [{ type: 'cascader', model: 'classificationId', name: '合同分类', options: { remote: true } }] }
+  const form = {
+    model: {
+      classificationId: ['old-id'],
+      classificationId__virtualName: '施工类',
+      classificationName: '施工类',
+    },
+    formItemContexts: {
+      classificationId: {
+        widget: { type: 'cascader', model: 'classificationId', options: { remote: true } },
+        $refs: { generateElementItem: { remoteOptions: [] } },
+      },
+    },
+    async refreshFieldOptionData () {},
+    getOptionData () { return [] },
+    async setData () { throw new Error('选项不可用时绝不能写值') },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['classificationId__virtualName', 'classificationName'], 2)
+  assert.equal(coordination.issues.length, 1)
+  assert.equal(coordination.issues[0].code, 'OPTION_SOURCE_UNAVAILABLE')
+  assert.deepEqual(coordination.values.classificationId, ['old-id'], '解析不出来时保留原值')
+})
+
+test('嵌在报表容器单元格里的选项控件同样参与补丁协调', async () => {
+  // 真实目标表单（合同盖章评审表）是报表布局：合同分类的实际位置是
+  // report > rows > columns > list > cascader。此前枚举只深入子表单，不进布局容器，
+  // 于是这个控件根本没被协调过——既不回填绑定值也不报任何问题，界面永远停在历史选项。
+  const cascader = { type: 'cascader', model: 'classificationId', name: '合同分类', options: { remote: true } }
+  const template = { list: [{
+    type: 'report', model: 'report_x', rows: [{ columns: [{ list: [cascader] }] }],
+  }] }
+  const form = {
+    model: { classificationId: ['old-id'], classificationId__virtualName: '施工类', classificationName: '施工类' },
+    formItemContexts: {
+      classificationId: {
+        widget: cascader,
+        $refs: { generateElementItem: { remoteOptions: [
+          { value: 'old-id', label: '行政综合类' },
+          { value: 'new-id', label: '施工类' },
+        ] } },
+      },
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['classificationId__virtualName', 'classificationName'], 1)
+  assert.deepEqual(coordination.issues, [])
+  assert.deepEqual(coordination.values.classificationId, ['new-id'], '布局容器里的控件也必须按真实选项回填绑定值')
+})
+
+test('表单值指纹按键字典序稳定，键顺序不同不算改动', () => {
+  const left = { b: 1, a: { y: [1, 2], x: '施工类' } }
+  const right = { a: { x: '施工类', y: [1, 2] }, b: 1 }
+  assert.equal(formValuesFingerprint(left), formValuesFingerprint(right))
+  assert.notEqual(formValuesFingerprint(left), formValuesFingerprint({ ...left, b: 2 }))
 })

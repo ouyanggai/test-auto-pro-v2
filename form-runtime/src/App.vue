@@ -12,7 +12,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
 import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -284,8 +284,15 @@ export default {
       // 选项型字段补丁协调：等待控件自己的远程选项就绪，按名称唯一匹配回填绑定值并重放联动；
       // 无法唯一匹配且显示仍停留在历史值的字段产生阻断问题。
       const coordination = await coordinateOptionPatches(form, this.template, this.values, this.optionPatchTriggers)
-      this.values = coordination.values
       this.optionCoordinationIssues = coordination.issues
+      if (formValuesFingerprint(coordination.values) !== formValuesFingerprint(this.values)) {
+        // 协调回填的绑定值必须同时落到宿主的 editData：runtime-source 宿主监听 editData 会异步 refresh，
+        // 只改 FormMaking 模型的话，那次刷新会按旧 editData 重新渲染控件，界面又退回历史选项，
+        // 随后的捕获也会把旧值读回去——这正是"右侧提示已改、表单还显示旧分类"的成因。
+        await this.setData(coordination.values)
+      } else {
+        this.values = coordination.values
+      }
       await replayFieldChangeEvents(form, this.changedFields)
       if (this.changedFields.length > 0 && typeof form.getValues === 'function') this.values = clonePlain(form.getValues() || {})
       this.changedFields = []
