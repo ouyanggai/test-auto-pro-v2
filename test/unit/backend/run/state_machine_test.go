@@ -32,6 +32,10 @@ func TestF016PathRunStatusMachineOnlyAdvances(t *testing.T) {
 		{model.PathRunStatusPaused, model.PathRunStatusRunning},
 		{model.PathRunStatusPaused, model.PathRunStatusStopped},
 		{model.PathRunStatusPaused, model.PathRunStatusCancelled},
+		// 待对账 -> 运行中 是 F-018 显式扩展的唯一一条恢复通路：对账判「已生效」后确认前进、
+		// 判「未生效」后重放本步，两者都必须先回到运行中。没有它，租约领不到、七阶段走不了，
+		// 三个恢复动作全部不可达。
+		{model.PathRunStatusAwaitingReconciliation, model.PathRunStatusRunning},
 	}
 	for _, item := range legal {
 		if !model.CanAdvancePathRunStatus(item.from, item.to) {
@@ -52,7 +56,7 @@ func TestF016PathRunStatusMachineOnlyAdvances(t *testing.T) {
 		{model.PathRunStatusCompleted, model.PathRunStatusRunning},
 		{model.PathRunStatusCompleted, model.PathRunStatusVerifying},
 		{model.PathRunStatusFailed, model.PathRunStatusRunning},
-		{model.PathRunStatusAwaitingReconciliation, model.PathRunStatusRunning},
+		// 待对账不得跳过对账直接进入核验中：核验是一次尝试的内部阶段，恢复只能从头走一遍。
 		{model.PathRunStatusAwaitingReconciliation, model.PathRunStatusVerifying},
 		{model.PathRunStatusStopped, model.PathRunStatusRunning},
 		{model.PathRunStatusCancelled, model.PathRunStatusWaiting},
@@ -89,13 +93,14 @@ func TestF016NineChinesePathRunStates(t *testing.T) {
 	}
 }
 
-// TestF016TerminalPathRunStatuses 锁定终态集合：待对账与四个运行级终态一样不可离开，
-// 唯一合法恢复动作（对账后前进）属于 F-018，由后续切片显式扩展迁移表。
+// TestF016TerminalPathRunStatuses 锁定停摆态集合与「可恢复」的边界：
+// 四个运行级终态一条出边都没有；待对账同样停摆（执行循环不会自行继续），
+// 但它是唯一可恢复的停摆态——F-018 的对账动作能把它带回运行中。
+// 两者必须用不同的判据区分，否则恢复动作会被「终态一律拒绝」的守卫全部挡掉。
 func TestF016TerminalPathRunStatuses(t *testing.T) {
-	terminal := []model.PathRunStatus{
+	finished := []model.PathRunStatus{
 		model.PathRunStatusCompleted,
 		model.PathRunStatusFailed,
-		model.PathRunStatusAwaitingReconciliation,
 		model.PathRunStatusStopped,
 		model.PathRunStatusCancelled,
 	}
@@ -106,9 +111,12 @@ func TestF016TerminalPathRunStatuses(t *testing.T) {
 		model.PathRunStatusVerifying,
 		model.PathRunStatusPaused,
 	}
-	for _, status := range terminal {
+	for _, status := range finished {
 		if !model.IsTerminalPathRunStatus(status) {
-			t.Fatalf("%s 应为终态", status)
+			t.Fatalf("%s 应为停摆态", status)
+		}
+		if model.CanRecoverPathRunStatus(status) {
+			t.Fatalf("%s 已真正结束，不得接受恢复动作", status)
 		}
 		for _, next := range active {
 			if model.CanAdvancePathRunStatus(status, next) {
@@ -116,9 +124,28 @@ func TestF016TerminalPathRunStatuses(t *testing.T) {
 			}
 		}
 	}
+	// 待对账：停摆但可恢复，且只有一条出边（回到运行中）。
+	if !model.IsTerminalPathRunStatus(model.PathRunStatusAwaitingReconciliation) {
+		t.Fatal("待对账对执行循环而言应为停摆态")
+	}
+	if !model.CanRecoverPathRunStatus(model.PathRunStatusAwaitingReconciliation) {
+		t.Fatal("待对账必须是可恢复状态，否则三个恢复动作全部不可达")
+	}
+	for _, next := range active {
+		allowed := model.CanAdvancePathRunStatus(model.PathRunStatusAwaitingReconciliation, next)
+		if next == model.PathRunStatusRunning && !allowed {
+			t.Fatal("待对账必须允许回到运行中（对账后确认前进/重放的落点）")
+		}
+		if next != model.PathRunStatusRunning && allowed {
+			t.Fatalf("待对账只允许回到运行中，不得前进到 %s", next)
+		}
+	}
 	for _, status := range active {
 		if model.IsTerminalPathRunStatus(status) {
-			t.Fatalf("%s 不应为终态", status)
+			t.Fatalf("%s 不应为停摆态", status)
+		}
+		if model.CanRecoverPathRunStatus(status) {
+			t.Fatalf("%s 不是待对账，不应被当成可恢复停摆态", status)
 		}
 	}
 }

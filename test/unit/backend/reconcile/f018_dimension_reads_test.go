@@ -39,7 +39,9 @@ func TestF018NotEffectiveRequiresAllFiveDimensionsRead(t *testing.T) {
 	if got.Verdict != reconcile.VerdictIndeterminate || got.Action == reconcile.ActionReplay {
 		t.Fatalf("审核记录读不到时必须降级且不得给出重放：%+v", got)
 	}
-	if !strings.Contains(strings.Join(got.Reasons, "；"), "审核记录读取失败或未接入") {
+	// 两个新增维度已经真的接入读取，降级理由必须说"读取失败"而不是"未接入"——
+	// 后者是接线之前的旧文案，留着会让界面上的依据与事实不符。
+	if !strings.Contains(strings.Join(got.Reasons, "；"), "审核记录读取失败") {
 		t.Fatalf("降级理由必须点明是哪个维度读不到：%v", got.Reasons)
 	}
 }

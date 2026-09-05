@@ -98,7 +98,7 @@ func TestF018MixedDirectionsDegrade(t *testing.T) {
 	}
 }
 
-// TestF018CollectMarksUnwiredDimsMissing 收集器对未接入的读取如实标缺失（已办/动作痕迹），不冒充未变化。
+// TestF018CollectMarksUnwiredDimsMissing 收集器对读不到的维度如实标缺失（已办/动作痕迹），不冒充未变化。
 func TestF018CollectMarksUnwiredDimsMissing(t *testing.T) {
 	input := reconcile.Collect(reconcile.FactInput{
 		StepNodeKey: "node-audit",
@@ -106,6 +106,6 @@ func TestF018CollectMarksUnwiredDimsMissing(t *testing.T) {
 	})
 	result := reconcile.Reconcile(input)
 	if result.Verdict != reconcile.VerdictIndeterminate {
-		t.Fatalf("已办/动作痕迹未接入时必须降级：%+v", result)
+		t.Fatalf("已办/动作痕迹读不到时必须降级：%+v", result)
 	}
 }

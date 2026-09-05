@@ -242,8 +242,9 @@ func (r *RunRepository) ListRunSteps(ctx context.Context, pathRunID uint64) ([]m
 // ListRunAttempts 按路径运行列出已落账尝试，按步骤与尝试序号升序。
 func (r *RunRepository) ListRunAttempts(ctx context.Context, pathRunID uint64) ([]model.RunStepAttempt, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code, initial, reread,
-		       failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms
+		SELECT id, path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code, initial, reread,
+		       failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms,
+		       reconcile_verdict, recovery_action, is_replay
 		FROM run_step_attempts WHERE path_run_id = ? ORDER BY id ASC
 	`, pathRunID)
 	if err != nil {
@@ -255,11 +256,17 @@ func (r *RunRepository) ListRunAttempts(ctx context.Context, pathRunID uint64) (
 		var attempt model.RunStepAttempt
 		var failureClass sql.NullString
 		var statusCode sql.NullInt64
-		if err := rows.Scan(&attempt.PathRunID, &attempt.StepID, &attempt.AttemptNo, &attempt.Verdict, &attempt.SideEffect,
+		// 主键必须取回：对账三列的回写按 attempt.ID 定位，漏取会让 UPDATE 落在 id = 0 上，
+		// 表现为“对账跑过但三列永远是空”，事后无从复盘。
+		var reconcileVerdict, recoveryAction sql.NullString
+		if err := rows.Scan(&attempt.ID, &attempt.PathRunID, &attempt.StepID, &attempt.AttemptNo, &attempt.Verdict, &attempt.SideEffect,
 			&attempt.Transport, &statusCode, &attempt.Initial, &attempt.Reread, &failureClass, &attempt.Reason, &attempt.Basis,
-			&attempt.TraceID, &attempt.CurlTraceID, &attempt.LogPath, &attempt.LogLine, &attempt.DurationMs); err != nil {
+			&attempt.TraceID, &attempt.CurlTraceID, &attempt.LogPath, &attempt.LogLine, &attempt.DurationMs,
+			&reconcileVerdict, &recoveryAction, &attempt.IsReplay); err != nil {
 			return nil, err
 		}
+		attempt.ReconcileVerdict = reconcileVerdict.String
+		attempt.RecoveryAction = recoveryAction.String
 		if statusCode.Valid {
 			attempt.StatusCode = int(statusCode.Int64)
 		}

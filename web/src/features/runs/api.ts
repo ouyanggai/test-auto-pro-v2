@@ -165,6 +165,8 @@ export interface ReconcileView {
   reasons: string[]
   replaysUsed: number
   replaysMax: number
+  // replayExhausted 为真表示证据仍指向未生效但重放次数已用完，唯一动作已由服务端降级为人工登记。
+  replayExhausted: boolean
 }
 
 // RunCommand 是后端给出的可用命令（含中文停止条件说明）。

@@ -272,6 +272,9 @@ type ApprovedStep struct {
 	NextIndex int
 	// Attempt 是本次执行的尝试序号（对账重放时递增）；0 视为 1。
 	Attempt int
+	// IsReplay 表示本次执行是对账判「未生效」后的重放（新尝试，不是首次执行）。
+	// 它只影响尝试行的记账列，不改变七阶段本身：重放同样只允许发出一次写请求。
+	IsReplay bool
 	// ReportProgress 把阶段进度实时上报给控制现场（运行画布指示器的数据源），可为 nil。
 	// phase 取七阶段名；note 是给用户看的中文补充（如重试退避说明）。
 	ReportProgress func(phase, note string)
@@ -436,6 +439,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			LogPath:    log.RelativePath(),
 			LogLine:    lineNo,
 			DurationMs: e.now().Sub(startedAt).Milliseconds(),
+			IsReplay:   approved.IsReplay,
 		}
 		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 			return outcome, lineNo, err
@@ -513,6 +517,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		LogPath:     log.RelativePath(),
 		LogLine:     lineNo,
 		DurationMs:  durationMs,
+		IsReplay:    approved.IsReplay,
 	}
 	if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 		return outcome, lineNo, err

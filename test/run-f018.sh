@@ -21,6 +21,26 @@ go vet ./internal/engine/reconcile/... ./internal/engine/control/... ./test/unit
 printf '%s\n' '[F-018] 对账判定单元测试（含竞态检测）'
 go test -race -count=1 ./test/unit/backend/reconcile/...
 
+printf '%s\n' '[F-018] 恢复链路真实 MySQL 集成测试（待对账 → 对账 → 三个唯一动作 → 重放为新尝试）'
+recovery_log="$(mktemp -t f018-recovery)"
+if ! go test -count=1 -v -run 'TestF018NotEffectiveLeadsToReplay|TestF018ReplayLimitIsEnforced|TestF018EffectiveLeadsToAdvanceOnly|TestF018MissingDimensionDegradesToManualEnd' ./test/unit/backend/executor 2>&1 | tee "${recovery_log}"; then
+  rm -f "${recovery_log}"
+  exit 1
+fi
+if grep -Eq -- '^[[:space:]]*--- SKIP' "${recovery_log}"; then
+  printf '%s\n' '[F-018] 恢复链路用例被跳过，判定为失败' >&2
+  rm -f "${recovery_log}"
+  exit 1
+fi
+for required in TestF018NotEffectiveLeadsToReplay TestF018ReplayLimitIsEnforced TestF018EffectiveLeadsToAdvanceOnly TestF018MissingDimensionDegradesToManualEnd; do
+  if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${recovery_log}"; then
+    printf '[F-018] 缺少必需的恢复链路用例通过记录：%s\n' "${required}" >&2
+    rm -f "${recovery_log}"
+    exit 1
+  fi
+done
+rm -f "${recovery_log}"
+
 printf '%s\n' '[F-018] 真实 MySQL 集成测试（F-016/F-017 全量回归，含迁移 028 应用）'
 integration_log="$(mktemp -t f018-integration)"
 trap 'rm -f "${integration_log}"' EXIT
@@ -43,14 +63,15 @@ printf '%s\n' '[F-018] 真实目标只读维度验证（已办记录与动作痕
 # 不能只靠源码推断响应形状。全程只读，不发任何写请求。
 readonly_log="$(mktemp -t f018-readonly)"
 trap 'rm -f "${readonly_log}"' EXIT
-if ! go test -count=1 -v -run 'TestF018DimensionReadsAgainstRealTarget|TestF018AuditTraceMatchesRealNode|TestF018DoneRecordMatchesRealDoneTask' ./test/integration 2>&1 | tee "${readonly_log}"; then
+if ! go test -count=1 -v -run 'TestF018DimensionReadsAgainstRealTarget|TestF018AuditTraceMatchesRealNode|TestF018DoneRecordMatchesRealDoneTask|TestF018ToolCreatedInstanceIsVisibleByExactLookup|TestF018CompanyRelevanceFilterHidesToolCreatedInstance' ./test/integration 2>&1 | tee "${readonly_log}"; then
   exit 1
 fi
 if grep -Eq -- '^[[:space:]]*--- SKIP' "${readonly_log}"; then
   printf '%s\n' '[F-018] 真实目标只读用例被跳过，判定为失败' >&2
   exit 1
 fi
-for required in TestF018DimensionReadsAgainstRealTarget TestF018AuditTraceMatchesRealNode TestF018DoneRecordMatchesRealDoneTask; do
+for required in TestF018DimensionReadsAgainstRealTarget TestF018AuditTraceMatchesRealNode TestF018DoneRecordMatchesRealDoneTask \
+  TestF018ToolCreatedInstanceIsVisibleByExactLookup TestF018CompanyRelevanceFilterHidesToolCreatedInstance; do
   if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${readonly_log}"; then
     printf '[F-018] 缺少必需的真实目标只读用例通过记录：%s\n' "${required}" >&2
     exit 1

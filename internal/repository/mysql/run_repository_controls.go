@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -72,9 +73,11 @@ func (r *RunRepository) AppendRunEvent(ctx context.Context, event model.RunEvent
 func (r *RunRepository) LatestStepAttempt(ctx context.Context, pathRunID uint64) (model.RunStep, model.RunStepAttempt, error) {
 	var step model.RunStep
 	var attempt model.RunStepAttempt
+	// 排序必须确定：重放会为同一步再落一行 run_steps，只按 step_no 排序时 MySQL 可返回任一行，
+	// 对账三列就可能写到上一次尝试上。附加 id DESC 表达“同一步取最近一次执行”。
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, path_run_id, step_no, source, action, node_key, status FROM run_steps
-		WHERE path_run_id = ? ORDER BY step_no DESC LIMIT 1
+		WHERE path_run_id = ? ORDER BY step_no DESC, id DESC LIMIT 1
 	`, pathRunID).Scan(&step.ID, &step.PathRunID, &step.StepNo, &step.Source, &step.Action, &step.NodeKey, &step.Status)
 	if err != nil {
 		return step, attempt, err
@@ -93,12 +96,29 @@ func (r *RunRepository) LatestStepAttempt(ctx context.Context, pathRunID uint64)
 
 // RecordReconcileOutcome 把对账结论与恢复动作写回尝试行的对账三列。
 // 这是事实表上唯一被允许的 UPDATE：仅覆盖纲领第 7.2 节明确归属本表的三个对账字段，不触碰任何既有事实。
+// attemptID 为 0 一律拒绝：那是调用方没取到尝试主键，静默 UPDATE 0 行会让对账结论凭空消失。
 func (r *RunRepository) RecordReconcileOutcome(ctx context.Context, attemptID uint64, verdict string, action string, isReplay bool, now time.Time) error {
-	_, err := r.db.ExecContext(ctx, `
+	if attemptID == 0 {
+		return fmt.Errorf("%w：对账结论缺少尝试主键，拒绝写入", repository.ErrRunNotFound)
+	}
+	// 命中判定用一次显式存在性查询，不看 UPDATE 受影响行数：
+	// MySQL 默认统计"被更改的行"，同一结论重复回写（执行恢复动作前必须再对账一次）时
+	// 三列值完全相同，受影响行数为 0，会把一次正常的幂等回写误判成尝试行不存在。
+	var exists uint64
+	err := r.db.QueryRowContext(ctx, "SELECT id FROM run_step_attempts WHERE id = ?", attemptID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return repository.ErrRunNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := r.db.ExecContext(ctx, `
 		UPDATE run_step_attempts SET reconcile_verdict = ?, recovery_action = ?, is_replay = ?
 		WHERE id = ?
-	`, verdict, action, isReplay, attemptID)
-	return err
+	`, verdict, action, isReplay, attemptID); err != nil {
+		return err
+	}
+	return nil
 }
 
 // AppendManualConclusion 登记人工核对结论事实（只 INSERT）。
@@ -180,12 +200,13 @@ func (r *RunRepository) RecordStepAttempt(ctx context.Context, step model.RunSte
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO run_step_attempts (path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code,
-			initial, reread, failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			initial, reread, failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms,
+			is_replay, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, step.PathRunID, stepID, attempt.AttemptNo, attempt.Verdict, attempt.SideEffect, attempt.Transport,
 		nullableInt(attempt.StatusCode), attempt.Initial, attempt.Reread, nullableFailureClass(attempt.FailureClass),
 		attempt.Reason, attempt.Basis, attempt.TraceID, attempt.CurlTraceID, attempt.LogPath, attempt.LogLine,
-		attempt.DurationMs, now); err != nil {
+		attempt.DurationMs, attempt.IsReplay, now); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

@@ -794,3 +794,51 @@ strength=源码可证明
 head=rsh-cloud-invest-power-system@8a00cb9995df
 deployment=2026-09-05 真实账号实测：按 flowInstanceId 读到审核记录并按 flowNodeProxyId 过滤命中
 ```
+
+## 19. 已发列表的业务关联过滤：本工具发起的实例会被整条排除
+
+状态：已勘定（2026-09-05 用真实账号与本工具自己发起的实例实测，全程只读）。
+
+问题：按实例 ID 精确复查事实（`/web/flowInstanceApi/list` + `ids`）时，
+请求里的 `data.flowInstanceBizRelevanceList` 会不会影响能不能查到这条实例。
+
+实测结论（2026-09-05，实例 `7bcf0c29f1054ba0bed5cf367ba2f2d2`，由本工具发起）：
+
+1. 请求带 `flowInstanceBizRelevanceList=[{"otherBiz":"company","otherBizId":""}]` 时，
+   目标返回 `isSuccess=true` 且 `data=[]`、`total=0`——**不是报错，是静默查不到**。
+2. 去掉这一个字段（其余条件不变）立刻命中该实例，返回状态 `run`、`currentNodeProxyId`、
+   `currentAuditUserInfo` 等完整事实。逐项试验证明只有这一个字段决定命中与否：
+   去掉 `useScope`、去掉状态过滤、只按 `ids`、按 `data.id` 都能命中。
+3. 原因侧的事实：本工具的发起载荷不带任何业务关联（`BuildSubmitBody` 只发
+   name/flowProxyId/formProxyId/companyId 与表单数据），因此这条实例在目标侧没有公司业务关联行，
+   而带 `otherBizId=""` 的过滤被目标当成「必须存在公司业务关联」，把它整条排除。
+4. 同一实例在其他入口是可见的：`/web/flowAuditRecord/list` 能读到它的「流程发起」审核记录
+   （执行人骆蒙恩），证明写确实已生效——所以这是**读取口径问题，不是目标没写成功**。
+
+对工具的约束（属产品原则第 2 条：工具问题必须与目标平台问题分开说明）：
+
+- 按实例 ID 精确复查事实的读取一律不得附加业务关联过滤。问的是「这条实例现在什么状态」，
+  与它挂在哪个公司的列表里无关。反向断言见 `test/contracts/f018/reconcile_readonly.sh`。
+- 浏览用的已发列表（用户挑选实例的入口）与本条无关，保持与目标页面一致的过滤，不在本条范围内。
+- 这条过滤是 F-016 首次真实写（实例 `caf2046d…`）与 F-018 收口前运行 12（实例 `6bd617f3…`）
+  被判「不确定」的唯一原因：核验重读读不到实例 → 「成功声明 + 明确未变」→ 不确定 → 待对账，
+  同时对账五维里三个由实例事实派生的维度全部读不到，结论只能是仍无法判定。
+  修掉后同一条路径的发起写实测判为「确定成功」（运行 13，trace `0715f0cdf7cc2700`）。
+
+```evidence
+file=internal/adapter/target/client_fact_reads.go
+line=53
+contains=按实例 ID 精确复查事实时绝不附加业务关联过滤
+strength=源码可证明
+head=rsh-cloud-invest-power-system@8a00cb9995df
+deployment=2026-09-05 真实账号实测：带公司业务关联过滤返回空集，去掉后命中同一实例
+```
+
+```evidence
+file=test/integration/f018_instance_visibility_test.go
+line=44
+contains=TestF018CompanyRelevanceFilterHidesToolCreatedInstance
+strength=源码可证明
+head=rsh-cloud-invest-power-system@8a00cb9995df
+deployment=2026-09-05 真实账号实测：同一实例两种查询形状的命中差异已固化为用例
+```

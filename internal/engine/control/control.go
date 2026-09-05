@@ -14,6 +14,7 @@ import (
 
 	"test-auto-pro-v2/internal/engine/run"
 	"test-auto-pro-v2/internal/engine/step"
+	"test-auto-pro-v2/internal/engine/verdict"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
@@ -466,7 +467,7 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 	s.logFact(pathRunID, approveFact, previewStepNo(session))
 
 	if command == model.CommandStep {
-		return s.approveOneStep(ctx, pathRunID, session, 1)
+		return s.approveOneStep(ctx, pathRunID, session, 1, false)
 	}
 	// next_node / continue：启动连续执行循环并立即返回当前状态（前端按配置轮询）。
 	s.startLoop(ctx, pathRunID, session, command)
@@ -475,7 +476,7 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 
 // approveOneStep 执行一步（单步模式、step 命令与对账重放共用），随后停在下一步之前或收尾。
 // attemptNo 是本次尝试序号（对账重放时递增，作为新的一次尝试记录）。
-func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session *activeStep, attemptNo int) (*ApproveResult, error) {
+func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session *activeStep, attemptNo int, isReplay bool) (*ApproveResult, error) {
 	// 保存写之前的目标事实基准，供对账收集器对照。
 	session.runCtx.LastBeforeFacts = session.preview.Facts
 	// 阶段进度上报：执行器在各阶段边界回调，写进会话现场供详情轮询读取。
@@ -486,14 +487,21 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	}
 	outcome, _, err := s.steps.RunApprovedStep(ctx, step.ApprovedStep{
 		RunCtx: session.runCtx, Preview: session.preview, NextIndex: session.nextIndex,
-		Attempt: attemptNo, ReportProgress: reporter,
+		Attempt: attemptNo, IsReplay: isReplay, ReportProgress: reporter,
 	})
 	if err != nil {
 		return nil, err
 	}
 	result := &ApproveResult{Outcome: outcome}
+	if outcome.Verdict == string(verdict.OutcomeUncertain) {
+		// 写结果不确定：路径运行停在待对账，但内存现场必须保留。
+		// 对账与三个恢复动作全靠这份现场（本步预览、步骤游标、写之前的基准事实、重放次数）；
+		// 在这里清掉现场，只读对账就会以“当前没有等待放行的步骤”失败，F-018 整层变成不可达的死代码。
+		// 现场保留不等于还能放行：ApproveWithCommand 会因路径运行不在运行中而拒绝。
+		return result, nil
+	}
 	if outcome.Verdict != "confirmed_success" {
-		// 确定失败或不确定：路径运行已进终态，现场作废。
+		// 确定失败：路径运行已进终态且没有任何合法后续动作，现场作废。
 		s.clear(pathRunID)
 		return result, nil
 	}

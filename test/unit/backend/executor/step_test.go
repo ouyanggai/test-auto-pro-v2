@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -124,6 +125,39 @@ type fakeTarget struct {
 	// dueTaskNodeID 记录待办读取实际收到的节点标识，用于锁定"发给目标的是真实标识"。
 	dueTaskNodeID    string
 	findDueTaskCalls int
+	// 对账两个新增维度的假件读数（F-018 强证据规则）：
+	// doneRecordFound 是本步节点是否已有已办记录，auditTraceFound 是是否已留下动作痕迹，
+	// auditTraceTotal 只进依据说明；两个 Err 用于验证"读不到就按缺失降级"。
+	doneRecordFound bool
+	doneRecordErr   error
+	auditTraceFound bool
+	auditTraceTotal int
+	auditTraceErr   error
+	// auditAdvanceFromCall 表示从第几次同意调用起目标事实才切到 afterAudit，
+	// 用于表达"重放那一次才真的生效"：0 表示只要发生过同意就切换。
+	auditAdvanceFromCall int
+}
+
+// FindDoneTaskOnNode 是对账「已办记录」维度的假件读取。
+func (f *fakeTarget) FindDoneTaskOnNode(_ context.Context, _ target.Session, instanceID, _ string) (bool, error) {
+	if f.doneRecordErr != nil {
+		return false, f.doneRecordErr
+	}
+	if instanceID == "" {
+		return false, nil
+	}
+	return f.doneRecordFound, nil
+}
+
+// FindAuditTraceOnNode 是对账「动作痕迹」维度的假件读取；第二个返回值是该实例的审核记录条数。
+func (f *fakeTarget) FindAuditTraceOnNode(_ context.Context, _ target.Session, instanceID, _ string) (bool, int, error) {
+	if f.auditTraceErr != nil {
+		return false, 0, f.auditTraceErr
+	}
+	if instanceID == "" {
+		return false, 0, nil
+	}
+	return f.auditTraceFound, f.auditTraceTotal, nil
 }
 
 func (f *fakeTarget) FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error) {
@@ -138,7 +172,7 @@ func (f *fakeTarget) FindDueFlow(context.Context, target.Session, string) (strin
 
 // currentView 返回当前应呈现的目标事实视图：按已发生的写动作切换到对应阶段。
 func (f *fakeTarget) currentView() fakeTargetView {
-	if f.audited && f.afterAudit != nil {
+	if f.audited && f.afterAudit != nil && f.auditCalls >= f.auditAdvanceFromCall {
 		return *f.afterAudit
 	}
 	if f.submitted && f.afterSubmit != nil {
@@ -181,7 +215,9 @@ func (f *fakeTarget) AuditCurrentTask(context.Context, target.Session, target.Au
 	if f.auditErr != nil {
 		return nil, target.WriteResponse{}, "trace-fail", f.auditErr
 	}
-	return f.auditResult, target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-audit", nil
+	// 每次写请求各自一个链路 ID：真实客户端也是每次调用新生成，重放必须能与首次尝试区分开。
+	return f.auditResult, target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true},
+		fmt.Sprintf("trace-audit-%d", f.auditCalls), nil
 }
 
 // newRunContext 构造一条「新发起」单步场景：发起后接同意。

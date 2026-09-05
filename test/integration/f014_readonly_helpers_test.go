@@ -77,9 +77,21 @@ func requireF014Session(t *testing.T) (target.ClientConfig, *target.Client, targ
 	if err != nil {
 		t.Fatalf("创建目标客户端失败：%v", err)
 	}
-	session, err := client.Login(context.Background(), account)
-	if err != nil {
-		t.Fatalf("真实目标登录失败：%v", err)
+	// 登录本身要有界重试：目标存在分钟级抖动（纲领第 4.4.1 节实测），
+	// 而登录是每个只读用例的第一步，不重试会让整批用例被一次抖动打断。
+	// 只读阶段允许重试，与"submit 阶段禁止重试"的边界互不冲突。
+	var session target.Session
+	var loginErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		session, loginErr = client.Login(context.Background(), account)
+		if loginErr == nil {
+			break
+		}
+		t.Logf("真实目标登录第 %d 次失败，5 秒后重试：%v", attempt, loginErr)
+		time.Sleep(5 * time.Second)
+	}
+	if loginErr != nil {
+		t.Fatalf("真实目标登录连续 3 次失败：%v", loginErr)
 	}
 	if strings.TrimSpace(session.SID) == "" {
 		t.Fatal("真实目标登录没有返回会话标识")

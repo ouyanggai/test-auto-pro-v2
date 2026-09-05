@@ -39,8 +39,10 @@ func RunStatusName(status RunStatus) string {
 }
 
 // PathRunStatus 是一条路径运行（path_runs）的状态，即纲领已定义的九个中文状态之一。
-// 状态只前进不回退：终态（已完成、失败、待对账、已停止、已取消）一旦进入不可离开；
+// 状态只前进不回退：终态（已完成、失败、已停止、已取消）一旦进入不可离开；
 // 运行中与核验中之间的前进表达步骤循环，不属于回退。
+// 待对账是唯一的“可恢复停摆态”：它自己不会前进，只有 F-018 只读对账给出的唯一合法动作
+// 能把它带回运行中（确认前进 / 重放本步）；登记人工结论则原地留在待对账作为最终归宿。
 type PathRunStatus string
 
 const (
@@ -80,8 +82,11 @@ var pathRunTransitions = map[PathRunStatus][]PathRunStatus{
 		PathRunStatusStopped,
 		PathRunStatusCancelled,
 	},
-	PathRunStatusPaused:                 {PathRunStatusRunning, PathRunStatusStopped, PathRunStatusCancelled},
-	PathRunStatusAwaitingReconciliation: {},
+	PathRunStatusPaused: {PathRunStatusRunning, PathRunStatusStopped, PathRunStatusCancelled},
+	// 待对账 -> 运行中 是 F-018 对账结论的落点：判「已生效」后确认前进、判「未生效」后重放本步，
+	// 两者都必须先回到运行中，否则租约领取（SQL 只认 waiting/running/verifying/paused）与
+	// 后续七阶段全部无法进行——恢复层会变成永远不可达的死代码。
+	PathRunStatusAwaitingReconciliation: {PathRunStatusRunning},
 	PathRunStatusCompleted:              {},
 	PathRunStatusFailed:                 {},
 	PathRunStatusStopped:                {},
@@ -126,7 +131,16 @@ func PathRunStatusName(status PathRunStatus) string {
 	}
 }
 
-// IsTerminalPathRunStatus 判断路径运行是否已处于终态；终态不可再前进，也不可被任何恢复动作改写。
+// CanRecoverPathRunStatus 判断路径运行是否停在可由对账恢复动作接手的状态。
+// 只有待对账成立：它是写结果不确定后的停摆点，恢复动作（确认前进/重放/登记人工结论）的唯一入口。
+// 其余终态（已完成、失败、已停止、已取消）都是真正结束，不接受任何恢复动作。
+func CanRecoverPathRunStatus(status PathRunStatus) bool {
+	return status == PathRunStatusAwaitingReconciliation
+}
+
+// IsTerminalPathRunStatus 判断路径运行是否已停摆：停摆后不会自行前进。
+// 注意待对账也在其中——它对执行循环而言确实已停，但它是可恢复的（见 CanRecoverPathRunStatus），
+// 恢复动作的守卫必须用 CanRecoverPathRunStatus 判断，不能用本函数一律拒绝。
 func IsTerminalPathRunStatus(status PathRunStatus) bool {
 	switch status {
 	case PathRunStatusAwaitingReconciliation, PathRunStatusCompleted,
@@ -346,6 +360,11 @@ type RunStepAttempt struct {
 	LogPath      string
 	LogLine      uint64
 	DurationMs   int64
+	// ReconcileVerdict/RecoveryAction 是对账落在本次尝试上的结论与唯一合法动作（纲领第 7.2 节三列）。
+	ReconcileVerdict string
+	RecoveryAction   string
+	// IsReplay 表示本次尝试本身是一次重放（由对账判「未生效」后新建的尝试），不是首次执行。
+	IsReplay bool
 }
 
 // RunControlAction 是人工控制事实的动作类别；本切片只承载放行与停止两类。

@@ -86,6 +86,13 @@ const reconciling = ref(false)
 const reconcileView = ref<ReconcileView | null>(null)
 const manualForm = ref({ instanceStatus: '', currentNode: '', note: '', reporter: '' })
 
+// partialEffectWarned 只在对账依据里真的出现「部分生效」时才提示"表单数据可能已经写进去了"。
+// 这句话是语义清单第 2.4 节那个特定形状的结论，对普通的证据不完整并不成立——
+// 不加区分地一直显示会把没有依据的判断说成事实。
+const partialEffectWarned = computed(
+  () => (reconcileView.value?.reasons ?? []).some((reason) => reason.includes('部分生效')),
+)
+
 async function doReconcile(): Promise<void> {
   if (reconciling.value) return
   reconciling.value = true
@@ -615,10 +622,15 @@ onBeforeUnmount(() => {
         <ul>
           <li v-for="(reason, index) in reconcileView.reasons" :key="index">{{ reason }}</li>
         </ul>
-        <p v-if="reconcileView.verdict === 'not_effective'" class="run-detail__reconcile-note">
+        <p v-if="reconcileView.action === 'replay'" class="run-detail__reconcile-note">
           唯一动作是重放这一步：它是一次新的尝试，会重新走门禁与七阶段；一次尝试仍然只发一次写请求。
+          已用重放 {{ reconcileView.replaysUsed }} / {{ reconcileView.replaysMax }} 次。
         </p>
-        <p v-if="reconcileView.verdict === 'indeterminate'" class="run-detail__reconcile-note">
+        <p v-else-if="reconcileView.replayExhausted" class="run-detail__reconcile-note">
+          证据仍指向未生效，但重放次数已用完（{{ reconcileView.replaysMax }} 次），不再提供重放；
+          只能登记你在目标平台上看到的事实并结束这条路径运行。
+        </p>
+        <p v-else-if="partialEffectWarned" class="run-detail__reconcile-note">
           表单数据可能已经写进去了，重放会再写一次；请登记你在目标平台上看到的事实。
         </p>
         <NButton

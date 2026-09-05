@@ -112,6 +112,19 @@ func (s *Service) BackToRunning(ctx context.Context, pathRunID uint64) error {
 	return err
 }
 
+// BackFromReconciliation 把停在待对账的路径运行带回运行中，是 F-018 两个前进类恢复动作的前置：
+// 确认前进与重放都要重新走执行循环，而租约领取只认 waiting/running/verifying/paused，
+// 状态不先回到运行中，恢复动作在库里根本无法落地。
+// 只允许从待对账进入，其他状态由 AdvancePathRunStatus 的迁移表拒绝。
+func (s *Service) BackFromReconciliation(ctx context.Context, pathRunID uint64, label string) error {
+	_, err := s.store.AdvancePathRunStatus(ctx, pathRunID,
+		model.PathRunStatusAwaitingReconciliation, model.PathRunStatusRunning, model.RunEvent{
+			Kind:  "path_run_recovered",
+			Label: label,
+		}, s.now())
+	return err
+}
+
 // Finish 把路径运行推进到终态并镜像收尾运行聚合。
 // 待对账不镜像运行状态：运行保持运行中，唯一合法恢复动作属于对账切片（F-018）。
 func (s *Service) Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label string) (model.PathRun, error) {

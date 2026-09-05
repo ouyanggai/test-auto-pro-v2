@@ -242,9 +242,18 @@ func TestF016CrashRecoveryForcesAwaitingReconciliation(t *testing.T) {
 		if run.Status != model.RunStatusRunning {
 			t.Fatalf("运行聚合应保持运行中留给对账切片，实际 %s", run.Status)
 		}
+		// 待对账不得跳过对账直接进入核验中：核验属于一次尝试的内部阶段，
+		// 恢复只能从"回到运行中重新走一遍"开始（F-018 的确认前进 / 重放）。
 		if _, err := store.AdvancePathRunStatus(ctx, pathRunID,
-			model.PathRunStatusAwaitingReconciliation, model.PathRunStatusRunning, model.RunEvent{}, now); !errors.Is(err, repository.ErrRunStatusConflict) {
-			t.Fatalf("待对账后继续推进必须被拒绝，实际 err=%v", err)
+			model.PathRunStatusAwaitingReconciliation, model.PathRunStatusVerifying, model.RunEvent{}, now); !errors.Is(err, repository.ErrRunStatusConflict) {
+			t.Fatalf("待对账不得直接进入核验中，实际 err=%v", err)
+		}
+		// 关键的"不会自动继续"保证落在推进权上：停在待对账的路径运行领不到租约，
+		// 任何执行者都无法在没经过对账的情况下继续发写请求。
+		// （待对账 -> 运行中 的迁移本身是合法的，但只有 F-018 的恢复动作会发起它，见
+		//  test/unit/backend/executor/f018_recovery_reachable_test.go。）
+		if _, err := store.ClaimPathRunLease(ctx, pathRunID, "worker-recovery", time.Minute, now); !errors.Is(err, repository.ErrRunStatusConflict) {
+			t.Fatalf("待对账的路径运行不得领到推进权，实际 err=%v", err)
 		}
 	}
 

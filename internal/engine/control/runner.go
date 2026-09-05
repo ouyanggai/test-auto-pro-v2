@@ -133,7 +133,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			return
 		}
 		s.logFact(pathRunID, approveFact, preview.StepNo)
-		result, err := s.approveOneStep(ctx, pathRunID, session, 1)
+		result, err := s.approveOneStep(ctx, pathRunID, session, 1, false)
 		if err != nil {
 			s.mu.Lock()
 			session.stopReason = "执行失败：" + err.Error()

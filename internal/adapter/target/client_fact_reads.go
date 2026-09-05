@@ -51,12 +51,17 @@ func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templa
 
 // FindSubmittedFlow 精确重查已发实例并返回代理树标识、活动入口、真实状态和代理表单。
 func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, string, []string, bool, error) {
+	// 按实例 ID 精确复查事实时绝不附加业务关联过滤。
+	// 实测（2026-09-05，实例 6bd617f3069d462d8bfe63ba12b35739）：带上
+	// flowInstanceBizRelevanceList=[{otherBiz:company,otherBizId:""}] 时目标返回空集，
+	// 去掉它立刻命中——本工具发起的实例不带公司业务关联，那个过滤会把它整条排除。
+	// 后果是核验重读把"确实已生效的发起"读成"实例不可见"，判成不确定并把路径推进待对账，
+	// 对账五维也随之全部读不到。这里问的是"这条实例现在什么状态"，与它挂在哪个公司列表无关。
 	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
 		"data": map[string]any{
-			"useScope":                     "invest",
-			"auditWayList":                 []string{},
-			"statusList":                   []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
-			"flowInstanceBizRelevanceList": []map[string]any{{"otherBiz": "company", "otherBizId": ""}},
+			"useScope":     "invest",
+			"auditWayList": []string{},
+			"statusList":   []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
 		},
 		"ids": []string{strings.TrimSpace(instanceID)}, "pagination": true, "pages": 1, "size": 100,
 	})

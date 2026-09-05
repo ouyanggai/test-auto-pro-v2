@@ -149,6 +149,45 @@ type RunStepAttemptDTO struct {
 	// PhaseDurations 是七个阶段各自的耗时（毫秒），来自 step.log 的阶段时间轴。
 	PhaseDurations     map[string]int64 `json:"phaseDurations,omitempty"`
 	PhaseDurationsNote string           `json:"phaseDurationsNote,omitempty"`
+	// 对账三列（纲领第 7.2 节）：结论、当时给出的唯一合法动作、这次尝试本身是否为重放。
+	// 界面据此把"哪一次尝试是重放"讲清楚，不必去翻数据库。
+	ReconcileVerdictName string `json:"reconcileVerdictName,omitempty"`
+	RecoveryActionName   string `json:"recoveryActionName,omitempty"`
+	IsReplay             bool   `json:"isReplay"`
+}
+
+// reconcileVerdictName 把对账三值结论转成界面用的中文名；未知取值原样返回，不猜。
+func reconcileVerdictName(verdict string) string {
+	switch verdict {
+	case "effective":
+		return "已生效"
+	case "not_effective":
+		return "未生效"
+	case "indeterminate":
+		return "仍无法判定"
+	case "":
+		return ""
+	default:
+		return verdict
+	}
+}
+
+// recoveryActionName 把恢复动作标识转成界面用的中文名；未知取值原样返回，不猜。
+func recoveryActionName(action string) string {
+	switch action {
+	case "advance":
+		return "确认并前进到下一步"
+	case "replay":
+		return "重放这一步"
+	case "manual_end":
+		return "登记人工核对结论并结束"
+	case "reconcile_again":
+		return "重新对账"
+	case "":
+		return ""
+	default:
+		return action
+	}
 }
 
 // RunStepDTO 是一个已落账步骤的公开事实。
@@ -425,6 +464,8 @@ type ReconcileViewDTO struct {
 	Reasons     []string `json:"reasons"`
 	ReplaysUsed int      `json:"replaysUsed"`
 	ReplaysMax  int      `json:"replaysMax"`
+	// ReplayExhausted 表示证据仍指向未生效但重放次数已用完，唯一动作已降级为人工登记。
+	ReplayExhausted bool `json:"replayExhausted"`
 }
 
 // ReconcileNow 对待对账路径运行执行只读对账并返回结论。runID 是运行 ID。
@@ -433,7 +474,13 @@ func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64
 	if err != nil {
 		return nil, err
 	}
-	view, err := s.control.ReconcileNow(ctx, pathRunID)
+	// 对账要回目标重读五维事实，这些请求必须落进本次运行的日志目录，
+	// 否则 recovery.log 有结论、network.log 与 curl.log 里却找不到对应请求，日志与记录无法互查。
+	scoped, err := s.withRunScope(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	view, err := s.control.ReconcileNow(scoped, pathRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -441,6 +488,7 @@ func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64
 		Verdict: view.Verdict, VerdictName: view.VerdictName, Action: view.Action,
 		Headline: view.Headline, Reasons: view.Reasons,
 		ReplaysUsed: view.ReplaysUsed, ReplaysMax: view.ReplaysMax,
+		ReplayExhausted: view.ReplayExhausted,
 	}, nil
 }
 
@@ -450,7 +498,12 @@ func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, runID uint
 	if err != nil {
 		return nil, err
 	}
-	if err := s.control.RecoveryAction(ctx, pathRunID, reconcile_action(action), manual); err != nil {
+	// 恢复动作要重新对账、可能重走七阶段（含真实写请求），同样必须带运行日志作用域。
+	scoped, err := s.withRunScope(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.control.RecoveryAction(scoped, pathRunID, reconcile_action(action), manual); err != nil {
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
@@ -787,6 +840,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				Action: view.Reconcile.Action, Headline: view.Reconcile.Headline,
 				Reasons:     view.Reconcile.Reasons,
 				ReplaysUsed: view.Reconcile.ReplaysUsed, ReplaysMax: view.Reconcile.ReplaysMax,
+				ReplayExhausted: view.Reconcile.ReplayExhausted,
 			}
 		}
 		detail.ModeName = model.RunModeName(view.Mode)
@@ -891,6 +945,11 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 				DurationMs:  attempt.DurationMs,
 				LogPath:     attempt.LogPath,
 				LogLine:     attempt.LogLine,
+				IsReplay:    attempt.IsReplay,
+			}
+			if attempt.ReconcileVerdict != "" {
+				attemptDTO.ReconcileVerdictName = reconcileVerdictName(attempt.ReconcileVerdict)
+				attemptDTO.RecoveryActionName = recoveryActionName(attempt.RecoveryAction)
 			}
 			// 阶段时间轴按 step_id:attempt 归组（与 parsePhaseTimings 的键一致）。
 			timings, ok := phaseTimings[stepPhaseKey(stepRecord.StepNo, attempt.AttemptNo)]

@@ -183,7 +183,7 @@ type FactInput struct {
 	NowDueNodes []string
 	// NowReadError 非空表示重读失败：唯一动作是重新对账。
 	NowReadError string
-	// DoneRecordsRead 表示已办记录维度是否成功读取（当前工具尚未接入该读取时为 false）。
+	// DoneRecordsRead 表示已办记录维度是否成功读取；读取失败时为 false，按证据缺失降级。
 	DoneRecordsRead bool
 	DoneRecordFound bool // 已办记录里是否已有本次动作痕迹
 	// ActionTraceRead 为真表示审核记录维度真的读到了；读不到时该维度按缺失降级，不当作"没有痕迹"。
@@ -195,7 +195,7 @@ type FactInput struct {
 }
 
 // Collect 把目标只读事实转换为对账输入（T02 收集器与判定器的边界）。
-// 已办记录维度当前工具未接入读取时如实标 missing——强证据规则会把它降级为仍无法判定，绝不冒充未变化。
+// 读不到的维度一律如实标 missing——强证据规则会把它降级为仍无法判定，绝不冒充未变化。
 func Collect(f FactInput) Input {
 	dims := map[Dimension]DimensionEvidence{}
 	if f.NowReadError != "" {
@@ -207,13 +207,17 @@ func Collect(f FactInput) Input {
 		return Input{StepNodeKey: f.StepNodeKey, BeforeStatus: f.BeforeStatus, BeforeHadInstance: f.BeforeHadInstance, Dims: dims}
 	}
 	if !f.NowFound {
-		// 实例现在读不到：发起类动作基准是“写之前不存在”，这属于读不到事实而不是未变化。
-		dims[DimInstanceStatus] = DimensionEvidence{State: DimMissing, Note: "实例在已发列表不可见"}
-		dims[DimCurrentNode] = DimensionEvidence{State: DimMissing, Note: "实例在已发列表不可见"}
-		dims[DimCurrentTask] = DimensionEvidence{State: DimMissing, Note: "实例在已发列表不可见"}
-		dims[DimDoneRecords] = DimensionEvidence{State: DimMissing, Note: "已办记录读取未接入"}
-		dims[DimActionTraces] = DimensionEvidence{State: DimMissing, Note: "动作痕迹读取未接入"}
-		return Input{StepNodeKey: f.StepNodeKey, BeforeStatus: f.BeforeStatus, BeforeHadInstance: f.BeforeHadInstance, Dims: dims}
+		// 实例现在读不到：三个由实例事实派生的维度只能标缺失（读不到不等于未变化）。
+		// 已办记录与动作痕迹走各自独立的端点，实例在列表里不可见时它们仍可能读到东西，
+		// 因此这里必须用真实读数，不能一并按"未接入"抹掉——那会把已经取得的证据丢掉，
+		// 还会在界面上给出一句与事实不符的依据。
+		dims[DimInstanceStatus] = DimensionEvidence{State: DimMissing, Note: "按实例精确复查，实例在已发列表不可见"}
+		dims[DimCurrentNode] = DimensionEvidence{State: DimMissing, Note: "按实例精确复查，实例在已发列表不可见"}
+		dims[DimCurrentTask] = DimensionEvidence{State: DimMissing, Note: "按实例精确复查，实例在已发列表不可见"}
+		dims[DimDoneRecords] = doneRecordEvidence(f)
+		dims[DimActionTraces] = actionTraceEvidence(f)
+		return Input{StepNodeKey: f.StepNodeKey, BeforeStatus: f.BeforeStatus, BeforeHadInstance: f.BeforeHadInstance,
+			Dims: dims, PartialEffect: f.FormChanged, PartialEffectNote: f.FormChangedNote}
 	}
 	// 实例状态：与写之前比较。
 	if !f.BeforeHadInstance {
@@ -252,28 +256,34 @@ func Collect(f FactInput) Input {
 	} else {
 		dims[DimCurrentTask] = DimensionEvidence{State: DimChanged, Note: "本步节点的待办已消失"}
 	}
-	// 已办记录与动作痕迹：当前工具未接入读取，如实按缺失处理（强证据规则降级）。
-	if f.DoneRecordsRead {
-		if f.DoneRecordFound {
-			dims[DimDoneRecords] = DimensionEvidence{State: DimChanged, Note: "已办记录出现本次动作"}
-		} else {
-			dims[DimDoneRecords] = DimensionEvidence{State: DimUnchanged, Note: "已办记录无本次动作"}
-		}
-	} else {
-		dims[DimDoneRecords] = DimensionEvidence{State: DimMissing, Note: "已办记录读取未接入"}
-	}
-	switch {
-	case !f.ActionTraceRead:
-		dims[DimActionTraces] = DimensionEvidence{State: DimMissing, Note: "审核记录读取失败或未接入"}
-	case f.ActionTraceFound:
-		dims[DimActionTraces] = DimensionEvidence{State: DimChanged,
-			Note: fmt.Sprintf("审核记录里已出现本步节点的动作痕迹（该实例共 %d 条）", f.ActionTraceTotal)}
-	default:
-		dims[DimActionTraces] = DimensionEvidence{State: DimUnchanged,
-			Note: fmt.Sprintf("审核记录里没有本步节点的动作痕迹（该实例共 %d 条）", f.ActionTraceTotal)}
-	}
+	dims[DimDoneRecords] = doneRecordEvidence(f)
+	dims[DimActionTraces] = actionTraceEvidence(f)
 	return Input{
 		StepNodeKey: f.StepNodeKey, BeforeStatus: f.BeforeStatus, BeforeHadInstance: f.BeforeHadInstance,
 		Dims: dims, PartialEffect: f.FormChanged, PartialEffectNote: f.FormChangedNote,
 	}
+}
+
+// doneRecordEvidence 给出「已办记录」维度的证据：读到才算证据，读不到按缺失降级。
+func doneRecordEvidence(f FactInput) DimensionEvidence {
+	if !f.DoneRecordsRead {
+		return DimensionEvidence{State: DimMissing, Note: "已办记录读取失败，本维度按证据缺失处理"}
+	}
+	if f.DoneRecordFound {
+		return DimensionEvidence{State: DimChanged, Note: "已办记录出现本次动作"}
+	}
+	return DimensionEvidence{State: DimUnchanged, Note: "已办记录无本次动作"}
+}
+
+// actionTraceEvidence 给出「动作痕迹」维度的证据；审核记录条数只进依据说明供人工核对。
+func actionTraceEvidence(f FactInput) DimensionEvidence {
+	if !f.ActionTraceRead {
+		return DimensionEvidence{State: DimMissing, Note: "审核记录读取失败，本维度按证据缺失处理"}
+	}
+	if f.ActionTraceFound {
+		return DimensionEvidence{State: DimChanged,
+			Note: fmt.Sprintf("审核记录里已出现本步节点的动作痕迹（该实例共 %d 条）", f.ActionTraceTotal)}
+	}
+	return DimensionEvidence{State: DimUnchanged,
+		Note: fmt.Sprintf("审核记录里没有本步节点的动作痕迹（该实例共 %d 条）", f.ActionTraceTotal)}
 }
