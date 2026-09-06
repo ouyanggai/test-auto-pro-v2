@@ -24,7 +24,6 @@ import { fetchRunEvents, type RunEventItem } from '../features/runs/api'
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
 import { pathConfigNodeKey } from '../features/path-configuration/logic'
 import RunNodePanel from '../features/runs/RunNodePanel.vue'
-import RunStatusIndicator from '../features/runs/RunStatusIndicator.vue'
 
 // RunDetailView 是路径运行详情：运行画布为主体，顶部固定条控制放行与停止。
 // 放行会发出真实写请求：只接受明确点击，不绑定单键快捷键。
@@ -34,6 +33,8 @@ const runId = String(route.params.runId || '')
 // 事件流（F-021）：按数据库自增键增量追加，轮询只取新事件，历史不重排。
 const runEvents = ref<RunEventItem[]>([])
 let lastEventID = 0
+// 主区页签：流程图（默认）/ 事件流。
+const activeTab = ref<'canvas' | 'events'>('canvas')
 // selectedPathRunID 是多路径运行里当前查看的路径运行（路由查询 ?path=）；缺省由后端取第一条。
 const selectedPathRunID = ref<number>(Number(route.query.path || 0) || 0)
 
@@ -45,6 +46,7 @@ function switchPathRun(pathRunID: number) {
   // 事件流按路径过滤：切换后清空并重置游标，重新只追加当前路径的事件。
   runEvents.value = []
   lastEventID = 0
+  activeTab.value = 'canvas'
   void router.replace({ query: { ...route.query, path: pathRunID ? String(pathRunID) : undefined } })
   void loadDetail()
 }
@@ -57,10 +59,6 @@ const errorText = ref('')
 const actionText = ref('')
 const acting = ref(false)
 
-// 本地时钟：执行中的已耗时以本地时钟连续插值，不被轮询节奏带跳，读数单调不减。
-const clockTick = ref(0)
-let clockTimer: number | null = null
-const approveStartedAt = ref<number | null>(null)
 const lastUpdateAt = ref<number>(Date.now())
 
 // 轮询：状态只在放行后变化，间隔来自后端配置。
@@ -353,41 +351,8 @@ const runNodeStates = computed(() => {
   return states
 })
 
-// isActing 表示一次放行或停止请求在途：指示器进入执行中状态。
+// isActing 表示一次放行或停止请求在途：此时放行/停止按钮进入忙碌态。
 const isActing = computed(() => acting.value)
-
-// indicatorRunning 让连续执行循环里的实时阶段也能驱动指示器：
-// 循环存活且后端上报了当前阶段时，即使没有放行请求在途也应显示阶段推进而不是等待放行。
-const indicatorRunning = computed(() => Boolean(detail.value?.loopRunning && detail.value?.currentPhase))
-
-// staleBudgetElapsed 判断是否超过疑似无响应预算。
-const staleBudgetElapsed = computed(() => {
-  if (!isActing.value || !detail.value) return false
-  void clockTick.value
-  return Date.now() - lastUpdateAt.value > detail.value.staleAfterMs
-})
-
-// elapsedText 是三处同源的耗时读数：执行中以放行点击时刻为起点本地插值，读数单调不减。
-const elapsedText = computed(() => {
-  void clockTick.value
-  if (isActing.value && approveStartedAt.value !== null) {
-    return formatElapsed(Math.max(0, Date.now() - approveStartedAt.value))
-  }
-  const steps = detail.value?.steps || []
-  if (steps.length > 0) {
-    const last = steps[steps.length - 1]
-    return formatElapsed(last.durationMs)
-  }
-  return formatElapsed(0)
-})
-
-// phaseDurations 取最后一步最近一次尝试的七阶段耗时（已落账时展示）。
-const phaseDurations = computed(() => {
-  const steps = detail.value?.steps || []
-  if (steps.length === 0) return undefined
-  const attempts = steps[steps.length - 1].attempts
-  return attempts.length > 0 ? attempts[attempts.length - 1].phaseDurations : undefined
-})
 
 // loadDetail 拉取详情并刷新结构（结构只按计划取一次）。
 async function loadDetail(): Promise<void> {
@@ -494,7 +459,6 @@ function resumeFollow(): void {
 async function approve(): Promise<void> {
   if (acting.value || !detail.value?.currentPreview) return
   acting.value = true
-  approveStartedAt.value = Date.now()
   actionText.value = ''
   errorText.value = ''
   try {
@@ -508,7 +472,6 @@ async function approve(): Promise<void> {
     errorText.value = error instanceof RunApiError ? error.message : '放行执行失败，请查看日志'
   } finally {
     acting.value = false
-    approveStartedAt.value = null
     schedulePoll()
   }
 }
@@ -594,73 +557,61 @@ const topConclusion = computed(() => {
 
 onMounted(() => {
   void loadDetail()
-  clockTimer = window.setInterval(() => { clockTick.value++ }, 250)
 })
 
 onBeforeUnmount(() => {
   if (pollTimer !== null) window.clearTimeout(pollTimer)
-  if (clockTimer !== null) window.clearInterval(clockTimer)
 })
 </script>
 
 <template>
   <section class="run-detail" :style="{ '--run-surface-color': themeVars.cardColor, '--run-border-color': themeVars.dividerColor }">
     <header v-if="detail" class="run-detail__topbar">
-      <div class="run-detail__meta">
-        <strong>运行 #{{ detail.runNo }}</strong>
-        <span>{{ detail.planName }} / {{ detail.pathName }}</span>
-        <NTag size="small" :bordered="false" type="info" :title="modeHint">{{ detail.modeName }}模式</NTag>
+      <div class="run-detail__topbar-left">
+        <NButton quaternary circle size="small" aria-label="返回运行列表" @click="router.push('/runs')">←</NButton>
+        <h2 class="run-detail__title">运行 #{{ detail.runNo }}</h2>
+        <span class="run-detail__meta-path">{{ detail.planName }} / {{ detail.pathName }}</span>
+        <NTag size="small" :bordered="false" type="info">{{ detail.modeName }}模式</NTag>
         <NTag size="small" :bordered="false" :type="statusTagType">{{ detail.pathRunStatusName }}</NTag>
         <NTag v-if="detail.failureClassName" size="small" :bordered="false" type="error">{{ detail.failureClassName }}</NTag>
-        <span v-if="detail.stopReason" class="run-detail__stop-reason" role="status">{{ detail.stopReason }}</span>
       </div>
-      <div class="run-detail__actions">
-        <!-- 主操作：一屏只有一个 primary，其余命令为次级；下一步会发真实写请求，按钮上写清这一点。 -->
-        <div class="run-detail__actions-primary">
-          <NButton
-            v-for="(command, index) in detail.commands"
-            :key="command.command"
-            :type="index === 0 ? 'primary' : 'default'"
-            :disabled="acting || looping || overviewDone"
-            :title="command.label"
-            @click="command.command === 'step' ? approve() : runCommand(command.command)"
-          >
-            {{ commandButtonText(command) }}
-          </NButton>
-          <span v-if="(detail.commands?.length ?? 0) === 0 && !overviewDone" class="run-detail__actions-empty">
-            {{ noCommandReason }}
-          </span>
-        </div>
-        <!-- 次级与不可逆操作与主操作分开：暂停只在阶段 3 生效，停止是终态。 -->
-        <div class="run-detail__actions-secondary">
-          <NButton
-            v-if="detail.loopRunning"
-            size="small"
-            :disabled="pausing || detail.pauseRequested"
-            :title="detail.pauseRequested ? '暂停请求已提交，本步走完核验与落账后生效' : '暂停请求只在本步走完核验与落账后生效，不会打断已发出的写请求'"
-            @click="pauseNow"
-          >{{ detail.pauseRequested ? '暂停已请求' : '暂停' }}</NButton>
-          <NPopconfirm :disabled="acting || overviewDone" @positive-click="stopRunAction">
-            <template #trigger>
-              <NButton size="small" type="error" ghost :disabled="acting || overviewDone">停止</NButton>
-            </template>
-            停止是终态，之后这条路径不能再前进；已发出的写请求不会被打断，已发生的事实全部保留。确定停止？
-          </NPopconfirm>
-        </div>
+      <div class="run-detail__topbar-actions">
+        <!-- 次级命令与不可逆操作在前，主操作「放行」最右；下一步会发真实写请求，按钮上写清这一点。 -->
+        <NButton
+          v-for="command in (detail.commands || []).filter(c => c.command !== 'step')"
+          :key="command.command"
+          size="small"
+          :disabled="acting || looping || overviewDone"
+          :title="command.label"
+          @click="runCommand(command.command)"
+        >{{ commandButtonText(command) }}</NButton>
+        <NButton
+          v-if="detail.loopRunning"
+          size="small"
+          :disabled="pausing || detail.pauseRequested"
+          :title="detail.pauseRequested ? '暂停请求已提交，本步走完核验与落账后生效' : '暂停请求只在本步走完核验与落账后生效，不会打断已发出的写请求'"
+          @click="pauseNow"
+        >{{ detail.pauseRequested ? '暂停已请求' : '暂停' }}</NButton>
+        <NPopconfirm :disabled="acting || overviewDone" @positive-click="stopRunAction">
+          <template #trigger>
+            <NButton size="small" type="error" ghost :disabled="acting || overviewDone">停止运行</NButton>
+          </template>
+          停止是终态，之后这条路径不能再前进；已发出的写请求不会被打断，已发生的事实全部保留。确定停止？
+        </NPopconfirm>
+        <NButton
+          size="small"
+          type="primary"
+          :loading="acting"
+          :disabled="overviewDone || !(detail.commands || []).some(c => c.command === 'step')"
+          :title="noCommandReason || '放行后执行下一步；下一步会发真实写请求'"
+          @click="approve()"
+        >放行（执行下一步）</NButton>
       </div>
-      <RunStatusIndicator
-        class="run-detail__indicator"
-        :running="isActing || indicatorRunning"
-        :stale="staleBudgetElapsed"
-        :elapsed-text="elapsedText"
-        :phase-durations="phaseDurations"
-        :note="acting && staleBudgetElapsed ? '超过预算未收到状态更新' : ''"
-        :current-phase="detail?.currentPhase"
-        :current-phase-note="detail?.currentPhaseNote"
-      />
     </header>
-    <!-- F-020 多路径运行：路径切换区。每条路径独立状态与结果，点击切换画布与侧栏，不新建第二套详情页。 -->
-    <div v-if="detail && (detail.paths?.length ?? 0) > 1" class="run-detail__paths" role="tablist" aria-label="路径运行列表">
+    <!-- F-020 多路径运行：路径切换 chips + 调度说明合并为一行（参照参考图第二行）。 -->
+    <div v-if="detail && (detail.paths?.length ?? 0) > 1" class="run-detail__subbar">
+      <span class="run-detail__schedule">{{ detail.runScheduleName }} · {{ detail.runConcurrencyLabel }}</span>
+      <div class="run-detail__paths" role="tablist" aria-label="路径运行列表">
       <button
         v-for="path in detail.paths"
         :key="path.pathRunId"
@@ -674,12 +625,11 @@ onBeforeUnmount(() => {
         <span class="run-detail__path-name">{{ path.pathName }}</span>
         <span class="run-detail__path-status">{{ path.statusName }}<template v-if="path.resultName"> · {{ path.resultName }}</template></span>
       </button>
+      </div>
     </div>
-    <p v-if="detail && detail.runConcurrencyLabel && (detail.paths?.length ?? 0) > 1" class="run-detail__schedule" role="status">
-      调度方式：{{ detail.runScheduleName }}（{{ detail.runConcurrencyLabel }}）
-    </p>
-    <p v-if="detail && detail.stopReason" class="run-detail__stop-reason" role="status">为什么停在这里：{{ detail.stopReason }}</p>
-    <p v-if="detail && detail.structureNote" class="run-detail__structure-note" role="status">{{ detail.structureNote }}</p>
+    <NAlert v-if="detail && (detail.stopReason || detail.structureNote)" type="warning" :show-icon="false" class="run-detail__notice-bar">
+      {{ [detail.stopReason, detail.structureNote].filter(Boolean).join('；') }}
+    </NAlert>
     <div
       v-if="detail && detail.pathRunStatusName === '待对账'"
       class="run-detail__reconcile"
@@ -769,21 +719,40 @@ onBeforeUnmount(() => {
     <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
     <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
 
-    <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放“状态怎么变的”。 -->
-    <section v-if="runEvents.length" class="run-detail__events" aria-label="事件流">
-      <h4>事件流（{{ runEvents.length }}）</h4>
-      <ol class="run-detail__event-list">
-        <li v-for="event in runEvents" :key="event.id">
-          <span class="run-detail__event-time">{{ event.createdAt }}</span>
-          <span>{{ event.label }}</span>
-        </li>
-      </ol>
-    </section>
     <div v-if="loading" class="run-detail__loading"><NSpin size="small" /><span>正在读取运行详情……</span></div>
     <NEmpty v-else-if="!detail" :description="errorText || '未找到该运行记录。'" />
 
     <div v-else class="run-detail__body">
-      <div class="run-detail__canvas">
+      <!-- 页签：流程图 / 事件流（F-021）。参照参考图的主区结构。 -->
+      <div class="run-detail__tabs" role="tablist" aria-label="运行内容">
+        <button
+          type="button"
+          class="run-detail__tab"
+          :class="{ 'run-detail__tab--active': activeTab === 'canvas' }"
+          role="tab"
+          :aria-selected="activeTab === 'canvas'"
+          @click="activeTab = 'canvas'"
+        >流程图</button>
+        <button
+          type="button"
+          class="run-detail__tab"
+          :class="{ 'run-detail__tab--active': activeTab === 'events' }"
+          role="tab"
+          :aria-selected="activeTab === 'events'"
+          @click="activeTab = 'events'"
+        >事件流（{{ runEvents.length }}）</button>
+      </div>
+      <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放“状态怎么变的”。 -->
+      <section v-show="activeTab === 'events'" class="run-detail__events" aria-label="事件流">
+        <ol class="run-detail__event-list">
+          <li v-for="event in runEvents" :key="event.id">
+            <span class="run-detail__event-time">{{ event.createdAt }}</span>
+            <span>{{ event.label }}</span>
+          </li>
+          <li v-if="runEvents.length === 0" class="run-detail__event-empty">还没有事件。</li>
+        </ol>
+      </section>
+      <div v-show="activeTab === 'canvas'" class="run-detail__canvas">
         <FlowGraphCanvas
           ref="canvasRef"
           v-if="graph"
@@ -880,18 +849,59 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 断点区与命令区按主次分组：一屏只有一个主操作，不可逆操作与常规操作在视觉上分开。 */
-.run-detail__actions {
-  display: grid;
-  gap: 6px;
-  justify-items: end;
+/* 头部：左标题右操作，单行紧凑（参照参考图）。 */
+.run-detail__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--run-border-color);
+  margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
-.run-detail__actions-primary,
-.run-detail__actions-secondary {
+.run-detail__topbar-left {
   display: flex;
-  gap: 8px;
   align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.run-detail__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.run-detail__meta-path {
+  color: var(--preflight-secondary-text-color, #909090);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-detail__topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 次级行：调度说明 + 多路径 chips。 */
+.run-detail__subbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 10px;
+  flex-wrap: wrap;
+}
+
+.run-detail__schedule {
+  color: var(--preflight-secondary-text-color, #909090);
+  font-size: 13px;
 }
 
 .run-detail__actions-empty {
@@ -980,7 +990,6 @@ onBeforeUnmount(() => {
 
 .run-detail__failure { color: var(--error-color, #d03050); }
 .run-detail__actions { display: flex; gap: 10px; }
-.run-detail__indicator { min-width: 380px; }
 
 .run-detail__conclusion {
   margin: 0;
@@ -1123,5 +1132,35 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1100px) {
   .run-detail__body { grid-template-columns: 1fr; }
+}
+
+/* 页签：流程图 / 事件流（参照参考图的下划线页签）。横跨整行，不参与画布/侧栏两列网格。 */
+.run-detail__tabs {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--run-border-color);
+  margin-bottom: 10px;
+}
+
+.run-detail__tab {
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--preflight-secondary-text-color, #909090);
+  padding: 8px 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.run-detail__tab--active {
+  color: var(--preflight-primary-color, #18a058);
+  border-bottom-color: var(--preflight-primary-color, #18a058);
+  font-weight: 500;
+}
+
+.run-detail__event-empty {
+  color: var(--preflight-secondary-text-color, #909090);
 }
 </style>

@@ -51,8 +51,9 @@ if grep -rnE '>[[:space:]]*(重试|重试本步|重新提交|继续执行|重发
   exit 1
 fi
 
-printf '%s\n' '[F-016] 七阶段指示器与自动跟随接管'
-grep -qF '取步' web/src/features/runs/RunStatusIndicator.vue
+# 2026-09-06 用户裁决：界面七阶段条移除（用户不关心阶段流水）；阶段事实仍在 step.log 与侧栏尝试耗时。
+printf '%s\n' '[F-016] 七阶段流水落在执行器日志与侧栏尝试明细，自动跟随可接管'
+grep -qF 'Phase("plan"' internal/engine/step/executor.go
 grep -qF '回到当前步' web/src/views/RunDetailView.vue
 
 printf '%s\n' '[F-016] 接口与前端结构契约通过'
