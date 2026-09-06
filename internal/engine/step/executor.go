@@ -611,6 +611,35 @@ func isSessionRejected(err error) bool {
 	return errors.As(err, &targetErr) && targetErr.Kind == target.ErrorSessionExpired
 }
 
+// resubmitOnSessionRejected 在写请求被会话失效拒绝后恢复：最多 3 次「换新会话 + 重发」。
+// 每次被拒都证明请求未进入业务、无副作用（RESP401/AUTH_401 发生在业务逻辑之前），
+// 因此写请求进入业务的次数仍至多一次；恢复过程逐次写 step.log，失败后按原错误上报。
+func resubmitOnSessionRejected[R any](
+	ctx context.Context, refresh func(account string) (target.Session, error), account string,
+	step model.CompiledActionStep, attemptNo int,
+	send func(refreshed target.Session) (R, target.WriteResponse, string, error),
+	log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep,
+) (R, target.WriteResponse, string, error) {
+	var zero R
+	for round := 1; round <= 3; round++ {
+		log.Phase("submit", step.Sequence, attemptNo, fmt.Sprintf(
+			"写请求被目标以会话失效拒绝（第_%d_次，未进入业务、无副作用），重新取得会话后重发", round))
+		reportPhase(approved, "submit", fmt.Sprintf("目标会话失效已拒绝 %d 次（无副作用），正在重新取得会话", round))
+		refreshed, refreshErr := refresh(account)
+		if refreshErr != nil {
+			return zero, target.WriteResponse{}, "", refreshErr
+		}
+		result, response, traceID, err := send(refreshed)
+		if !isSessionRejected(err) {
+			return result, response, traceID, err
+		}
+		if round == 3 {
+			return result, response, traceID, err
+		}
+	}
+	return zero, target.WriteResponse{}, "", fmt.Errorf("会话失效恢复重发未执行")
+}
+
 // refreshSessionForWrite 为写请求重新取得可用会话：强制重登并探活，探活只把会话失效当失败。
 func (e *Executor) refreshSessionForWrite(ctx context.Context, account string) (target.Session, error) {
 	fresh, err := e.sessions.Refresh(ctx, account)
@@ -650,14 +679,12 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		// 两次都被会话失效拒绝才如实按失败上报（纪律：绝不盲目重发真实写请求，
 		// 这里的重发仅以「目标明确拒绝、证明无副作用」为前提）。
 		if isSessionRejected(err) {
-			log.Phase("submit", step.Sequence, attemptNo, "写请求被目标以会话失效拒绝（未进入业务、无副作用），重新取得会话后作为同一次尝试重发")
-			reportPhase(approved, "submit", "目标会话失效已拒绝一次（无副作用），正在重新取得会话")
-			refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
-			if refreshErr == nil {
-				result, response, traceID, err = e.target.SubmitFlowInstance(ctx, refreshed, *request)
-			} else {
-				err = refreshErr
-			}
+			// 实测目标为多节点且写链路会话不同步：每次换新会话重发随机命中，
+			// 因此在同一次尝试内最多恢复重发 3 次；每次被拒都已证明未进入业务、无副作用。
+			result, response, traceID, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+				func(refreshed target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
+					return e.target.SubmitFlowInstance(ctx, refreshed, *request)
+				}, log, reportPhase, approved)
 		}
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
@@ -689,13 +716,10 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		preview.writeSent = true
 		result, response, traceID, err := e.target.AuditCurrentTask(ctx, session, *request)
 		if isSessionRejected(err) {
-			log.Phase("submit", step.Sequence, attemptNo, "写请求被目标以会话失效拒绝（未进入业务、无副作用），重新取得会话后作为同一次尝试重发")
-			refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
-			if refreshErr == nil {
-				result, response, traceID, err = e.target.AuditCurrentTask(ctx, refreshed, *request)
-			} else {
-				err = refreshErr
-			}
+			result, response, traceID, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+				func(refreshed target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
+					return e.target.AuditCurrentTask(ctx, refreshed, *request)
+				}, log, reportPhase, approved)
 		}
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
