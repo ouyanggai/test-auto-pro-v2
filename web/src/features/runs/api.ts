@@ -124,6 +124,10 @@ export interface PathRunDetail {
   // sceneLostNote 是配套的大白话说明与下一步引导。页面只展示只读记录，不给任何重试或登记入口。
   sceneLost?: boolean
   sceneLostNote?: string
+  // 模式切换（2026-09-06）：modeSwitchPending 表示已收到切换请求、将在本步完成后生效；
+  // pendingModeName 是目标模式的中文显示名。
+  modeSwitchPending?: boolean
+  pendingModeName?: string
 }
 
 export interface RunSummary {
@@ -341,6 +345,16 @@ export function removeBreakpoint(runId: string, bp: BreakpointInput, pathRunId?:
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bp),
+  })
+}
+
+// switchRunMode 运行中切换自动/单步：请求携带控制版本（条件写幂等），
+// 切换在安全步骤边界生效；响应里的 modeSwitchPending 表示将在本步完成后生效。
+export function switchRunMode(runId: string, mode: 'auto' | 'single_step', controlVersion: number, pathRunId?: number): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/mode${pathRunQuery(pathRunId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, controlVersion }),
   })
 }
 

@@ -144,6 +144,15 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			// 终局（失败/不确定/场景走完）：approveOneStep 已完成收尾或现场已作废。
 			return
 		}
+		// 模式切换在本步走完核验与落账后生效（2026-09-06）：切换为单步时，
+		// 循环必须在下一个写请求之前退出——单步的语义就是每步必停。
+		stepNo := 0
+		if preview != nil {
+			stepNo = preview.StepNo
+		}
+		if s.applyPendingMode(ctx, pathRunID, session, stepNo) {
+			return
+		}
 		// 暂停请求在本步走完 verify 与 settle 后生效（纲领第 4.5 节）。
 		s.mu.Lock()
 		pauseRequested := session.pauseRequested

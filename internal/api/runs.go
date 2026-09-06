@@ -40,6 +40,7 @@ type RunOrchestrator interface {
 	RemoveBreakpoint(ctx context.Context, runID uint64, pathRunID uint64, bp control.Breakpoint) ([]control.Breakpoint, error)
 	ListBreakpoints(ctx context.Context, runID uint64, pathRunID uint64) ([]control.Breakpoint, error)
 	RequestPause(ctx context.Context, runID uint64, pathRunID uint64) error
+	SwitchMode(ctx context.Context, runID uint64, pathRunID uint64, mode model.RunMode, version int64) (*service.PathRunDetailDTO, error)
 	Stop(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	// 运行记录层级（2026-09-06）：跨计划列表（一行一次运行）、二级路径页与整次运行删除。
 	ListAllRuns(ctx context.Context, status string) ([]service.RunSummaryDTO, error)
@@ -64,6 +65,8 @@ func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) 
 	mux.HandleFunc("POST /api/runs/{runId}/breakpoints", handleSetBreakpoint(orchestrator))
 	mux.HandleFunc("DELETE /api/runs/{runId}/breakpoints", handleRemoveBreakpoint(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/pause", handlePause(orchestrator))
+	// 运行中模式切换（2026-09-06）：自动/单步互切，安全边界生效，条件写幂等。
+	mux.HandleFunc("POST /api/runs/{runId}/mode", handleSwitchMode(orchestrator))
 	// F-021 事件流时间线：只读增量读取，afterEventID 为游标。
 	mux.HandleFunc("GET /api/runs/{runId}/events", handleRunEvents(orchestrator))
 }
@@ -354,6 +357,33 @@ func handlePause(orchestrator RunOrchestrator) http.HandlerFunc {
 			return
 		}
 		writeSuccess(response, map[string]any{"paused": true})
+	}
+}
+
+// switchModeRequest 是模式切换请求体：目标模式 + 控制版本（条件写、幂等）。
+type switchModeRequest struct {
+	Mode           string `json:"mode"`
+	ControlVersion int64  `json:"controlVersion"`
+}
+
+// handleSwitchMode 运行中切换自动/单步；重复点击只产生一次控制事实。
+func handleSwitchMode(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
+		if !ok {
+			return
+		}
+		var body switchModeRequest
+		if err := decodeRunBody(request, &body); err != nil {
+			writeFailure(response, http.StatusBadRequest, "RUN_MODE_INVALID", "模式切换请求体格式不正确", false)
+			return
+		}
+		detail, err := orchestrator.SwitchMode(request.Context(), runID, parsePathRunIDQuery(request), model.RunMode(body.Mode), body.ControlVersion)
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, detail)
 	}
 }
 

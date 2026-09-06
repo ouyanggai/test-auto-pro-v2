@@ -273,6 +273,11 @@ type PathRunDetailDTO struct {
 	SceneLost     bool   `json:"sceneLost"`
 	SceneLostNote string `json:"sceneLostNote,omitempty"`
 
+	// 模式切换（2026-09-06）：ModeSwitchPending 表示有待生效的切换（将在本步完成后生效），
+	// PendingModeName 是目标模式的中文显示名。界面据此区分「请求已收到」与「已经生效」。
+	ModeSwitchPending bool   `json:"modeSwitchPending"`
+	PendingModeName   string `json:"pendingModeName,omitempty"`
+
 	// PathChoices 是这条路径已保存的分支选择（分支节点 ID + 所选分支 ID），
 	// 是画布遍历分析的直接输入，用于区分路径内/路径外节点（评审缺陷 8）。
 	PathChoices []PathChoiceDTO `json:"pathChoices,omitempty"`
@@ -499,6 +504,23 @@ func (s *RunOrchestrationService) StartRunWithMode(ctx context.Context, input St
 	}
 	// RunContext 是值传递：真实运行身份以控制服务返回值为准。
 	return s.RunDetailByPathRun(ctx, started.PathRun.ID)
+}
+
+// SwitchMode 运行中切换自动/单步模式（2026-09-06）：只作用于这一条路径运行，
+// 切换在安全步骤边界生效；请求携带控制版本，重复点击只产生一次控制事实。
+func (s *RunOrchestrationService) SwitchMode(ctx context.Context, runID uint64, pathRunID uint64, mode model.RunMode, version int64) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	scoped, err := s.withRunScope(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.control.SwitchMode(scoped, pathRunID, mode, version); err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, pathRunID)
 }
 
 // SetBreakpoint / RemoveBreakpoint / RequestPause / ListBreakpoints / ControlView 是控制面转发。
@@ -863,6 +885,10 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.CurrentPhase = view.CurrentPhase
 		detail.CurrentPhaseNote = view.CurrentPhaseNote
 		detail.CurrentPhaseSince = view.CurrentPhaseSince
+		detail.ModeSwitchPending = view.PendingMode != nil
+		if view.PendingMode != nil {
+			detail.PendingModeName = model.RunModeName(*view.PendingMode)
+		}
 		for _, command := range view.Commands {
 			detail.Commands = append(detail.Commands, CommandDTO{Command: string(command), Label: CommandLabel(command)})
 		}

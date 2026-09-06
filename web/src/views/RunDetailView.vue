@@ -14,6 +14,7 @@ import {
   RunApiError,
   setBreakpoint,
   stopRun,
+  switchRunMode,
 } from '../features/runs/api'
 import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { BreakpointInput, PathRunDetail } from '../features/runs/api'
@@ -474,9 +475,51 @@ const modeHint = computed(() => {
     case '单步': return '每一步执行前都停下等放行，只有「执行一步」一条命令'
     case '自动': return '连续执行，首个写步骤与断点命中处必停'
     case '人工控制': return '停在第一步之前，暂停时拥有全部三条命令'
-    default: return '运行模式在启动时确定，运行中不可切换'
+    default: return ''
   }
 })
+
+// 模式切换（2026-09-06）：自动/单步双向互切，只影响当前路径；
+// 请求带控制版本（重复点击只产生一次控制事实），生效边界由后端判定并如实反馈。
+const switchingMode = ref(false)
+const modeFeedback = ref('')
+// canSwitchMode 只在自动与单步之间提供切换；人工控制与终态不显示切换入口。
+const canSwitchMode = computed(() => {
+  if (!detail.value || overviewDone.value) return false
+  return ['单步', '自动'].includes(detail.value.modeName)
+})
+// targetModeName 是切换按钮的目标模式：当前单步就切自动，反之亦然。
+const targetModeName = computed(() => (detail.value?.modeName === '单步' ? '自动' : '单步'))
+
+// applyModeFeedback 严格区分后端返回：已收到并将在本步后生效 / 已经生效 / 失败。
+function applyModeFeedback(next: PathRunDetail): void {
+  if (next.modeSwitchPending && next.pendingModeName) {
+    modeFeedback.value = `已收到切换请求：将在本步完成后切换为${next.pendingModeName}模式`
+  } else {
+    modeFeedback.value = `已切换为${next.modeName}模式`
+  }
+}
+
+// toggleMode 提交模式切换；以服务端返回的最新详情为准刷新界面。
+async function toggleMode(): Promise<void> {
+  if (switchingMode.value || !detail.value) return
+  switchingMode.value = true
+  modeFeedback.value = ''
+  errorText.value = ''
+  try {
+    const target = detail.value.modeName === '单步' ? 'auto' : 'single_step'
+    const next = await switchRunMode(runId, target, detail.value.controlVersion, detail.value?.pathRunId)
+    detail.value = next
+    syncControl(next)
+    applyModeFeedback(next)
+    lastUpdateAt.value = Date.now()
+  } catch (error) {
+    modeFeedback.value = ''
+    errorText.value = error instanceof RunApiError ? error.message : '模式切换失败，请重试'
+  } finally {
+    switchingMode.value = false
+  }
+}
 
 // statusTagType 让状态标签的颜色与语义一致；颜色之外始终有中文文字，不靠颜色单独表意。
 const statusTagType = computed<'default' | 'info' | 'success' | 'warning' | 'error'>(() => {
@@ -618,6 +661,22 @@ onBeforeUnmount(() => {
             :class="{ 'run-detail__freshness--stale': freshnessStale }"
             role="status"
           >{{ freshnessText }}</span>
+
+          <!-- 模式切换：只在自动/单步之间互切；反馈严格区分「已收到」「将在本步后生效」「已生效」。 -->
+          <template v-if="canSwitchMode">
+            <n-button
+              size="small"
+              :loading="switchingMode"
+              :title="`切换只影响当前路径，并在安全边界（本步走完核验与落账）后生效`"
+              @click="toggleMode"
+            >切换为{{ targetModeName }}</n-button>
+            <span v-if="modeFeedback" class="run-detail__mode-feedback" role="status">{{ modeFeedback }}</span>
+            <span
+              v-else-if="detail.modeSwitchPending && detail.pendingModeName"
+              class="run-detail__mode-feedback"
+              role="status"
+            >将在本步完成后切换为{{ detail.pendingModeName }}模式</span>
+          </template>
 
           <!-- 断点是调试能力而不是常看的信息：收进弹出层，画布不再被一整块说明占掉。 -->
           <n-popover trigger="click" placement="bottom-end" :width="342" :keep-alive-on-hover="false">
@@ -909,6 +968,11 @@ onBeforeUnmount(() => {
 
 .run-detail__freshness--stale {
   color: var(--warning-color, #f0a020);
+}
+
+.run-detail__mode-feedback {
+  color: var(--run-primary-color, #18a058);
+  font-size: 12px;
 }
 
 /* 断点弹出层：强制生效与手工挂载分区，新增断点三种挂载方式共用一处。 */

@@ -15,8 +15,11 @@ grep -qF 'commands' internal/service/run_orchestration.go
 
 printf '%s\n' '[F-017] 断点集合由事实回放得出，无断点可变表'
 grep -qF 'func ReplayBreakpoints' internal/engine/control/breakpoints.go
-if grep -rln 'UPDATE run_controls\|DELETE FROM run_controls' internal/ | grep -v migrations; then
-  printf '%s\n' '[F-017] run_controls 不得存在 UPDATE/DELETE 路径' >&2
+# 2026-09-06：整次运行删除（运行记录层级）会在同一事务里级联删掉该运行的控制事实，
+# 这是运行删除的合法路径，排除在断言之外；除此之外仍然禁止任何对 run_controls 的改写。
+if grep -rln 'UPDATE run_controls\|DELETE FROM run_controls' internal/ \
+  | grep -v migrations | grep -v run_repository_maintenance.go; then
+  printf '%s\n' '[F-017] run_controls 不得存在 UPDATE/DELETE 路径（整次运行删除的级联除外）' >&2
   exit 1
 fi
 if ls internal/repository/mysql/migrations/ | grep -vE '026|027' | grep -q breakpoint; then

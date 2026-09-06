@@ -177,6 +177,8 @@ type ControlFactKind string
 
 const (
 	ControlFactModeSelected     ControlFactKind = "mode_selected"     // 启动模式选定
+	ControlFactModeSwitchReq    ControlFactKind = "mode_switch_req"   // 请求切换模式（安全边界生效）
+	ControlFactModeSwitched     ControlFactKind = "mode_switched"     // 模式切换生效
 	ControlFactBreakpointSet    ControlFactKind = "breakpoint_set"    // 增加断点
 	ControlFactBreakpointRemove ControlFactKind = "breakpoint_remove" // 删除断点
 	ControlFactPauseRequested   ControlFactKind = "pause_requested"   // 请求暂停（阶段 3 生效）

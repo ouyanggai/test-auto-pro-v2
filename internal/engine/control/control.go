@@ -72,6 +72,9 @@ type activeStep struct {
 	stopRequested  bool
 	// deviationStalled 表示路径偏离断点已强制停止：不产出放行类命令。
 	deviationStalled bool
+	// pendingMode 是已落事实、待安全边界（当前步走完核验与落账）生效的模式切换请求。
+	// nil 表示没有待生效的切换；切换只影响当前路径运行，绝不暗中改变其他路径。
+	pendingMode *model.RunMode
 	// loopRunning 表示连续执行循环存活。
 	loopRunning bool
 	// stepInFlight 表示一步正在执行（从取步租约到落账）：这期间停止必须延后到本步
@@ -314,6 +317,8 @@ type SessionView struct {
 	LoopRunning    bool
 	StopRequested  bool
 	PauseRequested bool
+	// PendingMode 是待安全边界生效的模式切换请求；非 nil 时界面显示「将在本步完成后切换」。
+	PendingMode *model.RunMode
 	// CurrentPhase/CurrentPhaseNote 是当前步的实时阶段与中文补充；CurrentPhaseSince 是进入时刻。
 	CurrentPhase      string
 	CurrentPhaseNote  string
@@ -336,6 +341,7 @@ func (s *Service) View(pathRunID uint64) *SessionView {
 	}
 	view.PauseState = session.pauseState()
 	view.Commands = AvailableCommands(session.mode, view.PauseState)
+	view.PendingMode = session.pendingMode
 	view.CurrentPhase = session.progress.phase
 	view.CurrentPhaseNote = session.progress.note
 	view.CurrentPhaseSince = session.progress.since
@@ -460,6 +466,126 @@ func (s *Service) RequestPause(ctx context.Context, pathRunID uint64) error {
 	}, s.now())
 }
 
+// SwitchMode 运行中切换自动/单步模式（2026-09-06 交付验收）：
+// 条件写带控制版本（重复点击只产生一次控制事实），只影响当前路径运行；
+// 切换在安全步骤边界生效——当前停在阶段 3 时立即生效，本步正在执行或连续执行中时
+// 在本步走完核验与落账后生效，绝不中途打断已发出的写请求。
+func (s *Service) SwitchMode(ctx context.Context, pathRunID uint64, mode model.RunMode, version int64) (*SessionView, error) {
+	if mode != model.RunModeAuto && mode != model.RunModeSingleStep {
+		return nil, fmt.Errorf("运行中只能在自动与单步之间切换，不能切换为%s", model.RunModeName(mode))
+	}
+	s.mu.Lock()
+	session := s.active[pathRunID]
+	if session == nil {
+		s.mu.Unlock()
+		return nil, ErrNoActiveStep
+	}
+	if session.finished {
+		s.mu.Unlock()
+		return nil, ErrRunAlreadyFinished
+	}
+	if session.deviationStalled {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w：路径偏离后不提供模式切换", ErrNotRunnable)
+	}
+	// 幂等：请求的模式已经（或将要在本步后）生效时，不产生新的控制事实。
+	if session.mode == mode || (session.pendingMode != nil && *session.pendingMode == mode) {
+		view := &SessionView{
+			Mode: session.mode, Breakpoints: session.breakpoints.List(),
+			StopReason: session.stopReason, Version: session.version,
+			LoopRunning: session.loopRunning, StopRequested: session.stopRequested,
+			PauseRequested: session.pauseRequested, PendingMode: session.pendingMode,
+			PauseState: session.pauseState(), Commands: AvailableCommands(session.mode, session.pauseState()),
+			CurrentPhase: session.progress.phase, CurrentPhaseNote: session.progress.note,
+			CurrentPhaseSince: session.progress.since,
+		}
+		s.mu.Unlock()
+		return view, nil
+	}
+	if version != session.version {
+		s.mu.Unlock()
+		return nil, ErrVersionConflict
+	}
+	// 版本自增在锁内完成：并发重复请求到这里必然版本冲突，绝不产生第二条切换事实。
+	session.pendingMode = &mode
+	session.version++
+	applyNow := !session.loopRunning && !session.stepInFlight
+	applied := mode
+	if applyNow {
+		session.mode = mode
+		session.pendingMode = nil
+	} else {
+		applied = model.RunMode("")
+	}
+	s.mu.Unlock()
+
+	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	requestedFact := model.RunControl{
+		RunID: pathRun.RunID, PathRunID: pathRunID,
+		Kind: model.ControlFactModeSwitchReq, Command: model.ControlCommand(mode),
+		Source: model.RunControlSourceUI, CreatedAt: s.now(),
+	}
+	if err := s.store.AppendRunControl(ctx, requestedFact, s.now()); err != nil {
+		return nil, err
+	}
+	s.logFact(pathRunID, requestedFact, 0)
+	if applyNow {
+		s.appendModeSwitchedFact(ctx, pathRunID, pathRun.RunID, applied, "本步尚未开始，立即生效")
+	} else {
+		_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+			RunID: pathRun.RunID, PathRunID: &pathRunID,
+			Kind:  "mode_switch_requested",
+			Label: fmt.Sprintf("请求切换为%s模式：将在本步完成后生效，已发出的写请求不受影响", model.RunModeName(mode)),
+		}, s.now())
+	}
+	return s.View(pathRunID), nil
+}
+
+// appendModeSwitchedFact 落「模式切换生效」事实、control.log 与运行事件。
+func (s *Service) appendModeSwitchedFact(ctx context.Context, pathRunID, runID uint64, mode model.RunMode, when string) {
+	switchedFact := model.RunControl{
+		RunID: runID, PathRunID: pathRunID,
+		Kind: model.ControlFactModeSwitched, Command: model.ControlCommand(mode),
+		Source: model.RunControlSourceUI, CreatedAt: s.now(),
+	}
+	if err := s.store.AppendRunControl(ctx, switchedFact, s.now()); err != nil {
+		s.warnFactFailure(pathRunID, "模式切换生效事实", err)
+	} else {
+		s.logFact(pathRunID, switchedFact, 0)
+	}
+	_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+		RunID: runID, PathRunID: &pathRunID,
+		Kind:  "mode_switched",
+		Label: fmt.Sprintf("运行模式已切换为%s（%s）", model.RunModeName(mode), when),
+	}, s.now())
+}
+
+// applyPendingMode 在安全边界（本步走完核验与落账）应用待生效的模式切换；返回是否切换为单步。
+// 单步意味着「每步必停」，连续执行循环必须在下一个写请求之前退出。
+func (s *Service) applyPendingMode(ctx context.Context, pathRunID uint64, session *activeStep, stepNo int) bool {
+	s.mu.Lock()
+	if session.pendingMode == nil {
+		s.mu.Unlock()
+		return false
+	}
+	mode := *session.pendingMode
+	session.pendingMode = nil
+	session.mode = mode
+	runID := session.runCtx.Run.ID
+	s.mu.Unlock()
+	s.appendModeSwitchedFact(ctx, pathRunID, runID, mode, "本步已走完核验与落账")
+	if mode == model.RunModeSingleStep {
+		s.mu.Lock()
+		session.stopReason = fmt.Sprintf("已切换为单步模式（第 %d 步走完后生效）：下一步执行前等待放行", stepNo)
+		s.mu.Unlock()
+		return true
+	}
+	return false
+}
+
 // ApproveWithCommand 按命令放行（条件写 + 幂等）：
 // 命令携带当前步游标与控制版本；版本或游标不匹配返回中文冲突说明，重复提交只产生一次效果。
 // step 命令同步执行一步；next_node/continue 启动连续执行循环后立即返回（前端轮询状态）。
@@ -522,6 +648,12 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 		if err != nil {
 			return result, err
 		}
+		// 本步走完 verify 与 settle 后，放行期间请求的模式切换在这里生效（2026-09-06）。
+		stepNo := 0
+		if session.preview != nil {
+			stepNo = session.preview.StepNo
+		}
+		s.applyPendingMode(ctx, pathRunID, session, stepNo)
 		// 本步走完 verify 与 settle 后，放行期间收到的停止请求在这里生效（纲领第 4.5 节）。
 		s.mu.Lock()
 		deferredStop := session.stopRequested && !session.finished &&
