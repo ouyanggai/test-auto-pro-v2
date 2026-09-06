@@ -573,18 +573,15 @@ func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, 
 // 只有会话失效（RESP401/HTTP 401）或传输失败才返回错误。
 // 用途：执行器 prepare 阶段在登录后立即验证 sid 可用——实测目标存在
 // “首次登录的 sid 立即失效、重新登录后才有效”的现象（纲领第 4.4.1 节抖动家族）。
-// Ping 只回答一个问题：这个 SID 此刻是否通过目标鉴权。
-// 判据是响应是否为会话失效拒绝（RESP401/AUTH_401/明确失效文案）：是则探活失败；
-// 其余任何完整响应——包括业务失败（如个别账号的分组过滤配置已失效，list 永远报
-// 「分组id不存在」）——都证明 SID 已通过网关鉴权，探活必须通过。
-// 旧实现把任何业务失败都当探活失败，会让会话获取在重登循环里互踢，写请求刚发出就被判失效。
+// Ping 只回答一个问题：这个 SID 在目标上是否真的存在有效会话。
+// 判据就是最普通的空条件模板列表请求：有效会话返回成功列表（实测稳定约 30 秒慢请求）；
+// 会话不存在/已失效时返回 AUTH_401、RESP401 或「分组id不存在」——
+// 2026-09-07 实测确认第三种也是会话无效的业务层表现：无会话请求放行到业务层后
+// 取不到会话上下文里的默认分组。因此任何错误（含业务失败）都必须判探活失败并重登，
+// 绝不能把「分组id不存在」当成鉴权通过，否则写请求必然被写端点拒绝。
 func (c *Client) Ping(ctx context.Context, session Session) error {
 	_, err := c.call(ctx, "/web/flowTemplateApi/list", session.SID, map[string]any{
 		"data": map[string]any{}, "pagination": false, "pages": 1, "size": 1,
 	})
-	var targetErr *Error
-	if errors.As(err, &targetErr) && targetErr.Kind == ErrorSessionExpired {
-		return err
-	}
-	return nil
+	return err
 }
