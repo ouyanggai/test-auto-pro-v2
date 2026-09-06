@@ -28,16 +28,26 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       class="flow-node flow-node--run"
       :class="[
         data.runStatus ? `flow-node--run-${data.runStatus}` : '',
-        { 'flow-node--run-current': data.runCurrent, 'flow-node--run-busy': data.runCurrent && data.runBusy },
+        {
+          'flow-node--run-current': data.runCurrent,
+          'flow-node--run-busy': data.runCurrent && data.runBusy,
+          'flow-node--run-selected': data.runSelected && !data.runCurrent,
+        },
       ]"
-      :aria-label="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runCurrent ? (data.runBusy ? '，正在执行这一步' : '，当前步') : ''}`"
+      :aria-label="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runCurrent ? (data.runBusy ? '，正在执行这一步' : '，当前步') : ''}${data.runSelected ? '，正在查看' : ''}`"
       :title="`${data.name}，运行态：${data.runStatusName || '未开始'}`"
     >
       <handle type="target" :position="Position.Top" :connectable="false" />
       <span class="flow-node__type">{{ data.typeName }}</span>
       <span class="flow-node__name">{{ data.name }}</span>
       <span class="flow-node__run-status">
-        <!-- 执行动画由本地 CSS 时钟驱动，不跟轮询节奏跳；文字始终写清运行态，不靠颜色单独表意。 -->
+        <!-- 状态点是细小连续的动态反馈：运行/核验中呼吸，其余状态静止；文字始终写清运行态。 -->
+        <span
+          v-if="data.runStatus === 'running' || data.runStatus === 'verifying'"
+          class="flow-node__run-dot flow-node__run-dot--breathing"
+          aria-hidden="true"
+        />
+        <span v-else class="flow-node__run-dot" aria-hidden="true" />
         <span v-if="data.runCurrent && data.runBusy" class="flow-node__run-spinner" aria-hidden="true" />
         {{ data.runStatusName || '未开始' }}
       </span>
@@ -46,6 +56,8 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       </span>
       <handle type="source" :position="Position.Bottom" :connectable="false" />
     </div>
+    <!-- 错误摘要浮在卡片下方：一眼可见失败原因的第一句话，不撑破布局（完整依据在右栏）。 -->
+    <span v-if="data.runErrorNote" class="flow-node__run-error" role="status">{{ data.runErrorNote }}</span>
   </div>
   <div v-else-if="data.configurationMode" class="flow-node-shell">
     <button
@@ -249,9 +261,12 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   cursor: pointer;
   background: var(--flow-surface-color);
   border: 1px solid var(--flow-edge-color);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
   /* 运行画布只让当前步亮起来，其余节点整体压暗：读图时视线自然落在正在跑的那一步。 */
   opacity: 0.56;
-  transition: opacity 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  /* 状态切换平滑过渡：不闪烁、不跳变，位置与尺寸永不动画。 */
+  transition: opacity 240ms ease, border-color 240ms ease, box-shadow 240ms ease, background-color 240ms ease;
 }
 
 /* 九个中文运行态各有视觉档：颜色之外节点上必须有中文文字（run-status），不靠颜色单独表意。 */
@@ -287,6 +302,12 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 .flow-node--run-stopped .flow-node__run-status,
 .flow-node--run-cancelled .flow-node__run-status { color: var(--warning-color, #f0a020); }
 
+.flow-node--run-selected {
+  border-color: var(--flow-direction-color);
+  border-width: 2px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--flow-direction-color) 16%, transparent);
+}
+
 /* 当前步是整张画布唯一的高亮节点：亮边 + 淡色底 + 外圈光环，放在状态档之后好覆盖压暗。 */
 .flow-node--run-current {
   z-index: 1;
@@ -311,6 +332,46 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   font-size: 11px;
   font-weight: 600;
   line-height: 1.2;
+}
+
+/* 状态点：颜色跟运行态（默认继承状态文字的颜色），运行/核验中按本地时钟呼吸。 */
+.flow-node__run-dot {
+  width: 6px;
+  height: 6px;
+  background: currentcolor;
+  border-radius: 50%;
+}
+
+.flow-node__run-dot--breathing {
+  animation: flow-node-dot-breathe 1.6s ease-in-out infinite;
+}
+
+/* 失败/结果待确认节点的一句话错误摘要：浮在卡片下方，克制、可读、不撑破布局。 */
+.flow-node__run-error {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  max-width: 196px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  color: var(--error-color, #d03050);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  background: color-mix(in srgb, var(--error-color, #d03050) 8%, var(--flow-surface-color));
+  border: 1px solid color-mix(in srgb, var(--error-color, #d03050) 36%, transparent);
+  border-radius: 6px;
+  transform: translateX(-50%);
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  pointer-events: none;
+}
+
+@keyframes flow-node-dot-breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
 }
 
 /* 执行动画由 CSS 连续驱动，不受轮询节奏影响；旋转、呼吸与文字共同表达真实运行状态。 */

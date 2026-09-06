@@ -284,6 +284,22 @@ const runNodeStates = computed(() => {
   return states
 })
 
+// runErrorNotes 是失败/结果待确认节点上的一句话错误摘要：
+// 取最后一个已落账步骤里第一个非成功尝试的原因原文，只呈现、不猜测。
+const runErrorNotes = computed<Record<string, string>>(() => {
+  const notes: Record<string, string> = {}
+  if (!detail.value || detail.value.steps.length === 0) return notes
+  const closing = ['失败', '结果待确认']
+  if (!closing.includes(detail.value.pathRunStatusName)) return notes
+  const last = detail.value.steps[detail.value.steps.length - 1]
+  const bad = last.attempts.find((attempt) => attempt.verdictName !== '确定成功')
+  if (bad?.reason) {
+    const nodeID = last.nodeId || last.nodeKey
+    if (nodeID) notes[nodeID] = bad.reason
+  }
+  return notes
+})
+
 // isActing 表示一次放行或停止请求在途：此时放行/停止按钮进入忙碌态。
 const isActing = computed(() => acting.value)
 
@@ -560,12 +576,15 @@ const topConclusion = computed(() => {
   if (!detail.value) return ''
   if (!overviewDone.value) return ''
   const parts: string[] = []
-  parts.push(`路径结果：${detail.value.resultName || '—'}`)
-  const finalTarget = detail.value.finalTarget as { statusName?: string; currentNodeNames?: string[]; dueNodeNames?: string[] } | undefined
-  if (finalTarget) {
-    const due = finalTarget.dueNodeNames || []
-    parts.push(`最终目标事实：实例${finalTarget.statusName || '状态未知'}${finalTarget.currentNodeNames?.length ? `，当前节点 ${finalTarget.currentNodeNames.join('、')}` : ''}，待办 ${due.length} 个`)
+  if (detail.value.resultName) {
+    parts.push(`路径结果：${detail.value.resultName}`)
   }
+  const finalTarget = detail.value.finalTarget as { statusName?: string; currentNodeNames?: string[]; dueNodeNames?: string[] } | undefined
+  if (finalTarget?.statusName) {
+    const due = finalTarget.dueNodeNames || []
+    parts.push(`最终目标事实：实例${finalTarget.statusName}${finalTarget.currentNodeNames?.length ? `，当前节点 ${finalTarget.currentNodeNames.join('、')}` : ''}，待办 ${due.length} 个`)
+  }
+  // 没有任何可说的结论时不占位：空结论行对用户没有信息量。
   return parts.join('；')
 })
 
@@ -828,6 +847,8 @@ onBeforeUnmount(() => {
             :run-busy="runBusy"
             :run-taken-edge-ids="runTakenEdgeIds"
             :run-deviation-edge-ids="runDeviationEdgeIds"
+            :run-selected-node-key="selectedNodeKey"
+            :run-error-notes="runErrorNotes"
             @select-run-node="handleSelectRunNode"
             @run-viewport-change="handleRunViewportChange"
           >

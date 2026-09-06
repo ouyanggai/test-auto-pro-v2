@@ -327,9 +327,14 @@ func (r *RunRepository) AdvanceRunStatus(ctx context.Context, runID uint64, from
 	if isTerminalRunStatus(to) {
 		finishedAt = now
 	}
+	// 首次离开等待运行（进入运行中）时补记运行级开始时间；列表的开始/结束时间由此而来。
+	startedAt := any(nil)
+	if to == model.RunStatusRunning {
+		startedAt = now
+	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE runs SET status = ?, finished_at = COALESCE(?, finished_at), updated_at = ? WHERE id = ?
-	`, string(to), finishedAt, now, runID); err != nil {
+		UPDATE runs SET status = ?, started_at = COALESCE(started_at, ?), finished_at = COALESCE(?, finished_at), updated_at = ? WHERE id = ?
+	`, string(to), startedAt, finishedAt, now, runID); err != nil {
 		return model.Run{}, err
 	}
 	event.RunID = runID

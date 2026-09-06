@@ -50,10 +50,15 @@ const props = withDefaults(defineProps<{
   // runDeviationEdgeIds 是其中偏离已配置路径的连线（标红显示）。
   runTakenEdgeIds?: string[]
   runDeviationEdgeIds?: string[]
+  // runSelectedNodeKey 是被点选打开右栏的节点：卡片给选中描边。
+  runSelectedNodeKey?: string
+  // runErrorNotes 按图节点 ID 给出失败/结果待确认节点的一句话错误摘要。
+  runErrorNotes?: Record<string, string>
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
   configurationMode: false, configurationNodeStates: () => ({}), configurationFormStatus: '', configurationFormStatusName: '',
   runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '', runBusy: false, runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
+  runSelectedNodeKey: '', runErrorNotes: () => ({}),
 })
 const emit = defineEmits<{
   retry: []
@@ -128,6 +133,8 @@ const displayedLayout = computed(() => {
           runStatusName: runState?.statusName,
           runCurrent: props.runMode && node.id === props.currentRunNodeKey,
           runBusy: props.runMode && props.runBusy,
+          runSelected: props.runMode && node.id === props.runSelectedNodeKey,
+          runErrorNote: props.runErrorNotes?.[node.id],
         },
       }
     }),

@@ -48,6 +48,10 @@ export interface FlowNodeData extends Record<string, unknown> {
   // runBusy 表示当前步此刻真的在执行（放行请求在途、连续执行中或核验中）：
   // 节点据此显示执行动画，与「停在这里等放行」区分开。
   runBusy?: boolean
+  // runSelected 表示节点被用户点选（右栏打开）：卡片给明确的选中描边反馈。
+  runSelected?: boolean
+  // runErrorNote 是失败/结果待确认节点上的一句话错误摘要（来自已落账尝试，不猜测）。
+  runErrorNote?: string
 }
 
 export interface FlowConfigurationNodeState {
