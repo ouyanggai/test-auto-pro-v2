@@ -65,6 +65,20 @@ export interface RunStep {
   attempts: RunStepAttempt[]
 }
 
+// RunNodePlanAction 是某个节点上的一条已配置计划动作（后端由编译场景归组，全部中文）。
+export interface RunNodePlanAction {
+  sequence: number
+  actionName: string
+  sourceName: string
+  scopeName: string
+  precondition?: string
+  expectedEffect?: string
+  stopOnFailure?: string
+  recoveryPolicy?: string
+  reloadRequired: boolean
+  parameterCount: number
+}
+
 export interface PathRunDetail {
   runId: number
   runNo: number
@@ -85,6 +99,8 @@ export interface PathRunDetail {
   steps: RunStep[]
   currentPreview?: RunPreview
   nodeStates: Record<string, RunNodeState>
+  // nodePlans 按图节点 ID 索引本次运行在该节点上的已配置计划（侧栏配置页签的唯一来源）。
+  nodePlans?: Record<string, RunNodePlanAction[]>
   pollIntervalMs: number
   staleAfterMs: number
   // 控制现场（F-017）：版本、当前步、生效断点、为什么停在这里、可用命令。

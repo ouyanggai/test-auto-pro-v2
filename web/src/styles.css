@@ -42,6 +42,7 @@ body,
 }
 
 .product-name {
+  flex: 0 0 auto;
   overflow: hidden;
   color: var(--n-text-color);
   font-size: 17px;
@@ -58,6 +59,20 @@ body,
   display: flex;
   align-items: center;
   flex: 0 0 auto;
+}
+
+/* 顶栏上下文位：页面通过 Teleport 把返回入口与所在对象挂进来，居左紧跟产品名。 */
+.header-context {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 10px;
+  min-width: 0;
+  margin-left: 18px;
+}
+
+.header-context:empty {
+  margin-left: 0;
 }
 
 .app-workspace {
@@ -108,6 +123,12 @@ body,
   height: 100%;
   padding: 40px 48px;
   overflow-y: auto;
+}
+
+/* 工作台页（运行详情）：内容区不留外层白边、不整页滚动，纵向分区由页面自己负责。 */
+.app-main--flush > .n-layout-scroll-container {
+  padding: 0;
+  overflow: hidden;
 }
 
 .placeholder-page {

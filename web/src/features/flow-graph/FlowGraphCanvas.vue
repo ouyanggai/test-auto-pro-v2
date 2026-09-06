@@ -44,6 +44,8 @@ const props = withDefaults(defineProps<{
   runMode?: boolean
   runNodeStates?: Record<string, { status: string; statusName: string }>
   currentRunNodeKey?: string
+  // runBusy 表示当前步此刻真的在执行（放行在途／连续执行／核验中）：当前步节点据此播执行动画。
+  runBusy?: boolean
   // runTakenEdgeIds 是运行中真实走过的连线（按步骤顺序相邻节点连接）；
   // runDeviationEdgeIds 是其中偏离已配置路径的连线（标红显示）。
   runTakenEdgeIds?: string[]
@@ -51,7 +53,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
   configurationMode: false, configurationNodeStates: () => ({}), configurationFormStatus: '', configurationFormStatusName: '',
-  runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '', runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
+  runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '', runBusy: false, runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
 })
 const emit = defineEmits<{
   retry: []
@@ -93,7 +95,11 @@ const displayedLayout = computed(() => {
       const configurationInteractive = Boolean(props.configurationMode && configurationState?.interactive)
       // 运行模式：路径内节点可点开侧栏，路径外节点弱化只读。
       const runState = props.runNodeStates[node.id]
-      const runInteractive = Boolean(props.runMode && analysis.reachableNodeIds.has(node.id))
+      // 运行模式下"能点开"的判定要以运行事实为准：已配置路线上的节点、当前步节点、
+      // 以及任何已经有运行态的节点（实际走向偏离配置时就出现在路线外）都必须能点开看详情。
+      const runTouched = Boolean(runState && runState.status && runState.status !== 'not_started')
+      const runInPath = analysis.reachableNodeIds.has(node.id) || node.id === props.currentRunNodeKey || runTouched
+      const runInteractive = Boolean(props.runMode && runInPath)
       return {
         ...node,
         // Vue Flow 会用节点自身的 selectable/focusable 覆盖全局只读值；仅当前路径节点进入官方事件链。
@@ -107,7 +113,7 @@ const displayedLayout = computed(() => {
           : configurationInteractive
             ? `${node.data?.name || '流程节点'}，${configurationState?.statusName || '待配置'}，按回车或空格选择节点`
             : `${node.data?.name || '流程节点'}，不可配置`,
-        class: analysis.reachableNodeIds.has(node.id) ? 'flow-node--path-active' : 'flow-node--path-muted',
+        class: (props.runMode ? runInPath : analysis.reachableNodeIds.has(node.id)) ? 'flow-node--path-active' : 'flow-node--path-muted',
         data: {
           ...node.data,
           configurationMode: props.configurationMode && !props.runMode,
@@ -121,6 +127,7 @@ const displayedLayout = computed(() => {
           runStatus: runState?.status,
           runStatusName: runState?.statusName,
           runCurrent: props.runMode && node.id === props.currentRunNodeKey,
+          runBusy: props.runMode && props.runBusy,
         },
       }
     }),
@@ -165,6 +172,10 @@ const canvasStyle = computed(() => ({
   '--info-color': themeVars.value.infoColor,
 }))
 const { getViewport, onInit, setViewport } = useVueFlow()
+// programmaticViewportDepth > 0 表示这次视口变化是组件自己发起的（初始定位、节点定位、全屏补偿、
+// 选择引导），不是用户平移或缩放。运行画布据此不把自动跟随误判成"被用户接管"——
+// 否则页面刚打开就因为一次初始定位而停止跟随当前步。
+let programmaticViewportDepth = 0
 let ready = false
 let positionedPlanId = ''
 let viewportVersion = 0
@@ -186,6 +197,16 @@ const guideProjection = computed(() => guideBubble.value
     )
   : null)
 
+// applyViewport 是组件内部所有视口变更的唯一出口：整段过渡期间都标记为程序化移动。
+async function applyViewport(viewport: { x: number, y: number, zoom: number }, options?: { duration?: number }) {
+  programmaticViewportDepth += 1
+  try {
+    await setViewport(viewport, options)
+  } finally {
+    programmaticViewportDepth -= 1
+  }
+}
+
 function reducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
@@ -199,7 +220,7 @@ async function setInitialViewport() {
   const viewport = initialViewportForGraph(laidOut.value.nodes, canvasRoot.value?.clientWidth ?? 0)
   if (!viewport) return
   positionedPlanId = props.graph.planId
-  await setViewport(viewport, { duration: reducedMotion() ? 0 : 220 })
+  await applyViewport(viewport, { duration: reducedMotion() ? 0 : 220 })
   viewportState.value = viewport
 }
 
@@ -257,7 +278,7 @@ async function guideSelectionNext(anchorNodeID = '') {
   const nextViewport = nextRouteID
     ? viewportForCandidateGroupCentered(viewport, candidates, container, reservedRight.value)
     : viewportForPointCentered(viewport, point, container, reservedRight.value)
-  await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 250 })
+  await applyViewport(nextViewport, { duration: reducedMotion() ? 0 : 250 })
   if (version !== guideVersion || !props.workspaceOpen || !props.branchEditing || !canvasRoot.value) return
   viewportState.value = nextViewport
   const guideKey = nextRouteID || `complete:${anchorNodeID || targetID}`
@@ -281,8 +302,9 @@ function toggleSelectionPanel() {
 function handleViewportChange(viewport: { x: number, y: number, zoom: number }) {
   // 引导端点必须跟随 Vue Flow 当前变换，拖动或缩放后不能继续指向旧屏幕坐标。
   viewportState.value = { x: viewport.x, y: viewport.y, zoom: viewport.zoom }
-  if (props.runMode) {
-    // 运行画布把视口变化交给详情页判断"自动跟随是否被用户接管"。
+  if (props.runMode && programmaticViewportDepth === 0) {
+    // 运行画布把用户自己的平移与缩放交给详情页判断"自动跟随是否被用户接管"；
+    // 组件内部的定位不算，否则一进页面就停止跟随。
     emit('runViewportChange', viewport)
   }
 }
@@ -325,7 +347,7 @@ async function runPageFullscreenTransitions() {
     }
     const afterWidth = canvasRoot.value?.clientWidth ?? 0
     const compensated = compensateViewportForContainerWidth(viewport, beforeWidth, afterWidth)
-    await setViewport(compensated, { duration: 0 })
+    await applyViewport(compensated, { duration: 0 })
     viewportState.value = compensated
   }
   if (!isPageFullscreen.value) setDocumentScrollLocked(false)
@@ -376,7 +398,7 @@ async function focusNode(nodeID: string) {
     { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight },
     reservedRight.value,
   )
-  await setViewport(nextViewport, { duration: reducedMotion() ? 0 : 220 })
+  await applyViewport(nextViewport, { duration: reducedMotion() ? 0 : 220 })
   viewportState.value = nextViewport
 }
 
@@ -498,6 +520,7 @@ onBeforeUnmount(() => {
       'flow-graph-canvas--page-fullscreen': isPageFullscreen,
       'flow-graph-canvas--workspace': workspaceOpen,
       'flow-graph-canvas--configuration': configurationMode,
+      'flow-graph-canvas--run': runMode,
       'flow-graph-canvas--panel-collapsed': isSelectionPanelCollapsed,
     }"
     :style="canvasStyle"
@@ -553,6 +576,9 @@ onBeforeUnmount(() => {
       </template>
       <controls position="bottom-right" :show-interactive="false" />
     </vue-flow-canvas>
+    <div v-if="laidOut && $slots['canvas-floating']" class="flow-graph-canvas__floating">
+      <slot name="canvas-floating" />
+    </div>
     <aside
       v-if="laidOut && workspaceOpen"
       class="flow-graph-canvas__selection-panel"
@@ -668,6 +694,17 @@ onBeforeUnmount(() => {
   z-index: 6;
   display: flex;
   gap: 8px;
+}
+
+/* 画布内浮动位：底部居中，避开右下角缩放控件与右上角操作区。 */
+.flow-graph-canvas__floating {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  z-index: 7;
+  display: flex;
+  gap: 8px;
+  transform: translateX(-50%);
 }
 
 .flow-graph-canvas__selection-panel {
@@ -845,7 +882,7 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 
-.flow-graph-canvas :deep(.flow-node--path-active .flow-node) {
+.flow-graph-canvas :deep(.flow-node--path-active .flow-node:not(.flow-node--run)) {
   font-weight: 600;
   border-width: 2px;
 }

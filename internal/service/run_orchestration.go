@@ -237,6 +237,23 @@ type RunNodeStateDTO struct {
 	StatusName string `json:"statusName"`
 }
 
+// RunNodePlanActionDTO 是某个节点上的一条已配置计划动作（来源：编译场景）。
+// 字段全部是中文事实：编译场景本身就用中文写了前置条件、预期效果与失败处理，
+// 界面直接展示，不在前端翻译第二遍，也不输出动作键、作用范围枚举与演员策略等内部值。
+type RunNodePlanActionDTO struct {
+	Sequence       int    `json:"sequence"`
+	ActionName     string `json:"actionName"`
+	SourceName     string `json:"sourceName"`
+	ScopeName      string `json:"scopeName"`
+	Precondition   string `json:"precondition,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	StopOnFailure  string `json:"stopOnFailure,omitempty"`
+	RecoveryPolicy string `json:"recoveryPolicy,omitempty"`
+	ReloadRequired bool   `json:"reloadRequired"`
+	// ParameterCount 只给动作参数的项数：参数键是目标字段名，属内部标识，不上界面。
+	ParameterCount int `json:"parameterCount"`
+}
+
 // PathRunDetailDTO 是路径运行详情页的数据主体。
 type PathRunDetailDTO struct {
 	RunID             uint64 `json:"runId"`
@@ -263,6 +280,10 @@ type PathRunDetailDTO struct {
 	Steps            []RunStepDTO               `json:"steps"`
 	CurrentPreview   *RunPreviewDTO             `json:"currentPreview,omitempty"`
 	NodeStates       map[string]RunNodeStateDTO `json:"nodeStates"`
+	// NodePlans 是按图节点 ID 索引的「本次运行在该节点上的已配置计划」：
+	// 侧栏配置页签据此显示这个节点要做什么。数据只来自这条路径已保存的编译场景，
+	// 不额外读目标平台——运行详情要看的是「本次运行执行的配置」，不是目标此刻的最新配置。
+	NodePlans map[string][]RunNodePlanActionDTO `json:"nodePlans"`
 	// PollIntervalMs 提示前端轮询间隔（来自配置），状态只在放行后变化。
 	PollIntervalMs int64 `json:"pollIntervalMs"`
 	// StaleAfterMs 是超过该时长仍无状态更新即视为疑似无响应的预算（来自配置）。
@@ -989,6 +1010,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		PathID:            pathRun.ExecutionPathID,
 		PathName:          pathNameOf(ctx, s.paths, run.PlanID, pathRun.ExecutionPathID, plan.Name),
 		NodeStates:        map[string]RunNodeStateDTO{},
+		NodePlans:         map[string][]RunNodePlanActionDTO{},
 		// 数组型字段一律以空数组起步：nil 切片会序列化成 JSON null，前端按数组读取会整页崩溃。
 		Steps:               []RunStepDTO{},
 		Breakpoints:         []BreakpointDTO{},
@@ -1020,9 +1042,10 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	}
 	// 已配置路线（编译场景节点序列与分支选择）：画布据此标注「等待运行」并区分路径内外；
 	// 配置读取或编译失败时退化为不标注，绝不阻塞详情展示。
-	configuredNodeKeys, pathChoices := s.configuredRouteOf(ctx, run, pathRun.ExecutionPathID)
+	configuredNodeKeys, pathChoices, compiledSteps := s.configuredRouteOf(ctx, run, pathRun.ExecutionPathID)
 	detail.PathChoices = pathChoices
 	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
+	detail.NodePlans = buildNodePlans(compiledSteps, tokenToGraphID)
 	if view := s.control.View(pathRun.ID); view != nil {
 		if view.Reconcile != nil {
 			detail.Reconcile = &ReconcileViewDTO{
@@ -1193,12 +1216,13 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 	return dtos
 }
 
-// configuredRouteOf 读取这条路径的已保存配置：编译场景的节点序列与分支选择。
+// configuredRouteOf 读取这条路径的已保存配置：编译场景的节点序列、分支选择与编译场景本身。
 // 只读存储快照，不做真实结构校验（校验属启动流程）；读取或解析失败返回空，画布退化为不标注。
-func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run model.Run, executionPathID uint64) ([]string, []PathChoiceDTO) {
+// 第三个返回值是编译场景原文，供节点计划归组复用同一次读取，不为侧栏再读一遍配置。
+func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run model.Run, executionPathID uint64) ([]string, []PathChoiceDTO, []model.CompiledActionStep) {
 	path, err := s.paths.Get(ctx, run.PlanID, executionPathID)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	choices := make([]PathChoiceDTO, 0, len(path.Choices))
 	for _, choice := range path.Choices {
@@ -1206,17 +1230,72 @@ func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run mod
 	}
 	config, found, err := s.configs.GetPathConfig(ctx, executionPathID)
 	if err != nil || !found || len(config.CompiledSteps) == 0 {
-		return nil, choices
+		return nil, choices, nil
 	}
-	steps := []model.CompiledActionStep{}
-	if err := json.Unmarshal(config.CompiledSteps, &steps); err != nil {
-		return nil, choices
+	compiledSteps := []model.CompiledActionStep{}
+	if err := json.Unmarshal(config.CompiledSteps, &compiledSteps); err != nil {
+		return nil, choices, nil
 	}
-	keys := make([]string, 0, len(steps))
-	for _, compiled := range steps {
+	keys := make([]string, 0, len(compiledSteps))
+	for _, compiled := range compiledSteps {
 		keys = append(keys, compiled.NodeKey)
 	}
-	return keys, choices
+	return keys, choices, compiledSteps
+}
+
+// buildNodePlans 把编译场景按图节点 ID 归组成节点计划。
+// 令牌键翻译不出图节点 ID 时（结构变化等）保留原键兜底，绝不悄悄丢掉这个节点的计划。
+func buildNodePlans(compiledSteps []model.CompiledActionStep, tokenToGraphID map[string]string) map[string][]RunNodePlanActionDTO {
+	plans := map[string][]RunNodePlanActionDTO{}
+	for _, compiled := range compiledSteps {
+		key := tokenToGraphID[compiled.NodeKey]
+		if key == "" {
+			key = compiled.NodeKey
+		}
+		plans[key] = append(plans[key], RunNodePlanActionDTO{
+			Sequence:       compiled.Sequence,
+			ActionName:     actionNameOf(string(compiled.Action)),
+			SourceName:     actionStepSourceName(compiled.Source),
+			ScopeName:      actionScopeName(compiled.Scope),
+			Precondition:   compiled.Precondition,
+			ExpectedEffect: compiled.ExpectedEffect,
+			StopOnFailure:  compiled.StopOnFailure,
+			RecoveryPolicy: compiled.RecoveryPolicy,
+			ReloadRequired: compiled.ReloadRequired,
+			ParameterCount: len(compiled.Parameters),
+		})
+	}
+	return plans
+}
+
+// actionStepSourceName 返回场景步骤来源的中文名：界面不显示内部枚举值。
+func actionStepSourceName(source model.ActionStepSource) string {
+	switch source {
+	case model.ActionStepSourceUser:
+		return "用户配置"
+	case model.ActionStepSourceRecovery:
+		return "系统恢复"
+	case model.ActionStepSourceNavigation:
+		return "系统导航"
+	default:
+		return "来源未知"
+	}
+}
+
+// actionScopeName 返回动作作用范围的中文名：界面不显示内部枚举值。
+func actionScopeName(scope model.ActionScope) string {
+	switch scope {
+	case model.ActionScopeInitiator:
+		return "发起实例"
+	case model.ActionScopeTask:
+		return "当前待办"
+	case model.ActionScopeCompletedTask:
+		return "已办任务"
+	case model.ActionScopeInstance:
+		return "实例管理"
+	default:
+		return "范围未知"
+	}
 }
 
 // buildNodeStates 推导画布节点的九个中文运行态：
@@ -1523,6 +1602,11 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 		GateAllowed: preview.GateAllowed, GateReason: preview.GateReason,
 		GateItems: preview.GateItems, Facts: facts, BlockReason: preview.BlockReason,
 	}
+}
+
+// BuildNodePlansForTest 暴露节点计划归组，供 test 目录下的定向用例锁定键空间翻译与中文口径。
+func BuildNodePlansForTest(compiledSteps []model.CompiledActionStep, tokenToGraphID map[string]string) map[string][]RunNodePlanActionDTO {
+	return buildNodePlans(compiledSteps, tokenToGraphID)
 }
 
 // BuildNodeStatesForTest 暴露画布节点运行态推导，供 test 目录下的定向用例锁定「等待运行」语义。

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NForm, NFormItem, NInput, NInputNumber, NPopconfirm, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NEmpty, NForm, NFormItem, NInput, NInputNumber, NPopconfirm, NPopover, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
 import type { FormInst, FormRules } from 'naive-ui'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
@@ -354,6 +354,22 @@ const runNodeStates = computed(() => {
 // isActing 表示一次放行或停止请求在途：此时放行/停止按钮进入忙碌态。
 const isActing = computed(() => acting.value)
 
+// runBusy 表示当前步此刻真的在执行：放行请求在途、连续执行中，或路径运行处于核验中。
+// 画布据此在当前步节点上播执行动画；只是停在这里等放行时保持静态高亮。
+const runBusy = computed(() => acting.value
+  || looping.value
+  || Boolean(detail.value?.loopRunning)
+  || detail.value?.pathRunStatusName === '核验中')
+
+// headerVars 给传送到顶栏的身份区单独带上主题色：传送出去的节点不在本页根节点下，
+// 拿不到根上声明的自定义属性。
+const headerVars = computed(() => ({ '--run-secondary-text-color': themeVars.value.textColor3 }))
+
+// graphNodeByID 是图节点索引：面板标题与断点提示都用真实业务名称，不显示内部标识。
+const graphNodeByID = computed(() => new Map((graph.value?.nodes ?? []).map((node) => [node.id, node])))
+const selectedNodeName = computed(() => graphNodeByID.value.get(selectedNodeKey.value)?.name || '')
+const selectedNodeTypeName = computed(() => graphNodeByID.value.get(selectedNodeKey.value)?.typeName || '')
+
 // loadDetail 拉取详情并刷新结构（结构只按计划取一次）。
 async function loadDetail(): Promise<void> {
   if (!runId) {
@@ -376,7 +392,7 @@ async function loadDetail(): Promise<void> {
       graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
     }
     await nextTick()
-    if (currentNodeKey.value && !followPaused.value) {
+    if (shouldFollowCurrent()) {
       centerCurrentNode()
     }
     schedulePoll()
@@ -407,7 +423,7 @@ function schedulePoll(): void {
       detail.value = next
       syncControl(next)
       lastUpdateAt.value = Date.now()
-      if (currentNodeKey.value && !followPaused.value) {
+      if (shouldFollowCurrent()) {
         centerCurrentNode()
       }
       void pollEvents()
@@ -433,12 +449,24 @@ async function pollEvents(): Promise<void> {
   }
 }
 
-// centerCurrentNode 把当前步节点平移到操作区中央。
-function centerCurrentNode(): void {
-  if (!currentNodeKey.value) return
+// focusNodeQuietly 把某个节点平移到画布中央，并标记这是程序化移动（不算用户接管跟随）。
+function focusNodeQuietly(nodeID: string): void {
+  if (!nodeID) return
   programmaticMove.value = true
-  canvasRef.value?.focusNode(currentNodeKey.value)
+  canvasRef.value?.focusNode(nodeID)
   window.setTimeout(() => { programmaticMove.value = false }, 320)
+}
+
+// centerCurrentNode 把当前步节点平移到画布中央。
+function centerCurrentNode(): void {
+  focusNodeQuietly(currentNodeKey.value)
+}
+
+// shouldFollowCurrent 决定这次刷新要不要把画布拉回当前步。
+// 用户手动平移过、正在检视别的节点、或正在看事件流时都不跟随（纲领 12.2「不抢用户注意力」）。
+function shouldFollowCurrent(): boolean {
+  if (followPaused.value || !currentNodeKey.value || activeTab.value !== 'canvas') return false
+  return selectedNodeKey.value === '' || selectedNodeKey.value === currentNodeKey.value
 }
 
 // handleRunViewportChange 在用户手动平移/缩放时暂停自动跟随。
@@ -465,7 +493,7 @@ async function approve(): Promise<void> {
     detail.value = await approveRun(runId, 'step', detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
     lastUpdateAt.value = Date.now()
     await nextTick()
-    if (currentNodeKey.value && !followPaused.value) {
+    if (shouldFollowCurrent()) {
       centerCurrentNode()
     }
   } catch (error) {
@@ -492,9 +520,18 @@ async function stopRunAction(): Promise<void> {
   }
 }
 
-// handleSelectRunNode 记录侧栏选中的节点。
+// handleSelectRunNode 打开右侧检视面板。面板会挤掉画布宽度，首次打开时把这个节点重新
+// 平移到画布中央，否则用户刚点的节点会被面板推出视野。
 function handleSelectRunNode(nodeID: string): void {
+  const firstOpen = selectedNodeKey.value === ''
   selectedNodeKey.value = nodeID
+  if (firstOpen) void nextTick().then(() => focusNodeQuietly(nodeID))
+}
+
+// closeNodePanel 关闭检视面板；画布恢复整宽后如果仍在自动跟随，就把当前步重新居中。
+function closeNodePanel(): void {
+  selectedNodeKey.value = ''
+  if (shouldFollowCurrent()) void nextTick().then(() => centerCurrentNode())
 }
 
 // modeHint 用中文解释当前模式意味着什么，避免只给一个模式名。
@@ -555,313 +592,392 @@ const topConclusion = computed(() => {
   return parts.join('；')
 })
 
+// nowTick 是本地秒级时钟：新鲜度读数按它推进，不跟轮询节奏跳（纲领 12.2「动画由本地时钟驱动」）。
+const nowTick = ref(Date.now())
+let tickTimer: number | null = null
+
+// freshnessStale 表示超过后端给的预算仍没有新事实：这时必须明说疑似无响应，不让用户自己猜。
+const freshnessStale = computed(() => {
+  const budget = detail.value?.staleAfterMs ?? 0
+  return budget > 0 && nowTick.value - lastUpdateAt.value > budget
+})
+
+// freshnessText 用中文说明这屏事实有多新。
+const freshnessText = computed(() => {
+  const elapsed = nowTick.value - lastUpdateAt.value
+  if (freshnessStale.value) return `已 ${formatElapsed(elapsed)}没有新事实，疑似无响应`
+  if (elapsed < 3000) return '刚刚更新'
+  return `${formatElapsed(elapsed)}前更新`
+})
+
+// 从事件流切回流程图时补一次定位：画布隐藏期间不跟随，切回来必须对得上当前步。
+watch(activeTab, (tab) => {
+  if (tab === 'canvas' && shouldFollowCurrent()) void nextTick().then(() => centerCurrentNode())
+})
+
 onMounted(() => {
   void loadDetail()
+  tickTimer = window.setInterval(() => { nowTick.value = Date.now() }, 1000)
 })
 
 onBeforeUnmount(() => {
   if (pollTimer !== null) window.clearTimeout(pollTimer)
+  if (tickTimer !== null) window.clearInterval(tickTimer)
 })
 </script>
 
 <template>
-  <section class="run-detail" :style="{ '--run-surface-color': themeVars.cardColor, '--run-border-color': themeVars.dividerColor }">
-    <header v-if="detail" class="run-detail__topbar">
-      <div class="run-detail__topbar-left">
-        <NButton quaternary circle size="small" aria-label="返回运行列表" @click="router.push('/runs')">←</NButton>
+  <section
+    class="run-detail"
+    :style="{
+      '--run-surface-color': themeVars.cardColor,
+      '--run-border-color': themeVars.dividerColor,
+      '--run-secondary-text-color': themeVars.textColor3,
+      '--run-primary-color': themeVars.primaryColor,
+      '--success-color': themeVars.successColor,
+      '--warning-color': themeVars.warningColor,
+      '--error-color': themeVars.errorColor,
+      '--info-color': themeVars.infoColor,
+    }"
+  >
+    <!-- 返回入口与本次运行的身份挂到应用顶栏：页面内不再重复一条页头，横向空间全部留给操作区。 -->
+    <Teleport v-if="detail" defer to="#app-header-context">
+      <div class="run-detail__identity" :style="headerVars">
+        <n-button quaternary circle size="small" aria-label="返回运行列表" title="返回运行列表" @click="router.push('/runs')">←</n-button>
         <h2 class="run-detail__title">运行 #{{ detail.runNo }}</h2>
-        <span class="run-detail__meta-path">{{ detail.planName }} / {{ detail.pathName }}</span>
-        <NTag size="small" :bordered="false" type="info">{{ detail.modeName }}模式</NTag>
-        <NTag size="small" :bordered="false" :type="statusTagType">{{ detail.pathRunStatusName }}</NTag>
-        <NTag v-if="detail.failureClassName" size="small" :bordered="false" type="error">{{ detail.failureClassName }}</NTag>
+        <span class="run-detail__meta-path" :title="`${detail.planName} / ${detail.pathName}`">{{ detail.planName }} / {{ detail.pathName }}</span>
+        <n-tag size="small" :bordered="false" type="info" :title="modeHint">{{ detail.modeName }}模式</n-tag>
+        <n-tag size="small" :bordered="false" :type="statusTagType">{{ detail.pathRunStatusName }}</n-tag>
+        <n-tag v-if="detail.failureClassName" size="small" :bordered="false" type="error">{{ detail.failureClassName }}</n-tag>
       </div>
-      <div class="run-detail__topbar-actions">
-        <!-- 次级命令与不可逆操作在前，主操作「放行」最右；下一步会发真实写请求，按钮上写清这一点。 -->
-        <NButton
-          v-for="command in (detail.commands || []).filter(c => c.command !== 'step')"
-          :key="command.command"
-          size="small"
-          :disabled="acting || looping || overviewDone"
-          :title="command.label"
-          @click="runCommand(command.command)"
-        >{{ commandButtonText(command) }}</NButton>
-        <NButton
-          v-if="detail.loopRunning"
-          size="small"
-          :disabled="pausing || detail.pauseRequested"
-          :title="detail.pauseRequested ? '暂停请求已提交，本步走完核验与落账后生效' : '暂停请求只在本步走完核验与落账后生效，不会打断已发出的写请求'"
-          @click="pauseNow"
-        >{{ detail.pauseRequested ? '暂停已请求' : '暂停' }}</NButton>
-        <NPopconfirm :disabled="acting || overviewDone" @positive-click="stopRunAction">
-          <template #trigger>
-            <NButton size="small" type="error" ghost :disabled="acting || overviewDone">停止运行</NButton>
-          </template>
-          停止是终态，之后这条路径不能再前进；已发出的写请求不会被打断，已发生的事实全部保留。确定停止？
-        </NPopconfirm>
-        <NButton
-          size="small"
-          type="primary"
-          :loading="acting"
-          :disabled="overviewDone || !(detail.commands || []).some(c => c.command === 'step')"
-          :title="noCommandReason || '放行后执行下一步；下一步会发真实写请求'"
-          @click="approve()"
-        >放行（执行下一步）</NButton>
-      </div>
-    </header>
-    <!-- F-020 多路径运行：路径切换 chips + 调度说明合并为一行（参照参考图第二行）。 -->
-    <div v-if="detail && (detail.paths?.length ?? 0) > 1" class="run-detail__subbar">
-      <span class="run-detail__schedule">{{ detail.runScheduleName }} · {{ detail.runConcurrencyLabel }}</span>
-      <div class="run-detail__paths" role="tablist" aria-label="路径运行列表">
-      <button
-        v-for="path in detail.paths"
-        :key="path.pathRunId"
-        type="button"
-        class="run-detail__path"
-        :class="{ 'run-detail__path--active': path.pathRunId === (detail.pathRunId || selectedPathRunID) }"
-        role="tab"
-        :aria-selected="path.pathRunId === (detail.pathRunId || selectedPathRunID)"
-        @click="switchPathRun(path.pathRunId)"
-      >
-        <span class="run-detail__path-name">{{ path.pathName }}</span>
-        <span class="run-detail__path-status">{{ path.statusName }}<template v-if="path.resultName"> · {{ path.resultName }}</template></span>
-      </button>
-      </div>
-    </div>
-    <NAlert v-if="detail && (detail.stopReason || detail.structureNote)" type="warning" :show-icon="false" class="run-detail__notice-bar">
-      {{ [detail.stopReason, detail.structureNote].filter(Boolean).join('；') }}
-    </NAlert>
-    <div
-      v-if="detail && detail.pathRunStatusName === '待对账'"
-      class="run-detail__reconcile"
-      role="region"
-      aria-label="待对账工作区"
-    >
-      <h4>待对账</h4>
-      <p v-if="reconciling">正在只读对账……</p>
-      <template v-else-if="reconcileView">
-        <p class="run-detail__reconcile-verdict">对账结论：{{ reconcileView.verdictName }}</p>
-        <p>{{ reconcileView.headline }}</p>
-        <ul>
-          <li v-for="(reason, index) in reconcileView.reasons" :key="index">{{ reason }}</li>
-        </ul>
-        <p v-if="reconcileView.action === 'replay'" class="run-detail__reconcile-note">
-          唯一动作是重放这一步：它是一次新的尝试，会重新走门禁与七阶段；一次尝试仍然只发一次写请求。
-          已用重放 {{ reconcileView.replaysUsed }} / {{ reconcileView.replaysMax }} 次。
-        </p>
-        <p v-else-if="reconcileView.replayExhausted" class="run-detail__reconcile-note">
-          证据仍指向未生效，但重放次数已用完（{{ reconcileView.replaysMax }} 次），不再提供重放；
-          只能登记你在目标平台上看到的事实并结束这条路径运行。
-        </p>
-        <p v-else-if="partialEffectWarned" class="run-detail__reconcile-note">
-          表单数据可能已经写进去了，重放会再写一次；请登记你在目标平台上看到的事实。
-        </p>
-        <NButton
-          v-if="reconcileView.action === 'advance'"
-          type="primary" size="small" :disabled="reconciling"
-          @click="runRecovery('advance')"
-        >确认并前进到下一步</NButton>
-        <NButton
-          v-else-if="reconcileView.action === 'replay'"
-          type="primary" size="small" :disabled="reconciling"
-          @click="runRecovery('replay')"
-        >重放这一步</NButton>
-        <NButton v-else-if="reconcileView.action === 'reconcile_again'" size="small" :disabled="reconciling" @click="doReconcile">重新对账</NButton>
-        <div v-else-if="reconcileView.action === 'manual_end'" class="run-detail__manual-form">
-          <p class="run-detail__manual-lead">
-            请登记你在目标平台上亲眼看到的事实。登记后这条路径运行进入终态、不能再前进，
-            人工结论会作为运行事实永久保留。
-          </p>
-          <NForm
-            ref="manualFormRef"
-            :model="manualForm"
-            :rules="manualRules"
-            label-placement="left"
-            :label-width="96"
-            size="small"
-            require-mark-placement="left"
-          >
-            <NFormItem label="实例状态" path="instanceStatus">
-              <NSelect
-                v-model:value="manualForm.instanceStatus"
-                :options="instanceStatusOptions"
-                placeholder="选择目标平台上这条实例的当前状态"
-                aria-label="实例状态"
-              />
-            </NFormItem>
-            <NFormItem label="当前节点" path="currentNode">
-              <NInput v-model:value="manualForm.currentNode" placeholder="目标平台上显示的当前节点名称" />
-            </NFormItem>
-            <NFormItem label="登记人" path="reporter">
-              <NInput v-model:value="manualForm.reporter" placeholder="你的姓名或账号，事后可追溯" />
-            </NFormItem>
-            <NFormItem label="补充说明" path="note">
-              <NInput
-                v-model:value="manualForm.note"
-                type="textarea"
-                :autosize="{ minRows: 2, maxRows: 4 }"
-                placeholder="选填：你据以判断的依据，例如在目标平台看到的待办或已办"
-              />
-            </NFormItem>
-          </NForm>
-          <NPopconfirm :disabled="reconciling" @positive-click="registerManual">
+    </Teleport>
+
+    <div v-if="loading" class="run-detail__loading"><n-spin size="small" /><span>正在读取运行详情……</span></div>
+    <n-empty v-else-if="!detail" :description="errorText || '未找到该运行记录。'" />
+
+    <template v-else>
+      <!-- 主区第一行：左上角是内容页签，右上角是操作区，主操作「放行」固定在最右。 -->
+      <div class="run-detail__bar">
+        <div class="run-detail__tabs" role="tablist" aria-label="运行内容">
+          <button
+            type="button"
+            class="run-detail__tab"
+            :class="{ 'run-detail__tab--active': activeTab === 'canvas' }"
+            role="tab"
+            :aria-selected="activeTab === 'canvas'"
+            @click="activeTab = 'canvas'"
+          >流程图</button>
+          <button
+            type="button"
+            class="run-detail__tab"
+            :class="{ 'run-detail__tab--active': activeTab === 'events' }"
+            role="tab"
+            :aria-selected="activeTab === 'events'"
+            @click="activeTab = 'events'"
+          >事件流（{{ runEvents.length }}）</button>
+        </div>
+
+        <div class="run-detail__actions">
+          <span
+            v-if="!overviewDone"
+            class="run-detail__freshness"
+            :class="{ 'run-detail__freshness--stale': freshnessStale }"
+            role="status"
+          >{{ freshnessText }}</span>
+
+          <!-- 断点是调试能力而不是常看的信息：收进弹出层，画布不再被一整块说明占掉。 -->
+          <n-popover trigger="click" placement="bottom-end" :width="342" :keep-alive-on-hover="false">
             <template #trigger>
-              <NButton type="warning" size="small" :disabled="reconciling">登记人工核对结论并结束</NButton>
+              <n-button size="small" quaternary title="查看与管理本次运行的断点">断点（{{ detail.breakpoints?.length ?? 0 }}）</n-button>
             </template>
-            登记后本路径运行进入终态，不能再放行或重放。确认你登记的是目标平台上的真实状态？
-          </NPopconfirm>
+            <div class="run-detail__breakpoints">
+              <p class="run-detail__bp-hint">断点只对本次运行生效，命中都在放行之前判定。</p>
+
+              <div class="run-detail__bp-group">
+                <span class="run-detail__bp-group-title">强制生效</span>
+                <ul>
+                  <li v-for="bp in forcedBreakpoints" :key="bp.type">
+                    <n-tag size="tiny" :bordered="false" type="warning">{{ bp.typeName }}</n-tag>
+                    <span class="run-detail__bp-note">{{ forcedBreakpointNote(bp.type) }}</span>
+                  </li>
+                  <li v-if="forcedBreakpoints.length === 0" class="run-detail__empty">当前没有强制断点</li>
+                </ul>
+              </div>
+
+              <div class="run-detail__bp-group">
+                <span class="run-detail__bp-group-title">已挂载（{{ userBreakpoints.length }}）</span>
+                <ul>
+                  <li v-for="(bp, index) in userBreakpoints" :key="`${bp.type}-${index}`">
+                    <n-tag size="tiny" :bordered="false">{{ bp.typeName }}</n-tag>
+                    <span>{{ breakpointTargetText(bp) }}</span>
+                    <n-button text size="tiny" type="error" :title="`删除${bp.typeName}`" @click="deleteBreakpoint(bp)">删除</n-button>
+                  </li>
+                  <li v-if="userBreakpoints.length === 0" class="run-detail__empty">还没有手工挂载的断点</li>
+                </ul>
+              </div>
+
+              <div class="run-detail__bp-add-form">
+                <span class="run-detail__bp-group-title">新增断点</span>
+                <n-select
+                  v-model:value="newBreakpointType"
+                  size="small"
+                  :options="breakpointTypeOptions"
+                  aria-label="选择断点类型"
+                />
+                <n-button
+                  v-if="newBreakpointType === 'node'"
+                  size="small"
+                  :disabled="!selectedNodeKey || overviewDone"
+                  :title="selectedNodeKey ? '在画布上选中的节点挂节点断点' : '先在画布上点选一个节点'"
+                  @click="addNodeBreakpoint"
+                >{{ selectedNodeName ? `挂到「${selectedNodeName}」` : '挂到选中节点' }}</n-button>
+                <template v-else-if="newBreakpointType === 'step'">
+                  <n-input-number v-model:value="newBreakpointStep" size="small" :min="1" placeholder="步骤序号" aria-label="步骤序号" />
+                  <n-button size="small" :disabled="!newBreakpointStep || overviewDone" @click="addStepBreakpoint">挂到该步骤</n-button>
+                </template>
+                <template v-else>
+                  <n-select
+                    v-model:value="newBreakpointAction"
+                    size="small"
+                    :options="actionBreakpointOptions"
+                    placeholder="选择动作"
+                    aria-label="动作类型"
+                  />
+                  <n-button size="small" :disabled="!newBreakpointAction || overviewDone" @click="addActionBreakpoint">挂到该动作</n-button>
+                </template>
+                <small class="run-detail__bp-note">{{ breakpointTypeHint }}</small>
+              </div>
+            </div>
+          </n-popover>
+
+          <!-- 次级命令与不可逆操作在前，主操作「放行」最右；下一步会发真实写请求，按钮上写清这一点。 -->
+          <n-button
+            v-for="command in (detail.commands || []).filter(c => c.command !== 'step')"
+            :key="command.command"
+            size="small"
+            :disabled="acting || looping || overviewDone"
+            :title="command.label"
+            @click="runCommand(command.command)"
+          >{{ commandButtonText(command) }}</n-button>
+          <n-button
+            v-if="detail.loopRunning"
+            size="small"
+            :disabled="pausing || detail.pauseRequested"
+            :title="detail.pauseRequested ? '暂停请求已提交，本步走完核验与落账后生效' : '暂停请求只在本步走完核验与落账后生效，不会打断已发出的写请求'"
+            @click="pauseNow"
+          >{{ detail.pauseRequested ? '暂停已请求' : '暂停' }}</n-button>
+          <n-popconfirm :disabled="acting || overviewDone" @positive-click="stopRunAction">
+            <template #trigger>
+              <n-button size="small" type="error" ghost :disabled="acting || overviewDone">停止运行</n-button>
+            </template>
+            停止是终态，之后这条路径不能再前进；已发出的写请求不会被打断，已发生的事实全部保留。确定停止？
+          </n-popconfirm>
+          <n-button
+            size="small"
+            type="primary"
+            :loading="acting"
+            :disabled="overviewDone || !(detail.commands || []).some(c => c.command === 'step')"
+            :title="noCommandReason || '放行后执行下一步；下一步会发真实写请求'"
+            @click="approve()"
+          >放行（执行下一步）</n-button>
         </div>
-      </template>
-      <template v-else>
-        <NButton size="small" type="info" :disabled="reconciling" @click="doReconcile">对账</NButton>
-      </template>
-    </div>
-    <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
-    <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
-    <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
-
-    <div v-if="loading" class="run-detail__loading"><NSpin size="small" /><span>正在读取运行详情……</span></div>
-    <NEmpty v-else-if="!detail" :description="errorText || '未找到该运行记录。'" />
-
-    <div v-else class="run-detail__body">
-      <!-- 页签：流程图 / 事件流（F-021）。参照参考图的主区结构。 -->
-      <div class="run-detail__tabs" role="tablist" aria-label="运行内容">
-        <button
-          type="button"
-          class="run-detail__tab"
-          :class="{ 'run-detail__tab--active': activeTab === 'canvas' }"
-          role="tab"
-          :aria-selected="activeTab === 'canvas'"
-          @click="activeTab = 'canvas'"
-        >流程图</button>
-        <button
-          type="button"
-          class="run-detail__tab"
-          :class="{ 'run-detail__tab--active': activeTab === 'events' }"
-          role="tab"
-          :aria-selected="activeTab === 'events'"
-          @click="activeTab = 'events'"
-        >事件流（{{ runEvents.length }}）</button>
       </div>
-      <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放“状态怎么变的”。 -->
-      <section v-show="activeTab === 'events'" class="run-detail__events" aria-label="事件流">
-        <ol class="run-detail__event-list">
-          <li v-for="event in runEvents" :key="event.id">
-            <span class="run-detail__event-time">{{ event.createdAt }}</span>
-            <span>{{ event.label }}</span>
-          </li>
-          <li v-if="runEvents.length === 0" class="run-detail__event-empty">还没有事件。</li>
-        </ol>
-      </section>
-      <div v-show="activeTab === 'canvas'" class="run-detail__canvas">
-        <FlowGraphCanvas
-          ref="canvasRef"
-          v-if="graph"
-          :graph="graph"
-          :choices="pathChoices"
-          run-mode
-          :run-node-states="runNodeStates"
-          :current-run-node-key="currentNodeKey"
-          :run-taken-edge-ids="runTakenEdgeIds"
-          :run-deviation-edge-ids="runDeviationEdgeIds"
-          @select-run-node="handleSelectRunNode"
-          @run-viewport-change="handleRunViewportChange"
-        />
-        <NEmpty v-else description="真实流程结构尚未加载，无法渲染运行画布。" />
-        <NButton
-          v-if="followPaused && currentNodeKey"
-          class="run-detail__follow"
-          size="small"
-          type="info"
-          @click="resumeFollow"
+
+      <!-- F-020 多路径运行：调度说明与路径切换 chips 合并为一行。 -->
+      <div v-if="(detail.paths?.length ?? 0) > 1" class="run-detail__subbar">
+        <span class="run-detail__schedule">{{ detail.runScheduleName }} · {{ detail.runConcurrencyLabel }}</span>
+        <div class="run-detail__paths" role="tablist" aria-label="路径运行列表">
+          <button
+            v-for="path in detail.paths"
+            :key="path.pathRunId"
+            type="button"
+            class="run-detail__path"
+            :class="{ 'run-detail__path--active': path.pathRunId === (detail.pathRunId || selectedPathRunID) }"
+            role="tab"
+            :aria-selected="path.pathRunId === (detail.pathRunId || selectedPathRunID)"
+            @click="switchPathRun(path.pathRunId)"
+          >
+            <span class="run-detail__path-name">{{ path.pathName }}</span>
+            <span class="run-detail__path-status">{{ path.statusName }}<template v-if="path.resultName"> · {{ path.resultName }}</template></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 结论与提示区：只在真的有内容时占位，高度有界，不把画布挤没。 -->
+      <div
+        v-if="detail.stopReason || detail.structureNote || topConclusion || errorText || actionText || detail.pathRunStatusName === '待对账'"
+        class="run-detail__notices"
+      >
+        <n-alert v-if="detail.stopReason || detail.structureNote" type="warning" :show-icon="false" class="run-detail__notice-bar">
+          {{ [detail.stopReason, detail.structureNote].filter(Boolean).join('；') }}
+        </n-alert>
+        <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
+        <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
+        <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
+
+        <div
+          v-if="detail.pathRunStatusName === '待对账'"
+          class="run-detail__reconcile"
+          role="region"
+          aria-label="待对账工作区"
         >
-          回到当前步
-        </NButton>
-      </div>
-      <div class="run-detail__side">
-        <section class="run-detail__breakpoints" aria-label="断点">
-          <header class="run-detail__bp-head">
-            <h4>断点（{{ detail.breakpoints?.length ?? 0 }}）</h4>
-            <span class="run-detail__bp-hint">断点只对本次运行生效，命中都在放行之前判定</span>
-          </header>
-
-          <div class="run-detail__bp-group">
-            <span class="run-detail__bp-group-title">强制生效</span>
+          <h4>待对账</h4>
+          <p v-if="reconciling">正在只读对账……</p>
+          <template v-else-if="reconcileView">
+            <p class="run-detail__reconcile-verdict">对账结论：{{ reconcileView.verdictName }}</p>
+            <p>{{ reconcileView.headline }}</p>
             <ul>
-              <li v-for="bp in forcedBreakpoints" :key="bp.type">
-                <NTag size="tiny" :bordered="false" type="warning">{{ bp.typeName }}</NTag>
-                <span class="run-detail__bp-note">{{ forcedBreakpointNote(bp.type) }}</span>
-              </li>
-              <li v-if="forcedBreakpoints.length === 0" class="run-detail__empty">当前没有强制断点</li>
+              <li v-for="(reason, index) in reconcileView.reasons" :key="index">{{ reason }}</li>
             </ul>
-          </div>
-
-          <div class="run-detail__bp-group">
-            <span class="run-detail__bp-group-title">已挂载（{{ userBreakpoints.length }}）</span>
-            <ul>
-              <li v-for="(bp, index) in userBreakpoints" :key="`${bp.type}-${index}`">
-                <NTag size="tiny" :bordered="false">{{ bp.typeName }}</NTag>
-                <span>{{ breakpointTargetText(bp) }}</span>
-                <NButton text size="tiny" type="error" :title="`删除${bp.typeName}`" @click="deleteBreakpoint(bp)">删除</NButton>
-              </li>
-              <li v-if="userBreakpoints.length === 0" class="run-detail__empty">还没有手工挂载的断点</li>
-            </ul>
-          </div>
-
-          <div class="run-detail__bp-add-form">
-            <span class="run-detail__bp-group-title">新增断点</span>
-            <NSelect
-              v-model:value="newBreakpointType"
-              size="small"
-              :options="breakpointTypeOptions"
-              aria-label="选择断点类型"
-            />
-            <NButton
-              v-if="newBreakpointType === 'node'"
-              size="small"
-              :disabled="!selectedNodeKey || overviewDone"
-              :title="selectedNodeKey ? '在画布上选中的节点挂节点断点' : '先在画布上点选一个节点'"
-              @click="addNodeBreakpoint"
-            >挂到选中节点</NButton>
-            <template v-else-if="newBreakpointType === 'step'">
-              <NInputNumber v-model:value="newBreakpointStep" size="small" :min="1" placeholder="步骤序号" aria-label="步骤序号" />
-              <NButton size="small" :disabled="!newBreakpointStep || overviewDone" @click="addStepBreakpoint">挂到该步骤</NButton>
-            </template>
-            <template v-else>
-              <NSelect
-                v-model:value="newBreakpointAction"
+            <p v-if="reconcileView.action === 'replay'" class="run-detail__reconcile-note">
+              唯一动作是重放这一步：它是一次新的尝试，会重新走门禁与七阶段；一次尝试仍然只发一次写请求。
+              已用重放 {{ reconcileView.replaysUsed }} / {{ reconcileView.replaysMax }} 次。
+            </p>
+            <p v-else-if="reconcileView.replayExhausted" class="run-detail__reconcile-note">
+              证据仍指向未生效，但重放次数已用完（{{ reconcileView.replaysMax }} 次），不再提供重放；
+              只能登记你在目标平台上看到的事实并结束这条路径运行。
+            </p>
+            <p v-else-if="partialEffectWarned" class="run-detail__reconcile-note">
+              表单数据可能已经写进去了，重放会再写一次；请登记你在目标平台上看到的事实。
+            </p>
+            <n-button
+              v-if="reconcileView.action === 'advance'"
+              type="primary" size="small" :disabled="reconciling"
+              @click="runRecovery('advance')"
+            >确认并前进到下一步</n-button>
+            <n-button
+              v-else-if="reconcileView.action === 'replay'"
+              type="primary" size="small" :disabled="reconciling"
+              @click="runRecovery('replay')"
+            >重放这一步</n-button>
+            <n-button v-else-if="reconcileView.action === 'reconcile_again'" size="small" :disabled="reconciling" @click="doReconcile">重新对账</n-button>
+            <div v-else-if="reconcileView.action === 'manual_end'" class="run-detail__manual-form">
+              <p class="run-detail__manual-lead">
+                请登记你在目标平台上亲眼看到的事实。登记后这条路径运行进入终态、不能再前进，
+                人工结论会作为运行事实永久保留。
+              </p>
+              <n-form
+                ref="manualFormRef"
+                :model="manualForm"
+                :rules="manualRules"
+                label-placement="left"
+                :label-width="96"
                 size="small"
-                :options="actionBreakpointOptions"
-                placeholder="选择动作"
-                aria-label="动作类型"
-              />
-              <NButton size="small" :disabled="!newBreakpointAction || overviewDone" @click="addActionBreakpoint">挂到该动作</NButton>
-            </template>
-            <small class="run-detail__bp-note">{{ breakpointTypeHint }}</small>
-          </div>
-        </section>
-        <RunNodePanel v-if="selectedNodeKey" :detail="detail" :node-key="selectedNodeKey" @close="selectedNodeKey = ''" />
-        <div v-else class="run-detail__panel-placeholder">
-          <p>点击画布上的节点，查看该节点的运行信息与错误。</p>
+                require-mark-placement="left"
+              >
+                <n-form-item label="实例状态" path="instanceStatus">
+                  <n-select
+                    v-model:value="manualForm.instanceStatus"
+                    :options="instanceStatusOptions"
+                    placeholder="选择目标平台上这条实例的当前状态"
+                    aria-label="实例状态"
+                  />
+                </n-form-item>
+                <n-form-item label="当前节点" path="currentNode">
+                  <n-input v-model:value="manualForm.currentNode" placeholder="目标平台上显示的当前节点名称" />
+                </n-form-item>
+                <n-form-item label="登记人" path="reporter">
+                  <n-input v-model:value="manualForm.reporter" placeholder="你的姓名或账号，事后可追溯" />
+                </n-form-item>
+                <n-form-item label="补充说明" path="note">
+                  <n-input
+                    v-model:value="manualForm.note"
+                    type="textarea"
+                    :autosize="{ minRows: 2, maxRows: 4 }"
+                    placeholder="选填：你据以判断的依据，例如在目标平台看到的待办或已办"
+                  />
+                </n-form-item>
+              </n-form>
+              <n-popconfirm :disabled="reconciling" @positive-click="registerManual">
+                <template #trigger>
+                  <n-button type="warning" size="small" :disabled="reconciling">登记人工核对结论并结束</n-button>
+                </template>
+                登记后本路径运行进入终态，不能再放行或重放。确认你登记的是目标平台上的真实状态？
+              </n-popconfirm>
+            </div>
+          </template>
+          <template v-else>
+            <n-button size="small" type="info" :disabled="reconciling" @click="doReconcile">对账</n-button>
+          </template>
         </div>
       </div>
-    </div>
+
+      <!-- 主体：页签下方整块给流程图；右侧检视面板只在点开节点后出现。 -->
+      <div class="run-detail__body">
+        <div v-show="activeTab === 'canvas'" class="run-detail__canvas">
+          <flow-graph-canvas
+            v-if="graph"
+            ref="canvasRef"
+            class="run-detail__canvas-view"
+            :graph="graph"
+            :choices="pathChoices"
+            run-mode
+            :run-node-states="runNodeStates"
+            :current-run-node-key="currentNodeKey"
+            :run-busy="runBusy"
+            :run-taken-edge-ids="runTakenEdgeIds"
+            :run-deviation-edge-ids="runDeviationEdgeIds"
+            @select-run-node="handleSelectRunNode"
+            @run-viewport-change="handleRunViewportChange"
+          >
+            <!-- 常驻定位入口，浮在画布底部居中：自动跟随被用户接管后变成「回到当前步」（纲领 12.2）。 -->
+            <template #canvas-floating>
+              <n-button
+                v-if="currentNodeKey"
+                class="run-detail__follow"
+                size="small"
+                :type="followPaused ? 'info' : 'default'"
+                :secondary="!followPaused"
+                :title="followPaused ? '自动跟随已被你的平移接管，点这里回到当前步并恢复跟随' : '把当前执行的节点移到画布中央'"
+                @click="resumeFollow"
+              >{{ followPaused ? '回到当前步' : '定位当前节点' }}</n-button>
+            </template>
+          </flow-graph-canvas>
+          <n-empty v-else description="真实流程结构尚未加载，无法渲染运行画布。" />
+        </div>
+
+        <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放「状态怎么变的」。 -->
+        <section v-show="activeTab === 'events'" class="run-detail__events" aria-label="事件流">
+          <ol class="run-detail__event-list">
+            <li v-for="event in runEvents" :key="event.id">
+              <span class="run-detail__event-time">{{ event.createdAt }}</span>
+              <span>{{ event.label }}</span>
+            </li>
+            <li v-if="runEvents.length === 0" class="run-detail__event-empty">还没有事件；放行后这里会按顺序追加。</li>
+          </ol>
+        </section>
+
+        <run-node-panel
+          v-if="selectedNodeKey"
+          class="run-detail__side"
+          :detail="detail"
+          :node-key="selectedNodeKey"
+          :node-name="selectedNodeName"
+          :node-type-name="selectedNodeTypeName"
+          @close="closeNodePanel"
+        />
+      </div>
+    </template>
   </section>
 </template>
 
 <style scoped>
-/* 头部：左标题右操作，单行紧凑（参照参考图）。 */
-.run-detail__topbar {
+/* 运行详情是画布优先的工作台：整页不滚动，纵向分成「操作行 / 提示区 / 主体」三段，
+   主体把剩下的高度全部交给流程图，右侧检视面板只在点开节点后出现。 */
+.run-detail {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 0 10px;
-  border-bottom: 1px solid var(--run-border-color);
-  margin-bottom: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  padding: 10px 16px 14px;
+  /* 正常情况整页不滚动；只有待对账那种高提示区把空间挤满时才允许整页滚动，
+     绝不让画布被压成零高度。 */
+  overflow-y: auto;
 }
 
-.run-detail__topbar-left {
+/* 顶栏上下文（Teleport 到应用顶栏）：返回入口 + 运行编号 + 计划/路径 + 模式与状态。 */
+.run-detail__identity {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -870,297 +986,273 @@ onBeforeUnmount(() => {
 
 .run-detail__title {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
   white-space: nowrap;
 }
 
 .run-detail__meta-path {
-  color: var(--preflight-secondary-text-color, #909090);
-  white-space: nowrap;
   overflow: hidden;
+  max-width: 34vw;
+  color: var(--run-secondary-text-color, #909090);
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.run-detail__topbar-actions {
+.run-detail__loading {
   display: flex;
+  gap: 10px;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  padding: 20px 0;
 }
 
-/* 次级行：调度说明 + 多路径 chips。 */
-.run-detail__subbar {
+/* 操作行：页签在左上角，操作在右上角，共用一条下边线。 */
+.run-detail__bar {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  margin: 0 0 10px;
-  flex-wrap: wrap;
-}
-
-.run-detail__schedule {
-  color: var(--preflight-secondary-text-color, #909090);
-  font-size: 13px;
-}
-
-.run-detail__actions-empty {
-  font-size: 12px;
-  opacity: 0.75;
-}
-
-.run-detail__bp-head {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
+  align-items: flex-end;
   justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 16px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+}
+
+.run-detail__tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.run-detail__tab {
+  padding: 8px 14px;
+  color: var(--run-secondary-text-color, #909090);
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.run-detail__tab--active {
+  color: var(--run-primary-color, #18a058);
+  font-weight: 500;
+  border-bottom-color: var(--run-primary-color, #18a058);
+}
+
+.run-detail__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 6px;
+}
+
+.run-detail__freshness {
+  margin-right: 2px;
+  color: var(--run-secondary-text-color, #909090);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-detail__freshness--stale {
+  color: var(--warning-color, #f0a020);
+}
+
+/* 断点弹出层：强制生效与手工挂载分区，新增断点三种挂载方式共用一处。 */
+.run-detail__breakpoints {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
 }
 
 .run-detail__bp-hint,
 .run-detail__bp-note {
+  margin: 0;
+  color: var(--run-secondary-text-color, #909090);
   font-size: 12px;
-  opacity: 0.75;
+  line-height: 1.5;
 }
 
 .run-detail__bp-group {
   display: grid;
   gap: 4px;
-  padding: 6px 0;
-  border-top: 1px solid var(--run-border-color);
+  padding-top: 8px;
+  border-top: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
 }
 
 .run-detail__bp-group-title {
-  font-weight: 600;
   font-size: 12px;
+  font-weight: 600;
 }
 
 .run-detail__bp-group ul {
   display: grid;
   gap: 4px;
-  padding: 0;
   margin: 0;
+  padding: 0;
   list-style: none;
 }
 
 .run-detail__bp-group li {
   display: flex;
-  gap: 6px;
   align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .run-detail__bp-add-form {
   display: grid;
   gap: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--run-border-color);
+  padding-top: 8px;
+  border-top: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
 }
 
-.run-detail__manual-lead {
-  margin: 0 0 8px;
-  font-size: 12px;
-  opacity: 0.85;
+.run-detail__empty {
+  color: var(--run-secondary-text-color, #909090);
 }
 
-.run-detail {
-  display: grid;
-  gap: 10px;
-  align-content: start;
-  padding: 14px 18px;
-}
-
-.run-detail__topbar {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
-  border-radius: 8px;
-}
-
-.run-detail__meta {
+/* 次级行：调度说明 + 多路径切换 chips。 */
+.run-detail__subbar {
   display: flex;
+  align-items: center;
+  flex: 0 0 auto;
   gap: 14px;
   flex-wrap: wrap;
-  align-items: center;
+}
+
+.run-detail__schedule {
+  color: var(--run-secondary-text-color, #909090);
   font-size: 13px;
-}
-
-
-.run-detail__failure { color: var(--error-color, #d03050); }
-.run-detail__actions { display: flex; gap: 10px; }
-
-.run-detail__conclusion {
-  margin: 0;
-  padding: 8px 12px;
-  background: color-mix(in srgb, var(--success-color, #18a058) 10%, transparent);
-  border-radius: 6px;
-}
-
-.run-detail__error { margin: 0; color: var(--error-color, #d03050); }
-.run-detail__notice { margin: 0; opacity: 0.8; }
-.run-detail__loading { display: flex; gap: 10px; align-items: center; }
-
-.run-detail__body {
-  display: grid;
-  grid-template-columns: 1fr 336px;
-  gap: 12px;
-  align-items: start;
-}
-
-.run-detail__side {
-  display: grid;
-  gap: 10px;
-  align-content: start;
-}
-
-.run-detail__breakpoints {
-  padding: 10px;
-  font-size: 13px;
-  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
-  border-radius: 8px;
-}
-.run-detail__breakpoints h4 { margin: 0 0 6px; }
-.run-detail__breakpoints ul { margin: 0; padding-left: 18px; }
-.run-detail__empty { opacity: 0.7; }
-.run-detail__reconcile {
-  padding: 10px 12px;
-  border: 1px solid var(--run-border-color, rgba(128,128,128,0.35));
-  border-radius: 8px;
-}
-.run-detail__reconcile h4 { margin: 0 0 6px; }
-.run-detail__reconcile p, .run-detail__reconcile ul { margin: 4px 0; font-size: 13px; }
-.run-detail__reconcile-verdict { font-weight: 600; }
-.run-detail__reconcile-note { color: var(--warning-color, #f0a020); }
-.run-detail__manual-form { display: grid; gap: 6px; max-width: 420px; }
-
-.run-detail__events {
-  margin: 0 0 8px;
-  border: 1px solid v-bind('themeVars.borderColor');
-  border-radius: 4px;
-  padding: 8px 12px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-
-.run-detail__events h4 {
-  margin: 0 0 6px;
-  font-weight: 500;
-  color: v-bind('themeVars.textColor3');
-}
-
-.run-detail__event-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-}
-
-.run-detail__event-time {
-  color: v-bind('themeVars.textColor3');
-  margin-right: 8px;
-  font-variant-numeric: tabular-nums;
 }
 
 .run-detail__paths {
   display: flex;
-  flex-wrap: wrap;
   gap: 8px;
-  margin: 0 0 8px;
+  flex-wrap: wrap;
 }
 
 .run-detail__path {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border: 1px solid v-bind('themeVars.borderColor');
-  border-radius: 4px;
-  background: transparent;
+  padding: 5px 10px;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
 }
 
 .run-detail__path--active {
-  border-color: v-bind('themeVars.primaryColor');
-  color: v-bind('themeVars.primaryColor');
+  color: var(--run-primary-color, #18a058);
+  border-color: var(--run-primary-color, #18a058);
 }
 
 .run-detail__path-name { font-weight: 500; }
 .run-detail__path-status { font-size: 12px; opacity: 0.8; }
 
-.run-detail__schedule {
-  margin: 0 0 8px;
-  color: v-bind('themeVars.textColor3');
+/* 提示区：停止原因、结果结论、报错与待对账工作区，高度有界，不把画布挤没。 */
+.run-detail__notices {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
-.run-detail__structure-note {
+.run-detail__conclusion {
   margin: 0;
-  color: var(--run-detail-warning-text, #d48806);
-  line-height: 1.6;
-}
-
-.run-detail__stop-reason {
-  margin: 0;
-  padding: 8px 12px;
-  background: color-mix(in srgb, var(--warning-color, #f0a020) 14%, transparent);
+  padding: 7px 12px;
+  background: color-mix(in srgb, var(--success-color, #18a058) 10%, transparent);
   border-radius: 6px;
 }
 
-.run-detail__canvas { position: relative; }
+.run-detail__error { margin: 0; color: var(--error-color, #d03050); }
+.run-detail__notice { margin: 0; color: var(--run-secondary-text-color, #909090); }
 
-.run-detail__follow {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  z-index: 5;
-}
-
-.run-detail__panel-placeholder {
-  padding: 12px;
-  font-size: 13px;
-  opacity: 0.7;
-  border: 1px dashed var(--run-border-color, rgba(128,128,128,0.35));
+.run-detail__reconcile {
+  padding: 10px 12px;
+  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
   border-radius: 8px;
 }
 
-@media (max-width: 1100px) {
-  .run-detail__body { grid-template-columns: 1fr; }
+.run-detail__reconcile h4 { margin: 0 0 6px; }
+.run-detail__reconcile p,
+.run-detail__reconcile ul { margin: 4px 0; font-size: 13px; }
+.run-detail__reconcile-verdict { font-weight: 600; }
+.run-detail__reconcile-note { color: var(--warning-color, #f0a020); }
+.run-detail__manual-form { display: grid; gap: 6px; max-width: 460px; }
+
+.run-detail__manual-lead {
+  margin: 0 0 8px;
+  color: var(--run-secondary-text-color, #909090);
+  font-size: 12px;
 }
 
-/* 页签：流程图 / 事件流（参照参考图的下划线页签）。横跨整行，不参与画布/侧栏两列网格。 */
-.run-detail__tabs {
-  grid-column: 1 / -1;
+/* 主体：画布占满剩余空间，右侧检视面板按需出现（不出现时不占列）。 */
+.run-detail__body {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  min-height: 280px;
+}
+
+.run-detail__canvas {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+}
+
+.run-detail__canvas-view {
+  height: 100%;
+  min-height: 0;
+  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border-radius: 8px;
+}
+
+.run-detail__follow {
+  box-shadow: 0 2px 10px rgb(0 0 0 / 12%);
+}
+
+.run-detail__side {
+  width: 360px;
+  height: 100%;
+  min-height: 0;
+}
+
+.run-detail__events {
+  height: 100%;
+  padding: 10px 14px;
+  overflow-y: auto;
+  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
+  border-radius: 8px;
+}
+
+.run-detail__event-list {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--run-border-color);
-  margin-bottom: 10px;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  list-style: none;
 }
 
-.run-detail__tab {
-  border: none;
-  background: transparent;
-  font: inherit;
-  color: var(--preflight-secondary-text-color, #909090);
-  padding: 8px 14px;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-}
-
-.run-detail__tab--active {
-  color: var(--preflight-primary-color, #18a058);
-  border-bottom-color: var(--preflight-primary-color, #18a058);
-  font-weight: 500;
+.run-detail__event-time {
+  margin-right: 8px;
+  color: var(--run-secondary-text-color, #909090);
+  font-variant-numeric: tabular-nums;
 }
 
 .run-detail__event-empty {
-  color: var(--preflight-secondary-text-color, #909090);
+  color: var(--run-secondary-text-color, #909090);
+}
+
+@media (max-width: 1320px) {
+  .run-detail__side { width: 320px; }
 }
 </style>

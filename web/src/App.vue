@@ -16,6 +16,9 @@ const menuOptions: MenuOption[] = [
 ]
 
 const selectedKey = computed(() => (route.path.startsWith('/plans') ? '/plans' : route.path))
+// 运行详情是画布优先的工作台页：内容区去掉外层留白并禁用整页滚动，
+// 把顶栏以下的高度整块交给流程图（页面自己管纵向分区）。
+const flushContent = computed(() => /^\/runs\/[^/]+$/.test(route.path))
 const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
 const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
 const sidebarCollapsed = ref(false)
@@ -29,6 +32,9 @@ const sidebarCollapsed = ref(false)
         <n-layout class="app-shell" native-scrollbar>
           <n-layout-header class="app-header" bordered>
             <span class="product-name">{{ appStore.productName }}</span>
+            <!-- 顶栏上下文位：当前页面把返回入口与所在对象（如运行编号、计划/路径）挂到这里，
+                 页面内不再重复一条页头，操作区因此能拿到更多横向空间。 -->
+            <div id="app-header-context" class="header-context" />
             <div class="header-toolbar">
               <n-button
                 quaternary
@@ -58,7 +64,7 @@ const sidebarCollapsed = ref(false)
                 <n-menu :options="menuOptions" :value="selectedKey" />
               </nav>
             </n-layout-sider>
-            <n-layout-content class="app-main" native-scrollbar>
+            <n-layout-content class="app-main" :class="{ 'app-main--flush': flushContent }" native-scrollbar>
               <router-view />
             </n-layout-content>
           </n-layout>
