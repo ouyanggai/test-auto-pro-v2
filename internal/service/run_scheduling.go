@@ -217,6 +217,15 @@ func (s *RunOrchestrationService) beginPathRunOnScheduler(ctx context.Context, r
 	// 调度时真实身份已知，必须先填进上下文，否则 BeginPathRun 会按 0 号 ID 推进（实测踩坑）。
 	runCtx.Run = runRow
 	runCtx.PathRun = pathRun
+	// 待发/已发来源的路径运行创建即绑定计划指向的真实实例（2026-09-07 交付验收修复）：
+	// 门禁复验与事实重读都依赖主实例引用；此前它只在提交成功后落库，
+	// 草稿实例的 save_draft 门禁因读不到实例状态被误拒。
+	if runCtx.Source != "" && runCtx.Source != "new" && runCtx.PathRun.MainInstanceRef == "" {
+		// 待发/已发场景：计划目标对象就是真实实例 ID（buildRunContext 已把它放进 FlowProxyID），
+		// 门禁与事实重读据此读取实例状态；提交成功后 SetMainInstanceRef 的独占绑定不受影响
+		// （值相同，且「首次落库不可改写」语义仍然成立）。
+		runCtx.PathRun.MainInstanceRef = runCtx.FlowProxyID
+	}
 	// 预置断点随运行落库：每条路径开始时重放同一预置，重启恢复后同样生效。
 	presets := decodePresetBreakpoints(runRow.PresetBreakpoints)
 	if _, err := s.control.BeginPathRun(ctx, runCtx, runRow.Mode, presets); err != nil {

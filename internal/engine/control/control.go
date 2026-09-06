@@ -183,6 +183,11 @@ func (s *Service) BeginPathRun(ctx context.Context, runCtx step.RunContext, mode
 	if err != nil {
 		return nil, err
 	}
+	// 待发/已发来源的实例引用由编排层在启动前预填（草稿实例的门禁与事实重读依赖它）；
+	// 状态推进从库回读的行没有这个内存值，覆盖前必须保留，否则门禁又读不到实例状态。
+	if startedPathRun.MainInstanceRef == "" && runCtx.PathRun.MainInstanceRef != "" {
+		startedPathRun.MainInstanceRef = runCtx.PathRun.MainInstanceRef
+	}
 	runCtx.PathRun = startedPathRun
 	result, session, err := s.initSession(ctx, runCtx, mode, preset)
 	if err != nil {
