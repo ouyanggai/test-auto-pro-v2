@@ -104,6 +104,11 @@ type Observation struct {
 	StatusCode int
 	// Response 为空表示没有收到可解析的响应包。
 	Response *Response
+	// SessionRejected 表示目标已返回完整响应并以会话失效拒绝本次请求。
+	// 这是适配层按语义清单第 1.5 节勘定形状（HTTP 200 + code=RESP401/AUTH_401 或三个明确文案）
+	// 识别出的结构化事实，不是文案推断；这类响应包本身不携带 isSuccess 字段，
+	// 必须在形状校验之前先认成鉴权拒绝，否则会落进「不可解析→永远不确定」把可判定的失败藏起来。
+	SessionRejected bool
 	// Reread 是事实重读结论。
 	Reread Reread
 }

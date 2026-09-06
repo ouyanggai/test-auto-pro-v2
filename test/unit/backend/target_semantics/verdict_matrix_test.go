@@ -125,3 +125,30 @@ func TestVerdictMatrixCoversAllTwentyCells(t *testing.T) {
 		t.Fatalf("矩阵格数不是 20：%d", cells)
 	}
 }
+
+// TestSessionRejectedResponseIsAuthRejected 锁定 2026-09-07 实测修复：
+// 会话失效拒绝（HTTP 200 + code=RESP401，响应包不带 isSuccess 字段）是语义清单第 1.5 节
+// 勘定过的完整响应形状。适配层按证据清单识别后以 SessionRejected 结构化事实传入，
+// 判定必须在形状校验之前认成鉴权拒绝；配合重读「明确未变」得到确定失败（无副作用），
+// 绝不能落进「不可解析→永远不确定」把可判定的失败藏进待确认终局。
+func TestSessionRejectedResponseIsAuthRejected(t *testing.T) {
+	observation := verdict.Observation{
+		Action: "submit", Endpoint: "/web/flowInstanceApi/submit", Transport: verdict.TransportResponded,
+		StatusCode: 200, Reread: verdict.RereadUnchanged, SessionRejected: true,
+	}
+	result := verdict.Evaluate(observation)
+	if result.Initial != verdict.InitialAuthRejected || result.Outcome != verdict.OutcomeFailed {
+		t.Fatalf("会话失效 + 明确未变应判确定失败，实际 %+v", result)
+	}
+	if result.SideEffect != verdict.SideEffectNone {
+		t.Fatalf("会话失效拒绝发生在任何业务写之前，应无副作用：%+v", result)
+	}
+	// 重读结论缺失时仍然兜底为不确定：拒绝与观察不一致时不能声称确定失败。
+	uncertain := verdict.Evaluate(verdict.Observation{
+		Action: "submit", Endpoint: "/web/flowInstanceApi/submit", Transport: verdict.TransportResponded,
+		StatusCode: 200, Reread: verdict.RereadUnreadable, SessionRejected: true,
+	})
+	if uncertain.Outcome != verdict.OutcomeUncertain {
+		t.Fatalf("会话失效但重读失败时应兜底不确定，实际 %+v", uncertain)
+	}
+}

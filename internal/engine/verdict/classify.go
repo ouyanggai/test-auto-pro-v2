@@ -10,6 +10,11 @@ func classifyResponse(observation Observation) Initial {
 	if observation.StatusCode == 401 {
 		return InitialAuthRejected
 	}
+	// 会话失效拒绝是语义清单第 1.5 节勘定过的完整响应形状（HTTP 200 + 明确错误码，
+	// 不带 isSuccess 字段）：适配层已按证据清单识别，这里先于形状校验认成鉴权拒绝。
+	if observation.SessionRejected {
+		return InitialAuthRejected
+	}
 	response := observation.Response
 	if response == nil || response.Unparsable {
 		return InitialUnexplained

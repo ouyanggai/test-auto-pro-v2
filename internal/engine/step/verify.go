@@ -99,6 +99,13 @@ func buildObservation(endpoint string, writeErr error, response target.WriteResp
 		StatusCode: response.StatusCode,
 		Reread:     reread,
 	}
+	// 会话失效拒绝是适配层识别过的结构化事实（响应已收到、按勘定清单匹配）：
+	// 传给判定包按鉴权拒绝初判，配合重读「明确未变」可得到确定失败，而不是永远不确定。
+	var targetErr *target.Error
+	if errors.As(writeErr, &targetErr) && targetErr.Kind == target.ErrorSessionExpired &&
+		transport == verdict.TransportResponded {
+		observation.SessionRejected = true
+	}
 	if response.IsSuccessPresent {
 		observation.Response = &verdict.Response{
 			IsSuccess:        response.IsSuccess,
