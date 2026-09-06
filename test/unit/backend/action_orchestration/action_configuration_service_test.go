@@ -164,6 +164,65 @@ func TestSaveActionConfigurationPersistsCompiledScenario(t *testing.T) {
 	}
 }
 
+// TestSaveActionConfigurationDeleteRemovesStoredActions 复现交付缺口：删除动作→保存→重读，被删动作必须消失。
+func TestSaveActionConfigurationDeleteRemovesStoredActions(t *testing.T) {
+	plan := model.Plan{ID: 805, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 815, PlanID: plan.ID, SequenceNo: 1, Name: "审批路径"}
+	reader := &actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: actionConfigurationTree(), EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "审批流程", RenderType: target.FormRenderTypeFormMaking}}
+	store := &actionHistoryStore{}
+	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}), reader,
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
+	config.SetHistoryWorkspaceStores(store, store)
+	reviewKey := analyzer.PathConfigNodeToken("review")
+	personKey := analyzer.PathConfigPersonToken("review:add_sign")
+	personToken := analyzer.PathConfigPersonOptionToken("review:add_sign", "user-a")
+	persons := []model.PathConfigPersonStrategyInput{{Key: personKey, Strategy: "manual", Seed: 1, Selected: []string{personToken}}}
+	first, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174805", model.ActionConfigurationInput{
+		Persons: persons,
+		Actions: []model.ConfiguredAction{
+			{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, Order: 1},
+			{Key: "sign-1", Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 2, ActorPolicy: "manual"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("首次保存两条动作失败：%v", err)
+	}
+	// 删除 approve-1：模拟用户在编辑器里删掉第一条后整节点保存，只剩 sign-1。
+	second, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174806", model.ActionConfigurationInput{
+		Revision: first.Revision,
+		Persons:  persons,
+		Actions:  []model.ConfiguredAction{{Key: "sign-1", Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1, ActorPolicy: "manual"}},
+	})
+	if err != nil {
+		t.Fatalf("删除动作后的保存失败：%v", err)
+	}
+	reloaded, err := config.GetCompiledScenario(context.Background(), plan.ID, path.ID)
+	if err != nil {
+		t.Fatalf("保存后重读失败：%v", err)
+	}
+	if len(reloaded.Actions) != 1 || reloaded.Actions[0].Key != "sign-1" {
+		t.Fatalf("被删除的动作在重读后仍然存在：%+v", reloaded.Actions)
+	}
+	if second.ActionRevision <= first.ActionRevision {
+		t.Fatalf("删除保存没有推进动作修订：%d -> %d", first.ActionRevision, second.ActionRevision)
+	}
+	// 全部删空：节点动作清空必须同样可保存、可重读。
+	_, err = config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174807", model.ActionConfigurationInput{
+		Revision: second.Revision,
+		Actions:  []model.ConfiguredAction{},
+	})
+	if err != nil {
+		t.Fatalf("清空节点动作保存失败：%v", err)
+	}
+	emptied, err := config.GetCompiledScenario(context.Background(), plan.ID, path.ID)
+	if err != nil {
+		t.Fatalf("清空后重读失败：%v", err)
+	}
+	if len(emptied.Actions) != 0 {
+		t.Fatalf("节点动作清空保存后仍返回动作：%+v", emptied.Actions)
+	}
+}
+
 // TestSaveActionConfigurationRetainsActionPersonStrategy 验证动作私有人员策略与动作场景在同一次保存中持久化。
 func TestSaveActionConfigurationRetainsActionPersonStrategy(t *testing.T) {
 	plan := model.Plan{ID: 802, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}

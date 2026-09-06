@@ -569,13 +569,22 @@ async function saveCurrentNode() {
   const previousRevision = current.nodeRevision
   try {
     const result = await savePathActionConfiguration(planID.value, pathID.value, node.key, buildPathActionConfigurationInput(nodeActionContainer(node), draft.value, previousRevision), nodeSaveKey)
+    // 重读会按服务端权威响应重建整份草稿；实例动作编辑只存在于节点编辑器的页面草稿里，
+    // 必须先留存再还原，否则用户在节点编辑器里删除或新增的实例动作会被这次重读静默丢弃，
+    // 下面的实例保存判断永远为 false，刷新后动作又会复原（删除保存未生效的根因）。
+    const pendingInstanceActions = instanceContainer.value ? draft.value.actionConfigurations[instanceContainer.value.key] : undefined
     await reloadConfiguration()
     compiledVersion += 1
     compiledScenario.value = result.compiledScenario
     compiledIssues.value = result.issues
     compiledError.value = ''
     // 节点编辑器里同时编排的实例级动作在同一次保存里落盘，避免用户以为已保存却只写了节点。
+    if (instanceContainer.value && pendingInstanceActions) draft.value.actionConfigurations[instanceContainer.value.key] = pendingInstanceActions
     if (instanceDraftHasUnsavedChanges.value) await saveInstanceActions()
+    // 实例保存失败时其内部对账重读会把草稿重建为服务端状态；还原用户编辑，保证失败不丢稿。
+    if (instanceContainer.value && pendingInstanceActions && instanceDraftHasUnsavedChanges.value) {
+      draft.value.actionConfigurations[instanceContainer.value.key] = pendingInstanceActions
+    }
     await finishConfirmedNodeSave()
   }
   catch (caught) {
@@ -632,7 +641,15 @@ async function saveAllNodes() {
       compiledError.value = ''
       savedCount += 1
     }
+    // 全量保存同样要落盘实例动作容器：这里的重读会重建整份草稿，实例编辑不先写就会丢失。
+    const instanceChangedBefore = instanceDraftHasUnsavedChanges.value
+    const pendingInstanceActions = instanceContainer.value ? draft.value.actionConfigurations[instanceContainer.value.key] : undefined
+    if (instanceChangedBefore) await saveInstanceActions()
     await reloadConfiguration()
+    // 实例保存失败时两次重读已把实例草稿重建为服务端状态；还原用户编辑，失败不丢稿。
+    if (instanceChangedBefore && instanceContainer.value && pendingInstanceActions && instanceDraftHasUnsavedChanges.value) {
+      draft.value.actionConfigurations[instanceContainer.value.key] = pendingInstanceActions
+    }
     if (skipped.length) {
       nodeSaveError.value = `已保存 ${savedCount} 个节点，还有 ${skipped.length} 个节点需要先补充配置`
     } else {
