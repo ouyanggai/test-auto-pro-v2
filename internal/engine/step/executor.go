@@ -379,27 +379,42 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, 0, err
 	}
 	reportPhase(approved, "prepare", "正在就绪演员会话")
-	// 写步骤的会话必须现场刷新并探活：submit 发出后不允许任何重登，
-	// 过期会话只会白白浪费唯一一次写机会。实测目标存在“首次登录的 sid 立即失效”的现象，
-	// 因此刷新后立刻做一次只读探活，失效则在只读重试预算内重新登录。
-	session, sessionErr := RunWithRetry(ctx, e.policy, "会话刷新", func() (target.Session, error) {
-		fresh, err := e.sessions.Refresh(ctx, runCtx.PlanAccount)
-		if err != nil {
-			return fresh, err
-		}
+	// 写步骤的会话必须探活确认后才发写：submit 发出后不允许任何重登，
+	// 过期会话只会白白浪费唯一一次写机会。
+	// 会话策略（2026-09-07 实测修正）：先复用缓存会话并探活，探活失败才强制重登——
+	// 目标平台同账号重复登录会互踢，而运行详情轮询等读取路径共用同一缓存会话；
+	// 若每一步都无条件 Refresh，就会把其他读取正在用的会话踢掉，形成互踢循环，
+	// 写请求刚发出就被判「会话已失效」。实测目标还存在“首次登录的 sid 立即失效”的现象，
+	// 因此重登后仍要立刻探活，失效则在只读重试预算内再登。
+	ping := func(session target.Session) error {
 		if pinger, ok := e.target.(interface {
 			Ping(context.Context, target.Session) error
 		}); ok {
-			if err := pinger.Ping(ctx, fresh); err != nil {
-				return fresh, err
+			return pinger.Ping(ctx, session)
+		}
+		return nil
+	}
+	session, sessionErr := func() (target.Session, error) {
+		if cached, err := e.sessions.Current(ctx, runCtx.PlanAccount); err == nil {
+			if pingErr := ping(cached); pingErr == nil {
+				return cached, nil
 			}
 		}
-		return fresh, nil
-	}, func(attempt int, nextDelay time.Duration) {
-		note := fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay)
-		log.Phase("prepare", step.Sequence, attemptNo, note)
-		reportPhase(approved, "prepare", note)
-	})
+		return RunWithRetry(ctx, e.policy, "会话刷新", func() (target.Session, error) {
+			fresh, err := e.sessions.Refresh(ctx, runCtx.PlanAccount)
+			if err != nil {
+				return fresh, err
+			}
+			if err := ping(fresh); err != nil {
+				return fresh, err
+			}
+			return fresh, nil
+		}, func(attempt int, nextDelay time.Duration) {
+			note := fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay)
+			log.Phase("prepare", step.Sequence, attemptNo, note)
+			reportPhase(approved, "prepare", note)
+		})
+	}()
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
 		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
