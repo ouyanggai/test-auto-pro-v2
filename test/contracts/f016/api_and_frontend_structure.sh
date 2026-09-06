@@ -10,8 +10,10 @@ cd "${project_root}"
 
 printf '%s\n' '[F-016] 运行端点路由已注册'
 grep -qF 'POST /api/plans/{planId}/runs' internal/api/runs.go
-grep -qF 'GET /api/plans/{planId}/runs' internal/api/runs.go
+grep -qF 'GET /api/runs' internal/api/runs.go
 grep -qF 'GET /api/runs/{runId}' internal/api/runs.go
+grep -qF 'GET /api/runs/{runId}/paths' internal/api/runs.go
+grep -qF 'DELETE /api/runs/{runId}' internal/api/runs.go
 grep -qF 'POST /api/runs/{runId}/approve' internal/api/runs.go
 grep -qF 'POST /api/runs/{runId}/stop' internal/api/runs.go
 
@@ -29,10 +31,12 @@ fi
 printf '%s\n' '[F-016] 崩溃恢复在服务启动时执行'
 grep -qF 'runStateService.Recover' cmd/server/main.go
 
-printf '%s\n' '[F-016] 运行列表替换占位页并提供进入详情'
-grep -qF 'fetchPlanRuns' web/src/views/RunsView.vue
-grep -qF '进入详情' web/src/views/RunsView.vue
+printf '%s\n' '[F-016] 运行列表一行一次运行，二级路径页与运行面板构成三层导航'
+grep -qF 'fetchAllRuns' web/src/views/RunsView.vue
+grep -qF '查看路径' web/src/views/RunsView.vue
+grep -qF 'RunPathsView' web/src/router/index.ts
 grep -qF '/runs/:runId' web/src/router/index.ts
+grep -qF '/runs/:runId/paths/:pathRunId' web/src/router/index.ts
 
 printf '%s\n' '[F-016] 运行画布复用现有组件并新增 runMode 变体'
 grep -qF 'runMode' web/src/features/flow-graph/FlowGraphCanvas.vue

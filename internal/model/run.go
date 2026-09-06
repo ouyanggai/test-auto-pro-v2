@@ -290,6 +290,9 @@ type PathRun struct {
 	FinishedAt         *time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	// TotalSteps 是本次运行冻结的总步骤数（启动时从已保存编译场景取，配置后续变化不影响）。
+	// nil 表示迁移 031 之前的历史运行没有冻结值。
+	TotalSteps *int
 }
 
 // RunEvent 是运行事件流的一行（run_events 表）：聚合表每次状态前进在同一事务内追加一行。

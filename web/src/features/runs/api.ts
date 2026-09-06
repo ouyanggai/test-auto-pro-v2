@@ -134,12 +134,48 @@ export interface RunSummary {
   resultName?: string
   startedAt?: string
   finishedAt?: string
+  // 计划身份：一行只对应一次计划运行，列表按计划与运行号共同展示。
+  planId: number
+  planName?: string
   pathRunId: number
   pathRunStatusName: string
   // 运行级摘要（F-020）：调度方式与路径状态中文汇总。
   scheduleName?: string
   pathsSummary?: string
   pathRunCount?: number
+}
+
+// RunPathProgress 是二级路径页里一条执行路径的进度事实（后端由落库步骤与冻结总步骤计算）。
+export interface RunPathProgress {
+  pathRunId: number
+  pathId: number
+  pathName: string
+  statusName: string
+  resultName?: string
+  failureClassName?: string
+  currentNodeName?: string
+  doneSteps: number
+  totalSteps: number
+  progressPercent: number
+  startedAt?: string
+  finishedAt?: string
+  mainInstanceRef?: string
+}
+
+// RunPathsView 是二级「本次运行的执行路径」页的数据主体。
+export interface RunPathsView {
+  runId: number
+  runNo: number
+  modeName: string
+  runStatusName: string
+  resultName?: string
+  scheduleName?: string
+  concurrencyLabel?: string
+  planId: number
+  planName: string
+  startedAt?: string
+  finishedAt?: string
+  paths: RunPathProgress[]
 }
 
 // 运行 API 错误：文案与后端同源，只在网络层失败时给前端兜底中文。
@@ -182,10 +218,20 @@ async function requestOnce<T>(path: string, init?: RequestInit, signal?: AbortSi
   return parsed.data as T
 }
 
-// fetchPlanRuns 列出计划下的运行（最新在前）。
-export function fetchPlanRuns(planId: string, signal?: AbortSignal, status = ''): Promise<RunSummary[]> {
+// fetchAllRuns 跨计划列出运行（最新在前）：一行只对应一次计划运行，可按状态筛选。
+export function fetchAllRuns(status = ''): Promise<RunSummary[]> {
   const query = status ? `?status=${encodeURIComponent(status)}` : ''
-  return requestOnce<RunSummary[]>(`/api/plans/${encodeURIComponent(planId)}/runs${query}`, { method: 'GET' }, signal)
+  return requestOnce<RunSummary[]>(`/api/runs${query}`, { method: 'GET' })
+}
+
+// fetchRunPaths 读取一次运行的二级路径页数据（每条路径的准确进度）。
+export function fetchRunPaths(runId: string): Promise<RunPathsView> {
+  return requestOnce<RunPathsView>(`/api/runs/${encodeURIComponent(runId)}/paths`, { method: 'GET' })
+}
+
+// deleteRun 删除整次工具侧运行及其全部子记录；运行中的记录必须先停止再删除（后端守卫）。
+export function deleteRun(runId: string): Promise<void> {
+  return requestOnce<void>(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' })
 }
 
 // RunEventItem 是一条运行事件的公开形态（F-021 事件流时间线）。

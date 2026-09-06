@@ -41,9 +41,11 @@ type RunOrchestrator interface {
 	ListBreakpoints(ctx context.Context, runID uint64, pathRunID uint64) ([]control.Breakpoint, error)
 	RequestPause(ctx context.Context, runID uint64, pathRunID uint64) error
 	Stop(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
-	ListRuns(ctx context.Context, planID uint64) ([]service.RunSummaryDTO, error)
+	// 运行记录层级（2026-09-06）：跨计划列表（一行一次运行）、二级路径页与整次运行删除。
+	ListAllRuns(ctx context.Context, status string) ([]service.RunSummaryDTO, error)
+	RunPaths(ctx context.Context, runID uint64) (*service.RunPathsDTO, error)
+	DeleteRun(ctx context.Context, runID uint64) error
 	ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int, pathRunID uint64) ([]service.RunEventDTO, error)
-	ListRunsWithFilters(ctx context.Context, planID uint64, status string) ([]service.RunSummaryDTO, error)
 }
 
 // registerRunControlRoutes 注册启动、详情、放行与停止端点。
@@ -51,8 +53,12 @@ type RunOrchestrator interface {
 // 与 F-013 的日志作用域中间件的 /api/plans/{planId}/... 约定一致。
 func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) {
 	mux.HandleFunc("POST /api/plans/{planId}/runs", handleStartRun(orchestrator))
-	mux.HandleFunc("GET /api/plans/{planId}/runs", handleListRuns(orchestrator))
+	// 运行记录层级（2026-09-06）：列表挂在全局 /api/runs 下（一行只对应一次计划运行），
+	// 二级路径页与删除挂在单次运行下，与详情、控制端点同一寻址约定。
+	mux.HandleFunc("GET /api/runs", handleListAllRuns(orchestrator))
 	mux.HandleFunc("GET /api/runs/{runId}", handleRunDetail(orchestrator))
+	mux.HandleFunc("GET /api/runs/{runId}/paths", handleRunPaths(orchestrator))
+	mux.HandleFunc("DELETE /api/runs/{runId}", handleDeleteRun(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/approve", handleApproveRun(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/stop", handleStopRun(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/breakpoints", handleSetBreakpoint(orchestrator))
@@ -60,6 +66,50 @@ func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) 
 	mux.HandleFunc("POST /api/runs/{runId}/pause", handlePause(orchestrator))
 	// F-021 事件流时间线：只读增量读取，afterEventID 为游标。
 	mux.HandleFunc("GET /api/runs/{runId}/events", handleRunEvents(orchestrator))
+}
+
+// handleListAllRuns 跨计划列出运行（一行一次运行）；status 查询参数可选筛选。
+func handleListAllRuns(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		status := strings.TrimSpace(request.URL.Query().Get("status"))
+		items, err := orchestrator.ListAllRuns(request.Context(), status)
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, items)
+	}
+}
+
+// handleRunPaths 返回一次运行的二级路径页数据：每条路径的名称、状态、当前节点与准确进度。
+func handleRunPaths(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
+		if !ok {
+			return
+		}
+		paths, err := orchestrator.RunPaths(request.Context(), runID)
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, paths)
+	}
+}
+
+// handleDeleteRun 删除整次工具侧运行及其全部子记录；运行中的记录必须先停止再删除。
+func handleDeleteRun(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
+		if !ok {
+			return
+		}
+		if err := orchestrator.DeleteRun(request.Context(), runID); err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, map[string]any{"deleted": true})
+	}
 }
 
 // handleRunEvents 增量读取一次运行的事件流：afterEventID 之后的按数据库顺序返回。
@@ -156,31 +206,6 @@ func handleStartRun(orchestrator RunOrchestrator) http.HandlerFunc {
 			return
 		}
 		writeSuccess(response, result)
-	}
-}
-
-// handleListRuns 列出计划下的运行，供运行列表页进入详情；status 查询参数可选筛选。
-func handleListRuns(orchestrator RunOrchestrator) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		planID, ok := parseExecutionPathID(response, request.PathValue("planId"))
-		if !ok {
-			return
-		}
-		status := strings.TrimSpace(request.URL.Query().Get("status"))
-		var (
-			items []service.RunSummaryDTO
-			err   error
-		)
-		if status == "" {
-			items, err = orchestrator.ListRuns(request.Context(), planID)
-		} else {
-			items, err = orchestrator.ListRunsWithFilters(request.Context(), planID, status)
-		}
-		if err != nil {
-			writeRunControlError(response, err)
-			return
-		}
-		writeSuccess(response, items)
 	}
 }
 

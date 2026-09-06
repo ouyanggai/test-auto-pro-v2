@@ -1,34 +1,18 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NSelect, NSpin } from 'naive-ui'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { NButton, NEmpty, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { fetchPlanRuns, formatTime, RunApiError } from '../features/runs/api'
+import { deleteRun, fetchAllRuns, formatTime, RunApiError } from '../features/runs/api'
 import type { RunSummary } from '../features/runs/api'
 
-// RunsView 是运行列表：替换占位页，只提供进入详情的能力（分析视图属 F-021）。
+// RunsView 是运行记录列表：一行只对应一次计划运行（跨计划）。
+// 每行显示计划、运行方式、整体状态、路径汇总、开始/结束时间，并提供进入与删除入口（2026-09-06）。
 const router = useRouter()
-const plans = ref<Array<{ label: string; value: string }>>([])
-const selectedPlanId = ref<string>('')
+const themeVars = useThemeVars()
 const runs = ref<RunSummary[]>([])
 const loading = ref(false)
 const errorText = ref('')
-
-// loadPlans 拉取计划下拉项；只取一页足够选择最近使用的计划。
-async function loadPlans(): Promise<void> {
-  try {
-    const response = await fetch('/api/plans?limit=50')
-    const envelope = await response.json() as { success?: boolean; data?: { items?: Array<{ id: number; name: string }> } }
-    const items = envelope.data?.items || []
-    plans.value = items.map((item) => ({ label: item.name, value: String(item.id) }))
-    if (items.length > 0 && !selectedPlanId.value) {
-      selectedPlanId.value = String(items[0].id)
-      await loadRuns()
-    }
-  } catch {
-    errorText.value = '暂时无法读取计划列表，请重试'
-  }
-}
 
 // runStatusFilter 是运行状态筛选：空串表示全部；筛选在服务端完成，空结果与读取失败语义分开。
 const runStatusFilter = ref('')
@@ -41,13 +25,12 @@ const runStatusOptions = [
   { label: '已取消', value: 'cancelled' },
 ]
 
-// loadRuns 拉取所选计划的运行列表（可按状态筛选）。
+// loadRuns 拉取运行列表（可按状态筛选）。
 async function loadRuns(): Promise<void> {
-  if (!selectedPlanId.value) return
   loading.value = true
   errorText.value = ''
   try {
-    runs.value = await fetchPlanRuns(selectedPlanId.value, undefined, runStatusFilter.value)
+    runs.value = await fetchAllRuns(runStatusFilter.value)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行列表，请重试'
     runs.value = []
@@ -56,12 +39,40 @@ async function loadRuns(): Promise<void> {
   }
 }
 
-// openDetail 进入路径运行详情页。
-function openDetail(run: RunSummary): void {
+// openPaths 进入二级路径页：本次运行的执行路径列表。
+function openPaths(run: RunSummary): void {
   router.push(`/runs/${run.runId}`)
 }
 
-onMounted(() => { void loadPlans() })
+// deletingRunId 是正在删除的运行：删除请求在途时按钮进入忙碌态，重复点击不会发出第二个请求。
+const deletingRunId = ref<number>(0)
+
+// removeRun 删除整次工具侧运行；只删除工具侧记录，目标平台实例与业务数据不受影响。
+async function removeRun(run: RunSummary): Promise<void> {
+  if (deletingRunId.value !== 0) return
+  deletingRunId.value = run.runId
+  errorText.value = ''
+  try {
+    await deleteRun(String(run.runId))
+    await loadRuns()
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '删除失败，请重试'
+  } finally {
+    deletingRunId.value = 0
+  }
+}
+
+// deleteHint 写清删除的影响范围：删除什么、不删除什么。
+function deleteHint(run: RunSummary): string {
+  const pathCount = run.pathRunCount ?? 1
+  return `删除计划「${run.planName || '未知计划'}」的运行 #${run.runNo}：共 ${pathCount} 条执行路径的记录、步骤与日志引用会一并删除；目标平台上的实例和业务数据不受影响。删除后无法恢复。`
+}
+
+const emptyText = computed(() => (runStatusFilter.value
+  ? '没有匹配筛选状态的运行记录。'
+  : '还没有运行记录；在计划路径页勾选路径并通过运行前检查后即可启动运行。'))
+
+onMounted(() => { void loadRuns() })
 onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 </script>
 
@@ -69,7 +80,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
   <section class="runs-view">
     <header class="runs-view__header">
       <h1>运行记录</h1>
-      <p class="runs-view__hint">每次启动都会生成独立且不可覆盖的运行记录；这里只提供进入详情查看。</p>
+      <p class="runs-view__hint">每次启动都会生成独立且不可覆盖的运行记录；一行是一次计划运行，点开可查看这次运行的各条执行路径。</p>
     </header>
 
     <div class="runs-view__toolbar">
@@ -80,15 +91,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
         placeholder="全部状态"
         @update:value="loadRuns"
       />
-      <NSelect
-        v-model:value="selectedPlanId"
-        class="runs-view__plan-select"
-        :options="plans"
-        placeholder="选择计划"
-        filterable
-        @update:value="loadRuns"
-      />
-      <NButton type="primary" :disabled="!selectedPlanId" @click="loadRuns">刷新</NButton>
+      <NButton type="primary" @click="loadRuns">刷新</NButton>
     </div>
 
     <p v-if="errorText" class="runs-view__error" role="alert">{{ errorText }}</p>
@@ -97,17 +100,17 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 
     <NEmpty
       v-else-if="runs.length === 0 && !errorText"
-      :description="runStatusFilter ? '没有匹配筛选状态的运行记录。' : '该计划还没有运行记录；在计划路径页勾选路径并通过运行前检查后即可启动运行。'"
+      :description="emptyText"
     />
 
     <table v-else class="runs-view__table">
       <thead>
         <tr>
+          <th>计划</th>
           <th>运行号</th>
-          <th>模式</th>
-          <th>运行状态</th>
-          <th>路径状态</th>
-          <th>路径结果</th>
+          <th>运行方式</th>
+          <th>整体状态</th>
+          <th>路径情况</th>
           <th>开始时间</th>
           <th>结束时间</th>
           <th aria-label="操作" />
@@ -115,17 +118,31 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
       </thead>
       <tbody>
         <tr v-for="run in runs" :key="run.runId">
+          <td class="runs-view__plan">{{ run.planName || `计划 ${run.planId}` }}</td>
           <td>#{{ run.runNo }}</td>
           <td>{{ run.modeName }}</td>
-          <td>{{ run.statusName }}</td>
+          <td>{{ run.statusName }}<template v-if="run.resultName"> · {{ run.resultName }}</template></td>
           <td>
             <template v-if="(run.pathRunCount ?? 0) > 1">{{ run.pathsSummary }}</template>
             <template v-else>{{ run.pathRunStatusName }}</template>
           </td>
-          <td>{{ run.resultName || '—' }}</td>
           <td>{{ formatTime(run.startedAt) }}</td>
           <td>{{ formatTime(run.finishedAt) }}</td>
-          <td><NButton size="small" @click="openDetail(run)">进入详情</NButton></td>
+          <td class="runs-view__actions">
+            <NButton size="small" @click="openPaths(run)">查看路径</NButton>
+            <NPopconfirm @positive-click="removeRun(run)">
+              <template #trigger>
+                <NButton
+                  size="small"
+                  type="error"
+                  ghost
+                  :loading="deletingRunId === run.runId"
+                  :disabled="deletingRunId !== 0"
+                >删除</NButton>
+              </template>
+              {{ deleteHint(run) }}
+            </NPopconfirm>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -155,13 +172,12 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
   align-items: center;
 }
 
-.runs-view__plan-select { width: 280px; }
 .runs-view__status-select { width: 160px; }
 .runs-view__error { color: var(--error-color, #d03050); }
 .runs-view__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
 
 .runs-view__table {
-  border: 1px solid rgba(128, 128, 128, 0.35);
+  border: 1px solid v-bind('themeVars.dividerColor');
   border-collapse: collapse;
 }
 
@@ -169,6 +185,9 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 .runs-view__table td {
   padding: 8px 12px;
   text-align: left;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  border-bottom: 1px solid v-bind('themeVars.dividerColor');
 }
+
+.runs-view__plan { font-weight: 500; }
+.runs-view__actions { display: flex; gap: 8px; white-space: nowrap; }
 </style>

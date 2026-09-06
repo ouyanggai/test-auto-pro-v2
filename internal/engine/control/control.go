@@ -197,11 +197,18 @@ func (s *Service) BeginPathRun(ctx context.Context, runCtx step.RunContext, mode
 	return result, nil
 }
 
-// initSession 是启动的公共主体：模式选定事实、预置断点逐条落事实、构建第一步预览并停在阶段 3。
+// initSession 是启动的公共主体：冻结总步骤数、模式选定事实、预置断点逐条落事实、构建第一步预览并停在阶段 3。
 // 调用方负责创建/推进运行与路径运行并把真实身份填进 runCtx。
 func (s *Service) initSession(ctx context.Context, runCtx step.RunContext, mode model.RunMode, preset []Breakpoint) (*StartResult, *activeStep, error) {
 	startedRun := runCtx.Run
 	startedPathRun := runCtx.PathRun
+
+	// 冻结本次运行的总步骤数（进度分母）：取启动时已保存编译场景的长度，
+	// 配置后续变化不得改变已运行进度的分母（2026-09-06 运行记录层级要求）。
+	// 冻结失败直接拒绝启动：没有分母的进度不真实，宁可不开跑。
+	if err := s.store.SetPathRunTotalSteps(ctx, startedPathRun.ID, len(runCtx.Steps), s.now()); err != nil {
+		return nil, nil, err
+	}
 
 	// 模式选定事实与中文事件（control.log 由 T06 写入器同步落盘）。
 	modeFact := model.RunControl{

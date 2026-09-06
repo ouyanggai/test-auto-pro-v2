@@ -100,7 +100,8 @@ func TestF016RunsAPIGuards(t *testing.T) {
 		t.Fatalf("缺失运行应 404 且给中文：%d %s", recorder.Code, recorder.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "/api/plans/"+strconvUint(plan.ID)+"/runs", nil)
+	// 2026-09-06 运行记录层级：列表改为跨计划的 GET /api/runs（一行一次运行）。
+	request = httptest.NewRequest(http.MethodGet, "/api/runs", nil)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {

@@ -66,6 +66,15 @@ type RunStore interface {
 	ClaimScheduledPlan(ctx context.Context, planID uint64, now time.Time) (bool, error)
 	// ListRunsByPlan 按计划列出运行（运行号倒序），供运行列表使用。
 	ListRunsByPlan(ctx context.Context, planID uint64, limit int) ([]model.Run, error)
+	// ListAllRunsFiltered 跨计划列出运行（游标分页、状态筛选），供运行记录列表总览使用。
+	ListAllRunsFiltered(ctx context.Context, status string, beforeID uint64, limit int) ([]model.Run, error)
+	// ListRunIDsByAwaitingPaths 列出含结果待确认路径的运行 ID（去重），供启动时的历史清扫收尾聚合。
+	ListRunIDsByAwaitingPaths(ctx context.Context) ([]uint64, error)
+	// SetPathRunTotalSteps 冻结本次运行的总步骤数（进度分母）；只允许写一次，幂等。
+	SetPathRunTotalSteps(ctx context.Context, pathRunID uint64, total int, now time.Time) error
+	// DeleteRun 在同一事务内删除整次运行及其路径、步骤、尝试、事件与控制事实；
+	// 仍有未闭合路径时拒绝，失败不留半删状态。绝不触碰目标平台数据。
+	DeleteRun(ctx context.Context, runID uint64, now time.Time) error
 	// ListRunSteps 按路径运行列出已落账步骤（按步骤序号升序）。
 	ListRunSteps(ctx context.Context, pathRunID uint64) ([]model.RunStep, error)
 	// ListRunAttempts 按路径运行列出已落账尝试（按步骤序号与尝试序号升序）。

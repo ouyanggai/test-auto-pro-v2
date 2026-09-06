@@ -32,19 +32,13 @@ const runEvents = ref<RunEventItem[]>([])
 let lastEventID = 0
 // 主区页签：流程图（默认）/ 事件流。
 const activeTab = ref<'canvas' | 'events'>('canvas')
-// selectedPathRunID 是多路径运行里当前查看的路径运行（路由查询 ?path=）；缺省由后端取第一条。
-const selectedPathRunID = ref<number>(Number(route.query.path || 0) || 0)
+// selectedPathRunID 是多路径运行里当前查看的路径运行，来自三层导航的路由参数；缺省由后端取第一条。
+const selectedPathRunID = ref<number>(Number(route.params.pathRunId || 0) || 0)
 
-// switchPathRun 切换查看的路径运行：写回路由让刷新与分享保留选择，随后重读详情。
+// switchPathRun 切换查看的路径运行：整页跳到对应路径的面板地址，刷新与分享都保留选择。
 function switchPathRun(pathRunID: number) {
   if (pathRunID === selectedPathRunID.value) return
-  selectedPathRunID.value = pathRunID
-  // 事件流按路径过滤：切换后清空并重置游标，重新只追加当前路径的事件。
-  runEvents.value = []
-  lastEventID = 0
-  activeTab.value = 'canvas'
-  void router.replace({ query: { ...route.query, path: pathRunID ? String(pathRunID) : undefined } })
-  void loadDetail()
+  void router.push(`/runs/${runId}/paths/${pathRunID}`)
 }
 const themeVars = useThemeVars()
 
@@ -318,6 +312,11 @@ async function loadDetail(): Promise<void> {
   try {
     const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
     detail.value = next
+    if (!selectedPathRunID.value && next.pathRunId) {
+      // 首次缺省进入：把实际选中的路径运行写回路由，刷新与分享保留选择。
+      selectedPathRunID.value = next.pathRunId
+      void router.replace(`/runs/${runId}/paths/${next.pathRunId}`)
+    }
     syncControl(next)
     lastUpdateAt.value = Date.now()
     void pollEvents()
@@ -578,7 +577,7 @@ onBeforeUnmount(() => {
     <!-- 返回入口与本次运行的身份挂到应用顶栏：页面内不再重复一条页头，横向空间全部留给操作区。 -->
     <Teleport v-if="detail" defer to="#app-header-context">
       <div class="run-detail__identity" :style="headerVars">
-        <n-button quaternary circle size="small" aria-label="返回运行列表" title="返回运行列表" @click="router.push('/runs')">←</n-button>
+        <n-button quaternary circle size="small" aria-label="返回本次运行的执行路径" title="返回本次运行的执行路径" @click="router.push(`/runs/${runId}`)">←</n-button>
         <h2 class="run-detail__title">运行 #{{ detail.runNo }}</h2>
         <span class="run-detail__meta-path" :title="`${detail.planName} / ${detail.pathName}`">{{ detail.planName }} / {{ detail.pathName }}</span>
         <n-tag size="small" :bordered="false" type="info" :title="modeHint">{{ detail.modeName }}模式</n-tag>

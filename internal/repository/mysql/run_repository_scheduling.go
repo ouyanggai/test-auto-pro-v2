@@ -181,7 +181,7 @@ func (r *RunRepository) ListPathRunsByRun(ctx context.Context, runID uint64) ([]
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, run_id, execution_path_id, status, result, failure_class,
 		       main_instance_ref, final_target_summary, lease_owner, lease_expires_at, fencing_token,
-		       started_at, finished_at, created_at, updated_at
+		       started_at, finished_at, created_at, updated_at, total_steps
 		FROM path_runs WHERE run_id = ? ORDER BY id ASC
 	`, runID)
 	if err != nil {

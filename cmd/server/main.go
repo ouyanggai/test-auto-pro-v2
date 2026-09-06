@@ -195,6 +195,15 @@ func main() {
 		}
 		log.Printf("已把 %d 条未完成的路径运行置为结果待确认（运行现场已丢失，不可继续）；收尾 %d 次运行的聚合状态", len(recovered), closed)
 	}
+	// 历史清扫：迁移前已停在结果待确认的路径运行同样视为闭合。启动时对这类运行逐个尝试聚合收尾，
+	// 让旧数据也满足「无法安全继续的运行明确结束」，不依赖一次真实重启恢复才被修正。
+	if awaitingRuns, sweepErr := runStore.ListRunIDsByAwaitingPaths(context.Background()); sweepErr == nil {
+		for _, runID := range awaitingRuns {
+			if ok, err := runStore.FinishRunIfAllPathsClosed(context.Background(), runID, time.Now()); err == nil && ok {
+				log.Printf("历史运行 %d 的全部路径已闭合（结果待确认计入），聚合状态已收尾", runID)
+			}
+		}
+	}
 	server := &http.Server{
 		Addr: config.ServerAddress(),
 		Handler: api.WithRequestLogging(

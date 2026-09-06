@@ -182,7 +182,7 @@ func (r *RunRepository) GetPathRun(ctx context.Context, pathRunID uint64) (model
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, run_id, execution_path_id, status, result, failure_class, main_instance_ref,
 		       final_target_summary, lease_owner, lease_expires_at, fencing_token,
-		       started_at, finished_at, created_at, updated_at
+		       started_at, finished_at, created_at, updated_at, total_steps
 		FROM path_runs WHERE id = ?
 	`, pathRunID)
 	pathRun, err := scanPathRun(row.Scan)
@@ -200,7 +200,7 @@ func (r *RunRepository) GetPathRunByRun(ctx context.Context, runID uint64) (mode
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, run_id, execution_path_id, status, result, failure_class, main_instance_ref,
 		       final_target_summary, lease_owner, lease_expires_at, fencing_token,
-		       started_at, finished_at, created_at, updated_at
+		       started_at, finished_at, created_at, updated_at, total_steps
 		FROM path_runs WHERE run_id = ? ORDER BY id LIMIT 1
 	`, runID)
 	pathRun, err := scanPathRun(row.Scan)
@@ -833,9 +833,10 @@ func scanPathRun(scan func(dest ...any) error) (model.PathRun, error) {
 	var status string
 	var result, failureClass, mainInstanceRef, finalTargetSummary, leaseOwner sql.NullString
 	var leaseExpiresAt, startedAt, finishedAt sql.NullTime
+	var totalSteps sql.NullInt64
 	err := scan(&pathRun.ID, &pathRun.RunID, &pathRun.ExecutionPathID, &status, &result, &failureClass,
 		&mainInstanceRef, &finalTargetSummary, &leaseOwner, &leaseExpiresAt, &pathRun.FencingToken,
-		&startedAt, &finishedAt, &pathRun.CreatedAt, &pathRun.UpdatedAt)
+		&startedAt, &finishedAt, &pathRun.CreatedAt, &pathRun.UpdatedAt, &totalSteps)
 	if err != nil {
 		return model.PathRun{}, err
 	}
@@ -862,6 +863,10 @@ func scanPathRun(scan func(dest ...any) error) (model.PathRun, error) {
 	if finishedAt.Valid {
 		value := finishedAt.Time
 		pathRun.FinishedAt = &value
+	}
+	if totalSteps.Valid {
+		value := int(totalSteps.Int64)
+		pathRun.TotalSteps = &value
 	}
 	return pathRun, nil
 }

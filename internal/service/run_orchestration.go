@@ -138,17 +138,21 @@ type RunPreviewDTO struct {
 	BlockReason    string                     `json:"blockReason,omitempty"`
 }
 
-// RunSummaryDTO 是运行列表条目。
+// RunSummaryDTO 是运行列表条目：一行只对应一次计划运行（跨计划列表，2026-09-06）。
 type RunSummaryDTO struct {
-	RunID             uint64     `json:"runId"`
-	RunNo             uint64     `json:"runNo"`
-	ModeName          string     `json:"modeName"`
-	StatusName        string     `json:"statusName"`
-	ResultName        string     `json:"resultName,omitempty"`
-	StartedAt         *time.Time `json:"startedAt,omitempty"`
-	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
-	PathRunID         uint64     `json:"pathRunId"`
-	PathRunStatusName string     `json:"pathRunStatusName"`
+	RunID      uint64     `json:"runId"`
+	RunNo      uint64     `json:"runNo"`
+	ModeName   string     `json:"modeName"`
+	StatusName string     `json:"statusName"`
+	ResultName string     `json:"resultName,omitempty"`
+	StartedAt  *time.Time `json:"startedAt,omitempty"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	// PlanID 与 PlanName 标明这次运行属于哪个计划。
+	PlanID   uint64 `json:"planId"`
+	PlanName string `json:"planName,omitempty"`
+	// 所属第一条路径运行的摘要（单路径运行即该路径本身的状态）。
+	PathRunID         uint64 `json:"pathRunId"`
+	PathRunStatusName string `json:"pathRunStatusName"`
 	// 运行级摘要（F-020）：调度方式、路径总数与中文汇总（如「3 条路径：2 已完成、1 失败」）。
 	ScheduleName string `json:"scheduleName,omitempty"`
 	PathsSummary string `json:"pathsSummary,omitempty"`
@@ -708,58 +712,6 @@ func (s *RunOrchestrationService) withRunScope(ctx context.Context, pathRunID ui
 		PathRunID:         strconv.FormatUint(pathRun.ID, 10),
 	}
 	return logging.WithScope(ctx, scope), nil
-}
-
-// ListRuns 列出计划下的运行（最新在前）。
-func (s *RunOrchestrationService) ListRuns(ctx context.Context, planID uint64) ([]RunSummaryDTO, error) {
-	if _, err := s.plans.Get(ctx, planID); err != nil {
-		return nil, err
-	}
-	runs, err := s.store.ListRunsByPlan(ctx, planID, 100)
-	if err != nil {
-		return nil, err
-	}
-	return s.runSummaries(ctx, runs)
-}
-
-// ListRunsWithFilters 按状态筛选计划下的运行（F-021 列表筛选）。
-func (s *RunOrchestrationService) ListRunsWithFilters(ctx context.Context, planID uint64, status string) ([]RunSummaryDTO, error) {
-	if _, err := s.plans.Get(ctx, planID); err != nil {
-		return nil, err
-	}
-	runs, err := s.store.ListRunsFiltered(ctx, planID, status, 0, 100)
-	if err != nil {
-		return nil, err
-	}
-	return s.runSummaries(ctx, runs)
-}
-
-// runSummaries 把运行行聚合成列表摘要：路径数量、调度方式与中文状态汇总。
-func (s *RunOrchestrationService) runSummaries(ctx context.Context, runs []model.Run) ([]RunSummaryDTO, error) {
-	items := make([]RunSummaryDTO, 0, len(runs))
-	for _, run := range runs {
-		item := RunSummaryDTO{
-			RunID:      run.ID,
-			RunNo:      run.RunNo,
-			ModeName:   model.RunModeName(run.Mode),
-			StatusName: model.RunStatusName(run.Status),
-			StartedAt:  run.StartedAt,
-			FinishedAt: run.FinishedAt,
-		}
-		if run.Result != nil {
-			item.ResultName = resultName(*run.Result)
-		}
-		pathRuns, err := s.store.ListPathRunsByRun(ctx, run.ID)
-		if err == nil && len(pathRuns) > 0 {
-			item.PathRunID = pathRuns[0].ID
-			item.PathRunStatusName = model.PathRunStatusName(pathRuns[0].Status)
-			item.PathRunCount = len(pathRuns)
-			item.ScheduleName = runScheduleName(run)
-			item.PathsSummary = runPathsSummary(pathRuns)
-		}
-		items = append(items, item)
-	}
-	return items, nil
 }
 
 // runPathsSummary 把一次运行的路径状态汇成一句中文：按状态分组计数，失败在前。
