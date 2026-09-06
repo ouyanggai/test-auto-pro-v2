@@ -33,9 +33,9 @@ test('三个来源返回三类语义不同的本地候选', () => {
 })
 
 test('搜索只过滤候选列表且支持各来源字段语义', () => {
-  assert.ok(filterFlowCandidates(getMockFlowCandidates('new', 'zhangmin'), '采购').length > 0)
+  assert.ok(filterFlowCandidates(getMockFlowCandidates('new', 'zhangmin'), '测试流程模板').length > 0)
   assert.ok(filterFlowCandidates(getMockFlowCandidates('started', 'zhangmin'), '当前节点').length === 0)
-  assert.ok(filterFlowCandidates(getMockFlowCandidates('started', 'zhangmin'), '部门负责人').length > 0)
+  assert.ok(filterFlowCandidates(getMockFlowCandidates('started', 'zhangmin'), '测试处理人').length > 0)
   assert.ok(filterFlowCandidates(getMockFlowCandidates('pending', 'zhangmin'), '草稿').length > 0)
   assert.deepEqual(filterFlowCandidates(getMockFlowCandidates('pending', 'zhangmin'), '不存在的流程'), [])
 })
