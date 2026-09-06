@@ -86,6 +86,20 @@
 
 `8ca919a` 移除用户侧对账 → `3463f25` 运行记录层级与安全删除 → `7090052` 模式切换 → `9b8f93c` 画布质感 → `b546fba` 返回入口对齐 → `83d0ee8` 文案去术语 → `b543029` 会话失效判定修正 → `d6f5685` 图缓存与会话策略 → `658e3a4`/`4ec285b`/`35f3223`/`5c3ceae` 会话探活四轮实测收敛 → `31115d0`/`f3d57e3` 会话失效恢复重发 → `346cbbc` 写前强制新登录 → `e4e881b` 中期收口 → `06c744a` save_draft 发起人门禁修复 → `609cf46`/`5ce8d1f` 探针证据落档 → `a5f325c` 主实例引用预填 → `db607f5` save_draft 状态事实补全 → `bdef120` 测试会话探活 → `56cf7af` 环境阻断判断。
 
+### 用户指路后的两项系统性修复（2026-09-07 凌晨）
+
+1. **「未设置审批人」根因（提交参数传递，非目标模板问题）**：勘定目标源码
+   `FlowOperateServiceImpl.settingsAuditPerson/validateNodeRunNodeChooseIsExistPersonnel`——
+   下一节点审批方式 ∈ isSettingsPerson 集合（run_node_choose/branched_passage_manager/
+   department_supervisor/extendedAttribute/form_person/level）时，提交必须携带
+   `nextAuditorList` 人员指定项；v2 的 NextAuditors 此前只认分支手动选择参数，
+   线性路线提交一律缺失 → 必然被拒。已按语义矩阵实现（`e4a1841`，图节点实时携带
+   AuditType → NodeInfo → buildRequest 生成人员指定项；定向用例锁定三种审批方式差异）。
+   佐证：9-05 成功提交（运行 13）的载荷就带 `nextAuditorList=[{nodeProxyId:…}]`。
+2. **会话管理对齐 V1**：借鉴 V1 `session.Manager`（GetOrLogin 缓存复用 + withSessionRetry
+   失效重登重试一次、无主动探活）——v2 此前每步写前强制重登把登录频率放大数倍，
+   是触发目标账号会话限制的主因之一。已回到「缓存复用 + 失效恢复重发」模式（`d58cfb8`）。
+
 ### 终态试跑验证删除（UI 实测，2026-09-07 收口时）
 
 用样本 2 的一条卡在门禁阻塞的真实运行（运行 43，路径运行 45）完成专门验证：
