@@ -22,12 +22,19 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 		CurrentNodeKey:  step.NodeKey,
 		CurrentNodeType: info.Type,
 	}
-	if step.Action == model.ActionSubmit {
-		// 新发起：实例还不存在，“新建且非草稿”与“当前用户是发起人”都由运行上下文保证。
+	if step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft {
+		// 发起节点的两个动作（提交/保存草稿）都由计划账号以发起人身份执行：
+		// 2026-09-07 实测修复——save_draft 此前落入审批分支，IsInitiator 恒为 false，
+		// 发起人本人的草稿也被门禁「只有流程发起人可以保存草稿」误拒。
+		// 提交（submit）作用于尚未持久化的新建实例；保存草稿在待发草稿实例上同样
+		// 由发起人本人执行（草稿只有发起人可见可操作，出现在其待发列表即为其发起）。
 		ctx.FlowSource = runCtx.Source
-		ctx.InstanceStatus = ""
 		ctx.IsInitiator = true
-		ctx.InstanceVisible = false
+		if step.Action == model.ActionSubmit {
+			// 新发起提交：实例还不存在，“新建且非草稿”由运行上下文保证。
+			ctx.InstanceStatus = ""
+			ctx.InstanceVisible = false
+		}
 		return ctx
 	}
 	ctx.InstanceStatus = facts.Status
