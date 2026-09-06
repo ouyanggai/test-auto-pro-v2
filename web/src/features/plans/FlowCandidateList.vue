@@ -285,9 +285,4 @@ defineExpose({ getSearchElement, focusSearch })
 	min-height: 480px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-	.candidate-row {
-		transition: none;
-	}
-}
 </style>

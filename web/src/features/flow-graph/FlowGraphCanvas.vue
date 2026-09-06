@@ -207,10 +207,6 @@ async function applyViewport(viewport: { x: number, y: number, zoom: number }, o
   }
 }
 
-function reducedMotion(): boolean {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
 async function setInitialViewport() {
   const version = ++viewportVersion
   await nextTick()
@@ -220,7 +216,7 @@ async function setInitialViewport() {
   const viewport = initialViewportForGraph(laidOut.value.nodes, canvasRoot.value?.clientWidth ?? 0)
   if (!viewport) return
   positionedPlanId = props.graph.planId
-  await applyViewport(viewport, { duration: reducedMotion() ? 0 : 220 })
+  await applyViewport(viewport, { duration: 220 })
   viewportState.value = viewport
 }
 
@@ -278,7 +274,7 @@ async function guideSelectionNext(anchorNodeID = '') {
   const nextViewport = nextRouteID
     ? viewportForCandidateGroupCentered(viewport, candidates, container, reservedRight.value)
     : viewportForPointCentered(viewport, point, container, reservedRight.value)
-  await applyViewport(nextViewport, { duration: reducedMotion() ? 0 : 250 })
+  await applyViewport(nextViewport, { duration: 250 })
   if (version !== guideVersion || !props.workspaceOpen || !props.branchEditing || !canvasRoot.value) return
   viewportState.value = nextViewport
   const guideKey = nextRouteID || `complete:${anchorNodeID || targetID}`
@@ -398,7 +394,7 @@ async function focusNode(nodeID: string) {
     { width: canvasRoot.value.clientWidth, height: canvasRoot.value.clientHeight },
     reservedRight.value,
   )
-  await applyViewport(nextViewport, { duration: reducedMotion() ? 0 : 220 })
+  await applyViewport(nextViewport, { duration: 220 })
   viewportState.value = nextViewport
 }
 
@@ -941,21 +937,4 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .flow-graph-canvas *,
-  .flow-graph-canvas *::before,
-  .flow-graph-canvas *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0s !important;
-  }
-
-  .flow-graph-canvas__guide {
-    animation: none;
-  }
-
-  .flow-graph-canvas__guide-line,
-  .flow-graph-canvas__saved-paths {
-    animation: none;
-  }
-}
 </style>

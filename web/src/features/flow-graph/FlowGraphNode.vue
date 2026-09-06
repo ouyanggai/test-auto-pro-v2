@@ -313,7 +313,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   line-height: 1.2;
 }
 
-/* 执行动画：CSS 旋转环，不依赖轮询节奏；减少动态效果时退化为静态圆环，文字信息不减。 */
+/* 执行动画由 CSS 连续驱动，不受轮询节奏影响；旋转、呼吸与文字共同表达真实运行状态。 */
 .flow-node__run-spinner {
   display: inline-block;
   width: 10px;
@@ -348,19 +348,4 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--info-color, #2080f0) 26%, transparent); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .flow-node--configuration {
-    transition: none;
-  }
-
-  .flow-node--run {
-    transition: none;
-  }
-
-  /* 减少动态效果：旋转与呼吸全部停掉，当前步保留静态高亮，「正在执行」四个字仍在。 */
-  .flow-node--run-busy,
-  .flow-node__run-spinner {
-    animation: none;
-  }
-}
 </style>

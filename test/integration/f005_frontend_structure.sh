@@ -7,6 +7,11 @@ paths_view="${project_root}/web/src/views/PlanPathsView.vue"
 configuration_view="${project_root}/web/src/views/PlanPathConfigurationView.vue"
 paths_api="${project_root}/web/src/features/execution-paths/api.ts"
 
+if grep -Fq 'prefers-reduced-motion' "${paths_view}"; then
+  printf 'F-005 路径页面不得再关闭动画，定位与流向过渡应保持自然连贯\n' >&2
+  exit 1
+fi
+
 grep -Fq '新增路径' "${paths_view}"
 grep -Fq '>编辑路径</n-button>' "${paths_view}"
 grep -Fq 'NVirtualList' "${paths_view}"

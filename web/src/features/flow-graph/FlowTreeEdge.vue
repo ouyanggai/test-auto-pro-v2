@@ -210,13 +210,4 @@ const emit = defineEmits<{
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .flow-tree-edge__direction--animated {
-    animation: none;
-  }
-
-  .flow-tree-edge__choice {
-    transition: none;
-  }
-}
 </style>

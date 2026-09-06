@@ -770,10 +770,9 @@ function scheduledAtText(value: string | null): string {
   return Number.isNaN(parsed.getTime()) ? '时间异常' : parsed.toLocaleString('zh-CN', { hour12: false })
 }
 
-// scrollToGraphStructure 只响应用户点击导航；滚轮浏览完全交给 CSS 吸附，减少动态效果时不播放平滑动画。
+// scrollToGraphStructure 只响应用户点击导航；滚轮浏览完全交给 CSS 吸附，点击后平滑定位到流程结构。
 function scrollToGraphStructure() {
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  graphScreenRef.value?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
+  graphScreenRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 // resetPageScroll 进入计划配置页始终回到路径准备区，保留用户主动滚动时的吸附效果。
@@ -1816,13 +1815,4 @@ onMounted(() => {
   to { transform: translateY(28px); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :global(.app-main > .n-layout-scroll-container.plan-paths-scroll-container) {
-    scroll-behavior: auto;
-  }
-
-  .path-summary__item::after {
-    animation: none !important;
-  }
-}
 </style>

@@ -89,8 +89,11 @@ grep -Fq "BaseEdge" "${edge_file}"
 grep -Fq 'flow-tree-edge__direction' "${edge_file}"
 grep -Fq 'stroke-dasharray:' "${edge_file}"
 grep -Fq '@keyframes flow-tree-direction' "${edge_file}"
-grep -Fq '@media (prefers-reduced-motion: reduce)' "${edge_file}"
-grep -Fq 'animation: none' "${edge_file}"
+grep -Fq 'animation: flow-tree-direction 1.6s linear infinite' "${edge_file}"
+if grep -RIn 'prefers-reduced-motion' "${project_root}/web/src/features/flow-graph" >/dev/null; then
+  printf 'F-004 流程画布不得再关闭动画，方向与状态过渡应保持自然连贯\n' >&2
+  exit 1
+fi
 grep -Fq 'pointer-events: none' "${hub_file}"
 grep -Fq 'opacity: 0' "${hub_file}"
 grep -Fq 'flow-routing-hub--configuration' "${hub_file}"

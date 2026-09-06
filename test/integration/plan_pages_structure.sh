@@ -112,13 +112,15 @@ grep -Fq '<n-divider class="selection-divider" title-placement="left">选择流�
 grep -Fq 'class="selection-shell"' "${form_file}"
 grep -Fq 'min-height: 348px;' "${form_file}"
 grep -Fq '<transition name="selection-content" mode="out-in" @after-enter="handleSelectionContentEntered">' "${form_file}"
-grep -Fq '@media (prefers-reduced-motion: reduce)' "${form_file}"
 grep -Fq 'transform: translateY(4px);' "${form_file}"
+if grep -Fq 'prefers-reduced-motion' "${form_file}"; then
+	printf 'F-001 新建计划页不得再关闭过渡动画\n' >&2
+	exit 1
+fi
 grep -Fq 'defineExpose({ getSearchElement, focusSearch })' "${candidate_file}"
 grep -Fq 'searchFieldRef' "${candidate_file}"
-grep -Fq "window.matchMedia('(prefers-reduced-motion: reduce)')" "${form_file}"
 grep -Fq 'calculateNearestScrollDelta(' "${form_file}"
-grep -Fq "container.scrollBy({ top: delta, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })" "${form_file}"
+grep -Fq "container.scrollBy({ top: delta, behavior: 'smooth' })" "${form_file}"
 grep -Fq 'if (delta === 0) return' "${form_file}"
 grep -Fq 'pendingSelectionGuidance' "${form_file}"
 grep -Fq 'requestSelectionGuidance()' "${form_file}"

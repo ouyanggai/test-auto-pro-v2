@@ -153,10 +153,6 @@ function nextFrame() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
 }
 
-function prefersReducedMotion(): boolean {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
 function getMainScrollContainer(): HTMLElement | null {
   return document.querySelector<HTMLElement>('.app-main > .n-layout-scroll-container')
 }
@@ -184,7 +180,7 @@ async function guideTo(target: 'selection' | 'scheduledAt' | 'maxConcurrency' | 
   )
   if (delta === 0) return
 
-  container.scrollBy({ top: delta, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+  container.scrollBy({ top: delta, behavior: 'smooth' })
   if (focusSearch) candidateListRef.value?.focusSearch()
 }
 
@@ -834,18 +830,6 @@ async function submitPlan() {
 .selection-content-leave-to {
   opacity: 0;
   transform: translateY(4px);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .selection-content-enter-active,
-  .selection-content-leave-active {
-    transition: none;
-  }
-
-  .selection-content-enter-from,
-  .selection-content-leave-to {
-    transform: none;
-  }
 }
 
 .form-actions {

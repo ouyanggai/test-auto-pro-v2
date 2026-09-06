@@ -37,7 +37,11 @@ grep -Fq "candidate.remark.trim() || '暂无备注'" "${project_root}/web/src/fe
 grep -Fq "candidate.formTemplateCount" "${project_root}/web/src/features/plans/presentation.ts"
 grep -Fq 'candidate-row__detail--remark' "${candidate_file}"
 grep -Fq -- '-webkit-line-clamp: 2' "${candidate_file}"
-grep -Fq '@media (prefers-reduced-motion: reduce)' "${candidate_file}"
+grep -Fq 'transition: background-color 120ms ease, border-color 120ms ease' "${candidate_file}"
+if grep -Fq 'prefers-reduced-motion' "${candidate_file}"; then
+	printf 'F-002 候选列表不得再关闭动画，交互应保持自然连贯\n' >&2
+	exit 1
+fi
 
 grep -Fq '/api/target/accounts/verify' "${api_file}"
 grep -Fq '/api/target/flow-templates' "${api_file}"
