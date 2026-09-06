@@ -384,29 +384,22 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, 0, err
 	}
 	reportPhase(approved, "prepare", "正在就绪演员会话")
-	// 写步骤的会话必须现场刷新并探活（2026-09-07 实测收敛）：submit 复用缓存会话
-	// 会被目标写端点一律拒绝（读端点同会话却正常，写链路只认刚登录的新会话）；
-	// 因此每一步写前强制重新登录，登录后立刻探活，目标存在“首次登录的 sid 立即失效”
-	// 的现象，失效则在只读重试预算内再次登录。读取路径的会话由各自读取自愈（读失败
-	// 会重登重放一次），不与写会话共享新鲜度要求。
-	session, sessionErr := RunWithRetry(ctx, e.policy, "会话刷新", func() (target.Session, error) {
-		fresh, err := e.sessions.Refresh(ctx, runCtx.PlanAccount)
-		if err != nil {
-			return fresh, err
+	// 写步骤的会话策略对齐 V1 长期验证的模式（2026-09-07 修正）：复用缓存会话，
+	// 写请求被会话失效拒绝时由 resubmitOnSessionRejected 恢复（重登+重发至多 3 次）。
+	// 每一步强制重登会让登录频率放大数倍，实测触发了目标平台对账号的会话限制
+	// （连只读都秒级失效），反而摧毁运行现场；V1 的「缓存复用+失效恢复」多年无此问题。
+	session, sessionErr := func() (target.Session, error) {
+		if cached, err := e.sessions.Current(ctx, runCtx.PlanAccount); err == nil {
+			return cached, nil
 		}
-		if pinger, ok := e.target.(interface {
-			Ping(context.Context, target.Session) error
-		}); ok {
-			if err := pinger.Ping(ctx, fresh); err != nil {
-				return fresh, err
-			}
-		}
-		return fresh, nil
-	}, func(attempt int, nextDelay time.Duration) {
-		note := fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay)
-		log.Phase("prepare", step.Sequence, attemptNo, note)
-		reportPhase(approved, "prepare", note)
-	})
+		return RunWithRetry(ctx, e.policy, "会话刷新", func() (target.Session, error) {
+			return e.sessions.Refresh(ctx, runCtx.PlanAccount)
+		}, func(attempt int, nextDelay time.Duration) {
+			note := fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay)
+			log.Phase("prepare", step.Sequence, attemptNo, note)
+			reportPhase(approved, "prepare", note)
+		})
+	}()
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
 		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
