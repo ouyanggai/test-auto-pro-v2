@@ -52,6 +52,8 @@ export interface FlowNodeData extends Record<string, unknown> {
   runSelected?: boolean
   // runErrorNote 是失败/结果待确认节点上的一句话错误摘要（来自已落账尝试，不猜测）。
   runErrorNote?: string
+  // runStepNote 是该节点最近一次已落账步骤的紧凑事实（步序·动作·处理人·耗时），来自运行详情 DTO。
+  runStepNote?: string
 }
 
 export interface FlowConfigurationNodeState {

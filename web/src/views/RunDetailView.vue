@@ -310,6 +310,22 @@ const runBusy = computed(() => acting.value
   || Boolean(detail.value?.loopRunning)
   || detail.value?.pathRunStatusName === '核验中')
 
+// runStepNotes 按图节点 ID 汇总每个节点最近一次已落账步骤的紧凑事实：
+// 步序·动作·处理人·耗时都取自运行详情 DTO 的同源事实，卡片直接呈现，不点开右栏也能读。
+// 多步骤节点（如动作次数循环）显示最后一步的耗时，步序显示该节点最后走过的序号。
+const runStepNotes = computed<Record<string, string>>(() => {
+  const notes: Record<string, string> = {}
+  if (!detail.value) return notes
+  for (const step of detail.value.steps) {
+    const nodeID = step.nodeId || step.nodeKey
+    if (!nodeID) continue
+    const seconds = step.durationMs >= 1000 ? `${Math.round(step.durationMs / 1000)}秒` : `${step.durationMs}毫秒`
+    const actor = step.actorName ? `· ${step.actorName}` : ''
+    notes[nodeID] = `第 ${step.stepNo} 步 ${step.actionName} ${actor} · ${seconds}`.replace(/\s+/g, ' ').trim()
+  }
+  return notes
+})
+
 // headerVars 给传送到顶栏的身份区单独带上主题色：传送出去的节点不在本页根节点下，
 // 拿不到根上声明的自定义属性。
 const headerVars = computed(() => ({ '--run-secondary-text-color': themeVars.value.textColor3 }))
@@ -849,6 +865,7 @@ onBeforeUnmount(() => {
             :run-deviation-edge-ids="runDeviationEdgeIds"
             :run-selected-node-key="selectedNodeKey"
             :run-error-notes="runErrorNotes"
+            :run-step-notes="runStepNotes"
             @select-run-node="handleSelectRunNode"
             @run-viewport-change="handleRunViewportChange"
           >

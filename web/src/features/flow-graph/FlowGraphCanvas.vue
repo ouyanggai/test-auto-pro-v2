@@ -54,11 +54,13 @@ const props = withDefaults(defineProps<{
   runSelectedNodeKey?: string
   // runErrorNotes 按图节点 ID 给出失败/结果待确认节点的一句话错误摘要。
   runErrorNotes?: Record<string, string>
+  // runStepNotes 按图节点 ID 给出最近一次已落账步骤的紧凑事实（步序·动作·处理人·耗时）。
+  runStepNotes?: Record<string, string>
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
   configurationMode: false, configurationNodeStates: () => ({}), configurationFormStatus: '', configurationFormStatusName: '',
   runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '', runBusy: false, runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
-  runSelectedNodeKey: '', runErrorNotes: () => ({}),
+  runSelectedNodeKey: '', runErrorNotes: () => ({}), runStepNotes: () => ({}),
 })
 const emit = defineEmits<{
   retry: []
@@ -135,6 +137,7 @@ const displayedLayout = computed(() => {
           runBusy: props.runMode && props.runBusy,
           runSelected: props.runMode && node.id === props.runSelectedNodeKey,
           runErrorNote: props.runErrorNotes?.[node.id],
+          runStepNote: props.runStepNotes?.[node.id],
         },
       }
     }),

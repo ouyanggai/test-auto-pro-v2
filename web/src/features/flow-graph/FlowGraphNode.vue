@@ -54,6 +54,8 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       <span v-if="data.runCurrent" class="flow-node__run-current-badge" role="status">
         {{ data.runBusy ? '正在执行' : '当前步' }}
       </span>
+      <!-- 已落账步骤的紧凑事实（步序·动作·处理人·耗时）：卡片直接呈现这一步做了什么，不必点开右栏。 -->
+      <span v-if="data.runStepNote" class="flow-node__run-step">{{ data.runStepNote }}</span>
       <handle type="source" :position="Position.Bottom" :connectable="false" />
     </div>
     <!-- 错误摘要浮在卡片下方：一眼可见失败原因的第一句话，不撑破布局（完整依据在右栏）。 -->
@@ -320,10 +322,8 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   opacity: 1;
 }
 
-/* 正在执行：光环按本地时钟呼吸，表示这一步真的在跑；只是停在这里等放行时保持静态高亮。 */
-.flow-node--run-busy {
-  animation: flow-node-run-pulse 1.6s ease-out infinite;
-}
+/* 正在执行不做整卡动画：卡片必须静止不跳（用户裁决），连续反馈交给状态点呼吸与旋转指示器。 */
+.flow-node--run-busy { /* 静态高亮已由 --run-current 承担 */ }
 
 .flow-node__run-status {
   display: inline-flex;
@@ -369,6 +369,17 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   pointer-events: none;
 }
 
+/* 已落账步骤事实行：小字、单行省略，长处理人名不挤压卡片布局。 */
+.flow-node__run-step {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--flow-label-color);
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes flow-node-dot-breathe {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.45; transform: scale(0.82); }
@@ -401,12 +412,6 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 
 @keyframes flow-node-run-spin {
   to { transform: rotate(360deg); }
-}
-
-@keyframes flow-node-run-pulse {
-  0% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--info-color, #2080f0) 26%, transparent); }
-  70% { box-shadow: 0 0 0 11px color-mix(in srgb, var(--info-color, #2080f0) 0%, transparent); }
-  100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--info-color, #2080f0) 26%, transparent); }
 }
 
 </style>
