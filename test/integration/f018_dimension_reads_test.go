@@ -22,7 +22,7 @@ func TestF018DimensionReadsAgainstRealTarget(t *testing.T) {
 	defer cancel()
 
 	// 从目标自己的已发列表取一条真实实例，避免依赖某个历史实例是否还在。
-	submitted, err := client.ListSubmitted(ctx, session, "", 1, 5)
+	submitted, err := client.ListSubmitted(ctx, session, "", 1, 20)
 	if err != nil {
 		t.Fatalf("读取已发列表失败：%v", err)
 	}
@@ -95,7 +95,7 @@ func TestF018AuditTraceMatchesRealNode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	submitted, err := client.ListSubmitted(ctx, session, "", 1, 5)
+	submitted, err := client.ListSubmitted(ctx, session, "", 1, 20)
 	if err != nil {
 		t.Fatalf("读取已发列表失败：%v", err)
 	}
