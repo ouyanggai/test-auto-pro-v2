@@ -6,7 +6,7 @@ import type {
 } from './types.ts'
 
 export const planActionByStatus: Record<PlanStatus, PlanAction> = {
-  not_started: { label: '继续配置', intent: 'configure' },
+  not_started: { label: '编辑', intent: 'configure' },
   running: { label: '查看运行', intent: 'view_running' },
   completed: { label: '查看结果', intent: 'view_result' },
 }

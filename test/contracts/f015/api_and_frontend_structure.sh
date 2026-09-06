@@ -37,7 +37,15 @@ panel='web/src/features/run-readiness/RunPreflightDialog.vue'
 grep -qF 'data-testid="run-preflight-dialog"' "${panel}" || fail '预检结果必须用组件库弹窗承载'
 grep -qF 'n-modal' "${panel}" || fail '预检弹窗必须使用组件库的 NModal，不自造弹层'
 grep -qF 'data-testid="run-readiness-blocks"' "${panel}" || fail '预检弹窗缺少阻塞分区'
-grep -qF 'data-testid="run-readiness-reminders"' "${panel}" || fail '预检弹窗缺少提醒分区'
+# 2026-09-06 用户裁决：提醒区从弹窗移除——只有明确的阻塞才需要用户处理。
+if grep -qF 'run-readiness-reminders' "${panel}"; then
+  fail '预检弹窗仍渲染提醒区，用户已裁决移除'
+fi
+# 文案必须是大白话：检查模板（用户可见部分），禁止再出现“断点”“写请求”“安全阀”这类词。
+template_start=$(grep -n '^<template>' "${panel}" | head -1 | cut -d: -f1)
+if tail -n "+${template_start}" "${panel}" | grep -qE '断点|写请求|安全阀'; then
+  fail '弹窗文案出现内部概念词，用户裁决要求大白话'
+fi
 # 运行按钮在计划列表：模板形态或 h() 渲染形态任一即可。
 if ! grep -qF "'data-testid': 'plan-run-button'" web/src/views/PlansView.vue; then
   if ! grep -qF 'data-testid="plan-run-button"' web/src/views/PlansView.vue; then
@@ -55,10 +63,10 @@ grep -qF 'pathIds' web/src/features/run-readiness/api.ts || fail '预检必须�
 if grep -qE '<input|<select' "${panel}"; then
   fail '预检弹窗出现了裸 input/select，必须改用组件库控件（纲领 12.1）'
 fi
-# 模式三选一必须是真实控件：n-radio-group 与对应导入必须同时存在，防止模板退化为死文本。
-grep -qF '<n-radio-group' "${panel}" || fail '运行模式必须是 NRadioGroup 控件'
-grep -qF 'NRadioGroup' "${panel}" || fail '运行模式组件未导入 NRadioGroup，模板会退化为未知元素'
-grep -qF 'NCheckbox' "${panel}" || fail '首次写断点必须使用 NCheckbox'
+# 运行方式必须是可选中的真实控件（radio 语义卡片，2026-09-06 用户裁决改版）。
+grep -qF 'role="radio"' "${panel}" || fail '运行方式必须用 radio 语义的卡片控件'
+grep -qF 'run-preflight__card--active' "${panel}" || fail '运行方式选中态必须可见（卡片描边 + 标题变色，不只靠颜色）'
+grep -qF 'NCheckbox' "${panel}" || fail '写入前确认开关必须使用 NCheckbox'
 # 界面不得出现目标内部标识：节点键既不能让用户输入，也不能回显。
 if grep -qE '节点键|nodeBreakpointInput|bp\.nodeKey' "${panel}"; then
   fail '界面出现了内部标识（节点键），纲领 12.1 禁止'
