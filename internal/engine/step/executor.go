@@ -436,7 +436,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err := e.runState.RenewLease(ctx, runCtx.PathRun.ID, fencingToken); err != nil {
 		return outcome, 0, err
 	}
-	e.refreshAndSubmit(ctx, runCtx, step, session, preview)
+	e.refreshAndSubmit(ctx, runCtx, step, session, preview, log, reportPhase, approved, attemptNo)
 	if !preview.writeSent {
 		// 零写入：写请求没有发出（发送前的待办新鲜复验失败或载荷缺失）。
 		// 没有发出的请求不存在“结果不确定”——把零写入判成不确定会把无副作用的失败
@@ -605,21 +605,73 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	return outcome, lineNo, nil
 }
 
+// isSessionRejected 判断一次写调用是否被目标以会话失效拒绝（响应已收到、未进入业务）。
+func isSessionRejected(err error) bool {
+	var targetErr *target.Error
+	return errors.As(err, &targetErr) && targetErr.Kind == target.ErrorSessionExpired
+}
+
+// refreshSessionForWrite 为写请求重新取得可用会话：强制重登并探活，探活只把会话失效当失败。
+func (e *Executor) refreshSessionForWrite(ctx context.Context, account string) (target.Session, error) {
+	fresh, err := e.sessions.Refresh(ctx, account)
+	if err != nil {
+		return target.Session{}, err
+	}
+	if pinger, ok := e.target.(interface {
+		Ping(context.Context, target.Session) error
+	}); ok {
+		if pingErr := pinger.Ping(ctx, fresh); pingErr != nil {
+			// 首个登录会话可能立即失效（实测）：再登一次；仍失败则如实返回。
+			fresh, err = e.sessions.Refresh(ctx, account)
+			if err != nil {
+				return target.Session{}, err
+			}
+			if pingErr := pinger.Ping(ctx, fresh); pingErr != nil {
+				return target.Session{}, pingErr
+			}
+		}
+	}
+	return fresh, nil
+}
+
 // refreshAndSubmit 在发送前完成待办任务 ID 的新鲜读取，然后发出唯一一次写请求。
 // 请求本体与预览同源（preview.request）；本方法及其调用路径不存在任何重试。
 // 只有真正发出写请求的路径才置 preview.writeSent：发送前的任何失败都停留在零写入分支。
-func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview) {
+func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, attemptNo int) {
 	switch request := preview.request.(type) {
 	case *target.SubmitFlowInstanceRequest:
 		preview.writeSent = true
 		started := e.now()
 		result, response, traceID, err := e.target.SubmitFlowInstance(ctx, session, *request)
+		// 会话失效拒绝（RESP401/AUTH_401）发生在目标业务逻辑之前：请求没有进入业务、
+		// 无副作用（核验重读「明确未变」可证）。这不是「唯一一次写机会」的消耗——
+		// 实测目标写端点会话校验与读端点不同步，新登录的会话也可能被写链路拒绝。
+		// 因此在同一次尝试内重新取得可用会话并重发，写请求进入业务的次数仍然至多一次；
+		// 两次都被会话失效拒绝才如实按失败上报（纪律：绝不盲目重发真实写请求，
+		// 这里的重发仅以「目标明确拒绝、证明无副作用」为前提）。
+		if isSessionRejected(err) {
+			log.Phase("submit", step.Sequence, attemptNo, "写请求被目标以会话失效拒绝（未进入业务、无副作用），重新取得会话后作为同一次尝试重发")
+			reportPhase(approved, "submit", "目标会话失效已拒绝一次（无副作用），正在重新取得会话")
+			refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
+			if refreshErr == nil {
+				result, response, traceID, err = e.target.SubmitFlowInstance(ctx, refreshed, *request)
+			} else {
+				err = refreshErr
+			}
+		}
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
 	case *target.AuditCurrentTaskRequest:
 		started := e.now()
 		// 待办按目标真实节点标识精确定位：step.NodeKey 是工具侧不透明键，发给目标永远匹配不上。
+		// 待办读取是只读：会话失效时按目标会话事实重取（与 submit 同一恢复语义）。
 		jobTaskID, err := e.target.FindDueTaskID(ctx, session, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
+		if isSessionRejected(err) {
+			refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
+			if refreshErr == nil {
+				jobTaskID, err = e.target.FindDueTaskID(ctx, refreshed, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
+			}
+		}
 		if err != nil {
 			// 待办读取失败（目标抖动或响应形状不符）：写请求未发出，按演员/待办解析失败如实归类。
 			preview.writeErr = err
@@ -636,6 +688,15 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		request.JobTaskID = jobTaskID
 		preview.writeSent = true
 		result, response, traceID, err := e.target.AuditCurrentTask(ctx, session, *request)
+		if isSessionRejected(err) {
+			log.Phase("submit", step.Sequence, attemptNo, "写请求被目标以会话失效拒绝（未进入业务、无副作用），重新取得会话后作为同一次尝试重发")
+			refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
+			if refreshErr == nil {
+				result, response, traceID, err = e.target.AuditCurrentTask(ctx, refreshed, *request)
+			} else {
+				err = refreshErr
+			}
+		}
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
 	default:
