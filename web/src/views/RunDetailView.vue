@@ -902,7 +902,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   height: 100%;
   min-height: 0;
-  padding: 10px 16px 14px;
+  /* 水平留白与内容区统一：顶栏返回入口、标题与下方内容左边界对齐（styles.css 同一组变量）。 */
+  padding: 10px var(--app-content-pad-x) 14px;
   /* 正常情况整页不滚动；只有现场丢失那种高提示区把空间挤满时才允许整页滚动，
      绝不让画布被压成零高度。 */
   overflow-y: auto;

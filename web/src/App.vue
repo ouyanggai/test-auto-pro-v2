@@ -18,7 +18,7 @@ const menuOptions: MenuOption[] = [
 const selectedKey = computed(() => (route.path.startsWith('/plans') ? '/plans' : route.path))
 // 运行详情是画布优先的工作台页：内容区去掉外层留白并禁用整页滚动，
 // 把顶栏以下的高度整块交给流程图（页面自己管纵向分区）。
-const flushContent = computed(() => /^\/runs\/[^/]+$/.test(route.path))
+const flushContent = computed(() => /^\/runs\/[^/]+\/paths\/[^/]+$/.test(route.path))
 const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
 const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
 const sidebarCollapsed = ref(false)
@@ -29,7 +29,7 @@ const sidebarCollapsed = ref(false)
     <n-message-provider>
       <n-notification-provider>
         <n-global-style />
-        <n-layout class="app-shell" native-scrollbar>
+        <n-layout class="app-shell" :class="{ 'app-shell--sider-collapsed': sidebarCollapsed }" native-scrollbar>
           <n-layout-header class="app-header" bordered>
             <span class="product-name">{{ appStore.productName }}</span>
             <!-- 顶栏上下文位：当前页面把返回入口与所在对象（如运行编号、计划/路径）挂到这里，

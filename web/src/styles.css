@@ -33,15 +33,25 @@ body,
   overflow: hidden;
 }
 
+/* 内容区统一水平留白与侧栏宽度：顶栏上下文（返回入口）与内容区左边界共用同一组变量，
+   保证「返回按钮、标题和下方内容」在侧栏展开/收起时都对齐，不针对任何分辨率硬写偏移。 */
+:root {
+  --app-content-pad-x: 48px;
+  --app-sidebar-width: 240px;
+}
+
 .app-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  padding: 0 28px;
+  padding: 0 28px 0 calc(var(--app-sidebar-width) + var(--app-content-pad-x));
 }
 
 .product-name {
+  position: absolute;
+  left: 28px;
   flex: 0 0 auto;
   overflow: hidden;
   color: var(--n-text-color);
@@ -61,18 +71,14 @@ body,
   flex: 0 0 auto;
 }
 
-/* 顶栏上下文位：页面通过 Teleport 把返回入口与所在对象挂进来，居左紧跟产品名。 */
+/* 顶栏上下文位：页面通过 Teleport 把返回入口与所在对象挂进来。
+   产品名已绝对定位在侧栏区上方，上下文从内容区左边界（顶栏内边距）直接开始，保证与页面对齐。 */
 .header-context {
   display: flex;
   align-items: center;
   flex: 1 1 auto;
   gap: 10px;
   min-width: 0;
-  margin-left: 18px;
-}
-
-.header-context:empty {
-  margin-left: 0;
 }
 
 .app-workspace {
@@ -121,7 +127,7 @@ body,
 
 .app-main > .n-layout-scroll-container {
   height: 100%;
-  padding: 40px 48px;
+  padding: 40px var(--app-content-pad-x);
   overflow-y: auto;
 }
 
@@ -129,6 +135,16 @@ body,
 .app-main--flush > .n-layout-scroll-container {
   padding: 0;
   overflow: hidden;
+}
+
+/* 侧栏收起（宽度归零）时：顶栏上下文跟随内容区左移，产品名从顶栏让位，
+   避免「返回按钮比内容区更靠右」的错位；收起是用户显式操作，视觉变化即操作反馈。 */
+.app-shell--sider-collapsed .app-header {
+  padding-left: var(--app-content-pad-x);
+}
+
+.app-shell--sider-collapsed .product-name {
+  display: none;
 }
 
 .placeholder-page {
