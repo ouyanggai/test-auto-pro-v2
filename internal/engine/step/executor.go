@@ -190,7 +190,12 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 
 	// 构造与实际发出的请求严格同源的类型化请求与载荷预览（不含 SID），
 	// 并在发送前校验禁用字段（batchCode 禁令）。
-	request, endpoint, payload, requestErr := buildRequest(runCtx, step, session, formPlan.Payload)
+	// 下一步节点：提交载荷的 nextAuditorList 人员指定项按它的审批方式生成（2026-09-07 语义勘定）。
+	nextNodeKey := ""
+	if nextIndex >= 0 && nextIndex < len(runCtx.Steps) {
+		nextNodeKey = runCtx.Steps[nextIndex].NodeKey
+	}
+	request, endpoint, payload, requestErr := buildRequest(runCtx, step, session, formPlan.Payload, nextNodeKey)
 	if requestErr != nil {
 		preview.BlockReason = "构造写请求失败：" + requestErr.Error()
 		preview.BlockFailureClass = model.FailureClassToolBug

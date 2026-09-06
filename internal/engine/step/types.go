@@ -64,6 +64,9 @@ type NodeInfo struct {
 	// EditableFields 是目标在这个节点声明为可编辑（fieldPower=edit）的表单字段英文名。
 	// 它是本节点写载荷唯一允许覆盖的字段集合（语义清单第 11 条）。
 	EditableFields []string
+	// AuditType 是目标在该节点配置的审批方式（run_node_choose/company/level 等）。
+	// 提交载荷按它决定是否必须携带 nextAuditorList 人员指定项（语义清单 1.8 补充）。
+	AuditType string
 }
 
 // RunContext 是一次路径运行的静态上下文：执行期间不变的标识、场景与数据。

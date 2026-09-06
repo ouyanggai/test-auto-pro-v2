@@ -77,7 +77,11 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 		if name == "" {
 			name = typeName
 		}
-		b.nodes[id] = model.FlowGraphNode{ID: id, Name: name, Type: normalizedNodeType(node.Type, node.BranchExecuteType), TypeName: typeName}
+		graphNode := model.FlowGraphNode{ID: id, Name: name, Type: normalizedNodeType(node.Type, node.BranchExecuteType), TypeName: typeName}
+		if node.AuditConfig != nil {
+			graphNode.AuditType = strings.TrimSpace(node.AuditConfig.AuditType)
+		}
+		b.nodes[id] = graphNode
 		b.nodeOrder = append(b.nodeOrder, id)
 		if !known {
 			b.warnings = append(b.warnings, fmt.Sprintf("节点“%s”使用未知类型", name))

@@ -70,7 +70,7 @@ func evaluateGate(step model.CompiledActionStep, ctx model.ActionContext) (model
 //
 // formData 是 BuildNodeFormData 已按节点权限算好的完整表单数据：目标保存是整份覆盖，
 // 所以除了明确不带表单数据的动作，这里一律提交这一份，不再直接透传历史快照。
-func buildRequest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage) (any, string, map[string]any, error) {
+func buildRequest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string) (any, string, map[string]any, error) {
 	nextAuditors := nextAuditorsOf(step)
 	targetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
 	switch step.Action {
@@ -81,6 +81,14 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 		auditors := nextAuditors
 		if branchTarget := runCtx.SubmitBranchTargetNodeID; branchTarget != "" {
 			auditors = append([]target.NextAuditor{{NodeProxyID: branchTarget}}, auditors...)
+		}
+		// 下一节点的审批方式属「需要外部指定人员」集合（FlowOperateServiceImpl.settingsAuditPerson
+		// 的 isSettingsPerson：run_node_choose/branched_passage_manager/department_supervisor/
+		// extendedAttribute/form_person/level）时，提交必须带 nextAuditorList 人员指定项：
+		// run_node_choose 硬校验 nodeProxyId 匹配，缺失即抛「未设置审批人」（2026-09-07 实测）；
+		// level 等类型在目标侧取人失败时也按 nextAuditorList 兜底。节点身份与名称都取真实结构。
+		if info := runCtx.Nodes[nextNodeKey]; info.TargetNodeID != "" && isSettingsPersonAuditType(info.AuditType) {
+			auditors = append(auditors, target.NextAuditor{NodeProxyID: info.TargetNodeID, Name: info.Name})
 		}
 		request := target.SubmitFlowInstanceRequest{
 			Name:         instanceName(runCtx, step),
@@ -171,6 +179,18 @@ func boolPtr(value bool) *bool {
 	return &value
 }
 
+// isSettingsPersonAuditType 对齐目标 FlowOperateServiceImpl 的 isSettingsPerson 集合：
+// 这些审批方式的下一节点需要提交方在 nextAuditorList 里指定人员/节点，
+// 其余审批方式（company/department/initiator/assign/role/position 等）由目标自行解析，不传。
+func isSettingsPersonAuditType(auditType string) bool {
+	switch strings.TrimSpace(auditType) {
+	case "run_node_choose", "branched_passage_manager", "department_supervisor",
+		"extendedAttribute", "form_person", "level":
+		return true
+	}
+	return false
+}
+
 // nextAuditorsOf 提取分支选择参数 fixedExecuteNodeId：条件分支的手动指定节点，
 // 以目标“人员型选人”结构传递（与目标前端分支选择的传递方式一致）。
 func nextAuditorsOf(step model.CompiledActionStep) []target.NextAuditor {
@@ -231,4 +251,9 @@ func collectKeys(value any) []string {
 	}
 	walk(value)
 	return keys
+}
+
+// BuildRequestForTest 暴露提交载荷构造，供 test 目录下的定向用例锁定 nextAuditorList 语义。
+func BuildRequestForTest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string) (any, string, map[string]any, error) {
+	return buildRequest(runCtx, step, session, formData, nextNodeKey)
 }

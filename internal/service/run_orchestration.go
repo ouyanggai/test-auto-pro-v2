@@ -363,6 +363,8 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 			continue
 		}
 		info.TargetNodeID = graphNode.ID
+		// 节点审批方式随真实结构实时补齐：提交载荷据此决定 nextAuditorList 的人员指定项。
+		info.AuditType = graphNode.AuditType
 		nodes[key] = info
 	}
 	for index, choice := range path.Choices {
