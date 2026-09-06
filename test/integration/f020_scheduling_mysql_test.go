@@ -171,9 +171,9 @@ func TestF020WaitingPathCanBeCancelledForRunStop(t *testing.T) {
 	}
 }
 
-// TestF020ManualConclusionClosesRunAggregation 锁定 F-018×F-020 交界：
-// 待对账路径登记人工结论后即视为闭合；全部闭合时运行才收尾，未闭合时运行保持运行中。
-func TestF020ManualConclusionClosesRunAggregation(t *testing.T) {
+// TestF020AwaitingReconciliationClosesRunAggregation 锁定 2026-09-06 产品裁决后的聚合语义：
+// 写结果无法确认（结果待确认）是终局，直接视为闭合；全部闭合时运行才收尾，未闭合时运行保持运行中。
+func TestF020AwaitingReconciliationClosesRunAggregation(t *testing.T) {
 	store := openF020Store(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -195,18 +195,12 @@ func TestF020ManualConclusionClosesRunAggregation(t *testing.T) {
 			model.RunEvent{Kind: "path_run_started", Label: "开始"}, now); err != nil {
 			t.Fatalf("启动路径失败：%v", err)
 		}
-		if _, err := store.runs.AdvancePathRunStatus(ctx, pathRun.ID,
-			model.PathRunStatusRunning, model.PathRunStatusAwaitingReconciliation,
-			model.RunEvent{Kind: "path_run_awaiting", Label: "写结果不确定"}, now); err != nil {
-			t.Fatalf("置待对账失败：%v", err)
-		}
 	}
-	// 只登记第一条路径的结论：另一条仍未闭合，运行不得收尾。
-	if err := store.runs.AppendManualConclusion(ctx, model.RunManualConclusion{
-		RunID: runRow.ID, PathRunID: pathRuns[0].ID,
-		InstanceStatus: "none", CurrentNode: "无", Note: "验证", Reporter: "自动验证",
-	}, now); err != nil {
-		t.Fatalf("登记结论失败：%v", err)
+	// 只把第一条路径置为结果待确认：另一条仍在运行中，运行不得收尾。
+	if _, err := store.runs.AdvancePathRunStatus(ctx, pathRuns[0].ID,
+		model.PathRunStatusRunning, model.PathRunStatusAwaitingReconciliation,
+		model.RunEvent{Kind: "path_run_awaiting", Label: "写结果无法确认"}, now); err != nil {
+		t.Fatalf("置结果待确认失败：%v", err)
 	}
 	closed, err := store.runs.FinishRunIfAllPathsClosed(ctx, runRow.ID, now)
 	if err != nil {
@@ -215,11 +209,11 @@ func TestF020ManualConclusionClosesRunAggregation(t *testing.T) {
 	if closed {
 		t.Fatal("还有未闭合路径时运行不得收尾")
 	}
-	if err := store.runs.AppendManualConclusion(ctx, model.RunManualConclusion{
-		RunID: runRow.ID, PathRunID: pathRuns[1].ID,
-		InstanceStatus: "none", CurrentNode: "无", Note: "验证", Reporter: "自动验证",
-	}, now); err != nil {
-		t.Fatalf("登记第二条结论失败：%v", err)
+	// 第二条路径也进入结果待确认后，全部闭合，运行收尾为已停止。
+	if _, err := store.runs.AdvancePathRunStatus(ctx, pathRuns[1].ID,
+		model.PathRunStatusRunning, model.PathRunStatusAwaitingReconciliation,
+		model.RunEvent{Kind: "path_run_awaiting", Label: "写结果无法确认"}, now); err != nil {
+		t.Fatalf("置第二条结果待确认失败：%v", err)
 	}
 	closed, err = store.runs.FinishRunIfAllPathsClosed(ctx, runRow.ID, now)
 	if err != nil {
@@ -233,7 +227,7 @@ func TestF020ManualConclusionClosesRunAggregation(t *testing.T) {
 		t.Fatalf("读取运行失败：%v", err)
 	}
 	if final.Status != model.RunStatusStopped {
-		t.Fatalf("人工结论闭合的运行应聚合为已停止，实际 %s", model.RunStatusName(final.Status))
+		t.Fatalf("结果待确认闭合的运行应聚合为已停止，实际 %s", model.RunStatusName(final.Status))
 	}
 }
 

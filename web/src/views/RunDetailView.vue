@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NEmpty, NForm, NFormItem, NInput, NInputNumber, NPopconfirm, NPopover, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
-import type { FormInst, FormRules } from 'naive-ui'
+import { NAlert, NButton, NEmpty, NInputNumber, NPopconfirm, NPopover, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -10,8 +9,6 @@ import {
   approveRun,
   fetchRunDetail,
   formatElapsed,
-  recoveryAction,
-  reconcileNow,
   removeBreakpoint,
   requestPause,
   RunApiError,
@@ -19,7 +16,7 @@ import {
   stopRun,
 } from '../features/runs/api'
 import { fetchFlowGraph } from '../features/flow-graph/api'
-import type { BreakpointInput, PathRunDetail, ReconcileView } from '../features/runs/api'
+import type { BreakpointInput, PathRunDetail } from '../features/runs/api'
 import { fetchRunEvents, type RunEventItem } from '../features/runs/api'
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
 import { pathConfigNodeKey } from '../features/path-configuration/logic'
@@ -42,7 +39,6 @@ const selectedPathRunID = ref<number>(Number(route.query.path || 0) || 0)
 function switchPathRun(pathRunID: number) {
   if (pathRunID === selectedPathRunID.value) return
   selectedPathRunID.value = pathRunID
-  reconcileView.value = null
   // 事件流按路径过滤：切换后清空并重置游标，重新只追加当前路径的事件。
   runEvents.value = []
   lastEventID = 0
@@ -99,57 +95,20 @@ const runDeviationEdgeIds = computed<string[]>(() => {
   return runTakenEdgeIds.value.filter((edgeID) => !runPathAnalysis.value!.reachableEdgeIds.has(edgeID))
 })
 
-// 待对账工作区（F-018）：对账结论与唯一合法动作。
-const reconciling = ref(false)
-const reconcileView = ref<ReconcileView | null>(null)
-const manualForm = ref({ instanceStatus: '', currentNode: '', note: '', reporter: '' })
+// 运行现场已丢失（服务重启或执行结果无法确认）：只展示一句大白话说明与只读记录，
+// 不提供任何对账、重试或登记入口；用户继续执行的唯一方式是从计划重新发起一次运行。
+const sceneLostNote = computed(() => detail.value?.sceneLostNote || '')
 
-// partialEffectWarned 只在对账依据里真的出现「部分生效」时才提示"表单数据可能已经写进去了"。
-// 这句话是语义清单第 2.4 节那个特定形状的结论，对普通的证据不完整并不成立——
-// 不加区分地一直显示会把没有依据的判断说成事实。
-const partialEffectWarned = computed(
-  () => (reconcileView.value?.reasons ?? []).some((reason) => reason.includes('部分生效')),
-)
-
-async function doReconcile(): Promise<void> {
-  if (reconciling.value) return
-  reconciling.value = true
-  errorText.value = ''
-  try {
-    reconcileView.value = await reconcileNow(runId, detail.value?.pathRunId)
-  } catch (error) {
-    errorText.value = error instanceof RunApiError ? error.message : '对账失败，请重试'
-  } finally {
-    reconciling.value = false
-  }
-}
-
-// runRecovery 执行对账给出的唯一动作；完成后以服务端重读结果刷新。
-async function runRecovery(action: string): Promise<void> {
-  if (reconciling.value) return
-  reconciling.value = true
-  try {
-    const manual = action === 'manual_end' ? manualForm.value : undefined
-    detail.value = await recoveryAction(runId, action, manual, detail.value?.pathRunId)
-    reconcileView.value = null
-    lastUpdateAt.value = Date.now()
-  } catch (error) {
-    errorText.value = error instanceof RunApiError ? error.message : '恢复动作失败，请重试'
-  } finally {
-    reconciling.value = false
-  }
-}
-
-// registerManual 登记人工核对结论（仍无法判定的唯一出路）。
-async function registerManual(): Promise<void> {
-  // 先过表单校验：三项必填缺一不可，校验不通过就地提示，不发请求。
-  try {
-    await manualFormRef.value?.validate()
-  } catch {
-    errorText.value = '请先补全人工核对结论里的必填项'
-    return
-  }
-  await runRecovery('manual_end')
+// sceneLostBounced 保证「提示后返回上级页面」只发生一次：再次进入同一运行时直接展示只读记录，
+// 绝不形成跳转循环（任务书第 1 条产品调整的硬性要求）。
+const sceneLostBouncing = ref(false)
+function handleSceneLost(): void {
+  if (!detail.value?.sceneLost) return
+  const key = `run-scene-lost-${runId}`
+  if (sessionStorage.getItem(key)) return
+  sessionStorage.setItem(key, '1')
+  sceneLostBouncing.value = true
+  window.setTimeout(() => { void router.push('/runs') }, 2200)
 }
 
 // 放行命令与条件写参数：命令集合由后端给出，游标与版本取自详情（重复点击只产生一次效果）。
@@ -184,7 +143,6 @@ async function runCommand(command: string): Promise<void> {
 
 // pauseNow 提交暂停请求（本步走完核验与落账后生效）。
 const pausing = ref(false)
-// 待对账运行自动触发一次只读对账（安全）。
 
 async function pauseNow(): Promise<void> {
   if (pausing.value) return
@@ -304,26 +262,6 @@ function breakpointTypeName(type: string): string {
   }
 }
 
-// 人工结论表单：三项必填（实例状态、当前节点、登记人），说明选填。
-// 实例状态用目标的真实状态集合做选项，避免自由文本写出目标没有的状态。
-const manualFormRef = ref<FormInst | null>(null)
-const instanceStatusOptions = [
-  { label: '运行中（run）', value: 'run' },
-  { label: '已结束（end）', value: 'end' },
-  { label: '已驳回（rejected）', value: 'rejected' },
-  { label: '已撤回（withdraw）', value: 'withdraw' },
-  { label: '已终止（termination）', value: 'termination' },
-  { label: '已作废（abandon）', value: 'abandon' },
-  { label: '草稿（draft）', value: 'draft' },
-  { label: '待发（await_sent）', value: 'await_sent' },
-  { label: '目标平台上看不到这条实例', value: 'not_visible' },
-]
-const manualRules: FormRules = {
-  instanceStatus: [{ required: true, message: '请选择你在目标平台上看到的实例状态', trigger: ['change', 'blur'] }],
-  currentNode: [{ required: true, message: '请填写目标平台上显示的当前节点', trigger: ['input', 'blur'] }],
-  reporter: [{ required: true, message: '请填写登记人，人工结论要可追溯', trigger: ['input', 'blur'] }],
-}
-
 // applyBreakpoints 把后端返回的断点列表同步进详情（即时可见，不需要刷新页面）。
 function applyBreakpoints(list: BreakpointInput[]): void {
   if (!detail.value) return
@@ -383,11 +321,8 @@ async function loadDetail(): Promise<void> {
     syncControl(next)
     lastUpdateAt.value = Date.now()
     void pollEvents()
-    // 进入待对账后自动做一次只读对账（纲领第 4.4 节）：用户不需要先点一下才看到依据。
-    // 只在还没有结论时触发一次；对账是只读的，服务重启后它会顺带按运行事实重建现场。
-    if (next.pathRunStatusName === '待对账' && !reconcileView.value && !reconciling.value) {
-      void doReconcile()
-    }
+    // 现场已丢失的运行：先给一句大白话说明再返回上级页面；同一运行只返回一次，禁止跳转循环。
+    handleSceneLost()
     if (!graph.value) {
       graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
     }
@@ -413,7 +348,7 @@ function schedulePoll(): void {
     pollTimer = null
   }
   if (!detail.value) return
-  const terminalStatuses = ['已完成', '失败', '待对账', '已停止', '已取消']
+  const terminalStatuses = ['已完成', '失败', '结果待确认', '已停止', '已取消']
   // 多路径运行：当前路径终态但还有未终态兄弟路径时继续轮询，切换区的状态不能停滞（评审 P2）。
   const siblingActive = (detail.value.paths ?? []).some((path) => !terminalStatuses.includes(path.statusName) && path.statusName !== '暂停')
   if (terminalStatuses.includes(detail.value.pathRunStatusName) && !siblingActive) return
@@ -549,7 +484,7 @@ const statusTagType = computed<'default' | 'info' | 'success' | 'warning' | 'err
   switch (detail.value?.pathRunStatusName) {
     case '已完成': return 'success'
     case '失败': return 'error'
-    case '待对账': return 'warning'
+    case '结果待确认': return 'warning'
     case '运行中':
     case '核验中': return 'info'
     default: return 'default'
@@ -568,14 +503,14 @@ function commandButtonText(command: { command: string, label: string }): string 
 const noCommandReason = computed(() => {
   if (!detail.value) return ''
   if (detail.value.loopRunning) return '正在连续执行，命令在停下后可用'
-  if (detail.value.pathRunStatusName === '待对账') return '写结果不确定，先在下方待对账区完成对账，这里不提供重试或继续'
+  if (detail.value.sceneLost) return '这次运行无法安全继续；已保存的记录仅供参考，如需继续请从计划重新发起运行'
   return '当前状态下没有可用命令，请查看上方停止原因'
 })
 
 // overviewDone 表示整图进入结果总览（路径运行终态）。
 const overviewDone = computed(() => {
   const status = detail.value?.pathRunStatusName || ''
-  return ['已完成', '失败', '待对账', '已停止', '已取消'].includes(status)
+  return ['已完成', '失败', '结果待确认', '已停止', '已取消'].includes(status)
 })
 
 // topConclusion 把路径结果与最终目标事实分开表述。
@@ -805,101 +740,19 @@ onBeforeUnmount(() => {
 
       <!-- 结论与提示区：只在真的有内容时占位，高度有界，不把画布挤没。 -->
       <div
-        v-if="detail.stopReason || detail.structureNote || topConclusion || errorText || actionText || detail.pathRunStatusName === '待对账'"
+        v-if="detail.stopReason || detail.structureNote || topConclusion || errorText || actionText || sceneLostNote"
         class="run-detail__notices"
       >
+        <!-- 现场已丢失：一句大白话说明发生了什么、为什么、用户现在能做什么；不给任何输入或重试入口。 -->
+        <n-alert v-if="sceneLostNote" type="warning" :show-icon="false" class="run-detail__notice-bar">
+          {{ sceneLostNote }}{{ sceneLostBouncing ? ' 即将返回运行记录列表……' : '' }}
+        </n-alert>
         <n-alert v-if="detail.stopReason || detail.structureNote" type="warning" :show-icon="false" class="run-detail__notice-bar">
           {{ [detail.stopReason, detail.structureNote].filter(Boolean).join('；') }}
         </n-alert>
         <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
         <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
         <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
-
-        <div
-          v-if="detail.pathRunStatusName === '待对账'"
-          class="run-detail__reconcile"
-          role="region"
-          aria-label="待对账工作区"
-        >
-          <h4>待对账</h4>
-          <p v-if="reconciling">正在只读对账……</p>
-          <template v-else-if="reconcileView">
-            <p class="run-detail__reconcile-verdict">对账结论：{{ reconcileView.verdictName }}</p>
-            <p>{{ reconcileView.headline }}</p>
-            <ul>
-              <li v-for="(reason, index) in reconcileView.reasons" :key="index">{{ reason }}</li>
-            </ul>
-            <p v-if="reconcileView.action === 'replay'" class="run-detail__reconcile-note">
-              唯一动作是重放这一步：它是一次新的尝试，会重新走门禁与七阶段；一次尝试仍然只发一次写请求。
-              已用重放 {{ reconcileView.replaysUsed }} / {{ reconcileView.replaysMax }} 次。
-            </p>
-            <p v-else-if="reconcileView.replayExhausted" class="run-detail__reconcile-note">
-              证据仍指向未生效，但重放次数已用完（{{ reconcileView.replaysMax }} 次），不再提供重放；
-              只能登记你在目标平台上看到的事实并结束这条路径运行。
-            </p>
-            <p v-else-if="partialEffectWarned" class="run-detail__reconcile-note">
-              表单数据可能已经写进去了，重放会再写一次；请登记你在目标平台上看到的事实。
-            </p>
-            <n-button
-              v-if="reconcileView.action === 'advance'"
-              type="primary" size="small" :disabled="reconciling"
-              @click="runRecovery('advance')"
-            >确认并前进到下一步</n-button>
-            <n-button
-              v-else-if="reconcileView.action === 'replay'"
-              type="primary" size="small" :disabled="reconciling"
-              @click="runRecovery('replay')"
-            >重放这一步</n-button>
-            <n-button v-else-if="reconcileView.action === 'reconcile_again'" size="small" :disabled="reconciling" @click="doReconcile">重新对账</n-button>
-            <div v-else-if="reconcileView.action === 'manual_end'" class="run-detail__manual-form">
-              <p class="run-detail__manual-lead">
-                请登记你在目标平台上亲眼看到的事实。登记后这条路径运行进入终态、不能再前进，
-                人工结论会作为运行事实永久保留。
-              </p>
-              <n-form
-                ref="manualFormRef"
-                :model="manualForm"
-                :rules="manualRules"
-                label-placement="left"
-                :label-width="96"
-                size="small"
-                require-mark-placement="left"
-              >
-                <n-form-item label="实例状态" path="instanceStatus">
-                  <n-select
-                    v-model:value="manualForm.instanceStatus"
-                    :options="instanceStatusOptions"
-                    placeholder="选择目标平台上这条实例的当前状态"
-                    aria-label="实例状态"
-                  />
-                </n-form-item>
-                <n-form-item label="当前节点" path="currentNode">
-                  <n-input v-model:value="manualForm.currentNode" placeholder="目标平台上显示的当前节点名称" />
-                </n-form-item>
-                <n-form-item label="登记人" path="reporter">
-                  <n-input v-model:value="manualForm.reporter" placeholder="你的姓名或账号，事后可追溯" />
-                </n-form-item>
-                <n-form-item label="补充说明" path="note">
-                  <n-input
-                    v-model:value="manualForm.note"
-                    type="textarea"
-                    :autosize="{ minRows: 2, maxRows: 4 }"
-                    placeholder="选填：你据以判断的依据，例如在目标平台看到的待办或已办"
-                  />
-                </n-form-item>
-              </n-form>
-              <n-popconfirm :disabled="reconciling" @positive-click="registerManual">
-                <template #trigger>
-                  <n-button type="warning" size="small" :disabled="reconciling">登记人工核对结论并结束</n-button>
-                </template>
-                登记后本路径运行进入终态，不能再放行或重放。确认你登记的是目标平台上的真实状态？
-              </n-popconfirm>
-            </div>
-          </template>
-          <template v-else>
-            <n-button size="small" type="info" :disabled="reconciling" @click="doReconcile">对账</n-button>
-          </template>
-        </div>
       </div>
 
       <!-- 主体：页签下方整块给流程图；右侧检视面板只在点开节点后出现。 -->
@@ -971,7 +824,7 @@ onBeforeUnmount(() => {
   height: 100%;
   min-height: 0;
   padding: 10px 16px 14px;
-  /* 正常情况整页不滚动；只有待对账那种高提示区把空间挤满时才允许整页滚动，
+  /* 正常情况整页不滚动；只有现场丢失那种高提示区把空间挤满时才允许整页滚动，
      绝不让画布被压成零高度。 */
   overflow-y: auto;
 }
@@ -1154,7 +1007,7 @@ onBeforeUnmount(() => {
 .run-detail__path-name { font-weight: 500; }
 .run-detail__path-status { font-size: 12px; opacity: 0.8; }
 
-/* 提示区：停止原因、结果结论、报错与待对账工作区，高度有界，不把画布挤没。 */
+/* 提示区：停止原因、结果结论、报错与现场丢失说明，高度有界，不把画布挤没。 */
 .run-detail__notices {
   display: grid;
   flex: 0 0 auto;
@@ -1172,25 +1025,6 @@ onBeforeUnmount(() => {
 
 .run-detail__error { margin: 0; color: var(--error-color, #d03050); }
 .run-detail__notice { margin: 0; color: var(--run-secondary-text-color, #909090); }
-
-.run-detail__reconcile {
-  padding: 10px 12px;
-  border: 1px solid var(--run-border-color, rgba(128, 128, 128, 0.35));
-  border-radius: 8px;
-}
-
-.run-detail__reconcile h4 { margin: 0 0 6px; }
-.run-detail__reconcile p,
-.run-detail__reconcile ul { margin: 4px 0; font-size: 13px; }
-.run-detail__reconcile-verdict { font-weight: 600; }
-.run-detail__reconcile-note { color: var(--warning-color, #f0a020); }
-.run-detail__manual-form { display: grid; gap: 6px; max-width: 460px; }
-
-.run-detail__manual-lead {
-  margin: 0 0 8px;
-  color: var(--run-secondary-text-color, #909090);
-  font-size: 12px;
-}
 
 /* 主体：画布占满剩余空间，右侧检视面板按需出现（不出现时不占列）。 */
 .run-detail__body {

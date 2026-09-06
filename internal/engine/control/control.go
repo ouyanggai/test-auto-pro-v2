@@ -1,6 +1,7 @@
 // Package control 实现运行控制（纲领第 4.3 阶段 3、4.5、5.1-5.4 节）：
 // 启动（模式三选一）、断点增删与命中、暂停、三条放行命令、停止。
-// 边界：不实现对账与安全重试（F-018）、导航与恢复步骤（F-019）、多路径调度（F-020）；
+// 写结果无法确认是终局（2026-09-06 产品裁决）：现场作废、运行聚合收尾，不提供对账与恢复动作。
+// 边界：不实现导航与恢复步骤（F-019）、多路径调度（F-020）；
 // 不提供批量放行；不改写已发生事实。
 package control
 
@@ -71,9 +72,6 @@ type activeStep struct {
 	stopRequested  bool
 	// deviationStalled 表示路径偏离断点已强制停止：不产出放行类命令。
 	deviationStalled bool
-	// awaitingReconciliation 表示这条路径运行停在待对账：现场保留是为了对账与恢复动作，
-	// 但绝不能产出放行类命令——界面上出现「执行一步」会与「唯一合法动作」直接冲突。
-	awaitingReconciliation bool
 	// loopRunning 表示连续执行循环存活。
 	loopRunning bool
 	// stepInFlight 表示一步正在执行（从取步租约到落账）：这期间停止必须延后到本步
@@ -88,11 +86,7 @@ type activeStep struct {
 	executedNodeKeys map[string]bool
 	// finished 表示路径运行已到终态，现场可回收。
 	finished bool
-	// reconcile 是最近一次只读对账的结论（待对账工作区数据源）。
-	reconcile *ReconcileResultView
-	// replaysUsed 是已执行的重放次数。
-	replaysUsed int
-	// recoveryLog 把对账过程写进运行目录的 recovery.log。
+	// recoveryLog 把写结果无法确认的内部判定写进运行目录的 recovery.log。
 	recoveryLog *RecoveryLog
 	// progress 是当前步的实时阶段进度（执行器上报，指示器轮询的数据源）。
 	progress stepPhaseProgress
@@ -115,10 +109,8 @@ func (sess *activeStep) pauseState() PauseState {
 	if sess.finished {
 		return PauseStateFinished
 	}
-	if sess.awaitingReconciliation {
-		// 写结果不确定：只有对账给出的那一个动作，没有任何放行类命令（F-016 已定，不得回退）。
-		return PauseStateUncertain
-	}
+	// 结果待确认的会话在不确定落账时立即作废，正常运行到不了 PauseStateUncertain；
+	// 保留这个分支作为安全兜底：万一出现该状态，可用命令集合必须是空集，绝不给放行入口。
 	return PauseStateWaiting
 }
 
@@ -150,7 +142,7 @@ func (s *Service) SetControlLog(log *ControlLog) {
 	s.controlLog = log
 }
 
-// SetRecoveryLog 注入 recovery.log 写入器；必须在首次对账前调用。
+// SetRecoveryLog 注入 recovery.log 写入器；必须在首次执行前调用。
 func (s *Service) SetRecoveryLog(log *RecoveryLog) {
 	s.recoveryLog = log
 }
@@ -315,8 +307,6 @@ type SessionView struct {
 	LoopRunning    bool
 	StopRequested  bool
 	PauseRequested bool
-	// Reconcile 是最近一次只读对账的结论；待对账工作区的数据源。
-	Reconcile *ReconcileResultView
 	// CurrentPhase/CurrentPhaseNote 是当前步的实时阶段与中文补充；CurrentPhaseSince 是进入时刻。
 	CurrentPhase      string
 	CurrentPhaseNote  string
@@ -339,7 +329,6 @@ func (s *Service) View(pathRunID uint64) *SessionView {
 	}
 	view.PauseState = session.pauseState()
 	view.Commands = AvailableCommands(session.mode, view.PauseState)
-	view.Reconcile = session.reconcile
 	view.CurrentPhase = session.progress.phase
 	view.CurrentPhaseNote = session.progress.note
 	view.CurrentPhaseSince = session.progress.since
@@ -571,16 +560,29 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	}
 	result := &ApproveResult{Outcome: outcome}
 	if outcome.Verdict == string(verdict.OutcomeUncertain) {
-		// 写结果不确定：现场标记为待对账，可用命令集合随即变成空集（不给放行入口）。
+		// 写结果无法确认：2026-09-06 产品裁决移除用户侧对账后这就是终局。
+		// 现场立即作废，绝不自动继续、重放或重复发送真实写请求；
+		// 运行聚合随之收尾（结果待确认计入已停止），用户只能从计划重新发起一次运行。
+		// recovery.log 与运行事件都留下这条内部判定，日志与记录双向可查。
 		s.mu.Lock()
-		session.awaitingReconciliation = true
-		session.stopReason = "写结果不确定：路径运行停在待对账，只提供只读对账与对账给出的唯一动作"
-		session.version++
+		runID := session.runCtx.Run.ID
+		stepNo := 0
+		if session.preview != nil {
+			stepNo = session.preview.StepNo
+		}
 		s.mu.Unlock()
-		// 路径运行停在待对账，但内存现场必须保留。
-		// 对账与三个恢复动作全靠这份现场（本步预览、步骤游标、写之前的基准事实、重放次数）；
-		// 在这里清掉现场，只读对账就会以“当前没有等待放行的步骤”失败，F-018 整层变成不可达的死代码。
-		// 现场保留不等于还能放行：ApproveWithCommand 会因路径运行不在运行中而拒绝。
+		s.recoveryLog.LogFact(pathRunID, fmt.Sprintf(
+			"write_uncertain=1 decision=stop run_id=%d step_no=%d reason=写结果无法确认，已停止推进；继续执行请从计划重新运行", runID, stepNo))
+		_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+			RunID: runID, PathRunID: &pathRunID,
+			Kind:  "run_uncertain_closed",
+			Label: "有一步的真实执行结果无法确认，为避免重复执行真实业务操作，本次运行已停止推进；已保存的记录保留，可从计划重新发起运行",
+		}, s.now())
+		s.clear(pathRunID)
+		if _, err := s.store.FinishRunIfAllPathsClosed(ctx, runID, s.now()); err != nil {
+			// 聚合收尾失败不改变「已停止推进」的终局：路径运行已闭合，收尾本身幂等，可再次触发。
+			s.warnFactFailure(pathRunID, "运行聚合收尾", err)
+		}
 		return result, nil
 	}
 	if outcome.Verdict != "confirmed_success" {

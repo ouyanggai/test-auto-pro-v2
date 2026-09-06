@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -11,7 +10,7 @@ import (
 	"test-auto-pro-v2/internal/repository"
 )
 
-// 本文件承接运行记录仓储里与控制事实、对账结论与步骤落账相关的方法（纲领第 7.1、7.2 节），
+// 本文件承接运行记录仓储里与控制事实和步骤落账相关的方法（纲领第 7.1、7.2 节），
 // 与 run_repository.go 同属 mysql 包；拆分只为满足纲领第 10 节的单文件行数上限，不改任何行为。
 
 // AppendRunControl 追加一行人工控制事实；kind/breakpoint/command 等列按事实类别填充。
@@ -92,52 +91,6 @@ func (r *RunRepository) LatestStepAttempt(ctx context.Context, pathRunID uint64)
 		}
 	}
 	return step, attempt, sql.ErrNoRows
-}
-
-// RecordReconcileOutcome 把对账结论与恢复动作写回尝试行的对账三列。
-// 这是事实表上唯一被允许的 UPDATE：仅覆盖纲领第 7.2 节明确归属本表的三个对账字段，不触碰任何既有事实。
-// attemptID 为 0 一律拒绝：那是调用方没取到尝试主键，静默 UPDATE 0 行会让对账结论凭空消失。
-func (r *RunRepository) RecordReconcileOutcome(ctx context.Context, attemptID uint64, verdict string, action string, isReplay bool, now time.Time) error {
-	if attemptID == 0 {
-		return fmt.Errorf("%w：对账结论缺少尝试主键，拒绝写入", repository.ErrRunNotFound)
-	}
-	// 命中判定用一次显式存在性查询，不看 UPDATE 受影响行数：
-	// MySQL 默认统计"被更改的行"，同一结论重复回写（执行恢复动作前必须再对账一次）时
-	// 三列值完全相同，受影响行数为 0，会把一次正常的幂等回写误判成尝试行不存在。
-	var exists uint64
-	err := r.db.QueryRowContext(ctx, "SELECT id FROM run_step_attempts WHERE id = ?", attemptID).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return repository.ErrRunNotFound
-	}
-	if err != nil {
-		return err
-	}
-	if _, err := r.db.ExecContext(ctx, `
-		UPDATE run_step_attempts SET reconcile_verdict = ?, recovery_action = ?, is_replay = ?
-		WHERE id = ?
-	`, verdict, action, isReplay, attemptID); err != nil {
-		return err
-	}
-	return nil
-}
-
-// AppendManualConclusion 登记人工核对结论事实（只 INSERT）。
-func (r *RunRepository) AppendManualConclusion(ctx context.Context, conclusion model.RunManualConclusion, now time.Time) error {
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO run_manual_conclusions (run_id, path_run_id, step_no, instance_status, current_node, note, reporter, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, conclusion.RunID, conclusion.PathRunID, conclusion.StepNo, conclusion.InstanceStatus,
-		conclusion.CurrentNode, nullableString(conclusion.Note), nullableString(conclusion.Reporter), now.UTC())
-	return err
-}
-
-// HasManualConclusion 判断该路径运行是否已登记人工核对结论（F-018×F-020 守卫数据源）。
-// 结论一行即终局：登记后不再允许对账或恢复动作，防止已结束的运行被拉回运行中再发真实写。
-func (r *RunRepository) HasManualConclusion(ctx context.Context, pathRunID uint64) (bool, error) {
-	var count int
-	err := r.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM run_manual_conclusions WHERE path_run_id = ?", pathRunID).Scan(&count)
-	return count > 0, err
 }
 
 // SetFinalTargetSummary 落库最终目标事实摘要；路径运行未绑定实例时不允许写摘要。

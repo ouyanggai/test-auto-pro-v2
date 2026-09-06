@@ -266,7 +266,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   opacity: 0.7;
 }
 .flow-node--run-completed .flow-node__run-status { color: var(--success-color, #18a058); }
-/* 失败与待对账不压暗：出问题的节点必须一眼看到，压暗等于把故障藏起来。 */
+/* 失败与结果待确认不压暗：出问题的节点必须一眼看到，压暗等于把故障藏起来。 */
 .flow-node--run-failed {
   border-color: var(--error-color, #d03050);
   border-width: 2px;

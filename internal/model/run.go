@@ -38,11 +38,12 @@ func RunStatusName(status RunStatus) string {
 	}
 }
 
-// PathRunStatus 是一条路径运行（path_runs）的状态，即纲领已定义的九个中文状态之一。
+// PathRunStatus 是一条执行路径的运行聚合（path_runs 表）的状态，即纲领已定义的九个中文状态之一。
 // 状态只前进不回退：终态（已完成、失败、已停止、已取消）一旦进入不可离开；
 // 运行中与核验中之间的前进表达步骤循环，不属于回退。
-// 待对账是唯一的“可恢复停摆态”：它自己不会前进，只有 F-018 只读对账给出的唯一合法动作
-// 能把它带回运行中（确认前进 / 重放本步）；登记人工结论则原地留在待对账作为最终归宿。
+// 结果待确认（awaiting_reconciliation）是终局：写结果无法确认时为避免重复执行真实业务操作，
+// 工具明确停止推进并保留已落库事实；用户侧不提供对账、重放或人工登记入口，
+// 继续执行的唯一方式是从计划重新发起一次运行（2026-09-06 产品裁决）。
 type PathRunStatus string
 
 const (
@@ -53,7 +54,7 @@ const (
 	PathRunStatusCompleted              PathRunStatus = "completed"               // 已完成
 	PathRunStatusFailed                 PathRunStatus = "failed"                  // 失败
 	PathRunStatusPaused                 PathRunStatus = "paused"                  // 暂停
-	PathRunStatusAwaitingReconciliation PathRunStatus = "awaiting_reconciliation" // 待对账
+	PathRunStatusAwaitingReconciliation PathRunStatus = "awaiting_reconciliation" // 结果待确认（终局）
 	PathRunStatusStopped                PathRunStatus = "stopped"                 // 已停止
 	PathRunStatusCancelled              PathRunStatus = "cancelled"               // 已取消
 )
@@ -85,10 +86,9 @@ var pathRunTransitions = map[PathRunStatus][]PathRunStatus{
 		PathRunStatusCancelled,
 	},
 	PathRunStatusPaused: {PathRunStatusRunning, PathRunStatusStopped, PathRunStatusCancelled},
-	// 待对账 -> 运行中 是 F-018 对账结论的落点：判「已生效」后确认前进、判「未生效」后重放本步，
-	// 两者都必须先回到运行中，否则租约领取（SQL 只认 waiting/running/verifying/paused）与
-	// 后续七阶段全部无法进行——恢复层会变成永远不可达的死代码。
-	PathRunStatusAwaitingReconciliation: {PathRunStatusRunning},
+	// 结果待确认是终局：用户侧对账与恢复动作已于 2026-09-06 移除，
+	// 不存在任何把它带回运行中的通路；继续执行只能新建一次运行。
+	PathRunStatusAwaitingReconciliation: {},
 	PathRunStatusCompleted:              {},
 	PathRunStatusFailed:                 {},
 	PathRunStatusStopped:                {},
@@ -123,7 +123,7 @@ func PathRunStatusName(status PathRunStatus) string {
 	case PathRunStatusPaused:
 		return "暂停"
 	case PathRunStatusAwaitingReconciliation:
-		return "待对账"
+		return "结果待确认"
 	case PathRunStatusStopped:
 		return "已停止"
 	case PathRunStatusCancelled:
@@ -133,16 +133,9 @@ func PathRunStatusName(status PathRunStatus) string {
 	}
 }
 
-// CanRecoverPathRunStatus 判断路径运行是否停在可由对账恢复动作接手的状态。
-// 只有待对账成立：它是写结果不确定后的停摆点，恢复动作（确认前进/重放/登记人工结论）的唯一入口。
-// 其余终态（已完成、失败、已停止、已取消）都是真正结束，不接受任何恢复动作。
-func CanRecoverPathRunStatus(status PathRunStatus) bool {
-	return status == PathRunStatusAwaitingReconciliation
-}
-
 // IsTerminalPathRunStatus 判断路径运行是否已停摆：停摆后不会自行前进。
-// 注意待对账也在其中——它对执行循环而言确实已停，但它是可恢复的（见 CanRecoverPathRunStatus），
-// 恢复动作的守卫必须用 CanRecoverPathRunStatus 判断，不能用本函数一律拒绝。
+// 结果待确认也是终局：写结果无法确认时工具明确停止推进，不存在任何自动或人工的继续通路，
+// 继续执行的唯一方式是从计划重新发起一次运行（2026-09-06 产品裁决）。
 func IsTerminalPathRunStatus(status PathRunStatus) bool {
 	switch status {
 	case PathRunStatusAwaitingReconciliation, PathRunStatusCompleted,
@@ -250,7 +243,7 @@ func FailureClassName(class FailureClass) string {
 	case FailureClassTargetRejected:
 		return "目标拒绝"
 	case FailureClassWriteUncertain:
-		return "写结果不确定"
+		return "执行结果无法确认"
 	case FailureClassToolBug:
 		return "工具缺陷"
 	default:
@@ -390,18 +383,8 @@ type RunControlSource string
 
 const RunControlSourceUI RunControlSource = "ui" // 界面按钮（放行与停止不绑单键快捷键，只接受明确点击）
 
-// RunManualConclusion 是用户登记的人工核对结论事实（run_manual_conclusions 表），
-// append-only：与机器判定并存，不更新、不覆盖任何既有事实。
-type RunManualConclusion struct {
-	RunID          uint64
-	PathRunID      uint64
-	StepNo         int
-	InstanceStatus string
-	CurrentNode    string
-	Note           string
-	Reporter       string
-	CreatedAt      time.Time
-}
+// RunManualConclusion 已于 2026-09-06 随用户侧对账功能一并移除：
+// 工具不再要求用户登记目标平台事实，无法确认的运行明确结束并引导从计划重新运行。
 
 // RunControl 是一次人工控制事实（run_controls 表），只 INSERT，可审计。
 type RunControl struct {

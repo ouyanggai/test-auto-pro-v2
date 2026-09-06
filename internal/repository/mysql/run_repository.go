@@ -513,13 +513,12 @@ type runAggregate struct {
 }
 
 // aggregateRunTerminal 在同事务内检查一次运行下的全部路径运行：
-// 还有任何非终态（等待/运行/核验/暂停/待对账）路径时返回 false，运行保持运行中；
-// 待对账路径若已登记人工结论视为已闭合（按已停止计入，F-018 的结论语义保留在路径上）；
-// 全部闭合时按失败 > 停止 > 取消 > 完成的优先级给出聚合结论与中文汇总。
+// 还有任何非闭合（等待/运行/核验/暂停）路径时返回 false，运行保持运行中；
+// 结果待确认是终局（2026-09-06 移除用户侧对账后没有任何继续通路），按已停止计入聚合；
+// 全部闭合时按失败 > 待确认 > 停止 > 取消 > 完成的优先级给出聚合结论与中文汇总。
 func aggregateRunTerminal(ctx context.Context, tx *sql.Tx, runID uint64) (runAggregate, bool) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT p.status, EXISTS(SELECT 1 FROM run_manual_conclusions m WHERE m.path_run_id = p.id) AS concluded
-		FROM path_runs p WHERE p.run_id = ?
+		SELECT status FROM path_runs WHERE run_id = ?
 	`, runID)
 	if err != nil {
 		return runAggregate{}, false
@@ -529,13 +528,8 @@ func aggregateRunTerminal(ctx context.Context, tx *sql.Tx, runID uint64) (runAgg
 	total := 0
 	for rows.Next() {
 		var status string
-		var concluded bool
-		if err := rows.Scan(&status, &concluded); err != nil {
+		if err := rows.Scan(&status); err != nil {
 			return runAggregate{}, false
-		}
-		if model.PathRunStatus(status) == model.PathRunStatusAwaitingReconciliation && concluded {
-			// 人工结论已登记：待对账即终局，按停止计入运行聚合。
-			status = string(model.PathRunStatusStopped)
 		}
 		counts[model.PathRunStatus(status)]++
 		total++
@@ -545,7 +539,8 @@ func aggregateRunTerminal(ctx context.Context, tx *sql.Tx, runID uint64) (runAgg
 	}
 	terminalOf := func(status model.PathRunStatus) bool {
 		return status == model.PathRunStatusCompleted || status == model.PathRunStatusFailed ||
-			status == model.PathRunStatusStopped || status == model.PathRunStatusCancelled
+			status == model.PathRunStatusStopped || status == model.PathRunStatusCancelled ||
+			status == model.PathRunStatusAwaitingReconciliation
 	}
 	for status := range counts {
 		if !terminalOf(status) {
@@ -560,6 +555,7 @@ func aggregateRunTerminal(ctx context.Context, tx *sql.Tx, runID uint64) (runAgg
 		label     string
 	}{
 		{model.PathRunStatusFailed, model.RunStatusFailed, model.RunResultFailed, true, "失败"},
+		{model.PathRunStatusAwaitingReconciliation, model.RunStatusStopped, "", false, "结果待确认"},
 		{model.PathRunStatusStopped, model.RunStatusStopped, "", false, "已停止"},
 		{model.PathRunStatusCancelled, model.RunStatusCancelled, "", false, "已取消"},
 	}

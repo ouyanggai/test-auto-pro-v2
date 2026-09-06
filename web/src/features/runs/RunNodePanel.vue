@@ -426,9 +426,6 @@ const dialogStyle = computed(() => ({
           </p>
           <p class="run-panel__reason">{{ attempt.reason }}</p>
           <p class="run-panel__row-sub">依据：{{ attempt.basis }}</p>
-          <p v-if="attempt.reconcileVerdictName" class="run-panel__row-sub">
-            对账结论：{{ attempt.reconcileVerdictName }}<template v-if="attempt.recoveryActionName">，恢复动作：{{ attempt.recoveryActionName }}</template>
-          </p>
           <p class="run-panel__row-sub">耗时 {{ formatElapsed(attempt.durationMs) }}，trace_id {{ attempt.traceId }}</p>
           <div v-if="attempt.phaseDurations" class="run-panel__phases">
             <span v-for="[phase, label] in phaseOrder" :key="phase" class="run-panel__phase">

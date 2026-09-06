@@ -53,10 +53,9 @@ type RunStore interface {
 	ListPathRunsByRun(ctx context.Context, runID uint64) ([]model.PathRun, error)
 	// ListRunIDsNeedingScheduling 列出仍在运行中且带等待路径的运行 ID（调度器输入）。
 	ListRunIDsNeedingScheduling(ctx context.Context) ([]uint64, error)
-	// FinishRunIfAllPathsClosed 在人工结论登记后尝试收尾运行聚合；未全部闭合时不动作（F-020）。
+	// FinishRunIfAllPathsClosed 在全部路径闭合时收尾运行聚合（同事务）：写结果无法确认的
+	// 终局与启动恢复都会调用它；还有未闭合路径时什么都不做并返回 false。
 	FinishRunIfAllPathsClosed(ctx context.Context, runID uint64, now time.Time) (bool, error)
-	// HasManualConclusion 判断该路径运行是否已登记人工核对结论（登记即终局守卫）。
-	HasManualConclusion(ctx context.Context, pathRunID uint64) (bool, error)
 	// ListRunEvents 读取一次运行的事件流（afterID 游标增量，pathRunID 非零时按路径过滤，F-021 只读）。
 	ListRunEvents(ctx context.Context, runID uint64, afterID uint64, limit int, pathRunID uint64) ([]model.RunEvent, error)
 	// ListRunsFiltered 按状态与游标筛选计划下的运行（F-021 列表）。
@@ -92,12 +91,8 @@ type RunStore interface {
 	ListRunControls(ctx context.Context, pathRunID uint64) ([]model.RunControl, error)
 	// AppendRunEvent 追加一行运行事件（如路径偏离、断点命中），与聚合状态变更解耦的独立事实。
 	AppendRunEvent(ctx context.Context, event model.RunEvent, now time.Time) error
-	// LatestStepAttempt 返回路径运行最近一次落账的步骤与尝试事实（对账三列写回目标）。
+	// LatestStepAttempt 返回路径运行最近一次落账的步骤与尝试事实。
 	LatestStepAttempt(ctx context.Context, pathRunID uint64) (model.RunStep, model.RunStepAttempt, error)
-	// RecordReconcileOutcome 把对账结论与恢复动作写回尝试行的对账三列（仅这三列可更新）。
-	RecordReconcileOutcome(ctx context.Context, attemptID uint64, verdict string, action string, isReplay bool, now time.Time) error
-	// AppendManualConclusion 登记人工核对结论事实（只 INSERT），使路径进入终态的依据可回放。
-	AppendManualConclusion(ctx context.Context, conclusion model.RunManualConclusion, now time.Time) error
 	// SetFinalTargetSummary 落库最终目标事实摘要（收尾重读产物），与路径结果是两个独立字段。
 	SetFinalTargetSummary(ctx context.Context, pathRunID uint64, summary string, now time.Time) error
 	// SetMainInstanceRef 首次落库路径运行独占的主实例引用。

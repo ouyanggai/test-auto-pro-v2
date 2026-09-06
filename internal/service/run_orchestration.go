@@ -16,7 +16,6 @@ import (
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/control"
-	engine_reconcile "test-auto-pro-v2/internal/engine/reconcile"
 	"test-auto-pro-v2/internal/engine/run"
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/logging"
@@ -172,45 +171,8 @@ type RunStepAttemptDTO struct {
 	// PhaseDurations 是七个阶段各自的耗时（毫秒），来自 step.log 的阶段时间轴。
 	PhaseDurations     map[string]int64 `json:"phaseDurations,omitempty"`
 	PhaseDurationsNote string           `json:"phaseDurationsNote,omitempty"`
-	// 对账三列（纲领第 7.2 节）：结论、当时给出的唯一合法动作、这次尝试本身是否为重放。
-	// 界面据此把"哪一次尝试是重放"讲清楚，不必去翻数据库。
-	ReconcileVerdictName string `json:"reconcileVerdictName,omitempty"`
-	RecoveryActionName   string `json:"recoveryActionName,omitempty"`
-	IsReplay             bool   `json:"isReplay"`
-}
-
-// reconcileVerdictName 把对账三值结论转成界面用的中文名；未知取值原样返回，不猜。
-func reconcileVerdictName(verdict string) string {
-	switch verdict {
-	case "effective":
-		return "已生效"
-	case "not_effective":
-		return "未生效"
-	case "indeterminate":
-		return "仍无法判定"
-	case "":
-		return ""
-	default:
-		return verdict
-	}
-}
-
-// recoveryActionName 把恢复动作标识转成界面用的中文名；未知取值原样返回，不猜。
-func recoveryActionName(action string) string {
-	switch action {
-	case "advance":
-		return "确认并前进到下一步"
-	case "replay":
-		return "重放这一步"
-	case "manual_end":
-		return "登记人工核对结论并结束"
-	case "reconcile_again":
-		return "重新对账"
-	case "":
-		return ""
-	default:
-		return action
-	}
+	// IsReplay 保留为只读历史事实：用户侧重放已于 2026-09-06 移除，新运行的尝试恒为 false。
+	IsReplay bool `json:"isReplay"`
 }
 
 // RunStepDTO 是一个已落账步骤的公开事实。
@@ -292,15 +254,20 @@ type PathRunDetailDTO struct {
 	// 控制现场（F-017）：生效断点、为什么停在这里、可用命令集合、条件写版本。
 	// 这两个切片必须始终输出 JSON 数组而不是 null：Go 的 nil 切片会序列化成 null，
 	// 前端模板按数组读取，null 会让整页渲染崩溃、永远停在加载态（实测运行 12 复现）。
-	ControlVersion int64             `json:"controlVersion"`
-	Reconcile      *ReconcileViewDTO `json:"reconcile,omitempty"`
-	CurrentStepNo  int               `json:"currentStepNo"`
-	Breakpoints    []BreakpointDTO   `json:"breakpoints"`
-	StopReason     string            `json:"stopReason,omitempty"`
-	Commands       []CommandDTO      `json:"commands"`
-	LoopRunning    bool              `json:"loopRunning"`
-	StopRequested  bool              `json:"stopRequested"`
-	PauseRequested bool              `json:"pauseRequested"`
+	ControlVersion int64           `json:"controlVersion"`
+	CurrentStepNo  int             `json:"currentStepNo"`
+	Breakpoints    []BreakpointDTO `json:"breakpoints"`
+	StopReason     string          `json:"stopReason,omitempty"`
+	Commands       []CommandDTO    `json:"commands"`
+	LoopRunning    bool            `json:"loopRunning"`
+	StopRequested  bool            `json:"stopRequested"`
+	PauseRequested bool            `json:"pauseRequested"`
+
+	// SceneLost 表示这次运行的执行现场已经不在（服务重启或执行结果无法确认），
+	// 无法安全继续；SceneLostNote 是配套的大白话说明与下一步引导。
+	// 用户侧不再提供任何对账或登记入口，页面只展示只读记录并引导从计划重新运行。
+	SceneLost     bool   `json:"sceneLost"`
+	SceneLostNote string `json:"sceneLostNote,omitempty"`
 
 	// PathChoices 是这条路径已保存的分支选择（分支节点 ID + 所选分支 ID），
 	// 是画布遍历分析的直接输入，用于区分路径内/路径外节点（评审缺陷 8）。
@@ -528,118 +495,6 @@ func (s *RunOrchestrationService) StartRunWithMode(ctx context.Context, input St
 	}
 	// RunContext 是值传递：真实运行身份以控制服务返回值为准。
 	return s.RunDetailByPathRun(ctx, started.PathRun.ID)
-}
-
-// ReconcileViewDTO 是对账结论的公开形态。
-type ReconcileViewDTO struct {
-	Verdict     string   `json:"verdict"`
-	VerdictName string   `json:"verdictName"`
-	Action      string   `json:"action"`
-	Headline    string   `json:"headline"`
-	Reasons     []string `json:"reasons"`
-	ReplaysUsed int      `json:"replaysUsed"`
-	ReplaysMax  int      `json:"replaysMax"`
-	// ReplayExhausted 表示证据仍指向未生效但重放次数已用完，唯一动作已降级为人工登记。
-	ReplayExhausted bool `json:"replayExhausted"`
-}
-
-// ensureReconcileSession 保证待对账路径运行有可用的控制现场：现场还在就直接用，
-// 不在（典型是服务重启过）就按已落库的运行事实重建一次。
-//
-// 为什么放在应用服务层：重建要用计划、路径配置、编译场景与节点真实标识装配执行上下文，
-// 这些只有本层能读到；控制层负责按运行事实补齐游标、写前基准、已用重放次数与断点。
-func (s *RunOrchestrationService) ensureReconcileSession(ctx context.Context, pathRunID uint64) error {
-	if s.control.HasSession(pathRunID) {
-		return nil
-	}
-	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
-	if err != nil {
-		return err
-	}
-	if !model.CanRecoverPathRunStatus(pathRun.Status) {
-		return &RunOrchestrationError{Kind: RunOrchestrationConflict,
-			Message: "路径运行当前为" + model.PathRunStatusName(pathRun.Status) + "，没有可对账的现场"}
-	}
-	run, err := s.store.GetRun(ctx, pathRun.RunID)
-	if err != nil {
-		return err
-	}
-	runCtx, err := s.buildRunContext(ctx, run.PlanID, pathRun.ExecutionPathID)
-	if err != nil {
-		return err
-	}
-	runCtx.PathRun = pathRun
-	runCtx.Run = run
-	if len(runCtx.Steps) == 0 {
-		return &RunOrchestrationError{Kind: RunOrchestrationConflict,
-			Message: "这条路径的编译场景为空，无法重建对账现场；请先完成动作编排后新建一次运行"}
-	}
-	return s.control.Rehydrate(ctx, runCtx)
-}
-
-// ReconcileNow 对待对账路径运行执行只读对账并返回结论。runID 是运行 ID。
-func (s *RunOrchestrationService) ReconcileNow(ctx context.Context, runID uint64, pathRunID uint64) (*ReconcileViewDTO, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
-	if err != nil {
-		return nil, err
-	}
-	// 人工结论一登记，这条路径运行就是终局：禁止再对账，更不可能重放或前进（评审 P1）。
-	if concluded, err := s.store.HasManualConclusion(ctx, pathRunID); err == nil && concluded {
-		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict,
-			Message: "已登记人工核对结论并结束，不能再对账或重放"}
-	}
-	// 对账要回目标重读五维事实，这些请求必须落进本次运行的日志目录，
-	// 否则 recovery.log 有结论、network.log 与 curl.log 里却找不到对应请求，日志与记录无法互查。
-	scoped, err := s.withRunScope(ctx, pathRunID)
-	if err != nil {
-		return nil, err
-	}
-	// 现场可能因为服务重启而不在了：按运行事实重建，重建同样只读。
-	if err := s.ensureReconcileSession(scoped, pathRunID); err != nil {
-		return nil, err
-	}
-	view, err := s.control.ReconcileNow(scoped, pathRunID)
-	if err != nil {
-		return nil, err
-	}
-	return &ReconcileViewDTO{
-		Verdict: view.Verdict, VerdictName: view.VerdictName, Action: view.Action,
-		Headline: view.Headline, Reasons: view.Reasons,
-		ReplaysUsed: view.ReplaysUsed, ReplaysMax: view.ReplaysMax,
-		ReplayExhausted: view.ReplayExhausted,
-	}, nil
-}
-
-// RecoveryAction 执行对账给出的唯一合法动作并返回最新详情。runID 是运行 ID。
-func (s *RunOrchestrationService) RecoveryAction(ctx context.Context, runID uint64, pathRunID uint64, action string, manual model.RunManualConclusion) (*PathRunDetailDTO, error) {
-	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
-	if err != nil {
-		return nil, err
-	}
-	if action != string(engine_reconcile.ActionReconcileAgain) {
-		// 人工结论登记后的终局守卫：唯一例外是重新对账（只读，不改变任何状态）。
-		if concluded, err := s.store.HasManualConclusion(ctx, pathRunID); err == nil && concluded {
-			return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict,
-				Message: "已登记人工核对结论并结束，不能再执行恢复动作"}
-		}
-	}
-	// 恢复动作要重新对账、可能重走七阶段（含真实写请求），同样必须带运行日志作用域。
-	scoped, err := s.withRunScope(ctx, pathRunID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.ensureReconcileSession(scoped, pathRunID); err != nil {
-		return nil, err
-	}
-	if err := s.control.RecoveryAction(scoped, pathRunID, reconcile_action(action), manual); err != nil {
-		return nil, err
-	}
-	return s.RunDetailByPathRun(ctx, pathRunID)
-}
-
-// reconcile_action 把字符串转为恢复动作。
-func reconcile_action(action string) engine_reconcile.RecoveryAction {
-	return engine_reconcile.RecoveryAction(action)
 }
 
 // SetBreakpoint / RemoveBreakpoint / RequestPause / ListBreakpoints / ControlView 是控制面转发。
@@ -909,13 +764,13 @@ func (s *RunOrchestrationService) runSummaries(ctx context.Context, runs []model
 
 // runPathsSummary 把一次运行的路径状态汇成一句中文：按状态分组计数，失败在前。
 func runPathsSummary(pathRuns []model.PathRun) string {
-	// 展示顺序：失败、待对账、已停止、已取消、运行中/核验中、等待运行、已完成（用户最该先看的在前）。
+	// 展示顺序：失败、结果待确认、已停止、已取消、运行中/核验中、等待运行、已完成（用户最该先看的在前）。
 	order := []struct {
 		status model.PathRunStatus
 		label  string
 	}{
 		{model.PathRunStatusFailed, "失败"},
-		{model.PathRunStatusAwaitingReconciliation, "待对账"},
+		{model.PathRunStatusAwaitingReconciliation, "结果待确认"},
 		{model.PathRunStatusStopped, "已停止"},
 		{model.PathRunStatusCancelled, "已取消"},
 		{model.PathRunStatusRunning, "运行中"},
@@ -1047,15 +902,6 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	detail.NodePlans = buildNodePlans(compiledSteps, tokenToGraphID)
 	if view := s.control.View(pathRun.ID); view != nil {
-		if view.Reconcile != nil {
-			detail.Reconcile = &ReconcileViewDTO{
-				Verdict: view.Reconcile.Verdict, VerdictName: view.Reconcile.VerdictName,
-				Action: view.Reconcile.Action, Headline: view.Reconcile.Headline,
-				Reasons:     view.Reconcile.Reasons,
-				ReplaysUsed: view.Reconcile.ReplaysUsed, ReplaysMax: view.Reconcile.ReplaysMax,
-				ReplayExhausted: view.Reconcile.ReplayExhausted,
-			}
-		}
 		detail.ModeName = model.RunModeName(view.Mode)
 		detail.ControlVersion = view.Version
 		detail.StopReason = view.StopReason
@@ -1077,6 +923,12 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			}
 			detail.Breakpoints = append(detail.Breakpoints, dto)
 		}
+	}
+	// 执行现场已丢失的运行（服务重启或执行结果无法确认，路径运行停在结果待确认且没有内存现场）
+	// 无法安全继续：如实告诉用户并引导从计划重新运行；界面不给任何对账、重放或登记入口。
+	if s.control.View(pathRun.ID) == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
+		detail.SceneLost = true
+		detail.SceneLostNote = "这次运行无法安全继续：有一步的真实执行结果无法确认（可能是服务重启或目标响应丢失），工具已停止推进，避免重复执行真实业务操作。以下为已保存的只读记录；如需继续，请从计划重新发起一次运行。"
 	}
 	if err := s.fillRunPathSummaries(ctx, run, detail); err != nil {
 		return nil, err
@@ -1197,10 +1049,6 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 				LogLine:     attempt.LogLine,
 				IsReplay:    attempt.IsReplay,
 			}
-			if attempt.ReconcileVerdict != "" {
-				attemptDTO.ReconcileVerdictName = reconcileVerdictName(attempt.ReconcileVerdict)
-				attemptDTO.RecoveryActionName = recoveryActionName(attempt.RecoveryAction)
-			}
 			// 阶段时间轴按 step_id:attempt 归组（与 parsePhaseTimings 的键一致）。
 			timings, ok := phaseTimings[stepPhaseKey(stepRecord.StepNo, attempt.AttemptNo)]
 			if ok {
@@ -1299,7 +1147,7 @@ func actionScopeName(scope model.ActionScope) string {
 }
 
 // buildNodeStates 推导画布节点的九个中文运行态：
-// 已落账步骤的节点已完成；失败/待对账的收尾节点单独标出；当前步节点运行中；
+// 已落账步骤的节点已完成；失败/结果待确认的收尾节点单独标出；当前步节点运行中；
 // 已配置路线上尚未到达的节点等待运行；路线外节点未开始。状态不只靠颜色，界面必须渲染中文。
 func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
 	tokenToGraphID := tokenToGraphNodeID(graph)
@@ -1320,7 +1168,7 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 		settled[key] = true
 		states[key] = nodeState(model.PathRunStatusCompleted)
 	}
-	// 收尾节点：失败或待对账时把最后一步的节点标成对应状态。
+	// 收尾节点：失败或结果待确认时把最后一步的节点标成对应状态。
 	if pathRun.FailureClass != nil {
 		last := graphNodeKey(lastNodeOf(steps))
 		switch *pathRun.FailureClass {
@@ -1573,7 +1421,7 @@ func resultName(result model.RunResult) string {
 	case model.RunResultFailed:
 		return "失败"
 	case model.RunResultAwaitingReconcile:
-		return "待对账"
+		return "结果待确认"
 	default:
 		return string(result)
 	}

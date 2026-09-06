@@ -175,13 +175,25 @@ func main() {
 	go scheduleWorker.Run(context.Background())
 	// F-017 control.log：控制事实与 step.log 同目录逐行可查。
 	controlService.SetControlLog(control.NewControlLog(runOrchestrationService.ControlLogWriter()))
-	// F-018 recovery.log：对账过程逐行可查，与运行事实双向可达。
+	// F-018 recovery.log：写结果无法确认的内部判定逐行可查，与运行事实双向可达。
 	controlService.SetRecoveryLog(control.NewRecoveryLog(runOrchestrationService.RecoveryLogWriter()))
 	// 启动恢复是纲领第 4.2 节的不可破坏约束：崩溃前可能已发出写请求，重启后绝不自动继续。
+	// 用户侧对账移除后（2026-09-06），被恢复的路径运行就是终局：全部路径闭合的运行聚合
+	// 在这里直接收尾，运行列表不再出现永远「运行中」的僵尸运行。
 	if recovered, recoverErr := runStateService.Recover(context.Background()); recoverErr != nil {
 		log.Printf("运行恢复失败：%v", recoverErr)
 	} else if len(recovered) > 0 {
-		log.Printf("已把 %d 条未完成的路径运行置为待对账", len(recovered))
+		closed := 0
+		for _, pathRunID := range recovered {
+			pathRun, err := runStore.GetPathRun(context.Background(), pathRunID)
+			if err != nil {
+				continue
+			}
+			if ok, err := runStore.FinishRunIfAllPathsClosed(context.Background(), pathRun.RunID, time.Now()); err == nil && ok {
+				closed++
+			}
+		}
+		log.Printf("已把 %d 条未完成的路径运行置为结果待确认（运行现场已丢失，不可继续）；收尾 %d 次运行的聚合状态", len(recovered), closed)
 	}
 	server := &http.Server{
 		Addr: config.ServerAddress(),

@@ -42,9 +42,7 @@ export interface RunStepAttempt {
   phaseDurations?: Record<string, number>
   phaseDurationsNote?: string
   curlBlock?: string
-  // 对账三列（F-018）：对账结论、唯一恢复动作、这次尝试本身是否重放。
-  reconcileVerdictName?: string
-  recoveryActionName?: string
+  // isReplay 是只读历史事实：用户侧重放已于 2026-09-06 移除，新运行的尝试恒为 false。
   isReplay?: boolean
 }
 
@@ -122,6 +120,10 @@ export interface PathRunDetail {
   currentPhase?: string
   currentPhaseNote?: string
   currentPhaseSince?: string
+  // sceneLost 表示执行现场已丢失（服务重启或执行结果无法确认），运行无法安全继续；
+  // sceneLostNote 是配套的大白话说明与下一步引导。页面只展示只读记录，不给任何重试或登记入口。
+  sceneLost?: boolean
+  sceneLostNote?: string
 }
 
 export interface RunSummary {
@@ -206,19 +208,6 @@ export function fetchRunEvents(runId: string, afterEventId: number, pathRunId?: 
 export function fetchRunDetail(runId: string, signal?: AbortSignal, pathRunId?: number): Promise<PathRunDetail> {
   const query = pathRunId ? `?pathRunId=${pathRunId}` : ''
   return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}${query}`, { method: 'GET' }, signal)
-}
-
-// ReconcileView 是只读对账的结论：三值、唯一动作与逐维度依据。
-export interface ReconcileView {
-  verdict: string
-  verdictName: string
-  action: string
-  headline: string
-  reasons: string[]
-  replaysUsed: number
-  replaysMax: number
-  // replayExhausted 为真表示证据仍指向未生效但重放次数已用完，唯一动作已由服务端降级为人工登记。
-  replayExhausted: boolean
 }
 
 // RunCommand 是后端给出的可用命令（含中文停止条件说明）。
@@ -306,20 +295,6 @@ export function removeBreakpoint(runId: string, bp: BreakpointInput, pathRunId?:
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bp),
-  })
-}
-
-// reconcileNow 触发只读对账（可重复调用，安全）。
-export function reconcileNow(runId: string, pathRunId?: number): Promise<ReconcileView> {
-  return requestOnce<ReconcileView>(`/api/runs/${encodeURIComponent(runId)}/reconcile${pathRunQuery(pathRunId)}`, { method: 'POST' })
-}
-
-// recoveryAction 执行对账给出的唯一合法动作。
-export function recoveryAction(runId: string, action: string, manual?: { instanceStatus: string; currentNode: string; note: string; reporter: string }, pathRunId?: number): Promise<PathRunDetail> {
-  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/recovery${pathRunQuery(pathRunId)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, ...(manual || {}) }),
   })
 }
 
