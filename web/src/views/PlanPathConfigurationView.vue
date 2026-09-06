@@ -889,7 +889,7 @@ void loadPage()
       </n-card>
     </n-modal>
 
-    <nav v-if="configuration" class="path-configuration-page__switch" aria-label="配置工作区">
+    <nav v-if="configuration" class="path-configuration-page__switch" aria-label="节点配置与表单数据">
       <n-button :type="workspace === 'nodes' ? 'primary' : 'default'" :secondary="workspace !== 'nodes'" @click="returnToNodes">节点配置</n-button>
       <n-button :type="workspace === 'form' ? 'primary' : 'default'" :secondary="workspace !== 'form'" @click="openFormWorkspace">表单数据</n-button>
     </nav>
