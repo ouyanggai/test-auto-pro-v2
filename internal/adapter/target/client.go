@@ -574,14 +574,29 @@ func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, 
 // 用途：执行器 prepare 阶段在登录后立即验证 sid 可用——实测目标存在
 // “首次登录的 sid 立即失效、重新登录后才有效”的现象（纲领第 4.4.1 节抖动家族）。
 // Ping 只回答一个问题：这个 SID 在目标上是否真的存在有效会话。
-// 判据就是最普通的空条件模板列表请求：有效会话返回成功列表（实测稳定约 30 秒慢请求）；
-// 会话不存在/已失效时返回 AUTH_401、RESP401 或「分组id不存在」——
-// 2026-09-07 实测确认第三种也是会话无效的业务层表现：无会话请求放行到业务层后
-// 取不到会话上下文里的默认分组。因此任何错误（含业务失败）都必须判探活失败并重登，
-// 绝不能把「分组id不存在」当成鉴权通过，否则写请求必然被写端点拒绝。
+// 判据是带完整业务参数的模板列表请求（与 ListTemplates 同形状的最小分页）：
+// 有效会话返回成功列表；会话无效时返回 AUTH_401/RESP401，或触发「分组id不存在」——
+// 2026-09-07 实测确认该业务异常会让目标把会话作废，此后同一 SID 的写端点一律
+// RESP401。因此探活必须用不会触发该异常的正常请求形状，任何错误都判探活失败并重登。
 func (c *Client) Ping(ctx context.Context, session Session) error {
-	_, err := c.call(ctx, "/web/flowTemplateApi/list", session.SID, map[string]any{
-		"data": map[string]any{}, "pagination": false, "pages": 1, "size": 1,
-	})
+	body := map[string]any{
+		"data": map[string]any{
+			"flowName":     "",
+			"useScope":     "invest",
+			"customerCode": firstNonEmpty(session.CustomerCode, c.config.CustomerCode),
+		},
+		"showMe":                             true,
+		"ignoreFormTemplateBizRelevanceData": true,
+		"formTemplateBizRelevanceList":       []any{},
+		"notFormTemplateBizRelevanceList":    []map[string]any{{"otherBiz": "isProject", "otherBizId": "isProject"}},
+		"ignoreTemplateData":                 true,
+		"pagination":                         true,
+		"pages":                              1,
+		"size":                               1,
+		"projectId":                          "",
+		"platformCode":                       c.config.TemplatePlatformCodes,
+		"notAuditWayList":                    []string{"staff_annual_assessment"},
+	}
+	_, err := c.call(ctx, "/web/flowTemplateApi/list", session.SID, body)
 	return err
 }
