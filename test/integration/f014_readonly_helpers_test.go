@@ -96,6 +96,21 @@ func requireF014Session(t *testing.T) (target.ClientConfig, *target.Client, targ
 	if strings.TrimSpace(session.SID) == "" {
 		t.Fatal("真实目标登录没有返回会话标识")
 	}
+	// 2026-09-07 补探活：目标存在「新登录会话首个请求 AUTH_401」的失效形状（语义清单 1.8），
+	// 与生产执行器的会话策略保持一致——登录后立即探活，失效则重登（至多 3 轮），
+	// 否则每个用例的第一个请求都会被会话失效打断，整批用例被环境 flakiness 淹没。
+	for attempt := 1; attempt <= 3; attempt++ {
+		if pingErr := client.Ping(context.Background(), session); pingErr == nil {
+			return clientConfig, client, session
+		} else if attempt < 3 {
+			t.Logf("会话探活第 %d 次失败（新登录会话可能立即失效），重新登录：%v", attempt, pingErr)
+			relogged, loginErr := client.Login(context.Background(), account)
+			if loginErr != nil {
+				t.Fatalf("探活后重新登录失败：%v", loginErr)
+			}
+			session = relogged
+		}
+	}
 	return clientConfig, client, session
 }
 
