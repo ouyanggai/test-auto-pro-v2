@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NModal, NTag, useThemeVars } from 'naive-ui'
+import { NButton, NEmpty, NModal, NTag, useMessage, useThemeVars } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
@@ -16,6 +16,9 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ close: [] }>()
+
+// message 给复制操作明确的成功与失败反馈：复制失败不再静默（返工任务书缺口 9）。
+const message = useMessage()
 
 type PanelTab = 'plan' | 'facts' | 'errors'
 const activeTab = ref<PanelTab>('facts')
@@ -126,19 +129,26 @@ function toggleCurl(stepNo: number): void {
 async function copyLogRef(attempt: RunStepAttempt): Promise<void> {
   try {
     await navigator.clipboard.writeText(`${attempt.logPath} 第 ${attempt.logLine} 行`)
+    message.success('已复制日志位置')
   } catch {
-    // 剪贴板不可用时静默失败：用户仍可在日志文件里定位。
+    // 剪贴板不可用必须明说：告知用户去日志文件里定位，不静默吞掉。
+    message.error('复制失败：浏览器剪贴板不可用，请打开日志目录的对应文件查看')
   }
 }
 
 // copyCurl 复制原始字节内容（不做界面美化），供直接重放。
 async function copyCurl(step: RunStep): Promise<void> {
   const block = step.attempts[0]?.curlBlock || ''
-  if (!block) return
+  if (!block) {
+    message.warning('本次尝试没有可重放的 curl 记录')
+    return
+  }
   try {
     await navigator.clipboard.writeText(block)
+    message.success('已复制可重放 curl')
   } catch {
-    // 剪贴板不可用时静默失败：用户仍可在 curl.log 里复制。
+    // 剪贴板不可用必须明说：告知用户去 curl.log 里复制，不静默吞掉。
+    message.error('复制失败：浏览器剪贴板不可用，请在日志目录的 curl.log 中查看')
   }
 }
 
@@ -184,10 +194,10 @@ function gateSnapshotLines(step: RunStep): string[] {
 }
 
 // finalFactsText 把最终目标事实摘要渲染为中文行，不直接输出英文键 JSON。
+// 主实例 ID 属内部标识不上界面（用户裁决）：需要在目标平台定位实例时走日志目录的运行记录。
 const finalFactsText = computed<string[]>(() => {
   const facts = (props.detail.finalTarget ?? {}) as Record<string, unknown>
   const lines: string[] = []
-  if (facts.instanceRef) lines.push(`主实例：${String(facts.instanceRef)}`)
   if (facts.statusName) lines.push(`实例状态：${String(facts.statusName)}`)
   else if (facts.status) lines.push(`实例状态：${String(facts.status)}`)
   const current = facts.currentNodeNames as string[] | undefined
