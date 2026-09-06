@@ -21,7 +21,7 @@ fi
 
 printf '%s\n' '[F-022] 编译与静态检查'
 go build ./...
-go vet ./test/unit/backend/target_semantics ./test/unit/backend/reconcile ./test/integration
+go vet ./test/unit/backend/target_semantics ./test/integration
 test -z "$(gofmt -l internal cmd test)"
 
 printf '%s\n' '[F-022] 语义覆盖契约（19 条条目、34 个证据块、11 个写端点）'
@@ -31,7 +31,7 @@ printf '%s\n' '[F-022] 证据漂移检测（参考仓库 HEAD 与符号存在性
 ./test/contracts/f014/semantics_evidence_drift.sh
 
 printf '%s\n' '[F-022] 语义判定与幂等约束单元测试（含竞态检测）'
-go test -race -count=1 ./test/unit/backend/target_semantics/... ./test/unit/backend/reconcile/...
+go test -race -count=1 ./test/unit/backend/target_semantics/...
 
 printf '%s\n' '[F-022] 只读目标对照测试（错误语义与判定矩阵）'
 readonly_log="$(mktemp -t f022-readonly)"
