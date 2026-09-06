@@ -18,17 +18,17 @@ printf '%s\n' '[F-019] 编译与静态检查'
 go build ./...
 go vet ./internal/engine/step/... ./internal/adapter/target/... ./test/unit/backend/executor
 
-printf '%s\n' '[F-019] 回归：F-016/F-017/F-018 单元与集成（真实 MySQL，无跳过）'
+printf '%s\n' '[F-019] 回归：F-016/F-017/F-018 单元与集成（真实 MySQL，无跳过）+ 动作编排保存语义'
 integration_log="$(mktemp -t f019-integration)"
 trap 'rm -f "${integration_log}"' EXIT
-if ! go test -count=1 -v -run 'TestF01[6789]' ./test/unit/backend/executor ./test/unit/backend/debugger ./test/unit/backend/run ./test/unit/backend/target ./test/integration 2>&1 | tee "${integration_log}"; then
+if ! go test -count=1 -v -run 'TestF01[6789]|TestSaveActionConfiguration|TestGetPathConfiguration' ./test/unit/backend/executor ./test/unit/backend/debugger ./test/unit/backend/run ./test/unit/backend/target ./test/unit/backend/action_orchestration ./test/integration 2>&1 | tee "${integration_log}"; then
   exit 1
 fi
 if grep -Eq -- '^[[:space:]]*--- SKIP' "${integration_log}"; then
   printf '%s\n' '[F-019] 集成测试存在跳过用例，判定为失败' >&2
   exit 1
 fi
-for required in TestF016SingleStepControlLoop TestF016StopControl TestF016StepLogBidirectionalReachability TestF016StepFactsAreInsertOnlyAndInstanceRefExclusive TestF017RunControlsAppendOnlyBreakpointReplayAndIdempotentApprove TestF017AutoModeFirstWriteBreakpointStopsBeforeWrite TestF017PausedPathRunSurvivesRestart; do
+for required in TestF016SingleStepControlLoop TestF016StopControl TestF016StepLogBidirectionalReachability TestF016StepFactsAreInsertOnlyAndInstanceRefExclusive TestF017RunControlsAppendOnlyBreakpointReplayAndIdempotentApprove TestF017AutoModeFirstWriteBreakpointStopsBeforeWrite TestF017PausedPathRunSurvivesRestart TestSaveActionConfigurationDeleteRemovesStoredActions; do
   if ! grep -Eq -- "^[[:space:]]*--- PASS: ${required}" "${integration_log}"; then
     printf '[F-019] 缺少必需的集成用例通过记录：%s\n' "${required}" >&2
     exit 1
