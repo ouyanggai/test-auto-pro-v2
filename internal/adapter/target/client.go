@@ -339,12 +339,15 @@ func responseError(resp *envelope) error {
 }
 
 // responseSessionExpired 只识别已有证据支持的会话失效代码和文案。
+// 2026-09-07 实测补充 AUTH_401：目标平台存在「新登录的 SID 首个请求即返回 AUTH_401」的
+// 失效形状（实测同一新 SID 连续三次 list 全部 AUTH_401，重登后恢复），漏认它会让探活把
+// 已失效的会话当成业务失败而放行，写请求刚发出就被拒，运行反复死在同一个地方。
 func responseSessionExpired(resp *envelope) bool {
 	if resp == nil || responseSucceeded(resp) {
 		return false
 	}
 	switch strings.TrimSpace(resp.Code) {
-	case "RESP401", "-1":
+	case "RESP401", "AUTH_401", "-1":
 		return true
 	case "ERROR_99999":
 		message := strings.TrimSpace(resp.Message)
