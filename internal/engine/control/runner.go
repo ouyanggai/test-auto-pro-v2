@@ -176,6 +176,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			}
 			s.mu.Lock()
 			session.stopReason = reason
+			session.pauseRequested = false
 			s.mu.Unlock()
 			return
 		}

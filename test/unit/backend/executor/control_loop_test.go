@@ -205,6 +205,13 @@ func TestF017SingleStepApproveReturnsBeforeSlowTargetResponse(t *testing.T) {
 	if view == nil || !view.StepInFlight {
 		t.Fatalf("后台步骤应处于执行中：%+v", view)
 	}
+	view, err = controller.SwitchMode(ctx, started.PathRun.ID, model.RunModeSingleStep, 1)
+	if err != nil {
+		t.Fatalf("执行中重复切换当前模式不应失败：%v", err)
+	}
+	if !view.StepInFlight || len(view.Commands) != 0 {
+		t.Fatalf("执行中幂等模式查询不得暴露放行命令：%+v", view)
+	}
 	if err := controller.ApproveWithCommandAsync(ctx, started.PathRun.ID, model.CommandStep, started.Preview.StepNo, 1); !errors.Is(err, control.ErrStepInFlight) {
 		t.Fatalf("步骤执行中重复放行应被拒绝，实际 err=%v", err)
 	}
@@ -222,6 +229,53 @@ func TestF017SingleStepApproveReturnsBeforeSlowTargetResponse(t *testing.T) {
 	}
 	if preview := controller.CurrentPreview(started.PathRun.ID); preview == nil || preview.StepNo != 2 {
 		t.Fatalf("单步落账后应停在下一步预览，实际 %+v", preview)
+	}
+}
+
+// TestF017LoopPauseRecordsAfterStepOnly 验证连续执行中的暂停请求只在本步安全落账后产生一条暂停事实，
+// 避免请求接口提前写入 paused，导致同一步被重复记账且界面提前显示已暂停。
+func TestF017LoopPauseRecordsAfterStepOnly(t *testing.T) {
+	database := newF016ControlDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	runService := run.NewService(store, "worker-f017-pause", time.Minute, time.Now)
+	fakeTarget := &fakeTarget{
+		submitDelay:  400 * time.Millisecond,
+		afterSubmit:  &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		submitResult: &target.SubmitFlowInstanceResult{InstanceID: "instance-pause", Status: "run"},
+		dueTaskID:    "task-pause",
+	}
+	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, runService, store, fixedRunConfig(), nil)
+	controller := control.NewService(runService, executor, store, time.Now)
+	started, err := controller.StartWithMode(ctx, newRunContext([]model.CompiledActionStep{submitStep(), approveStep()}), model.RunModeAuto, nil)
+	if err != nil {
+		t.Fatalf("自动模式启动失败：%v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if view := controller.View(started.PathRun.ID); view != nil && view.LoopRunning {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := controller.RequestPause(ctx, started.PathRun.ID); err != nil {
+		t.Fatalf("连续执行暂停请求失败：%v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if view := controller.View(started.PathRun.ID); view != nil && !view.LoopRunning && view.StopReason != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var pausedCount int
+	if err := database.DB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM run_controls WHERE path_run_id = ? AND kind = 'paused'", started.PathRun.ID).Scan(&pausedCount); err != nil {
+		t.Fatalf("统计暂停事实失败：%v", err)
+	}
+	if pausedCount != 1 {
+		t.Fatalf("一次暂停请求只能在安全边界落一条 paused 事实，实际 %d", pausedCount)
 	}
 }
 

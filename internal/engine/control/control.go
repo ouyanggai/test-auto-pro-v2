@@ -474,12 +474,6 @@ func (s *Service) RequestPause(ctx context.Context, pathRunID uint64) error {
 	}
 	// 连续执行或单步后台执行在本步结束后才落暂停生效事实，避免把正在写入的步骤
 	// 误标成已经停下；执行器完成核验与落账后由对应后台收尾统一处理。
-	if loopRunning {
-		return s.store.AppendRunControl(ctx, model.RunControl{
-			RunID: pathRun.RunID, PathRunID: pathRunID,
-			Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now(),
-		}, s.now())
-	}
 	return nil
 }
 
@@ -507,12 +501,16 @@ func (s *Service) SwitchMode(ctx context.Context, pathRunID uint64, mode model.R
 	}
 	// 幂等：请求的模式已经（或将要在本步后）生效时，不产生新的控制事实。
 	if session.mode == mode || (session.pendingMode != nil && *session.pendingMode == mode) {
+		commands := []model.ControlCommand{}
+		if !session.stepInFlight {
+			commands = AvailableCommands(session.mode, session.pauseState())
+		}
 		view := &SessionView{
 			Mode: session.mode, Breakpoints: session.breakpoints.List(),
 			StopReason: session.stopReason, Version: session.version,
-			LoopRunning: session.loopRunning, StopRequested: session.stopRequested,
+			LoopRunning: session.loopRunning, StepInFlight: session.stepInFlight, StopRequested: session.stopRequested,
 			PauseRequested: session.pauseRequested, PendingMode: session.pendingMode,
-			PauseState: session.pauseState(), Commands: AvailableCommands(session.mode, session.pauseState()),
+			PauseState: session.pauseState(), Commands: commands,
 			CurrentPhase: session.progress.phase, CurrentPhaseNote: session.progress.note,
 			CurrentPhaseSince: session.progress.since,
 		}
@@ -829,6 +827,7 @@ func (s *Service) appendPausedFact(ctx context.Context, pathRunID uint64, sessio
 	s.mu.Lock()
 	if current := s.active[pathRunID]; current == session {
 		session.stopReason = "暂停请求已生效（本步已走完核验与落账）"
+		session.pauseRequested = false
 	}
 	s.mu.Unlock()
 }
