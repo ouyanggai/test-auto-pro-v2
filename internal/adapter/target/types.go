@@ -103,6 +103,21 @@ type DueFlow struct {
 	FlowNodeProxyID  string `json:"-"`
 }
 
+// TaskSnapshot 是目标任务链接的实时快照；任务 ID 和批次号只能来自这份读取结果，
+// 不能从配置参数或上一次写请求沿用。
+type TaskSnapshot struct {
+	JobTaskID             string
+	FlowInstanceID        string
+	FlowNodeProxyID       string
+	BatchNo               string
+	TaskStatus            string
+	ExecutorID            string
+	FormProxyID           string
+	FlowProxyID           string
+	AuditWay              string
+	FlowNextNodeAuditType string
+}
+
 // FlowTreeSnapshot 把本次读取的真实代理树和运行态入口绑定在一起。
 type FlowTreeSnapshot struct {
 	Tree         *FlowNodeTemplate

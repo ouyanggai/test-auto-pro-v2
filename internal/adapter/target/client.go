@@ -517,38 +517,53 @@ func firstNonEmpty(values ...string) string {
 // SubmittedStatusText 暴露目标实例状态的中文名称映射，供快速候选查询复用同一套状态文案。
 func SubmittedStatusText(status string) string { return submittedStatusText(strings.TrimSpace(status)) }
 
-// FindDueTaskID 精确重查当前账号在指定实例、指定节点上的活动待办任务链接 ID。
-// 审批写请求的 data.jobTaskId 是目标硬性必填项；本方法只读、可安全重试。
-// 同一节点存在多个活动任务时无法证明唯一归属，必须报错而不是任选一个。
-func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, nodeProxyID string) (string, error) {
+// FindTaskSnapshot 精确重查当前账号在指定实例、指定节点上的一条任务链接。
+// pending 用于当前待办，done 用于当前账号的已办；jobTaskId 与 batchNo 必须来自这次响应，
+// 同一实例同一节点出现多条匹配任务时无法证明唯一归属，必须报错而不是任选一条。
+func (c *Client) FindTaskSnapshot(ctx context.Context, active Session, instanceID, nodeProxyID, taskStatus string) (TaskSnapshot, error) {
+	taskStatus = strings.TrimSpace(taskStatus)
+	if taskStatus != "pending" && taskStatus != "done" {
+		return TaskSnapshot{}, invalidResponse("unsupported task status")
+	}
+	data := map[string]any{
+		"flowInstanceId":               strings.TrimSpace(instanceID),
+		"taskStatus":                   taskStatus,
+		"auditWayList":                 []string{},
+		"useScope":                     "invest",
+		"flowInstanceBizRelevance":     map[string]any{},
+		"flowInstanceBizRelevanceList": []any{},
+	}
+	// 已办列表必须限定当前实际执行人；待办列表由目标网关按 SID 解析当前用户。
+	if taskStatus == "done" && strings.TrimSpace(active.UserID) != "" {
+		data["executorId"] = strings.TrimSpace(active.UserID)
+	}
 	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
-		"data": map[string]any{
-			"flowInstanceId":               strings.TrimSpace(instanceID),
-			"taskStatus":                   "waiting_send",
-			"auditWayList":                 []string{},
-			"useScope":                     "invest",
-			"flowInstanceBizRelevance":     map[string]any{},
-			"flowInstanceBizRelevanceList": []any{},
-		},
-		"pagination": true, "pages": 1, "size": 100,
+		"data": data, "pagination": true, "pages": 1, "size": 100,
 	})
 	if err != nil {
-		return "", err
+		return TaskSnapshot{}, err
 	}
 	if !responseSucceeded(resp) {
-		return "", responseError(resp)
+		return TaskSnapshot{}, responseError(resp)
 	}
 	var raw []struct {
-		ID              string `json:"id"`
-		FlowInstanceID  string `json:"flowInstanceId"`
-		FlowNodeProxyID string `json:"flowNodeProxyId"`
+		JobTaskID             string `json:"jobTaskId"`
+		FlowInstanceID        string `json:"flowInstanceId"`
+		FlowNodeProxyID       string `json:"flowNodeProxyId"`
+		BatchNo               string `json:"batchNo"`
+		TaskStatus            string `json:"taskStatus"`
+		ExecutorID            string `json:"executorId"`
+		FormProxyID           string `json:"formProxyId"`
+		FlowProxyID           string `json:"flowProxyId"`
+		AuditWay              string `json:"auditWay"`
+		FlowNextNodeAuditType string `json:"flowNextNodeAuditType"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
-		return "", err
+		return TaskSnapshot{}, err
 	}
 	wantInstance := strings.TrimSpace(instanceID)
 	wantNode := strings.TrimSpace(nodeProxyID)
-	matched := make([]string, 0, 1)
+	matched := make([]TaskSnapshot, 0, 1)
 	for _, item := range raw {
 		if strings.TrimSpace(item.FlowInstanceID) != wantInstance {
 			continue
@@ -556,17 +571,37 @@ func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, 
 		if wantNode != "" && strings.TrimSpace(item.FlowNodeProxyID) != wantNode {
 			continue
 		}
-		if id := strings.TrimSpace(item.ID); id != "" {
-			matched = append(matched, id)
+		jobTaskID := strings.TrimSpace(item.JobTaskID)
+		if jobTaskID == "" {
+			// BaseVo.id 是数据库关联行 ID，不是审批接口需要的 jobTaskId；
+			// 缺少协议字段说明响应不完整，不能用 id 猜测替代。
+			return TaskSnapshot{}, invalidResponse("task response missing jobTaskId")
 		}
+		matched = append(matched, TaskSnapshot{
+			JobTaskID: jobTaskID, FlowInstanceID: strings.TrimSpace(item.FlowInstanceID),
+			FlowNodeProxyID: strings.TrimSpace(item.FlowNodeProxyID), BatchNo: strings.TrimSpace(item.BatchNo),
+			TaskStatus: strings.TrimSpace(item.TaskStatus), ExecutorID: strings.TrimSpace(item.ExecutorID),
+			FormProxyID: strings.TrimSpace(item.FormProxyID), FlowProxyID: strings.TrimSpace(item.FlowProxyID),
+			AuditWay: strings.TrimSpace(item.AuditWay), FlowNextNodeAuditType: strings.TrimSpace(item.FlowNextNodeAuditType),
+		})
 	}
 	if len(matched) == 0 {
-		return "", nil
+		return TaskSnapshot{}, nil
 	}
 	if len(matched) > 1 {
-		return "", invalidResponse("multiple due tasks on the same node")
+		return TaskSnapshot{}, invalidResponse("multiple tasks on the same instance and node")
 	}
 	return matched[0], nil
+}
+
+// FindDueTaskID 精确重查当前账号在指定实例、指定节点上的活动待办任务链接 ID。
+// 审批写请求的 data.jobTaskId 是目标硬性必填项；目标待办状态是 pending，不能误用 waiting_send。
+func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, nodeProxyID string) (string, error) {
+	task, err := c.FindTaskSnapshot(ctx, active, instanceID, nodeProxyID, "pending")
+	if err != nil {
+		return "", err
+	}
+	return task.JobTaskID, nil
 }
 
 // Ping 用一次轻量只读请求探活会话：会话有效时无论业务结果如何都返回 nil；
