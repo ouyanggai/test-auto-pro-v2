@@ -94,18 +94,6 @@ const runDeviationEdgeIds = computed<string[]>(() => {
 // 不提供任何对账、重试或登记入口；用户继续执行的唯一方式是从计划重新发起一次运行。
 const sceneLostNote = computed(() => detail.value?.sceneLostNote || '')
 
-// sceneLostBounced 保证「提示后返回上级页面」只发生一次：再次进入同一运行时直接展示只读记录，
-// 绝不形成跳转循环（任务书第 1 条产品调整的硬性要求）。
-const sceneLostBouncing = ref(false)
-function handleSceneLost(): void {
-  if (!detail.value?.sceneLost) return
-  const key = `run-scene-lost-${runId}`
-  if (sessionStorage.getItem(key)) return
-  sessionStorage.setItem(key, '1')
-  sceneLostBouncing.value = true
-  window.setTimeout(() => { void router.push('/runs') }, 2200)
-}
-
 // 放行命令与条件写参数：命令集合由后端给出，游标与版本取自详情（重复点击只产生一次效果）。
 const approveCommand = ref('step')
 const approveCursor = ref(0)
@@ -353,8 +341,6 @@ async function loadDetail(): Promise<void> {
     syncControl(next)
     lastUpdateAt.value = Date.now()
     void pollEvents()
-    // 现场已丢失的运行：先给一句大白话说明再返回上级页面；同一运行只返回一次，禁止跳转循环。
-    handleSceneLost()
     if (!graph.value) {
       graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
     }
@@ -838,7 +824,7 @@ onBeforeUnmount(() => {
       >
         <!-- 现场已丢失：一句大白话说明发生了什么、为什么、用户现在能做什么；不给任何输入或重试入口。 -->
         <n-alert v-if="sceneLostNote" type="warning" :show-icon="false" class="run-detail__notice-bar">
-          {{ sceneLostNote }}{{ sceneLostBouncing ? ' 即将返回运行记录列表……' : '' }}
+          {{ sceneLostNote }}
         </n-alert>
         <n-alert v-if="detail.stopReason || detail.structureNote" type="warning" :show-icon="false" class="run-detail__notice-bar">
           {{ [detail.stopReason, detail.structureNote].filter(Boolean).join('；') }}

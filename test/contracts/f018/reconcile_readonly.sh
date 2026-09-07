@@ -43,8 +43,17 @@ fi
 printf '%s\n' '[F-018] 现场丢失的大白话说明与一次返回（禁止跳转循环）'
 grep -qF 'sceneLost' internal/service/run_orchestration.go
 grep -qF 'sceneLost' web/src/features/runs/api.ts
-grep -qF 'run-scene-lost' web/src/views/RunDetailView.vue
-grep -qF 'handleSceneLost' web/src/views/RunDetailView.vue
+# 终局运行必须能从运行记录重新进入详情查看；现场丢失只提供只读说明，
+# 不得在详情加载时自动跳回列表，否则用户无法查看失败证据。
+grep -qF 'sceneLostNote' web/src/views/RunDetailView.vue
+if grep -qF "router.push('/runs')" web/src/views/RunDetailView.vue; then
+  printf '%s\n' '[F-018] 运行详情不得因 sceneLost 自动跳回运行列表' >&2
+  exit 1
+fi
+if grep -qF 'sceneLostBouncing' web/src/views/RunDetailView.vue; then
+  printf '%s\n' '[F-018] 运行详情不得保留现场丢失跳转状态' >&2
+  exit 1
+fi
 
 printf '%s\n' '[F-018] 显示名口径：结果待确认（不再出现「待对账」内部术语）'
 grep -qF '"结果待确认"' internal/model/run.go
