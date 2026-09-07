@@ -108,6 +108,7 @@ export interface PathRunDetail {
   stopReason?: string
   commands: RunCommand[]
   loopRunning: boolean
+  stepInFlight: boolean
   stopRequested: boolean
   pauseRequested: boolean
   // pathChoices 是这条路径已保存的分支选择（分支节点 ID + 分支 ID），画布遍历分析的输入。

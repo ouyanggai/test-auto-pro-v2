@@ -20,12 +20,18 @@ func loopFailureReason(what string, err error) string {
 // 循环在后台 goroutine 里跑：API 立即返回当前状态，前端按配置轮询。
 func (s *Service) startLoop(ctx context.Context, pathRunID uint64, session *activeStep, command model.ControlCommand) {
 	s.mu.Lock()
-	if session == nil || session.loopRunning {
+	if session == nil || session.loopRunning || session.stepInFlight {
 		s.mu.Unlock()
 		return
 	}
 	session.loopRunning = true
 	s.mu.Unlock()
+	s.startLoopReserved(ctx, pathRunID, session, command)
+}
+
+// startLoopReserved 启动已由放行校验占用的连续执行循环；调用方必须先设置 loopRunning。
+// 单独拆出启动动作，避免数据库落事实前后的并发放行窗口再次产生重复循环。
+func (s *Service) startLoopReserved(ctx context.Context, pathRunID uint64, session *activeStep, command model.ControlCommand) {
 	// 循环在后台跑，而控制 API 立即返回：HTTP 处理器一返回，请求上下文就被取消。
 	// 必须切断取消信号只保留取值（日志作用域等）——否则第一步的目标调用立刻拿到 context.Canceled，
 	// 传输档归类不出来即按不确定处理，"继续运行"会变成一次写都没发就把路径推进待对账。

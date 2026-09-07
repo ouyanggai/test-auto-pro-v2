@@ -160,6 +160,71 @@ func TestF016SingleStepControlLoop(t *testing.T) {
 	}
 }
 
+// TestF017SingleStepApproveReturnsBeforeSlowTargetResponse 验证单步放行不会被目标慢响应占住：
+// 接口先返回步骤执行中，后台完成写请求、核验与落账；同一游标重复放行必须被拒绝。
+func TestF017SingleStepApproveReturnsBeforeSlowTargetResponse(t *testing.T) {
+	database := newF016ControlDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	runService := run.NewService(store, "worker-f017-async-step", time.Minute, time.Now)
+
+	fakeTarget := &fakeTarget{
+		submitDelay: 400 * time.Millisecond,
+		afterSubmit: &fakeTargetView{
+			Found: true, Status: "run",
+			CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"},
+		},
+		submitResult: &target.SubmitFlowInstanceResult{InstanceID: "instance-async", Status: "run"},
+		dueTaskID:    "task-async",
+	}
+	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, runService, store, fixedRunConfig(), nil)
+	controller := control.NewService(runService, executor, store, time.Now)
+	started, err := controller.Start(ctx, newRunContext([]model.CompiledActionStep{submitStep(), approveStep()}))
+	if err != nil {
+		t.Fatalf("启动失败：%v", err)
+	}
+
+	requestStarted := time.Now()
+	if err := controller.ApproveWithCommandAsync(ctx, started.PathRun.ID, model.CommandStep, started.Preview.StepNo, 1); err != nil {
+		t.Fatalf("异步放行失败：%v", err)
+	}
+	if elapsed := time.Since(requestStarted); elapsed >= 300*time.Millisecond {
+		t.Fatalf("异步放行不应等待目标慢响应，实际耗时 %s", elapsed)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var view *control.SessionView
+	for time.Now().Before(deadline) {
+		view = controller.View(started.PathRun.ID)
+		if view != nil && view.StepInFlight {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if view == nil || !view.StepInFlight {
+		t.Fatalf("后台步骤应处于执行中：%+v", view)
+	}
+	if err := controller.ApproveWithCommandAsync(ctx, started.PathRun.ID, model.CommandStep, started.Preview.StepNo, 1); !errors.Is(err, control.ErrStepInFlight) {
+		t.Fatalf("步骤执行中重复放行应被拒绝，实际 err=%v", err)
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		view = controller.View(started.PathRun.ID)
+		if view != nil && !view.StepInFlight && view.StopReason == "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if view == nil || view.StepInFlight {
+		t.Fatalf("后台步骤应在慢响应结束后退出执行中：%+v", view)
+	}
+	if preview := controller.CurrentPreview(started.PathRun.ID); preview == nil || preview.StepNo != 2 {
+		t.Fatalf("单步落账后应停在下一步预览，实际 %+v", preview)
+	}
+}
+
 // TestF016StopControl 用真实 MySQL 验证停止语义：
 // 运行中可停止（终态、事实保留）；核验中停止延迟生效；终态不可再停止。
 func TestF016StopControl(t *testing.T) {

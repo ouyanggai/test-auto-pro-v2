@@ -296,6 +296,7 @@ const isActing = computed(() => acting.value)
 const runBusy = computed(() => acting.value
   || looping.value
   || Boolean(detail.value?.loopRunning)
+  || Boolean(detail.value?.stepInFlight)
   || detail.value?.pathRunStatusName === '核验中')
 
 // runStepNotes 按图节点 ID 汇总每个节点最近一次已落账步骤的紧凑事实：
@@ -769,7 +770,7 @@ onBeforeUnmount(() => {
             v-for="command in (detail.commands || []).filter(c => c.command !== 'step')"
             :key="command.command"
             size="small"
-            :disabled="acting || looping || overviewDone"
+            :disabled="acting || looping || detail.stepInFlight || detail.loopRunning || overviewDone"
             :title="command.label"
             @click="runCommand(command.command)"
           >{{ commandButtonText(command) }}</n-button>
@@ -790,7 +791,7 @@ onBeforeUnmount(() => {
             size="small"
             type="primary"
             :loading="acting"
-            :disabled="overviewDone || !(detail.commands || []).some(c => c.command === 'step')"
+            :disabled="overviewDone || detail.stepInFlight || detail.loopRunning || !(detail.commands || []).some(c => c.command === 'step')"
             :title="noCommandReason || '放行后执行下一步；下一步会发真实写请求'"
             @click="approve()"
           >放行（执行下一步）</n-button>

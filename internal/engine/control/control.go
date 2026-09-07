@@ -30,6 +30,8 @@ var (
 	ErrRunAlreadyFinished = errors.New("路径运行已结束")
 	// ErrLoopRunning 表示连续执行循环存活，不接受新的放行命令（先暂停或等待停止条件）。
 	ErrLoopRunning = errors.New("连续执行中；请先暂停（本步走完后生效）或等待停止条件")
+	// ErrStepInFlight 表示当前步骤已经在后台执行，重复放行不能再次发起真实写请求。
+	ErrStepInFlight = errors.New("当前步骤正在执行，请等待结果")
 	// ErrVersionConflict 表示控制版本不匹配：界面状态已过期，需以返回的当前状态为准。
 	ErrVersionConflict = errors.New("控制状态已变化，请以当前运行状态为准后重试")
 	// ErrCursorConflict 表示步游标不匹配：当前等待放行的步骤已不是命令所指的那一步。
@@ -320,6 +322,7 @@ type SessionView struct {
 	PauseState     PauseState
 	Version        int64
 	LoopRunning    bool
+	StepInFlight   bool
 	StopRequested  bool
 	PauseRequested bool
 	// PendingMode 是待安全边界生效的模式切换请求；非 nil 时界面显示「将在本步完成后切换」。
@@ -342,10 +345,13 @@ func (s *Service) View(pathRunID uint64) *SessionView {
 		Mode: session.mode, Breakpoints: session.breakpoints.List(),
 		StopReason: session.stopReason, Version: session.version,
 		LoopRunning: session.loopRunning, StopRequested: session.stopRequested,
+		StepInFlight:   session.stepInFlight,
 		PauseRequested: session.pauseRequested,
 	}
 	view.PauseState = session.pauseState()
-	view.Commands = AvailableCommands(session.mode, view.PauseState)
+	if !session.stepInFlight {
+		view.Commands = AvailableCommands(session.mode, view.PauseState)
+	}
 	view.PendingMode = session.pendingMode
 	view.CurrentPhase = session.progress.phase
 	view.CurrentPhaseNote = session.progress.note
@@ -460,15 +466,21 @@ func (s *Service) RequestPause(ctx context.Context, pathRunID uint64) error {
 		session.pauseRequested = true
 	}
 	loopRunning := session != nil && session.loopRunning
+	stepInFlight := session != nil && session.stepInFlight
 	s.mu.Unlock()
-	if !loopRunning {
+	if !loopRunning && !stepInFlight {
 		// 未在连续执行中：当前本来就停在阶段 3，请求如实落档即可。
 		return nil
 	}
-	return s.store.AppendRunControl(ctx, model.RunControl{
-		RunID: pathRun.RunID, PathRunID: pathRunID,
-		Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now(),
-	}, s.now())
+	// 连续执行或单步后台执行在本步结束后才落暂停生效事实，避免把正在写入的步骤
+	// 误标成已经停下；执行器完成核验与落账后由对应后台收尾统一处理。
+	if loopRunning {
+		return s.store.AppendRunControl(ctx, model.RunControl{
+			RunID: pathRun.RunID, PathRunID: pathRunID,
+			Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now(),
+		}, s.now())
+	}
+	return nil
 }
 
 // SwitchMode 运行中切换自动/单步模式（2026-09-06 交付验收）：
@@ -595,47 +607,17 @@ func (s *Service) applyPendingMode(ctx context.Context, pathRunID uint64, sessio
 // 命令携带当前步游标与控制版本；版本或游标不匹配返回中文冲突说明，重复提交只产生一次效果。
 // step 命令同步执行一步；next_node/continue 启动连续执行循环后立即返回（前端轮询状态）。
 func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*ApproveResult, error) {
-	s.mu.Lock()
-	session := s.active[pathRunID]
-	if session == nil {
-		s.mu.Unlock()
-		return nil, ErrNoActiveStep
-	}
-	if session.loopRunning {
-		s.mu.Unlock()
-		return nil, ErrLoopRunning
-	}
-	if version != session.version {
-		s.mu.Unlock()
-		return nil, ErrVersionConflict
-	}
-	if session.preview == nil || cursor != session.preview.StepNo {
-		s.mu.Unlock()
-		return nil, ErrCursorConflict
-	}
-	s.mu.Unlock()
-
-	if session.finished {
-		s.clear(pathRunID)
-		return nil, ErrRunAlreadyFinished
-	}
-	// 可用命令集合由服务端按模式与状态给出：偏离停止无放行类命令。
-	commands := AvailableCommands(session.mode, session.pauseState())
-	allowed := false
-	for _, available := range commands {
-		if available == command {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return nil, fmt.Errorf("%w：当前状态下可用命令为 %v", ErrCommandNotAllowed, commands)
-	}
-	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
+	session, err := s.reserveApproval(pathRunID, command, cursor, version)
 	if err != nil {
 		return nil, err
 	}
+	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		s.releaseApproval(pathRunID, session, command)
+		return nil, err
+	}
 	if pathRun.Status != model.PathRunStatusRunning {
+		s.releaseApproval(pathRunID, session, command)
 		return nil, fmt.Errorf("路径运行当前为 %s，不能放行", model.PathRunStatusName(pathRun.Status))
 	}
 	approveFact := model.RunControl{
@@ -644,6 +626,7 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 		Command: command, Source: model.RunControlSourceUI, CreatedAt: s.now(),
 	}
 	if err := s.store.AppendRunControl(ctx, approveFact, s.now()); err != nil {
+		s.releaseApproval(pathRunID, session, command)
 		return nil, err
 	}
 	s.logFact(pathRunID, approveFact, previewStepNo(session))
@@ -670,8 +653,184 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 		return result, err
 	}
 	// next_node / continue：启动连续执行循环并立即返回当前状态（前端按配置轮询）。
-	s.startLoop(ctx, pathRunID, session, command)
+	s.startLoopReserved(ctx, pathRunID, session, command)
 	return &ApproveResult{}, nil
+}
+
+// ApproveWithCommandAsync 按命令记录放行事实并立即返回；单步动作在后台完成七阶段执行，
+// 调用方通过 View 读取步骤执行中、核验中和落账后的状态。HTTP 请求不能绑定目标慢读重试，
+// 否则一次事实重读失败会把放行接口占住数分钟，前端看起来像“没有反应”。
+func (s *Service) ApproveWithCommandAsync(ctx context.Context, pathRunID uint64, command model.ControlCommand, cursor int, version int64) error {
+	session, err := s.reserveApproval(pathRunID, command, cursor, version)
+	if err != nil {
+		return err
+	}
+	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		s.releaseApproval(pathRunID, session, command)
+		return err
+	}
+	if pathRun.Status != model.PathRunStatusRunning {
+		s.releaseApproval(pathRunID, session, command)
+		return fmt.Errorf("路径运行当前为 %s，不能放行", model.PathRunStatusName(pathRun.Status))
+	}
+	approveFact := model.RunControl{
+		RunID: pathRun.RunID, PathRunID: pathRunID,
+		Kind: model.ControlFactApproved, Action: model.RunControlApprove,
+		Command: command, Source: model.RunControlSourceUI, CreatedAt: s.now(),
+	}
+	if err := s.store.AppendRunControl(ctx, approveFact, s.now()); err != nil {
+		s.releaseApproval(pathRunID, session, command)
+		return err
+	}
+	s.logFact(pathRunID, approveFact, previewStepNo(session))
+	if command == model.CommandStep {
+		s.startSingleStepReserved(ctx, pathRunID, session)
+		return nil
+	}
+	s.startLoopReserved(ctx, pathRunID, session, command)
+	return nil
+}
+
+// reserveApproval 在任何外部读写前占用本次放行的执行槽，保证并发请求最多产生一条放行事实和一次真实动作。
+// 单步占用 stepInFlight，连续命令占用 loopRunning；后续失败由 releaseApproval 释放，不能留下假忙状态。
+func (s *Service) reserveApproval(pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*activeStep, error) {
+	s.mu.Lock()
+	session := s.active[pathRunID]
+	if session == nil {
+		s.mu.Unlock()
+		return nil, ErrNoActiveStep
+	}
+	if session.loopRunning {
+		s.mu.Unlock()
+		return nil, ErrLoopRunning
+	}
+	if session.stepInFlight {
+		s.mu.Unlock()
+		return nil, ErrStepInFlight
+	}
+	if session.finished {
+		s.mu.Unlock()
+		s.clear(pathRunID)
+		return nil, ErrRunAlreadyFinished
+	}
+	if version != session.version {
+		s.mu.Unlock()
+		return nil, ErrVersionConflict
+	}
+	if session.preview == nil || cursor != session.preview.StepNo {
+		s.mu.Unlock()
+		return nil, ErrCursorConflict
+	}
+	commands := AvailableCommands(session.mode, session.pauseState())
+	allowed := false
+	for _, available := range commands {
+		if available == command {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w：当前状态下可用命令为 %v", ErrCommandNotAllowed, commands)
+	}
+	if command == model.CommandStep {
+		session.stepInFlight = true
+	} else {
+		session.loopRunning = true
+	}
+	s.mu.Unlock()
+	return session, nil
+}
+
+// releaseApproval 释放尚未启动后台执行的放行占用，避免数据库或状态校验失败后详情页永久显示忙碌。
+func (s *Service) releaseApproval(pathRunID uint64, session *activeStep, command model.ControlCommand) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current := s.active[pathRunID]; current != session {
+		return
+	}
+	if command == model.CommandStep {
+		session.stepInFlight = false
+		return
+	}
+	session.loopRunning = false
+}
+
+// startSingleStep 把单步执行放入后台，并在安全边界处理暂停、模式切换和延迟停止。
+// 步骤执行中不设置连续循环标记，避免单步被误显示成可继续的自动循环。
+func (s *Service) startSingleStep(ctx context.Context, pathRunID uint64, session *activeStep) {
+	s.mu.Lock()
+	if session == nil || session.stepInFlight {
+		s.mu.Unlock()
+		return
+	}
+	session.stepInFlight = true
+	s.mu.Unlock()
+	s.startSingleStepReserved(ctx, pathRunID, session)
+}
+
+// startSingleStepReserved 启动已由放行校验占用的单步；调用方必须先设置 stepInFlight。
+func (s *Service) startSingleStepReserved(ctx context.Context, pathRunID uint64, session *activeStep) {
+	go func() {
+		detached := context.WithoutCancel(ctx)
+		result, err := s.approveOneStep(detached, pathRunID, session, 1, false)
+		if err != nil {
+			s.mu.Lock()
+			if current := s.active[pathRunID]; current == session {
+				session.stopReason = "执行失败：" + err.Error()
+			}
+			s.mu.Unlock()
+			return
+		}
+		if result == nil || result.Outcome.Verdict != string(verdict.OutcomeSucceeded) || result.PathFinished {
+			return
+		}
+		stepNo := 0
+		s.mu.Lock()
+		if current := s.active[pathRunID]; current == session && session.preview != nil {
+			stepNo = session.preview.StepNo
+		}
+		s.mu.Unlock()
+		s.applyPendingMode(detached, pathRunID, session, stepNo)
+		s.mu.Lock()
+		deferredStop := session.stopRequested && !session.finished && !result.PathFinished
+		pauseRequested := session.pauseRequested && !session.finished
+		s.mu.Unlock()
+		if pauseRequested {
+			s.appendPausedFact(detached, pathRunID, session)
+		}
+		if deferredStop {
+			s.applyStop(detached, pathRunID)
+		}
+	}()
+}
+
+// appendPausedFact 在一步安全落账后记录暂停生效事实；失败只保留现场并写明原因。
+func (s *Service) appendPausedFact(ctx context.Context, pathRunID uint64, session *activeStep) {
+	s.mu.Lock()
+	if session == nil || session.finished {
+		s.mu.Unlock()
+		return
+	}
+	runID := session.runCtx.Run.ID
+	stepNo := previewStepNo(session)
+	s.mu.Unlock()
+	pausedFact := model.RunControl{RunID: runID, PathRunID: pathRunID, Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now()}
+	if err := s.store.AppendRunControl(ctx, pausedFact, s.now()); err != nil {
+		s.mu.Lock()
+		if current := s.active[pathRunID]; current == session {
+			session.stopReason = loopFailureReason("暂停事实", err)
+		}
+		s.mu.Unlock()
+		return
+	}
+	s.logFact(pathRunID, pausedFact, stepNo)
+	s.mu.Lock()
+	if current := s.active[pathRunID]; current == session {
+		session.stopReason = "暂停请求已生效（本步已走完核验与落账）"
+	}
+	s.mu.Unlock()
 }
 
 // approveOneStep 执行一步（单步模式、step 命令与对账重放共用），随后停在下一步之前或收尾。

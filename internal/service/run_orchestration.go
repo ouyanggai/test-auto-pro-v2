@@ -264,6 +264,7 @@ type PathRunDetailDTO struct {
 	StopReason     string          `json:"stopReason,omitempty"`
 	Commands       []CommandDTO    `json:"commands"`
 	LoopRunning    bool            `json:"loopRunning"`
+	StepInFlight   bool            `json:"stepInFlight"`
 	StopRequested  bool            `json:"stopRequested"`
 	PauseRequested bool            `json:"pauseRequested"`
 
@@ -482,7 +483,7 @@ func (s *RunOrchestrationService) ApproveWithCommand(ctx context.Context, runID 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.control.ApproveWithCommand(scoped, pathRunID, command, cursor, version); err != nil {
+	if err := s.control.ApproveWithCommandAsync(scoped, pathRunID, command, cursor, version); err != nil {
 		return nil, err
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
@@ -882,6 +883,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.ControlVersion = view.Version
 		detail.StopReason = view.StopReason
 		detail.LoopRunning = view.LoopRunning
+		detail.StepInFlight = view.StepInFlight
 		detail.StopRequested = view.StopRequested
 		detail.PauseRequested = view.PauseRequested
 		detail.CurrentPhase = view.CurrentPhase

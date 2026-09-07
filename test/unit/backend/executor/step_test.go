@@ -114,6 +114,7 @@ type fakeTarget struct {
 	dueTaskID    string
 	submitResult *target.SubmitFlowInstanceResult
 	submitErr    error
+	submitDelay  time.Duration
 	auditResult  *target.AuditCurrentTaskResult
 	auditErr     error
 	submitCalls  int
@@ -196,8 +197,12 @@ func (f *fakeTarget) FindDueTaskID(_ context.Context, _ target.Session, _ string
 	return f.dueTaskID, nil
 }
 
+// SubmitFlowInstance 模拟发起写请求，可按用例注入慢响应以验证后台执行边界。
 func (f *fakeTarget) SubmitFlowInstance(context.Context, target.Session, target.SubmitFlowInstanceRequest) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
 	f.submitCalls++
+	if f.submitDelay > 0 {
+		time.Sleep(f.submitDelay)
+	}
 	f.submitted = true
 	if f.submitErr != nil {
 		return nil, target.WriteResponse{}, "trace-fail", f.submitErr

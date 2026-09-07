@@ -13,6 +13,17 @@ printf '%s\n' '[F-017] 可用命令集合由后端按模式与状态计算'
 grep -qF 'func AvailableCommands' internal/engine/control/commands.go
 grep -qF 'commands' internal/service/run_orchestration.go
 
+printf '%s\n' '[F-017] 放行接口立即返回，单步由后台执行且禁止重复真实写'
+grep -qF 'ApproveWithCommandAsync' internal/engine/control/control.go
+grep -qF 's.control.ApproveWithCommandAsync' internal/service/run_orchestration.go
+grep -qF 'StepInFlight' internal/service/run_orchestration.go
+grep -qF 'stepInFlight' web/src/features/runs/api.ts
+grep -qF 'detail.stepInFlight' web/src/views/RunDetailView.vue
+if grep -qF 's.control.ApproveWithCommand(scoped' internal/service/run_orchestration.go; then
+  printf '%s\n' '[F-017] HTTP 放行不得同步等待目标写请求完成' >&2
+  exit 1
+fi
+
 printf '%s\n' '[F-017] 断点集合由事实回放得出，无断点可变表'
 grep -qF 'func ReplayBreakpoints' internal/engine/control/breakpoints.go
 # 2026-09-06：整次运行删除（运行记录层级）会在同一事务里级联删掉该运行的控制事实，
