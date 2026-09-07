@@ -186,7 +186,7 @@ func boolPtr(value bool) *bool {
 
 // actionPersonKey 生成运行上下文内人员解析结果的稳定索引，不把目标人员 ID 写入场景配置。
 func actionPersonKey(nodeKey string, action model.ActionKey) string {
-	return strings.TrimSpace(nodeKey) + "\x00" + string(action)
+	return ActionPersonIndex(nodeKey, action)
 }
 
 // isSettingsPersonAuditType 对齐目标 FlowOperateServiceImpl 的 isSettingsPerson 集合：

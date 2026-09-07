@@ -217,6 +217,14 @@ func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind st
 		actionPersons[model.ActionAddSign] = person
 		validationTarget.ActionPersons[string(model.ActionAddSign)] = personTarget
 	}
+	// 移交使用当前节点目标返回的真实处理人候选；它与节点原有处理人策略分开编码，
+	// 避免固定处理人规则没有可编辑策略时，移交仍然把空 userIds 发给目标。
+	if node != nil && node.AuditConfig != nil && len(node.AuditConfig.Candidates) > 0 && len(node.AuditConfig.ResolutionIssues) == 0 {
+		if person, personTarget := actionCandidatePersonConfig(nodeID, "transfer", "移交处理人", "候选来自当前待办可切换的目标人员目录", node.AuditConfig.Candidates, node.AuditConfig.DefaultCandidates); person != nil && personTarget != nil {
+			actionPersons[model.ActionTransfer] = person
+			validationTarget.ActionPersons[string(model.ActionTransfer)] = personTarget
+		}
+	}
 	ctx, previousReason := p.nodeActionContext(nodeID, nodeKind, node)
 	result.Catalog = projectActionCatalog(ctx, scope, actionPersons, previousReason, &validationTarget)
 	if len(validationTarget.ActionKinds) == 0 {

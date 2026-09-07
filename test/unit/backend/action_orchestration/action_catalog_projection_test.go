@@ -114,6 +114,10 @@ func TestPathConfigurationProjectsRealActionCatalog(t *testing.T) {
 	if !addSign.Enabled || !addSign.RequiresPerson || addSign.Person == nil || len(addSign.Preconditions) == 0 || !addSign.RequiresReload {
 		t.Fatalf("加签目录项缺少候选人员或重读事实：%+v", addSign)
 	}
+	transfer := findCatalogItem(review.ActionConfiguration.Catalog, "transfer")
+	if !transfer.Enabled || !transfer.RequiresPerson || transfer.Person == nil || len(transfer.Person.Options) == 0 {
+		t.Fatalf("移交目录项必须携带当前节点候选人员：%+v", transfer)
+	}
 	rollback := findCatalogItem(review.ActionConfiguration.Catalog, "rollback_previous")
 	if rollback.Enabled || !strings.Contains(rollback.DisabledReason, "发起节点") {
 		t.Fatalf("首个业务节点回退未按目标规则禁用：%+v", rollback)
@@ -168,6 +172,29 @@ func TestSaveActionConfigurationEnforcesCatalogGate(t *testing.T) {
 		Actions: []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, Order: 1}},
 	}); err != nil {
 		t.Fatalf("门禁通过的同意动作被误阻断：%v", err)
+	}
+}
+
+// TestResolveActionPersonIDsMapsOpaqueSelection 验证保存的人员令牌只存在配置边界，
+// 运行前按最新目标目录还原为真实用户 ID，执行器不直接猜测或透传令牌。
+func TestResolveActionPersonIDsMapsOpaqueSelection(t *testing.T) {
+	config, plan, path := newCatalogProjectionService(t, 824, 834)
+	nodeKey := analyzer.PathConfigNodeToken("review")
+	personKey := analyzer.PathConfigPersonToken("review:transfer")
+	personToken := analyzer.PathConfigPersonOptionToken("review:transfer", "user-a")
+	_, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, nodeKey, "123e4567-e89b-12d3-a456-426614174841", model.ActionConfigurationInput{
+		Persons: []model.PathConfigPersonStrategyInput{{Key: personKey, Strategy: "manual", Seed: 1, Selected: []string{personToken}}},
+		Actions: []model.ConfiguredAction{{Key: "transfer-1", Action: model.ActionTransfer, Scope: model.ActionScopeTask, NodeKey: nodeKey, Order: 1, ActorPolicy: "manual"}},
+	})
+	if err != nil {
+		t.Fatalf("保存移交人员策略失败：%v", err)
+	}
+	ids, err := config.ResolveActionPersonIDs(context.Background(), plan.ID, path.ID, nodeKey, model.ActionTransfer)
+	if err != nil {
+		t.Fatalf("解析移交人员策略失败：%v", err)
+	}
+	if len(ids) != 1 || ids[0] != "user-a" {
+		t.Fatalf("应解析为真实目标用户 ID，实际 %v", ids)
 	}
 }
 

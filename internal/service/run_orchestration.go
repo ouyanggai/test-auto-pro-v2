@@ -385,6 +385,19 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 			submitBranchTarget = matched
 		}
 	}
+	actionPersonIDs := map[string][]string{}
+	if s.pathNodes != nil {
+		for _, compiled := range steps {
+			if compiled.Action != model.ActionAddSign && compiled.Action != model.ActionTransfer {
+				continue
+			}
+			resolved, resolveErr := s.pathNodes.ResolveActionPersonIDs(ctx, planID, pathID, compiled.NodeKey, compiled.Action)
+			if resolveErr != nil {
+				return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "动作人员策略无法按当前目标结构解析：" + resolveErr.Error()}
+			}
+			actionPersonIDs[step.ActionPersonIndex(compiled.NodeKey, compiled.Action)] = resolved
+		}
+	}
 	return step.RunContext{
 		Run:                      model.Run{PlanID: planID},
 		PathRun:                  model.PathRun{ExecutionPathID: pathID},
@@ -399,6 +412,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		Steps:                    steps,
 		EffectiveFormData:        config.EffectiveFormData,
 		NodeEditableFields:       nodeEditableFields,
+		ActionPersonIDs:          actionPersonIDs,
 	}, nil
 }
 

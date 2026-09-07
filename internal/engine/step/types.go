@@ -69,6 +69,11 @@ type NodeInfo struct {
 	AuditType string
 }
 
+// ActionPersonIndex 返回运行上下文中动作人员解析结果的稳定索引。
+func ActionPersonIndex(nodeKey string, action model.ActionKey) string {
+	return strings.TrimSpace(nodeKey) + "\x00" + string(action)
+}
+
 // RunContext 是一次路径运行的静态上下文：执行期间不变的标识、场景与数据。
 type RunContext struct {
 	Run     model.Run

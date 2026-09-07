@@ -236,16 +236,28 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 		delete(byKey, target.Person.Key)
 	}
 	for _, action := range actions {
-		if action.Action != model.ActionAddSign {
+		if action.Action != model.ActionAddSign && action.Action != model.ActionTransfer {
 			continue
 		}
 		personTarget := target.ActionPersons[string(model.ActionAddSign)]
+		if action.Action == model.ActionTransfer {
+			personTarget = target.ActionPersons[string(model.ActionTransfer)]
+		}
 		if personTarget == nil {
-			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "加签动作缺少当前候选目录", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: "加签处理人", Reason: "目标未返回可用候选"}}}
+			if action.Action == model.ActionTransfer {
+				// 当前目标没有完整处理人候选时，保留动作交给实时目录门禁返回统一的“移交不可用”原因；
+				// 这里不能提前返回人员策略错误，否则保存接口会丢失动作级阻断定位。
+				continue
+			}
+			label := "加签处理人"
+			if action.Action == model.ActionTransfer {
+				label = "移交处理人"
+			}
+			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: label + "缺少当前候选目录", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: label, Reason: "目标未返回可用候选"}}}
 		}
 		person, ok := byKey[personTarget.Key]
 		if !ok {
-			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "加签动作人员策略不完整", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: personTarget.Name, Reason: "动作需要明确候选人员"}}}
+			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: personTarget.Name + "策略不完整", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: personTarget.Name, Reason: "动作需要明确候选人员"}}}
 		}
 		if _, reason := analyzer.EncodePathConfigPersonStrategy(*personTarget, person); reason != "" {
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作人员策略不合法", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: personTarget.Name, Reason: reason}}}
@@ -272,7 +284,7 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 // actionNeedsPerson 判断动作保存是否必须读取动作私有人员目录。
 func actionNeedsPerson(actions []model.ConfiguredAction) bool {
 	for _, action := range actions {
-		if action.Action == model.ActionAddSign {
+		if action.Action == model.ActionAddSign || action.Action == model.ActionTransfer {
 			return true
 		}
 	}
@@ -295,6 +307,46 @@ func decodeHistoryPersonStrategies(raw []byte) map[string]model.PathConfigPerson
 		return result
 	}
 	return result
+}
+
+// ResolveActionPersonIDs 按运行启动时的真实目标目录把动作人员策略解析为内部用户 ID。
+// 浏览器只保存不透明候选键；目标结构或候选变化时必须重新校验并阻止运行，不能猜测替代。
+func (s *PathConfigService) ResolveActionPersonIDs(ctx context.Context, planID, pathID uint64, nodeKey string, action model.ActionKey) ([]string, error) {
+	if planID == 0 || pathID == 0 || strings.TrimSpace(nodeKey) == "" {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "人员策略解析参数不正确"}
+	}
+	path, snapshot, analysis, current, found, _, err := s.loadWorkspace(ctx, planID, pathID)
+	if err != nil {
+		return nil, err
+	}
+	validation, err := s.pathActionGates(snapshot, path, analysis, found)
+	if err != nil {
+		return nil, err
+	}
+	node, ok := validation.NodeTokens[strings.TrimSpace(nodeKey)]
+	if !ok {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作节点不属于当前真实路径"}
+	}
+	personTarget := node.ActionPersons[string(action)]
+	if personTarget == nil {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作没有可用的目标人员候选"}
+	}
+	strategies := decodeHistoryPersonStrategies(current.PersonStrategies)
+	strategy, ok := strategies[personTarget.Key]
+	if !ok {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作缺少已保存的人员策略"}
+	}
+	encoded, reason := analyzer.EncodePathConfigPersonStrategy(*personTarget, strategy)
+	if reason != "" {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作人员策略已失效：" + reason}
+	}
+	var planData struct {
+		Selected []string `json:"selected"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &planData); err != nil || len(planData.Selected) == 0 {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作没有可执行的目标人员"}
+	}
+	return append([]string(nil), planData.Selected...), nil
 }
 
 // applyHistoryActionProjection 把 F-012 独立修订投影回节点工作台，保证保存后刷新不会丢失人员和动作草稿。
