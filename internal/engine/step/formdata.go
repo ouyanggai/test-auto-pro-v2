@@ -145,7 +145,7 @@ func decodeConfiguredFormData(raw []byte) (map[string]any, error) {
 // 名单与 target.BuildSubmitBody/BuildAuditBody/BuildActionBody 的实际形状一一对应。
 func ActionCarriesFormData(action model.ActionKey) bool {
 	switch action {
-	case model.ActionSubmit, model.ActionApprove, model.ActionReject,
+	case model.ActionSaveDraft, model.ActionSubmit, model.ActionApprove, model.ActionReject,
 		model.ActionResubmit, model.ActionStorageFormData, model.ActionForward:
 		return true
 	default:

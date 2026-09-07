@@ -74,7 +74,7 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 	nextAuditors := nextAuditorsOf(step)
 	targetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
 	switch step.Action {
-	case model.ActionSubmit:
+	case model.ActionSubmit, model.ActionSaveDraft:
 		// 手动条件分支（custom_choose）的选择必须随提交以 nextAuditorList[].nodeProxyId 传递
 		// （FlowOperateServiceImpl.validateHandBranchAndReturnExecuteNode 按 nodeProxyId 匹配候选分支节点），
 		// 缺失时目标以「手动条件分支,请选择」拒绝。fixedExecuteNodeId 是并行条件分支的另一机制，此处不用。
@@ -91,11 +91,15 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 			auditors = append(auditors, target.NextAuditor{NodeProxyID: info.TargetNodeID, Name: info.Name})
 		}
 		request := target.SubmitFlowInstanceRequest{
+			InstanceID:   runCtx.PathRun.MainInstanceRef,
 			Name:         instanceName(runCtx, step),
 			FlowProxyID:  runCtx.FlowProxyID,
 			CompanyID:    session.CompanyID,
 			FormData:     formData,
 			NextAuditors: auditors,
+		}
+		if step.Action == model.ActionSaveDraft {
+			request.Status = "draft"
 		}
 		return &request, target.WriteEndpointSubmit, target.BuildSubmitBody(request), nil
 	case model.ActionApprove:

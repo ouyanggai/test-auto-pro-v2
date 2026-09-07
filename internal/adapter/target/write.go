@@ -10,7 +10,7 @@ import (
 // 写端点白名单（F-016）：本切片允许调用的目标写端点只有以下两个，
 // 其余写端点由运行前检查（F-015）直接阻塞，不得静默降级。
 const (
-	// WriteEndpointSubmit 发起主实例（动作：发起；无表单流程的保存草稿同端点但本切片不使用）。
+	// WriteEndpointSubmit 发起主实例；保存草稿也使用该目标端点，但通过 data.status 区分语义。
 	WriteEndpointSubmit = "/web/flowInstanceApi/submit"
 	// WriteEndpointAudit 处理当前活动人工待办（动作：同意）。
 	WriteEndpointAudit = "/flowInstanceApi/audit"
@@ -55,8 +55,12 @@ type BizRelevance struct {
 
 // SubmitFlowInstanceRequest 是发起主实例的语义意图。执行器给出意图，适配层负责协议。
 type SubmitFlowInstanceRequest struct {
+	// InstanceID 是已有草稿实例的目标实例 ID；新建提交时为空。
+	InstanceID string
 	// Name 是实例显示名；目标已发列表按名称展示。
 	Name string
+	// Status 是提交状态；保存草稿固定为 draft，普通提交为空。
+	Status string
 	// FlowProxyID 是发布流程代理 ID；FormProxyID 是表单代理 ID。
 	// 参考实现要求二者至少有一个（有表单传 formProxyId，无表单传 flowProxyId）。
 	FlowProxyID string
@@ -87,8 +91,14 @@ type SubmitFlowInstanceResult struct {
 // 导出是为了让执行器的「即将发出的请求」预览与实际发出的载荷严格同源，不允许两套拼装逻辑。
 func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 	data := map[string]any{}
+	if id := strings.TrimSpace(request.InstanceID); id != "" {
+		data["id"] = id
+	}
 	if name := strings.TrimSpace(request.Name); name != "" {
 		data["name"] = name
+	}
+	if status := strings.TrimSpace(request.Status); status != "" {
+		data["status"] = status
 	}
 	if id := strings.TrimSpace(request.FormProxyID); id != "" {
 		data["formProxyId"] = id
