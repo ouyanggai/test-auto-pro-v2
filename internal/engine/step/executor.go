@@ -421,7 +421,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err := e.runState.RenewLease(ctx, runCtx.PathRun.ID, fencingToken); err != nil {
 		return outcome, 0, err
 	}
-	e.refreshAndSubmit(ctx, runCtx, step, session, preview, log, reportPhase, approved, attemptNo)
+	// 写端点可能明确拒绝过期会话，执行器会在确认请求未进入业务后换新会话重发。
+	// 后续事实重读必须沿用真正完成写入的会话，否则会拿旧 SID 做完整退避，
+	// 把已经成功的目标写误判成“声明成功但事实不可读”。
+	session = e.refreshAndSubmit(ctx, runCtx, step, session, preview, log, reportPhase, approved, attemptNo)
 	if !preview.writeSent {
 		// 零写入：写请求没有发出（发送前的待办新鲜复验失败或载荷缺失）。
 		// 没有发出的请求不存在“结果不确定”——把零写入判成不确定会把无副作用的失败
@@ -604,7 +607,7 @@ func resubmitOnSessionRejected[R any](
 	step model.CompiledActionStep, attemptNo int,
 	send func(refreshed target.Session) (R, target.WriteResponse, string, error),
 	log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep,
-) (R, target.WriteResponse, string, error) {
+) (R, target.WriteResponse, string, target.Session, error) {
 	var zero R
 	for round := 1; round <= 3; round++ {
 		log.Phase("submit", step.Sequence, attemptNo, fmt.Sprintf(
@@ -612,17 +615,17 @@ func resubmitOnSessionRejected[R any](
 		reportPhase(approved, "submit", fmt.Sprintf("目标会话失效已拒绝 %d 次（无副作用），正在重新取得会话", round))
 		refreshed, refreshErr := refresh(account)
 		if refreshErr != nil {
-			return zero, target.WriteResponse{}, "", refreshErr
+			return zero, target.WriteResponse{}, "", target.Session{}, refreshErr
 		}
 		result, response, traceID, err := send(refreshed)
 		if !isSessionRejected(err) {
-			return result, response, traceID, err
+			return result, response, traceID, refreshed, err
 		}
 		if round == 3 {
-			return result, response, traceID, err
+			return result, response, traceID, refreshed, err
 		}
 	}
-	return zero, target.WriteResponse{}, "", fmt.Errorf("会话失效恢复重发未执行")
+	return zero, target.WriteResponse{}, "", target.Session{}, fmt.Errorf("会话失效恢复重发未执行")
 }
 
 // refreshSessionForWrite 为写请求重新取得可用会话：强制重登并探活，探活只把会话失效当失败。
@@ -651,7 +654,7 @@ func (e *Executor) refreshSessionForWrite(ctx context.Context, account string) (
 // refreshAndSubmit 在发送前完成待办任务 ID 的新鲜读取，然后发出唯一一次写请求。
 // 请求本体与预览同源（preview.request）；本方法及其调用路径不存在任何重试。
 // 只有真正发出写请求的路径才置 preview.writeSent：发送前的任何失败都停留在零写入分支。
-func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, attemptNo int) {
+func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, attemptNo int) target.Session {
 	switch request := preview.request.(type) {
 	case *target.SubmitFlowInstanceRequest:
 		preview.writeSent = true
@@ -666,7 +669,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		if isSessionRejected(err) {
 			// 实测目标为多节点且写链路会话不同步：每次换新会话重发随机命中，
 			// 因此在同一次尝试内最多恢复重发 3 次；每次被拒都已证明未进入业务、无副作用。
-			result, response, traceID, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
 				func(refreshed target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
 					return e.target.SubmitFlowInstance(ctx, refreshed, *request)
 				}, log, reportPhase, approved)
@@ -681,27 +684,30 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		if isSessionRejected(err) {
 			refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
 			if refreshErr == nil {
+				session = refreshed
 				jobTaskID, err = e.target.FindDueTaskID(ctx, refreshed, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
+			} else {
+				err = refreshErr
 			}
 		}
 		if err != nil {
 			// 待办读取失败（目标抖动或响应形状不符）：写请求未发出，按演员/待办解析失败如实归类。
 			preview.writeErr = err
 			preview.writeErrClass = model.FailureClassActorUnresolved
-			return
+			return session
 		}
 		if jobTaskID == "" {
 			// 目标上已无本演员在本节点的活动待办：演员或待办已变化，绝不冒名发送。
 			// 用如实的原因，不复用「未验证动作」的话术——那是另一回事，且文案已过时（评审 P2）。
 			preview.writeErr = fmt.Errorf("目标上已无本演员在本节点的活动待办，无法执行%s；请核对目标平台的真实状态", preview.ActionName)
 			preview.writeErrClass = model.FailureClassActorUnresolved
-			return
+			return session
 		}
 		request.JobTaskID = jobTaskID
 		preview.writeSent = true
 		result, response, traceID, err := e.target.AuditCurrentTask(ctx, session, *request)
 		if isSessionRejected(err) {
-			result, response, traceID, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
 				func(refreshed target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
 					return e.target.AuditCurrentTask(ctx, refreshed, *request)
 				}, log, reportPhase, approved)
@@ -714,13 +720,21 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 			preview.writeSent = true
 			started := e.now()
 			response, traceID, err := e.target.ExecuteActionWrite(ctx, session, *actionRequest)
+			if isSessionRejected(err) {
+				_, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+					func(refreshed target.Session) (struct{}, target.WriteResponse, string, error) {
+						writeResponse, writeTraceID, writeErr := e.target.ExecuteActionWrite(ctx, refreshed, *actionRequest)
+						return struct{}{}, writeResponse, writeTraceID, writeErr
+					}, log, reportPhase, approved)
+			}
 			preview.writeResponse, preview.writeTraceID, preview.writeErr = response, traceID, err
 			preview.writeDurationMs = e.now().Sub(started).Milliseconds()
-			return
+			return session
 		}
 		preview.writeErr = errors.New("写请求载荷缺失，拒绝发送")
 		preview.writeErrClass = model.FailureClassToolBug
 	}
+	return session
 }
 
 // containsNode 判断节点键集合是否包含目标节点。
