@@ -94,8 +94,23 @@ func Apply(input Input) Result {
 	currentWalk := walkTree(input.Tree, original, choices)
 	if currentWalk.complete {
 		if currentWalk.matches {
+			directValues, cloneErr := cloneMap(original)
+			if cloneErr != nil {
+				return appendIssue(result, Issue{Code: "raw_data_uncloneable", Message: "目标原始表单数据无法完整复制"})
+			}
 			result.Status = StatusReady
+			result.Values = directValues
 			result.ActualChoices = currentWalk.choices
+			// 即使路径无需条件补丁，也要同步已经变化的成对显示字段。
+			// 历史数据可能只改过 Name 或 __virtualName，提前返回会把旧显示值继续带进表单。
+			synced := synchronizeLinkedSelectDisplay(original, result.Values)
+			for _, reference := range references {
+				if !reference.Selected {
+					continue
+				}
+				synced = append(synced, synchronizeLinkedSelectDisplayFromPath(original, result.Values, reference.Condition.FieldA)...)
+			}
+			result.Patches = appendDisplaySyncPatches(nil, original, result.Values, synced)
 			return result
 		}
 	} else if !walkCanBecomeEvaluable(currentWalk, references) {
@@ -194,6 +209,47 @@ func synchronizeLinkedSelectDisplay(original, values map[string]any) []displaySy
 	}
 	sort.Slice(synced, func(left, right int) bool { return synced[left].Path < synced[right].Path })
 	return synced
+}
+
+// synchronizeLinkedSelectDisplayFromPath 按已选条件字段修复直接命中路径中的成对显示值。
+// 直接命中时条件字段本身没有发生补丁变化，常规变更检测无法判断哪一侧是权威值，
+// 这里仅接受当前选中分支声明的字段作为来源，避免用两个显示值的差异进行猜测。
+func synchronizeLinkedSelectDisplayFromPath(original, values map[string]any, source string) []displaySync {
+	source = strings.TrimSpace(source)
+	after, exists := values[source]
+	if !exists {
+		return nil
+	}
+	if strings.HasSuffix(source, "__virtualName") {
+		namePath := pairedDisplayNamePath(strings.TrimSuffix(source, "__virtualName"))
+		if namePath == "" {
+			return nil
+		}
+		if _, beforeExists := original[namePath]; !beforeExists {
+			return nil
+		}
+		if valuesEqual(values[namePath], after) {
+			return nil
+		}
+		values[namePath] = cloneAny(after)
+		return []displaySync{{Path: namePath, Source: source}}
+	}
+	if !strings.HasSuffix(source, "Name") {
+		return nil
+	}
+	idPath := strings.TrimSuffix(source, "Name") + "Id"
+	virtualPath := idPath + "__virtualName"
+	if _, idExists := values[idPath]; !idExists {
+		return nil
+	}
+	if _, virtualExists := original[virtualPath]; !virtualExists {
+		return nil
+	}
+	if valuesEqual(values[virtualPath], after) {
+		return nil
+	}
+	values[virtualPath] = cloneAny(after)
+	return []displaySync{{Path: virtualPath, Source: source}}
 }
 
 // displaySync 记录一次显示名同步：跟随哪个条件字段、同步了哪个显示字段。

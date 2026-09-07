@@ -402,6 +402,39 @@ func TestBranchOverlaySyncsPairedNameWhenVirtualNameIsConditionField(t *testing.
 	}
 }
 
+// TestBranchOverlaySyncsPairedNameWhenPathAlreadyMatches 验证路径已直接命中时仍同步显示字段。
+// 当前条件值可能已经是目标值，但历史 Name 字段仍是旧值；直接返回也必须修复这组不一致数据。
+func TestBranchOverlaySyncsPairedNameWhenPathAlreadyMatches(t *testing.T) {
+	tree := conditionTree([]target.FlowBranchTemplate{
+		{ID: "target", Sort: 1, Conditions: []target.FlowCondition{
+			{FieldA: "classificationId__virtualName", ValueB: "施工类", Judge: "eq"},
+		}},
+		{ID: "fallback", Sort: 2},
+	})
+	result := branchoverlay.Apply(branchoverlay.Input{
+		Tree:    tree,
+		Choices: []model.ExecutionPathChoice{{RouteNodeID: "route", BranchID: "target"}},
+		Values: map[string]any{
+			"classificationId":              []any{"target-id"},
+			"classificationId__virtualName": "施工类",
+			"classificationName":            "行政综合类",
+		},
+	})
+	if result.Status != branchoverlay.StatusReady {
+		t.Fatalf("已命中路径不应进入待补数据：%#v", result)
+	}
+	if result.Values["classificationName"] != "施工类" {
+		t.Fatalf("已命中路径仍需同步名称字段：%#v", result.Values)
+	}
+	var patched []string
+	for _, patch := range result.Patches {
+		patched = append(patched, patch.Path)
+	}
+	if !containsPatchPath(patched, "classificationName") {
+		t.Fatalf("显示字段同步必须留下补丁明细：%#v", result.Patches)
+	}
+}
+
 // containsPatchPath 判断补丁明细里是否包含指定字段路径。
 func containsPatchPath(paths []string, want string) bool {
 	for _, path := range paths {

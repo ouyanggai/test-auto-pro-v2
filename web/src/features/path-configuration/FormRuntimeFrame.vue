@@ -5,8 +5,8 @@ import { classifyRuntimeMessage, FORM_RUNTIME_VERSION, type RuntimeMessage } fro
 import type { PathConfigurationDataWorkspace, PathFormRuntimeSession } from './types'
 
 const props = defineProps<{
-  // viewName 是当前按节点权限渲染的视图名（空串即发起人视图）；变化时按新权限重新装载表单。
-  form: PathConfigurationDataWorkspace & { readOnly?: boolean, viewName?: string }
+  // viewKey 是当前按节点权限渲染的视图身份；变化时按新权限重新装载表单。
+  form: PathConfigurationDataWorkspace & { readOnly?: boolean, viewKey?: string }
   runtimeSession: PathFormRuntimeSession
 }>()
 const emit = defineEmits<{
@@ -193,7 +193,7 @@ function destroyRuntime() {
   resetRuntime(true)
 }
 
-watch(() => [props.form.revision, props.runtimeSession.sid, props.form.viewName], () => {
+watch(() => [props.form.revision, props.runtimeSession.sid, props.form.viewKey], () => {
   if (!iframe.value?.contentWindow) return
   destroyRuntime()
   void loadRuntime()
