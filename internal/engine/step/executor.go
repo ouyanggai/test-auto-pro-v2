@@ -651,6 +651,82 @@ func (e *Executor) refreshSessionForWrite(ctx context.Context, account string) (
 	return fresh, nil
 }
 
+// taskSnapshotReader 是目标任务身份的可选能力面；旧的测试假件仍可用 FindDueTaskID，
+// 真实客户端必须实现完整快照以提供 jobTaskId、batchNo 和已办任务范围。
+type taskSnapshotReader interface {
+	FindTaskSnapshot(context.Context, target.Session, string, string, string) (target.TaskSnapshot, error)
+}
+
+// refreshActionTask 在任务级动作发出前重读当前任务身份，并在会话明确失效时只重取一次。
+// 任务号、批次和已办/待办状态都不能从编排配置或上一次写请求沿用。
+func (e *Executor) refreshActionTask(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, request *target.ActionWriteRequest, session target.Session) (target.Session, error) {
+	status := "pending"
+	switch step.Action {
+	case model.ActionRetrieve:
+		status = "done"
+	case model.ActionReject, model.ActionTransfer, model.ActionAddSign, model.ActionRollback:
+		status = "pending"
+	default:
+		return session, nil
+	}
+	read := func(active target.Session) (target.TaskSnapshot, error) {
+		if reader, ok := e.target.(taskSnapshotReader); ok {
+			return reader.FindTaskSnapshot(ctx, active, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID, status)
+		}
+		if status == "done" {
+			return target.TaskSnapshot{}, fmt.Errorf("目标客户端不支持已办任务快照读取")
+		}
+		jobTaskID, err := e.target.FindDueTaskID(ctx, active, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
+		return target.TaskSnapshot{JobTaskID: jobTaskID}, err
+	}
+	snapshot, err := read(session)
+	if isSessionRejected(err) {
+		refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
+		if refreshErr != nil {
+			return session, refreshErr
+		}
+		session = refreshed
+		snapshot, err = read(refreshed)
+	}
+	if err != nil {
+		return session, err
+	}
+	if strings.TrimSpace(snapshot.JobTaskID) == "" {
+		return session, fmt.Errorf("目标上已无本演员在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
+	}
+	request.JobTaskID = strings.TrimSpace(snapshot.JobTaskID)
+	if step.Action == model.ActionTransfer || step.Action == model.ActionAddSign {
+		request.BatchNo = strings.TrimSpace(snapshot.BatchNo)
+		if request.BatchNo == "" {
+			return session, fmt.Errorf("目标任务快照缺少 batchNo，无法执行%s", actionName(step.Action))
+		}
+		if len(request.UserIDs) == 0 {
+			return session, fmt.Errorf("%s未解析到可用目标人员，拒绝发送空 userIds", actionName(step.Action))
+		}
+	}
+	return session, nil
+}
+
+// taskStatusName 返回任务快照状态的中文名称，供零写入错误定位使用。
+func taskStatusName(status string) string {
+	if status == "done" {
+		return "已办"
+	}
+	return "待办"
+}
+
+// actionName 返回动作稳定键的中文名称，避免执行阶段错误只显示内部枚举。
+func actionName(action model.ActionKey) string {
+	labels := map[model.ActionKey]string{
+		model.ActionReject: "不同意", model.ActionTransfer: "移交", model.ActionAddSign: "加签",
+		model.ActionRollback: "回退", model.ActionRetrieve: "取回",
+	}
+	if label := labels[action]; label != "" {
+		return label
+	}
+	return string(action)
+}
+
 // refreshAndSubmit 在发送前完成待办任务 ID 的新鲜读取，然后发出唯一一次写请求。
 // 请求本体与预览同源（preview.request）；本方法及其调用路径不存在任何重试。
 // 只有真正发出写请求的路径才置 preview.writeSent：发送前的任何失败都停留在零写入分支。
@@ -717,8 +793,15 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 	default:
 		// 其余已登记动作经统一动作写出口（F-019）：载荷由 buildRequest 构造，端点在白名单内。
 		if actionRequest, ok := preview.request.(*target.ActionWriteRequest); ok {
-			preview.writeSent = true
 			started := e.now()
+			var taskErr error
+			session, taskErr = e.refreshActionTask(ctx, runCtx, step, actionRequest, session)
+			if taskErr != nil {
+				preview.writeErr = taskErr
+				preview.writeErrClass = model.FailureClassActorUnresolved
+				return session
+			}
+			preview.writeSent = true
 			response, traceID, err := e.target.ExecuteActionWrite(ctx, session, *actionRequest)
 			if isSessionRejected(err) {
 				_, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,

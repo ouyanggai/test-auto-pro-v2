@@ -127,6 +127,7 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 			request.AuditStatus = auditStatusOf(step.Action)
 			request.ExecuteDesc = auditMessage(runCtx, step)
 			request.NodeProxyID = targetNodeID
+			request.UserIDs = append([]string(nil), runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)]...)
 		case model.ActionStorageFormData:
 			request.ExecuteDesc = auditMessage(runCtx, step)
 			request.NodeProxyID = targetNodeID
@@ -181,6 +182,11 @@ func parameterString(step model.CompiledActionStep, key string) string {
 // boolPtr 返回布尔指针。
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+// actionPersonKey 生成运行上下文内人员解析结果的稳定索引，不把目标人员 ID 写入场景配置。
+func actionPersonKey(nodeKey string, action model.ActionKey) string {
+	return strings.TrimSpace(nodeKey) + "\x00" + string(action)
 }
 
 // isSettingsPersonAuditType 对齐目标 FlowOperateServiceImpl 的 isSettingsPerson 集合：

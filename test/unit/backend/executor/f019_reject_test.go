@@ -44,3 +44,27 @@ func TestF019RejectHasWritePayload(t *testing.T) {
 		t.Fatalf("表单数据必须按原始文本透传，实际 %s", got)
 	}
 }
+
+// TestF019TaskAppendCarriesFreshBatchAndUsers 锁定移交/加签的任务级身份和人员集合，
+// 防止适配层继续发送空 userIds 或遗漏目标要求的 batchNo。
+func TestF019TaskAppendCarriesFreshBatchAndUsers(t *testing.T) {
+	body, endpoint, err := target.BuildActionBody(target.ActionWriteRequest{
+		Action: "transfer", InstanceID: "i-2", JobTaskID: "task-2", BatchNo: "batch-4",
+		NodeProxyID: "node-2", AuditStatus: "transfer", UserIDs: []string{"user-2", "user-2", "user-3"},
+	})
+	if err != nil {
+		t.Fatalf("移交动作必须有载荷分支：%v", err)
+	}
+	if endpoint != target.WriteEndpointApproverAppend {
+		t.Fatalf("移交必须走 approverAppend 端点，实际 %s", endpoint)
+	}
+	data, _ := body["data"].(map[string]any)
+	if data["jobTaskId"] != "task-2" || data["batchNo"] != "batch-4" {
+		t.Fatalf("任务批次身份必须携带：%v", data)
+	}
+	appendVO, _ := body["approverAppendVo"].(map[string]any)
+	users, _ := appendVO["userIds"].([]string)
+	if len(users) != 2 || users[0] != "user-2" || users[1] != "user-3" {
+		t.Fatalf("人员 ID 应去重并保持配置顺序：%v", appendVO["userIds"])
+	}
+}

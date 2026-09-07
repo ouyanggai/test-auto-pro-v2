@@ -31,6 +31,8 @@ type ActionWriteRequest struct {
 	InstanceID string
 	// JobTaskID 是待办任务链接 ID（审批类动作硬性必填）。
 	JobTaskID string
+	// BatchNo 是任务快照返回的当前批次；移交和加签必须原样带给目标。
+	BatchNo string
 	// FlowProxyID / FormProxyID 是重提等动作需要的代理标识。
 	FlowProxyID string
 	FormProxyID string
@@ -44,6 +46,8 @@ type ActionWriteRequest struct {
 	FormData json.RawMessage
 	// NextAuditors 是分支/选人。
 	NextAuditors []NextAuditor
+	// UserIDs 是移交或加签的实时受限目标人员 ID 集合。
+	UserIDs []string
 	// ReceiverID 是转发的被转发人 ID（顶层 receiverId）。
 	ReceiverID string
 	// Name 是转发辅助实例名。
@@ -134,12 +138,21 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 				"executeDesc": request.ExecuteDesc,
 			},
 		}
-		if request.NodeProxyID != "" {
-			// batchNo 由目标在任务链接中返回；无值时省略而不是传空串。
+		if batchNo := strings.TrimSpace(request.BatchNo); batchNo != "" {
+			data["batchNo"] = batchNo
+		}
+		userIDs := make([]string, 0, len(request.UserIDs))
+		seen := make(map[string]bool, len(request.UserIDs))
+		for _, userID := range request.UserIDs {
+			userID = strings.TrimSpace(userID)
+			if userID != "" && !seen[userID] {
+				seen[userID] = true
+				userIDs = append(userIDs, userID)
+			}
 		}
 		body := map[string]any{
 			"data":             data,
-			"approverAppendVo": map[string]any{"flowNodeProxyId": request.NodeProxyID, "userIds": []string{}},
+			"approverAppendVo": map[string]any{"flowNodeProxyId": request.NodeProxyID, "userIds": userIDs},
 		}
 		return body, WriteEndpointApproverAppend, nil
 	case "rollback_previous":

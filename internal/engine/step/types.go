@@ -108,6 +108,9 @@ type RunContext struct {
 	// NodeEditableFields 是路线上每个节点声明的可编辑字段（键=编译场景的 nodeKey）。
 	// 与 Nodes 里的同名字段同源，单独留一份是为了在没有节点信息时也能判断"这个字段属于哪个节点"。
 	NodeEditableFields map[string][]string
+	// ActionPersonIDs 是启动时按当前目标目录解析的动作人员 ID；只允许执行器内部使用，
+	// 不向浏览器或持久化场景透传目标业务标识。
+	ActionPersonIDs map[string][]string
 }
 
 // InstanceFacts 是一次目标事实读取的快照，用于门禁复验与事实重读对照。
