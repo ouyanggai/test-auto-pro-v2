@@ -4,6 +4,9 @@ import test from 'node:test'
 
 const runtimeSource = fs.readFileSync(new URL('../../../form-runtime/runtime-source/src/main.js', import.meta.url), 'utf8')
 const runtimeAppSource = fs.readFileSync(new URL('../../../form-runtime/src/App.vue', import.meta.url), 'utf8')
+const runtimeProtocolSource = fs.readFileSync(new URL('../../../form-runtime/src/runtime/protocol.js', import.meta.url), 'utf8')
+const runtimeFrameSource = fs.readFileSync(new URL('../../../web/src/features/path-configuration/FormRuntimeFrame.vue', import.meta.url), 'utf8')
+const pathConfigurationViewSource = fs.readFileSync(new URL('../../../web/src/views/PlanPathConfigurationView.vue', import.meta.url), 'utf8')
 const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
 const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
@@ -151,8 +154,7 @@ test('刷新会回填已填数据，避免 FormMaking 重新初始化清空 mode
   assert.deepEqual(form.model, { title: '人工填写', amount: 2500 })
 })
 
-test('远程下拉按真实选项同步名称对应的绑定值、虚拟显示与名称字段', async () => {
-  const template = { list: [{ type: 'select', model: 'paymentId', name: '付款单位', options: { remote: true } }] }
+test('远程下拉按真实选项同步名称对应的绑定值、虚拟显示与名称字段', async () => {  const template = { list: [{ type: 'select', model: 'paymentId', name: '付款单位', options: { remote: true } }] }
   const form = {
     model: { paymentId: 'old-id', paymentId__virtualName: '旧付款单位', paymentName: '新付款单位' },
     // 真实 FormMaking 的 getComponent 返回 el-select；字段定义和选项属于 formItemContexts 包装组件。
@@ -192,6 +194,41 @@ test('远程下拉选项为空时先刷新数据源再同步分支值', async ()
   }
 
   const coordination = await coordinateOptionPatches(form, template, form.model, ['paymentName'], 2)
+  assert.equal(coordination.values.paymentId, 'new-id')
+})
+
+test('datasource 型远端控件缺数据源键时跳过刷新，装载不被永不落定的 Promise 拖死', async () => {
+  // 真实缺陷（合同盖章评审表 currentDepartment）：remote=true、remoteType=datasource 但 remoteDataSource 为空，
+  // FormMaking 的 refreshOptionData 对该形状返回永不落定的 Promise，批量刷新 Promise.all 永远等待，
+  // 整个表单装载挂死，父页面超时后销毁会话，用户看到"一直在加载中"。
+  const refreshedModels = []
+  const template = { list: [
+    { type: 'select', model: 'currentDepartment', name: '当前部门', options: { remote: true, remoteType: 'datasource', remoteDataSource: null } },
+    { type: 'select', model: 'paymentId', name: '付款单位', options: { remote: true, remoteType: 'datasource', remoteDataSource: 'ds01' } },
+  ] }
+  const select = { remoteOptions: [{ value: 'new-id', label: '新付款单位' }] }
+  const form = {
+    model: { currentDepartment: '建设运营部', paymentId: 'old-id', paymentId__virtualName: '旧付款单位', paymentName: '新付款单位' },
+    formItemContexts: {
+      currentDepartment: { widget: { type: 'select', model: 'currentDepartment', options: template.list[0].options } },
+      paymentId: {
+        widget: { type: 'select', model: 'paymentId', options: template.list[1].options },
+        $refs: { generateElementItem: select },
+      },
+    },
+    // 模拟 FormMaking 行为：currentDepartment 一旦被要求刷新就永不返回。
+    refreshFieldOptionData (models) {
+      refreshedModels.push(...models)
+      if (models.includes('currentDepartment')) return new Promise(() => {})
+      select.remoteOptions = [{ value: 'new-id', label: '新付款单位' }]
+      return Promise.resolve([])
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['paymentName'], 1)
+  assert.deepEqual(refreshedModels, ['paymentId'])
   assert.equal(coordination.values.paymentId, 'new-id')
 })
 
@@ -614,6 +651,7 @@ test('版本化消息拒绝旧版本、空会话和未知命令', () => {
   assert.equal(isRuntimeCommand({ ...valid, version: 'old' }), false)
   assert.equal(isRuntimeCommand({ ...valid, sessionId: '' }), false)
   assert.equal(isRuntimeCommand({ ...valid, type: 'submit' }), false)
+  assert.equal(isRuntimeCommand({ ...valid, type: 'cancel' }), true)
 })
 
 test('目标请求统一透传并保留网关改写与 SID', async () => {
@@ -791,6 +829,93 @@ test('请求策略把目标 XHR 和 fetch 接入完成屏障且忽略第三方�
   }
 })
 
+test('目标 XHR 在 abort 事件下也必须结束请求屏障', async () => {
+  const tracker = createTargetRequestTracker({ idleMs: 1, pollMs: 1, timeoutMs: 30 })
+  class AbortedXHR {
+    constructor () { this.handlers = {} }
+    open () {}
+    setRequestHeader () {}
+    addEventListener (name, handler) { this.handlers[name] = handler }
+    send () {}
+    abort () { this.handlers.abort?.() }
+  }
+  const originalWindow = globalThis.window
+  const originalXHR = globalThis.XMLHttpRequest
+  globalThis.XMLHttpRequest = AbortedXHR
+  globalThis.window = {
+    location: { href: 'http://127.0.0.1:19001/' },
+    fetch: async () => new Response('{}'),
+  }
+  try {
+    const restore = installReadOnlyRequestPolicy({ sid: 'sid', baseURL: 'http://target.test/api', requestTracker: tracker })
+    const request = new XMLHttpRequest()
+    request.open('GET', '/web/category/list')
+    request.send()
+    const waiting = tracker.waitForIdle()
+    request.abort()
+    await waiting
+    restore()
+  } finally {
+    tracker.dispose()
+    globalThis.window = originalWindow
+    globalThis.XMLHttpRequest = originalXHR
+  }
+})
+
+test('选项协调在每轮评估前重读 iframe 实时模型，避免迟到响应留下旧回显', async () => {
+  const template = { list: [{ type: 'select', model: 'paymentId', name: '付款单位', options: { remote: true } }] }
+  const form = {
+    model: { paymentId: 'new-id', paymentId__virtualName: '新付款单位', paymentName: '新付款单位' },
+    formItemContexts: {
+      paymentId: {
+        widget: { type: 'select', model: 'paymentId', options: { remote: true } },
+        $refs: { generateElementItem: { remoteOptions: [
+          { value: 'old-id', label: '旧付款单位' },
+          { value: 'new-id', label: '新付款单位' },
+        ] } },
+      },
+    },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  let waitCalls = 0
+  const waitForRequests = async () => {
+    waitCalls++
+    if (waitCalls === 1) {
+      form.model.paymentId = 'old-id'
+      form.model.paymentId__virtualName = '旧付款单位'
+      form.model.paymentName = '新付款单位'
+    }
+  }
+  await coordinateOptionPatches(form, template, {
+    paymentId: 'new-id', paymentId__virtualName: '新付款单位', paymentName: '新付款单位',
+  }, ['paymentName'], 1, waitForRequests)
+  assert.ok(waitCalls >= 1)
+  assert.equal(form.model.paymentId, 'new-id')
+  assert.equal(form.model.paymentId__virtualName, '新付款单位')
+})
+
+test('iframe 未 ready 前保留过渡层且 load 命令有总超时', () => {
+  assert.match(pathConfigurationViewSource, /<form-runtime-frame[\s\S]*v-if="runtimeSession && runtimeForm"/)
+  assert.match(pathConfigurationViewSource, /@loading="handleRuntimeLoading"/)
+  assert.match(pathConfigurationViewSource, /<Transition name="form-loading">/)
+  assert.match(pathConfigurationViewSource, /\.form-loading-enter-active[\s\S]*transition: opacity 160ms ease/)
+  assert.match(runtimeFrameSource, /emit\('loading'/)
+  assert.match(runtimeFrameSource, /runtimeReady\s*=\s*true/)
+  assert.match(runtimeFrameSource, /firstDocument && runtimeReady/)
+  assert.match(runtimeFrameSource, /RUNTIME_LOAD_TIMEOUT_MS\s*=\s*60_000/)
+  assert.match(runtimeFrameSource, /documentLoadCount/)
+  assert.match(runtimeFrameSource, /props\.form\.dataRevision/)
+  assert.match(runtimeFrameSource, /iframeBootPending\s*=\s*true/)
+  assert.match(runtimeFrameSource, /cancelRuntimeOperation/)
+  assert.match(runtimeFrameSource, /resetRuntime\(true\)/)
+  assert.match(runtimeFrameSource, /postCommand\('load'[\s\S]*remaining/)
+  assert.doesNotMatch(runtimeFrameSource, /postCommand\('load'[\s\S]*undefined,\s*0\)/)
+  assert.match(pathConfigurationViewSource, /controller\.abort\(\)/)
+  assert.match(pathConfigurationViewSource, /runtimeEpoch\s*\+=\s*1/)
+  assert.match(pathConfigurationViewSource, /历史数据接口加载超时/)
+})
+
 test('加载表单时展示分阶段进度并明确标出最终关键路径修正', () => {
   assert.match(runtimeAppSource, /form-runtime__loading/)
   assert.match(runtimeAppSource, /正在加载表单结构和历史数据/)
@@ -800,6 +925,11 @@ test('加载表单时展示分阶段进度并明确标出最终关键路径修�
   assert.match(runtimeAppSource, /this\.optionPatchTriggers,\s*20/)
   assert.match(runtimeAppSource, /operationGeneration/)
   assert.match(runtimeAppSource, /beginOperation/)
+  assert.match(runtimeProtocolSource, /'cancel'/)
+  assert.match(runtimeAppSource, /command\.type === 'cancel'/)
+  assert.match(runtimeAppSource, /capture\(true, commandContext\)/)
+  assert.match(runtimeAppSource, /command\.type === 'load' \? \(this\.sessionId && command\.sessionId !== this\.sessionId\)/)
+  assert.match(runtimeAppSource, /if \(!isCurrentSession\) return/)
 })
 
 

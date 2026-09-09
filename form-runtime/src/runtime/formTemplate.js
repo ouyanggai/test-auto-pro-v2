@@ -255,6 +255,9 @@ const OPTION_WAIT_ATTEMPTS = 120
 const OPTION_WAIT_INTERVAL_MS = 500
 // 每隔若干轮重新触发一次数据源刷新，应对链式依赖在中途才具备条件的情况。
 const OPTION_REFRESH_EVERY = 10
+// 单次"刷新远端选项"调用的兜底上限：正常情况下数据源请求在数秒内完成（实测毫秒级到秒级）；
+// 该兜底只防目标组件内部 Promise 永不落定导致装载挂死，不是常规等待预算。
+const REFRESH_OPTION_CALL_TIMEOUT_MS = 10000
 
 // formValuesFingerprint 生成表单值的稳定指纹（键按字典序），用于判断协调是否真的改动了取值。
 // 不用 JSON.stringify 直接比较：键顺序会随赋值顺序变化，会把"没改"误判成"改了"。
@@ -309,6 +312,12 @@ export function optionFieldDescriptors (template) {
           label: String(component.name || ''),
           multiple: options.multiple === true,
           remote: options.remote === true,
+          // 远端取数方式随模板透传：FormMaking 的 refreshOptionData 只对 fx 与"带数据源键的 datasource"
+          // 有明确落定路径；remote=true 却没有数据源键的控件（如身份字段 currentDepartment）会让
+          // refreshFieldOptionData 的 Promise.all 永远等待，必须跳过刷新（见 refreshOptionFields）。
+          remoteType: String(options.remoteType || '').trim(),
+          remoteDataSource: options.remoteDataSource == null ? '' : String(options.remoteDataSource),
+          remoteFx: options.remoteFx != null && options.remoteFx !== '',
           staticOptions: buildStaticOptions(options, type),
         })
       }
@@ -618,16 +627,36 @@ function evaluateOptionPatches (form, descriptors, triggers, values, apply) {
 }
 
 // refreshOptionFields 主动刷新被协调控件自己的远程选项数据源，避免首次刷新只完成挂载而选项仍为空。
+// FormMaking 的 refreshOptionData 只对 fx 与"带数据源键的 datasource"有明确落定路径；
+// remote=true 却没有数据源键的 datasource 控件（如身份字段 currentDepartment）会返回永不落定的
+// Promise，而这里是 Promise.all 聚合，任何一个都会让整次刷新（进而整个表单装载）永久挂起，
+// 因此这类控件必须跳过刷新：它的选项实际来自宿主回显与联动，不依赖本次刷新。
+// 其余远端控件照常刷新。刷新调用整体再加有界兜底：即使目标组件内部挂起（如请求永不返回），
+// 也不会拖死装载，超时后按"本轮未刷新"继续协调。
 async function refreshOptionFields (form, descriptors) {
   if (typeof form?.refreshFieldOptionData !== 'function') return false
-  const models = descriptors.filter(descriptor => descriptor.remote).map(descriptor => descriptor.model)
+  const models = descriptors
+    .filter(descriptor => descriptor.remote && refreshOptionDataCanSettle(descriptor))
+    .map(descriptor => descriptor.model)
   if (models.length === 0) return false
   try {
-    await form.refreshFieldOptionData(models)
+    await Promise.race([
+      form.refreshFieldOptionData(models),
+      new Promise((_, reject) => { setTimeout(() => reject(new Error('选项数据源刷新超时')), REFRESH_OPTION_CALL_TIMEOUT_MS) }),
+    ])
   } catch (_) {
-    // 选项接口失败时保留原始值，不能让只读历史回放因辅助显示数据不可用而白屏。
+    // 选项接口失败或刷新超时时保留原始值，不能让只读历史回放因辅助显示数据不可用而白屏。
   }
   return true
+}
+
+// refreshOptionDataCanSettle 判断该控件在 FormMaking 的 refreshOptionData 中是否必然落定。
+// 模板未声明 remoteType 的简单 remote 控件按可刷新处理（与既有回放契约一致）；
+// 已知会永不落定的形状只有"datasource 型但数据源键为空"。
+function refreshOptionDataCanSettle (descriptor) {
+  if (descriptor.remoteType === 'fx') return true
+  if (descriptor.remoteType === 'datasource') return descriptor.remoteDataSource !== ''
+  return descriptor.remoteType === ''
 }
 
 // overlayTriggeredIntent 以表单当前真实模型为底，只覆盖补丁明确触及的显示字段。
@@ -656,6 +685,20 @@ function overlayTriggeredIntent (target, source, path) {
   overlayTriggeredIntent(target[key], sourceChild, rest)
 }
 
+// readLiveFormValues 读取 FormMaking 当前模型；读取失败或暂时返回空对象时保留上一份快照，避免初始化抖动清空服务端值。
+function readLiveFormValues (form, fallback) {
+  const previous = clonePlain(fallback || {})
+  if (!form || typeof form.getValues !== 'function') return previous
+  try {
+    const live = form.getValues()
+    if (!live || typeof live !== 'object') return previous
+    if (Object.keys(live).length === 0 && Object.keys(previous).length > 0) return previous
+    return clonePlain(live)
+  } catch (_) {
+    return previous
+  }
+}
+
 // coordinateOptionPatches 是选项型字段补丁协调入口：等待控件自己的远程选项、数据源加载完成后，
 // 在真实选项里按名称唯一匹配并回填绑定值，重放原模板声明的 onChange 联动并等待异步派生完成，
 // 再读取最终表单值。无法唯一匹配且显示仍停留在历史值的字段产生阻断问题：
@@ -663,8 +706,7 @@ function overlayTriggeredIntent (target, source, path) {
 export async function coordinateOptionPatches (form, template, values, triggers = [], retries = OPTION_WAIT_ATTEMPTS, waitForRequests) {
   const patchTriggers = Array.isArray(triggers) ? triggers : []
   const intendedValues = clonePlain(values || {})
-  const liveValues = form && typeof form.getValues === 'function' ? form.getValues() : values
-  const current = clonePlain(liveValues || {})
+  let current = readLiveFormValues(form, values)
   const restorePatchIntent = () => {
     for (const trigger of patchTriggers) overlayTriggeredIntent(current, intendedValues, String(trigger || '').split('.').filter(Boolean))
   }
@@ -684,6 +726,9 @@ export async function coordinateOptionPatches (form, template, values, triggers 
       refreshed = await refreshOptionFields(form, descriptors)
       if (typeof waitForRequests === 'function') await waitForRequests()
     }
+    // 每轮等待可能让目标异步回调把旧绑定值写回模型；评估前必须以 iframe 实时值为准，不能沿用进入协调器时的快照。
+    Object.assign(current, readLiveFormValues(form, current))
+    restorePatchIntent()
     const evaluation = evaluateOptionPatches(form, descriptors, patchTriggers, current, true)
     if (evaluation.replayModels.length > 0 || evaluation.touchedGroups.length > 0) {
       const patch = clonePlain(evaluation.rootPatch)
@@ -696,8 +741,8 @@ export async function coordinateOptionPatches (form, template, values, triggers 
       // 否则迟到响应会在协调函数返回后把刚回填的绑定值覆盖回历史分类。
       if (typeof waitForRequests === 'function') await waitForRequests()
       await waitForFormUpdate(form)
-      if (typeof form.getValues === 'function') Object.assign(current, clonePlain(form.getValues() || {}))
       // 迟到响应可能同时写回旧绑定值和旧显示名；目标名称是服务端补丁意图，任何一轮实时取值后都必须重新覆盖。
+      Object.assign(current, readLiveFormValues(form, current))
       restorePatchIntent()
       continue
     }

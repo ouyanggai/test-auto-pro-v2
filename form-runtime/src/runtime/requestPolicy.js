@@ -240,6 +240,29 @@ function targetURL (raw, method, baseURL, sid, readRequestManifest, onDecision, 
   return url
 }
 
+// bindRequestCompletionEvents 为 XHR 绑定所有终止事件；不同目标组件对 abort/error 的事件监听实现不一致，
+// 但同一个 finishRequest 具备幂等性，因此 load、error、abort、timeout、loadend 任一先到都能释放屏障。
+function bindRequestCompletionEvents (xhr, finishRequest) {
+  const events = ['load', 'error', 'abort', 'timeout', 'loadend']
+  let attached = false
+  if (typeof xhr.addEventListener === 'function') {
+    for (const eventName of events) {
+      try {
+        xhr.addEventListener(eventName, finishRequest, { once: true })
+        attached = true
+      } catch (_) {
+        // 个别兼容层只实现了部分事件；继续尝试其余事件，再回落到 onloadend。
+      }
+    }
+  }
+  if (attached) return
+  const previousLoadEnd = xhr.onloadend
+  xhr.onloadend = (...args) => {
+    finishRequest()
+    if (typeof previousLoadEnd === 'function') previousLoadEnd.apply(xhr, args)
+  }
+}
+
 // installReadOnlyRequestPolicy 在会话内给目标请求附加 SID并改写网关地址；请求分类仅用于观察，不阻断目标请求。
 // 返回的清理函数会恢复原生网络对象，SID 因而只存在于本 iframe 当前会话闭包中。
 export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifest, onDecision, onIssue, shadowContext, requestTracker }) {
@@ -293,15 +316,7 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifes
       ? requestTracker.begin(this.__f007TargetRequestLabel)
       : null
     if (finishRequest) {
-      if (typeof this.addEventListener === 'function') {
-        this.addEventListener('loadend', finishRequest, { once: true })
-      } else {
-        const previousLoadEnd = this.onloadend
-        this.onloadend = (...args) => {
-          finishRequest()
-          if (typeof previousLoadEnd === 'function') previousLoadEnd.apply(this, args)
-        }
-      }
+      bindRequestCompletionEvents(this, finishRequest)
     }
     try {
       return originalSend.call(this, body)

@@ -93,25 +93,29 @@ export default {
     async onMessage (event) {
       if (event.source !== window.parent || event.origin !== this.parentOrigin || !isRuntimeCommand(event.data)) return
       const command = event.data
-      if (command.type !== 'load' && command.type !== 'destroy' && command.sessionId !== this.sessionId) return
+      // 首次 load 允许在空会话进入；已有会话只接受同一 SID，旧 load/destroy 不能再打断新会话。
+      if (command.type === 'load' ? (this.sessionId && command.sessionId !== this.sessionId) : command.sessionId !== this.sessionId) return
       try {
         await this.execute(command)
       } catch (caught) {
-		if (caught && (caught.code === 'FORM_RUNTIME_REQUEST_CANCELLED' || caught.code === 'FORM_RUNTIME_SESSION_SUPERSEDED')) return
-		const message = caught instanceof Error ? caught.message : '表单运行时操作失败'
-		if (command.sessionId === this.sessionId) this.loading = false
+        const isCurrentSession = command.sessionId === this.sessionId
+        if (caught && (caught.code === 'FORM_RUNTIME_REQUEST_CANCELLED' || caught.code === 'FORM_RUNTIME_SESSION_SUPERSEDED')) return
+        // 旧会话的异步请求可能在新会话 ready 后才失败，不能让它关闭新会话 loading 或回传旧错误。
+        if (!isCurrentSession) return
+        const message = caught instanceof Error ? caught.message : '表单运行时操作失败'
+        this.loading = false
         this.post({
           version: FORM_RUNTIME_VERSION,
           sessionId: command.sessionId,
           requestId: command.requestId,
           type: 'error',
-		  payload: {
-			message, renderType: this.renderType,
-			issues: this.combinedIssues([{
-			  code: 'runtime_command_failed', status: 'blocked', source: 'iframe_runtime', fieldPath: '', fieldLabel: '',
-			  operator: command.type, expected: '命令执行成功', actual: message, relatedFields: [], message, canRetry: true
-			}])
-		  }
+          payload: {
+            message, renderType: this.renderType,
+            issues: this.combinedIssues([{
+              code: 'runtime_command_failed', status: 'blocked', source: 'iframe_runtime', fieldPath: '', fieldLabel: '',
+              operator: command.type, expected: '命令执行成功', actual: message, relatedFields: [], message, canRetry: true
+            }])
+          }
         })
       }
     },
@@ -120,6 +124,12 @@ export default {
       if (command.type === 'destroy') {
         this.destroySession()
         this.result(command, { destroyed: true })
+        return
+      }
+      if (command.type === 'cancel') {
+        // 取消只终止当前异步操作并保留会话；父页面随后可以在同一 iframe 中重放最新数据，避免旧回调覆盖新回显。
+        this.operationGeneration++
+        this.loading = false
         return
       }
       if (command.type === 'load') {
@@ -257,7 +267,7 @@ export default {
         this.dirty = false
 		await this.refresh(commandContext)
         this.savedValues = clonePlain(this.values)
-        this.result(command, await this.capture(false))
+		this.result(command, await this.capture(false, commandContext))
         return
       }
       if (command.type === 'restore') {
@@ -265,20 +275,24 @@ export default {
 		await this.setData(this.savedValues, commandContext)
         this.dirty = false
 		await this.refresh(commandContext)
-        this.result(command, await this.capture(false))
+		this.result(command, await this.capture(false, commandContext))
         return
       }
       if (command.type === 'refresh') {
         const commandContext = this.beginOperation()
         await this.refresh(commandContext)
-        this.result(command, await this.capture(false))
+		this.result(command, await this.capture(false, commandContext))
         return
       }
       if (command.type === 'getValues') {
-        this.result(command, await this.capture(false))
+		const commandContext = this.beginOperation()
+		this.result(command, await this.capture(false, commandContext))
         return
       }
-      if (command.type === 'validateAndGetValues') this.result(command, await this.capture(true))
+      if (command.type === 'validateAndGetValues') {
+		const commandContext = this.beginOperation()
+		this.result(command, await this.capture(true, commandContext))
+	  }
     },
 	activeSessionContext () {
 	  return { sessionId: this.sessionId, generation: this.sessionGeneration, operation: this.operationGeneration, requestTracker: this.requestTracker }
@@ -338,8 +352,8 @@ export default {
 	  // FormMaking.refresh() 在内部只启动自动数据源，并不会等待请求结束。所有补丁协调必须越过这道真实网络完成屏障。
 	  await this.waitForTargetRequests(requestTracker)
 	  this.assertActiveSession(refreshContext)
-      // 选项型字段补丁协调：等待控件自己的远程选项就绪，按名称唯一匹配回填绑定值并重放联动；
-      // 无法唯一匹配且显示仍停留在历史值的字段产生阻断问题。
+	  // 选项型字段补丁协调：等待控件自己的远程选项就绪，按名称唯一匹配回填绑定值并重放联动；
+	  // 无法唯一匹配且显示仍停留在历史值的字段产生阻断问题。
       const coordination = await coordinateOptionPatches(
 		form,
 		this.template,
@@ -356,7 +370,7 @@ export default {
         // 协调回填的绑定值必须同时落到宿主的 editData：runtime-source 宿主监听 editData 会异步 refresh，
         // 只改 FormMaking 模型的话，那次刷新会按旧 editData 重新渲染控件，界面又退回历史选项，
         // 随后的捕获也会把旧值读回去——这正是"右侧提示已改、表单还显示旧分类"的成因。
-		await this.setData(coordination.values, refreshContext)
+      await this.setData(coordination.values, refreshContext)
       } else {
         this.values = coordination.values
       }
@@ -406,11 +420,13 @@ export default {
       this.boundForm = null
       this.formChangeHandler = null
     },
-    async capture (validate) {
+	async capture (validate, context) {
+	  this.assertActiveSession(context)
       if (this.renderType === 'vue_custom') {
         const page = this.$refs.vueHost
         if (!page || typeof page.capture !== 'function') throw new Error('宿主 Vue 业务页面尚未完成装载')
         const captured = await page.capture(validate)
+		this.assertActiveSession(context)
         const values = captured.values
         this.runtimeIssues = Array.isArray(captured.issues) ? captured.issues : []
         return buildValuesEnvelope({
@@ -421,6 +437,7 @@ export default {
       }
       const form = this.form()
       const values = await captureFormValues(form, validate)
+		this.assertActiveSession(context)
       this.values = values
       this.optionCoordinationIssues = optionCoordinationIssues(form, this.template, this.values, this.optionPatchTriggers)
 		return buildValuesEnvelope({
@@ -457,8 +474,9 @@ export default {
 	},
 	async reportState () {
 		if (!this.sessionId || this.loading || this.readOnly) return
+		const commandContext = this.activeSessionContext()
 		try {
-			const captured = await this.capture(false)
+			const captured = await this.capture(false, commandContext)
 			// 状态回报同时携带阻断问题，宿主面板可以实时展示选项协调等待人工处理的字段。
 			this.post({
 				version: FORM_RUNTIME_VERSION, sessionId: this.sessionId, requestId: 'state', type: 'state',

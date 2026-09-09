@@ -1,6 +1,6 @@
 export const FORM_RUNTIME_VERSION = 'f007-form-runtime/v1'
 
-const COMMAND_TYPES = new Set(['load', 'setData', 'refresh', 'getValues', 'validateAndGetValues', 'restore', 'destroy'])
+const COMMAND_TYPES = new Set(['load', 'setData', 'refresh', 'getValues', 'validateAndGetValues', 'restore', 'destroy', 'cancel'])
 const RESPONSE_TYPES = new Set(['state', 'result', 'error'])
 
 // isRuntimeCommand 严格校验协议版本、会话和请求标识，旧 iframe 消息不会污染当前表单。

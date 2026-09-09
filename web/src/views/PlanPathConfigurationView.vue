@@ -65,9 +65,9 @@ import type { PersistedPlan } from '../features/plans/types'
 
 type FormRuntimeExpose = InstanceType<typeof FormRuntimeFrame> & {
   setValues: (values: Record<string, unknown>, signal?: AbortSignal) => Promise<Record<string, unknown>>
-  restoreSaved: () => Promise<Record<string, unknown>>
+  restoreSaved: (signal?: AbortSignal) => Promise<Record<string, unknown>>
   getValues: (signal?: AbortSignal) => Promise<Record<string, unknown>>
-  validateAndGetValues: () => Promise<Record<string, unknown>>
+  validateAndGetValues: (signal?: AbortSignal) => Promise<Record<string, unknown>>
 }
 
 const route = useRoute()
@@ -121,6 +121,8 @@ let loadController: AbortController | null = null
 let runtimeEpoch = 0
 let runtimeSessionController: AbortController | null = null
 let formOperationController: AbortController | null = null
+// 表单数据接口和 runtime 操作共用上限；超时必须同时取消等待，避免晚到结果重新打开 loading 或覆盖新回显。
+const FORM_OPERATION_TIMEOUT_MS = 60_000
 let nodeSaveKey = ''
 let instanceSaveKey = ''
 let formSaveKey = ''
@@ -197,15 +199,18 @@ const runtimeForm = computed(() => {
   return { ...base, permissions: view.permissions, effectiveFormData: values }
 })
 
-// 节点视图默认选中发起人（配置阶段的表单永远处于发起态）；换路径重载后重新归位。
-watch(formNodeViews, views => {
+// alignSelectedFormView 在数据进入运行时前先稳定视图身份，避免首帧用旧节点权限或整份数据回显。
+function alignSelectedFormView(views: Array<{ viewKey: string, isInitiator: boolean }>) {
   if (views.length === 0) {
     selectedFormViewKey.value = ''
     return
   }
   if (views.some(view => view.viewKey === selectedFormViewKey.value)) return
   selectedFormViewKey.value = (views.find(view => view.isInitiator) ?? views[0]).viewKey
-}, { immediate: true })
+}
+
+// 节点视图默认选中发起人（配置阶段的表单永远处于发起态）；换路径重载后重新归位。
+watch(formNodeViews, views => alignSelectedFormView(views), { immediate: true })
 const pathAnalysis = computed(() => graph.value && currentPath.value ? analyzeExecutionPath(graph.value, currentPath.value.choices) : null)
 const selectedNode = computed(() => configurationByGraphNodeID.value.get(selectedNodeID.value) ?? null)
 const configurationNodeStates = computed(() => graph.value && pathAnalysis.value
@@ -254,24 +259,27 @@ function applyRuntimeFormState(payload: Record<string, unknown>) {
 }
 
 // handleRuntimeReady 接收真实组件注册表与首次字段统计，避免初始化阶段显示未经运行时确认的估算值。
-// iframe ready 事件触发后，确保父页面的 loading 状态已关闭（正常流程已在 openFormWorkspace finally 块中关闭，
-// 这里是异常路径的兜底：如果 iframe 加载很快，ready 事件可能在 finally 块之前触发）。
 function handleRuntimeReady(payload: Record<string, unknown>) {
   if (workspace.value !== 'form' || !runtimeSession.value) return
   runtimeUnsupported.value = Array.isArray(payload.unsupported) ? payload.unsupported.map(String) : []
   applyRuntimeIssues(payload)
   applyRuntimeFormState(payload)
-  // iframe ready 后确保父页面 loading 状态关闭。
-  if (formRuntimeLoading.value) formRuntimeLoading.value = false
+  formError.value = ''
+  formRuntimeLoading.value = false
+}
+
+// handleRuntimeLoading 在 iframe 文档到达、运行时重载或历史数据切换时重新打开过渡层，避免用户看到未 ready 的白屏。
+function handleRuntimeLoading() {
+  if (workspace.value !== 'form' || !runtimeSession.value) return
+  formError.value = ''
+  formRuntimeLoading.value = true
 }
 
 // handleRuntimeError 忽略离开表单后的迟到错误，避免旧 iframe 覆盖节点工作区状态。
-// iframe 错误时确保父页面 loading 状态关闭，防止错误发生时遮罩仍然显示。
 function handleRuntimeError(message: string) {
   if (workspace.value === 'form' && runtimeSession.value) {
     formError.value = message
-    // iframe 错误后确保父页面 loading 状态关闭。
-    if (formRuntimeLoading.value) formRuntimeLoading.value = false
+    formRuntimeLoading.value = false
   }
 }
 
@@ -703,15 +711,17 @@ async function openFormWorkspace() {
   runtimeSessionController = controller
   formRuntimeLoading.value = true
 
-  // 整体超时保护：60 秒后强制关闭 loading，防止 iframe 内部异常导致永久加载。
+  // 整体超时保护：取消未返回的接口并推进代次，迟到响应不能在错误提示后重新挂载 iframe。
   const loadingTimeout = window.setTimeout(() => {
-    if (epoch === runtimeEpoch && formRuntimeLoading.value) {
-      formRuntimeLoading.value = false
-      if (workspace.value === 'form' && !dataWorkspace.value) {
-        formError.value = '表单数据加载超时，请返回节点画布后重试'
-      }
-    }
-  }, 60000)
+    if (epoch !== runtimeEpoch || !formRuntimeLoading.value || workspace.value !== 'form') return
+    runtimeEpoch += 1
+    controller.abort()
+    if (runtimeSessionController === controller) runtimeSessionController = null
+    formRuntimeLoading.value = false
+    formError.value = dataWorkspace.value && runtimeSession.value
+      ? '表单运行时加载超时，请返回节点画布后重试'
+      : '表单数据加载超时，请返回节点画布后重试'
+  }, FORM_OPERATION_TIMEOUT_MS)
 
   try {
     const [data, session] = await Promise.all([
@@ -719,6 +729,7 @@ async function openFormWorkspace() {
       fetchPathFormRuntimeSession(planID.value, pathID.value, controller.signal),
     ])
     if (controller.signal.aborted || epoch !== runtimeEpoch || workspace.value !== 'form') return
+    alignSelectedFormView(data.nodeViews)
     dataWorkspace.value = data
     runtimeSession.value = session
   }
@@ -727,7 +738,8 @@ async function openFormWorkspace() {
   }
   finally {
     window.clearTimeout(loadingTimeout)
-    if (epoch === runtimeEpoch) formRuntimeLoading.value = false
+    // 数据和会话成功后必须继续保持遮罩，直到 iframe 回报 ready 或 error；否则会短暂显示白屏。
+    if (epoch === runtimeEpoch && (!runtimeSession.value || !dataWorkspace.value)) formRuntimeLoading.value = false
     if (runtimeSessionController === controller) runtimeSessionController = null
   }
 }
@@ -736,13 +748,36 @@ async function openFormWorkspace() {
 async function handleBaseFormDataSaved() {
   if (workspace.value !== 'form' || !runtimeSession.value) return
   const controller = new AbortController()
+  const epoch = runtimeEpoch
+  const frame = formFrame.value
+  const previousRevision = dataWorkspace.value?.revision
+  const previousDataRevision = dataWorkspace.value?.dataRevision
+  const previousViewKey = selectedFormViewKey.value
+  let waitingForRuntimeReload = false
+  formOperationController?.abort()
+  formOperationController = controller
+  formRuntimeLoading.value = true
+  formError.value = ''
+  const operationTimeout = window.setTimeout(() => {
+    if (epoch !== runtimeEpoch || workspace.value !== 'form' || formOperationController !== controller) return
+    controller.abort()
+    formRuntimeLoading.value = false
+    formError.value = '历史数据接口加载超时，请重试'
+  }, FORM_OPERATION_TIMEOUT_MS)
   try {
     const data = await fetchPathConfigurationData(planID.value, pathID.value, controller.signal)
-    if (workspace.value !== 'form' || !runtimeSession.value) return
+    if (!isActiveFormOperation(epoch, frame) || controller.signal.aborted) return
+    alignSelectedFormView(data.nodeViews)
     dataWorkspace.value = data
     runtimeStats.value = { filledEditable: 0, manualPending: 0 }
-    const frame = formFrame.value
-    if (frame) {
+    // 服务端修订变化会触发 iframe 自己按新模板/权限重载；此时不能再向旧会话发送 setValues，
+    // 否则旧请求会被销毁拒绝，finally 又会提前关掉新会话的 loading。
+    waitingForRuntimeReload = Boolean(frame && (
+      data.revision !== previousRevision
+      || data.dataRevision !== previousDataRevision
+      || selectedFormViewKey.value !== previousViewKey
+    ))
+    if (frame && !waitingForRuntimeReload) {
       // 与 runtimeForm 同一口径：当前视图不回显的字段（只有后续节点才能填）不推给运行时，
       // 否则"更换历史数据"会把整份样本值重新回显到本应留空的视图里。
       const view = selectedFormView.value
@@ -753,7 +788,12 @@ async function handleBaseFormDataSaved() {
     }
   }
   catch (caught) {
-    if (!controller.signal.aborted) formError.value = publicPageError(caught)
+    if (isActiveFormOperation(epoch, frame) && !controller.signal.aborted) formError.value = publicPageError(caught)
+  }
+  finally {
+    window.clearTimeout(operationTimeout)
+    if (epoch === runtimeEpoch && formOperationController === controller && !waitingForRuntimeReload) formRuntimeLoading.value = false
+    if (formOperationController === controller) formOperationController = null
   }
 }
 
@@ -772,17 +812,21 @@ async function restoreSavedForm() {
   formOperationController?.abort()
   formOperationController = controller
   formRestoring.value = true
+  formRuntimeLoading.value = true
   formError.value = ''
   try {
-    const restored = await frame.restoreSaved()
-    if (!isActiveFormOperation(epoch, frame)) return
+    const restored = await frame.restoreSaved(controller.signal)
+    if (!isActiveFormOperation(epoch, frame) || controller.signal.aborted) return
     applyRuntimeFormState(restored)
   }
   catch (caught) {
     if (isActiveFormOperation(epoch, frame) && !controller.signal.aborted) formError.value = publicPageError(caught)
   }
   finally {
-    if (epoch === runtimeEpoch) formRestoring.value = false
+    if (epoch === runtimeEpoch && formOperationController === controller) {
+      formRestoring.value = false
+      formRuntimeLoading.value = false
+    }
     if (formOperationController === controller) formOperationController = null
   }
 }
@@ -802,8 +846,8 @@ async function saveFormData(confirmationToken = '') {
   formSavedSuccessfully.value = false
   const previousRevision = data.revision
   try {
-    const captured = await frame.validateAndGetValues()
-    if (!isActiveFormOperation(epoch, frame)) return
+    const captured = await frame.validateAndGetValues(controller.signal)
+    if (!isActiveFormOperation(epoch, frame) || controller.signal.aborted) return
 	    const runtimeValidation: PathConfigurationRuntimeValidation = {
 	      accepted: captured.validated === true,
 	      issues: Array.isArray(captured.issues) ? captured.issues.map(issue => ({
@@ -822,7 +866,7 @@ async function saveFormData(confirmationToken = '') {
       viewKey: selectedFormViewKey.value,
       ...(confirmationToken ? { confirmationToken } : {}),
     }, controller.signal)
-    if (!isActiveFormOperation(epoch, frame)) return
+    if (!isActiveFormOperation(epoch, frame) || controller.signal.aborted) return
     dataWorkspace.value = { ...data, ...result }
     runtimeStats.value = { filledEditable: 0, manualPending: 0 }
     formSaveKey = crypto.randomUUID()
@@ -846,7 +890,7 @@ async function saveFormData(confirmationToken = '') {
     formErrorDetails.value = caught instanceof PathConfigApiError ? caught.details : []
   }
   finally {
-    if (epoch === runtimeEpoch) formSaving.value = false
+    if (epoch === runtimeEpoch && formOperationController === controller) formSaving.value = false
     if (formOperationController === controller) formOperationController = null
   }
 }
@@ -1030,33 +1074,36 @@ void loadPage()
           @saved="handleBaseFormDataSaved"
         />
         <div class="path-configuration-page__form-body">
-        <form-data-hints-panel
-          v-if="dataWorkspace"
-          v-model:selected-view="selectedFormViewKey"
-          :key-fields="dataWorkspace.keyFields ?? []"
-          :issues="[...(dataWorkspace.issues ?? []), ...runtimeCoordinationIssues]"
-          :branch-patches="dataWorkspace.branchPatches"
-          :node-views="formNodeViews"
-        />
-        <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
-          <n-spin :show="true" size="large" description="正在加载表单运行时" />
-        </section>
-        <form-runtime-frame
-		  v-else-if="runtimeSession && runtimeForm"
-          ref="formFrame"
-          class="path-configuration-page__form-frame"
-		  :form="runtimeForm"
-          :runtime-session="runtimeSession"
-          @ready="handleRuntimeReady"
-          @state="applyRuntimeFormState"
-          @error="handleRuntimeError"
-        />
-        <div v-else class="runtime-error-state">
-          <n-result status="error" size="small" title="表单数据暂不可用" description="表单运行时会话暂不可用，请返回节点画布后重试" role="alert" />
-          <div class="runtime-error-state__actions">
-            <n-button secondary @click="loadPage">重新读取</n-button>
+          <form-data-hints-panel
+            v-if="dataWorkspace"
+            v-model:selected-view="selectedFormViewKey"
+            :key-fields="dataWorkspace.keyFields ?? []"
+            :issues="[...(dataWorkspace.issues ?? []), ...runtimeCoordinationIssues]"
+            :branch-patches="dataWorkspace.branchPatches"
+            :node-views="formNodeViews"
+          />
+          <form-runtime-frame
+            v-if="runtimeSession && runtimeForm"
+            ref="formFrame"
+            class="path-configuration-page__form-frame"
+            :form="runtimeForm"
+            :runtime-session="runtimeSession"
+            @loading="handleRuntimeLoading"
+            @ready="handleRuntimeReady"
+            @state="applyRuntimeFormState"
+            @error="handleRuntimeError"
+          />
+          <Transition name="form-loading">
+            <section v-if="formRuntimeLoading" class="path-configuration-page__form-loading" role="status" aria-live="polite">
+              <n-spin :show="true" size="large" description="正在加载表单运行时" />
+            </section>
+          </Transition>
+          <div v-if="!formRuntimeLoading && (!runtimeSession || !runtimeForm)" class="runtime-error-state">
+            <n-result status="error" size="small" title="表单数据暂不可用" description="表单运行时会话暂不可用，请返回节点画布后重试" role="alert" />
+            <div class="runtime-error-state__actions">
+              <n-button secondary @click="loadPage">重新读取</n-button>
+            </div>
           </div>
-        </div>
         </div>
       </section>
 
@@ -1167,6 +1214,16 @@ void loadPage()
   min-height: 0;
 }
 .path-configuration-page__initial-loading { min-height: 320px; }
+.path-configuration-page__form-loading {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.9);
+}
+.form-loading-enter-active,
+.form-loading-leave-active { transition: opacity 160ms ease; }
+.form-loading-enter-from,
+.form-loading-leave-to { opacity: 0; }
 .path-configuration-page__canvas { height: 100%; min-height: 0; border-top: 0; }
 .path-configuration-page__error { margin: 20px; }
 .path-configuration-page__error-content { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; line-height: 1.6; }
