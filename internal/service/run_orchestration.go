@@ -409,8 +409,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 			continue
 		}
 		nextNodeKey := step.FollowingActionNodeKey(steps, index)
-		nextInfo, ok := nodes[nextNodeKey]
-		if !ok || strings.TrimSpace(nextInfo.AuditType) != "run_node_choose" {
+		if _, ok := nodes[nextNodeKey]; !ok {
 			continue
 		}
 		if _, resolved := nextNodeAuditors[nextNodeKey]; resolved {
@@ -419,9 +418,15 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		if s.pathNodes == nil {
 			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "下一节点处理人解析服务暂不可用"}
 		}
+		// 只要有已保存的处理人策略就随提交/同意携带：真实运行实测，目标对自选类审批节点
+		// 缺少 bizId 处理人时不建待办（实例停在节点上无任务），后续审批永远"无待办"。
+		// 固定规则节点没有已保存策略，解析失败按"目标自行指派"跳过，不阻塞启动。
 		resolved, resolveErr := s.pathNodes.ResolveNodeAuditors(ctx, planID, pathID, nextNodeKey)
 		if resolveErr != nil {
-			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "下一节点处理人策略无法按当前目标结构解析：" + resolveErr.Error()}
+			continue
+		}
+		if len(resolved) == 0 {
+			continue
 		}
 		nextNodeAuditors[nextNodeKey] = resolved
 	}
