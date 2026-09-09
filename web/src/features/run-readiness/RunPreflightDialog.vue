@@ -31,8 +31,28 @@ const error = ref('')
 let controller: AbortController | null = null
 
 const blockedPaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => !path.runnable))
-// allClear 要求确实有勾选路径且全部可运行：空计划与全部阻塞一样不能启动，也不能显示成功结论。
-const allClear = computed(() => Boolean(readiness.value) && blockedPaths.value.length === 0 && (readiness.value?.totalCount ?? 0) > 0)
+const runnablePaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => path.runnable))
+// S01 部分运行：默认勾选全部可运行路径，用户可以只勾选本次要运行的部分；
+// 未勾选的路径不会进入运行，也不占用串并名额。
+const selectedRunIds = ref<Set<string>>(new Set())
+const selectedRunnable = computed<PathRunReadiness[]>(() => runnablePaths.value.filter(path => selectedRunIds.value.has(String(path.pathId))))
+const canStart = computed(() => selectedRunnable.value.length > 0)
+
+// toggleRunPath 维护本次运行勾选；勾选集合只影响启动范围，不改变运行前检查的检查范围。
+function toggleRunPath(path: PathRunReadiness, included: boolean) {
+  const next = new Set(selectedRunIds.value)
+  const key = String(path.pathId)
+  if (included) next.add(key)
+  else next.delete(key)
+  selectedRunIds.value = next
+}
+
+// 每次重新检查后恢复默认全选可运行路径：让"全部运行"永远是零成本默认，部分运行是一步取消。
+watch(runnablePaths, (paths) => {
+  selectedRunIds.value = new Set(paths.map(path => String(path.pathId)))
+})
+// allClear 语义收窄为"有路径可运行"：阻塞路径的存在不再阻止运行就绪子集（失败隔离 S05）。
+const hasPaths = computed(() => Boolean(readiness.value) && (readiness.value?.totalCount ?? 0) > 0)
 // 宽度必须写成行内样式：NModal 的卡片是 teleport 出去渲染的，scoped 样式选不中它，
 // 只靠 class 设宽度会退化成撑满整屏。
 const dialogStyle = computed(() => ({
@@ -68,11 +88,11 @@ async function runCheck() {
   }
 }
 
-// startSelectedRun 启动全部勾选且可执行的路径（F-020 多路径）：
+// startSelectedRun 只启动本次勾选且可执行的路径（F-020 多路径 + S01 部分运行）：
 // 串并方式来自计划配置，调度与失败隔离由后端负责；启动前服务端会再次复验运行准备结论。
 // 幂等键每次启动生成一次：同一次点击的重试不会创建第二个运行。
 async function startSelectedRun() {
-  const targets = (readiness.value?.paths ?? []).filter(path => path.runnable)
+  const targets = selectedRunnable.value
   if (targets.length === 0 || starting.value) return
   starting.value = true
   startError.value = ''
@@ -126,35 +146,56 @@ watch(() => props.show, (open) => {
     <n-spin :show="loading" class="run-preflight__body">
       <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
 
-      <!-- 全部可运行：结论一行；运行方式用卡片表达；一个保护开关；别的不摆。 -->
-      <template v-if="allClear">
-        <div class="run-preflight__verdict run-preflight__verdict--ok" data-testid="run-preflight-summary">
-          <span class="run-preflight__verdict-icon">✓</span>
-          <span>已检查 {{ readiness?.totalCount }} 条路径，都可以运行。</span>
+      <!-- 有可运行路径：结论一行；勾选本次要运行的路径；运行方式用卡片表达；一个保护开关。 -->
+      <template v-if="runnablePaths.length">
+        <div
+          class="run-preflight__verdict"
+          :class="blockedPaths.length ? 'run-preflight__verdict--blocked' : 'run-preflight__verdict--ok'"
+          data-testid="run-preflight-summary"
+        >
+          <span class="run-preflight__verdict-icon">{{ blockedPaths.length ? '!' : '✓' }}</span>
+          <span>
+            已检查 {{ readiness?.totalCount }} 条路径：{{ runnablePaths.length }} 条可以运行<template v-if="blockedPaths.length">，{{ blockedPaths.length }} 条还不能运行</template>。
+          </span>
         </div>
 
-        <p class="run-preflight__section-label">运行方式</p>
-        <div class="run-preflight__cards" role="radiogroup" aria-label="运行方式">
-          <button
-            v-for="option in modeOptions"
-            :key="option.value"
-            type="button"
-            class="run-preflight__card"
-            :class="{ 'run-preflight__card--active': mode === option.value }"
-            role="radio"
-            :aria-checked="mode === option.value"
-            @click="mode = option.value"
+        <p class="run-preflight__section-label">选择本次要运行的路径（{{ selectedRunnable.length }}/{{ runnablePaths.length }}）</p>
+        <div class="run-preflight__paths" data-testid="run-preflight-paths">
+          <n-checkbox
+            v-for="path in runnablePaths"
+            :key="path.pathId"
+            :checked="selectedRunIds.has(String(path.pathId))"
+            @update:checked="value => toggleRunPath(path, value as boolean)"
           >
-            <span class="run-preflight__card-title">{{ option.title }}</span>
-            <span class="run-preflight__card-desc">{{ option.description }}</span>
-          </button>
+            {{ path.pathName }}
+          </n-checkbox>
         </div>
+        <p v-if="!selectedRunnable.length" class="run-preflight__muted">还没有勾选任何路径，勾选后才能开始运行。</p>
 
-        <p class="run-preflight__section-label">安全保护</p>
-        <n-checkbox v-model:checked="firstWriteBreakpoint" class="run-preflight__guard">
-          第一次写入数据前，先停下来让我确认（建议开启）
-        </n-checkbox>
-        <p class="run-preflight__muted">路线和配置对不上时会自动停下，不会硬跑。</p>
+        <template v-if="selectedRunnable.length">
+          <p class="run-preflight__section-label">运行方式</p>
+          <div class="run-preflight__cards" role="radiogroup" aria-label="运行方式">
+            <button
+              v-for="option in modeOptions"
+              :key="option.value"
+              type="button"
+              class="run-preflight__card"
+              :class="{ 'run-preflight__card--active': mode === option.value }"
+              role="radio"
+              :aria-checked="mode === option.value"
+              @click="mode = option.value"
+            >
+              <span class="run-preflight__card-title">{{ option.title }}</span>
+              <span class="run-preflight__card-desc">{{ option.description }}</span>
+            </button>
+          </div>
+
+          <p class="run-preflight__section-label">安全保护</p>
+          <n-checkbox v-model:checked="firstWriteBreakpoint" class="run-preflight__guard">
+            第一次写入数据前，先停下来让我确认（建议开启）
+          </n-checkbox>
+          <p class="run-preflight__muted">路线和配置对不上时会自动停下，不会硬跑。</p>
+        </template>
       </template>
 
       <!-- 有阻塞：只说哪些路径、因为什么，点击直接跳去处理。 -->
@@ -177,21 +218,23 @@ watch(() => props.show, (open) => {
           </button>
         </div>
       </template>
+
+      <p v-else-if="hasPaths" class="run-preflight__muted">本次勾选的路径都没有可运行的内容。</p>
     </n-spin>
 
     <template #footer>
       <n-alert v-if="startError" type="error" :show-icon="false" class="run-preflight__start-error">{{ startError }}</n-alert>
       <div class="run-preflight__footer">
         <n-button size="small" quaternary @click="emit('update:show', false)">关闭</n-button>
-        <!-- F-016/F-020：检查通过后启动全部勾选的可执行路径，多路径按计划配置串行或并行。 -->
+        <!-- F-016/F-020/S01：只启动本次勾选的可执行路径，多路径按计划配置串行或并行。 -->
         <n-button
           size="small"
           type="primary"
           :loading="starting"
-          :disabled="!allClear"
+          :disabled="!canStart"
           @click="startSelectedRun"
         >
-          {{ allClear ? '开始运行' : '有问题待处理' }}
+          {{ canStart ? '开始运行' : (blockedPaths.length ? '有问题待处理' : '请先勾选路径') }}
         </n-button>
       </div>
     </template>
@@ -237,6 +280,14 @@ watch(() => props.show, (open) => {
   font-size: 12px;
   font-weight: 700;
   flex: none;
+}
+
+/* 路径勾选区：两列栅格，勾掉即不进入本次运行。 */
+.run-preflight__paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin-bottom: 16px;
 }
 
 /* 区块标题：小号灰字，统一间距节奏。 */
