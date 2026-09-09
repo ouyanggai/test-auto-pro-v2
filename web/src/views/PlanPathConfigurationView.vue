@@ -254,19 +254,29 @@ function applyRuntimeFormState(payload: Record<string, unknown>) {
 }
 
 // handleRuntimeReady 接收真实组件注册表与首次字段统计，避免初始化阶段显示未经运行时确认的估算值。
+// iframe ready 事件触发后，确保父页面的 loading 状态已关闭（正常流程已在 openFormWorkspace finally 块中关闭，
+// 这里是异常路径的兜底：如果 iframe 加载很快，ready 事件可能在 finally 块之前触发）。
 function handleRuntimeReady(payload: Record<string, unknown>) {
   if (workspace.value !== 'form' || !runtimeSession.value) return
   runtimeUnsupported.value = Array.isArray(payload.unsupported) ? payload.unsupported.map(String) : []
   applyRuntimeIssues(payload)
   applyRuntimeFormState(payload)
+  // iframe ready 后确保父页面 loading 状态关闭。
+  if (formRuntimeLoading.value) formRuntimeLoading.value = false
 }
 
 // handleRuntimeError 忽略离开表单后的迟到错误，避免旧 iframe 覆盖节点工作区状态。
+// iframe 错误时确保父页面 loading 状态关闭，防止错误发生时遮罩仍然显示。
 function handleRuntimeError(message: string) {
-  if (workspace.value === 'form' && runtimeSession.value) formError.value = message
+  if (workspace.value === 'form' && runtimeSession.value) {
+    formError.value = message
+    // iframe 错误后确保父页面 loading 状态关闭。
+    if (formRuntimeLoading.value) formRuntimeLoading.value = false
+  }
 }
 
 // invalidateRuntimeSession 只由宿主失效会话和异步代次，iframe 实例的销毁交给它自己的卸载钩子完成。
+// 会话失效时必须强制关闭所有 loading 状态，防止状态残留。
 function invalidateRuntimeSession() {
   runtimeEpoch += 1
   runtimeSessionController?.abort()
@@ -280,6 +290,7 @@ function invalidateRuntimeSession() {
   routeConfirmationToken.value = ''
   routeConfirmationChange.value = null
   runtimeUnsupported.value = []
+  // 会话失效时强制关闭所有 loading 状态。
   formRuntimeLoading.value = false
   formRestoring.value = false
   formSaving.value = false
@@ -691,6 +702,17 @@ async function openFormWorkspace() {
   runtimeSessionController?.abort()
   runtimeSessionController = controller
   formRuntimeLoading.value = true
+
+  // 整体超时保护：60 秒后强制关闭 loading，防止 iframe 内部异常导致永久加载。
+  const loadingTimeout = window.setTimeout(() => {
+    if (epoch === runtimeEpoch && formRuntimeLoading.value) {
+      formRuntimeLoading.value = false
+      if (workspace.value === 'form' && !dataWorkspace.value) {
+        formError.value = '表单数据加载超时，请返回节点画布后重试'
+      }
+    }
+  }, 60000)
+
   try {
     const [data, session] = await Promise.all([
       fetchPathConfigurationData(planID.value, pathID.value, controller.signal),
@@ -704,6 +726,7 @@ async function openFormWorkspace() {
     if (!controller.signal.aborted && epoch === runtimeEpoch && workspace.value === 'form') formError.value = publicPageError(caught)
   }
   finally {
+    window.clearTimeout(loadingTimeout)
     if (epoch === runtimeEpoch) formRuntimeLoading.value = false
     if (runtimeSessionController === controller) runtimeSessionController = null
   }
