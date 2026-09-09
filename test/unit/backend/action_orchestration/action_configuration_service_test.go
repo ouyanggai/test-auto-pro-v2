@@ -356,28 +356,38 @@ func autoConfigureNode(key string, kinds []string) model.PathConfigNode {
 	}
 }
 
+// autoInitiatorNode 构造一个发起端待配置节点：全部目录项都是发起端动作，无编译器插入项和选人项。
+func autoInitiatorNode(key string, kinds []string) model.PathConfigNode {
+	catalog := make([]model.PathConfigActionCatalogItem, 0, len(kinds))
+	for _, kind := range kinds {
+		catalog = append(catalog, model.PathConfigActionCatalogItem{Kind: kind, Scope: "initiator", Label: kind, Enabled: true})
+	}
+	return model.PathConfigNode{
+		Key: key, Name: key, Kind: "start", Status: "pending",
+		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: catalog},
+	}
+}
+
 // TestAutoNodeActionPrefersUncoveredEnabledActions 验证一键配置的自动动作选择：
-// 只取已启用且不需要人员和必填参数的动作，跨节点优先覆盖尚未用过的动作，且结果可复现。
+// 只取已启用且不需要人员和必填参数的动作，跨节点优先覆盖尚未用过的可流转动作，且结果可复现。
+// 覆盖轮转只发生在可流转动作之间；拒绝/暂存等让路径停住的动作不参与自动编排。
 func TestAutoNodeActionPrefersUncoveredEnabledActions(t *testing.T) {
 	used := map[string]bool{}
-	first, ok := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-a", []string{"approve", "reject"}), used)
+	first, ok := service.AutoNodeActionForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), used)
 	if !ok || first.NodeKey != "node-a" {
 		t.Fatalf("第一个节点没有自动选出动作：%+v", first)
 	}
 	used[string(first.Action)] = true
-	second, ok := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-b", []string{"approve", "reject"}), used)
+	second, ok := service.AutoNodeActionForTest(41, 51, autoInitiatorNode("node-b", []string{"save_draft", "resubmit"}), used)
 	if !ok || second.Action == first.Action {
 		t.Fatalf("第二个节点没有优先覆盖尚未用过的动作：first=%s second=%s", first.Action, second.Action)
 	}
 	for _, action := range []model.ConfiguredAction{first, second} {
-		if action.Action == "resubmit" {
-			t.Fatalf("编译器自动插入的动作不应被自动编排：%+v", action)
-		}
 		if action.Action == "transfer" {
 			t.Fatalf("需要显式选人的动作不应被自动编排：%+v", action)
 		}
 	}
-	repeat, _ := service.AutoNodeActionForTest(41, 51, autoConfigureNode("node-a", []string{"approve", "reject"}), map[string]bool{})
+	repeat, _ := service.AutoNodeActionForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), map[string]bool{})
 	if repeat.Action != first.Action || repeat.Key != first.Key {
 		t.Fatalf("同一节点重复自动配置结果不稳定：%+v / %+v", first, repeat)
 	}
@@ -486,19 +496,79 @@ func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {
 }
 
 // TestAutoNodeActionCandidatesOrderCoversThenSeeds 验证自动动作候选顺序：
-// 未覆盖的动作排在前面，同一节点重复计算顺序稳定，需要显式选人和编译器插入的动作不参与。
+// 同一节点重复计算顺序稳定，不可流转的动作（暂存/不同意）不参与候选，
+// 需要显式选人和编译器插入的动作不参与。
 func TestAutoNodeActionCandidatesOrderCoversThenSeeds(t *testing.T) {
 	node := autoConfigureNode("node-a", []string{"approve", "reject", "storage_form_data"})
 	first, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
 	if !ok {
 		t.Fatal("节点应至少给出一个候选动作")
 	}
+	if first.Action != "approve" {
+		t.Fatalf("审批节点唯一可流转动作是同意，实际选出：%s", first.Action)
+	}
 	skipped, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{string(first.Action): true})
-	if !ok || skipped.Action == first.Action {
-		t.Fatalf("已覆盖动作没有让位给未覆盖动作：first=%s next=%s", first.Action, skipped.Action)
+	if !ok || skipped.Action != "approve" {
+		t.Fatalf("已覆盖动作没有让位给剩余可流转动作：first=%s next=%s", first.Action, skipped.Action)
 	}
 	repeat, _ := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
 	if repeat.Action != first.Action {
 		t.Fatalf("同一节点候选顺序不稳定：%s / %s", first.Action, repeat.Action)
+	}
+}
+
+// TestAutoNodeActionSkipsNonAdvancingKinds 验证一键配置只为节点选择能让主实例离开的动作：
+// 暂存/取回/回退/不同意/移交/催办/关注即使"尚未覆盖"也不参与自动选择——
+// 不同意会把实例退回发起端重走全链而上游动作已消费，其余动作单独配置必然停在当前待办；
+// 覆盖动作种类不能替代路径可流转。
+func TestAutoNodeActionSkipsNonAdvancingKinds(t *testing.T) {
+	node := autoConfigureNode("node-a", []string{"approve", "reject", "storage_form_data", "rollback_previous"})
+	nonAdvancing := map[string]bool{
+		"reject": true, "storage_form_data": true, "rollback_previous": true, "retrieve": true,
+		"transfer": true, "add_sign": true, "urge": true, "forward": true,
+		"follow": true, "unfollow": true,
+	}
+	used := map[string]bool{}
+	for {
+		first, ok := service.AutoNodeActionForTest(41, 51, node, used)
+		if !ok {
+			t.Fatal("存在可流转动作时节点应给出候选")
+		}
+		if nonAdvancing[string(first.Action)] {
+			t.Fatalf("一键配置选中了不可流转动作：%s", first.Action)
+		}
+		if used[string(first.Action)] {
+			break
+		}
+		used[string(first.Action)] = true
+		if len(used) >= 8 {
+			t.Fatalf("候选轮转发散：%+v", used)
+		}
+	}
+}
+
+// TestAutoNodeActionInitiatorOnlyAdvancing 验证发起节点的自动选择：
+// 保存草稿由编译器补提交恢复属于可流转动作；催办/关注不改变主实例状态，不得被选中。
+func TestAutoNodeActionInitiatorOnlyAdvancing(t *testing.T) {
+	node := model.PathConfigNode{
+		Key: "node-init", Name: "发起人", Kind: "start", Status: "pending",
+		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
+			{Kind: "save_draft", Scope: "initiator", Label: "保存草稿", Enabled: true},
+			{Kind: "urge", Scope: "instance", Label: "催办", Enabled: true},
+			{Kind: "follow", Scope: "instance", Label: "关注", Enabled: true},
+		}},
+	}
+	first, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
+	if !ok || first.Action != "save_draft" {
+		t.Fatalf("发起节点应只选可流转动作：%+v", first)
+	}
+}
+
+// TestAutoNodeActionUnconfigurableWhenNoAdvancingKind 验证目录里没有可流转动作时不再假装可配置：
+// 一键配置应放弃该节点（保持待配置、阻塞运行前检查），而不是选一个必然停住的暂存动作凑数。
+func TestAutoNodeActionUnconfigurableWhenNoAdvancingKind(t *testing.T) {
+	node := autoConfigureNode("node-only-storage", []string{"storage_form_data", "retrieve"})
+	if first, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{}); ok {
+		t.Fatalf("没有可流转动作时应放弃自动选择，实际选出：%+v", first)
 	}
 }

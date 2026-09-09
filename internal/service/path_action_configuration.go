@@ -1071,12 +1071,17 @@ func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pa
 	return nil
 }
 
-// autoNodeActionCandidates 按覆盖优先、其次确定性种子给出该节点可尝试的动作顺序。
+// autoNodeActionCandidates 按"可流转优先、其次覆盖、最后确定性种子"给出该节点可尝试的动作顺序。
 // 只取已启用、非系统语义、非编译器插入、且不需要显式选人的动作；参数由执行器运行时填充，不影响可选性。
 func autoNodeActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool) []model.ConfiguredAction {
 	available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
 	for _, item := range node.ActionConfiguration.Catalog {
 		if !item.Enabled || item.SystemOnly || item.SystemInserted || item.RequiresPerson {
+			continue
+		}
+		// 一键配置必须为节点选出能让主实例离开的动作，"覆盖动作种类"不能替代"路径可流转"：
+		// 暂存、取回、催办、关注等动作单独配置会让路径必然停在当前待办。
+		if !autoKindAdvancesFlow(model.ActionKey(item.Kind), model.ActionScope(item.Scope)) {
 			continue
 		}
 		available = append(available, item)
@@ -1100,6 +1105,24 @@ func autoNodeActionCandidates(node model.PathConfigNode, seed uint64, used map[s
 		})
 	}
 	return candidates
+}
+
+// autoKindAdvancesFlow 判断动作能否让主实例离开当前节点继续流转，一键配置只在这些动作里选择。
+// 审批待办只有同意能让流程真实向前；不同意会把实例退回发起端、重走时上游节点动作已消费，
+// 暂存只是任务检查点、取回把已办拉回待办、移交/加签不完成任务、催办/转发/关注不改变主实例状态，
+// 这些动作单独配置会让路径停在当前节点，必须由人工编排成"暂存+同意"等组合后才能使用。
+// 发起端的保存草稿和重新提交、实例级撤回由场景编译器补恢复步骤，仍属可流转动作。
+func autoKindAdvancesFlow(kind model.ActionKey, scope model.ActionScope) bool {
+	switch kind {
+	case model.ActionApprove:
+		return true
+	case model.ActionSaveDraft, model.ActionResubmit:
+		return scope == model.ActionScopeInitiator
+	case model.ActionWithdraw:
+		return scope == model.ActionScopeInstance
+	default:
+		return false
+	}
 }
 
 // autoPersonStrategy 一键配置始终优先按当前合法范围稳定随机选人。
