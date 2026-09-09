@@ -20,6 +20,7 @@ grep -qF ':component-options="componentOptions"' "${app}" || fail '应用没有�
 grep -qF 'Empty:' "${app}" || fail '组件库空态没有统一覆盖'
 grep -qF 'renderIcon: () => h(AppEmptyIcon)' "${app}" || fail '组件库仍可能显示默认叉号图标'
 grep -qF '<n-el tag="span" class="app-empty-icon"' "${icon}" || fail '空态插画没有接入主题变量'
+grep -qF "FileTrayFullOutline" "${icon}" || fail '空态插画没有使用统一图标'
 grep -qF 'aria-hidden="true"' "${icon}" || fail '装饰性空态插画会被辅助技术重复朗读'
 grep -qF '<AppEmptyIcon />' "${empty_state}" || fail '业务空态没有复用全局插画'
 grep -qF 'class="app-empty-state__message" role="status"' "${empty_state}" || fail '空态消息缺少独立的可访问状态语义'
