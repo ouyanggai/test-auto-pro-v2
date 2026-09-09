@@ -344,8 +344,8 @@ export default {
 		form,
 		this.template,
 		this.values,
-		this.optionPatchTriggers,
-		undefined,
+											this.optionPatchTriggers,
+											20,
 		async () => {
 		  await this.waitForTargetRequests(requestTracker)
 		  this.assertActiveSession(refreshContext)
@@ -373,7 +373,7 @@ export default {
 		this.template,
 		coordination.values,
 		this.optionPatchTriggers,
-		undefined,
+		1,
 		async () => {
 		  await this.waitForTargetRequests(requestTracker)
 		  this.assertActiveSession(refreshContext)
@@ -548,15 +548,18 @@ body {
 }
 
 .form-runtime__loading {
-  position: absolute;
+  position: fixed;
   z-index: 1000;
-  inset: 0;
+  top: 56px;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
-  min-height: 320px;
+  min-height: 264px;
   color: #262626;
   background: rgba(255, 255, 255, 0.94);
 }

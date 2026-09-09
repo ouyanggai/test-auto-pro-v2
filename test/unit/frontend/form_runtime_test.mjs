@@ -796,6 +796,8 @@ test('加载表单时展示分阶段进度并明确标出最终关键路径修�
   assert.match(runtimeAppSource, /正在加载表单结构和历史数据/)
   assert.match(runtimeAppSource, /正在加载表单组件和远程选项/)
   assert.match(runtimeAppSource, /正在自动修正关键路径数据/)
+  assert.match(runtimeAppSource, /top:\s*56px/)
+  assert.match(runtimeAppSource, /this\.optionPatchTriggers,\s*20/)
   assert.match(runtimeAppSource, /operationGeneration/)
   assert.match(runtimeAppSource, /beginOperation/)
 })

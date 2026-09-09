@@ -19,7 +19,7 @@ const EXPLICIT_FORBIDDEN_PATHS = [
 
 // createTargetRequestTracker 跟踪当前表单会话发出的目标平台请求，并要求请求数归零后保持一段稳定时间。
 // FormMaking 的 refresh 只启动数据源请求而不等待 Promise；稳定窗口用于覆盖同一轮响应继续触发后续请求的链式加载。
-export function createTargetRequestTracker ({ onChange, idleMs = 250, pollMs = 20, timeoutMs = 120000 } = {}) {
+export function createTargetRequestTracker ({ onChange, idleMs = 250, pollMs = 20, timeoutMs = 45000 } = {}) {
   let pending = 0
   let revision = 0
   let disposed = false
