@@ -1070,6 +1070,37 @@ func TestFormIdentityContextResolvesCompanyDepartmentUser(t *testing.T) {
 	}
 }
 
+// TestFormRuntimeSessionRefreshesExpiredCachedSession 验证 iframe 会话发放前会探活并替换目标已作废的缓存 SID。
+func TestFormRuntimeSessionRefreshesExpiredCachedSession(t *testing.T) {
+	fake := newFakeTarget(t)
+	targetServer := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer targetServer.Close()
+	configureTargetEnv(t, targetServer.URL, fake.password, fake.loginCode, "2s")
+	reader := service.NewTargetReadService(config.LoadTargetConfig())
+	if _, err := reader.Verify(context.Background(), "account-a"); err != nil {
+		t.Fatalf("预热缓存会话失败：%v", err)
+	}
+	fake.mu.Lock()
+	fake.expireMode = "business-once"
+	fake.mu.Unlock()
+
+	runtimeSession, err := reader.FormRuntimeSession(context.Background(), "account-a")
+	if err != nil {
+		t.Fatalf("缓存会话失效后发放运行时会话失败：%v", err)
+	}
+	fake.mu.Lock()
+	loginCount := fake.loginCount
+	templateCount := fake.templateCount
+	latestSID := fake.sessions[len(fake.sessions)-1]
+	fake.mu.Unlock()
+	if loginCount != 2 || templateCount != 2 {
+		t.Fatalf("运行时会话未先探活并只重登一次：login=%d ping=%d", loginCount, templateCount)
+	}
+	if runtimeSession.SID != latestSID {
+		t.Fatal("运行时仍发放了目标已作废的缓存 SID")
+	}
+}
+
 // TestPathConfigurationSnapshotReadsFormMakingOptions 验证选项、必填和默认值来自 FormMaking 组件配置。
 func TestPathConfigurationSnapshotReadsFormMakingOptions(t *testing.T) {
 	fake := newFakeTarget(t)

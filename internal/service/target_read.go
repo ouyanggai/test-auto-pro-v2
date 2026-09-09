@@ -385,18 +385,29 @@ func (s *TargetReadService) storeSnapshot(key string, snapshot target.PathConfig
 	s.snapshotCache[key] = cachedPathConfigurationSnapshot{snapshot: snapshot, expires: now.Add(pathConfigurationSnapshotTTL)}
 }
 
-// FormRuntimeSession 从现有账号验证缓存建立短期 iframe 上下文，不额外持久化或复制 SID。
+// FormRuntimeSession 探活账号缓存并建立短期 iframe 上下文，目标已作废的 SID 必须先重登再发放。
 func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account string) (target.FormRuntimeSession, error) {
 	if err := s.ready(); err != nil {
 		return target.FormRuntimeSession{}, err
 	}
-	active, err := s.sessions.Current(ctx, account)
+	var active target.Session
+	var identity target.FormIdentityContext
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, session target.Session) error {
+		// iframe 会直接用该 SID 请求远程选项，发放前必须验证目标仍认可会话；
+		// 否则右侧补丁已经更新，控件却因选项接口 RESP401 只能保留历史绑定值。
+		if pingErr := s.client.Ping(callContext, session); pingErr != nil {
+			return pingErr
+		}
+		resolved, identityErr := s.client.FormIdentityContext(callContext, session)
+		if identityErr != nil {
+			return identityErr
+		}
+		active = session
+		identity = resolved
+		return nil
+	})
 	if err != nil {
 		return target.FormRuntimeSession{}, err
-	}
-	identity, identityErr := s.client.FormIdentityContext(ctx, active)
-	if identityErr != nil {
-		return target.FormRuntimeSession{}, identityErr
 	}
 	companyName := strings.TrimSpace(identity.Company.Name)
 	if companyName == "" {

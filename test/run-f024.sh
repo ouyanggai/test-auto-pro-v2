@@ -96,6 +96,7 @@ printf '%s\n' '[F-024] 语义清单证据未漂移'
 
 printf '%s\n' '[F-024] F-012 与执行器回归'
 go test -count=1 ./test/unit/... ./test/integration/f012
+go test -count=1 -run '^TestFormRuntimeSessionRefreshesExpiredCachedSession$' ./test/integration
 
 printf '%s\n' '[F-024] 前端类型检查与构建'
 pnpm --dir web typecheck
