@@ -49,6 +49,9 @@ var (
 	ErrVersionConflict = errors.New("控制状态已变化，请以当前运行状态为准后重试")
 	// ErrCursorConflict 表示步游标不匹配：当前等待放行的步骤已不是命令所指的那一步。
 	ErrCursorConflict = errors.New("当前等待放行的步骤已变化，请以最新预览为准")
+	// ErrStepAlreadyExecuted 表示该步已经落账成功而下一步预览尚未构建好（常见于目标结构读取瞬断）。
+	// 放行绝不能把同一步再执行一遍：写步骤会重复写，只读步骤也会重复落账虚增进度。
+	ErrStepAlreadyExecuted = errors.New("该步骤已执行完成，正在等待目标状态恢复以准备下一步；请稍后刷新后重试")
 	// ErrCommandNotAllowed 表示当前模式或状态下该命令不可用。
 	ErrCommandNotAllowed = errors.New("当前状态下该命令不可用")
 	// ErrNotRunnable 表示路径运行当前状态不接受该控制动作（如待对账、已结束）。
@@ -710,6 +713,16 @@ func (s *Service) ApproveWithCommandAsync(ctx context.Context, pathRunID uint64,
 
 // reserveApproval 在任何外部读写前占用本次放行的执行槽，保证并发请求最多产生一条放行事实和一次真实动作。
 // 单步占用 stepInFlight，连续命令占用 loopRunning；后续失败由 releaseApproval 释放，不能留下假忙状态。
+// StepReReleaseGuard 判断单步放行是否撞上"同一步已落账"的防重复执行护栏。
+// 游标所指步骤已经执行成功而下一步预览尚未建出来时（常见于目标结构读取瞬断），
+// 再次放行会把同一步再跑一遍：写步骤重复写、只读步骤重复落账虚增进度，都必须拒绝。
+func StepReReleaseGuard(command model.ControlCommand, executedStepNos map[int]bool, cursor int) error {
+	if command == model.CommandStep && executedStepNos[cursor] {
+		return ErrStepAlreadyExecuted
+	}
+	return nil
+}
+
 func (s *Service) reserveApproval(pathRunID uint64, command model.ControlCommand, cursor int, version int64) (*activeStep, error) {
 	s.mu.Lock()
 	session := s.active[pathRunID]
@@ -737,6 +750,12 @@ func (s *Service) reserveApproval(pathRunID uint64, command model.ControlCommand
 	if session.preview == nil || cursor != session.preview.StepNo {
 		s.mu.Unlock()
 		return nil, ErrCursorConflict
+	}
+	// 防重复执行护栏：游标所指的步骤已经落账成功（下一步预览因瞬时故障没建出来）时，
+	// 再次放行绝不能把同一步再跑一遍，必须先等下一步预览恢复。
+	if err := StepReReleaseGuard(command, session.executedStepNos, cursor); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	commands := AvailableCommands(session.mode, session.pauseState())
 	allowed := false
@@ -966,7 +985,17 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		result.FinalFacts = &facts
 		return result, nil
 	}
-	preview, finished, err := s.steps.BuildPreview(ctx, session.runCtx, nextIndex)
+	// 下一步预览的构建依赖目标实时读取（结构、待办、实例事实），共享内网目标存在瞬断；
+	// 构建失败若直接放弃会让游标停在本步、后续放行触发重复执行，因此做有界退避重试。
+	var preview *step.StepPreview
+	var finished bool
+	for retry := 0; ; retry++ {
+		preview, finished, err = s.steps.BuildPreview(ctx, session.runCtx, nextIndex)
+		if err == nil || retry >= 2 {
+			break
+		}
+		time.Sleep(time.Duration(retry+1) * time.Second)
+	}
 	if err != nil {
 		return result, err
 	}

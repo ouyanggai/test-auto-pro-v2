@@ -417,7 +417,7 @@ func writeRunControlError(response http.ResponseWriter, err error) {
 			writeFailure(response, http.StatusConflict, "RUN_CONFLICT", orchestrationErr.Error(), false)
 		}
 	case errors.Is(err, control.ErrLoopRunning), errors.Is(err, control.ErrStepInFlight), errors.Is(err, control.ErrVersionConflict),
-		errors.Is(err, control.ErrCursorConflict), errors.Is(err, control.ErrCommandNotAllowed):
+		errors.Is(err, control.ErrCursorConflict), errors.Is(err, control.ErrCommandNotAllowed), errors.Is(err, control.ErrStepAlreadyExecuted):
 		writeFailure(response, http.StatusConflict, "RUN_CONTROL_CONFLICT", err.Error(), false)
 	case errors.Is(err, control.ErrNotRunnable):
 		writeFailure(response, http.StatusConflict, "RUN_NOT_RUNNABLE", err.Error(), false)
