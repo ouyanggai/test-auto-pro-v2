@@ -630,13 +630,45 @@ async function refreshOptionFields (form, descriptors) {
   return true
 }
 
+// overlayTriggeredIntent 以表单当前真实模型为底，只覆盖补丁明确触及的显示字段。
+// 这样既能保留迟到请求写回的实际绑定值用于一致性判断，也不会丢失服务端补丁声明的目标名称；子表单数组按行对齐处理。
+function overlayTriggeredIntent (target, source, path) {
+  if (!target || !source || path.length === 0) return
+  if (Array.isArray(target) || Array.isArray(source)) {
+    const targetRows = Array.isArray(target) ? target : []
+    const sourceRows = Array.isArray(source) ? source : []
+    for (let index = 0; index < sourceRows.length; index++) {
+      if (!targetRows[index] || typeof targetRows[index] !== 'object') targetRows[index] = Array.isArray(sourceRows[index]) ? [] : {}
+      overlayTriggeredIntent(targetRows[index], sourceRows[index], path)
+    }
+    return
+  }
+  if (typeof target !== 'object' || typeof source !== 'object') return
+  const [key, ...rest] = path
+  if (!Object.hasOwn(source, key)) return
+  if (rest.length === 0) {
+    target[key] = clonePlain(source[key])
+    return
+  }
+  const sourceChild = source[key]
+  if (!sourceChild || typeof sourceChild !== 'object') return
+  if (!target[key] || typeof target[key] !== 'object') target[key] = Array.isArray(sourceChild) ? [] : {}
+  overlayTriggeredIntent(target[key], sourceChild, rest)
+}
+
 // coordinateOptionPatches 是选项型字段补丁协调入口：等待控件自己的远程选项、数据源加载完成后，
 // 在真实选项里按名称唯一匹配并回填绑定值，重放原模板声明的 onChange 联动并等待异步派生完成，
 // 再读取最终表单值。无法唯一匹配且显示仍停留在历史值的字段产生阻断问题：
 // 绝不猜测绑定值，也不保留"路径提示已是新名称、控件显示历史值"的矛盾状态。
-export async function coordinateOptionPatches (form, template, values, triggers = [], retries = OPTION_WAIT_ATTEMPTS) {
-  const current = clonePlain(values || {})
+export async function coordinateOptionPatches (form, template, values, triggers = [], retries = OPTION_WAIT_ATTEMPTS, waitForRequests) {
   const patchTriggers = Array.isArray(triggers) ? triggers : []
+  const intendedValues = clonePlain(values || {})
+  const liveValues = form && typeof form.getValues === 'function' ? form.getValues() : values
+  const current = clonePlain(liveValues || {})
+  const restorePatchIntent = () => {
+    for (const trigger of patchTriggers) overlayTriggeredIntent(current, intendedValues, String(trigger || '').split('.').filter(Boolean))
+  }
+  restorePatchIntent()
   if (!form || typeof form.setData !== 'function') return { values: current, issues: [] }
   const descriptors = optionFieldDescriptors(template)
   if (descriptors.length === 0 || patchTriggers.length === 0) return { values: current, issues: [] }
@@ -644,10 +676,14 @@ export async function coordinateOptionPatches (form, template, values, triggers 
   let refreshed = false
   let issues = []
   for (let attempt = 0; attempt < attempts; attempt++) {
+    if (typeof waitForRequests === 'function') await waitForRequests()
     // 选项数据源不是一次刷新就一定就绪：目标的数据源请求本身是分钟级慢请求，
     // 而合同分类这类数据源的 requestFunc 还依赖另一个字段的选项先加载完（链式依赖）。
     // 因此在整个等待窗口内周期性重新触发刷新，而不是只在第一轮触发一次。
-    if (!refreshed || attempt % OPTION_REFRESH_EVERY === 0) refreshed = await refreshOptionFields(form, descriptors)
+    if (!refreshed || attempt % OPTION_REFRESH_EVERY === 0) {
+      refreshed = await refreshOptionFields(form, descriptors)
+      if (typeof waitForRequests === 'function') await waitForRequests()
+    }
     const evaluation = evaluateOptionPatches(form, descriptors, patchTriggers, current, true)
     if (evaluation.replayModels.length > 0 || evaluation.touchedGroups.length > 0) {
       const patch = clonePlain(evaluation.rootPatch)
@@ -656,7 +692,13 @@ export async function coordinateOptionPatches (form, template, values, triggers 
       // 回填绑定值后必须重放目标模板为该字段声明的 onChange 联动，补齐 setData 不会触发的派生字段计算。
       await replayFieldChangeEvents(form, evaluation.replayModels)
       await waitForFormUpdate(form)
+      // 目标 onChange 常继续发起分类树等远程请求；必须等本轮链式请求完全结束后再读取模型，
+      // 否则迟到响应会在协调函数返回后把刚回填的绑定值覆盖回历史分类。
+      if (typeof waitForRequests === 'function') await waitForRequests()
+      await waitForFormUpdate(form)
       if (typeof form.getValues === 'function') Object.assign(current, clonePlain(form.getValues() || {}))
+      // 迟到响应可能同时写回旧绑定值和旧显示名；目标名称是服务端补丁意图，任何一轮实时取值后都必须重新覆盖。
+      restorePatchIntent()
       continue
     }
     issues = evaluation.issues

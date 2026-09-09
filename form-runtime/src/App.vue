@@ -7,13 +7,18 @@
     />
     <host-vue-page v-else-if="sessionId && renderType === 'vue_custom'" ref="vueHost" :page="vuePage" :initial-values="values" :permissions="runtimePermissions" :read-only="readOnly" />
     <div v-else class="form-runtime__placeholder">正在等待表单工作区初始化…</div>
+    <section v-if="loading" class="form-runtime__loading" role="status" aria-live="polite">
+      <span class="form-runtime__spinner" aria-hidden="true" />
+      <strong>{{ loadingMessage }}</strong>
+      <span v-if="pendingTargetRequests > 0" class="form-runtime__loading-detail">正在等待 {{ pendingTargetRequests }} 个表单数据请求完成</span>
+    </section>
   </main>
 </template>
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
 import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
-import { installReadOnlyRequestPolicy } from './runtime/requestPolicy'
+import { createTargetRequestTracker, installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
 import HostVuePage from './HostVuePage.vue'
@@ -25,6 +30,8 @@ export default {
     return {
       parentOrigin: '',
       sessionId: '',
+		sessionGeneration: 0,
+		operationGeneration: 0,
       template: { list: [], config: {} },
       values: {},
       savedValues: {},
@@ -40,6 +47,9 @@ export default {
       changedFields: [],
       readOnly: false,
       loading: false,
+		loadingMessage: '正在加载表单结构和历史数据',
+		pendingTargetRequests: 0,
+		requestTracker: null,
       dirty: false,
 		removeRequestPolicy: null,
 		requestPolicyObservations: [],
@@ -87,7 +97,9 @@ export default {
       try {
         await this.execute(command)
       } catch (caught) {
+		if (caught && (caught.code === 'FORM_RUNTIME_REQUEST_CANCELLED' || caught.code === 'FORM_RUNTIME_SESSION_SUPERSEDED')) return
 		const message = caught instanceof Error ? caught.message : '表单运行时操作失败'
+		if (command.sessionId === this.sessionId) this.loading = false
         this.post({
           version: FORM_RUNTIME_VERSION,
           sessionId: command.sessionId,
@@ -113,7 +125,9 @@ export default {
       if (command.type === 'load') {
         this.destroySession()
         this.sessionId = command.sessionId
+		this.operationGeneration++
         this.loading = true
+		this.loadingMessage = '正在加载表单结构和历史数据'
         this.readOnly = Boolean(payload.readOnly)
         this.renderType = String(payload.renderType || 'formmaking')
 		this.vuePage = payload.vuePage || { status: 'blocked', pageName: '', fields: [], issues: [] }
@@ -123,6 +137,10 @@ export default {
         const targetOrigin = baseURL ? new URL(baseURL).origin : ''
         // 上游 axios 可能已捕获同步源码的旧默认地址；会话环境与请求策略双重收敛到后端核实的当前网关。
         setRuntimeEnvironment({ baseUrl: baseURL, viewFileUrl: targetOrigin })
+        this.requestTracker = createTargetRequestTracker({
+		  onChange: pending => { this.pendingTargetRequests = pending }
+		})
+		const loadContext = this.activeSessionContext()
         this.removeRequestPolicy = installReadOnlyRequestPolicy({
           sid: String(payload.sid || ''),
           baseURL,
@@ -134,7 +152,8 @@ export default {
 		  },
 		  onIssue: issue => {
 			this.requestPolicyIssues = this.mergeIssues(this.requestPolicyIssues, [issue]).slice(-50)
-		  }
+		  },
+		  requestTracker: this.requestTracker
         })
         // 目标组件继续走 rsh-flow-components 原生 Vuex/axios 链；认证只写当前 iframe 内存适配，销毁会话即清除。
         const runtimeIdentity = {
@@ -188,7 +207,9 @@ export default {
         this.optionPatchTriggers = [...this.changedFields]
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
+        this.loadingMessage = '正在加载表单组件和远程选项'
         await this.$nextTick()
+		this.assertActiveSession(loadContext)
         if (this.renderType === 'formmaking') {
           const host = this.$refs.formHost
           if (!host) throw new Error('目标表单宿主尚未完成装载')
@@ -198,17 +219,22 @@ export default {
           host.jsonData = clonePlain(this.template)
           host.editData = clonePlain(this.values)
           await this.$nextTick()
+		  this.assertActiveSession(loadContext)
           this.bindFormChange()
           const form = this.form()
           if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
           await form.setData(clonePlain(this.values))
+		  this.assertActiveSession(loadContext)
           // runtime-source 宿主监听 editData 会异步 refresh，必须在该刷新完成后再落一次回放值。
           await this.$nextTick()
+		  this.assertActiveSession(loadContext)
           await form.setData(clonePlain(this.values))
+		  this.assertActiveSession(loadContext)
         } else {
-          await this.setData(this.values)
+		  await this.setData(this.values, loadContext)
         }
-        await this.refresh()
+		await this.refresh(loadContext)
+		this.assertActiveSession(loadContext)
         this.savedValues = clonePlain(this.values)
         this.loading = false
         this.result(command, {
@@ -219,28 +245,32 @@ export default {
         return
       }
       if (command.type === 'setData') {
+		const commandContext = this.beginOperation()
         const nextValues = clonePlain(payload.values || {})
         this.changedFields = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : this.changedFields
         this.optionPatchTriggers = [...this.changedFields]
         await this.$nextTick()
-        await this.setData(nextValues)
+		this.assertActiveSession(commandContext)
+		await this.setData(nextValues, commandContext)
         // setData 只用于来源切换后的整份原始值替换；替换成功即成为新的恢复基线，避免恢复按钮回到旧来源快照。
         this.savedValues = clonePlain(nextValues)
         this.dirty = false
-        await this.refresh()
+		await this.refresh(commandContext)
         this.savedValues = clonePlain(this.values)
         this.result(command, await this.capture(false))
         return
       }
       if (command.type === 'restore') {
-        await this.setData(this.savedValues)
+		const commandContext = this.beginOperation()
+		await this.setData(this.savedValues, commandContext)
         this.dirty = false
-        await this.refresh()
+		await this.refresh(commandContext)
         this.result(command, await this.capture(false))
         return
       }
       if (command.type === 'refresh') {
-        await this.refresh()
+        const commandContext = this.beginOperation()
+        await this.refresh(commandContext)
         this.result(command, await this.capture(false))
         return
       }
@@ -250,12 +280,27 @@ export default {
       }
       if (command.type === 'validateAndGetValues') this.result(command, await this.capture(true))
     },
-    async setData (values) {
+	activeSessionContext () {
+	  return { sessionId: this.sessionId, generation: this.sessionGeneration, operation: this.operationGeneration, requestTracker: this.requestTracker }
+	},
+	beginOperation () {
+	  this.operationGeneration++
+	  return this.activeSessionContext()
+	},
+	assertActiveSession (context) {
+	  if (!context || context.sessionId === this.sessionId && context.generation === this.sessionGeneration && context.operation === this.operationGeneration) return
+	  const error = new Error('当前表单操作已被新的路径或数据来源替换')
+	  error.code = 'FORM_RUNTIME_SESSION_SUPERSEDED'
+	  throw error
+	},
+    async setData (values, context) {
+	  this.assertActiveSession(context)
       if (this.renderType === 'vue_custom') {
         this.values = clonePlain(values)
         const page = this.$refs.vueHost
         if (!page || typeof page.setData !== 'function') throw new Error('宿主 Vue 业务页面尚未完成装载')
         const result = await page.setData(this.values)
+		this.assertActiveSession(context)
         this.runtimeIssues = Array.isArray(result && result.issues) ? result.issues : []
         return
       }
@@ -265,8 +310,11 @@ export default {
         const form = this.form()
         if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
         await form.setData(clonePlain(values))
+		this.assertActiveSession(context)
         await this.$nextTick()
+		this.assertActiveSession(context)
         await form.setData(clonePlain(values))
+		this.assertActiveSession(context)
         this.bindFormChange()
         this.values = clonePlain(values)
         return
@@ -274,29 +322,73 @@ export default {
       const form = this.form()
       if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
       await form.setData(clonePlain(values))
+	  this.assertActiveSession(context)
       this.values = clonePlain(values)
     },
-    async refresh () {
+	async refresh (context) {
       if (this.renderType === 'vue_custom') return
+	  const refreshContext = context || this.activeSessionContext()
+	  this.assertActiveSession(refreshContext)
+	  const requestTracker = refreshContext.requestTracker
       // 字段权限已在 FormMaking 装载前写入每个组件 options；refresh 后统一调用 disabled 会击穿缺少 disabledElement 的已注册组件。
       const form = this.form()
+	  if (this.loading) this.loadingMessage = '正在加载表单组件和远程选项'
       await refreshPreparedForm(form)
+	  this.assertActiveSession(refreshContext)
+	  // FormMaking.refresh() 在内部只启动自动数据源，并不会等待请求结束。所有补丁协调必须越过这道真实网络完成屏障。
+	  await this.waitForTargetRequests(requestTracker)
+	  this.assertActiveSession(refreshContext)
       // 选项型字段补丁协调：等待控件自己的远程选项就绪，按名称唯一匹配回填绑定值并重放联动；
       // 无法唯一匹配且显示仍停留在历史值的字段产生阻断问题。
-      const coordination = await coordinateOptionPatches(form, this.template, this.values, this.optionPatchTriggers)
-      this.optionCoordinationIssues = coordination.issues
+      const coordination = await coordinateOptionPatches(
+		form,
+		this.template,
+		this.values,
+		this.optionPatchTriggers,
+		undefined,
+		async () => {
+		  await this.waitForTargetRequests(requestTracker)
+		  this.assertActiveSession(refreshContext)
+		}
+	  )
+	  this.assertActiveSession(refreshContext)
       if (formValuesFingerprint(coordination.values) !== formValuesFingerprint(this.values)) {
         // 协调回填的绑定值必须同时落到宿主的 editData：runtime-source 宿主监听 editData 会异步 refresh，
         // 只改 FormMaking 模型的话，那次刷新会按旧 editData 重新渲染控件，界面又退回历史选项，
         // 随后的捕获也会把旧值读回去——这正是"右侧提示已改、表单还显示旧分类"的成因。
-        await this.setData(coordination.values)
+		await this.setData(coordination.values, refreshContext)
       } else {
         this.values = coordination.values
       }
       await replayFieldChangeEvents(form, this.changedFields)
-      if (this.changedFields.length > 0 && typeof form.getValues === 'function') this.values = clonePlain(form.getValues() || {})
+	  this.assertActiveSession(refreshContext)
+	  await this.waitForTargetRequests(requestTracker)
+	  this.assertActiveSession(refreshContext)
+	  if (this.loading) this.loadingMessage = '正在自动修正关键路径数据'
+	  if (this.loading) await this.$nextTick()
+	  // 写入 host.editData 会触发目标宿主自己的异步 refresh；上面等它及字段联动全部结束后，
+	  // 再以服务端补丁目标名称和表单实时绑定值做最后一次协调。最终结果直接落 FormMaking，避免再次触发宿主刷新形成覆盖循环。
+	  const finalCoordination = await coordinateOptionPatches(
+		form,
+		this.template,
+		coordination.values,
+		this.optionPatchTriggers,
+		undefined,
+		async () => {
+		  await this.waitForTargetRequests(requestTracker)
+		  this.assertActiveSession(refreshContext)
+		}
+	  )
+	  this.assertActiveSession(refreshContext)
+	  this.optionCoordinationIssues = finalCoordination.issues
+	  this.values = finalCoordination.values
       this.changedFields = []
     },
+	// waitForTargetRequests 等待目标请求归零并保持稳定，涵盖响应回调继续触发的链式数据源。
+	async waitForTargetRequests (requestTracker = this.requestTracker) {
+	  if (!requestTracker || typeof requestTracker.waitForIdle !== 'function') return
+	  await requestTracker.waitForIdle()
+	},
     // bindFormChange 监听 runtime-source 宿主里的 FormMaking 实例，继续沿用 iframe 状态回报协议。
     bindFormChange () {
       const form = this.form()
@@ -380,11 +472,16 @@ export default {
       this.post({ version: FORM_RUNTIME_VERSION, sessionId: command.sessionId, requestId: command.requestId, type: 'result', payload })
     },
 	destroySession () {
+		this.sessionGeneration++
+		this.operationGeneration++
 		if (this.stateTimer) window.clearTimeout(this.stateTimer)
 		this.stateTimer = null
 		this.unbindFormChange()
       if (typeof this.removeRequestPolicy === 'function') this.removeRequestPolicy()
       this.removeRequestPolicy = null
+	  if (this.requestTracker && typeof this.requestTracker.dispose === 'function') this.requestTracker.dispose()
+	  this.requestTracker = null
+	  this.pendingTargetRequests = 0
 		if (typeof this.removeStorageFacade === 'function') this.removeStorageFacade()
 		this.removeStorageFacade = null
       this.sessionId = ''
@@ -408,6 +505,7 @@ export default {
 		this.companyId = ''
       this.dirty = false
       this.loading = false
+	  this.loadingMessage = '正在加载表单结构和历史数据'
       setRuntimeEnvironment({ baseUrl: '', viewFileUrl: '', onlyOfficeUrl: '' })
       clearRuntimeAuth()
       if (window.$store && window.$store._mutations['user/RESET_STATE']) window.$store.commit('user/RESET_STATE')
@@ -435,6 +533,7 @@ body {
 
 .form-runtime {
   box-sizing: border-box;
+  position: relative;
   min-height: 100vh;
   padding: 18px 22px 32px;
   color-scheme: light;
@@ -446,6 +545,38 @@ body {
   padding: 48px 20px;
   color: #8c8c8c;
   text-align: center;
+}
+
+.form-runtime__loading {
+  position: absolute;
+  z-index: 1000;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 320px;
+  color: #262626;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.form-runtime__spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid #d9f2e3;
+  border-top-color: #13a05f;
+  border-radius: 50%;
+  animation: form-runtime-spin 0.8s linear infinite;
+}
+
+.form-runtime__loading-detail {
+  color: #8c8c8c;
+  font-size: 13px;
+}
+
+@keyframes form-runtime-spin {
+  to { transform: rotate(360deg); }
 }
 
 </style>

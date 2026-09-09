@@ -17,6 +17,82 @@ const EXPLICIT_FORBIDDEN_PATHS = [
   /\/web\/user\/api\/login\/user\/(?:login|loginOut|switchLinkage)(?:\/|$)/i
 ]
 
+// createTargetRequestTracker 跟踪当前表单会话发出的目标平台请求，并要求请求数归零后保持一段稳定时间。
+// FormMaking 的 refresh 只启动数据源请求而不等待 Promise；稳定窗口用于覆盖同一轮响应继续触发后续请求的链式加载。
+export function createTargetRequestTracker ({ onChange, idleMs = 250, pollMs = 20, timeoutMs = 120000 } = {}) {
+  let pending = 0
+  let revision = 0
+  let disposed = false
+  const pendingLabels = new Map()
+  const notify = () => {
+    if (typeof onChange !== 'function') return
+    try {
+      onChange(pending)
+    } catch (_) {
+      // 加载文案观察器不能影响目标请求。
+    }
+  }
+  return {
+    begin (label = '目标平台请求') {
+      if (disposed) return () => {}
+      const requestLabel = String(label || '目标平台请求')
+      pending++
+      revision++
+      pendingLabels.set(requestLabel, (pendingLabels.get(requestLabel) || 0) + 1)
+      notify()
+      let finished = false
+      return () => {
+        if (finished || disposed) return
+        finished = true
+        pending = Math.max(0, pending - 1)
+        revision++
+        const labelCount = pendingLabels.get(requestLabel) || 0
+        if (labelCount <= 1) pendingLabels.delete(requestLabel)
+        else pendingLabels.set(requestLabel, labelCount - 1)
+        notify()
+      }
+    },
+    async waitForIdle () {
+      const startedAt = Date.now()
+      let idleRevision = -1
+      let idleSince = 0
+      while (true) {
+        if (disposed) {
+          const error = new Error('当前表单加载已被新的路径或数据来源替换')
+          error.code = 'FORM_RUNTIME_REQUEST_CANCELLED'
+          throw error
+        }
+        if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
+          const labels = [...pendingLabels.keys()].slice(0, 3)
+          const detail = labels.length > 0 ? `：${labels.join('；')}` : ''
+          const error = new Error(`表单数据接口等待超过 ${Math.ceil(timeoutMs / 1000)} 秒，仍有 ${pending} 个请求未完成${detail}`)
+          error.code = 'FORM_RUNTIME_REQUEST_TIMEOUT'
+          error.pendingPaths = labels
+          throw error
+        }
+        if (pending === 0) {
+          if (idleRevision !== revision) {
+            idleRevision = revision
+            idleSince = Date.now()
+          }
+          if (Date.now() - idleSince >= idleMs) return
+        } else {
+          idleRevision = revision
+          idleSince = 0
+        }
+        await new Promise(resolve => setTimeout(resolve, pollMs))
+      }
+    },
+    dispose () {
+      disposed = true
+      pending = 0
+      revision++
+      pendingLabels.clear()
+      notify()
+    },
+  }
+}
+
 // pathSegments 统一解码目标路径并保留层级，供写语义优先判断。
 function pathSegments (pathname) {
   try {
@@ -166,7 +242,7 @@ function targetURL (raw, method, baseURL, sid, readRequestManifest, onDecision, 
 
 // installReadOnlyRequestPolicy 在会话内给目标请求附加 SID并改写网关地址；请求分类仅用于观察，不阻断目标请求。
 // 返回的清理函数会恢复原生网络对象，SID 因而只存在于本 iframe 当前会话闭包中。
-export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifest, onDecision, onIssue, shadowContext }) {
+export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifest, onDecision, onIssue, shadowContext, requestTracker }) {
   const originalOpen = XMLHttpRequest.prototype.open
   const originalSend = XMLHttpRequest.prototype.send
   const originalFetch = window.fetch
@@ -205,6 +281,7 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifes
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     const resolved = targetURL(url, method, baseURL, sid, normalizedManifest, onDecision, onIssue, shadowContext)
     this.__f007TargetRequest = Boolean(baseURL) && resolved.origin === new URL(baseURL).origin
+    this.__f007TargetRequestLabel = `${String(method || 'GET').toUpperCase()} ${resolved.pathname}`
     return originalOpen.call(this, method, resolved.toString(), ...rest)
   }
   XMLHttpRequest.prototype.send = function (body) {
@@ -212,7 +289,26 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifes
       this.setRequestHeader('sid', sid)
       body = withTargetSid(body)
     }
-    return originalSend.call(this, body)
+    const finishRequest = this.__f007TargetRequest && requestTracker && typeof requestTracker.begin === 'function'
+      ? requestTracker.begin(this.__f007TargetRequestLabel)
+      : null
+    if (finishRequest) {
+      if (typeof this.addEventListener === 'function') {
+        this.addEventListener('loadend', finishRequest, { once: true })
+      } else {
+        const previousLoadEnd = this.onloadend
+        this.onloadend = (...args) => {
+          finishRequest()
+          if (typeof previousLoadEnd === 'function') previousLoadEnd.apply(this, args)
+        }
+      }
+    }
+    try {
+      return originalSend.call(this, body)
+    } catch (caught) {
+      if (finishRequest) finishRequest()
+      throw caught
+    }
   }
   window.fetch = async function (input, init) {
     const raw = typeof input === 'string' || input instanceof URL ? input : input.url
@@ -224,11 +320,19 @@ export function installReadOnlyRequestPolicy ({ sid, baseURL, readRequestManifes
       headers.set('sid', sid)
       nextInit.body = withTargetSid(init && init.body)
     }
-    if (input instanceof Request) {
-      const request = new Request(resolved.toString(), input)
-      return originalFetch.call(window, request, { ...nextInit, headers })
+    const isTargetRequest = Boolean(baseURL) && resolved.origin === new URL(baseURL).origin
+    const finishRequest = isTargetRequest && requestTracker && typeof requestTracker.begin === 'function'
+      ? requestTracker.begin(`${String(method || 'GET').toUpperCase()} ${resolved.pathname}`)
+      : null
+    try {
+      if (input instanceof Request) {
+        const request = new Request(resolved.toString(), input)
+        return await originalFetch.call(window, request, { ...nextInit, headers })
+      }
+      return await originalFetch.call(window, resolved.toString(), { ...nextInit, headers })
+    } finally {
+      if (finishRequest) finishRequest()
     }
-    return originalFetch.call(window, resolved.toString(), { ...nextInit, headers })
   }
   return () => {
     XMLHttpRequest.prototype.open = originalOpen

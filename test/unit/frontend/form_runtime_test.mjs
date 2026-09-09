@@ -3,12 +3,13 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 const runtimeSource = fs.readFileSync(new URL('../../../form-runtime/runtime-source/src/main.js', import.meta.url), 'utf8')
+const runtimeAppSource = fs.readFileSync(new URL('../../../form-runtime/src/App.vue', import.meta.url), 'utf8')
 const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
 const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
-import { installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
+import { createTargetRequestTracker, installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
 
 test('目标表单模板递归应用权限且复杂组件不降级', () => {
   const prepared = prepareTemplate({
@@ -706,6 +707,99 @@ test('目标请求统一透传并保留网关改写与 SID', async () => {
   }
 })
 
+test('目标请求跟踪器等待全部请求结束并经过稳定窗口', async () => {
+  const pendingChanges = []
+  const tracker = createTargetRequestTracker({
+    idleMs: 8,
+    pollMs: 1,
+    onChange: pending => pendingChanges.push(pending),
+  })
+  const finishFirst = tracker.begin()
+  const finishSecond = tracker.begin()
+  let settled = false
+  const waiting = tracker.waitForIdle().then(() => { settled = true })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(settled, false, '仍有请求时不能开始最终回填')
+  finishFirst()
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.equal(settled, false, '必须等待最后一个请求结束')
+  finishSecond()
+  await waiting
+  assert.equal(settled, true)
+  assert.deepEqual(pendingChanges, [1, 2, 1, 0])
+  tracker.dispose()
+})
+
+test('目标请求等待可被会话切换取消且超时提示具体接口', async () => {
+  const cancelled = createTargetRequestTracker({ idleMs: 1, pollMs: 1, timeoutMs: 100 })
+  cancelled.begin('POST /web/old-session')
+  const cancelledWait = cancelled.waitForIdle()
+  cancelled.dispose()
+  await assert.rejects(cancelledWait, error => error.code === 'FORM_RUNTIME_REQUEST_CANCELLED')
+
+  const timedOut = createTargetRequestTracker({ idleMs: 1, pollMs: 1, timeoutMs: 8 })
+  timedOut.begin('POST /web/api/measuring/contract/type/enableTreeList')
+  await assert.rejects(
+    timedOut.waitForIdle(),
+    error => error.code === 'FORM_RUNTIME_REQUEST_TIMEOUT' && /合同|enableTreeList/.test(error.message),
+  )
+  timedOut.dispose()
+})
+
+test('请求策略把目标 XHR 和 fetch 接入完成屏障且忽略第三方请求', async () => {
+  const pendingChanges = []
+  const tracker = createTargetRequestTracker({ idleMs: 1, pollMs: 1, timeoutMs: 100, onChange: pending => pendingChanges.push(pending) })
+  class TrackedXHR {
+    open () {}
+    setRequestHeader () {}
+    addEventListener (name, handler) { if (name === 'loadend') this.finish = handler }
+    send () {}
+  }
+  const originalWindow = globalThis.window
+  const originalXHR = globalThis.XMLHttpRequest
+  globalThis.XMLHttpRequest = TrackedXHR
+  let finishFetch
+  globalThis.window = {
+    location: { href: 'http://127.0.0.1:19001/' },
+    fetch: () => new Promise(resolve => { finishFetch = () => resolve(new Response('{}')) }),
+  }
+  try {
+    const restore = installReadOnlyRequestPolicy({ sid: 'sid', baseURL: 'http://target.test/api', requestTracker: tracker })
+    const targetRequest = new XMLHttpRequest()
+    targetRequest.open('POST', '/web/category/list')
+    targetRequest.send('{}')
+    assert.deepEqual(pendingChanges, [1])
+    targetRequest.finish()
+    assert.deepEqual(pendingChanges, [1, 0])
+
+    const thirdPartyRequest = new XMLHttpRequest()
+    thirdPartyRequest.open('GET', 'https://cdn.example.test/options.json')
+    thirdPartyRequest.send()
+    assert.deepEqual(pendingChanges, [1, 0], '第三方资源不属于表单目标接口完成屏障')
+
+    const fetchPromise = window.fetch('/web/category/tree', { method: 'POST', body: '{}' })
+    assert.deepEqual(pendingChanges, [1, 0, 1])
+    finishFetch()
+    await fetchPromise
+    assert.deepEqual(pendingChanges, [1, 0, 1, 0])
+    await tracker.waitForIdle()
+    restore()
+  } finally {
+    tracker.dispose()
+    globalThis.window = originalWindow
+    globalThis.XMLHttpRequest = originalXHR
+  }
+})
+
+test('加载表单时展示分阶段进度并明确标出最终关键路径修正', () => {
+  assert.match(runtimeAppSource, /form-runtime__loading/)
+  assert.match(runtimeAppSource, /正在加载表单结构和历史数据/)
+  assert.match(runtimeAppSource, /正在加载表单组件和远程选项/)
+  assert.match(runtimeAppSource, /正在自动修正关键路径数据/)
+  assert.match(runtimeAppSource, /operationGeneration/)
+  assert.match(runtimeAppSource, /beginOperation/)
+})
+
 
 test('统计剔除静态隐藏容器与联动隐藏区域内的字段', () => {
   const template = { list: [
@@ -892,6 +986,46 @@ test('嵌在报表容器单元格里的选项控件同样参与补丁协调', as
   const coordination = await coordinateOptionPatches(form, template, form.model, ['classificationId__virtualName', 'classificationName'], 1)
   assert.deepEqual(coordination.issues, [])
   assert.deepEqual(coordination.values.classificationId, ['new-id'], '布局容器里的控件也必须按真实选项回填绑定值')
+})
+
+test('选项回填等待联动请求结束并重新覆盖被迟到数据写回的旧绑定值', async () => {
+  const cascader = { type: 'cascader', model: 'classificationId', name: '合同分类', options: { remote: true }, events: { onChange: 'classificationChanged' } }
+  const template = { list: [cascader] }
+  let waitCalls = 0
+  const form = {
+    model: { classificationId: ['old-id'], classificationId__virtualName: '施工类', classificationName: '施工类' },
+    formItemContexts: {
+      classificationId: {
+        widget: cascader,
+        currentOptions: cascader.options,
+        $refs: { generateElementItem: { remoteOptions: [
+          { value: 'old-id', label: '行政综合类' },
+          { value: 'new-id', label: '施工类' },
+        ] } },
+      },
+    },
+    eventFunction: { async classificationChanged () {} },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const waitForRequests = async () => {
+    waitCalls++
+    if (waitCalls === 2) {
+      form.model.classificationId = ['old-id']
+      form.model.classificationId__virtualName = '行政综合类'
+      form.model.classificationName = '行政综合类'
+    }
+  }
+  const coordination = await coordinateOptionPatches(
+    form,
+    template,
+    form.model,
+    ['classificationId__virtualName', 'classificationName'],
+    2,
+    waitForRequests,
+  )
+  assert.ok(waitCalls >= 2, '每次联动后都要等待该轮接口完成')
+  assert.deepEqual(coordination.values.classificationId, ['new-id'], '迟到请求覆盖后必须再次修正为目标绑定值')
 })
 
 test('表单值指纹按键字典序稳定，键顺序不同不算改动', () => {
