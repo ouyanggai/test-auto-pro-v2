@@ -150,9 +150,13 @@ type PathConfigNode struct {
 
 // PathConfigPerson 是模板约束下的处理人呈现；只有 editable=true 时浏览器才允许回写候选。
 type PathConfigPerson struct {
-	Key             string                           `json:"key"`
-	Title           string                           `json:"title"`
-	Mode            string                           `json:"mode"`
+	Key   string `json:"key"`
+	Title string `json:"title"`
+	Mode  string `json:"mode"`
+	// Source 是目标人员规则来源的中文分类；Status 是当前配置事实状态。
+	Source          string                           `json:"source"`
+	Status          string                           `json:"status"`
+	StatusName      string                           `json:"statusName"`
 	Detail          string                           `json:"detail"`
 	Items           []PathConfigPersonDisplayItem    `json:"items"`
 	Editable        bool                             `json:"editable"`

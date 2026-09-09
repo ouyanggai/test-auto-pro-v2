@@ -53,13 +53,19 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
         <h3>处理人员</h3>
         <div v-for="person in node.persons" :key="person.key" class="person-row">
           <strong>{{ person.title }}</strong>
+          <div class="person-meta">
+            <n-tag size="small" :type="person.status === 'blocked' ? 'warning' : person.status === 'selectable' ? 'info' : 'default'">{{ person.statusName || person.source }}</n-tag>
+            <span>{{ person.source }}</span>
+          </div>
           <template v-if="person.editable">
             <div class="person-controls">
               <n-select :value="personDraft(person).strategy" :options="strategyOptions(person)" :disabled="readOnly" @update:value="value => updatePersonStrategy(person, { strategy: value })" />
               <n-select v-if="personDraft(person).strategy === 'manual'" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" :disabled="readOnly" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
             </div>
+            <small v-if="personDraft(person).selected.length">当前选择：{{ personDraft(person).selected.map(value => person.options.find(option => option.value === value)?.label || '已选人员').join('、') }}</small>
           </template>
           <p v-else>{{ person.detail }}</p>
+          <small v-if="person.items.length">目标范围：{{ person.items.map(item => `${item.name}${item.count > 1 ? `（${item.count}人）` : ''}`).join('、') }}</small>
           <small v-if="itemCount(person)">已解析 {{ itemCount(person) }} 项</small>
           <small v-if="person.note">{{ pathConfigurationMessage(person.note) }}</small>
         </div>
@@ -124,6 +130,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
 .node-configuration-panel__body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:16px}
 .node-configuration-panel__section{border-top:1px solid #e5e7eb;padding-top:14px}
 .person-row{display:flex;flex-direction:column;align-items:stretch;gap:7px;margin-top:12px}
+.person-meta{display:flex;align-items:center;gap:8px;color:#64748b;font-size:12px}
 .person-controls{display:flex;flex-direction:column;gap:7px}
 .node-configuration-panel p,.node-configuration-panel small{color:#64748b}
 .node-configuration-panel__footer{display:flex;flex-direction:column;align-items:stretch;gap:10px;margin:0 -16px -16px;padding:14px 16px 16px;border-top:1px solid #e5e7eb;background:#fafafa}

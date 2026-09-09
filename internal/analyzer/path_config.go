@@ -567,34 +567,37 @@ func pathConfigNodeStatus(node model.PathConfigNode, storedPresent bool) (string
 func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNodeTemplate) model.PathConfigPerson {
 	config := node.AuditConfig
 	if config == nil || strings.TrimSpace(config.AuditType) == "" {
-		return model.PathConfigPerson{Title: "处理人规则", Mode: "review", Detail: "当前节点缺少处理人配置", Items: []model.PathConfigPersonDisplayItem{}, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+		return model.PathConfigPerson{Title: "处理人规则", Mode: "review", Source: "目标人员规则", Status: "blocked", StatusName: "需要核对", Detail: "当前节点缺少处理人配置", Items: []model.PathConfigPersonDisplayItem{}, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
 	title, requirementStatus, known := auditTypePresentation(config.AuditType)
 	detail := auditModeText(config.Mode, config.CountersignNum)
 	items := pathConfigPersonDisplayItems(config)
+	source := title
 	if len(config.ResolutionIssues) > 0 {
 		reasons := make([]string, 0, len(config.ResolutionIssues))
 		for _, issue := range config.ResolutionIssues {
 			reasons = append(reasons, issue.Category+"："+issue.Reason)
 		}
-		return model.PathConfigPerson{Title: title, Mode: "review", Detail: strings.Join(reasons, "；"), Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+		return model.PathConfigPerson{Title: title, Mode: "review", Source: source, Status: "blocked", StatusName: "读取失败", Detail: strings.Join(reasons, "；"), Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
 	if !known || !auditModeValid(config.Mode, config.CountersignNum) {
-		return model.PathConfigPerson{Title: title, Mode: "review", Detail: detail + "；处理规则需要人工核对", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+		return model.PathConfigPerson{Title: title, Mode: "review", Source: source, Status: "blocked", StatusName: "需要核对", Detail: detail + "；处理规则需要人工核对", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
 	if strings.TrimSpace(config.AuditType) != "run_node_choose" {
 		mode := "fixed"
+		status, statusName := "resolved", "目标自动确定"
 		if requirementStatus == model.RequirementRuntime || requirementStatus == model.RequirementPending {
 			mode = "runtime"
+			status, statusName = "runtime", "运行时确定"
 		}
-		return model.PathConfigPerson{Title: title, Mode: mode, Detail: detail, Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+		return model.PathConfigPerson{Title: title, Mode: mode, Source: source, Status: status, StatusName: statusName, Detail: detail, Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
 	if len(config.Candidates) == 0 {
 		if len(config.Scopes) > 0 {
-			return model.PathConfigPerson{Title: title, Mode: "review", Detail: detail + "；当前合法范围内没有可选人员", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+			return model.PathConfigPerson{Title: title, Mode: "review", Source: source, Status: "blocked", StatusName: "候选为空", Detail: detail + "；当前合法范围内没有可选人员", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 		}
 		// 没有静态范围时只允许明确说明真实依赖，不能伪造全公司候选。
-		return model.PathConfigPerson{Title: title, Mode: "runtime", Detail: detail + "；依赖真实任务上下文，只能在实际执行该节点时加载候选", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+		return model.PathConfigPerson{Title: title, Mode: "runtime", Source: source, Status: "runtime", StatusName: "运行时确定", Detail: detail + "；依赖真实任务上下文，只能在实际执行该节点时加载候选", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
 	key := PathConfigPersonToken(nodeID)
 	options := make([]model.PathConfigPersonOption, 0, len(config.Candidates))
@@ -656,7 +659,7 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 		p.affected = true
 	}
 	return model.PathConfigPerson{
-		Key: key, Title: title, Mode: "select", Detail: detail, Items: items, Editable: true, Multiple: multiple,
+		Key: key, Title: title, Mode: "select", Source: source, Status: "selectable", StatusName: "可配置", Detail: detail, Items: items, Editable: true, Multiple: multiple,
 		Required: required, MinCount: minCount, Selected: selected, DefaultSelected: defaultSelected, Options: options,
 		MaxCount: maxCount, Strategy: strategy, StrategySeed: seed, Strategies: strategies, Affected: affected, Note: note,
 	}

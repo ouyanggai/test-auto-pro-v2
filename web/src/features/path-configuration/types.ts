@@ -253,6 +253,9 @@ export interface PathConfigPerson {
   key: string
   title: string
   mode: 'fixed' | 'select' | 'runtime' | 'review'
+  source: string
+  status: 'resolved' | 'runtime' | 'selectable' | 'blocked'
+  statusName: string
   detail: string
   items: PathConfigPersonDisplayItem[]
   editable: boolean
