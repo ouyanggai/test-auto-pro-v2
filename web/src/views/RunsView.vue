@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { NButton, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { deleteRun, fetchAllRuns, formatTime, RunApiError } from '../features/runs/api'
 import type { RunSummary } from '../features/runs/api'
+import RunListEmptyState from '../features/runs/RunListEmptyState.vue'
 
 // RunsView 是运行记录列表：一行只对应一次计划运行（跨计划）。
 // 每行显示计划、运行方式、整体状态、路径汇总、开始/结束时间，并提供进入与删除入口（2026-09-06）。
@@ -68,9 +69,11 @@ function deleteHint(run: RunSummary): string {
   return `删除计划「${run.planName || '未知计划'}」的运行 #${run.runNo}：共 ${pathCount} 条执行路径的记录、步骤与日志引用会一并删除；目标平台上的实例和业务数据不受影响。删除后无法恢复。`
 }
 
-const emptyText = computed(() => (runStatusFilter.value
-  ? '没有匹配筛选状态的运行记录。'
-  : '还没有运行记录；在计划路径页勾选路径并通过运行前检查后即可启动运行。'))
+// clearRunStatusFilter 清除状态筛选并重新读取完整运行列表。
+function clearRunStatusFilter(): void {
+  runStatusFilter.value = ''
+  void loadRuns()
+}
 
 onMounted(() => { void loadRuns() })
 onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
@@ -98,9 +101,11 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 
     <div v-if="loading" class="runs-view__loading"><NSpin size="small" /><span>正在读取运行列表……</span></div>
 
-    <NEmpty
+    <RunListEmptyState
       v-else-if="runs.length === 0 && !errorText"
-      :description="emptyText"
+      :filtered="Boolean(runStatusFilter)"
+      @clear-filter="clearRunStatusFilter"
+      @open-plans="router.push('/plans')"
     />
 
     <table v-else class="runs-view__table">
