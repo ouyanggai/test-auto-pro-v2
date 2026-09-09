@@ -15,14 +15,14 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-// UnverifiedActionError 表示步骤动作不在本切片已验证可执行范围内（纲领第 9 节）。
+// UnverifiedActionError 表示步骤动作不在当前原子动作目录内。
 type UnverifiedActionError struct {
 	Action model.ActionKey
 }
 
-// Error 返回中文说明：未验证动作必须由运行准备阻塞，不得静默执行。
+// Error 返回中文说明：未知动作必须在写请求前停止，不能静默替换目标端点。
 func (e *UnverifiedActionError) Error() string {
-	return fmt.Sprintf("动作 %s 尚未验证可执行，本切片只允许发起与同意", string(e.Action))
+	return fmt.Sprintf("动作 %s 不在已支持的原子动作清单中", string(e.Action))
 }
 
 // Executor 执行一条路径运行上的一步七阶段。
@@ -91,15 +91,16 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		actorName := runCtx.PlanAccount
 		session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "gate")
 		if sessionErr != nil {
-			return e.blockedPreview(runCtx, step, actorName, "演员登录失败："+sessionErr.Error(), model.FailureClassActorUnresolved), false, nil
+			return e.blockedPreview(runCtx, step, actorName, "演员登录失败："+userFacingError(sessionErr, target.WriteResponse{}), model.FailureClassActorUnresolved), false, nil
 		}
 		if session.Summary.DisplayName != "" {
 			actorName = session.Summary.DisplayName
 		}
-		facts, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
+		facts, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
 		if readErr != nil {
-			log.Phase("gate", step.Sequence, 1, "导航校验目标事实读取失败："+readErr.Error())
-			return e.blockedPreview(runCtx, step, actorName, "无法读取目标实时事实："+readErr.Error(), model.FailureClassGateBlocked), false, nil
+			message := userFacingError(readErr, target.WriteResponse{})
+			log.Phase("gate", step.Sequence, 1, "目标状态确认失败："+message)
+			return e.blockedPreview(runCtx, step, actorName, "目标状态确认失败："+message, model.FailureClassGateBlocked), false, nil
 		}
 		preview := &StepPreview{
 			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
@@ -118,18 +119,20 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	actorName := runCtx.PlanAccount
 	session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "gate")
 	if sessionErr != nil {
-		log.Phase("gate", step.Sequence, 1, "演员会话获取失败："+sessionErr.Error())
+		message := userFacingError(sessionErr, target.WriteResponse{})
+		log.Phase("gate", step.Sequence, 1, "演员登录失败："+message)
 		return e.blockedPreview(runCtx, step, actorName,
-			"演员登录失败："+sessionErr.Error(), model.FailureClassActorUnresolved), false, nil
+			"演员登录失败："+message, model.FailureClassActorUnresolved), false, nil
 	}
 	if session.Summary.DisplayName != "" {
 		actorName = session.Summary.DisplayName
 	}
-	facts, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
+	facts, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
 	if readErr != nil {
-		log.Phase("gate", step.Sequence, 1, "目标实时事实读取失败："+readErr.Error())
+		message := userFacingError(readErr, target.WriteResponse{})
+		log.Phase("gate", step.Sequence, 1, "目标状态确认失败："+message)
 		return e.blockedPreview(runCtx, step, actorName,
-			"无法读取目标实时事实："+readErr.Error(), model.FailureClassGateBlocked), false, nil
+			"目标状态确认失败："+message, model.FailureClassGateBlocked), false, nil
 	}
 	info := runCtx.Nodes[step.NodeKey]
 	catalogItem, allowed := evaluateGate(step, buildGateContext(runCtx, step, facts, info))
@@ -175,11 +178,12 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	// 门禁通过：先按节点权限算出本步要提交的完整表单数据。
 	// 目标保存表单数据是整份覆盖（语义清单第 16 条），基线必须是实例当前数据；
 	// 只覆盖本节点声明可编辑的配置字段，绝不用历史快照盖掉上游处理人填过的内容。
-	formPlan, formErr := e.nodeFormData(ctx, runCtx, step, session)
+	formPlan, session, formErr := e.nodeFormData(ctx, runCtx, step, session)
 	if formErr != nil {
-		log.Phase("gate", step.Sequence, 1, "读取实例当前表单数据失败："+formErr.Error())
+		message := userFacingError(formErr, target.WriteResponse{})
+		log.Phase("gate", step.Sequence, 1, "读取当前表单失败："+message)
 		return e.blockedPreview(runCtx, step, actorName,
-			"无法读取实例当前表单数据，不能构造写请求："+formErr.Error(), model.FailureClassGateBlocked), false, nil
+			"读取当前表单失败："+message, model.FailureClassGateBlocked), false, nil
 	}
 	if len(formPlan.Withheld) > 0 || len(formPlan.Overlaid) > 0 {
 		log.Phase("gate", step.Sequence, 1, fmt.Sprintf("表单数据按节点权限构造：基线=%s，覆盖 %d 个字段 %v，按权限未带 %d 个字段 %v",
@@ -190,22 +194,20 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 
 	// 构造与实际发出的请求严格同源的类型化请求与载荷预览（不含 SID），
 	// 并在发送前校验禁用字段（batchCode 禁令）。
-	// 下一步节点：提交载荷的 nextAuditorList 人员指定项按它的审批方式生成（2026-09-07 语义勘定）。
-	nextNodeKey := ""
-	if nextIndex >= 0 && nextIndex < len(runCtx.Steps) {
-		nextNodeKey = runCtx.Steps[nextIndex].NodeKey
-	}
-	request, endpoint, payload, requestErr := buildRequest(runCtx, step, session, formPlan.Payload, nextNodeKey)
+	// 提交类和同意类都要按真正的后续业务节点构造 nextAuditorList；当前步骤自身不是下一节点。
+	nextNodeKey := FollowingActionNodeKey(runCtx.Steps, nextIndex)
+	request, endpoint, payload, requestErr := buildRequestWithFacts(runCtx, step, session, formPlan.Payload, nextNodeKey, facts)
 	if requestErr != nil {
-		preview.BlockReason = "构造写请求失败：" + requestErr.Error()
+		message := userFacingError(requestErr, target.WriteResponse{})
+		preview.BlockReason = "构造写请求失败：" + message
 		preview.BlockFailureClass = model.FailureClassToolBug
-		log.Phase("gate", step.Sequence, 1, "构造写请求失败："+requestErr.Error())
+		log.Phase("gate", step.Sequence, 1, "构造写请求失败："+message)
 		return preview, false, nil
 	}
 	if err := validateWritePayloadKeys(payload); err != nil {
-		preview.BlockReason = "写请求载荷校验失败：" + err.Error()
+		preview.BlockReason = "写请求载荷校验失败：" + userFacingError(err, target.WriteResponse{})
 		preview.BlockFailureClass = model.FailureClassToolBug
-		log.Phase("gate", step.Sequence, 1, "写请求载荷校验失败："+err.Error())
+		log.Phase("gate", step.Sequence, 1, "写请求载荷校验失败："+userFacingError(err, target.WriteResponse{}))
 		return preview, false, nil
 	}
 	preview.Endpoint = endpoint
@@ -214,6 +216,27 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	preview.request = request
 	log.Phase("control", step.Sequence, 1, "单步暂停，等待放行")
 	return preview, false, nil
+}
+
+// FollowingActionNodeKey 返回当前动作之后第一个非导航、且不同于当前节点的业务节点。
+// 系统导航不产生待办，恢复步骤可能留在当前节点；把它们当作目标下一节点会让目标拒绝实际人员选择。
+func FollowingActionNodeKey(steps []model.CompiledActionStep, currentIndex int) string {
+	if currentIndex < 0 || currentIndex >= len(steps) {
+		return ""
+	}
+	currentNodeKey := strings.TrimSpace(steps[currentIndex].NodeKey)
+	for index := currentIndex + 1; index < len(steps); index++ {
+		candidate := steps[index]
+		if candidate.Source == model.ActionStepSourceNavigation {
+			continue
+		}
+		candidateNodeKey := strings.TrimSpace(candidate.NodeKey)
+		if candidateNodeKey == "" || candidateNodeKey == currentNodeKey {
+			continue
+		}
+		return candidateNodeKey
+	}
+	return ""
 }
 
 // requiresTargetNodeID 判断这一步是否必须拿到目标真实节点标识。
@@ -234,24 +257,28 @@ func requiresTargetNodeID(compiled model.CompiledActionStep) bool {
 
 // nodeFormData 读取实例当前表单数据并按节点权限构造本步要提交的完整表单数据。
 // 读取属只读阶段，允许有界重试；不携带表单数据的动作直接返回空计划，不做无意义的读取。
-func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled model.CompiledActionStep, session target.Session) (FormDataPlan, error) {
+// 读取期间如果会话失效，返回刷新后的会话，后续预览载荷和放行写请求必须继续使用它。
+func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled model.CompiledActionStep, session target.Session) (FormDataPlan, target.Session, error) {
 	if !ActionCarriesFormData(compiled.Action) {
-		return FormDataPlan{}, nil
+		return FormDataPlan{}, session, nil
 	}
 	var current map[string]any
 	hasInstance := false
 	if instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef); instanceRef != "" {
 		hasInstance = true
-		read, err := RunWithRetry(ctx, e.policy, "实例表单数据读取", func() (map[string]any, error) {
-			return e.target.ReadInstanceCurrentData(ctx, session, instanceRef)
-		}, nil)
+		read, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+			func(active target.Session) (map[string]any, error) {
+				return e.target.ReadInstanceCurrentData(ctx, active, instanceRef)
+			})
 		if err != nil {
-			return FormDataPlan{}, err
+			return FormDataPlan{}, active, err
 		}
+		session = active
 		current = read
 	}
 	// 实例存在但数据为空时必须保持实例分支（空基线），不得退回发起分支提交整份历史配置。
-	return BuildNodeFormData(runCtx, compiled, current, hasInstance)
+	plan, err := BuildNodeFormData(runCtx, compiled, current, hasInstance)
+	return plan, session, err
 }
 
 // formBaseName 返回表单数据基线的中文说明，供 step.log 一眼看出这份载荷是从哪来的。
@@ -349,7 +376,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		attempt := model.RunStepAttempt{
 			PathRunID: runCtx.PathRun.ID, AttemptNo: 1, Verdict: string(verdict.OutcomeSucceeded),
-			SideEffect: string(verdict.SideEffectNone), Reason: "导航步骤只读校验通过", Basis: "实例事实可读",
+			SideEffect: string(verdict.SideEffectNone), Reason: "执行成功：已确认流程节点", Basis: "实例事实可读",
 			LogPath: log.RelativePath(), LogLine: lineNo,
 		}
 		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
@@ -403,10 +430,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
 		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
-			"演员登录失败："+sessionErr.Error()); finishErr != nil {
+			"演员登录失败："+userFacingError(sessionErr, target.WriteResponse{})); finishErr != nil {
 			return outcome, 0, finishErr
 		}
-		log.Phase("prepare", step.Sequence, attemptNo, "演员会话获取失败："+sessionErr.Error())
+		log.Phase("prepare", step.Sequence, attemptNo, "演员登录失败："+userFacingError(sessionErr, target.WriteResponse{}))
 		return outcome, 0, nil
 	}
 	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("演员 %s（%s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
@@ -434,8 +461,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		if class == "" {
 			class = model.FailureClassToolBug
 		}
-		reason := "第 " + formatUint(uint64(step.Sequence)) + " 步在写请求发出前失败（零写入）：" + preview.writeErr.Error()
-		lineNo := log.Phase("settle", step.Sequence, attemptNo, "落账：确定失败且无副作用（"+reason+"）")
+		reason := "执行失败：" + firstResultMessage(preview.writeResponse, preview.writeErr, "写请求没有发出")
+		lineNo := log.Phase("settle", step.Sequence, attemptNo, reason)
 		record := model.RunStep{
 			PathRunID:    runCtx.PathRun.ID,
 			StepNo:       step.Sequence,
@@ -454,7 +481,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			Verdict:    string(verdict.OutcomeFailed),
 			SideEffect: string(verdict.SideEffectNone),
 			Reason:     reason,
-			Basis:      "写请求没有发出，不存在写结果，也无传输结果可归类",
+			Basis:      "写请求没有发出，不存在目标侧执行结果",
 			LogPath:    log.RelativePath(),
 			LogLine:    lineNo,
 			DurationMs: e.now().Sub(startedAt).Milliseconds(),
@@ -466,14 +493,23 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); err != nil {
 			return outcome, lineNo, err
 		}
-		log.Phase("settle", step.Sequence, attemptNo, "零写入失败已落账，路径运行置为失败")
+		log.Phase("settle", step.Sequence, attemptNo, "执行失败已记录，路径运行置为失败")
 		return outcome, lineNo, nil
+	}
+	if step.Action == model.ActionAddSign && preview.writeErr == nil {
+		proxyID, nodeID, parseErr := parseAddSignWriteData(preview.writeResponse.Data)
+		if parseErr != nil {
+			log.Phase("verify", step.Sequence, attemptNo, "加签响应未返回新的流程代理标识，后续任务将重新读取实时待办："+parseErr.Error())
+		} else {
+			outcome.FlowProxyID = proxyID
+			outcome.CurrentNodeProxyID = nodeID
+		}
 	}
 	// 写请求已发出：从这一行起 step.log 携带链路 ID，submit 之后的阶段行可与 network.log、curl.log 互查。
 	if preview.writeTraceID != "" {
 		log.SetTraceID(preview.writeTraceID)
 	}
-	log.Phase("submit", step.Sequence, attemptNo, submitSummary(preview.writeErr, preview.writeTraceID, preview.writeDurationMs))
+	log.Phase("submit", step.Sequence, attemptNo, submitSummary(preview.writeResponse, preview.writeErr, preview.writeTraceID, preview.writeDurationMs))
 
 	// 发起成功后尽早落库主实例引用（独占不可改写）：即使核验前崩溃，
 	// 恢复出的待对账路径运行仍有实例引用可供对账。
@@ -489,22 +525,38 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err := e.runState.MarkVerifying(ctx, runCtx.PathRun.ID); err != nil {
 		return outcome, 0, err
 	}
-	reportPhase(approved, "verify", "正在重读目标事实并做三值判定")
+	reportPhase(approved, "verify", "正在确认执行结果")
 	// 重读对照一律用目标真实节点标识：目标返回的当前节点与待办都是真实标识，
 	// 拿工具侧不透明键去比会永远"待办已消失"，把没生效的写误判成已前进。
 	stepTargetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
 	before := preview.Facts
 	before.StepNodeKey = stepTargetNodeID
-	after, _ := e.readFactsWithRetry(ctx, runCtx, session, step)
+	after, session, _ := e.readFactsWithRetry(ctx, runCtx, session, step)
 	after.StepNodeKey = stepTargetNodeID
 	reread := ClassifyReread(string(step.Action), stepTargetNodeID, before, after)
+	if step.Action == model.ActionTransfer {
+		reread = e.classifyTransferReread(ctx, runCtx, step, session, preview, after)
+	} else if step.Action == model.ActionRetrieve {
+		reread = e.classifyRetrieveReread(ctx, runCtx, step, session, preview, after)
+	} else if step.Action == model.ActionRollback {
+		reread = e.classifyRollbackReread(ctx, runCtx.PlanAccount, runCtx.PathRun.MainInstanceRef, session, preview.Facts, after)
+	} else if step.Action == model.ActionAddSign {
+		reread = e.classifyAddSignReread(ctx, runCtx, step, session, preview, after, outcome)
+	} else if step.Action == model.ActionForward {
+		reread, outcome.AuxiliaryInstanceRef = e.classifyForwardReread(ctx, runCtx.PlanAccount, session, preview)
+	}
 	observation := buildObservation(preview.Endpoint, preview.writeErr, preview.writeResponse, reread)
 	observation.Action = string(step.Action)
+	observation.ActionFactVerified = ActionFactVerified(step.Action, reread)
+	if step.Action == model.ActionForward && reread == verdict.RereadAdvanced {
+		observation.ActionFactVerified = true
+	}
 	verdictResult := verdict.Evaluate(observation)
-	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("三值判定：%s（%s）", verdictChinese(verdictResult.Outcome), verdictResult.Reason))
+	userMessage := userResultMessage(step.Action, verdictResult, preview.writeResponse, preview.writeErr, after)
+	log.Phase("verify", step.Sequence, attemptNo, "执行结果："+userMessage)
 
 	// 阶段 7：落账。事实表只 INSERT；随后按结论推进路径运行状态。
-	lineNo := log.Phase("settle", step.Sequence, attemptNo, "落账："+settleSummary(verdictResult))
+	lineNo := log.Phase("settle", step.Sequence, attemptNo, settleSummary(verdictResult, userMessage))
 	durationMs := preview.writeDurationMs
 	if durationMs == 0 {
 		durationMs = e.now().Sub(startedAt).Milliseconds()
@@ -529,7 +581,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		Transport:   string(target.TransportOf(preview.writeErr)),
 		Initial:     string(verdictResult.Initial),
 		Reread:      string(reread),
-		Reason:      verdictResult.Reason,
+		Reason:      userMessage,
 		Basis:       verdictResult.Basis,
 		TraceID:     preview.writeTraceID,
 		CurlTraceID: preview.writeTraceID,
@@ -571,24 +623,24 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		// 落账后释放推进权是尽力而为：释放失败只影响下一次领取的即时性，不影响已落账事实。
 		_ = e.runState.ReleaseExecution(ctx, runCtx.PathRun.ID, fencingToken)
-		log.Phase("settle", step.Sequence, attemptNo, "本步确定成功")
+		log.Phase("settle", step.Sequence, attemptNo, userMessage)
 	case verdict.OutcomeFailed:
 		outcome.Verdict = string(verdict.OutcomeFailed)
 		class := model.FailureClassTargetRejected
 		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
-			"路径在第 "+formatUint(uint64(step.Sequence))+" 步被目标拒绝："+verdictResult.Reason); err != nil {
+			"第 "+formatUint(uint64(step.Sequence))+" 步"+userMessage); err != nil {
 			return outcome, lineNo, err
 		}
-		log.Phase("settle", step.Sequence, attemptNo, "本步确定失败且无副作用，路径运行置为失败")
+		log.Phase("settle", step.Sequence, attemptNo, userMessage+"，路径运行置为失败")
 	default:
-		// 写结果不确定：路径运行进入待对账并停止；唯一合法恢复动作属于对账切片（F-018）。
+		// 无法确认执行结果：路径运行进入待确认并停止，避免重复执行真实业务操作。
 		outcome.Verdict = string(verdict.OutcomeUncertain)
 		class := model.FailureClassWriteUncertain
 		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusAwaitingReconciliation, runResultOf(model.RunResultAwaitingReconcile), &class,
-			"第 "+formatUint(uint64(step.Sequence))+" 步写结果不确定："+verdictResult.Reason); err != nil {
+			"第 "+formatUint(uint64(step.Sequence))+" 步"+userMessage); err != nil {
 			return outcome, lineNo, err
 		}
-		log.Phase("settle", step.Sequence, attemptNo, "写结果不确定，路径运行进入待对账并停止")
+		log.Phase("settle", step.Sequence, attemptNo, userMessage+"，路径运行已停止")
 	}
 	return outcome, lineNo, nil
 }
@@ -597,6 +649,13 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 func isSessionRejected(err error) bool {
 	var targetErr *target.Error
 	return errors.As(err, &targetErr) && targetErr.Kind == target.ErrorSessionExpired
+}
+
+// isRequestValidationError 判断错误是否发生在动作写请求发出之前。
+// 只有适配层明确标记的本地校验错误才允许把 writeSent 回退为 false。
+func isRequestValidationError(err error) bool {
+	var validationErr *target.RequestValidationError
+	return errors.As(err, &validationErr)
 }
 
 // resubmitOnSessionRejected 在写请求被会话失效拒绝后恢复：最多 3 次「换新会话 + 重发」。
@@ -657,36 +716,82 @@ type taskSnapshotReader interface {
 	FindTaskSnapshot(context.Context, target.Session, string, string, string) (target.TaskSnapshot, error)
 }
 
-// refreshActionTask 在任务级动作发出前重读当前任务身份，并在会话明确失效时只重取一次。
-// 任务号、批次和已办/待办状态都不能从编排配置或上一次写请求沿用。
-func (e *Executor) refreshActionTask(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, request *target.ActionWriteRequest, session target.Session) (target.Session, error) {
+// flowProxyDocumentReader 是加签更新实例私有流程代理所需的可选能力面；
+// 仅真实目标客户端提供，旧测试假件缺少时必须在写请求前失败。
+type flowProxyDocumentReader interface {
+	ReadFlowProxyDocument(context.Context, target.Session, string) (json.RawMessage, error)
+}
+
+// readTaskSnapshot 读取指定实例、节点和状态下的唯一任务身份；代理重建后允许按整实例唯一任务回退。
+// 该方法不刷新会话，便于写请求被会话拒绝后用新会话重新读取而不复用旧任务号。
+func (e *Executor) readTaskSnapshot(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID string, session target.Session, status string) (target.TaskSnapshot, error) {
+	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	nodeID = strings.TrimSpace(nodeID)
+	if reader, ok := e.target.(taskSnapshotReader); ok {
+		snapshot, err := reader.FindTaskSnapshot(ctx, session, instanceID, nodeID, status)
+		if err != nil || strings.TrimSpace(snapshot.JobTaskID) != "" || nodeID == "" || !runCtx.FlowProxyRemapped {
+			return snapshot, err
+		}
+		// updateFlowProxy 会重建实例私有代理，旧节点 ID 可能失效；只有整实例恰好一条任务时才允许回退。
+		return reader.FindTaskSnapshot(ctx, session, instanceID, "", status)
+	}
+	if status == "done" {
+		return target.TaskSnapshot{}, fmt.Errorf("目标客户端不支持已办任务快照读取")
+	}
+	jobTaskID, err := e.target.FindDueTaskID(ctx, session, instanceID, nodeID)
+	return target.TaskSnapshot{JobTaskID: jobTaskID, FlowNodeProxyID: nodeID}, err
+}
+
+// refreshTaskSnapshot 在任务读取被目标判定为会话失效时换取新会话并重新读取，返回实际使用的会话。
+func (e *Executor) refreshTaskSnapshot(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID string, session target.Session, status string) (target.Session, target.TaskSnapshot, error) {
+	snapshot, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+		func(active target.Session) (target.TaskSnapshot, error) {
+			return e.readTaskSnapshot(ctx, runCtx, step, nodeID, active, status)
+		})
+	return active, snapshot, err
+}
+
+// prepareAuditTask 在同意动作写入前读取实时任务号与流程代理，避免会话刷新后沿用预览阶段的旧身份。
+func (e *Executor) prepareAuditTask(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, request *target.AuditCurrentTaskRequest, session target.Session, allowRefresh bool) (target.Session, error) {
+	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	var snapshot target.TaskSnapshot
+	var err error
+	if allowRefresh {
+		session, snapshot, err = e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+	} else {
+		snapshot, err = e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+	}
+	if err != nil {
+		return session, err
+	}
+	if strings.TrimSpace(snapshot.JobTaskID) == "" {
+		return session, fmt.Errorf("目标上已无本演员在本节点的待办任务，无法执行%s", actionName(step.Action))
+	}
+	request.JobTaskID = strings.TrimSpace(snapshot.JobTaskID)
+	if flowProxyID := strings.TrimSpace(snapshot.FlowProxyID); flowProxyID != "" {
+		request.FlowProxyID = flowProxyID
+	}
+	return session, nil
+}
+
+// prepareActionWrite 按动作类型刷新任务身份，并在加签前读取完整代理文档；allowRefresh=false 用于会话恢复重发。
+func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, request *target.ActionWriteRequest, session target.Session, allowRefresh bool) (target.Session, error) {
 	status := "pending"
-	switch step.Action {
-	case model.ActionRetrieve:
+	if step.Action == model.ActionRetrieve {
 		status = "done"
-	case model.ActionReject, model.ActionTransfer, model.ActionAddSign, model.ActionRollback:
-		status = "pending"
+	}
+	switch step.Action {
+	case model.ActionStorageFormData, model.ActionReject, model.ActionTransfer, model.ActionAddSign, model.ActionRollback, model.ActionRetrieve:
 	default:
 		return session, nil
 	}
-	read := func(active target.Session) (target.TaskSnapshot, error) {
-		if reader, ok := e.target.(taskSnapshotReader); ok {
-			return reader.FindTaskSnapshot(ctx, active, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID, status)
-		}
-		if status == "done" {
-			return target.TaskSnapshot{}, fmt.Errorf("目标客户端不支持已办任务快照读取")
-		}
-		jobTaskID, err := e.target.FindDueTaskID(ctx, active, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
-		return target.TaskSnapshot{JobTaskID: jobTaskID}, err
-	}
-	snapshot, err := read(session)
-	if isSessionRejected(err) {
-		refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
-		if refreshErr != nil {
-			return session, refreshErr
-		}
-		session = refreshed
-		snapshot, err = read(refreshed)
+	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	var snapshot target.TaskSnapshot
+	var err error
+	if allowRefresh {
+		session, snapshot, err = e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, status)
+	} else {
+		snapshot, err = e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, status)
 	}
 	if err != nil {
 		return session, err
@@ -695,7 +800,13 @@ func (e *Executor) refreshActionTask(ctx context.Context, runCtx RunContext, ste
 		return session, fmt.Errorf("目标上已无本演员在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
 	}
 	request.JobTaskID = strings.TrimSpace(snapshot.JobTaskID)
-	if step.Action == model.ActionTransfer || step.Action == model.ActionAddSign {
+	if flowProxyID := strings.TrimSpace(snapshot.FlowProxyID); flowProxyID != "" {
+		request.FlowProxyID = flowProxyID
+	}
+	if nodeProxyID := strings.TrimSpace(snapshot.FlowNodeProxyID); nodeProxyID != "" {
+		request.NodeProxyID = nodeProxyID
+	}
+	if step.Action == model.ActionTransfer {
 		request.BatchNo = strings.TrimSpace(snapshot.BatchNo)
 		if request.BatchNo == "" {
 			return session, fmt.Errorf("目标任务快照缺少 batchNo，无法执行%s", actionName(step.Action))
@@ -704,7 +815,62 @@ func (e *Executor) refreshActionTask(ctx context.Context, runCtx RunContext, ste
 			return session, fmt.Errorf("%s未解析到可用目标人员，拒绝发送空 userIds", actionName(step.Action))
 		}
 	}
+	if step.Action != model.ActionAddSign {
+		return session, nil
+	}
+	if len(request.UserIDs) == 0 {
+		return session, fmt.Errorf("%s未解析到可用目标人员，拒绝发送空人员明细", actionName(step.Action))
+	}
+	reader, ok := e.target.(flowProxyDocumentReader)
+	if !ok {
+		return session, errors.New("目标客户端不支持读取完整流程代理树，无法执行加签")
+	}
+	type addSignRead struct {
+		snapshot target.TaskSnapshot
+		proxyID  string
+		tree     json.RawMessage
+	}
+	read, session, treeErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+		func(active target.Session) (addSignRead, error) {
+			// 会话刷新后任务代理也可能随目标上下文变化，必须和树一起重新读取，不能复用旧快照。
+			freshSnapshot, snapshotErr := e.readTaskSnapshot(ctx, runCtx, step, nodeID, active, status)
+			if snapshotErr != nil {
+				return addSignRead{}, snapshotErr
+			}
+			if strings.TrimSpace(freshSnapshot.JobTaskID) == "" {
+				return addSignRead{}, fmt.Errorf("目标上已无本演员在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
+			}
+			proxyID := firstNonEmpty(freshSnapshot.FlowProxyID, request.FlowProxyID)
+			if proxyID == "" {
+				return addSignRead{}, errors.New("目标任务快照缺少 flowProxyId，无法执行加签")
+			}
+			tree, readErr := reader.ReadFlowProxyDocument(ctx, active, proxyID)
+			if readErr != nil {
+				return addSignRead{}, readErr
+			}
+			return addSignRead{snapshot: freshSnapshot, proxyID: proxyID, tree: tree}, nil
+		})
+	if treeErr != nil {
+		return session, treeErr
+	}
+	snapshot = read.snapshot
+	request.JobTaskID = strings.TrimSpace(snapshot.JobTaskID)
+	request.FlowProxyID = read.proxyID
+	if nodeProxyID := strings.TrimSpace(snapshot.FlowNodeProxyID); nodeProxyID != "" {
+		request.NodeProxyID = nodeProxyID
+	}
+	request.NodeProxyID = strings.TrimSpace(request.NodeProxyID)
+	request.FlowProxyTree, treeErr = target.AppendAddSignUsers(read.tree, request.NodeProxyID, request.UserIDs)
+	if treeErr != nil {
+		return session, treeErr
+	}
 	return session, nil
+}
+
+// refreshActionTask 在任务级动作发出前重读当前任务身份，并在会话明确失效时只重取一次。
+// 任务号、批次和已办/待办状态都不能从编排配置或上一次写请求沿用。
+func (e *Executor) refreshActionTask(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, request *target.ActionWriteRequest, session target.Session) (target.Session, error) {
+	return e.prepareActionWrite(ctx, runCtx, step, request, session, true)
 }
 
 // taskStatusName 返回任务快照状态的中文名称，供零写入错误定位使用。
@@ -755,38 +921,32 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 	case *target.AuditCurrentTaskRequest:
 		started := e.now()
 		// 待办按目标真实节点标识精确定位：step.NodeKey 是工具侧不透明键，发给目标永远匹配不上。
-		// 待办读取是只读：会话失效时按目标会话事实重取（与 submit 同一恢复语义）。
-		jobTaskID, err := e.target.FindDueTaskID(ctx, session, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
-		if isSessionRejected(err) {
-			refreshed, refreshErr := e.refreshSessionForWrite(ctx, runCtx.PlanAccount)
-			if refreshErr == nil {
-				session = refreshed
-				jobTaskID, err = e.target.FindDueTaskID(ctx, refreshed, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
-			} else {
-				err = refreshErr
-			}
-		}
+		// 写入前和会话恢复重发都重新读取任务，不能复用预览阶段或旧 SID 下的 jobTaskId。
+		var err error
+		session, err = e.prepareAuditTask(ctx, runCtx, step, request, session, true)
 		if err != nil {
 			// 待办读取失败（目标抖动或响应形状不符）：写请求未发出，按演员/待办解析失败如实归类。
 			preview.writeErr = err
 			preview.writeErrClass = model.FailureClassActorUnresolved
 			return session
 		}
-		if jobTaskID == "" {
-			// 目标上已无本演员在本节点的活动待办：演员或待办已变化，绝不冒名发送。
-			// 用如实的原因，不复用「未验证动作」的话术——那是另一回事，且文案已过时（评审 P2）。
-			preview.writeErr = fmt.Errorf("目标上已无本演员在本节点的活动待办，无法执行%s；请核对目标平台的真实状态", preview.ActionName)
-			preview.writeErrClass = model.FailureClassActorUnresolved
-			return session
-		}
-		request.JobTaskID = jobTaskID
 		preview.writeSent = true
 		result, response, traceID, err := e.target.AuditCurrentTask(ctx, session, *request)
 		if isSessionRejected(err) {
+			var retrySession target.Session
+			var prepareErr error
 			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
 				func(refreshed target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
-					return e.target.AuditCurrentTask(ctx, refreshed, *request)
+					retrySession = refreshed
+					retrySession, prepareErr = e.prepareAuditTask(ctx, runCtx, step, request, refreshed, false)
+					if prepareErr != nil {
+						return nil, target.WriteResponse{}, "", prepareErr
+					}
+					return e.target.AuditCurrentTask(ctx, retrySession, *request)
 				}, log, reportPhase, approved)
+			if retrySession.SID != "" {
+				session = retrySession
+			}
 		}
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
 		preview.writeDurationMs = e.now().Sub(started).Milliseconds()
@@ -804,11 +964,27 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 			preview.writeSent = true
 			response, traceID, err := e.target.ExecuteActionWrite(ctx, session, *actionRequest)
 			if isSessionRejected(err) {
+				var retrySession target.Session
+				var prepareErr error
 				_, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
 					func(refreshed target.Session) (struct{}, target.WriteResponse, string, error) {
-						writeResponse, writeTraceID, writeErr := e.target.ExecuteActionWrite(ctx, refreshed, *actionRequest)
+						retrySession = refreshed
+						retrySession, prepareErr = e.prepareActionWrite(ctx, runCtx, step, actionRequest, refreshed, false)
+						if prepareErr != nil {
+							return struct{}{}, target.WriteResponse{}, "", prepareErr
+						}
+						writeResponse, writeTraceID, writeErr := e.target.ExecuteActionWrite(ctx, retrySession, *actionRequest)
 						return struct{}{}, writeResponse, writeTraceID, writeErr
 					}, log, reportPhase, approved)
+				if retrySession.SID != "" {
+					session = retrySession
+				}
+			}
+			if isRequestValidationError(err) {
+				// 适配层在 CallWrite 之前拒绝本地载荷：没有网络请求和目标副作用，
+				// 必须走零写入确定失败分支，不能按写结果不确定停在待对账。
+				preview.writeSent = false
+				preview.writeErrClass = model.FailureClassToolBug
 			}
 			preview.writeResponse, preview.writeTraceID, preview.writeErr = response, traceID, err
 			preview.writeDurationMs = e.now().Sub(started).Milliseconds()
@@ -818,6 +994,175 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		preview.writeErrClass = model.FailureClassToolBug
 	}
 	return session
+}
+
+// parseAddSignWriteData 提取 updateFlowProxy 成功响应中的新代理与当前节点标识。
+// 字段缺失只影响后续上下文刷新，不能把已发出的写请求重新发送或改判为失败。
+func parseAddSignWriteData(raw json.RawMessage) (string, string, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", "", errors.New("响应 data 为空")
+	}
+	var data struct {
+		FlowProxyID        string `json:"flowProxyId"`
+		CurrentNodeProxyID string `json:"currentNodeProxyId"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return "", "", fmt.Errorf("响应 data 不是有效对象：%w", err)
+	}
+	proxyID := strings.TrimSpace(data.FlowProxyID)
+	nodeID := strings.TrimSpace(data.CurrentNodeProxyID)
+	if proxyID == "" && nodeID == "" {
+		return "", "", errors.New("响应 data 缺少 flowProxyId/currentNodeProxyId")
+	}
+	return proxyID, nodeID, nil
+}
+
+// classifyAddSignReread 核对加签后的完整实例代理树是否真的持久化了本次人员明细。
+// updateFlowProxy 可能保持流程节点不变，不能只因响应带有代理标识就判成功；必须读回目标树，
+// 确认当前节点包含每个本次请求的人员，节点或人员缺失均按未变化处理。
+func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts, outcome StepOutcome) verdict.Reread {
+	if after.ReadError != "" {
+		return verdict.RereadUnreadable
+	}
+	request, ok := preview.request.(*target.ActionWriteRequest)
+	if !ok {
+		return verdict.RereadUnreadable
+	}
+	reader, ok := e.target.(flowProxyDocumentReader)
+	if !ok {
+		return verdict.RereadUnreadable
+	}
+	proxyID := firstNonEmpty(outcome.FlowProxyID, after.FlowProxyID, request.FlowProxyID, runCtx.FlowProxyID)
+	nodeID := firstNonEmpty(outcome.CurrentNodeProxyID, request.NodeProxyID)
+	if proxyID == "" || nodeID == "" {
+		return verdict.RereadUnreadable
+	}
+	document, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+		func(active target.Session) (json.RawMessage, error) {
+			return reader.ReadFlowProxyDocument(ctx, active, proxyID)
+		})
+	if err != nil {
+		return verdict.RereadUnreadable
+	}
+	updated, err := target.HasAddSignUsers(document, nodeID, request.UserIDs)
+	if err != nil {
+		return verdict.RereadUnreadable
+	}
+	if updated {
+		return verdict.RereadAdvanced
+	}
+	return verdict.RereadUnchanged
+}
+
+// classifyTransferReread 核对移交后当前演员的任务是否已经换成新任务。
+// 移交不推进节点，单看实例节点会把成功误判为“未变化”；任务 ID 变化或当前演员不再有待办才算前进。
+func (e *Executor) classifyTransferReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts) verdict.Reread {
+	if after.ReadError != "" {
+		return verdict.RereadUnreadable
+	}
+	request, ok := preview.request.(*target.ActionWriteRequest)
+	if !ok || strings.TrimSpace(request.JobTaskID) == "" {
+		return verdict.RereadUnreadable
+	}
+	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	_, snapshot, err := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+	if err != nil {
+		return verdict.RereadUnreadable
+	}
+	if snapshot.JobTaskID == "" || strings.TrimSpace(snapshot.JobTaskID) != strings.TrimSpace(request.JobTaskID) {
+		return verdict.RereadAdvanced
+	}
+	return verdict.RereadUnchanged
+}
+
+// classifyRetrieveReread 核对取回后目标是否在原审批节点创建了新的待办。
+// 取回会保留原节点位置，因此实例节点和待办节点都可能不变；目标以新的 jobTaskId 表示新批次，
+// 必须对照写入前的已办任务号，不能把同节点的新待办误判为“没有变化”。
+func (e *Executor) classifyRetrieveReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts) verdict.Reread {
+	if after.ReadError != "" {
+		return verdict.RereadUnreadable
+	}
+	request, ok := preview.request.(*target.ActionWriteRequest)
+	if !ok || strings.TrimSpace(request.JobTaskID) == "" {
+		return verdict.RereadUnreadable
+	}
+	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	_, snapshot, err := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+	if err != nil {
+		return verdict.RereadUnreadable
+	}
+	if snapshot.JobTaskID != "" && strings.TrimSpace(snapshot.JobTaskID) != strings.TrimSpace(request.JobTaskID) {
+		return verdict.RereadAdvanced
+	}
+	return verdict.RereadUnchanged
+}
+
+// classifyRollbackReread 确认目标已为本次原任务写入回退审核记录且实例仍在运行。
+// 并行分支回退后当前节点可能是策略节点而非直接前一审批节点，因此不能用节点相等判断成功；
+// 审核记录的任务关联和 auditStatus 在同一目标事务内写入，能精确证明本次原子动作已完成。
+func (e *Executor) classifyRollbackReread(ctx context.Context, account, instanceID string, session target.Session, before, after InstanceFacts) verdict.Reread {
+	if after.ReadError != "" || !after.Found {
+		return verdict.RereadUnreadable
+	}
+	if !strings.EqualFold(strings.TrimSpace(after.Status), "run") {
+		return verdict.RereadContradictory
+	}
+	linkID := strings.TrimSpace(before.CurrentTaskLinkID)
+	if linkID == "" || strings.TrimSpace(instanceID) == "" {
+		return verdict.RereadUnreadable
+	}
+	reader, ok := e.target.(auditRecordsReader)
+	if !ok {
+		return verdict.RereadUnreadable
+	}
+	records, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+		func(active target.Session) ([]target.AuditRecordSnapshot, error) {
+			return reader.ListAuditRecords(ctx, active, instanceID)
+		})
+	if err != nil {
+		return verdict.RereadUnreadable
+	}
+	for _, record := range records {
+		if strings.TrimSpace(record.FlowJobTaskID) == linkID && strings.EqualFold(strings.TrimSpace(record.AuditStatus), "roll_back_the_previous_level") {
+			return verdict.RereadAdvanced
+		}
+	}
+	return verdict.RereadUnchanged
+}
+
+// classifyForwardReread 从转发响应中提取辅助实例并按目标实例接口确认其已创建。
+// 转发不改变主实例，不能用主实例节点是否变化判断成功。
+func (e *Executor) classifyForwardReread(ctx context.Context, account string, session target.Session, preview *StepPreview) (verdict.Reread, string) {
+	response := preview.writeResponse.Data
+	if len(response) == 0 || string(response) == "null" {
+		return verdict.RereadUnreadable, ""
+	}
+	var raw struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response, &raw); err != nil || strings.TrimSpace(raw.ID) == "" {
+		return verdict.RereadUnreadable, ""
+	}
+	instanceID := strings.TrimSpace(raw.ID)
+	reader, ok := e.target.(interface {
+		FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error)
+	})
+	if !ok {
+		return verdict.RereadUnreadable, instanceID
+	}
+	result, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+		func(active target.Session) (bool, error) {
+			_, _, _, _, found, readErr := reader.FindSubmittedFlow(ctx, active, instanceID)
+			return found, readErr
+		})
+	if err != nil {
+		return verdict.RereadUnreadable, instanceID
+	}
+	if !result {
+		return verdict.RereadUnchanged, instanceID
+	}
+	return verdict.RereadAdvanced, instanceID
 }
 
 // containsNode 判断节点键集合是否包含目标节点。
@@ -840,19 +1185,64 @@ func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log 
 	})
 }
 
-// readFactsWithRetry 重读目标实时事实（只读，可重试）；重试预算耗尽后返回最后的读取错误。
-func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep) (InstanceFacts, error) {
-	facts, err := RunWithRetry(ctx, e.policy, "事实重读", func() (InstanceFacts, error) {
-		// 事实重读要与目标返回的真实节点标识对照，因此传真实标识而不是工具侧不透明键。
-		return e.readInstanceFacts(ctx, session, runCtx.PathRun.MainInstanceRef, runCtx.Nodes[step.NodeKey].TargetNodeID)
-	}, nil)
+// readOnlyWithSessionRetry 执行目标只读操作；会话失效时先刷新会话再立即重读，其他临时错误按配置退避。
+// 该函数只接受读取回调，明确隔离写请求，避免把已送达的业务动作放进重试循环。
+func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, sessions SessionProvider, account string, session target.Session, call func(target.Session) (T, error)) (T, target.Session, error) {
+	var zero T
+	if policy.Attempts < 1 {
+		policy.Attempts = 1
+	}
+	active := session
+	for attempt := 1; attempt <= policy.Attempts; attempt++ {
+		value, err := call(active)
+		if err == nil {
+			return value, active, nil
+		}
+		if attempt >= policy.Attempts || !retryableTargetError(err) {
+			return zero, active, err
+		}
+		if target.IsKind(err, target.ErrorSessionExpired) {
+			if sessions == nil {
+				return zero, active, err
+			}
+			refreshed, refreshErr := sessions.Refresh(ctx, account)
+			if refreshErr != nil {
+				return zero, active, refreshErr
+			}
+			if strings.TrimSpace(refreshed.SID) == "" {
+				return zero, active, errors.New("目标会话刷新后没有返回有效 SID")
+			}
+			active = refreshed
+			continue
+		}
+		delay := policy.backoff(attempt)
+		if policy.Sleep != nil {
+			policy.Sleep(delay)
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return zero, active, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return zero, active, errors.New("目标只读请求重试未执行")
+}
+
+// readFactsWithRetry 读取主实例事实，并按动作读取目标专用结果接口。
+func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep) (InstanceFacts, target.Session, error) {
+	facts, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+		func(active target.Session) (InstanceFacts, error) {
+			// 事实重读要与目标返回的真实节点标识对照，因此传真实标识而不是工具侧不透明键。
+			return e.readInstanceFacts(ctx, runCtx, active, step)
+		})
 	if err != nil {
 		// 预算耗尽仍读不到：把读取失败随事实带回（ReadError 非空 → 核验判不可读、对账走读取失败降级），
 		// 绝不把零值事实当「读到了且无痕迹」用——那会把读取失败误判成「已前进」或「明确未变」（评审 P1）。
-		facts.ReadError = err.Error()
-		return facts, err
+		facts.ReadError = target.UserFacingErrorMessage(target.WriteResponse{}, err)
+		return facts, active, err
 	}
-	return facts, nil
+	return facts, active, nil
 }
 
 // FinalTargetFacts 是收尾重读产出的最终目标事实摘要。
@@ -873,7 +1263,7 @@ func (e *Executor) FinalReview(ctx context.Context, runCtx RunContext) (FinalTar
 	if err != nil {
 		return FinalTargetFacts{}, err
 	}
-	facts, err := e.readFactsWithRetry(ctx, runCtx, session, model.CompiledActionStep{})
+	facts, _, err := e.readFactsWithRetry(ctx, runCtx, session, model.CompiledActionStep{})
 	if err != nil {
 		return FinalTargetFacts{}, err
 	}
@@ -962,7 +1352,7 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 		// 写之前的基准：执行时由控制现场回填，重启后由 run_step_attempts.before_facts 还原。
 		before, beforeKnown = runCtx.LastBeforeFacts, runCtx.LastBeforeFactsKnown
 	}
-	after, err := e.readFactsWithRetry(ctx, runCtx, session, model.CompiledActionStep{})
+	after, session, err := e.readFactsWithRetry(ctx, runCtx, session, model.CompiledActionStep{})
 	if err != nil {
 		return ReconcileFacts{BeforeStatus: before.Status, BeforeHadInstance: before.Found,
 			BeforeKnown: beforeKnown, NowReadError: after.ReadError}, nil
@@ -985,23 +1375,25 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 	}
 	if instanceRef != "" {
 		if reader, ok := e.target.(doneRecordReader); ok {
-			if found, readErr := RunWithRetry(ctx, e.policy, "已办记录读取", func() (bool, error) {
-				return reader.FindDoneTaskOnNode(ctx, session, instanceRef, nodeID)
-			}, nil); readErr == nil {
+			if found, _, readErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+				func(active target.Session) (bool, error) {
+					return reader.FindDoneTaskOnNode(ctx, active, instanceRef, nodeID)
+				}); readErr == nil {
 				facts.DoneRecordsRead, facts.DoneRecordFound = true, found
 			} else {
-				log.Phase("verify", stepNo, 1, "已办记录读取失败，对账按证据缺失降级："+readErr.Error())
+				log.Phase("verify", stepNo, 1, "已办记录读取失败，对账按证据缺失降级："+userFacingError(readErr, target.WriteResponse{}))
 			}
 		}
 		if reader, ok := e.target.(auditTraceReader); ok {
-			trace, readErr := RunWithRetry(ctx, e.policy, "审核记录读取", func() (auditTrace, error) {
-				found, total, err := reader.FindAuditTraceOnNode(ctx, session, instanceRef, nodeID)
-				return auditTrace{found: found, total: total}, err
-			}, nil)
+			trace, _, readErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+				func(active target.Session) (auditTrace, error) {
+					found, total, err := reader.FindAuditTraceOnNode(ctx, active, instanceRef, nodeID)
+					return auditTrace{found: found, total: total}, err
+				})
 			if readErr == nil {
 				facts.ActionTraceRead, facts.ActionTraceFound, facts.ActionTraceTotal = true, trace.found, trace.total
 			} else {
-				log.Phase("verify", stepNo, 1, "审核记录读取失败，对账按证据缺失降级："+readErr.Error())
+				log.Phase("verify", stepNo, 1, "审核记录读取失败，对账按证据缺失降级："+userFacingError(readErr, target.WriteResponse{}))
 			}
 		}
 	}

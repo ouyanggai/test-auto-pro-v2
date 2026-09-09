@@ -109,6 +109,8 @@ type fakeTarget struct {
 	instance     fakeTargetView
 	afterSubmit  *fakeTargetView
 	afterAudit   *fakeTargetView
+	flowProxyID  string
+	formProxyID  string
 	submitted    bool
 	audited      bool
 	dueTaskID    string
@@ -117,8 +119,13 @@ type fakeTarget struct {
 	submitDelay  time.Duration
 	auditResult  *target.AuditCurrentTaskResult
 	auditErr     error
-	submitCalls  int
-	auditCalls   int
+	auditMessage string
+	// actionResponse/actionErr 是统一原子动作出口的可控结果，供 F-019 非审批动作验证使用。
+	actionResponse target.WriteResponse
+	actionErr      error
+	actionCalls    int
+	submitCalls    int
+	auditCalls     int
 	// instanceFormData 是目标实例当前的完整表单数据；instanceDataReads 记录只读读取次数。
 	instanceFormData  map[string]any
 	instanceDataErr   error
@@ -163,7 +170,15 @@ func (f *fakeTarget) FindAuditTraceOnNode(_ context.Context, _ target.Session, i
 
 func (f *fakeTarget) FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error) {
 	view := f.currentView()
-	return "flow-proxy-1", view.CurrentNodes, view.Status, nil, view.Found, nil
+	flowProxyID := f.flowProxyID
+	if flowProxyID == "" {
+		flowProxyID = "flow-proxy-1"
+	}
+	formProxyIDs := []string(nil)
+	if f.formProxyID != "" {
+		formProxyIDs = []string{f.formProxyID}
+	}
+	return flowProxyID, view.CurrentNodes, view.Status, formProxyIDs, view.Found, nil
 }
 
 func (f *fakeTarget) FindDueFlow(context.Context, target.Session, string) (string, []string, []string, bool, error) {
@@ -210,7 +225,15 @@ func (f *fakeTarget) SubmitFlowInstance(context.Context, target.Session, target.
 	return f.submitResult, target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-submit", nil
 }
 
-func (f *fakeTarget) ExecuteActionWrite(_ context.Context, _ target.Session, request target.ActionWriteRequest) (target.WriteResponse, string, error) {
+// ExecuteActionWrite 模拟统一原子动作写出口，并保留目标响应 data 供动作专用结果确认。
+func (f *fakeTarget) ExecuteActionWrite(_ context.Context, _ target.Session, _ target.ActionWriteRequest) (target.WriteResponse, string, error) {
+	f.actionCalls++
+	if f.actionErr != nil {
+		return f.actionResponse, "trace-action", f.actionErr
+	}
+	if f.actionResponse.StatusCode != 0 || f.actionResponse.IsSuccessPresent || len(f.actionResponse.Data) > 0 {
+		return f.actionResponse, "trace-action", nil
+	}
 	return target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-action", nil
 }
 
@@ -220,9 +243,39 @@ func (f *fakeTarget) AuditCurrentTask(context.Context, target.Session, target.Au
 	if f.auditErr != nil {
 		return nil, target.WriteResponse{}, "trace-fail", f.auditErr
 	}
+	if f.auditMessage != "" {
+		response := target.WriteResponse{StatusCode: 200, IsSuccessPresent: true, Message: f.auditMessage}
+		return nil, response, fmt.Sprintf("trace-audit-%d", f.auditCalls), &target.BusinessRejection{Message: f.auditMessage}
+	}
 	// 每次写请求各自一个链路 ID：真实客户端也是每次调用新生成，重放必须能与首次尝试区分开。
 	return f.auditResult, target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true},
 		fmt.Sprintf("trace-audit-%d", f.auditCalls), nil
+}
+
+// TestF019StepReasonUsesTargetError 验证步骤记录直接保存目标接口原文，不再保存内部判定术语。
+func TestF019StepReasonUsesTargetError(t *testing.T) {
+	fakeTarget := &fakeTarget{
+		instance:     fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		dueTaskID:    "task-1",
+		auditMessage: "当前节点已被其他人处理",
+	}
+	facts := &fakeFacts{}
+	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, &fakeRunState{}, facts, fixedRunConfig(), nil)
+	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
+	runCtx.PathRun.MainInstanceRef = "instance-9"
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("审批步预览应通过：err=%v block=%s", err, previewBlock(preview))
+	}
+	if _, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0}); err != nil {
+		t.Fatalf("放行执行失败：%v", err)
+	}
+	if len(facts.attempts) != 1 {
+		t.Fatalf("应记录一次尝试，实际 %d 次", len(facts.attempts))
+	}
+	if got, want := facts.attempts[0].Reason, "执行失败：当前节点已被其他人处理"; got != want {
+		t.Fatalf("步骤结果应展示目标原文，实际 %q，期望 %q", got, want)
+	}
 }
 
 // newRunContext 构造一条「新发起」单步场景：发起后接同意。
@@ -250,8 +303,40 @@ func submitStep() model.CompiledActionStep {
 	return model.CompiledActionStep{Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionSubmit, Scope: model.ActionScopeInitiator, NodeKey: "node-start"}
 }
 
+// resubmitStep 构造一条发起人重新提交步骤。
+func resubmitStep() model.CompiledActionStep {
+	return model.CompiledActionStep{Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionResubmit, Scope: model.ActionScopeInitiator, NodeKey: "node-start"}
+}
+
 func approveStep() model.CompiledActionStep {
 	return model.CompiledActionStep{Sequence: 2, Source: model.ActionStepSourceUser, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: "node-audit"}
+}
+
+// TestF019ResubmitUsesLiveProxyFacts 验证重新提交门禁和载荷都使用目标当前实例返回的代理标识。
+func TestF019ResubmitUsesLiveProxyFacts(t *testing.T) {
+	fakeTarget := &fakeTarget{
+		instance:    fakeTargetView{Found: true, Status: "rejected"},
+		flowProxyID: "flow-live",
+		formProxyID: "form-live",
+	}
+	runCtx := newRunContext([]model.CompiledActionStep{resubmitStep()})
+	runCtx.PathRun.MainInstanceRef = "instance-9"
+	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("驳回实例的重新提交应通过门禁：err=%v preview=%+v", err, preview)
+	}
+	if preview.Endpoint != target.WriteEndpointReSubmit {
+		t.Fatalf("重新提交端点错误：%s", preview.Endpoint)
+	}
+	data, ok := preview.RequestPayload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("重新提交载荷缺少 data：%v", preview.RequestPayload)
+	}
+	if data["flowProxyId"] != "flow-live" || data["formProxyId"] != "form-live" {
+		t.Fatalf("必须使用目标实时代理标识：%v", data)
+	}
 }
 
 // TestF016RereadClassification 锁定事实重读四值的判定口径。
@@ -271,11 +356,31 @@ func TestF016RereadClassification(t *testing.T) {
 		{"审批后待办仍在", string(model.ActionApprove), "node-audit", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}}, verdict.RereadUnchanged},
 		{"审批后待办消失", string(model.ActionApprove), "node-audit", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: nil}, verdict.RereadAdvanced},
 		{"审批后实例被撤回", string(model.ActionApprove), "node-audit", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "withdraw", DueNodes: nil}, verdict.RereadContradictory},
+		{"暂存后流程事实稳定", string(model.ActionStorageFormData), "node-audit", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, verdict.RereadUnchanged},
+		{"暂存后检查点已更新", string(model.ActionStorageFormData), "node-audit", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-1"}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-2"}, verdict.RereadAdvanced},
+		{"催办记录已增加", string(model.ActionUrge), "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 1}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 2}, verdict.RereadAdvanced},
+		{"关注状态已开启", string(model.ActionFollow), "", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: false}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: true}, verdict.RereadAdvanced},
 	}
 	for _, item := range cases {
 		if got := step.ClassifyReread(item.action, item.nodeKey, item.before, item.after); got != item.want {
 			t.Fatalf("%s：重读结论应为 %s，实际 %s", item.name, item.want, got)
 		}
+	}
+}
+
+// TestF019StableActionSuccessDoesNotStopLoop 验证不推进流程节点的目标动作成功后不会被误判为不确定。
+func TestF019StableActionSuccessDoesNotStopLoop(t *testing.T) {
+	result := verdict.Evaluate(verdict.Observation{
+		Action:             string(model.ActionStorageFormData),
+		Endpoint:           "/web/flowInstanceApi/storageFormData",
+		Transport:          verdict.TransportResponded,
+		StatusCode:         200,
+		Response:           &verdict.Response{IsSuccess: true, IsSuccessPresent: true},
+		Reread:             verdict.RereadUnchanged,
+		ActionFactVerified: true,
+	})
+	if result.Outcome != verdict.OutcomeSucceeded {
+		t.Fatalf("暂存成功且流程事实稳定时应继续动作循环，实际：%+v", result)
 	}
 }
 

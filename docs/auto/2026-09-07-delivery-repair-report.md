@@ -2,7 +2,7 @@
 
 - 任务书：`docs/auto/2026-09-07-delivery-repair-task.md`。
 - **总体状态：未完成。** 11 个已确认缺口中本窗口关闭 3 个（缺口 1、7、8 的点名违规项），真值表（阶段 1）完成并有重大纠偏发现；其余缺口如实列为未完成，不写「已收口」。
-- 本窗口双线程并行：本线程负责配置保存、真值表、画布与测试脚本；并行线程负责会话与提交传参（`e4a1841`、`d58cfb8`、`93e08f2`，见验收报告附录「用户指路后的两项系统性修复」）。
+- 本窗口双线程并行：本线程负责配置保存、真值表、画布与测试脚本；并行线程负责会话与提交传参（`e4a1841`、`d58cfb8`、`93e08f2`，见验收报告附录「用户指路后的两项系统性修复」）。2026-09-07 加签返工已按目标 `updateFlowProxy` 整树协议接入，待真实写验证。
 
 ## 一、已完成项（每项：依据→修复→测试→验证）
 
@@ -22,7 +22,7 @@
 ### 阶段 1：目标动作真值表 —— 已完成（`a86fa1f`，`docs/auto/2026-09-07-target-action-matrix.md`）
 
 - 15 个动作全部从按钮处理函数追到 api/index.js → web 网关 → workflow-center-api → workflow-center 服务实现，每条事实带 `文件:行号`；前置钩子顺序（`beforeSubmitAndDraft`/`beforeSubmitAndDraftNoBiz` 及 temporary/reInit 参数差异）、响应形状、写后重读逐项写清。
-- **重大纠偏发现：加签端点错误**——目标平台加签走 `updateFlowProxy` + 整棵流程代理树 + 所有权复制（`FlowInstanceServiceImpl:1175-1221`），工具当前实现的 `approverAppend`+`userIds` 是移交语义。返工第 4 步必须按真值表重做，当前映射不得登记为可运行。
+- **重大纠偏发现：加签端点错误**——目标平台加签走 `updateFlowProxy` + 整棵流程代理树 + 所有权复制（`FlowInstanceServiceImpl:1175-1221`）。工具已完成返工：使用完整代理文档并在写前追加节点人员，真实写仍需人工验证。
 - 另两项直接影响执行链实施的事实：移交/回退/取回都更换批次并使原 jobTaskId 失效（写后必须重读 `/web/flowJobTaskLink/list` 重建任务映射）；暂存表单可用 `queryStorageFormData` 回读作为「检查点已更新」的确定判据。
 - 评审说明：CC/Claude 评审通道本会话延续 403 不可用（沿用验收报告记录），按任务书规则改为逐文件自查；真值表由三个只读探查线程交叉取证后汇总裁决。
 
@@ -47,7 +47,7 @@
 
 1. **缺口 2**（gate 无 save_draft/resubmit 可达分支；任务动作发送前实时补齐 jobTaskId）——未修复。resubmit 载荷分支已在适配层，执行链分派不可达（真值表第 3 节）。
 2. **缺口 3**（`person_strategies` 冻结进运行上下文、按策略解析执行人、人员不唯一明确阻塞）——未修复；并行线程已修提交侧 `nextAuditorList`（`e4a1841`），人员策略接入执行链仍缺。
-3. **缺口 4**（移交/加签空 `userIds`、`batchNo` 未承接、转发 receiverId 实时候选）——未修复（`write_actions.go:142` 仍发空数组）；且加签需按真值表整体改端点。
+3. **缺口 4**（移交/加签空 `userIds`、`batchNo` 未承接、转发 receiverId 实时候选）——移交的 `batchNo/userIds` 已接入实时任务快照；加签已改为不发送 `userIds`，改发目标要求的完整代理树；转发 receiverId 实时候选仍待后续真实验证。
 4. **缺口 5**（实例 ID / 流程代理 ID / 任务身份混用）——预填链已实现（前窗 `a5f325c`），提交载荷改用代理 ID 仍缺。
 5. **缺口 6**（formTemplate 删除 `beforeSubmitAndDraft`/`beforeSubmit`；生命周期白名单适配）——未修复。
 6. **缺口 9 其余项**（错误详情缺完整冻结配置与缺失证据说明）——复制反馈与内部 ID 两处点名项已修，其余未完成。

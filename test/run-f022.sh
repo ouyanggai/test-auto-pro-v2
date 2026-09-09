@@ -3,7 +3,7 @@
 # F-022 目标语义一致性套件汇总入口：
 # 静态证据 → 漂移检测 → 语义单元测试 → 只读目标对照 → 契约与白名单 →（显式）受控写。
 # 受控写套件默认不执行：只有显式设置 F022_CONTROLLED_WRITE=1 且本机配置提供
-# 测试账号与流程时才允许，任何写请求都受 11 个端点白名单约束。
+# 测试账号与流程时才允许，任何写请求都受 12 个端点白名单约束。
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ go build ./...
 go vet ./test/unit/backend/target_semantics ./test/integration
 test -z "$(gofmt -l internal cmd test)"
 
-printf '%s\n' '[F-022] 语义覆盖契约（19 条条目、34 个证据块、11 个写端点）'
+printf '%s\n' '[F-022] 语义覆盖契约（19 条条目、34 个证据块、12 个写端点）'
 ./test/contracts/f022/semantic_coverage.sh
 
 printf '%s\n' '[F-022] 证据漂移检测（参考仓库 HEAD 与符号存在性）'

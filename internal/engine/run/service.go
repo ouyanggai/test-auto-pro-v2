@@ -96,7 +96,7 @@ func (s *Service) MarkVerifying(ctx context.Context, pathRunID uint64) error {
 	_, err := s.store.AdvancePathRunStatus(ctx, pathRunID,
 		model.PathRunStatusRunning, model.PathRunStatusVerifying, model.RunEvent{
 			Kind:  "path_run_verifying",
-			Label: "写请求已发出，正在回目标重读事实",
+			Label: "接口已返回，正在确认执行结果",
 		}, s.now())
 	return err
 }

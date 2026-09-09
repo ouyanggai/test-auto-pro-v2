@@ -10,15 +10,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/run"
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/engine/verdict"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 )
+
+// controlErrorMessage 把目标错误链中的原始 message/code传给运行状态，避免控制台只显示内部错误分类。
+func controlErrorMessage(err error) string {
+	if message := target.UserFacingErrorMessage(target.WriteResponse{}, err); message != "" {
+		return message
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "未知错误"
+}
 
 // 控制层的稳定错误：调用方映射为中文响应，不透出内部细节。
 var (
@@ -108,11 +121,11 @@ type stepPhaseProgress struct {
 
 // pauseState 推导当前控制状态分类（供可用命令集合计算）。
 func (sess *activeStep) pauseState() PauseState {
-	if sess.deviationStalled {
-		return PauseStateDeviation
-	}
 	if sess.finished {
 		return PauseStateFinished
+	}
+	if sess.deviationStalled {
+		return PauseStateDeviation
 	}
 	// 结果待确认的会话在不确定落账时立即作废，正常运行到不了 PauseStateUncertain；
 	// 保留这个分支作为安全兜底：万一出现该状态，可用命令集合必须是空集，绝不给放行入口。
@@ -376,6 +389,8 @@ func (s *Service) SetBreakpoint(ctx context.Context, pathRunID uint64, bp Breakp
 		return nil, err
 	}
 	session.breakpoints.Add(bp)
+	updated := session.breakpoints.List()
+	stepNo := previewStepNo(session)
 	s.mu.Unlock()
 	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
 	if err != nil {
@@ -391,12 +406,12 @@ func (s *Service) SetBreakpoint(ctx context.Context, pathRunID uint64, bp Breakp
 	if err := s.store.AppendRunControl(ctx, setFact, s.now()); err != nil {
 		return nil, err
 	}
-	s.logFact(pathRunID, setFact, previewStepNo(session))
+	s.logFact(pathRunID, setFact, stepNo)
 	_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 		RunID: pathRun.RunID, PathRunID: &pathRunID,
 		Kind: "breakpoint_set", Label: fmt.Sprintf("断点已设置：%s", bp.Label()),
 	}, s.now())
-	return session.breakpoints.List(), nil
+	return updated, nil
 }
 
 // RemoveBreakpoint 运行中删除断点；路径偏离断点拒绝删除并给中文原因。
@@ -412,9 +427,11 @@ func (s *Service) RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp Bre
 	}
 	s.mu.Lock()
 	removed := session.breakpoints.Remove(bp)
+	updated := session.breakpoints.List()
+	stepNo := previewStepNo(session)
 	s.mu.Unlock()
 	if !removed {
-		return session.breakpoints.List(), nil
+		return updated, nil
 	}
 	pathRun, err := s.runs.GetPathRun(ctx, pathRunID)
 	if err != nil {
@@ -430,12 +447,12 @@ func (s *Service) RemoveBreakpoint(ctx context.Context, pathRunID uint64, bp Bre
 	if err := s.store.AppendRunControl(ctx, removeFact, s.now()); err != nil {
 		return nil, err
 	}
-	s.logFact(pathRunID, removeFact, previewStepNo(session))
+	s.logFact(pathRunID, removeFact, stepNo)
 	_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 		RunID: pathRun.RunID, PathRunID: &pathRunID,
 		Kind: "breakpoint_removed", Label: fmt.Sprintf("断点已删除：%s", bp.Label()),
 	}, s.now())
-	return session.breakpoints.List(), nil
+	return updated, nil
 }
 
 // ListBreakpoints 返回当前生效断点（由控制事实回放得出，与内存集合同源核对）。
@@ -632,6 +649,7 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 	if command == model.CommandStep {
 		result, err := s.approveOneStep(ctx, pathRunID, session, 1, false)
 		if err != nil {
+			s.sealPostWriteFailure(ctx, pathRunID, session, err)
 			return result, err
 		}
 		// 本步走完 verify 与 settle 后，放行期间请求的模式切换在这里生效（2026-09-06）。
@@ -774,9 +792,10 @@ func (s *Service) startSingleStepReserved(ctx context.Context, pathRunID uint64,
 		detached := context.WithoutCancel(ctx)
 		result, err := s.approveOneStep(detached, pathRunID, session, 1, false)
 		if err != nil {
+			s.sealPostWriteFailure(detached, pathRunID, session, err)
 			s.mu.Lock()
-			if current := s.active[pathRunID]; current == session {
-				session.stopReason = "执行失败：" + err.Error()
+			if current := s.active[pathRunID]; current == session && !session.finished {
+				session.stopReason = "执行失败：" + controlErrorMessage(err)
 			}
 			s.mu.Unlock()
 			return
@@ -874,11 +893,11 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		}
 		s.mu.Unlock()
 		s.recoveryLog.LogFact(pathRunID, fmt.Sprintf(
-			"write_uncertain=1 decision=stop run_id=%d step_no=%d reason=写结果无法确认，已停止推进；继续执行请从计划重新运行", runID, stepNo))
+			"write_uncertain=1 decision=stop run_id=%d step_no=%d reason=目标状态未确认，已停止推进；继续执行请从计划重新运行", runID, stepNo))
 		_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 			RunID: runID, PathRunID: &pathRunID,
 			Kind:  "run_uncertain_closed",
-			Label: "有一步的真实执行结果无法确认，为避免重复执行真实业务操作，本次运行已停止推进；已保存的记录保留，可从计划重新发起运行",
+			Label: "目标状态未确认，运行已停止；请查看该步骤的错误信息后从计划重新发起运行",
 		}, s.now())
 		s.clear(pathRunID)
 		if _, err := s.store.FinishRunIfAllPathsClosed(ctx, runID, s.now()); err != nil {
@@ -894,6 +913,30 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	}
 	if outcome.MainInstanceRef != "" {
 		session.runCtx.PathRun.MainInstanceRef = outcome.MainInstanceRef
+	}
+	if outcome.FlowProxyID != "" {
+		if strings.TrimSpace(outcome.FlowProxyID) != strings.TrimSpace(session.runCtx.FlowProxyID) {
+			session.runCtx.FlowProxyRemapped = true
+		}
+		session.runCtx.FlowProxyID = outcome.FlowProxyID
+	}
+	if outcome.CurrentNodeProxyID != "" {
+		if nodeKey := session.preview.NodeKey; nodeKey != "" {
+			info := session.runCtx.Nodes[nodeKey]
+			if strings.TrimSpace(info.TargetNodeID) != strings.TrimSpace(outcome.CurrentNodeProxyID) {
+				session.runCtx.FlowProxyRemapped = true
+			}
+			info.TargetNodeID = outcome.CurrentNodeProxyID
+			session.runCtx.Nodes[nodeKey] = info
+		}
+	}
+	if auxiliaryRef := strings.TrimSpace(outcome.AuxiliaryInstanceRef); auxiliaryRef != "" {
+		// 转发不改变主实例，辅助实例引用必须另落一条追加事件；Detail 仅供记录与审计使用，
+		// 事件流对页面只公开中文结果，避免把目标内部标识混入用户界面。
+		s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{
+			RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
+			Kind: "forward_auxiliary_created", Label: "转发已创建辅助流程", Detail: auxiliaryRef,
+		}, session.preview.StepNo)
 	}
 	s.mu.Lock()
 	session.executedStepNos[session.preview.StepNo] = true
@@ -1054,6 +1097,31 @@ func (s *Service) clear(pathRunID uint64) {
 	s.mu.Lock()
 	delete(s.active, pathRunID)
 	s.mu.Unlock()
+}
+
+// sealPostWriteFailure 封存写请求已送达但本地后续处理失败的现场。
+// 目标副作用已经存在时不清理内存会话、不提供再次放行；数据库收尾失败也只追加提示，优先保证进程内不会重复写。
+func (s *Service) sealPostWriteFailure(ctx context.Context, pathRunID uint64, session *activeStep, cause error) {
+	s.mu.Lock()
+	if session == nil || s.active[pathRunID] != session || session.preview == nil || !session.preview.WriteSent() || session.finished {
+		s.mu.Unlock()
+		return
+	}
+	stepNo := session.preview.StepNo
+	reason := fmt.Sprintf("执行失败：目标操作已经发出，但执行结果记录失败（第 %d 步）：%s；为避免重复操作，当前运行已停止", stepNo, controlErrorMessage(cause))
+	session.finished = true
+	session.stopReason = reason
+	session.version++
+	s.mu.Unlock()
+
+	class := model.FailureClassWriteUncertain
+	if _, finishErr := s.runs.Finish(ctx, pathRunID, model.PathRunStatusAwaitingReconciliation, runResultOf(model.RunResultAwaitingReconcile), &class, reason); finishErr != nil {
+		s.mu.Lock()
+		if s.active[pathRunID] == session {
+			session.stopReason += "；运行状态保存失败，已禁止再次放行"
+		}
+		s.mu.Unlock()
+	}
 }
 
 // runResultOf 返回路径结果的指针形态。

@@ -17,6 +17,8 @@ type reviewTarget struct {
 	dueTaskErr  error
 	submitCalls int
 	auditCalls  int
+	actionCalls int
+	actionErr   error
 }
 
 // FindSubmittedFlow 返回已发起且在运行中的实例事实。
@@ -51,9 +53,10 @@ func (r *reviewTarget) AuditCurrentTask(context.Context, target.Session, target.
 	return &target.AuditCurrentTaskResult{InstanceID: "i-1"}, target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "t-audit", nil
 }
 
-// FindDueFlowActions 满足 TargetClient 其余方法的空实现（本复核不涉及）。
+// ExecuteActionWrite 记录统一动作写出口调用，按用例返回目标假件结果。
 func (r *reviewTarget) ExecuteActionWrite(context.Context, target.Session, target.ActionWriteRequest) (target.WriteResponse, string, error) {
-	return target.WriteResponse{}, "", nil
+	r.actionCalls++
+	return target.WriteResponse{}, "", r.actionErr
 }
 
 // runReviewApprove 跑一次同意步骤的放行，返回状态机假件、事实假件与目标假件。
@@ -113,5 +116,43 @@ func TestF016MissingDueTaskSettlesAsZeroWriteFailure(t *testing.T) {
 		if class != model.FailureClassActorUnresolved {
 			t.Fatalf("零写入失败分类应为演员/待办解析失败，实际 %v", state.finishClasses)
 		}
+	}
+}
+
+// TestF019LocalActionValidationSettlesAsZeroWriteFailure 验证统一动作出口的本地载荷校验失败
+// 不会被执行器误记为已发出写请求，也不会把路径运行推进到待对账。
+func TestF019LocalActionValidationSettlesAsZeroWriteFailure(t *testing.T) {
+	fake := &reviewTarget{actionErr: &target.RequestValidationError{Message: "流程实例 id不能为空，拒绝发送"}}
+	state := &fakeRunState{}
+	facts := &fakeFacts{}
+	executor := step.NewExecutor(fake, &fakeSessions{}, state, facts, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
+	runCtx := newRunContext([]model.CompiledActionStep{{
+		Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionFollow,
+		Scope: model.ActionScopeInstance, NodeKey: "node-audit",
+	}})
+	runCtx.PathRun.MainInstanceRef = "instance-1"
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || !preview.GateAllowed {
+		t.Fatalf("关注动作预览应通过：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	if _, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0}); err != nil {
+		t.Fatalf("执行本地校验失败动作不应返回控制错误：%v", err)
+	}
+	if fake.actionCalls != 1 {
+		t.Fatalf("统一动作出口应只被调用一次，实际 %d 次", fake.actionCalls)
+	}
+	if len(state.finishedTo) == 0 || state.finishedTo[len(state.finishedTo)-1] != model.PathRunStatusFailed {
+		t.Fatalf("本地校验失败必须确定置败，实际终态 %v", state.finishedTo)
+	}
+	for _, class := range state.finishClasses {
+		if class != model.FailureClassToolBug {
+			t.Fatalf("本地校验失败应归为工具缺陷，实际 %v", state.finishClasses)
+		}
+	}
+	if len(facts.attempts) != 1 || facts.attempts[0].SideEffect != "none" {
+		t.Fatalf("本地校验失败应记录零副作用尝试，实际 %+v", facts.attempts)
+	}
+	if facts.attempts[0].Verdict != "confirmed_failure" {
+		t.Fatalf("本地校验失败不得记录为待确认，实际 %+v", facts.attempts[0])
 	}
 }

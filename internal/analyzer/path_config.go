@@ -169,7 +169,9 @@ func (a *PathConfigAnalyzer) Analyze(
 		fields:        fields, instanceValues: instanceValues,
 		storedFields: storedFields, storedActions: storedActions, storedPresent: hasStored,
 		groupByKey: make(map[string]int), visited: make(map[string]bool),
-		personTargets: make(map[string]*PathConfigPersonTarget),
+		forwardCandidates: append([]target.FlowAuditCandidate(nil), tree.ForwardCandidates...),
+		forwardIssues:     append([]target.FlowAuditResolutionIssue(nil), tree.ForwardIssues...),
+		personTargets:     make(map[string]*PathConfigPersonTarget),
 		validation: PathConfigValidation{
 			FieldTokens:  make(map[string]PathConfigFieldTarget),
 			ActionTokens: make(map[string]PathConfigActionTarget),
@@ -213,26 +215,28 @@ func (a *PathConfigAnalyzer) Analyze(
 }
 
 type pathConfigProjection struct {
-	graphNodes     map[string]model.FlowGraphNode
-	targetNodes    map[string]*target.FlowNodeTemplate
-	outgoing       map[string][]model.FlowGraphEdge
-	incoming       map[string][]model.FlowGraphEdge
-	reachableEdge  map[string]bool
-	choices        map[string]string
-	fields         []target.FormFieldDetail
-	instanceValues map[string]any
-	storedFields   map[string]map[string]string
-	storedActions  map[string]string
-	storedPresent  bool
-	requirements   *requirementProjection
-	groups         []model.PathConfigGroup
-	groupByKey     map[string]int
-	visited        map[string]bool
-	parallelIndex  int
-	validation     PathConfigValidation
-	personTargets  map[string]*PathConfigPersonTarget
-	warnings       []string
-	affected       bool
+	graphNodes        map[string]model.FlowGraphNode
+	targetNodes       map[string]*target.FlowNodeTemplate
+	outgoing          map[string][]model.FlowGraphEdge
+	incoming          map[string][]model.FlowGraphEdge
+	reachableEdge     map[string]bool
+	choices           map[string]string
+	fields            []target.FormFieldDetail
+	instanceValues    map[string]any
+	storedFields      map[string]map[string]string
+	storedActions     map[string]string
+	storedPresent     bool
+	requirements      *requirementProjection
+	groups            []model.PathConfigGroup
+	groupByKey        map[string]int
+	visited           map[string]bool
+	parallelIndex     int
+	forwardCandidates []target.FlowAuditCandidate
+	forwardIssues     []target.FlowAuditResolutionIssue
+	validation        PathConfigValidation
+	personTargets     map[string]*PathConfigPersonTarget
+	warnings          []string
+	affected          bool
 }
 
 // newConfigRequirementProjection 复用 F-006 的同一条件、人员和约束翻译规则，避免配置页另建一套业务推导。

@@ -76,11 +76,17 @@ func isAuthCode(code string) bool {
 func combine(observation Observation, initial Initial) Verdict {
 	switch initial {
 	case InitialSuccessClaim:
-		if observation.Reread == RereadAdvanced {
+		if observation.Reread == RereadAdvanced || (isNonAdvancingAction(observation.Action) && observation.Reread == RereadUnchanged && observation.ActionFactVerified) {
+			reason := "目标接口已返回成功，执行后状态已确认"
+			basis := "第 1.6 节矩阵：成功声明 + 已前进 = 确定成功"
+			if observation.Reread == RereadUnchanged {
+				reason = "目标接口已返回成功，动作结果已确认"
+				basis = "动作专用接口已确认检查点、催办记录或关注状态"
+			}
 			return Verdict{
 				Outcome: OutcomeSucceeded, SideEffect: SideEffectNone, Initial: initial,
-				Reason: "目标声明成功，且重读确认流程已按期望前进",
-				Basis:  "第 1.6 节矩阵：成功声明 + 已前进 = 确定成功",
+				Reason: reason,
+				Basis:  basis,
 			}
 		}
 		return uncertain(initial, successClaimReason(observation.Reread),
@@ -89,7 +95,7 @@ func combine(observation Observation, initial Initial) Verdict {
 		if observation.Reread == RereadUnchanged {
 			return Verdict{
 				Outcome: OutcomeFailed, SideEffect: SideEffectNone, Initial: initial,
-				Reason: "目标以会话失效拒绝本次请求，且重读确认流程侧事实明确没有变化",
+				Reason: "目标接口因会话失效拒绝请求，执行前后状态没有变化",
 				Basis:  "第 1.6 节矩阵：鉴权拒绝 + 明确未变 = 确定失败、无副作用",
 			}
 		}
@@ -99,7 +105,7 @@ func combine(observation Observation, initial Initial) Verdict {
 		if observation.Reread == RereadUnchanged {
 			return Verdict{
 				Outcome: OutcomeFailed, SideEffect: SideEffectNone, Initial: initial,
-				Reason: "命中前置拒绝清单，拒绝发生在任何写之前，且重读确认流程侧事实明确没有变化",
+				Reason: "目标接口在写入前拒绝请求，执行前后状态没有变化",
 				Basis:  "第 1.6 节矩阵：前置拒绝 + 明确未变 = 确定失败、无副作用；清单见第 1.7 节",
 			}
 		}
@@ -120,15 +126,26 @@ func combine(observation Observation, initial Initial) Verdict {
 	}
 }
 
+// isNonAdvancingAction 判断只改变检查点或辅助记录、按业务约定不推进实例节点的动作。
+// 这些动作仍必须先由动作专用接口确认；这里只决定确认后如何组合结果。
+func isNonAdvancingAction(action string) bool {
+	switch action {
+	case "storage_form_data", "urge", "follow", "unfollow":
+		return true
+	default:
+		return false
+	}
+}
+
 // successClaimReason 给出成功声明配上非「已前进」重读时的中文原因。
 func successClaimReason(reread Reread) string {
 	switch reread {
 	case RereadUnchanged:
-		return "目标声明成功，但重读显示流程侧事实明确没有变化，响应与事实冲突"
+		return "目标接口已返回成功，但执行后状态没有变化"
 	case RereadUnreadable:
-		return "目标声明成功，但重读失败，拿不到事实无法确认是否真的生效"
+		return "目标接口已返回成功，但无法读取执行后状态"
 	default:
-		return "目标声明成功，但重读结果自相矛盾，无法确认是否真的生效"
+		return "目标接口已返回成功，但执行后状态不一致"
 	}
 }
 
@@ -136,10 +153,10 @@ func successClaimReason(reread Reread) string {
 func rejectionReason(kind string, reread Reread) string {
 	switch reread {
 	case RereadAdvanced:
-		return "目标以" + kind + "拒绝本次请求，但重读显示流程已前进，两者不是同一件事，可能是上一次不确定写已生效"
+		return "目标接口以" + kind + "拒绝请求，但执行后状态已经变化，无法确认本次请求是否生效"
 	case RereadUnreadable:
-		return "目标以" + kind + "拒绝本次请求，但重读失败，拿不到事实无法确认目标侧状态"
+		return "目标接口以" + kind + "拒绝请求，但无法读取执行后状态"
 	default:
-		return "目标以" + kind + "拒绝本次请求，但重读结果自相矛盾，无法确认目标侧状态"
+		return "目标接口以" + kind + "拒绝请求，但执行后状态不一致"
 	}
 }

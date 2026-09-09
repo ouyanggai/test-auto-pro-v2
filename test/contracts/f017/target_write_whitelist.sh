@@ -5,7 +5,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${project_root}"
 grep -qF 'WriteEndpointSubmit = "/web/flowInstanceApi/submit"' internal/adapter/target/write.go
 grep -qF 'WriteEndpointAudit = "/flowInstanceApi/audit"' internal/adapter/target/write.go
-# F-019 起白名单按动作目录扩张为 11 个端点（docs/features/F-019-*.md）；
+# F-019 起白名单按动作目录扩张为 12 个端点（docs/features/F-019-*.md）；
 # CallWrite 的调用点只允许在 write.go（发起/同意）与 write_actions.go（统一动作出口）。
 call_sites=$(grep -rn 'c.CallWrite(ctx' internal/adapter/target/ | grep -v '_test')
 [ -n "${call_sites}" ]

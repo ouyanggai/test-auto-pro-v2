@@ -1,7 +1,7 @@
 # F-019 全动作与恢复步骤执行
 
 - 状态：ready_for_manual（用户 2026-09-05 裁决：F-019 完成后暂停，先统一 review 再继续）
-- 实施基准（2026-09-05）：9 个新增写端点的载荷形状已按参考源码逐一勘定（控制器、DTO 字段、前端实际 JSON、错误文案），记入本切片实施记录；加签的 `auditStatus` 枚举值源码未见明确定义，按 `源码推断、待实测` 处理并如实标注。
+- 实施基准（2026-09-05）：9 个新增写端点的载荷形状已按参考源码逐一勘定（控制器、DTO 字段、前端实际 JSON、错误文案），2026-09-07 返工补入加签专用 `updateFlowProxy` 端点；加签不再发送 `auditStatus`，人员写入完整流程代理树。
 - 产品依据：`docs/PRODUCT.md` 第 27 至 29、114 至 118 条（真实动作目录、恢复步骤、导航步骤、辅助流程和动作顺序）；产品原则第 1、5、6 条
 - 架构依据：`docs/ARCHITECTURE.md` 的系统边界（目标写请求只能从 `internal/adapter/target` 发出）、`internal/engine` 分包边界和 F-012 场景编译约束
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 4.1、4.3、4.4、7.1 至 7.4、8、9、10 节，以及 F-018 对账与安全重试计划
@@ -37,16 +37,16 @@
 
 ## 写端点白名单
 
-本切片允许调用的目标写端点仅为动作目录已声明的 11 个端点：
+本切片允许调用的目标写端点仅为动作目录已声明的 12 个端点：
 
-`/web/flowInstanceApi/submit`、`/web/flowInstanceApi/reSubmit`、`/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/approverAppend`、`/flowInstanceApi/audit`、`/web/flowInstanceApi/rollBackThePreviousLevel`、`/web/flowInstanceApi/retrieveProcess`、`/web/flowInstanceApi/revocation`、`/web/urgeHandleRecord/sendUrgeMessage`、`/web/flowInstanceApi/transpond`、`/web/flowInstanceApi/flowTracking`。
+`/web/flowInstanceApi/submit`、`/web/flowInstanceApi/reSubmit`、`/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/approverAppend`、`/web/flowInstanceApi/updateFlowProxy`、`/flowInstanceApi/audit`、`/web/flowInstanceApi/rollBackThePreviousLevel`、`/web/flowInstanceApi/retrieveProcess`、`/web/flowInstanceApi/revocation`、`/web/urgeHandleRecord/sendUrgeMessage`、`/web/flowInstanceApi/transpond`、`/web/flowInstanceApi/flowTracking`。
 
 契约只允许实际请求集合成为上述集合的子集；读请求仍可调用 F-016 已允许的只读端点。每次尝试最多一次写请求，任何第二次写都必须是 F-018 允许的全新重放尝试。
 
 ## 设计要点
 
 - **动作与端点一一受目录约束。** `TargetOperation`、参数白名单、预期效果和重读要求来自 `actioncatalog`；适配层不接受浏览器直接传入的目标 ID、人员 ID 或任意 URL。
-- **同一端点不同动作不混淆。** `audit` 根据 `pass`/`no_pass` 处理同意和不同意；`approverAppend` 根据移交或加签的目标协议区分；`flowTracking` 根据关注布尔值区分关注和取消关注。
+- **同一端点不同动作不混淆。** `audit` 根据 `pass`/`no_pass` 处理同意和不同意；`approverAppend` 只处理移交，`updateFlowProxy` 使用完整代理树处理加签；`flowTracking` 根据关注布尔值区分关注和取消关注。
 - **恢复步骤是事实驱动。** 回退、驳回、撤回、保存草稿后的重提，以及同意后同节点继续动作的取回，必须使用编译器输出的恢复步骤，不能靠 Worker 临时插入未记录步骤。
 - **辅助流程单独记录。** 转发只记录辅助实例和接收人，不把辅助实例伪装为主实例的下一节点；辅助流程失败不改变主实例游标，但会在路径结果中单独展示。
 - **人员连续性不可猜。** 运行时解析不到唯一人员、人员权限变化或演员不再拥有待办时停止并归类为目标拒绝或工具缺陷，不能切换到当前登录账号。
@@ -73,8 +73,8 @@
    第 16 条表单数据整份覆盖、第 17 条条件求值数据来源、第 18 条对账两个只读维度、
    第 19 条已发列表的业务关联过滤会排除本工具发起的实例），证据块共 34 个，
    漂移检测脚本 `test/contracts/f014/semantics_evidence_drift.sh` 已在用：新增语义一律扩展它，不另造。
-6. **动作与写端点的准确数字。** `internal/model` 有 16 个 `ActionKey`；写端点共 11 个
-   （`write.go` 2 个 + `write_actions.go` 9 个）。任何计划里的动作数、端点数以此为准。
+6. **动作与写端点的准确数字。** `internal/model` 有 16 个 `ActionKey`；写端点共 12 个
+   （`write.go` 2 个 + `write_actions.go` 10 个）。任何计划里的动作数、端点数以此为准。
 7. **控制端点当前按运行 ID 寻址。** `RunOrchestrationService.resolvePathRunID` 经
    `GetPathRunByRun`（SQL 为 `ORDER BY id LIMIT 1`）解析，全部 8 个控制端点共用。
    这是一次运行只跑一条路径的前提；F-020 引入多路径时必须先改成按路径运行寻址。
@@ -87,12 +87,12 @@
   会落到 `default` 返回 `UNSUPPORTED_ACTION`（失败安全，不会误写，但动作全集并未齐备）。
   已补上分支：与同意共用 `/flowInstanceApi/audit`，差别只在 `auditRecord.auditStatus=no_pass`，
   表单数据同样整份提交（审批必调 `saveFormData` 且是整份覆盖，语义清单第 16 条）。
-  写端点数量未变（仍是 11 个），白名单契约通过。新增用例 `TestF019RejectHasWritePayload`。
+  写端点数量已包含加签专用 `updateFlowProxy`（共 12 个），白名单契约通过。新增用例 `TestF019RejectHasWritePayload`。
 
 ### 本切片现状（核查线程如实记录）
 
-后端已落库（提交 `14cf365`）：`internal/adapter/target/write_actions.go` 提供 9 个写端点
-（与 `write.go` 的发起、审批合计 11 个），`test/run-f019.sh` 与 `test/contracts/f019/action_whitelist.sh` 已存在。
+后端已落库（提交 `14cf365`）：`internal/adapter/target/write_actions.go` 提供 10 个写端点
+（与 `write.go` 的发起、审批合计 12 个），`test/run-f019.sh` 与 `test/contracts/f019/action_whitelist.sh` 已存在。
 因此本切片不是从零开始，按「补齐与返工」推进。
 
 必须补齐的具体缺口（核查已确认）：
@@ -112,8 +112,8 @@
 ## 实施记录（2026-09-05，停在 ready_for_manual）
 
 - T01 完成：`internal/adapter/target/write_actions.go` 统一动作写出口 `ExecuteActionWrite` 与载荷构造器 `BuildActionBody`，
-  覆盖重新提交/暂存/加签与移交（approverAppend，auditStatus 区分）/回退/取回/撤回/催办（不走 data 容器的独立协议）/转发/关注与取消关注（顶层 tracking 布尔）九类，
-  端点常量共 11 个，载荷形状与参考源码及前端实际发送逐字同源。
+  覆盖重新提交/暂存/加签（updateFlowProxy 整树协议）与移交（approverAppend，auditStatus 区分）/回退/取回/撤回/催办（不走 data 容器的独立协议）/转发/关注与取消关注（顶层 tracking 布尔）九类，
+  端点常量共 12 个，载荷形状与参考源码及前端实际发送逐字同源。
 - T02 部分完成：演员-待办新鲜复验覆盖审批/回退/取回（待办任务 ID 发送前现场读取）；已办记录与动作痕迹的只读读取尚未接入
   （目标 flowJobTaskLink 接口需要待办人会话视角，见 F-018 收集器的如实标注），因此「取回」类恢复步骤的真实命中暂不可构造。
 - T03 部分完成：导航步骤（system_navigation）已按只读校验语义接入七阶段（不发写请求、事实可读即通过、独立 step/attempt/日志）；
@@ -170,7 +170,7 @@
 - [ ] 表单、附件、富文本和数字数据保持目标原始结构；写请求不带 `batchCode` 和未授权临时标识。
 - [ ] 运行画布能显示用户动作、恢复、导航、演员、门禁、结果和辅助流程，不新建运行详情页。
 - [ ] `test/run-f019.sh` 实际通过，单测、集成、契约、前端构建无跳过；真实写证据逐动作登记。
-- [ ] 实际写请求集合是 11 个白名单端点的子集；目标语义条目、参考 HEAD 和部署版本已同步。
+- [ ] 实际写请求集合是 12 个白名单端点的子集；目标语义条目、参考 HEAD 和部署版本已同步。
 - [ ] 已检查同范围相似问题：重复端点参数、旧动作别名、系统步骤重复插入、转发混入主实例和写路径会话重放。
 - [ ] 文档状态更新为 `ready_for_manual`，并列出用户手工验收步骤。
 
@@ -206,10 +206,23 @@
   ① `save_draft`/`resubmit` 在 gate 分派层无分支（适配层 resubmit 分支因此不可达），含这两类动作的场景会在恢复步骤停「工具缺陷」；
   ② 5 个任务级动作（不同意/移交/加签/回退/取回）的 `jobTaskId` 未接现场读取，带空必填字段发出；
   ③ 门禁上下文只投影 6 个字段，撤回/重提/加签/移交/回退/取回/取消关注在门禁复验必然被拒且原因失真；
-  ④ 演员策略未接入执行链（移交/加签/转发无法填人，`approverAppendVo.userIds` 恒空）；
-  ⑤ 重读判读对「预期效果为不变」的动作（暂存/加签/移交/催办/关注）成功后仍判不确定（保守安全但不达完成标准）；
+  ④ 演员策略已接入移交与加签的实时受限人员解析，转发仍未接入 receiverId 候选；
+  ⑤ 暂存、催办和关注类动作已允许“成功声明 + 主事实稳定”落确定成功，移交与加签分别核对新任务和新代理事实，转发等动作仍待真实验证；
   ⑥ 最终导航步骤复用 approve 落账且无判据即判成功、转发辅助流程无独立登记。
   以上各条的修复需要目标语义的进一步实测（语义清单第 4-8 条仍标未开始），按「如实记录不伪造通过」保留。
+
+> 上述“结构性缺口”是 2026-09-06 的历史评审快照。其后续修复与仍待人工真实写验证的边界，以 2026-09-08 状态记录为准；不得再把该段当作当前执行器状态。
+
+## 状态记录补充（2026-09-08 全动作收口）
+
+- 15 个用户动作均已进入对应的原子写出口，覆盖 12 个已核对目标端点。提交、保存草稿和同意保留各自类型化入口，其余动作统一由 `ExecuteActionWrite` 分派；目录、载荷构造和实际 HTTP 出口由同一动作键约束。
+- 重新提交已接入 gate 分派、当前实例代理、当前会话公司和与提交一致的 `nextAuditorList` 规则。目标后端虽会在公司字段缺失时回填旧值，执行器不再依赖该兜底。
+- 任务类动作发送前读取实时 `jobTaskId`、`batchNo`、节点和流程代理；加签读取完整代理树后更新指定节点人员；移交、取回以新任务确认，回退以关联原任务的回退审核记录确认结果。
+- 暂存、催办、关注和取消关注通过目标专用记录或状态确认，不再因流程节点不变而停在未确认；不同意、撤回、重新提交、同意按目标实例状态和待办变化确认。
+- 转发从响应取得新辅助实例并用目标列表确认存在，辅助实例引用以 `forward_auxiliary_created` 运行事件单独保存，主实例引用不被改写。事件流仅显示中文结果，不向页面透出目标内部标识。
+- 本地载荷校验失败被明确识别为“请求没有发出”的确定失败，不会进入结果待确认；失败运行详情保留在当前页面，用户不会被自动跳回列表。
+- 页面和日志使用“执行前条件、执行后状态、执行成功、执行失败”表述。目标接口拒绝时优先显示原始错误；只有目标返回成功但执行后状态确实无法读取时，才如实说明无法确认。
+- 本地单元、契约、前端构建与真实目标只读集成已通过；每个真实写动作仍须由人工在允许的测试流程中逐项验证。因此状态保持 `ready_for_manual`，不登记未执行过的真实写成功证据。
 
 ## 人工验收
 

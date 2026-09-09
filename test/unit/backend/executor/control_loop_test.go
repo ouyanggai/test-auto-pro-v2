@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -160,6 +161,59 @@ func TestF016SingleStepControlLoop(t *testing.T) {
 	}
 }
 
+// TestF019ForwardRecordsAuxiliaryInstance 验证转发成功后辅助实例引用独立追加到运行事件。
+// 主实例仍沿原路径推进，事件 Detail 保存目标引用供审计，页面只显示中文结果。
+func TestF019ForwardRecordsAuxiliaryInstance(t *testing.T) {
+	database := newF016ControlDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	runService := run.NewService(store, "worker-f019-forward", time.Minute, time.Now)
+	fakeTarget := &fakeTarget{
+		instance:     fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		afterSubmit:  &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		submitResult: &target.SubmitFlowInstanceResult{InstanceID: "instance-main", Status: "run"},
+		actionResponse: target.WriteResponse{
+			StatusCode: 200, IsSuccess: true, IsSuccessPresent: true,
+			Data: json.RawMessage(`{"id":"instance-forwarded"}`),
+		},
+	}
+	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, runService, store, fixedRunConfig(), nil)
+	controller := control.NewService(runService, executor, store, time.Now)
+	forward := model.CompiledActionStep{Sequence: 2, Source: model.ActionStepSourceUser, Action: model.ActionForward, Scope: model.ActionScopeInstance}
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), forward})
+	runCtx.ActionPersonIDs = map[string][]string{
+		step.ActionPersonIndex("", model.ActionForward): {"receiver-1"},
+	}
+
+	started, err := controller.Start(ctx, runCtx)
+	if err != nil || started.Preview == nil {
+		t.Fatalf("启动转发场景失败：err=%v result=%+v", err, started)
+	}
+	first, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, started.Preview.StepNo, 1)
+	if err != nil || first.NextPreview == nil {
+		t.Fatalf("提交主实例失败：err=%v result=%+v", err, first)
+	}
+	second, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, first.NextPreview.StepNo, 2)
+	if err != nil {
+		t.Fatalf("转发步骤失败：%v", err)
+	}
+	if second.Outcome.AuxiliaryInstanceRef != "instance-forwarded" {
+		t.Fatalf("转发应返回已确认的辅助实例引用：%+v", second.Outcome)
+	}
+	var kind, label, detail string
+	if err := database.DB.QueryRowContext(ctx, `
+		SELECT kind, label, detail FROM run_events
+		WHERE path_run_id = ? AND kind = 'forward_auxiliary_created'
+		ORDER BY id DESC LIMIT 1
+	`, started.PathRun.ID).Scan(&kind, &label, &detail); err != nil {
+		t.Fatalf("读取转发辅助流程事件失败：%v", err)
+	}
+	if kind != "forward_auxiliary_created" || label != "转发已创建辅助流程" || detail != "instance-forwarded" {
+		t.Fatalf("辅助流程事件不完整：kind=%q label=%q detail=%q", kind, label, detail)
+	}
+}
+
 // TestF017SingleStepApproveReturnsBeforeSlowTargetResponse 验证单步放行不会被目标慢响应占住：
 // 接口先返回步骤执行中，后台完成写请求、核验与落账；同一游标重复放行必须被拒绝。
 func TestF017SingleStepApproveReturnsBeforeSlowTargetResponse(t *testing.T) {
@@ -252,12 +306,40 @@ func TestF017LoopPauseRecordsAfterStepOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("自动模式启动失败：%v", err)
 	}
+	// 自动模式默认先命中首次写断点；先按真实人工操作删除安全断点并放行，
+	// 才能让本用例覆盖“写请求进行中收到暂停”的延迟生效边界。
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if view := controller.View(started.PathRun.ID); view != nil && view.LoopRunning {
+		if view := controller.View(started.PathRun.ID); view != nil && !view.LoopRunning && containsString(view.StopReason, "首次写断点") {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	view := controller.View(started.PathRun.ID)
+	if view == nil || view.LoopRunning || !containsString(view.StopReason, "首次写断点") {
+		t.Fatalf("自动模式应先停在首次写断点：%+v", view)
+	}
+	if _, err := controller.RemoveBreakpoint(ctx, started.PathRun.ID, control.Breakpoint{Type: model.BreakpointFirstWrite}); err != nil {
+		t.Fatalf("删除首次写断点失败：%v", err)
+	}
+	view = controller.View(started.PathRun.ID)
+	preview := controller.CurrentPreview(started.PathRun.ID)
+	if view == nil || preview == nil {
+		t.Fatal("删除首次写断点后控制现场丢失")
+	}
+	if err := controller.ApproveWithCommandAsync(ctx, started.PathRun.ID, model.CommandContinue, preview.StepNo, view.Version); err != nil {
+		t.Fatalf("继续运行命令失败：%v", err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if view := controller.View(started.PathRun.ID); view != nil && view.StepInFlight {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	view = controller.View(started.PathRun.ID)
+	if view == nil || !view.StepInFlight {
+		t.Fatalf("继续运行后应进入写请求执行中：%+v", view)
 	}
 	if err := controller.RequestPause(ctx, started.PathRun.ID); err != nil {
 		t.Fatalf("连续执行暂停请求失败：%v", err)

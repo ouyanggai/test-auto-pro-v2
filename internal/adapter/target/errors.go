@@ -3,6 +3,7 @@ package target
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type ErrorKind string
@@ -73,6 +74,36 @@ func asError(err error) *Error {
 		return targetErr
 	}
 	return nil
+}
+
+// UserFacingErrorMessage 返回目标错误的原始可读信息。
+// 响应包优先使用 message，其次使用 code；适配层错误再展开 Cause，避免把内部分类文案展示给用户。
+func UserFacingErrorMessage(response WriteResponse, err error) string {
+	if message := strings.TrimSpace(response.Message); message != "" {
+		return message
+	}
+	var rejection *BusinessRejection
+	if errors.As(err, &rejection) {
+		if message := strings.TrimSpace(rejection.Message); message != "" {
+			return message
+		}
+		if code := strings.TrimSpace(rejection.Code); code != "" {
+			return code
+		}
+	}
+	if code := strings.TrimSpace(response.Code); code != "" {
+		return code
+	}
+	if err == nil {
+		return ""
+	}
+	var targetErr *Error
+	if errors.As(err, &targetErr) && targetErr.Cause != nil {
+		if cause := strings.TrimSpace(targetErr.Cause.Error()); cause != "" {
+			return cause
+		}
+	}
+	return strings.TrimSpace(err.Error())
 }
 
 func invalidResponse(reason string) error {

@@ -59,7 +59,7 @@ deployment=<该结论对应的目标平台部署版本，未取得就写「未�
 | `rsh-cloud-workflow-center-api` | `master` `088aed79ad0b` | 同上 |
 | `rsh-cloud-web-api` | `master` `16410b5e7315` | 同上 |
 | `rsh-framework-all` | `test` `84bb19736a8a` | 同上 |
-| `rsh-cloud-invest-power-system` | `test` `8a00cb9995df` | 同上 |
+| `rsh-cloud-invest-power-system` | `oygdev2` `586ca09474c3` | 2026-09-08 按 `GroupApproveManage` 及直接组件重新核对；`make refs-sync` 因本地分支名与清单不符而未改动参考仓库 |
 | 目标平台部署版本 | **提交号未取得**（目标平台不提供版本接口），但已由只读探测取得两条部署事实，见下 | `test/integration/f014_error_semantics_readonly_test.go` 2026-09-04 实跑 |
 
 部署版本未取得的后果，必须在读本文件时始终记住：
@@ -88,7 +88,7 @@ deployment=<该结论对应的目标平台部署版本，未取得就写「未�
 | 5 | 回退语义 | 未开始 |
 | 6 | 取回语义 | 未开始 |
 | 7 | 转发语义 | 未开始 |
-| 8 | 加签与移交语义 | 未开始 |
+| 8 | 加签与移交语义 | 已勘定（加签协议已实现，待真实写验证） |
 | 9 | 会签与并行语义 | 未开始 |
 | 10 | 附件与富文本 | 未开始 |
 | 11 | 表单权限与可见性 | 未开始 |
@@ -102,7 +102,7 @@ deployment=<该结论对应的目标平台部署版本，未取得就写「未�
 
 ### 1.1 两条路由族与门禁
 
-本工具动作目录共 15 条动作、11 个不同写端点（`internal/engine/actioncatalog/catalog.go`）。它们分属两条路由族，经过的门禁不同，因此失败形状不同。
+本工具动作目录共 15 条动作、12 个不同写端点（`internal/engine/actioncatalog/catalog.go`）。它们分属两条路由族，经过的门禁不同，因此失败形状不同。
 
 | 动作 | 动作标识 | 目标端点 | 路由族 | `@FlowSubmitVerify` | `@Consistency` |
 | --- | --- | --- | --- | --- | --- |
@@ -110,7 +110,7 @@ deployment=<该结论对应的目标平台部署版本，未取得就写「未�
 | 提交 | `submit` | `/web/flowInstanceApi/submit` | web | 无 | **有** |
 | 重新提交 | `resubmit` | `/web/flowInstanceApi/reSubmit` | web | 无 | 无 |
 | 暂存当前表单 | `storage_form_data` | `/web/flowInstanceApi/storageFormData` | web | 无 | 无 |
-| 加签 | `add_sign` | `/web/flowInstanceApi/approverAppend` | web | 无 | 无 |
+| 加签 | `add_sign` | `/web/flowInstanceApi/updateFlowProxy` | web | 无 | 无 |
 | 移交 | `transfer` | `/web/flowInstanceApi/approverAppend` | web | 无 | 无 |
 | 同意 | `approve` | `/flowInstanceApi/audit` | 中心 api | 无 | 无 |
 | 不同意 | `reject` | `/flowInstanceApi/audit` | 中心 api | 无 | 无 |
@@ -295,7 +295,7 @@ deployment=已实测：auditWay 返回字符串编码名，说明 20260828 迁�
 
 同范围内的相似问题检查结论（不在本切片改动）：
 
-- 动作目录的路由族与真实前端一致，逐条核对了 11 个端点，只有审批走无 `/web` 前缀，与 `api/index.js` 相符。
+- 动作目录的路由族与真实前端一致，逐条核对了 12 个端点，只有审批走无 `/web` 前缀，与 `api/index.js` 相符。
 - 工具当前没有其它按 `code` 判成败的位置：`responseSucceeded` 只看 `isSuccess`/`success`，方向正确。
 
 ### 1.6 三值判定规则
@@ -483,7 +483,7 @@ head=rsh-framework-all@84bb19736a8a
 deployment=未取得（目标平台不提供版本接口）
 ```
 
-`/web/flowInstanceApi/submit` 是 11 个端点中唯一带 `@Consistency` 的，其 `deleteMethodName = "delete"`，即回滚动作是删除流程实例。禁令由 `test/unit/backend/target_semantics/idempotency_constraints_test.go` 与 `test/contracts/f014/target_write_whitelist.sh` 双向锁定。
+`/web/flowInstanceApi/submit` 是 12 个端点中唯一带 `@Consistency` 的，其 `deleteMethodName = "delete"`，即回滚动作是删除流程实例。禁令由 `test/unit/backend/target_semantics/idempotency_constraints_test.go` 与 `test/contracts/f014/target_write_whitelist.sh` 双向锁定。
 
 当前 Go 侧确认未使用该字段。动作目录里的 `batchNo` 是另一个业务字段，与 `batchCode` 无关。
 
@@ -562,7 +562,13 @@ deployment=未取得（目标平台不提供版本接口）
 
 ## 8. 加签与移交语义
 
-状态：未开始。
+状态：已勘定（源码可证明；加签适配已实现，真实写仍需人工验证）。
+
+加签使用 `/web/flowInstanceApi/updateFlowProxy`，请求正文是 `data{id}` 与
+`flowProxyProtocol.data` 的完整代理文档。执行器先以当前待办返回的 `flowNodeProxyId` 读取
+`/web/flowProxy/findById`，只向该节点的 `flowNodeAuditConfig.flowNodeDetailConfigList` 追加实时受限人员，
+并原样保留其它代理字段。目标返回的新 `flowProxyId` 与 `currentNodeProxyId` 会更新本次运行上下文，
+后续任务读取只在确认发生代理重建后允许按实例唯一任务恢复；无法确认节点或代理结构时在写请求前阻断。
 
 ## 9. 会签与并行语义
 
@@ -610,7 +616,7 @@ file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/com
 line=1723
 contains=filter(x=> x.fieldPower != 'hide')
 strength=源码可证明
-head=rsh-cloud-invest-power-system@8a00cb9995df
+head=rsh-cloud-invest-power-system@586ca09474c3
 deployment=2026-09-05 未取得（前端部署版本未核对）
 ```
 
@@ -619,7 +625,7 @@ file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/com
 line=1620
 contains=this.enableData?.includes(y.model + '_col')
 strength=源码可证明
-head=rsh-cloud-invest-power-system@8a00cb9995df
+head=rsh-cloud-invest-power-system@586ca09474c3
 deployment=2026-09-05 未取得（前端部署版本未核对）
 ```
 
@@ -719,7 +725,7 @@ file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/com
 line=1804
 contains=let value = this.$refs.generateForm.getValues();
 strength=源码可证明
-head=rsh-cloud-invest-power-system@8a00cb9995df
+head=rsh-cloud-invest-power-system@586ca09474c3
 deployment=2026-09-05 未取得（前端部署版本未核对）
 ```
 
@@ -791,7 +797,7 @@ file=参考代码/rsh-cloud-invest-power-system/src/api/index.js
 line=742
 contains=findRecord: '/web/flowAuditRecord/list'
 strength=源码可证明
-head=rsh-cloud-invest-power-system@8a00cb9995df
+head=rsh-cloud-invest-power-system@586ca09474c3
 deployment=2026-09-05 真实账号实测：按 flowInstanceId 读到审核记录并按 flowNodeProxyId 过滤命中
 ```
 
@@ -830,7 +836,7 @@ file=internal/adapter/target/client_fact_reads.go
 line=53
 contains=按实例 ID 精确复查事实时绝不附加业务关联过滤
 strength=源码可证明
-head=rsh-cloud-invest-power-system@8a00cb9995df
+head=rsh-cloud-invest-power-system@586ca09474c3
 deployment=2026-09-05 真实账号实测：带公司业务关联过滤返回空集，去掉后命中同一实例
 ```
 
@@ -839,7 +845,7 @@ file=test/integration/f018_instance_visibility_test.go
 line=44
 contains=TestF018CompanyRelevanceFilterHidesToolCreatedInstance
 strength=源码可证明
-head=rsh-cloud-invest-power-system@8a00cb9995df
+head=rsh-cloud-invest-power-system@586ca09474c3
 deployment=2026-09-05 真实账号实测：同一实例两种查询形状的命中差异已固化为用例
 ```
 

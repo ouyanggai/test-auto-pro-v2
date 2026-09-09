@@ -93,14 +93,12 @@ var actionDefinitions = []actionDefinition{
 	{
 		action: model.ActionAddSign, category: model.ActionCategoryCurrentTodo, scope: model.ActionScopeTask,
 		label: "加签", description: "在当前活动人工待办追加受限处理人，必要时先分离实例私有代理。",
-		targetOperation: "/web/flowInstanceApi/approverAppend",
+		targetOperation: "/web/flowInstanceApi/updateFlowProxy",
 		parameters: []model.ActionParameter{
 			{Name: "id", Required: true, Description: "目标流程实例键"},
-			{Name: "jobTaskId", Required: true, Description: "当前待办键"},
-			{Name: "batchNo", Required: true, Description: "当前实例批次"},
-			{Name: "flowNodeProxyId", Required: true, Description: "当前节点代理键"},
-			{Name: "approverAppendVo.flowNodeProxyId", Required: true, Description: "追加人员所属节点代理键"},
-			{Name: "approverAppendVo.userIds", Required: true, Description: "实时受限候选中的人员键集合"},
+			{Name: "flowProxyProtocol.data", Required: true, Description: "从目标重读并保留未知字段的完整流程代理树"},
+			{Name: "flowProxyProtocol.data.flowNodeTemplate", Required: true, Description: "完整流程代理树的根节点"},
+			{Name: "flowProxyProtocol.data.flowNodeTemplate.flowNodeAuditConfig.flowNodeDetailConfigList", Required: true, Description: "当前节点追加的人员明细"},
 		},
 		expectedEffect:     "通过 updateFlowProxy 必要时创建实例私有代理并追加审批人；后续任务按新代理继续。",
 		reloadRequirements: []string{"实例私有流程代理", "当前节点", "当前待办与演员", "代理任务映射"},
@@ -431,7 +429,7 @@ func evaluateRollback(ctx model.ActionContext) gateResult {
 	knownPrevious := ctx.PreviousTaskExists && previousType != ""
 	notStart := knownPrevious && !ctx.PreviousNodeIsStart && previousType != "start"
 	add(&g, "previous_task", "存在目标引擎解析出的直接前一待办", true, ctx.PreviousTaskExists)
-	add(&g, "previous_node_known", "直接前一节点类型已经重读", true, knownPrevious)
+	add(&g, "previous_node_known", "已确认直接前一节点类型", true, knownPrevious)
 	add(&g, "previous_not_start", "直接前一节点不是发起节点", true, notStart)
 	if !g.enabled {
 		return g
@@ -440,7 +438,7 @@ func evaluateRollback(ctx model.ActionContext) gateResult {
 		return denyWith(g, "当前待办没有可回退的直接前一节点")
 	}
 	if !knownPrevious {
-		return denyWith(g, "直接前一节点类型尚未重读，无法安全回退")
+		return denyWith(g, "尚未确认直接前一节点类型，无法安全回退")
 	}
 	if !notStart {
 		return denyWith(g, "直接前一节点是发起节点，请按目标规则使用不同意")
@@ -448,7 +446,9 @@ func evaluateRollback(ctx model.ActionContext) gateResult {
 	return g
 }
 
-// evaluateRetrieve 复刻目标取回的已办归属、运行状态、后继未处理及会签边界。
+// evaluateRetrieve 复刻目标取回的已办归属、运行状态、会签边界。
+// 目标公开任务列表只能读取当前用户的 pending/done，无法安全得到所有后继任务；后继状态未知时，
+// 由 retrieveProcess 在实例锁内裁决并把目标原始错误返回页面，不能把未知误说成“后继已处理”。
 func evaluateRetrieve(ctx model.ActionContext) gateResult {
 	g := newGate()
 	running := instanceRunning(ctx)
@@ -459,7 +459,11 @@ func evaluateRetrieve(ctx model.ActionContext) gateResult {
 	add(&g, "owned_completed_task", "当前用户拥有目标已完成任务", true, ctx.HasCompletedTask)
 	add(&g, "running_instance", "实例处于 run 状态", true, running)
 	add(&g, "not_ended", "实例尚未完结", true, notEnded)
-	add(&g, "successor_unprocessed", "取回任务的后继尚未处理", true, !ctx.NextTaskProcessed)
+	if ctx.SuccessorStateKnown {
+		add(&g, "successor_unprocessed", "取回任务的后继尚未处理", true, !ctx.NextTaskProcessed)
+	} else {
+		add(&g, "successor_checked_by_target", "后继任务状态将在执行时由目标平台确认", false, true)
+	}
 	add(&g, "retrieve_node_not_start", "已办任务不在发起节点", true, notStart)
 	add(&g, "not_already_retrieved", "该已办任务尚未被取回", true, notUsed)
 	add(&g, "parallel_or_countersign_clear", "会签或并行后继没有其他演员已处理", true, notHandledByOther)
@@ -478,7 +482,7 @@ func evaluateRetrieve(ctx model.ActionContext) gateResult {
 	if !notUsed {
 		return denyWith(g, "当前已办任务已经取回，不能重复取回")
 	}
-	if ctx.NextTaskProcessed {
+	if ctx.SuccessorStateKnown && ctx.NextTaskProcessed {
 		return denyWith(g, "后继任务已经处理，不支持取回")
 	}
 	if !notHandledByOther {
@@ -530,7 +534,7 @@ func evaluateForward(ctx model.ActionContext) gateResult {
 	source := normalizedSource(ctx.FlowSource)
 	allowedSource := source == "pending" || source == "submitted" || source == "done"
 	notDueOut := source != "dueout" && source != "timedout"
-	add(&g, "visible_instance", "当前账号已重读到可转发实例", true, visible)
+	add(&g, "visible_instance", "当前账号可以看到可转发实例", true, visible)
 	add(&g, "forward_context", "当前上下文属于待办、已发或已办实例", true, allowedSource)
 	add(&g, "not_dueout", "当前上下文不是待发/超时列表", true, notDueOut)
 	if !visible {
@@ -551,9 +555,9 @@ func evaluateFollow(ctx model.ActionContext, unfollow bool) gateResult {
 	visible := instanceVisible(ctx)
 	running := instanceRunning(ctx)
 	state := ctx.Followed
-	add(&g, "visible_instance", "当前账号已重读到目标实例", true, visible)
+	add(&g, "visible_instance", "当前账号可以看到目标实例", true, visible)
 	add(&g, "running_instance", "目标页面允许对运行中实例修改关注状态", true, running)
-	add(&g, "tracking_state", "当前用户关注状态已重读", true, true)
+	add(&g, "tracking_state", "已确认当前用户的关注状态", true, true)
 	if !visible {
 		return denyWith(g, "当前账号看不到目标实例，无法修改关注状态")
 	}
@@ -592,7 +596,7 @@ func buildSystemItem(ctx model.ActionContext) model.ActionCatalogItem {
 	}
 	if nodeType == "" {
 		if strings.TrimSpace(ctx.CurrentNodeType) == "" {
-			item.DisabledReason = "当前节点类型尚未重读，不能投影系统自动语义"
+			item.DisabledReason = "尚未确认当前节点类型，不能显示系统自动动作"
 		} else {
 			item.DisabledReason = "当前节点不是目标系统自动节点"
 		}

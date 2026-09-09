@@ -121,7 +121,7 @@ func TestActionCatalogRecoveryAndInstanceGates(t *testing.T) {
 		t.Fatalf("合法已办取回未启用：%+v", items[model.ActionRetrieve])
 	}
 	blocked := retrieve
-	blocked.NextTaskProcessed = true
+	blocked.SuccessorStateKnown, blocked.NextTaskProcessed = true, true
 	items = indexCatalog(actioncatalog.Build(blocked))
 	if items[model.ActionRetrieve].Enabled || items[model.ActionRetrieve].DisabledReason != "后继任务已经处理，不支持取回" {
 		t.Fatalf("后继已处理却允许取回：%+v", items[model.ActionRetrieve])

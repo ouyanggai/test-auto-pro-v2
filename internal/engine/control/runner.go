@@ -13,7 +13,7 @@ import (
 // loopFailureReason 把循环内必须落库却失败的事实转成中文停止原因。
 // 控制事实是真实写之前的审计记录：落不下去就不能继续往下发写请求，只能停在这里让人看到。
 func loopFailureReason(what string, err error) string {
-	return what + "落库失败，为避免出现没有审计记录的真实写，连续执行已停止：" + err.Error()
+	return what + "落库失败，为避免出现没有审计记录的真实写，连续执行已停止：" + controlErrorMessage(err)
 }
 
 // startLoop 启动连续执行循环（自动运行 / 执行到下一节点 / 继续运行）。
@@ -46,10 +46,12 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		session.loopRunning = false
 		s.mu.Unlock()
 	}()
+	s.mu.Lock()
 	fromNode := ""
 	if session.preview != nil {
 		fromNode = session.preview.NodeKey
 	}
+	s.mu.Unlock()
 	for {
 		// 阶段 3 判定一：停止请求生效（本步尚未发出写请求，停在这里最安全）。
 		s.mu.Lock()
@@ -61,28 +63,28 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		}
 		s.mu.Lock()
 		preview := session.preview
-		s.mu.Unlock()
 		if preview == nil {
+			s.mu.Unlock()
 			return
 		}
-
-		// 阶段 3 判定二：门禁不通过即停（不自动执行被门禁阻塞的步骤，留给用户查看与停止）。
+		runID := session.runCtx.Run.ID
+		facts := StepFacts{
+			StepNo: preview.StepNo, NodeKey: preview.NodeKey, Action: string(preview.Action),
+			IsWriteStep: preview.Endpoint != "", DeviationHit: session.deviationStalled,
+		}
+		// 断点集合只能在控制锁内读取；命中结果复制到局部变量后再做数据库写入。
+		hits := EvaluateBreakpointHits(facts, session.breakpoints)
+		s.mu.Unlock()
+		// 门禁阻塞表示本步根本不能放行；先停在阻塞现场，不能把预置断点伪装成已命中的执行事实。
 		if preview.BlockReason != "" {
 			s.mu.Lock()
 			session.stopReason = "门禁不通过：" + preview.BlockReason
 			s.mu.Unlock()
 			return
 		}
-
-		// 阶段 3 判定三：断点命中（全部落事实与事件；是否停留按命令与命中情况）。
-		facts := StepFacts{
-			StepNo: preview.StepNo, NodeKey: preview.NodeKey, Action: string(preview.Action),
-			IsWriteStep: preview.Endpoint != "", DeviationHit: session.deviationStalled,
-		}
-		hits := EvaluateBreakpointHits(facts, session.breakpoints)
 		for _, hit := range hits {
 			hitFact := model.RunControl{
-				RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
+				RunID: runID, PathRunID: pathRunID,
 				Kind: model.ControlFactBreakpointHit, BreakpointType: hit.Breakpoint.Type,
 				ObjectKind: "step", ObjectKey: fmt.Sprintf("%d", preview.StepNo),
 				Reason: hit.Reason, Source: model.RunControlSourceUI, CreatedAt: s.now(),
@@ -95,10 +97,11 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			}
 			s.logFact(pathRunID, hitFact, preview.StepNo)
 			s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{
-				RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
+				RunID: runID, PathRunID: &pathRunID,
 				Kind: "breakpoint_hit", Label: fmt.Sprintf("断点命中：%s（%s）", hit.Breakpoint.Label(), hit.Reason),
 			}, preview.StepNo)
 		}
+
 		// 执行到下一节点的边界：语义节点变化，在阶段 3 暂停（先落断点事实再停）。
 		if command == model.CommandNextNode && fromNode != "" && NextNodeBoundary(fromNode, preview.NodeKey) {
 			s.mu.Lock()
@@ -115,7 +118,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 				session.stopReason = "路径偏离：" + primary.Reason + "；后续步骤不提供放行，只能停止或查看"
 				s.mu.Unlock()
 				s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{
-					RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
+					RunID: runID, PathRunID: &pathRunID,
 					Kind: "path_deviation_stopped", Label: "路径偏离断点强制停止，不提供放行",
 				}, preview.StepNo)
 				return
@@ -128,7 +131,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 
 		// 每一步的放行事实（命令种类随循环命令），随后执行本步。
 		approveFact := model.RunControl{
-			RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
+			RunID: runID, PathRunID: pathRunID,
 			Kind: model.ControlFactApproved, Action: model.RunControlApprove,
 			Command: command, Source: model.RunControlSourceUI, CreatedAt: s.now(),
 		}
@@ -141,8 +144,11 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		s.logFact(pathRunID, approveFact, preview.StepNo)
 		result, err := s.approveOneStep(ctx, pathRunID, session, 1, false)
 		if err != nil {
+			s.sealPostWriteFailure(ctx, pathRunID, session, err)
 			s.mu.Lock()
-			session.stopReason = "执行失败：" + err.Error()
+			if !session.finished {
+				session.stopReason = "执行失败：" + controlErrorMessage(err)
+			}
 			s.mu.Unlock()
 			return
 		}
@@ -165,7 +171,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		s.mu.Unlock()
 		if pauseRequested {
 			pausedFact := model.RunControl{
-				RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
+				RunID: runID, PathRunID: pathRunID,
 				Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now(),
 			}
 			reason := "暂停请求已生效（本步已走完核验与落账）"
@@ -191,7 +197,7 @@ func (s *Service) applyStop(ctx context.Context, pathRunID uint64) {
 		s.mu.Lock()
 		if session := s.active[pathRunID]; session != nil {
 			session.stopRequested = false
-			session.stopReason = "停止未生效：" + err.Error() + "；已发生的事实全部保留，可再次停止"
+			session.stopReason = "停止未生效：" + controlErrorMessage(err) + "；已发生的事实全部保留，可再次停止"
 		}
 		s.mu.Unlock()
 		return
@@ -235,6 +241,6 @@ func (s *Service) appendEventOrWarn(ctx context.Context, pathRunID uint64, event
 func (s *Service) warnFactFailure(pathRunID uint64, what string, err error) {
 	s.logFact(pathRunID, model.RunControl{
 		Kind:   model.ControlFactKind("append_failed"),
-		Reason: what + "落库失败：" + err.Error(),
+		Reason: what + "落库失败：" + controlErrorMessage(err),
 	}, 0)
 }

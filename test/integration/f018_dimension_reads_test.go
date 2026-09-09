@@ -38,24 +38,23 @@ func TestF018DimensionReadsAgainstRealTarget(t *testing.T) {
 		if candidateID == "" {
 			continue
 		}
-		candidateTrace, candidateTotal, traceErr := client.FindAuditTraceOnNode(ctx, session, candidateID, "")
+		_, candidateTotal, traceErr := client.FindAuditTraceOnNode(ctx, session, candidateID, "")
 		if traceErr != nil {
 			// 目标存在「新登录会话首个请求 AUTH_401」的失效形状（语义清单 1.8），
 			// 单条候选读取失败不立即判死，换下一条候选。
 			t.Logf("候选 %s 动作痕迹读取失败，换下一条：%v", candidateID, traceErr)
 			continue
 		}
-		if candidateTotal > 0 && candidateTrace {
+		// 实例级查询不传节点时只返回记录总数；命中布尔值只用于指定节点的判断。
+		// 因此这里以审核记录条数作为候选条件，不能把空节点的 found 当成实例级命中。
+		if candidateTotal > 0 {
 			instanceID, traceTotal = candidateID, candidateTotal
 			t.Logf("取用真实实例：id=%s 名称=%s 状态=%s", candidateID, candidate.Name, candidate.Status)
 			break
 		}
 	}
 	if instanceID == "" {
-		// 2026-09-07：样本验收在骆蒙恩账号留下了草稿实例占据已发列表首部，
-		// 草稿实例没有已办与审核记录，属于真实数据状态而非读取缺陷；
-		// 已发列表全部不可用时如实跳过，等待账号有已完结实例后重跑。
-		t.Skip("已发列表前几条都没有动作痕迹（可能全部是草稿/新建实例）；请待账号有已完结实例后重跑")
+		t.Fatal("已发列表前 20 条都没有审核记录，无法证明动作痕迹读取可用；请检查目标账号数据或读取协议")
 	}
 
 	// 维度一：已办记录。不带节点标识时回答"这个实例上是否已经有已办"。

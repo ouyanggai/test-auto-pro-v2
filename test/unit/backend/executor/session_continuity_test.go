@@ -39,6 +39,41 @@ type sessionContinuityTarget struct {
 	factReadSIDs    []string
 }
 
+// actionTaskSessionTarget 模拟统一动作写入口被旧会话拒绝后，目标任务身份已随新会话刷新。
+// 它记录每次发给目标的请求，防止重试时沿用旧 taskId、batchNo 或节点代理标识。
+type actionTaskSessionTarget struct {
+	*fakeTarget
+	staleSID         string
+	freshSID         string
+	writeSessions    []string
+	snapshotSessions []string
+	requests         []target.ActionWriteRequest
+	completed        bool
+}
+
+// FindTaskSnapshot 按当前会话返回不同的实时任务身份；写入完成后当前演员不再拥有该待办。
+func (t *actionTaskSessionTarget) FindTaskSnapshot(_ context.Context, session target.Session, _ string, _ string, _ string) (target.TaskSnapshot, error) {
+	t.snapshotSessions = append(t.snapshotSessions, session.SID)
+	if t.completed {
+		return target.TaskSnapshot{}, nil
+	}
+	if session.SID == t.staleSID {
+		return target.TaskSnapshot{JobTaskID: "task-old", BatchNo: "batch-old", FlowNodeProxyID: "node-old", FlowProxyID: "proxy-old"}, nil
+	}
+	return target.TaskSnapshot{JobTaskID: "task-new", BatchNo: "batch-new", FlowNodeProxyID: "node-new", FlowProxyID: "proxy-new"}, nil
+}
+
+// ExecuteActionWrite 仅让新会话的请求进入目标业务，旧会话以可证明无副作用的会话失效拒绝。
+func (t *actionTaskSessionTarget) ExecuteActionWrite(_ context.Context, session target.Session, request target.ActionWriteRequest) (target.WriteResponse, string, error) {
+	t.writeSessions = append(t.writeSessions, session.SID)
+	t.requests = append(t.requests, request)
+	if session.SID == t.staleSID {
+		return target.WriteResponse{StatusCode: 200, IsSuccessPresent: true, Code: "RESP401", Message: "SID已失效!"}, "trace-stale", target.NewError(target.ErrorSessionExpired, nil)
+	}
+	t.completed = true
+	return target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-fresh", nil
+}
+
 // FindSubmittedFlow 在写已生效后拒绝旧 SID，保证用例能识别事实重读是否沿用成功写会话。
 func (t *sessionContinuityTarget) FindSubmittedFlow(ctx context.Context, session target.Session, instanceID string) (string, []string, string, []string, bool, error) {
 	t.factReadSIDs = append(t.factReadSIDs, session.SID)
@@ -153,5 +188,59 @@ func TestF016AuditUsesRefreshedTaskSession(t *testing.T) {
 	}
 	if len(targetFake.factReadSIDs) == 0 || targetFake.factReadSIDs[len(targetFake.factReadSIDs)-1] != "sid-new" {
 		t.Fatalf("审批后的事实重读必须继续使用新会话：%v", targetFake.factReadSIDs)
+	}
+}
+
+// TestF019ActionRetryRefreshesAllTaskIdentity 验证移交重试使用新会话下的 taskId、batchNo、节点和流程代理。
+// 旧实现只刷新了会话，统一动作写入口仍会把旧任务身份重发给目标，导致目标一直等待或拒绝。
+func TestF019ActionRetryRefreshesAllTaskIdentity(t *testing.T) {
+	targetFake := &actionTaskSessionTarget{
+		fakeTarget: &fakeTarget{
+			instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		},
+		staleSID: "sid-old",
+		freshSID: "sid-new",
+	}
+	sessions := &rotatingSessions{
+		current:   target.Session{SID: "sid-old", Summary: target.AccountSummary{Account: "oyg-test"}},
+		refreshed: target.Session{SID: "sid-new", Summary: target.AccountSummary{Account: "oyg-test"}},
+	}
+	runCtx := newRunContext([]model.CompiledActionStep{{
+		Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionTransfer,
+		Scope: model.ActionScopeTask, NodeKey: "node-audit",
+	}})
+	runCtx.Source = "pending"
+	runCtx.PathRun.MainInstanceRef = "instance-9"
+	runCtx.ActionPersonIDs = map[string][]string{
+		step.ActionPersonIndex("node-audit", model.ActionTransfer): []string{"receiver-1"},
+	}
+	executor := step.NewExecutor(targetFake, sessions, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || preview.BlockReason != "" {
+		t.Fatalf("移交预览构造失败：finished=%v err=%v block=%s", finished, err, previewBlock(preview))
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatalf("移交执行失败：%v", err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("新会话下的移交应完成，实际 %+v", outcome)
+	}
+	if len(targetFake.writeSessions) != 2 || targetFake.writeSessions[0] != "sid-old" || targetFake.writeSessions[1] != "sid-new" {
+		t.Fatalf("移交应只在旧会话被明确拒绝后改用新会话重发：%v", targetFake.writeSessions)
+	}
+	if len(targetFake.requests) != 2 {
+		t.Fatalf("应记录旧会话拒绝与新会话成功两次请求，实际 %d", len(targetFake.requests))
+	}
+	oldRequest, freshRequest := targetFake.requests[0], targetFake.requests[1]
+	if oldRequest.JobTaskID != "task-old" || oldRequest.BatchNo != "batch-old" || oldRequest.NodeProxyID != "node-old" || oldRequest.FlowProxyID != "proxy-old" {
+		t.Fatalf("旧会话请求身份不符合预期：%+v", oldRequest)
+	}
+	if freshRequest.JobTaskID != "task-new" || freshRequest.BatchNo != "batch-new" || freshRequest.NodeProxyID != "node-new" || freshRequest.FlowProxyID != "proxy-new" {
+		t.Fatalf("会话刷新后必须重取完整任务身份，实际 %+v", freshRequest)
+	}
+	if len(freshRequest.UserIDs) != 1 || freshRequest.UserIDs[0] != "receiver-1" || freshRequest.AuditStatus != "transfer" {
+		t.Fatalf("刷新任务身份不得丢失移交动作人员或枚举：%+v", freshRequest)
 	}
 }

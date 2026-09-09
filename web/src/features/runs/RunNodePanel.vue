@@ -6,7 +6,7 @@ import { formatElapsed, formatTime } from './api'
 import type { PathRunDetail, RunNodePlanAction, RunPreview, RunStep, RunStepAttempt } from './api'
 
 // RunNodePanel 是点击画布节点后才出现的检视面板：三个页签只给简要事实，
-// 完整内容（门禁逐项、依据、阶段耗时、日志位置与可重放 curl）一律进详情弹窗，
+// 完整内容（门禁逐项、阶段耗时、日志位置与可重放 curl）一律进详情弹窗，
 // 避免把一屏堆满说明文字。写结果不确定只呈现结论与依据，不渲染任何重试或继续入口（纲领第 4.4 节）。
 const props = defineProps<{
   detail: PathRunDetail
@@ -47,7 +47,12 @@ interface NodeErrorRow {
   step?: RunStep
 }
 
-// nodeErrors 汇总这个节点上需要人看一眼的事实：门禁未通过、非确定成功的尝试、以及停在这里的原因。
+// isSuccessfulAttempt 兼容历史运行记录，同时让新记录统一使用“执行成功”。
+function isSuccessfulAttempt(attempt: RunStepAttempt): boolean {
+  return attempt.verdictName === '执行成功' || attempt.verdictName === '确定成功'
+}
+
+// nodeErrors 汇总这个节点上需要人看一眼的事实：门禁未通过、执行失败的尝试、以及停在这里的原因。
 const nodeErrors = computed<NodeErrorRow[]>(() => {
   const rows: NodeErrorRow[] = []
   const preview = currentPreview.value
@@ -63,7 +68,7 @@ const nodeErrors = computed<NodeErrorRow[]>(() => {
   }
   for (const step of nodeSteps.value) {
     for (const attempt of step.attempts) {
-      if (attempt.verdictName === '确定成功') continue
+      if (isSuccessfulAttempt(attempt)) continue
       rows.push({
         key: `${step.stepNo}-${attempt.attemptNo}`,
         title: `第 ${step.stepNo} 步 · ${step.actionName}`,
@@ -154,8 +159,8 @@ async function copyCurl(step: RunStep): Promise<void> {
 
 // phaseOrder 用于按七阶段顺序展示耗时（阶段流水只在详情里给排查者看）。
 const phaseOrder: Array<[string, string]> = [
-  ['plan', '取步'], ['gate', '门禁'], ['control', '控制'], ['prepare', '演员'],
-  ['submit', '提交'], ['verify', '核验'], ['settle', '落账'],
+  ['plan', '准备'], ['gate', '检查'], ['control', '等待放行'], ['prepare', '准备执行'],
+  ['submit', '发送请求'], ['verify', '确认结果'], ['settle', '记录结果'],
 ]
 
 // GateSnapshotShape 是门禁结论快照的结构：逐项中文条件与满足情况。
@@ -367,7 +372,7 @@ const dialogStyle = computed(() => ({
         <div v-if="planDialog.expectedEffect"><dt>预期效果</dt><dd>{{ planDialog.expectedEffect }}</dd></div>
         <div v-if="planDialog.stopOnFailure"><dt>失败处理</dt><dd>{{ planDialog.stopOnFailure }}</dd></div>
         <div v-if="planDialog.recoveryPolicy"><dt>恢复策略</dt><dd>{{ planDialog.recoveryPolicy }}</dd></div>
-        <div><dt>执行前重读目标</dt><dd>{{ planDialog.reloadRequired ? '需要' : '不需要' }}</dd></div>
+          <div><dt>执行前确认当前状态</dt><dd>{{ planDialog.reloadRequired ? '需要' : '不需要' }}</dd></div>
         <div>
           <dt>动作参数</dt>
           <dd>{{ planDialog.parameterCount > 0 ? `${planDialog.parameterCount} 项，原文在 step.log 与 curl.log` : '无' }}</dd>
@@ -401,7 +406,7 @@ const dialogStyle = computed(() => ({
           </li>
         </ul>
         <p v-if="currentPreview.blockReason" class="run-panel__bad">{{ currentPreview.blockReason }}</p>
-        <p class="run-panel__block-title">目标实时事实</p>
+        <p class="run-panel__block-title">目标当前状态</p>
         <p v-for="line in previewFactsText" :key="line">{{ line }}</p>
         <details class="run-panel__request">
           <summary>即将发出的请求</summary>
@@ -410,7 +415,7 @@ const dialogStyle = computed(() => ({
       </template>
     </n-modal>
 
-    <!-- 已执行步骤详情：逐次尝试的判定、依据、阶段耗时、日志位置与可重放 curl。 -->
+    <!-- 已执行步骤详情：逐次尝试的结果、阶段耗时、日志位置与可重放 curl。 -->
     <n-modal
       :show="stepDialog !== null"
       preset="card"
@@ -435,7 +440,6 @@ const dialogStyle = computed(() => ({
             <span v-if="attempt.isReplay" class="run-panel__row-sub">（这次是重放）</span>
           </p>
           <p class="run-panel__reason">{{ attempt.reason }}</p>
-          <p class="run-panel__row-sub">依据：{{ attempt.basis }}</p>
           <p class="run-panel__row-sub">耗时 {{ formatElapsed(attempt.durationMs) }}，trace_id {{ attempt.traceId }}</p>
           <div v-if="attempt.phaseDurations" class="run-panel__phases">
             <span v-for="[phase, label] in phaseOrder" :key="phase" class="run-panel__phase">

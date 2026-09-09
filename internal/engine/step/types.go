@@ -15,7 +15,7 @@ import (
 )
 
 // TargetClient 是执行器需要的最小目标能力面。读写都经 internal/adapter/target，
-// 写端点只有白名单内的两个；新增写端点必须同时更新 F-016 白名单契约。
+// 写端点只能来自动作白名单；新增端点必须同步更新对应白名单契约。
 type TargetClient interface {
 	FindSubmittedFlow(ctx context.Context, active target.Session, instanceID string) (string, []string, string, []string, bool, error)
 	FindDueFlow(ctx context.Context, active target.Session, instanceID string) (string, []string, []string, bool, error)
@@ -116,17 +116,81 @@ type RunContext struct {
 	// ActionPersonIDs 是启动时按当前目标目录解析的动作人员 ID；只允许执行器内部使用，
 	// 不向浏览器或持久化场景透传目标业务标识。
 	ActionPersonIDs map[string][]string
+	// NextNodeAuditors 是启动时为 run_node_choose 下一节点解析的真实处理人。
+	// 仅在内存执行上下文中保存，提交、重新提交和同意都使用同一份结果构造目标 nextAuditorList。
+	NextNodeAuditors map[string][]target.NextAuditor
+	// FlowProxyRemapped 表示本次运行已经通过加签响应确认实例代理被重建；
+	// 只有此时任务读取才允许在旧节点 ID 失配后按实例唯一任务恢复。
+	FlowProxyRemapped bool
 }
 
 // InstanceFacts 是一次目标事实读取的快照，用于门禁复验与事实重读对照。
 type InstanceFacts struct {
-	ReadError    string   `json:"readError,omitempty"`
-	Found        bool     `json:"found"`
-	Status       string   `json:"status,omitempty"`
-	CurrentNodes []string `json:"currentNodes,omitempty"`
-	DueNodes     []string `json:"dueNodes,omitempty"`
+	ReadError string `json:"readError,omitempty"`
+	Found     bool   `json:"found"`
+	Status    string `json:"status,omitempty"`
+	// CreatorRead 表示本次实例读取已经核对创建人；没有该事实时不能把当前账号冒充创建人。
+	CreatorRead bool `json:"creatorRead,omitempty"`
+	// IsInitiator 表示当前会话账号是否为目标实例创建人。
+	IsInitiator bool `json:"isInitiator,omitempty"`
+	// FlowProxyID/FormProxyID 是目标实例当前返回的代理标识；重新提交必须使用这份实时事实，
+	// 不能把计划里的流程代理或历史表单代理当成当前实例标识。
+	FlowProxyID string `json:"flowProxyId,omitempty"`
+	FormProxyID string `json:"formProxyId,omitempty"`
+	// BizRelevance 是目标实例当前业务关联；重提和转发必须沿用它，避免辅助流程丢失业务归属。
+	BizRelevance []target.BizRelevance `json:"bizRelevance,omitempty"`
+	CurrentNodes []string              `json:"currentNodes,omitempty"`
+	DueNodes     []string              `json:"dueNodes,omitempty"`
 	// StepNodeKey 记录本次关心的是哪个节点上的待办（审批步骤对照用）。
 	StepNodeKey string `json:"stepNodeKey,omitempty"`
+	// StorageRead/StorageFound 是暂存检查点读取事实；检查点标识、说明和更新时间用于判断本次是否新增或更新。
+	StorageRead       bool   `json:"storageRead,omitempty"`
+	StorageFound      bool   `json:"storageFound,omitempty"`
+	StorageDataID     string `json:"storageDataId,omitempty"`
+	StorageAuditDesc  string `json:"storageAuditDesc,omitempty"`
+	StorageUpdateDate string `json:"storageUpdateDate,omitempty"`
+	// UrgeRecordsRead/UrgeRecordCount 是催办记录读取事实。
+	UrgeRecordsRead bool `json:"urgeRecordsRead,omitempty"`
+	UrgeRecordCount int  `json:"urgeRecordCount,omitempty"`
+	// TrackingRead/Tracking 是当前登录用户的关注状态读取事实。
+	TrackingRead bool `json:"trackingRead,omitempty"`
+	Tracking     bool `json:"tracking,omitempty"`
+	// ActionFactRead 表示本动作的专用结果接口已经成功读取，不能用实例节点未变化代替它。
+	ActionFactRead bool `json:"actionFactRead,omitempty"`
+	// CurrentTaskRead/CurrentTaskFound 是任务级动作的当前待办快照；门禁不得仅凭实例节点推断待办归属。
+	CurrentTaskRead      bool   `json:"currentTaskRead,omitempty"`
+	CurrentTaskFound     bool   `json:"currentTaskFound,omitempty"`
+	CurrentTaskLinkID    string `json:"currentTaskLinkId,omitempty"`
+	CurrentTaskParentID  string `json:"currentTaskParentId,omitempty"`
+	CurrentTaskBatchNo   string `json:"currentTaskBatchNo,omitempty"`
+	CurrentTaskFlowProxy string `json:"currentTaskFlowProxy,omitempty"`
+	CurrentTaskNodeID    string `json:"currentTaskNodeId,omitempty"`
+	// CompletedTask* 是取回动作的当前账号已办任务快照。
+	CompletedTaskRead     bool   `json:"completedTaskRead,omitempty"`
+	CompletedTaskFound    bool   `json:"completedTaskFound,omitempty"`
+	CompletedTaskLinkID   string `json:"completedTaskLinkId,omitempty"`
+	CompletedTaskNodeID   string `json:"completedTaskNodeId,omitempty"`
+	CompletedTaskParentID string `json:"completedTaskParentId,omitempty"`
+	CompletedTaskBatchNo  string `json:"completedTaskBatchNo,omitempty"`
+	CompletedTaskAuditWay string `json:"completedTaskAuditWay,omitempty"`
+	// 下面字段是动作门禁从目标任务链、代理树和审核记录得到的结论。
+	EditableProxyRead   bool   `json:"editableProxyRead,omitempty"`
+	ActorSwitchRead     bool   `json:"actorSwitchRead,omitempty"`
+	PreviousTaskRead    bool   `json:"previousTaskRead,omitempty"`
+	PreviousTaskExists  bool   `json:"previousTaskExists,omitempty"`
+	PreviousNodeType    string `json:"previousNodeType,omitempty"`
+	PreviousNodeIsStart bool   `json:"previousNodeIsStart,omitempty"`
+	// SuccessorStateKnown 为 false 时，目标任务列表没有可用的全局后继视图，取回接口必须自行确认后继状态。
+	SuccessorStateKnown       bool `json:"successorStateKnown,omitempty"`
+	NextTaskProcessed         bool `json:"nextTaskProcessed,omitempty"`
+	RetrieveAlreadyUsed       bool `json:"retrieveAlreadyUsed,omitempty"`
+	RetrieveNodeIsStart       bool `json:"retrieveNodeIsStart,omitempty"`
+	CurrentTaskHandledByOther bool `json:"currentTaskHandledByOther,omitempty"`
+	CurrentTaskCountersign    bool `json:"currentTaskCountersign,omitempty"`
+	CurrentTaskParallel       bool `json:"currentTaskParallel,omitempty"`
+	// PendingTaskRead/PendingTaskFound 是实例级动作（如催办）读取到的全实例待办事实。
+	PendingTaskRead  bool `json:"pendingTaskRead,omitempty"`
+	PendingTaskFound bool `json:"pendingTaskFound,omitempty"`
 }
 
 // EncodeInstanceFacts 把目标事实快照序列化为落库文本（run_step_attempts.before_facts）。
@@ -210,6 +274,12 @@ type StepPreview struct {
 	writeErrClass model.FailureClass
 }
 
+// WriteSent 报告本次预览是否已进入目标写请求阶段。
+// 控制层据此在写后本地落账失败时封存现场，禁止用户再次放行造成重复业务操作。
+func (p *StepPreview) WriteSent() bool {
+	return p != nil && p.writeSent
+}
+
 // StepOutcome 是一步走完后的结果，供控制层决定路径去向。
 type StepOutcome struct {
 	Verdict string // confirmed_success / confirmed_failure / uncertain
@@ -217,6 +287,12 @@ type StepOutcome struct {
 	NoMoreSteps bool
 	// MainInstanceRef 是本步之后的主实例引用（发起成功时写入）。
 	MainInstanceRef string
+	// FlowProxyID 是加签更新后目标返回的新实例私有流程代理标识。
+	FlowProxyID string
+	// CurrentNodeProxyID 是加签更新后目标返回的当前节点代理标识。
+	CurrentNodeProxyID string
+	// AuxiliaryInstanceRef 是转发动作创建的辅助实例引用，供运行记录与后续状态确认使用。
+	AuxiliaryInstanceRef string
 	// DeviationDetected 表示核验重读的实际当前节点与已配置路径的下一个预期节点不一致
 	//（纲领第 7.4 节：偏离是独立事实，停止在下一步阶段 3 生效）。
 	DeviationDetected bool

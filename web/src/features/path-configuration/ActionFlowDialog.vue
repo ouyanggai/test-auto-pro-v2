@@ -65,7 +65,7 @@ function stepName(step: PathCompiledActionStep) {
 function stepDetails(step: PathCompiledActionStep) {
   const parameters = pathActionFlowParameters(step)
   return [
-    { name: '前置事实', value: step.precondition },
+    { name: '执行前条件', value: step.precondition },
     { name: '演员策略', value: step.actorPolicy ?? '' },
     { name: '参数', value: parameters.join('；') },
     { name: '失败停止条件', value: step.stopOnFailure },
@@ -112,7 +112,7 @@ function stepDetails(step: PathCompiledActionStep) {
                     <span class="action-flow__sequence">{{ step.sequence }}</span>
                     <strong>{{ stepName(step) }}</strong>
                     <n-tag size="tiny" :type="sourceTag(step.source)">{{ sourceLabel(step.source) }}</n-tag>
-                    <n-tag v-if="step.reloadRequired" size="tiny">执行前重读目标事实</n-tag>
+                    <n-tag v-if="step.reloadRequired" size="tiny">执行前确认当前状态</n-tag>
                   </div>
                   <!-- 这里显示服务端给出的中文预期效果，不显示节点键和动作键这类内部标识。 -->
                   <p v-if="step.expectedEffect" class="action-flow__effect">{{ step.expectedEffect }}</p>

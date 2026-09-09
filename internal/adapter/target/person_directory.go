@@ -81,6 +81,8 @@ func (c *Client) resolveFlowAuditMetadata(ctx context.Context, active Session, t
 		}
 	}
 	walk(tree)
+	// 转发接收人来自当前登录公司的人员目录，不绑定某个审批节点；只读取一次并在实例级配置中复用。
+	resolver.resolveForwardCandidates(tree)
 }
 
 // resolveAddSignCandidates 为审批或协同节点读取新增加签节点可使用的公司人员目录，不复用当前节点处理人范围。
@@ -112,6 +114,37 @@ func (r *auditDirectoryResolver) resolveAddSignCandidates(node *FlowNodeTemplate
 		return
 	}
 	node.AddSignCandidates = candidates
+}
+
+// resolveForwardCandidates 为实例级转发读取当前登录公司的完整人员候选；读取失败时保留明确阻断原因，禁止保存不可执行的转发动作。
+func (r *auditDirectoryResolver) resolveForwardCandidates(tree *FlowNodeTemplate) {
+	if tree == nil {
+		return
+	}
+	items, err := r.personnelItems()
+	if err != nil {
+		tree.ForwardIssues = append(tree.ForwardIssues, FlowAuditResolutionIssue{Category: "转发接收人", Reason: "目标公司人员目录读取失败"})
+		return
+	}
+	candidates := make([]FlowAuditCandidate, 0, len(items))
+	for _, item := range items {
+		candidate := auditCandidateFromNamed(item)
+		if candidate.ID == "" || candidate.Name == "" {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	candidates = appendUniqueAuditCandidates(nil, candidates...)
+	if len(candidates) == 0 {
+		tree.ForwardIssues = append(tree.ForwardIssues, FlowAuditResolutionIssue{Category: "转发接收人", Reason: "目标公司人员目录没有可配置人员"})
+		return
+	}
+	if len(candidates) > maxAuditDirectoryCandidates {
+		tree.ForwardCandidates = candidates[:maxAuditDirectoryCandidates]
+		tree.ForwardIssues = append(tree.ForwardIssues, FlowAuditResolutionIssue{Category: "转发接收人", Reason: "目标公司人员目录超过当前安全解析上限"})
+		return
+	}
+	tree.ForwardCandidates = candidates
 }
 
 // resolve 补齐固定详情、运行节点范围名称和合法候选；未知范围或目录失败均阻止误保存为完成。

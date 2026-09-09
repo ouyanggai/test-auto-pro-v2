@@ -111,6 +111,8 @@ type Observation struct {
 	SessionRejected bool
 	// Reread 是事实重读结论。
 	Reread Reread
+	// ActionFactVerified 表示动作专用结果接口已成功返回；不推进流程的动作必须有此证据才能成功。
+	ActionFactVerified bool
 }
 
 // Verdict 是判定结果，除结论外一并给出中文原因与依据，便于直接写进日志与界面提示。

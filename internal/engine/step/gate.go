@@ -2,6 +2,7 @@ package step
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -22,12 +23,13 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 		CurrentNodeKey:  step.NodeKey,
 		CurrentNodeType: info.Type,
 	}
-	if step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft {
-		// 发起节点的两个动作（提交/保存草稿）都由计划账号以发起人身份执行：
+	if step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft || step.Action == model.ActionResubmit {
+		// 发起节点动作都由计划账号以发起人身份执行：
 		// 2026-09-07 实测修复——save_draft 此前落入审批分支，IsInitiator 恒为 false，
 		// 发起人本人的草稿也被门禁「只有流程发起人可以保存草稿」误拒。
 		ctx.FlowSource = runCtx.Source
-		ctx.IsInitiator = true
+		// 新发起没有实例创建人可读；已有实例必须使用目标返回的创建人事实。
+		ctx.IsInitiator = !facts.CreatorRead || facts.IsInitiator
 		if step.Action == model.ActionSubmit {
 			// 新发起提交：实例还不存在，“新建且非草稿”由运行上下文保证。
 			ctx.InstanceStatus = ""
@@ -38,13 +40,48 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 		// 必须带上，否则「新建或草稿」判据拿空状态恒失败（2026-09-07 实测第二层）。
 		ctx.InstanceStatus = facts.Status
 		ctx.InstanceVisible = facts.Found
-		ctx.HasCurrentTask = len(facts.DueNodes) > 0
+		if facts.CurrentTaskRead {
+			ctx.HasCurrentTask = facts.CurrentTaskFound
+			ctx.CurrentTaskDone = facts.Found && !facts.CurrentTaskFound
+		} else {
+			ctx.HasCurrentTask = len(facts.DueNodes) > 0
+		}
 		return ctx
 	}
 	ctx.InstanceStatus = facts.Status
 	ctx.InstanceVisible = facts.Found
-	ctx.HasCurrentTask = len(facts.DueNodes) > 0
-	ctx.CurrentTaskDone = facts.Found && len(facts.DueNodes) == 0
+	if facts.Found && strings.EqualFold(strings.TrimSpace(ctx.FlowSource), "new") {
+		// 提交后的同一运行仍保留计划来源 new；实例已经由目标创建后，实例级动作应按已发实例门禁判断。
+		ctx.FlowSource = "submitted"
+	}
+	if step.Action == model.ActionWithdraw {
+		// 撤回只能由目标实例创建人执行；没有成功读取创建人事实时必须保持不可用。
+		ctx.IsInitiator = facts.CreatorRead && facts.IsInitiator
+	}
+	if facts.CurrentTaskRead {
+		ctx.HasCurrentTask = facts.CurrentTaskFound
+		ctx.CurrentTaskDone = facts.Found && !facts.CurrentTaskFound
+	} else {
+		ctx.HasCurrentTask = len(facts.DueNodes) > 0
+		ctx.CurrentTaskDone = facts.Found && len(facts.DueNodes) == 0
+	}
+	// 实例级动作也必须基于本次目标读取决定可用性：关注状态、待办接收人和已办归属
+	// 都不能从用户之前保存的编排配置推断。
+	ctx.HasPendingRecipient = len(facts.DueNodes) > 0 || (facts.PendingTaskRead && facts.PendingTaskFound)
+	ctx.Followed = facts.TrackingRead && facts.Tracking
+	ctx.HasEditableProxy = facts.EditableProxyRead
+	ctx.CanSwitchActor = facts.ActorSwitchRead
+	ctx.HasCompletedTask = facts.CompletedTaskRead && facts.CompletedTaskFound
+	ctx.SuccessorStateKnown = facts.SuccessorStateKnown
+	ctx.NextTaskProcessed = facts.NextTaskProcessed
+	ctx.PreviousTaskExists = facts.PreviousTaskRead && facts.PreviousTaskExists
+	ctx.PreviousNodeType = facts.PreviousNodeType
+	ctx.PreviousNodeIsStart = facts.PreviousNodeIsStart
+	ctx.RetrieveNodeIsStart = facts.RetrieveNodeIsStart
+	ctx.RetrieveAlreadyUsed = facts.RetrieveAlreadyUsed
+	ctx.CurrentTaskHandledByOther = facts.CurrentTaskHandledByOther
+	ctx.CurrentTaskCountersign = facts.CurrentTaskCountersign
+	ctx.CurrentTaskParallel = facts.CurrentTaskParallel
 	return ctx
 }
 
@@ -71,24 +108,22 @@ func evaluateGate(step model.CompiledActionStep, ctx model.ActionContext) (model
 // formData 是 BuildNodeFormData 已按节点权限算好的完整表单数据：目标保存是整份覆盖，
 // 所以除了明确不带表单数据的动作，这里一律提交这一份，不再直接透传历史快照。
 func buildRequest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string) (any, string, map[string]any, error) {
-	nextAuditors := nextAuditorsOf(step)
+	return buildRequestWithFacts(runCtx, step, session, formData, nextNodeKey, InstanceFacts{})
+}
+
+// buildRequestWithFacts 在构造动作载荷时接收放行前刚读取的目标事实；实例代理和业务关联必须使用实时值，
+// 避免重提、审批、不同意或转发覆盖后丢失目标已有上下文。事实为空时保留测试和纯载荷构造调用的既有行为。
+func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string, facts InstanceFacts) (any, string, map[string]any, error) {
 	targetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
 	switch step.Action {
 	case model.ActionSubmit, model.ActionSaveDraft:
-		// 手动条件分支（custom_choose）的选择必须随提交以 nextAuditorList[].nodeProxyId 传递
-		// （FlowOperateServiceImpl.validateHandBranchAndReturnExecuteNode 按 nodeProxyId 匹配候选分支节点），
-		// 缺失时目标以「手动条件分支,请选择」拒绝。fixedExecuteNodeId 是并行条件分支的另一机制，此处不用。
-		auditors := nextAuditors
-		if branchTarget := runCtx.SubmitBranchTargetNodeID; branchTarget != "" {
-			auditors = append([]target.NextAuditor{{NodeProxyID: branchTarget}}, auditors...)
-		}
-		// 下一节点的审批方式属「需要外部指定人员」集合（FlowOperateServiceImpl.settingsAuditPerson
-		// 的 isSettingsPerson：run_node_choose/branched_passage_manager/department_supervisor/
-		// extendedAttribute/form_person/level）时，提交必须带 nextAuditorList 人员指定项：
-		// run_node_choose 硬校验 nodeProxyId 匹配，缺失即抛「未设置审批人」（2026-09-07 实测）；
-		// level 等类型在目标侧取人失败时也按 nextAuditorList 兜底。节点身份与名称都取真实结构。
-		if info := runCtx.Nodes[nextNodeKey]; info.TargetNodeID != "" && isSettingsPersonAuditType(info.AuditType) {
-			auditors = append(auditors, target.NextAuditor{NodeProxyID: info.TargetNodeID, Name: info.Name})
+		nextAuditors := nextAuditorsOf(step)
+		if step.Action == model.ActionSubmit {
+			var err error
+			nextAuditors, err = nextAuditorsForTransition(runCtx, step, nextNodeKey, true)
+			if err != nil {
+				return nil, "", nil, err
+			}
 		}
 		request := target.SubmitFlowInstanceRequest{
 			InstanceID:   runCtx.PathRun.MainInstanceRef,
@@ -96,35 +131,66 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 			FlowProxyID:  runCtx.FlowProxyID,
 			CompanyID:    session.CompanyID,
 			FormData:     formData,
-			NextAuditors: auditors,
+			BizRelevance: cloneBizRelevance(facts.BizRelevance),
+			NextAuditors: nextAuditors,
 		}
 		if step.Action == model.ActionSaveDraft {
 			request.Status = "draft"
 		}
 		return &request, target.WriteEndpointSubmit, target.BuildSubmitBody(request), nil
 	case model.ActionApprove:
+		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, false)
+		if err != nil {
+			return nil, "", nil, err
+		}
 		request := target.AuditCurrentTaskRequest{
 			InstanceID:   runCtx.PathRun.MainInstanceRef,
-			FlowProxyID:  runCtx.FlowProxyID,
+			FlowProxyID:  firstNonEmpty(facts.CurrentTaskFlowProxy, facts.FlowProxyID, runCtx.FlowProxyID),
 			AuditStatus:  "pass",
 			ExecuteDesc:  auditMessage(runCtx, step),
 			FormData:     formData,
+			BizRelevance: cloneBizRelevance(facts.BizRelevance),
 			NextAuditors: nextAuditors,
 		}
 		return &request, target.WriteEndpointAudit, target.BuildAuditBody(request), nil
+	case model.ActionResubmit:
+		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, true)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		request := target.ActionWriteRequest{
+			Action:       string(step.Action),
+			InstanceID:   runCtx.PathRun.MainInstanceRef,
+			FlowProxyID:  firstNonEmpty(facts.FlowProxyID, runCtx.FlowProxyID),
+			FormProxyID:  facts.FormProxyID,
+			CompanyID:    session.CompanyID,
+			FormData:     formData,
+			BizRelevance: cloneBizRelevance(facts.BizRelevance),
+			NextAuditors: nextAuditors,
+		}
+		body, endpoint, err := target.BuildActionBody(request)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return &request, endpoint, body, nil
 	default:
 		// F-019 全动作分派：不同意(no_pass)、暂存、重新提交、回退、取回、撤回、催办、转发、
 		// 加签/移交、关注/取消关注全部经动作目录语义走统一载荷构造器（端点在白名单内）。
 		request := target.ActionWriteRequest{
 			Action:       string(step.Action),
 			InstanceID:   runCtx.PathRun.MainInstanceRef,
-			FlowProxyID:  runCtx.FlowProxyID,
+			FlowProxyID:  firstNonEmpty(facts.CurrentTaskFlowProxy, facts.FlowProxyID, runCtx.FlowProxyID),
 			FormData:     formData,
-			NextAuditors: nextAuditors,
+			BizRelevance: cloneBizRelevance(facts.BizRelevance),
+			NextAuditors: nextAuditorsOf(step),
 		}
 		switch step.Action {
-		case model.ActionReject, model.ActionTransfer, model.ActionAddSign:
+		case model.ActionReject, model.ActionTransfer:
 			request.AuditStatus = auditStatusOf(step.Action)
+			request.ExecuteDesc = auditMessage(runCtx, step)
+			request.NodeProxyID = targetNodeID
+			request.UserIDs = append([]string(nil), runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)]...)
+		case model.ActionAddSign:
 			request.ExecuteDesc = auditMessage(runCtx, step)
 			request.NodeProxyID = targetNodeID
 			request.UserIDs = append([]string(nil), runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)]...)
@@ -139,7 +205,7 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 		case model.ActionWithdraw:
 			request.ExecuteDesc = auditMessage(runCtx, step)
 		case model.ActionForward:
-			request.ReceiverID = parameterString(step, "receiverId")
+			request.ReceiverID = firstActionPersonID(runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)])
 			request.Name = instanceName(runCtx, step) + "（转发）"
 		case model.ActionFollow:
 			request.Tracking = boolPtr(true)
@@ -156,25 +222,60 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 	}
 }
 
-// auditStatusOf 返回动作对应的目标 ExecuteResultEnum 编码名。
-// 加签的枚举值源码未见明确定义，按「源码推断、待实测」标注（F-019 实施记录）。
+// nextAuditorsForTransition 按目标提交、重新提交和同意共用的协议构造下一节点选人数据。
+// 仅 run_node_choose 需要本平台指定真实用户；其他动态审批方式由目标按当前表单和组织上下文解析，
+// 不能伪造空 bizId 的节点占位项，否则目标会把它当成无效人员配置。
+func nextAuditorsForTransition(runCtx RunContext, step model.CompiledActionStep, nextNodeKey string, includeSubmitBranch bool) ([]target.NextAuditor, error) {
+	auditors := append([]target.NextAuditor(nil), nextAuditorsOf(step)...)
+	if includeSubmitBranch {
+		// 手动条件分支（custom_choose）的选择必须以 nextAuditorList[].nodeProxyId 传递。
+		if branchTarget := strings.TrimSpace(runCtx.SubmitBranchTargetNodeID); branchTarget != "" {
+			auditors = append([]target.NextAuditor{{NodeProxyID: branchTarget}}, auditors...)
+		}
+	}
+	info, exists := runCtx.Nodes[strings.TrimSpace(nextNodeKey)]
+	if !exists || strings.TrimSpace(info.AuditType) != "run_node_choose" {
+		return auditors, nil
+	}
+	if strings.TrimSpace(info.TargetNodeID) == "" {
+		return nil, fmt.Errorf("下一节点「%s」缺少目标节点标识，无法选择处理人", info.Name)
+	}
+	selected := runCtx.NextNodeAuditors[strings.TrimSpace(nextNodeKey)]
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("下一节点「%s」需要选择处理人，但未解析到当前有效人员", info.Name)
+	}
+	for _, candidate := range selected {
+		candidate.BizID = strings.TrimSpace(candidate.BizID)
+		candidate.Name = strings.TrimSpace(candidate.Name)
+		if candidate.BizID == "" || candidate.Name == "" {
+			return nil, fmt.Errorf("下一节点「%s」存在无效处理人，无法发送目标请求", info.Name)
+		}
+		candidate.AuditDetailTyp = "personnel"
+		candidate.NodeProxyID = info.TargetNodeID
+		auditors = append(auditors, candidate)
+	}
+	return auditors, nil
+}
+
+// auditStatusOf 返回需要 auditRecord 的动作对应的目标 ExecuteResultEnum 编码名。
+// 加签通过 updateFlowProxy 写入完整代理树，不携带 auditStatus。
 func auditStatusOf(action model.ActionKey) string {
 	switch action {
 	case model.ActionReject:
 		return "no_pass"
 	case model.ActionTransfer:
 		return "transfer"
-	case model.ActionAddSign:
-		return "add_sign"
 	default:
 		return string(action)
 	}
 }
 
-// parameterString 读取动作参数里的字符串值。
-func parameterString(step model.CompiledActionStep, key string) string {
-	if value, ok := step.Parameters[key].(string); ok {
-		return strings.TrimSpace(value)
+// firstActionPersonID 取动作人员策略解析出的首个真实用户 ID；转发目标必须来自服务端目录策略，不能信任浏览器参数。
+func firstActionPersonID(values []string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
 	}
 	return ""
 }
@@ -187,18 +288,6 @@ func boolPtr(value bool) *bool {
 // actionPersonKey 生成运行上下文内人员解析结果的稳定索引，不把目标人员 ID 写入场景配置。
 func actionPersonKey(nodeKey string, action model.ActionKey) string {
 	return ActionPersonIndex(nodeKey, action)
-}
-
-// isSettingsPersonAuditType 对齐目标 FlowOperateServiceImpl 的 isSettingsPerson 集合：
-// 这些审批方式的下一节点需要提交方在 nextAuditorList 里指定人员/节点，
-// 其余审批方式（company/department/initiator/assign/role/position 等）由目标自行解析，不传。
-func isSettingsPersonAuditType(auditType string) bool {
-	switch strings.TrimSpace(auditType) {
-	case "run_node_choose", "branched_passage_manager", "department_supervisor",
-		"extendedAttribute", "form_person", "level":
-		return true
-	}
-	return false
 }
 
 // nextAuditorsOf 提取分支选择参数 fixedExecuteNodeId：条件分支的手动指定节点，
@@ -266,4 +355,9 @@ func collectKeys(value any) []string {
 // BuildRequestForTest 暴露提交载荷构造，供 test 目录下的定向用例锁定 nextAuditorList 语义。
 func BuildRequestForTest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string) (any, string, map[string]any, error) {
 	return buildRequest(runCtx, step, session, formData, nextNodeKey)
+}
+
+// BuildRequestWithFactsForTest 暴露带实时实例事实的请求构造，供 test 目录锁定业务关联不会在执行器层丢失。
+func BuildRequestWithFactsForTest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string, facts InstanceFacts) (any, string, map[string]any, error) {
+	return buildRequestWithFacts(runCtx, step, session, formData, nextNodeKey, facts)
 }

@@ -24,6 +24,8 @@ type WriteResponse struct {
 	IsSuccessPresent bool
 	Code             string
 	Message          string
+	// Data 是目标成功响应的原始 data，供 updateFlowProxy 读取新代理和当前节点标识。
+	Data json.RawMessage
 }
 
 // BusinessRejection 是目标业务包络的失败响应（isSuccess=false）。
@@ -49,8 +51,8 @@ type NextAuditor struct {
 
 // BizRelevance 对应目标的 flowInstanceBizRelevanceList 元素：业务关联（公司、项目等）。
 type BizRelevance struct {
-	OtherBiz   string `json:"otherBiz,omitempty"`
-	OtherBizID string `json:"otherBizId,omitempty"`
+	OtherBiz   string `json:"otherBiz"`
+	OtherBizID string `json:"otherBizId"`
 }
 
 // SubmitFlowInstanceRequest 是发起主实例的语义意图。执行器给出意图，适配层负责协议。
@@ -117,9 +119,13 @@ func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 		// 条件分支手动指定节点是协议的顶层字段，不属于 data 容器（FlowInstanceProtocol:47）。
 		body["fixedExecuteNodeId"] = id
 	}
-	if len(request.FormData) > 0 {
-		body["formDataMongoVo"] = map[string]any{"data": request.FormData}
+	// 目标服务在 submit/reSubmit/audit 内部都会读取 formDataMongoVo；即使表单为空也必须发送空对象，
+	// 否则目标把缺少容器当成请求结构错误，而不是合法的空表单。
+	formData := request.FormData
+	if len(formData) == 0 {
+		formData = json.RawMessage(`{}`)
 	}
+	body["formDataMongoVo"] = map[string]any{"data": formData}
 	if len(request.NextAuditors) > 0 {
 		body["nextAuditorList"] = request.NextAuditors
 	}
@@ -186,8 +192,12 @@ type AuditCurrentTaskRequest struct {
 	ExecuteDesc string
 	// FormData 是分支判断字段/表单数据的原始 JSON，可空。
 	FormData json.RawMessage
+	// BizRelevance 是实例已有业务关联；审批保存时必须原样带回，避免目标覆盖后丢失业务归属。
+	BizRelevance []BizRelevance
 	// NextAuditors 是分支选择/下一节点选人，可空。
 	NextAuditors []NextAuditor
+	// Tracking 是审批完成后是否关注实例；目标前端会把它作为 audit 顶层字段发送。
+	Tracking *bool
 }
 
 // AuditCurrentTaskResult 是审批返回的目标事实摘要。
@@ -206,6 +216,9 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	if id := strings.TrimSpace(request.FlowProxyID); id != "" {
 		data["flowProxyId"] = id
 	}
+	if len(request.BizRelevance) > 0 {
+		data["flowInstanceBizRelevanceList"] = request.BizRelevance
+	}
 	auditRecord := map[string]any{
 		"auditStatus": strings.TrimSpace(request.AuditStatus),
 	}
@@ -214,11 +227,16 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	}
 	data["auditRecord"] = auditRecord
 	body := map[string]any{"data": data}
-	if len(request.FormData) > 0 {
-		body["formDataMongoVo"] = map[string]any{"data": request.FormData}
+	formData := request.FormData
+	if len(formData) == 0 {
+		formData = json.RawMessage(`{}`)
 	}
+	body["formDataMongoVo"] = map[string]any{"data": formData}
 	if len(request.NextAuditors) > 0 {
 		body["nextAuditorList"] = request.NextAuditors
+	}
+	if request.Tracking != nil {
+		body["tracking"] = *request.Tracking
 	}
 	return body
 }

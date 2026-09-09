@@ -19,6 +19,17 @@ type Session struct {
 	Summary      AccountSummary `json:"-"`
 }
 
+// StorageFormData 是目标暂存接口返回的当前用户、批次和节点检查点摘要。
+type StorageFormData struct {
+	ID             string
+	FlowInstanceID string
+	FlowBatchID    string
+	DataID         string
+	AuditDesc      string
+	NodeID         string
+	UpdateDate     string
+}
+
 type FlowTemplate struct {
 	ID                string `json:"id"`
 	FlowName          string `json:"flowName"`
@@ -106,6 +117,8 @@ type DueFlow struct {
 // TaskSnapshot 是目标任务链接的实时快照；任务 ID 和批次号只能来自这份读取结果，
 // 不能从配置参数或上一次写请求沿用。
 type TaskSnapshot struct {
+	LinkID                string
+	ParentLinkID          string
 	JobTaskID             string
 	FlowInstanceID        string
 	FlowNodeProxyID       string
@@ -116,6 +129,17 @@ type TaskSnapshot struct {
 	FlowProxyID           string
 	AuditWay              string
 	FlowNextNodeAuditType string
+	BranchExecuteType     string
+}
+
+// AuditRecordSnapshot 是目标审核记录的只读事实摘要，用于取回和并发会签门禁。
+type AuditRecordSnapshot struct {
+	FlowJobTaskID   string
+	FlowInstanceID  string
+	FlowNodeProxyID string
+	BatchNo         string
+	ExecutorID      string
+	AuditStatus     string
 }
 
 // FlowTreeSnapshot 把本次读取的真实代理树和运行态入口绑定在一起。
@@ -143,6 +167,9 @@ type FlowNodeTemplate struct {
 	AuditConfig       *FlowNodeAuditConfig
 	AddSignCandidates []FlowAuditCandidate
 	AddSignIssues     []FlowAuditResolutionIssue
+	// ForwardCandidates 是实例级转发可用的目标公司人员，和节点处理人候选分开维护。
+	ForwardCandidates []FlowAuditCandidate
+	ForwardIssues     []FlowAuditResolutionIssue
 	FieldPowers       []FlowNodeFieldPower
 	IsSkip            *bool
 	Delay             *int

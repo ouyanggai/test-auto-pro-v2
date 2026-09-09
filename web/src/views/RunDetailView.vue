@@ -280,7 +280,7 @@ const runErrorNotes = computed<Record<string, string>>(() => {
   const closing = ['失败', '结果待确认']
   if (!closing.includes(detail.value.pathRunStatusName)) return notes
   const last = detail.value.steps[detail.value.steps.length - 1]
-  const bad = last.attempts.find((attempt) => attempt.verdictName !== '确定成功')
+  const bad = last.attempts.find((attempt) => attempt.verdictName !== '执行成功' && attempt.verdictName !== '确定成功')
   if (bad?.reason) {
     const nodeID = last.nodeId || last.nodeKey
     if (nodeID) notes[nodeID] = bad.reason
@@ -564,7 +564,7 @@ function commandButtonText(command: { command: string, label: string }): string 
 const noCommandReason = computed(() => {
   if (!detail.value) return ''
   if (detail.value.loopRunning) return '正在连续执行，命令在停下后可用'
-  if (detail.value.sceneLost) return '这次运行无法安全继续；已保存的记录仅供参考，如需继续请从计划重新发起运行'
+  if (detail.value.sceneLost) return '本次运行已停止；请查看步骤错误后从计划重新发起运行'
   return '当前状态下没有可用命令，请查看上方停止原因'
 })
 
@@ -585,7 +585,7 @@ const topConclusion = computed(() => {
   const finalTarget = detail.value.finalTarget as { statusName?: string; currentNodeNames?: string[]; dueNodeNames?: string[] } | undefined
   if (finalTarget?.statusName) {
     const due = finalTarget.dueNodeNames || []
-    parts.push(`最终目标事实：实例${finalTarget.statusName}${finalTarget.currentNodeNames?.length ? `，当前节点 ${finalTarget.currentNodeNames.join('、')}` : ''}，待办 ${due.length} 个`)
+    parts.push(`最终状态：实例${finalTarget.statusName}${finalTarget.currentNodeNames?.length ? `，当前节点 ${finalTarget.currentNodeNames.join('、')}` : ''}，待办 ${due.length} 个`)
   }
   // 没有任何可说的结论时不占位：空结论行对用户没有信息量。
   return parts.join('；')
@@ -604,7 +604,7 @@ const freshnessStale = computed(() => {
 // freshnessText 用中文说明这屏事实有多新。
 const freshnessText = computed(() => {
   const elapsed = nowTick.value - lastUpdateAt.value
-  if (freshnessStale.value) return `已 ${formatElapsed(elapsed)}没有新事实，疑似无响应`
+  if (freshnessStale.value) return `已 ${formatElapsed(elapsed)}没有新的状态更新，疑似目标没有响应`
   if (elapsed < 3000) return '刚刚更新'
   return `${formatElapsed(elapsed)}前更新`
 })

@@ -35,7 +35,7 @@ for required in TestF016SingleStepControlLoop TestF016StopControl TestF016StepLo
   fi
 done
 
-printf '%s\n' '[F-019] 动作白名单契约（11 端点）'
+printf '%s\n' '[F-019] 动作白名单契约（12 端点）'
 ./test/contracts/f019/action_whitelist.sh
 printf '%s\n' '[F-018] 对账只读契约'
 ./test/contracts/f018/reconcile_readonly.sh

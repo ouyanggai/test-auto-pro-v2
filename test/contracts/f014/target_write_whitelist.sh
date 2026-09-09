@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # F-014 写端点白名单检查：本切片白名单仍为空，目标适配层不允许出现任何写端点。
-# 与 F-013 同形式，但覆盖动作目录登记的全部 11 个写端点，并额外锁定 batchCode 禁令：
+# 与 F-013 同形式，但覆盖动作目录登记的全部 12 个写端点，并额外锁定 batchCode 禁令：
 # batchCode 不是幂等键，而是目标平台的批次补偿开关，带上它会让一次失败触发额外的删除写入。
 # 判定包 internal/engine/verdict 里出现这些端点字面量是允许的：那是前置拒绝清单的键，不是请求。
 
@@ -15,6 +15,7 @@ write_endpoints=(
   '/web/flowInstanceApi/reSubmit'
   '/web/flowInstanceApi/storageFormData'
   '/web/flowInstanceApi/approverAppend'
+  '/web/flowInstanceApi/updateFlowProxy'
   '/flowInstanceApi/audit'
   '/web/flowInstanceApi/rollBackThePreviousLevel'
   '/web/flowInstanceApi/retrieveProcess'

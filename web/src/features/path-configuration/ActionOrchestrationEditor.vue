@@ -232,16 +232,16 @@ function removeAction(index: number) {
           <div class="action-orchestration__catalog-head">
             <strong>{{ item.label }}</strong>
             <n-tag size="tiny" :type="item.enabled ? 'success' : 'warning'">{{ item.enabled ? '可配置' : '不可配置' }}</n-tag>
-            <n-tag v-if="item.requiresReload" size="tiny">需重读事实</n-tag>
+            <n-tag v-if="item.requiresReload" size="tiny">执行前需确认当前状态</n-tag>
           </div>
           <p>{{ item.description }}</p>
           <p v-if="!item.enabled && item.disabledReason" class="action-orchestration__blocked">{{ item.disabledReason }}</p>
           <p v-if="item.runtimeNote" class="action-orchestration__hint">{{ item.runtimeNote }}</p>
           <p v-if="item.expectedEffect">预期结果：{{ item.expectedEffect }}</p>
           <p v-if="item.preconditions.length">
-            前置事实：<span v-for="precondition in item.preconditions" :key="precondition.key">{{ precondition.label }}（{{ precondition.present ? '已满足' : '未满足' }}）</span>
+            执行前条件：<span v-for="precondition in item.preconditions" :key="precondition.key">{{ precondition.label }}（{{ precondition.present ? '已满足' : '未满足' }}）</span>
           </p>
-          <p v-if="item.reloadRequirements.length">重读要求：{{ item.reloadRequirements.join('、') }}</p>
+          <p v-if="item.reloadRequirements.length">执行前确认：{{ item.reloadRequirements.join('、') }}</p>
         </li>
       </ul>
     </details>

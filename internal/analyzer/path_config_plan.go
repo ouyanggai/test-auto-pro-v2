@@ -242,7 +242,14 @@ func (p *pathConfigProjection) instanceActionConfiguration() model.PathConfigAct
 		ActionPersons: map[string]*PathConfigPersonTarget{}, ActionKinds: map[string]bool{},
 		Catalog: []model.ActionCatalogItem{},
 	}
-	result.Catalog = projectActionCatalog(instanceActionContext(), model.ActionScopeInstance, nil, "", &validationTarget)
+	actionPersons := map[model.ActionKey]*model.PathConfigPerson{}
+	if len(p.forwardIssues) == 0 && len(p.forwardCandidates) > 0 {
+		if person, personTarget := actionCandidatePersonConfig(PathConfigInstanceActionKey(), "forward", "转发接收人", "候选来自目标公司人员目录", p.forwardCandidates, nil); person != nil && personTarget != nil {
+			actionPersons[model.ActionForward] = person
+			validationTarget.ActionPersons[string(model.ActionForward)] = personTarget
+		}
+	}
+	result.Catalog = projectActionCatalog(instanceActionContext(), model.ActionScopeInstance, actionPersons, "", &validationTarget)
 	if len(validationTarget.ActionKinds) == 0 {
 		return result
 	}
@@ -274,6 +281,10 @@ func projectActionCatalog(
 		}
 		item = resolveOrderDependentGate(item, ctx)
 		person := persons[item.Action]
+		if item.Action == model.ActionForward && person == nil {
+			item.Enabled = false
+			item.DisabledReason = "目标公司人员目录未返回可用转发接收人"
+		}
 		result = append(result, projectedCatalogItem(item, person, actionRuntimeNote(item.Action, previousReason)))
 		validationTarget.Catalog = append(validationTarget.Catalog, item)
 		if item.Enabled {

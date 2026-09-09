@@ -1,6 +1,7 @@
 package target
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strconv"
@@ -51,6 +52,35 @@ func (c *Client) FindVisibleTemplate(ctx context.Context, active Session, templa
 
 // FindSubmittedFlow 精确重查已发实例并返回代理树标识、活动入口、真实状态和代理表单。
 func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instanceID string) (string, []string, string, []string, bool, error) {
+	facts, err := c.findSubmittedFlowFacts(ctx, active, instanceID)
+	if err != nil {
+		return "", nil, "", nil, false, err
+	}
+	return facts.FlowProxyID, facts.CurrentNodes, facts.Status, facts.FormProxyIDs, facts.Found, nil
+}
+
+// FindSubmittedFlowWithRelevance 精确重查实例并额外返回目标业务关联，供重提和转发保持原业务上下文。
+// 旧的 FindSubmittedFlow 保留给列表与历史读取调用，避免把业务关联过滤带回实例可见性查询。
+func (c *Client) FindSubmittedFlowWithRelevance(ctx context.Context, active Session, instanceID string) (string, []string, string, []string, []BizRelevance, bool, error) {
+	facts, err := c.findSubmittedFlowFacts(ctx, active, instanceID)
+	if err != nil {
+		return "", nil, "", nil, nil, false, err
+	}
+	return facts.FlowProxyID, facts.CurrentNodes, facts.Status, facts.FormProxyIDs, facts.BizRelevance, facts.Found, nil
+}
+
+// submittedFlowFacts 是按实例精确读取的完整事实，业务关联只作为写请求上下文返回，不参与实例筛选。
+type submittedFlowFacts struct {
+	FlowProxyID  string
+	CurrentNodes []string
+	Status       string
+	FormProxyIDs []string
+	BizRelevance []BizRelevance
+	Found        bool
+}
+
+// findSubmittedFlowFacts 读取实例当前事实；请求不得携带业务关联过滤，否则无关联实例会被目标排除。
+func (c *Client) findSubmittedFlowFacts(ctx context.Context, active Session, instanceID string) (submittedFlowFacts, error) {
 	// 按实例 ID 精确复查事实时绝不附加业务关联过滤。
 	// 实测（2026-09-05，实例 6bd617f3069d462d8bfe63ba12b35739）：带上
 	// flowInstanceBizRelevanceList=[{otherBiz:company,otherBizId:""}] 时目标返回空集，
@@ -66,10 +96,10 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 		"ids": []string{strings.TrimSpace(instanceID)}, "pagination": true, "pages": 1, "size": 100,
 	})
 	if err != nil {
-		return "", nil, "", nil, false, err
+		return submittedFlowFacts{}, err
 	}
 	if !responseSucceeded(resp) {
-		return "", nil, "", nil, false, responseError(resp)
+		return submittedFlowFacts{}, responseError(resp)
 	}
 	var raw []struct {
 		ID                   string          `json:"id"`
@@ -78,9 +108,10 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 		Status               string          `json:"status"`
 		CurrentNodeProxyID   string          `json:"currentNodeProxyId"`
 		CurrentAuditUserInfo json.RawMessage `json:"currentAuditUserInfo"`
+		BizRelevance         []BizRelevance  `json:"flowInstanceBizRelevanceList"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
-		return "", nil, "", nil, false, err
+		return submittedFlowFacts{}, err
 	}
 	for _, item := range raw {
 		if strings.TrimSpace(item.ID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
@@ -93,10 +124,223 @@ func (c *Client) FindSubmittedFlow(ctx context.Context, active Session, instance
 			if formID := strings.TrimSpace(item.FormProxyID); formID != "" {
 				formProxyIDs = append(formProxyIDs, formID)
 			}
-			return strings.TrimSpace(item.FlowProxyID), entries, strings.TrimSpace(item.Status), formProxyIDs, true, nil
+			return submittedFlowFacts{
+				FlowProxyID:  strings.TrimSpace(item.FlowProxyID),
+				CurrentNodes: entries,
+				Status:       strings.TrimSpace(item.Status),
+				FormProxyIDs: formProxyIDs,
+				BizRelevance: normalizeBizRelevance(item.BizRelevance),
+				Found:        true,
+			}, nil
 		}
 	}
-	return "", nil, "", nil, false, nil
+	return submittedFlowFacts{}, nil
+}
+
+// normalizeBizRelevance 清理目标返回的空关联并保留其余项目的原始顺序和重复项，供转发协议原样使用。
+// 目标前端会把已有关联列表直接映射回请求；这里不能按工具侧规则去重，否则可能改变目标业务含义。
+func normalizeBizRelevance(values []BizRelevance) []BizRelevance {
+	result := make([]BizRelevance, 0, len(values))
+	for _, value := range values {
+		value.OtherBiz = strings.TrimSpace(value.OtherBiz)
+		value.OtherBizID = strings.TrimSpace(value.OtherBizID)
+		if value.OtherBiz == "" {
+			continue
+		}
+		result = append(result, value)
+	}
+	return result
+}
+
+// IsFlowCreator 按目标实例列表返回的创建人字段核对当前会话账号，供撤回、草稿和重新提交门禁使用。
+// 创建人字段缺失时返回响应异常，不能把“无法读取”当成当前用户就是发起人。
+func (c *Client) IsFlowCreator(ctx context.Context, active Session, instanceID string) (bool, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	userID := strings.TrimSpace(active.UserID)
+	if instanceID == "" || userID == "" {
+		return false, invalidResponse("creator check missing instance or user id")
+	}
+	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
+		"data": map[string]any{
+			"useScope":     "invest",
+			"auditWayList": []string{},
+			"statusList":   []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
+		},
+		"ids": []string{instanceID}, "pagination": true, "pages": 1, "size": 100,
+	})
+	if err != nil {
+		return false, err
+	}
+	if !responseSucceeded(resp) {
+		return false, responseError(resp)
+	}
+	var raw []struct {
+		ID          string `json:"id"`
+		InitiatorID string `json:"initiatorId"`
+		CreatorID   string `json:"createrId"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return false, err
+	}
+	for _, item := range raw {
+		if strings.TrimSpace(item.ID) != instanceID {
+			continue
+		}
+		creatorID := firstNonEmpty(item.InitiatorID, item.CreatorID)
+		if creatorID == "" {
+			return false, invalidResponse("flow instance response missing creator id")
+		}
+		return strings.TrimSpace(creatorID) == userID, nil
+	}
+	return false, nil
+}
+
+// ReadStorageFormData 读取当前用户在实例当前批次、当前节点上的暂存检查点。
+// 目标接口按会话用户和实例当前节点过滤，返回空 data 表示还没有暂存记录。
+func (c *Client) ReadStorageFormData(ctx context.Context, active Session, instanceID, nodeProxyID string) (StorageFormData, bool, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return StorageFormData{}, false, nil
+	}
+	resp, err := c.call(ctx, "/web/flowInstanceApi/queryStorageFormData", active.SID, map[string]any{
+		"data": map[string]any{
+			"id":                 instanceID,
+			"currentNodeProxyId": strings.TrimSpace(nodeProxyID),
+		},
+	})
+	if err != nil {
+		return StorageFormData{}, false, err
+	}
+	if !responseSucceeded(resp) {
+		return StorageFormData{}, false, responseError(resp)
+	}
+	data := bytes.TrimSpace(resp.Data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return StorageFormData{}, false, nil
+	}
+	var raw struct {
+		ID             string `json:"id"`
+		FlowInstanceID string `json:"flowInstanceId"`
+		FlowBatchID    string `json:"flowBatchId"`
+		DataID         string `json:"dataId"`
+		AuditDesc      string `json:"auditDesc"`
+		NodeID         string `json:"nodeId"`
+		UpdateDate     string `json:"updateDate"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return StorageFormData{}, false, invalidResponse("storage form response is invalid")
+	}
+	return StorageFormData{
+		ID: raw.ID, FlowInstanceID: raw.FlowInstanceID, FlowBatchID: raw.FlowBatchID,
+		DataID: raw.DataID, AuditDesc: raw.AuditDesc, NodeID: raw.NodeID, UpdateDate: raw.UpdateDate,
+	}, true, nil
+}
+
+// CountUrgeRecords 读取指定实例的催办记录总数，用于确认催办请求确实写入记录。
+func (c *Client) CountUrgeRecords(ctx context.Context, active Session, instanceID string) (int, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return 0, nil
+	}
+	resp, err := c.call(ctx, "/web/urgeHandleRecord/list", active.SID, map[string]any{
+		"data":       map[string]any{"flowInstanceId": instanceID},
+		"pagination": true, "pages": 1, "size": 1,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if !responseSucceeded(resp) {
+		return 0, responseError(resp)
+	}
+	if resp.Total > 0 {
+		return resp.Total, nil
+	}
+	var records []json.RawMessage
+	if err := decodeArray(resp.Data, &records); err != nil {
+		return 0, err
+	}
+	return len(records), nil
+}
+
+// ReadFlowTracking 读取当前会话用户对实例的关注状态。
+// found 区分实例不存在与 tracking 字段缺失，后者不能被当成未关注。
+func (c *Client) ReadFlowTracking(ctx context.Context, active Session, instanceID string) (tracking bool, found bool, err error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return false, false, nil
+	}
+	resp, err := c.call(ctx, "/web/flowInstanceApi/list", active.SID, map[string]any{
+		"data": map[string]any{
+			"useScope":     "invest",
+			"auditWayList": []string{},
+			"statusList":   []string{"draft", "await_sent", "run", "withdraw", "termination", "abandon", "rejected", "end"},
+		},
+		"ids": []string{instanceID}, "pagination": true, "pages": 1, "size": 100,
+	})
+	if err != nil {
+		return false, false, err
+	}
+	if !responseSucceeded(resp) {
+		return false, false, responseError(resp)
+	}
+	var raw []struct {
+		ID       string `json:"id"`
+		Tracking *bool  `json:"tracking"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return false, false, err
+	}
+	for _, item := range raw {
+		if strings.TrimSpace(item.ID) != instanceID {
+			continue
+		}
+		if item.Tracking == nil {
+			return false, true, invalidResponse("tracking field is missing")
+		}
+		return *item.Tracking, true, nil
+	}
+	return false, false, nil
+}
+
+// ListAuditRecords 读取实例审核记录，保留任务链、节点、批次和处理人等门禁所需事实。
+// 取回不能只看任务状态：重复取回和会签并发处理都由审核记录决定。
+func (c *Client) ListAuditRecords(ctx context.Context, active Session, instanceID string) ([]AuditRecordSnapshot, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return []AuditRecordSnapshot{}, nil
+	}
+	resp, err := c.call(ctx, "/web/flowAuditRecord/list", active.SID, map[string]any{
+		"data": map[string]any{"flowInstanceId": instanceID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
+	}
+	var raw []struct {
+		FlowJobTaskID   string `json:"flowJobTaskId"`
+		FlowInstanceID  string `json:"flowInstanceId"`
+		FlowNodeProxyID string `json:"flowNodeProxyId"`
+		BatchNo         string `json:"batchNo"`
+		ExecutorID      string `json:"executorId"`
+		AuditStatus     string `json:"auditStatus"`
+	}
+	if err := decodeArray(resp.Data, &raw); err != nil {
+		return nil, err
+	}
+	result := make([]AuditRecordSnapshot, 0, len(raw))
+	for _, item := range raw {
+		if strings.TrimSpace(item.FlowInstanceID) != instanceID {
+			continue
+		}
+		result = append(result, AuditRecordSnapshot{
+			FlowJobTaskID: strings.TrimSpace(item.FlowJobTaskID), FlowInstanceID: strings.TrimSpace(item.FlowInstanceID),
+			FlowNodeProxyID: strings.TrimSpace(item.FlowNodeProxyID), BatchNo: strings.TrimSpace(item.BatchNo),
+			ExecutorID: strings.TrimSpace(item.ExecutorID), AuditStatus: strings.TrimSpace(item.AuditStatus),
+		})
+	}
+	return result, nil
 }
 
 // FindDueFlow 精确重查实例全部 waiting_send 任务并汇总其代理节点入口和代理表单。
@@ -195,6 +439,34 @@ func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateI
 func (c *Client) ReadProxyTree(ctx context.Context, active Session, proxyID string) (*FlowNodeTemplate, error) {
 	tree, _, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
 	return tree, err
+}
+
+// ReadFlowProxyDocument 读取目标返回的完整 FlowProxyVo 原始文档，供实例私有代理更新原样回传。
+// 这里不能复用 ReadProxyTree：转换后的简化节点会丢失目标保存流程代理所需的字段。
+func (c *Client) ReadFlowProxyDocument(ctx context.Context, active Session, proxyID string) (json.RawMessage, error) {
+	proxyID = strings.TrimSpace(proxyID)
+	if proxyID == "" {
+		return nil, invalidResponse("flow proxy id is empty")
+	}
+	resp, err := c.call(ctx, "/web/flowProxy/findById", active.SID, map[string]any{"data": map[string]any{"id": proxyID}})
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
+	}
+	document := bytes.TrimSpace(resp.Data)
+	if len(document) == 0 || bytes.Equal(document, []byte("null")) {
+		return nil, invalidResponse("flow proxy response data is empty")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(document, &object); err != nil || object == nil {
+		return nil, invalidResponse("flow proxy response data is not an object")
+	}
+	if template, ok := object["flowNodeTemplate"]; !ok || len(bytes.TrimSpace(template)) == 0 || bytes.Equal(bytes.TrimSpace(template), []byte("null")) {
+		return nil, invalidResponse("flow proxy response missing flowNodeTemplate")
+	}
+	return append(json.RawMessage(nil), document...), nil
 }
 
 // ReadTemplateRequirements 读取模板树及其关联表单字段，供路径要求核对内部使用。

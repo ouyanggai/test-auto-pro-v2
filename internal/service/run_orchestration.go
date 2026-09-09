@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/control"
@@ -388,15 +389,41 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 	actionPersonIDs := map[string][]string{}
 	if s.pathNodes != nil {
 		for _, compiled := range steps {
-			if compiled.Action != model.ActionAddSign && compiled.Action != model.ActionTransfer {
+			if compiled.Action != model.ActionAddSign && compiled.Action != model.ActionTransfer && compiled.Action != model.ActionForward {
 				continue
 			}
-			resolved, resolveErr := s.pathNodes.ResolveActionPersonIDs(ctx, planID, pathID, compiled.NodeKey, compiled.Action)
+			nodeKey := compiled.NodeKey
+			if compiled.Action == model.ActionForward {
+				nodeKey = analyzer.PathConfigInstanceActionKey()
+			}
+			resolved, resolveErr := s.pathNodes.ResolveActionPersonIDs(ctx, planID, pathID, nodeKey, compiled.Action)
 			if resolveErr != nil {
 				return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "动作人员策略无法按当前目标结构解析：" + resolveErr.Error()}
 			}
 			actionPersonIDs[step.ActionPersonIndex(compiled.NodeKey, compiled.Action)] = resolved
 		}
+	}
+	nextNodeAuditors := map[string][]target.NextAuditor{}
+	for index, compiled := range steps {
+		if compiled.Action != model.ActionSubmit && compiled.Action != model.ActionResubmit && compiled.Action != model.ActionApprove {
+			continue
+		}
+		nextNodeKey := step.FollowingActionNodeKey(steps, index)
+		nextInfo, ok := nodes[nextNodeKey]
+		if !ok || strings.TrimSpace(nextInfo.AuditType) != "run_node_choose" {
+			continue
+		}
+		if _, resolved := nextNodeAuditors[nextNodeKey]; resolved {
+			continue
+		}
+		if s.pathNodes == nil {
+			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "下一节点处理人解析服务暂不可用"}
+		}
+		resolved, resolveErr := s.pathNodes.ResolveNodeAuditors(ctx, planID, pathID, nextNodeKey)
+		if resolveErr != nil {
+			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "下一节点处理人策略无法按当前目标结构解析：" + resolveErr.Error()}
+		}
+		nextNodeAuditors[nextNodeKey] = resolved
 	}
 	return step.RunContext{
 		Run:                      model.Run{PlanID: planID},
@@ -413,6 +440,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		EffectiveFormData:        config.EffectiveFormData,
 		NodeEditableFields:       nodeEditableFields,
 		ActionPersonIDs:          actionPersonIDs,
+		NextNodeAuditors:         nextNodeAuditors,
 	}, nil
 }
 
@@ -830,7 +858,11 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	// 真实结构只用于节点中文名与节点状态渲染；运行事实全部在本地库。
 	// 目标抖动是常态，结构读失败时降级为空结构继续返回详情，绝不让整份运行事实被一句
 	// 「运行服务暂不可用」挡住——降级必须如实告诉用户，不悄悄把「什么都没跑过」当事实展示。
-	graph, graphErr := s.graphs.Get(ctx, run.PlanID)
+	// 详情接口只把流程结构用于画布展示，不能让结构目标读取的慢请求拖住放行响应；
+	// 运行事实已在本地库，结构超时时继续返回事实并明确降级。
+	graphCtx, cancelGraph := context.WithTimeout(ctx, 500*time.Millisecond)
+	graph, graphErr := s.graphs.Get(graphCtx, run.PlanID)
+	cancelGraph()
 	structureDegraded := graphErr != nil
 	if structureDegraded {
 		graph = model.FlowGraph{PlanID: run.PlanID}
@@ -924,7 +956,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	// 无法安全继续：如实告诉用户并引导从计划重新运行；界面不给任何对账、重放或登记入口。
 	if s.control.View(pathRun.ID) == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
 		detail.SceneLost = true
-		detail.SceneLostNote = "这次运行无法安全继续：有一步的真实执行结果无法确认（可能是服务重启或目标响应丢失），工具已停止推进，避免重复执行真实业务操作。以下为已保存的只读记录；如需继续，请从计划重新发起一次运行。"
+		detail.SceneLostNote = "本次运行已停止。请查看该步骤的错误信息：目标接口没有返回可确认的结果，或目标状态暂时无法读取。为避免重复操作，需要从计划重新发起运行。"
 	}
 	if err := s.fillRunPathSummaries(ctx, run, detail); err != nil {
 		return nil, err
@@ -1050,7 +1082,7 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 			if ok {
 				attemptDTO.PhaseDurations = timings
 			} else {
-				attemptDTO.PhaseDurationsNote = "step.log 阶段时间轴缺失，无法给出七阶段耗时"
+				attemptDTO.PhaseDurationsNote = "执行过程记录缺失，暂时无法显示各阶段耗时"
 			}
 			attemptDTO.CurlBlock = curlBlockFor(router, attempt.TraceID, attempt.LogPath)
 			dto.Attempts = append(dto.Attempts, attemptDTO)
@@ -1385,11 +1417,11 @@ func actionNameOf(action string) string {
 func stepStatusName(status model.RunStepStatus) string {
 	switch status {
 	case model.RunStepSucceeded:
-		return "确定成功"
+		return "执行成功"
 	case model.RunStepFailed:
-		return "确定失败"
+		return "执行失败"
 	case model.RunStepUncertain:
-		return "不确定"
+		return "结果待确认"
 	default:
 		return string(status)
 	}
@@ -1399,11 +1431,11 @@ func stepStatusName(status model.RunStepStatus) string {
 func verdictName(verdict string) string {
 	switch verdict {
 	case "confirmed_success":
-		return "确定成功"
+		return "执行成功"
 	case "confirmed_failure":
-		return "确定失败"
+		return "执行失败"
 	case "uncertain":
-		return "不确定"
+		return "结果待确认"
 	default:
 		return verdict
 	}

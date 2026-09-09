@@ -201,16 +201,24 @@ func writeTargetError(response http.ResponseWriter, err error) {
 	}
 	switch {
 	case target.IsKind(err, target.ErrorLoginRejected):
-		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", "目标平台拒绝登录，请核对账号", false)
+		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", targetErrorMessage(err, "目标平台拒绝登录，请核对账号"), false)
 	case target.IsKind(err, target.ErrorSessionExpired):
-		writeFailure(response, http.StatusUnauthorized, "TARGET_SESSION_EXPIRED", "目标平台会话已失效，请重新验证账号", true)
+		writeFailure(response, http.StatusUnauthorized, "TARGET_SESSION_EXPIRED", targetErrorMessage(err, "目标平台会话已失效，请重新验证账号"), true)
 	case target.IsKind(err, target.ErrorResponseInvalid):
-		writeFailure(response, http.StatusBadGateway, "TARGET_RESPONSE_INVALID", "目标平台返回的数据格式异常", true)
+		writeFailure(response, http.StatusBadGateway, "TARGET_RESPONSE_INVALID", targetErrorMessage(err, "目标平台返回的数据格式异常"), true)
 	case target.IsKind(err, target.ErrorTimeout):
-		writeFailure(response, http.StatusGatewayTimeout, "TARGET_TIMEOUT", "目标平台响应超时，请重试", true)
+		writeFailure(response, http.StatusGatewayTimeout, "TARGET_TIMEOUT", targetErrorMessage(err, "目标平台响应超时，请重试"), true)
 	default:
-		writeFailure(response, http.StatusBadGateway, "TARGET_UNAVAILABLE", "暂时无法连接目标平台，请重试", true)
+		writeFailure(response, http.StatusBadGateway, "TARGET_UNAVAILABLE", targetErrorMessage(err, "暂时无法连接目标平台，请重试"), true)
 	}
+}
+
+// targetErrorMessage 优先透传目标返回的 message/code 或原始错误，只有错误链没有可读内容时才使用稳定兜底文案。
+func targetErrorMessage(err error, fallback string) string {
+	if message := target.UserFacingErrorMessage(target.WriteResponse{}, err); strings.TrimSpace(message) != "" {
+		return message
+	}
+	return fallback
 }
 
 func writeSuccess(response http.ResponseWriter, data any) {

@@ -236,12 +236,14 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 		delete(byKey, target.Person.Key)
 	}
 	for _, action := range actions {
-		if action.Action != model.ActionAddSign && action.Action != model.ActionTransfer {
+		if action.Action != model.ActionAddSign && action.Action != model.ActionTransfer && action.Action != model.ActionForward {
 			continue
 		}
 		personTarget := target.ActionPersons[string(model.ActionAddSign)]
 		if action.Action == model.ActionTransfer {
 			personTarget = target.ActionPersons[string(model.ActionTransfer)]
+		} else if action.Action == model.ActionForward {
+			personTarget = target.ActionPersons[string(model.ActionForward)]
 		}
 		if personTarget == nil {
 			if action.Action == model.ActionTransfer {
@@ -250,8 +252,8 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 				continue
 			}
 			label := "加签处理人"
-			if action.Action == model.ActionTransfer {
-				label = "移交处理人"
+			if action.Action == model.ActionForward {
+				label = "转发接收人"
 			}
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: label + "缺少当前候选目录", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: label, Reason: "目标未返回可用候选"}}}
 		}
@@ -284,7 +286,7 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 // actionNeedsPerson 判断动作保存是否必须读取动作私有人员目录。
 func actionNeedsPerson(actions []model.ConfiguredAction) bool {
 	for _, action := range actions {
-		if action.Action == model.ActionAddSign || action.Action == model.ActionTransfer {
+		if action.Action == model.ActionAddSign || action.Action == model.ActionTransfer || action.Action == model.ActionForward {
 			return true
 		}
 	}
@@ -349,6 +351,51 @@ func (s *PathConfigService) ResolveActionPersonIDs(ctx context.Context, planID, 
 	return append([]string(nil), planData.Selected...), nil
 }
 
+// ResolveNodeAuditors 按当前目标目录解析 run_node_choose 节点的真实处理人。
+// 浏览器只保存不透明候选键；启动运行时必须重新映射为目标 bizId 和名称，候选变动则拒绝发起。
+func (s *PathConfigService) ResolveNodeAuditors(ctx context.Context, planID, pathID uint64, nodeKey string) ([]target.NextAuditor, error) {
+	if planID == 0 || pathID == 0 || strings.TrimSpace(nodeKey) == "" {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "下一节点人员策略解析参数不正确"}
+	}
+	path, snapshot, analysis, current, found, _, err := s.loadWorkspace(ctx, planID, pathID)
+	if err != nil {
+		return nil, err
+	}
+	validation, err := s.pathActionGates(snapshot, path, analysis, found)
+	if err != nil {
+		return nil, err
+	}
+	node, ok := validation.NodeTokens[strings.TrimSpace(nodeKey)]
+	if !ok || node.Person == nil {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点没有可用的处理人目录"}
+	}
+	strategies := decodeHistoryPersonStrategies(current.PersonStrategies)
+	strategy, ok := strategies[node.Person.Key]
+	if !ok {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点缺少已保存的处理人策略"}
+	}
+	encoded, reason := analyzer.EncodePathConfigPersonStrategy(*node.Person, strategy)
+	if reason != "" {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点处理人策略已失效：" + reason}
+	}
+	var planData struct {
+		Selected []string `json:"selected"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &planData); err != nil || len(planData.Selected) == 0 {
+		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点没有可执行的处理人"}
+	}
+	result := make([]target.NextAuditor, 0, len(planData.Selected))
+	for _, id := range planData.Selected {
+		id = strings.TrimSpace(id)
+		name := strings.TrimSpace(node.Person.CandidateNames[id])
+		if id == "" || name == "" {
+			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点处理人目录已失效，请重新配置"}
+		}
+		result = append(result, target.NextAuditor{BizID: id, Name: name, AuditDetailTyp: "personnel"})
+	}
+	return result, nil
+}
+
 // applyHistoryActionProjection 把 F-012 独立修订投影回节点工作台，保证保存后刷新不会丢失人员和动作草稿。
 func (s *PathConfigService) applyHistoryActionProjection(ctx context.Context, pathID uint64, configuration *model.PathConfiguration) error {
 	if s.historyConfigStore == nil || configuration == nil {
@@ -388,6 +435,7 @@ func (s *PathConfigService) applyHistoryActionProjection(ctx context.Context, pa
 			// 实例动作作用于同一主实例，投影回独立容器而不是伪造节点归属。
 			configuration.InstanceActions.Actions = append(configuration.InstanceActions.Actions, model.PathConfigConfiguredAction{
 				Key: action.Key, Kind: actionDisplayKind(action.Action), Label: actionDisplayLabel(action.Action),
+				Person:     projectActionPersonFromCatalog(configuration.InstanceActions.Catalog, action, persons),
 				Parameters: cloneActionParameterMap(action.Parameters), ActorPolicy: action.ActorPolicy, Note: action.Note,
 			})
 			continue
@@ -410,10 +458,15 @@ func projectActionPerson(node *model.PathConfigNode, action model.ConfiguredActi
 	if node == nil {
 		return nil
 	}
+	return projectActionPersonFromCatalog(node.ActionConfiguration.Catalog, action, persons)
+}
+
+// projectActionPersonFromCatalog 从动作目录候选与独立人员策略恢复动作人员，实例动作和节点动作共用同一规则。
+func projectActionPersonFromCatalog(catalog []model.PathConfigActionCatalogItem, action model.ConfiguredAction, persons map[string]model.PathConfigPersonStrategyInput) *model.PathConfigPersonStrategyInput {
 	kind := actionDisplayKind(action.Action)
 	var source *model.PathConfigPerson
-	for index := range node.ActionConfiguration.Catalog {
-		item := &node.ActionConfiguration.Catalog[index]
+	for index := range catalog {
+		item := &catalog[index]
 		if item.Kind == kind && item.Person != nil {
 			source = item.Person
 			break

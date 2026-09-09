@@ -137,21 +137,24 @@ type ActionCatalogItem struct {
 
 // ActionContext 是动作门禁服务读取的目标实时上下文投影。
 type ActionContext struct {
-	FlowSource         string `json:"flowSource"`
-	InstanceStatus     string `json:"instanceStatus"`
-	InstanceEnded      bool   `json:"instanceEnded"`
-	IsInitiator        bool   `json:"isInitiator"`
-	CurrentNodeKey     string `json:"currentNodeKey"`
-	CurrentNodeType    string `json:"currentNodeType"`
-	HasCurrentTask     bool   `json:"hasCurrentTask"`
-	CurrentTaskDone    bool   `json:"currentTaskDone"`
-	HasEditableProxy   bool   `json:"hasEditableProxy"`
-	ForwardedContext   bool   `json:"forwardedContext"`
-	HasCompletedTask   bool   `json:"hasCompletedTask"`
-	NextTaskProcessed  bool   `json:"nextTaskProcessed"`
-	PreviousTaskExists bool   `json:"previousTaskExists"`
-	CanSwitchActor     bool   `json:"canSwitchActor"`
-	Followed           bool   `json:"followed"`
+	FlowSource       string `json:"flowSource"`
+	InstanceStatus   string `json:"instanceStatus"`
+	InstanceEnded    bool   `json:"instanceEnded"`
+	IsInitiator      bool   `json:"isInitiator"`
+	CurrentNodeKey   string `json:"currentNodeKey"`
+	CurrentNodeType  string `json:"currentNodeType"`
+	HasCurrentTask   bool   `json:"hasCurrentTask"`
+	CurrentTaskDone  bool   `json:"currentTaskDone"`
+	HasEditableProxy bool   `json:"hasEditableProxy"`
+	ForwardedContext bool   `json:"forwardedContext"`
+	HasCompletedTask bool   `json:"hasCompletedTask"`
+	// SuccessorStateKnown 表示是否已从目标读取到可判定的后继任务状态。
+	// 目标公开的任务列表只能读取当前用户的 pending/done，未知时必须由取回接口在事务内裁决。
+	SuccessorStateKnown bool `json:"successorStateKnown"`
+	NextTaskProcessed   bool `json:"nextTaskProcessed"`
+	PreviousTaskExists  bool `json:"previousTaskExists"`
+	CanSwitchActor      bool `json:"canSwitchActor"`
+	Followed            bool `json:"followed"`
 	// PreviousNodeType 来自目标流程代理的直接前驱节点；为空时不能安全声称可以回退。
 	PreviousNodeType string `json:"previousNodeType"`
 	// PreviousNodeIsStart 是目标回退实现对发起节点前驱的明确判定。

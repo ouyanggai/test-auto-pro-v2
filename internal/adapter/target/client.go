@@ -272,16 +272,6 @@ func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body
 		return nil, &Error{Kind: ErrorUnavailable, Cause: err, Transport: phase}
 	}
 	defer response.Body.Close()
-	// 以下分支都已收到完整 HTTP 响应，传输阶段一律记为 responded，结论交给响应侧判定。
-	if response.StatusCode == http.StatusUnauthorized {
-		return nil, &Error{Kind: ErrorSessionExpired, HTTPStatus: response.StatusCode, Transport: TransportResponded}
-	}
-	if response.StatusCode == http.StatusForbidden {
-		return nil, &Error{Kind: ErrorPermissionDenied, HTTPStatus: response.StatusCode, Transport: TransportResponded}
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, &Error{Kind: ErrorUnavailable, HTTPStatus: response.StatusCode, Transport: TransportResponded}
-	}
 	reader := io.LimitReader(response.Body, maxResponseBytes+1)
 	data, err := io.ReadAll(reader)
 	if err != nil {
@@ -291,6 +281,17 @@ func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body
 	if len(data) > maxResponseBytes {
 		return nil, &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("response too large")}
 	}
+	// 以下分支都已收到完整 HTTP 响应，传输阶段一律记为 responded；同时保留正文里的 message，
+	// 这样页面能直接显示目标原文，而不是把 401/403/500 统一翻译成内部分类名。
+	if response.StatusCode == http.StatusUnauthorized {
+		return nil, &Error{Kind: ErrorSessionExpired, HTTPStatus: response.StatusCode, Transport: TransportResponded, Cause: httpResponseDetail(data)}
+	}
+	if response.StatusCode == http.StatusForbidden {
+		return nil, &Error{Kind: ErrorPermissionDenied, HTTPStatus: response.StatusCode, Transport: TransportResponded, Cause: httpResponseDetail(data)}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, &Error{Kind: ErrorUnavailable, HTTPStatus: response.StatusCode, Transport: TransportResponded, Cause: httpResponseDetail(data)}
+	}
 	var result envelope
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("invalid json")}
@@ -298,7 +299,7 @@ func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body
 	if responseSessionExpired(&result) {
 		// 完整响应里带会话失效包络：传输事实是「已收到完整响应」，
 		// 丢掉它会把可判确定失败的鉴权拒绝升级成待对账（评审 P2）。
-		return nil, &Error{Kind: ErrorSessionExpired, Transport: TransportResponded}
+		return nil, &Error{Kind: ErrorSessionExpired, Transport: TransportResponded, Cause: responseDetail(&result)}
 	}
 	return &result, nil
 }
@@ -326,16 +327,50 @@ func responseSucceeded(resp *envelope) bool {
 
 // responseError 把目标业务失败收敛为会话失效或暂不可用。
 func responseError(resp *envelope) error {
+	cause := responseDetail(resp)
 	if responseSessionExpired(resp) {
-		return NewError(ErrorSessionExpired, nil)
+		return NewError(ErrorSessionExpired, cause)
 	}
 	if resp != nil {
 		message := strings.ToLower(strings.TrimSpace(resp.Message))
 		if strings.TrimSpace(resp.Code) == "403" || strings.Contains(message, "forbidden") || strings.Contains(message, "permission") || strings.Contains(message, "无权限") || strings.Contains(message, "没有权限") {
-			return NewError(ErrorPermissionDenied, nil)
+			return NewError(ErrorPermissionDenied, cause)
 		}
 	}
-	return NewError(ErrorUnavailable, nil)
+	return NewError(ErrorUnavailable, cause)
+}
+
+// responseDetail 提取目标响应里用户能够直接理解的原始错误信息。
+func responseDetail(resp *envelope) error {
+	if resp == nil {
+		return nil
+	}
+	message := strings.TrimSpace(resp.Message)
+	if message == "" {
+		message = strings.TrimSpace(resp.Error)
+	}
+	if message == "" {
+		message = strings.TrimSpace(resp.Code)
+	}
+	if message == "" {
+		return nil
+	}
+	return errors.New(message)
+}
+
+// httpResponseDetail 从非 2xx 响应正文中提取目标原文；正文不是 JSON 时保留原始文本。
+func httpResponseDetail(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil
+	}
+	var resp envelope
+	if err := json.Unmarshal(data, &resp); err == nil {
+		if detail := responseDetail(&resp); detail != nil {
+			return detail
+		}
+	}
+	return errors.New(trimmed)
 }
 
 // responseSessionExpired 只识别已有证据支持的会话失效代码和文案。
@@ -517,13 +552,13 @@ func firstNonEmpty(values ...string) string {
 // SubmittedStatusText 暴露目标实例状态的中文名称映射，供快速候选查询复用同一套状态文案。
 func SubmittedStatusText(status string) string { return submittedStatusText(strings.TrimSpace(status)) }
 
-// FindTaskSnapshot 精确重查当前账号在指定实例、指定节点上的一条任务链接。
-// pending 用于当前待办，done 用于当前账号的已办；jobTaskId 与 batchNo 必须来自这次响应，
-// 同一实例同一节点出现多条匹配任务时无法证明唯一归属，必须报错而不是任选一条。
-func (c *Client) FindTaskSnapshot(ctx context.Context, active Session, instanceID, nodeProxyID, taskStatus string) (TaskSnapshot, error) {
+// ListTaskSnapshots 读取指定实例、指定目标任务状态的任务链接快照。
+// 目标服务只接受 pending 或 done；空状态不是“全部状态”，会被目标拒绝。任务较多时必须完整遍历分页，
+// 否则当前待办、批次或已办归属可能落在第二页而被错误判为不存在。
+func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instanceID, taskStatus string) ([]TaskSnapshot, error) {
 	taskStatus = strings.TrimSpace(taskStatus)
 	if taskStatus != "pending" && taskStatus != "done" {
-		return TaskSnapshot{}, invalidResponse("unsupported task status")
+		return nil, invalidResponse("unsupported task status")
 	}
 	data := map[string]any{
 		"flowInstanceId":               strings.TrimSpace(instanceID),
@@ -534,19 +569,18 @@ func (c *Client) FindTaskSnapshot(ctx context.Context, active Session, instanceI
 		"flowInstanceBizRelevanceList": []any{},
 	}
 	// 已办列表必须限定当前实际执行人；待办列表由目标网关按 SID 解析当前用户。
-	if taskStatus == "done" && strings.TrimSpace(active.UserID) != "" {
-		data["executorId"] = strings.TrimSpace(active.UserID)
+	// 缺少用户标识时不能退化为全量已办查询，否则同一实例节点可能取到其他人的任务并把错误
+	// jobTaskId 发给取回接口。登录响应不完整时宁可在写前阻断，也不能猜测归属。
+	if taskStatus == "done" {
+		executorID := strings.TrimSpace(active.UserID)
+		if executorID == "" {
+			return nil, invalidResponse("done task lookup missing executor id")
+		}
+		data["executorId"] = executorID
 	}
-	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
-		"data": data, "pagination": true, "pages": 1, "size": 100,
-	})
-	if err != nil {
-		return TaskSnapshot{}, err
-	}
-	if !responseSucceeded(resp) {
-		return TaskSnapshot{}, responseError(resp)
-	}
-	var raw []struct {
+	type rawTaskSnapshot struct {
+		LinkID                string `json:"id"`
+		ParentLinkID          string `json:"pid"`
 		JobTaskID             string `json:"jobTaskId"`
 		FlowInstanceID        string `json:"flowInstanceId"`
 		FlowNodeProxyID       string `json:"flowNodeProxyId"`
@@ -557,33 +591,80 @@ func (c *Client) FindTaskSnapshot(ctx context.Context, active Session, instanceI
 		FlowProxyID           string `json:"flowProxyId"`
 		AuditWay              string `json:"auditWay"`
 		FlowNextNodeAuditType string `json:"flowNextNodeAuditType"`
-	}
-	if err := decodeArray(resp.Data, &raw); err != nil {
-		return TaskSnapshot{}, err
+		BranchExecuteType     string `json:"branchExecuteType"`
 	}
 	wantInstance := strings.TrimSpace(instanceID)
+	matched := make([]TaskSnapshot, 0)
+	const pageSize = 100
+	const maxPages = 20
+	for page := 1; page <= maxPages; page++ {
+		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
+			"data": data, "pagination": true, "pages": page, "size": pageSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !responseSucceeded(resp) {
+			return nil, responseError(resp)
+		}
+		var raw []rawTaskSnapshot
+		if err := decodeArray(resp.Data, &raw); err != nil {
+			return nil, err
+		}
+		for _, item := range raw {
+			if strings.TrimSpace(item.FlowInstanceID) != wantInstance {
+				continue
+			}
+			jobTaskID := strings.TrimSpace(item.JobTaskID)
+			if jobTaskID == "" {
+				// BaseVo.id 是数据库关联行 ID，不是审批接口需要的 jobTaskId；
+				// 缺少协议字段说明响应不完整，不能用 id 猜测替代。
+				return nil, invalidResponse("task response missing jobTaskId")
+			}
+			matched = append(matched, TaskSnapshot{
+				LinkID: strings.TrimSpace(item.LinkID), ParentLinkID: strings.TrimSpace(item.ParentLinkID),
+				JobTaskID: jobTaskID, FlowInstanceID: strings.TrimSpace(item.FlowInstanceID),
+				FlowNodeProxyID: strings.TrimSpace(item.FlowNodeProxyID), BatchNo: strings.TrimSpace(item.BatchNo),
+				TaskStatus: strings.TrimSpace(item.TaskStatus), ExecutorID: strings.TrimSpace(item.ExecutorID),
+				FormProxyID: strings.TrimSpace(item.FormProxyID), FlowProxyID: strings.TrimSpace(item.FlowProxyID),
+				AuditWay: strings.TrimSpace(item.AuditWay), FlowNextNodeAuditType: strings.TrimSpace(item.FlowNextNodeAuditType),
+				BranchExecuteType: strings.TrimSpace(item.BranchExecuteType),
+			})
+		}
+		hasMore := false
+		if resp.Pages > 0 {
+			if resp.Pages > maxPages {
+				return nil, invalidResponse("task pagination exceeds safe limit")
+			}
+			hasMore = page < resp.Pages
+		} else {
+			hasMore = len(raw) >= pageSize
+		}
+		if !hasMore {
+			break
+		}
+		if page == maxPages {
+			return nil, invalidResponse("task pagination exceeds safe limit")
+		}
+	}
+	return matched, nil
+}
+
+// FindTaskSnapshot 精确重查当前账号在指定实例、指定节点上的一条任务链接。
+// pending 用于当前待办，done 用于当前账号的已办；同一实例同一节点出现多条匹配任务时
+// 无法证明唯一归属，必须报错而不是任选一条。
+func (c *Client) FindTaskSnapshot(ctx context.Context, active Session, instanceID, nodeProxyID, taskStatus string) (TaskSnapshot, error) {
+	snapshots, err := c.ListTaskSnapshots(ctx, active, instanceID, taskStatus)
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
 	wantNode := strings.TrimSpace(nodeProxyID)
 	matched := make([]TaskSnapshot, 0, 1)
-	for _, item := range raw {
-		if strings.TrimSpace(item.FlowInstanceID) != wantInstance {
+	for _, snapshot := range snapshots {
+		if wantNode != "" && strings.TrimSpace(snapshot.FlowNodeProxyID) != wantNode {
 			continue
 		}
-		if wantNode != "" && strings.TrimSpace(item.FlowNodeProxyID) != wantNode {
-			continue
-		}
-		jobTaskID := strings.TrimSpace(item.JobTaskID)
-		if jobTaskID == "" {
-			// BaseVo.id 是数据库关联行 ID，不是审批接口需要的 jobTaskId；
-			// 缺少协议字段说明响应不完整，不能用 id 猜测替代。
-			return TaskSnapshot{}, invalidResponse("task response missing jobTaskId")
-		}
-		matched = append(matched, TaskSnapshot{
-			JobTaskID: jobTaskID, FlowInstanceID: strings.TrimSpace(item.FlowInstanceID),
-			FlowNodeProxyID: strings.TrimSpace(item.FlowNodeProxyID), BatchNo: strings.TrimSpace(item.BatchNo),
-			TaskStatus: strings.TrimSpace(item.TaskStatus), ExecutorID: strings.TrimSpace(item.ExecutorID),
-			FormProxyID: strings.TrimSpace(item.FormProxyID), FlowProxyID: strings.TrimSpace(item.FlowProxyID),
-			AuditWay: strings.TrimSpace(item.AuditWay), FlowNextNodeAuditType: strings.TrimSpace(item.FlowNextNodeAuditType),
-		})
+		matched = append(matched, snapshot)
 	}
 	if len(matched) == 0 {
 		return TaskSnapshot{}, nil

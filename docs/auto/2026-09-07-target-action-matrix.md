@@ -37,7 +37,7 @@
 - **后端写入**：首节点待办（SubmitSvc:221）、下一节点审核人（:225）、审核记录（:229）、回调与流程线（:236-240）。
 - **写后重读**：实例状态=run、首个待办、实际路径。工具已有真实运行证据（运行 13/31 到达业务层）。
 
-## 3. 重新提交 resubmit —— ⚠️（载荷已实现，执行链不可达=返工缺口①）
+## 3. 重新提交 resubmit —— ✅（执行链、实时代理/公司与选人参数已接入，待真实写验证）
 
 - **入口**：待发列表 DueOut:87-103「重新发起」（来源 `POST /web/flowJobTaskLink/list` + `taskStatus:'waiting_send'`，DueOut:289-305）→ EEO:84-88（isReInitiate）。
 - **前置钩子**：`handleRePostSubmit`（EEO:1335）：权限预检（EEO:1307-1333）→ `getData(true)` → 关联列表沿用原值去 commonFlow（EEO:1423-1454）→ `param{data:{name, id:flowInstanceId, formProxyId, flowInstanceBizRelevanceList}}`（EEO:1455-1466）→ **nextAuditorList 无条件映射**（EEO:1473-1477）→ `beforeSubmitAndDraft({reInit:true})`（EEO:1504-1507）→ `beforeSubmitAndDraftNoBiz`（EEO:1528）。
@@ -47,7 +47,7 @@
 - **注意**：待发列表的「保存草稿」仍走 `/submit` + `data.id`（EEO:1660,1702-1703），与 reSubmit 是两条链。
 - **写后重读**：实例离开 rejected/withdraw/draft 进入 run、新批次、新待办。
 
-## 4. 暂存表单 storage_form_data —— ⚠️（不变类判读=缺口⑤）
+## 4. 暂存表单 storage_form_data —— ✅（目标检查点确认已接入，待真实写验证）
 
 - **入口**：EEO:54-58「暂存」（审批人视角，非转发流程）→ `temporaryStorage()`（EEO:586）。
 - **前置钩子**：`getValues()` 取当前表单值 → **`beforeSubmitAndDraft({temporary:true})`（EEO:605，与提交同名事件不同参数）**。
@@ -56,26 +56,26 @@
 - **后端**：InstSvc:997-1031：实例存在校验；**无权限/状态校验（仅会话）**；按 `(flowInstanceId, batchNo, createrId, nodeId)` upsert `FlowFormDataStorage`（:1011-1026）；回写 `currentDataId`（:1027-1029）；**不改实例状态、不生成待办；审批成功后暂存记录被删除**（AuditSvc:267）。
 - **写后重读**：`POST /web/flowInstanceApi/queryStorageFormData`（EEO:477-481,549-569；API:388）可回读 `auditDesc`——工具的写后重读可直接用它判「检查点已更新」，比「实例不变」更强。
 
-## 5. 加签 add_sign —— ⛔（工具实现与目标语义不符，需返工）
+## 5. 加签 add_sign —— ✅（工具已按目标协议接入，待真实写验证）
 
 - **入口**：审批意见区「加签」→ 全屏流程设计器（EEO:62-64,544-547 → `AddCounterSign` 组件，有表单用 FormMulBranch、无表单用 NoFormMulBranch），先拉 `POST /web/flowProxy/findById` 作节点树底稿（AddSign:96-111）。
 - **端点**：`POST /web/flowInstanceApi/updateFlowProxy`（API:750；WebCtrl:294 → Feign → WFCtrl:222-225 → InstSvc:1175-1221）。**不是 approverAppend。**
 - **请求字段**：`{data:{id:flowInstanceId}, flowProxyProtocol:{data:<完整流程代理节点树>}}`（FMB:1047-1057）。**人员在节点树 `flowNodeAuditConfig.flowNodeDetailConfigList`，没有 `userIds` 字段。**
 - **后端**：InstSvc:1175-1221：代理存在且未删（:1204-1207）；**所有权隔离——非本实例私有的代理不原地改，而是复制出新代理并把实例指向新 `flowProxyId`、置 `separationFlowProxyFlag=true`**（:1210-1218）。加签本身不产生 auditStatus。
 - **响应**：`success(flowInstance)`，前端回填 `currentNodeProxyId`/`flowProxyId`（FMB:1060-1066）。
-- **工具现状**：`catalog.go:94-108` 与 `write_actions.go:128-144` 把加签映射到 `approverAppend`+`approverAppendVo.userIds`——**与目标语义不符**（那是移交的端点）。返工任务书第 4 步实施加签时必须改为 updateFlowProxy + 整树载荷 + 所有权复制语义；当前映射不得登记为可运行。
+- **工具实现**：动作目录声明 `updateFlowProxy`；执行器按实时待办取得当前 `flowNodeProxyId` 和 `flowProxyId`，读取完整代理文档后只追加目标节点人员明细，再以整树载荷发送。成功响应中的新代理和当前节点标识更新运行上下文；目标结构不完整时在写请求前阻断。
 - **写后重读**：实例私有流程代理、当前节点代理、待办任务映射（与 catalog 预期一致）。
 
-## 6. 移交 transfer —— ⚠️（端点正确；batchNo/userIds 实时补齐=缺口②④）
+## 6. 移交 transfer —— ✅（实时任务、批次和人员已接入，待真实写验证）
 
 - **入口**：待办行「移交」（Backlog:300-307，关联流程组件不显示）→ `clickHandOver`（Backlog:915-918）→ `PersonSelectDialog` 多选（Backlog:994-1000，空选提示「至少添加一位审批人」）。
 - **端点**：`POST /web/flowInstanceApi/approverAppend`（API:404；ApiCtrl:132-135 → ApiSvc:1178-1205）。
 - **请求字段**（Backlog:1011-1027，全部取自待办列表行）：`data{id, jobTaskId, batchNo, auditRecord{auditStatus:'transfer', executeDesc:'移交'}}` + `approverAppendVo{flowNodeProxyId, userIds[人员id数组]}`。
 - **后端**：ApiSvc:1178-1205：待办不存在/已 done 拒绝（:1183-1188）；**用实例 batchNo 覆盖请求 batchNo**（:1199）；原任务置 done + 同节点新建 pending（新 jobTaskId=UUID，pid=原任务）（createRelevancePendingFlowDataReturn :591-609）；按 userIds 写移交记录、仅使「自己移交过」的旧记录失效（FlowInstanceApproverAppendServiceImpl:46-105）；写 `transfer` 审核记录（Enum:13）。
 - **写后重读**：**原 jobTaskId 失效**，同节点出现新 pending 待办（新 jobTaskId）——工具必须在移交后重读任务映射，不能复用旧 jobTaskId 执行后续动作。
-- **工具缺口**：`write_actions.go:142` 恒发空 `userIds`、`batchNo` 未承接（缺口②④），移交后任务重读未实现。
+- **工具实现**：发送前读取当前待办的 `jobTaskId`、`batchNo` 和真实节点；人员由已保存策略在当前目标候选中解析。写后重新读取同节点 pending 任务，确认旧任务已替换为新任务后才判成功。
 
-## 7. 同意 approve —— ⚠️（jobTaskId 现场补齐=缺口②；判读基线已对齐）
+## 7. 同意 approve —— ✅（发送前实时读取待办，待真实写验证）
 
 - **入口**：EEO:40-43 / EO:27「同意」；批量 Backlog:96→`auditBatchFlow`（Backlog:474-498）。
 - **前置钩子顺序**：确认框（EEO:747-751）→ 意见表单校验（EEO:752）→ `getData(true)` 表单必填（EEO:896-897）→ 业务金额校验（EEO:925-956）→ 选人/分支 `nextAuditorList`（EEO:625-651,997-1004）→ **`beforeSubmitAndDraft`（仅 pass 触发，EEO:1034-1043）** → **`beforeSubmitAndDraftNoBiz`（EEO:1049-1050）** → 关联列表回填（EEO:1057-1076）。
@@ -93,16 +93,16 @@
 - **后端**：AuditSvc:201-216：实例 `status=rejected`、`currentNodeProxyId=起始节点`（:203）；**其余并行待办全部置 done+isDelete**（:206-213）。
 - **写后重读**：实例状态=rejected、待办清空、发起人重提状态。
 
-## 9. 回退 rollback_previous —— ⚠️（缺口②）
+## 9. 回退 rollback_previous —— ✅（实时任务与前一节点核验已接入，待真实写验证）
 
 - **入口**：待办行「回退上一节点」（Backlog:292-299,966-993）/ 审批弹窗内按钮（Mixin:51-88）/ 批量（Backlog:530-581）。
 - **前置钩子**：仅确认框+意见；无表单钩子。
 - **端点**：`POST /web/flowInstanceApi/rollBackThePreviousLevel`（API:403；链路 WebCtrl:155-159 → ApiSvc:1129-1132 → WFCtrl:239-243 → RollSvc:97-307）。
 - **请求字段**：`data{id, jobTaskId, withdrawDesc?}`（Mixin:59-67）。**回退目标不在请求里**——后端按当前待办 `pid`（上一待办）推导（RollSvc:135-137）。
 - **后端校验**：实例 `status==run`（:324-338）；待办未处理；`pid==null` 报「当前节点不支持回退」（:113-115）；上一节点是 start 报「请直接驳回给发起人」（:121-129）。写入：`auditStatus=roll_back_the_previous_level`（:143-147；Enum:12）、**换新 batchNo**（:150-152）、为上一节点重建待办（:246,259）、`currentNodeProxyId=上一节点`（:193,237）、当前待办 done、其余并行待办删除（:279-289）。
-- **写后重读**：实例当前节点=上一节点、**新批次**、新待办及演员。
+- **工具写后确认**：主实例仍为 `run`，且审核记录出现与原待办关联的 `roll_back_the_previous_level`。并行分支回退后当前节点可能是策略节点，不能把「当前节点=直接前一审批节点」当成唯一成功条件。
 
-## 10. 取回 retrieve —— ⚠️（缺口②）
+## 10. 取回 retrieve —— ✅（已办任务与新 pending 任务核验已接入，待真实写验证）
 
 - **入口**：仅**已办列表**行内，条件 `flowStatus=='run'`（Finished:260-277,404-424）。
 - **端点**：`POST /web/flowInstanceApi/retrieveProcess`（API:747；链路 WebCtrl:224-228 → InstSvc.saveRetrieveProcess:721-995）。
@@ -118,7 +118,7 @@
 - **后端校验**：`status` 必须 run（:400-402「当前流程不在运行中」）；**会话用户必须等于实例 createrId**（:403-405「非流程发起人不能撤销」）。写入：`status=withdraw`、`currentNodeProxyId=起始节点`（:409-413）；所有 pending 待办置 `withdraw` + 写 withdraw 审核记录（:415-428）；回调（:437）。
 - **写后重读**：实例状态=withdraw、待办清空、创建人已发列表。
 
-## 12. 催办 urge —— ⚠️（不变类判读=缺口⑤）
+## 12. 催办 urge —— ✅（催办记录确认已接入，待真实写验证）
 
 - **入口**：已发列表「催办」，仅 `status=='run'`（Submitted:262-275,717-733）。
 - **端点**：`POST /web/urgeHandleRecord/sendUrgeMessage`，body `{flowInstanceId: row.id, data:{}}`（Submitted:719-722；链路 UrgeHandleRecordWebController:28-30 → ApiCtrl:32-35 → UrgeHandleRecordServiceImpl:140-175）。
@@ -126,16 +126,16 @@
 - **响应**：boolean 包装 success；前端 `res.isSuccess` → 本地 `row.urgeFlag=true`（Submitted:723-727），**不刷新列表**。`urgeFlag` 后端无生产者（java-serve 全量 grep 无命中）——「查看催办记录」基本只在本次会话可见。
 - **写后重读**：实例/待办不变（不变类动作）；`POST /web/urgeHandleRecord/list`（Submitted:756-763）可查催办记录佐证。
 
-## 13. 转发 forward —— ⚠️（辅助实例独立登记未实现）
+## 13. 转发 forward —— ✅（实时接收人、辅助实例确认与运行事件登记已接入，待真实写验证）
 
 - **入口**：待发/已发列表勾选一条 → `transpond(type)`（flowTypeMixin.js:59-125，强制单选；取 `row.batchNo`）→ 选人（IndicatorHeaderDialog，单人）→ `confirmTranspond`（:127-283）。
 - **语义**：**不改原实例**——用「系统默认转发流程」模板 submit 一个全新实例，首节点审批人=被转发人，名称加「(由XX原发)」（InstSvc:1045-1090）。
 - **端点**：`POST /web/flowInstanceApi/transpond`（API:386；InstSvc:1045-1090 内部转 `flowSubmit.submit`）。
 - **请求字段**（flowTypeMixin.js:206-267）：`data{name=原名(由当前用户原发), flowInstanceBizRelevanceList[transpond_flowInstanceId, transpondFlow, transpond_formExist, transpond_auditWay, transpond_originalName, company]}` + 顶层 `receiverId`（单人 id）+ `formDataMongoVo.data`（原表单+转发附言/意见 dynamicParam）；附言另存 `savePostScript`（:285-300，用新实例 id）。
 - **后端**：模板不存在抛「转发流程未配置」（:1046-1049）；构造 `nextAuditorList{personnel, bizId=receiverId, nodeProxyId=模板首节点}`（:1069-1081）+ `validatePermissionsFlag`（:1082）；**新实例生成新 instanceId+新 batchNo**（SubmitSvc:353-362）。
-- **写后重读**：主实例不变；辅助实例存在且首待办=被转发人。工具必须把辅助实例与主实例分开登记（返工任务书第 4 步，未实现）；`receiverId` 当前只读动作参数、未接候选校验（缺口④）。
+- **工具实现**：`receiverId` 由当前目标候选目录解析；写后从响应读取新实例并用实例查询确认它存在。辅助实例引用以 `forward_auxiliary_created` 运行事件单独登记，主实例引用保持不变；页面只显示“转发已创建辅助流程”，不显示目标内部标识。
 
-## 14. 关注 follow / 15. 取消关注 unfollow —— ⚠️（不变类判读=缺口⑤）
+## 14. 关注 follow / 15. 取消关注 unfollow —— ✅（关注状态确认已接入，待真实写验证）
 
 - **入口**：已办行「设为跟踪/取消跟踪」（Finished:278-301,381-402，仅 `flowStatus=='run'`）；查看弹窗底部按钮（EO:61-67 / EEO:96-102）；审批时勾选「跟踪此流程」随审核提交（EO:14-17,720）。
 - **端点**：`POST /web/flowInstanceApi/flowTracking`（API:430；WebCtrl:306-309 → InstSvc:1224-1237）。**取消关注无独立端点**：同一端点 `tracking:false`。
@@ -149,21 +149,21 @@
 | --- | --- | --- | --- | --- | --- |
 | save_draft | /submit（status=draft） | ✅ | ✅ 已修（`06c744a`/`a5f325c`） | 不适用 | ✅ |
 | submit | /submit | ✅ | ✅ | nextAuditorList 按审批方式（`e4a1841`） | ✅ |
-| resubmit | /reSubmit | ✅ | ⛔ 缺口① | 同 submit 规则 | ⚠️ |
-| storage_form_data | /storageFormData | ✅ | ⚠️ | 不需要 jobTaskId | ⚠️ 缺口⑤（可用 queryStorageFormData 加强） |
-| add_sign | **updateFlowProxy（非 approverAppend）** | ⛔ 端点/载荷均不符 | ⛔ | 节点树人员配置 | ⛔ 需按第 5 节返工 |
-| transfer | /approverAppend | ⚠️ 缺 batchNo | ⚠️ | ⛔ 空 userIds（缺口④） | ⛔ |
-| approve | /flowInstanceApi/audit | ✅ | ⚠️ 缺口② | jobTaskId 待现场读取 | ⚠️ |
-| reject | /flowInstanceApi/audit | ✅ | ⚠️ 缺口② | 同上 | ✅ 判读已修 |
-| rollback | /rollBackThePreviousLevel | ✅ | ⚠️ 缺口② | jobTaskId；回退后新批次 | ⚠️ |
-| retrieve | /retrieveProcess | ✅ | ⚠️ 缺口② | jobTaskId=已办键 | ⚠️ |
+| resubmit | /reSubmit | ✅ | ✅ | 实时代理、公司与 nextAuditorList | ✅ 状态/待办确认，待真实写验证 |
+| storage_form_data | /storageFormData | ✅ | ✅ | 实时当前节点 | ✅ 暂存检查点确认，待真实写验证 |
+| add_sign | **updateFlowProxy（非 approverAppend）** | ✅ 整树载荷 | ✅ | 实时任务与节点树人员 | ✅ 代理树确认，待真实写验证 |
+| transfer | /approverAppend | ✅ batchNo | ✅ | ✅ 实时任务、批次与人员策略 | ✅ 新 pending 任务确认，待真实写验证 |
+| approve | /flowInstanceApi/audit | ✅ | ✅ | ✅ 实时 jobTaskId/flowProxyId | ✅ 状态与待办确认，待真实写验证 |
+| reject | /flowInstanceApi/audit | ✅ | ✅ | ✅ 实时 jobTaskId/flowProxyId | ✅ rejected 状态确认，待真实写验证 |
+| rollback | /rollBackThePreviousLevel | ✅ | ✅ | ✅ 实时 jobTaskId 和前一节点 | ✅ 回退审核记录确认，待真实写验证 |
+| retrieve | /retrieveProcess | ✅ | ✅ | ✅ 已办 jobTaskId | ✅ 新 pending 任务确认，待真实写验证 |
 | withdraw | /revocation | ✅ | ✅ | 不适用 | ✅ |
-| urge | /urgeHandleRecord/sendUrgeMessage | ✅ | ⚠️ | 不适用 | ⚠️ 缺口⑤ |
-| forward | /transpond | ✅ | ⚠️ | receiverId 未接候选（缺口④） | ⛔ 辅助实例独立登记未实现 |
-| follow/unfollow | /flowTracking | ✅ | ⚠️ | 不适用 | ⚠️ 缺口⑤ |
+| urge | /urgeHandleRecord/sendUrgeMessage | ✅ | ✅ | 当前待办接收人 | ✅ 催办记录确认，待真实写验证 |
+| forward | /transpond | ✅ | ✅ | ✅ 实时 receiverId 候选 | ✅ 辅助实例确认并单独登记，待真实写验证 |
+| follow/unfollow | /flowTracking | ✅ | ✅ | 当前用户会话 | ✅ 关注状态确认，待真实写验证 |
 
 ## 对返工执行顺序的三点修正建议
 
-1. **加签不能在 approverAppend 上修**：目标语义是 updateFlowProxy+整树+所有权复制（InstSvc:1210-1218），与移交完全不同端点；第 4 步实施加签时按本表第 5 节重做适配层与目录端点声明。
-2. **暂存表单的写后重读有真接口**：`/web/flowInstanceApi/queryStorageFormData` 回读 `auditDesc`，缺口⑤的「不变类」判读可用它升级为「检查点已更新」的确定判据。
-3. **移交/回退/取回都换 batchNo、任务身份都变**：写后必须重读 `/web/flowJobTaskLink/list` 重建「实例×节点×处理人→jobTaskId/batchNo」映射，再执行后续动作；这正是返工第 3 步「实时任务读取」要落的位置。
+1. **加签不能在 approverAppend 上修**：目标语义是 updateFlowProxy+整树+所有权复制（InstSvc:1210-1218），与移交完全不同端点；适配层已按本表第 5 节完成整树协议改造，真实写验证仍需人工完成。
+2. **暂存表单的写后确认有真接口**：`/web/flowInstanceApi/queryStorageFormData` 回读 `auditDesc`，执行器以检查点变化确认暂存成功。
+3. **移交/回退/取回都换 batchNo、任务身份都变**：移交和取回以新任务确认；回退以关联原任务的回退审核记录确认。后续步骤在发送前重新读取当前演员的 `/web/flowJobTaskLink/list`，不复用旧任务身份。

@@ -46,9 +46,20 @@ if grep -rln 'CallWrite' internal/engine/ | grep -v 'internal/engine/step/'; the
   exit 1
 fi
 
-printf '%s\n' '[F-016] 其余九个写端点未被任何工具代码引用'
-for endpoint in reSubmit storageFormData approverAppend rollBackThePreviousLevel retrieveProcess revocation sendUrgeMessage forward follow; do
-  if grep -rq "flowInstanceApi/${endpoint}\|${endpoint}" internal/adapter/target/write.go 2>/dev/null; then
+printf '%s\n' '[F-016] 动作目录写端点未被 F-016 直连实现引用'
+for endpoint in \
+  '/web/flowInstanceApi/reSubmit' \
+  '/web/flowInstanceApi/storageFormData' \
+  '/web/flowInstanceApi/approverAppend' \
+  '/web/flowInstanceApi/updateFlowProxy' \
+  '/web/flowInstanceApi/rollBackThePreviousLevel' \
+  '/web/flowInstanceApi/retrieveProcess' \
+  '/web/flowInstanceApi/revocation' \
+  '/web/urgeHandleRecord/sendUrgeMessage' \
+  '/web/flowInstanceApi/transpond' \
+  '/web/flowInstanceApi/flowTracking'; do
+  # 仅检查完整目标路径，避免协议说明中的动作名被误识别为端点调用。
+  if grep -rqF "${endpoint}" internal/adapter/target/write.go 2>/dev/null; then
     printf '[F-016] 白名单外写端点出现：%s\n' "${endpoint}" >&2
     exit 1
   fi
