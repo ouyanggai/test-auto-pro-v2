@@ -13,6 +13,7 @@ import {
 } from 'naive-ui'
 import { useRouter } from 'vue-router'
 
+import AppEmptyState from '../components/AppEmptyState.vue'
 import { fetchExecutionPaths } from '../features/execution-paths/api'
 import { getPlanAction, planStatusLabels, planStatusOptions } from '../features/plans/logic'
 import { deletePlan, fetchPlans, PlanApiError } from '../features/plans/persistence'
@@ -237,7 +238,20 @@ const columns: DataTableColumns<PlanRow> = [
         :scroll-x="1458"
         :single-line="false"
         striped
-      />
+      >
+        <template #empty>
+          <app-empty-state
+            v-if="!loading"
+            :title="hasFilters ? '没有符合条件的测试计划' : '还没有测试计划'"
+            :description="hasFilters
+              ? '当前筛选条件下没有结果，清除筛选后可以查看全部计划。'
+              : '新建一个测试计划，开始配置需要验证的流程和执行路径。'"
+          >
+            <n-button v-if="hasFilters" secondary type="primary" @click="clearFilters">查看全部计划</n-button>
+            <n-button v-else type="primary" @click="router.push('/plans/new')">新建计划</n-button>
+          </app-empty-state>
+        </template>
+      </n-data-table>
     </div>
   </section>
   <run-preflight-dialog

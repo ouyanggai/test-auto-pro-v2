@@ -9,6 +9,7 @@ printf '验证 Go 单元与健康契约\n'
 pnpm check:backend
 
 printf '验证前端结构、类型与构建\n'
+bash ./test/contracts/ui/empty_state_visual.sh
 ./test/unit/frontend/frontend_structure.sh
 pnpm check:frontend
 

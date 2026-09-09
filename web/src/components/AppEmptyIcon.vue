@@ -1,13 +1,19 @@
+<script setup lang="ts">
+import { NEl } from 'naive-ui'
+</script>
+
 <template>
-  <svg class="app-empty-icon" viewBox="0 0 120 88" aria-hidden="true" focusable="false">
-    <circle class="app-empty-icon__halo" cx="60" cy="44" r="38" />
-    <path class="app-empty-icon__paper app-empty-icon__paper--back" d="M39 22h42a5 5 0 0 1 5 5v34H34V27a5 5 0 0 1 5-5Z" />
-    <path class="app-empty-icon__paper" d="M34 29h52a5 5 0 0 1 5 5v31H29V34a5 5 0 0 1 5-5Z" />
-    <path class="app-empty-icon__line" d="M42 42h36M42 50h25" />
-    <path class="app-empty-icon__tray" d="m24 58 8 14h56l8-14H73l-4 6H51l-4-6H24Z" />
-    <circle class="app-empty-icon__dot" cx="94" cy="27" r="3" />
-    <circle class="app-empty-icon__dot app-empty-icon__dot--small" cx="25" cy="35" r="2" />
-  </svg>
+  <n-el tag="span" class="app-empty-icon" aria-hidden="true">
+    <svg viewBox="0 0 120 88" focusable="false">
+      <circle class="app-empty-icon__halo" cx="60" cy="44" r="38" />
+      <path class="app-empty-icon__paper app-empty-icon__paper--back" d="M39 22h42a5 5 0 0 1 5 5v34H34V27a5 5 0 0 1 5-5Z" />
+      <path class="app-empty-icon__paper" d="M34 29h52a5 5 0 0 1 5 5v31H29V34a5 5 0 0 1 5-5Z" />
+      <path class="app-empty-icon__line" d="M42 42h36M42 50h25" />
+      <path class="app-empty-icon__tray" d="m24 58 8 14h56l8-14H73l-4 6H51l-4-6H24Z" />
+      <circle class="app-empty-icon__dot" cx="94" cy="27" r="3" />
+      <circle class="app-empty-icon__dot app-empty-icon__dot--small" cx="25" cy="35" r="2" />
+    </svg>
+  </n-el>
 </template>
 
 <style scoped>
@@ -16,6 +22,12 @@
   width: 100%;
   height: 100%;
   color: var(--primary-color);
+}
+
+.app-empty-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .app-empty-icon__halo {

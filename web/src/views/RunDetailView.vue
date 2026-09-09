@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NEmpty, NInputNumber, NPopconfirm, NPopover, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NInputNumber, NPopconfirm, NPopover, NResult, NSelect, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -45,8 +45,11 @@ const themeVars = useThemeVars()
 
 const detail = ref<PathRunDetail | null>(null)
 const graph = ref<FlowGraph | null>(null)
-const loading = ref(false)
+const loading = ref(true)
 const errorText = ref('')
+const loadErrorText = ref('')
+const loadFailure = ref<RunApiError | null>(null)
+const detailNotFound = computed(() => loadFailure.value?.status === 404)
 const actionText = ref('')
 const acting = ref(false)
 
@@ -327,10 +330,14 @@ const selectedNodeTypeName = computed(() => graphNodeByID.value.get(selectedNode
 // loadDetail 拉取详情并刷新结构（结构只按计划取一次）。
 async function loadDetail(): Promise<void> {
   if (!runId) {
-    errorText.value = '运行标识缺失，无法打开详情。'
+    loadErrorText.value = '运行标识缺失，无法打开详情。'
+    loading.value = false
     return
   }
-  loading.value = !detail.value
+  const firstLoad = !detail.value
+  loading.value = firstLoad
+  loadErrorText.value = ''
+  loadFailure.value = null
   try {
     const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
     detail.value = next
@@ -351,7 +358,8 @@ async function loadDetail(): Promise<void> {
     }
     schedulePoll()
   } catch (error) {
-    errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行详情，请重试'
+    loadFailure.value = error instanceof RunApiError ? error : null
+    loadErrorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行详情，请重试'
   } finally {
     loading.value = false
     // 轮询链不因首次加载失败而断：详情已在（或结构读失败但运行事实还在）时，
@@ -652,7 +660,18 @@ onBeforeUnmount(() => {
     </Teleport>
 
     <div v-if="loading" class="run-detail__loading"><n-spin size="small" /><span>正在读取运行详情……</span></div>
-    <n-empty v-else-if="!detail" :description="errorText || '未找到该运行记录。'" />
+    <div v-else-if="!detail" class="run-detail__result">
+      <n-result
+        :status="detailNotFound ? '404' : 'error'"
+        size="small"
+        :title="detailNotFound ? '未找到运行记录' : '运行详情读取失败'"
+        :description="loadErrorText || '未找到该运行记录。'"
+        role="alert"
+      />
+      <div class="run-detail__result-actions">
+        <n-button v-if="runId && (!loadFailure || loadFailure.retryable)" type="primary" secondary @click="loadDetail">重新读取</n-button>
+      </div>
+    </div>
 
     <template v-else>
       <!-- 主区第一行：左上角是内容页签，右上角是操作区，主操作「放行」固定在最右。 -->
@@ -820,7 +839,7 @@ onBeforeUnmount(() => {
 
       <!-- 结论与提示区：只在真的有内容时占位，高度有界，不把画布挤没。 -->
       <div
-        v-if="detail.stopReason || detail.structureNote || topConclusion || errorText || actionText || sceneLostNote"
+        v-if="detail.stopReason || detail.structureNote || topConclusion || loadErrorText || errorText || actionText || sceneLostNote"
         class="run-detail__notices"
       >
         <!-- 现场已丢失：一句大白话说明发生了什么、为什么、用户现在能做什么；不给任何输入或重试入口。 -->
@@ -831,6 +850,7 @@ onBeforeUnmount(() => {
           {{ [detail.stopReason, detail.structureNote].filter(Boolean).join('；') }}
         </n-alert>
         <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
+        <p v-if="loadErrorText" class="run-detail__error" role="alert">{{ loadErrorText }}</p>
         <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
         <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
       </div>
@@ -869,7 +889,12 @@ onBeforeUnmount(() => {
               >{{ followPaused ? '回到当前步' : '定位当前节点' }}</n-button>
             </template>
           </flow-graph-canvas>
-          <n-empty v-else description="真实流程结构尚未加载，无法渲染运行画布。" />
+          <div v-else class="run-detail__result">
+            <n-result status="warning" size="small" title="流程图暂不可用" description="真实流程结构尚未加载，无法渲染运行画布。" role="status" aria-live="polite" />
+            <div class="run-detail__result-actions">
+              <n-button secondary @click="loadDetail">重新读取</n-button>
+            </div>
+          </div>
         </div>
 
         <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放「状态怎么变的」。 -->
@@ -1177,5 +1202,14 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1320px) {
   .run-detail__side { width: 320px; }
+}
+.run-detail__result {
+  text-align: center;
+}
+
+.run-detail__result-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
 }
 </style>

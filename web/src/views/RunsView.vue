@@ -3,9 +3,9 @@ import { NButton, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import AppEmptyState from '../components/AppEmptyState.vue'
 import { deleteRun, fetchAllRuns, formatTime, RunApiError } from '../features/runs/api'
 import type { RunSummary } from '../features/runs/api'
-import RunListEmptyState from '../features/runs/RunListEmptyState.vue'
 
 // RunsView 是运行记录列表：一行只对应一次计划运行（跨计划）。
 // 每行显示计划、运行方式、整体状态、路径汇总、开始/结束时间，并提供进入与删除入口（2026-09-06）。
@@ -101,12 +101,17 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 
     <div v-if="loading" class="runs-view__loading"><NSpin size="small" /><span>正在读取运行列表……</span></div>
 
-    <RunListEmptyState
+    <AppEmptyState
       v-else-if="runs.length === 0 && !errorText"
-      :filtered="Boolean(runStatusFilter)"
-      @clear-filter="clearRunStatusFilter"
-      @open-plans="router.push('/plans')"
-    />
+      size="large"
+      :title="runStatusFilter ? '没有符合条件的运行记录' : '还没有运行记录'"
+      :description="runStatusFilter
+        ? '当前筛选条件下没有结果，清除筛选后可以查看全部记录。'
+        : '运行测试计划后，每次运行的结果都会按时间出现在这里。'"
+    >
+      <NButton v-if="runStatusFilter" secondary type="primary" @click="clearRunStatusFilter">查看全部记录</NButton>
+      <NButton v-else type="primary" @click="router.push('/plans')">前往测试计划</NButton>
+    </AppEmptyState>
 
     <table v-else class="runs-view__table">
       <thead>

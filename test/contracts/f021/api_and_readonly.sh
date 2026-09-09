@@ -23,14 +23,14 @@ grep -qF 'ListRunsFiltered' internal/repository/run.go || fail '缺少状态筛�
 # 详情页：事件流与日志位置复制必须存在；不得出现重试/继续/跳过类只读违规入口。
 panel='web/src/views/RunDetailView.vue'
 list='web/src/views/RunsView.vue'
-empty_state='web/src/features/runs/RunListEmptyState.vue'
+empty_state='web/src/components/AppEmptyState.vue'
 grep -qF 'run-detail__events' "${panel}" || fail '运行详情缺少事件流时间线'
 grep -qF 'copyLogRef' web/src/features/runs/RunNodePanel.vue || fail '尝试行缺少日志位置复制'
-grep -qF '<RunListEmptyState' "${list}" || fail '运行列表缺少独立的正常空态'
+grep -qF '<AppEmptyState' "${list}" || fail '运行列表缺少独立的正常空态'
 grep -qF 'role="status"' "${empty_state}" || fail '正常空态缺少可访问状态语义'
-grep -qF "filtered ? '没有符合条件的运行记录' : '还没有运行记录'" "${empty_state}" || fail '正常空态没有区分筛选为空与首次为空'
-grep -qF '前往测试计划' "${empty_state}" || fail '首次空态缺少下一步入口'
-grep -qF '查看全部记录' "${empty_state}" || fail '筛选空态缺少清除筛选入口'
+grep -qF "runStatusFilter ? '没有符合条件的运行记录' : '还没有运行记录'" "${list}" || fail '正常空态没有区分筛选为空与首次为空'
+grep -qF '前往测试计划' "${list}" || fail '首次空态缺少下一步入口'
+grep -qF '查看全部记录' "${list}" || fail '筛选空态缺少清除筛选入口'
 if grep -qF '<NEmpty' "${list}"; then
   fail '运行列表仍在使用容易与错误混淆的默认空态'
 fi

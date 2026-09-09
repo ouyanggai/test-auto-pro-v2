@@ -11,6 +11,7 @@ import {
   NInput,
   NModal,
   NProgress,
+  NResult,
   NSpin,
   NTag,
   NVirtualList,
@@ -1144,11 +1145,10 @@ onMounted(() => {
               </flow-graph-canvas>
             </template>
             <div v-else class="graph-state">
-              <n-empty :description="graphError?.message || '暂时无法读取流程'">
-                <template #extra>
-                  <n-button type="primary" secondary @click="retryGraph">重试</n-button>
-                </template>
-              </n-empty>
+              <div class="graph-state__result">
+                <n-result status="error" size="small" title="流程读取失败" :description="graphError?.message || '暂时无法读取流程'" role="alert" />
+                <n-button type="primary" secondary @click="retryGraph">重试</n-button>
+              </div>
             </div>
           </div>
         </section>
@@ -1158,14 +1158,19 @@ onMounted(() => {
         <div class="paths-back-bar">
           <n-button text type="primary" @click="router.push('/plans')">返回测试计划</n-button>
         </div>
-        <n-empty :description="planNotFound ? '计划不存在或已不可用' : planError || '暂时无法读取计划'">
-          <template #extra>
-            <div class="error-actions">
-              <n-button v-if="!planNotFound" type="primary" secondary @click="loadPage">重试</n-button>
-              <n-button @click="router.push('/plans')">返回测试计划</n-button>
-            </div>
-          </template>
-        </n-empty>
+        <div class="paths-error-region__result">
+          <n-result
+            :status="planNotFound ? '404' : 'error'"
+            size="small"
+            :title="planNotFound ? '未找到测试计划' : '测试计划读取失败'"
+            :description="planNotFound ? '计划不存在或已不可用' : planError || '暂时无法读取计划'"
+            role="alert"
+          />
+          <div class="error-actions">
+            <n-button v-if="!planNotFound" type="primary" secondary @click="loadPage">重试</n-button>
+            <n-button @click="router.push('/plans')">返回测试计划</n-button>
+          </div>
+        </div>
       </section>
     </n-spin>
     <n-modal
@@ -1487,9 +1492,14 @@ onMounted(() => {
   justify-content: flex-start;
 }
 
-.paths-error-region > .n-empty {
+.paths-error-region__result {
   flex: 1 1 auto;
   align-self: center;
+  text-align: center;
+}
+
+.graph-state__result {
+  text-align: center;
 }
 
 .graph-warning {

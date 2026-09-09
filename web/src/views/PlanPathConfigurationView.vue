@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NEmpty, NModal, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NModal, NResult, NSpace, NSpin, NTag, useNotification, useThemeVars } from 'naive-ui'
 import type { NotificationReactive } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
@@ -1016,7 +1016,12 @@ void loadPage()
           @state="applyRuntimeFormState"
           @error="handleRuntimeError"
         />
-        <n-empty v-else description="表单运行时会话暂不可用，请返回节点画布后重试" />
+        <div v-else class="runtime-error-state">
+          <n-result status="error" size="small" title="表单数据暂不可用" description="表单运行时会话暂不可用，请返回节点画布后重试" role="alert" />
+          <div class="runtime-error-state__actions">
+            <n-button secondary @click="loadPage">重新读取</n-button>
+          </div>
+        </div>
         </div>
       </section>
 
@@ -1292,5 +1297,13 @@ void loadPage()
   .path-configuration-page--form > .path-configuration-page__stage,
   .path-configuration-page__form-workspace { min-height: 0; }
   .path-configuration-page__form-toolbar { flex: 0 0 auto; }
+}
+.runtime-error-state {
+  text-align: center;
+}
+
+.runtime-error-state__actions {
+  display: flex;
+  justify-content: center;
 }
 </style>

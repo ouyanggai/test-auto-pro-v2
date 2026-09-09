@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Controls } from '@vue-flow/controls'
-import { NButton, NEmpty, useThemeVars } from 'naive-ui'
+import { NButton, NResult, useThemeVars } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { VueFlow as VueFlowCanvas, useVueFlow } from '@vue-flow/core'
 import type { NodeChange, NodeMouseEvent } from '@vue-flow/core'
@@ -663,11 +663,10 @@ onBeforeUnmount(() => {
       还有 {{ guideProjection.hiddenRightCount }} 个候选 →
     </div>
     <div v-if="!laidOut" class="flow-graph-canvas__error">
-      <n-empty :description="layoutResult.error">
-        <template #extra>
-          <n-button type="primary" secondary @click="emit('retry')">重试</n-button>
-        </template>
-      </n-empty>
+      <div class="flow-graph-canvas__error-content">
+        <n-result status="error" size="small" title="流程暂时无法显示" :description="layoutResult.error" role="alert" />
+        <n-button type="primary" secondary @click="emit('retry')">重试</n-button>
+      </div>
     </div>
   </div>
 </template>
@@ -861,6 +860,10 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   place-items: center;
+}
+
+.flow-graph-canvas__error-content {
+  text-align: center;
 }
 
 .flow-graph-canvas :deep(.vue-flow__pane) {

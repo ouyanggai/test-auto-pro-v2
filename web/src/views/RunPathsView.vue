@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NPopconfirm, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { NButton, NEmpty, NPopconfirm, NResult, NSpin, NTag, useThemeVars } from 'naive-ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -15,8 +15,10 @@ const themeVars = useThemeVars()
 const runId = String(route.params.runId || '')
 
 const view = ref<RunPathsView | null>(null)
-const loading = ref(false)
+const loading = ref(true)
 const errorText = ref('')
+const loadFailure = ref<RunApiError | null>(null)
+const viewNotFound = computed(() => loadFailure.value?.status === 404)
 
 // deleting 表示删除请求在途：按钮忙碌，重复点击不会发出第二个删除请求。
 const deleting = ref(false)
@@ -25,14 +27,17 @@ const deleting = ref(false)
 async function loadPaths(): Promise<void> {
   if (!runId) {
     errorText.value = '运行标识缺失，无法打开运行记录。'
+    loading.value = false
     return
   }
   loading.value = !view.value
+  loadFailure.value = null
   try {
     view.value = await fetchRunPaths(runId)
     errorText.value = ''
     schedulePoll()
   } catch (error) {
+    loadFailure.value = error instanceof RunApiError ? error : null
     errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行记录，请重试'
   } finally {
     loading.value = false
@@ -112,7 +117,19 @@ onBeforeUnmount(() => {
 <template>
   <section class="run-paths">
     <div v-if="loading" class="run-paths__loading"><NSpin size="small" /><span>正在读取运行记录……</span></div>
-    <NEmpty v-else-if="!view" :description="errorText || '未找到该运行记录。'" />
+    <div v-else-if="!view" class="run-paths__result">
+      <NResult
+        :status="viewNotFound ? '404' : 'error'"
+        size="small"
+        :title="viewNotFound ? '未找到运行记录' : '运行记录读取失败'"
+        :description="errorText || '未找到该运行记录。'"
+        role="alert"
+      />
+      <div class="run-paths__result-actions">
+        <NButton v-if="runId && (!loadFailure || loadFailure.retryable)" type="primary" secondary @click="loadPaths">重试</NButton>
+        <NButton @click="router.push('/runs')">返回运行记录</NButton>
+      </div>
+    </div>
 
     <template v-else>
       <header class="run-paths__header">
@@ -232,6 +249,16 @@ onBeforeUnmount(() => {
 }
 
 .run-paths__error { margin: 0; color: var(--error-color, #d03050); }
+
+.run-paths__result-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.run-paths__result {
+  text-align: center;
+}
 
 .run-paths__list {
   display: grid;

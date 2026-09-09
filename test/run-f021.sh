@@ -38,6 +38,7 @@ done
 
 printf '%s\n' '[F-021] 只读契约'
 ./test/contracts/f021/api_and_readonly.sh
+bash ./test/contracts/ui/empty_state_visual.sh
 
 printf '%s\n' '[F-021] 前端类型检查与构建'
 (cd web && npx vue-tsc --noEmit >/dev/null && npm run build >/dev/null)

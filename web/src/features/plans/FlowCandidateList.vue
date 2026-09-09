@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NButton, NEl, NEmpty, NInput, NSpin, NTag, NText, NVirtualList } from 'naive-ui'
+import { NButton, NEl, NEmpty, NInput, NResult, NSpin, NTag, NText, NVirtualList } from 'naive-ui'
 
 import { flowSelectionLabels } from './selection'
 import {
@@ -89,8 +89,8 @@ defineExpose({ getSearchElement, focusSearch })
 	  <n-text depth="3">正在读取{{ title }}…</n-text>
 	</div>
 
-	<div v-else-if="error && items.length === 0" class="candidate-state" aria-live="polite">
-	  <n-empty :description="error" />
+	<div v-else-if="error && items.length === 0" class="candidate-state">
+	  <n-result status="error" size="small" title="读取失败" :description="error" role="alert" />
 	  <n-button secondary size="small" @click="emit('retry')">重新加载</n-button>
 	</div>
 
