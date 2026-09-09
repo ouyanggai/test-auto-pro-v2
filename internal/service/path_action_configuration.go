@@ -1086,14 +1086,12 @@ func autoNodeActionCandidates(node model.PathConfigNode, seed uint64, used map[s
 	return candidates
 }
 
-// autoPersonStrategy 优先沿用目标默认名单，没有默认值时按确定性种子随机取够最少人数。
+// autoPersonStrategy 一键配置始终优先按当前合法范围稳定随机选人。
+// 目标默认名单只描述目标模板事实，不能覆盖用户要求的默认随机策略；会签人数由人员项的最小人数约束决定。
 func autoPersonStrategy(person model.PathConfigPerson, seed uint64) model.PathConfigPersonStrategyInput {
 	strategies := make(map[string]bool, len(person.Strategies))
 	for _, item := range person.Strategies {
 		strategies[item.Value] = true
-	}
-	if len(person.DefaultSelected) > 0 && strategies["target_default"] {
-		return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "target_default", Seed: 1, Selected: append([]string(nil), person.DefaultSelected...)}
 	}
 	if strategies["random"] && len(person.Options) > 0 {
 		strategy := model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "random", Seed: int64(seed%1_000_000) + 1}
@@ -1109,6 +1107,11 @@ func autoPersonStrategy(person model.PathConfigPerson, seed uint64) model.PathCo
 		selected = append(selected, person.Options[(int(seed)+index)%len(person.Options)].Value)
 	}
 	return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "manual", Seed: 1, Selected: selected}
+}
+
+// AutoPersonStrategyForTest 暴露一键人员策略，供 test 目录锁定目标默认名单不得覆盖范围随机的约束。
+func AutoPersonStrategyForTest(person model.PathConfigPerson, seed uint64) model.PathConfigPersonStrategyInput {
+	return autoPersonStrategy(person, seed)
 }
 
 // autoConfigureSeed 由计划、路径和节点键派生确定性种子，保证同一计划重复一键配置结果一致。

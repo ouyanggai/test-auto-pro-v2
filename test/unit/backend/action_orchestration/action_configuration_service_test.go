@@ -383,6 +383,36 @@ func TestAutoNodeActionPrefersUncoveredEnabledActions(t *testing.T) {
 	}
 }
 
+// TestAutoPersonStrategyPrefersRangeRandom 验证一键配置不再把目标默认人员当成工具默认策略。
+func TestAutoPersonStrategyPrefersRangeRandom(t *testing.T) {
+	person := model.PathConfigPerson{
+		Key:             "node-person",
+		Required:        true,
+		MinCount:        1,
+		MaxCount:        1,
+		DefaultSelected: []string{"candidate-default"},
+		Options: []model.PathConfigPersonOption{
+			{Label: "候选甲", Value: "candidate-a"},
+			{Label: "候选乙", Value: "candidate-b"},
+			{Label: "候选丙", Value: "candidate-c"},
+		},
+		Strategies: []model.PathConfigPersonStrategyOption{
+			{Value: "target_default", Label: "目标默认"},
+			{Value: "random", Label: "范围随机"},
+			{Value: "manual", Label: "手动选择"},
+		},
+	}
+
+	first := service.AutoPersonStrategyForTest(person, 2)
+	second := service.AutoPersonStrategyForTest(person, 2)
+	if first.Strategy != "random" || first.Seed != second.Seed || len(first.Selected) != 1 || first.Selected[0] != second.Selected[0] {
+		t.Fatalf("一键配置应稳定随机选择一人，实际 first=%+v second=%+v", first, second)
+	}
+	if first.Selected[0] == person.DefaultSelected[0] {
+		t.Fatalf("一键配置不应沿用目标默认名单：%+v", first)
+	}
+}
+
 // TestConfirmedNodeKeysCoverSavedActionNodes 锁定节点确认列真的会被写入：
 // 这一列原来从来没有人写，节点状态永远停在待配置，一键配置和手工保存都看不到已配置。
 func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {
