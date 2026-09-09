@@ -166,6 +166,8 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		facts.CurrentTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)
 		facts.CurrentTaskFlowProxy = strings.TrimSpace(snapshot.FlowProxyID)
 		facts.CurrentTaskNodeID = strings.TrimSpace(snapshot.FlowNodeProxyID)
+		facts.CurrentTaskAssigneeID = strings.TrimSpace(snapshot.PendingUserID)
+		facts.CurrentTaskAssigneeName = strings.TrimSpace(snapshot.PendingUserName)
 		switch step.Action {
 		case model.ActionStorageFormData, model.ActionApprove, model.ActionReject:
 			// 这三个动作都直接处理当前待办；门禁和写后核验必须使用同一条实时任务快照。

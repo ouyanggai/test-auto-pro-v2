@@ -165,6 +165,10 @@ type InstanceFacts struct {
 	CurrentTaskBatchNo   string `json:"currentTaskBatchNo,omitempty"`
 	CurrentTaskFlowProxy string `json:"currentTaskFlowProxy,omitempty"`
 	CurrentTaskNodeID    string `json:"currentTaskNodeId,omitempty"`
+	// CurrentTaskAssigneeID/Name 是目标裁决的当前待办实际处理人（currentPendingUserId/Name）。
+	// 任务级动作必须以该处理人身份登录并发出写请求；这是"人员配置驱动执行"的事实来源。
+	CurrentTaskAssigneeID   string `json:"currentTaskAssigneeId,omitempty"`
+	CurrentTaskAssigneeName string `json:"currentTaskAssigneeName,omitempty"`
 	// CompletedTask* 是取回动作的当前账号已办任务快照。
 	CompletedTaskRead     bool   `json:"completedTaskRead,omitempty"`
 	CompletedTaskFound    bool   `json:"completedTaskFound,omitempty"`

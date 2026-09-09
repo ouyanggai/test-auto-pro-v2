@@ -27,6 +27,8 @@ type rawAuditNamedItem struct {
 	Name        string `json:"name"`
 	RealName    string `json:"realName"`
 	DisplayName string `json:"displayName"`
+	Account     string `json:"account"`
+	Username    string `json:"username"`
 	UserVo      *struct {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
@@ -603,4 +605,46 @@ func (c *Client) FormIdentityContext(ctx context.Context, active Session) (FormI
 // ResolveFlowAuditMetadataForTest 暴露人员目录解析，供 test 目录下的定向用例锁定平台码行为。
 func (c *Client) ResolveFlowAuditMetadataForTest(ctx context.Context, active Session, tree *FlowNodeTemplate) {
 	c.resolveFlowAuditMetadata(ctx, active, tree)
+}
+
+// UserAccountsByID 按目标用户 ID 集合解析登录账号（findByCompanyIdUserList 的 account 字段）。
+// 任务级动作的写请求必须以目标实时待办的实际处理人身份发出：任务列表给出 currentPendingUserId，
+// 这里把它映射回登录账号供执行器切换演员会话。查不到的 ID 不进结果，由调用方决定是否阻断。
+// 单次全量分页读取（size=1000），结果由调用方按步骤复用；只读，可安全重试。
+func (c *Client) UserAccountsByID(ctx context.Context, active Session, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return map[string]string{}, nil
+	}
+	if strings.TrimSpace(active.CompanyID) == "" {
+		return nil, fmt.Errorf("login response missing company id")
+	}
+	resp, err := c.call(ctx, "/web/user/api/user/findByCompanyIdUserList", active.SID, map[string]any{
+		"data": map[string]any{"companyId": active.CompanyID}, "pagination": true, "pages": 1, "size": 1000,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
+	}
+	var page rawAuditPersonnelPage
+	if err := json.Unmarshal(resp.Data, &page); err != nil {
+		return nil, fmt.Errorf("invalid personnel directory")
+	}
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			want[trimmed] = struct{}{}
+		}
+	}
+	result := make(map[string]string, len(want))
+	for _, item := range page.DataList {
+		candidate := auditCandidateFromNamed(item)
+		account := firstNonEmpty(item.Account, item.Username)
+		if _, needed := want[candidate.ID]; !needed || account == "" {
+			continue
+		}
+		result[candidate.ID] = account
+	}
+	return result, nil
 }

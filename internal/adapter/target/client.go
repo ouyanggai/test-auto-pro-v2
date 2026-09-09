@@ -592,6 +592,8 @@ func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instance
 		AuditWay              string `json:"auditWay"`
 		FlowNextNodeAuditType string `json:"flowNextNodeAuditType"`
 		BranchExecuteType     string `json:"branchExecuteType"`
+		CurrentPendingUserID  string `json:"currentPendingUserId"`
+		CurrentPendingUserName string `json:"currentPendingUserName"`
 	}
 	wantInstance := strings.TrimSpace(instanceID)
 	matched := make([]TaskSnapshot, 0)
@@ -626,6 +628,7 @@ func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instance
 				JobTaskID: jobTaskID, FlowInstanceID: strings.TrimSpace(item.FlowInstanceID),
 				FlowNodeProxyID: strings.TrimSpace(item.FlowNodeProxyID), BatchNo: strings.TrimSpace(item.BatchNo),
 				TaskStatus: strings.TrimSpace(item.TaskStatus), ExecutorID: strings.TrimSpace(item.ExecutorID),
+				PendingUserID: strings.TrimSpace(item.CurrentPendingUserID), PendingUserName: strings.TrimSpace(item.CurrentPendingUserName),
 				FormProxyID: strings.TrimSpace(item.FormProxyID), FlowProxyID: strings.TrimSpace(item.FlowProxyID),
 				AuditWay: strings.TrimSpace(item.AuditWay), FlowNextNodeAuditType: strings.TrimSpace(item.FlowNextNodeAuditType),
 				BranchExecuteType: strings.TrimSpace(item.BranchExecuteType),

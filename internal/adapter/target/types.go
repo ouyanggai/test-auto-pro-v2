@@ -117,17 +117,21 @@ type DueFlow struct {
 // TaskSnapshot 是目标任务链接的实时快照；任务 ID 和批次号只能来自这份读取结果，
 // 不能从配置参数或上一次写请求沿用。
 type TaskSnapshot struct {
-	LinkID                string
-	ParentLinkID          string
-	JobTaskID             string
-	FlowInstanceID        string
-	FlowNodeProxyID       string
-	BatchNo               string
-	TaskStatus            string
-	ExecutorID            string
-	FormProxyID           string
-	FlowProxyID           string
-	AuditWay              string
+	LinkID     string
+	ParentLinkID string
+	JobTaskID  string
+	FlowInstanceID string
+	FlowNodeProxyID string
+	BatchNo    string
+	TaskStatus string
+	ExecutorID string
+	// PendingUserID/PendingUserName 是目标裁决的当前待办实际处理人（currentPendingUserId/Name）。
+	// 任务级动作必须以该处理人身份发出写请求，不能冒用计划账号审批他人任务。
+	PendingUserID   string
+	PendingUserName string
+	FormProxyID     string
+	FlowProxyID     string
+	AuditWay        string
 	FlowNextNodeAuditType string
 	BranchExecuteType     string
 }

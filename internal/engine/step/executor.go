@@ -436,6 +436,38 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		log.Phase("prepare", step.Sequence, attemptNo, "演员登录失败："+userFacingError(sessionErr, target.WriteResponse{}))
 		return outcome, 0, nil
 	}
+	// 任务级动作以目标实时待办的真实处理人身份发出（工作包 D）：
+	// 事实里的 currentPendingUserId 是目标裁决的实际处理人，必须解析其登录账号并切换演员会话，
+	// 绝不冒用计划账号审批他人任务。解析失败就如实置败并指出节点与人员，不能静默回退到计划账号。
+	if step.Scope == model.ActionScopeTask || step.Scope == model.ActionScopeCompletedTask {
+		if assigneeID := strings.TrimSpace(preview.Facts.CurrentTaskAssigneeID); assigneeID != "" {
+			if account, name, resolveErr := e.assigneeAccount(ctx, session, assigneeID); resolveErr != nil {
+				class := model.FailureClassActorUnresolved
+				reason := "无法解析本节点实际处理人（" + nameOrFallback(preview.Facts.CurrentTaskAssigneeName, assigneeID) + "）的登录账号：" + userFacingError(resolveErr, target.WriteResponse{})
+				if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+					return outcome, 0, finishErr
+				}
+				log.Phase("prepare", step.Sequence, attemptNo, reason)
+				return outcome, 0, nil
+			} else if account != "" && account != runCtx.PlanAccount {
+				actorSession, actorErr := e.sessions.Current(ctx, account)
+				if actorErr != nil {
+					class := model.FailureClassActorUnresolved
+					reason := "无法登录本节点实际处理人 " + nameOrFallback(name, account) + "：" + userFacingError(actorErr, target.WriteResponse{})
+					if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+						return outcome, 0, finishErr
+					}
+					log.Phase("prepare", step.Sequence, attemptNo, reason)
+					return outcome, 0, nil
+				}
+				session = actorSession
+				preview.ActorAccount = account
+				if name != "" {
+					preview.ActorName = name
+				}
+			}
+		}
+	}
 	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("演员 %s（%s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
 	reportPhase(approved, "prepare", fmt.Sprintf("演员 %s 会话就绪", preview.ActorName))
 
@@ -1183,6 +1215,38 @@ func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log 
 	}, func(attempt int, nextDelay time.Duration) {
 		log.Phase(phase, stepNo, 1, fmt.Sprintf("会话获取第 %d 次失败，%s 后重试", attempt, nextDelay))
 	})
+}
+
+// assigneeAccount 把目标实时待办的实际处理人（用户 ID）解析为登录账号与姓名。
+// 人员目录按公司全量分页读取并就地缓存一次调用；查不到说明目录里没有该用户，
+// 调用方必须阻断本步，绝不能回退成计划账号冒充审批。
+func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, assigneeUserID string) (string, string, error) {
+	resolver, ok := e.target.(userAccountResolver)
+	if !ok {
+		return "", "", errors.New("目标客户端不支持人员目录账号解析")
+	}
+	accounts, err := resolver.UserAccountsByID(ctx, session, []string{assigneeUserID})
+	if err != nil {
+		return "", "", err
+	}
+	account, ok := accounts[assigneeUserID]
+	if !ok || strings.TrimSpace(account) == "" {
+		return "", "", errors.New("人员目录中没有该用户的登录账号")
+	}
+	return strings.TrimSpace(account), "", nil
+}
+
+// nameOrFallback 有名字用名字，否则用 ID 兜底，供阻断文案指向具体人员。
+func nameOrFallback(name, fallback string) string {
+	if strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+// userAccountResolver 是人员目录账号解析能力的最小接口，由目标适配层实现。
+type userAccountResolver interface {
+	UserAccountsByID(ctx context.Context, active target.Session, ids []string) (map[string]string, error)
 }
 
 // readOnlyWithSessionRetry 执行目标只读操作；会话失效时先刷新会话再立即重读，其他临时错误按配置退避。
