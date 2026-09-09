@@ -1269,6 +1269,18 @@ func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, se
 			if sessions == nil {
 				return zero, active, err
 			}
+			// 连续刷新之间强制退避：实测高频重登会触发目标平台对账号的会话限制
+			// （新发的 SID 连只读都秒级失效），把瞬断放大成账号级不可用；退避给目标恢复窗口。
+			delay := time.Duration(attempt) * time.Second
+			if policy.Sleep != nil {
+				policy.Sleep(delay)
+			} else {
+				select {
+				case <-ctx.Done():
+					return zero, active, ctx.Err()
+				case <-time.After(delay):
+				}
+			}
 			refreshed, refreshErr := sessions.Refresh(ctx, account)
 			if refreshErr != nil {
 				return zero, active, refreshErr

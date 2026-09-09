@@ -41,6 +41,15 @@ function switchPathRun(pathRunID: number) {
   if (pathRunID === selectedPathRunID.value) return
   void router.push(`/runs/${runId}/paths/${pathRunID}`)
 }
+
+// 路由参数是路径切换的唯一事实来源：标签点击只改路由，这里监听参数变化后重读面板，
+// 否则 URL 已切到目标路径而面板仍显示旧路径（实测缺陷：多路径标签点击后面板不刷新）。
+watch(() => route.params.pathRunId, (next) => {
+  const nextID = Number(next || 0) || 0
+  if (!nextID || nextID === selectedPathRunID.value) return
+  selectedPathRunID.value = nextID
+  void loadDetail()
+})
 const themeVars = useThemeVars()
 
 const detail = ref<PathRunDetail | null>(null)
