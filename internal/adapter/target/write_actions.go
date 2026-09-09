@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// F-019 写端点白名单（动作目录声明的全部 12 个端点）。
+// F-019 写端点白名单（动作目录声明的全部端点，除 Submit 和 Audit 在 write.go 已定义）。
 const (
 	WriteEndpointReSubmit        = "/web/flowInstanceApi/reSubmit"
 	WriteEndpointStorageForm     = "/web/flowInstanceApi/storageFormData"
@@ -139,6 +139,36 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 		}
 		body["formDataMongoVo"] = map[string]any{"data": formData}
 		return body, WriteEndpointStorageForm, nil
+	case "approve":
+		// 同意与不同意共用审批端点，差别在 auditRecord.auditStatus=pass
+		data := map[string]any{
+			"id":        strings.TrimSpace(request.InstanceID),
+			"jobTaskId": strings.TrimSpace(request.JobTaskID),
+		}
+		if id := strings.TrimSpace(request.FlowProxyID); id != "" {
+			data["flowProxyId"] = id
+		}
+		if len(request.BizRelevance) > 0 {
+			data["flowInstanceBizRelevanceList"] = request.BizRelevance
+		}
+		auditRecord := map[string]any{"auditStatus": strings.TrimSpace(request.AuditStatus)}
+		if desc := strings.TrimSpace(request.ExecuteDesc); desc != "" {
+			auditRecord["executeDesc"] = desc
+		}
+		data["auditRecord"] = auditRecord
+		body := map[string]any{"data": data}
+		formData := request.FormData
+		if len(formData) == 0 {
+			formData = json.RawMessage(`{}`)
+		}
+		body["formDataMongoVo"] = map[string]any{"data": formData}
+		if len(request.NextAuditors) > 0 {
+			body["nextAuditorList"] = request.NextAuditors
+		}
+		if request.Tracking != nil {
+			body["tracking"] = *request.Tracking
+		}
+		return body, WriteEndpointAudit, nil
 	case "reject":
 		// 不同意与同意共用审批端点，差别只在 auditRecord.auditStatus=no_pass
 		// （FlowAuditServiceImpl 按 ExecuteResultEnum 分派）。表单数据同样整份提交：
@@ -292,6 +322,17 @@ func validateActionWriteRequest(request ActionWriteRequest) error {
 			return err
 		}
 		return require(request.NodeProxyID, "当前节点代理 id")
+	case "approve":
+		// 同意与不同意同用审批端点；同意必须显式携带 pass，防止把空 auditStatus 发成目标默认行为。
+		if err := require(request.InstanceID, "流程实例 id"); err != nil {
+			return err
+		}
+		if err := require(request.JobTaskID, "待办任务 id"); err != nil {
+			return err
+		}
+		if strings.TrimSpace(request.AuditStatus) != "pass" {
+			return errors.New("同意动作必须使用 auditStatus=pass，拒绝发送")
+		}
 	case "reject":
 		if err := require(request.InstanceID, "流程实例 id"); err != nil {
 			return err
