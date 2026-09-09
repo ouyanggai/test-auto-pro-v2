@@ -7,8 +7,8 @@ import { containerActionsDraft, nodeActionContainer, normalizedPersonStrategy, p
 import type { PathActionFlowLabels } from './logic'
 import type { PathActionConfigurationIssue, PathActionContainer, PathCompiledActionStep, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
-const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string }>; savedSuccessfully: boolean; formComplete: boolean; instanceContainer?: PathActionContainer | null; instanceSavedActions?: PathConfigConfiguredActionInput[]; flowLabels?: PathActionFlowLabels; compiledSteps?: PathCompiledActionStep[]; compiledIssues?: PathActionConfigurationIssue[]; compiledLoading?: boolean; compiledError?: string }>()
-const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; backToPlan: []; openForm: []; requestCompiled: [] }>()
+const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft; saving: boolean; readOnly: boolean; saveDisabled: boolean; saveAllDisabled: boolean; missingCount: number; saveError: string; saveDetails: Array<{ kind: string; name: string; reason: string; nodeKey?: string }>; savedSuccessfully: boolean; formComplete: boolean; instanceContainer?: PathActionContainer | null; instanceSavedActions?: PathConfigConfiguredActionInput[]; flowLabels?: PathActionFlowLabels; compiledSteps?: PathCompiledActionStep[]; compiledIssues?: PathActionConfigurationIssue[]; compiledLoading?: boolean; compiledError?: string }>()
+const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; locateNode: [nodeKey: string]; backToPlan: []; openForm: []; requestCompiled: [] }>()
 
 const container = computed(() => props.node ? nodeActionContainer(props.node) : null)
 // savedActions 只保留当前节点已确认的独立动作记录。
@@ -67,7 +67,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           <p v-else>{{ person.detail }}</p>
           <small v-if="person.items.length">目标范围：{{ person.items.map(item => `${item.name}${item.count > 1 ? `（${item.count}人）` : ''}`).join('、') }}</small>
           <small v-if="itemCount(person)">已解析 {{ itemCount(person) }} 项</small>
-          <small v-if="person.note">{{ pathConfigurationMessage(person.note) }}</small>
+          <n-alert v-if="person.note" type="warning" :show-icon="false">{{ person.note }}</n-alert>
         </div>
       </section>
 
@@ -99,9 +99,12 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
         <n-alert v-if="readOnly" type="info" :show-icon="false">当前计划只能查看</n-alert>
         <n-alert v-if="saveError" type="error" :show-icon="false">{{ pathConfigurationMessage(saveError) }}</n-alert>
         <ul v-if="saveDetails.length" class="save-details">
-          <li v-for="detail in saveDetails" :key="`${detail.kind}-${detail.name}`">{{ detail.name }}：{{ pathConfigurationMessage(detail.reason) }}</li>
+          <li v-for="detail in saveDetails" :key="`${detail.kind}-${detail.name}`">
+            <n-button v-if="detail.nodeKey" text size="small" @click="emit('locateNode', detail.nodeKey)">{{ detail.name }}</n-button>
+            <span v-else>{{ detail.name }}</span>：{{ pathConfigurationMessage(detail.reason) }}
+          </li>
         </ul>
-        <span v-if="!saveError && missingCount">还有 {{ missingCount }} 项未满足配置要求</span>
+        <span v-if="!saveError && missingCount">当前节点仍缺少 {{ missingCount }} 项配置，请在本面板处理人员或节点动作区完成。</span>
       </div>
       <div v-if="!readOnly" class="save-actions">
         <n-button secondary :loading="saving" :disabled="saveAllDisabled" @click="emit('saveAll')">保存全部节点</n-button>

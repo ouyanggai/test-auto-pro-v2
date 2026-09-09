@@ -90,14 +90,18 @@ type PathConfigValidation struct {
 // PathConfigPersonSelectionIssue 按当前模板判断人员数量是否有效，空字符串表示满足约束。
 func PathConfigPersonSelectionIssue(required bool, minCount, maxCount, selectedCount int) string {
 	if required && selectedCount == 0 {
-		return "选择人数不足"
+		requiredCount := minCount
+		if requiredCount < 1 {
+			requiredCount = 1
+		}
+		return fmt.Sprintf("至少需要选择 %d 名处理人员，当前未选择", requiredCount)
 	}
 	// 可跳过只豁免完整的零选择；一旦已有选择，最低人数仍须整体满足。
 	if selectedCount > 0 && selectedCount < minCount {
-		return "选择人数不足"
+		return fmt.Sprintf("至少需要选择 %d 名处理人员，当前已选择 %d 名", minCount, selectedCount)
 	}
 	if maxCount > 0 && selectedCount > maxCount {
-		return "选择人数超过模板限制"
+		return fmt.Sprintf("最多只能选择 %d 名处理人员，当前已选择 %d 名", maxCount, selectedCount)
 	}
 	return ""
 }
@@ -652,14 +656,18 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 	if hasStoredPlan && !affected {
 		if issue := PathConfigPersonSelectionIssue(required, minCount, maxCount, len(selected)); issue != "" {
 			affected = true
-			note = issue + "，需要重新确认"
+			note = issue + "，请在本节点的处理人员区调整选择人数"
 		}
 	}
 	if affected {
 		p.affected = true
 	}
+	status, statusName := "selectable", "可配置"
+	if affected {
+		status, statusName = "blocked", "需要处理"
+	}
 	return model.PathConfigPerson{
-		Key: key, Title: title, Mode: "select", Source: source, Status: "selectable", StatusName: "可配置", Detail: detail, Items: items, Editable: true, Multiple: multiple,
+		Key: key, Title: title, Mode: "select", Source: source, Status: status, StatusName: statusName, Detail: detail, Items: items, Editable: true, Multiple: multiple,
 		Required: required, MinCount: minCount, Selected: selected, DefaultSelected: defaultSelected, Options: options,
 		MaxCount: maxCount, Strategy: strategy, StrategySeed: seed, Strategies: strategies, Affected: affected, Note: note,
 	}
@@ -757,7 +765,7 @@ func pathConfigStoredPersonSelection(raw string, rawToToken map[string]string) (
 	}
 	var stored []string
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return []string{}, true, "已保存人员数据无法识别，需要重新确认"
+		return []string{}, true, "本节点已保存的处理人员数据无法读取，请在本节点的处理人员区重新选择"
 	}
 	selected := make([]string, 0, len(stored))
 	for _, candidateID := range stored {

@@ -109,7 +109,7 @@ const routeConfirmationToken = ref('')
 const routeConfirmationChange = ref<PathConfigurationRouteChange | null>(null)
 const pageError = ref('')
 const nodeSaveError = ref('')
-const nodeSaveDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
+const nodeSaveDetails = ref<Array<{ kind: string, name: string, reason: string, nodeKey?: string }>>([])
 const formError = ref('')
 const formErrorDetails = ref<Array<{ kind: string, name: string, reason: string }>>([])
 const nodeSavedSuccessfully = ref(false)
@@ -608,7 +608,15 @@ async function saveCurrentNode() {
   }
 }
 
-// saveAllNodes 按当前服务端修订号顺序保存所有已满足规则的节点，不改变当前选中节点。
+// locateConfigurationNode 通过服务端不透明配置键定位画布节点，避免错误提示只给名称却无法直接处理。
+async function locateConfigurationNode(nodeKey: string) {
+  const graphNodeID = graphNodeIDByConfigurationKey.value.get(nodeKey)
+  if (!graphNodeID) return
+  selectedNodeID.value = graphNodeID
+  await focusSelectedNode()
+}
+
+// saveAllNodes 按当前服务端修订号顺序保存所有已满足规则的节点，并定位首个待处理节点。
 async function saveAllNodes() {
   const current = configuration.value
   if (!current || saveAllNodesDisabled.value) return
@@ -618,13 +626,13 @@ async function saveAllNodes() {
   nodeSavedSuccessfully.value = false
   let revision = current.nodeRevision
   let savedCount = 0
-  const skipped: string[] = []
+  const skipped: Array<{ key: string; name: string; missing: string[] }> = []
   try {
     const nodes = current.groups.flatMap(group => group.nodes).filter(node => !node.lineBlocked && node.status !== 'not_required' && node.status !== 'runtime')
     for (const node of nodes) {
       const completion = currentNodeConfigurationComplete(node, draft.value)
       if (!completion.complete) {
-        skipped.push(node.name)
+        skipped.push({ key: node.key, name: node.name, missing: completion.missing })
         continue
       }
       const result = await savePathActionConfiguration(
@@ -651,7 +659,10 @@ async function saveAllNodes() {
       draft.value.actionConfigurations[instanceContainer.value.key] = pendingInstanceActions
     }
     if (skipped.length) {
-      nodeSaveError.value = `已保存 ${savedCount} 个节点，还有 ${skipped.length} 个节点需要先补充配置`
+      const first = skipped[0]
+      nodeSaveError.value = `已保存 ${savedCount} 个节点。${first.name}缺少：${first.missing.join('、')}。已定位到该节点。`
+      nodeSaveDetails.value = skipped.map(item => ({ kind: 'node', name: item.name, reason: `缺少：${item.missing.join('、')}`, nodeKey: item.key }))
+      await locateConfigurationNode(first.key)
     } else {
       nodeSaveError.value = ''
       nodeSavedSuccessfully.value = savedCount > 0
@@ -962,6 +973,7 @@ void loadPage()
             @update-action-configuration="updateNodeActionConfiguration"
             @save="saveCurrentNode"
             @save-all="saveAllNodes"
+            @locate-node="locateConfigurationNode"
             @back-to-plan="backToPlan"
             @open-form="openFormWorkspace"
           />

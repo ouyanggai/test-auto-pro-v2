@@ -433,6 +433,32 @@ func TestAutoPersonStrategyHonorsCountersignMinimum(t *testing.T) {
 	}
 }
 
+// TestPersonSelectionIssueExplainsExactCount 验证人员数量错误包含当前数量与目标人数，不能退化为模糊提示。
+func TestPersonSelectionIssueExplainsExactCount(t *testing.T) {
+	if got := analyzer.PathConfigPersonSelectionIssue(true, 2, 3, 0); got != "至少需要选择 2 名处理人员，当前未选择" {
+		t.Fatalf("空选人数提示不明确：%q", got)
+	}
+	if got := analyzer.PathConfigPersonSelectionIssue(true, 2, 3, 1); got != "至少需要选择 2 名处理人员，当前已选择 1 名" {
+		t.Fatalf("人数不足提示不明确：%q", got)
+	}
+	if got := analyzer.PathConfigPersonSelectionIssue(true, 1, 2, 3); got != "最多只能选择 2 名处理人员，当前已选择 3 名" {
+		t.Fatalf("人数超限提示不明确：%q", got)
+	}
+}
+
+// TestAutoConfigurationStillFillsMissingPersonWithExistingAction 验证已有节点动作不会阻止一键补齐该节点遗漏的人员策略。
+func TestAutoConfigurationStillFillsMissingPersonWithExistingAction(t *testing.T) {
+	person := model.PathConfigPerson{
+		Key: "node-person", Editable: true, Required: true, MinCount: 1, MaxCount: 1,
+		Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}},
+		Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}},
+	}
+	result := service.AutoPersonStrategyForTest(person, 11)
+	if result.Strategy != "random" || len(result.Selected) != 1 {
+		t.Fatalf("已有动作节点补齐人员时仍应使用随机策略：%+v", result)
+	}
+}
+
 // TestConfirmedNodeKeysCoverSavedActionNodes 锁定节点确认列真的会被写入：
 // 这一列原来从来没有人写，节点状态永远停在待配置，一键配置和手工保存都看不到已配置。
 func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {

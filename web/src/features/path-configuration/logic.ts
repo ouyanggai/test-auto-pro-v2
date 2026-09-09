@@ -25,8 +25,8 @@ export function pathConfigurationStatusName(status: string): '待配置' | '部�
   return '部分配置'
 }
 
-// pathConfigurationMessage 不显示内部状态术语，只提示用户补齐当前配置。
-export function pathConfigurationMessage(message: string): string { return String(message || '').replace(/配置失效|需要重新确认|受影响需确认|需要重新核对/g, '请补充配置') }
+// pathConfigurationMessage 保留服务端的具体中文原因，不能把可处理的定位信息替换成泛化提示。
+export function pathConfigurationMessage(message: string): string { return String(message || '') }
 
 // copyPersonSelection 把服务端空人员集合统一收敛为空数组，避免历史配置中的 null 中断整页初始化。
 function copyPersonSelection(values: readonly string[] | null | undefined): string[] {

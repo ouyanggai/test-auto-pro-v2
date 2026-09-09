@@ -944,7 +944,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	confirmedNodes := make([]string, 0, 8)
 	for _, group := range configuration.Groups {
 		for _, node := range group.Nodes {
-			if node.LineBlocked || configuredNodes[node.Key] {
+			if node.LineBlocked {
 				continue
 			}
 			personChanged := false
@@ -963,6 +963,12 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				personStrategies[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
 				personChanged = true
 				changed = true
+			}
+			if configuredNodes[node.Key] {
+				if personChanged {
+					confirmedNodes = append(confirmedNodes, node.Key)
+				}
+				continue
 			}
 			candidates := autoNodeActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used)
 			if len(candidates) == 0 {

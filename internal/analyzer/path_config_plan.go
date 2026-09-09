@@ -71,17 +71,17 @@ func EncodePathConfigPersonStrategy(target PathConfigPersonTarget, input model.P
 	return string(encoded), ""
 }
 
-// resolveStoredPersonStrategy 重新核对已经保存的人员，候选变化时要求人工确认。
+// resolveStoredPersonStrategy 重新核对已经保存的人员，并给出可直接定位到本节点处理人员区的具体处理原因。
 func resolveStoredPersonStrategy(target *PathConfigPersonTarget, strategy string, seed int64, selected []string) ([]string, string) {
 	if !target.AllowedStrategies[strategy] {
-		return validRawPersonIDs(target, selected), "已保存的人员策略不再适用，请重新配置"
+		return validRawPersonIDs(target, selected), "当前节点不再支持已保存的人员选择方式，请在本节点的处理人员区重新选择"
 	}
 	expected, reason := expectedPathConfigPersonIDs(target, strategy, seed, selected)
 	if reason != "" {
-		return validRawPersonIDs(target, selected), reason + "，请重新配置"
+		return validRawPersonIDs(target, selected), reason + "，请在本节点的处理人员区调整"
 	}
 	if strategy != "manual" && !sameStrings(expected, selected) {
-		return validRawPersonIDs(target, selected), "目标默认人员或候选已变化，请重新配置"
+		return validRawPersonIDs(target, selected), "当前候选范围已变化，原随机结果不再有效，请在本节点的处理人员区重新选择"
 	}
 	return expected, ""
 }
@@ -93,7 +93,7 @@ func expectedPathConfigPersonIDs(target *PathConfigPersonTarget, strategy string
 	case "manual":
 		result = validRawPersonIDs(target, selected)
 		if len(result) != len(selected) {
-			return result, "包含已不属于当前模板的人员候选"
+			return result, "已选人员不在当前节点的候选范围内"
 		}
 	case "target_default":
 		if len(target.DefaultIDs) == 0 {
@@ -112,7 +112,7 @@ func expectedPathConfigPersonIDs(target *PathConfigPersonTarget, strategy string
 		}
 		result = deterministicPathConfigPeople(target.CandidateOrder, seed, count)
 	default:
-		return nil, "人员策略不属于当前模板允许范围"
+		return nil, "当前节点不支持所选的人员选择方式"
 	}
 	if issue := PathConfigPersonSelectionIssue(target.Required, target.MinCount, target.MaxCount, len(result)); issue != "" {
 		return result, issue
