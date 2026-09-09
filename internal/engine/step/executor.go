@@ -396,13 +396,29 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if preview.BlockReason != "" {
 		// 被阻塞的步骤不允许放行：路径运行在这里失败，而不是带病前进。
 		class := preview.BlockFailureClass
+		// 门禁阻塞也落一条尝试记录：失败原因（含目标平台原话）与日志行直接进界面，
+		// 不让失败步骤只剩一句泛化提示。此时没有写请求，副作用如实记 none。
+		lineNo := log.Phase("control", step.Sequence, attemptNo, "放行被拒绝（"+preview.BlockReason+"），路径运行置为失败")
+		record := model.RunStep{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
+			Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
+			Status: model.RunStepFailed, StartedAt: startedAt, FinishedAt: e.now(),
+			GateSnapshot: gateSnapshotJSON(preview, approved.RunCtx.SubmitBranchTargetNodeID),
+		}
+		attempt := model.RunStepAttempt{
+			PathRunID: runCtx.PathRun.ID, AttemptNo: attemptNo, Verdict: string(verdict.OutcomeFailed),
+			SideEffect: string(verdict.SideEffectNone), Reason: preview.BlockReason, Basis: "门禁未放行，未发出写请求",
+			FailureClass: &class, LogPath: log.RelativePath(), LogLine: lineNo,
+		}
+		if _, recordErr := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); recordErr != nil {
+			return outcome, lineNo, recordErr
+		}
 		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
 			"路径在第 "+formatUint(uint64(step.Sequence))+" 步失败："+preview.BlockReason); err != nil {
-			return outcome, 0, err
+			return outcome, lineNo, err
 		}
-		log.Phase("control", step.Sequence, attemptNo, "放行被拒绝（"+preview.BlockReason+"），路径运行置为失败")
 		reportPhase(approved, "control", "放行被拒绝："+preview.BlockReason)
-		return outcome, 0, nil
+		return outcome, lineNo, nil
 	}
 
 	// 阶段 4：领取推进权并就绪演员会话。领取失败说明已有其他执行者，调用方必须放弃。

@@ -458,7 +458,9 @@ const dialogStyle = computed(() => ({
             <n-button v-if="attempt.curlBlock" text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
           </div>
           <pre v-if="expandedCurl === String(stepDialog.stepNo)" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
-          <p v-else-if="!attempt.curlBlock" class="run-panel__row-sub">curl.log 中没有这次尝试的记录。</p>
+          <p v-else-if="!attempt.curlBlock" class="run-panel__row-sub">
+            这次尝试没有发出写请求（如门禁读取失败）；失败请求的原始 curl 与目标响应见同目录 curl.log（日志目录：{{ attempt.logPath.replace(/step\.log.*$/, '') }}curl.log）。
+          </p>
         </article>
       </template>
     </n-modal>
