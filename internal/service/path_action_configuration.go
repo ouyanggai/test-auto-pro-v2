@@ -947,17 +947,27 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			if node.LineBlocked || configuredNodes[node.Key] {
 				continue
 			}
+			personChanged := false
 			for _, person := range node.Persons {
 				if !person.Editable {
 					continue
 				}
+				if _, alreadyConfigured := personStrategies[person.Key]; alreadyConfigured {
+					// 一键配置只能补齐空白人员项，人工保存的策略属于用户事实，不能被随机覆盖。
+					continue
+				}
+				if person.Affected {
+					// 候选数量或目录状态已不满足模板约束时保留阻塞事实，不写入一份必然失效的随机策略。
+					continue
+				}
 				personStrategies[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
+				personChanged = true
 				changed = true
 			}
 			candidates := autoNodeActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used)
 			if len(candidates) == 0 {
 				// 没有可编排动作的节点，只要人员已按目标默认或随机策略填好就算配置完成。
-				if changed {
+				if personChanged {
 					confirmedNodes = append(confirmedNodes, node.Key)
 				}
 				continue

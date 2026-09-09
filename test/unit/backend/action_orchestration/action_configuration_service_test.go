@@ -413,6 +413,26 @@ func TestAutoPersonStrategyPrefersRangeRandom(t *testing.T) {
 	}
 }
 
+// TestAutoPersonStrategyHonorsCountersignMinimum 验证会签最少人数由节点投影传入，随机策略不会退化为一人。
+func TestAutoPersonStrategyHonorsCountersignMinimum(t *testing.T) {
+	person := model.PathConfigPerson{
+		Key:      "countersign-person",
+		Required: true,
+		MinCount: 2,
+		MaxCount: 3,
+		Options: []model.PathConfigPersonOption{
+			{Label: "候选甲", Value: "candidate-a"},
+			{Label: "候选乙", Value: "candidate-b"},
+			{Label: "候选丙", Value: "candidate-c"},
+		},
+		Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}},
+	}
+	result := service.AutoPersonStrategyForTest(person, 7)
+	if result.Strategy != "random" || len(result.Selected) != 2 {
+		t.Fatalf("会签应按最少人数随机选择：%+v", result)
+	}
+}
+
 // TestConfirmedNodeKeysCoverSavedActionNodes 锁定节点确认列真的会被写入：
 // 这一列原来从来没有人写，节点状态永远停在待配置，一键配置和手工保存都看不到已配置。
 func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {
