@@ -91,7 +91,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		// 门禁阻塞表示本步根本不能放行；先停在阻塞现场，不能把预置断点伪装成已命中的执行事实。
 		if preview.BlockReason != "" {
 			s.mu.Lock()
-			session.stopReason = "门禁不通过：" + preview.BlockReason
+			session.stopReason = "条件不满足：" + preview.BlockReason
 			s.mu.Unlock()
 			return
 		}

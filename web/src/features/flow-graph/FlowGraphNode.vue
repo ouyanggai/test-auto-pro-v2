@@ -23,7 +23,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 </script>
 
 <template>
-  <div v-if="data.runMode" class="flow-node-shell">
+  <div v-if="data.runMode" class="flow-node-shell flow-node-shell--run">
     <div
       class="flow-node flow-node--run"
       :class="[
@@ -35,7 +35,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
         },
       ]"
       :aria-label="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runCurrent ? (data.runBusy ? '，正在执行这一步' : '，当前步') : ''}${data.runSelected ? '，正在查看' : ''}`"
-      :title="`${data.name}，运行态：${data.runStatusName || '未开始'}`"
+      :title="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runStepNote ? `，最近一步：${data.runStepNote}` : ''}${data.runErrorNote ? `，问题：${data.runErrorNote}` : ''}`"
     >
       <handle type="target" :position="Position.Top" :connectable="false" />
       <span class="flow-node__type">{{ data.typeName }}</span>
@@ -369,15 +369,31 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   pointer-events: none;
 }
 
-/* 已落账步骤事实行：小字、单行省略，长处理人名不挤压卡片布局。 */
+/* 运行态卡片加高给已落账事实留完整空间；宽度保持布局宽度，避免分支节点互相压住。 */
+.flow-node-shell--run {
+  width: 180px;
+  height: 106px;
+}
+
+.flow-node-shell--run .flow-node--run {
+  gap: 3px;
+  padding: 8px 12px;
+}
+
+/* 已落账步骤事实行：允许两行完整换行，长处理人名和耗时不再只显示一半。 */
 .flow-node__run-step {
+  display: -webkit-box;
   max-width: 100%;
   overflow: hidden;
   color: var(--flow-label-color);
   font-size: 11px;
-  line-height: 1.3;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  word-break: break-word;
 }
 
 @keyframes flow-node-dot-breathe {

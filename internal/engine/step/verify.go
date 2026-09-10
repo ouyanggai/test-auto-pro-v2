@@ -54,9 +54,12 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 		return facts, err
 	}
 	facts.DueNodes = dueNodes
-	if err := e.readActionTaskFacts(ctx, runCtx, session, step, dueNodeKey, &facts); err != nil {
-		facts.ReadError = target.UserFacingErrorMessage(target.WriteResponse{}, err)
-		return facts, err
+	taskSession, taskErr := e.readActionTaskFacts(ctx, runCtx, session, step, dueNodeKey, &facts)
+	if taskErr == nil {
+		session = taskSession
+	} else {
+		facts.ReadError = target.UserFacingErrorMessage(target.WriteResponse{}, taskErr)
+		return facts, taskErr
 	}
 	// 这些动作的流程主事实本来不会推进，必须读取目标各自的业务记录，不能用“节点没变”代替成功验证。
 	switch step.Action {
@@ -132,10 +135,10 @@ func cloneBizRelevance(values []target.BizRelevance) []target.BizRelevance {
 
 // readActionTaskFacts 读取任务级动作的目标事实：当前待办、已办任务、任务链和代理树。
 // 这些事实只用于门禁和结果核验；任一关键事实缺失都保持禁用，不能靠动作配置猜测目标状态。
-func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string, facts *InstanceFacts) error {
+func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string, facts *InstanceFacts) (target.Session, error) {
 	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 	if instanceID == "" {
-		return nil
+		return session, nil
 	}
 	_, hasTaskReader := e.target.(taskSnapshotReader)
 	listReader, hasListReader := e.target.(taskSnapshotListReader)
@@ -144,7 +147,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 	if step.Action == model.ActionUrge && hasListReader {
 		pending, err := listReader.ListTaskSnapshots(ctx, session, instanceID, "pending")
 		if err != nil {
-			return err
+			return session, err
 		}
 		facts.PendingTaskRead, facts.PendingTaskFound = true, len(pending) > 0
 	}
@@ -153,25 +156,13 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 	case model.ActionStorageFormData, model.ActionApprove, model.ActionReject,
 		model.ActionAddSign, model.ActionTransfer, model.ActionRollback:
 		if !hasTaskReader {
-			return nil
+			return session, nil
 		}
-		snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
-		if err != nil {
-			return err
+		snapshot, candidateAssigneeID, candidateAssigneeName, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "pending")
+		if resolveErr != nil {
+			return session, resolveErr
 		}
-		candidateAssigneeID, candidateAssigneeName := "", ""
-		if strings.TrimSpace(snapshot.JobTaskID) == "" && strings.TrimSpace(session.Summary.Account) == strings.TrimSpace(runCtx.PlanAccount) {
-			// 任务级动作通常由他人处理。计划账号读取不到待办时，用下一节点已解析的候选人逐个换会话重读；
-			// 找到唯一待办后再进入门禁，避免把“当前账号没有待办”误判成“待办已被处理”。
-			candidateSnapshot, candidateID, candidateName, candidateErr := e.findCandidateTaskSnapshot(ctx, runCtx, session, step, nodeID, "pending")
-			if candidateErr != nil {
-				return candidateErr
-			}
-			if strings.TrimSpace(candidateSnapshot.JobTaskID) != "" {
-				snapshot = candidateSnapshot
-				candidateAssigneeID, candidateAssigneeName = candidateID, candidateName
-			}
-		}
+		session = taskSession
 		facts.CurrentTaskRead = true
 		facts.CurrentTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
 		facts.CurrentTaskLinkID = strings.TrimSpace(snapshot.LinkID)
@@ -184,16 +175,16 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		switch step.Action {
 		case model.ActionStorageFormData, model.ActionApprove, model.ActionReject:
 			// 这三个动作都直接处理当前待办；门禁和写后核验必须使用同一条实时任务快照。
-			return nil
+			return session, nil
 		case model.ActionAddSign:
 			personIDs := runCtx.ActionPersonIDs[ActionPersonIndex(step.NodeKey, step.Action)]
 			proxyID := firstNonEmpty(snapshot.FlowProxyID, runCtx.FlowProxyID)
 			if len(personIDs) == 0 || !hasTreeDocumentReader(e.target) || proxyID == "" {
-				return nil
+				return session, nil
 			}
 			documentReader := e.target.(flowProxyDocumentReader)
 			if _, err := documentReader.ReadFlowProxyDocument(ctx, session, proxyID); err != nil {
-				return err
+				return session, err
 			}
 			facts.EditableProxyRead = true
 		case model.ActionTransfer:
@@ -202,27 +193,27 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		case model.ActionRollback:
 			facts.PreviousTaskExists = facts.CurrentTaskParentID != ""
 			if !facts.PreviousTaskExists || !hasAuditReader {
-				return nil
+				return session, nil
 			}
 			records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
 			if auditErr != nil {
-				return auditErr
+				return session, auditErr
 			}
 			previousNodeID, found, previousErr := previousNodeFromAuditRecords(records, facts.CurrentTaskParentID)
 			if previousErr != nil {
-				return previousErr
+				return session, previousErr
 			}
 			facts.PreviousTaskRead = true
 			if !found || !hasTreeReader {
-				return nil
+				return session, nil
 			}
 			proxyID := firstNonEmpty(snapshot.FlowProxyID, runCtx.FlowProxyID)
 			if proxyID == "" {
-				return nil
+				return session, nil
 			}
 			tree, err := treeReader.ReadProxyTree(ctx, session, proxyID)
 			if err != nil {
-				return err
+				return session, err
 			}
 			facts.PreviousNodeType = nodeTypeInTree(tree, previousNodeID)
 			facts.PreviousNodeIsStart = isStartNodeType(facts.PreviousNodeType)
@@ -230,12 +221,13 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 
 	case model.ActionRetrieve:
 		if !hasTaskReader {
-			return nil
+			return session, nil
 		}
-		snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, "done")
-		if err != nil {
-			return err
+		snapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "done")
+		if resolveErr != nil {
+			return session, resolveErr
 		}
+		session = taskSession
 		facts.CompletedTaskRead = true
 		facts.CompletedTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
 		facts.CompletedTaskLinkID = strings.TrimSpace(snapshot.LinkID)
@@ -244,7 +236,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		facts.CompletedTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)
 		facts.CompletedTaskAuditWay = strings.TrimSpace(snapshot.AuditWay)
 		if !facts.CompletedTaskFound {
-			return nil
+			return session, nil
 		}
 		// 目标任务列表没有“所有状态、所有人员”的有效读取方式：空 taskStatus 会被目标直接拒绝，
 		// 而 pending/done 又只覆盖当前用户。后继任务是否合法必须交由 retrieveProcess 在实例锁内确认，
@@ -254,7 +246,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			if proxyID != "" {
 				tree, treeErr := treeReader.ReadProxyTree(ctx, session, proxyID)
 				if treeErr != nil {
-					return treeErr
+					return session, treeErr
 				}
 				facts.RetrieveNodeIsStart = isStartNodeType(nodeTypeInTree(tree, snapshot.FlowNodeProxyID))
 				for _, currentNodeID := range facts.CurrentNodes {
@@ -272,11 +264,11 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			// 没有审核记录就无法排除重复取回和其他演员已处理，不能误放行。
 			facts.RetrieveAlreadyUsed = true
 			facts.CurrentTaskHandledByOther = true
-			return nil
+			return session, nil
 		}
 		records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
 		if auditErr != nil {
-			return auditErr
+			return session, auditErr
 		}
 		for _, record := range records {
 			if record.FlowJobTaskID == facts.CompletedTaskLinkID && strings.EqualFold(record.AuditStatus, "retrieve") {
@@ -290,7 +282,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			}
 		}
 	}
-	return nil
+	return session, nil
 }
 
 // previousNodeFromAuditRecords 用审核记录里的 flowJobTaskId 定位前一任务的真实节点。

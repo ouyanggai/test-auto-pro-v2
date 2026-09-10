@@ -239,7 +239,7 @@ const (
 func FailureClassName(class FailureClass) string {
 	switch class {
 	case FailureClassGateBlocked:
-		return "门禁不通过"
+		return "放行条件不满足"
 	case FailureClassActorUnresolved:
 		return "演员不可解析"
 	case FailureClassTargetRejected:

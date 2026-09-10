@@ -164,12 +164,12 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	if !allowed {
 		reason := catalogItem.DisabledReason
 		if reason == "" {
-			reason = "门禁复验未通过"
+			reason = "放行条件不满足"
 		}
 		preview.GateReason = reason
-		preview.BlockReason = "门禁复验未通过：" + reason
+		preview.BlockReason = "放行条件不满足：" + reason
 		preview.BlockFailureClass = model.FailureClassGateBlocked
-		log.Phase("control", step.Sequence, 1, "单步暂停，等待放行；本步被门禁阻塞："+reason)
+		log.Phase("control", step.Sequence, 1, "单步暂停，等待放行；本步条件未满足："+reason)
 		return preview, false, nil
 	}
 
@@ -416,7 +416,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		attempt := model.RunStepAttempt{
 			PathRunID: runCtx.PathRun.ID, AttemptNo: attemptNo, Verdict: string(verdict.OutcomeFailed),
-			SideEffect: string(verdict.SideEffectNone), Reason: preview.BlockReason, Basis: "门禁未放行，未发出写请求",
+			SideEffect: string(verdict.SideEffectNone), Reason: preview.BlockReason, Basis: "放行条件未满足，没有发出写请求",
 			FailureClass: &class, LogPath: log.RelativePath(), LogLine: lineNo,
 		}
 		if _, recordErr := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); recordErr != nil {
@@ -1268,10 +1268,40 @@ func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, 
 
 // findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
 // 只有计划账号本身读不到待办时才调用，避免正常路径放大登录次数。
-func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunContext, planSession target.Session, step model.CompiledActionStep, nodeID, status string) (target.TaskSnapshot, string, string, error) {
+// resolveTaskSnapshotForStep 按“下一节点候选人优先、原会话兜底”的顺序读取任务快照。
+// 候选人优先是硬规则：流程已流转到下一处理人后，不能先用上一演员会话查待办再决定。
+// 返回的 session 是真正命中任务的处理人会话，供后续代理树/审核记录读取继续使用。
+func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, status string) (target.TaskSnapshot, string, string, target.Session, error) {
+	useCandidates := strings.TrimSpace(session.Summary.Account) == strings.TrimSpace(runCtx.PlanAccount) && len(runCtx.NextNodeAuditors[step.NodeKey]) > 0
+	var candidateErr error
+	if useCandidates {
+		snapshot, userID, userName, actorSession, err := e.findCandidateTaskSnapshot(ctx, runCtx, session, step, nodeID, status)
+		if err == nil {
+			if strings.TrimSpace(snapshot.JobTaskID) != "" {
+				return snapshot, userID, userName, actorSession, nil
+			}
+		} else {
+			candidateErr = err
+		}
+	}
+	snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, status)
+	if err != nil {
+		return target.TaskSnapshot{}, "", "", session, err
+	}
+	if strings.TrimSpace(snapshot.JobTaskID) != "" {
+		return snapshot, "", "", session, nil
+	}
+	if candidateErr != nil {
+		return target.TaskSnapshot{}, "", "", session, candidateErr
+	}
+	return snapshot, "", "", session, nil
+}
+
+// findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
+func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunContext, planSession target.Session, step model.CompiledActionStep, nodeID, status string) (target.TaskSnapshot, string, string, target.Session, error) {
 	candidates := runCtx.NextNodeAuditors[step.NodeKey]
-	if len(candidates) == 0 {
-		return target.TaskSnapshot{}, "", "", nil
+	if len(candidates) == 0 || e.sessions == nil {
+		return target.TaskSnapshot{}, "", "", target.Session{}, nil
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -1298,13 +1328,13 @@ func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunCont
 			continue
 		}
 		if strings.TrimSpace(snapshot.JobTaskID) != "" {
-			return snapshot, userID, strings.TrimSpace(candidate.Name), nil
+			return snapshot, userID, strings.TrimSpace(candidate.Name), actorSession, nil
 		}
 	}
 	if lastErr != nil {
-		return target.TaskSnapshot{}, "", "", lastErr
+		return target.TaskSnapshot{}, "", "", target.Session{}, lastErr
 	}
-	return target.TaskSnapshot{}, "", "", nil
+	return target.TaskSnapshot{}, "", "", target.Session{}, nil
 }
 
 // nameOrFallback 有名字用名字，否则用 ID 兜底，供阻断文案指向具体人员。

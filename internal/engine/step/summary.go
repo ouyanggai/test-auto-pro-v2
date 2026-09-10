@@ -12,13 +12,13 @@ import (
 // gateSummary 生成门禁复验的中文一行摘要。
 func gateSummary(item model.ActionCatalogItem, allowed bool) string {
 	if allowed {
-		return "门禁复验通过：" + item.Label
+		return "放行条件已满足：" + item.Label
 	}
 	reason := item.DisabledReason
 	if reason == "" {
-		reason = "门禁未通过"
+		reason = "放行条件不满足"
 	}
-	return "门禁复验未通过：" + reason
+	return "放行条件不满足：" + reason
 }
 
 // submitSummary 生成发送阶段的中文一行摘要；目标拒绝时直接展示目标返回的错误原文。

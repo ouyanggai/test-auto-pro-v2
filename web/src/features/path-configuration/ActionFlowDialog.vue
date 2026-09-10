@@ -91,7 +91,7 @@ function stepDetails(step: PathCompiledActionStep) {
     <n-spin :show="loading">
       <div class="action-flow">
         <p class="action-flow__note">
-          服务端按当前路径、处理人员和动作门禁编译出的只读执行顺序，只反映已保存的配置，不代表已经执行。
+          服务端按当前路径、处理人员和目标条件编译出的只读执行顺序，只反映已保存的配置，不代表已经执行。
           <span v-if="steps.length">共 {{ steps.length }} 步：用户动作 {{ userStepCount }}，系统插入 {{ systemStepCount }}。</span>
         </p>
         <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>

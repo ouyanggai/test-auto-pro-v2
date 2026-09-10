@@ -39,7 +39,8 @@ grep -qF 'system_default' web/src/features/path-configuration/types.ts
 grep -qF '放行边界' web/src/features/path-configuration/ActionFlowDialog.vue
 
 printf '%s\n' '[F-026] 实际待办人会话切换与实例命名契约'
-grep -qF 'findCandidateTaskSnapshot' internal/engine/step/verify.go
+grep -qF 'resolveTaskSnapshotForStep' internal/engine/step/verify.go
+grep -qF 'findCandidateTaskSnapshot' internal/engine/step/executor.go
 grep -qF 'candidate.Name, item.Phone' internal/adapter/target/person_directory.go
 grep -qF 'time.Now().Format("2006-01-02 15:04:05")' internal/engine/step/gate.go
 grep -qF 'run-panel__dialog-head' web/src/features/runs/RunNodePanel.vue

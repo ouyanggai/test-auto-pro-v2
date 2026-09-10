@@ -60,8 +60,8 @@ const nodeErrors = computed<NodeErrorRow[]>(() => {
     rows.push({
       key: 'gate',
       title: `当前步：${preview.actionName || preview.action}`,
-      verdict: '门禁未通过',
-      reason: preview.gateReason || preview.blockReason || '见门禁逐项条件',
+      verdict: '条件未满足',
+      reason: preview.gateReason || preview.blockReason || '见下面的检查结果',
     })
   } else if (preview?.blockReason) {
     rows.push({ key: 'block', title: `当前步：${preview.actionName || preview.action}`, verdict: '放行被阻塞', reason: preview.blockReason })
@@ -173,6 +173,34 @@ interface GateSnapshotShape {
   formWithheld?: string[]
 }
 
+// gateItemText 把服务端检查项翻译成用户看得懂的判断结果，不显示抽象条件名。
+function gateItemText(item: { label?: string; key?: string; required?: boolean; present?: boolean }): string {
+  const present = item.present === true
+  switch (item.key) {
+    case 'active_task':
+      return present ? '目标已查到当前处理人的待处理待办' : '目标没有查到待处理的待办：可能已流转给其他处理人，或已经被处理'
+    case 'running_instance':
+      return present ? '流程当前正在运行' : '流程当前不在运行中'
+    case 'human_node':
+      return present ? '当前节点是人工审批节点' : '当前节点不是人工审批节点'
+    case 'not_forwarded':
+      return present ? '当前不是转发辅助流程' : '当前是转发辅助流程，不能直接处理主流程'
+    case 'initiator':
+      return present ? '当前账号是流程发起人' : '当前账号不是流程发起人'
+    case 'new_or_draft':
+      return present ? '实例处于新建或草稿状态' : '实例当前不在新建或草稿状态'
+    case 'new_instance':
+      return present ? '实例尚未提交，可以新建提交' : '实例已经存在，不能再次新建提交'
+    case 'resubmittable_status':
+      return present ? '实例处于可重新提交状态' : '实例当前状态不能重新提交'
+    case 'not_ended':
+      return present ? '实例尚未结束' : '实例已经结束'
+    default:
+      if (item.label) return `${item.label}：${present ? '已满足' : (item.required === false ? '不适用' : '未满足')}`
+      return present ? '检查项已满足' : '检查项未满足'
+  }
+}
+
 // gateSnapshotLines 还原放行当时的门禁判定与逐项条件满足情况，不出现内部字段英文名。
 function gateSnapshotLines(step: RunStep): string[] {
   if (!step.gateSnapshot) return []
@@ -182,12 +210,9 @@ function gateSnapshotLines(step: RunStep): string[] {
   } catch {
     return []
   }
-  const lines: string[] = [snapshot.allowed ? '门禁：放行时已通过' : `门禁：放行时未通过${snapshot.reason ? `（${snapshot.reason}）` : ''}`]
+  const lines: string[] = [snapshot.allowed ? '检查结果：通过，可以放行' : `检查结果：未通过${snapshot.reason ? `（${snapshot.reason}）` : ''}`]
   for (const item of snapshot.items || []) {
-    const name = item.label || item.key || '条件'
-    if (item.present) lines.push(`${name}：已满足`)
-    else if (item.required) lines.push(`${name}：未满足`)
-    else lines.push(`${name}：未提供（非必填）`)
+    lines.push(gateItemText(item))
   }
   if (snapshot.formOverlaid && snapshot.formOverlaid.length > 0) {
     lines.push(`按本节点权限覆盖的字段：${snapshot.formOverlaid.join('、')}`)
@@ -218,8 +243,13 @@ const previewFactsText = computed<string[]>(() => {
   const lines: string[] = []
   lines.push(facts.instanceFound ? '实例：已存在' : '实例：尚未创建')
   if (facts.instanceStatus) lines.push(`实例状态：${String(facts.instanceStatus)}`)
-  const due = facts.dueNodes as string[] | undefined
-  lines.push(due && due.length > 0 ? `当前待办：${due.length} 个` : '当前待办：无')
+  if (typeof facts.currentTaskFound === 'boolean') {
+    const assignee = facts.currentTaskAssigneeName ? `，处理人：${String(facts.currentTaskAssigneeName)}` : ''
+    lines.push(facts.currentTaskFound ? `当前待办：已查到待处理任务${assignee}` : `当前待办：未查到待处理任务（目标没有返回当前处理人的待办，可能已流转或已处理）`)
+  } else {
+    const due = facts.dueNodes as string[] | undefined
+    lines.push(due && due.length > 0 ? `当前待办：${due.length} 个` : '当前待办：无')
+  }
   if (facts.readError) lines.push(`读取异常：${String(facts.readError)}`)
   return lines
 })
@@ -228,8 +258,8 @@ const previewFactsText = computed<string[]>(() => {
 const gateBrief = computed(() => {
   const preview = currentPreview.value
   if (!preview) return ''
-  if (preview.gateAllowed) return '门禁已通过，可以放行'
-  return `门禁未通过：${preview.gateReason || '见详情里的逐项条件'}`
+  if (preview.gateAllowed) return '条件已满足，可以放行'
+  return `条件未满足：${preview.gateReason || '查看下面的检查结果'}`
 })
 
 // stateTagType 让运行态标签的颜色与语义一致；颜色之外始终有中文文字。
@@ -417,7 +447,7 @@ const dialogStyle = computed(() => ({
           <div v-if="currentPreview.expectedEffect"><dt>预期效果</dt><dd>{{ currentPreview.expectedEffect }}</dd></div>
           <div v-if="currentPreview.endpoint"><dt>目标端点</dt><dd class="run-panel__mono">{{ currentPreview.endpoint }}</dd></div>
           <div>
-            <dt>门禁结论</dt>
+            <dt>检查结论</dt>
             <dd :class="currentPreview.gateAllowed ? 'run-panel__ok' : 'run-panel__bad'">{{ gateBrief }}</dd>
           </div>
         </dl>
@@ -462,7 +492,7 @@ const dialogStyle = computed(() => ({
         </section>
 
         <section v-if="gateSnapshotLines(stepDialog).length > 0" class="run-panel__section">
-          <p class="run-panel__section-title">门禁逐项</p>
+          <p class="run-panel__section-title">这一步的检查</p>
           <ul class="run-panel__conditions">
             <li v-for="(line, index) in gateSnapshotLines(stepDialog)" :key="index" class="run-panel__condition" :class="gateTone(line)">
               <span class="run-panel__condition-dot"></span>
@@ -501,7 +531,7 @@ const dialogStyle = computed(() => ({
               </n-button>
               <n-button text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
             </div>
-            <p v-else class="run-panel__no-curl">这次尝试没有发出写请求（如门禁读取失败）；失败请求的原始 curl 与目标响应见同目录 curl.log（日志目录：{{ attempt.logPath.replace(/step\.log.*$/, '') }}curl.log）。</p>
+            <p v-else class="run-panel__no-curl">这次尝试没有发出写请求（例如没有查到当前处理人的待处理待办）；失败请求的原始 curl 与目标响应见同目录 curl.log（日志目录：{{ attempt.logPath.replace(/step\.log.*$/, '') }}curl.log）。</p>
             <pre v-if="expandedCurl === String(stepDialog.stepNo) && attempt.curlBlock" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
           </article>
         </section>

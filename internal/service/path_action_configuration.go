@@ -200,11 +200,11 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 // pathActionGates 重读当前真实路径的动作门禁与人员目录投影，保存和预览共用同一份事实。
 func (s *PathConfigService) pathActionGates(snapshot target.PathConfigurationSnapshot, path model.ExecutionPath, analysis ownedPathAnalysis, found bool) (analyzer.PathConfigValidation, error) {
 	if s.configAnalyzer == nil {
-		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "动作门禁校验服务暂不可用"}
+		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "动作条件校验服务暂不可用"}
 	}
 	_, validation, err := s.configAnalyzer.Analyze(analysis.graph, snapshot.Tree, snapshot.FormFields, path, analysis.pathAnalysis, snapshot.InstanceValues, map[string]map[string]string{}, map[string]string{}, found)
 	if err != nil {
-		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径动作门禁无法核对"}
+		return analyzer.PathConfigValidation{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前路径动作条件无法核对"}
 	}
 	return validation, nil
 }

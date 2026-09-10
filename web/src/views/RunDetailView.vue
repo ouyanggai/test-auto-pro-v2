@@ -362,10 +362,6 @@ async function loadDetail(): Promise<void> {
     if (!graph.value) {
       graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
     }
-    await nextTick()
-    if (shouldFollowCurrent()) {
-      centerCurrentNode()
-    }
     schedulePoll()
   } catch (error) {
     loadFailure.value = error instanceof RunApiError ? error : null
@@ -395,9 +391,6 @@ function schedulePoll(): void {
       detail.value = next
       syncControl(next)
       lastUpdateAt.value = Date.now()
-      if (shouldFollowCurrent()) {
-        centerCurrentNode()
-      }
       void pollEvents()
     } catch {
       // 单次轮询失败不打断页面：下一次轮询会继续。
@@ -464,10 +457,6 @@ async function approve(): Promise<void> {
   try {
     detail.value = await approveRun(runId, 'step', detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
     lastUpdateAt.value = Date.now()
-    await nextTick()
-    if (shouldFollowCurrent()) {
-      centerCurrentNode()
-    }
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '放行执行失败，请查看日志'
   } finally {
@@ -503,7 +492,6 @@ function handleSelectRunNode(nodeID: string): void {
 // closeNodePanel 关闭检视面板；画布恢复整宽后如果仍在自动跟随，就把当前步重新居中。
 function closeNodePanel(): void {
   selectedNodeKey.value = ''
-  if (shouldFollowCurrent()) void nextTick().then(() => centerCurrentNode())
 }
 
 // modeHint 用中文解释当前模式意味着什么，避免只给一个模式名。
@@ -629,7 +617,6 @@ const freshnessText = computed(() => {
 
 // 从事件流切回流程图时补一次定位：画布隐藏期间不跟随，切回来必须对得上当前步。
 watch(activeTab, (tab) => {
-  if (tab === 'canvas' && shouldFollowCurrent()) void nextTick().then(() => centerCurrentNode())
 })
 
 onMounted(() => {
@@ -894,7 +881,7 @@ onBeforeUnmount(() => {
                 size="small"
                 :type="followPaused ? 'info' : 'default'"
                 :secondary="!followPaused"
-                :title="followPaused ? '自动跟随已被你的平移接管，点这里回到当前步并恢复跟随' : '把当前执行的节点移到画布中央'"
+                :title="followPaused ? '点这里把当前执行的节点移到画布中央' : '把当前执行的节点移到画布中央'"
                 @click="resumeFollow"
               >{{ followPaused ? '回到当前步' : '定位当前节点' }}</n-button>
             </template>

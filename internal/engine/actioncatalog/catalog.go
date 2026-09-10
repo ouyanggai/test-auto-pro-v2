@@ -645,7 +645,7 @@ func denyWith(g gateResult, reason string) gateResult {
 	g.enabled = false
 	g.reason = strings.TrimSpace(reason)
 	if g.reason == "" {
-		g.reason = "当前目标上下文未满足动作门禁"
+		g.reason = "当前目标上下文不满足执行条件"
 	}
 	return g
 }

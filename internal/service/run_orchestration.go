@@ -1548,6 +1548,9 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 		"instanceStatus": preview.Facts.Status,
 		"currentNodes":   preview.Facts.CurrentNodes,
 		"dueNodes":       preview.Facts.DueNodes,
+		// 任务级步骤的待办来自实际处理人会话，必须单独告诉界面，不能只用计划账号视角的 dueNodes 判断“无待办”。
+		"currentTaskFound":        preview.Facts.CurrentTaskFound,
+		"currentTaskAssigneeName": preview.Facts.CurrentTaskAssigneeName,
 	}
 	if preview.Facts.ReadError != "" {
 		facts["readError"] = preview.Facts.ReadError

@@ -202,7 +202,7 @@ func (c *compiler) emitFixedStartTail(nodeKey string) {
 	c.addGroupedStep(model.CompiledActionStep{
 		Source: model.ActionStepSourceSystemDefault, Action: action, Scope: model.ActionScopeInitiator, NodeKey: nodeKey,
 		Precondition:   "发起节点用户动作已完成，按当前实例状态选择提交或重新提交",
-		ExpectedEffect: expectedEffect(action), StopOnFailure: "提交门禁不满足时停止，不创建第二主实例",
+		ExpectedEffect: expectedEffect(action), StopOnFailure: "提交条件不满足时停止，不创建第二主实例",
 		RecoveryPolicy: "重新读取实例状态、流程代理和当前路径", ReloadRequired: true,
 	}, true)
 	c.status = "run"
@@ -215,7 +215,7 @@ func (c *compiler) emitFixedTaskTail(nodeKey string) {
 	c.addGroupedStep(model.CompiledActionStep{
 		Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
 		Precondition:   "当前人工节点所有用户动作已执行，且该节点仍有活动待办",
-		ExpectedEffect: expectedEffect(model.ActionApprove), StopOnFailure: "当前待办门禁不满足时停止，不切换到其他演员",
+		ExpectedEffect: expectedEffect(model.ActionApprove), StopOnFailure: "当前待办条件不满足时停止，不切换到其他演员",
 		RecoveryPolicy: "重新读取实例状态、当前待办和真实路径", ReloadRequired: true,
 	}, true)
 	c.status = "run"
@@ -280,7 +280,7 @@ func (c *compiler) emitRecoveryFromStart(target int, triggerKey string) {
 		Source: model.ActionStepSourceRecovery, SourceActionKey: triggerKey,
 		Action: model.ActionResubmit, Scope: model.ActionScopeInitiator, NodeKey: c.sequence[start],
 		Precondition: "实例已被驳回或撤回，等待发起人重新提交", ExpectedEffect: expectedEffect(model.ActionResubmit),
-		StopOnFailure: "恢复门禁不满足时停止并定位触发动作", RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
+		StopOnFailure: "恢复条件不满足时停止并定位触发动作", RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
 	}, false)
 	c.status = "run"
 	c.completed = map[string]bool{}
@@ -347,7 +347,7 @@ func recoveryApproveStep(action model.ConfiguredAction, precondition string) mod
 		Source: model.ActionStepSourceRecovery, SourceActionKey: action.Key,
 		Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: action.NodeKey,
 		Precondition: precondition, ExpectedEffect: expectedEffect(model.ActionApprove),
-		StopOnFailure:  "恢复门禁不满足时停止并定位触发动作",
+		StopOnFailure:  "恢复条件不满足时停止并定位触发动作",
 		RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
 	}
 }
@@ -431,7 +431,7 @@ func validateActionStructure(action model.ConfiguredAction, index int, nodes map
 	if catalogItem.Enabled == false {
 		reason := strings.TrimSpace(catalogItem.DisabledReason)
 		if reason == "" {
-			reason = "当前动作门禁未通过"
+			reason = "当前动作执行条件不满足"
 		}
 		return advisoryIssue(index, action, "ACTION_DISABLED", reason)
 	}
@@ -596,12 +596,12 @@ func validateAction(action model.ConfiguredAction, index int, nodes map[string]s
 	if len(catalog) > 0 {
 		catalogItem, exists := catalogGate(catalog, action)
 		if !exists {
-			return issue(index, action, "ACTION_NOT_IN_CATALOG", "动作未出现在当前实时动作目录，不能绕过门禁保存")
+			return issue(index, action, "ACTION_NOT_IN_CATALOG", "动作未出现在当前实时动作目录，不能绕过执行条件保存")
 		}
 		if !catalogItem.Enabled {
 			reason := strings.TrimSpace(catalogItem.DisabledReason)
 			if reason == "" {
-				reason = "当前动作门禁未通过"
+				reason = "当前动作执行条件不满足"
 			}
 			return issue(index, action, "ACTION_DISABLED", reason)
 		}
@@ -713,8 +713,8 @@ func userStep(action model.ConfiguredAction) model.CompiledActionStep {
 	return model.CompiledActionStep{
 		Source: model.ActionStepSourceUser, SourceActionKey: action.Key, Action: action.Action,
 		Scope: action.Scope, ActorPolicy: action.ActorPolicy, NodeKey: action.NodeKey,
-		Parameters: cloneParameters(action.Parameters), Precondition: "保存时已按当前路径、人员和动作目录核对门禁",
-		ExpectedEffect: expectedEffect(action.Action), StopOnFailure: "目标事实重读失败或门禁变化时停止场景",
+		Parameters: cloneParameters(action.Parameters), Precondition: "保存时已按当前路径、人员和动作目录核对执行条件",
+		ExpectedEffect: expectedEffect(action.Action), StopOnFailure: "目标事实重读失败或执行条件变化时停止场景",
 		RecoveryPolicy: "失败即停止并重读目标实例、任务和语义节点", ReloadRequired: true,
 	}
 }
@@ -726,7 +726,7 @@ func recoveryStep(action model.ActionKey, source model.ConfiguredAction, precond
 		Source: model.ActionStepSourceRecovery, SourceActionKey: source.Key, Action: action,
 		Scope: scope, ActorPolicy: source.ActorPolicy, NodeKey: source.NodeKey,
 		Precondition: precondition, ExpectedEffect: effect,
-		StopOnFailure: "恢复门禁不满足时停止并定位触发动作", RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
+		StopOnFailure: "恢复条件不满足时停止并定位触发动作", RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
 	}
 }
 
@@ -746,7 +746,7 @@ func finalNavigationStep(nodeKey string) model.CompiledActionStep {
 		Source: model.ActionStepSourceNavigation, Action: model.ActionApprove, Scope: model.ActionScopeTask,
 		ActorPolicy: "system:navigation", NodeKey: nodeKey,
 		Precondition: "所有配置用户动作已完成且当前节点可离开", ExpectedEffect: "按目标真实路径完成最终导航；最终节点结束主实例",
-		StopOnFailure: "最终导航门禁不满足时停止，不宣称流程完成", RecoveryPolicy: "重读主实例状态、当前节点和待办", ReloadRequired: true,
+		StopOnFailure: "最终导航条件不满足时停止，不宣称流程完成", RecoveryPolicy: "重读主实例状态、当前节点和待办", ReloadRequired: true,
 	}
 }
 
