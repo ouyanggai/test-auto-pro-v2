@@ -63,9 +63,9 @@ test('F-012 实例动作请求不携带语义节点键', () => {
   })
   const payload = buildPathActionConfigurationInput(container, emptyDraft({
     [INSTANCE_KEY]: [{ key: 'withdraw-1', kind: 'withdraw' }, { key: 'urge-1', kind: 'urge' }],
-  }), 5)
+  }))
 
-  assert.equal(payload.revision, 5)
+  assert.equal('revision' in payload, false)
   assert.deepEqual(payload.actions, [
     { key: 'withdraw-1', action: 'withdraw', scope: 'instance', nodeKey: undefined, order: 1 },
     { key: 'urge-1', action: 'urge', scope: 'instance', nodeKey: undefined, order: 2 },

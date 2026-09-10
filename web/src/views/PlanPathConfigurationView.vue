@@ -532,7 +532,7 @@ async function saveInstanceActions() {
       planID.value,
       pathID.value,
       container.key,
-      buildPathActionConfigurationInput(container, draft.value, previousRevision),
+      buildPathActionConfigurationInput(container, draft.value),
       instanceSaveKey,
     )
     instanceSaveKey = crypto.randomUUID()
@@ -587,7 +587,7 @@ async function saveCurrentNode() {
   nodeSavedSuccessfully.value = false
   const previousRevision = current.nodeRevision
   try {
-    const result = await savePathActionConfiguration(planID.value, pathID.value, node.key, buildPathActionConfigurationInput(nodeActionContainer(node), draft.value, previousRevision), nodeSaveKey)
+    const result = await savePathActionConfiguration(planID.value, pathID.value, node.key, buildPathActionConfigurationInput(nodeActionContainer(node), draft.value), nodeSaveKey)
     // 重读会按服务端权威响应重建整份草稿；实例动作编辑只存在于节点编辑器的页面草稿里，
     // 必须先留存再还原，否则用户在节点编辑器里删除或新增的实例动作会被这次重读静默丢弃，
     // 下面的实例保存判断永远为 false，刷新后动作又会复原（删除保存未生效的根因）。
@@ -635,7 +635,7 @@ async function locateConfigurationNode(nodeKey: string) {
   await focusSelectedNode()
 }
 
-// saveAllNodes 按当前服务端修订号顺序保存所有已满足规则的节点，并定位首个待处理节点。
+// saveAllNodes 顺序保存所有已满足规则的节点，并定位首个待处理节点。
 async function saveAllNodes() {
   const current = configuration.value
   if (!current || saveAllNodesDisabled.value) return
@@ -643,7 +643,6 @@ async function saveAllNodes() {
   nodeSaveError.value = ''
   nodeSaveDetails.value = []
   nodeSavedSuccessfully.value = false
-  let revision = current.nodeRevision
   let savedCount = 0
   const skipped: Array<{ key: string; name: string; missing: string[] }> = []
   try {
@@ -658,10 +657,9 @@ async function saveAllNodes() {
         planID.value,
         pathID.value,
         node.key,
-        buildPathActionConfigurationInput(nodeActionContainer(node), draft.value, revision),
+        buildPathActionConfigurationInput(nodeActionContainer(node), draft.value),
         crypto.randomUUID(),
       )
-      revision = result.nodeRevision
       compiledVersion += 1
       compiledScenario.value = result.compiledScenario
       compiledIssues.value = result.issues

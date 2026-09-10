@@ -52,14 +52,14 @@ func (s *actionConfigurationAPIStub) GetCompiledScenario(_ context.Context, plan
 // SaveActionConfiguration 记录语义动作和节点键，响应只返回服务端编译结果。
 func (s *actionConfigurationAPIStub) SaveActionConfiguration(_ context.Context, planID, pathID uint64, nodeKey, idempotency string, input model.ActionConfigurationInput) (model.ActionConfigurationResult, error) {
 	s.planID, s.pathID, s.nodeKey, s.idempotency, s.input = planID, pathID, nodeKey, idempotency, input
-	return model.ActionConfigurationResult{Path: model.PathConfigPath{SequenceNo: 1, Name: "主路径"}, Revision: input.Revision + 1, NodeRevision: input.Revision + 1, ActionRevision: 1, Status: "configured", Actions: input.Actions, CompiledScenario: []model.CompiledActionStep{{Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionApprove}}}, nil
+	return model.ActionConfigurationResult{Path: model.PathConfigPath{SequenceNo: 1, Name: "主路径"}, Revision: 1, NodeRevision: 1, ActionRevision: 1, Status: "configured", Actions: input.Actions, CompiledScenario: []model.CompiledActionStep{{Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionApprove}}}, nil
 }
 
 // TestActionConfigurationAPIUsesSemanticPayload 验证节点保存接收独立动作记录并由服务端返回编译结果。
 func TestActionConfigurationAPIUsesSemanticPayload(t *testing.T) {
 	stub := &actionConfigurationAPIStub{}
 	handler := api.NewHandlerWithConfigurationServices(actionTargetReader{}, service.NewPlanService(actionPlanRepository{}), actionFlowGraphService{}, actionExecutionPathService{}, actionPathRequirementService{}, stub)
-	body := `{"revision":4,"persons":[{"key":"person-token","strategy":"manual","seed":1,"selected":["candidate-token"]}],"actions":[{"key":"approve-1","action":"approve","scope":"task","nodeKey":"node-semantic","order":1,"actorPolicy":"current"}]}`
+	body := `{"persons":[{"key":"person-token","strategy":"manual","seed":1,"selected":["candidate-token"]}],"actions":[{"key":"approve-1","action":"approve","scope":"task","nodeKey":"node-semantic","order":1,"actorPolicy":"current"}]}`
 	request := httptest.NewRequest(http.MethodPut, "/api/plans/41/execution-paths/51/configuration/nodes/node-semantic", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174701")
 	response := httptest.NewRecorder()
@@ -73,7 +73,7 @@ func TestActionConfigurationAPIUsesSemanticPayload(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `"compiledScenario"`) || strings.Contains(response.Body.String(), "targetInstanceId") {
 		t.Fatalf("动作保存响应缺少服务端编译结果或泄露目标身份：%s", response.Body.String())
 	}
-	for _, body := range []string{`{"revision":4,"compiledScenario":[],"actions":[]}`, `{"revision":4,"targetInstanceId":"target-1","actions":[]}`} {
+	for _, body := range []string{`{"revision":4,"actions":[]}`, `{"compiledScenario":[],"actions":[]}`, `{"targetInstanceId":"target-1","actions":[]}`} {
 		request = httptest.NewRequest(http.MethodPut, "/api/plans/41/execution-paths/51/configuration/nodes/node-semantic", strings.NewReader(body))
 		request.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174702")
 		response = httptest.NewRecorder()
@@ -119,7 +119,7 @@ func TestInstanceActionConfigurationUsesInstanceContainer(t *testing.T) {
 	stub := &actionConfigurationAPIStub{}
 	handler := api.NewHandlerWithConfigurationServices(actionTargetReader{}, service.NewPlanService(actionPlanRepository{}), actionFlowGraphService{}, actionExecutionPathService{}, actionPathRequirementService{}, stub)
 	instanceKey := analyzer.PathConfigInstanceActionKey()
-	body := `{"revision":4,"actions":[{"key":"withdraw-1","action":"withdraw","scope":"instance","order":1},{"key":"urge-1","action":"urge","scope":"instance","order":2}]}`
+	body := `{"actions":[{"key":"withdraw-1","action":"withdraw","scope":"instance","order":1},{"key":"urge-1","action":"urge","scope":"instance","order":2}]}`
 	request := httptest.NewRequest(http.MethodPut, "/api/plans/41/execution-paths/51/configuration/nodes/"+instanceKey, strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "123e4567-e89b-12d3-a456-426614174712")
 	response := httptest.NewRecorder()

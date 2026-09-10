@@ -1,5 +1,7 @@
 # 当前进度
 
+- 2026-09-10 F-025 人工验收反馈已修复，状态重新进入 `ready_for_manual`：发起人节点新增“提交”动作时，浏览器提交节点修订 `1`，服务端错误按整体修订 `2` 校验并返回 `CONFIG_REVISION_CONFLICT`。按用户“第一版不做这类版本控制”的要求，节点与实例动作请求不再发送或接受浏览器修订号，服务端改为在最新配置上合并；内部并发冲突自动重读，仍保留幂等键和数据库事务保护。去掉 revision 后同一业务请求实测返回 200，发起人节点重读包含“保存草稿、提交”，同一幂等键重放仍返回同一修订；携带 revision 的旧请求明确返回 400。定向 Go、Node 测试和前端类型检查通过，等待人工页面复核。
+
 - 2026-09-09 F-025「节点人员配置与范围内选人」已完成自动验证，状态进入 `ready_for_manual`：人员候选失效、数量不足/超限和策略不再适用均改为具体原因，并直接指出“本节点的处理人员区”；前端不再把服务端原因替换成泛化提示。批量保存会自动定位首个缺项节点，遗漏列表中的其他节点名称可点击直达。已通过 `go test ./internal/analyzer ./internal/service ./test/unit/backend/action_orchestration`、`npm --prefix web run typecheck` 和 `node --experimental-strip-types --test test/unit/frontend/path_configuration/personnel_message_test.mjs`，等待人工页面验收。
 
 - 2026-09-09 F-025「节点人员配置与范围内选人」已获用户明确“开始”批准，状态进入 `implementing`。已核对当前实现与 V1/目标 `GroupApproveManage` 直接组件：节点人员、动作接收人和表单人员必须分域；可编辑范围默认稳定随机一人，手动只能在当前目标范围内选择；固定人员、主管/职级/扩展属性/表单人员只读显示目标运行时规则；会签数量、候选失效和目录解析失败必须阻塞或标记受影响。

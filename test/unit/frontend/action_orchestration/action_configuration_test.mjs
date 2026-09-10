@@ -28,9 +28,9 @@ test('F-012 动作请求保留重复语义记录', () => {
         { key: 'reject', kind: 'reject' },
       ],
     },
-  }, 7)
+  })
 
-  assert.equal(payload.revision, 7)
+  assert.equal('revision' in payload, false)
   assert.deepEqual(payload.persons, [])
   assert.deepEqual(payload.actions, [
     { key: 'storage-1', action: 'storage_form_data', scope: 'task', nodeKey: 'node-review', order: 1 },
@@ -47,7 +47,7 @@ test('F-012 单次动作请求保留稳定键和节点语义', () => {
     persons: {},
     personStrategies: {},
     actionConfigurations: { [node.key]: [{ key: 'sign', kind: 'add_sign' }] },
-  }, 3)
+  })
   assert.deepEqual(payload.actions, [{ key: 'sign', action: 'add_sign', scope: 'task', nodeKey: node.key, order: 1 }])
 })
 
@@ -73,7 +73,7 @@ test('F-012 动作请求合并目标参数并透传人员策略', () => {
         note: '按审批规则选择',
       }],
     },
-  }, 4)
+  })
 
   assert.deepEqual(payload.persons, [{ key: 'approver', strategy: 'manual', seed: 3, selected: ['user-a'] }])
   assert.deepEqual(payload.actions, [{

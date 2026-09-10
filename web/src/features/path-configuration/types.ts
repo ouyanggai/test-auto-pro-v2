@@ -132,7 +132,6 @@ export type PathActionScope = 'initiator' | 'task' | 'completed_task' | 'instanc
 
 // PathActionConfigurationInput 是新动作端点的最小请求体，只提交独立动作记录。
 export interface PathActionConfigurationInput {
-  revision: number
   persons?: PathConfigPersonStrategyInput[]
   actions: PathConfiguredActionInput[]
 }

@@ -53,9 +53,12 @@ func (r *actionTargetReader) PathConfigurationSnapshot(context.Context, string, 
 
 type actionHistoryStore struct {
 	repository.HistoryReplayStore
-	record repository.HistoryPathConfigRecord
-	found  bool
-	writes int
+	record               repository.HistoryPathConfigRecord
+	found                bool
+	writes               int
+	conflicts            int
+	conflictActions      []byte
+	lastExpectedRevision uint64
 }
 
 // GetPathConfig 返回当前路径的动作领域配置记录。
@@ -68,6 +71,15 @@ func (s *actionHistoryStore) GetPathConfig(_ context.Context, pathID uint64) (re
 
 // SavePathConfig 保存动作场景并执行路径修订和幂等屏障。
 func (s *actionHistoryStore) SavePathConfig(_ context.Context, record repository.HistoryPathConfigRecord, expectedRevision uint64, now time.Time) (repository.HistoryPathConfigRecord, error) {
+	s.lastExpectedRevision = expectedRevision
+	if s.conflicts > 0 {
+		s.conflicts--
+		s.record.Revision++
+		if len(s.conflictActions) > 0 {
+			s.record.UserActions = append([]byte(nil), s.conflictActions...)
+		}
+		return repository.HistoryPathConfigRecord{}, repository.ErrHistoryPathConfigConflict
+	}
 	if s.found && s.record.IdempotencyKey == record.IdempotencyKey {
 		return s.record, nil
 	}
@@ -87,6 +99,77 @@ func (s *actionHistoryStore) SavePathConfig(_ context.Context, record repository
 	}
 	s.record, s.found, s.writes = record, true, s.writes+1
 	return record, nil
+}
+
+// TestSaveActionConfigurationDoesNotRequireClientRevision 验证第一版节点动作保存始终合并服务端最新配置，
+// 表单写入导致整体修订领先于节点修订时也不能阻止用户新增动作。
+func TestSaveActionConfigurationDoesNotRequireClientRevision(t *testing.T) {
+	plan := model.Plan{ID: 806, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 816, PlanID: plan.ID, SequenceNo: 1, Name: "审批路径"}
+	reader := &actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: actionConfigurationTree(), EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "审批流程", RenderType: target.FormRenderTypeFormMaking}}
+	startKey := analyzer.PathConfigNodeToken("start")
+	storedActions, err := json.Marshal([]model.ConfiguredAction{{
+		Key: "draft-1", Action: model.ActionSaveDraft, Scope: model.ActionScopeInitiator, NodeKey: startKey, Order: 1, Revision: 1,
+	}})
+	if err != nil {
+		t.Fatalf("构造已保存动作失败：%v", err)
+	}
+	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{
+		PathID: path.ID, Revision: 2, NodeRevision: 1, DataRevision: 3, ActionRevision: 1,
+		UserActions: storedActions, EffectiveFormData: []byte(`{"title":"已保存表单"}`),
+	}}
+	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}), reader,
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
+	config.SetHistoryWorkspaceStores(store, store)
+
+	result, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, startKey, "123e4567-e89b-12d3-a456-426614174806", model.ActionConfigurationInput{
+		Actions: []model.ConfiguredAction{
+			{Key: "draft-1", Action: model.ActionSaveDraft, Scope: model.ActionScopeInitiator, NodeKey: startKey, Order: 1},
+			{Key: "submit-1", Action: model.ActionSubmit, Scope: model.ActionScopeInitiator, NodeKey: startKey, Order: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("整体修订领先时新增提交动作仍失败：%v", err)
+	}
+	if store.lastExpectedRevision != 2 {
+		t.Fatalf("落库没有使用服务端最新整体修订：got=%d want=2", store.lastExpectedRevision)
+	}
+	if result.Revision != 3 || result.NodeRevision != 2 || len(result.Actions) != 2 {
+		t.Fatalf("动作保存结果不完整：%+v", result)
+	}
+	if string(store.record.EffectiveFormData) != `{"title":"已保存表单"}` {
+		t.Fatalf("节点保存覆盖了表单数据：%s", store.record.EffectiveFormData)
+	}
+}
+
+// TestSaveActionConfigurationRetriesInternalConflict 验证服务端写入前发生并发变化时会重新读取并合并，
+// 不把内部整体修订冲突作为 CONFIG_REVISION_CONFLICT 暴露给第一版页面。
+func TestSaveActionConfigurationRetriesInternalConflict(t *testing.T) {
+	plan := model.Plan{ID: 807, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 817, PlanID: plan.ID, SequenceNo: 1, Name: "审批路径"}
+	reviewKey := analyzer.PathConfigNodeToken("review")
+	concurrentActions, err := json.Marshal([]model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1, Revision: 1}})
+	if err != nil {
+		t.Fatalf("构造并发动作失败：%v", err)
+	}
+	store := &actionHistoryStore{found: true, conflicts: 1, conflictActions: concurrentActions, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 2, NodeRevision: 1}}
+	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}),
+		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: actionConfigurationTree(), EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "审批流程", RenderType: target.FormRenderTypeFormMaking}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
+	config.SetHistoryWorkspaceStores(store, store)
+
+	result, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, analyzer.PathConfigNodeToken("start"), "123e4567-e89b-12d3-a456-426614174807", model.ActionConfigurationInput{
+		Actions: []model.ConfiguredAction{{Key: "submit-1", Action: model.ActionSubmit, Scope: model.ActionScopeInitiator, Order: 1}},
+	})
+	if err != nil {
+		t.Fatalf("内部并发冲突没有由服务端重新合并：%v", err)
+	}
+	if store.conflicts != 0 || store.writes != 1 || store.lastExpectedRevision != 3 || result.Revision != 4 || len(result.Actions) != 2 {
+		t.Fatalf("内部冲突重试结果不正确：conflicts=%d writes=%d expected=%d result=%+v", store.conflicts, store.writes, store.lastExpectedRevision, result)
+	}
+	if result.Actions[0].Action != model.ActionSubmit || result.Actions[1].Action != model.ActionApprove {
+		t.Fatalf("重新合并覆盖了并发保存的其他节点动作：%+v", result.Actions)
+	}
 }
 
 // GetPathSource 表示动作配置测试没有路径级历史来源覆盖。
@@ -149,15 +232,13 @@ func TestSaveActionConfigurationPersistsCompiledScenario(t *testing.T) {
 		t.Fatal("动作保存和预览没有重读目标流程事实")
 	}
 	retry, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174801", model.ActionConfigurationInput{
-		Revision: 0,
-		Actions:  []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1}},
+		Actions: []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1}},
 	})
 	if err != nil || retry.Revision != result.Revision || store.writes != 1 {
 		t.Fatalf("相同幂等键重试未复用原结果：err=%v retry=%+v writes=%d", err, retry, store.writes)
 	}
 	_, err = config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174801", model.ActionConfigurationInput{
-		Revision: 0,
-		Actions:  []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1, Note: "changed"}},
+		Actions: []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1, Note: "changed"}},
 	})
 	if err == nil {
 		t.Fatal("相同幂等键提交不同动作正文却未阻断")
@@ -189,9 +270,8 @@ func TestSaveActionConfigurationDeleteRemovesStoredActions(t *testing.T) {
 	}
 	// 删除 approve-1：模拟用户在编辑器里删掉第一条后整节点保存，只剩 sign-1。
 	second, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174806", model.ActionConfigurationInput{
-		Revision: first.Revision,
-		Persons:  persons,
-		Actions:  []model.ConfiguredAction{{Key: "sign-1", Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1, ActorPolicy: "manual"}},
+		Persons: persons,
+		Actions: []model.ConfiguredAction{{Key: "sign-1", Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: reviewKey, Order: 1, ActorPolicy: "manual"}},
 	})
 	if err != nil {
 		t.Fatalf("删除动作后的保存失败：%v", err)
@@ -208,8 +288,7 @@ func TestSaveActionConfigurationDeleteRemovesStoredActions(t *testing.T) {
 	}
 	// 全部删空：节点动作清空必须同样可保存、可重读。
 	_, err = config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174807", model.ActionConfigurationInput{
-		Revision: second.Revision,
-		Actions:  []model.ConfiguredAction{},
+		Actions: []model.ConfiguredAction{},
 	})
 	if err != nil {
 		t.Fatalf("清空节点动作保存失败：%v", err)

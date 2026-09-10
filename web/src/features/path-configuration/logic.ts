@@ -151,7 +151,7 @@ export function containerActionsDraft(container: PathActionContainer, draft: Pat
 }
 
 // buildPathActionConfigurationInput 把每条页面动作草稿按原始稳定语义发送到 F-012 服务端。
-export function buildPathActionConfigurationInput(container: PathActionContainer, draft: PathConfigDraft, revision: number): PathActionConfigurationInput {
+export function buildPathActionConfigurationInput(container: PathActionContainer, draft: PathConfigDraft): PathActionConfigurationInput {
   const source = containerActionsDraft(container, draft)
   const personsByKey = new Map(container.persons
     .filter(person => person.editable)
@@ -180,7 +180,7 @@ export function buildPathActionConfigurationInput(container: PathActionContainer
     })
     order += 1
   })
-  return { revision, persons: [...personsByKey.values()], actions }
+  return { persons: [...personsByKey.values()], actions }
 }
 
 // currentNodeConfigurationComplete 仅检查当前节点的人员与独立动作配置。

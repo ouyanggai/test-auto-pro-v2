@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -52,8 +53,24 @@ func (s *PathConfigService) GetCompiledScenario(ctx context.Context, planID, pat
 	return s.GetActionConfiguration(ctx, planID, pathID)
 }
 
-// SaveActionConfiguration 保存当前语义节点动作并在同一配置修订内编译完整主实例场景。
+const actionConfigurationSaveAttempts = 3
+
+// SaveActionConfiguration 保存当前语义节点动作；浏览器不参与版本协商，内部并发冲突由服务端重新合并。
 func (s *PathConfigService) SaveActionConfiguration(ctx context.Context, planID, pathID uint64, nodeKey, idempotencyKey string, input model.ActionConfigurationInput) (model.ActionConfigurationResult, error) {
+	for attempt := 1; attempt <= actionConfigurationSaveAttempts; attempt++ {
+		result, err := s.saveActionConfigurationOnce(ctx, planID, pathID, nodeKey, idempotencyKey, input)
+		if err == nil {
+			return result, nil
+		}
+		if !errors.Is(err, repository.ErrHistoryPathConfigConflict) {
+			return result, err
+		}
+	}
+	return model.ActionConfigurationResult{}, &PathConfigError{Kind: PathConfigErrorStorage, Message: "节点配置保存繁忙，请重试"}
+}
+
+// saveActionConfigurationOnce 基于一次服务端最新读取合并并保存动作；仓储竞争由外层重新读取后重试。
+func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, planID, pathID uint64, nodeKey, idempotencyKey string, input model.ActionConfigurationInput) (model.ActionConfigurationResult, error) {
 	if planID == 0 || pathID == 0 || strings.TrimSpace(nodeKey) == "" || !validUUID(strings.TrimSpace(idempotencyKey)) {
 		return model.ActionConfigurationResult{}, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "动作配置参数不正确"}
 	}
@@ -64,11 +81,10 @@ func (s *PathConfigService) SaveActionConfiguration(ctx context.Context, planID,
 	if err != nil {
 		return model.ActionConfigurationResult{}, err
 	}
-	// 相同幂等键允许客户端带着原始修订重试；其他旧修订仍须在编译前直接冲突，避免返回误导性的动作问题。
+	// 第一版动作保存不把浏览器修订号作为门禁：服务端始终基于刚读取的最新配置合并当前节点，
+	// 避免表单数据和节点动作各自推进计数后互相制造无意义的版本冲突。
+	// 幂等键仍用于识别响应丢失后的同一次重试，不能用同一键提交不同正文。
 	sameIdempotency := found && strings.TrimSpace(idempotencyKey) != "" && current.IdempotencyKey == strings.TrimSpace(idempotencyKey)
-	if input.Revision != current.Revision && !sameIdempotency {
-		return model.ActionConfigurationResult{}, &PathConfigError{Kind: PathConfigErrorRevisionConflict, Message: "动作配置已被其他操作更新，请刷新后重试"}
-	}
 	existing := []model.ConfiguredAction{}
 	if found {
 		existing = decodeWorkspaceActions(current.UserActions)
@@ -170,9 +186,13 @@ func (s *PathConfigService) SaveActionConfiguration(ctx context.Context, planID,
 	if len(record.RuntimeValidation) == 0 {
 		record.RuntimeValidation = []byte(`{}`)
 	}
-	saved, err := s.historyConfigStore.SavePathConfig(ctx, record, input.Revision, s.now().UTC())
+	// 浏览器不参与版本协商；仓储只用本次服务端读取到的整体修订做事务内并发保护。
+	saved, err := s.historyConfigStore.SavePathConfig(ctx, record, current.Revision, s.now().UTC())
 	if err != nil {
-		return model.ActionConfigurationResult{}, mapHistoryWorkspaceStoreError(err)
+		if !errors.Is(err, repository.ErrHistoryPathConfigConflict) {
+			return model.ActionConfigurationResult{}, mapHistoryWorkspaceStoreError(err)
+		}
+		return model.ActionConfigurationResult{}, err
 	}
 	return actionConfigurationResult(path, saved, compiled), nil
 }
