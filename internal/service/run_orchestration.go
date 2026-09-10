@@ -881,8 +881,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		return nil, err
 	}
 	detail := &PathRunDetailDTO{
-		StructureNote: structureNoteOf(structureDegraded),
-		RunID:         run.ID, RunNo: run.RunNo,
+		RunID: run.ID, RunNo: run.RunNo,
 		ModeName:          model.RunModeName(run.Mode),
 		RunStatusName:     model.RunStatusName(run.Status),
 		PathRunID:         pathRun.ID,
@@ -957,6 +956,8 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Breakpoints = append(detail.Breakpoints, dto)
 		}
 	}
+	// 结构降级只会影响已经发生的节点运行状态推导；首次放行前没有执行事实，不能提前报运行异常。
+	detail.StructureNote = structureNoteOf(structureDegraded, len(steps) > 0 || len(attempts) > 0 || detail.StepInFlight)
 	// 执行现场已丢失的运行（服务重启或执行结果无法确认，路径运行停在结果待确认且没有内存现场）
 	// 无法安全继续：如实告诉用户并引导从计划重新运行；界面不给任何对账、重放或登记入口。
 	if s.control.View(pathRun.ID) == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
@@ -1237,9 +1238,9 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 	return states
 }
 
-// structureNoteOf 生成结构读取降级的中文说明；读取正常时为空。
-func structureNoteOf(degraded bool) string {
-	if !degraded {
+// structureNoteOf 只在已有执行事实后说明结构读取降级；首次放行前没有运行状态可被误判。
+func structureNoteOf(degraded, executionStarted bool) string {
+	if !degraded || !executionStarted {
 		return ""
 	}
 	return "目标流程结构暂时读取失败，节点运行状态可能不完整；可稍后刷新重试"
@@ -1493,6 +1494,11 @@ func BuildNodePlansForTest(compiledSteps []model.CompiledActionStep, tokenToGrap
 // BuildNodeStatesForTest 暴露画布节点运行态推导，供 test 目录下的定向用例锁定「等待运行」语义。
 func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
 	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys)
+}
+
+// StructureNoteForTest 暴露结构降级提示门禁，供 test 目录锁定首次放行前不得误报。
+func StructureNoteForTest(degraded, executionStarted bool) string {
+	return structureNoteOf(degraded, executionStarted)
 }
 
 // ParsePhaseTimingsForTest 暴露 step.log 阶段时间轴解析，供 test 目录下的定向用例锁定归组键与耗时口径。
