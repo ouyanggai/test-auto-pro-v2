@@ -11,6 +11,8 @@ const props = defineProps<{ node: PathConfigNode | null; draft: PathConfigDraft;
 const emit = defineEmits<{ updatePersonStrategy: [person: PathConfigPerson, value: PathConfigPersonStrategyInput]; updateActionConfiguration: [nodeKey: string, value: PathConfigConfiguredActionInput[]]; save: []; saveAll: []; locateNode: [nodeKey: string]; backToPlan: []; openForm: []; requestCompiled: [] }>()
 
 const container = computed(() => props.node ? nodeActionContainer(props.node) : null)
+// systemAutomaticNode 以服务端只读动作语义识别系统自动节点，不能让实例动作目录重新打开配置入口。
+const systemAutomaticNode = computed(() => Boolean(props.node?.actionConfiguration.catalog.some(item => item.systemOnly)))
 // savedActions 只保留当前节点已确认的独立动作记录。
 const savedActions = computed(() => container.value ? containerActionsDraft(container.value, props.draft) : [])
 
@@ -44,12 +46,13 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
   <section v-if="node" class="node-configuration-panel">
     <header class="node-configuration-panel__header">
       <h2>{{ node.name }}</h2>
-      <n-tag size="small">{{ pathConfigurationStatusName(node.status) }}</n-tag>
+      <n-tag size="small">{{ systemAutomaticNode ? '无需配置' : pathConfigurationStatusName(node.status) }}</n-tag>
     </header>
 
     <div class="node-configuration-panel__body">
+      <n-alert v-if="systemAutomaticNode" type="info" :show-icon="false">此节点由目标引擎自动处理，无需配置人员和动作。</n-alert>
       <n-alert v-if="node.lineBlocked" type="warning" :show-icon="false">前序动作已结束当前线路，本节点无需继续配置。</n-alert>
-      <section v-if="node.persons.length" class="node-configuration-panel__section">
+      <section v-if="!systemAutomaticNode && node.persons.length" class="node-configuration-panel__section">
         <h3>处理人员</h3>
         <div v-for="person in node.persons" :key="person.key" class="person-row">
           <strong>{{ person.title }}</strong>
@@ -71,7 +74,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
         </div>
       </section>
 
-      <section class="node-configuration-panel__section">
+      <section v-if="!systemAutomaticNode" class="node-configuration-panel__section">
         <ActionOrchestrationEditor
           v-if="container"
           :container="container"
@@ -94,7 +97,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
       </section>
     </div>
 
-    <footer class="node-configuration-panel__footer">
+    <footer v-if="!systemAutomaticNode" class="node-configuration-panel__footer">
       <div class="save-status">
         <n-alert v-if="readOnly" type="info" :show-icon="false">当前计划只能查看</n-alert>
         <n-alert v-if="saveError" type="error" :show-icon="false">{{ pathConfigurationMessage(saveError) }}</n-alert>
@@ -112,7 +115,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
       </div>
     </footer>
 
-    <n-empty v-if="!node.persons.length && !node.actionConfiguration.catalog.length" description="此节点没有需要配置的内容" />
+    <n-empty v-if="!systemAutomaticNode && !node.persons.length && !node.actionConfiguration.catalog.length" description="此节点没有需要配置的内容" />
 
     <action-flow-dialog
       v-model:show="flowDialogOpen"
