@@ -23,23 +23,33 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 		// 发起前实例不存在：这是确定事实，不是读取失败。
 		return facts, nil
 	}
-	flowProxyID, currentNodes, status, formProxyIDs, bizRelevance, found, err := findSubmittedFlowWithRelevance(ctx, e.target, session, instanceID)
+	// 实例「已发」事实必须用流程发起人（计划账号）会话读取：已发列表是发起人视角的数据，
+	// 节点处理人自己的账号看不到这条实例（2026-09-11 用户强调的硬约束）。
+	// 演员切换只作用于后面的待办与任务读取，绝不作用于实例列表。
+	initiatorSession := session
+	if !strings.EqualFold(strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount)) {
+		if planSession, planErr := e.sessions.Current(ctx, runCtx.PlanAccount); planErr == nil {
+			initiatorSession = planSession
+		}
+	}
+	snapshot, err := findSubmittedFlowSnapshot(ctx, e.target, initiatorSession, instanceID)
 	if err != nil {
 		facts.ReadError = target.UserFacingErrorMessage(target.WriteResponse{}, err)
 		return facts, err
 	}
-	if !found {
+	if !snapshot.Found {
 		// 实例在已发列表不可见：发起成功前是常态；发起后不可见属于异常事实，由判定规则处理。
 		return facts, nil
 	}
 	facts.Found = true
-	facts.Status = status
-	facts.FlowProxyID = strings.TrimSpace(flowProxyID)
-	if len(formProxyIDs) > 0 {
-		facts.FormProxyID = strings.TrimSpace(formProxyIDs[0])
+	facts.Status = snapshot.Status
+	facts.FlowProxyID = strings.TrimSpace(snapshot.FlowProxyID)
+	if len(snapshot.FormProxyIDs) > 0 {
+		facts.FormProxyID = strings.TrimSpace(snapshot.FormProxyIDs[0])
 	}
-	facts.CurrentNodes = currentNodes
-	facts.BizRelevance = cloneBizRelevance(bizRelevance)
+	facts.CurrentNodes = snapshot.CurrentNodes
+	facts.BizRelevance = cloneBizRelevance(snapshot.BizRelevance)
+	facts.CurrentHandlers = snapshot.Handlers
 	if creatorReader, ok := e.target.(flowCreatorReader); ok && (step.Action == model.ActionSaveDraft || step.Action == model.ActionResubmit || step.Action == model.ActionWithdraw) {
 		isCreator, creatorErr := creatorReader.IsFlowCreator(ctx, session, instanceID)
 		if creatorErr != nil {
@@ -54,7 +64,10 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 		return facts, err
 	}
 	facts.DueNodes = dueNodes
-	taskSession, taskErr := e.readActionTaskFacts(ctx, runCtx, session, step, dueNodeKey, &facts)
+	// 当前处理人发现只允许在计划账号会话（放行前的准备/门禁阶段）使用；
+	// 写后核验用演员会话，必须只核对演员本人的任务（会签场景其他人的待办还在）。
+	allowDiscovery := strings.EqualFold(strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount))
+	taskSession, taskErr := e.readActionTaskFacts(ctx, runCtx, session, step, dueNodeKey, &facts, allowDiscovery)
 	if taskErr == nil {
 		session = taskSession
 	} else {
@@ -106,13 +119,35 @@ type flowBizRelevanceReader interface {
 	FindSubmittedFlowWithRelevance(context.Context, target.Session, string) (string, []string, string, []string, []target.BizRelevance, bool, error)
 }
 
-// findSubmittedFlowWithRelevance 优先读取实例业务关联；不支持扩展的测试假件退回基础读取，保持已有行为。
-func findSubmittedFlowWithRelevance(ctx context.Context, client TargetClient, session target.Session, instanceID string) (string, []string, string, []string, []target.BizRelevance, bool, error) {
+// submittedFlowFactsReader 是读取实例完整事实（含各当前节点待办处理人）的可选能力面。
+type submittedFlowFactsReader interface {
+	FindSubmittedFlowFacts(ctx context.Context, active target.Session, instanceID string) (target.SubmittedFlowFacts, error)
+}
+
+// findSubmittedFlowSnapshot 读取实例事实快照：优先取完整事实（含 currentAuditUserInfo 处理人），
+// 旧客户端按既有签名降级，处理人信息留空，由调用方按无处理人事实处理。
+func findSubmittedFlowSnapshot(ctx context.Context, client TargetClient, session target.Session, instanceID string) (target.SubmittedFlowFacts, error) {
+	if reader, ok := client.(submittedFlowFactsReader); ok {
+		return reader.FindSubmittedFlowFacts(ctx, session, instanceID)
+	}
 	if reader, ok := client.(flowBizRelevanceReader); ok {
-		return reader.FindSubmittedFlowWithRelevance(ctx, session, instanceID)
+		flowProxyID, currentNodes, status, formProxyIDs, bizRelevance, found, err := reader.FindSubmittedFlowWithRelevance(ctx, session, instanceID)
+		if err != nil {
+			return target.SubmittedFlowFacts{}, err
+		}
+		return target.SubmittedFlowFacts{
+			FlowProxyID: flowProxyID, CurrentNodes: currentNodes, Status: status,
+			FormProxyIDs: formProxyIDs, BizRelevance: bizRelevance, Found: found,
+		}, nil
 	}
 	flowProxyID, currentNodes, status, formProxyIDs, found, err := client.FindSubmittedFlow(ctx, session, instanceID)
-	return flowProxyID, currentNodes, status, formProxyIDs, nil, found, err
+	if err != nil {
+		return target.SubmittedFlowFacts{}, err
+	}
+	return target.SubmittedFlowFacts{
+		FlowProxyID: flowProxyID, CurrentNodes: currentNodes, Status: status,
+		FormProxyIDs: formProxyIDs, Found: found,
+	}, nil
 }
 
 // cloneBizRelevance 复制目标返回的业务关联，避免预览构造修改事实快照或后续落库基准。
@@ -135,7 +170,7 @@ func cloneBizRelevance(values []target.BizRelevance) []target.BizRelevance {
 
 // readActionTaskFacts 读取任务级动作的目标事实：当前待办、已办任务、任务链和代理树。
 // 这些事实只用于门禁和结果核验；任一关键事实缺失都保持禁用，不能靠动作配置猜测目标状态。
-func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string, facts *InstanceFacts) (target.Session, error) {
+func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string, facts *InstanceFacts, allowDiscovery bool) (target.Session, error) {
 	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 	if instanceID == "" {
 		return session, nil
@@ -158,7 +193,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if !hasTaskReader {
 			return session, nil
 		}
-		snapshot, candidateAssigneeID, candidateAssigneeName, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, facts.FlowProxyID, "pending", facts)
+		snapshot, candidateAssigneeID, candidateAssigneeName, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "pending", facts, allowDiscovery)
 		if resolveErr != nil {
 			return session, resolveErr
 		}
@@ -175,6 +210,23 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		switch step.Action {
 		case model.ActionStorageFormData, model.ActionApprove, model.ActionReject:
 			// 这三个动作都直接处理当前待办；门禁和写后核验必须使用同一条实时任务快照。
+			// 会签中间态核验（2026-09-11 实测）：部分人同意后实例仍停在本节点，节点上还有
+			// 其他人的 pending 任务。此时「待办是否清空」不能判定本步写是否生效——必须用
+			// 按执行人过滤的已办（ListTaskSnapshots(done) 自带 executorId）核对「本演员在
+			// 本节点的已完成任务」是否出现；出现即本次审批已被目标记录。
+			if facts.CurrentTaskRead && step.Action == model.ActionApprove && hasListReader {
+				done, doneErr := listReader.ListTaskSnapshots(ctx, session, instanceID, "done")
+				facts.CompletedTaskRead = true
+				if doneErr == nil {
+					for _, doneSnapshot := range done {
+						if strings.TrimSpace(doneSnapshot.FlowNodeProxyID) == strings.TrimSpace(nodeID) {
+							facts.CompletedTaskFound = true
+							facts.CompletedTaskNodeID = strings.TrimSpace(doneSnapshot.FlowNodeProxyID)
+							break
+						}
+					}
+				}
+			}
 			return session, nil
 		case model.ActionAddSign:
 			personIDs := runCtx.ActionPersonIDs[ActionPersonIndex(step.NodeKey, step.Action)]
@@ -223,7 +275,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if !hasTaskReader {
 			return session, nil
 		}
-		snapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, facts.FlowProxyID, "done", facts)
+		snapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "done", facts, allowDiscovery)
 		if resolveErr != nil {
 			return session, resolveErr
 		}
@@ -490,7 +542,15 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 	// 审批、不同意和暂存都以当前账号的任务链接为事实。实例节点列表是全局入口，
 	// 不能在任务已消失时替代当前账号任务的核验。
 	if (action == string(model.ActionApprove) || action == string(model.ActionReject) || action == string(model.ActionStorageFormData)) && after.CurrentTaskRead {
+		// 会签中间态（2026-09-11 实测）：本演员同意后节点上仍有其他人的 pending 任务，
+		// 按「节点待办是否清空」对照会误判「写未生效」。此时以按执行人过滤的已办为准——
+		// 本演员在本节点的已完成任务已出现，说明本次审批已被目标记录，实例只是在等其他人。
+		actorDone := action == string(model.ActionApprove) && after.CompletedTaskRead && after.CompletedTaskFound &&
+			strings.TrimSpace(after.CompletedTaskNodeID) == strings.TrimSpace(stepNodeKey)
 		if after.CurrentTaskFound {
+			if actorDone {
+				return verdict.RereadAdvanced
+			}
 			return verdict.RereadUnchanged
 		}
 		if after.Found && action == string(model.ActionReject) && strings.EqualFold(after.Status, "rejected") {
@@ -501,9 +561,13 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 		}
 		return verdict.RereadAdvanced
 	}
-	// 审批：本步节点的待办仍在，说明写未生效。
+	// 审批：本步节点的待办仍在，说明写未生效——除非本演员的已办已出现（会签中间态）。
 	for _, node := range after.DueNodes {
 		if node == stepNodeKey {
+			if action == string(model.ActionApprove) && after.CompletedTaskRead && after.CompletedTaskFound &&
+				strings.TrimSpace(after.CompletedTaskNodeID) == strings.TrimSpace(stepNodeKey) {
+				return verdict.RereadAdvanced
+			}
 			return verdict.RereadUnchanged
 		}
 	}

@@ -651,3 +651,92 @@ func (c *Client) UserAccountsByID(ctx context.Context, active Session, ids []str
 	}
 	return result, nil
 }
+
+// HandlerAccount 是一条待处理人员的账号解析结果：Key 是匹配键（"id:…"、"phone:…"、"name:…"），
+// UserID 是该人员在目标目录里的真实用户 ID（写请求与后续目录查询必须用它，不能用匹配键冒充），
+// Name 是目录里的真实姓名，Account 是登录账号。
+type HandlerAccount struct {
+	Key     string
+	UserID  string
+	Name    string
+	Account string
+}
+
+// MatchHandlerAccounts 解析当前节点待处理人员的登录账号：
+// 优先按用户 ID（自选类节点的 bizIds）精确匹配；目标「指定人员」类节点不再返回用户 ID，
+// 只有姓名与手机号，则按手机号或姓名在目录中匹配。返回的映射带三类键：
+// "id:<用户ID>"、"phone:<手机号>"、"name:<姓名>"，值都是登录账号。
+// 目录一次全量读取，同一响应内多键复用，不放大目录请求次数。
+func (c *Client) MatchHandlerAccounts(ctx context.Context, active Session, handler NodeCurrentHandler) ([]HandlerAccount, error) {
+	if len(handler.BizIDs) == 0 && len(handler.Users) == 0 {
+		return []HandlerAccount{}, nil
+	}
+	if strings.TrimSpace(active.CompanyID) == "" {
+		return nil, fmt.Errorf("login response missing company id")
+	}
+	resp, err := c.call(ctx, "/web/user/api/user/findByCompanyIdUserList", active.SID, map[string]any{
+		"data": map[string]any{"companyId": active.CompanyID}, "pagination": true, "pages": 1, "size": 1000,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
+	}
+	var page rawAuditPersonnelPage
+	if err := json.Unmarshal(resp.Data, &page); err != nil {
+		return nil, fmt.Errorf("invalid personnel directory")
+	}
+	result := []HandlerAccount{}
+	seen := map[string]bool{}
+	for _, item := range page.DataList {
+		candidate := auditCandidateFromNamed(item)
+		account := firstNonEmpty(item.Account, item.Username, candidate.Name, item.Phone)
+		id := strings.TrimSpace(candidate.ID)
+		phone := strings.TrimSpace(item.Phone)
+		name := strings.TrimSpace(candidate.Name)
+		if account == "" {
+			continue
+		}
+		matched := false
+		for _, wantID := range handler.BizIDs {
+			if id != "" && id == strings.TrimSpace(wantID) {
+				matched = true
+			}
+		}
+		for _, user := range handler.Users {
+			if (phone != "" && phone == user.Phone) || (name != "" && name == user.Name) {
+				matched = true
+			}
+		}
+		if !matched {
+			continue
+		}
+		for _, wantID := range handler.BizIDs {
+			if id != "" && id == strings.TrimSpace(wantID) {
+				key := "id:" + id
+				if !seen[key] {
+					result = append(result, HandlerAccount{Key: key, UserID: id, Name: name, Account: account})
+					seen[key] = true
+				}
+			}
+		}
+		for _, user := range handler.Users {
+			if phone != "" && phone == user.Phone {
+				key := "phone:" + user.Phone
+				if !seen[key] {
+					result = append(result, HandlerAccount{Key: key, UserID: id, Name: name, Account: account})
+					seen[key] = true
+				}
+			}
+			if name != "" && name == user.Name {
+				key := "name:" + user.Name
+				if !seen[key] {
+					result = append(result, HandlerAccount{Key: key, UserID: id, Name: name, Account: account})
+					seen[key] = true
+				}
+			}
+		}
+	}
+	return result, nil
+}

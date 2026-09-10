@@ -169,9 +169,13 @@ type InstanceFacts struct {
 	// 任务级动作必须以该处理人身份登录并发出写请求；这是"人员配置驱动执行"的事实来源。
 	CurrentTaskAssigneeID   string `json:"currentTaskAssigneeId,omitempty"`
 	CurrentTaskAssigneeName string `json:"currentTaskAssigneeName,omitempty"`
-	// AssigneeDiag 是固定人员发现（代理树提取+会话切换）没有命中时的中文原因，
+	// AssigneeDiag 是当前处理人发现（已发事实提取+会话切换）没有命中时的中文原因，
 	// 随门禁拒绝一并写入 step.log 与界面，让「当前待办已经处理」这类结论可解释。
 	AssigneeDiag string `json:"assigneeDiag,omitempty"`
+	// CurrentHandlers 是「已发」列表返回的各当前节点待办处理人信息（节点 ID → 审批方式
+	// 与待处理人员）。会签节点在全部处理人审批完成前一直出现在这里，人员随审批进度递减；
+	// 是发现「指定人员」类节点真实处理人的唯一稳定只读来源（待办列表按当前用户过滤）。
+	CurrentHandlers []target.NodeCurrentHandler `json:"currentHandlers,omitempty"`
 	// CompletedTask* 是取回动作的当前账号已办任务快照。
 	CompletedTaskRead     bool   `json:"completedTaskRead,omitempty"`
 	CompletedTaskFound    bool   `json:"completedTaskFound,omitempty"`

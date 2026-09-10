@@ -723,6 +723,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	before.StepNodeKey = stepTargetNodeID
 	after, session, _ := e.readFactsWithRetry(ctx, runCtx, session, step)
 	after.StepNodeKey = stepTargetNodeID
+	// 核验事实摘要落 step.log：会签等多人场景下「节点待办未清空」是常态，
+	// 不把判定依据（本演员待办/已办核对结果）写下来，事后无法解释结论怎么来的。
+	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("核验事实：实例可读=%v 状态=%s 本演员待办=%v（发现能力=%v） 本演员已办=%v/%v 实例当前节点=%v",
+		after.Found, after.Status, after.CurrentTaskFound, after.CurrentTaskRead,
+		after.CompletedTaskRead, after.CompletedTaskFound, after.CurrentNodes))
 	reread := ClassifyReread(string(step.Action), stepTargetNodeID, before, after)
 	if step.Action == model.ActionTransfer {
 		reread = e.classifyTransferReread(ctx, runCtx, step, session, preview, after)
@@ -1380,6 +1385,26 @@ func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log 
 	})
 }
 
+// InstanceStillAtStepNode 只读探测：实例当前节点是否仍停在编译步骤的节点上。
+// 会签节点需要全部处理人各自审批才前进：同意成功后实例仍停在本节点，就说明还有
+// 其他处理人未审批，控制层据此用新发现的当前处理人原步重跑。探测用计划账号会话——
+// 实例「已发」事实是发起人视角的数据（2026-09-11 用户强调的硬约束）。
+func (e *Executor) InstanceStillAtStepNode(ctx context.Context, runCtx RunContext, step model.CompiledActionStep) (bool, error) {
+	info, ok := runCtx.Nodes[step.NodeKey]
+	if !ok || strings.TrimSpace(info.TargetNodeID) == "" {
+		return false, nil
+	}
+	session, err := e.sessions.Current(ctx, runCtx.PlanAccount)
+	if err != nil {
+		return false, err
+	}
+	facts, _, err := e.readFactsWithRetry(ctx, runCtx, session, step)
+	if err != nil {
+		return false, err
+	}
+	return facts.Found && containsNode(facts.CurrentNodes, info.TargetNodeID), nil
+}
+
 // assigneeAccount 把目标实时待办的实际处理人（用户 ID）解析为登录账号与姓名。
 // 人员目录按公司全量分页读取并就地缓存一次调用；查不到说明目录里没有该用户，
 // 调用方必须阻断本步，绝不能回退成计划账号冒充审批。
@@ -1431,8 +1456,7 @@ func (e *Executor) recordPrepareFailure(ctx context.Context, runCtx RunContext, 
 // resolveTaskSnapshotForStep 按“下一节点候选人优先、原会话兜底”的顺序读取任务快照。
 // 候选人优先是硬规则：流程已流转到下一处理人后，不能先用上一演员会话查待办再决定。
 // 返回的 session 是真正命中任务的处理人会话，供后续代理树/审核记录读取继续使用。
-// proxyID 是实例当前流程代理（事实读取所得），供「指定人员」节点的代理树发现兜底使用。
-func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, proxyID, status string, facts *InstanceFacts) (target.TaskSnapshot, string, string, target.Session, error) {
+func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, status string, facts *InstanceFacts, allowDiscovery bool) (target.TaskSnapshot, string, string, target.Session, error) {
 	useCandidates := strings.TrimSpace(session.Summary.Account) == strings.TrimSpace(runCtx.PlanAccount) && len(runCtx.NextNodeAuditors[step.NodeKey]) > 0
 	var candidateErr error
 	if useCandidates {
@@ -1454,8 +1478,9 @@ func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunCon
 	}
 	// 计划账号与配置候选都没有命中，而实例当前确实停在本节点：目标「指定人员」类节点的
 	// 处理人由模板配置决定，待办列表按当前用户过滤，计划账号看不到他们的任务——
-	// 只能从完整流程代理树读出该节点配置的真实人员并逐个切换会话重读（只读，不写）。
-	snapshot, userID, userName, actorSession, found, diag := e.switchToConfiguredAssignee(ctx, runCtx, session, step, nodeID, proxyID, status)
+	// 从「已发」事实的 currentAuditUserInfo 读出该节点当前待处理人员并逐个切换会话重读
+	// （只读，不写）。已发事实由发起人会话读取（2026-09-11 用户强调的硬约束）。
+	snapshot, userID, userName, actorSession, found, diag := e.switchToCurrentHandler(ctx, runCtx, session, step, nodeID, status, *facts)
 	if facts != nil {
 		facts.AssigneeDiag = diag
 	}
@@ -1468,46 +1493,37 @@ func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunCon
 	return snapshot, "", "", session, nil
 }
 
-// switchToConfiguredAssignee 从完整流程代理树提取本节点「指定人员」配置的真实用户，
-// 逐个切换会话重读待办，命中任务即返回该处理人的会话与身份。
-// 这是固定人员节点的最后兜底：未命中时返回 found=false 与中文原因（写进事实诊断），
-// 由调用方按既有门禁失败处理，绝不猜测人员或冒用计划账号审批他人任务。
-func (e *Executor) switchToConfiguredAssignee(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, proxyID, status string) (snap target.TaskSnapshot, userID, userName string, sess target.Session, found bool, diag string) {
+// switchToCurrentHandler 从实例事实的 CurrentHandlers（「已发」列表 currentAuditUserInfo）
+// 提取本节点当前待处理人员，逐个切换会话重读待办，命中任务即返回该处理人的会话与身份。
+// 人员匹配优先用户 ID（bizIds），目标不再返回 ID 的「指定人员」节点按手机号或姓名匹配目录；
+// 未命中时返回 found=false 与中文原因（写进事实诊断），由调用方按既有门禁失败处理，
+// 绝不猜测人员或冒用计划账号审批他人任务。
+func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, status string, facts InstanceFacts) (snap target.TaskSnapshot, userID, userName string, sess target.Session, found bool, diag string) {
 	sess = session
-	documentReader, hasDocument := e.target.(flowProxyDocumentReader)
-	resolver, hasResolver := e.target.(userAccountResolver)
-	if !hasDocument || !hasResolver {
-		return target.TaskSnapshot{}, "", "", sess, false, "目标客户端不支持代理树读取或人员目录解析"
+	resolver, hasResolver := e.target.(handlerAccountMatcher)
+	if !hasResolver {
+		return target.TaskSnapshot{}, "", "", sess, false, "目标客户端不支持人员目录解析，无法发现当前处理人"
 	}
-	if strings.TrimSpace(proxyID) == "" {
-		return target.TaskSnapshot{}, "", "", sess, false, "实例流程代理标识缺失，无法读取代理树"
+	handler, ok := currentHandlerForNode(facts, nodeID)
+	if !ok {
+		return target.TaskSnapshot{}, "", "", sess, false, "实例事实里没有本节点的当前处理人信息（currentAuditUserInfo 为空）"
 	}
-	tree, err := documentReader.ReadFlowProxyDocument(ctx, session, proxyID)
-	if err != nil {
-		return target.TaskSnapshot{}, "", "", sess, false, "代理树读取失败：" + err.Error()
-	}
-	userIDs, err := target.ConfiguredPersonnelForNode(tree, nodeID)
-	if err != nil {
-		return target.TaskSnapshot{}, "", "", sess, false, "代理树中未找到本节点的固定人员配置：" + err.Error()
-	}
-	if len(userIDs) == 0 {
-		return target.TaskSnapshot{}, "", "", sess, false, "代理树中本节点没有配置固定人员"
-	}
-	accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
-		func(active target.Session) (map[string]string, error) {
-			return resolver.UserAccountsByID(ctx, active, userIDs)
+	matches, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
+		func(active target.Session) ([]target.HandlerAccount, error) {
+			return resolver.MatchHandlerAccounts(ctx, active, handler)
 		})
 	if err != nil {
-		return target.TaskSnapshot{}, "", "", sess, false, "固定人员账号解析失败：" + err.Error()
+		return target.TaskSnapshot{}, "", "", sess, false, "当前处理人账号解析失败：" + err.Error()
 	}
-	for _, uid := range userIDs {
-		account := strings.TrimSpace(accounts[uid])
-		if account == "" {
+	tried := []string{}
+	for _, match := range matches {
+		if strings.TrimSpace(match.Account) == "" {
 			continue
 		}
-		actorSession, err := e.sessions.Current(ctx, account)
+		tried = append(tried, match.Account)
+		actorSession, err := e.sessions.Current(ctx, match.Account)
 		if err != nil {
-			actorSession, err = e.sessions.Refresh(ctx, account)
+			actorSession, err = e.sessions.Refresh(ctx, match.Account)
 		}
 		if err != nil {
 			continue
@@ -1516,12 +1532,28 @@ func (e *Executor) switchToConfiguredAssignee(ctx context.Context, runCtx RunCon
 		if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
 			continue
 		}
-		snapshot.PendingUserID = uid
-		name := actorSession.Summary.DisplayName
+		// PendingUserID 必须回填目标目录里的真实用户 ID：写请求与后续目录查询都按它解析，
+		// 绝不能用匹配键（姓名/手机号）冒充用户 ID（实测会退化成「人员目录中没有该用户的登录账号」）。
+		snapshot.PendingUserID = match.UserID
+		name := firstNonEmpty(match.Name, actorSession.Summary.DisplayName)
 		snapshot.PendingUserName = name
-		return snapshot, uid, name, actorSession, true, "已切换到固定人员「" + name + "」并命中待办"
+		return snapshot, match.UserID, name, actorSession, true, ""
 	}
-	return target.TaskSnapshot{}, "", "", sess, false, "已按代理树配置依次切换固定人员会话，均未发现本节点待办"
+	if len(tried) == 0 {
+		return target.TaskSnapshot{}, "", "", sess, false, "当前处理人未能解析出登录账号"
+	}
+	return target.TaskSnapshot{}, "", "", sess, false, "已依次切换当前处理人（" + strings.Join(tried, "、") + "）会话，均未发现本节点待办"
+}
+
+// currentHandlerForNode 从实例事实里取本节点的待办处理人信息。
+func currentHandlerForNode(facts InstanceFacts, nodeID string) (target.NodeCurrentHandler, bool) {
+	nodeID = strings.TrimSpace(nodeID)
+	for _, handler := range facts.CurrentHandlers {
+		if strings.TrimSpace(handler.NodeID) == nodeID {
+			return handler, true
+		}
+	}
+	return target.NodeCurrentHandler{}, false
 }
 
 // findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
@@ -1570,6 +1602,11 @@ func nameOrFallback(name, fallback string) string {
 		return strings.TrimSpace(name)
 	}
 	return strings.TrimSpace(fallback)
+}
+
+// handlerAccountMatcher 是当前处理人账号匹配能力的最小接口：按 bizId/手机号/姓名解析登录账号。
+type handlerAccountMatcher interface {
+	MatchHandlerAccounts(ctx context.Context, active target.Session, handler target.NodeCurrentHandler) ([]target.HandlerAccount, error)
 }
 
 // userAccountResolver 是人员目录账号解析能力的最小接口，由目标适配层实现。
@@ -1635,7 +1672,15 @@ func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, se
 
 // readFactsWithRetry 读取主实例事实，并按动作读取目标专用结果接口。
 func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep) (InstanceFacts, target.Session, error) {
-	facts, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+	// 会话失效后的重登必须跟随当前会话的账号：核验阶段传的是演员会话，若静默换成
+	// 计划账号重登，会签场景下其他处理人未完成的待办会被当成「本步写未生效」
+	// （2026-09-11 实测：审核人3会签第一人审批成功却被判结果待确认）。
+	// 实例「已发」列表的发起人视角读取由 readInstanceFacts 内部单独切回计划账号。
+	account := strings.TrimSpace(session.Summary.Account)
+	if account == "" {
+		account = runCtx.PlanAccount
+	}
+	facts, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
 		func(active target.Session) (InstanceFacts, error) {
 			// 事实重读要与目标返回的真实节点标识对照，因此传真实标识而不是工具侧不透明键。
 			return e.readInstanceFacts(ctx, runCtx, active, step)

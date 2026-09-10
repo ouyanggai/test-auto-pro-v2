@@ -69,6 +69,20 @@ func (c *Client) FindSubmittedFlowWithRelevance(ctx context.Context, active Sess
 	return facts.FlowProxyID, facts.CurrentNodes, facts.Status, facts.FormProxyIDs, facts.BizRelevance, facts.Found, nil
 }
 
+// FindSubmittedFlowFacts 返回按实例精确读取的完整事实（含各当前节点的待办处理人信息）：
+// 「已发」列表的 currentAuditUserInfo 稳定给出每个当前节点的审批方式与待处理人员，
+// 是发现「指定人员」类节点真实处理人的唯一只读途径（待办列表按当前用户过滤，看不到别人的任务）。
+func (c *Client) FindSubmittedFlowFacts(ctx context.Context, active Session, instanceID string) (SubmittedFlowFacts, error) {
+	facts, err := c.findSubmittedFlowFacts(ctx, active, instanceID)
+	if err != nil {
+		return SubmittedFlowFacts{}, err
+	}
+	return SubmittedFlowFacts(facts), nil
+}
+
+// SubmittedFlowFacts 是按实例精确读取的完整事实，业务关联只作为写请求上下文返回，不参与实例筛选。
+type SubmittedFlowFacts = submittedFlowFacts
+
 // submittedFlowFacts 是按实例精确读取的完整事实，业务关联只作为写请求上下文返回，不参与实例筛选。
 type submittedFlowFacts struct {
 	FlowProxyID  string
@@ -76,7 +90,10 @@ type submittedFlowFacts struct {
 	Status       string
 	FormProxyIDs []string
 	BizRelevance []BizRelevance
-	Found        bool
+	// Handlers 是每个当前节点的待办处理人信息（来自 currentAuditUserInfo）；
+	// 会签节点在全部处理人审批完成前一直出现在这里，人员随审批进度递减。
+	Handlers []NodeCurrentHandler
+	Found    bool
 }
 
 // findSubmittedFlowFacts 读取实例当前事实；请求不得携带业务关联过滤，否则无关联实例会被目标排除。
@@ -116,7 +133,11 @@ func (c *Client) findSubmittedFlowFacts(ctx context.Context, active Session, ins
 	for _, item := range raw {
 		if strings.TrimSpace(item.ID) == strings.TrimSpace(instanceID) && strings.TrimSpace(item.FlowProxyID) != "" {
 			// 活动节点集合优先于单一 currentNodeProxyId，避免并行入口被压缩成一个节点。
-			entries := auditNodeIDs(item.CurrentAuditUserInfo)
+			handlers := auditHandlerInfo(item.CurrentAuditUserInfo)
+			entries := make([]string, 0, len(handlers))
+			for _, handler := range handlers {
+				entries = append(entries, handler.NodeID)
+			}
 			if len(entries) == 0 && strings.TrimSpace(item.CurrentNodeProxyID) != "" {
 				entries = []string{strings.TrimSpace(item.CurrentNodeProxyID)}
 			}
@@ -130,6 +151,7 @@ func (c *Client) findSubmittedFlowFacts(ctx context.Context, active Session, ins
 				Status:       strings.TrimSpace(item.Status),
 				FormProxyIDs: formProxyIDs,
 				BizRelevance: normalizeBizRelevance(item.BizRelevance),
+				Handlers:     handlers,
 				Found:        true,
 			}, nil
 		}

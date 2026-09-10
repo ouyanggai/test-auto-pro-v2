@@ -1060,6 +1060,47 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		}, s.now())
 	}
 
+	// 会签适配（2026-09-11 用户裁决：会签每个处理人都要审批，竞签其中一人处理即可）：
+	// 同意成功后实例仍停在本节点，说明还有其他处理人未审批。重建本步预览——事实重读会从
+	// 「已发」currentAuditUserInfo 发现新的当前处理人并切换演员——原步重跑。每次重跑都是
+	// 独立七阶段、独立落账的一次尝试（一次尝试仍最多一次写请求）。竞签节点一人审批后
+	// 实例前进，循环自然退出。上限取场景步数，防御数据异常导致的死循环。
+	if session.preview.Action == model.ActionApprove && !outcome.NoMoreSteps && !outcome.DeviationDetected {
+		for extra := 0; extra < len(session.runCtx.Steps); extra++ {
+			still, probeErr := s.steps.InstanceStillAtStepNode(ctx, session.runCtx, session.runCtx.Steps[session.nextIndex])
+			if probeErr != nil || !still {
+				break
+			}
+			extraPreview, extraFinished, buildErr := s.steps.BuildPreview(ctx, session.runCtx, session.nextIndex)
+			if buildErr != nil || extraFinished || extraPreview.BlockReason != "" {
+				// 探测与预览之间存在竞态（实例恰好前进/被跳过）：跳出循环，交给下方
+				// 下一步预览构建按目标真实事实裁决，绝不带着过期预览继续审批。
+				break
+			}
+			extraApproved := step.ApprovedStep{
+				RunCtx: session.runCtx, Preview: extraPreview, NextIndex: session.nextIndex,
+				Attempt: extra + 2, IsReplay: false, ReportProgress: reporter,
+			}
+			reporter("submit", "会签：实例仍停在本节点，用新发现的当前处理人继续审批")
+			extraOutcome, _, err := s.steps.RunApprovedStep(ctx, extraApproved)
+			if err != nil {
+				s.sealPostWriteFailure(ctx, pathRunID, session, err)
+				result.Outcome = extraOutcome
+				return result, err
+			}
+			if extraOutcome.Verdict != string(verdict.OutcomeSucceeded) {
+				// 确定失败或待确认已由执行器落账并收尾：如实返回最后一次结论。
+				s.clear(pathRunID)
+				result.Outcome = extraOutcome
+				return result, nil
+			}
+			s.mu.Lock()
+			session.executedStepNos[extraPreview.StepNo] = true
+			s.mu.Unlock()
+			outcome = extraOutcome
+		}
+	}
+
 	nextIndex := session.nextIndex + 1
 	if outcome.NoMoreSteps {
 		facts, reviewErr := s.steps.FinalReview(ctx, session.runCtx)
