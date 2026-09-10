@@ -27,6 +27,11 @@ type Manager struct {
 	entries      map[string]cacheEntry
 	lockMu       sync.Mutex
 	accountLocks map[string]*sync.Mutex
+	// useMu 与 useLocks 是账号「使用中」锁：同一账号同一时间只允许一个操作持有会话，
+	// 其他需要该账号的操作原地等待。目标平台同账号重复登录会踢掉旧会话，
+	// 审批链路持有此锁即可避免并发使用同一处理人账号时互相踢下线。
+	useMu    sync.Mutex
+	useLocks map[string]*sync.Mutex
 }
 
 type Option func(*Manager)
@@ -156,6 +161,26 @@ func (m *Manager) accountLock(key string) *sync.Mutex {
 	lock := &sync.Mutex{}
 	m.accountLocks[key] = lock
 	return lock
+}
+
+// LockAccountUsage 占用某账号的会话（2026-09-11 用户裁决：当前人正在使用中就等别人用完再用）。
+// 返回释放函数；调用方在持有期间完成「读待办 → 审批 → 核验」的完整操作。
+// 同一账号的并发操作在此排队，避免重复登录把正在使用的会话踢下线。
+// 注意：持有期间调用方不得再对本账号做会话刷新以外的 getOrLogin，否则会自己锁死自己。
+func (m *Manager) LockAccountUsage(account string) func() {
+	key := "use:" + normalizeAccount(account)
+	m.useMu.Lock()
+	defer m.useMu.Unlock()
+	if m.useLocks == nil {
+		m.useLocks = map[string]*sync.Mutex{}
+	}
+	lock, ok := m.useLocks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.useLocks[key] = lock
+	}
+	lock.Lock()
+	return lock.Unlock
 }
 
 func normalizeAccount(account string) string {

@@ -10,7 +10,7 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
-// readInstanceFacts 重读目标事实：实例状态、当前节点与演员待办。
+// readInstanceFacts 重读目标事实：实例状态、当前节点与当前处理人待办。
 // 读取属只读阶段，允许有界重试；失败时在快照里如实记录 ReadError 并返回错误，不伪造事实。
 func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep) (InstanceFacts, error) {
 	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
@@ -25,7 +25,7 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 	}
 	// 实例「已发」事实必须用流程发起人（计划账号）会话读取：已发列表是发起人视角的数据，
 	// 节点处理人自己的账号看不到这条实例（2026-09-11 用户强调的硬约束）。
-	// 演员切换只作用于后面的待办与任务读取，绝不作用于实例列表。
+	// 当前处理人切换只作用于后面的待办与任务读取，绝不作用于实例列表。
 	initiatorSession := session
 	if !strings.EqualFold(strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount)) {
 		if planSession, planErr := e.sessions.Current(ctx, runCtx.PlanAccount); planErr == nil {
@@ -65,7 +65,7 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 	}
 	facts.DueNodes = dueNodes
 	// 当前处理人发现只允许在计划账号会话（放行前的准备/门禁阶段）使用；
-	// 写后核验用演员会话，必须只核对演员本人的任务（会签场景其他人的待办还在）。
+	// 写后核验用当前处理人会话，必须只核对当前处理人本人的任务（会签场景其他人的待办还在）。
 	allowDiscovery := strings.EqualFold(strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount))
 	taskSession, taskErr := e.readActionTaskFacts(ctx, runCtx, session, step, dueNodeKey, &facts, allowDiscovery)
 	if taskErr == nil {
@@ -212,7 +212,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			// 这三个动作都直接处理当前待办；门禁和写后核验必须使用同一条实时任务快照。
 			// 会签中间态核验（2026-09-11 实测）：部分人同意后实例仍停在本节点，节点上还有
 			// 其他人的 pending 任务。此时「待办是否清空」不能判定本步写是否生效——必须用
-			// 按执行人过滤的已办（ListTaskSnapshots(done) 自带 executorId）核对「本演员在
+			// 按执行人过滤的已办（ListTaskSnapshots(done) 自带 executorId）核对「本当前处理人在
 			// 本节点的已完成任务」是否出现；出现即本次审批已被目标记录。
 			if facts.CurrentTaskRead && step.Action == model.ActionApprove && hasListReader {
 				done, doneErr := listReader.ListTaskSnapshots(ctx, session, instanceID, "done")
@@ -313,7 +313,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			}
 		}
 		if !hasAuditReader {
-			// 没有审核记录就无法排除重复取回和其他演员已处理，不能误放行。
+			// 没有审核记录就无法排除重复取回和其他当前处理人已处理，不能误放行。
 			facts.RetrieveAlreadyUsed = true
 			facts.CurrentTaskHandledByOther = true
 			return session, nil
@@ -542,9 +542,9 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 	// 审批、不同意和暂存都以当前账号的任务链接为事实。实例节点列表是全局入口，
 	// 不能在任务已消失时替代当前账号任务的核验。
 	if (action == string(model.ActionApprove) || action == string(model.ActionReject) || action == string(model.ActionStorageFormData)) && after.CurrentTaskRead {
-		// 会签中间态（2026-09-11 实测）：本演员同意后节点上仍有其他人的 pending 任务，
+		// 会签中间态（2026-09-11 实测）：当前处理人同意后节点上仍有其他人的 pending 任务，
 		// 按「节点待办是否清空」对照会误判「写未生效」。此时以按执行人过滤的已办为准——
-		// 本演员在本节点的已完成任务已出现，说明本次审批已被目标记录，实例只是在等其他人。
+		// 当前处理人在本节点的已完成任务已出现，说明本次审批已被目标记录，实例只是在等其他人。
 		actorDone := action == string(model.ActionApprove) && after.CompletedTaskRead && after.CompletedTaskFound &&
 			strings.TrimSpace(after.CompletedTaskNodeID) == strings.TrimSpace(stepNodeKey)
 		if after.CurrentTaskFound {
@@ -561,7 +561,7 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 		}
 		return verdict.RereadAdvanced
 	}
-	// 审批：本步节点的待办仍在，说明写未生效——除非本演员的已办已出现（会签中间态）。
+	// 审批：本步节点的待办仍在，说明写未生效——除非本当前处理人的已办已出现（会签中间态）。
 	for _, node := range after.DueNodes {
 		if node == stepNodeKey {
 			if action == string(model.ActionApprove) && after.CompletedTaskRead && after.CompletedTaskFound &&

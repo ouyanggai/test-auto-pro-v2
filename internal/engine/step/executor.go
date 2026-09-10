@@ -91,7 +91,7 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		actorName := runCtx.PlanAccount
 		session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "gate")
 		if sessionErr != nil {
-			return e.blockedPreview(runCtx, step, actorName, "演员登录失败："+userFacingError(sessionErr, target.WriteResponse{}), model.FailureClassActorUnresolved), false, nil
+			return e.blockedPreview(runCtx, step, actorName, "当前处理人登录失败："+userFacingError(sessionErr, target.WriteResponse{}), model.FailureClassActorUnresolved), false, nil
 		}
 		if session.Summary.DisplayName != "" {
 			actorName = session.Summary.DisplayName
@@ -115,15 +115,15 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		return preview, false, nil
 	}
 
-	// 阶段 2：演员候选（计划账号）取得会话后重读目标实时事实，投影为门禁上下文重新计算门禁。
+	// 阶段 2：计划账号会话取得会话后重读目标实时事实，投影为门禁上下文重新计算门禁。
 	// 配置时通过、此刻不通过就停止：门禁不通过绝不跳过。
 	actorName := runCtx.PlanAccount
 	session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "gate")
 	if sessionErr != nil {
 		message := userFacingError(sessionErr, target.WriteResponse{})
-		log.Phase("gate", step.Sequence, 1, "演员登录失败："+message)
+		log.Phase("gate", step.Sequence, 1, "当前处理人登录失败："+message)
 		return e.blockedPreview(runCtx, step, actorName,
-			"演员登录失败："+message, model.FailureClassActorUnresolved), false, nil
+			"当前处理人登录失败："+message, model.FailureClassActorUnresolved), false, nil
 	}
 	if session.Summary.DisplayName != "" {
 		actorName = session.Summary.DisplayName
@@ -549,12 +549,12 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, lineNo, nil
 	}
 
-	// 阶段 4：领取推进权并就绪演员会话。领取失败说明已有其他执行者，调用方必须放弃。
+	// 阶段 4：领取推进权并就绪当前处理人的会话。领取失败说明已有其他执行者，调用方必须放弃。
 	fencingToken, err := e.runState.ClaimExecution(ctx, runCtx.PathRun.ID)
 	if err != nil {
 		return outcome, 0, err
 	}
-	reportPhase(approved, "prepare", "正在就绪演员会话")
+	reportPhase(approved, "prepare", "正在就绪当前处理人的登录会话")
 	// 写步骤的会话策略对齐 V1 长期验证的模式（2026-09-07 修正）：复用缓存会话，
 	// 写请求被会话失效拒绝时由 resubmitOnSessionRejected 恢复（重登+重发至多 3 次）。
 	// 每一步强制重登会让登录频率放大数倍，实测触发了目标平台对账号的会话限制
@@ -573,12 +573,12 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}()
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
-		reason := "演员登录失败：" + userFacingError(sessionErr, target.WriteResponse{})
+		reason := "当前处理人登录失败：" + userFacingError(sessionErr, target.WriteResponse{})
 		lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
 		// prepare 失败也必须落一条失败事实行：没有它界面只能把失败标记回退到上一个成功节点，
 		// 把「本节点失败」误显示成上一个节点失败，用户找不到真正出问题的地方。
 		if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
-			attemptNo, approved.IsReplay, startedAt, class, reason, "演员会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
+			attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
 			return outcome, lineNo, recordErr
 		}
 		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
@@ -587,7 +587,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, lineNo, nil
 	}
 	// 任务级动作以目标实时待办的真实处理人身份发出（工作包 D）：
-	// 事实里的 currentPendingUserId 是目标裁决的实际处理人，必须解析其登录账号并切换演员会话，
+	// 事实里的 currentPendingUserId 是目标裁决的实际处理人，必须解析其登录账号并切换到当前处理人的会话，
 	// 绝不冒用计划账号审批他人任务。解析失败就如实置败并指出节点与人员，不能静默回退到计划账号。
 	if step.Scope == model.ActionScopeTask || step.Scope == model.ActionScopeCompletedTask {
 		if assigneeID := strings.TrimSpace(preview.Facts.CurrentTaskAssigneeID); assigneeID != "" {
@@ -596,7 +596,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 				reason := "无法解析本节点实际处理人（" + nameOrFallback(preview.Facts.CurrentTaskAssigneeName, assigneeID) + "）的登录账号：" + userFacingError(resolveErr, target.WriteResponse{})
 				lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
 				if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
-					attemptNo, approved.IsReplay, startedAt, class, reason, "演员身份未确认，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
+					attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录身份未确认，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
 					return outcome, lineNo, recordErr
 				}
 				if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
@@ -610,7 +610,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 					reason := "无法登录本节点实际处理人 " + nameOrFallback(name, account) + "：" + userFacingError(actorErr, target.WriteResponse{})
 					lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
 					if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
-						attemptNo, approved.IsReplay, startedAt, class, reason, "演员会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
+						attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
 						return outcome, lineNo, recordErr
 					}
 					if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
@@ -626,10 +626,20 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			}
 		}
 	}
-	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("演员 %s（%s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
-	reportPhase(approved, "prepare", fmt.Sprintf("演员 %s 会话就绪", preview.ActorName))
+	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("当前处理人 %s（登录账号 %s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
+	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人 %s 会话就绪", preview.ActorName))
+	// 账号使用锁（2026-09-11 用户裁决：当前人正在使用中就等别人用完再用，避免重复登录踢会话）。
+	// 处理人账号（非发起人）在「读待办 → 审批 → 核验」期间独占持有，其他需要同一账号的操作
+	// 在此排队等待。发起人账号的读取到处都在用，不在这一步独占。
+	var releaseHandlerUsage func()
+	if !strings.EqualFold(strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount)) {
+		if locker, canLock := e.sessions.(interface{ LockAccountUsage(string) func() }); canLock {
+			releaseHandlerUsage = locker.LockAccountUsage(session.Summary.Account)
+			defer releaseHandlerUsage()
+		}
+	}
 
-	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（演员与待办的新鲜复验）。
+	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（当前处理人与待办的新鲜复验）。
 	// 上报发生在发出之前：本次调用同步阻塞到目标响应返回，指示器在窗口内如实表达 submit 进行中。
 	reportPhase(approved, "submit", "写请求发送中，同步等待目标响应")
 	// 写请求前的租约续期：目标存在约 30 秒的慢请求，租约若在写请求期间过期，
@@ -724,8 +734,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	after, session, _ := e.readFactsWithRetry(ctx, runCtx, session, step)
 	after.StepNodeKey = stepTargetNodeID
 	// 核验事实摘要落 step.log：会签等多人场景下「节点待办未清空」是常态，
-	// 不把判定依据（本演员待办/已办核对结果）写下来，事后无法解释结论怎么来的。
-	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("核验事实：实例可读=%v 状态=%s 本演员待办=%v（发现能力=%v） 本演员已办=%v/%v 实例当前节点=%v",
+	// 不把判定依据（当前处理人待办/已办核对结果）写下来，事后无法解释结论怎么来的。
+	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("核验事实：实例可读=%v 状态=%s 当前处理人待办=%v（发现能力=%v） 当前处理人已办=%v/%v 实例当前节点=%v",
 		after.Found, after.Status, after.CurrentTaskFound, after.CurrentTaskRead,
 		after.CompletedTaskRead, after.CompletedTaskFound, after.CurrentNodes))
 	reread := ClassifyReread(string(step.Action), stepTargetNodeID, before, after)
@@ -944,7 +954,13 @@ func (e *Executor) readTaskSnapshot(ctx context.Context, runCtx RunContext, step
 
 // refreshTaskSnapshot 在任务读取被目标判定为会话失效时换取新会话并重新读取，返回实际使用的会话。
 func (e *Executor) refreshTaskSnapshot(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID string, session target.Session, status string) (target.Session, target.TaskSnapshot, error) {
-	snapshot, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+	// 会话失效后的重登必须跟随当前会话的账号：会签/指定人员链路里当前会话是节点处理人，
+	// 静默换成发起人重登会让后续待办读取换一个视角，任务也对不上号（2026-09-11 用户指正）。
+	account := strings.TrimSpace(session.Summary.Account)
+	if account == "" {
+		account = runCtx.PlanAccount
+	}
+	snapshot, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
 		func(active target.Session) (target.TaskSnapshot, error) {
 			return e.readTaskSnapshot(ctx, runCtx, step, nodeID, active, status)
 		})
@@ -965,7 +981,7 @@ func (e *Executor) prepareAuditTask(ctx context.Context, runCtx RunContext, step
 		return session, err
 	}
 	if strings.TrimSpace(snapshot.JobTaskID) == "" {
-		return session, fmt.Errorf("目标上已无本演员在本节点的待办任务，无法执行%s", actionName(step.Action))
+		return session, fmt.Errorf("目标上已无当前处理人在本节点的待办任务，无法执行%s", actionName(step.Action))
 	}
 	request.JobTaskID = strings.TrimSpace(snapshot.JobTaskID)
 	if flowProxyID := strings.TrimSpace(snapshot.FlowProxyID); flowProxyID != "" {
@@ -997,7 +1013,7 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 		return session, err
 	}
 	if strings.TrimSpace(snapshot.JobTaskID) == "" {
-		return session, fmt.Errorf("目标上已无本演员在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
+		return session, fmt.Errorf("目标上已无当前处理人在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
 	}
 	request.JobTaskID = strings.TrimSpace(snapshot.JobTaskID)
 	if flowProxyID := strings.TrimSpace(snapshot.FlowProxyID); flowProxyID != "" {
@@ -1038,7 +1054,7 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 				return addSignRead{}, snapshotErr
 			}
 			if strings.TrimSpace(freshSnapshot.JobTaskID) == "" {
-				return addSignRead{}, fmt.Errorf("目标上已无本演员在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
+				return addSignRead{}, fmt.Errorf("目标上已无当前处理人在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
 			}
 			proxyID := firstNonEmpty(freshSnapshot.FlowProxyID, request.FlowProxyID)
 			if proxyID == "" {
@@ -1111,7 +1127,11 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		if isSessionRejected(err) {
 			// 实测目标为多节点且写链路会话不同步：每次换新会话重发随机命中，
 			// 因此在同一次尝试内最多恢复重发 3 次；每次被拒都已证明未进入业务、无副作用。
-			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+			refreshAccount := strings.TrimSpace(session.Summary.Account)
+			if refreshAccount == "" {
+				refreshAccount = runCtx.PlanAccount
+			}
+			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, refreshAccount, step, attemptNo,
 				func(refreshed target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
 					return e.target.SubmitFlowInstance(ctx, refreshed, *request)
 				}, log, reportPhase, approved)
@@ -1125,7 +1145,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		var err error
 		session, err = e.prepareAuditTask(ctx, runCtx, step, request, session, true)
 		if err != nil {
-			// 待办读取失败（目标抖动或响应形状不符）：写请求未发出，按演员/待办解析失败如实归类。
+			// 待办读取失败（目标抖动或响应形状不符）：写请求未发出，按处理人/待办解析失败如实归类。
 			preview.writeErr = err
 			preview.writeErrClass = model.FailureClassActorUnresolved
 			return session
@@ -1135,7 +1155,11 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		if isSessionRejected(err) {
 			var retrySession target.Session
 			var prepareErr error
-			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+			refreshAccount := strings.TrimSpace(session.Summary.Account)
+			if refreshAccount == "" {
+				refreshAccount = runCtx.PlanAccount
+			}
+			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, refreshAccount, step, attemptNo,
 				func(refreshed target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
 					retrySession = refreshed
 					retrySession, prepareErr = e.prepareAuditTask(ctx, runCtx, step, request, refreshed, false)
@@ -1255,8 +1279,8 @@ func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext,
 	return verdict.RereadUnchanged
 }
 
-// classifyTransferReread 核对移交后当前演员的任务是否已经换成新任务。
-// 移交不推进节点，单看实例节点会把成功误判为“未变化”；任务 ID 变化或当前演员不再有待办才算前进。
+// classifyTransferReread 核对移交后当前处理人的任务是否已经换成新任务。
+// 移交不推进节点，单看实例节点会把成功误判为“未变化”；任务 ID 变化或当前处理人不再有待办才算前进。
 func (e *Executor) classifyTransferReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts) verdict.Reread {
 	if after.ReadError != "" {
 		return verdict.RereadUnreadable
@@ -1375,7 +1399,7 @@ func containsNode(nodes []string, nodeKey string) bool {
 	return false
 }
 
-// sessionWithRetry 取得演员会话：登录与会话获取属只读阶段，允许有界重试与退避。
+// sessionWithRetry 取得当前处理人会话：登录与会话获取属只读阶段，允许有界重试与退避。
 // 每次重试都如实写进 step.log，不允许出现“看起来只调了一次”的日志。
 func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log *StepLog, stepNo int, phase string) (target.Session, error) {
 	return RunWithRetry(ctx, e.policy, "会话获取", func() (target.Session, error) {
@@ -1410,7 +1434,7 @@ func (e *Executor) InstanceStillAtStepNode(ctx context.Context, runCtx RunContex
 // 调用方必须阻断本步，绝不能回退成计划账号冒充审批。
 // 目录读取沿用读路径会话纪律（readOnlyWithSessionRetry）：目标会话可能在门禁读取与
 // 账号解析之间被作废（实测返回 RESP401「SID已失效!」），失效只允许重登并重放同一只读请求
-// （有界、重登间退避防触发目标会话限制），不能把会话失效直接放大成演员解析失败。
+// （有界、重登间退避防触发目标会话限制），不能把会话失效直接放大成处理人解析失败。
 func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, assigneeUserID string) (string, string, error) {
 	resolver, ok := e.target.(userAccountResolver)
 	if !ok {
@@ -1454,7 +1478,7 @@ func (e *Executor) recordPrepareFailure(ctx context.Context, runCtx RunContext, 
 // findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
 // 只有计划账号本身读不到待办时才调用，避免正常路径放大登录次数。
 // resolveTaskSnapshotForStep 按“下一节点候选人优先、原会话兜底”的顺序读取任务快照。
-// 候选人优先是硬规则：流程已流转到下一处理人后，不能先用上一演员会话查待办再决定。
+// 候选人优先是硬规则：流程已流转到下一处理人后，不能先用上一当前处理人会话查待办再决定。
 // 返回的 session 是真正命中任务的处理人会话，供后续代理树/审核记录读取继续使用。
 func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, status string, facts *InstanceFacts, allowDiscovery bool) (target.TaskSnapshot, string, string, target.Session, error) {
 	useCandidates := strings.TrimSpace(session.Summary.Account) == strings.TrimSpace(runCtx.PlanAccount) && len(runCtx.NextNodeAuditors[step.NodeKey]) > 0
@@ -1672,7 +1696,7 @@ func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, se
 
 // readFactsWithRetry 读取主实例事实，并按动作读取目标专用结果接口。
 func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep) (InstanceFacts, target.Session, error) {
-	// 会话失效后的重登必须跟随当前会话的账号：核验阶段传的是演员会话，若静默换成
+	// 会话失效后的重登必须跟随当前会话的账号：核验阶段传的是当前处理人会话，若静默换成
 	// 计划账号重登，会签场景下其他处理人未完成的待办会被当成「本步写未生效」
 	// （2026-09-11 实测：审核人3会签第一人审批成功却被判结果待确认）。
 	// 实例「已发」列表的发起人视角读取由 readInstanceFacts 内部单独切回计划账号。

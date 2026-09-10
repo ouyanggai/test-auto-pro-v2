@@ -17,7 +17,7 @@ import (
 // 投影规则：
 //   - 发起步骤：实例尚未持久化，状态留空即“新建”事实（actioncatalog 的 sourceIsNew 判据），
 //     发起人就是计划账号；
-//   - 审批步骤：实例事实来自发起人会话的重读，待办事实来自演员会话的重读，
+//   - 审批步骤：实例事实来自发起人会话的重读，待办事实来自当前处理人会话的重读，
 //     缺一不可，不得凭配置推断。
 func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts, info NodeInfo) model.ActionContext {
 	ctx := model.ActionContext{

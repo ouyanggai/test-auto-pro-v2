@@ -1062,7 +1062,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 
 	// 会签适配（2026-09-11 用户裁决：会签每个处理人都要审批，竞签其中一人处理即可）：
 	// 同意成功后实例仍停在本节点，说明还有其他处理人未审批。重建本步预览——事实重读会从
-	// 「已发」currentAuditUserInfo 发现新的当前处理人并切换演员——原步重跑。每次重跑都是
+	// 「已发」currentAuditUserInfo 发现新的当前处理人并切换当前处理人——原步重跑。每次重跑都是
 	// 独立七阶段、独立落账的一次尝试（一次尝试仍最多一次写请求）。竞签节点一人审批后
 	// 实例前进，循环自然退出。上限取场景步数，防御数据异常导致的死循环。
 	if session.preview.Action == model.ActionApprove && !outcome.NoMoreSteps && !outcome.DeviationDetected {

@@ -498,7 +498,7 @@ const dialogStyle = computed(() => ({
           <p class="run-panel__section-title">步骤事实</p>
           <dl class="run-panel__facts run-panel__facts--card">
             <div><dt>结论</dt><dd :class="stepDialog.statusName.includes('失败') ? 'run-panel__bad' : 'run-panel__ok'">{{ stepDialog.statusName }}</dd></div>
-            <div><dt>演员</dt><dd>{{ stepDialog.actorName || '—' }}</dd></div>
+            <div><dt>当前处理人</dt><dd>{{ stepDialog.actorName || '—' }}</dd></div>
             <div><dt>开始</dt><dd>{{ formatTime(stepDialog.startedAt) }}</dd></div>
             <div><dt>结束</dt><dd>{{ formatTime(stepDialog.finishedAt) }}</dd></div>
             <div><dt>总耗时</dt><dd>{{ formatElapsed(stepDialog.durationMs) }}</dd></div>

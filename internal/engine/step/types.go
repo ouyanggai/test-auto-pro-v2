@@ -1,5 +1,5 @@
 // Package step 实现一步的七阶段生命周期（纲领第 4.3 节）：
-// plan 取步、gate 门禁复验、control 控制判定、prepare 演员与会话、submit 发写请求、
+// plan 取步、gate 门禁复验、control 控制判定、prepare 当前处理人与会话、submit 发写请求、
 // verify 事实重读、settle 落账。本包不做多路径调度（属 schedule），
 // 也不直接发目标请求——目标写只能由 internal/adapter/target 发出，本包给出语义意图。
 package step
@@ -82,7 +82,7 @@ type RunContext struct {
 	PlanName string
 	PathName string
 	// PlanAccount 是计划账号：目标登录账号，同时是「新发起」流程的发起人。
-	// 本切片的演员候选就是该账号；演员最终成立还必须通过目标待办/发起事实核验，绝不静默替换处理人。
+	// 本切片的当前处理人候选就是该账号；当前处理人最终成立还必须通过目标待办/发起事实核验，绝不静默替换处理人。
 	PlanAccount string
 	// FlowProxyID 是发布流程代理 ID（计划指向的目标对象标识），发起请求的必填标识之一。
 	FlowProxyID string
@@ -242,7 +242,7 @@ type StepPreview struct {
 	// TargetNodeID 是本步节点在目标平台的真实标识。NodeKey 是工具侧不透明键，
 	// 凡是要与目标返回的节点集合对照（待办、当前节点、对账）都必须用这个字段。
 	TargetNodeID string
-	// ActorAccount 与 ActorName 是解析出的唯一真实演员；SID 绝不进入本结构或任何展示。
+	// ActorAccount 与 ActorName 是解析出的唯一真实当前处理人；SID 绝不进入本结构或任何展示。
 	ActorAccount string
 	ActorName    string
 	// ExpectedEffect 来自动作目录的预期效果中文说明。
@@ -258,7 +258,7 @@ type StepPreview struct {
 	GateItems []model.ActionPrecondition
 	// Facts 是此刻的目标事实（发起前实例不存在则 Found=false）。
 	Facts InstanceFacts
-	// BlockReason 非空表示本步无法继续（门禁不通过/演员不可解析等），路径必须停止。
+	// BlockReason 非空表示本步无法继续（门禁不通过/当前处理人不可解析等），路径必须停止。
 	BlockReason       string
 	BlockFailureClass model.FailureClass
 	// ReleaseGroup 是编译场景中的动作组标识；人工模式一次放行同一组内的物理步骤。
@@ -290,7 +290,7 @@ type StepPreview struct {
 	// writeSent 表示写请求已经真正发出（或已尝试发出）。发送前的待办新鲜复验失败时保持 false：
 	// 没有发出的请求不存在“写结果不确定”，绝不能进三值判定的写判定路径。
 	writeSent bool
-	// writeErrClass 是零写入失败的归属分类（演员/待办解析失败或工具缺陷），供落账时如实归类。
+	// writeErrClass 是零写入失败的归属分类（处理人/待办解析失败或工具缺陷），供落账时如实归类。
 	writeErrClass model.FailureClass
 }
 
