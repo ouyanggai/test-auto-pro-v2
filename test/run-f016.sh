@@ -18,10 +18,10 @@ fi
 
 printf '%s\n' '[F-016] 编译与静态检查'
 go build ./...
-go vet ./internal/engine/... ./internal/adapter/target/... ./internal/repository/... ./internal/service/... ./internal/api/... ./test/unit/backend/executor ./test/unit/backend/run ./test/unit/backend/target ./test/integration
+go vet ./internal/engine/... ./internal/adapter/target/... ./internal/repository/... ./internal/service/... ./internal/api/... ./test/unit/backend/action_orchestration ./test/unit/backend/executor ./test/unit/backend/run ./test/unit/backend/target ./test/integration
 
-printf '%s\n' '[F-016] 执行器与状态机单元测试（含竞态检测）'
-go test -race -count=1 ./test/unit/backend/executor/... ./test/unit/backend/run/... ./test/unit/backend/target/...
+printf '%s\n' '[F-016] 场景编译、执行器与状态机单元测试（含竞态检测）'
+go test -race -count=1 ./test/unit/backend/action_orchestration/... ./test/unit/backend/executor/... ./test/unit/backend/run/... ./test/unit/backend/target/...
 
 printf '%s\n' '[F-016] 真实 MySQL 集成测试（迁移、状态机、租约、崩溃恢复、事实表、API）'
 integration_log="$(mktemp -t f016-integration)"

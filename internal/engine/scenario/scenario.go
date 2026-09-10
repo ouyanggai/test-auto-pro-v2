@@ -77,19 +77,25 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 	followed := false
 	for index, action := range actions {
 		position := nodeIndex(sequence, action.NodeKey)
+		compiledAction := action
+		submitResumesExisting := action.Action == model.ActionSubmit && resubmitReady
+		if submitResumesExisting {
+			// 保存草稿、驳回或撤回后主实例已经存在；后续“提交”表达继续流程，不能再调用新建提交。
+			compiledAction.Action = model.ActionResubmit
+		}
 		if action.NodeKey != "" && position < 0 {
 			return invalid(index, action, "UNKNOWN_NODE", "动作节点不属于当前已核实路径")
 		}
 		if issue := validateAction(action, index, nodeTypes, catalog); issue != nil {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
-		if issue := validateNodeOrder(action, index, position, lastNodeIndex, transferred); issue != nil {
+		if issue := validateNodeOrder(compiledAction, index, position, lastNodeIndex, transferred); issue != nil {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
 		if issue := validateRollbackTarget(action, index, position, sequence, nodeTypes); issue != nil {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
-		if issue := validateActionState(action, index, resubmitReady, followed); issue != nil {
+		if issue := validateActionState(compiledAction, index, resubmitReady, followed); issue != nil {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
 		for _, key := range sequence[:boundedIndex(position, len(sequence))] {
@@ -107,8 +113,12 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			steps = appendStep(steps, recoveryStep(model.ActionApprove, action, "取回前准备同意当前待办", "先取得可取回的已办任务，再按目标门禁取回"))
 			seenCompleted = true
 		}
-		steps = appendStep(steps, userStep(action))
-		switch action.Action {
+		if submitResumesExisting {
+			steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "已有主实例等待继续提交", "目标实例按当前完整表单值重新提交并解析当前路径"))
+		} else {
+			steps = appendStep(steps, userStep(action))
+		}
+		switch compiledAction.Action {
 		case model.ActionSaveDraft, model.ActionReject, model.ActionWithdraw:
 			// 这三个动作让目标实例进入草稿、驳回或撤回状态，为后续重新提交提供来源。
 			resubmitReady = true
@@ -132,14 +142,18 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			transferred = action.Action == model.ActionTransfer
 		}
 		if action.Action == model.ActionSaveDraft {
-			if nextAction := nextAction(actions, index); nextAction != nil && nextAction.Action != model.ActionResubmit {
-				// 草稿后仍有动作时必须重新提交同一主实例，不能把草稿直接当作运行态待办。
-				steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "草稿保存后仍有后续动作", "目标实例按当前原始表单值重新提交并解析当前路径"))
-				resubmitReady = false
+			if nextAction := nextAction(actions, index); nextAction != nil {
+				switch nextAction.Action {
+				case model.ActionSaveDraft, model.ActionSubmit, model.ActionResubmit:
+					// 连续草稿必须留在发起人节点；提交意图在下一轮转换为重新提交，显式重提则按原动作执行。
+				default:
+					steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "草稿保存后仍有后续动作", "目标实例按当前原始表单值重新提交并解析当前路径"))
+					resubmitReady = false
+				}
 			}
 		}
 		if action.Action == model.ActionReject || action.Action == model.ActionWithdraw {
-			if nextAction := nextAction(actions, index); nextAction != nil && nextAction.Action != model.ActionResubmit {
+			if nextAction := nextAction(actions, index); nextAction != nil && nextAction.Action != model.ActionSubmit && nextAction.Action != model.ActionResubmit {
 				steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "驳回或撤回后重新提交", "目标实例恢复 run 后重新解析当前路径"))
 				resubmitReady = false
 			}

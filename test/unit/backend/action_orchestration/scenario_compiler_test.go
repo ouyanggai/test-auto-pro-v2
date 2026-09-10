@@ -47,7 +47,7 @@ func TestScenarioCompilerKeepsIndependentOrderAndAddsRecoverySteps(t *testing.T)
 	}
 }
 
-// TestScenarioCompilerAddsDraftRecovery 验证草稿后仍有动作时重新提交同一主实例。
+// TestScenarioCompilerAddsDraftRecovery 验证保存草稿后的提交意图改为重新提交同一主实例。
 func TestScenarioCompilerAddsDraftRecovery(t *testing.T) {
 	result, err := scenario.Compile(scenario.Input{
 		Actions: []model.ConfiguredAction{
@@ -60,16 +60,97 @@ func TestScenarioCompilerAddsDraftRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("草稿后提交编译失败：%v", err)
 	}
-	var recovery *model.CompiledActionStep
-	for index := range result.Steps {
-		step := &result.Steps[index]
-		if step.Source == model.ActionStepSourceRecovery && step.Action == model.ActionResubmit {
-			recovery = step
-			break
+	if len(result.Steps) < 2 {
+		t.Fatalf("草稿后提交缺少编译步骤：%+v", result.Steps)
+	}
+	if result.Steps[0].Source != model.ActionStepSourceUser || result.Steps[0].Action != model.ActionSaveDraft {
+		t.Fatalf("首步不是用户保存草稿：%+v", result.Steps)
+	}
+	if result.Steps[1].Source != model.ActionStepSourceRecovery || result.Steps[1].Action != model.ActionResubmit || result.Steps[1].SourceActionKey != "submit" {
+		t.Fatalf("提交意图没有转换为同实例重新提交：%+v", result.Steps)
+	}
+	if findUserStep(result.Steps, model.ActionSubmit) != nil {
+		t.Fatalf("已有草稿后仍生成新建提交步骤：%+v", result.Steps)
+	}
+}
+
+// TestScenarioCompilerKeepsConsecutiveDraftsBeforeResubmit 锁定连续保存草稿不会提前推进目标节点。
+func TestScenarioCompilerKeepsConsecutiveDraftsBeforeResubmit(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "draft-1", Action: model.ActionSaveDraft, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 1},
+			{Key: "draft-2", Action: model.ActionSaveDraft, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 2},
+			{Key: "submit", Action: model.ActionSubmit, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 3},
+			{Key: "approve", Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: "review", Order: 4},
+		},
+		Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "review", Type: "common"}},
+		NodeSequence: []string{"start", "review"},
+	})
+	if err != nil {
+		t.Fatalf("连续草稿场景编译失败：%v", err)
+	}
+	if len(result.Steps) < 4 {
+		t.Fatalf("连续草稿场景缺少编译步骤：%+v", result.Steps)
+	}
+	wantActions := []model.ActionKey{model.ActionSaveDraft, model.ActionSaveDraft, model.ActionResubmit, model.ActionApprove}
+	wantSources := []model.ActionStepSource{model.ActionStepSourceUser, model.ActionStepSourceUser, model.ActionStepSourceRecovery, model.ActionStepSourceUser}
+	for index := range wantActions {
+		if result.Steps[index].Action != wantActions[index] || result.Steps[index].Source != wantSources[index] {
+			t.Fatalf("连续草稿在提交前被提前推进，步骤[%d]=%+v，全部步骤=%+v", index, result.Steps[index], result.Steps)
 		}
 	}
-	if recovery == nil || recovery.SourceActionKey != "draft" {
-		t.Fatalf("草稿恢复步骤缺少稳定来源键：%+v", result.Steps)
+	if result.Steps[2].SourceActionKey != "submit" || result.Steps[2].NodeKey != "start" {
+		t.Fatalf("重新提交没有关联提交意图和发起人节点：%+v", result.Steps[2])
+	}
+}
+
+// TestScenarioCompilerUsesResubmitForExistingInstance 锁定已有主实例后的提交意图不再创建第二主实例。
+func TestScenarioCompilerUsesResubmitForExistingInstance(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions []model.ConfiguredAction
+	}{
+		{
+			name: "驳回后提交",
+			actions: []model.ConfiguredAction{
+				{Key: "reject", Action: model.ActionReject, Scope: model.ActionScopeTask, NodeKey: "review", Order: 1},
+				{Key: "submit", Action: model.ActionSubmit, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 2},
+			},
+		},
+		{
+			name: "撤回后提交",
+			actions: []model.ConfiguredAction{
+				{Key: "withdraw", Action: model.ActionWithdraw, Scope: model.ActionScopeInstance, Order: 1},
+				{Key: "submit", Action: model.ActionSubmit, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 2},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := scenario.Compile(scenario.Input{
+				Actions:      tt.actions,
+				Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "review", Type: "common"}},
+				NodeSequence: []string{"start", "review"},
+			})
+			if err != nil {
+				t.Fatalf("已有主实例后的提交编译失败：%v", err)
+			}
+			if findUserStep(result.Steps, model.ActionSubmit) != nil {
+				t.Fatalf("已有主实例后仍生成新建提交步骤：%+v", result.Steps)
+			}
+			var recoveries int
+			for _, step := range result.Steps {
+				if step.Source == model.ActionStepSourceRecovery && step.Action == model.ActionResubmit {
+					recoveries++
+					if step.SourceActionKey != "submit" {
+						t.Fatalf("重新提交没有关联用户提交意图：%+v", step)
+					}
+				}
+			}
+			if recoveries != 1 {
+				t.Fatalf("已有主实例后应只重新提交一次，实际=%d，步骤=%+v", recoveries, result.Steps)
+			}
+		})
 	}
 }
 
