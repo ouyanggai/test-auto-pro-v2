@@ -13,6 +13,7 @@ import {
   removeBreakpoint,
   requestPause,
   RunApiError,
+  retryFailedAction,
   setBreakpoint,
   stopRun,
   switchRunMode,
@@ -518,6 +519,32 @@ async function stopRunAction(): Promise<void> {
   }
 }
 
+// retryFailed 失败动作重试（F-028）：点击后同一运行从失败步骤重新装填，按原运行模式继续。
+// 重试本身不发任何写请求；人工控制模式下装填后仍需按「放行」才会重新执行失败步骤。
+// 装填成功后立即恢复轮询：路径运行已从失败终态回到运行中。
+async function retryFailed(): Promise<void> {
+  if (!detail.value || acting.value) return
+  acting.value = true
+  errorText.value = ''
+  actionText.value = ''
+  try {
+    const next = await retryFailedAction(runId, detail.value.pathRunId)
+    detail.value = next
+    syncControl(next)
+    lastUpdateAt.value = Date.now()
+    actionText.value = next.modeName === '人工控制'
+      ? '已重新装填失败步骤；确认无误后按「放行」重新执行这一步。'
+      : '已重新装填失败步骤；运行按原模式继续。'
+    void pollEvents()
+    schedulePoll()
+  } catch (error) {
+    console.error('[重试失败动作]', error)
+    errorText.value = error instanceof RunApiError ? error.message : '重试执行失败，请查看日志'
+  } finally {
+    acting.value = false
+  }
+}
+
 // handleSelectRunNode 打开右侧检视面板。面板会挤掉画布宽度，首次打开时把这个节点重新
 // 平移到画布中央，否则用户刚点的节点会被面板推出视野。
 function handleSelectRunNode(nodeID: string): void {
@@ -840,6 +867,17 @@ onBeforeUnmount(() => {
             </template>
             停止是终态，之后这条路径不能再前进；已发出的写请求不会被打断，已发生的事实全部保留。确定停止？
           </n-popconfirm>
+          <!-- F-028 失败动作重试：只在服务端判定可重试（确定失败且失败步骤已落账）时出现。
+               重试本身不发任何写请求，只把运行从失败步骤重新装填；人工控制模式装填后仍需按「放行」。 -->
+          <n-button
+            v-if="detail.retryable"
+            size="small"
+            type="primary"
+            ghost
+            :loading="acting"
+            title="从失败的这一步重新装填本次运行；重试本身不发任何写请求，装填后按原运行模式继续"
+            @click="retryFailed"
+          >重试失败动作</n-button>
           <n-button
             size="small"
             type="primary"
@@ -950,6 +988,7 @@ onBeforeUnmount(() => {
           :node-name="selectedNodeName"
           :node-type-name="selectedNodeTypeName"
           @close="closeNodePanel"
+          @retry="retryFailed"
         />
       </div>
     </template>

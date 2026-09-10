@@ -87,6 +87,10 @@ type RunStore interface {
 	AdvancePathRunStatus(ctx context.Context, pathRunID uint64, from, to model.PathRunStatus, event model.RunEvent, now time.Time) (model.PathRun, error)
 	// FinishPathRun 把路径运行置为终态并镜像收尾运行聚合（同事务：路径运行状态+事件+运行状态与结果）。
 	FinishPathRun(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, event model.RunEvent, now time.Time) (model.PathRun, error)
+	// ReopenPathRunForRetry 把一条确定失败的路径运行重新装填为运行中（F-028 失败动作重试）：
+	// 同事务校验失败态与同运行无进行中路径、清空聚合结论与结束时间、释放残留租约并追加事件行；
+	// 运行聚合仍在失败态时一并重开。状态不满足返回 ErrRunStatusConflict，绝不落任何行。
+	ReopenPathRunForRetry(ctx context.Context, pathRunID uint64, event model.RunEvent, now time.Time) (model.PathRun, model.Run, error)
 	// ClaimPathRunLease 以租约与 fencing token 领取路径运行的推进权：
 	// 仅当处于运行中/核验中且无有效租约时成功，fencing token 递增并返回。
 	ClaimPathRunLease(ctx context.Context, pathRunID uint64, workerID string, leaseDuration time.Duration, now time.Time) (uint64, error)

@@ -61,7 +61,8 @@ const (
 
 // pathRunTransitions 是路径运行的合法前进表。
 // 核验中 -> 运行中表达“本步核验落账完毕、进入下一步”，是步骤循环的前进而非状态回退；
-// 除这一条外任何从靠后状态回到靠前状态的迁移都非法，终态一律无出边。
+// 除这一条与 F-028 的失败 → 运行中（用户显式重试失败动作）外，任何从靠后状态回到靠前状态的迁移都非法，
+// 其余终态一律无出边。
 // 暂停只在步骤的阶段 3（控制判定）生效，因此暂停只能从运行中进入。
 var pathRunTransitions = map[PathRunStatus][]PathRunStatus{
 	PathRunStatusNotStarted: {PathRunStatusWaiting},
@@ -90,9 +91,12 @@ var pathRunTransitions = map[PathRunStatus][]PathRunStatus{
 	// 不存在任何把它带回运行中的通路；继续执行只能新建一次运行。
 	PathRunStatusAwaitingReconciliation: {},
 	PathRunStatusCompleted:              {},
-	PathRunStatusFailed:                 {},
-	PathRunStatusStopped:                {},
-	PathRunStatusCancelled:              {},
+	// 失败 → 运行中是 F-028 失败动作重试引入的唯一用户受控通路：
+	// 只能由服务端在「确定失败（无目标副作用）+ 前缀一致性校验通过 + 用户显式点击」时触发，
+	// 执行器与调度器绝不在失败后自行推进；待对账、已完成、已停止、已取消仍无任何出边。
+	PathRunStatusFailed:    {PathRunStatusRunning},
+	PathRunStatusStopped:   {},
+	PathRunStatusCancelled: {},
 }
 
 // CanAdvancePathRunStatus 判断路径运行状态迁移是否合法；未知状态一律拒绝。
@@ -187,6 +191,9 @@ const (
 	ControlFactStopRequested    ControlFactKind = "stop_requested"    // 请求停止（submit 期间延后生效）
 	ControlFactStopped          ControlFactKind = "stopped"           // 停止生效
 	ControlFactBreakpointHit    ControlFactKind = "breakpoint_hit"    // 断点命中
+	// ControlFactRetryRequested 是 F-028 失败动作重试的控制事实：
+	// 用户显式要求把确定失败的路径运行从失败步骤重新装填；重试本身不发任何写请求。
+	ControlFactRetryRequested ControlFactKind = "retry_requested"
 )
 
 // BreakpointType 是五类断点（纲领第 5.2 节）。
@@ -381,6 +388,8 @@ type RunControlAction string
 const (
 	RunControlApprove RunControlAction = "approve" // 放行
 	RunControlStop    RunControlAction = "stop"    // 停止
+	// RunControlRetry 是 F-028 失败动作重试的控制动作：重试只重新装填运行现场，不直接执行步骤。
+	RunControlRetry RunControlAction = "retry"
 )
 
 // RunControlSource 是人工控制事实的来源。

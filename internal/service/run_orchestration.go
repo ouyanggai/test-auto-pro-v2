@@ -290,6 +290,11 @@ type PathRunDetailDTO struct {
 	SceneLost     bool   `json:"sceneLost"`
 	SceneLostNote string `json:"sceneLostNote,omitempty"`
 
+	// Retryable 表示服务端判定这条路径运行可以重试失败动作（F-028）：
+	// 只有「步骤执行中确定失败（无目标副作用）」的运行可重试；结果待确认与启动阶段失败不在范围内。
+	// 前端只按这个字段决定是否渲染重试按钮，不自行从状态推断。
+	Retryable bool `json:"retryable"`
+
 	// 模式切换（2026-09-06）：ModeSwitchPending 表示有待生效的切换（将在本步完成后生效），
 	// PendingModeName 是目标模式的中文显示名。界面据此区分「请求已收到」与「已经生效」。
 	ModeSwitchPending bool   `json:"modeSwitchPending"`
@@ -698,6 +703,67 @@ func (s *RunOrchestrationService) Stop(ctx context.Context, runID uint64, pathRu
 	return s.RunDetailByPathRun(ctx, pathRunID)
 }
 
+// RetryFailedStep 重试失败动作（F-028）。runID 是运行 ID；pathRunID 非零时按路径运行寻址。
+// 全链路只做五件事：校验失败态与失败分类、按当前配置重编译场景并核对已执行前缀、
+// 重开路径运行与运行聚合、把控制现场装填回失败步骤、返回最新详情。
+// 重试本身不发任何写请求；装填后的执行完全复用既有七阶段管线（实时门禁、一次写、写后核验、租约），
+// 每次尝试按事实表只追加的纪律独立落账，再次失败可以再次重试。
+func (s *RunOrchestrationService) RetryFailedStep(ctx context.Context, runID uint64, pathRunID uint64) (*PathRunDetailDTO, error) {
+	pathRunID, err := s.resolvePathRunID(ctx, runID, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	scoped, err := s.withRunScope(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	ctx = scoped
+	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	if pathRun.Status != model.PathRunStatusFailed {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict,
+			Message: "只有失败的路径运行可以重试失败动作；当前状态：" + model.PathRunStatusName(pathRun.Status)}
+	}
+	// 写结果不确定是终局（2026-09-06 产品裁决）：按聚合列防御性再拦一次，
+	// 防止历史数据把待对账结论错写进失败态后从这里漏出去重发真实写请求。
+	if pathRun.FailureClass != nil && *pathRun.FailureClass == model.FailureClassWriteUncertain {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict,
+			Message: "执行结果无法确认的运行不能重试；为避免重复操作，请从计划重新发起运行"}
+	}
+	runRow, err := s.store.GetRun(ctx, pathRun.RunID)
+	if err != nil {
+		return nil, err
+	}
+	factRows, err := s.store.ListRunSteps(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
+	// 重试按当前 user_actions 重新编译场景；前缀校验确保失败后没改过配置，
+	// 改过就拒绝——继续执行一份与原运行不同的场景比重新发起一次运行更危险。
+	runCtx, err := s.buildRunContext(ctx, runRow.PlanID, pathRun.ExecutionPathID)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := planFailedStepRetry(runCtx.Steps, pathRun.TotalSteps, factRows)
+	if err != nil {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: err.Error()}
+	}
+	reopenedPathRun, reopenedRun, err := s.runState.ReopenForRetry(ctx, pathRunID, plan.StepNo)
+	if err != nil {
+		return nil, err
+	}
+	// RunContext 是值传递：装填现场必须携带重开后的真实身份（含首次发起落库的主实例引用），
+	// 否则门禁与事实重读拿不到实例，重试步骤会在目标事实上失败。
+	runCtx.Run = reopenedRun
+	runCtx.PathRun = reopenedPathRun
+	if _, err := s.control.ArmRetrySession(ctx, runCtx, plan.CursorIndex, plan.ExecutedStepNos, plan.ExecutedNodeKeys); err != nil {
+		return nil, err
+	}
+	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
 // RecoveryLogWriter 暴露 recovery.log 写入函数供控制服务装配。
 func (s *RunOrchestrationService) RecoveryLogWriter() func(pathRunID uint64, message string) {
 	return func(pathRunID uint64, message string) {
@@ -1021,6 +1087,12 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.SceneLost = true
 		detail.SceneLostNote = "本次运行已停止。请查看该步骤的错误信息：目标接口没有返回可确认的结果，或目标状态暂时无法读取。为避免重复操作，需要从计划重新发起运行。"
 	}
+	// F-028 失败动作重试：确定失败（写请求确认未生效或未发出）的步骤执行失败可以重试；
+	// 启动阶段失败（没有任何已执行步骤）引导重新发起，结果待确认是终局。
+	// 前提是执行现场不在（有现场说明运行仍在推进，谈不上重试）。
+	detail.Retryable = pathRun.Status == model.PathRunStatusFailed &&
+		(pathRun.FailureClass == nil || *pathRun.FailureClass != model.FailureClassWriteUncertain) &&
+		len(steps) > 0 && s.control.View(pathRun.ID) == nil
 	if err := s.fillRunPathSummaries(ctx, run, detail); err != nil {
 		return nil, err
 	}

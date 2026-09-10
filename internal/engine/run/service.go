@@ -144,6 +144,16 @@ func (s *Service) Stop(ctx context.Context, pathRunID uint64) (model.PathRun, er
 	return s.Finish(ctx, pathRunID, model.PathRunStatusStopped, nil, nil, "用户停止运行，已发生的事实全部保留")
 }
 
+// ReopenForRetry 把确定失败的路径运行重新装填为运行中（F-028 失败动作重试的唯一状态入口）。
+// 失败态校验、同运行并发互斥与聚合重开在仓储层同一事务内完成；这里只负责组装中文事件。
+// 重试本身不发任何写请求：它只把运行恢复成可推进状态，之后的执行仍走完整七阶段管线。
+func (s *Service) ReopenForRetry(ctx context.Context, pathRunID uint64, stepNo int) (model.PathRun, model.Run, error) {
+	return s.store.ReopenPathRunForRetry(ctx, pathRunID, model.RunEvent{
+		Kind:  "path_run_retry",
+		Label: fmt.Sprintf("用户重试失败动作，路径运行从第 %d 步重新装填", stepNo),
+	}, s.now())
+}
+
 // Recover 是进程启动时的恢复入口：把处于运行中/核验中的路径运行一律置为待对账并写事件行。
 // 这是不可破坏约束——崩溃前可能已经发出过一次写请求，重启后绝不自动继续。
 func (s *Service) Recover(ctx context.Context) ([]uint64, error) {

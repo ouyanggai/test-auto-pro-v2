@@ -32,6 +32,8 @@ func TestF016PathRunStatusMachineOnlyAdvances(t *testing.T) {
 		{model.PathRunStatusPaused, model.PathRunStatusRunning},
 		{model.PathRunStatusPaused, model.PathRunStatusStopped},
 		{model.PathRunStatusPaused, model.PathRunStatusCancelled},
+		// F-028 失败动作重试：失败 -> 运行中是唯一用户受控的终态出口（服务端校验确定失败后才允许）。
+		{model.PathRunStatusFailed, model.PathRunStatusRunning},
 		// 结果待确认已于 2026-09-06 随用户侧对账移除成为终局：不允许出现任何回到运行中的通路。
 	}
 	for _, item := range legal {
@@ -52,7 +54,6 @@ func TestF016PathRunStatusMachineOnlyAdvances(t *testing.T) {
 		{model.PathRunStatusVerifying, model.PathRunStatusPaused},
 		{model.PathRunStatusCompleted, model.PathRunStatusRunning},
 		{model.PathRunStatusCompleted, model.PathRunStatusVerifying},
-		{model.PathRunStatusFailed, model.PathRunStatusRunning},
 		// 结果待确认是终局：既不能回到运行中，也不得进入核验中等任何其他状态。
 		{model.PathRunStatusAwaitingReconciliation, model.PathRunStatusVerifying},
 		{model.PathRunStatusAwaitingReconciliation, model.PathRunStatusRunning},
@@ -91,7 +92,8 @@ func TestF016NineChinesePathRunStates(t *testing.T) {
 	}
 }
 
-// TestF016TerminalPathRunStatuses 锁定停摆态集合：五个终态（含结果待确认）一条出边都没有。
+// TestF016TerminalPathRunStatuses 锁定停摆态集合：五个终态（含结果待确认）不会自行前进。
+// F-028 起失败态多出一条用户显式重试的受控出口（失败 -> 运行中），其余终态仍一条出边都没有；
 // 用户侧对账移除后（2026-09-06），写结果无法确认就是终局，不存在任何恢复动作或继续通路。
 func TestF016TerminalPathRunStatuses(t *testing.T) {
 	finished := []model.PathRunStatus{
@@ -114,6 +116,10 @@ func TestF016TerminalPathRunStatuses(t *testing.T) {
 		}
 		for _, next := range active {
 			if model.CanAdvancePathRunStatus(status, next) {
+				// 失败 -> 运行中是 F-028 唯一允许的终态出口，必须由用户显式重试触发，不在此禁止。
+				if status == model.PathRunStatusFailed && next == model.PathRunStatusRunning {
+					continue
+				}
 				t.Fatalf("终态 %s 不允许前进到 %s", status, next)
 			}
 		}

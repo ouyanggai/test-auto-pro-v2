@@ -15,7 +15,7 @@ const props = defineProps<{
   nodeTypeName: string
 }>()
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: [], retry: [] }>()
 
 // message 给复制操作明确的成功与失败反馈：复制失败不再静默（返工任务书缺口 9）。
 const message = useMessage()
@@ -411,6 +411,12 @@ const dialogStyle = computed(() => ({
             <n-button v-else-if="currentPreview" text size="tiny" type="error" @click="openStepDialog()">详情</n-button>
           </li>
         </ul>
+        <!-- F-028 失败动作重试：只在服务端判定可重试（确定失败、无目标副作用）时出现。
+             重试本身不发任何写请求，只把运行从失败步骤重新装填；人工控制模式装填后仍需按「放行」。 -->
+        <div v-if="props.detail.retryable" class="run-panel__retry">
+          <n-button size="small" type="primary" ghost @click="emit('retry')">重试失败动作</n-button>
+          <span class="run-panel__retry-note">从失败的这一步重新装填；重试不发任何写请求</span>
+        </div>
       </section>
     </div>
 
@@ -631,6 +637,19 @@ const dialogStyle = computed(() => ({
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* F-028 重试入口：错误列表底部一行，按钮加一句不发写请求的说明，不与错误行混排。 */
+.run-panel__retry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.run-panel__retry-note {
+  color: var(--run-secondary-text-color, #909090);
+  font-size: 12px;
 }
 
 .run-panel__row {

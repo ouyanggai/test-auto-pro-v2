@@ -132,6 +132,9 @@ export interface PathRunDetail {
   // sceneLostNote 是配套的大白话说明与下一步引导。页面只展示只读记录，不给任何重试或登记入口。
   sceneLost?: boolean
   sceneLostNote?: string
+  // retryable 表示服务端判定这条路径运行可以重试失败动作（F-028）：
+  // 只有「步骤执行中确定失败（无目标副作用）」的运行可重试；前端只按它决定是否渲染重试按钮。
+  retryable?: boolean
   // 模式切换（2026-09-06）：modeSwitchPending 表示已收到切换请求、将在本步完成后生效；
   // pendingModeName 是目标模式的中文显示名。
   modeSwitchPending?: boolean
@@ -376,6 +379,13 @@ export function requestPause(runId: string, pathRunId?: number): Promise<unknown
 // stopRun 停止路径运行。
 export function stopRun(runId: string, pathRunId?: number): Promise<PathRunDetail> {
   return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/stop${pathRunQuery(pathRunId)}`, { method: 'POST' })
+}
+
+// retryFailedAction 重试失败动作（F-028）：把确定失败的路径运行从失败步骤重新装填。
+// 重试本身不发任何写请求；装填后按原运行模式继续（人工控制等放行，单步等执行一步）。
+// 重复点击时第一次已把状态装填为运行中，后续请求得到稳定的中文冲突提示。
+export function retryFailedAction(runId: string, pathRunId?: number): Promise<PathRunDetail> {
+  return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/retry${pathRunQuery(pathRunId)}`, { method: 'POST' })
 }
 
 // formatElapsed 把毫秒格式化为中文可读时长。

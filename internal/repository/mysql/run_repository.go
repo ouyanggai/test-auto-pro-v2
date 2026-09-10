@@ -517,6 +517,115 @@ type runAggregate struct {
 	summary string
 }
 
+// ReopenPathRunForRetry 把一条确定失败的路径运行重新装填为运行中（F-028 失败动作重试的唯一入库入口）。
+// 同一事务内完成四件事：锁行校验路径运行确为失败态、确认本次运行没有其他进行中的路径运行
+// （重试不得绕过 F-020 的并发语义）、清空聚合结论列与结束时间并释放残留租约、追加运行事件行。
+// 运行聚合仍在失败态时一并重开为运行中；已在运行中（另一条失败路径先被重试）则保持不动。
+// 任何状态不满足都返回 ErrRunStatusConflict 且不落任何行；事实表在这里一行都不写。
+func (r *RunRepository) ReopenPathRunForRetry(ctx context.Context, pathRunID uint64, event model.RunEvent, now time.Time) (model.PathRun, model.Run, error) {
+	now = now.UTC()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	defer tx.Rollback()
+
+	var runID uint64
+	var current string
+	err = tx.QueryRowContext(ctx, "SELECT run_id, status FROM path_runs WHERE id = ? FOR UPDATE", pathRunID).Scan(&runID, &current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.PathRun{}, model.Run{}, repository.ErrRunNotFound
+	}
+	if err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	// 先锁运行行再动聚合：与 FinishPathRun 的加锁顺序一致，避免与收尾事务互相死锁。
+	if _, lockErr := tx.ExecContext(ctx, "SELECT id FROM runs WHERE id = ? FOR UPDATE", runID); lockErr != nil {
+		return model.PathRun{}, model.Run{}, lockErr
+	}
+	if model.PathRunStatus(current) != model.PathRunStatusFailed ||
+		!model.CanAdvancePathRunStatus(model.PathRunStatus(current), model.PathRunStatusRunning) {
+		return model.PathRun{}, model.Run{}, fmt.Errorf("%w：路径运行当前为 %s，只有失败的路径运行可以重试",
+			repository.ErrRunStatusConflict, model.PathRunStatusName(model.PathRunStatus(current)))
+	}
+	// 同运行其他路径仍有进行中（等待/运行/核验/暂停）时拒绝：一次运行同时只推进一条被重试的路径，
+	// 否则重试会绕过调度器的并发上限。判断在同事务内完成，两次并发重试最多成功一次。
+	siblingRows, err := tx.QueryContext(ctx, "SELECT status FROM path_runs WHERE run_id = ? AND id <> ?", runID, pathRunID)
+	if err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	siblingStatuses := []string{}
+	for siblingRows.Next() {
+		var status string
+		if scanErr := siblingRows.Scan(&status); scanErr != nil {
+			siblingRows.Close()
+			return model.PathRun{}, model.Run{}, scanErr
+		}
+		siblingStatuses = append(siblingStatuses, status)
+	}
+	siblingRows.Close()
+	if err := siblingRows.Err(); err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	for _, status := range siblingStatuses {
+		switch model.PathRunStatus(status) {
+		case model.PathRunStatusWaiting, model.PathRunStatusRunning, model.PathRunStatusVerifying, model.PathRunStatusPaused:
+			return model.PathRun{}, model.Run{}, fmt.Errorf("%w：本次运行还有进行中的路径（%s），请等它结束后再重试",
+				repository.ErrRunStatusConflict, model.PathRunStatusName(model.PathRunStatus(status)))
+		}
+	}
+	// 聚合结论列显式清空：失败结论只描述「上一次尝试结束时的状态」，重试期间路径结果回到未定。
+	// 残留租约一并释放：终态路径运行的租约行早已过期，留着只会让下一步的领取多一次等待。
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE path_runs
+		SET status = ?, result = NULL, failure_class = NULL, finished_at = NULL,
+		    lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+		WHERE id = ?
+	`, string(model.PathRunStatusRunning), now, pathRunID); err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	event.RunID = runID
+	event.PathRunID = &pathRunID
+	if event.Kind == "" {
+		event.Kind = "path_run_retry"
+	}
+	if err := appendRunEvent(ctx, tx, event, now); err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	// 运行聚合仍处于失败态时重开为运行中；已经是运行中（先前重试过另一条失败路径）则不再重复改写。
+	var runStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT status FROM runs WHERE id = ?", runID).Scan(&runStatus); err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	if model.RunStatus(runStatus) == model.RunStatusFailed {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE runs SET status = ?, result = NULL, failure_class = NULL, finished_at = NULL, updated_at = ?
+			WHERE id = ?
+		`, string(model.RunStatusRunning), now, runID); err != nil {
+			return model.PathRun{}, model.Run{}, err
+		}
+		if err := appendRunEvent(ctx, tx, model.RunEvent{
+			RunID: runID,
+			Kind:  "run_reopened",
+			Label: "运行因重试失败动作重新进入运行中",
+		}, now); err != nil {
+			return model.PathRun{}, model.Run{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	reopenedPathRun, err := r.GetPathRun(ctx, pathRunID)
+	if err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	reopenedRun, err := r.GetRun(ctx, runID)
+	if err != nil {
+		return model.PathRun{}, model.Run{}, err
+	}
+	return reopenedPathRun, reopenedRun, nil
+}
+
 // aggregateRunTerminal 在同事务内检查一次运行下的全部路径运行：
 // 还有任何非闭合（等待/运行/核验/暂停）路径时返回 false，运行保持运行中；
 // 结果待确认是终局（2026-09-06 移除用户侧对账后没有任何继续通路），按已停止计入聚合；

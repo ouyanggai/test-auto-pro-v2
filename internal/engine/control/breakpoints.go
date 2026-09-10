@@ -243,6 +243,18 @@ func ReplayBreakpoints(controls []model.RunControl) *BreakpointSet {
 	return set
 }
 
+// RetryBreakpointSet 计算失败动作重试装填后的生效断点集合（F-028）。
+// 基底与运行中一致：按控制事实回放；唯一差异是「本运行已有成功步骤」（cursorIndex > 0）时
+// 移除首次写断点——首个写请求早已被放行过，安全阀只对「从失败的第一步重新开始」有意义，
+// 保留它会让自动模式的重试在失败步骤前多停一次，把用户已经决定过的事再问一遍。
+func RetryBreakpointSet(controls []model.RunControl, cursorIndex int) *BreakpointSet {
+	set := ReplayBreakpoints(controls)
+	if cursorIndex > 0 {
+		set.Remove(Breakpoint{Type: model.BreakpointFirstWrite})
+	}
+	return set
+}
+
 // BreakpointFromControl 从控制事实行还原断点。
 func BreakpointFromControl(control model.RunControl) Breakpoint {
 	bp := Breakpoint{Type: control.BreakpointType}

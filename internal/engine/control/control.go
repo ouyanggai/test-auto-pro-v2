@@ -329,6 +329,54 @@ func (s *Service) CurrentPreview(pathRunID uint64) *step.StepPreview {
 	return session.preview
 }
 
+// ArmRetrySession 把重试后的控制现场装填回内存（F-028 失败动作重试）。
+// 前置条件由编排层保证：路径运行已重开为运行中，runCtx.Run/PathRun 已填入重开后的真实身份，
+// cursorIndex 是失败步骤在重编译场景中的下标，executed 集合只含已成功步骤。
+// 与启动的差异：不创建运行、不重落模式选定事实、不改冻结的总步骤数；
+// 断点按控制事实回放——本运行已有成功步骤时移除首次写断点，避免自动重试被安全阀二次拦停
+// （首个写请求早已被放行过，安全阀只对「从失败的第一步重新开始」有意义）。
+// 重试控制事实先落库再装填现场；装填后自动模式随即进入连续执行循环，单步/人工控制等待放行。
+func (s *Service) ArmRetrySession(ctx context.Context, runCtx step.RunContext, cursorIndex int, executedStepNos map[int]bool, executedNodeKeys map[string]bool) (*StartResult, error) {
+	controls, err := s.store.ListRunControls(ctx, runCtx.PathRun.ID)
+	if err != nil {
+		return nil, err
+	}
+	breakpoints := RetryBreakpointSet(controls, cursorIndex)
+	// 预览构建依赖目标实时读取；失败步骤已不在场景中说明事实与场景错位，拒绝而不是静默跳过。
+	preview, finished, err := s.steps.BuildPreview(ctx, runCtx, cursorIndex)
+	if err != nil {
+		return nil, err
+	}
+	if finished {
+		return nil, fmt.Errorf("失败步骤已不在当前场景中，无法重试；请从计划重新发起运行")
+	}
+	session := &activeStep{
+		runCtx: runCtx, mode: runCtx.Run.Mode,
+		breakpoints:     breakpoints,
+		version:         1,
+		recoveryLog:     s.recoveryLog,
+		executedStepNos: executedStepNos, executedNodeKeys: executedNodeKeys,
+		preview:   preview,
+		nextIndex: cursorIndex,
+	}
+	retryFact := model.RunControl{
+		RunID: runCtx.Run.ID, PathRunID: runCtx.PathRun.ID,
+		Kind: model.ControlFactRetryRequested, Action: model.RunControlRetry,
+		Source: model.RunControlSourceUI, CreatedAt: s.now(),
+	}
+	if err := s.store.AppendRunControl(ctx, retryFact, s.now()); err != nil {
+		return nil, err
+	}
+	s.logFact(runCtx.PathRun.ID, retryFact, preview.StepNo)
+	s.mu.Lock()
+	s.active[runCtx.PathRun.ID] = session
+	s.mu.Unlock()
+	if session.mode == model.RunModeAuto {
+		s.startLoop(ctx, runCtx.PathRun.ID, session, model.CommandContinue)
+	}
+	return &StartResult{Run: runCtx.Run, PathRun: runCtx.PathRun, Preview: preview}, nil
+}
+
 // SessionView 是详情页需要的控制现场摘要。
 type SessionView struct {
 	Mode           model.RunMode

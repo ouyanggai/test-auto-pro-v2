@@ -42,6 +42,8 @@ type RunOrchestrator interface {
 	RequestPause(ctx context.Context, runID uint64, pathRunID uint64) error
 	SwitchMode(ctx context.Context, runID uint64, pathRunID uint64, mode model.RunMode, version int64) (*service.PathRunDetailDTO, error)
 	Stop(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
+	// RetryFailedStep 重试失败动作（F-028）：只对确定失败的路径运行重新装填，重试不发写请求。
+	RetryFailedStep(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	// 运行记录层级（2026-09-06）：跨计划列表（一行一次运行）、二级路径页与整次运行删除。
 	ListAllRuns(ctx context.Context, status string) ([]service.RunSummaryDTO, error)
 	RunPaths(ctx context.Context, runID uint64) (*service.RunPathsDTO, error)
@@ -62,6 +64,7 @@ func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) 
 	mux.HandleFunc("DELETE /api/runs/{runId}", handleDeleteRun(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/approve", handleApproveRun(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/stop", handleStopRun(orchestrator))
+	mux.HandleFunc("POST /api/runs/{runId}/retry", handleRetryRun(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/breakpoints", handleSetBreakpoint(orchestrator))
 	mux.HandleFunc("DELETE /api/runs/{runId}/breakpoints", handleRemoveBreakpoint(orchestrator))
 	mux.HandleFunc("POST /api/runs/{runId}/pause", handlePause(orchestrator))
@@ -395,6 +398,24 @@ func handleStopRun(orchestrator RunOrchestrator) http.HandlerFunc {
 			return
 		}
 		detail, err := orchestrator.Stop(request.Context(), runID, parsePathRunIDQuery(request))
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, detail)
+	}
+}
+
+// handleRetryRun 重试失败动作（F-028）：把确定失败的路径运行从失败步骤重新装填。
+// 只接受显式点击，不绑快捷键；重复点击时第一次已把状态装填为运行中，
+// 后续请求按状态冲突返回稳定中文提示，绝不产生第二次装填。
+func handleRetryRun(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		runID, ok := parseExecutionPathID(response, request.PathValue("runId"))
+		if !ok {
+			return
+		}
+		detail, err := orchestrator.RetryFailedStep(request.Context(), runID, parsePathRunIDQuery(request))
 		if err != nil {
 			writeRunControlError(response, err)
 			return
