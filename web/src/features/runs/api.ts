@@ -86,6 +86,7 @@ export interface RunNodePlanAction {
 export interface PathRunDetail {
   runId: number
   runNo: number
+  startedAt?: string
   modeName: string
   runStatusName: string
   pathRunId: number

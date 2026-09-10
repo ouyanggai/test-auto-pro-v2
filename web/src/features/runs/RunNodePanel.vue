@@ -247,12 +247,33 @@ const stateTagType = computed<'default' | 'info' | 'success' | 'warning' | 'erro
   }
 })
 
+// statusTagType 把运行事实状态映射为弹窗标题旁的语义色，不让用户只靠文字判断。
+function statusTagType(statusName: string): 'success' | 'error' | 'warning' | 'info' {
+  if (statusName.includes('失败') || statusName.includes('异常')) return 'error'
+  if (statusName.includes('成功') || statusName.includes('完成')) return 'success'
+  if (statusName.includes('待确认') || statusName.includes('停止')) return 'warning'
+  return 'info'
+}
+
+// attemptTone 给每次尝试加左边框语义色：成功绿色、失败红色、不确定橙色。
+function attemptTone(attempt: RunStepAttempt): string {
+  if (attempt.verdictName.includes('成功')) return 'run-panel__attempt--success'
+  if (attempt.verdictName.includes('不确定') || attempt.verdictName.includes('待确认')) return 'run-panel__attempt--warning'
+  return 'run-panel__attempt--error'
+}
+
+// gateTone 按门禁项文字是否包含未满足判断展示色，不改变服务端的事实口径。
+function gateTone(line: string): string {
+  if (line.includes('未满足') || line.includes('未通过') || line.includes('失败')) return 'run-panel__condition--failed'
+  return 'run-panel__condition--passed'
+}
+
 // dialogStyle 是三个详情弹窗共用的尺寸与配色：弹窗内容被传送到 body，
 // 拿不到页面里声明的自定义属性，主题色必须随弹窗自己带过去。
 const themeVars = useThemeVars()
 const dialogStyle = computed(() => ({
-  width: '680px',
-  maxWidth: '92vw',
+  width: '760px',
+  maxWidth: '94vw',
   '--run-border-color': themeVars.value.dividerColor,
   '--run-secondary-text-color': themeVars.value.textColor3,
   '--info-color': themeVars.value.infoColor,
@@ -415,53 +436,75 @@ const dialogStyle = computed(() => ({
       </template>
     </n-modal>
 
-    <!-- 已执行步骤详情：逐次尝试的结果、阶段耗时、日志位置与可重放 curl。 -->
     <n-modal
       :show="stepDialog !== null"
       preset="card"
+      class="run-panel__dialog"
       :style="dialogStyle"
       :title="stepDialog ? `第 ${stepDialog.stepNo} 步详情 · ${stepDialog.actionName}` : ''"
       @update:show="stepDialog = null"
     >
       <template v-if="stepDialog">
-        <dl class="run-panel__facts">
-          <div><dt>结论</dt><dd>{{ stepDialog.statusName }}</dd></div>
-          <div><dt>演员</dt><dd>{{ stepDialog.actorName || '—' }}</dd></div>
-          <div><dt>开始</dt><dd>{{ formatTime(stepDialog.startedAt) }}</dd></div>
-          <div><dt>结束</dt><dd>{{ formatTime(stepDialog.finishedAt) }}</dd></div>
-          <div><dt>总耗时</dt><dd>{{ formatElapsed(stepDialog.durationMs) }}</dd></div>
-        </dl>
-        <ul v-if="gateSnapshotLines(stepDialog).length > 0" class="run-panel__conditions">
-          <li v-for="(line, index) in gateSnapshotLines(stepDialog)" :key="index">{{ line }}</li>
-        </ul>
-        <article v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo" class="run-panel__attempt">
-          <p class="run-panel__attempt-head">
-            第 {{ attempt.attemptNo }} 次尝试：{{ attempt.verdictName }}
-            <span v-if="attempt.isReplay" class="run-panel__row-sub">（这次是重放）</span>
-          </p>
-          <p class="run-panel__reason">{{ attempt.reason }}</p>
-          <p class="run-panel__row-sub">耗时 {{ formatElapsed(attempt.durationMs) }}，trace_id {{ attempt.traceId }}</p>
-          <div v-if="attempt.phaseDurations" class="run-panel__phases">
-            <span v-for="[phase, label] in phaseOrder" :key="phase" class="run-panel__phase">
-              {{ label }} {{ formatElapsed(attempt.phaseDurations[phase] ?? -1) }}
-            </span>
-          </div>
-          <p v-else class="run-panel__row-sub">{{ attempt.phaseDurationsNote || '暂无阶段耗时' }}</p>
-          <p class="run-panel__row-sub">
-            日志：{{ attempt.logPath }} 第 {{ attempt.logLine }} 行
-            <n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button>
-          </p>
-          <div class="run-panel__curl-actions">
-            <n-button text size="tiny" type="info" @click="toggleCurl(stepDialog.stepNo)">
-              {{ expandedCurl === String(stepDialog.stepNo) ? '收起请求与响应正文' : '展开请求与响应正文' }}
-            </n-button>
-            <n-button v-if="attempt.curlBlock" text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
-          </div>
-          <pre v-if="expandedCurl === String(stepDialog.stepNo)" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
-          <p v-else-if="!attempt.curlBlock" class="run-panel__row-sub">
-            这次尝试没有发出写请求（如门禁读取失败）；失败请求的原始 curl 与目标响应见同目录 curl.log（日志目录：{{ attempt.logPath.replace(/step\.log.*$/, '') }}curl.log）。
-          </p>
-        </article>
+        <div class="run-panel__dialog-head">
+          <n-tag size="small" :type="statusTagType(stepDialog.statusName)">{{ stepDialog.statusName }}</n-tag>
+          <span class="run-panel__dialog-meta">第 {{ stepDialog.stepNo }} 步 · {{ stepDialog.actionName }}</span>
+        </div>
+
+        <section class="run-panel__section">
+          <p class="run-panel__section-title">步骤事实</p>
+          <dl class="run-panel__facts run-panel__facts--card">
+            <div><dt>结论</dt><dd :class="stepDialog.statusName.includes('失败') ? 'run-panel__bad' : 'run-panel__ok'">{{ stepDialog.statusName }}</dd></div>
+            <div><dt>演员</dt><dd>{{ stepDialog.actorName || '—' }}</dd></div>
+            <div><dt>开始</dt><dd>{{ formatTime(stepDialog.startedAt) }}</dd></div>
+            <div><dt>结束</dt><dd>{{ formatTime(stepDialog.finishedAt) }}</dd></div>
+            <div><dt>总耗时</dt><dd>{{ formatElapsed(stepDialog.durationMs) }}</dd></div>
+          </dl>
+        </section>
+
+        <section v-if="gateSnapshotLines(stepDialog).length > 0" class="run-panel__section">
+          <p class="run-panel__section-title">门禁逐项</p>
+          <ul class="run-panel__conditions">
+            <li v-for="(line, index) in gateSnapshotLines(stepDialog)" :key="index" class="run-panel__condition" :class="gateTone(line)">
+              <span class="run-panel__condition-dot"></span>
+              <span>{{ line }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="run-panel__section">
+          <p class="run-panel__section-title">尝试记录</p>
+          <article v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo" class="run-panel__attempt" :class="attemptTone(attempt)">
+            <div class="run-panel__attempt-head">
+              <span>第 {{ attempt.attemptNo }} 次尝试</span>
+              <n-tag size="tiny" :type="statusTagType(attempt.verdictName)">{{ attempt.verdictName }}</n-tag>
+              <span v-if="attempt.isReplay" class="run-panel__row-sub">（这次是重放）</span>
+            </div>
+            <p class="run-panel__reason">{{ attempt.reason }}</p>
+            <p v-if="attempt.traceId" class="run-panel__attempt-meta">
+              <span>耗时 {{ formatElapsed(attempt.durationMs) }}</span>
+              <span class="run-panel__mono">{{ attempt.traceId }}</span>
+            </p>
+            <p v-else class="run-panel__attempt-meta">耗时 {{ formatElapsed(attempt.durationMs) }}，写请求发出前已停止，无 trace_id</p>
+            <div v-if="attempt.phaseDurations" class="run-panel__phases">
+              <span v-for="[phase, label] in phaseOrder" :key="phase" class="run-panel__phase">
+                {{ label }} {{ formatElapsed(attempt.phaseDurations[phase] ?? -1) }}
+              </span>
+            </div>
+            <p v-else class="run-panel__row-sub">{{ attempt.phaseDurationsNote || '暂无阶段耗时' }}</p>
+            <p class="run-panel__row-sub run-panel__log-ref">
+              日志：{{ attempt.logPath }} 第 {{ attempt.logLine }} 行
+              <n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button>
+            </p>
+            <div v-if="attempt.curlBlock" class="run-panel__curl-actions">
+              <n-button text size="tiny" type="info" @click="toggleCurl(stepDialog.stepNo)">
+                {{ expandedCurl === String(stepDialog.stepNo) ? '收起请求与响应正文' : '展开请求与响应正文' }}
+              </n-button>
+              <n-button text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
+            </div>
+            <p v-else class="run-panel__no-curl">这次尝试没有发出写请求（如门禁读取失败）；失败请求的原始 curl 与目标响应见同目录 curl.log（日志目录：{{ attempt.logPath.replace(/step\.log.*$/, '') }}curl.log）。</p>
+            <pre v-if="expandedCurl === String(stepDialog.stepNo) && attempt.curlBlock" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
+          </article>
+        </section>
       </template>
     </n-modal>
   </aside>
@@ -682,4 +725,123 @@ const dialogStyle = computed(() => ({
   background: color-mix(in srgb, var(--run-border-color, #ccc) 16%, transparent);
   border-radius: 4px;
 }
+
+/* 详情弹窗的分区、事实卡片与尝试卡片：让每一步的事实、门禁和尝试层次分明。 */
+.run-panel__dialog :deep(.n-card__content) {
+  max-height: 72vh;
+  overflow: auto;
+}
+
+.run-panel__dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.run-panel__dialog-meta {
+  color: var(--run-secondary-text-color, #909090);
+}
+
+.run-panel__section {
+  margin-top: 14px;
+}
+
+.run-panel__section:first-child {
+  margin-top: 0;
+}
+
+.run-panel__section-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--run-secondary-text-color, #666);
+}
+
+.run-panel__facts--card {
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--run-border-color, #ccc) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 52%, transparent);
+  border-radius: 8px;
+}
+
+.run-panel__conditions {
+  display: grid;
+  gap: 6px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.run-panel__condition {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--run-border-color, #ccc) 8%, transparent);
+}
+
+.run-panel__condition-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--info-color, #2080f0);
+}
+
+.run-panel__condition--passed .run-panel__condition-dot {
+  background: var(--success-color, #18a058);
+}
+
+.run-panel__condition--failed {
+  background: color-mix(in srgb, var(--error-color, #d03050) 8%, transparent);
+}
+
+.run-panel__condition--failed .run-panel__condition-dot {
+  background: var(--error-color, #d03050);
+}
+
+.run-panel__attempt {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 52%, transparent);
+  border-left-width: 3px;
+  border-radius: 8px;
+}
+
+.run-panel__attempt--success { border-left-color: var(--success-color, #18a058); }
+.run-panel__attempt--warning { border-left-color: var(--warning-color, #f0a020); }
+.run-panel__attempt--error { border-left-color: var(--error-color, #d03050); }
+
+.run-panel__attempt + .run-panel__attempt {
+  margin-top: 8px;
+}
+
+.run-panel__attempt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.run-panel__attempt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: var(--run-secondary-text-color, #909090);
+}
+
+.run-panel__log-ref {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.run-panel__no-curl {
+  margin: 4px 0 0;
+  color: var(--run-secondary-text-color, #909090);
+  line-height: 1.6;
+}
+
 </style>

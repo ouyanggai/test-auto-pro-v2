@@ -237,13 +237,14 @@ type RunNodePlanActionDTO struct {
 
 // PathRunDetailDTO 是路径运行详情页的数据主体。
 type PathRunDetailDTO struct {
-	RunID             uint64 `json:"runId"`
-	RunNo             uint64 `json:"runNo"`
-	ModeName          string `json:"modeName"`
-	RunStatusName     string `json:"runStatusName"`
-	PathRunID         uint64 `json:"pathRunId"`
-	PathRunStatus     string `json:"pathRunStatus"`
-	PathRunStatusName string `json:"pathRunStatusName"`
+	RunID             uint64     `json:"runId"`
+	RunNo             uint64     `json:"runNo"`
+	StartedAt         *time.Time `json:"startedAt,omitempty"`
+	ModeName          string     `json:"modeName"`
+	RunStatusName     string     `json:"runStatusName"`
+	PathRunID         uint64     `json:"pathRunId"`
+	PathRunStatus     string     `json:"pathRunStatus"`
+	PathRunStatusName string     `json:"pathRunStatusName"`
 	// StructureNote 是真实结构读取失败时的中文降级说明；为空表示结构读取正常。
 	StructureNote string `json:"structureNote,omitempty"`
 	// 运行级信息（F-020）：调度方式、并发说明与全部路径运行摘要，供运行详情的路径切换区。
@@ -926,6 +927,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	}
 	detail := &PathRunDetailDTO{
 		RunID: run.ID, RunNo: run.RunNo,
+		StartedAt:         run.StartedAt,
 		ModeName:          model.RunModeName(run.Mode),
 		RunStatusName:     model.RunStatusName(run.Status),
 		PathRunID:         pathRun.ID,

@@ -38,6 +38,12 @@ grep -qF 'data-testid="fixed-tail-action"' web/src/features/path-configuration/A
 grep -qF 'system_default' web/src/features/path-configuration/types.ts
 grep -qF '放行边界' web/src/features/path-configuration/ActionFlowDialog.vue
 
+printf '%s\n' '[F-026] 实际待办人会话切换与实例命名契约'
+grep -qF 'findCandidateTaskSnapshot' internal/engine/step/verify.go
+grep -qF 'candidate.Name, item.Phone' internal/adapter/target/person_directory.go
+grep -qF 'time.Now().Format("2006-01-02 15:04:05")' internal/engine/step/gate.go
+grep -qF 'run-panel__dialog-head' web/src/features/runs/RunNodePanel.vue
+
 printf '%s\n' '[F-026] 前端类型检查'
 if [ -x web/node_modules/.bin/vue-tsc ]; then
   (cd web && ./node_modules/.bin/vue-tsc --noEmit)

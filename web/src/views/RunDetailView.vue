@@ -9,6 +9,7 @@ import {
   approveRun,
   fetchRunDetail,
   formatElapsed,
+  formatTime,
   removeBreakpoint,
   requestPause,
   RunApiError,
@@ -661,7 +662,7 @@ onBeforeUnmount(() => {
       <div class="run-detail__identity" :style="headerVars">
         <n-button quaternary circle size="small" aria-label="返回本次运行的执行路径" title="返回本次运行的执行路径" @click="router.push(`/runs/${runId}`)">←</n-button>
         <h2 class="run-detail__title">运行 #{{ detail.runNo }}</h2>
-        <span class="run-detail__meta-path" :title="`${detail.planName} / ${detail.pathName}`">{{ detail.planName }} / {{ detail.pathName }}</span>
+        <span class="run-detail__meta-path" :title="`${detail.planName} / ${detail.pathName} · ${formatTime(detail.startedAt)}`">{{ detail.planName }} / {{ detail.pathName }} · {{ formatTime(detail.startedAt) }}</span>
         <n-tag size="small" :bordered="false" type="info" :title="modeHint">{{ detail.modeName }}模式</n-tag>
         <n-tag size="small" :bordered="false" :type="statusTagType">{{ detail.pathRunStatusName }}</n-tag>
         <n-tag v-if="detail.failureClassName" size="small" :bordered="false" type="error">{{ detail.failureClassName }}</n-tag>

@@ -135,6 +135,10 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		return e.blockedPreview(runCtx, step, actorName,
 			"目标状态确认失败："+message, model.FailureClassGateBlocked), false, nil
 	}
+	if name := strings.TrimSpace(facts.CurrentTaskAssigneeName); name == "" {
+	} else {
+		actorName = name
+	}
 	info := runCtx.Nodes[step.NodeKey]
 	catalogItem, allowed := evaluateGate(step, buildGateContext(runCtx, step, facts, info))
 	log.Phase("gate", step.Sequence, 1, gateSummary(catalogItem, allowed))
@@ -1260,6 +1264,47 @@ func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, 
 		return "", "", errors.New("人员目录中没有该用户的登录账号")
 	}
 	return strings.TrimSpace(account), "", nil
+}
+
+// findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
+// 只有计划账号本身读不到待办时才调用，避免正常路径放大登录次数。
+func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunContext, planSession target.Session, step model.CompiledActionStep, nodeID, status string) (target.TaskSnapshot, string, string, error) {
+	candidates := runCtx.NextNodeAuditors[step.NodeKey]
+	if len(candidates) == 0 {
+		return target.TaskSnapshot{}, "", "", nil
+	}
+	var lastErr error
+	for _, candidate := range candidates {
+		userID := strings.TrimSpace(candidate.BizID)
+		if userID == "" {
+			continue
+		}
+		account, _, resolveErr := e.assigneeAccount(ctx, planSession, userID)
+		if resolveErr != nil {
+			lastErr = resolveErr
+			continue
+		}
+		actorSession, sessionErr := e.sessions.Current(ctx, account)
+		if sessionErr != nil {
+			actorSession, sessionErr = e.sessions.Refresh(ctx, account)
+		}
+		if sessionErr != nil {
+			lastErr = sessionErr
+			continue
+		}
+		snapshot, readErr := e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if strings.TrimSpace(snapshot.JobTaskID) != "" {
+			return snapshot, userID, strings.TrimSpace(candidate.Name), nil
+		}
+	}
+	if lastErr != nil {
+		return target.TaskSnapshot{}, "", "", lastErr
+	}
+	return target.TaskSnapshot{}, "", "", nil
 }
 
 // nameOrFallback 有名字用名字，否则用 ID 兜底，供阻断文案指向具体人员。

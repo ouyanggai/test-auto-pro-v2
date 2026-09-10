@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/actioncatalog"
@@ -300,14 +301,26 @@ func nextAuditorsOf(step model.CompiledActionStep) []target.NextAuditor {
 	return []target.NextAuditor{{NodeProxyID: nodeID, AuditDetailTyp: "personnel"}}
 }
 
-// instanceName 生成发起实例的显示名：优先取动作参数里的 instanceName，否则用路径名加运行号。
+// instanceName 生成发起实例的显示名：优先取动作参数，否则使用计划名、路径名和目标创建时刻。
+// 目标平台实例列表里没有工具侧日志目录，名称需要与 logs/plans/<计划>/runs/<路径>/ 的层级一致，
+// 并带本地时间，用户登录目标平台后能直接辨认这次实例属于哪个计划和哪条路径。
 func instanceName(runCtx RunContext, step model.CompiledActionStep) string {
 	if value, ok := step.Parameters["instanceName"].(string); ok {
 		if name := strings.TrimSpace(value); name != "" {
 			return name
 		}
 	}
-	return strings.TrimSpace(runCtx.PathName) + "-运行" + formatUint(runCtx.Run.RunNo)
+	parts := make([]string, 0, 2)
+	if planName := strings.TrimSpace(runCtx.PlanName); planName != "" {
+		parts = append(parts, planName)
+	}
+	if pathName := strings.TrimSpace(runCtx.PathName); pathName != "" {
+		parts = append(parts, pathName)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "运行"+formatUint(runCtx.Run.RunNo))
+	}
+	return strings.Join(parts, "-") + "-" + time.Now().Format("2006-01-02 15:04:05")
 }
 
 // auditMessage 生成审批意见：优先取动作参数里的 approveMessage。

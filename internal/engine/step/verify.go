@@ -159,6 +159,19 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if err != nil {
 			return err
 		}
+		candidateAssigneeID, candidateAssigneeName := "", ""
+		if strings.TrimSpace(snapshot.JobTaskID) == "" && strings.TrimSpace(session.Summary.Account) == strings.TrimSpace(runCtx.PlanAccount) {
+			// 任务级动作通常由他人处理。计划账号读取不到待办时，用下一节点已解析的候选人逐个换会话重读；
+			// 找到唯一待办后再进入门禁，避免把“当前账号没有待办”误判成“待办已被处理”。
+			candidateSnapshot, candidateID, candidateName, candidateErr := e.findCandidateTaskSnapshot(ctx, runCtx, session, step, nodeID, "pending")
+			if candidateErr != nil {
+				return candidateErr
+			}
+			if strings.TrimSpace(candidateSnapshot.JobTaskID) != "" {
+				snapshot = candidateSnapshot
+				candidateAssigneeID, candidateAssigneeName = candidateID, candidateName
+			}
+		}
 		facts.CurrentTaskRead = true
 		facts.CurrentTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
 		facts.CurrentTaskLinkID = strings.TrimSpace(snapshot.LinkID)
@@ -166,8 +179,8 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		facts.CurrentTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)
 		facts.CurrentTaskFlowProxy = strings.TrimSpace(snapshot.FlowProxyID)
 		facts.CurrentTaskNodeID = strings.TrimSpace(snapshot.FlowNodeProxyID)
-		facts.CurrentTaskAssigneeID = strings.TrimSpace(snapshot.PendingUserID)
-		facts.CurrentTaskAssigneeName = strings.TrimSpace(snapshot.PendingUserName)
+		facts.CurrentTaskAssigneeID = firstNonEmpty(strings.TrimSpace(snapshot.PendingUserID), candidateAssigneeID)
+		facts.CurrentTaskAssigneeName = firstNonEmpty(strings.TrimSpace(snapshot.PendingUserName), candidateAssigneeName)
 		switch step.Action {
 		case model.ActionStorageFormData, model.ActionApprove, model.ActionReject:
 			// 这三个动作都直接处理当前待办；门禁和写后核验必须使用同一条实时任务快照。

@@ -29,6 +29,7 @@ type rawAuditNamedItem struct {
 	DisplayName string `json:"displayName"`
 	Account     string `json:"account"`
 	Username    string `json:"username"`
+	Phone       string `json:"phone"`
 	UserVo      *struct {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
@@ -640,7 +641,9 @@ func (c *Client) UserAccountsByID(ctx context.Context, active Session, ids []str
 	result := make(map[string]string, len(want))
 	for _, item := range page.DataList {
 		candidate := auditCandidateFromNamed(item)
-		account := firstNonEmpty(item.Account, item.Username)
+		// 目标人员目录的 account/username 在部分部署为空；登录账号实测可使用姓名或手机号，
+		// 因此按 account > username > name > phone 的顺序回落，避免任务处理人无法切换会话。
+		account := firstNonEmpty(item.Account, item.Username, candidate.Name, item.Phone)
 		if _, needed := want[candidate.ID]; !needed || account == "" {
 			continue
 		}
