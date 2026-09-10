@@ -130,7 +130,24 @@ let compiledVersion = 0
 let compiledController: AbortController | null = null
 const notification = useNotification()
 let formNotice: NotificationReactive | null = null
+let nodeNotice: NotificationReactive | null = null
 
+// showNodeSaveNotice 显示一次节点保存结果；通知不绑定当前选中节点，自动定位下一节点后仍保持可见。
+function showNodeSaveNotice(content: string) {
+  nodeNotice?.destroy()
+  nodeNotice = notification.success({
+    title: '节点配置已保存',
+    content,
+    duration: 3500,
+    closable: true,
+  })
+}
+
+// dismissNodeSaveNotice 销毁节点保存通知，避免切换路径后残留旧结果。
+function dismissNodeSaveNotice() {
+  nodeNotice?.destroy()
+  nodeNotice = null
+}
 
 // dismissFormNotice 销毁表单工作区悬浮反馈，避免离开路径后旧通知残留到下一条路径。
 function dismissFormNotice() {
@@ -343,6 +360,7 @@ async function applyConfiguration(next: PathConfiguration, preserveSelected = tr
 async function loadPage() {
   loadController?.abort()
   invalidateRuntimeSession()
+  dismissNodeSaveNotice()
   const controller = new AbortController()
   loadController = controller
   const version = ++loadVersion
@@ -447,19 +465,19 @@ async function finishConfirmedNodeSave() {
     graphNodeIDByConfigurationKey.value,
     dataWorkspace.value?.dataStatus === 'ready' ? 'ready' : 'empty',
   )
-  if (destination.kind === 'next-node') {
-    // 推进前清除上一节点成功态，侧栏立即成为下一节点的真实草稿和要求。
-    nodeSavedSuccessfully.value = false
-    selectedNodeID.value = destination.nodeID
-    await focusSelectedNode()
-    return
-  }
   if (destination.kind === 'unmapped') {
     nodeSavedSuccessfully.value = false
     nodeSaveError.value = '路径节点配置与当前流程结构不一致，请重新读取'
     return
   }
+  showNodeSaveNotice('当前节点配置已保存')
   nodeSavedSuccessfully.value = true
+  if (destination.kind === 'next-node') {
+    // 成功通知不依赖侧栏状态，因此定位下一节点不会吞掉刚完成的保存反馈。
+    selectedNodeID.value = destination.nodeID
+    await focusSelectedNode()
+    return
+  }
 }
 
 // updatePersonStrategy 只保留当前模板策略和候选中的不透明值。
@@ -683,6 +701,7 @@ async function saveAllNodes() {
     } else {
       nodeSaveError.value = ''
       nodeSavedSuccessfully.value = savedCount > 0
+      showNodeSaveNotice(`已保存 ${savedCount} 个节点`)
     }
   }
   catch (caught) {
@@ -937,6 +956,7 @@ onBeforeUnmount(() => {
   loadController?.abort()
   resetCompiledScenario()
   invalidateRuntimeSession()
+  dismissNodeSaveNotice()
 })
 
 void loadPage()
