@@ -34,6 +34,10 @@ type runGraphReader interface {
 	Get(ctx context.Context, planID uint64) (model.FlowGraph, error)
 }
 
+// runDetailGraphTimeout 限制详情轮询等待结构投影的最长时间。
+// 目标模板树的正常读取已实测超过 500ms；预算过短会让轮询把仍在返回的正常请求误判为失败。
+const runDetailGraphTimeout = 2 * time.Second
+
 // RunOrchestrationErrorKind 是运行编排服务的错误种类，API 层映射为稳定状态码。
 type RunOrchestrationErrorKind string
 
@@ -865,7 +869,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	// 「运行服务暂不可用」挡住——降级必须如实告诉用户，不悄悄把「什么都没跑过」当事实展示。
 	// 详情接口只把流程结构用于画布展示，不能让结构目标读取的慢请求拖住放行响应；
 	// 运行事实已在本地库，结构超时时继续返回事实并明确降级。
-	graphCtx, cancelGraph := context.WithTimeout(ctx, 500*time.Millisecond)
+	graphCtx, cancelGraph := context.WithTimeout(ctx, runDetailGraphTimeout)
 	graph, graphErr := s.graphs.Get(graphCtx, run.PlanID)
 	cancelGraph()
 	structureDegraded := graphErr != nil
@@ -1499,6 +1503,11 @@ func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRu
 // StructureNoteForTest 暴露结构降级提示门禁，供 test 目录锁定首次放行前不得误报。
 func StructureNoteForTest(degraded, executionStarted bool) string {
 	return structureNoteOf(degraded, executionStarted)
+}
+
+// RunDetailGraphTimeoutForTest 暴露详情结构读取预算，供 test 目录锁定正常目标读取不被过短预算截断。
+func RunDetailGraphTimeoutForTest() time.Duration {
+	return runDetailGraphTimeout
 }
 
 // ParsePhaseTimingsForTest 暴露 step.log 阶段时间轴解析，供 test 目录下的定向用例锁定归组键与耗时口径。

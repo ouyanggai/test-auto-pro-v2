@@ -2,6 +2,7 @@ package run_orchestration_test
 
 import (
 	"testing"
+	"time"
 
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/model"
@@ -47,5 +48,12 @@ func TestF016StructureWarningStartsAfterExecution(t *testing.T) {
 	}
 	if note := service.StructureNoteForTest(false, true); note != "" {
 		t.Fatalf("结构读取正常时不应显示警告：%q", note)
+	}
+}
+
+// TestF016RunDetailGraphReadBudget 验证运行详情不会用低于一秒的预算误杀正常的目标结构读取。
+func TestF016RunDetailGraphReadBudget(t *testing.T) {
+	if timeout := service.RunDetailGraphTimeoutForTest(); timeout < time.Second {
+		t.Fatalf("运行详情结构读取预算过短：%s", timeout)
 	}
 }
