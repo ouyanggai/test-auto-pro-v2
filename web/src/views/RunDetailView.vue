@@ -274,7 +274,18 @@ function applyBreakpoints(list: BreakpointInput[]): void {
 
 // currentNodeKey 是当前步所在节点（预览给出），画布据此高亮与居中。
 // currentNodeKey 用图节点 ID（画布键空间）；旧后端没有 nodeId 时回退 nodeKey。
-const currentNodeKey = computed(() => detail.value?.currentPreview?.nodeId || detail.value?.currentPreview?.nodeKey || '')
+// 失败或结果待确认时，如果没有 currentPreview，使用最后一个已落账步骤的节点作为当前节点。
+const currentNodeKey = computed(() => {
+  if (detail.value?.currentPreview?.nodeId || detail.value?.currentPreview?.nodeKey) {
+    return detail.value.currentPreview.nodeId || detail.value.currentPreview.nodeKey
+  }
+  // 终态时从最后一步获取当前节点
+  if (detail.value?.steps && detail.value.steps.length > 0) {
+    const lastStep = detail.value.steps[detail.value.steps.length - 1]
+    return lastStep.nodeId || lastStep.nodeKey || ''
+  }
+  return ''
+})
 
 // runNodeStates 把九个中文运行态与当前步标记交给画布。
 const runNodeStates = computed(() => {
@@ -350,6 +361,10 @@ async function loadDetail(): Promise<void> {
   loadFailure.value = null
   try {
     const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
+    if (!next) {
+      loadErrorText.value = '运行详情返回空数据，请重试'
+      return
+    }
     detail.value = next
     if (!selectedPathRunID.value && next.pathRunId) {
       // 首次缺省进入：把实际选中的路径运行写回路由，刷新与分享保留选择。
@@ -362,8 +377,16 @@ async function loadDetail(): Promise<void> {
     if (!graph.value) {
       graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
     }
+    // 记录详情加载状态
+    console.log('[加载详情]', {
+      hasCurrentPreview: !!next.currentPreview,
+      nodeStatesCount: Object.keys(next.nodeStates || {}).length,
+      stepsCount: next.steps?.length || 0,
+      pathRunStatus: next.pathRunStatusName
+    })
     schedulePoll()
   } catch (error) {
+    console.error('[加载详情失败]', error)
     loadFailure.value = error instanceof RunApiError ? error : null
     loadErrorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行详情，请重试'
   } finally {
@@ -455,9 +478,23 @@ async function approve(): Promise<void> {
   actionText.value = ''
   errorText.value = ''
   try {
-    detail.value = await approveRun(runId, 'step', detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
+    const result = await approveRun(runId, 'step', detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
+    if (!result) {
+      errorText.value = '放行后未收到有效的运行状态，请刷新页面查看'
+      return
+    }
+    detail.value = result
+    syncControl(result)
     lastUpdateAt.value = Date.now()
+    // 放行成功后的状态记录
+    console.log('[放行成功]', {
+      currentPreview: result.currentPreview,
+      nodeStates: Object.keys(result.nodeStates || {}),
+      pathRunStatus: result.pathRunStatusName,
+      stopReason: result.stopReason
+    })
   } catch (error) {
+    console.error('[放行失败]', error)
     errorText.value = error instanceof RunApiError ? error.message : '放行执行失败，请查看日志'
   } finally {
     acting.value = false
@@ -887,7 +924,7 @@ onBeforeUnmount(() => {
             </template>
           </flow-graph-canvas>
           <div v-else class="run-detail__result">
-            <n-result status="warning" size="small" title="流程图暂不可用" description="真实流程结构尚未加载，无法渲染运行画布。" role="status" aria-live="polite" />
+            <n-result status="warning" size="small" :show-icon="false" title="流程图暂不可用" description="真实流程结构尚未加载，无法渲染运行画布。" role="status" aria-live="polite" />
             <div class="run-detail__result-actions">
               <n-button secondary @click="loadDetail">重新读取</n-button>
             </div>

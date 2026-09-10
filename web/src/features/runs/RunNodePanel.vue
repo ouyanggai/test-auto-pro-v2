@@ -32,7 +32,18 @@ const nodeStatus = computed(() => props.detail.nodeStates[props.nodeKey]?.status
 
 // isCurrentNode 用图节点 ID 比对：预览自带的 nodeKey 是配置令牌键，两套键空间不能混用，
 // 混用会让当前步的预览永远显示不出来（本次改版修掉的既有缺陷）。
-const isCurrentNode = computed(() => (props.detail.currentPreview?.nodeId || '') === props.nodeKey)
+// 失败或结果待确认时，如果没有 currentPreview，检查这个节点是否是最后一步所在节点。
+const isCurrentNode = computed(() => {
+  if (props.detail.currentPreview?.nodeId || props.detail.currentPreview?.nodeKey) {
+    return (props.detail.currentPreview.nodeId || props.detail.currentPreview.nodeKey) === props.nodeKey
+  }
+  // 终态时，如果这是最后一步的节点，也视为当前节点
+  if (props.detail.steps && props.detail.steps.length > 0) {
+    const lastStep = props.detail.steps[props.detail.steps.length - 1]
+    return (lastStep.nodeId || lastStep.nodeKey) === props.nodeKey
+  }
+  return false
+})
 const currentPreview = computed<RunPreview | null>(() => (isCurrentNode.value ? props.detail.currentPreview ?? null : null))
 
 // planActions 是本次运行在这个节点上的已配置计划（服务端由编译场景归组，全部中文）。
@@ -355,11 +366,9 @@ const dialogStyle = computed(() => ({
             <n-button text size="tiny" type="info" @click="planDialog = action">详情</n-button>
           </li>
         </ul>
-        <n-empty
-          v-if="planActions.length === 0"
-          size="small"
-          description="这个节点在本次运行的计划里没有动作：它不在已配置路线上，或由目标引擎自动通过。"
-        />
+        <p v-if="planActions.length === 0" class="run-panel__lead" style="color: var(--run-secondary-text-color, #909090);">
+          这个节点在本次运行的计划里没有动作：它不在已配置路线上，或由目标引擎自动通过。
+        </p>
       </section>
 
       <!-- 运行信息：当前步一句话结论 + 已执行步骤清单，明细进详情弹窗。 -->
@@ -384,11 +393,9 @@ const dialogStyle = computed(() => ({
             <n-button text size="tiny" type="info" @click="openStepDialog(step)">详情</n-button>
           </li>
         </ul>
-        <n-empty
-          v-if="nodeSteps.length === 0 && !currentPreview"
-          size="small"
-          description="这个节点还没有执行过步骤；运行推进到这里后会在这里显示已发生的事实。"
-        />
+        <p v-if="nodeSteps.length === 0 && !currentPreview" class="run-panel__lead" style="color: var(--run-secondary-text-color, #909090);">
+          这个节点还没有执行过步骤；运行推进到这里后会在这里显示已发生的事实。
+        </p>
       </section>
 
       <!-- 错误：一行一条结论与一句话原因，依据、日志位置与可重放 curl 进详情弹窗。 -->
