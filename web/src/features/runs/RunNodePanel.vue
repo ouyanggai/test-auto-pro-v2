@@ -299,7 +299,7 @@ const dialogStyle = computed(() => ({
           <li v-for="action in planActions" :key="action.sequence" class="run-panel__row">
             <div class="run-panel__row-main">
               <span class="run-panel__row-title">{{ action.sequence }}. {{ action.actionName }}</span>
-              <span class="run-panel__row-sub">{{ action.sourceName }} · {{ action.scopeName }}</span>
+              <span class="run-panel__row-sub">{{ action.sourceName }} · {{ action.scopeName }}<template v-if="action.releaseRequired"> · 放行边界</template></span>
             </div>
             <n-button text size="tiny" type="info" @click="planDialog = action">详情</n-button>
           </li>

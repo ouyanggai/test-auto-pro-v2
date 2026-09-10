@@ -104,6 +104,7 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		}
 		preview := &StepPreview{
 			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
+			ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
 			Action: step.Action, ActionName: "导航校验", NodeKey: step.NodeKey, TargetNodeID: runCtx.Nodes[step.NodeKey].TargetNodeID,
 			NodeName: runCtx.Nodes[step.NodeKey].Name, ActorAccount: runCtx.PlanAccount, ActorName: actorName,
 			GateAllowed: true, Facts: facts, Navigation: true,
@@ -139,20 +140,22 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	log.Phase("gate", step.Sequence, 1, gateSummary(catalogItem, allowed))
 
 	preview := &StepPreview{
-		PathRunID:      runCtx.PathRun.ID,
-		StepNo:         step.Sequence,
-		TotalSteps:     len(runCtx.Steps),
-		Action:         step.Action,
-		ActionName:     catalogItem.Label,
-		NodeKey:        step.NodeKey,
-		TargetNodeID:   info.TargetNodeID,
-		NodeName:       info.Name,
-		ActorAccount:   runCtx.PlanAccount,
-		ActorName:      actorName,
-		ExpectedEffect: catalogItem.ExpectedEffect,
-		GateAllowed:    allowed,
-		GateItems:      catalogItem.Preconditions,
-		Facts:          facts,
+		PathRunID:       runCtx.PathRun.ID,
+		StepNo:          step.Sequence,
+		TotalSteps:      len(runCtx.Steps),
+		ReleaseGroup:    step.ReleaseGroup,
+		ReleaseRequired: step.ReleaseRequired,
+		Action:          step.Action,
+		ActionName:      catalogItem.Label,
+		NodeKey:         step.NodeKey,
+		TargetNodeID:    info.TargetNodeID,
+		NodeName:        info.Name,
+		ActorAccount:    runCtx.PlanAccount,
+		ActorName:       actorName,
+		ExpectedEffect:  catalogItem.ExpectedEffect,
+		GateAllowed:     allowed,
+		GateItems:       catalogItem.Preconditions,
+		Facts:           facts,
 	}
 	if !allowed {
 		reason := catalogItem.DisabledReason
@@ -296,6 +299,8 @@ func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionSt
 		PathRunID:         runCtx.PathRun.ID,
 		StepNo:            step.Sequence,
 		TotalSteps:        len(runCtx.Steps),
+		ReleaseGroup:      step.ReleaseGroup,
+		ReleaseRequired:   step.ReleaseRequired,
 		Action:            step.Action,
 		NodeKey:           step.NodeKey,
 		TargetNodeID:      info.TargetNodeID,
@@ -654,14 +659,19 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// TargetNodeID，拿编译场景的哈希键比较永远不相等，会把每一步都误判成偏离（评审 P1）。
 		// 判定保守：实例不可见、没有当前节点事实、或预期节点拿不到真实标识时不声称偏离。
 		if !outcome.NoMoreSteps {
-			expectedNextKey := runCtx.Steps[approved.NextIndex+1].NodeKey
-			expectedNextTarget := ""
-			if nodeInfo, ok := runCtx.Nodes[expectedNextKey]; ok {
-				expectedNextTarget = strings.TrimSpace(nodeInfo.TargetNodeID)
-			}
-			if after.Found && len(after.CurrentNodes) > 0 && expectedNextTarget != "" && !containsNode(after.CurrentNodes, expectedNextTarget) {
-				outcome.DeviationDetected = true
-				log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNextTarget))
+			nextStep := runCtx.Steps[approved.NextIndex+1]
+			// 恢复链与系统导航本来就会跨越节点或回到前序节点，不能按“下一步必须仍在路径上”判定偏离；
+			// 普通用户步骤和固定尾动作仍做真实节点对照，真实分支偏离继续立即停止。
+			if nextStep.Source != model.ActionStepSourceRecovery && nextStep.Source != model.ActionStepSourceNavigation {
+				expectedNextKey := nextStep.NodeKey
+				expectedNextTarget := ""
+				if nodeInfo, ok := runCtx.Nodes[expectedNextKey]; ok {
+					expectedNextTarget = strings.TrimSpace(nodeInfo.TargetNodeID)
+				}
+				if after.Found && len(after.CurrentNodes) > 0 && expectedNextTarget != "" && !containsNode(after.CurrentNodes, expectedNextTarget) {
+					outcome.DeviationDetected = true
+					log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNextTarget))
+				}
 			}
 		}
 		if !outcome.NoMoreSteps {

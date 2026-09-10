@@ -18,6 +18,7 @@ import (
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/control"
 	"test-auto-pro-v2/internal/engine/run"
+	"test-auto-pro-v2/internal/engine/scenario"
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
@@ -124,11 +125,14 @@ type StartRunInput struct {
 
 // RunPreviewDTO 是下一步预览的公开形态：中文为主，不含会话等目标敏感信息。
 type RunPreviewDTO struct {
-	StepNo     int    `json:"stepNo"`
-	TotalSteps int    `json:"totalSteps"`
-	Action     string `json:"action"`
-	ActionName string `json:"actionName"`
-	NodeKey    string `json:"nodeKey"`
+	StepNo     int `json:"stepNo"`
+	TotalSteps int `json:"totalSteps"`
+	// ReleaseGroup 与 ReleaseRequired 供人工模式按动作组展示放行边界。
+	ReleaseGroup    string `json:"releaseGroup,omitempty"`
+	ReleaseRequired bool   `json:"releaseRequired,omitempty"`
+	Action          string `json:"action"`
+	ActionName      string `json:"actionName"`
+	NodeKey         string `json:"nodeKey"`
 	// NodeID 是当前步节点的图上标识：画布据此平移与高亮当前步（与 nodeKey 是两套键空间）。
 	NodeID         string                     `json:"nodeId,omitempty"`
 	NodeName       string                     `json:"nodeName"`
@@ -189,6 +193,9 @@ type RunStepDTO struct {
 	StepNo     int    `json:"stepNo"`
 	ActionName string `json:"actionName"`
 	NodeKey    string `json:"nodeKey"`
+	// ReleaseGroup/ReleaseRequired 标明本步在动作组中的位置；执行事实本身不带动作组。
+	ReleaseGroup    string `json:"releaseGroup,omitempty"`
+	ReleaseRequired bool   `json:"releaseRequired,omitempty"`
 	// NodeID 是该节点在图上的真实标识：画布与侧栏按它取运行状态与步骤（与 nodeKey 是两套键空间）。
 	NodeID     string    `json:"nodeId,omitempty"`
 	NodeName   string    `json:"nodeName"`
@@ -212,15 +219,18 @@ type RunNodeStateDTO struct {
 // 字段全部是中文事实：编译场景本身就用中文写了前置条件、预期效果与失败处理，
 // 界面直接展示，不在前端翻译第二遍，也不输出动作键、作用范围枚举与演员策略等内部值。
 type RunNodePlanActionDTO struct {
-	Sequence       int    `json:"sequence"`
-	ActionName     string `json:"actionName"`
-	SourceName     string `json:"sourceName"`
-	ScopeName      string `json:"scopeName"`
-	Precondition   string `json:"precondition,omitempty"`
-	ExpectedEffect string `json:"expectedEffect,omitempty"`
-	StopOnFailure  string `json:"stopOnFailure,omitempty"`
-	RecoveryPolicy string `json:"recoveryPolicy,omitempty"`
-	ReloadRequired bool   `json:"reloadRequired"`
+	Sequence int `json:"sequence"`
+	// ReleaseGroup 与 ReleaseRequired 标识同一次人工放行包含的物理步骤。
+	ReleaseGroup    string `json:"releaseGroup,omitempty"`
+	ReleaseRequired bool   `json:"releaseRequired,omitempty"`
+	ActionName      string `json:"actionName"`
+	SourceName      string `json:"sourceName"`
+	ScopeName       string `json:"scopeName"`
+	Precondition    string `json:"precondition,omitempty"`
+	ExpectedEffect  string `json:"expectedEffect,omitempty"`
+	StopOnFailure   string `json:"stopOnFailure,omitempty"`
+	RecoveryPolicy  string `json:"recoveryPolicy,omitempty"`
+	ReloadRequired  bool   `json:"reloadRequired"`
 	// ParameterCount 只给动作参数的项数：参数键是目标字段名，属内部标识，不上界面。
 	ParameterCount int `json:"parameterCount"`
 }
@@ -317,6 +327,27 @@ type CommandDTO struct {
 	Label   string `json:"label"`
 }
 
+// compileRunSteps 用当前真实结构和新状态编译器从 user_actions 生成新运行步骤。
+// 编译器只做结构校验；实时门禁仍由每一步的执行器在目标事实上复验。
+func (s *RunOrchestrationService) compileRunSteps(ctx context.Context, planID, pathID uint64, path model.ExecutionPath, rawActions []byte) ([]model.CompiledActionStep, error) {
+	graph, err := s.graphs.Get(ctx, planID)
+	if err != nil {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "暂时无法读取真实流程结构，请重试"}
+	}
+	analysis, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, path.Choices)
+	if err != nil {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "分支选择与当前真实结构不一致，请重新校验执行路径"}
+	}
+	nodes, sequence := semanticScenarioNodes(graph, analysis)
+	compiled, compileErr := scenario.Compile(scenario.Input{
+		Actions: decodeWorkspaceActions(rawActions), Nodes: nodes, NodeSequence: sequence, FinalNodeKey: lastString(sequence),
+	})
+	if compileErr == nil {
+		return compiled.Steps, nil
+	}
+	return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "动作配置存在结构问题，不能启动运行：" + compileErr.Error()}
+}
+
 // buildRunContext 从真实业务记录装配执行上下文：只读，不触碰目标写接口。
 func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, pathID uint64) (step.RunContext, error) {
 	plan, err := s.plans.Get(ctx, planID)
@@ -332,7 +363,16 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		return step.RunContext{}, err
 	}
 	steps := []model.CompiledActionStep{}
-	if found && len(config.CompiledSteps) > 0 {
+	if found && len(config.UserActions) > 0 {
+		// 新运行以 user_actions 为唯一动作顺序来源，用当前状态编译器重新生成动作组；
+		// 旧 compiled_steps 只服务已开始的历史运行，避免旧隐藏步骤污染新运行。
+		compiled, compileErr := s.compileRunSteps(ctx, planID, pathID, path, config.UserActions)
+		if compileErr == nil {
+			steps = compiled
+		} else {
+			return step.RunContext{}, compileErr
+		}
+	} else if found && len(config.CompiledSteps) > 0 {
 		if err := json.Unmarshal(config.CompiledSteps, &steps); err != nil {
 			return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "编译场景读取失败，请重新保存动作编排"}
 		}
@@ -930,6 +970,17 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	// 配置读取或编译失败时退化为不标注，绝不阻塞详情展示。
 	configuredNodeKeys, pathChoices, compiledSteps := s.configuredRouteOf(ctx, run, pathRun.ExecutionPathID)
 	detail.PathChoices = pathChoices
+	// 用编译场景补齐已执行步骤的动作组边界；缺少配置快照时保持空值，绝不猜测。
+	stepGroups := make(map[int]model.CompiledActionStep, len(compiledSteps))
+	for _, compiled := range compiledSteps {
+		stepGroups[compiled.Sequence] = compiled
+	}
+	for index := range detail.Steps {
+		if compiled, exists := stepGroups[detail.Steps[index].StepNo]; exists {
+			detail.Steps[index].ReleaseGroup = compiled.ReleaseGroup
+			detail.Steps[index].ReleaseRequired = compiled.ReleaseRequired
+		}
+	}
 	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	detail.NodePlans = buildNodePlans(compiledSteps, tokenToGraphID)
 	if view := s.control.View(pathRun.ID); view != nil {
@@ -1115,11 +1166,27 @@ func (s *RunOrchestrationService) configuredRouteOf(ctx context.Context, run mod
 		choices = append(choices, PathChoiceDTO{RouteNodeID: choice.RouteNodeID, BranchID: choice.BranchID})
 	}
 	config, found, err := s.configs.GetPathConfig(ctx, executionPathID)
-	if err != nil || !found || len(config.CompiledSteps) == 0 {
+	if err == nil {
+	} else {
+		return nil, choices, nil
+	}
+	if found == false {
 		return nil, choices, nil
 	}
 	compiledSteps := []model.CompiledActionStep{}
-	if err := json.Unmarshal(config.CompiledSteps, &compiledSteps); err != nil {
+	if len(config.UserActions) > 0 {
+		// 运行详情与启动使用同一套状态编译器；编译失败时退回历史快照，避免旧运行画面直接空白。
+		if compiled, compileErr := s.compileRunSteps(ctx, run.PlanID, executionPathID, path, config.UserActions); compileErr == nil {
+			compiledSteps = compiled
+		}
+	}
+	if len(compiledSteps) == 0 && len(config.CompiledSteps) > 0 {
+		if err := json.Unmarshal(config.CompiledSteps, &compiledSteps); err == nil {
+		} else {
+			return nil, choices, nil
+		}
+	}
+	if len(compiledSteps) == 0 {
 		return nil, choices, nil
 	}
 	keys := make([]string, 0, len(compiledSteps))
@@ -1139,16 +1206,18 @@ func buildNodePlans(compiledSteps []model.CompiledActionStep, tokenToGraphID map
 			key = compiled.NodeKey
 		}
 		plans[key] = append(plans[key], RunNodePlanActionDTO{
-			Sequence:       compiled.Sequence,
-			ActionName:     actionNameOf(string(compiled.Action)),
-			SourceName:     actionStepSourceName(compiled.Source),
-			ScopeName:      actionScopeName(compiled.Scope),
-			Precondition:   compiled.Precondition,
-			ExpectedEffect: compiled.ExpectedEffect,
-			StopOnFailure:  compiled.StopOnFailure,
-			RecoveryPolicy: compiled.RecoveryPolicy,
-			ReloadRequired: compiled.ReloadRequired,
-			ParameterCount: len(compiled.Parameters),
+			Sequence:        compiled.Sequence,
+			ReleaseGroup:    compiled.ReleaseGroup,
+			ReleaseRequired: compiled.ReleaseRequired,
+			ActionName:      actionNameOf(string(compiled.Action)),
+			SourceName:      actionStepSourceName(compiled.Source),
+			ScopeName:       actionScopeName(compiled.Scope),
+			Precondition:    compiled.Precondition,
+			ExpectedEffect:  compiled.ExpectedEffect,
+			StopOnFailure:   compiled.StopOnFailure,
+			RecoveryPolicy:  compiled.RecoveryPolicy,
+			ReloadRequired:  compiled.ReloadRequired,
+			ParameterCount:  len(compiled.Parameters),
 		})
 	}
 	return plans
@@ -1163,6 +1232,8 @@ func actionStepSourceName(source model.ActionStepSource) string {
 		return "系统恢复"
 	case model.ActionStepSourceNavigation:
 		return "系统导航"
+	case model.ActionStepSourceSystemDefault:
+		return "固定尾动作"
 	default:
 		return "来源未知"
 	}
@@ -1481,6 +1552,7 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 	}
 	return &RunPreviewDTO{
 		StepNo: preview.StepNo, TotalSteps: preview.TotalSteps,
+		ReleaseGroup: preview.ReleaseGroup, ReleaseRequired: preview.ReleaseRequired,
 		Action: string(preview.Action), ActionName: preview.ActionName,
 		NodeKey: preview.NodeKey, NodeName: preview.NodeName,
 		ActorName: preview.ActorName, ExpectedEffect: preview.ExpectedEffect,

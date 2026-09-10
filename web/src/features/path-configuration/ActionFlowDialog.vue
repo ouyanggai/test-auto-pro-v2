@@ -24,11 +24,13 @@ const SOURCE_LABELS: Record<PathActionStepSource, string> = {
   user: '用户动作',
   system_recovery: '系统恢复',
   system_navigation: '系统导航',
+  system_default: '固定尾动作',
 }
 const SOURCE_TAGS: Record<PathActionStepSource, 'success' | 'warning' | 'info'> = {
   user: 'success',
   system_recovery: 'warning',
   system_navigation: 'info',
+  system_default: 'success',
 }
 
 const segments = computed(() => pathActionFlowSegments(props.steps, props.labels, props.currentNodeKey))
@@ -70,6 +72,7 @@ function stepDetails(step: PathCompiledActionStep) {
     { name: '参数', value: parameters.join('；') },
     { name: '失败停止条件', value: step.stopOnFailure },
     { name: '恢复策略', value: step.recoveryPolicy },
+    { name: '放行边界', value: step.releaseRequired ? '本步是动作组首个步骤，人工模式在此等待放行' : '' },
   ].filter(row => Boolean(row.value))
 }
 </script>

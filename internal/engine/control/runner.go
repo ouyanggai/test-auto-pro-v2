@@ -68,13 +68,26 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			return
 		}
 		runID := session.runCtx.Run.ID
+		manualControl := session.mode == model.RunModeManual
 		facts := StepFacts{
 			StepNo: preview.StepNo, NodeKey: preview.NodeKey, Action: string(preview.Action),
 			IsWriteStep: preview.Endpoint != "", DeviationHit: session.deviationStalled,
 		}
 		// 断点集合只能在控制锁内读取；命中结果复制到局部变量后再做数据库写入。
 		hits := EvaluateBreakpointHits(facts, session.breakpoints)
+		// 恢复组内部不响应普通断点：单步模式仍可逐物理步查看，人工模式整组放行，自动模式保持连续；
+		// 路径偏离断点例外，真实分支变化仍必须立即强制停止。
+		internalGroup := preview.ReleaseGroup != "" && preview.ReleaseRequired == false
 		s.mu.Unlock()
+		if internalGroup {
+			deviationHits := make([]BreakpointHit, 0, len(hits))
+			for _, hit := range hits {
+				if hit.Breakpoint.Type == model.BreakpointPathDeviation {
+					deviationHits = append(deviationHits, hit)
+				}
+			}
+			hits = deviationHits
+		}
 		// 门禁阻塞表示本步根本不能放行；先停在阻塞现场，不能把预置断点伪装成已命中的执行事实。
 		if preview.BlockReason != "" {
 			s.mu.Lock()
@@ -155,6 +168,19 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		if result.Outcome.Verdict != "confirmed_success" || result.PathFinished {
 			// 终局（失败/不确定/场景走完）：approveOneStep 已完成收尾或现场已作废。
 			return
+		}
+		// 人工控制一次放行只执行一个动作组：到下一组首个步骤时停下等待放行。
+		if manualControl {
+			s.mu.Lock()
+			next := session.preview
+			boundary := next == nil || next.ReleaseGroup != preview.ReleaseGroup || next.ReleaseRequired
+			if boundary {
+				session.stopReason = "人工控制已执行完一个动作组，下一动作组等待放行"
+			}
+			s.mu.Unlock()
+			if boundary {
+				return
+			}
 		}
 		// 模式切换在本步走完核验与落账后生效（2026-09-06）：切换为单步时，
 		// 循环必须在下一个写请求之前退出——单步的语义就是每步必停。

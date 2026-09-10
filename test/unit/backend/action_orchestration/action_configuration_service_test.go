@@ -211,8 +211,13 @@ func TestSaveActionConfigurationPersistsCompiledScenario(t *testing.T) {
 	if store.writes != 1 || result.ActionRevision != 1 || len(result.Actions) != 1 || len(result.CompiledScenario) < 2 {
 		t.Fatalf("动作场景保存结果不完整：writes=%d result=%+v", store.writes, result)
 	}
-	if result.Actions[0].NodeKey != reviewKey || result.CompiledScenario[0].Source != model.ActionStepSourceUser {
-		t.Fatalf("动作没有绑定语义节点或用户步骤来源错误：%+v", result)
+	if result.Actions[0].NodeKey == reviewKey {
+	} else {
+		t.Fatalf("动作没有绑定语义节点：%+v", result.Actions[0])
+	}
+	if len(result.CompiledScenario) >= 2 && result.CompiledScenario[0].Source == model.ActionStepSourceSystemDefault && result.CompiledScenario[0].Action == model.ActionSubmit && result.CompiledScenario[1].Source == model.ActionStepSourceSystemDefault && result.CompiledScenario[1].Action == model.ActionApprove {
+	} else {
+		t.Fatalf("显式同意未归一化为固定尾动作：%+v", result.CompiledScenario)
 	}
 	if result.Actions[0].Revision != result.ActionRevision {
 		t.Fatalf("动作没有绑定当前动作配置修订：action=%d revision=%d", result.Actions[0].Revision, result.ActionRevision)
@@ -221,8 +226,9 @@ func TestSaveActionConfigurationPersistsCompiledScenario(t *testing.T) {
 		t.Fatalf("保存动作不应丢失既有表单问题：%s", store.record.Issues)
 	}
 	last := result.CompiledScenario[len(result.CompiledScenario)-1]
-	if last.Source != model.ActionStepSourceNavigation || last.Action != model.ActionApprove {
-		t.Fatalf("缺少最终系统导航步骤：%+v", last)
+	if last.Source == model.ActionStepSourceNavigation && last.Action == model.ActionSystemAutomatic {
+	} else {
+		t.Fatalf("缺少末端系统导航步骤：%+v", last)
 	}
 	preview, err := config.GetCompiledScenario(context.Background(), plan.ID, path.ID)
 	if err != nil || len(preview.CompiledScenario) != len(result.CompiledScenario) || preview.Actions[0].Key != "approve-1" {

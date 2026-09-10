@@ -211,6 +211,12 @@ function removeAction(index: number) {
     </div>
     <span v-else class="action-orchestration__muted">未添加动作</span>
 
+    <div v-if="container.actionConfiguration.base" class="action-orchestration__fixed-tail" data-testid="fixed-tail-action">
+      <n-tag size="small" type="info">固定尾动作</n-tag>
+      <strong>{{ container.actionConfiguration.base.label }}</strong>
+      <span>{{ container.actionConfiguration.base.detail }}</span>
+    </div>
+
     <details v-if="selectableCatalog.length" class="action-orchestration__catalog">
       <summary>动作目录（{{ enabledCatalog.length }} / {{ selectableCatalog.length }} 可配置，含不可配置原因）</summary>
       <ul>

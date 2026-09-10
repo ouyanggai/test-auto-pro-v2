@@ -208,9 +208,9 @@ func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind st
 	}
 	switch nodeKind {
 	case "start":
-		result.Base = &model.PathConfigActionBase{Kind: "submit", Label: "提交", Detail: "发起节点固定提交"}
+		result.Base = &model.PathConfigActionBase{Kind: "submit", Label: "提交", Detail: "发起节点固定提交；前序动作产生草稿、驳回或撤回时，运行时会改为重新提交"}
 	case "common", "synergy":
-		result.Base = &model.PathConfigActionBase{Kind: "approve", Label: "同意", Detail: "系统默认同意"}
+		result.Base = &model.PathConfigActionBase{Kind: "approve", Label: "同意", Detail: "同意后将进入下一节点，所以始终最后执行"}
 	}
 	actionPersons := map[model.ActionKey]*model.PathConfigPerson{}
 	if person, personTarget := addSignNodePersonConfig(nodeID, node); person != nil && personTarget != nil {
@@ -274,6 +274,10 @@ func projectActionCatalog(
 			if item.Enabled {
 				result = append(result, projectedCatalogItem(item, nil, systemActionRuntimeNote()))
 			}
+			continue
+		}
+		// 提交与同意由配置界面的 base 契约固定展示，不允许用户拖拽、删除或重复配置。
+		if item.Action == model.ActionSubmit || item.Action == model.ActionApprove {
 			continue
 		}
 		if !catalogScopeAllowed(scope, item.Scope) {

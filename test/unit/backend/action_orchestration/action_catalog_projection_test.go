@@ -78,7 +78,7 @@ func gateBlockedReason(t *testing.T, err error, expectedAction string) string {
 	if !ok {
 		t.Fatalf("动作 %s 的阻断错误类型不正确：%T", expectedAction, err)
 	}
-	if configError.Kind != service.PathConfigErrorInvalid || configError.Message != "动作顺序无法恢复，请修正首个阻断动作" {
+	if configError.Kind != service.PathConfigErrorInvalid || configError.Message != "动作配置存在结构问题，请修正首个阻断项" {
 		t.Fatalf("动作 %s 的阻断错误不符合预期：%+v", expectedAction, configError)
 	}
 	if len(configError.Affected) != 1 || configError.Affected[0].Kind != "action" || configError.Affected[0].Name == "" {
@@ -101,10 +101,10 @@ func TestPathConfigurationProjectsRealActionCatalog(t *testing.T) {
 	if start == nil || review == nil || second == nil || end == nil {
 		t.Fatalf("路径配置缺少语义节点：%+v", configuration.Groups)
 	}
-	if got := strings.Join(catalogKinds(start.ActionConfiguration.Catalog), ","); got != "save_draft,submit,resubmit" {
+	if got := strings.Join(catalogKinds(start.ActionConfiguration.Catalog), ","); got != "save_draft,resubmit" {
 		t.Fatalf("发起节点目录 = %q，期望完整发起生命周期动作", got)
 	}
-	if got := strings.Join(catalogKinds(review.ActionConfiguration.Catalog), ","); got != "storage_form_data,add_sign,transfer,approve,reject,rollback_previous,retrieve" {
+	if got := strings.Join(catalogKinds(review.ActionConfiguration.Catalog), ","); got != "storage_form_data,add_sign,transfer,reject,rollback_previous,retrieve" {
 		t.Fatalf("审批节点目录 = %q，期望当前待办与已办恢复动作", got)
 	}
 	if item := findCatalogItem(start.ActionConfiguration.Catalog, "resubmit"); !item.Enabled || item.RuntimeNote == "" {
@@ -156,11 +156,16 @@ func TestSaveActionConfigurationEnforcesCatalogGate(t *testing.T) {
 		t.Fatalf("回退阻断原因未复用目标门禁说明：%q", reason)
 	}
 	secondKey := analyzer.PathConfigNodeToken("second")
-	_, err = config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, secondKey, "123e4567-e89b-12d3-a456-426614174822", model.ActionConfigurationInput{
+	savedTransfer, transferErr := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, secondKey, "123e4567-e89b-12d3-a456-426614174822", model.ActionConfigurationInput{
 		Actions: []model.ConfiguredAction{{Key: "transfer-1", Action: model.ActionTransfer, Scope: model.ActionScopeTask, Order: 1, ActorPolicy: "manual"}},
 	})
-	if reason := gateBlockedReason(t, err, "transfer"); !strings.Contains(reason, "移交") {
-		t.Fatalf("移交阻断原因未复用目标门禁说明：%q", reason)
+	if transferErr == nil {
+	} else {
+		t.Fatalf("移交动作保存失败：%v", transferErr)
+	}
+	if len(savedTransfer.Issues) > 0 && savedTransfer.Issues[0].Blocking == false && strings.Contains(savedTransfer.Issues[0].Message, "移交") {
+	} else {
+		t.Fatalf("移交运行时变化应形成非阻断提醒：%+v", savedTransfer.Issues)
 	}
 	_, err = config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, analyzer.PathConfigNodeToken("end"), "123e4567-e89b-12d3-a456-426614174823", model.ActionConfigurationInput{
 		Actions: []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, Order: 1}},
@@ -202,13 +207,18 @@ func TestResolveActionPersonIDsMapsOpaqueSelection(t *testing.T) {
 func TestSaveInstanceActionsUsesDedicatedContainer(t *testing.T) {
 	config, plan, path := newCatalogProjectionService(t, 823, 833)
 	instanceKey := analyzer.PathConfigInstanceActionKey()
-	_, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, instanceKey, "123e4567-e89b-12d3-a456-426614174831", model.ActionConfigurationInput{
+	savedUnfollow, unfollowErr := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, instanceKey, "123e4567-e89b-12d3-a456-426614174831", model.ActionConfigurationInput{
 		Actions: []model.ConfiguredAction{{Key: "unfollow-1", Action: model.ActionUnfollow, Scope: model.ActionScopeInstance, Order: 1}},
 	})
-	if reason := gateBlockedReason(t, err, "unfollow"); !strings.Contains(reason, "关注") {
-		t.Fatalf("取消关注顺序阻断原因不明确：%q", reason)
+	if unfollowErr == nil {
+	} else {
+		t.Fatalf("取消关注动作保存失败：%v", unfollowErr)
 	}
-	_, err = config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, instanceKey, "123e4567-e89b-12d3-a456-426614174832", model.ActionConfigurationInput{
+	if len(savedUnfollow.Issues) > 0 && savedUnfollow.Issues[0].Blocking == false && strings.Contains(savedUnfollow.Issues[0].Message, "关注") {
+	} else {
+		t.Fatalf("取消关注运行时顺序变化应形成非阻断提醒：%+v", savedUnfollow.Issues)
+	}
+	_, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, instanceKey, "123e4567-e89b-12d3-a456-426614174832", model.ActionConfigurationInput{
 		Actions: []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, Order: 1}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "实例动作容器只能保存实例作用域动作") {

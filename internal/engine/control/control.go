@@ -651,6 +651,9 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 
 	if command == model.CommandStep {
 		result, err := s.approveOneStep(ctx, pathRunID, session, 1, false)
+		if err == nil && result != nil && result.Outcome.Verdict == string(verdict.OutcomeSucceeded) && result.PathFinished == false && session.mode == model.RunModeManual {
+			result, err = s.continueManualGroup(ctx, pathRunID, session, result)
+		}
 		if err != nil {
 			s.sealPostWriteFailure(ctx, pathRunID, session, err)
 			return result, err
@@ -810,6 +813,9 @@ func (s *Service) startSingleStepReserved(ctx context.Context, pathRunID uint64,
 	go func() {
 		detached := context.WithoutCancel(ctx)
 		result, err := s.approveOneStep(detached, pathRunID, session, 1, false)
+		if err == nil && result != nil && result.Outcome.Verdict == string(verdict.OutcomeSucceeded) && result.PathFinished == false && session.mode == model.RunModeManual {
+			result, err = s.continueManualGroup(detached, pathRunID, session, result)
+		}
 		if err != nil {
 			s.sealPostWriteFailure(detached, pathRunID, session, err)
 			s.mu.Lock()
@@ -840,6 +846,41 @@ func (s *Service) startSingleStepReserved(ctx context.Context, pathRunID uint64,
 			s.applyStop(detached, pathRunID)
 		}
 	}()
+}
+
+// continueManualGroup 在人工控制模式下连续执行当前动作组内部步骤，遇到下一组首个步骤或安全边界时停下。
+// 动作组内部步骤仍各自走七阶段、独立重读和落账；普通断点边界由外层控制循环处理。
+func (s *Service) continueManualGroup(ctx context.Context, pathRunID uint64, session *activeStep, result *ApproveResult) (*ApproveResult, error) {
+	s.mu.Lock()
+	group := ""
+	if session.preview != nil {
+		group = session.preview.ReleaseGroup
+	}
+	s.mu.Unlock()
+	if group == "" {
+		return result, nil
+	}
+	for {
+		s.mu.Lock()
+		next := session.preview
+		if next == nil || next.ReleaseGroup != group || next.ReleaseRequired || session.stopRequested || session.pauseRequested || session.pendingMode != nil || session.deviationStalled || session.finished {
+			s.mu.Unlock()
+			return result, nil
+		}
+		session.loopRunning = true
+		s.mu.Unlock()
+		nextResult, err := s.approveOneStep(ctx, pathRunID, session, 1, false)
+		s.mu.Lock()
+		session.loopRunning = false
+		s.mu.Unlock()
+		if err != nil {
+			return nextResult, err
+		}
+		result = nextResult
+		if result == nil || result.Outcome.Verdict != string(verdict.OutcomeSucceeded) || result.PathFinished {
+			return result, nil
+		}
+	}
 }
 
 // appendPausedFact 在一步安全落账后记录暂停生效事实；失败只保留现场并写明原因。

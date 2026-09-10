@@ -29,7 +29,7 @@ type Result struct {
 	Issues  []model.ActionConfigurationIssue
 }
 
-// CompileError 表示保存时发现的首个不可恢复动作问题。
+// CompileError 表示保存时发现的首个结构性动作问题。
 type CompileError struct {
 	Issues []model.ActionConfigurationIssue
 }
@@ -48,13 +48,14 @@ func NewCompiler() *Compiler { return &Compiler{} }
 // Compiler 只读编译语义动作，不执行任何目标操作。
 type Compiler struct{}
 
-// Compile 按用户顺序复制动作并插入必要的同实例恢复、系统导航步骤。
+// Compile 按用户顺序生成固定尾动作、恢复链和系统导航步骤。
 func Compile(input Input) (Result, error) { return NewCompiler().Compile(input) }
 
-// Compile 校验动作顺序、节点和演员连续性，并生成可持久化的只读场景。
+// Compile 校验结构性问题，并按实例状态与节点游标生成可持久化动作组。
 func (c *Compiler) Compile(input Input) (Result, error) {
 	actions, nodes, sequence, err := normalizeInput(input)
-	if err != nil {
+	if err == nil {
+	} else {
 		return Result{}, err
 	}
 	if finalNode := strings.TrimSpace(input.FinalNodeKey); finalNode != "" && nodeIndex(sequence, finalNode) < 0 {
@@ -68,135 +69,429 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 		nodeTypes[key] = node.Type
 	}
 	catalog := catalogIndex(input.Catalog)
-	steps := make([]model.CompiledActionStep, 0, len(actions)+len(sequence)+4)
-	emittedNavigation := make(map[string]bool)
-	lastNodeIndex := -1
-	transferred := false
-	seenCompleted := false
-	resubmitReady := false
-	followed := false
+	issues := make([]model.ActionConfigurationIssue, 0)
 	for index, action := range actions {
-		position := nodeIndex(sequence, action.NodeKey)
-		compiledAction := action
-		submitResumesExisting := action.Action == model.ActionSubmit && resubmitReady
-		if submitResumesExisting {
-			// 保存草稿、驳回或撤回后主实例已经存在；后续“提交”表达继续流程，不能再调用新建提交。
-			compiledAction.Action = model.ActionResubmit
-		}
-		if action.NodeKey != "" && position < 0 {
-			return invalid(index, action, "UNKNOWN_NODE", "动作节点不属于当前已核实路径")
-		}
-		if issue := validateAction(action, index, nodeTypes, catalog); issue != nil {
+		if issue := validateActionStructure(action, index, nodeTypes, catalog); issue == nil {
+		} else if issue.Blocking {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
-		}
-		if issue := validateNodeOrder(compiledAction, index, position, lastNodeIndex, transferred); issue != nil {
-			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
-		}
-		if issue := validateRollbackTarget(action, index, position, sequence, nodeTypes); issue != nil {
-			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
-		}
-		if issue := validateActionState(compiledAction, index, resubmitReady, followed); issue != nil {
-			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
-		}
-		for _, key := range sequence[:boundedIndex(position, len(sequence))] {
-			if emittedNavigation[key] {
-				continue
-			}
-			typeName := strings.TrimSpace(nodeTypes[key])
-			if isAutomaticNode(typeName) {
-				steps = appendStep(steps, navigationStep(key, typeName))
-				emittedNavigation[key] = true
-			}
-		}
-		if action.Action == model.ActionRetrieve && !seenCompleted {
-			// 取回必须有已办事实；没有时透明插入一次准备同意，不能伪装成用户已执行。
-			steps = appendStep(steps, recoveryStep(model.ActionApprove, action, "取回前准备同意当前待办", "先取得可取回的已办任务，再按目标门禁取回"))
-			seenCompleted = true
-		}
-		if submitResumesExisting {
-			steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "已有主实例等待继续提交", "目标实例按当前完整表单值重新提交并解析当前路径"))
 		} else {
-			steps = appendStep(steps, userStep(action))
+			issues = append(issues, *issue)
 		}
-		switch compiledAction.Action {
-		case model.ActionSaveDraft, model.ActionReject, model.ActionWithdraw:
-			// 这三个动作让目标实例进入草稿、驳回或撤回状态，为后续重新提交提供来源。
-			resubmitReady = true
-		case model.ActionResubmit:
-			resubmitReady = false
-		case model.ActionFollow:
-			followed = true
-		case model.ActionUnfollow:
-			followed = false
+		if issue := validateRollbackTargetIssue(action, index, nodeIndex(sequence, action.NodeKey), sequence, nodeTypes); issue == nil {
+		} else {
+			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
-		if action.Action == model.ActionApprove {
-			seenCompleted = true
-		}
-		if action.Action == model.ActionRetrieve {
-			seenCompleted = true
-		}
-		if action.Action == model.ActionTransfer {
-			transferred = true
-		}
-		if action.ActorPolicy != "" {
-			transferred = action.Action == model.ActionTransfer
-		}
-		if action.Action == model.ActionSaveDraft {
-			if nextAction := nextAction(actions, index); nextAction != nil {
-				switch nextAction.Action {
-				case model.ActionSaveDraft, model.ActionSubmit, model.ActionResubmit:
-					// 连续草稿必须留在发起人节点；提交意图在下一轮转换为重新提交，显式重提则按原动作执行。
-				default:
-					steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "草稿保存后仍有后续动作", "目标实例按当前原始表单值重新提交并解析当前路径"))
-					resubmitReady = false
-				}
-			}
-		}
-		if action.Action == model.ActionReject || action.Action == model.ActionWithdraw {
-			if nextAction := nextAction(actions, index); nextAction != nil && nextAction.Action != model.ActionSubmit && nextAction.Action != model.ActionResubmit {
-				steps = appendStep(steps, recoveryStep(model.ActionResubmit, action, "驳回或撤回后重新提交", "目标实例恢复 run 后重新解析当前路径"))
-				resubmitReady = false
-			}
-		}
-		if action.Action == model.ActionApprove {
-			if nextAction := nextAction(actions, index); nextAction != nil && nextAction.NodeKey == action.NodeKey && nextAction.Action != model.ActionRetrieve {
-				steps = appendStep(steps, recoveryStep(model.ActionRetrieve, action, "同意后取回当前节点", "后续同节点动作必须先恢复当前待办"))
-			}
-		}
-		if action.Action == model.ActionRollback {
-			steps = appendStep(steps, recoveryStep(model.ActionApprove, action, "回退后重走前驱节点", "按真实前驱演员处理后重读主实例路径"))
-		}
-		if action.Action == model.ActionRollback && position > 0 {
-			// 自动节点不产生待办，回退后游标回到最近的真实人工前驱位置。
-			lastNodeIndex = previousActionNodeIndex(position, sequence, nodeTypes)
-		} else if position >= 0 {
-			lastNodeIndex = position
-		}
-		if action.Action == model.ActionApprove || action.Action == model.ActionRetrieve {
-			seenCompleted = true
+		if issue := validateStateReminder(action, index, actions); issue == nil {
+		} else {
+			issues = append(issues, *issue)
 		}
 	}
-	for _, key := range sequence {
-		if emittedNavigation[key] {
+	compiler := &compiler{nodeTypes: nodeTypes, sequence: sequence, status: "new", completed: map[string]bool{}, cursor: -1}
+	for _, action := range actions {
+		if isFixedTailAction(action.Action) {
 			continue
 		}
-		typeName := strings.TrimSpace(nodeTypes[key])
-		if isAutomaticNode(typeName) {
-			steps = appendStep(steps, navigationStep(key, typeName))
-			emittedNavigation[key] = true
+		actionIndex := nodeIndex(sequence, action.NodeKey)
+		if actionIndex >= 0 && compiler.cursor < actionIndex {
+			compiler.advanceForward(actionIndex)
 		}
+		if actionIndex >= 0 {
+			compiler.cursor = actionIndex
+		} else {
+			// 实例动作不绑定节点，按旧容器语义排在所有节点用户动作之后、当前节点固定尾动作之前。
+			target := compiler.lastHumanIndex()
+			if target > compiler.cursor {
+				compiler.advanceForward(target)
+			}
+			if target >= 0 {
+				compiler.cursor = target
+			}
+		}
+		compiler.emitUserAction(action, actionIndex)
 	}
-	finalNode := strings.TrimSpace(input.FinalNodeKey)
-	if finalNode == "" && len(sequence) > 0 {
-		finalNode = sequence[len(sequence)-1]
-	}
-	if finalNode != "" {
-		steps = appendStep(steps, finalNavigationStep(finalNode))
-	}
-	return Result{Actions: actions, Steps: steps, Issues: []model.ActionConfigurationIssue{}}, nil
+	compiler.advanceToEnd()
+	return Result{Actions: actions, Steps: compiler.steps, Issues: issues}, nil
 }
 
-// normalizeInput 深复制并稳定排序动作，重复动作不折叠为次数字段。
+// compiler 保存一次编译中的节点游标、实例状态和动作组游标。
+type compiler struct {
+	nodeTypes    map[string]string
+	sequence     []string
+	status       string
+	completed    map[string]bool
+	followed     bool
+	cursor       int
+	groupCounter int
+	currentGroup string
+	steps        []model.CompiledActionStep
+}
+
+// beginGroup 开启一个新动作组；固定尾动作与每个用户动作各自成组。
+func (c *compiler) beginGroup() {
+	c.groupCounter++
+	c.currentGroup = fmt.Sprintf("release-group-%d", c.groupCounter)
+}
+
+// addGroupedStep 为步骤分配顺序、动作组与首个放行标记。
+func (c *compiler) addGroupedStep(step model.CompiledActionStep, releaseRequired bool) {
+	if strings.TrimSpace(c.currentGroup) == "" {
+		c.beginGroup()
+		releaseRequired = true
+	}
+	step.Sequence = len(c.steps) + 1
+	step.ReleaseGroup = c.currentGroup
+	step.ReleaseRequired = releaseRequired
+	c.steps = append(c.steps, step)
+}
+
+// advanceForward 补齐离开当前节点到目标节点之间的人工尾动作和系统导航。
+func (c *compiler) advanceForward(target int) {
+	if target < 0 {
+		return
+	}
+	start := c.cursor
+	if start < 0 {
+		start = 0
+	}
+	for index := start; index < target; index++ {
+		c.emitNodeCompletion(index)
+	}
+	c.cursor = target
+}
+
+// advanceToEnd 从当前游标收尾到路径末端，保证每个经过的人工节点都有固定同意写步骤。
+func (c *compiler) advanceToEnd() {
+	start := c.cursor
+	if start < 0 {
+		start = 0
+	}
+	for index := start; index < len(c.sequence); index++ {
+		c.emitNodeCompletion(index)
+	}
+	if len(c.sequence) > 0 {
+		c.cursor = len(c.sequence) - 1
+	}
+}
+
+// emitNodeCompletion 在离开节点时补齐固定尾动作或系统节点只读导航。
+func (c *compiler) emitNodeCompletion(index int) {
+	if index < 0 || index >= len(c.sequence) {
+		return
+	}
+	nodeKey := c.sequence[index]
+	nodeType := strings.ToLower(strings.TrimSpace(c.nodeTypes[nodeKey]))
+	switch {
+	case nodeType == "start":
+		c.emitFixedStartTail(nodeKey)
+	case nodeType == "common" || nodeType == "synergy":
+		c.emitFixedTaskTail(nodeKey)
+	case isAutomaticNode(nodeType):
+		c.addGroupedStep(navigationStep(nodeKey, nodeType), false)
+	default:
+	}
+	c.cursor = index
+}
+
+// emitFixedStartTail 输出发起节点末尾的固定提交；已有草稿、驳回或撤回时改为重新提交。
+func (c *compiler) emitFixedStartTail(nodeKey string) {
+	c.beginGroup()
+	action := model.ActionSubmit
+	if c.status == "draft" || c.status == "rejected" || c.status == "withdraw" {
+		action = model.ActionResubmit
+	}
+	c.addGroupedStep(model.CompiledActionStep{
+		Source: model.ActionStepSourceSystemDefault, Action: action, Scope: model.ActionScopeInitiator, NodeKey: nodeKey,
+		Precondition:   "发起节点用户动作已完成，按当前实例状态选择提交或重新提交",
+		ExpectedEffect: expectedEffect(action), StopOnFailure: "提交门禁不满足时停止，不创建第二主实例",
+		RecoveryPolicy: "重新读取实例状态、流程代理和当前路径", ReloadRequired: true,
+	}, true)
+	c.status = "run"
+	c.completed = map[string]bool{}
+}
+
+// emitFixedTaskTail 输出审批/协同节点末尾的默认同意；它始终排在该节点所有用户动作之后。
+func (c *compiler) emitFixedTaskTail(nodeKey string) {
+	c.beginGroup()
+	c.addGroupedStep(model.CompiledActionStep{
+		Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
+		Precondition:   "当前人工节点所有用户动作已执行，且该节点仍有活动待办",
+		ExpectedEffect: expectedEffect(model.ActionApprove), StopOnFailure: "当前待办门禁不满足时停止，不切换到其他演员",
+		RecoveryPolicy: "重新读取实例状态、当前待办和真实路径", ReloadRequired: true,
+	}, true)
+	c.status = "run"
+	c.completed[nodeKey] = true
+}
+
+// emitUserAction 输出一条用户动作，并在动作离开节点时补齐恢复链。
+func (c *compiler) emitUserAction(action model.ConfiguredAction, actionIndex int) {
+	c.beginGroup()
+	prepRequired := false
+	if action.Action == model.ActionRetrieve && c.completed[action.NodeKey] == false {
+		c.addGroupedStep(recoveryApproveStep(action, "取回前没有可取回已办，先生成当前节点已办"), true)
+		c.completed[action.NodeKey] = true
+		prepRequired = true
+	}
+	c.addGroupedStep(userStep(action), prepRequired == false)
+	switch action.Action {
+	case model.ActionSaveDraft:
+		c.status = "draft"
+	case model.ActionSubmit, model.ActionResubmit:
+		c.status = "run"
+	case model.ActionReject:
+		c.status = "rejected"
+		c.emitRecoveryFromStart(actionIndex, action.Key)
+	case model.ActionWithdraw:
+		target := c.cursor
+		if target < 0 {
+			target = c.lastHumanIndex()
+		}
+		c.status = "withdraw"
+		c.emitRecoveryFromStart(target, action.Key)
+	case model.ActionRollback:
+		c.emitRollbackRecovery(actionIndex, action.Key)
+	case model.ActionRetrieve:
+		c.completed[action.NodeKey] = false
+	case model.ActionApprove:
+		c.completed[action.NodeKey] = true
+	case model.ActionFollow:
+		c.followed = true
+	case model.ActionUnfollow:
+		c.followed = false
+	}
+	c.cursor = actionIndex
+	if actionIndex < 0 {
+		c.cursor = c.lastHumanIndex()
+	}
+}
+
+// emitRecoveryFromStart 生成“重新提交 → 沿已选路径逐个人工节点同意 → 返回原节点”的恢复链。
+func (c *compiler) emitRecoveryFromStart(target int, triggerKey string) {
+	if target < 0 {
+		target = c.lastHumanIndex()
+	}
+	if target < 0 {
+		target = 0
+	}
+	start := c.firstHumanIndex()
+	if start < 0 {
+		start = 0
+	}
+	c.addGroupedStep(model.CompiledActionStep{
+		Source: model.ActionStepSourceRecovery, SourceActionKey: triggerKey,
+		Action: model.ActionResubmit, Scope: model.ActionScopeInitiator, NodeKey: c.sequence[start],
+		Precondition: "实例已被驳回或撤回，等待发起人重新提交", ExpectedEffect: expectedEffect(model.ActionResubmit),
+		StopOnFailure: "恢复门禁不满足时停止并定位触发动作", RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
+	}, false)
+	c.status = "run"
+	c.completed = map[string]bool{}
+	for index := start + 1; index < target; index++ {
+		c.emitRecoveryPass(index, triggerKey)
+	}
+	c.cursor = target
+}
+
+// emitRollbackRecovery 生成从真实前驱人工节点返回到原节点的恢复链。
+func (c *compiler) emitRollbackRecovery(target int, triggerKey string) {
+	previous := previousHumanIndex(target, c.sequence, c.nodeTypes)
+	if previous < 0 {
+		return
+	}
+	c.addGroupedStep(recoveryApproveStep(model.ConfiguredAction{Key: triggerKey, NodeKey: c.sequence[previous]}, "回退到真实前驱节点后重新处理"), false)
+	c.completed[c.sequence[previous]] = true
+	for index := previous + 1; index < target; index++ {
+		c.emitRecoveryPass(index, triggerKey)
+	}
+	c.cursor = target
+}
+
+// emitRecoveryPass 在恢复链经过人工节点时发出真实同意，经过系统节点时只读导航。
+func (c *compiler) emitRecoveryPass(index int, triggerKey string) {
+	if index < 0 || index >= len(c.sequence) {
+		return
+	}
+	nodeKey := c.sequence[index]
+	nodeType := strings.ToLower(strings.TrimSpace(c.nodeTypes[nodeKey]))
+	switch {
+	case nodeType == "common" || nodeType == "synergy":
+		c.addGroupedStep(recoveryApproveStep(model.ConfiguredAction{Key: triggerKey, NodeKey: nodeKey}, "沿已选路径恢复到原节点"), false)
+		c.completed[nodeKey] = true
+	case isAutomaticNode(nodeType):
+		c.addGroupedStep(navigationStep(nodeKey, nodeType), false)
+	default:
+	}
+}
+
+// firstHumanIndex 返回路径上第一个发起或人工节点；没有人工节点时返回 -1。
+func (c *compiler) firstHumanIndex() int {
+	for index, key := range c.sequence {
+		if isHumanNode(c.nodeTypes[key]) {
+			return index
+		}
+	}
+	return -1
+}
+
+// lastHumanIndex 返回路径上最后一个发起或人工节点；没有人工节点时返回 -1。
+func (c *compiler) lastHumanIndex() int {
+	for index := len(c.sequence) - 1; index >= 0; index-- {
+		if isHumanNode(c.nodeTypes[c.sequence[index]]) {
+			return index
+		}
+	}
+	return -1
+}
+
+// recoveryApproveStep 创建恢复链经过人工节点时的真实同意步骤。
+func recoveryApproveStep(action model.ConfiguredAction, precondition string) model.CompiledActionStep {
+	return model.CompiledActionStep{
+		Source: model.ActionStepSourceRecovery, SourceActionKey: action.Key,
+		Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: action.NodeKey,
+		Precondition: precondition, ExpectedEffect: expectedEffect(model.ActionApprove),
+		StopOnFailure:  "恢复门禁不满足时停止并定位触发动作",
+		RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
+	}
+}
+
+// isHumanNode 判断节点是否需要真实人工写操作：发起、审批和协同都属于人工节点。
+func isHumanNode(nodeType string) bool {
+	switch strings.ToLower(strings.TrimSpace(nodeType)) {
+	case "start", "common", "synergy":
+		return true
+	default:
+		return false
+	}
+}
+
+// isFixedTailAction 判断动作是否由固定尾动作承载；旧配置中的显式记录也会归一化。
+func isFixedTailAction(action model.ActionKey) bool {
+	switch action {
+	case model.ActionSubmit, model.ActionApprove, model.ActionResubmit:
+		return true
+	default:
+		return false
+	}
+}
+
+// previousHumanIndex 跳过自动节点，定位指定位置之前最近的人工或发起节点。
+func previousHumanIndex(position int, sequence []string, nodeTypes map[string]string) int {
+	if position > len(sequence) {
+		position = len(sequence)
+	}
+	for index := position - 1; index >= 0; index-- {
+		if isHumanNode(nodeTypes[sequence[index]]) {
+			return index
+		}
+	}
+	return -1
+}
+
+// validateActionStructure 校验动作结构、作用域、节点与不可伪造参数；实时门禁只做非阻断提醒。
+func validateActionStructure(action model.ConfiguredAction, index int, nodes map[string]string, catalog map[catalogKey]model.ActionCatalogItem) *model.ActionConfigurationIssue {
+	if action.Action == "" || action.Action == model.ActionSystemAutomatic {
+		return blockingIssue(index, action, "ACTION_NOT_CONFIGURABLE", "系统自动语义只能只读展示，不能作为用户动作保存")
+	}
+	wantScope, known := actionScope(action.Action)
+	if known == false {
+		return blockingIssue(index, action, "ACTION_UNKNOWN", "动作不属于当前目标动作目录")
+	}
+	if action.Scope != wantScope {
+		return blockingIssue(index, action, "ACTION_SCOPE_INVALID", "动作作用域与目标动作目录不一致")
+	}
+	if action.Scope == model.ActionScopeInstance && strings.TrimSpace(action.NodeKey) != "" {
+		return blockingIssue(index, action, "ACTION_NODE_INVALID", "实例动作不能绑定语义节点")
+	}
+	if action.Scope != model.ActionScopeInstance && strings.TrimSpace(action.NodeKey) == "" {
+		return blockingIssue(index, action, "ACTION_NODE_REQUIRED", "节点动作必须绑定语义节点键")
+	}
+	if action.NodeKey != "" {
+		nodeType, exists := nodes[action.NodeKey]
+		if exists == false {
+			return blockingIssue(index, action, "UNKNOWN_NODE", "动作节点不属于当前已核实路径")
+		}
+		if (action.Scope == model.ActionScopeTask || action.Scope == model.ActionScopeCompletedTask) && nodeType != "common" && nodeType != "synergy" {
+			return blockingIssue(index, action, "ACTION_NODE_TYPE_INVALID", "当前节点不是可处理的人工审批或协同节点")
+		}
+		if action.Scope == model.ActionScopeInitiator && nodeType != "start" {
+			return blockingIssue(index, action, "ACTION_NODE_TYPE_INVALID", "发起生命周期动作只能绑定发起节点")
+		}
+	}
+	if action.Action == model.ActionTransfer && action.ActorPolicy == "" {
+		return blockingIssue(index, action, "ACTOR_POLICY_REQUIRED", "移交动作必须明确目标演员策略")
+	}
+	if parameter := forbiddenParameterPath(action.Parameters, ""); parameter != "" {
+		return blockingIssue(index, action, "ACTION_PARAMETER_TARGET_ID", "动作参数不能携带目标实例、任务、代理或人员临时标识："+parameter)
+	}
+	if len(catalog) == 0 || isFixedTailAction(action.Action) {
+		return nil
+	}
+	catalogItem, exists := catalogGate(catalog, action)
+	if exists == false {
+		return advisoryIssue(index, action, "ACTION_NOT_IN_CATALOG", "当前实时动作目录未返回该动作，运行时将按目标事实复验")
+	}
+	if catalogItem.Enabled == false {
+		reason := strings.TrimSpace(catalogItem.DisabledReason)
+		if reason == "" {
+			reason = "当前动作门禁未通过"
+		}
+		return advisoryIssue(index, action, "ACTION_DISABLED", reason)
+	}
+	return nil
+}
+
+// validateRollbackTargetIssue 阻止把回退动作配置到没有可恢复前驱的节点。
+func validateRollbackTargetIssue(action model.ConfiguredAction, index, position int, sequence []string, nodeTypes map[string]string) *model.ActionConfigurationIssue {
+	if action.Action != model.ActionRollback || position < 0 || position >= len(sequence) {
+		return nil
+	}
+	if position == 0 {
+		return blockingIssue(index, action, "ROLLBACK_PREVIOUS_MISSING", "当前节点没有目标引擎解析出的直接前一待办，不能回退")
+	}
+	previous := previousHumanIndex(position, sequence, nodeTypes)
+	if previous < 0 || strings.EqualFold(strings.TrimSpace(nodeTypes[sequence[previous]]), "start") {
+		return blockingIssue(index, action, "ROLLBACK_PREVIOUS_START", "直接前一节点是发起节点，目标规则不允许回退")
+	}
+	return nil
+}
+
+// validateStateReminder 把顺序相关的运行时变化降级为非阻断提醒。
+func validateStateReminder(action model.ConfiguredAction, index int, actions []model.ConfiguredAction) *model.ActionConfigurationIssue {
+	if action.Action != model.ActionFollow && action.Action != model.ActionUnfollow {
+		return nil
+	}
+	seenFollow := false
+	for _, previous := range actions {
+		if previous.Order >= action.Order {
+			break
+		}
+		switch previous.Action {
+		case model.ActionFollow:
+			seenFollow = true
+		case model.ActionUnfollow:
+			seenFollow = false
+		}
+	}
+	switch action.Action {
+	case model.ActionUnfollow:
+		if seenFollow == false {
+			return advisoryIssue(index, action, "ACTION_UNFOLLOW_WITHOUT_FOLLOW", "当前顺序没有可引用的关注动作，运行时将按目标实时关注状态裁决")
+		}
+	case model.ActionFollow:
+		if seenFollow {
+			return advisoryIssue(index, action, "ACTION_FOLLOW_ALREADY_ACTIVE", "当前顺序重复关注，运行时将按目标实时关注状态裁决")
+		}
+	}
+	return nil
+}
+
+// blockingIssue 构造结构性阻断问题。
+func blockingIssue(index int, action model.ConfiguredAction, code, message string) *model.ActionConfigurationIssue {
+	return &model.ActionConfigurationIssue{Index: index, ActionKey: action.Action, ActionID: action.Key, Code: code, Message: message, Blocking: true}
+}
+
+// advisoryIssue 构造运行时复验用的非阻断提醒。
+func advisoryIssue(index int, action model.ConfiguredAction, code, message string) *model.ActionConfigurationIssue {
+	return &model.ActionConfigurationIssue{Index: index, ActionKey: action.Action, ActionID: action.Key, Code: code, Message: message, Blocking: false}
+}
 func normalizeInput(input Input) ([]model.ConfiguredAction, map[string]model.FlowGraphNode, []string, error) {
 	if len(input.Actions) > MaxActions {
 		return nil, nil, nil, &CompileError{Issues: []model.ActionConfigurationIssue{{Index: MaxActions, Code: "ACTION_LIMIT", Message: "动作数量不能超过 100 条", Blocking: true}}}

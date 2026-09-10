@@ -14,7 +14,7 @@ const (
 	ActionScopeInstance ActionScope = "instance"
 )
 
-// ActionStepSource 区分用户配置、系统恢复和系统导航步骤。
+// ActionStepSource 区分用户配置、固定尾动作、系统恢复和系统导航步骤。
 type ActionStepSource string
 
 const (
@@ -24,6 +24,8 @@ const (
 	ActionStepSourceRecovery ActionStepSource = "system_recovery"
 	// ActionStepSourceNavigation 表示引擎通过条件、并行或结束节点的导航步骤。
 	ActionStepSourceNavigation ActionStepSource = "system_navigation"
+	// ActionStepSourceSystemDefault 表示编译器在节点末尾生成的默认提交或同意。
+	ActionStepSourceSystemDefault ActionStepSource = "system_default"
 )
 
 // ActionKey 是不依赖目标临时 ID 的稳定动作语义键。
@@ -174,21 +176,25 @@ type ActionContext struct {
 	CurrentTaskParallel    bool `json:"currentTaskParallel"`
 }
 
-// CompiledActionStep 是未来执行器消费的只读步骤，当前切片不执行该步骤。
+// CompiledActionStep 是执行器消费的只读步骤；动作组与来源区分放行边界和恢复语义。
 type CompiledActionStep struct {
-	Sequence        int              `json:"sequence"`
-	Source          ActionStepSource `json:"source"`
-	SourceActionKey string           `json:"sourceActionKey,omitempty"`
-	Action          ActionKey        `json:"action"`
-	Scope           ActionScope      `json:"scope"`
-	ActorPolicy     string           `json:"actorPolicy,omitempty"`
-	NodeKey         string           `json:"nodeKey,omitempty"`
-	Parameters      map[string]any   `json:"parameters,omitempty"`
-	Precondition    string           `json:"precondition"`
-	ExpectedEffect  string           `json:"expectedEffect"`
-	StopOnFailure   string           `json:"stopOnFailure"`
-	RecoveryPolicy  string           `json:"recoveryPolicy"`
-	ReloadRequired  bool             `json:"reloadRequired"`
+	Sequence int              `json:"sequence"`
+	Source   ActionStepSource `json:"source"`
+	// ReleaseGroup 标识同一次人工放行包含的物理步骤。
+	ReleaseGroup string `json:"releaseGroup,omitempty"`
+	// ReleaseRequired 标识动作组的首个步骤；人工模式在这里停下等待下一次放行。
+	ReleaseRequired bool           `json:"releaseRequired,omitempty"`
+	SourceActionKey string         `json:"sourceActionKey,omitempty"`
+	Action          ActionKey      `json:"action"`
+	Scope           ActionScope    `json:"scope"`
+	ActorPolicy     string         `json:"actorPolicy,omitempty"`
+	NodeKey         string         `json:"nodeKey,omitempty"`
+	Parameters      map[string]any `json:"parameters,omitempty"`
+	Precondition    string         `json:"precondition"`
+	ExpectedEffect  string         `json:"expectedEffect"`
+	StopOnFailure   string         `json:"stopOnFailure"`
+	RecoveryPolicy  string         `json:"recoveryPolicy"`
+	ReloadRequired  bool           `json:"reloadRequired"`
 }
 
 // ActionConfigurationInput 是保存当前节点人员与有序动作的最小回写体，不携带目标 task/proxy ID。

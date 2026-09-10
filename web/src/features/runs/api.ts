@@ -13,6 +13,8 @@ export interface RunGateItem {
 export interface RunPreview {
   stepNo: number
   totalSteps: number
+  releaseGroup?: string
+  releaseRequired?: boolean
   action: string
   actionName: string
   nodeKey: string
@@ -49,6 +51,8 @@ export interface RunStepAttempt {
 export interface RunStep {
   stepNo: number
   actionName: string
+  releaseGroup?: string
+  releaseRequired?: boolean
   nodeKey: string
   // nodeId 是节点在图上的真实标识：画布与侧栏按它取状态（nodeKey 是配置令牌键，另一套键空间）。
   nodeId?: string
@@ -66,6 +70,8 @@ export interface RunStep {
 // RunNodePlanAction 是某个节点上的一条已配置计划动作（后端由编译场景归组，全部中文）。
 export interface RunNodePlanAction {
   sequence: number
+  releaseGroup?: string
+  releaseRequired?: boolean
   actionName: string
   sourceName: string
   scopeName: string

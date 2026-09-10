@@ -394,12 +394,14 @@ export interface PathConfigActionCatalogItem {
 }
 
 // PathActionStepSource 区分用户配置动作、系统恢复步骤和系统导航步骤。
-export type PathActionStepSource = 'user' | 'system_recovery' | 'system_navigation'
+export type PathActionStepSource = 'user' | 'system_recovery' | 'system_navigation' | 'system_default'
 
 // PathCompiledActionStep 是服务端编译的只读场景步骤，浏览器不能提交。
 export interface PathCompiledActionStep {
   sequence: number
   source: PathActionStepSource
+  releaseGroup?: string
+  releaseRequired?: boolean
   sourceActionKey?: string
   action: PathActionKey | 'system_automatic'
   scope: PathActionScope

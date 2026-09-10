@@ -110,7 +110,7 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 	if compileErr != nil {
 		result := actionConfigurationResult(path, current, compiled)
 		result.Issues = compileIssues(compileErr)
-		return result, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作顺序无法恢复，请修正首个阻断动作", Affected: actionConfigurationAffected(compileErr)}
+		return result, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作配置存在结构问题，请修正首个阻断项", Affected: actionConfigurationAffected(compileErr)}
 	}
 	if sameIdempotency {
 		// 幂等重试只复用正文完全相同的已保存结果；同键提交不同动作不能返回旧结果或产生第二次修订。

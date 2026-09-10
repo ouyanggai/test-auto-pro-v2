@@ -254,6 +254,10 @@ type StepPreview struct {
 	// BlockReason 非空表示本步无法继续（门禁不通过/演员不可解析等），路径必须停止。
 	BlockReason       string
 	BlockFailureClass model.FailureClass
+	// ReleaseGroup 是编译场景中的动作组标识；人工模式一次放行同一组内的物理步骤。
+	ReleaseGroup string
+	// ReleaseRequired 表示本步是动作组首个步骤，人工模式在此停下等待放行。
+	ReleaseRequired bool
 	// Navigation 表示本步是只读导航步骤：不发出写请求，仅校验实例事实。
 	Navigation bool
 	// RequestPayload 是放行后将要发出的请求载荷（与预览同源），只在内存流转，含会话无关字段。
