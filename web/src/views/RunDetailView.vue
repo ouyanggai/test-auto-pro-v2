@@ -305,7 +305,7 @@ const runErrorNotes = computed<Record<string, string>>(() => {
   const closing = ['失败', '结果待确认']
   if (!closing.includes(detail.value.pathRunStatusName)) return notes
   const last = detail.value.steps[detail.value.steps.length - 1]
-  const bad = last.attempts.find((attempt) => attempt.verdictName !== '执行成功' && attempt.verdictName !== '确定成功')
+  const bad = last.attempts.find((attempt) => attempt.verdictName !== '执行成功' && attempt.verdictName !== '确定成功' && attempt.verdictName !== '目标跳过')
   if (bad?.reason) {
     const nodeID = last.nodeId || last.nodeKey
     if (nodeID) notes[nodeID] = bad.reason

@@ -36,19 +36,20 @@ func planFailedStepRetry(compiledSteps []model.CompiledActionStep, totalSteps *i
 	if totalSteps != nil && *totalSteps != len(compiledSteps) {
 		return RetryPlan{}, fmt.Errorf("动作配置在失败后已被修改，无法继续本次运行；请从计划重新发起运行")
 	}
-	// 已落账事实里最大步骤号就是失败步骤：它之前的步骤必须全部成功，它自身的行必须全部失败。
+	// 已落账事实里最大步骤号就是失败步骤：它之前的步骤必须全部成功或被目标跳过，
+	// 它自身的行必须全部失败。
 	failedStepNo := 0
 	succeededByStepNo := map[int]model.RunStep{}
 	for _, row := range factRows {
 		if row.StepNo > failedStepNo {
 			failedStepNo = row.StepNo
 		}
-		if row.Status == model.RunStepSucceeded {
+		if row.Status == model.RunStepSucceeded || row.Status == model.RunStepSkipped {
 			succeededByStepNo[row.StepNo] = row
 		}
 	}
 	for _, row := range factRows {
-		if row.StepNo < failedStepNo && row.Status != model.RunStepSucceeded && succeededByStepNo[row.StepNo].ID == 0 {
+		if row.StepNo < failedStepNo && row.Status != model.RunStepSucceeded && row.Status != model.RunStepSkipped && succeededByStepNo[row.StepNo].ID == 0 {
 			return RetryPlan{}, fmt.Errorf("运行事实不完整（第 %d 步没有成功记录），无法重试；请从计划重新发起运行", row.StepNo)
 		}
 	}

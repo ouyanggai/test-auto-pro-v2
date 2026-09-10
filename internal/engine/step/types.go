@@ -169,6 +169,9 @@ type InstanceFacts struct {
 	// 任务级动作必须以该处理人身份登录并发出写请求；这是"人员配置驱动执行"的事实来源。
 	CurrentTaskAssigneeID   string `json:"currentTaskAssigneeId,omitempty"`
 	CurrentTaskAssigneeName string `json:"currentTaskAssigneeName,omitempty"`
+	// AssigneeDiag 是固定人员发现（代理树提取+会话切换）没有命中时的中文原因，
+	// 随门禁拒绝一并写入 step.log 与界面，让「当前待办已经处理」这类结论可解释。
+	AssigneeDiag string `json:"assigneeDiag,omitempty"`
 	// CompletedTask* 是取回动作的当前账号已办任务快照。
 	CompletedTaskRead     bool   `json:"completedTaskRead,omitempty"`
 	CompletedTaskFound    bool   `json:"completedTaskFound,omitempty"`
@@ -260,6 +263,11 @@ type StepPreview struct {
 	ReleaseRequired bool
 	// Navigation 表示本步是只读导航步骤：不发出写请求，仅校验实例事实。
 	Navigation bool
+	// TargetSkipped 表示本步节点已被目标自动跳过（模板约束「无处理人时跳过该节点」生效，
+	// 实例待办已落到路径上更靠后的节点）：不发出写请求，放行后按「已跳过」落账并推进。
+	// SkipReason 是给用户看的中文依据，必须说清为什么判定被跳过。
+	TargetSkipped bool
+	SkipReason    string
 	// RequestPayload 是放行后将要发出的请求载荷（与预览同源），只在内存流转，含会话无关字段。
 	RequestPayload map[string]any
 	// FormOverlaid 与 FormWithheld 是本步表单数据按节点权限构造的结果：
@@ -287,6 +295,10 @@ type StepPreview struct {
 func (p *StepPreview) WriteSent() bool {
 	return p != nil && p.writeSent
 }
+
+// StepVerdictTargetSkipped 是目标自动跳过步骤的尝试结论：不是三值判定对象（没有写请求），
+// 单独取值以便事实行与界面如实区分「成功」与「被目标跳过」。
+const StepVerdictTargetSkipped = "target_skipped"
 
 // StepOutcome 是一步走完后的结果，供控制层决定路径去向。
 type StepOutcome struct {

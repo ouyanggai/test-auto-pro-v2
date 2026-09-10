@@ -140,7 +140,33 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		actorName = name
 	}
 	info := runCtx.Nodes[step.NodeKey]
+	// 目标自动跳过适配：模板约束「无处理人时跳过该节点」在人员规则（如扩展属性）解析为空时
+	// 生效，实例待办直接落到路径上更靠后的节点，本步的同意永远等不到待办。只有「实例当前
+	// 待办节点在已配置路径上严格位于本步之后」这一可证明事实才允许跳过；其余情形仍按既有
+	// 门禁判定，绝不猜测。跳过不发出任何写请求，放行后按「已跳过」落账并推进。
+	if step.Scope == model.ActionScopeTask || step.Scope == model.ActionScopeCompletedTask {
+		reason, pendingName, diag := targetSkippedStepReason(runCtx, step, facts)
+		// 判定依据必须落 step.log：否则界面上「当前待办已经处理」无法解释实例究竟停在哪。
+		log.Phase("gate", step.Sequence, 1, "目标跳过判定："+diag)
+		if reason != "" {
+			preview := &StepPreview{
+				PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
+				ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
+				Action: step.Action, ActionName: "目标跳过确认", NodeKey: step.NodeKey,
+				TargetNodeID: info.TargetNodeID, NodeName: info.Name,
+				ActorAccount: runCtx.PlanAccount, ActorName: actorName,
+				GateAllowed: true, Facts: facts, TargetSkipped: true, SkipReason: reason,
+				GateItems: []model.ActionPrecondition{},
+			}
+			log.Phase("control", step.Sequence, 1, fmt.Sprintf("该节点已被目标自动跳过（实例待办已在「%s」）；放行将记录跳过并继续", pendingName))
+			return preview, false, nil
+		}
+	}
 	catalogItem, allowed := evaluateGate(step, buildGateContext(runCtx, step, facts, info))
+	// 固定人员发现的结论随门禁一并披露：拒绝原因要能说明「待办在谁的账号下、工具找过了谁」。
+	if !allowed && strings.TrimSpace(facts.AssigneeDiag) != "" {
+		log.Phase("gate", step.Sequence, 1, "固定人员发现："+facts.AssigneeDiag)
+	}
 	log.Phase("gate", step.Sequence, 1, gateSummary(catalogItem, allowed))
 
 	preview := &StepPreview{
@@ -165,6 +191,11 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		reason := catalogItem.DisabledReason
 		if reason == "" {
 			reason = "放行条件不满足"
+		}
+		// 固定人员发现的结论拼进拒绝原因：只说「当前待办已经处理」解释不了实例停在哪、
+		// 工具找过了谁；界面与 step.log 必须给出可操作的下一步。
+		if strings.TrimSpace(facts.AssigneeDiag) != "" {
+			reason = reason + "（" + facts.AssigneeDiag + "）"
 		}
 		preview.GateReason = reason
 		preview.BlockReason = "放行条件不满足：" + reason
@@ -318,6 +349,64 @@ func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionSt
 	}
 }
 
+// targetSkippedStepReason 判断本步节点是否已被目标自动跳过。
+// reason 非空表示可证明已被跳过（实例待办落到路径上严格靠后的节点），pendingName 是待办所在节点名；
+// diag 是给人看的判定依据（实例当前节点与待办节点分别落在哪），无论是否跳过都写进 step.log。
+// 判据必须可证明：实例可读、本步节点在场景中、实例当前/待办节点都能对上已配置路径的节点表；
+// 其余情形 reason 为空，按既有门禁失败处理，绝不猜测。
+func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) (reason string, pendingName string, diag string) {
+	if !facts.Found {
+		return "", "", "实例不可读（found=false）"
+	}
+	if strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID) == "" {
+		return "", "", "本步节点缺少目标真实标识"
+	}
+	position := map[string]int{}
+	for index, s := range runCtx.Steps {
+		key := strings.TrimSpace(s.NodeKey)
+		if key == "" {
+			continue
+		}
+		if _, exists := position[key]; !exists {
+			position[key] = index
+		}
+	}
+	expectedIndex, ok := position[strings.TrimSpace(step.NodeKey)]
+	if !ok {
+		return "", "", "本步节点不在编译场景中"
+	}
+	pendingIndex := -1
+	seen := map[string]bool{}
+	for _, nodeID := range append(append([]string{}, facts.DueNodes...), facts.CurrentNodes...) {
+		id := strings.TrimSpace(nodeID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		for key, info := range runCtx.Nodes {
+			if strings.TrimSpace(info.TargetNodeID) != id {
+				continue
+			}
+			index, exists := position[key]
+			if !exists {
+				continue
+			}
+			if pendingIndex < 0 || index < pendingIndex {
+				pendingIndex = index
+				pendingName = info.Name
+			}
+			break
+		}
+	}
+	if pendingIndex < 0 {
+		return "", "", fmt.Sprintf("实例当前/待办节点 %v 都不在已配置路径上，无法判定跳过", append(append([]string{}, facts.DueNodes...), facts.CurrentNodes...))
+	}
+	if pendingIndex <= expectedIndex {
+		return "", "", fmt.Sprintf("实例待办仍在「%s」（本步或更早），不构成跳过", pendingName)
+	}
+	return fmt.Sprintf("实例待办已在「%s」，本节点已被目标自动跳过（无处理人时跳过该节点），没有可执行的审批动作", pendingName), pendingName, fmt.Sprintf("实例待办在「%s」，位于本步之后的路径节点", pendingName)
+}
+
 // ApprovedStep 是放行后交给执行器的输入：预览事实（内含同源载荷）与步骤下标。
 type ApprovedStep struct {
 	RunCtx    RunContext
@@ -402,6 +491,36 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		log.Phase("settle", step.Sequence, 1, "导航步骤完成")
 		return outcome, lineNo, nil
 	}
+	if preview.TargetSkipped {
+		// 目标自动跳过：本节点没有待办（模板「无处理人时跳过该节点」约束生效），没有可执行
+		// 的写动作。只读核实后按「已跳过」落账并推进游标，绝不代替目标补发任何写请求；
+		// 与导航步骤同一推进语义：落账、返回确定成功让控制层推进下一步。
+		lineNo := log.Phase("settle", step.Sequence, 1, "落账："+preview.SkipReason)
+		record := model.RunStep{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
+			Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
+			Status: model.RunStepSkipped, StartedAt: startedAt, FinishedAt: e.now(),
+			GateSnapshot: gateSnapshotJSON(preview, approved.RunCtx.SubmitBranchTargetNodeID),
+		}
+		attempt := model.RunStepAttempt{
+			PathRunID: runCtx.PathRun.ID, AttemptNo: 1, Verdict: StepVerdictTargetSkipped,
+			SideEffect: string(verdict.SideEffectNone), Reason: preview.SkipReason,
+			Basis:   "实例待办已越过本节点，按目标事实记录跳过",
+			LogPath: log.RelativePath(), LogLine: lineNo,
+		}
+		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
+			return StepOutcome{Verdict: string(verdict.OutcomeFailed)}, lineNo, err
+		}
+		outcome.Verdict = string(verdict.OutcomeSucceeded)
+		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		if !outcome.NoMoreSteps {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+				return outcome, lineNo, err
+			}
+		}
+		log.Phase("settle", step.Sequence, 1, "跳过步骤完成")
+		return outcome, lineNo, nil
+	}
 	if preview.BlockReason != "" {
 		// 被阻塞的步骤不允许放行：路径运行在这里失败，而不是带病前进。
 		class := preview.BlockFailureClass
@@ -454,12 +573,18 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}()
 	if sessionErr != nil {
 		class := model.FailureClassActorUnresolved
-		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
-			"演员登录失败："+userFacingError(sessionErr, target.WriteResponse{})); finishErr != nil {
-			return outcome, 0, finishErr
+		reason := "演员登录失败：" + userFacingError(sessionErr, target.WriteResponse{})
+		lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
+		// prepare 失败也必须落一条失败事实行：没有它界面只能把失败标记回退到上一个成功节点，
+		// 把「本节点失败」误显示成上一个节点失败，用户找不到真正出问题的地方。
+		if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
+			attemptNo, approved.IsReplay, startedAt, class, reason, "演员会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
+			return outcome, lineNo, recordErr
 		}
-		log.Phase("prepare", step.Sequence, attemptNo, "演员登录失败："+userFacingError(sessionErr, target.WriteResponse{}))
-		return outcome, 0, nil
+		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+			return outcome, lineNo, finishErr
+		}
+		return outcome, lineNo, nil
 	}
 	// 任务级动作以目标实时待办的真实处理人身份发出（工作包 D）：
 	// 事实里的 currentPendingUserId 是目标裁决的实际处理人，必须解析其登录账号并切换演员会话，
@@ -469,21 +594,29 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			if account, name, resolveErr := e.assigneeAccount(ctx, session, assigneeID); resolveErr != nil {
 				class := model.FailureClassActorUnresolved
 				reason := "无法解析本节点实际处理人（" + nameOrFallback(preview.Facts.CurrentTaskAssigneeName, assigneeID) + "）的登录账号：" + userFacingError(resolveErr, target.WriteResponse{})
-				if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
-					return outcome, 0, finishErr
+				lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
+				if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
+					attemptNo, approved.IsReplay, startedAt, class, reason, "演员身份未确认，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
+					return outcome, lineNo, recordErr
 				}
-				log.Phase("prepare", step.Sequence, attemptNo, reason)
-				return outcome, 0, nil
+				if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+					return outcome, lineNo, finishErr
+				}
+				return outcome, lineNo, nil
 			} else if account != "" && account != runCtx.PlanAccount {
 				actorSession, actorErr := e.sessions.Current(ctx, account)
 				if actorErr != nil {
 					class := model.FailureClassActorUnresolved
 					reason := "无法登录本节点实际处理人 " + nameOrFallback(name, account) + "：" + userFacingError(actorErr, target.WriteResponse{})
-					if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
-						return outcome, 0, finishErr
+					lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
+					if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
+						attemptNo, approved.IsReplay, startedAt, class, reason, "演员会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
+						return outcome, lineNo, recordErr
 					}
-					log.Phase("prepare", step.Sequence, attemptNo, reason)
-					return outcome, 0, nil
+					if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+						return outcome, lineNo, finishErr
+					}
+					return outcome, lineNo, nil
 				}
 				session = actorSession
 				preview.ActorAccount = account
@@ -1250,12 +1383,18 @@ func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log 
 // assigneeAccount 把目标实时待办的实际处理人（用户 ID）解析为登录账号与姓名。
 // 人员目录按公司全量分页读取并就地缓存一次调用；查不到说明目录里没有该用户，
 // 调用方必须阻断本步，绝不能回退成计划账号冒充审批。
+// 目录读取沿用读路径会话纪律（readOnlyWithSessionRetry）：目标会话可能在门禁读取与
+// 账号解析之间被作废（实测返回 RESP401「SID已失效!」），失效只允许重登并重放同一只读请求
+// （有界、重登间退避防触发目标会话限制），不能把会话失效直接放大成演员解析失败。
 func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, assigneeUserID string) (string, string, error) {
 	resolver, ok := e.target.(userAccountResolver)
 	if !ok {
 		return "", "", errors.New("目标客户端不支持人员目录账号解析")
 	}
-	accounts, err := resolver.UserAccountsByID(ctx, session, []string{assigneeUserID})
+	accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
+		func(active target.Session) (map[string]string, error) {
+			return resolver.UserAccountsByID(ctx, active, []string{assigneeUserID})
+		})
 	if err != nil {
 		return "", "", err
 	}
@@ -1266,12 +1405,34 @@ func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, 
 	return strings.TrimSpace(account), "", nil
 }
 
+// recordPrepareFailure 把 prepare 阶段（写请求发出前）的步骤失败落一条失败事实行。
+// 与门禁阻塞同一纪律：失败原因原文进事实与界面，副作用如实记 none；
+// 没有这条事实行，详情只能把失败标记回退到上一个成功节点，用户找不到真正失败的节点，
+// 重试装填也会把游标错放回已成功的步骤。
+func (e *Executor) recordPrepareFailure(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, preview *StepPreview, submitBranchTargetNodeID string, attemptNo int, isReplay bool, startedAt time.Time, class model.FailureClass, reason, basis, logPath string, logLine uint64) error {
+	record := model.RunStep{
+		PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
+		Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
+		Status: model.RunStepFailed, StartedAt: startedAt, FinishedAt: e.now(),
+		GateSnapshot: gateSnapshotJSON(preview, submitBranchTargetNodeID),
+	}
+	attempt := model.RunStepAttempt{
+		PathRunID: runCtx.PathRun.ID, AttemptNo: attemptNo, Verdict: string(verdict.OutcomeFailed),
+		SideEffect: string(verdict.SideEffectNone), Reason: reason, Basis: basis,
+		FailureClass: &class, LogPath: logPath, LogLine: logLine,
+		DurationMs: e.now().Sub(startedAt).Milliseconds(), IsReplay: isReplay,
+	}
+	_, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now())
+	return err
+}
+
 // findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
 // 只有计划账号本身读不到待办时才调用，避免正常路径放大登录次数。
 // resolveTaskSnapshotForStep 按“下一节点候选人优先、原会话兜底”的顺序读取任务快照。
 // 候选人优先是硬规则：流程已流转到下一处理人后，不能先用上一演员会话查待办再决定。
 // 返回的 session 是真正命中任务的处理人会话，供后续代理树/审核记录读取继续使用。
-func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, status string) (target.TaskSnapshot, string, string, target.Session, error) {
+// proxyID 是实例当前流程代理（事实读取所得），供「指定人员」节点的代理树发现兜底使用。
+func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, proxyID, status string, facts *InstanceFacts) (target.TaskSnapshot, string, string, target.Session, error) {
 	useCandidates := strings.TrimSpace(session.Summary.Account) == strings.TrimSpace(runCtx.PlanAccount) && len(runCtx.NextNodeAuditors[step.NodeKey]) > 0
 	var candidateErr error
 	if useCandidates {
@@ -1291,10 +1452,76 @@ func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunCon
 	if strings.TrimSpace(snapshot.JobTaskID) != "" {
 		return snapshot, "", "", session, nil
 	}
+	// 计划账号与配置候选都没有命中，而实例当前确实停在本节点：目标「指定人员」类节点的
+	// 处理人由模板配置决定，待办列表按当前用户过滤，计划账号看不到他们的任务——
+	// 只能从完整流程代理树读出该节点配置的真实人员并逐个切换会话重读（只读，不写）。
+	snapshot, userID, userName, actorSession, found, diag := e.switchToConfiguredAssignee(ctx, runCtx, session, step, nodeID, proxyID, status)
+	if facts != nil {
+		facts.AssigneeDiag = diag
+	}
+	if found {
+		return snapshot, userID, userName, actorSession, nil
+	}
 	if candidateErr != nil {
 		return target.TaskSnapshot{}, "", "", session, candidateErr
 	}
 	return snapshot, "", "", session, nil
+}
+
+// switchToConfiguredAssignee 从完整流程代理树提取本节点「指定人员」配置的真实用户，
+// 逐个切换会话重读待办，命中任务即返回该处理人的会话与身份。
+// 这是固定人员节点的最后兜底：未命中时返回 found=false 与中文原因（写进事实诊断），
+// 由调用方按既有门禁失败处理，绝不猜测人员或冒用计划账号审批他人任务。
+func (e *Executor) switchToConfiguredAssignee(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, proxyID, status string) (snap target.TaskSnapshot, userID, userName string, sess target.Session, found bool, diag string) {
+	sess = session
+	documentReader, hasDocument := e.target.(flowProxyDocumentReader)
+	resolver, hasResolver := e.target.(userAccountResolver)
+	if !hasDocument || !hasResolver {
+		return target.TaskSnapshot{}, "", "", sess, false, "目标客户端不支持代理树读取或人员目录解析"
+	}
+	if strings.TrimSpace(proxyID) == "" {
+		return target.TaskSnapshot{}, "", "", sess, false, "实例流程代理标识缺失，无法读取代理树"
+	}
+	tree, err := documentReader.ReadFlowProxyDocument(ctx, session, proxyID)
+	if err != nil {
+		return target.TaskSnapshot{}, "", "", sess, false, "代理树读取失败：" + err.Error()
+	}
+	userIDs, err := target.ConfiguredPersonnelForNode(tree, nodeID)
+	if err != nil {
+		return target.TaskSnapshot{}, "", "", sess, false, "代理树中未找到本节点的固定人员配置：" + err.Error()
+	}
+	if len(userIDs) == 0 {
+		return target.TaskSnapshot{}, "", "", sess, false, "代理树中本节点没有配置固定人员"
+	}
+	accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
+		func(active target.Session) (map[string]string, error) {
+			return resolver.UserAccountsByID(ctx, active, userIDs)
+		})
+	if err != nil {
+		return target.TaskSnapshot{}, "", "", sess, false, "固定人员账号解析失败：" + err.Error()
+	}
+	for _, uid := range userIDs {
+		account := strings.TrimSpace(accounts[uid])
+		if account == "" {
+			continue
+		}
+		actorSession, err := e.sessions.Current(ctx, account)
+		if err != nil {
+			actorSession, err = e.sessions.Refresh(ctx, account)
+		}
+		if err != nil {
+			continue
+		}
+		snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
+		if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
+			continue
+		}
+		snapshot.PendingUserID = uid
+		name := actorSession.Summary.DisplayName
+		snapshot.PendingUserName = name
+		return snapshot, uid, name, actorSession, true, "已切换到固定人员「" + name + "」并命中待办"
+	}
+	return target.TaskSnapshot{}, "", "", sess, false, "已按代理树配置依次切换固定人员会话，均未发现本节点待办"
 }
 
 // findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。

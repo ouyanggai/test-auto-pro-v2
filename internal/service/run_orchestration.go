@@ -1577,6 +1577,8 @@ func stepStatusName(status model.RunStepStatus) string {
 		return "执行失败"
 	case model.RunStepUncertain:
 		return "结果待确认"
+	case model.RunStepSkipped:
+		return "已跳过"
 	default:
 		return string(status)
 	}
@@ -1591,6 +1593,8 @@ func verdictName(verdict string) string {
 		return "执行失败"
 	case "uncertain":
 		return "结果待确认"
+	case step.StepVerdictTargetSkipped:
+		return "目标跳过"
 	default:
 		return verdict
 	}

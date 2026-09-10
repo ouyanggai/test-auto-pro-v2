@@ -167,6 +167,66 @@ func decodeFlowProxyTree(flowProxyTree json.RawMessage) (any, error) {
 	return root, nil
 }
 
+// ConfiguredPersonnelForNode 从完整流程代理树中提取指定节点的固定人员配置（人员 bizId 集合）。
+// 目标「指定人员」类审批节点的处理人由模板配置决定，而待办列表按当前用户过滤——
+// 工具的计划账号看不到其他用户的任务，currentPendingUserId 又已不再返回；
+// 代理树是发现这类节点真实处理人的唯一只读途径。找不到节点、结构异常或节点出现多次
+// 都返回错误，由调用方如实降级，绝不用猜测的人员冒充处理人。
+func ConfiguredPersonnelForNode(flowProxyTree json.RawMessage, nodeProxyID string) ([]string, error) {
+	nodeProxyID = strings.TrimSpace(nodeProxyID)
+	if nodeProxyID == "" {
+		return nil, errors.New("节点代理标识为空，无法读取固定人员配置")
+	}
+	root, err := decodeFlowProxyTree(flowProxyTree)
+	if err != nil {
+		return nil, err
+	}
+	found := 0
+	var ids []string
+	var walk func(any)
+	walk = func(value any) {
+		if found > 1 {
+			return
+		}
+		object, ok := value.(map[string]any)
+		if ok {
+			if strings.TrimSpace(stringValue(object["id"])) == nodeProxyID {
+				found++
+				if config, configOK := object["flowNodeAuditConfig"].(map[string]any); configOK {
+					if list, listOK := config["flowNodeDetailConfigList"].([]any); listOK {
+						for _, item := range list {
+							detail, detailOK := item.(map[string]any)
+							if !detailOK {
+								continue
+							}
+							if id := firstDetailID(detail); id != "" {
+								ids = append(ids, id)
+							}
+						}
+					}
+				}
+			}
+			for _, child := range object {
+				walk(child)
+			}
+			return
+		}
+		if list, ok := value.([]any); ok {
+			for _, child := range list {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	if found == 0 {
+		return nil, fmt.Errorf("节点 %s 不在完整流程代理树中，无法读取固定人员配置", nodeProxyID)
+	}
+	if found > 1 {
+		return nil, fmt.Errorf("节点 %s 在流程代理树中出现多次，无法读取固定人员配置", nodeProxyID)
+	}
+	return uniqueNonEmpty(ids), nil
+}
+
 // appendPersonnelDetails 将候选人员变成目标 FlowNodeAuditDetailConfigTemplateVo，并保持已有人员顺序。
 func appendPersonnelDetails(config map[string]any, userIDs []string) error {
 	details, ok := config["flowNodeDetailConfigList"]

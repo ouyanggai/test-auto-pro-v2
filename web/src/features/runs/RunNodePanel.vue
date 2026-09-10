@@ -59,8 +59,9 @@ interface NodeErrorRow {
 }
 
 // isSuccessfulAttempt 兼容历史运行记录，同时让新记录统一使用“执行成功”。
+// 「目标跳过」是目标平台自动跳过节点的只读结论，不是错误，不进错误页签。
 function isSuccessfulAttempt(attempt: RunStepAttempt): boolean {
-  return attempt.verdictName === '执行成功' || attempt.verdictName === '确定成功'
+  return attempt.verdictName === '执行成功' || attempt.verdictName === '确定成功' || attempt.verdictName === '目标跳过'
 }
 
 // nodeErrors 汇总这个节点上需要人看一眼的事实：门禁未通过、执行失败的尝试、以及停在这里的原因。

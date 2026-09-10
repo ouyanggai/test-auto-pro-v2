@@ -158,7 +158,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if !hasTaskReader {
 			return session, nil
 		}
-		snapshot, candidateAssigneeID, candidateAssigneeName, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "pending")
+		snapshot, candidateAssigneeID, candidateAssigneeName, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, facts.FlowProxyID, "pending", facts)
 		if resolveErr != nil {
 			return session, resolveErr
 		}
@@ -223,7 +223,7 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if !hasTaskReader {
 			return session, nil
 		}
-		snapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "done")
+		snapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, facts.FlowProxyID, "done", facts)
 		if resolveErr != nil {
 			return session, resolveErr
 		}

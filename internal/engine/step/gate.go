@@ -3,6 +3,7 @@ package step
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -121,7 +122,9 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		nextAuditors := nextAuditorsOf(step)
 		if step.Action == model.ActionSubmit {
 			var err error
-			nextAuditors, err = nextAuditorsForTransition(runCtx, step, nextNodeKey, true)
+			// 发起/重提保持既有语义：优先按下一步精确匹配已选分支入口，匹配不到回落路线第一条分支。
+			nextAuditors, err = nextAuditorsForTransition(runCtx, step, nextNodeKey,
+				firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
 			if err != nil {
 				return nil, "", nil, err
 			}
@@ -140,7 +143,9 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		}
 		return &request, target.WriteEndpointSubmit, target.BuildSubmitBody(request), nil
 	case model.ActionApprove:
-		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, false)
+		// 同意跨越手动分支路由时必须代选本次流转对应的分支入口（实测缺失被目标
+		// 「手动条件分支,请选择」拒绝）；不跨分支时不携带，避免把路线第一条分支错传给后面的路由。
+		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, chosenBranchEntryForNode(runCtx, nextNodeKey))
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -155,7 +160,8 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		}
 		return &request, target.WriteEndpointAudit, target.BuildAuditBody(request), nil
 	case model.ActionResubmit:
-		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, true)
+		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey,
+			firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -224,18 +230,20 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 }
 
 // nextAuditorsForTransition 按目标提交、重新提交和同意共用的协议构造下一节点选人数据。
-// 仅 run_node_choose 需要本平台指定真实用户；其他动态审批方式由目标按当前表单和组织上下文解析，
-// 不能伪造空 bizId 的节点占位项，否则目标会把它当成无效人员配置。
-func nextAuditorsForTransition(runCtx RunContext, step model.CompiledActionStep, nextNodeKey string, includeSubmitBranch bool) ([]target.NextAuditor, error) {
+// branchTarget 是本次流转需要代选的手动分支入口（以 nextAuditorList[].nodeProxyId 传给目标，
+// 语义清单第 4 条）；空串表示本次流转不跨已选手动分支。仅 run_node_choose 需要本平台指定真实用户；
+// 其他动态审批方式由目标按当前表单和组织上下文解析，不能伪造空 bizId 的节点占位项，
+// 否则目标会把它当成无效人员配置。
+func nextAuditorsForTransition(runCtx RunContext, step model.CompiledActionStep, nextNodeKey string, branchTarget string) ([]target.NextAuditor, error) {
 	auditors := append([]target.NextAuditor(nil), nextAuditorsOf(step)...)
-	if includeSubmitBranch {
-		// 手动条件分支（custom_choose）的选择必须以 nextAuditorList[].nodeProxyId 传递。
-		if branchTarget := strings.TrimSpace(runCtx.SubmitBranchTargetNodeID); branchTarget != "" {
-			auditors = append([]target.NextAuditor{{NodeProxyID: branchTarget}}, auditors...)
-		}
+	// 手动条件分支（custom_choose）的选择必须以 nextAuditorList[].nodeProxyId 传递；
+	// 目标按 nodeProxyId 匹配分支节点，未携带或带错分支都会被「手动条件分支,请选择」拒绝。
+	if branchTarget = strings.TrimSpace(branchTarget); branchTarget != "" {
+		auditors = append([]target.NextAuditor{{NodeProxyID: branchTarget}}, auditors...)
 	}
 	info, exists := runCtx.Nodes[strings.TrimSpace(nextNodeKey)]
 	if !exists || strings.TrimSpace(info.AuditType) != "run_node_choose" {
+		auditors = append(auditors, upcomingRunNodeChooseAuditors(runCtx, nextNodeKey)...)
 		return auditors, nil
 	}
 	if strings.TrimSpace(info.TargetNodeID) == "" {
@@ -255,7 +263,65 @@ func nextAuditorsForTransition(runCtx RunContext, step model.CompiledActionStep,
 		candidate.NodeProxyID = info.TargetNodeID
 		auditors = append(auditors, candidate)
 	}
+	auditors = append(auditors, upcomingRunNodeChooseAuditors(runCtx, nextNodeKey)...)
 	return auditors, nil
+}
+
+// upcomingRunNodeChooseAuditors 把场景后续其余节点已解析的自选审批人人员指定并入载荷。
+// 目标在流转时沿链路递归校验，跨过分支与空节点后遇到的 run_node_choose 节点同样要求
+// nextAuditorList 携带该节点的人员（实测审核人1同意被「未设置审批人」拒绝，errorType=run_node_choose
+// 指向链路上更靠后的审核人2）；参考实现的审批弹窗同样预先收集整条链路上自选节点的人员。
+// 人员来自启动时按已保存策略解析的结果，这里只按各自节点补 nodeProxyId，不改写任何人员事实；
+// 目标只按当前校验节点的 nodeProxyId 取条目，多余条目不参与匹配。
+func upcomingRunNodeChooseAuditors(runCtx RunContext, excludeNodeKey string) []target.NextAuditor {
+	keys := make([]string, 0, len(runCtx.NextNodeAuditors))
+	for nodeKey := range runCtx.NextNodeAuditors {
+		if key := strings.TrimSpace(nodeKey); key != "" && key != strings.TrimSpace(excludeNodeKey) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	auditors := []target.NextAuditor{}
+	for _, key := range keys {
+		info, exists := runCtx.Nodes[key]
+		if !exists || strings.TrimSpace(info.AuditType) != "run_node_choose" || strings.TrimSpace(info.TargetNodeID) == "" {
+			continue
+		}
+		for _, candidate := range runCtx.NextNodeAuditors[key] {
+			entry := candidate
+			entry.BizID = strings.TrimSpace(entry.BizID)
+			entry.Name = strings.TrimSpace(entry.Name)
+			if entry.BizID == "" || entry.Name == "" {
+				continue
+			}
+			entry.AuditDetailTyp = "personnel"
+			entry.NodeProxyID = info.TargetNodeID
+			auditors = append(auditors, entry)
+		}
+	}
+	return auditors
+}
+
+// chosenBranchEntryForNode 判断下一步节点是否正好是某条已选分支的入口：
+// 是则返回该分支入口的目标节点 ID，作为本次流转要代选的手动分支（语义清单第 4 条）。
+// 同意跨越手动分支路由时目标按 nodeProxyId 匹配分支节点；必须携带本流转对应的分支入口，
+// 不能复用路线第一条分支的 SubmitBranchTargetNodeID——后面分支路由上的同意会带错分支。
+// 条件分支由目标自动求值，多带的条目不会被当作分支选择，保持同一规则即可。
+func chosenBranchEntryForNode(runCtx RunContext, nextNodeKey string) string {
+	info, exists := runCtx.Nodes[strings.TrimSpace(nextNodeKey)]
+	if !exists {
+		return ""
+	}
+	nextTarget := strings.TrimSpace(info.TargetNodeID)
+	if nextTarget == "" {
+		return ""
+	}
+	for _, branchTarget := range runCtx.BranchSelections {
+		if strings.TrimSpace(branchTarget) == nextTarget {
+			return nextTarget
+		}
+	}
+	return ""
 }
 
 // auditStatusOf 返回需要 auditRecord 的动作对应的目标 ExecuteResultEnum 编码名。

@@ -333,6 +333,9 @@ const (
 	RunStepSucceeded RunStepStatus = "succeeded" // 确定成功
 	RunStepFailed    RunStepStatus = "failed"    // 确定失败
 	RunStepUncertain RunStepStatus = "uncertain" // 写结果不确定
+	// RunStepSkipped 表示目标平台自动跳过了该节点（模板约束「无处理人时跳过该节点」生效，
+	// 实例待办已落到路径上更靠后的节点）：本步没有可执行的动作，也无任何写请求。
+	RunStepSkipped RunStepStatus = "skipped"
 )
 
 // RunStep 是一个编译步骤的执行事实（run_steps 表），落账时一次性 INSERT。

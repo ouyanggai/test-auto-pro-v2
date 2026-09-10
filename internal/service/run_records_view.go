@@ -154,7 +154,8 @@ func (s *RunOrchestrationService) RunPaths(ctx context.Context, runID uint64) (*
 		doneSteps := 0
 		lastNodeKey := ""
 		for _, stepRecord := range steps {
-			if stepRecord.Status == model.RunStepSucceeded {
+			// 目标自动跳过的步骤没有写动作，但确实已被流程越过：计入已完成进度。
+			if stepRecord.Status == model.RunStepSucceeded || stepRecord.Status == model.RunStepSkipped {
 				doneSteps++
 			}
 			lastNodeKey = stepRecord.NodeKey
