@@ -1094,6 +1094,17 @@ func (s *PathConfigService) persistAutoConfiguredActions(ctx context.Context, pa
 // autoNodeActionCandidates 按"可流转优先、其次覆盖、最后确定性种子"给出该节点可尝试的动作顺序。
 // 只取已启用、非系统语义、非编译器插入、且不需要显式选人的动作；参数由执行器运行时填充，不影响可选性。
 func autoNodeActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool) []model.ConfiguredAction {
+	// 基础动作（人工节点同意、发起节点提交）是一键配置约定中"每个节点一个动作"的默认选择。
+	// 同意收编为固定尾动作后不再出现在可编排目录里，这里必须显式落一条默认记录，
+	// 否则节点会停留在未配置动作状态，一键配置看起来什么都没配。
+	if base := node.ActionConfiguration.Base; base != nil {
+		switch model.ActionKey(base.Kind) {
+		case model.ActionApprove:
+			return []model.ConfiguredAction{{Key: autoConfigureActionKey(node.Key, base.Kind), Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: node.Key, Order: 1, Note: "默认"}}
+		case model.ActionSubmit:
+			return []model.ConfiguredAction{{Key: autoConfigureActionKey(node.Key, base.Kind), Action: model.ActionSubmit, Scope: model.ActionScopeInitiator, NodeKey: node.Key, Order: 1, Note: "默认"}}
+		}
+	}
 	available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
 	for _, item := range node.ActionConfiguration.Catalog {
 		if !item.Enabled || item.SystemOnly || item.SystemInserted || item.RequiresPerson {

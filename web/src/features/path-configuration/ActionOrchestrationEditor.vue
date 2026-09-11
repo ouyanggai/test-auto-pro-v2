@@ -204,17 +204,16 @@ function removeAction(index: number) {
     <p v-if="container.actionConfiguration.note" class="action-orchestration__note">{{ container.actionConfiguration.note }}</p>
     <p v-if="instanceContainer" class="action-orchestration__note">下拉上半是当前节点动作，下半是作用于整个实例的动作。</p>
 
-    <div v-if="savedSummary.length" class="action-orchestration__summary">
+    <div class="action-orchestration__summary">
       <n-tag v-for="(item, index) in savedSummary" :key="item.action.key" size="small">
         {{ index + 1 }}. {{ catalogItem(item.action.kind)?.label || item.action.kind }}{{ item.count > 1 ? ` ×${item.count}` : '' }}
       </n-tag>
-    </div>
-    <span v-else class="action-orchestration__muted">未添加动作</span>
-
-    <div v-if="container.actionConfiguration.base" class="action-orchestration__fixed-tail" data-testid="fixed-tail-action">
-      <n-tag size="small" type="info">固定尾动作</n-tag>
-      <strong>{{ container.actionConfiguration.base.label }}</strong>
-      <span>{{ container.actionConfiguration.base.detail }}</span>
+      <!-- 同意作为默认基本动作，直接并入动作列表尾部并加默认标识，不再单独展示固定尾动作区块 -->
+      <n-tag v-if="container.actionConfiguration.base" size="small" type="info" data-testid="default-tail-action">
+        {{ container.actionConfiguration.base.label }}
+        <n-tag size="tiny" type="primary" :bordered="false" class="action-orchestration__default-mark">默认</n-tag>
+      </n-tag>
+      <span v-if="!savedSummary.length && !container.actionConfiguration.base" class="action-orchestration__muted">未添加动作</span>
     </div>
 
     <details v-if="selectableCatalog.length" class="action-orchestration__catalog">
@@ -325,6 +324,7 @@ function removeAction(index: number) {
 .action-orchestration__note,.action-orchestration__hint{margin:0;font-size:12px;opacity:.75}
 .action-orchestration__muted{font-size:12px;opacity:.6}
 .action-orchestration__summary{display:flex;flex-wrap:wrap;gap:6px}
+.action-orchestration__default-mark{margin-left:4px}
 .action-orchestration__catalog{font-size:12px}
 .action-orchestration__catalog ul{display:grid;gap:8px;margin:8px 0 0;padding-left:16px}
 .action-orchestration__catalog-head{display:flex;align-items:center;gap:6px}

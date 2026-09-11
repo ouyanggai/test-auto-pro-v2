@@ -489,6 +489,64 @@ func auditNodeIDs(data json.RawMessage) []string {
 	return result
 }
 
+// TaskPendingUser 是当前节点待处理人员的稳定形状：目标在部分节点只返回姓名与手机号，
+// 不再返回用户 ID；人员目录按两者都能解析出登录账号。
+type TaskPendingUser struct {
+	Name  string `json:"name"`
+	Phone string `json:"phone"`
+}
+
+// NodeCurrentHandler 是「已发」列表 currentAuditUserInfo 里一个当前节点的待办处理人信息：
+// auditType 是节点审批方式，bizIds 是自选类节点已选的用户 ID，users 是固定类节点解析出的
+// 待处理人员（姓名+手机号）。会签节点在全部处理人审批完成前一直出现在实例事实里。
+type NodeCurrentHandler struct {
+	NodeID    string
+	AuditType string
+	BizIDs    []string
+	Users     []TaskPendingUser
+}
+
+// auditHandlerInfo 解析 currentAuditUserInfo 为逐节点处理人信息；结构异常时按无数据处理，
+// 调用方会退回 currentNodeProxyId 的既有语义，绝不猜测人员。
+func auditHandlerInfo(data json.RawMessage) []NodeCurrentHandler {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var nodes map[string]struct {
+		AuditType string   `json:"auditType"`
+		BizIds    []string `json:"bizIds"`
+		UserList  []struct {
+			Name  string `json:"name"`
+			Phone string `json:"phone"`
+		} `json:"userList"`
+	}
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil
+	}
+	result := make([]NodeCurrentHandler, 0, len(nodes))
+	for nodeID, info := range nodes {
+		id := strings.TrimSpace(nodeID)
+		if id == "" {
+			continue
+		}
+		handler := NodeCurrentHandler{NodeID: id, AuditType: strings.TrimSpace(info.AuditType)}
+		for _, bizID := range info.BizIds {
+			if trimmed := strings.TrimSpace(bizID); trimmed != "" {
+				handler.BizIDs = append(handler.BizIDs, trimmed)
+			}
+		}
+		for _, user := range info.UserList {
+			handler.Users = append(handler.Users, TaskPendingUser{
+				Name:  strings.TrimSpace(user.Name),
+				Phone: strings.TrimSpace(user.Phone),
+			})
+		}
+		result = append(result, handler)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].NodeID < result[j].NodeID })
+	return result
+}
+
 // templateStatusText 将模板状态转换为已有中文展示。
 func templateStatusText(status string) string {
 	switch status {
@@ -585,20 +643,20 @@ func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instance
 		data["executorId"] = executorID
 	}
 	type rawTaskSnapshot struct {
-		LinkID                string `json:"id"`
-		ParentLinkID          string `json:"pid"`
-		JobTaskID             string `json:"jobTaskId"`
-		FlowInstanceID        string `json:"flowInstanceId"`
-		FlowNodeProxyID       string `json:"flowNodeProxyId"`
-		BatchNo               string `json:"batchNo"`
-		TaskStatus            string `json:"taskStatus"`
-		ExecutorID            string `json:"executorId"`
-		FormProxyID           string `json:"formProxyId"`
-		FlowProxyID           string `json:"flowProxyId"`
-		AuditWay              string `json:"auditWay"`
-		FlowNextNodeAuditType string `json:"flowNextNodeAuditType"`
-		BranchExecuteType     string `json:"branchExecuteType"`
-		CurrentPendingUserID  string `json:"currentPendingUserId"`
+		LinkID                 string `json:"id"`
+		ParentLinkID           string `json:"pid"`
+		JobTaskID              string `json:"jobTaskId"`
+		FlowInstanceID         string `json:"flowInstanceId"`
+		FlowNodeProxyID        string `json:"flowNodeProxyId"`
+		BatchNo                string `json:"batchNo"`
+		TaskStatus             string `json:"taskStatus"`
+		ExecutorID             string `json:"executorId"`
+		FormProxyID            string `json:"formProxyId"`
+		FlowProxyID            string `json:"flowProxyId"`
+		AuditWay               string `json:"auditWay"`
+		FlowNextNodeAuditType  string `json:"flowNextNodeAuditType"`
+		BranchExecuteType      string `json:"branchExecuteType"`
+		CurrentPendingUserID   string `json:"currentPendingUserId"`
 		CurrentPendingUserName string `json:"currentPendingUserName"`
 	}
 	wantInstance := strings.TrimSpace(instanceID)
