@@ -509,3 +509,66 @@ func (s *TargetReadService) ResolveHistoryInstanceForSnapshot(ctx context.Contex
 	})
 	return result, err
 }
+
+// FlowTreeSnapshotWithoutRelogin 与 FlowTreeSnapshot 同语义，但只读调用不允许重登：
+// 会话不存在或失效时原样返回错误。供图投影后台刷新等非关键路径使用——目标平台同账号
+// 互踢，后台刷新自动重登会把用户正在浏览器里使用的会话踢下线（实测互踢死循环）。
+func (s *TargetReadService) FlowTreeSnapshotWithoutRelogin(ctx context.Context, account, source, targetObjectID string) (target.FlowTreeSnapshot, error) {
+	if err := s.ready(); err != nil {
+		return target.FlowTreeSnapshot{}, err
+	}
+	var result target.FlowTreeSnapshot
+	err := s.sessions.DoReadWithoutRelogin(ctx, account, func(callContext context.Context, active target.Session) error {
+		var tree *target.FlowNodeTemplate
+		var entryNodeIDs []string
+		var err error
+		switch strings.TrimSpace(source) {
+		case "new":
+			visible, findErr := s.client.FindVisibleTemplate(callContext, active, targetObjectID)
+			if findErr != nil {
+				return findErr
+			}
+			if !visible {
+				return ErrTargetFlowNotFound
+			}
+			tree, err = s.client.ReadTemplateTree(callContext, active, targetObjectID)
+		case "started":
+			proxyID, entries, status, _, found, findErr := s.client.FindSubmittedFlow(callContext, active, targetObjectID)
+			if findErr != nil {
+				return findErr
+			}
+			if !found {
+				return ErrTargetFlowNotFound
+			}
+			if !submittedFlowConfigurable(status) {
+				return ErrTargetFlowNotConfigurable
+			}
+			entryNodeIDs = entries
+			tree, err = s.client.ReadProxyTree(callContext, active, proxyID)
+		case "pending":
+			proxyID, entries, _, found, findErr := s.client.FindDueFlow(callContext, active, targetObjectID)
+			if findErr != nil {
+				return findErr
+			}
+			if !found {
+				return ErrTargetFlowNotFound
+			}
+			entryNodeIDs = entries
+			tree, err = s.client.ReadProxyTree(callContext, active, proxyID)
+		default:
+			return ErrTargetFlowNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if tree == nil {
+			return ErrTargetFlowStructureEmpty
+		}
+		if strings.TrimSpace(source) == "new" {
+			entryNodeIDs = []string{strings.TrimSpace(tree.ID)}
+		}
+		result = target.FlowTreeSnapshot{Tree: tree, EntryNodeIDs: entryNodeIDs}
+		return nil
+	})
+	return result, err
+}

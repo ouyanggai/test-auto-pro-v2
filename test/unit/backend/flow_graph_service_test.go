@@ -18,6 +18,11 @@ type capturedFlowTreeReader struct {
 	entries  []string
 }
 
+// FlowTreeSnapshotWithoutRelogin 与同步读取同形状：测试假件无需区分，直接复用。
+func (r *capturedFlowTreeReader) FlowTreeSnapshotWithoutRelogin(ctx context.Context, account, source, targetID string) (target.FlowTreeSnapshot, error) {
+	return r.FlowTreeSnapshot(ctx, account, source, targetID)
+}
+
 // FlowTreeSnapshot 记录计划持久化身份并返回预设真实入口。
 func (r *capturedFlowTreeReader) FlowTreeSnapshot(_ context.Context, account, source, targetID string) (target.FlowTreeSnapshot, error) {
 	r.account, r.source, r.targetID = account, source, targetID

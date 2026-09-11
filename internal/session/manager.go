@@ -115,13 +115,46 @@ func (m *Manager) DoRead(ctx context.Context, account string, call func(context.
 	if err != nil {
 		return err
 	}
+	return m.doReadWithSession(ctx, account, active, call)
+}
+
+// DoReadWithoutRelogin 只用当前缓存会话执行只读调用：会话不存在或失效都直接返回错误，
+// 绝不重登。背景：目标平台同账号互踢，若画布轮询这类非关键读在会话失效后自动重登，
+// 会把用户正在使用的浏览器会话踢下线，用户再登录又踢工具，形成互踢死循环（实测）。
+// 只有真正执行动作的链路（DoRead/写路径）才允许检测并重登。
+func (m *Manager) DoReadWithoutRelogin(ctx context.Context, account string, call func(context.Context, target.Session) error) error {
+	release := m.LockAccountUsage(account)
+	defer release()
+	active, ok := m.cached(normalizeAccount(account))
+	if !ok {
+		return target.NewError(target.ErrorSessionExpired, errors.New("无缓存会话，且后台刷新不允许登录"))
+	}
+	callErr := call(target.WithRetryAttempt(ctx, false, 1), active)
+	if callErr == nil {
+		return nil
+	}
+	if target.IsKind(callErr, target.ErrorSessionExpired) {
+		return callErr
+	}
+	if !target.IsRetryableReadError(callErr) {
+		return callErr
+	}
+	// 可重试的网络抖动：一次重放，但仍不重登。
+	if waitErr := m.waitRetry(ctx, 1); waitErr != nil {
+		return waitErr
+	}
+	return call(target.WithRetryAttempt(ctx, true, 2), active)
+}
+
+// doReadWithSession 是 DoRead 的会话重试主体：会话失效重登一次并重放，可重试网络错误有界重试。
+func (m *Manager) doReadWithSession(ctx context.Context, account string, active target.Session, call func(context.Context, target.Session) error) error {
 	sessionRefreshed := false
 	requestAttempt := 0
 	networkFailures := 0
 	for {
 		requestAttempt++
 		callContext := target.WithRetryAttempt(ctx, requestAttempt > 1, requestAttempt)
-		err = call(callContext, active)
+		err := call(callContext, active)
 		if err == nil {
 			return nil
 		}
@@ -132,12 +165,13 @@ func (m *Manager) DoRead(ctx context.Context, account string, call func(context.
 			}
 			sessionRefreshed = true
 			m.invalidate(account, active.SID)
-			active, err = m.getOrLogin(ctx, account)
-			if err != nil {
-				if target.IsKind(err, target.ErrorLoginRejected) {
-					return target.NewError(target.ErrorSessionExpired, err)
+			var loginErr error
+			active, loginErr = m.getOrLogin(ctx, account)
+			if loginErr != nil {
+				if target.IsKind(loginErr, target.ErrorLoginRejected) {
+					return target.NewError(target.ErrorSessionExpired, loginErr)
 				}
-				return err
+				return loginErr
 			}
 			continue
 		}

@@ -15,8 +15,11 @@ import (
 // backgroundRefreshTimeout 限制后台刷新单次目标读的时长；超时保留旧投影，不影响任何请求。
 const backgroundRefreshTimeout = 30 * time.Second
 
+// FlowTreeReader 是图投影的目标读取面；WithoutRelogin 变体供后台刷新使用，
+// 会话失效时绝不重登，避免把用户浏览器会话踢下线（同账号互踢）。
 type FlowTreeReader interface {
 	FlowTreeSnapshot(context.Context, string, string, string) (target.FlowTreeSnapshot, error)
+	FlowTreeSnapshotWithoutRelogin(context.Context, string, string, string) (target.FlowTreeSnapshot, error)
 }
 
 type FlowAnalyzer interface {
@@ -88,7 +91,7 @@ func (s *FlowGraphService) refreshInBackground(planID uint64) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
 		defer cancel()
-		graph, err := s.readGraph(ctx, planID)
+		graph, err := s.readGraphWithoutRelogin(ctx, planID)
 		s.cacheMu.Lock()
 		delete(s.refreshing, planID)
 		s.cacheMu.Unlock()
@@ -181,4 +184,32 @@ func validateEntryNodeIDs(entryNodeIDs []string, nodes []model.FlowGraphNode) ([
 		return nil, ErrTargetFlowNotConfigurable
 	}
 	return entries, nil
+}
+
+// readGraphWithoutRelogin 与 readGraph 同构，但底层目标读不允许重登：
+// 供后台刷新使用——刷新失败只影响画布投影新鲜度，绝不能拿用户的浏览器会话去换。
+func (s *FlowGraphService) readGraphWithoutRelogin(ctx context.Context, planID uint64) (model.FlowGraph, error) {
+	plan, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	snapshot, err := s.target.FlowTreeSnapshotWithoutRelogin(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	nodes, edges, warnings, err := s.analyzer.Analyze(snapshot.Tree)
+	if err != nil {
+		if errors.Is(err, analyzer.ErrFlowStructureInvalid) {
+			return model.FlowGraph{}, analyzer.ErrFlowStructureInvalid
+		}
+		return model.FlowGraph{}, err
+	}
+	entries, err := validateEntryNodeIDs(snapshot.EntryNodeIDs, nodes)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	return model.FlowGraph{
+		PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
+		EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings,
+	}, nil
 }
