@@ -91,6 +91,10 @@ func (s *Scheduler) promoteQueuedRun(ctx context.Context) {
 
 // scheduleWaitingPaths 对每个仍在运行中且有等待路径的运行按调度策略补位。
 // 并发上限取运行行的 max_concurrency（串行运行为 1）；活跃数=运行中+核验中+暂停。
+// F-030/T03：同账号排队可见性 —— 调度器只按运行级容量补位；同账号的真实串行由
+// 账号使用锁保证（session.LockAccountUsage），锁等待在 [session] 日志中单独计时，
+// 与目标接口耗时严格分开。计划账号相同的多条路径并发启动是允许的：先启动者持锁执行，
+// 后启动者在锁上有界等待（等待时长可见），不改变失败隔离。
 func (s *Scheduler) scheduleWaitingPaths(ctx context.Context) {
 	runIDs, err := s.store.ListRunIDsNeedingScheduling(ctx)
 	if err != nil {

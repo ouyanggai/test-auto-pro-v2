@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -327,7 +328,13 @@ func (m *Manager) LockAccountUsage(account string) func() {
 		m.useLocks[key] = lock
 	}
 	m.useMu.Unlock()
+	// F-030/T03：账号锁等待结构化计时。同账号路径并发时，等待时长在此可见，
+	// 与目标接口耗时（network.log duration_s）严格分开，不能混为一谈。
+	started := time.Now()
 	lock.Lock()
+	if waited := time.Since(started); waited > 100*time.Millisecond {
+		log.Printf("[session] 账号锁等待 account=%s waited=%s（同账号其他路径正在使用会话，串行排队中）", account, waited.Round(time.Millisecond))
+	}
 	return lock.Unlock
 }
 

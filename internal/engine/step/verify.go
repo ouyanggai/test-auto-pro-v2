@@ -18,6 +18,9 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 	if info, ok := runCtx.Nodes[step.NodeKey]; ok {
 		dueNodeKey = strings.TrimSpace(info.TargetNodeID)
 	}
+	// F-030/T02：本次事实读取边界内，同一 (会话, 实例, 状态) 的任务列表只扫一次；
+	// 写后核验是新的一次调用，memo 从零开始——写后屏障由作用域天然保证。
+	ctx = target.AttachTaskSnapshotScope(ctx)
 	facts := InstanceFacts{StepNodeKey: dueNodeKey}
 	if instanceID == "" {
 		// 发起前实例不存在：这是确定事实，不是读取失败。

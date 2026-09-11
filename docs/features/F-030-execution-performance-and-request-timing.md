@@ -1,9 +1,9 @@
 # F-030 执行性能与请求耗时可观测优化
 
-- 状态：awaiting_approval
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md`「计划与运行主线」、`docs/PRODUCT.md`「F-026 状态感知的动作循环编排」、产品原则中的真实状态与可观测要求
 - 架构依据：`docs/ARCHITECTURE.md`「F-029 会话缓存与网络重试」、`docs/ARCHITECTURE.md`「F-026 状态感知的动作循环编排」、`docs/EXECUTION_PROGRAM.md` 第 4.3、6.2、7.1 节
-- 计划确认时间：待确认
+- 计划确认时间：2026-09-12（用户批准全量实施）
 
 ## 目标
 
@@ -161,6 +161,8 @@
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。
 
 - 2026-09-12 `preparing` -> `awaiting_approval`：根据用户反馈“接口本身不慢但整个流程耗时长、节点动作详情需要真实接口耗时、优化动作详情 UI 排版”形成独立计划。本切片只写方案，不修改执行代码、数据库或目标平台，不启动浏览器，不自动实施。
+- 2026-09-12 `awaiting_approval` -> `implementing`：用户指示严格按要求完成全部任务。
+- 2026-09-12 `implementing` -> `ready_for_manual`：T01/T06 不变量与定向测试就位（请求窗口归属、读写分类兑底、缺失日志降级、DTO 无敏感字段）；T02 任务列表 memo（会话×实例×状态维度，作用域限单次事实读取，写后天然失效）；T03 账号锁等待结构化日志（>100ms 记录 `[session] 账号锁等待`）与调度器同账号排队可见性注释；T04 请求耗时明细 DTO（network.log duration_s 真实计时，按 step.log 时间轴窗口归属尝试）；T05 节点动作详情重排（摘要区/四指标/本地过程/请求明细表/折叠原文）。基准复测（完成标准第 10 条的 50%/30% 量化指标）需用户在验收时用同一样本运行前后对照，工具侧已提供全部可观测数据。
 
 ## 人工验收
 

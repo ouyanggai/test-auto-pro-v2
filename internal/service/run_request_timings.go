@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -229,4 +230,10 @@ func atoiOr(raw string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+// ReadAttemptRequestsForTestWithRouter 暴露请求明细解析，供 test 目录锁定窗口归属与耗时口径。
+func ReadAttemptRequestsForTestWithRouter(router *logging.Router, pathRunID uint64, attempts []model.RunStepAttempt) (map[string][]RunRequestDTO, map[string]runRequestSummaryDTO) {
+	s := &RunOrchestrationService{router: router}
+	return s.readAttemptRequests(pathRunID, attempts)
 }

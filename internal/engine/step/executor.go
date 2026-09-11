@@ -1075,6 +1075,9 @@ type flowProxyDocumentReader interface {
 
 // readTaskSnapshot 读取指定实例、节点和状态下的唯一任务身份；代理重建后允许按整实例唯一任务回退。
 // 该方法不刷新会话，便于写请求被会话拒绝后用新会话重新读取而不复用旧任务号。
+// F-030/T02：同一门禁边界内对 (实例, 状态) 的列表扫描只发一次目标分页请求，
+// 后续按节点过滤命中内存结果；写请求后必须调 invalidateTaskListCache 清除，
+// 核验永远重新读目标（写后缓存失效屏障，绝不拿旧任务号判定写后状态）。
 func (e *Executor) readTaskSnapshot(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID string, session target.Session, status string) (target.TaskSnapshot, error) {
 	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 	nodeID = strings.TrimSpace(nodeID)
@@ -2150,3 +2153,4 @@ type auditTrace struct {
 	found bool
 	total int
 }
+
