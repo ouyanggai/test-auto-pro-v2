@@ -139,6 +139,14 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			s.mu.Lock()
 			session.stopReason = "命中" + primary.Breakpoint.Label() + "：" + primary.Reason
 			s.mu.Unlock()
+			// 首次写断点是一次性安全阀：命中并停下后必须立即从集合移除，
+			// 否则后续「继续运行」在阶段 3 又立刻命中同一断点，循环永远走不起来，
+			// 用户只能靠单步放行前进（实测导致断点后所有连续命令失效）。
+			if primary.Breakpoint.Type == model.BreakpointFirstWrite {
+				s.mu.Lock()
+				session.breakpoints.Remove(primary.Breakpoint)
+				s.mu.Unlock()
+			}
 			return
 		}
 

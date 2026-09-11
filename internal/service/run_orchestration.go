@@ -285,11 +285,12 @@ type PathRunDetailDTO struct {
 	PauseRequested bool            `json:"pauseRequested"`
 
 	// SceneLost 表示这次运行的执行现场已经不在（服务重启或执行结果无法确认），
-	// 无法安全继续；SceneLostNote 是配套的大白话说明与下一步引导。
-	// 用户侧不再提供任何对账或登记入口，页面只展示只读记录并引导从计划重新运行。
+	// InterruptedNodeID/InterruptedNote 定位中断时正在执行、尚未落账的那一步，
+	// 供节点面板把中断原因直接显示在那个节点上（否则该节点无任何步骤记录，点开一片空白）。
 	SceneLost     bool   `json:"sceneLost"`
 	SceneLostNote string `json:"sceneLostNote,omitempty"`
-
+	InterruptedNodeID string `json:"interruptedNodeId,omitempty"`
+	InterruptedNote   string `json:"interruptedNote,omitempty"`
 	// Retryable 表示服务端判定这条路径运行可以重试失败动作（F-028）：
 	// 只有「步骤执行中确定失败（无目标副作用）」的运行可重试；结果待确认与启动阶段失败不在范围内。
 	// 前端只按这个字段决定是否渲染重试按钮，不自行从状态推断。
@@ -1086,6 +1087,14 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	if s.control.View(pathRun.ID) == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
 		detail.SceneLost = true
 		detail.SceneLostNote = "本次运行已停止。请查看该步骤的错误信息：目标接口没有返回可确认的结果，或目标状态暂时无法读取。为避免重复操作，需要从计划重新发起运行。"
+		// 中断步定位：中断时正在执行的那一步尚未落账，已落账步骤之后的第一条编译步骤就是它。
+		// 把它映射到图节点，前端在对应节点面板直接显示中断原因，否则用户点开节点什么也看不到。
+		if len(compiledSteps) > len(steps) {
+			interrupted := compiledSteps[len(steps)]
+			detail.InterruptedNodeID = tokenToGraphID[interrupted.NodeKey]
+			detail.InterruptedNote = fmt.Sprintf("第 %d 步「%s」执行中断：目标接口没有返回可确认的结果，或目标状态暂时无法读取。需要从计划重新发起运行。",
+				interrupted.Sequence, interrupted.Action)
+		}
 	}
 	// F-028 失败动作重试：确定失败（写请求确认未生效或未发出）的步骤执行失败可以重试；
 	// 启动阶段失败（没有任何已执行步骤）引导重新发起，结果待确认是终局。

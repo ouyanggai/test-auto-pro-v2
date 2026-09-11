@@ -553,8 +553,9 @@ func (s *Service) RequestPause(ctx context.Context, pathRunID uint64) error {
 // 切换在安全步骤边界生效——当前停在阶段 3 时立即生效，本步正在执行或连续执行中时
 // 在本步走完核验与落账后生效，绝不中途打断已发出的写请求。
 func (s *Service) SwitchMode(ctx context.Context, pathRunID uint64, mode model.RunMode, version int64) (*SessionView, error) {
-	if mode != model.RunModeAuto && mode != model.RunModeSingleStep {
-		return nil, fmt.Errorf("运行中只能在自动与单步之间切换，不能切换为%s", model.RunModeName(mode))
+	// 运行中只允许自动与人工控制互切；单步模式仅保留给历史运行展示，不再支持新切换。
+	if mode != model.RunModeAuto && mode != model.RunModeManual {
+		return nil, fmt.Errorf("运行中只能在自动与人工控制之间切换，不能切换为%s", model.RunModeName(mode))
 	}
 	s.mu.Lock()
 	session := s.active[pathRunID]

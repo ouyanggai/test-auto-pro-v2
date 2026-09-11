@@ -63,11 +63,12 @@ type BreakpointSet struct {
 	breakpoints map[string]Breakpoint
 }
 
-// NewBreakpointSet 创建空集合，并按默认规则置入强制断点：
-// 路径偏离断点强制开启不可关闭；首次写断点默认开启（可被事实回放的删除移除）。
+// NewBreakpointSet 创建空集合，并置入强制断点：
+// 路径偏离断点强制开启不可关闭；首次写断点不再默认开启——
+// 默认开启会把自动运行的第一次真实写拦停在详情页等放行（实测缺陷），
+// 用户要的安全阀已在启动弹窗里明确选择，不在这里偷偷加回去。
 func NewBreakpointSet() *BreakpointSet {
 	set := &BreakpointSet{breakpoints: map[string]Breakpoint{}}
-	set.breakpoints[(Breakpoint{Type: model.BreakpointFirstWrite}).key()] = Breakpoint{Type: model.BreakpointFirstWrite}
 	set.breakpoints[(Breakpoint{Type: model.BreakpointPathDeviation}).key()] = Breakpoint{Type: model.BreakpointPathDeviation}
 	return set
 }

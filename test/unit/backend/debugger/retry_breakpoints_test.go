@@ -8,9 +8,8 @@ import (
 )
 
 // TestF028RetryBreakpointSetReplaysFactsAndDisarmsFirstWrite 锁定重试装填的断点规则（F-028）：
-// 生效断点按控制事实回放，路径偏离断点始终强制开启；
-// 本运行已有成功步骤（cursorIndex > 0）时移除首次写断点——首个写请求早已被放行过，
-// 安全阀只对「从失败的第一步重新开始」有意义；从第 1 步重试时安全阀保持开启。
+// 生效断点按控制事实回放，路径偏离断点始终强制开启；首次写断点已不默认开启，
+// 只有事实回放显式设置过才会出现，重试装填不再特殊处理安全阀。
 func TestF028RetryBreakpointSetReplaysFactsAndDisarmsFirstWrite(t *testing.T) {
 	controls := []model.RunControl{
 		{Kind: model.ControlFactBreakpointSet, BreakpointType: model.BreakpointStep, ObjectKind: "step", ObjectKey: "5"},
@@ -18,10 +17,10 @@ func TestF028RetryBreakpointSetReplaysFactsAndDisarmsFirstWrite(t *testing.T) {
 		{Kind: model.ControlFactBreakpointRemove, BreakpointType: model.BreakpointNode, ObjectKind: "node", ObjectKey: "node-audit"},
 	}
 
-	// 从失败的第 1 步重试：首次写安全阀保持开启，事实回放的步骤断点生效。
+	// 从失败的第 1 步重试：事实回放的步骤断点生效。
 	fromFirst := control.RetryBreakpointSet(controls, 0)
-	if !fromFirst.Contains(control.Breakpoint{Type: model.BreakpointFirstWrite}) {
-		t.Fatal("从第 1 步重试时应保留首次写断点")
+	if fromFirst.Contains(control.Breakpoint{Type: model.BreakpointFirstWrite}) {
+		t.Fatal("首次写断点未显式设置时不应出现在重试断点集合")
 	}
 	if !fromFirst.Contains(control.Breakpoint{Type: model.BreakpointStep, StepNo: 5}) {
 		t.Fatal("事实回放的步骤断点应在重试后继续生效")
@@ -30,10 +29,10 @@ func TestF028RetryBreakpointSetReplaysFactsAndDisarmsFirstWrite(t *testing.T) {
 		t.Fatal("路径偏离断点必须始终强制开启")
 	}
 
-	// 从失败的第 3 步重试（前缀已有成功步骤）：首次写安全阀解除，其余断点照常回放。
+	// 从失败的第 3 步重试（前缀已有成功步骤）：断点照常回放。
 	fromThird := control.RetryBreakpointSet(controls, 2)
 	if fromThird.Contains(control.Breakpoint{Type: model.BreakpointFirstWrite}) {
-		t.Fatal("前缀已有成功步骤时应移除首次写断点，避免自动重试被安全阀二次拦停")
+		t.Fatal("首次写断点未显式设置时不应出现在重试断点集合")
 	}
 	if !fromThird.Contains(control.Breakpoint{Type: model.BreakpointStep, StepNo: 5}) {
 		t.Fatal("步骤断点应跨重试保留")

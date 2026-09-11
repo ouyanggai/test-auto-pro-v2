@@ -33,7 +33,11 @@ func AvailableCommands(mode model.RunMode, state PauseState) []model.ControlComm
 		switch mode {
 		case model.RunModeSingleStep:
 			return []model.ControlCommand{model.CommandStep}
-		case model.RunModeAuto, model.RunModeManual:
+		case model.RunModeAuto:
+			// 自动模式只提供连续放行：放行即连续执行到断点或结束；
+			// 单步放行会破坏自动语义（每步都要手点，实测被用户当成故障）。
+			return []model.ControlCommand{model.CommandContinue}
+		case model.RunModeManual:
 			return []model.ControlCommand{model.CommandStep, model.CommandNextNode, model.CommandContinue}
 		}
 	}

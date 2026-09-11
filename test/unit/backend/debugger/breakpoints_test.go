@@ -11,7 +11,8 @@ import (
 // TestF017BreakpointHitMatrix 五类断点的命中矩阵（可穷举对照）。
 func TestF017BreakpointHitMatrix(t *testing.T) {
 	set := control.NewBreakpointSet()
-	// 默认断点：首次写 + 路径偏离。
+	// 默认断点只有路径偏离；首次写断点改为显式挂载后才会命中。
+	set.Add(control.Breakpoint{Type: model.BreakpointFirstWrite})
 	writeStep := control.StepFacts{StepNo: 1, NodeKey: "n1", Action: "submit", IsWriteStep: true}
 	readStep := control.StepFacts{StepNo: 2, NodeKey: "n2", Action: "approve"}
 	deviated := control.StepFacts{StepNo: 3, NodeKey: "nX", Action: "approve", DeviationHit: true}
@@ -43,6 +44,7 @@ func TestF017BreakpointHitMatrix(t *testing.T) {
 // TestF017MultiHitPriority 多命中时主因按固定优先级：路径偏离、首次写、动作、节点、步骤。
 func TestF017MultiHitPriority(t *testing.T) {
 	set := control.NewBreakpointSet()
+	set.Add(control.Breakpoint{Type: model.BreakpointFirstWrite})
 	set.Add(control.Breakpoint{Type: model.BreakpointNode, NodeKey: "n1"})
 	set.Add(control.Breakpoint{Type: model.BreakpointAction, Action: "submit"})
 	set.Add(control.Breakpoint{Type: model.BreakpointStep, StepNo: 1})
@@ -94,8 +96,8 @@ func TestF017ReplayBreakpointsFromFacts(t *testing.T) {
 	}
 	set := control.ReplayBreakpoints(controls)
 	list := set.List()
-	if len(list) != 4 { // 默认两项（首次写+路径偏离，删除无效）+ 动作 + 步骤
-		t.Fatalf("回放结果应为 4 个生效断点：%+v", list)
+	if len(list) != 3 { // 默认一项（路径偏离，删除无效）+ 动作 + 步骤
+		t.Fatalf("回放结果应为 3 个生效断点：%+v", list)
 	}
 	hasAction, hasNode, hasDeviation := false, false, false
 	for _, bp := range list {
@@ -115,7 +117,7 @@ func TestF017ReplayBreakpointsFromFacts(t *testing.T) {
 	}
 }
 
-// TestF017CommandSets 模式与命令集映射：单步只有执行一步；自动/人工暂停时三条；偏离与终态无命令。
+// TestF017CommandSets 模式与命令集映射：单步只有执行一步；自动只连续放行；人工三条；偏离与终态无命令。
 func TestF017CommandSets(t *testing.T) {
 	cases := []struct {
 		mode  model.RunMode
@@ -123,7 +125,7 @@ func TestF017CommandSets(t *testing.T) {
 		want  int
 	}{
 		{model.RunModeSingleStep, control.PauseStateWaiting, 1},
-		{model.RunModeAuto, control.PauseStateWaiting, 3},
+		{model.RunModeAuto, control.PauseStateWaiting, 1},
 		{model.RunModeManual, control.PauseStateWaiting, 3},
 		{model.RunModeAuto, control.PauseStateDeviation, 0},
 		{model.RunModeManual, control.PauseStateUncertain, 0},
@@ -137,6 +139,9 @@ func TestF017CommandSets(t *testing.T) {
 	}
 	if commands := control.AvailableCommands(model.RunModeSingleStep, control.PauseStateWaiting); commands[0] != model.CommandStep {
 		t.Fatalf("单步运行唯一命令应是执行一步：%v", commands)
+	}
+	if commands := control.AvailableCommands(model.RunModeAuto, control.PauseStateWaiting); commands[0] != model.CommandContinue {
+		t.Fatalf("自动模式唯一命令应是继续运行：%v", commands)
 	}
 }
 

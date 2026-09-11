@@ -12,6 +12,9 @@ import (
 	"test-auto-pro-v2/internal/model"
 )
 
+// backgroundRefreshTimeout 限制后台刷新单次目标读的时长；超时保留旧投影，不影响任何请求。
+const backgroundRefreshTimeout = 30 * time.Second
+
 type FlowTreeReader interface {
 	FlowTreeSnapshot(context.Context, string, string, string) (target.FlowTreeSnapshot, error)
 }
@@ -30,6 +33,8 @@ type FlowGraphService struct {
 	//（那些判定用执行器自身的实时读取，不走本缓存）。
 	cacheMu    sync.Mutex
 	graphCache map[uint64]cachedGraph
+	// refreshing 标记后台刷新中的计划，防止单飞重复读目标。
+	refreshing map[uint64]bool
 	cacheTTL   time.Duration
 	now        func() time.Time
 }
@@ -44,25 +49,54 @@ type cachedGraph struct {
 func NewFlowGraphService(plans *PlanService, targetReader FlowTreeReader, flowAnalyzer FlowAnalyzer) *FlowGraphService {
 	return &FlowGraphService{
 		plans: plans, target: targetReader, analyzer: flowAnalyzer,
-		graphCache: map[uint64]cachedGraph{}, cacheTTL: 15 * time.Second, now: time.Now,
+		graphCache: map[uint64]cachedGraph{}, refreshing: map[uint64]bool{}, cacheTTL: 15 * time.Second, now: time.Now,
 	}
 }
 
-// Get 按计划保存的身份重新读取真实图，并附加本次运行态入口集合。
-// 根因修复：目标平台的 flowTemplateApi/list 会间歇性返回 500，运行详情每秒轮询，
-// 若读取失败就降级会让用户在目标抖动期间反复看到结构降级提示。结构在运行期间稳定，
-// 且图投影仅用于画布展示（运行期硬门禁不走本接口），因此读取失败时回退到最近一次
-// 成功的投影（即使已过期）；只有从未成功读取过才真正降级。
+// Get 返回计划的结构投影：缓存未过期直接返回；过期时立即返回旧投影并在后台单飞刷新，
+// 从未读取过才同步读一次。
+// 为什么必须这样：运行详情页每 4 秒轮询一次，若每次都同步读目标（list+findById 约 1s+），
+// 既让轮询请求本身动辄十几秒，又会长时间占用账号使用锁，与执行器的 prepare 读、写前探活
+// 互斥，直接拖慢每个动作的执行节奏——结构在运行期稳定，轮询绝不该同步等目标。
 func (s *FlowGraphService) Get(ctx context.Context, planID uint64) (model.FlowGraph, error) {
-	graph, err := s.readGraph(ctx, planID)
-	if err == nil {
-		s.storeGraph(planID, graph)
+	if graph, ok := s.cachedGraph(planID); ok {
 		return graph, nil
 	}
 	if stale, ok := s.lastGoodGraph(planID); ok {
+		// 旧投影已过期：先返回旧值，后台单飞刷新，避免轮询风暴同时读目标。
+		s.refreshInBackground(planID)
 		return stale, nil
 	}
-	return model.FlowGraph{}, err
+	graph, err := s.readGraph(ctx, planID)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	s.storeGraph(planID, graph)
+	return graph, nil
+}
+
+// refreshInBackground 在后台刷新投影；refreshing 标志保证同一计划同时只跑一个刷新，
+// 避免高频轮询打出并发目标读。刷新失败时保留旧投影，下次过期再试。
+func (s *FlowGraphService) refreshInBackground(planID uint64) {
+	s.cacheMu.Lock()
+	if s.refreshing[planID] {
+		s.cacheMu.Unlock()
+		return
+	}
+	s.refreshing[planID] = true
+	s.cacheMu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
+		defer cancel()
+		graph, err := s.readGraph(ctx, planID)
+		s.cacheMu.Lock()
+		delete(s.refreshing, planID)
+		s.cacheMu.Unlock()
+		if err != nil {
+			return
+		}
+		s.storeGraph(planID, graph)
+	}()
 }
 
 // cachedGraph 返回未过期的缓存投影；缓存关闭读取失败时的自愈：过期即重读。
