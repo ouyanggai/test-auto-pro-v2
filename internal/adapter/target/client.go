@@ -125,6 +125,10 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 		if IsKind(err, ErrorSessionExpired) {
 			return Session{}, NewError(ErrorLoginRejected, err)
 		}
+		var rejection *BusinessRejection
+		if errors.As(err, &rejection) {
+			return Session{}, NewError(ErrorLoginRejected, err)
+		}
 		if targetErr := asError(err); targetErr != nil && targetErr.Kind == ErrorUnavailable && targetErr.HTTPStatus >= 400 && targetErr.HTTPStatus < 500 {
 			return Session{}, errorWithStatus(ErrorLoginRejected, targetErr.HTTPStatus, targetErr.Cause)
 		}
@@ -325,7 +329,8 @@ func responseSucceeded(resp *envelope) bool {
 	return resp != nil && (resp.IsSuccess || resp.Success)
 }
 
-// responseError 把目标业务失败收敛为会话失效或暂不可用。
+// responseError 把目标完整响应按会话、权限或业务拒绝分类。
+// 完整业务响应必须保留原始 code/message，不能伪装成网络不可用，否则上层会错误重试。
 func responseError(resp *envelope) error {
 	cause := responseDetail(resp)
 	if responseSessionExpired(resp) {
@@ -336,8 +341,9 @@ func responseError(resp *envelope) error {
 		if strings.TrimSpace(resp.Code) == "403" || strings.Contains(message, "forbidden") || strings.Contains(message, "permission") || strings.Contains(message, "无权限") || strings.Contains(message, "没有权限") {
 			return NewError(ErrorPermissionDenied, cause)
 		}
+		return &BusinessRejection{Code: strings.TrimSpace(resp.Code), Message: strings.TrimSpace(resp.Message)}
 	}
-	return NewError(ErrorUnavailable, cause)
+	return NewError(ErrorResponseInvalid, errors.New("目标响应为空"))
 }
 
 // responseDetail 提取目标响应里用户能够直接理解的原始错误信息。

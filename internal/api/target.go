@@ -195,13 +195,24 @@ func parsePositiveInt(value string, fallback int) (int, bool) {
 
 func writeTargetError(response http.ResponseWriter, err error) {
 	var configErr *config.MissingTargetConfigError
+	var rejection *target.BusinessRejection
 	if errors.As(err, &configErr) {
 		writeFailure(response, http.StatusServiceUnavailable, "TARGET_CONFIG_MISSING", "目标环境尚未配置完整", false)
+		return
+	}
+	if errors.As(err, &rejection) {
+		code := strings.TrimSpace(rejection.Code)
+		if code == "" {
+			code = "TARGET_BUSINESS_REJECTED"
+		}
+		writeFailure(response, http.StatusBadGateway, code, targetErrorMessage(err, "目标平台拒绝了本次业务操作"), false)
 		return
 	}
 	switch {
 	case target.IsKind(err, target.ErrorLoginRejected):
 		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", targetErrorMessage(err, "目标平台拒绝登录，请核对账号"), false)
+	case target.IsKind(err, target.ErrorPermissionDenied):
+		writeFailure(response, http.StatusForbidden, "TARGET_PERMISSION_DENIED", targetErrorMessage(err, "目标平台拒绝访问当前资源"), false)
 	case target.IsKind(err, target.ErrorSessionExpired):
 		writeFailure(response, http.StatusUnauthorized, "TARGET_SESSION_EXPIRED", targetErrorMessage(err, "目标平台会话已失效，请重新验证账号"), true)
 	case target.IsKind(err, target.ErrorResponseInvalid):

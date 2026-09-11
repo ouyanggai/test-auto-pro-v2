@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
@@ -51,6 +52,7 @@ func registerFlowGraphRoute(mux *http.ServeMux, graphs FlowGraphService) {
 // writeFlowGraphError 将计划、目标会话和结构错误收敛为稳定公开响应。
 func writeFlowGraphError(response http.ResponseWriter, err error) {
 	var configErr *config.MissingTargetConfigError
+	var rejection *target.BusinessRejection
 	switch {
 	case service.IsPlanErrorKind(err, service.PlanErrorInvalidArgument):
 		writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "计划 ID 不正确", false)
@@ -68,8 +70,16 @@ func writeFlowGraphError(response http.ResponseWriter, err error) {
 		writeFailure(response, http.StatusBadGateway, "TARGET_FLOW_STRUCTURE_INVALID", "目标流程结构异常", false)
 	case errors.As(err, &configErr):
 		writeFailure(response, http.StatusServiceUnavailable, "TARGET_CONFIG_MISSING", "目标环境尚未配置完整", false)
+	case errors.As(err, &rejection):
+		code := strings.TrimSpace(rejection.Code)
+		if code == "" {
+			code = "TARGET_BUSINESS_REJECTED"
+		}
+		writeFailure(response, http.StatusBadGateway, code, targetErrorMessage(err, "目标平台拒绝了本次业务操作"), false)
 	case target.IsKind(err, target.ErrorLoginRejected):
 		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", "账号验证失败，请核对账号", false)
+	case target.IsKind(err, target.ErrorPermissionDenied):
+		writeFailure(response, http.StatusForbidden, "TARGET_PERMISSION_DENIED", "目标平台拒绝访问当前资源", false)
 	case target.IsKind(err, target.ErrorSessionExpired):
 		writeFailure(response, http.StatusUnauthorized, "TARGET_SESSION_EXPIRED", "账号会话已失效，请重新验证账号", true)
 	case target.IsKind(err, target.ErrorResponseInvalid):

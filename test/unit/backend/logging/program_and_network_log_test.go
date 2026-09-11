@@ -180,19 +180,30 @@ func TestNetworkLogSplitsSuccessAndFailureAndLinksCurl(t *testing.T) {
 	}
 }
 
-// TestCurlCommandMatchesActualRequest 验证生成的命令逐字对应真实请求，含会话值且可直接重放。
-func TestCurlCommandMatchesActualRequest(t *testing.T) {
+// TestCurlCommandRedactsSensitiveValues 验证生成的排查命令保留请求结构，但不泄露会话与密码。
+func TestCurlCommandRedactsSensitiveValues(t *testing.T) {
 	command := logging.CurlCommand("post", "https://target/web/user/api/login/user/login?platformCode=invest",
-		map[string]string{"Content-Type": "application/json", "sid": "sid-real-value"}, `{"data":{"a":"b'c"}}`)
+		map[string]string{"Content-Type": "application/json", "sid": "sid-real-value"}, `{"data":{"a":"b'c","password":"secret"}}`)
 	for _, expected := range []string{
 		"curl -sS -X POST 'https://target/web/user/api/login/user/login?platformCode=invest'",
 		"-H 'Content-Type: application/json'",
-		"-H 'sid: sid-real-value'",
-		`--data-raw '{"data":{"a":"b'\''c"}}'`,
+		"-H 'sid: [REDACTED]'",
+		`--data-raw '{"data":{"a":"b'\''c","password":"[REDACTED]"}}'`,
 	} {
 		if !strings.Contains(command, expected) {
 			t.Fatalf("命令缺少 %s：%s", expected, command)
 		}
+	}
+	if strings.Contains(command, "sid-real-value") || strings.Contains(command, "secret") {
+		t.Fatalf("命令泄露敏感值：%s", command)
+	}
+	safeURL := logging.SanitizeURL("https://target/web/x?sid=sid-real-value&platformCode=invest")
+	if strings.Contains(safeURL, "sid-real-value") || !strings.Contains(safeURL, "platformCode=invest") {
+		t.Fatalf("URL 脱敏或非敏感参数保留异常：%s", safeURL)
+	}
+	safeResponse := logging.SanitizeBody(`{"data":{"sid":"sid-real-value","message":"业务拒绝"}}`)
+	if strings.Contains(safeResponse, "sid-real-value") || !strings.Contains(safeResponse, "业务拒绝") {
+		t.Fatalf("响应正文脱敏异常：%s", safeResponse)
 	}
 	repeat := logging.CurlCommand("post", "https://target/x",
 		map[string]string{"sid": "s", "Content-Type": "application/json"}, "{}")
@@ -213,5 +224,19 @@ func TestNetworkLogUsesContextScope(t *testing.T) {
 	})
 	if content := readBucketFile(t, root, "network.log"); !strings.Contains(content, "request_id=req-from-context") {
 		t.Fatalf("网络日志没有带上 context 作用域：%s", content)
+	}
+}
+
+// TestNetworkLogRecordsRetryAttempt 验证网络日志显式记录重试标记与尝试序号，便于区分首次请求和退避重试。
+func TestNetworkLogRecordsRetryAttempt(t *testing.T) {
+	root := t.TempDir()
+	logger := logging.NewLogger(logging.NewRouter(root, fixedTime), fixedTime)
+	logger.Network(businessScope("req-retry"), logging.NetworkRecord{
+		TraceID: "trace-retry", Method: "GET", Endpoint: "/web/flowTemplateApi/list",
+		Result: "failure", ErrorType: "timeout", Retry: true, RetryAttempt: 2,
+	})
+	content := readBucketFile(t, root, "network-error.log")
+	if !strings.Contains(content, "retry=true") || !strings.Contains(content, "retry_attempt=2") {
+		t.Fatalf("网络重试日志缺少尝试信息：%s", content)
 	}
 }

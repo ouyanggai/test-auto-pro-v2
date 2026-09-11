@@ -59,6 +59,33 @@ func NewError(kind ErrorKind, cause error) error {
 	return &Error{Kind: kind, Cause: cause}
 }
 
+// IsRetryableReadError 判断错误是否属于只读网络瞬断或会话失效。
+// 完整响应、业务拒绝、权限错误和登录拒绝都已经有确定含义，不能被重试吞掉。
+func IsRetryableReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsKind(err, ErrorSessionExpired) {
+		return true
+	}
+	if IsKind(err, ErrorResponseInvalid) {
+		return TransportOf(err) != TransportResponded
+	}
+	if !IsKind(err, ErrorTimeout) && !IsKind(err, ErrorUnavailable) {
+		return false
+	}
+	return TransportOf(err) != TransportResponded
+}
+
+// IsRetryableWriteConnectError 判断写请求是否明确未写出、可以安全重试。
+// 只有连接阶段失败满足条件；响应丢失或传输阶段不明时必须保留不确定结果。
+func IsRetryableWriteConnectError(err error) bool {
+	if err == nil || IsKind(err, ErrorSessionExpired) {
+		return false
+	}
+	return TransportOf(err) == TransportConnectFailed
+}
+
 func errorWithStatus(kind ErrorKind, status int, cause error) error {
 	return &Error{Kind: kind, HTTPStatus: status, Cause: cause}
 }

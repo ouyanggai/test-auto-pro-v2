@@ -59,9 +59,11 @@ func NewTargetReadService(cfg config.TargetConfig) *TargetReadService {
 	if err != nil {
 		return &TargetReadService{configMissing: []string{"TARGET_API_GATEWAY"}}
 	}
+	runConfig := config.LoadRunConfig()
 	return &TargetReadService{
-		client:   client,
-		sessions: session.NewManager(client, cfg.SessionTTL),
+		client: client,
+		sessions: session.NewManager(client, cfg.SessionTTL,
+			session.WithReadRetry(runConfig.ReadOnlyRetryAttempts, runConfig.ReadOnlyRetryBaseDelay, runConfig.ReadOnlyRetryMaxDelay)),
 	}
 }
 
@@ -76,7 +78,7 @@ func NewTargetReadServiceWithClient(client *target.Client, ttl time.Duration) *T
 // 读服务和执行器必须共享这一对实例，避免同一进程为同一账号维护两份 SID 缓存。
 func NewTargetReadServiceWithSession(client *target.Client, sessions *session.Manager) *TargetReadService {
 	if sessions == nil {
-		sessions = session.NewManager(client, 0)
+		sessions = session.NewManager(client, 8*time.Hour)
 	}
 	return &TargetReadService{client: client, sessions: sessions}
 }

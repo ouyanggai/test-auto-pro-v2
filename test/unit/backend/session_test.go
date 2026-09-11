@@ -23,6 +23,13 @@ type selectiveLoginClient struct {
 	releaseSlow chan struct{}
 }
 
+type versionedLoginClient struct {
+	mu           sync.Mutex
+	count        int
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+}
+
 func (c *selectiveLoginClient) Login(ctx context.Context, account string) (target.Session, error) {
 	if account == "slow-account" {
 		close(c.slowStarted)
@@ -33,6 +40,23 @@ func (c *selectiveLoginClient) Login(ctx context.Context, account string) (targe
 		}
 	}
 	return target.Session{SID: "runtime-session", Summary: target.AccountSummary{Account: account}}, nil
+}
+
+// Login 返回可区分代次的会话，并让首个登录停住，供验证迟到 SID 覆盖保护。
+func (c *versionedLoginClient) Login(ctx context.Context, account string) (target.Session, error) {
+	c.mu.Lock()
+	c.count++
+	count := c.count
+	c.mu.Unlock()
+	if count == 1 {
+		close(c.firstStarted)
+		select {
+		case <-c.releaseFirst:
+		case <-ctx.Done():
+			return target.Session{}, ctx.Err()
+		}
+	}
+	return target.Session{SID: fmt.Sprintf("sid-%d", count), Summary: target.AccountSummary{Account: account}}, nil
 }
 
 func newFakeLoginClient() *fakeLoginClient {
@@ -169,5 +193,116 @@ func TestSessionManagerReusesValidSession(t *testing.T) {
 	}
 	if got := client.loginCount("account-a"); got != 1 {
 		t.Fatalf("有效缓存下登录次数 = %d，期望 1", got)
+	}
+}
+
+// TestSessionManagerSerializesReadUsageByAccount 验证同账号读操作在完整回调期间排队，
+// 不同账号仍可并行进入，避免读请求与执行器刷新同一 SID。
+func TestSessionManagerSerializesReadUsageByAccount(t *testing.T) {
+	client := newFakeLoginClient()
+	manager := session.NewManager(client, time.Hour)
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondEntered := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.DoRead(context.Background(), "account-a", func(context.Context, target.Session) error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- manager.DoRead(context.Background(), "account-a", func(context.Context, target.Session) error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+	select {
+	case <-secondEntered:
+		t.Fatal("同账号第二个读操作未等待第一个操作释放")
+	case <-time.After(50 * time.Millisecond):
+	}
+	differentDone := make(chan error, 1)
+	go func() {
+		differentDone <- manager.DoRead(context.Background(), "account-b", func(context.Context, target.Session) error { return nil })
+	}()
+	select {
+	case err := <-differentDone:
+		if err != nil {
+			t.Fatalf("不同账号读操作失败：%v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("不同账号读操作被错误阻塞")
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("第一个读操作失败：%v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("第二个读操作失败：%v", err)
+	}
+}
+
+// TestSessionManagerDropsLateLoginResult 验证刷新代次变化后，迟到的旧登录结果不会覆盖新 SID。
+func TestSessionManagerDropsLateLoginResult(t *testing.T) {
+	client := &versionedLoginClient{firstStarted: make(chan struct{}), releaseFirst: make(chan struct{})}
+	manager := session.NewManager(client, time.Hour)
+	firstDone := make(chan target.Session, 1)
+	go func() {
+		session, _ := manager.Current(context.Background(), "account-a")
+		firstDone <- session
+	}()
+	<-client.firstStarted
+	refreshDone := make(chan target.Session, 1)
+	go func() {
+		session, err := manager.Refresh(context.Background(), "account-a")
+		if err != nil {
+			t.Errorf("刷新会话失败：%v", err)
+		}
+		refreshDone <- session
+	}()
+	close(client.releaseFirst)
+	first := <-firstDone
+	refreshed := <-refreshDone
+	if first.SID != "sid-1" || refreshed.SID != "sid-2" {
+		t.Fatalf("刷新会话代次异常：first=%q refreshed=%q", first.SID, refreshed.SID)
+	}
+	current, err := manager.Current(context.Background(), "account-a")
+	if err != nil || current.SID != "sid-2" {
+		t.Fatalf("刷新后的缓存被旧登录结果覆盖：current=%q err=%v", current.SID, err)
+	}
+	if got := client.count; got != 2 {
+		t.Fatalf("会话刷新产生了 %d 次登录，期望 2", got)
+	}
+}
+
+// TestSessionManagerRetriesReadNetworkFailure 验证只读连接失败会按预算重试，业务错误仍只执行一次。
+func TestSessionManagerRetriesReadNetworkFailure(t *testing.T) {
+	client := newFakeLoginClient()
+	manager := session.NewManager(client, time.Hour, session.WithReadRetry(3, 0, 0))
+	calls := 0
+	err := manager.DoRead(context.Background(), "account-a", func(context.Context, target.Session) error {
+		calls++
+		if calls < 3 {
+			failure := target.NewError(target.ErrorTimeout, nil).(*target.Error)
+			failure.Transport = target.TransportConnectFailed
+			return failure
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("只读连接失败应重试至成功：calls=%d err=%v", calls, err)
+	}
+
+	calls = 0
+	err = manager.DoRead(context.Background(), "account-a", func(context.Context, target.Session) error {
+		calls++
+		return &target.BusinessRejection{Code: "FLOW_409", Message: "业务拒绝"}
+	})
+	if err == nil || calls != 1 {
+		t.Fatalf("业务错误不得重试：calls=%d err=%v", calls, err)
 	}
 }

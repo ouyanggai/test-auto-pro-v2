@@ -12,6 +12,8 @@ import (
 type requestClassKey struct{}
 
 type requestTraceIDKey struct{}
+type requestRetryKey struct{}
+type requestRetryAttemptKey struct{}
 
 // RequestClassFromContext 读取请求分类；未标记的请求一律按只读处理。
 func RequestClassFromContext(ctx context.Context) string {
@@ -33,4 +35,25 @@ func requestTraceIDFromContext(ctx context.Context) string {
 func withRequestMetadata(ctx context.Context, class, traceID string) context.Context {
 	ctx = context.WithValue(ctx, requestClassKey{}, class)
 	return context.WithValue(ctx, requestTraceIDKey{}, traceID)
+}
+
+// WithRetryAttempt 标记目标请求是否为网络重试及其尝试序号，供传输日志准确记录。
+func WithRetryAttempt(ctx context.Context, retry bool, attempt int) context.Context {
+	ctx = context.WithValue(ctx, requestRetryKey{}, retry)
+	return context.WithValue(ctx, requestRetryAttemptKey{}, attempt)
+}
+
+// RetryFromContext 返回请求是否由受控网络重试发起。
+func RetryFromContext(ctx context.Context) bool {
+	value, _ := ctx.Value(requestRetryKey{}).(bool)
+	return value
+}
+
+// RetryAttemptFromContext 返回请求尝试序号；未标记时按首次请求处理。
+func RetryAttemptFromContext(ctx context.Context) int {
+	value, ok := ctx.Value(requestRetryAttemptKey{}).(int)
+	if !ok || value < 1 {
+		return 1
+	}
+	return value
 }

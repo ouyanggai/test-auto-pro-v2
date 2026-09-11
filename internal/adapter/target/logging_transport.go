@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"time"
 
@@ -22,6 +23,9 @@ type networkLogger interface {
 // SetNetworkLogger 在唯一出口接入目标请求日志。未注入时客户端行为完全不变。
 func (c *Client) SetNetworkLogger(logger networkLogger) {
 	if c == nil || logger == nil {
+		return
+	}
+	if _, alreadyWrapped := c.httpClient.Transport.(*loggingTransport); alreadyWrapped {
 		return
 	}
 	c.httpClient.Transport = &loggingTransport{next: c.httpClient.Transport, logger: logger}
@@ -51,10 +55,16 @@ func (t *loggingTransport) RoundTrip(request *http.Request) (*http.Response, err
 		// 分类由唯一请求出口标记；未标记的历史只读调用按 read 落盘。
 		RequestClass: RequestClassFromContext(request.Context()),
 		Curl:         logging.CurlCommand(request.Method, request.URL.String(), requestHeaders(request), requestBody),
+		Retry:        RetryFromContext(request.Context()),
+		RetryAttempt: RetryAttemptFromContext(request.Context()),
 	}
 	started := time.Now()
+	probe := &transportProbe{}
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), probe.trace()))
 	response, err := next.RoundTrip(request)
 	record.Duration = time.Since(started)
+	record.TransportPhase = string(probe.classify(err))
+	record.RequestWritten = probe.wroteRequest.Load()
 	if err != nil {
 		record.Result, record.ErrorType = "failure", transportErrorType(err)
 		t.logger.Network(scope, record)

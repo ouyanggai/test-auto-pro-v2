@@ -123,8 +123,10 @@ func TestTargetAPIErrorMapping(t *testing.T) {
 	}{
 		{name: "配置缺失", err: &config.MissingTargetConfigError{Names: []string{"TARGET_API_GATEWAY"}}, status: 503, code: "TARGET_CONFIG_MISSING"},
 		{name: "登录拒绝", err: target.NewError(target.ErrorLoginRejected, nil), status: 401, code: "TARGET_LOGIN_REJECTED"},
+		{name: "权限拒绝", err: target.NewError(target.ErrorPermissionDenied, nil), status: 403, code: "TARGET_PERMISSION_DENIED"},
 		{name: "会话失效", err: target.NewError(target.ErrorSessionExpired, nil), status: 401, code: "TARGET_SESSION_EXPIRED", retryable: true},
 		{name: "响应异常", err: target.NewError(target.ErrorResponseInvalid, nil), status: 502, code: "TARGET_RESPONSE_INVALID", retryable: true},
+		{name: "业务拒绝", err: &target.BusinessRejection{Code: "FLOW_409", Message: "流程状态已发生变化"}, status: 502, code: "FLOW_409", retryable: false},
 		{name: "不可用", err: target.NewError(target.ErrorUnavailable, nil), status: 502, code: "TARGET_UNAVAILABLE", retryable: true},
 		{name: "超时", err: target.NewError(target.ErrorTimeout, nil), status: 504, code: "TARGET_TIMEOUT", retryable: true},
 	}

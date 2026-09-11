@@ -36,6 +36,7 @@ func main() {
 	defer planDatabase.Close()
 
 	targetConfig := config.LoadTargetConfig()
+	runConfig := config.LoadRunConfig()
 	// 目标读写必须共享同一个客户端和会话管理器：两套内存 SID 缓存会让页面读请求与执行链
 	// 互相覆盖会话，旧 SID 可能在刷新后继续传播。
 	engineTargetClient, err := target.NewClient(target.ClientConfig{
@@ -51,7 +52,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sessionManager := session.NewManager(engineTargetClient, targetConfig.SessionTTL)
+	sessionManager := session.NewManager(engineTargetClient, targetConfig.SessionTTL,
+		session.WithReadRetry(runConfig.ReadOnlyRetryAttempts, runConfig.ReadOnlyRetryBaseDelay, runConfig.ReadOnlyRetryMaxDelay))
 	targetReader := service.NewTargetReadServiceWithSession(engineTargetClient, sessionManager)
 	// 目标业务库只读连接可选：配置后基础表单数据候选走一次联表查询，未配置时回落到目标只读 API。
 	var targetCompanyDirectory service.PathDataCompanyDirectory
@@ -160,8 +162,6 @@ func main() {
 	)
 	// F-016 执行器最小真实闭环：目标写客户端、会话管理、运行状态机、一步执行器与单步控制。
 	// 写请求只能由 internal/adapter/target 发出；超时与重试预算全部来自配置。
-	runConfig := config.LoadRunConfig()
-	engineTargetClient.SetNetworkLogger(appLogger)
 	runStore := planmysql.NewRunRepository(planDatabase.DB)
 	runStateService := run.NewService(runStore, "server-run-worker", runConfig.LeaseDuration, time.Now)
 	stepExecutor := step.NewExecutor(engineTargetClient, sessionManager, runStateService, runStore, runConfig, time.Now)

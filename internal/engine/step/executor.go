@@ -27,7 +27,7 @@ func (e *UnverifiedActionError) Error() string {
 
 // Executor 执行一条路径运行上的一步七阶段。
 // 边界：只经 RunStateControl 推进状态机、只经 TargetClient 发目标请求、
-// 事实只经 RunFactsStore 落账；submit 阶段内部没有任何重试路径。
+// 事实只经 RunFactsStore 落账；submit 阶段只允许连接尚未建立时的受控重试。
 type Executor struct {
 	target   TargetClient
 	sessions SessionProvider
@@ -52,8 +52,12 @@ func NewExecutor(targetClient TargetClient, sessions SessionProvider, runState R
 		sessions: sessions,
 		runState: runState,
 		facts:    facts,
-		policy:   RetryPolicy{Attempts: runConfig.ReadOnlyRetryAttempts, BaseDelay: runConfig.ReadOnlyRetryBaseDelay, MaxDelay: runConfig.ReadOnlyRetryMaxDelay, Now: now},
-		now:      now,
+		policy: RetryPolicy{
+			Attempts: runConfig.ReadOnlyRetryAttempts, BaseDelay: runConfig.ReadOnlyRetryBaseDelay, MaxDelay: runConfig.ReadOnlyRetryMaxDelay,
+			WriteConnectAttempts: runConfig.WriteConnectRetryAttempts, WriteConnectBaseDelay: runConfig.WriteConnectRetryBaseDelay,
+			WriteConnectMaxDelay: runConfig.WriteConnectRetryMaxDelay, Now: now,
+		},
+		now: now,
 	}
 }
 
@@ -80,6 +84,11 @@ func (e *Executor) stepLogFor(runCtx RunContext) *StepLog {
 func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextIndex int) (*StepPreview, bool, error) {
 	if nextIndex >= len(runCtx.Steps) {
 		return nil, true, nil
+	}
+	var releaseUsage func()
+	if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
+		releaseUsage = locker.LockAccountUsage(runCtx.PlanAccount)
+		defer releaseUsage()
 	}
 	step := runCtx.Steps[nextIndex]
 	log := e.stepLogFor(runCtx)
@@ -304,9 +313,13 @@ func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled
 	hasInstance := false
 	if instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef); instanceRef != "" {
 		hasInstance = true
-		read, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
-			func(active target.Session) (map[string]any, error) {
-				return e.target.ReadInstanceCurrentData(ctx, active, instanceRef)
+		account := strings.TrimSpace(session.Summary.Account)
+		if account == "" {
+			account = runCtx.PlanAccount
+		}
+		read, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+			func(callContext context.Context, active target.Session) (map[string]any, error) {
+				return e.target.ReadInstanceCurrentData(callContext, active, instanceRef)
 			})
 		if err != nil {
 			return FormDataPlan{}, active, err
@@ -458,7 +471,7 @@ func gateSnapshotJSON(preview *StepPreview, branchTarget string) string {
 }
 
 // RunApprovedStep 执行阶段 3（放行）、4（prepare）、5（submit）、6（verify）、7（settle）。
-// 一次尝试最多一次写请求：submit 只调用一次，写结果不确定即停在待对账，绝不重发。
+// 一次尝试最多一次进入目标业务写入；仅连接尚未写出时允许有限重试，写出后响应丢失绝不重发。
 func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (StepOutcome, uint64, error) {
 	runCtx := approved.RunCtx
 	preview := approved.Preview
@@ -475,6 +488,15 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// 重新核验（2026-09-11 用户裁决）：上次核验读取失败，这次只重读结果、绝不重发写请求。
 		// 用写出时的当前处理人会话重读（其已办/待办才是本步写是否生效的直接事实）；
 		// 会话已失效时 readFactsWithRetry 会按该账号自动重登。
+		var releaseUsage func()
+		if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
+			account := strings.TrimSpace(preview.ActorAccount)
+			if account == "" {
+				account = runCtx.PlanAccount
+			}
+			releaseUsage = locker.LockAccountUsage(account)
+			defer releaseUsage()
+		}
 		if err := e.runState.MarkVerifying(ctx, runCtx.PathRun.ID); err != nil {
 			return outcome, 0, err
 		}
@@ -639,6 +661,18 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, 0, err
 	}
 	reportPhase(approved, "prepare", "正在就绪当前处理人的登录会话")
+	// 从取得执行会话开始独占计划账号，页面读取和其他执行不能并发刷新同一账号 SID。
+	var releaseUsage func()
+	usageAccount := ""
+	if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
+		releaseUsage = locker.LockAccountUsage(runCtx.PlanAccount)
+		usageAccount = strings.TrimSpace(runCtx.PlanAccount)
+		defer func() {
+			if releaseUsage != nil {
+				releaseUsage()
+			}
+		}()
+	}
 	// 写步骤的会话策略对齐 V1 长期验证的模式（2026-09-07 修正）：复用缓存会话，
 	// 写请求被会话失效拒绝时由 resubmitOnSessionRejected 恢复（重登+重发至多 3 次）。
 	// 每一步强制重登会让登录频率放大数倍，实测触发了目标平台对账号的会话限制
@@ -647,8 +681,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		if cached, err := e.sessions.Current(ctx, runCtx.PlanAccount); err == nil {
 			return cached, nil
 		}
-		return RunWithRetry(ctx, e.policy, "会话刷新", func() (target.Session, error) {
-			return e.sessions.Refresh(ctx, runCtx.PlanAccount)
+		return RunWithConnectRetry(ctx, e.policy, func(callContext context.Context) (target.Session, error) {
+			return e.sessions.Refresh(callContext, runCtx.PlanAccount)
 		}, func(attempt int, nextDelay time.Duration) {
 			note := fmt.Sprintf("会话刷新第 %d 次失败，%s 后重试", attempt, nextDelay)
 			log.Phase("prepare", step.Sequence, attemptNo, note)
@@ -688,6 +722,13 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 				}
 				return outcome, lineNo, nil
 			} else if account != "" && account != runCtx.PlanAccount {
+				if locker, canLock := e.sessions.(interface{ LockAccountUsage(string) func() }); canLock && !strings.EqualFold(usageAccount, account) {
+					if releaseUsage != nil {
+						releaseUsage()
+					}
+					releaseUsage = locker.LockAccountUsage(account)
+					usageAccount = strings.TrimSpace(account)
+				}
 				actorSession, actorErr := e.sessions.Current(ctx, account)
 				if actorErr != nil {
 					class := model.FailureClassActorUnresolved
@@ -712,14 +753,15 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("当前处理人 %s（登录账号 %s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
 	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人 %s 会话就绪", preview.ActorName))
-	// 账号使用锁（2026-09-11 用户裁决：当前人正在使用中就等别人用完再用，避免重复登录踢会话）。
-	// 处理人账号（非发起人）在「读待办 → 审批 → 核验」期间独占持有，其他需要同一账号的操作
-	// 在此排队等待。发起人账号的读取到处都在用，不在这一步独占。
-	var releaseHandlerUsage func()
-	if !strings.EqualFold(strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount)) {
-		if locker, canLock := e.sessions.(interface{ LockAccountUsage(string) func() }); canLock {
-			releaseHandlerUsage = locker.LockAccountUsage(session.Summary.Account)
-			defer releaseHandlerUsage()
+	// 当前处理人账号可能不同于计划账号：把锁转移到真实处理人并持有到核验结束。
+	if !strings.EqualFold(strings.TrimSpace(session.Summary.Account), usageAccount) {
+		if releaseUsage != nil {
+			releaseUsage()
+			releaseUsage = nil
+		}
+		if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
+			releaseUsage = locker.LockAccountUsage(session.Summary.Account)
+			usageAccount = strings.TrimSpace(session.Summary.Account)
 		}
 	}
 
@@ -1072,8 +1114,8 @@ func (e *Executor) refreshTaskSnapshot(ctx context.Context, runCtx RunContext, s
 		account = runCtx.PlanAccount
 	}
 	snapshot, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
-		func(active target.Session) (target.TaskSnapshot, error) {
-			return e.readTaskSnapshot(ctx, runCtx, step, nodeID, active, status)
+		func(callContext context.Context, active target.Session) (target.TaskSnapshot, error) {
+			return e.readTaskSnapshot(callContext, runCtx, step, nodeID, active, status)
 		})
 	return active, snapshot, err
 }
@@ -1157,10 +1199,14 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 		proxyID  string
 		tree     json.RawMessage
 	}
-	read, session, treeErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
-		func(active target.Session) (addSignRead, error) {
+	account := strings.TrimSpace(session.Summary.Account)
+	if account == "" {
+		account = runCtx.PlanAccount
+	}
+	read, session, treeErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+		func(callContext context.Context, active target.Session) (addSignRead, error) {
 			// 会话刷新后任务代理也可能随目标上下文变化，必须和树一起重新读取，不能复用旧快照。
-			freshSnapshot, snapshotErr := e.readTaskSnapshot(ctx, runCtx, step, nodeID, active, status)
+			freshSnapshot, snapshotErr := e.readTaskSnapshot(callContext, runCtx, step, nodeID, active, status)
 			if snapshotErr != nil {
 				return addSignRead{}, snapshotErr
 			}
@@ -1171,7 +1217,7 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 			if proxyID == "" {
 				return addSignRead{}, errors.New("目标任务快照缺少 flowProxyId，无法执行加签")
 			}
-			tree, readErr := reader.ReadFlowProxyDocument(ctx, active, proxyID)
+			tree, readErr := reader.ReadFlowProxyDocument(callContext, active, proxyID)
 			if readErr != nil {
 				return addSignRead{}, readErr
 			}
@@ -1220,15 +1266,18 @@ func actionName(action model.ActionKey) string {
 	return string(action)
 }
 
-// refreshAndSubmit 在发送前完成待办任务 ID 的新鲜读取，然后发出唯一一次写请求。
-// 请求本体与预览同源（preview.request）；本方法及其调用路径不存在任何重试。
-// 只有真正发出写请求的路径才置 preview.writeSent：发送前的任何失败都停留在零写入分支。
+// refreshAndSubmit 在发送前完成待办任务 ID 的新鲜读取，然后发出业务写请求。
+// 网络连接尚未写出时允许有限重试；请求一旦写出，响应丢失不得重发。
+// 只有实际尝试进入目标写请求的路径才置 preview.writeSent。
 func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, attemptNo int) target.Session {
 	switch request := preview.request.(type) {
 	case *target.SubmitFlowInstanceRequest:
-		preview.writeSent = true
 		started := e.now()
-		result, response, traceID, err := e.target.SubmitFlowInstance(ctx, session, *request)
+		result, response, traceID, err, attempted := e.runWriteWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved,
+			func(callContext context.Context, active target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
+				return e.target.SubmitFlowInstance(callContext, active, *request)
+			}, session)
+		preview.writeSent = attempted
 		// 会话失效拒绝（RESP401/AUTH_401）发生在目标业务逻辑之前：请求没有进入业务、
 		// 无副作用（核验重读「明确未变」可证）。这不是「唯一一次写机会」的消耗——
 		// 实测目标写端点会话校验与读端点不同步，新登录的会话也可能被写链路拒绝。
@@ -1244,7 +1293,11 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 			}
 			result, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, refreshAccount, step, attemptNo,
 				func(refreshed target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
-					return e.target.SubmitFlowInstance(ctx, refreshed, *request)
+					result, response, traceID, err, _ = e.runWriteWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved,
+						func(callContext context.Context, active target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
+							return e.target.SubmitFlowInstance(callContext, active, *request)
+						}, refreshed)
+					return result, response, traceID, err
 				}, log, reportPhase, approved)
 		}
 		preview.writeResult, preview.writeResponse, preview.writeTraceID, preview.writeErr = result, response, traceID, err
@@ -1261,8 +1314,11 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 			preview.writeErrClass = model.FailureClassActorUnresolved
 			return session
 		}
-		preview.writeSent = true
-		result, response, traceID, err := e.target.AuditCurrentTask(ctx, session, *request)
+		result, response, traceID, err, attempted := e.runAuditWriteWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved,
+			func(callContext context.Context, active target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
+				return e.target.AuditCurrentTask(callContext, active, *request)
+			}, session)
+		preview.writeSent = attempted
 		if isSessionRejected(err) {
 			var retrySession target.Session
 			var prepareErr error
@@ -1277,7 +1333,11 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 					if prepareErr != nil {
 						return nil, target.WriteResponse{}, "", prepareErr
 					}
-					return e.target.AuditCurrentTask(ctx, retrySession, *request)
+					result, response, traceID, err, _ = e.runAuditWriteWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved,
+						func(callContext context.Context, active target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
+							return e.target.AuditCurrentTask(callContext, active, *request)
+						}, retrySession)
+					return result, response, traceID, err
 				}, log, reportPhase, approved)
 			if retrySession.SID != "" {
 				session = retrySession
@@ -1296,19 +1356,23 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 				preview.writeErrClass = model.FailureClassActorUnresolved
 				return session
 			}
-			preview.writeSent = true
-			response, traceID, err := e.target.ExecuteActionWrite(ctx, session, *actionRequest)
+			response, traceID, err, attempted := e.runActionWriteWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved, session, *actionRequest)
+			preview.writeSent = attempted
 			if isSessionRejected(err) {
 				var retrySession target.Session
 				var prepareErr error
-				_, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, runCtx.PlanAccount, step, attemptNo,
+				refreshAccount := strings.TrimSpace(session.Summary.Account)
+				if refreshAccount == "" {
+					refreshAccount = runCtx.PlanAccount
+				}
+				_, response, traceID, session, err = resubmitOnSessionRejected(ctx, func(account string) (target.Session, error) { return e.refreshSessionForWrite(ctx, account) }, refreshAccount, step, attemptNo,
 					func(refreshed target.Session) (struct{}, target.WriteResponse, string, error) {
 						retrySession = refreshed
 						retrySession, prepareErr = e.prepareActionWrite(ctx, runCtx, step, actionRequest, refreshed, false)
 						if prepareErr != nil {
 							return struct{}{}, target.WriteResponse{}, "", prepareErr
 						}
-						writeResponse, writeTraceID, writeErr := e.target.ExecuteActionWrite(ctx, retrySession, *actionRequest)
+						writeResponse, writeTraceID, writeErr, _ := e.runActionWriteWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved, retrySession, *actionRequest)
 						return struct{}{}, writeResponse, writeTraceID, writeErr
 					}, log, reportPhase, approved)
 				if retrySession.SID != "" {
@@ -1329,6 +1393,42 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		preview.writeErrClass = model.FailureClassToolBug
 	}
 	return session
+}
+
+// runWriteWithNetworkRetry 只为连接阶段未写出的发起/审批请求提供有限重试。
+// 传输阶段一旦不是 connect_refused，结果就交给执行器原有的不确定判定，不得再次发送业务写。
+func (e *Executor) runWriteWithNetworkRetry(ctx context.Context, step model.CompiledActionStep, attemptNo int, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, call func(context.Context, target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error), session target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error, bool) {
+	return RunWithWriteConnectRetry(ctx, e.policy, func(callContext context.Context) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
+		return call(callContext, session)
+	}, func(attempt int, nextDelay time.Duration) {
+		note := fmt.Sprintf("写请求连接未建立，第 %d 次后将在 %s 重试", attempt, nextDelay)
+		log.Phase("submit", step.Sequence, attemptNo, note)
+		reportPhase(approved, "submit", note)
+	})
+}
+
+// runAuditWriteWithNetworkRetry 为审批写请求复用未写出连接重试边界。
+func (e *Executor) runAuditWriteWithNetworkRetry(ctx context.Context, step model.CompiledActionStep, attemptNo int, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, call func(context.Context, target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error), session target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error, bool) {
+	return RunWithWriteConnectRetry(ctx, e.policy, func(callContext context.Context) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
+		return call(callContext, session)
+	}, func(attempt int, nextDelay time.Duration) {
+		note := fmt.Sprintf("写请求连接未建立，第 %d 次后将在 %s 重试", attempt, nextDelay)
+		log.Phase("submit", step.Sequence, attemptNo, note)
+		reportPhase(approved, "submit", note)
+	})
+}
+
+// runActionWriteWithNetworkRetry 为统一动作写出口复用未写出连接重试边界。
+func (e *Executor) runActionWriteWithNetworkRetry(ctx context.Context, step model.CompiledActionStep, attemptNo int, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, session target.Session, request target.ActionWriteRequest) (target.WriteResponse, string, error, bool) {
+	_, response, traceID, err, attempted := RunWithWriteConnectRetry(ctx, e.policy, func(callContext context.Context) (struct{}, target.WriteResponse, string, error) {
+		response, traceID, err := e.target.ExecuteActionWrite(callContext, session, request)
+		return struct{}{}, response, traceID, err
+	}, func(attempt int, nextDelay time.Duration) {
+		note := fmt.Sprintf("写请求连接未建立，第 %d 次后将在 %s 重试", attempt, nextDelay)
+		log.Phase("submit", step.Sequence, attemptNo, note)
+		reportPhase(approved, "submit", note)
+	})
+	return response, traceID, err, attempted
 }
 
 // parseAddSignWriteData 提取 updateFlowProxy 成功响应中的新代理与当前节点标识。
@@ -1373,9 +1473,13 @@ func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext,
 	if proxyID == "" || nodeID == "" {
 		return verdict.RereadUnreadable
 	}
-	document, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
-		func(active target.Session) (json.RawMessage, error) {
-			return reader.ReadFlowProxyDocument(ctx, active, proxyID)
+	account := strings.TrimSpace(session.Summary.Account)
+	if account == "" {
+		account = runCtx.PlanAccount
+	}
+	document, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+		func(callContext context.Context, active target.Session) (json.RawMessage, error) {
+			return reader.ReadFlowProxyDocument(callContext, active, proxyID)
 		})
 	if err != nil {
 		return verdict.RereadUnreadable
@@ -1452,8 +1556,8 @@ func (e *Executor) classifyRollbackReread(ctx context.Context, account, instance
 		return verdict.RereadUnreadable
 	}
 	records, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
-		func(active target.Session) ([]target.AuditRecordSnapshot, error) {
-			return reader.ListAuditRecords(ctx, active, instanceID)
+		func(callContext context.Context, active target.Session) ([]target.AuditRecordSnapshot, error) {
+			return reader.ListAuditRecords(callContext, active, instanceID)
 		})
 	if err != nil {
 		return verdict.RereadUnreadable
@@ -1487,8 +1591,8 @@ func (e *Executor) classifyForwardReread(ctx context.Context, account string, se
 		return verdict.RereadUnreadable, instanceID
 	}
 	result, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
-		func(active target.Session) (bool, error) {
-			_, _, _, _, found, readErr := reader.FindSubmittedFlow(ctx, active, instanceID)
+		func(callContext context.Context, active target.Session) (bool, error) {
+			_, _, _, _, found, readErr := reader.FindSubmittedFlow(callContext, active, instanceID)
 			return found, readErr
 		})
 	if err != nil {
@@ -1513,8 +1617,8 @@ func containsNode(nodes []string, nodeKey string) bool {
 // sessionWithRetry 取得当前处理人会话：登录与会话获取属只读阶段，允许有界重试与退避。
 // 每次重试都如实写进 step.log，不允许出现“看起来只调了一次”的日志。
 func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log *StepLog, stepNo int, phase string) (target.Session, error) {
-	return RunWithRetry(ctx, e.policy, "会话获取", func() (target.Session, error) {
-		return e.sessions.Current(ctx, runCtx.PlanAccount)
+	return RunWithConnectRetry(ctx, e.policy, func(callContext context.Context) (target.Session, error) {
+		return e.sessions.Current(callContext, runCtx.PlanAccount)
 	}, func(attempt int, nextDelay time.Duration) {
 		log.Phase(phase, stepNo, 1, fmt.Sprintf("会话获取第 %d 次失败，%s 后重试", attempt, nextDelay))
 	})
@@ -1528,6 +1632,10 @@ func (e *Executor) InstanceStillAtStepNode(ctx context.Context, runCtx RunContex
 	info, ok := runCtx.Nodes[step.NodeKey]
 	if !ok || strings.TrimSpace(info.TargetNodeID) == "" {
 		return false, nil
+	}
+	if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
+		release := locker.LockAccountUsage(runCtx.PlanAccount)
+		defer release()
 	}
 	session, err := e.sessions.Current(ctx, runCtx.PlanAccount)
 	if err != nil {
@@ -1552,8 +1660,8 @@ func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, 
 		return "", "", errors.New("目标客户端不支持人员目录账号解析")
 	}
 	accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
-		func(active target.Session) (map[string]string, error) {
-			return resolver.UserAccountsByID(ctx, active, []string{assigneeUserID})
+		func(callContext context.Context, active target.Session) (map[string]string, error) {
+			return resolver.UserAccountsByID(callContext, active, []string{assigneeUserID})
 		})
 	if err != nil {
 		return "", "", err
@@ -1644,8 +1752,8 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 		return target.TaskSnapshot{}, "", "", sess, false, "实例事实里没有本节点的当前处理人信息（currentAuditUserInfo 为空）"
 	}
 	matches, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
-		func(active target.Session) ([]target.HandlerAccount, error) {
-			return resolver.MatchHandlerAccounts(ctx, active, handler)
+		func(callContext context.Context, active target.Session) ([]target.HandlerAccount, error) {
+			return resolver.MatchHandlerAccounts(callContext, active, handler)
 		})
 	if err != nil {
 		return target.TaskSnapshot{}, "", "", sess, false, "当前处理人账号解析失败：" + err.Error()
@@ -1751,14 +1859,16 @@ type userAccountResolver interface {
 
 // readOnlyWithSessionRetry 执行目标只读操作；会话失效时先刷新会话再立即重读，其他临时错误按配置退避。
 // 该函数只接受读取回调，明确隔离写请求，避免把已送达的业务动作放进重试循环。
-func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, sessions SessionProvider, account string, session target.Session, call func(target.Session) (T, error)) (T, target.Session, error) {
+func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, sessions SessionProvider, account string, session target.Session, call func(context.Context, target.Session) (T, error)) (T, target.Session, error) {
 	var zero T
 	if policy.Attempts < 1 {
 		policy.Attempts = 1
 	}
 	active := session
+	sessionRefreshed := false
 	for attempt := 1; attempt <= policy.Attempts; attempt++ {
-		value, err := call(active)
+		callContext := target.WithRetryAttempt(ctx, attempt > 1, attempt)
+		value, err := call(callContext, active)
 		if err == nil {
 			return value, active, nil
 		}
@@ -1769,6 +1879,11 @@ func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, se
 			if sessions == nil {
 				return zero, active, err
 			}
+			if sessionRefreshed {
+				return zero, active, target.NewError(target.ErrorSessionExpired,
+					errors.New("新会话仍然失效，可能存在浏览器或其他进程的外部会话竞争"))
+			}
+			sessionRefreshed = true
 			// 连续刷新之间强制退避：实测高频重登会触发目标平台对账号的会话限制
 			// （新发的 SID 连只读都秒级失效），把瞬断放大成账号级不可用；退避给目标恢复窗口。
 			delay := time.Duration(attempt) * time.Second
@@ -1816,9 +1931,9 @@ func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, se
 		account = runCtx.PlanAccount
 	}
 	facts, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
-		func(active target.Session) (InstanceFacts, error) {
+		func(callContext context.Context, active target.Session) (InstanceFacts, error) {
 			// 事实重读要与目标返回的真实节点标识对照，因此传真实标识而不是工具侧不透明键。
-			return e.readInstanceFacts(ctx, runCtx, active, step)
+			return e.readInstanceFacts(callContext, runCtx, active, step)
 		})
 	if err != nil {
 		// 预算耗尽仍读不到：把读取失败随事实带回（ReadError 非空 → 核验判不可读、对账走读取失败降级），
@@ -1925,6 +2040,10 @@ type ReconcileFacts struct {
 // ReconcileFacts 重读目标事实供对账判定：只读、可重试。
 // before 事实以本步预览里保存的目标事实为准（写之前的状态）。
 func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo int) (ReconcileFacts, error) {
+	if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
+		release := locker.LockAccountUsage(runCtx.PlanAccount)
+		defer release()
+	}
 	log := e.stepLogFor(runCtx)
 	session, err := e.sessionWithRetry(ctx, runCtx, log, 0, "verify")
 	if err != nil {
@@ -1960,8 +2079,8 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 	if instanceRef != "" {
 		if reader, ok := e.target.(doneRecordReader); ok {
 			if found, _, readErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
-				func(active target.Session) (bool, error) {
-					return reader.FindDoneTaskOnNode(ctx, active, instanceRef, nodeID)
+				func(callContext context.Context, active target.Session) (bool, error) {
+					return reader.FindDoneTaskOnNode(callContext, active, instanceRef, nodeID)
 				}); readErr == nil {
 				facts.DoneRecordsRead, facts.DoneRecordFound = true, found
 			} else {
@@ -1970,8 +2089,8 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 		}
 		if reader, ok := e.target.(auditTraceReader); ok {
 			trace, _, readErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
-				func(active target.Session) (auditTrace, error) {
-					found, total, err := reader.FindAuditTraceOnNode(ctx, active, instanceRef, nodeID)
+				func(callContext context.Context, active target.Session) (auditTrace, error) {
+					found, total, err := reader.FindAuditTraceOnNode(callContext, active, instanceRef, nodeID)
 					return auditTrace{found: found, total: total}, err
 				})
 			if readErr == nil {

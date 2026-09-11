@@ -29,7 +29,7 @@ type WriteResponse struct {
 }
 
 // BusinessRejection 是目标业务包络的失败响应（isSuccess=false）。
-// 必须原样携带 code 与 message，供判定包按「端点+精确文案」做清单匹配，禁止模糊化或改写。
+// 必须原样携带 code 与 message，供页面直接展示和判定包按「端点+精确文案」做清单匹配，禁止模糊化或改写。
 type BusinessRejection struct {
 	Code    string
 	Message string
@@ -37,6 +37,15 @@ type BusinessRejection struct {
 
 // Error 返回稳定的中文分类文案；真实文案只进判定输入，不进错误链展示。
 func (e *BusinessRejection) Error() string {
+	if e == nil {
+		return "目标平台业务拒绝"
+	}
+	if message := strings.TrimSpace(e.Message); message != "" {
+		return message
+	}
+	if code := strings.TrimSpace(e.Code); code != "" {
+		return code
+	}
 	return "目标平台业务拒绝"
 }
 

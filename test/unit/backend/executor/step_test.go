@@ -536,6 +536,53 @@ func TestF016RetryBudgetOnReadOnlyPhases(t *testing.T) {
 	}
 }
 
+// TestWriteConnectRetryStopsAtTransportBoundary 验证写请求只在明确未建立连接时重试，
+// 请求发出后的响应丢失与完整业务拒绝都只调用一次。
+func TestWriteConnectRetryStopsAtTransportBoundary(t *testing.T) {
+	policy := step.RetryPolicy{
+		WriteConnectAttempts:  3,
+		WriteConnectBaseDelay: time.Millisecond,
+		WriteConnectMaxDelay:  2 * time.Millisecond,
+		Sleep:                 func(time.Duration) {},
+	}
+	connectCalls := 0
+	_, _, _, err, attempted := step.RunWithWriteConnectRetry(context.Background(), policy,
+		func(context.Context) (int, target.WriteResponse, string, error) {
+			connectCalls++
+			if connectCalls < 3 {
+				failure := target.NewError(target.ErrorUnavailable, nil).(*target.Error)
+				failure.Transport = target.TransportConnectFailed
+				return 0, target.WriteResponse{}, "", failure
+			}
+			return 3, target.WriteResponse{}, "trace-success", nil
+		}, nil)
+	if err != nil || !attempted || connectCalls != 3 {
+		t.Fatalf("连接阶段应重试至成功：calls=%d attempted=%v err=%v", connectCalls, attempted, err)
+	}
+
+	interruptedCalls := 0
+	_, _, _, err, attempted = step.RunWithWriteConnectRetry(context.Background(), policy,
+		func(context.Context) (int, target.WriteResponse, string, error) {
+			interruptedCalls++
+			failure := target.NewError(target.ErrorTimeout, nil).(*target.Error)
+			failure.Transport = target.TransportInterrupted
+			return 0, target.WriteResponse{}, "trace-lost", failure
+		}, nil)
+	if err == nil || !attempted || interruptedCalls != 1 {
+		t.Fatalf("响应丢失写请求不得重发：calls=%d attempted=%v err=%v", interruptedCalls, attempted, err)
+	}
+
+	businessCalls := 0
+	_, _, _, err, attempted = step.RunWithWriteConnectRetry(context.Background(), policy,
+		func(context.Context) (int, target.WriteResponse, string, error) {
+			businessCalls++
+			return 0, target.WriteResponse{Code: "FLOW_409", Message: "业务拒绝"}, "trace-business", &target.BusinessRejection{Code: "FLOW_409", Message: "业务拒绝"}
+		}, nil)
+	if err == nil || !attempted || businessCalls != 1 {
+		t.Fatalf("业务拒绝不得重试：calls=%d attempted=%v err=%v", businessCalls, attempted, err)
+	}
+}
+
 // previewBlock 安全取出预览的阻塞原因（测试辅助）。
 func previewBlock(preview *step.StepPreview) string {
 	if preview == nil {

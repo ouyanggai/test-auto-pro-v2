@@ -296,6 +296,12 @@ type RunConfig struct {
 	ReadOnlyRetryBaseDelay time.Duration
 	// ReadOnlyRetryMaxDelay 是只读阶段单次退避的间隔上限，防止预算膨胀到不可接受。
 	ReadOnlyRetryMaxDelay time.Duration
+	// WriteConnectRetryAttempts 是写请求尚未建立连接时的最大重试次数；请求一旦写出不再使用该预算。
+	WriteConnectRetryAttempts int
+	// WriteConnectRetryBaseDelay 是写连接重试的指数退避基准间隔。
+	WriteConnectRetryBaseDelay time.Duration
+	// WriteConnectRetryMaxDelay 是写连接重试的单次退避上限。
+	WriteConnectRetryMaxDelay time.Duration
 	// StepProgressStaleAfter 是一步执行期间超过该时长仍无状态更新即视为疑似无响应的预算。
 	StepProgressStaleAfter time.Duration
 	// StatusPollInterval 是前端状态轮询间隔；强制单步下状态只在放行后变化，轮询够用。
@@ -304,30 +310,39 @@ type RunConfig struct {
 
 // 运行参数的环境变量名与兜底默认值。
 const (
-	runLeaseDurationEnv      = "TEST_AUTO_PRO_RUN_LEASE_DURATION"
-	runReadRetryAttemptsEnv  = "TEST_AUTO_PRO_READ_RETRY_ATTEMPTS"
-	runReadRetryBaseDelayEnv = "TEST_AUTO_PRO_READ_RETRY_BASE_DELAY"
-	runReadRetryMaxDelayEnv  = "TEST_AUTO_PRO_READ_RETRY_MAX_DELAY"
-	runStepStaleAfterEnv     = "TEST_AUTO_PRO_STEP_STALE_AFTER"
-	runStatusPollIntervalEnv = "TEST_AUTO_PRO_STATUS_POLL_INTERVAL"
+	runLeaseDurationEnv       = "TEST_AUTO_PRO_RUN_LEASE_DURATION"
+	runReadRetryAttemptsEnv   = "TEST_AUTO_PRO_READ_RETRY_ATTEMPTS"
+	runReadRetryBaseDelayEnv  = "TEST_AUTO_PRO_READ_RETRY_BASE_DELAY"
+	runReadRetryMaxDelayEnv   = "TEST_AUTO_PRO_READ_RETRY_MAX_DELAY"
+	runWriteRetryAttemptsEnv  = "TEST_AUTO_PRO_WRITE_CONNECT_RETRY_ATTEMPTS"
+	runWriteRetryBaseDelayEnv = "TEST_AUTO_PRO_WRITE_CONNECT_RETRY_BASE_DELAY"
+	runWriteRetryMaxDelayEnv  = "TEST_AUTO_PRO_WRITE_CONNECT_RETRY_MAX_DELAY"
+	runStepStaleAfterEnv      = "TEST_AUTO_PRO_STEP_STALE_AFTER"
+	runStatusPollIntervalEnv  = "TEST_AUTO_PRO_STATUS_POLL_INTERVAL"
 
-	defaultRunLeaseDuration      = 5 * time.Minute
-	defaultRunReadRetryAttempts  = 8
-	defaultRunReadRetryBaseDelay = 3 * time.Second
-	defaultRunReadRetryMaxDelay  = 2 * time.Minute
-	defaultRunStepStaleAfter     = 10 * time.Minute
-	defaultRunStatusPollInterval = 2 * time.Second
+	defaultRunLeaseDuration       = 5 * time.Minute
+	defaultRunReadRetryAttempts   = 8
+	defaultRunReadRetryBaseDelay  = 3 * time.Second
+	defaultRunReadRetryMaxDelay   = 2 * time.Minute
+	defaultRunWriteRetryAttempts  = 3
+	defaultRunWriteRetryBaseDelay = 2 * time.Second
+	defaultRunWriteRetryMaxDelay  = 10 * time.Second
+	defaultRunStepStaleAfter      = 10 * time.Minute
+	defaultRunStatusPollInterval  = 2 * time.Second
 )
 
 // LoadRunConfig 读取执行器运行参数；非法或缺省时使用上述默认值。
 func LoadRunConfig() RunConfig {
 	return RunConfig{
-		LeaseDuration:          durationFromEnv(runLeaseDurationEnv, defaultRunLeaseDuration),
-		ReadOnlyRetryAttempts:  intFromEnv(runReadRetryAttemptsEnv, defaultRunReadRetryAttempts),
-		ReadOnlyRetryBaseDelay: durationFromEnv(runReadRetryBaseDelayEnv, defaultRunReadRetryBaseDelay),
-		ReadOnlyRetryMaxDelay:  durationFromEnv(runReadRetryMaxDelayEnv, defaultRunReadRetryMaxDelay),
-		StepProgressStaleAfter: durationFromEnv(runStepStaleAfterEnv, defaultRunStepStaleAfter),
-		StatusPollInterval:     durationFromEnv(runStatusPollIntervalEnv, defaultRunStatusPollInterval),
+		LeaseDuration:              durationFromEnv(runLeaseDurationEnv, defaultRunLeaseDuration),
+		ReadOnlyRetryAttempts:      intFromEnv(runReadRetryAttemptsEnv, defaultRunReadRetryAttempts),
+		ReadOnlyRetryBaseDelay:     durationFromEnv(runReadRetryBaseDelayEnv, defaultRunReadRetryBaseDelay),
+		ReadOnlyRetryMaxDelay:      durationFromEnv(runReadRetryMaxDelayEnv, defaultRunReadRetryMaxDelay),
+		WriteConnectRetryAttempts:  intFromEnv(runWriteRetryAttemptsEnv, defaultRunWriteRetryAttempts),
+		WriteConnectRetryBaseDelay: durationFromEnv(runWriteRetryBaseDelayEnv, defaultRunWriteRetryBaseDelay),
+		WriteConnectRetryMaxDelay:  durationFromEnv(runWriteRetryMaxDelayEnv, defaultRunWriteRetryMaxDelay),
+		StepProgressStaleAfter:     durationFromEnv(runStepStaleAfterEnv, defaultRunStepStaleAfter),
+		StatusPollInterval:         durationFromEnv(runStatusPollIntervalEnv, defaultRunStatusPollInterval),
 	}
 }
 
