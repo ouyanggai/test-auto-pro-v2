@@ -508,7 +508,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			actorAccount = runCtx.PlanAccount
 		}
 		session, sessionErr := e.sessions.Current(ctx, actorAccount)
-		if sessionErr != nil {
+		if sessionErr != nil && sessionRefreshAllowed(sessionErr) {
 			session, sessionErr = e.sessions.Refresh(ctx, actorAccount)
 		}
 		if sessionErr != nil {
@@ -680,12 +680,14 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}()
 	}
 	// 写步骤的会话策略对齐 V1 长期验证的模式（2026-09-07 修正）：复用缓存会话，
-	// 写请求被会话失效拒绝时由 resubmitOnSessionRejected 恢复（重登+重发至多 3 次）。
+	// 写请求被会话失效拒绝时由 resubmitOnSessionRejected 恢复（仅自动重登+重发一次）。
 	// 每一步强制重登会让登录频率放大数倍，实测触发了目标平台对账号的会话限制
 	// （连只读都秒级失效），反而摧毁运行现场；V1 的「缓存复用+失效恢复」多年无此问题。
 	session, sessionErr := func() (target.Session, error) {
 		if cached, err := e.sessions.Current(ctx, runCtx.PlanAccount); err == nil {
 			return cached, nil
+		} else if !sessionRefreshAllowed(err) {
+			return target.Session{}, err
 		}
 		return RunWithConnectRetry(ctx, e.policy, func(callContext context.Context) (target.Session, error) {
 			return e.sessions.Refresh(callContext, runCtx.PlanAccount)
@@ -1015,9 +1017,9 @@ func isRequestValidationError(err error) bool {
 	return errors.As(err, &validationErr)
 }
 
-// resubmitOnSessionRejected 在写请求被会话失效拒绝后恢复：最多 3 次「换新会话 + 重发」。
+// resubmitOnSessionRejected 在写请求被会话失效拒绝后恢复：仅允许一次「换新会话 + 重发」。
 // 每次被拒都证明请求未进入业务、无副作用（RESP401/AUTH_401 发生在业务逻辑之前），
-// 因此写请求进入业务的次数仍至多一次；恢复过程逐次写 step.log，失败后按原错误上报。
+// 因此写请求进入业务的次数仍至多一次；再次被拒时立即停步并按原错误上报。
 func resubmitOnSessionRejected[R any](
 	ctx context.Context, refresh func(account string) (target.Session, error), account string,
 	step model.CompiledActionStep, attemptNo int,
@@ -1025,7 +1027,7 @@ func resubmitOnSessionRejected[R any](
 	log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep,
 ) (R, target.WriteResponse, string, target.Session, error) {
 	var zero R
-	for round := 1; round <= 3; round++ {
+	for round := 1; round <= 1; round++ {
 		log.Phase("submit", step.Sequence, attemptNo, fmt.Sprintf(
 			"写请求被目标以会话失效拒绝（第_%d_次，未进入业务、无副作用），重新取得会话后重发", round))
 		reportPhase(approved, "submit", fmt.Sprintf("目标会话失效已拒绝 %d 次（无副作用），正在重新取得会话", round))
@@ -1037,7 +1039,7 @@ func resubmitOnSessionRejected[R any](
 		if !isSessionRejected(err) {
 			return result, response, traceID, refreshed, err
 		}
-		if round == 3 {
+		if round == 1 {
 			return result, response, traceID, refreshed, err
 		}
 	}
@@ -1279,8 +1281,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		// 两次都被会话失效拒绝才如实按失败上报（纪律：绝不盲目重发真实写请求，
 		// 这里的重发仅以「目标明确拒绝、证明无副作用」为前提）。
 		if isSessionRejected(err) {
-			// 实测目标为多节点且写链路会话不同步：每次换新会话重发随机命中，
-			// 因此在同一次尝试内最多恢复重发 3 次；每次被拒都已证明未进入业务、无副作用。
+			// 只允许一次自动恢复重发；第二次会话失效必须停步，提示可能存在外部会话竞争。
 			refreshAccount := strings.TrimSpace(session.Summary.Account)
 			if refreshAccount == "" {
 				refreshAccount = runCtx.PlanAccount
@@ -1618,6 +1619,16 @@ func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log 
 	})
 }
 
+// sessionRefreshAllowed 判断 Current 失败后是否允许再刷新一次会话；登录、权限和业务拒绝是确定失败，
+// 不能通过重复登录掩盖目标原始结果，网络瞬断和会话失效才交给 Refresh 处理。
+func sessionRefreshAllowed(err error) bool {
+	if err == nil || target.IsKind(err, target.ErrorLoginRejected) || target.IsKind(err, target.ErrorPermissionDenied) {
+		return false
+	}
+	var rejection *target.BusinessRejection
+	return !errors.As(err, &rejection)
+}
+
 // InstanceStillAtStepNode 只读探测：实例当前节点是否仍停在编译步骤的节点上。
 // 会签节点需要全部处理人各自审批才前进：同意成功后实例仍停在本节点，就说明还有
 // 其他处理人未审批，控制层据此用新发现的当前处理人原步重跑。探测用计划账号会话——
@@ -1771,7 +1782,7 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 				defer release()
 			}
 			actorSession, err = e.sessions.Current(ctx, match.Account)
-			if err != nil {
+			if err != nil && sessionRefreshAllowed(err) {
 				actorSession, err = e.sessions.Refresh(ctx, match.Account)
 			}
 			if err != nil {
@@ -1836,7 +1847,7 @@ func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunCont
 				defer release()
 			}
 			actorSession, sessionErr = e.sessions.Current(ctx, account)
-			if sessionErr != nil {
+			if sessionErr != nil && sessionRefreshAllowed(sessionErr) {
 				actorSession, sessionErr = e.sessions.Refresh(ctx, account)
 			}
 			if sessionErr != nil {
