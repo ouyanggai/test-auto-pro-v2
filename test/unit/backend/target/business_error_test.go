@@ -73,7 +73,7 @@ func TestLoginPreservesBusinessRejection(t *testing.T) {
 func TestDirectoryPreservesBusinessRejection(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"isSuccess":false,"code":"DIRECTORY_403","message":"目录无权限"}`))
+		_, _ = response.Write([]byte(`{"isSuccess":false,"code":"DIRECTORY_409","message":"目录状态异常"}`))
 	}))
 	defer server.Close()
 	client, err := target.NewClient(target.ClientConfig{BaseURL: server.URL, Timeout: 2 * time.Second})
@@ -82,7 +82,7 @@ func TestDirectoryPreservesBusinessRejection(t *testing.T) {
 	}
 	_, err = client.FormIdentityContext(context.Background(), target.Session{SID: "sid", CompanyID: "company"})
 	var rejection *target.BusinessRejection
-	if !errors.As(err, &rejection) || rejection.Code != "DIRECTORY_403" || rejection.Message != "目录无权限" {
+	if !errors.As(err, &rejection) || rejection.Code != "DIRECTORY_409" || rejection.Message != "目录状态异常" {
 		t.Fatalf("目录业务拒绝未保留原始内容：%T %+v", err, rejection)
 	}
 }
