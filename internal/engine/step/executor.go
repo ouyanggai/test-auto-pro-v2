@@ -1895,19 +1895,17 @@ type userAccountResolver interface {
 // 该函数只接受读取回调，明确隔离写请求，避免把已送达的业务动作放进重试循环。
 func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, sessions SessionProvider, account string, session target.Session, call func(context.Context, target.Session) (T, error)) (T, target.Session, error) {
 	var zero T
-	if policy.Attempts < 1 {
-		policy.Attempts = 1
+	attempts := policy.Attempts
+	if attempts < 1 {
+		attempts = 1
 	}
 	active := session
 	sessionRefreshed := false
-	for attempt := 1; attempt <= policy.Attempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		callContext := target.WithRetryAttempt(ctx, attempt > 1, attempt)
 		value, err := call(callContext, active)
 		if err == nil {
 			return value, active, nil
-		}
-		if attempt >= policy.Attempts || !retryableTargetError(err) {
-			return zero, active, err
 		}
 		if target.IsKind(err, target.ErrorSessionExpired) {
 			if sessions == nil {
@@ -1938,7 +1936,15 @@ func readOnlyWithSessionRetry[T any](ctx context.Context, policy RetryPolicy, se
 				return zero, active, errors.New("目标会话刷新后没有返回有效 SID")
 			}
 			active = refreshed
+			// 会话恢复是独立于网络重试预算的安全重放：即使调用方把只读网络预算设为 1，
+			// 也必须完成一次换新会话后的重读，不能把会话失效误报成不可恢复失败。
+			if attempt >= attempts {
+				attempts = attempt + 1
+			}
 			continue
+		}
+		if attempt >= attempts || !retryableTargetError(err) {
+			return zero, active, err
 		}
 		delay := policy.backoff(attempt)
 		if policy.Sleep != nil {
