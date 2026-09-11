@@ -727,7 +727,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 					return outcome, lineNo, finishErr
 				}
 				return outcome, lineNo, nil
-			} else if account != "" && account != runCtx.PlanAccount {
+			} else if account != "" && !strings.EqualFold(account, runCtx.PlanAccount) {
 				if locker, canLock := e.sessions.(interface{ LockAccountUsage(string) func() }); canLock && !strings.EqualFold(usageAccount, account) {
 					releaseActorUsage = locker.LockAccountUsage(account)
 					usageAccount = strings.TrimSpace(account)
