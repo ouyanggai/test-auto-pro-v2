@@ -241,6 +241,24 @@ func (s *RunOrchestrationService) StartScheduledRun(ctx context.Context, plan mo
 // beginPathRunOnScheduler 是注入调度器的路径启动回调：构建执行上下文并停在阶段 3（自动模式进循环）。
 // 构建失败（结构读取失败、编译场景为空等）按失败隔离处理：只把这一条路径运行置为失败，其他路径继续。
 func (s *RunOrchestrationService) beginPathRunOnScheduler(ctx context.Context, runRow model.Run, pathRun model.PathRun) error {
+	// 运行日志作用域必须在这里注入：调度链路没有 HTTP 请求中间件，不注入的话
+	// step.log 与 network/curl 日志会落错目录（实测落到 configuration/ 下，运行目录里什么都没有）。
+	if scope, scopeErr := s.runLogScope(ctx, pathRun.ID); scopeErr == nil {
+		ctx = logging.WithScope(ctx, scope)
+	}
+	// 原子领取：先把等待运行条件推进为运行中。并行补位循环与定时 Tick 并发时，
+	// 两个调度方可能同时读到同一条等待路径；不在这里抢先领取就会重复构建执行上下文、
+	// 重复启动同一条路径（实测 run=89 每条路径都被启动了两次）。输了领取的一方直接退出。
+	if _, err := s.runState.AdvancePathRun(ctx, pathRun.ID,
+		model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{
+			Kind:  "path_run_started",
+			Label: "调度器领取路径运行，准备第一步预览",
+		}); err != nil {
+		if errors.Is(err, repository.ErrRunStatusConflict) {
+			return nil
+		}
+		return err
+	}
 	runCtx, err := s.buildRunContext(ctx, runRow.PlanID, pathRun.ExecutionPathID)
 	if err != nil {
 		s.finishPathRunFailed(ctx, pathRun.ID, "路径运行启动失败："+err.Error())

@@ -193,16 +193,23 @@ func (s *Service) startSession(ctx context.Context, runCtx step.RunContext, mode
 }
 
 // BeginPathRun 在调度器已创建的等待路径运行上开始执行会话（F-020）：
-// 推进等待→运行中，其余与 startSession 完全同一条链路——模式与断点事实、第一步预览、自动模式进循环。
-// runCtx.Run / runCtx.PathRun 必须已由编排层填充且路径运行处于等待运行。
+// 推进等待→运行中（调度器已提前领取时跳过推进），其余与 startSession 完全同一条链路——
+// 模式与断点事实、第一步预览、自动模式进循环。runCtx.Run / runCtx.PathRun 必须已由编排层填充。
 func (s *Service) BeginPathRun(ctx context.Context, runCtx step.RunContext, mode model.RunMode, preset []Breakpoint) (*StartResult, error) {
-	startedPathRun, err := s.runs.AdvancePathRun(ctx, runCtx.PathRun.ID,
-		model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{
-			Kind:  "path_run_started",
-			Label: "调度器启动路径运行，准备第一步预览",
-		})
-	if err != nil {
-		return nil, err
+	var startedPathRun model.PathRun
+	if runCtx.PathRun.Status == model.PathRunStatusRunning {
+		// 调度器已经用条件推进原子领取了这条路径（防并发重复调度）；直接复用内存状态。
+		startedPathRun = runCtx.PathRun
+	} else {
+		var err error
+		startedPathRun, err = s.runs.AdvancePathRun(ctx, runCtx.PathRun.ID,
+			model.PathRunStatusWaiting, model.PathRunStatusRunning, model.RunEvent{
+				Kind:  "path_run_started",
+				Label: "调度器启动路径运行，准备第一步预览",
+			})
+		if err != nil {
+			return nil, err
+		}
 	}
 	// 待发/已发来源的实例引用由编排层在启动前预填（草稿实例的门禁与事实重读依赖它）；
 	// 状态推进从库回读的行没有这个内存值，覆盖前必须保留，否则门禁又读不到实例状态。

@@ -326,6 +326,9 @@ const themeVars = useThemeVars()
 const dialogStyle = computed(() => ({
   width: '760px',
   maxWidth: '94vw',
+  // 弹窗高度约束：内容被传送到 body，不加最大高度会冲破视口且无滚动（实测缺陷）。
+  maxHeight: '86vh',
+  overflowY: 'auto',
   '--run-border-color': themeVars.value.dividerColor,
   '--run-secondary-text-color': themeVars.value.textColor3,
   '--info-color': themeVars.value.infoColor,
