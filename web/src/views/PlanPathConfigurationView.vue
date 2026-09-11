@@ -13,6 +13,7 @@ import { fetchFlowGraph } from '../features/flow-graph/api'
 import type { FlowGraph } from '../features/flow-graph/types'
 import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vue'
 import ActionOrchestrationEditor from '../features/path-configuration/ActionOrchestrationEditor.vue'
+import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
 import FormDataHintsPanel from '../features/path-configuration/FormDataHintsPanel.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
@@ -946,6 +947,10 @@ function backToPlan() {
   router.push('/plans/' + planID.value + '/paths')
 }
 
+// runPreflightOpen 驱动路径配置页的运行弹窗：行为与计划列表一致，
+// 启动后弹窗内部自行跳转到运行详情，这里只负责打开弹窗。
+const runPreflightOpen = ref(false)
+
 onBeforeRouteLeave(confirmDiscardNodeDraft)
 watch([workspace, formError, formSavedSuccessfully, runtimeBlockingReasons, formErrorDetails], showFormNotice, { deep: true })
 watch([planID, pathID], () => { void loadPage() })
@@ -971,18 +976,28 @@ void loadPage()
   >
     <header class="path-configuration-page__header">
       <div class="path-configuration-page__identity">
-        <n-button text type="primary" @click="backToPlan">返回计划详情</n-button>
-        <div>
-          <h1>路径配置</h1>
-          <p v-if="plan && configuration">{{ plan.name }} · #{{ configuration.path.sequenceNo }} {{ configuration.path.name }}</p>
-        </div>
+        <h1>路径配置</h1>
+        <p v-if="plan && configuration">{{ plan.name }} · #{{ configuration.path.sequenceNo }} {{ configuration.path.name }}</p>
       </div>
       <div v-if="configuration" class="path-configuration-page__progress" aria-label="路径配置进度">
-        <span>节点配置状态：{{ pathConfigurationStatusName(configuration.status) }}</span>
+        <span>{{ pathConfigurationStatusName(configuration.status) }}</span>
+        <span class="path-configuration-page__progress-divider" />
         <span>节点 {{ configuration.progress.completed }} / {{ configuration.progress.total }}</span>
-        <n-button v-if="workspace === 'nodes' && configuration.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
+      </div>
+      <div class="path-configuration-page__actions">
+        <n-button size="small" secondary @click="backToPlan">返回计划详情</n-button>
+        <n-button v-if="workspace === 'nodes' && configuration?.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
+        <n-button v-if="plan" size="small" type="primary" @click="runPreflightOpen = true">运行</n-button>
       </div>
     </header>
+
+    <!-- 运行弹窗：与计划列表共用同一组件；pathIds 传空表示不限定，勾选范围默认全部可运行路径。 -->
+    <run-preflight-dialog
+      :show="runPreflightOpen"
+      :plan-id="planID"
+      :path-ids="[]"
+      @update:show="value => (runPreflightOpen = value)"
+    />
 
     <n-modal v-model:show="routeConfirmationOpen" :mask-closable="false" :closable="false">
       <n-card title="确认换路并覆盖数据" style="width: min(620px, 94vw)">
@@ -1166,6 +1181,7 @@ void loadPage()
 .path-configuration-page__header,
 .path-configuration-page__identity,
 .path-configuration-page__progress,
+.path-configuration-page__actions,
 .path-configuration-page__switch,
 .path-configuration-page__form-toolbar,
 .path-configuration-page__form-actions {
@@ -1197,13 +1213,15 @@ void loadPage()
 }
 .path-configuration-page__route-change { flex-direction: column; align-items: flex-start; color: var(--path-config-text-color); }
 
-.path-configuration-page__header { justify-content: space-between; gap: 24px; padding: 4px 0 14px; }
-.path-configuration-page__identity { align-items: flex-start; gap: 12px; min-width: 0; }
-.path-configuration-page__identity > :deep(.n-button) { flex: 0 0 auto; margin-top: 2px; }
-.path-configuration-page__identity h1 { margin: 0 0 6px; font-size: 24px; line-height: 1.25; letter-spacing: 0; }
-.path-configuration-page__identity p { margin: 0; color: var(--path-config-text-secondary-color); line-height: 1.5; }
-.path-configuration-page__progress { flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; max-width: 52%; font-size: 13px; line-height: 1.5; color: var(--path-config-text-secondary-color); }
+.path-configuration-page__header { justify-content: space-between; gap: 16px; padding: 4px 0 10px; }
+/* 头部单行布局：标题与副标题同行、进度居中、按钮靠右；压缩纵向空间。 */
+.path-configuration-page__identity { align-items: baseline; gap: 12px; min-width: 0; flex: 1 1 auto; }
+.path-configuration-page__identity h1 { margin: 0; font-size: 17px; line-height: 1.3; letter-spacing: 0; white-space: nowrap; }
+.path-configuration-page__identity p { margin: 0; color: var(--path-config-text-secondary-color); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.path-configuration-page__progress { flex: 0 0 auto; gap: 10px; font-size: 13px; line-height: 1.5; color: var(--path-config-text-secondary-color); }
 .path-configuration-page__progress span { white-space: nowrap; }
+.path-configuration-page__progress-divider { width: 1px; height: 14px; background: var(--path-config-border-color); }
+.path-configuration-page__actions { flex: 0 0 auto; align-items: center; gap: 8px; }
 .path-configuration-page__switch { gap: 8px; padding: 4px 0 12px; border-bottom: 1px solid var(--path-config-border-color); }
 .path-configuration-page__cycle-body { display: grid; gap: 12px; }
 
@@ -1403,6 +1421,8 @@ void loadPage()
     flex-wrap: wrap;
   }
   .path-configuration-page__progress { width: 100%; max-width: none; justify-content: flex-start; }
+  .path-configuration-page__identity { flex-wrap: wrap; }
+  .path-configuration-page__identity h1 { white-space: normal; }
   .path-configuration-page__stage { min-height: 640px; }
   .path-configuration-page--form > .path-configuration-page__stage,
   .path-configuration-page__form-workspace { min-height: 0; }

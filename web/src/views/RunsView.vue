@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { NButton, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { NButton, NCheckbox, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/AppEmptyState.vue'
@@ -47,6 +47,55 @@ function openPaths(run: RunSummary): void {
 
 // deletingRunId 是正在删除的运行：删除请求在途时按钮进入忙碌态，重复点击不会发出第二个请求。
 const deletingRunId = ref<number>(0)
+
+// checkedRunIds 是批量删除的勾选集合；逐行复选框 + 表头全选。
+const checkedRunIds = ref<Set<number>>(new Set())
+const checkedCount = computed(() => checkedRunIds.value.size)
+const allChecked = computed(() => runs.value.length > 0 && runs.value.every(run => checkedRunIds.value.has(run.runId)))
+// deletingBatch 标记批量删除请求在途。
+const deletingBatch = ref(false)
+
+// toggleChecked 维护单行勾选；加载后勾选集合会被重置，避免残留已不在列表里的 ID。
+function toggleChecked(runId: number, checked: boolean): void {
+  const next = new Set(checkedRunIds.value)
+  if (checked) next.add(runId)
+  else next.delete(runId)
+  checkedRunIds.value = next
+}
+
+// toggleAllChecked 表头全选/取消全选。
+function toggleAllChecked(checked: boolean): void {
+  checkedRunIds.value = checked ? new Set(runs.value.map(run => run.runId)) : new Set()
+}
+
+// removeChecked 批量删除勾选的运行：逐条调用单删接口，失败的跳过并在最后汇总，
+// 不因为其中一条失败而中断其余删除（用户意图是清掉这批记录）。
+async function removeChecked(): Promise<void> {
+  if (deletingBatch.value || checkedCount.value === 0) return
+  deletingBatch.value = true
+  errorText.value = ''
+  const failures: string[] = []
+  try {
+    for (const runId of checkedRunIds.value) {
+      try {
+        await deleteRun(String(runId))
+      } catch (error) {
+        failures.push(`运行 ${runId}：${error instanceof RunApiError ? error.message : '删除失败'}`)
+      }
+    }
+    if (failures.length) {
+      errorText.value = `部分删除失败：${failures.join('；')}`
+    }
+    checkedRunIds.value = new Set()
+    await loadRuns()
+  } finally {
+    deletingBatch.value = false
+  }
+}
+
+// batchDeleteHint 写清批量删除的影响范围与数量。
+const batchDeleteHint = computed(() =>
+  `删除勾选的 ${checkedCount.value} 次运行：各次运行的全部路径记录、步骤与日志引用会一并删除；目标平台上的实例和业务数据不受影响。删除后无法恢复。`)
 
 // removeRun 删除整次工具侧运行；只删除工具侧记录，目标平台实例与业务数据不受影响。
 async function removeRun(run: RunSummary): Promise<void> {
@@ -95,6 +144,12 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
         @update:value="loadRuns"
       />
       <NButton type="primary" @click="loadRuns">刷新</NButton>
+      <NPopconfirm v-if="checkedCount > 0" @positive-click="removeChecked">
+        <template #trigger>
+          <NButton type="error" ghost :loading="deletingBatch">删除选中（{{ checkedCount }}）</NButton>
+        </template>
+        {{ batchDeleteHint }}
+      </NPopconfirm>
     </div>
 
     <p v-if="errorText" class="runs-view__error" role="alert">{{ errorText }}</p>
@@ -116,6 +171,13 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
     <table v-else class="runs-view__table">
       <thead>
         <tr>
+          <th class="runs-view__check-col">
+            <NCheckbox
+              :checked="allChecked"
+              :indeterminate="checkedCount > 0 && !allChecked"
+              @update:checked="toggleAllChecked"
+            />
+          </th>
           <th>计划</th>
           <th>运行号</th>
           <th>运行方式</th>
@@ -128,6 +190,12 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
       </thead>
       <tbody>
         <tr v-for="run in runs" :key="run.runId">
+          <td class="runs-view__check-col">
+            <NCheckbox
+              :checked="checkedRunIds.has(run.runId)"
+              @update:checked="value => toggleChecked(run.runId, Boolean(value))"
+            />
+          </td>
           <td class="runs-view__plan">{{ run.planName || `计划 ${run.planId}` }}</td>
           <td>#{{ run.runNo }}</td>
           <td>{{ run.modeName }}</td>
@@ -183,6 +251,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 }
 
 .runs-view__status-select { width: 160px; }
+.runs-view__check-col { width: 40px; text-align: center; }
 .runs-view__error { color: var(--error-color, #d03050); }
 .runs-view__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
 

@@ -98,6 +98,16 @@ const nodeErrors = computed<NodeErrorRow[]>(() => {
       reason: props.detail.stopReason,
     })
   }
+  // 中断步定位：中断时正在执行的那一步尚未落账，节点上没有任何步骤记录，
+  // 若不在这里补一行，用户点开节点一片空白，无从知道问题出在哪（实测缺陷）。
+  if (props.detail.interruptedNodeId && props.detail.interruptedNodeId === props.nodeKey && props.detail.interruptedNote) {
+    rows.push({
+      key: 'interrupted',
+      title: '路径运行中断在这个节点',
+      verdict: '结果待确认',
+      reason: props.detail.interruptedNote,
+    })
+  }
   return rows
 })
 

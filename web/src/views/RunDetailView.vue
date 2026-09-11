@@ -472,14 +472,17 @@ function resumeFollow(): void {
   centerCurrentNode()
 }
 
-// approve 放行当前步：等待响应期间指示器进入执行中，写请求不可中断。
+// approve 放行当前步：发送当前可用命令集合的第一条（自动模式是连续执行，手动控制是单步），
+// 不再硬编码 step——自动模式下硬编码 step会把连续运行拆成一步一停（实测缺陷）。
+// 等待响应期间指示器进入执行中，写请求不可中断。
 async function approve(): Promise<void> {
   if (acting.value || !detail.value?.currentPreview) return
+  const command = approveCommand.value || 'step'
   acting.value = true
   actionText.value = ''
   errorText.value = ''
   try {
-    const result = await approveRun(runId, 'step', detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
+    const result = await approveRun(runId, command, detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
     if (!result) {
       errorText.value = '放行后未收到有效的运行状态，请刷新页面查看'
       return
@@ -561,24 +564,24 @@ function closeNodePanel(): void {
 // modeHint 用中文解释当前模式意味着什么，避免只给一个模式名。
 const modeHint = computed(() => {
   switch (detail.value?.modeName) {
-    case '单步': return '每一步执行前都停下等放行，只有「执行一步」一条命令'
-    case '自动': return '连续执行，首个写步骤与断点命中处必停'
-    case '人工控制': return '停在第一步之前，暂停时拥有全部三条命令'
+    case '单步': return '每一步执行前都停下等放行（旧运行遗留，新运行已不提供）'
+    case '自动': return '放行后连续执行，命中断点或异常时才停下'
+    case '人工控制': return '每个动作组执行完停下，由我确认后再继续'
     default: return ''
   }
 })
 
-// 模式切换（2026-09-06）：自动/单步双向互切，只影响当前路径；
+// 模式切换（2026-09-06）：自动/人工控制双向互切，只影响当前路径；
 // 请求带控制版本（重复点击只产生一次控制事实），生效边界由后端判定并如实反馈。
 const switchingMode = ref(false)
 const modeFeedback = ref('')
-// canSwitchMode 只在自动与单步之间提供切换；人工控制与终态不显示切换入口。
+// canSwitchMode 只在自动与人工控制之间提供切换；终态不显示切换入口。
 const canSwitchMode = computed(() => {
   if (!detail.value || overviewDone.value) return false
-  return ['单步', '自动'].includes(detail.value.modeName)
+  return ['自动', '人工控制'].includes(detail.value.modeName)
 })
-// targetModeName 是切换按钮的目标模式：当前单步就切自动，反之亦然。
-const targetModeName = computed(() => (detail.value?.modeName === '单步' ? '自动' : '单步'))
+// targetModeName 是切换按钮的目标模式：当前自动就切人工控制，反之亦然。
+const targetModeName = computed(() => (detail.value?.modeName === '自动' ? '人工控制' : '自动'))
 
 // applyModeFeedback 严格区分后端返回：已收到并将在本步后生效 / 已经生效 / 失败。
 function applyModeFeedback(next: PathRunDetail): void {
@@ -596,7 +599,7 @@ async function toggleMode(): Promise<void> {
   modeFeedback.value = ''
   errorText.value = ''
   try {
-    const target = detail.value.modeName === '单步' ? 'auto' : 'single_step'
+    const target = detail.value.modeName === '自动' ? 'manual_control' : 'auto'
     const next = await switchRunMode(runId, target, detail.value.controlVersion, detail.value?.pathRunId)
     detail.value = next
     syncControl(next)
@@ -644,7 +647,8 @@ const overviewDone = computed(() => {
   return ['已完成', '失败', '结果待确认', '已停止', '已取消'].includes(status)
 })
 
-// topConclusion 把路径结果与最终目标事实分开表述。
+// topConclusion 用用户视角表述终态：先说结果，再说走了多少步、走到哪；
+// 不再暴露目标内部的节点 ID 与待办计数（对用户是噪音）。
 const topConclusion = computed(() => {
   if (!detail.value) return ''
   if (!overviewDone.value) return ''
@@ -652,10 +656,24 @@ const topConclusion = computed(() => {
   if (detail.value.resultName) {
     parts.push(`路径结果：${detail.value.resultName}`)
   }
+  // 进度一句话：成功时强调全部走完；非成功时说清停在哪一步，方便用户定位问题。
+  // 详情接口没有冻结总步骤数，只用已落账步骤数表述，不虚构分母。
+  const done = detail.value.steps?.length ?? 0
+  if (detail.value.resultName === '成功') {
+    if (done > 0) parts.push(`全部 ${done} 个步骤执行完成`)
+  } else if (done > 0) {
+    parts.push(`执行到第 ${done} 步后停止`)
+  }
+  // 最终目标事实只在「有实际意义」时说人话：实例没结束、还有待办时才提醒去向；
+  // 实例已结束且无待办时什么都不用补——「成功」已经说明了一切。
   const finalTarget = detail.value.finalTarget as { statusName?: string; currentNodeNames?: string[]; dueNodeNames?: string[] } | undefined
-  if (finalTarget?.statusName) {
-    const due = finalTarget.dueNodeNames || []
-    parts.push(`最终状态：实例${finalTarget.statusName}${finalTarget.currentNodeNames?.length ? `，当前节点 ${finalTarget.currentNodeNames.join('、')}` : ''}，待办 ${due.length} 个`)
+  const due = finalTarget?.dueNodeNames ?? []
+  if (finalTarget?.statusName && (due.length > 0 || (finalTarget.statusName !== '已结束' && finalTarget.statusName !== '草稿'))) {
+    if (due.length > 0) {
+      parts.push(`目标侧还有 ${due.length} 个待办${finalTarget.currentNodeNames?.length ? `（在「${finalTarget.currentNodeNames.join('、')}」）` : ''}`)
+    } else {
+      parts.push(`目标实例${finalTarget.statusName}`)
+    }
   }
   // 没有任何可说的结论时不占位：空结论行对用户没有信息量。
   return parts.join('；')
@@ -882,10 +900,10 @@ onBeforeUnmount(() => {
             size="small"
             type="primary"
             :loading="acting"
-            :disabled="overviewDone || detail.stepInFlight || detail.loopRunning || !(detail.commands || []).some(c => c.command === 'step')"
-            :title="noCommandReason || '放行后执行下一步；下一步会发真实写请求'"
+            :disabled="overviewDone || detail.stepInFlight || detail.loopRunning || !(detail.commands || []).length"
+            :title="noCommandReason || (approveCommand === 'continue' ? '放行后连续执行到断点或结束' : '放行后执行下一步；下一步会发真实写请求')"
             @click="approve()"
-          >放行（执行下一步）</n-button>
+          >{{ approveCommand === 'continue' ? '放行（连续执行到断点或结束）' : '放行（执行下一步）' }}</n-button>
         </div>
       </div>
 

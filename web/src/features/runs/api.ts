@@ -132,6 +132,9 @@ export interface PathRunDetail {
   // sceneLostNote 是配套的大白话说明与下一步引导。页面只展示只读记录，不给任何重试或登记入口。
   sceneLost?: boolean
   sceneLostNote?: string
+  // interruptedNodeId/InterruptedNote 定位中断时正在执行、尚未落账的那一步。
+  interruptedNodeId?: string
+  interruptedNote?: string
   // retryable 表示服务端判定这条路径运行可以重试失败动作（F-028）：
   // 只有「步骤执行中确定失败（无目标副作用）」的运行可重试；前端只按它决定是否渲染重试按钮。
   retryable?: boolean
@@ -320,7 +323,7 @@ export interface RunStartResult {
 
 // startRun 按勾选路径集合启动一次运行（F-020 多路径；F-017 模式三选一，默认单步由后端兜底）。
 // idempotencyKey 由调用方生成：同键重试返回同一次运行，绝不创建第二个运行。
-export function startRun(planId: string, pathIds: string[], mode = 'single_step', breakpoints: BreakpointInput[] = [], idempotencyKey = ''): Promise<RunStartResult> {
+export function startRun(planId: string, pathIds: string[], mode = 'auto', breakpoints: BreakpointInput[] = [], idempotencyKey = ''): Promise<RunStartResult> {
   return requestOnce<RunStartResult>(`/api/plans/${encodeURIComponent(planId)}/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -361,7 +364,7 @@ export function removeBreakpoint(runId: string, bp: BreakpointInput, pathRunId?:
 
 // switchRunMode 运行中切换自动/单步：请求携带控制版本（条件写幂等），
 // 切换在安全步骤边界生效；响应里的 modeSwitchPending 表示将在本步完成后生效。
-export function switchRunMode(runId: string, mode: 'auto' | 'single_step', controlVersion: number, pathRunId?: number): Promise<PathRunDetail> {
+export function switchRunMode(runId: string, mode: 'auto' | 'manual_control', controlVersion: number, pathRunId?: number): Promise<PathRunDetail> {
   return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}/mode${pathRunQuery(pathRunId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

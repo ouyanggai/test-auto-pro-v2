@@ -179,7 +179,12 @@ onBeforeUnmount(() => {
               <span v-if="path.finishedAt">结束于 {{ formatTime(path.finishedAt) }}</span>
             </div>
             <div v-if="path.totalSteps" class="run-paths__progress" role="img" :aria-label="`进度 ${path.progressPercent}%`">
-              <div class="run-paths__progress-bar" :style="{ width: `${path.progressPercent}%` }" />
+              <!-- 运行未结束时进度条叠加流光动画，表示任务正在推进；终态后动画停止。 -->
+              <div
+                class="run-paths__progress-bar"
+                :class="{ 'run-paths__progress-bar--active': !path.finishedAt }"
+                :style="{ width: `${path.progressPercent}%` }"
+              />
             </div>
           </button>
         </li>
@@ -324,5 +329,27 @@ onBeforeUnmount(() => {
   background: v-bind('themeVars.primaryColor');
   border-radius: 3px;
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+/* 运行中流光：一条高亮斜纹在进度条内循环移动，直观表达「正在运行」。 */
+.run-paths__progress-bar--active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.45) 50%,
+    transparent 80%
+  );
+  background-size: 200% 100%;
+  animation: run-paths-shimmer 1.6s linear infinite;
+}
+
+@keyframes run-paths-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }
 </style>

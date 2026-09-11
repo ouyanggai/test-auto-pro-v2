@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCheckbox, NModal, NSpin, useThemeVars } from 'naive-ui'
+import { NAlert, NButton, NModal, NSpin, useThemeVars } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
 import { useRouter } from 'vue-router'
@@ -14,15 +14,13 @@ const router = useRouter()
 const starting = ref(false)
 const startError = ref('')
 
-// F-017：运行方式三选一（默认一步一步——最保守）。
-// 选项标题说大白话，说明一行讲清行为；用户不需要理解“写请求”“断点”等内部概念。
-const mode = ref<string>('single_step')
+// 运行方式二选一（默认自动——用户预期点一次就跑起来）：
+// 一步一步运行与手动控制行为重复（都是每步停下等放行），只保留手动控制。
+const mode = ref<string>('auto')
 const modeOptions = [
-  { value: 'single_step', title: '一步一步运行', description: '每一步都停下来，等我确认后再继续' },
-  { value: 'auto', title: '自动运行', description: '自动往下执行；第一次写入数据前会停下来' },
-  { value: 'manual_control', title: '手动控制', description: '先停在第一步，之后每一步都由我控制' },
+  { value: 'auto', title: '自动运行', description: '点一次后自动连续执行；命中断点或异常时才停下' },
+  { value: 'manual_control', title: '手动控制', description: '每个动作组执行完就停下，由我确认后再继续' },
 ]
-const firstWriteBreakpoint = ref(true)
 
 const themeVars = useThemeVars()
 const readiness = ref<PlanRunReadiness | null>(null)
@@ -32,25 +30,14 @@ let controller: AbortController | null = null
 
 const blockedPaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => !path.runnable))
 const runnablePaths = computed<PathRunReadiness[]>(() => (readiness.value?.paths ?? []).filter(path => path.runnable))
-// S01 部分运行：默认勾选全部可运行路径，用户可以只勾选本次要运行的部分；
-// 未勾选的路径不会进入运行，也不占用串并名额。
-const selectedRunIds = ref<Set<string>>(new Set())
-const selectedRunnable = computed<PathRunReadiness[]>(() => runnablePaths.value.filter(path => selectedRunIds.value.has(String(path.pathId))))
-const canStart = computed(() => selectedRunnable.value.length > 0)
-
-// toggleRunPath 维护本次运行勾选；勾选集合只影响启动范围，不改变运行前检查的检查范围。
-function toggleRunPath(path: PathRunReadiness, included: boolean) {
-  const next = new Set(selectedRunIds.value)
-  const key = String(path.pathId)
-  if (included) next.add(key)
-  else next.delete(key)
-  selectedRunIds.value = next
-}
-
-// 每次重新检查后恢复默认全选可运行路径：让"全部运行"永远是零成本默认，部分运行是一步取消。
-watch(runnablePaths, (paths) => {
-  selectedRunIds.value = new Set(paths.map(path => String(path.pathId)))
+// 启动范围仍以计划页勾选的路径为准（props.pathIds），弹窗内不再重复展示勾选列表：
+// 取「勾选路径 ∩ 可运行路径」作为启动目标；勾选为空（如路径配置页入口）则运行全部可运行路径。
+const startTargets = computed<PathRunReadiness[]>(() => {
+  if (!props.pathIds.length) return runnablePaths.value
+  const allowed = new Set(props.pathIds.map(String))
+  return runnablePaths.value.filter(path => allowed.has(String(path.pathId)))
 })
+const canStart = computed(() => startTargets.value.length > 0)
 // allClear 语义收窄为"有路径可运行"：阻塞路径的存在不再阻止运行就绪子集（失败隔离 S05）。
 const hasPaths = computed(() => Boolean(readiness.value) && (readiness.value?.totalCount ?? 0) > 0)
 // 宽度必须写成行内样式：NModal 的卡片是 teleport 出去渲染的，scoped 样式选不中它，
@@ -91,19 +78,24 @@ async function runCheck() {
 // startSelectedRun 只启动本次勾选且可执行的路径（F-020 多路径 + S01 部分运行）：
 // 串并方式来自计划配置，调度与失败隔离由后端负责；启动前服务端会再次复验运行准备结论。
 // 幂等键每次启动生成一次：同一次点击的重试不会创建第二个运行。
+// 启动要装配执行上下文并停在第一步预览，可能耗时数秒；期间给明确的阶段提示，
+// 不再让弹窗空着让用户猜。
+const startStage = ref('')
 async function startSelectedRun() {
-  const targets = selectedRunnable.value
+  const targets = startTargets.value
   if (targets.length === 0 || starting.value) return
   starting.value = true
   startError.value = ''
+  startStage.value = '正在启动运行…'
   try {
     const result = await startRun(
       props.planId,
       targets.map(path => String(path.pathId)),
       mode.value,
-      [...(firstWriteBreakpoint.value ? [{ type: 'first_write' }] : [])],
+      [],
       crypto.randomUUID(),
     )
+    startStage.value = '启动完成，正在打开运行界面…'
     emit('update:show', false)
     router.push(`/runs/${result.runId}`)
   }
@@ -112,6 +104,7 @@ async function startSelectedRun() {
   }
   finally {
     starting.value = false
+    startStage.value = ''
   }
 }
 
@@ -146,7 +139,7 @@ watch(() => props.show, (open) => {
     <n-spin :show="loading" class="run-preflight__body">
       <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
 
-      <!-- 有可运行路径：结论一行；勾选本次要运行的路径；运行方式用卡片表达；一个保护开关。 -->
+      <!-- 有可运行路径：只说明总路径数与可运行数，不再逐条勾选；运行方式用卡片表达。 -->
       <template v-if="runnablePaths.length">
         <div
           class="run-preflight__verdict"
@@ -155,24 +148,11 @@ watch(() => props.show, (open) => {
         >
           <span class="run-preflight__verdict-icon">{{ blockedPaths.length ? '!' : '✓' }}</span>
           <span>
-            已检查 {{ readiness?.totalCount }} 条路径：{{ runnablePaths.length }} 条可以运行<template v-if="blockedPaths.length">，{{ blockedPaths.length }} 条还不能运行</template>。
+            共 {{ readiness?.totalCount }} 条路径，本次运行 {{ startTargets.length }} 条<template v-if="blockedPaths.length">，{{ blockedPaths.length }} 条还不能运行</template>。
           </span>
         </div>
 
-        <p class="run-preflight__section-label">选择本次要运行的路径（{{ selectedRunnable.length }}/{{ runnablePaths.length }}）</p>
-        <div class="run-preflight__paths" data-testid="run-preflight-paths">
-          <n-checkbox
-            v-for="path in runnablePaths"
-            :key="path.pathId"
-            :checked="selectedRunIds.has(String(path.pathId))"
-            @update:checked="value => toggleRunPath(path, value as boolean)"
-          >
-            {{ path.pathName }}
-          </n-checkbox>
-        </div>
-        <p v-if="!selectedRunnable.length" class="run-preflight__muted">还没有勾选任何路径，勾选后才能开始运行。</p>
-
-        <template v-if="selectedRunnable.length">
+        <template v-if="runnablePaths.length">
           <p class="run-preflight__section-label">运行方式</p>
           <div class="run-preflight__cards" role="radiogroup" aria-label="运行方式">
             <button
@@ -189,11 +169,6 @@ watch(() => props.show, (open) => {
               <span class="run-preflight__card-desc">{{ option.description }}</span>
             </button>
           </div>
-
-          <p class="run-preflight__section-label">安全保护</p>
-          <n-checkbox v-model:checked="firstWriteBreakpoint" class="run-preflight__guard">
-            第一次写入数据前，先停下来让我确认（建议开启）
-          </n-checkbox>
           <p class="run-preflight__muted">路线和配置对不上时会自动停下，不会硬跑。</p>
         </template>
       </template>
@@ -225,7 +200,8 @@ watch(() => props.show, (open) => {
     <template #footer>
       <n-alert v-if="startError" type="error" :show-icon="false" class="run-preflight__start-error">{{ startError }}</n-alert>
       <div class="run-preflight__footer">
-        <n-button size="small" quaternary @click="emit('update:show', false)">关闭</n-button>
+        <span v-if="starting" class="run-preflight__stage" role="status">{{ startStage }}</span>
+        <n-button size="small" quaternary :disabled="starting" @click="emit('update:show', false)">关闭</n-button>
         <!-- F-016/F-020/S01：只启动本次勾选的可执行路径，多路径按计划配置串行或并行。 -->
         <n-button
           size="small"
@@ -234,7 +210,7 @@ watch(() => props.show, (open) => {
           :disabled="!canStart"
           @click="startSelectedRun"
         >
-          {{ canStart ? '开始运行' : (blockedPaths.length ? '有问题待处理' : '请先勾选路径') }}
+          {{ canStart ? '开始运行' : (blockedPaths.length ? '有问题待处理' : '没有可运行的路径') }}
         </n-button>
       </div>
     </template>
@@ -280,14 +256,6 @@ watch(() => props.show, (open) => {
   font-size: 12px;
   font-weight: 700;
   flex: none;
-}
-
-/* 路径勾选区：两列栅格，勾掉即不进入本次运行。 */
-.run-preflight__paths {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 12px;
-  margin-bottom: 16px;
 }
 
 /* 区块标题：小号灰字，统一间距节奏。 */
@@ -336,10 +304,6 @@ watch(() => props.show, (open) => {
   color: var(--preflight-secondary-text-color);
   font-size: 13px;
   line-height: 1.5;
-}
-
-.run-preflight__guard {
-  margin-bottom: 6px;
 }
 
 .run-preflight__muted {
@@ -395,6 +359,14 @@ watch(() => props.show, (open) => {
 .run-preflight__footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
+}
+
+/* 启动阶段提示：启动期间的右下角状态文字，让用户知道没有卡住。 */
+.run-preflight__stage {
+  margin-right: auto;
+  color: var(--preflight-secondary-text-color);
+  font-size: 13px;
 }
 </style>
