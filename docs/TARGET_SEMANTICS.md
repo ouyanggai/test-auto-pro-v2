@@ -884,5 +884,5 @@ deployment=2026-09-05 真实账号实测：同一实例两种查询形状的命�
    - `code=ERROR_99999`，`message=分组id不存在:<uuid>`（无会话上下文时业务层取不到默认分组）。
    三者都必须按会话无效处理：只读链触发重登重放，写链的探活判失败。证据：`internal/adapter/target/client.go` `responseSessionExpired`。
 2. **空条件模板列表请求会触发「分组id不存在」业务异常，且该异常之后同一 SID 的写端点全部 RESP401**（实测 4 次连续 submit 全部被拒）。探活必须使用与 `ListTemplates` 同形状的正常业务参数请求，不能使用空条件请求毒化会话。证据：`internal/adapter/target/client.go` `Ping`。
-3. **写端点的会话校验与读端点不同步**：读端点（flowTemplateApi/list、findById）在探活成功后的同一 SID 上正常工作，写端点（flowInstanceApi/submit）对同一 SID 返回 RESP401 的概率可观（2026-09-07 实测同一 SID 连续 4 次全拒，也有首写即过的样本）。执行器对策：写前强制刷新会话并探活，submit 被会话失效拒绝（未进入业务、无副作用，重读「明确未变」可证）时在同一次尝试内换新会话重发至多 3 次，写请求进入业务的次数仍至多一次。证据：`internal/engine/step/executor.go` `resubmitOnSessionRejected`。
+3. **写端点的会话校验与读端点不同步**：读端点（flowTemplateApi/list、findById）在探活成功后的同一 SID 上正常工作，写端点（flowInstanceApi/submit）对同一 SID 返回 RESP401 的概率可观（2026-09-07 实测同一 SID 连续 4 次全拒，也有首写即过的样本）。执行器对策：写前强制刷新会话并探活，submit 被会话失效拒绝（未进入业务、无副作用，重读「明确未变」可证）时在同一次尝试内只换新会话重发一次；再次被拒立即停步并提示外部会话竞争，写请求进入业务的次数仍至多一次。证据：`internal/engine/step/executor.go` `resubmitOnSessionRejected`。
 4. 判定归属：会话失效拒绝 + 重读「明确未变」= 确定失败、无副作用（沿用第 1.6 节矩阵的鉴权拒绝行）；重读不一致仍兜底不确定。
