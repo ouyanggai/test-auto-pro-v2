@@ -31,6 +31,8 @@ type CreateRunInput struct {
 	Mode             model.RunMode
 	Trigger          model.RunTriggerKind
 	MaxConcurrency   *int
+	// PathDispatch 是本运行的计划内路径调度方式（serial / parallel）：来自启动弹窗的本次选择。
+	PathDispatch string
 	// IdempotencyKey 非空时按（计划, 键）唯一约束幂等：同键重试返回已有运行，绝不创建第二份。
 	IdempotencyKey string
 	// PresetBreakpoints 是预置断点集合的原始 JSON：每条路径运行开始时重放同一预置。
@@ -53,6 +55,13 @@ type RunStore interface {
 	ListPathRunsByRun(ctx context.Context, runID uint64) ([]model.PathRun, error)
 	// ListRunIDsNeedingScheduling 列出仍在运行中且带等待路径的运行 ID（调度器输入）。
 	ListRunIDsNeedingScheduling(ctx context.Context) ([]uint64, error)
+	// CountActiveRuns 统计处于非终态（等待/运行中）的计划运行数；计划间串行调度据此判断能否放行。
+	CountActiveRuns(ctx context.Context) (int, error)
+	// EnqueueRun 把一次运行加入计划间串行等待队列；同一次运行重复入队是幂等空操作。
+	EnqueueRun(ctx context.Context, runID uint64, planID uint64, now time.Time) error
+	// DequeueRun 原子领取队首的等待运行并从队列移除；返回 0 表示队列为空。
+	// 仅当当时没有其他非终态运行时才领取，保证计划间串行的同时不丢唤醒。
+	DequeueRun(ctx context.Context, now time.Time) (uint64, error)
 	// FinishRunIfAllPathsClosed 在全部路径闭合时收尾运行聚合（同事务）：写结果无法确认的
 	// 终局与启动恢复都会调用它；还有未闭合路径时什么都不做并返回 false。
 	FinishRunIfAllPathsClosed(ctx context.Context, runID uint64, now time.Time) (bool, error)

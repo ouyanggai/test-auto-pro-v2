@@ -30,8 +30,8 @@ func decodeRunBody(request *http.Request, target any) error {
 
 // RunOrchestrator 是运行主线的处理器的服务面：启动（模式与断点）、详情、放行命令、断点、暂停、停止、列表。
 type RunOrchestrator interface {
-	// StartRunWithPaths 按勾选路径集合启动（F-020）：多路径一次运行，串并方式来自计划配置。
-	StartRunWithPaths(ctx context.Context, planID uint64, pathIDs []uint64, mode model.RunMode, breakpoints []control.Breakpoint, idempotencyKey string) (*service.RunStartDTO, error)
+	// StartRunWithPaths 按勾选路径集合启动（F-020）：多路径一次运行，路径串并与并发数来自启动弹窗本次选择。
+	StartRunWithPaths(ctx context.Context, planID uint64, pathIDs []uint64, mode model.RunMode, breakpoints []control.Breakpoint, idempotencyKey string, pathDispatch string, pathMaxConcurrency *int) (*service.RunStartDTO, error)
 	RunDetail(ctx context.Context, runID uint64) (*service.PathRunDetailDTO, error)
 	RunDetailByRunAndPathRun(ctx context.Context, runID, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	// 控制端点以运行 ID 寻址；多路径运行必须携带路径运行身份（pathRunId），单路径可省略。
@@ -49,6 +49,8 @@ type RunOrchestrator interface {
 	RunPaths(ctx context.Context, runID uint64) (*service.RunPathsDTO, error)
 	DeleteRun(ctx context.Context, runID uint64) error
 	ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int, pathRunID uint64) ([]service.RunEventDTO, error)
+	// RunDispatchDefault 返回该计划上次启动使用的路径调度方式与并发数，供运行弹窗回显「上次选择」。
+	RunDispatchDefault(ctx context.Context, planID uint64) (string, *int, error)
 }
 
 // registerRunControlRoutes 注册启动、详情、放行与停止端点。
@@ -56,6 +58,8 @@ type RunOrchestrator interface {
 // 与 F-013 的日志作用域中间件的 /api/plans/{planId}/... 约定一致。
 func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) {
 	mux.HandleFunc("POST /api/plans/{planId}/runs", handleStartRun(orchestrator))
+	// 上次启动的路径调度选择：运行弹窗打开时回显，用户可改可不改。
+	mux.HandleFunc("GET /api/plans/{planId}/run-dispatch-default", handleRunDispatchDefault(orchestrator))
 	// 运行记录层级（2026-09-06）：列表挂在全局 /api/runs 下（一行只对应一次计划运行），
 	// 二级路径页与删除挂在单次运行下，与详情、控制端点同一寻址约定。
 	mux.HandleFunc("GET /api/runs", handleListAllRuns(orchestrator))
@@ -143,6 +147,10 @@ type startRunRequest struct {
 	PathIDs     []uint64          `json:"pathIds"`
 	Mode        string            `json:"mode"`
 	Breakpoints []breakpointInput `json:"breakpoints"`
+	// PathDispatch 是本次运行的路径调度方式（serial / parallel）：来自启动弹窗，仅作用本次。
+	PathDispatch string `json:"pathDispatch"`
+	// PathMaxConcurrency 是并行时的最大并发数（2~20）；串行时忽略。
+	PathMaxConcurrency *int `json:"pathMaxConcurrency"`
 	// IdempotencyKey 是本次启动的幂等键：同键重试返回同一次运行，绝不创建第二个运行。
 	IdempotencyKey string `json:"idempotencyKey"`
 }
@@ -206,12 +214,28 @@ func handleStartRun(orchestrator RunOrchestrator) http.HandlerFunc {
 			}
 			breakpoints = append(breakpoints, bp)
 		}
-		result, err := orchestrator.StartRunWithPaths(request.Context(), body.PlanID, body.PathIDs, mode, breakpoints, body.IdempotencyKey)
+		result, err := orchestrator.StartRunWithPaths(request.Context(), body.PlanID, body.PathIDs, mode, breakpoints, body.IdempotencyKey, body.PathDispatch, body.PathMaxConcurrency)
 		if err != nil {
 			writeRunControlError(response, err)
 			return
 		}
 		writeSuccess(response, result)
+	}
+}
+
+// handleRunDispatchDefault 返回计划上次启动的路径调度选择：无历史运行时返回空串，前端用默认值。
+func handleRunDispatchDefault(orchestrator RunOrchestrator) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		planID, ok := parseExecutionPathID(response, request.PathValue("planId"))
+		if !ok {
+			return
+		}
+		dispatch, maxConcurrency, err := orchestrator.RunDispatchDefault(request.Context(), planID)
+		if err != nil {
+			writeRunControlError(response, err)
+			return
+		}
+		writeSuccess(response, map[string]any{"pathDispatch": dispatch, "maxConcurrency": maxConcurrency})
 	}
 }
 

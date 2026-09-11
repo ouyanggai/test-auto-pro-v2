@@ -68,10 +68,25 @@ func (s *Scheduler) Kick(ctx context.Context) {
 	s.Tick(ctx)
 }
 
-// Tick 执行一轮调度：先补位运行中运行的等待路径，再扫描到点的单次定时计划。
+// Tick 执行一轮调度：先按计划间串行规则放行队列首的等待运行，再补位运行中运行的等待路径，
+// 最后扫描到点的单次定时计划。
 func (s *Scheduler) Tick(ctx context.Context) {
+	s.promoteQueuedRun(ctx)
 	s.scheduleWaitingPaths(ctx)
 	s.triggerDuePlans(ctx)
+}
+
+// promoteQueuedRun 放行计划间串行队列的队首（若有）：DequeueRun 内部原子判定
+// 「没有其他非终态运行」才领取并置运行中；领到的运行随后的 scheduleWaitingPaths 立即启动路径。
+func (s *Scheduler) promoteQueuedRun(ctx context.Context) {
+	runID, err := s.store.DequeueRun(ctx, s.now())
+	if err != nil {
+		log.Printf("[schedule] 计划间串行队列放行失败: %v", err)
+		return
+	}
+	if runID != 0 {
+		log.Printf("[schedule] 队列放行运行 run=%d", runID)
+	}
 }
 
 // scheduleWaitingPaths 对每个仍在运行中且有等待路径的运行按调度策略补位。

@@ -69,12 +69,12 @@ func (r *RunRepository) getRunWithMeta(ctx context.Context, runID uint64) (model
 	var result sql.NullString
 	var maxConcurrency sql.NullInt64
 	var startedAt, finishedAt sql.NullTime
-	var idempotencyKey, presetBreakpoints sql.NullString
+	var idempotencyKey, presetBreakpoints, pathDispatch sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, status, result, started_at, finished_at, created_at, updated_at,
+		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, path_dispatch, status, result, started_at, finished_at, created_at, updated_at,
 		       idempotency_key, preset_breakpoints
 		FROM runs WHERE id = ?
-	`, runID).Scan(&run.ID, &run.PlanID, &run.RunNo, &mode, &trigger, &maxConcurrency, &status, &result,
+	`, runID).Scan(&run.ID, &run.PlanID, &run.RunNo, &mode, &trigger, &maxConcurrency, &pathDispatch, &status, &result,
 		&startedAt, &finishedAt, &run.CreatedAt, &run.UpdatedAt, &idempotencyKey, &presetBreakpoints)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Run{}, repository.ErrRunNotFound
@@ -103,6 +103,7 @@ func (r *RunRepository) getRunWithMeta(ctx context.Context, runID uint64) (model
 	}
 	run.IdempotencyKey = idempotencyKey.String
 	run.PresetBreakpoints = presetBreakpoints.String
+	run.PathDispatch = pathDispatch.String
 	return run, nil
 }
 
@@ -120,10 +121,10 @@ func (r *RunRepository) tryCreateRunWithPaths(ctx context.Context, input reposit
 		return model.Run{}, nil, err
 	}
 	result, err := tx.ExecContext(ctx, `
-		INSERT INTO runs (plan_id, run_no, mode, trigger_kind, max_concurrency, idempotency_key, preset_breakpoints, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO runs (plan_id, run_no, mode, trigger_kind, max_concurrency, path_dispatch, idempotency_key, preset_breakpoints, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, input.PlanID, nextRunNo, string(input.Mode), string(input.Trigger), input.MaxConcurrency,
-		nullableString(input.IdempotencyKey), nullableString(input.PresetBreakpoints),
+		nullableString(input.PathDispatch), nullableString(input.IdempotencyKey), nullableString(input.PresetBreakpoints),
 		string(model.RunStatusPending), now, now)
 	if err != nil {
 		return model.Run{}, nil, err
@@ -242,7 +243,7 @@ func (r *RunRepository) ListRunsFiltered(ctx context.Context, planID uint64, sta
 		beforeID = ^uint64(0)
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, status, result, started_at, finished_at, created_at, updated_at
+		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, path_dispatch, status, result, started_at, finished_at, created_at, updated_at
 		FROM runs
 		WHERE plan_id = ? AND (? = '' OR status = ?) AND id < ?
 		ORDER BY id DESC LIMIT ?
@@ -319,4 +320,91 @@ func (r *RunRepository) ListDueScheduledPlans(ctx context.Context, now time.Time
 		plans = append(plans, plan)
 	}
 	return plans, rows.Err()
+}
+
+// CountActiveRuns 统计处于非终态（等待/运行中）的计划运行数。
+// 计划间串行调度据此判断能否放行队首运行：大于 0 表示还有计划在跑，必须排队。
+func (r *RunRepository) CountActiveRuns(ctx context.Context) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM runs WHERE status IN (?, ?)",
+		string(model.RunStatusPending), string(model.RunStatusRunning)).Scan(&count)
+	return count, err
+}
+
+// EnqueueRun 把一次运行加入计划间串行等待队列。
+// 幂等：同一次运行重复入队直接忽略（幂等键重试会走到这里）；运行已不在等待态则拒绝。
+func (r *RunRepository) EnqueueRun(ctx context.Context, runID uint64, planID uint64, now time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO plan_run_queue (run_id, plan_id, status, enqueued_at)
+		VALUES (?, ?, 'pending', ?)
+		ON DUPLICATE KEY UPDATE run_id = run_id
+	`, runID, planID, now)
+	return err
+}
+
+// DequeueRun 原子领取队首等待运行并从队列移除，返回运行 ID；队列为空返回 0。
+// 放行条件：领取时不存在其他非终态运行（含自身所在事务的行锁串行化）。
+// 两个调度 Tick 并发领取时，行锁保证只有一个赢家，输家拿到 0 等下一轮，绝不重复放行。
+func (r *RunRepository) DequeueRun(ctx context.Context, now time.Time) (uint64, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var runID, planID uint64
+	err = tx.QueryRowContext(ctx, `
+		SELECT run_id, plan_id FROM plan_run_queue WHERE status = 'pending' ORDER BY id ASC LIMIT 1 FOR UPDATE
+	`).Scan(&runID, &planID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	// 领取前确认没有别的非终态运行：串行语义是「同一时刻只有一个计划运行在跑」。
+	// 自身此刻仍是 pending，也会被计入，因此阈值是 1 而不是 0。
+	var active int
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM runs WHERE status IN (?, ?)",
+		string(model.RunStatusPending), string(model.RunStatusRunning)).Scan(&active); err != nil {
+		return 0, err
+	}
+	if active > 1 {
+		// 还有别的计划在跑：保留队列行，返回 0 让下一轮 Tick 再试。
+		return 0, nil
+	}
+
+	// 原子出队：状态行更新成功才算领取；并发赢家已把它标为 dispatched 时拿不到行。
+	result, err := tx.ExecContext(ctx,
+		"UPDATE plan_run_queue SET status = 'dispatched' WHERE id = (SELECT id FROM (SELECT id FROM plan_run_queue WHERE run_id = ? AND status = 'pending') AS q)",
+		runID)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected != 1 {
+		return 0, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+		string(model.RunStatusRunning), now, runID, string(model.RunStatusPending)); err != nil {
+		return 0, err
+	}
+	if err := appendRunEvent(ctx, tx, model.RunEvent{
+		RunID: runID,
+		Kind:  "run_dispatched",
+		Label: "计划间串行队列放行，准备启动路径运行",
+	}, now); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return runID, nil
 }

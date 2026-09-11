@@ -26,6 +26,11 @@ func (f *fakeSchedulerStore) ListRunIDsNeedingScheduling(context.Context) ([]uin
 	return f.needingIDs, nil
 }
 
+// DequeueRun 默认队列为空：计划间串行排队单独用例覆盖。
+func (f *fakeSchedulerStore) DequeueRun(context.Context, time.Time) (uint64, error) {
+	return 0, nil
+}
+
 // GetRun 读取运行聚合。
 func (f *fakeSchedulerStore) GetRun(_ context.Context, runID uint64) (model.Run, error) {
 	return f.runs[runID], nil

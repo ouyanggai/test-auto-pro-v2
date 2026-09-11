@@ -268,6 +268,9 @@ type Run struct {
 	Mode           RunMode
 	TriggerKind    RunTriggerKind
 	MaxConcurrency *int
+	// PathDispatch 是本运行的计划内路径调度方式（serial / parallel）：来自启动弹窗的本次选择，
+	// 与 MaxConcurrency 配套决定调度器是否给等待路径补位；空值按串行处理。
+	PathDispatch string
 	Status         RunStatus
 	Result         *RunResult
 	StartedAt      *time.Time

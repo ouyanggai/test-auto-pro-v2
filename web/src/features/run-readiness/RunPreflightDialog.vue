@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 
 import { useRouter } from 'vue-router'
 
-import { startRun } from '../runs/api'
+import { startRun, fetchRunDispatchDefault } from '../runs/api'
 import { fetchPlanRunReadiness, RunReadinessApiError } from './api'
 import type { PathRunReadiness, PlanRunReadiness, RunReadinessItem } from './types'
 
@@ -80,7 +80,27 @@ async function runCheck() {
 // 幂等键每次启动生成一次：同一次点击的重试不会创建第二个运行。
 // 启动要装配执行上下文并停在第一步预览，可能耗时数秒；期间给明确的阶段提示，
 // 不再让弹窗空着让用户猜。
+// 启动阶段提示与路径调度选择（记住上次选择：打开弹窗时读该计划最近一次运行的选择回显）。
 const startStage = ref('')
+const pathDispatch = ref<'serial' | 'parallel'>('serial')
+const pathMaxConcurrency = ref<number>(2)
+const dispatchOptions = [
+  { value: 'serial', title: '串行', description: '路径按顺序逐条运行' },
+  { value: 'parallel', title: '并行', description: '多条路径同时运行，可设最大并发数' },
+]
+async function loadDispatchDefault(): Promise<void> {
+  try {
+    const last = await fetchRunDispatchDefault(props.planId)
+    if (last.pathDispatch === 'parallel') {
+      pathDispatch.value = 'parallel'
+      pathMaxConcurrency.value = last.maxConcurrency ?? 2
+    } else if (last.pathDispatch === 'serial') {
+      pathDispatch.value = 'serial'
+    }
+  } catch {
+    // 读取失败静默用默认值：回显只是便利，不能阳塞启动。
+  }
+}
 async function startSelectedRun() {
   const targets = startTargets.value
   if (targets.length === 0 || starting.value) return
@@ -94,6 +114,8 @@ async function startSelectedRun() {
       mode.value,
       [],
       crypto.randomUUID(),
+      pathDispatch.value,
+      pathDispatch.value === 'parallel' ? pathMaxConcurrency.value : undefined,
     )
     startStage.value = '启动完成，正在打开运行界面…'
     emit('update:show', false)
@@ -117,6 +139,7 @@ function locate(pathId: string, item: RunReadinessItem) {
 watch(() => props.show, (open) => {
   if (open) {
     void runCheck()
+    void loadDispatchDefault()
     return
   }
   controller?.abort()
@@ -168,6 +191,34 @@ watch(() => props.show, (open) => {
               <span class="run-preflight__card-title">{{ option.title }}</span>
               <span class="run-preflight__card-desc">{{ option.description }}</span>
             </button>
+          </div>
+
+          <p class="run-preflight__section-label">路径执行方式</p>
+          <div class="run-preflight__dispatch" role="radiogroup" aria-label="路径执行方式">
+            <button
+              v-for="option in dispatchOptions"
+              :key="option.value"
+              type="button"
+              class="run-preflight__card run-preflight__card--inline"
+              :class="{ 'run-preflight__card--active': pathDispatch === option.value }"
+              role="radio"
+              :aria-checked="pathDispatch === option.value"
+              @click="pathDispatch = option.value as 'serial' | 'parallel'"
+            >
+              <span class="run-preflight__card-title">{{ option.title }}</span>
+              <span class="run-preflight__card-desc">{{ option.description }}</span>
+            </button>
+            <label v-if="pathDispatch === 'parallel'" class="run-preflight__concurrency">
+              最大并发
+              <input
+                v-model.number="pathMaxConcurrency"
+                type="number"
+                min="2"
+                max="20"
+                class="run-preflight__concurrency-input"
+              >
+              （2 ~ 20）
+            </label>
           </div>
           <p class="run-preflight__muted">路线和配置对不上时会自动停下，不会硬跑。</p>
         </template>
@@ -271,6 +322,39 @@ watch(() => props.show, (open) => {
   flex-direction: column;
   gap: 8px;
   margin-bottom: 16px;
+}
+
+/* 路径执行方式：两卡横排 + 并行时的并发数输入，紧凑一行。 */
+.run-preflight__dispatch {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.run-preflight__card--inline {
+  flex: 0 0 auto;
+  min-width: 140px;
+}
+
+.run-preflight__concurrency {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--preflight-secondary-text-color);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.run-preflight__concurrency-input {
+  width: 60px;
+  padding: 4px 8px;
+  border: 1px solid var(--preflight-border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
 }
 
 .run-preflight__card {

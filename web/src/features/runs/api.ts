@@ -323,12 +323,30 @@ export interface RunStartResult {
 
 // startRun 按勾选路径集合启动一次运行（F-020 多路径；F-017 模式三选一，默认单步由后端兜底）。
 // idempotencyKey 由调用方生成：同键重试返回同一次运行，绝不创建第二个运行。
-export function startRun(planId: string, pathIds: string[], mode = 'auto', breakpoints: BreakpointInput[] = [], idempotencyKey = ''): Promise<RunStartResult> {
+export function startRun(
+  planId: string,
+  pathIds: string[],
+  mode = 'auto',
+  breakpoints: BreakpointInput[] = [],
+  idempotencyKey = '',
+  pathDispatch: 'serial' | 'parallel' = 'serial',
+  pathMaxConcurrency?: number,
+): Promise<RunStartResult> {
   return requestOnce<RunStartResult>(`/api/plans/${encodeURIComponent(planId)}/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ planId: Number(planId), pathIds: pathIds.map(Number), mode, breakpoints, idempotencyKey }),
+    body: JSON.stringify({
+      planId: Number(planId), pathIds: pathIds.map(Number), mode, breakpoints, idempotencyKey,
+      pathDispatch, pathMaxConcurrency: pathDispatch === 'parallel' ? (pathMaxConcurrency ?? 2) : null,
+    }),
   })
+}
+
+// fetchRunDispatchDefault 读取计划上次启动的路径调度选择（记住上次选择）：无历史时 dispatch 为空。
+export function fetchRunDispatchDefault(planId: string): Promise<{ pathDispatch: string, maxConcurrency: number | null }> {
+  return requestOnce<{ pathDispatch: string, maxConcurrency: number | null }>(
+    `/api/plans/${encodeURIComponent(planId)}/run-dispatch-default`,
+  )
 }
 
 // pathRunQuery 把可选的路径运行身份拼成查询串（多路径运行的控制寻址）。

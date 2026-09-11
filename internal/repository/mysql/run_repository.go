@@ -141,7 +141,7 @@ func emptyToNull(value string) any {
 // GetRun 读取运行聚合，找不到返回 ErrRunNotFound。
 func (r *RunRepository) GetRun(ctx context.Context, runID uint64) (model.Run, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, status, result, started_at, finished_at, created_at, updated_at
+		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, path_dispatch, status, result, started_at, finished_at, created_at, updated_at
 		FROM runs WHERE id = ?
 	`, runID)
 	run, err := scanRun(row.Scan)
@@ -219,7 +219,7 @@ func (r *RunRepository) ListRunsByPlan(ctx context.Context, planID uint64, limit
 		limit = 50
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, status, result, started_at, finished_at, created_at, updated_at
+		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, path_dispatch, status, result, started_at, finished_at, created_at, updated_at
 		FROM runs WHERE plan_id = ? ORDER BY run_no DESC LIMIT ?
 	`, planID, limit)
 	if err != nil {
@@ -912,10 +912,10 @@ func requireOneRowUpdated(result sql.Result, err error) error {
 func scanRun(scan func(dest ...any) error) (model.Run, error) {
 	var run model.Run
 	var mode, trigger, status string
-	var result sql.NullString
+	var result, pathDispatch sql.NullString
 	var maxConcurrency sql.NullInt64
 	var startedAt, finishedAt sql.NullTime
-	err := scan(&run.ID, &run.PlanID, &run.RunNo, &mode, &trigger, &maxConcurrency, &status, &result, &startedAt, &finishedAt, &run.CreatedAt, &run.UpdatedAt)
+	err := scan(&run.ID, &run.PlanID, &run.RunNo, &mode, &trigger, &maxConcurrency, &pathDispatch, &status, &result, &startedAt, &finishedAt, &run.CreatedAt, &run.UpdatedAt)
 	if err != nil {
 		return model.Run{}, err
 	}
@@ -926,6 +926,7 @@ func scanRun(scan func(dest ...any) error) (model.Run, error) {
 		value := int(maxConcurrency.Int64)
 		run.MaxConcurrency = &value
 	}
+	run.PathDispatch = pathDispatch.String
 	if result.Valid {
 		value := model.RunResult(result.String)
 		run.Result = &value

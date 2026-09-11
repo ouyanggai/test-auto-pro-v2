@@ -81,8 +81,13 @@ type RunPathSummaryDTO struct {
 // StartRunWithPaths 按勾选路径集合启动一次运行（F-020 手动启动入口）。
 // 运行前检查对每条勾选路径复验：任何一条被阻塞则整次启动被拒绝（手动启动不允许半份启动）；
 // 定时启动的「只跑可执行路径」口径由 StartScheduledRun 单独处理。
+// pathDispatch / pathMaxConcurrency 是启动弹窗的本次选择（serial / parallel + 2~20），
+// 仅作用于本次运行的路径并发，同时作为该计划的「上次选择」供下次弹窗回显。
+// 计划层串行（plan.RunMode != parallel）：已有其他计划运行未到终态时，本次运行进入等待队列，
+// 由调度器在上一轮计划运行终态后放行；并行计划不受限，直接开跑。
 func (s *RunOrchestrationService) StartRunWithPaths(ctx context.Context, planID uint64, pathIDs []uint64,
-	mode model.RunMode, presets []control.Breakpoint, idempotencyKey string) (*RunStartDTO, error) {
+	mode model.RunMode, presets []control.Breakpoint, idempotencyKey string,
+	pathDispatch string, pathMaxConcurrency *int) (*RunStartDTO, error) {
 	if !validRunModes()[mode] {
 		return nil, &RunOrchestrationError{Kind: RunOrchestrationInvalid, Message: "运行模式不正确"}
 	}
@@ -119,10 +124,17 @@ func (s *RunOrchestrationService) StartRunWithPaths(ctx context.Context, planID 
 	if err != nil {
 		return nil, mapPlanError(err)
 	}
-	// 并发上限：串行计划固定 1；并行计划用保存的最大并发（缺失时保守按 1）。
+	// 计划内路径并发由启动弹窗决定：串行固定 1；并行用弹窗传入的最大并发（2~20，缺失/非法回退 1）。
+	// 「上次选择」的回显从该计划最近一次运行的 path_dispatch / max_concurrency 反推，不再单独建偏好表。
+	if pathDispatch != "parallel" {
+		pathDispatch = "serial"
+		pathMaxConcurrency = nil
+	}
 	capacity := 1
-	if plan.RunMode == "parallel" && plan.MaxConcurrency != nil && *plan.MaxConcurrency > 0 {
-		capacity = *plan.MaxConcurrency
+	if pathDispatch == "parallel" && pathMaxConcurrency != nil && *pathMaxConcurrency >= 2 && *pathMaxConcurrency <= 20 {
+		capacity = *pathMaxConcurrency
+	} else if pathDispatch == "parallel" {
+		capacity = 1
 	}
 	presetJSON, err := json.Marshal(presets)
 	if err != nil {
@@ -130,7 +142,7 @@ func (s *RunOrchestrationService) StartRunWithPaths(ctx context.Context, planID 
 	}
 	created, pathRuns, err := s.store.CreateRunWithPaths(ctx, repository.CreateRunInput{
 		PlanID: planID, ExecutionPathIDs: pathIDs, Mode: mode,
-		Trigger: model.RunTriggerManual, MaxConcurrency: &capacity,
+		Trigger: model.RunTriggerManual, MaxConcurrency: &capacity, PathDispatch: pathDispatch,
 		IdempotencyKey: idempotencyKey, PresetBreakpoints: string(presetJSON),
 	})
 	if err != nil {
@@ -138,12 +150,29 @@ func (s *RunOrchestrationService) StartRunWithPaths(ctx context.Context, planID 
 	}
 	// 幂等重试：运行已经在推进中（非等待启动）时原样返回那次运行，不再推进或重新调度。
 	if created.Status == model.RunStatusPending {
-		if _, err := s.runState.AdvanceRunStatus(ctx, created.ID,
-			model.RunStatusPending, model.RunStatusRunning, model.RunEvent{
-				Kind:  "run_started",
-				Label: runStartedLabel(mode, plan, capacity, len(pathRuns)),
-			}); err != nil {
-			return nil, err
+		// 计划间串行：串行计划在已有非终态运行（含刚创建的自己之外）时入队等待。
+		// CountActiveRuns 含自身，所以阈值是 2：除自己外还有别的运行在跑就必须排队。
+		active, activeErr := s.store.CountActiveRuns(ctx)
+		if activeErr != nil {
+			return nil, activeErr
+		}
+		if plan.RunMode != "parallel" && active > 1 {
+			if err := s.store.EnqueueRun(ctx, created.ID, planID, s.now()); err != nil {
+				return nil, err
+			}
+			_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+				RunID: created.ID,
+				Kind:  "run_queued",
+				Label: "计划间串行：已有其他计划运行在进行，本次运行进入等待队列",
+			}, s.now())
+		} else {
+			if _, err := s.runState.AdvanceRunStatus(ctx, created.ID,
+				model.RunStatusPending, model.RunStatusRunning, model.RunEvent{
+					Kind:  "run_started",
+					Label: runStartedLabel(mode, plan, capacity, len(pathRuns)),
+				}); err != nil {
+				return nil, err
+			}
 		}
 		s.kickScheduler(ctx)
 	}
@@ -188,8 +217,16 @@ func (s *RunOrchestrationService) StartScheduledRun(ctx context.Context, plan mo
 		return s.recordScheduleFailure(ctx, plan, "定时启动未执行：没有可执行的路径。"+strings.Join(blocked, "；"))
 	}
 	// 定时触发按计划身份生成确定性幂等键：即使消费标记出现竞态，同键重试也只得到同一次运行。
+	// 路径调度方式沿用计划保存的上次选择：并行计划用其最大并发，串行计划串行。
+	scheduledDispatch := "serial"
+	var scheduledConcurrency *int
+	if plan.RunMode == "parallel" {
+		scheduledDispatch = "parallel"
+		scheduledConcurrency = plan.MaxConcurrency
+	}
 	result, err := s.StartRunWithPaths(ctx, plan.ID, selected, model.RunModeAuto,
-		[]control.Breakpoint{{Type: model.BreakpointFirstWrite}}, "scheduled-"+strconv.FormatUint(plan.ID, 10))
+		[]control.Breakpoint{{Type: model.BreakpointFirstWrite}}, "scheduled-"+strconv.FormatUint(plan.ID, 10),
+		scheduledDispatch, scheduledConcurrency)
 	if err != nil {
 		return s.recordScheduleFailure(ctx, plan, "定时启动失败："+err.Error())
 	}
@@ -360,4 +397,26 @@ func (s *RunOrchestrationService) writeScheduleFact(ctx context.Context, planID 
 		return
 	}
 	writer.WriteLine("time=" + s.now().Format("2006-01-02_15:04:05") + " level=info message=" + message)
+}
+
+// RunDispatchDefault 返回计划上次启动使用的路径调度方式与并发数（无历史运行返回空串与 nil）。
+// 「记住上次选择」直接从最近一次运行行反推，不另建偏好表：上一次怎么跑的，下次默认怎么跑。
+func (s *RunOrchestrationService) RunDispatchDefault(ctx context.Context, planID uint64) (string, *int, error) {
+	runs, err := s.store.ListRunsByPlan(ctx, planID, 1)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(runs) == 0 {
+		return "", nil, nil
+	}
+	dispatch := runs[0].PathDispatch
+	if dispatch == "" {
+		// 迁移前的历史运行没有 path_dispatch：按并发数反推，避免回显成空。
+		if runs[0].MaxConcurrency != nil && *runs[0].MaxConcurrency > 1 {
+			dispatch = "parallel"
+		} else {
+			dispatch = "serial"
+		}
+	}
+	return dispatch, runs[0].MaxConcurrency, nil
 }
