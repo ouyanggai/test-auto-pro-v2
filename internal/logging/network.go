@@ -159,8 +159,9 @@ func CurlCommand(method, url string, headers map[string]string, body string) str
 }
 
 var sensitiveLogKeys = map[string]struct{}{
-	"sid": {}, "password": {}, "aeskey": {}, "loginpassword": {}, "logincode": {},
-	"authorization": {}, "cookie": {}, "set-cookie": {}, "token": {}, "accesstoken": {}, "refreshtoken": {},
+	"sid": {}, "sessionid": {}, "password": {}, "aeskey": {}, "loginpassword": {}, "logincode": {},
+	"authorization": {}, "cookie": {}, "set-cookie": {}, "token": {}, "accesstoken": {}, "access_token": {},
+	"refreshtoken": {}, "refresh_token": {}, "x-auth-token": {}, "x-csrf-token": {},
 }
 
 // SanitizeURL 清理 URL 查询参数中的会话、令牌等敏感值；解析失败时返回固定占位符，避免泄露原始 URL。
