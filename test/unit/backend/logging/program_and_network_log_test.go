@@ -180,30 +180,36 @@ func TestNetworkLogSplitsSuccessAndFailureAndLinksCurl(t *testing.T) {
 	}
 }
 
-// TestCurlCommandRedactsSensitiveValues 验证生成的排查命令保留请求结构，但不泄露会话与密码。
-func TestCurlCommandRedactsSensitiveValues(t *testing.T) {
+// TestCurlCommandPreservesSensitiveValues 验证内网测试环境生成的命令与请求、响应正文保持原样。
+func TestCurlCommandPreservesSensitiveValues(t *testing.T) {
 	command := logging.CurlCommand("post", "https://target/web/user/api/login/user/login?platformCode=invest",
 		map[string]string{"Content-Type": "application/json", "sid": "sid-real-value"}, `{"data":{"a":"b'c","password":"secret"}}`)
 	for _, expected := range []string{
 		"curl -sS -X POST 'https://target/web/user/api/login/user/login?platformCode=invest'",
 		"-H 'Content-Type: application/json'",
-		"-H 'sid: [REDACTED]'",
-		`--data-raw '{"data":{"a":"b'\''c","password":"[REDACTED]"}}'`,
+		"-H 'sid: sid-real-value'",
+		`--data-raw '{"data":{"a":"b'\''c","password":"secret"}}'`,
 	} {
 		if !strings.Contains(command, expected) {
 			t.Fatalf("命令缺少 %s：%s", expected, command)
 		}
 	}
-	if strings.Contains(command, "sid-real-value") || strings.Contains(command, "secret") {
-		t.Fatalf("命令泄露敏感值：%s", command)
+	if !strings.Contains(command, "sid-real-value") || !strings.Contains(command, "secret") {
+		t.Fatalf("内网测试日志未保留原始值：%s", command)
 	}
-	safeURL := logging.SanitizeURL("https://target/web/x?sid=sid-real-value&platformCode=invest")
-	if strings.Contains(safeURL, "sid-real-value") || !strings.Contains(safeURL, "platformCode=invest") {
-		t.Fatalf("URL 脱敏或非敏感参数保留异常：%s", safeURL)
+	rawURL := "https://target/web/x?sid=sid-real-value&platformCode=invest"
+	if !strings.Contains(logging.CurlCommand("GET", rawURL, nil, ""), rawURL) {
+		t.Fatalf("URL 未按原样写入排查命令")
 	}
-	safeResponse := logging.SanitizeBody(`{"data":{"sid":"sid-real-value","message":"业务拒绝"}}`)
-	if strings.Contains(safeResponse, "sid-real-value") || !strings.Contains(safeResponse, "业务拒绝") {
-		t.Fatalf("响应正文脱敏异常：%s", safeResponse)
+	rawResponse := `{"data":{"sid":"sid-real-value","message":"业务拒绝"}}`
+	root := t.TempDir()
+	logger := logging.NewLogger(logging.NewRouter(root, fixedTime), fixedTime)
+	logger.Network(businessScope("raw-response"), logging.NetworkRecord{
+		TraceID: "raw-response", Method: "POST", Endpoint: "/web/x", StatusCode: 200,
+		Curl: "curl -sS -X POST 'https://target/web/x'", ResponseBody: rawResponse,
+	})
+	if !strings.Contains(readBucketFile(t, root, "curl.log"), rawResponse) {
+		t.Fatalf("响应正文未按原样写入 curl.log")
 	}
 	repeat := logging.CurlCommand("post", "https://target/x",
 		map[string]string{"sid": "s", "Content-Type": "application/json"}, "{}")

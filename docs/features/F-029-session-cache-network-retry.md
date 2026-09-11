@@ -11,7 +11,7 @@
 2. 同账号验证、读取、写入和核验排队；缓存用会话代次阻止迟到旧登录结果覆盖新 SID。
 3. `RESP401`、`AUTH_401`、`SID已失效` 只允许当前账号重登并重放一次；第二次仍失效时停步并提示外部会话竞争。
 4. 完整业务拒绝透传目标 `code/message` 且不可重试。读取网络错误可有限重试；写请求只有连接未建立时重试，写出后响应丢失不重发。
-5. 网络日志记录 `retry`、`retry_attempt`、`transport_phase`、`request_written`，禁止记录 SID、密码等敏感值。
+5. 网络日志记录 `retry`、`retry_attempt`、`transport_phase`、`request_written`，在内网测试环境原样保留请求、响应、SID 和密码，日志文件不进 Git、不经公开 API 返回。
 
 ## 自动验证
 

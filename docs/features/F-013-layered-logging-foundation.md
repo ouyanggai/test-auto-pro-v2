@@ -9,7 +9,7 @@
 
 ## 目标
 
-让本工具的每一次目标平台请求和每一次程序错误都留下可定位、可关联、可复制排查命令的记录，并且用户能用已经认可的 code-server 方式直接打开这些记录。
+让本工具的每一次目标平台请求和每一次程序错误都留下可定位、可关联、可直接复现的记录，并且用户能用已经认可的 code-server 方式直接打开这些记录。
 
 本切片不执行任何目标写操作，也不创建运行记录。它是后续执行器与调试器全部切片的验收依据：先有观测，再有执行。
 
@@ -21,7 +21,7 @@
 
 ## 单一用户结果
 
-用户在浏览器里做完一组配置操作后，打开 code-server 就能看到：这段时间工具向目标平台发了哪些请求、每个请求的请求结构与脱敏响应、失败的请求单独成文件、可复制的脱敏排查命令，以及工具自身在同一时刻报的错和界面上看到的那句中文提示是同一件事。
+用户在浏览器里做完一组配置操作后，打开 code-server 就能看到：这段时间工具向目标平台发了哪些请求、每个请求的原始请求与响应、失败的请求单独成文件、可以直接复制重放的 curl 命令，以及工具自身在同一时刻报的错和界面上看到的那句中文提示是同一件事。
 
 ## 范围
 
@@ -37,9 +37,9 @@
   内含 `meta.json`、`execution.log`、`execution-error.log` 与同样三个网络日志文件；本切片只实现路由，不创建运行记录。
 - 已知计划但还不知道执行路径的计划级操作进 `configuration/_plan/<YYYY-MM-DD>/`。
 - 中间件从路由取计划与执行路径的不可变 ID，显示名由 `service.LogScopeService` 从真实业务记录读取并完成归属校验，
-  每次请求只解析一次；作用域随 `context` 传给目标站点客户端，网络日志与脱敏排查命令因此落在同一个计划目录。
+  每次请求只解析一次；作用域随 `context` 传给目标站点客户端，网络日志与可重放命令因此落在同一个计划目录。
 - 目标请求日志在 `internal/adapter/target` 的 `Client.call` 单点接入，覆盖当前全部只读请求。
-- `curl.log` 写入保留请求结构的诊断命令与响应正文；SID、密码、令牌等敏感字段统一替换为 `[REDACTED]`，不得直接重放真实会话。
+- `curl.log` 写入原始请求命令与响应正文；内网测试环境允许直接重放真实会话，日志文件只供内网排查，不经公开 API 返回。
 - API 中间件：请求日志、失败响应日志（记录实际返回给用户的稳定错误码与中文文案）、panic 恢复并落程序错误日志。
 - 程序错误日志字段：`error_class`、`error_chain`、`source`、`stack`（仅 panic）、`run_terminated`、`user_message`。
 - `make logs-viewer`：一条命令起固定版本 code-server（`codercom/code-server:4.96.4`），本机 19002 映射容器 8080，挂载本项目 `logs/` 到 `/home/coder/logs` 并直接打开该目录，内网使用不设登录，挂载目录可读写，容器以当前本机用户 UID/GID 运行。`make logs-viewer-stop` 只停止并删除该容器。
@@ -53,7 +53,7 @@
 - 运行记录表、运行相关 API、`RunsView.vue` 的任何改动。
 - Docker Compose 整套编排。属于 F-023，本切片只给单个 code-server 容器启动方式。
 - 系统设置页里的日志配置项。保留期与容量本切片只用环境变量控制，`docs/EXECUTION_PROGRAM.md` 第 6.6 节提到的“可在系统设置里调整”留到有实际需要时再单独立项。
-- 旧版本的“原样日志”约定不再适用；F-029 起所有网络日志统一执行脱敏，避免 SID、密码和令牌泄露。
+- F-029 按用户裁决恢复内网测试环境的原样网络日志，SID、密码和令牌不在日志层改写；日志文件仍不进 Git，公开 DTO 仍不返回会话和凭证。
 - Loki、Promtail、Grafana 一类外部可观测栈。
 
 ## 设计要点
@@ -127,11 +127,11 @@ time=2026-09-03 18:56:31 level=error ...
 
 完成判据：单元测试覆盖八类分类与错误链展开；panic 用例产生带 `stack` 块的记录且截断生效。
 
-### T03：目标请求日志与脱敏排查命令
+### T03：目标请求日志与可重放 curl
 
-在 `Client.call` 单点记录：`time`、`level`、`duration_s`、`request_id`、`trace_id`、`curl_trace_id`、`method`、`endpoint`、`request_class`、`status_code`、`result`、`outcome_kind`、`error_type`、目标实例与任务标识。网络请求块与响应进入 `curl.log` 前统一脱敏，复制出的命令只用于排查请求结构，不携带真实会话。
+在 `Client.call` 单点记录：`time`、`level`、`duration_s`、`request_id`、`trace_id`、`curl_trace_id`、`method`、`endpoint`、`request_class`、`status_code`、`result`、`outcome_kind`、`error_type`、目标实例与任务标识。网络请求块与响应进入 `curl.log` 时保持原样，复制出的命令可以在内网测试环境直接重放。
 
-完成判据：集成测试用不可达的目标地址触发失败，断言两个文件各出现对应记录且 `trace_id` 与 `curl_trace_id` 双向可查；断言 `curl.log` 保留请求结构且不出现 SID、密码等敏感值。
+完成判据：集成测试用不可达的目标地址触发失败，断言两个文件各出现对应记录且 `trace_id` 与 `curl_trace_id` 双向可查；断言 `curl.log` 保留原始请求、响应及 SID、密码等字段。
 
 ### T04：API 中间件与组装
 
@@ -196,7 +196,7 @@ time=2026-09-03 18:56:31 level=error ...
 
 - 2026-09-04：用户明确验收通过（“013 可以标记为完成了”），状态由 `ready_for_manual` 进入 `accepted`。
   验收范围为本文件「包含」条目的全部交付：`internal/logging` 日志底座、按计划与执行路径归档的目录结构、
-  目标请求在传输层单点接入的网络与脱敏排查命令日志、API 中间件的请求与失败日志且界面文案同源、
+  目标请求在传输层单点接入的网络与可重放命令日志、API 中间件的请求与失败日志且界面文案同源、
   按天分文件与保留期清理，以及 `make logs-viewer` / `make logs-viewer-stop` 的 code-server 单容器查看方式。
   后续切片可直接依赖该底座；如需改动其行为需另行立项，不在本切片内继续修改。
 - 2026-09-04：人工验收未通过，状态从 `ready_for_manual` 退回 `implementing`。
@@ -256,7 +256,7 @@ time=2026-09-03 18:56:31 level=error ...
   `logging.Scope` 扩展出 `PlanID`、`PlanName`、`ExecutionPathID`、`ExecutionPathName` 并进日志字段；
   `WithScope` 改为合并语义；中间件只从路由取不可变 ID，显示名由 `service.LogScopeService` 从真实业务记录读取
   （按计划 ID 读执行路径顺带完成归属校验，每请求解析一次并带 30 秒缓存）；作用域随 `context` 传给目标站点客户端，
-  网络日志与脱敏排查命令因此与业务日志落在同一个计划目录；配置阶段改用 `operation.log`，执行阶段用 `execution.log`；
+  网络日志与可重放命令因此与业务日志落在同一个计划目录；配置阶段改用 `operation.log`，执行阶段用 `execution.log`；
   已归属的业务日志不再重复写进根目录聚合文件，业务异常也不改写进 `application-error.log`。
   真实数据实测证据（本机 19013 端口接真实目标与真实数据库，计划 2 名为 `oyg测试002`，路径 13 名为 `路径 1`）：
   - 访问 `/api/plans/2/execution-paths/13/configuration` 后，`operation.log`、`network.log`、`curl.log` 与 `meta.json`
