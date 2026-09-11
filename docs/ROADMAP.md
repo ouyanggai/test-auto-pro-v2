@@ -53,7 +53,7 @@ F-028 失败动作重试已停在 `ready_for_manual`。它允许用户在运行�
 
 F-030 执行性能与节点动作耗时展示已登记为 `awaiting_approval`，计划见
 `docs/features/F-030-execution-performance-and-request-timing.md`。本切片只优化重复目标只读、同账号排队和详情展示口径，
-不改变节点动作、写请求、重试、核验和运行结论；用户批准前不进入 `implementing`。
+并把运行阶段改成带动作、节点、处理人和下一步的白话说明；不改变节点动作、写请求、重试、核验和运行结论；用户批准前不进入 `implementing`。
 
 F-025 节点人员配置与范围内选人已停在 `ready_for_manual`，等待人工复核；本轮不再修改。
 
