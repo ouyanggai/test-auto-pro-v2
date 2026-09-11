@@ -49,16 +49,20 @@ func NewFlowGraphService(plans *PlanService, targetReader FlowTreeReader, flowAn
 }
 
 // Get 按计划保存的身份重新读取真实图，并附加本次运行态入口集合。
+// 根因修复：目标平台的 flowTemplateApi/list 会间歇性返回 500，运行详情每秒轮询，
+// 若读取失败就降级会让用户在目标抖动期间反复看到结构降级提示。结构在运行期间稳定，
+// 且图投影仅用于画布展示（运行期硬门禁不走本接口），因此读取失败时回退到最近一次
+// 成功的投影（即使已过期）；只有从未成功读取过才真正降级。
 func (s *FlowGraphService) Get(ctx context.Context, planID uint64) (model.FlowGraph, error) {
-	if graph, ok := s.cachedGraph(planID); ok {
+	graph, err := s.readGraph(ctx, planID)
+	if err == nil {
+		s.storeGraph(planID, graph)
 		return graph, nil
 	}
-	graph, err := s.readGraph(ctx, planID)
-	if err != nil {
-		return model.FlowGraph{}, err
+	if stale, ok := s.lastGoodGraph(planID); ok {
+		return stale, nil
 	}
-	s.storeGraph(planID, graph)
-	return graph, nil
+	return model.FlowGraph{}, err
 }
 
 // cachedGraph 返回未过期的缓存投影；缓存关闭读取失败时的自愈：过期即重读。
@@ -67,6 +71,17 @@ func (s *FlowGraphService) cachedGraph(planID uint64) (model.FlowGraph, bool) {
 	defer s.cacheMu.Unlock()
 	entry, ok := s.graphCache[planID]
 	if !ok || s.now().After(entry.expiresAt) {
+		return model.FlowGraph{}, false
+	}
+	return entry.graph, true
+}
+
+// lastGoodGraph 返回最近一次成功的投影（不论是否过期），供目标抖动时回退展示。
+func (s *FlowGraphService) lastGoodGraph(planID uint64) (model.FlowGraph, bool) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	entry, ok := s.graphCache[planID]
+	if !ok {
 		return model.FlowGraph{}, false
 	}
 	return entry.graph, true

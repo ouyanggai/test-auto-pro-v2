@@ -911,19 +911,21 @@ onBeforeUnmount(() => {
 
       <!-- 结论与提示区：只在真的有内容时占位，高度有界，不把画布挤没。 -->
       <div
-        v-if="detail.stopReason || detail.structureNote || topConclusion || loadErrorText || errorText || actionText || sceneLostNote"
+        v-if="detail.stopReason || topConclusion || loadErrorText || errorText || actionText || sceneLostNote || detail.graphError"
         class="run-detail__notices"
       >
         <!-- 现场已丢失：一句大白话说明发生了什么、为什么、用户现在能做什么；不给任何输入或重试入口。 -->
         <n-alert v-if="sceneLostNote" type="warning" :show-icon="false" class="run-detail__notice-bar">
           {{ sceneLostNote }}
         </n-alert>
-        <n-alert v-if="detail.stopReason || detail.structureNote" type="warning" :show-icon="false" class="run-detail__notice-bar">
-          {{ [detail.stopReason, detail.structureNote].filter(Boolean).join('；') }}
+        <n-alert v-if="detail.stopReason" type="warning" :show-icon="false" class="run-detail__notice-bar">
+          {{ detail.stopReason }}
         </n-alert>
         <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
         <p v-if="loadErrorText" class="run-detail__error" role="alert">{{ loadErrorText }}</p>
         <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
+        <!-- 结构读取失败：原样展示后端透传的底层错误，不包装不改写，让用户看到真实原因。 -->
+        <p v-if="detail.graphError" class="run-detail__error" role="alert">{{ detail.graphError }}</p>
         <p v-if="actionText" class="run-detail__notice" role="status">{{ actionText }}</p>
       </div>
 

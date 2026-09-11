@@ -38,18 +38,6 @@ func TestF016WaitingNodesDerivedFromConfiguredRoute(t *testing.T) {
 	}
 }
 
-// TestF016StructureWarningStartsAfterExecution 验证尚未放行第一步时不把画布降级误报成运行状态异常。
-func TestF016StructureWarningStartsAfterExecution(t *testing.T) {
-	if note := service.StructureNoteForTest(true, false); note != "" {
-		t.Fatalf("尚无执行事实时不应显示结构降级警告：%q", note)
-	}
-	if note := service.StructureNoteForTest(true, true); note == "" {
-		t.Fatal("执行开始后结构读取失败应保留明确警告")
-	}
-	if note := service.StructureNoteForTest(false, true); note != "" {
-		t.Fatalf("结构读取正常时不应显示警告：%q", note)
-	}
-}
 
 // TestF016RunDetailGraphReadBudget 验证运行详情不会用低于一秒的预算误杀正常的目标结构读取。
 func TestF016RunDetailGraphReadBudget(t *testing.T) {

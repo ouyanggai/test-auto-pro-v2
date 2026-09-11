@@ -245,8 +245,6 @@ type PathRunDetailDTO struct {
 	PathRunID         uint64     `json:"pathRunId"`
 	PathRunStatus     string     `json:"pathRunStatus"`
 	PathRunStatusName string     `json:"pathRunStatusName"`
-	// StructureNote 是真实结构读取失败时的中文降级说明；为空表示结构读取正常。
-	StructureNote string `json:"structureNote,omitempty"`
 	// 运行级信息（F-020）：调度方式、并发说明与全部路径运行摘要，供运行详情的路径切换区。
 	RunScheduleName     string              `json:"runScheduleName,omitempty"`
 	RunConcurrencyLabel string              `json:"runConcurrencyLabel,omitempty"`
@@ -262,6 +260,8 @@ type PathRunDetailDTO struct {
 	Steps            []RunStepDTO               `json:"steps"`
 	CurrentPreview   *RunPreviewDTO             `json:"currentPreview,omitempty"`
 	NodeStates       map[string]RunNodeStateDTO `json:"nodeStates"`
+	// GraphError 原样携带结构读取失败的底层错误文案；为空表示结构读取正常。
+	GraphError string `json:"graphError,omitempty"`
 	// NodePlans 是按图节点 ID 索引的「本次运行在该节点上的已配置计划」：
 	// 侧栏配置页签据此显示这个节点要做什么。数据只来自这条路径已保存的编译场景，
 	// 不额外读目标平台——运行详情要看的是「本次运行执行的配置」，不是目标此刻的最新配置。
@@ -971,17 +971,17 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	if err != nil {
 		return nil, err
 	}
-	// 真实结构只用于节点中文名与节点状态渲染；运行事实全部在本地库。
-	// 目标抖动是常态，结构读失败时降级为空结构继续返回详情，绝不让整份运行事实被一句
-	// 「运行服务暂不可用」挡住——降级必须如实告诉用户，不悄悄把「什么都没跑过」当事实展示。
-	// 详情接口只把流程结构用于画布展示，不能让结构目标读取的慢请求拖住放行响应；
-	// 运行事实已在本地库，结构超时时继续返回事实并明确降级。
+	// 结构读取仅服务画布展示；失败时降级为空结构继续返回，但把原始错误原样透传给前端，
+	// 由前端在错误信息区展示真实原因，不做任何包装或改写。
 	graphCtx, cancelGraph := context.WithTimeout(ctx, runDetailGraphTimeout)
 	graph, graphErr := s.graphs.Get(graphCtx, run.PlanID)
 	cancelGraph()
-	structureDegraded := graphErr != nil
-	if structureDegraded {
+	if graphErr != nil {
 		graph = model.FlowGraph{PlanID: run.PlanID}
+	}
+	graphErrorText := ""
+	if graphErr != nil {
+		graphErrorText = graphErr.Error()
 	}
 	steps, err := s.store.ListRunSteps(ctx, pathRun.ID)
 	if err != nil {
@@ -1004,6 +1004,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		PathID:            pathRun.ExecutionPathID,
 		PathName:          pathNameOf(ctx, s.paths, run.PlanID, pathRun.ExecutionPathID, plan.Name),
 		NodeStates:        map[string]RunNodeStateDTO{},
+		GraphError:        graphErrorText,
 		NodePlans:         map[string][]RunNodePlanActionDTO{},
 		// 数组型字段一律以空数组起步：nil 切片会序列化成 JSON null，前端按数组读取会整页崩溃。
 		Steps:               []RunStepDTO{},
@@ -1079,8 +1080,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Breakpoints = append(detail.Breakpoints, dto)
 		}
 	}
-	// 结构降级只会影响已经发生的节点运行状态推导；首次放行前没有执行事实，不能提前报运行异常。
-	detail.StructureNote = structureNoteOf(structureDegraded, len(steps) > 0 || len(attempts) > 0 || detail.StepInFlight)
+	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	// 执行现场已丢失的运行（服务重启或执行结果无法确认，路径运行停在结果待确认且没有内存现场）
 	// 无法安全继续：如实告诉用户并引导从计划重新运行；界面不给任何对账、重放或登记入口。
 	if s.control.View(pathRun.ID) == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
@@ -1387,14 +1387,6 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 	return states
 }
 
-// structureNoteOf 只在已有执行事实后说明结构读取降级；首次放行前没有运行状态可被误判。
-func structureNoteOf(degraded, executionStarted bool) string {
-	if !degraded || !executionStarted {
-		return ""
-	}
-	return "目标流程结构暂时读取失败，节点运行状态可能不完整；可稍后刷新重试"
-}
-
 // tokenToGraphNodeID 从真实结构推导「配置令牌键 -> 图节点 ID」映射：
 // 编译场景、步骤事实与预览都用令牌键，而画布与侧栏以图节点 ID 为准，键空间必须在这里对齐。
 func tokenToGraphNodeID(graph model.FlowGraph) map[string]string {
@@ -1653,10 +1645,6 @@ func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRu
 	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys)
 }
 
-// StructureNoteForTest 暴露结构降级提示门禁，供 test 目录锁定首次放行前不得误报。
-func StructureNoteForTest(degraded, executionStarted bool) string {
-	return structureNoteOf(degraded, executionStarted)
-}
 
 // RunDetailGraphTimeoutForTest 暴露详情结构读取预算，供 test 目录锁定正常目标读取不被过短预算截断。
 func RunDetailGraphTimeoutForTest() time.Duration {

@@ -95,8 +95,6 @@ export interface PathRunDetail {
   resultName?: string
   failureClassName?: string
   finalTarget?: unknown
-  // structureNote 是真实结构读取失败时的降级说明；为空表示结构读取正常。
-  structureNote?: string
   planId: number
   planName: string
   pathId: number
@@ -104,6 +102,8 @@ export interface PathRunDetail {
   steps: RunStep[]
   currentPreview?: RunPreview
   nodeStates: Record<string, RunNodeState>
+  // graphError 原样携带后端结构读取失败的底层错误文案；为空表示结构读取正常。
+  graphError?: string
   // nodePlans 按图节点 ID 索引本次运行在该节点上的已配置计划（侧栏配置页签的唯一来源）。
   nodePlans?: Record<string, RunNodePlanAction[]>
   pollIntervalMs: number
