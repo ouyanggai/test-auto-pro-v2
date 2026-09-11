@@ -72,6 +72,15 @@ func NewTargetReadServiceWithClient(client *target.Client, ttl time.Duration) *T
 	}
 }
 
+// NewTargetReadServiceWithSession 使用装配层提供的目标客户端与会话管理器。
+// 读服务和执行器必须共享这一对实例，避免同一进程为同一账号维护两份 SID 缓存。
+func NewTargetReadServiceWithSession(client *target.Client, sessions *session.Manager) *TargetReadService {
+	if sessions == nil {
+		sessions = session.NewManager(client, 0)
+	}
+	return &TargetReadService{client: client, sessions: sessions}
+}
+
 // SetHistoryCandidateStore 注入目标业务库只读候选来源；未注入时候选回落到目标只读 API。
 func (s *TargetReadService) SetHistoryCandidateStore(store repository.TargetHistoryCandidateStore) {
 	s.candidates = store

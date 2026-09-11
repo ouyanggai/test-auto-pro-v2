@@ -81,6 +81,10 @@ func (m *Manager) Refresh(ctx context.Context, account string) (target.Session, 
 
 // DoRead 只对会话失效执行一次重登和一次只读重放。
 func (m *Manager) DoRead(ctx context.Context, account string, call func(context.Context, target.Session) error) error {
+	// 读操作从取得会话到失效重登和一次重放都占用账号使用锁，避免页面读请求与执行链
+	// 同时登录/使用同一账号时互相覆盖会话。Refresh 不在这里再次加锁，避免递归锁死。
+	release := m.LockAccountUsage(account)
+	defer release()
 	session, err := m.getOrLogin(ctx, account)
 	if err != nil {
 		return err
