@@ -200,6 +200,10 @@ func writeTargetError(response http.ResponseWriter, err error) {
 		writeFailure(response, http.StatusServiceUnavailable, "TARGET_CONFIG_MISSING", "目标环境尚未配置完整", false)
 		return
 	}
+	if target.IsKind(err, target.ErrorLoginRejected) {
+		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", targetErrorMessage(err, "目标平台拒绝登录，请核对账号"), false)
+		return
+	}
 	if errors.As(err, &rejection) {
 		code := strings.TrimSpace(rejection.Code)
 		if code == "" {
@@ -209,8 +213,6 @@ func writeTargetError(response http.ResponseWriter, err error) {
 		return
 	}
 	switch {
-	case target.IsKind(err, target.ErrorLoginRejected):
-		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", targetErrorMessage(err, "目标平台拒绝登录，请核对账号"), false)
 	case target.IsKind(err, target.ErrorPermissionDenied):
 		writeFailure(response, http.StatusForbidden, "TARGET_PERMISSION_DENIED", targetErrorMessage(err, "目标平台拒绝访问当前资源"), false)
 	case target.IsKind(err, target.ErrorSessionExpired):

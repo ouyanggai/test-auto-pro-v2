@@ -70,14 +70,14 @@ func writeFlowGraphError(response http.ResponseWriter, err error) {
 		writeFailure(response, http.StatusBadGateway, "TARGET_FLOW_STRUCTURE_INVALID", "目标流程结构异常", false)
 	case errors.As(err, &configErr):
 		writeFailure(response, http.StatusServiceUnavailable, "TARGET_CONFIG_MISSING", "目标环境尚未配置完整", false)
+	case target.IsKind(err, target.ErrorLoginRejected):
+		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", "账号验证失败，请核对账号", false)
 	case errors.As(err, &rejection):
 		code := strings.TrimSpace(rejection.Code)
 		if code == "" {
 			code = "TARGET_BUSINESS_REJECTED"
 		}
 		writeFailure(response, http.StatusBadGateway, code, targetErrorMessage(err, "目标平台拒绝了本次业务操作"), false)
-	case target.IsKind(err, target.ErrorLoginRejected):
-		writeFailure(response, http.StatusUnauthorized, "TARGET_LOGIN_REJECTED", "账号验证失败，请核对账号", false)
 	case target.IsKind(err, target.ErrorPermissionDenied):
 		writeFailure(response, http.StatusForbidden, "TARGET_PERMISSION_DENIED", "目标平台拒绝访问当前资源", false)
 	case target.IsKind(err, target.ErrorSessionExpired):
