@@ -349,6 +349,11 @@ func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionSt
 	}
 }
 
+// stepTargetNodeIDOf 返回编译步骤节点在目标平台的真实标识；缺失时返回空串由调用方兜底。
+func stepTargetNodeIDOf(runCtx RunContext, step model.CompiledActionStep) string {
+	return strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+}
+
 // targetSkippedStepReason 判断本步节点是否已被目标自动跳过。
 // reason 非空表示可证明已被跳过（实例待办落到路径上严格靠后的节点），pendingName 是待办所在节点名；
 // diag 是给人看的判定依据（实例当前节点与待办节点分别落在哪），无论是否跳过都写进 step.log。
@@ -420,6 +425,9 @@ type ApprovedStep struct {
 	// ReportProgress 把阶段进度实时上报给控制现场（运行画布指示器的数据源），可为 nil。
 	// phase 取七阶段名；note 是给用户看的中文补充（如重试退避说明）。
 	ReportProgress func(phase, note string)
+	// Reverify 表示本次放行只重新核验、绝不重发写请求（2026-09-11 用户裁决：
+	// 核验时工具自己会话失效读不到事实，就停在原地，恢复后重新核验，而不是判终局）。
+	Reverify bool
 }
 
 // reportPhase 把阶段进度上报给控制现场（指示器实时推进的数据源）；未接收集方时是空操作。
@@ -462,6 +470,82 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		attemptNo = 1
 	}
 	outcome := StepOutcome{Verdict: string(verdict.OutcomeUncertain)}
+
+	if approved.Reverify {
+		// 重新核验（2026-09-11 用户裁决）：上次核验读取失败，这次只重读结果、绝不重发写请求。
+		// 用写出时的当前处理人会话重读（其已办/待办才是本步写是否生效的直接事实）；
+		// 会话已失效时 readFactsWithRetry 会按该账号自动重登。
+		if err := e.runState.MarkVerifying(ctx, runCtx.PathRun.ID); err != nil {
+			return outcome, 0, err
+		}
+		reportPhase(approved, "verify", "正在重新读取执行结果")
+		actorAccount := strings.TrimSpace(preview.ActorAccount)
+		if actorAccount == "" {
+			actorAccount = runCtx.PlanAccount
+		}
+		session, sessionErr := e.sessions.Current(ctx, actorAccount)
+		if sessionErr != nil {
+			session, sessionErr = e.sessions.Refresh(ctx, actorAccount)
+		}
+		if sessionErr != nil {
+			// 登录失败也停住不判终局：用户稍后重新放行再试。
+			outcome.RereadFailed = true
+			return outcome, 0, nil
+		}
+		after, _, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
+		after.StepNodeKey = stepTargetNodeIDOf(runCtx, step)
+		if readErr != nil || after.ReadError != "" {
+			outcome.RereadFailed = true
+			return outcome, 0, nil
+		}
+		before := approved.Preview.Facts
+		before.StepNodeKey = after.StepNodeKey
+		reread := ClassifyReread(string(step.Action), after.StepNodeKey, before, after)
+		observation := buildObservation(approved.Preview.Endpoint, nil, approved.Preview.writeResponse, reread)
+		observation.Action = string(step.Action)
+		observation.ActionFactVerified = ActionFactVerified(step.Action, reread)
+		verdictResult := verdict.Evaluate(observation)
+		userMessage := userResultMessage(step.Action, verdictResult, approved.Preview.writeResponse, approved.Preview.writeErr, after)
+		lineNo := log.Phase("settle", step.Sequence, attemptNo, "重新核验："+userMessage)
+		record := model.RunStep{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
+			Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
+			Status: statusOfVerdict(verdictResult.Outcome), StartedAt: startedAt, FinishedAt: e.now(),
+		}
+		attempt := model.RunStepAttempt{
+			PathRunID: runCtx.PathRun.ID, AttemptNo: attemptNo, Verdict: string(verdictResult.Outcome),
+			SideEffect: string(verdictResult.SideEffect), Initial: string(verdictResult.Initial),
+			Reread: string(reread), Reason: userMessage, Basis: verdictResult.Basis,
+			TraceID: approved.Preview.writeTraceID, CurlTraceID: approved.Preview.writeTraceID,
+			DurationMs: e.now().Sub(startedAt).Milliseconds(),
+		}
+		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
+			return outcome, lineNo, err
+		}
+		switch verdictResult.Outcome {
+		case verdict.OutcomeSucceeded:
+			outcome.Verdict = string(verdict.OutcomeSucceeded)
+			outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+			if !outcome.NoMoreSteps {
+				if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+					return outcome, lineNo, err
+				}
+			}
+		case verdict.OutcomeFailed:
+			class := model.FailureClassTargetRejected
+			if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
+				"重新核验判定失败："+userMessage); err != nil {
+				return outcome, lineNo, err
+			}
+		default:
+			class := model.FailureClassWriteUncertain
+			if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusAwaitingReconciliation, runResultOf(model.RunResultAwaitingReconcile), &class,
+				"重新核验仍未确认执行结果："+userMessage); err != nil {
+				return outcome, lineNo, err
+			}
+		}
+		return outcome, lineNo, nil
+	}
 
 	if preview.Navigation {
 		// 导航步骤：只读校验后直接落账成功（无写请求、无三值判定对象）。
@@ -731,14 +815,41 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	stepTargetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
 	before := preview.Facts
 	before.StepNodeKey = stepTargetNodeID
-	after, session, _ := e.readFactsWithRetry(ctx, runCtx, session, step)
+	after, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
 	after.StepNodeKey = stepTargetNodeID
+	if readErr != nil || strings.TrimSpace(after.ReadError) != "" {
+		// 核验重读失败（工具侧会话失效或目标抖动）：写请求已发出且目标声明成功，但结果未确认。
+		// 2026-09-11 用户裁决：工具自己的读取错误不得把运行判成终局——停在本步、保留现场，
+		// 不落结论尝试行；用户重新放行只重读核验结果（Reverify），绝不重复发写请求。
+		detail := firstNonEmpty(after.ReadError, userFacingError(readErr, target.WriteResponse{}))
+		message := "核验读取失败：" + detail + "；已停在本步，重新放行只重新读取结果，不会重复发写请求"
+		log.Phase("verify", step.Sequence, attemptNo, message)
+		reportPhase(approved, "verify", message)
+		outcome.RereadFailed = true
+		if backErr := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); backErr != nil {
+			return outcome, 0, backErr
+		}
+		return outcome, 0, nil
+	}
 	// 核验事实摘要落 step.log：会签等多人场景下「节点待办未清空」是常态，
 	// 不把判定依据（当前处理人待办/已办核对结果）写下来，事后无法解释结论怎么来的。
 	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("核验事实：实例可读=%v 状态=%s 当前处理人待办=%v（发现能力=%v） 当前处理人已办=%v/%v 实例当前节点=%v",
 		after.Found, after.Status, after.CurrentTaskFound, after.CurrentTaskRead,
 		after.CompletedTaskRead, after.CompletedTaskFound, after.CurrentNodes))
 	reread := ClassifyReread(string(step.Action), stepTargetNodeID, before, after)
+	if reread == verdict.RereadUnreadable && preview.writeSent && preview.writeErr == nil {
+		// 核验读取失败（工具会话失效/目标抖动导致事实不可读）：写请求已发出且目标声明成功，
+		// 但工具没能确认结果。2026-09-11 用户裁决：工具自己的读取错误不得把运行判成终局——
+		// 停在本步、保留现场、不落结论尝试行；重新放行只重读核验结果（Reverify），不重发写请求。
+		message := "核验读取失败，已停在本步；重新放行只重新读取结果，不会重复发写请求"
+		log.Phase("verify", step.Sequence, attemptNo, message)
+		reportPhase(approved, "verify", message)
+		outcome.RereadFailed = true
+		if backErr := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); backErr != nil {
+			return outcome, 0, backErr
+		}
+		return outcome, 0, nil
+	}
 	if step.Action == model.ActionTransfer {
 		reread = e.classifyTransferReread(ctx, runCtx, step, session, preview, after)
 	} else if step.Action == model.ActionRetrieve {

@@ -111,6 +111,9 @@ type activeStep struct {
 	recoveryLog *RecoveryLog
 	// progress 是当前步的实时阶段进度（执行器上报，指示器轮询的数据源）。
 	progress stepPhaseProgress
+	// reverifyPending 表示本步写请求已成功发出、但核验读取失败（工具侧会话/网络问题），
+	// 停在本步等待用户重新放行以只重读核验结果（2026-09-11 用户裁决：核验失败不判终局）。
+	reverifyPending bool
 }
 
 // stepPhaseProgress 是一次尝试内执行器上报的阶段进度快照。
@@ -980,14 +983,34 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		session.progress = stepPhaseProgress{phase: phase, note: note, since: s.now()}
 		s.mu.Unlock()
 	}
+	reverify := session.reverifyPending
+	attempt := attemptNo
+	if reverify {
+		// 重新核验：只重读结果，绝不重发写请求；尝试序号顺延，事实如实追加。
+		attempt = attemptNo + 1
+	}
 	outcome, _, err := s.steps.RunApprovedStep(ctx, step.ApprovedStep{
 		RunCtx: session.runCtx, Preview: session.preview, NextIndex: session.nextIndex,
-		Attempt: attemptNo, IsReplay: isReplay, ReportProgress: reporter,
+		Attempt: attempt, IsReplay: isReplay, ReportProgress: reporter, Reverify: reverify,
 	})
 	if err != nil {
 		return nil, err
 	}
 	result := &ApproveResult{Outcome: outcome}
+	if outcome.RereadFailed {
+		// 核验读取仍失败：停在本步、保留现场等待再次放行（重新放行只重读结果），
+		// 不判终局、不清现场、不落结论尝试行（2026-09-11 用户裁决）。
+		s.mu.Lock()
+		session.reverifyPending = true
+		session.stopReason = "核验读取失败，已停在本步；重新放行只重新读取结果，不会重复发写请求"
+		s.mu.Unlock()
+		return result, nil
+	}
+	if reverify {
+		s.mu.Lock()
+		session.reverifyPending = false
+		s.mu.Unlock()
+	}
 	if outcome.Verdict == string(verdict.OutcomeUncertain) {
 		// 写结果无法确认：2026-09-06 产品裁决移除用户侧对账后这就是终局。
 		// 现场立即作废，绝不自动继续、重放或重复发送真实写请求；

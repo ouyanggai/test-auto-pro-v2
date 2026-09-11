@@ -307,6 +307,9 @@ const StepVerdictTargetSkipped = "target_skipped"
 // StepOutcome 是一步走完后的结果，供控制层决定路径去向。
 type StepOutcome struct {
 	Verdict string // confirmed_success / confirmed_failure / uncertain
+	// RereadFailed 表示写请求已成功发出，但核验重读因工具侧会话/网络问题失败。
+	// 此时不判终局：路径保持停在本步，用户重新放行只重读核验结果（Reverify），不重发写请求。
+	RereadFailed bool
 	// NoMoreSteps 表示编译场景已走完，控制层应执行收尾重读。
 	NoMoreSteps bool
 	// MainInstanceRef 是本步之后的主实例引用（发起成功时写入）。
