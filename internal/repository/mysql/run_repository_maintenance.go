@@ -48,7 +48,7 @@ func (r *RunRepository) ListAllRunsFiltered(ctx context.Context, status string, 
 		limit = 100
 	}
 	query := `
-		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, status, result, started_at, finished_at, created_at, updated_at
+		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, path_dispatch, status, result, started_at, finished_at, created_at, updated_at
 		FROM runs
 		WHERE (? = '' OR status = ?) AND (? = 0 OR id < ?)
 		ORDER BY id DESC LIMIT ?
