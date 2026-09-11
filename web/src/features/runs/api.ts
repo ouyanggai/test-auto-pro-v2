@@ -44,8 +44,24 @@ export interface RunStepAttempt {
   phaseDurations?: Record<string, number>
   phaseDurationsNote?: string
   curlBlock?: string
+  // requests/requestSummary 是 F-030/T04 的真实目标请求明细与汇总（来自 network.log 传输层计时）。
+  requests?: RunRequestItem[]
+  requestSummary?: { totalMs: number, writeMs: number, count: number, writeCount: number }
   // isReplay 是只读历史事实：用户侧重放已于 2026-09-06 移除，新运行的尝试恒为 false。
   isReplay?: boolean
+}
+
+// RunRequestItem 是一条真实目标接口请求的安全摘要。
+export interface RunRequestItem {
+  phase?: string
+  requestClass: 'read' | 'write'
+  endpoint: string
+  durationMs: number
+  statusCode: number
+  result: string
+  retryAttempt: number
+  traceId?: string
+  at?: string
 }
 
 export interface RunStep {

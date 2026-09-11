@@ -181,6 +181,10 @@ type RunStepAttemptDTO struct {
 	LogLine uint64 `json:"logLine"`
 	// CurlBlock 是该次尝试在 curl.log 里的完整可重放命令与响应正文块，与日志文件同源。
 	CurlBlock string `json:"curlBlock,omitempty"`
+	// Requests 是本次尝试的真实目标请求明细（F-030/T04，来自 network.log 传输层计时）。
+	Requests []RunRequestDTO `json:"requests,omitempty"`
+	// RequestSummary 是请求汇总指标：总耗时、写耗时、次数（写单独统计）。
+	RequestSummary *runRequestSummaryDTO `json:"requestSummary,omitempty"`
 	// PhaseDurations 是七个阶段各自的耗时（毫秒），来自 step.log 的阶段时间轴。
 	PhaseDurations     map[string]int64 `json:"phaseDurations,omitempty"`
 	PhaseDurationsNote string           `json:"phaseDurationsNote,omitempty"`
@@ -1027,10 +1031,12 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		detail.FinalTarget = json.RawMessage(pathRun.FinalTargetSummary)
 	}
 	phaseTimings := s.readPhaseTimings(pathRun.ID, attempts)
+	// F-030/T04：真实目标请求明细与汇总，一次读取按尝试归组，详情接口不逐请求扫描。
+	requestsByKey, summaryByKey := s.readAttemptRequests(pathRun.ID, attempts)
 	// 步骤与预览携带的是配置令牌键（编译场景的 nodeKey），画布与侧栏按图节点 ID 取值。
 	// 这里统一翻译出图节点 ID，键空间对齐后九个运行态、当前步标记与侧栏才真实可用（评审 P1）。
 	tokenToGraphID := tokenToGraphNodeID(graph)
-	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, s.router, tokenToGraphID)
+	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, requestsByKey, summaryByKey, s.router, tokenToGraphID)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
 		detail.CurrentPreview.NodeID = tokenToGraphID[preview.NodeKey]
@@ -1189,7 +1195,9 @@ func pathNameOf(ctx context.Context, paths repository.ExecutionPathRepository, p
 }
 
 // buildStepDTOs 把步骤与尝试事实组装为公开 DTO，并附上 step.log 解析出的阶段耗时。
-func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64, router *logging.Router, tokenToGraphID map[string]string) []RunStepDTO {
+func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64,
+	requestsByKey map[string][]RunRequestDTO, summaryByKey map[string]runRequestSummaryDTO,
+	router *logging.Router, tokenToGraphID map[string]string) []RunStepDTO {
 	attemptsByStep := map[uint64][]model.RunStepAttempt{}
 	for _, attempt := range attempts {
 		attemptsByStep[attempt.StepID] = append(attemptsByStep[attempt.StepID], attempt)
@@ -1227,6 +1235,15 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 				attemptDTO.PhaseDurations = timings
 			} else {
 				attemptDTO.PhaseDurationsNote = "执行过程记录缺失，暂时无法显示各阶段耗时"
+			}
+			// 真实目标请求明细与汇总：历史运行没有 network.log 时保持空，前端按缺失降级。
+			requestKey := stepPhaseKey(stepRecord.StepNo, attempt.AttemptNo)
+			if list, ok := requestsByKey[requestKey]; ok {
+				attemptDTO.Requests = list
+			}
+			if summary, ok := summaryByKey[requestKey]; ok && summary.Count > 0 {
+				summaryCopy := summary
+				attemptDTO.RequestSummary = &summaryCopy
 			}
 			attemptDTO.CurlBlock = curlBlockFor(router, attempt.TraceID, attempt.LogPath)
 			dto.Attempts = append(dto.Attempts, attemptDTO)

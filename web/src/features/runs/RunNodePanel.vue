@@ -3,7 +3,7 @@ import { NButton, NEmpty, NModal, NTag, useMessage, useThemeVars } from 'naive-u
 import { computed, ref, watch } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
-import type { PathRunDetail, RunNodePlanAction, RunPreview, RunStep, RunStepAttempt } from './api'
+import type { PathRunDetail, RunNodePlanAction, RunPreview, RunRequestItem, RunStep, RunStepAttempt } from './api'
 
 // RunNodePanel 是点击画布节点后才出现的检视面板：三个页签只给简要事实，
 // 完整内容（门禁逐项、阶段耗时、日志位置与可重放 curl）一律进详情弹窗，
@@ -181,9 +181,40 @@ async function copyCurl(step: RunStep): Promise<void> {
 
 // phaseOrder 用于按七阶段顺序展示耗时（阶段流水只在详情里给排查者看）。
 const phaseOrder: Array<[string, string]> = [
-  ['plan', '准备'], ['gate', '检查'], ['control', '等待放行'], ['prepare', '准备执行'],
-  ['submit', '发送请求'], ['verify', '确认结果'], ['settle', '记录结果'],
+  ['plan', '确认要做什么'], ['gate', '检查能不能做'], ['control', '等待放行'], ['prepare', '准备操作人'],
+  ['submit', '向目标提交'], ['verify', '回读确认结果'], ['settle', '保存结果'],
 ]
+
+// phaseFlow 是本地执行过程的展示序列：只列实际发生过的阶段，用 F-030 的用户口径命名。
+const phaseFlow = computed<Array<[string, string]>>(() => {
+  const durations = stepDialog.value?.attempts[0]?.phaseDurations
+  if (!durations) return phaseOrder
+  return phaseOrder.filter(([phase]) => durations[phase] !== undefined)
+})
+
+// attemptRequests 返回某一步的请求明细；多尝试时合并展示（按发生顺序已在后端排好）。
+function attemptRequests(step: RunStep): RunRequestItem[] {
+  return step.attempts.flatMap(attempt => attempt.requests ?? [])
+}
+
+// stepRequestTotalText 目标请求耗时：没有可靠请求事实时明确说“暂无”，不显示 0ms。
+const stepRequestTotalText = computed(() => {
+  const summary = stepDialog.value?.attempts.find(a => a.requestSummary)?.requestSummary
+  return summary ? formatElapsed(summary.totalMs) : '暂无记录'
+})
+
+// stepRequestCountText 请求次数：读+写合计。
+const stepRequestCountText = computed(() => {
+  const summary = stepDialog.value?.attempts.find(a => a.requestSummary)?.requestSummary
+  return summary ? `${summary.count} 次` : '—'
+})
+
+// stepWriteText 写请求：次数 + 单独计时的耗时，与读请求分开。
+const stepWriteText = computed(() => {
+  const summary = stepDialog.value?.attempts.find(a => a.requestSummary)?.requestSummary
+  if (!summary || summary.writeCount === 0) return '无'
+  return `${summary.writeCount} 次 · ${formatElapsed(summary.writeMs)}`
+})
 
 // GateSnapshotShape 是门禁结论快照的结构：逐项中文条件与满足情况。
 interface GateSnapshotShape {
@@ -498,24 +529,86 @@ const dialogStyle = computed(() => ({
       preset="card"
       class="run-panel__dialog"
       :style="dialogStyle"
-      :title="stepDialog ? `第 ${stepDialog.stepNo} 步详情 · ${stepDialog.actionName}` : ''"
+      :title="stepDialog ? `第 ${stepDialog.stepNo} 步 · ${stepDialog.actionName}` : ''"
       @update:show="stepDialog = null"
     >
       <template v-if="stepDialog">
-        <div class="run-panel__dialog-head">
-          <n-tag size="small" :type="statusTagType(stepDialog.statusName)">{{ stepDialog.statusName }}</n-tag>
-          <span class="run-panel__dialog-meta">第 {{ stepDialog.stepNo }} 步 · {{ stepDialog.actionName }}</span>
+        <!-- F-030/T05：摘要先看——结论、节点、处理人一行说清，不把内部键当主标题。 -->
+        <div class="run-panel__summary">
+          <div class="run-panel__summary-main">
+            <n-tag size="small" :type="statusTagType(stepDialog.statusName)">{{ stepDialog.statusName }}</n-tag>
+            <span class="run-panel__summary-title">{{ stepDialog.actionName }}</span>
+            <span class="run-panel__summary-sub">{{ nodeName || stepDialog.nodeKey }} · 处理人：{{ stepDialog.actorName || '—' }}</span>
+          </div>
+          <span class="run-panel__summary-time">{{ formatTime(stepDialog.startedAt) }} → {{ formatTime(stepDialog.finishedAt) }}</span>
         </div>
 
+        <!-- 四个可比较指标：步骤总耗时与目标请求耗时严格分开，绝不把本地等待算进接口耗时。 -->
+        <div class="run-panel__metrics">
+          <div class="run-panel__metric">
+            <span class="run-panel__metric-value">{{ formatElapsed(stepDialog.durationMs) }}</span>
+            <span class="run-panel__metric-label">步骤总耗时</span>
+          </div>
+          <div class="run-panel__metric">
+            <span class="run-panel__metric-value">{{ stepRequestTotalText }}</span>
+            <span class="run-panel__metric-label">目标请求耗时</span>
+          </div>
+          <div class="run-panel__metric">
+            <span class="run-panel__metric-value">{{ stepRequestCountText }}</span>
+            <span class="run-panel__metric-label">请求次数</span>
+          </div>
+          <div class="run-panel__metric">
+            <span class="run-panel__metric-value">{{ stepWriteText }}</span>
+            <span class="run-panel__metric-label">其中写请求</span>
+          </div>
+        </div>
+
+        <!-- 本地执行过程：阶段按顺序排列，用用户口径命名；没有记录时明确降级。 -->
         <section class="run-panel__section">
-          <p class="run-panel__section-title">步骤事实</p>
-          <dl class="run-panel__facts run-panel__facts--card">
-            <div><dt>结论</dt><dd :class="stepDialog.statusName.includes('失败') ? 'run-panel__bad' : 'run-panel__ok'">{{ stepDialog.statusName }}</dd></div>
-            <div><dt>当前处理人</dt><dd>{{ stepDialog.actorName || '—' }}</dd></div>
-            <div><dt>开始</dt><dd>{{ formatTime(stepDialog.startedAt) }}</dd></div>
-            <div><dt>结束</dt><dd>{{ formatTime(stepDialog.finishedAt) }}</dd></div>
-            <div><dt>总耗时</dt><dd>{{ formatElapsed(stepDialog.durationMs) }}</dd></div>
-          </dl>
+          <p class="run-panel__section-title">本地执行过程</p>
+          <div v-if="stepDialog.attempts[0]?.phaseDurations" class="run-panel__phase-flow">
+            <div
+              v-for="[phase, label] in phaseFlow"
+              :key="phase"
+              class="run-panel__phase-step"
+              :class="{ 'run-panel__phase-step--empty': !(stepDialog.attempts[0].phaseDurations?.[phase] > 0) }"
+            >
+              <span class="run-panel__phase-name">{{ label }}</span>
+              <span class="run-panel__phase-ms">{{ formatElapsed(stepDialog.attempts[0].phaseDurations?.[phase] ?? -1) }}</span>
+            </div>
+          </div>
+          <p v-else class="run-panel__muted">{{ stepDialog.attempts[0]?.phaseDurationsNote || '暂无本地执行过程记录' }}</p>
+        </section>
+
+        <!-- 目标请求明细：真实接口请求按发生顺序排列，读写用文字标识不只靠颜色。 -->
+        <section class="run-panel__section">
+          <p class="run-panel__section-title">目标请求明细</p>
+          <table v-if="attemptRequests(stepDialog).length > 0" class="run-panel__req-table">
+            <thead>
+              <tr><th>类型</th><th>接口</th><th class="run-panel__req-num">耗时</th><th>结果</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(req, index) in attemptRequests(stepDialog)" :key="index">
+                <td>
+                  <span class="run-panel__req-kind" :class="req.requestClass === 'write' ? 'run-panel__req-kind--write' : 'run-panel__req-kind--read'">
+                    {{ req.requestClass === 'write' ? '写入' : '读取' }}
+                  </span>
+                </td>
+                <td class="run-panel__req-endpoint">
+                  <span class="run-panel__req-path">{{ req.endpoint }}</span>
+                  <span v-if="req.retryAttempt > 1" class="run-panel__req-retry">第 {{ req.retryAttempt }} 次重试</span>
+                  <span v-if="req.statusCode && req.statusCode >= 400" class="run-panel__req-retry">HTTP {{ req.statusCode }}</span>
+                </td>
+                <td class="run-panel__req-num run-panel__mono">{{ req.durationMs }} ms</td>
+                <td>
+                  <span :class="req.result === 'success' ? 'run-panel__ok' : 'run-panel__bad'">
+                    {{ req.result === 'success' ? '成功' : (req.statusCode ? `失败（HTTP ${req.statusCode}）` : '传输失败') }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="run-panel__muted">暂无真实请求耗时记录（历史运行或读取类步骤未产生网络日志）</p>
         </section>
 
         <section v-if="gateSnapshotLines(stepDialog).length > 0" class="run-panel__section">
@@ -537,30 +630,20 @@ const dialogStyle = computed(() => ({
               <span v-if="attempt.isReplay" class="run-panel__row-sub">（这次是重放）</span>
             </div>
             <p class="run-panel__reason">{{ attempt.reason }}</p>
-            <p v-if="attempt.traceId" class="run-panel__attempt-meta">
-              <span>耗时 {{ formatElapsed(attempt.durationMs) }}</span>
-              <span class="run-panel__mono">{{ attempt.traceId }}</span>
-            </p>
-            <p v-else class="run-panel__attempt-meta">耗时 {{ formatElapsed(attempt.durationMs) }}，写请求发出前已停止，无 trace_id</p>
-            <div v-if="attempt.phaseDurations" class="run-panel__phases">
-              <span v-for="[phase, label] in phaseOrder" :key="phase" class="run-panel__phase">
-                {{ label }} {{ formatElapsed(attempt.phaseDurations[phase] ?? -1) }}
-              </span>
-            </div>
-            <p v-else class="run-panel__row-sub">{{ attempt.phaseDurationsNote || '暂无阶段耗时' }}</p>
             <p class="run-panel__row-sub run-panel__log-ref">
               日志：{{ attempt.logPath }} 第 {{ attempt.logLine }} 行
               <n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button>
             </p>
-            <div v-if="attempt.curlBlock" class="run-panel__curl-actions">
-              <n-button text size="tiny" type="info" @click="toggleCurl(stepDialog.stepNo)">
-                {{ expandedCurl === String(stepDialog.stepNo) ? '收起请求与响应正文' : '展开请求与响应正文' }}
-              </n-button>
-              <n-button text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
-            </div>
-            <p v-else class="run-panel__no-curl">这次尝试没有发出写请求（例如没有查到当前处理人的待处理待办）；失败请求的原始 curl 与目标响应见同目录 curl.log（日志目录：{{ attempt.logPath.replace(/step\.log.*$/, '') }}curl.log）。</p>
-            <pre v-if="expandedCurl === String(stepDialog.stepNo) && attempt.curlBlock" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
           </article>
+          <!-- 原始请求/响应折叠在详情底部：正文默认不展开，避免超大正文卡住界面。 -->
+          <div v-if="stepDialog.attempts[0]?.curlBlock" class="run-panel__curl-actions">
+            <n-button text size="tiny" type="info" @click="toggleCurl(stepDialog.stepNo)">
+              {{ expandedCurl === String(stepDialog.stepNo) ? '收起原始请求与响应' : '展开原始请求与响应（含 curl）' }}
+            </n-button>
+            <n-button text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
+          </div>
+          <p v-else class="run-panel__no-curl">这次尝试没有发出写请求；完整网络日志见运行目录的 curl.log。</p>
+          <pre v-if="expandedCurl === String(stepDialog.stepNo) && stepDialog.attempts[0]?.curlBlock" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
         </section>
       </template>
     </n-modal>
@@ -772,8 +855,6 @@ const dialogStyle = computed(() => ({
 .run-panel__attempt-head { font-weight: 600; }
 .run-panel__reason { line-height: 1.6; }
 
-.run-panel__phases { display: flex; flex-wrap: wrap; gap: 6px; }
-
 .run-panel__phase {
   padding: 1px 6px;
   background: color-mix(in srgb, var(--info-color, #2080f0) 10%, transparent);
@@ -914,4 +995,188 @@ const dialogStyle = computed(() => ({
   line-height: 1.6;
 }
 
+</style>
+<style scoped>
+/* ===== F-030/T05 节点动作详情排版：摘要区、指标带、两 separates 结构、折叠原文。 ===== */
+
+/* 摘要区：结论与主体信息一行，时间靠右；浅色底与卡片描边拉开层次。 */
+.run-panel__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--run-border-color, #ccc) 8%, transparent);
+}
+
+.run-panel__summary-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.run-panel__summary-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.run-panel__summary-sub {
+  color: var(--run-secondary-text-color, #909090);
+}
+
+.run-panel__summary-time {
+  flex: none;
+  color: var(--run-secondary-text-color, #909090);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 指标带：四等分网格，数值大字、标签小字，视觉重心在数字上。 */
+.run-panel__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.run-panel__metric {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border-radius: 8px;
+}
+
+.run-panel__metric-value {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-panel__metric-label {
+  color: var(--run-secondary-text-color, #909090);
+  font-size: 12px;
+}
+
+/* 本地执行过程：横向阶段流，有耗时的阶段正常展示，无记录的阶段弱化。 */
+.run-panel__phase-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.run-panel__phase-step {
+  display: grid;
+  gap: 1px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 52%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--info-color, #2080f0) 6%, transparent);
+}
+
+.run-panel__phase-step--empty {
+  opacity: 0.55;
+}
+
+.run-panel__phase-name {
+  font-size: 12px;
+  color: var(--run-secondary-text-color, #909090);
+}
+
+.run-panel__phase-ms {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-panel__muted {
+  margin: 0;
+  color: var(--run-secondary-text-color, #909090);
+  line-height: 1.6;
+}
+
+/* 目标请求明细表：接口名列可换行不撐破；数字右对齐等宽字体。 */
+.run-panel__req-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.run-panel__req-table th,
+.run-panel__req-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid color-mix(in srgb, var(--run-border-color, #ccc) 40%, transparent);
+}
+
+.run-panel__req-table th {
+  color: var(--run-secondary-text-color, #909090);
+  font-weight: 500;
+}
+
+.run-panel__req-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.run-panel__req-num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.run-panel__req-kind {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 12px;
+}
+
+.run-panel__req-kind--write {
+  color: var(--warning-color, #f0a020);
+  background: color-mix(in srgb, var(--warning-color, #f0a020) 14%, transparent);
+  font-weight: 600;
+}
+
+.run-panel__req-kind--read {
+  color: var(--info-color, #2080f0);
+  background: color-mix(in srgb, var(--info-color, #2080f0) 10%, transparent);
+}
+
+.run-panel__req-endpoint {
+  min-width: 0;
+}
+
+.run-panel__req-path {
+  display: block;
+  word-break: break-all;
+  line-height: 1.4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.run-panel__req-retry {
+  display: inline-block;
+  margin-top: 2px;
+  color: var(--warning-color, #f0a020);
+  font-size: 12px;
+}
+
+/* 窄窗口退化：指标两列、摘要换行，摘要先看、明细可滚动的布局不变。 */
+@media (max-width: 720px) {
+  .run-panel__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .run-panel__summary {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}
 </style>
