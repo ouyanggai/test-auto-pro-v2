@@ -488,14 +488,16 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// 重新核验（2026-09-11 用户裁决）：上次核验读取失败，这次只重读结果、绝不重发写请求。
 		// 用写出时的当前处理人会话重读（其已办/待办才是本步写是否生效的直接事实）；
 		// 会话已失效时 readFactsWithRetry 会按该账号自动重登。
-		var releaseUsage func()
+		var releasePlanUsage func()
+		var releaseActorUsage func()
 		if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
+			releasePlanUsage = locker.LockAccountUsage(runCtx.PlanAccount)
+			defer releasePlanUsage()
 			account := strings.TrimSpace(preview.ActorAccount)
-			if account == "" {
-				account = runCtx.PlanAccount
+			if account != "" && !strings.EqualFold(account, strings.TrimSpace(runCtx.PlanAccount)) {
+				releaseActorUsage = locker.LockAccountUsage(account)
+				defer releaseActorUsage()
 			}
-			releaseUsage = locker.LockAccountUsage(account)
-			defer releaseUsage()
 		}
 		if err := e.runState.MarkVerifying(ctx, runCtx.PathRun.ID); err != nil {
 			return outcome, 0, err
@@ -662,14 +664,18 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	reportPhase(approved, "prepare", "正在就绪当前处理人的登录会话")
 	// 从取得执行会话开始独占计划账号，页面读取和其他执行不能并发刷新同一账号 SID。
-	var releaseUsage func()
+	var releasePlanUsage func()
+	var releaseActorUsage func()
 	usageAccount := ""
 	if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
-		releaseUsage = locker.LockAccountUsage(runCtx.PlanAccount)
+		releasePlanUsage = locker.LockAccountUsage(runCtx.PlanAccount)
 		usageAccount = strings.TrimSpace(runCtx.PlanAccount)
 		defer func() {
-			if releaseUsage != nil {
-				releaseUsage()
+			if releaseActorUsage != nil {
+				releaseActorUsage()
+			}
+			if releasePlanUsage != nil {
+				releasePlanUsage()
 			}
 		}()
 	}
@@ -723,10 +729,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 				return outcome, lineNo, nil
 			} else if account != "" && account != runCtx.PlanAccount {
 				if locker, canLock := e.sessions.(interface{ LockAccountUsage(string) func() }); canLock && !strings.EqualFold(usageAccount, account) {
-					if releaseUsage != nil {
-						releaseUsage()
-					}
-					releaseUsage = locker.LockAccountUsage(account)
+					releaseActorUsage = locker.LockAccountUsage(account)
 					usageAccount = strings.TrimSpace(account)
 				}
 				actorSession, actorErr := e.sessions.Current(ctx, account)
@@ -753,17 +756,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("当前处理人 %s（登录账号 %s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
 	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人 %s 会话就绪", preview.ActorName))
-	// 当前处理人账号可能不同于计划账号：把锁转移到真实处理人并持有到核验结束。
-	if !strings.EqualFold(strings.TrimSpace(session.Summary.Account), usageAccount) {
-		if releaseUsage != nil {
-			releaseUsage()
-			releaseUsage = nil
-		}
-		if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok {
-			releaseUsage = locker.LockAccountUsage(session.Summary.Account)
-			usageAccount = strings.TrimSpace(session.Summary.Account)
-		}
-	}
+	// 当前处理人账号可能不同于计划账号：计划账号锁与处理人锁同时持有到核验结束，
+	// 保证实例“已发”视角读取和真实待办写入不会互相覆盖 SID。
 
 	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（当前处理人与待办的新鲜复验）。
 	// 上报发生在发出之前：本次调用同步阻塞到目标响应返回，指示器在窗口内如实表达 submit 进行中。
@@ -1764,14 +1758,27 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 			continue
 		}
 		tried = append(tried, match.Account)
-		actorSession, err := e.sessions.Current(ctx, match.Account)
-		if err != nil {
-			actorSession, err = e.sessions.Refresh(ctx, match.Account)
-		}
-		if err != nil {
-			continue
-		}
-		snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
+		var actorSession target.Session
+		var snapshot target.TaskSnapshot
+		var err error
+		func() {
+			// 候选账号的登录、待办读取也必须串行；计划账号锁由调用方持有，
+			// 这里按“计划 -> 候选”顺序获取，避免多账号执行时锁顺序反转。
+			var release func()
+			if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok &&
+				!strings.EqualFold(strings.TrimSpace(match.Account), strings.TrimSpace(runCtx.PlanAccount)) {
+				release = locker.LockAccountUsage(match.Account)
+				defer release()
+			}
+			actorSession, err = e.sessions.Current(ctx, match.Account)
+			if err != nil {
+				actorSession, err = e.sessions.Refresh(ctx, match.Account)
+			}
+			if err != nil {
+				return
+			}
+			snapshot, err = e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
+		}()
 		if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
 			continue
 		}
@@ -1816,15 +1823,31 @@ func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunCont
 			lastErr = resolveErr
 			continue
 		}
-		actorSession, sessionErr := e.sessions.Current(ctx, account)
-		if sessionErr != nil {
-			actorSession, sessionErr = e.sessions.Refresh(ctx, account)
-		}
+		var actorSession target.Session
+		var snapshot target.TaskSnapshot
+		var sessionErr, readErr error
+		func() {
+			// 计划账号锁由门禁调用方持有，候选账号按固定顺序单独占用，
+			// 防止同一候选同时被页面读取和任务发现刷新。
+			var release func()
+			if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok &&
+				!strings.EqualFold(strings.TrimSpace(account), strings.TrimSpace(runCtx.PlanAccount)) {
+				release = locker.LockAccountUsage(account)
+				defer release()
+			}
+			actorSession, sessionErr = e.sessions.Current(ctx, account)
+			if sessionErr != nil {
+				actorSession, sessionErr = e.sessions.Refresh(ctx, account)
+			}
+			if sessionErr != nil {
+				return
+			}
+			snapshot, readErr = e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
+		}()
 		if sessionErr != nil {
 			lastErr = sessionErr
 			continue
 		}
-		snapshot, readErr := e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
 		if readErr != nil {
 			lastErr = readErr
 			continue
@@ -1929,15 +1952,6 @@ func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, se
 	account := strings.TrimSpace(session.Summary.Account)
 	if account == "" {
 		account = runCtx.PlanAccount
-	}
-	// 实例“已发”事实固定使用计划账号视角。处理人账号与计划账号不同的执行阶段，
-	// 仍要独占计划账号，避免页面读服务在同一时间刷新/替换其共享 SID；同账号场景
-	// 的外层锁已覆盖，这里不重复加锁以免自锁。
-	var releasePlanUsage func()
-	if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok &&
-		!strings.EqualFold(account, strings.TrimSpace(runCtx.PlanAccount)) {
-		releasePlanUsage = locker.LockAccountUsage(runCtx.PlanAccount)
-		defer releasePlanUsage()
 	}
 	facts, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
 		func(callContext context.Context, active target.Session) (InstanceFacts, error) {
