@@ -135,7 +135,7 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			FlowProxyID:  runCtx.FlowProxyID,
 			CompanyID:    session.CompanyID,
 			FormData:     formData,
-			BizRelevance: cloneBizRelevance(facts.BizRelevance),
+			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditors,
 		}
 		if step.Action == model.ActionSaveDraft {
@@ -155,7 +155,7 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			AuditStatus:  "pass",
 			ExecuteDesc:  auditMessage(runCtx, step),
 			FormData:     formData,
-			BizRelevance: cloneBizRelevance(facts.BizRelevance),
+			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditors,
 		}
 		return &request, target.WriteEndpointAudit, target.BuildAuditBody(request), nil
@@ -172,7 +172,7 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			FormProxyID:  facts.FormProxyID,
 			CompanyID:    session.CompanyID,
 			FormData:     formData,
-			BizRelevance: cloneBizRelevance(facts.BizRelevance),
+			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditors,
 		}
 		body, endpoint, err := target.BuildActionBody(request)
@@ -188,7 +188,7 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			InstanceID:   runCtx.PathRun.MainInstanceRef,
 			FlowProxyID:  firstNonEmpty(facts.CurrentTaskFlowProxy, facts.FlowProxyID, runCtx.FlowProxyID),
 			FormData:     formData,
-			BizRelevance: cloneBizRelevance(facts.BizRelevance),
+			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditorsOf(step),
 		}
 		switch step.Action {

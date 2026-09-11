@@ -652,3 +652,22 @@ func targetTransportOf(err error) verdict.Transport {
 		return verdict.TransportUnclassified
 	}
 }
+
+// ensureCompanyRelevance 保证发起/存草稿的实例至少带一条 company 业务关联。
+// 根因：目标平台「已发流程」页面固定按 company 关联过滤，原生发起时 FlowDialog 会
+// 提交 {otherBiz:"company", otherBizId:当前公司}；工具此前只在重读事实带出关联时才写，
+// 新流程发起前关联为空 → 实例创建成功但在已发列表里永远搜不到（实测缺陷）。
+// 已有关联时原样保留，只补缺失的 company 项。
+func ensureCompanyRelevance(values []target.BizRelevance, companyID string) []target.BizRelevance {
+	companyID = strings.TrimSpace(companyID)
+	if companyID == "" {
+		return cloneBizRelevance(values)
+	}
+	result := cloneBizRelevance(values)
+	for _, value := range result {
+		if strings.EqualFold(strings.TrimSpace(value.OtherBiz), "company") {
+			return result
+		}
+	}
+	return append(result, target.BizRelevance{OtherBiz: "company", OtherBizID: companyID})
+}
