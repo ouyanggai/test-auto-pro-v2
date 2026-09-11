@@ -318,8 +318,11 @@ func (r *auditDirectoryResolver) companyTree(flag string) ([]rawAuditDirectoryNo
 	resp, err := r.client.call(r.ctx, "/web/user/api/company/children", r.active.SID, map[string]any{
 		"data": map[string]any{"flag": flag, "id": r.active.CompanyID, "customerCode": r.active.CustomerCode},
 	})
-	if err != nil || !responseSucceeded(resp) {
-		return nil, fmt.Errorf("company directory unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
 	}
 	var result []rawAuditDirectoryNode
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
@@ -340,8 +343,11 @@ func (r *auditDirectoryResolver) personnelItems() ([]rawAuditNamedItem, error) {
 	resp, err := r.client.call(r.ctx, "/web/user/api/user/findByCompanyIdUserList", r.active.SID, map[string]any{
 		"data": map[string]any{"companyId": r.active.CompanyID}, "pagination": true, "pages": 1, "size": 1000,
 	})
-	if err != nil || !responseSucceeded(resp) {
-		return nil, fmt.Errorf("personnel directory unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
 	}
 	var page rawAuditPersonnelPage
 	if err := json.Unmarshal(resp.Data, &page); err != nil {
@@ -372,8 +378,11 @@ func (r *auditDirectoryResolver) namedItems(cacheKey, path string, body map[stri
 		return cached, nil
 	}
 	resp, err := r.client.callWithPlatform(r.ctx, path, r.active.SID, body, r.platformCode)
-	if err != nil || !responseSucceeded(resp) {
-		return nil, fmt.Errorf("audit directory unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
 	}
 	var result []rawAuditNamedItem
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
@@ -406,8 +415,11 @@ func (r *auditDirectoryResolver) roleCandidates(roleID string) ([]FlowAuditCandi
 	resp, err := r.client.call(r.ctx, "/web/flowRoleUserApi/list", r.active.SID, map[string]any{
 		"data": map[string]any{"flowRoleId": roleID}, "pagination": false,
 	})
-	if err != nil || !responseSucceeded(resp) {
-		return nil, fmt.Errorf("role users unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
 	}
 	var items []rawAuditNamedItem
 	if err := json.Unmarshal(resp.Data, &items); err != nil {
@@ -429,8 +441,11 @@ func (r *auditDirectoryResolver) positionCandidates(positionID string) ([]FlowAu
 	resp, err := r.client.call(r.ctx, "/web/user/api/user/getUserVosByBizIds", r.active.SID, map[string]any{
 		"data": map[string]any{"queryTypeEnum": "DUTY", "bizIds": []string{positionID}},
 	})
-	if err != nil || !responseSucceeded(resp) {
-		return nil, fmt.Errorf("position users unavailable")
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
 	}
 	var items []rawAuditNamedItem
 	if err := json.Unmarshal(resp.Data, &items); err != nil {
@@ -550,8 +565,11 @@ func (c *Client) FormIdentityContext(ctx context.Context, active Session) (FormI
 	resp, err := c.call(ctx, "/web/user/api/company/children", active.SID, map[string]any{
 		"data": map[string]any{"flag": "3", "id": active.CompanyID, "customerCode": active.CustomerCode},
 	})
-	if err != nil || !responseSucceeded(resp) {
-		return result, fmt.Errorf("company directory unavailable")
+	if err != nil {
+		return result, err
+	}
+	if !responseSucceeded(resp) {
+		return result, responseError(resp)
 	}
 	var tree []rawAuditDirectoryNode
 	if err := json.Unmarshal(resp.Data, &tree); err != nil {

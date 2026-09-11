@@ -69,6 +69,24 @@ func TestLoginPreservesBusinessRejection(t *testing.T) {
 	}
 }
 
+// TestDirectoryPreservesBusinessRejection 验证人员目录读取不把完整业务拒绝改写成泛化错误。
+func TestDirectoryPreservesBusinessRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"isSuccess":false,"code":"DIRECTORY_403","message":"目录无权限"}`))
+	}))
+	defer server.Close()
+	client, err := target.NewClient(target.ClientConfig{BaseURL: server.URL, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("创建目标客户端失败：%v", err)
+	}
+	_, err = client.FormIdentityContext(context.Background(), target.Session{SID: "sid", CompanyID: "company"})
+	var rejection *target.BusinessRejection
+	if !errors.As(err, &rejection) || rejection.Code != "DIRECTORY_403" || rejection.Message != "目录无权限" {
+		t.Fatalf("目录业务拒绝未保留原始内容：%T %+v", err, rejection)
+	}
+}
+
 // TestRetryClassificationUsesTransportPhase 验证连接未建立可重试，响应已收到或响应中断不可重试。
 func TestRetryClassificationUsesTransportPhase(t *testing.T) {
 	connectError := target.NewError(target.ErrorTimeout, nil)
