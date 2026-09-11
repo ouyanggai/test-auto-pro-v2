@@ -90,7 +90,7 @@ func readRequestBody(request *http.Request) string {
 	if request.Body == nil {
 		return ""
 	}
-	data, err := io.ReadAll(io.LimitReader(request.Body, maxLoggedBodyBytes))
+	data, err := io.ReadAll(request.Body)
 	_ = request.Body.Close()
 	if err != nil {
 		request.Body = io.NopCloser(bytes.NewReader(nil))
@@ -98,7 +98,7 @@ func readRequestBody(request *http.Request) string {
 	}
 	request.Body = io.NopCloser(bytes.NewReader(data))
 	request.ContentLength = int64(len(data))
-	return string(data)
+	return string(truncateLoggedBody(data))
 }
 
 // requestHeaders 收集实际发出的请求头，供生成可重放命令。
@@ -115,14 +115,23 @@ func captureResponseBody(response *http.Response) string {
 	if response.Body == nil {
 		return ""
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxLoggedBodyBytes))
+	data, err := io.ReadAll(response.Body)
 	_ = response.Body.Close()
 	if err != nil {
 		response.Body = io.NopCloser(bytes.NewReader(nil))
 		return ""
 	}
 	response.Body = io.NopCloser(bytes.NewReader(data))
-	return string(data)
+	return string(truncateLoggedBody(data))
+}
+
+// truncateLoggedBody 只限制日志字段，不截断回填到 HTTP 请求或响应的原始正文。
+// 日志容量约束不能改变目标协议正文，否则大表单会被截断、完整响应也可能无法解析。
+func truncateLoggedBody(data []byte) []byte {
+	if len(data) <= maxLoggedBodyBytes {
+		return data
+	}
+	return data[:maxLoggedBodyBytes]
 }
 
 // transportErrorType 把传输层失败收敛为稳定分类，与目标适配层的错误分类保持同一套词汇。
