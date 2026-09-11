@@ -40,6 +40,35 @@ func TestListTemplatesPreservesBusinessRejection(t *testing.T) {
 	}
 }
 
+// TestLoginPreservesBusinessRejection 验证登录完整业务拒绝保留目标 code/message，且不伪装成网络错误。
+func TestLoginPreservesBusinessRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"isSuccess":false,"code":"LOGIN_403","message":"账号或密码错误"}`))
+	}))
+	defer server.Close()
+	client, err := target.NewClient(target.ClientConfig{
+		BaseURL:       server.URL,
+		Timeout:       2 * time.Second,
+		LoginPassword: "password",
+		LoginAESKey:   "0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("创建目标客户端失败：%v", err)
+	}
+	_, err = client.Login(context.Background(), "account-a")
+	if !target.IsKind(err, target.ErrorLoginRejected) {
+		t.Fatalf("登录业务拒绝未映射为登录拒绝：%T %v", err, err)
+	}
+	var rejection *target.BusinessRejection
+	if !errors.As(err, &rejection) || rejection.Code != "LOGIN_403" || rejection.Message != "账号或密码错误" {
+		t.Fatalf("登录业务拒绝未保留原始内容：%T %+v", err, rejection)
+	}
+	if target.IsRetryableWriteConnectError(err) {
+		t.Fatal("登录业务拒绝不应进入连接重试")
+	}
+}
+
 // TestRetryClassificationUsesTransportPhase 验证连接未建立可重试，响应已收到或响应中断不可重试。
 func TestRetryClassificationUsesTransportPhase(t *testing.T) {
 	connectError := target.NewError(target.ErrorTimeout, nil)

@@ -136,9 +136,9 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 	}
 	if !responseSucceeded(resp) {
 		if responseSessionExpired(resp) {
-			return Session{}, NewError(ErrorLoginRejected, nil)
+			return Session{}, NewError(ErrorLoginRejected, &BusinessRejection{Code: strings.TrimSpace(resp.Code), Message: strings.TrimSpace(resp.Message)})
 		}
-		return Session{}, NewError(ErrorLoginRejected, nil)
+		return Session{}, NewError(ErrorLoginRejected, &BusinessRejection{Code: strings.TrimSpace(resp.Code), Message: strings.TrimSpace(resp.Message)})
 	}
 	if strings.TrimSpace(resp.SID) == "" {
 		return Session{}, invalidResponse("login response missing sid")
