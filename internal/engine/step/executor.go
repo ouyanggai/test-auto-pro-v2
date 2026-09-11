@@ -1930,6 +1930,15 @@ func (e *Executor) readFactsWithRetry(ctx context.Context, runCtx RunContext, se
 	if account == "" {
 		account = runCtx.PlanAccount
 	}
+	// 实例“已发”事实固定使用计划账号视角。处理人账号与计划账号不同的执行阶段，
+	// 仍要独占计划账号，避免页面读服务在同一时间刷新/替换其共享 SID；同账号场景
+	// 的外层锁已覆盖，这里不重复加锁以免自锁。
+	var releasePlanUsage func()
+	if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok &&
+		!strings.EqualFold(account, strings.TrimSpace(runCtx.PlanAccount)) {
+		releasePlanUsage = locker.LockAccountUsage(runCtx.PlanAccount)
+		defer releasePlanUsage()
+	}
 	facts, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
 		func(callContext context.Context, active target.Session) (InstanceFacts, error) {
 			// 事实重读要与目标返回的真实节点标识对照，因此传真实标识而不是工具侧不透明键。
