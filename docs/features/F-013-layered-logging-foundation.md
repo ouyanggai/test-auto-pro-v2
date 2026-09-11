@@ -39,7 +39,7 @@
 - 中间件从路由取计划与执行路径的不可变 ID，显示名由 `service.LogScopeService` 从真实业务记录读取并完成归属校验，
   每次请求只解析一次；作用域随 `context` 传给目标站点客户端，网络日志与可重放命令因此落在同一个计划目录。
 - 目标请求日志在 `internal/adapter/target` 的 `Client.call` 单点接入，覆盖当前全部只读请求。
-- `curl.log` 写入可直接复制重放的完整命令，含真实会话值与完整请求响应正文（内网裁决，见 `docs/EXECUTION_PROGRAM.md` 第 6.5 节）。
+- `curl.log` 写入保留请求结构的诊断命令与响应正文；SID、密码、令牌等敏感字段统一替换为 `[REDACTED]`，不得直接重放真实会话。
 - API 中间件：请求日志、失败响应日志（记录实际返回给用户的稳定错误码与中文文案）、panic 恢复并落程序错误日志。
 - 程序错误日志字段：`error_class`、`error_chain`、`source`、`stack`（仅 panic）、`run_terminated`、`user_message`。
 - `make logs-viewer`：一条命令起固定版本 code-server（`codercom/code-server:4.96.4`），本机 19002 映射容器 8080，挂载本项目 `logs/` 到 `/home/coder/logs` 并直接打开该目录，内网使用不设登录，挂载目录可读写，容器以当前本机用户 UID/GID 运行。`make logs-viewer-stop` 只停止并删除该容器。
@@ -53,7 +53,7 @@
 - 运行记录表、运行相关 API、`RunsView.vue` 的任何改动。
 - Docker Compose 整套编排。属于 F-023，本切片只给单个 code-server 容器启动方式。
 - 系统设置页里的日志配置项。保留期与容量本切片只用环境变量控制，`docs/EXECUTION_PROGRAM.md` 第 6.6 节提到的“可在系统设置里调整”留到有实际需要时再单独立项。
-- 脱敏过滤器、日志级别开关矩阵、正文摘要化。用户已明确不做。
+- 旧版本的“原样日志”约定不再适用；F-029 起所有网络日志统一执行脱敏，避免 SID、密码和令牌泄露。
 - Loki、Promtail、Grafana 一类外部可观测栈。
 
 ## 设计要点
@@ -129,9 +129,9 @@ time=2026-09-03 18:56:31 level=error ...
 
 ### T03：目标请求日志与可重放 curl
 
-在 `Client.call` 单点记录：`time`、`level`、`duration_s`、`request_id`、`trace_id`、`curl_trace_id`、`method`、`endpoint`、`request_class`、`status_code`、`result`、`outcome_kind`、`error_type`、目标实例与任务标识（原样）。成功与运行提示进 `network.log`，失败与最终错误进 `network-error.log`，请求块进 `curl.log`。
+在 `Client.call` 单点记录：`time`、`level`、`duration_s`、`request_id`、`trace_id`、`curl_trace_id`、`method`、`endpoint`、`request_class`、`status_code`、`result`、`outcome_kind`、`error_type`、目标实例与任务标识。网络请求块与响应进入 `curl.log` 前统一脱敏。
 
-完成判据：集成测试用不可达的目标地址触发失败，断言两个文件各出现对应记录且 `trace_id` 与 `curl_trace_id` 双向可查；断言 `curl.log` 里的命令与实际发出的请求逐字一致（含会话值），可直接重放。
+完成判据：集成测试用不可达的目标地址触发失败，断言两个文件各出现对应记录且 `trace_id` 与 `curl_trace_id` 双向可查；断言 `curl.log` 保留请求结构且不出现 SID、密码等敏感值。
 
 ### T04：API 中间件与组装
 
