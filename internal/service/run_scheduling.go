@@ -270,6 +270,10 @@ func (s *RunOrchestrationService) beginPathRunOnScheduler(ctx context.Context, r
 	}
 	// buildRunContext 留下的 PathRun/Run 只有占位身份（创建前的 ID 未知），
 	// 调度时真实身份已知，必须先填进上下文，否则 BeginPathRun 会按 0 号 ID 推进（实测踩坑）。
+	// 上面已用条件推进原子领取（等待运行→运行中）：这里同步内存副本的状态，
+	// 否则 BeginPathRun 会按旧的等待运行再推进一次，撞上状态冲突后整个启动被吞掉，
+	// 路径卡在「运行中」但没有任何执行现场（实测缺陷）。
+	pathRun.Status = model.PathRunStatusRunning
 	runCtx.Run = runRow
 	runCtx.PathRun = pathRun
 	// 待发/已发来源的路径运行创建即绑定计划指向的真实实例（2026-09-07 交付验收修复）：
