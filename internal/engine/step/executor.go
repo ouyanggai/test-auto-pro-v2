@@ -1027,23 +1027,15 @@ func resubmitOnSessionRejected[R any](
 	log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep,
 ) (R, target.WriteResponse, string, target.Session, error) {
 	var zero R
-	for round := 1; round <= 1; round++ {
-		log.Phase("submit", step.Sequence, attemptNo, fmt.Sprintf(
-			"写请求被目标以会话失效拒绝（第_%d_次，未进入业务、无副作用），重新取得会话后重发", round))
-		reportPhase(approved, "submit", fmt.Sprintf("目标会话失效已拒绝 %d 次（无副作用），正在重新取得会话", round))
-		refreshed, refreshErr := refresh(account)
-		if refreshErr != nil {
-			return zero, target.WriteResponse{}, "", target.Session{}, refreshErr
-		}
-		result, response, traceID, err := send(refreshed)
-		if !isSessionRejected(err) {
-			return result, response, traceID, refreshed, err
-		}
-		if round == 1 {
-			return result, response, traceID, refreshed, err
-		}
+	log.Phase("submit", step.Sequence, attemptNo,
+		"写请求被目标以会话失效拒绝（第_1_次，未进入业务、无副作用），重新取得会话后重发")
+	reportPhase(approved, "submit", "目标会话失效已拒绝 1 次（无副作用），正在重新取得会话")
+	refreshed, refreshErr := refresh(account)
+	if refreshErr != nil {
+		return zero, target.WriteResponse{}, "", target.Session{}, refreshErr
 	}
-	return zero, target.WriteResponse{}, "", target.Session{}, fmt.Errorf("会话失效恢复重发未执行")
+	result, response, traceID, err := send(refreshed)
+	return result, response, traceID, refreshed, err
 }
 
 // refreshSessionForWrite 为写请求重新取得可用会话：强制重登并探活，探活只把会话失效当失败。
