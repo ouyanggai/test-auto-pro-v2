@@ -996,7 +996,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		RunID: run.ID, RunNo: run.RunNo,
 		StartedAt:         run.StartedAt,
 		ModeName:          model.RunModeName(run.Mode),
-		RunStatusName:     model.RunStatusName(run.Status),
+		RunStatusName:     s.runStatusNameOf(ctx, run),
 		PathRunID:         pathRun.ID,
 		PathRunStatus:     string(pathRun.Status),
 		PathRunStatusName: model.PathRunStatusName(pathRun.Status),

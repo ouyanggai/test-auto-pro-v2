@@ -614,11 +614,18 @@ async function submitPlan() {
             </div>
           </n-form-item-gi>
 
-          <n-form-item-gi span="12" path="runMode" label="运行方式" first>
+          <n-form-item-gi span="12" path="runMode" label="计划间运行方式" first>
             <n-radio-group v-model:value="form.runMode">
               <n-radio-button value="serial">串行</n-radio-button>
               <n-radio-button value="parallel">并行</n-radio-button>
             </n-radio-group>
+            <!-- 计划层运行方式只描述计划之间：串行=已有其他计划运行未结束时排队等待；
+                 计划内多条路径的串并行在「开始运行」弹窗里每次选择。 -->
+            <n-text depth="3" style="width: 100%">
+              {{ form.runMode === 'parallel'
+                ? '本计划可与其它计划同时运行'
+                : '已有其它计划运行未结束时，本计划的运行会排队等待' }}
+            </n-text>
           </n-form-item-gi>
 
           <n-form-item-gi span="12" label="定时启动" :show-feedback="false">
@@ -652,7 +659,7 @@ async function submitPlan() {
             ref="concurrencyItemRef"
             span="12"
             path="maxConcurrency"
-            label="并行最大并发数"
+            label="定时启动的路径并发数"
             first
           >
             <div ref="concurrencyGuideRef" class="full-width-control">

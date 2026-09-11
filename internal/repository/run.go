@@ -62,6 +62,8 @@ type RunStore interface {
 	// DequeueRun 原子领取队首的等待运行并从队列移除；返回 0 表示队列为空。
 	// 仅当当时没有其他非终态运行时才领取，保证计划间串行的同时不丢唤醒。
 	DequeueRun(ctx context.Context, now time.Time) (uint64, error)
+	// ListQueuedRunIDs 列出仍在计划间串行队列中等待的运行 ID；界面据此把等待启动显示为「排队中」。
+	ListQueuedRunIDs(ctx context.Context) ([]uint64, error)
 	// FinishRunIfAllPathsClosed 在全部路径闭合时收尾运行聚合（同事务）：写结果无法确认的
 	// 终局与启动恢复都会调用它；还有未闭合路径时什么都不做并返回 false。
 	FinishRunIfAllPathsClosed(ctx context.Context, runID uint64, now time.Time) (bool, error)

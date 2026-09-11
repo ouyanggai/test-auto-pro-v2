@@ -62,13 +62,24 @@ func (s *RunOrchestrationService) ListAllRuns(ctx context.Context, status string
 			planNames[plan.ID] = plan.Name
 		}
 	}
+	// 计划间串行排队中的运行：状态显示为「排队中」，与普通等待启动区分，让用户知道为什么没跑。
+	queued := map[uint64]bool{}
+	if queuedIDs, qErr := s.store.ListQueuedRunIDs(ctx); qErr == nil {
+		for _, id := range queuedIDs {
+			queued[id] = true
+		}
+	}
 	items := make([]RunSummaryDTO, 0, len(runs))
 	for _, run := range runs {
+		statusName := model.RunStatusName(run.Status)
+		if run.Status == model.RunStatusPending && queued[run.ID] {
+			statusName = "排队中"
+		}
 		item := RunSummaryDTO{
 			RunID:      run.ID,
 			RunNo:      run.RunNo,
 			ModeName:   model.RunModeName(run.Mode),
-			StatusName: model.RunStatusName(run.Status),
+			StatusName: statusName,
 			StartedAt:  run.StartedAt,
 			FinishedAt: run.FinishedAt,
 			PlanID:     run.PlanID,
@@ -105,8 +116,7 @@ func (s *RunOrchestrationService) RunPaths(ctx context.Context, runID uint64) (*
 		return nil, mapPlanError(err)
 	}
 	graph, graphErr := s.graphs.Get(ctx, run.PlanID)
-	structureDegraded := graphErr != nil
-	if structureDegraded {
+	if graphErr != nil {
 		graph = model.FlowGraph{PlanID: run.PlanID}
 	}
 	pathRuns, err := s.store.ListPathRunsByRun(ctx, runID)
@@ -119,7 +129,7 @@ func (s *RunOrchestrationService) RunPaths(ctx context.Context, runID uint64) (*
 		RunID:            run.ID,
 		RunNo:            run.RunNo,
 		ModeName:         model.RunModeName(run.Mode),
-		RunStatusName:    model.RunStatusName(run.Status),
+		RunStatusName:    s.runStatusNameOf(ctx, run),
 		ScheduleName:     runScheduleName(run),
 		ConcurrencyLabel: runConcurrencyLabel(run),
 		PlanID:           run.PlanID,
@@ -218,4 +228,20 @@ func currentNodeNameOf(pathRun model.PathRun, previewName string, lastNodeKey st
 // 绝不删除目标平台实例或业务数据。运行中的记录必须先停止再删除（仓储层同事务守卫）。
 func (s *RunOrchestrationService) DeleteRun(ctx context.Context, runID uint64) error {
 	return s.store.DeleteRun(ctx, runID, s.now())
+}
+
+// runStatusNameOf 返回运行状态的中文显示名：计划间串行队列中的等待运行显示为「排队中」，
+// 与普通等待启动区分，让用户在路径页与详情页都能一眼看出为什么还没跑。
+func (s *RunOrchestrationService) runStatusNameOf(ctx context.Context, run model.Run) string {
+	if run.Status != model.RunStatusPending {
+		return model.RunStatusName(run.Status)
+	}
+	if queued, err := s.store.ListQueuedRunIDs(ctx); err == nil {
+		for _, id := range queued {
+			if id == run.ID {
+				return "排队中"
+			}
+		}
+	}
+	return model.RunStatusName(run.Status)
 }

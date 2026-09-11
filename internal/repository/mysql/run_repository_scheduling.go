@@ -408,3 +408,23 @@ func (r *RunRepository) DequeueRun(ctx context.Context, now time.Time) (uint64, 
 	}
 	return runID, nil
 }
+
+// ListQueuedRunIDs 列出仍在计划间串行队列中等待（pending）的运行 ID。
+// 界面把这些运行的等待启动状态显示为「排队中」，与普通等待启动区分开。
+func (r *RunRepository) ListQueuedRunIDs(ctx context.Context) ([]uint64, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT run_id FROM plan_run_queue WHERE status = 'pending' ORDER BY id ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]uint64, 0)
+	for rows.Next() {
+		var id uint64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
