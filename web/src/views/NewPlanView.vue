@@ -109,7 +109,9 @@ const accountVerified = computed(() => (
   verificationState.value === 'verified'
   && verifiedAccount.value === form.account.trim()
 ))
-const showMaxConcurrency = computed(() => form.runMode === 'parallel')
+// 并发数字段只在「并行 + 已开启定时启动」时出现：路径并发数本来就是定时启动的取值，
+// 手动启动的路径串并行在「开始运行」弹窗里每次选择（F-030 两级调度）。
+const showMaxConcurrency = computed(() => form.runMode === 'parallel' && form.scheduleEnabled)
 const sourceOptions = computed(() => (
   (Object.entries(flowSourceLabels) as Array<[FlowSource, string]>).map(([value, label]) => ({
     value,
