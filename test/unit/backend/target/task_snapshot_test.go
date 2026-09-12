@@ -44,8 +44,10 @@ func TestFindTaskSnapshotUsesProtocolTaskIdentity(t *testing.T) {
 		t.Fatalf("应只发起一次读取请求，实际 %d 次", len(requests))
 	}
 	data, _ := requests[0]["data"].(map[string]any)
-	if data["taskStatus"] != "pending" || data["flowInstanceId"] != "instance-7" {
-		t.Fatalf("待办读取参数错误：%v", data)
+	// 实例过滤在协议顶层 flowInstanceIdList：放 data 里目标端不理会，会翻全量任务表（实测缺陷）。
+	ids, _ := requests[0]["flowInstanceIdList"].([]any)
+	if data["taskStatus"] != "pending" || len(ids) != 1 || ids[0] != "instance-7" {
+		t.Fatalf("待办读取参数错误：%v / flowInstanceIdList=%v", data, requests[0]["flowInstanceIdList"])
 	}
 }
 

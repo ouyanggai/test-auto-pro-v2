@@ -647,13 +647,15 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 		return nil, invalidResponse("unsupported task status")
 	}
 	data := map[string]any{
-		"flowInstanceId":               strings.TrimSpace(instanceID),
 		"taskStatus":                   taskStatus,
 		"auditWayList":                 []string{},
 		"useScope":                     "invest",
 		"flowInstanceBizRelevance":     map[string]any{},
 		"flowInstanceBizRelevanceList": []any{},
 	}
+	// 实例过滤必须用顶层 flowInstanceIdList（参考代码 Backlog/index.vue 的同端点用法）：
+	// 放进 data.flowInstanceId 目标端不理会，导致每次扫描翻全量任务表（实测单次扫描
+	// 翻到第 11 页 × 74 条，20 个账号 = 60+ 次请求、11 秒）。修正后一次请求只回本实例任务。
 	// 视角用户：done 列表必须限定实际执行人；指定视角用户时同样把 executorId 换成该用户。
 	// 待办列表由目标网关按 SID 解析当前用户，但目标协议顶层 queryUserId 可显式指定待办视角用户
 	// （源码：queryUserId 为空才默认 SID 用户），两个分支都用同一个既有字段，不新增端点。
@@ -692,6 +694,8 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 	for page := 1; page <= maxPages; page++ {
 		body := map[string]any{
 			"data": data, "pagination": true, "pages": page, "size": pageSize,
+			// 实例过滤是协议顶层字段（参考代码 Backlog/index.vue 同端点用法）。
+			"flowInstanceIdList": []string{wantInstance},
 		}
 		if taskStatus == "pending" && viewUserID != "" {
 			body["queryUserId"] = viewUserID
