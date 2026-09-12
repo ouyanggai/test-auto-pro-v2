@@ -911,7 +911,7 @@ onBeforeUnmount(() => {
            说明由后端统一口径提供（currentPhaseNote），前端缺失时显示不可用，不回退泛化词。 -->
       <div v-if="!overviewDone && (detail.currentPhaseNote || detail.currentPhase)" class="run-detail__phase-bar" data-testid="current-phase-note">
         <span class="run-detail__phase-dot"></span>
-        <span class="run-detail__phase-note">{{ detail.currentPhaseNote || `当前阶段说明暂时不可用（内部阶段：${detail.currentPhase}）` }}</span>
+        <span class="run-detail__phase-note">{{ detail.currentPhaseNote || '当前阶段说明暂时不可用，可从日志入口查看执行过程' }}</span>
       </div>
 
       <!-- F-020 多路径运行：调度说明与路径切换 chips 合并为一行。 -->

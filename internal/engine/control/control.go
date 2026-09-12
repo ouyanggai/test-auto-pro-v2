@@ -181,6 +181,17 @@ func (s *Service) Start(ctx context.Context, runCtx step.RunContext) (*StartResu
 	return s.StartWithMode(ctx, runCtx, model.RunModeSingleStep, nil)
 }
 
+// previewProgressReporter 返回绑定到会话现场的预览进度上报器（F-030 评审 P1）：
+// 预览阶段的目标读取（登录、事实重读、候选处理人扫描）往往是最长的等待，
+// 实时写进会话进度供详情轮询读取，页面等待时能看到正在检查什么。
+func (s *Service) previewProgressReporter(session *activeStep) func(phase, note string) {
+	return func(phase, note string) {
+		s.mu.Lock()
+		session.progress = stepPhaseProgress{phase: phase, note: note, since: s.now()}
+		s.mu.Unlock()
+	}
+}
+
 // startSession 是模式无关的启动主体：创建运行、初始化断点（预置逐条落事实）、构建第一步预览并停在阶段 3。
 func (s *Service) startSession(ctx context.Context, runCtx step.RunContext, mode model.RunMode, preset []Breakpoint) (*StartResult, *activeStep, error) {
 	startedRun, startedPathRun, err := s.runs.StartRunWithMode(ctx, runCtx.Run.PlanID, runCtx.PathRun.ExecutionPathID, mode)
@@ -290,7 +301,7 @@ func (s *Service) initSession(ctx context.Context, runCtx step.RunContext, mode 
 		}, s.now())
 	}
 
-	preview, finished, err := s.steps.BuildPreview(ctx, runCtx, 0)
+	preview, finished, err := s.steps.BuildPreviewWithProgress(ctx, runCtx, 0, s.previewProgressReporter(session))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1102,7 +1113,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 			if probeErr != nil || !still {
 				break
 			}
-			extraPreview, extraFinished, buildErr := s.steps.BuildPreview(ctx, session.runCtx, session.nextIndex)
+			extraPreview, extraFinished, buildErr := s.steps.BuildPreviewWithProgress(ctx, session.runCtx, session.nextIndex, s.previewProgressReporter(session))
 			if buildErr != nil || extraFinished || extraPreview.BlockReason != "" {
 				// 探测与预览之间存在竞态（实例恰好前进/被跳过）：跳出循环，交给下方
 				// 下一步预览构建按目标真实事实裁决，绝不带着过期预览继续审批。
@@ -1151,7 +1162,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	var preview *step.StepPreview
 	var finished bool
 	for retry := 0; ; retry++ {
-		preview, finished, err = s.steps.BuildPreview(ctx, session.runCtx, nextIndex)
+		preview, finished, err = s.steps.BuildPreviewWithProgress(ctx, session.runCtx, nextIndex, s.previewProgressReporter(session))
 		if err == nil || retry >= 2 {
 			break
 		}

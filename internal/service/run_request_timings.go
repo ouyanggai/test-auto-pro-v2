@@ -95,10 +95,30 @@ func (s *RunOrchestrationService) readAttemptRequests(pathRunID uint64, attempts
 		if err != nil {
 			continue
 		}
-		// 只归属有执行事实的尝试：找不到窗口的请求（如登录、结构读取）不进动作明细。
-		key, _ := matchAttemptWindow(windows, at)
-		if key == "" {
-			continue
+		// 只归属有执行事实的尝试：优先按日志行携带的 step_id/attempt 直接归属（F-030 评审 P1：
+		// 执行器已把步骤号/尝试号/阶段注入目标请求上下文，传输层写入 network.log，
+		// 不再依赖秒级时间窗口推断）；旧日志缺这两列时才回退到时间窗口兜底，
+		// 避免临近步骤、重试或多次尝试时归错。
+		var key string
+		if fields["step_id"] != "" && fields["step_id"] != "-" && fields["attempt"] != "" && fields["attempt"] != "-" {
+			stepNo := atoiOr(fields["step_id"], 0)
+			for _, attempt := range attempts {
+				// 步骤号与尝试号必须同时对上：只匹配尝试号会把其他步骤的请求错归属。
+				if attempt.StepID == uint64(stepNo) && attempt.AttemptNo == atoiOr(fields["attempt"], 0) {
+					key = stepPhaseKey(stepNo, attempt.AttemptNo)
+					break
+				}
+			}
+			// step_id 与尝试记录对不上时不硬归属：请求可能属于登录或结构读取，
+			// 错归属比不归属更误导。
+			if key == "" {
+				continue
+			}
+		} else {
+			key, _ = matchAttemptWindow(windows, at)
+			if key == "" {
+				continue
+			}
 		}
 		dto := RunRequestDTO{
 			Phase:        fields["phase"],

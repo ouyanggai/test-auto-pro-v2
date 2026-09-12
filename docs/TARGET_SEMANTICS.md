@@ -101,6 +101,7 @@ deployment=<该结论对应的目标平台部署版本，未取得就写「未�
 状态：勘定中（2026-09-10 F-028 验收实测，正式证据块待补）。本轮实测与修复见 `docs/features/F-028-failed-action-retry.md` 状态记录。
 
 - 审批待办列表（`flowJobTaskLink/list`）按当前会话用户过滤：计划账号读不到其他处理人的任务；任务行里的 `currentPendingUserId`/`currentPendingUserName` 自 2026-08 底目标调整后返回空。因此「某节点待办属于谁」无法从待办接口获知。
+- 上述按用户过滤的视角用户可显式指定（2026-09-12 F-030 勘定，源码可证明）：协议顶层字段 `queryUserId` 为空时目标服务在入口处回填为 SID 用户，非空时按该用户解析待办（pending 走 `cusQueryUserPendingFLowJobTaskId(queryUserId,…)`）；已办分支用 `data.executorId` 同样可指定执行人。源码锚点：`FlowJobTaskLinkApiServiceImpl.list`（`if (StringUtils.isEmpty(requestProtocol.getQueryUserId())) { setQueryUserId(userId) }`）与 `FlowJobTaskLinkServiceImpl.list` pending 分支。工具据此实现「同一计划会话按候选人用户 ID 窄查询」（`ListTaskSnapshotsForUser`），不再逐候选登录扫描；真实部署行为待 F-030 人工验收复测确认。
 - 目标「指定人员」类审批节点的处理人由模板配置决定，工具人员策略不会保存他们；这类节点的真实处理人只能从完整流程代理树（`flowProxy/findById` 返回的 `flowNodeAuditConfig.flowNodeDetailConfigList`）读取，再经人员目录解析账号并切换会话。工具已按此实现运行时发现（`target.ConfiguredPersonnelForNode` + 执行器 `switchToConfiguredAssignee`），实测审核人3（指定人员、会签）以代理树配置人员身份完成真实审批（运行 72 第 9 步）。
 - 审批（audit）跨手动分支路由时必须携带所选分支入口（`nextAuditorList[].nodeProxyId`），缺失被「手动条件分支,请选择」拒绝；流转链路上遇到的 `run_node_choose` 节点必须携带对应人员条目，缺失被「未设置审批人」拒绝（errorType=run_node_choose）。源码锚点：`FlowOperateServiceImpl` 的 `validateHandBranchAndReturnExecuteNode`（分支匹配）与 `throwRunNodeChooseNotFindError`（自选校验）。运行 68 第 4 步、运行 69 第 4 步分别实测命中这两条拒绝；运行 72 携带后通过。
 

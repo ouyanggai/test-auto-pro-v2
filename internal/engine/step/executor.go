@@ -12,6 +12,7 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/verdict"
+	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -71,6 +72,17 @@ func formatUint(value uint64) string {
 	return strconv.FormatUint(value, 10)
 }
 
+// withStepScope 把步骤号、尝试序号与执行阶段注入目标请求上下文的日志作用域，
+// 传输层记录 network.log 时按 step_id/attempt/phase 稳定归属每条请求（F-030 评审 P1）。
+// WithScope 是合并语义：只补充本步维度，不覆盖上游已注入的计划/路径/运行身份。
+func withStepScope(ctx context.Context, stepNo, attemptNo int, phase string) context.Context {
+	return logging.WithScope(ctx, logging.Scope{
+		StepID:  formatUint(uint64(stepNo)),
+		Attempt: formatUint(uint64(attemptNo)),
+		Phase:   phase,
+	})
+}
+
 // stepLogFor 返回该路径运行的 step.log 写入器；未注入工厂时返回空写入器（写入静默跳过）。
 func (e *Executor) stepLogFor(runCtx RunContext) *StepLog {
 	if e.logFactory == nil {
@@ -81,7 +93,25 @@ func (e *Executor) stepLogFor(runCtx RunContext) *StepLog {
 
 // BuildPreview 执行阶段 1（plan 取步）、阶段 2（gate 门禁复验），并写下阶段 3 的暂停行，
 // 产出给用户的下一步预览。本方法只读目标、不落账、绝不发写请求。
+// reportProgressSafe 安全调用预览进度上报器：未接收集方时是空操作，
+// 保证旧的 BuildPreview 调用路径（无上报）行为完全不变。
+func reportProgressSafe(reportProgress func(phase, note string), phase, note string) {
+	if reportProgress != nil {
+		reportProgress(phase, note)
+	}
+}
+
+// BuildPreview 执行阶段 1（plan 取步）、阶段 2（gate 门禁复验），并写下阶段 3 的暂停行，
+// 产出给用户的下一步预览。本方法只读目标、不落账、绝不发写请求。
 func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextIndex int) (*StepPreview, bool, error) {
+	return e.BuildPreviewWithProgress(ctx, runCtx, nextIndex, nil)
+}
+
+// BuildPreviewWithProgress 是带实时阶段上报的预览构建（F-030 评审 P1）：
+// reportProgress 在长耗时读取（登录、目标事实、候选处理人扫描）前后回调，
+// 页面等待预览时能看到正在检查什么；为 nil 时行为与旧 BuildPreview 完全一致。
+// 同时把 step_id/attempt/phase 注入目标请求上下文，network.log 每条请求可稳定归属到本步。
+func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunContext, nextIndex int, reportProgress func(phase, note string)) (*StepPreview, bool, error) {
 	if nextIndex >= len(runCtx.Steps) {
 		return nil, true, nil
 	}
@@ -95,6 +125,9 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	// 作用域只到本次预览：放行后的核验（RunApprovedStep）不经过这里，天然全新读取。
 	ctx = target.AttachTaskSnapshotScope(ctx)
 	step := runCtx.Steps[nextIndex]
+	// 预览请求统一归属到本步第 1 次尝试：预览只读不写，不存在别的尝试号。
+	ctx = withStepScope(ctx, step.Sequence, 1, "plan")
+	reportProgressSafe(reportProgress, "plan", fmt.Sprintf("正在确认第 %d 步要做什么：查看要操作的节点和动作，确认它属于当前流程", step.Sequence))
 	log := e.stepLogFor(runCtx)
 	log.Phase("plan", step.Sequence, 1, fmt.Sprintf("取第 %d 步：来源 %s，动作 %s，节点 %s", step.Sequence, step.Source, string(step.Action), step.NodeKey))
 
@@ -130,7 +163,9 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 
 	// 阶段 2：计划账号会话取得会话后重读目标实时事实，投影为门禁上下文重新计算门禁。
 	// 配置时通过、此刻不通过就停止：门禁不通过绝不跳过。
+	// F-030 评审 P1：阶段说明同时回答现在做什么、为什么、下一步是什么。
 	actorName := runCtx.PlanAccount
+	reportProgressSafe(reportProgress, "gate", fmt.Sprintf("正在检查第 %d 步现在能不能做：用计划账号登录目标平台，重新查看流程的当前状态（节点、待办）并复核门禁条件", step.Sequence))
 	session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "gate")
 	if sessionErr != nil {
 		message := userFacingError(sessionErr, target.WriteResponse{})
@@ -141,6 +176,12 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	if session.Summary.DisplayName != "" {
 		actorName = session.Summary.DisplayName
 	}
+	// 目标事实重读可能包含候选处理人扫描（逐个切换只读会话），是预览阶段最长的等待，
+	// 必须把正在检查什么上报给页面，不能让用户对着无说明的等待猜进度。
+	// 此处动作名尚未从目录解析，不提前使用内部动作键，避免页面出现内部枚举。
+	reportProgressSafe(reportProgress, "gate", fmt.Sprintf("正在重新查看流程在目标平台的实时状态（当前节点、待办与实际处理人），确认第 %d 步现在能不能做；检查完成后会展示这一步的预览并等待确认", step.Sequence))
+	// 进入 gate 阶段的目标读取：更新请求上下文的阶段标记，network.log 能区分预览取步与门禁事实读取。
+	ctx = withStepScope(ctx, step.Sequence, 1, "gate")
 	facts, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
 	if readErr != nil {
 		message := userFacingError(readErr, target.WriteResponse{})
@@ -266,6 +307,7 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 	preview.RequestPreview = previewJSON(payload)
 	preview.request = request
 	log.Phase("control", step.Sequence, 1, "单步暂停，等待放行")
+	reportProgressSafe(reportProgress, "control", fmt.Sprintf("第 %d 步已就绪，等你确认执行：点击“执行这一步”后，会由“%s”在“%s”节点执行“%s”，只发送一次目标请求", step.Sequence, actorName, runCtx.Nodes[step.NodeKey].Name, catalogItem.Label))
 	return preview, false, nil
 }
 
@@ -506,7 +548,9 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		if err := e.runState.MarkVerifying(ctx, runCtx.PathRun.ID); err != nil {
 			return outcome, 0, err
 		}
-		reportPhase(approved, "verify", "正在重新读取执行结果")
+		// 重新核验只读重读，同样注入步骤作用域，与首次执行的请求区分尝试号。
+		ctx = withStepScope(ctx, step.Sequence, attemptNo, "verify")
+		reportPhase(approved, "verify", "正在重新读取执行结果：只重新查看目标平台确认上次请求是否生效，不会重复发写请求")
 		actorAccount := strings.TrimSpace(preview.ActorAccount)
 		if actorAccount == "" {
 			actorAccount = runCtx.PlanAccount
@@ -666,7 +710,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err != nil {
 		return outcome, 0, err
 	}
-	reportPhase(approved, "prepare", "正在就绪当前处理人的登录会话")
+	// 从 prepare 起把步骤号、尝试号、阶段注入目标请求上下文：本阶段所有目标请求
+	// （会话探活、任务新鲜读取）在 network.log 中按 step_id/attempt/phase 稳定归属。
+	ctx = withStepScope(ctx, step.Sequence, attemptNo, "prepare")
+	reportPhase(approved, "prepare", fmt.Sprintf("正在准备第 %d 步的实际操作人：为“%s”准备目标平台登录会话；这里只做账号准备，不会提交审批动作，准备好后才会发送一次“%s”请求", step.Sequence, preview.ActorName, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 从取得执行会话开始独占计划账号，页面读取和其他执行不能并发刷新同一账号 SID。
 	var releasePlanUsage func()
 	var releaseActorUsage func()
@@ -761,13 +808,15 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 	}
 	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("当前处理人 %s（登录账号 %s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
-	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人 %s 会话就绪", preview.ActorName))
+	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人“%s”会话已就绪，即将在“%s”节点发送一次“%s”请求", preview.ActorName, runCtx.Nodes[step.NodeKey].Name, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 当前处理人账号可能不同于计划账号：计划账号锁与处理人锁同时持有到核验结束，
 	// 保证实例“已发”视角读取和真实待办写入不会互相覆盖 SID。
 
 	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（当前处理人与待办的新鲜复验）。
 	// 上报发生在发出之前：本次调用同步阻塞到目标响应返回，指示器在窗口内如实表达 submit 进行中。
-	reportPhase(approved, "submit", "写请求发送中，同步等待目标响应")
+	// submit 阶段的目标请求（含写前待办新鲜读取）同样注入步骤作用域，network.log 可按阶段归属。
+	ctx = withStepScope(ctx, step.Sequence, attemptNo, "submit")
+	reportPhase(approved, "submit", fmt.Sprintf("正在向目标平台提交第 %d 步：“%s”在“%s”节点发送一次“%s”请求，发送后不会重复提交；完成后会重新查看目标平台确认结果", step.Sequence, preview.ActorName, runCtx.Nodes[step.NodeKey].Name, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 写请求前的租约续期：目标存在约 30 秒的慢请求，租约若在写请求期间过期，
 	// 另一执行者可能在核验未完成时领取推进权（评审缺陷 12：RenewLease 此前无调用方）。
 	// 续期失败说明推进权已易主，本步必须放弃且绝不发出写请求。
@@ -851,7 +900,9 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if err := e.runState.MarkVerifying(ctx, runCtx.PathRun.ID); err != nil {
 		return outcome, 0, err
 	}
-	reportPhase(approved, "verify", "正在确认执行结果")
+	// 核验阶段的目标请求注入 verify 阶段作用域，与写请求、准备请求在日志中可区分。
+	ctx = withStepScope(ctx, step.Sequence, attemptNo, "verify")
+	reportPhase(approved, "verify", fmt.Sprintf("第 %d 步的请求已经发出，正在重新查看目标平台的流程节点和待办，确认“%s”是否已经生效；这里不会再次发送动作，确认后保存结果并继续下一步", step.Sequence, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 重读对照一律用目标真实节点标识：目标返回的当前节点与待办都是真实标识，
 	// 拿工具侧不透明键去比会永远"待办已消失"，把没生效的写误判成已前进。
 	stepTargetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
@@ -1763,6 +1814,40 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 		return target.TaskSnapshot{}, "", "", sess, false, "当前处理人账号解析失败：" + err.Error()
 	}
 	tried := []string{}
+	// F-030 评审 P2：优先用计划会话按处理人用户 ID 视角查询（不新增端点），
+	// 命中者才登录其会话；客户端不支持视角查询时回退旧的逐人登录重读。
+	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	viewReader, hasView := e.target.(taskSnapshotViewReader)
+	if hasView && instanceID != "" {
+		for _, match := range matches {
+			if strings.TrimSpace(match.UserID) == "" {
+				continue
+			}
+			snapshots, _, viewErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
+				func(callContext context.Context, active target.Session) ([]target.TaskSnapshot, error) {
+					return viewReader.ListTaskSnapshotsForUser(callContext, active, instanceID, status, match.UserID)
+				})
+			if viewErr != nil {
+				continue
+			}
+			wantNode := strings.TrimSpace(nodeID)
+			for _, snapshot := range snapshots {
+				if wantNode != "" && strings.TrimSpace(snapshot.FlowNodeProxyID) != wantNode {
+					continue
+				}
+				// 命中：登录该处理人会话供后续读取；登录失败退回计划会话（写路径会重新解析）。
+				snapshot.PendingUserID = match.UserID
+				name := firstNonEmpty(match.Name, session.Summary.DisplayName)
+				snapshot.PendingUserName = name
+				if account := strings.TrimSpace(match.Account); account != "" {
+					if actorSession, sessionErr := e.sessions.Current(ctx, account); sessionErr == nil {
+						return snapshot, match.UserID, name, actorSession, true, ""
+					}
+				}
+				return snapshot, match.UserID, name, session, true, ""
+			}
+		}
+	}
 	for _, match := range matches {
 		if strings.TrimSpace(match.Account) == "" {
 			continue
@@ -1802,7 +1887,7 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 	if len(tried) == 0 {
 		return target.TaskSnapshot{}, "", "", sess, false, "当前处理人未能解析出登录账号"
 	}
-	return target.TaskSnapshot{}, "", "", sess, false, "已依次切换当前处理人（" + strings.Join(tried, "、") + "）会话，均未发现本节点待办"
+	return target.TaskSnapshot{}, "", "", sess, false, "已依次核对当前处理人（" + strings.Join(tried, "、") + "）的待办，均未发现本节点待办"
 }
 
 // currentHandlerForNode 从实例事实里取本节点的待办处理人信息。
@@ -1816,12 +1901,21 @@ func currentHandlerForNode(facts InstanceFacts, nodeID string) (target.NodeCurre
 	return target.NodeCurrentHandler{}, false
 }
 
-// findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
+// taskSnapshotViewReader 是按指定用户视角读任务列表的可选能力面（真实客户端提供）。
+type taskSnapshotViewReader interface {
+	ListTaskSnapshotsForUser(ctx context.Context, active target.Session, instanceID, taskStatus, queryUserID string) ([]target.TaskSnapshot, error)
+}
+
+// findCandidateTaskSnapshot 发现下一节点的候选任务：优先用计划账号会话按候选人用户 ID
+// 逐个窄查询（目标协议原生支持 queryUserId 指定待办视角用户，不新增端点；F-030 评审 P2），
+// 只有命中者才登录其会话——消除「逐候选登录 + 各自完整分页扫描」的主要耗时。
+// 客户端不支持视角查询时回退旧路径（逐候选登录重读），行为与旧实现一致。
 func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunContext, planSession target.Session, step model.CompiledActionStep, nodeID, status string) (target.TaskSnapshot, string, string, target.Session, error) {
 	candidates := runCtx.NextNodeAuditors[step.NodeKey]
 	if len(candidates) == 0 || e.sessions == nil {
 		return target.TaskSnapshot{}, "", "", target.Session{}, nil
 	}
+	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 	// F-030/T02：候选人账号目录解析一次批量完成（UserAccountsByID 支持批量），
 	// 代替逐个候选人一次目录请求——候选越多省下的请求数越多，语义不变。
 	accountsByID := map[string]string{}
@@ -1842,6 +1936,56 @@ func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunCont
 			}
 		}
 	}
+	// 视角查询路径：同一计划会话逐候选按用户 ID 查待办，命中者才登录。
+	viewReader, hasView := e.target.(taskSnapshotViewReader)
+	if hasView && instanceID != "" {
+		var lastErr error
+		for _, candidate := range candidates {
+			userID := strings.TrimSpace(candidate.BizID)
+			if userID == "" {
+				continue
+			}
+			snapshots, _, viewErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, planSession.Summary.Account, planSession,
+				func(callContext context.Context, active target.Session) ([]target.TaskSnapshot, error) {
+					return viewReader.ListTaskSnapshotsForUser(callContext, active, instanceID, status, userID)
+				})
+			if viewErr != nil {
+				lastErr = viewErr
+				continue
+			}
+			wantNode := strings.TrimSpace(nodeID)
+			for _, snapshot := range snapshots {
+				if wantNode != "" && strings.TrimSpace(snapshot.FlowNodeProxyID) != wantNode {
+					continue
+				}
+				// 命中候选：登录其会话返回（后续代理树/审核记录读取继续用该会话）；
+				// 目录里没有账号时退回计划会话——写路径会按事实里的处理人 ID 重新解析会话，
+				// 这里不能因目录缺口丢弃已发现的任务事实。
+				account := accountsByID[userID]
+				name := strings.TrimSpace(candidate.Name)
+				if account == "" {
+					snapshot.PendingUserID = userID
+					snapshot.PendingUserName = name
+					return snapshot, userID, name, planSession, nil
+				}
+				actorSession, sessionErr := e.sessions.Current(ctx, account)
+				if sessionErr != nil && sessionRefreshAllowed(sessionErr) {
+					actorSession, sessionErr = e.sessions.Refresh(ctx, account)
+				}
+				if sessionErr == nil {
+					snapshot.PendingUserID = userID
+					snapshot.PendingUserName = name
+					return snapshot, userID, name, actorSession, nil
+				}
+				lastErr = sessionErr
+			}
+		}
+		if lastErr != nil {
+			return target.TaskSnapshot{}, "", "", target.Session{}, lastErr
+		}
+		return target.TaskSnapshot{}, "", "", target.Session{}, nil
+	}
+	// 回退路径：客户端不支持视角查询，逐候选登录重读（旧行为）。
 	var lastErr error
 	for _, candidate := range candidates {
 		userID := strings.TrimSpace(candidate.BizID)

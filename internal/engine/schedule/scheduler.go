@@ -8,6 +8,7 @@ package schedule
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"test-auto-pro-v2/internal/model"
@@ -94,17 +95,30 @@ func (s *Scheduler) promoteQueuedRun(ctx context.Context) {
 // scheduleWaitingPaths 对每个仍在运行中且有等待路径的运行按调度策略补位。
 // 并发上限取运行行的 max_concurrency（串行运行为 1）；活跃数=运行中+核验中+暂停。
 // F-030/T03：同账号真实串行排队 —— 同一账号的会话与目标操作在目标侧互踢，只能串行；
-// 调度器在放行前按计划账号限制实际启动数：本轮 Tick 内某账号已有路径被启动（或活跃中），
+// 调度器在放行前按计划账号限制实际启动数：本轮 Tick 内某账号已有路径在运行（或刚被启动），
 // 同账号后续路径继续等待，把并发机会让给不同账号的路径。这避免多条路径同时抢同一把
 // 账号锁后长时间空转——先启动者持锁执行，后启动者不再白占执行现场等锁。
+// 实现分两轮扫描：第一轮只收集「已有活跃路径」的账号（运行中/核验中/暂停都算占用，
+// 暂停的路径随时会继续执行）；第二轮再补位启动。只做一轮会依赖运行的遍历顺序——
+// 先处理全等待的运行会把同账号新路径启动起来，随后才看到另一个运行的同账号路径
+// 正在运行，这正是要消除的无效排队（评审 P1）。
 func (s *Scheduler) scheduleWaitingPaths(ctx context.Context) {
 	runIDs, err := s.store.ListRunIDsNeedingScheduling(ctx)
 	if err != nil {
 		return
 	}
-	// busyAccounts 是本轮 Tick 内已确认占用的计划账号：路径启动成功即记录，
-	// 后续同账号路径本轮不再启动（跨运行也生效：账号是全局资源不是运行资源）。
+	// busyAccounts 是本轮 Tick 内已确认占用的计划账号：已有活跃路径的运行与本轮启动成功的
+	// 路径都计入（跨运行也生效：账号是全局资源不是运行资源）。
 	busyAccounts := map[string]bool{}
+	type runPlan struct {
+		run        model.Run
+		pathRuns   []model.PathRun
+		planErr    error
+		account    string
+		active     int
+		waitingCnt int
+	}
+	plans := make([]runPlan, 0, len(runIDs))
 	for _, runID := range runIDs {
 		run, err := s.store.GetRun(ctx, runID)
 		if err != nil {
@@ -116,38 +130,51 @@ func (s *Scheduler) scheduleWaitingPaths(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		capacity := 1
-		if run.MaxConcurrency != nil && *run.MaxConcurrency > 0 {
-			capacity = *run.MaxConcurrency
-		}
-		active := 0
-		waiting := make([]model.PathRun, 0)
+		entry := runPlan{run: run, pathRuns: pathRuns, planErr: planErr, account: planAccount}
 		for _, pathRun := range pathRuns {
 			switch pathRun.Status {
 			case model.PathRunStatusRunning, model.PathRunStatusVerifying, model.PathRunStatusPaused:
-				active++
+				entry.active++
 			case model.PathRunStatusWaiting:
-				waiting = append(waiting, pathRun)
+				entry.waitingCnt++
 			}
 		}
-		for _, pathRun := range waiting {
+		// 已有活跃路径即占用计划账号：同账号的其他运行（含本运行）本轮不再启动新路径。
+		if entry.active > 0 && planErr == nil && strings.TrimSpace(planAccount) != "" {
+			busyAccounts[strings.TrimSpace(planAccount)] = true
+		}
+		plans = append(plans, entry)
+	}
+	for _, entry := range plans {
+		if entry.waitingCnt == 0 {
+			continue
+		}
+		capacity := 1
+		if entry.run.MaxConcurrency != nil && *entry.run.MaxConcurrency > 0 {
+			capacity = *entry.run.MaxConcurrency
+		}
+		active := entry.active
+		for _, pathRun := range entry.pathRuns {
+			if pathRun.Status != model.PathRunStatusWaiting {
+				continue
+			}
 			if active >= capacity {
 				// 槽位已满：本运行的等待路径继续排队，处理下一个运行。
 				break
 			}
-			// 同账号串行排队：本轮已有同账号路径被启动则不再启动（避免抢锁空转）。
-			if planErr == nil && busyAccounts[planAccount] {
+			// 同账号串行排队：本轮已有同账号路径在运行或被启动则不再启动（避免抢锁空转）。
+			if entry.planErr == nil && busyAccounts[strings.TrimSpace(entry.account)] {
 				break
 			}
-			log.Printf("[schedule] 启动路径运行 run=%d path_run=%d", run.ID, pathRun.ID)
-			if err := s.startPathRun(ctx, run, pathRun); err != nil {
+			log.Printf("[schedule] 启动路径运行 run=%d path_run=%d", entry.run.ID, pathRun.ID)
+			if err := s.startPathRun(ctx, entry.run, pathRun); err != nil {
 				// 启动失败如实交给下一轮 Tick：路径运行仍在等待，数据库状态没有被破坏；
 				// 本运行停止补位，继续处理其他运行。
-				log.Printf("[schedule] 启动失败 run=%d path_run=%d: %v", run.ID, pathRun.ID, err)
+				log.Printf("[schedule] 启动失败 run=%d path_run=%d: %v", entry.run.ID, pathRun.ID, err)
 				break
 			}
-			if planErr == nil && planAccount != "" {
-				busyAccounts[planAccount] = true
+			if entry.planErr == nil && strings.TrimSpace(entry.account) != "" {
+				busyAccounts[strings.TrimSpace(entry.account)] = true
 			}
 			active++
 		}

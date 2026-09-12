@@ -620,10 +620,25 @@ func SubmittedStatusText(status string) string { return submittedStatusText(stri
 // 目标服务只接受 pending 或 done；空状态不是“全部状态”，会被目标拒绝。任务较多时必须完整遍历分页，
 // 否则当前待办、批次或已办归属可能落在第二页而被错误判为不存在。
 func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instanceID, taskStatus string) ([]TaskSnapshot, error) {
-	// F-030/T02：同一次事实读取边界内同一 (会话, 实例, 状态) 的列表只扫一次。
-	// 键用账号而不是 SID：同账号锁内会话重建（重登）后列表内容对查找语义不变，
-	// 复用可避免重登后的重复扫描；不同账号视角不同必须各自扫描。
-	scopeKey := strings.TrimSpace(active.Summary.Account) + "|" + strings.TrimSpace(instanceID) + "|" + strings.TrimSpace(taskStatus)
+	return c.ListTaskSnapshotsForUser(ctx, active, instanceID, taskStatus, "")
+}
+
+// ListTaskSnapshotsForUser 以指定用户视角读取任务列表（F-030 评审 P2）：
+// queryUserID 非空时不再切换会话也能读其他用户的任务——目标源码
+// （FlowJobTaskLinkApiServiceImpl.list）只在 queryUserId 为空时才默认 SID 用户，
+// 非空时按该用户查询；pending 写入协议顶层 queryUserId，done 写入 data.executorId
+// （两个参数都是目标原生支持的既有字段，不是新增端点）。候选处理人扫描由此从
+// 「逐个候选登录 + 各自完整分页扫描」收敛为「同一会话逐候选一次窄查询」，
+// 只有命中者才需要登录会话。
+func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, instanceID, taskStatus, queryUserID string) ([]TaskSnapshot, error) {
+	// F-030/T02：同一次事实读取边界内同一 (有效用户, 实例, 状态) 的列表只扫一次。
+	// 键用账号而不是 SID：同账号锁内会话重建（重登）后列表内容对查找语义不变；
+	// 有效用户 = 会话账号与显式 queryUserId 的组合，不同用户视角必须各自扫描。
+	effectiveUser := strings.TrimSpace(active.Summary.Account)
+	if id := strings.TrimSpace(queryUserID); id != "" {
+		effectiveUser = "user:" + id
+	}
+	scopeKey := effectiveUser + "|" + strings.TrimSpace(instanceID) + "|" + strings.TrimSpace(taskStatus)
 	if cached := taskListFromScope(ctx, scopeKey); cached != nil {
 		return cached, nil
 	}
@@ -639,11 +654,15 @@ func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instance
 		"flowInstanceBizRelevance":     map[string]any{},
 		"flowInstanceBizRelevanceList": []any{},
 	}
-	// 已办列表必须限定当前实际执行人；待办列表由目标网关按 SID 解析当前用户。
-	// 缺少用户标识时不能退化为全量已办查询，否则同一实例节点可能取到其他人的任务并把错误
-	// jobTaskId 发给取回接口。登录响应不完整时宁可在写前阻断，也不能猜测归属。
+	// 视角用户：done 列表必须限定实际执行人；指定视角用户时同样把 executorId 换成该用户。
+	// 待办列表由目标网关按 SID 解析当前用户，但目标协议顶层 queryUserId 可显式指定待办视角用户
+	// （源码：queryUserId 为空才默认 SID 用户），两个分支都用同一个既有字段，不新增端点。
+	viewUserID := strings.TrimSpace(queryUserID)
 	if taskStatus == "done" {
-		executorID := strings.TrimSpace(active.UserID)
+		executorID := viewUserID
+		if executorID == "" {
+			executorID = strings.TrimSpace(active.UserID)
+		}
 		if executorID == "" {
 			return nil, invalidResponse("done task lookup missing executor id")
 		}
@@ -671,9 +690,13 @@ func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instance
 	const pageSize = 100
 	const maxPages = 20
 	for page := 1; page <= maxPages; page++ {
-		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
+		body := map[string]any{
 			"data": data, "pagination": true, "pages": page, "size": pageSize,
-		})
+		}
+		if taskStatus == "pending" && viewUserID != "" {
+			body["queryUserId"] = viewUserID
+		}
+		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, body)
 		if err != nil {
 			return nil, err
 		}

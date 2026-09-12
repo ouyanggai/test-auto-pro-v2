@@ -90,6 +90,40 @@ func TestMissingNetworkLogDegradesWithoutGuessing(t *testing.T) {
 	}
 }
 
+// TestReadAttemptRequestsPrefersStepScopeOverWindow 锁定 F-030 评审 P1 修复：
+// network.log 行携带 step_id/attempt 时按日志直接归属，不再依赖秒级时间窗口推断——
+// 两个步骤窗口重叠（第 1 步重试核验与第 2 步预览交错）时也不会归错。
+func TestReadAttemptRequestsPrefersStepScopeOverWindow(t *testing.T) {
+	stepLog := strings.Join([]string{
+		// 第 1 步窗口：22:19:10 → 22:19:40（含重试）
+		"time=2026-09-11_22:19:10 level=info run_id=90 path_run_id=106 step_id=1 attempt=1 phase=plan message=a",
+		"time=2026-09-11_22:19:40 level=info run_id=90 path_run_id=106 step_id=1 attempt=2 phase=settle message=b",
+		// 第 2 步窗口：22:19:20 → 22:19:50（与第 1 步重叠）
+		"time=2026-09-11_22:19:20 level=info run_id=90 path_run_id=106 step_id=2 attempt=1 phase=plan message=c",
+		"time=2026-09-11_22:19:50 level=info run_id=90 path_run_id=106 step_id=2 attempt=1 phase=settle message=d",
+	}, "\n")
+	networkLog := strings.Join([]string{
+		// 时间落在两个窗口重叠区，但日志行声明属于第 2 步：必须按 step_id/attempt 归属。
+		"time=2026-09-11_22:19:25 level=info run_id=90 path_run_id=106 step_id=2 attempt=1 phase=gate trace_id=t1 method=POST endpoint=/api/web/flowInstanceApi/list request_class=read status_code=200 duration_s=0.4 result=success retry_attempt=1",
+		// 同理：声明属于第 1 步第 2 次尝试的重试请求。
+		"time=2026-09-11_22:19:35 level=info run_id=90 path_run_id=106 step_id=1 attempt=2 phase=verify trace_id=t2 method=POST endpoint=/api/web/flowJobTaskLink/list request_class=read status_code=200 duration_s=0.2 result=success retry_attempt=2",
+		// step_id 对不上尝试记录（如登录/结构读取遗留）：不硬归属。
+		"time=2026-09-11_22:19:26 level=info run_id=90 path_run_id=106 step_id=9 attempt=1 phase=plan trace_id=t3 method=POST endpoint=/api/web/flowInstanceApi/list request_class=read status_code=200 duration_s=0.1 result=success retry_attempt=1",
+	}, "\n")
+	router, attempts := newTimingFixture(t, networkLog, stepLog)
+	attempts = []model.RunStepAttempt{{StepID: 1, AttemptNo: 1, LogPath: attempts[0].LogPath}, {StepID: 1, AttemptNo: 2}, {StepID: 2, AttemptNo: 1}}
+	requests, _ := service.ReadAttemptRequestsForTestWithRouter(router, 106, attempts)
+	if got := requests["2:1"]; len(got) != 1 || got[0].TraceID != "t1" || got[0].Phase != "gate" {
+		t.Fatalf("重叠窗口内应按 step_id/attempt 直接归属到第 2 步，实际 %v", requests)
+	}
+	if got := requests["1:2"]; len(got) != 1 || got[0].TraceID != "t2" || got[0].Phase != "verify" {
+		t.Fatalf("重试请求应归属到第 1 步第 2 次尝试，实际 %v", requests)
+	}
+	if _, ok := requests["9:1"]; ok {
+		t.Fatal("step_id 对不上尝试记录的请求不应硬归属")
+	}
+}
+
 // 编译期确认 DTO 字段不携带敏感信息：只允许白名单键出现在 JSON 输出。
 func TestRunRequestDTOHasNoSensitiveFields(t *testing.T) {
 	dto := service.RunRequestDTO{Phase: "verify", RequestClass: "write", Endpoint: "flowInstanceApi/audit", DurationMs: 300, StatusCode: 200, Result: "success", RetryAttempt: 1, TraceID: "t2", At: "2026-09-11_22:19:20"}

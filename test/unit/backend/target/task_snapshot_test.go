@@ -128,6 +128,53 @@ func TestFindTaskSnapshotRejectsAmbiguousOrIncompleteTask(t *testing.T) {
 	}
 }
 
+// TestListTaskSnapshotsForUserSendsViewUserParams 锁定 F-030 评审 P2 的视角查询载荷：
+// pending 时 queryUserId 放协议顶层（目标源码：queryUserId 为空才默认 SID 用户），
+// done 时写入 data.executorId；不指定视角用户时不携带这两个参数，行为与旧调用一致。
+func TestListTaskSnapshotsForUserSendsViewUserParams(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("请求正文解析失败：%v", err)
+		}
+		bodies = append(bodies, body)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"isSuccess":true,"data":[{"id":"row-1","jobTaskId":"task-1","flowInstanceId":"instance-11","flowNodeProxyId":"node-1","taskStatus":"pending"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := target.NewClient(target.ClientConfig{BaseURL: server.URL, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("创建目标客户端失败：%v", err)
+	}
+	session := target.Session{SID: "sid-11", UserID: "user-plan", Summary: target.AccountSummary{Account: "plan"}}
+	// 指定视角用户查 pending：queryUserId 在协议顶层。
+	if _, err := client.ListTaskSnapshotsForUser(context.Background(), session, "instance-11", "pending", "user-9"); err != nil {
+		t.Fatalf("视角查询 pending 失败：%v", err)
+	}
+	// 指定视角用户查 done：executorId 在 data 内。
+	if _, err := client.ListTaskSnapshotsForUser(context.Background(), session, "instance-11", "done", "user-9"); err != nil {
+		t.Fatalf("视角查询 done 失败：%v", err)
+	}
+	// 不指定视角用户：载荷与旧调用完全一致，不带 queryUserId。
+	if _, err := client.ListTaskSnapshotsForUser(context.Background(), session, "instance-11", "pending", ""); err != nil {
+		t.Fatalf("默认视角查询失败：%v", err)
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("应发出 3 次请求，实际 %d 次", len(bodies))
+	}
+	if bodies[0]["queryUserId"] != "user-9" {
+		t.Fatalf("pending 视角查询应携带顶层 queryUserId：%v", bodies[0])
+	}
+	if doneData, _ := bodies[1]["data"].(map[string]any); doneData["executorId"] != "user-9" {
+		t.Fatalf("done 视角查询应携带 data.executorId：%v", bodies[1])
+	}
+	if _, has := bodies[2]["queryUserId"]; has {
+		t.Fatalf("未指定视角用户时不应携带 queryUserId：%v", bodies[2])
+	}
+}
+
 // TestListTaskSnapshotsPaginatesAndRejectsBlankStatus 验证任务事实不会因为第二页遗漏而丢失，
 // 且调用方不能再向目标发送会被拒绝的空 taskStatus。
 func TestListTaskSnapshotsPaginatesAndRejectsBlankStatus(t *testing.T) {
