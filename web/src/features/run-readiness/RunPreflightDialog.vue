@@ -162,8 +162,17 @@ watch(() => props.show, (open) => {
     <n-spin :show="loading" class="run-preflight__body">
       <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
 
-      <!-- 有可运行路径：只说明总路径数与可运行数，不再逐条勾选；运行方式用卡片表达。 -->
-      <template v-if="runnablePaths.length">
+      <!-- 首次打开先渲染检查中的说明：弹窗不能先空白再突然变大，用户必须知道正在核对什么。 -->
+      <div v-else-if="!readiness" class="run-preflight__checking" role="status" aria-live="polite">
+        <span class="run-preflight__checking-pulse" aria-hidden="true" />
+        <p class="run-preflight__checking-title">正在检查能不能运行…</p>
+        <p class="run-preflight__checking-hint">逐条核对勾选路径的节点配置、基础表单数据和可执行步骤，稍等片刻。</p>
+      </div>
+
+      <!-- 结果整体淡入并轻微上移：让"检查完成"这件事本身被看见，而不是内容凭空出现。 -->
+      <div v-else class="run-preflight__reveal">
+        <!-- 有可运行路径：只说明总路径数与可运行数，不再逐条勾选；运行方式用卡片表达。 -->
+        <template v-if="runnablePaths.length">
         <div
           class="run-preflight__verdict"
           :class="blockedPaths.length ? 'run-preflight__verdict--blocked' : 'run-preflight__verdict--ok'"
@@ -246,6 +255,7 @@ watch(() => props.show, (open) => {
       </template>
 
       <p v-else-if="hasPaths" class="run-preflight__muted">本次勾选的路径都没有可运行的内容。</p>
+      </div>
     </n-spin>
 
     <template #footer>
@@ -261,7 +271,7 @@ watch(() => props.show, (open) => {
           :disabled="!canStart"
           @click="startSelectedRun"
         >
-          {{ canStart ? '开始运行' : (blockedPaths.length ? '有问题待处理' : '没有可运行的路径') }}
+          {{ starting ? '正在启动…' : loading ? '正在检查…' : canStart ? '开始运行' : (blockedPaths.length ? '有问题待处理' : '没有可运行的路径') }}
         </n-button>
       </div>
     </template>
@@ -269,9 +279,61 @@ watch(() => props.show, (open) => {
 </template>
 
 <style scoped>
+/* 打开即给稳定高度：检查中与结果之间不出现"先一张小空白、再突然变一大窗"的跳变。 */
 .run-preflight__body {
+  min-height: 172px;
   max-height: 62vh;
   overflow-y: auto;
+}
+
+/* 检查中占位：呼吸圆点 + 两句说明，明确说出正在核对哪些内容。 */
+.run-preflight__checking {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 30px 12px 22px;
+  text-align: center;
+}
+
+.run-preflight__checking-pulse {
+  width: 10px;
+  height: 10px;
+  margin-bottom: 8px;
+  background: var(--preflight-primary-color);
+  border-radius: 50%;
+  animation: run-preflight-pulse 1.1s ease-in-out infinite;
+}
+
+.run-preflight__checking-title {
+  margin: 0;
+  color: var(--preflight-secondary-text-color);
+  font-size: 14px;
+}
+
+.run-preflight__checking-hint {
+  max-width: 460px;
+  margin: 0;
+  color: var(--preflight-secondary-text-color);
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.82;
+}
+
+/* 结果淡入 + 轻微上移：让"检查完成"本身成为一个可见的变化。 */
+.run-preflight__reveal {
+  animation: run-preflight-reveal 0.24s ease-out both;
+}
+
+@keyframes run-preflight-pulse {
+  0%,
+  100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes run-preflight-reveal {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
 /* 结论条：图标 + 一句话，浅底色块，一眼看清能不能跑。 */

@@ -59,8 +59,6 @@ type RunStore interface {
 	CountActiveRuns(ctx context.Context) (int, error)
 	// EnqueueRun 把一次运行加入计划间串行等待队列；同一次运行重复入队是幂等空操作。
 	EnqueueRun(ctx context.Context, runID uint64, planID uint64, now time.Time) error
-	// PlanAccountOf 返回计划的目标登录账号（调度器同账号串行排队需要）；计划不存在返回错误。
-	PlanAccountOf(ctx context.Context, planID uint64) (string, error)
 	// DequeueRun 原子领取队首的等待运行并从队列移除；返回 0 表示队列为空。
 	// 仅当当时没有其他非终态运行时才领取，保证计划间串行的同时不丢唤醒。
 	DequeueRun(ctx context.Context, now time.Time) (uint64, error)

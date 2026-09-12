@@ -2,7 +2,6 @@ package schedule_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -30,11 +29,6 @@ func (f *fakeSchedulerStore) ListRunIDsNeedingScheduling(context.Context) ([]uin
 // DequeueRun 默认队列为空：计划间串行排队单独用例覆盖。
 func (f *fakeSchedulerStore) DequeueRun(context.Context, time.Time) (uint64, error) {
 	return 0, nil
-}
-
-// PlanAccountOf 默认返回独立账号：同账号排队单独用例覆盖。
-func (f *fakeSchedulerStore) PlanAccountOf(_ context.Context, planID uint64) (string, error) {
-	return fmt.Sprintf("account-%d", planID), nil
 }
 
 // GetRun 读取运行聚合。
@@ -83,90 +77,9 @@ func TestSchedulerSerialStartsOneAtATime(t *testing.T) {
 	}
 }
 
-// TestSchedulerParallelSameAccountStaggers 锁定 F-030/T03 新语义：并行上限 2 但计划账号相同，
-// 同一轮 Tick 只启动一条（后一条不再白占执行现场抢账号锁），下一轮账号空闲再补位。
-func TestSchedulerParallelSameAccountStaggers(t *testing.T) {
-	capacity := 2
-	store := &fakeSchedulerStore{
-		runs: map[uint64]model.Run{1: {ID: 1, PlanID: 1, Status: model.RunStatusRunning, MaxConcurrency: &capacity}},
-		pathRuns: map[uint64][]model.PathRun{1: {
-			waiting(101, 1), waiting(102, 2), waiting(103, 3),
-		}},
-		needingIDs: []uint64{1},
-	}
-	started := make([]uint64, 0)
-	scheduler := schedule.NewScheduler(store, store, time.Hour,
-		func(_ context.Context, _ model.Run, pathRun model.PathRun) error {
-			started = append(started, pathRun.ID)
-			return nil
-		}, func(context.Context, model.Plan) error { return nil }, nil)
-	scheduler.Tick(context.Background())
-	if len(started) != 1 || started[0] != 101 {
-		t.Fatalf("同账号并行一轮只应启动一条路径（避免抢锁空转），实际 %v", started)
-	}
-	// 模拟第一条路径运行中但本轮 Tick 后（下一轮账号仍被占）：后续路径继续排队等待补位，
-	// 最终按序全部启动由真实运行中路径释放槽位后逐轮完成；这里锁定不会一次全启。
-}
-
 // running 构造运行中路径运行。
 func running(id, pathID uint64) model.PathRun {
 	return model.PathRun{ID: id, RunID: 1, ExecutionPathID: pathID, Status: model.PathRunStatusRunning}
-}
-
-// TestSchedulerSameAccountActivePathBlocksNewStart 锁定评审 P1 修复：同账号已有运行中路径时
-// （无论在同一个运行还是另一个运行），本轮 Tick 不再启动同账号的等待路径——
-// 避免新路径占着执行槽位在账号锁上长时间空转，把并发机会留给不同账号。
-func TestSchedulerSameAccountActivePathBlocksNewStart(t *testing.T) {
-	capacity := 2
-	store := &fakeSchedulerStore{
-		// 两个运行同属计划 1（同账号）：运行 1 已有一条路径在运行中，运行 2 全部等待。
-		runs: map[uint64]model.Run{
-			1: {ID: 1, PlanID: 1, Status: model.RunStatusRunning, MaxConcurrency: &capacity},
-			2: {ID: 2, PlanID: 1, Status: model.RunStatusRunning, MaxConcurrency: &capacity},
-		},
-		pathRuns: map[uint64][]model.PathRun{
-			1: {running(101, 1), waiting(102, 2)},
-			2: {waiting(201, 3)},
-		},
-		needingIDs: []uint64{1, 2},
-	}
-	started := make([]uint64, 0)
-	scheduler := schedule.NewScheduler(store, store, time.Hour,
-		func(_ context.Context, _ model.Run, pathRun model.PathRun) error {
-			started = append(started, pathRun.ID)
-			return nil
-		}, func(context.Context, model.Plan) error { return nil }, nil)
-	scheduler.Tick(context.Background())
-	if len(started) != 0 {
-		t.Fatalf("同账号已有运行中路径时不应再启动同账号新路径，实际启动 %v", started)
-	}
-}
-
-// TestSchedulerDifferentAccountActiveStillStarts 锁定并发不受影响：已有活跃路径只占用同账号，
-// 不同账号的运行照常补位启动，不因本次修复误伤并行能力。
-func TestSchedulerDifferentAccountActiveStillStarts(t *testing.T) {
-	capacity := 2
-	store := &fakeSchedulerStore{
-		runs: map[uint64]model.Run{
-			1: {ID: 1, PlanID: 1, Status: model.RunStatusRunning, MaxConcurrency: &capacity},
-			2: {ID: 2, PlanID: 2, Status: model.RunStatusRunning, MaxConcurrency: &capacity},
-		},
-		pathRuns: map[uint64][]model.PathRun{
-			1: {running(101, 1)},
-			2: {waiting(201, 3)},
-		},
-		needingIDs: []uint64{1, 2},
-	}
-	started := make([]uint64, 0)
-	scheduler := schedule.NewScheduler(store, store, time.Hour,
-		func(_ context.Context, _ model.Run, pathRun model.PathRun) error {
-			started = append(started, pathRun.ID)
-			return nil
-		}, func(context.Context, model.Plan) error { return nil }, nil)
-	scheduler.Tick(context.Background())
-	if len(started) != 1 || started[0] != 201 {
-		t.Fatalf("不同账号的等待路径应照常启动，实际 %v", started)
-	}
 }
 
 // TestSchedulerStartFailureDoesNotBlockRun 锁定失败隔离与重试边界：
@@ -186,5 +99,29 @@ func TestSchedulerStartFailureDoesNotBlockRun(t *testing.T) {
 	scheduler.Tick(context.Background())
 	if calls != 1 {
 		t.Fatalf("失败后本轮不应继续尝试其他路径，实际调用 %d 次", calls)
+	}
+}
+
+// TestSchedulerParallelStartsUpToCap 锁定方案 A（用户裁决）：并行上限 2 时一轮补足两个槽位，
+// 同账号路径也同时启动——同账号互踢的串行约束由账号锁在请求粒度消化，
+// 总耗时趋近 max(各路径)；锁等待由 [session] 日志单独可见。
+func TestSchedulerParallelStartsUpToCap(t *testing.T) {
+	capacity := 2
+	store := &fakeSchedulerStore{
+		runs: map[uint64]model.Run{1: {ID: 1, PlanID: 1, Status: model.RunStatusRunning, MaxConcurrency: &capacity}},
+		pathRuns: map[uint64][]model.PathRun{1: {
+			waiting(101, 1), waiting(102, 2), waiting(103, 3),
+		}},
+		needingIDs: []uint64{1},
+	}
+	started := make([]uint64, 0)
+	scheduler := schedule.NewScheduler(store, store, time.Hour,
+		func(_ context.Context, _ model.Run, pathRun model.PathRun) error {
+			started = append(started, pathRun.ID)
+			return nil
+		}, func(context.Context, model.Plan) error { return nil }, nil)
+	scheduler.Tick(context.Background())
+	if len(started) != 2 || started[0] != 101 || started[1] != 102 {
+		t.Fatalf("并行一轮应按序补足两个槽位（同账号也并发启动），实际 %v", started)
 	}
 }

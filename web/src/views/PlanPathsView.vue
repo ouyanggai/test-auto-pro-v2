@@ -61,6 +61,7 @@ import BaseFormDataPicker from '../features/history-replay/BaseFormDataPicker.vu
 import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import { flowSourceLabels } from '../features/plans/selection'
 import type { PersistedPlan } from '../features/plans/types'
+import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -101,6 +102,8 @@ const pathSelectionError = ref('')
 const preparationJob = ref<HistoryReplayJob | null>(null)
 const preparationLoading = ref(false)
 const dataPickerOpen = ref(false)
+// 运行入口：计划详情右上角的「运行」只启动当前勾选路径，与路径页的勾选范围严格一致。
+const runPreflightOpen = ref(false)
 const SAVED_PATH_ITEM_SIZE = 44
 const PREPARATION_PATH_ITEM_SIZE = 84
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
@@ -183,6 +186,8 @@ const preparationProcessed = computed(() => preparationJob.value
   : 0)
 const savedPathListHeight = computed(() => Math.min(paths.value.length, 5) * SAVED_PATH_ITEM_SIZE)
 const allPathsSelectedForRun = computed(() => paths.value.length > 0 && paths.value.every(path => selectedRunPathIDs.value.has(path.id)))
+// runPathIDs 是启动运行时的路径快照：预检弹窗按它检查、启动也按它执行，两边范围必须一致。
+const runPathIDs = computed(() => [...selectedRunPathIDs.value])
 const pathMoreOptions = computed(() => planMutable.value ? [
   ...(allowCopy.value ? [{ label: '复制路径', key: 'copy' }] : []),
   { label: '删除路径', key: 'delete' },
@@ -348,9 +353,11 @@ async function selectSavedPath(path: ExecutionPath) {
   }
 }
 
-// updateRunPathSelection 只维护本次一键配置的明确勾选，创建任务时一次提交路径快照。
+// updateRunPathSelection 只维护本次运行的明确勾选，启动运行或创建一键配置任务时一次提交路径快照。
+// 勾选表达的是"这次跑哪些路径"，与计划是否已产生运行记录无关：计划进入只读后仍要能挑子集运行，
+// 所以这里不被 planMutable 拦截；只有一键配置正在写路径数据时才冻结勾选，避免写读互相覆盖。
 function updateRunPathSelection(path: ExecutionPath, included: boolean) {
-	if (!planMutable.value || preparationBusy.value) return
+	if (preparationBusy.value) return
   runSelectionTouched.value = true
   const next = new Set(selectedRunPathIDs.value)
   if (included) next.add(path.id)
@@ -451,11 +458,23 @@ async function resumeCurrentPreparation() {
   }
 }
 
-// setAllRunPathSelections 为本次任务全选或清空路径，不写入配置表。
+// setAllRunPathSelections 为本次运行或一键配置任务全选或清空路径，不写入配置表；只读计划同样可全选。
 function setAllRunPathSelections(included: boolean) {
-  if (!planMutable.value || preparationBusy.value) return
+  if (preparationBusy.value) return
   runSelectionTouched.value = true
   selectedRunPathIDs.value = included ? new Set(paths.value.map(path => path.id)) : new Set()
+}
+
+// openRunPreflight 打开运行前检查弹窗：没有勾选路径时按钮本身就是禁用的，这里只做最后一道拦截。
+function openRunPreflight() {
+  if (preparationBusy.value || selectedRunPathIDs.value.size === 0) return
+  runPreflightOpen.value = true
+}
+
+// locateReadinessItem 把运行前检查里的阻塞项落到那条路径的配置页对应面板，锚点由配置页消费后清参。
+function locateReadinessItem(pathId: string, anchor: string) {
+  const query = anchor ? '?panel=' + encodeURIComponent(anchor) : ''
+  void router.push('/plans/' + planID.value + '/paths/' + pathId + '/configure' + query)
 }
 
 function closeSavedPaths() {
@@ -818,6 +837,16 @@ onMounted(() => {
             </div>
             <n-space class="page-heading__actions" align="center" size="small">
               <span class="page-heading__selection">已勾选 {{ selectedRunPathIDs.size }} / {{ paths.length }} 条路径</span>
+              <!-- 运行入口：只启动勾选路径，预检与启动同范围；计划列表那一处按「已配置且数据就绪」启动。 -->
+              <n-button
+                type="primary"
+                data-testid="plan-detail-run-button"
+                :disabled="preparationBusy || selectedRunPathIDs.size === 0"
+                :title="selectedRunPathIDs.size === 0 ? '先勾选要运行的路径' : `运行已勾选的 ${selectedRunPathIDs.size} 条路径`"
+                @click="openRunPreflight"
+              >
+                运行
+              </n-button>
             </n-space>
           </header>
 
@@ -841,8 +870,8 @@ onMounted(() => {
                 <p v-else>共 {{ paths.length }} 条 · 已选 {{ selectedRunPathIDs.size }} 条</p>
               </div>
               <div class="path-prepare__header-actions">
-							<n-button v-if="planMutable && paths.length" size="small" secondary :disabled="preparationBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
-                <n-button v-if="planMutable && paths.length" size="small" secondary :disabled="preparationBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
+							<n-button v-if="paths.length" size="small" secondary :disabled="preparationBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
+                <n-button v-if="paths.length" size="small" secondary :disabled="preparationBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
 							<n-button
 								v-if="planMutable && paths.length"
 								size="small"
@@ -912,7 +941,7 @@ onMounted(() => {
 								<div class="path-prepare__item">
                 <n-checkbox
                   :checked="selectedRunPathIDs.has(path.id)"
-									:disabled="!planMutable || preparationBusy"
+									:disabled="preparationBusy"
                   @update:checked="value => updateRunPathSelection(path, value)"
                 >
                   运行
@@ -1194,6 +1223,14 @@ onMounted(() => {
     >
       只删除当前工具中的路径记录，确认继续？
     </n-modal>
+    <!-- 与计划列表共用同一个运行前检查弹窗；这里传勾选快照，弹窗只检查并启动这些路径。 -->
+    <run-preflight-dialog
+      :show="runPreflightOpen"
+      :plan-id="planID"
+      :path-ids="runPathIDs"
+      @update:show="value => (runPreflightOpen = value)"
+      @locate="locateReadinessItem"
+    />
   </section>
 </template>
 
