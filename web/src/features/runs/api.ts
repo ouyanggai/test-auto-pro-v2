@@ -46,7 +46,7 @@ export interface RunStepAttempt {
   curlBlock?: string
   // requests/requestSummary 是 F-030/T04 的真实目标请求明细与汇总（来自 network.log 传输层计时）。
   requests?: RunRequestItem[]
-  requestSummary?: { totalMs: number, writeMs: number, count: number, writeCount: number }
+  requestSummary?: { totalMs: number, writeMs: number, count: number, writeCount: number, allDurationsKnown: boolean }
   // isReplay 是只读历史事实：用户侧重放已于 2026-09-06 移除，新运行的尝试恒为 false。
   isReplay?: boolean
 }
@@ -57,6 +57,7 @@ export interface RunRequestItem {
   requestClass: 'read' | 'write'
   endpoint: string
   durationMs: number
+  durationKnown?: boolean
   statusCode: number
   result: string
   retryAttempt: number

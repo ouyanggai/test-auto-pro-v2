@@ -90,6 +90,10 @@ func (e *Executor) BuildPreview(ctx context.Context, runCtx RunContext, nextInde
 		releaseUsage = locker.LockAccountUsage(runCtx.PlanAccount)
 		defer releaseUsage()
 	}
+	// F-030/T02：任务列表 memo 覆盖整个预览调用树（gate 事实读取、候选人扫描、
+	// 当前处理人切换都对同一账号×实例×状态复用同一次目标分页扫描）。
+	// 作用域只到本次预览：放行后的核验（RunApprovedStep）不经过这里，天然全新读取。
+	ctx = target.AttachTaskSnapshotScope(ctx)
 	step := runCtx.Steps[nextIndex]
 	log := e.stepLogFor(runCtx)
 	log.Phase("plan", step.Sequence, 1, fmt.Sprintf("取第 %d 步：来源 %s，动作 %s，节点 %s", step.Sequence, step.Source, string(step.Action), step.NodeKey))
@@ -1818,13 +1822,39 @@ func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunCont
 	if len(candidates) == 0 || e.sessions == nil {
 		return target.TaskSnapshot{}, "", "", target.Session{}, nil
 	}
+	// F-030/T02：候选人账号目录解析一次批量完成（UserAccountsByID 支持批量），
+	// 代替逐个候选人一次目录请求——候选越多省下的请求数越多，语义不变。
+	accountsByID := map[string]string{}
+	resolver, hasResolver := e.target.(userAccountResolver)
+	if hasResolver {
+		ids := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			if id := strings.TrimSpace(candidate.BizID); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			if accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, planSession.Summary.Account, planSession,
+				func(callContext context.Context, active target.Session) (map[string]string, error) {
+					return resolver.UserAccountsByID(callContext, active, ids)
+				}); err == nil {
+				accountsByID = accounts
+			}
+		}
+	}
 	var lastErr error
 	for _, candidate := range candidates {
 		userID := strings.TrimSpace(candidate.BizID)
 		if userID == "" {
 			continue
 		}
-		account, _, resolveErr := e.assigneeAccount(ctx, planSession, userID)
+		// 优先批量解析结果；批量解析失败时逐个兜底，行为与旧路径一致。
+		account, _, resolveErr := func() (string, string, error) {
+			if account, ok := accountsByID[userID]; ok && strings.TrimSpace(account) != "" {
+				return account, "", nil
+			}
+			return e.assigneeAccount(ctx, planSession, userID)
+		}()
 		if resolveErr != nil {
 			lastErr = resolveErr
 			continue
@@ -2153,4 +2183,3 @@ type auditTrace struct {
 	found bool
 	total int
 }
-

@@ -20,6 +20,8 @@ type ScheduledPlanStore interface {
 	ListDueScheduledPlans(ctx context.Context, now time.Time) ([]model.Plan, error)
 	// ClaimScheduledPlan 原子领取到点计划的一次性消费标记；返回是否领取成功。
 	ClaimScheduledPlan(ctx context.Context, planID uint64, now time.Time) (bool, error)
+	// PlanAccountOf 返回计划的目标账号（调度器用于同账号串行排队）；读不到返回错误。
+	PlanAccountOf(ctx context.Context, planID uint64) (string, error)
 }
 
 // Scheduler 是运行级调度器。
@@ -91,20 +93,25 @@ func (s *Scheduler) promoteQueuedRun(ctx context.Context) {
 
 // scheduleWaitingPaths 对每个仍在运行中且有等待路径的运行按调度策略补位。
 // 并发上限取运行行的 max_concurrency（串行运行为 1）；活跃数=运行中+核验中+暂停。
-// F-030/T03：同账号排队可见性 —— 调度器只按运行级容量补位；同账号的真实串行由
-// 账号使用锁保证（session.LockAccountUsage），锁等待在 [session] 日志中单独计时，
-// 与目标接口耗时严格分开。计划账号相同的多条路径并发启动是允许的：先启动者持锁执行，
-// 后启动者在锁上有界等待（等待时长可见），不改变失败隔离。
+// F-030/T03：同账号真实串行排队 —— 同一账号的会话与目标操作在目标侧互踢，只能串行；
+// 调度器在放行前按计划账号限制实际启动数：本轮 Tick 内某账号已有路径被启动（或活跃中），
+// 同账号后续路径继续等待，把并发机会让给不同账号的路径。这避免多条路径同时抢同一把
+// 账号锁后长时间空转——先启动者持锁执行，后启动者不再白占执行现场等锁。
 func (s *Scheduler) scheduleWaitingPaths(ctx context.Context) {
 	runIDs, err := s.store.ListRunIDsNeedingScheduling(ctx)
 	if err != nil {
 		return
 	}
+	// busyAccounts 是本轮 Tick 内已确认占用的计划账号：路径启动成功即记录，
+	// 后续同账号路径本轮不再启动（跨运行也生效：账号是全局资源不是运行资源）。
+	busyAccounts := map[string]bool{}
 	for _, runID := range runIDs {
 		run, err := s.store.GetRun(ctx, runID)
 		if err != nil {
 			continue
 		}
+		// 计划账号决定目标会话归属：读不到账号的运行无法判断账号约束，按容量补位（旧行为）。
+		planAccount, planErr := s.plans.PlanAccountOf(ctx, run.PlanID)
 		pathRuns, err := s.store.ListPathRunsByRun(ctx, runID)
 		if err != nil {
 			continue
@@ -128,12 +135,19 @@ func (s *Scheduler) scheduleWaitingPaths(ctx context.Context) {
 				// 槽位已满：本运行的等待路径继续排队，处理下一个运行。
 				break
 			}
+			// 同账号串行排队：本轮已有同账号路径被启动则不再启动（避免抢锁空转）。
+			if planErr == nil && busyAccounts[planAccount] {
+				break
+			}
 			log.Printf("[schedule] 启动路径运行 run=%d path_run=%d", run.ID, pathRun.ID)
 			if err := s.startPathRun(ctx, run, pathRun); err != nil {
 				// 启动失败如实交给下一轮 Tick：路径运行仍在等待，数据库状态没有被破坏；
 				// 本运行停止补位，继续处理其他运行。
 				log.Printf("[schedule] 启动失败 run=%d path_run=%d: %v", run.ID, pathRun.ID, err)
 				break
+			}
+			if planErr == nil && planAccount != "" {
+				busyAccounts[planAccount] = true
 			}
 			active++
 		}

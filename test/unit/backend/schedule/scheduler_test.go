@@ -2,6 +2,7 @@ package schedule_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -29,6 +30,11 @@ func (f *fakeSchedulerStore) ListRunIDsNeedingScheduling(context.Context) ([]uin
 // DequeueRun 默认队列为空：计划间串行排队单独用例覆盖。
 func (f *fakeSchedulerStore) DequeueRun(context.Context, time.Time) (uint64, error) {
 	return 0, nil
+}
+
+// PlanAccountOf 默认返回独立账号：同账号排队单独用例覆盖。
+func (f *fakeSchedulerStore) PlanAccountOf(_ context.Context, planID uint64) (string, error) {
+	return fmt.Sprintf("account-%d", planID), nil
 }
 
 // GetRun 读取运行聚合。
@@ -77,8 +83,9 @@ func TestSchedulerSerialStartsOneAtATime(t *testing.T) {
 	}
 }
 
-// TestSchedulerParallelFillsUpToCap 锁定并行语义：并发上限 2 时一轮补足两个槽位，且顺序稳定。
-func TestSchedulerParallelFillsUpToCap(t *testing.T) {
+// TestSchedulerParallelSameAccountStaggers 锁定 F-030/T03 新语义：并行上限 2 但计划账号相同，
+// 同一轮 Tick 只启动一条（后一条不再白占执行现场抢账号锁），下一轮账号空闲再补位。
+func TestSchedulerParallelSameAccountStaggers(t *testing.T) {
 	capacity := 2
 	store := &fakeSchedulerStore{
 		runs: map[uint64]model.Run{1: {ID: 1, PlanID: 1, Status: model.RunStatusRunning, MaxConcurrency: &capacity}},
@@ -94,9 +101,11 @@ func TestSchedulerParallelFillsUpToCap(t *testing.T) {
 			return nil
 		}, func(context.Context, model.Plan) error { return nil }, nil)
 	scheduler.Tick(context.Background())
-	if len(started) != 2 || started[0] != 101 || started[1] != 102 {
-		t.Fatalf("并行一轮应按序补足两个槽位，实际 %v", started)
+	if len(started) != 1 || started[0] != 101 {
+		t.Fatalf("同账号并行一轮只应启动一条路径（避免抢锁空转），实际 %v", started)
 	}
+	// 模拟第一条路径运行中但本轮 Tick 后（下一轮账号仍被占）：后续路径继续排队等待补位，
+	// 最终按序全部启动由真实运行中路径释放槽位后逐轮完成；这里锁定不会一次全启。
 }
 
 // TestSchedulerStartFailureDoesNotBlockRun 锁定失败隔离与重试边界：

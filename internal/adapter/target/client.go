@@ -621,7 +621,9 @@ func SubmittedStatusText(status string) string { return submittedStatusText(stri
 // 否则当前待办、批次或已办归属可能落在第二页而被错误判为不存在。
 func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instanceID, taskStatus string) ([]TaskSnapshot, error) {
 	// F-030/T02：同一次事实读取边界内同一 (会话, 实例, 状态) 的列表只扫一次。
-	scopeKey := active.SID + "|" + strings.TrimSpace(instanceID) + "|" + strings.TrimSpace(taskStatus)
+	// 键用账号而不是 SID：同账号锁内会话重建（重登）后列表内容对查找语义不变，
+	// 复用可避免重登后的重复扫描；不同账号视角不同必须各自扫描。
+	scopeKey := strings.TrimSpace(active.Summary.Account) + "|" + strings.TrimSpace(instanceID) + "|" + strings.TrimSpace(taskStatus)
 	if cached := taskListFromScope(ctx, scopeKey); cached != nil {
 		return cached, nil
 	}

@@ -181,7 +181,7 @@ async function copyCurl(step: RunStep): Promise<void> {
 
 // phaseOrder 用于按七阶段顺序展示耗时（阶段流水只在详情里给排查者看）。
 const phaseOrder: Array<[string, string]> = [
-  ['plan', '确认要做什么'], ['gate', '检查能不能做'], ['control', '等待放行'], ['prepare', '准备操作人'],
+  ['plan', '确认要做什么'], ['gate', '检查能不能做'], ['control', '等你确认执行'], ['prepare', '正在准备实际操作人'],
   ['submit', '向目标提交'], ['verify', '回读确认结果'], ['settle', '保存结果'],
 ]
 
@@ -197,24 +197,67 @@ function attemptRequests(step: RunStep): RunRequestItem[] {
   return step.attempts.flatMap(attempt => attempt.requests ?? [])
 }
 
-// stepRequestTotalText 目标请求耗时：没有可靠请求事实时明确说“暂无”，不显示 0ms。
+// stepRequestSummary 多尝试汇总：聚合全部 attempt 的指标，保证明细列表与顶部指标是同一批数据
+// （审查 P1：此前只取第一条 attempt，重试或重新核验时明细与指标不一致）。
+const stepRequestSummary = computed(() => {
+  const attempts = stepDialog.value?.attempts ?? []
+  const merged = { totalMs: 0, writeMs: 0, count: 0, writeCount: 0, allDurationsKnown: true }
+  let hasSummary = false
+  for (const attempt of attempts) {
+    const summary = attempt.requestSummary
+    if (!summary) continue
+    hasSummary = true
+    merged.count += summary.count
+    merged.writeCount += summary.writeCount
+    merged.writeMs += summary.writeMs
+    merged.totalMs += summary.totalMs
+    if (!summary.allDurationsKnown) merged.allDurationsKnown = false
+  }
+  return hasSummary ? merged : null
+})
+
+// stepRequestTotalText 目标请求耗时：没有可靠请求事实时明确说“暂无”，不显示 0ms；
+// 部分请求缺耗时实测时明确说“部分未知”，不把未知当 0 求和。
 const stepRequestTotalText = computed(() => {
-  const summary = stepDialog.value?.attempts.find(a => a.requestSummary)?.requestSummary
-  return summary ? formatElapsed(summary.totalMs) : '暂无记录'
+  const summary = stepRequestSummary.value
+  if (!summary) return '暂无记录'
+  if (!summary.allDurationsKnown) return `${formatElapsed(summary.totalMs)}+（部分未知）`
+  return formatElapsed(summary.totalMs)
 })
 
 // stepRequestCountText 请求次数：读+写合计。
 const stepRequestCountText = computed(() => {
-  const summary = stepDialog.value?.attempts.find(a => a.requestSummary)?.requestSummary
+  const summary = stepRequestSummary.value
   return summary ? `${summary.count} 次` : '—'
 })
 
 // stepWriteText 写请求：次数 + 单独计时的耗时，与读请求分开。
 const stepWriteText = computed(() => {
-  const summary = stepDialog.value?.attempts.find(a => a.requestSummary)?.requestSummary
+  const summary = stepRequestSummary.value
   if (!summary || summary.writeCount === 0) return '无'
   return `${summary.writeCount} 次 · ${formatElapsed(summary.writeMs)}`
 })
+
+// requestPhaseLabel 把请求所属阶段翻译为用户口径；无阶段记录时如实显示。
+function requestPhaseLabel(phase?: string): string {
+  const found = phaseOrder.find(([key]) => key === phase)
+  return found ? found[1] : '（阶段未记录）'
+}
+
+// shortTrace 展示 trace 前 8 位，完整值点击复制。
+function shortTrace(traceId: string): string {
+  return traceId.length > 8 ? traceId.slice(0, 8) : traceId
+}
+
+// copyTrace 复制完整 trace_id，供在 curl.log / network.log 中检索原文。
+async function copyTrace(traceId: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(traceId)
+    message.success('已复制 trace，可在 curl.log 中检索')
+  } catch {
+    message.error('复制失败：浏览器剪贴板不可用，请手动从日志目录检索')
+  }
+}
 
 // GateSnapshotShape 是门禁结论快照的结构：逐项中文条件与满足情况。
 interface GateSnapshotShape {
@@ -494,7 +537,7 @@ const dialogStyle = computed(() => ({
       :show="previewDialogOpen"
       preset="card"
       :style="dialogStyle"
-      title="当前步详情（等待放行）"
+      title="当前步详情"
       @update:show="previewDialogOpen = false"
     >
       <template v-if="currentPreview">
@@ -585,7 +628,7 @@ const dialogStyle = computed(() => ({
           <p class="run-panel__section-title">目标请求明细</p>
           <table v-if="attemptRequests(stepDialog).length > 0" class="run-panel__req-table">
             <thead>
-              <tr><th>类型</th><th>接口</th><th class="run-panel__req-num">耗时</th><th>结果</th></tr>
+              <tr><th>类型</th><th>发生在</th><th>接口</th><th class="run-panel__req-num">耗时</th><th>结果</th></tr>
             </thead>
             <tbody>
               <tr v-for="(req, index) in attemptRequests(stepDialog)" :key="index">
@@ -594,16 +637,25 @@ const dialogStyle = computed(() => ({
                     {{ req.requestClass === 'write' ? '写入' : '读取' }}
                   </span>
                 </td>
+                <td class="run-panel__req-phase">{{ requestPhaseLabel(req.phase) }}</td>
                 <td class="run-panel__req-endpoint">
                   <span class="run-panel__req-path">{{ req.endpoint }}</span>
                   <span v-if="req.retryAttempt > 1" class="run-panel__req-retry">第 {{ req.retryAttempt }} 次重试</span>
                   <span v-if="req.statusCode && req.statusCode >= 400" class="run-panel__req-retry">HTTP {{ req.statusCode }}</span>
                 </td>
-                <td class="run-panel__req-num run-panel__mono">{{ req.durationMs }} ms</td>
+                <td class="run-panel__req-num run-panel__mono">
+                  {{ req.durationKnown ? `${req.durationMs} ms` : '未知' }}
+                </td>
                 <td>
                   <span :class="req.result === 'success' ? 'run-panel__ok' : 'run-panel__bad'">
                     {{ req.result === 'success' ? '成功' : (req.statusCode ? `失败（HTTP ${req.statusCode}）` : '传输失败') }}
                   </span>
+                  <a
+                    v-if="req.traceId"
+                    class="run-panel__req-trace"
+                    :title="`在 curl.log 中检索 ${req.traceId}`"
+                    @click.prevent="copyTrace(req.traceId)"
+                  >{{ shortTrace(req.traceId) }}</a>
                 </td>
               </tr>
             </tbody>
@@ -1178,5 +1230,21 @@ const dialogStyle = computed(() => ({
     align-items: flex-start;
     gap: 6px;
   }
+}
+</style>
+<style scoped>
+/* 阶段列与 trace 列：小字号弱化，trace 可点击复制。 */
+.run-panel__req-phase {
+  color: var(--run-secondary-text-color, #909090);
+  white-space: nowrap;
+}
+
+.run-panel__req-trace {
+  display: inline-block;
+  margin-top: 2px;
+  cursor: pointer;
+  color: var(--info-color, #2080f0);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
 }
 </style>

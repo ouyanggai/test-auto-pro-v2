@@ -627,9 +627,9 @@ const statusTagType = computed<'default' | 'info' | 'success' | 'warning' | 'err
 
 // commandButtonText 把命令写成"点下去会发生什么"，写请求类命令明确标出。
 function commandButtonText(command: { command: string, label: string }): string {
-  if (command.command === 'step') return '放行（执行一步，会发真实写请求）'
+  if (command.command === 'step') return '执行这一步（会向目标平台发一次真实写请求）'
   if (command.command === 'next_node') return '执行到下一节点'
-  if (command.command === 'continue') return '继续运行（直到断点或结束）'
+  if (command.command === 'continue') return '继续执行后续步骤（到断点或路径结束）'
   return command.label.split('（')[0]
 }
 
@@ -903,8 +903,15 @@ onBeforeUnmount(() => {
             :disabled="overviewDone || detail.stepInFlight || detail.loopRunning || !(detail.commands || []).length"
             :title="noCommandReason || (approveCommand === 'continue' ? '放行后连续执行到断点或结束' : '放行后执行下一步；下一步会发真实写请求')"
             @click="approve()"
-          >{{ approveCommand === 'continue' ? '放行（连续执行到断点或结束）' : '放行（执行下一步）' }}</n-button>
+          >{{ approveCommand === 'continue' ? '继续执行后续步骤' : '执行这一步' }}</n-button>
         </div>
+      </div>
+
+      <!-- F-030：当前步实时阶段说明——回答"现在在做什么、为什么要做、下一步是什么"。
+           说明由后端统一口径提供（currentPhaseNote），前端缺失时显示不可用，不回退泛化词。 -->
+      <div v-if="!overviewDone && (detail.currentPhaseNote || detail.currentPhase)" class="run-detail__phase-bar" data-testid="current-phase-note">
+        <span class="run-detail__phase-dot"></span>
+        <span class="run-detail__phase-note">{{ detail.currentPhaseNote || `当前阶段说明暂时不可用（内部阶段：${detail.currentPhase}）` }}</span>
       </div>
 
       <!-- F-020 多路径运行：调度说明与路径切换 chips 合并为一行。 -->
@@ -1304,5 +1311,34 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   gap: 8px;
+}
+</style>
+<style scoped>
+/* F-030 当前步实时阶段说明条：圆点呼吸 + 一句大白话，回答正在做什么。 */
+.run-detail__phase-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 2px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.run-detail__phase-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--info-color, #2080f0);
+  animation: run-detail-phase-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes run-detail-phase-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.run-detail__phase-note {
+  color: inherit;
 }
 </style>

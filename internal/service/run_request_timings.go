@@ -26,6 +26,8 @@ type RunRequestDTO struct {
 	Endpoint string `json:"endpoint"`
 	// DurationMs 是传输层真实耗时：开始发送到收到响应或传输失败，毫秒。
 	DurationMs int64 `json:"durationMs"`
+	// DurationKnown 表示 duration_s 字段存在且可解析；false 时前端显示「未知」而不是 0ms。
+	DurationKnown bool `json:"durationKnown"`
 	// StatusCode 是 HTTP 状态码；0 表示传输层失败未拿到响应。
 	StatusCode int `json:"statusCode"`
 	// Result 是目标业务结果：success / failure。
@@ -47,6 +49,8 @@ type runRequestSummaryDTO struct {
 	// Count 是请求总次数，WriteCount 是其中写请求次数。
 	Count      int `json:"count"`
 	WriteCount int `json:"writeCount"`
+	// AllDurationsKnown 表示全部请求都有真实耗时；false 时汇总耗时显示「部分未知」。
+	AllDurationsKnown bool `json:"allDurationsKnown"`
 }
 
 // readAttemptRequests 读取路径运行目录的 network.log，把每条目标请求归入所属尝试。
@@ -105,8 +109,9 @@ func (s *RunOrchestrationService) readAttemptRequests(pathRunID uint64, attempts
 			TraceID:      fields["trace_id"],
 			At:           fields["time"],
 		}
-		if seconds, err := strconv.ParseFloat(fields["duration_s"], 64); err == nil {
+		if seconds, err := strconv.ParseFloat(fields["duration_s"], 64); err == nil && fields["duration_s"] != "" && fields["duration_s"] != "-" {
 			dto.DurationMs = int64(seconds * 1000)
+			dto.DurationKnown = true
 		}
 		dto.StatusCode = atoiOr(fields["status_code"], 0)
 		requestsByKey[key] = append(requestsByKey[key], dto)
@@ -114,9 +119,13 @@ func (s *RunOrchestrationService) readAttemptRequests(pathRunID uint64, attempts
 	// 汇总指标与按发生时间排序。
 	for key, list := range requestsByKey {
 		sort.Slice(list, func(i, j int) bool { return list[i].At < list[j].At })
-		summary := runRequestSummaryDTO{}
+		summary := runRequestSummaryDTO{AllDurationsKnown: true}
 		for _, item := range list {
 			summary.Count++
+			if !item.DurationKnown {
+				summary.AllDurationsKnown = false
+				continue
+			}
 			summary.TotalMs += item.DurationMs
 			if item.RequestClass == "write" {
 				summary.WriteCount++
@@ -201,23 +210,25 @@ func requestClassOf(fields map[string]string) string {
 	if fields["request_class"] == "write" {
 		return "write"
 	}
-	// 兜底：目标写端点按 F-029 白名单判断，防旧日志缺 request_class 字段。
+	// 兜底：旧日志缺 request_class 字段时按写端点白名单归类，
+	// 白名单与 target 写动作常量（write_actions.go）一一对应，防写请求被误计为读取。
 	switch {
 	case strings.Contains(fields["endpoint"], "flowInstanceApi/submit"),
 		strings.Contains(fields["endpoint"], "flowInstanceApi/audit"),
 		strings.Contains(fields["endpoint"], "flowInstanceApi/addSign"),
 		strings.Contains(fields["endpoint"], "flowInstanceApi/withdraw"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/retrieve"),
+		strings.Contains(fields["endpoint"], "flowInstanceApi/retrieveProcess"),
 		strings.Contains(fields["endpoint"], "flowInstanceApi/transfer"),
 		strings.Contains(fields["endpoint"], "flowInstanceApi/forward"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/urge"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/rollback"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/follow"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/unfollow"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/storageFormData"),
+		strings.Contains(fields["endpoint"], "urgeHandleRecord/sendUrgeMessage"),
+		strings.Contains(fields["endpoint"], "flowInstanceApi/rollBackThePreviousLevel"),
+		strings.Contains(fields["endpoint"], "flowInstanceApi/revocation"),
+		strings.Contains(fields["endpoint"], "flowInstanceApi/transpond"),
+		strings.Contains(fields["endpoint"], "flowInstanceApi/flowTracking"),
+		strings.Contains(fields["endpoint"], "flowInstanceApi/approverAppend"),
 		strings.Contains(fields["endpoint"], "flowInstanceApi/updateFlowProxy"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/reSubmit"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/saveDraft"):
+		strings.Contains(fields["endpoint"], "flowInstanceApi/storageFormData"),
+		strings.Contains(fields["endpoint"], "flowInstanceApi/reSubmit"):
 		return "write"
 	}
 	return "read"

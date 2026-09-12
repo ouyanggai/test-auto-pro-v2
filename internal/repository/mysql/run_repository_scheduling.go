@@ -428,3 +428,12 @@ func (r *RunRepository) ListQueuedRunIDs(ctx context.Context) ([]uint64, error) 
 	}
 	return ids, rows.Err()
 }
+
+// PlanAccountOf 返回计划的目标登录账号；调度器按账号实施同账号串行排队。
+// 计划不存在时返回 ErrPlanNotFound 由调用方按旧行为（容量补位）处理。
+func (r *RunRepository) PlanAccountOf(ctx context.Context, planID uint64) (string, error) {
+	var account string
+	err := r.db.QueryRowContext(ctx,
+		"SELECT account FROM test_plans WHERE id = ?", planID).Scan(&account)
+	return account, err
+}
