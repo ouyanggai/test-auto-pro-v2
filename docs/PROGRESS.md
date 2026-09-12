@@ -2,6 +2,20 @@
 
 - 2026-09-12 F-031「任务事实参数与实例日志归属修复」已登记为 `awaiting_approval`。源码核对确认：`/web/flowJobTaskLink/list` 的实例过滤必须使用顶层 `flowInstanceIdList`，`data.flowInstanceId` 会被目标忽略；`pending` 使用 `queryUserId`、`done` 使用 `data.executorId`。当前节点处理人必须取发起人已发列表的 `currentAuditUserInfo`，配置中的 `NextNodeAuditors` 只表示下一节点选人。日志方案已按页面调整为 `logs/runs/<运行记录>/paths/<路径运行>`，目录使用 `runId/pathRunId` 稳定定位，`runNo/planName/pathName` 与页面标签对应；目标实例名称只写详情和 `meta.json`，不参与目录寻址。用户批准前不改执行代码、不改数据库、不启动浏览器。详细计划见 `docs/features/F-031-task-facts-and-instance-log-naming.md`。
 
+- 2026-09-13 F-031「任务事实参数与实例日志归属修复」已按文档实施完成并停在 `ready_for_manual`：
+  `/web/flowJobTaskLink/list` 收敛到唯一载荷出口（实例筛选只写协议顶层 `flowInstanceIdList`，pending 用顶层
+  `queryUserId`，done 用 `data.executorId`），`FindDueFlow`/`FindDoneTaskOnNode` 迁到该出口，done 复用统一快照读取
+  并遍历全部分页、按当前真实操作账号视角核对；当前处理人发现改为「已发列表 `currentAuditUserInfo` 事实优先」，
+  删除按配置候选人登录与扫描的全部路径，解析结果按用户 ID 去重，缺失事实时记录字段与实例 ID 并停步；
+  运行日志改为 `logs/runs/运行_<运行号>__<计划名>__run-<运行ID>/paths/<路径名>__path-run-<路径运行ID>__path-<路径ID>/`，
+  与页面「运行记录 -> 路径运行」逐层对应，实例名称只进日志字段与 `meta.json`（历史日志不迁移），
+  运行详情直接返回日志相对目录与实例名称。`bash test/run-f031.sh` 与 `bash test/run-f030.sh` 全部通过，
+  结构契约脚本经变异验证。既有失败如实记录且与本切片无关：`test/unit/backend/history_replay` 两个用例
+  （历史链路调用未批准端点）与 `TestF016RunControlResolvesRunIDToPathRun`（断点回放数量断言），
+  均经 `git stash` 在改动前工作树复现。等待人工核对：连续两次运行的目录归属、`currentAuditUserInfo` 与动作详情
+  处理人对照、`network.log` 字段与修复前后请求数/耗时对比。详细计划与状态记录见
+  `docs/features/F-031-task-facts-and-instance-log-naming.md`。
+
 - 2026-09-12 全局空态改为纯文字提示（用户要求所有空状态去掉图标）：共享空态组件去掉插画，只留标题、简短说明和下一步操作；组件库 `NEmpty` 的空态图标（含表格、下拉候选、级联等组件内部空态）在全局样式层统一隐藏；`AppEmptyIcon` 组件与应用层空态图标注册删除。空态与错误态边界不变，`docs/PRODUCT.md` 产品原则同步改为「正常空数据只给文字提示」。
 - 2026-09-12 F-030 人工验收反馈（评审 4 项：同账号活跃路径仍会启动新路径、请求无法稳定归属步骤/尝试/阶段、阶段说明泛化且预览无进度上报、候选处理人扫描耗时未消除）已全部修复，状态退回 `implementing` 后再次停在 `ready_for_manual`：调度器两轮扫描把活跃路径账号计入忙账号；执行器把 step_id/attempt/phase 注入目标请求上下文，请求明细按日志行直接归属；阶段说明统一为带动作、节点、处理人和下一步的白话口径，预览阶段实时上报进度，页面不回显内部阶段名；候选扫描改用目标原生 queryUserId 视角窄查询（源码锚点已入语义清单第 4 节），仅命中者登录。`test/run-f030.sh` 全部通过；基准复测与 queryUserId 真实部署行为仍待人工验收确认。
 - 2026-09-12 F-030 全量实施完成，状态进入 `ready_for_manual`：任务列表 memo 覆盖整个预览调用树（同账号×实例×状态只扫一次目标分页，写后核验天然全新）；候选人账号目录批量解析；调度器按计划账号同账号串行排队（同轮 Tick 每账号最多启动一条，跨运行生效）；账号锁等待 >100ms 结构化日志；请求耗时明细来自 network.log 传输层真实计时（duration 缺失显示「未知」不显示 0ms，汇总「部分未知」不把未知当 0 求和）；节点动作详情重排为摘要区/四指标/本地过程/请求明细表/折叠原文，明细带阶段（用户口径）与可复制 trace；当前步实时阶段说明条渲染 currentPhaseNote；写端点白名单补齐 approverAppend/rollBackThePreviousLevel/revocation/urgeHandleRecord/transpond/flowTracking。汇总测试入口 `test/run-f030.sh` 全部通过。量化基准复测（请求数-50%/本地等待-50%/端到端-30%）留待用户验收时同一样本对照。

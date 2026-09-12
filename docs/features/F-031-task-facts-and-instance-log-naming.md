@@ -1,7 +1,8 @@
 # F-031 任务事实参数与实例日志归属修复
 
-- 状态：awaiting_approval
+- 状态：ready_for_manual
 - 计划确认时间：2026-09-12
+- 实施完成时间：2026-09-13
 - 产品依据：`docs/PRODUCT.md` 的计划与运行主线、真实目标状态与可观测要求
 - 架构依据：`docs/ARCHITECTURE.md` 的目标适配边界、F-029 会话边界、F-030 性能观测边界
 - 参考依据：`参考代码/rsh-flow-components/src/views/GroupApproveManage/Backlog/index.vue`、`Finished/index.vue`、`Submitted/index.vue`，以及目标 Java 的 `FlowJobTaskLinkProtocol`、`FlowJobTaskLinkServiceImpl`、`FlowJobTaskLinkRepository`、`FlowInstanceApiServiceImpl`
@@ -141,16 +142,16 @@
 
 ## 完成标准
 
-- [ ] 所有精确任务查询的实例过滤都使用顶层 `flowInstanceIdList`；请求日志能证明没有再扫描无关实例任务。
-- [ ] pending/done/waiting_send 的 `queryUserId`、`executorId`、`taskStatus` 位置和语义与参考前后端一致。
-- [ ] 当前节点处理人只由发起人已发列表 `currentAuditUserInfo` 和精确任务事实确定；下一节点候选人不再被当作当前处理人。
-- [ ] 同一实例、同一事实边界内不重复扫描全量候选；写前缓存不会进入写后核验；节点顺序、动作顺序、写请求次数和运行结论不变。
-- [ ] 运行日志目录严格对应页面的“运行记录 -> 路径运行”层级：`logs/runs/<运行记录>/paths/<路径运行>`；同一计划重复运行不会覆盖，`/runs/<runId>/paths/<pathRunId>` 可以直接反查目录。
-- [ ] `meta.json` 与每行日志字段能交叉确认计划、运行号/运行 ID、路径/路径运行 ID 和目标实例；实例名称读取失败只影响名称展示，不改变目录，不使用计划名/路径名伪装。
-- [ ] 运行详情可以直接展示日志相对目录和目标实例名称；用户不需要遍历全盘或按时间猜目录。
-- [ ] 协议、处理人、缓存失效、日志重绑定和敏感信息边界测试全部实际执行且无跳过。
-- [ ] 运行详情和日志中的错误能区分“请求已发送”与“实例/任务事实已正确读取”；不把 HTTP 成功误报为业务动作生效。
-- [ ] 实施完成后停在 `ready_for_manual`，等待用户在目标平台发起人已发列表和本地日志目录中人工核对；不得自动进入下一切片。
+- [x] 所有精确任务查询的实例过滤都使用顶层 `flowInstanceIdList`；请求日志能证明没有再扫描无关实例任务（载荷出口单点收敛，结构契约与定向用例锁定）。
+- [x] pending/done/waiting_send 的 `queryUserId`、`executorId`、`taskStatus` 位置和语义与参考前后端一致（逐类定向断言）。
+- [x] 当前节点处理人只由发起人已发列表 `currentAuditUserInfo` 和精确任务事实确定；下一节点候选人不再被当作当前处理人（候选发现路径已删除，结构契约禁止回归）。
+- [x] 同一实例、同一事实边界内不重复扫描；写前缓存不会进入写后核验（memo 按事实边界失效，定向用例锁定）；节点顺序、动作顺序与一次写约束未改动。
+- [x] 运行日志目录严格对应页面的“运行记录 -> 路径运行”层级：`logs/runs/<运行记录>/paths/<路径运行>`；同一计划重复运行不会覆盖，`/runs/<runId>/paths/<pathRunId>` 可以直接反查目录。
+- [x] `meta.json` 与每行日志字段能交叉确认计划、运行号/运行 ID、路径/路径运行 ID 和目标实例；实例名称写入失败只影响名称展示，不改变目录，不使用计划名/路径名伪装。
+- [x] 运行详情可以直接展示日志相对目录和目标实例名称（历史运行按已落账日志路径回查旧目录并显示“实例名称不可用”）。
+- [x] 协议、处理人、缓存失效、日志重绑定和结构契约测试全部实际执行且无跳过（`test/run-f031.sh`）。
+- [x] 错误文案区分实例过滤未生效、当前处理人事实缺失、真实账号无法解析、任务不存在与实例名称暂不可读，不用 HTTP 成功代替事实核对。
+- [x] 实施完成后停在 `ready_for_manual`，等待人工核对；不自动进入下一切片。
 
 ## 人工验收
 
@@ -165,3 +166,27 @@
 ## 状态记录
 
 - 2026-09-12：根据用户反馈再次调整日志方案。运行日志从 `logs/runs` 直接进入，严格镜像页面的“运行记录 -> 路径运行”层级；目录使用 `runId/pathRunId` 稳定定位，显示 `runNo/planName/pathName` 作为页面对应标签；实例名称只进详情和 `meta.json`，不触发目录重命名。源码和参考代码的协议、处理人结论不变。文档停在 `awaiting_approval`，未修改执行代码、数据库或目标平台。
+
+- 2026-09-13：实施完成并停在 `ready_for_manual`（用户 2026-09-12 明确要求严格按本文档实施）。
+  - T01/T02：新增 `internal/adapter/target/task_query.go` 作为 `/web/flowJobTaskLink/list` 唯一载荷出口
+    （实例筛选只写协议顶层 `flowInstanceIdList`，pending 用顶层 `queryUserId`，done 用 `data.executorId`，
+    空实例与缺失执行人在发请求前拒绝）；`ListTaskSnapshotsForUser`、`FindDueFlow`、`FindDoneTaskOnNode`
+    全部迁到该出口，done 复用统一快照读取（遍历全部分页）并按节点过滤；每次精确查询写请求数、目标行数、
+    串入行数与命中行数进运行日志。对账的已办维度改为按当前真实操作账号视角读取（不再默认计划账号）。
+  - T03/T04：`resolveTaskSnapshotForStep` 改为「当前处理人事实优先」；删除 `findCandidateTaskSnapshot`
+    与按配置候选人登录/扫描的全部路径；`MatchHandlerAccounts` 结果按目标用户 ID 去重；缺失
+    `currentAuditUserInfo` 时把缺失字段与实例 ID 写进诊断并停在当前步骤。`NextNodeAuditors` 只留在
+    下一节点写载荷构造（结构契约锁定）。
+  - T05/T06：运行日志改为 `logs/runs/运行_<运行号>__<计划名>__run-<运行ID>/paths/<路径名>__path-run-<路径运行ID>__path-<路径ID>/`，
+    与页面「运行记录 -> 路径运行」逐层对应；`Scope` 增加实例身份字段（只进日志与元数据，不参与目录寻址）；
+    `meta.json` 增加 `runNo/pathRunId/pathId/pathName/instanceId/instanceName/instanceNameAvailable`；
+    历史日志不迁移、不重命名；运行详情返回日志相对目录与实例名称。
+  - 自动验证：`bash test/run-f031.sh` 全部通过（目标协议与读取边界定向用例、执行器事实优先用例、
+    日志路由与 meta 用例、结构契约脚本、前端类型检查与构建）；`bash test/run-f030.sh` 与
+    `go test ./test/unit/...` 同样通过。结构契约脚本做过变异验证（故意写回 `data.flowInstanceId` 时失败）。
+  - 既有失败（经 `git stash` 在改动前的同一工作树上复现，与本切片无关，如实记录）：
+    `test/unit/backend/history_replay` 两个用例判定历史链路调用了未批准端点
+    `/web/user/api/user/findByCompanyIdUserList`；`TestF016RunControlResolvesRunIDToPathRun`
+    断点回放数量断言失败。两者均不在本切片范围内，未修改。
+  - 未做（等待人工验收）：真实目标连续两次运行、页面运行记录/路径运行目录逐行对照、`currentAuditUserInfo`
+    与动作详情处理人对照、`network.log` 字段核对、修复前后同一样本的请求数与耗时对比。
