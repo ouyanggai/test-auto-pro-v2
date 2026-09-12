@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { NEl } from 'naive-ui'
 
-import AppEmptyIcon from './AppEmptyIcon.vue'
-
 withDefaults(defineProps<{
   title: string
   description: string
@@ -15,9 +13,6 @@ withDefaults(defineProps<{
 <template>
   <n-el class="app-empty-state" :class="`app-empty-state--${size}`">
     <div class="app-empty-state__message" role="status" aria-live="polite" aria-atomic="true">
-      <div class="app-empty-state__illustration" aria-hidden="true">
-        <AppEmptyIcon />
-      </div>
       <p class="app-empty-state__title">{{ title }}</p>
       <p class="app-empty-state__description">{{ description }}</p>
     </div>
@@ -50,18 +45,6 @@ withDefaults(defineProps<{
   display: flex;
   flex-direction: column;
   align-items: center;
-}
-
-.app-empty-state__illustration {
-  width: 96px;
-  height: 70px;
-  margin-bottom: 16px;
-}
-
-.app-empty-state--large .app-empty-state__illustration {
-  width: 120px;
-  height: 88px;
-  margin-bottom: 20px;
 }
 
 .app-empty-state__title {

@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
 import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu, NMessageProvider, NNotificationProvider, darkTheme, dateZhCN, zhCN } from 'naive-ui'
-import type { GlobalComponentConfig, MenuOption } from 'naive-ui'
+import type { MenuOption } from 'naive-ui'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 
-import AppEmptyIcon from './components/AppEmptyIcon.vue'
 import { useAppStore } from './stores/app'
 
 const route = useRoute()
@@ -23,17 +22,10 @@ const flushContent = computed(() => /^\/runs\/[^/]+\/paths\/[^/]+$/.test(route.p
 const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
 const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
 const sidebarCollapsed = ref(false)
-
-// componentOptions 统一替换组件库默认的叉号空图标；表格、下拉候选和各页面空态都复用同一套中性视觉。
-const componentOptions: GlobalComponentConfig = {
-  Empty: {
-    renderIcon: () => h(AppEmptyIcon),
-  },
-}
 </script>
 
 <template>
-  <n-config-provider :theme="naiveTheme" :locale="zhCN" :date-locale="dateZhCN" :component-options="componentOptions">
+  <n-config-provider :theme="naiveTheme" :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <n-notification-provider>
         <n-global-style />

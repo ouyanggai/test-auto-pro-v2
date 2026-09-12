@@ -165,3 +165,9 @@ body,
   color: var(--n-text-color-2);
   line-height: 1.7;
 }
+
+/* 空状态只保留文字提示：组件库 NEmpty 自带图标（含表格、下拉候选、级联等内部空态）
+   统一隐藏。必须在全局层收口，因为这些内部空态不经过业务代码，无法逐个传 show-icon。 */
+.n-empty__icon {
+  display: none;
+}
