@@ -2,6 +2,7 @@ package logging_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,14 +110,15 @@ func TestPlanLevelAndApplicationRouting(t *testing.T) {
 	}
 }
 
-// TestRunScopeRoutesToPlanRunsAndWritesExecutionLog 验证真实运行作用域进计划的 runs 子树，
+// TestRunScopeRoutesToPlanRunsAndWritesExecutionLog 验证真实运行作用域进 logs/runs 的页面层级，
 // 配置阶段的 operation.log 与执行阶段的 execution.log 不混用。
 func TestRunScopeRoutesToPlanRunsAndWritesExecutionLog(t *testing.T) {
 	root := t.TempDir()
 	scope := businessScope("req-run")
-	scope.RunID, scope.RunSeq = "run-1782741614477351000-1", "run-1782741614477351000-1"
+	scope.RunID, scope.RunSeq, scope.PathRunID = "501", "3", "88"
 	dir := writeBusinessLogs(t, root, scope)
-	expected := filepath.Join(root, "plans", "员工请假单（集团）-自动回归__plan-7", "runs", "执行路径 1__path-13", scope.RunSeq)
+	expected := filepath.Join(root, "runs", "运行_3__员工请假单（集团）-自动回归__run-501",
+		"paths", "执行路径 1__path-run-88__path-13")
 	if dir != expected {
 		t.Fatalf("运行日志目录不正确：\n实际 %s\n期望 %s", dir, expected)
 	}
@@ -146,26 +148,128 @@ func TestMetaJSONMatchesDirectory(t *testing.T) {
 		t.Fatalf("配置目录 meta.json 缺少正确日期：%v", configuration)
 	}
 	runScope := businessScope("req-meta-run")
-	runScope.RunID, runScope.RunSeq = "run-9", "run-9"
-	run := readMeta(t, writeBusinessLogs(t, root, runScope))
-	if run["runId"] != "run-9" || strings.TrimSpace(run["startedAt"]) == "" {
-		t.Fatalf("运行目录 meta.json 缺少运行号或开始时间：%v", run)
+	runScope.RunID, runScope.RunSeq, runScope.PathRunID = "9", "2", "88"
+	runDir := writeBusinessLogs(t, root, runScope)
+	run := readMetaAny(t, runDir)
+	if run["runId"] != "9" || strings.TrimSpace(anyString(run["startedAt"])) == "" {
+		t.Fatalf("运行目录 meta.json 缺少运行 ID 或开始时间：%v", run)
 	}
-	if run["planId"] != "7" || run["executionPathId"] != "13" {
-		t.Fatalf("运行目录 meta.json 的归属不正确：%v", run)
+	// runNo / pathRunId / pathId / pathName 与页面每行一一对应，必须同时落进 meta.json。
+	for key, expected := range map[string]string{
+		"runNo": "2", "pathRunId": "88", "pathId": "13", "pathName": "执行路径 1", "planId": "7",
+	} {
+		if anyString(run[key]) != expected {
+			t.Fatalf("运行目录 meta.json 的 %s 不正确：%v", key, run)
+		}
+	}
+	// 实例名称在没有事实时如实标为不可用，不用计划名或路径名冒充。
+	if run["instanceNameAvailable"] != false {
+		t.Fatalf("没有实例名称时 instanceNameAvailable 应为 false：%v", run)
+	}
+	if strings.TrimSpace(anyString(run["instanceNameNote"])) == "" {
+		t.Fatalf("实例名称不可用必须带原因：%v", run)
+	}
+	// 实例如实补进作用域后：名称只进元数据，目录不变。
+	updated := runScope
+	updated.InstanceID, updated.InstanceName = "instance-9", "请假单-路径1-2026-09-12 10:00:00"
+	router := logging.NewRouter(root, fixedTime)
+	router.UpdateRunInstanceMeta(updated)
+	merged := readMetaAny(t, runDir)
+	if merged["instanceId"] != "instance-9" || merged["instanceName"] != updated.InstanceName || merged["instanceNameAvailable"] != true {
+		t.Fatalf("实例身份没有补进 meta.json：%v", merged)
+	}
+	if merged["startedAt"] != run["startedAt"] {
+		t.Fatalf("补写实例身份改写了开始时间：%v", merged)
+	}
+	if dir := router.BucketDir(updated); dir != runDir {
+		t.Fatalf("实例名称变化不得改变日志目录：%s", dir)
 	}
 }
 
-// readMeta 读取并解析一个业务日志目录里的 meta.json。
+// readMeta 读取并解析配置目录 meta.json 的字符串字段。
 func readMeta(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	parsed := map[string]string{}
+	for key, value := range readMetaAny(t, dir) {
+		parsed[key] = anyString(value)
+	}
+	return parsed
+}
+
+// readMetaAny 读取并解析一个业务日志目录里的 meta.json；字段类型原样保留，便于断言布尔字段。
+func readMetaAny(t *testing.T, dir string) map[string]any {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join(dir, logging.MetaFileName))
 	if err != nil {
 		t.Fatalf("读取 %s 失败：%v", logging.MetaFileName, err)
 	}
-	parsed := map[string]string{}
+	parsed := map[string]any{}
 	if err := json.Unmarshal(content, &parsed); err != nil {
 		t.Fatalf("meta.json 不是合法 JSON：%v", err)
 	}
 	return parsed
+}
+
+// anyString 把 meta.json 里的字段值收敛为字符串，缺值与布尔值都按原样表达。
+func anyString(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
+}
+
+// TestConsecutiveRunsAndPathsKeepTheirOwnDirectories 锁定运行日志的页面层级映射：
+// 同一计划连续运行 1、2、3 次各用各自 runId 的目录，同一运行内同名路径按 pathRunId 分开，
+// 实例名称只进元数据字段、不改变目录；换一个 Router（服务重启）后按 runId/pathRunId 复用同一目录。
+func TestConsecutiveRunsAndPathsKeepTheirOwnDirectories(t *testing.T) {
+	root := t.TempDir()
+	dirs := map[string]string{}
+	for index, runID := range []string{"101", "102", "103"} {
+		scope := businessScope("req-run-" + runID)
+		scope.RunID, scope.RunSeq = runID, fmt.Sprint(index+1)
+		scope.PathRunID = fmt.Sprint(880 + index)
+		dirs[runID] = writeBusinessLogs(t, root, scope)
+		expected := filepath.Join(root, "runs",
+			fmt.Sprintf("运行_%d__员工请假单（集团）-自动回归__run-%s", index+1, runID),
+			"paths", fmt.Sprintf("执行路径 1__path-run-%d__path-13", 880+index))
+		if dirs[runID] != expected {
+			t.Fatalf("第 %d 次运行的目录不正确：\n实际 %s\n期望 %s", index+1, dirs[runID], expected)
+		}
+	}
+	if dirs["101"] == dirs["102"] || dirs["102"] == dirs["103"] || dirs["101"] == dirs["103"] {
+		t.Fatalf("连续运行共用了目录：%v", dirs)
+	}
+	// 同一运行内两条同名路径按 pathRunId 分开，绝不互相覆盖。
+	sameRun := businessScope("req-same-path")
+	sameRun.RunID, sameRun.RunSeq, sameRun.PathRunID = "201", "7", "901"
+	first := writeBusinessLogs(t, root, sameRun)
+	sameRun.PathRunID, sameRun.RequestID = "902", "req-same-path-2"
+	second := writeBusinessLogs(t, root, sameRun)
+	if first == second {
+		t.Fatalf("同名路径共用了目录：%s", first)
+	}
+	// 实例名称含中文、空格、斜杠与超长文本：只进元数据与日志字段，目录不受影响。
+	named := businessScope("req-instance-name")
+	named.RunID, named.RunSeq, named.PathRunID = "301", "9", "903"
+	named.InstanceID = "instance-301"
+	named.InstanceName = "请假单/审批 流程 " + strings.Repeat("超长名称", 40)
+	namedDir := writeBusinessLogs(t, root, named)
+	if strings.Contains(namedDir, "超长名称") || strings.Contains(namedDir, named.InstanceName) {
+		t.Fatalf("实例名称参与了目录寻址：%s", namedDir)
+	}
+	meta := readMetaAny(t, namedDir)
+	if meta["instanceName"] != named.InstanceName || meta["instanceNameAvailable"] != true {
+		t.Fatalf("实例名称没有原样写进元数据：%v", meta)
+	}
+	// 服务重启：新 Router 按同一 runId/pathRunId 复用同一目录与既有元数据。
+	restarted := logging.NewRouter(root, fixedTime)
+	if dir := restarted.BucketDir(named); dir != namedDir {
+		t.Fatalf("重启后目录不一致：\n实际 %s\n期望 %s", dir, namedDir)
+	}
+	if _, err := os.Stat(filepath.Join(namedDir, "execution.log")); err != nil {
+		t.Fatalf("重启后复用的目录里找不到原有日志：%v", err)
+	}
 }

@@ -58,7 +58,7 @@ func TestF018DimensionReadsAgainstRealTarget(t *testing.T) {
 	}
 
 	// 维度一：已办记录。不带节点标识时回答"这个实例上是否已经有已办"。
-	doneAny, err := client.FindDoneTaskOnNode(ctx, session, instanceID, "")
+	doneAny, err := client.FindDoneTaskOnNode(ctx, session, instanceID, "", session.UserID)
 	if err != nil {
 		t.Fatalf("已办记录读取失败（对账会因此降级，不能上线）：%v", err)
 	}
@@ -66,7 +66,7 @@ func TestF018DimensionReadsAgainstRealTarget(t *testing.T) {
 	t.Logf("动作痕迹维度：实例级审核记录条数=%d", traceTotal)
 
 	// 节点过滤必须真的生效：用一个必然不存在的节点标识，两个维度都应当返回未命中而不是报错。
-	doneOnFakeNode, err := client.FindDoneTaskOnNode(ctx, session, instanceID, "node-that-does-not-exist")
+	doneOnFakeNode, err := client.FindDoneTaskOnNode(ctx, session, instanceID, "node-that-does-not-exist", session.UserID)
 	if err != nil {
 		t.Fatalf("已办记录按节点过滤读取失败：%v", err)
 	}
@@ -82,7 +82,7 @@ func TestF018DimensionReadsAgainstRealTarget(t *testing.T) {
 	}
 
 	// 空实例标识按"没有事实"处理，不发请求也不报错（对账收集器会因此标缺失）。
-	if found, err := client.FindDoneTaskOnNode(ctx, session, "", ""); err != nil || found {
+	if found, err := client.FindDoneTaskOnNode(ctx, session, "", "", session.UserID); err != nil || found {
 		t.Fatalf("空实例标识应当直接返回未命中：found=%v err=%v", found, err)
 	}
 }
@@ -159,7 +159,7 @@ func TestF018DoneRecordMatchesRealDoneTask(t *testing.T) {
 	}
 	t.Logf("真实已办记录：实例=%s 节点=%s", instanceID, nodeID)
 
-	found, err := client.FindDoneTaskOnNode(ctx, session, instanceID, "")
+	found, err := client.FindDoneTaskOnNode(ctx, session, instanceID, "", session.UserID)
 	if err != nil {
 		t.Fatalf("已办记录读取失败：%v", err)
 	}
@@ -167,7 +167,7 @@ func TestF018DoneRecordMatchesRealDoneTask(t *testing.T) {
 		t.Fatal("目标自己的已办列表里出现过的实例必须命中已办记录维度")
 	}
 	if nodeID != "" {
-		onNode, err := client.FindDoneTaskOnNode(ctx, session, instanceID, nodeID)
+		onNode, err := client.FindDoneTaskOnNode(ctx, session, instanceID, nodeID, session.UserID)
 		if err != nil {
 			t.Fatalf("按真实节点读取已办记录失败：%v", err)
 		}

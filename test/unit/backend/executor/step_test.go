@@ -147,7 +147,7 @@ type fakeTarget struct {
 }
 
 // FindDoneTaskOnNode 是对账「已办记录」维度的假件读取。
-func (f *fakeTarget) FindDoneTaskOnNode(_ context.Context, _ target.Session, instanceID, _ string) (bool, error) {
+func (f *fakeTarget) FindDoneTaskOnNode(_ context.Context, _ target.Session, instanceID, _, _ string) (bool, error) {
 	if f.doneRecordErr != nil {
 		return false, f.doneRecordErr
 	}

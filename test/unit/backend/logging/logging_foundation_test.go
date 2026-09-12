@@ -156,7 +156,8 @@ func TestScopeFieldsInjectFromContext(t *testing.T) {
 	}
 	expected := []string{
 		"plan_id", "plan_name", "execution_path_id", "execution_path_name",
-		"request_id", "run_id", "path_run_id", "step_id", "attempt", "phase",
+		"request_id", "run_id", "path_run_id", "instance_id", "instance_name",
+		"step_id", "attempt", "phase",
 	}
 	if strings.Join(keys, ",") != strings.Join(expected, ",") {
 		t.Fatalf("关联键顺序不固定：%v", keys)
@@ -185,8 +186,11 @@ func TestWithScopeMergesInsteadOfOverwriting(t *testing.T) {
 	}
 }
 
-// TestBucketRoutingSeparatesApplicationConfigurationAndRun 验证顶层只有 application 与 plans 两棵树，
-// 业务日志先按计划与执行路径归档再按日期或运行号分层，只有确实无法归属业务对象的日志才进 application。
+// TestBucketRoutingSeparatesApplicationConfigurationAndRun 验证配置阶段仍进计划目录，
+// 运行阶段改为严格镜像页面的 logs/runs/<运行记录>/paths/<路径运行>，
+// 只有确实无法归属业务对象的日志才进 application。
+// 运行目录必须同时带 runId 与运行号：只有运行号（没有 runId）不构成一次运行，
+// 否则同一计划的第二次运行会落进同名目录。
 func TestBucketRoutingSeparatesApplicationConfigurationAndRun(t *testing.T) {
 	root := t.TempDir()
 	router := logging.NewRouter(root, fixedTime)
@@ -202,13 +206,32 @@ func TestBucketRoutingSeparatesApplicationConfigurationAndRun(t *testing.T) {
 	if configurationDir != expected {
 		t.Fatalf("配置阶段目录不正确：\n实际 %s\n期望 %s", configurationDir, expected)
 	}
+	// 只有运行号没有 runId：不构成一次真实运行，不能落到运行子树（防止同名运行号互相覆盖）。
+	sequenceOnly := router.BucketDir(logging.Scope{
+		RequestID: "req-1", PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
+		ExecutionPathID: "13", ExecutionPathName: "执行路径 1", RunSeq: "3",
+	})
+	if sequenceOnly != configurationDir {
+		t.Fatalf("只有运行号时不应进运行子树：%s", sequenceOnly)
+	}
 	runDir := router.BucketDir(logging.Scope{
 		RequestID: "req-1", PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
-		ExecutionPathID: "13", ExecutionPathName: "执行路径 1", RunSeq: "run-1782741614477351000-1",
+		ExecutionPathID: "13", ExecutionPathName: "执行路径 1",
+		RunID: "501", RunSeq: "3", PathRunID: "88",
 	})
-	expectedRun := filepath.Join(root, "plans", "员工请假单（集团）-自动回归__plan-7", "runs", "执行路径 1__path-13", "run-1782741614477351000-1")
+	expectedRun := filepath.Join(root, "runs", "运行_3__员工请假单（集团）-自动回归__run-501",
+		"paths", "执行路径 1__path-run-88__path-13")
 	if runDir != expectedRun {
 		t.Fatalf("执行阶段目录不正确：\n实际 %s\n期望 %s", runDir, expectedRun)
+	}
+	// 同一计划连续运行必须各用各自的 runId，绝不共用目录。
+	secondRun := router.BucketDir(logging.Scope{
+		RequestID: "req-2", PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
+		ExecutionPathID: "13", ExecutionPathName: "执行路径 1",
+		RunID: "502", RunSeq: "4", PathRunID: "89",
+	})
+	if secondRun == runDir || !strings.Contains(secondRun, "run-502") {
+		t.Fatalf("同一计划的第二次运行没有独立目录：%s", secondRun)
 	}
 }
 
