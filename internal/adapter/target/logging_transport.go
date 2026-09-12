@@ -25,6 +25,9 @@ func (c *Client) SetNetworkLogger(logger networkLogger) {
 	if c == nil || logger == nil {
 		return
 	}
+	// 同一入口既供传输层逐请求记录，也供精确实例查询等业务诊断写范围事实；
+	// 未注入时两种记录一起静默跳过，行为与旧实现一致。
+	c.networkLogger = logger
 	if _, alreadyWrapped := c.httpClient.Transport.(*loggingTransport); alreadyWrapped {
 		return
 	}

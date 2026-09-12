@@ -647,6 +647,31 @@ const overviewDone = computed(() => {
   return ['已完成', '失败', '结果待确认', '已停止', '已取消'].includes(status)
 })
 
+// instanceMetaText 用一句话说清目标实例身份与日志目录：名称不可用时如实说明，
+// 目录按页面身份（runId/pathRunId）定位，用户不需要遍历全盘或按时间猜目录。
+const instanceMetaText = computed(() => {
+  if (!detail.value) return ''
+  const parts: string[] = []
+  if (detail.value.instanceNameAvailable && detail.value.instanceName) {
+    parts.push(`实例名称 ${detail.value.instanceName}`)
+  } else {
+    parts.push('实例名称不可用')
+  }
+  if (detail.value.instanceId) parts.push(`实例编号 ${detail.value.instanceId}`)
+  if (detail.value.logDir) parts.push(`日志 ${detail.value.logDir}`)
+  return parts.join(' · ')
+})
+
+// instanceMetaTitle 悬浮说明名称不可用的真实原因与完整日志目录。
+const instanceMetaTitle = computed(() => {
+  if (!detail.value) return ''
+  const parts: string[] = []
+  if (detail.value.instanceNameNote) parts.push(detail.value.instanceNameNote)
+  if (detail.value.instanceId) parts.push(`实例编号：${detail.value.instanceId}`)
+  if (detail.value.logDir) parts.push(`日志目录：${detail.value.logDir}`)
+  return parts.join('；')
+})
+
 // topConclusion 用用户视角表述终态：先说结果，再说走了多少步、走到哪；
 // 不再暴露目标内部的节点 ID 与待办计数（对用户是噪音）。
 const topConclusion = computed(() => {
@@ -732,6 +757,12 @@ onBeforeUnmount(() => {
         <n-button quaternary circle size="small" aria-label="返回本次运行的执行路径" title="返回本次运行的执行路径" @click="router.push(`/runs/${runId}`)">←</n-button>
         <h2 class="run-detail__title">运行 #{{ detail.runNo }}</h2>
         <span class="run-detail__meta-path" :title="`${detail.planName} / ${detail.pathName} · ${formatTime(detail.startedAt)}`">{{ detail.planName }} / {{ detail.pathName }} · {{ formatTime(detail.startedAt) }}</span>
+        <!-- 目标实例身份与日志位置：实例名称只作业务信息；名称不可用时如实说明，不用其他名字冒充。 -->
+        <span
+          v-if="detail.instanceId || detail.logDir"
+          class="run-detail__meta-path"
+          :title="instanceMetaTitle"
+        >{{ instanceMetaText }}</span>
         <n-tag size="small" :bordered="false" type="info" :title="modeHint">{{ detail.modeName }}模式</n-tag>
         <n-tag size="small" :bordered="false" :type="statusTagType">{{ detail.pathRunStatusName }}</n-tag>
         <n-tag v-if="detail.failureClassName" size="small" :bordered="false" type="error">{{ detail.failureClassName }}</n-tag>

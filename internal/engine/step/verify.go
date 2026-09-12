@@ -47,6 +47,8 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 	facts.Found = true
 	facts.Status = snapshot.Status
 	facts.FlowProxyID = strings.TrimSpace(snapshot.FlowProxyID)
+	// 实例名称只作业务信息：目标没返回名称时保持空串，由日志与详情按「不可用」如实展示。
+	facts.InstanceName = strings.TrimSpace(snapshot.Name)
 	if len(snapshot.FormProxyIDs) > 0 {
 		facts.FormProxyID = strings.TrimSpace(snapshot.FormProxyIDs[0])
 	}

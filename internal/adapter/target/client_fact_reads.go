@@ -93,7 +93,10 @@ type submittedFlowFacts struct {
 	// Handlers 是每个当前节点的待办处理人信息（来自 currentAuditUserInfo）；
 	// 会签节点在全部处理人审批完成前一直出现在这里，人员随审批进度递减。
 	Handlers []NodeCurrentHandler
-	Found    bool
+	// Name 是目标实例名称：优先 name，其次 formName（F-031/T05）。
+	// 只作业务信息写进日志字段与 meta.json，不参与日志目录寻址；为空表示目标没返回名称。
+	Name  string
+	Found bool
 }
 
 // findSubmittedFlowFacts 读取实例当前事实；请求不得携带业务关联过滤，否则无关联实例会被目标排除。
@@ -120,6 +123,8 @@ func (c *Client) findSubmittedFlowFacts(ctx context.Context, active Session, ins
 	}
 	var raw []struct {
 		ID                   string          `json:"id"`
+		Name                 string          `json:"name"`
+		FormName             string          `json:"formName"`
 		FlowProxyID          string          `json:"flowProxyId"`
 		FormProxyID          string          `json:"formProxyId"`
 		Status               string          `json:"status"`
@@ -152,7 +157,9 @@ func (c *Client) findSubmittedFlowFacts(ctx context.Context, active Session, ins
 				FormProxyIDs: formProxyIDs,
 				BizRelevance: normalizeBizRelevance(item.BizRelevance),
 				Handlers:     handlers,
-				Found:        true,
+				// 名称优先 name，其次 formName；两者都空时保留空串由调用方按「不可用」展示。
+				Name:  strings.TrimSpace(firstNonEmpty(item.Name, item.FormName)),
+				Found: true,
 			}, nil
 		}
 	}
@@ -366,30 +373,34 @@ func (c *Client) ListAuditRecords(ctx context.Context, active Session, instanceI
 }
 
 // FindDueFlow 精确重查实例全部 waiting_send 任务并汇总其代理节点入口和代理表单。
+// 实例筛选只走协议顶层 flowInstanceIdList（见 buildTaskSnapshotBody）；返回行仍按实例 ID 复核，
+// 目标异常响应串入的其他实例行会被剔除并计数，避免把别的实例的入口当成这个实例的待发入口。
 func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID string) (string, []string, []string, bool, error) {
+	query := taskSnapshotQuery{InstanceID: instanceID, TaskStatus: taskStatusWaitingSend}
+	// 发请求前先校验协议约束（实例 ID 必需），空实例不发注定被忽略的请求。
+	if _, err := buildTaskSnapshotBody(query, 1, 1); err != nil {
+		return "", nil, nil, false, err
+	}
+	wantInstance := strings.TrimSpace(instanceID)
 	proxyID := ""
 	entries := make([]string, 0)
 	seen := make(map[string]struct{})
 	formProxyIDs := make([]string, 0)
 	seenForms := make(map[string]struct{})
+	stats := taskQueryStats{}
 	const pageSize = 100
 	const maxPages = 20
 	for page := 1; page <= maxPages; page++ {
 		// 待发实例可能同时存在多个并行任务，必须遍历目标分页，不能只保留第一页入口。
-		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
-			"data": map[string]any{
-				"flowInstanceId":               strings.TrimSpace(instanceID),
-				"taskStatus":                   "waiting_send",
-				"auditWayList":                 []string{},
-				"useScope":                     "invest",
-				"flowInstanceBizRelevance":     map[string]any{},
-				"flowInstanceBizRelevanceList": []any{},
-			},
-			"pagination": true, "pages": page, "size": pageSize,
-		})
+		body, buildErr := buildTaskSnapshotBody(query, page, pageSize)
+		if buildErr != nil {
+			return "", nil, nil, false, buildErr
+		}
+		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, body)
 		if err != nil {
 			return "", nil, nil, false, err
 		}
+		stats.Requests++
 		if !responseSucceeded(resp) {
 			return "", nil, nil, false, responseError(resp)
 		}
@@ -402,8 +413,15 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 		if err := decodeArray(resp.Data, &raw); err != nil {
 			return "", nil, nil, false, err
 		}
+		stats.Pages = resp.Pages
+		stats.Rows += len(raw)
 		for _, item := range raw {
-			if strings.TrimSpace(item.FlowInstanceID) != strings.TrimSpace(instanceID) || strings.TrimSpace(item.FlowProxyID) == "" {
+			if strings.TrimSpace(item.FlowInstanceID) != wantInstance {
+				stats.ForeignRows++
+				continue
+			}
+			stats.Matched++
+			if strings.TrimSpace(item.FlowProxyID) == "" {
 				continue
 			}
 			currentProxyID := strings.TrimSpace(item.FlowProxyID)
@@ -445,6 +463,7 @@ func (c *Client) FindDueFlow(ctx context.Context, active Session, instanceID str
 			return "", nil, nil, false, invalidResponse("due task pagination exceeds safe limit")
 		}
 	}
+	c.reportTaskQuery(ctx, query, stats)
 	if proxyID == "" {
 		return "", nil, nil, false, nil
 	}
@@ -933,44 +952,28 @@ func convertFlowFieldPowers(raw []rawFlowNodeFieldPower) []FlowNodeFieldPower {
 	return result
 }
 
-// FindDoneTaskOnNode 读取指定实例、指定节点上是否已有本账号的已办记录（对账「已办记录」维度）。
+// FindDoneTaskOnNode 读取指定实例、指定节点上指定执行人的已办记录（对账「已办记录」维度）。
 // 只读，可安全重试。已办任务与待办同表同端点，只是 taskStatus 取 done（TaskStatusEnum.done=已办）。
-// 节点标识为空时只按实例判断"这个实例上是否已经有已办"。
-func (c *Client) FindDoneTaskOnNode(ctx context.Context, active Session, instanceID, nodeProxyID string) (bool, error) {
+// executorUserID 是要核对的真实操作账号（协议 data.executorId）：为空时按当前会话用户核对；
+// 两处都取不到时直接报错，绝不退化成「随便查一个视角」而把别人的已办当成自己的。
+// 复用统一快照读取：实例筛选在协议顶层，且必须遍历分页——只看第一页会把落在第二页的已办
+// 误判成「没有已办记录」，而对账「未生效」是唯一会触发重放的结论，这条误判代价最高。
+// 节点标识为空时只按实例判断「这个实例上是否已经有该账号的已办」。
+func (c *Client) FindDoneTaskOnNode(ctx context.Context, active Session, instanceID, nodeProxyID, executorUserID string) (bool, error) {
 	instanceID = strings.TrimSpace(instanceID)
 	if instanceID == "" {
 		return false, nil
 	}
-	resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, map[string]any{
-		"data": map[string]any{
-			"flowInstanceId":               instanceID,
-			"taskStatus":                   "done",
-			"auditWayList":                 []string{},
-			"useScope":                     "invest",
-			"flowInstanceBizRelevance":     map[string]any{},
-			"flowInstanceBizRelevanceList": []any{},
-		},
-		"pagination": true, "pages": 1, "size": 100,
-	})
+	snapshots, err := c.ListTaskSnapshotsForUser(ctx, active, instanceID, taskStatusDone, executorUserID)
 	if err != nil {
 		return false, err
 	}
-	if !responseSucceeded(resp) {
-		return false, responseError(resp)
-	}
-	var raw []struct {
-		FlowInstanceID  string `json:"flowInstanceId"`
-		FlowNodeProxyID string `json:"flowNodeProxyId"`
-	}
-	if err := decodeArray(resp.Data, &raw); err != nil {
-		return false, err
-	}
 	wantNode := strings.TrimSpace(nodeProxyID)
-	for _, item := range raw {
-		if strings.TrimSpace(item.FlowInstanceID) != instanceID {
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.FlowInstanceID) != instanceID {
 			continue
 		}
-		if wantNode != "" && strings.TrimSpace(item.FlowNodeProxyID) != wantNode {
+		if wantNode != "" && strings.TrimSpace(snapshot.FlowNodeProxyID) != wantNode {
 			continue
 		}
 		return true, nil

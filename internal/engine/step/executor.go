@@ -91,6 +91,37 @@ func (e *Executor) stepLogFor(runCtx RunContext) *StepLog {
 	return e.logFactory(runCtx)
 }
 
+// annotateInstance 把目标实例身份（ID 与名称）补进日志作用域与请求上下文：
+// 之后的 step.log 阶段行、network.log/curl.log 与运行目录 meta.json 都带上同一实例。
+// 日志目录键始终是页面的 runId/pathRunId——实例名称只作业务信息，
+// 读取慢、读不到或后来改名都不会搬迁日志，也不会让运行等待目标名称。
+func (e *Executor) annotateInstance(ctx context.Context, log *StepLog, instanceID, instanceName, note string) context.Context {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return ctx
+	}
+	log.SetInstance(instanceID, instanceName, note)
+	return logging.WithScope(ctx, logging.Scope{
+		InstanceID:            instanceID,
+		InstanceName:          strings.TrimSpace(instanceName),
+		InstanceNameAvailable: strings.TrimSpace(instanceName) != "",
+		InstanceNameNote:      strings.TrimSpace(note),
+	})
+}
+
+// annotateInstanceFromFacts 在实例事实可读时补上实例 ID 与名称；
+// 事实不可读或没有实例时保持原样——没有事实就不写名称，绝不用计划名或路径名冒充实例名。
+func (e *Executor) annotateInstanceFromFacts(ctx context.Context, runCtx RunContext, log *StepLog, facts InstanceFacts) context.Context {
+	if !facts.Found {
+		return ctx
+	}
+	note := ""
+	if strings.TrimSpace(facts.InstanceName) == "" {
+		note = "目标未返回实例名称"
+	}
+	return e.annotateInstance(ctx, log, runCtx.PathRun.MainInstanceRef, facts.InstanceName, note)
+}
+
 // BuildPreview 执行阶段 1（plan 取步）、阶段 2（gate 门禁复验），并写下阶段 3 的暂停行，
 // 产出给用户的下一步预览。本方法只读目标、不落账、绝不发写请求。
 // reportProgressSafe 安全调用预览进度上报器：未接收集方时是空操作，
@@ -148,6 +179,8 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 			log.Phase("gate", step.Sequence, 1, "目标状态确认失败："+message)
 			return e.blockedPreview(runCtx, step, actorName, "目标状态确认失败："+message, model.FailureClassGateBlocked), false, nil
 		}
+		// 实例事实可读就把实例 ID 与名称补进日志作用域（名称读不到只影响展示）。
+		ctx = e.annotateInstanceFromFacts(ctx, runCtx, log, facts)
 		preview := &StepPreview{
 			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
 			ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
@@ -189,6 +222,7 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		return e.blockedPreview(runCtx, step, actorName,
 			"目标状态确认失败："+message, model.FailureClassGateBlocked), false, nil
 	}
+	ctx = e.annotateInstanceFromFacts(ctx, runCtx, log, facts)
 	if name := strings.TrimSpace(facts.CurrentTaskAssigneeName); name == "" {
 	} else {
 		actorName = name
@@ -894,6 +928,9 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		runCtx.PathRun.MainInstanceRef = result.InstanceID
 		outcome.MainInstanceRef = result.InstanceID
+		// 实例刚创建：先把实例 ID 补进作用域，名称等紧随其后的核验重读读到再补；
+		// 这一步不等待、不额外读目标，目录与日志行不会因为名称未到而延后。
+		ctx = e.annotateInstance(ctx, log, result.InstanceID, "", "目标实例名称尚未读取")
 	}
 
 	// 阶段 6：事实重读。路径运行先进入核验中——从此刻起崩溃恢复会把该路径置为待对账。
@@ -910,6 +947,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	before.StepNodeKey = stepTargetNodeID
 	after, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
 	after.StepNodeKey = stepTargetNodeID
+	if readErr == nil && strings.TrimSpace(after.ReadError) == "" {
+		// 核验重读同时把实例名称补进日志作用域与 meta.json；写后屏障之后的新事实优先。
+		ctx = e.annotateInstanceFromFacts(ctx, runCtx, log, after)
+	}
 	if readErr != nil || strings.TrimSpace(after.ReadError) != "" {
 		// 核验重读失败（工具侧会话失效或目标抖动）：写请求已发出且目标声明成功，但结果未确认。
 		// 2026-09-11 用户裁决：工具自己的读取错误不得把运行判成终局——停在本步、保留现场，
@@ -1749,44 +1790,28 @@ func (e *Executor) recordPrepareFailure(ctx context.Context, runCtx RunContext, 
 	return err
 }
 
-// findCandidateTaskSnapshot 依次用下一节点候选人的登录会话重读指定任务；任务只允许唯一命中。
-// 只有计划账号本身读不到待办时才调用，避免正常路径放大登录次数。
-// resolveTaskSnapshotForStep 按“下一节点候选人优先、原会话兜底”的顺序读取任务快照。
-// 候选人优先是硬规则：流程已流转到下一处理人后，不能先用上一当前处理人会话查待办再决定。
-// 返回的 session 是真正命中任务的处理人会话，供后续代理树/审核记录读取继续使用。
+// resolveTaskSnapshotForStep 发现并读取本步的精确任务快照，返回真正命中任务的处理人会话。
+// 查询顺序固定（F-031/T03）：当前处理人事实（「已发」currentAuditUserInfo）→ 真实用户 ID/会话
+// → 精确实例任务 → 精确节点上的唯一 jobTaskId。
+// 配置里的 NextNodeAuditors 只表示下一次提交/审批要发送的选人参数，不是当前节点已经产生的待办处理人，
+// 因此绝不参与当前任务发现：不再为配置候选人逐一登录、逐一查任务。返回的 session 是真正命中任务
+// 的处理人会话，供后续代理树/审核记录读取继续使用。
 func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, status string, facts *InstanceFacts, allowDiscovery bool) (target.TaskSnapshot, string, string, target.Session, error) {
-	useCandidates := strings.TrimSpace(session.Summary.Account) == strings.TrimSpace(runCtx.PlanAccount) && len(runCtx.NextNodeAuditors[step.NodeKey]) > 0
-	var candidateErr error
-	if useCandidates {
-		snapshot, userID, userName, actorSession, err := e.findCandidateTaskSnapshot(ctx, runCtx, session, step, nodeID, status)
-		if err == nil {
-			if strings.TrimSpace(snapshot.JobTaskID) != "" {
-				return snapshot, userID, userName, actorSession, nil
-			}
-		} else {
-			candidateErr = err
+	// 写前准备（allowDiscovery）才允许按目标事实发现当前处理人；事实里没有本节点处理人时
+	// switchToCurrentHandler 返回中文原因，随门禁一并披露，绝不用配置候选人顶替。
+	if allowDiscovery && facts != nil {
+		snapshot, userID, userName, actorSession, found, diag := e.switchToCurrentHandler(ctx, runCtx, session, step, nodeID, status, *facts)
+		if diag != "" {
+			facts.AssigneeDiag = diag
+		}
+		if found {
+			return snapshot, userID, userName, actorSession, nil
 		}
 	}
+	// 当前会话本人的精确实例任务：发起人节点、当前处理人本人与写后核验都靠它。
 	snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, status)
 	if err != nil {
 		return target.TaskSnapshot{}, "", "", session, err
-	}
-	if strings.TrimSpace(snapshot.JobTaskID) != "" {
-		return snapshot, "", "", session, nil
-	}
-	// 计划账号与配置候选都没有命中，而实例当前确实停在本节点：目标「指定人员」类节点的
-	// 处理人由模板配置决定，待办列表按当前用户过滤，计划账号看不到他们的任务——
-	// 从「已发」事实的 currentAuditUserInfo 读出该节点当前待处理人员并逐个切换会话重读
-	// （只读，不写）。已发事实由发起人会话读取（2026-09-11 用户强调的硬约束）。
-	snapshot, userID, userName, actorSession, found, diag := e.switchToCurrentHandler(ctx, runCtx, session, step, nodeID, status, *facts)
-	if facts != nil {
-		facts.AssigneeDiag = diag
-	}
-	if found {
-		return snapshot, userID, userName, actorSession, nil
-	}
-	if candidateErr != nil {
-		return target.TaskSnapshot{}, "", "", session, candidateErr
 	}
 	return snapshot, "", "", session, nil
 }
@@ -1804,7 +1829,13 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 	}
 	handler, ok := currentHandlerForNode(facts, nodeID)
 	if !ok {
-		return target.TaskSnapshot{}, "", "", sess, false, "实例事实里没有本节点的当前处理人信息（currentAuditUserInfo 为空）"
+		instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+		if len(facts.CurrentHandlers) == 0 {
+			// 目标响应整段缺少 currentAuditUserInfo：把缺失字段与实例 ID 一起说清楚，
+			// 由门禁停在本步（F-031/T04），绝不用配置候选人顶替当前处理人。
+			return target.TaskSnapshot{}, "", "", sess, false, fmt.Sprintf("目标响应缺少 currentAuditUserInfo（实例 %s），无法确定本节点当前处理人", instanceID)
+		}
+		return target.TaskSnapshot{}, "", "", sess, false, fmt.Sprintf("实例 %s 的 currentAuditUserInfo 里没有本节点的处理人信息", instanceID)
 	}
 	matches, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
 		func(callContext context.Context, active target.Session) ([]target.HandlerAccount, error) {
@@ -1813,6 +1844,10 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 	if err != nil {
 		return target.TaskSnapshot{}, "", "", sess, false, "当前处理人账号解析失败：" + err.Error()
 	}
+	// 解析结果按目标真实用户 ID 去重（F-031/T03）：同一个处理人可能同时命中 bizId、
+	// 手机号和姓名三条匹配键，不去重就会对同一个人重复发同一视角的任务查询，
+	// 既放大目标请求也把「一次事实核对」伪装成多次。
+	matches = dedupeHandlerAccounts(matches)
 	tried := []string{}
 	// F-030 评审 P2：优先用计划会话按处理人用户 ID 视角查询（不新增端点），
 	// 命中者才登录其会话；客户端不支持视角查询时回退旧的逐人登录重读。
@@ -1906,140 +1941,23 @@ type taskSnapshotViewReader interface {
 	ListTaskSnapshotsForUser(ctx context.Context, active target.Session, instanceID, taskStatus, queryUserID string) ([]target.TaskSnapshot, error)
 }
 
-// findCandidateTaskSnapshot 发现下一节点的候选任务：优先用计划账号会话按候选人用户 ID
-// 逐个窄查询（目标协议原生支持 queryUserId 指定待办视角用户，不新增端点；F-030 评审 P2），
-// 只有命中者才登录其会话——消除「逐候选登录 + 各自完整分页扫描」的主要耗时。
-// 客户端不支持视角查询时回退旧路径（逐候选登录重读），行为与旧实现一致。
-func (e *Executor) findCandidateTaskSnapshot(ctx context.Context, runCtx RunContext, planSession target.Session, step model.CompiledActionStep, nodeID, status string) (target.TaskSnapshot, string, string, target.Session, error) {
-	candidates := runCtx.NextNodeAuditors[step.NodeKey]
-	if len(candidates) == 0 || e.sessions == nil {
-		return target.TaskSnapshot{}, "", "", target.Session{}, nil
-	}
-	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
-	// F-030/T02：候选人账号目录解析一次批量完成（UserAccountsByID 支持批量），
-	// 代替逐个候选人一次目录请求——候选越多省下的请求数越多，语义不变。
-	accountsByID := map[string]string{}
-	resolver, hasResolver := e.target.(userAccountResolver)
-	if hasResolver {
-		ids := make([]string, 0, len(candidates))
-		for _, candidate := range candidates {
-			if id := strings.TrimSpace(candidate.BizID); id != "" {
-				ids = append(ids, id)
-			}
-		}
-		if len(ids) > 0 {
-			if accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, planSession.Summary.Account, planSession,
-				func(callContext context.Context, active target.Session) (map[string]string, error) {
-					return resolver.UserAccountsByID(callContext, active, ids)
-				}); err == nil {
-				accountsByID = accounts
-			}
-		}
-	}
-	// 视角查询路径：同一计划会话逐候选按用户 ID 查待办，命中者才登录。
-	viewReader, hasView := e.target.(taskSnapshotViewReader)
-	if hasView && instanceID != "" {
-		var lastErr error
-		for _, candidate := range candidates {
-			userID := strings.TrimSpace(candidate.BizID)
-			if userID == "" {
+// dedupeHandlerAccounts 按目标真实用户 ID 去重待处理人员。
+// 同一处理人在目录里可能同时命中 bizId、手机号与姓名三条匹配键，未去重会对同一个人
+// 重复发同一视角的任务查询；用户 ID 为空（目录没有返回 ID）时保留原样，由调用方按匹配键继续核对。
+func dedupeHandlerAccounts(matches []target.HandlerAccount) []target.HandlerAccount {
+	result := make([]target.HandlerAccount, 0, len(matches))
+	seen := map[string]bool{}
+	for _, match := range matches {
+		id := strings.TrimSpace(match.UserID)
+		if id != "" {
+			if seen[id] {
 				continue
 			}
-			snapshots, _, viewErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, planSession.Summary.Account, planSession,
-				func(callContext context.Context, active target.Session) ([]target.TaskSnapshot, error) {
-					return viewReader.ListTaskSnapshotsForUser(callContext, active, instanceID, status, userID)
-				})
-			if viewErr != nil {
-				lastErr = viewErr
-				continue
-			}
-			wantNode := strings.TrimSpace(nodeID)
-			for _, snapshot := range snapshots {
-				if wantNode != "" && strings.TrimSpace(snapshot.FlowNodeProxyID) != wantNode {
-					continue
-				}
-				// 命中候选：登录其会话返回（后续代理树/审核记录读取继续用该会话）；
-				// 目录里没有账号时退回计划会话——写路径会按事实里的处理人 ID 重新解析会话，
-				// 这里不能因目录缺口丢弃已发现的任务事实。
-				account := accountsByID[userID]
-				name := strings.TrimSpace(candidate.Name)
-				if account == "" {
-					snapshot.PendingUserID = userID
-					snapshot.PendingUserName = name
-					return snapshot, userID, name, planSession, nil
-				}
-				actorSession, sessionErr := e.sessions.Current(ctx, account)
-				if sessionErr != nil && sessionRefreshAllowed(sessionErr) {
-					actorSession, sessionErr = e.sessions.Refresh(ctx, account)
-				}
-				if sessionErr == nil {
-					snapshot.PendingUserID = userID
-					snapshot.PendingUserName = name
-					return snapshot, userID, name, actorSession, nil
-				}
-				lastErr = sessionErr
-			}
+			seen[id] = true
 		}
-		if lastErr != nil {
-			return target.TaskSnapshot{}, "", "", target.Session{}, lastErr
-		}
-		return target.TaskSnapshot{}, "", "", target.Session{}, nil
+		result = append(result, match)
 	}
-	// 回退路径：客户端不支持视角查询，逐候选登录重读（旧行为）。
-	var lastErr error
-	for _, candidate := range candidates {
-		userID := strings.TrimSpace(candidate.BizID)
-		if userID == "" {
-			continue
-		}
-		// 优先批量解析结果；批量解析失败时逐个兜底，行为与旧路径一致。
-		account, _, resolveErr := func() (string, string, error) {
-			if account, ok := accountsByID[userID]; ok && strings.TrimSpace(account) != "" {
-				return account, "", nil
-			}
-			return e.assigneeAccount(ctx, planSession, userID)
-		}()
-		if resolveErr != nil {
-			lastErr = resolveErr
-			continue
-		}
-		var actorSession target.Session
-		var snapshot target.TaskSnapshot
-		var sessionErr, readErr error
-		func() {
-			// 计划账号锁由门禁调用方持有，候选账号按固定顺序单独占用，
-			// 防止同一候选同时被页面读取和任务发现刷新。
-			var release func()
-			if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok &&
-				!strings.EqualFold(strings.TrimSpace(account), strings.TrimSpace(runCtx.PlanAccount)) {
-				release = locker.LockAccountUsage(account)
-				defer release()
-			}
-			actorSession, sessionErr = e.sessions.Current(ctx, account)
-			if sessionErr != nil && sessionRefreshAllowed(sessionErr) {
-				actorSession, sessionErr = e.sessions.Refresh(ctx, account)
-			}
-			if sessionErr != nil {
-				return
-			}
-			snapshot, readErr = e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
-		}()
-		if sessionErr != nil {
-			lastErr = sessionErr
-			continue
-		}
-		if readErr != nil {
-			lastErr = readErr
-			continue
-		}
-		if strings.TrimSpace(snapshot.JobTaskID) != "" {
-			return snapshot, userID, strings.TrimSpace(candidate.Name), actorSession, nil
-		}
-	}
-	if lastErr != nil {
-		return target.TaskSnapshot{}, "", "", target.Session{}, lastErr
-	}
-	return target.TaskSnapshot{}, "", "", target.Session{}, nil
+	return result
 }
 
 // nameOrFallback 有名字用名字，否则用 ID 兜底，供阻断文案指向具体人员。
@@ -2287,9 +2205,21 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 	}
 	if instanceRef != "" {
 		if reader, ok := e.target.(doneRecordReader); ok {
-			if found, _, readErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, runCtx.PlanAccount, session,
+			// 已办记录必须按「当前真实操作账号」核对，不能默认用计划账号（发起人）视角：
+			// 会签/指定人员链路里本步写是以当前处理人身份发出的，用发起人视角查已办
+			// 会把已经生效的写读成「没有已办痕迹」，而对账「未生效」是唯一会触发重放的结论。
+			// 视角为空（会话没有用户 ID）时如实记录，不冒充任何人。
+			operatorUserID := strings.TrimSpace(session.UserID)
+			operatorAccount := strings.TrimSpace(session.Summary.Account)
+			if operatorAccount == "" {
+				operatorAccount = runCtx.PlanAccount
+			}
+			if operatorUserID == "" {
+				log.Phase("verify", stepNo, 1, "已办记录核对没有可用的真实操作账号，按当前会话视角读取并如实记录空视角")
+			}
+			if found, _, readErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, operatorAccount, session,
 				func(callContext context.Context, active target.Session) (bool, error) {
-					return reader.FindDoneTaskOnNode(callContext, active, instanceRef, nodeID)
+					return reader.FindDoneTaskOnNode(callContext, active, instanceRef, nodeID, operatorUserID)
 				}); readErr == nil {
 				facts.DoneRecordsRead, facts.DoneRecordFound = true, found
 			} else {
@@ -2315,7 +2245,7 @@ func (e *Executor) ReconcileFacts(ctx context.Context, runCtx RunContext, stepNo
 // doneRecordReader 与 auditTraceReader 是对账两个新增维度的最小能力面。
 // 用接口断言而不是加进 TargetClient：假件与既有装配不必被迫实现它们，读不到时对账如实降级。
 type doneRecordReader interface {
-	FindDoneTaskOnNode(ctx context.Context, active target.Session, instanceID, nodeProxyID string) (bool, error)
+	FindDoneTaskOnNode(ctx context.Context, active target.Session, instanceID, nodeProxyID, executorUserID string) (bool, error)
 }
 
 type auditTraceReader interface {

@@ -175,15 +175,22 @@ func (r *Router) Bucket(scope Scope, name string) *Writer {
 }
 
 // BucketDir 返回当前作用域对应的日志目录，目录段全部经过清洗。
-// 能确定计划就进该计划目录：配置阶段按执行路径与日期分层，执行阶段按执行路径与运行号分层；
-// 只知道计划不知道执行路径时进计划级目录；确实无法归属业务对象时才进当天的应用程序目录。
+// 运行阶段严格镜像页面层级「运行记录 -> 路径运行」：logs/runs/<运行目录>/paths/<路径运行目录>，
+// 目录名只用页面已有的稳定键（runId/pathRunId）加可读标签，实例名称不参与寻址。
+// 配置阶段仍按计划、执行路径与日期分层；只知道计划不知道执行路径时进计划级目录；
+// 确实无法归属业务对象时才进当天的应用程序目录。
 func (r *Router) BucketDir(scope Scope) string {
 	if !scope.HasPlan() {
 		return r.ApplicationDir()
 	}
 	planDir := filepath.Join(r.root, plansDirName, scope.PlanDirName())
 	if scope.IsRun() {
-		return filepath.Join(planDir, runsDirName, scope.ExecutionPathDirName(), SanitizePathSegment(scope.RunFolder()))
+		runDir := filepath.Join(r.root, runsRootDirName, scope.RunFolder())
+		if pathRunFolder := scope.PathRunFolder(); pathRunFolder != "" {
+			return filepath.Join(runDir, pathsDirName, pathRunFolder)
+		}
+		// 只有运行身份、还没有路径运行身份时落在运行目录本身，不按路径名另造一层目录。
+		return runDir
 	}
 	return filepath.Join(planDir, configurationDirName, scope.ExecutionPathDirName(), r.Day())
 }

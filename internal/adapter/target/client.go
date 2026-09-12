@@ -36,6 +36,8 @@ type Client struct {
 	baseURL    *url.URL
 	config     ClientConfig
 	httpClient *http.Client
+	// networkLogger 是传输层与业务诊断日志的同一入口；未注入时为 nil，所有诊断日志静默跳过。
+	networkLogger networkLogger
 }
 
 // ProxyFor 返回客户端对指定请求的代理决策。目标客户端对一切请求都显式绕过本机代理，
@@ -630,10 +632,14 @@ func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instance
 // （两个参数都是目标原生支持的既有字段，不是新增端点）。候选处理人扫描由此从
 // 「逐个候选登录 + 各自完整分页扫描」收敛为「同一会话逐候选一次窄查询」，
 // 只有命中者才需要登录会话。
+// 载荷一律走 buildTaskSnapshotBody：实例筛选只出现在协议顶层 flowInstanceIdList。
 func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, instanceID, taskStatus, queryUserID string) ([]TaskSnapshot, error) {
-	// F-030/T02：同一次事实读取边界内同一 (有效用户, 实例, 状态) 的列表只扫一次。
+	// F-030/T02（F-031/T04 收敛）：memo 键 = 有效查询视角 + 实例 ID + 任务状态。
+	// 有效查询视角编码了「会话账号」与「显式视角用户」（pending 的 queryUserId / done 的 executorId），
+	// 事实版本由 context 作用域本身表达：一次 AttachTaskSnapshotScope 就是一次事实版本，
+	// 预览/门禁/写前准备共享它，写请求之后的核验从零开始，绝不把写前结果带进写后判定。
 	// 键用账号而不是 SID：同账号锁内会话重建（重登）后列表内容对查找语义不变；
-	// 有效用户 = 会话账号与显式 queryUserId 的组合，不同用户视角必须各自扫描。
+	// 不同用户视角必须各自扫描。
 	effectiveUser := strings.TrimSpace(active.Summary.Account)
 	if id := strings.TrimSpace(queryUserID); id != "" {
 		effectiveUser = "user:" + id
@@ -642,33 +648,25 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 	if cached := taskListFromScope(ctx, scopeKey); cached != nil {
 		return cached, nil
 	}
-	taskStatus = strings.TrimSpace(taskStatus)
-	if taskStatus != "pending" && taskStatus != "done" {
+	query := taskSnapshotQuery{
+		InstanceID: instanceID,
+		TaskStatus: taskStatus,
+	}
+	switch strings.TrimSpace(taskStatus) {
+	case taskStatusPending:
+		query.ViewUserID = strings.TrimSpace(queryUserID)
+	case taskStatusDone:
+		// done 必须限定实际执行人：显式视角用户优先，其次当前会话用户（当前真实操作账号）。
+		query.ExecutorID = firstNonEmpty(strings.TrimSpace(queryUserID), strings.TrimSpace(active.UserID))
+	default:
+		// 任务快照只服务 pending 与 done：waiting_send 由 FindDueFlow 走同一载荷出口读取，
+		// 其他状态目标会直接拒绝，这里在发请求前就拒绝。
 		return nil, invalidResponse("unsupported task status")
 	}
-	data := map[string]any{
-		"taskStatus":                   taskStatus,
-		"auditWayList":                 []string{},
-		"useScope":                     "invest",
-		"flowInstanceBizRelevance":     map[string]any{},
-		"flowInstanceBizRelevanceList": []any{},
-	}
-	// 实例过滤必须用顶层 flowInstanceIdList（参考代码 Backlog/index.vue 的同端点用法）：
-	// 放进 data.flowInstanceId 目标端不理会，导致每次扫描翻全量任务表（实测单次扫描
-	// 翻到第 11 页 × 74 条，20 个账号 = 60+ 次请求、11 秒）。修正后一次请求只回本实例任务。
-	// 视角用户：done 列表必须限定实际执行人；指定视角用户时同样把 executorId 换成该用户。
-	// 待办列表由目标网关按 SID 解析当前用户，但目标协议顶层 queryUserId 可显式指定待办视角用户
-	// （源码：queryUserId 为空才默认 SID 用户），两个分支都用同一个既有字段，不新增端点。
-	viewUserID := strings.TrimSpace(queryUserID)
-	if taskStatus == "done" {
-		executorID := viewUserID
-		if executorID == "" {
-			executorID = strings.TrimSpace(active.UserID)
-		}
-		if executorID == "" {
-			return nil, invalidResponse("done task lookup missing executor id")
-		}
-		data["executorId"] = executorID
+	// 先构造一次载荷把协议约束（实例 ID、状态、执行人）在发请求前校验掉，
+	// 避免未知状态或空视角先发出一次注定被忽略的请求。
+	if _, err := buildTaskSnapshotBody(query, 1, 1); err != nil {
+		return nil, err
 	}
 	type rawTaskSnapshot struct {
 		LinkID                 string `json:"id"`
@@ -689,21 +687,19 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 	}
 	wantInstance := strings.TrimSpace(instanceID)
 	matched := make([]TaskSnapshot, 0)
+	stats := taskQueryStats{}
 	const pageSize = 100
 	const maxPages = 20
 	for page := 1; page <= maxPages; page++ {
-		body := map[string]any{
-			"data": data, "pagination": true, "pages": page, "size": pageSize,
-			// 实例过滤是协议顶层字段（参考代码 Backlog/index.vue 同端点用法）。
-			"flowInstanceIdList": []string{wantInstance},
-		}
-		if taskStatus == "pending" && viewUserID != "" {
-			body["queryUserId"] = viewUserID
+		body, buildErr := buildTaskSnapshotBody(query, page, pageSize)
+		if buildErr != nil {
+			return nil, buildErr
 		}
 		resp, err := c.call(ctx, "/web/flowJobTaskLink/list", active.SID, body)
 		if err != nil {
 			return nil, err
 		}
+		stats.Requests++
 		if !responseSucceeded(resp) {
 			return nil, responseError(resp)
 		}
@@ -711,8 +707,12 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 		if err := decodeArray(resp.Data, &raw); err != nil {
 			return nil, err
 		}
+		stats.Pages = resp.Pages
+		stats.Rows += len(raw)
 		for _, item := range raw {
 			if strings.TrimSpace(item.FlowInstanceID) != wantInstance {
+				// 目标异常响应可能串入其他实例的行：剔除并计数，作为「实例过滤是否生效」的证据。
+				stats.ForeignRows++
 				continue
 			}
 			jobTaskID := strings.TrimSpace(item.JobTaskID)
@@ -748,6 +748,8 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 			return nil, invalidResponse("task pagination exceeds safe limit")
 		}
 	}
+	stats.Matched = len(matched)
+	c.reportTaskQuery(ctx, query, stats)
 	storeTaskListToScope(ctx, scopeKey, matched)
 	return matched, nil
 }

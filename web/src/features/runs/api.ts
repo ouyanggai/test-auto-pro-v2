@@ -116,6 +116,14 @@ export interface PathRunDetail {
   planName: string
   pathId: number
   pathName: string
+  // logDir 是这次运行的路径运行日志目录（相对日志根），由页面身份（runId/pathRunId）直接得出。
+  logDir?: string
+  // 目标实例身份：instanceName 只作业务信息展示，不参与日志目录定位；
+  // instanceNameAvailable 为 false 时显示「实例名称不可用」并用 instanceNameNote 说明原因。
+  instanceId?: string
+  instanceName?: string
+  instanceNameAvailable?: boolean
+  instanceNameNote?: string
   steps: RunStep[]
   currentPreview?: RunPreview
   nodeStates: Record<string, RunNodeState>

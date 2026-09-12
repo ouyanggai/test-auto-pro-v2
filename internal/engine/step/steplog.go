@@ -2,6 +2,7 @@ package step
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"test-auto-pro-v2/internal/logging"
@@ -16,6 +17,9 @@ type StepLog struct {
 	now    func() time.Time
 	// relativePath 是 step.log 相对日志根的路径，落进尝试记录实现记录到日志的可达。
 	relativePath string
+	// onInstanceScope 由装配层注入：实例身份补进作用域后同步更新运行目录的 meta.json。
+	// 目录本身不随实例名称变化，只补字段（F-031/T05）。
+	onInstanceScope func(scope logging.Scope)
 	// traceID 与 curlTraceID 由发送阶段回填；写请求发出前不存在链路 ID，保持为空。
 	traceID     string
 	curlTraceID string
@@ -29,6 +33,39 @@ func NewStepLog(writer *logging.Writer, scope logging.Scope, now func() time.Tim
 		now = func() time.Time { return time.Now() }
 	}
 	return &StepLog{writer: writer, scope: scope, now: now}
+}
+
+// SetInstanceScopeUpdater 注入实例身份变化时的通知回调（由装配层接入运行目录 meta.json）。
+func (l *StepLog) SetInstanceScopeUpdater(update func(scope logging.Scope)) {
+	if l == nil {
+		return
+	}
+	l.onInstanceScope = update
+}
+
+// SetInstance 把目标实例身份补进本步日志作用域，后续阶段行与 network.log 因此带上同一实例，
+// 并通知装配层同步运行目录的 meta.json；名称缺失时只记录「不可用」，不冒充任何名称。
+// 目录键（runId/pathRunId）不受影响：实例名称变化不会造成日志搬迁。
+func (l *StepLog) SetInstance(instanceID, instanceName, note string) {
+	if l == nil {
+		return
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return
+	}
+	l.scope.InstanceID = instanceID
+	if name := strings.TrimSpace(instanceName); name != "" {
+		l.scope.InstanceName = name
+		l.scope.InstanceNameAvailable = true
+		l.scope.InstanceNameNote = ""
+	} else if strings.TrimSpace(l.scope.InstanceName) == "" {
+		l.scope.InstanceNameAvailable = false
+		l.scope.InstanceNameNote = strings.TrimSpace(note)
+	}
+	if l.onInstanceScope != nil {
+		l.onInstanceScope(l.scope)
+	}
 }
 
 // SetRelativePath 记录 step.log 相对日志根的路径（由装配层按运行目录计算）。

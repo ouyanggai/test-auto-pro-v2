@@ -13,7 +13,8 @@ type taskSnapshotScopeKey struct{}
 
 // taskSnapshotScope 是一次事实读取边界内的任务列表 memo。
 type taskSnapshotScope struct {
-	// lists 按 (sessionID, instanceID, status) 缓存一次扫描结果。
+	// lists 按 (有效查询视角, 实例 ID, 任务状态) 缓存一次扫描结果；
+	// 事实版本由本作用域对象表达，换一次事实读取就是换一个作用域。
 	lists map[string][]TaskSnapshot
 }
 

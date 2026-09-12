@@ -368,8 +368,9 @@ func nextAuditorsOf(step model.CompiledActionStep) []target.NextAuditor {
 }
 
 // instanceName 生成发起实例的显示名：优先取动作参数，否则使用计划名、路径名和目标创建时刻。
-// 目标平台实例列表里没有工具侧日志目录，名称需要与 logs/plans/<计划>/runs/<路径>/ 的层级一致，
-// 并带本地时间，用户登录目标平台后能直接辨认这次实例属于哪个计划和哪条路径。
+// 目标平台实例列表里没有工具侧日志目录，名称与运行日志的「计划 / 路径」层级保持一致
+// （目录见 logs/runs/<运行记录>/paths/<路径运行>），并带本地时间，
+// 用户登录目标平台后能直接辨认这次实例属于哪个计划和哪条路径。
 func instanceName(runCtx RunContext, step model.CompiledActionStep) string {
 	if value, ok := step.Parameters["instanceName"].(string); ok {
 		if name := strings.TrimSpace(value); name != "" {

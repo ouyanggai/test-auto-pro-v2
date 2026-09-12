@@ -33,14 +33,20 @@ var unsafePathChars = regexp.MustCompile(`[/\\:*?"<>|\x00-\x1f\x7f]+`)
 const (
 	// applicationDirName 是应用程序日志子树，只放启动停止与无法归属业务对象的系统级事件。
 	applicationDirName = "application"
-	// plansDirName 是计划业务日志子树，下面按计划、配置或运行、执行路径逐层分开。
+	// plansDirName 是计划业务日志子树，只放配置阶段的日志。
 	plansDirName = "plans"
 	// configurationDirName 是某个计划的配置阶段日志子树。
 	configurationDirName = "configuration"
-	// runsDirName 是某个计划的执行阶段日志子树。
-	runsDirName = "runs"
+	// runsRootDirName 是运行日志子树根：logs/runs/<运行记录>/paths/<路径运行>，
+	// 与页面的「运行记录 -> 路径运行」逐层对应。
+	runsRootDirName = "runs"
+	// pathsDirName 是一次运行下的路径运行子树。
+	pathsDirName = "paths"
 	// planLevelDirName 用于已知计划但还不知道执行路径的计划级操作。
 	planLevelDirName = "_plan"
+	// legacyPlanRunsDirName 是 F-031 之前的计划内运行子树名（logs/plans/<计划>/runs/...）。
+	// 历史日志不迁移、不重命名，只在保留期清理里继续认这条老路径。
+	legacyPlanRunsDirName = "runs"
 	// unknownSegment 是目录段清洗后为空时的占位，保证路径始终可落盘。
 	unknownSegment = "unknown"
 )
@@ -88,14 +94,23 @@ type Scope struct {
 	ExecutionPathID string
 	// ExecutionPathName 是执行路径的真实显示名，同样只能来自数据库记录。
 	ExecutionPathName string
-	// RunID 与 RunSeq 只在真实执行时出现；RunSeq 是运行目录名。F-013 不创建运行记录也不伪造运行号。
+	// RunID 与 RunSeq 只在真实执行时出现；RunSeq 是运行号（页面「运行 #」的可读标签），
+	// 运行目录的唯一定位键是 RunID，两者必须同时保留。
 	RunID  string
 	RunSeq string
-	// PathRunID、StepID、Attempt、Phase 由后续执行器切片填充，配置阶段写占位符。
+	// PathRunID 是路径运行的唯一定位键（页面路径页每行），StepID、Attempt、Phase 由执行器填充。
 	PathRunID string
-	StepID    string
-	Attempt   string
-	Phase     string
+	// InstanceID/InstanceName 是这次运行目标实例的业务信息，只进日志字段与 meta.json，
+	// 不参与目录寻址：实例名称变更、读取延迟或同名实例都不会造成日志搬迁和误归档。
+	InstanceID string
+	// InstanceName 为空表示目标暂时读不到名称，此时 InstanceNameAvailable 为假并带原因。
+	InstanceName          string
+	InstanceNameAvailable bool
+	// InstanceNameNote 说明名称为空的真实原因，只进日志与 meta.json，不用计划名或路径名冒充。
+	InstanceNameNote string
+	StepID           string
+	Attempt          string
+	Phase            string
 }
 
 type scopeContextKey struct{}
@@ -122,6 +137,7 @@ func (s Scope) Merge(next Scope) Scope {
 		{&merged.RunID, next.RunID},
 		{&merged.RunSeq, next.RunSeq},
 		{&merged.PathRunID, next.PathRunID},
+		{&merged.InstanceID, next.InstanceID},
 		{&merged.StepID, next.StepID},
 		{&merged.Attempt, next.Attempt},
 		{&merged.Phase, next.Phase},
@@ -129,6 +145,15 @@ func (s Scope) Merge(next Scope) Scope {
 		if strings.TrimSpace(pair.value) != "" {
 			*pair.target = pair.value
 		}
+	}
+	// 实例名称与「名称是否可用」是一对：名称补进来就同时置为可用；
+	// 名称缺失时保留调用方给出的原因，绝不把已有名称清空。
+	if strings.TrimSpace(next.InstanceName) != "" {
+		merged.InstanceName = next.InstanceName
+		merged.InstanceNameAvailable = true
+		merged.InstanceNameNote = ""
+	} else if !next.InstanceNameAvailable && strings.TrimSpace(next.InstanceNameNote) != "" && !merged.InstanceNameAvailable {
+		merged.InstanceNameNote = next.InstanceNameNote
 	}
 	return merged
 }
@@ -156,6 +181,8 @@ func (s Scope) Fields() []Field {
 		{Key: "request_id", Value: s.RequestID},
 		{Key: "run_id", Value: s.RunID},
 		{Key: "path_run_id", Value: s.PathRunID},
+		{Key: "instance_id", Value: s.InstanceID},
+		{Key: "instance_name", Value: s.InstanceName},
 		{Key: "step_id", Value: s.StepID},
 		{Key: "attempt", Value: s.Attempt},
 		{Key: "phase", Value: s.Phase},
@@ -172,12 +199,30 @@ func (s Scope) HasExecutionPath() bool {
 	return strings.TrimSpace(s.ExecutionPathID) != ""
 }
 
-// RunFolder 返回运行目录名：优先运行号，其次运行标识；两者都空说明还没有真实运行。
+// RunFolder 返回运行目录名：可读运行号 + 计划名 + 运行 ID，与页面「运行记录」的一行一一对应。
+// 唯一定位键是 runId，运行号只是同一计划内的可读标签，两者都保留在目录名里；
+// runId 缺失说明这次作用域还没有真实运行，不能当运行目录用。
 func (s Scope) RunFolder() string {
-	if sequence := strings.TrimSpace(s.RunSeq); sequence != "" {
-		return sequence
+	runID := strings.TrimSpace(s.RunID)
+	if runID == "" {
+		return ""
 	}
-	return strings.TrimSpace(s.RunID)
+	label := strings.TrimSpace(s.RunSeq)
+	if label == "" {
+		label = runID
+	}
+	return "运行_" + SanitizePathSegment(label) + "__" + SanitizePathSegment(s.PlanName) + "__run-" + SanitizePathSegment(runID)
+}
+
+// PathRunFolder 返回路径运行目录名：可读路径名 + 路径运行 ID + 路径 ID，与页面路径页每行一一对应。
+// 稳定键是 pathRunId（pathId 与 pathName 只是可读辅助信息），同一运行内出现同名路径也不会互相覆盖；
+// pathRunId 缺失时返回空串，由调用方决定退回运行目录，绝不按路径名或计划名猜目录。
+func (s Scope) PathRunFolder() string {
+	pathRunID := strings.TrimSpace(s.PathRunID)
+	if pathRunID == "" {
+		return ""
+	}
+	return SanitizePathSegment(s.ExecutionPathName) + "__path-run-" + SanitizePathSegment(pathRunID) + "__path-" + SanitizePathSegment(s.ExecutionPathID)
 }
 
 // IsRun 判断作用域是否指向一次真实运行；只有运行作用域才路由到计划的 runs 子树。

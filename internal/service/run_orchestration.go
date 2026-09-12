@@ -254,16 +254,25 @@ type PathRunDetailDTO struct {
 	RunConcurrencyLabel string              `json:"runConcurrencyLabel,omitempty"`
 	Paths               []RunPathSummaryDTO `json:"paths"`
 	// Result 与 FinalTarget 是两件分开的事：路径结果只看步骤事实，最终目标事实如实描述目标现状。
-	ResultName       string                     `json:"resultName,omitempty"`
-	FailureClassName string                     `json:"failureClassName,omitempty"`
-	FinalTarget      json.RawMessage            `json:"finalTarget,omitempty"`
-	PlanID           uint64                     `json:"planId"`
-	PlanName         string                     `json:"planName"`
-	PathID           uint64                     `json:"pathId"`
-	PathName         string                     `json:"pathName"`
-	Steps            []RunStepDTO               `json:"steps"`
-	CurrentPreview   *RunPreviewDTO             `json:"currentPreview,omitempty"`
-	NodeStates       map[string]RunNodeStateDTO `json:"nodeStates"`
+	ResultName       string          `json:"resultName,omitempty"`
+	FailureClassName string          `json:"failureClassName,omitempty"`
+	FinalTarget      json.RawMessage `json:"finalTarget,omitempty"`
+	PlanID           uint64          `json:"planId"`
+	PlanName         string          `json:"planName"`
+	PathID           uint64          `json:"pathId"`
+	PathName         string          `json:"pathName"`
+	// LogDir 是这次运行的路径运行日志目录（相对日志根），从页面身份（runId/pathRunId）直接算出，
+	// 用户不必遍历全盘或按时间猜目录。
+	LogDir string `json:"logDir,omitempty"`
+	// InstanceID/InstanceName 是目标实例身份：实例名称只作业务信息，不参与日志目录寻址。
+	// 名称读不到时 InstanceNameAvailable 为假并带原因，界面显示「实例名称不可用」，不用其他名字冒充。
+	InstanceID            string                     `json:"instanceId,omitempty"`
+	InstanceName          string                     `json:"instanceName,omitempty"`
+	InstanceNameAvailable bool                       `json:"instanceNameAvailable"`
+	InstanceNameNote      string                     `json:"instanceNameNote,omitempty"`
+	Steps                 []RunStepDTO               `json:"steps"`
+	CurrentPreview        *RunPreviewDTO             `json:"currentPreview,omitempty"`
+	NodeStates            map[string]RunNodeStateDTO `json:"nodeStates"`
 	// GraphError 原样携带结构读取失败的底层错误文案；为空表示结构读取正常。
 	GraphError string `json:"graphError,omitempty"`
 	// NodePlans 是按图节点 ID 索引的「本次运行在该节点上的已配置计划」：
@@ -291,8 +300,8 @@ type PathRunDetailDTO struct {
 	// SceneLost 表示这次运行的执行现场已经不在（服务重启或执行结果无法确认），
 	// InterruptedNodeID/InterruptedNote 定位中断时正在执行、尚未落账的那一步，
 	// 供节点面板把中断原因直接显示在那个节点上（否则该节点无任何步骤记录，点开一片空白）。
-	SceneLost     bool   `json:"sceneLost"`
-	SceneLostNote string `json:"sceneLostNote,omitempty"`
+	SceneLost         bool   `json:"sceneLost"`
+	SceneLostNote     string `json:"sceneLostNote,omitempty"`
 	InterruptedNodeID string `json:"interruptedNodeId,omitempty"`
 	InterruptedNote   string `json:"interruptedNote,omitempty"`
 	// Retryable 表示服务端判定这条路径运行可以重试失败动作（F-028）：
@@ -784,8 +793,14 @@ func (s *RunOrchestrationService) RecoveryLogWriter() func(pathRunID uint64, mes
 	}
 }
 
-// runLogScope 按路径运行身份构造日志作用域。
+// runLogScope 按路径运行身份构造日志作用域（供恢复与控制日志复用）。
 func (s *RunOrchestrationService) runLogScope(ctx context.Context, pathRunID uint64) (logging.Scope, error) {
+	return s.runScopeByPathRun(ctx, pathRunID)
+}
+
+// runScopeByPathRun 读取路径运行、运行与计划、执行路径的真实身份并构造日志作用域。
+// 显示名只能来自数据库记录，读不到就留空由目录清洗成占位段，绝不拿计划名冒充路径名。
+func (s *RunOrchestrationService) runScopeByPathRun(ctx context.Context, pathRunID uint64) (logging.Scope, error) {
 	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
 	if err != nil {
 		return logging.Scope{}, err
@@ -798,10 +813,17 @@ func (s *RunOrchestrationService) runLogScope(ctx context.Context, pathRunID uin
 	if err != nil {
 		return logging.Scope{}, err
 	}
-	pathName := plan.Name
-	if path, pathErr := s.paths.Get(ctx, run.PlanID, pathRun.ExecutionPathID); pathErr == nil && strings.TrimSpace(path.Name) != "" {
-		pathName = path.Name
+	pathName := ""
+	if path, pathErr := s.paths.Get(ctx, run.PlanID, pathRun.ExecutionPathID); pathErr == nil {
+		pathName = strings.TrimSpace(path.Name)
 	}
+	return runScopeOf(pathRun, run, plan, pathName), nil
+}
+
+// runScopeOf 组装运行日志作用域：页面身份（计划/路径/运行/路径运行）+ 目标实例业务信息。
+// 目录键只用页面已有的 runId/pathRunId（见 logging.Router.BucketDir），显示名与实例名称只作可读标签；
+// 实例名称由执行器读到后补进 meta.json，这里只带已落账的实例 ID，绝不猜测名称。
+func runScopeOf(pathRun model.PathRun, run model.Run, plan model.Plan, pathName string) logging.Scope {
 	return logging.Scope{
 		PlanID:            strconv.FormatUint(run.PlanID, 10),
 		PlanName:          plan.Name,
@@ -810,7 +832,8 @@ func (s *RunOrchestrationService) runLogScope(ctx context.Context, pathRunID uin
 		RunID:             strconv.FormatUint(run.ID, 10),
 		RunSeq:            strconv.FormatUint(run.RunNo, 10),
 		PathRunID:         strconv.FormatUint(pathRun.ID, 10),
-	}, nil
+		InstanceID:        strings.TrimSpace(pathRun.MainInstanceRef),
+	}
 }
 
 // ControlLogWriter 暴露 control.log 写入函数供控制服务装配（复用 F-013 的运行目录路由）。
@@ -826,30 +849,9 @@ func (s *RunOrchestrationService) controlLogWriter() func(pathRunID uint64, fiel
 	return func(pathRunID uint64, fields []fmt.Stringer) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		pathRun, err := s.store.GetPathRun(ctx, pathRunID)
-		if err != nil {
+		scope, scopeErr := s.runScopeByPathRun(ctx, pathRunID)
+		if scopeErr != nil {
 			return
-		}
-		run, err := s.store.GetRun(ctx, pathRun.RunID)
-		if err != nil {
-			return
-		}
-		plan, err := s.plans.Get(ctx, run.PlanID)
-		if err != nil {
-			return
-		}
-		pathName := plan.Name
-		if path, pathErr := s.paths.Get(ctx, run.PlanID, pathRun.ExecutionPathID); pathErr == nil && strings.TrimSpace(path.Name) != "" {
-			pathName = path.Name
-		}
-		scope := logging.Scope{
-			PlanID:            strconv.FormatUint(run.PlanID, 10),
-			PlanName:          plan.Name,
-			ExecutionPathID:   strconv.FormatUint(pathRun.ExecutionPathID, 10),
-			ExecutionPathName: pathName,
-			RunID:             strconv.FormatUint(run.ID, 10),
-			RunSeq:            strconv.FormatUint(run.RunNo, 10),
-			PathRunID:         strconv.FormatUint(pathRun.ID, 10),
 		}
 		// 同一运行目录内的日志统一用本地时间（与 step.log、network.log 一致，按时间对照不错位）。
 		line := logging.FormatLine(time.Now(), "info", append(scope.Fields(), toLoggingFields(fields)...))
@@ -872,32 +874,12 @@ func toLoggingFields(fields []fmt.Stringer) []logging.Field {
 }
 
 // withRunScope 按路径运行的真实身份构造日志作用域并注入上下文。
+// 放行、停止、重试与详情读取都从这里取同一份作用域，因此 network.log、curl.log、step.log
+// 与恢复/控制日志始终落在同一个路径运行目录。
 func (s *RunOrchestrationService) withRunScope(ctx context.Context, pathRunID uint64) (context.Context, error) {
-	pathRun, err := s.store.GetPathRun(ctx, pathRunID)
+	scope, err := s.runScopeByPathRun(ctx, pathRunID)
 	if err != nil {
 		return ctx, err
-	}
-	run, err := s.store.GetRun(ctx, pathRun.RunID)
-	if err != nil {
-		return ctx, err
-	}
-	plan, err := s.plans.Get(ctx, run.PlanID)
-	if err != nil {
-		return ctx, err
-	}
-	path, pathErr := s.paths.Get(ctx, run.PlanID, pathRun.ExecutionPathID)
-	pathName := plan.Name
-	if pathErr == nil && strings.TrimSpace(path.Name) != "" {
-		pathName = path.Name
-	}
-	scope := logging.Scope{
-		PlanID:            strconv.FormatUint(run.PlanID, 10),
-		PlanName:          plan.Name,
-		ExecutionPathID:   strconv.FormatUint(pathRun.ExecutionPathID, 10),
-		ExecutionPathName: pathName,
-		RunID:             strconv.FormatUint(run.ID, 10),
-		RunSeq:            strconv.FormatUint(run.RunNo, 10),
-		PathRunID:         strconv.FormatUint(pathRun.ID, 10),
 	}
 	return logging.WithScope(ctx, scope), nil
 }
@@ -955,6 +937,61 @@ func (s *RunOrchestrationService) RunDetailByRunAndPathRun(ctx context.Context, 
 		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "该路径运行不属于这次运行"}
 	}
 	return s.RunDetailByPathRun(ctx, pathRunID)
+}
+
+// fillRunLogLocation 补齐运行详情的日志目录与目标实例身份（F-031/T05、T06）。
+// 目录由本次运行的 runId/pathRunId 直接算出，与页面「运行记录 -> 路径运行」逐层对应；
+// 实例名称从该目录的 meta.json 读取。历史运行（F-031 之前）的日志在旧目录里，
+// 按已落账的 step.log 相对路径回查它的 meta.json；两处都读不到名称时如实标记「实例名称不可用」，
+// 绝不用计划名、路径名或候选处理人名称补造。
+func (s *RunOrchestrationService) fillRunLogLocation(detail *PathRunDetailDTO, run model.Run, pathRun model.PathRun, plan model.Plan, attempts []model.RunStepAttempt) {
+	if detail == nil || s.router == nil {
+		return
+	}
+	pathName := ""
+	if path, pathErr := s.paths.Get(context.Background(), run.PlanID, pathRun.ExecutionPathID); pathErr == nil {
+		pathName = strings.TrimSpace(path.Name)
+	}
+	scope := runScopeOf(pathRun, run, plan, pathName)
+	meta, found := s.router.ReadMeta(scope)
+	dir := s.router.BucketDir(scope)
+	if !found {
+		// 旧目录回查：只按已落账的 step.log 相对路径定位，不扫描盘上的历史目录。
+		if legacyDir, ok := legacyLogDir(s.router, attempts); ok {
+			dir = legacyDir
+			meta, found = s.router.ReadMetaAt(legacyDir)
+		}
+	}
+	if relative, err := filepath.Rel(s.router.Root(), dir); err == nil {
+		detail.LogDir = filepath.ToSlash(relative)
+	}
+	if instanceID := strings.TrimSpace(meta.InstanceID); instanceID != "" {
+		detail.InstanceID = instanceID
+	} else {
+		detail.InstanceID = strings.TrimSpace(pathRun.MainInstanceRef)
+	}
+	detail.InstanceName = strings.TrimSpace(meta.InstanceName)
+	detail.InstanceNameAvailable = detail.InstanceName != ""
+	detail.InstanceNameNote = strings.TrimSpace(meta.InstanceNameNote)
+	if !detail.InstanceNameAvailable && detail.InstanceNameNote == "" {
+		detail.InstanceNameNote = "目标实例名称不可用"
+	}
+}
+
+// legacyLogDir 从已落账尝试的 step.log 相对路径反查旧日志目录（F-031 之前的目录方案）。
+// 取第一条非空记录即可：同一次路径运行的所有日志都在同一个目录里。
+func legacyLogDir(router *logging.Router, attempts []model.RunStepAttempt) (string, bool) {
+	if router == nil {
+		return "", false
+	}
+	for _, attempt := range attempts {
+		if strings.TrimSpace(attempt.LogPath) == "" {
+			continue
+		}
+		dir := filepath.Dir(filepath.Join(router.Root(), filepath.FromSlash(attempt.LogPath)))
+		return dir, true
+	}
+	return "", false
 }
 
 // RunDetailByPathRun 按路径运行 ID 读取详情。
@@ -1030,6 +1067,8 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	if pathRun.FinalTargetSummary != "" {
 		detail.FinalTarget = json.RawMessage(pathRun.FinalTargetSummary)
 	}
+	// 日志位置与目标实例身份：目录按页面身份（runId/pathRunId）直接算出，实例名称只作业务信息。
+	s.fillRunLogLocation(detail, run, pathRun, plan, attempts)
 	phaseTimings := s.readPhaseTimings(pathRun.ID, attempts)
 	// F-030/T04：真实目标请求明细与汇总，一次读取按尝试归组，详情接口不逐请求扫描。
 	requestsByKey, summaryByKey := s.readAttemptRequests(pathRun.ID, attempts)
@@ -1670,7 +1709,6 @@ func BuildNodePlansForTest(compiledSteps []model.CompiledActionStep, tokenToGrap
 func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
 	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys)
 }
-
 
 // RunDetailGraphTimeoutForTest 暴露详情结构读取预算，供 test 目录锁定正常目标读取不被过短预算截断。
 func RunDetailGraphTimeoutForTest() time.Duration {

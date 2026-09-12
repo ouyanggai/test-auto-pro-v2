@@ -20,7 +20,32 @@ func CleanupExpired(root string, retentionDays int, now time.Time) []string {
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	today := now.Format("2006-01-02")
 	removed := removeExpiredDateDirs(filepath.Join(root, applicationDirName), cutoff, today)
-	return append(removed, cleanupPlanTrees(filepath.Join(root, plansDirName), cutoff, today)...)
+	removed = append(removed, cleanupPlanTrees(filepath.Join(root, plansDirName), cutoff, today)...)
+	return append(removed, cleanupRunTrees(filepath.Join(root, runsRootDirName), cutoff)...)
+}
+
+// cleanupRunTrees 清理运行日志子树 logs/runs/<运行记录>/paths/<路径运行>。
+// 运行目录与路径运行目录的名字都是页面身份（runId/pathRunId），不含日期，
+// 因此只能按最后修改时间判断过期：先删过期的路径运行目录，再把整次运行都过期的运行目录收掉。
+// 只删日志文件，绝不触碰数据库里的运行事实。
+func cleanupRunTrees(runsRoot string, cutoff time.Time) []string {
+	removed := make([]string, 0)
+	for _, runDir := range childDirs(runsRoot) {
+		pathsDir := filepath.Join(runDir, pathsDirName)
+		removed = append(removed, removeExpiredRunDirs(pathsDir, cutoff)...)
+		removeIfEmpty(pathsDir)
+		if dirExpired(runDir, cutoff) {
+			removed = append(removed, removeExpiredRunDirs(runDir, cutoff)...)
+			removeIfEmpty(runDir)
+		}
+	}
+	return removed
+}
+
+// dirExpired 判断目录的最后修改时间是否早于保留期；目录不存在或读不到信息时按未过期处理。
+func dirExpired(dir string, cutoff time.Time) bool {
+	info, err := os.Stat(dir)
+	return err == nil && info.ModTime().Before(cutoff)
 }
 
 // cleanupPlanTrees 遍历每个计划目录，分别清理配置阶段的日期目录与执行阶段的运行目录，
@@ -42,7 +67,9 @@ func cleanupPlanTrees(plansRoot string, cutoff time.Time, today string) []string
 			removeIfEmpty(pathDir)
 		}
 		removeIfEmpty(configurationDir)
-		runsDir := filepath.Join(planDir, runsDirName)
+		// 历史运行日志仍在计划目录的 runs 子树下（F-031 之前的目录方案不迁移、不重命名），
+		// 保留这条清理路径让旧日志同样按保留期滚动删除。
+		runsDir := filepath.Join(planDir, legacyPlanRunsDirName)
 		for _, pathDir := range childDirs(runsDir) {
 			removed = append(removed, removeExpiredRunDirs(pathDir, cutoff)...)
 			removeIfEmpty(pathDir)

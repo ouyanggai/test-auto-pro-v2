@@ -176,6 +176,9 @@ type InstanceFacts struct {
 	// 与待处理人员）。会签节点在全部处理人审批完成前一直出现在这里，人员随审批进度递减；
 	// 是发现「指定人员」类节点真实处理人的唯一稳定只读来源（待办列表按当前用户过滤）。
 	CurrentHandlers []target.NodeCurrentHandler `json:"currentHandlers,omitempty"`
+	// InstanceName 是目标实例名称（优先 name，其次 formName），只作业务信息进日志与 meta.json，
+	// 不参与日志目录寻址；为空表示目标暂时没有返回名称。
+	InstanceName string `json:"instanceName,omitempty"`
 	// CompletedTask* 是取回动作的当前账号已办任务快照。
 	CompletedTaskRead     bool   `json:"completedTaskRead,omitempty"`
 	CompletedTaskFound    bool   `json:"completedTaskFound,omitempty"`
