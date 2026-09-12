@@ -1,6 +1,6 @@
 # 当前进度
 
-- 2026-09-12 F-031「任务事实参数与实例日志归属修复」已登记为 `awaiting_approval`。源码核对确认：`/web/flowJobTaskLink/list` 的实例过滤必须使用顶层 `flowInstanceIdList`，`data.flowInstanceId` 会被目标忽略；`pending` 使用 `queryUserId`、`done` 使用 `data.executorId`。当前节点处理人必须取发起人已发列表的 `currentAuditUserInfo`，配置中的 `NextNodeAuditors` 只表示下一节点选人。方案同时把目标实例名称和实例 ID 纳入运行日志目录与 `meta.json`，保留旧日志不迁移；用户批准前不改执行代码、不改数据库、不启动浏览器。详细计划见 `docs/features/F-031-task-facts-and-instance-log-naming.md`。
+- 2026-09-12 F-031「任务事实参数与实例日志归属修复」已登记为 `awaiting_approval`。源码核对确认：`/web/flowJobTaskLink/list` 的实例过滤必须使用顶层 `flowInstanceIdList`，`data.flowInstanceId` 会被目标忽略；`pending` 使用 `queryUserId`、`done` 使用 `data.executorId`。当前节点处理人必须取发起人已发列表的 `currentAuditUserInfo`，配置中的 `NextNodeAuditors` 只表示下一节点选人。日志方案已按页面调整为 `logs/runs/<运行记录>/paths/<路径运行>`，目录使用 `runId/pathRunId` 稳定定位，`runNo/planName/pathName` 与页面标签对应；目标实例名称只写详情和 `meta.json`，不参与目录寻址。用户批准前不改执行代码、不改数据库、不启动浏览器。详细计划见 `docs/features/F-031-task-facts-and-instance-log-naming.md`。
 
 - 2026-09-12 全局空态改为纯文字提示（用户要求所有空状态去掉图标）：共享空态组件去掉插画，只留标题、简短说明和下一步操作；组件库 `NEmpty` 的空态图标（含表格、下拉候选、级联等组件内部空态）在全局样式层统一隐藏；`AppEmptyIcon` 组件与应用层空态图标注册删除。空态与错误态边界不变，`docs/PRODUCT.md` 产品原则同步改为「正常空数据只给文字提示」。
 - 2026-09-12 F-030 人工验收反馈（评审 4 项：同账号活跃路径仍会启动新路径、请求无法稳定归属步骤/尝试/阶段、阶段说明泛化且预览无进度上报、候选处理人扫描耗时未消除）已全部修复，状态退回 `implementing` 后再次停在 `ready_for_manual`：调度器两轮扫描把活跃路径账号计入忙账号；执行器把 step_id/attempt/phase 注入目标请求上下文，请求明细按日志行直接归属；阶段说明统一为带动作、节点、处理人和下一步的白话口径，预览阶段实时上报进度，页面不回显内部阶段名；候选扫描改用目标原生 queryUserId 视角窄查询（源码锚点已入语义清单第 4 节），仅命中者登录。`test/run-f030.sh` 全部通过；基准复测与 queryUserId 真实部署行为仍待人工验收确认。

@@ -57,7 +57,7 @@ F-030 执行性能与节点动作耗时展示已实施完成，停在 `ready_for
 并把运行阶段改成带动作、节点、处理人和下一步的白话说明；不改变节点动作、写请求、重试、核验和运行结论；用户批准前不进入 `implementing`。
 
 F-031 任务事实参数与实例日志归属修复处于 `awaiting_approval`，计划见
-`docs/features/F-031-task-facts-and-instance-log-naming.md`。本切片修正目标任务列表协议的实例过滤层级，改用发起人已发列表的 `currentAuditUserInfo` 识别当前节点处理人，并将目标实例名称绑定到运行日志目录；不改变动作顺序、写协议、目标平台和业务库。用户批准前不进入 `implementing`。
+`docs/features/F-031-task-facts-and-instance-log-naming.md`。本切片修正目标任务列表协议的实例过滤层级，改用发起人已发列表的 `currentAuditUserInfo` 识别当前节点处理人，并将运行日志从 `logs/runs` 按页面“运行记录 -> 路径运行”直接归档；目标实例名称只做详情和元数据，不作为物理目录键。不改变动作顺序、写协议、目标平台和业务库。用户批准前不进入 `implementing`。
 
 F-025 节点人员配置与范围内选人已停在 `ready_for_manual`，等待人工复核；本轮不再修改。
 
