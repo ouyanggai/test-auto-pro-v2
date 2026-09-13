@@ -19,7 +19,7 @@ type PlanRepository struct {
 // planDerivedStatusExpr 从 runs 运行事实派生计划公开状态（F-032）：
 // 存在等待中/运行中记录则运行中；存在历史运行则已运行；否则保留存储列（未运行）。
 // 读侧以运行事实为准，即使历史数据的状态列未同步也能自愈；存储列的同步由运行事务内的
-// syncPlanRunStatus 负责（路径配置锁定等写侧判断仍读存储列）。
+// syncPlanRunStatus 负责维护运行事实冗余列，删除守卫等写侧判断仍读该存储列。
 const planDerivedStatusExpr = `
 CASE
   WHEN EXISTS(SELECT 1 FROM runs ar WHERE ar.plan_id = test_plans.id AND ar.status IN ('pending','running')) THEN 'running'
@@ -72,6 +72,40 @@ INSERT INTO test_plans (
 	return existing, false, selectErr
 }
 
+// Update 原子保存计划配置；目标身份变化时将路径配置标记为受影响，避免静默复用旧事实。
+func (r *PlanRepository) Update(ctx context.Context, id uint64, plan model.Plan) (model.Plan, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Plan{}, err
+	}
+	defer tx.Rollback()
+	var oldAccount, oldSource, oldTargetID string
+	var oldScheduledAt sql.NullTime
+	if err := tx.QueryRowContext(ctx, `SELECT account, flow_source, target_object_id, scheduled_at FROM test_plans WHERE id = ? FOR UPDATE`, id).Scan(&oldAccount, &oldSource, &oldTargetID, &oldScheduledAt); errors.Is(err, sql.ErrNoRows) {
+		return model.Plan{}, repository.ErrPlanNotFound
+	} else if err != nil {
+		return model.Plan{}, err
+	}
+	scheduledAtChanged := (oldScheduledAt.Valid != (plan.ScheduledAt != nil)) || (oldScheduledAt.Valid && plan.ScheduledAt != nil && !oldScheduledAt.Time.UTC().Equal(plan.ScheduledAt.UTC()))
+	if _, err := tx.ExecContext(ctx, `UPDATE test_plans SET name = ?, account = ?, account_display_name = ?, flow_source = ?, target_object_id = ?, target_object_name = ?, run_mode = ?, max_concurrency = ?, scheduled_at = ?, scheduled_consumed_at = CASE WHEN ? THEN NULL ELSE scheduled_consumed_at END, updated_at = ? WHERE id = ?`,
+		plan.Name, plan.Account, plan.AccountDisplayName, plan.FlowSource, plan.TargetObjectID, plan.TargetObjectName, plan.RunMode, plan.MaxConcurrency, plan.ScheduledAt, scheduledAtChanged, plan.UpdatedAt, id); err != nil {
+		return model.Plan{}, err
+	}
+	if oldAccount != plan.Account || oldSource != plan.FlowSource || oldTargetID != plan.TargetObjectID {
+		if _, err := tx.ExecContext(ctx, `UPDATE test_execution_path_configs SET config_status = 'affected', node_status = 'affected', data_status = 'affected', updated_at = ? WHERE path_id IN (SELECT id FROM test_execution_paths WHERE plan_id = ?)`, plan.UpdatedAt, id); err != nil {
+			return model.Plan{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Plan{}, err
+	}
+	updated, err := r.Get(ctx, id)
+	if err != nil {
+		return model.Plan{}, err
+	}
+	return updated, nil
+}
+
 // List 按名称和状态筛选计划，从路径表实时统计 pathCount，并一次 SQL 聚合最近运行事实。
 // 状态筛选与展示都用派生状态表达式，保证与运行事实一致。
 func (r *PlanRepository) List(ctx context.Context, filter model.PlanListFilter) ([]model.Plan, error) {
@@ -111,8 +145,8 @@ func (r *PlanRepository) Get(ctx context.Context, id uint64) (model.Plan, error)
 	row := r.db.QueryRowContext(ctx, `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
        target_object_name, run_mode, max_concurrency, scheduled_at,
-       ` + planDerivedStatusExpr + ` AS status,
-       ` + planRunSummarySelect + `,
+       `+planDerivedStatusExpr+` AS status,
+       `+planRunSummarySelect+`,
        (SELECT COUNT(*) FROM test_execution_paths ep WHERE ep.plan_id = test_plans.id) AS path_count,
        created_at, updated_at
 FROM test_plans WHERE id = ?`, id)
@@ -144,8 +178,8 @@ func (r *PlanRepository) getByCreateKey(ctx context.Context, createKey string) (
 	row := r.db.QueryRowContext(ctx, `
 SELECT id, name, account, account_display_name, flow_source, target_object_id,
        target_object_name, run_mode, max_concurrency, scheduled_at,
-       ` + planDerivedStatusExpr + ` AS status,
-       ` + planRunSummarySelect + `,
+       `+planDerivedStatusExpr+` AS status,
+       `+planRunSummarySelect+`,
        (SELECT COUNT(*) FROM test_execution_paths ep WHERE ep.plan_id = test_plans.id) AS path_count,
        created_at, updated_at
 FROM test_plans WHERE create_key = ?`, createKey)

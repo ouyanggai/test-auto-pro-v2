@@ -17,6 +17,7 @@ import (
 
 type PlanService interface {
 	Create(context.Context, string, service.CreatePlanInput) (model.Plan, bool, error)
+	Update(context.Context, uint64, service.UpdatePlanInput) (model.Plan, error)
 	List(context.Context, string, model.PlanStatus) ([]model.Plan, error)
 	Get(context.Context, uint64) (model.Plan, error)
 	Delete(context.Context, uint64) error
@@ -56,12 +57,49 @@ type planListResponse struct {
 	Items []planResponse `json:"items"`
 }
 
-// registerPlanRoutes 注册计划创建、列表和详情端点。
+// registerPlanRoutes 注册计划创建、编辑、列表和详情端点。
 func registerPlanRoutes(mux *http.ServeMux, plans PlanService) {
 	mux.HandleFunc("POST /api/plans", handleCreatePlan(plans))
+	mux.HandleFunc("PUT /api/plans/{id}", handleUpdatePlan(plans))
 	mux.HandleFunc("GET /api/plans", handleListPlans(plans))
 	mux.HandleFunc("GET /api/plans/{id}", handleGetPlan(plans))
 	mux.HandleFunc("DELETE /api/plans/{id}", handleDeletePlan(plans))
+}
+
+// handleUpdatePlan 解析完整计划配置并保存；不接受历史运行字段，避免覆盖运行事实。
+func handleUpdatePlan(plans PlanService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		id, err := strconv.ParseUint(request.PathValue("id"), 10, 64)
+		if err != nil || id == 0 {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "计划 ID 不正确", false)
+			return
+		}
+		var input createPlanRequest
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "编辑计划请求格式不正确", false)
+			return
+		}
+		if err := ensureJSONEnd(decoder); err != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "编辑计划请求只能包含一个对象", false)
+			return
+		}
+		scheduledAt, ok := parseOptionalRFC3339(response, input.ScheduledAt)
+		if !ok {
+			return
+		}
+		plan, err := plans.Update(request.Context(), id, service.UpdatePlanInput{
+			Name: input.Name, Account: input.Account, AccountDisplayName: input.AccountDisplayName,
+			FlowSource: input.FlowSource, TargetObjectID: input.TargetObjectID, TargetObjectName: input.TargetObjectName,
+			RunMode: input.RunMode, MaxConcurrency: input.MaxConcurrency, ScheduledAt: scheduledAt,
+		})
+		if err != nil {
+			writePlanError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, apiSuccess{Success: true, Data: toPlanResponse(plan)})
+	}
 }
 
 // handleDeletePlan 删除本系统计划及其开发配置；目标平台不参与这个操作。
@@ -264,6 +302,11 @@ type unavailablePlanService struct{}
 // Create 在未注入计划存储时拒绝创建。
 func (unavailablePlanService) Create(context.Context, string, service.CreatePlanInput) (model.Plan, bool, error) {
 	return model.Plan{}, false, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
+}
+
+// Update 在未注入计划存储时拒绝编辑。
+func (unavailablePlanService) Update(context.Context, uint64, service.UpdatePlanInput) (model.Plan, error) {
+	return model.Plan{}, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
 }
 
 // List 在未注入计划存储时拒绝列表读取。

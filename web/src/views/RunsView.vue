@@ -33,7 +33,7 @@ async function loadRuns(): Promise<void> {
   try {
     runs.value = await fetchAllRuns(runStatusFilter.value)
   } catch (error) {
-    errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行列表，请重试'
+    errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取任务列表，请重试'
     runs.value = []
   } finally {
     loading.value = false
@@ -131,8 +131,8 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 <template>
   <section class="runs-view">
     <header class="runs-view__header">
-      <h1>运行记录</h1>
-      <p class="runs-view__hint">每次启动都会生成独立且不可覆盖的运行记录；一行是一次计划运行，点开可查看这次运行的各条执行路径。</p>
+      <h1>任务列表</h1>
+      <p class="runs-view__hint">每次启动都会生成一条独立任务；打开任务可以查看本次执行的各条路径。</p>
     </header>
 
     <div class="runs-view__toolbar">
@@ -154,17 +154,17 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 
     <p v-if="errorText" class="runs-view__error" role="alert">{{ errorText }}</p>
 
-    <div v-if="loading" class="runs-view__loading"><NSpin size="small" /><span>正在读取运行列表……</span></div>
+    <div v-if="loading" class="runs-view__loading"><NSpin size="small" /><span>正在读取任务列表……</span></div>
 
     <AppEmptyState
       v-else-if="runs.length === 0 && !errorText"
       size="large"
-      :title="runStatusFilter ? '没有符合条件的运行记录' : '还没有运行记录'"
+      :title="runStatusFilter ? '没有符合条件的任务' : '还没有任务'"
       :description="runStatusFilter
-        ? '当前筛选条件下没有结果，清除筛选后可以查看全部记录。'
+        ? '当前筛选条件下没有结果，清除筛选后可以查看全部任务。'
         : '运行测试计划后，每次运行的结果都会按时间出现在这里。'"
     >
-      <NButton v-if="runStatusFilter" secondary type="primary" @click="clearRunStatusFilter">查看全部记录</NButton>
+      <NButton v-if="runStatusFilter" secondary type="primary" @click="clearRunStatusFilter">查看全部任务</NButton>
       <NButton v-else type="primary" @click="router.push('/plans')">前往测试计划</NButton>
     </AppEmptyState>
 

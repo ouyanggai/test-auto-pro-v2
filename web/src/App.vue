@@ -11,7 +11,7 @@ const appStore = useAppStore()
 
 const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: '/plans' }, { default: () => '测试计划' }), key: '/plans' },
-  { label: () => h(RouterLink, { to: '/runs' }, { default: () => '运行记录' }), key: '/runs' },
+  { label: () => h(RouterLink, { to: '/runs' }, { default: () => '任务中心' }), key: '/runs' },
   { label: () => h(RouterLink, { to: '/settings' }, { default: () => '系统设置' }), key: '/settings' },
 ]
 

@@ -491,6 +491,15 @@ func (r *ExecutionPathRepository) Delete(ctx context.Context, planID, pathID uin
 	if _, _, err := lockMutablePlan(ctx, tx, planID); err != nil {
 		return err
 	}
+	// 路径编辑不受运行状态限制，但删除会让历史任务失去页面对应的路径名称，仍保留删除守卫。
+	// 直接检查 runs 事实，不能依赖可能尚未同步的 test_plans.status 冗余列。
+	var hasRuns bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM runs WHERE plan_id = ?)", planID).Scan(&hasRuns); err != nil {
+		return err
+	}
+	if hasRuns {
+		return repository.ErrExecutionPathPlanLocked
+	}
 	if _, err := findExecutionPath(ctx, tx, planID, pathID); err != nil {
 		return err
 	}
@@ -503,21 +512,17 @@ func (r *ExecutionPathRepository) Delete(ctx context.Context, planID, pathID uin
 	return tx.Commit()
 }
 
-// lockMutablePlan 锁定计划并返回来源和下一稳定序号，非未运行计划立即拒绝。
+// lockMutablePlan 锁定计划并返回来源和下一稳定序号；行锁只用于序号并发，不限制运行后的编辑。
 func lockMutablePlan(ctx context.Context, tx *sql.Tx, planID uint64) (string, uint, error) {
 	var source string
-	var status model.PlanStatus
 	var nextSequenceNo uint
 	// FOR UPDATE 将同一计划的计数器分配串行化，不同计划仍可并发创建路径。
-	err := tx.QueryRowContext(ctx, "SELECT flow_source, status, next_path_sequence_no FROM test_plans WHERE id = ? FOR UPDATE", planID).Scan(&source, &status, &nextSequenceNo)
+	err := tx.QueryRowContext(ctx, "SELECT flow_source, next_path_sequence_no FROM test_plans WHERE id = ? FOR UPDATE", planID).Scan(&source, &nextSequenceNo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", 0, repository.ErrPlanNotFound
 	}
 	if err != nil {
 		return "", 0, err
-	}
-	if status != model.PlanStatusNotStarted {
-		return "", 0, repository.ErrExecutionPathPlanLocked
 	}
 	if nextSequenceNo == 0 {
 		return "", 0, repository.ErrExecutionPathDataInvalid

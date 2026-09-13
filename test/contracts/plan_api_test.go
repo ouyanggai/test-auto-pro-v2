@@ -58,6 +58,21 @@ func (r *contractPlanRepository) Get(_ context.Context, id uint64) (model.Plan, 
 	return r.plan, nil
 }
 
+// Update 在接口夹具中保存计划编辑结果，供 PUT 契约验证。
+func (r *contractPlanRepository) Update(_ context.Context, id uint64, plan model.Plan) (model.Plan, error) {
+	if r.err != nil {
+		return model.Plan{}, r.err
+	}
+	if !r.found || r.plan.ID != id {
+		return model.Plan{}, repository.ErrPlanNotFound
+	}
+	plan.ID = id
+	plan.Status = r.plan.Status
+	plan.CreatedAt = r.plan.CreatedAt
+	r.plan = plan
+	return plan, nil
+}
+
 // Delete 删除夹具中的计划，供 DELETE 契约验证。
 func (r *contractPlanRepository) Delete(_ context.Context, id uint64) error {
 	if r.err != nil {
@@ -99,6 +114,14 @@ func TestPlanAPIContractsAndIdempotency(t *testing.T) {
 			t.Fatalf("读取计划契约失败：%s status=%d", path, recorder.Code)
 		}
 		assertPlanResponseSafe(t, recorder.Body.Bytes())
+	}
+
+	updateBody := `{"name":"采购回归二次","account":"tester01","accountDisplayName":"测试专员","flowSource":"new","targetObjectId":"template-id","targetObjectName":"采购流程","runMode":"serial","maxConcurrency":null,"scheduledAt":null}`
+	update := httptest.NewRequest(http.MethodPut, "/api/plans/41", strings.NewReader(updateBody))
+	updated := httptest.NewRecorder()
+	handler.ServeHTTP(updated, update)
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), "采购回归二次") {
+		t.Fatalf("编辑计划契约失败：%d %s", updated.Code, updated.Body.String())
 	}
 }
 

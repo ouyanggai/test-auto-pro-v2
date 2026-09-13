@@ -107,6 +107,14 @@ export async function createPlan(payload: CreatePlanRequest, idempotencyKey: str
   }, signal)
 }
 
+// updatePlan 保存计划配置；运行历史不在请求体中，因此不会被编辑覆盖。
+export async function updatePlan(id: string, payload: CreatePlanRequest, signal: AbortSignal): Promise<PersistedPlan> {
+  return request<PersistedPlan>(`/api/plans/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  }, signal)
+}
+
 export async function fetchPlans(filters: PlanFilters, signal: AbortSignal): Promise<PlanRow[]> {
   const search = new URLSearchParams()
   const name = filters.name.trim()

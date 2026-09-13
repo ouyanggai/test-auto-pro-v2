@@ -20,7 +20,8 @@ go build ./...
 go vet ./internal/repository/... ./internal/api/... ./test/integration/ ./test/unit/backend/
 
 echo "== F-032 后端定向测试（单元 + 真实 MySQL 集成） =="
-go test ./test/unit/backend/ -run 'TestPlanLastRunText|TestPlanAPIContractsAndIdempotency'
+go test ./test/unit/backend/ -run 'TestPlanLastRunText|TestPlanServiceUpdatesPlanAfterRun|TestFlowGraphServiceInvalidatesCacheAfterPlanBindingChange'
+go test ./test/contracts/ -run 'TestPlanAPIContractsAndIdempotency|TestPlanAPIParameterAndStableErrorContracts'
 go test ./test/integration/ -run 'TestF032|TestPlanMySQLMigrationCRUDIdempotencyAndRestartRead'
 
 echo "== F-032 前端类型检查 =="

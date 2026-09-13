@@ -26,7 +26,7 @@ const deleting = ref(false)
 // loadPaths 读取本次运行的路径进度；轮询只在运行未结束时继续。
 async function loadPaths(): Promise<void> {
   if (!runId) {
-    errorText.value = '运行标识缺失，无法打开运行记录。'
+    errorText.value = '任务标识缺失，无法打开任务。'
     loading.value = false
     return
   }
@@ -38,7 +38,7 @@ async function loadPaths(): Promise<void> {
     schedulePoll()
   } catch (error) {
     loadFailure.value = error instanceof RunApiError ? error : null
-    errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行记录，请重试'
+    errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取任务，请重试'
   } finally {
     loading.value = false
   }
@@ -69,7 +69,7 @@ function openPanel(path: RunPathProgress): void {
   router.push(`/runs/${runId}/paths/${path.pathRunId}`)
 }
 
-// removeRun 删除整次运行：运行中的记录必须先停止再删除（后端守卫），删除后返回运行记录列表。
+// removeRun 删除整次任务：运行中的记录必须先停止再删除（后端守卫），删除后返回任务列表。
 async function removeRun(): Promise<void> {
   if (deleting.value) return
   deleting.value = true
@@ -116,25 +116,25 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="run-paths">
-    <div v-if="loading" class="run-paths__loading"><NSpin size="small" /><span>正在读取运行记录……</span></div>
+    <div v-if="loading" class="run-paths__loading"><NSpin size="small" /><span>正在读取任务……</span></div>
     <div v-else-if="!view" class="run-paths__result">
       <NResult
         :status="viewNotFound ? '404' : 'error'"
         size="small"
-        :title="viewNotFound ? '未找到运行记录' : '运行记录读取失败'"
-        :description="errorText || '未找到该运行记录。'"
+        :title="viewNotFound ? '未找到任务' : '任务读取失败'"
+        :description="errorText || '未找到该任务。'"
         role="alert"
       />
       <div class="run-paths__result-actions">
         <NButton v-if="runId && (!loadFailure || loadFailure.retryable)" type="primary" secondary @click="loadPaths">重试</NButton>
-        <NButton @click="router.push('/runs')">返回运行记录</NButton>
+        <NButton @click="router.push('/runs')">返回任务列表</NButton>
       </div>
     </div>
 
     <template v-else>
       <header class="run-paths__header">
         <div class="run-paths__identity">
-          <NButton quaternary circle size="small" aria-label="返回运行记录列表" title="返回运行记录列表" @click="router.push('/runs')">←</NButton>
+          <NButton quaternary circle size="small" aria-label="返回任务列表" title="返回任务列表" @click="router.push('/runs')">←</NButton>
           <h2 class="run-paths__title">运行 #{{ view.runNo }}</h2>
           <span class="run-paths__plan">{{ view.planName }}</span>
           <NTag size="small" :bordered="false" type="info">{{ view.modeName }}模式</NTag>

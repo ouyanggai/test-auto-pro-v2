@@ -327,14 +327,11 @@ func (s *HistoryDataManager) getPlan(ctx context.Context, planID uint64) (model.
 	return plan, nil
 }
 
-// getMutablePlan 只允许未进入运行事实的计划修改历史来源。
+// getMutablePlan 只确认计划存在；新历史来源只用于后续任务，旧运行快照保持不变。
 func (s *HistoryDataManager) getMutablePlan(ctx context.Context, planID uint64) (model.Plan, error) {
 	plan, err := s.getPlan(ctx, planID)
 	if err != nil {
 		return model.Plan{}, err
-	}
-	if plan.Status != model.PlanStatusNotStarted {
-		return model.Plan{}, &HistoryDataError{Kind: HistoryDataErrorConflict, Message: "计划已经不能修改基础表单数据"}
 	}
 	return plan, nil
 }

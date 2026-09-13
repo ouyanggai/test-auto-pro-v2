@@ -39,11 +39,6 @@ export interface PlanFilters {
   status: PlanStatus | null
 }
 
-export interface PlanAction {
-  label: string
-  intent: 'configure' | 'view_running' | 'view_result'
-}
-
 export interface PlanFormValue {
   name: string
   account: string

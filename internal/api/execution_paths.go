@@ -293,7 +293,7 @@ func writeExecutionPathError(response http.ResponseWriter, err error) {
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorEnumerationLimit):
 		writeFailure(response, http.StatusConflict, "PATH_GENERATION_RESOURCE_LIMIT", "当前解析任务触及资源保护，请恢复任务继续", true)
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorLocked):
-		writeFailure(response, http.StatusConflict, "PLAN_LOCKED", "计划已经不能修改执行路径", false)
+		writeFailure(response, http.StatusConflict, "PLAN_LOCKED", err.Error(), false)
 	case service.IsExecutionPathErrorKind(err, service.ExecutionPathErrorStorage):
 		writeFailure(response, http.StatusServiceUnavailable, "PLAN_STORAGE_UNAVAILABLE", "路径存储暂不可用，请重试", true)
 	default:

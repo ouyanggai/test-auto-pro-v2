@@ -772,7 +772,7 @@ func nullableRunResultOf(result model.RunResult) any {
 // syncPlanRunStatus 在运行状态变更事务内同步计划存储列状态（F-032）：
 // 计划状态只前进（未运行 -> 运行中 -> 已运行），永不回退到未运行。
 // 用条件更新守卫：当前为 not_started 时置为 running；当前为 not_started/running 且本次进入
-// 终态时置为 completed。写侧（路径配置锁定）读的是存储列，必须与运行事实保持同步。
+// 终态时置为 completed。读侧展示和删除守卫读的是存储列，必须与运行事实保持同步。
 func syncPlanRunStatus(ctx context.Context, tx *sql.Tx, planID uint64, to model.RunStatus, now time.Time) error {
 	if to == model.RunStatusRunning {
 		if _, err := tx.ExecContext(ctx,

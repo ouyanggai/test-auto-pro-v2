@@ -142,12 +142,9 @@ func (s *HistoryReplayService) Create(ctx context.Context, planID uint64, input 
 	if err != nil {
 		return model.HistoryReplayJob{}, err
 	}
-	plan, err := s.plans.Get(ctx, planID)
+	_, err = s.plans.Get(ctx, planID)
 	if err != nil {
 		return model.HistoryReplayJob{}, mapHistoryReplayRepositoryError(err)
-	}
-	if plan.Status != model.PlanStatusNotStarted {
-		return model.HistoryReplayJob{}, &HistoryReplayError{Kind: HistoryReplayErrorConflict, Message: "计划已经不能执行批量准备"}
 	}
 	paths, err := s.paths.GetMany(ctx, planID, pathIDs)
 	if err != nil {

@@ -96,7 +96,7 @@ func TestF016RunsAPIGuards(t *testing.T) {
 	request = httptest.NewRequest(http.MethodGet, "/api/runs/999999", nil)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "运行记录不存在") {
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "任务不存在") {
 		t.Fatalf("缺失运行应 404 且给中文：%d %s", recorder.Code, recorder.Body.String())
 	}
 

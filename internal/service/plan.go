@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -48,10 +49,15 @@ type CreatePlanInput struct {
 	ScheduledAt        *time.Time
 }
 
+// UpdatePlanInput 接收计划编辑后的业务字段；历史运行事实不在此输入中。
+type UpdatePlanInput = CreatePlanInput
+
 // PlanService 管理计划持久化与公开三态边界。
 type PlanService struct {
-	repository repository.PlanRepository
-	now        func() time.Time
+	repository                    repository.PlanRepository
+	now                           func() time.Time
+	configurationChangedMu        sync.Mutex
+	configurationChangedListeners []func(uint64)
 }
 
 // NewPlanService 创建计划服务。
@@ -85,6 +91,63 @@ func (s *PlanService) Create(ctx context.Context, createKey string, input Create
 		return model.Plan{}, false, mapRepositoryError(err)
 	}
 	return createdPlan, created, nil
+}
+
+// Update 保存计划最新配置，允许任意公开状态编辑；已有运行记录保持只读不被覆盖。
+func (s *PlanService) Update(ctx context.Context, id uint64, input UpdatePlanInput) (model.Plan, error) {
+	if id == 0 {
+		return model.Plan{}, &PlanError{Kind: PlanErrorInvalidArgument, Message: "计划 ID 不正确"}
+	}
+	input = normalizeCreateInput(input)
+	plan, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return model.Plan{}, mapRepositoryError(err)
+	}
+	// 只有真实目标身份变化才会使按计划缓存的流程图失效；名称、调度设置不影响图结构。
+	targetIdentityChanged := plan.Account != input.Account || plan.FlowSource != input.FlowSource || plan.TargetObjectID != input.TargetObjectID
+	// 定时任务触发后仍保留原定时时间作为历史设置；编辑其他字段时保留这个原值不能被过期校验误拦。
+	keepConsumedSchedule := plan.ScheduledAt != nil && input.ScheduledAt != nil && plan.ScheduledAt.UTC().Equal(input.ScheduledAt.UTC())
+	if message := validatePlanFieldsForUpdate(input, s.now().UTC(), keepConsumedSchedule); message != "" {
+		return model.Plan{}, &PlanError{Kind: PlanErrorInvalidArgument, Message: message}
+	}
+	plan.Name = input.Name
+	plan.Account = input.Account
+	plan.AccountDisplayName = input.AccountDisplayName
+	plan.FlowSource = input.FlowSource
+	plan.TargetObjectID = input.TargetObjectID
+	plan.TargetObjectName = input.TargetObjectName
+	plan.RunMode = input.RunMode
+	plan.MaxConcurrency = input.MaxConcurrency
+	plan.ScheduledAt = input.ScheduledAt
+	plan.UpdatedAt = s.now().UTC()
+	updated, err := s.repository.Update(ctx, id, plan)
+	if err != nil {
+		return model.Plan{}, mapRepositoryError(err)
+	}
+	if targetIdentityChanged {
+		s.notifyConfigurationChanged(id)
+	}
+	return updated, nil
+}
+
+// addConfigurationChangedListener 注册进程内派生缓存失效回调；监听器只能清理本地缓存，不能阻断计划保存。
+func (s *PlanService) addConfigurationChangedListener(listener func(uint64)) {
+	if listener == nil {
+		return
+	}
+	s.configurationChangedMu.Lock()
+	defer s.configurationChangedMu.Unlock()
+	s.configurationChangedListeners = append(s.configurationChangedListeners, listener)
+}
+
+// notifyConfigurationChanged 在持久化成功后通知派生缓存；复制切片避免监听器重入时持锁。
+func (s *PlanService) notifyConfigurationChanged(planID uint64) {
+	s.configurationChangedMu.Lock()
+	listeners := append([]func(uint64){}, s.configurationChangedListeners...)
+	s.configurationChangedMu.Unlock()
+	for _, listener := range listeners {
+		listener(planID)
+	}
 }
 
 // List 按名称和公开三态筛选计划。
@@ -154,6 +217,16 @@ func validateCreateInput(createKey string, input CreatePlanInput, now time.Time)
 	if !validUUID(createKey) {
 		return "创建请求标识不正确，请重试"
 	}
+	return validatePlanFields(input, now)
+}
+
+// validatePlanFields 校验创建与编辑共用的计划配置边界，不把编辑请求伪装成创建请求。
+func validatePlanFields(input CreatePlanInput, now time.Time) string {
+	return validatePlanFieldsForUpdate(input, now, false)
+}
+
+// validatePlanFieldsForUpdate 校验编辑与创建共用的配置边界；允许原样保留已消费定时值，其他过期时间仍拒绝。
+func validatePlanFieldsForUpdate(input CreatePlanInput, now time.Time, keepConsumedSchedule bool) string {
 	if input.Name == "" || utf8.RuneCountInString(input.Name) > 60 {
 		return "计划名称应为 1 至 60 个字符"
 	}
@@ -181,7 +254,7 @@ func validateCreateInput(createKey string, input CreatePlanInput, now time.Time)
 	if input.RunMode == "parallel" && (input.MaxConcurrency == nil || *input.MaxConcurrency < 2 || *input.MaxConcurrency > 20) {
 		return "并行最大并发数应为 2 至 20"
 	}
-	if input.ScheduledAt != nil && !input.ScheduledAt.After(now) {
+	if input.ScheduledAt != nil && !input.ScheduledAt.After(now) && !keepConsumedSchedule {
 		return "启动时间必须晚于当前时间"
 	}
 	return ""

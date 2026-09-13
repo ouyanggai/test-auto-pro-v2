@@ -3,16 +3,18 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/repository"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
 )
 
 // F-032 计划状态与最近运行结果修复：计划公开状态由 runs 运行事实派生（读侧自愈），
-// 运行事务内同步计划存储列（写侧锁定判断一致）；最近运行结果按「第 N 次：结果」口径返回。
+// 运行事务内同步计划存储列（展示和删除守卫一致）；最近运行结果按「第 N 次：结果」口径返回。
 
 // openF032Store 建立临时计划数据库并完成全部迁移；用例之间互不共享数据。
 func openF032Store(t *testing.T) *planmysql.Database {
@@ -144,14 +146,15 @@ func TestF032PlanStatusFollowsRunFacts(t *testing.T) {
 	}
 }
 
-// TestF032PlanLockUsesSyncedStatus 验证运行后计划存储列已同步，路径配置锁定随之生效。
-func TestF032PlanLockUsesSyncedStatus(t *testing.T) {
+// TestF032PlanRemainsEditableAfterRun 验证运行状态只用于展示，计划和路径在运行前后都能继续调整。
+func TestF032PlanRemainsEditableAfterRun(t *testing.T) {
 	db := openF032Store(t)
 	ctx := context.Background()
 	runs := planmysql.NewRunRepository(db.DB)
-	planID := insertF032Plan(t, db.DB, "f032-lock")
+	plans := planmysql.NewPlanRepository(db.DB)
+	planID := insertF032Plan(t, db.DB, "f032-editable")
 
-	// 创建运行后存储列应为运行中，此时新增路径配置被锁定拒绝。
+	// 运行中仍允许新增路径，路径配置不受计划展示状态限制。
 	run, _, err := runs.CreateRun(ctx, planID, 11, model.RunModeAuto, model.RunTriggerManual, nil, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("创建运行失败：%v", err)
@@ -165,11 +168,15 @@ func TestF032PlanLockUsesSyncedStatus(t *testing.T) {
 		t.Fatalf("存储列应为 running：status=%s err=%v", storedStatus, err)
 	}
 	paths := planmysql.NewExecutionPathRepository(db.DB)
-	if _, _, err := paths.Create(ctx, planID, "k-f032-new-path", "锁定路径", nil, time.Now().UTC()); err == nil {
-		t.Fatal("运行中计划应拒绝新增路径配置")
+	if _, _, err := paths.Create(ctx, planID, "k-f032-new-path", "运行中可编辑路径", nil, time.Now().UTC()); err != nil {
+		t.Fatalf("运行中计划应允许新增路径：%v", err)
+	}
+	updated, err := plans.Update(ctx, planID, model.Plan{Name: "运行中已编辑", Account: "a", AccountDisplayName: "账号", FlowSource: "new", TargetObjectID: "obj", TargetObjectName: "流程", RunMode: "serial", UpdatedAt: time.Now().UTC()})
+	if err != nil || updated.Name != "运行中已编辑" {
+		t.Fatalf("运行中计划编辑失败：plan=%+v err=%v", updated, err)
 	}
 
-	// 收尾后存储列应为已运行（锁定持续生效），读侧派生状态一致。
+	// 收尾后状态仍按运行事实派生，且再次创建路径继续可用；已有任务引用的旧路径仍不允许删除。
 	run, pathRun, err := runs.CreateRun(ctx, planID, 11, model.RunModeAuto, model.RunTriggerManual, nil, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("第二次创建运行失败：%v", err)
@@ -193,8 +200,12 @@ func TestF032PlanLockUsesSyncedStatus(t *testing.T) {
 	if err := db.DB.QueryRowContext(ctx, "SELECT status FROM test_plans WHERE id = ?", planID).Scan(&storedStatus); err != nil || storedStatus != string(model.PlanStatusCompleted) {
 		t.Fatalf("存储列应为 completed：status=%s err=%v", storedStatus, err)
 	}
-	if _, _, err := paths.Create(ctx, planID, "k-f032-new-path-2", "锁定路径", nil, time.Now().UTC()); err == nil {
-		t.Fatal("已运行计划应拒绝新增路径配置")
+	createdPath, _, err := paths.Create(ctx, planID, "k-f032-new-path-2", "已运行可编辑路径", nil, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("已运行计划应允许新增路径：%v", err)
+	}
+	if err := paths.Delete(ctx, planID, createdPath.ID, time.Now().UTC()); !errors.Is(err, repository.ErrExecutionPathPlanLocked) {
+		t.Fatalf("已有运行事实的路径仍应禁止删除：%v", err)
 	}
 }
 

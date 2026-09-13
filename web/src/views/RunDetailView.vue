@@ -363,7 +363,7 @@ async function loadDetail(): Promise<void> {
   try {
     const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
     if (!next) {
-      loadErrorText.value = '运行详情返回空数据，请重试'
+      loadErrorText.value = '任务详情返回空数据，请重试'
       return
     }
     detail.value = next
@@ -389,7 +389,7 @@ async function loadDetail(): Promise<void> {
   } catch (error) {
     console.error('[加载详情失败]', error)
     loadFailure.value = error instanceof RunApiError ? error : null
-    loadErrorText.value = error instanceof RunApiError ? error.message : '暂时无法读取运行详情，请重试'
+    loadErrorText.value = error instanceof RunApiError ? error.message : '暂时无法读取任务详情，请重试'
   } finally {
     loading.value = false
     // 轮询链不因首次加载失败而断：详情已在（或结构读失败但运行事实还在）时，
@@ -769,13 +769,13 @@ onBeforeUnmount(() => {
       </div>
     </Teleport>
 
-    <div v-if="loading" class="run-detail__loading"><n-spin size="small" /><span>正在读取运行详情……</span></div>
+    <div v-if="loading" class="run-detail__loading"><n-spin size="small" /><span>正在读取任务详情……</span></div>
     <div v-else-if="!detail" class="run-detail__result">
       <n-result
         :status="detailNotFound ? '404' : 'error'"
         size="small"
-        :title="detailNotFound ? '未找到运行记录' : '运行详情读取失败'"
-        :description="loadErrorText || '未找到该运行记录。'"
+        :title="detailNotFound ? '未找到任务' : '任务详情读取失败'"
+        :description="loadErrorText || '未找到该任务。'"
         role="alert"
       />
       <div class="run-detail__result-actions">

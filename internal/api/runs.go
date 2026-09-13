@@ -477,7 +477,7 @@ func writeRunControlError(response http.ResponseWriter, err error) {
 	case service.IsRunReadinessErrorKind(err, service.RunReadinessErrorTarget):
 		writeFailure(response, http.StatusBadGateway, "RUN_TARGET_UNAVAILABLE", err.Error(), true)
 	case errors.Is(err, repository.ErrRunNotFound):
-		writeFailure(response, http.StatusNotFound, "RUN_NOT_FOUND", "运行记录不存在", false)
+		writeFailure(response, http.StatusNotFound, "RUN_NOT_FOUND", "任务不存在", false)
 	case errors.Is(err, repository.ErrRunStatusConflict), errors.Is(err, repository.ErrLeaseHeld), errors.Is(err, repository.ErrStaleLease):
 		writeFailure(response, http.StatusConflict, "RUN_STATE_CONFLICT", err.Error(), false)
 	default:

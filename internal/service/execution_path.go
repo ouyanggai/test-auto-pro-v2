@@ -331,9 +331,6 @@ func (s *ExecutionPathService) generatePathsBatch(ctx context.Context, planID ui
 	if err != nil {
 		return model.ExecutionPathBatchResult{}, false, err
 	}
-	if plan.Status != model.PlanStatusNotStarted {
-		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "计划已经不能修改执行路径"}
-	}
 	if plan.FlowSource != "new" {
 		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "只有新发起计划可以自动解析全部路径"}
 	}
@@ -355,7 +352,7 @@ func (s *ExecutionPathService) generatePathsBatch(ctx context.Context, planID ui
 	return result, created, nil
 }
 
-// Delete 只删除本工具中属于未运行计划的路径，不访问目标系统。
+// Delete 删除本工具中的路径，不访问目标系统；历史运行引用的路径事实不会被改写。
 func (s *ExecutionPathService) Delete(ctx context.Context, planID, pathID uint64) error {
 	if planID == 0 || pathID == 0 {
 		return &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "计划或路径 ID 不正确"}
@@ -366,16 +363,10 @@ func (s *ExecutionPathService) Delete(ctx context.Context, planID, pathID uint64
 	return nil
 }
 
-// validateMutablePlan 在访问目标图前阻止已经产生后续事实的计划继续修改。
+// validateMutablePlan 只确认计划存在；运行状态是展示事实，不是路径编辑锁。
 func (s *ExecutionPathService) validateMutablePlan(ctx context.Context, planID uint64) error {
-	plan, err := s.plans.Get(ctx, planID)
-	if err != nil {
-		return err
-	}
-	if plan.Status != model.PlanStatusNotStarted {
-		return &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "计划已经不能修改执行路径"}
-	}
-	return nil
+	_, err := s.plans.Get(ctx, planID)
+	return err
 }
 
 // validateCurrentChoices 用计划持久化身份重读真实图，禁止浏览器用过期或跨图选择写库。
@@ -429,7 +420,7 @@ func mapExecutionPathRepositoryError(err error) error {
 	case errors.Is(err, repository.ErrExecutionPathSource):
 		return &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "只有新发起计划可以自动解析全部路径"}
 	case errors.Is(err, repository.ErrExecutionPathPlanLocked):
-		return &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "计划已经不能修改执行路径"}
+		return &ExecutionPathError{Kind: ExecutionPathErrorLocked, Message: "已有任务的路径不能删除"}
 	case errors.Is(err, repository.ErrExecutionPathDataInvalid):
 		return &ExecutionPathError{Kind: ExecutionPathErrorInvalidArgument, Message: "执行路径数据不正确"}
 	default:

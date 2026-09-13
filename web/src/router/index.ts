@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 const PlansView = () => import('../views/PlansView.vue')
 const NewPlanView = () => import('../views/NewPlanView.vue')
+const EditPlanView = () => import('../views/EditPlanView.vue')
 const PlanPathsView = () => import('../views/PlanPathsView.vue')
 const PlanPathConfigurationView = () => import('../views/PlanPathConfigurationView.vue')
 const RunsView = () => import('../views/RunsView.vue')
@@ -16,6 +17,7 @@ const router = createRouter({
     { path: '/', redirect: '/plans' },
     { path: '/plans', component: PlansView },
     { path: '/plans/new', component: NewPlanView },
+    { path: '/plans/:id/edit', component: EditPlanView },
     { path: '/plans/:id/paths', component: PlanPathsView },
     { path: '/plans/:planId/paths/:pathId/configure', component: PlanPathConfigurationView },
     { path: '/runs', component: RunsView },

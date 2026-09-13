@@ -117,7 +117,8 @@ let generationTimer: ReturnType<typeof setTimeout> | null = null
 let preparationTimer: ReturnType<typeof setTimeout> | null = null
 
 const planID = computed(() => String(route.params.id || ''))
-const planMutable = computed(() => plan.value?.status === 'not_started')
+// 计划状态只描述任务事实，不再决定能否编辑；历史任务只读，计划配置面向下一次运行。
+const planMutable = computed(() => Boolean(plan.value))
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
 const visiblePaths = computed(() => paths.value)
 const preparationPathListHeight = computed(() => Math.min(visiblePaths.value.length, 5) * PREPARATION_PATH_ITEM_SIZE)
@@ -186,11 +187,13 @@ const preparationProcessed = computed(() => preparationJob.value
   : 0)
 const savedPathListHeight = computed(() => Math.min(paths.value.length, 5) * SAVED_PATH_ITEM_SIZE)
 const allPathsSelectedForRun = computed(() => paths.value.length > 0 && paths.value.every(path => selectedRunPathIDs.value.has(path.id)))
+// 删除会断开历史任务与路径名称的页面对应关系，只允许没有运行事实的计划删除路径；编辑仍对所有状态开放。
+const planCanDeletePaths = computed(() => plan.value?.status === 'not_started')
 // runPathIDs 是启动运行时的路径快照：预检弹窗按它检查、启动也按它执行，两边范围必须一致。
 const runPathIDs = computed(() => [...selectedRunPathIDs.value])
 const pathMoreOptions = computed(() => planMutable.value ? [
   ...(allowCopy.value ? [{ label: '复制路径', key: 'copy' }] : []),
-  { label: '删除路径', key: 'delete' },
+  ...(planCanDeletePaths.value ? [{ label: '删除路径', key: 'delete' }] : []),
 ] : [])
 
 async function loadPage() {
@@ -354,8 +357,7 @@ async function selectSavedPath(path: ExecutionPath) {
 }
 
 // updateRunPathSelection 只维护本次运行的明确勾选，启动运行或创建一键配置任务时一次提交路径快照。
-// 勾选表达的是"这次跑哪些路径"，与计划是否已产生运行记录无关：计划进入只读后仍要能挑子集运行，
-// 所以这里不被 planMutable 拦截；只有一键配置正在写路径数据时才冻结勾选，避免写读互相覆盖。
+// 勾选表达的是"这次跑哪些路径"，与计划历史任务互不影响；只有一键配置正在写路径数据时才冻结勾选，避免写读互相覆盖。
 function updateRunPathSelection(path: ExecutionPath, included: boolean) {
 	if (preparationBusy.value) return
   runSelectionTouched.value = true
@@ -833,7 +835,7 @@ onMounted(() => {
           <header class="page-heading">
             <div>
               <h1 id="plan-paths-heading">{{ plan.name }}</h1>
-							<p>{{ planMutable ? '从当前入口选择执行线路，并保存为计划路径。' : '当前计划已进入只读状态。' }}</p>
+							<p>从当前入口选择执行线路，并保存为计划路径；已有任务不会被改写。</p>
             </div>
             <n-space class="page-heading__actions" align="center" size="small">
               <span class="page-heading__selection">已勾选 {{ selectedRunPathIDs.size }} / {{ paths.length }} 条路径</span>
@@ -958,7 +960,7 @@ onMounted(() => {
                   </n-tag>
 									</div>
                 </div>
-                <n-button size="small" type="primary" secondary :disabled="preparationBusy" @click="openPathConfiguration(path)">{{ planMutable ? '配置节点' : '查看配置' }}</n-button>
+								<n-button size="small" type="primary" secondary :disabled="preparationBusy" @click="openPathConfiguration(path)">配置节点</n-button>
               </div>
               </template>
             </n-virtual-list>

@@ -107,7 +107,7 @@ func (s *RunOrchestrationService) RunPaths(ctx context.Context, runID uint64) (*
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {
 		if errors.Is(err, repository.ErrRunNotFound) {
-			return nil, &RunOrchestrationError{Kind: RunOrchestrationNotFound, Message: "运行记录不存在"}
+			return nil, &RunOrchestrationError{Kind: RunOrchestrationNotFound, Message: "任务不存在"}
 		}
 		return nil, err
 	}

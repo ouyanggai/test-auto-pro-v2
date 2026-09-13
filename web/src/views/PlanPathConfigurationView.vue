@@ -196,7 +196,8 @@ const pageThemeStyle = computed(() => ({
   '--path-config-text-color': themeVars.value.textColor1,
   '--path-config-text-secondary-color': themeVars.value.textColor2,
 }))
-const planMutable = computed(() => plan.value?.status === 'not_started')
+// 计划状态只用于展示任务事实，配置修改只影响后续运行。
+const planMutable = computed(() => Boolean(plan.value))
 const formReadOnly = computed(() => !planMutable.value)
 // 表单权限视图：目标按节点声明字段权限，真实用户在一个节点上只能改该节点声明可编辑的字段。
 // 默认发起人视图；切到审批节点视图后只放开那个节点能改的字段，数据仍是同一份表单数据。

@@ -164,16 +164,10 @@ func (s *PathConfigService) ownedPath(ctx context.Context, planID, pathID uint64
 	return path, nil
 }
 
-// validateConfigMutablePlan 只允许尚未运行的计划继续修改配置。
+// validateConfigMutablePlan 只确认计划存在；配置变化只影响后续任务，不改写历史运行。
 func (s *PathConfigService) validateConfigMutablePlan(ctx context.Context, planID uint64) error {
-	plan, err := s.plans.Get(ctx, planID)
-	if err != nil {
-		return err
-	}
-	if plan.Status != model.PlanStatusNotStarted {
-		return &PathConfigError{Kind: PathConfigErrorLocked, Message: "计划已经不能修改路径配置"}
-	}
-	return nil
+	_, err := s.plans.Get(ctx, planID)
+	return err
 }
 
 // readVerifiedSnapshot 按计划持久化的目标身份重读流程，不接受浏览器覆盖来源或目标对象。

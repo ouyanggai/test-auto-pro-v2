@@ -15,7 +15,7 @@ import { useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/AppEmptyState.vue'
 import { fetchExecutionPaths } from '../features/execution-paths/api'
-import { getPlanAction, planStatusLabels, planStatusOptions } from '../features/plans/logic'
+import { planStatusLabels, planStatusOptions } from '../features/plans/logic'
 import { deletePlan, fetchPlans, PlanApiError } from '../features/plans/persistence'
 import type { PlanFilters, PlanRow, PlanStatus } from '../features/plans/types'
 import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
@@ -23,7 +23,6 @@ import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue
 const message = useMessage()
 const router = useRouter()
 const filters = reactive<PlanFilters>({ name: '', status: null })
-const prototypeNotice = ref('')
 const plans = ref<PlanRow[]>([])
 const loading = ref(false)
 const loadError = ref('')
@@ -38,14 +37,8 @@ function clearFilters() {
   filters.status = null
 }
 
-function handlePlanAction(plan: PlanRow) {
-  const action = getPlanAction(plan.status)
-  if (action.intent === 'configure') {
-    void router.push(`/plans/${plan.id}/paths`)
-    return
-  }
-  prototypeNotice.value = `“${plan.name}”的“${action.label}”当前仅用于静态原型展示，真实业务将在后续功能接入。`
-}
+function editPlan(plan: PlanRow) { void router.push(`/plans/${plan.id}/edit`) }
+function editPaths(plan: PlanRow) { void router.push(`/plans/${plan.id}/paths`) }
 
 // runFromList 从计划列表直接发起一次运行：默认勾选「已配置且数据就绪」的路径，
 // 与路径页此前的默认口径一致；运行前检查弹窗只检查这些路径。
@@ -55,7 +48,6 @@ const runPreparing = ref<string>('')
 
 async function runFromList(plan: PlanRow): Promise<void> {
   runPreparing.value = plan.id
-  prototypeNotice.value = ''
   try {
     const paths = await fetchExecutionPaths(plan.id, new AbortController().signal)
     const selected = paths
@@ -83,7 +75,6 @@ function locateReadinessItem(pathId: string, anchor: string) {
 
 // removePlan 删除本系统开发计划后重读列表；当前目标平台不会收到任何写请求。
 async function removePlan(plan: PlanRow) {
-	prototypeNotice.value = ''
 	try {
 		await deletePlan(plan.id)
 		plans.value = plans.value.filter(item => item.id !== plan.id)
@@ -156,15 +147,14 @@ const columns: DataTableColumns<PlanRow> = [
     width: 110,
     render: (row) => h(NTag, { size: 'small', type: statusTagType(row.status), bordered: false }, { default: () => planStatusLabels[row.status] }),
   },
-  { title: '最近运行结果', key: 'lastRunResult', width: 180, ellipsis: { tooltip: true } },
+  { title: '最近任务结果', key: 'lastRunResult', width: 180, ellipsis: { tooltip: true } },
   {
     title: '操作',
     key: 'actions',
-    width: 260,
+    width: 340,
     fixed: 'right',
     render: (row) => {
-      const action = getPlanAction(row.status)
-      return h('div', {
+    return h('div', {
         class: 'plan-row-actions',
         style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' },
       }, [
@@ -179,7 +169,8 @@ const columns: DataTableColumns<PlanRow> = [
           },
           { default: () => '运行' },
         ),
-        h(NButton, { size: 'small', secondary: true, type: 'primary', onClick: () => handlePlanAction(row) }, { default: () => action.label }),
+        h(NButton, { size: 'small', secondary: true, type: 'primary', onClick: () => editPlan(row) }, { default: () => '编辑计划' }),
+        h(NButton, { size: 'small', secondary: true, onClick: () => editPaths(row) }, { default: () => '编辑路径' }),
         row.status === 'not_started' ? h('span', { class: 'plan-row-actions__delete' }, [
           h(NPopconfirm, { positiveText: '删除计划', negativeText: '取消', onPositiveClick: () => void removePlan(row) }, {
             default: () => '删除后会清除本系统中的路径和配置，不能恢复。',
@@ -219,11 +210,6 @@ const columns: DataTableColumns<PlanRow> = [
       <n-button :disabled="!hasFilters" @click="clearFilters">清空</n-button>
     </div>
 
-    <div v-if="prototypeNotice" class="prototype-notice" role="status">
-      {{ prototypeNotice }}
-      <n-button text type="primary" @click="prototypeNotice = ''">关闭</n-button>
-    </div>
-
     <div v-if="loadError" class="plan-load-error" role="alert">
       <span>{{ loadError }}</span>
       <n-button text type="primary" @click="loadPlans">重试</n-button>
@@ -235,7 +221,7 @@ const columns: DataTableColumns<PlanRow> = [
         :data="plans"
         :loading="loading"
         :row-key="(row: PlanRow) => row.id"
-        :scroll-x="1458"
+        :scroll-x="1538"
         :single-line="false"
         striped
       >
@@ -303,16 +289,6 @@ const columns: DataTableColumns<PlanRow> = [
 
 .plan-status-filter {
   width: 180px;
-}
-
-.prototype-notice {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 16px;
-  color: var(--n-text-color-2);
-  line-height: 1.6;
 }
 
 .plan-table-region {

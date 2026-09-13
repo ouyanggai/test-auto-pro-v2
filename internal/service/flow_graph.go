@@ -36,6 +36,8 @@ type FlowGraphService struct {
 	//（那些判定用执行器自身的实时读取，不走本缓存）。
 	cacheMu    sync.Mutex
 	graphCache map[uint64]cachedGraph
+	// cacheGeneration 让身份变更前尚在后台读取的旧图无法重新写回缓存。
+	cacheGeneration map[uint64]uint64
 	// refreshing 标记后台刷新中的计划，防止单飞重复读目标。
 	refreshing map[uint64]bool
 	cacheTTL   time.Duration
@@ -50,10 +52,13 @@ type cachedGraph struct {
 
 // NewFlowGraphService 组装持久化计划身份、目标树读取和安全图分析。
 func NewFlowGraphService(plans *PlanService, targetReader FlowTreeReader, flowAnalyzer FlowAnalyzer) *FlowGraphService {
-	return &FlowGraphService{
+	service := &FlowGraphService{
 		plans: plans, target: targetReader, analyzer: flowAnalyzer,
-		graphCache: map[uint64]cachedGraph{}, refreshing: map[uint64]bool{}, cacheTTL: 15 * time.Second, now: time.Now,
+		graphCache: map[uint64]cachedGraph{}, cacheGeneration: map[uint64]uint64{}, refreshing: map[uint64]bool{}, cacheTTL: 15 * time.Second, now: time.Now,
 	}
+	// 计划目标身份变更后，路径编辑和运行前复验必须立即读取新流程，不能等待旧图缓存自然过期。
+	plans.addConfigurationChangedListener(service.invalidate)
+	return service
 }
 
 // Get 返回计划的结构投影：缓存未过期直接返回；过期时立即返回旧投影并在后台单飞刷新，
@@ -70,11 +75,12 @@ func (s *FlowGraphService) Get(ctx context.Context, planID uint64) (model.FlowGr
 		s.refreshInBackground(planID)
 		return stale, nil
 	}
+	generation := s.currentCacheGeneration(planID)
 	graph, err := s.readGraph(ctx, planID)
 	if err != nil {
 		return model.FlowGraph{}, err
 	}
-	s.storeGraph(planID, graph)
+	s.storeGraph(planID, generation, graph)
 	return graph, nil
 }
 
@@ -87,18 +93,18 @@ func (s *FlowGraphService) refreshInBackground(planID uint64) {
 		return
 	}
 	s.refreshing[planID] = true
+	generation := s.cacheGeneration[planID]
 	s.cacheMu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
 		defer cancel()
 		graph, err := s.readGraphWithoutRelogin(ctx, planID)
 		s.cacheMu.Lock()
+		defer s.cacheMu.Unlock()
 		delete(s.refreshing, planID)
-		s.cacheMu.Unlock()
-		if err != nil {
-			return
+		if err == nil && s.cacheGeneration[planID] == generation {
+			s.graphCache[planID] = cachedGraph{graph: graph, expiresAt: s.now().Add(s.cacheTTL)}
 		}
-		s.storeGraph(planID, graph)
 	}()
 }
 
@@ -124,11 +130,29 @@ func (s *FlowGraphService) lastGoodGraph(planID uint64) (model.FlowGraph, bool) 
 	return entry.graph, true
 }
 
-// storeGraph 记录一次成功读取的投影。
-func (s *FlowGraphService) storeGraph(planID uint64, graph model.FlowGraph) {
+// currentCacheGeneration 读取当前缓存代次，供同步目标读取完成后确认结果仍属于同一计划身份。
+func (s *FlowGraphService) currentCacheGeneration(planID uint64) uint64 {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
+	return s.cacheGeneration[planID]
+}
+
+// storeGraph 记录同一缓存代次的成功投影；计划编辑期间完成的旧读取不得重新写回。
+func (s *FlowGraphService) storeGraph(planID, generation uint64, graph model.FlowGraph) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.cacheGeneration[planID] != generation {
+		return
+	}
 	s.graphCache[planID] = cachedGraph{graph: graph, expiresAt: s.now().Add(s.cacheTTL)}
+}
+
+// invalidate 清除目标身份变更前的图投影，并推进代次阻止旧后台读取回填缓存。
+func (s *FlowGraphService) invalidate(planID uint64) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cacheGeneration[planID]++
+	delete(s.graphCache, planID)
 }
 
 // readGraph 真实读取目标结构并分析成图投影。

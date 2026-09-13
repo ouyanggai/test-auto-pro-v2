@@ -57,6 +57,21 @@ func (r *memoryPlanRepository) Get(_ context.Context, id uint64) (model.Plan, er
 	return model.Plan{}, repository.ErrPlanNotFound
 }
 
+// Update 在内存夹具中保存计划编辑结果，模拟事务更新后重新读取。
+func (r *memoryPlanRepository) Update(_ context.Context, id uint64, updated model.Plan) (model.Plan, error) {
+	if r.err != nil {
+		return model.Plan{}, r.err
+	}
+	for index, plan := range r.plans {
+		if plan.ID == id {
+			updated.ID = id
+			r.plans[index] = updated
+			return updated, nil
+		}
+	}
+	return model.Plan{}, repository.ErrPlanNotFound
+}
+
 // Delete 从内存夹具中移除计划，模拟数据库级联清理后的计划不可再读取状态。
 func (r *memoryPlanRepository) Delete(_ context.Context, id uint64) error {
 	if r.err != nil {
@@ -108,6 +123,26 @@ func TestPlanServiceDeletesDevelopmentPlan(t *testing.T) {
 	}
 	if _, err := plans.Get(context.Background(), 9); !service.IsPlanErrorKind(err, service.PlanErrorNotFound) {
 		t.Fatalf("删除后计划仍可读取：%v", err)
+	}
+}
+
+// TestPlanServiceUpdatesPlanAfterRun 验证已运行计划仍可编辑且不覆盖运行状态。
+func TestPlanServiceUpdatesPlanAfterRun(t *testing.T) {
+	repo := newMemoryPlanRepository()
+	consumedSchedule := time.Now().UTC().Add(-time.Hour)
+	repo.plans = []model.Plan{{ID: 9, Name: "旧名称", Account: "account", AccountDisplayName: "账号", FlowSource: "new", TargetObjectID: "obj", TargetObjectName: "流程", RunMode: "serial", ScheduledAt: &consumedSchedule, Status: model.PlanStatusCompleted}}
+	plans := service.NewPlanService(repo)
+	updated, err := plans.Update(context.Background(), 9, service.UpdatePlanInput{
+		Name: "新名称", Account: "account", AccountDisplayName: "账号", FlowSource: "new", TargetObjectID: "obj", TargetObjectName: "流程", RunMode: "serial", ScheduledAt: &consumedSchedule,
+	})
+	if err != nil {
+		t.Fatalf("已运行计划编辑失败：%v", err)
+	}
+	if updated.Name != "新名称" || updated.Status != model.PlanStatusCompleted {
+		t.Fatalf("编辑不应覆盖计划运行状态：%+v", updated)
+	}
+	if updated.ScheduledAt == nil || !updated.ScheduledAt.Equal(consumedSchedule) {
+		t.Fatalf("编辑其他字段时应允许保留已消费定时设置：%+v", updated.ScheduledAt)
 	}
 }
 
