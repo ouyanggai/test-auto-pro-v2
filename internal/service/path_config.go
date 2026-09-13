@@ -19,7 +19,6 @@ type PathConfigErrorKind string
 const (
 	PathConfigErrorInvalidArgument   PathConfigErrorKind = "invalid_argument"
 	PathConfigErrorNotFound          PathConfigErrorKind = "not_found"
-	PathConfigErrorLocked            PathConfigErrorKind = "locked"
 	PathConfigErrorRevisionConflict  PathConfigErrorKind = "revision_conflict"
 	PathConfigErrorInvalid           PathConfigErrorKind = "invalid"
 	PathConfigErrorRouteConfirmation PathConfigErrorKind = "route_confirmation"
