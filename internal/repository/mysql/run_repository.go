@@ -66,6 +66,10 @@ func (r *RunRepository) tryCreateRun(ctx context.Context, planID uint64, executi
 	if err != nil {
 		return model.Run{}, model.PathRun{}, err
 	}
+	// F-032：创建运行即视为运行事实开始，计划存储列从「未运行」推进到「运行中」，永不回退。
+	if err := syncPlanRunStatus(ctx, tx, planID, model.RunStatusRunning, now); err != nil {
+		return model.Run{}, model.PathRun{}, err
+	}
 	runID, err := result.LastInsertId()
 	if err != nil {
 		return model.Run{}, model.PathRun{}, err
@@ -312,8 +316,9 @@ func (r *RunRepository) AdvanceRunStatus(ctx context.Context, runID uint64, from
 	}
 	defer tx.Rollback()
 
+	var planID uint64
 	var current string
-	err = tx.QueryRowContext(ctx, "SELECT status FROM runs WHERE id = ? FOR UPDATE", runID).Scan(&current)
+	err = tx.QueryRowContext(ctx, "SELECT plan_id, status FROM runs WHERE id = ? FOR UPDATE", runID).Scan(&planID, &current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Run{}, repository.ErrRunNotFound
 	}
@@ -335,6 +340,10 @@ func (r *RunRepository) AdvanceRunStatus(ctx context.Context, runID uint64, from
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE runs SET status = ?, started_at = COALESCE(started_at, ?), finished_at = COALESCE(?, finished_at), updated_at = ? WHERE id = ?
 	`, string(to), startedAt, finishedAt, now, runID); err != nil {
+		return model.Run{}, err
+	}
+	// F-032：运行进入运行中或终态时同步计划存储列（同事务，保证锁定判断一致）。
+	if err := syncPlanRunStatus(ctx, tx, planID, to, now); err != nil {
 		return model.Run{}, err
 	}
 	event.RunID = runID
@@ -503,6 +512,14 @@ func (r *RunRepository) FinishPathRun(ctx context.Context, pathRunID uint64, to 
 		}, now); err != nil {
 			return model.PathRun{}, err
 		}
+		// F-032：运行聚合进入终态时同步计划存储列为已运行；读侧仍以 runs 事实为准。
+		var runPlanID uint64
+		if err := tx.QueryRowContext(ctx, "SELECT plan_id FROM runs WHERE id = ?", runID).Scan(&runPlanID); err != nil {
+			return model.PathRun{}, err
+		}
+		if err := syncPlanRunStatus(ctx, tx, runPlanID, aggregate.status, now); err != nil {
+			return model.PathRun{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return model.PathRun{}, err
@@ -540,8 +557,12 @@ func (r *RunRepository) ReopenPathRunForRetry(ctx context.Context, pathRunID uin
 		return model.PathRun{}, model.Run{}, err
 	}
 	// 先锁运行行再动聚合：与 FinishPathRun 的加锁顺序一致，避免与收尾事务互相死锁。
-	if _, lockErr := tx.ExecContext(ctx, "SELECT id FROM runs WHERE id = ? FOR UPDATE", runID); lockErr != nil {
+	if _, lockErr := tx.ExecContext(ctx, "SELECT id, plan_id FROM runs WHERE id = ? FOR UPDATE", runID); lockErr != nil {
 		return model.PathRun{}, model.Run{}, lockErr
+	}
+	var runPlanID uint64
+	if err := tx.QueryRowContext(ctx, "SELECT plan_id FROM runs WHERE id = ?", runID).Scan(&runPlanID); err != nil {
+		return model.PathRun{}, model.Run{}, err
 	}
 	if model.PathRunStatus(current) != model.PathRunStatusFailed ||
 		!model.CanAdvancePathRunStatus(model.PathRunStatus(current), model.PathRunStatusRunning) {
@@ -611,6 +632,10 @@ func (r *RunRepository) ReopenPathRunForRetry(ctx context.Context, pathRunID uin
 		}, now); err != nil {
 			return model.PathRun{}, model.Run{}, err
 		}
+	}
+	// F-032：重试使运行重新进入运行中，计划存储列同步推进；计划状态永不回退。
+	if err := syncPlanRunStatus(ctx, tx, runPlanID, model.RunStatusRunning, now); err != nil {
+		return model.PathRun{}, model.Run{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return model.PathRun{}, model.Run{}, err
@@ -722,6 +747,14 @@ func (r *RunRepository) FinishRunIfAllPathsClosed(ctx context.Context, runID uin
 	}, now); err != nil {
 		return false, err
 	}
+	// F-032：收尾事务同步计划存储列为已运行；读侧展示仍以 runs 事实为准。
+	var closedPlanID uint64
+	if err := tx.QueryRowContext(ctx, "SELECT plan_id FROM runs WHERE id = ?", runID).Scan(&closedPlanID); err != nil {
+		return false, err
+	}
+	if err := syncPlanRunStatus(ctx, tx, closedPlanID, aggregate.status, now); err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
@@ -734,6 +767,30 @@ func nullableRunResultOf(result model.RunResult) any {
 		return nil
 	}
 	return string(result)
+}
+
+// syncPlanRunStatus 在运行状态变更事务内同步计划存储列状态（F-032）：
+// 计划状态只前进（未运行 -> 运行中 -> 已运行），永不回退到未运行。
+// 用条件更新守卫：当前为 not_started 时置为 running；当前为 not_started/running 且本次进入
+// 终态时置为 completed。写侧（路径配置锁定）读的是存储列，必须与运行事实保持同步。
+func syncPlanRunStatus(ctx context.Context, tx *sql.Tx, planID uint64, to model.RunStatus, now time.Time) error {
+	if to == model.RunStatusRunning {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE test_plans SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+			string(model.PlanStatusRunning), now, planID, string(model.PlanStatusNotStarted)); err != nil {
+			return err
+		}
+		return nil
+	}
+	if isTerminalRunStatus(to) {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE test_plans SET status = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)",
+			string(model.PlanStatusCompleted), now, planID,
+			string(model.PlanStatusNotStarted), string(model.PlanStatusRunning)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ClaimPathRunLease 领取路径运行的推进权：仅当未到终态且没有其他 Worker 的有效租约时成功。

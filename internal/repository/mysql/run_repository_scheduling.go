@@ -167,6 +167,10 @@ func (r *RunRepository) tryCreateRunWithPaths(ctx context.Context, input reposit
 			Status: model.PathRunStatusWaiting, CreatedAt: now, UpdatedAt: now,
 		})
 	}
+	// F-032：创建运行即视为运行事实开始，计划存储列从「未运行」推进到「运行中」，永不回退。
+	if err := syncPlanRunStatus(ctx, tx, input.PlanID, model.RunStatusRunning, now); err != nil {
+		return model.Run{}, nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.Run{}, nil, err
 	}
@@ -394,6 +398,14 @@ func (r *RunRepository) DequeueRun(ctx context.Context, now time.Time) (uint64, 
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
 		string(model.RunStatusRunning), now, runID, string(model.RunStatusPending)); err != nil {
+		return 0, err
+	}
+	// F-032：队列放行后运行真正进入运行中；计划存储列同步推进（等待运行也计为运行中事实）。
+	var runPlanID uint64
+	if err := tx.QueryRowContext(ctx, "SELECT plan_id FROM runs WHERE id = ?", runID).Scan(&runPlanID); err != nil {
+		return 0, err
+	}
+	if err := syncPlanRunStatus(ctx, tx, runPlanID, model.RunStatusRunning, now); err != nil {
 		return 0, err
 	}
 	if err := appendRunEvent(ctx, tx, model.RunEvent{

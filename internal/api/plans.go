@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -181,7 +182,44 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 	return errors.New("存在额外 JSON 内容")
 }
 
-// toPlanResponse 将计划模型转换为公开 DTO，并返回数据库实时统计的路径数量。
+// lastRunOutcomeText 将最近一次运行的终态转成展示口径（F-032）：
+// 有结果按结果展示（成功/失败），无结果按运行状态展示；completed 不翻译成“已完成”以免被误解为计划终态。
+func lastRunOutcomeText(status model.RunStatus, result *model.RunResult) string {
+	if result != nil {
+		switch *result {
+		case model.RunResultSucceeded:
+			return "成功"
+		case model.RunResultFailed:
+			return "失败"
+		}
+	}
+	switch status {
+	case model.RunStatusCompleted:
+		return "成功"
+	case model.RunStatusFailed:
+		return "失败"
+	case model.RunStatusStopped:
+		return "已停止"
+	case model.RunStatusCancelled:
+		return "已取消"
+	default:
+		return model.RunStatusName(status)
+	}
+}
+
+// PlanLastRunText 由计划模型生成「最近运行结果」展示文案（F-032）：
+// 暂无运行记录 / 第 N 次运行中 / 第 N 次：结果。导出供契约测试与后续视图复用。
+func PlanLastRunText(plan model.Plan) string {
+	if plan.LastRunNo == nil {
+		return "暂无运行记录"
+	}
+	if plan.HasActiveRun {
+		return fmt.Sprintf("第 %d 次运行中", *plan.LastRunNo)
+	}
+	return fmt.Sprintf("第 %d 次：%s", *plan.LastRunNo, lastRunOutcomeText(plan.LastRunStatus, plan.LastRunResult))
+}
+
+// toPlanResponse 将计划模型转换为公开 DTO，并返回数据库实时统计的路径数量与最近运行事实。
 func toPlanResponse(plan model.Plan) planResponse {
 	var scheduledAt *string
 	if plan.ScheduledAt != nil {
@@ -201,7 +239,7 @@ func toPlanResponse(plan model.Plan) planResponse {
 		ScheduledAt:        scheduledAt,
 		Status:             string(plan.Status),
 		PathCount:          plan.PathCount,
-		LastRunResult:      "",
+		LastRunResult:      PlanLastRunText(plan),
 		CreatedAt:          plan.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:          plan.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}

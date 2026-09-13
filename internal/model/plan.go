@@ -37,8 +37,16 @@ type Plan struct {
 	ScheduledConsumedAt *time.Time
 	Status              PlanStatus
 	PathCount           int
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// 以下五个字段是最近一次运行与活跃运行的事实摘要，由列表/详情查询从 runs 表一次 SQL 聚合（F-032）：
+	// 计划状态公开口径的「已运行」以运行事实为准，不依赖 test_plans.status 是否被及时同步。
+	// LastRunNo 为空表示计划从未运行过；HasActiveRun 表示存在等待中或运行中的运行记录。
+	LastRunNo         *uint64
+	LastRunStatus     RunStatus
+	LastRunResult     *RunResult
+	LastRunFinishedAt *time.Time
+	HasActiveRun      bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // PlanListFilter 约束计划列表的名称、状态和数量。

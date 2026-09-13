@@ -1,5 +1,23 @@
 # 当前进度
 
+- 2026-09-13 F-032「计划状态与最近运行结果修复」已获批准并实施完成，停在 `ready_for_manual`：
+  计划列表/详情一条 SQL 从 `runs` 运行事实派生计划公开状态并聚合最近运行号、状态、结果、结束时间与活跃标记
+  （无 N+1，历史脏数据自愈）；创建运行、运行推进/收尾、失败重试重开等事务内同步计划存储列，
+  路径配置锁定与「已运行计划不能删除」恢复生效且永不回退未运行；接口最近运行结果返回
+  「暂无运行记录/第 N 次运行中/第 N 次：成功/失败/已停止/已取消」，运行级待对账崩溃恢复统一显示已停止；
+  前端 `completed` 显示改为「已运行」，`docs/PRODUCT.md` 同步修订。
+  `bash test/run-f032.sh` 全部通过（单元 + 真实 MySQL 集成 TestF032 三用例 + 契约回归 + vue-tsc + 构建）。
+  等待人工验收：新计划未运行 → 运行中 → 已运行流转、再次运行回运行中、最近运行结果真实显示、
+  运行后路径配置只读。F-033 仍为 `awaiting_approval`，批准前不实施。
+- 2026-09-13 用户只读排查确认两个缺陷并登记两个独立修复切片，均停在 `awaiting_approval`，批准前不改实现代码：
+  ① F-032「计划状态与最近运行结果修复」（`docs/features/F-032-plan-status-and-last-run-result.md`）：计划创建后状态固定
+  `not_started` 永不流转、列表不结合 `runs` 表、接口最近运行结果写死为空，并导致运行后路径配置锁定失效；方案是状态按运行事实
+  流转（未运行/运行中/已运行，永不回退）、运行事务内同步更新计划状态、列表单条 SQL 补齐最近运行信息，`docs/PRODUCT.md`
+  「已完成」同步改「已运行」。
+  ② F-033「运行详情原子快照与节点过渡显示修复」（`docs/features/F-033-atomic-run-snapshot-node-transition.md`）：放行后后台协程
+  执行期间详情接口非原子读取 CurrentPreview/View，前端轮询覆盖详情导致画布短暂无节点高亮；方案是控制服务原子快照、过渡态
+  白话说明、前端保留最后有效当前节点与一次受控快速刷新。
+  推进顺序：先 F-032 后 F-033，各自独立验收。
 - 2026-09-12 F-031「任务事实参数与实例日志归属修复」已登记为 `awaiting_approval`。源码核对确认：`/web/flowJobTaskLink/list` 的实例过滤必须使用顶层 `flowInstanceIdList`，`data.flowInstanceId` 会被目标忽略；`pending` 使用 `queryUserId`、`done` 使用 `data.executorId`。当前节点处理人必须取发起人已发列表的 `currentAuditUserInfo`，配置中的 `NextNodeAuditors` 只表示下一节点选人。日志方案已按页面调整为 `logs/runs/<运行记录>/paths/<路径运行>`，目录使用 `runId/pathRunId` 稳定定位，`runNo/planName/pathName` 与页面标签对应；目标实例名称只写详情和 `meta.json`，不参与目录寻址。用户批准前不改执行代码、不改数据库、不启动浏览器。详细计划见 `docs/features/F-031-task-facts-and-instance-log-naming.md`。
 
 - 2026-09-13 F-031 评审整改完成（评审提出「一个处理人安全缺陷 + 一个页面验收缺陷」，均已修复并重跑验证）：
