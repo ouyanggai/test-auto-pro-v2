@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -33,6 +34,43 @@ func (t *actorSwitchTarget) FindTaskSnapshot(_ context.Context, session target.S
 		JobTaskID: "task-1", FlowNodeProxyID: "node-audit", FlowProxyID: "proxy-1",
 		PendingUserID: t.ownerID, PendingUserName: t.ownerName,
 	}, nil
+}
+
+// currentHandlerUserID 用本假件配置的真实处理人覆盖基础默认值，
+// 事实发现路径（currentAuditUserInfo → 视角查询）因此针对的就是这位处理人。
+func (t *actorSwitchTarget) currentHandlerUserID() string { return strings.TrimSpace(t.ownerID) }
+
+// FindSubmittedFlowFacts 用本假件配置的真实处理人构造 currentAuditUserInfo：
+// 基础假件的方法体按静态分派取默认处理人 ID，无法表达「待办属于另一位处理人」。
+func (t *actorSwitchTarget) FindSubmittedFlowFacts(_ context.Context, _ target.Session, _ string) (target.SubmittedFlowFacts, error) {
+	view := t.currentView()
+	flowProxyID := t.flowProxyID
+	if flowProxyID == "" {
+		flowProxyID = "flow-proxy-1"
+	}
+	handlers := make([]target.NodeCurrentHandler, 0, len(view.DueNodes))
+	for _, nodeID := range view.DueNodes {
+		handlers = append(handlers, target.NodeCurrentHandler{
+			NodeID: strings.TrimSpace(nodeID), AuditType: "run_node_choose",
+			BizIDs: []string{t.currentHandlerUserID()},
+		})
+	}
+	return target.SubmittedFlowFacts{
+		FlowProxyID: flowProxyID, CurrentNodes: view.CurrentNodes, Status: view.Status,
+		Handlers: handlers, Name: "测试实例", Found: view.Found,
+	}, nil
+}
+
+// ListTaskSnapshotsForUser 让事实发现路径复用本假件的任务语义：命中处理人视角时返回实时待办。
+func (t *actorSwitchTarget) ListTaskSnapshotsForUser(ctx context.Context, session target.Session, instanceID, status, queryUserID string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) != "pending" || strings.TrimSpace(queryUserID) != t.currentHandlerUserID() {
+		return nil, nil
+	}
+	snapshot, err := t.FindTaskSnapshot(ctx, session, instanceID, "", status)
+	if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
+		return nil, err
+	}
+	return []target.TaskSnapshot{snapshot}, nil
 }
 
 // UserAccountsByID 是人员目录账号解析假件：ownerID → zhangsan。

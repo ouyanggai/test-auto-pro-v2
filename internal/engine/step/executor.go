@@ -198,7 +198,7 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	// 配置时通过、此刻不通过就停止：门禁不通过绝不跳过。
 	// F-030 评审 P1：阶段说明同时回答现在做什么、为什么、下一步是什么。
 	actorName := runCtx.PlanAccount
-	reportProgressSafe(reportProgress, "gate", fmt.Sprintf("正在检查第 %d 步现在能不能做：用计划账号登录目标平台，重新查看流程的当前状态（节点、待办）并复核门禁条件", step.Sequence))
+	reportProgressSafe(reportProgress, "gate", fmt.Sprintf("正在检查第 %d 步现在能不能做：用计划账号登录目标平台，重新查看流程的当前状态（节点、待办）并复核放行条件", step.Sequence))
 	session, sessionErr := e.sessionWithRetry(ctx, runCtx, log, step.Sequence, "gate")
 	if sessionErr != nil {
 		message := userFacingError(sessionErr, target.WriteResponse{})
@@ -1157,6 +1157,10 @@ func (e *Executor) refreshSessionForWrite(ctx context.Context, account string) (
 	return fresh, nil
 }
 
+// taskStatusPendingValue 是目标任务列表里「当前待办」的状态名，与目标协议一致。
+// 只有这个状态才需要按当前处理人事实发现任务；已办（done）由取回动作按会话本人读取。
+const taskStatusPendingValue = "pending"
+
 // taskSnapshotReader 是目标任务身份的可选能力面；旧的测试假件仍可用 FindDueTaskID，
 // 真实客户端必须实现完整快照以提供 jobTaskId、batchNo 和已办任务范围。
 type taskSnapshotReader interface {
@@ -1797,9 +1801,14 @@ func (e *Executor) recordPrepareFailure(ctx context.Context, runCtx RunContext, 
 // 因此绝不参与当前任务发现：不再为配置候选人逐一登录、逐一查任务。返回的 session 是真正命中任务
 // 的处理人会话，供后续代理树/审核记录读取继续使用。
 func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID, status string, facts *InstanceFacts, allowDiscovery bool) (target.TaskSnapshot, string, string, target.Session, error) {
-	// 写前准备（allowDiscovery）才允许按目标事实发现当前处理人；事实里没有本节点处理人时
-	// switchToCurrentHandler 返回中文原因，随门禁一并披露，绝不用配置候选人顶替。
-	if allowDiscovery && facts != nil {
+	// 写前准备的待办动作只认当前处理人事实（F-031/T03，审查 P1）：事实里没有本节点处理人、
+	// 或处理人账号/待办核对不命中时，一律停在当前步骤返回空快照，由门禁按「没有当前待办」阻断。
+	// 绝不回退到计划账号或会话本人的待办读取：那会让计划账号冒充当前处理人，
+	// 放行一次本不属于它的审批（计划账号读到自己名下的历史待办时尤其危险）。
+	if allowDiscovery && strings.TrimSpace(status) == taskStatusPendingValue {
+		if facts == nil {
+			return target.TaskSnapshot{}, "", "", session, nil
+		}
 		snapshot, userID, userName, actorSession, found, diag := e.switchToCurrentHandler(ctx, runCtx, session, step, nodeID, status, *facts)
 		if diag != "" {
 			facts.AssigneeDiag = diag
@@ -1807,8 +1816,10 @@ func (e *Executor) resolveTaskSnapshotForStep(ctx context.Context, runCtx RunCon
 		if found {
 			return snapshot, userID, userName, actorSession, nil
 		}
+		return target.TaskSnapshot{}, "", "", session, nil
 	}
-	// 当前会话本人的精确实例任务：发起人节点、当前处理人本人与写后核验都靠它。
+	// 当前会话本人的精确实例任务：写后核验（allowDiscovery=false）与已办读取（取回）都靠它。
+	// 写后核验用的是真正执行过写请求的当前处理人会话，只核对本人任务，不存在冒充问题。
 	snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, status)
 	if err != nil {
 		return target.TaskSnapshot{}, "", "", session, err

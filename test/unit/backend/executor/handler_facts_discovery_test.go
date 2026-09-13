@@ -169,3 +169,45 @@ func TestMissingCurrentAuditUserInfoStopsWithExplanation(t *testing.T) {
 		t.Fatalf("事实缺失必须停在当前步骤而不是放行：%+v", preview)
 	}
 }
+
+// TestMissingHandlerFactBlocksEvenWhenPlanAccountHasTask 锁定评审 P1 的危险情形：
+// 目标响应缺少 currentAuditUserInfo（本节点没有处理人事实），但计划账号自己名下有历史待办时，
+// 也绝不能把那个待办当成当前任务——那会让计划账号冒充当前处理人放行一次本不属于它的审批。
+// 正确行为：不读会话待办、事实标记为「没有当前待办」、门禁阻断并给出可解释原因。
+func TestMissingHandlerFactBlocksEvenWhenPlanAccountHasTask(t *testing.T) {
+	viewTarget := &handlerFactTarget{
+		fakeTarget: &fakeTarget{
+			instance:      fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+			dueTaskID:     "task-stale", // 计划账号用会话读取时能读到自己名下的待办
+			dueTaskNodeID: "node-audit",
+		},
+		handlers: nil,
+	}
+	sessions := &recordingSessions{}
+	executor := step.NewExecutor(viewTarget, sessions, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	runCtx := factRunContext(nil)
+
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview == nil {
+		t.Fatal("预览不应为空")
+	}
+	// 关键：不得回退到会话待办读取。
+	if viewTarget.snapshotCalls != 0 {
+		t.Fatalf("事实缺失时不得读取会话本人待办，实际读取 %d 次", viewTarget.snapshotCalls)
+	}
+	if preview.Facts.CurrentTaskFound {
+		t.Fatalf("不得把计划账号的待办当成当前任务：%+v", preview.Facts)
+	}
+	if !strings.Contains(preview.Facts.AssigneeDiag, "currentAuditUserInfo") {
+		t.Fatalf("缺失字段必须写进诊断：%q", preview.Facts.AssigneeDiag)
+	}
+	if preview.GateAllowed {
+		t.Fatal("处理人事实缺失时必须阻断待办动作")
+	}
+	if !strings.Contains(preview.BlockReason, "当前待办") {
+		t.Fatalf("阻断原因应说明没有当前待办：%q", preview.BlockReason)
+	}
+}

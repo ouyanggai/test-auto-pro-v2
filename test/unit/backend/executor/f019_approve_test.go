@@ -18,7 +18,7 @@ func TestF019ApproveHasWritePayload(t *testing.T) {
 	body, endpoint, err := target.BuildActionBody(target.ActionWriteRequest{
 		Action: "approve", InstanceID: "i-1", JobTaskID: "task-1", FlowProxyID: "flow-1",
 		AuditStatus: "pass", ExecuteDesc: "同意说明",
-		FormData: []byte(`{"amount":"12.30"}`),
+		FormData:     []byte(`{"amount":"12.30"}`),
 		NextAuditors: []target.NextAuditor{{Name: "下一节点处理人", BizID: "user-9"}},
 	})
 	if err != nil {

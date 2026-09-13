@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -63,6 +64,21 @@ func (t *actionTaskSessionTarget) FindTaskSnapshot(_ context.Context, session ta
 	return target.TaskSnapshot{JobTaskID: "task-new", BatchNo: "batch-new", FlowNodeProxyID: "node-new", FlowProxyID: "proxy-new"}, nil
 }
 
+// ListTaskSnapshotsForUser 让事实发现路径复用按会话变化的实时任务身份。
+func (t *actionTaskSessionTarget) ListTaskSnapshotsForUser(ctx context.Context, session target.Session, instanceID, status, queryUserID string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) != "pending" || strings.TrimSpace(queryUserID) != t.currentHandlerUserID() {
+		return nil, nil
+	}
+	snapshot, err := t.FindTaskSnapshot(ctx, session, instanceID, "", status)
+	if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
+		return nil, err
+	}
+	// 事实发现只回答「这位处理人在实例当前待办节点有没有任务」；任务身份（taskId/batchNo/代理）
+	// 留给写路径按会话重取，写路径的身份刷新断言不受影响。
+	snapshot.FlowNodeProxyID = t.viewerTaskNodeID()
+	return []target.TaskSnapshot{snapshot}, nil
+}
+
 // ExecuteActionWrite 仅让新会话的请求进入目标业务，旧会话以可证明无副作用的会话失效拒绝。
 func (t *actionTaskSessionTarget) ExecuteActionWrite(_ context.Context, session target.Session, request target.ActionWriteRequest) (target.WriteResponse, string, error) {
 	t.writeSessions = append(t.writeSessions, session.SID)
@@ -81,6 +97,16 @@ func (t *sessionContinuityTarget) FindSubmittedFlow(ctx context.Context, session
 		return "", nil, "", nil, false, target.NewError(target.ErrorSessionExpired, nil)
 	}
 	return t.fakeTarget.FindSubmittedFlow(ctx, session, instanceID)
+}
+
+// FindSubmittedFlowFacts 与 FindSubmittedFlow 同源：记录事实重读用的会话，
+// 并在写已生效后拒绝旧 SID。执行器优先走完整事实读取，这条规则必须同时覆盖它。
+func (t *sessionContinuityTarget) FindSubmittedFlowFacts(ctx context.Context, session target.Session, instanceID string) (target.SubmittedFlowFacts, error) {
+	t.factReadSIDs = append(t.factReadSIDs, session.SID)
+	if (t.submitted || t.audited) && session.SID != t.freshSID {
+		return target.SubmittedFlowFacts{}, target.NewError(target.ErrorSessionExpired, nil)
+	}
+	return t.fakeTarget.FindSubmittedFlowFacts(ctx, session, instanceID)
 }
 
 // FindDueTaskID 模拟发送审批前旧 SID 失效，并记录重取任务时使用的会话。

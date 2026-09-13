@@ -3,6 +3,7 @@ package executor_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -27,6 +28,18 @@ type taskActionFactsTarget struct {
 func (t *taskActionFactsTarget) FindTaskSnapshot(context.Context, target.Session, string, string, string) (target.TaskSnapshot, error) {
 	t.snapshotRead++
 	return t.snapshot, nil
+}
+
+// ListTaskSnapshotsForUser 让事实发现路径复用本假件的任务快照与读取计数。
+func (t *taskActionFactsTarget) ListTaskSnapshotsForUser(ctx context.Context, session target.Session, instanceID, status, queryUserID string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) != "pending" || strings.TrimSpace(queryUserID) != t.currentHandlerUserID() {
+		return nil, nil
+	}
+	snapshot, err := t.FindTaskSnapshot(ctx, session, instanceID, "", status)
+	if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
+		return nil, err
+	}
+	return []target.TaskSnapshot{snapshot}, nil
 }
 
 // ListAuditRecords 返回前一任务或取回动作的审核记录事实。
@@ -55,6 +68,18 @@ type rollbackExecutionTarget struct {
 	*taskActionFactsTarget
 	written    bool
 	writeCalls int
+}
+
+// ListTaskSnapshotsForUser 与回退后的待办消失规则保持一致（复用本假件的 FindTaskSnapshot）。
+func (t *rollbackExecutionTarget) ListTaskSnapshotsForUser(ctx context.Context, session target.Session, instanceID, status, queryUserID string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) != "pending" || strings.TrimSpace(queryUserID) != t.currentHandlerUserID() {
+		return nil, nil
+	}
+	snapshot, err := t.FindTaskSnapshot(ctx, session, instanceID, "", status)
+	if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
+		return nil, err
+	}
+	return []target.TaskSnapshot{snapshot}, nil
 }
 
 // ListAuditRecords 在回退后返回与原任务关联的目标回退审核记录。

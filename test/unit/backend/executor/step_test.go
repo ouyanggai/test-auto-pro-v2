@@ -3,6 +3,7 @@ package executor_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +134,11 @@ type fakeTarget struct {
 	// dueTaskNodeID 记录待办读取实际收到的节点标识，用于锁定"发给目标的是真实标识"。
 	dueTaskNodeID    string
 	findDueTaskCalls int
+	// handlerUserID/handlerAccount 是当前处理人事实发现路径的假件读数：
+	// handlerUserID 是目标"已发"事实里该节点处理人的用户 ID，handlerAccount 是解析出的登录账号
+	// （为空表示沿用当前会话，不额外登录）。默认值让既有用例在不改断言的前提下走真实的事实发现路径。
+	handlerUserID  string
+	handlerAccount string
 	// 对账两个新增维度的假件读数（F-018 强证据规则）：
 	// doneRecordFound 是本步节点是否已有已办记录，auditTraceFound 是是否已留下动作痕迹，
 	// auditTraceTotal 只进依据说明；两个 Err 用于验证"读不到就按缺失降级"。
@@ -204,6 +210,92 @@ func (f *fakeTarget) ReadInstanceCurrentData(context.Context, target.Session, st
 		return nil, f.instanceDataErr
 	}
 	return f.instanceFormData, nil
+}
+
+// currentHandlerUserID 返回假件为当前节点处理人分配的稳定用户 ID。
+func (f *fakeTarget) currentHandlerUserID() string {
+	if id := strings.TrimSpace(f.handlerUserID); id != "" {
+		return id
+	}
+	return "user-handler"
+}
+
+// viewerTaskNodeID 返回假件在当前视图下待办所在的目标节点标识。
+func (f *fakeTarget) viewerTaskNodeID() string {
+	view := f.currentView()
+	if len(view.DueNodes) > 0 {
+		return strings.TrimSpace(view.DueNodes[0])
+	}
+	if len(view.CurrentNodes) > 0 {
+		return strings.TrimSpace(view.CurrentNodes[0])
+	}
+	return strings.TrimSpace(f.dueTaskNodeID)
+}
+
+// FindSubmittedFlowFacts 返回带 currentAuditUserInfo 处理人的实例事实：
+// 处理人挂在当前视图的待办节点上，执行器据此发现当前处理人（F-031/T03 的唯一首选来源）。
+func (f *fakeTarget) FindSubmittedFlowFacts(_ context.Context, _ target.Session, _ string) (target.SubmittedFlowFacts, error) {
+	view := f.currentView()
+	flowProxyID := f.flowProxyID
+	if flowProxyID == "" {
+		flowProxyID = "flow-proxy-1"
+	}
+	formProxyIDs := []string(nil)
+	if f.formProxyID != "" {
+		formProxyIDs = []string{f.formProxyID}
+	}
+	handlers := make([]target.NodeCurrentHandler, 0, len(view.DueNodes))
+	for _, nodeID := range view.DueNodes {
+		handlers = append(handlers, target.NodeCurrentHandler{
+			NodeID: strings.TrimSpace(nodeID), AuditType: "run_node_choose",
+			BizIDs: []string{f.currentHandlerUserID()},
+		})
+	}
+	return target.SubmittedFlowFacts{
+		FlowProxyID: flowProxyID, CurrentNodes: view.CurrentNodes, Status: view.Status,
+		FormProxyIDs: formProxyIDs, Handlers: handlers, Name: "测试实例", Found: view.Found,
+	}, nil
+}
+
+// UserAccountsByID 是人员目录账号解析假件：默认把处理人解析为计划账号，
+// 专用假件用 handlerAccount 表达"另一位处理人"的账号（actorSwitchTarget 另有自己的映射）。
+func (f *fakeTarget) UserAccountsByID(_ context.Context, _ target.Session, ids []string) (map[string]string, error) {
+	account := strings.TrimSpace(f.handlerAccount)
+	if account == "" {
+		account = "oyg-test"
+	}
+	result := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			result[trimmed] = account
+		}
+	}
+	return result, nil
+}
+
+// MatchHandlerAccounts 把当前处理人解析为登录账号；账号为空表示沿用当前会话（不额外登录）。
+func (f *fakeTarget) MatchHandlerAccounts(_ context.Context, _ target.Session, handler target.NodeCurrentHandler) ([]target.HandlerAccount, error) {
+	result := []target.HandlerAccount{}
+	for _, bizID := range handler.BizIDs {
+		result = append(result, target.HandlerAccount{
+			Key: "id:" + bizID, UserID: bizID, Name: "测试处理人", Account: strings.TrimSpace(f.handlerAccount),
+		})
+	}
+	return result, nil
+}
+
+// ListTaskSnapshotsForUser 按视角用户返回本节点当前待办快照；
+// 专用假件可覆盖本方法以表达各自的会话语义（例如按 SID 返回不同任务身份）。
+func (f *fakeTarget) ListTaskSnapshotsForUser(_ context.Context, _ target.Session, _, status, queryUserID string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) != "pending" || strings.TrimSpace(queryUserID) != f.currentHandlerUserID() {
+		return nil, nil
+	}
+	if strings.TrimSpace(f.dueTaskID) == "" {
+		return nil, nil
+	}
+	return []target.TaskSnapshot{{
+		JobTaskID: f.dueTaskID, FlowNodeProxyID: f.viewerTaskNodeID(), FlowProxyID: "flow-proxy-1",
+	}}, nil
 }
 
 func (f *fakeTarget) FindDueTaskID(_ context.Context, _ target.Session, _ string, nodeProxyID string) (string, error) {
