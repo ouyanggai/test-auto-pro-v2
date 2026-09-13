@@ -226,3 +226,15 @@ F-034 将“路径”和“复制”相关入口统一为可扫读的行式布�
    经 git stash 在改动前工作树复现，与本切片无关。
 
 不包含项均未触碰：未改目标接口/节点拓扑/人员规则/F-026/F-033 状态机，未新增表或迁移。
+
+## 评审整改记录（2026-09-13，7 项阻塞问题全部修复）
+
+1. 候选排序改为「本路径未使用动作优先（跨安全等级）」，未使用前置后再按等级/稳定键/种子轮转。
+2. 目标 `isSkip` 与审批类型传入执行器（FlowGraphNode/NodeInfo 新增 IsSkip）：isSkip=true 且待办越过→跳过；
+   未声明/false 且越过→发送前阻塞；run_node_choose 越过→阻塞。三场景无写入测试锁定。
+3. 一键配置失败语义拆分：候选级失败只作诊断，只有业务节点没有任何可用动作才返回失败，
+   消除「数据已保存但接口返回失败」的状态不一致。
+4. 动作人员策略在接受前走 `analyzer.EncodePathConfigPersonStrategy` 共享校验（策略范围/人数边界/令牌）。
+5. `validateActionState`/`validateNodeOrder` 接入 `scenario.Compile` 主流程；「未关注就取消关注」升级为阻断。
+6. 分支解析失败不再回落第一条分支：图边可用时解析失败直接阻塞；BuildRequest 无写入测试覆盖三个动作。
+7. RunStepDTO/RunNodePlanActionDTO 补充稳定动作键 `action`；前端所有动作名渲染统一走 actionLabel 集中映射。
