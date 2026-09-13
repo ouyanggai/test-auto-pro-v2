@@ -238,3 +238,14 @@ F-034 将“路径”和“复制”相关入口统一为可扫读的行式布�
 5. `validateActionState`/`validateNodeOrder` 接入 `scenario.Compile` 主流程；「未关注就取消关注」升级为阻断。
 6. 分支解析失败不再回落第一条分支：图边可用时解析失败直接阻塞；BuildRequest 无写入测试覆盖三个动作。
 7. RunStepDTO/RunNodePlanActionDTO 补充稳定动作键 `action`；前端所有动作名渲染统一走 actionLabel 集中映射。
+
+## 第二轮评审整改记录（2026-09-13，3 项阻塞问题全部修复）
+
+1. 手动分支已有保存选择时只沿该选择继续；选中路径走不到下一业务节点时直接阻塞，
+   不再遍历其他出边改走未选分支（条件分支等非手动节点仍可遍历）。
+   定向测试 TestF034SelectedManualBranchNeverSwitchesToOtherBranches 锁定。
+2. 一键配置人员策略与动作补齐拆分：节点人员策略先暂存 pendingPersons，只有动作候选被接受
+   （或节点已有额外动作）才并入整体写入；没有安全动作的节点不写入本次自动生成的人员策略。
+3. 传输层 inspectEnvelope 提取目标包络 message/code 安全摘要写入 network.log（单行/截断/不含正文），
+   详情请求行 resultSummary 直接展示目标原文；TestInspectEnvelopeExtractsMessageAndCode 与
+   TestRequestSummaryCarriesTargetMessage 锁定「手动条件分支,请选择」端到端摘要。
