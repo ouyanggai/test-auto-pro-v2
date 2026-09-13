@@ -758,8 +758,6 @@ func TestAutoCandidatePersonValidationLockedWhenMinCountExceedsCatalog(t *testin
 	}
 }
 
-
-
 // TestAutoExtraCandidatesRejectedReasonsEnablePersonHoldback 锁定评审 #2 的提交边界前提：
 // 无安全候选的节点能被识别（候选为空且带淘汰原因），一键配置据此跳过该节点的人员提交；
 // 有候选的节点才可能落动作与人员。这里锁定识别行为本身，提交边界由实现中的
@@ -834,7 +832,7 @@ func TestAutoConfigureRejectsCountersignPersonShortageEndToEnd(t *testing.T) {
 	// 会签节点：最少 3 人，但目标只返回 2 个候选。
 	tree := &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
 		ID: "review", Type: "common", AuditConfig: &target.FlowNodeAuditConfig{
-			AuditType: "company", Mode: "countersign", CountersignNum: func() *int { v := 3; return &v }(),
+			AuditType: "run_node_choose", Mode: "countersign", CountersignNum: func() *int { v := 3; return &v }(),
 			Candidates: []target.FlowAuditCandidate{{ID: "user-a", Name: "用户 A"}, {ID: "user-b", Name: "用户 B"}},
 		},
 		Child: &target.FlowNodeTemplate{ID: "end", Type: "end"},
@@ -846,15 +844,10 @@ func TestAutoConfigureRejectsCountersignPersonShortageEndToEnd(t *testing.T) {
 	config.SetHistoryWorkspaceStores(store, store)
 	err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID)
 	if err == nil {
-		// 若投影把人数不足标为 Affected 而由既有防护跳过，同样不允许写入不完整策略；
-		// 但评审要求必须有明确报告，这里两条路径都必须给出包含节点的错误。
-		if store.writes != 0 || !strings.Contains(string(store.record.PersonStrategies), "review") {
-			t.Log("人数不足由 Affected 防护拦截，未写入策略")
-		}
-		return
+		t.Fatal("人数不足时必须返回包含节点和人数原因的明确错误")
 	}
-	if !strings.Contains(err.Error(), "人数") || !strings.Contains(err.Error(), "会签处理人") {
-		t.Fatalf("错误应包含节点人员策略与人数不足原因：%v", err)
+	if !strings.Contains(err.Error(), "审批") || !strings.Contains(err.Error(), "至少需要选择 3 名") {
+		t.Fatalf("错误应包含节点名称、人员策略与人数不足原因：%v", err)
 	}
 	if store.writes != 0 || strings.Contains(string(store.record.PersonStrategies), "review") {
 		t.Fatalf("不完整人员策略不得落库：writes=%d strategies=%s", store.writes, store.record.PersonStrategies)

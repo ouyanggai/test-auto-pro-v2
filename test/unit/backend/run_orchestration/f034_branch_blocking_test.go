@@ -6,8 +6,8 @@ import (
 
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/engine/verdict"
-	"test-auto-pro-v2/internal/service"
 	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/service"
 )
 
 // F-034 T01/T04：复现路径 4217（路径 8）的手动分支缺陷——分支已保存但入口是空节点，
@@ -141,6 +141,44 @@ func TestF034LastAttemptPreRejected(t *testing.T) {
 	}
 	if service.LastAttemptWasPreRejectedForTest(nil) {
 		t.Fatal("没有尝试记录时不应判为阻塞")
+	}
+}
+
+// TestF034PreRejectedStepUsesPersistedOrder 锁定跨步骤尝试的最后记录判定：
+// AttemptNo 是单步编号，不能拿第 1 步的第 3 次尝试覆盖第 3 步的第 1 次阻塞。
+func TestF034PreRejectedStepUsesPersistedOrder(t *testing.T) {
+	attempts := []model.RunStepAttempt{
+		{ID: 11, StepID: 1, AttemptNo: 1, Initial: "unexplained"},
+		{ID: 12, StepID: 1, AttemptNo: 3, Initial: "unexplained"},
+		{ID: 13, StepID: 3, AttemptNo: 1, Initial: "pre_rejected"},
+	}
+	if !service.LastAttemptWasPreRejectedForTest(attempts) {
+		t.Fatal("落账最后一条为 pre_rejected 时应判为阻塞")
+	}
+	if got := service.LastPreRejectedStepNoForTest(attempts); got != 3 {
+		t.Fatalf("应定位到第 3 步，实际是第 %d 步", got)
+	}
+
+	attempts = append(attempts, model.RunStepAttempt{ID: 14, StepID: 4, AttemptNo: 1, Initial: "unexplained"})
+	if service.LastAttemptWasPreRejectedForTest(attempts) {
+		t.Fatal("最后一条不是 pre_rejected 时不应判为阻塞")
+	}
+	if got := service.LastPreRejectedStepNoForTest(attempts); got != 3 {
+		t.Fatalf("最后一次前置拒绝仍应定位到第 3 步，实际是第 %d 步", got)
+	}
+}
+
+// TestF034StepDTOCarriesStableActionKey 锁定已落账步骤同时返回稳定动作键与中文名称，
+// 使历史动作名称缺失时前端仍可通过 action 键显示中文。
+func TestF034StepDTOCarriesStableActionKey(t *testing.T) {
+	dtos := service.BuildStepDTOsForTest([]model.RunStep{{
+		ID: 1, StepNo: 1, Action: "approve", NodeKey: "node-1", Status: model.RunStepSucceeded,
+	}}, nil)
+	if len(dtos) != 1 {
+		t.Fatalf("应返回 1 条步骤事实，实际 %d 条", len(dtos))
+	}
+	if dtos[0].Action != "approve" || dtos[0].ActionName != "同意" {
+		t.Fatalf("步骤 DTO 应同时返回 action=approve 与中文名称同意：%+v", dtos[0])
 	}
 }
 

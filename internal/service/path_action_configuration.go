@@ -1155,6 +1155,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			// 额外动作（或本来已有额外动作）才并入整体写入；没有安全动作的节点不写入
 			// 本次自动生成的人员策略，避免“配置失败但人员数据已改变”的半成品状态。
 			pendingPersons := map[string]model.PathConfigPersonStrategyInput{}
+			personBlocked := false
 			for _, person := range node.Persons {
 				if !person.Editable {
 					continue
@@ -1164,10 +1165,24 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 					continue
 				}
 				if person.Affected {
-					// 候选数量或目录状态已不满足模板约束时保留阻塞事实，不写入一份必然失效的随机策略。
+					// 有候选但当前策略已不满足模板约束（例如会签人数不足）必须明确阻塞；
+					// 只有“目标配置为空且本身不可编辑”的节点才走上面的正常跳过路径。
+					reason := strings.TrimSpace(person.Note)
+					if reason == "" {
+						reason = strings.TrimSpace(person.Detail)
+					}
+					if reason == "" {
+						reason = "当前人员候选或人数约束不满足"
+					}
+					blockingRejections = append(blockingRejections, "节点 "+node.Name+" 人员策略「"+person.Title+"」无法安全配置（"+reason+"）")
+					personBlocked = true
+					// 不写入一份必然失效的随机策略，也不为该节点补动作。
 					continue
 				}
 				pendingPersons[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
+			}
+			if personBlocked {
+				continue
 			}
 			// F-034 评审 #1：提交前对本节点每个自动生成的人员策略做统一校验——
 			// 策略类型、空策略、最少/最多人数与人员来源（候选范围）必须全部通过；

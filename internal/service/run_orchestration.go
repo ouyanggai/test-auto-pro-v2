@@ -197,8 +197,8 @@ type RunStepDTO struct {
 	StepNo     int    `json:"stepNo"`
 	ActionName string `json:"actionName"`
 	// Action 是稳定动作键（F-034 评审）：前端据此走集中中文映射，不从中文名反推动作类型。
-	Action string `json:"action,omitempty"`
-	NodeKey    string `json:"nodeKey"`
+	Action  string `json:"action,omitempty"`
+	NodeKey string `json:"nodeKey"`
 	// ReleaseGroup/ReleaseRequired 标明本步在动作组中的位置；执行事实本身不带动作组。
 	ReleaseGroup    string `json:"releaseGroup,omitempty"`
 	ReleaseRequired bool   `json:"releaseRequired,omitempty"`
@@ -231,14 +231,14 @@ type RunNodePlanActionDTO struct {
 	ReleaseRequired bool   `json:"releaseRequired,omitempty"`
 	ActionName      string `json:"actionName"`
 	// Action 是稳定动作键（F-034 评审）：前端据此走集中中文映射，不从中文名反推动作类型。
-	Action string `json:"action,omitempty"`
-	SourceName      string `json:"sourceName"`
-	ScopeName       string `json:"scopeName"`
-	Precondition    string `json:"precondition,omitempty"`
-	ExpectedEffect  string `json:"expectedEffect,omitempty"`
-	StopOnFailure   string `json:"stopOnFailure,omitempty"`
-	RecoveryPolicy  string `json:"recoveryPolicy,omitempty"`
-	ReloadRequired  bool   `json:"reloadRequired"`
+	Action         string `json:"action,omitempty"`
+	SourceName     string `json:"sourceName"`
+	ScopeName      string `json:"scopeName"`
+	Precondition   string `json:"precondition,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	StopOnFailure  string `json:"stopOnFailure,omitempty"`
+	RecoveryPolicy string `json:"recoveryPolicy,omitempty"`
+	ReloadRequired bool   `json:"reloadRequired"`
 	// ParameterCount 只给动作参数的项数：参数键是目标字段名，属内部标识，不上界面。
 	ParameterCount int `json:"parameterCount"`
 }
@@ -258,21 +258,21 @@ type PathRunDetailDTO struct {
 	RunConcurrencyLabel string              `json:"runConcurrencyLabel,omitempty"`
 	Paths               []RunPathSummaryDTO `json:"paths"`
 	// Result 与 FinalTarget 是两件分开的事：路径结果只看步骤事实，最终目标事实如实描述目标现状。
-	ResultName       string          `json:"resultName,omitempty"`
-	FailureClassName string          `json:"failureClassName,omitempty"`
+	ResultName       string `json:"resultName,omitempty"`
+	FailureClassName string `json:"failureClassName,omitempty"`
 	// StopKind 是停止语义投影（F-034 T04）：blocked=目标在写入前明确拒绝（前置条件未满足，如手动分支
 	// 未选择、未设置审批人），由后端按受控拒绝清单（尝试初判 pre_rejected）稳定派生；
 	// 失败/结果待确认等其他语义不使用该字段，前端不得用错误文案猜测。
-	StopKind    string          `json:"stopKind,omitempty"`
-	StopKindNote string         `json:"stopKindNote,omitempty"`
+	StopKind     string `json:"stopKind,omitempty"`
+	StopKindNote string `json:"stopKindNote,omitempty"`
 	// StopStepNo 是触发本次阻塞/停止的步骤号（F-034 评审 #2）：前端只在展示该步骤详情时
 	// 使用路径级阻塞信息，其他步骤用自身的执行状态，防止把第 3 步的阻塞显示到第 1 步。
-	StopStepNo int `json:"stopStepNo,omitempty"`
+	StopStepNo  int             `json:"stopStepNo,omitempty"`
 	FinalTarget json.RawMessage `json:"finalTarget,omitempty"`
-	PlanID           uint64          `json:"planId"`
-	PlanName         string          `json:"planName"`
-	PathID           uint64          `json:"pathId"`
-	PathName         string          `json:"pathName"`
+	PlanID      uint64          `json:"planId"`
+	PlanName    string          `json:"planName"`
+	PathID      uint64          `json:"pathId"`
+	PathName    string          `json:"pathName"`
 	// LogDir 是这次运行的路径运行日志目录（相对日志根），从页面身份（runId/pathRunId）直接算出，
 	// 用户不必遍历全盘或按时间猜目录。
 	LogDir string `json:"logDir,omitempty"`
@@ -970,37 +970,27 @@ func (s *RunOrchestrationService) RunDetailByRunAndPathRun(ctx context.Context, 
 // 实例名称从该目录的 meta.json 读取。历史运行（F-031 之前）的日志在旧目录里，
 // 按已落账的 step.log 相对路径回查它的 meta.json；两处都读不到名称时如实标记「实例名称不可用」，
 // 绝不用计划名、路径名或候选处理人名称补造。
-// lastPreRejectedStepNo 返回最后一次前置拒绝尝试所属的步骤号；没有记录时返回 0。
+// lastPreRejectedStepNo 返回按落账顺序最后一次前置拒绝尝试所属的步骤号；没有记录时返回 0。
 func lastPreRejectedStepNo(attempts []model.RunStepAttempt) int {
-	last, lastAttemptNo, stepNo := -1, -1, 0
-	for index, attempt := range attempts {
-		if attempt.AttemptNo >= lastAttemptNo {
-			lastAttemptNo, last = attempt.AttemptNo, index
+	// ListRunAttempts 按 run_step_attempts.id ASC 返回；AttemptNo 只在单个步骤内递增，
+	// 不能跨步骤比较，否则前一步的第 3 次尝试会错误覆盖后一步的第 1 次阻塞。
+	for index := len(attempts) - 1; index >= 0; index-- {
+		if attempts[index].Initial == "pre_rejected" {
+			return int(attempts[index].StepID)
 		}
 	}
-	if last < 0 {
-		return 0
-	}
-	stepNo = int(attempts[last].StepID)
-	return stepNo
+	return 0
 }
 
 // lastAttemptWasPreRejected 判断该路径运行的最后一次尝试是否命中前置拒绝初判（F-034 T04）。
 // pre_rejected 表示目标在任何写之前明确拒绝（如手动分支未选择、未设置审批人），可安全投影为阻塞；
 // 没有任何尝试记录或初判为空时返回 false，不凭失败分类猜测。
 func lastAttemptWasPreRejected(attempts []model.RunStepAttempt) bool {
-	last := -1
-	lastAttemptNo := -1
-	for index, attempt := range attempts {
-		if attempt.AttemptNo >= lastAttemptNo {
-			lastAttemptNo = attempt.AttemptNo
-			last = index
-		}
-	}
-	if last < 0 {
+	if len(attempts) == 0 {
 		return false
 	}
-	return attempts[last].Initial == "pre_rejected"
+	// 尝试列表按落账主键升序排列；最后一条才是路径的最后一次尝试。
+	return attempts[len(attempts)-1].Initial == "pre_rejected"
 }
 
 // fillRunLogLocation 填充运行日志目录与实例身份。
@@ -1313,6 +1303,7 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 		dto := RunStepDTO{
 			StepNo:       stepRecord.StepNo,
 			ActionName:   actionNameOf(stepRecord.Action),
+			Action:       stepRecord.Action,
 			NodeKey:      stepRecord.NodeKey,
 			NodeID:       tokenToGraphID[stepRecord.NodeKey],
 			ActorName:    stepRecord.ActorSummary,
@@ -1776,6 +1767,11 @@ func BuildNodePlansForTest(compiledSteps []model.CompiledActionStep, tokenToGrap
 	return buildNodePlans(compiledSteps, tokenToGraphID)
 }
 
+// BuildStepDTOsForTest 暴露步骤事实映射，供 test 目录锁定稳定动作键与中文名称同时返回。
+func BuildStepDTOsForTest(steps []model.RunStep, attempts []model.RunStepAttempt) []RunStepDTO {
+	return buildStepDTOs(steps, attempts, nil, nil, nil, nil, nil)
+}
+
 // BuildNodeStatesForTest 暴露画布节点运行态推导，供 test 目录下的定向用例锁定「等待运行」语义。
 func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
 	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys)
@@ -1794,4 +1790,9 @@ func ParsePhaseTimingsForTest(rd io.Reader) map[string]map[string]int64 {
 // LastAttemptWasPreRejectedForTest 暴露阻塞投影判据，供 test 目录锁定 F-034 行为。
 func LastAttemptWasPreRejectedForTest(attempts []model.RunStepAttempt) bool {
 	return lastAttemptWasPreRejected(attempts)
+}
+
+// LastPreRejectedStepNoForTest 暴露最后一次前置拒绝的步骤定位，供 test 目录锁定跨步骤尝试顺序。
+func LastPreRejectedStepNoForTest(attempts []model.RunStepAttempt) int {
+	return lastPreRejectedStepNo(attempts)
 }
