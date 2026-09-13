@@ -119,6 +119,35 @@ deployment=<该结论对应的目标平台部署版本，未取得就写「未�
 
 - 模板约束「无处理人时跳过该节点」真实生效：节点的人员规则（如扩展属性「总建部分管领导」）在当前实例上下文解析为空时，目标不创建该节点任务、实例直接前进到更靠后的节点（运行 71/72 第 6 步实测：手动分支1被跳过，待办直接落在审核人2）。
 - 工具的适配：仅当「实例待办节点在已配置路径上严格位于本步之后」这一可证明事实成立时，把该步记录为「已跳过」（`run_steps.status=skipped`，无写请求）并推进；待办仍在当前或更早节点时不构成跳过，按门禁失败处理。
+- 该跳过规则不是“所有空人员都跳过”：参考后端 `FlowOperateServiceImpl.recursionGetNextNodeProxy*` 在人员解析为空时只有 `getNodeSkip()==true` 才递归后继，否则返回当前节点；`FlowParallelServiceImpl` 同样以 `getIsSkip()` 作为条件。参考后端还单独对 `run_node_choose` 调用 `validateNodeRunNodeChooseIsExistPersonnel`，缺少匹配 `nextAuditorList[].nodeProxyId` 时抛出“未设置审批人”，不受普通 `isSkip` 跳过逻辑替代。
+- 手动分支入口的匹配只比较 `nextAuditorList[].nodeProxyId` 与分支节点 ID；入口即使是 `empty` 节点也必须携带该 ID，之后目标再递归穿过空节点。工具不能因为入口没有人员就删除该条选择，也不能伪造 `bizId`。
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowOperateServiceImpl.java
+line=703
+contains=if ((result.getType() == FlowNodeType.empty))
+strength=源码可证明
+head=rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
+```
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowOperateServiceImpl.java
+line=721
+contains=if (!result.getNodeSkip())
+strength=源码可证明
+head=rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
+```
+
+```evidence
+file=参考代码/java-serve/rsh-cloud-workflow-center/src/main/java/com/rsh/cloud/workflow/center/service/impl/FlowOperateServiceImpl.java
+line=1105
+contains=validateNodeRunNodeChooseIsExistPersonnel
+strength=源码可证明
+head=rsh-cloud-workflow-center@37c01d04eb10
+deployment=未取得（目标平台不提供版本接口）
+```
 
 ## 1. 错误语义
 
@@ -416,6 +445,7 @@ deployment=未取得（目标平台不提供版本接口）
 | `/web/flowInstanceApi/retrieveProcess` | `当前已办任务, 不支持取回` | `:776` | 同上，注意文案中逗号后有一个空格 |
 | `/web/flowInstanceApi/retrieveProcess` | `当前环节不支持取回` | `:782` | 同上 |
 | `/flowInstanceApi/audit` | `该待办记录不存在` | 中心 `FlowAuditServiceImpl:122` | 在 `audit` 方法首段、写 Mongo 之前返回 |
+| `/flowInstanceApi/audit` | `手动条件分支,请选择` | `FlowOperateServiceImpl.validateHandBranchAndReturnExecuteNode`；2026-09-13 运行 95 路径 8 第 3 步 | 缺少 `nextAuditorList[].nodeProxyId` 中的所选手动分支入口；目标以 `errorType=custom_choose` 明确拒绝，属于确定的前置阻塞 |
 | 全部带 `@FlowSubmitVerify` 的端点 | `未发现实例` | `FlowSubmitVerifyBaseController:52` | 依赖动态注册状态；旧部署上同场景抛 `IllegalArgumentException`，会变成不可解释失败 |
 
 ```evidence
@@ -707,6 +737,15 @@ deployment=2026-09-05 真实提交实测（计划 11 路径 1121，运行 6 拒�
 - `fixedExecuteNodeId` 的并行条件分支行为（本切片未触发并行分支）。
 - 受理后实例在已发列表的可见性延迟：2026-09-05 实测受理成功后即时重读已发列表为空
   （成功声明 + 明确未变 → 按矩阵判不确定 → 待对账），实例可见性与异步落库时序待人工在目标平台核对。
+
+### 15.1 F-034 路径 8 复现补充
+
+2026-09-13 运行 95 的“欧阳改测试1005/路径 8”（`path_run_id=123`）已在工具数据库保存手动路由
+`b037ae8937574810a458c44d06eb9237 -> 2c26ec387e2f46fca04886d22fc1271e`，真实图边对应入口
+`8b676f8c25b34fd2b7e54f94a59f2e3c`（空节点）。第 3 步审批请求的 `nextAuditorList` 只有后续条件节点，
+没有该入口；目标返回 HTTP 200、`isSuccess=false`、`errorType=custom_choose` 和
+`手动条件分支,请选择`，实例仍停在发起人待办。该事实证明路径解析已保存选择，缺陷在运行时跨空/导航节点绑定，
+并且工具当前将清单外拒绝落成 `uncertain`，需要 F-034 修正为发送前阻塞/目标确定拒绝。
 
 ## 16. 表单数据的保存语义（整份覆盖）
 
