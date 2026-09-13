@@ -207,16 +207,12 @@ func TestResolveActionPersonIDsMapsOpaqueSelection(t *testing.T) {
 func TestSaveInstanceActionsUsesDedicatedContainer(t *testing.T) {
 	config, plan, path := newCatalogProjectionService(t, 823, 833)
 	instanceKey := analyzer.PathConfigInstanceActionKey()
-	savedUnfollow, unfollowErr := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, instanceKey, "123e4567-e89b-12d3-a456-426614174831", model.ActionConfigurationInput{
+	// F-034 评审修正：状态顺序校验接入编译主流程后，未关注就取消关注必须被阻断（不再降级为提醒）。
+	_, unfollowErr := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, instanceKey, "123e4567-e89b-12d3-a456-426614174831", model.ActionConfigurationInput{
 		Actions: []model.ConfiguredAction{{Key: "unfollow-1", Action: model.ActionUnfollow, Scope: model.ActionScopeInstance, Order: 1}},
 	})
 	if unfollowErr == nil {
-	} else {
-		t.Fatalf("取消关注动作保存失败：%v", unfollowErr)
-	}
-	if len(savedUnfollow.Issues) > 0 && savedUnfollow.Issues[0].Blocking == false && strings.Contains(savedUnfollow.Issues[0].Message, "关注") {
-	} else {
-		t.Fatalf("取消关注运行时顺序变化应形成非阻断提醒：%+v", savedUnfollow.Issues)
+		t.Fatal("未关注就取消关注应被阻断")
 	}
 	_, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, instanceKey, "123e4567-e89b-12d3-a456-426614174832", model.ActionConfigurationInput{
 		Actions: []model.ConfiguredAction{{Key: "approve-1", Action: model.ActionApprove, Scope: model.ActionScopeTask, Order: 1}},

@@ -30,32 +30,33 @@ func resolveBranchEntriesForTransition(currentTargetID, nextBusinessTargetID str
 		return nil, ""
 	}
 	visited := map[string]bool{}
-	found, entries, blockReason, pathKnown := walkBranchPath(currentTargetID, nextBusinessTargetID, runCtx, visited, nil)
+	found, entries, blockReason := walkBranchPath(currentTargetID, nextBusinessTargetID, runCtx, visited, nil)
 	if !found {
 		if blockReason != "" {
 			return nil, blockReason
 		}
-		if pathKnown {
+		// 图边可用但走不到目标：说明本次流转与路径选择不一致，必须阻塞，不能猜路径。
+		if len(runCtx.GraphEdges) > 0 {
 			return nil, fmt.Sprintf("当前路径没有找到从“分支”到下一节点的入口，请重新选择路径（%s → %s）", currentTargetID, nextBusinessTargetID)
 		}
-		// 图结构不完整（节点表缺边）时保持旧解析器行为：返回空让既有门禁裁决，不虚构阻塞。
+		// 图结构完全不完整（运行上下文没有边表，旧数据）时保持空结果由既有门禁裁决，不虚构阻塞。
 		return nil, ""
 	}
 	return entries, ""
 }
 
 // walkBranchPath 深度优先沿已选分支走图：找到目标返回穿越的手动分支入口；结果按路径稳定。
-func walkBranchPath(nodeID, target string, runCtx RunContext, visited map[string]bool, entries []string) (bool, []string, string, bool) {
+func walkBranchPath(nodeID, target string, runCtx RunContext, visited map[string]bool, entries []string) (bool, []string, string) {
 	if nodeID == target {
-		return true, entries, "", true
+		return true, entries, ""
 	}
 	if visited[nodeID] {
-		return false, nil, "", false
+		return false, nil, ""
 	}
 	visited[nodeID] = true
 	edges, exists := runCtx.GraphEdges[nodeID]
 	if !exists || len(edges) == 0 {
-		return false, nil, "", false
+		return false, nil, ""
 	}
 	// 分支路由节点：有选择沿选择走；手动分支入口必须携带，无选择直接阻塞。
 	if selection, ok := runCtx.BranchSelections[nodeID]; ok {
@@ -63,28 +64,28 @@ func walkBranchPath(nodeID, target string, runCtx RunContext, visited map[string
 		if strings.EqualFold(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]), "manual") {
 			nextEntries = append(append([]string(nil), entries...), selection)
 		}
-		found, result, blockReason, pathKnown := walkBranchPath(selection, target, runCtx, visited, nextEntries)
-		if found || blockReason != "" || pathKnown {
-			return found, result, blockReason, pathKnown
+		found, result, nestedBlock := walkBranchPath(selection, target, runCtx, visited, nextEntries)
+		if found || nestedBlock != "" {
+			return found, result, nestedBlock
 		}
 		return walkAllEdges(nodeID, target, runCtx, visited, entries, edges)
 	}
 	// 手动分支节点没有选择：目标无法确定实际走向，必须阻塞。
 	if strings.EqualFold(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]), "manual") {
-		return false, nil, "当前路径没有找到从“分支”选择的入口，请重新选择路径", true
+		return false, nil, "当前路径没有找到从“分支”选择的入口，请重新选择路径"
 	}
 	return walkAllEdges(nodeID, target, runCtx, visited, entries, edges)
 }
 
 // walkAllEdges 依次尝试节点全部出边，返回第一条能到达目标的路径结果。
-func walkAllEdges(nodeID, target string, runCtx RunContext, visited map[string]bool, entries []string, edges []GraphEdgeInfo) (bool, []string, string, bool) {
+func walkAllEdges(nodeID, target string, runCtx RunContext, visited map[string]bool, entries []string, edges []GraphEdgeInfo) (bool, []string, string) {
 	for _, edge := range edges {
-		found, result, blockReason, pathKnown := walkBranchPath(edge.Target, target, runCtx, visited, entries)
-		if found || blockReason != "" || pathKnown {
-			return found, result, blockReason, pathKnown
+		found, result, nestedBlock := walkBranchPath(edge.Target, target, runCtx, visited, entries)
+		if found || nestedBlock != "" {
+			return found, result, nestedBlock
 		}
 	}
-	return false, nil, "", false
+	return false, nil, ""
 }
 
 // branchEntriesForStep 返回本步流转需要携带的手动分支入口；阻塞时返回原因供写前门禁拦截。

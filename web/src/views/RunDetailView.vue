@@ -24,6 +24,7 @@ import { fetchRunEvents, type RunEventItem } from '../features/runs/api'
 import { analyzeExecutionPath } from '../features/execution-paths/logic'
 import { pathConfigNodeKey } from '../features/path-configuration/logic'
 import RunNodePanel from '../features/runs/RunNodePanel.vue'
+import { actionLabel } from '../features/runs/presentation'
 
 // RunDetailView 是路径运行详情：运行画布为主体，顶部固定条控制放行与停止。
 // 放行会发出真实写请求：只接受明确点击，不绑定单键快捷键。
@@ -191,7 +192,7 @@ function forcedBreakpointNote(type: string): string {
 function breakpointTargetText(bp: { type: string, nodeName?: string, stepNo?: number, action?: string }): string {
   if (bp.type === 'node') return bp.nodeName ? `节点：${bp.nodeName}` : '节点：未指定'
   if (bp.type === 'step') return bp.stepNo ? `第 ${bp.stepNo} 步` : '步骤：未指定'
-  if (bp.type === 'action') return bp.action ? `动作：${actionLabel(bp.action)}` : '动作：未指定'
+  if (bp.type === 'action') return bp.action ? `动作：${breakpointActionLabel(bp.action)}` : '动作：未指定'
   return ''
 }
 
@@ -221,8 +222,8 @@ const breakpointTypeHint = computed(() => {
   return '挂在动作类型上：本次运行里每次要执行该动作前都停下'
 })
 
-// actionLabel 把动作键转成中文；未登记的键原样显示，不猜。
-function actionLabel(action: string): string {
+// breakpointActionLabel 把断点下拉里的动作键转成中文；未登记的键原样显示，不猜。
+function breakpointActionLabel(action: string): string {
   return actionBreakpointOptions.find(option => option.value === action)?.label ?? action
 }
 
@@ -335,7 +336,7 @@ const runStepNotes = computed<Record<string, string>>(() => {
     if (!nodeID) continue
     const seconds = step.durationMs >= 1000 ? `${Math.round(step.durationMs / 1000)}秒` : `${step.durationMs}毫秒`
     const actor = step.actorName ? `· ${step.actorName}` : ''
-    notes[nodeID] = `第 ${step.stepNo} 步 ${step.actionName} ${actor} · ${seconds}`.replace(/\s+/g, ' ').trim()
+    notes[nodeID] = `第 ${step.stepNo} 步 ${actionLabel(step.actionName, step.action)} ${actor} · ${seconds}`.replace(/\s+/g, ' ').trim()
   }
   return notes
 })

@@ -1021,21 +1021,26 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 			}
 			return nil, rejections
 		}
-		// 排序：安全等级优先；同等级内先按稳定键排，再按种子偏移轮转；
-		// 最后把本路径尚未使用的动作稳定前置。不用全局随机数，重试可复现。
+		// 排序（F-034 评审修正）：本路径尚未使用的动作优先（跨安全等级），
+		// 同为未使用/已使用时再按安全等级与稳定键排，最后按种子在同优先级内轮转；
+		// 不用全局随机数，重试可复现。
 		sort.SliceStable(available, func(left, right int) bool {
+			leftUsed, rightUsed := used[available[left].Kind], used[available[right].Kind]
+			if leftUsed != rightUsed {
+				return !leftUsed
+			}
 			leftRank, rightRank := autoExtraActionRanks[model.ActionKey(available[left].Kind)], autoExtraActionRanks[model.ActionKey(available[right].Kind)]
 			if leftRank != rightRank {
 				return leftRank < rightRank
 			}
 			return available[left].Kind < available[right].Kind
 		})
-		// 种子偏移只在同一安全等级内部进行：先按等级分组，再组内轮转，最后拼接。
+		// 种子偏移只在同一优先级（未使用+等级相同的连续段）内部进行，不破坏前面的全局次序。
 		rotated := make([]model.PathConfigActionCatalogItem, 0, len(available))
 		for start := 0; start < len(available); {
 			end := start + 1
-			rank := autoExtraActionRanks[model.ActionKey(available[start].Kind)]
-			for end < len(available) && autoExtraActionRanks[model.ActionKey(available[end].Kind)] == rank {
+			usedKey, rank := used[available[start].Kind], autoExtraActionRanks[model.ActionKey(available[start].Kind)]
+			for end < len(available) && used[available[end].Kind] == usedKey && autoExtraActionRanks[model.ActionKey(available[end].Kind)] == rank {
 				end++
 			}
 			group := available[start:end]
@@ -1045,17 +1050,6 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 			}
 			start = end
 		}
-		sort.SliceStable(rotated, func(left, right int) bool {
-			leftRank, rightRank := autoExtraActionRanks[model.ActionKey(rotated[left].Kind)], autoExtraActionRanks[model.ActionKey(rotated[right].Kind)]
-			if leftRank != rightRank {
-				return leftRank < rightRank
-			}
-			leftUsed, rightUsed := used[rotated[left].Kind], used[rotated[right].Kind]
-			if leftUsed != rightUsed {
-				return !leftUsed
-			}
-			return false
-		})
 		candidates := make([]autoExtraCandidate, 0, len(rotated))
 		for _, item := range rotated {
 			kind := model.ActionKey(item.Kind)
@@ -1074,6 +1068,7 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 					rejections = append(rejections, item.Label+"：动作专属候选为空，不能用空人员凑数")
 					continue
 				}
+				// 完整策略/人数校验在接受循环进行（需要验证层的人员目标目录，见 validateAutoCandidatePerson）。
 				person := strategy
 				candidate.person = &person
 			}
@@ -1146,7 +1141,10 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	changed := clearedFixedTail
 	confirmedNodes := make([]string, 0, 8)
 	autoConfiguredNodes := make([]string, 0, 8)
-	autoRejections := make([]string, 0, 8)
+	// F-034 评审修正：候选级失败只是诊断信息；只有业务节点没有任何可用动作才构成阻塞失败，
+	// 避免“数据已保存但接口返回失败”的状态不一致。
+	diagnostics := make([]string, 0, 8)
+	blockingRejections := make([]string, 0, 8)
 	for _, group := range configuration.Groups {
 		for gi := range group.Nodes {
 			node := &group.Nodes[gi]
@@ -1179,10 +1177,14 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				continue
 			}
 			candidates, rejections := autoExtraActionCandidates(*node, autoConfigureSeed(planID, pathID, node.Key), usedInPath(actions))
-			autoRejections = append(autoRejections, rejections...)
+			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
+			diagnostics = append(diagnostics, rejections...)
 			if len(candidates) == 0 {
-				// 系统节点没有候选是正常情况；业务节点没有候选时原因已在 rejections 里，不假装已配置。
-				if personChanged && isConfigurableBusinessNode(node.Kind) {
+				// 系统节点没有候选是正常情况；业务节点没有候选时不假装已配置，原因升级为阻塞。
+				if isConfigurableBusinessNode(node.Kind) {
+					blockingRejections = append(blockingRejections, "节点 "+node.Name+" 未找到可安全配置的额外动作："+strings.Join(dedupStrings(rejections), "；"))
+				}
+				if personChanged {
 					confirmedNodes = append(confirmedNodes, node.Key)
 				}
 				continue
@@ -1191,13 +1193,19 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			// 编译不通过（恢复链不可生成、参数无法安全构造、目录禁用等）就换下一个并记录原因。
 			accepted := false
 			for _, candidate := range candidates {
+				// F-034 评审修正：候选接受前必须通过与手工保存相同的策略合法性、
+				// 最小/最大人数与人员令牌校验；人数不足或非法策略直接淘汰，不写入空/短人员集合。
+				if reason := validateAutoCandidatePerson(validation, node.Key, candidate); reason != "" {
+					diagnostics = append(diagnostics, node.Name+"·"+actionDisplayLabel(candidate.action.Action)+"：人员策略不合法（"+reason+"）")
+					continue
+				}
 				merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{candidate.action}, node.Key, analysis.graph, analysis.pathAnalysis)
 				if mergeErr != nil {
-					autoRejections = append(autoRejections, node.Name+"·"+actionDisplayLabel(candidate.action.Action)+"：场景合并被拒绝")
+					diagnostics = append(diagnostics, node.Name+"·"+actionDisplayLabel(candidate.action.Action)+"：场景合并被拒绝")
 					continue
 				}
 				if _, compileErr := compilePathActions(merged, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation)); compileErr != nil {
-					autoRejections = append(autoRejections, node.Name+"·"+actionDisplayLabel(candidate.action.Action)+"："+firstCompileIssueMessage(compileErr))
+					diagnostics = append(diagnostics, node.Name+"·"+actionDisplayLabel(candidate.action.Action)+"："+firstCompileIssueMessage(compileErr))
 					continue
 				}
 				actions = merged
@@ -1210,16 +1218,17 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				accepted = true
 				break
 			}
-			if !accepted && len(candidates) > 0 {
-				autoRejections = append(autoRejections, "节点 "+node.Name+" 未找到可安全配置的额外动作：全部候选场景编译未通过")
+			if !accepted {
+				// 该业务节点最终没有任何额外动作：属于必须让用户看到的失败，候选级失败原因一并附上。
+				blockingRejections = append(blockingRejections, "节点 "+node.Name+" 未找到可安全配置的额外动作："+strings.Join(dedupStrings(append([]string{diagnosticSummaryOfNode(node.Name, diagnostics)}, rejections...)), "；"))
 			}
 		}
 	}
-	// 淘汰原因只在真正需要报告时聚合：业务节点没有安全候选属于用户必须看到的事实。
+	// 只有业务节点没有任何可用动作才返回失败；候选级失败只是诊断，不改变整体成功语义。
 	var rejectionError error
-	if len(autoRejections) > 0 {
+	if len(blockingRejections) > 0 {
 		rejectionError = &PathConfigError{Kind: PathConfigErrorInvalid,
-			Message: strings.Join(dedupStrings(autoRejections), "；")}
+			Message: strings.Join(dedupStrings(blockingRejections), "；")}
 	}
 	if !changed {
 		// 部分节点无安全候选也要报告；写入没有变化时同样返回原因，不静默吞掉。
@@ -1233,6 +1242,35 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 		return err
 	}
 	return rejectionError
+}
+
+// validateAutoCandidatePerson 按当前验证层的人员目标目录复验动作私有人员策略（F-034 评审修正）：
+// 策略合法性、最小/最大人数与人员令牌必须与手工保存同一套规则（analyzer.EncodePathConfigPersonStrategy）；
+// 目录没有该动作的人员目标时返回淘汰原因，绝不复用节点主处理人键或写入空/短人员集合。
+func validateAutoCandidatePerson(validation analyzer.PathConfigValidation, nodeKey string, candidate autoExtraCandidate) string {
+	if candidate.person == nil {
+		return ""
+	}
+	nodeTarget, ok := validation.NodeTokens[strings.TrimSpace(nodeKey)]
+	if !ok {
+		return "当前节点没有人员候选目录"
+	}
+	personTarget := nodeTarget.ActionPersons[string(candidate.action.Action)]
+	if personTarget == nil {
+		return "当前动作没有动作专属人员候选目录"
+	}
+	_, reason := analyzer.EncodePathConfigPersonStrategy(*personTarget, *candidate.person)
+	return reason
+}
+
+// diagnosticSummaryOfNode 取该节点最新一条诊断文案；没有时返回空串，由 rejections 兜底。
+func diagnosticSummaryOfNode(nodeName string, diagnostics []string) string {
+	for index := len(diagnostics) - 1; index >= 0; index-- {
+		if strings.HasPrefix(diagnostics[index], nodeName+"·") {
+			return diagnostics[index]
+		}
+	}
+	return ""
 }
 
 // usedInPath 统计当前路径已保存动作键，供跨节点“未使用动作优先”排序。
@@ -1404,4 +1442,10 @@ func AutoExtraCandidatesForTest(planID, pathID uint64, node model.PathConfigNode
 // ConfirmedNodeKeysJSONForTest 暴露已确认节点编码，供 test 目录下的定向用例锁定行为。
 func ConfirmedNodeKeysJSONForTest(current []byte, actions []model.ConfiguredAction, extra ...string) ([]byte, error) {
 	return confirmedNodeKeysJSON(current, actions, extra...)
+}
+
+// ValidateAutoCandidatePersonForTest 暴露动作人员策略完整校验，供 test 目录锁定 F-034 评审 #4 行为：
+// 策略合法性、最小/最大人数与人员令牌必须通过 analyzer.EncodePathConfigPersonStrategy 校验。
+func ValidateAutoCandidatePersonForTest(validation analyzer.PathConfigValidation, nodeKey string, action model.ActionKey, person *model.PathConfigPersonStrategyInput) string {
+	return validateAutoCandidatePerson(validation, nodeKey, autoExtraCandidate{action: model.ConfiguredAction{Action: action}, person: person})
 }

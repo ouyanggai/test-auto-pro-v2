@@ -128,8 +128,9 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			if blockReason != "" {
 				return nil, "", nil, fmt.Errorf("%s", blockReason)
 			}
-			if len(entries) == 0 {
-				// 图边不可用（旧数据）时保持旧行为：按下一步精确匹配，匹配不到回落路线第一条分支。
+			if len(entries) == 0 && len(runCtx.GraphEdges) == 0 {
+				// 只有运行上下文完全没有边表（旧数据）时才保持旧行为；
+				// 有边表时解析失败已在前一步阻塞，绝不回落路线第一条分支（F-034 T04）。
 				entries = nonEmptyList(firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
 			}
 			nextAuditors, err = nextAuditorsForTransition(runCtx, step, nextNodeKey, entries)
@@ -157,7 +158,8 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		if blockReason != "" {
 			return nil, "", nil, fmt.Errorf("%s", blockReason)
 		}
-		if len(entries) == 0 {
+		if len(entries) == 0 && len(runCtx.GraphEdges) == 0 {
+			// 只有上下文没有边表（旧数据）时才按旧的“下一节点即入口”匹配；有边表时已阻塞。
 			entries = nonEmptyList(chosenBranchEntryForNode(runCtx, nextNodeKey))
 		}
 		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, entries)
@@ -179,7 +181,8 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		if blockReason != "" {
 			return nil, "", nil, fmt.Errorf("%s", blockReason)
 		}
-		if len(entries) == 0 {
+		if len(entries) == 0 && len(runCtx.GraphEdges) == 0 {
+			// 只有上下文没有边表（旧数据）时才保持旧行为；有边表时已阻塞（F-034 T04）。
 			entries = nonEmptyList(firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
 		}
 		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, entries)

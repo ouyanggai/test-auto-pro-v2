@@ -484,7 +484,7 @@ const dialogStyle = computed(() => ({
         <ul class="run-panel__rows">
           <li v-for="action in planActions" :key="action.sequence" class="run-panel__row">
             <div class="run-panel__row-main">
-              <span class="run-panel__row-title">{{ action.sequence }}. {{ action.actionName }}</span>
+              <span class="run-panel__row-title">{{ action.sequence }}. {{ actionLabel(action.actionName, action.action) }}</span>
               <span class="run-panel__row-sub">{{ action.sourceName }} · {{ action.scopeName }}<template v-if="action.releaseRequired"> · 放行边界</template></span>
             </div>
             <n-button text size="tiny" type="info" @click="planDialog = action">详情</n-button>
@@ -553,7 +553,7 @@ const dialogStyle = computed(() => ({
       @update:show="planDialog = null"
     >
       <dl v-if="planDialog" class="run-panel__facts">
-        <div><dt>动作</dt><dd>{{ planDialog.actionName }}</dd></div>
+        <div><dt>动作</dt><dd>{{ actionLabel(planDialog.actionName, planDialog.action) }}</dd></div>
         <div><dt>来源</dt><dd>{{ planDialog.sourceName }}</dd></div>
         <div><dt>作用范围</dt><dd>{{ planDialog.scopeName }}</dd></div>
         <div v-if="planDialog.precondition"><dt>前置条件</dt><dd>{{ planDialog.precondition }}</dd></div>
@@ -608,7 +608,7 @@ const dialogStyle = computed(() => ({
       preset="card"
       class="run-panel__dialog"
       :style="dialogStyle"
-      :title="stepDialog ? `第 ${stepDialog.stepNo} 步 · ${stepDialog.actionName}` : ''"
+      :title="stepDialog ? `第 ${stepDialog.stepNo} 步 · ${stepActionLabel(stepDialog)}` : ''"
       @update:show="stepDialog = null"
     >
       <template v-if="stepDialog">

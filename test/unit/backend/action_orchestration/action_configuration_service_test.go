@@ -594,12 +594,17 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 	if first.Action != model.ActionStorageFormData {
 		t.Fatalf("审批节点最安全额外动作是暂存表单，实际选出：%s", first.Action)
 	}
-	// 跨节点多样性：同安全等级内，同一路径中已用过的动作让位给未用过的动作。
-	// 不同等级之间安全优先：暂存表单（等级 0）被用过时，不同意的未使用也不越级。
+	// 跨节点多样性（F-034 评审修正）：本路径尚未使用的动作优先，跨安全等级生效——
+	// 暂存表单被用过时，未使用的不同意排在再次暂存之前。
 	secondNode := autoConfigureNode("node-b", []string{"storage_form_data", "reject"})
 	second, _, okSecond, _ := service.AutoExtraCandidatesForTest(41, 51, secondNode, map[string]bool{string(model.ActionStorageFormData): true})
-	if !okSecond || second.Action != model.ActionStorageFormData {
-		t.Fatalf("安全等级优先于多样性，应继续选暂存表单：second=%s ok=%v", second.Action, okSecond)
+	if !okSecond || second.Action != model.ActionReject {
+		t.Fatalf("未使用动作应优先（跨等级）：second=%s ok=%v", second.Action, okSecond)
+	}
+	// 首次使用时安全等级仍然生效：都没用过时先选最安全的暂存表单。
+	firstUse, _, okFirst, _ := service.AutoExtraCandidatesForTest(41, 51, secondNode, map[string]bool{})
+	if !okFirst || firstUse.Action != model.ActionStorageFormData {
+		t.Fatalf("都没使用时仍按安全等级选暂存表单：first=%s", firstUse.Action)
 	}
 	// 同等级多样性：两个节点都只有加签/移交（等级 1）时，第二个节点选未用过的那个。
 	rankOneNode := func(key string) model.PathConfigNode {
@@ -677,5 +682,78 @@ func TestAutoNodeActionSystemNodesNoCandidates(t *testing.T) {
 		if action, _, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{}); ok {
 			t.Fatalf("系统节点 %s 不应有用户动作候选：%+v", kind, action)
 		}
+	}
+}
+
+// TestAutoCandidatePersonStrategyValidatedBySharedRules 锁定 F-034 评审 #4：
+// 自动配置的动作人员策略必须通过与手工保存相同的校验（策略范围、最少/最多人数、人员令牌），
+// 人数不足或非法策略在候选接受前被淘汰，不写入短/空人员集合。
+func TestAutoCandidatePersonStrategyValidatedBySharedRules(t *testing.T) {
+	target := analyzer.PathConfigNodeTarget{
+		NodeID: "node-sign", ActionPersons: map[string]*analyzer.PathConfigPersonTarget{
+			"add_sign": {Key: "node-sign:add_sign", Name: "加签处理人",
+				CandidateTokens:   map[string]string{"candidate-a": "id-a", "candidate-b": "id-b", "candidate-c": "id-c"},
+				CandidateOrder:    []string{"id-a", "id-b", "id-c"},
+				AllowedStrategies: map[string]bool{"manual": true, "random": true},
+				Required:          true, MinCount: 3, MaxCount: 4},
+		},
+	}
+	validation := analyzer.PathConfigValidation{NodeTokens: map[string]analyzer.PathConfigNodeTarget{"node-sign": target}}
+
+	// 人数不足：只选 2 人（模板要求至少 3 人）必须被拒绝。
+	short := model.PathConfigPersonStrategyInput{Key: "node-sign:add_sign", Strategy: "manual", Selected: []string{"candidate-a", "candidate-b"}}
+	if reason := service.ValidateAutoCandidatePersonForTest(validation, "node-sign", model.ActionAddSign, &short); reason == "" {
+		t.Fatal("人数不足的加签策略应被拒绝")
+	}
+	// 非法策略：不在模板允许范围内必须被拒绝。
+	invalid := model.PathConfigPersonStrategyInput{Key: "node-sign:add_sign", Strategy: "target_default", Selected: []string{"candidate-a", "candidate-b", "candidate-a"}}
+	if reason := service.ValidateAutoCandidatePersonForTest(validation, "node-sign", model.ActionAddSign, &invalid); reason == "" {
+		t.Fatal("模板不允许的策略应被拒绝")
+	}
+	// 人数满足且策略合法：通过。
+	// 会签最少 3 人但只有 2 个候选的矛盾在此不构造；用 3 个不同候选锁定正向通过。
+	valid := model.PathConfigPersonStrategyInput{Key: "node-sign:add_sign", Strategy: "manual", Selected: []string{"candidate-a", "candidate-b", "candidate-c"}}
+	if reason := service.ValidateAutoCandidatePersonForTest(validation, "node-sign", model.ActionAddSign, &valid); reason != "" {
+		t.Fatalf("满足人数的合法策略应通过：%s", reason)
+	}
+	// 无动作私有人员候选目录：淘汰并给出原因。
+	if reason := service.ValidateAutoCandidatePersonForTest(validation, "other-node", model.ActionAddSign, &valid); reason == "" {
+		t.Fatal("节点不在人员目录时应有淘汰原因")
+	}
+}
+
+// TestAutoCandidatePersonValidationLockedWhenMinCountExceedsCatalog 锁定 F-034 评审 #4 的自动候选路径：
+// 动作专属候选数量不足模板最少人数时，autoPersonStrategy 产生的策略必须被共享校验淘汰
+// （自动策略按 MinCount 选人，候选不足时人数天然不满足，最终走 blocking 报告而非写入短集合）。
+func TestAutoCandidatePersonValidationLockedWhenMinCountExceedsCatalog(t *testing.T) {
+	node := model.PathConfigNode{
+		Key: "node-short", Name: "会签节点", Kind: "common", Status: "pending",
+		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
+			{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true,
+				Person: &model.PathConfigPerson{Key: "node-short:add_sign", Title: "加签处理人", MinCount: 3, MaxCount: 4,
+					Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}, {Label: "候选乙", Value: "candidate-b"}},
+					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}, {Value: "manual", Label: "手动选择"}}}},
+		}},
+	}
+	action, person, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
+	if !ok || action.Action != model.ActionAddSign {
+		t.Fatalf("加签候选应生成（校验在接受阶段）：%+v ok=%v", action, ok)
+	}
+	if person == nil {
+		t.Fatal("应生成动作私有人员策略供接受阶段校验")
+	}
+	// 用模板目录复验：候选只有 2 人、模板要求至少 3 人，策略必须被淘汰（人数不足）。
+	personTarget := &analyzer.PathConfigPersonTarget{
+		Key: person.Key, Name: "加签处理人",
+		CandidateTokens:   map[string]string{"candidate-a": "id-a", "candidate-b": "id-b"},
+		CandidateOrder:    []string{"id-a", "id-b"},
+		AllowedStrategies: map[string]bool{"random": true, "manual": true},
+		Required:          true, MinCount: 3, MaxCount: 4,
+	}
+	if _, reason := analyzer.EncodePathConfigPersonStrategy(*personTarget, *person); reason == "" {
+		t.Fatal("候选不足模板最少人数时共享校验必须淘汰该策略")
+	}
+	if len(rejections) != 0 {
+		t.Fatalf("候选构造阶段不应提前淘汰（校验在共享层）：reason=%v", rejections)
 	}
 }

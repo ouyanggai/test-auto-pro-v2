@@ -70,6 +70,12 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 	}
 	catalog := catalogIndex(input.Catalog)
 	issues := make([]model.ActionConfigurationIssue, 0)
+	// F-034 评审修正：状态顺序与节点顺序校验接入编译主流程，保证一键配置与手工保存
+	// 共用同一套顺序安全规则（重新提交来源、关注状态、移交后处理人连续性、前序回跳）。
+	resubmitReady := false
+	followed := false
+	transferred := false
+	lastNodeIndex := -1
 	for index, action := range actions {
 		if issue := validateActionStructure(action, index, nodeTypes, catalog); issue == nil {
 		} else if issue.Blocking {
@@ -81,9 +87,34 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 		} else {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
+		if issue := validateActionState(action, index, resubmitReady, followed); issue == nil {
+		} else {
+			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
+		}
+		nodeIdx := nodeIndex(sequence, action.NodeKey)
+		if issue := validateNodeOrder(action, index, nodeIdx, lastNodeIndex, transferred); issue == nil {
+		} else {
+			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
+		}
 		if issue := validateStateReminder(action, index, actions); issue == nil {
 		} else {
 			issues = append(issues, *issue)
+		}
+		// 按顺序维护状态事实：重新提交来源、关注状态、移交连续性与最近节点位置。
+		switch action.Action {
+		case model.ActionSaveDraft, model.ActionReject, model.ActionWithdraw:
+			resubmitReady = true
+		case model.ActionResubmit:
+			resubmitReady = false
+		case model.ActionFollow:
+			followed = true
+		case model.ActionUnfollow:
+			followed = false
+		case model.ActionTransfer:
+			transferred = true
+		}
+		if nodeIdx >= 0 {
+			lastNodeIndex = nodeIdx
 		}
 	}
 	compiler := &compiler{nodeTypes: nodeTypes, sequence: sequence, status: "new", completed: map[string]bool{}, cursor: -1}

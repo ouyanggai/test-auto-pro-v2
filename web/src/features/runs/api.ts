@@ -71,6 +71,8 @@ export interface RunRequestItem {
 export interface RunStep {
   stepNo: number
   actionName: string
+  // action 是稳定动作键：actionLabel 据此映射中文，不从中文名反推动作类型。
+  action?: string
   releaseGroup?: string
   releaseRequired?: boolean
   nodeKey: string
@@ -93,6 +95,8 @@ export interface RunNodePlanAction {
   releaseGroup?: string
   releaseRequired?: boolean
   actionName: string
+  // action 是稳定动作键：actionLabel 据此映射中文，不从中文名反推动作类型。
+  action?: string
   sourceName: string
   scopeName: string
   precondition?: string

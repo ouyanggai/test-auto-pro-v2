@@ -67,6 +67,10 @@ type NodeInfo struct {
 	// AuditType 是目标在该节点配置的审批方式（run_node_choose/company/level 等）。
 	// 提交载荷按它决定是否必须携带 nextAuditorList 人员指定项（语义清单 1.8 补充）。
 	AuditType string
+	// IsSkip 是目标模板声明的“无处理人时跳过该节点”（nil=未声明，不允许跳过）。
+	// F-034：目标自动跳过判定必须同时满足“模板允许跳过 + 待办确实越过本节点”，
+	// 不再只靠待办位置推断；run_node_choose 自选节点无论该值如何都必须显式选人。
+	IsSkip *bool
 }
 
 // ActionPersonIndex 返回运行上下文中动作人员解析结果的稳定索引。

@@ -196,6 +196,8 @@ type RunStepAttemptDTO struct {
 type RunStepDTO struct {
 	StepNo     int    `json:"stepNo"`
 	ActionName string `json:"actionName"`
+	// Action 是稳定动作键（F-034 评审）：前端据此走集中中文映射，不从中文名反推动作类型。
+	Action string `json:"action,omitempty"`
 	NodeKey    string `json:"nodeKey"`
 	// ReleaseGroup/ReleaseRequired 标明本步在动作组中的位置；执行事实本身不带动作组。
 	ReleaseGroup    string `json:"releaseGroup,omitempty"`
@@ -228,6 +230,8 @@ type RunNodePlanActionDTO struct {
 	ReleaseGroup    string `json:"releaseGroup,omitempty"`
 	ReleaseRequired bool   `json:"releaseRequired,omitempty"`
 	ActionName      string `json:"actionName"`
+	// Action 是稳定动作键（F-034 评审）：前端据此走集中中文映射，不从中文名反推动作类型。
+	Action string `json:"action,omitempty"`
 	SourceName      string `json:"sourceName"`
 	ScopeName       string `json:"scopeName"`
 	Precondition    string `json:"precondition,omitempty"`
@@ -446,6 +450,8 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		info.TargetNodeID = graphNode.ID
 		// 节点审批方式随真实结构实时补齐：提交载荷据此决定 nextAuditorList 的人员指定项。
 		info.AuditType = graphNode.AuditType
+		// F-034：目标 isSkip 声明随节点表进入执行器，跳过/阻塞分型不再靠待办位置猜测。
+		info.IsSkip = graphNode.IsSkip
 		nodes[key] = info
 	}
 	for index, choice := range path.Choices {
@@ -1391,6 +1397,7 @@ func buildNodePlans(compiledSteps []model.CompiledActionStep, tokenToGraphID map
 			ReleaseGroup:    compiled.ReleaseGroup,
 			ReleaseRequired: compiled.ReleaseRequired,
 			ActionName:      actionNameOf(string(compiled.Action)),
+			Action:          string(compiled.Action),
 			SourceName:      actionStepSourceName(compiled.Source),
 			ScopeName:       actionScopeName(compiled.Scope),
 			Precondition:    compiled.Precondition,

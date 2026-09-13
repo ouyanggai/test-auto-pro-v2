@@ -81,6 +81,8 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 		if node.AuditConfig != nil {
 			graphNode.AuditType = strings.TrimSpace(node.AuditConfig.AuditType)
 		}
+		// F-034：目标 isSkip 声明随图节点进入运行时；nil 表示未声明（不允许跳过）。
+		graphNode.IsSkip = node.IsSkip
 		b.nodes[id] = graphNode
 		b.nodeOrder = append(b.nodeOrder, id)
 		if !known {

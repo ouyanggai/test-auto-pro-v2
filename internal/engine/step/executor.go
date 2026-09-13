@@ -233,10 +233,11 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	// 待办节点在已配置路径上严格位于本步之后」这一可证明事实才允许跳过；其余情形仍按既有
 	// 门禁判定，绝不猜测。跳过不发出任何写请求，放行后按「已跳过」落账并推进。
 	if step.Scope == model.ActionScopeTask || step.Scope == model.ActionScopeCompletedTask {
-		reason, pendingName, diag := targetSkippedStepReason(runCtx, step, facts)
+		action, reason, pendingName, diag := targetSkippedStepReason(runCtx, step, facts)
 		// 判定依据必须落 step.log：否则界面上「当前待办已经处理」无法解释实例究竟停在哪。
 		log.Phase("gate", step.Sequence, 1, "目标跳过判定："+diag)
-		if reason != "" {
+		switch action {
+		case "skip":
 			preview := &StepPreview{
 				PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
 				ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
@@ -248,6 +249,11 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 			}
 			log.Phase("control", step.Sequence, 1, fmt.Sprintf("该节点已被目标自动跳过（实例待办已在「%s」）；放行将记录跳过并继续", pendingName))
 			return preview, false, nil
+		case "block":
+			// F-034：模板不允许跳过或自选节点缺人，目标不可能自动越过本节点；
+			// 必须在发送前阻塞，绝不发写请求，也不用空人员或随机人员凑数。
+			log.Phase("control", step.Sequence, 1, "目标不可能自动越过本节点，已在发送前阻塞："+reason)
+			return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 		}
 	}
 	catalogItem, allowed := evaluateGate(step, buildGateContext(runCtx, step, facts, info))
@@ -447,17 +453,19 @@ func stepTargetNodeIDOf(runCtx RunContext, step model.CompiledActionStep) string
 	return strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
 }
 
-// targetSkippedStepReason 判断本步节点是否已被目标自动跳过。
-// reason 非空表示可证明已被跳过（实例待办落到路径上严格靠后的节点），pendingName 是待办所在节点名；
-// diag 是给人看的判定依据（实例当前节点与待办节点分别落在哪），无论是否跳过都写进 step.log。
-// 判据必须可证明：实例可读、本步节点在场景中、实例当前/待办节点都能对上已配置路径的节点表；
-// 其余情形 reason 为空，按既有门禁失败处理，绝不猜测。
-func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) (reason string, pendingName string, diag string) {
+// targetSkippedStepReason 判断本步节点是否已被目标自动跳过（F-034：按目标 isSkip 与审批类型分型）。
+// 返回值：
+//   - action="skip"：模板声明允许跳过（isSkip=true）且实例待办可证明已越过本节点，无写请求记“目标已跳过”；
+//   - action="block"：待办已越过本节点但模板未声明允许跳过（isSkip 未声明或为 false），
+//     或本节点是 run_node_choose 自选审批——目标不可能自动越过，必须阻塞，不能用空人员凑数；
+//   - action=""：无法证明越过，按既有门禁失败处理，绝不猜测。
+func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) (action, reason, pendingName, diag string) {
+	info := runCtx.Nodes[step.NodeKey]
 	if !facts.Found {
-		return "", "", "实例不可读（found=false）"
+		return "", "", "", "实例不可读（found=false）"
 	}
-	if strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID) == "" {
-		return "", "", "本步节点缺少目标真实标识"
+	if strings.TrimSpace(info.TargetNodeID) == "" {
+		return "", "", "", "本步节点缺少目标真实标识"
 	}
 	position := map[string]int{}
 	for index, s := range runCtx.Steps {
@@ -471,7 +479,7 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 	}
 	expectedIndex, ok := position[strings.TrimSpace(step.NodeKey)]
 	if !ok {
-		return "", "", "本步节点不在编译场景中"
+		return "", "", "", "本步节点不在编译场景中"
 	}
 	pendingIndex := -1
 	seen := map[string]bool{}
@@ -481,8 +489,8 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 			continue
 		}
 		seen[id] = true
-		for key, info := range runCtx.Nodes {
-			if strings.TrimSpace(info.TargetNodeID) != id {
+		for key, nodeInfo := range runCtx.Nodes {
+			if strings.TrimSpace(nodeInfo.TargetNodeID) != id {
 				continue
 			}
 			index, exists := position[key]
@@ -491,18 +499,29 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 			}
 			if pendingIndex < 0 || index < pendingIndex {
 				pendingIndex = index
-				pendingName = info.Name
+				pendingName = nodeInfo.Name
 			}
 			break
 		}
 	}
 	if pendingIndex < 0 {
-		return "", "", fmt.Sprintf("实例当前/待办节点 %v 都不在已配置路径上，无法判定跳过", append(append([]string{}, facts.DueNodes...), facts.CurrentNodes...))
+		return "", "", "", fmt.Sprintf("实例当前/待办节点 %v 都不在已配置路径上，无法判定跳过", append(append([]string{}, facts.DueNodes...), facts.CurrentNodes...))
 	}
 	if pendingIndex <= expectedIndex {
-		return "", "", fmt.Sprintf("实例待办仍在「%s」（本步或更早），不构成跳过", pendingName)
+		return "", "", "", fmt.Sprintf("实例待办仍在「%s」（本步或更早），不构成跳过", pendingName)
 	}
-	return fmt.Sprintf("实例待办已在「%s」，本节点已被目标自动跳过（无处理人时跳过该节点），没有可执行的审批动作", pendingName), pendingName, fmt.Sprintf("实例待办在「%s」，位于本步之后的路径节点", pendingName)
+	// 待办确实越过本节点。分型依据目标后端规则：只有模板声明 isSkip=true 才递归跳过；
+	// run_node_choose 自选节点无论声明如何都要求显式人员，缺失即抛“未设置审批人”。
+	if strings.TrimSpace(info.AuditType) == "run_node_choose" {
+		return "block", fmt.Sprintf("节点「%s」是运行时自选审批节点，待办已越过但没有可用的已选处理人，不能自动跳过", info.Name), pendingName,
+			fmt.Sprintf("实例待办在「%s」，本节点为 run_node_choose，必须阻塞", pendingName)
+	}
+	if info.IsSkip == nil || !*info.IsSkip {
+		return "block", fmt.Sprintf("目标未在节点「%s」声明“无处理人时跳过”，而实例待办已越过该节点，无法安全继续", info.Name), pendingName,
+			fmt.Sprintf("实例待办在「%s」，模板未声明 isSkip，必须阻塞", pendingName)
+	}
+	return "skip", fmt.Sprintf("实例待办已在「%s」，本节点已被目标自动跳过（无处理人时跳过该节点），没有可执行的审批动作", pendingName), pendingName,
+		fmt.Sprintf("实例待办在「%s」，模板声明允许跳过（isSkip=true）", pendingName)
 }
 
 // ApprovedStep 是放行后交给执行器的输入：预览事实（内含同源载荷）与步骤下标。
@@ -2267,4 +2286,11 @@ type auditTraceReader interface {
 type auditTrace struct {
 	found bool
 	total int
+}
+
+// TargetSkippedClassificationForTest 暴露跳过/阻塞分型判定，供 test 目录锁定 F-034 评审 #2 行为：
+// isSkip=true 且越过本节点 → 跳过；isSkip 未声明/false 且越过 → 阻塞；run_node_choose 越过 → 阻塞。
+func TargetSkippedClassificationForTest(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) (string, string) {
+	action, reason, _, _ := targetSkippedStepReason(runCtx, step, facts)
+	return action, reason
 }
