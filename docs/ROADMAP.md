@@ -39,16 +39,18 @@
 | F-032 | 计划状态、编辑与可重复运行修复 | ready_for_manual（2026-09-13 已修复计划/路径编辑、重复运行及任务中心文案，待人工验收） |
 | F-033 | 运行详情原子快照与节点过渡显示修复 | awaiting_approval |
 | F-034 | 一键配置动作多样化与运行详情可读性修复 | ready_for_manual（2026-09-13 实施与自动验证完成：动作矩阵重做、跨空节点分支解析与阻塞语义、详情弹窗重排；待人工验收） |
-| F-035 | 目标处理人异步核验与有效表单数据闭环 | awaiting_approval |
+| F-035 | 目标请求协议一致性、真实处理人和有效表单数据闭环 | awaiting_approval |
 
 `superseded` 表示该方案不再是产品或架构依据；实施 F-012 时删除其代码、接口、表、测试和旧任务文件，不做迁移、兼容或兜底。
 
 ## 当前与后两项
 
-F-035 目标处理人异步核验与有效表单数据闭环已完成只读根因排查，当前处于 `awaiting_approval`，详细任务见
-`docs/features/F-035-target-assignment-and-effective-form-data.md`。处理人链路按目标异步生成事实增加有界轮询，目标未生成
-处理人时明确阻塞；表单链路把后台基础回放与运行时最终确认分开，只有下拉实际值、显示值和关联字段完成绑定、回读并
-保存后才进入最终 ready。该切片不修改目标平台、不新增目标写接口和数据库表。
+F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」已完成新证据下的只读复核，当前处于
+`awaiting_approval`，详细任务见 `docs/features/F-035-target-assignment-and-effective-form-data.md`。本轮把范围从单纯的
+处理人异步等待扩展为目标前后端请求逐接口一致：修复 FormMaking 的 `formProxyId`、计划账号与表单身份错位、
+`batchCode`/`nextAuditorList`/`projectId`/空值形状和其他动作接口的协议差异；处理人链路仍按目标事实有界轮询，
+目标未生成处理人时明确阻塞；表单链路只有运行时最终绑定、回读并保存后才进入最终 ready。不修改目标平台、不新增
+目标写接口和数据库表。
 
 F-032 计划状态、编辑与可重复运行修复当前处于 `ready_for_manual`，实施依据见
 `docs/features/F-032-plan-status-and-last-run-result.md`。计划状态由运行事实派生，任一状态都能再次运行和编辑，
