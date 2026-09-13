@@ -143,3 +143,55 @@ func TestF034LastAttemptPreRejected(t *testing.T) {
 		t.Fatal("没有尝试记录时不应判为阻塞")
 	}
 }
+
+// TestF034SelectedManualBranchNeverSwitchesToOtherBranches 锁定 F-034 评审 #1：
+// 手动分支已有保存选择时只允许沿该选择继续；选中路径无法到达下一业务节点时直接阻塞，
+// 绝不遍历其他出边改走另一条分支——否则会把请求发到与路径选择不一致的路径。
+func TestF034SelectedManualBranchNeverSwitchesToOtherBranches(t *testing.T) {
+	// 图形：分支路由 route 有两个出边：selectedA（已选）与 otherB（未选）。
+	// selectedA 走到死胡同，otherB 才能到达目标节点。
+	runCtx := step.RunContext{
+		Nodes: map[string]step.NodeInfo{
+			"current": {Name: "分支节点", Type: "manual", TargetNodeID: "route-target"},
+			"next":    {Name: "审核人", Type: "common", TargetNodeID: "next-target"},
+		},
+		BranchSelections: map[string]string{"route-target": "selected-a"},
+		GraphEdges: map[string][]step.GraphEdgeInfo{
+			"route-target": {{Target: "selected-a"}, {Target: "other-b"}},
+			"selected-a":   {},
+			"other-b":      {{Target: "next-target"}},
+		},
+		GraphNodeTypes: map[string]string{"route-target": "manual", "selected-a": "common", "other-b": "common"},
+	}
+	_, blockReason := step.BranchEntriesForTransitionForTest("current", "next", runCtx)
+	if blockReason == "" {
+		t.Fatal("已选分支走不通时必须阻塞，不得改走未选分支")
+	}
+	if !strings.Contains(blockReason, "入口") {
+		t.Fatalf("阻塞原因应说明找不到入口：%s", blockReason)
+	}
+}
+
+// TestF034ConditionBranchMayTraverseAllEdgesWhenUnresolved 锁定评审 #1 的另一面：
+// 条件分支没有保存选择时（目标运行时自动求值），允许沿任意出边尝试到达目标，不阻塞。
+func TestF034ConditionBranchMayTraverseAllEdgesWhenUnresolved(t *testing.T) {
+	runCtx := step.RunContext{
+		Nodes: map[string]step.NodeInfo{
+			"current": {Name: "条件节点", Type: "condition", TargetNodeID: "cond-target"},
+			"next":    {Name: "审核人", Type: "common", TargetNodeID: "next-target"},
+		},
+		BranchSelections: map[string]string{},
+		GraphEdges: map[string][]step.GraphEdgeInfo{
+			"cond-target": {{Target: "dead-end"}, {Target: "next-target"}},
+			"dead-end":    {},
+		},
+		GraphNodeTypes: map[string]string{"cond-target": "condition", "dead-end": "end"},
+	}
+	entries, blockReason := step.BranchEntriesForTransitionForTest("current", "next", runCtx)
+	if blockReason != "" {
+		t.Fatalf("条件分支无选择时不应阻塞：%s", blockReason)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("条件分支入口不进手动分支条目：%v", entries)
+	}
+}

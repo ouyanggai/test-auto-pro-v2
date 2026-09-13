@@ -58,22 +58,30 @@ func walkBranchPath(nodeID, target string, runCtx RunContext, visited map[string
 	if !exists || len(edges) == 0 {
 		return false, nil, ""
 	}
-	// 分支路由节点：有选择沿选择走；手动分支入口必须携带，无选择直接阻塞。
+	// 分支路由节点：有选择沿选择走。F-034 评审 #1：手动分支有已保存选择时只允许沿该选择继续，
+	// 选中路径无法到达下一业务节点时直接阻塞，绝不再遍历其他出边——否则会把请求发到与路径选择
+	// 不一致的另一条分支，重新引入“选择与实际发送路径不一致”的缺陷。
+	// 只有条件分支等非手动节点（目标运行时自动求值）才允许在选择走不通时遍历全部出边。
+	isManual := strings.EqualFold(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]), "manual")
 	if selection, ok := runCtx.BranchSelections[nodeID]; ok {
 		nextEntries := entries
-		if strings.EqualFold(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]), "manual") {
+		if isManual {
 			nextEntries = append(append([]string(nil), entries...), selection)
 		}
 		found, result, nestedBlock := walkBranchPath(selection, target, runCtx, visited, nextEntries)
 		if found || nestedBlock != "" {
 			return found, result, nestedBlock
 		}
+		if isManual {
+			return false, nil, "当前路径没有找到从“分支”到下一节点的入口，请重新选择路径"
+		}
 		return walkAllEdges(nodeID, target, runCtx, visited, entries, edges)
 	}
 	// 手动分支节点没有选择：目标无法确定实际走向，必须阻塞。
-	if strings.EqualFold(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]), "manual") {
+	if isManual {
 		return false, nil, "当前路径没有找到从“分支”选择的入口，请重新选择路径"
 	}
+	// 非手动路由节点（条件等）没有选择时目标自动求值，允许沿任意出边尝试到达目标。
 	return walkAllEdges(nodeID, target, runCtx, visited, entries, edges)
 }
 

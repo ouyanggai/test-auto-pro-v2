@@ -757,3 +757,26 @@ func TestAutoCandidatePersonValidationLockedWhenMinCountExceedsCatalog(t *testin
 		t.Fatalf("候选构造阶段不应提前淘汰（校验在共享层）：reason=%v", rejections)
 	}
 }
+
+
+
+// TestAutoExtraCandidatesRejectedReasonsEnablePersonHoldback 锁定评审 #2 的提交边界前提：
+// 无安全候选的节点能被识别（候选为空且带淘汰原因），一键配置据此跳过该节点的人员提交；
+// 有候选的节点才可能落动作与人员。这里锁定识别行为本身，提交边界由实现中的
+// pendingPersons → commitPendingPersons 流程保证（动作被接受才并入整体写入）。
+func TestAutoExtraCandidatesRejectedReasonsEnablePersonHoldback(t *testing.T) {
+	// 发起节点目录缺失保存草稿 → 候选为空 + 淘汰原因。
+	node := autoInitiatorNode("node-holdback", []string{"resubmit"})
+	_, _, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
+	if ok {
+		t.Fatal("无安全候选时应返回 ok=false")
+	}
+	if len(rejections) == 0 {
+		t.Fatal("无安全候选时应带淘汰原因，供 blockingRejections 聚合与人员暂存跳过")
+	}
+	// 系统节点无候选、无原因（不参与补配，也不阻塞）。
+	systemNode := model.PathConfigNode{Key: "node-empty", Name: "空节点", Kind: "empty", Status: "pending"}
+	if action, _, hasCandidate, _ := service.AutoExtraCandidatesForTest(41, 51, systemNode, map[string]bool{}); hasCandidate {
+		t.Fatalf("系统节点不应有候选：%+v", action)
+	}
+}

@@ -1151,7 +1151,10 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			if node.LineBlocked {
 				continue
 			}
-			personChanged := false
+			// F-034 评审 #2：节点人员策略先暂存到本节点的待提交集，只有该节点最终落了
+			// 额外动作（或本来已有额外动作）才并入整体写入；没有安全动作的节点不写入
+			// 本次自动生成的人员策略，避免“配置失败但人员数据已改变”的半成品状态。
+			pendingPersons := map[string]model.PathConfigPersonStrategyInput{}
 			for _, person := range node.Persons {
 				if !person.Editable {
 					continue
@@ -1164,28 +1167,32 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 					// 候选数量或目录状态已不满足模板约束时保留阻塞事实，不写入一份必然失效的随机策略。
 					continue
 				}
-				personStrategies[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
-				personChanged = true
-				changed = true
+				pendingPersons[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
 			}
-			// F-034：判断维度从“节点是否有任意动作”改为“节点是否已有额外用户动作”；
-			// 固定尾动作由编译器生成，有它的节点仍然需要补配。
-			if hasExtraUserAction(actions, node.Key) {
-				if personChanged {
+			commitPendingPersons := func() {
+				for key, strategy := range pendingPersons {
+					personStrategies[key] = strategy
+					changed = true
+				}
+				if len(pendingPersons) > 0 {
 					confirmedNodes = append(confirmedNodes, node.Key)
 				}
+			}
+			// F-034：判断维度从“节点是否有任意动作”改为“节点是否已有额外用户动作”；
+			// 固定尾动作由编译器生成，有它的节点仍然需要补配。已有额外动作的节点
+			// 只补人员，人员补齐即提交（这是该节点既有配置的补全，不是半成品）。
+			if hasExtraUserAction(actions, node.Key) {
+				commitPendingPersons()
 				continue
 			}
 			candidates, rejections := autoExtraActionCandidates(*node, autoConfigureSeed(planID, pathID, node.Key), usedInPath(actions))
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
 			diagnostics = append(diagnostics, rejections...)
 			if len(candidates) == 0 {
-				// 系统节点没有候选是正常情况；业务节点没有候选时不假装已配置，原因升级为阻塞。
+				// 系统节点没有候选是正常情况；业务节点没有候选时不假装已配置，原因升级为阻塞，
+				// 且该节点的人员策略不写入（评审 #2：没有安全动作就不留下部分配置）。
 				if isConfigurableBusinessNode(node.Kind) {
 					blockingRejections = append(blockingRejections, "节点 "+node.Name+" 未找到可安全配置的额外动作："+strings.Join(dedupStrings(rejections), "；"))
-				}
-				if personChanged {
-					confirmedNodes = append(confirmedNodes, node.Key)
 				}
 				continue
 			}
@@ -1209,6 +1216,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 					continue
 				}
 				actions = merged
+				commitPendingPersons()
 				if candidate.person != nil {
 					personStrategies[candidate.person.Key] = *candidate.person
 				}

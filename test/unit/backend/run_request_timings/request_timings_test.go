@@ -137,3 +137,41 @@ func TestRunRequestDTOHasNoSensitiveFields(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestSummaryCarriesTargetMessage 锁定 F-034 评审 #3：
+// 传输层把目标业务包络的 message/code 安全摘要写入 network.log 后，
+// 详情请求行的结果摘要必须直接展示目标原文，如「目标拒绝：手动条件分支,请选择」；
+// 传输失败显示“未得到目标结果”，无 message 的写成功显示“目标已接受请求”。
+func TestRequestSummaryCarriesTargetMessage(t *testing.T) {
+	stepLog := strings.Join([]string{
+		"time=2026-09-13_10:00:00 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 phase=plan message=a",
+		"time=2026-09-13_10:00:10 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 phase=settle message=b",
+	}, "\n")
+	networkLog := strings.Join([]string{
+		// 前置阻塞拒绝：目标 message 进摘要，尝试初判 pre_rejected → blocking。
+		"time=2026-09-13_10:00:02 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 trace_id=t1 method=POST endpoint=/api/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.150 result=failure outcome_kind=business_failure error_type=custom_choose message=手动条件分支,请选择 code=ERROR_99999 retry_attempt=1",
+		// 无 message 的写成功。
+		"time=2026-09-13_10:00:05 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 trace_id=t2 method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.120 result=success retry_attempt=1",
+		// 传输失败：没有 HTTP 状态码。
+		"time=2026-09-13_10:00:07 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 trace_id=t3 method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write duration_s=0.050 result=failure transport_phase=connect_failed retry_attempt=1",
+	}, "\n")
+	router, attempts := newTimingFixture(t, networkLog, stepLog)
+	attempts[0].Initial = "pre_rejected"
+	requests, _ := service.ReadAttemptRequestsForTestWithRouter(router, 2, attempts)
+	rows := requests["18:1"]
+	if len(rows) != 3 {
+		t.Fatalf("应归属 3 条请求：%+v", requests)
+	}
+	if rows[0].ResultSummary != "目标拒绝（前置条件未满足）：手动条件分支,请选择" {
+		t.Fatalf("拒绝摘要应携带目标原文：%q", rows[0].ResultSummary)
+	}
+	if !rows[0].Blocking {
+		t.Fatal("前置拒绝请求应标记 blocking")
+	}
+	if rows[1].ResultSummary != "目标已接受请求" {
+		t.Fatalf("无 message 的写成功摘要应为接受请求：%q", rows[1].ResultSummary)
+	}
+	if rows[2].ResultSummary == "" || strings.Contains(rows[2].ResultSummary, "目标拒绝") {
+		t.Fatalf("传输失败应显示未得到目标结果：%q", rows[2].ResultSummary)
+	}
+}

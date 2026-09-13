@@ -80,7 +80,7 @@ func (t *loggingTransport) RoundTrip(request *http.Request) (*http.Response, err
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		record.Result, record.ErrorType = "failure", "http_status"
 	}
-	record.OutcomeKind, record.TargetInstanceID, record.TargetTaskID = inspectEnvelope(body)
+	record.OutcomeKind, record.TargetInstanceID, record.TargetTaskID, record.TargetMessage, record.TargetCode = inspectEnvelope(body)
 	if record.Result == "success" && record.OutcomeKind == "business_failure" {
 		record.Result = "failure"
 	}
@@ -151,15 +151,18 @@ func transportErrorType(err error) string {
 	return string(ErrorUnavailable)
 }
 
-// inspectEnvelope 从目标业务包络提取结果分类与目标实例、任务标识，解析失败时不猜测。
-func inspectEnvelope(body string) (outcomeKind, instanceID, taskID string) {
+// inspectEnvelope 从目标业务包络提取结果分类、目标实例/任务标识与 message/code 安全摘要（F-034 评审 #3）。
+// message/code 只取包络层一句话与错误码，不含任何请求/响应正文；解析失败时不猜测、留空。
+func inspectEnvelope(body string) (outcomeKind, instanceID, taskID, targetMessage, targetCode string) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" || (!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
-		return "", "", ""
+		return "", "", "", "", ""
 	}
 	var parsed struct {
-		IsSuccess bool `json:"isSuccess"`
-		Success   bool `json:"success"`
+		IsSuccess bool   `json:"isSuccess"`
+		Success   bool   `json:"success"`
+		Message   string `json:"message"`
+		Code      string `json:"code"`
 		Data      struct {
 			ID         string `json:"id"`
 			InstanceID string `json:"flowInstanceId"`
@@ -167,7 +170,7 @@ func inspectEnvelope(body string) (outcomeKind, instanceID, taskID string) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-		return "", "", ""
+		return "", "", "", "", ""
 	}
 	outcomeKind = "business_success"
 	if !parsed.IsSuccess && !parsed.Success {
@@ -175,5 +178,22 @@ func inspectEnvelope(body string) (outcomeKind, instanceID, taskID string) {
 	}
 	instanceID = strings.TrimSpace(firstNonEmpty(parsed.Data.InstanceID, parsed.Data.ID))
 	taskID = strings.TrimSpace(parsed.Data.TaskID)
-	return outcomeKind, instanceID, taskID
+	// 安全摘要：压成单行并限制长度，保证单行日志格式且不携带正文。
+	targetMessage = sanitizeTargetSummary(parsed.Message)
+	targetCode = sanitizeTargetSummary(parsed.Code)
+	return outcomeKind, instanceID, taskID, targetMessage, targetCode
+}
+
+// sanitizeTargetSummary 把目标包络摘要压成单行安全文本：去换行/制表符并限制长度，不含正文。
+func sanitizeTargetSummary(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ")
+	value = replacer.Replace(value)
+	if len(value) > 200 {
+		value = value[:200]
+	}
+	return value
 }

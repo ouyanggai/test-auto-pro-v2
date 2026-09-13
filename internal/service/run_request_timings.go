@@ -288,6 +288,8 @@ func fillRequestSummary(dto *RunRequestDTO, fields map[string]string, attempt *m
 	if dto == nil {
 		return
 	}
+	// 写请求失败且尝试初判为前置拒绝（pre_rejected）时标记阻塞，摘要优先展示目标原文（F-034 评审 #3）。
+	blocking := dto.Result != "success" && dto.RequestClass == "write" && attempt != nil && attempt.Initial == "pre_rejected"
 	// 传输层失败：没有收到响应，不能声称目标有任何结果。
 	if dto.StatusCode == 0 {
 		dto.ResultSummary = "连接未建立或响应未收到，未得到目标结果"
@@ -296,10 +298,15 @@ func fillRequestSummary(dto *RunRequestDTO, fields map[string]string, attempt *m
 	// network.log 携带的目标业务消息（message 列由传输层记录的响应包络提取，不含正文）。
 	if message := strings.TrimSpace(fields["message"]); message != "" {
 		if dto.Result == "failure" {
-			dto.ResultSummary = "目标拒绝：" + message
-			return
+			if blocking {
+				dto.ResultSummary = "目标拒绝（前置条件未满足）：" + message
+			} else {
+				dto.ResultSummary = "目标拒绝：" + message
+			}
+		} else {
+			dto.ResultSummary = "目标返回：" + message
 		}
-		dto.ResultSummary = "目标返回：" + message
+		dto.Blocking = blocking
 		return
 	}
 	switch {
@@ -310,11 +317,11 @@ func fillRequestSummary(dto *RunRequestDTO, fields map[string]string, attempt *m
 	default:
 		dto.ResultSummary = "请求完成"
 	}
-	// 写请求失败时结合尝试结论标注阻塞语义：前置拒绝（pre_rejected）是确定阻塞。
-	if dto.Result != "success" && dto.RequestClass == "write" && attempt != nil {
-		dto.Blocking = attempt.Initial == "pre_rejected"
-		if dto.Blocking {
-			dto.ResultSummary = "目标拒绝（前置条件未满足）：" + firstNonEmptySummary(strings.TrimSpace(fields["message"]), attempt.Reason)
+	// 写请求失败但日志没有 message 时，结合尝试结论补阻塞语义与原因摘要（初判 pre_rejected 是确定阻塞）。
+	if dto.Result != "success" && dto.RequestClass == "write" && attempt != nil && attempt.Initial == "pre_rejected" {
+		dto.Blocking = true
+		if dto.ResultSummary == "请求完成" || dto.ResultSummary == "" {
+			dto.ResultSummary = "目标拒绝（前置条件未满足）：" + firstNonEmptySummary(attempt.Reason)
 		}
 	}
 }
