@@ -2,6 +2,16 @@
 
 - 2026-09-12 F-031「任务事实参数与实例日志归属修复」已登记为 `awaiting_approval`。源码核对确认：`/web/flowJobTaskLink/list` 的实例过滤必须使用顶层 `flowInstanceIdList`，`data.flowInstanceId` 会被目标忽略；`pending` 使用 `queryUserId`、`done` 使用 `data.executorId`。当前节点处理人必须取发起人已发列表的 `currentAuditUserInfo`，配置中的 `NextNodeAuditors` 只表示下一节点选人。日志方案已按页面调整为 `logs/runs/<运行记录>/paths/<路径运行>`，目录使用 `runId/pathRunId` 稳定定位，`runNo/planName/pathName` 与页面标签对应；目标实例名称只写详情和 `meta.json`，不参与目录寻址。用户批准前不改执行代码、不改数据库、不启动浏览器。详细计划见 `docs/features/F-031-task-facts-and-instance-log-naming.md`。
 
+- 2026-09-13 F-031 评审整改完成（评审提出「一个处理人安全缺陷 + 一个页面验收缺陷」，均已修复并重跑验证）：
+  P1 处理人事实缺失改为直接阻断待办动作——写前准备只认 `currentAuditUserInfo` 事实，缺失或核对不命中即
+  停在当前步骤返回空快照，不再回退到计划账号/会话本人待办（此前计划账号读到自身历史待办会误放行），
+  并新增危险用例 `TestMissingHandlerFactBlocksEvenWhenPlanAccountHasTask`；执行器测试假件补齐事实发现路径
+  （事实读取、处理人账号解析、视角查询），既有用例由此走生产同一条路径。P2 页面禁用词整改：状态名
+  「核验中」→「确认结果中」、失败分类「演员不可解析」→「处理人身份未确认」，路径配置/动作目录/场景编译/
+  控制事实/断点说明/运行命令/运行详情提示/表单运行时维护中的「演员、核验、落账、门禁」全部换词；
+  `web/src` 渲染文本扫描无禁用词。`go test ./test/unit/...`、`bash test/run-f031.sh`、
+  `bash test/run-f030.sh` 全部通过（两处既有失败与本切片无关，见功能文档记录）。
+
 - 2026-09-13 F-031「任务事实参数与实例日志归属修复」已按文档实施完成并停在 `ready_for_manual`：
   `/web/flowJobTaskLink/list` 收敛到唯一载荷出口（实例筛选只写协议顶层 `flowInstanceIdList`，pending 用顶层
   `queryUserId`，done 用 `data.executorId`），`FindDueFlow`/`FindDoneTaskOnNode` 迁到该出口，done 复用统一快照读取

@@ -190,3 +190,22 @@
     断点回放数量断言失败。两者均不在本切片范围内，未修改。
   - 未做（等待人工验收）：真实目标连续两次运行、页面运行记录/路径运行目录逐行对照、`currentAuditUserInfo`
     与动作详情处理人对照、`network.log` 字段核对、修复前后同一样本的请求数与耗时对比。
+
+- 2026-09-13 评审整改（评审结论：一个处理人安全缺陷 + 一个页面验收缺陷）：
+  - [P1] 处理人事实缺失时必须阻断待办动作：`resolveTaskSnapshotForStep` 在写前准备（allowDiscovery）
+    的待办动作上只认当前处理人事实，事实缺失或处理人账号/待办核对不命中时返回空快照并停在当前步骤，
+    不再回退到计划账号或会话本人的待办读取（此前计划账号读到自身历史待办会让门禁误判「当前待办存在」
+    并放行一次本不属于它的审批）。核验阶段（allowDiscovery=false）、已办（取回）与发起人节点仍按本人
+    会话读取——那是真正执行过写请求的身份，不存在冒充。新增危险用例
+    `TestMissingHandlerFactBlocksEvenWhenPlanAccountHasTask`：计划账号名下能读到待办、事实里没有本节点
+    处理人时，断言不读会话待办、`CurrentTaskFound=false`、诊断写明缺失 `currentAuditUserInfo`、
+    门禁阻断。执行器测试假件同步补齐事实发现路径（`FindSubmittedFlowFacts`、`MatchHandlerAccounts`、
+    视角查询与人员目录账号解析），既有用例因此走的就是生产事实路径。
+  - [P2] 页面禁用词整改：运行状态名「核验中」改为「确认结果中」，失败分类「演员不可解析」改为
+    「处理人身份未确认」；路径配置、动作目录、场景编译、控制事实、断点说明、运行命令名、运行详情提示与
+    表单运行时维护阶段名中的「演员 / 核验 / 落账 / 门禁」全部改为「处理人 / 结果确认 / 记录 / 放行条件」。
+    已对 `web/src` 做渲染文本扫描（跳过注释）：无禁用词；`internal` 侧仅保留代码注释、step.log 专用文案与
+    进程日志中的旧词（内部阶段名按 F-030 允许只用于日志与内部归组）。
+  - 验证：`go test ./test/unit/...`（除两处既有失败外全通过）、`bash test/run-f031.sh`、
+    `bash test/run-f030.sh` 全部通过。既有失败仍为 `test/unit/backend/history_replay` 两个用例与
+    `TestF016RunControlResolvesRunIDToPathRun`，均与本切片无关。
