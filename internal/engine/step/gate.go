@@ -122,9 +122,17 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		nextAuditors := nextAuditorsOf(step)
 		if step.Action == model.ActionSubmit {
 			var err error
-			// 发起/重提保持既有语义：优先按下一步精确匹配已选分支入口，匹配不到回落路线第一条分支。
-			nextAuditors, err = nextAuditorsForTransition(runCtx, step, nextNodeKey,
-				firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
+			// F-034 T04：发起/重提与同意共用跨节点分支入口解析；入口是空节点时也能精确携带。
+			// 解析器无法确定路径时直接阻塞，不再回落路线第一条分支（实测会把错误分支传给目标）。
+			entries, blockReason := branchEntriesForStep(runCtx, step, nextNodeKey)
+			if blockReason != "" {
+				return nil, "", nil, fmt.Errorf("%s", blockReason)
+			}
+			if len(entries) == 0 {
+				// 图边不可用（旧数据）时保持旧行为：按下一步精确匹配，匹配不到回落路线第一条分支。
+				entries = nonEmptyList(firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
+			}
+			nextAuditors, err = nextAuditorsForTransition(runCtx, step, nextNodeKey, entries)
 			if err != nil {
 				return nil, "", nil, err
 			}
@@ -143,9 +151,16 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		}
 		return &request, target.WriteEndpointSubmit, target.BuildSubmitBody(request), nil
 	case model.ActionApprove:
-		// 同意跨越手动分支路由时必须代选本次流转对应的分支入口（实测缺失被目标
-		// 「手动条件分支,请选择」拒绝）；不跨分支时不携带，避免把路线第一条分支错传给后面的路由。
-		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, chosenBranchEntryForNode(runCtx, nextNodeKey))
+		// F-034 T04：同意跨越手动分支路由时沿真实图解析本次流转实际跨越的全部入口；
+		// 入口是空节点同样按 nodeProxyId 携带，不伪造 bizId 或人员。
+		entries, blockReason := branchEntriesForStep(runCtx, step, nextNodeKey)
+		if blockReason != "" {
+			return nil, "", nil, fmt.Errorf("%s", blockReason)
+		}
+		if len(entries) == 0 {
+			entries = nonEmptyList(chosenBranchEntryForNode(runCtx, nextNodeKey))
+		}
+		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, entries)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -160,8 +175,14 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		}
 		return &request, target.WriteEndpointAudit, target.BuildAuditBody(request), nil
 	case model.ActionResubmit:
-		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey,
-			firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
+		entries, blockReason := branchEntriesForStep(runCtx, step, nextNodeKey)
+		if blockReason != "" {
+			return nil, "", nil, fmt.Errorf("%s", blockReason)
+		}
+		if len(entries) == 0 {
+			entries = nonEmptyList(firstNonEmpty(chosenBranchEntryForNode(runCtx, nextNodeKey), runCtx.SubmitBranchTargetNodeID))
+		}
+		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, entries)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -230,15 +251,20 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 }
 
 // nextAuditorsForTransition 按目标提交、重新提交和同意共用的协议构造下一节点选人数据。
-// branchTarget 是本次流转需要代选的手动分支入口（以 nextAuditorList[].nodeProxyId 传给目标，
-// 语义清单第 4 条）；空串表示本次流转不跨已选手动分支。仅 run_node_choose 需要本平台指定真实用户；
+// branchTargets 是本次流转需要代选的手动分支入口列表（以 nextAuditorList[].nodeProxyId 传给目标，
+// 语义清单第 4 条）；一次流转跨越多个手动分支时全部携带且顺序稳定（F-034 T04）。
+// 空列表表示本次流转不跨已选手动分支。仅 run_node_choose 需要本平台指定真实用户；
 // 其他动态审批方式由目标按当前表单和组织上下文解析，不能伪造空 bizId 的节点占位项，
 // 否则目标会把它当成无效人员配置。
-func nextAuditorsForTransition(runCtx RunContext, step model.CompiledActionStep, nextNodeKey string, branchTarget string) ([]target.NextAuditor, error) {
+func nextAuditorsForTransition(runCtx RunContext, step model.CompiledActionStep, nextNodeKey string, branchTargets []string) ([]target.NextAuditor, error) {
 	auditors := append([]target.NextAuditor(nil), nextAuditorsOf(step)...)
 	// 手动条件分支（custom_choose）的选择必须以 nextAuditorList[].nodeProxyId 传递；
 	// 目标按 nodeProxyId 匹配分支节点，未携带或带错分支都会被「手动条件分支,请选择」拒绝。
-	if branchTarget = strings.TrimSpace(branchTarget); branchTarget != "" {
+	for index := len(branchTargets) - 1; index >= 0; index-- {
+		branchTarget := strings.TrimSpace(branchTargets[index])
+		if branchTarget == "" {
+			continue
+		}
 		auditors = append([]target.NextAuditor{{NodeProxyID: branchTarget}}, auditors...)
 	}
 	info, exists := runCtx.Nodes[strings.TrimSpace(nextNodeKey)]

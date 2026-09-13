@@ -73,6 +73,12 @@ var preRejections = map[string][]string{
 	},
 	"/flowInstanceApi/audit": {
 		"该待办记录不存在",
+		// F-034 T04：手动分支入口缺失是 FlowOperateServiceImpl.validateHandBranchAndReturnExecuteNode
+		// 在任何写之前抛出的前置拒绝（errorType=custom_choose），HTTP 200 + isSuccess=false 即确定阻塞；
+		// 实测证据见语义清单第 1.7 节（运行 95 路径 8 第 3 步）。
+		"手动条件分支,请选择",
+		// run_node_choose 无匹配人员时 validateNodeRunNodeChooseIsExistPersonnel 同样在任何写之前抛出。
+		"未设置审批人",
 	},
 }
 

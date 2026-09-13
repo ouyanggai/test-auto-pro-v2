@@ -256,7 +256,12 @@ type PathRunDetailDTO struct {
 	// Result 与 FinalTarget 是两件分开的事：路径结果只看步骤事实，最终目标事实如实描述目标现状。
 	ResultName       string          `json:"resultName,omitempty"`
 	FailureClassName string          `json:"failureClassName,omitempty"`
-	FinalTarget      json.RawMessage `json:"finalTarget,omitempty"`
+	// StopKind 是停止语义投影（F-034 T04）：blocked=目标在写入前明确拒绝（前置条件未满足，如手动分支
+	// 未选择、未设置审批人），由后端按受控拒绝清单（尝试初判 pre_rejected）稳定派生；
+	// 失败/结果待确认等其他语义不使用该字段，前端不得用错误文案猜测。
+	StopKind    string          `json:"stopKind,omitempty"`
+	StopKindNote string         `json:"stopKindNote,omitempty"`
+	FinalTarget json.RawMessage `json:"finalTarget,omitempty"`
 	PlanID           uint64          `json:"planId"`
 	PlanName         string          `json:"planName"`
 	PathID           uint64          `json:"pathId"`
@@ -420,6 +425,16 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		// 否则提交载荷缺失分支参数，会在目标侧以“手动条件分支,请选择”失败。
 		return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "暂时无法读取真实流程结构，请重试"}
 	}
+	// F-034 T04：真实图边与节点类型进入运行上下文，跨节点手动分支入口解析不再依赖“下一业务节点
+	// 恰好是分支目标”的巧合；入口是空节点时同样能精确解析。
+	graphEdges := map[string][]step.GraphEdgeInfo{}
+	graphNodeTypes := map[string]string{}
+	for _, graphNode := range graph.Nodes {
+		graphNodeTypes[graphNode.ID] = graphNode.Type
+	}
+	for _, edge := range graph.Edges {
+		graphEdges[edge.Source] = append(graphEdges[edge.Source], step.GraphEdgeInfo{Target: edge.Target, BranchID: edge.BranchID})
+	}
 	// 配置快照与编译场景用的 nodeKey 是不透明派生键，发给目标匹配不上任何数据；
 	// 这里按同一派生规则把真实节点标识补回节点表，供待办读取、按节点写参数与对账对照使用。
 	for _, graphNode := range graph.Nodes {
@@ -504,6 +519,8 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		Source:                   plan.FlowSource,
 		Nodes:                    nodes,
 		BranchSelections:         branchSelections,
+		GraphEdges:               graphEdges,
+		GraphNodeTypes:           graphNodeTypes,
 		SubmitBranchTargetNodeID: submitBranchTarget,
 		Steps:                    steps,
 		EffectiveFormData:        config.EffectiveFormData,
@@ -944,6 +961,25 @@ func (s *RunOrchestrationService) RunDetailByRunAndPathRun(ctx context.Context, 
 // 实例名称从该目录的 meta.json 读取。历史运行（F-031 之前）的日志在旧目录里，
 // 按已落账的 step.log 相对路径回查它的 meta.json；两处都读不到名称时如实标记「实例名称不可用」，
 // 绝不用计划名、路径名或候选处理人名称补造。
+// lastAttemptWasPreRejected 判断该路径运行的最后一次尝试是否命中前置拒绝初判（F-034 T04）。
+// pre_rejected 表示目标在任何写之前明确拒绝（如手动分支未选择、未设置审批人），可安全投影为阻塞；
+// 没有任何尝试记录或初判为空时返回 false，不凭失败分类猜测。
+func lastAttemptWasPreRejected(attempts []model.RunStepAttempt) bool {
+	last := -1
+	lastAttemptNo := -1
+	for index, attempt := range attempts {
+		if attempt.AttemptNo >= lastAttemptNo {
+			lastAttemptNo = attempt.AttemptNo
+			last = index
+		}
+	}
+	if last < 0 {
+		return false
+	}
+	return attempts[last].Initial == "pre_rejected"
+}
+
+// fillRunLogLocation 填充运行日志目录与实例身份。
 func (s *RunOrchestrationService) fillRunLogLocation(detail *PathRunDetailDTO, run model.Run, pathRun model.PathRun, plan model.Plan, attempts []model.RunStepAttempt) {
 	if detail == nil || s.router == nil {
 		return
@@ -1063,6 +1099,12 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	}
 	if pathRun.FailureClass != nil {
 		detail.FailureClassName = model.FailureClassName(*pathRun.FailureClass)
+		// F-034 T04：只有确定失败且最后一次尝试的初判是 pre_rejected（目标在任何写之前明确拒绝）
+		// 才投影为“阻塞”；写结果不确定、传输中断等仍保持“结果待确认”，其余失败保持“失败”。
+		if *pathRun.FailureClass == model.FailureClassTargetRejected && detail.PathRunStatus == string(model.PathRunStatusFailed) && lastAttemptWasPreRejected(attempts) {
+			detail.StopKind = "blocked"
+			detail.StopKindNote = "目标在执行前明确拒绝了请求：前置条件未满足，没有产生任何写入"
+		}
 	}
 	if pathRun.FinalTargetSummary != "" {
 		detail.FinalTarget = json.RawMessage(pathRun.FinalTargetSummary)
@@ -1721,4 +1763,9 @@ func RunDetailGraphTimeoutForTest() time.Duration {
 // ParsePhaseTimingsForTest 暴露 step.log 阶段时间轴解析，供 test 目录下的定向用例锁定归组键与耗时口径。
 func ParsePhaseTimingsForTest(rd io.Reader) map[string]map[string]int64 {
 	return parsePhaseTimings(rd)
+}
+
+// LastAttemptWasPreRejectedForTest 暴露阻塞投影判据，供 test 目录锁定 F-034 行为。
+func LastAttemptWasPreRejectedForTest(attempts []model.RunStepAttempt) bool {
+	return lastAttemptWasPreRejected(attempts)
 }

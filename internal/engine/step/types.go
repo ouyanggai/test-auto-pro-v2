@@ -94,6 +94,10 @@ type RunContext struct {
 	// BranchSelections 是这条路径已保存的分支选择（分支节点 ID -> 所选分支的目标节点 ID）。
 	// 手动条件分支在提交/审批时必须显式携带所选节点，否则目标以“手动条件分支,请选择”拒绝。
 	BranchSelections map[string]string
+	// GraphEdges 是真实图的邻接表（目标节点 ID -> 出边）：跨节点手动分支入口解析依赖它（F-034 T04）。
+	GraphEdges map[string][]GraphEdgeInfo
+	// GraphNodeTypes 是目标节点 ID 到节点类型的映射：解析器据此区分手动分支与条件/导航节点。
+	GraphNodeTypes map[string]string
 	// SubmitBranchTargetNodeID 是路线第一个手动分支所选分支的目标节点 ID，
 	// 随提交请求以 nextAuditorList[].nodeProxyId 传递（FlowOperateServiceImpl 按 nodeProxyId 匹配候选分支）；
 	// 协议顶层的 fixedExecuteNodeId 是并行条件分支的另一机制，与此无关（语义清单第 15 条）。

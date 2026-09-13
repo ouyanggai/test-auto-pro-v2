@@ -32,6 +32,12 @@ type RunRequestDTO struct {
 	StatusCode int `json:"statusCode"`
 	// Result 是目标业务结果：success / failure。
 	Result string `json:"result"`
+	// ResultSummary 是一句话业务结果摘要（F-034 T05）：来自结构化 WriteResponse.Message/Code、
+	// 传输状态与尝试原因，如“目标已接受请求”“目标拒绝：手动条件分支,请选择”“连接未建立，未发送”。
+	// 不返回完整请求/响应正文，不编造读取类响应内容。
+	ResultSummary string `json:"resultSummary,omitempty"`
+	// Blocking 表示该请求的失败属于前置条件阻塞（受控拒绝清单），不是写结果不确定。
+	Blocking bool `json:"blocking,omitempty"`
 	// RetryAttempt 是重试序号：1=首次，>1 为第 N 次重试。
 	RetryAttempt int `json:"retryAttempt"`
 	// TraceID 用于与 curl.log 原文互查，不是主标识。
@@ -77,6 +83,11 @@ func (s *RunOrchestrationService) readAttemptRequests(pathRunID uint64, attempts
 	windows := s.attemptTimeWindows(pathRunID, attempts)
 	if len(windows) == 0 {
 		return requestsByKey, summaryByKey
+	}
+	// 尝试索引：结果摘要（F-034 T05）需要按归组键取到尝试结论（如 pre_rejected 阻塞标记）。
+	attemptsByKey := map[string]*model.RunStepAttempt{}
+	for index := range attempts {
+		attemptsByKey[stepPhaseKey(int(attempts[index].StepID), attempts[index].AttemptNo)] = &attempts[index]
 	}
 	file, err := os.Open(filepath.Join(s.router.Root(), filepath.Dir(filepath.FromSlash(logPath)), "network.log"))
 	if err != nil {
@@ -134,6 +145,7 @@ func (s *RunOrchestrationService) readAttemptRequests(pathRunID uint64, attempts
 			dto.DurationKnown = true
 		}
 		dto.StatusCode = atoiOr(fields["status_code"], 0)
+		fillRequestSummary(&dto, fields, attemptsByKey[key])
 		requestsByKey[key] = append(requestsByKey[key], dto)
 	}
 	// 汇总指标与按发生时间排序。
@@ -267,4 +279,52 @@ func atoiOr(raw string, fallback int) int {
 func ReadAttemptRequestsForTestWithRouter(router *logging.Router, pathRunID uint64, attempts []model.RunStepAttempt) (map[string][]RunRequestDTO, map[string]runRequestSummaryDTO) {
 	s := &RunOrchestrationService{router: router}
 	return s.readAttemptRequests(pathRunID, attempts)
+}
+
+// fillRequestSummary 填充一句话业务结果摘要与阻塞标记（F-034 T05）。
+// 来源优先级：network.log 结构化业务消息 → 传输状态 → 尝试结论原因；没有可靠事实时留空，
+// 由前端显示“暂无真实结果摘要”，不用阶段时间或猜测填充。摘要不包含 SID、密码或完整正文。
+func fillRequestSummary(dto *RunRequestDTO, fields map[string]string, attempt *model.RunStepAttempt) {
+	if dto == nil {
+		return
+	}
+	// 传输层失败：没有收到响应，不能声称目标有任何结果。
+	if dto.StatusCode == 0 {
+		dto.ResultSummary = "连接未建立或响应未收到，未得到目标结果"
+		return
+	}
+	// network.log 携带的目标业务消息（message 列由传输层记录的响应包络提取，不含正文）。
+	if message := strings.TrimSpace(fields["message"]); message != "" {
+		if dto.Result == "failure" {
+			dto.ResultSummary = "目标拒绝：" + message
+			return
+		}
+		dto.ResultSummary = "目标返回：" + message
+		return
+	}
+	switch {
+	case dto.Result == "success":
+		dto.ResultSummary = "目标已接受请求"
+	case dto.RequestClass == "read":
+		dto.ResultSummary = "读取成功"
+	default:
+		dto.ResultSummary = "请求完成"
+	}
+	// 写请求失败时结合尝试结论标注阻塞语义：前置拒绝（pre_rejected）是确定阻塞。
+	if dto.Result != "success" && dto.RequestClass == "write" && attempt != nil {
+		dto.Blocking = attempt.Initial == "pre_rejected"
+		if dto.Blocking {
+			dto.ResultSummary = "目标拒绝（前置条件未满足）：" + firstNonEmptySummary(strings.TrimSpace(fields["message"]), attempt.Reason)
+		}
+	}
+}
+
+// firstNonEmptySummary 返回第一个非空摘要；两处都空时返回安全占位，不返回内部英文键。
+func firstNonEmptySummary(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return "见尝试原因与日志"
 }
