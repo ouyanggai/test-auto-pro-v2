@@ -249,3 +249,14 @@ F-034 将“路径”和“复制”相关入口统一为可扫读的行式布�
 3. 传输层 inspectEnvelope 提取目标包络 message/code 安全摘要写入 network.log（单行/截断/不含正文），
    详情请求行 resultSummary 直接展示目标原文；TestInspectEnvelopeExtractsMessageAndCode 与
    TestRequestSummaryCarriesTargetMessage 锁定「手动条件分支,请选择」端到端摘要。
+
+## 第三轮评审整改记录（2026-09-13，3 项阻塞问题 + 2 项建议全部修复）
+
+1. [P1] 节点人员策略提交前统一校验（validateAutoNodePerson）：策略类型、空策略、最少/最多人数、
+   候选来源与稳定键任一失败即不提交该节点 pending 人员、不标记已配置，错误含节点名与人员策略名；
+   端到端测试锁定会签 MinCount=3 候选 2 人不落库并报告人数不足。
+2. [P1] PathRunDetailDTO 新增 stopStepNo；前端只在展示该步骤详情时使用路径级阻塞信息，
+   其他步骤用自身执行状态，防止把第 3 步的阻塞显示到已成功的第 1 步。
+3. [P2] actionLabel 全部传稳定 action 键：actionName 缺失但 action=approve 时显示“同意”。
+4. 建议落实：包络摘要测试迁移到 test/unit/backend/target/（导出 InspectEnvelopeForTest 按公开行为测试）；
+   message/code 摘要截断改为按 rune，避免中文产生非法 UTF-8。
