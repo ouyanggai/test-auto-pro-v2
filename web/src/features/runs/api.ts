@@ -121,6 +121,8 @@ export interface PathRunDetail {
   // stopKind=blocked 表示目标在写入前明确拒绝（前置条件未满足），区别于普通失败与结果待确认。
   stopKind?: string
   stopKindNote?: string
+  // stopStepNo 是触发阻塞/停止的步骤号：只在展示该步骤详情时使用路径级阻塞信息。
+  stopStepNo?: number
   finalTarget?: unknown
   planId: number
   planName: string

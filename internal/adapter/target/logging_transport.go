@@ -153,6 +153,11 @@ func transportErrorType(err error) string {
 
 // inspectEnvelope 从目标业务包络提取结果分类、目标实例/任务标识与 message/code 安全摘要（F-034 评审 #3）。
 // message/code 只取包络层一句话与错误码，不含任何请求/响应正文；解析失败时不猜测、留空。
+// InspectEnvelopeForTest 是包络提取的导出形态：供 test 目录按公开行为锁定 message/code 摘要。
+func InspectEnvelopeForTest(body string) (outcomeKind, instanceID, taskID, targetMessage, targetCode string) {
+	return inspectEnvelope(body)
+}
+
 func inspectEnvelope(body string) (outcomeKind, instanceID, taskID, targetMessage, targetCode string) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" || (!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
@@ -192,8 +197,9 @@ func sanitizeTargetSummary(value string) string {
 	}
 	replacer := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ")
 	value = replacer.Replace(value)
-	if len(value) > 200 {
-		value = value[:200]
+	// F-034 评审建议：按 rune 截断避免把中文切成非法 UTF-8 字节序列。
+	if runes := []rune(value); len(runes) > 200 {
+		value = string(runes[:200])
 	}
 	return value
 }

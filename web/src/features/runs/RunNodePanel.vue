@@ -55,7 +55,7 @@ const previewActionLabel = computed(() => actionLabel(currentPreview.value?.acti
 
 // stepActionLabel 已落账步骤的动作名：旧记录只有动作键时走同一张白名单。
 function stepActionLabel(step: RunStep): string {
-  return actionLabel(step.actionName, undefined)
+  return actionLabel(step.actionName, step.action)
 }
 
 // NodeErrorRow 是错误页签的一行：标题、结论、一句话原因，详情留给弹窗。
@@ -221,7 +221,10 @@ function attemptRequests(step: RunStep): RunRequestItem[] {
 const stepOutcomeTitle = computed(() => {
   const step = stepDialog.value
   if (!step) return ''
-  if (props.detail.stopKind === 'blocked') return '阻塞'
+  // F-034 评审 #2：路径级阻塞只绑定触发它的步骤，其他步骤用自身的执行状态，
+  // 防止把第 3 步的阻塞原因显示到已成功的第 1 步上。
+  const stepBlocked = props.detail.stopKind === 'blocked' && props.detail.stopStepNo === step.stepNo
+  if (stepBlocked) return '阻塞'
   if (step.statusName.includes('失败')) return '失败'
   if (step.statusName.includes('待确认') || step.statusName.includes('不确定')) return '结果待确认'
   if (step.statusName.includes('成功') || step.statusName.includes('完成') || step.statusName.includes('跳过')) return '成功'
@@ -241,7 +244,8 @@ const stepOutcomeTone = computed<'success' | 'error' | 'warning' | 'info'>(() =>
 const stepWhyText = computed(() => {
   const step = stepDialog.value
   if (!step) return ''
-  if (props.detail.stopKind === 'blocked') return props.detail.stopKindNote || '目标在执行前明确拒绝了请求：前置条件未满足'
+  const stepBlocked = props.detail.stopKind === 'blocked' && props.detail.stopStepNo === step.stepNo
+  if (stepBlocked) return props.detail.stopKindNote || '目标在执行前明确拒绝了请求：前置条件未满足'
   const failedAttempt = step.attempts.find(attempt => !isSuccessfulAttempt(attempt))
   return failedAttempt?.reason || ''
 })
@@ -549,7 +553,7 @@ const dialogStyle = computed(() => ({
       :show="planDialog !== null"
       preset="card"
       :style="dialogStyle"
-      :title="`计划动作：${actionLabel(planDialog?.actionName, undefined)}`"
+      :title="`计划动作：${actionLabel(planDialog?.actionName, planDialog?.action)}`"
       @update:show="planDialog = null"
     >
       <dl v-if="planDialog" class="run-panel__facts">

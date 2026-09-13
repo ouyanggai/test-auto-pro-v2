@@ -265,6 +265,9 @@ type PathRunDetailDTO struct {
 	// 失败/结果待确认等其他语义不使用该字段，前端不得用错误文案猜测。
 	StopKind    string          `json:"stopKind,omitempty"`
 	StopKindNote string         `json:"stopKindNote,omitempty"`
+	// StopStepNo 是触发本次阻塞/停止的步骤号（F-034 评审 #2）：前端只在展示该步骤详情时
+	// 使用路径级阻塞信息，其他步骤用自身的执行状态，防止把第 3 步的阻塞显示到第 1 步。
+	StopStepNo int `json:"stopStepNo,omitempty"`
 	FinalTarget json.RawMessage `json:"finalTarget,omitempty"`
 	PlanID           uint64          `json:"planId"`
 	PlanName         string          `json:"planName"`
@@ -967,6 +970,21 @@ func (s *RunOrchestrationService) RunDetailByRunAndPathRun(ctx context.Context, 
 // 实例名称从该目录的 meta.json 读取。历史运行（F-031 之前）的日志在旧目录里，
 // 按已落账的 step.log 相对路径回查它的 meta.json；两处都读不到名称时如实标记「实例名称不可用」，
 // 绝不用计划名、路径名或候选处理人名称补造。
+// lastPreRejectedStepNo 返回最后一次前置拒绝尝试所属的步骤号；没有记录时返回 0。
+func lastPreRejectedStepNo(attempts []model.RunStepAttempt) int {
+	last, lastAttemptNo, stepNo := -1, -1, 0
+	for index, attempt := range attempts {
+		if attempt.AttemptNo >= lastAttemptNo {
+			lastAttemptNo, last = attempt.AttemptNo, index
+		}
+	}
+	if last < 0 {
+		return 0
+	}
+	stepNo = int(attempts[last].StepID)
+	return stepNo
+}
+
 // lastAttemptWasPreRejected 判断该路径运行的最后一次尝试是否命中前置拒绝初判（F-034 T04）。
 // pre_rejected 表示目标在任何写之前明确拒绝（如手动分支未选择、未设置审批人），可安全投影为阻塞；
 // 没有任何尝试记录或初判为空时返回 false，不凭失败分类猜测。
@@ -1110,6 +1128,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		if *pathRun.FailureClass == model.FailureClassTargetRejected && detail.PathRunStatus == string(model.PathRunStatusFailed) && lastAttemptWasPreRejected(attempts) {
 			detail.StopKind = "blocked"
 			detail.StopKindNote = "目标在执行前明确拒绝了请求：前置条件未满足，没有产生任何写入"
+			detail.StopStepNo = lastPreRejectedStepNo(attempts)
 		}
 	}
 	if pathRun.FinalTargetSummary != "" {

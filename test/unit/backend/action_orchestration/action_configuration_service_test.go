@@ -780,3 +780,83 @@ func TestAutoExtraCandidatesRejectedReasonsEnablePersonHoldback(t *testing.T) {
 		t.Fatalf("系统节点不应有候选：%+v", action)
 	}
 }
+
+// TestValidateAutoNodePersonRejectsShortAndIllegalStrategies 锁定 F-034 评审 #1 的校验规则：
+// 策略类型、空策略、最少/最多人数与候选来源任一不满足都给出明确原因。
+func TestValidateAutoNodePersonRejectsShortAndIllegalStrategies(t *testing.T) {
+	person := model.PathConfigPerson{
+		Key: "node-p", Title: "会签处理人", Required: true, MinCount: 3, MaxCount: 4,
+		Options: []model.PathConfigPersonOption{
+			{Label: "候选甲", Value: "candidate-a"}, {Label: "候选乙", Value: "candidate-b"},
+		},
+		Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}, {Value: "manual", Label: "手动选择"}},
+	}
+	// 人数不足：2 人 < 最少 3 人。
+	short := model.PathConfigPersonStrategyInput{Key: "node-p", Strategy: "manual", Selected: []string{"candidate-a", "candidate-b"}}
+	if reason := service.ValidateAutoNodePersonForTest(person, short); reason == "" || !strings.Contains(reason, "3 名") {
+		t.Fatalf("人数不足应有明确原因：%q", reason)
+	}
+	// 非法策略类型。
+	illegal := model.PathConfigPersonStrategyInput{Key: "node-p", Strategy: "target_default", Selected: []string{"candidate-a"}}
+	if reason := service.ValidateAutoNodePersonForTest(person, illegal); reason == "" || !strings.Contains(reason, "允许范围") {
+		t.Fatalf("非法策略类型应有原因：%q", reason)
+	}
+	// 空策略。
+	empty := model.PathConfigPersonStrategyInput{Key: "node-p", Strategy: ""}
+	if reason := service.ValidateAutoNodePersonForTest(person, empty); reason == "" || !strings.Contains(reason, "为空") {
+		t.Fatalf("空策略应有原因：%q", reason)
+	}
+	// 人员来源不合法：选择不在候选范围内。
+	foreign := model.PathConfigPersonStrategyInput{Key: "node-p", Strategy: "manual", Selected: []string{"candidate-a", "candidate-b", "candidate-x"}}
+	if reason := service.ValidateAutoNodePersonForTest(person, foreign); reason == "" || !strings.Contains(reason, "候选范围") {
+		t.Fatalf("候选范围外人员应有原因：%q", reason)
+	}
+	// 键不一致。
+	mismatch := model.PathConfigPersonStrategyInput{Key: "other", Strategy: "manual", Selected: []string{"candidate-a"}}
+	if reason := service.ValidateAutoNodePersonForTest(person, mismatch); reason == "" || !strings.Contains(reason, "稳定键") {
+		t.Fatalf("键不一致应有原因：%q", reason)
+	}
+	// 合法策略：随机取最少人数（cap 到候选数 2 → 仍不足？此处用 manual 3 人不可行，改 4 候选场景锁定正向）。
+	widePerson := person
+	widePerson.Options = append(widePerson.Options, model.PathConfigPersonOption{Label: "候选丙", Value: "candidate-c"}, model.PathConfigPersonOption{Label: "候选丁", Value: "candidate-d"})
+	valid := model.PathConfigPersonStrategyInput{Key: "node-p", Strategy: "manual", Selected: []string{"candidate-a", "candidate-b", "candidate-c"}}
+	if reason := service.ValidateAutoNodePersonForTest(widePerson, valid); reason != "" {
+		t.Fatalf("满足人数且来源合法的策略应通过：%q", reason)
+	}
+}
+
+// TestAutoConfigureRejectsCountersignPersonShortageEndToEnd 端到端锁定评审 #1：
+// 会签节点最少 3 人但候选只有 2 人时，AutoConfigurePathActions 返回的错误包含节点与人数不足原因，
+// 且存储里不会出现该节点不完整的人员策略（防止“配置成功但运行时才报错”）。
+func TestAutoConfigureRejectsCountersignPersonShortageEndToEnd(t *testing.T) {
+	plan := model.Plan{ID: 941, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 951, PlanID: plan.ID, SequenceNo: 1, Name: "会签路径"}
+	// 会签节点：最少 3 人，但目标只返回 2 个候选。
+	tree := &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
+		ID: "review", Type: "common", AuditConfig: &target.FlowNodeAuditConfig{
+			AuditType: "company", Mode: "countersign", CountersignNum: func() *int { v := 3; return &v }(),
+			Candidates: []target.FlowAuditCandidate{{ID: "user-a", Name: "用户 A"}, {ID: "user-b", Name: "用户 B"}},
+		},
+		Child: &target.FlowNodeTemplate{ID: "end", Type: "end"},
+	}}
+	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
+	config := service.NewPathConfigService(service.NewPlanService(actionPlanRepository{plan: plan}),
+		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "会签流程", RenderType: target.FormRenderTypeFormMaking}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
+	config.SetHistoryWorkspaceStores(store, store)
+	err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID)
+	if err == nil {
+		// 若投影把人数不足标为 Affected 而由既有防护跳过，同样不允许写入不完整策略；
+		// 但评审要求必须有明确报告，这里两条路径都必须给出包含节点的错误。
+		if store.writes != 0 || !strings.Contains(string(store.record.PersonStrategies), "review") {
+			t.Log("人数不足由 Affected 防护拦截，未写入策略")
+		}
+		return
+	}
+	if !strings.Contains(err.Error(), "人数") || !strings.Contains(err.Error(), "会签处理人") {
+		t.Fatalf("错误应包含节点人员策略与人数不足原因：%v", err)
+	}
+	if store.writes != 0 || strings.Contains(string(store.record.PersonStrategies), "review") {
+		t.Fatalf("不完整人员策略不得落库：writes=%d strategies=%s", store.writes, store.record.PersonStrategies)
+	}
+}

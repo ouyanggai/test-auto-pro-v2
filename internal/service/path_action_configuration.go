@@ -1169,8 +1169,29 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				}
 				pendingPersons[person.Key] = autoPersonStrategy(person, autoConfigureSeed(planID, pathID, node.Key+":"+person.Key))
 			}
+			// F-034 评审 #1：提交前对本节点每个自动生成的人员策略做统一校验——
+			// 策略类型、空策略、最少/最多人数与人员来源（候选范围）必须全部通过；
+			// 任一必需人员策略校验失败时不提交该节点的 pending 人员、不标记已配置，
+			// 并返回明确的节点名称、人员策略与失败原因，避免“配置成功但运行时才报错”。
 			commitPendingPersons := func() {
 				for key, strategy := range pendingPersons {
+					var source *model.PathConfigPerson
+					for pi := range node.Persons {
+						if node.Persons[pi].Key == key {
+							source = &node.Persons[pi]
+							break
+						}
+					}
+					if source == nil {
+						blockingRejections = append(blockingRejections, "节点 "+node.Name+" 人员策略「"+key+"」不合法（节点没有对应的人员候选目录）")
+						delete(pendingPersons, key)
+						continue
+					}
+					if reason := validateAutoNodePerson(*source, strategy); reason != "" {
+						blockingRejections = append(blockingRejections, "节点 "+node.Name+" 人员策略「"+source.Title+"」不合法（"+reason+"）")
+						delete(pendingPersons, key)
+						continue
+					}
 					personStrategies[key] = strategy
 					changed = true
 				}
@@ -1269,6 +1290,47 @@ func validateAutoCandidatePerson(validation analyzer.PathConfigValidation, nodeK
 	}
 	_, reason := analyzer.EncodePathConfigPersonStrategy(*personTarget, *candidate.person)
 	return reason
+}
+
+// validateAutoNodePerson 按节点人员投影统一校验自动生成的人员策略（F-034 评审 #1）：
+// 策略类型必须在模板允许范围、选择不能为空、数量必须满足最少/最多人数、
+// 选择必须来自节点当前候选范围（人员来源合法）。失败返回面向用户的原因，全部通过返回空串。
+func validateAutoNodePerson(person model.PathConfigPerson, strategy model.PathConfigPersonStrategyInput) string {
+	if strings.TrimSpace(strategy.Key) != strings.TrimSpace(person.Key) {
+		return "人员策略稳定键与节点处理人员不一致"
+	}
+	if strings.TrimSpace(strategy.Strategy) == "" {
+		return "人员策略为空"
+	}
+	allowed := false
+	for _, option := range person.Strategies {
+		if option.Value == strings.TrimSpace(strategy.Strategy) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "人员策略不属于当前模板允许范围"
+	}
+	if len(strategy.Selected) == 0 && person.Required {
+		return analyzer.PathConfigPersonSelectionIssue(person.Required, person.MinCount, person.MaxCount, 0)
+	}
+	for _, selected := range strategy.Selected {
+		inOptions := false
+		for _, option := range person.Options {
+			if option.Value == selected {
+				inOptions = true
+				break
+			}
+		}
+		if !inOptions {
+			return "包含不属于当前节点候选范围的人员"
+		}
+	}
+	if reason := analyzer.PathConfigPersonSelectionIssue(person.Required, person.MinCount, person.MaxCount, len(strategy.Selected)); reason != "" {
+		return reason
+	}
+	return ""
 }
 
 // diagnosticSummaryOfNode 取该节点最新一条诊断文案；没有时返回空串，由 rejections 兜底。
@@ -1456,4 +1518,10 @@ func ConfirmedNodeKeysJSONForTest(current []byte, actions []model.ConfiguredActi
 // 策略合法性、最小/最大人数与人员令牌必须通过 analyzer.EncodePathConfigPersonStrategy 校验。
 func ValidateAutoCandidatePersonForTest(validation analyzer.PathConfigValidation, nodeKey string, action model.ActionKey, person *model.PathConfigPersonStrategyInput) string {
 	return validateAutoCandidatePerson(validation, nodeKey, autoExtraCandidate{action: model.ConfiguredAction{Action: action}, person: person})
+}
+
+// ValidateAutoNodePersonForTest 暴露节点人员策略统一校验，供 test 目录锁定 F-034 评审 #1 行为：
+// 策略类型、空策略、最少/最多人数与候选来源不满足时必须给出明确原因。
+func ValidateAutoNodePersonForTest(person model.PathConfigPerson, strategy model.PathConfigPersonStrategyInput) string {
+	return validateAutoNodePerson(person, strategy)
 }
