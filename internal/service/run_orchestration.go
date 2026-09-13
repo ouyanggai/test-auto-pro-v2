@@ -1618,11 +1618,12 @@ func parseLogLine(line string) map[string]string {
 }
 
 // actionNameOf 返回动作的中文名（落账事实里只有动作键）。
+// F-034 T03：未知键不再原样透出英文稳定键，统一用安全中文占位，原始键只能去日志里查。
 func actionNameOf(action string) string {
 	if name := model.ActionChineseName(model.ActionKey(action)); name != "" {
 		return name
 	}
-	return action
+	return "未识别动作"
 }
 
 // stepStatusName 返回步骤事实状态的中文显示名。
@@ -1691,7 +1692,9 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 	return &RunPreviewDTO{
 		StepNo: preview.StepNo, TotalSteps: preview.TotalSteps,
 		ReleaseGroup: preview.ReleaseGroup, ReleaseRequired: preview.ReleaseRequired,
-		Action: string(preview.Action), ActionName: preview.ActionName,
+		// F-034 T03：预览名称直接透传会在导航/历史场景出现空名或原始动作键；
+		// 这里统一经过集中中文映射，已知动作键始终返回中文名。
+		Action: string(preview.Action), ActionName: actionNameOf(string(preview.Action)),
 		NodeKey: preview.NodeKey, NodeName: preview.NodeName,
 		ActorName: preview.ActorName, ExpectedEffect: preview.ExpectedEffect,
 		Endpoint: preview.Endpoint, RequestPreview: preview.RequestPreview,

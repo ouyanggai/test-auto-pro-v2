@@ -475,7 +475,13 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 	s.mu.Unlock()
 	if configurator != nil {
 		if err := configurator.AutoConfigurePathActions(ctx, planID, item.PathID); err != nil {
-			result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "AUTO_ACTION_CONFIGURE_FAILED", Message: "节点动作未能自动配置完成，请打开路径手工确认", Blocking: false})
+			// F-034：一键配置的淘汰原因（节点 X 未找到可安全配置的额外动作：原因 Y）随错误文案透出，
+			// 不再用一句泛化提示掩盖具体节点；写入本身已按部分成功落盘。
+			message := "节点动作未能自动配置完成，请打开路径手工确认"
+			if err.Error() != "" {
+				message = err.Error()
+			}
+			result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "AUTO_ACTION_CONFIGURE_FAILED", Message: message, Blocking: false})
 		}
 	}
 	if path.ConfigurationRevision != item.PathRevision {

@@ -453,28 +453,31 @@ func autoInitiatorNode(key string, kinds []string) model.PathConfigNode {
 	}
 }
 
-// TestAutoNodeActionPrefersUncoveredEnabledActions 验证一键配置的自动动作选择：
-// 只取已启用且不需要人员和必填参数的动作，跨节点优先覆盖尚未用过的可流转动作，且结果可复现。
-// 覆盖轮转只发生在可流转动作之间；拒绝/暂存等让路径停住的动作不参与自动编排。
-func TestAutoNodeActionPrefersUncoveredEnabledActions(t *testing.T) {
+// TestAutoNodeActionInitiatorOnlySaveDraft 验证 F-034 矩阵：发起节点唯一可自动补配的额外动作是“保存草稿”；
+// 提交由固定尾动作承载，重新提交是恢复链动作不许随机分配，其他键不出现在候选里。
+func TestAutoNodeActionInitiatorOnlySaveDraft(t *testing.T) {
 	used := map[string]bool{}
-	first, ok := service.AutoNodeActionForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), used)
-	if !ok || first.NodeKey != "node-a" {
-		t.Fatalf("第一个节点没有自动选出动作：%+v", first)
+	first, _, ok, _ := service.AutoExtraCandidatesForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), used)
+	if !ok || first.NodeKey != "node-a" || first.Action != model.ActionSaveDraft {
+		t.Fatalf("发起节点应只选出保存草稿：%+v ok=%v", first, ok)
 	}
-	used[string(first.Action)] = true
-	second, ok := service.AutoNodeActionForTest(41, 51, autoInitiatorNode("node-b", []string{"save_draft", "resubmit"}), used)
-	if !ok || second.Action == first.Action {
-		t.Fatalf("第二个节点没有优先覆盖尚未用过的动作：first=%s second=%s", first.Action, second.Action)
-	}
-	for _, action := range []model.ConfiguredAction{first, second} {
-		if action.Action == "transfer" {
-			t.Fatalf("需要显式选人的动作不应被自动编排：%+v", action)
-		}
-	}
-	repeat, _ := service.AutoNodeActionForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), map[string]bool{})
-	if repeat.Action != first.Action || repeat.Key != first.Key {
+	// 重复点击结果可复现：同一节点同一种子选出的动作键与语义一致。
+	repeat, _, okRepeat, _ := service.AutoExtraCandidatesForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), map[string]bool{})
+	if !okRepeat || repeat.Action != first.Action || repeat.Key != first.Key {
 		t.Fatalf("同一节点重复自动配置结果不稳定：%+v / %+v", first, repeat)
+	}
+}
+
+// TestAutoNodeActionInitiatorWithoutCatalogReportsReason 验证发起节点目录缺失保存草稿时给出精确淘汰原因，
+// 不再用提交/重新提交凑数。
+func TestAutoNodeActionInitiatorWithoutCatalogReportsReason(t *testing.T) {
+	node := autoInitiatorNode("node-b", []string{"resubmit"})
+	_, _, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
+	if ok {
+		t.Fatal("目录没有保存草稿时不应给出候选")
+	}
+	if len(rejections) == 0 || !strings.Contains(strings.Join(rejections, "；"), "保存草稿") {
+		t.Fatalf("淘汰原因应定位到保存草稿：%v", rejections)
 	}
 }
 
@@ -580,80 +583,99 @@ func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {
 	}
 }
 
-// TestAutoNodeActionCandidatesOrderCoversThenSeeds 验证自动动作候选顺序：
-// 同一节点重复计算顺序稳定，不可流转的动作（暂存/不同意）不参与候选，
-// 需要显式选人和编译器插入的动作不参与。
-func TestAutoNodeActionCandidatesOrderCoversThenSeeds(t *testing.T) {
-	node := autoConfigureNode("node-a", []string{"approve", "reject", "storage_form_data"})
-	first, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
+// TestAutoNodeActionSafetyRankAndCoverage 验证 F-034 候选顺序：安全等级优先（暂存表单最安全），
+// 同级内本路径未使用动作前置，再按稳定种子轮转；结果可复现。
+func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
+	node := autoConfigureNode("node-a", []string{"approve", "reject", "storage_form_data", "add_sign", "rollback_previous"})
+	first, person, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
 	if !ok {
-		t.Fatal("节点应至少给出一个候选动作")
+		t.Fatal("审批节点应至少给出一个候选动作")
 	}
-	if first.Action != "approve" {
-		t.Fatalf("审批节点唯一可流转动作是同意，实际选出：%s", first.Action)
+	if first.Action != model.ActionStorageFormData {
+		t.Fatalf("审批节点最安全额外动作是暂存表单，实际选出：%s", first.Action)
 	}
-	skipped, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{string(first.Action): true})
-	if !ok || skipped.Action != "approve" {
-		t.Fatalf("已覆盖动作没有让位给剩余可流转动作：first=%s next=%s", first.Action, skipped.Action)
+	// 跨节点多样性：同安全等级内，同一路径中已用过的动作让位给未用过的动作。
+	// 不同等级之间安全优先：暂存表单（等级 0）被用过时，不同意的未使用也不越级。
+	secondNode := autoConfigureNode("node-b", []string{"storage_form_data", "reject"})
+	second, _, okSecond, _ := service.AutoExtraCandidatesForTest(41, 51, secondNode, map[string]bool{string(model.ActionStorageFormData): true})
+	if !okSecond || second.Action != model.ActionStorageFormData {
+		t.Fatalf("安全等级优先于多样性，应继续选暂存表单：second=%s ok=%v", second.Action, okSecond)
 	}
-	repeat, _ := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
-	if repeat.Action != first.Action {
-		t.Fatalf("同一节点候选顺序不稳定：%s / %s", first.Action, repeat.Action)
+	// 同等级多样性：两个节点都只有加签/移交（等级 1）时，第二个节点选未用过的那个。
+	rankOneNode := func(key string) model.PathConfigNode {
+		return model.PathConfigNode{Key: key, Name: key, Kind: "common", Status: "pending",
+			ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
+				{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true,
+					Person: &model.PathConfigPerson{Key: key + ":add_sign", Title: "加签处理人", MinCount: 1, MaxCount: 1,
+						Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}},
+						Strategies: []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}}}},
+				{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true, RequiresPerson: true,
+					Person: &model.PathConfigPerson{Key: key + ":transfer", Title: "移交处理人", MinCount: 1, MaxCount: 1,
+						Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}},
+						Strategies: []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}}}},
+			}}}
 	}
-}
-
-// TestAutoNodeActionSkipsNonAdvancingKinds 验证一键配置只为节点选择能让主实例离开的动作：
-// 暂存/取回/回退/不同意/移交/催办/关注即使"尚未覆盖"也不参与自动选择——
-// 不同意会把实例退回发起端重走全链而上游动作已消费，其余动作单独配置必然停在当前待办；
-// 覆盖动作种类不能替代路径可流转。
-func TestAutoNodeActionSkipsNonAdvancingKinds(t *testing.T) {
-	node := autoConfigureNode("node-a", []string{"approve", "reject", "storage_form_data", "rollback_previous"})
-	nonAdvancing := map[string]bool{
-		"reject": true, "storage_form_data": true, "rollback_previous": true, "retrieve": true,
-		"transfer": true, "add_sign": true, "urge": true, "forward": true,
-		"follow": true, "unfollow": true,
+	firstRankOne, _, okA, _ := service.AutoExtraCandidatesForTest(41, 51, rankOneNode("node-r1a"), map[string]bool{})
+	if !okA {
+		t.Fatal("等级一候选应存在")
 	}
-	used := map[string]bool{}
-	for {
-		first, ok := service.AutoNodeActionForTest(41, 51, node, used)
-		if !ok {
-			t.Fatal("存在可流转动作时节点应给出候选")
-		}
-		if nonAdvancing[string(first.Action)] {
-			t.Fatalf("一键配置选中了不可流转动作：%s", first.Action)
-		}
-		if used[string(first.Action)] {
-			break
-		}
-		used[string(first.Action)] = true
-		if len(used) >= 8 {
-			t.Fatalf("候选轮转发散：%+v", used)
-		}
+	secondRankOne, _, okB, _ := service.AutoExtraCandidatesForTest(41, 51, rankOneNode("node-r1b"), map[string]bool{string(firstRankOne.Action): true})
+	if !okB || secondRankOne.Action == firstRankOne.Action {
+		t.Fatalf("同等级内未使用动作应前置：first=%s second=%s", firstRankOne.Action, secondRankOne.Action)
+	}
+	// 需要人员的动作（如加签）在没有动作专属候选时不能自动配置，但暂存/不同意不受影响。
+	if person != nil {
+		t.Fatalf("暂存表单不需要动作专属人员策略：%+v", person)
 	}
 }
 
-// TestAutoNodeActionInitiatorOnlyAdvancing 验证发起节点的自动选择：
-// 保存草稿由编译器补提交恢复属于可流转动作；催办/关注不改变主实例状态，不得被选中。
-func TestAutoNodeActionInitiatorOnlyAdvancing(t *testing.T) {
+// TestAutoNodeActionRequiresPersonCandidateFromActionCatalog 验证需要人员的候选（加签/移交）
+// 只有动作专属目录返回候选时才可接受，且生成的策略是动作私有键，不复用节点主处理人键。
+func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 	node := model.PathConfigNode{
-		Key: "node-init", Name: "发起人", Kind: "start", Status: "pending",
+		Key: "node-sign", Name: "审批节点", Kind: "common", Status: "pending",
 		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
-			{Kind: "save_draft", Scope: "initiator", Label: "保存草稿", Enabled: true},
-			{Kind: "urge", Scope: "instance", Label: "催办", Enabled: true},
-			{Kind: "follow", Scope: "instance", Label: "关注", Enabled: true},
+			{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true,
+				Person: &model.PathConfigPerson{Key: "node-sign:add_sign", Title: "加签处理人", MinCount: 1, MaxCount: 1,
+					Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}, {Label: "候选乙", Value: "candidate-b"}},
+					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}}}},
 		}},
 	}
-	first, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{})
-	if !ok || first.Action != "save_draft" {
-		t.Fatalf("发起节点应只选可流转动作：%+v", first)
+	action, person, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
+	if !ok || action.Action != model.ActionAddSign {
+		t.Fatalf("有完整动作专属候选时应选出加签：%+v ok=%v", action, ok)
+	}
+	if person == nil || person.Key != "node-sign:add_sign" || len(person.Selected) != 1 {
+		t.Fatalf("动作专属人员策略应基于动作私有键生成：%+v", person)
+	}
+
+	// 候选缺失：无动作专属人员时候选被淘汰并给出精确原因。
+	missing := model.PathConfigNode{
+		Key: "node-sign2", Name: "审批节点", Kind: "common", Status: "pending",
+		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
+			{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true},
+		}},
+	}
+	_, _, okMissing, rejections := service.AutoExtraCandidatesForTest(41, 51, missing, map[string]bool{})
+	if okMissing {
+		t.Fatal("没有动作专属候选时不应接受加签")
+	}
+	if len(rejections) == 0 || !strings.Contains(strings.Join(rejections, "；"), "加签") {
+		t.Fatalf("淘汰原因应定位到加签：%v", rejections)
 	}
 }
 
-// TestAutoNodeActionUnconfigurableWhenNoAdvancingKind 验证目录里没有可流转动作时不再假装可配置：
-// 一键配置应放弃该节点（保持待配置、阻塞运行前检查），而不是选一个必然停住的暂存动作凑数。
-func TestAutoNodeActionUnconfigurableWhenNoAdvancingKind(t *testing.T) {
-	node := autoConfigureNode("node-only-storage", []string{"storage_form_data", "retrieve"})
-	if first, ok := service.AutoNodeActionForTest(41, 51, node, map[string]bool{}); ok {
-		t.Fatalf("没有可流转动作时应放弃自动选择，实际选出：%+v", first)
+// TestAutoNodeActionSystemNodesNoCandidates 验证系统/空节点不补任何用户动作。
+func TestAutoNodeActionSystemNodesNoCandidates(t *testing.T) {
+	for _, kind := range []string{"condition", "manual", "parallel", "merge", "empty", "end", "timer"} {
+		node := model.PathConfigNode{
+			Key: "node-" + kind, Name: kind, Kind: kind, Status: "pending",
+			ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
+				{Kind: "storage_form_data", Scope: "task", Label: "暂存当前表单", Enabled: true},
+			}},
+		}
+		if action, _, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{}); ok {
+			t.Fatalf("系统节点 %s 不应有用户动作候选：%+v", kind, action)
+		}
 	}
 }

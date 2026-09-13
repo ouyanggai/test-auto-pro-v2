@@ -3,6 +3,7 @@ import { NButton, NEmpty, NModal, NTag, useMessage, useThemeVars } from 'naive-u
 import { computed, ref, watch } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
+import { actionLabel } from './presentation'
 import type { PathRunDetail, RunNodePlanAction, RunPreview, RunRequestItem, RunStep, RunStepAttempt } from './api'
 
 // RunNodePanel 是点击画布节点后才出现的检视面板：三个页签只给简要事实，
@@ -49,6 +50,14 @@ const currentPreview = computed<RunPreview | null>(() => (isCurrentNode.value ? 
 // planActions 是本次运行在这个节点上的已配置计划（服务端由编译场景归组，全部中文）。
 const planActions = computed<RunNodePlanAction[]>(() => props.detail.nodePlans?.[props.nodeKey] ?? [])
 
+// previewActionLabel 当前步动作的用户可见名称：集中映射避免原始动作键出现在界面（F-034 T03）。
+const previewActionLabel = computed(() => actionLabel(currentPreview.value?.actionName, currentPreview.value?.action))
+
+// stepActionLabel 已落账步骤的动作名：旧记录只有动作键时走同一张白名单。
+function stepActionLabel(step: RunStep): string {
+  return actionLabel(step.actionName, undefined)
+}
+
 // NodeErrorRow 是错误页签的一行：标题、结论、一句话原因，详情留给弹窗。
 interface NodeErrorRow {
   key: string
@@ -71,19 +80,19 @@ const nodeErrors = computed<NodeErrorRow[]>(() => {
   if (preview && !preview.gateAllowed) {
     rows.push({
       key: 'gate',
-      title: `当前步：${preview.actionName || preview.action}`,
+      title: `当前步：${actionLabel(preview.actionName, preview.action)}`,
       verdict: '条件未满足',
       reason: preview.gateReason || preview.blockReason || '见下面的检查结果',
     })
   } else if (preview?.blockReason) {
-    rows.push({ key: 'block', title: `当前步：${preview.actionName || preview.action}`, verdict: '放行被阻塞', reason: preview.blockReason })
+    rows.push({ key: 'block', title: `当前步：${actionLabel(preview.actionName, preview.action)}`, verdict: '放行被阻塞', reason: preview.blockReason })
   }
   for (const step of nodeSteps.value) {
     for (const attempt of step.attempts) {
       if (isSuccessfulAttempt(attempt)) continue
       rows.push({
         key: `${step.stepNo}-${attempt.attemptNo}`,
-        title: `第 ${step.stepNo} 步 · ${step.actionName}`,
+        title: `第 ${step.stepNo} 步 · ${stepActionLabel(step)}`,
         verdict: attempt.verdictName,
         reason: attempt.reason,
         step,
@@ -463,7 +472,7 @@ const dialogStyle = computed(() => ({
       <section v-show="activeTab === 'facts'" aria-label="节点运行信息">
         <div v-if="currentPreview" class="run-panel__block">
           <div class="run-panel__block-head">
-            <span class="run-panel__block-title">当前步：{{ currentPreview.actionName || currentPreview.action }}</span>
+            <span class="run-panel__block-title">当前步：{{ previewActionLabel }}</span>
             <n-button text size="tiny" type="info" @click="openStepDialog()">详情</n-button>
           </div>
           <p>处理人：{{ currentPreview.actorName || '执行时按已配置人员策略确定' }}</p>
@@ -475,7 +484,7 @@ const dialogStyle = computed(() => ({
         <ul class="run-panel__rows">
           <li v-for="step in nodeSteps" :key="step.stepNo" class="run-panel__row">
             <div class="run-panel__row-main">
-              <span class="run-panel__row-title">第 {{ step.stepNo }} 步 · {{ step.actionName }}</span>
+              <span class="run-panel__row-title">第 {{ step.stepNo }} 步 · {{ stepActionLabel(step) }}</span>
               <span class="run-panel__row-sub">{{ step.statusName }} · 耗时 {{ formatElapsed(step.durationMs) }} · 开始于 {{ formatTime(step.startedAt) }}</span>
             </div>
             <n-button text size="tiny" type="info" @click="openStepDialog(step)">详情</n-button>
@@ -513,7 +522,7 @@ const dialogStyle = computed(() => ({
       :show="planDialog !== null"
       preset="card"
       :style="dialogStyle"
-      :title="`计划动作：${planDialog?.actionName || ''}`"
+      :title="`计划动作：${actionLabel(planDialog?.actionName, undefined)}`"
       @update:show="planDialog = null"
     >
       <dl v-if="planDialog" class="run-panel__facts">
@@ -542,7 +551,7 @@ const dialogStyle = computed(() => ({
     >
       <template v-if="currentPreview">
         <dl class="run-panel__facts">
-          <div><dt>动作</dt><dd>{{ currentPreview.actionName || currentPreview.action }}</dd></div>
+          <div><dt>动作</dt><dd>{{ previewActionLabel }}</dd></div>
           <div><dt>步序</dt><dd>第 {{ currentPreview.stepNo }} 步，共 {{ currentPreview.totalSteps }} 步</dd></div>
           <div><dt>处理人</dt><dd>{{ currentPreview.actorName || '执行时按已配置人员策略确定' }}</dd></div>
           <div v-if="currentPreview.expectedEffect"><dt>预期效果</dt><dd>{{ currentPreview.expectedEffect }}</dd></div>
