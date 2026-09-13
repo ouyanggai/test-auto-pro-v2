@@ -109,7 +109,7 @@ func (s *Service) BackToRunning(ctx context.Context, pathRunID uint64) error {
 	_, err := s.store.AdvancePathRunStatus(ctx, pathRunID,
 		model.PathRunStatusVerifying, model.PathRunStatusRunning, model.RunEvent{
 			Kind:  "path_run_step_settled",
-			Label: "本步落账完毕，进入下一步",
+			Label: "本步结果确认并记录完成，进入下一步",
 		}, s.now())
 	if err != nil {
 		if pathRun, getErr := s.store.GetPathRun(ctx, pathRunID); getErr == nil && pathRun.Status == model.PathRunStatusRunning {

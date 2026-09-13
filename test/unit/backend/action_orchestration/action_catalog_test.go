@@ -140,7 +140,7 @@ func TestActionCatalogRecoveryAndInstanceGates(t *testing.T) {
 		gated := retrieve
 		context.set(&gated)
 		items = indexCatalog(actioncatalog.Build(gated))
-		if items[model.ActionRetrieve].Enabled || items[model.ActionRetrieve].DisabledReason != "会签或并行节点已有其他演员处理，不支持取回" {
+		if items[model.ActionRetrieve].Enabled || items[model.ActionRetrieve].DisabledReason != "会签或并行节点已有其他处理人处理，不支持取回" {
 			t.Fatalf("%s其他演员已处理却允许取回：%+v", context.name, items[model.ActionRetrieve])
 		}
 	}

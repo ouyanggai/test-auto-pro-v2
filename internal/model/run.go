@@ -119,7 +119,7 @@ func PathRunStatusName(status PathRunStatus) string {
 	case PathRunStatusRunning:
 		return "运行中"
 	case PathRunStatusVerifying:
-		return "核验中"
+		return "确认结果中"
 	case PathRunStatusCompleted:
 		return "已完成"
 	case PathRunStatusFailed:
@@ -248,7 +248,7 @@ func FailureClassName(class FailureClass) string {
 	case FailureClassGateBlocked:
 		return "放行条件不满足"
 	case FailureClassActorUnresolved:
-		return "演员不可解析"
+		return "处理人身份未确认"
 	case FailureClassTargetRejected:
 		return "目标拒绝"
 	case FailureClassWriteUncertain:
@@ -271,12 +271,12 @@ type Run struct {
 	// PathDispatch 是本运行的计划内路径调度方式（serial / parallel）：来自启动弹窗的本次选择，
 	// 与 MaxConcurrency 配套决定调度器是否给等待路径补位；空值按串行处理。
 	PathDispatch string
-	Status         RunStatus
-	Result         *RunResult
-	StartedAt      *time.Time
-	FinishedAt     *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	Status       RunStatus
+	Result       *RunResult
+	StartedAt    *time.Time
+	FinishedAt   *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 	// IdempotencyKey 是启动请求的幂等键：同键重试返回同一次运行，绝不创建第二个运行（F-020）。
 	IdempotencyKey string
 	// PresetBreakpoints 是启动时预置的断点集合原始 JSON：调度器在每条路径运行开始时重放同一预置。

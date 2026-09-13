@@ -681,7 +681,7 @@ func (s *Service) applyPendingMode(ctx context.Context, pathRunID uint64, sessio
 	session.mode = mode
 	runID := session.runCtx.Run.ID
 	s.mu.Unlock()
-	s.appendModeSwitchedFact(ctx, pathRunID, runID, mode, "本步已走完核验与落账")
+	s.appendModeSwitchedFact(ctx, pathRunID, runID, mode, "本步已完成结果确认与记录")
 	if mode == model.RunModeSingleStep {
 		s.mu.Lock()
 		session.stopReason = fmt.Sprintf("已切换为单步模式（第 %d 步走完后生效）：下一步执行前等待放行", stepNo)
@@ -975,7 +975,7 @@ func (s *Service) appendPausedFact(ctx context.Context, pathRunID uint64, sessio
 	s.logFact(pathRunID, pausedFact, stepNo)
 	s.mu.Lock()
 	if current := s.active[pathRunID]; current == session {
-		session.stopReason = "暂停请求已生效（本步已走完核验与落账）"
+		session.stopReason = "暂停请求已生效（本步已完成结果确认与记录）"
 		session.pauseRequested = false
 	}
 	s.mu.Unlock()
@@ -1021,7 +1021,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		// 不判终局、不清现场、不落结论尝试行（2026-09-11 用户裁决）。
 		s.mu.Lock()
 		session.reverifyPending = true
-		session.stopReason = "核验读取失败，已停在本步；重新放行只重新读取结果，不会重复发写请求"
+		session.stopReason = "结果读取失败，已停在本步；重新放行只重新读取结果，不会重复发写请求"
 		s.mu.Unlock()
 		return result, nil
 	}
@@ -1098,7 +1098,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		s.mu.Unlock()
 		_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 			RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
-			Kind: "path_deviation", Label: "核验发现实际分支与已配置路径不一致，下一步将强制停止且不提供放行",
+			Kind: "path_deviation", Label: "结果确认发现实际分支与已配置路径不一致，下一步将强制停止且不提供放行",
 		}, s.now())
 	}
 

@@ -407,7 +407,7 @@ func actionRuntimeNote(action model.ActionKey, previousReason string) string {
 	case model.ActionRetrieve:
 		return "取回需要当前节点已有已办任务；缺少已办事实时编译器会插入一次准备同意。"
 	case model.ActionTransfer:
-		return "移交演员只能来自目标运行时实时受限候选，保存时只记录演员策略。"
+		return "移交处理人只能来自目标运行时实时受限候选，保存时只记录处理人策略。"
 	case model.ActionAddSign:
 		return "加签必要时会创建实例私有代理并重映射任务，后续步骤必须重读代理与待办。"
 	case model.ActionRollback:

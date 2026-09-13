@@ -27,7 +27,7 @@ let requestVersion = 0
 const active = computed(() => job.value?.status === 'PENDING' || job.value?.status === 'RUNNING')
 const stageName = computed(() => ({
   QUEUED: '排队', INSPECT: '来源复核', SYNC: '同步原样区', SYNC_CHECK: '同步校验', BUILD: '构建候选',
-  RESTART: '切换候选', VERIFY: '健康核验', COMPLETED: '已完成',
+  RESTART: '切换候选', VERIFY: '健康检查', COMPLETED: '已完成',
 }[job.value?.stage || 'QUEUED']))
 const statusType = computed(() => job.value?.status === 'SUCCEEDED' ? 'success' : job.value?.status === 'FAILED' ? 'error' : 'warning')
 

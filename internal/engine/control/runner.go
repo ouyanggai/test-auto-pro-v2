@@ -208,7 +208,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 				RunID: runID, PathRunID: pathRunID,
 				Kind: model.ControlFactPaused, Source: model.RunControlSourceUI, CreatedAt: s.now(),
 			}
-			reason := "暂停请求已生效（本步已走完核验与落账）"
+			reason := "暂停请求已生效（本步已完成结果确认与记录）"
 			if err := s.store.AppendRunControl(ctx, pausedFact, s.now()); err != nil {
 				reason = loopFailureReason("暂停事实", err)
 			} else {

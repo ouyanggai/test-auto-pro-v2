@@ -215,7 +215,7 @@ func (c *compiler) emitFixedTaskTail(nodeKey string) {
 	c.addGroupedStep(model.CompiledActionStep{
 		Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
 		Precondition:   "当前人工节点所有用户动作已执行，且该节点仍有活动待办",
-		ExpectedEffect: expectedEffect(model.ActionApprove), StopOnFailure: "当前待办条件不满足时停止，不切换到其他演员",
+		ExpectedEffect: expectedEffect(model.ActionApprove), StopOnFailure: "当前待办条件不满足时停止，不切换到其他处理人",
 		RecoveryPolicy: "重新读取实例状态、当前待办和真实路径", ReloadRequired: true,
 	}, true)
 	c.status = "run"
@@ -416,7 +416,7 @@ func validateActionStructure(action model.ConfiguredAction, index int, nodes map
 		}
 	}
 	if action.Action == model.ActionTransfer && action.ActorPolicy == "" {
-		return blockingIssue(index, action, "ACTOR_POLICY_REQUIRED", "移交动作必须明确目标演员策略")
+		return blockingIssue(index, action, "ACTOR_POLICY_REQUIRED", "移交动作必须明确目标处理人策略")
 	}
 	if parameter := forbiddenParameterPath(action.Parameters, ""); parameter != "" {
 		return blockingIssue(index, action, "ACTION_PARAMETER_TARGET_ID", "动作参数不能携带目标实例、任务、代理或人员临时标识："+parameter)
@@ -588,7 +588,7 @@ func validateAction(action model.ConfiguredAction, index int, nodes map[string]s
 		}
 	}
 	if action.Action == model.ActionTransfer && action.ActorPolicy == "" {
-		return issue(index, action, "ACTOR_POLICY_REQUIRED", "移交动作必须明确目标演员策略")
+		return issue(index, action, "ACTOR_POLICY_REQUIRED", "移交动作必须明确目标处理人策略")
 	}
 	if parameter := forbiddenParameterPath(action.Parameters, ""); parameter != "" {
 		return issue(index, action, "ACTION_PARAMETER_TARGET_ID", "动作参数不能携带目标实例、任务、代理或人员临时标识："+parameter)
@@ -631,7 +631,7 @@ func validateActionState(action model.ConfiguredAction, index int, resubmitReady
 // validateNodeOrder 阻止没有恢复步骤支撑的回跳或移交后隐式切换演员。
 func validateNodeOrder(action model.ConfiguredAction, index, nodeIndex, lastNodeIndex int, transferred bool) *model.ActionConfigurationIssue {
 	if transferred && action.Scope == model.ActionScopeTask && action.Action != model.ActionTransfer && action.ActorPolicy == "" {
-		return issue(index, action, "ACTOR_CONTINUITY_UNKNOWN", "移交后后续动作必须显式指定可回读的演员策略")
+		return issue(index, action, "ACTOR_CONTINUITY_UNKNOWN", "移交后后续动作必须显式指定可回读的处理人策略")
 	}
 	if nodeIndex >= 0 && lastNodeIndex >= 0 && nodeIndex < lastNodeIndex && action.Action != model.ActionRollback && action.Action != model.ActionRetrieve && action.Action != model.ActionResubmit {
 		return issue(index, action, "ACTION_PATH_BACKTRACK", "动作回到前序节点但没有回退或取回恢复步骤")
@@ -762,7 +762,7 @@ func expectedEffect(action model.ActionKey) string {
 	case model.ActionAddSign:
 		return "更新实例私有代理和追加人员后重读任务映射"
 	case model.ActionTransfer:
-		return "切换当前待办演员后停留当前节点并重读任务"
+		return "切换当前待办处理人后停留当前节点并重读任务"
 	case model.ActionApprove:
 		return "按目标引擎推进当前人工待办"
 	case model.ActionReject:

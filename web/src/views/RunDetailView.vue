@@ -138,7 +138,7 @@ async function runCommand(command: string): Promise<void> {
   }
 }
 
-// pauseNow 提交暂停请求（本步走完核验与落账后生效）。
+// pauseNow 提交暂停请求（本步完成结果确认与记录后生效）。
 const pausing = ref(false)
 
 async function pauseNow(): Promise<void> {
@@ -322,7 +322,7 @@ const runBusy = computed(() => acting.value
   || looping.value
   || Boolean(detail.value?.loopRunning)
   || Boolean(detail.value?.stepInFlight)
-  || detail.value?.pathRunStatusName === '核验中')
+  || detail.value?.pathRunStatusName === '确认结果中')
 
 // runStepNotes 按图节点 ID 汇总每个节点最近一次已落账步骤的紧凑事实：
 // 步序·动作·处理人·耗时都取自运行详情 DTO 的同源事实，卡片直接呈现，不点开右栏也能读。
@@ -620,7 +620,7 @@ const statusTagType = computed<'default' | 'info' | 'success' | 'warning' | 'err
     case '失败': return 'error'
     case '结果待确认': return 'warning'
     case '运行中':
-    case '核验中': return 'info'
+    case '确认结果中': return 'info'
     default: return 'default'
   }
 })
@@ -818,7 +818,7 @@ onBeforeUnmount(() => {
             <n-button
               size="small"
               :loading="switchingMode"
-              :title="`切换只影响当前路径，并在安全边界（本步走完核验与落账）后生效`"
+              :title="`切换只影响当前路径，并在安全边界（本步完成结果确认与记录）后生效`"
               @click="toggleMode"
             >切换为{{ targetModeName }}</n-button>
             <span v-if="modeFeedback" class="run-detail__mode-feedback" role="status">{{ modeFeedback }}</span>
@@ -907,7 +907,7 @@ onBeforeUnmount(() => {
             v-if="detail.loopRunning"
             size="small"
             :disabled="pausing || detail.pauseRequested"
-            :title="detail.pauseRequested ? '暂停请求已提交，本步走完核验与落账后生效' : '暂停请求只在本步走完核验与落账后生效，不会打断已发出的写请求'"
+            :title="detail.pauseRequested ? '暂停请求已提交，本步完成结果确认与记录后生效' : '暂停请求只在本步完成结果确认与记录后生效，不会打断已发出的写请求'"
             @click="pauseNow"
           >{{ detail.pauseRequested ? '暂停已请求' : '暂停' }}</n-button>
           <n-popconfirm :disabled="acting || overviewDone" @positive-click="stopRunAction">

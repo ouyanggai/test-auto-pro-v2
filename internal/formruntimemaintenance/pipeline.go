@@ -152,13 +152,13 @@ func (p *Pipeline) resumeDeployment(ctx context.Context, job Job, output io.Writ
 
 // verifyAndComplete 完成最终健康核验，并只在核验成功后标记 COMPLETED。
 func (p *Pipeline) verifyAndComplete(ctx context.Context, job Job, candidate, previous string, output io.Writer) (bool, error) {
-	writeStage(output, StageVerify, "核验切换后的运行时")
+	writeStage(output, StageVerify, "检查切换后的运行时")
 	if err := p.withLease(ctx, job, func(work context.Context) error {
 		return p.operator.Verify(work, candidate, previous, output)
 	}); err != nil {
 		return true, p.fail(ctx, job, StageVerify, err, output)
 	}
-	writeStage(output, StageCompleted, "同步、切换和健康核验完成")
+	writeStage(output, StageCompleted, "同步、切换和健康检查完成")
 	if err := p.store.Complete(ctx, Completion{ID: job.ID, WorkerID: p.workerID, FencingToken: job.FencingToken}); err != nil {
 		return true, err
 	}

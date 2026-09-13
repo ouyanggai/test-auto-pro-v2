@@ -344,7 +344,7 @@ func (o *PnpmOperator) CurrentVersion(ctx context.Context) (string, error) {
 			}
 			if err := o.health.Check(ctx, o.versionDir(version), ""); err != nil {
 				_ = os.RemoveAll(o.versionDir(version))
-				return "", fmt.Errorf("核验首次 previous: %w", err)
+				return "", fmt.Errorf("检查首次 previous: %w", err)
 			}
 		}
 	}
@@ -391,7 +391,7 @@ func (o *PnpmOperator) Verify(ctx context.Context, candidate, previous string, o
 	if err == nil {
 		return nil
 	}
-	return o.rollback(ctx, previous, fmt.Errorf("最终 HTTP 健康核验失败: %w", err), output)
+	return o.rollback(ctx, previous, fmt.Errorf("最终 HTTP 健康检查失败: %w", err), output)
 }
 
 // deploy 原子替换 live 源码和产物；任一步失败都恢复替换前现场。

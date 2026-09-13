@@ -159,7 +159,7 @@ func EvaluateBreakpointHits(facts StepFacts, set *BreakpointSet) []BreakpointHit
 	if facts.DeviationHit && set.Contains(Breakpoint{Type: model.BreakpointPathDeviation}) {
 		hits = append(hits, BreakpointHit{
 			Breakpoint: Breakpoint{Type: model.BreakpointPathDeviation},
-			Reason:     "上一步核验发现实际命中分支与已配置路径不一致",
+			Reason:     "上一步结果确认发现实际命中分支与已配置路径不一致",
 		})
 	}
 	if facts.IsWriteStep && set.Contains(Breakpoint{Type: model.BreakpointFirstWrite}) {

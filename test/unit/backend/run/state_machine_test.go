@@ -74,7 +74,7 @@ func TestF016NineChinesePathRunStates(t *testing.T) {
 		model.PathRunStatusNotStarted:             "未开始",
 		model.PathRunStatusWaiting:                "等待运行",
 		model.PathRunStatusRunning:                "运行中",
-		model.PathRunStatusVerifying:              "核验中",
+		model.PathRunStatusVerifying:              "确认结果中",
 		model.PathRunStatusPaused:                 "暂停",
 		model.PathRunStatusCompleted:              "已完成",
 		model.PathRunStatusFailed:                 "失败",

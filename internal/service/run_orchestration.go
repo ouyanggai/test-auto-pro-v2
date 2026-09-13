@@ -896,7 +896,7 @@ func runPathsSummary(pathRuns []model.PathRun) string {
 		{model.PathRunStatusStopped, "已停止"},
 		{model.PathRunStatusCancelled, "已取消"},
 		{model.PathRunStatusRunning, "运行中"},
-		{model.PathRunStatusVerifying, "核验中"},
+		{model.PathRunStatusVerifying, "确认结果中"},
 		{model.PathRunStatusPaused, "暂停"},
 		{model.PathRunStatusWaiting, "等待运行"},
 		{model.PathRunStatusCompleted, "已完成"},

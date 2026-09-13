@@ -101,11 +101,11 @@ var actionDefinitions = []actionDefinition{
 			{Name: "flowProxyProtocol.data.flowNodeTemplate.flowNodeAuditConfig.flowNodeDetailConfigList", Required: true, Description: "当前节点追加的人员明细"},
 		},
 		expectedEffect:     "通过 updateFlowProxy 必要时创建实例私有代理并追加审批人；后续任务按新代理继续。",
-		reloadRequirements: []string{"实例私有流程代理", "当前节点", "当前待办与演员", "代理任务映射"},
+		reloadRequirements: []string{"实例私有流程代理", "当前节点", "当前待办与处理人", "代理任务映射"},
 	},
 	{
 		action: model.ActionTransfer, category: model.ActionCategoryCurrentTodo, scope: model.ActionScopeTask,
-		label: "移交", description: "把当前活动待办移交给实时受限候选演员，不推进流程节点。",
+		label: "移交", description: "把当前活动待办移交给实时受限候选处理人，不推进流程节点。",
 		targetOperation: "/web/flowInstanceApi/approverAppend",
 		parameters: []model.ActionParameter{
 			{Name: "id", Required: true, Description: "目标流程实例键"},
@@ -114,10 +114,10 @@ var actionDefinitions = []actionDefinition{
 			{Name: "auditRecord.auditStatus", Value: "transfer", Required: true, Description: "固定移交结果"},
 			{Name: "auditRecord.executeDesc", Required: false, Description: "移交说明"},
 			{Name: "approverAppendVo.flowNodeProxyId", Required: true, Description: "当前节点代理键"},
-			{Name: "approverAppendVo.userIds", Required: true, Description: "实时受限候选中的新演员键集合"},
+			{Name: "approverAppendVo.userIds", Required: true, Description: "实时受限候选中的新处理人键集合"},
 		},
-		expectedEffect:     "当前待办演员切换为目标候选；节点位置不变，后续步骤必须重读任务。",
-		reloadRequirements: []string{"当前待办", "当前演员", "节点代理"},
+		expectedEffect:     "当前待办处理人切换为目标候选；节点位置不变，后续步骤必须重读任务。",
+		reloadRequirements: []string{"当前待办", "当前处理人", "节点代理"},
 	},
 	{
 		action: model.ActionApprove, category: model.ActionCategoryCurrentTodo, scope: model.ActionScopeTask,
@@ -158,12 +158,12 @@ var actionDefinitions = []actionDefinition{
 			{Name: "id", Required: true, Description: "目标流程实例键"},
 			{Name: "jobTaskId", Required: true, Description: "当前待办键，由服务端绑定"},
 		},
-		expectedEffect:     "实例回到真实直接前一待办并切换对应演员；前驱为发起节点时按目标规则阻止。",
-		reloadRequirements: []string{"实例当前节点", "直接前一待办", "当前演员", "待办列表"},
+		expectedEffect:     "实例回到真实直接前一待办并切换对应处理人；前驱为发起节点时按目标规则阻止。",
+		reloadRequirements: []string{"实例当前节点", "直接前一待办", "当前处理人", "待办列表"},
 	},
 	{
 		action: model.ActionRetrieve, category: model.ActionCategoryDoneRecovery, scope: model.ActionScopeCompletedTask,
-		label: "取回", description: "由已办任务所属演员在后继尚未处理时恢复该审批步骤。",
+		label: "取回", description: "由已办任务所属处理人在后继尚未处理时恢复该审批步骤。",
 		targetOperation: "/web/flowInstanceApi/retrieveProcess",
 		parameters: []model.ActionParameter{
 			{Name: "id", Required: true, Description: "目标流程实例键"},
@@ -412,12 +412,12 @@ func evaluateAddSign(ctx model.ActionContext) gateResult {
 // evaluateTransfer 要求目标后端允许切换当前待办演员，并保持当前任务不推进。
 func evaluateTransfer(ctx model.ActionContext) gateResult {
 	g := evaluateCurrentTask(ctx)
-	add(&g, "actor_switch_permission", "当前待办允许从实时受限候选切换演员", true, ctx.CanSwitchActor)
+	add(&g, "actor_switch_permission", "当前待办允许从实时受限候选切换处理人", true, ctx.CanSwitchActor)
 	if !g.enabled {
 		return g
 	}
 	if !ctx.CanSwitchActor {
-		return denyWith(g, "当前待办没有可用的移交演员候选或权限")
+		return denyWith(g, "当前待办没有可用的移交处理人候选或权限")
 	}
 	return g
 }
@@ -466,7 +466,7 @@ func evaluateRetrieve(ctx model.ActionContext) gateResult {
 	}
 	add(&g, "retrieve_node_not_start", "已办任务不在发起节点", true, notStart)
 	add(&g, "not_already_retrieved", "该已办任务尚未被取回", true, notUsed)
-	add(&g, "parallel_or_countersign_clear", "会签或并行后继没有其他演员已处理", true, notHandledByOther)
+	add(&g, "parallel_or_countersign_clear", "会签或并行后继没有其他处理人已处理", true, notHandledByOther)
 	if !ctx.HasCompletedTask {
 		return denyWith(g, "当前用户没有可取回的已完成任务")
 	}
@@ -486,7 +486,7 @@ func evaluateRetrieve(ctx model.ActionContext) gateResult {
 		return denyWith(g, "后继任务已经处理，不支持取回")
 	}
 	if !notHandledByOther {
-		return denyWith(g, "会签或并行节点已有其他演员处理，不支持取回")
+		return denyWith(g, "会签或并行节点已有其他处理人处理，不支持取回")
 	}
 	return g
 }

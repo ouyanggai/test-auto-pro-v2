@@ -103,7 +103,7 @@ function statusTagType(statusName: string): 'default' | 'info' | 'success' | 'wa
     case '失败': return 'error'
     case '结果待确认': return 'warning'
     case '运行中':
-    case '核验中': return 'info'
+    case '确认结果中': return 'info'
     default: return 'default'
   }
 }

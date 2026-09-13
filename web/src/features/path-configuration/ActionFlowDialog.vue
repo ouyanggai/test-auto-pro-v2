@@ -68,7 +68,7 @@ function stepDetails(step: PathCompiledActionStep) {
   const parameters = pathActionFlowParameters(step)
   return [
     { name: '执行前条件', value: step.precondition },
-    { name: '演员策略', value: step.actorPolicy ?? '' },
+    { name: '执行人策略', value: step.actorPolicy ?? '' },
     { name: '参数', value: parameters.join('；') },
     { name: '失败停止条件', value: step.stopOnFailure },
     { name: '恢复策略', value: step.recoveryPolicy },
