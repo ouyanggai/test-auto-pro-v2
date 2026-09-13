@@ -109,15 +109,25 @@ const nodeErrors = computed<NodeErrorRow[]>(() => {
   }
   // 中断步定位：中断时正在执行的那一步尚未落账，节点上没有任何步骤记录，
   // 若不在这里补一行，用户点开节点一片空白，无从知道问题出在哪（实测缺陷）。
+  // F-034 T06：不再无条件显示“结果待确认”——结构化阻塞 > 确定失败 > 执行中恢复 > 结果待确认。
   if (props.detail.interruptedNodeId && props.detail.interruptedNodeId === props.nodeKey && props.detail.interruptedNote) {
     rows.push({
       key: 'interrupted',
       title: '路径运行中断在这个节点',
-      verdict: '结果待确认',
+      verdict: interruptedVerdict.value,
       reason: props.detail.interruptedNote,
     })
   }
   return rows
+})
+
+// interruptedVerdict 按运行事实判定中断节点的展示语义：
+// 只有写结果不确定才用“结果待确认”；目标明确前置拒绝为“阻塞”；其他失败为“失败”。
+const interruptedVerdict = computed(() => {
+  if (props.detail.stopKind === 'blocked') return '阻塞'
+  if (props.detail.pathRunStatus === 'failed') return '失败'
+  if (props.detail.stepInFlight) return '正在执行，等待结果'
+  return '结果待确认'
 })
 
 // 切换节点时重选页签：有错误先给错误，否则给运行信息；运行中出现新错误不抢走用户当前视图。
@@ -206,6 +216,63 @@ function attemptRequests(step: RunStep): RunRequestItem[] {
   return step.attempts.flatMap(attempt => attempt.requests ?? [])
 }
 
+// stepOutcomeTitle 是步骤结果摘要的状态词（F-034 T06）：
+// 优先级：结构化阻塞 > 确定失败 > 结果待确认 > 运行中；只有写结果不确定才用“结果待确认”。
+const stepOutcomeTitle = computed(() => {
+  const step = stepDialog.value
+  if (!step) return ''
+  if (props.detail.stopKind === 'blocked') return '阻塞'
+  if (step.statusName.includes('失败')) return '失败'
+  if (step.statusName.includes('待确认') || step.statusName.includes('不确定')) return '结果待确认'
+  if (step.statusName.includes('成功') || step.statusName.includes('完成') || step.statusName.includes('跳过')) return '成功'
+  return step.statusName
+})
+
+// stepOutcomeTone 给结果摘要配语义色：阻塞与失败同色但文字不同，待确认单独色。
+const stepOutcomeTone = computed<'success' | 'error' | 'warning' | 'info'>(() => {
+  const title = stepOutcomeTitle.value
+  if (title === '成功') return 'success'
+  if (title === '阻塞' || title === '失败') return 'error'
+  if (title === '结果待确认') return 'warning'
+  return 'info'
+})
+
+// stepWhyText 回答“为什么不能/没能继续”（F-034 T06）：优先受控阻塞说明，其次尝试原因。
+const stepWhyText = computed(() => {
+  const step = stepDialog.value
+  if (!step) return ''
+  if (props.detail.stopKind === 'blocked') return props.detail.stopKindNote || '目标在执行前明确拒绝了请求：前置条件未满足'
+  const failedAttempt = step.attempts.find(attempt => !isSuccessfulAttempt(attempt))
+  return failedAttempt?.reason || ''
+})
+
+// stepNextText 回答“下一步怎么处理”（F-034 T06）：按结果语义给出可操作建议，不展示内部阶段。
+const stepNextText = computed(() => {
+  const title = stepOutcomeTitle.value
+  if (title === '阻塞') return '请按原因修正路径或人员配置后重新发起运行；本次没有产生任何目标写入'
+  if (title === '失败') return props.detail.retryable ? '可在节点面板点击「重试失败动作」，从失败步骤重新装填' : '请检查原因修正配置后重新发起运行'
+  if (title === '结果待确认') return '请先在目标平台确认实例当前状态，再决定是否重新发起；工具不会自动重发同一写请求'
+  return ''
+})
+
+// stepTimingNote 用一句白话解释步骤总耗时与接口等待的关系（F-034 T06）。
+const stepTimingNote = computed(() => {
+  const step = stepDialog.value
+  if (!step) return ''
+  const summary = stepRequestSummary.value
+  if (!summary || summary.count === 0) return `这一步共 ${formatElapsed(step.durationMs)}，暂无真实接口耗时记录`
+  const total = summary.allDurationsKnown ? formatElapsed(summary.totalMs) : `${formatElapsed(summary.totalMs)}+（部分未知）`
+  return `这一步共 ${formatElapsed(step.durationMs)}，其中目标接口等待 ${total}，其余时间用于读取当前待办和保存结果`
+})
+
+// requestResultText 请求行结果：优先后端业务摘要，无摘要时退回 HTTP/传输状态（F-034 T06）。
+function requestResultText(req: RunRequestItem): string {
+  if (req.resultSummary) return req.resultSummary
+  if (req.result === 'success') return '成功'
+  if (!req.statusCode) return '传输失败'
+  return `失败（HTTP ${req.statusCode}）`
+}
+
 // stepRequestSummary 多尝试汇总：聚合全部 attempt 的指标，保证明细列表与顶部指标是同一批数据
 // （审查 P1：此前只取第一条 attempt，重试或重新核验时明细与指标不一致）。
 const stepRequestSummary = computed(() => {
@@ -224,39 +291,6 @@ const stepRequestSummary = computed(() => {
   }
   return hasSummary ? merged : null
 })
-
-// stepRequestTotalText 目标请求耗时：没有可靠请求事实时明确说“暂无”，不显示 0ms；
-// 部分请求缺耗时实测时明确说“部分未知”，不把未知当 0 求和。
-const stepRequestTotalText = computed(() => {
-  const summary = stepRequestSummary.value
-  if (!summary) return '暂无记录'
-  if (!summary.allDurationsKnown) return `${formatElapsed(summary.totalMs)}+（部分未知）`
-  return formatElapsed(summary.totalMs)
-})
-
-// stepRequestCountText 请求次数：读+写合计。
-const stepRequestCountText = computed(() => {
-  const summary = stepRequestSummary.value
-  return summary ? `${summary.count} 次` : '—'
-})
-
-// stepWriteText 写请求：次数 + 单独计时的耗时，与读请求分开。
-const stepWriteText = computed(() => {
-  const summary = stepRequestSummary.value
-  if (!summary || summary.writeCount === 0) return '无'
-  return `${summary.writeCount} 次 · ${formatElapsed(summary.writeMs)}`
-})
-
-// requestPhaseLabel 把请求所属阶段翻译为用户口径；无阶段记录时如实显示。
-function requestPhaseLabel(phase?: string): string {
-  const found = phaseOrder.find(([key]) => key === phase)
-  return found ? found[1] : '（阶段未记录）'
-}
-
-// shortTrace 展示 trace 前 8 位，完整值点击复制。
-function shortTrace(traceId: string): string {
-  return traceId.length > 8 ? traceId.slice(0, 8) : traceId
-}
 
 // copyTrace 复制完整 trace_id，供在 curl.log / network.log 中检索原文。
 async function copyTrace(traceId: string): Promise<void> {
@@ -388,13 +422,6 @@ function statusTagType(statusName: string): 'success' | 'error' | 'warning' | 'i
   if (statusName.includes('成功') || statusName.includes('完成')) return 'success'
   if (statusName.includes('待确认') || statusName.includes('停止')) return 'warning'
   return 'info'
-}
-
-// attemptTone 给每次尝试加左边框语义色：成功绿色、失败红色、不确定橙色。
-function attemptTone(attempt: RunStepAttempt): string {
-  if (attempt.verdictName.includes('成功')) return 'run-panel__attempt--success'
-  if (attempt.verdictName.includes('不确定') || attempt.verdictName.includes('待确认')) return 'run-panel__attempt--warning'
-  return 'run-panel__attempt--error'
 }
 
 // gateTone 按门禁项文字是否包含未满足判断展示色，不改变服务端的事实口径。
@@ -585,127 +612,90 @@ const dialogStyle = computed(() => ({
       @update:show="stepDialog = null"
     >
       <template v-if="stepDialog">
-        <!-- F-030/T05：摘要先看——结论、节点、处理人一行说清，不把内部键当主标题。 -->
+        <!-- F-034 T06：首屏只回答五件事——做了什么、调哪个接口、耗时多久、返回什么、为什么能/不能继续。
+             内部阶段、逐项检查、参数键、日志与 curl 全部收进折叠的排查区。 -->
         <div class="run-panel__summary">
           <div class="run-panel__summary-main">
-            <n-tag size="small" :type="statusTagType(stepDialog.statusName)">{{ stepDialog.statusName }}</n-tag>
-            <span class="run-panel__summary-title">{{ stepDialog.actionName }}</span>
+            <n-tag size="small" :type="stepOutcomeTone">{{ stepOutcomeTitle }}</n-tag>
+            <span class="run-panel__summary-title">{{ stepActionLabel(stepDialog) }}</span>
             <span class="run-panel__summary-sub">{{ nodeName || stepDialog.nodeKey }} · 处理人：{{ stepDialog.actorName || '—' }}</span>
           </div>
-          <span class="run-panel__summary-time">{{ formatTime(stepDialog.startedAt) }} → {{ formatTime(stepDialog.finishedAt) }}</span>
+          <span class="run-panel__summary-time">步骤总耗时 {{ formatElapsed(stepDialog.durationMs) }}</span>
         </div>
 
-        <!-- 四个可比较指标：步骤总耗时与目标请求耗时严格分开，绝不把本地等待算进接口耗时。 -->
-        <div class="run-panel__metrics">
-          <div class="run-panel__metric">
-            <span class="run-panel__metric-value">{{ formatElapsed(stepDialog.durationMs) }}</span>
-            <span class="run-panel__metric-label">步骤总耗时</span>
-          </div>
-          <div class="run-panel__metric">
-            <span class="run-panel__metric-value">{{ stepRequestTotalText }}</span>
-            <span class="run-panel__metric-label">目标请求耗时</span>
-          </div>
-          <div class="run-panel__metric">
-            <span class="run-panel__metric-value">{{ stepRequestCountText }}</span>
-            <span class="run-panel__metric-label">请求次数</span>
-          </div>
-          <div class="run-panel__metric">
-            <span class="run-panel__metric-value">{{ stepWriteText }}</span>
-            <span class="run-panel__metric-label">其中写请求</span>
-          </div>
+        <!-- 为什么不能/不能继续 + 下一步怎么处理：阻塞与失败时紧邻结论显示。 -->
+        <div v-if="stepOutcomeTitle !== '成功'" class="run-panel__why">
+          <p v-if="stepWhyText" class="run-panel__why-reason">为什么不能继续：{{ stepWhyText }}</p>
+          <p v-if="stepNextText" class="run-panel__why-next">下一步：{{ stepNextText }}</p>
         </div>
 
-        <!-- 本地执行过程：阶段按顺序排列，用用户口径命名；没有记录时明确降级。 -->
+        <!-- 接口请求：按真实发生顺序的简洁行列表，每行只有类型、接口、真实耗时与结果摘要。 -->
         <section class="run-panel__section">
-          <p class="run-panel__section-title">本地执行过程</p>
-          <div v-if="stepDialog.attempts[0]?.phaseDurations" class="run-panel__phase-flow">
-            <div
-              v-for="[phase, label] in phaseFlow"
-              :key="phase"
-              class="run-panel__phase-step"
-              :class="{ 'run-panel__phase-step--empty': !(stepDialog.attempts[0].phaseDurations?.[phase] > 0) }"
-            >
-              <span class="run-panel__phase-name">{{ label }}</span>
-              <span class="run-panel__phase-ms">{{ formatElapsed(stepDialog.attempts[0].phaseDurations?.[phase] ?? -1) }}</span>
-            </div>
-          </div>
-          <p v-else class="run-panel__muted">{{ stepDialog.attempts[0]?.phaseDurationsNote || '暂无本地执行过程记录' }}</p>
-        </section>
-
-        <!-- 目标请求明细：真实接口请求按发生顺序排列，读写用文字标识不只靠颜色。 -->
-        <section class="run-panel__section">
-          <p class="run-panel__section-title">目标请求明细</p>
-          <table v-if="attemptRequests(stepDialog).length > 0" class="run-panel__req-table">
-            <thead>
-              <tr><th>类型</th><th>发生在</th><th>接口</th><th class="run-panel__req-num">耗时</th><th>结果</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="(req, index) in attemptRequests(stepDialog)" :key="index">
-                <td>
-                  <span class="run-panel__req-kind" :class="req.requestClass === 'write' ? 'run-panel__req-kind--write' : 'run-panel__req-kind--read'">
-                    {{ req.requestClass === 'write' ? '写入' : '读取' }}
-                  </span>
-                </td>
-                <td class="run-panel__req-phase">{{ requestPhaseLabel(req.phase) }}</td>
-                <td class="run-panel__req-endpoint">
-                  <span class="run-panel__req-path">{{ req.endpoint }}</span>
-                  <span v-if="req.retryAttempt > 1" class="run-panel__req-retry">第 {{ req.retryAttempt }} 次重试</span>
-                  <span v-if="req.statusCode && req.statusCode >= 400" class="run-panel__req-retry">HTTP {{ req.statusCode }}</span>
-                </td>
-                <td class="run-panel__req-num run-panel__mono">
-                  {{ req.durationKnown ? `${req.durationMs} ms` : '未知' }}
-                </td>
-                <td>
-                  <span :class="req.result === 'success' ? 'run-panel__ok' : 'run-panel__bad'">
-                    {{ req.result === 'success' ? '成功' : (req.statusCode ? `失败（HTTP ${req.statusCode}）` : '传输失败') }}
-                  </span>
-                  <a
-                    v-if="req.traceId"
-                    class="run-panel__req-trace"
-                    :title="`在 curl.log 中检索 ${req.traceId}`"
-                    @click.prevent="copyTrace(req.traceId)"
-                  >{{ shortTrace(req.traceId) }}</a>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-else class="run-panel__muted">暂无真实请求耗时记录（历史运行或读取类步骤未产生网络日志）</p>
-        </section>
-
-        <section v-if="gateSnapshotLines(stepDialog).length > 0" class="run-panel__section">
-          <p class="run-panel__section-title">这一步的检查</p>
-          <ul class="run-panel__conditions">
-            <li v-for="(line, index) in gateSnapshotLines(stepDialog)" :key="index" class="run-panel__condition" :class="gateTone(line)">
-              <span class="run-panel__condition-dot"></span>
-              <span>{{ line }}</span>
+          <p class="run-panel__section-title">接口请求</p>
+          <ul v-if="attemptRequests(stepDialog).length > 0" class="run-panel__req-lines">
+            <li v-for="(req, index) in attemptRequests(stepDialog)" :key="index" class="run-panel__req-line">
+              <span class="run-panel__req-kind" :class="req.requestClass === 'write' ? 'run-panel__req-kind--write' : 'run-panel__req-kind--read'">
+                {{ req.requestClass === 'write' ? '写入' : '读取' }}
+              </span>
+              <span class="run-panel__req-path">{{ req.endpoint }}</span>
+              <span class="run-panel__req-num run-panel__mono">{{ req.durationKnown ? `${req.durationMs} ms` : '耗时未知' }}</span>
+              <span class="run-panel__req-outcome" :class="req.result === 'success' ? 'run-panel__ok' : 'run-panel__bad'">
+                {{ requestResultText(req) }}
+              </span>
             </li>
           </ul>
+          <p v-else class="run-panel__muted">这一步没有发出真实接口请求（历史运行或读取类步骤未产生网络日志）</p>
+          <p class="run-panel__timing-note">{{ stepTimingNote }}</p>
         </section>
 
+        <!-- 尝试结论：只保留每次尝试的一句话结论；依据、门禁逐项、阶段流水进排查区。 -->
         <section class="run-panel__section">
-          <p class="run-panel__section-title">尝试记录</p>
-          <article v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo" class="run-panel__attempt" :class="attemptTone(attempt)">
-            <div class="run-panel__attempt-head">
-              <span>第 {{ attempt.attemptNo }} 次尝试</span>
-              <n-tag size="tiny" :type="statusTagType(attempt.verdictName)">{{ attempt.verdictName }}</n-tag>
-              <span v-if="attempt.isReplay" class="run-panel__row-sub">（这次是重放）</span>
-            </div>
-            <p class="run-panel__reason">{{ attempt.reason }}</p>
-            <p class="run-panel__row-sub run-panel__log-ref">
-              日志：{{ attempt.logPath }} 第 {{ attempt.logLine }} 行
-              <n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button>
-            </p>
-          </article>
-          <!-- 原始请求/响应折叠在详情底部：正文默认不展开，避免超大正文卡住界面。 -->
+          <p class="run-panel__section-title">尝试结论</p>
+          <p v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo" class="run-panel__attempt-line">
+            第 {{ attempt.attemptNo }} 次尝试：{{ attempt.verdictName }}——{{ attempt.reason }}
+          </p>
+        </section>
+
+        <!-- 排查入口：默认折叠；日志位置、trace、curl、门禁逐项、阶段流水与原始正文都在这里。 -->
+        <details class="run-panel__debug">
+          <summary>查看日志与原始请求（排查用）</summary>
+          <dl class="run-panel__debug-list">
+            <template v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo">
+              <div><dt>日志位置</dt><dd class="run-panel__debug-path">{{ attempt.logPath }} 第 {{ attempt.logLine }} 行</dd></div>
+              <div><dt></dt><dd><n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button></dd></div>
+              <div v-if="attempt.traceId"><dt>trace</dt><dd class="run-panel__debug-path">{{ attempt.traceId }}</dd></div>
+              <div v-if="attempt.traceId"><dt></dt><dd><n-button text size="tiny" type="info" @click="copyTrace(attempt.traceId)">复制 trace</n-button></dd></div>
+            </template>
+          </dl>
           <div v-if="stepDialog.attempts[0]?.curlBlock" class="run-panel__curl-actions">
-            <n-button text size="tiny" type="info" @click="toggleCurl(stepDialog.stepNo)">
-              {{ expandedCurl === String(stepDialog.stepNo) ? '收起原始请求与响应' : '展开原始请求与响应（含 curl）' }}
-            </n-button>
             <n-button text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
+            <n-button text size="tiny" type="info" @click="toggleCurl(stepDialog.stepNo)">
+              {{ expandedCurl === String(stepDialog.stepNo) ? '收起原始请求与响应' : '展开原始请求与响应' }}
+            </n-button>
           </div>
           <p v-else class="run-panel__no-curl">这次尝试没有发出写请求；完整网络日志见运行目录的 curl.log。</p>
           <pre v-if="expandedCurl === String(stepDialog.stepNo) && stepDialog.attempts[0]?.curlBlock" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
-        </section>
+
+          <!-- 内部排查内容统一收在这里，标签用人话；不把阶段名当主标题。 -->
+          <section v-if="gateSnapshotLines(stepDialog).length > 0" class="run-panel__section">
+            <p class="run-panel__section-title">这一步的检查项</p>
+            <ul class="run-panel__conditions">
+              <li v-for="(line, index) in gateSnapshotLines(stepDialog)" :key="index" class="run-panel__condition" :class="gateTone(line)">
+                <span class="run-panel__condition-dot"></span>
+                <span>{{ line }}</span>
+              </li>
+            </ul>
+          </section>
+          <section v-if="stepDialog.attempts[0]?.phaseDurations" class="run-panel__section">
+            <p class="run-panel__section-title">本地执行各环节用时</p>
+            <ul class="run-panel__phase-lines">
+              <li v-for="[phase, label] in phaseFlow" :key="phase">
+                {{ label }}：{{ formatElapsed(stepDialog.attempts[0].phaseDurations?.[phase] ?? -1) }}
+              </li>
+            </ul>
+          </section>
+          <p v-else class="run-panel__muted">{{ stepDialog.attempts[0]?.phaseDurationsNote || '暂无本地执行过程记录' }}</p>
+        </details>
       </template>
     </n-modal>
   </aside>
@@ -897,6 +887,103 @@ const dialogStyle = computed(() => ({
 }
 
 .run-panel__mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* F-034 T06：结果摘要下的“为什么/下一步”两行说明，紧跟结论不抢层级。 */
+.run-panel__why {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--error-color, #d03050);
+  background: color-mix(in srgb, var(--error-color, #d03050) 5%, transparent);
+  border-radius: 0 6px 6px 0;
+}
+
+.run-panel__why p { margin: 0; line-height: 1.6; word-break: break-word; }
+
+.run-panel__why-next { color: var(--run-secondary-text-color, #909090); }
+
+/* 接口请求行式布局：类型、路径（可换行）、耗时、结果一行可扫读，窄屏不溢出。 */
+.run-panel__req-lines {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.run-panel__req-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border-radius: 6px;
+}
+
+.run-panel__req-path {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.run-panel__req-outcome { min-width: 0; }
+
+.run-panel__timing-note {
+  margin: 0;
+  color: var(--run-secondary-text-color, #909090);
+  line-height: 1.6;
+}
+
+.run-panel__attempt-line {
+  margin: 0 0 4px;
+  line-height: 1.6;
+}
+
+/* 排查折叠区：日志路径可换行/横向滚动，复制按钮独立成行，不挤压主结论。 */
+.run-panel__debug {
+  margin: 4px 0 0;
+  border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.run-panel__debug > summary {
+  cursor: pointer;
+  color: var(--run-secondary-text-color, #909090);
+}
+
+.run-panel__debug-list {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.run-panel__debug-list > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.run-panel__debug-list dt { color: var(--run-secondary-text-color, #909090); }
+
+.run-panel__debug-list dd { margin: 0; }
+
+.run-panel__debug-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.run-panel__phase-lines {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.8;
+}
 
 .run-panel__conditions {
   margin: 0 0 10px;

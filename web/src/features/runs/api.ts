@@ -60,6 +60,9 @@ export interface RunRequestItem {
   durationKnown?: boolean
   statusCode: number
   result: string
+  // resultSummary/blocking 是 F-034/T05 的一句话业务结果摘要与阻塞标记（后端受控生成）。
+  resultSummary?: string
+  blocking?: boolean
   retryAttempt: number
   traceId?: string
   at?: string
@@ -111,6 +114,9 @@ export interface PathRunDetail {
   pathRunStatusName: string
   resultName?: string
   failureClassName?: string
+  // stopKind=blocked 表示目标在写入前明确拒绝（前置条件未满足），区别于普通失败与结果待确认。
+  stopKind?: string
+  stopKindNote?: string
   finalTarget?: unknown
   planId: number
   planName: string

@@ -321,12 +321,14 @@ export function deriveExecutionPathWorkspacePresentation(options: {
   changedByGraph: boolean
 }): ExecutionPathWorkspacePresentation {
   const branchEditing = options.mode === 'edit' || options.mode === 'new' || options.mode === 'copy'
+  // F-034 T07：复制路径的弹层说明必须讲清来源与独立副本语义，不误导用户以为会改原路径。
+  // 复制模式的标题带上来源路径名，弹层内已有独立的取消/保存操作。
   const title = options.mode === 'edit'
     ? '编辑路径'
     : options.mode === 'new'
       ? '新建路径'
       : options.mode === 'copy'
-        ? '复制路径'
+        ? '复制路径（生成独立副本，不改原路径）'
         : '路径详情'
   let hint = '已保存'
   if (branchEditing) {

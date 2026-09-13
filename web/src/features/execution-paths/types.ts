@@ -28,7 +28,7 @@ export interface PathGenerationJob {
 export type ExecutionPathWorkspaceMode = 'view' | 'edit' | 'new' | 'copy' | null
 
 export interface ExecutionPathWorkspacePresentation {
-  title: '路径详情' | '编辑路径' | '新建路径' | '复制路径'
+  title: '路径详情' | '编辑路径' | '新建路径' | '复制路径（生成独立副本，不改原路径）'
   branchEditing: boolean
   dirty: boolean
   showNameInput: boolean
