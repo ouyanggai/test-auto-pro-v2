@@ -49,6 +49,8 @@ func companySyncTemplate() string {
 	]},"list":[
 		{"type":"select","model":"applicationFundsVo_payCompanyId","options":{"remote":true,"remoteDataSource":"gbftfvts"}},
 		{"type":"input","model":"applicationFundsVo_payCompanyName","options":{"hidden":true}},
+		{"type":"select","model":"keepCompanyId","options":{"remote":true,"remoteDataSource":"gbftfvts"}},
+		{"type":"input","model":"keepCompanyName","options":{"hidden":true}},
 		{"type":"select","model":"companyNumber","options":{"remote":true,"remoteDataSource":"abp9bz1m"}},
 		{"type":"select","model":"dummyCompanyId","options":{"remote":true,"remoteDataSource":"abp9bz1m"}},
 		{"type":"number","model":"applicationFundsVo_payMoney"}
@@ -93,8 +95,8 @@ func companySyncStoredData() string {
 		"applicationFundsVo_payCompanyId":"old-company-id",
 		"applicationFundsVo_payCompanyName":"临猗县斯能电力有限公司",
 		"applicationFundsVo_payMoney":1999,
-		"expenseCompanyId":"consistent-company-id",
-		"expenseCompanyName":"广东斯能投资有限责任公司",
+		"keepCompanyId":"consistent-company-id",
+		"keepCompanyName":"广东斯能投资有限责任公司",
 		"dummyCompanyId":"dummy-old-id",
 		"dummyCompanyName":"不应被同步的公司"
 	}`
@@ -123,8 +125,9 @@ func TestGetDataSyncsLinkedCompanySelectID(t *testing.T) {
 		t.Fatalf("分支补丁字段被同步逻辑破坏：%+v", values)
 	}
 	// 已一致的配对必须零改动：名称与 ID 指向同一家公司时不能触发任何回写。
-	if values["expenseCompanyId"] != "consistent-company-id" {
-		t.Fatalf("一致的公司配对被误改：%v", values["expenseCompanyId"])
+	// 哨兵不能用 expenseCompany*：那是登录人上下文字段，配置期会按计划账号覆盖。
+	if values["keepCompanyId"] != "consistent-company-id" {
+		t.Fatalf("一致的公司配对被误改：%v", values["keepCompanyId"])
 	}
 	// 非公司数据源的远程下拉即使名称与 ID 不一致也绝不能按公司主数据同步。
 	if values["dummyCompanyId"] != "dummy-old-id" {
@@ -161,7 +164,7 @@ func TestGetDataKeepsDataWhenDirectoryMissing(t *testing.T) {
 // 保留即意味着控件继续显示并提交历史公司，这种矛盾状态必须阻断并提示用户处理。
 func TestGetDataReportsUnresolvedCompanyLink(t *testing.T) {
 	directory := &fakeCompanyDirectory{
-		byID:   map[string]string{"old-company-id": "广西润兴电力有限公司"},
+		byID:   map[string]string{"old-company-id": "广西润兴电力有限公司", "consistent-company-id": "广东斯能投资有限责任公司"},
 		byName: map[string][]string{"临猗县斯能电力有限公司": {"company-a", "company-b"}},
 	}
 	configService, _ := newCompanySyncService(t, 653, 663, companySyncStoredData(), directory)
@@ -192,7 +195,7 @@ func TestGetDataReportsUnresolvedCompanyLink(t *testing.T) {
 // TestGetDataReportsCompanyDirectoryFailure 锁定目录读取失败时保留原值并给出阻断问题。
 func TestGetDataReportsCompanyDirectoryFailure(t *testing.T) {
 	directory := &fakeCompanyDirectory{
-		byID:      map[string]string{"old-company-id": "广西润兴电力有限公司"},
+		byID:      map[string]string{"old-company-id": "广西润兴电力有限公司", "consistent-company-id": "广东斯能投资有限责任公司"},
 		errByName: errors.New("目标公司目录暂不可用"),
 	}
 	configService, _ := newCompanySyncService(t, 654, 664, companySyncStoredData(), directory)
@@ -260,12 +263,13 @@ type identityTargetReader struct {
 	workspaceTargetReader
 }
 
-// FormRuntimeSession 返回固定的计划账号身份。
+// FormRuntimeSession 返回固定的计划账号身份，含岗位事实，避免配置期误走岗位缺失阻断。
 func (r identityTargetReader) FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error) {
 	return target.FormRuntimeSession{
 		SID: "session-a", BaseURL: "http://target.example", AccountName: "计划账号",
 		UserID: "user-plan", CompanyID: "company-plan", CompanyName: "计划公司",
 		DepartmentID: "dept-plan", DepartmentName: "计划部门",
+		DutyID: "duty-test", DutyName: "测试岗位",
 	}, nil
 }
 
@@ -332,8 +336,8 @@ func TestGetDataReplacesUserIdentityWithPlanAccount(t *testing.T) {
 	if identity["userId"] != "user-plan" || identity["userName"] != "计划账号" || identity["departmentName"] != "计划部门" {
 		t.Fatalf("读取边界没有替换为计划账号身份：%+v", identity)
 	}
-	if identity["dutyId"] != "" {
-		t.Fatalf("岗位信息被伪造：%+v", identity)
+	if identity["dutyId"] != "duty-test" || identity["dutyName"] != "测试岗位" {
+		t.Fatalf("岗位事实必须随计划账号一起替换：%+v", identity)
 	}
 	if fmt.Sprintf("%v", configuration.EffectiveFormData["amount"]) != "1" {
 		t.Fatalf("业务字段被身份替换波及：%v", configuration.EffectiveFormData["amount"])

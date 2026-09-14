@@ -238,9 +238,8 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 		if runCtx.RenderType == string(target.FormRenderTypeVueCustom) {
 			request.FormProxyID = ""
 			request.FlowProxyID = runCtx.FlowProxyID
-			if request.FormData == nil {
-				request.FormData = noFormSubmitMongo(runCtx, session)
-			}
+			// 已有表单数据时也必须补 initiatorRange：目标 NoFormFlow.submitFinal 无条件写入当前用户。
+			request.FormData = mergeNoFormSubmitMongo(runCtx, session, request.FormData)
 		}
 		if step.Action == model.ActionSaveDraft {
 			request.Status = "draft"
@@ -293,6 +292,10 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			FormData:     formData,
 			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditors,
+		}
+		if runCtx.RenderType == string(target.FormRenderTypeVueCustom) {
+			request.FormProxyID = ""
+			request.FormData = mergeNoFormSubmitMongo(runCtx, session, request.FormData)
 		}
 		body, endpoint, err := target.BuildActionBody(request)
 		if err != nil {
@@ -534,6 +537,11 @@ func BuildRequestWithFactsForTest(runCtx RunContext, step model.CompiledActionSt
 	return buildRequestWithFacts(runCtx, step, session, formData, nextNodeKey, facts)
 }
 
+// ApplySpecialBusinessFormDataForTest 暴露已实现特殊业务的表单改写，供契约测试锁定日期/意见规则。
+func ApplySpecialBusinessFormDataForTest(runCtx RunContext, compiled model.CompiledActionStep, session target.Session, formData json.RawMessage) json.RawMessage {
+	return applySpecialBusinessFormData(runCtx, compiled, session, formData)
+}
+
 // applySpecialBusinessFormData 按已实现的目标页面分支改写表单值。
 // 合同盖章/合规自定义组件仍未实现，调用方已在门禁阻塞；这里只处理能从源码证明的字段改写。
 func applySpecialBusinessFormData(runCtx RunContext, compiled model.CompiledActionStep, session target.Session, formData json.RawMessage) json.RawMessage {
@@ -581,16 +589,43 @@ func applySpecialBusinessFormData(runCtx RunContext, compiled model.CompiledActi
 
 // noFormSubmitMongo 构造目标 NoFormFlow submitFinal 的 formDataMongoVo.data：initiatorRange 为当前用户。
 func noFormSubmitMongo(runCtx RunContext, session target.Session) json.RawMessage {
+	return mergeNoFormSubmitMongo(runCtx, session, nil)
+}
+
+// mergeNoFormSubmitMongo 把目标无表单提交必带字段并入已有表单对象。
+// initiatorRange 必须是当前会话用户：历史实例残留的发起人 ID 不能带进本次请求。
+// 费用报销的 expenseCompanyId 仅在缺失时补当前公司，已有业务值不覆盖。
+func mergeNoFormSubmitMongo(runCtx RunContext, session target.Session, formData json.RawMessage) json.RawMessage {
 	userID := strings.TrimSpace(session.UserID)
-	payload := map[string]any{"initiatorRange": userID}
-	if runCtx.FlowType == "expense_budget" {
-		payload["expenseCompanyId"] = session.CompanyID
+	values := map[string]any{}
+	if len(bytesTrimJSON(formData)) > 0 {
+		decoded, err := jsonvalues.DecodeObject(formData)
+		if err != nil {
+			return formData
+		}
+		values = decoded
 	}
-	encoded, err := json.Marshal(payload)
+	if userID != "" {
+		values["initiatorRange"] = userID
+	}
+	if runCtx.FlowType == "expense_budget" {
+		if _, exists := values["expenseCompanyId"]; !exists && strings.TrimSpace(session.CompanyID) != "" {
+			values["expenseCompanyId"] = session.CompanyID
+		}
+	}
+	encoded, err := json.Marshal(values)
 	if err != nil {
+		if len(formData) > 0 {
+			return formData
+		}
 		return json.RawMessage(`{}`)
 	}
 	return encoded
+}
+
+// bytesTrimJSON 去掉 JSON 原文两端空白，供空载荷判断。
+func bytesTrimJSON(raw json.RawMessage) []byte {
+	return []byte(strings.TrimSpace(string(raw)))
 }
 
 // pickerID 从人员选择器 JSON 文本取出 id，源不是 JSON 时返回原值。

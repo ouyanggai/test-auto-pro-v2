@@ -95,6 +95,7 @@ deployment=<该结论对应的目标平台部署版本，未取得就写「未�
 | 12 | 子流程语义 | 未开始 |
 | 13 | 超时与跳过语义 | 勘定中（2026-09-10 F-028 验收实测：模板「无处理人时跳过该节点」约束真实生效；详见第 13 节） |
 | 14 | 通知与催办语义 | 未开始 |
+| 16.1 | 目标衍生审批意见字段 | 已勘定（F-035） |
 
 ## 4. 演员解析
 
@@ -802,6 +803,45 @@ contains=let value = this.$refs.generateForm.getValues();
 strength=源码可证明
 head=rsh-cloud-invest-power-system@586ca09474c3
 deployment=2026-09-05 未取得（前端部署版本未核对）
+```
+
+### 16.1 目标衍生审批意见字段（`auto_audit_info_*`，F-035 勘定）
+
+状态：已勘定（源码可证明，2026-09-14 F-035）。对照测试：`test/unit/backend/form_data_derived_fields/`。
+
+问题：历史实例上的 `auto_audit_info_*` 与配置阶段清空值、审批后目标新生成值是否属于同一次业务数据，能否做严格相等比较。
+
+结论：
+
+1. **这是目标根据审批事实机械生成的衍生字段，不是用户可填业务字段。** 审批弹窗按字段名前缀识别三类伴生结构：文本 `auto_audit_info_<n>`、对象 `auto_audit_info_obj_<n>`、会签列表 `auto_audit_info_obj_list_<n>`。展示文案由 `formatAutoAuditInfoLine` 拼成「意见 【状态】 审批人 时间」。
+2. **草稿/撤回态目标会把文本意见清空，对象/列表仍保留。** `flowStatus == draft || withdraw` 时只 `$set` 文本键为空串，不删对象键。
+3. **对工具的硬约束**：配置阶段必须清空历史意见（保留键）；写后核对不得把目标新生成的非空意见判成工具改写；工具把目标已有非空意见写空才阻塞；后续节点不得用历史空值回写覆盖目标已生成意见。
+
+```evidence
+file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/components/EnterpriseExamineDialog.vue
+line=1271
+contains=if(item.includes('auto_audit_info_') && !item.includes('auto_audit_info_obj_')){
+strength=源码可证明
+head=rsh-cloud-invest-power-system@586ca09474c3
+deployment=未取得（前端部署版本未核对）
+```
+
+```evidence
+file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/components/EnterpriseExamineDialog.vue
+line=1277
+contains=const key3 ='auto_audit_info_obj_list_' + number;
+strength=源码可证明
+head=rsh-cloud-invest-power-system@586ca09474c3
+deployment=未取得（前端部署版本未核对）
+```
+
+```evidence
+file=参考代码/rsh-cloud-invest-power-system/src/views/GroupApproveManage/components/EnterpriseExamineDialog.vue
+line=1531
+contains=formatAutoAuditInfoLine(auditInfo = {}){
+strength=源码可证明
+head=rsh-cloud-invest-power-system@586ca09474c3
+deployment=未取得（前端部署版本未核对）
 ```
 
 ## 17. 条件求值读取的表单数据来源

@@ -1,11 +1,6 @@
 # 当前进度
 
-- 2026-09-14 F-035 最新复核继续保持 `implementing`。运行号 6/7「欧阳改测试1005 / 路径 12」反复出现第二节点没有处理人，
-  对比人工成功 curl 后确认工具侧仍有 FormMaking 误传 `flowProxyId`、缺少目标页面实际携带的 `batchCode`/空 `nextAuditorList`/`projectId` 形状、
-  计划账号与表单身份可能串号，以及其他动作接口未逐项对齐的问题。目标平台手工发起可以在“已发”看到当前处理人，因此不能再按目标偶发问题处理。
-  同轮复核确认 `auto_audit_info_*` 是目标后端依据审批事实机械生成的衍生字段，历史配置阶段清空值与目标审批后生成值不同属于正常结果；工具不得用历史空值严格比较或回写空值。
-  另发现运行详情 `Teleport defer`、路径切换复用、轮询/事件迟到响应和节点面板条件卸载组合可能触发 Vue `emitsOptions` 崩溃；`runtime.lastError` 经源码搜索不属于产品调用，需无扩展 A/B 归因。
-  本轮只更新聚合任务书，不改业务实现；特殊业务和 NoFormFlow 必须逐代码实现，不能以“命中即阻塞”作为最终完成。详细指导见 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
+- 2026-09-14 F-035 第四轮继续保持 `implementing`。已实现页不再“命中即阻塞”：资金往来/投资款前置保存、出版委托日期改写、已登记 NoFormFlow 走 `mixin.saveData` + `flowProxyId`；合同盖章/合规自定义组件仍写前阻塞。配置期身份替换不再新建缺失的 `global_user_basic_information`；无表单 `initiatorRange` 覆盖为当前会话。`auto_audit_info_*` 已写入语义清单 16.1。运行详情请求代次已落地；`runtime.lastError` 产品源码零调用，无扩展浏览器 A/B 仍待人工。真实路径 12 对照未完成，不得进入 `ready_for_manual`。详细指导见 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
 
 - 2026-09-14 F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」经评审退回 `implementing`（评审指出 2 Critical + 6 High：
   FormMaking 特殊业务链路缺失、无表单通用兜底、formPersonFields 未迁移、运行时旧身份、全局 customerCode、

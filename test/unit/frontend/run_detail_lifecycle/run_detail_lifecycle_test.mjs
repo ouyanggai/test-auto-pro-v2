@@ -60,3 +60,27 @@ test('节点面板仍有三个 Modal，切换路径时父级会卸载旧实例',
   assert.equal(modalCount, 3)
   assert.match(view, /v-if="selectedNodeKey && detail"/)
 })
+
+test('产品源码不调用 chrome.runtime / runtime.lastError', () => {
+  const forbidden = /chrome\.runtime|browser\.runtime|runtime\.lastError|runtime\.sendMessage/
+  const roots = [
+    new URL('../../../../web/src/', import.meta.url),
+    new URL('../../../../form-runtime/src/', import.meta.url),
+  ]
+  const hits = []
+  function walk(dirURL) {
+    const dir = fs.realpathSync(dirURL)
+    for (const name of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = dir + '/' + name.name
+      if (name.isDirectory()) {
+        walk(new URL(full + '/', 'file://'))
+        continue
+      }
+      if (!/\.(vue|ts|js|mjs|css)$/.test(name.name)) continue
+      const text = fs.readFileSync(full, 'utf8')
+      if (forbidden.test(text)) hits.push(full)
+    }
+  }
+  for (const root of roots) walk(root)
+  assert.deepEqual(hits, [], 'runtime.lastError 若出现在产品 URL，必须修发送端而不是吞错')
+})

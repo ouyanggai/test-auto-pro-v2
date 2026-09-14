@@ -15,10 +15,9 @@ func TestResolveVueCustomPageUsesTargetAuditWay(t *testing.T) {
 	if page.ComponentName != "contract_review" || page.Route != "contract_review" || page.PageName != "合同评审表" {
 		t.Fatalf("目标页面入口没有保留 auditWay：%+v", page)
 	}
-	// F-035 评审补充：目标无表单页面存在专用业务链路，页面规则必须如实标记 partial 并带阻断说明，
-	// 不再伪装成 complete 让用户以为协议已对齐。
-	if page.Status != "partial" || len(page.Issues) == 0 {
-		t.Fatalf("无表单页面必须标记 partial 并携带业务链路说明：%+v", page)
+	// 合同评审已实现 mixin.saveData 前置保存，不得再把“尚未逐页面实现”写进配置阻断。
+	if page.Status != "complete" || len(page.Issues) != 0 {
+		t.Fatalf("已实现的无表单页面必须标记 complete 且无阻断说明：%+v", page)
 	}
 }
 
@@ -44,5 +43,13 @@ func TestResolveVueCustomPageFallsBackToGenericPage(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("通用无表单页面缺少 userInfo 中文标签")
+	}
+}
+
+// TestResolveVueCustomPageBlocksUnimplementedGeneric 锁定未登记无表单页仍必须 partial 并阻断。
+func TestResolveVueCustomPageBlocksUnimplementedGeneric(t *testing.T) {
+	page := target.ResolveVueCustomPage(target.FormRenderTypeVueCustom, "unknown_custom_page", "未知页")
+	if page == nil || page.Status != "partial" || len(page.Issues) == 0 {
+		t.Fatalf("未登记无表单页必须 partial 并阻断：%+v", page)
 	}
 }

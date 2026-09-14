@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -207,12 +206,10 @@ func (s *PathConfigService) currentUserIdentity(ctx context.Context, planID uint
 }
 
 // replaceUserIdentityValues 把历史表单数据里目标提交时注入的登录人上下文字段替换为当前计划账号身份。
-// 目标在每次提交时都会用登录态覆盖该字段，回放值若保留原发起人身份，提交出去的数据会冒用他人身份；
-// 岗位事实随同一次会话读取（F-035），缺失时由读取/保存边界阻塞，这里不再伪造空值。
+// 配置期只覆盖已经存在的登录人字段，不创建历史数据没有的 global_user_basic_information：
+// 该字段由发起/草稿/重提写请求按目标 FlowDialog 无条件注入；配置页新增会污染无表单原始数据。
 func replaceUserIdentityValues(values map[string]any, identity runtimeUserIdentity) {
-	// F-035 评审补充：登录人字段规则与替换逻辑统一收敛到 adapter/target.ApplyUserIdentity，
-	// 配置期与运行期消费同一份登记表，禁止两套实现漂移。
-	target.ApplyUserIdentity(values, target.UserIdentity(identity))
+	target.ApplyUserIdentityForAction(values, target.UserIdentity(identity), false)
 }
 
 // ReplaceUserIdentityValuesForTest 暴露登录人上下文替换，供 test 目录下的定向用例锁定行为。
@@ -232,59 +229,4 @@ func RuntimeUserIdentityForTest(userID, userName, companyID, companyName, depart
 // RetryTransientTargetReadForTest 暴露目标读取瞬断重试，供 test 目录下的定向用例锁定行为。
 func RetryTransientTargetReadForTest(ctx context.Context, attempts int, call func(context.Context) error) error {
 	return retryTransientTargetRead(ctx, attempts, call)
-}
-
-// identityAttrValue 按属性名取当前计划账号的身份值。
-func identityAttrValue(identity runtimeUserIdentity, attr string) (string, bool) {
-	switch attr {
-	case "userId":
-		return identity.UserID, true
-	case "userName":
-		return identity.UserName, true
-	case "companyId":
-		return identity.CompanyID, true
-	case "companyName":
-		return identity.CompanyName, true
-	case "departmentId":
-		return identity.DepartmentID, true
-	case "departmentName":
-		return identity.DepartmentName, true
-	}
-	return "", false
-}
-
-// identityJSONValue 按人员选择器约定写出 {"id":..,"name":..} JSON 文本；两项都为空时不产出。
-func identityJSONValue(identity runtimeUserIdentity, kind string) (string, bool) {
-	var id, name string
-	switch kind {
-	case "user":
-		id, name = identity.UserID, identity.UserName
-	case "department":
-		id, name = identity.DepartmentID, identity.DepartmentName
-	case "company":
-		id, name = identity.CompanyID, identity.CompanyName
-	default:
-		return "", false
-	}
-	if id == "" && name == "" {
-		return "", false
-	}
-	encoded, err := json.Marshal(map[string]any{"id": id, "name": name})
-	if err != nil {
-		return "", false
-	}
-	return string(encoded), true
-}
-
-// identityPickerCompanions 返回人员选择器 JSON 键对应的伴生属性：__formPersonId 用 ID，__condition 用名称。
-func identityPickerCompanions(rule string) (string, string) {
-	switch strings.TrimPrefix(rule, "json:") {
-	case "user":
-		return "userId", "userName"
-	case "department":
-		return "departmentId", "departmentName"
-	case "company":
-		return "companyId", "companyName"
-	}
-	return "", ""
 }
