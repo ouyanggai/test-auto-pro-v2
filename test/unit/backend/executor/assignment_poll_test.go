@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -112,4 +113,88 @@ func containsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+// TestSpecialBusinessLifecycleBlocksSubmit 锁定 F-035 评审补充：
+// 命中目标特殊业务钩子清单的流程类型必须阻塞，绝不发通用请求顶替业务变更。
+func TestSpecialBusinessLifecycleBlocksSubmit(t *testing.T) {
+	view := &pollTarget{fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run"}}}
+	executor := step.NewExecutor(view, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
+	// 新发起（无实例）：与发起链路一致，不进入待办轮询。
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.FlowType = "contract_seal_review"
+	runCtx.RenderType = "formmaking"
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview == nil || preview.GateAllowed {
+		t.Fatalf("特殊业务流程类型必须阻塞：%+v", preview)
+	}
+	if !strings.Contains(preview.BlockReason, "contract_seal_review") {
+		t.Fatalf("阻塞原因必须指明流程类型：%q", preview.BlockReason)
+	}
+	if view.fakeTarget.submitCalls != 0 || view.auditCalls() != 0 {
+		t.Fatal("特殊业务阻塞路径不得发送写请求")
+	}
+}
+
+// TestVueCustomSubmitBlocks 锁定：无表单页面的专用业务链路（项目/业务关联、initiatorRange、
+// 并行/手动分支选人）未实现前，发起/重提必须阻塞，不得用通用请求冒充。
+func TestVueCustomSubmitBlocks(t *testing.T) {
+	view := &pollTarget{fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run"}}}
+	executor := step.NewExecutor(view, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.FlowType = "contract_review"
+	runCtx.RenderType = "vue_custom"
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview == nil || preview.GateAllowed {
+		t.Fatalf("vue_custom 无表单发起必须阻塞：%+v", preview)
+	}
+	if !strings.Contains(preview.BlockReason, "无表单") {
+		t.Fatalf("阻塞原因必须说明无表单业务链路：%q", preview.BlockReason)
+	}
+}
+
+// TestRuntimeIdentityOverridesSnapshot 锁定：发起前用当前会话实时身份覆盖表单登录人字段，
+// 配置期历史身份不得进入载荷。
+func TestRuntimeIdentityOverridesSnapshot(t *testing.T) {
+	// 新发起场景：实例尚不存在（Found=false），与 TestF016SubmitHappyPath 同一事实形状。
+	view := &pollTarget{fakeTarget: &fakeTarget{instance: fakeTargetView{Found: false}}}
+	executor := step.NewExecutor(view, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	// 配置期快照里是历史身份“旧账号”。
+	runCtx.EffectiveFormData = []byte(`{"global_user_basic_information":{"userId":"old-user","userName":"旧账号","companyId":"old-company","companyName":"旧公司","departmentId":"old-dept","departmentName":"旧部门","dutyId":"old-duty","dutyName":"旧岗位"}}`)
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview == nil || !preview.GateAllowed {
+		t.Fatalf("普通流程发起应通过门禁：%+v", preview)
+	}
+	formDataContainer, ok := preview.RequestPayload["formDataMongoVo"].(map[string]any)
+	if !ok {
+		t.Fatalf("载荷缺少表单容器：%v", preview.RequestPayload)
+	}
+	// json.RawMessage 在 map[string]any 里表现为 []byte：先解码再断言。
+	var formData map[string]any
+	if raw, ok := formDataContainer["data"].([]byte); ok {
+		if err := json.Unmarshal(raw, &formData); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if err := json.Unmarshal(formDataContainer["data"].(json.RawMessage), &formData); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity, ok := formData["global_user_basic_information"].(map[string]any)
+	if !ok {
+		t.Fatalf("表单缺少登录人上下文：%v", formData)
+	}
+	if identity["userId"] != "uid-oyg-test" || identity["dutyId"] != "duty-oyg-test" {
+		t.Fatalf("登录人上下文必须被实时身份覆盖：%v", identity)
+	}
 }

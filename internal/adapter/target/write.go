@@ -166,7 +166,11 @@ func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 // 业务失败以 BusinessRejection 原样携带 code 与 message。
 func (c *Client) SubmitFlowInstance(ctx context.Context, session Session, request SubmitFlowInstanceRequest) (*SubmitFlowInstanceResult, WriteResponse, string, error) {
 	body := BuildSubmitBody(request)
-	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointSubmit, session.SID, body)
+	// F-035 评审补充：发送前按协议矩阵强制校验载荷形状（required/forbidden），未登记端点直接拒绝。
+	if err := ValidateBodyMatrix(WriteEndpointSubmit, body, session.CustomerCode); err != nil {
+		return nil, WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
+	}
+	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointSubmit, session.SID, session.CustomerCode, body)
 	response := WriteResponse{}
 	if err != nil {
 		// 传输层失败没有可信状态码；只有“完整响应被拒收”的少数错误才带 HTTP 状态。
@@ -237,9 +241,10 @@ type AuditCurrentTaskResult struct {
 }
 
 // BuildAuditBody 构造审批请求的协议载荷（不含会话敏感信息）。与预览严格同源。
-// F-035 矩阵：data 的 id/jobTaskId/flowProxyId/auditRecord/flowInstanceBizRelevanceList 与
-// formDataMongoVo 固定发送；tracking 顶层布尔无条件携带（页面 this.tracking 直发，默认 false）；
-// nextAuditorList 仅 pass 分支发送，条件成立时固定数组。batchCode 审批不发送。
+// F-035 矩阵（评审补充）：id/jobTaskId/auditRecord/formDataMongoVo/tracking 固定发送；
+// flowProxyId 与 flowInstanceBizRelevanceList 按页面条件发送（无表单页直传关联；
+// FormMaking 审批页只在公共流程/案件场景设置，初值不携带——空数组不是页面行为）。
+// nextAuditorList 仅 pass 分支发送；batchCode 审批不发送。
 func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	data := map[string]any{
 		"id":        strings.TrimSpace(request.InstanceID),
@@ -250,8 +255,6 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	}
 	if len(request.BizRelevance) > 0 {
 		data["flowInstanceBizRelevanceList"] = request.BizRelevance
-	} else {
-		data["flowInstanceBizRelevanceList"] = []BizRelevance{}
 	}
 	auditRecord := map[string]any{
 		"auditStatus": strings.TrimSpace(request.AuditStatus),
@@ -281,7 +284,10 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 // AuditCurrentTask 处理当前活动人工待办。会话属于持待办的真实处理人；本方法内部不做任何重试。
 func (c *Client) AuditCurrentTask(ctx context.Context, session Session, request AuditCurrentTaskRequest) (*AuditCurrentTaskResult, WriteResponse, string, error) {
 	body := BuildAuditBody(request)
-	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointAudit, session.SID, body)
+	if err := ValidateBodyMatrix(WriteEndpointAudit, body, session.CustomerCode); err != nil {
+		return nil, WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
+	}
+	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointAudit, session.SID, session.CustomerCode, body)
 	// 传输失败时响应事实必须保持零值：连接被拒时伪造 200 会让判定包看到
 	// 「声明没有收到响应却带回状态码」的矛盾，把可判确定失败的抖动升级成待对账。
 	response := WriteResponse{}

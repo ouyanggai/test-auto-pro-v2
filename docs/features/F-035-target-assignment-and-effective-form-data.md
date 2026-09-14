@@ -1,8 +1,48 @@
 # F-035 目标请求协议一致性、真实处理人和有效表单数据闭环
 
-- 状态：ready_for_manual
+- 状态：implementing（2026-09-14 第三轮：评审退回后完成目标特殊逻辑逐代码对齐，待用户复验后进入 ready_for_manual）
 
-## 本切片实施现状（2026-09-14，第二轮补充后停在 ready_for_manual）
+## 本切片实施现状（2026-09-14，第三轮：目标特殊逻辑逐代码对齐，停在 implementing）
+
+评审（第二轮）提出 2 Critical + 6 High，均已在第三轮处理：
+
+- **Critical 1（FormMaking 特殊业务链路）**：新增目标业务生命周期登记处 `specialBusinessFlowTypes`
+  （`internal/adapter/target/protocol_matrix.go`），逐项对应参考页面分支：合同合规/合同盖章（自定义组件，FlowDialog.vue:367-374）、
+  资金往来/投资款（业务数据保存，:375、:380-425）、出版委托/专业提资（审批改写日期，EnterpriseExamineOpinion:939-975）、
+  年度绩效/考核（审批写意见）、费用报销（审批金额计算）。命中类型的全部写动作在门禁阻塞（含阻断说明与手工处理指引），
+  绝不发通用请求顶替；登记外的普通类型才走通用提交路径。
+- **Critical 2（无表单专用链路）**：`ResolveVueCustomPage` 不再返回 complete——vue_custom 页面如实标记 partial
+  并携带业务链路阻断说明；执行器对 vue_custom 的发起/草稿/重提全部阻塞（项目/业务关联、initiatorRange、并行/手动分支选人
+  未逐页面实现前不发通用请求）。
+- **Critical 3（formPersonFields）**：新增 `CollectFormPersonFields` 递归目标流程树（含条件/并行分支）收集
+  `auditType=form_person` 节点声明的选择器字段（逐节点携带目标节点 ID）；`FlowLifecycleMeta` 随快照进入运行上下文；
+  发起/重提/审批前按目标 `traverseFlowNode` 规则生成字段（JSON 取 id、纯文本取原值、已有值不覆盖、源缺失不产出不伪造），
+  契约测试锁定全部规则。固定字段名表从 service 层收敛进 adapter 单一登记处，配置期与运行期共用。
+- **High 1（运行时旧身份）**：执行器在发起/草稿/重提/审批的表单构造后，用当前会话实时读取身份
+  （`Client.CurrentUserIdentity`：目录树 + 岗位）覆盖 `global_user_basic_information` 与全部登记登录人字段及伴生键；
+  身份读取失败或岗位缺失阻塞；配置期快照只作为初始值。
+- **High 2（customerCode）**：`CallWrite` 增加 customerCode 参数，三个写出口传 `session.CustomerCode`；
+  信封注入优先当前会话客户码，缺失时才回落全局配置（契约测试锁定两个分支）。
+- **High 3（跨节点值改写）**：决策记录新增 `OverlaidValues`（实际写入值）与 `BaseValues`（完整基线快照）；
+  跨节点核对升级为 JSON 规范化深度比较（覆盖嵌套对象/数组/表格字段），丢失与被改写分别给出中文阻塞结论；
+  新增 `TestCrossNodeValueRewriteBlocks`/`TestCrossNodeNestedValueRewriteBlocks`。
+- **High 4（写后表单核对）**：新增 `verifyFormDataAfterWrite`——写后重读实例当前表单，
+  逐字段核对覆盖字段已保存成目标值、基线保留字段未被改写（深度比较）；核对不一致落
+  `InstanceFacts.FormDataVerifyIssue`，下一步门禁直接阻塞；通过时落核对通过日志（含指纹）。
+- **High 5（矩阵与构造器一致）**：新增 `ValidateBodyMatrix` 在三个写出口发送前强制校验（required 缺失、
+  forbidden 出现、未登记端点均拒绝）；审批空业务关联不再伪造空数组（矩阵改 optional）；
+  修正 `write_whitelist_dynamic_test` 为按矩阵断言（submit 必带 batchCode、audit 禁带）；
+  契约测试锁定矩阵强制行为。
+
+测试：`go test ./test/unit/... ./test/contracts/f035/...` 全部通过（含新增 business_lifecycle_contract、
+矩阵强制、会话客户码、特殊业务阻塞、vue_custom 阻塞、实时身份覆盖、跨节点值改写用例）；
+`go vet`/`gofmt` 通过；`test/contracts/f035/drift/protocol_symbols_drift.sh` 通过。
+
+剩余如实登记：`beforeSubmitAndDraft`/`afterSaveFlowInstance` 等页面钩子的目标行为已按分派与顺序登记进
+语义清单与代码登记处，但具体自定义组件（contractBusiness、saveCostFundsBusiness 等）的目标写接口仍需逐类型勘定——
+当前以“命中即阻塞 + 手工处理指引”保证不破坏目标数据，这是本切片的最安全边界；逐类型实现需后续切片单独批准范围。
+
+## 历史轮次（第二轮）
 
 本切片经用户批准实施完成；用户反馈 T05/T06/T08 未完成后退回 `implementing`，第二轮已补齐，重新停在人工验收。已落地的核心修复：
 

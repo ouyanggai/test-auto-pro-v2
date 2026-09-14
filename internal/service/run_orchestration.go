@@ -498,6 +498,12 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 	if formProxyErr != nil {
 		return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: formProxyErr.Error()}
 	}
+	// F-035 评审补充：流程类型、渲染类型与 form_person 表单人员字段只能来自当前目标快照，
+	// 读取失败直接阻塞启动，绝不能带未知业务类型或缺失的人员选择器规则发起。
+	lifecycle, lifecycleErr := s.pathNodes.FlowLifecycleMeta(ctx, planID)
+	if lifecycleErr != nil {
+		return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: lifecycleErr.Error()}
+	}
 	for index, compiled := range steps {
 		if compiled.Action != model.ActionSubmit && compiled.Action != model.ActionResubmit && compiled.Action != model.ActionApprove {
 			continue
@@ -532,6 +538,9 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		PlanAccount:              plan.Account,
 		FlowProxyID:              plan.TargetObjectID,
 		FormProxyID:              formProxyID,
+		FlowType:                 lifecycle.FlowType,
+		RenderType:               lifecycle.RenderType,
+		FormPersonFields:         lifecycle.FormPersonFields,
 		Source:                   plan.FlowSource,
 		Nodes:                    nodes,
 		BranchSelections:         branchSelections,

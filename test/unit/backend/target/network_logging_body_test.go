@@ -52,7 +52,7 @@ func TestNetworkLoggerPreservesLargeRequestAndResponse(t *testing.T) {
 	client.SetNetworkLogger(collector)
 	formData := json.RawMessage(`{"padding":"` + largeValue + `"}`)
 	result, _, _, err := client.SubmitFlowInstance(context.Background(), target.Session{SID: "sid-large"}, target.SubmitFlowInstanceRequest{
-		Name:     "large-request",
+		Name: "large-request", CompanyID: "company-large", BatchCode: "batch-large",
 		FormData: formData,
 	})
 	if err != nil {

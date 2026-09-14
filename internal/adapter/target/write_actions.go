@@ -202,6 +202,12 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 		if len(request.NextAuditors) > 0 {
 			body["nextAuditorList"] = request.NextAuditors
 		}
+		// F-035 矩阵：审批（同意/不同意）顶层 tracking 布尔无条件携带（页面 this.tracking 直发）。
+		tracking := false
+		if request.Tracking != nil {
+			tracking = *request.Tracking
+		}
+		body["tracking"] = tracking
 		return body, WriteEndpointAudit, nil
 	case "add_sign":
 		tree := bytes.TrimSpace(request.FlowProxyTree)
@@ -285,7 +291,11 @@ func (c *Client) ExecuteActionWrite(ctx context.Context, session Session, reques
 	if err != nil {
 		return WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
 	}
-	envelope, traceID, err := c.CallWrite(ctx, endpoint, session.SID, body)
+	// F-035 评审补充：发送前按协议矩阵强制校验载荷形状（required/forbidden），未登记端点直接拒绝。
+	if err := ValidateBodyMatrix(endpoint, body, session.CustomerCode); err != nil {
+		return WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
+	}
+	envelope, traceID, err := c.CallWrite(ctx, endpoint, session.SID, session.CustomerCode, body)
 	response := WriteResponse{}
 	if err != nil {
 		if targetErr := asError(err); targetErr != nil {

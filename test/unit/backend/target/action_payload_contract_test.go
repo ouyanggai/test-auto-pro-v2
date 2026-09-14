@@ -227,8 +227,9 @@ func TestAllAtomicActionsSendVerifiedTargetContracts(t *testing.T) {
 		{
 			name: "保存草稿", endpoint: "/web/flowInstanceApi/submit",
 			send: func() error {
+				// F-035 矩阵强制：submit/draft 必带顶层批次号与公司 ID（目标页面同形状）。
 				_, _, _, err := client.SubmitFlowInstance(context.Background(), target.Session{SID: "sid"}, target.SubmitFlowInstanceRequest{
-					Name: "草稿实例", Status: "draft", FlowProxyID: "proxy-1", CompanyID: "company-1", FormData: formData,
+					Name: "草稿实例", Status: "draft", FlowProxyID: "proxy-1", CompanyID: "company-1", FormData: formData, BatchCode: "batch-1",
 				})
 				return err
 			},
@@ -238,7 +239,7 @@ func TestAllAtomicActionsSendVerifiedTargetContracts(t *testing.T) {
 			name: "提交", endpoint: "/web/flowInstanceApi/submit",
 			send: func() error {
 				_, _, _, err := client.SubmitFlowInstance(context.Background(), target.Session{SID: "sid"}, target.SubmitFlowInstanceRequest{
-					Name: "提交实例", FlowProxyID: "proxy-1", FormData: formData,
+					Name: "提交实例", FlowProxyID: "proxy-1", CompanyID: "company-1", FormData: formData, BatchCode: "batch-1",
 				})
 				return err
 			},
@@ -298,7 +299,7 @@ func TestAllAtomicActionsSendVerifiedTargetContracts(t *testing.T) {
 			name: "不同意", endpoint: "/flowInstanceApi/audit",
 			send: func() error {
 				_, _, err := client.ExecuteActionWrite(context.Background(), target.Session{SID: "sid"}, target.ActionWriteRequest{
-					Action: "reject", InstanceID: "instance-1", JobTaskID: "task-1", FlowProxyID: "proxy-1", AuditStatus: "no_pass", ExecuteDesc: "不同意说明", FormData: formData,
+					Action: "reject", InstanceID: "instance-1", JobTaskID: "task-1", FlowProxyID: "proxy-1", AuditStatus: "no_pass", ExecuteDesc: "不同意说明", FormData: formData, Tracking: &trackingOff,
 				})
 				return err
 			},

@@ -15,8 +15,10 @@ func TestResolveVueCustomPageUsesTargetAuditWay(t *testing.T) {
 	if page.ComponentName != "contract_review" || page.Route != "contract_review" || page.PageName != "合同评审表" {
 		t.Fatalf("目标页面入口没有保留 auditWay：%+v", page)
 	}
-	if page.Status != "complete" || len(page.Issues) != 0 {
-		t.Fatalf("完整页面入口被错误标记为阻塞：%+v", page)
+	// F-035 评审补充：目标无表单页面存在专用业务链路，页面规则必须如实标记 partial 并带阻断说明，
+	// 不再伪装成 complete 让用户以为协议已对齐。
+	if page.Status != "partial" || len(page.Issues) == 0 {
+		t.Fatalf("无表单页面必须标记 partial 并携带业务链路说明：%+v", page)
 	}
 }
 
@@ -30,7 +32,7 @@ func TestResolveVueCustomPageKeepsFormMakingUnchanged(t *testing.T) {
 // TestResolveVueCustomPageFallsBackToGenericPage 验证目标只返回无表单类型时仍生成可渲染入口，并提供常见中文字段标签。
 func TestResolveVueCustomPageFallsBackToGenericPage(t *testing.T) {
 	page := target.ResolveVueCustomPage(target.FormRenderTypeVueCustom, "", "普通流程")
-	if page == nil || page.ComponentName != "NoFormFlow" || page.Status != "complete" {
+	if page == nil || page.ComponentName != "NoFormFlow" || page.Status != "partial" {
 		t.Fatalf("无 auditWay 的无表单流程没有回落到通用页面：%+v", page)
 	}
 	found := false

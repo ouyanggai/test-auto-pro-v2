@@ -64,7 +64,7 @@ func TestF016WriteEndpointsDynamicWhitelist(t *testing.T) {
 	if _, err := client.FindDueTaskID(ctx, session, "instance-1", "node-1"); err != nil {
 		t.Fatalf("待办读取探针失败：%v", err)
 	}
-	if _, _, _, err := client.SubmitFlowInstance(ctx, session, target.SubmitFlowInstanceRequest{Name: "白名单", FlowProxyID: "proxy-1"}); err != nil {
+	if _, _, _, err := client.SubmitFlowInstance(ctx, session, target.SubmitFlowInstanceRequest{Name: "白名单", FlowProxyID: "proxy-1", CompanyID: "company-1", BatchCode: "batch-1"}); err != nil {
 		t.Fatalf("发起探针失败：%v", err)
 	}
 	if _, _, _, err := client.AuditCurrentTask(ctx, session, target.AuditCurrentTaskRequest{InstanceID: "i-1", JobTaskID: "t-1", AuditStatus: "pass"}); err != nil {
@@ -83,8 +83,19 @@ func TestF016WriteEndpointsDynamicWhitelist(t *testing.T) {
 		if request.method != http.MethodPost {
 			continue
 		}
-		if strings.Contains(request.body, "batchCode") {
-			t.Fatalf("写请求正文携带禁用的 batchCode：%s %s", request.path, request.body)
+		// F-035 矩阵锁定：batchCode 仅 submit 顶层携带（required），audit 不携带（forbidden）。
+		// 它不再是“一律禁止”：响应丢失仍先对账，绝不以 batchCode 重发。
+		for _, request := range recorder.requests {
+			if request.method != http.MethodPost {
+				continue
+			}
+			hasBatchCode := strings.Contains(request.body, "batchCode")
+			if request.path == target.WriteEndpointSubmit && !hasBatchCode {
+				t.Fatalf("submit 写请求必须携带顶层 batchCode：%s", request.body)
+			}
+			if request.path == target.WriteEndpointAudit && hasBatchCode {
+				t.Fatalf("audit 写请求不得携带 batchCode：%s", request.body)
+			}
 		}
 		if allowedReads[request.path] {
 			continue

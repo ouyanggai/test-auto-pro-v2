@@ -9,6 +9,7 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/actioncatalog"
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -108,6 +109,33 @@ func evaluateGate(step model.CompiledActionStep, ctx model.ActionContext) (model
 	return model.ActionCatalogItem{}, false
 }
 
+// applyFormPersonFields 按目标 traverseFlowNode 规则把 form_person 人员选择器字段补进表单数据
+// （F-035 评审补充，FlowDialog.vue:940）：声明字段缺失时从去掉 __formPersonId 后缀的源字段解析
+// （JSON 取 id，否则取原值）。数字保真解码后重新序列化，返回更新后的载荷。
+func applyFormPersonFields(runCtx RunContext, formData json.RawMessage) (json.RawMessage, error) {
+	if len(runCtx.FormPersonFields) == 0 || len(formData) == 0 {
+		return formData, nil
+	}
+	values, err := jsonvalues.DecodeObject(formData)
+	if err != nil {
+		return nil, fmt.Errorf("表单数据解码失败，无法应用表单人员字段规则：%w", err)
+	}
+	changed := false
+	for _, field := range runCtx.FormPersonFields {
+		if target.ApplyFormPersonFieldRule(values, field) {
+			changed = true
+		}
+	}
+	if !changed {
+		return formData, nil
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return nil, fmt.Errorf("表单人员字段规则结果编码失败：%w", err)
+	}
+	return encoded, nil
+}
+
 // buildRequest 构造本步的类型化写请求与其协议载荷（载荷由适配层导出的构造器生成，
 // 与实际发出的请求严格同源）。审批任务 ID 不在此处填写：它必须在发送前现场新鲜读取。
 // 端点必须落在白名单内；未验证动作直接拒绝，绝不静默换端点。
@@ -122,6 +150,15 @@ func buildRequest(runCtx RunContext, step model.CompiledActionStep, session targ
 // 避免重提、审批、不同意或转发覆盖后丢失目标已有上下文。事实为空时保留测试和纯载荷构造调用的既有行为。
 func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string, facts InstanceFacts) (any, string, map[string]any, error) {
 	targetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
+	// F-035 评审补充：发起/重提/审批前按目标 traverseFlowNode 规则生成 form_person 人员选择器字段，
+	// 缺失时从同前缀源字段解析，绝不能用固定字段名表或候选人猜测。
+	if step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft || step.Action == model.ActionResubmit || step.Action == model.ActionApprove {
+		updated, applyErr := applyFormPersonFields(runCtx, formData)
+		if applyErr != nil {
+			return nil, "", nil, applyErr
+		}
+		formData = updated
+	}
 	switch step.Action {
 	case model.ActionSubmit, model.ActionSaveDraft:
 		nextAuditors := nextAuditorsOf(step)

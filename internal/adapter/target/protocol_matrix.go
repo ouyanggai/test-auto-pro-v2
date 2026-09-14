@@ -1,9 +1,13 @@
 package target
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -76,13 +80,13 @@ var endpointFieldMatrix = map[string]map[string]FieldPresence{
 	},
 	// 当前节点暂存：参考 EnterpriseExamineOpinion.temporaryStorage。
 	WriteEndpointStorageForm: {
-		"data.id":                PresenceRequired,
+		"data.id":                 PresenceRequired,
 		"data.currentNodeProxyId": PresenceRequired,
-		"data.auditRecord":       PresenceRequired, // executeDesc 必在（页面 approveMessage）
-		"formDataMongoVo.data":   PresenceRequired, // editData+getValues 整份覆盖
-		"batchCode":              PresenceForbidden,
-		"sid":                    PresenceRequired,
-		"projectId":              PresenceRequired,
+		"data.auditRecord":        PresenceRequired, // executeDesc 必在（页面 approveMessage）
+		"formDataMongoVo.data":    PresenceRequired, // editData+getValues 整份覆盖
+		"batchCode":               PresenceForbidden,
+		"sid":                     PresenceRequired,
+		"projectId":               PresenceRequired,
 	},
 	// 移交：参考 Backlog/index.vue handleHandOver（Api.schedule.handOver = approverAppend）。
 	WriteEndpointApproverAppend: {
@@ -182,4 +186,360 @@ func ProtocolMatrix() map[string]map[string]FieldPresence {
 		result[endpoint] = copied
 	}
 	return result
+}
+
+// 目标业务生命周期登记（F-035 评审补充，唯一代码登记处）。
+// 目标发起/审批页按流程类型（selectFlowType/auditWay）分派特殊业务前置与后置：
+//   - submit 分派：FlowDialog.formMakingFormBusiness —— contract_compliance_review 与
+//     contract_seal_review 调用自定义组件保存业务（FlowDialog.vue:367-374），
+//     cost_funds_transactions / cost_funds_invest 先保存请款业务数据（FlowDialog.vue:375、:380-425），
+//     其余流程类型直接走通用 enterpriseHandleSubmit（FlowDialog.vue:377-378）；
+//   - submit 前后钩子顺序：checkFlowPermission → 业务保存/触发 beforeSubmitAndDraft →
+//     发起 → afterSaveFlowInstance / 文件状态与业务实例绑定（FlowDialog.vue:385-905）；
+//   - 审批同意的业务字段改写：EnterpriseExamineOpinion.handleSubmitCheck ——
+//     publication_commission / profession_indirect_provide 审批时更新日期字段（:939-975），
+//     staff_annual_performance / staff_annual_assessment 把审批意见写入表单（:946-949），
+//     差旅/请款/借款等类型有专用金额一致性计算（:952-990）。
+//
+// 工具没有这些自定义组件与业务接口的执行能力：命中下列清单的流程类型必须在发送前阻塞，
+// 绝不能发通用请求顶替目标业务变更。新类型必须在目标页面核实后先登记再放行。
+var specialBusinessFlowTypes = map[string]bool{
+	// submit 阶段的自定义业务组件/业务数据保存（FlowDialog.formMakingFormBusiness）。
+	"contract_compliance_review": true,
+	"contract_seal_review":       true,
+	"cost_funds_transactions":    true,
+	"cost_funds_invest":          true,
+	// 审批同意阶段会改写业务字段的类型（EnterpriseExamineOpinion.handleSubmitCheck）。
+	"publication_commission":      true,
+	"profession_indirect_provide": true,
+	"staff_annual_performance":    true,
+	"staff_annual_assessment":     true,
+	"expense_budget":              true,
+}
+
+// HasSpecialBusinessLifecycle 判断流程类型在目标页面存在工具无法执行的特殊业务钩子。
+func HasSpecialBusinessLifecycle(flowType string) bool {
+	return specialBusinessFlowTypes[strings.TrimSpace(flowType)]
+}
+
+// SpecialBusinessFlowTypes 返回登记过的特殊业务流程类型（排序副本），供测试与文档核对。
+func SpecialBusinessFlowTypes() []string {
+	result := make([]string, 0, len(specialBusinessFlowTypes))
+	for flowType := range specialBusinessFlowTypes {
+		result = append(result, flowType)
+	}
+	sort.Strings(result)
+	return result
+}
+
+// FlowLifecycleMeta 是流程生命周期元数据快照（F-035 评审补充）：
+// FlowType 是目标页面分派业务钩子的键（auditWay/selectFlowType）；
+// RenderType 是表单渲染类型；FormPersonFields 是目标流程树逐节点声明的
+// form_person 表单人员选择器字段（递归收集，逐节点携带目标节点 ID）。
+type FlowLifecycleMeta struct {
+	FlowType         string
+	RenderType       string
+	FormPersonFields []NodeFormPersonField
+}
+
+// NodeFormPersonField 是一个目标节点声明的表单人员选择器字段（FlowDialog.traverseFlowNode 规则）：
+// 目标在提交时递归流程树，对 auditType=form_person 的节点把声明字段从
+// {"id":..,"name":..} JSON 或同前缀名称字段解析成真实用户 ID；字段缺失时按源字段补齐。
+// 工具必须按同一规则在发起/重提/审批前生成该字段及其伴生字段，不能用固定字段名表猜测。
+type NodeFormPersonField struct {
+	// NodeID 是声明该选择器的目标节点 ID。
+	NodeID string
+	// Field 是表单里的选择器字段名（formPersonFields 逗号分隔项，如 myUserName__formPersonId）。
+	Field string
+}
+
+// CollectFormPersonFields 递归流程树，收集 auditType=form_person 节点声明的全部表单人员字段。
+// 一个节点可声明多个字段（逗号分隔）；同一字段被多个节点声明时按节点去重合并。
+// 树为空时返回空切片（无表单人员节点的流程没有该协议）。
+func CollectFormPersonFields(tree *FlowNodeTemplate) []NodeFormPersonField {
+	result := []NodeFormPersonField{}
+	seen := map[string]bool{}
+	var visit func(node *FlowNodeTemplate)
+	visit = func(node *FlowNodeTemplate) {
+		if node == nil {
+			return
+		}
+		if config := node.AuditConfig; config != nil && strings.TrimSpace(config.AuditType) == "form_person" {
+			nodeID := strings.TrimSpace(node.ID)
+			for _, raw := range strings.Split(config.FormPersonField, ",") {
+				field := strings.TrimSpace(raw)
+				if field == "" || nodeID == "" {
+					continue
+				}
+				key := nodeID + "\x00" + field
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				result = append(result, NodeFormPersonField{NodeID: nodeID, Field: field})
+			}
+		}
+		visit(node.Child)
+		for index := range node.ConditionNodes {
+			visit(node.ConditionNodes[index].Child)
+		}
+		for index := range node.ParallelNodes {
+			visit(node.ParallelNodes[index].Child)
+		}
+	}
+	visit(tree)
+	return result
+}
+
+// ApplyFormPersonFieldRule 按目标 traverseFlowNode 规则把声明字段补进表单值（F-035 评审补充）：
+// 声明字段（如 xxx__formPersonId）为空/缺失时，从去掉 __formPersonId 后缀的源字段解析：
+// 源是 JSON 文本取 id，否则取原值。源也不存在时不产出（目标同样跳过），不伪造人员。
+// 返回是否写入了新值，供调用方记录协议摘要。
+func ApplyFormPersonFieldRule(values map[string]any, field NodeFormPersonField) bool {
+	if values == nil {
+		return false
+	}
+	if existing, exists := values[field.Field]; exists && existing != nil && existing != "" {
+		return false
+	}
+	source := strings.TrimSuffix(field.Field, "__formPersonId")
+	if source == field.Field {
+		return false
+	}
+	raw, exists := values[source]
+	if !exists || raw == nil {
+		return false
+	}
+	switch typed := raw.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return false
+		}
+		// JSON 文本（人员选择器写入的 {"id":..,"name":..}）取 id；其余取原值。
+		var decoded struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil && strings.TrimSpace(decoded.ID) != "" {
+			values[field.Field] = strings.TrimSpace(decoded.ID)
+			return true
+		}
+		values[field.Field] = trimmed
+		return true
+	default:
+		values[field.Field] = raw
+		return true
+	}
+}
+
+// UserIdentity 是一次目标会话的当前账号身份事实（F-035 评审补充）：
+// 全部来自当前会话的实时目标读取（目录树 + 人员目录），不是配置期快照。
+type UserIdentity struct {
+	UserID         string
+	UserName       string
+	CompanyID      string
+	CompanyName    string
+	DepartmentID   string
+	DepartmentName string
+	DutyID         string
+	DutyName       string
+}
+
+// Complete 判断身份事实是否足以构造目标登录人上下文；岗位缺失时调用方必须阻塞。
+func (i UserIdentity) Complete() bool {
+	return strings.TrimSpace(i.UserID) != "" && strings.TrimSpace(i.CompanyID) != "" &&
+		strings.TrimSpace(i.DutyID) != "" && strings.TrimSpace(i.DutyName) != ""
+}
+
+// targetLoginIdentityFieldRules 是目标平台登录人字段约定的唯一登记处（从 service 层迁移）：
+// 键为目标表单字段模型，值为身份属性或 "json:user"/"json:department"/"json:company"（人员选择器 JSON 文本）。
+// 目标 FlowDialog 提交时用登录态覆盖这些字段；新约定出现时在此补充一条即全局生效。
+var targetLoginIdentityFieldRules = map[string]string{
+	"handledBy":             "userId",
+	"handlingCompany":       "companyId",
+	"handlingDepartment":    "departmentId",
+	"initiatorDepartmentId": "departmentId",
+	"currentDepartment":     "departmentId",
+	"currentCompanyId":      "companyId",
+	"currentDepName":        "departmentName",
+	"expenseUserId":         "userId",
+	"expenseUserName":       "userName",
+	"expenseCompanyId":      "companyId",
+	"expenseCompanyName":    "companyName",
+	"myUserName":            "json:user",
+	"myDepName":             "json:department",
+	"myCompanyName":         "json:company",
+}
+
+// ApplyUserIdentity 用当前会话身份覆盖目标登录人上下文字段（F-035 评审补充）：
+// global_user_basic_information 整体覆盖（含岗位），登记字段逐项替换并同步 __formPersonId/__condition 伴生键。
+// 表单没有该字段时跳过（目标同样只在有字段时覆盖）；身份属性为空不伪造。
+func ApplyUserIdentity(values map[string]any, identity UserIdentity) {
+	if values == nil {
+		return
+	}
+	const globalField = "global_user_basic_information"
+	// 与目标页面一致：表单没有登录人上下文字段时不做任何身份写入（历史行为保持，配置期测试也锁定该语义）。
+	if _, exists := values[globalField]; !exists {
+		return
+	}
+	values[globalField] = map[string]any{
+		"userId": identity.UserID, "userName": identity.UserName,
+		"companyId": identity.CompanyID, "companyName": identity.CompanyName,
+		"departmentId": identity.DepartmentID, "departmentName": identity.DepartmentName,
+		"dutyId": identity.DutyID, "dutyName": identity.DutyName,
+	}
+	for field, rule := range targetLoginIdentityFieldRules {
+		if _, exists := values[field]; !exists {
+			continue
+		}
+		if strings.HasPrefix(rule, "json:") {
+			encoded, ok := identityJSONText(identity, strings.TrimPrefix(rule, "json:"))
+			if !ok {
+				continue
+			}
+			values[field] = encoded
+			idAttr, nameAttr := identityPickerCompanions(rule)
+			if _, exists := values[field+"__formPersonId"]; exists {
+				if value, ok := identityAttr(identity, idAttr); ok {
+					values[field+"__formPersonId"] = value
+				}
+			}
+			if _, exists := values[field+"__condition"]; exists {
+				if value, ok := identityAttr(identity, nameAttr); ok {
+					values[field+"__condition"] = value
+				}
+			}
+			continue
+		}
+		if value, ok := identityAttr(identity, rule); ok {
+			values[field] = value
+		}
+	}
+}
+
+// identityJSONText 按人员选择器约定产出 {"id":..,"name":..} JSON 文本。
+func identityJSONText(identity UserIdentity, kind string) (string, bool) {
+	var id, name string
+	switch kind {
+	case "user":
+		id, name = identity.UserID, identity.UserName
+	case "department":
+		id, name = identity.DepartmentID, identity.DepartmentName
+	case "company":
+		id, name = identity.CompanyID, identity.CompanyName
+	}
+	if id == "" || name == "" {
+		return "", false
+	}
+	encoded, err := json.Marshal(map[string]string{"id": id, "name": name})
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+// identityPickerCompanions 返回人员选择器伴生键对应的身份属性。
+func identityPickerCompanions(rule string) (idAttr, nameAttr string) {
+	switch rule {
+	case "json:user":
+		return "userId", "userName"
+	case "json:department":
+		return "departmentId", "departmentName"
+	case "json:company":
+		return "companyId", "companyName"
+	}
+	return "", ""
+}
+
+// identityAttr 按属性名取身份值；空值不产出。
+func identityAttr(identity UserIdentity, attr string) (string, bool) {
+	switch attr {
+	case "userId":
+		return identity.UserID, true
+	case "userName":
+		return identity.UserName, true
+	case "companyId":
+		return identity.CompanyID, true
+	case "companyName":
+		return identity.CompanyName, true
+	case "departmentId":
+		return identity.DepartmentID, true
+	case "departmentName":
+		return identity.DepartmentName, true
+	case "dutyId":
+		return identity.DutyID, true
+	case "dutyName":
+		return identity.DutyName, true
+	}
+	return "", false
+}
+
+// CurrentUserIdentity 用当前会话实时读取账号身份（目录树 + 岗位），
+// 供执行器在每次写请求前覆盖身份字段；任何一项读取失败都返回错误，调用方必须阻塞。
+func (c *Client) CurrentUserIdentity(ctx context.Context, active Session) (UserIdentity, error) {
+	identityCtx, err := c.FormIdentityContext(ctx, active)
+	if err != nil {
+		return UserIdentity{}, err
+	}
+	dutyID, dutyName, err := c.CurrentUserDuty(ctx, active)
+	if err != nil {
+		return UserIdentity{}, err
+	}
+	companyName := firstNonEmpty(identityCtx.Company.Name, active.Summary.CompanyName)
+	departmentID := firstNonEmpty(identityCtx.Department.ID, active.DepartmentID)
+	departmentName := firstNonEmpty(identityCtx.Department.Name, "")
+	return UserIdentity{
+		UserID: active.UserID, UserName: active.Summary.DisplayName,
+		CompanyID: active.CompanyID, CompanyName: companyName,
+		DepartmentID: departmentID, DepartmentName: departmentName,
+		DutyID: dutyID, DutyName: dutyName,
+	}, nil
+}
+
+// ValidateBodyMatrix 在写请求发出前按矩阵强制校验载荷（F-035 评审补充）：
+// required 字段必须存在（含固定发送的空数组/空对象），forbidden 字段不得出现。
+// sid/projectId/customerCode 由信封注入，不在载荷构造器职责内，这里跳过；
+// optional 字段由调用方按页面条件决定，不做硬性断言。返回中文结论供阻塞使用。
+func ValidateBodyMatrix(endpoint string, body map[string]any, customerCode string) error {
+	fields, registered := endpointFieldMatrix[endpoint]
+	if !registered {
+		// 未登记矩阵的端点禁止进入实现（F-035 硬性规则）。
+		return fmt.Errorf("端点 %s 未登记协议矩阵，禁止发送写请求", endpoint)
+	}
+	flat := map[string]any{}
+	var walk func(prefix string, value any)
+	walk = func(prefix string, value any) {
+		if typed, ok := value.(map[string]any); ok {
+			for key, child := range typed {
+				pathPath := key
+				if prefix != "" {
+					pathPath = prefix + "." + key
+				}
+				flat[pathPath] = child
+				walk(pathPath, child)
+			}
+		}
+	}
+	walk("", body)
+	// 信封层注入的字段在发送前由统一出口补齐，这里按已注入口径核对。
+	if sid, ok := body["__envelope_sid__"]; ok {
+		flat["sid"] = sid
+	}
+	flat["sid"] = true
+	flat["projectId"] = true
+	flat["data.customerCode"] = true
+	for field, presence := range fields {
+		switch presence {
+		case PresenceRequired:
+			if _, exists := flat[field]; !exists {
+				return fmt.Errorf("写请求 %s 缺少协议矩阵 required 字段 %s，不能发送", endpoint, field)
+			}
+		case PresenceForbidden:
+			if _, exists := flat[field]; exists {
+				return fmt.Errorf("写请求 %s 携带了协议矩阵 forbidden 字段 %s，不能发送", endpoint, field)
+			}
+		}
+	}
+	return nil
 }

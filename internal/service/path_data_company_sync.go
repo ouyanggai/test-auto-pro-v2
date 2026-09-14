@@ -210,50 +210,9 @@ func (s *PathConfigService) currentUserIdentity(ctx context.Context, planID uint
 // 目标在每次提交时都会用登录态覆盖该字段，回放值若保留原发起人身份，提交出去的数据会冒用他人身份；
 // 岗位事实随同一次会话读取（F-035），缺失时由读取/保存边界阻塞，这里不再伪造空值。
 func replaceUserIdentityValues(values map[string]any, identity runtimeUserIdentity) {
-	if values == nil {
-		return
-	}
-	if _, exists := values[targetGlobalUserIdentityField]; !exists {
-		return
-	}
-	values[targetGlobalUserIdentityField] = map[string]any{
-		"userId":         identity.UserID,
-		"userName":       identity.UserName,
-		"companyId":      identity.CompanyID,
-		"companyName":    identity.CompanyName,
-		"departmentId":   identity.DepartmentID,
-		"departmentName": identity.DepartmentName,
-		"dutyId":         identity.DutyID,
-		"dutyName":       identity.DutyName,
-	}
-	// 登录人约定字段按登记表逐项替换；键不存在（表单没这个字段）自然跳过，身份属性为空不伪造。
-	for field, rule := range targetLoginIdentityFieldRules {
-		if _, exists := values[field]; !exists {
-			continue
-		}
-		if strings.HasPrefix(rule, "json:") {
-			encoded, ok := identityJSONValue(identity, strings.TrimPrefix(rule, "json:"))
-			if !ok {
-				continue
-			}
-			values[field] = encoded
-			idAttr, nameAttr := identityPickerCompanions(rule)
-			if _, exists := values[field+"__formPersonId"]; exists {
-				if idValue, ok := identityAttrValue(identity, idAttr); ok {
-					values[field+"__formPersonId"] = idValue
-				}
-			}
-			if _, exists := values[field+"__condition"]; exists {
-				if nameValue, ok := identityAttrValue(identity, nameAttr); ok {
-					values[field+"__condition"] = nameValue
-				}
-			}
-			continue
-		}
-		if value, ok := identityAttrValue(identity, rule); ok {
-			values[field] = value
-		}
-	}
+	// F-035 评审补充：登录人字段规则与替换逻辑统一收敛到 adapter/target.ApplyUserIdentity，
+	// 配置期与运行期消费同一份登记表，禁止两套实现漂移。
+	target.ApplyUserIdentity(values, target.UserIdentity(identity))
 }
 
 // ReplaceUserIdentityValuesForTest 暴露登录人上下文替换，供 test 目录下的定向用例锁定行为。

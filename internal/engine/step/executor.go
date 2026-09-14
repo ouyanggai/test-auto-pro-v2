@@ -12,6 +12,7 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/verdict"
+	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 )
@@ -227,6 +228,13 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	} else {
 		actorName = name
 	}
+	// F-035 评审补充：上一步写后表单核对不一致时直接阻塞本步——上游值已丢失或被改写，
+	// 继续执行会把错误数据当基线，必须在用户检查目标实例后再放行。
+	if strings.TrimSpace(facts.FormDataVerifyIssue) != "" {
+		reason := "上一步的表单数据写后核对未通过：" + facts.FormDataVerifyIssue + "；已阻塞本步，请先到目标平台核对实例当前表单数据"
+		log.Phase("gate", step.Sequence, 1, reason)
+		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
+	}
 	// F-035：目标节点已到达但未生成处理人/待办时，进入“正在生成处理人”有界轮询；
 	// 总等待不超过 10 秒、最多 5 次，期间不发任何写请求。超时后按 assignment_missing 阻塞，
 	// 绝不显示“当前待办已经处理”，也不用计划账号或候选人代替目标返回的真实处理人。
@@ -239,6 +247,23 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 			session = *pollSession
 		}
 		facts = pollFacts
+	}
+	// F-035 评审补充：目标页面按流程类型分派特殊业务前置/后置（自定义组件、业务数据保存、
+	// 业务字段改写）。工具没有这些自定义组件的执行能力，命中登记清单必须阻塞，
+	// 绝不能发通用请求顶替目标业务变更（用户豁免的是表单校验，不是业务数据变更与请求顺序）。
+	if target.HasSpecialBusinessLifecycle(runCtx.FlowType) {
+		reason := fmt.Sprintf("流程类型「%s」在目标页面存在特殊业务逻辑（自定义组件/业务数据保存/业务字段改写），本工具无法代替目标执行；已阻塞，请在目标平台手工完成该流程的验证", runCtx.FlowType)
+		log.Phase("gate", step.Sequence, 1, "特殊业务生命周期阻塞："+reason)
+		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
+	}
+	// F-035 评审补充：目标无表单页面（vue_custom/NoFormFlow）有专用业务链路——项目与业务组件关联、
+	// initiatorRange、money 等类型字段、并行/手动分支选人（NoFormFLow/Flow.vue submitFinal）。
+	// 通用请求不能代替这些协议；发起/重提必须阻塞，等目标无表单页面逐页实现后再放行。
+	if runCtx.RenderType == string(target.FormRenderTypeVueCustom) &&
+		(step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft || step.Action == model.ActionResubmit) {
+		reason := fmt.Sprintf("无表单页面「%s」存在专用业务链路（项目/业务关联、initiatorRange、并行或手动分支选人等），本工具尚未逐页面实现；已阻塞，请在目标平台手工发起", runCtx.FlowType)
+		log.Phase("gate", step.Sequence, 1, "无表单业务链路阻塞："+reason)
+		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
 	info := runCtx.Nodes[step.NodeKey]
 	// 目标自动跳过适配：模板约束「无处理人时跳过该节点」在人员规则（如扩展属性）解析为空时
@@ -435,7 +460,49 @@ func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled
 	if err == nil && plan.Decision != nil && len(plan.Decision.ValidationIssues) > 0 {
 		return plan, session, fmt.Errorf("%s", strings.Join(plan.Decision.ValidationIssues, "；"))
 	}
-	return plan, session, err
+	if err != nil {
+		return plan, session, err
+	}
+	// F-035 评审补充：发起/重提/审批前必须按当前计划账号的实时会话身份覆盖目标登录人字段——
+	// 运行上下文里的 EffectiveFormData 是配置期快照，计划账号变化后不能沿用历史身份。
+	// 身份读取失败或岗位缺失一律阻塞（不伪造空岗位），这正对目标 FlowDialog 用登录态覆盖提交值的规则。
+	switch compiled.Action {
+	case model.ActionSubmit, model.ActionSaveDraft, model.ActionResubmit, model.ActionApprove:
+		identityReader, canReadIdentity := e.target.(runtimeIdentityReader)
+		if !canReadIdentity {
+			return FormDataPlan{}, session, fmt.Errorf("目标客户端不支持实时身份读取，不能按当前计划账号覆盖发起人身份")
+		}
+		account := strings.TrimSpace(session.Summary.Account)
+		if account == "" {
+			account = runCtx.PlanAccount
+		}
+		identity, _, identityErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+			func(callContext context.Context, active target.Session) (target.UserIdentity, error) {
+				return identityReader.CurrentUserIdentity(callContext, active)
+			})
+		if identityErr != nil {
+			return FormDataPlan{}, session, fmt.Errorf("读取当前计划账号的实时身份失败：%s", target.UserFacingErrorMessage(target.WriteResponse{}, identityErr))
+		}
+		if !identity.Complete() {
+			return FormDataPlan{}, session, fmt.Errorf("当前计划账号在目标平台缺少岗位信息（dutyId/dutyName），发起会被按错误身份解析处理人，请先在目标平台补全该账号岗位")
+		}
+		// 用实时身份覆盖表单值：快照是配置期的，这里必须是当前会话的。
+		values, decodeErr := jsonvalues.DecodeObject(plan.Payload)
+		if decodeErr != nil {
+			return FormDataPlan{}, session, fmt.Errorf("表单数据解码失败，无法覆盖实时身份：%w", decodeErr)
+		}
+		target.ApplyUserIdentity(values, identity)
+		encoded, encodeErr := json.Marshal(values)
+		if encodeErr != nil {
+			return FormDataPlan{}, session, fmt.Errorf("实时身份覆盖结果编码失败：%w", encodeErr)
+		}
+		plan.Payload = encoded
+		if plan.Decision != nil {
+			plan.Decision.FinalPayload = encoded
+			plan.Decision.PayloadFingerprint = decisionFingerprint(encoded)
+		}
+	}
+	return plan, session, nil
 }
 
 // formBaseName 返回表单数据基线的中文说明，供 step.log 一眼看出这份载荷是从哪来的。
@@ -471,6 +538,67 @@ func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionSt
 // stepTargetNodeIDOf 返回编译步骤节点在目标平台的真实标识；缺失时返回空串由调用方兜底。
 func stepTargetNodeIDOf(runCtx RunContext, step model.CompiledActionStep) string {
 	return strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+}
+
+// runtimeIdentityReader 是读取当前会话实时身份的可选能力面（F-035 评审补充）：
+// 真实目标客户端实现它；测试假件不必实现，缺省时发起/审批阻塞而不是用历史身份冒充。
+type runtimeIdentityReader interface {
+	CurrentUserIdentity(ctx context.Context, active target.Session) (target.UserIdentity, error)
+}
+
+// verifyFormDataAfterWrite 在写请求成功后重读目标实例当前表单，并与本节点决策逐字段核对（F-035 评审补充）：
+//   - 本节点覆盖字段：目标值必须等于决策记录的实际写入值；
+//   - 基线保留字段（发起态为发起字段，实例态为实例基线）：目标值必须保持原值；
+//   - 不核对目标自身的校验规则（用户已豁免），只核对工具写副作用的保存事实。
+//
+// 读取失败返回空串（核验失败由既有 ReadError 通路处理），核对不一致返回中文结论。
+func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunContext, session target.Session, decision *NodeFormDataDecision, log *StepLog) string {
+	instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	if instanceRef == "" {
+		// 发起场景实例 ID 尚未回填：表单核对由提交结果与待办事实承担，这里只核已有实例。
+		return ""
+	}
+	current, err := e.target.ReadInstanceCurrentData(ctx, session, instanceRef)
+	if err != nil {
+		// 目标读取失败不算核对不一致：由 ReadError 通路按「结果待确认」处理。
+		return ""
+	}
+	issues := []string{}
+	for _, field := range decision.OverlaidFields {
+		written, hasWritten := decision.OverlaidValues[field]
+		if !hasWritten {
+			continue
+		}
+		actual, exists := current[field]
+		if !exists {
+			issues = append(issues, fmt.Sprintf("字段 %s 发送后未出现在目标实例数据中", field))
+			continue
+		}
+		if !deepEqualNormalized(written, actual) {
+			issues = append(issues, fmt.Sprintf("字段 %s 发送的值未被目标保存（发送 %v，目标 %v）", field, written, actual))
+		}
+	}
+	for field, baseValue := range decision.BaseValues {
+		if containsString(decision.OverlaidFields, field) || containsString(decision.WithheldFields, field) {
+			// 本节点覆盖的字段以写入值为准；被扣留字段不属于本节点写入，不参与保留核对。
+			continue
+		}
+		actual, exists := current[field]
+		if !exists {
+			continue
+		}
+		if !deepEqualNormalized(baseValue, actual) {
+			issues = append(issues, fmt.Sprintf("上游字段 %s 的值在本次写后被改写（写前 %v，目标 %v）", field, baseValue, actual))
+		}
+	}
+	if len(issues) == 0 {
+		log.Phase("verify", decision.StepNo, 1, fmt.Sprintf("表单数据写后核对通过：覆盖 %d 个字段均已保存，基线保留字段未被改写（指纹 %s）",
+			len(decision.OverlaidFields), decision.PayloadFingerprint))
+		return ""
+	}
+	message := "表单数据写后核对不一致：" + strings.Join(issues, "；")
+	log.Phase("verify", decision.StepNo, 1, message)
+	return message
 }
 
 // pollForHandlerGeneration 对“目标节点已到达但处理人/待办尚未生成”的场景执行有界轮询（F-035/T07）：
@@ -1025,6 +1153,14 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	before.StepNodeKey = stepTargetNodeID
 	after, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
 	after.StepNodeKey = stepTargetNodeID
+	// F-035 评审补充：写后表单数据逐字段核对——本次发送的覆盖字段必须已保存成目标值，
+	// 基线里保留的上游字段必须保持原值。这不是目标表单校验（用户已豁免），
+	// 而是工具自己的写副作用事实核对；核对结论随核验事实落账，供下一步门禁阻塞使用。
+	if readErr == nil && strings.TrimSpace(after.ReadError) == "" && preview.FormDataDecision != nil && ActionCarriesFormData(step.Action) {
+		if issue := e.verifyFormDataAfterWrite(ctx, runCtx, session, preview.FormDataDecision, log); issue != "" {
+			after.FormDataVerifyIssue = issue
+		}
+	}
 	if readErr == nil && strings.TrimSpace(after.ReadError) == "" {
 		// 核验重读同时把实例名称补进日志作用域与 meta.json；写后屏障之后的新事实优先。
 		ctx = e.annotateInstanceFromFacts(ctx, runCtx, log, after)

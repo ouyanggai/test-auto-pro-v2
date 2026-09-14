@@ -93,7 +93,19 @@ type RunContext struct {
 	// 发起/草稿只发送 formProxyId（FormMaking）或 flowProxyId（无表单）；
 	// 禁止把发布流程代理 ID 当表单代理 ID，也禁止无依据同时发送两个代理字段。
 	FlowProxyID string
+	// FormProxyID 是 FormMaking 表单代理 ID（F-035）：从新流程模板唯一的 Forms 项取得，
+	// 发起/草稿只发送 formProxyId（FormMaking）或 flowProxyId（无表单）；
+	// 禁止把发布流程代理 ID 当表单代理 ID，也禁止无依据同时发送两个代理字段。
 	FormProxyID string
+	// FlowType 是目标流程类型（auditWay / selectFlowType，F-035 评审补充）：
+	// 目标页面按它分派特殊业务前置与后置；命中 specialBusinessFlowTypes 的类型必须阻塞。
+	FlowType string
+	// RenderType 是目标表单渲染类型（formmaking / vue_custom / no-form）：
+	// vue_custom 页面有专用业务链路（项目/业务关联、initiatorRange 等），通用请求不得代替。
+	RenderType string
+	// FormPersonFields 是目标流程树逐节点声明的 form_person 表单人员选择器字段（F-035 评审补充）：
+	// 发起/重提/审批前必须按目标 traverseFlowNode 规则生成这些字段，不能用固定字段名表猜测。
+	FormPersonFields []target.NodeFormPersonField
 	// Source 是这条路径的流程来源（如“新发起”）；门禁投影与来源相关。
 	Source string
 	// Nodes 是路径配置快照里这条路径的目标节点表（键=目标代理节点 Key），
@@ -150,6 +162,9 @@ type InstanceFacts struct {
 	// 有界轮询结束后仍缺失时，门禁必须显示“目标节点未生成处理人”，不得显示“当前待办已经处理”。
 	HandlerGenerationRead bool `json:"handlerGenerationRead,omitempty"`
 	HandlerMissing        bool `json:"handlerMissing,omitempty"`
+	// FormDataVerifyIssue 是写后表单数据逐字段核对的中文结论（F-035 评审补充）；
+	// 非空表示本次写请求的表单副作用与目标实例不一致，下一步门禁据此阻塞。
+	FormDataVerifyIssue string `json:"formDataVerifyIssue,omitempty"`
 	// CreatorRead 表示本次实例读取已经核对创建人；没有该事实时不能把当前账号冒充创建人。
 	CreatorRead bool `json:"creatorRead,omitempty"`
 	// IsInitiator 表示当前会话账号是否为目标实例创建人。

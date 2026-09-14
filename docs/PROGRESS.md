@@ -1,5 +1,16 @@
 # 当前进度
 
+- 2026-09-14 F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」经评审退回 `implementing`（评审指出 2 Critical + 6 High：
+  FormMaking 特殊业务链路缺失、无表单通用兜底、formPersonFields 未迁移、运行时旧身份、全局 customerCode、
+  跨节点只查字段缺失、无写后表单核对、矩阵与构造器不一致）。第三轮已全部处理：新增目标业务生命周期登记处
+  （命中特殊业务类型的全部写动作门禁阻塞）、vue_custom 页面如实标记 partial 且发起/重提阻塞、
+  form_person 人员选择器字段按目标 traverseFlowNode 规则递归收集并生成、执行器在每次发起/审批前用当前会话
+  实时身份覆盖登录人字段（岗位缺失阻塞）、写出口按 session.CustomerCode 注入客户码、跨节点核对升级为
+  深度值比较（改写即阻塞）、新增写后表单逐字段核对（下一步门禁据此阻塞）、`ValidateBodyMatrix` 在发送前
+  强制 required/forbidden/未登记端点。`go test ./test/unit/... ./test/contracts/f035/...` 全部通过，漂移脚本通过。
+  自定义组件（contractBusiness、saveCostFundsBusiness 等）的具体目标写接口仍按切片边界以“命中即阻塞”保证安全，
+  逐类型实现需后续切片批准。详细记录见功能文档「本切片实施现状（第三轮）」。
+
 - 2026-09-14 F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」经用户批准实施完成，停在 `ready_for_manual`。
   已落地：逐接口协议矩阵登记处 `internal/adapter/target/protocol_matrix.go`（四态字段存在性）与统一写出口信封注入
   （顶层 sid/projectId、data.customerCode，与目标 axios 拦截器同语义）；删除 `verdict` 对 `batchCode` 的无条件禁令，

@@ -4,6 +4,9 @@ import "strings"
 
 // ResolveVueCustomPage 将目标无表单审批方式转换为复制运行时可解析的页面入口。
 // auditWay 是目标页面注册表使用的稳定键；工具不根据流程名称猜测组件，也不重建页面字段。
+// F-035 评审补充：vue_custom 页面不再标记 complete——目标无表单页面有专用业务链路
+// （项目关联、initiatorRange、业务组件关联、并行/手动分支选人等，NoFormFLow/Flow.vue submitFinal），
+// 通用字段清单不能冒充页面协议；规则携带 Issues 阻断说明，由配置/运行链路呈现给用户。
 func ResolveVueCustomPage(renderType FormRenderType, auditWay, flowName string) *VueCustomPageRule {
 	if renderType != FormRenderTypeVueCustom {
 		return nil
@@ -15,7 +18,8 @@ func ResolveVueCustomPage(renderType FormRenderType, auditWay, flowName string) 
 	}
 	pageName := strings.TrimSpace(flowName)
 	rule := &VueCustomPageRule{
-		Status:        "complete",
+		// Status 停在 partial：目标无表单页面的业务链路尚未逐页面实现，工具不提供“协议已完整”的假象。
+		Status:        "partial",
 		PageKey:       pageKey,
 		PageName:      pageName,
 		ComponentName: pageKey,
@@ -23,7 +27,7 @@ func ResolveVueCustomPage(renderType FormRenderType, auditWay, flowName string) 
 		Fields:        vueCustomFieldRules(),
 		Dependencies:  []VueCustomDependencyRule{},
 		ReadRequests:  []VueCustomRequestRule{},
-		Issues:        []string{},
+		Issues:        []string{"目标无表单页面「" + pageKey + "」存在专用业务链路（项目/业务关联、initiatorRange、并行或手动分支选人等），本工具尚未逐页面实现；发起/审批前会阻塞并要求人工在目标平台处理"},
 	}
 	return rule
 }

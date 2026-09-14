@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,4 +158,19 @@ func TestF019LocalActionValidationSettlesAsZeroWriteFailure(t *testing.T) {
 	if facts.attempts[0].Verdict != "confirmed_failure" {
 		t.Fatalf("本地校验失败不得记录为待确认，实际 %+v", facts.attempts[0])
 	}
+}
+
+// CurrentUserIdentity 为 reviewTarget 提供实时身份读取（F-035 评审补充）：
+// 假件返回完整身份事实，让零写入回归继续走生产同一条身份覆盖路径。
+func (r *reviewTarget) CurrentUserIdentity(_ context.Context, active target.Session) (target.UserIdentity, error) {
+	account := strings.TrimSpace(active.Summary.Account)
+	if account == "" {
+		account = "plan-account"
+	}
+	return target.UserIdentity{
+		UserID: "uid-" + account, UserName: "姓名-" + account,
+		CompanyID: "company-" + account, CompanyName: "公司-" + account,
+		DepartmentID: "dept-" + account, DepartmentName: "部门-" + account,
+		DutyID: "duty-" + account, DutyName: "岗位-" + account,
+	}, nil
 }

@@ -82,6 +82,12 @@ type NodeFormDataDecision struct {
 	EditableFields []string `json:"editableFields"`
 	// OverlaidFields 是本次用配置值覆盖的字段。
 	OverlaidFields []string `json:"overlaidFields"`
+	// OverlaidValues 是本次实际写入的字段值（F-035 评审补充）：写后核对与跨节点核对
+	// 深度比较用，字段名存在但值被改写同样算丢失。
+	OverlaidValues map[string]any `json:"overlaidValues,omitempty"`
+	// BaseValues 是本次构造时的完整基线快照（发起态或实例当前数据）：
+	// 写后逐字段核对"上游字段保持原值"以它为准。
+	BaseValues map[string]any `json:"baseValues,omitempty"`
 	// PreservedFields 是基线中保留未动的字段（上一节点/目标已填值）。
 	PreservedFields []string `json:"preservedFields"`
 	// WithheldFields 是禁止进入本次载荷的后续节点专属/权限外配置字段。
@@ -140,11 +146,13 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 			decision.BaselineSource = "instance"
 		}
 		// 实例已存在：只覆盖本节点声明可编辑的配置字段，其余保持实例现状。
+		overlaidValues := map[string]any{}
 		for key, value := range configured {
 			if fieldpower.Covers(editable, key) {
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
 				decision.OverlaidFields = append(decision.OverlaidFields, key)
+				overlaidValues[key] = value
 				continue
 			}
 			if _, exists := merged[key]; !exists && !ownedByOtherNodeOnly(runCtx, compiled.NodeKey, key) {
@@ -153,22 +161,34 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
 				decision.OverlaidFields = append(decision.OverlaidFields, key)
+				overlaidValues[key] = value
 				continue
 			}
 			plan.Withheld = append(plan.Withheld, key)
 			decision.WithheldFields = append(decision.WithheldFields, key)
 		}
-		// 跨节点核对（F-035/T05）：上一节点覆盖字段的值必须仍在当前实例基线里，
-		// 否则说明目标数据丢失或被覆盖，必须阻塞而不是带着旧快照继续写。
+		decision.OverlaidValues = overlaidValues
+		decision.BaseValues = cloneForDecision(merged)
+		// 跨节点核对（F-035 评审补充）：上一节点覆盖字段的值必须仍在当前实例基线里且值未被改写，
+		// 嵌套对象/数组/表格字段按深度比较；丢失或被改写一律阻塞，不能带着旧快照继续写。
 		if previous != nil && decision.BaselineSource == "instance" {
 			for _, field := range previous.OverlaidFields {
 				if fieldpower.Covers(editable, field) {
 					// 当前节点本就可以编辑该字段：它将由本节点重新覆盖，不适用保留断言。
 					continue
 				}
-				if _, exists := merged[field]; !exists {
+				current, exists := merged[field]
+				if !exists {
 					decision.ValidationIssues = append(decision.ValidationIssues,
 						fmt.Sprintf("上一节点写入的字段 %s 在目标实例当前数据中丢失，不能继续提交", field))
+					continue
+				}
+				if written, ok := previous.OverlaidValues[field]; ok {
+					// 深度比较：把两侧按 JSON 规范化后比较，覆盖嵌套对象、数组与表格字段。
+					if !deepEqualNormalized(written, current) {
+						decision.ValidationIssues = append(decision.ValidationIssues,
+							fmt.Sprintf("上一节点写入的字段 %s 的值在目标实例上被改写（期望 %v，实际 %v），不能继续提交", field, written, current))
+					}
 				}
 			}
 		}
@@ -245,4 +265,31 @@ func ActionCarriesFormData(action model.ActionKey) bool {
 	default:
 		return false
 	}
+}
+
+// cloneForDecision 为决策记录做基线深拷贝（避免后续修改污染记录）。
+func cloneForDecision(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(source)
+	if err != nil {
+		return nil
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(encoded, &cloned); err != nil {
+		return nil
+	}
+	return cloned
+}
+
+// deepEqualNormalized 把两个值按 JSON 序列化后比较（json.Number 原样保留），
+// 覆盖嵌套对象、数组与表格字段；字符串比较不做排序扰动，键序差异由 map 序列化的确定性吸收。
+func deepEqualNormalized(a, b any) bool {
+	encodedA, errA := json.Marshal(a)
+	encodedB, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return fmt.Sprint(a) == fmt.Sprint(b)
+	}
+	return string(encodedA) == string(encodedB)
 }

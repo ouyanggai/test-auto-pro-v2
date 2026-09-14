@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,8 +96,12 @@ func TestAuditBodyAlwaysCarriesTrackingAndBizRelevance(t *testing.T) {
 	} else if tracking != false {
 		t.Fatalf("未配置 tracking 时应发 false：%v", tracking)
 	}
-	if _, ok := flat["data"].(map[string]any)["flowInstanceBizRelevanceList"].([]any); !ok {
-		t.Fatal("业务关联必须固定为数组")
+	if _, exists := flat["data"]; !exists {
+		t.Fatal("data 容器缺失")
+	}
+	// F-035 评审补充：审批页初值不携带业务关联，仅公共流程/案件场景设置——空数组不是页面行为。
+	if _, exists := flat["data.flowInstanceBizRelevanceList"]; exists {
+		t.Fatal("无业务关联时审批不应强制携带空 flowInstanceBizRelevanceList（页面条件发送）")
 	}
 	if flat["nextAuditorList"] != nil {
 		t.Fatal("非 pass 显式人员时 nextAuditorList 不发送（页面仅 pass 分支 map）")
@@ -211,5 +216,96 @@ func TestNewBatchCodeShape(t *testing.T) {
 	}
 	if code == target.NewBatchCode() {
 		t.Fatal("两次生成的批次号不应相同")
+	}
+}
+
+// TestWriteUsesSessionCustomerCode 锁定 F-035 评审补充：写出口必须按当前会话注入
+// data.customerCode，而不是全局配置；请求体、查询参数与会话同身份。
+func TestWriteUsesSessionCustomerCode(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &received)
+		_, _ = w.Write([]byte(`{"isSuccess":true,"data":{}}`))
+	}))
+	defer server.Close()
+	client, err := target.NewClient(target.ClientConfig{
+		BaseURL: server.URL, Timeout: time.Second, CustomerCode: "global-cust", PlatformCode: "200001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.CallWrite(context.Background(), "/web/flowInstanceApi/submit", "sid-1", "session-cust", map[string]any{
+		"data": map[string]any{"name": "n"},
+	}); err != nil {
+		t.Fatalf("写出口请求失败：%v", err)
+	}
+	data := received["data"].(map[string]any)
+	if data["customerCode"] != "session-cust" {
+		t.Fatalf("data.customerCode 必须来自当前会话：%v", data)
+	}
+}
+
+// TestWriteFallsBackToGlobalCustomerCode 锁定：会话客户码缺失时回落全局配置（兼容旧会话形状）。
+func TestWriteFallsBackToGlobalCustomerCode(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &received)
+		_, _ = w.Write([]byte(`{"isSuccess":true,"data":{}}`))
+	}))
+	defer server.Close()
+	client, err := target.NewClient(target.ClientConfig{
+		BaseURL: server.URL, Timeout: time.Second, CustomerCode: "global-cust", PlatformCode: "200001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.CallWrite(context.Background(), "/web/flowInstanceApi/submit", "sid-1", "", map[string]any{
+		"data": map[string]any{"name": "n"},
+	}); err != nil {
+		t.Fatalf("写出口请求失败：%v", err)
+	}
+	if received["data"].(map[string]any)["customerCode"] != "global-cust" {
+		t.Fatalf("会话客户码缺失时应回落全局配置：%v", received)
+	}
+}
+
+// TestValidateBodyMatrixEnforcement 锁定发送前矩阵强制：required 缺失与 forbidden 出现都拒绝，
+// 未登记端点直接拒绝；信封注入字段不参与载荷断言。
+func TestValidateBodyMatrixEnforcement(t *testing.T) {
+	// submit 缺 batchCode 必须拒绝。
+	err := target.ValidateBodyMatrix(target.WriteEndpointSubmit, map[string]any{
+		"data": map[string]any{"name": "n", "companyId": "c"},
+	}, "cust")
+	if err == nil {
+		t.Fatal("缺少 required 字段必须被拒绝")
+	}
+	if !strings.Contains(err.Error(), "required 字段") {
+		t.Fatalf("拒绝原因必须指向缺失的 required 字段：%v", err)
+	}
+	// 完整 submit 载荷通过。
+	if err := target.ValidateBodyMatrix(target.WriteEndpointSubmit, map[string]any{
+		"batchCode": "b", "data": map[string]any{"name": "n", "companyId": "c", "flowInstanceBizRelevanceList": []any{}, "customerCode": "cust"},
+		"formDataMongoVo": map[string]any{"data": map[string]any{}}, "nextAuditorList": []any{},
+	}, "cust"); err != nil {
+		t.Fatalf("完整载荷不应被拒绝：%v", err)
+	}
+	// audit 携带 batchCode 必须拒绝（先补齐 required 字段使断言聚焦 forbidden）。
+	auditBody := map[string]any{
+		"data":            map[string]any{"id": "i", "jobTaskId": "t", "auditRecord": map[string]any{}},
+		"formDataMongoVo": map[string]any{"data": map[string]any{}},
+		"tracking":        false,
+	}
+	if err := target.ValidateBodyMatrix(target.WriteEndpointAudit, auditBody, "cust"); err != nil {
+		t.Fatalf("完整审批载荷不应被拒绝：%v", err)
+	}
+	auditBody["batchCode"] = "b"
+	if err := target.ValidateBodyMatrix(target.WriteEndpointAudit, auditBody, "cust"); err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("audit 携带 batchCode 必须被拒绝：%v", err)
+	}
+	// 未登记端点直接拒绝。
+	if err := target.ValidateBodyMatrix("/web/unknown", map[string]any{}, "cust"); err == nil {
+		t.Fatal("未登记端点必须被拒绝")
 	}
 }

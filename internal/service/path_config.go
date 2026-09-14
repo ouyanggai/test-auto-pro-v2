@@ -205,6 +205,21 @@ func (s *PathConfigService) TemplateFormProxyID(ctx context.Context, planID uint
 	return strings.TrimSpace(snapshot.Forms[0].ID), nil
 }
 
+// FlowLifecycleMeta 返回运行编排需要的流程生命周期元数据（F-035 评审补充）：
+// 流程类型（auditWay）、渲染类型与目标流程树中声明 form_person 表单人员选择器的字段清单。
+// 这些事实只能来自当前目标模板/代理树快照，不能从历史配置或示例推断。
+func (s *PathConfigService) FlowLifecycleMeta(ctx context.Context, planID uint64) (target.FlowLifecycleMeta, error) {
+	snapshot, err := s.readVerifiedSnapshot(ctx, planID)
+	if err != nil {
+		return target.FlowLifecycleMeta{}, err
+	}
+	return target.FlowLifecycleMeta{
+		FlowType:         strings.TrimSpace(snapshot.AuditWay),
+		RenderType:       string(snapshot.RenderType),
+		FormPersonFields: target.CollectFormPersonFields(snapshot.Tree),
+	}, nil
+}
+
 // ownedPathAnalysis 是当前真实图与路径分析的组合结果。
 type ownedPathAnalysis struct {
 	graph        model.FlowGraph

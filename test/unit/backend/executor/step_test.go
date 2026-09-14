@@ -683,3 +683,18 @@ func previewBlock(preview *step.StepPreview) string {
 	}
 	return preview.BlockReason
 }
+
+// CurrentUserIdentity 为 fakeTarget 提供实时身份读取（F-035 评审补充）：
+// 假件返回派生自会话账号的完整身份（含岗位），让既有用例继续走生产同一条身份覆盖路径。
+func (f *fakeTarget) CurrentUserIdentity(_ context.Context, active target.Session) (target.UserIdentity, error) {
+	account := strings.TrimSpace(active.Summary.Account)
+	if account == "" {
+		account = "plan-account"
+	}
+	return target.UserIdentity{
+		UserID: "uid-" + account, UserName: "姓名-" + account,
+		CompanyID: "company-" + account, CompanyName: "公司-" + account,
+		DepartmentID: "dept-" + account, DepartmentName: "部门-" + account,
+		DutyID: "duty-" + account, DutyName: "岗位-" + account,
+	}, nil
+}

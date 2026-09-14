@@ -206,23 +206,24 @@ func (c *Client) call(ctx context.Context, path, sid string, body map[string]any
 // CallWrite 发出唯一一次写请求，返回本次请求的 trace_id。
 // trace_id 由本出口生成并贯穿 network.log/curl.log 与运行事实的尝试记录，实现记录与日志双向可达。
 // 本方法不内建任何重试：调用方（执行器 submit 阶段）保证一次尝试只调用一次。
-func (c *Client) CallWrite(ctx context.Context, path, sid string, body map[string]any) (*envelope, string, error) {
+// customerCode 传空时回落全局配置；写路径必须传当前会话的 CustomerCode（F-035 评审补充），
+// 保证请求体、查询参数与会话属于同一身份。
+func (c *Client) CallWrite(ctx context.Context, path, sid, customerCode string, body map[string]any) (*envelope, string, error) {
 	traceID := logging.NewTraceID()
-	result, err := c.callOfClass(ctx, path, sid, body, "write", traceID)
+	result, err := c.callOfClassCustomer(ctx, path, sid, customerCode, body, "write", traceID)
 	return result, traceID, err
 }
 
 // CallWriteForTest 暴露统一写出口的载荷注入路径，供契约测试锁定信封注入（顶层 sid/projectId
-// 与 data.customerCode）。测试不连真实目标：请求在传输层失败，但注入发生在发送之前，
-// 可通过可注入的载荷观察器验证；无观察器时仅验证错误按不可用归类。
+// 与 data.customerCode）。测试不连真实目标：请求在传输层失败，但注入发生在发送之前。
 func (c *Client) CallWriteForTest(ctx context.Context, path, sid string, body map[string]any) error {
-	_, _, err := c.CallWrite(ctx, path, sid, body)
+	_, _, err := c.CallWrite(ctx, path, sid, "", body)
 	return err
 }
 
 // callOfClass 是全部目标请求的唯一出口；class 标记读写分类，traceID 非空时作为日志关联键。
 func (c *Client) callOfClass(ctx context.Context, path, sid string, body map[string]any, class, traceID string) (*envelope, error) {
-	return c.callOfClassPlatform(ctx, path, sid, body, class, traceID, "")
+	return c.callOfClassCustomer(ctx, path, sid, "", body, class, traceID)
 }
 
 // callWithPlatform 以指定平台码发出只读请求：目标不同目录数据挂在不同平台码下
@@ -231,8 +232,19 @@ func (c *Client) callWithPlatform(ctx context.Context, path, sid string, body ma
 	return c.callOfClassPlatform(ctx, path, sid, body, "read", "", platformCode)
 }
 
+// callOfClassCustomer 是带会话客户码的统一出口（F-035 评审补充）：customerCode 为空时回落全局配置，
+// 非空时按当前会话注入 data.customerCode，确保请求体与会话同身份。
+func (c *Client) callOfClassCustomer(ctx context.Context, path, sid, customerCode string, body map[string]any, class, traceID string) (*envelope, error) {
+	return c.callOfClassPlatformWithCustomer(ctx, path, sid, body, class, traceID, "", customerCode)
+}
+
 // callOfClassPlatform 是带平台码覆盖的统一出口；platformCode 为空时回落全局配置。
 func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body map[string]any, class, traceID, platformCode string) (*envelope, error) {
+	return c.callOfClassPlatformWithCustomer(ctx, path, sid, body, class, traceID, platformCode, "")
+}
+
+// callOfClassPlatformWithCustomer 是最终统一出口；customerCode 非空时按当前会话注入 data.customerCode。
+func (c *Client) callOfClassPlatformWithCustomer(ctx context.Context, path, sid string, body map[string]any, class, traceID, platformCode, customerCode string) (*envelope, error) {
 	payload := make(map[string]any, len(body)+3)
 	for key, value := range body {
 		payload[key] = value
@@ -245,7 +257,9 @@ func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body
 		payload["projectId"] = ""
 		if dataMap, ok := payload["data"].(map[string]any); ok {
 			if _, exists := dataMap["customerCode"]; !exists {
-				dataMap["customerCode"] = c.config.CustomerCode
+				// F-035 评审补充：优先当前会话的客户码，会话缺失时才回落全局配置——
+				// 不同计划账号/公司的会话客户码可能不同，必须与请求同身份。
+				dataMap["customerCode"] = firstNonEmpty(customerCode, c.config.CustomerCode)
 			}
 		}
 	}

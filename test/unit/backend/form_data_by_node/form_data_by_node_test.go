@@ -184,3 +184,47 @@ func TestCrossNodePreservedPasses(t *testing.T) {
 		t.Fatal("有实例时基线必须来自实例")
 	}
 }
+
+// TestCrossNodeValueRewriteBlocks 锁定 F-035 评审补充：上一节点写入 reason=A，
+// 当前实例已是 reason=B（值被改写）时必须阻塞，不能像旧实现一样只查字段是否存在。
+func TestCrossNodeValueRewriteBlocks(t *testing.T) {
+	runCtx := nodeFormRunContext()
+	previous := &step.NodeFormDataDecision{
+		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
+		OverlaidFields: []string{"reason"}, OverlaidValues: map[string]any{"reason": "发起填写"},
+	}
+	instanceCurrent := map[string]any{"amount": float64(100), "reason": "被人改过的值"}
+	plan, err := step.BuildNodeFormData(runCtx,
+		model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"},
+		instanceCurrent, true, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Decision.ValidationIssues) == 0 {
+		t.Fatal("上一节点值被改写必须阻塞")
+	}
+	if !strings.Contains(plan.Decision.ValidationIssues[0], "被改写") {
+		t.Fatalf("校验问题必须说明值被改写：%v", plan.Decision.ValidationIssues)
+	}
+}
+
+// TestCrossNodeNestedValueRewriteBlocks 锁定嵌套对象/表格字段的深度比较。
+func TestCrossNodeNestedValueRewriteBlocks(t *testing.T) {
+	runCtx := nodeFormRunContext()
+	previous := &step.NodeFormDataDecision{
+		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
+		OverlaidFields: []string{"detail"}, OverlaidValues: map[string]any{
+			"detail": []any{map[string]any{"name": "甲", "money": float64(1)}},
+		},
+	}
+	instanceCurrent := map[string]any{"detail": []any{map[string]any{"name": "甲", "money": float64(999)}}}
+	plan, err := step.BuildNodeFormData(runCtx,
+		model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"},
+		instanceCurrent, true, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Decision.ValidationIssues) == 0 {
+		t.Fatal("嵌套字段值被改写必须阻塞（深度比较）")
+	}
+}
