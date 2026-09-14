@@ -42,7 +42,8 @@ export async function fetchFlowGraph(planId: string, signal: AbortSignal): Promi
   try {
     envelope = await response.json() as ApiSuccess<FlowGraph> | ApiFailure
   }
-  catch {
+  catch (error) {
+    if (signal.aborted) throw error
     throw new FlowGraphApiError('流程数据格式异常', { code: 'TARGET_RESPONSE_INVALID', retryable: true, status: response.status })
   }
   if (!response.ok || !envelope.success) {

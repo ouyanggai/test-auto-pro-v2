@@ -248,18 +248,23 @@ export class RunApiError extends Error {
   }
 }
 
-// requestOnce 是运行模块的统一请求出口：解析后端统一包络，不在前端另造提示。
 async function requestOnce<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {
     response = await fetch(path, { ...init, signal })
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, signal)) {
+      throw error
+    }
     throw new RunApiError('暂时无法连接后端服务，请重试', { code: 'NETWORK', retryable: true, status: 0 })
   }
   let envelope: unknown
   try {
     envelope = await response.json()
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, signal)) {
+      throw error
+    }
     throw new RunApiError('后端响应格式异常，请重试', { code: 'INVALID_RESPONSE', retryable: true, status: response.status })
   }
   const parsed = envelope as { success?: boolean; data?: T; error?: { code?: string; message?: string; retryable?: boolean } }
@@ -273,23 +278,24 @@ async function requestOnce<T>(path: string, init?: RequestInit, signal?: AbortSi
   return parsed.data as T
 }
 
-// fetchAllRuns 跨计划列出运行（最新在前）：一行只对应一次计划运行，可按状态筛选。
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 export function fetchAllRuns(status = ''): Promise<RunSummary[]> {
   const query = status ? `?status=${encodeURIComponent(status)}` : ''
   return requestOnce<RunSummary[]>(`/api/runs${query}`, { method: 'GET' })
 }
 
-// fetchRunPaths 读取一次运行的二级路径页数据（每条路径的准确进度）。
 export function fetchRunPaths(runId: string): Promise<RunPathsView> {
   return requestOnce<RunPathsView>(`/api/runs/${encodeURIComponent(runId)}/paths`, { method: 'GET' })
 }
 
-// deleteRun 删除整次工具侧运行及其全部子记录；运行中的记录必须先停止再删除（后端守卫）。
 export function deleteRun(runId: string): Promise<void> {
   return requestOnce<void>(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' })
 }
 
-// RunEventItem 是一条运行事件的公开形态（F-021 事件流时间线）。
 export interface RunEventItem {
   id: number
   pathRunId?: number
@@ -298,14 +304,12 @@ export interface RunEventItem {
   createdAt: string
 }
 
-// fetchRunEvents 增量读取事件流：afterEventId 为游标，只返回其后的事件。
-export function fetchRunEvents(runId: string, afterEventId: number, pathRunId?: number): Promise<RunEventItem[]> {
+export function fetchRunEvents(runId: string, afterEventId: number, pathRunId?: number, signal?: AbortSignal): Promise<RunEventItem[]> {
   const params = new URLSearchParams({ afterEventId: String(afterEventId) })
   if (pathRunId) params.set('pathRunId', String(pathRunId))
-  return requestOnce<RunEventItem[]>(`/api/runs/${encodeURIComponent(runId)}/events?${params.toString()}`, { method: 'GET' })
+  return requestOnce<RunEventItem[]>(`/api/runs/${encodeURIComponent(runId)}/events?${params.toString()}`, { method: 'GET' }, signal)
 }
 
-// fetchRunDetail 读取路径运行详情。
 export function fetchRunDetail(runId: string, signal?: AbortSignal, pathRunId?: number): Promise<PathRunDetail> {
   const query = pathRunId ? `?pathRunId=${pathRunId}` : ''
   return requestOnce<PathRunDetail>(`/api/runs/${encodeURIComponent(runId)}${query}`, { method: 'GET' }, signal)

@@ -31,27 +31,63 @@ import { actionLabel } from '../features/runs/presentation'
 const route = useRoute()
 const router = useRouter()
 const runId = String(route.params.runId || '')
-// 事件流（F-021）：按数据库自增键增量追加，轮询只取新事件，历史不重排。
 const runEvents = ref<RunEventItem[]>([])
 let lastEventID = 0
-// 主区页签：流程图（默认）/ 事件流。
+let eventPathRunID = 0
 const activeTab = ref<'canvas' | 'events'>('canvas')
-// selectedPathRunID 是多路径运行里当前查看的路径运行，来自三层导航的路由参数；缺省由后端取第一条。
 const selectedPathRunID = ref<number>(Number(route.params.pathRunId || 0) || 0)
 
-// switchPathRun 切换查看的路径运行：整页跳到对应路径的面板地址，刷新与分享都保留选择。
-function switchPathRun(pathRunID: number) {
-  if (pathRunID === selectedPathRunID.value) return
-  void router.push(`/runs/${runId}/paths/${pathRunID}`)
+let requestVersion = 0
+let disposed = false
+const inflightControllers = new Set<AbortController>()
+const lastValidCurrentNodeByVersion = new Map<number, string>()
+
+function beginRequest(): { version: number; controller: AbortController } {
+  requestVersion += 1
+  for (const controller of inflightControllers) {
+    controller.abort()
+  }
+  inflightControllers.clear()
+  const controller = new AbortController()
+  inflightControllers.add(controller)
+  return { version: requestVersion, controller }
 }
 
-// 路由参数是路径切换的唯一事实来源：标签点击只改路由，这里监听参数变化后重读面板，
-// 否则 URL 已切到目标路径而面板仍显示旧路径（实测缺陷：多路径标签点击后面板不刷新）。
+function trackSignal(controller: AbortController): AbortSignal {
+  inflightControllers.add(controller)
+  return controller.signal
+}
+
+function isCurrent(version: number, pathRunId: number): boolean {
+  if (disposed || version !== requestVersion) return false
+  if (pathRunId === selectedPathRunID.value) return true
+  // 首次进入还没有路径参数时，本次响应会把缺省路径写回路由；同代次仍算当前请求。
+  return pathRunId === 0
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function switchPathRun(pathRunID: number) {
+  if (pathRunID === selectedPathRunID.value) return
+  closeNodePanel()
+  void router.push(`/runs/${runId}/paths/${pathRunID}`).catch((error) => {
+    if (!isAbortError(error)) {
+      errorText.value = error instanceof RunApiError ? error.message : '切换路径失败'
+    }
+  })
+}
+
 watch(() => route.params.pathRunId, (next) => {
   const nextID = Number(next || 0) || 0
   if (!nextID || nextID === selectedPathRunID.value) return
+  closeNodePanel()
   selectedPathRunID.value = nextID
-  void loadDetail()
+  lastEventID = 0
+  eventPathRunID = nextID
+  runEvents.value = []
+  void loadDetail().catch(() => {})
 })
 const themeVars = useThemeVars()
 
@@ -274,14 +310,16 @@ function applyBreakpoints(list: BreakpointInput[]): void {
   }))
 }
 
-// currentNodeKey 是当前步所在节点（预览给出），画布据此高亮与居中。
-// currentNodeKey 用图节点 ID（画布键空间）；旧后端没有 nodeId 时回退 nodeKey。
-// 失败或结果待确认时，如果没有 currentPreview，使用最后一个已落账步骤的节点作为当前节点。
 const currentNodeKey = computed(() => {
-  if (detail.value?.currentPreview?.nodeId || detail.value?.currentPreview?.nodeKey) {
-    return detail.value.currentPreview.nodeId || detail.value.currentPreview.nodeKey
+  const previewKey = detail.value?.currentPreview?.nodeId || detail.value?.currentPreview?.nodeKey || ''
+  if (previewKey) {
+    lastValidCurrentNodeByVersion.set(requestVersion, previewKey)
+    return previewKey
   }
-  // 终态时从最后一步获取当前节点
+  const kept = lastValidCurrentNodeByVersion.get(requestVersion) || ''
+  if (kept && detail.value && !['已完成', '失败', '结果待确认', '已停止', '已取消'].includes(detail.value.pathRunStatusName)) {
+    return kept
+  }
   if (detail.value?.steps && detail.value.steps.length > 0) {
     const lastStep = detail.value.steps[detail.value.steps.length - 1]
     return lastStep.nodeId || lastStep.nodeKey || ''
@@ -350,7 +388,6 @@ const graphNodeByID = computed(() => new Map((graph.value?.nodes ?? []).map((nod
 const selectedNodeName = computed(() => graphNodeByID.value.get(selectedNodeKey.value)?.name || '')
 const selectedNodeTypeName = computed(() => graphNodeByID.value.get(selectedNodeKey.value)?.typeName || '')
 
-// loadDetail 拉取详情并刷新结构（结构只按计划取一次）。
 async function loadDetail(): Promise<void> {
   if (!runId) {
     loadErrorText.value = '运行标识缺失，无法打开详情。'
@@ -361,81 +398,115 @@ async function loadDetail(): Promise<void> {
   loading.value = firstLoad
   loadErrorText.value = ''
   loadFailure.value = null
+  const { version, controller } = beginRequest()
+  const pathRunId = selectedPathRunID.value
   try {
-    const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
+    const next = await fetchRunDetail(runId, controller.signal, pathRunId)
+    if (!isCurrent(version, pathRunId)) return
     if (!next) {
       loadErrorText.value = '任务详情返回空数据，请重试'
       return
     }
-    detail.value = next
+    applyDetail(next, version)
     if (!selectedPathRunID.value && next.pathRunId) {
-      // 首次缺省进入：把实际选中的路径运行写回路由，刷新与分享保留选择。
       selectedPathRunID.value = next.pathRunId
-      void router.replace(`/runs/${runId}/paths/${next.pathRunId}`)
+      void router.replace(`/runs/${runId}/paths/${next.pathRunId}`).catch((error) => {
+        if (!isAbortError(error) && isCurrent(version, next.pathRunId)) {
+          errorText.value = error instanceof RunApiError ? error.message : '更新路径地址失败'
+        }
+      })
     }
-    syncControl(next)
-    lastUpdateAt.value = Date.now()
-    void pollEvents()
+    await pollEvents(version, controller.signal)
     if (!graph.value) {
-      graph.value = await fetchFlowGraph(String(next.planId), new AbortController().signal)
+      const graphSignal = new AbortController()
+      try {
+        const nextGraph = await fetchFlowGraph(String(next.planId), trackSignal(graphSignal))
+        if (isCurrent(version, pathRunId || next.pathRunId)) {
+          graph.value = nextGraph
+        }
+      } catch (error) {
+        if (!isAbortError(error) && isCurrent(version, pathRunId || next.pathRunId)) {
+          loadErrorText.value = error instanceof Error ? error.message : '暂时无法读取流程结构'
+        }
+      }
     }
-    // 记录详情加载状态
-    console.log('[加载详情]', {
-      hasCurrentPreview: !!next.currentPreview,
-      nodeStatesCount: Object.keys(next.nodeStates || {}).length,
-      stepsCount: next.steps?.length || 0,
-      pathRunStatus: next.pathRunStatusName
-    })
-    schedulePoll()
+    schedulePoll(version)
   } catch (error) {
-    console.error('[加载详情失败]', error)
+    if (isAbortError(error) || !isCurrent(version, pathRunId)) return
     loadFailure.value = error instanceof RunApiError ? error : null
     loadErrorText.value = error instanceof RunApiError ? error.message : '暂时无法读取任务详情，请重试'
   } finally {
-    loading.value = false
-    // 轮询链不因首次加载失败而断：详情已在（或结构读失败但运行事实还在）时，
-    // 后续推进与恢复仍按配置间隔刷新，用户不需要手动刷新页面（纲领 12.2）。
-    if (detail.value) schedulePoll()
+    inflightControllers.delete(controller)
+    if (isCurrent(version, pathRunId)) {
+      loading.value = false
+      if (detail.value) schedulePoll(version)
+    }
   }
 }
 
-// schedulePoll 按配置间隔轮询；路径运行进入终态后停止。
-function schedulePoll(): void {
+function applyDetail(next: PathRunDetail, version: number): void {
+  const previewKey = next.currentPreview?.nodeId || next.currentPreview?.nodeKey || ''
+  if (previewKey) {
+    lastValidCurrentNodeByVersion.set(version, previewKey)
+  } else if (detail.value && selectedPathRunID.value === next.pathRunId) {
+    const kept = lastValidCurrentNodeByVersion.get(version)
+    if (kept) lastValidCurrentNodeByVersion.set(version, kept)
+  }
+  detail.value = next
+  syncControl(next)
+  lastUpdateAt.value = Date.now()
+}
+
+function schedulePoll(version = requestVersion): void {
   if (pollTimer !== null) {
     window.clearTimeout(pollTimer)
     pollTimer = null
   }
-  if (!detail.value) return
+  if (!detail.value || disposed) return
+  const pollVersion = version
   const terminalStatuses = ['已完成', '失败', '结果待确认', '已停止', '已取消']
-  // 多路径运行：当前路径终态但还有未终态兄弟路径时继续轮询，切换区的状态不能停滞（评审 P2）。
   const siblingActive = (detail.value.paths ?? []).some((path) => !terminalStatuses.includes(path.statusName) && path.statusName !== '暂停')
   if (terminalStatuses.includes(detail.value.pathRunStatusName) && !siblingActive) return
+  const interval = Math.max(500, detail.value.pollIntervalMs || 2000)
   pollTimer = window.setTimeout(async () => {
+    if (!isCurrent(pollVersion, selectedPathRunID.value)) return
+    const controller = new AbortController()
+    inflightControllers.add(controller)
     try {
-      const next = await fetchRunDetail(runId, undefined, selectedPathRunID.value)
-      detail.value = next
-      syncControl(next)
-      lastUpdateAt.value = Date.now()
-      void pollEvents()
-    } catch {
-      // 单次轮询失败不打断页面：下一次轮询会继续。
+      const next = await fetchRunDetail(runId, controller.signal, selectedPathRunID.value)
+      if (!isCurrent(pollVersion, selectedPathRunID.value)) return
+      applyDetail(next, pollVersion)
+      await pollEvents(pollVersion, controller.signal)
+    } catch (error) {
+      if (!isAbortError(error) && isCurrent(pollVersion, selectedPathRunID.value)) {
+        errorText.value = error instanceof RunApiError ? error.message : '刷新任务详情失败'
+      }
+    } finally {
+      inflightControllers.delete(controller)
     }
-    schedulePoll()
-  }, Math.max(500, detail.value.pollIntervalMs || 2000))
+    if (isCurrent(pollVersion, selectedPathRunID.value)) schedulePoll(pollVersion)
+  }, interval)
 }
 
-// pollEvents 增量拉取事件流：游标为已取到的最大事件 ID，只追加不重排（F-021）。
-async function pollEvents(): Promise<void> {
+async function pollEvents(version = requestVersion, signal?: AbortSignal): Promise<void> {
+  const pathRunId = selectedPathRunID.value
+  if (eventPathRunID !== pathRunId) {
+    lastEventID = 0
+    eventPathRunID = pathRunId
+    runEvents.value = []
+  }
   try {
-    const fresh = await fetchRunEvents(runId, lastEventID, selectedPathRunID.value || undefined)
+    const fresh = await fetchRunEvents(runId, lastEventID, pathRunId || undefined, signal)
+    if (!isCurrent(version, pathRunId)) return
     for (const event of fresh) {
       if (event.id > lastEventID) {
         runEvents.value.push(event)
         lastEventID = event.id
       }
     }
-  } catch {
-    // 事件流拉取失败不打断页面：下一次轮询会带游标重试，已有事件不丢失。
+  } catch (error) {
+    if (isAbortError(error) || !isCurrent(version, pathRunId)) return
+    errorText.value = error instanceof RunApiError ? error.message : '读取事件流失败'
   }
 }
 
@@ -479,47 +550,50 @@ function resumeFollow(): void {
 async function approve(): Promise<void> {
   if (acting.value || !detail.value?.currentPreview) return
   const command = approveCommand.value || 'step'
+  const pathRunId = detail.value.pathRunId
+  const version = requestVersion
   acting.value = true
   actionText.value = ''
   errorText.value = ''
   try {
-    const result = await approveRun(runId, command, detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, detail.value?.pathRunId)
+    const result = await approveRun(runId, command, detail.value?.currentStepNo ?? 0, detail.value?.controlVersion ?? 0, pathRunId)
+    if (!isCurrent(version, pathRunId)) return
     if (!result) {
       errorText.value = '放行后未收到有效的运行状态，请刷新页面查看'
       return
     }
-    detail.value = result
-    syncControl(result)
-    lastUpdateAt.value = Date.now()
-    // 放行成功后的状态记录
-    console.log('[放行成功]', {
-      currentPreview: result.currentPreview,
-      nodeStates: Object.keys(result.nodeStates || {}),
-      pathRunStatus: result.pathRunStatusName,
-      stopReason: result.stopReason
-    })
+    applyDetail(result, version)
   } catch (error) {
-    console.error('[放行失败]', error)
+    if (isAbortError(error) || !isCurrent(version, pathRunId)) return
     errorText.value = error instanceof RunApiError ? error.message : '放行执行失败，请查看日志'
   } finally {
-    acting.value = false
-    schedulePoll()
+    if (isCurrent(version, pathRunId)) {
+      acting.value = false
+      schedulePoll(version)
+    }
   }
 }
 
 // stopRunAction 停止路径运行。
 async function stopRunAction(): Promise<void> {
   if (acting.value) return
+  const pathRunId = detail.value?.pathRunId || selectedPathRunID.value
+  const version = requestVersion
   acting.value = true
   actionText.value = ''
   errorText.value = ''
   try {
-    detail.value = await stopRun(runId, detail.value?.pathRunId)
+    const result = await stopRun(runId, pathRunId)
+    if (!isCurrent(version, pathRunId)) return
+    applyDetail(result, version)
   } catch (error) {
+    if (isAbortError(error) || !isCurrent(version, pathRunId)) return
     errorText.value = error instanceof RunApiError ? error.message : '停止失败，请重试'
   } finally {
-    acting.value = false
-    schedulePoll()
+    if (isCurrent(version, pathRunId)) {
+      acting.value = false
+      schedulePoll(version)
+    }
   }
 }
 
@@ -528,24 +602,27 @@ async function stopRunAction(): Promise<void> {
 // 装填成功后立即恢复轮询：路径运行已从失败终态回到运行中。
 async function retryFailed(): Promise<void> {
   if (!detail.value || acting.value) return
+  const pathRunId = detail.value.pathRunId
+  const version = requestVersion
   acting.value = true
   errorText.value = ''
   actionText.value = ''
   try {
-    const next = await retryFailedAction(runId, detail.value.pathRunId)
-    detail.value = next
-    syncControl(next)
-    lastUpdateAt.value = Date.now()
+    const next = await retryFailedAction(runId, pathRunId)
+    if (!isCurrent(version, pathRunId)) return
+    applyDetail(next, version)
     actionText.value = next.modeName === '人工控制'
       ? '已重新装填失败步骤；确认无误后按「放行」重新执行这一步。'
       : '已重新装填失败步骤；运行按原模式继续。'
-    void pollEvents()
-    schedulePoll()
+    await pollEvents(version)
+    schedulePoll(version)
   } catch (error) {
-    console.error('[重试失败动作]', error)
+    if (isAbortError(error) || !isCurrent(version, pathRunId)) return
     errorText.value = error instanceof RunApiError ? error.message : '重试执行失败，请查看日志'
   } finally {
-    acting.value = false
+    if (isCurrent(version, pathRunId)) {
+      acting.value = false
+    }
   }
 }
 
@@ -554,7 +631,9 @@ async function retryFailed(): Promise<void> {
 function handleSelectRunNode(nodeID: string): void {
   const firstOpen = selectedNodeKey.value === ''
   selectedNodeKey.value = nodeID
-  if (firstOpen) void nextTick().then(() => focusNodeQuietly(nodeID))
+  if (firstOpen) {
+    void nextTick().then(() => focusNodeQuietly(nodeID)).catch(() => {})
+  }
 }
 
 // closeNodePanel 关闭检视面板；画布恢复整宽后如果仍在自动跟随，就把当前步重新居中。
@@ -725,16 +804,26 @@ const freshnessText = computed(() => {
 
 // 从事件流切回流程图时补一次定位：画布隐藏期间不跟随，切回来必须对得上当前步。
 watch(activeTab, (tab) => {
+  if (tab === 'canvas' && currentNodeKey.value) {
+    void nextTick().then(() => focusNodeQuietly(currentNodeKey.value)).catch(() => {})
+  }
 })
 
 onMounted(() => {
-  void loadDetail()
+  disposed = false
+  void loadDetail().catch(() => {})
   tickTimer = window.setInterval(() => { nowTick.value = Date.now() }, 1000)
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  closeNodePanel()
   if (pollTimer !== null) window.clearTimeout(pollTimer)
   if (tickTimer !== null) window.clearInterval(tickTimer)
+  for (const controller of inflightControllers) {
+    controller.abort()
+  }
+  inflightControllers.clear()
 })
 </script>
 
@@ -753,7 +842,7 @@ onBeforeUnmount(() => {
     }"
   >
     <!-- 返回入口与本次运行的身份挂到应用顶栏：页面内不再重复一条页头，横向空间全部留给操作区。 -->
-    <Teleport v-if="detail" defer to="#app-header-context">
+    <Teleport v-if="detail" to="#app-header-context">
       <div class="run-detail__identity" :style="headerVars">
         <n-button quaternary circle size="small" aria-label="返回本次运行的执行路径" title="返回本次运行的执行路径" @click="router.push(`/runs/${runId}`)">←</n-button>
         <h2 class="run-detail__title">运行 #{{ detail.runNo }}</h2>
@@ -1040,7 +1129,8 @@ onBeforeUnmount(() => {
         </section>
 
         <run-node-panel
-          v-if="selectedNodeKey"
+          v-if="selectedNodeKey && detail"
+          :key="`${detail.pathRunId}-${selectedNodeKey}`"
           class="run-detail__side"
           :detail="detail"
           :node-key="selectedNodeKey"
