@@ -45,11 +45,10 @@
 
 ## 当前与后两项
 
-F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」已实施完成并停在 `ready_for_manual`，
-实施现状与剩余边界见 `docs/features/F-035-target-assignment-and-effective-form-data.md` 的「本切片实施现状」小节：
-逐接口协议矩阵登记处、旧 `batchCode` 一律禁令改写、submit/draft 顶层批次号与空数组形状、代理 ID 互斥、
-计划账号身份含岗位事实（缺失阻断）与处理人缺失的有界轮询/assignment_missing 阻塞均已落地并有定向用例；
-等待用户按功能文档「人工验收」清单在真实目标上逐项核对。
+F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」仍处于 `implementing`。上一轮已落地部分协议矩阵、身份读取、处理人轮询和分节点表单基础能力，
+但最新复核发现特殊业务/NoFormFlow 尚未逐页面实现、写后核对未持久化、`form_person` 作用域错误、目标衍生审批意见被误判，
+以及运行详情存在异步生命周期竞态；不能进入 `ready_for_manual`。本轮整改任务见
+`docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`，完成自动验证后再申请人工验收。
 
 F-032 计划状态、编辑与可重复运行修复当前处于 `ready_for_manual`，实施依据见
 `docs/features/F-032-plan-status-and-last-run-result.md`。计划状态由运行事实派生，任一状态都能再次运行和编辑，

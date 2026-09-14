@@ -1,10 +1,15 @@
 # F-035 目标请求协议一致性、真实处理人和有效表单数据闭环
 
-- 状态：implementing（2026-09-14 第三轮：评审退回后完成目标特殊逻辑逐代码对齐，待用户复验后进入 ready_for_manual）
+- 状态：implementing（2026-09-14 第四轮整改：最新复核发现目标特殊业务/NoFormFlow 仍未逐页面实现、写后核对未持久化、目标衍生审批意见误判及运行详情生命周期竞态；完成前不得进入 ready_for_manual）
 
-## 本切片实施现状（2026-09-14，第三轮：目标特殊逻辑逐代码对齐，停在 implementing）
+## 本切片实施现状（2026-09-14，第四轮整改登记，停在 implementing）
 
-评审（第二轮）提出 2 Critical + 6 High，均已在第三轮处理：
+最新用户复核否定了“第三轮全部处理、等待复验”的结论。本轮必须以目标页面实际行为重新校准：特殊业务分支和无表单专用链路需要逐页面实现，不能继续把命中流程统一阻塞；`auto_audit_info_*` 属于目标根据审批事实生成的衍生字段，不能与配置阶段清空的历史值做严格相等比较；写后核对必须持久化并传递到下一节点；运行详情页必须修复路径切换与异步请求生命周期竞态。聚合执行任务、证据、测试和人工验收见 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
+
+以下内容是第三轮实施时的登记记录，不代表第四轮整改已经通过。第四轮复核确认其中若干项只是“安全阻塞”或“内存内记录”，
+尚未达到目标页面逐代码一致和可恢复运行的完成标准；实施 Agent 必须以本文件顶部的第四轮说明及聚合任务书为准。
+
+评审（第二轮）提出的 2 Critical + 6 High，第三轮曾登记为已处理：
 
 - **Critical 1（FormMaking 特殊业务链路）**：新增目标业务生命周期登记处 `specialBusinessFlowTypes`
   （`internal/adapter/target/protocol_matrix.go`），逐项对应参考页面分支：合同合规/合同盖章（自定义组件，FlowDialog.vue:367-374）、
@@ -38,9 +43,10 @@
 矩阵强制、会话客户码、特殊业务阻塞、vue_custom 阻塞、实时身份覆盖、跨节点值改写用例）；
 `go vet`/`gofmt` 通过；`test/contracts/f035/drift/protocol_symbols_drift.sh` 通过。
 
-剩余如实登记：`beforeSubmitAndDraft`/`afterSaveFlowInstance` 等页面钩子的目标行为已按分派与顺序登记进
-语义清单与代码登记处，但具体自定义组件（contractBusiness、saveCostFundsBusiness 等）的目标写接口仍需逐类型勘定——
-当前以“命中即阻塞 + 手工处理指引”保证不破坏目标数据，这是本切片的最安全边界；逐类型实现需后续切片单独批准范围。
+第四轮复核已将上述“命中即阻塞”重新定性为临时安全措施，而非完成结果。`beforeSubmitAndDraft`、
+`afterSaveFlowInstance`、`contractBusiness`、`saveCostFundsBusiness` 等必须继续逐类型读取目标前端、Controller、Service 和 VO，
+实现已确认的业务写入顺序；仅对尚未勘定的分支保留写前阻塞。具体执行、测试和人工验收见
+`docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
 
 ## 历史轮次（第二轮）
 

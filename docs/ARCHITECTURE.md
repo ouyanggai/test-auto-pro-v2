@@ -24,7 +24,7 @@ F-030 只在现有执行器、会话协调器、目标传输日志和运行详�
 - **前端边界**：复用 `RunNodePanel.vue` 的节点检视面板和尝试弹窗，摘要指标、执行过程、请求明细、判定和日志按固定顺序呈现；页面不发目标请求，不改变放行、停止、重试和复制日志入口。
 - **用户文案边界**：`plan/gate/control/prepare/submit/verify/settle` 等内部阶段名只用于日志、接口字段和内部归组；用户可见标题与说明由运行详情统一映射，必须同时包含当前动作、节点、实际操作人/等待原因和下一步。前端不得回退到“处理中”“准备执行”“等待放行”等泛化文案，缺失上下文时明确显示说明不可用。
 
-## F-035 处理人异步事实与最终表单快照（计划）
+## F-035 处理人异步事实与最终表单快照（实施中）
 
 F-035 在既有目标事实读取、七阶段执行器、历史回放仓储和复制的 form-runtime 上增量修复，不新增状态机、目标写接口或数据库表。
 
@@ -33,9 +33,15 @@ F-035 在既有目标事实读取、七阶段执行器、历史回放仓储和�
 - **真实处理人边界**：`internal/adapter/target` 解析目标处理人和任务事实，`internal/engine/step` 负责匹配和状态裁决；配置候选人与计划账号不进入当前处理人发现。
 - **回放状态分层**：后台 `branchoverlay` 结果只是基础数据；有远程选项绑定要求的 FormMaking 数据必须由 form-runtime 完成选项请求、实际值/显示值协调、联动、最终回读，随后通过既有 `SaveData` 写入路径配置才成为最终 ready。
 - **唯一数据源**：运行只消费 `test_execution_path_configs.effective_form_data` 和数据修订；最终 ready 时禁止回退原始历史快照。回放失败、运行时阻塞和修订冲突不覆盖已有有效数据。
+- **字段所有权**：运行时把字段分为 `tool_owned`、`preserved_business`、`target_derived`、`node_owned_future` 四类；
+  `target_derived` 至少包括 `auto_audit_info_`、`auto_audit_info_obj_`、`auto_audit_info_obj_list_`，目标新增审批意见不与历史空值做严格相等断言，
+  但工具删除或清空目标已有非空值必须阻塞。发起、审批、暂存和重提不能共用一份全局表单载荷，必须按节点、动作和目标页面时机读取实例基线。
+- **前端异步生命周期**：运行详情的详情、事件和流程图请求必须带请求代次及取消信号；路由路径变化、组件卸载和放行切换时，迟到响应不得覆盖当前路径。
+  稳定 Teleport 目标不得使用无必要的 `defer`，节点面板和 Modal 必须在路径切换前关闭或使用稳定 key；禁止修改 Vue runtime 或全局错误处理器吞掉生命周期错误。
 - **存储和安全**：复用现有 JSON 列、修订号和幂等保存，不新增迁移；日志只记录数据来源、修订和摘要指纹，不公开完整表单正文、SID或密码。
 
-实现与人工门禁见 `docs/features/F-035-target-assignment-and-effective-form-data.md`；未获批准不得进入 `implementing`。
+实现与人工门禁见 `docs/features/F-035-target-assignment-and-effective-form-data.md` 和
+`docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`；完成自动验证前保持 `implementing`，不得提前进入 `ready_for_manual`。
 
 ## F-034 一键配置与运行信息可读性修复（计划）
 
