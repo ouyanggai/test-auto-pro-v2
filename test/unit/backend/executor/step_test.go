@@ -2,6 +2,8 @@ package executor_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -80,6 +82,14 @@ func (f *fakeFacts) RecordStepAttempt(_ context.Context, stepRecord model.RunSte
 	return uint64(len(f.steps)), nil
 }
 
+// LatestStepAttempt 返回最近一次落账的步骤与尝试，供同一步恢复业务保存 id。
+func (f *fakeFacts) LatestStepAttempt(_ context.Context, _ uint64) (model.RunStep, model.RunStepAttempt, error) {
+	if len(f.steps) == 0 || len(f.attempts) == 0 {
+		return model.RunStep{}, model.RunStepAttempt{}, sql.ErrNoRows
+	}
+	return f.steps[len(f.steps)-1], f.attempts[len(f.attempts)-1], nil
+}
+
 // fakeSessions 固定返回计划账号会话。
 type fakeSessions struct {
 	calls int
@@ -150,6 +160,14 @@ type fakeTarget struct {
 	// auditAdvanceFromCall 表示从第几次同意调用起目标事实才切到 afterAudit，
 	// 用于表达"重放那一次才真的生效"：0 表示只要发生过同意就切换。
 	auditAdvanceFromCall int
+	// businessSaveID 是前置业务保存返回的 id；businessSaveErr 注入失败。
+	businessSaveID    string
+	businessSaveErr   error
+	specialSaveCalls  int
+	noFormSaveCalls   int
+	lastSpecialSpec   target.SpecialBusinessSpec
+	lastNoFormSpec    target.NoFormFlowSpec
+	lastSubmitRequest *target.SubmitFlowInstanceRequest
 }
 
 // FindDoneTaskOnNode 是对账「已办记录」维度的假件读取。
@@ -304,9 +322,10 @@ func (f *fakeTarget) FindDueTaskID(_ context.Context, _ target.Session, _ string
 	return f.dueTaskID, nil
 }
 
-// SubmitFlowInstance 模拟发起写请求，可按用例注入慢响应以验证后台执行边界。
-func (f *fakeTarget) SubmitFlowInstance(context.Context, target.Session, target.SubmitFlowInstanceRequest) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
+func (f *fakeTarget) SubmitFlowInstance(_ context.Context, _ target.Session, request target.SubmitFlowInstanceRequest) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
 	f.submitCalls++
+	copied := request
+	f.lastSubmitRequest = &copied
 	if f.submitDelay > 0 {
 		time.Sleep(f.submitDelay)
 	}
@@ -342,6 +361,42 @@ func (f *fakeTarget) AuditCurrentTask(context.Context, target.Session, target.Au
 	// 每次写请求各自一个链路 ID：真实客户端也是每次调用新生成，重放必须能与首次尝试区分开。
 	return f.auditResult, target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true},
 		fmt.Sprintf("trace-audit-%d", f.auditCalls), nil
+}
+
+// SaveSpecialBusiness 模拟 FormMaking 特殊业务前置保存，供执行器在主流程前调用。
+func (f *fakeTarget) SaveSpecialBusiness(_ context.Context, _ target.Session, spec target.SpecialBusinessSpec, _ json.RawMessage, _ string) (target.SpecialBusinessSaveResult, error) {
+	f.specialSaveCalls++
+	f.lastSpecialSpec = spec
+	if f.businessSaveErr != nil {
+		return target.SpecialBusinessSaveResult{}, f.businessSaveErr
+	}
+	id := strings.TrimSpace(f.businessSaveID)
+	if id == "" {
+		id = "biz-" + spec.FlowType
+	}
+	return target.SpecialBusinessSaveResult{
+		BusinessID: id,
+		Response:   target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true},
+		TraceID:    "trace-special-save",
+	}, nil
+}
+
+// SaveNoFormFlow 模拟无表单 mixin.saveData 前置保存。
+func (f *fakeTarget) SaveNoFormFlow(_ context.Context, _ target.Session, spec target.NoFormFlowSpec, _ json.RawMessage, _ string) (target.SpecialBusinessSaveResult, error) {
+	f.noFormSaveCalls++
+	f.lastNoFormSpec = spec
+	if f.businessSaveErr != nil {
+		return target.SpecialBusinessSaveResult{}, f.businessSaveErr
+	}
+	id := strings.TrimSpace(f.businessSaveID)
+	if id == "" {
+		id = "biz-" + spec.PageKey
+	}
+	return target.SpecialBusinessSaveResult{
+		BusinessID: id,
+		Response:   target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true},
+		TraceID:    "trace-noform-save",
+	}, nil
 }
 
 // TestF019StepReasonUsesTargetError 验证步骤记录直接保存目标接口原文，不再保存内部判定术语。

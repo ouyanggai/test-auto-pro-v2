@@ -3,12 +3,14 @@ package executor_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/step"
+	"test-auto-pro-v2/internal/engine/verdict"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -139,24 +141,166 @@ func TestSpecialBusinessLifecycleBlocksSubmit(t *testing.T) {
 	}
 }
 
-// TestVueCustomSubmitBlocks 锁定：无表单页面的专用业务链路（项目/业务关联、initiatorRange、
-// 并行/手动分支选人）未实现前，发起/重提必须阻塞，不得用通用请求冒充。
+// TestVueCustomSubmitBlocks 锁定：未登记或未实现的无表单页面写前必须阻塞。
 func TestVueCustomSubmitBlocks(t *testing.T) {
-	view := &pollTarget{fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run"}}}
+	view := &pollTarget{fakeTarget: &fakeTarget{instance: fakeTargetView{Found: false}}}
 	executor := step.NewExecutor(view, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
 	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
-	runCtx.FlowType = "contract_review"
+	runCtx.FlowType = "NoFormFlow"
 	runCtx.RenderType = "vue_custom"
 	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if preview == nil || preview.GateAllowed {
-		t.Fatalf("vue_custom 无表单发起必须阻塞：%+v", preview)
+		t.Fatalf("未实现的无表单入口必须阻塞：%+v", preview)
 	}
 	if !strings.Contains(preview.BlockReason, "无表单") {
 		t.Fatalf("阻塞原因必须说明无表单业务链路：%q", preview.BlockReason)
 	}
+}
+
+// TestVueCustomImplementedSubmitSavesBusiness 锁定：已实现的无表单页面先保存业务再发主流程。
+func TestVueCustomImplementedSubmitSavesBusiness(t *testing.T) {
+	fake := &fakeTarget{
+		instance:       fakeTargetView{Found: false},
+		submitResult:   &target.SubmitFlowInstanceResult{InstanceID: "instance-9", Status: "run"},
+		afterSubmit:    &fakeTargetView{Found: true, Status: "run"},
+		businessSaveID: "biz-contract-review",
+	}
+	executor := step.NewExecutor(fake, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.FlowType = "contract_review"
+	runCtx.RenderType = "vue_custom"
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("已实现的无表单发起应通过门禁：err=%v preview=%+v", err, preview)
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("无表单前置保存后主流程应成功：%+v", outcome)
+	}
+	if fake.noFormSaveCalls != 1 || fake.submitCalls != 1 {
+		t.Fatalf("必须先保存业务再发主流程：save=%d submit=%d", fake.noFormSaveCalls, fake.submitCalls)
+	}
+	if fake.lastNoFormSpec.PageKey != "contract_review" {
+		t.Fatalf("无表单保存必须命中合同评审页：%+v", fake.lastNoFormSpec)
+	}
+	if !hasRelevance(fake.lastSubmitRequest, "contract_review", "biz-contract-review") {
+		t.Fatalf("主流程必须带上业务 id：%+v", fake.lastSubmitRequest)
+	}
+}
+
+// TestSpecialBusinessPreSaveAttachesRelevance 锁定：资金往来先保存业务，主流程只发一次并带上返回 id。
+func TestSpecialBusinessPreSaveAttachesRelevance(t *testing.T) {
+	fake := &fakeTarget{
+		instance:       fakeTargetView{Found: false},
+		submitResult:   &target.SubmitFlowInstanceResult{InstanceID: "instance-9", Status: "run"},
+		afterSubmit:    &fakeTargetView{Found: true, Status: "run"},
+		businessSaveID: "biz-funds-1",
+	}
+	facts := &fakeFacts{}
+	executor := step.NewExecutor(fake, &fakeSessions{}, &fakeRunState{}, facts, fixedRunConfig(), nil)
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.FlowType = "cost_funds_transactions"
+	runCtx.RenderType = "formmaking"
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("已实现的资金往来不得门禁阻塞：err=%v preview=%+v", err, preview)
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("资金往来前置保存后主流程应成功：%+v", outcome)
+	}
+	if fake.specialSaveCalls != 1 || fake.submitCalls != 1 {
+		t.Fatalf("必须先保存业务再发主流程：save=%d submit=%d", fake.specialSaveCalls, fake.submitCalls)
+	}
+	if fake.lastSpecialSpec.FlowType != "cost_funds_transactions" {
+		t.Fatalf("业务保存必须命中资金往来：%+v", fake.lastSpecialSpec)
+	}
+	if !hasRelevance(fake.lastSubmitRequest, "cost_funds_transactions", "biz-funds-1") {
+		t.Fatalf("主流程必须带上业务 id：%+v", fake.lastSubmitRequest)
+	}
+	persisted, decoded := step.DecodeInstanceFacts(facts.attempts[0].BeforeFacts)
+	if !decoded || persisted.BusinessSaveID != "biz-funds-1" {
+		t.Fatalf("业务 id 必须写入 before_facts：%+v", facts.attempts[0].BeforeFacts)
+	}
+}
+
+// TestSpecialBusinessPreSaveSkippedOnRetry 锁定：同一步已有业务 id 时不得重复保存。
+func TestSpecialBusinessPreSaveSkippedOnRetry(t *testing.T) {
+	fake := &fakeTarget{
+		instance:       fakeTargetView{Found: false},
+		submitResult:   &target.SubmitFlowInstanceResult{InstanceID: "instance-9", Status: "run"},
+		afterSubmit:    &fakeTargetView{Found: true, Status: "run"},
+		businessSaveID: "biz-should-not-use",
+	}
+	executor := step.NewExecutor(fake, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.FlowType = "cost_funds_transactions"
+	runCtx.RenderType = "formmaking"
+	runCtx.LastBeforeFacts = step.InstanceFacts{BusinessSaveID: "biz-funds-1", BusinessSaveOtherBiz: "cost_funds_transactions"}
+	runCtx.LastBeforeFactsKnown = true
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("重试发起应通过门禁：err=%v preview=%+v", err, preview)
+	}
+	if _, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.specialSaveCalls != 0 {
+		t.Fatalf("已有业务 id 不得重复前置保存，实际 %d 次", fake.specialSaveCalls)
+	}
+	if fake.submitCalls != 1 {
+		t.Fatalf("主流程仍应发送一次，实际 %d 次", fake.submitCalls)
+	}
+	if !hasRelevance(fake.lastSubmitRequest, "cost_funds_transactions", "biz-funds-1") {
+		t.Fatalf("重试必须复用已保存业务 id：%+v", fake.lastSubmitRequest)
+	}
+}
+
+// TestSpecialBusinessPreSaveFailureBlocksMainSubmit 锁定：业务保存失败不得继续主流程。
+func TestSpecialBusinessPreSaveFailureBlocksMainSubmit(t *testing.T) {
+	fake := &fakeTarget{
+		instance:        fakeTargetView{Found: false},
+		businessSaveErr: errors.New("业务保存被目标拒绝"),
+	}
+	executor := step.NewExecutor(fake, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
+	runCtx.FlowType = "cost_funds_transactions"
+	runCtx.RenderType = "formmaking"
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("已实现分支应通过门禁，失败发生在前置保存：err=%v preview=%+v", err, preview)
+	}
+	if _, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.specialSaveCalls != 1 {
+		t.Fatalf("必须尝试业务保存，实际 %d 次", fake.specialSaveCalls)
+	}
+	if fake.submitCalls != 0 {
+		t.Fatalf("业务保存失败后不得发主流程，实际 %d 次", fake.submitCalls)
+	}
+}
+
+// hasRelevance 判断主流程请求是否带上指定业务关联。
+func hasRelevance(request *target.SubmitFlowInstanceRequest, otherBiz, businessID string) bool {
+	if request == nil {
+		return false
+	}
+	for _, item := range request.BizRelevance {
+		if item.OtherBiz == otherBiz && item.OtherBizID == businessID {
+			return true
+		}
+	}
+	return false
 }
 
 // TestRuntimeIdentityOverridesSnapshot 锁定：发起前用当前会话实时身份覆盖表单登录人字段，

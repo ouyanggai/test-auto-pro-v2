@@ -166,10 +166,11 @@ func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 // 业务失败以 BusinessRejection 原样携带 code 与 message。
 func (c *Client) SubmitFlowInstance(ctx context.Context, session Session, request SubmitFlowInstanceRequest) (*SubmitFlowInstanceResult, WriteResponse, string, error) {
 	body := BuildSubmitBody(request)
-	// F-035 评审补充：发送前按协议矩阵强制校验载荷形状（required/forbidden），未登记端点直接拒绝。
-	if err := ValidateBodyMatrix(WriteEndpointSubmit, body, session.CustomerCode); err != nil {
+	finalBody, err := ValidateFinalWriteBody(WriteEndpointSubmit, session.SID, session.CustomerCode, body)
+	if err != nil {
 		return nil, WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
 	}
+	body = finalBody
 	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointSubmit, session.SID, session.CustomerCode, body)
 	response := WriteResponse{}
 	if err != nil {
@@ -284,9 +285,11 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 // AuditCurrentTask 处理当前活动人工待办。会话属于持待办的真实处理人；本方法内部不做任何重试。
 func (c *Client) AuditCurrentTask(ctx context.Context, session Session, request AuditCurrentTaskRequest) (*AuditCurrentTaskResult, WriteResponse, string, error) {
 	body := BuildAuditBody(request)
-	if err := ValidateBodyMatrix(WriteEndpointAudit, body, session.CustomerCode); err != nil {
+	finalBody, err := ValidateFinalWriteBody(WriteEndpointAudit, session.SID, session.CustomerCode, body)
+	if err != nil {
 		return nil, WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
 	}
+	body = finalBody
 	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointAudit, session.SID, session.CustomerCode, body)
 	// 传输失败时响应事实必须保持零值：连接被拒时伪造 200 会让判定包看到
 	// 「声明没有收到响应却带回状态码」的矛盾，把可判确定失败的抖动升级成待对账。

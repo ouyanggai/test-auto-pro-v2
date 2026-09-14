@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/formdata/fieldpower"
 	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/model"
@@ -145,9 +146,12 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		} else {
 			decision.BaselineSource = "instance"
 		}
-		// 实例已存在：只覆盖本节点声明可编辑的配置字段，其余保持实例现状。
 		overlaidValues := map[string]any{}
 		for key, value := range configured {
+			if target.IsTargetDerivedField(key) {
+				// 审批后目标会机械生成衍生意见：当前节点不得用配置阶段清空值覆盖目标现值。
+				continue
+			}
 			if fieldpower.Covers(editable, key) {
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
@@ -156,8 +160,6 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 				continue
 			}
 			if _, exists := merged[key]; !exists && !ownedByOtherNodeOnly(runCtx, compiled.NodeKey, key) {
-				// 实例里还没有、且没有任何其他节点声明能编辑它：属于表单自身维护的伴生键，
-				// 缺了会让目标少一份数据，按配置值补上。
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
 				decision.OverlaidFields = append(decision.OverlaidFields, key)
@@ -169,12 +171,24 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		}
 		decision.OverlaidValues = overlaidValues
 		decision.BaseValues = cloneForDecision(merged)
-		// 跨节点核对（F-035 评审补充）：上一节点覆盖字段的值必须仍在当前实例基线里且值未被改写，
-		// 嵌套对象/数组/表格字段按深度比较；丢失或被改写一律阻塞，不能带着旧快照继续写。
 		if previous != nil && decision.BaselineSource == "instance" {
 			for _, field := range previous.OverlaidFields {
+				if target.IsTargetDerivedField(field) {
+					current, exists := merged[field]
+					if !exists {
+						if written, ok := previous.OverlaidValues[field]; ok && !target.IsEmptyDerivedValue(written) {
+							decision.ValidationIssues = append(decision.ValidationIssues,
+								fmt.Sprintf("目标已有非空审批意见 %s 从实例中删除；若工具请求删除该值则阻塞", field))
+						}
+						continue
+					}
+					if written, ok := previous.OverlaidValues[field]; ok && target.DerivedFieldClearedByTool(written, current) {
+						decision.ValidationIssues = append(decision.ValidationIssues,
+							fmt.Sprintf("目标已有非空审批意见 %s 被工具写空，已阻塞", field))
+					}
+					continue
+				}
 				if fieldpower.Covers(editable, field) {
-					// 当前节点本就可以编辑该字段：它将由本节点重新覆盖，不适用保留断言。
 					continue
 				}
 				current, exists := merged[field]
@@ -184,7 +198,6 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 					continue
 				}
 				if written, ok := previous.OverlaidValues[field]; ok {
-					// 深度比较：把两侧按 JSON 规范化后比较，覆盖嵌套对象、数组与表格字段。
 					if !deepEqualNormalized(written, current) {
 						decision.ValidationIssues = append(decision.ValidationIssues,
 							fmt.Sprintf("上一节点写入的字段 %s 的值在目标实例上被改写（期望 %v，实际 %v），不能继续提交", field, written, current))
@@ -206,6 +219,12 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 			if ownedByOtherNodeOnly(runCtx, compiled.NodeKey, key) {
 				plan.Withheld = append(plan.Withheld, key)
 				decision.WithheldFields = append(decision.WithheldFields, key)
+				continue
+			}
+			if target.IsTargetDerivedField(key) {
+				// 新发起不得把历史审批意见带进新实例：保留键，清空文本/对象/列表。
+				merged[key] = emptyDerivedValue(key)
+				decision.PreservedFields = append(decision.PreservedFields, key)
 				continue
 			}
 			merged[key] = value
@@ -292,4 +311,17 @@ func deepEqualNormalized(a, b any) bool {
 		return fmt.Sprint(a) == fmt.Sprint(b)
 	}
 	return string(encodedA) == string(encodedB)
+}
+
+// emptyDerivedValue 按目标衍生字段种类返回空形状：文本空串、对象空 map、列表空数组。
+func emptyDerivedValue(field string) any {
+	record := target.ClassifyTargetDerivedField(field)
+	switch record.DerivedKind {
+	case target.DerivedFieldKindObject:
+		return map[string]any{}
+	case target.DerivedFieldKindList:
+		return []any{}
+	default:
+		return ""
+	}
 }

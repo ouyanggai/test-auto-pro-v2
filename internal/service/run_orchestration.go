@@ -541,6 +541,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		FlowType:                 lifecycle.FlowType,
 		RenderType:               lifecycle.RenderType,
 		FormPersonFields:         lifecycle.FormPersonFields,
+		FlowTree:                 lifecycle.Tree,
 		Source:                   plan.FlowSource,
 		Nodes:                    nodes,
 		BranchSelections:         branchSelections,

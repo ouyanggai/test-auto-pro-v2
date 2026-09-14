@@ -245,24 +245,7 @@ func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body
 
 // callOfClassPlatformWithCustomer 是最终统一出口；customerCode 非空时按当前会话注入 data.customerCode。
 func (c *Client) callOfClassPlatformWithCustomer(ctx context.Context, path, sid string, body map[string]any, class, traceID, platformCode, customerCode string) (*envelope, error) {
-	payload := make(map[string]any, len(body)+3)
-	for key, value := range body {
-		payload[key] = value
-	}
-	if sid != "" {
-		payload["sid"] = sid
-		// F-035：目标 axios 拦截器对每个带会话的 POST 统一注入顶层 projectId
-		//（来自 store，本项目无项目上下文固定空字符串）与 data.customerCode；
-		// 空字符串也必须保留，不得因空值省略（人工成功 curl 已确认）。
-		payload["projectId"] = ""
-		if dataMap, ok := payload["data"].(map[string]any); ok {
-			if _, exists := dataMap["customerCode"]; !exists {
-				// F-035 评审补充：优先当前会话的客户码，会话缺失时才回落全局配置——
-				// 不同计划账号/公司的会话客户码可能不同，必须与请求同身份。
-				dataMap["customerCode"] = firstNonEmpty(customerCode, c.config.CustomerCode)
-			}
-		}
-	}
+	payload := InjectWriteEnvelope(body, sid, firstNonEmpty(customerCode, c.config.CustomerCode))
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, invalidResponse("cannot encode request")

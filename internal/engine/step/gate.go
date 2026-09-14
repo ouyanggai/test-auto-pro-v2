@@ -109,11 +109,21 @@ func evaluateGate(step model.CompiledActionStep, ctx model.ActionContext) (model
 	return model.ActionCatalogItem{}, false
 }
 
-// applyFormPersonFields 按目标 traverseFlowNode 规则把 form_person 人员选择器字段补进表单数据
-// （F-035 评审补充，FlowDialog.vue:940）：声明字段缺失时从去掉 __formPersonId 后缀的源字段解析
-// （JSON 取 id，否则取原值）。数字保真解码后重新序列化，返回更新后的载荷。
-func applyFormPersonFields(runCtx RunContext, formData json.RawMessage) (json.RawMessage, error) {
-	if len(runCtx.FormPersonFields) == 0 || len(formData) == 0 {
+// applyFormPersonFields 按当前动作和目标下一节点入口注入 form_person 字段。
+// 发起/重提使用发起页入口规则；年度绩效发起才走全树；审批只处理 nextNodeProxyId 及其直接条件/并行入口。
+func applyFormPersonFields(runCtx RunContext, compiled model.CompiledActionStep, formData json.RawMessage, nextNodeKey string) (json.RawMessage, error) {
+	if len(formData) == 0 {
+		return formData, nil
+	}
+	nextNodeID := ""
+	if info, ok := runCtx.Nodes[nextNodeKey]; ok {
+		nextNodeID = strings.TrimSpace(info.TargetNodeID)
+	}
+	fields := target.CollectFormPersonFieldsForAction(runCtx.FlowTree, string(compiled.Action), runCtx.FlowType, nextNodeID)
+	if len(fields) == 0 {
+		fields = filterFormPersonFields(runCtx.FormPersonFields, string(compiled.Action), runCtx.FlowType, nextNodeID)
+	}
+	if len(fields) == 0 {
 		return formData, nil
 	}
 	values, err := jsonvalues.DecodeObject(formData)
@@ -121,7 +131,17 @@ func applyFormPersonFields(runCtx RunContext, formData json.RawMessage) (json.Ra
 		return nil, fmt.Errorf("表单数据解码失败，无法应用表单人员字段规则：%w", err)
 	}
 	changed := false
-	for _, field := range runCtx.FormPersonFields {
+	seen := map[string]bool{}
+	for _, field := range fields {
+		if seen[field.Field] {
+			continue
+		}
+		seen[field.Field] = true
+		if nextNodeID != "" && strings.TrimSpace(field.NodeID) != "" && field.Scope != target.FormPersonScopeInitiationFullTree && strings.TrimSpace(field.NodeID) != nextNodeID {
+			if field.Scope == target.FormPersonScopeApprovalNextEntry || field.Scope == target.FormPersonScopeInitiationNextEntry || field.Scope == target.FormPersonScopeResubmitPageRule {
+				continue
+			}
+		}
 		if target.ApplyFormPersonFieldRule(values, field) {
 			changed = true
 		}
@@ -136,24 +156,48 @@ func applyFormPersonFields(runCtx RunContext, formData json.RawMessage) (json.Ra
 	return encoded, nil
 }
 
+// filterFormPersonFields 在没有完整流程树时，按动作和下一节点从快照清单收窄字段。
+func filterFormPersonFields(fields []target.NodeFormPersonField, action, flowType, nextNodeID string) []target.NodeFormPersonField {
+	if len(fields) == 0 {
+		return nil
+	}
+	wantScope := target.FormPersonScopeInitiationNextEntry
+	switch action {
+	case string(model.ActionApprove), string(model.ActionReject), string(model.ActionStorageFormData):
+		wantScope = target.FormPersonScopeApprovalNextEntry
+	case string(model.ActionResubmit):
+		wantScope = target.FormPersonScopeResubmitPageRule
+	}
+	if flowType == "staff_annual_performance" && (action == string(model.ActionSubmit) || action == string(model.ActionSaveDraft) || action == string(model.ActionResubmit)) {
+		wantScope = target.FormPersonScopeInitiationFullTree
+	}
+	result := []target.NodeFormPersonField{}
+	for _, field := range fields {
+		if wantScope == target.FormPersonScopeInitiationFullTree {
+			field.Scope = wantScope
+			result = append(result, field)
+			continue
+		}
+		if nextNodeID != "" && strings.TrimSpace(field.NodeID) != nextNodeID {
+			continue
+		}
+		field.Scope = wantScope
+		result = append(result, field)
+	}
+	return result
+}
+
 // buildRequest 构造本步的类型化写请求与其协议载荷（载荷由适配层导出的构造器生成，
 // 与实际发出的请求严格同源）。审批任务 ID 不在此处填写：它必须在发送前现场新鲜读取。
-// 端点必须落在白名单内；未验证动作直接拒绝，绝不静默换端点。
-//
-// formData 是 BuildNodeFormData 已按节点权限算好的完整表单数据：目标保存是整份覆盖，
-// 所以除了明确不带表单数据的动作，这里一律提交这一份，不再直接透传历史快照。
 func buildRequest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string) (any, string, map[string]any, error) {
 	return buildRequestWithFacts(runCtx, step, session, formData, nextNodeKey, InstanceFacts{})
 }
 
-// buildRequestWithFacts 在构造动作载荷时接收放行前刚读取的目标事实；实例代理和业务关联必须使用实时值，
-// 避免重提、审批、不同意或转发覆盖后丢失目标已有上下文。事实为空时保留测试和纯载荷构造调用的既有行为。
+// buildRequestWithFacts 在构造动作载荷时接收放行前刚读取的目标事实；实例代理和业务关联必须使用实时值。
 func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string, facts InstanceFacts) (any, string, map[string]any, error) {
 	targetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
-	// F-035 评审补充：发起/重提/审批前按目标 traverseFlowNode 规则生成 form_person 人员选择器字段，
-	// 缺失时从同前缀源字段解析，绝不能用固定字段名表或候选人猜测。
 	if step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft || step.Action == model.ActionResubmit || step.Action == model.ActionApprove {
-		updated, applyErr := applyFormPersonFields(runCtx, formData)
+		updated, applyErr := applyFormPersonFields(runCtx, step, formData, nextNodeKey)
 		if applyErr != nil {
 			return nil, "", nil, applyErr
 		}
@@ -181,20 +225,22 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			}
 		}
 		request := target.SubmitFlowInstanceRequest{
-			InstanceID: runCtx.PathRun.MainInstanceRef,
-			Name:       instanceName(runCtx, step),
-			// F-035：FormMaking 只发送 formProxyId，NoFormFlow 只发送 flowProxyId；
-			// 互斥选择在 BuildSubmitBody 内按同一规则强制执行。
+			InstanceID:   runCtx.PathRun.MainInstanceRef,
+			Name:         instanceName(runCtx, step),
 			FormProxyID:  runCtx.FormProxyID,
 			FlowProxyID:  runCtx.FlowProxyID,
 			CompanyID:    session.CompanyID,
-			FormData:     formData,
+			FormData:     applySpecialBusinessFormData(runCtx, step, session, formData),
 			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditors,
-			// F-035：目标 FlowDialog 在打开时生成 32 位批次号并随 submit/draft 顶层发送；
-			// 这里在构造请求时生成一次并随请求结构走到发送，预览与实发严格同源；
-			// 它不是幂等键：写请求仍只发送一次，响应丢失先对账，绝不重发。
-			BatchCode: target.NewBatchCode(),
+			BatchCode:    target.NewBatchCode(),
+		}
+		if runCtx.RenderType == string(target.FormRenderTypeVueCustom) {
+			request.FormProxyID = ""
+			request.FlowProxyID = runCtx.FlowProxyID
+			if request.FormData == nil {
+				request.FormData = noFormSubmitMongo(runCtx, session)
+			}
 		}
 		if step.Action == model.ActionSaveDraft {
 			request.Status = "draft"
@@ -220,7 +266,7 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			FlowProxyID:  firstNonEmpty(facts.CurrentTaskFlowProxy, facts.FlowProxyID, runCtx.FlowProxyID),
 			AuditStatus:  "pass",
 			ExecuteDesc:  auditMessage(runCtx, step),
-			FormData:     formData,
+			FormData:     applySpecialBusinessFormData(runCtx, step, session, formData),
 			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditors,
 		}
@@ -486,4 +532,82 @@ func BuildRequestForTest(runCtx RunContext, step model.CompiledActionStep, sessi
 // BuildRequestWithFactsForTest 暴露带实时实例事实的请求构造，供 test 目录锁定业务关联不会在执行器层丢失。
 func BuildRequestWithFactsForTest(runCtx RunContext, step model.CompiledActionStep, session target.Session, formData json.RawMessage, nextNodeKey string, facts InstanceFacts) (any, string, map[string]any, error) {
 	return buildRequestWithFacts(runCtx, step, session, formData, nextNodeKey, facts)
+}
+
+// applySpecialBusinessFormData 按已实现的目标页面分支改写表单值。
+// 合同盖章/合规自定义组件仍未实现，调用方已在门禁阻塞；这里只处理能从源码证明的字段改写。
+func applySpecialBusinessFormData(runCtx RunContext, compiled model.CompiledActionStep, session target.Session, formData json.RawMessage) json.RawMessage {
+	if len(formData) == 0 {
+		return formData
+	}
+	values, err := jsonvalues.DecodeObject(formData)
+	if err != nil {
+		return formData
+	}
+	changed := false
+	userID := strings.TrimSpace(session.UserID)
+	switch runCtx.FlowType {
+	case "publication_commission":
+		if compiled.Action == model.ActionApprove && pickerID(values["manageUserName"]) == userID && userID != "" {
+			values["manageUserDate"] = time.Now().Format("2006-01-02")
+			changed = true
+		}
+	case "profession_indirect_provide":
+		if compiled.Action == model.ActionApprove {
+			if pickerID(values["proposeLeaderUserName"]) == userID && userID != "" {
+				values["proposeLeaderDate"] = time.Now().Format("2006-01-02")
+				changed = true
+			}
+			if pickerID(values["receiveLeaderUserName"]) == userID && userID != "" {
+				values["receiveLeaderDate"] = time.Now().Format("2006-01-02")
+				changed = true
+			}
+		}
+	case "staff_annual_performance", "staff_annual_assessment":
+		if compiled.Action == model.ActionApprove {
+			values["opinion"] = auditMessage(runCtx, compiled)
+			changed = true
+		}
+	}
+	if !changed {
+		return formData
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return formData
+	}
+	return encoded
+}
+
+// noFormSubmitMongo 构造目标 NoFormFlow submitFinal 的 formDataMongoVo.data：initiatorRange 为当前用户。
+func noFormSubmitMongo(runCtx RunContext, session target.Session) json.RawMessage {
+	userID := strings.TrimSpace(session.UserID)
+	payload := map[string]any{"initiatorRange": userID}
+	if runCtx.FlowType == "expense_budget" {
+		payload["expenseCompanyId"] = session.CompanyID
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
+}
+
+// pickerID 从人员选择器 JSON 文本取出 id，源不是 JSON 时返回原值。
+func pickerID(raw any) string {
+	text, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	var decoded struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil && strings.TrimSpace(decoded.ID) != "" {
+		return strings.TrimSpace(decoded.ID)
+	}
+	return trimmed
 }

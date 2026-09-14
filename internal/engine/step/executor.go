@@ -12,7 +12,6 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/verdict"
-	"test-auto-pro-v2/internal/jsonvalues"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 )
@@ -228,10 +227,11 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	} else {
 		actorName = name
 	}
-	// F-035 评审补充：上一步写后表单核对不一致时直接阻塞本步——上游值已丢失或被改写，
-	// 继续执行会把错误数据当基线，必须在用户检查目标实例后再放行。
+	if persisted := loadPersistedFormDataVerifyIssue(e.facts, runCtx.PathRun.ID, step.Sequence); persisted != "" {
+		facts.FormDataVerifyIssue = persisted
+	}
 	if strings.TrimSpace(facts.FormDataVerifyIssue) != "" {
-		reason := "上一步的表单数据写后核对未通过：" + facts.FormDataVerifyIssue + "；已阻塞本步，请先到目标平台核对实例当前表单数据"
+		reason := "上一步表单核对未通过：" + facts.FormDataVerifyIssue + "；已阻塞本步，请先到对应步骤和日志核对目标实例当前表单"
 		log.Phase("gate", step.Sequence, 1, reason)
 		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
@@ -248,22 +248,18 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		}
 		facts = pollFacts
 	}
-	// F-035 评审补充：目标页面按流程类型分派特殊业务前置/后置（自定义组件、业务数据保存、
-	// 业务字段改写）。工具没有这些自定义组件的执行能力，命中登记清单必须阻塞，
-	// 绝不能发通用请求顶替目标业务变更（用户豁免的是表单校验，不是业务数据变更与请求顺序）。
-	if target.HasSpecialBusinessLifecycle(runCtx.FlowType) {
-		reason := fmt.Sprintf("流程类型「%s」在目标页面存在特殊业务逻辑（自定义组件/业务数据保存/业务字段改写），本工具无法代替目标执行；已阻塞，请在目标平台手工完成该流程的验证", runCtx.FlowType)
-		log.Phase("gate", step.Sequence, 1, "特殊业务生命周期阻塞："+reason)
+	// F-035 第四轮：已知特殊业务必须实现；只有未实现或未登记证明不足的分支才写前阻塞。
+	if reason := target.SpecialBusinessBlockReason(runCtx.FlowType, string(step.Action)); reason != "" {
+		log.Phase("gate", step.Sequence, 1, "特殊业务未实现阻塞："+reason)
 		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
-	// F-035 评审补充：目标无表单页面（vue_custom/NoFormFlow）有专用业务链路——项目与业务组件关联、
-	// initiatorRange、money 等类型字段、并行/手动分支选人（NoFormFLow/Flow.vue submitFinal）。
-	// 通用请求不能代替这些协议；发起/重提必须阻塞，等目标无表单页面逐页实现后再放行。
 	if runCtx.RenderType == string(target.FormRenderTypeVueCustom) &&
 		(step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft || step.Action == model.ActionResubmit) {
-		reason := fmt.Sprintf("无表单页面「%s」存在专用业务链路（项目/业务关联、initiatorRange、并行或手动分支选人等），本工具尚未逐页面实现；已阻塞，请在目标平台手工发起", runCtx.FlowType)
-		log.Phase("gate", step.Sequence, 1, "无表单业务链路阻塞："+reason)
-		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
+		pageKey := strings.TrimSpace(runCtx.FlowType)
+		if reason := target.NoFormFlowBlockReason(pageKey, string(step.Action)); reason != "" {
+			log.Phase("gate", step.Sequence, 1, "无表单业务链路阻塞："+reason)
+			return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
+		}
 	}
 	info := runCtx.Nodes[step.NodeKey]
 	// 目标自动跳过适配：模板约束「无处理人时跳过该节点」在人员规则（如扩展属性）解析为空时
@@ -312,12 +308,15 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		NodeKey:         step.NodeKey,
 		TargetNodeID:    info.TargetNodeID,
 		NodeName:        info.Name,
-		ActorAccount:    runCtx.PlanAccount,
+		ActorAccount:    "",
 		ActorName:       actorName,
 		ExpectedEffect:  catalogItem.ExpectedEffect,
 		GateAllowed:     allowed,
 		GateItems:       catalogItem.Preconditions,
 		Facts:           facts,
+	}
+	if step.Scope != model.ActionScopeTask && step.Scope != model.ActionScopeCompletedTask {
+		preview.ActorAccount = runCtx.PlanAccount
 	}
 	if !allowed {
 		reason := catalogItem.DisabledReason
@@ -430,11 +429,43 @@ func requiresTargetNodeID(compiled model.CompiledActionStep) bool {
 }
 
 // nodeFormData 读取实例当前表单数据并按节点权限构造本步要提交的完整表单数据。
-// 读取属只读阶段，允许有界重试；不携带表单数据的动作直接返回空计划，不做无意义的读取。
-// 读取期间如果会话失效，返回刷新后的会话，后续预览载荷和放行写请求必须继续使用它。
+// 必须先切真实会话并读取当前身份，再构造表单：动态字段、选项和伴生键不能按旧账号生成。
 func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled model.CompiledActionStep, session target.Session) (FormDataPlan, target.Session, error) {
 	if !ActionCarriesFormData(compiled.Action) {
 		return FormDataPlan{}, session, nil
+	}
+	createGlobal := compiled.Action == model.ActionSubmit || compiled.Action == model.ActionSaveDraft || compiled.Action == model.ActionResubmit
+	switch compiled.Action {
+	case model.ActionSubmit, model.ActionSaveDraft, model.ActionResubmit, model.ActionApprove:
+		identityReader, canReadIdentity := e.target.(runtimeIdentityReader)
+		if !canReadIdentity {
+			return FormDataPlan{}, session, fmt.Errorf("目标客户端不支持实时身份读取，不能按当前会话覆盖表单身份")
+		}
+		account := strings.TrimSpace(session.Summary.Account)
+		if account == "" {
+			account = runCtx.PlanAccount
+		}
+		identity, active, identityErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+			func(callContext context.Context, active target.Session) (target.UserIdentity, error) {
+				return identityReader.CurrentUserIdentity(callContext, active)
+			})
+		session = active
+		if identityErr != nil {
+			return FormDataPlan{}, session, fmt.Errorf("读取当前会话实时身份失败：%s", target.UserFacingErrorMessage(target.WriteResponse{}, identityErr))
+		}
+		if !identity.Complete() {
+			return FormDataPlan{}, session, fmt.Errorf("当前会话在目标平台缺少身份字段 %s，写请求前已阻塞", strings.Join(identity.MissingFields(), "、"))
+		}
+		configured, decodeErr := decodeConfiguredFormData(runCtx.EffectiveFormData)
+		if decodeErr != nil {
+			return FormDataPlan{}, session, decodeErr
+		}
+		target.ApplyUserIdentityForAction(configured, identity, createGlobal)
+		encoded, encodeErr := json.Marshal(configured)
+		if encodeErr != nil {
+			return FormDataPlan{}, session, fmt.Errorf("实时身份覆盖结果编码失败：%w", encodeErr)
+		}
+		runCtx.EffectiveFormData = encoded
 	}
 	var current map[string]any
 	hasInstance := false
@@ -453,54 +484,28 @@ func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled
 		}
 		session = active
 		current = read
+		if createGlobal {
+			identityReader, canReadIdentity := e.target.(runtimeIdentityReader)
+			if canReadIdentity {
+				identity, _, identityErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+					func(callContext context.Context, active target.Session) (target.UserIdentity, error) {
+						return identityReader.CurrentUserIdentity(callContext, active)
+					})
+				if identityErr == nil && identity.Complete() {
+					if current == nil {
+						current = map[string]any{}
+					}
+					target.ApplyUserIdentityForAction(current, identity, true)
+				}
+			}
+		}
 	}
-	// 实例存在但数据为空时必须保持实例分支（空基线），不得退回发起分支提交整份历史配置。
-	// F-035/T05：上一节点决策非空时执行跨节点核对，上一节点覆盖字段在目标实例上丢失立即阻塞。
 	plan, err := BuildNodeFormData(runCtx, compiled, current, hasInstance, runCtx.LastFormDataDecision)
 	if err == nil && plan.Decision != nil && len(plan.Decision.ValidationIssues) > 0 {
 		return plan, session, fmt.Errorf("%s", strings.Join(plan.Decision.ValidationIssues, "；"))
 	}
 	if err != nil {
 		return plan, session, err
-	}
-	// F-035 评审补充：发起/重提/审批前必须按当前计划账号的实时会话身份覆盖目标登录人字段——
-	// 运行上下文里的 EffectiveFormData 是配置期快照，计划账号变化后不能沿用历史身份。
-	// 身份读取失败或岗位缺失一律阻塞（不伪造空岗位），这正对目标 FlowDialog 用登录态覆盖提交值的规则。
-	switch compiled.Action {
-	case model.ActionSubmit, model.ActionSaveDraft, model.ActionResubmit, model.ActionApprove:
-		identityReader, canReadIdentity := e.target.(runtimeIdentityReader)
-		if !canReadIdentity {
-			return FormDataPlan{}, session, fmt.Errorf("目标客户端不支持实时身份读取，不能按当前计划账号覆盖发起人身份")
-		}
-		account := strings.TrimSpace(session.Summary.Account)
-		if account == "" {
-			account = runCtx.PlanAccount
-		}
-		identity, _, identityErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
-			func(callContext context.Context, active target.Session) (target.UserIdentity, error) {
-				return identityReader.CurrentUserIdentity(callContext, active)
-			})
-		if identityErr != nil {
-			return FormDataPlan{}, session, fmt.Errorf("读取当前计划账号的实时身份失败：%s", target.UserFacingErrorMessage(target.WriteResponse{}, identityErr))
-		}
-		if !identity.Complete() {
-			return FormDataPlan{}, session, fmt.Errorf("当前计划账号在目标平台缺少岗位信息（dutyId/dutyName），发起会被按错误身份解析处理人，请先在目标平台补全该账号岗位")
-		}
-		// 用实时身份覆盖表单值：快照是配置期的，这里必须是当前会话的。
-		values, decodeErr := jsonvalues.DecodeObject(plan.Payload)
-		if decodeErr != nil {
-			return FormDataPlan{}, session, fmt.Errorf("表单数据解码失败，无法覆盖实时身份：%w", decodeErr)
-		}
-		target.ApplyUserIdentity(values, identity)
-		encoded, encodeErr := json.Marshal(values)
-		if encodeErr != nil {
-			return FormDataPlan{}, session, fmt.Errorf("实时身份覆盖结果编码失败：%w", encodeErr)
-		}
-		plan.Payload = encoded
-		if plan.Decision != nil {
-			plan.Decision.FinalPayload = encoded
-			plan.Decision.PayloadFingerprint = decisionFingerprint(encoded)
-		}
 	}
 	return plan, session, nil
 }
@@ -546,30 +551,32 @@ type runtimeIdentityReader interface {
 	CurrentUserIdentity(ctx context.Context, active target.Session) (target.UserIdentity, error)
 }
 
-// verifyFormDataAfterWrite 在写请求成功后重读目标实例当前表单，并与本节点决策逐字段核对（F-035 评审补充）：
-//   - 本节点覆盖字段：目标值必须等于决策记录的实际写入值；
-//   - 基线保留字段（发起态为发起字段，实例态为实例基线）：目标值必须保持原值；
-//   - 不核对目标自身的校验规则（用户已豁免），只核对工具写副作用的保存事实。
-//
-// 读取失败返回空串（核验失败由既有 ReadError 通路处理），核对不一致返回中文结论。
+// verifyFormDataAfterWrite 在写请求成功后重读目标实例当前表单，并按字段所有权核对。
 func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunContext, session target.Session, decision *NodeFormDataDecision, log *StepLog) string {
 	instanceRef := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 	if instanceRef == "" {
-		// 发起场景实例 ID 尚未回填：表单核对由提交结果与待办事实承担，这里只核已有实例。
 		return ""
 	}
 	current, err := e.target.ReadInstanceCurrentData(ctx, session, instanceRef)
 	if err != nil {
-		// 目标读取失败不算核对不一致：由 ReadError 通路按「结果待确认」处理。
 		return ""
 	}
 	issues := []string{}
+	overlaidSet := map[string]bool{}
 	for _, field := range decision.OverlaidFields {
+		overlaidSet[field] = true
 		written, hasWritten := decision.OverlaidValues[field]
 		if !hasWritten {
 			continue
 		}
+		ownership := target.ClassifyFormField(field, true, false)
 		actual, exists := current[field]
+		if ownership.Ownership == target.FieldOwnershipTargetDerived {
+			if exists && target.DerivedFieldClearedByTool(written, actual) {
+				issues = append(issues, fmt.Sprintf("目标已有非空审批意见 %s 被工具写空，已阻塞", field))
+			}
+			continue
+		}
 		if !exists {
 			issues = append(issues, fmt.Sprintf("字段 %s 发送后未出现在目标实例数据中", field))
 			continue
@@ -579,12 +586,25 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 		}
 	}
 	for field, baseValue := range decision.BaseValues {
-		if containsString(decision.OverlaidFields, field) || containsString(decision.WithheldFields, field) {
-			// 本节点覆盖的字段以写入值为准；被扣留字段不属于本节点写入，不参与保留核对。
+		if overlaidSet[field] || containsString(decision.WithheldFields, field) {
 			continue
 		}
+		ownership := target.ClassifyFormField(field, false, false)
 		actual, exists := current[field]
+		if ownership.Ownership == target.FieldOwnershipTargetDerived {
+			if !exists {
+				if !target.IsEmptyDerivedValue(baseValue) {
+					issues = append(issues, fmt.Sprintf("目标已有非空审批意见 %s 从实例中删除；若工具请求删除该值则阻塞", field))
+				}
+				continue
+			}
+			if target.DerivedFieldClearedByTool(baseValue, actual) {
+				issues = append(issues, fmt.Sprintf("目标已有非空审批意见 %s 被工具写空，已阻塞", field))
+			}
+			continue
+		}
 		if !exists {
+			issues = append(issues, fmt.Sprintf("上游业务字段 %s 从目标实例中删除，不能继续", field))
 			continue
 		}
 		if !deepEqualNormalized(baseValue, actual) {
@@ -1159,7 +1179,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if readErr == nil && strings.TrimSpace(after.ReadError) == "" && preview.FormDataDecision != nil && ActionCarriesFormData(step.Action) {
 		if issue := e.verifyFormDataAfterWrite(ctx, runCtx, session, preview.FormDataDecision, log); issue != "" {
 			after.FormDataVerifyIssue = issue
+			after.FormDataVerifyResults = []string{issue}
 		}
+		after.FormDataVerifyAt = e.now().UTC().Format(time.RFC3339)
+		after.FormDataVerifyFingerprint = preview.FormDataDecision.PayloadFingerprint
 	}
 	if readErr == nil && strings.TrimSpace(after.ReadError) == "" {
 		// 核验重读同时把实例名称补进日志作用域与 meta.json；写后屏障之后的新事实优先。
@@ -1253,9 +1276,9 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		LogLine:     lineNo,
 		DurationMs:  durationMs,
 		IsReplay:    approved.IsReplay,
-		// 写之前的目标事实随尝试行落库：这是对账判定的另一半输入，
-		// 只留在内存里会让进程重启后停在待对账的路径运行永远拿不到基准（F-018 根治项）。
-		BeforeFacts: EncodeInstanceFacts(before),
+		// BeforeFacts 复用现有 JSON 列同时携带写后核对结论：不新增表。
+		// 下一步按 pathRunId 读取最近尝试，重启后仍能恢复阻塞结论。
+		BeforeFacts: EncodeInstanceFacts(mergeVerifyIssue(before, after)),
 	}
 	if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 		return outcome, lineNo, err
@@ -1614,6 +1637,12 @@ func boolText(value bool) string {
 // 网络连接尚未写出时允许有限重试；请求一旦写出，响应丢失不得重发。
 // 只有实际尝试进入目标写请求的路径才置 preview.writeSent。
 func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, attemptNo int) target.Session {
+	preSaveSent := preview.writeSent
+	session = e.ensureBusinessPreSave(ctx, runCtx, step, session, preview, log, reportPhase, approved, attemptNo)
+	if preview.writeErr != nil {
+		return session
+	}
+	preSaveSent = preSaveSent || preview.writeSent
 	switch request := preview.request.(type) {
 	case *target.SubmitFlowInstanceRequest:
 		started := e.now()
@@ -1621,7 +1650,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 			func(callContext context.Context, active target.Session) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
 				return e.target.SubmitFlowInstance(callContext, active, *request)
 			}, session)
-		preview.writeSent = attempted
+		preview.writeSent = preSaveSent || attempted
 		// 会话失效拒绝（RESP401/AUTH_401）发生在目标业务逻辑之前：请求没有进入业务、
 		// 无副作用（核验重读「明确未变」可证）。这不是「唯一一次写机会」的消耗——
 		// 实测目标写端点会话校验与读端点不同步，新登录的会话也可能被写链路拒绝。
@@ -1661,7 +1690,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 			func(callContext context.Context, active target.Session) (*target.AuditCurrentTaskResult, target.WriteResponse, string, error) {
 				return e.target.AuditCurrentTask(callContext, active, *request)
 			}, session)
-		preview.writeSent = attempted
+		preview.writeSent = preSaveSent || attempted
 		if isSessionRejected(err) {
 			var retrySession target.Session
 			var prepareErr error
@@ -1700,7 +1729,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 				return session
 			}
 			response, traceID, err, attempted := e.runActionWriteWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved, session, *actionRequest)
-			preview.writeSent = attempted
+			preview.writeSent = preSaveSent || attempted
 			if isSessionRejected(err) {
 				var retrySession target.Session
 				var prepareErr error
@@ -1722,7 +1751,7 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 					session = retrySession
 				}
 			}
-			if isRequestValidationError(err) {
+			if isRequestValidationError(err) && !preSaveSent {
 				// 适配层在 CallWrite 之前拒绝本地载荷：没有网络请求和目标副作用，
 				// 必须走零写入确定失败分支，不能按写结果不确定停在待对账。
 				preview.writeSent = false
@@ -1736,6 +1765,182 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 		preview.writeErrClass = model.FailureClassToolBug
 	}
 	return session
+}
+
+// ensureBusinessPreSave 在主流程写请求前按目标页面顺序发出特殊业务/无表单前置保存。
+// 业务保存失败不得继续主流程；成功后把返回 id 写入主流程关联。
+// 已有同类型关联或本步已落账的 businessSaveId 时跳过，避免重启后重复保存。
+func (e *Executor) ensureBusinessPreSave(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, attemptNo int) target.Session {
+	if !target.NeedsSpecialBusinessPreSave(runCtx.FlowType, string(step.Action)) &&
+		!(runCtx.RenderType == string(target.FormRenderTypeVueCustom) && target.NeedsNoFormFlowPreSave(runCtx.FlowType, string(step.Action))) {
+		return session
+	}
+	otherBiz, restoredID := restoreBusinessSave(preview, runCtx, e.facts, step.Sequence)
+	if restoredID != "" {
+		attachBusinessRelevance(preview, otherBiz, restoredID)
+		log.Phase("submit", step.Sequence, attemptNo, "复用已保存业务 id="+restoredID+"，不再重复前置保存")
+		return session
+	}
+	writer, ok := e.target.(specialBusinessWriter)
+	if !ok {
+		preview.writeErr = fmt.Errorf("流程类型「%s」已登记专用业务保存，但当前目标客户端未实现前置写出口，不能发通用请求顶替", runCtx.FlowType)
+		preview.writeErrClass = model.FailureClassToolBug
+		return session
+	}
+	formData := formDataFromPreviewRequest(preview)
+	action := string(step.Action)
+	reportPhase(approved, "submit", "正在按目标页面顺序保存业务数据，成功后再发主流程")
+	var result target.SpecialBusinessSaveResult
+	var err error
+	var attempted bool
+	if runCtx.RenderType == string(target.FormRenderTypeVueCustom) && target.NeedsNoFormFlowPreSave(runCtx.FlowType, action) {
+		spec, found := target.LookupNoFormFlow(runCtx.FlowType)
+		if !found {
+			preview.writeErr = fmt.Errorf("无表单页面「%s」未登记专用业务链路，不能发通用 submit 顶替", runCtx.FlowType)
+			preview.writeErrClass = model.FailureClassToolBug
+			return session
+		}
+		otherBiz = target.NoFormFlowOtherBiz(spec.PageKey)
+		result, err, attempted = e.runBusinessSaveWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved,
+			func(callContext context.Context, active target.Session) (target.SpecialBusinessSaveResult, error) {
+				return writer.SaveNoFormFlow(callContext, active, spec, formData, action)
+			}, session)
+	} else {
+		spec, found := target.LookupSpecialBusiness(runCtx.FlowType)
+		if !found {
+			return session
+		}
+		otherBiz = target.SpecialBusinessOtherBiz(spec.FlowType)
+		result, err, attempted = e.runBusinessSaveWithNetworkRetry(ctx, step, attemptNo, log, reportPhase, approved,
+			func(callContext context.Context, active target.Session) (target.SpecialBusinessSaveResult, error) {
+				return writer.SaveSpecialBusiness(callContext, active, spec, formData, action)
+			}, session)
+	}
+	if attempted {
+		preview.writeSent = true
+		preview.writeResponse = result.Response
+		preview.writeTraceID = result.TraceID
+	}
+	if err != nil {
+		preview.writeErr = err
+		if isRequestValidationError(err) {
+			preview.writeSent = false
+			preview.writeErrClass = model.FailureClassToolBug
+		}
+		log.Phase("submit", step.Sequence, attemptNo, "业务前置保存失败，不得继续主流程："+err.Error())
+		return session
+	}
+	if strings.TrimSpace(result.BusinessID) == "" {
+		preview.writeErr = errors.New("业务保存成功但响应未返回业务 id，不能继续主流程")
+		preview.writeErrClass = model.FailureClassToolBug
+		preview.writeSent = attempted
+		return session
+	}
+	attachBusinessRelevance(preview, otherBiz, result.BusinessID)
+	preview.Facts.BusinessSaveID = result.BusinessID
+	preview.Facts.BusinessSaveOtherBiz = otherBiz
+	log.Phase("submit", step.Sequence, attemptNo, "业务前置保存成功，id="+result.BusinessID+"，即将发送主流程")
+	return session
+}
+
+// runBusinessSaveWithNetworkRetry 为前置业务保存复用未写出连接重试边界。
+// 请求一旦写出，响应丢失不得重发；主流程尚未发出。
+func (e *Executor) runBusinessSaveWithNetworkRetry(ctx context.Context, step model.CompiledActionStep, attemptNo int, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, call func(context.Context, target.Session) (target.SpecialBusinessSaveResult, error), session target.Session) (target.SpecialBusinessSaveResult, error, bool) {
+	result, response, traceID, err, attempted := RunWithWriteConnectRetry(ctx, e.policy, func(callContext context.Context) (target.SpecialBusinessSaveResult, target.WriteResponse, string, error) {
+		saved, saveErr := call(callContext, session)
+		return saved, saved.Response, saved.TraceID, saveErr
+	}, func(attempt int, nextDelay time.Duration) {
+		note := fmt.Sprintf("业务保存连接未建立，第 %d 次后将在 %s 重试", attempt, nextDelay)
+		log.Phase("submit", step.Sequence, attemptNo, note)
+		reportPhase(approved, "submit", note)
+	})
+	if result.TraceID == "" {
+		result.TraceID = traceID
+	}
+	if result.Response.StatusCode == 0 {
+		result.Response = response
+	}
+	return result, err, attempted
+}
+
+// restoreBusinessSave 从本步预览事实、运行现场或同一步已落账 JSON 恢复已成功的业务保存 id。
+func restoreBusinessSave(preview *StepPreview, runCtx RunContext, store RunFactsStore, stepNo int) (otherBiz, businessID string) {
+	if preview != nil {
+		if id := strings.TrimSpace(preview.Facts.BusinessSaveID); id != "" {
+			return firstNonEmpty(preview.Facts.BusinessSaveOtherBiz, target.SpecialBusinessOtherBiz(runCtx.FlowType)), id
+		}
+		if otherBiz, id := relevanceBusinessID(preview.Facts.BizRelevance, runCtx); id != "" {
+			return otherBiz, id
+		}
+	}
+	if id := strings.TrimSpace(runCtx.LastBeforeFacts.BusinessSaveID); id != "" {
+		return firstNonEmpty(runCtx.LastBeforeFacts.BusinessSaveOtherBiz, target.SpecialBusinessOtherBiz(runCtx.FlowType)), id
+	}
+	if otherBiz, id := relevanceBusinessID(runCtx.LastBeforeFacts.BizRelevance, runCtx); id != "" {
+		return otherBiz, id
+	}
+	return loadPersistedBusinessSave(store, runCtx, stepNo)
+}
+
+// relevanceBusinessID 从关联列表取出本流程类型对应的非空业务 id。
+func relevanceBusinessID(values []target.BizRelevance, runCtx RunContext) (string, string) {
+	keys := []string{
+		target.SpecialBusinessOtherBiz(runCtx.FlowType),
+		target.NoFormFlowOtherBiz(runCtx.FlowType),
+		strings.TrimSpace(runCtx.FlowType),
+	}
+	for _, item := range values {
+		otherBiz := strings.TrimSpace(item.OtherBiz)
+		id := strings.TrimSpace(item.OtherBizID)
+		if otherBiz == "" || id == "" {
+			continue
+		}
+		for _, key := range keys {
+			if key != "" && strings.EqualFold(otherBiz, key) {
+				return otherBiz, id
+			}
+		}
+	}
+	return "", ""
+}
+
+// attachBusinessRelevance 把业务保存返回的 id 写入即将发出的主流程请求关联列表。
+func attachBusinessRelevance(preview *StepPreview, otherBiz, businessID string) {
+	if preview == nil {
+		return
+	}
+	preview.Facts.BizRelevance = target.AppendBusinessRelevance(preview.Facts.BizRelevance, otherBiz, businessID)
+	preview.Facts.BusinessSaveID = businessID
+	preview.Facts.BusinessSaveOtherBiz = otherBiz
+	switch request := preview.request.(type) {
+	case *target.SubmitFlowInstanceRequest:
+		request.BizRelevance = target.AppendBusinessRelevance(request.BizRelevance, otherBiz, businessID)
+		preview.request = request
+		preview.RequestPayload = target.BuildSubmitBody(*request)
+	case *target.ActionWriteRequest:
+		request.BizRelevance = target.AppendBusinessRelevance(request.BizRelevance, otherBiz, businessID)
+		preview.request = request
+		if body, _, err := target.BuildActionBody(*request); err == nil {
+			preview.RequestPayload = body
+		}
+	}
+}
+
+// formDataFromPreviewRequest 取出本步即将发送的表单原文，供前置业务保存按目标页面构造载荷。
+func formDataFromPreviewRequest(preview *StepPreview) json.RawMessage {
+	if preview == nil {
+		return nil
+	}
+	switch request := preview.request.(type) {
+	case *target.SubmitFlowInstanceRequest:
+		return request.FormData
+	case *target.AuditCurrentTaskRequest:
+		return request.FormData
+	case *target.ActionWriteRequest:
+		return request.FormData
+	default:
+		return nil
+	}
 }
 
 // runWriteWithNetworkRetry 只为连接阶段未写出的发起/审批请求提供有限重试。

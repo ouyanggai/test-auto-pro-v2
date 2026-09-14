@@ -159,6 +159,76 @@ var endpointFieldMatrix = map[string]map[string]FieldPresence{
 		"sid":            PresenceRequired,
 		"projectId":      PresenceRequired,
 	},
+	// 资金往来/投资款业务保存：FlowDialog.saveCostFundsBusiness，主流程前置。
+	"/web/measuring/api/costFundsTransactions/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	// 年度考核业务保存：AnnualAssessmentNoForm.saveBusinessData。
+	"/web/plan/api/annualPerformance/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	// 费用报销业务保存：ExpensesClaimForm.postData。
+	"/web/expenseReimbursement/submit": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceOptional, // 页面明细可能携带，不是主流程批次号
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	// 无表单计量页业务保存：mixin.saveData / apiList.save。
+	"/web/measuring/api/procurePlan/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	"/web/measuringApi/materialDeviceDemandTable/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	"/web/measuringApi/purchaseOrder/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	"/web/measuring/api/contractReview/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	"/web/measuring/api/contractPayment/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	"/web/measuringApi/orderReceipt/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	"/web/measuring/api/costBudget/saveTask": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
+	"/web/plan/api/kpiGroup/save": {
+		"data":      PresenceRequired,
+		"batchCode": PresenceForbidden,
+		"sid":       PresenceRequired,
+		"projectId": PresenceRequired,
+	},
 }
 
 // NewBatchCode 生成目标 FlowDialog 同形状的 32 位十六进制批次号。
@@ -188,113 +258,167 @@ func ProtocolMatrix() map[string]map[string]FieldPresence {
 	return result
 }
 
-// 目标业务生命周期登记（F-035 评审补充，唯一代码登记处）。
-// 目标发起/审批页按流程类型（selectFlowType/auditWay）分派特殊业务前置与后置：
-//   - submit 分派：FlowDialog.formMakingFormBusiness —— contract_compliance_review 与
-//     contract_seal_review 调用自定义组件保存业务（FlowDialog.vue:367-374），
-//     cost_funds_transactions / cost_funds_invest 先保存请款业务数据（FlowDialog.vue:375、:380-425），
-//     其余流程类型直接走通用 enterpriseHandleSubmit（FlowDialog.vue:377-378）；
-//   - submit 前后钩子顺序：checkFlowPermission → 业务保存/触发 beforeSubmitAndDraft →
-//     发起 → afterSaveFlowInstance / 文件状态与业务实例绑定（FlowDialog.vue:385-905）；
-//   - 审批同意的业务字段改写：EnterpriseExamineOpinion.handleSubmitCheck ——
-//     publication_commission / profession_indirect_provide 审批时更新日期字段（:939-975），
-//     staff_annual_performance / staff_annual_assessment 把审批意见写入表单（:946-949），
-//     差旅/请款/借款等类型有专用金额一致性计算（:952-990）。
-//
-// 工具没有这些自定义组件与业务接口的执行能力：命中下列清单的流程类型必须在发送前阻塞，
-// 绝不能发通用请求顶替目标业务变更。新类型必须在目标页面核实后先登记再放行。
-var specialBusinessFlowTypes = map[string]bool{
-	// submit 阶段的自定义业务组件/业务数据保存（FlowDialog.formMakingFormBusiness）。
-	"contract_compliance_review": true,
-	"contract_seal_review":       true,
-	"cost_funds_transactions":    true,
-	"cost_funds_invest":          true,
-	// 审批同意阶段会改写业务字段的类型（EnterpriseExamineOpinion.handleSubmitCheck）。
-	"publication_commission":      true,
-	"profession_indirect_provide": true,
-	"staff_annual_performance":    true,
-	"staff_annual_assessment":     true,
-	"expense_budget":              true,
-}
-
-// HasSpecialBusinessLifecycle 判断流程类型在目标页面存在工具无法执行的特殊业务钩子。
-func HasSpecialBusinessLifecycle(flowType string) bool {
-	return specialBusinessFlowTypes[strings.TrimSpace(flowType)]
-}
-
-// SpecialBusinessFlowTypes 返回登记过的特殊业务流程类型（排序副本），供测试与文档核对。
-func SpecialBusinessFlowTypes() []string {
-	result := make([]string, 0, len(specialBusinessFlowTypes))
-	for flowType := range specialBusinessFlowTypes {
-		result = append(result, flowType)
-	}
-	sort.Strings(result)
-	return result
-}
+// 目标业务生命周期登记已迁到 special_business.go（F-035 第四轮）：
+// 已知分支必须按目标页面顺序实现，未知分支继续写前阻塞，禁止“命中即阻塞”当作完成。
 
 // FlowLifecycleMeta 是流程生命周期元数据快照（F-035 评审补充）：
 // FlowType 是目标页面分派业务钩子的键（auditWay/selectFlowType）；
 // RenderType 是表单渲染类型；FormPersonFields 是目标流程树逐节点声明的
 // form_person 表单人员选择器字段（递归收集，逐节点携带目标节点 ID）。
+// Tree 保留完整目标树，供审批按 nextNodeProxyId 收窄入口，不得在运行时再猜。
 type FlowLifecycleMeta struct {
 	FlowType         string
 	RenderType       string
 	FormPersonFields []NodeFormPersonField
+	Tree             *FlowNodeTemplate
 }
 
-// NodeFormPersonField 是一个目标节点声明的表单人员选择器字段（FlowDialog.traverseFlowNode 规则）：
-// 目标在提交时递归流程树，对 auditType=form_person 的节点把声明字段从
-// {"id":..,"name":..} JSON 或同前缀名称字段解析成真实用户 ID；字段缺失时按源字段补齐。
-// 工具必须按同一规则在发起/重提/审批前生成该字段及其伴生字段，不能用固定字段名表猜测。
+const (
+	// FormPersonScopeInitiationFullTree 新发起页 staff_annual_performance 的全树 traverseFlowNode。
+	FormPersonScopeInitiationFullTree = "initiation_full_tree"
+	// FormPersonScopeInitiationNextEntry 新发起/重提页 OtherSteps2.setFormPersonFields：只收下一节点及其直接条件/并行入口。
+	FormPersonScopeInitiationNextEntry = "initiation_next_entry"
+	// FormPersonScopeApprovalNextEntry 审批页 getFlowDetailFindFormPerson：只收 nextNodeProxyId 及其直接条件/并行入口。
+	FormPersonScopeApprovalNextEntry = "approval_next_entry"
+	// FormPersonScopeResubmitPageRule 重提页沿用发起页入口规则，不是审批整树。
+	FormPersonScopeResubmitPageRule = "resubmit_page_rule"
+)
+
+// NodeFormPersonField 是一个目标节点声明的表单人员选择器字段。
+// 目标发起与审批使用不同遍历范围和取值规则，Scope 必须随字段一起传递，禁止全局复用整树清单。
 type NodeFormPersonField struct {
 	// NodeID 是声明该选择器的目标节点 ID。
 	NodeID string
 	// Field 是表单里的选择器字段名（formPersonFields 逗号分隔项，如 myUserName__formPersonId）。
 	Field string
+	// Scope 区分发起全树、发起下一入口、审批下一入口和重提页规则。
+	Scope string
 }
 
 // CollectFormPersonFields 递归流程树，收集 auditType=form_person 节点声明的全部表单人员字段。
-// 一个节点可声明多个字段（逗号分隔）；同一字段被多个节点声明时按节点去重合并。
-// 树为空时返回空切片（无表单人员节点的流程没有该协议）。
+// 默认 Scope 为 initiation_full_tree，供配置期与年度绩效全树特例使用；运行时必须再按动作收窄。
 func CollectFormPersonFields(tree *FlowNodeTemplate) []NodeFormPersonField {
+	return collectFormPersonFields(tree, FormPersonScopeInitiationFullTree, "")
+}
+
+// CollectFormPersonFieldsForAction 按目标页面对应动作选择遍历范围：
+// 发起/草稿默认只收下一节点入口；年度绩效发起才走全树；审批只收 nextNodeProxyId 入口；重提沿用发起入口规则。
+func CollectFormPersonFieldsForAction(tree *FlowNodeTemplate, action, flowType, nextNodeProxyID string) []NodeFormPersonField {
+	switch strings.TrimSpace(action) {
+	case "approve", "reject", "storage_form_data":
+		return collectFormPersonFields(tree, FormPersonScopeApprovalNextEntry, nextNodeProxyID)
+	case "resubmit":
+		if strings.TrimSpace(flowType) == "staff_annual_performance" {
+			return collectFormPersonFields(tree, FormPersonScopeInitiationFullTree, "")
+		}
+		return collectFormPersonFields(tree, FormPersonScopeResubmitPageRule, nextNodeProxyID)
+	case "submit", "save_draft":
+		if strings.TrimSpace(flowType) == "staff_annual_performance" {
+			return collectFormPersonFields(tree, FormPersonScopeInitiationFullTree, "")
+		}
+		return collectFormPersonFields(tree, FormPersonScopeInitiationNextEntry, nextNodeProxyID)
+	default:
+		return nil
+	}
+}
+
+// collectFormPersonFields 按作用域收集 form_person 字段。
+func collectFormPersonFields(tree *FlowNodeTemplate, scope, nextNodeProxyID string) []NodeFormPersonField {
 	result := []NodeFormPersonField{}
 	seen := map[string]bool{}
-	var visit func(node *FlowNodeTemplate)
-	visit = func(node *FlowNodeTemplate) {
+	appendNode := func(node *FlowNodeTemplate) {
+		if node == nil || node.AuditConfig == nil || strings.TrimSpace(node.AuditConfig.AuditType) != "form_person" {
+			return
+		}
+		nodeID := strings.TrimSpace(node.ID)
+		for _, raw := range strings.Split(node.AuditConfig.FormPersonField, ",") {
+			field := strings.TrimSpace(raw)
+			if field == "" || nodeID == "" {
+				continue
+			}
+			key := nodeID + "\x00" + field + "\x00" + scope
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, NodeFormPersonField{NodeID: nodeID, Field: field, Scope: scope})
+		}
+	}
+	appendDirectEntries := func(node *FlowNodeTemplate) {
 		if node == nil {
 			return
 		}
-		if config := node.AuditConfig; config != nil && strings.TrimSpace(config.AuditType) == "form_person" {
-			nodeID := strings.TrimSpace(node.ID)
-			for _, raw := range strings.Split(config.FormPersonField, ",") {
-				field := strings.TrimSpace(raw)
-				if field == "" || nodeID == "" {
-					continue
-				}
-				key := nodeID + "\x00" + field
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				result = append(result, NodeFormPersonField{NodeID: nodeID, Field: field})
-			}
-		}
-		visit(node.Child)
+		appendNode(node)
 		for index := range node.ConditionNodes {
-			visit(node.ConditionNodes[index].Child)
+			appendNode(node.ConditionNodes[index].Child)
 		}
 		for index := range node.ParallelNodes {
-			visit(node.ParallelNodes[index].Child)
+			appendNode(node.ParallelNodes[index].Child)
 		}
 	}
-	visit(tree)
-	return result
+	switch scope {
+	case FormPersonScopeApprovalNextEntry, FormPersonScopeInitiationNextEntry, FormPersonScopeResubmitPageRule:
+		nextID := strings.TrimSpace(nextNodeProxyID)
+		if nextID == "" {
+			if scope == FormPersonScopeInitiationNextEntry || scope == FormPersonScopeResubmitPageRule {
+				if tree != nil {
+					appendDirectEntries(tree.Child)
+				}
+			}
+			return result
+		}
+		var visit func(node *FlowNodeTemplate)
+		visit = func(node *FlowNodeTemplate) {
+			if node == nil {
+				return
+			}
+			if strings.TrimSpace(node.ID) == nextID {
+				appendDirectEntries(node)
+				return
+			}
+			for index := range node.ConditionNodes {
+				branch := node.ConditionNodes[index]
+				if strings.TrimSpace(branch.ID) == nextID {
+					appendNode(branch.Child)
+					return
+				}
+				visit(branch.Child)
+			}
+			for index := range node.ParallelNodes {
+				branch := node.ParallelNodes[index]
+				if strings.TrimSpace(branch.ID) == nextID {
+					appendNode(branch.Child)
+					return
+				}
+				visit(branch.Child)
+			}
+			visit(node.Child)
+		}
+		visit(tree)
+		return result
+	default:
+		var visit func(node *FlowNodeTemplate)
+		visit = func(node *FlowNodeTemplate) {
+			if node == nil {
+				return
+			}
+			appendNode(node)
+			visit(node.Child)
+			for index := range node.ConditionNodes {
+				visit(node.ConditionNodes[index].Child)
+			}
+			for index := range node.ParallelNodes {
+				visit(node.ParallelNodes[index].Child)
+			}
+		}
+		visit(tree)
+		return result
+	}
 }
 
-// ApplyFormPersonFieldRule 按目标 traverseFlowNode 规则把声明字段补进表单值（F-035 评审补充）：
-// 声明字段（如 xxx__formPersonId）为空/缺失时，从去掉 __formPersonId 后缀的源字段解析：
-// 源是 JSON 文本取 id，否则取原值。源也不存在时不产出（目标同样跳过），不伪造人员。
-// 返回是否写入了新值，供调用方记录协议摘要。
+// ApplyFormPersonFieldRule 按目标页面规则把声明字段补进表单值。
+// 发起全树（FlowDialog.traverseFlowNode）用 fieldKey.split('__')[0]；审批/发起入口（replace __formPersonId）用精确后缀。
+// JSON 取 id，纯文本取原值；已有值不覆盖，源缺失不产出、不伪造。
 func ApplyFormPersonFieldRule(values map[string]any, field NodeFormPersonField) bool {
 	if values == nil {
 		return false
@@ -302,7 +426,7 @@ func ApplyFormPersonFieldRule(values map[string]any, field NodeFormPersonField) 
 	if existing, exists := values[field.Field]; exists && existing != nil && existing != "" {
 		return false
 	}
-	source := strings.TrimSuffix(field.Field, "__formPersonId")
+	source := formPersonSourceKey(field)
 	if source == field.Field {
 		return false
 	}
@@ -316,7 +440,6 @@ func ApplyFormPersonFieldRule(values map[string]any, field NodeFormPersonField) 
 		if trimmed == "" {
 			return false
 		}
-		// JSON 文本（人员选择器写入的 {"id":..,"name":..}）取 id；其余取原值。
 		var decoded struct {
 			ID string `json:"id"`
 		}
@@ -332,6 +455,18 @@ func ApplyFormPersonFieldRule(values map[string]any, field NodeFormPersonField) 
 	}
 }
 
+// formPersonSourceKey 按动作选择目标页面的源字段解析规则，不得自行统一。
+func formPersonSourceKey(field NodeFormPersonField) string {
+	if field.Scope == FormPersonScopeInitiationFullTree {
+		parts := strings.Split(field.Field, "__")
+		if len(parts) == 0 {
+			return field.Field
+		}
+		return parts[0]
+	}
+	return strings.TrimSuffix(field.Field, "__formPersonId")
+}
+
 // UserIdentity 是一次目标会话的当前账号身份事实（F-035 评审补充）：
 // 全部来自当前会话的实时目标读取（目录树 + 人员目录），不是配置期快照。
 type UserIdentity struct {
@@ -345,10 +480,32 @@ type UserIdentity struct {
 	DutyName       string
 }
 
-// Complete 判断身份事实是否足以构造目标登录人上下文；岗位缺失时调用方必须阻塞。
+// Complete 判断身份事实是否足以构造目标登录人上下文。
+// 目标发起页无条件写入 userId/userName/companyId/companyName/departmentId/departmentName/dutyId/dutyName，缺任一字段都必须阻塞。
 func (i UserIdentity) Complete() bool {
-	return strings.TrimSpace(i.UserID) != "" && strings.TrimSpace(i.CompanyID) != "" &&
+	return strings.TrimSpace(i.UserID) != "" && strings.TrimSpace(i.UserName) != "" &&
+		strings.TrimSpace(i.CompanyID) != "" && strings.TrimSpace(i.CompanyName) != "" &&
+		strings.TrimSpace(i.DepartmentID) != "" && strings.TrimSpace(i.DepartmentName) != "" &&
 		strings.TrimSpace(i.DutyID) != "" && strings.TrimSpace(i.DutyName) != ""
+}
+
+// MissingFields 返回本次动作实际缺少的身份字段名，供写前阻塞文案使用。
+func (i UserIdentity) MissingFields() []string {
+	missing := []string{}
+	check := func(name, value string) {
+		if strings.TrimSpace(value) == "" {
+			missing = append(missing, name)
+		}
+	}
+	check("userId", i.UserID)
+	check("userName", i.UserName)
+	check("companyId", i.CompanyID)
+	check("companyName", i.CompanyName)
+	check("departmentId", i.DepartmentID)
+	check("departmentName", i.DepartmentName)
+	check("dutyId", i.DutyID)
+	check("dutyName", i.DutyName)
+	return missing
 }
 
 // targetLoginIdentityFieldRules 是目标平台登录人字段约定的唯一登记处（从 service 层迁移）：
@@ -371,23 +528,27 @@ var targetLoginIdentityFieldRules = map[string]string{
 	"myCompanyName":         "json:company",
 }
 
-// ApplyUserIdentity 用当前会话身份覆盖目标登录人上下文字段（F-035 评审补充）：
-// global_user_basic_information 整体覆盖（含岗位），登记字段逐项替换并同步 __formPersonId/__condition 伴生键。
-// 表单没有该字段时跳过（目标同样只在有字段时覆盖）；身份属性为空不伪造。
+// ApplyUserIdentity 用当前会话身份覆盖目标登录人上下文字段。
+// 目标 FlowDialog 无条件设置 global_user_basic_information；表单没有该键时，发起/草稿/重提必须创建并注入。
+// createGlobal 为假时（审批页不写该字段）不创建新键，但仍覆盖已经存在的登记字段。
 func ApplyUserIdentity(values map[string]any, identity UserIdentity) {
+	ApplyUserIdentityForAction(values, identity, true)
+}
+
+// ApplyUserIdentityForAction 按动作决定是否创建 global_user_basic_information。
+func ApplyUserIdentityForAction(values map[string]any, identity UserIdentity, createGlobal bool) {
 	if values == nil {
 		return
 	}
 	const globalField = "global_user_basic_information"
-	// 与目标页面一致：表单没有登录人上下文字段时不做任何身份写入（历史行为保持，配置期测试也锁定该语义）。
-	if _, exists := values[globalField]; !exists {
-		return
-	}
-	values[globalField] = map[string]any{
-		"userId": identity.UserID, "userName": identity.UserName,
-		"companyId": identity.CompanyID, "companyName": identity.CompanyName,
-		"departmentId": identity.DepartmentID, "departmentName": identity.DepartmentName,
-		"dutyId": identity.DutyID, "dutyName": identity.DutyName,
+	_, exists := values[globalField]
+	if exists || createGlobal {
+		values[globalField] = map[string]any{
+			"userId": identity.UserID, "userName": identity.UserName,
+			"companyId": identity.CompanyID, "companyName": identity.CompanyName,
+			"departmentId": identity.DepartmentID, "departmentName": identity.DepartmentName,
+			"dutyId": identity.DutyID, "dutyName": identity.DutyName,
+		}
 	}
 	for field, rule := range targetLoginIdentityFieldRules {
 		if _, exists := values[field]; !exists {
@@ -404,8 +565,16 @@ func ApplyUserIdentity(values map[string]any, identity UserIdentity) {
 				if value, ok := identityAttr(identity, idAttr); ok {
 					values[field+"__formPersonId"] = value
 				}
+			} else if createGlobal {
+				if value, ok := identityAttr(identity, idAttr); ok {
+					values[field+"__formPersonId"] = value
+				}
 			}
 			if _, exists := values[field+"__condition"]; exists {
+				if value, ok := identityAttr(identity, nameAttr); ok {
+					values[field+"__condition"] = value
+				}
+			} else if createGlobal {
 				if value, ok := identityAttr(identity, nameAttr); ok {
 					values[field+"__condition"] = value
 				}
@@ -452,27 +621,34 @@ func identityPickerCompanions(rule string) (idAttr, nameAttr string) {
 	return "", ""
 }
 
-// identityAttr 按属性名取身份值；空值不产出。
+// identityAttr 按属性名取身份值；空值不产出，避免把空字符串写成登录人 ID。
 func identityAttr(identity UserIdentity, attr string) (string, bool) {
+	var value string
 	switch attr {
 	case "userId":
-		return identity.UserID, true
+		value = identity.UserID
 	case "userName":
-		return identity.UserName, true
+		value = identity.UserName
 	case "companyId":
-		return identity.CompanyID, true
+		value = identity.CompanyID
 	case "companyName":
-		return identity.CompanyName, true
+		value = identity.CompanyName
 	case "departmentId":
-		return identity.DepartmentID, true
+		value = identity.DepartmentID
 	case "departmentName":
-		return identity.DepartmentName, true
+		value = identity.DepartmentName
 	case "dutyId":
-		return identity.DutyID, true
+		value = identity.DutyID
 	case "dutyName":
-		return identity.DutyName, true
+		value = identity.DutyName
+	default:
+		return "", false
 	}
-	return "", false
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	return value, true
 }
 
 // CurrentUserIdentity 用当前会话实时读取账号身份（目录树 + 岗位），
@@ -497,49 +673,129 @@ func (c *Client) CurrentUserIdentity(ctx context.Context, active Session) (UserI
 	}, nil
 }
 
-// ValidateBodyMatrix 在写请求发出前按矩阵强制校验载荷（F-035 评审补充）：
-// required 字段必须存在（含固定发送的空数组/空对象），forbidden 字段不得出现。
-// sid/projectId/customerCode 由信封注入，不在载荷构造器职责内，这里跳过；
-// optional 字段由调用方按页面条件决定，不做硬性断言。返回中文结论供阻塞使用。
+// ValidateBodyMatrix 在写请求发出前按矩阵强制校验最终 body 的真实路径和值。
+// required 必须真实存在；empty 必须存在且为空串/空数组/空对象；forbidden 不得存在；optional 不强制。
+// 不再把 sid/projectId/customerCode 伪造为 true；信封字段只在最终 body 里真实出现时才算存在。
 func ValidateBodyMatrix(endpoint string, body map[string]any, customerCode string) error {
+	_ = customerCode
 	fields, registered := endpointFieldMatrix[endpoint]
 	if !registered {
-		// 未登记矩阵的端点禁止进入实现（F-035 硬性规则）。
 		return fmt.Errorf("端点 %s 未登记协议矩阵，禁止发送写请求", endpoint)
 	}
-	flat := map[string]any{}
-	var walk func(prefix string, value any)
-	walk = func(prefix string, value any) {
-		if typed, ok := value.(map[string]any); ok {
-			for key, child := range typed {
-				pathPath := key
-				if prefix != "" {
-					pathPath = prefix + "." + key
-				}
-				flat[pathPath] = child
-				walk(pathPath, child)
-			}
-		}
+	if body == nil {
+		return fmt.Errorf("写请求 %s 缺少请求体，不能发送", endpoint)
 	}
-	walk("", body)
-	// 信封层注入的字段在发送前由统一出口补齐，这里按已注入口径核对。
-	if sid, ok := body["__envelope_sid__"]; ok {
-		flat["sid"] = sid
-	}
-	flat["sid"] = true
-	flat["projectId"] = true
-	flat["data.customerCode"] = true
+	var missingRequired []string
+	var missingEmpty []string
+	var forbidden []string
+	var nonemptyEmpty []string
 	for field, presence := range fields {
+		exists, empty := lookupBodyPath(body, field)
 		switch presence {
 		case PresenceRequired:
-			if _, exists := flat[field]; !exists {
-				return fmt.Errorf("写请求 %s 缺少协议矩阵 required 字段 %s，不能发送", endpoint, field)
+			if !exists {
+				missingRequired = append(missingRequired, field)
+			}
+		case PresenceEmpty:
+			if !exists {
+				missingEmpty = append(missingEmpty, field)
+			} else if !empty {
+				nonemptyEmpty = append(nonemptyEmpty, field)
 			}
 		case PresenceForbidden:
-			if _, exists := flat[field]; exists {
-				return fmt.Errorf("写请求 %s 携带了协议矩阵 forbidden 字段 %s，不能发送", endpoint, field)
+			if exists {
+				forbidden = append(forbidden, field)
 			}
 		}
 	}
+	sort.Strings(missingRequired)
+	sort.Strings(missingEmpty)
+	sort.Strings(nonemptyEmpty)
+	sort.Strings(forbidden)
+	if len(missingRequired) > 0 {
+		return fmt.Errorf("写请求 %s 缺少协议矩阵 required 字段 %s，不能发送", endpoint, strings.Join(missingRequired, "、"))
+	}
+	if len(missingEmpty) > 0 {
+		return fmt.Errorf("写请求 %s 缺少协议矩阵 empty 字段 %s，不能发送", endpoint, strings.Join(missingEmpty, "、"))
+	}
+	if len(nonemptyEmpty) > 0 {
+		return fmt.Errorf("写请求 %s 的协议矩阵 empty 字段 %s 必须为空串/空数组/空对象，不能发送", endpoint, strings.Join(nonemptyEmpty, "、"))
+	}
+	if len(forbidden) > 0 {
+		return fmt.Errorf("写请求 %s 携带了协议矩阵 forbidden 字段 %s，不能发送", endpoint, strings.Join(forbidden, "、"))
+	}
 	return nil
+}
+
+// lookupBodyPath 读取最终 body 的点分路径；第二返回值表示存在且形状为空。
+func lookupBodyPath(body map[string]any, path string) (exists bool, empty bool) {
+	if body == nil || strings.TrimSpace(path) == "" {
+		return false, false
+	}
+	var current any = body
+	for _, part := range strings.Split(path, ".") {
+		typed, ok := current.(map[string]any)
+		if !ok {
+			return false, false
+		}
+		next, found := typed[part]
+		if !found {
+			return false, false
+		}
+		current = next
+	}
+	return true, isMatrixEmptyValue(current)
+}
+
+// isMatrixEmptyValue 只把空串、空数组、空对象视为 empty 形状；nil 不算目标页面固定发送的空值。
+func isMatrixEmptyValue(value any) bool {
+	if value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed == ""
+	case []any:
+		return len(typed) == 0
+	case []NextAuditor:
+		return len(typed) == 0
+	case []BizRelevance:
+		return len(typed) == 0
+	case map[string]any:
+		return len(typed) == 0
+	default:
+		return false
+	}
+}
+
+// InjectWriteEnvelope 按目标 axios 拦截器语义生成最终写请求 body：
+// 顶层 sid、空字符串 projectId，以及 data.customerCode（已有则保留）。
+// 矩阵校验必须读取这份最终 body，不能在构造器阶段伪造字段存在。
+func InjectWriteEnvelope(body map[string]any, sid, customerCode string) map[string]any {
+	payload := map[string]any{}
+	for key, value := range body {
+		payload[key] = value
+	}
+	if strings.TrimSpace(sid) == "" {
+		return payload
+	}
+	payload["sid"] = sid
+	if _, exists := payload["projectId"]; !exists {
+		payload["projectId"] = ""
+	}
+	if dataMap, ok := payload["data"].(map[string]any); ok {
+		if _, exists := dataMap["customerCode"]; !exists {
+			dataMap["customerCode"] = customerCode
+		}
+	}
+	return payload
+}
+
+// ValidateFinalWriteBody 先注入信封再按矩阵校验真实存在性。
+func ValidateFinalWriteBody(endpoint, sid, customerCode string, body map[string]any) (map[string]any, error) {
+	finalBody := InjectWriteEnvelope(body, sid, customerCode)
+	if err := ValidateBodyMatrix(endpoint, finalBody, customerCode); err != nil {
+		return nil, err
+	}
+	return finalBody, nil
 }

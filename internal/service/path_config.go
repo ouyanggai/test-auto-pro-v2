@@ -217,6 +217,7 @@ func (s *PathConfigService) FlowLifecycleMeta(ctx context.Context, planID uint64
 		FlowType:         strings.TrimSpace(snapshot.AuditWay),
 		RenderType:       string(snapshot.RenderType),
 		FormPersonFields: target.CollectFormPersonFields(snapshot.Tree),
+		Tree:             snapshot.Tree,
 	}, nil
 }
 

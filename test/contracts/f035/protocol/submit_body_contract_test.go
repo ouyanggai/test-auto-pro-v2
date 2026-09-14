@@ -272,23 +272,21 @@ func TestWriteFallsBackToGlobalCustomerCode(t *testing.T) {
 }
 
 // TestValidateBodyMatrixEnforcement 锁定发送前矩阵强制：required 缺失与 forbidden 出现都拒绝，
-// 未登记端点直接拒绝；信封注入字段不参与载荷断言。
+// 未登记端点直接拒绝。sid/projectId 必须在最终 body 真实存在，不能伪造。
 func TestValidateBodyMatrixEnforcement(t *testing.T) {
-	// submit 缺 batchCode 必须拒绝。
+	// submit 构造器载荷缺信封时，矩阵必须按真实路径拒绝，不得把 sid/projectId 伪造为存在。
 	err := target.ValidateBodyMatrix(target.WriteEndpointSubmit, map[string]any{
-		"data": map[string]any{"name": "n", "companyId": "c"},
-	}, "cust")
-	if err == nil {
-		t.Fatal("缺少 required 字段必须被拒绝")
-	}
-	if !strings.Contains(err.Error(), "required 字段") {
-		t.Fatalf("拒绝原因必须指向缺失的 required 字段：%v", err)
-	}
-	// 完整 submit 载荷通过。
-	if err := target.ValidateBodyMatrix(target.WriteEndpointSubmit, map[string]any{
 		"batchCode": "b", "data": map[string]any{"name": "n", "companyId": "c", "flowInstanceBizRelevanceList": []any{}, "customerCode": "cust"},
 		"formDataMongoVo": map[string]any{"data": map[string]any{}}, "nextAuditorList": []any{},
-	}, "cust"); err != nil {
+	}, "cust")
+	if err == nil || !strings.Contains(err.Error(), "sid") || !strings.Contains(err.Error(), "projectId") {
+		t.Fatalf("未注入信封的载荷必须因 sid 与 projectId 缺失被拒绝：%v", err)
+	}
+	// 完整 submit 最终载荷（含信封）通过。
+	if _, err := target.ValidateFinalWriteBody(target.WriteEndpointSubmit, "sid-1", "cust", map[string]any{
+		"batchCode": "b", "data": map[string]any{"name": "n", "companyId": "c", "flowInstanceBizRelevanceList": []any{}},
+		"formDataMongoVo": map[string]any{"data": map[string]any{}}, "nextAuditorList": []any{},
+	}); err != nil {
 		t.Fatalf("完整载荷不应被拒绝：%v", err)
 	}
 	// audit 携带 batchCode 必须拒绝（先补齐 required 字段使断言聚焦 forbidden）。
@@ -297,11 +295,11 @@ func TestValidateBodyMatrixEnforcement(t *testing.T) {
 		"formDataMongoVo": map[string]any{"data": map[string]any{}},
 		"tracking":        false,
 	}
-	if err := target.ValidateBodyMatrix(target.WriteEndpointAudit, auditBody, "cust"); err != nil {
+	if _, err := target.ValidateFinalWriteBody(target.WriteEndpointAudit, "sid-1", "cust", auditBody); err != nil {
 		t.Fatalf("完整审批载荷不应被拒绝：%v", err)
 	}
 	auditBody["batchCode"] = "b"
-	if err := target.ValidateBodyMatrix(target.WriteEndpointAudit, auditBody, "cust"); err == nil || !strings.Contains(err.Error(), "forbidden") {
+	if _, err := target.ValidateFinalWriteBody(target.WriteEndpointAudit, "sid-1", "cust", auditBody); err == nil || !strings.Contains(err.Error(), "forbidden") {
 		t.Fatalf("audit 携带 batchCode 必须被拒绝：%v", err)
 	}
 	// 未登记端点直接拒绝。

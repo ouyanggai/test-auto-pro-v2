@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -291,10 +292,11 @@ func (c *Client) ExecuteActionWrite(ctx context.Context, session Session, reques
 	if err != nil {
 		return WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
 	}
-	// F-035 评审补充：发送前按协议矩阵强制校验载荷形状（required/forbidden），未登记端点直接拒绝。
-	if err := ValidateBodyMatrix(endpoint, body, session.CustomerCode); err != nil {
+	finalBody, err := ValidateFinalWriteBody(endpoint, session.SID, session.CustomerCode, body)
+	if err != nil {
 		return WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
 	}
+	body = finalBody
 	envelope, traceID, err := c.CallWrite(ctx, endpoint, session.SID, session.CustomerCode, body)
 	response := WriteResponse{}
 	if err != nil {
@@ -442,4 +444,34 @@ func nonEmptyIDs(values []string) []string {
 }
 
 // 保留常用引用。
-var _ = strings.TrimSpace
+
+// CallBusinessSave 走唯一写出口发出特殊业务/无表单前置保存。
+// 未登记端点会被矩阵拒绝；成功后必须返回业务 id，调用方才能写入主流程关联。
+func (c *Client) CallBusinessSave(ctx context.Context, session Session, endpoint string, body map[string]any) (SpecialBusinessSaveResult, error) {
+	finalBody, err := ValidateFinalWriteBody(endpoint, session.SID, session.CustomerCode, body)
+	if err != nil {
+		return SpecialBusinessSaveResult{}, &RequestValidationError{Message: err.Error()}
+	}
+	envelope, traceID, err := c.CallWrite(ctx, endpoint, session.SID, session.CustomerCode, finalBody)
+	result := SpecialBusinessSaveResult{TraceID: traceID}
+	if err != nil {
+		if targetErr := asError(err); targetErr != nil {
+			result.Response.StatusCode = targetErr.HTTPStatus
+		}
+		return result, err
+	}
+	result.Response.StatusCode = http.StatusOK
+	result.Response.IsSuccessPresent = true
+	result.Response.IsSuccess = responseSucceeded(envelope)
+	result.Response.Code = envelope.Code
+	result.Response.Message = envelope.Message
+	result.Response.Data = append(json.RawMessage(nil), envelope.Data...)
+	if !responseSucceeded(envelope) {
+		return result, &BusinessRejection{Code: envelope.Code, Message: envelope.Message}
+	}
+	result.BusinessID = parseBusinessSaveID(envelope.Data)
+	if strings.TrimSpace(result.BusinessID) == "" {
+		return result, fmt.Errorf("业务保存成功但响应未返回业务 id，不能继续主流程")
+	}
+	return result, nil
+}

@@ -29,6 +29,13 @@ type TargetClient interface {
 	ExecuteActionWrite(ctx context.Context, session target.Session, request target.ActionWriteRequest) (target.WriteResponse, string, error)
 }
 
+// specialBusinessWriter 是特殊业务/无表单前置保存的可选能力面。
+// 真实客户端实现；测试假件缺省时已实现分支在写前阻塞，不能发通用 submit 顶替。
+type specialBusinessWriter interface {
+	SaveSpecialBusiness(ctx context.Context, session target.Session, spec target.SpecialBusinessSpec, formData json.RawMessage, action string) (target.SpecialBusinessSaveResult, error)
+	SaveNoFormFlow(ctx context.Context, session target.Session, spec target.NoFormFlowSpec, formData json.RawMessage, action string) (target.SpecialBusinessSaveResult, error)
+}
+
 // SessionProvider 取得指定账号的目标会话。登录与会话获取属只读阶段（纲领第 4.4.1 节），可安全重试。
 type SessionProvider interface {
 	Current(ctx context.Context, account string) (target.Session, error)
@@ -48,9 +55,13 @@ type RunStateControl interface {
 	Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label string) (model.PathRun, error)
 }
 
-// RunFactsStore 是运行事实落账面：步骤与尝试事实只 INSERT。
 type RunFactsStore interface {
 	RecordStepAttempt(ctx context.Context, step model.RunStep, attempt model.RunStepAttempt, now time.Time) (uint64, error)
+}
+
+// persistedAttemptReader 是可选能力：从已落账尝试恢复写后核对结论。
+type persistedAttemptReader interface {
+	LatestStepAttempt(ctx context.Context, pathRunID uint64) (model.RunStep, model.RunStepAttempt, error)
 }
 
 // NodeInfo 是执行器查表用的节点信息：目标节点名称与类型名（如「审批」，可被门禁归一化识别）。
@@ -97,15 +108,14 @@ type RunContext struct {
 	// 发起/草稿只发送 formProxyId（FormMaking）或 flowProxyId（无表单）；
 	// 禁止把发布流程代理 ID 当表单代理 ID，也禁止无依据同时发送两个代理字段。
 	FormProxyID string
-	// FlowType 是目标流程类型（auditWay / selectFlowType，F-035 评审补充）：
-	// 目标页面按它分派特殊业务前置与后置；命中 specialBusinessFlowTypes 的类型必须阻塞。
+	// FlowType 是目标流程类型（auditWay / selectFlowType）。
 	FlowType string
-	// RenderType 是目标表单渲染类型（formmaking / vue_custom / no-form）：
-	// vue_custom 页面有专用业务链路（项目/业务关联、initiatorRange 等），通用请求不得代替。
+	// RenderType 是目标表单渲染类型（formmaking / vue_custom / no-form）。
 	RenderType string
-	// FormPersonFields 是目标流程树逐节点声明的 form_person 表单人员选择器字段（F-035 评审补充）：
-	// 发起/重提/审批前必须按目标 traverseFlowNode 规则生成这些字段，不能用固定字段名表猜测。
+	// FormPersonFields 是目标流程树声明的 form_person 字段快照；运行时必须再按动作收窄。
 	FormPersonFields []target.NodeFormPersonField
+	// FlowTree 是目标流程树，供审批按 nextNodeProxyId 收窄 form_person 入口。
+	FlowTree *target.FlowNodeTemplate
 	// Source 是这条路径的流程来源（如“新发起”）；门禁投影与来源相关。
 	Source string
 	// Nodes 是路径配置快照里这条路径的目标节点表（键=目标代理节点 Key），
@@ -165,6 +175,12 @@ type InstanceFacts struct {
 	// FormDataVerifyIssue 是写后表单数据逐字段核对的中文结论（F-035 评审补充）；
 	// 非空表示本次写请求的表单副作用与目标实例不一致，下一步门禁据此阻塞。
 	FormDataVerifyIssue string `json:"formDataVerifyIssue,omitempty"`
+	// FormDataVerifyAt 是写后核对完成时间（UTC RFC3339）；供重启后恢复阻塞结论。
+	FormDataVerifyAt string `json:"formDataVerifyAt,omitempty"`
+	// FormDataVerifyFingerprint 是本次决策载荷指纹，下一步按它确认核对对象。
+	FormDataVerifyFingerprint string `json:"formDataVerifyFingerprint,omitempty"`
+	// FormDataVerifyResults 是字段级核对原文，日志与详情共用。
+	FormDataVerifyResults []string `json:"formDataVerifyResults,omitempty"`
 	// CreatorRead 表示本次实例读取已经核对创建人；没有该事实时不能把当前账号冒充创建人。
 	CreatorRead bool `json:"creatorRead,omitempty"`
 	// IsInitiator 表示当前会话账号是否为目标实例创建人。
@@ -175,8 +191,13 @@ type InstanceFacts struct {
 	FormProxyID string `json:"formProxyId,omitempty"`
 	// BizRelevance 是目标实例当前业务关联；重提和转发必须沿用它，避免辅助流程丢失业务归属。
 	BizRelevance []target.BizRelevance `json:"bizRelevance,omitempty"`
-	CurrentNodes []string              `json:"currentNodes,omitempty"`
-	DueNodes     []string              `json:"dueNodes,omitempty"`
+	// BusinessSaveID 是本步前置业务保存已经成功返回的 id（F-035 第四轮）。
+	// 写入 before_facts 后，同一步重启不得再发一次业务保存；主流程失败时只重发主流程。
+	BusinessSaveID string `json:"businessSaveId,omitempty"`
+	// BusinessSaveOtherBiz 是 BusinessSaveID 对应的 otherBiz，供恢复关联列表。
+	BusinessSaveOtherBiz string   `json:"businessSaveOtherBiz,omitempty"`
+	CurrentNodes         []string `json:"currentNodes,omitempty"`
+	DueNodes             []string `json:"dueNodes,omitempty"`
 	// StepNodeKey 记录本次关心的是哪个节点上的待办（审批步骤对照用）。
 	StepNodeKey string `json:"stepNodeKey,omitempty"`
 	// StorageRead/StorageFound 是暂存检查点读取事实；检查点标识、说明和更新时间用于判断本次是否新增或更新。
@@ -267,6 +288,66 @@ func DecodeInstanceFacts(raw string) (InstanceFacts, bool) {
 		return InstanceFacts{}, false
 	}
 	return facts, true
+}
+
+// mergeVerifyIssue 把写后核对结论并入落库 JSON，供下一步和重启恢复读取。
+func mergeVerifyIssue(before, after InstanceFacts) InstanceFacts {
+	merged := before
+	merged.FormDataVerifyIssue = strings.TrimSpace(after.FormDataVerifyIssue)
+	merged.FormDataVerifyAt = strings.TrimSpace(after.FormDataVerifyAt)
+	merged.FormDataVerifyFingerprint = strings.TrimSpace(after.FormDataVerifyFingerprint)
+	if len(after.FormDataVerifyResults) > 0 {
+		merged.FormDataVerifyResults = append([]string(nil), after.FormDataVerifyResults...)
+	}
+	if id := strings.TrimSpace(after.BusinessSaveID); id != "" {
+		merged.BusinessSaveID = id
+		merged.BusinessSaveOtherBiz = strings.TrimSpace(after.BusinessSaveOtherBiz)
+	}
+	if len(after.BizRelevance) > 0 {
+		merged.BizRelevance = append([]target.BizRelevance(nil), after.BizRelevance...)
+	}
+	return merged
+}
+
+// loadPersistedFormDataVerifyIssue 按 pathRunId 读取上一节点已落账的核对结论。
+func loadPersistedFormDataVerifyIssue(store RunFactsStore, pathRunID uint64, currentStepNo int) string {
+	reader, ok := store.(persistedAttemptReader)
+	if !ok || pathRunID == 0 {
+		return ""
+	}
+	stepRow, attempt, err := reader.LatestStepAttempt(context.Background(), pathRunID)
+	if err != nil {
+		return ""
+	}
+	if stepRow.StepNo >= currentStepNo {
+		return ""
+	}
+	facts, decoded := DecodeInstanceFacts(attempt.BeforeFacts)
+	if !decoded {
+		return ""
+	}
+	return strings.TrimSpace(facts.FormDataVerifyIssue)
+}
+
+// loadPersistedBusinessSave 读取同一步最近一次落账尝试里已经成功的业务保存 id。
+// 只接受当前步骤号：上一步的业务关联不能当成这一步的前置保存结果。
+func loadPersistedBusinessSave(store RunFactsStore, runCtx RunContext, currentStepNo int) (otherBiz, businessID string) {
+	reader, ok := store.(persistedAttemptReader)
+	if !ok || runCtx.PathRun.ID == 0 || currentStepNo <= 0 {
+		return "", ""
+	}
+	stepRow, attempt, err := reader.LatestStepAttempt(context.Background(), runCtx.PathRun.ID)
+	if err != nil || stepRow.StepNo != currentStepNo {
+		return "", ""
+	}
+	facts, decoded := DecodeInstanceFacts(attempt.BeforeFacts)
+	if !decoded {
+		return "", ""
+	}
+	if id := strings.TrimSpace(facts.BusinessSaveID); id != "" {
+		return firstNonEmpty(facts.BusinessSaveOtherBiz, target.SpecialBusinessOtherBiz(runCtx.FlowType)), id
+	}
+	return relevanceBusinessID(facts.BizRelevance, runCtx)
 }
 
 // StepPreview 是控制阶段停下时给用户的下一步预览。
