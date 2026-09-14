@@ -30,15 +30,18 @@ F-035 在既有目标事实读取、七阶段执行器、历史回放仓储和�
 
 - **处理人分配预期**：运行上下文按目标节点 `auditType/isSkip` 区分显式选人、目标自动分配和允许跳过。`run_node_choose` 在写前要求完整 `nextAuditorList`；扩展属性等固定规则节点不伪造人员，但在写后建立“等待目标自动分配”的核验预期。
 - **有界事实读取**：目标写确定成功后，只重读实例和精确待办，有限次数等待 `currentAuditUserInfo` 或任务事实出现；节点已经越过且允许跳过时记录跳过，仍停在节点且没有处理人时从等待转为阻塞。轮询不得重放业务写请求。
+- **阻塞状态投影**：数据库继续保存既有 `failed` 技术终态，不新增状态枚举或表；服务端在运行、路径和详情 DTO 中统一投影 `statusName=阻塞`、`stopKind=blocked` 及结构化原因，前端按机器字段停止轮询，禁止分别读取中文状态自行判断。
 - **真实处理人边界**：`internal/adapter/target` 解析目标处理人和任务事实，`internal/engine/step` 负责匹配和状态裁决；配置候选人与计划账号不进入当前处理人发现。
 - **回放状态分层**：后台 `branchoverlay` 结果只是基础数据；有远程选项绑定要求的 FormMaking 数据必须由 form-runtime 完成选项请求、实际值/显示值协调、联动、最终回读，随后通过既有 `SaveData` 写入路径配置才成为最终 ready。
 - **唯一数据源**：运行只消费 `test_execution_path_configs.effective_form_data` 和数据修订；最终 ready 时禁止回退原始历史快照。回放失败、运行时阻塞和修订冲突不覆盖已有有效数据。
 - **字段所有权**：运行时把字段分为 `tool_owned`、`preserved_business`、`target_derived`、`node_owned_future` 四类；
   `target_derived` 至少包括 `auto_audit_info_`、`auto_audit_info_obj_`、`auto_audit_info_obj_list_`，目标新增审批意见不与历史空值做严格相等断言，
   但工具删除或清空目标已有非空值必须阻塞。发起、审批、暂存和重提不能共用一份全局表单载荷，必须按节点、动作和目标页面时机读取实例基线。
+- **表单补丁一致性**：分支补丁必须同时协调 FormMaking 绑定值、显示值和最终请求；直接模型路径与 `Name/__virtualName` 路径按目标控件描述符分别解析，解析失败在写前阻塞，不允许只有页面提示变化。
+- **动作模型边界**：用户动作与编译器固定尾动作分开保存；`submit/approve/resubmit` 只在编译器生成且位于最后，节点级与实例级动作不在前端编辑器中混成一个可排序数组。
 - **前端异步生命周期**：运行详情的详情、事件和流程图请求必须带请求代次及取消信号；路由路径变化、组件卸载和放行切换时，迟到响应不得覆盖当前路径。
   稳定 Teleport 目标不得使用无必要的 `defer`，节点面板和 Modal 必须在路径切换前关闭或使用稳定 key；禁止修改 Vue runtime 或全局错误处理器吞掉生命周期错误。
-- **存储和安全**：复用现有 JSON 列、修订号和幂等保存，不新增迁移；日志只记录数据来源、修订和摘要指纹，不公开完整表单正文、SID或密码。
+- **存储和安全**：复用现有 JSON 列、修订号和幂等保存，不新增迁移；内网运行日志按 AGENTS.md 原样记录完整请求与响应（含 SID、表单正文），公开 DTO 和页面仍只返回摘要，不返回密码。
 
 实现与人工门禁见 `docs/features/F-035-target-assignment-and-effective-form-data.md` 和
 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`；完成自动验证前保持 `implementing`，不得提前进入 `ready_for_manual`。

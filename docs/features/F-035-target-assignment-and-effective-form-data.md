@@ -1,6 +1,6 @@
 # F-035 目标请求协议一致性、真实处理人和有效表单数据闭环
 
-- 状态：implementing（2026-09-14 第四轮继续整改：已实现页面的特殊业务/NoFormFlow 不再统一阻塞，写后核对已持久化，衍生字段分类与运行详情请求代次已落地；真实路径 12 对照、无扩展 lastError 浏览器 A/B 和合同盖章自定义组件仍未完成，不得进入 ready_for_manual）
+- 状态：implementing（2026-09-15 第五轮人工复核退回：下拉实际绑定值、固定尾动作与删除/中文显示、结构化配置缺口、阻塞状态聚合和路径 12 请求/处理人对照仍未完成；上一轮特殊业务/NoFormFlow、衍生字段分类、写后核对和运行详情请求代次整改继续有效，但不得进入 ready_for_manual）
 
 ## 本切片实施现状（2026-09-14，第四轮继续整改，停在 implementing）
 
@@ -12,7 +12,7 @@
 - `auto_audit_info_*` 按 `docs/TARGET_SEMANTICS.md` 第 16.1 节作为目标衍生字段处理。
 - 运行详情请求代次/Abort/Teleport 已落地；`runtime.lastError` 产品源码零调用已锁定，无扩展浏览器 A/B 仍待人工完成。
 
-聚合执行任务、证据、测试和人工验收见 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
+聚合执行任务、证据、测试和人工验收见 `docs/auto/2026-09-15-f035-review-round5-ui-state-and-assignment-task.md`；上一轮任务见 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
 
 以下内容是第三轮实施时的登记记录，不代表第四轮整改已经通过。第四轮复核确认其中若干项只是“安全阻塞”或“内存内记录”，
 尚未达到目标页面逐代码一致和可恢复运行的完成标准；实施 Agent 必须以本文件顶部的第四轮说明及聚合任务书为准。
@@ -197,7 +197,7 @@
 
 | 位置 | 字段 | 形状和规则 |
 | --- | --- | --- |
-| query | `sid`、`platformCode` | `sid` 为当前会话，`platformCode=200001`；两者均在请求日志中脱敏记录 |
+| query | `sid`、`platformCode` | `sid` 为当前会话，`platformCode=200001`；内网运行日志按 AGENTS.md 原样记录完整请求，不做脱敏 |
 | headers | `Accept`、`Content-Type`、`Origin`、`sid` | 与目标页面同语义；`sid` 与 query/body 使用同一会话值 |
 | `data` | `name` | 目标页面命名规则生成的字符串，使用最终表单业务值和计划发起人 |
 | `data` | `formProxyId` | FormMaking 表单代理 ID；本请求不得出现 `flowProxyId` |
@@ -277,7 +277,7 @@
 
 ### T09：日志、状态和页面事实一致
 
-- 增加协议摘要：接口、动作、代理 ID、是否有 `batchCode`、`nextAuditorList` 条目数、处理人来源、表单数据版本和响应事实；敏感值只记录脱敏摘要。
+- 增加协议摘要：接口、动作、代理 ID、是否有 `batchCode`、`nextAuditorList` 条目数、处理人来源、表单数据版本和响应事实；内网 `network.log`/`curl.log` 同时按 AGENTS.md 原样记录完整请求与响应（含 SID、表单正文），公开 DTO 仍只返回摘要。
 - 将“currentAuditUserInfo 缺失”显示为“目标节点未生成处理人”或“处理人查询阻塞”，禁止显示“当前待办已经处理”。
 - 记录目标自动分配等待、目标明确跳过、处理人缺失、目标拒绝和写结果待确认的不同 `stopKind`。
 - 页面首屏只展示业务结论、接口耗时和目标事实；协议差异放入可展开的排查区，确保用户能把页面请求与 `curl.log` 一一对应。
