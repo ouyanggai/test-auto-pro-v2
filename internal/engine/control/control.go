@@ -996,6 +996,8 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	// 这份基准随后会随尝试行落库（before_facts），进程重启后按它还原。
 	session.runCtx.LastBeforeFacts = session.preview.Facts
 	session.runCtx.LastBeforeFactsKnown = true
+	// F-035/T05：本步表单决策带进运行现场，下一节点构造表单数据时按它核对上一节点值仍在。
+	session.runCtx.LastFormDataDecision = session.preview.FormDataDecision
 	// 阶段进度上报：执行器在各阶段边界回调，写进会话现场供详情轮询读取。
 	reporter := func(phase, note string) {
 		s.mu.Lock()

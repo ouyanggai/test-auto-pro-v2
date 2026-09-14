@@ -534,9 +534,11 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 	s.mu.Unlock()
 	if runtime == nil {
 		// 批量任务里没有浏览器，复制的 form-runtime 无法在后台执行校验。
-		// 目标条件复验已经通过，因此数据按已准备落盘，真正的运行时校验在用户打开表单数据页时完成。
-		result.Status, result.DataStatus = model.HistoryReplayItemStatusReady, model.HistoryDataStatusReady
-		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VALIDATION_DEFERRED", Message: "表单校验会在打开表单数据页时完成", Blocking: false})
+		// F-035/T08：拆分状态——基础数据已生成（base_ready）而不是 ready；
+		// 只有用户打开表单数据页完成选项绑定、回读并保存确认后才进入最终 ready。
+		result.Status = model.HistoryReplayItemStatusReady
+		result.DataStatus = model.HistoryDataStatusBaseReady
+		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VALIDATION_DEFERRED", Message: "基础数据已生成；最终表单确认将在打开表单数据页时完成", Blocking: false})
 		return result
 	}
 	validation, validateErr := runtime.Validate(ctx, current.RenderType, overlay.Values)

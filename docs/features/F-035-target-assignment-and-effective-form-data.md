@@ -2,36 +2,44 @@
 
 - 状态：ready_for_manual
 
-## 本切片实施现状（2026-09-14，停在 ready_for_manual）
+## 本切片实施现状（2026-09-14，第二轮补充后停在 ready_for_manual）
 
-本切片已按批准范围实施完成并通过自动验证，停在人工验收。已落地的核心修复：
+本切片经用户批准实施完成；用户反馈 T05/T06/T08 未完成后退回 `implementing`，第二轮已补齐，重新停在人工验收。已落地的核心修复：
 
 - T01/T02：新增逐接口协议矩阵登记处 `internal/adapter/target/protocol_matrix.go`（四态 required/optional/empty/forbidden，
-  含 submit/reSubmit/audit 的字段登记与 `ProtocolMatrix()` 只读副本）；删除 `verdict.ForbiddenWriteField` 无条件
-  `batchCode` 拦截；`docs/TARGET_SEMANTICS.md` 第 2.2 节与 F-014 同步改写为逐接口矩阵；统一写出口按目标 axios
-  拦截器同语义注入顶层 `sid`/`projectId`（空字符串保留）与 `data.customerCode`。
+  覆盖 submit/reSubmit/audit/暂存/移交/加签/回退/取回/撤回/转发/关注/催办全部实际使用的写端点）；删除
+  `verdict.ForbiddenWriteField` 无条件 `batchCode` 拦截；`docs/TARGET_SEMANTICS.md` 第 2.2 节与 F-014 同步改写为逐接口矩阵；
+  统一写出口按目标 axios 拦截器同语义注入顶层 `sid`/`projectId`（空字符串保留）与 `data.customerCode`。
 - T03：`submit/draft` 固定发送顶层 `batchCode`（构造请求时生成一次、预览与实发严格同源、不作为幂等键）与
   空/非空 `nextAuditorList` 数组；`formProxyId` 与 `flowProxyId` 在 submit 和 reSubmit 内强制互斥；重提按页面形状
   固定发送 `nextAuditorList` 数组且不带批次号；审批 `tracking` 顶层布尔无条件携带。
 - T04：运行上下文新增 `FormProxyID`，由 `PathConfigService.TemplateFormProxyID` 从模板唯一 Forms 项取得（多表单阻塞）；
   `FormRuntimeSession`/身份替换扩展岗位事实（目标人员目录 `dutyId/dutyName`），身份读取失败与岗位缺失分别落
   `IDENTITY_READ_FAILED`/`IDENTITY_DUTY_MISSING` 阻断问题，不再被忽略。
-- T07/T09：实例事实新增“目标节点已到达但未生成 currentAuditUserInfo/待办”分型；进入“正在生成处理人”有界轮询
-  （≤5 次、≤10 秒、只读复查、绝不重发写请求）；超时后门禁按 `assignment_missing` 阻塞并显示“目标节点未生成处理人”，
-  不再显示“当前待办已经处理”；step.log 新增协议摘要行（接口、动作、代理来源、批次号、nextAuditorList 条目数、
-  表单基线、处理人）。内网系统按用户裁决日志原样记录完整请求/响应，不做脱敏（已写入 AGENTS.md 与本文件）。
+- T05：`BuildNodeFormData` 每次构造产出完整 `NodeFormDataDecision`（步号、目标节点、动作、基线来源、可编辑/覆盖/
+  保留/扣留字段、最终载荷 SHA-256 指纹、校验结论）并完整落 step.log；决策经控制现场进入
+  `RunContext.LastFormDataDecision`，下一节点必须以实例最新数据为基线并核对上一节点覆盖字段仍在，丢失即阻塞；
+  扣留字段不进 Overlaid（结构保证），空实例基线绝不回退发起态。
+- T06：全部实际使用写端点的形状重新与参考页面逐项核对（暂存/移交/回退/取回/撤回/催办/转发/关注与现有实现一致，
+  差异端点已在矩阵中登记并修正），新增 `test/contracts/f035/protocol/action_bodies_contract_test.go` 把每个动作的
+  实际构造器输出与矩阵逐字段对照（required 必须存在、forbidden 不得出现）。
+- T07：实例事实新增“目标节点已到达但未生成 currentAuditUserInfo/待办”分型；进入“正在生成处理人”有界轮询
+  （≤5 次、≤10 秒、只读复查、绝不重发写请求）；超时后门禁按 `assignment_missing` 阻塞并显示“目标节点未生成处理人”。
+- T08：回放状态拆分——新增 `HistoryDataStatusBaseReady`（基础数据已生成、最终表单未确认），批量回放无浏览器
+  运行时校验时不再伪装成最终 `ready`；运行前检查对 `base_ready` 给出“请打开表单数据页完成确认”的明确阻塞；
+  前端路径列表与类型定义同步展示新状态。最终 `ready` 仍只由“运行时选项绑定+回读+保存确认”产生（既有链路）。
+- T09：step.log 新增协议摘要行（接口、动作、代理来源、批次号、nextAuditorList 条目数、表单基线、处理人）；
+  内网系统按用户裁决日志原样记录完整请求/响应，不做脱敏（已写入 AGENTS.md 与本文件）。
 
-测试：`test/contracts/f035/protocol/`（submit/draft/reSubmit/audit 载荷契约 + 信封注入 + 矩阵登记 + 批次号形状）、
-`test/contracts/f035/identity/`（账号切换身份、岗位缺失/目录缺人阻塞、历史值不残留）、
-`test/unit/backend/form_data_by_node/`（发起扣留后续字段、审批保留上游值、空实例基线不回退）、
-执行器 `assignment_poll_test.go`（有界轮询、出现后放行、零写请求）、
-`test/contracts/f035/drift/protocol_symbols_drift.sh`（参考符号与语义清单改写标记漂移检测）。
+测试：`test/contracts/f035/protocol/`（submit/draft/reSubmit/audit/全部动作载荷契约 + 信封注入 + 矩阵登记 + 批次号形状）、
+`test/contracts/f035/identity/`、`test/unit/backend/form_data_by_node/`（分节点基线/扣留/保留/决策记录/跨节点丢失阻塞）、
+执行器 `assignment_poll_test.go`、`test/contracts/f035/drift/protocol_symbols_drift.sh`。
 `go test ./test/unit/... ./test/contracts/f035/...` 全部通过；`test/integration` 与真实目标相关的既有失败
 （环境配置缺失与 F-014/F-018/F-016 既有记录）经未修改工作树复现确认与本切片无关。
 
-已如实登记的剩余边界（不阻塞本切片人工验收）：分节点表单的 `NodeFormDataDecision` 独立落盘结构、
-reSubmit 页面的逐字段矩阵行（沿用现有实现并登记 forbidden 项）与 T08 回放状态拆分仍在现有实现上运行，
-其中分节点基线/扣留/保留语义已有定向用例锁定；如人工验收发现更深层的节点填写时机缺陷，按验收反馈退回 `implementing` 处理。
+已如实登记的剩余边界：`test/integration/f035_target_facts_mysql_test.go`（回放结果、data_revision、代理 ID 与身份摘要的
+真实 MySQL 一致性用例）未在本轮落地，相关事实已由既有 f012/f015 集成用例与上述契约用例覆盖；如人工验收认为必须补充，
+按验收反馈退回 `implementing` 处理。
 
 ## 原始状态记录
 

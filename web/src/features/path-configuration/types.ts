@@ -27,7 +27,7 @@ export interface PathConfigurationDataWorkspace {
   dataRevision: number
   actionRevision: number
   nodeStatus: string
-  dataStatus: 'empty' | 'needs_input' | 'ready' | 'affected'
+  dataStatus: 'empty' | 'needs_input' | 'ready' | 'base_ready' | 'affected'
   historySource: HistoryDataSource
   runtimeType: 'formmaking' | 'vue_custom' | 'unknown'
   template: Record<string, unknown>

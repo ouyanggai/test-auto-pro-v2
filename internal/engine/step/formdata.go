@@ -1,7 +1,10 @@
 package step
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sort"
 
 	"test-auto-pro-v2/internal/formdata/fieldpower"
@@ -59,20 +62,68 @@ type FormDataPlan struct {
 	Withheld []string
 	// BaseFromInstance 为真表示基线来自目标实例当前数据。
 	BaseFromInstance bool
+	// BaseEmptyInstance 表示实例存在但表单数据为空（空基线，不是发起态历史配置）。
+	BaseEmptyInstance bool
+	// Decision 是本次构造的完整节点决策记录（F-035/T05）：落日志与写后核对都消费它。
+	Decision *NodeFormDataDecision
 }
 
-// BuildNodeFormData 按上述规则构造本步写请求的表单数据。
+// NodeFormDataDecision 是一次表单写入的完整决策记录（F-035/T05）：
+// 每个节点的目标字段权限、配置值、实例基线与最终载荷都能追溯到这一行。
+// 后续节点只能消费该决策和最新实例事实，禁止直接把全局 EffectiveFormData 当作最终载荷。
+type NodeFormDataDecision struct {
+	StepNo       int    `json:"stepNo"`
+	NodeKey      string `json:"nodeKey"`
+	TargetNodeID string `json:"targetNodeId"`
+	Action       string `json:"action"`
+	// BaselineSource 是基线来源：initiation（发起态）/ instance（实例当前）/ instance_empty。
+	BaselineSource string `json:"baselineSource"`
+	// EditableFields 是当前节点声明可编辑（fieldPower=edit）的字段。
+	EditableFields []string `json:"editableFields"`
+	// OverlaidFields 是本次用配置值覆盖的字段。
+	OverlaidFields []string `json:"overlaidFields"`
+	// PreservedFields 是基线中保留未动的字段（上一节点/目标已填值）。
+	PreservedFields []string `json:"preservedFields"`
+	// WithheldFields 是禁止进入本次载荷的后续节点专属/权限外配置字段。
+	WithheldFields []string `json:"withheldFields"`
+	// FinalPayload 是最终提交的表单数据 JSON（供指纹与写后逐字段核对）。
+	FinalPayload json.RawMessage `json:"finalPayload"`
+	// PayloadFingerprint 是最终表单数据 JSON 的 SHA-256 指纹（hex），可稳定比对版本。
+	PayloadFingerprint string `json:"payloadFingerprint"`
+	// ValidationIssues 是构造期校验问题；非空表示本次写请求必须阻塞。
+	ValidationIssues []string `json:"validationIssues,omitempty"`
+}
+
+// decisionFingerprint 计算最终载荷的稳定指纹；空载荷按空串处理。
+func decisionFingerprint(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// BuildNodeFormData 按上述规则构造本步写请求的表单数据并产出完整节点决策（F-035/T05）。
 // hasInstance 区分「发起（主实例还不存在）」与「实例存在但表单数据为空」：
 // 后者必须以空对象为基线走实例分支，绝不能退回发起分支把整份历史配置当载荷——
 // 那正是本函数要根治的"历史快照覆盖上游已填内容"（评审 P2：读空静默换基线）。
 // instanceCurrent 已由适配层以 json.Number 解码，重新编码不会改写数字字面量。
-func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, instanceCurrent map[string]any, hasInstance bool) (FormDataPlan, error) {
+// previous 决策非空时执行跨节点核对：上一节点覆盖字段必须仍在实例基线里，
+// 丢失或被改写一律阻塞（ValidationIssues 非空，写请求禁止发出）。
+func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, instanceCurrent map[string]any, hasInstance bool, previous *NodeFormDataDecision) (FormDataPlan, error) {
 	configured, err := decodeConfiguredFormData(runCtx.EffectiveFormData)
 	if err != nil {
 		return FormDataPlan{}, err
 	}
+	info := runCtx.Nodes[compiled.NodeKey]
 	plan := FormDataPlan{Overlaid: []string{}, Withheld: []string{}}
 	editable := nodeEditableFields(runCtx, compiled.NodeKey)
+	decision := &NodeFormDataDecision{
+		StepNo: compiled.Sequence, NodeKey: compiled.NodeKey, TargetNodeID: info.TargetNodeID,
+		Action: string(compiled.Action), EditableFields: append([]string(nil), editable...),
+		OverlaidFields: []string{}, PreservedFields: []string{}, WithheldFields: []string{},
+	}
+	plan.Decision = decision
 
 	var merged map[string]any
 	if hasInstance {
@@ -82,11 +133,18 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		}
 		merged = copied
 		plan.BaseFromInstance = true
+		if len(merged) == 0 {
+			plan.BaseEmptyInstance = true
+			decision.BaselineSource = "instance_empty"
+		} else {
+			decision.BaselineSource = "instance"
+		}
 		// 实例已存在：只覆盖本节点声明可编辑的配置字段，其余保持实例现状。
 		for key, value := range configured {
 			if fieldpower.Covers(editable, key) {
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
+				decision.OverlaidFields = append(decision.OverlaidFields, key)
 				continue
 			}
 			if _, exists := merged[key]; !exists && !ownedByOtherNodeOnly(runCtx, compiled.NodeKey, key) {
@@ -94,27 +152,61 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 				// 缺了会让目标少一份数据，按配置值补上。
 				merged[key] = value
 				plan.Overlaid = append(plan.Overlaid, key)
+				decision.OverlaidFields = append(decision.OverlaidFields, key)
 				continue
 			}
 			plan.Withheld = append(plan.Withheld, key)
+			decision.WithheldFields = append(decision.WithheldFields, key)
+		}
+		// 跨节点核对（F-035/T05）：上一节点覆盖字段的值必须仍在当前实例基线里，
+		// 否则说明目标数据丢失或被覆盖，必须阻塞而不是带着旧快照继续写。
+		if previous != nil && decision.BaselineSource == "instance" {
+			for _, field := range previous.OverlaidFields {
+				if fieldpower.Covers(editable, field) {
+					// 当前节点本就可以编辑该字段：它将由本节点重新覆盖，不适用保留断言。
+					continue
+				}
+				if _, exists := merged[field]; !exists {
+					decision.ValidationIssues = append(decision.ValidationIssues,
+						fmt.Sprintf("上一节点写入的字段 %s 在目标实例当前数据中丢失，不能继续提交", field))
+				}
+			}
+		}
+		// 保留字段清单：基线里存在且本次未覆盖的键。
+		for key := range merged {
+			if !containsString(decision.OverlaidFields, key) {
+				decision.PreservedFields = append(decision.PreservedFields, key)
+			}
 		}
 	} else {
 		merged = make(map[string]any, len(configured))
+		decision.BaselineSource = "initiation"
 		// 发起：基线就是发起态渲染出来的完整表单模型，只去掉只有后续节点才能编辑的字段。
 		for key, value := range configured {
 			if ownedByOtherNodeOnly(runCtx, compiled.NodeKey, key) {
 				plan.Withheld = append(plan.Withheld, key)
+				decision.WithheldFields = append(decision.WithheldFields, key)
 				continue
 			}
 			merged[key] = value
 			if fieldpower.Covers(editable, key) {
 				plan.Overlaid = append(plan.Overlaid, key)
+				decision.OverlaidFields = append(decision.OverlaidFields, key)
+			} else {
+				decision.PreservedFields = append(decision.PreservedFields, key)
 			}
 		}
 	}
+	// T05 断言已由构造结构保证：扣留字段不会出现在 Overlaid 清单（本节点不写它们），
+	// 它们若存在于合并结果，只能是实例基线保留（目标已填值）——这恰恰是“保留上游值”的语义。
 	sort.Strings(plan.Overlaid)
 	sort.Strings(plan.Withheld)
+	sort.Strings(decision.OverlaidFields)
+	sort.Strings(decision.PreservedFields)
+	sort.Strings(decision.WithheldFields)
 	if len(merged) == 0 {
+		decision.FinalPayload = nil
+		decision.PayloadFingerprint = ""
 		return plan, nil
 	}
 	encoded, err := json.Marshal(merged)
@@ -122,6 +214,8 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		return FormDataPlan{}, err
 	}
 	plan.Payload = encoded
+	decision.FinalPayload = encoded
+	decision.PayloadFingerprint = decisionFingerprint(encoded)
 	return plan, nil
 }
 

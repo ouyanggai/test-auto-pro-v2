@@ -7,8 +7,11 @@ const (
 	HistoryDataStatusEmpty = "empty"
 	// HistoryDataStatusNeedsInput 表示数据或路径证据不足，需要用户补充或确认。
 	HistoryDataStatusNeedsInput = "needs_input"
-	// HistoryDataStatusReady 表示 runtime 校验和当前路径复验均已通过。
+	// HistoryDataStatusReady 表示 runtime 校验和当前路径复验均已通过（最终表单已确认）。
 	HistoryDataStatusReady = "ready"
+	// HistoryDataStatusBaseReady 表示基础数据已生成（分支复验通过），但最终表单尚未经
+	// 运行时选项绑定、回读与保存确认（F-035/T08）：它不是 ready，也不能据此启动运行。
+	HistoryDataStatusBaseReady = "base_ready"
 	// HistoryDataStatusAffected 表示来源、路径或目标运行时变化后需要重新核对。
 	HistoryDataStatusAffected = "affected"
 )

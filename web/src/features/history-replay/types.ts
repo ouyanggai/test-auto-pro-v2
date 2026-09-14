@@ -1,6 +1,6 @@
 export type HistoryRuntimeType = 'formmaking' | 'vue_custom' | 'unknown'
 export type HistorySourceMode = 'none' | 'default' | 'override'
-export type HistoryDataStatus = 'empty' | 'needs_input' | 'ready' | 'affected'
+export type HistoryDataStatus = 'empty' | 'needs_input' | 'ready' | 'base_ready' | 'affected'
 
 // HistoryCandidate 只包含目标返回的可见摘要和后端不透明键，不包含目标实例 ID。
 export interface HistoryCandidate {

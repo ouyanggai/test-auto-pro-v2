@@ -46,7 +46,7 @@ func decodeFormPayload(t *testing.T, payload json.RawMessage) map[string]json.Ra
 // 发起人可编辑字段、以及没有任何节点声明的表单自身伴生键照常提交。
 func TestF024SubmitDropsFieldsOnlyLaterNodesCanEdit(t *testing.T) {
 	runCtx := f024RunContext(`{"contractSum":12.30,"classificationId":["c-1"],"classificationId__virtualName":"施工类","classificationName":"施工类","accountantOpinion":"历史意见","initiatorId":"u-1"}`)
-	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false)
+	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false, nil)
 	if err != nil {
 		t.Fatalf("构造发起表单数据失败：%v", err)
 	}
@@ -83,7 +83,7 @@ func TestF024ApproveMergesInstanceDataAndOverlaysOnlyNodeEditable(t *testing.T) 
 		"classificationName": "施工类",
 		"legalOpinion":       "法务已经填过的内容",
 	}
-	plan, err := step.BuildNodeFormData(runCtx, approveStep(), instanceCurrent, true)
+	plan, err := step.BuildNodeFormData(runCtx, approveStep(), instanceCurrent, true, nil)
 	if err != nil {
 		t.Fatalf("构造审批表单数据失败：%v", err)
 	}
@@ -114,7 +114,7 @@ func TestF024ApproveMergesInstanceDataAndOverlaysOnlyNodeEditable(t *testing.T) 
 func TestF024EmptyInstanceDataKeepsInstanceBaseline(t *testing.T) {
 	runCtx := f024RunContext(`{"contractSum":500001,"accountantOpinion":"配置意见","classificationId":["c-1"],"classificationName":"施工类"}`)
 	runCtx.PathRun.MainInstanceRef = "instance-1"
-	plan, err := step.BuildNodeFormData(runCtx, approveStep(), nil, true)
+	plan, err := step.BuildNodeFormData(runCtx, approveStep(), nil, true, nil)
 	if err != nil {
 		t.Fatalf("构造审批表单数据失败：%v", err)
 	}
@@ -143,7 +143,7 @@ func TestF024CompanionKeysFollowTheirOwnControl(t *testing.T) {
 		EditableFields: []string{"classificationId"}}
 	runCtx.NodeEditableFields["node-start"] = []string{"classificationId"}
 	runCtx.NodeEditableFields["node-audit"] = []string{"accountantUserName"}
-	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false)
+	plan, err := step.BuildNodeFormData(runCtx, submitStep(), nil, false, nil)
 	if err != nil {
 		t.Fatalf("构造发起表单数据失败：%v", err)
 	}

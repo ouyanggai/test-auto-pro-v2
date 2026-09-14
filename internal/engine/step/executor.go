@@ -334,9 +334,17 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		log.Phase("gate", step.Sequence, 1, fmt.Sprintf("表单数据按节点权限构造：基线=%s，覆盖 %d 个字段 %v，按权限未带 %d 个字段 %v",
 			formBaseName(formPlan.BaseFromInstance), len(formPlan.Overlaid), formPlan.Overlaid, len(formPlan.Withheld), formPlan.Withheld))
 	}
+	// F-035/T05：每个节点的表单决策完整落 step.log（内网系统不脱敏），
+	// 字段所有权、基线版本指纹与校验结论可逐节点追溯。
+	if formPlan.Decision != nil {
+		if encoded, marshalErr := json.Marshal(formPlan.Decision); marshalErr == nil {
+			log.Phase("gate", step.Sequence, 1, "表单节点决策："+string(encoded))
+		}
+	}
 	preview.FormOverlaid = formPlan.Overlaid
 	preview.FormWithheld = formPlan.Withheld
 	preview.FormBaseFromInstance = formPlan.BaseFromInstance
+	preview.FormDataDecision = formPlan.Decision
 
 	// 构造与实际发出的请求严格同源的类型化请求与载荷预览（不含 SID）。
 	// 字段存在性由逐接口协议矩阵在适配层构造器内强制（F-035），不再做通用字段禁令校验。
@@ -422,7 +430,11 @@ func (e *Executor) nodeFormData(ctx context.Context, runCtx RunContext, compiled
 		current = read
 	}
 	// 实例存在但数据为空时必须保持实例分支（空基线），不得退回发起分支提交整份历史配置。
-	plan, err := BuildNodeFormData(runCtx, compiled, current, hasInstance)
+	// F-035/T05：上一节点决策非空时执行跨节点核对，上一节点覆盖字段在目标实例上丢失立即阻塞。
+	plan, err := BuildNodeFormData(runCtx, compiled, current, hasInstance, runCtx.LastFormDataDecision)
+	if err == nil && plan.Decision != nil && len(plan.Decision.ValidationIssues) > 0 {
+		return plan, session, fmt.Errorf("%s", strings.Join(plan.Decision.ValidationIssues, "；"))
+	}
 	return plan, session, err
 }
 

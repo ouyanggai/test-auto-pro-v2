@@ -1417,7 +1417,7 @@ func validHistoryReplayItemStatus(status string) bool {
 // normalizeReplayDataStatus 让明细状态与数据状态保持同一确定终态，避免聚合出现不可解释组合。
 func normalizeReplayDataStatus(dataStatus, itemStatus string) string {
 	switch dataStatus {
-	case model.HistoryDataStatusReady, model.HistoryDataStatusNeedsInput, model.HistoryDataStatusAffected:
+	case model.HistoryDataStatusReady, model.HistoryDataStatusNeedsInput, model.HistoryDataStatusAffected, model.HistoryDataStatusBaseReady:
 		return dataStatus
 	}
 	switch itemStatus {

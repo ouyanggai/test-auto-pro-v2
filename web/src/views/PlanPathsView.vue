@@ -711,8 +711,10 @@ function pathConfigurationLabel(path: ExecutionPath): string {
 }
 
 // pathDataLabel 把表单数据准备状态翻译成独立业务标签。
+// base_ready（F-035/T08）是“基础数据已生成、最终表单未确认”，不得显示成已就绪。
 function pathDataLabel(path: ExecutionPath): string {
 	if (path.dataStatus === 'ready') return '数据已就绪'
+	if (path.dataStatus === 'base_ready') return '基础数据已生成，待确认最终表单'
 	if (path.dataStatus === 'needs_input') return '数据需补充'
 	if (path.dataStatus === 'affected') return '数据受影响'
 	return '数据未选择'
@@ -955,7 +957,7 @@ onMounted(() => {
 							<n-tag size="small" :bordered="false" :type="path.configurationStatus === 'configured' ? 'success' : path.configurationStatus === 'partial' || path.configurationStatus === 'affected' ? 'warning' : 'default'" :title="path.configurationDetail">
                     {{ pathConfigurationLabel(path) }}
                   </n-tag>
-							<n-tag size="small" :bordered="false" :type="path.dataStatus === 'ready' ? 'success' : path.dataStatus === 'needs_input' || path.dataStatus === 'affected' ? 'warning' : 'default'" :title="path.dataDetail">
+							<n-tag size="small" :bordered="false" :type="path.dataStatus === 'ready' ? 'success' : path.dataStatus === 'needs_input' || path.dataStatus === 'affected' || path.dataStatus === 'base_ready' ? 'warning' : 'default'" :title="path.dataDetail">
                     {{ pathDataLabel(path) }}
                   </n-tag>
 									</div>

@@ -9,7 +9,7 @@ export interface ExecutionPath {
   name: string
   configurationStatus: 'pending' | 'partial' | 'configured' | 'affected'
   configurationDetail: string
-  dataStatus: 'empty' | 'needs_input' | 'ready' | 'affected'
+  dataStatus: 'empty' | 'needs_input' | 'ready' | 'base_ready' | 'affected'
   dataDetail: string
   choices: ExecutionPathChoice[]
   updatedAt: string

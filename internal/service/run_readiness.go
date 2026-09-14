@@ -127,9 +127,15 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 		})
 	}
 	if input.Path.DataStatus != model.HistoryDataStatusReady {
+		reason := firstNonEmptyText(input.Path.DataDetail, "基础表单数据尚未就绪")
+		// F-035/T08：base_ready 表示基础数据已生成但最终表单尚未确认，
+		// 给出明确的下一步（打开表单数据页确认），不把它当 ready 放行。
+		if input.Path.DataStatus == model.HistoryDataStatusBaseReady {
+			reason = firstNonEmptyText(input.Path.DataDetail, "基础数据已生成，但最终表单尚未确认：请打开表单数据页完成选项绑定并保存")
+		}
 		blocks = append(blocks, model.RunReadinessItem{
 			Kind: model.RunReadinessFormData, Name: pathName,
-			Reason: firstNonEmptyText(input.Path.DataDetail, "基础表单数据尚未就绪"),
+			Reason: reason,
 			Anchor: runReadinessAnchorFormData,
 		})
 	}

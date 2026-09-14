@@ -119,6 +119,10 @@ type RunContext struct {
 	// 零值不等于"写之前实例不存在"：把丢失的基准当成确定事实用，会让对账把审批类写的
 	// 实例状态维度说成"写之前实例不存在、现在存在"，凭空造出一条与事实相反的依据。
 	LastBeforeFactsKnown bool
+	// LastFormDataDecision 是上一次携带表单数据的写请求的节点决策（F-035/T05）：
+	// 由控制现场在放行后从预览填入。下一节点构造表单数据时必须重新读取目标实例，
+	// 并核对上一节点覆盖字段的值仍在；发现丢失或被覆盖立即阻塞，绝不用历史快照继续。
+	LastFormDataDecision *NodeFormDataDecision
 	// EffectiveFormData 是路径生效表单数据的原始 JSON 文本。
 	// 以 json.Number 解码后再序列化，数字字面量保持原样（原生 JSON 列会改写数字的教训见迁移 023）。
 	EffectiveFormData []byte
@@ -300,6 +304,9 @@ type StepPreview struct {
 	FormWithheld []string
 	// FormBaseFromInstance 表示表单数据基线来自目标实例当前数据（F-035 协议摘要用）。
 	FormBaseFromInstance bool
+	// FormDataDecision 是本步表单数据的完整节点决策（F-035/T05）；控制现场在放行后
+	// 把它带进 RunContext.LastFormDataDecision，供下一节点跨节点核对。
+	FormDataDecision *NodeFormDataDecision
 	// request 是构造载荷的那份类型化请求本体；发送时直接使用它，保证预览与实际发出严格同源。
 	request any
 
