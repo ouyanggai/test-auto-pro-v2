@@ -149,7 +149,11 @@ func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request
 	case "/web/flowInstanceApi/getCurrentFromData":
 		f.handleInstanceCurrentData(response, request)
 	case "/web/user/api/user/findByCompanyIdUserList":
-		f.handleDirectoryResponse(response, map[string]any{"dataList": []any{map[string]any{"id": "person-1", "realName": "张三"}}})
+		// F-035：目录同时返回岗位事实，供当前账号身份构造 dutyId/dutyName。
+		f.handleDirectoryResponse(response, map[string]any{"dataList": []any{
+			map[string]any{"id": "person-1", "realName": "张三", "dutyId": "duty-1", "dutyName": "测试岗位"},
+			map[string]any{"id": "person-2", "realName": "测试人员", "dutyId": "duty-2", "dutyName": "登录岗位"},
+		}})
 	case "/web/user/api/company/children":
 		body := f.requireSession(request)
 		data, _ := body["data"].(map[string]any)

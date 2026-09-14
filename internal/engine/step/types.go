@@ -88,8 +88,12 @@ type RunContext struct {
 	// PlanAccount 是计划账号：目标登录账号，同时是「新发起」流程的发起人。
 	// 本切片的当前处理人候选就是该账号；当前处理人最终成立还必须通过目标待办/发起事实核验，绝不静默替换处理人。
 	PlanAccount string
-	// FlowProxyID 是发布流程代理 ID（计划指向的目标对象标识），发起请求的必填标识之一。
+	// FlowProxyID 是发布流程代理 ID（计划指向的目标对象标识）。
+	// FormProxyID 是 FormMaking 表单代理 ID（F-035）：从新流程模板唯一的 Forms 项取得，
+	// 发起/草稿只发送 formProxyId（FormMaking）或 flowProxyId（无表单）；
+	// 禁止把发布流程代理 ID 当表单代理 ID，也禁止无依据同时发送两个代理字段。
 	FlowProxyID string
+	FormProxyID string
 	// Source 是这条路径的流程来源（如“新发起”）；门禁投影与来源相关。
 	Source string
 	// Nodes 是路径配置快照里这条路径的目标节点表（键=目标代理节点 Key），
@@ -137,6 +141,11 @@ type InstanceFacts struct {
 	ReadError string `json:"readError,omitempty"`
 	Found     bool   `json:"found"`
 	Status    string `json:"status,omitempty"`
+	// HandlerGenerationRead/HandlerMissing 表示已经按实例事实核实：目标节点已到达但
+	// 没有生成 currentAuditUserInfo 和待办（F-035/T07 的“正在生成处理人”分型事实）。
+	// 有界轮询结束后仍缺失时，门禁必须显示“目标节点未生成处理人”，不得显示“当前待办已经处理”。
+	HandlerGenerationRead bool `json:"handlerGenerationRead,omitempty"`
+	HandlerMissing        bool `json:"handlerMissing,omitempty"`
 	// CreatorRead 表示本次实例读取已经核对创建人；没有该事实时不能把当前账号冒充创建人。
 	CreatorRead bool `json:"creatorRead,omitempty"`
 	// IsInitiator 表示当前会话账号是否为目标实例创建人。
@@ -289,6 +298,8 @@ type StepPreview struct {
 	// 覆盖了哪些字段、按权限没带哪些字段。进日志与门禁快照，让"少带了什么"可追溯。
 	FormOverlaid []string
 	FormWithheld []string
+	// FormBaseFromInstance 表示表单数据基线来自目标实例当前数据（F-035 协议摘要用）。
+	FormBaseFromInstance bool
 	// request 是构造载荷的那份类型化请求本体；发送时直接使用它，保证预览与实际发出严格同源。
 	request any
 

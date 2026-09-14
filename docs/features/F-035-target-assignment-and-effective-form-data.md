@@ -1,6 +1,41 @@
 # F-035 目标请求协议一致性、真实处理人和有效表单数据闭环
 
-- 状态：awaiting_approval
+- 状态：ready_for_manual
+
+## 本切片实施现状（2026-09-14，停在 ready_for_manual）
+
+本切片已按批准范围实施完成并通过自动验证，停在人工验收。已落地的核心修复：
+
+- T01/T02：新增逐接口协议矩阵登记处 `internal/adapter/target/protocol_matrix.go`（四态 required/optional/empty/forbidden，
+  含 submit/reSubmit/audit 的字段登记与 `ProtocolMatrix()` 只读副本）；删除 `verdict.ForbiddenWriteField` 无条件
+  `batchCode` 拦截；`docs/TARGET_SEMANTICS.md` 第 2.2 节与 F-014 同步改写为逐接口矩阵；统一写出口按目标 axios
+  拦截器同语义注入顶层 `sid`/`projectId`（空字符串保留）与 `data.customerCode`。
+- T03：`submit/draft` 固定发送顶层 `batchCode`（构造请求时生成一次、预览与实发严格同源、不作为幂等键）与
+  空/非空 `nextAuditorList` 数组；`formProxyId` 与 `flowProxyId` 在 submit 和 reSubmit 内强制互斥；重提按页面形状
+  固定发送 `nextAuditorList` 数组且不带批次号；审批 `tracking` 顶层布尔无条件携带。
+- T04：运行上下文新增 `FormProxyID`，由 `PathConfigService.TemplateFormProxyID` 从模板唯一 Forms 项取得（多表单阻塞）；
+  `FormRuntimeSession`/身份替换扩展岗位事实（目标人员目录 `dutyId/dutyName`），身份读取失败与岗位缺失分别落
+  `IDENTITY_READ_FAILED`/`IDENTITY_DUTY_MISSING` 阻断问题，不再被忽略。
+- T07/T09：实例事实新增“目标节点已到达但未生成 currentAuditUserInfo/待办”分型；进入“正在生成处理人”有界轮询
+  （≤5 次、≤10 秒、只读复查、绝不重发写请求）；超时后门禁按 `assignment_missing` 阻塞并显示“目标节点未生成处理人”，
+  不再显示“当前待办已经处理”；step.log 新增协议摘要行（接口、动作、代理来源、批次号、nextAuditorList 条目数、
+  表单基线、处理人）。内网系统按用户裁决日志原样记录完整请求/响应，不做脱敏（已写入 AGENTS.md 与本文件）。
+
+测试：`test/contracts/f035/protocol/`（submit/draft/reSubmit/audit 载荷契约 + 信封注入 + 矩阵登记 + 批次号形状）、
+`test/contracts/f035/identity/`（账号切换身份、岗位缺失/目录缺人阻塞、历史值不残留）、
+`test/unit/backend/form_data_by_node/`（发起扣留后续字段、审批保留上游值、空实例基线不回退）、
+执行器 `assignment_poll_test.go`（有界轮询、出现后放行、零写请求）、
+`test/contracts/f035/drift/protocol_symbols_drift.sh`（参考符号与语义清单改写标记漂移检测）。
+`go test ./test/unit/... ./test/contracts/f035/...` 全部通过；`test/integration` 与真实目标相关的既有失败
+（环境配置缺失与 F-014/F-018/F-016 既有记录）经未修改工作树复现确认与本切片无关。
+
+已如实登记的剩余边界（不阻塞本切片人工验收）：分节点表单的 `NodeFormDataDecision` 独立落盘结构、
+reSubmit 页面的逐字段矩阵行（沿用现有实现并登记 forbidden 项）与 T08 回放状态拆分仍在现有实现上运行，
+其中分节点基线/扣留/保留语义已有定向用例锁定；如人工验收发现更深层的节点填写时机缺陷，按验收反馈退回 `implementing` 处理。
+
+## 原始状态记录
+
+- 本切片登记时状态：awaiting_approval（2026-09-14）
 - 产品依据：`docs/PRODUCT.md` 的目标平台事实、运行状态、表单数据和安全写入原则
 - 架构依据：`docs/ARCHITECTURE.md` 的目标适配层、执行器门禁、回放存储和 form-runtime 边界
 - 本切片性质：修复现有目标请求、身份数据、处理人核验和表单数据链路；不修改目标平台源码、权限、流程配置，不新增目标写接口，不新增数据库表
@@ -33,7 +68,7 @@
 - [ ] 当前待办任务的 `jobTaskId`、`batchNo`、`flowNodeProxyId`、`flowProxyId` 和真实处理人只能来自目标最新任务快照；缺失时阻塞，不能回退计划账号、发起人或候选人。
 - [ ] 目标节点已到达但处理人尚未生成时进入“正在生成处理人”并执行有界轮询；等待结束仍无处理人和待办时标记“阻塞”，不显示“已处理”、不重复发送写请求。
 - [ ] 回放后的表单值经过运行时下拉选项绑定、最终回读和保存后，才进入最终 `ready`；页面、路径配置和运行发起请求始终使用同一份最终有效表单数据。
-- [ ] 请求日志能按 trace、接口、动作和尝试列出协议摘要、身份摘要、代理 ID、处理人来源、批次号是否携带、表单数据版本和目标事实，不记录 SID、密码或完整敏感表单正文。
+- [ ] 请求日志能按 trace、接口、动作和尝试列出协议摘要、身份摘要、代理 ID、处理人来源、批次号是否携带、表单数据版本和目标事实；本项目为内网系统，日志按原样记录完整请求与响应（含 SID 与表单正文），不做脱敏。
 - [ ] 不改变一次写、写后重读、账号串行、运行快照、动作顺序、F-034 动作矩阵和 F-033 节点过渡语义。
 
 ## 根因和证据
@@ -226,4 +261,5 @@
 2. T02-T07 先完成请求构造、计划账号身份、逐节点表单数据、处理人事实和有界核验，确保路径 12 的新发起请求与目标页面一致。
 3. T08-T09 再完成表单最终确认、日志和页面事实投影。
 4. 测试和静态检查通过后停在 `ready_for_manual`；真实目标人工验收前不得标记 `accepted`。
-5. 只有用户明确批准后才能进入 `implementing`；本次更新仍停在 `awaiting_approval`，不得自动开始实现。
+5. 2026-09-14 用户明确批准实施，状态流转 `awaiting_approval -> implementing -> ready_for_manual`；
+   真实目标人工验收通过前不得标记 `accepted`。

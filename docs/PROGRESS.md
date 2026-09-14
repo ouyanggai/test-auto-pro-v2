@@ -1,5 +1,23 @@
 # 当前进度
 
+- 2026-09-14 F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」经用户批准实施完成，停在 `ready_for_manual`。
+  已落地：逐接口协议矩阵登记处 `internal/adapter/target/protocol_matrix.go`（四态字段存在性）与统一写出口信封注入
+  （顶层 sid/projectId、data.customerCode，与目标 axios 拦截器同语义）；删除 `verdict` 对 `batchCode` 的无条件禁令，
+  `docs/TARGET_SEMANTICS.md` 2.2 节与 F-014 同步改写为逐接口矩阵（submit/draft 顶层必带批次号，reSubmit/audit 等不带；
+  批次号绝不作为幂等键）；submit/draft 固定发送 `nextAuditorList` 数组（空时 []）与审批无条件 `tracking`；
+  FormMaking 只发 `formProxyId`、无表单只发 `flowProxyId`（submit/reSubmit 强制互斥），运行上下文新增 `FormProxyID`
+  从模板唯一 Forms 项取得（多表单阻塞）；计划账号身份扩展岗位事实（目标人员目录 dutyId/dutyName），身份读取失败
+  与岗位缺失分别落 `IDENTITY_READ_FAILED`/`IDENTITY_DUTY_MISSING` 阻断，历史账号值不得进入请求；目标节点已到达但无
+  currentAuditUserInfo/待办时进入有界轮询（≤5 次、≤10 秒、只读），超时按 `assignment_missing` 阻塞并显示
+  “目标节点未生成处理人”，不再显示“当前待办已经处理”；step.log 新增协议摘要行。内网系统按用户裁决：日志原样记录
+  完整请求/响应（含 SID 与表单正文），不做脱敏，已写入 AGENTS.md。新增 test/contracts/f035/protocol 与 identity、
+  test/unit/backend/form_data_by_node、执行器 assignment_poll 定向用例与 f035/drift 漂移脚本。
+  `go test ./test/unit/... ./test/contracts/f035/...` 全部通过；test/integration 与真实目标相关的既有失败
+  （环境缺失及 F-014/F-018/F-016 既有记录）经未修改工作树复现确认与本切片无关。
+  等待人工验收：按功能文档「人工验收」9 项清单在真实目标逐项核对（路径 12 重跑对照手工 curl、身份随计划账号变化、
+  真实处理人、分节点表单保留/扣留、NoFormFlow 对比、batchCode 矩阵、阻塞路径不覆盖有效数据）。
+  详细实施现状见 `docs/features/F-035-target-assignment-and-effective-form-data.md`。
+
 - 2026-09-14 F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」完成新证据下的只读复核并登记为 `awaiting_approval`。
   运行 6、7 / 路径 12 的 submit 都被目标平台接受并进入“行政综合部-考勤管理”，但目标没有生成
   `currentAuditUserInfo` 和待办。对比人工成功 curl 后确认工具同时存在 FormMaking 误传 `flowProxyId`、表单身份仍是张泽华而计划账号为骆蒙恩、

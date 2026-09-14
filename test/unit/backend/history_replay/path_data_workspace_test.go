@@ -60,6 +60,16 @@ func (r workspaceTargetReader) PathConfigurationSnapshot(context.Context, string
 	return r.snapshot, nil
 }
 
+// FormRuntimeSession 提供含岗位的当前账号身份（F-035）：测试假件按同一个人返回完整身份事实，
+// 保证数据工作区的身份替换可以走生产同一条路径。
+func (r workspaceTargetReader) FormRuntimeSession(context.Context, string) (target.FormRuntimeSession, error) {
+	return target.FormRuntimeSession{
+		SID: "sid-test", AccountName: "计划账号", UserID: "user-plan", CompanyID: "company-plan",
+		CompanyName: "计划公司", DepartmentID: "dept-plan", DepartmentName: "计划部门",
+		DutyID: "duty-plan", DutyName: "计划岗位",
+	}, nil
+}
+
 type workspaceHistoryStore struct {
 	*historyMemoryStore
 	configs map[uint64]repository.HistoryPathConfigRecord

@@ -185,6 +185,26 @@ func (s *PathConfigService) readVerifiedSnapshot(ctx context.Context, planID uin
 	return snapshot, nil
 }
 
+// TemplateFormProxyID 返回新发起流程模板唯一的 FormMaking 表单代理 ID（F-035）。
+// 渲染类型不是 FormMaking、没有表单或有多个表单时返回空串（走 flowProxyId）或阻塞：
+// 多表单无法唯一确定发起载荷的 formProxyId，绝不能猜。读取失败向上阻塞启动。
+func (s *PathConfigService) TemplateFormProxyID(ctx context.Context, planID uint64) (string, error) {
+	snapshot, err := s.readVerifiedSnapshot(ctx, planID)
+	if err != nil {
+		return "", err
+	}
+	if snapshot.RenderType != target.FormRenderTypeFormMaking {
+		return "", nil
+	}
+	if len(snapshot.Forms) == 0 {
+		return "", nil
+	}
+	if len(snapshot.Forms) > 1 {
+		return "", &PathConfigError{Kind: PathConfigErrorInvalid, Message: "流程模板挂载了多个表单，无法唯一确定表单代理 ID，不能发起"}
+	}
+	return strings.TrimSpace(snapshot.Forms[0].ID), nil
+}
+
 // ownedPathAnalysis 是当前真实图与路径分析的组合结果。
 type ownedPathAnalysis struct {
 	graph        model.FlowGraph

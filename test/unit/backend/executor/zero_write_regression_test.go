@@ -28,7 +28,9 @@ func (r *reviewTarget) FindSubmittedFlow(context.Context, target.Session, string
 
 // FindDueFlow 返回本节点仍有待办的事实。
 func (r *reviewTarget) FindDueFlow(context.Context, target.Session, string) (string, []string, []string, bool, error) {
-	return "flow-proxy-1", []string{"node-audit"}, nil, true, nil
+	// F-035：返回非空 DueNodes，保持「有待办但任务读取失败/缺失」的原语义；
+	// 空待办属于“处理人未生成”分型，不再与零写入回归混用。
+	return "flow-proxy-1", []string{"node-audit"}, []string{"node-audit"}, true, nil
 }
 
 // ReadInstanceCurrentData 复核用假件不预设实例表单数据。

@@ -1,7 +1,6 @@
 package verdict
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 )
@@ -38,12 +37,6 @@ func OptimisticLockEndpoints() []string {
 // AuthRejectedCodes 是会话失效的两个目标错误码。HTTP 401 单独识别。
 // AUTH_401 是现有只读路径漏认的那一个，本包必须认，依据见语义清单第 1.5 节。
 var AuthRejectedCodes = []string{"RESP401", "AUTH_401"}
-
-// ForbiddenWriteField 是写请求禁止携带的字段名。
-// 目标平台的 @Consistency 只在请求带 batchCode 时生效，一旦生效，失败会触发注解声明的
-// deleteMethodName 回滚同批次已登记数据；/web/flowInstanceApi/submit 的回滚动作就是删除实例。
-// 证据见语义清单第 2.2 节。
-const ForbiddenWriteField = "batchCode"
 
 // preRejections 是前置拒绝清单：键为目标端点，值为该端点上能证明发生在任何写之前的精确文案。
 // 匹配规则是「端点 + 文案全等」，禁止模糊匹配、关键字包含或跨端点复用文案。
@@ -113,18 +106,6 @@ func PreRejectionMessages(endpoint string) []string {
 	messages := make([]string, len(source))
 	copy(messages, source)
 	return messages
-}
-
-// ValidateWritePayload 检查写请求载荷没有携带禁止字段。
-// 这是语义清单第 2.2 节 batchCode 禁令的代码化：目标平台没有幂等键，
-// batchCode 不是幂等键而是批次补偿开关，带上它会把一次失败放大成额外的删除写入。
-func ValidateWritePayload(fieldNames []string) error {
-	for _, name := range fieldNames {
-		if normalizeMessage(name) == ForbiddenWriteField {
-			return fmt.Errorf("写请求禁止携带字段 %s：它会触发目标平台的批次补偿回滚，见 docs/TARGET_SEMANTICS.md 第 2.2 节", ForbiddenWriteField)
-		}
-	}
-	return nil
 }
 
 // normalizeMessage 只去掉首尾空白，不做大小写折叠也不做内部空格归并，

@@ -403,6 +403,7 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 	}
 	var active target.Session
 	var identity target.FormIdentityContext
+	var duty [2]string
 	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, session target.Session) error {
 		// iframe 会直接用该 SID 请求远程选项，发放前必须验证目标仍认可会话；
 		// 否则右侧补丁已经更新，控件却因选项接口 RESP401 只能保留历史绑定值。
@@ -413,8 +414,14 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 		if identityErr != nil {
 			return identityErr
 		}
+		// F-035：岗位事实随同一次已验证会话读取；读取失败按错误上抛，不静默发放缺岗位的会话。
+		dutyID, dutyName, dutyErr := s.client.CurrentUserDuty(callContext, session)
+		if dutyErr != nil {
+			return dutyErr
+		}
 		active = session
 		identity = resolved
+		duty = [2]string{dutyID, dutyName}
 		return nil
 	})
 	if err != nil {
@@ -433,6 +440,7 @@ func (s *TargetReadService) FormRuntimeSession(ctx context.Context, account stri
 		SID: active.SID, BaseURL: s.client.BaseURL(), AccountName: active.Summary.DisplayName,
 		UserID: active.UserID, CompanyID: active.CompanyID, CustomerCode: active.CustomerCode, CompanyName: companyName,
 		DepartmentID: departmentID, DepartmentName: departmentName,
+		DutyID: duty[0], DutyName: duty[1],
 	}, nil
 }
 

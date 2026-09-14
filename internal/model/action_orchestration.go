@@ -174,6 +174,9 @@ type ActionContext struct {
 	// CurrentTaskCountersign/CurrentTaskParallel 是取回门禁所需的目标节点事实。
 	CurrentTaskCountersign bool `json:"currentTaskCountersign"`
 	CurrentTaskParallel    bool `json:"currentTaskParallel"`
+	// HandlerMissing 表示目标节点已到达但未生成 currentAuditUserInfo 和待办（F-035）：
+	// 这是“正在生成处理人/处理人查询阻塞”的事实，绝不等于“当前待办已经处理”。
+	HandlerMissing bool `json:"handlerMissing"`
 }
 
 // CompiledActionStep 是执行器消费的只读步骤；动作组与来源区分放行边界和恢复语义。

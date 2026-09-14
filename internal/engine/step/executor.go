@@ -227,6 +227,19 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	} else {
 		actorName = name
 	}
+	// F-035：目标节点已到达但未生成处理人/待办时，进入“正在生成处理人”有界轮询；
+	// 总等待不超过 10 秒、最多 5 次，期间不发任何写请求。超时后按 assignment_missing 阻塞，
+	// 绝不显示“当前待办已经处理”，也不用计划账号或候选人代替目标返回的真实处理人。
+	if step.Scope == model.ActionScopeTask && facts.HandlerGenerationRead && facts.HandlerMissing && stepTargetNodeIDOf(runCtx, step) != "" {
+		pollFacts, pollSession, pollErr := e.pollForHandlerGeneration(ctx, runCtx, session, step, log)
+		if pollErr != nil {
+			return e.blockedPreview(runCtx, step, actorName, pollErr.Error(), model.FailureClassGateBlocked), false, nil
+		}
+		if pollSession != nil {
+			session = *pollSession
+		}
+		facts = pollFacts
+	}
 	info := runCtx.Nodes[step.NodeKey]
 	// 目标自动跳过适配：模板约束「无处理人时跳过该节点」在人员规则（如扩展属性）解析为空时
 	// 生效，实例待办直接落到路径上更靠后的节点，本步的同意永远等不到待办。只有「实例当前
@@ -323,9 +336,10 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	}
 	preview.FormOverlaid = formPlan.Overlaid
 	preview.FormWithheld = formPlan.Withheld
+	preview.FormBaseFromInstance = formPlan.BaseFromInstance
 
-	// 构造与实际发出的请求严格同源的类型化请求与载荷预览（不含 SID），
-	// 并在发送前校验禁用字段（batchCode 禁令）。
+	// 构造与实际发出的请求严格同源的类型化请求与载荷预览（不含 SID）。
+	// 字段存在性由逐接口协议矩阵在适配层构造器内强制（F-035），不再做通用字段禁令校验。
 	// 提交类和同意类都要按真正的后续业务节点构造 nextAuditorList；当前步骤自身不是下一节点。
 	nextNodeKey := FollowingActionNodeKey(runCtx.Steps, nextIndex)
 	request, endpoint, payload, requestErr := buildRequestWithFacts(runCtx, step, session, formPlan.Payload, nextNodeKey, facts)
@@ -334,12 +348,6 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		preview.BlockReason = "构造写请求失败：" + message
 		preview.BlockFailureClass = model.FailureClassToolBug
 		log.Phase("gate", step.Sequence, 1, "构造写请求失败："+message)
-		return preview, false, nil
-	}
-	if err := validateWritePayloadKeys(payload); err != nil {
-		preview.BlockReason = "写请求载荷校验失败：" + userFacingError(err, target.WriteResponse{})
-		preview.BlockFailureClass = model.FailureClassToolBug
-		log.Phase("gate", step.Sequence, 1, "写请求载荷校验失败："+userFacingError(err, target.WriteResponse{}))
 		return preview, false, nil
 	}
 	preview.Endpoint = endpoint
@@ -451,6 +459,42 @@ func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionSt
 // stepTargetNodeIDOf 返回编译步骤节点在目标平台的真实标识；缺失时返回空串由调用方兜底。
 func stepTargetNodeIDOf(runCtx RunContext, step model.CompiledActionStep) string {
 	return strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+}
+
+// pollForHandlerGeneration 对“目标节点已到达但处理人/待办尚未生成”的场景执行有界轮询（F-035/T07）：
+// 最多 5 次、总等待不超过 10 秒，每次只重读实例事实（只读），绝不重发写请求。
+// 轮询期间任何一次读到处理人或待办即返回最新事实；全部超时仍无处理人时返回阻塞结论，
+// 停止原因按 assignment_missing 分型（目标没有产生处理人），不伪装成“已处理”。
+func (e *Executor) pollForHandlerGeneration(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, log *StepLog) (InstanceFacts, *target.Session, error) {
+	const maxPolls = 5
+	const pollInterval = 2 * time.Second
+	const totalBudget = 10 * time.Second
+	deadline := e.now().Add(totalBudget)
+	facts := InstanceFacts{}
+	for attempt := 1; attempt <= maxPolls; attempt++ {
+		select {
+		case <-ctx.Done():
+			return facts, nil, fmt.Errorf("等待目标生成处理人被取消：%w", ctx.Err())
+		case <-time.After(pollInterval):
+		}
+		if e.now().After(deadline) {
+			break
+		}
+		log.Phase("gate", step.Sequence, attempt, fmt.Sprintf("目标节点已到达但尚未生成处理人，正在第 %d/%d 次复查（不发送任何写请求）", attempt, maxPolls))
+		pollFacts, pollSession, err := e.readFactsWithRetry(ctx, runCtx, session, step)
+		if err != nil {
+			return facts, nil, fmt.Errorf("等待目标生成处理人期间读取失败：%s", target.UserFacingErrorMessage(target.WriteResponse{}, err))
+		}
+		session = pollSession
+		facts = pollFacts
+		if !pollFacts.HandlerMissing {
+			return pollFacts, &session, nil
+		}
+	}
+	if facts.ReadError != "" {
+		return facts, nil, fmt.Errorf("目标节点未生成处理人，且复查读取失败：%s", facts.ReadError)
+	}
+	return facts, nil, fmt.Errorf("目标节点已到达但 %d 秒内未生成处理人和待办（assignment_missing）；已阻塞本步，不发送写请求，请到目标平台确认该节点的处理人配置", int(totalBudget.Seconds()))
 }
 
 // targetSkippedStepReason 判断本步节点是否已被目标自动跳过（F-034：按目标 isSkip 与审批类型分型）。
@@ -861,6 +905,9 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 	}
 	log.Phase("prepare", step.Sequence, attemptNo, fmt.Sprintf("当前处理人 %s（登录账号 %s）会话就绪，即将发出 %s", preview.ActorName, preview.ActorAccount, preview.Endpoint))
+	// F-035/T09 协议摘要：把代理 ID、批次号、nextAuditorList 条目数、表单数据版本与处理人来源
+	// 逐行落 step.log，页面请求与 curl.log 可逐字段对照；敏感值（SID、密码、表单正文）不进日志。
+	log.Phase("prepare", step.Sequence, attemptNo, protocolSummary(runCtx, step, preview))
 	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人“%s”会话已就绪，即将在“%s”节点发送一次“%s”请求", preview.ActorName, runCtx.Nodes[step.NodeKey].Name, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 当前处理人账号可能不同于计划账号：计划账号锁与处理人锁同时持有到核验结束，
 	// 保证实例“已发”视角读取和真实待办写入不会互相覆盖 SID。
@@ -1374,6 +1421,45 @@ func actionName(action model.ActionKey) string {
 		return label
 	}
 	return string(action)
+}
+
+// protocolSummary 生成一次写请求的协议摘要（F-035/T09）：
+// 接口、动作、代理 ID 来源、是否携带批次号、nextAuditorList 条目数、表单基线与处理人来源。
+// 本项目为内网系统，日志按原样记录完整请求/响应（含 SID 与表单正文），摘要只做逐行索引，不做脱敏。
+func protocolSummary(runCtx RunContext, step model.CompiledActionStep, preview *StepPreview) string {
+	parts := []string{"协议摘要", "接口 " + preview.Endpoint, "动作 " + string(step.Action)}
+	switch request := preview.request.(type) {
+	case *target.SubmitFlowInstanceRequest:
+		if request.FormProxyID != "" {
+			parts = append(parts, "代理=formProxyId（运行上下文表单代理）")
+		} else if request.FlowProxyID != "" {
+			parts = append(parts, "代理=flowProxyId（计划流程代理）")
+		}
+		parts = append(parts, "batchCode="+boolText(request.BatchCode != ""))
+		parts = append(parts, fmt.Sprintf("nextAuditorList 条目=%d", len(request.NextAuditors)))
+	case *target.AuditCurrentTaskRequest:
+		parts = append(parts, "代理=flowProxyId（目标任务快照）")
+		parts = append(parts, "batchCode=否")
+		parts = append(parts, fmt.Sprintf("nextAuditorList 条目=%d", len(request.NextAuditors)))
+	case *target.ActionWriteRequest:
+		parts = append(parts, "batchCode=否")
+		parts = append(parts, fmt.Sprintf("nextAuditorList 条目=%d", len(request.NextAuditors)))
+	}
+	source := "发起态表单模型"
+	if preview.FormBaseFromInstance {
+		source = "目标实例当前数据"
+	}
+	parts = append(parts, "表单基线="+source)
+	parts = append(parts, fmt.Sprintf("处理人=%s（账号 %s）", nameOrFallback(preview.ActorName, "未知"), preview.ActorAccount))
+	return strings.Join(parts, "，")
+}
+
+// boolText 把布尔值转成中文日志友好的文本。
+func boolText(value bool) string {
+	if value {
+		return "是"
+	}
+	return "否"
 }
 
 // refreshAndSubmit 在发送前完成待办任务 ID 的新鲜读取，然后发出业务写请求。

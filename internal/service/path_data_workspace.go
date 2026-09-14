@@ -111,7 +111,19 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		issues = appendHistoryIssues(issues, syncIssues)
 	}
 	// 登录人上下文字段跟随当前计划账号：目标提交时总会用登录态覆盖该字段，历史发起人身份不能带进回放。
-	if identity, identityErr := s.currentUserIdentity(ctx, planID); identityErr == nil {
+	// F-035：身份读取失败或岗位缺失不再被忽略——直接落阻断问题，禁止带着历史身份继续配置/发起。
+	identity, identityErr := s.currentUserIdentity(ctx, planID)
+	switch {
+	case identityErr != nil:
+		issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
+			Code: "IDENTITY_READ_FAILED", Message: "读取当前计划账号的目标身份失败：" + identityErr.Error() + "，不能沿用历史账号身份，请重试或检查账号配置", Blocking: true,
+		}})
+	case identity.DutyID == "" || identity.DutyName == "":
+		replaceUserIdentityValues(values, identity)
+		issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
+			Code: "IDENTITY_DUTY_MISSING", Message: "当前计划账号在目标平台缺少岗位信息，发起会被目标按错误身份解析处理人，请先在目标平台补全该账号岗位", Blocking: true,
+		}})
+	default:
 		replaceUserIdentityValues(values, identity)
 	}
 	// 条件字段的填写时机按节点权限算出；一个节点都填不了的决定性条件字段必须阻断，
@@ -412,7 +424,19 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 		issues = appendHistoryIssues(issues, s.syncLinkedCompanySelects(ctx, template, overlay.Values))
 	}
 	// 落盘前把登录人上下文字段替换为当前计划账号身份，历史发起人身份不允许进入工作区正文。
-	if identity, identityErr := s.currentUserIdentity(ctx, planID); identityErr == nil {
+	// F-035：身份读取失败或岗位缺失不再被忽略，落阻断问题并保留旧值不覆盖（失败不得掩盖有效数据）。
+	identity, identityErr := s.currentUserIdentity(ctx, planID)
+	switch {
+	case identityErr != nil:
+		issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
+			Code: "IDENTITY_READ_FAILED", Message: "读取当前计划账号的目标身份失败：" + identityErr.Error() + "，本次保存不替换身份字段", Blocking: true,
+		}})
+	case identity.DutyID == "" || identity.DutyName == "":
+		replaceUserIdentityValues(overlay.Values, identity)
+		issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
+			Code: "IDENTITY_DUTY_MISSING", Message: "当前计划账号在目标平台缺少岗位信息，发起前必须补全，请检查目标平台账号岗位配置", Blocking: true,
+		}})
+	default:
 		replaceUserIdentityValues(overlay.Values, identity)
 	}
 	// 决定性条件字段填不出或填了也影响不了分支时，必须把阻断问题落进配置行：

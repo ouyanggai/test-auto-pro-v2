@@ -101,10 +101,10 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 		if request.InstanceID != "" {
 			data["id"] = request.InstanceID
 		}
+		// F-035 代理互斥：FormMaking 重提只发实例实时的 formProxyId，无表单只发 flowProxyId。
 		if request.FormProxyID != "" {
 			data["formProxyId"] = request.FormProxyID
-		}
-		if request.FlowProxyID != "" {
+		} else if request.FlowProxyID != "" {
 			data["flowProxyId"] = request.FlowProxyID
 		}
 		if companyID := strings.TrimSpace(request.CompanyID); companyID != "" {
@@ -112,6 +112,8 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 		}
 		if len(request.BizRelevance) > 0 {
 			data["flowInstanceBizRelevanceList"] = request.BizRelevance
+		} else {
+			data["flowInstanceBizRelevanceList"] = []BizRelevance{}
 		}
 		body := map[string]any{"data": data}
 		formData := request.FormData
@@ -119,9 +121,12 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 			formData = json.RawMessage(`{}`)
 		}
 		body["formDataMongoVo"] = map[string]any{"data": formData}
-		if len(request.NextAuditors) > 0 {
-			body["nextAuditorList"] = request.NextAuditors
+		// 重提页面无条件 map 出 nextAuditorList（空时固定 []）；batchCode 重提不发送（矩阵 forbidden）。
+		auditors := request.NextAuditors
+		if auditors == nil {
+			auditors = []NextAuditor{}
 		}
+		body["nextAuditorList"] = auditors
 		return body, WriteEndpointReSubmit, nil
 	case "storage_form_data":
 		auditRecord := map[string]any{}

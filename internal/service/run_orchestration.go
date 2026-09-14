@@ -492,6 +492,12 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		}
 	}
 	nextNodeAuditors := map[string][]target.NextAuditor{}
+	// F-035：FormMaking 发起必须使用目标模板唯一的表单代理 ID；无表单保持空（走 flowProxyId）。
+	// 多个表单或读取失败直接阻塞启动：代理 ID 错误会让实例创建后停在节点上没有处理人。
+	formProxyID, formProxyErr := s.pathNodes.TemplateFormProxyID(ctx, planID)
+	if formProxyErr != nil {
+		return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: formProxyErr.Error()}
+	}
 	for index, compiled := range steps {
 		if compiled.Action != model.ActionSubmit && compiled.Action != model.ActionResubmit && compiled.Action != model.ActionApprove {
 			continue
@@ -525,6 +531,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		PathName:                 path.Name,
 		PlanAccount:              plan.Account,
 		FlowProxyID:              plan.TargetObjectID,
+		FormProxyID:              formProxyID,
 		Source:                   plan.FlowSource,
 		Nodes:                    nodes,
 		BranchSelections:         branchSelections,

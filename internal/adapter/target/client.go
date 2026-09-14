@@ -212,6 +212,14 @@ func (c *Client) CallWrite(ctx context.Context, path, sid string, body map[strin
 	return result, traceID, err
 }
 
+// CallWriteForTest 暴露统一写出口的载荷注入路径，供契约测试锁定信封注入（顶层 sid/projectId
+// 与 data.customerCode）。测试不连真实目标：请求在传输层失败，但注入发生在发送之前，
+// 可通过可注入的载荷观察器验证；无观察器时仅验证错误按不可用归类。
+func (c *Client) CallWriteForTest(ctx context.Context, path, sid string, body map[string]any) error {
+	_, _, err := c.CallWrite(ctx, path, sid, body)
+	return err
+}
+
 // callOfClass 是全部目标请求的唯一出口；class 标记读写分类，traceID 非空时作为日志关联键。
 func (c *Client) callOfClass(ctx context.Context, path, sid string, body map[string]any, class, traceID string) (*envelope, error) {
 	return c.callOfClassPlatform(ctx, path, sid, body, class, traceID, "")
@@ -225,12 +233,21 @@ func (c *Client) callWithPlatform(ctx context.Context, path, sid string, body ma
 
 // callOfClassPlatform 是带平台码覆盖的统一出口；platformCode 为空时回落全局配置。
 func (c *Client) callOfClassPlatform(ctx context.Context, path, sid string, body map[string]any, class, traceID, platformCode string) (*envelope, error) {
-	payload := make(map[string]any, len(body)+1)
+	payload := make(map[string]any, len(body)+3)
 	for key, value := range body {
 		payload[key] = value
 	}
 	if sid != "" {
 		payload["sid"] = sid
+		// F-035：目标 axios 拦截器对每个带会话的 POST 统一注入顶层 projectId
+		//（来自 store，本项目无项目上下文固定空字符串）与 data.customerCode；
+		// 空字符串也必须保留，不得因空值省略（人工成功 curl 已确认）。
+		payload["projectId"] = ""
+		if dataMap, ok := payload["data"].(map[string]any); ok {
+			if _, exists := dataMap["customerCode"]; !exists {
+				dataMap["customerCode"] = c.config.CustomerCode
+			}
+		}
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {

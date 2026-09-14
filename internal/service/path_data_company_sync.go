@@ -162,6 +162,8 @@ var targetLoginIdentityFieldRules = map[string]string{
 }
 
 // runtimeUserIdentity 是数据工作区替换登录人上下文所需的当前计划账号身份。
+// DutyID/DutyName 是 F-035 新增的岗位事实：目标 FlowDialog 提交时把登录态 dutyId/dutyName
+// 一并覆盖进 global_user_basic_information；岗位取不到时发起前阻塞，不能用空值或历史岗位。
 type runtimeUserIdentity struct {
 	UserID         string
 	UserName       string
@@ -169,6 +171,8 @@ type runtimeUserIdentity struct {
 	CompanyName    string
 	DepartmentID   string
 	DepartmentName string
+	DutyID         string
+	DutyName       string
 }
 
 // currentUserIdentity 读取计划账号在目标平台的当前身份；会话由会话管理器缓存，不额外触发登录。
@@ -198,12 +202,13 @@ func (s *PathConfigService) currentUserIdentity(ctx context.Context, planID uint
 		UserID: active.UserID, UserName: active.AccountName,
 		CompanyID: active.CompanyID, CompanyName: active.CompanyName,
 		DepartmentID: active.DepartmentID, DepartmentName: active.DepartmentName,
+		DutyID: active.DutyID, DutyName: active.DutyName,
 	}, nil
 }
 
 // replaceUserIdentityValues 把历史表单数据里目标提交时注入的登录人上下文字段替换为当前计划账号身份。
 // 目标在每次提交时都会用登录态覆盖该字段，回放值若保留原发起人身份，提交出去的数据会冒用他人身份；
-// 岗位信息由目标登录态携带而运行时会话不含岗位，保持为空，不伪造岗位值。
+// 岗位事实随同一次会话读取（F-035），缺失时由读取/保存边界阻塞，这里不再伪造空值。
 func replaceUserIdentityValues(values map[string]any, identity runtimeUserIdentity) {
 	if values == nil {
 		return
@@ -218,8 +223,8 @@ func replaceUserIdentityValues(values map[string]any, identity runtimeUserIdenti
 		"companyName":    identity.CompanyName,
 		"departmentId":   identity.DepartmentID,
 		"departmentName": identity.DepartmentName,
-		"dutyId":         "",
-		"dutyName":       "",
+		"dutyId":         identity.DutyID,
+		"dutyName":       identity.DutyName,
 	}
 	// 登录人约定字段按登记表逐项替换；键不存在（表单没这个字段）自然跳过，身份属性为空不伪造。
 	for field, rule := range targetLoginIdentityFieldRules {
@@ -261,6 +266,7 @@ func RuntimeUserIdentityForTest(userID, userName, companyID, companyName, depart
 	return runtimeUserIdentity{
 		UserID: userID, UserName: userName, CompanyID: companyID,
 		CompanyName: companyName, DepartmentID: departmentID, DepartmentName: departmentName,
+		DutyID: "duty-test", DutyName: "测试岗位",
 	}
 }
 

@@ -382,6 +382,12 @@ func evaluateCurrentTask(ctx model.ActionContext) gateResult {
 		return denyWith(g, "转发辅助流程不提供主实例审批动作")
 	}
 	if !active {
+		// F-035：目标节点已到达但没有生成 currentAuditUserInfo 和待办时，
+		// 这是“目标节点未生成处理人”阻塞，不是“当前待办已经处理”——
+		// 把无处理人显示成已处理会诱导用户重复提交同一节点。
+		if ctx.HandlerMissing {
+			return denyWith(g, "目标节点未生成处理人（处理人查询阻塞，assignment_missing），不能当作已处理")
+		}
 		if ctx.CurrentTaskDone {
 			return denyWith(g, "当前待办已经处理，不能重复执行")
 		}

@@ -78,16 +78,28 @@ func TestInitiationNextAuditorListByTargetSemantics(t *testing.T) {
 				t.Fatalf("人员指定项应带真实人员名称，实际 %+v", auditors[0])
 			}
 
-			// level：目标自行按组织层级解析，不能发送只有节点名的伪造项。
-			if body := buildBody(action, "level"); body["nextAuditorList"] != nil {
-				t.Fatalf("level 不应携带伪造 nextAuditorList：%+v", body["nextAuditorList"])
+			// level：目标自行按组织层级解析，不能发送伪造人员项；按目标页面形状固定发送空数组（F-035）。
+			if body := buildBody(action, "level"); !isEmptyNextAuditorList(body["nextAuditorList"]) {
+				t.Fatalf("level 只能携带空 nextAuditorList 数组，实际：%+v", body["nextAuditorList"])
 			}
 
-			// 固定人员类（company）：目标自行解析，不传。
-			if body := buildBody(action, "company"); body["nextAuditorList"] != nil {
-				t.Fatalf("固定人员类下一节点不应携带 nextAuditorList：%+v", body["nextAuditorList"])
+			// 固定人员类（company）：目标自行解析，不传伪造项；字段仍固定存在且为空数组。
+			if body := buildBody(action, "company"); !isEmptyNextAuditorList(body["nextAuditorList"]) {
+				t.Fatalf("固定人员类下一节点只能携带空 nextAuditorList 数组，实际：%+v", body["nextAuditorList"])
 			}
 		})
 	}
 
+}
+
+// isEmptyNextAuditorList 判定载荷里的 nextAuditorList 是否为固定空数组形状（F-035 矩阵）。
+func isEmptyNextAuditorList(value any) bool {
+	switch typed := value.(type) {
+	case []target.NextAuditor:
+		return len(typed) == 0
+	case []any:
+		return len(typed) == 0
+	default:
+		return false
+	}
 }

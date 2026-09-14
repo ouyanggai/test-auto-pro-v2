@@ -85,8 +85,11 @@ type SubmitFlowInstanceRequest struct {
 	FormData json.RawMessage
 	// BizRelevance 是业务关联列表，可空。
 	BizRelevance []BizRelevance
-	// NextAuditors 是分支选择/下一节点选人，可空。
+	// NextAuditors 是分支选择/下一节点选人，可空；submit 按目标页面固定发送数组（空时为 []）。
 	NextAuditors []NextAuditor
+	// BatchCode 是随 submit/draft 顶层发送的批次号（F-035）：目标 FlowDialog 打开时生成一次，
+	// 随提交原样携带；不是工具幂等键，重试/对账不得以它为依据。
+	BatchCode string
 }
 
 // SubmitFlowInstanceResult 是发起返回的目标事实摘要，供核验重读与运行记录使用。
@@ -100,6 +103,11 @@ type SubmitFlowInstanceResult struct {
 
 // BuildSubmitBody 构造发起请求的协议载荷（不含 SID 等会话敏感信息，会话由唯一出口注入）。
 // 导出是为了让执行器的「即将发出的请求」预览与实际发出的载荷严格同源，不允许两套拼装逻辑。
+// 字段存在性按 F-035 协议矩阵（protocol_matrix.go）执行：
+//   - formProxyId 与 flowProxyId 互斥：FormMaking 只发 formProxyId，无表单只发 flowProxyId
+//     （FlowDialog 按 formId 是否为空二选一，禁止同时发送两个代理字段）；
+//   - nextAuditorList 固定发送数组，无显式选人时是 []（目标页面无条件 map 出数组）；
+//   - batchCode 仅 submit/draft 顶层携带；sid/projectId 由统一出口注入。
 func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 	data := map[string]any{}
 	if id := strings.TrimSpace(request.InstanceID); id != "" {
@@ -111,17 +119,21 @@ func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 	if status := strings.TrimSpace(request.Status); status != "" {
 		data["status"] = status
 	}
+	// 代理 ID 互斥：目标页面按「有表单用 formProxyId、无表单用 flowProxyId」构造，
+	// 把发布流程代理 ID 当表单代理 ID 或两者同发都是工具缺陷（F-035 根因 C）。
 	if id := strings.TrimSpace(request.FormProxyID); id != "" {
 		data["formProxyId"] = id
-	}
-	if id := strings.TrimSpace(request.FlowProxyID); id != "" {
+	} else if id := strings.TrimSpace(request.FlowProxyID); id != "" {
 		data["flowProxyId"] = id
 	}
 	if id := strings.TrimSpace(request.CompanyID); id != "" {
 		data["companyId"] = id
 	}
+	// 业务关联固定发送数组：目标页面无条件构造列表（至少公司关联），空时也要保留数组形状。
 	if len(request.BizRelevance) > 0 {
 		data["flowInstanceBizRelevanceList"] = request.BizRelevance
+	} else {
+		data["flowInstanceBizRelevanceList"] = []BizRelevance{}
 	}
 	body := map[string]any{"data": data}
 	if id := strings.TrimSpace(request.FixedExecuteNodeID); id != "" {
@@ -135,8 +147,16 @@ func BuildSubmitBody(request SubmitFlowInstanceRequest) map[string]any {
 		formData = json.RawMessage(`{}`)
 	}
 	body["formDataMongoVo"] = map[string]any{"data": formData}
-	if len(request.NextAuditors) > 0 {
-		body["nextAuditorList"] = request.NextAuditors
+	// nextAuditorList 固定发送数组：目标页面 2025.9.9 改为无条件 map（空列表也发送），
+	// 人工成功 curl 已确认空数组形状（F-035 根因 A）。空值不能被解释为已解析出人员。
+	auditors := request.NextAuditors
+	if auditors == nil {
+		auditors = []NextAuditor{}
+	}
+	body["nextAuditorList"] = auditors
+	// batchCode 仅 submit/draft 顶层携带；空值不发送（调用方未生成说明走的不是页面同源路径）。
+	if code := strings.TrimSpace(request.BatchCode); code != "" {
+		body["batchCode"] = code
 	}
 	return body
 }
@@ -216,7 +236,10 @@ type AuditCurrentTaskResult struct {
 	BatchNo    string
 }
 
-// BuildAuditBody 构造审批请求的协议载荷（不含会话敏感信息）。与预览严格同源，规则同 BuildSubmitBody。
+// BuildAuditBody 构造审批请求的协议载荷（不含会话敏感信息）。与预览严格同源。
+// F-035 矩阵：data 的 id/jobTaskId/flowProxyId/auditRecord/flowInstanceBizRelevanceList 与
+// formDataMongoVo 固定发送；tracking 顶层布尔无条件携带（页面 this.tracking 直发，默认 false）；
+// nextAuditorList 仅 pass 分支发送，条件成立时固定数组。batchCode 审批不发送。
 func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	data := map[string]any{
 		"id":        strings.TrimSpace(request.InstanceID),
@@ -227,6 +250,8 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	}
 	if len(request.BizRelevance) > 0 {
 		data["flowInstanceBizRelevanceList"] = request.BizRelevance
+	} else {
+		data["flowInstanceBizRelevanceList"] = []BizRelevance{}
 	}
 	auditRecord := map[string]any{
 		"auditStatus": strings.TrimSpace(request.AuditStatus),
@@ -244,9 +269,12 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	if len(request.NextAuditors) > 0 {
 		body["nextAuditorList"] = request.NextAuditors
 	}
+	// tracking 是页面无条件携带的顶层布尔；nil 视为 false，不能因“没配置”省略字段。
+	tracking := false
 	if request.Tracking != nil {
-		body["tracking"] = *request.Tracking
+		tracking = *request.Tracking
 	}
+	body["tracking"] = tracking
 	return body
 }
 

@@ -284,8 +284,8 @@ func TestReplaceUserIdentityValuesOnlyTouchesGlobalContextField(t *testing.T) {
 	if identity["departmentId"] != "dept-plan" || identity["departmentName"] != "计划部门" {
 		t.Fatalf("部门身份没有替换为计划账号：%+v", identity)
 	}
-	if identity["dutyId"] != "" || identity["dutyName"] != "" {
-		t.Fatalf("运行时会话不含岗位信息，不允许伪造岗位值：%+v", identity)
+	if identity["dutyId"] != "duty-test" || identity["dutyName"] != "测试岗位" {
+		t.Fatalf("岗位事实必须随身份一起替换（F-035：岗位缺失在读取/保存边界阻塞，而不是伪造空值）：%+v", identity)
 	}
 	if values["expenseUserName"] != "计划账号" {
 		t.Fatalf("费用归属人是发起人个人信息，应替换为计划账号：%v", values["expenseUserName"])

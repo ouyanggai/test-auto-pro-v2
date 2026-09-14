@@ -426,8 +426,9 @@ func TestF019ResubmitUsesLiveProxyFacts(t *testing.T) {
 	if !ok {
 		t.Fatalf("重新提交载荷缺少 data：%v", preview.RequestPayload)
 	}
-	if data["flowProxyId"] != "flow-live" || data["formProxyId"] != "form-live" {
-		t.Fatalf("必须使用目标实时代理标识：%v", data)
+	// F-035 代理互斥：FormMaking 重提只发实时的 formProxyId，不再同时携带 flowProxyId。
+	if data["formProxyId"] != "form-live" || data["flowProxyId"] != nil {
+		t.Fatalf("必须且只能使用目标实代表单代理标识：%v", data)
 	}
 }
 

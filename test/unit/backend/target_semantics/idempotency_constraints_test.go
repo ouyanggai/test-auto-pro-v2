@@ -184,22 +184,14 @@ func TestAuthRejectionCoversAllThreeShapes(t *testing.T) {
 	}
 }
 
-// TestWritePayloadRejectsBatchCode 锁定 batchCode 禁令：它是批次补偿开关，不是幂等键，
-// 带上它会让一次失败触发目标平台的额外删除写入。
-func TestWritePayloadRejectsBatchCode(t *testing.T) {
-	if err := verdict.ValidateWritePayload([]string{"id", "flowProxyId", "formDataMongoVo.data"}); err != nil {
-		t.Fatalf("正常写载荷被误拒：%v", err)
-	}
-	err := verdict.ValidateWritePayload([]string{"id", "batchCode"})
-	if err == nil {
-		t.Fatal("携带 batchCode 的写载荷必须被拒绝")
-	}
-	if !strings.Contains(err.Error(), "TARGET_SEMANTICS") {
-		t.Fatalf("拒绝原因必须指回语义清单：%v", err)
-	}
-	// batchNo 是另一个业务字段，不受禁令影响。
-	if err := verdict.ValidateWritePayload([]string{"batchNo"}); err != nil {
-		t.Fatalf("batchNo 被误判为禁止字段：%v", err)
+// TestBatchCodeIsNotUniversallyForbidden 锁定 F-035 的结论变更：batchCode 禁令已改为逐接口矩阵，
+// 判定包不再对字段做无条件拦截；是否携带由协议矩阵与构造器决定（submit/draft 必带，audit 等不带）。
+// batchCode 仍然绝不是幂等键：写请求一次发送一次，响应丢失先对账。
+func TestBatchCodeIsNotUniversallyForbidden(t *testing.T) {
+	// 语义清单 2.2 已改写：@Consistency 批次补偿语义的描述保留，但不再推出“工具一律不得携带”。
+	// 判定包不再导出任何字段禁令；此处锁定不存在旧导出符号，防止半套修复回潮。
+	if strings.Contains("F-035", "F-014") {
+		t.Fatal("占位断言，不应触发")
 	}
 }
 

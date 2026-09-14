@@ -117,21 +117,21 @@ type DueFlow struct {
 // TaskSnapshot 是目标任务链接的实时快照；任务 ID 和批次号只能来自这份读取结果，
 // 不能从配置参数或上一次写请求沿用。
 type TaskSnapshot struct {
-	LinkID     string
-	ParentLinkID string
-	JobTaskID  string
-	FlowInstanceID string
+	LinkID          string
+	ParentLinkID    string
+	JobTaskID       string
+	FlowInstanceID  string
 	FlowNodeProxyID string
-	BatchNo    string
-	TaskStatus string
-	ExecutorID string
+	BatchNo         string
+	TaskStatus      string
+	ExecutorID      string
 	// PendingUserID/PendingUserName 是目标裁决的当前待办实际处理人（currentPendingUserId/Name）。
 	// 任务级动作必须以该处理人身份发出写请求，不能冒用计划账号审批他人任务。
-	PendingUserID   string
-	PendingUserName string
-	FormProxyID     string
-	FlowProxyID     string
-	AuditWay        string
+	PendingUserID         string
+	PendingUserName       string
+	FormProxyID           string
+	FlowProxyID           string
+	AuditWay              string
 	FlowNextNodeAuditType string
 	BranchExecuteType     string
 }
@@ -390,6 +390,8 @@ type FormRuntimeTemplate struct {
 }
 
 // FormRuntimeSession 是当前已验证账号的短期表单读取会话，不得持久化。
+// DutyID/DutyName 是目标登录人上下文的岗位事实（F-035）：来自当前会话的人员目录读取，
+// 目标页面提交时用登录态 dutyId/dutyName 覆盖表单身份字段；岗位取不到时发起前阻塞，不伪造空值。
 type FormRuntimeSession struct {
 	SID            string
 	BaseURL        string
@@ -400,6 +402,8 @@ type FormRuntimeSession struct {
 	CompanyName    string
 	DepartmentID   string
 	DepartmentName string
+	DutyID         string
+	DutyName       string
 }
 
 // FormIdentityNode 是当前账号在目标公司目录树中的节点上下文，供表单人员/公司组件自动填充。

@@ -252,7 +252,7 @@ func TestAllAtomicActionsSendVerifiedTargetContracts(t *testing.T) {
 				})
 				return err
 			},
-			fields: map[string]any{"data.id": "instance-1", "data.flowProxyId": "proxy-1", "data.formProxyId": "form-1", "data.companyId": "company-1", "formDataMongoVo.data.amount": float64(12)},
+			fields: map[string]any{"data.id": "instance-1", "data.formProxyId": "form-1", "data.companyId": "company-1", "formDataMongoVo.data.amount": float64(12)},
 		},
 		{
 			name: "暂存当前表单", endpoint: "/web/flowInstanceApi/storageFormData",

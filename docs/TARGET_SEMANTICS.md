@@ -199,7 +199,7 @@ deployment=未取得（目标平台不提供版本接口）
 
 1. **同意与不同意不经过 `@FlowSubmitVerify`。** 工具用的是无 `/web` 前缀的 `/flowInstanceApi/audit`，该控制器方法只有 `@ParaCheck({})`。`/web/flowInstanceApi/audit` 确实带 `@FlowSubmitVerify(submitType = audit)`，但那是另一个端点，工具不调用它。真实前端也走无前缀路径（`api/index.js:498` `submitTask: '/flowInstanceApi/audit'`）。
 2. **`/web/flowInstanceApi/v1` 是另一个控制器**（`FlowInstanceWebControllerV1`，`@RequestMapping("/web/flowInstanceApi/v1")`），带自己的 `@Consistency`。工具不调用 v1 路径，勘定时不要把两个控制器的注解混读。
-3. **只有 submit 带 `@Consistency`**，且 `deleteMethodName = "delete"`。这是第 2 章 `batchCode` 禁令的直接来源。
+3. **只有 submit 带 `@Consistency`**，且 `deleteMethodName = "delete"`。批次号的携带规则见第 2.2 节 F-035 逐接口矩阵。
 
 ```evidence
 file=参考代码/java-serve/rsh-cloud-web-api/src/main/java/com/rsh/cloud/web/api/controller/ops/flow/FlowInstanceWebController.java
@@ -426,7 +426,7 @@ deployment=未取得（目标平台不提供版本接口）
 - 「鉴权拒绝 / 前置拒绝 + 已前进」说明这次拒绝与观察到的推进不是同一件事，可能是上一次不确定写已生效。
 - 「不可解释失败 + 明确未变」仍判「不确定」，因为重读只覆盖流程侧事实，跨存储的部分生效证明不了不存在。
 
-写进代码的三条硬约束：禁止用 `code` 判成功；禁止把业务拒绝并入「暂时不可用」；写请求禁止携带 `batchCode`。
+写进代码的三条硬约束：禁止用 `code` 判成功；禁止把业务拒绝并入「暂时不可用」；`batchCode` 是否携带由第 2.2 节逐接口协议矩阵决定（submit/draft 必带顶层批次号，其余端点不携带），且它绝不是工具重试键。
 
 ### 1.7 前置拒绝清单
 
@@ -512,12 +512,24 @@ deployment=未取得（目标平台不提供版本接口）
 
 依据：动作目录 15 条动作的参数集合（`internal/engine/actioncatalog/catalog.go`）逐条对照目标 `FlowInstanceProtocol` 与各 `Vo`，没有幂等键字段。因此**重复写的防护责任全部在工具侧**，这是 F-016 必须先有运行记录与检查点的原因。
 
-### 2.2 `@Consistency` 不是幂等机制，`batchCode` 是禁令
+### 2.2 `@Consistency` 不是幂等机制；`batchCode` 按逐接口协议矩阵携带（F-035 改写）
 
 | 结论 | 强度 |
 | --- | --- |
 | `@Consistency` 是批次补偿机制，只在请求带 `batchCode` 时生效；生效后一旦失败会调用注解声明的 `deleteMethodName` 回滚同批次已登记数据。 | `源码可证明` |
-| **工具的写请求一律不得携带 `batchCode`。** 否则一次失败可能触发目标平台的额外删除写入，把「一次失败的提交」放大成「删掉了别的数据」。 | `源码可证明` |
+| **旧结论「工具的写请求一律不得携带 `batchCode`」已被 F-035 改写。** 目标 `GroupApproveManage` 前端 FlowDialog 在打开弹窗时生成 32 位批次号（`generateRandomId(32)`）并随 FormMaking 新建提交/保存草稿的 `/web/flowInstanceApi/submit` 顶层原样发送；人工成功 curl 已确认该字段存在。是否携带由逐接口协议矩阵决定（见下），不再是一律禁止。 | `源码可证明`（FlowDialog.vue:261、:875） |
+| `batchCode` 仍然绝不是工具幂等键：写请求一次发送一次，响应丢失先按目标实例/任务事实对账，绝不以 `batchCode`、超时或网络错误为重试依据。 | `源码可证明` + 工具纪律 |
+
+逐接口 `batchCode` 存在性矩阵（代码登记处 `internal/adapter/target/protocol_matrix.go`，四态 required/optional/empty/forbidden）：
+
+| 端点 | `batchCode` | 证据 |
+| --- | --- | --- |
+| `/web/flowInstanceApi/submit`（新建提交、保存草稿，FormMaking 与无表单页面同源） | `required`（顶层） | FlowDialog.enterpriseHandleSubmit `param.batchCode = this.batchCode`（:875），弹窗 data 初始化 `batchCode: generateRandomId(32)`（:261）；人工成功 curl 运行 7 同计划 |
+| `/web/flowInstanceApi/reSubmit` | `forbidden` | examineOpinion 重提页面不生成、不发送批次号 |
+| `/flowInstanceApi/audit` | `forbidden` | examineOpinion.handleSubmitCheck 无批次号 |
+| 其余动作端点（暂存、回退、取回、撤回、移交、加签、转发、关注、催办） | `forbidden`（未登记前禁止进入实现） | 各自页面构造无批次号；新增证据必须先登记矩阵 |
+
+`@Consistency` 的批次补偿风险重新表述：工具按目标页面同形状携带 `batchCode` 时，`submit` 失败可能触发目标自身的删除回滚——这是目标平台自身行为，不是工具可选择的；工具侧防护是「一次写 + 写后对账」，不因补偿风险回退到与目标页面不一致的请求形状。
 
 ```evidence
 file=参考代码/rsh-framework-all/rsh-framework-cloud-server/src/com/rsh/framework/cloud/server/ConsistencyInterceptor.java
@@ -537,9 +549,9 @@ head=rsh-framework-all@84bb19736a8a
 deployment=未取得（目标平台不提供版本接口）
 ```
 
-`/web/flowInstanceApi/submit` 是 12 个端点中唯一带 `@Consistency` 的，其 `deleteMethodName = "delete"`，即回滚动作是删除流程实例。禁令由 `test/unit/backend/target_semantics/idempotency_constraints_test.go` 与 `test/contracts/f014/target_write_whitelist.sh` 双向锁定。
+`/web/flowInstanceApi/submit` 是 12 个端点中唯一带 `@Consistency` 的，其 `deleteMethodName = "delete"`，即回滚动作是删除流程实例。字段存在性矩阵由 `internal/adapter/target/ProtocolMatrix()` 与 `test/contracts/f035/protocol/` 契约测试双向锁定。
 
-当前 Go 侧确认未使用该字段。动作目录里的 `batchNo` 是另一个业务字段，与 `batchCode` 无关。
+动作目录里的 `batchNo` 是另一个业务字段（移交/待办快照），与 `batchCode` 无关。
 
 ### 2.3 两道可能拦住重复写的防线
 

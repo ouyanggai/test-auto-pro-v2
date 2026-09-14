@@ -30,7 +30,11 @@ type rawAuditNamedItem struct {
 	Account     string `json:"account"`
 	Username    string `json:"username"`
 	Phone       string `json:"phone"`
-	UserVo      *struct {
+	// DutyID/DutyName 是人员目录返回的岗位事实（目标 UserRepository 查询直接带出 dutyId/dutyName），
+	// 供当前计划账号身份构造 global_user_basic_information.dutyId/dutyName。
+	DutyID   string `json:"dutyId"`
+	DutyName string `json:"dutyName"`
+	UserVo   *struct {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
 		RealName    string `json:"realName"`
@@ -757,4 +761,34 @@ func (c *Client) MatchHandlerAccounts(ctx context.Context, active Session, handl
 		}
 	}
 	return result, nil
+}
+
+// CurrentUserDuty 从公司人员目录解析当前会话账号的岗位事实（F-035）：
+// 目标 UserRepository 的目录查询直接返回 dutyId/dutyName，目标发起页提交时
+// 用登录态的这两个值覆盖表单身份字段。目录里查不到当前用户或岗位为空时返回空串，
+// 由调用方决定阻塞——绝不能用历史账号岗位或空值冒充。
+func (c *Client) CurrentUserDuty(ctx context.Context, active Session) (string, string, error) {
+	if strings.TrimSpace(active.CompanyID) == "" || strings.TrimSpace(active.UserID) == "" {
+		return "", "", fmt.Errorf("login response missing company id or user id")
+	}
+	resp, err := c.call(ctx, "/web/user/api/user/findByCompanyIdUserList", active.SID, map[string]any{
+		"data": map[string]any{"companyId": active.CompanyID}, "pagination": true, "pages": 1, "size": 1000,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	if !responseSucceeded(resp) {
+		return "", "", responseError(resp)
+	}
+	var page rawAuditPersonnelPage
+	if err := json.Unmarshal(resp.Data, &page); err != nil {
+		return "", "", fmt.Errorf("invalid personnel directory")
+	}
+	for _, item := range page.DataList {
+		if strings.TrimSpace(item.ID) != strings.TrimSpace(active.UserID) {
+			continue
+		}
+		return strings.TrimSpace(item.DutyID), strings.TrimSpace(item.DutyName), nil
+	}
+	return "", "", fmt.Errorf("current user not found in personnel directory")
 }

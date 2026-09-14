@@ -3,6 +3,7 @@ package step
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -69,6 +70,13 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 		return facts, err
 	}
 	facts.DueNodes = dueNodes
+	// F-035：目标节点已到达但未生成处理人的分型事实——实例可读、当前节点已知、
+	// 但 currentAuditUserInfo 与待办都为空。这只是“正在生成处理人”的证据，
+	// 绝不能被解释为“当前待办已经处理”；有界轮询结束后仍缺失则按 assignment_missing 阻塞。
+	if len(facts.CurrentNodes) > 0 && len(facts.CurrentHandlers) == 0 && len(facts.DueNodes) == 0 {
+		facts.HandlerGenerationRead = true
+		facts.HandlerMissing = true
+	}
 	// 当前处理人发现只允许在计划账号会话（放行前的准备/门禁阶段）使用；
 	// 写后核验用当前处理人会话，必须只核对当前处理人本人的任务（会签场景其他人的待办还在）。
 	allowDiscovery := strings.EqualFold(strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount))
@@ -205,6 +213,11 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		session = taskSession
 		facts.CurrentTaskRead = true
 		facts.CurrentTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
+		// F-035：解析不到待办且目标也没有生成处理人时，把分型事实落进诊断，
+		// 让门禁显示「目标节点未生成处理人」而不是误导性的「当前待办已经处理」。
+		if !facts.CurrentTaskFound && facts.HandlerGenerationRead && facts.HandlerMissing {
+			facts.AssigneeDiag = fmt.Sprintf("目标节点已到达但未生成 currentAuditUserInfo（实例 %s），目标尚未产生处理人（assignment_missing）", instanceID)
+		}
 		facts.CurrentTaskLinkID = strings.TrimSpace(snapshot.LinkID)
 		facts.CurrentTaskParentID = strings.TrimSpace(snapshot.ParentLinkID)
 		facts.CurrentTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)

@@ -237,6 +237,8 @@ func assertTargetHistoryReadOnlyCalls(t *testing.T, fixture *targetHistoryFixtur
 		"/web/user/api/login/user/login": true, "/web/flowInstanceApi/list": true,
 		"/web/flowInstanceApi/getCurrentFromData": true, "/web/flowProxy/findById": true,
 		"/web/formProxy/findById": true,
+		// F-035：当前计划账号岗位事实来自目标人员目录（只读，带 dutyId/dutyName）。
+		"/web/user/api/user/findByCompanyIdUserList": true,
 	}
 	for _, path := range paths {
 		if !allowed[path] {

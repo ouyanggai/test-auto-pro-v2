@@ -86,7 +86,7 @@
 `源码可证明`：
 
 - 目标平台没有幂等键。写接口参数里没有任何客户端可控的去重标识。
-- `@Consistency` 不是幂等机制，是批次补偿：`ConsistencyInterceptor` 只在请求带 `batchCode` 时生效（`:104`），失败时会调用注解声明的 `deleteMethodName` 回滚同批次已登记数据（`:130`、`:143`）。**结论：工具的写请求一律不携带 `batchCode`，否则一次失败可能触发目标平台的额外删除写入。** 当前 Go 侧确认未使用该字段（动作目录里的 `batchNo` 是另一个业务字段）。
+- `@Consistency` 不是幂等机制，是批次补偿：`ConsistencyInterceptor` 只在请求带 `batchCode` 时生效（`:104`），失败时会调用注解声明的 `deleteMethodName` 回滚同批次已登记数据（`:130`、`:143`）。**【F-035 改写】原结论「工具的写请求一律不携带 `batchCode`」已废止：目标 FlowDialog 前端在 FormMaking 新建提交/保存草稿时固定发送顶层 32 位批次号（FlowDialog.vue:261、:875，人工成功 curl 证据），是否携带由 F-035 逐接口协议矩阵决定（`internal/adapter/target/protocol_matrix.go`；submit/draft required，reSubmit/audit/其余动作 forbidden）。`batchCode` 仍不是幂等键，写请求一次发送一次，响应丢失先对账。** 动作目录里的 `batchNo` 是另一个业务字段。
 - 源码中存在两道可能拦住重复写的防线：`FlowInstance` 的 `@Version` 乐观锁（`entity/FlowInstance.java:31`）经 `saveAndFlushWithOptimisticLockMessage` 转成固定中文提示「流程状态已发生变化，请刷新后重试」（`FlowInstanceServiceImpl.java:70`、`:526`）；以及各写接口在写事务前抛出的状态校验异常（如「该待办记录不存在」、「流程已完结,不支持取回」、「起始节点,不支持取回」）。
 - 浏览器侧另有 `utils/RequestQueue.js` 级别的重复请求抑制，属于前端行为，不构成服务端保证，工具不能依赖。
 
@@ -178,7 +178,7 @@
 
 - 禁止用 `code` 判成功，只认 `isSuccess`。
 - 禁止把业务拒绝并入「暂时不可用」；写判定不复用 `responseError`。
-- 写请求禁止携带 `batchCode`。
+- 【F-035 改写】`batchCode` 不再被无条件禁止：是否携带由逐接口协议矩阵决定，且绝不作为工具幂等键或重试依据。
 
 ## 详细执行任务
 

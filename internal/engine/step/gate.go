@@ -9,7 +9,6 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/actioncatalog"
-	"test-auto-pro-v2/internal/engine/verdict"
 	"test-auto-pro-v2/internal/model"
 )
 
@@ -66,6 +65,12 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 	} else {
 		ctx.HasCurrentTask = len(facts.DueNodes) > 0
 		ctx.CurrentTaskDone = facts.Found && len(facts.DueNodes) == 0
+	}
+	// F-035：目标节点已到达但未生成处理人/待办是有界轮询后的独立阻塞分型：
+	// CurrentTaskDone 必须保持 false，否则无处理人会被误报成“当前待办已经处理”。
+	if facts.HandlerGenerationRead && facts.HandlerMissing {
+		ctx.HandlerMissing = true
+		ctx.CurrentTaskDone = false
 	}
 	// 实例级动作也必须基于本次目标读取决定可用性：关注状态、待办接收人和已办归属
 	// 都不能从用户之前保存的编排配置推断。
@@ -139,13 +144,20 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			}
 		}
 		request := target.SubmitFlowInstanceRequest{
-			InstanceID:   runCtx.PathRun.MainInstanceRef,
-			Name:         instanceName(runCtx, step),
+			InstanceID: runCtx.PathRun.MainInstanceRef,
+			Name:       instanceName(runCtx, step),
+			// F-035：FormMaking 只发送 formProxyId，NoFormFlow 只发送 flowProxyId；
+			// 互斥选择在 BuildSubmitBody 内按同一规则强制执行。
+			FormProxyID:  runCtx.FormProxyID,
 			FlowProxyID:  runCtx.FlowProxyID,
 			CompanyID:    session.CompanyID,
 			FormData:     formData,
 			BizRelevance: ensureCompanyRelevance(facts.BizRelevance, session.CompanyID),
 			NextAuditors: nextAuditors,
+			// F-035：目标 FlowDialog 在打开时生成 32 位批次号并随 submit/draft 顶层发送；
+			// 这里在构造请求时生成一次并随请求结构走到发送，预览与实发严格同源；
+			// 它不是幂等键：写请求仍只发送一次，响应丢失先对账，绝不重发。
+			BatchCode: target.NewBatchCode(),
 		}
 		if step.Action == model.ActionSaveDraft {
 			request.Status = "draft"
@@ -427,38 +439,6 @@ func auditMessage(runCtx RunContext, step model.CompiledActionStep) string {
 		}
 	}
 	return "流程自动化测试平台代为同意（运行" + formatUint(runCtx.Run.RunNo) + "）"
-}
-
-// validateWritePayloadKeys 递归收集载荷里的全部键名并交给判定包校验，
-// 确保写请求绝不携带 batchCode（F-014 第 2.2 节禁令），发送前强制执行。
-func validateWritePayloadKeys(payload map[string]any) error {
-	return verdict.ValidateWritePayload(collectKeys(payload))
-}
-
-// collectKeys 深度优先收集载荷对象树的全部键名，含数组内嵌套对象。
-func collectKeys(value any) []string {
-	keys := make([]string, 0, 8)
-	var walk func(any)
-	walk = func(current any) {
-		switch typed := current.(type) {
-		case map[string]any:
-			for key, child := range typed {
-				keys = append(keys, key)
-				walk(child)
-			}
-		case []any:
-			for _, item := range typed {
-				walk(item)
-			}
-		case json.RawMessage:
-			var decoded any
-			if err := json.Unmarshal(typed, &decoded); err == nil {
-				walk(decoded)
-			}
-		}
-	}
-	walk(value)
-	return keys
 }
 
 // BuildRequestForTest 暴露提交载荷构造，供 test 目录下的定向用例锁定 nextAuditorList 语义。
