@@ -16,11 +16,12 @@
 </template>
 
 <script>
-import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
+import { FORM_RUNTIME_VERSION, EXECUTION_ACTIONS, isRuntimeCommand } from './runtime/protocol'
 import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
+import { createExecutionBridge } from './runtime/executionBridge'
 import HostVuePage from './HostVuePage.vue'
 
 export default {
@@ -60,14 +61,18 @@ export default {
 		formChangeHandler: null,
 		removeStorageFacade: null,
 		stateTimer: null,
-		// 选项型字段补丁协调：补丁触及的字段集合与最近一次协调产生的阻断问题。
-		optionPatchTriggers: [],
-		optionCoordinationIssues: []
+      // 选项型字段补丁协调：补丁触及的字段集合与最近一次协调产生的阻断问题。
+      optionPatchTriggers: [],
+      optionCoordinationIssues: [],
+      // 执行模式根桥接（window.__runtimeBridge__ 的持有者），销毁会话时一并废弃。
+      executionBridge: null
     }
   },
   mounted () {
     this.parentOrigin = this.getParentOrigin()
     window.addEventListener('message', this.onMessage)
+    // 执行模式根桥接：组件树装载完成后主动注册，执行服务只通过 window.__runtimeBridge__ 调用业务方法。
+    this.installExecutionBridge()
     this.post({ version: FORM_RUNTIME_VERSION, sessionId: '', requestId: 'boot', type: 'ready' })
   },
   beforeDestroy () {
@@ -81,6 +86,72 @@ export default {
       } catch (_) {
         return ''
       }
+    },
+    // ===== 执行模式（执行引擎改造 docs/s）=====
+    // installExecutionBridge 创建并注册根桥接；iframe 模式不受影响，两种模式可共存。
+    installExecutionBridge () {
+      this.executionBridge = createExecutionBridge(this)
+      window.__runtimeBridge__ = this.executionBridge
+    },
+    // invalidateExecutionBridge 在会话销毁后废弃桥接：删除全局引用并让既有引用不可执行。
+    invalidateExecutionBridge () {
+      if (this.executionBridge && typeof this.executionBridge.invalidate === 'function') {
+        this.executionBridge.invalidate()
+      }
+      this.executionBridge = null
+      if (window.__runtimeBridge__) delete window.__runtimeBridge__
+    },
+    executionSessionId () {
+      return this.sessionId
+    },
+    // loadForExecution 是 load_initiate/load_approve 的执行模式入口：复用既有真实装载链路，
+    // 并把执行模式记入载荷；发起与审批的差异（身份注入、审批页面组件）由后续任务在同一入口扩展。
+    async loadForExecution (mode, command) {
+      const payload = { ...(command.payload || {}), executionMode: mode }
+      const result = await this.execute({
+        version: FORM_RUNTIME_VERSION,
+        type: 'load',
+        sessionId: command.sessionId,
+        requestId: command.requestId,
+        payload
+      })
+      return { ...(result || {}), executionMode: mode }
+    },
+    // captureForExecution 对应 capture/validate：validate=true 走目标表单校验口径。
+    async captureForExecution (validate, command) {
+      this.assertExecutionSession(command)
+      const commandContext = this.beginOperation()
+      return this.capture(validate, commandContext)
+    },
+    // assertExecutionSession 校验执行命令归属当前会话，防止旧会话命令污染新装载。
+    assertExecutionSession (command) {
+      if (!this.sessionId || (command.sessionId && command.sessionId !== this.sessionId)) {
+        const error = new Error(`执行命令会话 ${command.sessionId || '空'} 与当前会话 ${this.sessionId || '空'} 不一致`)
+        error.code = 'BRIDGE_SESSION_MISMATCH'
+        throw error
+      }
+    },
+    // executeBusinessAction 是七个 runtime 业务动作与选择闭环的唯一执行入口。
+    // T005 只交付桥接与装载；业务动作在此统一登记接入点，动作实现于 T010 接入前必须如实拒绝，
+    // 绝不伪装成功或回落到任何按钮模拟。
+    async executeBusinessAction (action, command) {
+      this.assertExecutionSession(command)
+      if (!EXECUTION_ACTIONS.includes(action)) {
+        const error = new Error(`未知 runtime 动作：${action}`)
+        error.code = 'EXECUTION_ACTION_UNKNOWN'
+        throw error
+      }
+      const error = new Error(`动作 ${action} 尚未在 runtime 能力登记中开放执行`)
+      error.code = 'EXECUTION_ACTION_UNSUPPORTED'
+      throw error
+    },
+    // destroyExecutionSession 响应桥接 destroy：销毁既有会话；桥接失效由 destroySession 统一触发。
+    async destroyExecutionSession (command) {
+      if (command && command.sessionId && this.sessionId && command.sessionId !== this.sessionId) {
+        this.assertExecutionSession(command)
+      }
+      this.destroySession()
+      return { destroyed: true }
     },
     form () {
       const host = this.$refs.formHost
@@ -124,7 +195,7 @@ export default {
       if (command.type === 'destroy') {
         this.destroySession()
         this.result(command, { destroyed: true })
-        return
+        return { destroyed: true }
       }
       if (command.type === 'cancel') {
         // 取消只终止当前异步操作并保留会话；父页面随后可以在同一 iframe 中重放最新数据，避免旧回调覆盖新回显。
@@ -247,12 +318,14 @@ export default {
 		this.assertActiveSession(loadContext)
         this.savedValues = clonePlain(this.values)
         this.loading = false
-        this.result(command, {
+        const loadResult = {
 		  ready: true, renderType: this.renderType,
 		  unsupported: this.unsupported, isolatedHooks: this.isolatedHooks,
 		  issues: this.combinedIssues(), stats: this.stats()
-		})
-        return
+		}
+        this.result(command, loadResult)
+        // 返回值供执行模式桥接（window.__runtimeBridge__）直接取用；iframe 模式忽略返回值。
+        return loadResult
       }
       if (command.type === 'setData') {
 		const commandContext = this.beginOperation()
@@ -267,31 +340,37 @@ export default {
         this.dirty = false
 		await this.refresh(commandContext)
         this.savedValues = clonePlain(this.values)
-		this.result(command, await this.capture(false, commandContext))
-        return
+		const dataResult = await this.capture(false, commandContext)
+		this.result(command, dataResult)
+		return dataResult
       }
       if (command.type === 'restore') {
 		const commandContext = this.beginOperation()
 		await this.setData(this.savedValues, commandContext)
         this.dirty = false
 		await this.refresh(commandContext)
-		this.result(command, await this.capture(false, commandContext))
-        return
+		const restoreResult = await this.capture(false, commandContext)
+		this.result(command, restoreResult)
+		return restoreResult
       }
       if (command.type === 'refresh') {
         const commandContext = this.beginOperation()
         await this.refresh(commandContext)
-		this.result(command, await this.capture(false, commandContext))
-        return
+		const refreshResult = await this.capture(false, commandContext)
+		this.result(command, refreshResult)
+		return refreshResult
       }
       if (command.type === 'getValues') {
 		const commandContext = this.beginOperation()
-		this.result(command, await this.capture(false, commandContext))
-        return
+		const valuesResult = await this.capture(false, commandContext)
+		this.result(command, valuesResult)
+		return valuesResult
       }
       if (command.type === 'validateAndGetValues') {
 		const commandContext = this.beginOperation()
-		this.result(command, await this.capture(true, commandContext))
+		const validatedResult = await this.capture(true, commandContext)
+		this.result(command, validatedResult)
+		return validatedResult
 	  }
     },
 	activeSessionContext () {
@@ -489,10 +568,12 @@ export default {
     result (command, payload) {
       this.post({ version: FORM_RUNTIME_VERSION, sessionId: command.sessionId, requestId: command.requestId, type: 'result', payload })
     },
-	destroySession () {
-		this.sessionGeneration++
-		this.operationGeneration++
-		if (this.stateTimer) window.clearTimeout(this.stateTimer)
+    destroySession () {
+      this.sessionGeneration++
+      this.operationGeneration++
+      // 执行桥接随会话一起废弃：销毁后 window.__runtimeBridge__ 不存在，既有引用也不可执行。
+      this.invalidateExecutionBridge()
+      if (this.stateTimer) window.clearTimeout(this.stateTimer)
 		this.stateTimer = null
 		this.unbindFormChange()
       if (typeof this.removeRequestPolicy === 'function') this.removeRequestPolicy()

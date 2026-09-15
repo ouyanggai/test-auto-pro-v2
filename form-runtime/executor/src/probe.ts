@@ -40,6 +40,11 @@ async function main(): Promise<void> {
       undefined,
       { timeout: 30000 }
     )
+    // 等待执行桥接注册：App 组件树装载完成后必须主动挂上 window.__runtimeBridge__（T005）。
+    await page.waitForFunction('Boolean(window.__runtimeBridge__)', undefined, { timeout: 30000 })
+    const bridgeMethods = await page.evaluate(
+      "Object.keys(window.__runtimeBridge__).filter(name => typeof window.__runtimeBridge__[name] === 'function').sort()"
+    )
     const runtimeVersion = await page.evaluate('String(window.__formRuntimeVersion__)')
     const browserVersion = browser.version()
     const result = {
@@ -47,6 +52,7 @@ async function main(): Promise<void> {
       runtimeVersion,
       browserVersion,
       url: entryURL,
+      bridgeMethods,
       pageErrors
     }
     console.log(JSON.stringify(result, null, 2))

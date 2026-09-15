@@ -8,7 +8,7 @@
     "build": "vue-cli-service build",
     "sync": "node scripts/sync.js",
     "sync:check": "node scripts/sync-check.js",
-    "typecheck": "node --check src/main.js && node --check src/runtime/protocol.js && node --check src/runtime/formTemplate.js && node --check src/runtime/requestPolicy.js && node --check src/runtime/memoryAuth.js && node --check scripts/sync-config.js && node --check scripts/sync.js && node --check scripts/sync-check.js"
+    "typecheck": "node --check src/main.js && node --check src/runtime/protocol.js && node --check src/runtime/executionBridge.js && node --check src/runtime/formTemplate.js && node --check src/runtime/requestPolicy.js && node --check src/runtime/memoryAuth.js && node --check scripts/sync-config.js && node --check scripts/sync.js && node --check scripts/sync-check.js"
   },
   "dependencies": {
     "@wangeditor/editor": "5.1.23",
