@@ -254,6 +254,41 @@ func TestClientSessionExpiredReplaysOnceWithRefresh(t *testing.T) {
 	}
 }
 
+// TestClientRefreshedWriteLostIsUncertain SID 失效换会话重放后写响应丢失，随后连接断开：
+// 重放与首次发送遵守同一写出事实口径——必须判不确定，绝不降级成零写入失败。
+func TestClientRefreshedWriteLostIsUncertain(t *testing.T) {
+	server := startFakeExecutor(t, func(ws *websocket.Conn, env *runtimeexec.Message) {
+		forward := runtimeexec.Message{
+			Version: runtimeexec.ProtocolVersion,
+			Kind:    runtimeexec.KindRequestForward, RequestID: "fwd-1", SessionID: env.SessionID,
+			RunID: env.RunID, PathRunID: env.PathRunID, StepID: env.StepID,
+			Payload: json.RawMessage(`{"method":"POST","url":"https://target.example.com/web/flowInstanceApi/submit","headers":{},"action":"submit"}`),
+		}
+		_ = ws.WriteJSON(forward)
+		if resp := readEnvelope(t, ws); resp.Kind != runtimeexec.KindRequestResp {
+			t.Fatalf("期望 request_response")
+		}
+		// 重放的写请求已丢失响应，之后直接断开、不发送 result：写出事实必须已被记录。
+	})
+	sessions := &fakeSessions{current: target.Session{SID: "sid-old", Summary: target.AccountSummary{Account: "acct"}}, refresh: target.Session{SID: "sid-new", Summary: target.AccountSummary{Account: "acct"}}}
+	// 第一次：会话失效（响应已到达，未进入业务）；第二次：请求已写出但响应丢失。
+	forwarder := &fakeForwarder{errs: []error{
+		sessionExpiredError(),
+		&target.Error{Kind: target.ErrorUnavailable, Transport: target.TransportResponded, Cause: errors.New("响应丢失")},
+	}}
+	client, err := runtimeexec.NewClient(server.URL, forwarder, sessions)
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	_, err = client.Execute(context.Background(), "sess-fake", "acct", executeCommand(), runtimeexec.ExecuteCallbacks{})
+	if !errors.Is(err, runtimeexec.ErrUncertain) {
+		t.Fatalf("换会话重放后写丢失必须返回 ErrUncertain，实际 %v", err)
+	}
+	if len(forwarder.calls) != 2 {
+		t.Fatalf("会话失效后必须且只能重放一次，实际调用 %d 次", len(forwarder.calls))
+	}
+}
+
 // TestClientDisconnectAfterWrittenIsUncertain 写请求已写出后连接断开：必须返回不确定，不重发。
 func TestClientDisconnectAfterWrittenIsUncertain(t *testing.T) {
 	server := startFakeExecutor(t, func(ws *websocket.Conn, env *runtimeexec.Message) {
