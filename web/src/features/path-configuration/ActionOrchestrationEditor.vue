@@ -25,6 +25,26 @@ const actionDraft = ref<PathConfigConfiguredActionInput[]>([])
 const repeatDraft = ref<Record<string, number>>({})
 const allowClose = ref(false)
 const dragIndex = ref(-1)
+const allPeopleOpen = ref(false)
+const allPeopleTitle = ref('')
+const allPeopleNames = ref<string[]>([])
+
+const ALL_PEOPLE_PREVIEW = 5
+
+// personAllSummary 生成“张三、李四 等 12 人”样式的摘要，只取前几人避免撑开卡片。
+function personAllSummary(person: PathConfigPerson): string {
+  const names = personOptions(person).map(option => option.label)
+  const preview = names.slice(0, ALL_PEOPLE_PREVIEW).join('、')
+  return names.length > ALL_PEOPLE_PREVIEW ? `${preview} 等 ${names.length} 人` : preview
+}
+
+// openAllPeople 打开第二个弹窗，滚动展示全部候选人名单。
+function openAllPeople(person: PathConfigPerson) {
+  allPeopleTitle.value = `全部候选人员（${personOptions(person).length} 人）`
+  allPeopleNames.value = personOptions(person).map(option => option.label)
+  allPeopleOpen.value = true
+}
+
 const dropIndex = ref(-1)
 
 const nodeCatalog = computed(() => props.container.actionConfiguration.catalog ?? [])
@@ -300,17 +320,31 @@ function removeAction(index: number) {
           </div>
           <small class="action-row__hint">{{ actionHint(action.kind) }}</small>
           <div v-if="actionPerson(action.kind)" class="action-person-fields">
-            <n-select :value="action.person?.strategy || actionPerson(action.kind)!.strategy" :options="strategyOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { strategy: value as PathConfigPersonStrategyInput['strategy'] })" />
-            <n-select v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'manual'" :multiple="actionPerson(action.kind)!.multiple" :value="actionPerson(action.kind)!.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
+            <n-select filterable :value="action.person?.strategy || actionPerson(action.kind)!.strategy" :options="strategyOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { strategy: value as PathConfigPersonStrategyInput['strategy'] })" />
+            <n-select v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'manual'" filterable :multiple="actionPerson(action.kind)!.multiple" :value="actionPerson(action.kind)!.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
+            <!-- 全部候选只展示前几人加人数汇总，防止候选人过多撑爆弹窗；完整名单由第二个弹窗滚动查看 -->
+            <template v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'all'">
+              <span class="action-person-all">{{ personAllSummary(actionPerson(action.kind)!) }}</span>
+              <n-button quaternary size="tiny" type="primary" @click="openAllPeople(actionPerson(action.kind)!)">查看全部</n-button>
+            </template>
           </div>
         </div>
         <n-alert v-if="!actions.length" type="info" :show-icon="false">尚未添加动作，添加后可拖动整张卡片或使用上下按钮调整顺序。</n-alert>
         <template #footer>
           <n-space justify="end">
             <n-button @click="closeEditor">取消</n-button>
-            <n-button :disabled="readOnly || !canAddAction" @click="addAction"><AddOutline /> 添加动作</n-button>
             <n-button type="primary" :disabled="readOnly" @click="saveEditor">保存动作配置</n-button>
           </n-space>
+        </template>
+      </n-card>
+    </n-modal>
+    <n-modal :show="allPeopleOpen" @update:show="value => (allPeopleOpen = value)">
+      <n-card :title="allPeopleTitle" style="width: min(420px, 90vw)" :bordered="false">
+        <ul class="all-people-list">
+          <li v-for="(name, index) in allPeopleNames" :key="name">{{ index + 1 }}. {{ name }}</li>
+        </ul>
+        <template #footer>
+          <n-space justify="end"><n-button @click="allPeopleOpen = false">关闭</n-button></n-space>
         </template>
       </n-card>
     </n-modal>
@@ -339,6 +373,8 @@ function removeAction(index: number) {
 .action-drag-handle{width:14px;height:14px}
 .action-select{flex:1 1 auto;min-width:0}
 .action-repeat{display:flex;align-items:center;gap:4px;flex:0 0 auto;font-size:12px;opacity:.85}
+.action-person-all{font-size:12px;opacity:.8;align-self:center}
+.all-people-list{max-height:50vh;overflow-y:auto;margin:0;padding-left:18px;display:grid;gap:4px}
 .action-repeat :deep(.n-input-number){width:56px}
 .action-row__actions{display:flex;flex:0 0 auto;gap:4px}
 .action-row__hint{font-size:12px;opacity:.7}
