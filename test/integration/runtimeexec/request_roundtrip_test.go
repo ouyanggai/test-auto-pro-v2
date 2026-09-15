@@ -127,7 +127,7 @@ func TestExecutorServiceRequestRoundtrip(t *testing.T) {
 		RunID: "run-int", PathRunID: "pr-int", StepID: "step-int",
 		Payload: json.RawMessage(`{"mode":"initiate","renderType":"formmaking","template":{"list":[],"config":{}},"values":{},"permissions":[]}`),
 	}
-	loadResult, err := client.Load(ctx, handle.SessionID, "req-load", loadEnvelope)
+	loadResult, err := client.Load(ctx, handle.SessionID, loadEnvelope)
 	if err != nil {
 		t.Fatalf("装载失败：%v", err)
 	}
@@ -167,7 +167,7 @@ func TestExecutorServiceRequestRoundtrip(t *testing.T) {
 	if err := client.Destroy(ctx, handle.SessionID); err != nil {
 		t.Fatalf("销毁会话失败：%v", err)
 	}
-	if _, err := client.Load(ctx, handle.SessionID, "req-load-2", loadEnvelope); err == nil {
+	if _, err := client.Load(ctx, handle.SessionID, loadEnvelope); err == nil {
 		t.Fatalf("销毁后的会话不允许再装载")
 	}
 }

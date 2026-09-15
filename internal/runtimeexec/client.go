@@ -102,9 +102,10 @@ func (c *Client) CreateSession(ctx context.Context, spec SessionSpec) (*SessionH
 	return &result, nil
 }
 
-// Load 装载身份、流程和表单；payload 按 T008/T009 的装载载荷形状传入。
+// Load 装载身份、流程和表单；cmd 必须是携带全部协议编号的完整 load 信封，
+// 经 EncodeMessage 复核后原样发给执行服务（服务端按信封顶层字段校验，不接受二次包装）。
 // mode 取 initiate 或 approve。
-func (c *Client) Load(ctx context.Context, sessionID, requestID string, cmd Message) (json.RawMessage, error) {
+func (c *Client) Load(ctx context.Context, sessionID string, cmd Message) (json.RawMessage, error) {
 	envelope, err := EncodeMessage(cmd)
 	if err != nil {
 		return nil, err
@@ -295,8 +296,17 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 		return nil, fmt.Errorf("会话失效且重登失败：%w", refreshErr)
 	}
 	response, err = c.forwardOnce(ctx, refreshed, forwarded, parsed)
-	if err == nil && isWrite {
-		state.written = true
+	if isWrite {
+		if err == nil {
+			state.written = true
+		} else if targetErr, ok := err.(*target.Error); ok {
+			// 换会话重放与首次发送遵守同一写出事实口径：响应已到达或中断都算可能已写出。
+			// 漏判会把真实写丢失降级成零写入失败，让上层误以为没有副作用。
+			switch targetErr.Transport {
+			case target.TransportResponded, target.TransportInterrupted:
+				state.written = true
+			}
+		}
 	}
 	return response, err
 }

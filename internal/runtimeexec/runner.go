@@ -129,11 +129,18 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	if err != nil {
 		return ActionRunResult{}, fmt.Errorf("装载载荷构造失败：%w", err)
 	}
+	// 装载信封必须携带全部协议编号：EncodeLoadMessage 产出完整信封后，
+	// 这里按信封原文解码回 Message 再交给 Load 统一复核——绝不能把信封塞进
+	// 外层 Payload 二次包装，否则外层缺编号会被协议校验直接拒绝。
 	loadEnvelope, err := EncodeLoadMessage(handle.SessionID, fmt.Sprintf("load-%d", time.Now().UnixNano()), request.RunID, request.PathRunID, request.StepID, loadPayload)
 	if err != nil {
 		return ActionRunResult{}, err
 	}
-	if _, err := r.client.Load(ctx, handle.SessionID, "req-load", Message{Kind: KindLoad, Payload: loadEnvelope}); err != nil {
+	var loadMessage Message
+	if err := json.Unmarshal(loadEnvelope, &loadMessage); err != nil {
+		return ActionRunResult{}, fmt.Errorf("装载信封解析失败：%w", err)
+	}
+	if _, err := r.client.Load(ctx, handle.SessionID, loadMessage); err != nil {
 		return ActionRunResult{}, fmt.Errorf("runtime 装载失败：%w", err)
 	}
 
