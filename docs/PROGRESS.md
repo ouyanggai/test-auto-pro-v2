@@ -1,5 +1,14 @@
 # 当前进度
 
+- 2026-09-15 用户裁决去掉浏览器验证环节：一键配置后的最终表单确认不再依赖浏览器 form-runtime，服务端新增静态选项绑定解析器
+  （`internal/service/path_data_static_options.go`）：对模板里 `remote:false` 且 options 完整的下拉，按目标渲染口径
+  （showLabel 时显示 label，否则直接显示 value）把补丁改写的显示名唯一匹配成绑定值并回填 `__virtualName`；
+  找不到或同名歧义落 `STATIC_OPTION_UNRESOLVED`/`STATIC_OPTION_AMBIGUOUS` 阻断且不覆盖旧值。回放（`replayItem`）与保存
+  （`SaveData`）两处接入；`workspaceDataStatus` 不再把浏览器校验证据作为 ready 必要条件；删除 `HistoryReplayRuntimeValidator`
+  桥接及其全部测试假件。真实验证：计划 30 十二条路径重新一键配置 12/12 直接 `ready`，路径 4222 的 `vacateType` 与
+  `vacateType__virtualName` 均为“产假”。`go test ./test/unit/... ./test/contracts/f035/...` 与漂移脚本全部通过。
+  F-035 保持 `implementing`，等待用户人工验收，不自动开始下一功能。
+
 - 2026-09-15 F-035 第五轮人工复核退回 `implementing`：路径 12 的分支提示已显示“请假类别：事假 → 产假”，但最终 `vacateType`/`__virtualName` 仍为“事假”，且 `myDutyName` 与 `global_user_basic_information.dutyName` 相互矛盾，目标没有生成当前处理人不是偶发问题。动作编辑器仍会把英文 `approve` 与固定“同意”重复展示，未校验“同意必须最后”，添加动作的删除入口不可用；节点缺口提示仍只给数量；详情已阻塞而列表仍显示运行中。F-035 第五轮任务已登记，需先修复有效表单值和请求对照，再复验目标处理人；同时完成统一阻塞状态投影、动作和配置提示、无扩展 `runtime.lastError` A/B 及 Vue 生命周期人工验证。详细指导见 `docs/auto/2026-09-15-f035-review-round5-ui-state-and-assignment-task.md`，状态保持 `implementing`。
 
 - 2026-09-14 F-035 第四轮继续保持 `implementing`。已实现页不再“命中即阻塞”：资金往来/投资款前置保存、出版委托日期改写、已登记 NoFormFlow 走 `mixin.saveData` + `flowProxyId`；合同盖章/合规自定义组件仍写前阻塞。配置期身份替换不再新建缺失的 `global_user_basic_information`；无表单 `initiatorRange` 覆盖为当前会话。`auto_audit_info_*` 已写入语义清单 16.1。运行详情请求代次已落地；`runtime.lastError` 产品源码零调用，无扩展浏览器 A/B 仍待人工。真实路径 12 对照未完成，不得进入 `ready_for_manual`。详细指导见 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
