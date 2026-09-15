@@ -126,13 +126,10 @@ func EvaluatePathReadiness(input PathReadinessInput) model.PathRunReadiness {
 			Anchor: runReadinessAnchorNodes,
 		})
 	}
-	if input.Path.DataStatus != model.HistoryDataStatusReady {
+	if input.Path.DataStatus != model.HistoryDataStatusReady && input.Path.DataStatus != model.HistoryDataStatusBaseReady {
 		reason := firstNonEmptyText(input.Path.DataDetail, "基础表单数据尚未就绪")
-		// F-035/T08：base_ready 表示基础数据已生成但最终表单尚未确认，
-		// 给出明确的下一步（打开表单数据页确认），不把它当 ready 放行。
-		if input.Path.DataStatus == model.HistoryDataStatusBaseReady {
-			reason = firstNonEmptyText(input.Path.DataDetail, "基础数据已生成，但最终表单尚未确认：请打开表单数据页完成选项绑定并保存")
-		}
+		// 用户裁决去掉浏览器验证环节：base_ready 的静态选项绑定已由服务端解析回填，运行前检查
+		// 不再要求逐路径打开表单数据页确认；只有 needs_input/affected/empty 等状态仍然阻塞。
 		blocks = append(blocks, model.RunReadinessItem{
 			Kind: model.RunReadinessFormData, Name: pathName,
 			Reason: reason,

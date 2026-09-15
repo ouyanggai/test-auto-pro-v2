@@ -714,7 +714,7 @@ function pathConfigurationLabel(path: ExecutionPath): string {
 // base_ready（F-035/T08）是“基础数据已生成、最终表单未确认”，不得显示成已就绪。
 function pathDataLabel(path: ExecutionPath): string {
 	if (path.dataStatus === 'ready') return '数据已就绪'
-	if (path.dataStatus === 'base_ready') return '基础数据已生成，待确认最终表单'
+	if (path.dataStatus === 'base_ready') return '基础数据已生成（服务端已解析选项绑定）'
 	if (path.dataStatus === 'needs_input') return '数据需补充'
 	if (path.dataStatus === 'affected') return '数据受影响'
 	return '数据未选择'

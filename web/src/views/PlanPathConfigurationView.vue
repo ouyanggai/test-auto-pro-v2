@@ -287,6 +287,13 @@ function handleRuntimeReady(payload: Record<string, unknown>) {
   formRuntimeLoading.value = false
 }
 
+// handleRuntimeBooted 在运行时协议握手完成后关闭宿主外层遮罩：内部 Vue 已挂载并由它自己的
+// loading 呈现初始化进度，宿主遮罩若继续显示会把“正在加载表单组件和远程选项”等内部状态全部挡住。
+function handleRuntimeBooted() {
+  if (workspace.value !== 'form' || !runtimeSession.value) return
+  formRuntimeLoading.value = false
+}
+
 // handleRuntimeLoading 在 iframe 文档到达、运行时重载或历史数据切换时重新打开过渡层，避免用户看到未 ready 的白屏。
 function handleRuntimeLoading() {
   if (workspace.value !== 'form' || !runtimeSession.value) return
@@ -1123,6 +1130,7 @@ void loadPage()
             :form="runtimeForm"
             :runtime-session="runtimeSession"
             @loading="handleRuntimeLoading"
+            @booted="handleRuntimeBooted"
             @ready="handleRuntimeReady"
             @state="applyRuntimeFormState"
             @error="handleRuntimeError"

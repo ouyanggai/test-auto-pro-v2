@@ -11,6 +11,9 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   loading: []
+  // booted 表示运行时 iframe 已完成协议握手并接管界面：宿主外层遮罩应立即隐藏，
+  // 表单初始化与选项协调的加载状态由运行时内部自己的 loading 呈现，避免双重遮罩互相遮挡。
+  booted: []
   ready: [payload: Record<string, unknown>]
   state: [payload: Record<string, unknown>]
   error: [message: string]
@@ -177,9 +180,8 @@ function handleMessage(event: MessageEvent) {
     bootPending: iframeBootPending,
   })
   if (disposition === 'boot') {
-    clearBootTimeout()
-    bootFailed = false
     iframeBootPending = false
+    emit('booted')
     void loadRuntime()
     return
   }
