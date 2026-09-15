@@ -59,9 +59,11 @@ note "  · 待发删除（/web/flowInstanceApi/delete）：明确未纳入本切
 
 if [ "${RUNTIME_REAL_TARGET:-0}" = "1" ]; then
   note "== 真实目标验证（RUNTIME_REAL_TARGET=1）=="
-  note "真实写验证逐动作执行入口：bash test/integration/runtimeexec/real-target-checklist.md 中的逐项命令；"
-  note "需要环境变量：RUNTIME_TARGET_BASE_URL、RUNTIME_PLAN_ACCOUNT、RUNTIME_PLAN_PASSWORD、"
-  note "RUNTIME_AUDITOR_ACCOUNT、RUNTIME_AUDITOR_PASSWORD（账号值不入仓库）。"
+  note "真实写验证是人工清单（Markdown，不可直接执行）：打开 test/integration/runtimeexec/real-target-checklist.md，"
+  note "按其中「执行环境启动命令」逐项复制执行（或直接以 RUNTIME_EXECUTOR_URL 启动后端，"
+  note "本进程会自动托管拉起 19011 执行服务）；需要环境变量：RUNTIME_TARGET_BASE_URL、"
+  note "RUNTIME_PLAN_ACCOUNT、RUNTIME_PLAN_PASSWORD、RUNTIME_AUDITOR_ACCOUNT、RUNTIME_AUDITOR_PASSWORD"
+  note "（账号值不入仓库）。"
   note "完成一项即在 real-target-checklist.md 勾选并回填证据（实例 ID + trace ID + 日志路径）。"
 fi
 

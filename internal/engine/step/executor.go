@@ -1285,7 +1285,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			Reread: string(reread), Reason: userMessage, Basis: verdictResult.Basis,
 			// 重新核验沿用首次执行的 runtime 投影：写请求没有重发，投影仍是这次尝试的事实。
 			RuntimeDetail: preview.runtimeDetailJSON,
-			TraceID: approved.Preview.writeTraceID, CurlTraceID: approved.Preview.writeTraceID,
+			TraceID:       approved.Preview.writeTraceID, CurlTraceID: approved.Preview.writeTraceID,
 			DurationMs: e.now().Sub(startedAt).Milliseconds(),
 		}
 		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {

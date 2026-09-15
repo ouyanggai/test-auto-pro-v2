@@ -18,19 +18,20 @@
 ```bash
 # ① 构建 form-runtime 产物（执行服务的静态现场）：
 pnpm --dir form-runtime build
-# ② 启动执行服务（无头 Chromium，端口 19011）：
-cd form-runtime/executor && EXECUTOR_PORT=19011 node --experimental-strip-types src/server.ts
-# ③ 以 runtime 路由 + 验证模式启动后端（端口 19080）：
+# ② 以 runtime 路由 + 验证模式启动后端（端口 19080）——托管模式会自动拉起 19011 执行服务：
 RUNTIME_EXECUTOR_URL=http://127.0.0.1:19011 RUNTIME_EXEC_VERIFICATION=1 go run ./cmd/server
-# ④ 启动前端（端口 19000，代理 /api 到 19080）：
+#    （不想让后端托管执行服务时，置 RUNTIME_EXECUTOR_MANAGED=0 并手动执行：
+#      cd form-runtime/executor && EXECUTOR_PORT=19011 node --experimental-strip-types src/server.ts）
+# ③ 启动前端（端口 19000，代理 /api 到 19080）：
 pnpm --dir web dev
-# ⑤ 在浏览器打开 http://127.0.0.1:19000 → 测试计划 → 目标计划「运行」，
+# ④ 在浏览器打开 http://127.0.0.1:19000 → 测试计划 → 目标计划「运行」，
 #    单步放行逐动作执行；证据回填到下方清单。
 ```
 
 纪律说明：`RUNTIME_EXEC_VERIFICATION=1` 是 T015 真实验证专用——未登记组合放行执行一次以取得证据，
 动作经目标事实核验判定 `confirmed_success` 后自动按「流程+动作+表单摘要」登记能力（step.log settle
-阶段可见登记行）；验证结束后关闭该变量重启后端，未登记组合恢复「阻塞不回退」的正常口径。
+阶段可见登记行），登记同时落盘 `.runtime/runtime-capabilities.json`，后端重启不丢失；
+验证结束后关闭该变量重启后端，未登记组合恢复「阻塞不回退」的正常口径。
 
 ## 表单矩阵
 

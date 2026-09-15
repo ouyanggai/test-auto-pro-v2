@@ -371,20 +371,27 @@ type RuntimeExecConfig struct {
 	// Verification 是真实目标验证模式（T015 专用）：未登记的 FormMaking 组合允许经
 	// runtime 执行一次以取得登记证据，核验确认成功后自动登记能力；未开启时未登记组合阻塞。
 	Verification bool
+	// Managed 表示由 Go 服务托管本机执行服务子进程（评审 P1-1 修复）：
+	// 环回地址默认托管拉起并做就绪探测，随后端停止而停止；置 0 可关闭（执行服务自行启动）。
+	Managed bool
 }
 
 // runtime 执行路由的环境变量名。
 const (
 	runtimeExecutorURLEnv  = "RUNTIME_EXECUTOR_URL"
 	runtimeVerificationEnv = "RUNTIME_EXEC_VERIFICATION"
+	runtimeManagedEnv      = "RUNTIME_EXECUTOR_MANAGED"
 )
 
 // LoadRuntimeExecConfig 优先读取进程环境，其次读取项目根目录的本机忽略配置。
 func LoadRuntimeExecConfig() RuntimeExecConfig {
 	localValues, _ := loadTargetLocalValues(targetLocalEnvFile())
+	managedValue := strings.TrimSpace(targetConfigValue(runtimeManagedEnv, localValues))
 	return RuntimeExecConfig{
 		ExecutorURL:  strings.TrimSpace(targetConfigValue(runtimeExecutorURLEnv, localValues)),
 		Verification: boolFromValue(targetConfigValue(runtimeVerificationEnv, localValues)),
+		// 托管默认开启：显式配置了执行服务地址却要人工另起进程，是评审指出的部署缺口。
+		Managed: managedValue == "" || boolFromValue(managedValue),
 	}
 }
 

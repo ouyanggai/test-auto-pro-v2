@@ -200,6 +200,21 @@ func main() {
 		if registryErr != nil {
 			log.Fatal(registryErr)
 		}
+		// 生产接线（评审 P1-1）：环回执行服务由本进程托管拉起并做就绪探测，随后端停止而停止；
+		// 启动失败（缺产物/缺 Node/端口不可用）直接终止启动，不让动作在执行中才失败。
+		// RUNTIME_EXECUTOR_MANAGED=0 或远端地址时跳过托管，由部署方自行保证服务在运行。
+		if runtimeExecConfig.Managed {
+			supervisor, supervisorErr := runtimeexec.StartExecutorSupervisor(runtimeExecConfig.ExecutorURL, workspaceRoot)
+			if supervisorErr != nil {
+				log.Fatal(supervisorErr)
+			}
+			defer runtimeexec.StopExecutorSupervisor(supervisor)
+			if supervisor.Started() {
+				log.Printf("已托管启动执行服务：%s", runtimeExecConfig.ExecutorURL)
+			} else {
+				log.Printf("检测到执行服务已在运行，跳过托管启动：%s", runtimeExecConfig.ExecutorURL)
+			}
+		}
 		stepExecutor.EnableRuntimeExecution(runtimeexec.NewRuntimeExecutor(runtimeClient), capabilityRegistry, "", targetFrontendVersion)
 		if runtimeExecConfig.Verification {
 			stepExecutor.EnableRuntimeVerification()
