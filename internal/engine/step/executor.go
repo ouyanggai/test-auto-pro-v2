@@ -120,31 +120,79 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 		return true
 	}
-	// 审批装载需要 FormMaking 模板原文：按实例绑定表单代理读取（读取失败不得发送写动作）。
-	// 模板读取走可选接口（真实适配层实现；测试假件无须实现）。
+	// FormMaking 模板原文是两种装载模式的硬事实：发起模式由宿主离线注入模板
+	// （runtime 装载载荷没有 flowId 自装载通道），审批模式注入实例绑定模板。
+	// 模板读取走可选接口（真实适配层实现；测试假件无须实现）；读取失败必须阻塞，
+	// 绝不发送写动作，也不用空模板装载出一张空表单。
 	template := json.RawMessage(`{}`)
-	if loadModeForRuntime(step.Action) == "approve" {
-		reader, ok := e.target.(interface {
-			ReadFormTemplateData(ctx context.Context, active target.Session, formProxyID string) (json.RawMessage, error)
-		})
-		if !ok {
+	if strings.TrimSpace(runCtx.FormProxyID) == "" {
+		preview.writeSent = false
+		preview.writeErr = fmt.Errorf("运行上下文缺少 FormMaking 表单代理 ID，runtime 装载被阻塞")
+		preview.writeErrClass = model.FailureClassGateBlocked
+		preview.runtimeHandled = true
+		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+		return true
+	}
+	reader, ok := e.target.(interface {
+		ReadFormTemplateData(ctx context.Context, active target.Session, formProxyID string) (json.RawMessage, error)
+	})
+	if !ok {
+		preview.writeSent = false
+		preview.writeErr = errors.New("目标出口不支持表单模板读取，runtime 装载被阻塞")
+		preview.writeErrClass = model.FailureClassGateBlocked
+		preview.runtimeHandled = true
+		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+		return true
+	}
+	raw, err := reader.ReadFormTemplateData(ctx, session, runCtx.FormProxyID)
+	if err != nil {
+		preview.writeSent = false
+		preview.writeErr = fmt.Errorf("读取实例绑定表单模板失败：%w", err)
+		preview.writeErrClass = model.FailureClassGateBlocked
+		preview.runtimeHandled = true
+		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+		return true
+	}
+	template = raw
+	// 审批族动作的目标载荷硬依赖任务号（audit 载荷 data.jobTaskId）：
+	// 与 Go 写路径同一纪律——发送前按当前处理人会话现场刷新任务快照，
+	// 读取失败或目标已无待办一律阻塞，绝不带空任务号进入 runtime。
+	jobTaskID := ""
+	switch step.Action {
+	case model.ActionApprove, model.ActionReject, model.ActionStorageFormData:
+		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+		_, snapshot, snapErr := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+		if snapErr != nil {
 			preview.writeSent = false
-			preview.writeErr = errors.New("目标出口不支持表单模板读取，runtime 审批装载被阻塞")
+			preview.writeErr = fmt.Errorf("runtime 执行前读取当前任务失败：%w", snapErr)
 			preview.writeErrClass = model.FailureClassGateBlocked
 			preview.runtimeHandled = true
 			log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 			return true
 		}
-		raw, err := reader.ReadFormTemplateData(ctx, session, runCtx.FormProxyID)
-		if err != nil {
+		if strings.TrimSpace(snapshot.JobTaskID) == "" {
 			preview.writeSent = false
-			preview.writeErr = fmt.Errorf("读取实例绑定表单模板失败：%w", err)
+			preview.writeErr = fmt.Errorf("目标上已无当前处理人在本节点的待办任务，无法经 runtime 执行%s", actionName(step.Action))
 			preview.writeErrClass = model.FailureClassGateBlocked
 			preview.runtimeHandled = true
 			log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 			return true
 		}
-		template = raw
+		jobTaskID = strings.TrimSpace(snapshot.JobTaskID)
+	}
+	// 发起人身份必须是计划账号的真实用户事实（工具发起的实例一律由计划账号发起）。
+	// 主实例引用是实例 ID，把它填进发起人用户 ID 会让目标把实例当人；取不到用户事实就阻塞。
+	initiator := runtimeexec.ActorIdentity{}
+	if planSession, planErr := e.sessions.Current(ctx, runCtx.PlanAccount); planErr == nil {
+		initiator = runtimeexec.ActorIdentity{UserID: planSession.UserID, Name: planSession.Summary.DisplayName}
+	}
+	if strings.TrimSpace(initiator.UserID) == "" {
+		preview.writeSent = false
+		preview.writeErr = fmt.Errorf("无法取得计划账号 %s 的用户事实，runtime 装载缺少原发起人身份", runCtx.PlanAccount)
+		preview.writeErrClass = model.FailureClassGateBlocked
+		preview.runtimeHandled = true
+		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+		return true
 	}
 	runRequest := runtimeexec.RuntimeRunRequest{
 		RunID:        fmt.Sprintf("%d", runCtx.Run.RunNo),
@@ -157,24 +205,28 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 			UserID: session.UserID, CompanyID: session.CompanyID, DepartmentID: session.DepartmentID,
 			CustomerCode: session.CustomerCode, Account: session.Summary.Account, DisplayName: session.Summary.DisplayName,
 		},
-		Initiator:   runtimeexec.ActorIdentity{UserID: runCtx.PathRun.MainInstanceRef},
+		Initiator:   initiator,
 		Template:    template,
 		Values:      formDataFromPreviewRequest(preview),
 		InstanceID:  runCtx.PathRun.MainInstanceRef,
+		JobTaskID:   jobTaskID,
 		NodeProxyID: stepTargetNodeIDOf(runCtx, step),
 		AuditDesc:   auditMessage(runCtx, step),
 		BaseURL:     e.runtimeBaseURL,
 	}
-	if runCtx.FormProxyID != "" {
-		runRequest.Template = template
-	}
-	// 选择闭环配置（T010B）：分支入口与节点人员原样带入。
-	for _, entryID := range runCtx.BranchSelections {
-		runRequest.BranchSelections = append(runRequest.BranchSelections, runtimeexec.BranchSelection{NodeProxyID: entryID, EntryNodeID: entryID})
+	// 选择闭环配置（T010B）：分支选择是「分支节点 ID → 所选分支入口节点 ID」，
+	// 键值各归其位；只带入口会丢掉分支节点归属，目标无法匹配候选分支。
+	for branchNodeID, entryID := range runCtx.BranchSelections {
+		runRequest.BranchSelections = append(runRequest.BranchSelections, runtimeexec.BranchSelection{NodeProxyID: branchNodeID, EntryNodeID: entryID})
 	}
 	for nodeKey, auditors := range runCtx.NextNodeAuditors {
 		if info, ok := runCtx.Nodes[nodeKey]; ok {
 			for _, auditor := range auditors {
+				// 空人员条目绝不下发：runtime 会把它们原样装入目标的 nextAuditorList，
+				// 「不能用空人员代替配置结果」（T010B）；残缺条目等于把未配置事实发给目标。
+				if strings.TrimSpace(auditor.BizID) == "" || strings.TrimSpace(auditor.Name) == "" {
+					continue
+				}
 				runRequest.NextNodeAuditors = append(runRequest.NextNodeAuditors, runtimeexec.NextAuditorEntry{
 					NodeProxyID: info.TargetNodeID, BizID: auditor.BizID, Name: auditor.Name, AuditDetailType: "personnel",
 				})
@@ -234,14 +286,6 @@ func (e *Executor) ShouldRunViaRuntimeForTest(runCtx RunContext, step model.Comp
 // RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。
 func (e *Executor) RunViaRuntimeForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, approved ApprovedStep) bool {
 	return e.runViaRuntime(ctx, runCtx, step, session, preview, nil, approved)
-}
-
-// loadModeForRuntime 返回动作对应的 runtime 装载模式。
-func loadModeForRuntime(action model.ActionKey) string {
-	if action == model.ActionSaveDraft || action == model.ActionSubmit {
-		return "initiate"
-	}
-	return "approve"
 }
 
 func (e *Executor) SetLogFactory(factory LogFactory) {

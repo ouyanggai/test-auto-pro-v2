@@ -25,6 +25,7 @@ type recordingTarget struct {
 	mu       sync.Mutex
 	writes   []string
 	template bool
+	taskID   string
 }
 
 func (r *recordingTarget) FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error) {
@@ -44,6 +45,13 @@ func (r *recordingTarget) ReadFormTemplateData(context.Context, target.Session, 
 }
 func (r *recordingTarget) FindDueTaskID(context.Context, target.Session, string, string) (string, error) {
 	return "", nil
+}
+
+// FindTaskSnapshot 提供任务快照能力面：返回预置任务号，供审批族动作的 runtime 前置刷新读取。
+func (r *recordingTarget) FindTaskSnapshot(context.Context, target.Session, string, string, string) (target.TaskSnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return target.TaskSnapshot{JobTaskID: r.taskID, FlowNodeProxyID: "node-proxy-1"}, nil
 }
 func (r *recordingTarget) SubmitFlowInstance(context.Context, target.Session, target.SubmitFlowInstanceRequest) (*target.SubmitFlowInstanceResult, target.WriteResponse, string, error) {
 	r.mu.Lock()
@@ -76,20 +84,59 @@ func (r *recordingTarget) writeCalls() []string {
 	return append([]string(nil), r.writes...)
 }
 
-// fakeRuntimeRunner 返回预置判定并记录调用。
+// fakeRuntimeRunner 返回预置判定并记录调用；captures 非空时保存每次收到的请求事实。
 type fakeRuntimeRunner struct {
-	status string
-	calls  int
+	mu       sync.Mutex
+	status   string
+	calls    int
+	requests []runtimeexec.RuntimeRunRequest
 }
 
-func (f *fakeRuntimeRunner) RunAction(context.Context, runtimeexec.RuntimeRunRequest) (runtimeexec.ActionRunResult, error) {
+func (f *fakeRuntimeRunner) RunAction(_ context.Context, request runtimeexec.RuntimeRunRequest) (runtimeexec.ActionRunResult, error) {
+	f.mu.Lock()
 	f.calls++
+	f.requests = append(f.requests, request)
+	f.mu.Unlock()
 	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake"}, nil
+}
+
+func (f *fakeRuntimeRunner) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *fakeRuntimeRunner) lastRequest() runtimeexec.RuntimeRunRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		return runtimeexec.RuntimeRunRequest{}
+	}
+	return f.requests[len(f.requests)-1]
+}
+
+// fakeStepSessions 是最小会话提供者：按账号返回预置会话，供 runtime 前置身份与任务刷新读取。
+type fakeStepSessions struct {
+	byAccount map[string]target.Session
+}
+
+func (s *fakeStepSessions) Current(_ context.Context, account string) (target.Session, error) {
+	if session, ok := s.byAccount[account]; ok {
+		return session, nil
+	}
+	return target.Session{}, errors.New("账号未登记")
+}
+
+func (s *fakeStepSessions) Refresh(_ context.Context, account string) (target.Session, error) {
+	return s.Current(context.Background(), account)
 }
 
 func newExecutorForRouting(t *testing.T, view *recordingTarget, runner step.RuntimeRunner, registry *runtimeexec.CapabilityRegistry) *step.Executor {
 	t.Helper()
-	executor := step.NewExecutor(view, nil, nil, nil, fixedRunConfigForRouting(), nil)
+	executor := step.NewExecutor(view, &fakeStepSessions{byAccount: map[string]target.Session{
+		"plan-acct":  {UserID: "user-plan", Summary: target.AccountSummary{Account: "plan-acct", DisplayName: "发起人"}},
+		"actor-acct": {UserID: "user-actor", Summary: target.AccountSummary{Account: "actor-acct", DisplayName: "处理人"}},
+	}}, nil, nil, fixedRunConfigForRouting(), nil)
 	if runner != nil {
 		executor.EnableRuntimeExecution(runner, registry, "http://127.0.0.1:19011")
 	}
@@ -108,8 +155,13 @@ func runtimeRunCtx() step.RunContext {
 	return step.RunContext{
 		FlowType:          "employee_leave",
 		RenderType:        string(target.FormRenderTypeFormMaking),
+		FormProxyID:       "form-proxy-1",
+		PlanAccount:       "plan-acct",
 		EffectiveFormData: []byte(`{"reason":"x"}`),
 		PathRun:           model.PathRun{ID: 1},
+		Nodes: map[string]step.NodeInfo{
+			"node-1": {TargetNodeID: "target-node-1", Name: "审批节点"},
+		},
 	}
 }
 
@@ -214,5 +266,117 @@ func TestRuntimeResultMappingIsThreeValued(t *testing.T) {
 		if item.expectUncer && preview.WriteErrForTest() == nil {
 			t.Fatalf("%s：应携带待确认错误", item.status)
 		}
+	}
+}
+
+// TestRunViaRuntimeCarriesSelectionTaskAndIdentityFacts runtime 请求必须携带写前事实：
+// 审批动作带现场任务号；分支选择按「分支节点 ID → 入口节点 ID」映射；
+// 发起人是计划账号的真实用户事实（绝不是实例 ID）；节点人员按目标节点代理 ID 展开。
+func TestRunViaRuntimeCarriesSelectionTaskAndIdentityFacts(t *testing.T) {
+	view := &recordingTarget{taskID: "task-9"}
+	registry := runtimeexec.NewCapabilityRegistry()
+	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "approve"})
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	runCtx := runtimeRunCtx()
+	runCtx.BranchSelections = map[string]string{"branch-node-1": "entry-node-1", "branch-node-2": "entry-node-2"}
+	runCtx.NextNodeAuditors = map[string][]target.NextAuditor{
+		"node-1": {{BizID: "biz-1", Name: "张三"}, {BizID: "", Name: "空人员"}},
+	}
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	if !executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
+		t.Fatalf("runtime 应接管本步")
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("runtime 应被调用一次，实际 %d", runner.callCount())
+	}
+	request := runner.lastRequest()
+	if request.JobTaskID != "task-9" {
+		t.Fatalf("审批动作必须携带现场任务号，实际 %q", request.JobTaskID)
+	}
+	if len(request.BranchSelections) != 2 {
+		t.Fatalf("两条分支选择都应带入，实际 %d", len(request.BranchSelections))
+	}
+	for _, selection := range request.BranchSelections {
+		if selection.NodeProxyID == selection.EntryNodeID {
+			t.Fatalf("分支节点与入口节点不得混用同一 ID：%+v", selection)
+		}
+		if selection.NodeProxyID != "branch-node-1" && selection.NodeProxyID != "branch-node-2" {
+			t.Fatalf("分支节点归属错误：%+v", selection)
+		}
+	}
+	if request.Initiator.UserID != "user-plan" || request.Initiator.Name != "发起人" {
+		t.Fatalf("发起人必须是计划账号用户事实，实际 %+v", request.Initiator)
+	}
+	if request.Initiator.UserID == request.InstanceID {
+		t.Fatalf("发起人用户 ID 不得用主实例 ID 冒充：%q", request.Initiator.UserID)
+	}
+	if request.NodeProxyID != "target-node-1" {
+		t.Fatalf("节点代理 ID 应取目标真实标识，实际 %q", request.NodeProxyID)
+	}
+	if len(request.NextNodeAuditors) != 1 || request.NextNodeAuditors[0].BizID != "biz-1" || request.NextNodeAuditors[0].AuditDetailType != "personnel" {
+		t.Fatalf("空人员必须被剔除且带 personnel 类型：%+v", request.NextNodeAuditors)
+	}
+}
+
+// TestRunViaRuntimeBlocksWithoutTaskFact 审批动作读不到任务事实：阻塞且不调用 runtime，绝不带空任务号执行。
+func TestRunViaRuntimeBlocksWithoutTaskFact(t *testing.T) {
+	view := &recordingTarget{taskID: ""}
+	registry := runtimeexec.NewCapabilityRegistry()
+	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "approve"})
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	if !executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
+		t.Fatalf("runtime 分支应接管（即便阻塞）")
+	}
+	if runner.callCount() != 0 {
+		t.Fatalf("无任务事实不得调用 runtime，实际 %d 次", runner.callCount())
+	}
+	if preview.WriteSent() {
+		t.Fatalf("无任务事实不得产生写请求")
+	}
+	if preview.WriteErrForTest() == nil || !strings.Contains(preview.WriteErrForTest().Error(), "待办任务") {
+		t.Fatalf("阻塞原因必须说明待办任务缺失：%v", preview.WriteErrForTest())
+	}
+}
+
+// TestRunViaRuntimeInitiateCarriesRealTemplate 发起模式同样必须携带真实表单模板：
+// 装载载荷没有 flowId 自装载通道，空模板会装载出一张空表单并把空数据写进目标。
+func TestRunViaRuntimeInitiateCarriesRealTemplate(t *testing.T) {
+	view := &recordingTarget{}
+	registry := runtimeexec.NewCapabilityRegistry()
+	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit"})
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	preview := &step.StepPreview{ActorAccount: "plan-acct"}
+	if !executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
+		t.Fatalf("runtime 应接管本步")
+	}
+	if !view.template {
+		t.Fatalf("发起模式必须读取实例绑定表单模板")
+	}
+	request := runner.lastRequest()
+	if !strings.Contains(string(request.Template), "list") {
+		t.Fatalf("发起装载必须携带真实模板，实际 %s", request.Template)
+	}
+	if request.JobTaskID != "" {
+		t.Fatalf("发起动作不携带任务号，实际 %q", request.JobTaskID)
+	}
+}
+
+// TestRunViaRuntimeBlocksWithoutFormProxy FormMaking 缺少表单代理 ID：装载无据，阻塞且不调用 runtime。
+func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
+	view := &recordingTarget{}
+	registry := runtimeexec.NewCapabilityRegistry()
+	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit"})
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	runCtx := runtimeRunCtx()
+	runCtx.FormProxyID = ""
+	preview := &step.StepPreview{ActorAccount: "plan-acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	if runner.callCount() != 0 || preview.WriteSent() {
+		t.Fatalf("缺少表单代理 ID 必须阻塞，不得进入 runtime")
 	}
 }
