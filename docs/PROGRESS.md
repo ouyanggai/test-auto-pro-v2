@@ -1,5 +1,21 @@
 # 当前进度
 
+- 2026-09-15 执行引擎改造（docs/s/，分支「执行引擎改造」）T001–T015 全部实施完成，状态停在
+  **ready_for_manual**，等待用户按 `test/integration/runtimeexec/real-target-checklist.md` 做真实目标人工验收。
+  已落地：BrowserContext 会话管理（同账号互斥/崩溃广播）；Go/runtime 消息协议（exec-engine/v1，
+  双侧夹具锁定）；执行模式根桥接 `window.__runtimeBridge__`（六方法，iframe 模式共存，销毁失效）；
+  Playwright 全量网络拦截（目标请求转发 Go、未登记请求本地拒绝、base64 保真、可回放轨迹）；
+  Go runtime 客户端（WS 往返、SID 失效换会话重放一次、断连按写出事实二分 uncertain/failed）；
+  发起/审批装载（真实 FlowDialog 自装载目标模板、操作人/发起人身份分存、双审批人隔离）；
+  七个 runtime 业务动作真实入口（sumbitFlow/formMakingFormBusiness/temporaryStorage/reSubmit/confirmTranspond）
+  与选择闭环（custom_choose/parallel_choose/run_node_choose 仅继续一次，choice_required 事件）；
+  工具流程名称协议级恢复；动作完成检测（网络空闲稳定窗、硬超时后拒绝新写、business_failed/uncertain 口径）；
+  执行器可选 runtime 路由（能力未登记即阻塞、接管后零 Go 写）；运行详情三阶段投影；
+  能力登记表（只认 confirmed_success，逐组合登记，当前为空）。
+  验证：`bash test/run-runtime-exec.sh` 10/10 通过（单测 36、契约 5 组、真实服务集成 6 项）；
+  真实目标写验证（15 动作对照人工操作）待用户按清单逐项回填证据。
+  各任务逐项中文提交见 git log（T001–T015）。
+
 - 2026-09-15 用户反馈动作编辑弹窗"添加动作"按钮不见了。根因：提交 5f2170b 重写弹窗 footer 时误删了
   `<n-button … @click="addAction">添加动作</n-button>`，`addAction`/`canAddAction`/`AddOutline` 成为死代码，且
   F-012 结构契约测试没有对按钮的断言导致静默丢失。修复：在 footer（取消与保存动作配置之间）原样恢复按钮并加
