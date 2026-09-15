@@ -47,7 +47,17 @@ type PageForwardResponse struct {
 // 传输层错误原样上抛（Transport 阶段供客户端判断「是否已写出」）。
 func (c *Client) ForwardRuntimeRequest(ctx context.Context, session Session, request PageForwardRequest) (*PageForwardResponse, error) {
 	endpoint := *c.baseURL
-	endpoint.Path = strings.TrimRight(c.baseURL.Path, "/") + request.Path
+	// 页面里并存多套 axios 实例：部分实例的 baseURL 被执行装载清空（页面相对 /web/...），
+	// 部分实例仍持有构建期烘焙的绝对网关（请求路径自带 /api 前缀）。两类请求落到同一出口时，
+	// 先剥掉转发路径上与网关 base 重复的前缀再拼接——否则烘焙前缀叠加 base 自身的 /api
+	// 会拼出 /api/api/web/... 被网关 404（2026-09-16 真实验收实测缺陷）。
+	// 归一化对无前缀路径是空操作；对真实以 /api 开头的目标路径（如 /api/type/list）
+	// 剥掉后重新拼接结果不变，不改变任何合法请求的落点。
+	forwardPath := request.Path
+	if basePath := strings.TrimRight(c.baseURL.Path, "/"); basePath != "" {
+		forwardPath = strings.TrimPrefix(forwardPath, basePath)
+	}
+	endpoint.Path = strings.TrimRight(c.baseURL.Path, "/") + forwardPath
 	endpoint.RawPath = ""
 	query := endpoint.Query()
 	for key, values := range request.Query {
