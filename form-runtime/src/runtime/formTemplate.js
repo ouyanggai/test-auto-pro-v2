@@ -312,6 +312,9 @@ export function optionFieldDescriptors (template) {
           label: String(component.name || ''),
           multiple: options.multiple === true,
           remote: options.remote === true,
+          // showLabel 决定渲染层显示 label 还是 value（showLabel||remote?label:value），
+          // 实时选项显示名归一化必须与 buildStaticOptions 同口径，见 normalizeLiveOptionLabels。
+          showLabel: options.showLabel === true,
           // 远端取数方式随模板透传：FormMaking 的 refreshOptionData 只对 fx 与"带数据源键的 datasource"
           // 有明确落定路径；remote=true 却没有数据源键的控件（如身份字段 currentDepartment）会让
           // refreshFieldOptionData 的 Promise.all 永远等待，必须跳过刷新（见 refreshOptionFields）。
@@ -418,12 +421,25 @@ function entryValue (container, key) {
   return modelValue(container, key)
 }
 
+// normalizeLiveOptionLabels 把控件实时选项的显示名按目标渲染口径归一化。
+// FormMaking 渲染层对选项显示文本的取法是 showLabel||remote ? label : value，而 getOptionData
+// 返回的是原始 remoteOptions（label 原样）。模板若从其他业务复制而来（如员工请假单的 vacateType，
+// label 残留采购分类名），实时选项 label 会与 value 完全错位，按 label 匹配就会把已显示正确
+// value 的字段误报成"找不到选项"；因此非远程且 showLabel=false 时显示名必须取 value，
+// 与 buildStaticOptions、服务端 staticOptionEntries 三方同口径。级联按树形路径解析，不在此归一化。
+function normalizeLiveOptionLabels (descriptor, options) {
+  if (descriptor.type === 'cascader' || descriptor.remote || descriptor.showLabel) return options
+  return (Array.isArray(options) ? options : []).map(option => (option && typeof option === 'object'
+    ? { ...option, label: option.value }
+    : option))
+}
+
 // fieldOptions 读取控件当前真实选项：优先 FormMaking 公共选项 API（getOptionData 深拷贝，
 // 异步刷新后总是最新），静态选项回落模板声明，最后才是包装层组件引用，避免空选项误判。
 function fieldOptions (form, descriptor) {
   try {
     const options = form && typeof form.getOptionData === 'function' ? form.getOptionData(descriptor.model) : null
-    if (Array.isArray(options) && options.length > 0) return options
+    if (Array.isArray(options) && options.length > 0) return normalizeLiveOptionLabels(descriptor, options)
   } catch (_) {
     // 字段实例尚未完成挂载时静默回落，不能中断只读历史回放。
   }
@@ -431,7 +447,7 @@ function fieldOptions (form, descriptor) {
   const context = formItemContext(form, descriptor.model)
   const nested = context && context.$refs && context.$refs.generateElementItem
   const remoteOptions = nested && nested.remoteOptions
-  return Array.isArray(remoteOptions) ? remoteOptions : []
+  return Array.isArray(remoteOptions) ? normalizeLiveOptionLabels(descriptor, remoteOptions) : []
 }
 
 // optionEntryState 计算一个绑定点的当前一致性状态。

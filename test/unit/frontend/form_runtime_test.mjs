@@ -377,6 +377,56 @@ test('showLabel 为 false 的静态选项按 value 归一化显示名并完成�
   assert.equal(coordination.values.vacateType__virtualName, '产假')
 })
 
+// 真实环境回归（计划 30 路径 4222 员工请假单）：控件挂载后 getOptionData 返回原始 remoteOptions，
+// label 仍是错位的采购分类名，静态归一化被跳过；按渲染口径归一化后“产假”必须按 value 命中，
+// 绑定值已一致的字段不得再误报“选项中找不到该名称对应的选项”。
+test('getOptionData 返回错位 label 时绑定值已一致不误报阻断', async () => {
+  const template = { list: [{ type: 'select', model: 'vacateType', name: '请假类别', options: {
+    showLabel: false,
+    remote: false,
+    remoteType: 'datasource',
+    options: [
+      { label: '设备材料采购', value: '事假' },
+      { label: '全过程项目管理', value: '产假' },
+    ],
+  } }] }
+  const form = {
+    model: { vacateType: '产假', vacateType__virtualName: '产假' },
+    async refreshFieldOptionData () {},
+    getOptionData () { return [{ value: '事假', label: '设备材料采购' }, { value: '产假', label: '全过程项目管理' }] },
+    async setData () { throw new Error('已一致时绝不能写值') },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['vacateType__virtualName'], 1)
+  assert.equal(coordination.issues.length, 0)
+  assert.equal(coordination.values.vacateType, '产假')
+  // 只读检查与协调同口径：宿主右侧“需要处理”面板消费的就是这份结果。
+  assert.deepEqual(optionCoordinationIssues(form, template, form.model, ['vacateType__virtualName']), [])
+})
+
+test('getOptionData 返回错位 label 时仍按 value 回填绑定值', async () => {
+  const template = { list: [{ type: 'select', model: 'vacateType', name: '请假类别', options: {
+    showLabel: false,
+    remote: false,
+    remoteType: 'datasource',
+    options: [
+      { label: '设备材料采购', value: '事假' },
+      { label: '全过程项目管理', value: '产假' },
+    ],
+  } }] }
+  const form = {
+    model: { vacateType: '事假', vacateType__virtualName: '产假' },
+    async refreshFieldOptionData () {},
+    getOptionData () { return [{ value: '事假', label: '设备材料采购' }, { value: '产假', label: '全过程项目管理' }] },
+    async setData (values) { Object.assign(this.model, values) },
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['vacateType__virtualName'], 1)
+  assert.equal(coordination.issues.length, 0)
+  assert.equal(coordination.values.vacateType, '产假')
+  assert.equal(coordination.values.vacateType__virtualName, '产假')
+})
+
 test('选项中存在多个同名项时阻断且不猜测绑定值', async () => {
   const template = { list: [{ type: 'select', model: 'companyId', options: { options: [
     { value: 'c1', label: '同名公司' }, { value: 'c2', label: '同名公司' },

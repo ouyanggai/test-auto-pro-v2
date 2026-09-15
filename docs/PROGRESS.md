@@ -1,5 +1,14 @@
 # 当前进度
 
+- 2026-09-15 用户反馈路径 4222 表单值已正确（vacateType 显示"产假"）但右侧"路径关键信息"仍提示"需要处理"。根因：
+  `vacateType` 是 `showLabel=false` 且 `remoteType=datasource` 的下拉，模板静态选项 label/value 完全错位（label 残留
+  采购分类名），FormMaking 渲染层对这类选项直接显示 value，而 iframe 选项协调的 `fieldOptions` 优先读 `getOptionData`
+  返回的原始 `remoteOptions`（label 原样），按 label 匹配"产假"失败即误报 `OPTION_PATCH_UNRESOLVED`。修复：
+  `formTemplate.js` 描述符记录 `showLabel`，实时选项经 `normalizeLiveOptionLabels` 按渲染口径
+  （showLabel||remote ? label : value）归一化显示名，与 `buildStaticOptions`、服务端 `staticOptionEntries` 三方同口径；
+  已修复前代码复现误报、修复后消除。前端 109 项、后端 `test/unit/...` 与 `test/contracts/f035/...` 全部通过。
+  F-035 保持 `implementing`，等待用户人工验收，不自动开始下一功能。
+
 - 2026-09-15 用户裁决去掉浏览器验证环节：一键配置后的最终表单确认不再依赖浏览器 form-runtime，服务端新增静态选项绑定解析器
   （`internal/service/path_data_static_options.go`）：对模板里 `remote:false` 且 options 完整的下拉，按目标渲染口径
   （showLabel 时显示 label，否则直接显示 value）把补丁改写的显示名唯一匹配成绑定值并回填 `__virtualName`；
