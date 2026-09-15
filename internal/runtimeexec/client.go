@@ -140,8 +140,11 @@ func (c *Client) Destroy(ctx context.Context, sessionID string) error {
 }
 
 // ExecuteCallbacks 接收动作过程中的事件（页面异常、选择要求、阶段日志）。
+// OnChoiceRequired：目标等待选择时被调用（data 含 errorType 与目标返回节点）；
+// 返回 choice_continue 命令则由 Execute 自动发出（仅允许一次），返回 nil 表示放弃闭环。
 type ExecuteCallbacks struct {
-	OnEvent func(msg *Message)
+	OnEvent          func(msg *Message)
+	OnChoiceRequired func(eventData json.RawMessage) *Message
 }
 
 // Execute 通过 WebSocket 发送业务命令并驱动转发循环，直到 runtime 返回结果消息。
@@ -218,6 +221,24 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 			if callbacks.OnEvent != nil {
 				callbacks.OnEvent(message)
 			}
+			// 选择闭环（T010B）：只有明确的三种选择错误才继续一次；继续命令走同一 WS 通道。
+			if callbacks.OnChoiceRequired != nil && !state.choiceSent {
+				var payload struct {
+					Type string          `json:"type"`
+					Data json.RawMessage `json:"data"`
+				}
+				if len(message.Payload) > 0 && json.Unmarshal(message.Payload, &payload) == nil && payload.Type == EventChoiceRequired {
+					if cmd := callbacks.OnChoiceRequired(payload.Data); cmd != nil {
+						if err := send(*cmd); err != nil {
+							if state.written {
+								return nil, ErrUncertain
+							}
+							return nil, ErrFailedCleanly
+						}
+						state.choiceSent = true
+					}
+				}
+			}
 		case KindResult:
 			return message, nil
 		default:
@@ -226,10 +247,11 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 	}
 }
 
-// executeState 记录一次 Execute 过程中「目标请求是否已写出」的事实。
+// executeState 记录一次 Execute 过程中「目标请求是否已写出」「选择闭环是否已继续」的事实。
 type executeState struct {
-	account string
-	written bool
+	account    string
+	written    bool
+	choiceSent bool
 }
 
 // handleForward 校验并转发一笔页面目标请求；SID 失效只换新会话重放一次。

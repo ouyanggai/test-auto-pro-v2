@@ -149,3 +149,28 @@ func IsKnownWritePath(path string) bool {
 	}
 	return writeEndpointSet[path]
 }
+
+// ReadFormTemplateData 读取实例绑定表单代理的 FormMaking 模板原文（审批 runtime 装载用）。
+// 读取失败按传输错误上抛：调用方必须阻塞写动作，不得以空模板发送。
+func (c *Client) ReadFormTemplateData(ctx context.Context, active Session, formProxyID string) (json.RawMessage, error) {
+	resp, err := c.call(ctx, "/web/formProxy/findById", active.SID, map[string]any{"data": map[string]any{"id": strings.TrimSpace(formProxyID)}})
+	if err != nil {
+		return nil, err
+	}
+	if !responseSucceeded(resp) {
+		return nil, responseError(resp)
+	}
+	if len(resp.Data) == 0 || string(resp.Data) == "null" {
+		return nil, invalidResponse("form proxy response is empty")
+	}
+	var data struct {
+		TemplateData string `json:"templateData"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return nil, invalidResponse("form proxy response is not an object")
+	}
+	if strings.TrimSpace(data.TemplateData) == "" {
+		return nil, invalidResponse("form proxy response missing templateData")
+	}
+	return json.RawMessage(data.TemplateData), nil
+}

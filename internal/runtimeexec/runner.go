@@ -1,0 +1,296 @@
+// T012 Runtime 执行器：七阶段执行器的可选 runtime 运行面。
+// 一个动作经 runtime 执行的完整编排：创建会话 → 装载（发起/审批）→ WS 业务命令 →
+// 选择闭环自动继续（最多一次，仅限三种明确选择错误）→ 消费完成检测结果。
+package runtimeexec
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// NextAuditorEntry 是 runtime 协议的节点人员条目（与 TS 侧 NextAuditorEntry 对齐）。
+type NextAuditorEntry struct {
+	NodeProxyID     string `json:"nodeProxyId"`
+	BizID           string `json:"bizId"`
+	Name            string `json:"name"`
+	AuditDetailType string `json:"auditDetailType"`
+}
+
+// BranchSelection 是一条手动分支选择（分支节点代理 ID → 选中分支入口节点代理 ID）。
+type BranchSelection struct {
+	NodeProxyID string
+	EntryNodeID string
+}
+
+// RuntimeRunRequest 是一次 runtime 动作执行的全部输入（由执行器从运行上下文投影）。
+type RuntimeRunRequest struct {
+	RunID     string
+	PathRunID string
+	StepID    string
+	Account   string
+	Action    string
+	// ToolFlowName 是工具流程名称：最终流程请求中目标脚本不得改写。
+	ToolFlowName string
+	// 装载事实
+	Session       SessionFacts
+	Initiator     ActorIdentity
+	Template      json.RawMessage
+	Values        json.RawMessage
+	Permissions   []string
+	ChangedFields []string
+	InstanceID    string
+	JobTaskID     string
+	NodeProxyID   string
+	AuditDesc     string
+	// 选择闭环（T010B）：路径已保存的分支入口与节点人员。
+	BranchSelections []BranchSelection
+	NextNodeAuditors []NextAuditorEntry
+	// BaseURL 是目标网关地址。
+	BaseURL string
+	// LoadMode 覆盖默认模式推导；空串时按动作推导（submit/save_draft → initiate，其余 → approve）。
+	LoadMode string
+}
+
+// ActionRunResult 是 runtime 动作的最终判定事实（状态为协议七值之一）。
+type ActionRunResult struct {
+	Status       string
+	Message      string
+	RequestTrace json.RawMessage
+}
+
+// RuntimeRunner 是执行器对 runtime 能力的接口面（*RuntimeExecutor 满足）。
+type RuntimeRunner interface {
+	RunAction(ctx context.Context, request RuntimeRunRequest) (ActionRunResult, error)
+}
+
+// RuntimeExecutor 基于 Client 实现完整动作编排。
+type RuntimeExecutor struct {
+	client *Client
+}
+
+// NewRuntimeExecutor 构造 runtime 执行器。
+func NewRuntimeExecutor(client *Client) *RuntimeExecutor {
+	return &RuntimeExecutor{client: client}
+}
+
+// loadModeFor 按动作推导装载模式：发起链两个动作走发起装载，其余走审批装载。
+func loadModeFor(action string) string {
+	switch action {
+	case "save_draft", "submit":
+		return LoadModeInitiate
+	default:
+		return LoadModeApprove
+	}
+}
+
+// RunAction 执行一次完整 runtime 动作并返回完成检测判定。
+// 会话生命周期归本方法所有：无论成败，返回前销毁会话并释放 Context。
+func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunRequest) (ActionRunResult, error) {
+	handle, err := r.client.CreateSession(ctx, SessionSpec{
+		AccountKey: request.Account,
+		RunID:      request.RunID,
+		PathRunID:  request.PathRunID,
+		StepID:     request.StepID,
+	})
+	if err != nil {
+		return ActionRunResult{}, fmt.Errorf("创建 runtime 会话失败：%w", err)
+	}
+	defer func() {
+		destroyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = r.client.Destroy(destroyCtx, handle.SessionID)
+	}()
+
+	// ① 装载：发起模式（submit/save_draft）由目标自装载模板（载荷带 flowId 由执行器填写）；
+	// 审批模式注入模板/值/权限。
+	loadMode := request.LoadMode
+	if loadMode == "" {
+		loadMode = loadModeFor(request.Action)
+	}
+	permissions := request.Permissions
+	if permissions == nil {
+		permissions = []string{}
+	}
+	loadPayload, err := BuildLoadPayload(LoadInput{
+		Mode:          loadMode,
+		Session:       request.Session,
+		ToolFlowName:  request.ToolFlowName,
+		InstanceID:    request.InstanceID,
+		JobTaskID:     request.JobTaskID,
+		NodeProxyID:   request.NodeProxyID,
+		Permissions:   permissions,
+		ChangedFields: request.ChangedFields,
+		BaseURL:       request.BaseURL,
+		Initiator:     request.Initiator,
+	}, request.Template, request.Values)
+	if err != nil {
+		return ActionRunResult{}, fmt.Errorf("装载载荷构造失败：%w", err)
+	}
+	loadEnvelope, err := EncodeLoadMessage(handle.SessionID, fmt.Sprintf("load-%d", time.Now().UnixNano()), request.RunID, request.PathRunID, request.StepID, loadPayload)
+	if err != nil {
+		return ActionRunResult{}, err
+	}
+	if _, err := r.client.Load(ctx, handle.SessionID, "req-load", Message{Kind: KindLoad, Payload: loadEnvelope}); err != nil {
+		return ActionRunResult{}, fmt.Errorf("runtime 装载失败：%w", err)
+	}
+
+	// ② 业务命令 + 选择闭环：仅三种明确选择错误允许继续一次。
+	choiceSent := false
+	callbacks := ExecuteCallbacks{
+		OnChoiceRequired: func(eventData json.RawMessage) *Message {
+			if choiceSent {
+				return nil
+			}
+			choice := r.buildChoice(request, eventData)
+			if choice == nil {
+				return nil
+			}
+			choiceSent = true
+			choicePayload, _ := json.Marshal(map[string]any{
+				"action": "choice_continue",
+				"choice": choice,
+			})
+			return &Message{
+				Kind:      KindExecute,
+				RequestID: fmt.Sprintf("choice-%d", time.Now().UnixNano()),
+				SessionID: handle.SessionID,
+				RunID:     request.RunID,
+				PathRunID: request.PathRunID,
+				StepID:    request.StepID,
+				Payload:   choicePayload,
+			}
+		},
+	}
+	actionPayload, err := json.Marshal(map[string]any{
+		"action":           normalizeAction(request.Action),
+		"instanceId":       request.InstanceID,
+		"jobTaskId":        request.JobTaskID,
+		"nodeProxyId":      request.NodeProxyID,
+		"auditDesc":        request.AuditDesc,
+		"branchSelections": branchSelectionMap(request.BranchSelections),
+		"nextNodeAuditors": request.NextNodeAuditors,
+	})
+	if err != nil {
+		return ActionRunResult{}, err
+	}
+	result, err := r.client.Execute(ctx, handle.SessionID, request.Account, Message{
+		Kind:      KindExecute,
+		RequestID: fmt.Sprintf("exec-%d", time.Now().UnixNano()),
+		SessionID: handle.SessionID,
+		RunID:     request.RunID,
+		PathRunID: request.PathRunID,
+		StepID:    request.StepID,
+		Payload:   actionPayload,
+	}, callbacks)
+	if err != nil {
+		return ActionRunResult{}, err
+	}
+	var payload ActionRunResult
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		return ActionRunResult{}, fmt.Errorf("结果载荷解析失败：%w", err)
+	}
+	return payload, nil
+}
+
+// buildChoice 按目标返回的选择要求匹配已配置数据，构造继续命令载荷。
+// 匹配不到已配置分支/人员时返回 nil：执行器据此阻塞（绝不猜测分支或用空人员）。
+func (r *RuntimeExecutor) buildChoice(request RuntimeRunRequest, eventData json.RawMessage) map[string]any {
+	var data struct {
+		ErrorType string `json:"errorType"`
+		Data      struct {
+			ErrorType   string `json:"errorType"`
+			BranchNodes []struct {
+				ID       string `json:"id"`
+				NodeName string `json:"nodeName"`
+			} `json:"branchNodes"`
+			Node struct {
+				ID string `json:"id"`
+			} `json:"node"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(eventData, &data); err != nil {
+		return nil
+	}
+	errorType := data.Data.ErrorType
+	if errorType == "" {
+		errorType = data.ErrorType
+	}
+	switch errorType {
+	case "custom_choose":
+		// 分支：必须找到与已保存分支入口完全相同的一项。
+		for _, node := range data.Data.BranchNodes {
+			for _, selection := range request.BranchSelections {
+				if selection.EntryNodeID != "" && selection.EntryNodeID == node.ID {
+					return map[string]any{
+						"kind":                    "branch",
+						"branchEntryNodeProxyIds": []string{node.ID},
+						"nextAuditors":            auditorsForNode(request, node.ID),
+					}
+				}
+			}
+		}
+		return nil
+	case "parallel_choose":
+		// 并行：逐个分支携带各自节点人员。
+		entries := []string{}
+		auditors := []NextAuditorEntry{}
+		for _, node := range data.Data.BranchNodes {
+			entries = append(entries, node.ID)
+			auditors = append(auditors, auditorsForNode(request, node.ID)...)
+		}
+		if len(entries) == 0 {
+			return nil
+		}
+		return map[string]any{
+			"kind":                    "parallel",
+			"branchEntryNodeProxyIds": entries,
+			"nextAuditors":            auditors,
+		}
+	case "run_node_choose":
+		// 自选人员：按返回节点 ID 匹配已配置人员。
+		nodeID := data.Data.Node.ID
+		if nodeID == "" {
+			return nil
+		}
+		auditors := auditorsForNode(request, nodeID)
+		if len(auditors) == 0 {
+			return nil
+		}
+		return map[string]any{
+			"kind":         "auditor",
+			"nextAuditors": auditors,
+		}
+	default:
+		return nil
+	}
+}
+
+// auditorsForNode 取某节点已配置的人员；空人员绝不放行。
+func auditorsForNode(request RuntimeRunRequest, nodeProxyID string) []NextAuditorEntry {
+	result := []NextAuditorEntry{}
+	for _, auditor := range request.NextNodeAuditors {
+		if auditor.NodeProxyID == nodeProxyID && auditor.BizID != "" && auditor.Name != "" {
+			result = append(result, auditor)
+		}
+	}
+	return result
+}
+
+// branchSelectionMap 把分支选择转成协议键值形状。
+func branchSelectionMap(selections []BranchSelection) map[string]string {
+	result := map[string]string{}
+	for _, selection := range selections {
+		if selection.NodeProxyID != "" && selection.EntryNodeID != "" {
+			result[selection.NodeProxyID] = selection.EntryNodeID
+		}
+	}
+	return result
+}
+
+// normalizeAction 返回去除空白的动作键。
+func normalizeAction(action string) string {
+	return strings.TrimSpace(action)
+}

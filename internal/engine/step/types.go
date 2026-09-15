@@ -12,6 +12,7 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/runtimeexec"
 )
 
 // TargetClient 是执行器需要的最小目标能力面。读写都经 internal/adapter/target，
@@ -42,6 +43,12 @@ type SessionProvider interface {
 	// Refresh 作废缓存并强制重新登录；写步骤的 prepare 阶段必须用最新会话，
 	// 因为 submit 一旦发出就没有任何重试或重登的机会。
 	Refresh(ctx context.Context, account string) (target.Session, error)
+}
+
+// RuntimeRunner 是执行器可选的 runtime 执行面（*runtimeexec.RuntimeExecutor 满足）。
+// 仅七个表单动作允许经它执行；配置后同一动作不得再走 TargetClient 写出口（T012）。
+type RuntimeRunner interface {
+	RunAction(ctx context.Context, request runtimeexec.RuntimeRunRequest) (runtimeexec.ActionRunResult, error)
 }
 
 // RunStateControl 是执行器对路径运行状态机的推进面（internal/engine/run.Service 满足）。
@@ -387,6 +394,10 @@ type StepPreview struct {
 	ReleaseRequired bool
 	// Navigation 表示本步是只读导航步骤：不发出写请求，仅校验实例事实。
 	Navigation bool
+	// runtimeHandled/runtimeStatus（T012）：本步写路径已由 runtime 接管及其七值判定结果。
+	// 置位后执行器不再调用 TargetClient 写出口，杜绝双写。
+	runtimeHandled bool
+	runtimeStatus  string
 	// TargetSkipped 表示本步节点已被目标自动跳过（模板约束「无处理人时跳过该节点」生效，
 	// 实例待办已落到路径上更靠后的节点）：不发出写请求，放行后按「已跳过」落账并推进。
 	// SkipReason 是给用户看的中文依据，必须说清为什么判定被跳过。
@@ -417,6 +428,19 @@ type StepPreview struct {
 	writeSent bool
 	// writeErrClass 是零写入失败的归属分类（处理人/待办解析失败或工具缺陷），供落账时如实归类。
 	writeErrClass model.FailureClass
+}
+
+// WriteErrForTest / WriteResponseForTest / RuntimeHandledForTest 供契约测试读取写事实与 runtime 接管状态。
+func (p *StepPreview) WriteErrForTest() error {
+	return p.writeErr
+}
+
+func (p *StepPreview) WriteResponseForTest() target.WriteResponse {
+	return p.writeResponse
+}
+
+func (p *StepPreview) RuntimeHandledForTest() bool {
+	return p != nil && p.runtimeHandled
 }
 
 // WriteSent 报告本次预览是否已进入目标写请求阶段。

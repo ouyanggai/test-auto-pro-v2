@@ -2,6 +2,7 @@ package step
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"test-auto-pro-v2/internal/engine/verdict"
 	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/runtimeexec"
 )
 
 // UnverifiedActionError 表示步骤动作不在当前原子动作目录内。
@@ -38,6 +40,11 @@ type Executor struct {
 	// logFactory 把运行上下文映射为运行目录里的 step.log 写入器；未注入时日志静默跳过（单测场景）。
 	logFactory LogFactory
 	now        func() time.Time
+	// runtime 执行能力（T012）：nil 时保持既有 Go 写路径；配置后七个表单动作经 runtime 且必须已登记能力。
+	runtimeRunner RuntimeRunner
+	capabilities  *runtimeexec.CapabilityRegistry
+	// runtimeBaseURL 是执行服务地址（如 http://127.0.0.1:19011），随 EnableRuntimeExecution 注入。
+	runtimeBaseURL string
 }
 
 // LogFactory 由装配层注入：复用 F-013 的运行目录路由打开 step.log。
@@ -49,10 +56,12 @@ func NewExecutor(targetClient TargetClient, sessions SessionProvider, runState R
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Executor{
-		target:   targetClient,
-		sessions: sessions,
-		runState: runState,
-		facts:    facts,
+		runtimeRunner: nil,
+		capabilities:  nil,
+		target:        targetClient,
+		sessions:      sessions,
+		runState:      runState,
+		facts:         facts,
 		policy: RetryPolicy{
 			Attempts: runConfig.ReadOnlyRetryAttempts, BaseDelay: runConfig.ReadOnlyRetryBaseDelay, MaxDelay: runConfig.ReadOnlyRetryMaxDelay,
 			WriteConnectAttempts: runConfig.WriteConnectRetryAttempts, WriteConnectBaseDelay: runConfig.WriteConnectRetryBaseDelay,
@@ -63,6 +72,178 @@ func NewExecutor(targetClient TargetClient, sessions SessionProvider, runState R
 }
 
 // SetLogFactory 注入 step.log 工厂；必须在首次使用前调用。
+// EnableRuntimeExecution 配置可选的 runtime 执行能力（T012）：
+// runner 为 nil 时全部动作保持既有 Go 写路径；配置后七个表单动作经 runtime 执行，
+// 且必须已通过能力登记（T014），未登记直接阻塞，绝不回退 Go 写造成双写。
+func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, registry *runtimeexec.CapabilityRegistry, serviceBaseURL string) {
+	e.runtimeRunner = runner
+	e.capabilities = registry
+	e.runtimeBaseURL = serviceBaseURL
+}
+
+// shouldRunViaRuntime 判定本步是否走 runtime：仅七个表单动作 + 已配置 runtime 能力。
+// Go 直连动作（加签/移交/回退/取回/撤回/催办/关注/取消关注）与系统节点永不经 runtime。
+func (e *Executor) shouldRunViaRuntime(runCtx RunContext, step model.CompiledActionStep) bool {
+	if e.runtimeRunner == nil {
+		return false
+	}
+	switch step.Action {
+	case model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData,
+		model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward:
+	default:
+		return false
+	}
+	// 无表单（vue_custom/NoFormFlow）不经 runtime：runtime 首版只支持 FormMaking 表单链。
+	if runCtx.RenderType != "" && runCtx.RenderType != string(target.FormRenderTypeFormMaking) {
+		return false
+	}
+	return true
+}
+
+// runViaRuntime 经 runtime 执行本步动作并回填 preview 写事实；返回 true 表示已接管。
+// 结果映射（设计 T012）：success 交给既有事实核验裁决；uncertain/timeout → 结果待确认；
+// target_rejected/business_failed → 确定失败（事实核验仍会复核）；failed/unsupported → 零写入失败。
+func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, approved ApprovedStep) bool {
+	if preview.runtimeHandled {
+		return true
+	}
+	reportPhase(approved, "submit", fmt.Sprintf("正在经无头表单运行时执行“%s”：真实页面组件将按目标顺序执行业务与流程请求，完成后仍会重读目标平台核验", firstNonEmpty(preview.ActionName, string(step.Action))))
+	action := string(step.Action)
+	formDigest := fmt.Sprintf("%x", sha256.Sum256(runCtx.EffectiveFormData))
+	if e.capabilities == nil || !e.capabilities.Registered(runCtx.FlowType, action, formDigest) &&
+		!e.capabilities.Registered(runCtx.FlowType, action, "") {
+		// 能力未登记：阻塞本步（不回退 Go 写出口，杜绝双写）。
+		preview.writeSent = false
+		preview.writeErr = fmt.Errorf("runtime 能力未登记（%s/%s），拒绝执行且不回退旧接口", runCtx.FlowType, action)
+		preview.writeErrClass = model.FailureClassGateBlocked
+		preview.runtimeHandled = true
+		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+		return true
+	}
+	// 审批装载需要 FormMaking 模板原文：按实例绑定表单代理读取（读取失败不得发送写动作）。
+	// 模板读取走可选接口（真实适配层实现；测试假件无须实现）。
+	template := json.RawMessage(`{}`)
+	if loadModeForRuntime(step.Action) == "approve" {
+		reader, ok := e.target.(interface {
+			ReadFormTemplateData(ctx context.Context, active target.Session, formProxyID string) (json.RawMessage, error)
+		})
+		if !ok {
+			preview.writeSent = false
+			preview.writeErr = errors.New("目标出口不支持表单模板读取，runtime 审批装载被阻塞")
+			preview.writeErrClass = model.FailureClassGateBlocked
+			preview.runtimeHandled = true
+			log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+			return true
+		}
+		raw, err := reader.ReadFormTemplateData(ctx, session, runCtx.FormProxyID)
+		if err != nil {
+			preview.writeSent = false
+			preview.writeErr = fmt.Errorf("读取实例绑定表单模板失败：%w", err)
+			preview.writeErrClass = model.FailureClassGateBlocked
+			preview.runtimeHandled = true
+			log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+			return true
+		}
+		template = raw
+	}
+	runRequest := runtimeexec.RuntimeRunRequest{
+		RunID:        fmt.Sprintf("%d", runCtx.Run.RunNo),
+		PathRunID:    fmt.Sprintf("%d", runCtx.PathRun.ID),
+		StepID:       fmt.Sprintf("%d", step.Sequence),
+		Account:      preview.ActorAccount,
+		Action:       action,
+		ToolFlowName: instanceName(runCtx, step),
+		Session: runtimeexec.SessionFacts{
+			UserID: session.UserID, CompanyID: session.CompanyID, DepartmentID: session.DepartmentID,
+			CustomerCode: session.CustomerCode, Account: session.Summary.Account, DisplayName: session.Summary.DisplayName,
+		},
+		Initiator:   runtimeexec.ActorIdentity{UserID: runCtx.PathRun.MainInstanceRef},
+		Template:    template,
+		Values:      formDataFromPreviewRequest(preview),
+		InstanceID:  runCtx.PathRun.MainInstanceRef,
+		NodeProxyID: stepTargetNodeIDOf(runCtx, step),
+		AuditDesc:   auditMessage(runCtx, step),
+		BaseURL:     e.runtimeBaseURL,
+	}
+	if runCtx.FormProxyID != "" {
+		runRequest.Template = template
+	}
+	// 选择闭环配置（T010B）：分支入口与节点人员原样带入。
+	for _, entryID := range runCtx.BranchSelections {
+		runRequest.BranchSelections = append(runRequest.BranchSelections, runtimeexec.BranchSelection{NodeProxyID: entryID, EntryNodeID: entryID})
+	}
+	for nodeKey, auditors := range runCtx.NextNodeAuditors {
+		if info, ok := runCtx.Nodes[nodeKey]; ok {
+			for _, auditor := range auditors {
+				runRequest.NextNodeAuditors = append(runRequest.NextNodeAuditors, runtimeexec.NextAuditorEntry{
+					NodeProxyID: info.TargetNodeID, BizID: auditor.BizID, Name: auditor.Name, AuditDetailType: "personnel",
+				})
+			}
+		}
+	}
+	result, err := e.runtimeRunner.RunAction(ctx, runRequest)
+	if err != nil {
+		// 连接断开按写出事实二分（runtimeexec.ErrUncertain/ErrFailedCleanly）。
+		preview.writeSent = false
+		preview.writeErr = err
+		preview.writeErrClass = model.FailureClassWriteUncertain
+		if errors.Is(err, runtimeexec.ErrFailedCleanly) {
+			preview.writeErrClass = model.FailureClassToolBug
+		}
+		preview.runtimeHandled = true
+		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 执行失败："+err.Error())
+		return true
+	}
+	preview.runtimeHandled = true
+	preview.runtimeStatus = result.Status
+	preview.writeResponse = target.WriteResponse{StatusCode: 200, IsSuccessPresent: true, IsSuccess: result.Status == "success"}
+	switch result.Status {
+	case "success":
+		preview.writeSent = true
+		preview.writeErr = nil
+		preview.writeResponse.IsSuccess = true
+		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 完成：业务与流程请求已全部收敛，进入目标事实核验")
+	case "uncertain", "timeout":
+		// 写状态不明：结果待确认，绝不重发。
+		preview.writeSent = true
+		preview.writeErr = &target.Error{Kind: target.ErrorUnavailable, Transport: target.TransportResponded, Cause: errors.New(result.Message)}
+		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 判定结果待确认："+result.Message)
+	case "target_rejected":
+		preview.writeSent = true
+		preview.writeErr = &target.BusinessRejection{Code: "RUNTIME_TARGET_REJECTED", Message: result.Message}
+		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 判定目标拒绝："+result.Message)
+	case "business_failed":
+		preview.writeSent = true
+		preview.writeErr = &target.BusinessRejection{Code: "RUNTIME_BUSINESS_FAILED", Message: result.Message}
+		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 判定后置业务失败："+result.Message)
+	default:
+		// failed / unsupported：零写入失败。
+		preview.writeSent = false
+		preview.writeErr = errors.New(result.Message)
+		preview.writeErrClass = model.FailureClassGateBlocked
+		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 判定失败："+result.Message)
+	}
+	return true
+}
+
+// ShouldRunViaRuntimeForTest 暴露路由判定，供契约测试锁定「哪些动作走 runtime」。
+func (e *Executor) ShouldRunViaRuntimeForTest(runCtx RunContext, step model.CompiledActionStep) bool {
+	return e.shouldRunViaRuntime(runCtx, step)
+}
+
+// RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。
+func (e *Executor) RunViaRuntimeForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, approved ApprovedStep) bool {
+	return e.runViaRuntime(ctx, runCtx, step, session, preview, nil, approved)
+}
+
+// loadModeForRuntime 返回动作对应的 runtime 装载模式。
+func loadModeForRuntime(action model.ActionKey) string {
+	if action == model.ActionSaveDraft || action == model.ActionSubmit {
+		return "initiate"
+	}
+	return "approve"
+}
+
 func (e *Executor) SetLogFactory(factory LogFactory) {
 	e.logFactory = factory
 }
@@ -1086,7 +1267,12 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	// 写端点可能明确拒绝过期会话，执行器会在确认请求未进入业务后换新会话重发。
 	// 后续事实重读必须沿用真正完成写入的会话，否则会拿旧 SID 做完整退避，
 	// 把已经成功的目标写误判成“声明成功但事实不可读”。
-	session = e.refreshAndSubmit(ctx, runCtx, step, session, preview, log, reportPhase, approved, attemptNo)
+	if e.shouldRunViaRuntime(runCtx, step) {
+		// runtime 已接管写路径：回填 preview 写事实后走既有核验/落账，绝不调用 TargetClient 写出口。
+		e.runViaRuntime(ctx, runCtx, step, session, preview, log, approved)
+	} else {
+		session = e.refreshAndSubmit(ctx, runCtx, step, session, preview, log, reportPhase, approved, attemptNo)
+	}
 	if !preview.writeSent {
 		// 零写入：写请求没有发出（发送前的待办新鲜复验失败或载荷缺失）。
 		// 没有发出的请求不存在“结果不确定”——把零写入判成不确定会把无副作用的失败
