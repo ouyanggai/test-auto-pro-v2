@@ -10,10 +10,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "playwright": "1.63.0"
+    "playwright": "1.63.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "22.20.2",
+    "@types/ws": "^8.18.1",
     "tsx": "4.23.13",
     "typescript": "5.9.3"
   }

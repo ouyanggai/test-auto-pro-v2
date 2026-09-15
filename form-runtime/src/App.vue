@@ -318,6 +318,9 @@ export default {
 		this.assertActiveSession(loadContext)
         this.savedValues = clonePlain(this.values)
         this.loading = false
+        // 装载开头的 destroySession 会废弃旧桥接；新会话就绪后必须重新注册执行桥接，
+        // 保证 window.__runtimeBridge__ 始终指向当前会话的可用入口。
+        this.installExecutionBridge()
         const loadResult = {
 		  ready: true, renderType: this.renderType,
 		  unsupported: this.unsupported, isolatedHooks: this.isolatedHooks,

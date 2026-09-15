@@ -24,5 +24,15 @@ pnpm --dir form-runtime/executor probe
 ## 服务
 
 ```bash
-pnpm --dir form-runtime/executor start   # 默认 127.0.0.1:19011，GET /healthz
+pnpm --dir form-runtime/executor start   # 默认 127.0.0.1:19011
 ```
+
+端点（docs/s/01-执行引擎设计.md 第 5 节）：
+
+- `POST /runtime/session` 创建执行会话
+- `POST /runtime/session/{id}/load` 装载身份、流程和表单
+- `WS /runtime/session/{id}/execute` 执行业务命令并推送事件/转发请求/结果
+- `GET /runtime/session/{id}/status` 只读状态查询
+- `POST /runtime/session/{id}/destroy` 关闭会话
+
+同端口 `GET /form-runtime/` 提供已构建的 runtime 产物静态服务。
