@@ -21,6 +21,7 @@ import (
 	"test-auto-pro-v2/internal/formruntimemaintenance"
 	"test-auto-pro-v2/internal/logging"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
+	"test-auto-pro-v2/internal/runtimeexec"
 	"test-auto-pro-v2/internal/service"
 	"test-auto-pro-v2/internal/session"
 )
@@ -166,6 +167,23 @@ func main() {
 	runStateService := run.NewService(runStore, "server-run-worker", runConfig.LeaseDuration, time.Now)
 	stepExecutor := step.NewExecutor(engineTargetClient, sessionManager, runStateService, runStore, runConfig, time.Now)
 	stepExecutor.SetLogFactory(step.NewRouterStepLogFactory(logRouter))
+	// 执行引擎改造（docs/s）：RUNTIME_EXECUTOR_URL 配置后七个表单动作经无头表单运行时执行，
+	// 页面请求经 Playwright 拦截回本进程 TargetClient 转发（唯一目标出口，不新增 HTTP 客户端）；
+	// 未配置时 runtime 路由停用，全部动作保持既有 Go 写路径。页面装载载荷的 baseURL 传空串：
+	// 请求保持相对路径由路由全量拦截（App.vue 执行模式约定）。RUNTIME_EXEC_VERIFICATION=1
+	// 进入真实目标验证模式：未登记组合放行一次以取得证据，核验确认成功后自动登记能力。
+	runtimeExecConfig := config.LoadRuntimeExecConfig()
+	if runtimeExecConfig.ExecutorURL != "" {
+		runtimeClient, runtimeErr := runtimeexec.NewClient(runtimeExecConfig.ExecutorURL, engineTargetClient, sessionManager)
+		if runtimeErr != nil {
+			log.Fatal(runtimeErr)
+		}
+		stepExecutor.EnableRuntimeExecution(runtimeexec.NewRuntimeExecutor(runtimeClient), runtimeexec.NewCapabilityRegistry(), "")
+		if runtimeExecConfig.Verification {
+			stepExecutor.EnableRuntimeVerification()
+		}
+		log.Printf("runtime 执行路由已启用：执行服务 %s（验证模式=%v）", runtimeExecConfig.ExecutorURL, runtimeExecConfig.Verification)
+	}
 	controlService := control.NewService(runStateService, stepExecutor, runStore, time.Now)
 	runOrchestrationService := service.NewRunOrchestrationService(
 		planService, pathRepository, flowGraphService, historyWorkspaceStore,

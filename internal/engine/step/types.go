@@ -398,6 +398,9 @@ type StepPreview struct {
 	// 置位后执行器不再调用 TargetClient 写出口，杜绝双写。
 	runtimeHandled bool
 	runtimeStatus  string
+	// runtimeFormDigest 是 runtime 执行时登记能力用的表单数据摘要（sha256），
+	// 与路由判定用同一份值，核验确认成功后按「流程+动作+摘要」登记能力（T014）。
+	runtimeFormDigest string
 	// TargetSkipped 表示本步节点已被目标自动跳过（模板约束「无处理人时跳过该节点」生效，
 	// 实例待办已落到路径上更靠后的节点）：不发出写请求，放行后按「已跳过」落账并推进。
 	// SkipReason 是给用户看的中文依据，必须说清为什么判定被跳过。
@@ -441,6 +444,23 @@ func (p *StepPreview) WriteResponseForTest() target.WriteResponse {
 
 func (p *StepPreview) RuntimeHandledForTest() bool {
 	return p != nil && p.runtimeHandled
+}
+
+// RuntimeFormDigestForTest 供契约测试读取能力登记用的表单摘要。
+func (p *StepPreview) RuntimeFormDigestForTest() string {
+	if p == nil {
+		return ""
+	}
+	return p.runtimeFormDigest
+}
+
+// SetRuntimeFormDigestForTest / SetRuntimeHandledForTest 供契约测试模拟 runtime 接管后的登记输入。
+func (p *StepPreview) SetRuntimeFormDigestForTest(digest string) {
+	p.runtimeFormDigest = digest
+}
+
+func (p *StepPreview) SetRuntimeHandledForTest(handled bool) {
+	p.runtimeHandled = handled
 }
 
 // WriteSent 报告本次预览是否已进入目标写请求阶段。

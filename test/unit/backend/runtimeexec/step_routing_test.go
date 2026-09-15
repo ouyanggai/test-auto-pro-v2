@@ -137,8 +137,10 @@ func newExecutorForRouting(t *testing.T, view *recordingTarget, runner step.Runt
 		"plan-acct":  {UserID: "user-plan", Summary: target.AccountSummary{Account: "plan-acct", DisplayName: "发起人"}},
 		"actor-acct": {UserID: "user-actor", Summary: target.AccountSummary{Account: "actor-acct", DisplayName: "处理人"}},
 	}}, nil, nil, fixedRunConfigForRouting(), nil)
-	if runner != nil {
-		executor.EnableRuntimeExecution(runner, registry, "http://127.0.0.1:19011")
+	// registry 非空即配置 runtime 能力面（runner 可为 nil：登记测试不经过路由）；
+	// 两者都为空时保持未配置形态，锁定「未配置=全部动作走 Go 写路径」。
+	if runner != nil || registry != nil {
+		executor.EnableRuntimeExecution(runner, registry, "")
 	}
 	return executor
 }
@@ -236,8 +238,53 @@ func TestUnregisteredCapabilityBlocksStepWithoutFallback(t *testing.T) {
 	if !strings.Contains(preview.WriteErrForTest().Error(), "能力未登记") {
 		t.Fatalf("阻塞原因必须说明能力未登记：%v", preview.WriteErrForTest())
 	}
-	if runner.calls != 0 {
-		t.Fatalf("未登记能力不应调用 runtime：%d", runner.calls)
+	if runner.callCount() != 0 {
+		t.Fatalf("未登记能力不应调用 runtime：%d", runner.callCount())
+	}
+}
+
+// TestVerificationModePassesUnregisteredOnce 验证模式（T015）：未登记组合放行执行一次以取得登记证据。
+func TestVerificationModePassesUnregisteredOnce(t *testing.T) {
+	view := &recordingTarget{taskID: "task-9"}
+	registry := runtimeexec.NewCapabilityRegistry()
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	executor.EnableRuntimeVerification()
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	if !executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
+		t.Fatalf("验证模式下 runtime 应接管本步")
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("验证模式应放行未登记组合调用 runtime，实际 %d 次", runner.callCount())
+	}
+	if !preview.WriteSent() {
+		t.Fatalf("验证模式放行后应进入写路径")
+	}
+	if preview.RuntimeFormDigestForTest() == "" {
+		t.Fatalf("放行时必须记录登记用表单摘要")
+	}
+}
+
+// TestRegisterRuntimeCapabilityAfterVerifiedSuccess 核验确认成功后按流程+动作+表单摘要登记能力，
+// 之后同组合路由直接命中登记；其他动作、其他表单摘要不自动解锁（T014 验收口径）。
+func TestRegisterRuntimeCapabilityAfterVerifiedSuccess(t *testing.T) {
+	view := &recordingTarget{}
+	registry := runtimeexec.NewCapabilityRegistry()
+	executor := newExecutorForRouting(t, view, nil, registry)
+	runCtx := runtimeRunCtx()
+	stepItem := runtimeStep(model.ActionSubmit)
+	preview := &step.StepPreview{ActorAccount: "plan-acct"}
+	preview.SetRuntimeFormDigestForTest("digest-abcdef")
+	preview.SetRuntimeHandledForTest(true)
+	executor.RegisterRuntimeCapabilityForTest(runCtx, stepItem, preview)
+	if !registry.Registered(runCtx.FlowType, "submit", "digest-abcdef") {
+		t.Fatalf("核验确认成功后同组合应已登记")
+	}
+	if registry.Registered(runCtx.FlowType, "approve", "digest-abcdef") {
+		t.Fatalf("同流程其他动作不得被自动解锁")
+	}
+	if registry.Registered(runCtx.FlowType, "submit", "other-digest") {
+		t.Fatalf("其他表单摘要不得被自动解锁")
 	}
 }
 

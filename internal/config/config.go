@@ -362,3 +362,38 @@ func intFromEnv(name string, fallback int) int {
 	}
 	return fallback
 }
+
+// RuntimeExecConfig 是执行引擎 runtime 路由的可选配置（docs/s 执行引擎改造）。
+// ExecutorURL 为空表示停用 runtime 路由：全部动作保持既有 Go 写路径，行为与本配置出现前完全一致。
+type RuntimeExecConfig struct {
+	// ExecutorURL 是 form-runtime 执行服务（无头 Chromium）地址，如 http://127.0.0.1:19011。
+	ExecutorURL string
+	// Verification 是真实目标验证模式（T015 专用）：未登记的 FormMaking 组合允许经
+	// runtime 执行一次以取得登记证据，核验确认成功后自动登记能力；未开启时未登记组合阻塞。
+	Verification bool
+}
+
+// runtime 执行路由的环境变量名。
+const (
+	runtimeExecutorURLEnv  = "RUNTIME_EXECUTOR_URL"
+	runtimeVerificationEnv = "RUNTIME_EXEC_VERIFICATION"
+)
+
+// LoadRuntimeExecConfig 优先读取进程环境，其次读取项目根目录的本机忽略配置。
+func LoadRuntimeExecConfig() RuntimeExecConfig {
+	localValues, _ := loadTargetLocalValues(targetLocalEnvFile())
+	return RuntimeExecConfig{
+		ExecutorURL:  strings.TrimSpace(targetConfigValue(runtimeExecutorURLEnv, localValues)),
+		Verification: boolFromValue(targetConfigValue(runtimeVerificationEnv, localValues)),
+	}
+}
+
+// boolFromValue 解析布尔环境值；1/true（不分大小写）为真，其余为假。
+func boolFromValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true":
+		return true
+	default:
+		return false
+	}
+}
