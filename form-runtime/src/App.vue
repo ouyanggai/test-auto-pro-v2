@@ -104,14 +104,16 @@ export default {
     executionSessionId () {
       return this.sessionId
     },
-    // loadForExecution 是 load_initiate/load_approve 的执行模式入口：复用既有真实装载链路，
-    // 并把执行模式记入载荷；发起与审批的差异（身份注入、审批页面组件）由同一入口扩展。
+    // loadForExecution 是 load_initiate/load_approve/load_forward 的执行模式入口：
+    // 复用既有真实装载链路，并把执行模式记入载荷；发起与审批的差异（身份注入、审批页面组件）
+    // 由同一入口扩展，转发（评审 P1-4）复用审批宿主并注入转发弹窗等价状态。
     async loadForExecution (mode, command) {
       const payload = { ...(command.payload || {}) }
       payload.executionMode = mode
       // 审批装载必须携带原发起人事实：当前审批人身份只作为登录上下文注入，
       // 发起人身份单独保存（window.__runtimeExecutionIdentity__.initiator），
       // 禁止当前人覆盖发起人字段（T009 身份注入纪律）。
+      // 转发装载不需要发起人身份（mixin 只读实例关联与接收人），不做该校验。
       if (mode === 'approve') {
         const initiator = payload.initiator && typeof payload.initiator === 'object' ? payload.initiator : null
         if (!initiator || !String(initiator.userId || '').trim()) {
@@ -375,8 +377,9 @@ export default {
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
         // 执行模式：按装载模式切换到对应执行宿主路由（真实 FlowDialog / 审批组件链）。
+        // 转发与审批同属待办页链路（评审 P1-4）：复用审批宿主，由 applyForwardLoad 注入转发状态。
         if (payload.executionMode) {
-          const routeByMode = { initiate: '/test-auto-form/exec', approve: '/test-auto-form/exec-approve' }
+          const routeByMode = { initiate: '/test-auto-form/exec', approve: '/test-auto-form/exec-approve', forward: '/test-auto-form/exec-approve' }
           const targetRoute = routeByMode[payload.executionMode]
           if (targetRoute) {
             await window.$router.replace(targetRoute).catch(() => {})
@@ -392,23 +395,30 @@ export default {
           if (payload.executionMode && typeof host.applyExecutionLoad === 'function') {
             // 执行宿主装载：FlowDialog 存在 flowId 时模板与字段权限由目标接口（经 Go 转发）自行装载；
             // 离线注入场景与审批宿主由宿主 applyExecutionLoad 落模板事实。
+            // 转发装载（评审 P1-4）：applyForwardLoad 注入转发弹窗等价的行事实、接收人与勾选，
+            // 没有 FormMaking 表单可 setData，装载后直接就绪。
             // 宿主实例同时登记到执行全局，供服务端完成检测读取业务完成信号。
             window.__runtimeExecutionHost__ = host
-            await host.applyExecutionLoad({
-              payload,
-              template: this.template,
-              permissions: this.runtimePermissions,
-              values: this.values
-            })
-			this.assertActiveSession(loadContext)
-            const execForm = this.form()
-            if (!execForm || typeof execForm.setData !== 'function') throw new Error('执行宿主表单尚未就绪')
-            await execForm.setData(clonePlain(this.values))
-			this.assertActiveSession(loadContext)
-            await this.$nextTick()
-			this.assertActiveSession(loadContext)
-            await execForm.setData(clonePlain(this.values))
-			this.assertActiveSession(loadContext)
+            if (payload.executionMode === 'forward' && typeof host.applyForwardLoad === 'function') {
+              await host.applyForwardLoad({ payload, template: this.template, values: this.values })
+              this.assertActiveSession(loadContext)
+            } else {
+              await host.applyExecutionLoad({
+                payload,
+                template: this.template,
+                permissions: this.runtimePermissions,
+                values: this.values
+              })
+              this.assertActiveSession(loadContext)
+              const execForm = this.form()
+              if (!execForm || typeof execForm.setData !== 'function') throw new Error('执行宿主表单尚未就绪')
+              await execForm.setData(clonePlain(this.values))
+              this.assertActiveSession(loadContext)
+              await this.$nextTick()
+              this.assertActiveSession(loadContext)
+              await execForm.setData(clonePlain(this.values))
+              this.assertActiveSession(loadContext)
+            }
           } else {
             // iframe 注入路径（现状保持）：适配层只注入目标宿主已有的数据模型和权限。
             host.enableData = [...this.editableFields]

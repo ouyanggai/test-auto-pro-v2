@@ -221,6 +221,26 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 		return true
 	}
+	// 转发接收人是目标转发弹窗的强制输入（flowTypeMixin：请选择人员）：
+	// 缺失时写前阻塞，绝不进入目标页面（评审 P1-4）。
+	receiverID := ""
+	receiverName := ""
+	if step.Action == model.ActionForward {
+		receiverID = firstActionPersonID(runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)])
+		if strings.TrimSpace(receiverID) == "" {
+			preview.writeSent = false
+			preview.writeErr = fmt.Errorf("转发动作未配置接收人，拒绝经 runtime 执行")
+			preview.writeErrClass = model.FailureClassGateBlocked
+			preview.runtimeHandled = true
+			log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+			return true
+		}
+		receiverName = personNameFor(runCtx, receiverID)
+	}
+	// 目标代理与节点事实（评审 P1-3）：FlowDialog/审批组件的最终流程载荷直接消费这些字段。
+	// 表单代理优先用实例当前事实（重提/加签后可能变化），回落实计划模板事实。
+	formProxyID := firstNonEmpty(preview.Facts.FormProxyID, runCtx.FormProxyID)
+	flowProxyID := firstNonEmpty(preview.Facts.CurrentTaskFlowProxy, preview.Facts.FlowProxyID, runCtx.FlowProxyID)
 	runRequest := runtimeexec.RuntimeRunRequest{
 		RunID:        fmt.Sprintf("%d", runCtx.Run.RunNo),
 		PathRunID:    fmt.Sprintf("%d", runCtx.PathRun.ID),
@@ -239,7 +259,20 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		JobTaskID:   jobTaskID,
 		NodeProxyID: stepTargetNodeIDOf(runCtx, step),
 		AuditDesc:   auditMessage(runCtx, step),
-		BaseURL:     e.runtimeBaseURL,
+		// 权限=当前节点声明可编辑字段；变更字段=本步实际覆盖的字段（预览阶段已按权限构造）。
+		Permissions:   runCtx.Nodes[step.NodeKey].EditableFields,
+		ChangedFields: preview.FormOverlaid,
+		// 代理与节点事实：目标提交按 formId 决定发送 formProxyId/flowProxyId（评审 P1-3 根因）。
+		FormProxyID:          formProxyID,
+		FlowProxyID:          flowProxyID,
+		SelectFlowType:       runCtx.FlowType,
+		FlowNodeType:         runCtx.Nodes[step.NodeKey].AuditType,
+		NextNodeProxyID:      nextNodeTargetIDOf(runCtx, approved.NextIndex),
+		BizRelevance:         runtimeBizRelevance(preview.Facts.BizRelevance),
+		ReceiverID:           receiverID,
+		ReceiverName:         receiverName,
+		BranchNodeAuditTypes: branchAuditTypes(runCtx),
+		BaseURL:              e.runtimeBaseURL,
 	}
 	// 选择闭环配置（T010B）：分支选择是「分支节点 ID → 所选分支入口节点 ID」，
 	// 键值各归其位；只带入口会丢掉分支节点归属，目标无法匹配候选分支。
@@ -877,6 +910,57 @@ func (e *Executor) blockedPreview(runCtx RunContext, step model.CompiledActionSt
 // stepTargetNodeIDOf 返回编译步骤节点在目标平台的真实标识；缺失时返回空串由调用方兜底。
 func stepTargetNodeIDOf(runCtx RunContext, step model.CompiledActionStep) string {
 	return strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+}
+
+// nextNodeTargetIDOf 返回本次流转下一业务节点在目标平台的真实代理 ID；
+// 审批组件把它作为 nextAuditorList 缺省归属兜底（评审 P1-3）。取不到返回空串。
+func nextNodeTargetIDOf(runCtx RunContext, nextIndex int) string {
+	nextNodeKey := FollowingActionNodeKey(runCtx.Steps, nextIndex)
+	if nextNodeKey == "" {
+		return ""
+	}
+	return strings.TrimSpace(runCtx.Nodes[nextNodeKey].TargetNodeID)
+}
+
+// personNameFor 在启动时已解析的人员目录里反查目标用户 ID 对应的姓名；
+// 找不到返回空串——宁可少一个展示名，也不用猜测值冒充目标事实。
+func personNameFor(runCtx RunContext, userID string) string {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ""
+	}
+	for _, auditors := range runCtx.NextNodeAuditors {
+		for _, auditor := range auditors {
+			if strings.TrimSpace(auditor.BizID) == userID {
+				return auditor.Name
+			}
+		}
+	}
+	return ""
+}
+
+// runtimeBizRelevance 把实例当前业务关联转成 runtime 装载载荷形状：
+// 审批与转发沿用目标事实，不在页面里凭空重建（评审 P1-3）。
+func runtimeBizRelevance(relevance []target.BizRelevance) []runtimeexec.BizRelevance {
+	result := make([]runtimeexec.BizRelevance, 0, len(relevance))
+	for _, item := range relevance {
+		result = append(result, runtimeexec.BizRelevance{OtherBiz: item.OtherBiz, OtherBizID: item.OtherBizID})
+	}
+	return result
+}
+
+// branchAuditTypes 反查节点表生成「目标节点代理 ID → 审批方式」映射：
+// runtime 选择闭环据此判定返回分支是否必须携带已配置人员（评审 P1-6）。
+func branchAuditTypes(runCtx RunContext) map[string]string {
+	result := map[string]string{}
+	for _, info := range runCtx.Nodes {
+		nodeID := strings.TrimSpace(info.TargetNodeID)
+		auditType := strings.TrimSpace(info.AuditType)
+		if nodeID != "" && auditType != "" {
+			result[nodeID] = auditType
+		}
+	}
+	return result
 }
 
 // runtimeIdentityReader 是读取当前会话实时身份的可选能力面（F-035 评审补充）：

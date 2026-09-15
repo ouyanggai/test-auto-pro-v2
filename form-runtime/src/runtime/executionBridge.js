@@ -4,8 +4,9 @@
 // version 固定 exec-engine/v1，缺 run/pathRun/step/request 编号的命令一律拒绝。
 import { EXECUTION_ACTIONS, EXECUTION_PROTOCOL_VERSION, isExecutionCommand } from './protocol.js'
 
-// BRIDGE_METHODS 是对外暴露且仅有的六个方法；多余能力一律不挂到全局。
-export const BRIDGE_METHODS = ['loadInitiate', 'loadApprove', 'capture', 'validate', 'execute', 'destroy']
+// BRIDGE_METHODS 是对外暴露且仅有的七个方法；多余能力一律不挂到全局。
+// loadForward 是转发复合动作的装载入口（评审 P1-4）：注入转发弹窗等价的行事实与接收人。
+export const BRIDGE_METHODS = ['loadInitiate', 'loadApprove', 'loadForward', 'capture', 'validate', 'execute', 'destroy']
 
 // BridgeInvalidatedError 表示桥接已销毁后仍被调用；调用方必须停止，不允许复活会话。
 export class BridgeInvalidatedError extends Error {
@@ -51,6 +52,7 @@ export function createExecutionBridge (app) {
     version: EXECUTION_PROTOCOL_VERSION,
     loadInitiate: wrap(command => app.loadForExecution('initiate', command)),
     loadApprove: wrap(command => app.loadForExecution('approve', command)),
+    loadForward: wrap(command => app.loadForExecution('forward', command)),
     capture: wrap(command => app.captureForExecution(false, command)),
     validate: wrap(command => app.captureForExecution(true, command)),
     execute: wrap(command => app.executeBusinessAction(command.payload.action, command)),

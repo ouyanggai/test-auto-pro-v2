@@ -10,10 +10,12 @@ import (
 	"strings"
 )
 
-// 装载模式：发起装载创建发起表单组件；审批装载（T009）复用同一形状并注入两套身份。
+// 装载模式：发起装载创建发起表单组件；审批装载（T009）复用同一形状并注入两套身份；
+// 转发装载（P1-4 修复）复用审批宿主并注入转发弹窗等价的行事实与接收人。
 const (
 	LoadModeInitiate = "initiate"
 	LoadModeApprove  = "approve"
+	LoadModeForward  = "forward"
 )
 
 // SessionFacts 是装载需要的会话事实子集，由调用方从 target.Session 投影；SID 不在其中。
@@ -59,6 +61,32 @@ type LoadPayload struct {
 	AccountName     string        `json:"accountName,omitempty"`
 	// BaseURL 是目标网关地址：页面据此构造目标请求（由 Go 拦截转发，绝不直连）。
 	BaseURL string `json:"baseURL,omitempty"`
+	// —— 以下为评审 P1-3 补齐的目标代理与节点事实：目标组件提交/审批载荷直接消费这些字段 ——
+	// FormProxyID 是 FormMaking 表单代理 ID：FlowDialog 据 formId 决定发送 formProxyId；
+	// 缺失时目标提交会退回发送 flowProxyId: ""（评审 P1-3 的空代理 ID 根因）。
+	FormProxyID string `json:"formProxyId,omitempty"`
+	// FlowProxyID 是发布流程代理 ID：审批组件与转发链的流程归属事实。
+	FlowProxyID string `json:"flowProxyId,omitempty"`
+	// SelectFlowType 是流程类型（auditWay）：目标组件按它组装业务关联与表单业务分支。
+	SelectFlowType string `json:"selectFlowType,omitempty"`
+	// FlowNodeType 是当前节点审批方式：审批组件据它判定选人入口。
+	FlowNodeType string `json:"flowNodeType,omitempty"`
+	// NextNodeProxyID 是本次流转下一节点的真实代理 ID：审批 nextAuditorList 缺省归属兜底。
+	NextNodeProxyID string `json:"nextNodeProxyId,omitempty"`
+	// FlowInstanceBizRelevanceList 是实例当前业务关联：审批与转发沿用目标事实，不凭空重建。
+	FlowInstanceBizRelevanceList []BizRelevance `json:"flowInstanceBizRelevanceList,omitempty"`
+	// —— 转发事实（P1-4）：等价于用户在转发弹窗中的输入 ——
+	// ReceiverID/ReceiverName 是转发接收人：缺失必须在装载前被拒绝（空接收人绝不下发）。
+	ReceiverID   string `json:"receiverId,omitempty"`
+	ReceiverName string `json:"receiverName,omitempty"`
+	// ForwardCheckList 是转发勾选项（fuyan=附言 / yijian=流程日志）。
+	ForwardCheckList []string `json:"forwardCheckList,omitempty"`
+}
+
+// BizRelevance 是一条实例业务关联（与目标载荷 {otherBiz, otherBizId} 同形）。
+type BizRelevance struct {
+	OtherBiz   string `json:"otherBiz"`
+	OtherBizID string `json:"otherBizId"`
 }
 
 // ActorIdentity 是一个业务身份的最小事实。
@@ -79,12 +107,23 @@ type LoadInput struct {
 	ChangedFields []string
 	BaseURL       string
 	Initiator     ActorIdentity
+	// —— 目标代理与节点事实（评审 P1-3）——
+	FormProxyID                  string
+	FlowProxyID                  string
+	SelectFlowType               string
+	FlowNodeType                 string
+	NextNodeProxyID              string
+	FlowInstanceBizRelevanceList []BizRelevance
+	// —— 转发事实（评审 P1-4）——
+	ReceiverID       string
+	ReceiverName     string
+	ForwardCheckList []string
 }
 
 // BuildLoadPayload 构造并校验装载载荷；模板与表单数据必须是合法 JSON，工具流程名称必填。
 func BuildLoadPayload(input LoadInput, template, values json.RawMessage) (*LoadPayload, error) {
-	if input.Mode != LoadModeInitiate && input.Mode != LoadModeApprove {
-		return nil, fmt.Errorf("装载模式只支持 initiate/approve：%s", input.Mode)
+	if input.Mode != LoadModeInitiate && input.Mode != LoadModeApprove && input.Mode != LoadModeForward {
+		return nil, fmt.Errorf("装载模式只支持 initiate/approve/forward：%s", input.Mode)
 	}
 	if strings.TrimSpace(input.ToolFlowName) == "" {
 		return nil, fmt.Errorf("装载缺少工具流程名称")
@@ -109,6 +148,16 @@ func BuildLoadPayload(input LoadInput, template, values json.RawMessage) (*LoadP
 		// 发起人就是当前操作人：缺失用户事实时必须阻止，否则身份字段替换会把空值写进表单。
 		return nil, fmt.Errorf("装载缺少当前账号用户事实")
 	}
+	if input.Mode == LoadModeForward {
+		// 转发在装载前就要有接收人：等价于目标弹窗「请选择人员」的强制校验，
+		// 没有接收人的转发绝不允许进入目标接口（评审 P1-4）。
+		if strings.TrimSpace(input.InstanceID) == "" {
+			return nil, fmt.Errorf("转发装载缺少实例 ID")
+		}
+		if strings.TrimSpace(input.ReceiverID) == "" {
+			return nil, fmt.Errorf("转发装载缺少接收人，拒绝进入目标页面")
+		}
+	}
 	permissions := input.Permissions
 	if permissions == nil {
 		permissions = []string{}
@@ -116,6 +165,14 @@ func BuildLoadPayload(input LoadInput, template, values json.RawMessage) (*LoadP
 	changed := input.ChangedFields
 	if changed == nil {
 		changed = []string{}
+	}
+	relevance := input.FlowInstanceBizRelevanceList
+	if relevance == nil {
+		relevance = []BizRelevance{}
+	}
+	checkList := input.ForwardCheckList
+	if checkList == nil {
+		checkList = []string{}
 	}
 	return &LoadPayload{
 		Mode:            input.Mode,
@@ -136,6 +193,15 @@ func BuildLoadPayload(input LoadInput, template, values json.RawMessage) (*LoadP
 		UserID:          current.UserID,
 		AccountName:     strings.TrimSpace(input.Session.Account),
 		BaseURL:         strings.TrimRight(input.BaseURL, "/"),
+		FormProxyID:     strings.TrimSpace(input.FormProxyID),
+		FlowProxyID:     strings.TrimSpace(input.FlowProxyID),
+		SelectFlowType:  strings.TrimSpace(input.SelectFlowType),
+		FlowNodeType:    strings.TrimSpace(input.FlowNodeType),
+		NextNodeProxyID: strings.TrimSpace(input.NextNodeProxyID),
+		FlowInstanceBizRelevanceList: relevance,
+		ReceiverID:                   strings.TrimSpace(input.ReceiverID),
+		ReceiverName:                 strings.TrimSpace(input.ReceiverName),
+		ForwardCheckList:             checkList,
 	}, nil
 }
 

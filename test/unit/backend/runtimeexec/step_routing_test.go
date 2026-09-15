@@ -503,3 +503,94 @@ func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
 		t.Fatalf("缺少表单代理 ID 必须阻塞，不得进入 runtime")
 	}
 }
+
+// TestRunViaRuntimeCarriesProxyNodeAndFormFacts 评审 P1-3 回归：runtime 请求必须携带
+// 目标代理与节点事实——FlowDialog/审批组件的最终流程载荷直接消费这些字段，
+// 缺失会让提交发送 flowProxyId:"" 或丢业务关联。
+func TestRunViaRuntimeCarriesProxyNodeAndFormFacts(t *testing.T) {
+	view := &recordingTarget{taskID: "task-9"}
+	registry := runtimeexec.NewCapabilityRegistry()
+	registerCapabilityForRunCtx(t, registry, "approve")
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	runCtx := runtimeRunCtx()
+	runCtx.FlowProxyID = "flow-proxy-plan"
+	runCtx.Nodes["node-1"] = step.NodeInfo{TargetNodeID: "target-node-1", Name: "审批节点", AuditType: "run_node_choose", EditableFields: []string{"reason"}}
+	runCtx.Nodes["node-2"] = step.NodeInfo{TargetNodeID: "target-node-2", Name: "下一节点", AuditType: "company"}
+	runCtx.Steps = []model.CompiledActionStep{
+		{Action: model.ActionApprove, NodeKey: "node-1"},
+		{Action: model.ActionApprove, NodeKey: "node-2"},
+	}
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	preview.Facts = step.InstanceFacts{FormProxyID: "form-proxy-live", FlowProxyID: "flow-proxy-live",
+		BizRelevance: []target.BizRelevance{{OtherBiz: "company", OtherBizID: "c-1"}}}
+	preview.FormOverlaid = []string{"reason"}
+	if !executor.RunViaRuntimeForTest(context.Background(), runCtx, runCtx.Steps[0], target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
+		t.Fatalf("runtime 应接管本步")
+	}
+	request := runner.lastRequest()
+	if request.FormProxyID != "form-proxy-live" {
+		t.Fatalf("表单代理必须优先取实例当前事实，实际 %q", request.FormProxyID)
+	}
+	if request.FlowProxyID != "flow-proxy-live" {
+		t.Fatalf("流程代理必须优先取实例当前事实，实际 %q", request.FlowProxyID)
+	}
+	if request.SelectFlowType != "employee_leave" {
+		t.Fatalf("装载必须携带流程类型，实际 %q", request.SelectFlowType)
+	}
+	if request.FlowNodeType != "run_node_choose" {
+		t.Fatalf("装载必须携带当前节点审批方式，实际 %q", request.FlowNodeType)
+	}
+	if request.NextNodeProxyID != "target-node-2" {
+		t.Fatalf("下一节点代理应取真实目标标识，实际 %q", request.NextNodeProxyID)
+	}
+	if len(request.BizRelevance) != 1 || request.BizRelevance[0].OtherBizID != "c-1" {
+		t.Fatalf("装载必须携带实例业务关联：%+v", request.BizRelevance)
+	}
+	if len(request.Permissions) != 1 || request.Permissions[0] != "reason" {
+		t.Fatalf("装载必须携带当前节点可编辑字段：%+v", request.Permissions)
+	}
+	if len(request.ChangedFields) != 1 || request.ChangedFields[0] != "reason" {
+		t.Fatalf("装载必须携带本步覆盖字段：%+v", request.ChangedFields)
+	}
+	if request.BranchNodeAuditTypes["target-node-1"] != "run_node_choose" || request.BranchNodeAuditTypes["target-node-2"] != "company" {
+		t.Fatalf("选择闭环需要节点审批方式映射：%+v", request.BranchNodeAuditTypes)
+	}
+}
+
+// TestRunViaRuntimeForwardRequiresReceiver 评审 P1-4 回归：转发未配置接收人必须
+// 写前阻塞且不调用 runtime；配置接收人后请求必须携带转发事实。
+func TestRunViaRuntimeForwardRequiresReceiver(t *testing.T) {
+	view := &recordingTarget{}
+	registry := runtimeexec.NewCapabilityRegistry()
+	registerCapabilityForRunCtx(t, registry, "forward")
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	runCtx := runtimeRunCtx()
+	runCtx.PathRun.MainInstanceRef = "instance-1"
+	forwardStep := runtimeStep(model.ActionForward)
+	// 未配置接收人：阻塞，零写入，不进入 runtime。
+	blocked := &step.StepPreview{ActorAccount: "actor-acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, forwardStep, target.Session{}, blocked, step.ApprovedStep{Attempt: 1})
+	if blocked.WriteSent() || runner.callCount() != 0 {
+		t.Fatalf("无接收人的转发必须写前阻塞且不进入 runtime")
+	}
+	if !strings.Contains(blocked.WriteErrForTest().Error(), "接收人") {
+		t.Fatalf("阻塞原因必须说明接收人缺失：%v", blocked.WriteErrForTest())
+	}
+	// 配置接收人：请求携带接收人与转发装载模式。
+	runCtx.ActionPersonIDs = map[string][]string{
+		step.ActionPersonIndex("node-1", model.ActionForward): {"receiver-1"},
+	}
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	if !executor.RunViaRuntimeForTest(context.Background(), runCtx, forwardStep, target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
+		t.Fatalf("runtime 应接管本步")
+	}
+	request := runner.lastRequest()
+	if request.ReceiverID != "receiver-1" {
+		t.Fatalf("转发请求必须携带接收人，实际 %q", request.ReceiverID)
+	}
+	if request.InstanceID != "instance-1" {
+		t.Fatalf("转发请求必须携带主实例引用，实际 %q", request.InstanceID)
+	}
+}

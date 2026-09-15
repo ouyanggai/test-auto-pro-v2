@@ -75,3 +75,61 @@ func TestEncodeLoadMessage(t *testing.T) {
 		t.Fatalf("装载信封字段错误：%+v", message)
 	}
 }
+
+// TestBuildLoadPayloadCarriesProxyAndForwardFacts 评审 P1-3/P1-4 回归：
+// 装载载荷必须携带目标代理与节点事实（目标组件的最终流程载荷直接消费），
+// 转发装载必须携带接收人事实，且缺接收人/缺实例的转发在装载阶段就被拒绝。
+func TestBuildLoadPayloadCarriesProxyAndForwardFacts(t *testing.T) {
+	template := json.RawMessage(`{"list":[],"config":{}}`)
+	values := json.RawMessage(`{"reason":"x"}`)
+	payload, err := runtimeexec.BuildLoadPayload(runtimeexec.LoadInput{
+		Mode:                         runtimeexec.LoadModeForward,
+		Session:                      runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "处理人"},
+		ToolFlowName:                 "工具流程",
+		InstanceID:                   "instance-1",
+		FormProxyID:                  "form-proxy-1",
+		FlowProxyID:                  "flow-proxy-1",
+		SelectFlowType:               "employee_leave",
+		FlowNodeType:                 "run_node_choose",
+		NextNodeProxyID:              "next-node-1",
+		FlowInstanceBizRelevanceList: []runtimeexec.BizRelevance{{OtherBiz: "company", OtherBizID: "c-1"}},
+		ReceiverID:                   "receiver-1",
+		ReceiverName:                 "接收人",
+		ForwardCheckList:             []string{"fuyan", "yijian"},
+	}, template, values)
+	if err != nil {
+		t.Fatalf("合法转发装载被拒绝：%v", err)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(raw)
+	for _, want := range []string{
+		`"formProxyId":"form-proxy-1"`, `"flowProxyId":"flow-proxy-1"`,
+		`"selectFlowType":"employee_leave"`, `"flowNodeType":"run_node_choose"`,
+		`"nextNodeProxyId":"next-node-1"`, `"flowInstanceBizRelevanceList"`,
+		`"receiverId":"receiver-1"`, `"forwardCheckList":["fuyan","yijian"]`,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("转发装载载荷缺少 %s：%s", want, encoded)
+		}
+	}
+
+	forwardBase := runtimeexec.LoadInput{
+		Mode: runtimeexec.LoadModeForward, ToolFlowName: "工具流程", InstanceID: "instance-1", ReceiverID: "receiver-1",
+	}
+	if _, err := runtimeexec.BuildLoadPayload(forwardBase, template, values); err != nil {
+		t.Fatalf("带接收人的转发装载应通过：%v", err)
+	}
+	noReceiver := forwardBase
+	noReceiver.ReceiverID = ""
+	if _, err := runtimeexec.BuildLoadPayload(noReceiver, template, values); err == nil {
+		t.Fatalf("缺接收人的转发装载必须被拒绝")
+	}
+	noInstance := forwardBase
+	noInstance.InstanceID = ""
+	if _, err := runtimeexec.BuildLoadPayload(noInstance, template, values); err == nil {
+		t.Fatalf("缺实例的转发装载必须被拒绝")
+	}
+}

@@ -345,9 +345,12 @@ async function main(): Promise<void> {
           return
         }
         const mode = String((envelope.payload as any)?.mode ?? 'initiate')
+        // 装载模式 → 桥接方法（评审 P1-4）：转发走 loadForward，把转发弹窗等价状态注入审批宿主。
+        const loadCommandByMode: Record<string, string> = { approve: 'load_approve', forward: 'load_forward' }
+        const bridgeMethodByMode: Record<string, string> = { approve: 'loadApprove', forward: 'loadForward' }
         try {
-          const command = { ...envelope, payload: { action: mode === 'approve' ? 'load_approve' : 'load_initiate', ...(envelope.payload as Record<string, unknown>) } } as Record<string, unknown>
-          const result = await runBridgeAction(session, mode === 'approve' ? 'loadApprove' : 'loadInitiate', command)
+          const command = { ...envelope, payload: { action: loadCommandByMode[mode] ?? 'load_initiate', ...(envelope.payload as Record<string, unknown>) } } as Record<string, unknown>
+          const result = await runBridgeAction(session, bridgeMethodByMode[mode] ?? 'loadInitiate', command)
           session.loaded = true
           const loadPayload = (envelope.payload ?? {}) as Record<string, any>
           // 工具流程名称保护（设计 5.2）：主实例 submit 发出前由路由层恢复工具值。

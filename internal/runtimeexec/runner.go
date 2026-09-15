@@ -45,12 +45,27 @@ type RuntimeRunRequest struct {
 	JobTaskID     string
 	NodeProxyID   string
 	AuditDesc     string
+	// —— 目标代理与节点事实（评审 P1-3）：目标组件提交/审批载荷直接消费 ——
+	FormProxyID     string
+	FlowProxyID     string
+	SelectFlowType  string
+	FlowNodeType    string
+	NextNodeProxyID string
+	BizRelevance    []BizRelevance
+	// —— 转发事实（评审 P1-4）：接收人缺失时装载阶段直接拒绝 ——
+	ReceiverID       string
+	ReceiverName     string
+	ForwardCheckList []string
 	// 选择闭环（T010B）：路径已保存的分支入口与节点人员。
 	BranchSelections []BranchSelection
 	NextNodeAuditors []NextAuditorEntry
+	// BranchNodeAuditTypes 是目标节点代理 ID → 审批方式（run_node_choose 等）：
+	// 选择闭环据此判定哪些返回分支必须携带已配置人员，缺配置一律阻塞（评审 P1-6）。
+	BranchNodeAuditTypes map[string]string
 	// BaseURL 是目标网关地址。
 	BaseURL string
-	// LoadMode 覆盖默认模式推导；空串时按动作推导（submit/save_draft → initiate，其余 → approve）。
+	// LoadMode 覆盖默认模式推导；空串时按动作推导（submit/save_draft → initiate，
+	// forward → forward，其余 → approve）。
 	LoadMode string
 }
 
@@ -79,11 +94,13 @@ func NewRuntimeExecutor(client *Client) *RuntimeExecutor {
 	return &RuntimeExecutor{client: client}
 }
 
-// loadModeFor 按动作推导装载模式：发起链两个动作走发起装载，其余走审批装载。
+// loadModeFor 按动作推导装载模式：发起链两个动作走发起装载，转发走转发装载，其余走审批装载。
 func loadModeFor(action string) string {
 	switch action {
 	case "save_draft", "submit":
 		return LoadModeInitiate
+	case "forward":
+		return LoadModeForward
 	default:
 		return LoadModeApprove
 	}
@@ -128,6 +145,17 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		ChangedFields: request.ChangedFields,
 		BaseURL:       request.BaseURL,
 		Initiator:     request.Initiator,
+		// 目标代理与节点事实（评审 P1-3）：目标组件按这些字段组装最终流程载荷。
+		FormProxyID:                  request.FormProxyID,
+		FlowProxyID:                  request.FlowProxyID,
+		SelectFlowType:               request.SelectFlowType,
+		FlowNodeType:                 request.FlowNodeType,
+		NextNodeProxyID:              request.NextNodeProxyID,
+		FlowInstanceBizRelevanceList: request.BizRelevance,
+		// 转发事实（评审 P1-4）：装载阶段缺接收人直接失败，不再等到页面动作抛错。
+		ReceiverID:       request.ReceiverID,
+		ReceiverName:     request.ReceiverName,
+		ForwardCheckList: request.ForwardCheckList,
 	}, request.Template, request.Values)
 	if err != nil {
 		return ActionRunResult{}, fmt.Errorf("装载载荷构造失败：%w", err)

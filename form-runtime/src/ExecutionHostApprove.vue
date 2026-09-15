@@ -176,22 +176,32 @@ export default {
       return opinion
     },
     // ===== 转发（复合动作）薄适配层 =====
-    // applyForwardLoad 注入行事实（等价于列表页勾选一条流程后点“转发”）；
-    // 接收人、意见与附言/日志勾选来自 Go 参数（等价于用户在转发弹窗中的输入）。
-    async applyForwardLoad ({ payload }) {
+    // applyForwardLoad 注入行事实（等价于列表页勾选一条流程后点“转发”）；由 App 的
+    // load_forward 装载命令调用（评审 P1-4 修复：此前无任何调用方，转发必然缺接收人）。
+    // 接收人、意见与附言/日志勾选来自 Go 装载载荷（等价于用户在转发弹窗中的输入），
+    // 表单模板与实例当前数据由 Go 离线注入（formProxyData / currentFormData）。
+    async applyForwardLoad ({ payload, template, values }) {
       this.formExist = String(payload.formExist ?? '')
       this.flowInstanceId = String(payload.instanceId ?? '')
       this.batchNo = String(payload.batchNo ?? '')
       this.selectFlowType = String(payload.selectFlowType ?? '')
       this.formId = String(payload.formProxyId ?? payload.formId ?? '')
+      // selectFlowName 是 mixin confirmTranspond 组装转发流程名的来源；
+      // 目标页面取实例名称，执行模式取工具流程名称（同一业务事实，禁止猜测）。
+      this.selectFlowName = String(payload.toolFlowName ?? '')
       const bizRelevance = Array.isArray(payload.flowInstanceBizRelevanceList)
         ? payload.flowInstanceBizRelevanceList
         : []
       this.oldFlowInstanceBizRelevanceList = bizRelevance
       const find = bizRelevance.find(item => item.otherBiz === this.selectFlowType)
       this.businessId = find?.otherBizId || ''
-      this.currentFormData = payload.currentFormData ? JSON.parse(JSON.stringify(payload.currentFormData)) : {}
-      this.formProxyData = payload.formProxyData ? JSON.parse(JSON.stringify(payload.formProxyData)) : {}
+      // currentFormData=实例当前完整表单数据；formProxyData=表单模板（FormMaking JSON）。
+      this.currentFormData = values && Object.keys(values).length
+        ? JSON.parse(JSON.stringify(values))
+        : (payload.currentFormData ? JSON.parse(JSON.stringify(payload.currentFormData)) : {})
+      this.formProxyData = template && template.list
+        ? JSON.parse(JSON.stringify(template))
+        : (payload.formProxyData ? JSON.parse(JSON.stringify(payload.formProxyData)) : {})
       this.transpondFlowInstance = {
         selectFlowType: this.selectFlowType,
         businessId: this.businessId,

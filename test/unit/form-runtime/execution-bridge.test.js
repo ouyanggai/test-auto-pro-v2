@@ -64,13 +64,13 @@ function command (overrides = {}) {
   }
 }
 
-test('T005 桥接只暴露六个方法且版本一致', () => {
+test('T005 桥接只暴露七个方法且版本一致（loadForward：评审 P1-4 转发装载）', () => {
   const app = fakeApp()
   const bridge = createExecutionBridge(app)
   app.executionBridge = bridge
   assert.equal(bridge.version, EXECUTION_PROTOCOL_VERSION)
   const methods = BRIDGE_METHODS.filter(name => typeof bridge[name] === 'function').sort()
-  assert.deepEqual(methods, ['capture', 'destroy', 'execute', 'loadApprove', 'loadInitiate', 'validate'])
+  assert.deepEqual(methods, ['capture', 'destroy', 'execute', 'loadApprove', 'loadForward', 'loadInitiate', 'validate'])
   // 除 version/invalidate 外不允许出现其他可调用属性，防止桥接变成万能入口。
   const extra = Object.keys(bridge).filter(name => !BRIDGE_METHODS.includes(name) && name !== 'version' && name !== 'invalidate')
   assert.deepEqual(extra, [])

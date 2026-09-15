@@ -34,19 +34,21 @@ export default {
     async applyExecutionLoad ({ payload, template, permissions }) {
       const flowDialog = this.$refs.flowDialog
       flowDialog.formExist = String(payload.formExist ?? '')
+      // selectFlowType/formId 来自 Go 装载载荷（评审 P1-3）：FlowDialog 提交时按 formId
+      // 决定发送 formProxyId，缺失会把提交退化成 flowProxyId: ''。
       flowDialog.selectFlowType = String(payload.selectFlowType ?? '')
       flowDialog.stepsActive = 2
       this.visible = true
       const flowId = String(payload.flowId ?? '')
       if (flowId) {
         flowDialog.flowId = flowId
-        flowDialog.formId = String(payload.formId ?? '')
+        flowDialog.formId = String(payload.formProxyId ?? payload.formId ?? '')
         await this.waitForFormReady(60000)
         return { mode: 'selfloaded' }
       }
       // 离线注入：模板来自 Go 装载载荷（已按权限预处理），交由 App 通用注入逻辑写入 OtherSteps2。
       flowDialog.flowId = ''
-      flowDialog.formId = String(payload.formId ?? '')
+      flowDialog.formId = String(payload.formProxyId ?? payload.formId ?? '')
       await this.$nextTick()
       const steps2 = this.getOtherSteps2()
       if (steps2) {
