@@ -11,6 +11,7 @@
       <enterprise-examine-opinion
         ref="opinion"
         :visible="true"
+        @post-examine="businessDone = true"
         :is-re-initiate="isReInitiate"
         :initiator-id="initiatorId"
         :job-task-id="jobTaskId"
@@ -61,7 +62,14 @@ export default {
       flowProxyId: '',
       selectFlowType: '',
       flowNodeProxyId: '',
-      flowInstanceBizRelevanceList: []
+      flowInstanceBizRelevanceList: [],
+      // 业务完成信号：审批链路 closeCheck → postExamine 事件、转发链路 transpondVisible 关闭时置位。
+      businessDone: false
+    }
+  },
+  watch: {
+    transpondVisible (val) {
+      if (val === false) this.businessDone = true
     }
   },
   methods: {
@@ -90,6 +98,12 @@ export default {
     },
     getGenerateForm () {
       return this.$refs.generateForm || null
+    },
+    isBusinessDone () {
+      return this.businessDone
+    },
+    resetBusinessDone () {
+      this.businessDone = false
     },
     getOpinion () {
       return this.$refs.opinion || null

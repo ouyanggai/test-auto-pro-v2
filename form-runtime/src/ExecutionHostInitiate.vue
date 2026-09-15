@@ -5,7 +5,7 @@
   表单模板与字段权限在有 flowId 时由目标接口（经 Go 转发）自行装载，工具不复制目标逻辑。
 -->
 <template>
-  <flow-dialog ref="flowDialog" :visible="visible" :append-to-body="false" />
+  <flow-dialog ref="flowDialog" :visible="visible" :append-to-body="false" @success="businessDone = true" />
 </template>
 
 <script>
@@ -16,10 +16,18 @@ export default {
   components: { FlowDialog },
   data () {
     return {
-      visible: false
+      visible: false,
+      // 业务完成信号：FlowDialog 链路自然完成时（commonAction → success 事件）置位，供完成检测判定。
+      businessDone: false
     }
   },
   methods: {
+    isBusinessDone () {
+      return this.businessDone
+    },
+    resetBusinessDone () {
+      this.businessDone = false
+    },
     // applyExecutionLoad 由 App 装载链路调用：配置真实 FlowDialog 到第二步（表单填写）状态。
     // payload.flowId 存在时 OtherSteps2 会按 watch(flowId) 自行经 Go 转发拉取模板与字段权限，
     // 完成后以 fmDone 置位 fmComplete；无 flowId（离线模板注入）时由 App 走注入分支。

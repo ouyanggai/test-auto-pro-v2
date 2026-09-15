@@ -392,6 +392,8 @@ export default {
           if (payload.executionMode && typeof host.applyExecutionLoad === 'function') {
             // 执行宿主装载：FlowDialog 存在 flowId 时模板与字段权限由目标接口（经 Go 转发）自行装载；
             // 离线注入场景与审批宿主由宿主 applyExecutionLoad 落模板事实。
+            // 宿主实例同时登记到执行全局，供服务端完成检测读取业务完成信号。
+            window.__runtimeExecutionHost__ = host
             await host.applyExecutionLoad({
               payload,
               template: this.template,
@@ -691,8 +693,9 @@ export default {
       this.operationGeneration++
       // 执行桥接随会话一起废弃：销毁后 window.__runtimeBridge__ 不存在，既有引用也不可执行。
       this.invalidateExecutionBridge()
-      // 执行身份（操作人/发起人/实例任务节点）一并清除，禁止残留到下一会话。
+      // 执行身份（操作人/发起人/实例任务节点）与宿主引用一并清除，禁止残留到下一会话。
       if (window.__runtimeExecutionIdentity__) delete window.__runtimeExecutionIdentity__
+      if (window.__runtimeExecutionHost__) delete window.__runtimeExecutionHost__
       if (this.stateTimer) window.clearTimeout(this.stateTimer)
 		this.stateTimer = null
 		this.unbindFormChange()
