@@ -330,8 +330,14 @@ async function main(): Promise<void> {
             sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: '同一会话同一时刻只允许一个动作' })
             return
           }
-          session.actionInFlight = true
           const action = String((envelope.payload as any)?.action ?? '')
+          // 装载门禁（T008）：业务动作必须发生在成功装载之后；装载失败/未装载绝不放行写动作。
+          const readOnlyCommand = action === 'capture' || action === 'validate'
+          if (!readOnlyCommand && !session.loaded) {
+            sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: '表单尚未成功装载，不允许执行业务动作' })
+            return
+          }
+          session.actionInFlight = true
           try {
             // 硬超时（设计 7）：超时后不再等待页面回调，返回 timeout；T011 会接入更完整的完成检测。
             const result = await Promise.race([
