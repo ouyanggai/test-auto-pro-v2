@@ -1,5 +1,31 @@
 # 当前进度
 
+- 2026-09-16 执行引擎改造评审退回修复完成（评审判定 HEAD 3baef75 不能按「已完成接入」验收，
+  指出 7 个 P1 + 2 个 P2）。全部问题已在独立分支 **执行引擎改造评审修复**（基于 3baef75）修复，
+  等待用户裁决何时合并，不自动合并；逐项中文原子提交：
+  ① `ErrUncertain`（连接断开且已有目标请求写出）改按「写已发出、结果未知」处理进入结果待确认，
+  不再误判零写入失败诱发重复执行；`ErrFailedCleanly` 与会话/装载失败保持零写入失败并如实分类（9d091b6）。
+  ② 能力登记落盘持久化：装配层从 `.runtime/runtime-capabilities.json` 加载、登记成功即原子重写，
+  重启不再清空；`Register` 强制校验流程类型/动作/表单摘要/runtime 版本/目标版本/证据/日志引用，
+  自动登记补目标版本（runtime-source HEAD）与转发写请求传输层 trace 证据，废除无摘要粒度回落（be02cd3）。
+  ③ 装载载荷补齐目标代理与节点事实：formProxyId/flowProxyId/selectFlowType/flowNodeType/
+  nextNodeProxyId/flowInstanceBizRelevanceList/当前节点权限与覆盖字段（提交按 formId 决定发送
+  formProxyId，此前空表单代理必然发出 `flowProxyId:""`）（55b1f84）。
+  ④ 转发动作接入接收人：RuntimeRunRequest 新增接收人/勾选事实，新增 load_forward 装载模式与
+  桥接 `loadForward`，审批宿主 `applyForwardLoad` 首次接通；无接收人写前阻塞（55b1f84）。
+  ⑤ 选择闭环严格校验：分支入口必须通过真实图边校验（是分支节点直接后继），并行/分支的
+  自选节点必须已有配置人员，任一缺配置整体阻塞，绝不让目标临时节点集合覆盖已保存配置（35e77a6）。
+  ⑥ runtime 详情生产接线：迁移 033 新增 `run_step_attempts.runtime_detail`，三阶段投影与请求
+  轨迹随尝试行落库，详情接口透传，运行详情弹窗新增「表单运行时执行详情」区块（e3b418d）。
+  ⑦ 生产接线：配置 `RUNTIME_EXECUTOR_URL` 后 Go 服务默认托管拉起本机执行服务子进程
+  （就绪探测、复用已运行服务、随后端停止；`RUNTIME_EXECUTOR_MANAGED=0` 关闭，远端地址不托管），
+  修正 run-runtime-exec.sh 真实验证入口说明（16268b4）。
+  验证：`bash test/run-runtime-exec.sh` 10/10 通过（含真实无头 Chromium 集成与新增托管启动
+  集成用例）；`go build ./...`、`go test ./test/unit/backend/... ./test/contracts/...` 全部通过；
+  `pnpm --dir web run typecheck` 通过。既有环境失败如实记录：test/integration 的 F-016 系列
+  MySQL 用例因本机 shell 缺少 `PLAN_DB_HOST/USER/PASSWORD` 失败，经基线提交 3baef75 复现确认
+  与本分支无关。真实目标动作验证仍待用户按 real-target-checklist.md 人工执行。
+
 - 2026-09-16 执行引擎改造自查评审修复一轮完成（状态保持 **ready_for_manual**）。评审证实四处真实缺陷并已修复：
   ① RunAction 把已编码装载信封塞进外层 Payload 二次包装，协议校验必然拒绝（探针复现「消息缺少 requestId」），
   整条 runtime 动作链路此前从未走通装载；② SID 换会话重放后写响应丢失不记写出事实，断连会误判零写入失败；
