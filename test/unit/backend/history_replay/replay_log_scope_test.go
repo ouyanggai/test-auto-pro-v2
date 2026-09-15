@@ -70,7 +70,6 @@ func newScopedReplayService() (*service.HistoryReplayService, *scopeCapturingRep
 	replay := service.NewHistoryReplayService(
 		service.NewPlanService(&replayPlanRepo{plan: plan}), &replayPathRepo{created: path, current: path}, reader, store,
 	)
-	replay.SetRuntimeValidator(&replayValidator{})
 	return replay, reader
 }
 

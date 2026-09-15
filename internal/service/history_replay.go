@@ -48,23 +48,6 @@ func IsHistoryReplayErrorKind(err error, kind HistoryReplayErrorKind) bool {
 	return errors.As(err, &replayErr) && replayErr.Kind == kind
 }
 
-// HistoryReplayRuntimeValidator 是复制 form-runtime 的窄验证边界，只接受目标原始数据和运行时类型。
-// 实现不得把数据包裹为工具侧 DTO，也不得调用目标平台写接口。
-type HistoryReplayRuntimeValidator interface {
-	Validate(context.Context, target.FormRenderType, map[string]any) (model.HistoryRuntimeValidation, error)
-}
-
-// HistoryReplayRuntimeValidatorFunc 将函数适配为历史回放运行时校验器，便于隔离测试和 iframe 桥接。
-type HistoryReplayRuntimeValidatorFunc func(context.Context, target.FormRenderType, map[string]any) (model.HistoryRuntimeValidation, error)
-
-// Validate 执行函数适配器并保持原始 map 作为唯一数据载体。
-func (f HistoryReplayRuntimeValidatorFunc) Validate(ctx context.Context, renderType target.FormRenderType, values map[string]any) (model.HistoryRuntimeValidation, error) {
-	if f == nil {
-		return model.HistoryRuntimeValidation{}, errors.New("form-runtime 校验器未配置")
-	}
-	return f(ctx, renderType, values)
-}
-
 // HistoryReplayTargetReader 读取同计划当前真实流程树，不暴露目标写接口或旧页面映射。
 type HistoryReplayTargetReader interface {
 	PathConfigurationSnapshot(context.Context, string, string, string) (target.PathConfigurationSnapshot, error)
@@ -81,7 +64,6 @@ type HistoryReplayService struct {
 	paths   repository.ExecutionPathRepository
 	target  HistoryReplayTargetReader
 	store   repository.HistoryReplayStore
-	runtime HistoryReplayRuntimeValidator
 	actions HistoryReplayActionConfigurator
 	config  historyReplayPathConfigReader
 	now     func() time.Time
@@ -109,21 +91,11 @@ func NewHistoryReplayService(plans *PlanService, paths repository.ExecutionPathR
 	}
 }
 
-// SetRuntimeValidator 注入复制 form-runtime 的校验桥接；未注入时任务必须明确落 needs_input。
 // SetActionConfigurator 注入一键配置时的自动动作配置协作者；未注入时只做业务数据回放。
 func (s *HistoryReplayService) SetActionConfigurator(configurator HistoryReplayActionConfigurator) {
 	s.mu.Lock()
 	s.actions = configurator
 	s.mu.Unlock()
-}
-
-func (s *HistoryReplayService) SetRuntimeValidator(validator HistoryReplayRuntimeValidator) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.runtime = validator
 }
 
 // Create 按明确路径列表冻结来源快照并创建单计划活动任务，重复幂等键只返回同一任务。
@@ -529,30 +501,16 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 	if overlay.Status != branchoverlay.StatusReady {
 		return result
 	}
-	s.mu.Lock()
-	runtime := s.runtime
-	s.mu.Unlock()
-	if runtime == nil {
-		// 批量任务里没有浏览器，复制的 form-runtime 无法在后台执行校验。
-		// F-035/T08：拆分状态——基础数据已生成（base_ready）而不是 ready；
-		// 只有用户打开表单数据页完成选项绑定、回读并保存确认后才进入最终 ready。
-		result.Status = model.HistoryReplayItemStatusReady
-		result.DataStatus = model.HistoryDataStatusBaseReady
-		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VALIDATION_DEFERRED", Message: "基础数据已生成；最终表单确认将在打开表单数据页时完成", Blocking: false})
+	// 用户裁决去掉浏览器验证环节：静态下拉的绑定值由服务端按目标渲染口径直接解析回填，
+	// 解析失败（找不到/同名歧义）落阻断，运行时校验只对远程控件等无法静态证明的部分保留推迟提示。
+	if template, _ := runtimeTemplate(current.Forms); len(template) > 0 {
+		result.Issues = append(result.Issues, staticOptionBindingIssues(template, snapshot.RawFormData, overlay.Values)...)
+	}
+	if hasBlockingWorkspaceIssue(result.Issues) {
 		return result
 	}
-	validation, validateErr := runtime.Validate(ctx, current.RenderType, overlay.Values)
-	if validateErr != nil {
-		result.RuntimeValidation = model.HistoryRuntimeValidation{Accepted: false}
-		result.Issues = append(result.Issues, model.HistoryDataIssue{Code: "HISTORY_RUNTIME_VALIDATION_FAILED", Message: "复制的 form-runtime 校验失败", Blocking: true})
-		return result
-	}
-	result.RuntimeValidation = validation
-	result.Issues = append(result.Issues, validation.Issues...)
-	if !validation.Accepted {
-		return result
-	}
-	result.Status, result.DataStatus = model.HistoryReplayItemStatusReady, model.HistoryDataStatusReady
+	result.Status = model.HistoryReplayItemStatusReady
+	result.DataStatus = model.HistoryDataStatusReady
 	return result
 }
 

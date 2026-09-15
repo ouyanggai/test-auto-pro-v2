@@ -418,9 +418,10 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	}
 	issues := append([]model.HistoryDataIssue{}, historyIssuesFromOverlay(overlay.Issues)...)
 	issues = appendHistoryIssues(issues, input.RuntimeValidation.Issues)
-	// 保存边界同样同步公司下拉真实 ID：浏览器捕获值和直接接口保存都必须落成名称与 ID 一致的数据。
-	// 同步只改 ID 与虚拟显示值，不改分支条件读取的名称字段，因此不影响已经完成的路径复验结论。
+	// 用户裁决去掉浏览器验证环节：保存前在服务端把静态下拉的绑定值按目标渲染口径解析回填，
+	// 与浏览器运行时协调同一套匹配规则（唯一匹配，找不到/歧义阻断）；远程控件仍走公司目录等既有同步。
 	if template, _ := workspaceRuntimeTemplate(snapshot); len(template) > 0 {
+		issues = appendHistoryIssues(issues, staticOptionBindingIssues(template, input.Values, overlay.Values))
 		issues = appendHistoryIssues(issues, s.syncLinkedCompanySelects(ctx, template, overlay.Values))
 	}
 	// 落盘前把登录人上下文字段替换为当前计划账号身份，历史发起人身份不允许进入工作区正文。
@@ -743,11 +744,15 @@ func workspaceConfirmationToken(planID, fromPathID, toPathID uint64, values map[
 	return hex.EncodeToString(digest[:])
 }
 
-// workspaceDataStatus 只在 runtime 接受且目标路径复验通过时报告 ready。
+// workspaceDataStatus 只在目标路径复验通过且没有阻断问题时报告 ready。
+// 用户裁决去掉浏览器验证环节：静态下拉绑定值由服务端解析回填，不再要求 form-runtime 校验接受；
+// 运行时校验证据（浏览器保存链路遗留的 input.RuntimeValidation）只作参考，不作为 ready 的必要条件。
 func workspaceDataStatus(validation model.HistoryRuntimeValidation, issues []model.HistoryDataIssue) string {
-	if !validation.Accepted || hasBlockingWorkspaceIssue(issues) {
+	if hasBlockingWorkspaceIssue(issues) {
 		return model.HistoryDataStatusNeedsInput
 	}
+	// 浏览器校验证据只作参考：无论是否携带，复验通过且无阻断即收敛 ready。
+	_ = validation
 	return model.HistoryDataStatusReady
 }
 

@@ -52,28 +52,21 @@ func (r *replayPathRepo) GetMany(_ context.Context, planID uint64, pathIDs []uin
 type replayTargetReader struct {
 	snapshot target.PathConfigurationSnapshot
 	calls    int
+	// blocked 非空时读取会阻塞到 close(blocked) 或 ctx 取消，供取消恢复测试制造可控阻塞点。
+	blocked chan struct{}
 }
 
 // PathConfigurationSnapshot 返回目标真实树和运行时类型，不读取 VuePage 映射。
-func (r *replayTargetReader) PathConfigurationSnapshot(context.Context, string, string, string) (target.PathConfigurationSnapshot, error) {
+func (r *replayTargetReader) PathConfigurationSnapshot(ctx context.Context, _, _, _ string) (target.PathConfigurationSnapshot, error) {
 	r.calls++
+	if r.blocked != nil {
+		select {
+		case <-r.blocked:
+		case <-ctx.Done():
+			return target.PathConfigurationSnapshot{}, ctx.Err()
+		}
+	}
 	return r.snapshot, nil
-}
-
-type replayValidator struct {
-	mu     sync.Mutex
-	calls  int
-	render target.FormRenderType
-	values map[string]any
-}
-
-// Validate 记录 form-runtime 收到的原始 map，并返回通过结果。
-func (r *replayValidator) Validate(_ context.Context, render target.FormRenderType, values map[string]any) (model.HistoryRuntimeValidation, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls++
-	r.render, r.values = render, values
-	return model.HistoryRuntimeValidation{Accepted: true}, nil
 }
 
 type replayStore struct {
@@ -364,7 +357,7 @@ func timePtrReplay(value time.Time) *time.Time {
 }
 
 // replayServiceFixture 构造一个包含默认历史快照和真实条件树的服务夹具。
-func replayServiceFixture(pathRevision, currentRevision uint64, render target.FormRenderType) (*service.HistoryReplayService, *replayStore, *replayValidator, *replayTargetReader) {
+func replayServiceFixture(pathRevision, currentRevision uint64, render target.FormRenderType) (*service.HistoryReplayService, *replayStore, *replayTargetReader) {
 	plan := model.Plan{ID: 91, Account: "tester", FlowSource: "flow-source", TargetObjectID: "target-1", Status: model.PlanStatusNotStarted}
 	path := model.ExecutionPath{ID: 101, PlanID: plan.ID, ConfigurationRevision: pathRevision, Choices: []model.ExecutionPathChoice{{RouteNodeID: "route-1", BranchID: "branch-a"}}}
 	tree := conditionTreeID("route-1", []target.FlowBranchTemplate{
@@ -377,12 +370,10 @@ func replayServiceFixture(pathRevision, currentRevision uint64, render target.Fo
 	}
 	paths := &replayPathRepo{created: path, current: path}
 	paths.current.ConfigurationRevision = currentRevision
-	validator := &replayValidator{}
 	targetReader := &replayTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, RenderType: render}}
 	plans := service.NewPlanService(&replayPlanRepo{plan: plan})
 	replay := service.NewHistoryReplayService(plans, paths, targetReader, store)
-	replay.SetRuntimeValidator(validator)
-	return replay, store, validator, targetReader
+	return replay, store, targetReader
 }
 
 // waitReplayCompletion 等待后台 worker 写入完成聚合，超时即说明任务没有可观察终态。
@@ -403,9 +394,10 @@ func waitReplayCompletion(t *testing.T, replay *service.HistoryReplayService, pl
 	return model.HistoryReplayJob{}
 }
 
-// TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation 验证原始嵌套数据经过分支补丁后直接交给 runtime。
+// TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation 验证原始嵌套数据经过分支补丁后直接进入最终 ready；
+// 用户裁决去掉浏览器验证环节，回放不再经过复制 form-runtime，服务端静态解析即收敛。
 func TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation(t *testing.T) {
-	replay, store, validator, targetReader := replayServiceFixture(4, 4, target.FormRenderTypeFormMaking)
+	replay, store, targetReader := replayServiceFixture(4, 4, target.FormRenderTypeFormMaking)
 	key := "123e4567-e89b-12d3-a456-426614174700"
 	job, err := replay.Create(context.Background(), 91, model.HistoryReplayCreateInput{PathIDs: []uint64{101}}, key)
 	if err != nil {
@@ -427,13 +419,6 @@ func TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation(t *testing.T
 	if !reflect.DeepEqual(item.EffectiveFormData["nested"], map[string]any{"kept": true}) {
 		t.Fatalf("嵌套原始表单数据未保留：%#v", item.EffectiveFormData)
 	}
-	validator.mu.Lock()
-	gotValues := cloneReplayMap(validator.values)
-	gotRender, calls := validator.render, validator.calls
-	validator.mu.Unlock()
-	if calls != 1 || gotRender != target.FormRenderTypeFormMaking || !reflect.DeepEqual(gotValues["nested"], map[string]any{"kept": true}) {
-		t.Fatalf("runtime 未收到原始 map：calls=%d render=%s values=%#v", calls, gotRender, gotValues)
-	}
 	if targetReader.calls != 1 {
 		t.Fatalf("目标真实流程树读取次数不正确：%d", targetReader.calls)
 	}
@@ -442,7 +427,7 @@ func TestHistoryReplayServiceReplaysRawSnapshotAndRuntimeValidation(t *testing.T
 // TestHistoryReplayServiceRepairsPathBeforeDetourChoiceMissing 验证一键配置会先修复当前路径条件，
 // 不会因为历史数据暂时进入其他分支而把下游缺少选择错误地留给用户。
 func TestHistoryReplayServiceRepairsPathBeforeDetourChoiceMissing(t *testing.T) {
-	replay, store, validator, targetReader := replayServiceFixture(4, 4, target.FormRenderTypeFormMaking)
+	replay, store, targetReader := replayServiceFixture(4, 4, target.FormRenderTypeFormMaking)
 	store.config = repository.HistoryPathConfigRecord{PathID: 101, SourceMode: model.HistorySourceModeNone}
 	store.source = repository.HistoryPathSourceRecord{PathID: 101, Mode: model.HistorySourceModeNone}
 	store.mu.Lock()
@@ -467,16 +452,11 @@ func TestHistoryReplayServiceRepairsPathBeforeDetourChoiceMissing(t *testing.T) 
 	if item.EffectiveFormData["amount"] != "2" || len(item.BranchPatches) != 1 || item.BranchPatches[0].Path != "amount" {
 		t.Fatalf("一键配置没有记录条件字段最小调整：%#v", item)
 	}
-	validator.mu.Lock()
-	defer validator.mu.Unlock()
-	if validator.values["amount"] != "2" {
-		t.Fatalf("修复后的原始表单数据未交给 runtime：%#v", validator.values)
-	}
 }
 
 // TestHistoryReplayServiceMarksPathRevisionChangeAffected 验证路径修订变化落确定受影响终态，不伪造数据。
 func TestHistoryReplayServiceMarksPathRevisionChangeAffected(t *testing.T) {
-	replay, store, _, _ := replayServiceFixture(8, 9, target.FormRenderTypeVueCustom)
+	replay, store, _ := replayServiceFixture(8, 9, target.FormRenderTypeVueCustom)
 	job, err := replay.Create(context.Background(), 91, model.HistoryReplayCreateInput{PathIDs: []uint64{101}}, "123e4567-e89b-12d3-a456-426614174701")
 	if err != nil {
 		t.Fatalf("创建修订变化回放任务失败：%v", err)
@@ -498,7 +478,7 @@ func TestHistoryReplayServiceMarksPathRevisionChangeAffected(t *testing.T) {
 
 // TestHistoryReplayServiceReplaysVueCustomRawSnapshot 验证 NoFormFlow 自定义页面沿用同一原始 map 和任务状态机。
 func TestHistoryReplayServiceReplaysVueCustomRawSnapshot(t *testing.T) {
-	replay, store, validator, targetReader := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
+	replay, store, targetReader := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
 	store.mu.Lock()
 	// 目标只按顶层键读取条件字段；自定义页面的深层结构原样保留，不参与条件求值。
 	store.snapshot.RawFormData = map[string]any{
@@ -515,12 +495,11 @@ func TestHistoryReplayServiceReplaysVueCustomRawSnapshot(t *testing.T) {
 	if completed.Ready != 1 || completed.NeedsInput != 0 {
 		t.Fatalf("自定义页面任务聚合不正确：%#v", completed)
 	}
-	validator.mu.Lock()
-	gotRender, gotValues, calls := validator.render, cloneReplayMap(validator.values), validator.calls
-	validator.mu.Unlock()
-	if calls != 1 || gotRender != target.FormRenderTypeVueCustom {
-		t.Fatalf("自定义页面 runtime 协议不正确：calls=%d render=%s", calls, gotRender)
-	}
+	store.mu.Lock()
+	item := cloneReplayItem(store.items[0])
+	store.mu.Unlock()
+	// 浏览器验证已去掉：正文透传改由落库的 EffectiveFormData 断言，不再经过复制 form-runtime。
+	gotValues := cloneReplayMap(item.EffectiveFormData)
 	pageState, ok := gotValues["pageState"].(map[string]any)
 	rows, rowsOK := pageState["rows"].([]any)
 	row, rowOK := func() (map[string]any, bool) {
@@ -542,7 +521,7 @@ func TestHistoryReplayServiceReplaysVueCustomRawSnapshot(t *testing.T) {
 
 // TestHistoryReplayServiceIdempotencyAndResumeCheckpoint 验证重复请求不创建第二任务，取消后可从同一检查点恢复。
 func TestHistoryReplayServiceIdempotencyAndResumeCheckpoint(t *testing.T) {
-	replay, store, _, _ := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
+	replay, store, _ := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
 	key := "123e4567-e89b-12d3-a456-426614174703"
 	first, err := replay.Create(context.Background(), 91, model.HistoryReplayCreateInput{PathIDs: []uint64{101}}, key)
 	if err != nil {
@@ -564,37 +543,29 @@ func TestHistoryReplayServiceIdempotencyAndResumeCheckpoint(t *testing.T) {
 	}
 }
 
-// TestHistoryReplayServiceCancelAndResumeKeepsCheckpoint 验证取消不会清除检查点，恢复只重新领取未完成路径。
 func TestHistoryReplayServiceCancelAndResumeKeepsCheckpoint(t *testing.T) {
-	replay, store, _, _ := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var startedOnce sync.Once
-	replay.SetRuntimeValidator(service.HistoryReplayRuntimeValidatorFunc(func(ctx context.Context, _ target.FormRenderType, _ map[string]any) (model.HistoryRuntimeValidation, error) {
-		startedOnce.Do(func() { close(started) })
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return model.HistoryRuntimeValidation{}, ctx.Err()
-		}
-		return model.HistoryRuntimeValidation{Accepted: true}, nil
-	}))
+	replay, store, targetReader := replayServiceFixture(6, 6, target.FormRenderTypeVueCustom)
+	// 目标读取阻塞点替代原 runtime 校验器：worker 进入回放后停在读取上，取消后关闭闸门让它继续收尾。
+	blocked := make(chan struct{})
+	targetReader.blocked = blocked
 	key := "123e4567-e89b-12d3-a456-426614174704"
 	job, err := replay.Create(context.Background(), 91, model.HistoryReplayCreateInput{PathIDs: []uint64{101}}, key)
 	if err != nil {
 		t.Fatalf("创建可取消回放任务失败：%v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatalf("worker 未领取路径并进入 runtime")
+	deadline := time.Now().Add(2 * time.Second)
+	for targetReader.calls == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond * 5)
+	}
+	if targetReader.calls == 0 {
+		t.Fatalf("worker 未领取路径并进入目标读取")
 	}
 	cancelled, err := replay.Cancel(context.Background(), 91, job.ID)
+	close(blocked)
+	time.Sleep(10 * time.Millisecond)
 	if err != nil || cancelled.Status != model.HistoryReplayStatusCancelled || cancelled.Pending != 1 {
 		t.Fatalf("取消未保留待处理检查点：job=%#v err=%v", cancelled, err)
 	}
-	close(release)
-	time.Sleep(10 * time.Millisecond)
 	resumed, err := replay.Resume(context.Background(), 91, job.ID)
 	if err != nil || resumed.Status != model.HistoryReplayStatusQueued {
 		t.Fatalf("恢复任务未重新排队：job=%#v err=%v", resumed, err)
