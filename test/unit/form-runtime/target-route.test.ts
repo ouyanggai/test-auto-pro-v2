@@ -162,6 +162,6 @@ test('T006 Go 不可达时请求本地中止，绝不直连目标平台', async 
 
 test('T006 目标路径前缀与 Go 侧允许清单镜像', () => {
   // 前缀清单在两侧必须同步维护：这里锁定 TS 侧形状，Go 侧由 request-route_test.go 锁定。
-  assert.deepEqual(TARGET_PATH_PREFIXES, ['/web/', '/flowInstanceApi'])
+  assert.deepEqual(TARGET_PATH_PREFIXES, ['/web/', '/flowInstanceApi', '/api/'])
   assert.equal(TARGET_PATH_PREFIXES.includes('/web/'), true)
 })

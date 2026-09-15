@@ -16,6 +16,7 @@ import { launchHeadlessChromium, HEADLESS_LAUNCH_ARGS } from './browser.ts'
 import { SESSION_EVENTS, SessionManager } from './session-manager.ts'
 import { installTargetRoute, type TargetRouteHandle } from './target-route.ts'
 import { ForwardChannel } from './forward-channel.ts'
+import { settleCompletion } from './completion.ts'
 import { PROTOCOL_VERSION, validateMessage, type MessageEnvelope } from './protocol.ts'
 import { serveDirectory } from './static-origin.ts'
 
@@ -41,6 +42,11 @@ interface RuntimeSession {
   actionInFlight: boolean
   destroyed: boolean
   identity: Record<string, unknown> | null
+  // 复合动作纪律（T011）：转发主请求确认成功后才放行附言请求；硬超时后拒绝新写请求。
+  transpondConfirmed: boolean
+  writeBlocked: boolean
+  // 选择闭环（T010B）：目标等待选择期间动作未结束，choice_continue 是原动作的一部分。
+  choicePending: boolean
 }
 
 // BridgeError 是页面内错误对象（浏览器上下文），允许携带稳定 code。
@@ -195,6 +201,17 @@ async function main(): Promise<void> {
         const route = await installTargetRoute(record.page!, {
           runtimeOrigins: [new URL(entryURL).origin],
           forward: async payload => {
+            const runtimeSessionNow = sessions.get(record.sessionId)
+            // 复合动作纪律：附言只允许在转发主请求确认成功后发出；
+            // 硬超时后不再放行任何新写请求（设计 7）。
+            if (runtimeSessionNow) {
+              if (payload.url.includes('/flowInstancePostscript/save') && !runtimeSessionNow.transpondConfirmed) {
+                throw new Error('转发主请求未确认成功，禁止发送附言请求')
+              }
+              if (runtimeSessionNow.writeBlocked && payload.method === 'POST') {
+                throw new Error('动作已硬超时，拒绝新写请求')
+              }
+            }
             const outcome = await channel.send({
               sessionId: record.sessionId,
               runId,
@@ -202,6 +219,9 @@ async function main(): Promise<void> {
               stepId,
               payload
             })
+            if (runtimeSessionNow && payload.url.includes('/web/flowInstanceApi/transpond') && outcome.httpStatus === 200) {
+              runtimeSessionNow.transpondConfirmed = true
+            }
             // 选择闭环检测（T010B）：目标返回 isSuccess=false 且 errorType 属于三种选择错误时，
             // 表示流程尚未推进、只在等待选择；以 choice_required 事件通知 Go，用已配置数据继续。
             const choiceErrorType = detectChoiceError({ body: outcome.body, bodyEncoding: outcome.bodyEncoding })
@@ -209,6 +229,7 @@ async function main(): Promise<void> {
               const runtimeSession = sessions.get(record.sessionId)
               const socket = channel.socketForEvents
               if (runtimeSession && socket) {
+                runtimeSession.choicePending = true
                 sendEnvelope(socket, runtimeSession, 'event', randomUUID(), {
                   type: 'choice_required',
                   data: { ...choiceErrorType, url: payload.url }
@@ -248,7 +269,10 @@ async function main(): Promise<void> {
           loaded: false,
           actionInFlight: false,
           destroyed: false,
-          identity: null
+          identity: null,
+          transpondConfirmed: false,
+          writeBlocked: false,
+          choicePending: false
         })
         send(200, { sessionId: record.sessionId, status: record.status, entryURL })
       })()
@@ -381,11 +405,26 @@ async function main(): Promise<void> {
             sendEnvelope(ws, session, 'event', envelope.requestId, { type: 'log', data: { level: 'error', message: `WS 不接受 ${envelope.kind} 消息` } })
             return
           }
+          const action = String((envelope.payload as any)?.action ?? '')
+          if (action === 'choice_continue') {
+            // 选择闭环继续：属于正在进行的动作，不检查在途标志、不启动新的完成检测。
+            if (!session.actionInFlight || !session.choicePending) {
+              sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: '当前没有等待选择的动作' })
+              return
+            }
+            session.choicePending = false
+            try {
+              const dispatched = await runBridgeAction(session, 'execute', envelope as unknown as Record<string, unknown>)
+              sendEnvelope(ws, session, 'result', envelope.requestId, settleResult(dispatched))
+            } catch (error) {
+              sendEnvelope(ws, session, 'result', envelope.requestId, settleError(error))
+            }
+            return
+          }
           if (session.actionInFlight) {
             sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: '同一会话同一时刻只允许一个动作' })
             return
           }
-          const action = String((envelope.payload as any)?.action ?? '')
           // 装载门禁（T008）：业务动作必须发生在成功装载之后；装载失败/未装载绝不放行写动作。
           const readOnlyCommand = action === 'capture' || action === 'validate'
           if (!readOnlyCommand && !session.loaded) {
@@ -393,19 +432,47 @@ async function main(): Promise<void> {
             return
           }
           session.actionInFlight = true
+          session.writeBlocked = false
+          session.transpondConfirmed = false
+          const baselineSeq = session.route.trace.list().length
+          // 重置宿主业务完成标志（上一动作的信号不得带入本动作）。
+          await session.page.evaluate(() => {
+            const host = (window as any).__runtimeExecutionHost__
+            if (host && typeof host.resetBusinessDone === 'function') host.resetBusinessDone()
+          }).catch(() => undefined)
           try {
-            // 硬超时（设计 7）：超时后不再等待页面回调，返回 timeout；T011 会接入更完整的完成检测。
-            const result = await Promise.race([
+            // 分派阶段：调用真实目标入口（异步链路立即返回）。
+            const dispatchTimeoutMs = Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000)
+            const dispatched = await Promise.race([
               runBridgeAction(session, bridgeMethodFor(action), envelope as unknown as Record<string, unknown>),
               new Promise((_, reject) => setTimeout(() => {
-                const error: BridgeError = new Error("动作执行超时")
+                const error: BridgeError = new Error('动作执行超时')
                 error.code = 'BRIDGE_COMMAND_TIMEOUT'
                 reject(error)
-              }, Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000)))
+              }, dispatchTimeoutMs))
             ])
-            sendEnvelope(ws, session, 'result', envelope.requestId, settleResult(result))
+            // 完成检测（T011）：网络空闲稳定窗 + 页面异常 + 业务完成事件 + 复合动作纪律。
+            const readOnlyCommand = action === 'capture' || action === 'validate'
+            const verdict = readOnlyCommand
+              ? settleResult(dispatched)
+              : await settleCompletion({
+                  action,
+                  trace: session.route.trace,
+                  baselineSeq,
+                  businessDone: async () => session.page.evaluate(() => {
+                    const host = (window as any).__runtimeExecutionHost__
+                    return Boolean(host && typeof host.isBusinessDone === 'function' && host.isBusinessDone())
+                  }).catch(() => false),
+                  hardTimeoutMs: dispatchTimeoutMs,
+                  idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),
+                  gate: async () => !session.choicePending
+                })
+            if (verdict.status === 'timeout') session.writeBlocked = true
+            sendEnvelope(ws, session, 'result', envelope.requestId, { ...verdict })
           } catch (error) {
-            sendEnvelope(ws, session, 'result', envelope.requestId, settleError(error))
+            const settled = settleError(error)
+            if (settled.status === 'timeout') session.writeBlocked = true
+            sendEnvelope(ws, session, 'result', envelope.requestId, settled)
           } finally {
             session.actionInFlight = false
           }

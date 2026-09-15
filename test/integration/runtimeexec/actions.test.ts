@@ -249,16 +249,14 @@ test('T010 提交链路与手动分支选择闭环（真实 FlowDialog）', { ti
       throw new Error(`${String(error)}\ntrace=${JSON.stringify(status.traceEntries)}`)
     }
   }
-  await waitWithTrace(() => realSubmits().length >= 1)
-  const firstSubmit = realSubmits()[0]!
-  assert.equal(firstSubmit.body.data.name, 'T010 提交闭环验证', '主实例名称必须是工具流程名称')
-  assert.equal(firstSubmit.body.formDataMongoVo.data.reason, '产假事宜', '提交正文必须携带表单数据')
-
-  // ③ 目标返回明确选择要求：服务端必须广播 choice_required 事件。
-  await fakeGo.waitUntil(() => fakeGo.events.some(item => item.type === 'choice_required'))
+  // ③ 目标返回明确选择要求：服务端必须广播 choice_required 事件（此时动作未结束，检测挂起）。
+  await waitWithTrace(() => fakeGo.events.some(item => item.type === 'choice_required'))
   const choiceEvent = fakeGo.events.find(item => item.type === 'choice_required')!
   assert.equal(choiceEvent.data.errorType, 'custom_choose')
   assert.ok(Array.isArray(choiceEvent.data.data.branchNodes) && choiceEvent.data.data.branchNodes.length === 2)
+  const firstSubmit = realSubmits()[0]!
+  assert.equal(firstSubmit.body.data.name, 'T010 提交闭环验证', '主实例名称必须是工具流程名称')
+  assert.equal(firstSubmit.body.formDataMongoVo.data.reason, '产假事宜', '提交正文必须携带表单数据')
 
   // ④ 注入已配置的分支与人员后继续：调用真实 handleSaveBranchChooseNode，第二次提交携带完整 nextAuditorList。
   fakeGo.send({
@@ -286,8 +284,9 @@ test('T010 提交链路与手动分支选择闭环（真实 FlowDialog）', { ti
   assert.equal(secondSubmit.body.data.name, 'T010 提交闭环验证', '继续提交同样保持工具流程名称')
   assert.equal(secondSubmit.body.formDataMongoVo.data.reason, '产假事宜')
 
-  // ⑤ 目标受理：链路自然完成（afterSaveFlowInstance 触发后无更多写请求），提交恰好两次。
+  // ⑤ 目标受理：原动作的完成检测在闭环继续后落定——流程成功 + 业务完成事件 → success。
   await fakeGo.waitUntil(() => fakeGo.results.length >= 2)
+  assert.equal(fakeGo.results[0]!.status, 'success', `原动作最终判定应为 success：${JSON.stringify(fakeGo.results[0])}`)
   await new Promise(resolve => setTimeout(resolve, 1500))
   assert.equal(realSubmits().length, 2, `闭环只允许继续一次，实际提交 ${realSubmits().length} 次`)
   await fetch(`${executor.base}/runtime/session/${sessionId}/destroy`, { method: 'POST' })
