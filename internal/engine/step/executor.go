@@ -259,19 +259,32 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	}
 	result, err := e.runtimeRunner.RunAction(ctx, runRequest)
 	if err != nil {
-		// 连接断开按写出事实二分（runtimeexec.ErrUncertain/ErrFailedCleanly）。
-		preview.writeSent = false
-		preview.writeErr = err
-		preview.writeErrClass = model.FailureClassWriteUncertain
-		if errors.Is(err, runtimeexec.ErrFailedCleanly) {
-			preview.writeErrClass = model.FailureClassToolBug
-		}
 		preview.runtimeHandled = true
-		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 执行失败："+err.Error())
+		switch {
+		case errors.Is(err, runtimeexec.ErrUncertain):
+			// 连接断开且已有目标请求写出：写状态不明。必须按「已发出、结果未知」处理，
+			// 走既有核验与结果待确认流程；判成零写入失败会诱发重复执行真实业务（评审 P1）。
+			preview.writeSent = true
+			preview.writeErr = &target.Error{Kind: target.ErrorUnavailable, Transport: target.TransportInterrupted, Cause: err}
+			e.rememberRuntimeFacts(preview, result)
+			log.Phase("submit", step.Sequence, approved.Attempt, "runtime 连接断开且已有目标请求写出："+err.Error())
+		case errors.Is(err, runtimeexec.ErrFailedCleanly):
+			// 连接断开且确认没有任何目标请求写出：零写入失败，归工具侧缺陷。
+			preview.writeSent = false
+			preview.writeErr = err
+			preview.writeErrClass = model.FailureClassToolBug
+			log.Phase("submit", step.Sequence, approved.Attempt, "runtime 连接断开且无目标请求写出："+err.Error())
+		default:
+			// 会话创建/装载/协议校验失败：业务命令尚未发出，写请求必然没有写出，零写入失败。
+			preview.writeSent = false
+			preview.writeErr = err
+			preview.writeErrClass = model.FailureClassToolBug
+			log.Phase("submit", step.Sequence, approved.Attempt, "runtime 执行失败："+err.Error())
+		}
 		return true
 	}
 	preview.runtimeHandled = true
-	preview.runtimeStatus = result.Status
+	e.rememberRuntimeFacts(preview, result)
 	preview.writeResponse = target.WriteResponse{StatusCode: 200, IsSuccessPresent: true, IsSuccess: result.Status == "success"}
 	switch result.Status {
 	case "success":
@@ -305,6 +318,28 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 // ShouldRunViaRuntimeForTest 暴露路由判定，供契约测试锁定「哪些动作走 runtime」。
 func (e *Executor) ShouldRunViaRuntimeForTest(runCtx RunContext, step model.CompiledActionStep) bool {
 	return e.shouldRunViaRuntime(runCtx, step)
+}
+
+// rememberRuntimeFacts 把一次 runtime 动作的判定事实回填到预览：七值状态、业务说明与
+// 逐请求轨迹，并在同一处构造三阶段投影（运行详情的生产数据源，评审 P1-7）。
+// 成功与失败路径都要回填：连接断开不等于请求没发出，已收集的轨迹必须留档。
+func (e *Executor) rememberRuntimeFacts(preview *StepPreview, result runtimeexec.ActionRunResult) {
+	preview.runtimeStatus = result.Status
+	if strings.TrimSpace(result.Message) != "" {
+		preview.runtimeMessage = result.Message
+	}
+	if len(result.RequestTrace) > 0 {
+		preview.runtimeRequestTrace = result.RequestTrace
+	}
+	// 轨迹为空时投影仍会给出「流程动作未发出」的三阶段视图，如实呈现比留空更可解释。
+	projection := runtimeexec.BuildDetailProjection(
+		runtimeexec.ActionRunResult{Status: preview.runtimeStatus, Message: preview.runtimeMessage},
+		preview.runtimeRequestTrace,
+		runtimeexec.ProtocolVersion,
+	)
+	if encoded, err := json.Marshal(projection); err == nil {
+		preview.runtimeDetailJSON = string(encoded)
+	}
 }
 
 // RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。

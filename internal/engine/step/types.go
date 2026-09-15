@@ -401,6 +401,14 @@ type StepPreview struct {
 	// runtimeFormDigest 是 runtime 执行时登记能力用的表单数据摘要（sha256），
 	// 与路由判定用同一份值，核验确认成功后按「流程+动作+摘要」登记能力（T014）。
 	runtimeFormDigest string
+	// runtimeMessage 是 runtime 完成检测给出的业务说明，与状态一起进运行详情投影。
+	runtimeMessage string
+	// runtimeRequestTrace 是 runtime 返回的逐请求轨迹原文（P1-7 修复：不再丢弃），
+	// 随尝试行落账，供运行详情三阶段投影与事后追查使用。
+	runtimeRequestTrace json.RawMessage
+	// runtimeDetailJSON 是本动作三阶段投影的落账文本（run_step_attempts.runtime_detail），
+	// 在 runtime 事实回填时统一构造；非 runtime 步骤恒为空。
+	runtimeDetailJSON string
 	// TargetSkipped 表示本步节点已被目标自动跳过（模板约束「无处理人时跳过该节点」生效，
 	// 实例待办已落到路径上更靠后的节点）：不发出写请求，放行后按「已跳过」落账并推进。
 	// SkipReason 是给用户看的中文依据，必须说清为什么判定被跳过。

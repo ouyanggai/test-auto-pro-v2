@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -85,9 +86,11 @@ func (r *recordingTarget) writeCalls() []string {
 }
 
 // fakeRuntimeRunner 返回预置判定并记录调用；captures 非空时保存每次收到的请求事实。
+// err 非空时 RunAction 返回该错误（用于连接断开二分分类的回归）。
 type fakeRuntimeRunner struct {
 	mu       sync.Mutex
 	status   string
+	err      error
 	calls    int
 	requests []runtimeexec.RuntimeRunRequest
 }
@@ -97,6 +100,9 @@ func (f *fakeRuntimeRunner) RunAction(_ context.Context, request runtimeexec.Run
 	f.calls++
 	f.requests = append(f.requests, request)
 	f.mu.Unlock()
+	if f.err != nil {
+		return runtimeexec.ActionRunResult{Status: "failed", Message: "fake-error"}, f.err
+	}
 	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake"}, nil
 }
 
@@ -285,6 +291,47 @@ func TestRegisterRuntimeCapabilityAfterVerifiedSuccess(t *testing.T) {
 	}
 	if registry.Registered(runCtx.FlowType, "submit", "other-digest") {
 		t.Fatalf("其他表单摘要不得被自动解锁")
+	}
+}
+
+// TestRuntimeDisconnectWithWritesIsUncertainNotZeroWrite 评审 P1 回归：
+// runtime 连接断开且已有目标请求写出（ErrUncertain）必须按「已发出、结果未知」处理，
+// 绝不允许判成零写入失败——那会把「可能已写出」标成「无副作用」，诱发重复执行真实业务。
+func TestRuntimeDisconnectWithWritesIsUncertainNotZeroWrite(t *testing.T) {
+	view := &recordingTarget{}
+	registry := runtimeexec.NewCapabilityRegistry()
+	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit", RuntimeVersion: "exec-engine/v1", Evidence: "e", LogRef: "l"})
+	runner := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrUncertain)}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	preview := &step.StepPreview{ActorAccount: "acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	if !preview.WriteSent() {
+		t.Fatalf("ErrUncertain 必须按「写已发出」处理，不得判零写入")
+	}
+	var targetErr *target.Error
+	if !errors.As(preview.WriteErrForTest(), &targetErr) || targetErr.Transport != target.TransportInterrupted {
+		t.Fatalf("ErrUncertain 应映射为传输中断错误，实际 %v", preview.WriteErrForTest())
+	}
+	if preview.RuntimeHandledForTest() != true {
+		t.Fatalf("runtime 仍应标记接管")
+	}
+}
+
+// TestRuntimeDisconnectWithoutWritesIsCleanZeroWrite 评审 P1 对偶回归：
+// 连接断开且没有任何目标请求写出（ErrFailedCleanly）保持零写入失败，不得虚报「可能已写出」。
+func TestRuntimeDisconnectWithoutWritesIsCleanZeroWrite(t *testing.T) {
+	view := &recordingTarget{}
+	registry := runtimeexec.NewCapabilityRegistry()
+	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit", RuntimeVersion: "exec-engine/v1", Evidence: "e", LogRef: "l"})
+	runner := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrFailedCleanly)}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	preview := &step.StepPreview{ActorAccount: "acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	if preview.WriteSent() {
+		t.Fatalf("ErrFailedCleanly 是零写入失败，不得标记写已发出")
+	}
+	if preview.WriteErrForTest() == nil || !strings.Contains(preview.WriteErrForTest().Error(), "没有任何目标请求写出") {
+		t.Fatalf("失败原因必须保留连接断开事实：%v", preview.WriteErrForTest())
 	}
 }
 
