@@ -143,6 +143,17 @@ var endpointFieldMatrix = map[string]map[string]FieldPresence{
 		"sid":                               PresenceRequired,
 		"projectId":                         PresenceRequired,
 	},
+	// 转发附言：参考 flowTypeMixin.handleSubmitPostscript（转发主请求成功后按页面逻辑发送）。
+	// runtime 转发链的第二个写请求（writeSequence=2）；Go 直连不构造此端点载荷，
+	// 登记在此供契约测试与转发响应的端点校验共用。
+	FlowPostscriptEndpoint: {
+		"data.text":           PresenceRequired, // 附言正文（页面无条件发送，可为空串）
+		"data.id":             PresenceRequired, // uuidGenerator 生成的附言 ID
+		"data.flowInstanceId": PresenceRequired, // 辅助实例 ID
+		"batchCode":           PresenceForbidden,
+		"sid":                 PresenceRequired,
+		"projectId":           PresenceRequired,
+	},
 	// 关注/取消关注：参考 GroupApproveManage/components/mixin.js setTracking。
 	WriteEndpointFlowTracking: {
 		"data.id":   PresenceRequired,
