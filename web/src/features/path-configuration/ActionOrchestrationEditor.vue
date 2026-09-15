@@ -333,6 +333,8 @@ function removeAction(index: number) {
         <template #footer>
           <n-space justify="end">
             <n-button @click="closeEditor">取消</n-button>
+            <!-- 添加动作是编辑器唯一的新增入口，误删会让已有动作无法补充，结构契约测试对其有断言 -->
+            <n-button :disabled="readOnly || !canAddAction" data-testid="add-action" @click="addAction"><AddOutline /> 添加动作</n-button>
             <n-button type="primary" :disabled="readOnly" @click="saveEditor">保存动作配置</n-button>
           </n-space>
         </template>

@@ -1,5 +1,11 @@
 # 当前进度
 
+- 2026-09-15 用户反馈动作编辑弹窗"添加动作"按钮不见了。根因：提交 5f2170b 重写弹窗 footer 时误删了
+  `<n-button … @click="addAction">添加动作</n-button>`，`addAction`/`canAddAction`/`AddOutline` 成为死代码，且
+  F-012 结构契约测试没有对按钮的断言导致静默丢失。修复：在 footer（取消与保存动作配置之间）原样恢复按钮并加
+  `data-testid="add-action"`，保留只读、无可配置动作、超 10 条上限的禁用语义；结构契约补两条断言锁死按钮存在与
+  禁用条件。前端 151 项测试与结构检查全部通过。F-035 保持 `implementing`，等待用户人工验收，不自动开始下一功能。
+
 - 2026-09-15 用户反馈路径 4222 表单值已正确（vacateType 显示"产假"）但右侧"路径关键信息"仍提示"需要处理"。根因：
   `vacateType` 是 `showLabel=false` 且 `remoteType=datasource` 的下拉，模板静态选项 label/value 完全错位（label 残留
   采购分类名），FormMaking 渲染层对这类选项直接显示 value，而 iframe 选项协调的 `fieldOptions` 优先读 `getOptionData`

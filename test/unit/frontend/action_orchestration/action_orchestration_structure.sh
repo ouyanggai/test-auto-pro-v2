@@ -53,6 +53,9 @@ forbid "${editor}" 'parameterPlaceholder' '动作配置不应再出现自由填�
 require "${editor}" '@drop.prevent="handleDrop(index)"' '动作行未绑定放置事件'
 require "${editor}" 'moveAction(index, -1)' '动作排序缺少键盘可达的上移入口'
 require "${editor}" 'moveAction(index, 1)' '动作排序缺少键盘可达的下移入口'
+# 添加动作按钮是编辑器唯一的新增入口，曾被误删导致无法补充动作，这里锁死其存在与禁用语义。
+require "${editor}" 'data-testid="add-action"' '动作编辑弹窗缺少添加动作按钮'
+require "${editor}" ':disabled="readOnly || !canAddAction" data-testid="add-action"' '添加动作按钮缺少只读与上限禁用'
 
 # 目录必须展示精确禁用原因、前置事实和重读要求，不能只隐藏动作。
 require "${editor}" 'item.disabledReason' '动作目录未展示精确禁用原因'
