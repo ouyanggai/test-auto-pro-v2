@@ -105,9 +105,21 @@ export default {
       return this.sessionId
     },
     // loadForExecution 是 load_initiate/load_approve 的执行模式入口：复用既有真实装载链路，
-    // 并把执行模式记入载荷；发起与审批的差异（身份注入、审批页面组件）由后续任务在同一入口扩展。
+    // 并把执行模式记入载荷；发起与审批的差异（身份注入、审批页面组件）由同一入口扩展。
     async loadForExecution (mode, command) {
-      const payload = { ...(command.payload || {}), executionMode: mode }
+      const payload = { ...(command.payload || {}) }
+      payload.executionMode = mode
+      // 审批装载必须携带原发起人事实：当前审批人身份只作为登录上下文注入，
+      // 发起人身份单独保存（window.__runtimeExecutionIdentity__.initiator），
+      // 禁止当前人覆盖发起人字段（T009 身份注入纪律）。
+      if (mode === 'approve') {
+        const initiator = payload.initiator && typeof payload.initiator === 'object' ? payload.initiator : null
+        if (!initiator || !String(initiator.userId || '').trim()) {
+          const error = new Error('审批装载缺少原发起人事实，不能以当前操作人身份顶替发起人')
+          error.code = 'BRIDGE_INITIATOR_MISSING'
+          throw error
+        }
+      }
       const result = await this.execute({
         version: FORM_RUNTIME_VERSION,
         type: 'load',
@@ -115,6 +127,25 @@ export default {
         requestId: command.requestId,
         payload
       })
+      // 登录上下文（memoryAuth/Vuex/storage facade）始终是当前操作人；
+      // 发起人、实例、任务与节点事实单独挂在执行身份上，动作执行时按用途取用，互不覆盖。
+      window.__runtimeExecutionIdentity__ = {
+        mode,
+        operator: {
+          userId: String(payload.userId || ''),
+          account: String(payload.accountName || ''),
+          name: String(payload.currentOperator?.name || payload.accountName || ''),
+          companyId: String(payload.companyId || ''),
+          departmentId: String(payload.departmentId || '')
+        },
+        initiator: payload.initiator && typeof payload.initiator === 'object'
+          ? { userId: String(payload.initiator.userId || ''), name: String(payload.initiator.name || '') }
+          : null,
+        instanceId: String(payload.instanceId || ''),
+        jobTaskId: String(payload.jobTaskId || ''),
+        nodeProxyId: String(payload.nodeProxyId || ''),
+        toolFlowName: String(payload.toolFlowName || '')
+      }
       return { ...(result || {}), executionMode: mode }
     },
     // captureForExecution 对应 capture/validate：validate=true 走目标表单校验口径。
@@ -576,6 +607,8 @@ export default {
       this.operationGeneration++
       // 执行桥接随会话一起废弃：销毁后 window.__runtimeBridge__ 不存在，既有引用也不可执行。
       this.invalidateExecutionBridge()
+      // 执行身份（操作人/发起人/实例任务节点）一并清除，禁止残留到下一会话。
+      if (window.__runtimeExecutionIdentity__) delete window.__runtimeExecutionIdentity__
       if (this.stateTimer) window.clearTimeout(this.stateTimer)
 		this.stateTimer = null
 		this.unbindFormChange()

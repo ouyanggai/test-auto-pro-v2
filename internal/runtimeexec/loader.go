@@ -44,6 +44,9 @@ type LoadPayload struct {
 	ToolFlowName string `json:"toolFlowName"`
 	// InstanceID 是主实例 ID；新建草稿/新发起时为空。
 	InstanceID string `json:"instanceId,omitempty"`
+	// JobTaskID 是当前待办任务 ID、NodeProxyID 是当前节点代理 ID：审批装载的硬事实（T009）。
+	JobTaskID   string `json:"jobTaskId,omitempty"`
+	NodeProxyID string `json:"nodeProxyId,omitempty"`
 	// Initiator / CurrentOperator 分开保存发起人与当前操作人，禁止当前人覆盖发起人字段。
 	Initiator       ActorIdentity `json:"initiator"`
 	CurrentOperator ActorIdentity `json:"currentOperator"`
@@ -70,6 +73,8 @@ type LoadInput struct {
 	Session       SessionFacts
 	ToolFlowName  string
 	InstanceID    string
+	JobTaskID     string
+	NodeProxyID   string
 	Permissions   []string
 	ChangedFields []string
 	BaseURL       string
@@ -121,6 +126,8 @@ func BuildLoadPayload(input LoadInput, template, values json.RawMessage) (*LoadP
 		ChangedFields:   changed,
 		ToolFlowName:    strings.TrimSpace(input.ToolFlowName),
 		InstanceID:      strings.TrimSpace(input.InstanceID),
+		JobTaskID:       strings.TrimSpace(input.JobTaskID),
+		NodeProxyID:     strings.TrimSpace(input.NodeProxyID),
 		Initiator:       input.Initiator,
 		CurrentOperator: current,
 		CompanyID:       strings.TrimSpace(input.Session.CompanyID),

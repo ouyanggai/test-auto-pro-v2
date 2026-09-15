@@ -40,6 +40,7 @@ interface RuntimeSession {
   loaded: boolean
   actionInFlight: boolean
   destroyed: boolean
+  identity: Record<string, unknown> | null
 }
 
 // BridgeError 是页面内错误对象（浏览器上下文），允许携带稳定 code。
@@ -212,7 +213,8 @@ async function main(): Promise<void> {
           channel,
           loaded: false,
           actionInFlight: false,
-          destroyed: false
+          destroyed: false,
+          identity: null
         })
         send(200, { sessionId: record.sessionId, status: record.status, entryURL })
       })()
@@ -236,6 +238,7 @@ async function main(): Promise<void> {
         sessionId,
         loaded: session.loaded,
         channelConnected: session.channel.connected,
+        identity: session.identity,
         trace: session.route.trace.stats()
       })
       return
@@ -283,6 +286,17 @@ async function main(): Promise<void> {
           const command = { ...envelope, payload: { action: mode === 'approve' ? 'load_approve' : 'load_initiate', ...(envelope.payload as Record<string, unknown>) } } as Record<string, unknown>
           const result = await runBridgeAction(session, mode === 'approve' ? 'loadApprove' : 'loadInitiate', command)
           session.loaded = true
+          // 身份事实快照（T009）：操作人是会话账号本身；发起人来自装载载荷，二者分开保存。
+          const payload = (envelope.payload ?? {}) as Record<string, any>
+          session.identity = {
+            mode,
+            operatorAccount: session.accountKey,
+            initiator: payload.initiator ?? null,
+            instanceId: String(payload.instanceId ?? ''),
+            jobTaskId: String(payload.jobTaskId ?? ''),
+            nodeProxyId: String(payload.nodeProxyId ?? ''),
+            toolFlowName: String(payload.toolFlowName ?? '')
+          }
           send(200, settleResult(result))
         } catch (error) {
           send(500, settleError(error))
