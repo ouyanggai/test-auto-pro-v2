@@ -3,6 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "packageManager": "pnpm@10.25.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "playwright"
+    ]
+  },
   "scripts": {
     "dev:f": "pnpm --parallel --filter test-auto-pro-v2-web dev",
     "dev:form": "pnpm --filter test-auto-pro-v2-form-runtime dev",

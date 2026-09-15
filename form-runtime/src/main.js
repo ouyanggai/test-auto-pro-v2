@@ -1,5 +1,10 @@
 import App from './App.vue'
 import '@runtime/main.js'
+import { FORM_RUNTIME_VERSION } from './runtime/protocol'
+
+// 执行引擎（无头探针与后续执行桥接）与 iframe 宿主共用同一版本标识；
+// 在真实入口脚本执行后立即可读，不依赖组件挂载完成，探针据此确认加载的是真实 runtime。
+window.__formRuntimeVersion__ = FORM_RUNTIME_VERSION
 
 // 隔离 iframe 内不展示目标登录页：目标 axios 遇到 401/请求失败时会 replace('/login')，
 // 这会销毁表单工作区并吞掉后续指令；统一中止该导航，保证会话内工作区不被导航打断。

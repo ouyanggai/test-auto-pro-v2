@@ -1,6 +1,8 @@
 packages:
   - web
   - form-runtime
+  # 执行引擎改造（docs/s）：Playwright 无头执行服务作为独立工作区包，依赖与 Vue 应用隔离。
+  - form-runtime/executor
 
 # Vue 2 的 template compiler 会在运行时 require('vue') 校验版本，但旧包未声明该依赖。
 # 工作区同时包含 Vue 3 主应用时必须显式绑定 Vue 2，避免安装顺序改变表单服务构建结果。

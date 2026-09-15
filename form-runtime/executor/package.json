@@ -1,0 +1,20 @@
+{
+  "name": "test-auto-pro-v2-form-runtime-executor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "执行引擎改造：Playwright + Chromium 无头执行服务（只装载真实 form-runtime 页面，不做界面操作）",
+  "scripts": {
+    "probe": "tsx src/probe.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  }
+}
