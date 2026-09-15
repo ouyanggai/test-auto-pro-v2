@@ -276,7 +276,27 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	}
 	// 选择闭环配置（T010B）：分支选择是「分支节点 ID → 所选分支入口节点 ID」，
 	// 键值各归其位；只带入口会丢掉分支节点归属，目标无法匹配候选分支。
+	// 评审 P1-6：入口必须经真实图边校验——它必须是该分支节点的直接后继，
+	// 防止目标返回的临时节点集合诱导工具发出与已保存配置无关的分支。
+	// 没有边表的旧数据保持既有行为（与 F-034 T04 同一口径）；有边表而校验不过即写前阻塞。
 	for branchNodeID, entryID := range runCtx.BranchSelections {
+		if len(runCtx.GraphEdges) > 0 {
+			reachable := false
+			for _, edge := range runCtx.GraphEdges[branchNodeID] {
+				if edge.Target == entryID {
+					reachable = true
+					break
+				}
+			}
+			if !reachable {
+				preview.writeSent = false
+				preview.writeErr = fmt.Errorf("分支选择与真实流程图不一致：入口 %s 不是分支节点 %s 的直接后继，拒绝经 runtime 执行", entryID, branchNodeID)
+				preview.writeErrClass = model.FailureClassGateBlocked
+				preview.runtimeHandled = true
+				log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+				return true
+			}
+		}
 		runRequest.BranchSelections = append(runRequest.BranchSelections, runtimeexec.BranchSelection{NodeProxyID: branchNodeID, EntryNodeID: entryID})
 	}
 	for nodeKey, auditors := range runCtx.NextNodeAuditors {

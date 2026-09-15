@@ -594,3 +594,38 @@ func TestRunViaRuntimeForwardRequiresReceiver(t *testing.T) {
 		t.Fatalf("转发请求必须携带主实例引用，实际 %q", request.InstanceID)
 	}
 }
+
+// TestRunViaRuntimeValidatesBranchSelectionAgainstGraph 评审 P1-6 回归：
+// 分支选择必须通过真实图边校验——入口不是分支节点的直接后继时写前阻塞，
+// 绝不让目标返回的临时节点集合诱导工具发出与已保存配置无关的分支。
+func TestRunViaRuntimeValidatesBranchSelectionAgainstGraph(t *testing.T) {
+	view := &recordingTarget{taskID: "task-9"}
+	registry := runtimeexec.NewCapabilityRegistry()
+	registerCapabilityForRunCtx(t, registry, "approve")
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	runCtx := runtimeRunCtx()
+	runCtx.BranchSelections = map[string]string{"branch-node-1": "entry-node-1"}
+	runCtx.GraphEdges = map[string][]step.GraphEdgeInfo{
+		"branch-node-1": {{Target: "other-entry"}},
+	}
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	if preview.WriteSent() || runner.callCount() != 0 {
+		t.Fatalf("入口不属于分支节点后继时必须写前阻塞，不得进入 runtime")
+	}
+	if !strings.Contains(preview.WriteErrForTest().Error(), "直接后继") {
+		t.Fatalf("阻塞原因必须说明图边校验失败：%v", preview.WriteErrForTest())
+	}
+	// 入口是真实后继：正常进入 runtime。
+	runCtx.GraphEdges = map[string][]step.GraphEdgeInfo{
+		"branch-node-1": {{Target: "entry-node-1"}},
+	}
+	previewOK := &step.StepPreview{ActorAccount: "actor-acct"}
+	if !executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionApprove), target.Session{}, previewOK, step.ApprovedStep{Attempt: 1}) {
+		t.Fatalf("runtime 应接管本步")
+	}
+	if runner.callCount() != 1 {
+		t.Fatalf("图边校验通过后应进入 runtime，实际 %d 次", runner.callCount())
+	}
+}

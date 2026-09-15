@@ -124,3 +124,93 @@ func TestRunActionSendsValidLoadEnvelope(t *testing.T) {
 		t.Fatalf("装载载荷字段不符：%+v", payload)
 	}
 }
+
+// 选择闭环事件形状：目标以 isSuccess=false + errorType 返回「等待选择」。
+func choiceEvent(errorType string, branchIDs ...string) json.RawMessage {
+	branchNodes := []map[string]any{}
+	for _, id := range branchIDs {
+		branchNodes = append(branchNodes, map[string]any{"id": id, "nodeName": "节点" + id})
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"errorType": errorType,
+		"data":      map[string]any{"errorType": errorType, "branchNodes": branchNodes},
+	})
+	return raw
+}
+
+// selectionRequest 构造带分支选择、节点人员与审批方式映射的请求。
+func selectionRequest() runtimeexec.RuntimeRunRequest {
+	return runtimeexec.RuntimeRunRequest{
+		BranchSelections: []runtimeexec.BranchSelection{
+			{NodeProxyID: "branch-node-1", EntryNodeID: "entry-1"},
+		},
+		NextNodeAuditors: []runtimeexec.NextAuditorEntry{
+			{NodeProxyID: "entry-1", BizID: "biz-1", Name: "张三", AuditDetailType: "personnel"},
+		},
+		BranchNodeAuditTypes: map[string]string{
+			"entry-1":   "run_node_choose",
+			"par-a":     "run_node_choose",
+			"par-b":     "run_node_choose",
+			"par-fixed": "company",
+		},
+	}
+}
+
+// TestChoiceCustomChooseRequiresConfiguredPersonnel 评审 P1-6 回归：
+// 自选分支命中已保存入口但没有任何已配置人员时，绝不构造继续命令（nil → 执行器阻塞）。
+func TestChoiceCustomChooseRequiresConfiguredPersonnel(t *testing.T) {
+	executor := runtimeexec.NewRuntimeExecutor(nil)
+	request := selectionRequest()
+	if choice := executor.BuildChoiceForTest(request, choiceEvent("custom_choose", "entry-1")); choice == nil {
+		t.Fatalf("自选分支已有配置人员，应允许继续")
+	}
+	request.NextNodeAuditors = nil
+	if choice := executor.BuildChoiceForTest(request, choiceEvent("custom_choose", "entry-1")); choice != nil {
+		t.Fatalf("自选分支缺已配置人员必须阻塞，不得继续：%+v", choice)
+	}
+	// 非自选审批方式的分支不需要页面人员（目标按节点配置自行解析）。
+	fixed := selectionRequest()
+	fixed.BranchSelections = []runtimeexec.BranchSelection{{NodeProxyID: "b", EntryNodeID: "par-fixed"}}
+	fixed.NextNodeAuditors = nil
+	if choice := executor.BuildChoiceForTest(fixed, choiceEvent("custom_choose", "par-fixed")); choice == nil {
+		t.Fatalf("固定审批方式分支不要求已配置人员")
+	}
+}
+
+// TestChoiceParallelChooseRequiresEveryConfiguredPersonnel 评审 P1-6 回归：
+// 并行分支中任一自选分支缺已配置人员时，整体放弃继续，绝不发送不完整的 nextAuditors。
+func TestChoiceParallelChooseRequiresEveryConfiguredPersonnel(t *testing.T) {
+	executor := runtimeexec.NewRuntimeExecutor(nil)
+	request := selectionRequest()
+	request.BranchSelections = nil
+	// 两个自选分支都有人员：继续并逐分支携带人员。
+	request.NextNodeAuditors = []runtimeexec.NextAuditorEntry{
+		{NodeProxyID: "par-a", BizID: "biz-a", Name: "张三", AuditDetailType: "personnel"},
+		{NodeProxyID: "par-b", BizID: "biz-b", Name: "李四", AuditDetailType: "personnel"},
+	}
+	choice := executor.BuildChoiceForTest(request, choiceEvent("parallel_choose", "par-a", "par-b"))
+	if choice == nil {
+		t.Fatalf("人员齐全的并行分支应允许继续")
+	}
+	entries := choice["branchEntryNodeProxyIds"].([]string)
+	if len(entries) != 2 {
+		t.Fatalf("并行应携带全部返回分支：%+v", entries)
+	}
+	if auditors := choice["nextAuditors"].([]runtimeexec.NextAuditorEntry); len(auditors) != 2 {
+		t.Fatalf("nextAuditors 应含两个分支的已配置人员：%+v", auditors)
+	}
+	// par-fixed 是固定审批方式：无需人员，允许继续。
+	fixed := selectionRequest()
+	fixed.BranchSelections = nil
+	fixed.NextNodeAuditors = nil
+	if choice := executor.BuildChoiceForTest(fixed, choiceEvent("parallel_choose", "par-fixed")); choice == nil {
+		t.Fatalf("固定审批方式的并行分支不要求已配置人员")
+	}
+	// 任一自选分支缺人员：整体阻塞。
+	request.NextNodeAuditors = []runtimeexec.NextAuditorEntry{
+		{NodeProxyID: "par-a", BizID: "biz-1", Name: "张三", AuditDetailType: "personnel"},
+	}
+	if choice := executor.BuildChoiceForTest(request, choiceEvent("parallel_choose", "par-a", "par-b")); choice != nil {
+		t.Fatalf("并行分支缺配置人员必须整体阻塞，不得发不完整 nextAuditors：%+v", choice)
+	}
+}

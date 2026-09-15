@@ -242,6 +242,11 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	return payload, nil
 }
 
+// BuildChoiceForTest 暴露选择闭环的继续载荷构造，供单元测试锁定严格校验口径（评审 P1-6）。
+func (r *RuntimeExecutor) BuildChoiceForTest(request RuntimeRunRequest, eventData json.RawMessage) map[string]any {
+	return r.buildChoice(request, eventData)
+}
+
 // buildChoice 按目标返回的选择要求匹配已配置数据，构造继续命令载荷。
 // 匹配不到已配置分支/人员时返回 nil：执行器据此阻塞（绝不猜测分支或用空人员）。
 func (r *RuntimeExecutor) buildChoice(request RuntimeRunRequest, eventData json.RawMessage) map[string]any {
@@ -267,10 +272,14 @@ func (r *RuntimeExecutor) buildChoice(request RuntimeRunRequest, eventData json.
 	}
 	switch errorType {
 	case "custom_choose":
-		// 分支：必须找到与已保存分支入口完全相同的一项。
+		// 分支：必须找到与已保存分支入口完全相同的一项（入口归属已在发送前按真实图边校验）。
+		// 评审 P1-6：自选分支没有已配置人员时绝不继续——目标返回的临时候选不能替代配置。
 		for _, node := range data.Data.BranchNodes {
 			for _, selection := range request.BranchSelections {
 				if selection.EntryNodeID != "" && selection.EntryNodeID == node.ID {
+					if !branchPersonnelSatisfied(request, node.ID) {
+						return nil
+					}
 					return map[string]any{
 						"kind":                    "branch",
 						"branchEntryNodeProxyIds": []string{node.ID},
@@ -281,10 +290,14 @@ func (r *RuntimeExecutor) buildChoice(request RuntimeRunRequest, eventData json.
 		}
 		return nil
 	case "parallel_choose":
-		// 并行：逐个分支携带各自节点人员。
+		// 并行：逐个分支携带各自节点人员。评审 P1-6：任一自选分支缺已配置人员时整体放弃继续
+		//（由执行器阻塞），绝不发送不完整的 nextAuditors，也绝不用目标临时节点集合覆盖已保存配置。
 		entries := []string{}
 		auditors := []NextAuditorEntry{}
 		for _, node := range data.Data.BranchNodes {
+			if !branchPersonnelSatisfied(request, node.ID) {
+				return nil
+			}
 			entries = append(entries, node.ID)
 			auditors = append(auditors, auditorsForNode(request, node.ID)...)
 		}
@@ -313,6 +326,18 @@ func (r *RuntimeExecutor) buildChoice(request RuntimeRunRequest, eventData json.
 	default:
 		return nil
 	}
+}
+
+// auditTypeRunNodeChoose 是目标「审批人自选」审批方式：这类分支必须由工具显式携带人员。
+const auditTypeRunNodeChoose = "run_node_choose"
+
+// branchPersonnelSatisfied 校验分支入口的人员配置：审批方式为自选（run_node_choose）的
+// 分支必须携带至少一条已配置人员；其余审批方式由目标按节点配置自行解析，不要求页面选人。
+func branchPersonnelSatisfied(request RuntimeRunRequest, entryNodeID string) bool {
+	if request.BranchNodeAuditTypes[entryNodeID] != auditTypeRunNodeChoose {
+		return true
+	}
+	return len(auditorsForNode(request, entryNodeID)) > 0
 }
 
 // auditorsForNode 取某节点已配置的人员；空人员绝不放行。
