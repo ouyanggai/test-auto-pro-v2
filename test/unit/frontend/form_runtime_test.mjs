@@ -353,6 +353,29 @@ test('选项里找不到补丁名称且控件仍显示历史值时明确阻断',
   assert.equal(coordination.issues[0].actual, '旧公司')
   assert.equal(coordination.values.payCompanyId, 'old-id', '阻断时必须保留原值等待人工处理')
 })
+// 真实样本（计划 30 路径 4222 员工请假单）：showLabel=false 且选项 label/value 错位，目标渲染层按 value 显示。
+// 归一化后显示名必须等于 value，否则“产假”会去匹配错位的 label“全过程项目管理”，回填停在旧值“事假”。
+test('showLabel 为 false 的静态选项按 value 归一化显示名并完成绑定值回填', async () => {
+  const template = { list: [{ type: 'select', model: 'vacateType', name: '请假类别', options: {
+    showLabel: false,
+    remote: false,
+    options: [
+      { label: '设备材料采购', value: '事假' },
+      { label: '招标代理', value: '病假' },
+      { label: '全过程项目管理', value: '产假' },
+    ],
+  } }] }
+  const form = {
+    model: { vacateType: '事假', vacateType__virtualName: '产假' },
+    async setData (values) { Object.assign(this.model, values) },
+    async refreshFieldOptionData () {},
+    getValues () { return this.model },
+  }
+  const coordination = await coordinateOptionPatches(form, template, form.model, ['vacateType__virtualName'], 1)
+  assert.equal(coordination.issues.length, 0)
+  assert.equal(coordination.values.vacateType, '产假')
+  assert.equal(coordination.values.vacateType__virtualName, '产假')
+})
 
 test('选项中存在多个同名项时阻断且不猜测绑定值', async () => {
   const template = { list: [{ type: 'select', model: 'companyId', options: { options: [
