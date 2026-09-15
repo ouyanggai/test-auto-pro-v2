@@ -46,6 +46,9 @@ type Executor struct {
 	// runtimeBaseURL 是页面装载载荷的目标网关地址；空串=页面用相对路径请求，
 	// 由 Playwright 路由全量拦截转发 Go（App.vue 执行模式约定）。
 	runtimeBaseURL string
+	// runtimeTargetVersion 是目标前端快照版本（runtime-source HEAD）：能力登记必须携带
+	// 目标版本（docs/s/03 登记纪律 3），目标源码变更后旧登记的适用性才可追溯。
+	runtimeTargetVersion string
 	// runtimeVerification 是真实目标验证模式（T015）：显式配置开启后，未登记组合允许
 	// 经 runtime 执行一次以取得登记证据；核验确认成功即登记能力，之后与正常模式一致。
 	// 正常运行（未开启）未登记组合一律阻塞，绝不回退 Go 写造成双写。
@@ -80,10 +83,12 @@ func NewExecutor(targetClient TargetClient, sessions SessionProvider, runState R
 // EnableRuntimeExecution 配置可选的 runtime 执行能力（T012）：
 // runner 为 nil 时全部动作保持既有 Go 写路径；配置后七个表单动作经 runtime 执行，
 // 且必须已通过能力登记（T014），未登记直接阻塞，绝不回退 Go 写造成双写。
-func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, registry *runtimeexec.CapabilityRegistry, loadBaseURL string) {
+// targetVersion 是目标前端快照版本，随每条能力登记落档（评审 P2-1：登记缺目标版本不得登记）。
+func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, registry *runtimeexec.CapabilityRegistry, loadBaseURL, targetVersion string) {
 	e.runtimeRunner = runner
 	e.capabilities = registry
 	e.runtimeBaseURL = loadBaseURL
+	e.runtimeTargetVersion = strings.TrimSpace(targetVersion)
 }
 
 // EnableRuntimeVerification 启用真实目标验证模式（T015 专用，必须显式配置开启）：
@@ -126,9 +131,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	formDigest := fmt.Sprintf("%x", sha256.Sum256(runCtx.EffectiveFormData))
 	// 登记摘要随预览留存：核验确认成功后按同一把摘要登记能力，键必须与路由判定一致。
 	preview.runtimeFormDigest = formDigest
-	registered := e.capabilities != nil &&
-		(e.capabilities.Registered(runCtx.FlowType, action, formDigest) ||
-			e.capabilities.Registered(runCtx.FlowType, action, ""))
+	registered := e.capabilities != nil && e.capabilities.Registered(runCtx.FlowType, action, formDigest)
 	if !registered && !e.runtimeVerification {
 		// 能力未登记：阻塞本步（不回退 Go 写出口，杜绝双写）。
 		preview.writeSent = false
@@ -331,6 +334,13 @@ func (e *Executor) rememberRuntimeFacts(preview *StepPreview, result runtimeexec
 	if len(result.RequestTrace) > 0 {
 		preview.runtimeRequestTrace = result.RequestTrace
 	}
+	if len(result.WriteTraceIDs) > 0 {
+		preview.runtimeWriteTraceIDs = append(preview.runtimeWriteTraceIDs, result.WriteTraceIDs...)
+		// 首个写请求 trace 直接作为本步尝试的 trace：尝试行、network.log 与能力登记证据同源。
+		if preview.writeTraceID == "" {
+			preview.writeTraceID = result.WriteTraceIDs[0]
+		}
+	}
 	// 轨迹为空时投影仍会给出「流程动作未发出」的三阶段视图，如实呈现比留空更可解释。
 	projection := runtimeexec.BuildDetailProjection(
 		runtimeexec.ActionRunResult{Status: preview.runtimeStatus, Message: preview.runtimeMessage},
@@ -348,18 +358,24 @@ func (e *Executor) RunViaRuntimeForTest(ctx context.Context, runCtx RunContext, 
 }
 
 // registerRuntimeCapability 在核验确认成功后登记 runtime 能力（T014）：
-// 键=流程类型+动作+表单摘要（与路由判定同一把摘要），证据=主实例引用，日志引用=step.log 相对路径。
+// 键=流程类型+动作+表单摘要（与路由判定同一把摘要）；证据=主实例引用+runtime 页面写请求
+// 的传输层 trace（network.log 按 trace 可互查）；日志引用=step.log 相对路径。
 // 登记失败只落日志不回滚运行事实：能力缺失的后果是后续同组合被阻塞，不会造成双写。
 func (e *Executor) registerRuntimeCapability(runCtx RunContext, step model.CompiledActionStep, preview *StepPreview, log *StepLog, attemptNo int) {
 	if e.capabilities == nil {
 		return
+	}
+	evidence := "instance=" + runCtx.PathRun.MainInstanceRef
+	if trace := strings.TrimSpace(preview.writeTraceID); trace != "" {
+		evidence += ";trace=" + trace
 	}
 	entry := runtimeexec.CapabilityEntry{
 		FlowType:       runCtx.FlowType,
 		Action:         string(step.Action),
 		FormDigest:     preview.runtimeFormDigest,
 		RuntimeVersion: runtimeexec.ProtocolVersion,
-		Evidence:       runCtx.PathRun.MainInstanceRef,
+		TargetVersion:  e.runtimeTargetVersion,
+		Evidence:       evidence,
 		LogRef:         log.RelativePath(),
 	}
 	if err := e.capabilities.UnlockFromVerifiedRun(entry, string(verdict.OutcomeSucceeded)); err != nil {
@@ -371,14 +387,14 @@ func (e *Executor) registerRuntimeCapability(runCtx RunContext, step model.Compi
 		digest = digest[:8] + "…"
 	}
 	log.Phase("settle", step.Sequence, attemptNo,
-		fmt.Sprintf("能力已登记：%s/%s（表单摘要 %s，证据 实例=%s，日志=%s）",
-			runCtx.FlowType, step.Action, digest, runCtx.PathRun.MainInstanceRef, log.RelativePath()))
+		fmt.Sprintf("能力已登记：%s/%s（表单摘要 %s，目标版本 %s，证据 %s，日志=%s）",
+			runCtx.FlowType, step.Action, digest, e.runtimeTargetVersion, evidence, log.RelativePath()))
 }
 
 // RegisterRuntimeCapabilityForTest 暴露核验成功后的能力登记，供契约测试锁定登记键与证据字段。
-func (e *Executor) RegisterRuntimeCapabilityForTest(runCtx RunContext, step model.CompiledActionStep, preview *StepPreview) {
-	// StepLog 全方法 nil 安全：测试无日志工厂时直接传 nil，写入静默跳过。
-	e.registerRuntimeCapability(runCtx, step, preview, nil, 1)
+// 登记强制携带日志引用（评审 P2-1），测试须传入带相对路径的 StepLog。
+func (e *Executor) RegisterRuntimeCapabilityForTest(runCtx RunContext, step model.CompiledActionStep, preview *StepPreview, log *StepLog) {
+	e.registerRuntimeCapability(runCtx, step, preview, log, 1)
 }
 
 func (e *Executor) SetLogFactory(factory LogFactory) {

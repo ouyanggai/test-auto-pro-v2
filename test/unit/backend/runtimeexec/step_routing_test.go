@@ -7,6 +7,7 @@ package runtimeexec
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/step"
+	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/runtimeexec"
 )
@@ -146,9 +148,23 @@ func newExecutorForRouting(t *testing.T, view *recordingTarget, runner step.Runt
 	// registry 非空即配置 runtime 能力面（runner 可为 nil：登记测试不经过路由）；
 	// 两者都为空时保持未配置形态，锁定「未配置=全部动作走 Go 写路径」。
 	if runner != nil || registry != nil {
-		executor.EnableRuntimeExecution(runner, registry, "")
+		executor.EnableRuntimeExecution(runner, registry, "", "target-head-1")
 	}
 	return executor
+}
+
+// registerCapabilityForRunCtx 按运行上下文的表单原文计算同一把摘要并登记一条字段齐全的能力：
+// 登记判定已改为三维精确匹配（评审 P2-1），测试登记必须与路由判定同键。
+func registerCapabilityForRunCtx(t *testing.T, registry *runtimeexec.CapabilityRegistry, action string) {
+	t.Helper()
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(`{"reason":"x"}`)))
+	if err := registry.Register(runtimeexec.CapabilityEntry{
+		FlowType: "employee_leave", Action: action, FormDigest: digest,
+		RuntimeVersion: "exec-engine/v1", TargetVersion: "target-head-1",
+		Evidence: "instance=e;trace=t", LogRef: "step.log",
+	}); err != nil {
+		t.Fatalf("预置登记失败：%v", err)
+	}
 }
 
 func fixedRunConfigForRouting() config.RunConfig {
@@ -210,7 +226,7 @@ func TestRoutingWithRunnerCoverSevenActions(t *testing.T) {
 func TestRuntimeActionNeverTouchesTargetWrite(t *testing.T) {
 	view := &recordingTarget{}
 	registry := runtimeexec.NewCapabilityRegistry()
-	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit", RuntimeVersion: "exec-engine/v1", Evidence: "t012", LogRef: "test"})
+	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{status: "success"}
 	executor := newExecutorForRouting(t, view, runner, registry)
 	runCtx := runtimeRunCtx()
@@ -282,9 +298,22 @@ func TestRegisterRuntimeCapabilityAfterVerifiedSuccess(t *testing.T) {
 	preview := &step.StepPreview{ActorAccount: "plan-acct"}
 	preview.SetRuntimeFormDigestForTest("digest-abcdef")
 	preview.SetRuntimeHandledForTest(true)
-	executor.RegisterRuntimeCapabilityForTest(runCtx, stepItem, preview)
+	// 登记强制携带日志引用（评审 P2-1）：测试用 nil writer 的 StepLog 只留相对路径。
+	stepLog := step.NewStepLog(nil, logging.Scope{}, nil)
+	stepLog.SetRelativePath("runs/运行_13/paths/路径_1/step.log")
+	executor.RegisterRuntimeCapabilityForTest(runCtx, stepItem, preview, stepLog)
 	if !registry.Registered(runCtx.FlowType, "submit", "digest-abcdef") {
 		t.Fatalf("核验确认成功后同组合应已登记")
+	}
+	snapshot := registry.Snapshot()
+	if snapshot[0].TargetVersion != "target-head-1" {
+		t.Fatalf("登记必须携带装配层提供的目标版本：%+v", snapshot[0])
+	}
+	if !strings.Contains(snapshot[0].Evidence, "instance=") {
+		t.Fatalf("登记证据必须包含实例引用：%+v", snapshot[0])
+	}
+	if snapshot[0].LogRef == "" {
+		t.Fatalf("登记必须携带日志引用：%+v", snapshot[0])
 	}
 	if registry.Registered(runCtx.FlowType, "approve", "digest-abcdef") {
 		t.Fatalf("同流程其他动作不得被自动解锁")
@@ -300,7 +329,7 @@ func TestRegisterRuntimeCapabilityAfterVerifiedSuccess(t *testing.T) {
 func TestRuntimeDisconnectWithWritesIsUncertainNotZeroWrite(t *testing.T) {
 	view := &recordingTarget{}
 	registry := runtimeexec.NewCapabilityRegistry()
-	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit", RuntimeVersion: "exec-engine/v1", Evidence: "e", LogRef: "l"})
+	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrUncertain)}
 	executor := newExecutorForRouting(t, view, runner, registry)
 	preview := &step.StepPreview{ActorAccount: "acct"}
@@ -322,7 +351,7 @@ func TestRuntimeDisconnectWithWritesIsUncertainNotZeroWrite(t *testing.T) {
 func TestRuntimeDisconnectWithoutWritesIsCleanZeroWrite(t *testing.T) {
 	view := &recordingTarget{}
 	registry := runtimeexec.NewCapabilityRegistry()
-	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit", RuntimeVersion: "exec-engine/v1", Evidence: "e", LogRef: "l"})
+	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrFailedCleanly)}
 	executor := newExecutorForRouting(t, view, runner, registry)
 	preview := &step.StepPreview{ActorAccount: "acct"}
@@ -350,7 +379,7 @@ func TestRuntimeResultMappingIsThreeValued(t *testing.T) {
 	for _, item := range cases {
 		view := &recordingTarget{}
 		registry := runtimeexec.NewCapabilityRegistry()
-		_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit"})
+		registerCapabilityForRunCtx(t, registry, "submit")
 		executor := newExecutorForRouting(t, view, &fakeRuntimeRunner{status: item.status}, registry)
 		preview := &step.StepPreview{ActorAccount: "acct"}
 		executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
@@ -369,7 +398,7 @@ func TestRuntimeResultMappingIsThreeValued(t *testing.T) {
 func TestRunViaRuntimeCarriesSelectionTaskAndIdentityFacts(t *testing.T) {
 	view := &recordingTarget{taskID: "task-9"}
 	registry := runtimeexec.NewCapabilityRegistry()
-	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "approve"})
+	registerCapabilityForRunCtx(t, registry, "approve")
 	runner := &fakeRuntimeRunner{status: "success"}
 	executor := newExecutorForRouting(t, view, runner, registry)
 	runCtx := runtimeRunCtx()
@@ -417,7 +446,7 @@ func TestRunViaRuntimeCarriesSelectionTaskAndIdentityFacts(t *testing.T) {
 func TestRunViaRuntimeBlocksWithoutTaskFact(t *testing.T) {
 	view := &recordingTarget{taskID: ""}
 	registry := runtimeexec.NewCapabilityRegistry()
-	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "approve"})
+	registerCapabilityForRunCtx(t, registry, "approve")
 	runner := &fakeRuntimeRunner{status: "success"}
 	executor := newExecutorForRouting(t, view, runner, registry)
 	preview := &step.StepPreview{ActorAccount: "actor-acct"}
@@ -440,7 +469,7 @@ func TestRunViaRuntimeBlocksWithoutTaskFact(t *testing.T) {
 func TestRunViaRuntimeInitiateCarriesRealTemplate(t *testing.T) {
 	view := &recordingTarget{}
 	registry := runtimeexec.NewCapabilityRegistry()
-	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit"})
+	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{status: "success"}
 	executor := newExecutorForRouting(t, view, runner, registry)
 	preview := &step.StepPreview{ActorAccount: "plan-acct"}
@@ -463,7 +492,7 @@ func TestRunViaRuntimeInitiateCarriesRealTemplate(t *testing.T) {
 func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
 	view := &recordingTarget{}
 	registry := runtimeexec.NewCapabilityRegistry()
-	_ = registry.Register(runtimeexec.CapabilityEntry{FlowType: "employee_leave", Action: "submit"})
+	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{status: "success"}
 	executor := newExecutorForRouting(t, view, runner, registry)
 	runCtx := runtimeRunCtx()

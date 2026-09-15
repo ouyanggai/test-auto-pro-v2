@@ -40,5 +40,11 @@
 
 1. T015 真实闭环中某组合全链路成功：请求轨迹完整、目标事实核验 `confirmed_success`。
 2. 从该运行的 `step.log` / `network.log` 提取证据（实例 ID、trace ID）与日志路径。
-3. 调用 `CapabilityRegistry.UnlockFromVerifiedRun` 写入登记（持久化由装配层在启动时从本表载入）。
-4. 更新本表：每个动作一行，一个组合一行，不合并。
+3. 调用 `CapabilityRegistry.UnlockFromVerifiedRun` 写入登记；**持久化（评审 P1-2 修复）**：
+   装配层在服务启动时从工作区 `.runtime/runtime-capabilities.json` 加载登记
+   （`runtimeexec.OpenCapabilityRegistry`），每次登记成功即原子重写该文件，
+   Go 服务重启后已验证能力不再丢失。登记字段缺一不得登记（评审 P2-1 修复）：
+   表单摘要、runtime 版本、目标版本（runtime-source 快照 HEAD）、
+   证据（实例 ID + trace ID）与日志引用由 `Register` 强制校验。
+4. 更新本表：每个动作一行，一个组合一行，不合并。本表是人工审计台账；
+   机器读取的持久化事实以 `.runtime/runtime-capabilities.json` 为准。

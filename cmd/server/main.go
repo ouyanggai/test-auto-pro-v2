@@ -5,9 +5,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +27,18 @@ import (
 	"test-auto-pro-v2/internal/service"
 	"test-auto-pro-v2/internal/session"
 )
+
+// resolveTargetFrontendVersion 读取目标前端快照版本（runtime-source 仓库 HEAD）：
+// 每条能力登记都必须携带目标版本（docs/s/03-能力登记表.md 登记纪律 3），
+// 读不到 HEAD 说明快照现场已损坏，登记证据无法追溯，必须在启用 runtime 前失败。
+func resolveTargetFrontendVersion(workspaceRoot string) string {
+	command := exec.Command("git", "-C", filepath.Join(workspaceRoot, "form-runtime", "runtime-source"), "rev-parse", "--short=12", "HEAD")
+	output, err := command.Output()
+	if err != nil {
+		log.Fatalf("无法读取目标前端快照版本（form-runtime/runtime-source HEAD）：%v", err)
+	}
+	return strings.TrimSpace(string(output))
+}
 
 // main 在监听端口前完成向前迁移并组装目标读取、计划、流程图和路径服务。
 func main() {
@@ -172,17 +186,26 @@ func main() {
 	// 未配置时 runtime 路由停用，全部动作保持既有 Go 写路径。页面装载载荷的 baseURL 传空串：
 	// 请求保持相对路径由路由全量拦截（App.vue 执行模式约定）。RUNTIME_EXEC_VERIFICATION=1
 	// 进入真实目标验证模式：未登记组合放行一次以取得证据，核验确认成功后自动登记能力。
+	// 能力登记表从 .runtime/runtime-capabilities.json 加载并随登记落盘（评审 P1-2）：
+	// 重启后已验证能力不丢失；目标版本取 runtime-source 快照 HEAD（评审 P2-1）。
 	runtimeExecConfig := config.LoadRuntimeExecConfig()
 	if runtimeExecConfig.ExecutorURL != "" {
+		targetFrontendVersion := resolveTargetFrontendVersion(workspaceRoot)
 		runtimeClient, runtimeErr := runtimeexec.NewClient(runtimeExecConfig.ExecutorURL, engineTargetClient, sessionManager)
 		if runtimeErr != nil {
 			log.Fatal(runtimeErr)
 		}
-		stepExecutor.EnableRuntimeExecution(runtimeexec.NewRuntimeExecutor(runtimeClient), runtimeexec.NewCapabilityRegistry(), "")
+		capabilityRegistry, registryErr := runtimeexec.OpenCapabilityRegistry(
+			filepath.Join(workspaceRoot, ".runtime", "runtime-capabilities.json"))
+		if registryErr != nil {
+			log.Fatal(registryErr)
+		}
+		stepExecutor.EnableRuntimeExecution(runtimeexec.NewRuntimeExecutor(runtimeClient), capabilityRegistry, "", targetFrontendVersion)
 		if runtimeExecConfig.Verification {
 			stepExecutor.EnableRuntimeVerification()
 		}
-		log.Printf("runtime 执行路由已启用：执行服务 %s（验证模式=%v）", runtimeExecConfig.ExecutorURL, runtimeExecConfig.Verification)
+		log.Printf("runtime 执行路由已启用：执行服务 %s（验证模式=%v，目标版本=%s，已登记能力 %d 条）",
+			runtimeExecConfig.ExecutorURL, runtimeExecConfig.Verification, targetFrontendVersion, len(capabilityRegistry.Snapshot()))
 	}
 	controlService := control.NewService(runStateService, stepExecutor, runStore, time.Now)
 	runOrchestrationService := service.NewRunOrchestrationService(

@@ -406,6 +406,9 @@ type StepPreview struct {
 	// runtimeRequestTrace 是 runtime 返回的逐请求轨迹原文（P1-7 修复：不再丢弃），
 	// 随尝试行落账，供运行详情三阶段投影与事后追查使用。
 	runtimeRequestTrace json.RawMessage
+	// runtimeWriteTraceIDs 是 runtime 页面写请求经 Go 转发时的传输层 trace 集合：
+	// 与 network.log 双向可达，也是能力登记证据里 trace ID 的来源（评审 P2-1）。
+	runtimeWriteTraceIDs []string
 	// runtimeDetailJSON 是本动作三阶段投影的落账文本（run_step_attempts.runtime_detail），
 	// 在 runtime 事实回填时统一构造；非 runtime 步骤恒为空。
 	runtimeDetailJSON string

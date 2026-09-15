@@ -20,11 +20,13 @@ const (
 // Error 对外只暴露稳定分类，不携带目标平台原始报文。
 // Transport 是传输层失败阶段的独立事实（见 transport.go），仅在传输层失败或完整响应后填充，
 // 供执行器构造判定包输入；未经过传输的配置类错误保持空值。
+// TraceID 只在页面转发路径填充：请求已写出的错误必须可回溯到 network.log 具体行（评审 P2-1）。
 type Error struct {
 	Kind       ErrorKind
 	HTTPStatus int
 	Transport  TransportPhase
 	Cause      error
+	TraceID    string
 }
 
 // Error 返回不含目标原始响应的稳定错误分类。

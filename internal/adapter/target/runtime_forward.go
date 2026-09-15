@@ -34,10 +34,12 @@ type PageForwardRequest struct {
 }
 
 // PageForwardResponse 是目标平台的原始响应事实；任何 HTTP 状态都原样返回给页面。
+// TraceID 是本次转发在传输层的链路 ID（写请求据此与 network.log 互查）。
 type PageForwardResponse struct {
 	StatusCode int
 	Headers    map[string]string
 	Body       []byte
+	TraceID    string
 }
 
 // ForwardRuntimeRequest 以当前账号会话发出页面目标请求。
@@ -90,26 +92,26 @@ func (c *Client) ForwardRuntimeRequest(ctx context.Context, session Session, req
 		}
 		phase := probe.classify(err)
 		if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
-			return nil, &Error{Kind: ErrorTimeout, Cause: err, Transport: phase}
+			return nil, &Error{Kind: ErrorTimeout, Cause: err, Transport: phase, TraceID: traceID}
 		}
-		return nil, &Error{Kind: ErrorUnavailable, Cause: err, Transport: phase}
+		return nil, &Error{Kind: ErrorUnavailable, Cause: err, Transport: phase, TraceID: traceID}
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, &Error{Kind: ErrorUnavailable, Cause: err, Transport: TransportInterrupted}
+		return nil, &Error{Kind: ErrorUnavailable, Cause: err, Transport: TransportInterrupted, TraceID: traceID}
 	}
 	if len(data) > maxResponseBytes {
-		return nil, &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("response too large")}
+		return nil, &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("response too large"), TraceID: traceID}
 	}
 	if response.StatusCode == http.StatusUnauthorized {
-		return nil, &Error{Kind: ErrorSessionExpired, HTTPStatus: response.StatusCode, Transport: TransportResponded, Cause: httpResponseDetail(data)}
+		return nil, &Error{Kind: ErrorSessionExpired, HTTPStatus: response.StatusCode, Transport: TransportResponded, Cause: httpResponseDetail(data), TraceID: traceID}
 	}
 	// 目标习惯用 HTTP 200 包裹会话失效包络（RESP401）：转发路径同样要识别，
 	// 否则 SID 失效会被当成普通响应写进业务，后续读全会失败且无法自动恢复。
 	var envelopeBody envelope
 	if json.Unmarshal(data, &envelopeBody) == nil && responseSessionExpired(&envelopeBody) {
-		return nil, &Error{Kind: ErrorSessionExpired, Transport: TransportResponded, Cause: httpResponseDetail(data)}
+		return nil, &Error{Kind: ErrorSessionExpired, Transport: TransportResponded, Cause: httpResponseDetail(data), TraceID: traceID}
 	}
 	headers := make(map[string]string, len(response.Header))
 	for name, values := range response.Header {
@@ -119,6 +121,7 @@ func (c *Client) ForwardRuntimeRequest(ctx context.Context, session Session, req
 		StatusCode: response.StatusCode,
 		Headers:    headers,
 		Body:       data,
+		TraceID:    traceID,
 	}, nil
 }
 

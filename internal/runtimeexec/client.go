@@ -143,9 +143,12 @@ func (c *Client) Destroy(ctx context.Context, sessionID string) error {
 // ExecuteCallbacks 接收动作过程中的事件（页面异常、选择要求、阶段日志）。
 // OnChoiceRequired：目标等待选择时被调用（data 含 errorType 与目标返回节点）；
 // 返回 choice_continue 命令则由 Execute 自动发出（仅允许一次），返回 nil 表示放弃闭环。
+// OnWriteTrace：页面写请求（已登记写端点）经 Go 转发发出后被调用，携带传输层 trace，
+// 调用方据此落账尝试 trace 与登记证据；连接断开前已上报的 trace 不会丢。
 type ExecuteCallbacks struct {
 	OnEvent          func(msg *Message)
 	OnChoiceRequired func(eventData json.RawMessage) *Message
+	OnWriteTrace     func(traceID string)
 }
 
 // Execute 通过 WebSocket 发送业务命令并驱动转发循环，直到 runtime 返回结果消息。
@@ -169,7 +172,7 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 	}
 	defer conn.Close()
 
-	state := &executeState{account: account}
+	state := &executeState{account: account, onWriteTrace: callbacks.OnWriteTrace}
 	var writeMu sync.Mutex
 	send := func(message Message) error {
 		// 统一经 EncodeMessage 补协议版本并复核；直接序列化会漏掉 version 被对端拒绝。
@@ -253,6 +256,20 @@ type executeState struct {
 	account    string
 	written    bool
 	choiceSent bool
+	// onWriteTrace 是调用方注册的写请求 trace 回调；nil 时 trace 只落 state 不上报。
+	onWriteTrace func(traceID string)
+}
+
+// noteWriteTrace 记录一笔已写出（或写出后响应丢失）的页面写请求传输 trace，
+// 并通过回调上抛给调用方落账；空 trace 直接忽略。
+func (s *executeState) noteWriteTrace(traceID string) {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" || s == nil {
+		return
+	}
+	if s.onWriteTrace != nil {
+		s.onWriteTrace(traceID)
+	}
 }
 
 // handleForward 校验并转发一笔页面目标请求；SID 失效只换新会话重放一次。
@@ -275,6 +292,7 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	if err == nil {
 		if isWrite {
 			state.written = true
+			state.noteWriteTrace(response.TraceID)
 		}
 		return response, nil
 	}
@@ -285,6 +303,7 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 				switch targetErr.Transport {
 				case target.TransportResponded, target.TransportInterrupted:
 					state.written = true
+					state.noteWriteTrace(targetErr.TraceID)
 				}
 			}
 		}
@@ -299,12 +318,14 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	if isWrite {
 		if err == nil {
 			state.written = true
+			state.noteWriteTrace(response.TraceID)
 		} else if targetErr, ok := err.(*target.Error); ok {
 			// 换会话重放与首次发送遵守同一写出事实口径：响应已到达或中断都算可能已写出。
 			// 漏判会把真实写丢失降级成零写入失败，让上层误以为没有副作用。
 			switch targetErr.Transport {
 			case target.TransportResponded, target.TransportInterrupted:
 				state.written = true
+				state.noteWriteTrace(targetErr.TraceID)
 			}
 		}
 	}

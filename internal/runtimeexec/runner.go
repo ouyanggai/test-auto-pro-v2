@@ -55,10 +55,13 @@ type RuntimeRunRequest struct {
 }
 
 // ActionRunResult 是 runtime 动作的最终判定事实（状态为协议七值之一）。
+// WriteTraceIDs 不是 runtime 返回的协议字段：由 Go 客户端在转发循环里收集的
+// 页面写请求传输层 trace 回填（network.log 同源），供尝试行与能力登记证据使用。
 type ActionRunResult struct {
-	Status       string
-	Message      string
-	RequestTrace json.RawMessage
+	Status        string
+	Message       string
+	RequestTrace  json.RawMessage
+	WriteTraceIDs []string `json:"-"`
 }
 
 // RuntimeRunner 是执行器对 runtime 能力的接口面（*RuntimeExecutor 满足）。
@@ -146,7 +149,14 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 
 	// ② 业务命令 + 选择闭环：仅三种明确选择错误允许继续一次。
 	choiceSent := false
+	// writeTraces 收集页面写请求经 Go 转发的传输层 trace：证据与尝试行 trace 的唯一来源。
+	writeTraces := []string{}
 	callbacks := ExecuteCallbacks{
+		OnWriteTrace: func(traceID string) {
+			if strings.TrimSpace(traceID) != "" {
+				writeTraces = append(writeTraces, strings.TrimSpace(traceID))
+			}
+		},
 		OnChoiceRequired: func(eventData json.RawMessage) *Message {
 			if choiceSent {
 				return nil
@@ -193,12 +203,14 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		Payload:   actionPayload,
 	}, callbacks)
 	if err != nil {
-		return ActionRunResult{}, err
+		// 连接断开等错误同样带回已收集的写请求 trace：不确定判定的对账与登记证据不能丢。
+		return ActionRunResult{WriteTraceIDs: writeTraces}, err
 	}
 	var payload ActionRunResult
 	if err := json.Unmarshal(result.Payload, &payload); err != nil {
 		return ActionRunResult{}, fmt.Errorf("结果载荷解析失败：%w", err)
 	}
+	payload.WriteTraceIDs = writeTraces
 	return payload, nil
 }
 
