@@ -8,9 +8,11 @@ import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
 
 // TARGET_PATH_PREFIXES 与 Go 侧 internal/runtimeexec（forward.go）镜像维护：
 // 命中任一前缀的请求都视为目标平台请求，必须经过 Go 转发。
-export const TARGET_PATH_PREFIXES = ['/web/', '/flowInstanceApi']
+export const TARGET_PATH_PREFIXES = ['/web/', '/flowInstanceApi', '/api/']
 
-// TARGET_PREFIXES 匹配规则：路径前缀即目标请求，与来源主机无关——目标网关主机可能随部署变化。
+// TARGET_PREFIXES 匹配规则：路径包含目标段即目标请求，与来源主机无关——
+// 目标网关主机可能随部署变化，且构建产物可能把绝对网关地址（含 /api 前缀）烘焙进页面，
+// 因此匹配按“路径中出现 /web/ 或 /flowInstanceApi”判定，runtime 自身静态资源不含这些段。
 export function isTargetRequest (url: string): boolean {
   let pathname: string
   try {
@@ -18,7 +20,7 @@ export function isTargetRequest (url: string): boolean {
   } catch {
     return false
   }
-  return TARGET_PATH_PREFIXES.some(prefix => pathname.startsWith(prefix))
+  return TARGET_PATH_PREFIXES.some(prefix => pathname.includes(prefix))
 }
 
 export interface ForwardOutcome {
@@ -40,11 +42,16 @@ export interface TargetRouteOptions {
     bodyEncoding: 'utf8' | 'base64'
     action: string
   }) => Promise<ForwardOutcome>
+  // toolFlowName 非空时，主实例 submit 请求（保存草稿/提交）的 data.name 在发出前恢复为工具流程名称，
+  // 目标页面脚本拼装的名称不得覆盖工具值（设计 5.2）；其他业务字段保留目标脚本结果。
+  toolFlowName?: string
 }
 
 export interface TargetRouteHandle {
   trace: RequestTraceRecorder
   uninstall: () => Promise<void>
+  // setToolFlowName 在装载后登记工具流程名称；为空串时禁用名称恢复。
+  setToolFlowName: (name: string) => void
 }
 
 // installTargetRoute 在页面上安装全量路由拦截；返回轨迹与卸载句柄。
@@ -52,6 +59,8 @@ export interface TargetRouteHandle {
 export async function installTargetRoute (page: Page, options: TargetRouteOptions): Promise<TargetRouteHandle> {
   const trace = new RequestTraceRecorder()
   const ownOrigins = new Set(options.runtimeOrigins)
+  // toolFlowName 由装载链路登记（闭包可变，路由处理器每次发出前读取最新值）。
+  let toolFlowName = ''
 
   async function handle (route: Route): Promise<void> {
     const request = route.request()
@@ -82,8 +91,26 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
 
     // 目标请求：取出正文（可能是上传二进制）后转发 Go。
     const postBuffer = request.postDataBuffer()
+    let body = postBuffer ? postBuffer.toString('base64') : undefined
+    if (
+      body &&
+      toolFlowName &&
+      request.method() === 'POST' &&
+      /\/web\/flowInstanceApi\/submit$/.test(new URL(request.url()).pathname)
+    ) {
+      // 工具流程名称保护：只改写主实例 submit 的 data.name，其余字段原样保留。
+      try {
+        const parsed = JSON.parse(Buffer.from(body, 'base64').toString('utf8'))
+        if (parsed && parsed.data && typeof parsed.data === 'object' && typeof parsed.data.name === 'string') {
+          // 只“恢复”页面已写入的名称字段，不给未携带名称的请求（如权限校验）注入新字段。
+          parsed.data.name = toolFlowName
+          body = Buffer.from(JSON.stringify(parsed), 'utf8').toString('base64')
+        }
+      } catch {
+        // 正文不是 JSON（异常形态）时原样转发，不伪造改写事实。
+      }
+    }
     const bodyEncoding: 'utf8' | 'base64' = 'base64'
-    const body = postBuffer ? postBuffer.toString('base64') : undefined
     const entry: TraceEntry = trace.begin({
       method: request.method(),
       url: request.url(),
@@ -131,7 +158,8 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
     trace,
     uninstall: async () => {
       await page.unroute('**/*', handle).catch(() => undefined)
-    }
+    },
+    setToolFlowName: (name: string) => { toolFlowName = String(name ?? '') }
   }
 }
 

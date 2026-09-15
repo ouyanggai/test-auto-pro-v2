@@ -58,8 +58,11 @@ func TestForwardedRequestValidation(t *testing.T) {
 // 两侧必须同步修改，任何一侧单方面扩张都意味着绕过校验。
 func TestTargetPathPrefixesMirror(t *testing.T) {
 	joined := strings.Join(runtimeexec.TargetPathPrefixes, ",")
-	if joined != "/web/,/flowInstanceApi" {
+	if joined != "/web/,/flowInstanceApi,/api/" {
 		t.Fatalf("目标路径前缀清单变化必须与 TS 侧同步：%s", joined)
+	}
+	if !runtimeexec.IsTargetPath("/api/web/flowTemplateApi/findById") {
+		t.Fatalf("烘焙网关前缀 /api 下的目标端点必须命中")
 	}
 	if !runtimeexec.IsTargetPath("/web/flowInstanceApi/submit") {
 		t.Fatalf("/web/ 前缀必须命中")

@@ -54,6 +54,24 @@ interface SessionPayload {
   stepId?: string
 }
 
+// CHOICE_ERROR_TYPES 是目标“尚未提交、等待选择”的三种明确业务返回（设计 5.2 / T010B）。
+const CHOICE_ERROR_TYPES = ['custom_choose', 'parallel_choose', 'run_node_choose']
+
+// detectChoiceError 解析转发响应正文；命中三种选择错误时返回事件数据，其余返回 null。
+function detectChoiceError(payload: { body?: string; bodyEncoding?: string }): Record<string, unknown> | null {
+  if (!payload.body || payload.bodyEncoding !== 'base64') return null
+  try {
+    const parsed = JSON.parse(Buffer.from(payload.body, 'base64').toString('utf8'))
+    const errorType = parsed && parsed.data && parsed.data.errorType
+    if (parsed.isSuccess === false && typeof errorType === 'string' && (CHOICE_ERROR_TYPES as string[]).includes(errorType)) {
+      return { errorType, data: parsed.data }
+    }
+  } catch {
+    // 非 JSON 响应不参与选择闭环判定。
+  }
+  return null
+}
+
 async function main(): Promise<void> {
   const distRoot = resolveDistRoot()
   if (!fs.existsSync(path.join(distRoot, 'form-runtime', 'index.html'))) {
@@ -176,13 +194,29 @@ async function main(): Promise<void> {
         const channel = new ForwardChannel()
         const route = await installTargetRoute(record.page!, {
           runtimeOrigins: [new URL(entryURL).origin],
-          forward: async payload => channel.send({
-            sessionId: record.sessionId,
-            runId,
-            pathRunId,
-            stepId,
-            payload
-          })
+          forward: async payload => {
+            const outcome = await channel.send({
+              sessionId: record.sessionId,
+              runId,
+              pathRunId,
+              stepId,
+              payload
+            })
+            // 选择闭环检测（T010B）：目标返回 isSuccess=false 且 errorType 属于三种选择错误时，
+            // 表示流程尚未推进、只在等待选择；以 choice_required 事件通知 Go，用已配置数据继续。
+            const choiceErrorType = detectChoiceError({ body: outcome.body, bodyEncoding: outcome.bodyEncoding })
+            if (choiceErrorType) {
+              const runtimeSession = sessions.get(record.sessionId)
+              const socket = channel.socketForEvents
+              if (runtimeSession && socket) {
+                sendEnvelope(socket, runtimeSession, 'event', randomUUID(), {
+                  type: 'choice_required',
+                  data: { ...choiceErrorType, url: payload.url }
+                })
+              }
+            }
+            return outcome
+          }
         })
         // 页面异常必须通知 Go（设计 3.1/6）：在此监听并经通道推送事件。
         record.page!.on('pageerror', error => {
@@ -239,7 +273,12 @@ async function main(): Promise<void> {
         loaded: session.loaded,
         channelConnected: session.channel.connected,
         identity: session.identity,
-        trace: session.route.trace.stats()
+        trace: session.route.trace.stats(),
+        traceEntries: session.route.trace.list().map(entry => ({
+          seq: entry.seq, method: entry.method, url: entry.url, state: entry.state,
+          abortReason: entry.abortReason,
+          httpStatus: entry.response?.httpStatus
+        }))
       })
       return
     }
@@ -286,16 +325,18 @@ async function main(): Promise<void> {
           const command = { ...envelope, payload: { action: mode === 'approve' ? 'load_approve' : 'load_initiate', ...(envelope.payload as Record<string, unknown>) } } as Record<string, unknown>
           const result = await runBridgeAction(session, mode === 'approve' ? 'loadApprove' : 'loadInitiate', command)
           session.loaded = true
+          const loadPayload = (envelope.payload ?? {}) as Record<string, any>
+          // 工具流程名称保护（设计 5.2）：主实例 submit 发出前由路由层恢复工具值。
+          session.route.setToolFlowName(String(loadPayload.toolFlowName ?? ''))
           // 身份事实快照（T009）：操作人是会话账号本身；发起人来自装载载荷，二者分开保存。
-          const payload = (envelope.payload ?? {}) as Record<string, any>
           session.identity = {
             mode,
             operatorAccount: session.accountKey,
-            initiator: payload.initiator ?? null,
-            instanceId: String(payload.instanceId ?? ''),
-            jobTaskId: String(payload.jobTaskId ?? ''),
-            nodeProxyId: String(payload.nodeProxyId ?? ''),
-            toolFlowName: String(payload.toolFlowName ?? '')
+            initiator: loadPayload.initiator ?? null,
+            instanceId: String(loadPayload.instanceId ?? ''),
+            jobTaskId: String(loadPayload.jobTaskId ?? ''),
+            nodeProxyId: String(loadPayload.nodeProxyId ?? ''),
+            toolFlowName: String(loadPayload.toolFlowName ?? '')
           }
           send(200, settleResult(result))
         } catch (error) {

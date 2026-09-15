@@ -11,7 +11,7 @@ import (
 )
 
 // TargetPathPrefixes 是目标平台请求的路径前缀允许清单：命中任一前缀的页面请求必须转发 Go。
-var TargetPathPrefixes = []string{"/web/", "/flowInstanceApi"}
+var TargetPathPrefixes = []string{"/web/", "/flowInstanceApi", "/api/"}
 
 // ForwardedRequest 是 request_forward 消息的载荷形状（与 TS 侧 RequestForwardPayload 对齐）。
 // Body 为原样正文；二进制（上传）按 bodyEncoding=base64 保真，内网日志不脱敏。
@@ -66,10 +66,11 @@ func (r *ForwardedRequest) Validate() error {
 	return nil
 }
 
-// IsTargetPath 判定路径是否命中目标前缀允许清单。
+// IsTargetPath 判定路径是否包含目标段（构建产物可能带 /api 等烘焙前缀，
+// 与 TS 侧 isTargetRequest 的包含判定同口径）。
 func IsTargetPath(path string) bool {
 	for _, prefix := range TargetPathPrefixes {
-		if strings.HasPrefix(path, prefix) {
+		if strings.Contains(path, prefix) {
 			return true
 		}
 	}

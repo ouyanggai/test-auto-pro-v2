@@ -18,6 +18,7 @@ window.$router.beforeEach((to, from, next) => {
 
 // 完整 rsh-flow-components 入口先注册真实 FormMaking、自定义组件、Vuex 与原生路由；配置协议只把目标宿主页面挂到隔离路由下。
 // 表单页面由 runtime-source 自己渲染，本地 App 只作为数据协议适配层，不导入或复制宿主表单组件。
+// 执行模式路由（docs/s T010）：发起/审批/转发宿主分别挂载真实 FlowDialog、审批组件与转发 mixin 链路。
 window.$router.addRoutes([{
   path: '/test-auto-form',
   name: 'testAutoFormRuntime',
@@ -25,6 +26,12 @@ window.$router.addRoutes([{
   children: [{
     path: '',
     component: () => import('@runtime/views/GroupApproveManage/Submitted/components/OtherSteps2.vue')
+  }, {
+    path: 'exec',
+    component: () => import('./ExecutionHostInitiate.vue')
+  }, {
+    path: 'exec-approve',
+    component: () => import('./ExecutionHostApprove.vue')
   }]
 }])
 window.$router.replace('/test-auto-form').catch(() => {})
