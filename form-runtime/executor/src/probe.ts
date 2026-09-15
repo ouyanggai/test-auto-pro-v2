@@ -4,8 +4,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { launchHeadlessChromium } from './browser.js'
-import { serveDirectory } from './static-origin.js'
+import { launchHeadlessChromium } from './browser.ts'
+import { serveDirectory } from './static-origin.ts'
 
 // resolveDistRoot 返回 web 构建产物根目录：form-runtime 的 publicPath 固定为 /form-runtime/，
 // 因此静态源根目录是其上级 web/dist；允许用 FORM_RUNTIME_DIST_ROOT 覆盖。

@@ -1,7 +1,7 @@
 // 执行服务入口（T002 阶段）：提供健康检查并声明固定的运行参数。
 // 会话管理（T003）、协议命令（T004）与请求转发（T006）在后续任务接入同一进程。
 import http from 'node:http'
-import { HEADLESS_LAUNCH_ARGS } from './browser.js'
+import { HEADLESS_LAUNCH_ARGS } from './browser.ts'
 
 // EXECUTOR_PORT 默认 19011：与 form-runtime 开发端口 19001、主应用端口错开。
 const port = Number(process.env.EXECUTOR_PORT || 19011)
