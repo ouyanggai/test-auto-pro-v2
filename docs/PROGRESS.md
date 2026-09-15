@@ -1,5 +1,18 @@
 # 当前进度
 
+- 2026-09-16 执行引擎改造自查评审修复一轮完成（状态保持 **ready_for_manual**）。评审证实四处真实缺陷并已修复：
+  ① RunAction 把已编码装载信封塞进外层 Payload 二次包装，协议校验必然拒绝（探针复现「消息缺少 requestId」），
+  整条 runtime 动作链路此前从未走通装载；② SID 换会话重放后写响应丢失不记写出事实，断连会误判零写入失败；
+  ③ runViaRuntime 审批族动作不带任务号（audit 载荷 data.jobTaskId 是目标硬依赖）、分支选择丢键、
+  发起人用户 ID 误用主实例 ID、发起模式传空模板（空表单写目标风险）、空人员条目原样下发；
+  均已修复并新增定向用例（装载信封形状、重放写丢失判不确定、事实传递/无任务阻塞/发起模板/缺表单代理阻塞），
+  全部经变异验证。`go build ./...`、`go test ./test/unit/backend/... ./test/contracts/...`（25 包）、
+  `go test ./test/integration/runtimeexec/`（真实无头 Chromium 服务）全部通过。
+  评审同时确认三处接线缺口未在本轮处理（runtime 路由是可选能力，保持停用不影响既有 Go 写路径）：
+  `EnableRuntimeExecution` 无生产装配点（服务启动未接线，当前生产仍全量走 Go 写路径）；
+  `BuildDetailProjection`/`UnlockFromVerifiedRun` 无生产调用方（运行详情三阶段投影与能力自动登记未接入 API）；
+  real-target-checklist 缺少 run-runtime-exec.sh 承诺的「逐项命令」。三处均需人工验收裁决后另行批准实施。
+
 - 2026-09-15 执行引擎改造（docs/s/，分支「执行引擎改造」）T001–T015 全部实施完成，状态停在
   **ready_for_manual**，等待用户按 `test/integration/runtimeexec/real-target-checklist.md` 做真实目标人工验收。
   已落地：BrowserContext 会话管理（同账号互斥/崩溃广播）；Go/runtime 消息协议（exec-engine/v1，
