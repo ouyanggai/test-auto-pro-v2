@@ -1283,6 +1283,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			PathRunID: runCtx.PathRun.ID, AttemptNo: attemptNo, Verdict: string(verdictResult.Outcome),
 			SideEffect: string(verdictResult.SideEffect), Initial: string(verdictResult.Initial),
 			Reread: string(reread), Reason: userMessage, Basis: verdictResult.Basis,
+			// 重新核验沿用首次执行的 runtime 投影：写请求没有重发，投影仍是这次尝试的事实。
+			RuntimeDetail: preview.runtimeDetailJSON,
 			TraceID: approved.Preview.writeTraceID, CurlTraceID: approved.Preview.writeTraceID,
 			DurationMs: e.now().Sub(startedAt).Milliseconds(),
 		}
@@ -1564,6 +1566,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			LogLine:    lineNo,
 			DurationMs: e.now().Sub(startedAt).Milliseconds(),
 			IsReplay:   approved.IsReplay,
+			// runtime 零写入失败同样保留三阶段投影：请求轨迹能证明「流程动作未发出」。
+			RuntimeDetail: preview.runtimeDetailJSON,
 		}
 		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 			return outcome, lineNo, err
@@ -1722,6 +1726,9 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// BeforeFacts 复用现有 JSON 列同时携带写后核对结论：不新增表。
 		// 下一步按 pathRunId 读取最近尝试，重启后仍能恢复阻塞结论。
 		BeforeFacts: EncodeInstanceFacts(mergeVerifyIssue(before, after)),
+		// runtime 三阶段投影与请求轨迹随尝试行落库（评审 P1-7）：详情接口据此展示
+		// runtime 三阶段、请求轨迹与业务失败状态；非 runtime 步骤为空。
+		RuntimeDetail: preview.runtimeDetailJSON,
 	}
 	if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 		return outcome, lineNo, err

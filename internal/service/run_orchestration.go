@@ -188,6 +188,9 @@ type RunStepAttemptDTO struct {
 	// PhaseDurations 是七个阶段各自的耗时（毫秒），来自 step.log 的阶段时间轴。
 	PhaseDurations     map[string]int64 `json:"phaseDurations,omitempty"`
 	PhaseDurationsNote string           `json:"phaseDurationsNote,omitempty"`
+	// RuntimeDetail 是 runtime 动作的三阶段投影（评审 P1-7 生产接线）：
+	// 后端已按 BuildDetailProjection 落库，这里原样透传给前端渲染；非 runtime 步骤为空。
+	RuntimeDetail json.RawMessage `json:"runtimeDetail,omitempty"`
 	// IsReplay 保留为只读历史事实：用户侧重放已于 2026-09-06 移除，新运行的尝试恒为 false。
 	IsReplay bool `json:"isReplay"`
 }
@@ -1342,6 +1345,10 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 				LogPath:     attempt.LogPath,
 				LogLine:     attempt.LogLine,
 				IsReplay:    attempt.IsReplay,
+			}
+			// runtime 三阶段投影（评审 P1-7）：落库原文直接透传，接口层不做二次解释。
+			if strings.TrimSpace(attempt.RuntimeDetail) != "" {
+				attemptDTO.RuntimeDetail = json.RawMessage(attempt.RuntimeDetail)
 			}
 			// 阶段时间轴按 step_id:attempt 归组（与 parsePhaseTimings 的键一致）。
 			timings, ok := phaseTimings[stepPhaseKey(stepRecord.StepNo, attempt.AttemptNo)]

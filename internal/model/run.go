@@ -386,6 +386,9 @@ type RunStepAttempt struct {
 	// 它是对账判定的另一半输入：没有它就没有"写之前什么样"的基准，重启后对账只能按证据缺失降级。
 	// 与其他尝试事实一样只在插入时写一次，永不更新。
 	BeforeFacts string
+	// RuntimeDetail 是 runtime 动作的三阶段投影与请求轨迹摘要（JSON 文本，run_step_attempts.runtime_detail）。
+	// 只在插入时写一次；空值表示非 runtime 步骤或本迁移之前的尝试，详情页按缺失降级。
+	RuntimeDetail string
 }
 
 // RunControlAction 是人工控制事实的动作类别；本切片只承载放行与停止两类。

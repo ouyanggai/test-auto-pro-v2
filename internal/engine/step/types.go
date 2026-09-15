@@ -465,6 +465,22 @@ func (p *StepPreview) RuntimeFormDigestForTest() string {
 	return p.runtimeFormDigest
 }
 
+// RuntimeDetailForTest 供测试读取随尝试行落库的三阶段投影文本（评审 P1-7）。
+func (p *StepPreview) RuntimeDetailForTest() string {
+	if p == nil {
+		return ""
+	}
+	return p.runtimeDetailJSON
+}
+
+// WriteTraceIDForTest 供测试读取本步尝试的传输层 trace（runtime 页面写请求转发时回填）。
+func (p *StepPreview) WriteTraceIDForTest() string {
+	if p == nil {
+		return ""
+	}
+	return p.writeTraceID
+}
+
 // SetRuntimeFormDigestForTest / SetRuntimeHandledForTest 供契约测试模拟 runtime 接管后的登记输入。
 func (p *StepPreview) SetRuntimeFormDigestForTest(digest string) {
 	p.runtimeFormDigest = digest

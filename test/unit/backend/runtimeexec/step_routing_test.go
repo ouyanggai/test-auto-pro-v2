@@ -93,6 +93,7 @@ type fakeRuntimeRunner struct {
 	mu       sync.Mutex
 	status   string
 	err      error
+	trace    json.RawMessage
 	calls    int
 	requests []runtimeexec.RuntimeRunRequest
 }
@@ -103,9 +104,9 @@ func (f *fakeRuntimeRunner) RunAction(_ context.Context, request runtimeexec.Run
 	f.requests = append(f.requests, request)
 	f.mu.Unlock()
 	if f.err != nil {
-		return runtimeexec.ActionRunResult{Status: "failed", Message: "fake-error"}, f.err
+		return runtimeexec.ActionRunResult{Status: "failed", Message: "fake-error", WriteTraceIDs: []string{"trace-1"}}, f.err
 	}
-	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake"}, nil
+	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake", RequestTrace: f.trace}, nil
 }
 
 func (f *fakeRuntimeRunner) callCount() int {
@@ -501,6 +502,40 @@ func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
 	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
 	if runner.callCount() != 0 || preview.WriteSent() {
 		t.Fatalf("缺少表单代理 ID 必须阻塞，不得进入 runtime")
+	}
+}
+
+// TestRunViaRuntimeRecordsDetailProjection 评审 P1-7 回归：runtime 动作的三阶段投影
+// 必须随预览留存（尝试行据此落库），请求轨迹不再被丢弃；ErrUncertain 错误路径同样留存
+// 已收集的写请求 trace，供尝试行与能力登记证据使用。
+func TestRunViaRuntimeRecordsDetailProjection(t *testing.T) {
+	view := &recordingTarget{}
+	registry := runtimeexec.NewCapabilityRegistry()
+	registerCapabilityForRunCtx(t, registry, "submit")
+	runner := &fakeRuntimeRunner{status: "success", trace: json.RawMessage(`[{"seq":1,"method":"POST","url":"https://t/web/flowInstanceApi/submit","state":"fulfilled","httpStatus":200,"durationMs":120}]`)}
+	executor := newExecutorForRouting(t, view, runner, registry)
+	preview := &step.StepPreview{ActorAccount: "plan-acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	detail := preview.RuntimeDetailForTest()
+	if detail == "" {
+		t.Fatalf("runtime 成功后必须留存三阶段投影")
+	}
+	for _, want := range []string{"表单业务处理", "流程动作", "提交后业务处理", "flowInstanceApi/submit"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("三阶段投影缺少 %s：%s", want, detail)
+		}
+	}
+	// 错误路径：ErrUncertain 必须按已写出处理且保留首个写请求 trace。
+	uncertain := &step.StepPreview{ActorAccount: "plan-acct"}
+	runnerErr := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrUncertain)}
+	executorErr := newExecutorForRouting(t, &recordingTarget{}, runnerErr, registry)
+	registerCapabilityForRunCtx(t, registry, "submit")
+	executorErr.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, uncertain, step.ApprovedStep{Attempt: 1})
+	if !uncertain.WriteSent() {
+		t.Fatalf("ErrUncertain 必须按写已发出处理")
+	}
+	if uncertain.WriteTraceIDForTest() != "trace-1" {
+		t.Fatalf("错误路径必须保留已收集的写请求 trace，实际 %q", uncertain.WriteTraceIDForTest())
 	}
 }
 

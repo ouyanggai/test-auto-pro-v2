@@ -47,8 +47,19 @@ export interface RunStepAttempt {
   // requests/requestSummary 是 F-030/T04 的真实目标请求明细与汇总（来自 network.log 传输层计时）。
   requests?: RunRequestItem[]
   requestSummary?: { totalMs: number, writeMs: number, count: number, writeCount: number, allDurationsKnown: boolean }
+  // runtimeDetail 是 runtime 动作的三阶段投影（评审 P1-7）：后端 BuildDetailProjection 落库原文。
+  runtimeDetail?: RuntimeExecutionDetail
   // isReplay 是只读历史事实：用户侧重放已于 2026-09-06 移除，新运行的尝试恒为 false。
   isReplay?: boolean
+}
+
+// RuntimeExecutionDetail 是 runtime 动作的执行详情投影（与 internal/runtimeexec/detail.go 同形）。
+export interface RuntimeExecutionDetail {
+  stages: Array<{ name: string, state: 'pending' | 'running' | 'done' | 'failed' | 'uncertain', note?: string, requests: number }>
+  requests: Array<{ seq: number, method: string, path: string, state: string, httpStatus?: number, durationMs?: number }>
+  capabilityVersion: string
+  status: string
+  message?: string
 }
 
 // RunRequestItem 是一条真实目标接口请求的安全摘要。

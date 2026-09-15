@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
 import { actionLabel } from './presentation'
+import { runtimeStageViews, runtimeStatusLabel } from './runtimeDetail'
 import type { PathRunDetail, RunNodePlanAction, RunPreview, RunRequestItem, RunStep, RunStepAttempt } from './api'
 
 // RunNodePanel 是点击画布节点后才出现的检视面板：三个页签只给简要事实，
@@ -215,6 +216,16 @@ const phaseFlow = computed<Array<[string, string]>>(() => {
 function attemptRequests(step: RunStep): RunRequestItem[] {
   return step.attempts.flatMap(attempt => attempt.requests ?? [])
 }
+
+// runtimeDetail 是当前步骤最新一次尝试的 runtime 三阶段投影（评审 P1-7 生产接线）：
+// 只有 runtime 接管的步骤才有该数据，非 runtime 步骤为 null，区块整体不渲染。
+const runtimeDetail = computed(() => stepDialog.value?.attempts.find(attempt => attempt.runtimeDetail)?.runtimeDetail ?? null)
+
+// runtimeStageViewList 把三阶段投影映射为中文视图（表单业务处理 → 流程动作 → 提交后业务处理）。
+const runtimeStageViewList = computed(() => runtimeStageViews(runtimeDetail.value?.stages ?? []))
+
+// runtimeStatusText 是 runtime 七值判定的中文口径；业务失败不显示为流程失败。
+const runtimeStatusText = computed(() => runtimeDetail.value ? runtimeStatusLabel(runtimeDetail.value.status) : '')
 
 // stepOutcomeTitle 是步骤结果摘要的状态词（F-034 T06）：
 // 优先级：结构化阻塞 > 确定失败 > 结果待确认 > 运行中；只有写结果不确定才用“结果待确认”。
@@ -650,6 +661,35 @@ const dialogStyle = computed(() => ({
           </ul>
           <p v-else class="run-panel__muted">这一步没有发出真实接口请求（历史运行或读取类步骤未产生网络日志）</p>
           <p class="run-panel__timing-note">{{ stepTimingNote }}</p>
+        </section>
+
+        <!-- runtime 执行详情（评审 P1-7）：三阶段进度、判定状态与逐请求摘要；
+             只在 runtime 接管的步骤出现，完整正文仍走日志文件。 -->
+        <section v-if="runtimeDetail" class="run-panel__section">
+          <p class="run-panel__section-title">表单运行时执行详情</p>
+          <p class="run-panel__runtime-status">
+            判定：<n-tag size="small" :type="runtimeDetail.status === 'success' ? 'success' : (runtimeDetail.status === 'uncertain' || runtimeDetail.status === 'timeout' ? 'warning' : 'error')">
+              {{ runtimeStatusText }}
+            </n-tag>
+            <span v-if="runtimeDetail.message" class="run-panel__runtime-message">{{ runtimeDetail.message }}</span>
+          </p>
+          <ul class="run-panel__runtime-stages">
+            <li v-for="stage in runtimeStageViewList" :key="stage.name" class="run-panel__runtime-stage">
+              <span class="run-panel__runtime-stage-name">{{ stage.name }}</span>
+              <span class="run-panel__runtime-stage-state" :class="`run-panel__tone--${stage.tone}`">{{ stage.stateLabel }}</span>
+              <span class="run-panel__runtime-stage-count">{{ stage.requests }} 个请求</span>
+            </li>
+          </ul>
+          <ul v-if="runtimeDetail.requests.length > 0" class="run-panel__runtime-requests">
+            <li v-for="req in runtimeDetail.requests" :key="req.seq" class="run-panel__runtime-request">
+              <span class="run-panel__mono">{{ req.method }}</span>
+              <span class="run-panel__req-path">{{ req.path }}</span>
+              <span :class="req.state === 'fulfilled' ? 'run-panel__ok' : 'run-panel__bad'">
+                {{ req.state === 'fulfilled' ? `完成${req.httpStatus ? `（HTTP ${req.httpStatus}）` : ''}` : (req.state === 'aborted' ? '已中止' : '已拦截') }}
+              </span>
+              <span v-if="req.durationMs" class="run-panel__req-num run-panel__mono">{{ req.durationMs }} ms</span>
+            </li>
+          </ul>
         </section>
 
         <!-- 尝试结论：只保留每次尝试的一句话结论；依据、门禁逐项、阶段流水进排查区。 -->
@@ -1346,5 +1386,61 @@ const dialogStyle = computed(() => ({
   color: var(--info-color, #2080f0);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
+}
+</style>
+
+<style scoped>
+/* runtime 执行详情（评审 P1-7）：三阶段行、判定行与逐请求摘要行的轻量样式。 */
+.run-panel__runtime-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.run-panel__runtime-message {
+  color: var(--run-secondary-text-color, #606060);
+}
+
+.run-panel__runtime-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.run-panel__runtime-stage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.run-panel__runtime-stage-name {
+  min-width: 120px;
+}
+
+.run-panel__runtime-stage-state.run-panel__tone--ok { color: #18a058; }
+.run-panel__runtime-stage-state.run-panel__tone--bad { color: #d03050; }
+.run-panel__runtime-stage-state.run-panel__tone--warn { color: #f0a020; }
+.run-panel__runtime-stage-state.run-panel__tone--idle { color: #909090; }
+
+.run-panel__runtime-stage-count {
+  color: var(--run-secondary-text-color, #909090);
+}
+
+.run-panel__runtime-requests {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-panel__runtime-request {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: 12px;
 }
 </style>
