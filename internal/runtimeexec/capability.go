@@ -86,3 +86,22 @@ func (r *CapabilityRegistry) Snapshot() []CapabilityEntry {
 	}
 	return result
 }
+
+// UnlockFromVerifiedRun 仅在动作真实执行成功且完成目标结果核验后登记能力。
+// 纪律：target_rejected/business_failed/uncertain/timeout 一律不登记——
+// 提交成功不自动解锁同流程同意/不同意，同端点一个动作成功不自动解锁另一个动作。
+func (r *CapabilityRegistry) UnlockFromVerifiedRun(entry CapabilityEntry, verifiedVerdict string) error {
+	if strings.TrimSpace(verifiedVerdict) != "confirmed_success" {
+		return fmt.Errorf("核验判定 %s 不允许登记能力（仅 confirmed_success）", verifiedVerdict)
+	}
+	return r.Register(entry)
+}
+
+// BlockedReason 说明组合不可运行的常见原因（登记表中如实记录，不用代码伪造通过）。
+const (
+	BlockedUnsupportedComponent   = "包含未登记的目标自定义组件"
+	BlockedOnlineEditor           = "依赖在线 Office 编辑器且初始化流程未验证"
+	BlockedUnconfirmableResult    = "该表单的动作结果无法由请求与回读确认"
+	BlockedDragOrRealSize         = "依赖真实尺寸或拖拽交互，无头环境不支持"
+	BlockedUnregisteredExternalWS = "存在未登记的外部网络请求"
+)
