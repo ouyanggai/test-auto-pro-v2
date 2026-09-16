@@ -1,6 +1,8 @@
 package runtimeexec_test
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/runtimeexec"
@@ -24,5 +26,21 @@ func TestExecutorHostPortStillRejectsRemoteIP(t *testing.T) {
 	// TEST-NET-3（203.0.113.0/24）不会分配给本机网卡，作为远端地址样本。
 	if _, _, err := runtimeexec.ExecutorHostPortForTest("http://203.0.113.7:19011"); err == nil {
 		t.Fatalf("远端 IP 必须拒绝托管")
+	}
+}
+
+// TestSupervisorSourceDoesNotReferenceFormRuntimeExecutor 锁定 F-036 T001：
+// Go 托管入口不再引用 form-runtime/executor 路径。
+func TestSupervisorSourceDoesNotReferenceFormRuntimeExecutor(t *testing.T) {
+	raw, err := os.ReadFile("../../../../internal/runtimeexec/supervisor.go")
+	if err != nil {
+		t.Fatalf("读取 supervisor.go 失败：%v", err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "form-runtime/executor") || strings.Contains(text, `"form-runtime", "executor"`) {
+		t.Fatalf("supervisor.go 不得再引用 form-runtime/executor")
+	}
+	if !strings.Contains(text, "executor-service") {
+		t.Fatalf("supervisor.go 必须引用独立 executor-service")
 	}
 }

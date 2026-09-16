@@ -1,7 +1,7 @@
-// 执行服务托管（评审 P1-1 修复）：配置 RUNTIME_EXECUTOR_URL 后由 Go 服务把本机
-// form-runtime/executor（无头 Chromium 执行服务）作为子进程拉起并做就绪探测，
-// 随后端停止而停止——生产部署不再依赖"有人手动起 19011 服务"。
-// 边界：只允许托管本机地址（环回、0.0.0.0 或本机网卡 IP）；远端执行服务必须由部署方自行启动（本进程无法跨机托管）。
+// 执行服务托管：配置 RUNTIME_EXECUTOR_URL 后由 Go 把本机 executor-service 作为子进程拉起。
+// F-036 T001 已把工作目录改为根目录 executor-service/；T011 将删除本托管。
+// 边界：只允许托管本机地址（环回、0.0.0.0 或本机网卡 IP）；远端执行服务必须由部署方自行启动。
+
 package runtimeexec
 
 import (
@@ -43,22 +43,21 @@ func (s *ExecutorSupervisor) Started() bool {
 // StartExecutorSupervisor 托管启动本机执行服务：
 //  1. baseURL 必须指向环回地址且带端口，否则拒绝托管（远端服务不由本进程负责）；
 //  2. 端口已被监听时视为服务已在运行，直接复用（人工启动的现场不被破坏）；
-//  3. 缺少 form-runtime 构建产物或 Node.js 时给出明确中文错误并让启动失败——
-//     runtime 路由已显式启用，静默降级会让动作在执行中才失败。
+//  3. 缺少 executor-service 源码或 Node.js 时给出明确中文错误并让启动失败。
 func StartExecutorSupervisor(baseURL, workspaceRoot string) (*ExecutorSupervisor, error) {
 	host, port, err := executorHostPort(baseURL)
 	if err != nil {
 		return nil, err
 	}
-	executorDir := filepath.Join(workspaceRoot, "form-runtime", "executor")
-	distRoot := filepath.Join(workspaceRoot, "web", "dist", "form-runtime", "index.html")
-	if _, statErr := os.Stat(distRoot); statErr != nil {
-		return nil, fmt.Errorf("缺少 form-runtime 构建产物（%s），请先执行 pnpm --dir form-runtime build", distRoot)
+	executorDir := filepath.Join(workspaceRoot, "executor-service")
+	if _, statErr := os.Stat(filepath.Join(executorDir, "src", "server.ts")); statErr != nil {
+		return nil, fmt.Errorf("缺少独立执行服务源码（%s），请确认 executor-service/src/server.ts 存在", executorDir)
 	}
 	node, err := exec.LookPath("node")
 	if err != nil {
 		return nil, errors.New("未找到 node 可执行文件，无法托管执行服务（需要 Node.js ≥ 22）")
 	}
+
 	// 服务已在运行：直接复用，不重复拉起（与人工按清单启动的流程兼容）。
 	if executorReady(host, port) {
 		return &ExecutorSupervisor{}, nil
@@ -85,7 +84,8 @@ func StartExecutorSupervisor(baseURL, workspaceRoot string) (*ExecutorSupervisor
 		select {
 		case <-done:
 			cancel()
-			return nil, fmt.Errorf("执行服务启动后立即退出，请检查端口 %s 与 form-runtime 构建（stdout/stderr 有原始输出）", port)
+			return nil, fmt.Errorf("执行服务启动后立即退出，请检查端口 %s 与 executor-service 源码（stdout/stderr 有原始输出）", port)
+
 		default:
 		}
 		if executorReady(host, port) {
@@ -112,8 +112,8 @@ func StopExecutorSupervisor(supervisor *ExecutorSupervisor) {
 	supervisor.cancel()
 }
 
-// executorReady 探测执行服务是否可接受 HTTP 请求：任意响应（含 404）都算就绪，
-// 因为服务的静态与 /runtime 路由在同一个监听器上，能应答就说明进程与端口已就绪。
+// executorReady 探测执行服务是否可接受 HTTP 请求：优先打 /health。
+// 任意 HTTP 应答都算端口就绪；连接失败才视为未启动。
 func executorReady(host, port string) bool {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), time.Second)
 	if err != nil {
@@ -121,7 +121,7 @@ func executorReady(host, port string) bool {
 	}
 	_ = conn.Close()
 	client := &http.Client{Timeout: 2 * time.Second}
-	response, err := client.Get("http://" + net.JoinHostPort(host, port) + "/")
+	response, err := client.Get("http://" + net.JoinHostPort(host, port) + "/health")
 	if err != nil {
 		return false
 	}

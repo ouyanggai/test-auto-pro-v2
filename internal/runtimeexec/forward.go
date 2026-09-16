@@ -1,6 +1,5 @@
 // T006 Go 侧请求转发事实：runtime 拦截到的目标请求在此校验路径允许清单后交给 TargetClient。
-// 路径前缀与 form-runtime/executor/src/target-route.ts 的 TARGET_PATH_PREFIXES 镜像维护，
-// 两侧必须同步修改；这里同时是「未登记目标写请求不能绕过 Go」的服务端最后一道判定。
+// 路径前缀与执行服务 TARGET_PATH_PREFIXES 镜像维护；未登记目标写请求不能绕过 Go。
 package runtimeexec
 
 import (

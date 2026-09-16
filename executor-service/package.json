@@ -1,0 +1,23 @@
+{
+  "name": "test-auto-pro-v2-executor-service",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "F-036 独立执行服务：Playwright + Chromium 无头装载原生 /flow 页面，不做界面操作",
+  "scripts": {
+    "probe": "tsx src/probe.ts",
+    "start": "node --env-file-if-exists=.env --experimental-strip-types src/server.ts",
+    "health": "node --experimental-strip-types src/health-check.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "1.63.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  }
+}

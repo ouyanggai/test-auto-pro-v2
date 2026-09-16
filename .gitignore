@@ -10,6 +10,11 @@
 /web/node_modules/
 /web/dist/
 /web/.vite/
+/executor-service/node_modules/
+/executor-service/dist/
+/executor-service/page/dist/
+/executor-service/flow-source/
+
 *.tsbuildinfo
 
 # Go 构建与测试产物

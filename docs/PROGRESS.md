@@ -2,13 +2,12 @@
 
 # 当前进度
 
-- 2026-09-16 F-036「独立执行服务与原生页面装载」完成只读规划，状态 **awaiting_approval**。
-  计划把页面执行迁到根目录 `executor-service/`，独立复制 `rsh-flow-components`（`test`/`be355ae`），
-  按原生 `/flow/initiate` 与 `/flow/detail/:id` 的 `audit/edit/view` 装载；配置侧只保留数据显示、
-  编辑和取回。协议升级 `exec-engine/v2`，取消能力登记门禁、验证模式和 Go 进程托管。
+- 2026-09-16 F-036「独立执行服务与原生页面装载」已获用户批准，进入 **implementing**。
+  规划文档已提交 ee519c3。当前原子成果：根目录 `executor-service/` 骨架（无头 Chromium 探针、
+  `/health`、独立 workspace 包）。下一步 T002：`make refs-sync` 后复制 `be355ae` 快照。
   文档：`docs/features/F-036-independent-executor-native-page.md`、`docs/s2/`。
-  已知前置：本机参考仓库 `test` HEAD=`24f3a28`，当前克隆不含 `be355ae`；批准后实施须先 `make refs-sync`
-  核实该提交，缺失则阻塞。用户明确批准前不写实现代码。
+  已知前置：本机参考仓库 `test` HEAD=`24f3a28`，当前克隆不含 `be355ae`。
+
 
 - 2026-09-16 执行引擎改造浏览器真实代验收首轮完成（部分受阻，状态保持 **ready_for_manual**）。
   已验证：验证模式放行与能力门禁行为正确、runtime 全链路机械贯通（会话→装载→页面请求转发→

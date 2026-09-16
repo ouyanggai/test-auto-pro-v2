@@ -29,11 +29,11 @@ func executorEnvMissing() string {
 	if err != nil {
 		return err.Error()
 	}
-	if _, err := os.Stat(filepath.Join(root, "form-runtime", "executor", "node_modules")); err != nil {
-		return "缺少 form-runtime/executor/node_modules，先执行 pnpm install"
+	if _, err := os.Stat(filepath.Join(root, "executor-service", "node_modules")); err != nil {
+		return "缺少 executor-service/node_modules，先执行 pnpm --dir executor-service install"
 	}
-	if _, err := os.Stat(filepath.Join(root, "web", "dist", "form-runtime", "index.html")); err != nil {
-		return "缺少 form-runtime 构建产物，先执行 pnpm --dir form-runtime build"
+	if _, err := os.Stat(filepath.Join(root, "executor-service", "src", "server.ts")); err != nil {
+		return "缺少 executor-service/src/server.ts"
 	}
 	return ""
 }

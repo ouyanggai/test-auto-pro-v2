@@ -1,9 +1,10 @@
 # F-036 独立执行服务与原生页面装载
 
-- 状态：awaiting_approval
+- 状态：implementing
 - 产品依据：`docs/PRODUCT.md` 的「F-036 独立执行服务与原生页面装载」
 - 架构依据：`docs/ARCHITECTURE.md` 的「F-036 独立执行服务」
-- 计划确认时间：待确认
+- 计划确认时间：2026-09-16（用户批准开始实现）
+
 - 详细设计：`docs/s2/01-执行服务设计.md`
 - 任务清单：`docs/s2/02-执行任务清单.md`
 - 入口对照：`docs/s2/03-原生入口与装载对照.md`
@@ -80,6 +81,10 @@
 正常状态按 `preparing -> awaiting_approval -> implementing -> ready_for_manual -> accepted` 推进。
 
 - 2026-09-16：用户要求在 `docs/s2` 按 `docs/s` 结构规划，将页面执行迁到 `executor-service/`，使用独立 `rsh-flow-components` 副本和原生路由装载。本文件从 preparing 进入 `awaiting_approval`。未获明确批准不得写实现代码。
+- 2026-09-16：用户批准开始实现，状态进入 `implementing`。规划文档已提交 `ee519c3`。
+- 2026-09-16 T001：根目录 `executor-service/` 骨架可启动无头 Chromium 并响应 `/health`；workspace 改为独立包；Go 托管路径改为 `executor-service`。
+
+
 
 上一轮 `docs/s` 执行引擎改造仍停在 `ready_for_manual`；本切片批准后替换其执行宿主方案，不兼容 v1 协议。
 

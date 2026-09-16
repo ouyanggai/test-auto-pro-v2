@@ -1,12 +1,8 @@
-// Package runtimeexec 是 Go 侧与 form-runtime 执行服务（无头 Chromium）通信的唯一实现。
-// 本文件是消息协议的 Go 侧权威定义，与 form-runtime/executor/src/protocol.ts 逐字镜像；
-// 两侧的字段、动作全集、结果七值与校验规则必须同步修改，并以
-// test/contracts/form-runtime/protocol_test.go 与 test/unit/form-runtime/protocol.test.ts 锁定。
-//
-// 纪律（docs/s/01-执行引擎设计.md 第 5 节）：
-//   - 每条消息必须携带 requestId、runId、pathRunId、stepId；除 create 外还必须携带 sessionId；
-//   - 旧协议版本直接拒绝，不静默兼容；
-//   - runtime 不返回 Vue 实例，只返回 JSON 数据。
+// Package runtimeexec 是 Go 侧与独立执行服务（无头 Chromium）通信的唯一实现。
+// F-036 起协议权威定义迁到 executor-service/src/protocol.ts；T004 将同步升级为 exec-engine/v2。
+// 当前仍与历史夹具锁定字段、动作全集、结果七值。
+// 纪律：每条消息必须携带 requestId、runId、pathRunId、stepId；除 create 外还必须携带 sessionId；
+// 旧协议版本直接拒绝，不静默兼容；runtime 不返回 Vue 实例，只返回 JSON 数据。
 package runtimeexec
 
 import (

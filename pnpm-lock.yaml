@@ -10,6 +10,28 @@ importers:
 
   .: {}
 
+  executor-service:
+    dependencies:
+      playwright:
+        specifier: 1.63.0
+        version: 1.63.0
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
+    devDependencies:
+      '@types/node':
+        specifier: 22.20.2
+        version: 22.20.2
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+      tsx:
+        specifier: 4.23.13
+        version: 4.23.13
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
   form-runtime:
     dependencies:
       '@wangeditor/editor':

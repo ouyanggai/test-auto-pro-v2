@@ -2,7 +2,8 @@
 
 ## F-036 独立执行服务
 
-F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，与配置侧彻底隔离。状态 `awaiting_approval`，未获批准不得进入 `implementing`。
+F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，与配置侧彻底隔离。状态 `implementing`。
+
 
 - **源码隔离**：执行服务拥有独立页面构建包和独立 `rsh-flow-components` 快照，初始提交为已核实的 `test` 分支 `be355ae`；必须 `make refs-sync` 后复制，禁止复用 `form-runtime/runtime-source`。FormMaking 库产物独立构建。参考源码、依赖和产物不提交。
 - **原生装载**：无头 Chromium 导航参考项目路由。发起 `#/flow/initiate`；实例 `#/flow/detail/:id`，`mode=audit|edit|view`。身份注入对齐 `runtimeAuthSync`。`taskContext` 按 `FlowDetail.vue` 字段传入。
