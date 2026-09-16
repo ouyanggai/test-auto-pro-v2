@@ -13,7 +13,9 @@ export const HEADLESS_LAUNCH_ARGS = [
   '--mute-audio'
 ] as const
 
-// launchHeadlessChromium 启动无头 Chromium；本项目不使用可见窗口。
+// launchHeadlessChromium 启动 Chromium：默认无头；调试需要人工观察页面时
+// 置 EXECUTOR_HEADFUL=1 以有头模式启动，显示真实浏览器窗口。
 export async function launchHeadlessChromium(): Promise<Browser> {
-  return chromium.launch({ headless: true, args: [...HEADLESS_LAUNCH_ARGS] })
+  const headful = process.env.EXECUTOR_HEADFUL === '1'
+  return chromium.launch({ headless: !headful, args: [...HEADLESS_LAUNCH_ARGS] })
 }
