@@ -326,27 +326,33 @@ async function main (): Promise<void> {
             })
           }
           const allowed = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
-          const values = payload.values && typeof payload.values === 'object' ? payload.values as Record<string, unknown> : {}
           if (allowed.length > 0) {
             const api = await session.page.evaluate(() => {
-              const native = (window as unknown as { __executorNative: { initFlow?: { $refs?: Record<string, unknown> }, flowDetail?: { $refs?: Record<string, unknown> } } }).__executorNative
-              const host = native.initFlow || native.flowDetail
-              const form = host && (host as { $refs?: { generateForm?: { setData?: unknown, getValues?: unknown } } }).$refs?.generateForm
+              const native = (window as unknown as { __executorNative: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
+              const container = native.initFlow || native.flowDetail
+              if (!container) return false
+              const typed = container as { $children?: Array<{ $options?: { name?: string }, $refs?: { generateForm?: { setData?: unknown, getValues?: unknown } } }> }
+              const dialog = typed.$children?.find(c => c.$options?.name === 'FlowDialog' || c.$options?.name === 'FlowDetail')
+              const form = dialog?.$refs?.generateForm
               return Boolean(form && typeof form.setData === 'function' && typeof form.getValues === 'function')
             })
             if (api) {
               await applyNodePatch({
                 setData: next => session.page.evaluate(values => {
-                  const native = (window as unknown as { __executorNative: { initFlow?: { $refs?: { generateForm?: { setData: (v: unknown) => void } } }, flowDetail?: { $refs?: { generateForm?: { setData: (v: unknown) => void } } } } }).__executorNative
-                  const form = native.initFlow?.$refs?.generateForm || native.flowDetail?.$refs?.generateForm
-                  form?.setData(values)
+                  const native = (window as unknown as { __executorNative: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
+                  const container = native.initFlow || native.flowDetail
+                  const typed = container as { $children?: Array<{ $options?: { name?: string }, $refs?: { generateForm?: { setData: (v: unknown) => void } } }> }
+                  const dialog = typed.$children?.find(c => c.$options?.name === 'FlowDialog' || c.$options?.name === 'FlowDetail')
+                  dialog?.$refs?.generateForm?.setData(values)
                 }, next),
                 getValues: () => session.page.evaluate(() => {
-                  const native = (window as unknown as { __executorNative: { initFlow?: { $refs?: { generateForm?: { getValues: () => Record<string, unknown> } } }, flowDetail?: { $refs?: { generateForm?: { getValues: () => Record<string, unknown> } } } } }).__executorNative
-                  const form = native.initFlow?.$refs?.generateForm || native.flowDetail?.$refs?.generateForm
-                  return form?.getValues() ?? {}
+                  const native = (window as unknown as { __executorNative: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
+                  const container = native.initFlow || native.flowDetail
+                  const typed = container as { $children?: Array<{ $options?: { name?: string }, $refs?: { generateForm?: { getValues: () => Record<string, unknown> } } }> }
+                  const dialog = typed.$children?.find(c => c.$options?.name === 'FlowDialog' || c.$options?.name === 'FlowDetail')
+                  return dialog?.$refs?.generateForm?.getValues() ?? {}
                 })
-              }, values, { allowedKeys: allowed, optionsReady: true })
+              }, values, { allowedKeys: allowed, optionsReady: false })
             }
           }
           if (!session.nativeHost) {
