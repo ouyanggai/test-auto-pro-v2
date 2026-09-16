@@ -33,4 +33,8 @@ echo "== F-036 Go 契约与路由 =="
 go test ./test/contracts/executor-service ./test/contracts/runtimeexec ./test/contracts/form-runtime \
   ./test/unit/backend/runtimeexec ./test/unit/backend -count=1
 
+echo "== F-036 真实闭环验证台（L1/L2）=="
+echo "说明：未配置 TEST_AUTO_PRO_TARGET_ACCOUNT / RUNTIME_EXECUTOR_URL 时用例会打印跳过原因后跳过，不允许静默通过。"
+go test ./test/integration/runtimeexec -run 'TestF036' -count=1 -v
+
 echo "== F-036 全部通过 =="

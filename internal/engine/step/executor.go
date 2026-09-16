@@ -79,10 +79,16 @@ func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, loadBaseURL stri
 	e.runtimeBaseURL = loadBaseURL
 }
 
-// shouldRunViaRuntime 判定本步是否走 runtime：仅七个表单动作 + 已配置 runtime 能力。
+// shouldRunViaRuntime 判定本步是否走 runtime：仅 FormMaking 渲染的七个表单动作 + 已配置 runtime 能力。
 // Go 直连动作（加签/移交/回退/取回/撤回/催办/关注/取消关注）与系统节点永不经 runtime。
+// S8 采用方案 B（保守口径）：执行服务只实现了 FormMaking 页面装载与动作族，NoFormFlow/Vue 自定义页
+// 不再因「路由放开、能力缺失」并存而进入 runtime 后被 FormProxyID 门禁拦截——这里直接按渲染类型
+// 收窄，非 FormMaking 的七个动作由既有 Go 直连路径处理，F-036 范围口径同步收敛。
 func (e *Executor) shouldRunViaRuntime(runCtx RunContext, step model.CompiledActionStep) bool {
 	if e.runtimeRunner == nil {
+		return false
+	}
+	if runCtx.RenderType != string(target.FormRenderTypeFormMaking) {
 		return false
 	}
 	switch step.Action {
