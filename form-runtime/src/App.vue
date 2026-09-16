@@ -16,12 +16,11 @@
 </template>
 
 <script>
-import { FORM_RUNTIME_VERSION, EXECUTION_ACTIONS, isRuntimeCommand } from './runtime/protocol'
+import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
 import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
-import { createExecutionBridge } from './runtime/executionBridge'
 import HostVuePage from './HostVuePage.vue'
 
 export default {
@@ -63,16 +62,12 @@ export default {
 		stateTimer: null,
       // 选项型字段补丁协调：补丁触及的字段集合与最近一次协调产生的阻断问题。
       optionPatchTriggers: [],
-      optionCoordinationIssues: [],
-      // 执行模式根桥接（window.__runtimeBridge__ 的持有者），销毁会话时一并废弃。
-      executionBridge: null
+      optionCoordinationIssues: []
     }
   },
   mounted () {
     this.parentOrigin = this.getParentOrigin()
     window.addEventListener('message', this.onMessage)
-    // 执行模式根桥接：组件树装载完成后主动注册，执行服务只通过 window.__runtimeBridge__ 调用业务方法。
-    this.installExecutionBridge()
     this.post({ version: FORM_RUNTIME_VERSION, sessionId: '', requestId: 'boot', type: 'ready' })
   },
   beforeDestroy () {
@@ -87,151 +82,8 @@ export default {
         return ''
       }
     },
-    // ===== 执行模式（执行引擎改造 docs/s）=====
-    // installExecutionBridge 创建并注册根桥接；iframe 模式不受影响，两种模式可共存。
-    installExecutionBridge () {
-      this.executionBridge = createExecutionBridge(this)
-      window.__runtimeBridge__ = this.executionBridge
-    },
-    // invalidateExecutionBridge 在会话销毁后废弃桥接：删除全局引用并让既有引用不可执行。
-    invalidateExecutionBridge () {
-      if (this.executionBridge && typeof this.executionBridge.invalidate === 'function') {
-        this.executionBridge.invalidate()
-      }
-      this.executionBridge = null
-      if (window.__runtimeBridge__) delete window.__runtimeBridge__
-    },
-    executionSessionId () {
-      return this.sessionId
-    },
-    // loadForExecution 是 load_initiate/load_approve/load_forward 的执行模式入口：
-    // 复用既有真实装载链路，并把执行模式记入载荷；发起与审批的差异（身份注入、审批页面组件）
-    // 由同一入口扩展，转发（评审 P1-4）复用审批宿主并注入转发弹窗等价状态。
-    async loadForExecution (mode, command) {
-      const payload = { ...(command.payload || {}) }
-      payload.executionMode = mode
-      // 审批装载必须携带原发起人事实：当前审批人身份只作为登录上下文注入，
-      // 发起人身份单独保存（window.__runtimeExecutionIdentity__.initiator），
-      // 禁止当前人覆盖发起人字段（T009 身份注入纪律）。
-      // 转发装载不需要发起人身份（mixin 只读实例关联与接收人），不做该校验。
-      if (mode === 'approve') {
-        const initiator = payload.initiator && typeof payload.initiator === 'object' ? payload.initiator : null
-        if (!initiator || !String(initiator.userId || '').trim()) {
-          const error = new Error('审批装载缺少原发起人事实，不能以当前操作人身份顶替发起人')
-          error.code = 'BRIDGE_INITIATOR_MISSING'
-          throw error
-        }
-      }
-      const result = await this.execute({
-        version: FORM_RUNTIME_VERSION,
-        type: 'load',
-        sessionId: command.sessionId,
-        requestId: command.requestId,
-        payload
-      })
-      // 登录上下文（memoryAuth/Vuex/storage facade）始终是当前操作人；
-      // 发起人、实例、任务与节点事实单独挂在执行身份上，动作执行时按用途取用，互不覆盖。
-      window.__runtimeExecutionIdentity__ = {
-        mode,
-        operator: {
-          userId: String(payload.userId || ''),
-          account: String(payload.accountName || ''),
-          name: String(payload.currentOperator?.name || payload.accountName || ''),
-          companyId: String(payload.companyId || ''),
-          departmentId: String(payload.departmentId || '')
-        },
-        initiator: payload.initiator && typeof payload.initiator === 'object'
-          ? { userId: String(payload.initiator.userId || ''), name: String(payload.initiator.name || '') }
-          : null,
-        instanceId: String(payload.instanceId || ''),
-        jobTaskId: String(payload.jobTaskId || ''),
-        nodeProxyId: String(payload.nodeProxyId || ''),
-        toolFlowName: String(payload.toolFlowName || '')
-      }
-      return { ...(result || {}), executionMode: mode }
-    },
-    // captureForExecution 对应 capture/validate：validate=true 走目标表单校验口径。
-    async captureForExecution (validate, command) {
-      this.assertExecutionSession(command)
-      const commandContext = this.beginOperation()
-      return this.capture(validate, commandContext)
-    },
-    // assertExecutionSession 校验执行命令归属当前会话，防止旧会话命令污染新装载。
-    assertExecutionSession (command) {
-      if (!this.sessionId || (command.sessionId && command.sessionId !== this.sessionId)) {
-        const error = new Error(`执行命令会话 ${command.sessionId || '空'} 与当前会话 ${this.sessionId || '空'} 不一致`)
-        error.code = 'BRIDGE_SESSION_MISMATCH'
-        throw error
-      }
-    },
-    // executeBusinessAction 是七个 runtime 业务动作与选择闭环的唯一执行入口：
-    // 调用执行宿主暴露的真实目标组件方法（sumbitFlow/formMakingFormBusiness/temporaryStorage/
-    // reSubmitFormMakingFormBusiness/confirmTranspond 及分支并行选人的继续方法），
-    // 不做按钮模拟；参数差异（校验、前后置事件）由目标方法自身保留。
-    async executeBusinessAction (action, command) {
-      this.assertExecutionSession(command)
-      if (!EXECUTION_ACTIONS.includes(action)) {
-        const error = new Error(`未知 runtime 动作：${action}`)
-        error.code = 'EXECUTION_ACTION_UNKNOWN'
-        throw error
-      }
-      const host = this.$refs.formHost
-      if (!host || typeof host.applyExecutionLoad !== 'function') {
-        const error = new Error('执行宿主未挂载，不能执行业务动作')
-        error.code = 'EXECUTION_ACTION_UNSUPPORTED'
-        throw error
-      }
-      const payload = command.payload || {}
-      switch (action) {
-        case 'save_draft':
-          return host.actionSaveDraft()
-        case 'submit':
-          return host.actionSubmit()
-        case 'approve':
-          host.setAuditMessage(payload.auditDesc)
-          host.setTracking(payload.tracking !== false)
-          return host.actionApprove()
-        case 'reject':
-          host.setAuditMessage(payload.auditDesc)
-          return host.actionReject()
-        case 'storage_form_data':
-          host.setAuditMessage(payload.auditDesc)
-          return host.actionStorageFormData()
-        case 'resubmit':
-          return host.actionResubmit()
-        case 'forward':
-          return host.actionForward()
-        case 'choice_continue':
-          return this.dispatchChoiceContinue(host, payload.choice || {})
-        default: {
-          const error = new Error(`动作 ${action} 没有登记的执行入口`)
-          error.code = 'EXECUTION_ACTION_UNSUPPORTED'
-          throw error
-        }
-      }
-    },
-    // dispatchChoiceContinue 继续选择闭环（T010B）：按目标返回的错误类型选择等价的
-    // 弹窗确认继续方法；分支/并行/自选分别对应目标页面确认按钮里的三个继续入口。
-    dispatchChoiceContinue (host, choice) {
-      const kind = String(choice.kind || '')
-      if (kind === 'branch') return host.actionContinueBranchChoice(choice)
-      if (kind === 'parallel') return host.actionContinueParallelChoice(choice)
-      return host.actionContinueAuditorChoice(choice)
-    },
-    // destroyExecutionSession 响应桥接 destroy：销毁既有会话；桥接失效由 destroySession 统一触发。
-    async destroyExecutionSession (command) {
-      if (command && command.sessionId && this.sessionId && command.sessionId !== this.sessionId) {
-        this.assertExecutionSession(command)
-      }
-      this.destroySession()
-      return { destroyed: true }
-    },
     form () {
       const host = this.$refs.formHost
-      if (!host) return null
-      // 执行宿主（发起/审批）通过 getGenerateForm 暴露真实 FormMaking 实例；
-      // iframe 模式的路由子组件直接暴露 $refs.generateForm。
-      if (typeof host.getGenerateForm === 'function') return host.getGenerateForm()
       return host && host.$refs && host.$refs.generateForm ? host.$refs.generateForm : null
     },
     post (message) {
@@ -296,8 +148,7 @@ export default {
         // 上游 axios 可能已捕获同步源码的旧默认地址；会话环境与请求策略双重收敛到后端核实的当前网关。
         setRuntimeEnvironment({ baseUrl: baseURL, viewFileUrl: targetOrigin })
         // 目标 axios 实例在模块加载时捕获 baseURL（构建期烘焙了外部网关地址），
-        // setConfig 的运行时覆盖必须同步写回实例 defaults，页面请求才会落到当前核实网关；
-        // 执行模式传空 baseURL：请求保持相对路径，由 Playwright 路由全量拦截转发 Go。
+        // setConfig 的运行时覆盖必须同步写回实例 defaults，页面请求才会落到当前核实网关。
         if (this.$axios && this.$axios.defaults) {
           this.$axios.defaults.baseURL = baseURL
         }
@@ -305,25 +156,19 @@ export default {
 		  onChange: pending => { this.pendingTargetRequests = pending }
 		})
 		const loadContext = this.activeSessionContext()
-        // 只读请求策略是 iframe 数据配置模式的防线；执行模式不走它：
-        // 页面全部目标请求由 Playwright 路由拦截转发 Go，端点允许清单在 Go 侧统一校验（设计 5.3），
-        // 本地再拦一道会把目标模板读取等已登记读请求错误拦死在页面内。
-        if (!payload.executionMode) {
-          this.removeRequestPolicy = installReadOnlyRequestPolicy({
-            sid: String(payload.sid || ''),
-            baseURL,
-            readRequestManifest: payload.readRequestManifest,
-            shadowContext: { renderType: this.renderType, componentName: String(this.vuePage.componentName || '') },
-            onDecision: observation => {
-              // 影子数据只保留无敏感判定摘要并设置上限，P0 不上传、不持久化也不改变请求结果。
-              this.requestPolicyObservations = [...this.requestPolicyObservations, observation].slice(-200)
-            },
-            onIssue: issue => {
-              this.requestPolicyIssues = this.mergeIssues(this.requestPolicyIssues, [issue]).slice(-50)
-            },
-            requestTracker: this.requestTracker
-          })
-        }
+        this.removeRequestPolicy = installReadOnlyRequestPolicy({
+          sid: String(payload.sid || ''),
+          baseURL,
+          readRequestManifest: payload.readRequestManifest,
+          shadowContext: { renderType: this.renderType, componentName: String(this.vuePage.componentName || '') },
+          onDecision: observation => {
+            this.requestPolicyObservations = [...this.requestPolicyObservations, observation].slice(-200)
+          },
+          onIssue: issue => {
+            this.requestPolicyIssues = this.mergeIssues(this.requestPolicyIssues, [issue]).slice(-50)
+          },
+          requestTracker: this.requestTracker
+        })
         // 目标组件继续走 rsh-flow-components 原生 Vuex/axios 链；认证只写当前 iframe 内存适配，销毁会话即清除。
         const runtimeIdentity = {
           token: String(payload.sid || ''), sid: String(payload.sid || ''), userName: String(payload.accountName || ''),
@@ -376,68 +221,27 @@ export default {
         this.optionPatchTriggers = [...this.changedFields]
         this.values = clonePlain(payload.values || {})
         this.savedValues = clonePlain(this.values)
-        // 执行模式：按装载模式切换到对应执行宿主路由（真实 FlowDialog / 审批组件链）。
-        // 转发与审批同属待办页链路（评审 P1-4）：复用审批宿主，由 applyForwardLoad 注入转发状态。
-        if (payload.executionMode) {
-          const routeByMode = { initiate: '/test-auto-form/exec', approve: '/test-auto-form/exec-approve', forward: '/test-auto-form/exec-approve' }
-          const targetRoute = routeByMode[payload.executionMode]
-          if (targetRoute) {
-            await window.$router.replace(targetRoute).catch(() => {})
-            await this.$nextTick()
-          }
-        }
         this.loadingMessage = '正在加载表单组件和远程选项'
         await this.$nextTick()
 		this.assertActiveSession(loadContext)
         if (this.renderType === 'formmaking') {
           const host = this.$refs.formHost
           if (!host) throw new Error('目标表单宿主尚未完成装载')
-          if (payload.executionMode && typeof host.applyExecutionLoad === 'function') {
-            // 执行宿主装载：FlowDialog 存在 flowId 时模板与字段权限由目标接口（经 Go 转发）自行装载；
-            // 离线注入场景与审批宿主由宿主 applyExecutionLoad 落模板事实。
-            // 转发装载（评审 P1-4）：applyForwardLoad 注入转发弹窗等价的行事实、接收人与勾选，
-            // 没有 FormMaking 表单可 setData，装载后直接就绪。
-            // 宿主实例同时登记到执行全局，供服务端完成检测读取业务完成信号。
-            window.__runtimeExecutionHost__ = host
-            if (payload.executionMode === 'forward' && typeof host.applyForwardLoad === 'function') {
-              await host.applyForwardLoad({ payload, template: this.template, values: this.values })
-              this.assertActiveSession(loadContext)
-            } else {
-              await host.applyExecutionLoad({
-                payload,
-                template: this.template,
-                permissions: this.runtimePermissions,
-                values: this.values
-              })
-              this.assertActiveSession(loadContext)
-              const execForm = this.form()
-              if (!execForm || typeof execForm.setData !== 'function') throw new Error('执行宿主表单尚未就绪')
-              await execForm.setData(clonePlain(this.values))
-              this.assertActiveSession(loadContext)
-              await this.$nextTick()
-              this.assertActiveSession(loadContext)
-              await execForm.setData(clonePlain(this.values))
-              this.assertActiveSession(loadContext)
-            }
-          } else {
-            // iframe 注入路径（现状保持）：适配层只注入目标宿主已有的数据模型和权限。
-            host.enableData = [...this.editableFields]
-            host.disabledData = this.allFields.filter(field => !this.editableFields.includes(field))
-            host.jsonData = clonePlain(this.template)
-            host.editData = clonePlain(this.values)
-            await this.$nextTick()
+          host.enableData = [...this.editableFields]
+          host.disabledData = this.allFields.filter(field => !this.editableFields.includes(field))
+          host.jsonData = clonePlain(this.template)
+          host.editData = clonePlain(this.values)
+          await this.$nextTick()
 			this.assertActiveSession(loadContext)
-            this.bindFormChange()
-            const form = this.form()
-            if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
-            await form.setData(clonePlain(this.values))
+          this.bindFormChange()
+          const form = this.form()
+          if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
+          await form.setData(clonePlain(this.values))
 			this.assertActiveSession(loadContext)
-            // runtime-source 宿主监听 editData 会异步 refresh，必须在该刷新完成后再落一次回放值。
-            await this.$nextTick()
+          await this.$nextTick()
 			this.assertActiveSession(loadContext)
-            await form.setData(clonePlain(this.values))
+          await form.setData(clonePlain(this.values))
 			this.assertActiveSession(loadContext)
-          }
         } else {
 		  await this.setData(this.values, loadContext)
         }
@@ -445,16 +249,12 @@ export default {
 		this.assertActiveSession(loadContext)
         this.savedValues = clonePlain(this.values)
         this.loading = false
-        // 装载开头的 destroySession 会废弃旧桥接；新会话就绪后必须重新注册执行桥接，
-        // 保证 window.__runtimeBridge__ 始终指向当前会话的可用入口。
-        this.installExecutionBridge()
         const loadResult = {
 		  ready: true, renderType: this.renderType,
 		  unsupported: this.unsupported, isolatedHooks: this.isolatedHooks,
 		  issues: this.combinedIssues(), stats: this.stats()
 		}
         this.result(command, loadResult)
-        // 返回值供执行模式桥接（window.__runtimeBridge__）直接取用；iframe 模式忽略返回值。
         return loadResult
       }
       if (command.type === 'setData') {
@@ -701,11 +501,6 @@ export default {
     destroySession () {
       this.sessionGeneration++
       this.operationGeneration++
-      // 执行桥接随会话一起废弃：销毁后 window.__runtimeBridge__ 不存在，既有引用也不可执行。
-      this.invalidateExecutionBridge()
-      // 执行身份（操作人/发起人/实例任务节点）与宿主引用一并清除，禁止残留到下一会话。
-      if (window.__runtimeExecutionIdentity__) delete window.__runtimeExecutionIdentity__
-      if (window.__runtimeExecutionHost__) delete window.__runtimeExecutionHost__
       if (this.stateTimer) window.clearTimeout(this.stateTimer)
 		this.stateTimer = null
 		this.unbindFormChange()
