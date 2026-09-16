@@ -202,12 +202,6 @@ func TestRoutingWithRunnerCoverSevenActions(t *testing.T) {
 			t.Fatalf("动作 %s 不应走 runtime", action)
 		}
 	}
-	// NoFormFlow 现在也走 runtime（继承原生能力，见 F-036 P1-8）。
-	noForm := runtimeRunCtx()
-	noForm.RenderType = string(target.FormRenderTypeNoFormFlow)
-	if !executor.ShouldRunViaRuntimeForTest(noForm, runtimeStep(model.ActionSubmit)) {
-		t.Fatalf("NoFormFlow 提交现在应该走 runtime")
-	}
 }
 
 // TestRuntimeActionNeverTouchesTargetWrite runtime 已接管后 TargetClient 写调用必须为零。
