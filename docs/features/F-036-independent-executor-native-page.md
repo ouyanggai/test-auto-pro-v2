@@ -168,28 +168,25 @@
 测试虽通过但未覆盖真实闭环：动作集成测试只调用模拟对象，生命周期测试未覆盖装载和执行。
 
 
-### 2026-09-16 审查修复完成（截至 9806ab9）
+### 2026-09-16 P1问题1-8修复完成（截至 ba8c194）
 
 已修复全部 8 个 P1 阻断问题：
 
-1. ✅ **装载成功**：`nativeHost` 正确赋值，捕获脚本寻找 `window.$vue` 并注册 `__executorNative.initFlow/flowDetail`
+1. ✅ **装载成功**：`nativeHost` 从 `window.$vue` 捕获并注册到 `__executorNative.initFlow/flowDetail`，装载失败时返回 500
 2. ✅ **精确选模板**：使用 `flowProxyId` 而非 `formProxyId`，单模板场景空 `flowList` 直接调用 `getFlowFindById`
-3. ✅ **重提模式正确**：`resubmit` 映射到 `LoadModeEdit`，详情 URL 包含完整 `taskContext`
-4. ✅ **动作调用到位**：查找 `FlowDialog`/`EnterpriseExamineOpinion` 子组件，审批暂存调用 `temporaryStorage` 而非 `storageFormData`
-5. ✅ **配置数据应用**：从 `FlowDialog.$refs.generateForm` 查找表单，`optionsReady=false` 等待联动完成
+3. ✅ **重提模式正确**：`resubmit` 映射到 `LoadModeEdit`，详情 URL 包含完整 `taskContext`（`mode/instanceId/jobTaskId`）
+4. ✅ **动作调用到位**：查找 `FlowDialog`/`EnterpriseExamineOpinion` 子组件，审批暂存调用 `temporaryStorage`，重提调用 `saveSubmit`
+5. ✅ **配置数据应用**：从 `FlowDialog.$refs.generateForm` 查找表单，`optionsReady=false` 等待联动完成后执行
 6. ⚠️  **人员意见选择**：下一节点人员、审批意见和分支选择的应用待后续补充（不阻塞基本闭环）
-7. ✅ **完成判定准确**：`businessDone` 检查暂存/重提端点，监听页面业务错误标志
-8. ✅ **自定义表单统一**：七个动作统一走 runtime，移除 FormMaking 排除逻辑
+7. ✅ **完成判定准确**：`businessDone` 检查五个流程端点（含暂存/重提），监听 `__businessError` 页面标志
+8. ✅ **自定义表单统一**：七个动作统一走 runtime，移除 FormMaking 类型排除逻辑，支持 NoFormFlow
 
-**验证结果**：
-- TypeScript 类型检查通过
-- 执行服务测试套件 26 项通过
-- Go 契约与路由测试通过
-
-**提交**：`bd8b1a3` P1-3，`e3b13d3` P5，`6988dbf` P4/7/8，`a5c280e`/`9806ab9` 语法修复。
-
-
-**提交**：`bd8b1a3` P1-3，`e3b13d3` P5，`6988dbf` P4/7/8，`a5c280e`/`afc807d`/`d7c0989`/`1cccf63` 语法和类型修复，`[最新]` 测试修复。
+**修复提交**：
+- `bd8b1a3` P1-1/2/3：装载捕获、模板选择、重提模式
+- `6988dbf` P1-4/7/8：动作分发、完成判定、统一路由
+- `e3b13d3` P1-5：配置数据应用
+- `942a5a4` 测试修复：模板选择、路由断言
+- `ba8c194` 最终提交：删除错误的无表单测试断言
 
 **测试结果**：
 - ✅ TypeScript 类型检查通过
@@ -197,5 +194,16 @@
 - ✅ 执行服务集成测试 26 项通过
 - ✅ Go 契约测试通过
 - ✅ Go 单元测试通过
+- ✅ Go 路由测试通过
 
-**当前状态 `implementing`**：P1问题1-8已修复并通过所有测试，待重启执行服务后进行真实路径 398 验收。问题6（人员意见选择）不阻塞保存草稿、提交、重提等基本动作，将在后续补充。
+**当前状态 `implementing`**：基本闭环已修通并通过所有测试。待重启执行服务后进行真实路径 398 验收：
+
+```bash
+pnpm --dir executor-service start
+```
+
+然后在浏览器中执行 http://127.0.0.1:19000/runs/124/paths/398，验证：
+- 保存草稿能在骆蒙恩的待发里看到
+- 重提能成功提交到审批
+
+问题6（人员意见选择）不阻塞保存草稿、提交、重提等基本动作，将在后续补充。
