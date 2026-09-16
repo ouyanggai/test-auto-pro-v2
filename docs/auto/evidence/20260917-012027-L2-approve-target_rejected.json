@@ -1,0 +1,52 @@
+{
+  "account": "骆蒙恩",
+  "action": "approve",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "submitCheckBefore(\"pass\")"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 12,
+        "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"jobTaskId\":\"2513ae9251b745e1bd713fd287f2175d\",\"auditRecord\":{\"auditStatus\":\"pass\",\"executeDesc\":\"自动验证意见\"},\"id\":\"bc847fa12c5f4307b9d33e00d45361b0\"},\"formDataMongoVo\":{\"data\":{\"input_yt4g0u8l\":\"\",\"input_v9ntg1r6\":\"1\",\"fileupload_common_file\":[],\"input_6bqfq0zo\":\"\",\"flowInstanceId\":\"3bb456f5a",
+        "responseBodyExcerpt": "{\"message\":\"手动条件分支,请选择\",\"isSuccess\":false,\"data\":{\"errorType\":\"custom_choose\",\"branchNodes\":[{\"id\":\"8fefa7c9922747c5a16439755f07ae9b\",\"isDelete\":false,\"createrId\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"updaterId\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"createDate\":\"2026-07-01 13:35:35\",\"updateDate\":\"2026-07-01 13:35:35\",\"platformCode\":\"999999\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"nodeDesc\":null,\"nodeName\":\"手动分支1\",\"remark\":null,\"conditionPrev\":null,\"type\":\"common\",\"flowTemplateId\":\"1179794e2da3403cb22cb0cad7e5a978\",\"parentId\":\"e75ba32f0473456982"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "手动条件分支,请选择",
+        "url": ""
+      }
+    ],
+    "relevantErrorsAtEnd": 1,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "bc847fa12c5f4307b9d33e00d45361b0",
+  "jobTaskId": "2513ae9251b745e1bd713fd287f2175d",
+  "requestTrace": [
+    {
+      "seq": 12,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 12,
+      "durationMs": 1232
+    }
+  ],
+  "result": {
+    "message": "选择要求未闭环：手动条件分支,请选择",
+    "status": "target_rejected"
+  },
+  "toolFlowName": "T-AUTO-F036-approve-0917-012022",
+  "writeTraceIDs": [
+    "dea84b8986f13481"
+  ]
+}

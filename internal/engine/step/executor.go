@@ -289,6 +289,12 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		preview.writeSent = true
 		preview.writeErr = nil
 		preview.writeResponse.IsSuccess = true
+		// 发起链：runtime 在浏览器里拿到写响应，新实例 ID 经业务摘要回传。
+		// 填进 writeResult 后走与 Go 直连写相同的「主实例引用落库」路径，
+		// 否则核验阶段拿不到实例 ID，真实成功的发起会被误判为结果待确认。
+		if strings.TrimSpace(result.NewInstanceID) != "" {
+			preview.writeResult = &target.SubmitFlowInstanceResult{InstanceID: result.NewInstanceID}
+		}
 		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 完成：业务与流程请求已全部收敛，进入目标事实核验")
 	case "uncertain", "timeout":
 		// 写状态不明：结果待确认，绝不重发。

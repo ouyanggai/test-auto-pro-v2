@@ -170,7 +170,14 @@ function finalize (input: CompletionInput, entries: TraceEntry[], businessDone: 
   if (lostWrite) return { status: 'uncertain', message: `写响应丢失：${lostWrite.url}`, requestTrace }
   for (const entry of flowEntries) {
     const rejection = detectFlowRejection(entry)
-    if (rejection) return { status: 'target_rejected', message: rejection, requestTrace }
+    if (!rejection) continue
+    // 选择要求类拒绝可以被「继续一次」后的后续成功写覆盖（S6 闭环：目标以
+    // isSuccess=false 要求选择，选择继续后重新提交成功）。此时早先的选择要求
+    // 不是终局；其余拒绝（SID 失效、HTTP 错误、业务拒绝）仍然是终局。
+    const superseded = rejection.startsWith('选择要求未闭环') &&
+      flowEntries.some(later => later.seq > entry.seq && later.state === 'fulfilled' && detectFlowRejection(later) === null)
+    if (superseded) continue
+    return { status: 'target_rejected', message: rejection, requestTrace }
   }
   const lostPost = postEntries.find(entry => entry.state === 'aborted' || entry.state === 'blocked')
   if (lostPost) return { status: 'business_failed', message: `后置业务请求未完成：${lostPost.url}`, requestTrace }

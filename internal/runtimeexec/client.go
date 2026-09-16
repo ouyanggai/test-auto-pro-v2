@@ -267,6 +267,12 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 				}
 			}
 		case KindResult:
+			// 结果必须与原执行命令按 requestId 关联：选择闭环的 choice_continue 也会收到
+			// 自己的结果回执，若把第一条 result 当动作终局，会在选择继续刚被受理时
+			// 提前返回空轨迹的 success，丢失真正的动作判定与请求轨迹（F-036 夜间验证实测）。
+			if message.RequestID != cmd.RequestID {
+				continue
+			}
 			return message, nil
 		default:
 			return nil, fmt.Errorf("runtime 发来不接受的消息类型：%s", message.Kind)

@@ -1,0 +1,65 @@
+{
+  "account": "骆蒙恩",
+  "action": "reject",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "submitCheckBefore(\"no_pass\")"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 5,
+        "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"jobTaskId\":\"5acef9497a3644c4965846d0c40d3293\",\"auditRecord\":{\"auditStatus\":\"no_pass\",\"executeDesc\":\"自动验证意见\"},\"id\":\"cd9c8b01fdc3474485de18da37bc68fd\"},\"formDataMongoVo\":{\"data\":{}},\"tracking\":false}",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"cd9c8b01fdc3474485de18da37bc68fd\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"createDate\":\"2026-09-17 01:09:09\",\"updateDate\":\"2026-09-17 01:44:51\",\"platformCode\":\"200001\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"batchNo\":\"14ba28e13244446baf7e1a9bd6c8db8d\",\"name\":\"T-AUTO-F036-resubmit-0917-013517-骆蒙恩\",\"currentDataId\":\"c6cfcb5e4c6f4f558aa72f6b840295a4\",\"status\":\"rejected\",\"statusList\":null,\"statusQ\":\"rejected\",\"flowProxyId\":\""
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowAuditRecord/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowInstanceApi/queryStorageFormData"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowInstancePostscript/list"
+      }
+    ],
+    "relevantErrorsAtEnd": 0,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "cd9c8b01fdc3474485de18da37bc68fd",
+  "jobTaskId": "5acef9497a3644c4965846d0c40d3293",
+  "readback": {
+    "taskDoneOnNode": true
+  },
+  "requestTrace": [
+    {
+      "seq": 5,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 2,
+      "durationMs": 1171
+    }
+  ],
+  "result": {
+    "message": "",
+    "status": "success"
+  },
+  "toolFlowName": "T-AUTO-F036-reject-0917-014635",
+  "writeTraceIDs": [
+    "41bc196cc0676412"
+  ]
+}

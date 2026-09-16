@@ -14,7 +14,7 @@ import { encodeEnvelope, PROTOCOL_VERSION, validateMessage, type MessageEnvelope
 import { InitiateBlockedError, planTemplateSelection } from './native-initiate.ts'
 import { resolveDetailSemantics } from './native-detail.ts'
 import { UnsupportedFormError } from './data-patch.ts'
-import { canContinueChoice, dispatchChoiceContinue, dispatchNativeAction } from './native-actions.ts'
+import { canContinueChoice, CHOICE_ERRORS } from './native-actions.ts'
 import { detectFlowRejection, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
 
@@ -33,6 +33,8 @@ interface RuntimeSession {
   writeGate: WriteGate
   transpondConfirmed: boolean
   choicePending: boolean
+  choicePendingAt: number
+  lastChoiceError: Record<string, unknown> | null
   choiceState: { continued: boolean }
   identity: Record<string, unknown> | null
   nativeHost: Record<string, unknown> | null
@@ -137,10 +139,17 @@ async function collectHostPath (page: Page, targetNames: string[]): Promise<stri
 // 带 URL 的 Network Error/404 属请求级结果：目标请求的成败已由 trace（aborted/HTTP 状态/
 // isSuccess 包络）覆盖，FormMaking 外部服务（tools-server）的失败也与业务完成无关；
 // 实测同一请求 trace 为 fulfilled 仍会抛 Network Error（应用层噪声），按 URL 排除。
+// 选择要求的中间态业务消息（目标要求选分支/选人，选择继续后即被覆盖）同样不算终局异常：
+// 写层面的真相由 trace 的 supersede 逻辑裁决（completion.ts finalize）。
 async function countRelevantPageErrors (page: Page): Promise<number> {
   return page.evaluate(() => {
+    const CHOICE_MESSAGES = ['手动条件分支,请选择', '请选择流程分支', '未设置审批人', '该分支需选择审批人，请先选择']
     const errors = (window as unknown as { __executorPageErrors?: Array<{ kind?: string, message?: string, url?: string }> }).__executorPageErrors ?? []
-    return errors.filter(error => String(error?.url ?? '') === '').length
+    return errors.filter(error => {
+      if (String(error?.url ?? '') !== '') return false
+      const message = String(error?.message ?? '')
+      return !CHOICE_MESSAGES.includes(message)
+    }).length
   })
 }
 
@@ -155,6 +164,95 @@ async function describeCapturedTree (page: Page): Promise<string> {
     const names = (node: VNode): string[] => (node.$children ?? []).map(child => String(child?.$options?.name ?? '<anonymous>'))
     return `root=(${names(root).join(',')}) examineDialogVisible=${String(root.examineDialogVisible)} ExpensesClaimFormVisible=${String(root.ExpensesClaimFormVisible)} approveDialogVisible=${String(root.approveDialogVisible)}`
   })
+}
+
+// ChoiceContinueChoice 是 Go 回传的选择继续载荷（协议 ChoicePayload 镜像）。
+interface ChoiceContinueChoice {
+  kind?: string
+  branchEntryNodeProxyIds?: string[]
+  nextAuditors?: Array<{ nodeProxyId?: string, bizId?: string, name?: string, auditDetailType?: string }>
+}
+
+// dispatchChoiceContinueOnPage 在页面内把选择继续落到原生组件（S6）：
+// custom_choose → 设置 chooseBranchNode 后调用 handleSaveBranchChooseNode；
+// parallel_choose → 补齐 parallelNodeChooseList 的选择后调用 handleSaveParallelChooseNode；
+// run_node_choose → 以 checkboxPersonGroup 形状调用 getSelectPerson。
+// 三者都会由原生方法自行重新提交流程写（formMakingFormBusiness 等），外部不得再发第二次写。
+async function dispatchChoiceContinueOnPage (page: Page, errorType: string, choice: ChoiceContinueChoice, choiceError: Record<string, unknown> | null): Promise<{ component: string, method: string }> {
+  return page.evaluate(({ errorType, choice, choiceError }) => {
+    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
+    interface VNode { $options?: { name?: string }, $children?: VNode[], [key: string]: unknown }
+    const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
+    if (!container) throw new Error('原生宿主未捕获，不能继续选择')
+    const found: VNode[] = []
+    const walk = (node: VNode): void => {
+      if (String(node?.$options?.name ?? '') === 'ExamineOpinion') { found.push(node); return }
+      for (const child of node.$children ?? []) walk(child)
+    }
+    walk(container)
+    if (found.length !== 1) throw new Error(`ExamineOpinion 命中 ${found.length} 个（应为唯一），不能继续选择`)
+    const opinion = found[0]!
+    // 人员注入：选择继续携带的人员先并入 nextAuditorList（按 nodeProxyId 去重）。
+    const auditors = (choice.nextAuditors ?? []) as Array<{ nodeProxyId?: string, bizId?: string, name?: string }>
+    if (auditors.length > 0) {
+      const list = (opinion.nextAuditorList as Array<Record<string, unknown>> | undefined) ?? []
+      for (const auditor of auditors) {
+        const entry = {
+          name: String(auditor.name ?? ''),
+          bizId: String(auditor.bizId ?? ''),
+          auditDetailType: 'personnel',
+          nodeProxyId: String(auditor.nodeProxyId ?? '')
+        }
+        if (!entry.bizId || !entry.name) throw new Error('选择继续携带空人员，拒绝写入')
+        const exists = list.some(item => item.nodeProxyId === entry.nodeProxyId)
+        if (!exists) list.push(entry)
+      }
+      opinion.nextAuditorList = list
+    }
+    if (errorType === 'custom_choose') {
+      const entry = String(choice.branchEntryNodeProxyIds?.[0] ?? '')
+      if (!entry) throw new Error('分支继续缺少入口节点 ID')
+      // auditType 必须取目标返回的真实值：硬编码 run_node_choose 会让原生
+      // 「需选择审批人」校验误拦不需要人员的分支（F-036 夜间验证实测）。
+      const nodes = ((choiceError as { data?: { branchNodes?: Array<{ id?: string, flowNodeAuditConfig?: { auditType?: string } }> } }).data?.branchNodes ?? [])
+      const branchNode = nodes.find(item => String(item?.id ?? '') === entry)
+      const auditType = String(branchNode?.flowNodeAuditConfig?.auditType ?? '')
+      if (auditType === 'run_node_choose') {
+        const list = (opinion.nextAuditorList as Array<Record<string, unknown>> | undefined) ?? []
+        const has = list.some(item => item.nodeProxyId === entry)
+        if (!has) throw new Error('分支入口为审批人自选且未配置人员，拒绝继续（绝不带空人员提交）')
+      }
+      opinion.chooseBranchNode = { nextNodeTemplateId: entry, auditType }
+      // 原生提交载荷从 chooseBranchList 取分支选择（handleChangeChooseBranch 维护，
+      // 构造时 push({nodeProxyId})）：不写它，第二笔写仍会被目标要求选分支（实测）。
+      opinion.chooseBranchList = Array.from(new Set([...((opinion.chooseBranchList as string[] | undefined) ?? []), entry]))
+      if (typeof opinion.handleSaveBranchChooseNode !== 'function') throw new Error('ExamineOpinion 缺少 handleSaveBranchChooseNode')
+      opinion.handleSaveBranchChooseNode()
+      return { component: 'ExamineOpinion', method: 'handleSaveBranchChooseNode' }
+    }
+    if (errorType === 'parallel_choose') {
+      // 并行：把入口写回 parallelNodeChooseList 的 nextNodeTemplateId 后交给原 生方法校验并提交。
+      const entries = (choice.branchEntryNodeProxyIds ?? []).map(String)
+      const list = (opinion.parallelNodeChooseList as Array<Record<string, unknown>> | undefined) ?? []
+      for (const item of list) {
+        const id = String(item.id ?? '')
+        if (id && entries.includes(id)) item.nextNodeTemplateId = id
+      }
+      opinion.parallelNodeChooseList = list
+      if (typeof opinion.handleSaveParallelChooseNode !== 'function') throw new Error('ExamineOpinion 缺少 handleSaveParallelChooseNode')
+      opinion.handleSaveParallelChooseNode()
+      return { component: 'ExamineOpinion', method: 'handleSaveParallelChooseNode' }
+    }
+    // run_node_choose：原生 getSelectPerson 消费 checkboxPersonGroup（{name,id,nodeProxyId}）。
+    if (typeof opinion.getSelectPerson !== 'function') throw new Error('ExamineOpinion 缺少 getSelectPerson')
+    const group = auditors.map(auditor => ({
+      name: String(auditor.name ?? ''),
+      id: String(auditor.bizId ?? ''),
+      nodeProxyId: String(auditor.nodeProxyId ?? '')
+    }))
+    opinion.getSelectPerson({ checkboxPersonGroup: group })
+    return { component: 'ExamineOpinion', method: 'getSelectPerson' }
+  }, { errorType, choice, choiceError })
 }
 
 // NEXT_AUDITOR_FIELDS 锁定下一节点人员条目形状（与目标 nextAuditorList 一致）。
@@ -554,6 +652,8 @@ async function main (): Promise<void> {
           writeGate: new WriteGate(),
           transpondConfirmed: false,
           choicePending: false,
+          choicePendingAt: 0,
+          lastChoiceError: null,
           choiceState: { continued: false },
           identity: null,
           nativeHost: null
@@ -655,6 +755,30 @@ async function main (): Promise<void> {
               })
               if (requestPayload.url.includes('/web/flowInstanceApi/transpond') && outcome.httpStatus === 200) {
                 session.transpondConfirmed = true
+              }
+              // 选择要求识别（S6/P1-6）：流程写响应 isSuccess=false 且 errorType 属于三种选择错误时，
+              // 置位 choicePending 并向 Go 发 choice_required 事件；继续命令经 choice_continue 回来。
+              if (requestPayload.method === 'POST' && outcome.httpStatus === 200 && outcome.body) {
+                let parsed: { isSuccess?: boolean, data?: { errorType?: string }, message?: string } | null = null
+                try {
+                  const text = outcome.bodyEncoding === 'base64'
+                    ? Buffer.from(outcome.body, 'base64').toString('utf8')
+                    : outcome.body
+                  parsed = JSON.parse(text)
+                } catch { parsed = null }
+                const errorType = String(parsed?.data?.errorType ?? '')
+                if (parsed && parsed.isSuccess === false && (CHOICE_ERRORS as readonly string[]).includes(errorType)) {
+                  session.choicePending = true
+                  session.choicePendingAt = Date.now()
+                  session.lastChoiceError = parsed as unknown as Record<string, unknown>
+                  const socket = session.channel.socketForEvents
+                  if (socket) {
+                    socket.send(JSON.stringify(encodeEnvelope('event', session, randomUUID(), {
+                      type: 'choice_required',
+                      data: parsed as unknown as Record<string, unknown>
+                    })))
+                  }
+                }
               }
               return outcome
             }
@@ -866,14 +990,18 @@ async function main (): Promise<void> {
               sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: '当前没有等待选择的动作' })
               return
             }
-            session.choicePending = false
             try {
-              const host = (session.nativeHost ?? {}) as Parameters<typeof dispatchChoiceContinue>[0]
-              const errorType = String((envelope.payload as { choice?: { kind?: string } } | undefined)?.choice?.kind ?? '')
-              canContinueChoice(errorType === 'branch' ? 'custom_choose' : errorType === 'parallel' ? 'parallel_choose' : 'run_node_choose', session.choiceState, true)
-              dispatchChoiceContinue(host, errorType === 'branch' ? 'custom_choose' : errorType === 'parallel' ? 'parallel_choose' : 'run_node_choose')
+              const choice = (envelope.payload as { choice?: ChoiceContinueChoice } | undefined)?.choice
+              if (!choice) throw new Error('choice_continue 缺少 choice 载荷')
+              const errorType = choice.kind === 'branch' ? 'custom_choose' : choice.kind === 'parallel' ? 'parallel_choose' : 'run_node_choose'
+              canContinueChoice(errorType, session.choiceState, true)
+              session.choiceState.continued = true
+              session.choicePending = false
+              // 只允许继续一次：继续后不再接受第二个 choice_continue。
+              await dispatchChoiceContinueOnPage(session.page, errorType, choice, session.lastChoiceError)
               sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'success' })
             } catch (error) {
+              session.choicePending = false
               sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error) })
             }
             return
@@ -927,7 +1055,11 @@ async function main (): Promise<void> {
                 },
                 hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000),
                 idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),
-                gate: async () => !session.choicePending,
+                gate: async () => {
+                  if (!session.choicePending) return true
+                  // 选择继续未在窗口内到达（Go 侧放弃闭环）：放行判定，让完成检测按目标拒绝收口。
+                  return Date.now() - session.choicePendingAt > 15000
+                },
                 writeGate: session.writeGate
               })
             // 分发事实回传：调用了哪个组件哪个方法（L2 断言与运行详情的证据）。
@@ -956,9 +1088,16 @@ async function main (): Promise<void> {
             const allPageErrors = await session.page.evaluate(() =>
               (window as unknown as { __executorPageErrors?: unknown[] }).__executorPageErrors ?? []
             ).catch(() => [])
+            // 新实例 ID（发起链）：主实例写响应 data.id 是引擎核验与后续步骤的实例引用来源。
+            let newInstanceId = ''
+            for (const write of debugWrites) {
+              if (write.isPermissionCheck || !write.url.includes('/web/flowInstanceApi/submit')) continue
+              const match = /"id":"([0-9a-f]{32})"/.exec(write.responseBodyExcerpt)
+              if (match) { newInstanceId = match[1]!; break }
+            }
             const verdictWithFacts = {
               ...verdict,
-              businessSummary: { dispatched: dispatchFacts, debugWrites, pageErrors: allPageErrors, relevantErrorsAtEnd: await countRelevantPageErrors(session.page).catch(() => -1), relevantErrorsAtBaseline: errorsAtBaseline }
+              businessSummary: { dispatched: dispatchFacts, newInstanceId, debugWrites, pageErrors: allPageErrors, relevantErrorsAtEnd: await countRelevantPageErrors(session.page).catch(() => -1), relevantErrorsAtBaseline: errorsAtBaseline }
             }
             sendEnvelope(ws, session, 'result', envelope.requestId, verdictWithFacts)
           } catch (error) {

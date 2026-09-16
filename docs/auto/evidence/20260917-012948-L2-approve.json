@@ -1,0 +1,65 @@
+{
+  "account": "骆蒙恩",
+  "action": "approve",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "submitCheckBefore(\"pass\")"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 5,
+        "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"jobTaskId\":\"5123377a53a64292b7a6100aabe8ad86\",\"auditRecord\":{\"auditStatus\":\"pass\",\"executeDesc\":\"自动验证意见\"},\"id\":\"bc847fa12c5f4307b9d33e00d45361b0\"},\"formDataMongoVo\":{\"data\":{}},\"tracking\":false,\"nextAuditorList\":[{\"name\":\"骆蒙恩\",\"bizId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"auditDetailType\":\"p",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"bc847fa12c5f4307b9d33e00d45361b0\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"createDate\":\"2026-09-17 01:14:14\",\"updateDate\":\"2026-09-17 01:28:15\",\"platformCode\":\"200001\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"batchNo\":\"11f7f9855ae64e3caeb0d47ac28ff990\",\"name\":\"T-AUTO-F036-resubmit-0917-011940-骆蒙恩\",\"currentDataId\":\"165c28194c4d45aaabe7cdafac1d2b5c\",\"status\":\"run\",\"statusList\":null,\"statusQ\":\"run\",\"flowProxyId\":\"1179794e2d"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowAuditRecord/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowInstanceApi/queryStorageFormData"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowInstancePostscript/list"
+      }
+    ],
+    "relevantErrorsAtEnd": 0,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "bc847fa12c5f4307b9d33e00d45361b0",
+  "jobTaskId": "5123377a53a64292b7a6100aabe8ad86",
+  "readback": {
+    "taskDoneOnNode": true
+  },
+  "requestTrace": [
+    {
+      "seq": 5,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 2,
+      "durationMs": 1991
+    }
+  ],
+  "result": {
+    "message": "",
+    "status": "success"
+  },
+  "toolFlowName": "T-AUTO-F036-approve-0917-012943",
+  "writeTraceIDs": [
+    "94bad5f567f3f187"
+  ]
+}

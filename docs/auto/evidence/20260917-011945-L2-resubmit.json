@@ -1,0 +1,104 @@
+{
+  "account": "骆蒙恩",
+  "action": "resubmit",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "saveSubmit(\"submit\")"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 9,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": true,
+        "requestBodyExcerpt": "{\"data\":{\"flowProxyId\":\"1179794e2da3403cb22cb0cad7e5a978\",\"checkPermissions\":\"first\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}]}}",
+        "responseBodyExcerpt": "{\"message\":\"权限校验通过\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}"
+      },
+      {
+        "seq": 10,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/reSubmit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"name\":\"T-AUTO-F036-resubmit-0917-011940-骆蒙恩\",\"id\":\"bc847fa12c5f4307b9d33e00d45361b0\",\"formProxyId\":\"0f1c30deb9324593b29aa527583603b7\",\"flowInstanceBizRelevanceList\":[],\"companyId\":\"6e1235cf416e4143947311c6cc93d78e\"},\"formDataMongoVo\":{\"data\":{\"input_yt4g0u8l\":\"\",\"input_v9ntg1r6\":\"1\",\"fileu",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"bc847fa12c5f4307b9d33e00d45361b0\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"createDate\":\"2026-09-17 01:14:14\",\"updateDate\":\"2026-09-17 01:14:14\",\"platformCode\":\"200001\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"batchNo\":\"11f7f9855ae64e3caeb0d47ac28ff990\",\"name\":\"T-AUTO-F036-resubmit-0917-011940-骆蒙恩\",\"currentDataId\":\"02f3a19838a949c286880f94a8f499d7\",\"status\":\"run\",\"statusList\":null,\"statusQ\":\"run\",\"flowProxyId\":\"1179794e2d"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Cannot read properties of undefined (reading 'forEach')",
+        "url": ""
+      }
+    ],
+    "relevantErrorsAtEnd": 1,
+    "relevantErrorsAtBaseline": 1
+  },
+  "instanceId": "bc847fa12c5f4307b9d33e00d45361b0",
+  "jobTaskId": "",
+  "readback": {
+    "instanceFacts": {
+      "FlowProxyID": "1179794e2da3403cb22cb0cad7e5a978",
+      "CurrentNodes": [
+        "c01dd1195dcd4b5d9ddb3d8d1b48a226"
+      ],
+      "Status": "run",
+      "FormProxyIDs": [
+        "0f1c30deb9324593b29aa527583603b7"
+      ],
+      "BizRelevance": [
+        {
+          "otherBiz": "company",
+          "otherBizId": "6e1235cf416e4143947311c6cc93d78e"
+        }
+      ],
+      "Handlers": [
+        {
+          "NodeID": "c01dd1195dcd4b5d9ddb3d8d1b48a226",
+          "AuditType": "run_node_choose",
+          "BizIDs": null,
+          "Users": [
+            {
+              "name": "骆蒙恩",
+              "phone": "18239479639"
+            }
+          ]
+        }
+      ],
+      "Name": "T-AUTO-F036-resubmit-0917-011940-骆蒙恩",
+      "Found": true
+    }
+  },
+  "requestTrace": [
+    {
+      "seq": 9,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 9,
+      "durationMs": 85
+    },
+    {
+      "seq": 10,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/reSubmit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 10,
+      "durationMs": 1599
+    }
+  ],
+  "result": {
+    "message": "",
+    "status": "success"
+  },
+  "toolFlowName": "T-AUTO-F036-resubmit-0917-011940",
+  "writeTraceIDs": [
+    "e45b088428afcfe5",
+    "31c135ba9ea81f80"
+  ]
+}

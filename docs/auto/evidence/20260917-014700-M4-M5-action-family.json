@@ -1,0 +1,18 @@
+{
+  "milestone": "M4 动作族 + M5 选择闭环（全部真实写证据）",
+  "time": "2026-09-17T01:47:00+08:00",
+  "evidence": {
+    "save_draft": "20260917-004421-L2-save_draft.json（新实例，status=draft，写后核验 found）",
+    "submit": "20260917-010000-L2-submit.json（实例 bbfbbac5 → run，待办生成）+ 20260917-010521-L2-submit.json",
+    "storage_form_data": "20260917-012011-L2-storage_form_data.json（暂存记录写后核验）",
+    "approve": "20260917-012818-L2-approve.json + 20260917-012948-L2-approve.json（taskDoneOnNode=true，实例推进）",
+    "reject": "20260917-013213-L2-reject.json（实例驳回至发起人）",
+    "resubmit": "20260917-011945-L2-resubmit.json + 20260917-013156-L2-resubmit.json（待发→run）",
+    "choice_loop": "20260917-014655-L2-approve.json：write5=custom_choose 拒绝 → choice_required 事件 → choice_continue → write6 成功；判定 success；DoD-4 完整序列"
+  },
+  "notes": [
+    "所有真实写均走 executor-service→页面原生组件→目标端点，流程名 T-AUTO-F036-*",
+    "实例预算：约 12 个（含 7 个 L2 草稿、3 个提交实例、计划27 L3 产生的 2 个）",
+    "转发(M6,可选)未验证：需 transpond 前置弹窗状态，实例预算已满，晨报中声明"
+  ]
+}

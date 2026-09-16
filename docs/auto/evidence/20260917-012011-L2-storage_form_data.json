@@ -1,0 +1,50 @@
+{
+  "account": "骆蒙恩",
+  "action": "storage_form_data",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "temporaryStorage()"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 12,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/storageFormData",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"id\":\"bc847fa12c5f4307b9d33e00d45361b0\",\"currentNodeProxyId\":\"c01dd1195dcd4b5d9ddb3d8d1b48a226\",\"auditRecord\":{\"executeDesc\":\"自动验证意见\"}},\"formDataMongoVo\":{\"data\":{\"input_yt4g0u8l\":\"\",\"input_v9ntg1r6\":\"1\",\"fileupload_common_file\":[],\"input_6bqfq0zo\":\"\",\"flowInstanceId\":\"3bb456f5a9e4453cb7e90",
+        "responseBodyExcerpt": "{\"message\":\"成功\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}"
+      }
+    ],
+    "pageErrors": [],
+    "relevantErrorsAtEnd": 0,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "bc847fa12c5f4307b9d33e00d45361b0",
+  "jobTaskId": "2513ae9251b745e1bd713fd287f2175d",
+  "readback": {
+    "storageAuditDesc": "自动验证意见",
+    "storageFound": true
+  },
+  "requestTrace": [
+    {
+      "seq": 12,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/storageFormData",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 12,
+      "durationMs": 68
+    }
+  ],
+  "result": {
+    "message": "",
+    "status": "success"
+  },
+  "toolFlowName": "T-AUTO-F036-storage_form_data-0917-012007",
+  "writeTraceIDs": [
+    "ffd649ed369f8cef"
+  ]
+}

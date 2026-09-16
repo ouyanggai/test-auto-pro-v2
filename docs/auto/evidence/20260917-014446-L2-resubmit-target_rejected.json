@@ -1,0 +1,76 @@
+{
+  "account": "骆蒙恩",
+  "action": "resubmit",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "saveSubmit(\"submit\")"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 13,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": true,
+        "requestBodyExcerpt": "{\"data\":{\"flowProxyId\":\"1179794e2da3403cb22cb0cad7e5a978\",\"checkPermissions\":\"first\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}]}}",
+        "responseBodyExcerpt": "{\"message\":\"权限校验通过\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}"
+      },
+      {
+        "seq": 14,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/reSubmit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"name\":\"T-AUTO-F036-resubmit-0917-014442-骆蒙恩\",\"id\":\"cd9c8b01fdc3474485de18da37bc68fd\",\"formProxyId\":\"0f1c30deb9324593b29aa527583603b7\",\"flowInstanceBizRelevanceList\":[],\"companyId\":\"6e1235cf416e4143947311c6cc93d78e\"},\"formDataMongoVo\":{\"data\":{\"input_yt4g0u8l\":\"\",\"input_v9ntg1r6\":\"1\",\"fileu",
+        "responseBodyExcerpt": "{\"message\":\"当前实例状态不正确,无法重新发起\",\"isSuccess\":false,\"data\":null,\"sid\":null,\"code\":\"ERROR_99999\",\"platformCode\":null}"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Cannot read properties of undefined (reading 'forEach')",
+        "url": ""
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "当前实例状态不正确,无法重新发起",
+        "url": ""
+      }
+    ],
+    "relevantErrorsAtEnd": 2,
+    "relevantErrorsAtBaseline": 1
+  },
+  "instanceId": "cd9c8b01fdc3474485de18da37bc68fd",
+  "jobTaskId": "",
+  "requestTrace": [
+    {
+      "seq": 13,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 13,
+      "durationMs": 70
+    },
+    {
+      "seq": 14,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/reSubmit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 14,
+      "durationMs": 25
+    }
+  ],
+  "result": {
+    "message": "当前实例状态不正确,无法重新发起",
+    "status": "target_rejected"
+  },
+  "toolFlowName": "T-AUTO-F036-resubmit-0917-014442",
+  "writeTraceIDs": [
+    "0676b47814e8cc9a",
+    "14d2765784497357"
+  ]
+}

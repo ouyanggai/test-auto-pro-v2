@@ -62,12 +62,14 @@ type RuntimeRunRequest struct {
 }
 
 // ActionRunResult 是 runtime 动作的最终判定事实（状态为协议七值之一）。
-// BusinessSummary 携带 runtime 回传的业务摘要（分发事实与写端点判定输入），供证据落盘。
+// BusinessSummary 携带 runtime 回传的业务摘要（分发事实与写端点判定输入），供证据落盘；
+// NewInstanceID 是发起链写响应里的新实例 ID（json:"-"：由本包从摘要解析，外部不可注入）。
 type ActionRunResult struct {
 	Status          string
 	Message         string
 	RequestTrace    json.RawMessage
 	BusinessSummary json.RawMessage
+	NewInstanceID   string   `json:"-"`
 	WriteTraceIDs   []string `json:"-"`
 }
 
@@ -251,7 +253,23 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		return ActionRunResult{}, fmt.Errorf("结果载荷解析失败：%w", err)
 	}
 	payload.WriteTraceIDs = writeTraces
+	payload.NewInstanceID = extractNewInstanceID(payload.BusinessSummary)
 	return payload, nil
+}
+
+// extractNewInstanceID 从 runtime 回传的业务摘要中取新发起实例 ID：
+// 写发生在浏览器里，发起链的实例 ID 只能来自写响应体；引擎核验与后续步骤都依赖它。
+func extractNewInstanceID(summary json.RawMessage) string {
+	if len(summary) == 0 {
+		return ""
+	}
+	var parsed struct {
+		NewInstanceID string `json:"newInstanceId"`
+	}
+	if err := json.Unmarshal(summary, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.NewInstanceID)
 }
 
 // BuildChoiceForTest 暴露选择闭环的继续载荷构造，供单元测试锁定严格校验口径（评审 P1-6）。

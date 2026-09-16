@@ -1,0 +1,86 @@
+{
+  "account": "骆蒙恩",
+  "action": "approve",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "submitCheckBefore(\"pass\")"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 5,
+        "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"jobTaskId\":\"900167294c6e47198a985afd1150866b\",\"auditRecord\":{\"auditStatus\":\"pass\",\"executeDesc\":\"自动验证意见\"},\"id\":\"cd9c8b01fdc3474485de18da37bc68fd\"},\"formDataMongoVo\":{\"data\":{}},\"tracking\":false,\"nextAuditorList\":[{\"name\":\"骆蒙恩\",\"bizId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"auditDetailType\":\"p",
+        "responseBodyExcerpt": "{\"message\":\"手动条件分支,请选择\",\"isSuccess\":false,\"data\":{\"errorType\":\"custom_choose\",\"branchNodes\":[{\"id\":\"8fefa7c9922747c5a16439755f07ae9b\",\"isDelete\":false,\"createrId\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"updaterId\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"createDate\":\"2026-07-01 13:35:35\",\"updateDate\":\"2026-07-01 13:35:35\",\"platformCode\":\"999999\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"nodeDesc\":null,\"nodeName\":\"手动分支1\",\"remark\":null,\"conditionPrev\":null,\"type\":\"common\",\"flowTemplateId\":\"1179794e2da3403cb22cb0cad7e5a978\",\"parentId\":\"e75ba32f0473456982"
+      },
+      {
+        "seq": 6,
+        "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"jobTaskId\":\"900167294c6e47198a985afd1150866b\",\"auditRecord\":{\"auditStatus\":\"pass\",\"executeDesc\":\"自动验证意见\"},\"id\":\"cd9c8b01fdc3474485de18da37bc68fd\"},\"formDataMongoVo\":{\"data\":{}},\"tracking\":false,\"nextAuditorList\":[{\"name\":\"骆蒙恩\",\"bizId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"auditDetailType\":\"p",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"cd9c8b01fdc3474485de18da37bc68fd\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"createDate\":\"2026-09-17 01:09:09\",\"updateDate\":\"2026-09-17 01:35:20\",\"platformCode\":\"200001\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"batchNo\":\"14ba28e13244446baf7e1a9bd6c8db8d\",\"name\":\"T-AUTO-F036-resubmit-0917-013517-骆蒙恩\",\"currentDataId\":\"cf1a53dcbfd14f25871318fbb62c3ec1\",\"status\":\"run\",\"statusList\":null,\"statusQ\":\"run\",\"flowProxyId\":\"1179794e2d"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowAuditRecord/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowInstanceApi/queryStorageFormData"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowInstancePostscript/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "手动条件分支,请选择",
+        "url": ""
+      }
+    ],
+    "relevantErrorsAtEnd": 1,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "cd9c8b01fdc3474485de18da37bc68fd",
+  "jobTaskId": "900167294c6e47198a985afd1150866b",
+  "requestTrace": [
+    {
+      "seq": 5,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 2,
+      "durationMs": 1032
+    },
+    {
+      "seq": 6,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/flowInstanceApi/audit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 3,
+      "durationMs": 2080
+    }
+  ],
+  "result": {
+    "message": "流程写请求已受理，但业务完成事件未到达",
+    "status": "business_failed"
+  },
+  "toolFlowName": "T-AUTO-F036-approve-0917-014447",
+  "writeTraceIDs": [
+    "7e60fd8ea316958d",
+    "d305a152d05ff1c0"
+  ]
+}

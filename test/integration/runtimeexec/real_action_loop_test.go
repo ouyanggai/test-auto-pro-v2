@@ -152,6 +152,10 @@ func TestF036RealActionLoop(t *testing.T) {
 			request.ChangedFields = allFields
 		}
 	}
+	session3, sessErr := current(ctx, account)
+	if sessErr != nil {
+		t.Fatalf("取目标会话失败：%v", sessErr)
+	}
 	instanceID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_INSTANCE"))
 	jobTaskID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_JOB_TASK"))
 	nodeProxyID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_NODE"))
@@ -161,11 +165,25 @@ func TestF036RealActionLoop(t *testing.T) {
 		// 新发起链：无实例事实，由目标在页面上自装载模板。
 	case "storage_form_data", "approve", "reject":
 		request.InstanceID = instanceID
-		request.JobTaskID = jobTaskID
 		request.NodeProxyID = nodeProxyID
-		if instanceID == "" || jobTaskID == "" {
-			t.Fatalf("动作 %s 需要 TEST_AUTO_PRO_F036_INSTANCE / TEST_AUTO_PRO_F036_JOB_TASK", action)
+		if instanceID == "" {
+			t.Fatalf("动作 %s 需要 TEST_AUTO_PRO_F036_INSTANCE", action)
 		}
+		// 未显式给任务号时从目标实时解析当前待办（与引擎写前刷新同一读取）。
+		if jobTaskID == "" {
+			snapshot, snapErr := client.FindTaskSnapshot(ctx, session3, instanceID, nodeProxyID, "pending")
+			if snapErr != nil {
+				t.Fatalf("解析当前待办任务失败：%v", snapErr)
+			}
+			jobTaskID = strings.TrimSpace(snapshot.JobTaskID)
+			if jobTaskID == "" {
+				t.Fatalf("目标上已无当前账号在该节点的待办任务（node=%s）", nodeProxyID)
+			}
+			if nodeProxyID == "" {
+				request.NodeProxyID = snapshot.FlowNodeProxyID
+			}
+		}
+		request.JobTaskID = jobTaskID
 	case "resubmit":
 		request.InstanceID = instanceID
 		request.LoadMode = runtimeexec.LoadModeEdit
@@ -182,6 +200,45 @@ func TestF036RealActionLoop(t *testing.T) {
 		}
 	}
 
+	// TEST_AUTO_PRO_F036_BRANCH_ENTRY：手动分支的已选入口节点 ID（分支节点=TEST_AUTO_PRO_F036_NODE）。
+	// 配置后同意/提交若被目标以「手动条件分支,请选择」拒绝，执行器会按已保存选择继续一次（S6 闭环）。
+	if branchEntry := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_BRANCH_ENTRY")); branchEntry != "" {
+		branchNode := nodeProxyID
+		if branchNode == "" {
+			branchNode = branchEntry
+		}
+		// 只配置选择（Go 侧继续依据），不预注入人员：分支人员由原生继续链路按需携带。
+		request.BranchSelections = []runtimeexec.BranchSelection{{NodeProxyID: branchNode, EntryNodeID: branchEntry}}
+	}
+	// TEST_AUTO_PRO_F036_NEXT_AUDITOR_NODES=id1,id2：为若干下游自选节点预置本人人员
+	// （目标在审批写入时会校验后续链路的选人需求）。
+	if nodes := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_NEXT_AUDITOR_NODES")); nodes != "" {
+		for _, nodeID := range strings.Split(nodes, ",") {
+			nodeID = strings.TrimSpace(nodeID)
+			if nodeID == "" {
+				continue
+			}
+			request.NextNodeAuditors = append(request.NextNodeAuditors, runtimeexec.NextAuditorEntry{
+				NodeProxyID:     nodeID,
+				BizID:           s.UserID,
+				Name:            s.Summary.DisplayName,
+				AuditDetailType: "personnel",
+			})
+		}
+	}
+	// TEST_AUTO_PRO_F036_SELF_AUDIT=1：把下一节点处理人设为计划账号本人（nodeProxyId 用
+	// TEST_AUTO_PRO_F036_NODE），让产生的待办落在本账号名下，供审批族动作真实验证。
+	if os.Getenv("TEST_AUTO_PRO_F036_SELF_AUDIT") == "1" && (action == "submit" || action == "resubmit") {
+		request.NextNodeAuditors = []runtimeexec.NextAuditorEntry{{
+			NodeProxyID:     nodeProxyID,
+			BizID:           s.UserID,
+			Name:            s.Summary.DisplayName,
+			AuditDetailType: "personnel",
+		}}
+		if nodeProxyID == "" {
+			t.Fatalf("SELF_AUDIT 需要 TEST_AUTO_PRO_F036_NODE（下一节点代理 ID）")
+		}
+	}
 	exec := runtimeexec.NewRuntimeExecutor(rc)
 	res, err := exec.RunAction(ctx, request)
 	fact := map[string]any{
