@@ -38,6 +38,28 @@
 
 ---
 
+## 0.0 开工三步（现在就开始，别先读完全文再动手）
+
+1. **读**：`docs/s2/01-执行服务设计.md`（第 2.1、3、4、7 节）＋ 本文件 §3（事实底稿）＋ §附录A。
+2. **搭台子**：按 §5.4 建 `docs/auto/evidence/`；按 §5.1/§5.2 写两个 Go 用例（L1 装载台、L2 动作台）并跑通 L1 **首次真实装载**（此刻必然失败——把失败原因抄进证据文件，这就是你的起点）。
+3. **按里程碑推进**：`M1 装载台绿 → M2 模板精确选择绿 → M3 提交链真写绿 → M4 动作族（暂存/同意/不同意/重提/转发）逐个绿 → M5 选择闭环绿 → M6 测试换血＋文档收尾`。
+   每个里程碑跑通后立刻提交，并在 `docs/auto/evidence/` 落一份证据。
+
+### 0.1 优先级阶梯（按此顺序投入时间，宁可保 1 也不要做 3）
+
+| 级别 | 内容 | 说明 |
+| --- | --- | --- |
+| 必达 P0 | 装载不再 500；发起精确选模板；**保存草稿**、**提交**、**审批暂存** 三个动作真写成功 | 用户主要用途是造数据（草稿/提交）与暂存 |
+| 必达 P0 | 完成判定端点表修正（否则一切动作都会被误判） | 见 S7 |
+| 尽量 P1 | **同意**、**不同意**、**重提** | 依赖可用待办；缺待办则记录事实 |
+| 尽量 P1 | 手动分支/自选人员 `choice_required` 闭环 | 路径上确有分支时才需要 |
+| 可选 P2 | **转发**（复合写：transpond＋附言） | 前置状态最复杂 |
+| 可选 P2 | NoFormFlow/自定义表单（方案 A） | 做不了就走方案 B 并声明范围变更 |
+
+> 每完成一项就在本文件末尾的里程碑清单打勾（见 §10），这是你通宵的进度条。
+
+---
+
 ## 1. 完成定义（DoD，五条硬门，缺一条就不算完成）
 
 1. **七个动作**（保存草稿、提交、审批暂存、同意、不同意、重提、转发）各有一条真实证据：
@@ -203,6 +225,94 @@ rc.Load(ctx, handle.SessionID, loadMessage)                        // 用 runtim
 > `diagnostics` 至少含：`mode`、`hostPath`（组件链）、`templateId`、`templateCandidates`、
 > `semantics`（operaType/isReInitiate/btnVisible）、`patchReadback`（回读值）、`warnings`。
 > 这条诊断是后续每一步的观测口，**必须做**。
+
+#### 5.1.1 可复制骨架（照此写，别自创接线）
+
+```go
+package runtimeexec_test
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "os"
+    "testing"
+    "time"
+
+    "test-auto-pro-v2/internal/adapter/target"
+    "test-auto-pro-v2/internal/config"
+    "test-auto-pro-v2/internal/runtimeexec"
+    "test-auto-pro-v2/internal/session"
+)
+
+// realLoopDeps 是真实闭环验证台的公共接线：目标出口 + 会话管理 + runtime 客户端。
+func realLoopDeps(t *testing.T) (*runtimeexec.Client, func(context.Context, string) (target.Session, error)) {
+    t.Helper()
+    account := os.Getenv("TEST_AUTO_PRO_TARGET_ACCOUNT")
+    baseURL := os.Getenv("RUNTIME_EXECUTOR_URL")
+    if account == "" || baseURL == "" {
+        t.Skip("未配置 TEST_AUTO_PRO_TARGET_ACCOUNT / RUNTIME_EXECUTOR_URL，跳过真实闭环验证")
+    }
+    cfg := config.LoadTargetConfig()
+    if missing := cfg.MissingRequired(); len(missing) != 0 {
+        t.Fatalf("目标配置缺失：%v", missing)
+    }
+    client, err := target.NewClient(target.ClientConfig{
+        BaseURL: cfg.APIGateway, LoginPassword: cfg.LoginPassword, LoginAESKey: cfg.LoginAESKey,
+        LoginCode: cfg.LoginCode, PlatformCode: cfg.PlatformCode, TemplatePlatformCodes: cfg.TemplatePlatformCodes,
+        CustomerCode: cfg.CustomerCode, Timeout: cfg.HTTPTimeout,
+    })
+    if err != nil { t.Fatalf("目标客户端构造失败：%v", err) }
+    sessions := session.NewManager(client, cfg.SessionTTL)
+    rc, err := runtimeexec.NewClient(baseURL, client, sessions) // 第二参数=TargetForwarder，*target.Client 满足
+    if err != nil { t.Fatalf("runtime 客户端构造失败：%v", err) }
+    return rc, sessions.Current
+}
+
+func TestF036RealLoadLoop(t *testing.T) {
+    rc, current := realLoopDeps(t)
+    account := os.Getenv("TEST_AUTO_PRO_TARGET_ACCOUNT")
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+    defer cancel()
+    if err := rc.Health(ctx); err != nil { t.Fatalf("执行服务不可用：%v", err) }
+
+    handle, err := rc.CreateSession(ctx, runtimeexec.SessionSpec{AccountKey: account, RunID: "1", PathRunID: "1", StepID: "1"})
+    if err != nil { t.Fatalf("创建会话失败：%v", err) }
+    defer func() { _ = rc.Destroy(context.Background(), handle.SessionID) }()
+    if closeWS, prewarmErr := rc.Prewarm(ctx, handle.SessionID, account); prewarmErr == nil {
+        defer closeWS()
+    } else {
+        t.Fatalf("预热转发通道失败：%v", prewarmErr) // 装载期读取必须经通道
+    }
+
+    s, err := current(ctx, account)
+    if err != nil { t.Fatalf("取目标会话失败：%v", err) }
+
+    // 发起装载：SelectFlowType=auditWay，FlowTemplateID=计划绑定模板 ID（S2 落地后该字段才有）
+    load, err := runtimeexec.BuildLoadPayload(runtimeexec.LoadInput{
+        Mode: runtimeexec.LoadModeInitiate, Session: runtimeexec.SessionFacts{
+            UserID: s.UserID, CompanyID: s.CompanyID, DepartmentID: s.DepartmentID,
+            CustomerCode: s.CustomerCode, Account: s.Summary.Account, DisplayName: s.Summary.DisplayName,
+        },
+        ToolFlowName: "T-AUTO-F036-L1", SelectFlowType: "<auditWay>", FlowTemplateID: "<计划绑定模板ID>", BaseURL: "",
+    }, json.RawMessage(`{}`))
+    if err != nil { t.Fatalf("装载载荷构造失败：%v", err) }
+    envelope, err := runtimeexec.EncodeLoadMessage(handle.SessionID, fmt.Sprintf("load-%d", time.Now().UnixNano()), "1", "1", "1", load)
+    if err != nil { t.Fatalf("装载信封编码失败：%v", err) }
+    var message runtimeexec.Message
+    if err := json.Unmarshal(envelope, &message); err != nil { t.Fatalf("信封解析失败：%v", err) }
+    raw, err := rc.Load(ctx, handle.SessionID, message) // 返回 json.RawMessage：直接解析 diagnostics
+    if err != nil { t.Fatalf("装载失败：%v", err) }
+    t.Logf("装载响应：%s", string(raw))
+    // 断言：diagnostics.hostPath 非空、templateId 命中、无写端点；不满足就改代码，不放宽断言。
+}
+```
+
+> 注意：`SessionFacts` 的字段全部来自 `target.Session`（`UserID/CompanyID/DepartmentID/CustomerCode` + `Summary.Account/DisplayName`），
+> 不要自己拼身份。`LoadModeInitiate` 要求 `SelectFlowType` 非空（`loader.go:129`）。
+> 骨架里的 `FlowTemplateID` 是 **S2 要新增的字段**：先做 S2 加字段，再让这段编译通过；
+> 不要为了让它先跑起来而继续用 `flowProxyId` 顶替（那正是要修的 P1-2）。
+> L2 动作台复用同一套 `realLoopDeps`，把 `RunAction` 的 `RuntimeRunRequest` 按动作填参即可（字段清单见 `internal/runtimeexec/runner.go:33-62`）。
 
 ### 5.2 L2 动作台（真写、单动作）
 
@@ -483,3 +593,17 @@ go test ./internal/runtimeexec ./internal/engine/step ./test/contracts/... -coun
 | P1-8 | 半修+矛盾 | `executor.go:84` 放开 vs `:116` 拦截 |
 
 > 本文件是施工指令，不是描述性报告：执行时以"我能跑出来的证据"为唯一标准。
+
+---
+
+## 10. 里程碑进度清单（每完成一项就地打勾，并写上提交号与证据文件）
+
+- [ ] M0 环境就绪：执行服务 `/health` 通过、后端 `/api/health` 通过、L1/L2 用例文件已建（跳过逻辑正确）
+- [ ] M1 装载台绿：发起与详情装载都返回 200，`diagnostics.hostPath` 非空（S1）
+- [ ] M2 模板精确选择绿：命中计划绑定模板；0 条/不存在 ID 均阻塞且无写（S2）
+- [ ] M3 提交链真写绿：保存草稿、提交各一条真实证据（`T-AUTO-F036-*` 实例）（S4/S5/S7）
+- [ ] M4 动作族逐个绿：审批暂存、同意、不同意、重提（各一份证据；缺待办的动作写明事实）（S4/S6/S7）
+- [ ] M5 选择闭环绿：`choice_required` → 继续一次 → 仅多一笔写（S6）
+- [ ] M6 转发绿（可选）：transpond＋附言按序，第一步未确认不发第二步（S4）
+- [ ] M7 测试换血：`bash test/run-executor-service.sh` 含真实闭环用例且全绿（S9/§8）
+- [ ] M8 收尾：功能文档状态与结论按证据重写、晨报写完、进程停止、仓库干净（§9）
