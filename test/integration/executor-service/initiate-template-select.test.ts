@@ -35,11 +35,11 @@ test('只传 flowTemplateId 不传 auditWay 时阻塞', () => {
   )
 })
 
-test('查询空列表阻塞', () => {
-  assert.throws(
-    () => selectBoundTemplate({ params: { auditWay: 'employee_leave' }, flowList: [] }, 'bound-1'),
-    (error: unknown) => error instanceof InitiateBlockedError && String(error.message).includes('为空')
-  )
+test('查询空列表直接装载（单模板场景）', () => {
+  const handle = { params: { auditWay: 'approval' }, flowList: [] }
+  const result = selectBoundTemplate(handle, 'tpl-999')
+  assert.strictEqual(result.selectedId, 'tpl-999')
+  assert.strictEqual(result.via, 'direct')
 })
 
 test('结果不含绑定模板时阻塞且不调用确认', () => {
