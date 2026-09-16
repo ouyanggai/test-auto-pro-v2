@@ -348,7 +348,6 @@ async function main (): Promise<void> {
               }, values, { allowedKeys: allowed, optionsReady: true })
             }
           }
-          }
           if (!session.nativeHost) {
             send(500, { error: '原生宿主未捕获，装载失败' })
             return
@@ -356,10 +355,10 @@ async function main (): Promise<void> {
           session.loaded = true
           session.identity = {
             mode,
-            mode,
             operator: payload.currentOperator ?? null,
             initiator: payload.initiator ?? null
-        }
+          }
+          session.route.setToolFlowName(String(payload.toolFlowName ?? ''))
       })()
       return
     }

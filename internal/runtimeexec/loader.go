@@ -57,8 +57,7 @@ type LoadPayload struct {
 	AccountName     string        `json:"accountName,omitempty"`
 	SID             string        `json:"sid,omitempty"`
 	PlatformCode    string        `json:"platformCode,omitempty"`
-	// BaseURL 是目标网关地址：页面据此构造目标请求（由 Go 拦截转发，绝不直连）。
-	// —— 以下为评审 P1-3 补齐的目标代理与节点事实：目标组件提交/审批载荷直接消费这些字段 ——
+	BaseURL string `json:"baseURL,omitempty"`
 	// FormProxyID 是 FormMaking 表单代理 ID：FlowDialog 据 formId 决定发送 formProxyId；
 	// 缺失时目标提交会退回发送 flowProxyId: ""（评审 P1-3 的空代理 ID 根因）。
 	FormProxyID string `json:"formProxyId,omitempty"`
