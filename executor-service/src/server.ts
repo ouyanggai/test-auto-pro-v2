@@ -425,36 +425,53 @@ async function main (): Promise<void> {
             return
           }
           const readOnly = action === 'capture' || action === 'validate'
-          if (!readOnly && !session.loaded) {
-            sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: '表单尚未成功装载，不允许执行业务动作' })
-            return
-          }
-          session.actionInFlight = true
-          session.writeGate = new WriteGate()
-          session.transpondConfirmed = false
-          const baselineSeq = session.route?.trace.list().length ?? 0
-          try {
             if (!readOnly) {
               await session.page.evaluate((action) => {
                 const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
-                const host = native?.initFlow || native?.flowDetail
-                if (!host) return
-                const typed = host as Record<string, unknown>
+                const container = native?.initFlow || native?.flowDetail
+                if (!container) return
+                const typed = container as { $children?: Array<{ $options?: { name?: string }, sumbitFlow?: unknown, temporaryStorage?: unknown, formMakingFormBusiness?: unknown, saveSubmit?: unknown, confirmTranspond?: unknown }> }
+                const flowDialog = typed.$children?.find(c => c.$options?.name === 'FlowDialog')
+                const opinion = typed.$children?.find(c => c.$options?.name === 'EnterpriseExamineOpinion')
                 switch (action) {
                   case 'save_draft':
-                    if (typeof typed.sumbitFlow === 'function') (typed.sumbitFlow as (kind: string) => unknown)('draft')
+                    if (flowDialog && typeof flowDialog.sumbitFlow === 'function') {
+                      (flowDialog.sumbitFlow as (kind: string) => unknown)('draft')
+                    }
                     break
                   case 'submit':
-                    if (typeof typed.sumbitFlow === 'function') (typed.sumbitFlow as (kind: string) => unknown)('submit')
+                    if (flowDialog && typeof flowDialog.sumbitFlow === 'function') {
+                      (flowDialog.sumbitFlow as (kind: string) => unknown)('submit')
+                    }
+                    break
+                  case 'storage_form_data':
+                    if (opinion && typeof opinion.temporaryStorage === 'function') {
+                      (opinion.temporaryStorage as () => unknown)()
+                    }
                     break
                   case 'resubmit':
-                    if (typeof typed.reSubmit === 'function') (typed.reSubmit as () => unknown)()
+                    if (opinion && typeof opinion.saveSubmit === 'function') {
+                      (opinion.saveSubmit as (type: string) => unknown)('submit')
+                    }
                     break
                   case 'approve':
-                    if (typeof typed.formMakingFormBusiness === 'function') (typed.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(true, 'pass')
+                    if (opinion && typeof opinion.formMakingFormBusiness === 'function') {
+                      (opinion.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(true, 'pass')
+                    }
                     break
                   case 'reject':
-                    if (typeof typed.formMakingFormBusiness === 'function') (typed.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(false, 'no_pass')
+                    if (opinion && typeof opinion.formMakingFormBusiness === 'function') {
+                      (opinion.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(false, 'no_pass')
+                    }
+                    break
+                  case 'forward':
+                    if (opinion && typeof opinion.confirmTranspond === 'function') {
+                      (opinion.confirmTranspond as () => unknown)()
+                    }
+                    break
+                }
+              }, action)
+            }
                     break
                   case 'storage_form_data':
                     if (typeof typed.storageFormData === 'function') (typed.storageFormData as () => unknown)()
@@ -462,17 +479,24 @@ async function main (): Promise<void> {
                   case 'forward':
                     if (typeof typed.confirmTranspond === 'function') (typed.confirmTranspond as () => unknown)()
                     break
-                }
-              }, action)
-            }
-            const verdict = readOnly
-              ? { status: 'success' as const, requestTrace: [] }
-              : await settleCompletion({
-                action,
-                trace: session.route!.trace,
-                baselineSeq,
                 businessDone: async () => {
                   const entries = session.route!.trace.list().filter(e => e.seq > baselineSeq)
+                  const flowWrites = entries.filter(e => 
+                    e.method === 'POST' && 
+                    e.state === 'fulfilled' &&
+                    e.response?.httpStatus === 200 &&
+                    (e.url.includes('/flowInstanceApi/submit') || 
+                     e.url.includes('/flowInstanceApi/audit') ||
+                     e.url.includes('/flowInstanceApi/transpond') ||
+                     e.url.includes('/flowInstanceApi/temporaryStorage') ||
+                     e.url.includes('/flowInstanceApi/reEdit'))
+                  )
+                  if (flowWrites.length === 0) return false
+                  const hasBusinessError = await session.page.evaluate(() => {
+                    return (window as unknown as { __businessError?: boolean }).__businessError === true
+                  }).catch(() => false)
+                  return flowWrites.length > 0 && !hasBusinessError
+                },
                   const flowWrites = entries.filter(e => 
                     e.method === 'POST' && 
                     e.state === 'fulfilled' &&

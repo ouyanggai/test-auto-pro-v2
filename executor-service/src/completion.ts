@@ -7,12 +7,13 @@
 import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
 
 // FLOW_WRITE_PATHS 是流程主写端点：它们的成败决定主实例是否推进（转发的辅助实例创建同属主写）。
-const FLOW_WRITE_PATHS = ['/web/flowInstanceApi/submit', '/flowInstanceApi/audit', '/web/flowInstanceApi/reSubmit', '/web/flowInstanceApi/transpond']
-
-export type CompletionVerdict = 'success' | 'target_rejected' | 'uncertain' | 'business_failed' | 'failed' | 'timeout'
-
-export interface CompletionInput {
-  action: string
+const FLOW_WRITE_PATHS = [
+  '/web/flowInstanceApi/submit',
+  '/web/flowInstanceApi/audit',
+  '/web/flowInstanceApi/transpond',
+  '/web/flowInstanceApi/temporaryStorage',
+  '/web/flowInstanceApi/reEdit'
+]
   trace: RequestTraceRecorder
   baselineSeq: number
   businessDone: () => Promise<boolean>

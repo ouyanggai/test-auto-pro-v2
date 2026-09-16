@@ -89,10 +89,9 @@ func (e *Executor) shouldRunViaRuntime(runCtx RunContext, step model.CompiledAct
 	case model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData,
 		model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward:
 	default:
-		return false
+	if r := e.runtime; r != nil {
+		return e.runViaRuntime(ctx, preview, runCtx, step)
 	}
-	// 无表单（vue_custom/NoFormFlow）不经 runtime：runtime 首版只支持 FormMaking 表单链。
-	if runCtx.RenderType != "" && runCtx.RenderType != string(target.FormRenderTypeFormMaking) {
 		return false
 	}
 	return true
