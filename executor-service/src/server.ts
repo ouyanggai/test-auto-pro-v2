@@ -431,6 +431,9 @@ async function main (): Promise<void> {
             return
           }
           const readOnly = action === 'capture' || action === 'validate'
+          try {
+            session.actionInFlight = true
+            const baselineSeq = session.route!.trace.nextSeq()
             if (!readOnly) {
               await session.page.evaluate((action) => {
                 const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
@@ -507,7 +510,9 @@ async function main (): Promise<void> {
                 gate: async () => !session.choicePending,
                 writeGate: session.writeGate
               })
+            sendEnvelope(ws, session, 'result', envelope.requestId, verdict)
           } catch (error) {
+            sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error) })
           } finally {
             session.actionInFlight = false
           }
