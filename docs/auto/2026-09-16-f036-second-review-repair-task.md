@@ -1,250 +1,485 @@
-# F-036 二次核对与修复施工方案（原生装载与七个动作闭环）
+# F-036 夜间自主施工令：把 S2 调通可用（agent 通宵执行版）
 
-- 审查基线：`48f7ced`（第一次审查不通过，结论见 `docs/features/F-036-independent-executor-native-page.md`）
-- 本次核对范围：`48f7ced..17ca7e3`，即 `bd8b1a3`、`6988dbf`、`e3b13d3`、`942a5a4`、`9806ab9`、`a5c280e`、`afc807d`、`d7c0989`、`1cccf63`、`ba8c194` 等"P1 问题 1-8 修复完成"提交
-- 核对方式：不采信提交说明与功能文档结论，直接读当前 HEAD 源码 + 独立快照
-  `executor-service/flow-source/`（`test`/`be355ae`）+ 执行服务实际装载的构建产物 `executor-service/flow-source/dist.zip`；
-  未调用真实目标写接口，未修改任何代码或状态
-- 结论：**八个 P1 没有一项真正闭环**。其中 P1-1、P1-4、P1-5、P1-6 未修；P1-2、P1-3、P1-7 属"改了一半、方向正确但落地错误"；P1-3、P1-7、P1-8 的改动引入了新的确定性故障或口径矛盾。
-  当前 HEAD 仍不能达成"通过原生页面完成七个动作"。
+> 读者＝被授权独立施工的执行 agent。目标：在无人介入的情况下，用真实页面与真实目标证据，把 F-036
+> （S2「独立执行服务与原生页面装载」）修到**七个动作通过原生页面真实可用**。
+> 本文件同时是施工令、事实底稿、验证台说明和验收标准。**先完整读一遍再动手**；全程不要向用户提问（用户已休息）。
 
-## 一、逐条判定
+---
 
-| 编号 | 事项 | 判定 | 一句话依据 |
+## 0. 授权与边界（用户睡前预授权，照此执行）
+
+### 允许（不需要再确认）
+
+1. 读写本仓库代码、测试、文档；中文原子提交；本地建分支随意。
+2. 启动/重启本地服务：Go 后端、执行服务（executor-service）、表单运行时、主前端。
+3. 打开无头 Chromium（执行服务自带），装载真实目标页面；对目标平台做**只读**读取（模板、实例、字段权限、远程选项）。
+4. 对目标平台做**真实写**——但只允许通过本工具自己的执行链路发出（`internal/runtimeexec` → `executor-service` → 页面原生组件 → 目标端点）。
+   - 计数上限：整夜通过工具发起的真实流程实例 ≤ 12 个；每个动作 ≤ 3 次真实写尝试；达到上限即停该动作并记录。
+   - 流程名称必须带标记 `T-AUTO-F036-<序号>`，便于用户次日识别与清理。
+   - 同一个动作的失败重试使用**新实例**，不复用已写过的实例（除非该动作本身就是对同一实例的合法后续）。
+5. 读取目标业务库只读连接（`.env.local` 里的 `TARGET_DB_*`）核对写后事实。
+6. 新增测试与验证脚本；删除与生产实现不一致的旧测试（见 §8）。
+
+### 禁止（做了就算事故）
+
+1. 修改目标平台源码、权限、数据库（`参考代码/` 只读；`make refs-sync` 只用于同步快照）。
+2. 用临时脚本绕过工具链路直接打目标写端点（所有真实写必须经 §5 的验证台或工具运行）。
+3. 提交凭证、日志、`.env.local`、`参考代码/`、构建产物；`git push`；改动与本切片无关的功能。
+4. 为了让测试变绿而跳过/删除有效断言、放宽门禁、把阻塞改成"成功"。
+5. 在没有**端点级证据**（写请求真的以正确端点出现在 target trace 里）时宣称某动作可用。
+6. 向用户提问、等待确认、把未验证的东西写成 `ready_for_manual`。
+
+### 决策规则（遇到分歧时）
+
+- 设计口径以 `docs/s2/01-执行服务设计.md` 为准；产品口径以 `docs/PRODUCT.md` 为准；目标平台行为以
+  `executor-service/flow-source/src/` 与 `参考代码/rsh-cloud-invest-power-system/src/` 的真实代码为准。
+- 提交说明与功能文档里的结论**一律不采信**，只采信你自己跑出来的证据。
+- 歧义时选保守方案（阻塞 > 猜测；真证据 > 推断），并把选择写进晨报。
+
+---
+
+## 1. 完成定义（DoD，五条硬门，缺一条就不算完成）
+
+1. **七个动作**（保存草稿、提交、审批暂存、同意、不同意、重提、转发）各有一条真实证据：
+   动作返回 `success`，且 target trace 里出现**该动作应有的写端点**（见 §附录A.3），并有写后事实核验（实例/任务/表单状态变化）。
+2. 装载不再 500，且发起侧**精确命中计划绑定模板**（日志里可读到实际模板 ID 与候选集合）。
+3. `bash test/run-executor-service.sh` 全绿，且其中包含**真实闭环用例**（§8），不再只有纯函数用例。
+4. 手动分支/自选人员路径能走通：出现 `choice_required` → 继续一次 → 只多一笔写请求。
+5. `docs/features/F-036-independent-executor-native-page.md` 状态回到 `ready_for_manual`，
+   逐项状态与真实证据一致（把"P1 修复完成 ✅"那段改成 §附录B 的真实结论），并给出用户次日人工核对步骤；
+   晨报写在 `docs/auto/2026-09-17-f036-autonomous-run-report.md`（模板见 §9.2）。
+
+**不要求**：NoFormFlow/自定义表单的真跑通——但必须二选一并写死口径（见施工步骤 S8）。
+
+---
+
+## 2. 铁律：上一轮出现过的"假修"（再犯即失败）
+
+| 假修形态 | 本轮禁止 |
+| --- | --- |
+| 把 `null` 赋回去当成"已抓取" | 捕获逻辑必须能自证：抓到实例后把组件链写进装载诊断 |
+| 用错字段顶替（`formProxyId`/`flowProxyId` ↔ `flowTemplateId`） | 语义不同的 ID 不得互用；新增 `flowTemplateId` 专字段 |
+| 常量加了、校验没改（`LoadModeEdit` vs `loader.go:123`） | 加常量必须同时改校验与测试 |
+| 用不存在的端点凑清单（`reEdit`/`temporaryStorage`） | 端点只能来自 `flow-source/src/api/index.js` 的真实定义 |
+| 幻影全局标志当判据（`__businessError`） | 判据必须有写入方；写不出写入方就换判据 |
+| 参数语义写反/写死（`optionsReady:false`/`true`） | 就绪必须"等待"出来，不能硬编码 |
+| `if (found) {...}` 静默跳过 | 找不到入口/接口 → `unsupported` 阻塞，绝不静默成功 |
+| 测试只覆盖纯函数，生产是另一套分发 | 断言必须打在**生产分发路径**上 |
+
+---
+
+## 3. 事实底稿（已独立核对完成，直接用，不要重复考古）
+
+### 3.1 现状：审查列出的八个 P1，当前 HEAD（`17ca7e3`）一项都没闭环
+
+| 编号 | 事项 | 现状 | 关键证据 |
 | --- | --- | --- | --- |
-| P1-1 | 所有装载最终都会失败 | **未修** | 捕获脚本挂在 `window.Vue/window.app`，产物只暴露 `window.$vue`；`server.ts:297` 只是把 `null` 赋回去，`:358` 仍必然 500 |
-| P1-2 | 精确选模板用了错误 ID、单模板被阻塞 | **未修（换了个错 ID）** | 选择改用 `flowProxyId`（`server.ts:320`），但 URL 仍写 `flowTemplateId=formProxyId`（`:111`）；0 模板被当成"单模板直接加载"，且没有任何对照列表的校验 |
-| P1-3 | 重提走错模式、taskContext 不全 | **未修（新增硬故障）** | `runner.go:101-102` 已改 `edit`，但 `loader.go:123` 仍只允许 `initiate/approve/forward` → 重提在 Go 侧构造装载载荷时必失败；URL 仍只有 `mode/jobTaskId`（`server.ts:119`） |
-| P1-4 | 动作调用落不到真正业务组件 | **未修** | 仍在容器直接子级按名字找 `FlowDialog`/`EnterpriseExamineOpinion`（`server.ts:443-444`）；审批侧组件名是 `ExamineOpinion` 且深两层；找不到即静默跳过（`:447-481`） |
-| P1-5 | 配置数据可能完全未应用却继续执行 | **未修（语义反了）** | `optionsReady: false`（`server.ts:355`）会让 `applyNodePatch` 直接抛错；表单 API 宿主层级仍然错；找不到接口时 `if (api)` 静默跳过；回读值被丢弃 |
-| P1-6 | 人员、意见、选择没有接通 | **未修（被显式推迟）** | WS 执行只读 `action`（`server.ts:411`）；`choicePending` 从未置 `true`；`choice_required` 事件从未发出（全仓 grep 为 0） |
-| P1-7 | 完成判定仍会误报 | **未修（端点写错，更严重）** | `completion.ts:14/15` 写入了两个**不存在**的端点，且删掉了正确的 `/web/flowInstanceApi/reSubmit`；`__businessError` 是幻影标志，无人写入 |
-| P1-8 | 自定义表单、NoFormFlow 绕过新服务 | **半修 + 口径矛盾** | 路由已放开（`executor.go:84`），但 `executor.go:116` 仍以 `FormProxyID == ""` 拦截无表单；服务端只支持 FormMaking 形状 |
+| P1-1 | 装载必然失败 | 未修 | 捕获脚本用 `window.Vue \|\| window.app`（`server.ts:93`）；产物只有 `window.$vue=zo`、`prototype.$initFlow=ko`，`window.Vue=`/`window.app=` 零赋值 → `__executorNative` 永远空 → `:358` 必 500 |
+| P1-2 | 模板选择 ID 错 | 未修 | 选择用 `flowProxyId`（`:320`），URL 却写 `flowTemplateId=formProxyId`（`:111`）；`native-initiate.ts:31-33` 把"0 模板（无权限）"当成"单模板直接加载" |
+| P1-3 | 重提模式/上下文 | 未修+新硬故障 | `runner.go:101` 改 `edit`，但 `loader.go:123` 仍只允许 `initiate/approve/forward` → 重提在 Go 构造载荷即失败；URL 只有 `mode/jobTaskId` |
+| P1-4 | 动作落不到组件 | 未修 | 在容器直接子级找 `FlowDialog`/`EnterpriseExamineOpinion`（`:443-444`）；审批侧真名 `ExamineOpinion` 且深两层；找不到静默跳过（`:447-481`） |
+| P1-5 | 配置数据未应用 | 未修 | `optionsReady:false`（`:355`）必抛 `UnsupportedFormError`；表单 API 宿主层级错；`if (api)` 静默跳过；回读值丢弃 |
+| P1-6 | 意见/人员/选择未接通 | 未修 | WS 只读 `action`（`:411`）；`choicePending` 从不置 `true`；`choice_required` 全仓 0 次发出 |
+| P1-7 | 完成判定误报 | 未修 | `completion.ts:14-15` 用了两个**不存在**的端点（`temporaryStorage`/`reEdit`），还删掉了正确的 `reSubmit`；`__businessError` 是幻影 |
+| P1-8 | NoFormFlow 绕过 | 半修+矛盾 | 路由放开（`executor.go:84`）但 `:116` 仍以 `FormProxyID==""` 拦截；服务只支持 FormMaking 形状 |
 
-补充（第一次审查未点名、但同属阻断级）：
+附加（同为阻断级）：`/web/flowInstanceApi/submit` 同时被 `checkFlowPermission()` 当权限校验用（`EnterpriseExamineOpinion.vue:1316`），只看 URL+方法会把"权限校验"误判成"流程已写"。
 
-- **主写识别会被"权限校验 POST"污染**：重提链路先调 `checkFlowPermission()`，它 POST 的正是 `/web/flowInstanceApi/submit`（`EnterpriseExamineOpinion.vue:1316`）。只按 URL+方法判定主写，会把权限校验当成"流程写已受理"，完成判定随之失真。
-- **`applyNodePatch` 抛错会变成装载 500**：`optionsReady: false` 时该函数必然抛 `UnsupportedFormError`；当前组件探测层级写错（多数情况探不到 → 走 `if (api)` 静默跳过），但一旦探测通过，装载块没有对该错误做 `unsupported` 分类，就会直接返回 500。
+### 3.2 目标平台真名速查（改动前逐条对照，不要凭记忆）
 
-## 二、必须先读的目标平台事实（照做前逐条核对）
+**全局句柄**（`flow-source/src/main.js`，产物可验证 `prototype.$initFlow=ko`、`window.$vue=zo`）：
+`window.$vue = app`（根实例）；`Vue.prototype.$initFlow = createDialog`、`Vue.prototype.$flowDetail = flowDetailDialog`
+（`components/InitFlowDialog/index.js`）。`createDialog` 返回 `{instance, close, setData}`，`flowDetailDialog` 返回 `{instance, close}`。
 
-统一路径前缀：`executor-service/flow-source/src/`（下称快照）。这些是原生页面自身的行为，不是推测。
+**组件树**：
 
-### 2.1 全局句柄与薄桥接落点
+- 发起：`InitFlowDialog`（`name:'InitFlowDialog'`）→ 直接子 `FlowDialog`（`name:'FlowDialog'`，`v-if=approveDialogVisible`）。
+  表单 API：`FlowDialog.$refs.OtherSteps2.$refs.generateForm`。
+- 详情：`flowDetail`（globalDialog，**`name:''`**）→ `EnterpriseExamineDialog`（`ref="generateForm"`、`data.editData`）
+  → `<component :is>` 包装 → `ExamineOpinion`（**`name:'ExamineOpinion'`**）。表单 API 与 `editData` 在 `EnterpriseExamineDialog` 上。
+- 无表单：`flowDetail` → `ExamineDialog`（`v-if=ExpensesClaimFormVisible`），审批方法在 `components/examineOpinion.vue`（`submitTask` → `/flowInstanceApi/audit`）。
 
-- `main.js`：`window.$router` / `window.$store` / **`window.$vue = app`（根实例）**。产物中可验证：`app.js` 内存在 `prototype.$initFlow=ko`、`prototype.$flowDetail=Co`、`window.$vue=zo`；`window.Vue=`、`window.app=` 在产物中**零赋值**（只有 `if (window.Vue) window.Vue.use(...)` 这种只读判断）。
-- `components/InitFlowDialog/index.js`：`Vue.prototype.$initFlow = createDialog`、`Vue.prototype.$flowDetail = flowDetailDialog`；
-  `createDialog` 返回 `{ instance, close, setData }`，`flowDetailDialog` 返回 `{ instance, close }`。**要的是 `instance`**。
-- 因此正确捕获方式：从 `window.$vue` 取其原型（`Object.getPrototypeOf(window.$vue)`），包装该原型上的 `$initFlow`/`$flowDetail`，把 `created.instance` 存进 `window.__executorNative`。当前 `server.ts:93` 的 `window.Vue || (window.app && window.app.constructor)` 永远取不到东西。
-- `page-origin.ts:85` 也有一份 `injectIdentityScript`，**没有被 import**（`server.ts:12` 只引入 `extractPageDist/serveFlowPage`），是死代码；它用 `window.$vue.$children.find(name==='InitFlowDialog')` 也是错的：`$initFlow` 把弹窗挂在独立 div 上（`parent: this`），不在任何组件的 `$children` 里。两份必须合并成一份并删除死代码。
+**动作方法真名**（`EnterpriseExamineOpinion.vue`，照原生按钮）：
 
-### 2.2 发起链
-
-- `views/FlowInitiate.vue`：`mounted` 里 `this.$initFlow({ title, params: { flowTemplateId: params.flowTemplateId, companyId: params.companyId, ...params }, onSuccess, onClosed })`；**`params.auditWay` 才是查询条件**，`flowTemplateId` 只是透传。
-- `components/InitFlowDialog/InitFlowDialog.vue`：
-  - 只在 `params.auditWay` 存在时 `getFlowByTemplate(auditWay)`；
-  - 列表走 `Api.schedule.getFlowTemplateList` → `/web/flowTemplateApi/list`；
-  - `res.data.length == 0` → `this.$message.error('暂无流程权限，请联系管理员')`，**不发生任何加载**；
-  - `== 1` → `getFlowFindById(res.data[0].id)`，**`flowList` 保持 `[]`**；
-  - `> 1` → `this.flowList = res.data`，打开 `chooseFlowDialog`，确认后 `confirm(id)` → `getFlowFindById(find.id)`；
-  - 详情走 `Api.schedule.flowTemplateFindById` → `/web/flowTemplateApi/findById`，成功后 `flowJson = res.data`、`approveDialogVisible = true`。
-  - 组件名：本组件 `InitFlowDialog`；其模板内直接子组件 `FlowDialog`（`name: 'FlowDialog'`，`v-if="approveDialogVisible"`）。
-- 发起动作落点：`views/GroupApproveManage/Submitted/components/FlowDialog.vue`
-  - `sumbitFlow('draft')`（模板第 31/32 行按钮）、`sumbitFlow('submit')`（第 33 行按钮），方法定义在第 1052 行；
-  - 表单数据接口：`this.$refs.OtherSteps2.$refs.generateForm`（第 391/459/666 行），`OtherSteps2` = `Submitted/components/OtherSteps2.vue`，通过 `ref="OtherSteps2"` 挂载。
-
-### 2.3 详情链
-
-- `views/FlowDetail.vue`（路由页，`name: 'FlowDetail'`）：读 `mode` 与 `taskContext`，`switch(mode)`：
-  - `audit` → `isExamine=true`，`operaType='examine'`（费用类无表单在 `strictEditAuditWaySet` 且 `formExist` 不成立时走 `'edit'`），`taskStatus='pending'`；
-  - `edit` → `isReInitiate=true`，`operaType='reEdit'`，`taskStatus='edit'`；
-  - `view` → `operaType='check'`；
-  - `taskContext` 解析：优先 `taskContext` query 的 JSON，否则从逐字段 query 里取（字段清单见源码 `fieldNames`，含 `auditWay/formExist/formProxyId/flowProxyId/flowNodeProxyId/nextNodeProxyId/nextNodeName/nextNodeType/auditPassLogicFlag/branchExecuteType/lastCountersignFlag/initiatorId/flowInstanceName/flowInstanceBizRelevanceList/currentPendingNodeName/tracking` 等）；
-  - `mode==='edit'` 时 `data.row = taskContext`，并 `applyEditEntryContext`（写 `flowName/selectFlowName/flowStatus/btnVisible`）；
-  - `data.isExamine/isReInitiate/operaType/actionType/taskStatus` 都来自上面的映射，**执行服务不需要自己拼 data**，但必须把 `mode` 与 `taskContext` 传到位。
-- 弹窗实例来自 `$flowDetail(...)`，其 `instance` 是 `layout/components/globalDialog/components/flowDetail.vue`：`name: ""`（**空名字**，任何 `name === 'FlowDetail'` 的查找都不可能命中），模板直接子级是 `EnterpriseExamineDialog`（`v-if="examineDialogVisible"`）和 `ExamineDialog`（无表单，`v-if="ExpensesClaimFormVisible"`）。
-- `views/GroupApproveManage/components/EnterpriseExamineDialog.vue`：表单接口 `ref="generateForm"`（`fm-generate-form`），数据 `editData: {}`；模板内含 `EnterpriseExamineOpinion v-if="visible"`（组件名 `ExamineOpinion`，见 `EnterpriseExamineOpinion.vue:271`）。原生自己就是用 `this.$parent.$parent.$refs.generateForm` / `this.$parent.$parent.editData`（`EnterpriseExamineOpinion.vue:589/598`）取表单与数据的，说明宿主是 **EnterpriseExamineDialog**。
-  → 审批/重提侧的动作宿主是 `ExamineOpinion`，且它在 `flowDetail → EnterpriseExamineDialog → <component :is> 包装 → ExamineOpinion`的深处；**不能按层数取**（设计 §4 明令禁止），必须从捕获实例递归遍历 `$children` 按 `$options.name` 命中并断言唯一。
-- 动作方法真名（`EnterpriseExamineOpinion.vue`，全部照原生按钮走）：
-
-| 动作 | 原生按钮 | 应调方法 |
+| 动作 | 原生入口 | 备注 |
 | --- | --- | --- |
-| 同意 | `<el-button @click="submitCheckBefore('pass')">同意`（第 42 行） | `submitCheckBefore('pass')`，内部：`$confirm` → `$refs.approveForm.validate` → `formMakingFormBusiness(true,'pass')`（第 745 行） |
-| 不同意 | `submitCheckBefore('no_pass')`（第 52 行） | `submitCheckBefore('no_pass')` |
-| 审批暂存 | `@click="temporaryStorage"`（第 57 行） | `temporaryStorage()`（第 587 行，无参） |
-| 重提 | `v-else-if="isReInitiate"` 分支的 `saveSubmit('submit')`（第 87 行） | `saveSubmit('submit')`（第 1135 行；`isReInitiate` 时转 `reSubmitFormMakingFormBusiness(true)` → `handleRePostSubmit`） |
-| 重提保存草稿 | 同分支 `saveSubmit('save')` | `saveSubmit('save')` |
-| 转发 | `confirmTranspond`（`flowTypeMixin.js:127`，混入 `ExamineOpinion`） | 必须先有 `batchSelectDatas[0]`、`currentFormData`、`transpondFlowInstance`、`approveForm.personId/personName/checkList`（`transpond(type)` 第 60 行负责准备），否则必抛错 |
-| 选择继续 | 并行 `handleSaveParallelChooseNode`（第 655 行）、分支 `handleSaveBranchChooseNode`（第 695 行）、自选 `getSelectPerson(data)`（第 626 行） | 同名方法；`getSelectPerson` 需要 `{checkboxPersonGroup:[{id,name,nodeProxyId}]}` |
+| 同意 | `submitCheckBefore('pass')`（按钮 42 行；定义 745 行） | 内含 `$confirm` → `approveForm.validate` → `formMakingFormBusiness(true,'pass')` |
+| 不同意 | `submitCheckBefore('no_pass')`（52 行） | 同上 |
+| 审批暂存 | `temporaryStorage()`（57 行按钮；定义 587 行） | 无参 |
+| 重提 | `saveSubmit('submit')`（87 行按钮，`v-else-if="isReInitiate"`；定义 1135 行） | `isReInitiate` 时转 `handleRePostSubmit` |
+| 重提存草稿 | `saveSubmit('save')` | 同分支 |
+| 转发 | `confirmTranspond()`（`flowTypeMixin.js:127`） | **前置状态**：`approveForm.personId/personName/checkList`、`batchSelectDatas[0]`、`currentFormData`、`transpondFlowInstance`（由 `transpond(type)` 准备） |
+| 选择继续 | `handleSaveBranchChooseNode()` / `handleSaveParallelChooseNode()` / `getSelectPerson(data)` | `getSelectPerson` 需 `{checkboxPersonGroup:[{id,name,nodeProxyId}]}` |
 
-- 审批意见入口是 `approveForm.approveMessage`（`rules.approveMessage` 必填），最终进 `auditRecord.executeDesc`（第 598/982 行）；下一节点人员进 `nextAuditorList`（第 318 行），构造为 `{name, bizId, auditDetailType:'personnel', nodeProxyId}`。
+审批意见字段：`approveForm.approveMessage`（必填规则）→ 最终 `auditRecord.executeDesc`（598/982 行）。
+下一节点人员：`nextAuditorList`（318 行），条目 `{name,bizId,auditDetailType:'personnel',nodeProxyId}`。
 
-### 2.4 端点真名（`api/index.js`，决定完成判定与主写识别）
+**端点真名**（`flow-source/src/api/index.js`）：
 
-| 语义 | 真实端点 | 备注 |
+| 语义 | 端点 |
+| --- | --- |
+| 提交 / 保存草稿 / 权限校验 | `/web/flowInstanceApi/submit` |
+| 审批（同意/不同意） | `/flowInstanceApi/audit`（无 `/web` 前缀） |
+| 审批暂存 | `/web/flowInstanceApi/storageFormData` |
+| 重提 | `/web/flowInstanceApi/reSubmit` |
+| 转发 | `/web/flowInstanceApi/transpond` |
+| 模板列表 / 详情 | `/web/flowTemplateApi/list`、`/web/flowTemplateApi/findById` |
+
+**发起链行为**（`InitFlowDialog.vue`）：只有 `params.auditWay` 存在才查询；列表 0 条 → 报"暂无流程权限"且不加载；
+1 条 → 直接 `getFlowFindById(res.data[0].id)`（`flowList` 保持 `[]`）；多条 → 打开 `chooseFlowDialog`，`confirm(id)` 后加载。
+
+**详情 query 契约**（`views/FlowDetail.vue`）：`mode` ∈ `audit|edit|view`；`taskContext` 优先取 query JSON，
+否则从逐字段 query 取（`auditWay/formExist/formProxyId/flowProxyId/flowNodeProxyId/nextNodeProxyId/nextNodeName/nextNodeType/auditPassLogicFlag/branchExecuteType/lastCountersignFlag/initiatorId/flowInstanceName/flowInstanceBizRelevanceList/currentPendingNodeName/tracking` 等）。
+
+---
+
+## 4. 环境与启动
+
+端口：后端 `0.0.0.0:19080`｜主前端 `19000`（vite）｜表单运行时 `19001`｜执行服务 `19011`（`EXECUTOR_PORT` 可覆盖）。
+
+```bash
+# 0) 依赖与配置自检（.env.local 必须存在；只看键名，不要打印值）
+pnpm install
+grep -c . .env.local            # 非空即可
+awk -F= '/^(RUNTIME_EXECUTOR_URL|TARGET_API_GATEWAY|PLAN_DB_HOST)=/{print $1}' .env.local
+```
+
+```bash
+# 1) 执行服务（后台常驻；改代码后必须重启）
+pnpm --dir executor-service typecheck
+pnpm --dir executor-service start          # 日志第一行含 "listening"
+curl -s http://127.0.0.1:19011/health      # {"ok":true,...,"protocol":"exec-engine/v2"}
+```
+
+```bash
+# 2) 后端（读 .env.local；RUNTIME_EXECUTOR_URL 已配置时七个动作走执行服务）
+pnpm dev:b                                  # 或 go run ./cmd/server
+curl -s http://127.0.0.1:19080/api/health
+```
+
+```bash
+# 3) 主前端（仅 L3 运行台/人工界面需要）
+pnpm dev:f
+```
+
+长驻进程用后台方式启动并保留日志（例如 `nohup ... > /tmp/f036-executor.log 2>&1 &`），
+并把日志路径写进晨报。**每次改执行服务代码后重启并确认 `/health` 通过**，否则会拿旧进程测新代码。
+
+---
+
+## 5. 三个验证台（内层循环，先搭台子再改代码）
+
+顺序要求：**先能反复观测，再改代码**。三个台子都由你新建，放在 `test/integration/runtimeexec/`，
+用环境变量门禁（`TEST_AUTO_PRO_TARGET_ACCOUNT` + `RUNTIME_EXECUTOR_URL` + `PLAN_DB_*`），未配置时 `t.Skip`。
+
+### 5.1 L1 装载台（真读、无写）——最快的内层循环
+
+文件：`test/integration/runtimeexec/real_load_loop_test.go`
+
+接线（照抄 `cmd/server/main.go:37-48 / 174-178` 的构造）：
+
+```go
+targetCfg := config.LoadTargetConfig()                       // 缺项直接失败，不要跳过
+client, _ := target.NewClient(target.ClientConfig{ BaseURL: targetCfg.APIGateway, LoginPassword: targetCfg.LoginPassword,
+    LoginAESKey: targetCfg.LoginAESKey, LoginCode: targetCfg.LoginCode, PlatformCode: targetCfg.PlatformCode,
+    TemplatePlatformCodes: targetCfg.TemplatePlatformCodes, CustomerCode: targetCfg.CustomerCode, Timeout: targetCfg.HTTPTimeout })
+sessions := session.NewManager(client, targetCfg.SessionTTL)
+rc, _ := runtimeexec.NewClient(runtimeExecURL, client, sessions)   // 第二个参数是 TargetForwarder（*target.Client 满足）
+handle, _ := rc.CreateSession(ctx, runtimeexec.SessionSpec{AccountKey: account, RunID: "1", PathRunID: "1", StepID: "1"})
+closeWS, _ := rc.Prewarm(ctx, handle.SessionID, account)           // 装载期读取必须走通道，否则页面读全被中止
+defer rc.Destroy(ctx, handle.SessionID); defer closeWS()
+rc.Load(ctx, handle.SessionID, loadMessage)                        // 用 runtimeexec.BuildLoadPayload + EncodeLoadMessage 构造
+```
+
+断言（不满足就修代码，不许放宽断言）：
+
+1. `Load` 返回 200 且响应诊断里 `mode` 正确、捕获到的组件链非空（发起：`InitFlowDialog>FlowDialog`；审批：`flowDetail>EnterpriseExamineDialog>ExamineOpinion`）。
+2. 发起：装载诊断里的**实际模板 ID == 计划绑定模板 ID**；候选集合来自 `/web/flowTemplateApi/list` 的真实响应体。
+3. 详情：`operaType/isReInitiate/btnVisible` 与 mode 对应（`audit→examine|edit`、`edit→reEdit`、`view→check`）。
+4. 目标 trace 里出现 `/web/flowTemplateApi/list`、`/web/flowTemplateApi/findById`（发起）或实例读取（详情），且**没有任何写端点**。
+
+> 诊断怎么拿：给 `/load` 的 200 响应体**增加** `diagnostics` 字段即可——Go 侧 `Client.Load` 返回 `json.RawMessage`
+> （`internal/runtimeexec/client.go:131`），新增字段不影响解码；L1 用例直接解析这段 JSON 断言。
+> `diagnostics` 至少含：`mode`、`hostPath`（组件链）、`templateId`、`templateCandidates`、
+> `semantics`（operaType/isReInitiate/btnVisible）、`patchReadback`（回读值）、`warnings`。
+> 这条诊断是后续每一步的观测口，**必须做**。
+
+### 5.2 L2 动作台（真写、单动作）
+
+文件：`test/integration/runtimeexec/real_action_loop_test.go`，用 `runtimeexec.NewRuntimeExecutor(rc).RunAction`：
+
+```go
+exec := runtimeexec.NewRuntimeExecutor(rc)
+res, err := exec.RunAction(ctx, runtimeexec.RuntimeRunRequest{
+    RunID:"1", PathRunID:"1", StepID:"1", Account: account, Action: action,
+    ToolFlowName: toolName, Session: runtimeexec.SessionFacts{...}, Initiator: runtimeexec.ActorIdentity{...},
+    Values: json.RawMessage(`{}`), Permissions: []string{}, ChangedFields: []string{},
+    InstanceID: instanceID, JobTaskID: jobTaskID, NodeProxyID: nodeProxyID, AuditDesc: "自动验证意见",
+    FormProxyID: formProxyID, FlowProxyID: flowProxyID, SelectFlowType: auditWay, FlowNodeType: "…",
+    NextNodeProxyID: nextNodeProxyID, BizRelevance: [...], ReceiverID: receiverID, ReceiverName: receiverName,
+    BranchSelections: [...], NextNodeAuditors: [...], BaseURL: "", LoadMode: loadMode,
+})
+```
+
+断言：`res.Status == "success"` **且** `res.RequestTrace` 里出现该动作的写端点（附录A.3）**且**写后
+用只读接口核到事实（实例已建/已提交/已暂存/已转发/已重提）。把 `res` 与 trace 原样落盘成证据（§5.4）。
+
+### 5.3 L3 运行台（工具 API 全链，最终验收路径）
+
+```bash
+# 发现计划与路径
+curl -s 'http://127.0.0.1:19080/api/plans' | jq '.data[] | {id,name,account,flowSource}'
+curl -s 'http://127.0.0.1:19080/api/plans/{planId}/execution-paths' | jq '.data[] | {id,name}'
+curl -s 'http://127.0.0.1:19080/api/plans/{planId}/execution-paths/{pathId}/configuration/compiled-scenario' | jq '.data.steps[].action'
+
+# 启动一次运行（自动模式，首个写步骤会停下）
+curl -s -X POST 'http://127.0.0.1:19080/api/plans/{planId}/runs' -H 'content-type: application/json' \
+  -d '{"planId":{planId},"pathIds":[{pathId}],"mode":"auto","idempotencyKey":"f036-<动作>-<时间戳>"}'
+
+# 读取事实与放行（多路径时带 ?pathRunId=）
+curl -s 'http://127.0.0.1:19080/api/runs/{runId}' | jq '.data'
+curl -s 'http://127.0.0.1:19080/api/runs/{runId}/events?limit=200' | jq '.data[] | {type,message}'
+curl -s -X POST 'http://127.0.0.1:19080/api/runs/{runId}/approve?pathRunId={pathRunId}' \
+  -H 'content-type: application/json' -d '{"command":"continue"}'   # step / next_node / continue
+```
+
+放行语义与断点规则以 `internal/engine/control`、`internal/service/run_orchestration.go` 为准（先读再驱动）。
+运行记录可在 `logs/` 下按计划/路径目录核对（完整请求/响应落盘，不脱敏）。
+
+### 5.4 证据落盘（三个台子共用）
+
+每跑一次写：`docs/auto/evidence/<时间戳>-<动作>-<实例ID>.json`，内容至少：
+
+```json
+{ "action":"save_draft", "planId":1, "pathId":398, "runId":124, "account":"<账号键>",
+  "instanceId":"…", "jobTaskId":"…", "result":{"status":"success","message":"…"},
+  "writeEndpoints":[{"method":"POST","url":"/web/flowInstanceApi/submit","httpStatus":200}],
+  "readback":{"instance":"…","taskStatus":"…"},
+  "notes":"…" }
+```
+
+**没有这个文件就不算验证过。** 晨报里逐动作引用这些文件名。
+
+---
+
+## 6. 场景矩阵：七个动作各自怎么拿到证据
+
+先做场景发现（只读）：列出用户已有计划/路径与各自 `compiled-scenario` 的动作清单，优先复用用户已配置好的路径。
+
+| 动作 | 需要的场景 | 获取方式 |
 | --- | --- | --- |
-| 提交/保存草稿/权限校验 | `/web/flowInstanceApi/submit` | 三个语义共用同一端点（`saveFlowInstance`），草稿靠 `data.status='draft'` 区分 |
-| 审批（同意/不同意） | `/flowInstanceApi/audit` | `submitTask`，**无 `/web` 前缀** |
-| 审批暂存 | `/web/flowInstanceApi/storageFormData` | 方法名叫 `temporaryStorage`，端点叫 `storageFormData` |
-| 重提 | `/web/flowInstanceApi/reSubmit` | `saveFlowInstanceAgain` |
-| 转发 | `/web/flowInstanceApi/transpond` | |
-| 模板列表/详情 | `/web/flowTemplateApi/list`、`/web/flowTemplateApi/findById` | 计划绑定的"模板 ID"就是这里返回的 `id` |
+| 保存草稿 | 新发起链（`source=new`） | 跑发起路径的 save_draft 步骤 |
+| 提交 | 新发起链 | 对**新实例**跑 submit（会真实建实例并产生下一节点待办） |
+| 审批暂存/同意/不同意/转发 | 审批链（`source=due/待办`），且当前账号是该节点处理人 | 用上一步 submit 产生的待办；**每个动作各用一个新实例**（同意/不同意互斥，不可同一实例复用） |
+| 重提 | 待发链（`source=draft/待发`） | 先 save_draft 造出待发实例，再跑 reSubmit |
 
-**`/web/flowInstanceApi/reEdit` 与 `/web/flowInstanceApi/temporaryStorage` 在参考项目与快照中都不存在**（全仓 grep 为 0），当前 `completion.ts:14/15` 把它们当成主写端点是错的，且删掉了正确的 `reSubmit`。
+规则：
 
-## 三、修复要求（按顺序，一项一提交）
+1. 审批链账号必须是该流真正会流转到的处理人（用户配置里已存在这样的路径；若某动作找不到可用待办，
+   **不要硬造**：把它记为"缺少可用待办，无法真实验证"，并附上你查到的事实（目标上该账号当前待办清单为空）。
+2. 每个真实实例的流程名带 `T-AUTO-F036-<序号>` 标记（工具流程名由计划配置决定；若计划名不可改，就在晨报里列明实例 ID 供用户清理）。
+3. 达到 §0 的计数上限立即停止该动作链路。
 
-### 第 1 步：装载捕获（P1-1）
+---
 
-1. 删除 `page-origin.ts:85` 的死实现，唯一实现留在执行服务内。
-2. 注入脚本改为：`const root = window.$vue`（带轮询等待，直到出现且其原型上有 `$initFlow/$flowDetail`），
-   `const proto = Object.getPrototypeOf(root)`（找不到就用 `root.constructor.prototype` 兜底），
-   包装 `proto.$initFlow`、`proto.$flowDetail`，把 `created.instance` 分别写入 `window.__executorNative.initFlow/flowDetail`。
-   包装必须是幂等的（重复注入不得二次包装）。
-3. 装载成功判据不能只看"实例非空"：发起侧要等到 `instance.approveDialogVisible === true && instance.flowJson && instance.flowJson.id`；详情侧要等到 `flowDetail` 的 `examineDialogVisible === true` 或 `ExpensesClaimFormVisible === true`。等不到就按超时阻塞，**不得**把 `loaded` 置真。
-4. 保留 `server.ts:358` 的 nativeHost 门禁（它现在正确地挡住了假装载），修的是捕获，不是门禁。
-5. 同时在该脚本里注册 `window.onerror`、`unhandledrejection` 监听，把页面异常写入 `window.__executorPageErrors`（第 7 步要用）。
+## 7. 施工步骤（按序执行，一步一提交）
 
-验收：装载一次发起会话与一次审批会话，返回 200 且 `/status` 能读出 `identity`、`loaded=true`；对错误路由（如缺失 `auditWay`）必须 500/阻塞而不是假装成功。
+> 顺序不可颠倒：装载不通过，后面全是在假页面上做判断。
+> 每步都走：**改代码 → 重启执行服务 → 跑对应验证台 → 落证据 → 中文提交**。
 
-### 第 2 步：模板精确选择（P1-2）
+### S1 装载捕获（P1-1）
 
-1. 装载载荷新增 `flowTemplateId`（专指计划绑定的**流程模板 ID**，即 `/web/flowTemplateApi/list` 返回的 `id`），
-   Go 侧 `LoadPayload`/`LoadInput`/`RunAction` 同步；`server.ts:111` 的 URL 参数与选择逻辑都改用该字段。
-   现有 `formProxyId`（表单代理）与 `flowProxyId`（发布流程代理）都**不是**模板 ID，不得互相顶替。
-   - 说明：Go 侧目前只有 `runCtx.FormProxyID` 与 `runCtx.FlowProxyID`（`run_orchestration.go:542` 把 `plan.TargetObjectID` 当 `FlowProxyID`），
-     需要按 `FlowSource` 把新发起路径的计划目标对象 ID 作为模板 ID 传下来（新发起来源配置就是从 `flowTemplateApi/findById` 读的，见 `internal/service/target_read.go:317`），并写测试锁定。
-2. 选择判据改为**对照真实列表**，而不是看 `flowList` 是否为空（空列表既可能是单模板，也可能是无权限）：
-   - 从 request trace 里取 `/web/flowTemplateApi/list` 的响应体（`isSuccess` + `data[].id`）；
-   - 响应失败、`data` 为空 → 阻塞，消息与原生一致（无权限），**绝不继续调用 `getFlowFindById`**；
-   - `boundTemplateId` 不在返回集合 → 阻塞，日志带上"计划绑定 ID + 实际集合"；
-   - 集合只有 1 项 → 等原生自加载完成后核对 `instance.flowJson.id === boundTemplateId`；不一致则调 `instance.getFlowFindById(boundTemplateId)` 纠正（这正是精确保守的语义）；
-   - 集合多项 → 调 `instance.confirm(boundTemplateId)`（原生会关选择框并加载详情）。
-3. `native-initiate.ts:31-33` 的 `list.length === 0 → direct` 分支必须删除或改为"由列表证据决定"，不能让"无权限"走成"直接加载"。
+改什么：
 
-验收：给两条同 `auditWay` 的模板，装载必须命中计划绑定的那一条（记录实际 ID）；给一条不存在的 ID 或空列表，必须阻塞。
+1. 删除重复实现：`page-origin.ts` 里的 `injectIdentityScript` 没有被 import（`server.ts:12` 只引入 `extractPageDist/serveFlowPage`），
+   与 `server.ts` 里那份合并成唯一一份，放在执行服务内。
+2. 注入脚本改为：轮询等 `window.$vue` 出现 → 取 `Object.getPrototypeOf(window.$vue)`（兜底 `window.$vue.constructor.prototype`）
+   → 幂等包装原型上的 `$initFlow`/`$flowDetail` → 把 `created.instance` 写入 `window.__executorNative.initFlow/flowDetail`。
+3. 成功判据不只看"实例非空"：发起要等 `instance.approveDialogVisible === true && instance.flowJson && instance.flowJson.id`；
+   详情要等 `examineDialogVisible === true` 或 `ExpensesClaimFormVisible === true`；等不到按超时阻塞（保留 `:358` 的 500 门禁）。
+4. 顺带在该脚本里注册 `window.onerror` / `unhandledrejection` → `window.__executorPageErrors[]`（S7 要用），并实现
+   `choice_required` 所需的选择错误识别（S6）。
+5. `/load` 响应加 `diagnostics`（§5.1）。
 
-### 第 3 步：重提模式与上下文（P1-3）
+验收：L1 通过（发起 + 详情各一次），且 `__executorPageErrors` 为空。
 
-1. `loader.go:123` 允许 `LoadModeEdit`；同时给 edit 装载加校验：必须带实例 ID（`id/flowInstanceId`），
-   并根据 `EnterpriseExamineOpinion.saveSubmit('submit')` 的真实载荷决定是否强制 `jobTaskId`（**先读代码再定**，不要照抄其它动作的门禁）。
-2. 详情 URL 必须携带完整 `taskContext`（设计 §3.2）：按 `FlowDetail.getTaskContext` 的可解析形状序列化成 JSON 放 `taskContext` query。
-   至少覆盖：`id/flowInstanceId`、`flowInstanceName`、`auditWay`、`jobTaskId`、`formProxyId`、`flowProxyId`、`flowNodeProxyId`、
-   `formExist`、`nextNodeProxyId`、`nextNodeName`、`nextNodeType`、`nextAuditorList`、`auditPassLogicFlag`、
-   `branchExecuteType`、`lastCountersignFlag`、`initiatorId`、`tracking`、`flowInstanceBizRelevanceList`、`currentPendingNodeName`。
-   缺失字段按"原生打不开对应动作入口 → 阻塞"处理，不要用空对象糊过去。
-3. `server.ts:118-121` 现在只写 `mode/jobTaskId`，视为未实现。
+### S2 模板精确选择（P1-2）
 
-验收：`mode=edit` 的装载在 Go 侧不再报"装载模式只支持 initiate/approve/forward"；页面上 `operaType==='reEdit'`、`isReInitiate===true`、`btnVisible===true`（可从 `flowDetail` 实例读出来做断言）。
+1. 新增专字段 `flowTemplateId`（Go `LoadPayload/LoadInput/RunAction` + TS），语义＝`/web/flowTemplateApi/list` 返回的 `id`。
+   `server.ts:111` 的 URL 参数与选择逻辑都改用它；`formProxyId`（表单代理）与 `flowProxyId`（发布流程代理）不得顶替。
+   Go 侧新发起来源的计划目标对象 ID 就是模板 ID 的来源（`internal/service/target_read.go:317` 即以它调 `ReadTemplateConfiguration`）。
+2. 选择判据改为读 trace 里 `/web/flowTemplateApi/list` 的真实响应：
+   - 失败或 `data` 为空 → 阻塞（无权限），**绝不**再调 `getFlowFindById`；
+   - 绑定 ID 不在集合 → 阻塞，日志带"绑定 ID + 实际集合"；
+   - 集合 1 项 → 等原生加载完，核对 `instance.flowJson.id === boundId`，不一致则调 `getFlowFindById(boundId)` 纠正；
+   - 多项 → 调 `instance.confirm(boundId)`。
+3. 删除 `native-initiate.ts:31-33` 的"空列表→直接加载"分支。
 
-### 第 4 步：动作落到真实组件（P1-4）
+验收：L1 的发起断言 2 通过；再故意传一个不存在的模板 ID，必须阻塞且无写请求。
 
-1. 写一个"从捕获实例递归找唯一组件"的工具函数：按 `$options.name` 命中，返回实例或抛"找不到/多命中"。
-   发起侧找 `FlowDialog`；审批侧找 `ExamineOpinion`（**不是** `EnterpriseExamineOpinion`）。
-2. 分发必须按第 2.3 节的真实入口表，且**找不到方法要阻塞**（`unsupported`），不允许 `if (x && typeof x.f === 'function')` 静默跳过（`server.ts:457-478` 现在就是静默跳过）。
-3. 同意/不同意：原生入口会弹 `$confirm`。二选一并在文档里写死：
-   - A：调 `submitCheckBefore(type)`，同时在页面内自动确认 Element MessageBox 的主按钮（`page.evaluate` 内触发 DOM 事件，不使用 Playwright 定位器，符合设计 §2.1 对"禁止用定位器点业务控件"的约束）；
-   - B：复刻原生的校验链（`$refs.approveForm.validate` → `formMakingFormBusiness(flag,type)`），并把"跳过 $confirm"记录为已知差异。
-   推荐 A（保留原生校验与同意/不同意分支），但必须写清例外理由。
-4. 转发：先准备 `approveForm.personId/personName`（来自 Go 的接收人事实）、`checkList`（`fuyan/yijian`）、
-   以及 `batchSelectDatas[0]/currentFormData/transpondFlowInstance`（走原生的 `transpond('backlog')` 等价准备步骤或用有效载荷等价构造），
-   再调 `confirmTranspond()`；任何前置缺失按阻塞处理，不允许"先调了再说"。
+### S3 重提模式与 taskContext（P1-3）
 
-验收：每个动作都能在 trace 里看到**该动作应有的那一笔写请求**（端点见 2.4），且后置请求（附言等）按序出现。
+1. `loader.go:123` 允许 `LoadModeEdit`；edit 装载必须带实例 ID；是否强制 `jobTaskId` **先读 `saveSubmit('submit')`→`handleRePostSubmit` 的真实载荷再定**，不要照抄别的动作。
+2. 详情 URL 携带完整 `taskContext`（按 §3.2 的 query 契约，JSON 序列化放 `taskContext`，或逐字段，二选一保持一致）。
+3. `server.ts:118-121` 只写 `mode/jobTaskId` 视为未实现。
 
-### 第 5 步：配置数据应用与回读（P1-5）
+验收：L1 详情断言 3（`edit` → `isReInitiate=true, operaType='reEdit', btnVisible=true`）通过；`LoadModeEdit` 不再被 Go 拒绝。
 
-1. 表单 API 宿主按侧分别解析：
-   - 发起：`FlowDialog.$refs.OtherSteps2.$refs.generateForm`；
-   - 审批/重提：`EnterpriseExamineDialog.$refs.generateForm`（原生自己就是这么取的，见 `EnterpriseExamineOpinion.vue:589`）。
-   解析不到 → `unsupported` 阻塞，不得跳过补丁而继续动作。
-2. `applyNodePatch` 的 `optionsReady` 语义是"选项已就绪"（`data-patch.ts` 在 `false` 时抛 `UnsupportedFormError`）。
-   正确做法：**等待就绪**（轮询：补丁后再无在途目标请求且稳定窗满足），就绪后 `setData` → 等联动请求收敛 → `getValues` 回读。
-   永远不要硬编码 `true`，也不要在装载时传 `false` 让它必然抛错。
-3. `changedFields` 为空时同样要回读完整值（设计 §3.4 第 6 步），把回读结果放进装载结果/日志，不得丢弃。
-4. 装载块里的 `UnsupportedFormError` 必须映射为 `unsupported`（阻塞且说明原因），不能落成 500 通用错误。
+### S4 动作落到真实组件（P1-4）
 
-验收：带补丁的装载能读回被改字段与虚拟字段（`<key>__virtualName`）；不支持的组件返回 `unsupported` 而不是 500 或"成功"。
+1. 写"从捕获实例**递归**遍历 `$children` 按 `$options.name` 命中唯一组件"的工具函数；发起找 `FlowDialog`，审批找 `ExamineOpinion`。
+   找不到/多命中 → `unsupported` 阻塞（禁止静默跳过）。
+2. 分发按 §3.2 的方法表；每个 case 调用后**回传调用事实**（调用了哪个组件、哪个方法）到结果或 `log` 事件，便于断言。
+3. 同意/不同意：调 `submitCheckBefore(type)`；它会弹 `$confirm`。在 `page.evaluate` 内自动确认 Element MessageBox 主按钮
+   （页面内触发 DOM 事件，不使用 Playwright 定位器；设计 §2.1 禁止的是用定位器点业务控件）。把这条例外写进设计文档的"已知差异"小节。
+   若确认框方案在无头环境不稳定，退化为"复刻原生校验链（`$refs.approveForm.validate` → `formMakingFormBusiness`）"，并同样登记为差异。
+4. 转发：先准备 `approveForm.personId/personName`（Go 的接收人）、`checkList`（`fuyan/yijian`）、
+   `batchSelectDatas[0]/currentFormData/transpondFlowInstance`（走原生 `transpond('backlog')` 等价准备或有效载荷等价构造），再 `confirmTranspond()`；前置缺失一律阻塞。
 
-### 第 6 步：动作上下文接通（P1-6）
+验收：L2 对每个动作断言"组件链 + 方法名 + 写端点"三件事同时命中。
 
-1. WS 执行分支必须消费 Go 已经发出的字段（`runner.go` 已发，`protocol.ts:82` 已声明）：`auditDesc`、`branchSelections`、`nextNodeAuditors`、`choice`。
-   - 审批/重提前把 `auditDesc` 写入动作宿主的 `approveForm.approveMessage`；
-   - `nextNodeAuditors` 写入 `nextAuditorList`（`{name,bizId,auditDetailType:'personnel',nodeProxyId}`），空人员一律不写、直接阻塞；
-   - `branchSelections` 按原生 `manualChooseNodes`/`parallelNodeChooseList` 的形状落到实例上（先在原生代码里核对键名，不要自创）。
-2. 选择要求事件：在 trace 发现流程写响应 `isSuccess === false` 且 `data.errorType ∈ {custom_choose, parallel_choose, run_node_choose}` 时：
-   - 先置 `session.choicePending = true`（`server.ts:413/510` 依赖它，现在恒为 false，等于永不等待）；
-   - 再向 Go 发 `event` 类型 `choice_required`，`data` 原样带目标响应 JSON（Go 的 `OnChoiceRequired` 只认这个事件）。
-3. `choice_continue` 处理：宿主是**第 4 步解析出的业务组件**（不是 `nativeHost` 容器），并且必须把 `choice.nextAuditors` 作为载荷传给 `getSelectPerson`；
-   `custom_choose/parallel_choose/run_node_choose` 分别落到 `handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson`。只允许继续一次（保留 `canContinueChoice`）。
+### S5 配置数据应用与回读（P1-5）
 
-验收：构造一条手动分支路径与一条自选人员路径，能看到 `choice_required` 事件、继续后只多一笔写请求、且没有硬超时。
+1. 表单 API 宿主：发起 `FlowDialog.$refs.OtherSteps2.$refs.generateForm`；审批/重提 `EnterpriseExamineDialog.$refs.generateForm`（+ `editData`）。找不到 → `unsupported`。
+2. `applyNodePatch` 的 `optionsReady` 语义是"已就绪"；正确做法是**等待就绪**（trace 无在途目标请求 + 稳定窗），再 `setData` → 等联动收敛 → `getValues` 回读；不要硬编码 `true/false`。
+3. `changedFields` 为空也要回读完整值（含 `<key>__virtualName`），放进 `diagnostics.patchReadback`。
+4. `UnsupportedFormError` 必须映射为 `unsupported`（阻塞+原因），不能落成 500。
 
-### 第 7 步：完成判定（P1-7）
+验收：L1 断言 4 + 一条带补丁的装载能读回被改字段与虚拟字段。
 
-1. `completion.ts:10-15` 的主写端点改为：`/web/flowInstanceApi/submit`、`/flowInstanceApi/audit`、`/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/reSubmit`、`/web/flowInstanceApi/transpond`。
-   删除 `temporaryStorage`/`reEdit` 两个不存在的端点。
-2. 主写识别不能只看 URL+方法：`/web/flowInstanceApi/submit` 同时承担草稿、正式提交与**权限校验**（`checkFlowPermission`）。
-   至少要按载荷语义区分（提交/草稿带 `data.id|null`、`data.status`、`formDataMongoVo`；权限校验带 `data.checkPermissions`），
-   否则权限校验的 200 会把"没有提交"判成"流程写已受理"。
-3. 删除幻影 `__businessError`（`server.ts:504`，全仓无人写入）。改用第 1 步注册的 `__executorPageErrors` 与原生成功回调
+### S6 动作上下文与选择闭环（P1-6）
+
+1. WS 执行分支消费 Go 已发字段（`protocol.ts:82` 已声明，`runner.go` 已发）：`auditDesc` → `approveForm.approveMessage`；
+   `nextNodeAuditors` → `nextAuditorList`（`{name,bizId,auditDetailType:'personnel',nodeProxyId}`，空人员不写并阻塞）；
+   `branchSelections` → 按原生 `manualChooseNodes`/`parallelNodeChooseList` 的真实形状落到实例（先读原生代码核对键名）。
+2. 选择要求事件：trace 里发现写响应 `isSuccess===false` 且 `data.errorType ∈ {custom_choose, parallel_choose, run_node_choose}` 时，
+   先置 `session.choicePending = true`（`:413/:510` 依赖它），再发 `choice_required` 事件，`data` 原样带目标响应 JSON。
+3. `choice_continue`：宿主用 S4 解析出的业务组件；把 `choice.nextAuditors` 作为载荷传给 `getSelectPerson`；
+   三类分别落 `handleSaveBranchChooseNode/handleSaveParallelChooseNode/getSelectPerson`；只允许继续一次。
+
+验收：L2 跑一条手动分支路径与一条自选人员路径，trace 里能看到 `choice_required` → 继续 → 仅多一笔写。
+
+### S7 完成判定（P1-7）
+
+1. `completion.ts:10-15` 主写端点改为：`/web/flowInstanceApi/submit`、`/flowInstanceApi/audit`、
+   `/web/flowInstanceApi/storageFormData`、`/web/flowInstanceApi/reSubmit`、`/web/flowInstanceApi/transpond`。
+2. 主写识别加语义判据：`/web/flowInstanceApi/submit` 的权限校验载荷带 `data.checkPermissions`，不得计主写。
+3. 删除幻影 `__businessError`（`:504`），改用 S1 的 `__executorPageErrors` + 原生成功信号
    （`FlowDialog @success`、`flowDetail` 的 `callback(payload)`、`postMessage('RSH_FLOW_EVENT','flow-action-done')`）。
-4. `businessDone` 与 `finalize` 的口径必须自洽（`completion.ts:160-164`）：要么把"业务完成信号"做成真信号，
-   要么把判据改成"页无异常 + 后置请求收敛"，不能留一个永远为 `false` 的输入让所有动作都落到 `business_failed`。
+4. `businessDone` 与 `finalize`（`completion.ts:160-164`）口径自洽：要么做成真信号，要么改成"页无异常 + 后置请求收敛"。
 
-验收：四个端点各跑一次能判 `success`；权限校验型 POST 不会让判定变成功；人为断网得到 `uncertain` 且后续写被锁。
+验收：四个端点各判对一次；权限校验型 POST 不让判定变成功；断网 → `uncertain` 且后续写被锁。
 
-### 第 8 步：无表单口径（P1-8）
+### S8 无表单口径（P1-8）二选一，写进文档
 
-当前状态是"路由放开、能力没做、门禁还在拦"，两处口径相反。二选一，写进功能文档，不要两说：
+- 方案 A（推荐，若时间允许）：实现无表单链（`flowDetail → ExamineDialog`，审批 `submitTask` → `/flowInstanceApi/audit`），
+  同时放开 `executor.go:116` 的 `FormProxyID==""` 门禁（改为按 `RenderType` 选宿主与数据接口）。
+- 方案 B（保守）：`shouldRunViaRuntime` 收回到"仅 FormMaking"，并把 F-036 的范围与完成标准同步改成"不含 NoFormFlow"。
+  **采用 B 必须在晨报里显式声明这是范围变更，等用户确认**；不得让"路由放开、能力缺失"继续并存。
 
-- 方案 A（本切片做）：实现无表单路径——`flowDetail → ExamineDialog`（`EnterpriseExamineOpinion` 的无表单版本在 `views/GroupApproveManage/components/examineOpinion.vue`，审批走 `submitTask` → `/flowInstanceApi/audit`），
-  同时放开 `executor.go:116` 的 `FormProxyID == ""` 门禁（改为按 `RenderType` 选择宿主与数据接口）。
-- 方案 B（本切片不做）：`shouldRunViaRuntime` 改回"仅 FormMaking"，功能文档明确"自定义表单/NoFormFlow 仍走既有路径，不在本切片"。
-  方案 B 与第一次审查的整改要求冲突，采用它必须由用户明确批准并同步修订 F-036 的范围与完成标准。
+### S9 测试换血（§8），S10 文档与晨报（§9）
 
-### 第 9 步：清理与文档订正
+---
 
-1. `docs/features/F-036-independent-executor-native-page.md` 中"P1 问题 1-8 修复完成 ✅"整段必须替换为本文件的判定表（不得保留与代码不符的 ✅）。
-2. 功能文档状态保持 `implementing`；未通过人工验收前不得写 `ready_for_manual`。
-3. 提交说明不得再出现"修复完成"这类未经真实证据支撑的结论。
+## 8. 测试要求
 
-## 四、测试换血（否则同样的假修会重复发生）
+必做：
 
-现有 `test/integration/executor-service/` 下的 `detail-load.test.ts`、`data-patch-readback.test.ts`、`actions.test.ts` 等，
-断言的是**另一套实现**：它们只调 `resolveDetailSemantics/applyNodePatch/dispatchNativeAction` 这类纯函数，而生产代码走的是
-`server.ts` 里 `page.evaluate` 的 switch 分支。这类绿灯不能证明任何闭环。
+1. 新增 §5.1/§5.2 两个真实闭环用例（环境变量门禁；未配置时 `t.Skip` 并打印跳过原因）。
+2. 把 `test/integration/executor-service/actions.test.ts` 这类"只测纯函数、生产走另一套分发"的用例改造成**打在生产分发路径上**
+   （或在服务端抽出可测的解析/分发函数，并让生产代码真的调用它）。
+3. 补：主写端点表、权限校验不计主写、`choice_required` 事件、选择继续只一次、装载 500 门禁、`flowTemplateId` 语义。
+4. 聚合：`bash test/run-executor-service.sh` 纳入新用例；未配置环境变量时允许跳过但必须打印原因（不允许静默通过）。
+5. 删掉已被证伪的断言（如"空 flowList → 直接加载"），不要为了保住绿色而保留错口径。
 
-必须新增（可离线、可复现）：
+---
 
-1. **真实装载用例**：启动执行服务（真实 dist），装载 `/flow/initiate` 与 `/flow/detail/:id`，
-   断言捕获到实例、选中绑定模板、`taskContext` 生效（`operaType/isReInitiate`），并断言**不再 500**。
-2. **动作分发用例**：在真实页面上下文里触发七个动作，断言调用到第 4 步解析出的同一个业务组件实例，
-   目标写请求经 stub 转发端点出去，端点与载荷字段与 2.4/2.3 一致；找不到组件时必须是 `unsupported`。
-3. **选择闭环用例**：stub 返回带 `errorType` 的响应 → 断言 `choice_required` 事件、`choicePending`、继续命令只发一次、继续后写请求数正确。
-4. **完成判定用例**：覆盖权限校验 POST 不计主写、四个真端点、SID 失效、写响应丢失、超时锁。
-5. 删除或改写与生产实现不一致的旧用例（保留"测了别的实现"的绿灯等于自欺）。
+## 9. 收尾
 
-## 五、人工验收前置（重启服务后按此顺序）
+### 9.1 结束动作
 
-1. 启动 `pnpm --dir executor-service start`，健康检查通过。
-2. 发起一条计划绑定模板与同 `auditWay` 其它模板共存的路径：必须打开绑定的那一条（把实际模板 ID 打进日志）。
-3. 保存草稿：目标"待发"里能看到草稿，流程名称是工具流程名。
-4. 提交：进入审批链，实例可读。
-5. 审批侧：暂存、同意、不同意各一次，目标审批记录里能看到配置的审批意见文本。
-6. 重提：待发实例能被重新提交（`/web/flowInstanceApi/reSubmit` 出现一笔写）。
-7. 转发：接收人来自配置；先 `transpond` 后附言，附言只在第一步确认成功后发出。
-8. 手动分支 / 自选人员路径：`choice_required` 后能继续，且只继续一次。
-9. 断开执行服务后再放行七个动作之一：写前阻塞，配置页仍可用。
-10. 无表单/自定义表单：按第 8 步选定方案的结论验证（要么真能跑，要么明确 `unsupported` + 文档口径一致）。
+1. 停掉所有你启动的常驻进程（后端/执行服务/前端），确认端口释放。
+2. `git status` 干净；所有改动已中文提交；确认没有提交 `.env.local`、日志、`参考代码/`。
+3. 更新 `docs/features/F-036-independent-executor-native-page.md`：状态与逐项结论按真实证据重写（§附录B 为基线），
+   人工核对步骤单独一节（用户次日照着点）。
 
-## 附录：禁止的"假修"清单（本轮实际出现过）
+### 9.2 晨报模板（`docs/auto/2026-09-17-f036-autonomous-run-report.md`）
 
-- 把 `null` 赋回去当作"已修复"（`server.ts:297`）。
-- 用错误的字段顶替（`formProxyId`/`flowProxyId` ↔ `flowTemplateId`）。
-- 常量加了、校验没改（`LoadModeEdit` vs `loader.go:123`）。
-- 用不存在的端点名凑清单（`reEdit`/`temporaryStorage`），并删掉正确的 `reSubmit`。
-- 用幻影全局标志当判据（`__businessError`）。
-- 参数语义写反（`optionsReady: false`）或写死（`true`）。
-- `if (found) {...}` 静默跳过，把"没找到组件/接口"变成"动作成功"。
-- 测试只覆盖纯函数，而生产分支是另一套实现。
+```markdown
+# F-036 夜间自主施工晨报（<日期> <起止时间>）
+## 一、结论
+<能用的：…；不能用的：…；整体是否达到 DoD 五条>
+## 二、逐动作证据（表格：动作｜运行/路径｜实例ID｜写端点｜结果｜证据文件）
+## 三、代码改动与提交（提交号 + 一句话）
+## 四、未解决项与原因（含达到计数上限的、缺待办的、方案 B 的范围变更声明）
+## 五、需要用户做什么（≤5 条，可勾选清单）
+## 六、日志与证据索引（日志路径、evidence 文件清单）
+```
+
+### 9.3 停止条件（满足任一，停止夜间施工并写晨报）
+
+1. 目标平台不可达、账号/SID 失效且重登失败、目标网关异常（连续 3 次不同动作都失败）。
+2. `PLAN_DB_*` 不可连（后端起不来）。
+3. 真实写计数达到 §0 上限，且仍有 ≥3 个动作未验证。
+4. 出现可能影响真实业务数据的异常（例如实例被错误流转、重复写同一实例）。
+5. 时间到 07:30（当天）——收尾写晨报，把服务停掉。
+
+**不许**为了"看起来完成"而降低标准、跳过验证或写成 `accepted`。
+
+---
+
+## 附录 A：速查
+
+### A.1 关键文件
+
+| 位置 | 作用 |
+| --- | --- |
+| `executor-service/src/server.ts` | 会话/装载/WS 执行/完成判定装配 |
+| `executor-service/src/protocol.ts` | 协议 v2 与动作全集、ExecutePayload 形状 |
+| `executor-service/src/native-initiate.ts` / `native-detail.ts` / `native-actions.ts` | 发起选择、详情语义、动作分发表 |
+| `executor-service/src/data-patch.ts` / `completion.ts` / `target-route.ts` | 补丁回读、完成判定、请求拦截与转发 |
+| `internal/runtimeexec/*.go` | Go 侧客户端、装载载荷、动作编排、选择闭环 |
+| `internal/engine/step/executor.go` | 七个动作的 runtime 路由（`shouldRunViaRuntime` / `runViaRuntime`） |
+| `internal/adapter/target/*.go` | 唯一目标出口（转发与直连写） |
+| `executor-service/flow-source/src/**` | 目标原生页面真源码（行为依据） |
+
+### A.2 组件与方法
+
+见 §3.2。
+
+### A.3 写端点 → 动作
+
+| 动作 | 期望写端点 | 备注 |
+| --- | --- | --- |
+| 保存草稿（发起） | `/web/flowInstanceApi/submit`（`data.status='draft'`） | 草稿不触发审批 |
+| 提交 | `/web/flowInstanceApi/submit` | 建实例、产下一节点待办 |
+| 审批暂存 | `/web/flowInstanceApi/storageFormData` | 不改流程状态 |
+| 同意/不同意 | `/flowInstanceApi/audit` | 载荷带 `jobTaskId` |
+| 重提 | `/web/flowInstanceApi/reSubmit` | 待发实例重新提交 |
+| 转发 | `/web/flowInstanceApi/transpond`（+ 按需 `/web/flowInstancePostscript/save`） | 复合写：第二步依赖第一步成功 |
+
+### A.4 常用校验命令
+
+```bash
+pnpm --dir executor-service typecheck
+node --experimental-strip-types --test test/unit/executor-service/*.test.ts
+bash test/run-executor-service.sh
+go test ./internal/runtimeexec ./internal/engine/step ./test/contracts/... -count=1
+```
+
+---
+
+## 附录 B：八个 P1 的核对基线（改动动机，不要重复考古）
+
+| 编号 | 核对结论 | 证据 |
+| --- | --- | --- |
+| P1-1 | 未修 | `server.ts:93` 用 `window.Vue/window.app`；产物只有 `window.$vue`；`:297` 赋 `null`，`:358` 必 500 |
+| P1-2 | 未修（换了错 ID） | `:320` 用 `flowProxyId`；`:111` 写 `flowTemplateId=formProxyId`；`native-initiate.ts:31-33` 空列表当单模板 |
+| P1-3 | 未修+新故障 | `runner.go:101` vs `loader.go:123`；`server.ts:119` 缺 taskContext |
+| P1-4 | 未修 | `:443-444` 层级/名字双错；`:447-481` 静默跳过 |
+| P1-5 | 未修（语义反） | `:355` `optionsReady:false` 必抛错；宿主层级错；回读丢弃 |
+| P1-6 | 未修 | `:411` 只读 action；`choicePending` 从不置真；`choice_required` 0 次 |
+| P1-7 | 未修（端点错） | `completion.ts:14-15` 端点不存在；删了 `reSubmit`；`__businessError` 幻影 |
+| P1-8 | 半修+矛盾 | `executor.go:84` 放开 vs `:116` 拦截 |
+
+> 本文件是施工指令，不是描述性报告：执行时以"我能跑出来的证据"为唯一标准。
