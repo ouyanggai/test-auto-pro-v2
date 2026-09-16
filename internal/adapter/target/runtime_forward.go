@@ -176,6 +176,20 @@ func IsKnownWritePath(path string) bool {
 	return writeEndpointSet[path]
 }
 
+// IsKnownWriteRequestPath 判定页面转发请求的原始路径是否命中登记写端点。
+// 页面构建产物把网关绝对地址（含 /api 前缀）烘焙进请求 URL，路径形如 /api/web/flowInstanceApi/submit；
+// 只按裸路径比对会把真实写判成「未写出」，连接断开时误报零写入失败并诱发重复发送（F-036 夜间验证实测）。
+// 因此先剥掉一层 /api 前缀再比对，两种形态都认。
+func IsKnownWriteRequestPath(path string) bool {
+	if IsKnownWritePath(path) {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/api"); ok {
+		return IsKnownWritePath(rest)
+	}
+	return false
+}
+
 // ReadFormTemplateData 读取实例绑定表单代理的 FormMaking 模板原文（审批 runtime 装载用）。
 // 读取失败按传输错误上抛：调用方必须阻塞写动作，不得以空模板发送。
 func (c *Client) ReadFormTemplateData(ctx context.Context, active Session, formProxyID string) (json.RawMessage, error) {

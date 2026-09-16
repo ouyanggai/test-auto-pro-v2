@@ -1,0 +1,77 @@
+{
+  "account": "骆蒙恩",
+  "action": "save_draft",
+  "businessSummary": {
+    "dispatched": {
+      "component": "FlowDialog",
+      "method": "sumbitFlow(\"draft\")"
+    },
+    "debugWrites": [
+      {
+        "seq": 6,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": true,
+        "requestBodyExcerpt": "{\"data\":{\"flowProxyId\":\"73eaa9b297b54364a3c320d3002a1b4f\",\"checkPermissions\":\"first\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}]}}",
+        "responseBodyExcerpt": "{\"message\":\"权限校验通过\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}"
+      },
+      {
+        "seq": 7,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"name\":\"T-AUTO-F036-save_draft-0917-003327\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}],\"status\":\"draft\",\"formProxyId\":\"5222ef99bdab4826a14dd7ae1af4fd80\",\"companyId\":\"6e1235cf416e4143947311c6cc93d78e\"},\"formDataMongoVo\":{\"data\":{\"g",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"c77f15c5b02f476ab65c3bbf30984af1\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"createDate\":\"2026-09-17 00:33:30\",\"updateDate\":\"2026-09-17 00:33:30\",\"platformCode\":\"200001\",\"sort\":0,"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowGroup/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/type/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowTemplateApi/findById"
+      }
+    ],
+    "relevantErrorsAtEnd": 2,
+    "relevantErrorsAtBaseline": 1
+  },
+  "instanceId": "",
+  "jobTaskId": "",
+  "requestTrace": [
+    {
+      "seq": 6,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 3,
+      "durationMs": 65
+    },
+    {
+      "seq": 7,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 4,
+      "durationMs": 498
+    }
+  ],
+  "result": {
+    "message": "流程写请求已受理，但业务完成事件未到达",
+    "status": "business_failed"
+  },
+  "toolFlowName": "T-AUTO-F036-save_draft-0917-003327",
+  "writeTraceIDs": []
+}

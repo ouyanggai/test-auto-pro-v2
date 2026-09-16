@@ -62,11 +62,13 @@ type RuntimeRunRequest struct {
 }
 
 // ActionRunResult 是 runtime 动作的最终判定事实（状态为协议七值之一）。
+// BusinessSummary 携带 runtime 回传的业务摘要（分发事实与写端点判定输入），供证据落盘。
 type ActionRunResult struct {
-	Status        string
-	Message       string
-	RequestTrace  json.RawMessage
-	WriteTraceIDs []string `json:"-"`
+	Status          string
+	Message         string
+	RequestTrace    json.RawMessage
+	BusinessSummary json.RawMessage
+	WriteTraceIDs   []string `json:"-"`
 }
 
 // RuntimeRunner 是执行器对 runtime 能力的接口面（*RuntimeExecutor 满足）。

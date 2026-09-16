@@ -13,10 +13,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/runtimeexec"
 )
 
@@ -36,6 +38,42 @@ func f036ExpectedWriteEndpoint(action string) string {
 	default:
 		return ""
 	}
+}
+
+// f036ReadbackNewInstance 从 businessSummary.debugWrites 的写响应里提取实例 ID，
+// 并用目标只读 API 复核实例存在。发起族动作的实例 ID 只能来自写响应（运行编排之外没有别的来源）。
+func f036ReadbackNewInstance(ctx context.Context, t *testing.T, client *target.Client, session target.Session, res runtimeexec.ActionRunResult) (map[string]any, string) {
+	t.Helper()
+	var summary struct {
+		DebugWrites []struct {
+			IsPermissionCheck   bool   `json:"isPermissionCheck"`
+			ResponseBodyExcerpt string `json:"responseBodyExcerpt"`
+		} `json:"debugWrites"`
+	}
+	if len(res.BusinessSummary) > 0 {
+		if err := json.Unmarshal(res.BusinessSummary, &summary); err != nil {
+			t.Fatalf("businessSummary 解析失败：%v", err)
+		}
+	}
+	instanceID := ""
+	for _, write := range summary.DebugWrites {
+		if write.IsPermissionCheck {
+			continue
+		}
+		match := regexp.MustCompile(`"id":"([0-9a-f]{32})"`).FindStringSubmatch(write.ResponseBodyExcerpt)
+		if len(match) == 2 {
+			instanceID = match[1]
+			break
+		}
+	}
+	if instanceID == "" {
+		return nil, ""
+	}
+	facts, err := client.FindSubmittedFlowFacts(ctx, session, instanceID)
+	if err != nil {
+		t.Fatalf("写后实例事实读取失败：%v", err)
+	}
+	return map[string]any{"found": facts.Found, "status": facts.Status, "name": facts.Name, "currentNodes": facts.CurrentNodes}, instanceID
 }
 
 // TestF036RealActionLoop 单动作真实写验证入口：环境变量未配置时跳过并打印原因。
@@ -135,6 +173,9 @@ func TestF036RealActionLoop(t *testing.T) {
 	fact["result"] = map[string]any{"status": res.Status, "message": res.Message}
 	fact["requestTrace"] = json.RawMessage(res.RequestTrace)
 	fact["writeTraceIDs"] = res.WriteTraceIDs
+	if len(res.BusinessSummary) > 0 {
+		fact["businessSummary"] = json.RawMessage(res.BusinessSummary)
+	}
 
 	// 断言 1：状态必须 success。
 	if res.Status != "success" {
@@ -161,10 +202,11 @@ func TestF036RealActionLoop(t *testing.T) {
 	readback := map[string]any{}
 	switch action {
 	case "save_draft", "submit":
-		// 新实例：草稿/提交后实例已存在；提交还会产生下一节点待办（用跟踪事实核对）。
-		if instanceID == "" {
-			// 发起链的实例 ID 由运行编排维护，L2 台从踪迹中提取：目标写请求响应里带实例 ID。
-			fact["note"] = "新发起动作：实例核验用踪迹中的实例 ID（见 requestTrace）"
+		// 新实例：从写响应里提取实例 ID，再用目标只读 API 复核实例存在（写后事实核验）。
+		readback["instanceFact"], readback["extractedInstanceId"] = f036ReadbackNewInstance(ctx, t, client, session2, res)
+		if readback["extractedInstanceId"] == "" {
+			saveF036Evidence(t, "L2-"+action+"-readback-no-id", fact)
+			t.Fatalf("写响应中未提取到实例 ID，无法完成写后核验")
 		}
 	case "storage_form_data":
 		stored, found, err := client.ReadStorageFormData(ctx, session2, instanceID, nodeProxyID)

@@ -7,12 +7,17 @@
 import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
 
 // FLOW_WRITE_PATHS 是流程主写端点：它们的成败决定主实例是否推进（转发的辅助实例创建同属主写）。
+// 端点真名来自 flow-source/src/api/index.js（P1-7 修正）：
+//   saveFlowInstance=/web/flowInstanceApi/submit、submitTask=/flowInstanceApi/audit（无 /web 前缀）、
+//   transpondFlow=/web/flowInstanceApi/transpond、storageFormData=/web/flowInstanceApi/storageFormData、
+//   saveFlowInstanceAgain=/web/flowInstanceApi/reSubmit。
+// 曾被错写的 temporaryStorage/reEdit 端点在目标源码中不存在，已删除。
 const FLOW_WRITE_PATHS = [
   '/web/flowInstanceApi/submit',
   '/flowInstanceApi/audit',
   '/web/flowInstanceApi/transpond',
-  '/web/flowInstanceApi/temporaryStorage',
-  '/web/flowInstanceApi/reEdit'
+  '/web/flowInstanceApi/storageFormData',
+  '/web/flowInstanceApi/reSubmit'
 ]
 
 export type CompletionVerdict = 'success' | 'target_rejected' | 'uncertain' | 'business_failed' | 'failed' | 'timeout'
@@ -123,6 +128,17 @@ export function detectFlowRejection (entry: FlowRejectionInput): string | null {
   return null
 }
 
+// isPermissionCheckSubmit 识别权限校验型 POST /web/flowInstanceApi/submit：
+// 重提链的 checkFlowPermission（EnterpriseExamineOpinion checkFlowPermission，data.checkPermissions='first'）
+// 与 FlowDialog 打开时的前置校验都走 submit 端点，但它们不是流程写；只看 URL+方法会把
+// 「权限校验」误判成「流程已写」（施工令 §3 附加项）。按请求载荷语义排除。
+export function isPermissionCheckSubmit (entry: { url: string, body?: string, bodyEncoding?: string }): boolean {
+  if (!entry.url.includes('/web/flowInstanceApi/submit')) return false
+  let text = entry.body ?? ''
+  if (entry.bodyEncoding === 'base64') text = Buffer.from(text, 'base64').toString('utf8')
+  return text.includes('checkPermissions')
+}
+
 function lockIfNeeded (input: CompletionInput, result: CompletionResult): CompletionResult {
   if (result.status === 'timeout' || result.status === 'uncertain') {
     input.writeGate?.lock(result.message ?? result.status)
@@ -130,14 +146,16 @@ function lockIfNeeded (input: CompletionInput, result: CompletionResult): Comple
   return result
 }
 
-function isWrite (entry: WriteLookup): boolean {
-  if (entry.method !== 'POST') return false
-  return FLOW_WRITE_PATHS.some(path => entry.url.includes(path))
+// isFlowWriteEntry 判定一笔请求是否为真实流程主写：端点命中且不是权限校验型 submit。
+function isFlowWriteEntry (entry: { method?: string, url: string, body?: string, bodyEncoding?: string }): boolean {
+  if (entry.method !== undefined && entry.method !== 'POST') return false
+  if (!FLOW_WRITE_PATHS.some(path => entry.url.includes(path))) return false
+  return !isPermissionCheckSubmit(entry)
 }
 
 function isAfterFlow (entries: TraceEntry[], baselineSeq: number, entry: AfterFlowLookup): boolean {
   const flowSeqs = entries
-    .filter(item => item.seq > baselineSeq && FLOW_WRITE_PATHS.some(path => item.url.includes(path)) && item.state === 'fulfilled')
+    .filter(item => item.seq > baselineSeq && isFlowWriteEntry(item) && item.state === 'fulfilled')
     .map(item => item.seq)
   if (flowSeqs.length === 0) return false
   return entry.seq > Math.min(...flowSeqs)
@@ -145,8 +163,8 @@ function isAfterFlow (entries: TraceEntry[], baselineSeq: number, entry: AfterFl
 
 function finalize (input: CompletionInput, entries: TraceEntry[], businessDone: boolean): CompletionResult {
   const requestTrace = summarize(entries)
-  const writeEntries = entries.filter(entry => isWrite(entry))
-  const flowEntries = entries.filter(entry => FLOW_WRITE_PATHS.some(path => entry.url.includes(path)))
+  const writeEntries = entries.filter(entry => isFlowWriteEntry(entry))
+  const flowEntries = entries.filter(entry => isFlowWriteEntry(entry))
   const postEntries = entries.filter(entry => isAfterFlow(input.trace.list(), input.baselineSeq, entry))
   const lostWrite = writeEntries.find(entry => entry.state === 'aborted')
   if (lostWrite) return { status: 'uncertain', message: `写响应丢失：${lostWrite.url}`, requestTrace }

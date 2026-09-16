@@ -1,0 +1,32 @@
+{
+  "account": "骆蒙恩",
+  "action": "save_draft",
+  "instanceId": "",
+  "jobTaskId": "",
+  "requestTrace": [
+    {
+      "seq": 6,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 3,
+      "durationMs": 63
+    },
+    {
+      "seq": 7,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 4,
+      "durationMs": 612
+    }
+  ],
+  "result": {
+    "message": "流程写请求已受理，但业务完成事件未到达",
+    "status": "business_failed"
+  },
+  "toolFlowName": "T-AUTO-F036-save_draft-0917-002950",
+  "writeTraceIDs": []
+}

@@ -370,7 +370,9 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	if err != nil {
 		return nil, err
 	}
-	isWrite := target.IsKnownWritePath(parsed.Path)
+	// 页面烘焙的网关绝对路径可能带 /api 前缀：写端点判定必须按同一口径归一，
+	// 否则真实写被判成「未写出」，断线时按零写入失败处理会诱发重发。
+	isWrite := target.IsKnownWriteRequestPath(parsed.Path)
 	session, err := c.sessions.Current(ctx, state.account)
 	if err != nil {
 		return nil, fmt.Errorf("取得账号 %s 会话失败：%w", state.account, err)

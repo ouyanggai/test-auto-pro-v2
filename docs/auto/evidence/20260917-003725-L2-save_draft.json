@@ -1,0 +1,203 @@
+{
+  "account": "骆蒙恩",
+  "action": "save_draft",
+  "businessSummary": {
+    "dispatched": {
+      "component": "FlowDialog",
+      "method": "sumbitFlow(\"draft\")"
+    },
+    "debugWrites": [
+      {
+        "seq": 6,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": true,
+        "requestBodyExcerpt": "{\"data\":{\"flowProxyId\":\"73eaa9b297b54364a3c320d3002a1b4f\",\"checkPermissions\":\"first\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}]}}",
+        "responseBodyExcerpt": "{\"message\":\"权限校验通过\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}"
+      },
+      {
+        "seq": 9,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"name\":\"T-AUTO-F036-save_draft-0917-003718\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}],\"status\":\"draft\",\"formProxyId\":\"5222ef99bdab4826a14dd7ae1af4fd80\",\"companyId\":\"6e1235cf416e4143947311c6cc93d78e\"},\"formDataMongoVo\":{\"data\":{\"g",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"de07610b98f348469bd191a0001751e0\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"createDate\":\"2026-09-17 00:37:23\",\"updateDate\":\"2026-09-17 00:37:23\",\"platformCode\":\"200001\",\"sort\":0,"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Request failed with status code 404",
+        "url": "http://tools-server.making.link/api/uptoken"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Request failed with status code 404",
+        "url": "http://tools-server.making.link/api/new/options"
+      }
+    ],
+    "relevantErrorsAtEnd": 0,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "",
+  "jobTaskId": "",
+  "note": "新发起动作：实例核验用踪迹中的实例 ID（见 requestTrace）",
+  "readback": {},
+  "requestTrace": [
+    {
+      "seq": 3,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowGroup/list",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 3,
+      "durationMs": 37
+    },
+    {
+      "seq": 4,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/type/list",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 4,
+      "durationMs": 134
+    },
+    {
+      "seq": 5,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowTemplateApi/findById",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 5,
+      "durationMs": 190
+    },
+    {
+      "seq": 6,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 6,
+      "durationMs": 269
+    },
+    {
+      "seq": 7,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowTemplateApi/list",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 7,
+      "durationMs": 1068
+    },
+    {
+      "seq": 8,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/formTemplateApi/findById",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 8,
+      "durationMs": 1455
+    },
+    {
+      "seq": 9,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 9,
+      "durationMs": 1893
+    },
+    {
+      "seq": 10,
+      "method": "GET",
+      "url": "http://tools-server.making.link/api/uptoken",
+      "state": "fulfilled",
+      "httpStatus": 404,
+      "responseSeq": 10,
+      "durationMs": 480
+    },
+    {
+      "seq": 11,
+      "method": "GET",
+      "url": "http://tools-server.making.link/api/new/options",
+      "state": "fulfilled",
+      "httpStatus": 404,
+      "responseSeq": 11,
+      "durationMs": 493
+    },
+    {
+      "seq": 12,
+      "method": "POST",
+      "url": "http://192.168.1.220:8081/api/web/user/api/company/getCompanyVosWithinProjectCompany?platformCode=200001\u0026sid=undefined",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 12,
+      "durationMs": 524
+    },
+    {
+      "seq": 13,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/user/api/company/children",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 13,
+      "durationMs": 561
+    },
+    {
+      "seq": 14,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/user/api/company/children",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 14,
+      "durationMs": 621
+    },
+    {
+      "seq": 15,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/user/api/company/children",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 15,
+      "durationMs": 885
+    },
+    {
+      "seq": 16,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/user/api/company/children",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 16,
+      "durationMs": 908
+    },
+    {
+      "seq": 17,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/user/api/company/children",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 17,
+      "durationMs": 965
+    },
+    {
+      "seq": 18,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/user/api/company/children",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 18,
+      "durationMs": 1239
+    }
+  ],
+  "result": {
+    "message": "",
+    "status": "success"
+  },
+  "toolFlowName": "T-AUTO-F036-save_draft-0917-003718",
+  "writeTraceIDs": [
+    "34bc8ae55a5b7661",
+    "e1939705e917b7a7"
+  ]
+}

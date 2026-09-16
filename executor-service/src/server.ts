@@ -15,7 +15,7 @@ import { InitiateBlockedError, planTemplateSelection } from './native-initiate.t
 import { resolveDetailSemantics } from './native-detail.ts'
 import { applyNodePatch, UnsupportedFormError } from './data-patch.ts'
 import { canContinueChoice, dispatchChoiceContinue, dispatchNativeAction } from './native-actions.ts'
-import { settleCompletion, WriteGate } from './completion.ts'
+import { detectFlowRejection, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
 
 interface RuntimeSession {
@@ -133,6 +133,17 @@ async function collectHostPath (page: Page, targetNames: string[]): Promise<stri
   }, targetNames)
 }
 
+// countRelevantPageErrors 统计「无 URL 的页面异常」（真实 JS 崩溃：TypeError 等）。
+// 带 URL 的 Network Error/404 属请求级结果：目标请求的成败已由 trace（aborted/HTTP 状态/
+// isSuccess 包络）覆盖，FormMaking 外部服务（tools-server）的失败也与业务完成无关；
+// 实测同一请求 trace 为 fulfilled 仍会抛 Network Error（应用层噪声），按 URL 排除。
+async function countRelevantPageErrors (page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const errors = (window as unknown as { __executorPageErrors?: Array<{ kind?: string, message?: string, url?: string }> }).__executorPageErrors ?? []
+    return errors.filter(error => String(error?.url ?? '') === '').length
+  })
+}
+
 // describeCapturedTree 描述捕获实例的直接子组件与关键可见标志：hostPath 找不到目标组件时
 // 给诊断一个真实树形快照（绝不静默返回空链）。
 async function describeCapturedTree (page: Page): Promise<string> {
@@ -144,6 +155,114 @@ async function describeCapturedTree (page: Page): Promise<string> {
     const names = (node: VNode): string[] => (node.$children ?? []).map(child => String(child?.$options?.name ?? '<anonymous>'))
     return `root=(${names(root).join(',')}) examineDialogVisible=${String(root.examineDialogVisible)} ExpensesClaimFormVisible=${String(root.ExpensesClaimFormVisible)} approveDialogVisible=${String(root.approveDialogVisible)}`
   })
+}
+
+// NEXT_AUDITOR_FIELDS 锁定下一节点人员条目形状（与目标 nextAuditorList 一致）。
+interface DispatchInput {
+  action: string
+  auditDesc?: string
+  nextNodeAuditors?: Array<{ nodeProxyId?: string, bizId?: string, name?: string, auditDetailType?: string }>
+}
+
+// dispatchBusinessAction 在页面内把动作落到真实原生组件（S4）：
+// 发起族找 FlowDialog（sumbitFlow），审批族找 ExamineOpinion（submitCheckBefore 等）。
+// 组件按 $options.name 递归唯一命中，找不到/多命中一律抛错（绝不静默跳过）。
+// 动作上下文先注入再分发：auditDesc → approveForm.approveMessage；
+// nextNodeAuditors → nextAuditorList（{name,bizId,auditDetailType:'personnel',nodeProxyId}）。
+async function dispatchBusinessAction (page: Page, input: DispatchInput): Promise<{ component: string, method: string }> {
+  return page.evaluate(input => {
+    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
+    interface VNode { $options?: { name?: string }, $children?: VNode[] }
+    const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
+    if (!container) throw new Error('原生宿主未捕获，不能执行动作')
+    const findUnique = (want: string): ({ $options?: { name?: string }, [key: string]: unknown }) => {
+      const found: Array<{ $options?: { name?: string }, [key: string]: unknown }> = []
+      const walk = (node: VNode): void => {
+        if (String(node?.$options?.name ?? '') === want) { found.push(node as { $options?: { name?: string }, [key: string]: unknown }); return }
+        for (const child of node.$children ?? []) walk(child)
+      }
+      walk(container)
+      if (found.length !== 1) throw new Error(`组件 ${want} 命中 ${found.length} 个（应为唯一），拒绝执行`)
+      return found[0]!
+    }
+    const action = input.action
+    let component: { $options?: { name?: string }, [key: string]: unknown }
+    let method = ''
+    if (action === 'save_draft' || action === 'submit') {
+      component = findUnique('FlowDialog')
+      if (typeof component.sumbitFlow !== 'function') throw new Error('FlowDialog 缺少 sumbitFlow 方法')
+    } else {
+      component = findUnique('ExamineOpinion')
+    }
+    // 动作上下文（P1-6）：审批意见与下一节点人员先落到组件，再调用原生方法。
+    const auditDesc = String(input.auditDesc ?? '')
+    if (auditDesc !== '' && component.approveForm && typeof component.approveForm === 'object') {
+      (component.approveForm as { approveMessage?: string }).approveMessage = auditDesc
+    }
+    if (Array.isArray(input.nextNodeAuditors) && input.nextNodeAuditors.length > 0) {
+      const entries = (input.nextNodeAuditors as Array<{ nodeProxyId?: string, bizId?: string, name?: string }>).map(item => ({
+        name: String(item.name ?? ''),
+        bizId: String(item.bizId ?? ''),
+        auditDetailType: 'personnel',
+        nodeProxyId: String(item.nodeProxyId ?? '')
+      }))
+      if (entries.some(item => item.bizId === '' || item.name === '')) {
+        throw new Error('下一节点人员存在空 bizId/name，拒绝写入目标组件')
+      }
+      component.nextAuditorList = entries
+    }
+    switch (action) {
+      case 'save_draft':
+        method = 'sumbitFlow("draft")'
+        ;(component.sumbitFlow as (kind: string) => unknown)('draft')
+        break
+      case 'submit':
+        method = 'sumbitFlow("submit")'
+        ;(component.sumbitFlow as (kind: string) => unknown)('submit')
+        break
+      case 'storage_form_data':
+        if (typeof component.temporaryStorage !== 'function') throw new Error('ExamineOpinion 缺少 temporaryStorage 方法')
+        method = 'temporaryStorage()'
+        ;(component.temporaryStorage as () => unknown)()
+        break
+      case 'approve':
+      case 'reject':
+        // 走原生按钮入口 submitCheckBefore：内含 $confirm → approveForm.validate → formMakingFormBusiness。
+        // $confirm 的确认按钮由服务端在执行后于页面内点击（autoConfirmMessageBox）。
+        if (typeof component.submitCheckBefore !== 'function') throw new Error('ExamineOpinion 缺少 submitCheckBefore 方法')
+        method = `submitCheckBefore("${action === 'approve' ? 'pass' : 'no_pass'}")`
+        ;(component.submitCheckBefore as (type: string) => unknown)(action === 'approve' ? 'pass' : 'no_pass')
+        break
+      case 'resubmit':
+        if (typeof component.saveSubmit !== 'function') throw new Error('ExamineOpinion 缺少 saveSubmit 方法')
+        method = 'saveSubmit("submit")'
+        ;(component.saveSubmit as (type: string) => unknown)('submit')
+        break
+      default:
+        throw new Error(`动作 ${action} 尚未接入原生组件分发`)
+    }
+    return { component: String(component.$options?.name ?? ''), method }
+  }, input)
+}
+
+// autoConfirmMessageBox 在页面内自动点击 Element MessageBox 的确认主按钮（S4 已知差异：
+// 设计禁止用 Playwright 定位器点业务控件；这里是 page.evaluate 内触发 DOM click，
+// 复刻「用户点确认」的原生路径）。找不到按钮按超时失败，绝不静默跳过。
+async function autoConfirmMessageBox (page: Page, timeoutMs = 10000): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const clicked = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('.el-message-box__btns button'))
+      const primary = buttons.find(button => button.classList.contains('el-button--primary')) as HTMLButtonElement | undefined
+      const target = primary ?? buttons[buttons.length - 1] as HTMLButtonElement | undefined
+      if (!target) return false
+      target.click()
+      return true
+    })
+    if (clicked) return
+    await new Promise(resolve => setTimeout(resolve, 120))
+  }
+  throw new Error('确认弹窗未出现或没有可点击按钮')
 }
 
 // parseTemplateCandidateIds 从 trace 里 /web/flowTemplateApi/list 的真实响应体解出候选模板 ID。
@@ -254,9 +373,16 @@ function injectIdentityScript (payload: Record<string, unknown>): string {
       window.__executorPageErrors.push({ kind: 'error', message: String(event.message ?? ''), source: String(event.filename ?? ''), lineno: event.lineno ?? 0 });
     });
     window.addEventListener('unhandledrejection', event => {
-      let reason = '';
-      try { reason = String(event.reason && event.reason.message ? event.reason.message : event.reason ?? ''); } catch (e) { reason = 'unhandledrejection'; }
-      window.__executorPageErrors.push({ kind: 'unhandledrejection', message: reason });
+      let message = '';
+      let url = '';
+      try {
+        const reason = event.reason;
+        message = reason && reason.message ? String(reason.message) : String(reason ?? 'unhandledrejection');
+        // axios 类 rejection 携带 config.url：完成判定要区分「目标请求异常」与
+        // 「FormMaking 外部服务（如 tools-server uptoken）异常」，后者是与流程无关的噪声。
+        url = String(reason && reason.config && reason.config.url ? reason.config.url : '');
+      } catch (e) { message = 'unhandledrejection'; }
+      window.__executorPageErrors.push({ kind: 'unhandledrejection', message, url });
     });
     // 原生宿主捕获（P1-1 修复）：目标产物只有 window.$vue（main.js:130 全局根实例），
     // 绝不能用 window.Vue / window.app 捕获。做法：等 $vue 出现 → 取其原型 →
@@ -717,52 +843,21 @@ async function main (): Promise<void> {
           try {
             session.actionInFlight = true
             const baselineSeq = session.route!.trace.lastSeq
+            // 页面异常基线（S7）：业务完成信号=主写端点成功 + 动作期无新增页面异常。
+            // 幻影 __businessError 已删除：判据必须有写入方（__executorPageErrors 由注入脚本写入）。
+            const errorsAtBaseline = await countRelevantPageErrors(session.page)
+            let dispatchFacts: { component: string, method: string } | null = null
             if (!readOnly) {
-              await session.page.evaluate((action) => {
-                const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
-                const container = native?.initFlow || native?.flowDetail
-                if (!container) return
-                const typed = container as { $children?: Array<{ $options?: { name?: string }, sumbitFlow?: unknown, temporaryStorage?: unknown, formMakingFormBusiness?: unknown, saveSubmit?: unknown, confirmTranspond?: unknown }> }
-                const flowDialog = typed.$children?.find(c => c.$options?.name === 'FlowDialog')
-                const opinion = typed.$children?.find(c => c.$options?.name === 'EnterpriseExamineOpinion')
-                switch (action) {
-                  case 'save_draft':
-                    if (flowDialog && typeof flowDialog.sumbitFlow === 'function') {
-                      (flowDialog.sumbitFlow as (kind: string) => unknown)('draft')
-                    }
-                    break
-                  case 'submit':
-                    if (flowDialog && typeof flowDialog.sumbitFlow === 'function') {
-                      (flowDialog.sumbitFlow as (kind: string) => unknown)('submit')
-                    }
-                    break
-                  case 'storage_form_data':
-                    if (opinion && typeof opinion.temporaryStorage === 'function') {
-                      (opinion.temporaryStorage as () => unknown)()
-                    }
-                    break
-                  case 'resubmit':
-                    if (opinion && typeof opinion.saveSubmit === 'function') {
-                      (opinion.saveSubmit as (type: string) => unknown)('submit')
-                    }
-                    break
-                  case 'approve':
-                    if (opinion && typeof opinion.formMakingFormBusiness === 'function') {
-                      (opinion.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(true, 'pass')
-                    }
-                    break
-                  case 'reject':
-                    if (opinion && typeof opinion.formMakingFormBusiness === 'function') {
-                      (opinion.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(false, 'no_pass')
-                    }
-                    break
-                  case 'forward':
-                    if (opinion && typeof opinion.confirmTranspond === 'function') {
-                      (opinion.confirmTranspond as () => unknown)()
-                    }
-                    break
-                }
-              }, action)
+              const payload = (envelope.payload ?? {}) as { auditDesc?: string, nextNodeAuditors?: DispatchInput['nextNodeAuditors'] }
+              dispatchFacts = await dispatchBusinessAction(session.page, {
+                action,
+                auditDesc: payload.auditDesc,
+                nextNodeAuditors: payload.nextNodeAuditors
+              })
+              // 同意/不同意走原生 $confirm 弹窗：在页面内点击确认主按钮（已知差异，登记于设计文档）。
+              if (action === 'approve' || action === 'reject') {
+                await autoConfirmMessageBox(session.page)
+              }
             }
             const verdict = readOnly
               ? { status: 'success' as const, requestTrace: [] }
@@ -772,28 +867,57 @@ async function main (): Promise<void> {
                 baselineSeq,
                 businessDone: async () => {
                   const entries = session.route!.trace.list().filter(e => e.seq > baselineSeq)
-                  const flowWrites = entries.filter(e => 
-                    e.method === 'POST' && 
+                  const flowWrites = entries.filter(e =>
+                    e.method === 'POST' &&
                     e.state === 'fulfilled' &&
                     e.response?.httpStatus === 200 &&
-                    (e.url.includes('/flowInstanceApi/submit') || 
-                     e.url.includes('/flowInstanceApi/audit') ||
-                     e.url.includes('/flowInstanceApi/transpond') ||
-                     e.url.includes('/flowInstanceApi/temporaryStorage') ||
-                     e.url.includes('/flowInstanceApi/reEdit'))
+                    !isPermissionCheckSubmit(e) &&
+                    detectFlowRejection(e) === null &&
+                    ['/web/flowInstanceApi/submit', '/flowInstanceApi/audit', '/web/flowInstanceApi/transpond',
+                      '/web/flowInstanceApi/storageFormData', '/web/flowInstanceApi/reSubmit'
+                    ].some(path => e.url.includes(path))
                   )
                   if (flowWrites.length === 0) return false
-                  const hasBusinessError = await session.page.evaluate(() => {
-                    return (window as unknown as { __businessError?: boolean }).__businessError === true
-                  }).catch(() => false)
-                  return flowWrites.length > 0 && !hasBusinessError
+                  // 与基线同一口径：只统计无 URL 的页面异常（真实 JS 崩溃）。
+                  const relevantErrors = await countRelevantPageErrors(session.page).catch(() => -1)
+                  return relevantErrors === errorsAtBaseline
                 },
                 hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000),
                 idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),
                 gate: async () => !session.choicePending,
                 writeGate: session.writeGate
               })
-            sendEnvelope(ws, session, 'result', envelope.requestId, verdict)
+            // 分发事实回传：调用了哪个组件哪个方法（L2 断言与运行详情的证据）。
+            // debugWrites 记录动作窗口内每笔流程端点请求的判定输入（是否权限校验、响应摘要），
+            // 供失败诊断与端点级证据核对。
+            const debugWrites = session.route!.trace.list()
+              .filter(e => e.seq > baselineSeq &&
+                ['/web/flowInstanceApi/submit', '/flowInstanceApi/audit', '/web/flowInstanceApi/transpond',
+                  '/web/flowInstanceApi/storageFormData', '/web/flowInstanceApi/reSubmit'].some(p => e.url.includes(p)))
+              .map(e => {
+                let bodyText = e.body ?? ''
+                if (e.bodyEncoding === 'base64') bodyText = Buffer.from(bodyText, 'base64').toString('utf8')
+                let responseText = ''
+                if (e.response?.body) {
+                  responseText = e.response.bodyEncoding === 'base64'
+                    ? Buffer.from(e.response.body, 'base64').toString('utf8')
+                    : e.response.body
+                }
+                return {
+                  seq: e.seq, url: e.url, state: e.state, httpStatus: e.response?.httpStatus ?? 0,
+                  isPermissionCheck: isPermissionCheckSubmit(e),
+                  requestBodyExcerpt: bodyText.slice(0, 300),
+                  responseBodyExcerpt: responseText.slice(0, 600)
+                }
+              })
+            const allPageErrors = await session.page.evaluate(() =>
+              (window as unknown as { __executorPageErrors?: unknown[] }).__executorPageErrors ?? []
+            ).catch(() => [])
+            const verdictWithFacts = {
+              ...verdict,
+              businessSummary: { dispatched: dispatchFacts, debugWrites, pageErrors: allPageErrors, relevantErrorsAtEnd: await countRelevantPageErrors(session.page).catch(() => -1), relevantErrorsAtBaseline: errorsAtBaseline }
+            }
+            sendEnvelope(ws, session, 'result', envelope.requestId, verdictWithFacts)
           } catch (error) {
             sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error) })
           } finally {

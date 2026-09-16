@@ -1,0 +1,91 @@
+{
+  "account": "骆蒙恩",
+  "action": "save_draft",
+  "businessSummary": {
+    "dispatched": {
+      "component": "FlowDialog",
+      "method": "sumbitFlow(\"draft\")"
+    },
+    "debugWrites": [
+      {
+        "seq": 6,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": true,
+        "requestBodyExcerpt": "{\"data\":{\"flowProxyId\":\"73eaa9b297b54364a3c320d3002a1b4f\",\"checkPermissions\":\"first\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}]}}",
+        "responseBodyExcerpt": "{\"message\":\"权限校验通过\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}"
+      },
+      {
+        "seq": 7,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBodyExcerpt": "{\"data\":{\"name\":\"T-AUTO-F036-save_draft-0917-004416\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}],\"status\":\"draft\",\"formProxyId\":\"5222ef99bdab4826a14dd7ae1af4fd80\",\"companyId\":\"6e1235cf416e4143947311c6cc93d78e\"},\"formDataMongoVo\":{\"data\":{\"g",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"c3aab9235d6c4b75b54a55c5c1bfe6e1\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"createDate\":\"2026-09-17 00:44:19\",\"updateDate\":\"2026-09-17 00:44:19\",\"platformCode\":\"200001\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"batchNo\":\"f527651073284f5ebe52a6671d1a76ff\",\"name\":\"T-AUTO-F036-save_draft-0917-004416\",\"currentDataId\":\"690092b9e8654069b8e9bdb8a1cd61b3\",\"status\":\"draft\",\"statusList\":null,\"statusQ\":\"draft\",\"flowProxyId\":\"73eaa9b2"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowGroup/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/type/list"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Network Error",
+        "url": "/web/flowTemplateApi/findById"
+      }
+    ],
+    "relevantErrorsAtEnd": 0,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "",
+  "jobTaskId": "",
+  "readback": {
+    "extractedInstanceId": "c3aab9235d6c4b75b54a55c5c1bfe6e1",
+    "instanceFact": {
+      "currentNodes": [
+        "993daf28d7d94ed5b6302743b67d1c7d"
+      ],
+      "found": true,
+      "name": "T-AUTO-F036-save_draft-0917-004416",
+      "status": "draft"
+    }
+  },
+  "requestTrace": [
+    {
+      "seq": 6,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 3,
+      "durationMs": 60
+    },
+    {
+      "seq": 7,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 4,
+      "durationMs": 535
+    }
+  ],
+  "result": {
+    "message": "",
+    "status": "success"
+  },
+  "toolFlowName": "T-AUTO-F036-save_draft-0917-004416",
+  "writeTraceIDs": [
+    "7b6ec66d271db359",
+    "6227d2fbbf14b6ef"
+  ]
+}
