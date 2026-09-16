@@ -214,3 +214,18 @@ export function validateMessage (value: unknown): MessageEnvelope {
   }
   return message as unknown as MessageEnvelope
 }
+
+// encodeEnvelope 构造发给 Go 的协议信封；调用方保证 payload 形状。
+export function encodeEnvelope (kind: MessageKind, session: { sessionId: string, runId: string, pathRunId: string, stepId: string }, requestId: string, payload?: unknown): MessageEnvelope {
+  return {
+    version: PROTOCOL_VERSION,
+    kind,
+    requestId,
+    sessionId: session.sessionId,
+    runId: session.runId,
+    pathRunId: session.pathRunId,
+    stepId: session.stepId,
+    payload
+  }
+}
+

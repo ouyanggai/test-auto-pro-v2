@@ -53,8 +53,8 @@ type SessionSpec struct {
 
 // SessionHandle 是执行服务返回的会话事实。
 type SessionHandle struct {
-	SessionID string
-	Status    string
+	SessionID string `json:"sessionId"`
+	Status    string `json:"status"`
 }
 
 // Client 是执行服务客户端；零值不可用，必须经 NewClient 构造。

@@ -96,6 +96,8 @@
 - 2026-09-16 T012：删除 form-runtime 执行宿主、执行桥接和 executor 目录；配置 iframe 协议保留。
 - 2026-09-16 T013：执行服务停止后配置 iframe 协议仍含 getValues；两侧快照 HEAD 与构建产物目录隔离。
 - 2026-09-16 T014：聚合脚本 `test/run-executor-service.sh` 只跑本切片测试；状态停在 `ready_for_manual`，不自动开始下一功能。
+- 2026-09-16 人工验收：运行 122/路径 396 创建会话返回 HTTP 404。根因是独立服务只实现 `/health`；已补齐 `/runtime/session` 生命周期。
+
 
 
 

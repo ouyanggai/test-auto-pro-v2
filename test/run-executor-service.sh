@@ -26,7 +26,8 @@ node --experimental-strip-types --test \
   test/integration/executor-service/data-patch-readback.test.ts \
   test/integration/executor-service/actions.test.ts \
   test/integration/executor-service/choice-continue.test.ts \
-  test/integration/executor-service/isolation.test.ts
+  test/integration/executor-service/isolation.test.ts \
+  test/integration/executor-service/session-lifecycle.test.ts
 
 echo "== F-036 Go 契约与路由 =="
 go test ./test/contracts/executor-service ./test/contracts/runtimeexec ./test/contracts/form-runtime \
