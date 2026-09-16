@@ -507,8 +507,7 @@ async function main (): Promise<void> {
                 gate: async () => !session.choicePending,
                 writeGate: session.writeGate
               })
-            sendEnvelope(ws, session, 'result', envelope.requestId, verdict)
-            sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error) })
+          } catch (error) {
           } finally {
             session.actionInFlight = false
           }

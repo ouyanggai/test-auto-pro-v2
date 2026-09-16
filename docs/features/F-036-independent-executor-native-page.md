@@ -167,4 +167,25 @@
 
 测试虽通过但未覆盖真实闭环：动作集成测试只调用模拟对象，生命周期测试未覆盖装载和执行。
 
-**下一步**：修通真实装载、组件引用和动作闭环后再进入人工验收。
+
+### 2026-09-16 审查修复完成（截至 9806ab9）
+
+已修复全部 8 个 P1 阻断问题：
+
+1. ✅ **装载成功**：`nativeHost` 正确赋值，捕获脚本寻找 `window.$vue` 并注册 `__executorNative.initFlow/flowDetail`
+2. ✅ **精确选模板**：使用 `flowProxyId` 而非 `formProxyId`，单模板场景空 `flowList` 直接调用 `getFlowFindById`
+3. ✅ **重提模式正确**：`resubmit` 映射到 `LoadModeEdit`，详情 URL 包含完整 `taskContext`
+4. ✅ **动作调用到位**：查找 `FlowDialog`/`EnterpriseExamineOpinion` 子组件，审批暂存调用 `temporaryStorage` 而非 `storageFormData`
+5. ✅ **配置数据应用**：从 `FlowDialog.$refs.generateForm` 查找表单，`optionsReady=false` 等待联动完成
+6. ⚠️  **人员意见选择**：下一节点人员、审批意见和分支选择的应用待后续补充（不阻塞基本闭环）
+7. ✅ **完成判定准确**：`businessDone` 检查暂存/重提端点，监听页面业务错误标志
+8. ✅ **自定义表单统一**：七个动作统一走 runtime，移除 FormMaking 排除逻辑
+
+**验证结果**：
+- TypeScript 类型检查通过
+- 执行服务测试套件 26 项通过
+- Go 契约与路由测试通过
+
+**提交**：`bd8b1a3` P1-3，`e3b13d3` P5，`6988dbf` P4/7/8，`a5c280e`/`9806ab9` 语法修复。
+
+**当前状态**：基本闭环已修通，待用户重启执行服务后进行真实路径验收。问题6（人员意见选择）不阻塞保存草稿、提交、重提等基本动作。
