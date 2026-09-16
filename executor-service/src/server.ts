@@ -359,10 +359,13 @@ async function main (): Promise<void> {
             initiator: payload.initiator ?? null
           }
           session.route.setToolFlowName(String(payload.toolFlowName ?? ''))
+          send(200, { ready: true, mode })
+        } catch (error) {
+          send(500, { error: String((error as Error)?.message ?? error) })
+        }
       })()
       return
     }
-
     send(404, { error: 'not found' })
   })
 
