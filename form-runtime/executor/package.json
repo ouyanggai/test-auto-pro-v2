@@ -6,7 +6,7 @@
   "description": "执行引擎改造：Playwright + Chromium 无头执行服务（只装载真实 form-runtime 页面，不做界面操作）",
   "scripts": {
     "probe": "tsx src/probe.ts",
-    "start": "tsx src/server.ts",
+    "start": "node --env-file-if-exists=.env --experimental-strip-types src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
