@@ -352,7 +352,7 @@ async function main (): Promise<void> {
                   const dialog = typed.$children?.find(c => c.$options?.name === 'FlowDialog' || c.$options?.name === 'FlowDetail')
                   return dialog?.$refs?.generateForm?.getValues() ?? {}
                 })
-              }, values, { allowedKeys: allowed, optionsReady: false })
+              }, payload.values as Record<string, unknown>, { allowedKeys: allowed, optionsReady: false })
             }
           }
           if (!session.nativeHost) {
@@ -433,7 +433,7 @@ async function main (): Promise<void> {
           const readOnly = action === 'capture' || action === 'validate'
           try {
             session.actionInFlight = true
-            const baselineSeq = session.route!.trace.nextSeq()
+            const baselineSeq = session.route!.trace.lastSeq
             if (!readOnly) {
               await session.page.evaluate((action) => {
                 const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative

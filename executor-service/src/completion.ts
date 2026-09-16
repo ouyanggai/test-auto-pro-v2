@@ -22,6 +22,10 @@ export interface CompletionInput {
   trace: RequestTraceRecorder
   baselineSeq: number
   businessDone: () => Promise<boolean>
+  hardTimeoutMs: number
+  idleWindowMs: number
+  gate?: () => Promise<boolean>
+  writeGate?: WriteGate
 }
 
 export interface CompletionResult {
