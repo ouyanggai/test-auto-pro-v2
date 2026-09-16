@@ -1,0 +1,31 @@
+{
+  "milestone": "M1 装载台绿（S1 装载捕获 + S2 前置 + 转发 SID 修复）",
+  "time": "2026-09-17T00:16:10+08:00",
+  "results": {
+    "initiate": {
+      "status": "pass",
+      "evidence": "20260917-001606-L1-initiate.json",
+      "hostPath": ["InitFlowDialog", "FlowDialog"],
+      "templateId": "73eaa9b297b54364a3c320d3002a1b4f",
+      "templateMatchedBound": true,
+      "templateCandidatesSource": "/web/flowTemplateApi/list 真实响应（99 项，含绑定 ID，走 confirm 选择路径）",
+      "writeEndpoints": [],
+      "pageErrors": []
+    },
+    "detailView": {
+      "status": "pass",
+      "evidence": "20260917-001609-L1-detail-view.json",
+      "hostPathContains": "EnterpriseExamineDialog",
+      "writeEndpoints": [],
+      "pageErrors": ["tools-server.making.link 404 ×2（外部表单库的上传/选项服务，与目标平台无关）"]
+    }
+  },
+  "codeChanges": [
+    "注入脚本改用 window.$vue 原型捕获 $initFlow/$flowDetail（P1-1）",
+    "装载就绪判据：发起等 approveDialogVisible+flowJson.id；详情等 examineDialogVisible/ExpensesClaimFormVisible",
+    "模板精确选择：读 trace 真实 list 响应，0 条/不含绑定 ID 一律阻塞（S2）",
+    "/load 响应新增 diagnostics（mode/hostPath/templateId/templateCandidates/semantics/patchReadback/warnings/pageErrors/traceUrls）",
+    "转发出口统一重写 JSON 体顶层 sid 信封（目标按 body sid 鉴权，此前全部转发读取被判未登录）",
+    "URL 发起参数 flowTemplateId 改用专字段（不再用 formProxyId 顶替）"
+  ]
+}

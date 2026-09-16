@@ -1,0 +1,58 @@
+{
+  "account": "骆蒙恩",
+  "instanceId": "0bb92332a34442aa93b51a88fc68e14d",
+  "response": {
+    "ready": true,
+    "mode": "view",
+    "diagnostics": {
+      "mode": "view",
+      "hostPath": [
+        "",
+        "EnterpriseExamineDialog"
+      ],
+      "templateId": "",
+      "templateCandidates": [],
+      "semantics": {
+        "operaType": "check",
+        "actionType": "preview",
+        "isExamine": false,
+        "isReInitiate": false,
+        "btnVisible": false,
+        "formExist": "",
+        "formId": "5222ef99bdab4826a14dd7ae1af4fd80",
+        "flowInstanceId": "0bb92332a34442aa93b51a88fc68e14d"
+      },
+      "patchReadback": {},
+      "warnings": [],
+      "pageErrors": [],
+      "traceUrls": [
+        {
+          "seq": 1,
+          "method": "POST",
+          "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/list",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 2,
+          "method": "POST",
+          "url": "https://iserver.runshihua.com/api/web/flowAuditRecord/list",
+          "state": "forwarding"
+        },
+        {
+          "seq": 3,
+          "method": "POST",
+          "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/queryStorageFormData",
+          "state": "forwarding"
+        },
+        {
+          "seq": 4,
+          "method": "POST",
+          "url": "https://iserver.runshihua.com/api/web/flowInstancePostscript/list",
+          "state": "forwarding"
+        }
+      ]
+    }
+  },
+  "scene": "detail-view"
+}

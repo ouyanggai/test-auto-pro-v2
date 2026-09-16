@@ -11,12 +11,14 @@ import (
 )
 
 // 装载模式：发起装载创建发起表单组件；审批装载（T009）复用同一形状并注入两套身份；
-// 转发装载（P1-4 修复）复用审批宿主并注入转发弹窗等价的行事实与接收人。
+// 转发装载（P1-4 修复）复用审批宿主并注入转发弹窗等价的行事实与接收人；
+// edit=重提/待发编辑（isReInitiate），view=只读核对（operaType=check）。
 const (
 	LoadModeInitiate = "initiate"
 	LoadModeApprove  = "approve"
 	LoadModeForward  = "forward"
 	LoadModeEdit     = "edit"
+	LoadModeView     = "view"
 )
 
 // SessionFacts 是装载需要的会话事实子集，由调用方从 target.Session 投影；SID 不在其中。
@@ -126,8 +128,8 @@ type LoadInput struct {
 // 发起必须带 auditWay 与计划绑定 flowTemplateId，实例必须带 taskContext；
 // edit（重提/待发编辑）必须带实例 ID（P1-3：重提走 /flow/detail 的 edit 模式）。
 func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, error) {
-	if input.Mode != LoadModeInitiate && input.Mode != LoadModeApprove && input.Mode != LoadModeForward && input.Mode != LoadModeEdit {
-		return nil, fmt.Errorf("装载模式只支持 initiate/approve/forward/edit：%s", input.Mode)
+	if input.Mode != LoadModeInitiate && input.Mode != LoadModeApprove && input.Mode != LoadModeForward && input.Mode != LoadModeEdit && input.Mode != LoadModeView {
+		return nil, fmt.Errorf("装载模式只支持 initiate/approve/forward/edit/view：%s", input.Mode)
 	}
 	if strings.TrimSpace(input.ToolFlowName) == "" {
 		return nil, fmt.Errorf("装载缺少工具流程名称")
@@ -140,6 +142,9 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 	}
 	if input.Mode == LoadModeEdit && strings.TrimSpace(input.InstanceID) == "" {
 		return nil, fmt.Errorf("编辑（重提/待发）装载缺少实例 ID")
+	}
+	if input.Mode == LoadModeView && strings.TrimSpace(input.InstanceID) == "" {
+		return nil, fmt.Errorf("查看装载缺少实例 ID")
 	}
 	if len(values) == 0 {
 		values = json.RawMessage(`{}`)

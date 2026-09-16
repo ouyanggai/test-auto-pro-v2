@@ -16,7 +16,9 @@ import (
 
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
+	"test-auto-pro-v2/internal/repository"
 	"test-auto-pro-v2/internal/runtimeexec"
+	mysql "test-auto-pro-v2/internal/repository/mysql"
 	"test-auto-pro-v2/internal/session"
 )
 
@@ -115,14 +117,31 @@ var f036WriteEndpoints = []string{
 	"/web/flowInstanceApi/transpond",
 }
 
-// saveF036Evidence 把一次验证事实原样落盘到 docs/auto/evidence/。
+// saveF036Evidence 把一次验证事实原样落盘到仓库根 docs/auto/evidence/。
+// go test 的工作目录是包目录，这里向上定位仓库根再写。
 func saveF036Evidence(t *testing.T, name string, fact map[string]any) {
 	t.Helper()
-	if err := os.MkdirAll("docs/auto/evidence", 0o755); err != nil {
+	root, err := os.Getwd()
+	if err != nil {
+		t.Logf("证据落盘失败（不影响断言）：%v", err)
+		return
+	}
+	for i := 0; i < 6; i++ {
+		if _, statErr := os.Stat(root + "/.git"); statErr == nil {
+			break
+		}
+		parent := root[:strings.LastIndex(root, "/")]
+		if parent == "" || parent == root {
+			break
+		}
+		root = parent
+	}
+	dir := root + "/docs/auto/evidence"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Logf("证据目录创建失败（不影响断言）：%v", err)
 		return
 	}
-	file := fmt.Sprintf("docs/auto/evidence/%s-%s.json", time.Now().Format("20060102-150405"), name)
+	file := fmt.Sprintf("%s/%s-%s.json", dir, time.Now().Format("20060102-150405"), name)
 	raw, err := json.MarshalIndent(fact, "", "  ")
 	if err != nil {
 		t.Logf("证据序列化失败：%v", err)
@@ -159,6 +178,11 @@ func f036LoadOnce(ctx context.Context, t *testing.T, rc *runtimeexec.Client, cur
 	}
 	raw, err := rc.Load(ctx, handle.SessionID, message)
 	if err != nil {
+		// 失败时把会话 trace 原样打出来：转发失败/中止原因必须能被看到，否则无从定位。
+		entries := f036SessionTrace(t, handle.SessionID)
+		for _, entry := range entries {
+			t.Logf("trace[%d] %s %s state=%s http=%d", entry.Seq, entry.Method, entry.URL, entry.State, entry.HTTPStatus)
+		}
 		t.Fatalf("装载失败：%v", err)
 	}
 	return raw, handle.SessionID
@@ -166,8 +190,11 @@ func f036LoadOnce(ctx context.Context, t *testing.T, rc *runtimeexec.Client, cur
 
 // f036SessionTrace 调执行服务 /status 读取会话捕获的目标请求清单（只读观测口）。
 func f036SessionTrace(t *testing.T, sessionID string) []struct {
+	Seq        int    `json:"seq"`
 	Method     string `json:"method"`
 	URL        string `json:"url"`
+	State      string `json:"state"`
+	AbortReason string `json:"abortReason"`
 	HTTPStatus int    `json:"httpStatus"`
 } {
 	t.Helper()
@@ -184,8 +211,11 @@ func f036SessionTrace(t *testing.T, sessionID string) []struct {
 	var parsed struct {
 		Trace struct {
 			Entries []struct {
+				Seq        int    `json:"seq"`
 				Method     string `json:"method"`
 				URL        string `json:"url"`
+				State      string `json:"state"`
+				AbortReason string `json:"abortReason"`
 				HTTPStatus int    `json:"httpStatus"`
 			} `json:"entries"`
 		} `json:"trace"`
@@ -265,8 +295,8 @@ func TestF036RealLoadLoopInitiate(t *testing.T) {
 		t.Fatalf("装载诊断 hostPath 为空：原生组件链未捕获（P1-1）")
 	}
 	joined := strings.Join(diag.Diagnostics.HostPath, ">")
-	if !strings.Contains(joined, "InitFlowDialog") {
-		t.Fatalf("发起装载组件链应含 InitFlowDialog，实际 %v", diag.Diagnostics.HostPath)
+	if !strings.Contains(joined, "InitFlowDialog") || !strings.Contains(joined, "FlowDialog") {
+		t.Fatalf("发起装载组件链应含 InitFlowDialog>FlowDialog，实际 %v", diag.Diagnostics.HostPath)
 	}
 	if diag.Diagnostics.TemplateID != boundID {
 		t.Fatalf("实际装载模板 %s != 计划绑定模板 %s（P1-2）", diag.Diagnostics.TemplateID, boundID)
@@ -293,5 +323,97 @@ func TestF036RealLoadLoopInitiate(t *testing.T) {
 	}
 	if !hasList || !hasFind {
 		t.Fatalf("发起 trace 缺模板读取（list=%v findById=%v）：%d 笔", hasList, hasFind, len(entries))
+	}
+}
+
+// TestF036RealLoadLoopDetail 详情装载（view 模式，只读）：实例取自目标业务库最新一条
+// 同模板实例；断言捕获链非空、语义字段与 mode 对应、trace 无写端点。
+func TestF036RealLoadLoopDetail(t *testing.T) {
+	rc, client, current := realLoopDeps(t)
+	account := os.Getenv("TEST_AUTO_PRO_TARGET_ACCOUNT")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := rc.Health(ctx); err != nil {
+		t.Fatalf("执行服务不可用：%v", err)
+	}
+
+	boundID := f036BoundTemplateID(t)
+	s, err := current(ctx, account)
+	if err != nil {
+		t.Fatalf("取目标会话失败：%v", err)
+	}
+	snapshot, err := client.ReadTemplateConfiguration(ctx, s, boundID)
+	if err != nil {
+		t.Fatalf("读取目标模板配置失败：%v", err)
+	}
+	instanceID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_INSTANCE"))
+	if instanceID == "" {
+		// 从目标业务库只读连接找同模板最新实例（施工令 §0 允许项 5）。
+		repo, repoErr := mysql.NewTargetHistoryRepository(ctx, config.LoadTargetBizDBConfig(), s.CustomerCode)
+		if repoErr != nil {
+			t.Fatalf("目标业务库只读连接不可用，且未设置 TEST_AUTO_PRO_F036_INSTANCE：%v", repoErr)
+		}
+		defer repo.Close()
+		rows, _, listErr := repo.TargetHistoryCandidates(ctx, repository.TargetHistoryCandidateFilter{
+			FlowName: snapshot.FlowName,
+		}, 1, 5)
+		if listErr != nil || len(rows) == 0 {
+			t.Fatalf("目标业务库未找到模板 %s 的实例：%v", snapshot.FlowName, listErr)
+		}
+		instanceID = rows[0].InstanceID
+	}
+
+	load, err := runtimeexec.BuildLoadPayload(runtimeexec.LoadInput{
+		Mode: runtimeexec.LoadModeView,
+		Session: runtimeexec.SessionFacts{
+			UserID: s.UserID, CompanyID: s.CompanyID, DepartmentID: s.DepartmentID,
+			CustomerCode: s.CustomerCode, Account: s.Summary.Account, DisplayName: s.Summary.DisplayName,
+		},
+		ToolFlowName:   "T-AUTO-F036-L1",
+		InstanceID:     instanceID,
+		FormProxyID:    snapshot.Forms[0].ID,
+		FlowProxyID:    boundID,
+		SelectFlowType: snapshot.AuditWay,
+		BaseURL:        "",
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("装载载荷构造失败：%v", err)
+	}
+	raw, sessionID := f036LoadOnce(ctx, t, rc, current, account, load)
+	t.Logf("装载响应：%s", string(raw))
+	saveF036Evidence(t, "L1-detail-view", map[string]any{
+		"scene": "detail-view", "account": account, "instanceId": instanceID,
+		"response": json.RawMessage(raw),
+	})
+
+	var diag struct {
+		Ready       bool `json:"ready"`
+		Diagnostics struct {
+			Mode       string   `json:"mode"`
+			HostPath   []string `json:"hostPath"`
+			Warnings   []string `json:"warnings"`
+			PageErrors []any    `json:"pageErrors"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(raw, &diag); err != nil {
+		t.Fatalf("装载响应解析失败：%v（原文：%s）", err, string(raw))
+	}
+	if !diag.Ready {
+		t.Fatalf("装载未就绪：%s", string(raw))
+	}
+	if len(diag.Diagnostics.HostPath) == 0 {
+		t.Fatalf("详情装载 hostPath 为空：原生组件链未捕获")
+	}
+	joined := strings.Join(diag.Diagnostics.HostPath, ">")
+	if !strings.Contains(joined, "EnterpriseExamineDialog") {
+		t.Fatalf("详情装载组件链应含 EnterpriseExamineDialog，实际 %v", diag.Diagnostics.HostPath)
+	}
+	// 只读装载绝不允许写端点。
+	for _, entry := range f036SessionTrace(t, sessionID) {
+		for _, write := range f036WriteEndpoints {
+			if strings.Contains(entry.URL, write) {
+				t.Fatalf("详情装载期出现写端点 %s：装载必须是纯读", entry.URL)
+			}
+		}
 	}
 }

@@ -71,6 +71,19 @@ func (c *Client) ForwardRuntimeRequest(ctx context.Context, session Session, req
 		query.Set("sid", session.SID)
 	}
 	endpoint.RawQuery = query.Encode()
+	// 目标网关按「请求体顶层 sid」鉴权（直连出口 InjectWriteEnvelope 复刻其 axios 拦截器语义）：
+	// 页面 JSON 体里的 sid 来自页面 localStorage，装载载荷未带 SID 时必然为空，只覆盖
+	// query/header 会被空 body sid 顶掉，全部转发读取被目标判为未登录（2026-09-16 真实验收实测）。
+	// 因此 JSON 对象体在这里统一重写会话信封（顶层 sid/空 projectId/data.customerCode）；
+	// 非对象体（上传等二进制）保持原样直通。
+	if len(request.Body) > 0 && session.SID != "" {
+		var parsed map[string]any
+		if json.Unmarshal(request.Body, &parsed) == nil && parsed != nil {
+			if encoded, err := json.Marshal(InjectWriteEnvelope(parsed, session.SID, session.CustomerCode)); err == nil {
+				request.Body = encoded
+			}
+		}
+	}
 	var bodyReader io.Reader
 	if len(request.Body) > 0 {
 		bodyReader = bytes.NewReader(request.Body)
