@@ -1,0 +1,56 @@
+{
+  "account": "骆蒙恩",
+  "action": "submit",
+  "businessSummary": {
+    "dispatched": {
+      "component": "FlowDialog",
+      "method": "sumbitFlow(\"submit\")"
+    },
+    "debugWrites": [
+      {
+        "seq": 17,
+        "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": true,
+        "requestBodyExcerpt": "{\"data\":{\"flowProxyId\":\"73eaa9b297b54364a3c320d3002a1b4f\",\"checkPermissions\":\"first\",\"flowInstanceBizRelevanceList\":[{\"otherBiz\":\"company\",\"otherBizId\":\"6e1235cf416e4143947311c6cc93d78e\"}]}}",
+        "responseBodyExcerpt": "{\"message\":\"权限校验通过\",\"isSuccess\":true,\"data\":null,\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}"
+      }
+    ],
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Request failed with status code 404",
+        "url": "http://tools-server.making.link/api/uptoken"
+      },
+      {
+        "kind": "unhandledrejection",
+        "message": "Request failed with status code 404",
+        "url": "http://tools-server.making.link/api/new/options"
+      }
+    ],
+    "relevantErrorsAtEnd": 0,
+    "relevantErrorsAtBaseline": 0
+  },
+  "instanceId": "",
+  "jobTaskId": "",
+  "requestTrace": [
+    {
+      "seq": 17,
+      "method": "POST",
+      "url": "https://iserver.runshihua.com/api/web/flowInstanceApi/submit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 17,
+      "durationMs": 78
+    }
+  ],
+  "result": {
+    "message": "动作没有发出任何写请求",
+    "status": "failed"
+  },
+  "toolFlowName": "T-AUTO-F036-submit-0917-005859",
+  "writeTraceIDs": [
+    "f33b00788e73cae5"
+  ]
+}

@@ -129,6 +129,29 @@ func TestF036RealActionLoop(t *testing.T) {
 		AuditDesc:      "自动验证意见",
 		BaseURL:        "",
 	}
+	// 表单值来源：TEST_AUTO_PRO_F036_VALUES_FILE 指向 JSON 文件（发起提交需要表单数据通过原生校验）。
+	if valuesFile := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_VALUES_FILE")); valuesFile != "" {
+		raw, readErr := os.ReadFile(valuesFile)
+		if readErr != nil {
+			t.Fatalf("读取表单值文件失败：%v", readErr)
+		}
+		request.Values = json.RawMessage(raw)
+		// 未显式给 CHANGED_FIELDS 时补丁全部键：新发起链的表单初始为空，
+		// 只补覆盖字段会让必填校验拦住提交（原生用户路径是整表填写）。
+		if fields := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_CHANGED_FIELDS")); fields != "" {
+			request.ChangedFields = strings.Split(fields, ",")
+		} else {
+			var values map[string]any
+			if err := json.Unmarshal(raw, &values); err != nil {
+				t.Fatalf("表单值文件不是 JSON 对象：%v", err)
+			}
+			allFields := make([]string, 0, len(values))
+			for key := range values {
+				allFields = append(allFields, key)
+			}
+			request.ChangedFields = allFields
+		}
+	}
 	instanceID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_INSTANCE"))
 	jobTaskID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_JOB_TASK"))
 	nodeProxyID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_NODE"))

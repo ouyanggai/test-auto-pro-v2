@@ -13,7 +13,7 @@ import { extractPageDist, serveFlowPage } from './page-origin.ts'
 import { encodeEnvelope, PROTOCOL_VERSION, validateMessage, type MessageEnvelope } from './protocol.ts'
 import { InitiateBlockedError, planTemplateSelection } from './native-initiate.ts'
 import { resolveDetailSemantics } from './native-detail.ts'
-import { applyNodePatch, UnsupportedFormError } from './data-patch.ts'
+import { UnsupportedFormError } from './data-patch.ts'
 import { canContinueChoice, dispatchChoiceContinue, dispatchNativeAction } from './native-actions.ts'
 import { detectFlowRejection, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
@@ -285,37 +285,66 @@ function parseTemplateCandidateIds (trace: { list: () => Array<{ url: string, st
   }
 }
 
-// resolveFormApi 按模式解析真实表单数据接口（S5）：
+// formApiAvailable 探测按模式解析的真实表单数据接口是否存在（S5）：
 // 发起=FlowDialog.$refs.OtherSteps2.$refs.generateForm（InitFlowDialog.vue/FlowDialog 结构）；
 // 审批与重提=EnterpriseExamineDialog.$refs.generateForm（flowDetail.vue 结构）。
-// 找不到返回 null，由调用方按 unsupported 阻塞，绝不静默跳过。
-async function resolveFormApi (page: Page, mode: string): Promise<{ setData: (values: Record<string, unknown>) => Promise<void> | void, getValues: () => Promise<Record<string, unknown>> | Record<string, unknown> } | null> {
+// 注意：Playwright evaluate 返回值必须可 JSON 序列化，组件方法本身不能跨边界带回——
+// 所以这里只回布尔；setData/getValues 由 applyNodePatchViaPage 在页面内一次完成。
+async function formApiAvailable (page: Page, mode: string): Promise<boolean> {
   const wantDialog = mode === 'initiate' ? 'FlowDialog' : 'EnterpriseExamineDialog'
   return page.evaluate(want => {
+    interface VNode { $options?: { name?: string }, $children?: VNode[], $refs?: Record<string, unknown> }
     const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
-    const container = (native?.initFlow || native?.flowDetail) as { $children?: unknown[] } | undefined
-    if (!container) return null
+    const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
+    if (!container) return false
     // 从捕获实例递归按 $options.name 找唯一宿主组件；找不到/多命中都视为缺失。
-    const found: unknown[] = []
-    const walk = (node: { $options?: { name?: string }, $children?: unknown[] }): void => {
+    const found: VNode[] = []
+    const walk = (node: VNode): void => {
       if (node?.$options?.name === want) { found.push(node); return }
-      for (const child of (node.$children ?? []) as Array<{ $options?: { name?: string }, $children?: unknown[] }>) {
-        walk(child)
-      }
+      for (const child of node.$children ?? []) walk(child)
+    }
+    walk(container)
+    if (found.length !== 1) return false
+    const refs = found[0]!.$refs ?? {}
+    const form = (want === 'FlowDialog'
+      ? ((refs.OtherSteps2 as { $refs?: Record<string, unknown> } | undefined)?.$refs?.generateForm)
+      : refs.generateForm) as { setData?: unknown, getValues?: unknown } | undefined
+    return Boolean(form && typeof form.setData === 'function' && typeof form.getValues === 'function')
+  }, wantDialog)
+}
+
+// applyNodePatchViaPage 在页面内一次完成「唯一宿主解析 → 只写允许字段 → 回读完整值」。
+// 返回回读值；宿主缺失返回 null，由调用方按 unsupported 阻塞。
+async function applyNodePatchViaPage (page: Page, mode: string, patch: Record<string, unknown>, allowedKeys: string[]): Promise<Record<string, unknown> | null> {
+  const wantDialog = mode === 'initiate' ? 'FlowDialog' : 'EnterpriseExamineDialog'
+  return page.evaluate(({ want, patch, keys }) => {
+    interface VNode { $options?: { name?: string }, $children?: VNode[], $refs?: Record<string, unknown> }
+    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
+    const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
+    if (!container) return null
+    const found: VNode[] = []
+    const walk = (node: VNode): void => {
+      if (node?.$options?.name === want) { found.push(node); return }
+      for (const child of node.$children ?? []) walk(child)
     }
     walk(container)
     if (found.length !== 1) return null
-    const dialog = found[0] as { $refs?: Record<string, unknown> }
-    const refs = dialog.$refs ?? {}
+    const refs = found[0]!.$refs ?? {}
     const form = (want === 'FlowDialog'
       ? ((refs.OtherSteps2 as { $refs?: Record<string, unknown> } | undefined)?.$refs?.generateForm)
       : refs.generateForm) as { setData?: unknown, getValues?: unknown } | undefined
     if (!form || typeof form.setData !== 'function' || typeof form.getValues !== 'function') return null
-    return {
-      setData: (values: Record<string, unknown>) => (form.setData as (v: Record<string, unknown>) => void)(values),
-      getValues: () => (form.getValues as () => Record<string, unknown>)()
+    const picked: Record<string, unknown> = {}
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) picked[key] = patch[key]
+      const virtual = `${key}__virtualName`
+      if (Object.prototype.hasOwnProperty.call(patch, virtual)) picked[virtual] = patch[virtual]
     }
-  }, wantDialog)
+    ;(form.setData as (values: Record<string, unknown>) => void)(picked)
+    const values = (form.getValues as () => Record<string, unknown>)()
+    if (values === null || values === undefined || typeof values !== 'object') return null
+    return values
+  }, { want: wantDialog, patch, keys: allowedKeys })
 }
 
 // waitForOptionsReady 等待远程选项/联动收敛：trace 无在途转发请求且条目数保持稳定窗。
@@ -738,13 +767,25 @@ async function main (): Promise<void> {
           const allowed = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
           let patchReadback: Record<string, unknown> = {}
           if (allowed.length > 0) {
-            const api = await resolveFormApi(session.page, mode)
-            if (!api) {
+            // 表单宿主是异步渲染的（发起链 Steps1 监听 flowJson 自动 nextStep，
+            // OtherSteps2 的 v-if 挂载与 FormMaking 初始化都在下一个 tick 之后）：
+            // 轮询等待表单接口出现，超时才判 unsupported。
+            const apiDeadline = Date.now() + CAPTURE_TIMEOUT_MS
+            let available = false
+            while (Date.now() < apiDeadline) {
+              if (await formApiAvailable(session.page, mode)) { available = true; break }
+              await new Promise(resolve => setTimeout(resolve, 200))
+            }
+            if (!available) {
               throw new UnsupportedFormError('未能在原生组件链上找到 setData/getValues 表单接口')
             }
             // 等待就绪：trace 无在途请求 + 稳定窗（远程选项/联动收敛），绝不硬编码就绪标志。
             await waitForOptionsReady(session.route.trace, 900)
-            patchReadback = await applyNodePatch(api, (payload.values ?? {}) as Record<string, unknown>, { allowedKeys: allowed })
+            const readback = await applyNodePatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed)
+            if (readback === null) {
+              throw new UnsupportedFormError('补丁应用时表单数据接口不可用')
+            }
+            patchReadback = readback
           }
 
           session.loaded = true
@@ -769,6 +810,8 @@ async function main (): Promise<void> {
         } catch (error) {
           // 装载期异常按七值语义映射：表单接口缺失=unsupported（阻塞+原因）；
           // 无权限/绑定缺失等发起阻塞=blocked；其余才是服务端故障（500）。
+          console.error('[executor] 装载失败 mode=', String((envelope.payload as Record<string, unknown> | undefined)?.mode ?? ''),
+            'error=', String((error as Error)?.message ?? error), (error as Error)?.stack ?? '')
           if (error instanceof UnsupportedFormError) {
             send(422, { status: 'unsupported', error: String((error as Error)?.message ?? error) })
             return
