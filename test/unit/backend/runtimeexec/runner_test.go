@@ -88,6 +88,7 @@ func TestRunActionSendsValidLoadEnvelope(t *testing.T) {
 		Action:         "submit",
 		ToolFlowName:   "工具流程",
 		SelectFlowType: "employee_leave",
+		FlowTemplateID: "tpl-9",
 		Session:        runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "张三"},
 		Initiator:      runtimeexec.ActorIdentity{UserID: "u-1", Name: "张三"},
 		Values:         json.RawMessage(`{"reason":"x"}`),

@@ -62,6 +62,9 @@ type LoadPayload struct {
 	// FormProxyID 是 FormMaking 表单代理 ID：FlowDialog 据 formId 决定发送 formProxyId；
 	// 缺失时目标提交会退回发送 flowProxyId: ""（评审 P1-3 的空代理 ID 根因）。
 	FormProxyID string `json:"formProxyId,omitempty"`
+	// FlowTemplateID 是流程模板 ID（/web/flowTemplateApi/list 返回的 id）：发起装载专字段。
+	// 语义独立的第三种 ID——不得用表单代理 ID 或发布流程代理 ID 顶替（P1-2 根因）。
+	FlowTemplateID string `json:"flowTemplateId,omitempty"`
 	// FlowProxyID 是发布流程代理 ID：审批组件与转发链的流程归属事实。
 	FlowProxyID string `json:"flowProxyId,omitempty"`
 	// SelectFlowType 是流程类型（auditWay）：目标组件按它组装业务关联与表单业务分支。
@@ -108,6 +111,8 @@ type LoadInput struct {
 	FormProxyID                  string
 	FlowProxyID                  string
 	SelectFlowType               string
+	// FlowTemplateID 是计划绑定的流程模板 ID（新发起来源=计划目标对象 ID）：发起装载必填。
+	FlowTemplateID               string
 	FlowNodeType                 string
 	NextNodeProxyID              string
 	FlowInstanceBizRelevanceList []BizRelevance
@@ -118,16 +123,23 @@ type LoadInput struct {
 }
 
 // BuildLoadPayload 构造并校验装载载荷。v2 不再接受 Go 渲染模板；
-// 发起必须带 auditWay 与计划绑定 flowTemplateId，实例必须带 taskContext。
+// 发起必须带 auditWay 与计划绑定 flowTemplateId，实例必须带 taskContext；
+// edit（重提/待发编辑）必须带实例 ID（P1-3：重提走 /flow/detail 的 edit 模式）。
 func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, error) {
-	if input.Mode != LoadModeInitiate && input.Mode != LoadModeApprove && input.Mode != LoadModeForward {
-		return nil, fmt.Errorf("装载模式只支持 initiate/approve/forward：%s", input.Mode)
+	if input.Mode != LoadModeInitiate && input.Mode != LoadModeApprove && input.Mode != LoadModeForward && input.Mode != LoadModeEdit {
+		return nil, fmt.Errorf("装载模式只支持 initiate/approve/forward/edit：%s", input.Mode)
 	}
 	if strings.TrimSpace(input.ToolFlowName) == "" {
 		return nil, fmt.Errorf("装载缺少工具流程名称")
 	}
 	if input.Mode == LoadModeInitiate && strings.TrimSpace(input.SelectFlowType) == "" {
 		return nil, fmt.Errorf("发起装载缺少 auditWay，不能只传 flowTemplateId")
+	}
+	if input.Mode == LoadModeInitiate && strings.TrimSpace(input.FlowTemplateID) == "" {
+		return nil, fmt.Errorf("发起装载缺少计划绑定模板 ID（flowTemplateId）")
+	}
+	if input.Mode == LoadModeEdit && strings.TrimSpace(input.InstanceID) == "" {
+		return nil, fmt.Errorf("编辑（重提/待发）装载缺少实例 ID")
 	}
 	if len(values) == 0 {
 		values = json.RawMessage(`{}`)
@@ -184,6 +196,7 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 		AccountName:                  strings.TrimSpace(input.Session.Account),
 		BaseURL:                      strings.TrimRight(input.BaseURL, "/"),
 		FormProxyID:                  strings.TrimSpace(input.FormProxyID),
+		FlowTemplateID:               strings.TrimSpace(input.FlowTemplateID),
 		FlowProxyID:                  strings.TrimSpace(input.FlowProxyID),
 		SelectFlowType:               strings.TrimSpace(input.SelectFlowType),
 		FlowNodeType:                 strings.TrimSpace(input.FlowNodeType),

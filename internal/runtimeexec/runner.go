@@ -45,6 +45,8 @@ type RuntimeRunRequest struct {
 	AuditDesc            string
 	FormProxyID          string
 	FlowProxyID          string
+	// FlowTemplateID 是计划绑定的流程模板 ID：发起装载用它精确选中模板（P1-2 专字段）。
+	FlowTemplateID       string
 	SelectFlowType       string
 	FlowNodeType         string
 	NextNodeProxyID      string
@@ -153,6 +155,7 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		Initiator:     request.Initiator,
 		// 目标代理与节点事实（评审 P1-3）：目标组件按这些字段组装最终流程载荷。
 		FormProxyID:                  request.FormProxyID,
+		FlowTemplateID:               request.FlowTemplateID,
 		FlowProxyID:                  request.FlowProxyID,
 		SelectFlowType:               request.SelectFlowType,
 		FlowNodeType:                 request.FlowNodeType,

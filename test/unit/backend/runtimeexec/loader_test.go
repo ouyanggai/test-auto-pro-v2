@@ -15,11 +15,15 @@ func TestBuildLoadPayload(t *testing.T) {
 		Session:        runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "骆蒙恩", CompanyID: "c-1", DepartmentID: "d-1", CustomerCode: "cc"},
 		ToolFlowName:   "工具流程",
 		SelectFlowType: "employee_leave",
+		FlowTemplateID: "73eaa9b297b54364a3c320d3002a1b4f",
 		Permissions:    []string{"reason"},
 		BaseURL:        "https://target.example.com/",
 	}, values)
 	if err != nil {
 		t.Fatalf("合法装载被拒绝：%v", err)
+	}
+	if payload.FlowTemplateID != "73eaa9b297b54364a3c320d3002a1b4f" {
+		t.Fatalf("发起装载必须携带计划绑定模板 ID 专字段：%+v", payload)
 	}
 	if payload.CurrentOperator.UserID != "u-1" || payload.CurrentOperator.Name != "骆蒙恩" {
 		t.Fatalf("当前操作人身份投影错误：%+v", payload.CurrentOperator)
@@ -44,9 +48,11 @@ func TestBuildLoadPayload(t *testing.T) {
 		input runtimeexec.LoadInput
 	}{
 		{"未知模式", runtimeexec.LoadInput{Mode: "both", Session: runtimeexec.SessionFacts{UserID: "u"}, ToolFlowName: "t", SelectFlowType: "leave"}},
-		{"缺工具流程名称", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeInitiate, Session: runtimeexec.SessionFacts{UserID: "u"}, SelectFlowType: "leave"}},
-		{"发起装载缺用户事实", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeInitiate, ToolFlowName: "t", SelectFlowType: "leave"}},
-		{"发起装载缺 auditWay", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeInitiate, Session: runtimeexec.SessionFacts{UserID: "u"}, ToolFlowName: "t"}},
+		{"缺工具流程名称", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeInitiate, Session: runtimeexec.SessionFacts{UserID: "u"}, SelectFlowType: "leave", FlowTemplateID: "tpl-1"}},
+		{"发起装载缺用户事实", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeInitiate, ToolFlowName: "t", SelectFlowType: "leave", FlowTemplateID: "tpl-1"}},
+		{"发起装载缺 auditWay", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeInitiate, Session: runtimeexec.SessionFacts{UserID: "u"}, ToolFlowName: "t", FlowTemplateID: "tpl-1"}},
+		{"发起装载缺模板 ID", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeInitiate, Session: runtimeexec.SessionFacts{UserID: "u"}, ToolFlowName: "t", SelectFlowType: "leave"}},
+		{"编辑装载缺实例 ID", runtimeexec.LoadInput{Mode: runtimeexec.LoadModeEdit, Session: runtimeexec.SessionFacts{UserID: "u"}, ToolFlowName: "t"}},
 	}
 	for _, item := range failures {
 		if _, err := runtimeexec.BuildLoadPayload(item.input, values); err == nil {

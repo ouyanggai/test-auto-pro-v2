@@ -203,6 +203,10 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		// 代理与节点事实：目标提交按 formId 决定发送 formProxyId/flowProxyId（评审 P1-3 根因）。
 		FormProxyID:          formProxyID,
 		FlowProxyID:          flowProxyID,
+		// 发起装载专用的计划绑定模板 ID：新发起来源下计划目标对象 ID 就是 /web/flowTemplateApi/list
+		// 返回的模板 ID（target_read.go 以它调 ReadTemplateConfiguration）；与表单/流程代理 ID 语义不同，
+		// 绝不互用（P1-2）。
+		FlowTemplateID:       runCtx.FlowProxyID,
 		SelectFlowType:       runCtx.FlowType,
 		FlowNodeType:         runCtx.Nodes[step.NodeKey].AuditType,
 		NextNodeProxyID:      nextNodeTargetIDOf(runCtx, approved.NextIndex),

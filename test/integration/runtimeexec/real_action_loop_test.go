@@ -1,0 +1,199 @@
+// F-036 L2 动作台：单个 runtime 动作的真实写验证（施工令 §5.2）。
+// 由环境变量驱动，避免包内默认发起真实写：
+//   TEST_AUTO_PRO_F036_ACTION   必填（save_draft/submit/storage_form_data/approve/reject/resubmit/forward），为空跳过
+//   TEST_AUTO_PRO_F036_INSTANCE 审批族/重提/转发的实例 ID
+//   TEST_AUTO_PRO_F036_JOB_TASK 审批族的任务 ID
+//   TEST_AUTO_PRO_F036_NODE     审批族的节点代理 ID
+//   TEST_AUTO_PRO_F036_RECEIVER 转发接收人用户 ID
+// 断言三件事同时命中：组件链+方法调用事实（result.requestTrace 之外的动作事实）、
+// 写端点出现在 RequestTrace、写后目标事实核验；证据落盘 docs/auto/evidence/。
+package runtimeexec_test
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"test-auto-pro-v2/internal/runtimeexec"
+)
+
+// f036ExpectedWriteEndpoint 按施工令附录 A.3 给出动作的期望主写端点。
+func f036ExpectedWriteEndpoint(action string) string {
+	switch action {
+	case "save_draft", "submit":
+		return "/web/flowInstanceApi/submit"
+	case "storage_form_data":
+		return "/web/flowInstanceApi/storageFormData"
+	case "approve", "reject":
+		return "/flowInstanceApi/audit"
+	case "resubmit":
+		return "/web/flowInstanceApi/reSubmit"
+	case "forward":
+		return "/web/flowInstanceApi/transpond"
+	default:
+		return ""
+	}
+}
+
+// TestF036RealActionLoop 单动作真实写验证入口：环境变量未配置时跳过并打印原因。
+func TestF036RealActionLoop(t *testing.T) {
+	rc, client, current := realLoopDeps(t)
+	account := os.Getenv("TEST_AUTO_PRO_TARGET_ACCOUNT")
+	action := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_ACTION"))
+	if action == "" {
+		t.Skip("未配置 TEST_AUTO_PRO_F036_ACTION，跳过真实写动作验证")
+	}
+	endpoint := f036ExpectedWriteEndpoint(action)
+	if endpoint == "" {
+		t.Fatalf("未知动作 %s", action)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	if err := rc.Health(ctx); err != nil {
+		t.Fatalf("执行服务不可用：%v", err)
+	}
+
+	s, err := current(ctx, account)
+	if err != nil {
+		t.Fatalf("取目标会话失败：%v", err)
+	}
+	boundID := f036BoundTemplateID(t)
+	snapshot, err := client.ReadTemplateConfiguration(ctx, s, boundID)
+	if err != nil {
+		t.Fatalf("读取目标模板配置失败：%v", err)
+	}
+	if len(snapshot.Forms) != 1 {
+		t.Fatalf("目标模板应挂唯一表单，实际 %d 个", len(snapshot.Forms))
+	}
+	formProxyID := snapshot.Forms[0].ID
+	flowProxyID := boundID
+
+	request := runtimeexec.RuntimeRunRequest{
+		RunID: "1", PathRunID: "1", StepID: "1",
+		Account:      account,
+		Action:       action,
+		ToolFlowName: "T-AUTO-F036-" + action + "-" + time.Now().Format("0102-150405"),
+		Session: runtimeexec.SessionFacts{
+			UserID: s.UserID, CompanyID: s.CompanyID, DepartmentID: s.DepartmentID,
+			CustomerCode: s.CustomerCode, Account: s.Summary.Account, DisplayName: s.Summary.DisplayName,
+		},
+		Initiator:      runtimeexec.ActorIdentity{UserID: s.UserID, Name: s.Summary.DisplayName},
+		Values:         json.RawMessage(`{}`),
+		Permissions:    []string{},
+		ChangedFields:  []string{},
+		FormProxyID:    formProxyID,
+		FlowProxyID:    flowProxyID,
+		FlowTemplateID: boundID,
+		SelectFlowType: snapshot.AuditWay,
+		AuditDesc:      "自动验证意见",
+		BaseURL:        "",
+	}
+	instanceID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_INSTANCE"))
+	jobTaskID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_JOB_TASK"))
+	nodeProxyID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_NODE"))
+	receiverID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_RECEIVER"))
+	switch action {
+	case "save_draft", "submit":
+		// 新发起链：无实例事实，由目标在页面上自装载模板。
+	case "storage_form_data", "approve", "reject":
+		request.InstanceID = instanceID
+		request.JobTaskID = jobTaskID
+		request.NodeProxyID = nodeProxyID
+		if instanceID == "" || jobTaskID == "" {
+			t.Fatalf("动作 %s 需要 TEST_AUTO_PRO_F036_INSTANCE / TEST_AUTO_PRO_F036_JOB_TASK", action)
+		}
+	case "resubmit":
+		request.InstanceID = instanceID
+		request.LoadMode = runtimeexec.LoadModeEdit
+		if instanceID == "" {
+			t.Fatalf("动作 resubmit 需要 TEST_AUTO_PRO_F036_INSTANCE")
+		}
+	case "forward":
+		request.InstanceID = instanceID
+		request.JobTaskID = jobTaskID
+		request.NodeProxyID = nodeProxyID
+		request.ReceiverID = receiverID
+		if instanceID == "" || receiverID == "" {
+			t.Fatalf("动作 forward 需要 TEST_AUTO_PRO_F036_INSTANCE / TEST_AUTO_PRO_F036_RECEIVER")
+		}
+	}
+
+	exec := runtimeexec.NewRuntimeExecutor(rc)
+	res, err := exec.RunAction(ctx, request)
+	fact := map[string]any{
+		"action": action, "account": account, "instanceId": instanceID,
+		"jobTaskId": jobTaskID, "toolFlowName": request.ToolFlowName,
+	}
+	if err != nil {
+		fact["error"] = err.Error()
+		saveF036Evidence(t, "L2-"+action+"-error", fact)
+		t.Fatalf("动作执行失败：%v", err)
+	}
+	fact["result"] = map[string]any{"status": res.Status, "message": res.Message}
+	fact["requestTrace"] = json.RawMessage(res.RequestTrace)
+	fact["writeTraceIDs"] = res.WriteTraceIDs
+
+	// 断言 1：状态必须 success。
+	if res.Status != "success" {
+		saveF036Evidence(t, "L2-"+action+"-"+res.Status, fact)
+		t.Fatalf("动作状态=%s 消息=%s", res.Status, res.Message)
+	}
+	// 断言 2：传输层写 trace 必须存在（页面写请求确实经 Go 转发发出）。
+	if len(res.WriteTraceIDs) == 0 {
+		saveF036Evidence(t, "L2-"+action+"-no-write-trace", fact)
+		t.Fatalf("动作成功但没有任何写请求 trace（端点级证据缺失）")
+	}
+	// 断言 3：RequestTrace 里出现该动作的期望写端点。
+	traceText := string(res.RequestTrace)
+	if !strings.Contains(traceText, endpoint) {
+		saveF036Evidence(t, "L2-"+action+"-missing-endpoint", fact)
+		t.Fatalf("请求轨迹缺少期望写端点 %s：%s", endpoint, traceText)
+	}
+
+	// 断言 4：写后目标事实核验（只读）。
+	session2, err := current(ctx, account)
+	if err != nil {
+		t.Fatalf("取核验会话失败：%v", err)
+	}
+	readback := map[string]any{}
+	switch action {
+	case "save_draft", "submit":
+		// 新实例：草稿/提交后实例已存在；提交还会产生下一节点待办（用跟踪事实核对）。
+		if instanceID == "" {
+			// 发起链的实例 ID 由运行编排维护，L2 台从踪迹中提取：目标写请求响应里带实例 ID。
+			fact["note"] = "新发起动作：实例核验用踪迹中的实例 ID（见 requestTrace）"
+		}
+	case "storage_form_data":
+		stored, found, err := client.ReadStorageFormData(ctx, session2, instanceID, nodeProxyID)
+		if err != nil {
+			t.Fatalf("暂存核验读取失败：%v", err)
+		}
+		readback["storageFound"] = found
+		readback["storageAuditDesc"] = stored.AuditDesc
+		if !found {
+			saveF036Evidence(t, "L2-"+action+"-readback-miss", fact)
+			t.Fatalf("暂存写后未读到暂存记录")
+		}
+	case "approve", "reject":
+		done, err := client.FindDoneTaskOnNode(ctx, session2, instanceID, nodeProxyID, session2.UserID)
+		if err != nil {
+			t.Fatalf("审批核验读取失败：%v", err)
+		}
+		readback["taskDoneOnNode"] = done
+		if !done {
+			saveF036Evidence(t, "L2-"+action+"-readback-miss", fact)
+			t.Fatalf("审批写后未见当前节点已办任务")
+		}
+	case "resubmit", "forward":
+		facts, err := client.FindSubmittedFlowFacts(ctx, session2, instanceID)
+		if err != nil {
+			t.Fatalf("实例事实读取失败：%v", err)
+		}
+		readback["instanceFacts"] = facts
+	}
+	fact["readback"] = readback
+	saveF036Evidence(t, "L2-"+action, fact)
+}

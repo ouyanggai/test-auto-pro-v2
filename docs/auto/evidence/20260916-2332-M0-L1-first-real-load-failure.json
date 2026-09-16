@@ -1,0 +1,14 @@
+{
+  "milestone": "M0",
+  "scene": "L1 首次真实装载（起点证据，施工令 §0.0 第 2 步）",
+  "time": "2026-09-16T23:32:28+08:00",
+  "action": "load initiate",
+  "boundTemplateId": "73eaa9b297b54364a3c320d3002a1b4f",
+  "result": {
+    "status": "failed",
+    "transport": "执行服务返回 HTTP 500",
+    "body": {"error": "原生宿主未捕获，装载失败"}
+  },
+  "diagnosis": "P1-1 未修：注入脚本用 window.Vue || window.app 捕获（server.ts:93），目标产物只有 window.$vue（main.js:130），__executorNative 永远为空 → :358 的 500 门禁必然触发",
+  "notes": "另见预热通道一次「目标平台会话已失效」转发失败（会话刷新后继续，属登录重登路径，不阻塞）。"
+}
