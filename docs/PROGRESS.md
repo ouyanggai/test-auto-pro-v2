@@ -2,9 +2,10 @@
 
 # 当前进度
 
-- 2026-09-16 F-036 进入 **implementing**。T001 已提交 1b1c9ec。
-  T002：从原项目 `/Volumes/oygsky/bigsys/rsh-flow-components@be355ae` 复制独立 `flow-source/`（含 FormMaking dist）。
-  下一步 T003：BrowserContext 会话迁入新服务。
+- 2026-09-16 F-036 **implementing**。T001 `1b1c9ec`，T002 `93b14e1`。
+  T003：独立服务 BrowserContext 会话隔离、关闭失效、崩溃释放已验证。
+  下一步 T004：协议升级 `exec-engine/v2`。
+
 
 
 

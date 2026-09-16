@@ -3,7 +3,8 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2024", "DOM"],
+
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
