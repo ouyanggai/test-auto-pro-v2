@@ -124,6 +124,13 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		_ = r.client.Destroy(destroyCtx, handle.SessionID)
 	}()
 
+	// ⓪ 预热命令通道：装载期页面的目标读取（模板、字段权限、远程选项）要经 WS 转发 Go，
+	// 必须先于装载连接；若等 Execute 才连通道，装载期读取全部被本地中止，表单装载不完
+	// （2026-09-16 真实验收实测）。预热失败不阻断（Execute 仍会重连）。
+	if closeWS, prewarmErr := r.client.Prewarm(ctx, handle.SessionID, request.Account); prewarmErr == nil {
+		defer closeWS()
+	}
+
 	// ① 装载：发起模式（submit/save_draft）由目标自装载模板（载荷带 flowId 由执行器填写）；
 	// 审批模式注入模板/值/权限。
 	loadMode := request.LoadMode

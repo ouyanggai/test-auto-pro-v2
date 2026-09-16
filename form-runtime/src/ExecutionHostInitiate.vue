@@ -29,17 +29,20 @@ export default {
       this.businessDone = false
     },
     // applyExecutionLoad 由 App 装载链路调用：配置真实 FlowDialog 到第二步（表单填写）状态。
-    // payload.flowId 存在时 OtherSteps2 会按 watch(flowId) 自行经 Go 转发拉取模板与字段权限，
-    // 完成后以 fmDone 置位 fmComplete；无 flowId（离线模板注入）时由 App 走注入分支。
+    // flowId（发布流程代理）来自 Go 装载载荷的 flowProxyId，存在时 OtherSteps2 按 watch(flowId)
+    // 自行经 Go 转发拉取模板与字段权限，完成后以 fmDone 置位 fmComplete；
+    // 无 flowId（离线模板注入）时由 App 走注入分支。
     async applyExecutionLoad ({ payload, template, permissions }) {
       const flowDialog = this.$refs.flowDialog
-      flowDialog.formExist = String(payload.formExist ?? '')
-      // selectFlowType/formId 来自 Go 装载载荷（评审 P1-3）：FlowDialog 提交时按 formId
-      // 决定发送 formProxyId，缺失会把提交退化成 flowProxyId: ''。
+      // 执行宿主只承载 FormMaking 发起链：formExist 取真值（等价目标列表点「发起」的行事实）；
+      // selectFlowType/formId/flowId 来自 Go 装载载荷（评审 P1-3）：FlowDialog 提交时按 formId
+      // 决定发送 formProxyId、按 flowId 携带发布流程代理（checkFlowPermission 消费它），
+      // 缺失会把提交退化成 flowProxyId: '' 触发目标空指针（2026-09-16 真实验收实测）。
+      flowDialog.formExist = String(payload.formExist ?? '1')
       flowDialog.selectFlowType = String(payload.selectFlowType ?? '')
       flowDialog.stepsActive = 2
       this.visible = true
-      const flowId = String(payload.flowId ?? '')
+      const flowId = String(payload.flowProxyId ?? payload.flowId ?? '')
       if (flowId) {
         flowDialog.flowId = flowId
         flowDialog.formId = String(payload.formProxyId ?? payload.formId ?? '')

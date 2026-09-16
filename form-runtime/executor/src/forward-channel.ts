@@ -41,13 +41,21 @@ export class ForwardChannel {
   }
 
   // send 发送 request_forward 并等待配对响应；httpStatus=0 表示 Go 侧转发失败。
+  // 通道未连接时先等待短暂宽限：装载先于 Go 的命令到达，页面装载期读取必须等
+  // Go 预热的通道接上，不能立即按失败中止（2026-09-16 验收实测表单装载不完的根因）。
   async send (envelope: {
     sessionId: string
     runId: string
     pathRunId: string
     stepId: string
     payload: Record<string, unknown>
-  }, timeoutMs = 120000): Promise<ForwardOutcome> {
+  }, timeoutMs = 120000, connectGraceMs = 15000): Promise<ForwardOutcome> {
+    if (!this.connected) {
+      const startedAt = Date.now()
+      while (!this.connected && Date.now() - startedAt < connectGraceMs) {
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
     if (!this.connected) throw new ForwardFailure('Go 通道未连接，目标请求已在本地中止')
     const requestId = randomUUID()
     const message = {

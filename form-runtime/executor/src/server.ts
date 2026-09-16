@@ -240,13 +240,24 @@ async function main(): Promise<void> {
           }
         })
         // 页面异常必须通知 Go（设计 3.1/6）：在此监听并经通道推送事件。
+        // 装载阶段 WS 通道尚未连接，事件无处可去：同时落一行执行服务 stderr，
+        // 保证装载期的页面异常在日志里可见（2026-09-16 验收排障：fmDone 链路异常无处可查）。
         record.page!.on('pageerror', error => {
+          console.error('[executor] 页面异常:', String((error as Error)?.stack ?? error))
           const runtimeSession = sessions.get(record.sessionId)
           if (!channel.connected || !runtimeSession) return
           sendEnvelope(channel.socketForEvents!, runtimeSession, 'event', randomUUID(), {
             type: 'page_error',
             data: { message: String((error as Error)?.message ?? error) }
           })
+        })
+        // 页面侧请求失败与 console 错误同样落 stderr：网络层失败会让业务回调整条中断，
+        // 而 Go 出口只记录转发成功的事实，两边对照才能定位「200 但页面没收到」的缺口。
+        record.page!.on('requestfailed', request => {
+          console.error('[executor] 请求失败:', new Date().toISOString(), request.method(), request.url(), request.failure()?.errorText ?? '')
+        })
+        record.page!.on('console', message => {
+          if (message.type() === 'error') console.error('[executor:page-console]', message.text().slice(0, 400))
         })
         // 创建即装载固定执行路由：桥接就绪后会话才可用。
         try {
@@ -389,6 +400,7 @@ async function main(): Promise<void> {
       return
     }
     wss.handleUpgrade(request, socket, head, ws => {
+      console.error('[executor] 通道已连接:', session.sessionId, new Date().toISOString())
       session.channel.attach(ws)
       ws.on('message', (data: Buffer) => {
         void (async () => {
@@ -483,7 +495,7 @@ async function main(): Promise<void> {
           console.error('[executor] WS 处理失败：', error)
         })
       })
-      ws.on('close', () => session.channel.detachAll('Go 通道已断开'))
+      ws.on('close', () => { console.error('[executor] 通道已断开:', session.sessionId, new Date().toISOString()); session.channel.detachAll('Go 通道已断开') })
     })
   })
 

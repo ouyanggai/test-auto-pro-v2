@@ -81,6 +81,7 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
           action: ''
         })
         trace.markAborted(entry, 'blocked', '未登记的外部请求被本地拒绝')
+        console.error('[executor] 拒绝未登记外部请求:', request.url())
         await route.abort('blockedbyclient')
         return
       }
@@ -140,15 +141,28 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       const fulfillBody = outcome.body === undefined
         ? undefined
         : outcome.bodyEncoding === 'base64' ? Buffer.from(outcome.body, 'base64') : outcome.body
+      // 逐跳/长度类响应头必须剔除：Go 出口返回的正文是解压后的原文字节，
+      // 若把 content-length/transfer-encoding/content-encoding 原样带给 fulfill，
+      // 长度与正文不符会让页面 XHR 直接抛 Network Error，业务回调整条中断
+      // （2026-09-16 验收实测：getFormDetail 已 200 但 fmDone 永不触发的根因）。
+      const unsafeHeader = (name: string): boolean => {
+        const normalized = name.toLowerCase()
+        return ['content-length', 'transfer-encoding', 'content-encoding', 'keep-alive', 'connection', 'te', 'trailer', 'upgrade']
+          .includes(normalized)
+      }
+      const fulfillHeaders = Object.fromEntries(
+        Object.entries(outcome.headers ?? {}).filter(([name]) => !unsafeHeader(name))
+      )
       await route.fulfill({
         status: outcome.httpStatus,
-        headers: outcome.headers,
+        headers: fulfillHeaders,
         ...(contentType ? {} : { contentType: 'application/octet-stream' }),
         ...(fulfillBody === undefined ? {} : { body: fulfillBody })
       })
     } catch (error) {
       // 转发失败（Go 不可达/拒绝）：请求绝不能落到目标平台，本地中止并记录原因。
       trace.markAborted(entry, 'aborted', String((error as Error)?.message ?? error))
+      console.error('[executor] 转发失败中止:', request.url(), '|', String((error as Error)?.message ?? error))
       await route.abort('blockedbyclient')
     }
   }

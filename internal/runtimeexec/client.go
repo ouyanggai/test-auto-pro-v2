@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -73,8 +74,11 @@ func NewClient(baseURL string, forward TargetForwarder, sessions SessionProvider
 		return nil, fmt.Errorf("执行服务地址不合法：%s", baseURL)
 	}
 	return &Client{
-		baseURL:        parsed,
-		http:           &http.Client{Timeout: 60 * time.Second},
+		baseURL: parsed,
+		// 环回调用预算对齐动作硬超时（默认 180s）：flowId 自装载链路要等目标模板、
+		// 字段权限与远程选项全部经 Go 转发读回并渲染完成，60s 会在装载中途掐断
+		// （2026-09-16 真实验收实测 load 超时）。创建/销毁等快调用不受影响。
+		http:           &http.Client{Timeout: 180 * time.Second},
 		forward:        forward,
 		sessions:       sessions,
 		forwardTimeout: 90 * time.Second,
@@ -249,6 +253,70 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 			return nil, fmt.Errorf("runtime 发来不接受的消息类型：%s", message.Kind)
 		}
 	}
+}
+
+// Prewarm 在装载前预热 WS 命令通道并开启转发循环：flowId 自装载链路里页面会立刻发出
+// 目标读取（模板、字段权限、远程选项），这些请求需要经通道转发 Go；若等 Execute 才连接
+// 通道，装载期读取全部被本地中止，表单永远装载不完（2026-09-16 真实验收实测）。
+// account 必须携带：装载期读取与动作期同一纪律，按当前操作人账号取会话再转发，
+// 空账号会在会话查找处瞬间失败并被页面侧当成 Network Error。
+// 预热连接带完整转发循环（与 Execute 同一套写出事实口径）；Execute 建立的新连接会在
+// 服务端替换本连接，属正常时序。返回释放函数。
+func (c *Client) Prewarm(ctx context.Context, sessionID, account string) (func(), error) {
+	dialURL := *c.baseURL
+	if dialURL.Scheme == "https" {
+		dialURL.Scheme = "wss"
+	} else {
+		dialURL.Scheme = "ws"
+	}
+	dialURL.Path = strings.TrimRight(dialURL.Path, "/") + "/runtime/session/" + sessionID + "/execute"
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, dialURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("预热执行通道失败：%w", err)
+	}
+	state := &executeState{account: account}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			message, err := ValidateMessage(raw)
+			if err != nil {
+				continue
+			}
+			if message.Kind != KindRequestForward {
+				continue
+			}
+			response, forwardErr := c.handleForward(ctx, state, message)
+			if forwardErr != nil {
+				log.Printf("[runtimeexec] 预热通道转发失败 %s: %v", message.RequestID, forwardErr)
+			}
+			payload := requestResponsePayloadOf(response, forwardErr)
+			reply := Message{
+				Kind:      KindRequestResp,
+				RequestID: message.RequestID,
+				SessionID: message.SessionID,
+				RunID:     message.RunID,
+				PathRunID: message.PathRunID,
+				StepID:    message.StepID,
+				Payload:   payload,
+			}
+			rawReply, encodeErr := EncodeMessage(reply)
+			if encodeErr != nil {
+				continue
+			}
+			if writeErr := conn.WriteMessage(websocket.TextMessage, rawReply); writeErr != nil {
+				return
+			}
+		}
+	}()
+	return func() {
+		_ = conn.Close()
+		<-done
+	}, nil
 }
 
 // executeState 记录一次 Execute 过程中「目标请求是否已写出」「选择闭环是否已继续」的事实。
