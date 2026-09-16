@@ -478,13 +478,12 @@ async function main (): Promise<void> {
                 }
               }, action)
             }
-                    break
-                  case 'storage_form_data':
-                    if (typeof typed.storageFormData === 'function') (typed.storageFormData as () => unknown)()
-                    break
-                  case 'forward':
-                    if (typeof typed.confirmTranspond === 'function') (typed.confirmTranspond as () => unknown)()
-                    break
+            const verdict = readOnly
+              ? { status: 'success' as const, requestTrace: [] }
+              : await settleCompletion({
+                action,
+                trace: session.route!.trace,
+                baselineSeq,
                 businessDone: async () => {
                   const entries = session.route!.trace.list().filter(e => e.seq > baselineSeq)
                   const flowWrites = entries.filter(e => 
@@ -502,15 +501,6 @@ async function main (): Promise<void> {
                     return (window as unknown as { __businessError?: boolean }).__businessError === true
                   }).catch(() => false)
                   return flowWrites.length > 0 && !hasBusinessError
-                },
-                  const flowWrites = entries.filter(e => 
-                    e.method === 'POST' && 
-                    e.state === 'fulfilled' &&
-                    (e.url.includes('/flowInstanceApi/submit') || 
-                     e.url.includes('/flowInstanceApi/audit') ||
-                     e.url.includes('/flowInstanceApi/transpond'))
-                  )
-                  return flowWrites.length > 0
                 },
                 hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000),
                 idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),

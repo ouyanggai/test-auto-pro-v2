@@ -88,13 +88,10 @@ func (e *Executor) shouldRunViaRuntime(runCtx RunContext, step model.CompiledAct
 	switch step.Action {
 	case model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData,
 		model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward:
+		return true
 	default:
-	if r := e.runtime; r != nil {
-		return e.runViaRuntime(ctx, preview, runCtx, step)
-	}
 		return false
 	}
-	return true
 }
 
 // runViaRuntime 经 runtime 执行本步动作并回填 preview 写事实；返回 true 表示已接管。
