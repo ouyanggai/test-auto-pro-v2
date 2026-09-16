@@ -24,7 +24,7 @@ var goDirectEndpointLiterals = []string{
 	target.WriteEndpointFlowTracking,
 }
 
-// runtimeSources 返回 runtime 执行侧源码文件清单（executor TS + 页面桥接层）。
+// runtimeSources 返回独立执行服务源码文件清单。
 func runtimeSources(t *testing.T) []string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
@@ -32,11 +32,9 @@ func runtimeSources(t *testing.T) []string {
 		t.Fatal(err)
 	}
 	patterns := []string{
-		filepath.Join(root, "form-runtime", "executor", "src", "*.ts"),
-		filepath.Join(root, "form-runtime", "src", "*.vue"),
-		filepath.Join(root, "form-runtime", "src", "runtime", "*.js"),
-		filepath.Join(root, "form-runtime", "src", "main.js"),
+		filepath.Join(root, "executor-service", "src", "*.ts"),
 	}
+
 	var files []string
 	for _, pattern := range patterns {
 		matched, err := filepath.Glob(pattern)

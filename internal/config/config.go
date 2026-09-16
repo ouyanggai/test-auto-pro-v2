@@ -363,44 +363,20 @@ func intFromEnv(name string, fallback int) int {
 	return fallback
 }
 
-// RuntimeExecConfig 是执行引擎 runtime 路由的可选配置（docs/s 执行引擎改造）。
-// ExecutorURL 为空表示停用 runtime 路由：全部动作保持既有 Go 写路径，行为与本配置出现前完全一致。
+// RuntimeExecConfig 是执行引擎 runtime 路由的可选配置。
+// ExecutorURL 为空表示停用 runtime 路由：全部动作保持既有 Go 写路径。
 type RuntimeExecConfig struct {
-	// ExecutorURL 是 form-runtime 执行服务（无头 Chromium）地址，如 http://127.0.0.1:19011。
+	// ExecutorURL 是独立 executor-service 地址，如 http://127.0.0.1:19011。
+	// Go 不再托管该进程；服务不可用时七个 runtime 动作写前阻塞。
 	ExecutorURL string
-	// Verification 是真实目标验证模式（T015 专用）：未登记的 FormMaking 组合允许经
-	// runtime 执行一次以取得登记证据，核验确认成功后自动登记能力；未开启时未登记组合阻塞。
-	Verification bool
-	// Managed 表示由 Go 服务托管本机执行服务子进程（评审 P1-1 修复）：
-	// 环回地址默认托管拉起并做就绪探测，随后端停止而停止；置 0 可关闭（执行服务自行启动）。
-	Managed bool
 }
 
-// runtime 执行路由的环境变量名。
-const (
-	runtimeExecutorURLEnv  = "RUNTIME_EXECUTOR_URL"
-	runtimeVerificationEnv = "RUNTIME_EXEC_VERIFICATION"
-	runtimeManagedEnv      = "RUNTIME_EXECUTOR_MANAGED"
-)
+const runtimeExecutorURLEnv = "RUNTIME_EXECUTOR_URL"
 
 // LoadRuntimeExecConfig 优先读取进程环境，其次读取项目根目录的本机忽略配置。
 func LoadRuntimeExecConfig() RuntimeExecConfig {
 	localValues, _ := loadTargetLocalValues(targetLocalEnvFile())
-	managedValue := strings.TrimSpace(targetConfigValue(runtimeManagedEnv, localValues))
 	return RuntimeExecConfig{
-		ExecutorURL:  strings.TrimSpace(targetConfigValue(runtimeExecutorURLEnv, localValues)),
-		Verification: boolFromValue(targetConfigValue(runtimeVerificationEnv, localValues)),
-		// 托管默认开启：显式配置了执行服务地址却要人工另起进程，是评审指出的部署缺口。
-		Managed: managedValue == "" || boolFromValue(managedValue),
-	}
-}
-
-// boolFromValue 解析布尔环境值；1/true（不分大小写）为真，其余为假。
-func boolFromValue(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true":
-		return true
-	default:
-		return false
+		ExecutorURL: strings.TrimSpace(targetConfigValue(runtimeExecutorURLEnv, localValues)),
 	}
 }

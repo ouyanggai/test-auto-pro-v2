@@ -25,7 +25,7 @@ type BranchSelection struct {
 	EntryNodeID string
 }
 
-// RuntimeRunRequest 是一次 runtime 动作执行的全部输入（由执行器从运行上下文投影）。
+// RuntimeRunRequest 是一次 runtime 动作执行的全部输入；v2 不再携带 Go 渲染模板。
 type RuntimeRunRequest struct {
 	RunID     string
 	PathRunID string
@@ -33,45 +33,33 @@ type RuntimeRunRequest struct {
 	Account   string
 	Action    string
 	// ToolFlowName 是工具流程名称：最终流程请求中目标脚本不得改写。
-	ToolFlowName string
-	// 装载事实
-	Session       SessionFacts
-	Initiator     ActorIdentity
-	Template      json.RawMessage
-	Values        json.RawMessage
-	Permissions   []string
-	ChangedFields []string
-	InstanceID    string
-	JobTaskID     string
-	NodeProxyID   string
-	AuditDesc     string
-	// —— 目标代理与节点事实（评审 P1-3）：目标组件提交/审批载荷直接消费 ——
-	FormProxyID     string
-	FlowProxyID     string
-	SelectFlowType  string
-	FlowNodeType    string
-	NextNodeProxyID string
-	BizRelevance    []BizRelevance
-	// —— 转发事实（评审 P1-4）：接收人缺失时装载阶段直接拒绝 ——
-	ReceiverID       string
-	ReceiverName     string
-	ForwardCheckList []string
-	// 选择闭环（T010B）：路径已保存的分支入口与节点人员。
-	BranchSelections []BranchSelection
-	NextNodeAuditors []NextAuditorEntry
-	// BranchNodeAuditTypes 是目标节点代理 ID → 审批方式（run_node_choose 等）：
-	// 选择闭环据此判定哪些返回分支必须携带已配置人员，缺配置一律阻塞（评审 P1-6）。
+	ToolFlowName         string
+	Session              SessionFacts
+	Initiator            ActorIdentity
+	Values               json.RawMessage
+	Permissions          []string
+	ChangedFields        []string
+	InstanceID           string
+	JobTaskID            string
+	NodeProxyID          string
+	AuditDesc            string
+	FormProxyID          string
+	FlowProxyID          string
+	SelectFlowType       string
+	FlowNodeType         string
+	NextNodeProxyID      string
+	BizRelevance         []BizRelevance
+	ReceiverID           string
+	ReceiverName         string
+	ForwardCheckList     []string
+	BranchSelections     []BranchSelection
+	NextNodeAuditors     []NextAuditorEntry
 	BranchNodeAuditTypes map[string]string
-	// BaseURL 是目标网关地址。
-	BaseURL string
-	// LoadMode 覆盖默认模式推导；空串时按动作推导（submit/save_draft → initiate，
-	// forward → forward，其余 → approve）。
-	LoadMode string
+	BaseURL              string
+	LoadMode             string
 }
 
 // ActionRunResult 是 runtime 动作的最终判定事实（状态为协议七值之一）。
-// WriteTraceIDs 不是 runtime 返回的协议字段：由 Go 客户端在转发循环里收集的
-// 页面写请求传输层 trace 回填（network.log 同源），供尝试行与能力登记证据使用。
 type ActionRunResult struct {
 	Status        string
 	Message       string
@@ -81,6 +69,7 @@ type ActionRunResult struct {
 
 // RuntimeRunner 是执行器对 runtime 能力的接口面（*RuntimeExecutor 满足）。
 type RuntimeRunner interface {
+	Health(ctx context.Context) error
 	RunAction(ctx context.Context, request RuntimeRunRequest) (ActionRunResult, error)
 }
 
@@ -92,6 +81,14 @@ type RuntimeExecutor struct {
 // NewRuntimeExecutor 构造 runtime 执行器。
 func NewRuntimeExecutor(client *Client) *RuntimeExecutor {
 	return &RuntimeExecutor{client: client}
+}
+
+// Health 探测独立执行服务；失败时七个动作写前阻塞。
+func (r *RuntimeExecutor) Health(ctx context.Context) error {
+	if r == nil || r.client == nil {
+		return fmt.Errorf("执行服务客户端未配置")
+	}
+	return r.client.Health(ctx)
 }
 
 // loadModeFor 按动作推导装载模式：发起链两个动作走发起装载，转发走转发装载，其余走审批装载。

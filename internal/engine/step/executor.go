@@ -2,7 +2,6 @@ package step
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,19 +39,11 @@ type Executor struct {
 	// logFactory 把运行上下文映射为运行目录里的 step.log 写入器；未注入时日志静默跳过（单测场景）。
 	logFactory LogFactory
 	now        func() time.Time
-	// runtime 执行能力（T012）：nil 时保持既有 Go 写路径；配置后七个表单动作经 runtime 且必须已登记能力。
+	// runtime 执行能力：nil 时保持既有 Go 写路径；配置后七个表单动作经独立执行服务，
+	// 服务不可用时写前阻塞，绝不回退 Go 写造成双写。
 	runtimeRunner RuntimeRunner
-	capabilities  *runtimeexec.CapabilityRegistry
-	// runtimeBaseURL 是页面装载载荷的目标网关地址；空串=页面用相对路径请求，
-	// 由 Playwright 路由全量拦截转发 Go（App.vue 执行模式约定）。
+	// runtimeBaseURL 是页面装载载荷的目标网关地址；空串=页面用相对路径请求。
 	runtimeBaseURL string
-	// runtimeTargetVersion 是目标前端快照版本（runtime-source HEAD）：能力登记必须携带
-	// 目标版本（docs/s/03 登记纪律 3），目标源码变更后旧登记的适用性才可追溯。
-	runtimeTargetVersion string
-	// runtimeVerification 是真实目标验证模式（T015）：显式配置开启后，未登记组合允许
-	// 经 runtime 执行一次以取得登记证据；核验确认成功即登记能力，之后与正常模式一致。
-	// 正常运行（未开启）未登记组合一律阻塞，绝不回退 Go 写造成双写。
-	runtimeVerification bool
 }
 
 // LogFactory 由装配层注入：复用 F-013 的运行目录路由打开 step.log。
@@ -65,11 +56,11 @@ func NewExecutor(targetClient TargetClient, sessions SessionProvider, runState R
 	}
 	return &Executor{
 		runtimeRunner: nil,
-		capabilities:  nil,
-		target:        targetClient,
-		sessions:      sessions,
-		runState:      runState,
-		facts:         facts,
+
+		target:   targetClient,
+		sessions: sessions,
+		runState: runState,
+		facts:    facts,
 		policy: RetryPolicy{
 			Attempts: runConfig.ReadOnlyRetryAttempts, BaseDelay: runConfig.ReadOnlyRetryBaseDelay, MaxDelay: runConfig.ReadOnlyRetryMaxDelay,
 			WriteConnectAttempts: runConfig.WriteConnectRetryAttempts, WriteConnectBaseDelay: runConfig.WriteConnectRetryBaseDelay,
@@ -80,24 +71,12 @@ func NewExecutor(targetClient TargetClient, sessions SessionProvider, runState R
 }
 
 // SetLogFactory 注入 step.log 工厂；必须在首次使用前调用。
-// EnableRuntimeExecution 配置可选的 runtime 执行能力（T012）：
-// runner 为 nil 时全部动作保持既有 Go 写路径；配置后七个表单动作经 runtime 执行，
-// 且必须已通过能力登记（T014），未登记直接阻塞，绝不回退 Go 写造成双写。
-// targetVersion 是目标前端快照版本，随每条能力登记落档（评审 P2-1：登记缺目标版本不得登记）。
-func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, registry *runtimeexec.CapabilityRegistry, loadBaseURL, targetVersion string) {
+// EnableRuntimeExecution 配置可选的 runtime 执行能力：
+// runner 为 nil 时全部动作保持既有 Go 写路径；配置后七个表单动作经 runtime 执行。
+// 执行服务不可用时写前阻塞，绝不回退 Go 写路径。
+func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, loadBaseURL string) {
 	e.runtimeRunner = runner
-	e.capabilities = registry
 	e.runtimeBaseURL = loadBaseURL
-	e.runtimeTargetVersion = strings.TrimSpace(targetVersion)
-}
-
-// EnableRuntimeVerification 启用真实目标验证模式（T015 专用，必须显式配置开启）：
-// 未登记的 FormMaking 组合允许经 runtime 执行一次以取得登记证据；
-// 核验判定 confirmed_success 后按「流程类型+动作+表单摘要」登记能力并落 step.log。
-// 设计依据：能力只能来自真实执行成功并完成目标结果核验的组合（docs/s/01 第 199 行验证顺序），
-// 验证模式就是产生第一份证据的入口；正常模式未登记仍阻塞。
-func (e *Executor) EnableRuntimeVerification() {
-	e.runtimeVerification = true
 }
 
 // shouldRunViaRuntime 判定本步是否走 runtime：仅七个表单动作 + 已配置 runtime 能力。
@@ -128,30 +107,14 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	}
 	reportPhase(approved, "submit", fmt.Sprintf("正在经无头表单运行时执行“%s”：真实页面组件将按目标顺序执行业务与流程请求，完成后仍会重读目标平台核验", firstNonEmpty(preview.ActionName, string(step.Action))))
 	action := string(step.Action)
-	formDigest := fmt.Sprintf("%x", sha256.Sum256(runCtx.EffectiveFormData))
-	// 登记摘要随预览留存：核验确认成功后按同一把摘要登记能力，键必须与路由判定一致。
-	preview.runtimeFormDigest = formDigest
-	registered := e.capabilities != nil && e.capabilities.Registered(runCtx.FlowType, action, formDigest)
-	if !registered && !e.runtimeVerification {
-		// 能力未登记：阻塞本步（不回退 Go 写出口，杜绝双写）。
+	if err := e.runtimeRunner.Health(ctx); err != nil {
 		preview.writeSent = false
-		preview.writeErr = fmt.Errorf("runtime 能力未登记（%s/%s），拒绝执行且不回退旧接口", runCtx.FlowType, action)
+		preview.writeErr = fmt.Errorf("执行服务不可用，拒绝执行且不回退旧接口：%w", err)
 		preview.writeErrClass = model.FailureClassGateBlocked
 		preview.runtimeHandled = true
 		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 		return true
 	}
-	if !registered {
-		// 验证模式（T015）：未登记组合放行一次，用本次真实执行取得登记证据；
-		// 只有核验判定 confirmed_success 才会真正登记（见 RunApprovedStep 成功分支）。
-		log.Phase("submit", step.Sequence, approved.Attempt,
-			fmt.Sprintf("runtime 验证模式：组合 %s/%s 未登记，放行本次执行以取得登记证据", runCtx.FlowType, action))
-	}
-	// FormMaking 模板原文是两种装载模式的硬事实：发起模式由宿主离线注入模板
-	// （runtime 装载载荷没有 flowId 自装载通道），审批模式注入实例绑定模板。
-	// 模板读取走可选接口（真实适配层实现；测试假件无须实现）；读取失败必须阻塞，
-	// 绝不发送写动作，也不用空模板装载出一张空表单。
-	template := json.RawMessage(`{}`)
 	if strings.TrimSpace(runCtx.FormProxyID) == "" {
 		preview.writeSent = false
 		preview.writeErr = fmt.Errorf("运行上下文缺少 FormMaking 表单代理 ID，runtime 装载被阻塞")
@@ -160,28 +123,8 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 		return true
 	}
-	reader, ok := e.target.(interface {
-		ReadFormTemplateData(ctx context.Context, active target.Session, formProxyID string) (json.RawMessage, error)
-	})
-	if !ok {
-		preview.writeSent = false
-		preview.writeErr = errors.New("目标出口不支持表单模板读取，runtime 装载被阻塞")
-		preview.writeErrClass = model.FailureClassGateBlocked
-		preview.runtimeHandled = true
-		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
-		return true
-	}
-	raw, err := reader.ReadFormTemplateData(ctx, session, runCtx.FormProxyID)
-	if err != nil {
-		preview.writeSent = false
-		preview.writeErr = fmt.Errorf("读取实例绑定表单模板失败：%w", err)
-		preview.writeErrClass = model.FailureClassGateBlocked
-		preview.runtimeHandled = true
-		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
-		return true
-	}
-	template = raw
 	// 审批族动作的目标载荷硬依赖任务号（audit 载荷 data.jobTaskId）：
+
 	// 与 Go 写路径同一纪律——发送前按当前处理人会话现场刷新任务快照，
 	// 读取失败或目标已无待办一律阻塞，绝不带空任务号进入 runtime。
 	jobTaskID := ""
@@ -253,7 +196,6 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 			CustomerCode: session.CustomerCode, Account: session.Summary.Account, DisplayName: session.Summary.DisplayName,
 		},
 		Initiator:   initiator,
-		Template:    template,
 		Values:      formDataFromPreviewRequest(preview),
 		InstanceID:  runCtx.PathRun.MainInstanceRef,
 		JobTaskID:   jobTaskID,
@@ -408,46 +350,6 @@ func (e *Executor) rememberRuntimeFacts(preview *StepPreview, result runtimeexec
 // RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。
 func (e *Executor) RunViaRuntimeForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, approved ApprovedStep) bool {
 	return e.runViaRuntime(ctx, runCtx, step, session, preview, nil, approved)
-}
-
-// registerRuntimeCapability 在核验确认成功后登记 runtime 能力（T014）：
-// 键=流程类型+动作+表单摘要（与路由判定同一把摘要）；证据=主实例引用+runtime 页面写请求
-// 的传输层 trace（network.log 按 trace 可互查）；日志引用=step.log 相对路径。
-// 登记失败只落日志不回滚运行事实：能力缺失的后果是后续同组合被阻塞，不会造成双写。
-func (e *Executor) registerRuntimeCapability(runCtx RunContext, step model.CompiledActionStep, preview *StepPreview, log *StepLog, attemptNo int) {
-	if e.capabilities == nil {
-		return
-	}
-	evidence := "instance=" + runCtx.PathRun.MainInstanceRef
-	if trace := strings.TrimSpace(preview.writeTraceID); trace != "" {
-		evidence += ";trace=" + trace
-	}
-	entry := runtimeexec.CapabilityEntry{
-		FlowType:       runCtx.FlowType,
-		Action:         string(step.Action),
-		FormDigest:     preview.runtimeFormDigest,
-		RuntimeVersion: runtimeexec.ProtocolVersion,
-		TargetVersion:  e.runtimeTargetVersion,
-		Evidence:       evidence,
-		LogRef:         log.RelativePath(),
-	}
-	if err := e.capabilities.UnlockFromVerifiedRun(entry, string(verdict.OutcomeSucceeded)); err != nil {
-		log.Phase("settle", step.Sequence, attemptNo, "能力登记失败："+err.Error())
-		return
-	}
-	digest := preview.runtimeFormDigest
-	if len(digest) > 8 {
-		digest = digest[:8] + "…"
-	}
-	log.Phase("settle", step.Sequence, attemptNo,
-		fmt.Sprintf("能力已登记：%s/%s（表单摘要 %s，目标版本 %s，证据 %s，日志=%s）",
-			runCtx.FlowType, step.Action, digest, e.runtimeTargetVersion, evidence, log.RelativePath()))
-}
-
-// RegisterRuntimeCapabilityForTest 暴露核验成功后的能力登记，供契约测试锁定登记键与证据字段。
-// 登记强制携带日志引用（评审 P2-1），测试须传入带相对路径的 StepLog。
-func (e *Executor) RegisterRuntimeCapabilityForTest(runCtx RunContext, step model.CompiledActionStep, preview *StepPreview, log *StepLog) {
-	e.registerRuntimeCapability(runCtx, step, preview, log, 1)
 }
 
 func (e *Executor) SetLogFactory(factory LogFactory) {
@@ -1738,13 +1640,6 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	case verdict.OutcomeSucceeded:
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
-		// T014 能力登记：runtime 接管的步骤只有走到这里的「目标事实核验确认成功」
-		// 才按「流程类型+动作+表单摘要」登记能力；target_rejected/business_failed/
-		// uncertain/timeout 走不到本分支，绝不登记。证据用实例引用与 step.log 路径，
-		// 满足「登记含目标证据和日志引用」的验收要求。
-		if preview.runtimeHandled {
-			e.registerRuntimeCapability(runCtx, step, preview, log, attemptNo)
-		}
 		// 路径偏离判据（T04）：只用重读到的真实事实——实际当前节点集合里没有已配置路径的下一个预期节点。
 		// 两边必须在同一键空间比较：CurrentNodes 是目标 nodeProxyId，预期节点必须取节点表反查出的
 		// TargetNodeID，拿编译场景的哈希键比较永远不相等，会把每一步都误判成偏离（评审 P1）。

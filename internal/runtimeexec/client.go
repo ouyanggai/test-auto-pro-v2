@@ -85,6 +85,25 @@ func NewClient(baseURL string, forward TargetForwarder, sessions SessionProvider
 	}, nil
 }
 
+// Health 探测独立执行服务是否可接受命令；失败时七个 runtime 动作写前阻塞。
+func (c *Client) Health(ctx context.Context) error {
+	if c == nil {
+		return fmt.Errorf("执行服务客户端未配置")
+	}
+	var body struct {
+		OK       bool   `json:"ok"`
+		Service  string `json:"service"`
+		Protocol string `json:"protocol"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/health", nil, &body); err != nil {
+		return fmt.Errorf("执行服务未启动：%w", err)
+	}
+	if !body.OK || body.Protocol != ProtocolVersion {
+		return fmt.Errorf("执行服务健康检查失败：ok=%v protocol=%s", body.OK, body.Protocol)
+	}
+	return nil
+}
+
 // CreateSession 创建执行会话（执行服务随即装载固定路由并注册桥接）。
 func (c *Client) CreateSession(ctx context.Context, spec SessionSpec) (*SessionHandle, error) {
 	body, err := json.Marshal(map[string]string{

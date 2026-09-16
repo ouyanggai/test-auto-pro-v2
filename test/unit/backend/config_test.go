@@ -170,32 +170,24 @@ func unsetTargetEnvironment(t *testing.T) {
 	}
 }
 
-// TestRuntimeExecConfigDefaultsToDisabled 未配置 RUNTIME_EXECUTOR_URL 时 runtime 路由必须停用，
-// 全部动作保持既有 Go 写路径。
+// TestRuntimeExecConfigDefaultsToDisabled 未配置 RUNTIME_EXECUTOR_URL 时 runtime 路由必须停用。
 func TestRuntimeExecConfigDefaultsToDisabled(t *testing.T) {
 	disableLocalTargetConfig(t)
 	t.Setenv("RUNTIME_EXECUTOR_URL", "")
-	t.Setenv("RUNTIME_EXEC_VERIFICATION", "")
 	cfg := config.LoadRuntimeExecConfig()
-	if cfg.ExecutorURL != "" || cfg.Verification {
+	if cfg.ExecutorURL != "" {
 		t.Fatalf("未配置时应停用 runtime 路由：%+v", cfg)
 	}
 }
 
-// TestRuntimeExecConfigReadsExecutorURLAndVerification 配置执行服务地址与验证模式后按原样生效。
-func TestRuntimeExecConfigReadsExecutorURLAndVerification(t *testing.T) {
+// TestRuntimeExecConfigReadsExecutorURL 只读取执行服务地址，不再识别托管或验证模式。
+func TestRuntimeExecConfigReadsExecutorURL(t *testing.T) {
 	disableLocalTargetConfig(t)
 	t.Setenv("RUNTIME_EXECUTOR_URL", "http://127.0.0.1:19011")
 	t.Setenv("RUNTIME_EXEC_VERIFICATION", "1")
+	t.Setenv("RUNTIME_EXECUTOR_MANAGED", "1")
 	cfg := config.LoadRuntimeExecConfig()
 	if cfg.ExecutorURL != "http://127.0.0.1:19011" {
 		t.Fatalf("执行服务地址不符：%q", cfg.ExecutorURL)
-	}
-	if !cfg.Verification {
-		t.Fatalf("验证模式应为开启")
-	}
-	t.Setenv("RUNTIME_EXEC_VERIFICATION", "0")
-	if config.LoadRuntimeExecConfig().Verification {
-		t.Fatalf("验证模式取值 0 应为关闭")
 	}
 }

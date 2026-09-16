@@ -79,6 +79,11 @@ func startFakeExecutor(t *testing.T, onExecute func(ws *websocket.Conn, env *run
 	t.Helper()
 	upgrader := websocket.Upgrader{}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"service":"executor-service","protocol":"exec-engine/v2"}`))
+	})
+
 	mux.HandleFunc("/runtime/session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"sessionId":"sess-fake","status":"ready"}`))
@@ -393,5 +398,32 @@ func TestClientCreateSession(t *testing.T) {
 	}
 	if handle.SessionID != "sess-fake" {
 		t.Fatalf("会话编号不符：%s", handle.SessionID)
+	}
+}
+
+// TestClientHealthRequiresV2Service 健康检查必须命中独立执行服务的 v2 协议。
+func TestClientHealthRequiresV2Service(t *testing.T) {
+	server := startFakeExecutor(t, nil)
+	client, err := runtimeexec.NewClient(server.URL, &fakeForwarder{}, &fakeSessions{})
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Health(ctx); err != nil {
+		t.Fatalf("健康检查应通过：%v", err)
+	}
+}
+
+// TestClientHealthFailsWhenServiceStopped 执行服务未启动时健康检查必须失败。
+func TestClientHealthFailsWhenServiceStopped(t *testing.T) {
+	client, err := runtimeexec.NewClient("http://127.0.0.1:1", &fakeForwarder{}, &fakeSessions{})
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := client.Health(ctx); err == nil {
+		t.Fatal("执行服务未启动时健康检查必须失败")
 	}
 }

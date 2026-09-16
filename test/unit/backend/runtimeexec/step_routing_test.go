@@ -1,13 +1,12 @@
-// T012 七阶段执行器路由契约：
+// T011 七阶段执行器路由契约：
 // ① 未配置 runtime → 全部动作保持 Go 写路径；
-// ② 配置后仅七个表单动作走 runtime，Go 直连动作与系统节点不受影响；
-// ③ 未登记能力的表单动作被阻塞且绝不回退 Go 写（无双写）；
+// ② 配置后仅七个表单动作走 runtime，Go 直连动作不受影响；
+// ③ 执行服务不可用时写前阻塞且不回退 Go 写；
 // ④ runtime 已接管的动作对 TargetClient 的写调用为零。
 package runtimeexec
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/engine/step"
-	"test-auto-pro-v2/internal/logging"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/runtimeexec"
 )
@@ -87,15 +85,21 @@ func (r *recordingTarget) writeCalls() []string {
 	return append([]string(nil), r.writes...)
 }
 
-// fakeRuntimeRunner 返回预置判定并记录调用；captures 非空时保存每次收到的请求事实。
-// err 非空时 RunAction 返回该错误（用于连接断开二分分类的回归）。
 type fakeRuntimeRunner struct {
-	mu       sync.Mutex
-	status   string
-	err      error
-	trace    json.RawMessage
-	calls    int
-	requests []runtimeexec.RuntimeRunRequest
+	mu        sync.Mutex
+	status    string
+	err       error
+	healthErr error
+	trace     json.RawMessage
+	calls     int
+	requests  []runtimeexec.RuntimeRunRequest
+}
+
+func (f *fakeRuntimeRunner) Health(context.Context) error {
+	if f == nil {
+		return errors.New("执行服务未配置")
+	}
+	return f.healthErr
 }
 
 func (f *fakeRuntimeRunner) RunAction(_ context.Context, request runtimeexec.RuntimeRunRequest) (runtimeexec.ActionRunResult, error) {
@@ -124,7 +128,6 @@ func (f *fakeRuntimeRunner) lastRequest() runtimeexec.RuntimeRunRequest {
 	return f.requests[len(f.requests)-1]
 }
 
-// fakeStepSessions 是最小会话提供者：按账号返回预置会话，供 runtime 前置身份与任务刷新读取。
 type fakeStepSessions struct {
 	byAccount map[string]target.Session
 }
@@ -140,32 +143,16 @@ func (s *fakeStepSessions) Refresh(_ context.Context, account string) (target.Se
 	return s.Current(context.Background(), account)
 }
 
-func newExecutorForRouting(t *testing.T, view *recordingTarget, runner step.RuntimeRunner, registry *runtimeexec.CapabilityRegistry) *step.Executor {
+func newExecutorForRouting(t *testing.T, view *recordingTarget, runner step.RuntimeRunner) *step.Executor {
 	t.Helper()
 	executor := step.NewExecutor(view, &fakeStepSessions{byAccount: map[string]target.Session{
 		"plan-acct":  {UserID: "user-plan", Summary: target.AccountSummary{Account: "plan-acct", DisplayName: "发起人"}},
 		"actor-acct": {UserID: "user-actor", Summary: target.AccountSummary{Account: "actor-acct", DisplayName: "处理人"}},
 	}}, nil, nil, fixedRunConfigForRouting(), nil)
-	// registry 非空即配置 runtime 能力面（runner 可为 nil：登记测试不经过路由）；
-	// 两者都为空时保持未配置形态，锁定「未配置=全部动作走 Go 写路径」。
-	if runner != nil || registry != nil {
-		executor.EnableRuntimeExecution(runner, registry, "", "target-head-1")
+	if runner != nil {
+		executor.EnableRuntimeExecution(runner, "")
 	}
 	return executor
-}
-
-// registerCapabilityForRunCtx 按运行上下文的表单原文计算同一把摘要并登记一条字段齐全的能力：
-// 登记判定已改为三维精确匹配（评审 P2-1），测试登记必须与路由判定同键。
-func registerCapabilityForRunCtx(t *testing.T, registry *runtimeexec.CapabilityRegistry, action string) {
-	t.Helper()
-	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(`{"reason":"x"}`)))
-	if err := registry.Register(runtimeexec.CapabilityEntry{
-		FlowType: "employee_leave", Action: action, FormDigest: digest,
-		RuntimeVersion: "exec-engine/v1", TargetVersion: "target-head-1",
-		Evidence: "instance=e;trace=t", LogRef: "step.log",
-	}); err != nil {
-		t.Fatalf("预置登记失败：%v", err)
-	}
 }
 
 func fixedRunConfigForRouting() config.RunConfig {
@@ -192,7 +179,7 @@ func runtimeRunCtx() step.RunContext {
 
 // TestRoutingWithoutRunnerKeepsGoPath 未配置 runtime：所有动作都不走 runtime（第一阶段兼容）。
 func TestRoutingWithoutRunnerKeepsGoPath(t *testing.T) {
-	executor := newExecutorForRouting(t, &recordingTarget{}, nil, nil)
+	executor := newExecutorForRouting(t, &recordingTarget{}, nil)
 	runCtx := runtimeRunCtx()
 	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionApprove, model.ActionForward, model.ActionAddSign} {
 		if executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
@@ -203,7 +190,7 @@ func TestRoutingWithoutRunnerKeepsGoPath(t *testing.T) {
 
 // TestRoutingWithRunnerCoverSevenActions 配置后七个表单动作走 runtime，Go 直连动作不走。
 func TestRoutingWithRunnerCoverSevenActions(t *testing.T) {
-	executor := newExecutorForRouting(t, &recordingTarget{}, &fakeRuntimeRunner{status: "success"}, runtimeexec.NewCapabilityRegistry())
+	executor := newExecutorForRouting(t, &recordingTarget{}, &fakeRuntimeRunner{status: "success"})
 	runCtx := runtimeRunCtx()
 	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData, model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward} {
 		if !executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
@@ -226,10 +213,8 @@ func TestRoutingWithRunnerCoverSevenActions(t *testing.T) {
 // TestRuntimeActionNeverTouchesTargetWrite runtime 已接管后 TargetClient 写调用必须为零。
 func TestRuntimeActionNeverTouchesTargetWrite(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	runCtx := runtimeRunCtx()
 	preview := &step.StepPreview{ActorAccount: "acct", ActionName: "提交"}
 	approved := step.ApprovedStep{Attempt: 1}
@@ -244,83 +229,26 @@ func TestRuntimeActionNeverTouchesTargetWrite(t *testing.T) {
 	}
 }
 
-// TestUnregisteredCapabilityBlocksStepWithoutFallback 能力未登记：阻塞且不回退 Go 写。
-func TestUnregisteredCapabilityBlocksStepWithoutFallback(t *testing.T) {
+// TestUnavailableExecutorBlocksSevenActionsWithoutFallback 执行服务不可用：写前阻塞且不回退 Go 写。
+func TestUnavailableExecutorBlocksSevenActionsWithoutFallback(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
-	runCtx := runtimeRunCtx()
+	runner := &fakeRuntimeRunner{status: "success", healthErr: errors.New("连接拒绝")}
+	executor := newExecutorForRouting(t, view, runner)
 	preview := &step.StepPreview{ActorAccount: "acct"}
-	if !executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
+	if !executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
 		t.Fatalf("runtime 分支应接管（即便阻塞）")
 	}
 	if preview.WriteSent() {
-		t.Fatalf("未登记能力不得发出写请求")
+		t.Fatalf("执行服务不可用不得发出写请求")
 	}
-	if !strings.Contains(preview.WriteErrForTest().Error(), "能力未登记") {
-		t.Fatalf("阻塞原因必须说明能力未登记：%v", preview.WriteErrForTest())
+	if !strings.Contains(preview.WriteErrForTest().Error(), "执行服务不可用") {
+		t.Fatalf("阻塞原因必须说明执行服务不可用：%v", preview.WriteErrForTest())
 	}
 	if runner.callCount() != 0 {
-		t.Fatalf("未登记能力不应调用 runtime：%d", runner.callCount())
+		t.Fatalf("健康检查失败不应调用 RunAction：%d", runner.callCount())
 	}
-}
-
-// TestVerificationModePassesUnregisteredOnce 验证模式（T015）：未登记组合放行执行一次以取得登记证据。
-func TestVerificationModePassesUnregisteredOnce(t *testing.T) {
-	view := &recordingTarget{taskID: "task-9"}
-	registry := runtimeexec.NewCapabilityRegistry()
-	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
-	executor.EnableRuntimeVerification()
-	preview := &step.StepPreview{ActorAccount: "actor-acct"}
-	if !executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
-		t.Fatalf("验证模式下 runtime 应接管本步")
-	}
-	if runner.callCount() != 1 {
-		t.Fatalf("验证模式应放行未登记组合调用 runtime，实际 %d 次", runner.callCount())
-	}
-	if !preview.WriteSent() {
-		t.Fatalf("验证模式放行后应进入写路径")
-	}
-	if preview.RuntimeFormDigestForTest() == "" {
-		t.Fatalf("放行时必须记录登记用表单摘要")
-	}
-}
-
-// TestRegisterRuntimeCapabilityAfterVerifiedSuccess 核验确认成功后按流程+动作+表单摘要登记能力，
-// 之后同组合路由直接命中登记；其他动作、其他表单摘要不自动解锁（T014 验收口径）。
-func TestRegisterRuntimeCapabilityAfterVerifiedSuccess(t *testing.T) {
-	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	executor := newExecutorForRouting(t, view, nil, registry)
-	runCtx := runtimeRunCtx()
-	stepItem := runtimeStep(model.ActionSubmit)
-	preview := &step.StepPreview{ActorAccount: "plan-acct"}
-	preview.SetRuntimeFormDigestForTest("digest-abcdef")
-	preview.SetRuntimeHandledForTest(true)
-	// 登记强制携带日志引用（评审 P2-1）：测试用 nil writer 的 StepLog 只留相对路径。
-	stepLog := step.NewStepLog(nil, logging.Scope{}, nil)
-	stepLog.SetRelativePath("runs/运行_13/paths/路径_1/step.log")
-	executor.RegisterRuntimeCapabilityForTest(runCtx, stepItem, preview, stepLog)
-	if !registry.Registered(runCtx.FlowType, "submit", "digest-abcdef") {
-		t.Fatalf("核验确认成功后同组合应已登记")
-	}
-	snapshot := registry.Snapshot()
-	if snapshot[0].TargetVersion != "target-head-1" {
-		t.Fatalf("登记必须携带装配层提供的目标版本：%+v", snapshot[0])
-	}
-	if !strings.Contains(snapshot[0].Evidence, "instance=") {
-		t.Fatalf("登记证据必须包含实例引用：%+v", snapshot[0])
-	}
-	if snapshot[0].LogRef == "" {
-		t.Fatalf("登记必须携带日志引用：%+v", snapshot[0])
-	}
-	if registry.Registered(runCtx.FlowType, "approve", "digest-abcdef") {
-		t.Fatalf("同流程其他动作不得被自动解锁")
-	}
-	if registry.Registered(runCtx.FlowType, "submit", "other-digest") {
-		t.Fatalf("其他表单摘要不得被自动解锁")
+	if len(view.writeCalls()) != 0 {
+		t.Fatalf("不得回退 Go 写路径：%v", view.writeCalls())
 	}
 }
 
@@ -329,10 +257,8 @@ func TestRegisterRuntimeCapabilityAfterVerifiedSuccess(t *testing.T) {
 // 绝不允许判成零写入失败——那会把「可能已写出」标成「无副作用」，诱发重复执行真实业务。
 func TestRuntimeDisconnectWithWritesIsUncertainNotZeroWrite(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrUncertain)}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	preview := &step.StepPreview{ActorAccount: "acct"}
 	executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
 	if !preview.WriteSent() {
@@ -351,10 +277,8 @@ func TestRuntimeDisconnectWithWritesIsUncertainNotZeroWrite(t *testing.T) {
 // 连接断开且没有任何目标请求写出（ErrFailedCleanly）保持零写入失败，不得虚报「可能已写出」。
 func TestRuntimeDisconnectWithoutWritesIsCleanZeroWrite(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrFailedCleanly)}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	preview := &step.StepPreview{ActorAccount: "acct"}
 	executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
 	if preview.WriteSent() {
@@ -379,9 +303,7 @@ func TestRuntimeResultMappingIsThreeValued(t *testing.T) {
 	}
 	for _, item := range cases {
 		view := &recordingTarget{}
-		registry := runtimeexec.NewCapabilityRegistry()
-		registerCapabilityForRunCtx(t, registry, "submit")
-		executor := newExecutorForRouting(t, view, &fakeRuntimeRunner{status: item.status}, registry)
+		executor := newExecutorForRouting(t, view, &fakeRuntimeRunner{status: item.status})
 		preview := &step.StepPreview{ActorAccount: "acct"}
 		executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
 		if preview.WriteSent() != item.expectSent {
@@ -398,10 +320,8 @@ func TestRuntimeResultMappingIsThreeValued(t *testing.T) {
 // 发起人是计划账号的真实用户事实（绝不是实例 ID）；节点人员按目标节点代理 ID 展开。
 func TestRunViaRuntimeCarriesSelectionTaskAndIdentityFacts(t *testing.T) {
 	view := &recordingTarget{taskID: "task-9"}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "approve")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	runCtx := runtimeRunCtx()
 	runCtx.BranchSelections = map[string]string{"branch-node-1": "entry-node-1", "branch-node-2": "entry-node-2"}
 	runCtx.NextNodeAuditors = map[string][]target.NextAuditor{
@@ -446,10 +366,8 @@ func TestRunViaRuntimeCarriesSelectionTaskAndIdentityFacts(t *testing.T) {
 // TestRunViaRuntimeBlocksWithoutTaskFact 审批动作读不到任务事实：阻塞且不调用 runtime，绝不带空任务号执行。
 func TestRunViaRuntimeBlocksWithoutTaskFact(t *testing.T) {
 	view := &recordingTarget{taskID: ""}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "approve")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	preview := &step.StepPreview{ActorAccount: "actor-acct"}
 	if !executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
 		t.Fatalf("runtime 分支应接管（即便阻塞）")
@@ -465,25 +383,19 @@ func TestRunViaRuntimeBlocksWithoutTaskFact(t *testing.T) {
 	}
 }
 
-// TestRunViaRuntimeInitiateCarriesRealTemplate 发起模式同样必须携带真实表单模板：
-// 装载载荷没有 flowId 自装载通道，空模板会装载出一张空表单并把空数据写进目标。
-func TestRunViaRuntimeInitiateCarriesRealTemplate(t *testing.T) {
+// TestRunViaRuntimeInitiateDoesNotInjectTemplate v2 装载由原生页面自行读模板，Go 不得再注入 template。
+func TestRunViaRuntimeInitiateDoesNotInjectTemplate(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	preview := &step.StepPreview{ActorAccount: "plan-acct"}
 	if !executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
 		t.Fatalf("runtime 应接管本步")
 	}
-	if !view.template {
-		t.Fatalf("发起模式必须读取实例绑定表单模板")
+	if view.template {
+		t.Fatalf("v2 不得由 Go 读取并注入表单模板")
 	}
 	request := runner.lastRequest()
-	if !strings.Contains(string(request.Template), "list") {
-		t.Fatalf("发起装载必须携带真实模板，实际 %s", request.Template)
-	}
 	if request.JobTaskID != "" {
 		t.Fatalf("发起动作不携带任务号，实际 %q", request.JobTaskID)
 	}
@@ -492,10 +404,8 @@ func TestRunViaRuntimeInitiateCarriesRealTemplate(t *testing.T) {
 // TestRunViaRuntimeBlocksWithoutFormProxy FormMaking 缺少表单代理 ID：装载无据，阻塞且不调用 runtime。
 func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	runCtx := runtimeRunCtx()
 	runCtx.FormProxyID = ""
 	preview := &step.StepPreview{ActorAccount: "plan-acct"}
@@ -510,10 +420,8 @@ func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
 // 已收集的写请求 trace，供尝试行与能力登记证据使用。
 func TestRunViaRuntimeRecordsDetailProjection(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "submit")
 	runner := &fakeRuntimeRunner{status: "success", trace: json.RawMessage(`[{"seq":1,"method":"POST","url":"https://t/web/flowInstanceApi/submit","state":"fulfilled","httpStatus":200,"durationMs":120}]`)}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	preview := &step.StepPreview{ActorAccount: "plan-acct"}
 	executor.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
 	detail := preview.RuntimeDetailForTest()
@@ -528,8 +436,7 @@ func TestRunViaRuntimeRecordsDetailProjection(t *testing.T) {
 	// 错误路径：ErrUncertain 必须按已写出处理且保留首个写请求 trace。
 	uncertain := &step.StepPreview{ActorAccount: "plan-acct"}
 	runnerErr := &fakeRuntimeRunner{err: fmt.Errorf("%w（ws closed）", runtimeexec.ErrUncertain)}
-	executorErr := newExecutorForRouting(t, &recordingTarget{}, runnerErr, registry)
-	registerCapabilityForRunCtx(t, registry, "submit")
+	executorErr := newExecutorForRouting(t, &recordingTarget{}, runnerErr)
 	executorErr.RunViaRuntimeForTest(context.Background(), runtimeRunCtx(), runtimeStep(model.ActionSubmit), target.Session{}, uncertain, step.ApprovedStep{Attempt: 1})
 	if !uncertain.WriteSent() {
 		t.Fatalf("ErrUncertain 必须按写已发出处理")
@@ -544,10 +451,8 @@ func TestRunViaRuntimeRecordsDetailProjection(t *testing.T) {
 // 缺失会让提交发送 flowProxyId:"" 或丢业务关联。
 func TestRunViaRuntimeCarriesProxyNodeAndFormFacts(t *testing.T) {
 	view := &recordingTarget{taskID: "task-9"}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "approve")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	runCtx := runtimeRunCtx()
 	runCtx.FlowProxyID = "flow-proxy-plan"
 	runCtx.Nodes["node-1"] = step.NodeInfo{TargetNodeID: "target-node-1", Name: "审批节点", AuditType: "run_node_choose", EditableFields: []string{"reason"}}
@@ -597,10 +502,8 @@ func TestRunViaRuntimeCarriesProxyNodeAndFormFacts(t *testing.T) {
 // 写前阻塞且不调用 runtime；配置接收人后请求必须携带转发事实。
 func TestRunViaRuntimeForwardRequiresReceiver(t *testing.T) {
 	view := &recordingTarget{}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "forward")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	runCtx := runtimeRunCtx()
 	runCtx.PathRun.MainInstanceRef = "instance-1"
 	forwardStep := runtimeStep(model.ActionForward)
@@ -635,10 +538,8 @@ func TestRunViaRuntimeForwardRequiresReceiver(t *testing.T) {
 // 绝不让目标返回的临时节点集合诱导工具发出与已保存配置无关的分支。
 func TestRunViaRuntimeValidatesBranchSelectionAgainstGraph(t *testing.T) {
 	view := &recordingTarget{taskID: "task-9"}
-	registry := runtimeexec.NewCapabilityRegistry()
-	registerCapabilityForRunCtx(t, registry, "approve")
 	runner := &fakeRuntimeRunner{status: "success"}
-	executor := newExecutorForRouting(t, view, runner, registry)
+	executor := newExecutorForRouting(t, view, runner)
 	runCtx := runtimeRunCtx()
 	runCtx.BranchSelections = map[string]string{"branch-node-1": "entry-node-1"}
 	runCtx.GraphEdges = map[string][]step.GraphEdgeInfo{

@@ -46,8 +46,10 @@ type SessionProvider interface {
 }
 
 // RuntimeRunner 是执行器可选的 runtime 执行面（*runtimeexec.RuntimeExecutor 满足）。
-// 仅七个表单动作允许经它执行；配置后同一动作不得再走 TargetClient 写出口（T012）。
+// 仅七个表单动作允许经它执行；配置后同一动作不得再走 TargetClient 写出口。
+// Health 失败时七个动作写前阻塞，不回退 Go 写路径。
 type RuntimeRunner interface {
+	Health(ctx context.Context) error
 	RunAction(ctx context.Context, request runtimeexec.RuntimeRunRequest) (runtimeexec.ActionRunResult, error)
 }
 
