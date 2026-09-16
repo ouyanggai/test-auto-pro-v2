@@ -16,6 +16,7 @@ const (
 	LoadModeInitiate = "initiate"
 	LoadModeApprove  = "approve"
 	LoadModeForward  = "forward"
+	LoadModeEdit     = "edit"
 )
 
 // SessionFacts 是装载需要的会话事实子集，由调用方从 target.Session 投影；SID 不在其中。

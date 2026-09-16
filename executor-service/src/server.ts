@@ -294,6 +294,7 @@ async function main (): Promise<void> {
             }
             return captured
           }).catch(() => null)
+          session.nativeHost = host
           const mode = String(payload.mode ?? 'initiate')
           if (mode === 'initiate') {
             const handle = await session.page.evaluate(() => {
@@ -316,7 +317,7 @@ async function main (): Promise<void> {
                   const instance = (window as unknown as { __executorNative: { initFlow?: { getFlowFindById?: (value: string) => void } } }).__executorNative.initFlow
                   instance?.getFlowFindById?.(bound)
                 }, id) }
-              }, String(payload.formProxyId ?? ''))
+              }, String(payload.flowProxyId ?? ''))
             }
           } else {
             resolveDetailSemantics(mode === 'approve' || mode === 'forward' ? 'audit' : mode, {

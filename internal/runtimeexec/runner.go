@@ -98,6 +98,8 @@ func loadModeFor(action string) string {
 		return LoadModeInitiate
 	case "forward":
 		return LoadModeForward
+	case "resubmit":
+		return LoadModeEdit
 	default:
 		return LoadModeApprove
 	}

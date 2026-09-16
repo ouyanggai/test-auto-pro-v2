@@ -51,39 +51,57 @@ export function serveFlowPage (distDir: string): Promise<PageOrigin> {
     let relative = requestPath.replace(/^\/flow\/?/, '')
     if (relative === '' || relative.endsWith('/')) relative += 'index.html'
     const target = path.resolve(root, relative)
-    if (target !== root && !target.startsWith(root + path.sep)) {
-      response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
-      response.end('forbidden')
-      return
-    }
-    const filePath = fs.existsSync(target) && fs.statSync(target).isFile() ? target : path.join(root, 'index.html')
-    fs.readFile(filePath, (readError, data) => {
-      if (readError) {
-        response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-        response.end('not found')
+    const ext = path.extname(target)
+    const contentType = CONTENT_TYPES[ext] ?? 'application/octet-stream'
+    fs.readFile(target, (error, content) => {
+      if (error) {
+        if (error.code === 'ENOENT') {
+          response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+          response.end('not found')
+        } else {
+          response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+          response.end('internal error')
+        }
         return
       }
-      const type = CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
-      response.writeHead(200, { 'content-type': type })
-      response.end(data)
+      response.writeHead(200, { 'content-type': contentType })
+      response.end(content)
     })
   })
-  const { promise, resolve, reject } = Promise.withResolvers<PageOrigin>()
-  server.once('error', reject)
-  server.listen(0, '127.0.0.1', () => {
-    const address = server.address()
-    if (!address || typeof address === 'string') {
-      reject(new Error('原生页面静态源端口分配失败'))
-      return
-    }
-    resolve({
-      url: `http://127.0.0.1:${address.port}/flow/`,
-      close: () => {
-        const closed = Promise.withResolvers<void>()
-        server.close(error => (error ? closed.reject(error) : closed.resolve()))
-        return closed.promise
+  return new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        throw new Error('页面服务未绑定端口')
       }
+      resolve({
+        url: `http://127.0.0.1:${address.port}/flow/`,
+        close: async () => new Promise(done => { server.close(() => { done() }) })
+      })
     })
   })
-  return promise
+}
+
+export function injectIdentityScript (payload: Record<string, unknown>): string {
+  const sid = String(payload.sid ?? '')
+  const platformCode = String(payload.platformCode ?? '200001')
+  const userName = String(payload.currentOperator && typeof payload.currentOperator === 'object' && 'name' in payload.currentOperator ? payload.currentOperator.name : '')
+  return `
+    (function() {
+      const vue = window.$vue;
+      if (!vue) return;
+      if (!window.__executorNative) window.__executorNative = {};
+      window.__executorNative.initFlow = vue.$children && vue.$children.find(c => c.$options.name === 'InitFlowDialog');
+      window.__executorNative.flowDetail = vue.$children && vue.$children.find(c => c.$options.name === 'FlowDetail');
+      if (${JSON.stringify(sid)}) {
+        localStorage.setItem('token', ${JSON.stringify(sid)});
+      }
+      if (${JSON.stringify(platformCode)}) {
+        localStorage.setItem('platformCode', ${JSON.stringify(platformCode)});
+      }
+      if (${JSON.stringify(userName)}) {
+        localStorage.setItem('userName', ${JSON.stringify(userName)});
+      }
+    })();
+  `
 }
