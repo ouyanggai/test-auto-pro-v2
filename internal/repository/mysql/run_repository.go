@@ -536,8 +536,9 @@ type runAggregate struct {
 }
 
 // ReopenPathRunForRetry 把一条确定失败的路径运行重新装填为运行中（F-028 失败动作重试的唯一入库入口）。
-// 同一事务内完成四件事：锁行校验路径运行确为失败态、确认本次运行没有其他进行中的路径运行
-// （重试不得绕过 F-020 的并发语义）、清空聚合结论列与结束时间并释放残留租约、追加运行事件行。
+// 同一事务内完成四件事：锁行校验路径运行确为失败态、确认本次运行没有其他占用并发槽位的路径运行
+// （运行中/核验中/暂停；等待路径不阻塞重试，重开路径回到调度队列受同一并发上限，不绕过 F-020 语义）、
+// 清空聚合结论列与结束时间并释放残留租约、追加运行事件行。
 // 运行聚合仍在失败态时一并重开为运行中；已在运行中（另一条失败路径先被重试）则保持不动。
 // 任何状态不满足都返回 ErrRunStatusConflict 且不落任何行；事实表在这里一行都不写。
 func (r *RunRepository) ReopenPathRunForRetry(ctx context.Context, pathRunID uint64, event model.RunEvent, now time.Time) (model.PathRun, model.Run, error) {
@@ -570,8 +571,11 @@ func (r *RunRepository) ReopenPathRunForRetry(ctx context.Context, pathRunID uin
 		return model.PathRun{}, model.Run{}, fmt.Errorf("%w：路径运行当前为 %s，只有失败的路径运行可以重试",
 			repository.ErrRunStatusConflict, model.PathRunStatusName(model.PathRunStatus(current)))
 	}
-	// 同运行其他路径仍有进行中（等待/运行/核验/暂停）时拒绝：一次运行同时只推进一条被重试的路径，
-	// 否则重试会绕过调度器的并发上限。判断在同事务内完成，两次并发重试最多成功一次。
+	// 同运行互斥只看真正占用并发槽位的路径（运行中/核验中/暂停，2026-09-16 用户裁决）：
+	// 失败路径只停自己留现场，同运行其他路径（含仍在排队的等待路径）照常调度、不受影响；
+	// 重试也不该被与失败路径无关的排队路径阻塞——重开后的路径运行会回到调度队列，
+	// 与等待路径一样受同一并发上限约束，不会绕过调度器的并发语义。
+	// 判断在同事务内完成，两次并发重试最多成功一次。
 	siblingRows, err := tx.QueryContext(ctx, "SELECT status FROM path_runs WHERE run_id = ? AND id <> ?", runID, pathRunID)
 	if err != nil {
 		return model.PathRun{}, model.Run{}, err
@@ -591,8 +595,8 @@ func (r *RunRepository) ReopenPathRunForRetry(ctx context.Context, pathRunID uin
 	}
 	for _, status := range siblingStatuses {
 		switch model.PathRunStatus(status) {
-		case model.PathRunStatusWaiting, model.PathRunStatusRunning, model.PathRunStatusVerifying, model.PathRunStatusPaused:
-			return model.PathRun{}, model.Run{}, fmt.Errorf("%w：本次运行还有进行中的路径（%s），请等它结束后再重试",
+		case model.PathRunStatusRunning, model.PathRunStatusVerifying, model.PathRunStatusPaused:
+			return model.PathRun{}, model.Run{}, fmt.Errorf("%w：本次运行还有执行中的路径（%s），请等它结束后再重试",
 				repository.ErrRunStatusConflict, model.PathRunStatusName(model.PathRunStatus(status)))
 		}
 	}

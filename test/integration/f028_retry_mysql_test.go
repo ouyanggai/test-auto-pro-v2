@@ -136,7 +136,7 @@ func TestF028ReopenRejectsIllegalStates(t *testing.T) {
 		t.Fatalf("非失败态必须拒绝重开，实际 err=%v", err)
 	}
 
-	// 场景二：一条路径失败、另一条仍在运行中，拒绝重试以避免绕过并发语义。
+	// 场景二：一条路径失败、另一条仍在执行中（运行中），拒绝重试以避免绕过并发语义。
 	_, siblingPaths, err := store.runs.CreateRunWithPaths(ctx, repository.CreateRunInput{
 		PlanID: 283, ExecutionPathIDs: []uint64{2831, 2832},
 		Mode: model.RunModeSingleStep, Trigger: model.RunTriggerManual, MaxConcurrency: f028One(),
@@ -157,7 +157,29 @@ func TestF028ReopenRejectsIllegalStates(t *testing.T) {
 		t.Fatalf("失败收尾失败：%v", err)
 	}
 	if _, _, err := store.runs.ReopenPathRunForRetry(ctx, siblingPaths[0].ID, model.RunEvent{}, now); !errors.Is(err, repository.ErrRunStatusConflict) {
-		t.Fatalf("存在进行中兄弟路径时必须拒绝重开，实际 err=%v", err)
+		t.Fatalf("存在执行中兄弟路径时必须拒绝重开，实际 err=%v", err)
+	}
+
+	// 场景三（2026-09-16 用户裁决）：失败路径只停自己留现场，仍在排队的等待路径
+	// 不阻塞重试——否则串行多路径运行里失败路径要等整轮跑完才能重试。
+	_, queuePaths, err := store.runs.CreateRunWithPaths(ctx, repository.CreateRunInput{
+		PlanID: 284, ExecutionPathIDs: []uint64{2841, 2842},
+		Mode: model.RunModeSingleStep, Trigger: model.RunTriggerManual, MaxConcurrency: f028One(),
+	})
+	if err != nil {
+		t.Fatalf("创建排队多路径运行失败：%v", err)
+	}
+	if _, err := store.runs.AdvancePathRunStatus(ctx, queuePaths[0].ID, model.PathRunStatusWaiting, model.PathRunStatusRunning,
+		model.RunEvent{Kind: "path_run_started", Label: "路径运行开始"}, now); err != nil {
+		t.Fatalf("路径运行推进失败：%v", err)
+	}
+	if _, err := store.runs.FinishPathRun(ctx, queuePaths[0].ID, model.PathRunStatusFailed, &failedResult, &failedClass,
+		model.RunEvent{Kind: "path_run_finished", Label: "路径运行结束：失败"}, now); err != nil {
+		t.Fatalf("失败收尾失败：%v", err)
+	}
+	if _, _, err := store.runs.ReopenPathRunForRetry(ctx, queuePaths[0].ID,
+		model.RunEvent{Kind: "path_run_retry", Label: "用户重试失败动作"}, now); err != nil {
+		t.Fatalf("兄弟路径仅排队等待时必须允许重开（等待不占并发槽位）：%v", err)
 	}
 
 	// 兄弟路径结束后同一条失败路径可以重开：证明拒绝只来自并发边界，不来自路径本身。
