@@ -326,6 +326,73 @@ func TestF036RealLoadLoopInitiate(t *testing.T) {
 	}
 }
 
+// TestF036RealLoadLoopInitiateBadTemplate 故意传不存在的模板 ID：必须阻塞（409）且无任何写请求（S2 验收）。
+func TestF036RealLoadLoopInitiateBadTemplate(t *testing.T) {
+	rc, client, current := realLoopDeps(t)
+	account := os.Getenv("TEST_AUTO_PRO_TARGET_ACCOUNT")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := rc.Health(ctx); err != nil {
+		t.Fatalf("执行服务不可用：%v", err)
+	}
+	boundID := f036BoundTemplateID(t)
+	s, err := current(ctx, account)
+	if err != nil {
+		t.Fatalf("取目标会话失败：%v", err)
+	}
+	snapshot, err := client.ReadTemplateConfiguration(ctx, s, boundID)
+	if err != nil {
+		t.Fatalf("读取目标模板配置失败：%v", err)
+	}
+	load, err := runtimeexec.BuildLoadPayload(runtimeexec.LoadInput{
+		Mode:           runtimeexec.LoadModeInitiate,
+		Session: runtimeexec.SessionFacts{
+			UserID: s.UserID, CompanyID: s.CompanyID, DepartmentID: s.DepartmentID,
+			CustomerCode: s.CustomerCode, Account: s.Summary.Account, DisplayName: s.Summary.DisplayName,
+		},
+		ToolFlowName:   "T-AUTO-F036-L1",
+		SelectFlowType: snapshot.AuditWay,
+		FlowTemplateID: "f036-not-exist-template-id",
+		BaseURL:        "",
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("装载载荷构造失败：%v", err)
+	}
+	handle, err := rc.CreateSession(ctx, runtimeexec.SessionSpec{AccountKey: account, RunID: "1", PathRunID: "1", StepID: "1"})
+	if err != nil {
+		t.Fatalf("创建会话失败：%v", err)
+	}
+	t.Cleanup(func() { _ = rc.Destroy(context.Background(), handle.SessionID) })
+	closeWS, prewarmErr := rc.Prewarm(ctx, handle.SessionID, account)
+	if prewarmErr != nil {
+		t.Fatalf("预热转发通道失败：%v", prewarmErr)
+	}
+	defer closeWS()
+	envelope, err := runtimeexec.EncodeLoadMessage(handle.SessionID, fmt.Sprintf("load-%d", time.Now().UnixNano()), "1", "1", "1", load)
+	if err != nil {
+		t.Fatalf("装载信封编码失败：%v", err)
+	}
+	var message runtimeexec.Message
+	if err := json.Unmarshal(envelope, &message); err != nil {
+		t.Fatalf("信封解析失败：%v", err)
+	}
+	if _, err := rc.Load(ctx, handle.SessionID, message); err == nil {
+		t.Fatalf("不存在的模板 ID 必须阻塞装载，实际装载成功")
+	}
+	// 阻塞时不得有任何写端点出现。
+	for _, entry := range f036SessionTrace(t, handle.SessionID) {
+		for _, write := range f036WriteEndpoints {
+			if strings.Contains(entry.URL, write) {
+				t.Fatalf("阻塞路径出现写端点 %s", entry.URL)
+			}
+		}
+	}
+	saveF036Evidence(t, "L2-initiate-bad-template-blocked", map[string]any{
+		"scene": "initiate-bad-template", "boundTemplateId": boundID, "badTemplateId": "f036-not-exist-template-id",
+		"result": "blocked-without-write",
+	})
+}
+
 // TestF036RealLoadLoopDetail 详情装载（view 模式，只读）：实例取自目标业务库最新一条
 // 同模板实例；断言捕获链非空、语义字段与 mode 对应、trace 无写端点。
 func TestF036RealLoadLoopDetail(t *testing.T) {
