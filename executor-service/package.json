@@ -8,8 +8,11 @@
     "probe": "tsx src/probe.ts",
     "start": "node --env-file-if-exists=.env --experimental-strip-types src/server.ts",
     "health": "node --experimental-strip-types src/health-check.ts",
+    "sync-source": "node scripts/sync-flow-source.js",
+    "build-form-making": "node scripts/build-form-making.js",
     "typecheck": "tsc --noEmit"
   },
+
   "dependencies": {
     "playwright": "1.63.0",
     "ws": "^8.21.3"

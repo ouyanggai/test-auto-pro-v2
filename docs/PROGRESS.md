@@ -2,11 +2,11 @@
 
 # 当前进度
 
-- 2026-09-16 F-036「独立执行服务与原生页面装载」已获用户批准，进入 **implementing**。
-  规划文档已提交 ee519c3。当前原子成果：根目录 `executor-service/` 骨架（无头 Chromium 探针、
-  `/health`、独立 workspace 包）。下一步 T002：`make refs-sync` 后复制 `be355ae` 快照。
-  文档：`docs/features/F-036-independent-executor-native-page.md`、`docs/s2/`。
-  已知前置：本机参考仓库 `test` HEAD=`24f3a28`，当前克隆不含 `be355ae`。
+- 2026-09-16 F-036 进入 **implementing**。T001 已提交 1b1c9ec。
+  T002：从原项目 `/Volumes/oygsky/bigsys/rsh-flow-components@be355ae` 复制独立 `flow-source/`（含 FormMaking dist）。
+  下一步 T003：BrowserContext 会话迁入新服务。
+
+
 
 
 - 2026-09-16 执行引擎改造浏览器真实代验收首轮完成（部分受阻，状态保持 **ready_for_manual**）。

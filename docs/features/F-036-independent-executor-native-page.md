@@ -83,6 +83,9 @@
 - 2026-09-16：用户要求在 `docs/s2` 按 `docs/s` 结构规划，将页面执行迁到 `executor-service/`，使用独立 `rsh-flow-components` 副本和原生路由装载。本文件从 preparing 进入 `awaiting_approval`。未获明确批准不得写实现代码。
 - 2026-09-16：用户批准开始实现，状态进入 `implementing`。规划文档已提交 `ee519c3`。
 - 2026-09-16 T001：根目录 `executor-service/` 骨架可启动无头 Chromium 并响应 `/health`；workspace 改为独立包；Go 托管路径改为 `executor-service`。
+- 2026-09-16 T002：独立快照来自原项目 `/Volumes/oygsky/bigsys/rsh-flow-components` 的 `test`/`be355ae`（含 FormMaking dist，不自行编译）；不复用 `form-runtime/runtime-source`。后续一键升级与原项目同一套 `sync-manifest`。
+
+
 
 
 
