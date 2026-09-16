@@ -2,9 +2,9 @@
 
 # 当前进度
 
-- 2026-09-16 F-036 **implementing**。T001 `1b1c9ec`，T002 `93b14e1`。
-  T003：独立服务 BrowserContext 会话隔离、关闭失效、崩溃释放已验证。
-  下一步 T004：协议升级 `exec-engine/v2`。
+- 2026-09-16 F-036 **implementing**。T001 `1b1c9ec`，T002 `93b14e1`，T003 `27cab53`。
+  T004：`exec-engine/v2` 拒绝 v1 与 template 装载。下一步 T005：导航前拦截。
+
 
 
 

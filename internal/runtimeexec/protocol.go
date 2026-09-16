@@ -13,7 +13,7 @@ import (
 )
 
 // ProtocolVersion 是协议版本；字段形状或语义发生不兼容变化时必须递增，并与 TS 侧同步。
-const ProtocolVersion = "exec-engine/v1"
+const ProtocolVersion = "exec-engine/v2"
 
 // 消息类型与唯一合法方向（Go 发出 / runtime 发出）。
 const (
@@ -60,7 +60,8 @@ var runtimeActions = map[string]bool{
 // 结果状态固定七值（与 TS 侧 RESULT_STATUSES 一致）：
 // success 成功；failed 未发出流程写请求即失败；target_rejected 目标明确拒绝；
 // uncertain 响应丢失/崩溃无法判断；business_failed 流程已推进但后置业务失败；
-// unsupported 能力未登记；timeout 动作超时。
+// unsupported 原生缺少入口或数据接口；timeout 动作超时。
+
 const (
 	ResultSuccess        = "success"
 	ResultFailed         = "failed"
@@ -160,6 +161,26 @@ func ValidateMessage(raw []byte) (*Message, error) {
 		return nil, newProtocolError("session_missing", "%s 消息缺少 sessionId", message.Kind)
 	}
 	switch message.Kind {
+	case KindLoad:
+		var payload map[string]json.RawMessage
+		if len(message.Payload) == 0 {
+			return nil, newProtocolError("load_payload_invalid", "load 载荷必须是 JSON 对象")
+		}
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			return nil, newProtocolError("load_payload_invalid", "load 载荷必须是 JSON 对象：%v", err)
+		}
+		if _, exists := payload["template"]; exists {
+			return nil, newProtocolError("template_forbidden", "exec-engine/v2 装载不得携带 Go 渲染模板")
+		}
+		var mode string
+		if raw, ok := payload["mode"]; ok {
+			_ = json.Unmarshal(raw, &mode)
+		}
+		switch strings.TrimSpace(mode) {
+		case "initiate", "audit", "edit", "view", "approve", "forward":
+		default:
+			return nil, newProtocolError("load_mode_invalid", "装载模式不支持：%s", mode)
+		}
 	case KindExecute:
 		var payload struct {
 			Action string `json:"action"`
@@ -172,6 +193,7 @@ func ValidateMessage(raw []byte) (*Message, error) {
 		if !runtimeActions[payload.Action] {
 			return nil, newProtocolError("action_unknown", "未知 runtime 动作：%s", payload.Action)
 		}
+
 	case KindResult:
 		var payload struct {
 			Status string `json:"status"`

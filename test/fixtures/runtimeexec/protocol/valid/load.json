@@ -1,1 +1,1 @@
-{"version":"exec-engine/v1","kind":"load","requestId":"req-load-1","sessionId":"sess-1","runId":"run-1","pathRunId":"pr-1","stepId":"step-2","payload":{"mode":"initiate","toolFlowName":"测试流程"}}
+{"version":"exec-engine/v2","kind":"load","requestId":"req-load-1","sessionId":"sess-1","runId":"run-1","pathRunId":"pr-1","stepId":"step-2","payload":{"mode":"initiate","toolFlowName":"测试流程"}}

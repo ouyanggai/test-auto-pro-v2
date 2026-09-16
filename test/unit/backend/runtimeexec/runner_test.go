@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
@@ -75,7 +74,7 @@ func newRunnerServer(t *testing.T, harness *runnerHarness) *httptest.Server {
 }
 
 // TestRunActionSendsValidLoadEnvelope 动作编排的装载信封必须是完整协议信封：
-// 编号齐全、能通过 ValidateMessage，且载荷携带模式、模板与工具流程名称。
+// 编号齐全、能通过 ValidateMessage，且载荷携带模式、auditWay 与工具流程名称，不得带 template。
 func TestRunActionSendsValidLoadEnvelope(t *testing.T) {
 	harness := &runnerHarness{}
 	server := newRunnerServer(t, harness)
@@ -86,13 +85,13 @@ func TestRunActionSendsValidLoadEnvelope(t *testing.T) {
 	executor := runtimeexec.NewRuntimeExecutor(client)
 	result, err := executor.RunAction(context.Background(), runtimeexec.RuntimeRunRequest{
 		RunID: "run-9", PathRunID: "pr-9", StepID: "step-9", Account: "acct",
-		Action:       "submit",
-		ToolFlowName: "工具流程",
-		Session:      runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "张三"},
-		Initiator:    runtimeexec.ActorIdentity{UserID: "u-1", Name: "张三"},
-		Template:     json.RawMessage(`{"list":[],"config":{}}`),
-		Values:       json.RawMessage(`{"reason":"x"}`),
-		BaseURL:      "http://127.0.0.1:1",
+		Action:         "submit",
+		ToolFlowName:   "工具流程",
+		SelectFlowType: "employee_leave",
+		Session:        runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "张三"},
+		Initiator:      runtimeexec.ActorIdentity{UserID: "u-1", Name: "张三"},
+		Values:         json.RawMessage(`{"reason":"x"}`),
+		BaseURL:        "http://127.0.0.1:1",
 	})
 	if err != nil {
 		t.Fatalf("RunAction 失败：%v", err)
@@ -113,15 +112,19 @@ func TestRunActionSendsValidLoadEnvelope(t *testing.T) {
 		t.Fatalf("装载信封类型/会话不符：%s/%s", envelope.Kind, envelope.SessionID)
 	}
 	var payload struct {
-		Mode         string          `json:"mode"`
-		ToolFlowName string          `json:"toolFlowName"`
-		Template     json.RawMessage `json:"template"`
+		Mode           string          `json:"mode"`
+		ToolFlowName   string          `json:"toolFlowName"`
+		SelectFlowType string          `json:"selectFlowType"`
+		Template       json.RawMessage `json:"template"`
 	}
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		t.Fatalf("装载载荷解析失败：%v", err)
 	}
-	if payload.Mode != "initiate" || payload.ToolFlowName != "工具流程" || !strings.Contains(string(payload.Template), "list") {
+	if payload.Mode != "initiate" || payload.ToolFlowName != "工具流程" || payload.SelectFlowType != "employee_leave" {
 		t.Fatalf("装载载荷字段不符：%+v", payload)
+	}
+	if len(payload.Template) > 0 {
+		t.Fatalf("v2 装载不得携带 template：%s", payload.Template)
 	}
 }
 

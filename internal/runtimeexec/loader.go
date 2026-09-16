@@ -32,15 +32,11 @@ type SessionFacts struct {
 type LoadPayload struct {
 	// Mode 取 initiate 或 approve。
 	Mode string `json:"mode"`
-	// RenderType 固定 formmaking；vue_custom 无表单流程不走 runtime 装载。
-	RenderType string `json:"renderType"`
-	// Template 是目标表单代理的原始 FormMaking JSON（原样透传，不重排序）。
-	Template json.RawMessage `json:"template"`
-	// Values 是历史表单原始数据（深复制后的原文）。
-	Values json.RawMessage `json:"values"`
-	// Permissions 是当前节点可编辑字段键列表；空数组表示全只读口径由页面按模板决定。
+	// Values 是当前节点允许覆盖的配置补丁，不是完整渲染模板。
+	Values json.RawMessage `json:"values,omitempty"`
+	// Permissions 是当前节点可编辑字段键列表；空数组表示由原生页面权限决定。
 	Permissions []string `json:"permissions"`
-	// ChangedFields 是补丁触及的字段：触发选项协调与字段联动重放。
+	// ChangedFields 是补丁触及的字段：等待选项及联动完成后再回读。
 	ChangedFields []string `json:"changedFields"`
 	// ToolFlowName 是工具流程名称：最终流程请求中目标脚本不得改写。
 	ToolFlowName string `json:"toolFlowName"`
@@ -120,37 +116,32 @@ type LoadInput struct {
 	ForwardCheckList []string
 }
 
-// BuildLoadPayload 构造并校验装载载荷；模板与表单数据必须是合法 JSON，工具流程名称必填。
-func BuildLoadPayload(input LoadInput, template, values json.RawMessage) (*LoadPayload, error) {
+// BuildLoadPayload 构造并校验装载载荷。v2 不再接受 Go 渲染模板；
+// 发起必须带 auditWay 与计划绑定 flowTemplateId，实例必须带 taskContext。
+func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, error) {
 	if input.Mode != LoadModeInitiate && input.Mode != LoadModeApprove && input.Mode != LoadModeForward {
 		return nil, fmt.Errorf("装载模式只支持 initiate/approve/forward：%s", input.Mode)
 	}
 	if strings.TrimSpace(input.ToolFlowName) == "" {
 		return nil, fmt.Errorf("装载缺少工具流程名称")
 	}
-	if len(template) == 0 {
-		return nil, fmt.Errorf("装载缺少目标表单模板")
-	}
-	if !json.Valid(template) {
-		return nil, fmt.Errorf("目标表单模板不是合法 JSON")
+	if input.Mode == LoadModeInitiate && strings.TrimSpace(input.SelectFlowType) == "" {
+		return nil, fmt.Errorf("发起装载缺少 auditWay，不能只传 flowTemplateId")
 	}
 	if len(values) == 0 {
 		values = json.RawMessage(`{}`)
 	}
 	if !json.Valid(values) {
-		return nil, fmt.Errorf("历史表单数据不是合法 JSON")
+		return nil, fmt.Errorf("当前节点数据补丁不是合法 JSON")
 	}
 	current := ActorIdentity{
 		UserID: strings.TrimSpace(input.Session.UserID),
 		Name:   strings.TrimSpace(input.Session.DisplayName),
 	}
 	if input.Mode == LoadModeInitiate && current.UserID == "" {
-		// 发起人就是当前操作人：缺失用户事实时必须阻止，否则身份字段替换会把空值写进表单。
 		return nil, fmt.Errorf("装载缺少当前账号用户事实")
 	}
 	if input.Mode == LoadModeForward {
-		// 转发在装载前就要有接收人：等价于目标弹窗「请选择人员」的强制校验，
-		// 没有接收人的转发绝不允许进入目标接口（评审 P1-4）。
 		if strings.TrimSpace(input.InstanceID) == "" {
 			return nil, fmt.Errorf("转发装载缺少实例 ID")
 		}
@@ -176,8 +167,6 @@ func BuildLoadPayload(input LoadInput, template, values json.RawMessage) (*LoadP
 	}
 	return &LoadPayload{
 		Mode:                         input.Mode,
-		RenderType:                   "formmaking",
-		Template:                     template,
 		Values:                       values,
 		Permissions:                  permissions,
 		ChangedFields:                changed,
@@ -212,6 +201,7 @@ func EncodeLoadMessage(sessionID, requestID, runID, pathRunID, stepID string, pa
 		return nil, fmt.Errorf("装载载荷编码失败：%w", err)
 	}
 	return EncodeMessage(Message{
+		Version:   ProtocolVersion,
 		Kind:      KindLoad,
 		RequestID: requestID,
 		SessionID: sessionID,
@@ -220,4 +210,5 @@ func EncodeLoadMessage(sessionID, requestID, runID, pathRunID, stepID string, pa
 		StepID:    stepID,
 		Payload:   raw,
 	})
+
 }

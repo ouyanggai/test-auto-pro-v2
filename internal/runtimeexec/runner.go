@@ -163,7 +163,8 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		ReceiverID:       request.ReceiverID,
 		ReceiverName:     request.ReceiverName,
 		ForwardCheckList: request.ForwardCheckList,
-	}, request.Template, request.Values)
+	}, request.Values)
+
 	if err != nil {
 		return ActionRunResult{}, fmt.Errorf("装载载荷构造失败：%w", err)
 	}
