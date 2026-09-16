@@ -86,6 +86,8 @@
 - 2026-09-16 T002：独立快照来自原项目 `/Volumes/oygsky/bigsys/rsh-flow-components` 的 `test`/`be355ae`（含 FormMaking dist，不自行编译）；不复用 `form-runtime/runtime-source`。后续一键升级与原项目同一套 `sync-manifest`。
 - 2026-09-16 T003：`executor-service` 会话管理器每个动作独立 BrowserContext；关闭后拒绝命令，崩溃广播并释放。
 - 2026-09-16 T004：协议升级 `exec-engine/v2`，拒绝 v1；装载不得携带 Go 渲染模板，发起必须带 `auditWay`。
+- 2026-09-16 T005：导航前安装 `page.route()`；转发通道未连接禁止 goto。目标请求转 Go，未登记外部请求本地拒绝。
+
 
 
 
