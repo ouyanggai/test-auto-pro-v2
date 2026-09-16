@@ -1,7 +1,7 @@
 // 执行服务托管（评审 P1-1 修复）：配置 RUNTIME_EXECUTOR_URL 后由 Go 服务把本机
 // form-runtime/executor（无头 Chromium 执行服务）作为子进程拉起并做就绪探测，
 // 随后端停止而停止——生产部署不再依赖"有人手动起 19011 服务"。
-// 边界：只允许托管环回地址；远端执行服务必须由部署方自行启动（本进程无法跨机托管）。
+// 边界：只允许托管本机地址（环回、0.0.0.0 或本机网卡 IP）；远端执行服务必须由部署方自行启动（本进程无法跨机托管）。
 package runtimeexec
 
 import (
@@ -130,7 +130,25 @@ func executorReady(host, port string) bool {
 	return true
 }
 
-// executorHostPort 校验并拆出托管目标的主机与端口：只允许环回地址且必须显式带端口。
+// isLocalExecutorHost 判断执行服务地址是否指向本机：环回名、全网卡监听或本机任一网卡 IP 均算本机。
+// Go 进程只能托管本机子进程，远端 IP 一律拒绝托管；网卡地址在每次调用时实时读取，插拔网卡后无需改配置。
+func isLocalExecutorHost(host string) bool {
+	switch host {
+	case "127.0.0.1", "localhost", "::1", "0.0.0.0":
+		return true
+	}
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, address := range addresses {
+		if ipNet, ok := address.(*net.IPNet); ok && ipNet.IP.String() == host {
+			return true
+		}
+	}
+	return false
+}
+
 func executorHostPort(baseURL string) (string, string, error) {
 	trimmed := strings.TrimSpace(baseURL)
 	parsed, parseErr := url.Parse(trimmed)
@@ -148,15 +166,18 @@ func executorHostPort(baseURL string) (string, string, error) {
 	if host == "" || port == "" {
 		return "", "", fmt.Errorf("执行服务地址必须携带端口：%s", baseURL)
 	}
-	// 0.0.0.0 是本机全网卡监听，进程仍在本机托管浏览器，与 127.0.0.1 同等放行；
-	// 其它具体 IP 视为远端服务，必须由部署方自行启动并保持本进程不托管。
-	switch host {
-	case "127.0.0.1", "localhost", "::1", "0.0.0.0":
-	default:
-		return "", "", fmt.Errorf("只允许托管环回地址的执行服务（%s），远端服务请由部署方自行启动并保持本进程不托管", host)
+	// 托管的前提是执行服务跑在本机：环回地址、全网卡监听 0.0.0.0 或本机任一网卡 IP 都满足；
+	// 解析不到的本机地址才视为远端服务，必须由部署方自行启动并保持本进程不托管。
+	if !isLocalExecutorHost(host) {
+		return "", "", fmt.Errorf("执行服务地址 %s 不在本机上，远端服务请由部署方自行启动并保持本进程不托管", host)
 	}
 	if _, convErr := strconv.Atoi(port); convErr != nil {
 		return "", "", fmt.Errorf("执行服务端口不合法：%s", baseURL)
 	}
 	return host, port, nil
+}
+
+// ExecutorHostPortForTest 暴露托管守卫的本机地址判定，供单元测试锁定本机 IP 放行与远端拒绝口径。
+func ExecutorHostPortForTest(baseURL string) (string, string, error) {
+	return executorHostPort(baseURL)
 }
