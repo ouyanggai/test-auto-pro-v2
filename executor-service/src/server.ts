@@ -508,7 +508,6 @@ async function main (): Promise<void> {
                 writeGate: session.writeGate
               })
             sendEnvelope(ws, session, 'result', envelope.requestId, verdict)
-          } catch (error) {
             sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error) })
           } finally {
             session.actionInFlight = false
