@@ -1,6 +1,6 @@
 # F-036 独立执行服务与原生页面装载
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的「F-036 独立执行服务与原生页面装载」
 - 架构依据：`docs/ARCHITECTURE.md` 的「F-036 独立执行服务」
 - 计划确认时间：2026-09-16（用户批准开始实现）
@@ -207,3 +207,74 @@ pnpm --dir executor-service start
 - 重提能成功提交到审批
 
 问题6（人员意见选择）不阻塞保存草稿、提交、重提等基本动作，将在后续补充。
+
+### 2026-09-17 夜间自主施工：八个 P1 按真实证据闭环（进入 ready_for_manual）
+
+按《docs/auto/2026-09-16-f036-second-review-repair-task.md》施工令执行，全部结论以当夜真实运行证据为准
+（证据目录 `docs/auto/evidence/`，晨报 `docs/auto/2026-09-17-f036-autonomous-run-report.md`）。上一节
+「P1问题1-8修复完成」的多项结论被本轮真实运行证伪，以本节为准：
+
+1. **P1-1 装载捕获 ✅**：注入脚本改用 `window.$vue` 原型幂等包装 `$initFlow/$flowDetail`；
+   发起就绪=approveDialogVisible+flowJson.id，详情就绪=examineDialogVisible/ExpensesClaimFormVisible。
+   证据：L1 发起装载 hostPath=[InitFlowDialog,FlowDialog]；详情装载含 EnterpriseExamineDialog。
+2. **P1-2 模板精确选择 ✅**：URL 参数改用专字段 `flowTemplateId`；选择判据=trace 里
+   `/web/flowTemplateApi/list` 真实响应（99 候选含绑定 ID 走 confirm，精确命中 73eaa9b2…）；
+   空列表/不含绑定 ID/无响应一律阻塞。证据：L1-initiate + 不存在模板 ID 阻塞用例（零写请求）。
+3. **P1-3 重提模式/taskContext ✅**：Go 侧 `LoadModeEdit` 合法化（edit 必带实例 ID）；
+   详情 URL 携带 taskContext JSON。证据：L2 重提真写（待发→run，待办落配置人员）。
+4. **P1-4 动作落组件 ✅**：分发按 `$options.name` 递归唯一命中（发起找 FlowDialog、审批找
+   ExamineOpinion），找不到/多命中抛错；同意/不同意走 `submitCheckBefore` 原生入口并在页面内
+   点击确认框（已知差异：page.evaluate 内 DOM click，非 Playwright 定位器）。
+5. **P1-5 配置数据 ✅**：表单宿主=FlowDialog.$refs.OtherSteps2.$refs.generateForm /
+   EnterpriseExamineDialog.$refs.generateForm（轮询等待渲染）；就绪由 trace 稳定窗「等待」；
+   补丁在页面内一次完成 setData→getValues（实测教训：Playwright evaluate 返回值不可携带函数）。
+6. **P1-6 选择闭环 ✅**：choice_required 事件 + choice_continue 页面内真实分发
+   （chooseBranchList/chooseBranchNode/真实 auditType/getSelectPerson），只允许继续一次。
+   证据：20260917-014655-L2-approve.json（custom_choose → 继续 → 第二笔写成功 → success）。
+7. **P1-7 完成判定 ✅**：端点表修正为五个真实端点（submit/audit/transpond/storageFormData/reSubmit，
+   原 temporaryStorage/reEdit 端点不存在）；权限校验型 submit（data.checkPermissions）不计主写；
+   幻影 `__businessError` 删除，页面异常口径=__executorPageErrors 真实崩溃 + trace 选择拒绝 supersede。
+8. **P1-8 无表单口径 ✅（方案 B，范围变更待用户确认）**：`shouldRunViaRuntime` 收窄为仅 FormMaking
+   渲染；NoFormFlow/Vue 自定义页回退既有 Go 直连路径。「路由放开、能力缺失」不再并存。
+
+附加修复（夜间真实运行暴露的真缺陷）：
+- 转发出口统一重写 JSON 体顶层 SID 信封：目标按 body sid 鉴权，此前页面全部转发读取被判未登录。
+- 写端点判定兼容页面烘焙的 `/api` 前缀路径：此前真实写会被判「未写出」，断线时误报零写入失败。
+- runtime 新实例 ID 经 businessSummary 回传并落库主实例引用：否则发起后核验必然「实例不可读」。
+- Go Execute 结果按 requestId 关联：此前 choice_continue 的回执被误当成动作终局（空轨迹 success）。
+
+**七个动作真实写证据**：保存草稿、提交、审批暂存、同意、不同意、重提全部具备
+「状态=success + 期望写端点 + 传输层 trace + 写后核验」四件套（晨报逐动作表）。
+**转发（M6，可选）未验证**：无配置路径且实例预算（≤12）已用满，如实声明。
+
+`bash test/run-executor-service.sh` 全绿（单测 31 + 集成 34 + Go 契约/单测 + 真实闭环 L1×3，
+L2 真实写按环境变量门控并在未配置时打印跳过原因）。
+
+### 2026-09-17 次日人工核对步骤（用户照此执行）
+
+前提：本机已 `pnpm install`；`.env.local` 在位。以下命令均在仓库根目录执行。
+
+1. **启动服务**
+   - 终端 A：`pnpm --dir executor-service start`（日志首行含 listening；`curl http://127.0.0.1:19011/health` 返回 `"ok":true`）。
+   - 终端 B：`pnpm dev:b`（或 `go run ./cmd/server`）；`curl http://127.0.0.1:19080/api/health` 返回 ok。
+   - 如需界面：终端 C `pnpm dev:f`。
+2. **看证据（不启动任何服务也能看）**：打开 `docs/auto/evidence/`，重点核对
+   `20260917-004421-L2-save_draft.json`、`20260917-010000-L2-submit.json`、
+   `20260917-012011-L2-storage_form_data.json`、`20260917-012818-L2-approve.json`、
+   `20260917-013213-L2-reject.json`、`20260917-014655-L2-approve.json`（选择闭环）、
+   `20260916-2332-M0-L1-first-real-load-failure.json`（起点对照）。每份证据的
+   `businessSummary.debugWrites[].responseBodyExcerpt` 里有目标返回原文与实例 ID。
+3. **登录目标平台核对实例**：用骆蒙恩账号在目标平台搜流程名含 `T-AUTO-F036` 的实例：
+   - 草稿若干（保存草稿证据，status=draft）；
+   - `bbfbbac5…`/`06c4a0d8…` 为 run 状态（提交证据）；
+   - `bc847fa1…` 已推进到审核人3 之后（同意证据链）；
+   - `cd9c8b01…` 当前在审核人2 待骆蒙恩处理（选择闭环后停留，可手动清理）。
+   确认无误后可自行清理这些测试实例。
+4. **界面跑一次真实计划**（可选，建议用「欧阳改测试1005」路径 1）：自动模式运行，
+   观察第 1 步提交在「运行详情」的 runtime 三阶段投影与请求轨迹里出现
+   `/web/flowInstanceApi/submit`，且运行详情可读、无「结果待确认」。
+5. **回归检查**：`bash test/run-executor-service.sh` 全绿（真实闭环用例在未配置环境变量时
+   会打印跳过原因，属预期）。
+6. **范围确认（需要你拍板）**：S8 采用方案 B——runtime 只接 FormMaking；
+   NoFormFlow/Vue 自定义页回退既有 Go 直连路径。若你要求方案 A（runtime 内实现无表单链），
+   请反馈，将作为下一个切片规划。
