@@ -40,15 +40,25 @@
 | F-033 | 运行详情原子快照与节点过渡显示修复 | awaiting_approval |
 | F-034 | 一键配置动作多样化与运行详情可读性修复 | ready_for_manual（2026-09-13 实施与自动验证完成：动作矩阵重做、跨空节点分支解析与阻塞语义、详情弹窗重排；待人工验收） |
 | F-035 | 目标请求协议一致性、真实处理人和有效表单数据闭环 | implementing（2026-09-15 第五轮复核：下拉实际值、动作尾部/删除、阻塞状态投影、路径 12 请求对照和处理人事实仍未闭环，不得进入 ready_for_manual） |
+| F-036 | 独立执行服务与原生页面装载 | awaiting_approval |
+
 
 `superseded` 表示该方案不再是产品或架构依据；实施 F-012 时删除其代码、接口、表、测试和旧任务文件，不做迁移、兼容或兜底。
 
 ## 当前与后两项
 
+F-036「独立执行服务与原生页面装载」已登记为 `awaiting_approval`，计划见
+`docs/features/F-036-independent-executor-native-page.md` 与 `docs/s2/`。它把页面执行迁到根目录
+`executor-service/`，使用独立 `rsh-flow-components` 快照（`test`/`be355ae`）和原生
+`/flow/initiate`、`/flow/detail/:id` 装载；配置侧 `form-runtime/` 只保留数据显示、编辑和取回。
+协议升级为 `exec-engine/v2`，取消能力登记门禁和 Go 进程托管。用户批准前不改实现代码。
+规划时本机参考仓库 `test` HEAD 为 `24f3a28`、未包含 `be355ae`，实施第一步必须 `make refs-sync` 复核该提交。
+
 F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」仍处于 `implementing`。第四轮已把已实现页面的特殊业务/NoFormFlow 从统一阻塞改为专用前置保存与 `flowProxyId` 主流程，并补齐衍生字段语义、配置期身份不污染无表单数据、运行详情请求代次；第五轮复核确认下拉实际绑定值、动作模型、配置缺口文案、阻塞状态聚合和真实路径 12 请求仍不一致。
 合同盖章/合规自定义组件、真实路径 12 与手工 curl 对照、无扩展窗口 `runtime.lastError` A/B、Vue 生命周期人工证据仍未完成，不能进入 `ready_for_manual`。本轮整改任务见
 `docs/auto/2026-09-15-f035-review-round5-ui-state-and-assignment-task.md`，上一轮任务见
 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。
+
 
 F-032 计划状态、编辑与可重复运行修复当前处于 `ready_for_manual`，实施依据见
 `docs/features/F-032-plan-status-and-last-run-result.md`。计划状态由运行事实派生，任一状态都能再次运行和编辑，

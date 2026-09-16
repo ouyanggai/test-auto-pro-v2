@@ -1,5 +1,23 @@
 # 技术架构
 
+## F-036 独立执行服务
+
+F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，与配置侧彻底隔离。状态 `awaiting_approval`，未获批准不得进入 `implementing`。
+
+- **源码隔离**：执行服务拥有独立页面构建包和独立 `rsh-flow-components` 快照，初始提交为已核实的 `test` 分支 `be355ae`；必须 `make refs-sync` 后复制，禁止复用 `form-runtime/runtime-source`。FormMaking 库产物独立构建。参考源码、依赖和产物不提交。
+- **原生装载**：无头 Chromium 导航参考项目路由。发起 `#/flow/initiate`；实例 `#/flow/detail/:id`，`mode=audit|edit|view`。身份注入对齐 `runtimeAuthSync`。`taskContext` 按 `FlowDetail.vue` 字段传入。
+- **精确选模板**：`InitFlowDialog` 只按 `auditWayList` 查询模板。执行装载必须带计划 `auditWay` 与绑定 `flowTemplateId`，在查询结果中精确匹配；0 条、不含绑定 ID 或多模板误取第一项均阻塞。
+- **薄桥接**：拦截 `$initFlow`/`$flowDetail` 返回的 `instance`，调用页面已有业务方法（`sumbitFlow`、暂存/同意/不同意/重提/转发、选择继续方法）。禁止手工执行宿主和 `/test-auto-form/exec*`。
+- **数据补丁**：页面自己读模板、实例和字段权限。完成后仅用组件现有 `setData`/`getValues`/`getData`（或自定义页等价接口）写入当前节点允许值，等待选项和联动再回读。无接口则 `unsupported`。
+- **协议**：生命周期仍为 `/runtime/session` + WebSocket。版本 `exec-engine/v2`，拒绝 v1。装载输入为身份、原生流程/任务上下文和当前节点数据补丁，不含 Go 渲染模板。
+- **转发**：`page.route()` 必须在 `page.goto` 之前安装；转发通道未连接成功不得装载。目标请求只经现有 `internal/adapter/target`。一次写纪律不变；写未知禁止重发和回退 Go 写路径。
+- **门禁**：删除能力登记执行门禁和验证模式。执行依据原生页面能力与目标权限。完成判定仍要求业务完成信号、请求收敛、无页面异常，并由 Go `verify` 重读目标事实。
+- **进程**：默认端口 `19011`，沿用 `RUNTIME_EXECUTOR_URL`。独立构建/启动/健康检查。删除 Go 进程托管。服务不可用只阻塞七个 runtime 动作。
+- **配置侧清理**：删除 `form-runtime/executor`、执行宿主和执行桥接；配置协议与 iframe 入口保留。系统设置维护入口只更新配置服务。两套服务不共享源码、身份适配、请求策略或构建产物。
+- **存储**：运行详情复用现有尝试行与日志，返回前后数据、请求轨迹和组件版本；不新增迁移。
+
+实现与人工门禁见 `docs/features/F-036-independent-executor-native-page.md` 和 `docs/s2/`。
+
 ## F-029 会话缓存与网络重试
 
 F-029 已完成自动验证，当前处于 `ready_for_manual`，等待人工页面验收。
@@ -137,10 +155,10 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 
 ## 固定选型
 
-- 主前端：Vue 3、Vite、Vue Router、Pinia、Naive UI；F-012 的 `form-runtime/` 是唯一隔离例外，直接使用从目标平台复制的 Vue 2、Element UI 和多表单运行时，并通过 iframe 接入主应用。
+- 主前端：Vue 3、Vite、Vue Router、Pinia、Naive UI；F-012 的 `form-runtime/` 是配置侧隔离例外，直接使用从目标平台复制的 Vue 2、Element UI 和多表单运行时，并通过 iframe 接入主应用。F-036 的 `executor-service/` 是执行侧隔离例外，使用另一份独立组件快照和原生 `/flow` 路由，不与配置侧共享源码或产物。
 - 后端：Go 单体，一个二进制进程；F-000 使用标准库 `net/http`。
 - 包管理：pnpm。
-- 本地端口：前端 `19000`，后端 `19080`；前端开发服务器将 `/api` 代理到后端。
+- 本地端口：前端 `19000`，配置表单运行时 `19001`，后端 `19080`，执行服务 `19011`；前端开发服务器将 `/api` 代理到后端。
 - Go module：`test-auto-pro-v2`。
 
 主应用不采用 Vben Admin、Element Plus 或其他中后台应用基座，也不直接混用 Vue 2 组件；历史 PRD 中相反描述已被本文件取代。
@@ -148,11 +166,13 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 ## 本地开发方式
 
 - 根目录 `package.json` 仅提供全栈开发与检查命令；Go 依赖仍只由 `go.mod` 管理。
-- F-012 继续使用根目录 `pnpm-workspace.yaml`，只包含 `web` 与 `form-runtime`，从根目录执行 `pnpm install` 仍只生成一个 `pnpm-lock.yaml`。
+- `pnpm-workspace.yaml` 包含 `web`、`form-runtime` 与 `executor-service`；从根目录执行 `pnpm install` 仍只生成一个 `pnpm-lock.yaml`。配置侧与执行侧不得互相引用源码别名或构建产物目录。
 - 前端在一个前台终端执行 `pnpm dev:f`，仅启动主 Vue 3 应用并监听 `127.0.0.1:19000`；表单运行时在独立前台终端执行 `pnpm dev:form`，监听 `127.0.0.1:19001` 并提供热更新，主应用通过固定 iframe 地址使用它。
+- 执行服务在独立前台终端启动，监听 `127.0.0.1:19011`；Go 不托管该进程。未启动时七个表单动作写前阻塞，配置页仍可用。
 - 后端在另一个前台终端执行 `pnpm dev:b`，实际命令为 `go tool air -c .air.toml`。Air 固定为 Go 1.25 tool dependency，构建 `cmd/server` 到被忽略的 `.runtime/`。
-- 两个前台进程的日志留在各自终端，用户通过 `Ctrl+C` 停止；不使用后台守护、PID 文件、日志文件、`concurrently` 或后台重启命令。
-- `.air.toml` 只监听项目 Go 源码，排除 `.git`、`.runtime`、根目录 `node_modules`、`web`、`参考代码`、`test`、`docs` 和历史资料。
+- 前台进程的日志留在各自终端，用户通过 `Ctrl+C` 停止；不使用后台守护、PID 文件、`concurrently` 或后台重启命令。
+- `.air.toml` 只监听项目 Go 源码，排除 `.git`、`.runtime`、根目录 `node_modules`、`web`、`form-runtime`、`executor-service`、`参考代码`、`test`、`docs` 和历史资料。
+
 
 ## 系统边界
 
