@@ -1,6 +1,6 @@
 # F-036 独立执行服务与原生页面装载
 
-- 状态：implementing
+- 状态：ready_for_manual
 - 产品依据：`docs/PRODUCT.md` 的「F-036 独立执行服务与原生页面装载」
 - 架构依据：`docs/ARCHITECTURE.md` 的「F-036 独立执行服务」
 - 计划确认时间：2026-09-16（用户批准开始实现）
@@ -95,6 +95,8 @@
 - 2026-09-16 T011：Go 只发 v2；取消进程托管、能力门禁和验证模式；执行服务不可用时七个动作写前阻塞。
 - 2026-09-16 T012：删除 form-runtime 执行宿主、执行桥接和 executor 目录；配置 iframe 协议保留。
 - 2026-09-16 T013：执行服务停止后配置 iframe 协议仍含 getValues；两侧快照 HEAD 与构建产物目录隔离。
+- 2026-09-16 T014：聚合脚本 `test/run-executor-service.sh` 只跑本切片测试；状态停在 `ready_for_manual`，不自动开始下一功能。
+
 
 
 

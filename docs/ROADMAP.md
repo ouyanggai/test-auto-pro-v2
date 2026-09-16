@@ -40,7 +40,7 @@
 | F-033 | 运行详情原子快照与节点过渡显示修复 | awaiting_approval |
 | F-034 | 一键配置动作多样化与运行详情可读性修复 | ready_for_manual（2026-09-13 实施与自动验证完成：动作矩阵重做、跨空节点分支解析与阻塞语义、详情弹窗重排；待人工验收） |
 | F-035 | 目标请求协议一致性、真实处理人和有效表单数据闭环 | implementing（2026-09-15 第五轮复核：下拉实际值、动作尾部/删除、阻塞状态投影、路径 12 请求对照和处理人事实仍未闭环，不得进入 ready_for_manual） |
-| F-036 | 独立执行服务与原生页面装载 | implementing（2026-09-16 用户批准开始实现） |
+| F-036 | 独立执行服务与原生页面装载 | ready_for_manual（2026-09-16 T001–T014 自动验证完成，待人工验收） |
 
 
 
@@ -48,12 +48,13 @@
 
 ## 当前与后两项
 
-F-036「独立执行服务与原生页面装载」已获用户批准，进入 `implementing`，计划见
-`docs/features/F-036-independent-executor-native-page.md` 与 `docs/s2/`。它把页面执行迁到根目录
-`executor-service/`，使用独立 `rsh-flow-components` 快照（`test`/`be355ae`）和原生
+F-036「独立执行服务与原生页面装载」自动验证完成，停在 `ready_for_manual`，计划见
+`docs/features/F-036-independent-executor-native-page.md` 与 `docs/s2/`。页面执行已迁到根目录
+`executor-service/`，独立 `rsh-flow-components` 快照（`test`/`be355ae`）和原生
 `/flow/initiate`、`/flow/detail/:id` 装载；配置侧 `form-runtime/` 只保留数据显示、编辑和取回。
-协议升级为 `exec-engine/v2`，取消能力登记门禁和 Go 进程托管。当前先交付独立服务骨架。
-规划时本机参考仓库 `test` HEAD 为 `24f3a28`、未包含 `be355ae`，T002 必须 `make refs-sync` 复核该提交。
+协议为 `exec-engine/v2`，取消能力登记门禁和 Go 进程托管。可见页面和真实目标动作等待人工验收。
+聚合验证：`bash test/run-executor-service.sh`。不得自动开始下一功能。
+
 
 
 F-035「目标请求协议一致性、真实处理人和有效表单数据闭环」仍处于 `implementing`。第四轮已把已实现页面的特殊业务/NoFormFlow 从统一阻塞改为专用前置保存与 `flowProxyId` 主流程，并补齐衍生字段语义、配置期身份不污染无表单数据、运行详情请求代次；第五轮复核确认下拉实际绑定值、动作模型、配置缺口文案、阻塞状态聚合和真实路径 12 请求仍不一致。

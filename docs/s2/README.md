@@ -12,6 +12,9 @@
 
 ## 当前结论
 
+当前切片状态：`ready_for_manual`。聚合验证：`bash test/run-executor-service.sh`。可见页面和真实目标动作等待人工验收。
+
+
 - 配置服务与执行服务独立源码、独立快照、独立构建、独立启动。执行服务停止时，配置表单仍可显示、编辑和取回数据。
 - 执行服务使用独立的 `rsh-flow-components` 副本，初始快照为已核实的 `test` 分支 `be355ae`；必须先 `make refs-sync` 再复制，禁止复用 `form-runtime/runtime-source`。
 - 实例通过 `/flow/detail/:id` 的 `audit/edit/view` 模式装载；发起通过 `/flow/initiate` 装载。传参对齐参考项目身份及 `taskContext`。
