@@ -67,4 +67,9 @@ export class RequestTraceRecorder {
     for (const entry of this.entries) stats[entry.state]++
     return stats
   }
+
+  // lastSeq 返回当前已分配的最大序列号；用于完成检测的基线记录。
+  get lastSeq (): number {
+    return this.nextSeq - 1
+  }
 }
