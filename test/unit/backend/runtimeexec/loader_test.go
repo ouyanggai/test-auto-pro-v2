@@ -32,8 +32,8 @@ func TestBuildLoadPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded := string(raw)
-	if strings.Contains(encoded, "SID") || strings.Contains(encoded, `"sid"`) {
-		t.Fatalf("装载载荷不允许携带会话标识：%s", raw)
+	if strings.Contains(encoded, `"sid"`) && !strings.Contains(encoded, `"sid":""`) {
+		t.Fatalf("BuildLoadPayload 自身不得携带 SID（运行时注入）：%s", raw)
 	}
 	if strings.Contains(encoded, `"template"`) {
 		t.Fatalf("v2 装载不得携带渲染模板：%s", raw)

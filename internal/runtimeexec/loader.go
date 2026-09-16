@@ -1,7 +1,7 @@
 // T008 发起表单装载：构造 load 命令载荷的 Go 侧契约。
 // 载荷字段与页面侧 App.vue 的 load 命令消费严格对齐（renderType/template/values/permissions/identity），
 // 身份字段只来自 Go 当前会话，浏览器不能提交或覆盖（docs/s/01-执行引擎设计.md 5.2）。
-// SID 绝不进入载荷：它由执行服务的会话现场持有，页面不发目标请求。
+// SID 由 Go 在 Load 调用前注入载荷，页面从载荷读取后写入 localStorage 供 axios 使用。
 package runtimeexec
 
 import (
@@ -55,8 +55,9 @@ type LoadPayload struct {
 	CustomerCode    string        `json:"customerCode,omitempty"`
 	UserID          string        `json:"userId,omitempty"`
 	AccountName     string        `json:"accountName,omitempty"`
+	SID             string        `json:"sid,omitempty"`
+	PlatformCode    string        `json:"platformCode,omitempty"`
 	// BaseURL 是目标网关地址：页面据此构造目标请求（由 Go 拦截转发，绝不直连）。
-	BaseURL string `json:"baseURL,omitempty"`
 	// —— 以下为评审 P1-3 补齐的目标代理与节点事实：目标组件提交/审批载荷直接消费这些字段 ——
 	// FormProxyID 是 FormMaking 表单代理 ID：FlowDialog 据 formId 决定发送 formProxyId；
 	// 缺失时目标提交会退回发送 flowProxyId: ""（评审 P1-3 的空代理 ID 根因）。

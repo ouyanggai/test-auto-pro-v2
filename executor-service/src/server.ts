@@ -287,8 +287,13 @@ async function main (): Promise<void> {
             'window.__executorNative && (window.__executorNative.initFlow || window.__executorNative.flowDetail)',
             undefined,
             { timeout: 30000 }
-          ).then(async () => session.page.evaluate(() => (window as unknown as { __executorNative: Record<string, unknown> }).__executorNative)).catch(() => null)
-          session.nativeHost = host
+          ).then(async () => {
+            const captured = await session.page.evaluate(() => (window as unknown as { __executorNative: Record<string, unknown> }).__executorNative)
+            if (!captured || (!captured.initFlow && !captured.flowDetail)) {
+              throw new Error('原生宿主捕获失败')
+            }
+            return captured
+          }).catch(() => null)
           const mode = String(payload.mode ?? 'initiate')
           if (mode === 'initiate') {
             const handle = await session.page.evaluate(() => {
@@ -343,16 +348,17 @@ async function main (): Promise<void> {
               }, values, { allowedKeys: allowed, optionsReady: true })
             }
           }
+          }
+          if (!session.nativeHost) {
+            send(500, { error: '原生宿主未捕获，装载失败' })
+            return
+          }
           session.loaded = true
           session.identity = {
             mode,
+            mode,
             operator: payload.currentOperator ?? null,
             initiator: payload.initiator ?? null
-          }
-          session.route.setToolFlowName(String(payload.toolFlowName ?? ''))
-          send(200, { ready: true, mode })
-        } catch (error) {
-          send(500, { error: String((error as Error)?.message ?? error) })
         }
       })()
       return
@@ -426,7 +432,35 @@ async function main (): Promise<void> {
           const baselineSeq = session.route?.trace.list().length ?? 0
           try {
             if (!readOnly) {
-              dispatchNativeAction((session.nativeHost ?? {}) as Parameters<typeof dispatchNativeAction>[0], action)
+              await session.page.evaluate((action) => {
+                const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
+                const host = native?.initFlow || native?.flowDetail
+                if (!host) return
+                const typed = host as Record<string, unknown>
+                switch (action) {
+                  case 'save_draft':
+                    if (typeof typed.sumbitFlow === 'function') (typed.sumbitFlow as (kind: string) => unknown)('draft')
+                    break
+                  case 'submit':
+                    if (typeof typed.sumbitFlow === 'function') (typed.sumbitFlow as (kind: string) => unknown)('submit')
+                    break
+                  case 'resubmit':
+                    if (typeof typed.reSubmit === 'function') (typed.reSubmit as () => unknown)()
+                    break
+                  case 'approve':
+                    if (typeof typed.formMakingFormBusiness === 'function') (typed.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(true, 'pass')
+                    break
+                  case 'reject':
+                    if (typeof typed.formMakingFormBusiness === 'function') (typed.formMakingFormBusiness as (flag: boolean, type: string) => unknown)(false, 'no_pass')
+                    break
+                  case 'storage_form_data':
+                    if (typeof typed.storageFormData === 'function') (typed.storageFormData as () => unknown)()
+                    break
+                  case 'forward':
+                    if (typeof typed.confirmTranspond === 'function') (typed.confirmTranspond as () => unknown)()
+                    break
+                }
+              }, action)
             }
             const verdict = readOnly
               ? { status: 'success' as const, requestTrace: [] }
@@ -434,7 +468,17 @@ async function main (): Promise<void> {
                 action,
                 trace: session.route!.trace,
                 baselineSeq,
-                businessDone: async () => true,
+                businessDone: async () => {
+                  const entries = session.route!.trace.list().filter(e => e.seq > baselineSeq)
+                  const flowWrites = entries.filter(e => 
+                    e.method === 'POST' && 
+                    e.state === 'fulfilled' &&
+                    (e.url.includes('/flowInstanceApi/submit') || 
+                     e.url.includes('/flowInstanceApi/audit') ||
+                     e.url.includes('/flowInstanceApi/transpond'))
+                  )
+                  return flowWrites.length > 0
+                },
                 hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000),
                 idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),
                 gate: async () => !session.choicePending,
