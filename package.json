@@ -11,7 +11,11 @@
   },
   "scripts": {
     "dev:f": "pnpm --parallel --filter test-auto-pro-v2-web dev",
-    "dev:form": "pnpm --filter test-auto-pro-v2-form-runtime dev",
+    "dev:form-runtime": "pnpm --filter test-auto-pro-v2-form-runtime dev",
+    "dev:form": "pnpm dev:form-runtime",
+    "dev:r": "pnpm dev:form-runtime",
+    "dev:executor": "pnpm --filter test-auto-pro-v2-form-runtime-executor start",
+    "dev:e": "pnpm dev:executor",
     "dev:b": "go tool air -c .air.toml",
     "check:frontend": "pnpm --filter test-auto-pro-v2-web typecheck && pnpm --filter test-auto-pro-v2-form-runtime typecheck && pnpm --filter test-auto-pro-v2-web build && pnpm --filter test-auto-pro-v2-form-runtime build",
     "check:backend": "go test ./test/unit/backend ./test/contracts && go build ./cmd/server",

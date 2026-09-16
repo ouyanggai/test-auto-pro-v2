@@ -38,6 +38,7 @@
 | Go 后端 | `http://127.0.0.1:19080` | 提供 API、计划与路径数据，并读取目标平台信息。 |
 | Vue 3 主前端 | `http://127.0.0.1:19000` | 提供日常操作界面。 |
 | Vue 2 form-runtime | `http://127.0.0.1:19001` | 独立渲染 FormMaking 表单。 |
+| executor | `http://127.0.0.1:19011` | Playwright 无头执行服务。 |
 
 ## 运行环境
 
@@ -70,8 +71,15 @@ pnpm dev:f
 ```
 
 ```bash
-# 终端三：独立表单运行时
-pnpm dev:form
+# 终端三：独立表单运行时（完整命令）
+pnpm dev:form-runtime
+# 简写：pnpm dev:r
+```
+
+```bash
+# 终端四：executor（完整命令）
+pnpm dev:executor
+# 简写：pnpm dev:e
 ```
 
 启动后访问：[主应用](http://127.0.0.1:19000)。
@@ -79,6 +87,7 @@ pnpm dev:form
 - 后端：`http://127.0.0.1:19080`
 - 主前端：`http://127.0.0.1:19000`
 - 表单运行时：`http://127.0.0.1:19001/form-runtime/`
+- executor：`http://127.0.0.1:19011`
 
 每个服务都可在自己的终端按 `Ctrl+C` 停止。
 
