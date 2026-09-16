@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "description": "由完整 rsh-flow-components 源码驱动的独立表单渲染服务",
   "scripts": {
-    "dev": "vue-cli-service serve --host 127.0.0.1 --port 19001",
+    "dev": "vue-cli-service serve --host 0.0.0.0 --port 19001",
     "build": "vue-cli-service build",
     "sync": "node scripts/sync.js",
     "sync:check": "node scripts/sync-check.js",

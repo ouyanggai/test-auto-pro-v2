@@ -21,7 +21,9 @@ const emit = defineEmits<{
 
 const iframe = ref<HTMLIFrameElement | null>(null)
 const sessionId = ref(crypto.randomUUID())
-const iframeSource = computed(() => import.meta.env.DEV ? 'http://127.0.0.1:19001/form-runtime/#/test-auto-form' : '/form-runtime/#/test-auto-form')
+// 开发态 iframe 指向表单运行时 dev 服（0.0.0.0 监听）：跟随当前访问的 hostname，
+// 从其它机器打开页面时不会把运行时解析成访问者自己的 127.0.0.1。
+const iframeSource = computed(() => import.meta.env.DEV ? `http://${window.location.hostname}:19001/form-runtime/#/test-auto-form` : '/form-runtime/#/test-auto-form')
 const runtimeOrigin = computed(() => new URL(iframeSource.value, window.location.href).origin)
 const RUNTIME_LOAD_TIMEOUT_MS = 60_000
 const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer?: number, cleanup: () => void }>()

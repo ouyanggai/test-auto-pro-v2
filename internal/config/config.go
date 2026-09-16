@@ -11,7 +11,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const defaultServerAddress = "127.0.0.1:19080"
+const defaultServerAddress = "0.0.0.0:19080"
 
 const (
 	defaultTargetLocalEnvFile = ".env.local"

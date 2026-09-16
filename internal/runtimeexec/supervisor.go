@@ -148,8 +148,10 @@ func executorHostPort(baseURL string) (string, string, error) {
 	if host == "" || port == "" {
 		return "", "", fmt.Errorf("执行服务地址必须携带端口：%s", baseURL)
 	}
+	// 0.0.0.0 是本机全网卡监听，进程仍在本机托管浏览器，与 127.0.0.1 同等放行；
+	// 其它具体 IP 视为远端服务，必须由部署方自行启动并保持本进程不托管。
 	switch host {
-	case "127.0.0.1", "localhost", "::1":
+	case "127.0.0.1", "localhost", "::1", "0.0.0.0":
 	default:
 		return "", "", fmt.Errorf("只允许托管环回地址的执行服务（%s），远端服务请由部署方自行启动并保持本进程不托管", host)
 	}

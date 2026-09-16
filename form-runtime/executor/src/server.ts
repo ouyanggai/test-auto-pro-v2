@@ -499,10 +499,10 @@ async function main(): Promise<void> {
     })
   })
 
-  server.listen(port, '127.0.0.1', () => {
+  server.listen(port, '0.0.0.0', () => {
     console.log(JSON.stringify({
       service: 'form-runtime-executor',
-      listening: `http://127.0.0.1:${port}`,
+      listening: `http://0.0.0.0:${port}`,
       entryURL,
       launchArgs: HEADLESS_LAUNCH_ARGS
     }))
