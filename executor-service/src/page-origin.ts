@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -24,17 +23,22 @@ function serviceRoot (): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 }
 
-// extractPageDist 把 flow-source/dist.zip 解到临时目录的 flow/ 前缀下，对齐 publicPath=/flow/。
+// extractPageDist 把 flow-source/dist 复制到临时目录的 flow/ 前缀下，对齐 publicPath=/flow/。
+//
+// 迁移修订：旧实现依赖 flow-source/dist.zip 并调用 `unzip`，两者都只在 macOS 上成立
+// （zip 是 Mac 上手工产物，Windows 默认没有 unzip）。现在直接消费 flow-source 里
+// 已构建好的 dist/ 目录：纯 Node 复制，不依赖任何外部命令，也不依赖 zip 中间产物。
 export function extractPageDist (): { root: string, distDir: string } {
-  const zipPath = path.join(serviceRoot(), 'flow-source', 'dist.zip')
-  if (!fs.existsSync(zipPath)) {
-    throw new Error('缺少 executor-service/flow-source/dist.zip，无法装载原生 /flow 页面')
+  const distSource = path.join(serviceRoot(), 'flow-source', 'dist')
+  if (!fs.existsSync(distSource)) {
+    throw new Error('缺少 executor-service/flow-source/dist，无法装载原生 /flow 页面（先执行 pnpm --dir executor-service build-native-page）')
+  }
+  if (!fs.existsSync(path.join(distSource, 'index.html'))) {
+    throw new Error('executor-service/flow-source/dist 缺少 index.html，页面产物不完整')
   }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'executor-page-'))
-  execFileSync('unzip', ['-o', '-q', zipPath, '-d', root])
-  const unpacked = path.join(root, 'dist')
   const distDir = path.join(root, 'flow')
-  fs.renameSync(unpacked, distDir)
+  fs.cpSync(distSource, distDir, { recursive: true })
   return { root, distDir }
 }
 

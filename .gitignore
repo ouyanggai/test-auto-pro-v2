@@ -4,6 +4,8 @@
 # 本地运行状态与日志
 /.runtime/
 /.plans/
+# 本地 Agent 工具缓存，不进版本库。
+/.claude/
 
 # 前端依赖、缓存与构建产物
 /node_modules/

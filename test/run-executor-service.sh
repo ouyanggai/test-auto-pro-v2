@@ -8,6 +8,13 @@ echo "== F-036 独立执行服务 typecheck =="
 pnpm --dir executor-service typecheck
 pnpm --dir form-runtime typecheck
 
+# flow-source 已改为按清单 git 同步；页面产物也不再依赖 macOS 上手工产出的 dist.zip。
+# 这两步都是幂等的：已同步/已构建时只做核对，不重复下载或重复编译。
+echo "== F-036 flow-source 同步与页面产物前置 =="
+pnpm --dir executor-service sync-source
+pnpm --dir executor-service build-native-page
+pnpm --dir executor-service build-form-making
+
 echo "== F-036 执行服务单元 =="
 node --experimental-strip-types --test \
   test/unit/executor-service/skeleton.test.ts \

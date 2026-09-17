@@ -1,44 +1,83 @@
 #!/usr/bin/env node
 
-// T002：把原项目 /Volumes/oygsky/bigsys/rsh-flow-components 复制为独立 flow-source。
-// 后续一键升级与原项目相同：从其 sync-manifest 同步目标平台代码。
-// 不复用 form-runtime/runtime-source，不改原项目工作树。
+// T002（Windows 迁移修订）：flow-source 不再复制任何本机静态目录，改为直接 git 同步参考仓库。
+//
+// 旧实现把原项目在 macOS 外接盘上的绝对路径整体复制成快照，导致：
+//   ① 依赖只在 Mac 上存在的挂载盘路径，迁移到 Windows 后必然报「原项目不存在」；
+//   ② 快照脱离版本控制，无法判断本地是否被改脏；
+//   ③ 与 form-runtime 的 sync-manifest 出现两套来源口径。
+// 现统一为：从固定远端 + 固定分支 clone/快进，路径全部相对工作区解析。
 import childProcess from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const PINNED_HEAD = 'be355ae309479a0c37598c0ee95ba724d062e5f1'
-const PINNED_BRANCH = 'test'
-const DEFAULT_SOURCE = '/Volumes/oygsky/bigsys/rsh-flow-components'
-const SKIP_NAMES = new Set(['.git', 'node_modules', '.npmrc', '.claude', '.omc', '.DS_Store', '__MACOSX'])
-
 const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const workspaceRoot = path.resolve(serviceRoot, '..')
+const manifestPath = path.join(serviceRoot, 'flow-source-manifest.json')
 const targetRoot = path.join(serviceRoot, 'flow-source')
 const metadataPath = path.join(serviceRoot, 'flow-source.json')
-const configRuntime = path.resolve(serviceRoot, '..', 'form-runtime', 'runtime-source')
+const lockPath = path.join(serviceRoot, 'flow-source.lock.json')
+const configRuntime = path.join(workspaceRoot, 'form-runtime', 'runtime-source')
 
-function git (root, args) {
-  return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
-}
+// SKIP_NAMES 是与运行时无关的本机噪声，git checkout 之后按需清理，不进构建输入。
+const SKIP_NAMES = new Set(['.git', 'node_modules', '.npmrc', '.claude', '.omc', '.DS_Store', '__MACOSX'])
 
 function fail (message) {
   process.stderr.write(`错误：${message}\n`)
   process.exit(1)
 }
 
+// git 只执行固定只读参数并返回文本；调用方负责保证参数来自清单，不接受任意输入。
+function git (root, args) {
+  return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
+}
+
+// gitRaw 与 git 相同，但不裁剪首尾空白。
+// porcelain 状态行的第一列就是「暂存区状态」，为空时是一个前导空格；
+// 用 git() 的 trim() 会把第一行的前导空格吃掉，导致把「未暂存的删除」误读成「已暂存的修改」。
+function gitRaw (root, args) {
+  return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' })
+}
+
+// readManifest 读取本项目固定同步清单；远端、分支和目标目录都不允许由命令行或环境变量覆盖。
+function readManifest () {
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  } catch (error) {
+    fail(`同步清单不可读：${manifestPath}（${String(error?.message ?? error)}）`)
+  }
+}
+
+// readLock 读取上次同步落盘的锁文件；首次同步没有锁文件，按全量同步处理。
+function readLock () {
+  if (!fs.existsSync(lockPath)) return null
+  try {
+    return JSON.parse(fs.readFileSync(lockPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+// digestDirectory 计算目录内容摘要，用于证明「同一版本的 flow-source 字节一致」。
+// 元数据文件本身不参与摘要，避免自引用导致每次都判定为变化。
+//
+// dist/ 是 build-native-page 在本机生成的页面产物，不属于 git 同步内容，
+// 也不参与摘要：它是构建结果而非源码，纳入摘要会让「同步后摘要」随构建而变。
 function digestDirectory (root) {
   const hash = crypto.createHash('sha256')
   const files = []
   const visit = (directory, prefix) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (SKIP_NAMES.has(entry.name)) continue
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (relative === 'dist' || relative.startsWith('dist/')) continue
       if (entry.isDirectory()) visit(path.join(directory, entry.name), relative)
       else files.push(relative)
     }
   }
-  if (fs.existsSync(root)) visit(root, '')
+  visit(root, '')
   for (const relative of files.sort()) {
     hash.update(relative)
     hash.update('\0')
@@ -48,53 +87,160 @@ function digestDirectory (root) {
   return hash.digest('hex')
 }
 
-function copyTree (sourceRoot) {
-  fs.rmSync(targetRoot, { recursive: true, force: true })
-  fs.mkdirSync(targetRoot, { recursive: true })
-  fs.cpSync(sourceRoot, targetRoot, {
-    recursive: true,
-    filter: (source) => {
-      const name = path.basename(source)
-      if (SKIP_NAMES.has(name)) return false
-      const relative = path.relative(sourceRoot, source)
-      if (relative === 'dist' || relative.startsWith(`dist${path.sep}`)) return false
-      return true
-    }
+// removeNoise 清掉 git checkout 之后仍可能存在的本机噪声目录（.DS_Store 等不参与摘要，但也无意义留盘）。
+function removeNoise (root) {
+  for (const name of SKIP_NAMES) {
+    if (name === '.git') continue
+    fs.rmSync(path.join(root, name), { recursive: true, force: true })
+  }
+}
+
+// isCheckedOutAt 判断目标目录当前是否就是「清单远端 + 清单分支 + 清单 HEAD」的受控检出。
+// 这是幂等判据，不使用时间戳或本地缓存。
+//
+// 脏判据必须只看「内容被改动」的文件，不能把「脚本主动删除的本机噪声」也算脏：
+// .npmrc/.claude/.omc 是上游 tracked 文件，removeNoise 会按设计删掉它们，
+// status 于是长期显示 ` D`。若把这些删除也算脏，同步永远判不出「已是最新」，
+// 每次执行都会整个重新 clone（实测每次都重新下载 722 个文件）。
+// 因此这里只放行 status 第一列（暂存区）为空、第二列仅为 `D` 的行，
+// 任何内容修改（M）、新增或暂存改动仍然判定为脏并触发重新同步。
+function isCheckedOutAt (manifest, head) {
+  if (!fs.existsSync(path.join(targetRoot, '.git'))) return false
+  const remote = git(targetRoot, ['remote', 'get-url', 'origin'])
+  if (remote !== manifest.remote) return false
+  if (git(targetRoot, ['rev-parse', 'HEAD']) !== head) return false
+  if (hasContentChanges()) return false
+  return git(targetRoot, ['ls-tree', '-r', '--name-only', 'HEAD']).length > 0
+}
+
+// hasContentChanges 判断工作树里是否存在「本机噪声删除」以外的任何变化。
+// 必须用 gitRaw：porcelain 行的首列空白是有意义的（空格=暂存区无变化）。
+function hasContentChanges () {
+  const lines = gitRaw(targetRoot, ['status', '--porcelain', '--untracked-files=no'])
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(line => line !== '')
+  return lines.some(line => {
+    const index = line[0]
+    const worktree = line[1]
+    // 只允许「未暂存的工作树删除」这一种状态；其余一律视为有真实变化。
+    return index !== ' ' || worktree !== 'D'
   })
 }
 
+// cloneAt 做一次干净克隆：先删残留目录，再 fetch 到临时目录并检出。
+// 不直接 clone --branch 是为了在同一处统一处理锁定的 commit（分支 HEAD 已前移时仍可复现）。
+function cloneAt (manifest, head) {
+  fs.rmSync(targetRoot, { recursive: true, force: true })
+  fs.mkdirSync(targetRoot, { recursive: true })
+  git(targetRoot, ['init', '--quiet'])
+  git(targetRoot, ['remote', 'add', 'origin', manifest.remote])
+  git(targetRoot, ['fetch', '--quiet', '--depth', '1', 'origin', head])
+  git(targetRoot, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'])
+  git(targetRoot, ['branch', '--quiet', '--force', manifest.branch, 'HEAD'])
+  removeNoise(targetRoot)
+}
+
+// assertNotConfigRuntime 挡住把 flow-source 指向 form-runtime 运行源码的误配置：
+// 两者都必须各自独立，跨用会让执行服务装载与表单运行时互相污染。
+function assertNotConfigRuntime () {
+  if (!fs.existsSync(configRuntime)) return
+  if (path.resolve(targetRoot) === path.resolve(configRuntime)) {
+    fail('flow-source 目标不能是 form-runtime/runtime-source')
+  }
+}
+
+// FORMMAKING_RELATIVE 是 FormMaking 产物在仓库内的固定位置。
+const FORMMAKING_RELATIVE = path.join('src', 'lib', 'vue-form-making', 'dist')
+// FORMMAKING_ENTRY 是运行时必须存在的入口文件；只校验目录存在会把半截产物当成功。
+const FORMMAKING_ENTRY = 'FormMaking.common.js'
+
+// stageFormMaking 把 FormMaking 构建产物放进 clone 出来的 flow-source。
+//
+// 为什么必须单独补：rsh-flow-components 的 Git 只跟踪 src/lib/vue-form-making/package.json，
+// dist 是构建产物且被上游忽略（`git ls-tree` 实测只剩一个 package.json）。
+// 产物在 form-runtime 侧作为 preservedTargetPaths 受控保存，是工作区里唯一可信副本；
+// 这里只做「复制 + 逐字节校验」，绝不自己编译，避免产物来源出现第二个口径。
+function stageFormMaking () {
+  const target = path.join(targetRoot, FORMMAKING_RELATIVE)
+  const source = path.join(configRuntime, FORMMAKING_RELATIVE)
+  const targetEntry = path.join(target, FORMMAKING_ENTRY)
+  const sourceEntry = path.join(source, FORMMAKING_ENTRY)
+
+  if (fs.existsSync(targetEntry)) {
+    process.stdout.write('[OK] FormMaking 产物已在快照内\n')
+    return
+  }
+  if (!fs.existsSync(sourceEntry)) {
+    fail(`缺少 FormMaking 产物：${sourceEntry}（受控副本不存在，拒绝自行编译）`)
+  }
+
+  fs.rmSync(target, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.cpSync(source, target, { recursive: true })
+
+  // 逐字节校验：复制后必须与受控副本完全一致，否则装载原生 /flow 页面会用到未知产物。
+  if (digestDirectory(target) !== digestDirectory(source)) {
+    fail('FormMaking 产物复制后与受控副本不一致')
+  }
+  process.stdout.write('[OK] FormMaking 产物已从受控副本补齐\n')
+}
+
 function main () {
-  const sourceRoot = process.env.EXECUTOR_FLOW_SOURCE_ROOT || DEFAULT_SOURCE
-  if (!fs.existsSync(path.join(sourceRoot, '.git'))) {
-    fail(`原项目不存在：${sourceRoot}`)
+  const manifest = readManifest()
+  assertNotConfigRuntime()
+
+  // HEAD 固定：远端分支前移不自动跟进，避免目标页面行为在无审查时漂移。
+  const head = manifest.head
+  if (!/^[0-9a-f]{40}$/.test(String(head))) fail(`清单 head 必须是完整提交号：${head}`)
+  if (!manifest.remote || !manifest.branch) fail('清单必须给出 remote 与 branch')
+
+  if (isCheckedOutAt(manifest, head)) {
+    const digest = digestDirectory(targetRoot)
+    writeMetadata(manifest, head, digest, 'unchanged')
+    process.stdout.write(`[GIT] flow-source 已是最新 ${head.slice(0, 7)}（未变更）\n`)
+    return
   }
-  if (fs.existsSync(configRuntime) && fs.realpathSync(sourceRoot) === fs.realpathSync(configRuntime)) {
-    fail('来源不能是 form-runtime/runtime-source')
+
+  // cloneAt 内部的 fetch 就是远端可达性判据：目标提交可能已被分支前移甩开，
+  // 这里不能用 ls-remote 按 SHA 探测（服务端只按 ref 过滤，已前移的提交会查不到，
+  // 但按 SHA 直接 fetch 依然成立）。失败时给出明确原因，绝不静默留下半同步目录。
+  try {
+    cloneAt(manifest, head)
+  } catch (error) {
+    fail(`从 ${manifest.remote} 同步提交 ${head} 失败：${String(error?.message ?? error)}`)
   }
-  const branch = git(sourceRoot, ['rev-parse', '--abbrev-ref', 'HEAD'])
-  const head = git(sourceRoot, ['rev-parse', 'HEAD'])
-  if (branch !== PINNED_BRANCH) {
-    fail(`原项目必须在 ${PINNED_BRANCH} 分支，实际 ${branch}`)
+  const actual = git(targetRoot, ['rev-parse', 'HEAD'])
+  if (actual !== head) fail(`检出提交不符：期望 ${head}，实际 ${actual}`)
+
+  // FormMaking 产物不在 rsh-flow-components 的 Git 里（该仓库只跟踪
+  // src/lib/vue-form-making/package.json，dist 是构建产物且被上游忽略），
+  // 因此不能指望 clone 带出它，必须从受控副本补齐并逐字节校验。
+  stageFormMaking()
+  if (!fs.existsSync(path.join(targetRoot, 'src', 'api', 'index.js'))) {
+    fail('同步后缺少 src/api/index.js（端点真名清单来源）')
   }
-  if (head !== PINNED_HEAD) {
-    fail(`原项目 HEAD 必须是 ${PINNED_HEAD}，实际 ${head}`)
-  }
-  copyTree(sourceRoot)
-  const formMaking = path.join(targetRoot, 'src', 'lib', 'vue-form-making', 'dist', 'FormMaking.common.js')
-  if (!fs.existsSync(formMaking)) {
-    fail('复制后缺少原项目 FormMaking 产物 src/lib/vue-form-making/dist/FormMaking.common.js')
-  }
+
+  const digest = digestDirectory(targetRoot)
+  writeMetadata(manifest, head, digest, 'synced')
+  process.stdout.write(`[GIT] ${manifest.remote}@${head.slice(0, 7)} -> flow-source/\n`)
+}
+
+// writeMetadata 落盘同步事实：远端、分支、HEAD、内容摘要与同步方式。
+// digest 供 build-form-making 与测试核对「本地快照未被手改」。
+function writeMetadata (manifest, head, digest, action) {
   const metadata = {
-    repository: 'rsh-flow-components',
-    sourceRoot,
-    branch: PINNED_BRANCH,
-    head: PINNED_HEAD,
-    subject: git(sourceRoot, ['log', '-1', '--format=%s', PINNED_HEAD]),
-    targetDigest: digestDirectory(targetRoot),
-    copiedAt: new Date().toISOString()
+    repository: manifest.repository,
+    remote: manifest.remote,
+    branch: manifest.branch,
+    head,
+    subject: git(targetRoot, ['log', '-1', '--format=%s', head]),
+    digest,
+    action,
+    syncedAt: new Date().toISOString()
   }
   fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`)
-  process.stdout.write(`[COPY] ${sourceRoot}@${PINNED_HEAD.slice(0, 7)} -> flow-source/\n`)
+  fs.writeFileSync(lockPath, `${JSON.stringify({ head, digest }, null, 2)}\n`)
 }
 
 main()
