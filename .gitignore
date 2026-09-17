@@ -15,7 +15,11 @@
 /executor-service/node_modules/
 /executor-service/dist/
 /executor-service/page/dist/
+# flow-source 是按清单 git 同步的检出目录；同步元数据每次都会变，
+# 属于本机运行状态而不是源码，因此不跟踪（事实由 flow-source-manifest.json 固定）。
 /executor-service/flow-source/
+/executor-service/flow-source.json
+/executor-service/flow-source.lock.json
 
 *.tsbuildinfo
 
