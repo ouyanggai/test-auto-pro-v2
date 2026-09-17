@@ -161,6 +161,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 - 后端：Go 单体，一个二进制进程；F-000 使用标准库 `net/http`。
 - 包管理：pnpm。
 - 本地端口：前端 `19000`，配置表单运行时 `19001`，后端 `19080`，执行服务 `19011`；前端开发服务器将 `/api` 代理到后端。
+- 四个服务都监听 `0.0.0.0`，因此除 `127.0.0.1` 外也可用本机局域网 IP 访问（便于同一网络内的浏览器与手工核对）。后端默认地址为 `0.0.0.0:19080`，可用 `TEST_AUTO_PRO_SERVER_ADDR` 覆盖。
 - Go module：`test-auto-pro-v2`。
 
 主应用不采用 Vben Admin、Element Plus 或其他中后台应用基座，也不直接混用 Vue 2 组件；历史 PRD 中相反描述已被本文件取代。
@@ -169,9 +170,10 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 
 - 根目录 `package.json` 仅提供全栈开发与检查命令；Go 依赖仍只由 `go.mod` 管理。
 - `pnpm-workspace.yaml` 包含 `web`、`form-runtime` 与 `executor-service`；从根目录执行 `pnpm install` 仍只生成一个 `pnpm-lock.yaml`。配置侧与执行侧不得互相引用源码别名或构建产物目录。
-- 前端在一个前台终端执行 `pnpm dev:f`，仅启动主 Vue 3 应用并监听 `127.0.0.1:19000`；表单运行时在独立前台终端执行 `pnpm dev:form`，监听 `127.0.0.1:19001` 并提供热更新，主应用通过固定 iframe 地址使用它。
-- 执行服务在独立前台终端启动，监听 `127.0.0.1:19011`；Go 不托管该进程。未启动时七个表单动作写前阻塞，配置页仍可用。
+- 前端在一个前台终端执行 `pnpm dev:f`，仅启动主 Vue 3 应用并监听 `0.0.0.0:19000`；表单运行时在独立前台终端执行 `pnpm dev:form`，监听 `0.0.0.0:19001` 并提供热更新，主应用通过固定 iframe 地址使用它。
+- 执行服务在独立前台终端启动，监听 `0.0.0.0:19011`；Go 不托管该进程。未启动时七个表单动作写前阻塞，配置页仍可用。
 - 后端在另一个前台终端执行 `pnpm dev:b`，实际命令为 `go tool air -c .air.toml`。Air 固定为 Go 1.25 tool dependency，构建 `cmd/server` 到被忽略的 `.runtime/`。
+- `.air.toml` 的 air 产物必须带 `.exe` 后缀（构建到 `.runtime/server.exe`）：Windows 的 CMD 只执行 `.exe`，无后缀文件会直接报「CMD will not recognize non .exe file for execution」并以退出码 0 静默结束，表现为 `19080` 从不监听。该后缀在 macOS/Linux 上同样可执行，且不使用 air 的 `{{ if }}` 模板条件（条件表达式经 PowerShell 调用链会被当成语法解析而失败）。
 - 前台进程的日志留在各自终端，用户通过 `Ctrl+C` 停止；不使用后台守护、PID 文件、`concurrently` 或后台重启命令。
 - `.air.toml` 只监听项目 Go 源码，排除 `.git`、`.runtime`、根目录 `node_modules`、`web`、`form-runtime`、`executor-service`、`参考代码`、`test`、`docs` 和历史资料。
 

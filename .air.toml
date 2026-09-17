@@ -2,10 +2,14 @@ root = "."
 tmp_dir = ".runtime/air"
 
 [build]
-  cmd = "go build -o .runtime/server ./cmd/server"
-  entrypoint = [".runtime/server"]
+  # Windows 的 CMD 只执行 .exe，无后缀产物会直接报「CMD will not recognize non .exe file
+  # for execution」并静默退出（实测 air 打印 Process Exit with Code 0，但 19080 从不监听）。
+  # 这里直接输出带 .exe 的名字：Windows 认，macOS/Linux 也照常执行，
+  # 不需要 air 的模板条件（条件表达式在 PowerShell 调用链里会被当成语法解析而失败）。
+  cmd = "go build -o .runtime/server.exe ./cmd/server"
+  entrypoint = [".runtime/server.exe"]
   include_ext = ["go"]
-  exclude_dir = [".git", ".runtime", "node_modules", "参考代码", "web", "test", "docs", "重构指南"]
+  exclude_dir = [".git", ".runtime", "node_modules", "参考代码", "web", "test", "docs", "重构指南", "executor-service", "form-runtime", "logs"]
   exclude_regex = ["_test\\.go"]
   delay = 300
   stop_on_error = true
