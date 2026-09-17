@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,10 @@ func f036BoundTemplateID(t *testing.T) string {
 // f036LoadDotEnv 在进程环境缺失键时从 .env.local 补充（go test 不会自动加载本地环境文件）。
 // go test 的工作目录是包目录，这里从当前目录向上找到仓库根的 .env.local；
 // 只补进程内环境变量，不打印任何值。
+//
+// 必须用 filepath.Dir/os.Stat 而不是手写分隔符切分：Windows 上路径分隔符是 `\`，
+// 旧实现的 strings.LastIndex(dir, "/") 在 Windows 上返回 -1，切片 dir[:-1] 会直接 panic，
+// 让整个 L1/L2 验证台在 Windows 上不可用。
 func f036LoadDotEnv(t *testing.T) {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -43,13 +48,13 @@ func f036LoadDotEnv(t *testing.T) {
 		return
 	}
 	for i := 0; i < 6; i++ {
-		raw, err := os.ReadFile(dir + "/.env.local")
+		raw, err := os.ReadFile(filepath.Join(dir, ".env.local"))
 		if err == nil {
 			f036ApplyDotEnv(raw)
 			return
 		}
-		parent := dir[:strings.LastIndex(dir, "/")]
-		if parent == "" || parent == dir {
+		parent := filepath.Dir(dir)
+		if parent == dir {
 			return
 		}
 		dir = parent
@@ -57,6 +62,8 @@ func f036LoadDotEnv(t *testing.T) {
 }
 
 // f036ApplyDotEnv 解析 .env.local 文本并补充进程环境。
+// 按行切分时同时兼容 CRLF：Windows 上写出的 .env.local 行尾是 \r\n，
+// 不裁剪 \r 会让最后一段值带上不可见回车，导致目标配置读取失败。
 func f036ApplyDotEnv(raw []byte) {
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
@@ -119,6 +126,9 @@ var f036WriteEndpoints = []string{
 
 // saveF036Evidence 把一次验证事实原样落盘到仓库根 docs/auto/evidence/。
 // go test 的工作目录是包目录，这里向上定位仓库根再写。
+//
+// 与 f036LoadDotEnv 同一处 Windows 陷阱：必须用 filepath.Dir/filepath.Join，
+// 手写 "/" 切分在 Windows 上会得到 -1 并 panic。
 func saveF036Evidence(t *testing.T, name string, fact map[string]any) {
 	t.Helper()
 	root, err := os.Getwd()
@@ -127,16 +137,16 @@ func saveF036Evidence(t *testing.T, name string, fact map[string]any) {
 		return
 	}
 	for i := 0; i < 6; i++ {
-		if _, statErr := os.Stat(root + "/.git"); statErr == nil {
+		if _, statErr := os.Stat(filepath.Join(root, ".git")); statErr == nil {
 			break
 		}
-		parent := root[:strings.LastIndex(root, "/")]
-		if parent == "" || parent == root {
+		parent := filepath.Dir(root)
+		if parent == root {
 			break
 		}
 		root = parent
 	}
-	dir := root + "/docs/auto/evidence"
+	dir := filepath.Join(root, "docs", "auto", "evidence")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Logf("证据目录创建失败（不影响断言）：%v", err)
 		return

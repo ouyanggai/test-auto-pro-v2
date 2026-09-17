@@ -1,5 +1,17 @@
 # 当前进度
 
+- 2026-09-17 迁移修复（macOS → Windows）：清掉三处只在 Mac 上成立的路径依赖，并把执行器跑起来。
+  ① `flow-source` 不再复制本机静态目录，改为按 `executor-service/flow-source-manifest.json`
+  直接从固定远端 git 同步（`test`/`bff4ef8`），脚本内零本机绝对路径；幂等（一致时只报告「已是最新」，
+  本地被改脏则重新检出覆盖）。FormMaking 产物经核实不在上游 Git（上游只跟踪
+  `src/lib/vue-form-making/package.json`），改由同步脚本从 `form-runtime/runtime-source` 受控副本
+  补齐并逐字节校验。② 原生 `/flow` 页面产物不再依赖 Mac 上手工产出的 `dist.zip` 与系统 `unzip`，
+  改由新增的 `build-native-page` 在本机真实构建到 `flow-source/dist`（按源码摘要判定是否过期）。
+  ③ `E:\bigsys` 下失效的 worktree 绝对路径已修复：`rsh-cloud-invest-power-system-oygdev2`、
+  `rsh-cloud-invest-power-system-test`、`rsh-cloud-invest-power-system-test`（test-auto-pro 内副本）、
+  `rsh-unified-vue3-web-test`、`rsh-unified-vue3-web-hot-fix` 共 5 个可正常用 git；
+  修复脚本为 `scripts/repair-migrated-worktrees.ps1`（幂等、改写前备份、支持 `-DryRun`）。
+  参考仓库清单远端统一为 SSH（HTTP 远端需凭据，本机未配置会挂住），`make refs-status` 13 个仓库全部可达。
 - 2026-09-17 F-036 第二轮修复后重新 **ready_for_manual**（夜间自主施工）。八个 P1 按真实运行证据闭环，
   六个动作（草稿/提交/暂存/同意/不同意/重提）+ 手动分支选择闭环均有真实写证据（`docs/auto/evidence/`）；
   转发未验证（预算满）；S8 采用方案 B（runtime 仅 FormMaking）属范围变更待用户确认。

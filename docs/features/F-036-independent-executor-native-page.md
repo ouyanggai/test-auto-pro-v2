@@ -93,7 +93,8 @@
 - 2026-09-16：用户要求在 `docs/s2` 按 `docs/s` 结构规划，将页面执行迁到 `executor-service/`，使用独立 `rsh-flow-components` 副本和原生路由装载。本文件从 preparing 进入 `awaiting_approval`。未获明确批准不得写实现代码。
 - 2026-09-16：用户批准开始实现，状态进入 `implementing`。规划文档已提交 `ee519c3`。
 - 2026-09-16 T001：根目录 `executor-service/` 骨架可启动无头 Chromium 并响应 `/health`；workspace 改为独立包；Go 托管路径改为 `executor-service`。
-- 2026-09-16 T002：独立快照来自原项目 `/Volumes/oygsky/bigsys/rsh-flow-components` 的 `test`/`be355ae`（含 FormMaking dist，不自行编译）；不复用 `form-runtime/runtime-source`。后续一键升级与原项目同一套 `sync-manifest`。
+- 2026-09-16 T002：独立快照来自原项目 `rsh-flow-components` 的 `test`/`be355ae`（含 FormMaking dist，不自行编译）；不复用 `form-runtime/runtime-source`。后续一键升级与原项目同一套 `sync-manifest`。
+- 2026-09-17 T002 修订（Windows 迁移）：本机已从 macOS 迁到 Windows，旧实现依赖的 Mac 外接盘绝对路径在本机不存在，`sync-source` 必然失败。flow-source 改为按 `executor-service/flow-source-manifest.json` 直接从固定远端 git 同步（`test`/`bff4ef8`）：HEAD、远端与内容都与清单一致时判定「已是最新」且不重新下载，本地被改动时重新检出覆盖；脚本内不再出现任何本机绝对路径，也不再整体复制静态目录。FormMaking 产物经核实不在上游 Git 里（上游只跟踪 `src/lib/vue-form-making/package.json`），改由同步脚本从 `form-runtime/runtime-source` 的受控副本补齐并逐字节校验，仍不自行编译。参考仓库清单远端同步统一为 SSH（HTTP 远端需要凭据，本机未配置会挂住）。
 - 2026-09-16 T003：`executor-service` 会话管理器每个动作独立 BrowserContext；关闭后拒绝命令，崩溃广播并释放。
 - 2026-09-16 T004：协议升级 `exec-engine/v2`，拒绝 v1；装载不得携带 Go 渲染模板，发起必须带 `auditWay`。
 - 2026-09-16 T005：导航前安装 `page.route()`；转发通道未连接禁止 goto。目标请求转 Go，未登记外部请求本地拒绝。

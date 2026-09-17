@@ -1,10 +1,21 @@
-.PHONY: refs-sync refs-status form-runtime-sync form-runtime-status plan-db-config-sync logs-viewer logs-viewer-stop
+.PHONY: refs-sync refs-status form-runtime-sync form-runtime-status plan-db-config-sync flow-source-sync flow-source-status flow-source-page logs-viewer logs-viewer-stop
 
 refs-sync:
 	@./scripts/reference-repos.sh sync
 
 refs-status:
 	@./scripts/reference-repos.sh status
+
+# flow-source 按 executor-service/flow-source-manifest.json 直接 git 同步，不再复制本机静态目录。
+flow-source-sync:
+	@pnpm --dir executor-service sync-source
+
+flow-source-status:
+	@pnpm --dir executor-service sync-source
+
+# flow-source-page 在本机真实构建原生 /flow 页面产物（不再依赖 macOS 上手工产出的 dist.zip）。
+flow-source-page:
+	@pnpm --dir executor-service build-native-page
 
 form-runtime-sync:
 	@./scripts/form-runtime-maintenance.sh sync
