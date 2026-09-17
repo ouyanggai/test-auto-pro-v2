@@ -1,6 +1,6 @@
 // F-036 L1 装载台：真实装载发起/详情原生页面（只读、无写），断言捕获链与模板精确选择。
 // 环境门禁：TEST_AUTO_PRO_TARGET_ACCOUNT + RUNTIME_EXECUTOR_URL 未配置时跳过并打印原因。
-// 证据落盘：docs/auto/evidence/<时间戳>-L1-<场景>.json（施工令 §5.4）。
+// 证据落盘：docs/auto/evidence-round2/<时间戳>-L1-<场景>.json。
 package runtimeexec_test
 
 import (
@@ -18,8 +18,8 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/config"
 	"test-auto-pro-v2/internal/repository"
-	"test-auto-pro-v2/internal/runtimeexec"
 	mysql "test-auto-pro-v2/internal/repository/mysql"
+	"test-auto-pro-v2/internal/runtimeexec"
 	"test-auto-pro-v2/internal/session"
 )
 
@@ -93,7 +93,7 @@ func realLoopDeps(t *testing.T) (*runtimeexec.Client, *target.Client, func(conte
 	account := os.Getenv("TEST_AUTO_PRO_TARGET_ACCOUNT")
 	baseURL := os.Getenv("RUNTIME_EXECUTOR_URL")
 	if account == "" || baseURL == "" {
-		t.Skip("未配置 TEST_AUTO_PRO_TARGET_ACCOUNT / RUNTIME_EXECUTOR_URL，跳过真实闭环验证")
+		f036SkipOrFail(t, "未配置 TEST_AUTO_PRO_TARGET_ACCOUNT / RUNTIME_EXECUTOR_URL，跳过真实闭环验证")
 	}
 	cfg := config.LoadTargetConfig()
 	if missing := cfg.MissingRequired(); len(missing) != 0 {
@@ -115,6 +115,15 @@ func realLoopDeps(t *testing.T) (*runtimeexec.Client, *target.Client, func(conte
 	return rc, client, sessions.Current
 }
 
+// f036SkipOrFail 在普通本地检查中明确跳过；强制真实门禁开启时把同一条件升级为失败。
+func f036SkipOrFail(t *testing.T, reason string) {
+	t.Helper()
+	if os.Getenv("TEST_AUTO_PRO_F036_REQUIRE_REAL") == "1" {
+		t.Fatal(reason)
+	}
+	t.Skip(reason)
+}
+
 // f036WriteEndpoints 是七个动作的主写端点：装载台断言它们一次都不允许出现。
 var f036WriteEndpoints = []string{
 	"/web/flowInstanceApi/submit",
@@ -124,7 +133,7 @@ var f036WriteEndpoints = []string{
 	"/web/flowInstanceApi/transpond",
 }
 
-// saveF036Evidence 把一次验证事实原样落盘到仓库根 docs/auto/evidence/。
+// saveF036Evidence 把一次验证事实原样落盘到仓库根 docs/auto/evidence-round2/。
 // go test 的工作目录是包目录，这里向上定位仓库根再写。
 //
 // 与 f036LoadDotEnv 同一处 Windows 陷阱：必须用 filepath.Dir/filepath.Join，
@@ -146,7 +155,7 @@ func saveF036Evidence(t *testing.T, name string, fact map[string]any) {
 		}
 		root = parent
 	}
-	dir := filepath.Join(root, "docs", "auto", "evidence")
+	dir := filepath.Join(root, "docs", "auto", "evidence-round2")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Logf("证据目录创建失败（不影响断言）：%v", err)
 		return
@@ -200,12 +209,12 @@ func f036LoadOnce(ctx context.Context, t *testing.T, rc *runtimeexec.Client, cur
 
 // f036SessionTrace 调执行服务 /status 读取会话捕获的目标请求清单（只读观测口）。
 func f036SessionTrace(t *testing.T, sessionID string) []struct {
-	Seq        int    `json:"seq"`
-	Method     string `json:"method"`
-	URL        string `json:"url"`
-	State      string `json:"state"`
+	Seq         int    `json:"seq"`
+	Method      string `json:"method"`
+	URL         string `json:"url"`
+	State       string `json:"state"`
 	AbortReason string `json:"abortReason"`
-	HTTPStatus int    `json:"httpStatus"`
+	HTTPStatus  int    `json:"httpStatus"`
 } {
 	t.Helper()
 	base := strings.TrimRight(os.Getenv("RUNTIME_EXECUTOR_URL"), "/")
@@ -221,12 +230,12 @@ func f036SessionTrace(t *testing.T, sessionID string) []struct {
 	var parsed struct {
 		Trace struct {
 			Entries []struct {
-				Seq        int    `json:"seq"`
-				Method     string `json:"method"`
-				URL        string `json:"url"`
-				State      string `json:"state"`
+				Seq         int    `json:"seq"`
+				Method      string `json:"method"`
+				URL         string `json:"url"`
+				State       string `json:"state"`
 				AbortReason string `json:"abortReason"`
-				HTTPStatus int    `json:"httpStatus"`
+				HTTPStatus  int    `json:"httpStatus"`
 			} `json:"entries"`
 		} `json:"trace"`
 	}
@@ -244,7 +253,7 @@ func TestF036RealLoadLoopInitiate(t *testing.T) {
 	defer cancel()
 	if err := rc.Health(ctx); err != nil {
 		// 执行服务未启动属可跳过场景（与未配置环境变量同类）：真实闭环需要本地服务在跑。
-		t.Skipf("执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证：%v", err)
+		f036SkipOrFail(t, fmt.Sprintf("执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证：%v", err))
 	}
 
 	boundID := f036BoundTemplateID(t)
@@ -345,7 +354,7 @@ func TestF036RealLoadLoopInitiateBadTemplate(t *testing.T) {
 	defer cancel()
 	if err := rc.Health(ctx); err != nil {
 		// 执行服务未启动属可跳过场景（与未配置环境变量同类）：真实闭环需要本地服务在跑。
-		t.Skipf("执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证：%v", err)
+		f036SkipOrFail(t, fmt.Sprintf("执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证：%v", err))
 	}
 	boundID := f036BoundTemplateID(t)
 	s, err := current(ctx, account)
@@ -357,7 +366,7 @@ func TestF036RealLoadLoopInitiateBadTemplate(t *testing.T) {
 		t.Fatalf("读取目标模板配置失败：%v", err)
 	}
 	load, err := runtimeexec.BuildLoadPayload(runtimeexec.LoadInput{
-		Mode:           runtimeexec.LoadModeInitiate,
+		Mode: runtimeexec.LoadModeInitiate,
 		Session: runtimeexec.SessionFacts{
 			UserID: s.UserID, CompanyID: s.CompanyID, DepartmentID: s.DepartmentID,
 			CustomerCode: s.CustomerCode, Account: s.Summary.Account, DisplayName: s.Summary.DisplayName,
@@ -414,7 +423,7 @@ func TestF036RealLoadLoopDetail(t *testing.T) {
 	defer cancel()
 	if err := rc.Health(ctx); err != nil {
 		// 执行服务未启动属可跳过场景（与未配置环境变量同类）：真实闭环需要本地服务在跑。
-		t.Skipf("执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证：%v", err)
+		f036SkipOrFail(t, fmt.Sprintf("执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证：%v", err))
 	}
 
 	boundID := f036BoundTemplateID(t)

@@ -1,12 +1,15 @@
 // F-036 L2 动作台：单个 runtime 动作的真实写验证（施工令 §5.2）。
 // 由环境变量驱动，避免包内默认发起真实写：
-//   TEST_AUTO_PRO_F036_ACTION   必填（save_draft/submit/storage_form_data/approve/reject/resubmit/forward），为空跳过
-//   TEST_AUTO_PRO_F036_INSTANCE 审批族/重提/转发的实例 ID
-//   TEST_AUTO_PRO_F036_JOB_TASK 审批族的任务 ID
-//   TEST_AUTO_PRO_F036_NODE     审批族的节点代理 ID
-//   TEST_AUTO_PRO_F036_RECEIVER 转发接收人用户 ID
+//
+//	TEST_AUTO_PRO_F036_ACTION   必填（save_draft/submit/storage_form_data/approve/reject/resubmit/forward），为空跳过
+//	TEST_AUTO_PRO_F036_INSTANCE 审批族/重提/转发的实例 ID
+//	TEST_AUTO_PRO_F036_JOB_TASK 审批族的任务 ID
+//	TEST_AUTO_PRO_F036_NODE     审批族的节点代理 ID
+//	TEST_AUTO_PRO_F036_RECEIVER 转发接收人用户 ID
+//	TEST_AUTO_PRO_F036_FORWARD_CHECKLIST 转发勾选项，逗号分隔；默认 fuyan
+//
 // 断言三件事同时命中：组件链+方法调用事实（result.requestTrace 之外的动作事实）、
-// 写端点出现在 RequestTrace、写后目标事实核验；证据落盘 docs/auto/evidence/。
+// 写端点出现在 RequestTrace、写后目标事实核验；证据落盘 docs/auto/evidence-round2/。
 package runtimeexec_test
 
 import (
@@ -47,6 +50,7 @@ func f036ReadbackNewInstance(ctx context.Context, t *testing.T, client *target.C
 	var summary struct {
 		DebugWrites []struct {
 			IsPermissionCheck   bool   `json:"isPermissionCheck"`
+			ResponseBody        string `json:"responseBody"`
 			ResponseBodyExcerpt string `json:"responseBodyExcerpt"`
 		} `json:"debugWrites"`
 	}
@@ -60,7 +64,11 @@ func f036ReadbackNewInstance(ctx context.Context, t *testing.T, client *target.C
 		if write.IsPermissionCheck {
 			continue
 		}
-		match := regexp.MustCompile(`"id":"([0-9a-f]{32})"`).FindStringSubmatch(write.ResponseBodyExcerpt)
+		responseBody := write.ResponseBody
+		if responseBody == "" {
+			responseBody = write.ResponseBodyExcerpt
+		}
+		match := regexp.MustCompile(`"id":"([0-9a-f]{32})"`).FindStringSubmatch(responseBody)
 		if len(match) == 2 {
 			instanceID = match[1]
 			break
@@ -82,7 +90,7 @@ func TestF036RealActionLoop(t *testing.T) {
 	account := os.Getenv("TEST_AUTO_PRO_TARGET_ACCOUNT")
 	action := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_ACTION"))
 	if action == "" {
-		t.Skip("未配置 TEST_AUTO_PRO_F036_ACTION，跳过真实写动作验证")
+		f036SkipOrFail(t, "未配置 TEST_AUTO_PRO_F036_ACTION，跳过真实写动作验证")
 	}
 	endpoint := f036ExpectedWriteEndpoint(action)
 	if endpoint == "" {
@@ -92,7 +100,7 @@ func TestF036RealActionLoop(t *testing.T) {
 	defer cancel()
 	if err := rc.Health(ctx); err != nil {
 		// 执行服务未启动属可跳过场景（与未配置环境变量同类）：真实闭环需要本地服务在跑。
-		t.Skipf("执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证：%v", err)
+		f036SkipOrFail(t, "执行服务不可用（pnpm --dir executor-service start 可启动），跳过真实闭环验证："+err.Error())
 	}
 
 	s, err := current(ctx, account)
@@ -163,7 +171,11 @@ func TestF036RealActionLoop(t *testing.T) {
 	receiverID := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_RECEIVER"))
 	switch action {
 	case "save_draft", "submit":
-		// 新发起链：无实例事实，由目标在页面上自装载模板。
+		// save_draft 传入已有实例时验证第二次保存走 edit 且不产生副本；submit 保持新发起。
+		if action == "save_draft" && instanceID != "" {
+			request.InstanceID = instanceID
+			request.LoadMode = runtimeexec.LoadModeEdit
+		}
 	case "storage_form_data", "approve", "reject":
 		request.InstanceID = instanceID
 		request.NodeProxyID = nodeProxyID
@@ -193,11 +205,30 @@ func TestF036RealActionLoop(t *testing.T) {
 		}
 	case "forward":
 		request.InstanceID = instanceID
-		request.JobTaskID = jobTaskID
 		request.NodeProxyID = nodeProxyID
 		request.ReceiverID = receiverID
 		if instanceID == "" || receiverID == "" {
 			t.Fatalf("动作 forward 需要 TEST_AUTO_PRO_F036_INSTANCE / TEST_AUTO_PRO_F036_RECEIVER")
+		}
+		if jobTaskID == "" {
+			snapshot, snapErr := client.FindTaskSnapshot(ctx, session3, instanceID, nodeProxyID, "pending")
+			if snapErr != nil {
+				t.Fatalf("解析转发待办任务失败：%v", snapErr)
+			}
+			jobTaskID = strings.TrimSpace(snapshot.JobTaskID)
+			if nodeProxyID == "" {
+				request.NodeProxyID = snapshot.FlowNodeProxyID
+			}
+		}
+		if jobTaskID == "" {
+			t.Fatalf("目标上已无可转发的当前待办任务")
+		}
+		request.JobTaskID = jobTaskID
+		request.LoadMode = runtimeexec.LoadModeForward
+		request.ForwardTab = "backlog"
+		request.ForwardCheckList = []string{"fuyan"}
+		if configured := strings.TrimSpace(os.Getenv("TEST_AUTO_PRO_F036_FORWARD_CHECKLIST")); configured != "" {
+			request.ForwardCheckList = strings.Split(configured, ",")
 		}
 	}
 
@@ -240,11 +271,18 @@ func TestF036RealActionLoop(t *testing.T) {
 			t.Fatalf("SELF_AUDIT 需要 TEST_AUTO_PRO_F036_NODE（下一节点代理 ID）")
 		}
 	}
+	formBefore := map[string]any{}
+	if instanceID != "" {
+		if currentData, readErr := client.ReadInstanceCurrentData(ctx, session3, instanceID); readErr == nil {
+			formBefore = currentData
+		}
+	}
 	exec := runtimeexec.NewRuntimeExecutor(rc)
 	res, err := exec.RunAction(ctx, request)
 	fact := map[string]any{
 		"action": action, "account": account, "instanceId": instanceID,
 		"jobTaskId": jobTaskID, "toolFlowName": request.ToolFlowName,
+		"formBefore": formBefore, "fieldCountBefore": len(formBefore),
 	}
 	if err != nil {
 		fact["error"] = err.Error()
@@ -274,6 +312,10 @@ func TestF036RealActionLoop(t *testing.T) {
 		saveF036Evidence(t, "L2-"+action+"-missing-endpoint", fact)
 		t.Fatalf("请求轨迹缺少期望写端点 %s：%s", endpoint, traceText)
 	}
+	if action == "forward" && strings.Contains(strings.Join(request.ForwardCheckList, ","), "fuyan") && !strings.Contains(traceText, "/web/flowInstancePostscript/save") {
+		saveF036Evidence(t, "L2-"+action+"-missing-postscript", fact)
+		t.Fatalf("转发勾选附言后请求轨迹缺少 /web/flowInstancePostscript/save")
+	}
 
 	// 断言 4：写后目标事实核验（只读）。
 	session2, err := current(ctx, account)
@@ -288,6 +330,10 @@ func TestF036RealActionLoop(t *testing.T) {
 		if readback["extractedInstanceId"] == "" {
 			saveF036Evidence(t, "L2-"+action+"-readback-no-id", fact)
 			t.Fatalf("写响应中未提取到实例 ID，无法完成写后核验")
+		}
+		if instanceID != "" && readback["extractedInstanceId"] != instanceID {
+			saveF036Evidence(t, "L2-"+action+"-duplicate-instance", fact)
+			t.Fatalf("后续草稿保存返回了不同实例：原实例 %s，新实例 %v", instanceID, readback["extractedInstanceId"])
 		}
 	case "storage_form_data":
 		stored, found, err := client.ReadStorageFormData(ctx, session2, instanceID, nodeProxyID)
@@ -316,6 +362,22 @@ func TestF036RealActionLoop(t *testing.T) {
 			t.Fatalf("实例事实读取失败：%v", err)
 		}
 		readback["instanceFacts"] = facts
+	}
+	formAfter := map[string]any{}
+	readbackInstanceID := instanceID
+	if readbackInstanceID == "" {
+		readbackInstanceID, _ = readback["extractedInstanceId"].(string)
+	}
+	if readbackInstanceID != "" {
+		if currentData, readErr := client.ReadInstanceCurrentData(ctx, session2, readbackInstanceID); readErr == nil {
+			formAfter = currentData
+		}
+	}
+	fact["formAfter"] = formAfter
+	fact["fieldCountAfter"] = len(formAfter)
+	if (action == "storage_form_data" || action == "approve" || action == "reject") && len(formBefore) > 0 && len(formAfter) < len(formBefore) {
+		saveF036Evidence(t, "L2-"+action+"-form-shrunk", fact)
+		t.Fatalf("审批族动作写后表单字段减少：写前 %d，写后 %d", len(formBefore), len(formAfter))
 	}
 	fact["readback"] = readback
 	saveF036Evidence(t, "L2-"+action, fact)

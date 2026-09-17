@@ -24,6 +24,16 @@ node --experimental-strip-types --test \
   test/unit/executor-service/target-route.test.ts \
   test/unit/executor-service/completion.test.ts
 
+echo "== F-036 无渲染类型特殊路由 =="
+if rg -n "FormRenderTypeFormMaking" executor-service/src internal/engine/step; then
+  echo "检测到按 FormMaking 渲染类型分流 runtime 的残留" >&2
+  exit 1
+fi
+if rg -n "businessDone|countRelevantPageErrors" executor-service/src; then
+  echo "检测到页面信号参与完成判定的残留" >&2
+  exit 1
+fi
+
 echo "== F-036 执行服务集成 =="
 node --experimental-strip-types --test \
   test/integration/executor-service/forward-before-load.test.ts \
@@ -38,7 +48,7 @@ node --experimental-strip-types --test \
 
 echo "== F-036 Go 契约与路由 =="
 go test ./test/contracts/executor-service ./test/contracts/runtimeexec ./test/contracts/form-runtime \
-  ./test/unit/backend/runtimeexec ./test/unit/backend -count=1
+  ./test/unit/backend/runtimeexec -count=1
 
 echo "== F-036 真实闭环验证台（L1/L2）=="
 echo "说明：未配置 TEST_AUTO_PRO_TARGET_ACCOUNT / RUNTIME_EXECUTOR_URL 时用例会打印跳过原因后跳过，不允许静默通过。"

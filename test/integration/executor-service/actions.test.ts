@@ -29,6 +29,14 @@ test('保存草稿走 FlowDialog.sumbitFlow("draft")，不提前 submit', () => 
   assert.match(result.method, /draft/)
 })
 
+test('已有实例再次保存草稿走 ExamineOpinion.saveSubmit("save")', () => {
+  const calls: string[] = []
+  const tree = makeTree('flowDetail', 'ExamineOpinion', { saveSubmit: (kind: unknown) => { calls.push(String(kind)) } })
+  const result = nativeDispatch(tree, { action: 'save_draft', loadMode: 'edit' })
+  assert.equal(result.component, 'ExamineOpinion')
+  assert.deepEqual(calls, ['save'])
+})
+
 test('提交走 sumbitFlow("submit")', () => {
   const calls: string[] = []
   const tree = makeTree('InitFlowDialog', 'FlowDialog', { sumbitFlow: (kind: unknown) => { calls.push(String(kind)) } })
@@ -45,6 +53,21 @@ test('暂存走 temporaryStorage，不走同意或提交', () => {
   })
   nativeDispatch(tree, { action: 'storage_form_data' })
   assert.deepEqual(calls, ['storage'])
+})
+
+test('无表单暂存入口回退到 temporarySaveBizData', () => {
+  const calls: string[] = []
+  const tree = makeTree('flowDetail', 'ExamineOpinion', { temporarySaveBizData: () => { calls.push('custom-storage') } })
+  nativeDispatch(tree, { action: 'storage_form_data' })
+  assert.deepEqual(calls, ['custom-storage'])
+})
+
+test('转发调用列表组件 confirmTranspond', () => {
+  const calls: string[] = []
+  const host = { $options: { name: 'Backlog' }, confirmTranspond: () => { calls.push('forward') } }
+  const result = nativeDispatch({ forwardList: host }, { action: 'forward', loadMode: 'forward' })
+  assert.equal(result.method, 'confirmTranspond()')
+  assert.deepEqual(calls, ['forward'])
 })
 
 test('同意/不同意走 submitCheckBefore 原生入口且互不误触', () => {

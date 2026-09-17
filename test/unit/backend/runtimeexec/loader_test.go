@@ -85,6 +85,7 @@ func TestBuildLoadPayloadCarriesProxyAndForwardFacts(t *testing.T) {
 		Session:                      runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "处理人"},
 		ToolFlowName:                 "工具流程",
 		InstanceID:                   "instance-1",
+		JobTaskID:                    "task-1",
 		FormProxyID:                  "form-proxy-1",
 		FlowProxyID:                  "flow-proxy-1",
 		SelectFlowType:               "employee_leave",
@@ -94,6 +95,7 @@ func TestBuildLoadPayloadCarriesProxyAndForwardFacts(t *testing.T) {
 		ReceiverID:                   "receiver-1",
 		ReceiverName:                 "接收人",
 		ForwardCheckList:             []string{"fuyan", "yijian"},
+		ForwardTab:                   "backlog",
 	}, values)
 	if err != nil {
 		t.Fatalf("合法转发装载被拒绝：%v", err)
@@ -107,7 +109,7 @@ func TestBuildLoadPayloadCarriesProxyAndForwardFacts(t *testing.T) {
 		`"formProxyId":"form-proxy-1"`, `"flowProxyId":"flow-proxy-1"`,
 		`"selectFlowType":"employee_leave"`, `"flowNodeType":"run_node_choose"`,
 		`"nextNodeProxyId":"next-node-1"`, `"flowInstanceBizRelevanceList"`,
-		`"receiverId":"receiver-1"`, `"forwardCheckList":["fuyan","yijian"]`,
+		`"receiverId":"receiver-1"`, `"forwardCheckList":["fuyan","yijian"]`, `"forwardTab":"backlog"`,
 	} {
 		if !strings.Contains(encoded, want) {
 			t.Fatalf("转发装载载荷缺少 %s：%s", want, encoded)
@@ -115,7 +117,7 @@ func TestBuildLoadPayloadCarriesProxyAndForwardFacts(t *testing.T) {
 	}
 
 	forwardBase := runtimeexec.LoadInput{
-		Mode: runtimeexec.LoadModeForward, ToolFlowName: "工具流程", InstanceID: "instance-1", ReceiverID: "receiver-1",
+		Mode: runtimeexec.LoadModeForward, ToolFlowName: "工具流程", InstanceID: "instance-1", JobTaskID: "task-1", ReceiverID: "receiver-1",
 	}
 	if _, err := runtimeexec.BuildLoadPayload(forwardBase, values); err != nil {
 		t.Fatalf("带接收人的转发装载应通过：%v", err)

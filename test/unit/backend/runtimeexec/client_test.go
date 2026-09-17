@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -425,5 +426,62 @@ func TestClientHealthFailsWhenServiceStopped(t *testing.T) {
 	defer cancel()
 	if err := client.Health(ctx); err == nil {
 		t.Fatal("执行服务未启动时健康检查必须失败")
+	}
+}
+
+// TestClientPrewarmAndTenCommandsReuseOneConnection 验证预热与连续十次命令共用同一条通道。
+func TestClientPrewarmAndTenCommandsReuseOneConnection(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	var mu sync.Mutex
+	upgrades := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/runtime/session/sess-reuse/execute", func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		upgrades++
+		mu.Unlock()
+		defer ws.Close()
+		for {
+			_, raw, readErr := ws.ReadMessage()
+			if readErr != nil {
+				return
+			}
+			env, validateErr := runtimeexec.ValidateMessage(raw)
+			if validateErr != nil || env.Kind != runtimeexec.KindExecute {
+				continue
+			}
+			_ = ws.WriteJSON(map[string]any{
+				"version": runtimeexec.ProtocolVersion, "kind": "result", "requestId": env.RequestID,
+				"sessionId": env.SessionID, "runId": env.RunID, "pathRunId": env.PathRunID, "stepId": env.StepID,
+				"payload": map[string]any{"status": "success"},
+			})
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client, err := runtimeexec.NewClient(server.URL, &fakeForwarder{}, &fakeSessions{current: target.Session{SID: "sid"}})
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	closeWS, err := client.Prewarm(context.Background(), "sess-reuse", "acct")
+	if err != nil {
+		t.Fatalf("预热失败：%v", err)
+	}
+	defer closeWS()
+	for index := 0; index < 10; index++ {
+		cmd := executeCommand()
+		cmd.SessionID = "sess-reuse"
+		cmd.RequestID = fmt.Sprintf("req-%d", index)
+		if _, executeErr := client.Execute(context.Background(), "sess-reuse", "acct", cmd, runtimeexec.ExecuteCallbacks{}); executeErr != nil {
+			t.Fatalf("第 %d 次执行失败：%v", index+1, executeErr)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if upgrades != 1 {
+		t.Fatalf("预热与十次执行必须只建立一条连接，实际 %d 条", upgrades)
 	}
 }

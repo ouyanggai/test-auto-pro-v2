@@ -81,6 +81,7 @@ export interface MessageEnvelope {
 // nextNodeAuditors：本次动作会跨过的 run_node_choose 节点人员（nodeProxyId/bizId/name/auditDetailType=personnel）。
 export interface ExecutePayload {
   action: RuntimeAction
+  loadMode?: string
   instanceId?: string
   jobTaskId?: string
   nodeProxyId?: string
@@ -228,4 +229,3 @@ export function encodeEnvelope (kind: MessageKind, session: { sessionId: string,
     payload
   }
 }
-

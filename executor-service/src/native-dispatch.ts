@@ -6,11 +6,13 @@
 export interface NativeCaptured {
   initFlow?: unknown
   flowDetail?: unknown
+  forwardList?: unknown
 }
 
 // DispatchInput 是动作分发输入：action 必填，其余按动作取用。
 export interface DispatchInput {
   action: string
+  loadMode?: string
   auditDesc?: string
   nextNodeAuditors?: Array<{ nodeProxyId?: string, bizId?: string, name?: string, auditDetailType?: string }>
 }
@@ -44,16 +46,29 @@ export function findUniqueComponent (container: VNode, want: string): VNode {
 //   审批意见先写 approveForm.approveMessage；人员先并入 nextAuditorList（空人员拒绝）；
 //   未知动作/缺失方法/组件不唯一一律抛错，绝不静默跳过。
 export function nativeDispatch (native: NativeCaptured | undefined, input: DispatchInput): DispatchResult {
-  const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
+  // 函数会以源码串注入页面执行，必须自包含，不能依赖模块闭包里的辅助函数。
+  const find = (root: VNode, want: string): VNode => {
+    const found: VNode[] = []
+    const walk = (node: VNode): void => {
+      if (String(node?.$options?.name ?? '') === want) { found.push(node); return }
+      for (const child of node.$children ?? []) walk(child)
+    }
+    walk(root)
+    if (found.length !== 1) throw new Error(`组件 ${want} 命中 ${found.length} 个（应为唯一），拒绝执行`)
+    return found[0]!
+  }
+  const container = (input.action === 'forward' ? native?.forwardList : (native?.initFlow || native?.flowDetail)) as VNode | undefined
   if (!container) throw new Error('原生宿主未捕获，不能执行动作')
   const action = input.action
   let component: VNode
   let method = ''
-  if (action === 'save_draft' || action === 'submit') {
-    component = findUniqueComponent(container, 'FlowDialog')
+  if ((action === 'save_draft' && input.loadMode !== 'edit') || action === 'submit') {
+    component = find(container, 'FlowDialog')
     if (typeof component.sumbitFlow !== 'function') throw new Error('FlowDialog 缺少 sumbitFlow 方法')
+  } else if (action === 'forward') {
+    component = container
   } else {
-    component = findUniqueComponent(container, 'ExamineOpinion')
+    component = find(container, 'ExamineOpinion')
   }
   const auditDesc = String(input.auditDesc ?? '')
   if (auditDesc !== '' && component.approveForm && typeof component.approveForm === 'object') {
@@ -73,17 +88,29 @@ export function nativeDispatch (native: NativeCaptured | undefined, input: Dispa
   }
   switch (action) {
     case 'save_draft':
-      method = 'sumbitFlow("draft")'
-      ;(component.sumbitFlow as (kind: string) => unknown)('draft')
+      if (input.loadMode === 'edit') {
+        if (typeof component.saveSubmit !== 'function') throw new Error('ExamineOpinion 缺少 saveSubmit 方法')
+        method = 'saveSubmit("save")'
+        ;(component.saveSubmit as (kind: string) => unknown)('save')
+      } else {
+        method = 'sumbitFlow("draft")'
+        ;(component.sumbitFlow as (kind: string) => unknown)('draft')
+      }
       break
     case 'submit':
       method = 'sumbitFlow("submit")'
       ;(component.sumbitFlow as (kind: string) => unknown)('submit')
       break
     case 'storage_form_data':
-      if (typeof component.temporaryStorage !== 'function') throw new Error('ExamineOpinion 缺少 temporaryStorage 方法')
-      method = 'temporaryStorage()'
-      ;(component.temporaryStorage as () => unknown)()
+      if (typeof component.temporaryStorage === 'function') {
+        method = 'temporaryStorage()'
+        ;(component.temporaryStorage as () => unknown)()
+      } else if (typeof component.temporarySaveBizData === 'function') {
+        method = 'temporarySaveBizData()'
+        ;(component.temporarySaveBizData as () => unknown)()
+      } else {
+        throw new Error('ExamineOpinion 缺少 temporaryStorage/temporarySaveBizData 方法')
+      }
       break
     case 'approve':
     case 'reject':
@@ -97,6 +124,11 @@ export function nativeDispatch (native: NativeCaptured | undefined, input: Dispa
       if (typeof component.saveSubmit !== 'function') throw new Error('ExamineOpinion 缺少 saveSubmit 方法')
       method = 'saveSubmit("submit")'
       ;(component.saveSubmit as (type: string) => unknown)('submit')
+      break
+    case 'forward':
+      if (typeof component.confirmTranspond !== 'function') throw new Error('转发列表组件缺少 confirmTranspond 方法')
+      method = 'confirmTranspond()'
+      ;(component.confirmTranspond as () => unknown)()
       break
     default:
       throw new Error(`动作 ${action} 尚未接入原生组件分发`)
@@ -122,9 +154,19 @@ export function nativeChoiceContinue (
   choice: ChoiceContinueChoice,
   choiceError: Record<string, unknown> | null
 ): DispatchResult {
+  const find = (root: VNode, want: string): VNode => {
+    const found: VNode[] = []
+    const walk = (node: VNode): void => {
+      if (String(node?.$options?.name ?? '') === want) { found.push(node); return }
+      for (const child of node.$children ?? []) walk(child)
+    }
+    walk(root)
+    if (found.length !== 1) throw new Error(`组件 ${want} 命中 ${found.length} 个（应为唯一），拒绝执行`)
+    return found[0]!
+  }
   const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
   if (!container) throw new Error('原生宿主未捕获，不能继续选择')
-  const opinion = findUniqueComponent(container, 'ExamineOpinion')
+  const opinion = find(container, 'ExamineOpinion')
   const auditors = (choice.nextAuditors ?? []) as Array<{ nodeProxyId?: string, bizId?: string, name?: string }>
   if (auditors.length > 0) {
     const list = (opinion.nextAuditorList as Array<Record<string, unknown>> | undefined) ?? []

@@ -109,12 +109,57 @@ test('转发失败时本地中止，不直连目标', async () => {
     const handle = await installTargetRoute(page, {
       runtimeOrigins: [originURL.replace(/\/$/, '')],
       forward: async () => {
-        throw new Error('Go 通道已断开')
+        throw new Error('执行通道连接中断')
       }
     })
     await page.goto(new URL('index.html', originURL).toString(), { waitUntil: 'load' })
     await assert.rejects(() => page.evaluate(`window.doFetch('${new URL('/web/flowInstanceApi/submit', originURL)}', { method: 'POST', body: '{}' })`))
     assert.equal(handle.trace.list()[0]?.state, 'aborted')
+    await handle.uninstall()
+  })
+})
+
+test('转发主写与附言按 writeSequence 串行且各自只允许一次', async () => {
+  const sequences: number[] = []
+  await withPage(async (page, originURL) => {
+    const handle = await installTargetRoute(page, {
+      runtimeOrigins: [originURL.replace(/\/$/, '')],
+      forward: async payload => {
+        if (payload.writeSequence !== undefined) sequences.push(payload.writeSequence)
+        return {
+          httpStatus: 200,
+          headers: { 'content-type': 'application/json' },
+          bodyEncoding: 'utf8',
+          body: JSON.stringify({ isSuccess: true })
+        }
+      }
+    })
+    await page.goto(new URL('index.html', originURL).toString(), { waitUntil: 'load' })
+    const mainURL = new URL('/web/flowInstanceApi/transpond', originURL).toString()
+    const postscriptURL = new URL('/web/flowInstancePostscript/save', originURL).toString()
+    const main = await page.evaluate(`window.doFetch('${mainURL}', { method: 'POST', body: '{}' })`) as { status: number }
+    assert.equal(main.status, 200)
+    const postscript = await page.evaluate(`window.doFetch('${postscriptURL}', { method: 'POST', body: '{}' })`) as { status: number }
+    assert.equal(postscript.status, 200)
+    await assert.rejects(() => page.evaluate(`window.doFetch('${mainURL}', { method: 'POST', body: '{}' })`))
+    assert.deepEqual(sequences, [1, 2])
+    const entries = handle.trace.list().filter(entry => entry.writeSequence !== undefined)
+    assert.deepEqual(entries.map(entry => [entry.writeSequence, entry.state]), [[1, 'fulfilled'], [2, 'fulfilled'], [1, 'blocked']])
+    await handle.uninstall()
+  })
+})
+
+test('转发主写成功前禁止发送附言', async () => {
+  await withPage(async (page, originURL) => {
+    const handle = await installTargetRoute(page, {
+      runtimeOrigins: [originURL.replace(/\/$/, '')],
+      forward: async () => ({ httpStatus: 200, headers: {}, bodyEncoding: 'utf8', body: '{}' })
+    })
+    await page.goto(new URL('index.html', originURL).toString(), { waitUntil: 'load' })
+    const postscriptURL = new URL('/web/flowInstancePostscript/save', originURL).toString()
+    await assert.rejects(() => page.evaluate(`window.doFetch('${postscriptURL}', { method: 'POST', body: '{}' })`))
+    assert.equal(handle.trace.list()[0]?.state, 'blocked')
+    assert.equal(handle.trace.list()[0]?.writeSequence, 2)
     await handle.uninstall()
   })
 })

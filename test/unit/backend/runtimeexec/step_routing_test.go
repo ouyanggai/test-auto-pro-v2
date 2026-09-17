@@ -27,6 +27,7 @@ type recordingTarget struct {
 	writes   []string
 	template bool
 	taskID   string
+	formData map[string]any
 }
 
 func (r *recordingTarget) FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error) {
@@ -36,7 +37,7 @@ func (r *recordingTarget) FindDueFlow(context.Context, target.Session, string) (
 	return "", nil, nil, false, nil
 }
 func (r *recordingTarget) ReadInstanceCurrentData(context.Context, target.Session, string) (map[string]any, error) {
-	return map[string]any{}, nil
+	return r.formData, nil
 }
 func (r *recordingTarget) ReadFormTemplateData(context.Context, target.Session, string) (json.RawMessage, error) {
 	r.mu.Lock()
@@ -91,6 +92,7 @@ type fakeRuntimeRunner struct {
 	err       error
 	healthErr error
 	trace     json.RawMessage
+	summary   json.RawMessage
 	calls     int
 	requests  []runtimeexec.RuntimeRunRequest
 }
@@ -110,7 +112,7 @@ func (f *fakeRuntimeRunner) RunAction(_ context.Context, request runtimeexec.Run
 	if f.err != nil {
 		return runtimeexec.ActionRunResult{Status: "failed", Message: "fake-error", WriteTraceIDs: []string{"trace-1"}}, f.err
 	}
-	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake", RequestTrace: f.trace}, nil
+	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake", RequestTrace: f.trace, BusinessSummary: f.summary}, nil
 }
 
 func (f *fakeRuntimeRunner) callCount() int {
@@ -195,6 +197,12 @@ func TestRoutingWithRunnerCoverSevenActions(t *testing.T) {
 	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData, model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward} {
 		if !executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
 			t.Fatalf("表单动作 %s 应走 runtime", action)
+		}
+	}
+	for _, renderType := range []string{"formmaking", "vue_custom", "no-form"} {
+		runCtx.RenderType = renderType
+		if !executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(model.ActionApprove)) {
+			t.Fatalf("渲染类型 %s 的审批动作都应统一走 runtime", renderType)
 		}
 	}
 	for _, action := range []model.ActionKey{model.ActionAddSign, model.ActionTransfer, model.ActionRollback, model.ActionRetrieve, model.ActionWithdraw, model.ActionUrge, model.ActionFollow, model.ActionUnfollow, model.ActionSystemAutomatic} {
@@ -395,8 +403,41 @@ func TestRunViaRuntimeInitiateDoesNotInjectTemplate(t *testing.T) {
 	}
 }
 
-// TestRunViaRuntimeBlocksWithoutFormProxy FormMaking 缺少表单代理 ID：装载无据，阻塞且不调用 runtime。
-func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
+// TestSaveDraftLoadModeFollowsMainInstance 首次草稿走发起，已有实例再次保存走待发编辑。
+func TestSaveDraftLoadModeFollowsMainInstance(t *testing.T) {
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, &recordingTarget{}, runner)
+	runCtx := runtimeRunCtx()
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionSaveDraft), target.Session{}, &step.StepPreview{ActorAccount: "plan-acct"}, step.ApprovedStep{Attempt: 1})
+	if got := runner.lastRequest().LoadMode; got != runtimeexec.LoadModeInitiate {
+		t.Fatalf("首次草稿应走 initiate，实际 %q", got)
+	}
+	runCtx.PathRun.MainInstanceRef = "instance-1"
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionSaveDraft), target.Session{}, &step.StepPreview{ActorAccount: "plan-acct"}, step.ApprovedStep{Attempt: 1})
+	if got := runner.lastRequest().LoadMode; got != runtimeexec.LoadModeEdit {
+		t.Fatalf("后续草稿应走 edit，实际 %q", got)
+	}
+}
+
+// TestRuntimeApprovalRejectsShrunkFormBody 审批写后字段数少于页面写前快照时必须改判业务失败。
+func TestRuntimeApprovalRejectsShrunkFormBody(t *testing.T) {
+	view := &recordingTarget{taskID: "task-1", formData: map[string]any{"kept": 1}}
+	runner := &fakeRuntimeRunner{status: "success", summary: json.RawMessage(`{"fieldCountBefore":3,"formBefore":{"kept":1,"lostA":2,"lostB":3}}`)}
+	executor := newExecutorForRouting(t, view, runner)
+	runCtx := runtimeRunCtx()
+	runCtx.PathRun.MainInstanceRef = "instance-1"
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionApprove), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	if !preview.WriteSent() {
+		t.Fatalf("runtime 已发出审批写时必须保留写出事实")
+	}
+	if preview.WriteErrForTest() == nil || !strings.Contains(preview.WriteErrForTest().Error(), "字段明显减少") {
+		t.Fatalf("表单正文减少必须改判业务失败：%v", preview.WriteErrForTest())
+	}
+}
+
+// TestRunViaRuntimeAllowsMissingFormProxy 无表单流程不依赖 FormMaking 表单代理，仍由原生页面执行。
+func TestRunViaRuntimeAllowsMissingFormProxy(t *testing.T) {
 	view := &recordingTarget{}
 	runner := &fakeRuntimeRunner{status: "success"}
 	executor := newExecutorForRouting(t, view, runner)
@@ -404,8 +445,8 @@ func TestRunViaRuntimeBlocksWithoutFormProxy(t *testing.T) {
 	runCtx.FormProxyID = ""
 	preview := &step.StepPreview{ActorAccount: "plan-acct"}
 	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionSubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
-	if runner.callCount() != 0 || preview.WriteSent() {
-		t.Fatalf("缺少表单代理 ID 必须阻塞，不得进入 runtime")
+	if runner.callCount() != 1 || !preview.WriteSent() {
+		t.Fatalf("缺少表单代理 ID 不得作为 runtime 路由门禁")
 	}
 }
 
@@ -501,6 +542,7 @@ func TestRunViaRuntimeForwardRequiresReceiver(t *testing.T) {
 	runCtx := runtimeRunCtx()
 	runCtx.PathRun.MainInstanceRef = "instance-1"
 	forwardStep := runtimeStep(model.ActionForward)
+	forwardStep.Parameters = map[string]any{"forwardCheckList": []any{"fuyan", "yijian"}}
 	// 未配置接收人：阻塞，零写入，不进入 runtime。
 	blocked := &step.StepPreview{ActorAccount: "actor-acct"}
 	executor.RunViaRuntimeForTest(context.Background(), runCtx, forwardStep, target.Session{}, blocked, step.ApprovedStep{Attempt: 1})
@@ -514,6 +556,7 @@ func TestRunViaRuntimeForwardRequiresReceiver(t *testing.T) {
 	runCtx.ActionPersonIDs = map[string][]string{
 		step.ActionPersonIndex("node-1", model.ActionForward): {"receiver-1"},
 	}
+	view.taskID = "task-forward-1"
 	preview := &step.StepPreview{ActorAccount: "actor-acct"}
 	if !executor.RunViaRuntimeForTest(context.Background(), runCtx, forwardStep, target.Session{}, preview, step.ApprovedStep{Attempt: 1}) {
 		t.Fatalf("runtime 应接管本步")
@@ -524,6 +567,9 @@ func TestRunViaRuntimeForwardRequiresReceiver(t *testing.T) {
 	}
 	if request.InstanceID != "instance-1" {
 		t.Fatalf("转发请求必须携带主实例引用，实际 %q", request.InstanceID)
+	}
+	if len(request.ForwardCheckList) != 2 || request.ForwardCheckList[0] != "fuyan" {
+		t.Fatalf("转发请求必须携带勾选项，实际 %+v", request.ForwardCheckList)
 	}
 }
 

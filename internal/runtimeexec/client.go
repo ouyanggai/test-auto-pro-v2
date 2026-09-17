@@ -65,6 +65,20 @@ type Client struct {
 	sessions SessionProvider
 	// forwardTimeout 是单笔页面请求转发到目标平台的超时；目标存在约 30 秒慢请求，取 90 秒上限。
 	forwardTimeout time.Duration
+	connectionsMu  sync.Mutex
+	connections    map[string]*sessionConn
+}
+
+// sessionConn 是一个会话的唯一 WebSocket；预热、装载期转发和动作命令共享它，
+// 由读泵按消息类型分发，从根上避免新连接替换旧连接导致在途请求被中止。
+type sessionConn struct {
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	messages  chan *Message
+	done      chan struct{}
+	closeOnce sync.Once
+	activeMu  sync.Mutex
+	active    *executeState
 }
 
 // NewClient 构造 runtime 客户端；baseURL 是执行服务地址（如 http://127.0.0.1:19011）。
@@ -82,6 +96,7 @@ func NewClient(baseURL string, forward TargetForwarder, sessions SessionProvider
 		forward:        forward,
 		sessions:       sessions,
 		forwardTimeout: 90 * time.Second,
+		connections:    make(map[string]*sessionConn),
 	}, nil
 }
 
@@ -142,6 +157,7 @@ func (c *Client) Load(ctx context.Context, sessionID string, cmd Message) (json.
 
 // Destroy 关闭执行会话并释放 Context；会话不存在时执行服务返回 404，同样视为已关闭。
 func (c *Client) Destroy(ctx context.Context, sessionID string) error {
+	c.closeSessionConn(sessionID, nil)
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimRight(c.baseURL.Path, "/") + "/runtime/session/" + sessionID + "/destroy"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), nil)
@@ -181,69 +197,40 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 	if _, err := EncodeMessage(cmd); err != nil {
 		return nil, err
 	}
-	dialURL := *c.baseURL
-	switch dialURL.Scheme {
-	case "https":
-		dialURL.Scheme = "wss"
-	default:
-		dialURL.Scheme = "ws"
-	}
-	dialURL.Path = strings.TrimRight(dialURL.Path, "/") + "/runtime/session/" + sessionID + "/execute"
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, dialURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("连接执行服务失败：%w", err)
-	}
-	defer conn.Close()
-
 	state := &executeState{account: account, onWriteTrace: callbacks.OnWriteTrace}
-	var writeMu sync.Mutex
-	send := func(message Message) error {
-		// 统一经 EncodeMessage 补协议版本并复核；直接序列化会漏掉 version 被对端拒绝。
-		raw, err := EncodeMessage(message)
-		if err != nil {
-			return err
-		}
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return conn.WriteMessage(websocket.TextMessage, raw)
+	connection, err := c.connection(ctx, sessionID, account)
+	if err != nil {
+		return nil, err
 	}
+	connection.setActive(state)
+	defer connection.clearActive(state)
+	send := connection.send
 	if err := send(cmd); err != nil {
-		return nil, fmt.Errorf("发送执行命令失败：%w", err)
+		c.closeSessionConn(sessionID, connection)
+		return nil, fmt.Errorf("%w（发送执行命令失败：%v）", ErrFailedCleanly, err)
 	}
 	for {
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			// 连接断开：按「是否已有目标请求写出」二分，绝不重发原命令。
-			if state.written {
-				return nil, fmt.Errorf("%w（%v）", ErrUncertain, err)
+		var message *Message
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-connection.done:
+			if state.hasWritten() {
+				return nil, ErrUncertain
 			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+			return nil, ErrFailedCleanly
+		case message = <-connection.messages:
+			if message == nil {
+				if state.hasWritten() {
+					return nil, ErrUncertain
+				}
+				return nil, ErrFailedCleanly
 			}
-			return nil, fmt.Errorf("%w（%v）", ErrFailedCleanly, err)
-		}
-		message, err := ValidateMessage(raw)
-		if err != nil {
-			return nil, err
 		}
 		switch message.Kind {
 		case KindRequestForward:
-			response, err := c.handleForward(ctx, state, message)
-			payload := requestResponsePayloadOf(response, err)
-			if err := send(Message{
-				Kind:      KindRequestResp,
-				RequestID: message.RequestID,
-				SessionID: message.SessionID,
-				RunID:     message.RunID,
-				PathRunID: message.PathRunID,
-				StepID:    message.StepID,
-				Payload:   payload,
-			}); err != nil {
-				if state.written {
-					return nil, fmt.Errorf("%w（%v）", ErrUncertain, err)
-				}
-				return nil, fmt.Errorf("%w（%v）", ErrFailedCleanly, err)
-			}
+			// request_forward 已由读泵处理；保留分支以便未来协议扩展，不重复转发。
+			continue
 		case KindEvent:
 			if callbacks.OnEvent != nil {
 				callbacks.OnEvent(message)
@@ -257,7 +244,7 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 				if len(message.Payload) > 0 && json.Unmarshal(message.Payload, &payload) == nil && payload.Type == EventChoiceRequired {
 					if cmd := callbacks.OnChoiceRequired(payload.Data); cmd != nil {
 						if err := send(*cmd); err != nil {
-							if state.written {
+							if state.hasWritten() {
 								return nil, ErrUncertain
 							}
 							return nil, ErrFailedCleanly
@@ -285,9 +272,26 @@ func (c *Client) Execute(ctx context.Context, sessionID, account string, cmd Mes
 // 通道，装载期读取全部被本地中止，表单永远装载不完（2026-09-16 真实验收实测）。
 // account 必须携带：装载期读取与动作期同一纪律，按当前操作人账号取会话再转发，
 // 空账号会在会话查找处瞬间失败并被页面侧当成 Network Error。
-// 预热连接带完整转发循环（与 Execute 同一套写出事实口径）；Execute 建立的新连接会在
-// 服务端替换本连接，属正常时序。返回释放函数。
+// 预热连接带完整转发循环（与 Execute 同一套写出事实口径）；Execute 必须复用本连接。
 func (c *Client) Prewarm(ctx context.Context, sessionID, account string) (func(), error) {
+	connection, err := c.connection(ctx, sessionID, account)
+	if err != nil {
+		return nil, err
+	}
+	return func() { c.closeSessionConn(sessionID, connection) }, nil
+}
+
+// connection 取得或建立会话唯一连接，并启动唯一读泵。
+func (c *Client) connection(ctx context.Context, sessionID, account string) (*sessionConn, error) {
+	c.connectionsMu.Lock()
+	if existing := c.connections[sessionID]; existing != nil {
+		if !existing.isClosed() {
+			c.connectionsMu.Unlock()
+			return existing, nil
+		}
+		delete(c.connections, sessionID)
+	}
+	c.connectionsMu.Unlock()
 	dialURL := *c.baseURL
 	if dialURL.Scheme == "https" {
 		dialURL.Scheme = "wss"
@@ -297,60 +301,143 @@ func (c *Client) Prewarm(ctx context.Context, sessionID, account string) (func()
 	dialURL.Path = strings.TrimRight(dialURL.Path, "/") + "/runtime/session/" + sessionID + "/execute"
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, dialURL.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("预热执行通道失败：%w", err)
+		return nil, fmt.Errorf("连接执行服务失败：%w", err)
 	}
-	state := &executeState{account: account}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			_, raw, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-			message, err := ValidateMessage(raw)
-			if err != nil {
-				continue
-			}
-			if message.Kind != KindRequestForward {
-				continue
-			}
-			response, forwardErr := c.handleForward(ctx, state, message)
-			if forwardErr != nil {
-				log.Printf("[runtimeexec] 预热通道转发失败 %s: %v", message.RequestID, forwardErr)
-			}
-			payload := requestResponsePayloadOf(response, forwardErr)
-			reply := Message{
-				Kind:      KindRequestResp,
-				RequestID: message.RequestID,
-				SessionID: message.SessionID,
-				RunID:     message.RunID,
-				PathRunID: message.PathRunID,
-				StepID:    message.StepID,
-				Payload:   payload,
-			}
-			rawReply, encodeErr := EncodeMessage(reply)
-			if encodeErr != nil {
-				continue
-			}
-			if writeErr := conn.WriteMessage(websocket.TextMessage, rawReply); writeErr != nil {
-				return
-			}
-		}
-	}()
-	return func() {
+	connection := &sessionConn{conn: conn, messages: make(chan *Message, 32), done: make(chan struct{})}
+	c.connectionsMu.Lock()
+	if existing := c.connections[sessionID]; existing != nil {
+		c.connectionsMu.Unlock()
 		_ = conn.Close()
-		<-done
-	}, nil
+		return existing, nil
+	}
+	c.connections[sessionID] = connection
+	c.connectionsMu.Unlock()
+	go c.readPump(sessionID, account, connection)
+	return connection, nil
+}
+
+// readPump 处理页面转发请求并把事件/结果交给当前 Execute；连接断开后通知等待方。
+func (c *Client) readPump(sessionID, account string, connection *sessionConn) {
+	defer func() {
+		connection.closeDone()
+		c.connectionsMu.Lock()
+		if c.connections[sessionID] == connection {
+			delete(c.connections, sessionID)
+		}
+		c.connectionsMu.Unlock()
+	}()
+	for {
+		_, raw, err := connection.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		message, err := ValidateMessage(raw)
+		if err != nil {
+			continue
+		}
+		if message.Kind == KindRequestForward {
+			state := connection.currentActive()
+			if state == nil {
+				state = &executeState{account: account}
+			}
+			response, forwardErr := c.handleForward(context.Background(), state, message)
+			if forwardErr != nil {
+				log.Printf("[runtimeexec] 通道转发失败 %s: %v", message.RequestID, forwardErr)
+			}
+			if err := connection.send(Message{Kind: KindRequestResp, RequestID: message.RequestID, SessionID: message.SessionID, RunID: message.RunID, PathRunID: message.PathRunID, StepID: message.StepID, Payload: requestResponsePayloadOf(response, forwardErr)}); err != nil {
+				return
+			}
+			continue
+		}
+		select {
+		case connection.messages <- message:
+		case <-connection.done:
+			return
+		}
+	}
+}
+
+// send 以串行写锁把消息写入会话唯一连接。
+func (s *sessionConn) send(message Message) error {
+	raw, err := EncodeMessage(message)
+	if err != nil {
+		return err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.conn.WriteMessage(websocket.TextMessage, raw)
+}
+
+// setActive 标记当前动作，让读泵把写出事实回调到对应执行状态。
+func (s *sessionConn) setActive(state *executeState) {
+	s.activeMu.Lock()
+	s.active = state
+	s.activeMu.Unlock()
+}
+
+// clearActive 仅清除自己登记的动作，避免晚到的清理误伤下一条命令。
+func (s *sessionConn) clearActive(state *executeState) {
+	s.activeMu.Lock()
+	if s.active == state {
+		s.active = nil
+	}
+	s.activeMu.Unlock()
+}
+
+// currentActive 返回当前动作状态，供读泵登记写出事实。
+func (s *sessionConn) currentActive() *executeState {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	return s.active
+}
+
+// closeDone 幂等广播连接终止。
+func (s *sessionConn) closeDone() { s.closeOnce.Do(func() { close(s.done) }) }
+
+// isClosed 判断读泵是否已终止，避免下一动作复用已失效但尚未从会话表移除的连接。
+func (s *sessionConn) isClosed() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// closeSessionConn 关闭指定会话连接；expected 为空时关闭当前连接。
+func (c *Client) closeSessionConn(sessionID string, expected *sessionConn) {
+	c.connectionsMu.Lock()
+	current := c.connections[sessionID]
+	if expected == nil || current == expected {
+		delete(c.connections, sessionID)
+	} else {
+		current = nil
+	}
+	c.connectionsMu.Unlock()
+	if current != nil {
+		_ = current.conn.Close()
+		current.closeDone()
+	}
 }
 
 // executeState 记录一次 Execute 过程中「目标请求是否已写出」「选择闭环是否已继续」的事实。
 type executeState struct {
 	account    string
+	stateMu    sync.Mutex
 	written    bool
 	choiceSent bool
 	// onWriteTrace 是调用方注册的写请求 trace 回调；nil 时 trace 只落 state 不上报。
 	onWriteTrace func(traceID string)
+}
+
+// markWritten 记录已写出事实，供连接断开分类使用。
+func (s *executeState) markWritten() { s.stateMu.Lock(); s.written = true; s.stateMu.Unlock() }
+
+// hasWritten 返回当前动作是否已有目标写请求进入传输阶段。
+func (s *executeState) hasWritten() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.written
 }
 
 // noteWriteTrace 记录一笔已写出（或写出后响应丢失）的页面写请求传输 trace，
@@ -386,7 +473,7 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	response, err := c.forwardOnce(ctx, session, forwarded, parsed)
 	if err == nil {
 		if isWrite {
-			state.written = true
+			state.markWritten()
 			state.noteWriteTrace(response.TraceID)
 		}
 		return response, nil
@@ -397,7 +484,7 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 			if targetErr, ok := err.(*target.Error); ok {
 				switch targetErr.Transport {
 				case target.TransportResponded, target.TransportInterrupted:
-					state.written = true
+					state.markWritten()
 					state.noteWriteTrace(targetErr.TraceID)
 				}
 			}
@@ -412,14 +499,14 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	response, err = c.forwardOnce(ctx, refreshed, forwarded, parsed)
 	if isWrite {
 		if err == nil {
-			state.written = true
+			state.markWritten()
 			state.noteWriteTrace(response.TraceID)
 		} else if targetErr, ok := err.(*target.Error); ok {
 			// 换会话重放与首次发送遵守同一写出事实口径：响应已到达或中断都算可能已写出。
 			// 漏判会把真实写丢失降级成零写入失败，让上层误以为没有副作用。
 			switch targetErr.Transport {
 			case target.TransportResponded, target.TransportInterrupted:
-				state.written = true
+				state.markWritten()
 				state.noteWriteTrace(targetErr.TraceID)
 			}
 		}

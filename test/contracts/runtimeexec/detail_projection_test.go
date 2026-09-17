@@ -46,6 +46,15 @@ func TestDetailProjectionSanitized(t *testing.T) {
 	}
 }
 
+// TestDetailProjectionKeepsBusinessSummary 运行详情必须保留写前/写后表单证据，不能只存在于瞬时返回值。
+func TestDetailProjectionKeepsBusinessSummary(t *testing.T) {
+	summary := json.RawMessage(`{"fieldCountBefore":3,"fieldCountAfter":3,"formBefore":{"a":1},"formAfter":{"a":1}}`)
+	detail := runtimeexec.BuildDetailProjection(runtimeexec.ActionRunResult{Status: "success", BusinessSummary: summary}, nil, "v1")
+	if string(detail.BusinessSummary) != string(summary) {
+		t.Fatalf("运行详情丢失业务摘要：%s", detail.BusinessSummary)
+	}
+}
+
 // TestDetailProjectionFailureStatuses 失败口径：主写被拒 → 流程动作 failed；后置失败 → 提交后阶段 failed。
 func TestDetailProjectionFailureStatuses(t *testing.T) {
 	rejected := runtimeexec.BuildDetailProjection(runtimeexec.ActionRunResult{Status: "target_rejected"}, json.RawMessage(`[

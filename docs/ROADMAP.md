@@ -40,7 +40,7 @@
 | F-033 | 运行详情原子快照与节点过渡显示修复 | awaiting_approval |
 | F-034 | 一键配置动作多样化与运行详情可读性修复 | ready_for_manual（2026-09-13 实施与自动验证完成：动作矩阵重做、跨空节点分支解析与阻塞语义、详情弹窗重排；待人工验收） |
 | F-035 | 目标请求协议一致性、真实处理人和有效表单数据闭环 | implementing（2026-09-15 第五轮复核：下拉实际值、动作尾部/删除、阻塞状态投影、路径 12 请求对照和处理人事实仍未闭环，不得进入 ready_for_manual） |
-| F-036 | 独立执行服务与原生页面装载 | ready_for_manual（2026-09-16 T001–T014 自动验证完成，待人工验收） |
+| F-036 | 独立执行服务与原生页面装载 | implementing（2026-09-17 第二轮代码主体与本地清空已完成；真实七动作证据和 G2、G5–G8 未闭环） |
 
 
 
@@ -48,12 +48,12 @@
 
 ## 当前与后两项
 
-F-036「独立执行服务与原生页面装载」自动验证完成，停在 `ready_for_manual`，计划见
-`docs/features/F-036-independent-executor-native-page.md` 与 `docs/s2/`。页面执行已迁到根目录
-`executor-service/`，独立 `rsh-flow-components` 快照（`test`/`be355ae`）和原生
-`/flow/initiate`、`/flow/detail/:id` 装载；配置侧 `form-runtime/` 只保留数据显示、编辑和取回。
-协议为 `exec-engine/v2`，取消能力登记门禁和 Go 进程托管。可见页面和真实目标动作等待人工验收。
-聚合验证：`bash test/run-executor-service.sh`。不得自动开始下一功能。
+F-036「独立执行服务与原生页面装载」处于第二轮 `implementing`，计划见
+`docs/features/F-036-independent-executor-native-page.md` 与
+`docs/auto/2026-09-17-f036-round2-unified-native-execution-repair-task.md`。通道复用、接口终局判据、
+多次草稿、原生转发、统一渲染类型和表单正文保护的代码主体已完成，本地计划/运行数据已按任务清空；
+但强制真实 L1/L2、七动作第二轮证据、无表单真实路径、计划 A–G 和 G2、G5–G8 尚未完成。
+用户要求标识当前进度后停止，故不得进入 `ready_for_manual`，不得开始下一功能。
 
 
 

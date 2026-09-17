@@ -1,6 +1,6 @@
-// T010 动作完成检测：以请求轨迹、页面异常、通道状态与稳定空闲窗判定动作终局。
+// T010 动作完成检测：以动作期望写端点的响应与稳定空闲窗判定动作终局。
 // 纪律（docs/s2/01-执行服务设计.md 第 7 节）：
-//   - 流程接口成功不能代替全部业务成功（后置请求失败 → business_failed）；
+//   - 页面完成信号与页面异常只作证据，不参与终局；
 //   - 写响应丢失/连接断开且已写出 → uncertain；
 //   - 目标明确拒绝 → target_rejected；未发出写请求即失败 → failed；
 //   - 硬超时 → timeout，且超时后不再放行任何新写请求。
@@ -20,15 +20,27 @@ const FLOW_WRITE_PATHS = [
   '/web/flowInstanceApi/reSubmit'
 ]
 
+const ACTION_WRITE_PATH: Record<string, string> = {
+  save_draft: '/web/flowInstanceApi/submit',
+  submit: '/web/flowInstanceApi/submit',
+  storage_form_data: '/web/flowInstanceApi/storageFormData',
+  approve: '/flowInstanceApi/audit',
+  reject: '/flowInstanceApi/audit',
+  resubmit: '/web/flowInstanceApi/reSubmit',
+  forward: '/web/flowInstanceApi/transpond'
+}
+
+const FORWARD_POSTSCRIPT_PATH = '/web/flowInstancePostscript/save'
+
 export type CompletionVerdict = 'success' | 'target_rejected' | 'uncertain' | 'business_failed' | 'failed' | 'timeout'
 
 export interface CompletionInput {
   action: string
   trace: RequestTraceRecorder
   baselineSeq: number
-  businessDone: () => Promise<boolean>
   hardTimeoutMs: number
   idleWindowMs: number
+  forwardPostscriptRequired?: boolean
   gate?: () => Promise<boolean>
   writeGate?: WriteGate
 }
@@ -64,11 +76,6 @@ export interface ForwardStepEntry {
 
 export interface WriteLookup {
   method: string
-  url: string
-}
-
-export interface AfterFlowLookup {
-  seq: number
   url: string
 }
 
@@ -109,9 +116,12 @@ export function detectFlowRejection (entry: FlowRejectionInput): string | null {
   if (entry.response.httpStatus === 401) return 'SID已失效'
   if (entry.response.httpStatus !== 200) return `HTTP ${entry.response.httpStatus}`
 
-  if (!entry.response.body || entry.response.bodyEncoding !== 'base64') return null
+  if (!entry.response.body) return null
   try {
-    const parsed = JSON.parse(Buffer.from(entry.response.body, 'base64').toString('utf8'))
+    const text = entry.response.bodyEncoding === 'base64'
+      ? Buffer.from(entry.response.body, 'base64').toString('utf8')
+      : entry.response.body
+    const parsed = JSON.parse(text)
     if (parsed && (parsed.code === 'RESP401' || parsed.code === 'AUTH_401' || parsed.message === 'SID已失效')) {
       return 'SID已失效'
     }
@@ -153,42 +163,60 @@ function isFlowWriteEntry (entry: { method?: string, url: string, body?: string,
   return !isPermissionCheckSubmit(entry)
 }
 
-function isAfterFlow (entries: TraceEntry[], baselineSeq: number, entry: AfterFlowLookup): boolean {
-  const flowSeqs = entries
-    .filter(item => item.seq > baselineSeq && isFlowWriteEntry(item) && item.state === 'fulfilled')
-    .map(item => item.seq)
-  if (flowSeqs.length === 0) return false
-  return entry.seq > Math.min(...flowSeqs)
-}
-
-function finalize (input: CompletionInput, entries: TraceEntry[], businessDone: boolean): CompletionResult {
+function finalize (input: CompletionInput, entries: TraceEntry[]): CompletionResult {
   const requestTrace = summarize(entries)
-  const writeEntries = entries.filter(entry => isFlowWriteEntry(entry))
-  const flowEntries = entries.filter(entry => isFlowWriteEntry(entry))
-  const postEntries = entries.filter(entry => isAfterFlow(input.trace.list(), input.baselineSeq, entry))
-  const lostWrite = writeEntries.find(entry => entry.state === 'aborted')
+  const expectedPath = ACTION_WRITE_PATH[input.action]
+  const allWriteEntries = entries.filter(entry => entry.method === 'POST' && (isFlowWriteEntry(entry) || entry.url.includes(FORWARD_POSTSCRIPT_PATH)))
+  const expectedEntries = expectedPath
+    ? entries.filter(entry => entry.method === 'POST' && entry.url.includes(expectedPath) && !isPermissionCheckSubmit(entry))
+    : []
+  if (!expectedPath) return { status: 'failed', message: `动作 ${input.action} 没有登记期望写端点`, requestTrace }
+  if (expectedEntries.length === 0) {
+    if (allWriteEntries.length > 0) {
+      return { status: 'failed', message: `动作未调用期望写端点 ${expectedPath}，实际调用了 ${allWriteEntries.map(entry => entry.url).join('、')}`, requestTrace }
+    }
+    return { status: 'failed', message: `动作没有发出期望写请求 ${expectedPath}`, requestTrace }
+  }
+  const lostWrite = expectedEntries.find(entry => entry.state === 'aborted')
   if (lostWrite) return { status: 'uncertain', message: `写响应丢失：${lostWrite.url}`, requestTrace }
-  for (const entry of flowEntries) {
+  const blockedWrite = expectedEntries.find(entry => entry.state === 'blocked')
+  if (blockedWrite) return { status: 'failed', message: `期望写请求被本地阻止：${blockedWrite.abortReason ?? blockedWrite.url}`, requestTrace }
+  for (const entry of expectedEntries) {
     const rejection = detectFlowRejection(entry)
     if (!rejection) continue
     // 选择要求类拒绝可以被「继续一次」后的后续成功写覆盖（S6 闭环：目标以
     // isSuccess=false 要求选择，选择继续后重新提交成功）。此时早先的选择要求
     // 不是终局；其余拒绝（SID 失效、HTTP 错误、业务拒绝）仍然是终局。
     const superseded = rejection.startsWith('选择要求未闭环') &&
-      flowEntries.some(later => later.seq > entry.seq && later.state === 'fulfilled' && detectFlowRejection(later) === null)
+      expectedEntries.some(later => later.seq > entry.seq && later.state === 'fulfilled' && later.response?.httpStatus === 200 && detectFlowRejection(later) === null)
     if (superseded) continue
     return { status: 'target_rejected', message: rejection, requestTrace }
   }
-  const lostPost = postEntries.find(entry => entry.state === 'aborted' || entry.state === 'blocked')
-  if (lostPost) return { status: 'business_failed', message: `后置业务请求未完成：${lostPost.url}`, requestTrace }
-  const hasFlowSuccess = flowEntries.some(entry => entry.state === 'fulfilled' && detectFlowRejection(entry) === null)
-  if (hasFlowSuccess && !businessDone) {
-    return { status: 'business_failed', message: '流程写请求已受理，但业务完成事件未到达', requestTrace }
+  const hasExpectedSuccess = expectedEntries.some(entry => entry.state === 'fulfilled' && entry.response?.httpStatus === 200 && detectFlowRejection(entry) === null)
+  if (!hasExpectedSuccess) {
+    return { status: 'failed', message: `期望写端点 ${expectedPath} 没有成功响应`, requestTrace }
   }
-  if (writeEntries.length === 0 && !businessDone) {
-    return { status: 'failed', message: '动作没有发出任何写请求', requestTrace }
+  if (input.action === 'forward') {
+    const postscript = entries.filter(entry => entry.method === 'POST' && entry.url.includes(FORWARD_POSTSCRIPT_PATH))
+    if (input.forwardPostscriptRequired && postscript.length === 0) {
+      return { status: 'business_failed', message: '转发主请求已成功，但附言请求没有发出', requestTrace }
+    }
+    const failedPostscript = postscript.find(entry => entry.state !== 'fulfilled' || entry.response?.httpStatus !== 200 || detectEnvelopeRejection(entry) !== null)
+    if (failedPostscript) return { status: 'business_failed', message: `转发主请求已成功，但附言请求未完成：${failedPostscript.url}`, requestTrace }
   }
   return { status: 'success', requestTrace }
+}
+
+// detectEnvelopeRejection 解析非流程端点的统一响应信封，供转发附言判定使用。
+function detectEnvelopeRejection (entry: TraceEntry): string | null {
+  if (entry.state !== 'fulfilled' || !entry.response) return '响应未完成'
+  if (entry.response.httpStatus !== 200) return `HTTP ${entry.response.httpStatus}`
+  if (!entry.response.body) return null
+  try {
+    const text = entry.response.bodyEncoding === 'base64' ? Buffer.from(entry.response.body, 'base64').toString('utf8') : entry.response.body
+    const parsed = JSON.parse(text)
+    return parsed?.isSuccess === false ? String(parsed.message ?? '目标拒绝') : null
+  } catch { return '响应正文无法解析' }
 }
 
 // settleCompletion 等待动作落定并给出终局；轮询实现，稳定窗内无在途请求即收敛。
@@ -215,9 +243,7 @@ export async function settleCompletion (input: CompletionInput): Promise<Complet
     if (!inFlight) {
       if (stableSince === null) stableSince = Date.now()
       if (Date.now() - stableSince >= input.idleWindowMs) {
-        let businessDone = false
-        try { businessDone = await input.businessDone() } catch { businessDone = false }
-        return lockIfNeeded(input, finalize(input, entries, businessDone))
+        return lockIfNeeded(input, finalize(input, entries))
       }
     } else {
       stableSince = null

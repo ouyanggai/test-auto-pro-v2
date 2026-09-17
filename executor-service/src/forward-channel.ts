@@ -26,9 +26,15 @@ export class ForwardChannel {
   private readonly pending = new Map<string, PendingForward>()
 
   // attach 在 Go 的 WebSocket 接入时调用；同一会话同时只允许一条连接。
-  attach (socket: WebSocket): void {
-    this.detachAll('Go 通道被新连接替换')
+  attach (socket: WebSocket): boolean {
+    if (this.socket && this.socket.readyState === this.socket.OPEN) {
+      // 预热连接可能正在承载页面读取；替换它会让在途请求变成本地 abort，
+      // 进而把可重试的连接问题伪装成写结果不明。新连接必须等待旧连接自然释放。
+      socket.close(1013, '已有活动通道')
+      return false
+    }
     this.socket = socket
+    return true
   }
 
   get connected (): boolean {
@@ -98,5 +104,11 @@ export class ForwardChannel {
       pending.reject(new ForwardFailure(reason))
       this.pending.delete(requestId)
     }
+  }
+
+  // detach 只允许当前连接清理会话；旧连接的 close 事件不能误伤后来建立的连接。
+  detach (socket: WebSocket, reason: string): void {
+    if (this.socket !== socket) return
+    this.detachAll(reason)
   }
 }

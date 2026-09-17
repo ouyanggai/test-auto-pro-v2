@@ -60,7 +60,7 @@ type LoadPayload struct {
 	AccountName     string        `json:"accountName,omitempty"`
 	SID             string        `json:"sid,omitempty"`
 	PlatformCode    string        `json:"platformCode,omitempty"`
-	BaseURL string `json:"baseURL,omitempty"`
+	BaseURL         string        `json:"baseURL,omitempty"`
 	// FormProxyID 是 FormMaking 表单代理 ID：FlowDialog 据 formId 决定发送 formProxyId；
 	// 缺失时目标提交会退回发送 flowProxyId: ""（评审 P1-3 的空代理 ID 根因）。
 	FormProxyID string `json:"formProxyId,omitempty"`
@@ -83,6 +83,8 @@ type LoadPayload struct {
 	ReceiverName string `json:"receiverName,omitempty"`
 	// ForwardCheckList 是转发勾选项（fuyan=附言 / yijian=流程日志）。
 	ForwardCheckList []string `json:"forwardCheckList,omitempty"`
+	// ForwardTab 是原生列表页标签：待办=backlog，待发=dueout。
+	ForwardTab string `json:"forwardTab,omitempty"`
 }
 
 // BizRelevance 是一条实例业务关联（与目标载荷 {otherBiz, otherBizId} 同形）。
@@ -110,9 +112,9 @@ type LoadInput struct {
 	BaseURL       string
 	Initiator     ActorIdentity
 	// —— 目标代理与节点事实（评审 P1-3）——
-	FormProxyID                  string
-	FlowProxyID                  string
-	SelectFlowType               string
+	FormProxyID    string
+	FlowProxyID    string
+	SelectFlowType string
 	// FlowTemplateID 是计划绑定的流程模板 ID（新发起来源=计划目标对象 ID）：发起装载必填。
 	FlowTemplateID               string
 	FlowNodeType                 string
@@ -122,6 +124,7 @@ type LoadInput struct {
 	ReceiverID       string
 	ReceiverName     string
 	ForwardCheckList []string
+	ForwardTab       string
 }
 
 // BuildLoadPayload 构造并校验装载载荷。v2 不再接受 Go 渲染模板；
@@ -140,11 +143,11 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 	if input.Mode == LoadModeInitiate && strings.TrimSpace(input.FlowTemplateID) == "" {
 		return nil, fmt.Errorf("发起装载缺少计划绑定模板 ID（flowTemplateId）")
 	}
-	if input.Mode == LoadModeEdit && strings.TrimSpace(input.InstanceID) == "" {
-		return nil, fmt.Errorf("编辑（重提/待发）装载缺少实例 ID")
+	if input.Mode != LoadModeInitiate && strings.TrimSpace(input.InstanceID) == "" {
+		return nil, fmt.Errorf("实例装载模式 %s 缺少实例 ID", input.Mode)
 	}
-	if input.Mode == LoadModeView && strings.TrimSpace(input.InstanceID) == "" {
-		return nil, fmt.Errorf("查看装载缺少实例 ID")
+	if (input.Mode == LoadModeApprove || input.Mode == LoadModeForward) && strings.TrimSpace(input.JobTaskID) == "" {
+		return nil, fmt.Errorf("审批/转发装载缺少当前任务 ID")
 	}
 	if len(values) == 0 {
 		values = json.RawMessage(`{}`)
@@ -160,9 +163,6 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 		return nil, fmt.Errorf("装载缺少当前账号用户事实")
 	}
 	if input.Mode == LoadModeForward {
-		if strings.TrimSpace(input.InstanceID) == "" {
-			return nil, fmt.Errorf("转发装载缺少实例 ID")
-		}
 		if strings.TrimSpace(input.ReceiverID) == "" {
 			return nil, fmt.Errorf("转发装载缺少接收人，拒绝进入目标页面")
 		}
@@ -210,6 +210,7 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 		ReceiverID:                   strings.TrimSpace(input.ReceiverID),
 		ReceiverName:                 strings.TrimSpace(input.ReceiverName),
 		ForwardCheckList:             checkList,
+		ForwardTab:                   strings.TrimSpace(input.ForwardTab),
 	}, nil
 }
 

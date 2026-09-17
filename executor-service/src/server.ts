@@ -16,7 +16,7 @@ import { resolveDetailSemantics } from './native-detail.ts'
 import { UnsupportedFormError } from './data-patch.ts'
 import { canContinueChoice, CHOICE_ERRORS } from './native-actions.ts'
 import { nativeChoiceContinue, nativeDispatch, type ChoiceContinueChoice, type DispatchInput } from './native-dispatch.ts'
-import { detectFlowRejection, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
+import { isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
 
 interface RuntimeSession {
@@ -39,6 +39,10 @@ interface RuntimeSession {
   choiceState: { continued: boolean }
   identity: Record<string, unknown> | null
   nativeHost: Record<string, unknown> | null
+  loadMode: string
+  instanceId: string
+  forwardPostscriptRequired: boolean
+  formBefore: Record<string, unknown>
 }
 
 interface SessionCreateBody {
@@ -90,8 +94,7 @@ async function waitForInitiateReady (page: Page): Promise<void> {
   )
 }
 
-// waitForDetailReady 等待详情装载就绪：FormMaking 走 examineDialogVisible，
-// 无表单固定页走 ExpensesClaimFormVisible（flowDetail.vue 的两条打开分支）。
+// waitForDetailReady 等待详情容器与实例正文同时就绪；仅弹窗可见不代表数据已加载。
 async function waitForDetailReady (page: Page): Promise<void> {
   await page.waitForFunction(
     `(() => {
@@ -102,6 +105,107 @@ async function waitForDetailReady (page: Page): Promise<void> {
     undefined,
     { timeout: CAPTURE_TIMEOUT_MS }
   )
+  const deadline = Date.now() + CAPTURE_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    if (Object.keys(await readNativeFormSnapshot(page)).length > 0) return
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  throw new UnsupportedFormError('详情容器已打开，但实例表单正文在等待窗口内始终为空')
+}
+
+// readNativeFormSnapshot 优先通过原生读写接口取值，再回退到已知业务数据对象；
+// 不返回任意组件状态，避免把任务上下文或 UI 配置误当成表单正文。
+async function readNativeFormSnapshot (page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(async () => {
+    interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
+    const native = (window as unknown as { __executorNative?: { initFlow?: VNode, flowDetail?: VNode, forwardList?: VNode } }).__executorNative
+    const root = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
+    if (!root) return {}
+    const queue: unknown[] = [root]
+    const seen = new Set<unknown>()
+    const nodes: Record<string, unknown>[] = []
+    while (queue.length > 0) {
+      const candidate = queue.shift()
+      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
+      seen.add(candidate)
+      const node = candidate as Record<string, unknown>
+      nodes.push(node)
+      queue.push(...((node.$children as unknown[] | undefined) ?? []), ...Object.values((node.$refs as Record<string, unknown> | undefined) ?? {}))
+    }
+    for (const node of nodes) {
+      const getter = ((typeof node.setData === 'function' || typeof node.setValues === 'function') && typeof node.getValues === 'function')
+        ? node.getValues
+        : typeof node.setFormData === 'function' && typeof node.getFormData === 'function' ? node.getFormData : null
+      if (typeof getter !== 'function') continue
+      try {
+        const values = await (getter as () => unknown).call(node)
+        if (values && typeof values === 'object' && !Array.isArray(values) && Object.keys(values as object).length > 0) return values as Record<string, unknown>
+      } catch {}
+    }
+    const keys = ['editData', 'currentFormData', 'formData', 'infoForm', 'formModel', 'detailData']
+    for (const key of keys) {
+      let best: Record<string, unknown> = {}
+      for (const node of nodes) {
+        const value = node[key]
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+        const record = value as Record<string, unknown>
+        if (Object.keys(record).length > Object.keys(best).length) best = record
+      }
+      if (Object.keys(best).length > 0) return best
+    }
+    return {}
+  })
+}
+
+// prepareForwardList 在原生列表数据模型中精确选中实例与任务，调用 transpond 完成弹窗准备。
+async function prepareForwardList (page: Page, input: { tab: string, instanceId: string, jobTaskId: string, receiverId: string, receiverName: string, checkList: string[] }): Promise<void> {
+  await page.waitForFunction(({ tab, instanceId, jobTaskId }) => {
+    interface VNode { $children?: VNode[], $refs?: Record<string, unknown> }
+    const root = (window as unknown as { $vue?: VNode }).$vue
+    if (!root) return false
+    const queue: VNode[] = [root]
+    while (queue.length > 0) {
+      const node = queue.shift()!
+      const child = node.$refs?.[tab] as { tableData?: Array<Record<string, unknown>> } | undefined
+      if (child && Array.isArray(child.tableData)) {
+        return child.tableData.some(row => String(row.flowInstanceId ?? row.id ?? '') === instanceId && (!jobTaskId || String(row.jobTaskId ?? '') === jobTaskId))
+      }
+      queue.push(...(node.$children ?? []))
+    }
+    return false
+  }, { tab: input.tab, instanceId: input.instanceId, jobTaskId: input.jobTaskId }, { timeout: CAPTURE_TIMEOUT_MS })
+  await page.evaluate(async payload => {
+    interface VNode { $children?: VNode[], $refs?: Record<string, unknown> }
+    interface ListHost extends VNode {
+      tableData?: Array<Record<string, unknown>>
+      transpond?: (tab: string) => unknown
+      transpondVisible?: boolean
+      approveForm?: Record<string, unknown>
+    }
+    const native = (window as unknown as { __executorNative?: Record<string, unknown> }).__executorNative ?? ((window as unknown as { __executorNative: Record<string, unknown> }).__executorNative = {})
+    const root = (window as unknown as { $vue?: VNode }).$vue
+    const queue: VNode[] = root ? [root] : []
+    let host: ListHost | undefined
+    while (queue.length > 0 && !host) {
+      const node = queue.shift()!
+      const candidate = node.$refs?.[payload.tab] as ListHost | undefined
+      if (candidate && Array.isArray(candidate.tableData)) host = candidate
+      queue.push(...(node.$children ?? []))
+    }
+    if (!host || typeof host.transpond !== 'function') throw new Error(`原生列表页缺少 ${payload.tab}.transpond 入口`)
+    const rows = (host.tableData ?? []).filter(row => String(row.flowInstanceId ?? row.id ?? '') === payload.instanceId && (!payload.jobTaskId || String(row.jobTaskId ?? '') === payload.jobTaskId))
+    if (rows.length !== 1) throw new Error(`转发行匹配数量为 ${rows.length}，必须按实例和任务唯一命中`)
+    const dytable = host.$refs?.dytable as { selectDatas?: Array<Record<string, unknown>>, toggleRowSelection?: (row: Record<string, unknown>, selected: boolean) => void } | undefined
+    if (!dytable) throw new Error('转发列表缺少 dytable 选择接口')
+    if (typeof dytable.toggleRowSelection === 'function') dytable.toggleRowSelection(rows[0]!, true)
+    dytable.selectDatas = [rows[0]!]
+    await host.transpond(payload.tab)
+    if (host.transpondVisible !== true || !host.approveForm) throw new Error('原生转发弹窗未完成准备')
+    host.approveForm.personId = payload.receiverId
+    host.approveForm.personName = payload.receiverName
+    host.approveForm.checkList = payload.checkList
+    native.forwardList = host
+  }, input)
 }
 
 // collectHostPath 从捕获实例向下递归找目标组件链（按 $options.name 唯一命中），
@@ -136,13 +240,13 @@ async function collectHostPath (page: Page, targetNames: string[]): Promise<stri
   }, targetNames)
 }
 
-// countRelevantPageErrors 统计「无 URL 的页面异常」（真实 JS 崩溃：TypeError 等）。
+// collectPageErrorEvidence 统计「无 URL 的页面异常」（真实 JS 崩溃：TypeError 等），仅作证据。
 // 带 URL 的 Network Error/404 属请求级结果：目标请求的成败已由 trace（aborted/HTTP 状态/
 // isSuccess 包络）覆盖，FormMaking 外部服务（tools-server）的失败也与业务完成无关；
 // 实测同一请求 trace 为 fulfilled 仍会抛 Network Error（应用层噪声），按 URL 排除。
 // 选择要求的中间态业务消息（目标要求选分支/选人，选择继续后即被覆盖）同样不算终局异常：
 // 写层面的真相由 trace 的 supersede 逻辑裁决（completion.ts finalize）。
-async function countRelevantPageErrors (page: Page): Promise<number> {
+async function collectPageErrorEvidence (page: Page): Promise<number> {
   return page.evaluate(() => {
     const CHOICE_MESSAGES = ['手动条件分支,请选择', '请选择流程分支', '未设置审批人', '该分支需选择审批人，请先选择']
     const errors = (window as unknown as { __executorPageErrors?: Array<{ kind?: string, message?: string, url?: string }> }).__executorPageErrors ?? []
@@ -229,66 +333,65 @@ function parseTemplateCandidateIds (trace: { list: () => Array<{ url: string, st
   }
 }
 
-// formApiAvailable 探测按模式解析的真实表单数据接口是否存在（S5）：
-// 发起=FlowDialog.$refs.OtherSteps2.$refs.generateForm（InitFlowDialog.vue/FlowDialog 结构）；
-// 审批与重提=EnterpriseExamineDialog.$refs.generateForm（flowDetail.vue 结构）。
-// 注意：Playwright evaluate 返回值必须可 JSON 序列化，组件方法本身不能跨边界带回——
-// 所以这里只回布尔；setData/getValues 由 applyNodePatchViaPage 在页面内一次完成。
-async function formApiAvailable (page: Page, mode: string): Promise<boolean> {
-  const wantDialog = mode === 'initiate' ? 'FlowDialog' : 'EnterpriseExamineDialog'
-  return page.evaluate(want => {
-    interface VNode { $options?: { name?: string }, $children?: VNode[], $refs?: Record<string, unknown> }
-    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
-    const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
+// formApiAvailable 按“宿主是否提供读写接口”探测，不按渲染类型或组件名称分流。
+async function formApiAvailable (page: Page, _mode: string): Promise<boolean> {
+  return page.evaluate(() => {
+    interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
+    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
+    const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
     if (!container) return false
-    // 从捕获实例递归按 $options.name 找唯一宿主组件；找不到/多命中都视为缺失。
-    const found: VNode[] = []
-    const walk = (node: VNode): void => {
-      if (node?.$options?.name === want) { found.push(node); return }
-      for (const child of node.$children ?? []) walk(child)
+    const queue: unknown[] = [container]
+    const seen = new Set<unknown>()
+    while (queue.length > 0) {
+      const candidate = queue.shift()
+      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
+      seen.add(candidate)
+      const value = candidate as Record<string, unknown>
+      const hasPair = (typeof value.setData === 'function' && typeof value.getValues === 'function') ||
+        (typeof value.setValues === 'function' && typeof value.getValues === 'function') ||
+        (typeof value.setFormData === 'function' && typeof value.getFormData === 'function')
+      if (hasPair) return true
+      queue.push(...((value.$children as unknown[] | undefined) ?? []), ...Object.values((value.$refs as Record<string, unknown> | undefined) ?? {}))
     }
-    walk(container)
-    if (found.length !== 1) return false
-    const refs = found[0]!.$refs ?? {}
-    const form = (want === 'FlowDialog'
-      ? ((refs.OtherSteps2 as { $refs?: Record<string, unknown> } | undefined)?.$refs?.generateForm)
-      : refs.generateForm) as { setData?: unknown, getValues?: unknown } | undefined
-    return Boolean(form && typeof form.setData === 'function' && typeof form.getValues === 'function')
-  }, wantDialog)
+    return false
+  })
 }
 
-// applyNodePatchViaPage 在页面内一次完成「唯一宿主解析 → 只写允许字段 → 回读完整值」。
+// applyNodePatchViaPage 在页面内一次完成「数据接口解析 → 只写允许字段 → 回读完整值」。
 // 返回回读值；宿主缺失返回 null，由调用方按 unsupported 阻塞。
-async function applyNodePatchViaPage (page: Page, mode: string, patch: Record<string, unknown>, allowedKeys: string[]): Promise<Record<string, unknown> | null> {
-  const wantDialog = mode === 'initiate' ? 'FlowDialog' : 'EnterpriseExamineDialog'
-  return page.evaluate(({ want, patch, keys }) => {
-    interface VNode { $options?: { name?: string }, $children?: VNode[], $refs?: Record<string, unknown> }
-    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown } }).__executorNative
-    const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
+async function applyNodePatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[]): Promise<Record<string, unknown> | null> {
+  return page.evaluate(async ({ patch, keys }) => {
+    interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
+    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
+    const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
     if (!container) return null
-    const found: VNode[] = []
-    const walk = (node: VNode): void => {
-      if (node?.$options?.name === want) { found.push(node); return }
-      for (const child of node.$children ?? []) walk(child)
+    const queue: unknown[] = [container]
+    const seen = new Set<unknown>()
+    let api: Record<string, unknown> | null = null
+    while (queue.length > 0 && api === null) {
+      const candidate = queue.shift()
+      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
+      seen.add(candidate)
+      const value = candidate as Record<string, unknown>
+      if ((typeof value.setData === 'function' && typeof value.getValues === 'function') ||
+        (typeof value.setValues === 'function' && typeof value.getValues === 'function') ||
+        (typeof value.setFormData === 'function' && typeof value.getFormData === 'function')) api = value
+      queue.push(...((value.$children as unknown[] | undefined) ?? []), ...Object.values((value.$refs as Record<string, unknown> | undefined) ?? {}))
     }
-    walk(container)
-    if (found.length !== 1) return null
-    const refs = found[0]!.$refs ?? {}
-    const form = (want === 'FlowDialog'
-      ? ((refs.OtherSteps2 as { $refs?: Record<string, unknown> } | undefined)?.$refs?.generateForm)
-      : refs.generateForm) as { setData?: unknown, getValues?: unknown } | undefined
-    if (!form || typeof form.setData !== 'function' || typeof form.getValues !== 'function') return null
+    if (!api) return null
     const picked: Record<string, unknown> = {}
     for (const key of keys) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) picked[key] = patch[key]
       const virtual = `${key}__virtualName`
       if (Object.prototype.hasOwnProperty.call(patch, virtual)) picked[virtual] = patch[virtual]
     }
-    ;(form.setData as (values: Record<string, unknown>) => void)(picked)
-    const values = (form.getValues as () => Record<string, unknown>)()
+    const setter = (api.setData ?? api.setValues ?? api.setFormData) as (values: Record<string, unknown>) => unknown
+    const getter = (api.getValues ?? api.getFormData) as () => unknown
+    await setter.call(api, picked)
+    const values = await getter.call(api)
     if (values === null || values === undefined || typeof values !== 'object') return null
-    return values
-  }, { want: wantDialog, patch, keys: allowedKeys })
+    return values as Record<string, unknown>
+  }, { patch, keys: allowedKeys })
 }
 
 // waitForOptionsReady 等待远程选项/联动收敛：trace 无在途转发请求且条目数保持稳定窗。
@@ -407,8 +510,12 @@ function nativeURL (origin: string, payload: Record<string, unknown>): string {
     if (payload.toolFlowName) params.set('title', String(payload.toolFlowName))
     return `${origin}#/flow/initiate?${params.toString()}`
   }
+  if (mode === 'forward') {
+    const tab = String(payload.forwardTab ?? 'backlog')
+    return `${origin}#/flow/approve/${encodeURIComponent(tab)}?tab=${encodeURIComponent(tab)}`
+  }
   const instanceId = String(payload.instanceId ?? '')
-  const detailMode = mode === 'approve' || mode === 'forward' ? 'audit' : mode
+  const detailMode = mode === 'approve' ? 'audit' : mode
   const params = new URLSearchParams()
   params.set('mode', detailMode)
   const relevance = Array.isArray(payload.flowInstanceBizRelevanceList) ? payload.flowInstanceBizRelevanceList : []
@@ -502,7 +609,11 @@ async function main (): Promise<void> {
           lastChoiceError: null,
           choiceState: { continued: false },
           identity: null,
-          nativeHost: null
+          nativeHost: null,
+          loadMode: '',
+          instanceId: '',
+          forwardPostscriptRequired: false,
+          formBefore: {}
         })
         send(200, { sessionId: record.sessionId, status: record.status })
       })().catch(error => {
@@ -599,19 +710,20 @@ async function main (): Promise<void> {
                 stepId: session.stepId,
                 payload: requestPayload
               })
-              if (requestPayload.url.includes('/web/flowInstanceApi/transpond') && outcome.httpStatus === 200) {
+              let parsedResponse: { isSuccess?: boolean, data?: { errorType?: string }, message?: string } | null = null
+              if (outcome.body) {
+                try {
+                  const text = outcome.bodyEncoding === 'base64' ? Buffer.from(outcome.body, 'base64').toString('utf8') : outcome.body
+                  parsedResponse = JSON.parse(text)
+                } catch { parsedResponse = null }
+              }
+              if (requestPayload.url.includes('/web/flowInstanceApi/transpond') && outcome.httpStatus === 200 && parsedResponse?.isSuccess !== false) {
                 session.transpondConfirmed = true
               }
               // 选择要求识别（S6/P1-6）：流程写响应 isSuccess=false 且 errorType 属于三种选择错误时，
               // 置位 choicePending 并向 Go 发 choice_required 事件；继续命令经 choice_continue 回来。
               if (requestPayload.method === 'POST' && outcome.httpStatus === 200 && outcome.body) {
-                let parsed: { isSuccess?: boolean, data?: { errorType?: string }, message?: string } | null = null
-                try {
-                  const text = outcome.bodyEncoding === 'base64'
-                    ? Buffer.from(outcome.body, 'base64').toString('utf8')
-                    : outcome.body
-                  parsed = JSON.parse(text)
-                } catch { parsed = null }
+                const parsed = parsedResponse
                 const errorType = String(parsed?.data?.errorType ?? '')
                 if (parsed && parsed.isSuccess === false && (CHOICE_ERRORS as readonly string[]).includes(errorType)) {
                   session.choicePending = true
@@ -631,9 +743,26 @@ async function main (): Promise<void> {
           })
           await session.page.addInitScript(injectIdentityScript(payload))
           await session.page.goto(nativeURL(pageOrigin.url, payload), { waitUntil: 'domcontentloaded' })
-          // 捕获失败直接抛错 → 500 门禁保留；绝不把「没捕到」当装载成功。
-          session.nativeHost = await waitForExecutorNative(session.page)
           const mode = String(payload.mode ?? 'initiate')
+          session.loadMode = mode
+          session.instanceId = String(payload.instanceId ?? '')
+          session.forwardPostscriptRequired = Array.isArray(payload.forwardCheckList) && payload.forwardCheckList.map(String).includes('fuyan')
+          // 转发使用列表页自身组件；其他模式由 $initFlow/$flowDetail 捕获宿主。
+          if (mode === 'forward') {
+            const tab = String(payload.forwardTab ?? 'backlog')
+            await prepareForwardList(session.page, {
+              tab,
+              instanceId: session.instanceId,
+              jobTaskId: String(payload.jobTaskId ?? ''),
+              receiverId: String(payload.receiverId ?? ''),
+              receiverName: String(payload.receiverName ?? ''),
+              checkList: Array.isArray(payload.forwardCheckList) ? payload.forwardCheckList.map(String) : []
+            })
+            session.nativeHost = { forwardList: true }
+          } else {
+            // 捕获失败直接抛错，绝不把“没捕到”当装载成功。
+            session.nativeHost = await waitForExecutorNative(session.page)
+          }
           const warnings: string[] = []
           let templateId = ''
           let templateCandidates: string[] = []
@@ -698,8 +827,10 @@ async function main (): Promise<void> {
               warnings.push('原生自行装载的模板与绑定模板不一致，已用 getFlowFindById 纠正')
             }
             hostPath = await collectHostPath(session.page, ['InitFlowDialog', 'FlowDialog'])
+          } else if (mode === 'forward') {
+            hostPath = ['GroupApproveManage', String(payload.forwardTab ?? 'backlog')]
           } else {
-            resolveDetailSemantics(mode === 'approve' || mode === 'forward' ? 'audit' : mode, {
+            resolveDetailSemantics(mode === 'approve' ? 'audit' : mode, {
               jobTaskId: String(payload.jobTaskId ?? ''),
               flowInstanceId: String(payload.instanceId ?? '')
             })
@@ -758,6 +889,11 @@ async function main (): Promise<void> {
             patchReadback = readback
           }
 
+          session.formBefore = await readNativeFormSnapshot(session.page)
+          if (mode !== 'initiate' && mode !== 'forward' && Object.keys(session.formBefore).length === 0) {
+            throw new UnsupportedFormError('实例表单正文尚未加载，拒绝让空表单进入写动作')
+          }
+
           session.loaded = true
           session.identity = {
             mode,
@@ -812,7 +948,7 @@ async function main (): Promise<void> {
       return
     }
     wss.handleUpgrade(request, socket, head, ws => {
-      session.channel.attach(ws)
+       if (!session.channel.attach(ws)) return
       ws.on('message', (data: Buffer) => {
         void (async () => {
           let envelope: MessageEnvelope
@@ -860,14 +996,14 @@ async function main (): Promise<void> {
           try {
             session.actionInFlight = true
             const baselineSeq = session.route!.trace.lastSeq
-            // 页面异常基线（S7）：业务完成信号=主写端点成功 + 动作期无新增页面异常。
-            // 幻影 __businessError 已删除：判据必须有写入方（__executorPageErrors 由注入脚本写入）。
-            const errorsAtBaseline = await countRelevantPageErrors(session.page)
+            // 页面异常只保留为证据，不参与终局；终局只看动作期望写端点响应。
+            const errorsAtBaseline = await collectPageErrorEvidence(session.page)
             let dispatchFacts: { component: string, method: string } | null = null
             if (!readOnly) {
-              const payload = (envelope.payload ?? {}) as { auditDesc?: string, nextNodeAuditors?: DispatchInput['nextNodeAuditors'] }
+              const payload = (envelope.payload ?? {}) as { auditDesc?: string, loadMode?: string, nextNodeAuditors?: DispatchInput['nextNodeAuditors'] }
               dispatchFacts = await dispatchBusinessAction(session.page, {
                 action,
+                loadMode: payload.loadMode ?? session.loadMode,
                 auditDesc: payload.auditDesc,
                 nextNodeAuditors: payload.nextNodeAuditors
               })
@@ -882,25 +1018,9 @@ async function main (): Promise<void> {
                 action,
                 trace: session.route!.trace,
                 baselineSeq,
-                businessDone: async () => {
-                  const entries = session.route!.trace.list().filter(e => e.seq > baselineSeq)
-                  const flowWrites = entries.filter(e =>
-                    e.method === 'POST' &&
-                    e.state === 'fulfilled' &&
-                    e.response?.httpStatus === 200 &&
-                    !isPermissionCheckSubmit(e) &&
-                    detectFlowRejection(e) === null &&
-                    ['/web/flowInstanceApi/submit', '/flowInstanceApi/audit', '/web/flowInstanceApi/transpond',
-                      '/web/flowInstanceApi/storageFormData', '/web/flowInstanceApi/reSubmit'
-                    ].some(path => e.url.includes(path))
-                  )
-                  if (flowWrites.length === 0) return false
-                  // 与基线同一口径：只统计无 URL 的页面异常（真实 JS 崩溃）。
-                  const relevantErrors = await countRelevantPageErrors(session.page).catch(() => -1)
-                  return relevantErrors === errorsAtBaseline
-                },
                 hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000),
                 idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),
+                forwardPostscriptRequired: session.forwardPostscriptRequired,
                 gate: async () => {
                   if (!session.choicePending) return true
                   // 选择继续未在窗口内到达（Go 侧放弃闭环）：放行判定，让完成检测按目标拒绝收口。
@@ -914,7 +1034,8 @@ async function main (): Promise<void> {
             const debugWrites = session.route!.trace.list()
               .filter(e => e.seq > baselineSeq &&
                 ['/web/flowInstanceApi/submit', '/flowInstanceApi/audit', '/web/flowInstanceApi/transpond',
-                  '/web/flowInstanceApi/storageFormData', '/web/flowInstanceApi/reSubmit'].some(p => e.url.includes(p)))
+                  '/web/flowInstanceApi/storageFormData', '/web/flowInstanceApi/reSubmit',
+                  '/web/flowInstancePostscript/save'].some(p => e.url.includes(p)))
               .map(e => {
                 let bodyText = e.body ?? ''
                 if (e.bodyEncoding === 'base64') bodyText = Buffer.from(bodyText, 'base64').toString('utf8')
@@ -926,7 +1047,10 @@ async function main (): Promise<void> {
                 }
                 return {
                   seq: e.seq, url: e.url, state: e.state, httpStatus: e.response?.httpStatus ?? 0,
+                  writeSequence: e.writeSequence,
                   isPermissionCheck: isPermissionCheckSubmit(e),
+                  requestBody: bodyText,
+                  responseBody: responseText,
                   requestBodyExcerpt: bodyText.slice(0, 300),
                   responseBodyExcerpt: responseText.slice(0, 600)
                 }
@@ -937,13 +1061,36 @@ async function main (): Promise<void> {
             // 新实例 ID（发起链）：主实例写响应 data.id 是引擎核验与后续步骤的实例引用来源。
             let newInstanceId = ''
             for (const write of debugWrites) {
-              if (write.isPermissionCheck || !write.url.includes('/web/flowInstanceApi/submit')) continue
-              const match = /"id":"([0-9a-f]{32})"/.exec(write.responseBodyExcerpt)
-              if (match) { newInstanceId = match[1]!; break }
+              if (write.isPermissionCheck || !write.url.includes('/web/flowInstanceApi/submit') || !write.responseBody) continue
+              try {
+                const parsed = JSON.parse(write.responseBody) as { data?: { id?: unknown } }
+                const responseId = String(parsed?.data?.id ?? '').trim()
+                if (responseId) { newInstanceId = responseId; break }
+              } catch {}
             }
+            let finalVerdict = verdict
+            if ((action === 'save_draft' || action === 'submit') && session.instanceId && newInstanceId && session.instanceId !== newInstanceId) {
+              finalVerdict = {
+                status: 'failed' as const,
+                message: `原实例 ${session.instanceId} 与写响应实例 ${newInstanceId} 不一致，已按重复实例缺陷停止`,
+                requestTrace: verdict.requestTrace
+              }
+            }
+            const formAfter = await readNativeFormSnapshot(session.page).catch(() => ({}))
             const verdictWithFacts = {
-              ...verdict,
-              businessSummary: { dispatched: dispatchFacts, newInstanceId, debugWrites, pageErrors: allPageErrors, relevantErrorsAtEnd: await countRelevantPageErrors(session.page).catch(() => -1), relevantErrorsAtBaseline: errorsAtBaseline }
+              ...finalVerdict,
+              businessSummary: {
+                dispatched: dispatchFacts,
+                newInstanceId,
+                debugWrites,
+                formBefore: session.formBefore,
+                formAfter,
+                fieldCountBefore: Object.keys(session.formBefore).length,
+                fieldCountAfter: Object.keys(formAfter).length,
+                pageErrors: allPageErrors,
+                relevantErrorsAtEnd: await collectPageErrorEvidence(session.page).catch(() => -1),
+                relevantErrorsAtBaseline: errorsAtBaseline
+              }
             }
             sendEnvelope(ws, session, 'result', envelope.requestId, verdictWithFacts)
           } catch (error) {
@@ -955,7 +1102,7 @@ async function main (): Promise<void> {
           console.error('[executor] WS 处理失败：', error)
         })
       })
-      ws.on('close', () => { session.channel.detachAll('Go 通道已断开') })
+       ws.on('close', () => { session.channel.detach(ws, '执行通道连接中断') })
     })
   })
 

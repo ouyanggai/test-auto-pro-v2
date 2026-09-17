@@ -79,16 +79,10 @@ func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, loadBaseURL stri
 	e.runtimeBaseURL = loadBaseURL
 }
 
-// shouldRunViaRuntime 判定本步是否走 runtime：仅 FormMaking 渲染的七个表单动作 + 已配置 runtime 能力。
+// shouldRunViaRuntime 判定本步是否走 runtime：原生页面支持的渲染类型统一承载七个表单动作。
 // Go 直连动作（加签/移交/回退/取回/撤回/催办/关注/取消关注）与系统节点永不经 runtime。
-// S8 采用方案 B（保守口径）：执行服务只实现了 FormMaking 页面装载与动作族，NoFormFlow/Vue 自定义页
-// 不再因「路由放开、能力缺失」并存而进入 runtime 后被 FormProxyID 门禁拦截——这里直接按渲染类型
-// 收窄，非 FormMaking 的七个动作由既有 Go 直连路径处理，F-036 范围口径同步收敛。
 func (e *Executor) shouldRunViaRuntime(runCtx RunContext, step model.CompiledActionStep) bool {
 	if e.runtimeRunner == nil {
-		return false
-	}
-	if runCtx.RenderType != string(target.FormRenderTypeFormMaking) {
 		return false
 	}
 	switch step.Action {
@@ -117,13 +111,20 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 		return true
 	}
-	if strings.TrimSpace(runCtx.FormProxyID) == "" {
-		preview.writeSent = false
-		preview.writeErr = fmt.Errorf("运行上下文缺少 FormMaking 表单代理 ID，runtime 装载被阻塞")
-		preview.writeErrClass = model.FailureClassGateBlocked
-		preview.runtimeHandled = true
-		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
-		return true
+	// 转发接收人是目标转发弹窗的强制输入；缺失时在任何目标读取前阻塞。
+	receiverID := ""
+	receiverName := ""
+	if step.Action == model.ActionForward {
+		receiverID = firstActionPersonID(runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)])
+		if strings.TrimSpace(receiverID) == "" {
+			preview.writeSent = false
+			preview.writeErr = fmt.Errorf("转发动作未配置接收人，拒绝经 runtime 执行")
+			preview.writeErrClass = model.FailureClassGateBlocked
+			preview.runtimeHandled = true
+			log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+			return true
+		}
+		receiverName = personNameFor(runCtx, receiverID)
 	}
 	// 审批族动作的目标载荷硬依赖任务号（audit 载荷 data.jobTaskId）：
 
@@ -131,7 +132,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	// 读取失败或目标已无待办一律阻塞，绝不带空任务号进入 runtime。
 	jobTaskID := ""
 	switch step.Action {
-	case model.ActionApprove, model.ActionReject, model.ActionStorageFormData:
+	case model.ActionApprove, model.ActionReject, model.ActionStorageFormData, model.ActionForward:
 		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
 		_, snapshot, snapErr := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
 		if snapErr != nil {
@@ -166,22 +167,6 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
 		return true
 	}
-	// 转发接收人是目标转发弹窗的强制输入（flowTypeMixin：请选择人员）：
-	// 缺失时写前阻塞，绝不进入目标页面（评审 P1-4）。
-	receiverID := ""
-	receiverName := ""
-	if step.Action == model.ActionForward {
-		receiverID = firstActionPersonID(runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)])
-		if strings.TrimSpace(receiverID) == "" {
-			preview.writeSent = false
-			preview.writeErr = fmt.Errorf("转发动作未配置接收人，拒绝经 runtime 执行")
-			preview.writeErrClass = model.FailureClassGateBlocked
-			preview.runtimeHandled = true
-			log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
-			return true
-		}
-		receiverName = personNameFor(runCtx, receiverID)
-	}
 	// 目标代理与节点事实（评审 P1-3）：FlowDialog/审批组件的最终流程载荷直接消费这些字段。
 	// 表单代理优先用实例当前事实（重提/加签后可能变化），回落实计划模板事实。
 	formProxyID := firstNonEmpty(preview.Facts.FormProxyID, runCtx.FormProxyID)
@@ -207,8 +192,8 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		Permissions:   runCtx.Nodes[step.NodeKey].EditableFields,
 		ChangedFields: preview.FormOverlaid,
 		// 代理与节点事实：目标提交按 formId 决定发送 formProxyId/flowProxyId（评审 P1-3 根因）。
-		FormProxyID:          formProxyID,
-		FlowProxyID:          flowProxyID,
+		FormProxyID: formProxyID,
+		FlowProxyID: flowProxyID,
 		// 发起装载专用的计划绑定模板 ID：新发起来源下计划目标对象 ID 就是 /web/flowTemplateApi/list
 		// 返回的模板 ID（target_read.go 以它调 ReadTemplateConfiguration）；与表单/流程代理 ID 语义不同，
 		// 绝不互用（P1-2）。
@@ -221,6 +206,29 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		ReceiverName:         receiverName,
 		BranchNodeAuditTypes: branchAuditTypes(runCtx),
 		BaseURL:              e.runtimeBaseURL,
+	}
+	// 装载模式由持久化实例事实决定：首次草稿走发起，已有主实例的后续草稿走待发编辑。
+	switch step.Action {
+	case model.ActionSaveDraft:
+		if strings.TrimSpace(runCtx.PathRun.MainInstanceRef) == "" {
+			runRequest.LoadMode = runtimeexec.LoadModeInitiate
+		} else {
+			runRequest.LoadMode = runtimeexec.LoadModeEdit
+		}
+	case model.ActionSubmit:
+		runRequest.LoadMode = runtimeexec.LoadModeInitiate
+	case model.ActionResubmit:
+		runRequest.LoadMode = runtimeexec.LoadModeEdit
+	case model.ActionForward:
+		runRequest.LoadMode = runtimeexec.LoadModeForward
+		runRequest.ForwardCheckList = stringSliceParameter(step.Parameters, "forwardCheckList")
+		if strings.EqualFold(strings.TrimSpace(runCtx.Source), "pending") || strings.EqualFold(strings.TrimSpace(runCtx.Source), "backlog") {
+			runRequest.ForwardTab = "backlog"
+		} else {
+			runRequest.ForwardTab = "dueout"
+		}
+	default:
+		runRequest.LoadMode = runtimeexec.LoadModeApprove
 	}
 	// 选择闭环配置（T010B）：分支选择是「分支节点 ID → 所选分支入口节点 ID」，
 	// 键值各归其位；只带入口会丢掉分支节点归属，目标无法匹配候选分支。
@@ -287,6 +295,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		}
 		return true
 	}
+	result = e.protectRuntimeFormBody(ctx, runCtx, step, session, result, log, approved.Attempt)
 	preview.runtimeHandled = true
 	e.rememberRuntimeFacts(preview, result)
 	preview.writeResponse = target.WriteResponse{StatusCode: 200, IsSuccessPresent: true, IsSuccess: result.Status == "success"}
@@ -325,6 +334,91 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	return true
 }
 
+// stringSliceParameter 从动作参数读取字符串数组；非数组或空项直接忽略，绝不猜测配置值。
+func stringSliceParameter(parameters map[string]any, key string) []string {
+	value, ok := parameters[key]
+	if !ok {
+		return nil
+	}
+	result := []string{}
+	switch items := value.(type) {
+	case []string:
+		for _, item := range items {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+	case []any:
+		for _, item := range items {
+			if trimmed := strings.TrimSpace(fmt.Sprint(item)); trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+	}
+	return result
+}
+
+// protectRuntimeFormBody 用目标写后回读补齐正文证据，并在字段数明显减少时改判业务失败。
+// 页面快照只证明写前装载完整；写后事实必须以 Go 重新读取目标实例为准。
+func (e *Executor) protectRuntimeFormBody(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, result runtimeexec.ActionRunResult, log *StepLog, attempt int) runtimeexec.ActionRunResult {
+	if result.Status != "success" {
+		return result
+	}
+	switch step.Action {
+	case model.ActionStorageFormData, model.ActionApprove, model.ActionReject:
+	default:
+		return result
+	}
+	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	if instanceID == "" {
+		return result
+	}
+	current, err := e.target.ReadInstanceCurrentData(ctx, session, instanceID)
+	if err != nil {
+		result.Status = "business_failed"
+		result.Message = "runtime 表单正文写后回读失败，无法证明写后正文完整：" + err.Error()
+		log.Phase("verify", step.Sequence, attempt, result.Message)
+		return result
+	}
+	summary := map[string]any{}
+	if len(result.BusinessSummary) > 0 {
+		_ = json.Unmarshal(result.BusinessSummary, &summary)
+	}
+	before := runtimeSummaryFieldCount(summary["fieldCountBefore"])
+	after := len(current)
+	summary["formAfter"] = current
+	summary["fieldCountAfter"] = after
+	if encoded, encodeErr := json.Marshal(summary); encodeErr == nil {
+		result.BusinessSummary = encoded
+	}
+	if before > 0 && after < before {
+		result.Status = "business_failed"
+		result.Message = fmt.Sprintf("写后表单正文字段明显减少：写前 %d 个，写后 %d 个；已阻止继续执行", before, after)
+		log.Phase("verify", step.Sequence, attempt, result.Message)
+	}
+	return result
+}
+
+// runtimeSummaryFieldCount 把 JSON 解码后的字段数收敛为非负整数。
+func runtimeSummaryFieldCount(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		if typed > 0 {
+			return int(typed)
+		}
+	case json.Number:
+		parsed, _ := typed.Int64()
+		if parsed > 0 {
+			return int(parsed)
+		}
+	case int:
+		if typed > 0 {
+			return typed
+		}
+	}
+	return 0
+}
+
 // ShouldRunViaRuntimeForTest 暴露路由判定，供契约测试锁定「哪些动作走 runtime」。
 func (e *Executor) ShouldRunViaRuntimeForTest(runCtx RunContext, step model.CompiledActionStep) bool {
 	return e.shouldRunViaRuntime(runCtx, step)
@@ -350,7 +444,7 @@ func (e *Executor) rememberRuntimeFacts(preview *StepPreview, result runtimeexec
 	}
 	// 轨迹为空时投影仍会给出「流程动作未发出」的三阶段视图，如实呈现比留空更可解释。
 	projection := runtimeexec.BuildDetailProjection(
-		runtimeexec.ActionRunResult{Status: preview.runtimeStatus, Message: preview.runtimeMessage},
+		runtimeexec.ActionRunResult{Status: preview.runtimeStatus, Message: preview.runtimeMessage, BusinessSummary: result.BusinessSummary},
 		preview.runtimeRequestTrace,
 		runtimeexec.ProtocolVersion,
 	)

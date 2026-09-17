@@ -2,6 +2,7 @@
 // 目标 /web、/flowInstanceApi、文件请求一律转发 Go；未登记外部请求本地拒绝。
 
 import type { Page, Request, Route } from 'playwright'
+import { canSendForwardStep } from './completion.ts'
 import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
 
 
@@ -40,6 +41,7 @@ export interface TargetRouteOptions {
     body?: string
     bodyEncoding: 'utf8' | 'base64'
     action: string
+    writeSequence?: number
   }) => Promise<ForwardOutcome>
   // toolFlowName 非空时，主实例 submit 请求（保存草稿/提交）的 data.name 在发出前恢复为工具流程名称，
   // 目标页面脚本拼装的名称不得覆盖工具值（设计 5.2）；其他业务字段保留目标脚本结果。
@@ -111,13 +113,33 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       }
     }
     const bodyEncoding: 'utf8' | 'base64' = 'base64'
+    const writeSequence = request.method() === 'POST' && request.url().includes('/web/flowInstanceApi/transpond')
+      ? 1
+      : request.method() === 'POST' && request.url().includes('/web/flowInstancePostscript/save') ? 2 : undefined
+    if (writeSequence !== undefined && !canSendForwardStep(trace.list(), writeSequence)) {
+      const entry = trace.begin({
+        method: request.method(),
+        url: request.url(),
+        headers: await safeHeaders(request),
+        action: '',
+        body,
+        bodyEncoding: body ? bodyEncoding : undefined,
+        writeSequence
+      })
+      trace.markAborted(entry, 'blocked', writeSequence === 1
+        ? '转发主请求已登记，禁止重复发送'
+        : '转发主请求尚未确认成功或附言已登记，禁止发送附言')
+      await route.abort('blockedbyclient')
+      return
+    }
     const entry: TraceEntry = trace.begin({
       method: request.method(),
       url: request.url(),
       headers: await safeHeaders(request),
       action: '',
       body,
-      bodyEncoding: body ? bodyEncoding : undefined
+      bodyEncoding: body ? bodyEncoding : undefined,
+      writeSequence
     })
     try {
       const outcome = await options.forward({
@@ -126,7 +148,8 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
         headers: entry.headers,
         body: entry.body,
         bodyEncoding: entry.bodyEncoding ?? 'utf8',
-        action: entry.action
+        action: entry.action,
+        writeSequence: entry.writeSequence
       })
       trace.markFulfilled(entry, {
         httpStatus: outcome.httpStatus,

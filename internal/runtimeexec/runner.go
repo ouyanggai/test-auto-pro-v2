@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,18 +34,18 @@ type RuntimeRunRequest struct {
 	Account   string
 	Action    string
 	// ToolFlowName 是工具流程名称：最终流程请求中目标脚本不得改写。
-	ToolFlowName         string
-	Session              SessionFacts
-	Initiator            ActorIdentity
-	Values               json.RawMessage
-	Permissions          []string
-	ChangedFields        []string
-	InstanceID           string
-	JobTaskID            string
-	NodeProxyID          string
-	AuditDesc            string
-	FormProxyID          string
-	FlowProxyID          string
+	ToolFlowName  string
+	Session       SessionFacts
+	Initiator     ActorIdentity
+	Values        json.RawMessage
+	Permissions   []string
+	ChangedFields []string
+	InstanceID    string
+	JobTaskID     string
+	NodeProxyID   string
+	AuditDesc     string
+	FormProxyID   string
+	FlowProxyID   string
 	// FlowTemplateID 是计划绑定的流程模板 ID：发起装载用它精确选中模板（P1-2 专字段）。
 	FlowTemplateID       string
 	SelectFlowType       string
@@ -54,6 +55,7 @@ type RuntimeRunRequest struct {
 	ReceiverID           string
 	ReceiverName         string
 	ForwardCheckList     []string
+	ForwardTab           string
 	BranchSelections     []BranchSelection
 	NextNodeAuditors     []NextAuditorEntry
 	BranchNodeAuditTypes map[string]string
@@ -131,10 +133,12 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 
 	// ⓪ 预热命令通道：装载期页面的目标读取（模板、字段权限、远程选项）要经 WS 转发 Go，
 	// 必须先于装载连接；若等 Execute 才连通道，装载期读取全部被本地中止，表单装载不完
-	// （2026-09-16 真实验收实测）。预热失败不阻断（Execute 仍会重连）。
-	if closeWS, prewarmErr := r.client.Prewarm(ctx, handle.SessionID, request.Account); prewarmErr == nil {
-		defer closeWS()
+	// （2026-09-16 真实验收实测）。预热连接也是动作连接，失败时不能继续装载。
+	closeWS, prewarmErr := r.client.Prewarm(ctx, handle.SessionID, request.Account)
+	if prewarmErr != nil {
+		return ActionRunResult{}, fmt.Errorf("预热 runtime 通道失败：%w", prewarmErr)
 	}
+	defer closeWS()
 
 	// ① 装载：发起模式（submit/save_draft）由目标自装载模板（载荷带 flowId 由执行器填写）；
 	// 审批模式注入模板/值/权限。
@@ -169,6 +173,7 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		ReceiverID:       request.ReceiverID,
 		ReceiverName:     request.ReceiverName,
 		ForwardCheckList: request.ForwardCheckList,
+		ForwardTab:       request.ForwardTab,
 	}, request.Values)
 
 	if err != nil {
@@ -193,10 +198,13 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	choiceSent := false
 	// writeTraces 收集页面写请求经 Go 转发的传输层 trace：证据与尝试行 trace 的唯一来源。
 	writeTraces := []string{}
+	var writeTracesMu sync.Mutex
 	callbacks := ExecuteCallbacks{
 		OnWriteTrace: func(traceID string) {
 			if strings.TrimSpace(traceID) != "" {
+				writeTracesMu.Lock()
 				writeTraces = append(writeTraces, strings.TrimSpace(traceID))
+				writeTracesMu.Unlock()
 			}
 		},
 		OnChoiceRequired: func(eventData json.RawMessage) *Message {
@@ -225,6 +233,7 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	}
 	actionPayload, err := json.Marshal(map[string]any{
 		"action":           normalizeAction(request.Action),
+		"loadMode":         loadMode,
 		"instanceId":       request.InstanceID,
 		"jobTaskId":        request.JobTaskID,
 		"nodeProxyId":      request.NodeProxyID,
@@ -246,13 +255,17 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	}, callbacks)
 	if err != nil {
 		// 连接断开等错误同样带回已收集的写请求 trace：不确定判定的对账与登记证据不能丢。
+		writeTracesMu.Lock()
+		defer writeTracesMu.Unlock()
 		return ActionRunResult{WriteTraceIDs: writeTraces}, err
 	}
 	var payload ActionRunResult
 	if err := json.Unmarshal(result.Payload, &payload); err != nil {
 		return ActionRunResult{}, fmt.Errorf("结果载荷解析失败：%w", err)
 	}
-	payload.WriteTraceIDs = writeTraces
+	writeTracesMu.Lock()
+	payload.WriteTraceIDs = append([]string(nil), writeTraces...)
+	writeTracesMu.Unlock()
 	payload.NewInstanceID = extractNewInstanceID(payload.BusinessSummary)
 	return payload, nil
 }

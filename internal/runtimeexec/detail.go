@@ -41,6 +41,7 @@ type RuntimeRequestSummary struct {
 type RuntimeExecutionDetail struct {
 	Stages            []RuntimeStage          `json:"stages"`
 	Requests          []RuntimeRequestSummary `json:"requests"`
+	BusinessSummary   json.RawMessage         `json:"businessSummary,omitempty"`
 	CapabilityVersion string                  `json:"capabilityVersion"`
 	Status            string                  `json:"status"`
 	Message           string                  `json:"message,omitempty"`
@@ -64,6 +65,7 @@ func BuildDetailProjection(result ActionRunResult, requestTrace json.RawMessage,
 	detail := RuntimeExecutionDetail{
 		Status:            result.Status,
 		Message:           result.Message,
+		BusinessSummary:   result.BusinessSummary,
 		CapabilityVersion: capabilityVersion,
 	}
 	var entries []runtimeDetailRequestEntry

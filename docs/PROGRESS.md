@@ -1,5 +1,12 @@
 # 当前进度
 
+- 2026-09-17 F-036 第二轮修复按用户要求暂停，状态保持 **implementing**。已完成代码主体：通道单连接复用、
+  接口终局判据、多次草稿 edit 模式、列表页原生转发与两笔写顺序门禁、所有原生渲染类型统一 runtime 路由、
+  表单正文写前快照/写后回读保护；已通过 TypeScript 类型检查、执行服务测试 73/73、runtime Go 契约与单测。
+  第 0 步已从真实 `SHOW TABLES` 核对 20 张表并清空 19 张业务表，保留 `schema_migrations`；
+  `logs/runs`、`logs/plans` 为空，12 份第一轮证据已归档。尚未跑强制真实 L1/L2、计划 A–G、七动作第二轮证据、
+  无表单真实路径、真实多次草稿/转发和最终聚合门禁，故不得进入 `ready_for_manual`。
+  暂停报告：`docs/auto/2026-09-18-f036-round2-run-report.md`。
 - 2026-09-17 迁移修复（macOS → Windows）：清掉三处只在 Mac 上成立的路径依赖，并把执行器跑起来。
   ① `flow-source` 不再复制本机静态目录，改为按 `executor-service/flow-source-manifest.json`
   直接从固定远端 git 同步（`test`/`bff4ef8`），脚本内零本机绝对路径；幂等（一致时只报告「已是最新」，
@@ -12,10 +19,8 @@
   `rsh-unified-vue3-web-test`、`rsh-unified-vue3-web-hot-fix` 共 5 个可正常用 git；
   修复脚本为 `scripts/repair-migrated-worktrees.ps1`（幂等、改写前备份、支持 `-DryRun`）。
   参考仓库清单远端统一为 SSH（HTTP 远端需凭据，本机未配置会挂住），`make refs-status` 13 个仓库全部可达。
-- 2026-09-17 F-036 第二轮修复后重新 **ready_for_manual**（夜间自主施工）。八个 P1 按真实运行证据闭环，
-  六个动作（草稿/提交/暂存/同意/不同意/重提）+ 手动分支选择闭环均有真实写证据（`docs/auto/evidence/`）；
-  转发未验证（预算满）；S8 采用方案 B（runtime 仅 FormMaking）属范围变更待用户确认。
-  晨报：`docs/auto/2026-09-17-f036-autonomous-run-report.md`；核对步骤见功能文档。
+- 2026-09-17 F-036 第一轮曾标为 **ready_for_manual** 的结论已被第二轮任务复核证伪；旧证据已归档，
+  不得再作为当前完成依据。当前状态与剩余项以上方第二轮暂停记录为准。
 - 2026-09-16 F-036 **ready_for_manual**。T001–T014 自动验证完成。可见页面和真实目标动作等待人工验收；不得自动开始下一功能。
 
 
