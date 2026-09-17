@@ -1485,26 +1485,31 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 					return outcome, lineNo, finishErr
 				}
 				return outcome, lineNo, nil
-			} else if account != "" && !strings.EqualFold(account, runCtx.PlanAccount) {
-				if locker, canLock := e.sessions.(interface{ LockAccountUsage(string) func() }); canLock && !strings.EqualFold(usageAccount, account) {
-					releaseActorUsage = locker.LockAccountUsage(account)
-					usageAccount = strings.TrimSpace(account)
-				}
-				actorSession, actorErr := e.sessions.Current(ctx, account)
-				if actorErr != nil {
-					class := model.FailureClassActorUnresolved
-					reason := "无法登录本节点实际处理人 " + nameOrFallback(name, account) + "：" + userFacingError(actorErr, target.WriteResponse{})
-					lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
-					if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
-						attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
-						return outcome, lineNo, recordErr
+			} else if account != "" {
+				if !strings.EqualFold(account, runCtx.PlanAccount) {
+					if locker, canLock := e.sessions.(interface{ LockAccountUsage(string) func() }); canLock && !strings.EqualFold(usageAccount, account) {
+						releaseActorUsage = locker.LockAccountUsage(account)
+						usageAccount = strings.TrimSpace(account)
 					}
-					if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
-						return outcome, lineNo, finishErr
+					actorSession, actorErr := e.sessions.Current(ctx, account)
+					if actorErr != nil {
+						class := model.FailureClassActorUnresolved
+						reason := "无法登录本节点实际处理人 " + nameOrFallback(name, account) + "：" + userFacingError(actorErr, target.WriteResponse{})
+						lineNo := log.Phase("prepare", step.Sequence, attemptNo, reason)
+						if recordErr := e.recordPrepareFailure(ctx, runCtx, step, preview, approved.RunCtx.SubmitBranchTargetNodeID,
+							attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
+							return outcome, lineNo, recordErr
+						}
+						if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+							return outcome, lineNo, finishErr
+						}
+						return outcome, lineNo, nil
 					}
-					return outcome, lineNo, nil
+					session = actorSession
 				}
-				session = actorSession
+				// 处理人就是计划账号本人时也必须回填执行者账号：runtime 会话创建按 accountKey
+				// 强校验，留空会被执行服务以 400 阻塞（2026-09-18 单路径真实运行实测，
+				// 协同发起人节点的同意因此失败）。此时会话本就是计划账号会话，无需切换。
 				preview.ActorAccount = account
 				if name != "" {
 					preview.ActorName = name

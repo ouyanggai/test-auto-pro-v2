@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/engine/verdict"
 	"test-auto-pro-v2/internal/model"
+	"test-auto-pro-v2/internal/runtimeexec"
 )
 
 // actorSwitchTarget 模拟目标返回实时待办的真实处理人（currentPendingUserId），
@@ -98,9 +100,10 @@ type accountRecordingSessions struct {
 }
 
 // Current 返回以账号派生 SID 的会话，便于断言写请求用的是谁的会话。
+// UserID 必须有值：runtime 装载按计划账号会话解析原发起人身份，缺 UserID 会在写前阻塞。
 func (s *accountRecordingSessions) Current(_ context.Context, account string) (target.Session, error) {
 	s.requested = append(s.requested, account)
-	return target.Session{SID: "sid-" + account, Summary: target.AccountSummary{Account: account, DisplayName: account}}, nil
+	return target.Session{SID: "sid-" + account, UserID: "user-plan", Summary: target.AccountSummary{Account: account, DisplayName: account}}, nil
 }
 
 // Refresh 与 Current 同形。
@@ -155,5 +158,75 @@ func TestApproveRunsAsRealtimeTaskAssignee(t *testing.T) {
 	}
 	if len(targetFake.writeAccounts) != 1 || targetFake.writeAccounts[0] != "zhangsan" {
 		t.Fatalf("写请求账号必须是实际处理人：writes=%v accounts=%v taskReads=%v requested=%v verdict=%s", targetFake.writeSIDs, targetFake.writeAccounts, targetFake.taskReadSIDs, sessions.requested, outcome.Verdict)
+	}
+}
+
+// recordingRuntimeRunner 记录引擎下发到 runtime 的每次动作请求，供账号字段断言使用。
+type recordingRuntimeRunner struct {
+	requests []runtimeexec.RuntimeRunRequest
+	// onRun 在每次 RunAction 时回调：测试用它翻转目标假件的已审批事实。
+	onRun func()
+}
+
+// Health 恒定可用：用例只关心请求字段，不关心执行服务连通性。
+func (r *recordingRuntimeRunner) Health(context.Context) error { return nil }
+
+// RunAction 记录请求并返回成功判定，让流程继续走到 Go 侧事实核验。
+func (r *recordingRuntimeRunner) RunAction(_ context.Context, request runtimeexec.RuntimeRunRequest) (runtimeexec.ActionRunResult, error) {
+	r.requests = append(r.requests, request)
+	if r.onRun != nil {
+		r.onRun()
+	}
+	return runtimeexec.ActionRunResult{Status: "success", RequestTrace: json.RawMessage(`[]`)}, nil
+}
+
+// TestApproveAsSelfAssigneeKeepsRuntimeAccountKey 锁定 2026-09-18 单路径真实运行的失败根因：
+// 当前待办的实际处理人就是计划账号本人时，runtime 会话创建的 accountKey 不能留空——
+// 执行服务按 accountKey/runId/pathRunId/stepId 强校验，空账号会让协同发起人节点的同意
+// 以「工具缺陷」失败。修复后处理人等于计划账号也要回填 preview.ActorAccount。
+func TestApproveAsSelfAssigneeKeepsRuntimeAccountKey(t *testing.T) {
+	targetFake := &actorSwitchTarget{
+		fakeTarget: &fakeTarget{
+			instance:    fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+			afterAudit:  &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-next"}},
+			auditResult: &target.AuditCurrentTaskResult{InstanceID: "instance-9", Status: "run"},
+		},
+		// 实时待办处理人解析出的登录账号 == 计划账号 oyg-test：触发「处理人=计划账号」分支。
+		ownerID:   "user-self",
+		ownerName: "骆蒙恩",
+		accounts:  map[string]string{"user-self": "oyg-test"},
+	}
+	sessions := &accountRecordingSessions{}
+	runtime := &recordingRuntimeRunner{onRun: func() { targetFake.fakeTarget.audited = true }}
+	executor := step.NewExecutor(targetFake, sessions, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	executor.EnableRuntimeExecution(runtime, "")
+	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
+	runCtx.PathRun.MainInstanceRef = "instance-9"
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || preview.BlockReason != "" {
+		t.Fatalf("审批预览构造失败：finished=%v err=%v block=%s", finished, err, previewBlock(preview))
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatalf("审批执行失败：%v", err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("审批应确定成功，实际 %+v actorAccount=%q writeErr=%v runtimeReq=%+v", outcome, preview.ActorAccount, preview.WriteErrForTest(), runtime.requests)
+	}
+	if len(runtime.requests) != 1 {
+		t.Fatalf("审批应恰好下发一次 runtime 动作，实际 %d 次", len(runtime.requests))
+	}
+	if got := strings.TrimSpace(runtime.requests[0].Account); got != "oyg-test" {
+		t.Fatalf("处理人=计划账号时 runtime 请求必须携带账号，实际 %q", got)
+	}
+	if got := strings.TrimSpace(preview.ActorAccount); got != "oyg-test" {
+		t.Fatalf("preview 执行者账号必须回填计划账号，实际 %q", got)
+	}
+	// 处理人就是计划账号本人：不得触发第二账号登录，写会话保持计划账号会话。
+	for _, account := range sessions.requested {
+		if account != "oyg-test" {
+			t.Fatalf("处理人=计划账号时不应登录其他账号：%v", sessions.requested)
+		}
 	}
 }
