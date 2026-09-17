@@ -1,0 +1,240 @@
+{
+  "account": "骆蒙恩",
+  "action": "reject",
+  "businessSummary": {
+    "dispatched": {
+      "component": "ExamineOpinion",
+      "method": "submitCheckBefore(\"no_pass\")"
+    },
+    "newInstanceId": "",
+    "debugWrites": [
+      {
+        "seq": 11,
+        "url": "http://192.168.1.220:38081/api/flowInstanceApi/audit",
+        "state": "fulfilled",
+        "httpStatus": 200,
+        "isPermissionCheck": false,
+        "requestBody": "{\"data\":{\"jobTaskId\":\"319fca63f3394cca912570e0b59b30f4\",\"auditRecord\":{\"auditStatus\":\"no_pass\",\"executeDesc\":\"自动验证意见\"},\"id\":\"5aa625f4002f4c0898d0f646d9651218\"},\"formDataMongoVo\":{\"data\":{\"\":\"\",\"myCompanyName\":\"{\\\"id\\\":\\\"6e1235cf416e4143947311c6cc93d78e\\\",\\\"name\\\":\\\"广东斯能投资有限责任公司\\\"}\",\"myUserName__condition\":\"骆蒙恩\",\"removeTime\":\"\",\"flowInstanceId\":\"5aa625f4002f4c0898d0f646d9651218\",\"myDepName\":\"{\\\"id\\\":\\\"3c002902cb0740e8831179839e55edfb\\\",\\\"name\\\":\\\"建设运营部\\\"}\",\"myUserName\":\"{\\\"id\\\":\\\"08e604bf0cbb44d4bdd545d3db0b0a87\\\",\\\"name\\\":\\\"骆蒙恩\\\"}\",\"myDepName__formPersonId\":\"3c002902cb0740e8831179839e55edfb\",\"vacateType\":\"产假\",\"myCompanyName__formPersonId\":\"6e1235cf416e4143947311c6cc93d78e\",\"fileupload_common_file\":[],\"vacateType__virtualName\":\"产假\",\"myDepName__condition\":\"建设运营部\",\"auto_audit_info_4\":\"\",\"auto_audit_info_3\":\"\",\"auto_audit_info_2\":\"\",\"auto_audit_info_1\":\"\",\"vacateTime\":\"2026-02-11\",\"myDutyName\":\"{}\",\"auto_audit_info_7\":\"\",\"auto_audit_info_6\":\"\",\"auto_audit_info_5\":\"\",\"vacateDayNum\":8,\"vacateReason\":\"回家\",\"time\":[\"2026-02-11\",\"2026-02-11\"],\"myCompanyName__condition\":\"广东斯能投资有限责任公司\",\"myUserName__formPersonId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"auto_audit_info_20\":\"\",\"global_user_basic_information\":{\"companyId\":\"6e1235cf416e4143947311c6cc93d78e\",\"userName\":\"骆蒙恩\",\"userId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\"}}},\"tracking\":false}",
+        "responseBody": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"5aa625f4002f4c0898d0f646d9651218\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"0546c9d3aa80455ab9045440a9991137\",\"createDate\":\"2026-09-18 04:56:57\",\"updateDate\":\"2026-09-18 04:58:01\",\"platformCode\":\"200001\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"batchNo\":\"fe93a57b63684354b492e2174d86333d\",\"name\":\"T-AUTO-F036R2-请假单-单路径-路径 1-2026-09-18 04:57:44-骆蒙恩-产假-8天\",\"currentDataId\":\"6a11ad4878cf4c4fb8a18d27448d273a\",\"status\":\"rejected\",\"statusList\":null,\"statusQ\":\"rejected\",\"flowProxyId\":\"73eaa9b297b54364a3c320d3002a1b4f\",\"formProxyId\":\"5222ef99bdab4826a14dd7ae1af4fd80\",\"formName\":null,\"flowName\":null,\"isExecuteBranch\":null,\"groupFlag\":null,\"conditionNodeId\":null,\"formExist\":null,\"currentNodeProxyId\":\"993daf28d7d94ed5b6302743b67d1c7d\",\"currentNodeName\":null,\"currentNodeType\":null,\"withdrawDesc\":\"自动验证意见\",\"abandonDesc\":null,\"auditRecord\":{\"id\":null,\"isDelete\":null,\"createrId\":null,\"updaterId\":null,\"createDate\":null,\"updateDate\":null,\"platformCode\":null,\"sort\":null,\"customerCode\":null,\"canDelete\":null,\"canUpdate\":null,\"executeDesc\":\"自动验证意见\",\"executorId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"executorName\":\"骆蒙恩\",\"flowInstanceId\":\"5aa625f4002f4c0898d0f646d9651218\",\"batchNo\":\"fe93a57b63684354b492e2174d86333d\",\"flowNodeProxyId\":\"a408500c0ef942e2a27f05a30be2a14a\",\"auditStatus\":\"no_pass\",\"mongoDataId\":\"6a11ad4878cf4c4fb8a18d27448d273a\",\"flowJobTaskId\":\"7d1d55e7abad434e9f93224f2f4159aa\",\"auditNodeName\":null,\"delete\":null},\"jobTaskId\":null,\"flowCode\":null,\"useScope\":null,\"useScopeQ\":null,\"auditWay\":\"enterprise\",\"auditWayList\":null,\"notAuditWayList\":null,\"initiator\":null,\"cusFormCode\":null,\"flowInstanceBizRelevanceList\":null,\"notQueryFlowInstanceBizRelevanceVo\":null,\"startDate\":null,\"endDate\":null,\"flowInstanceBizRelevance\":null,\"checkPermissions\":null,\"executeNodeType\":null,\"executeNodeId\":null,\"currentAuditUserInfo\":null,\"formCellData\":null,\"sn\":0,\"excelStationNames\":null,\"nextNodeAuditInfo\":null,\"initiatorIds\":null,\"initiatorName\":null,\"initCreateTime\":null,\"deviceType\":null,\"subprocessFlag\":null,\"subprocessAuditFlag\":false,\"existSubprocessFlag\":false,\"companyId\":\"6e1235cf416e4143947311c6cc93d78e\",\"source\":null,\"nodeName\":null,\"tracking\":null,\"separationFlowProxyFlag\":null,\"subType\":null,\"subId\":null,\"filterTicket\":null,\"groupName\":null,\"queryStartDate\":null,\"queryEndDate\":null,\"executorStartDate\":null,\"executorEndDate\":null,\"flowProxyIds\":null,\"urgeFlag\":null,\"executeBranch\":null,\"delete\":false},\"sid\":null,\"code\":\"RESP200\",\"platformCode\":null}",
+        "requestBodyExcerpt": "{\"data\":{\"jobTaskId\":\"319fca63f3394cca912570e0b59b30f4\",\"auditRecord\":{\"auditStatus\":\"no_pass\",\"executeDesc\":\"自动验证意见\"},\"id\":\"5aa625f4002f4c0898d0f646d9651218\"},\"formDataMongoVo\":{\"data\":{\"\":\"\",\"myCompanyName\":\"{\\\"id\\\":\\\"6e1235cf416e4143947311c6cc93d78e\\\",\\\"name\\\":\\\"广东斯能投资有限责任公司\\\"}\",\"myUserName__cond",
+        "responseBodyExcerpt": "{\"message\":\"success\",\"isSuccess\":true,\"data\":{\"id\":\"5aa625f4002f4c0898d0f646d9651218\",\"isDelete\":false,\"createrId\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"updaterId\":\"0546c9d3aa80455ab9045440a9991137\",\"createDate\":\"2026-09-18 04:56:57\",\"updateDate\":\"2026-09-18 04:58:01\",\"platformCode\":\"200001\",\"sort\":0,\"customerCode\":\"d4036cc6581141a8b13cf39387c8d6f2\",\"canDelete\":null,\"canUpdate\":null,\"batchNo\":\"fe93a57b63684354b492e2174d86333d\",\"name\":\"T-AUTO-F036R2-请假单-单路径-路径 1-2026-09-18 04:57:44-骆蒙恩-产假-8天\",\"currentDataId\":\"6a11ad4878cf4c4fb8a18d27448d273a\",\"status\":\"rejected\",\"statusList\":null,\"statusQ\":\"rejec"
+      }
+    ],
+    "formBefore": {
+      "": "",
+      "myCompanyName": "{\"id\":\"6e1235cf416e4143947311c6cc93d78e\",\"name\":\"广东斯能投资有限责任公司\"}",
+      "myUserName__condition": "骆蒙恩",
+      "removeTime": "",
+      "flowInstanceId": "5aa625f4002f4c0898d0f646d9651218",
+      "myDepName": "{\"id\":\"3c002902cb0740e8831179839e55edfb\",\"name\":\"建设运营部\"}",
+      "myUserName": "{\"id\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"name\":\"骆蒙恩\"}",
+      "myDepName__formPersonId": "3c002902cb0740e8831179839e55edfb",
+      "vacateType": "产假",
+      "myCompanyName__formPersonId": "6e1235cf416e4143947311c6cc93d78e",
+      "fileupload_common_file": [],
+      "vacateType__virtualName": "产假",
+      "myDepName__condition": "建设运营部",
+      "auto_audit_info_4": "",
+      "auto_audit_info_3": "",
+      "auto_audit_info_2": "",
+      "auto_audit_info_1": "",
+      "vacateTime": "2026-02-11",
+      "myDutyName": "{}",
+      "auto_audit_info_7": "",
+      "auto_audit_info_6": "",
+      "auto_audit_info_5": "",
+      "vacateDayNum": 8,
+      "vacateReason": "回家",
+      "time": [
+        "2026-02-11",
+        "2026-02-11"
+      ],
+      "myCompanyName__condition": "广东斯能投资有限责任公司",
+      "myUserName__formPersonId": "08e604bf0cbb44d4bdd545d3db0b0a87",
+      "auto_audit_info_20": "",
+      "global_user_basic_information": {
+        "companyId": "6e1235cf416e4143947311c6cc93d78e",
+        "userName": "骆蒙恩",
+        "userId": "08e604bf0cbb44d4bdd545d3db0b0a87"
+      }
+    },
+    "formAfter": {
+      "": "",
+      "myCompanyName": "{\"id\":\"6e1235cf416e4143947311c6cc93d78e\",\"name\":\"广东斯能投资有限责任公司\"}",
+      "myUserName__condition": "骆蒙恩",
+      "removeTime": "",
+      "flowInstanceId": "5aa625f4002f4c0898d0f646d9651218",
+      "myDepName": "{\"id\":\"3c002902cb0740e8831179839e55edfb\",\"name\":\"建设运营部\"}",
+      "myUserName": "{\"id\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"name\":\"骆蒙恩\"}",
+      "myDepName__formPersonId": "3c002902cb0740e8831179839e55edfb",
+      "vacateType": "产假",
+      "myCompanyName__formPersonId": "6e1235cf416e4143947311c6cc93d78e",
+      "fileupload_common_file": [],
+      "vacateType__virtualName": "产假",
+      "myDepName__condition": "建设运营部",
+      "auto_audit_info_4": "",
+      "auto_audit_info_3": "",
+      "auto_audit_info_2": "",
+      "auto_audit_info_1": "",
+      "vacateTime": "2026-02-11",
+      "myDutyName": "{}",
+      "auto_audit_info_7": "",
+      "auto_audit_info_6": "",
+      "auto_audit_info_5": "",
+      "vacateDayNum": 8,
+      "vacateReason": "回家",
+      "time": [
+        "2026-02-11",
+        "2026-02-11"
+      ],
+      "myCompanyName__condition": "广东斯能投资有限责任公司",
+      "myUserName__formPersonId": "08e604bf0cbb44d4bdd545d3db0b0a87",
+      "auto_audit_info_20": "",
+      "global_user_basic_information": {
+        "companyId": "6e1235cf416e4143947311c6cc93d78e",
+        "userName": "骆蒙恩",
+        "userId": "08e604bf0cbb44d4bdd545d3db0b0a87"
+      }
+    },
+    "fieldCountBefore": 29,
+    "fieldCountAfter": 29,
+    "pageErrors": [
+      {
+        "kind": "unhandledrejection",
+        "message": "Cannot read properties of undefined (reading 'refresh')",
+        "url": ""
+      }
+    ],
+    "relevantErrorsAtEnd": 1,
+    "relevantErrorsAtBaseline": 0
+  },
+  "fieldCountAfter": 29,
+  "fieldCountBefore": 29,
+  "formAfter": {
+    "": "",
+    "auto_audit_info_1": "",
+    "auto_audit_info_2": "",
+    "auto_audit_info_20": "",
+    "auto_audit_info_3": "",
+    "auto_audit_info_4": "",
+    "auto_audit_info_5": "",
+    "auto_audit_info_6": "",
+    "auto_audit_info_7": "",
+    "fileupload_common_file": [],
+    "flowInstanceId": "5aa625f4002f4c0898d0f646d9651218",
+    "global_user_basic_information": {
+      "companyId": "6e1235cf416e4143947311c6cc93d78e",
+      "userId": "08e604bf0cbb44d4bdd545d3db0b0a87",
+      "userName": "骆蒙恩"
+    },
+    "myCompanyName": "{\"id\":\"6e1235cf416e4143947311c6cc93d78e\",\"name\":\"广东斯能投资有限责任公司\"}",
+    "myCompanyName__condition": "广东斯能投资有限责任公司",
+    "myCompanyName__formPersonId": "6e1235cf416e4143947311c6cc93d78e",
+    "myDepName": "{\"id\":\"3c002902cb0740e8831179839e55edfb\",\"name\":\"建设运营部\"}",
+    "myDepName__condition": "建设运营部",
+    "myDepName__formPersonId": "3c002902cb0740e8831179839e55edfb",
+    "myDutyName": "{}",
+    "myUserName": "{\"id\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"name\":\"骆蒙恩\"}",
+    "myUserName__condition": "骆蒙恩",
+    "myUserName__formPersonId": "08e604bf0cbb44d4bdd545d3db0b0a87",
+    "removeTime": "",
+    "time": [
+      "2026-02-11",
+      "2026-02-11"
+    ],
+    "vacateDayNum": 8,
+    "vacateReason": "回家",
+    "vacateTime": "2026-02-11",
+    "vacateType": "产假",
+    "vacateType__virtualName": "产假"
+  },
+  "formBefore": {
+    "": "",
+    "auto_audit_info_1": "",
+    "auto_audit_info_2": "",
+    "auto_audit_info_20": "",
+    "auto_audit_info_3": "",
+    "auto_audit_info_4": "",
+    "auto_audit_info_5": "",
+    "auto_audit_info_6": "",
+    "auto_audit_info_7": "",
+    "fileupload_common_file": [],
+    "flowInstanceId": "5aa625f4002f4c0898d0f646d9651218",
+    "global_user_basic_information": {
+      "companyId": "6e1235cf416e4143947311c6cc93d78e",
+      "userId": "08e604bf0cbb44d4bdd545d3db0b0a87",
+      "userName": "骆蒙恩"
+    },
+    "myCompanyName": "{\"id\":\"6e1235cf416e4143947311c6cc93d78e\",\"name\":\"广东斯能投资有限责任公司\"}",
+    "myCompanyName__condition": "广东斯能投资有限责任公司",
+    "myCompanyName__formPersonId": "6e1235cf416e4143947311c6cc93d78e",
+    "myDepName": "{\"id\":\"3c002902cb0740e8831179839e55edfb\",\"name\":\"建设运营部\"}",
+    "myDepName__condition": "建设运营部",
+    "myDepName__formPersonId": "3c002902cb0740e8831179839e55edfb",
+    "myDutyName": "{}",
+    "myUserName": "{\"id\":\"08e604bf0cbb44d4bdd545d3db0b0a87\",\"name\":\"骆蒙恩\"}",
+    "myUserName__condition": "骆蒙恩",
+    "myUserName__formPersonId": "08e604bf0cbb44d4bdd545d3db0b0a87",
+    "removeTime": "",
+    "time": [
+      "2026-02-11",
+      "2026-02-11"
+    ],
+    "vacateDayNum": 8,
+    "vacateReason": "回家",
+    "vacateTime": "2026-02-11",
+    "vacateType": "产假",
+    "vacateType__virtualName": "产假"
+  },
+  "instanceId": "5aa625f4002f4c0898d0f646d9651218",
+  "jobTaskId": "319fca63f3394cca912570e0b59b30f4",
+  "readback": {
+    "taskDoneOnNode": true
+  },
+  "requestTrace": [
+    {
+      "seq": 11,
+      "method": "POST",
+      "url": "http://192.168.1.220:38081/api/flowInstanceApi/audit",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 11,
+      "durationMs": 1323
+    },
+    {
+      "seq": 12,
+      "method": "POST",
+      "url": "http://192.168.1.220:38081/api/web/flowProxy/getUserHideField",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 12,
+      "durationMs": 1023
+    },
+    {
+      "seq": 13,
+      "method": "POST",
+      "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 13,
+      "durationMs": 1021
+    },
+    {
+      "seq": 14,
+      "method": "POST",
+      "url": "http://192.168.1.220:38081/api/web/formProxy/findById",
+      "state": "fulfilled",
+      "httpStatus": 200,
+      "responseSeq": 14,
+      "durationMs": 325
+    }
+  ],
+  "result": {
+    "message": "",
+    "status": "success"
+  },
+  "toolFlowName": "T-AUTO-F036-reject-0918-050010",
+  "writeTraceIDs": [
+    "716d7ef45b93e403"
+  ]
+}

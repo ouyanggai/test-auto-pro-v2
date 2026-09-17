@@ -1,0 +1,142 @@
+{
+  "account": "骆蒙恩",
+  "instanceId": "0bb92332a34442aa93b51a88fc68e14d",
+  "response": {
+    "ready": true,
+    "mode": "view",
+    "diagnostics": {
+      "mode": "view",
+      "hostPath": [
+        "",
+        "EnterpriseExamineDialog"
+      ],
+      "templateId": "",
+      "templateCandidates": [],
+      "semantics": {
+        "operaType": "check",
+        "actionType": "preview",
+        "isExamine": false,
+        "isReInitiate": false,
+        "btnVisible": false,
+        "formExist": "",
+        "formId": "5222ef99bdab4826a14dd7ae1af4fd80",
+        "flowInstanceId": "0bb92332a34442aa93b51a88fc68e14d"
+      },
+      "patchReadback": {},
+      "warnings": [],
+      "pageErrors": [],
+      "traceUrls": [
+        {
+          "seq": 1,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/flowInstanceApi/list",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 2,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/flowAuditRecord/list",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 3,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/flowInstanceApi/queryStorageFormData",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 4,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/flowInstancePostscript/list",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 5,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/flowInstanceApi/getCurrentFromData",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 6,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/flowAuditRecord/list",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 7,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "fulfilled",
+          "httpStatus": 200
+        },
+        {
+          "seq": 8,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/formProxy/findById",
+          "state": "forwarding"
+        },
+        {
+          "seq": 9,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 10,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 11,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 12,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 13,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 14,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 15,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 16,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        },
+        {
+          "seq": 17,
+          "method": "POST",
+          "url": "http://192.168.1.220:38081/api/web/file/api/relationFile/findByRelationIdList",
+          "state": "forwarding"
+        }
+      ]
+    }
+  },
+  "scene": "detail-view"
+}
