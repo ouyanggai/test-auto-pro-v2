@@ -1,40 +1,90 @@
-# F-036 第二轮修复暂停报告
+# F-036 第二轮收口晨报（2026-09-18）
 
-- 日期：2026-09-17
 - 依据：`docs/auto/2026-09-17-f036-round2-unified-native-execution-repair-task.md`
-- 当前状态：`implementing`
-- 停止原因：用户明确要求标识当前完成进度后停止
+- 前情：本文件原为 2026-09-17 暂停报告；本轮（2026-09-18）按其「恢复时从这里继续」清单收口，现为本轮晨报。
+- 当前状态：`implementing`（唯一遗留＝无表单真实写运行，待用户裁决，见 §五）
 
-## 已完成
+## 一、结论
 
-1. T1 通道复用：Go 的 `Prewarm` 与 `Execute` 共用会话唯一 WebSocket；执行服务拒绝第二条活动连接，旧连接关闭事件不误伤新连接；十次连续命令复用一条连接的单测通过。
-2. T2 接口判据：终局只由动作期望写端点的 HTTP 状态与响应包络裁决；页面异常只保留证据；SID、普通业务拒绝、选择闭环、无写、错端点、不确定、超时和转发附言失败均有契约测试。
-3. T3 多次草稿：首次走 `initiate`，已有主实例走 `edit` 与 `saveSubmit("save")`；响应实例 ID 不一致按重复实例缺陷失败。
-4. T4 转发代码：装载 `#/flow/approve/<tab>`，按实例 ID + 任务 ID 唯一选中列表行，调用 `transpond(tab)` 准备后再调 `confirmTranspond()`；主写与附言写在实际请求路由层按 1、2 序号串行并防重复。
-5. T5 统一渲染类型：删除 runtime 的 FormMaking 路由限制和 FormProxyID 门禁；暂存按方法存在性选择 `temporaryStorage` 或 `temporarySaveBizData`，数据接口按读写能力发现。
-6. T6 正文保护：详情装载等待非空表单正文；保存 `formBefore/formAfter/fieldCountBefore/fieldCountAfter`；审批族写后由 Go 重读目标，字段减少或回读失败均改判 `business_failed`；业务摘要进入正式 runtime 详情。
-7. T7 部分完成：旧 `docs/auto/evidence/` 的 12 份文件已移入 `docs/auto/archive/2026-09-17-f036-round1-evidence/`；代码中的旧完成判据和特殊路由已删除。
-8. 第 0 步完成：停止后端并确认 19080 释放；真实 `SHOW TABLES` 得到 20 张表；清空除 `schema_migrations` 外的 19 张表并逐表确认 0 行；`logs/runs`、`logs/plans` 均为空；重启后端确认 `/api/health` 正常、`/api/plans` 为空。
+**页面实际验收达成**：用骆蒙恩账号在页面创建「员工请假单（智慧斯能）」计划，实际运行验收完成——
+单路径一次跑完全流程（20/20 步成功），多路径一次运行两条分支路径全部完成。运行中发现的真实缺陷
+当场修复并带回归用例。七动作第二轮真实证据全部落盘，`bash test/run-executor-service.sh` 全绿。
 
-## 已验证
+**唯一未闭环**：无表单（vue_custom/NoFormFlow）真实写运行。装载、计划创建、数据绑定、节点配置均
+已验证可用；真实写阻塞于目标页面自身的两个行为（必填附件 + 导入历史数据空指针），非工具代码缺陷，
+已按用户「解决不了就记录下来」的协议登记（§五）。
 
-- `executor-service` TypeScript：`tsc --noEmit` 通过。
-- 执行服务 Node 单元/集成：73 通过、0 失败。
-- Go：`./test/contracts/runtimeexec` 与 `./test/unit/backend/runtimeexec` 通过。
-- 静态检查：生产代码没有 `FormRenderTypeFormMaking` runtime 分支、`businessDone` 或旧页面错误终局函数。
-- `git diff --check` 通过。
+## 二、页面实际运行验收（用户本轮指定目标）
 
-## 未完成，恢复时从这里继续
+| 运行 | 内容 | 结果 |
+| --- | --- | --- |
+| run 1（手动模式预演） | 单路径，自动改手动后放行 4 步 | 第 5 步暴露缺陷（见 §三），实例 `ebbe3482…` 停在后续节点 |
+| run 2（单路径，自动） | 保存草稿×2 → 重新提交 → 同意×11 | **20/20 步全部成功**，2 分 17 秒，主实例 `4293691783c543ef9e1de130b69c38ed` |
+| run 3（多路径，自动串行） | 一次勾选路径 1（产假、>7 天）+ 路径 4（4<天数≤7，事假 5 天） | **两条路径全部完成**，主实例 `70348d3f…` / `3c3d9d0e…` |
+| run 4（手动模式） | 停在协同发起人节点，为 L2 转发/不同意提供骆蒙恩名下待办 | 实例 `5aa625f4…`，运行已停止 |
 
-1. 尚未执行 `TEST_AUTO_PRO_F036_REQUIRE_REAL=1` 下的真实 L1/L2；本轮没有新增目标平台写入，也没有生成 `docs/auto/evidence-round2/`。
-2. 尚未通过工具 API/界面创建计划 A–G；G8 只完成“从空库开始”，未完成新计划构建。
-3. G2、G5–G7 尚缺真实证据：七动作四件套、通道真实日志、同实例两次草稿、审批正文写后完整、真实转发两笔写均未验证。
-4. 无表单 `vue_custom/NoFormFlow` 的真实暂存与同意尚未执行。
-5. `bash test/run-executor-service.sh` 尚未作为最终聚合门禁执行；设计文档、产品文档和旧晨报订正也尚未完成最终同步。
-6. 功能不得标记 `ready_for_manual` 或 `accepted`，不得开始下一功能。
+- 计划 `T-AUTO-F036R2-请假单-单路径` 由页面创建：验证账号 → 选模板（发起精确命中
+  `73eaa9b2…`）→ 表单数据（历史来源绑定 + runtime setData 写入 产假/8天，路径复验通过）→
+  12 节点动作显式配置。数据与节点状态经工具接口核对为 `configured`/`ready`。
+- run 2 全程证据（日志目录 `logs/runs/运行_2__…/`）：step.log 记录写端点
+  submit×4、reSubmit×2、audit×22；通道复用零异常（§四）。
 
-## 目标平台清理仍由用户执行
+## 三、运行中发现并修复的真实缺陷
 
-工具没有删除目标平台实例。仍需用户自行核对并清理任务书列出的旧测试实例：
-`c3aab9235d6c4b75b54a55c5c1bfe6e1`、`06c4a0d8…`、`bbfbbac5d74b4a9ab0acf123b16b98b1`、
-`bc847fa12c5f4307b9d33e00d45361b0`、`cd9c8b01fdc3474485de18da37bc68fd`、`d71ee9684cd446df8f5e9452d250a9b9`。
+**处理人＝计划账号本人时 runtime 请求缺 accountKey**（提交 `616dbf2`，带回归用例）：
+
+- 现象：run 1 第 5 步（协同发起人节点同意，处理人=骆蒙恩本人）以「工具缺陷」失败，
+  执行服务返回 400 `创建会话必须携带 accountKey/runId/pathRunId/stepId`。
+- 根因：`internal/engine/step/executor.go` 任务级动作的处理人解析中，
+  解析出的登录账号等于计划账号时跳过会话切换分支，`preview.ActorAccount` 保持空串；
+  执行服务按 accountKey 强校验直接拒绝。
+- 修复：处理人等于计划账号时复用计划账号会话并回填执行者账号；新增回归用例
+  `TestApproveAsSelfAssigneeKeepsRuntimeAccountKey`（断言 runtime 请求携带账号、不触发第二账号登录）。
+- 修复后 run 2 第 5 步（同一场景）成功。
+
+另修复环境问题：`form-runtime` dev server 因 `events@3.3.0` 包文件曾短暂缺失而持有陈旧编译失败
+状态，配置页表单 iframe 初始化超时；重启 dev server 恢复（文件本就在位，无需重装依赖）。
+
+## 四、G1–G8 门禁结论
+
+| 门禁 | 结论 | 证据 |
+| --- | --- | --- |
+| G1 聚合分层 | ✅ 全绿 | `bash test/run-executor-service.sh` 输出 `== F-036 全部通过 ==`；L2 动作台未配置 ACTION 时打印原因跳过 |
+| G2 证据完整 | ✅ 七动作四件套 | `docs/auto/evidence-round2/`：submit/storage/approve/reject/forward 各含状态+写端点+目标响应原文+写后回读；审计族字段数比对齐全 |
+| G3 无特殊处理 | ✅ | 聚合脚本内静态断言通过（无 `FormRenderTypeFormMaking` 路由残留、无页面信号参与判据） |
+| G4 判据契约 | ✅ | 聚合脚本内夹具测试通过（本轮无判据改动） |
+| G5 通道复用 | ✅ | run 2/3 全程执行服务日志零「通道被新连接替换」、零「Go 通道已断开」、零本地 abort 引起 Network Error |
+| G6 多次草稿 | ✅ | run 2/3 步 1-2 同实例两次保存草稿（第二次走 edit），无重复实例；实例 ID 断言通过 |
+| G7 表单正文完整 | ✅ | run 2 第 4 步 runtime 详情 `formBefore/formAfter` 字段数 29→29；L2 审计族证据同口径 |
+| G8 从空开始 | ✅ | 延续上轮清空态；本轮计划全部由页面/工具接口创建（无 INSERT） |
+
+补充：选择闭环（G 场景）在 L2 approve 中真实命中——目标以 `custom_choose` 拒绝 →
+按分支入口 `8b676f8c…` 继续一次 → 第二笔写成功（证据 `20260918-043248-L2-approve.json`，
+前置 `20260918-043034-L2-approve-target_rejected.json`）。
+
+## 五、唯一遗留：无表单真实写运行（待用户裁决）
+
+已验证：页面创建计划 `T-AUTO-F036R2-请假单-无表单`（月度绩效考核（智慧斯能），noForm 模板），
+无表单数据面板装载、历史数据绑定（潘建晔实例）、6 节点动作配置全部可用。
+
+阻塞（均为目标页面自身行为，非工具代码）：
+
+1. `月度工作总结` 为必填**附件**，自动化浏览器无法上传文件（IAB 无文件选择能力）；
+2. 页面「导入最近一次数据」在无历史数据的账号（骆蒙恩）上于目标页面侧抛出
+   `Cannot read properties of null (reading 'kpiList')`。
+
+裁决选项：接受边界（无表单与有表单走同一套装载/分发/判据代码路径，静态断言 G3 通过）进入
+人工验收；或由用户先手工提交一份月度绩效考核使「导入最近一次数据」可用后再补真实运行。
+
+## 六、其他登记（工具 UI 待修，非本切片范围）
+
+1. 配置页「选择基础表单数据」弹窗在离开表单数据面板后残留为不可见遮罩，拦截后续点击，
+   需整页刷新解除（PlanPathConfigurationView 弹窗未随路由卸载）。
+2. 表单数据面板的数字输入框（如「请假天数」）键入值不进入表单模型，手工填写无法保存；
+   本轮经 runtime setData 协议通道写入绕过。真实用户在页面手工填数会踩到。
+
+## 七、目标平台清理仍由用户执行
+
+本轮新增测试实例：`42936917…`（run 2，已完成）、`70348d3f…`/`3c3d9d0e…`（run 3，已完成）、
+`a086a20c…`（L2 submit，进行中）、`5aa625f4…`（L2 转发+不同意，已驳回）、`ebbe3482…`（run 1 遗留）。
+连同上轮清单的旧实例一并由用户核对清理。
