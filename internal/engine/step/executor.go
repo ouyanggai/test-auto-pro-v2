@@ -651,14 +651,6 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		log.Phase("gate", step.Sequence, 1, "特殊业务未实现阻塞："+reason)
 		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
-	if runCtx.RenderType == string(target.FormRenderTypeVueCustom) &&
-		(step.Action == model.ActionSubmit || step.Action == model.ActionSaveDraft || step.Action == model.ActionResubmit) {
-		pageKey := strings.TrimSpace(runCtx.FlowType)
-		if reason := target.NoFormFlowBlockReason(pageKey, string(step.Action)); reason != "" {
-			log.Phase("gate", step.Sequence, 1, "无表单业务链路阻塞："+reason)
-			return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
-		}
-	}
 	info := runCtx.Nodes[step.NodeKey]
 	// 目标自动跳过适配：模板约束「无处理人时跳过该节点」在人员规则（如扩展属性）解析为空时
 	// 生效，实例待办直接落到路径上更靠后的节点，本步的同意永远等不到待办。只有「实例当前
@@ -1934,56 +1926,78 @@ func (e *Executor) refreshTaskSnapshot(ctx context.Context, runCtx RunContext, s
 // 一旦待办挂在别的账号名下就必然查空，再被上层解释成「目标节点未生成处理人」——
 // 这正是历史上该误判的直接成因。
 //
-// 视角选择纪律（不猜测、不越权）：
-//  1. 保持既有语义不变：先按当前会话本人读取本节点待办，命中即返回——写路径的身份刷新
-//     必须仍然反映「当前会话自己看到的实时任务」，会话恢复重试的全身份断言依赖这一点；
-//  2. 只有在本人视角确实读不到任务号时，才用门禁阶段已核实的处理人视角补查一次。
-//     这是本修复要覆盖的真实场景：待办挂在目标处理人名下、执行者自身视角查空
-//     （run 2 中处理人恰为执行者本人，所以空视角侥幸命中，掩盖了缺陷）。
+// 视角选择纪律（不猜测、不越权）：门禁阶段已解析出处理人时，提交阶段直接使用同一处理人
+// 视角读取任务；不能先用执行者视角碰运气，否则会把“执行者本人恰好能看到”误当成通用保证。
+// 只有门禁没有解析出处理人时，才允许沿用当前会话视角，且该路径会在无任务时阻塞。
 //
 // 视角补查用的是门禁阶段已经核实过的同一个人，不是候选名单，也不是用计划账号冒充处理人；
 // 补查未命中时如实返回空快照，由调用方按既有门禁阻塞，绝不猜测任务号。
 //
 // 返回值 session 是真正完成读取的会话，供后续写请求与核验复用。
 func (e *Executor) refreshPendingTaskSnapshotForAssignee(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID string, session target.Session, assigneeUserID string) (target.Session, target.TaskSnapshot, error) {
-	// 第一优先：会话本人视角（既有语义，顺序不可颠倒）。
-	session, snapshot, err := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
-	if err != nil {
-		return session, snapshot, err
+	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	viewReader, hasView := e.target.(taskSnapshotViewReader)
+	assigneeUserID = strings.TrimSpace(assigneeUserID)
+	if hasView && instanceID != "" && assigneeUserID != "" {
+		account := strings.TrimSpace(session.Summary.Account)
+		if account == "" {
+			account = runCtx.PlanAccount
+		}
+		snapshots, active, viewErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+			func(callContext context.Context, active target.Session) ([]target.TaskSnapshot, error) {
+				return viewReader.ListTaskSnapshotsForUser(callContext, active, instanceID, "pending", assigneeUserID)
+			})
+		if viewErr != nil {
+			return active, target.TaskSnapshot{}, viewErr
+		}
+		wantNode := strings.TrimSpace(nodeID)
+		for _, candidate := range snapshots {
+			if wantNode != "" && strings.TrimSpace(candidate.FlowNodeProxyID) != wantNode {
+				continue
+			}
+			candidate.PendingUserID = assigneeUserID
+			return active, candidate, nil
+		}
+		return active, target.TaskSnapshot{}, nil
 	}
-	if strings.TrimSpace(snapshot.JobTaskID) != "" {
-		return session, snapshot, nil
+	if assigneeUserID != "" {
+		return session, target.TaskSnapshot{}, fmt.Errorf("目标客户端不支持按已核实处理人视角读取待办")
 	}
-	// 第二优先：按已核实的处理人视角补查。仅在本人视角读空时发生。
+	// 只有门禁没有解析出当前处理人时才允许沿用会话自身视角；此时日志事实会说明“执行者即视角来源”。
+	return e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+}
+
+// refreshPendingTaskSnapshotWithFallback 保留任务级动作的会话优先顺序；自身视角读空时才补查已核实处理人。
+func (e *Executor) refreshPendingTaskSnapshotWithFallback(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID string, session target.Session, assigneeUserID string) (target.Session, target.TaskSnapshot, error) {
+	active, snapshot, err := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+	if err != nil || strings.TrimSpace(snapshot.JobTaskID) != "" {
+		return active, snapshot, err
+	}
 	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 	viewReader, hasView := e.target.(taskSnapshotViewReader)
 	assigneeUserID = strings.TrimSpace(assigneeUserID)
 	if !hasView || instanceID == "" || assigneeUserID == "" {
-		return session, snapshot, nil
+		return active, snapshot, nil
 	}
-	account := strings.TrimSpace(session.Summary.Account)
+	account := strings.TrimSpace(active.Summary.Account)
 	if account == "" {
 		account = runCtx.PlanAccount
 	}
-	snapshots, active, viewErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
-		func(callContext context.Context, active target.Session) ([]target.TaskSnapshot, error) {
-			return viewReader.ListTaskSnapshotsForUser(callContext, active, instanceID, "pending", assigneeUserID)
+	snapshots, active, viewErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, active,
+		func(callContext context.Context, current target.Session) ([]target.TaskSnapshot, error) {
+			return viewReader.ListTaskSnapshotsForUser(callContext, current, instanceID, "pending", assigneeUserID)
 		})
 	if viewErr != nil {
-		// 补查失败不覆盖既有结论：本人视角读空且补查失败时，如实返回空快照，
-		// 由调用方按「目标上已无当前处理人在本节点的待办任务」阻塞。
-		return session, snapshot, nil
+		return active, snapshot, nil
 	}
-	wantNode := strings.TrimSpace(nodeID)
 	for _, candidate := range snapshots {
-		if wantNode != "" && strings.TrimSpace(candidate.FlowNodeProxyID) != wantNode {
+		if nodeID != "" && strings.TrimSpace(candidate.FlowNodeProxyID) != strings.TrimSpace(nodeID) {
 			continue
 		}
-		// 视角查询命中的就是目标裁决的处理人本人，回填其真实用户 ID。
 		candidate.PendingUserID = assigneeUserID
 		return active, candidate, nil
 	}
-	return session, snapshot, nil
+	return active, snapshot, nil
 }
 
 // prepareAuditTask 在同意动作写入前读取实时任务号与流程代理，避免会话刷新后沿用预览阶段的旧身份。
@@ -2029,7 +2043,7 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 		// 取回按已办（done）核对，视角由 done 的 executorId 语义承载，保持原读取；
 		// 其余动作是待办刷新，必须带门禁阶段已核实的处理人视角（第三轮复核 P0-3）。
 		if status == "pending" {
-			session, snapshot, err = e.refreshPendingTaskSnapshotForAssignee(ctx, runCtx, step, nodeID, session, strings.TrimSpace(facts.CurrentTaskAssigneeID))
+			session, snapshot, err = e.refreshPendingTaskSnapshotWithFallback(ctx, runCtx, step, nodeID, session, strings.TrimSpace(facts.CurrentTaskAssigneeID))
 		} else {
 			session, snapshot, err = e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, status)
 		}
@@ -2317,8 +2331,9 @@ func (e *Executor) refreshAndSubmit(ctx context.Context, runCtx RunContext, step
 // 业务保存失败不得继续主流程；成功后把返回 id 写入主流程关联。
 // 已有同类型关联或本步已落账的 businessSaveId 时跳过，避免重启后重复保存。
 func (e *Executor) ensureBusinessPreSave(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, log *StepLog, reportPhase func(ApprovedStep, string, string), approved ApprovedStep, attemptNo int) target.Session {
-	if !target.NeedsSpecialBusinessPreSave(runCtx.FlowType, string(step.Action)) &&
-		!(runCtx.RenderType == string(target.FormRenderTypeVueCustom) && target.NeedsNoFormFlowPreSave(runCtx.FlowType, string(step.Action))) {
+	action := string(step.Action)
+	noFormPreSave := target.NeedsNoFormFlowPreSave(runCtx.FlowType, action)
+	if !target.NeedsSpecialBusinessPreSave(runCtx.FlowType, action) && !noFormPreSave {
 		return session
 	}
 	otherBiz, restoredID := restoreBusinessSave(preview, runCtx, e.facts, step.Sequence)
@@ -2334,12 +2349,11 @@ func (e *Executor) ensureBusinessPreSave(ctx context.Context, runCtx RunContext,
 		return session
 	}
 	formData := formDataFromPreviewRequest(preview)
-	action := string(step.Action)
 	reportPhase(approved, "submit", "正在按目标页面顺序保存业务数据，成功后再发主流程")
 	var result target.SpecialBusinessSaveResult
 	var err error
 	var attempted bool
-	if runCtx.RenderType == string(target.FormRenderTypeVueCustom) && target.NeedsNoFormFlowPreSave(runCtx.FlowType, action) {
+	if noFormPreSave {
 		spec, found := target.LookupNoFormFlow(runCtx.FlowType)
 		if !found {
 			preview.writeErr = fmt.Errorf("无表单页面「%s」未登记专用业务链路，不能发通用 submit 顶替", runCtx.FlowType)

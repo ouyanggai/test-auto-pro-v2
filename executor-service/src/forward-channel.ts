@@ -12,6 +12,20 @@ export interface ForwardOutcome {
   body?: string
 }
 
+// ForwardChannelStats 是通道健康状况的可机读事实（F-036 门禁 G5）。
+// 两个计数都必须能被测试与运行详情直接读取，而不是只留一句日志：
+// 「通道被新连接替换」与「在途转发被本地中止」是两类不同的可用性事件，
+// 前者说明有并发连接争用（旧实现会因此在途请求变成本地 abort），
+// 后者说明已经有请求真的没发出去。二者为 0 才是「通道复用正常」的证据。
+export interface ForwardChannelStats {
+  // attachRejected 是被拒绝的新连接数（同一会话已有活动连接时要求新连接等待）。
+  attachRejected: number
+  // abortedInFlight 是因断连/替换而本地中止的在途转发数。
+  abortedInFlight: number
+  // pending 是当前仍在等待 Go 响应的转发数。
+  pending: number
+}
+
 // ForwardFailure 是 Go 无法转发（断连、路径拒绝、目标传输失败）的稳定错误；路由层只关心失败这一事实。
 export class ForwardFailure extends Error {}
 
@@ -24,17 +38,30 @@ interface PendingForward {
 export class ForwardChannel {
   private socket: WebSocket | null = null
   private readonly pending = new Map<string, PendingForward>()
+  // G5 计数：只增不减，供运行期间与运行结束后的门禁断言读取。
+  private attachRejectedCount = 0
+  private abortedInFlightCount = 0
 
   // attach 在 Go 的 WebSocket 接入时调用；同一会话同时只允许一条连接。
   attach (socket: WebSocket): boolean {
     if (this.socket && this.socket.readyState === this.socket.OPEN) {
       // 预热连接可能正在承载页面读取；替换它会让在途请求变成本地 abort，
       // 进而把可重试的连接问题伪装成写结果不明。新连接必须等待旧连接自然释放。
+      this.attachRejectedCount++
       socket.close(1013, '已有活动通道')
       return false
     }
     this.socket = socket
     return true
+  }
+
+  // stats 返回通道健康事实；未接日志/未连接时也始终可读。
+  stats (): ForwardChannelStats {
+    return {
+      attachRejected: this.attachRejectedCount,
+      abortedInFlight: this.abortedInFlightCount,
+      pending: this.pending.size
+    }
   }
 
   get connected (): boolean {
@@ -101,6 +128,8 @@ export class ForwardChannel {
     this.socket = null
     for (const [requestId, pending] of this.pending) {
       clearTimeout(pending.timer)
+      // 本次中止是真实发生的可用性事件：计数后门禁才能断言「运行期间为零」。
+      this.abortedInFlightCount++
       pending.reject(new ForwardFailure(reason))
       this.pending.delete(requestId)
     }

@@ -176,9 +176,7 @@ func TestSubmitPhaseRefreshFallsBackToAssigneeViewpoint(t *testing.T) {
 	}
 }
 
-// TestSubmitPhaseRefreshKeepsSelfViewpointFirst 锁定视角补查不改变既有顺序：
-// 执行者自身会话能读到待办时，必须直接采用会话本人的任务身份，不得被视角补查覆盖。
-// F-019 会话恢复重试的全身份断言依赖这条顺序。
+// TestSubmitPhaseRefreshUsesAssigneeViewpoint 锁定提交阶段直接使用已解析处理人视角。
 func TestSubmitPhaseRefreshKeepsSelfViewpointFirst(t *testing.T) {
 	viewTarget := &assigneeViewTarget{fakeTarget: &fakeTarget{
 		instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
@@ -197,11 +195,11 @@ func TestSubmitPhaseRefreshKeepsSelfViewpointFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("提交阶段待办刷新不应失败：%v", err)
 	}
-	if snapshot.JobTaskID != "task-self" {
-		t.Fatalf("会话本人可读时必须保持既有任务身份，实际 %+v", snapshot)
+	if snapshot.JobTaskID != "task-under-b" {
+		t.Fatalf("提交阶段必须使用已解析处理人视角任务身份，实际 %+v", snapshot)
 	}
-	if targetValue := strings.TrimSpace(snapshot.PendingUserID); targetValue != "" {
-		t.Fatalf("走会话本人读取时不得回填视角用户，实际 %q", targetValue)
+	if targetValue := strings.TrimSpace(snapshot.PendingUserID); targetValue != "user-b" {
+		t.Fatalf("提交阶段必须回填处理人用户，实际 %q", targetValue)
 	}
 }
 

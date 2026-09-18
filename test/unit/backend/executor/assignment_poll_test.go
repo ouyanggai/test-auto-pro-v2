@@ -141,7 +141,7 @@ func TestSpecialBusinessLifecycleBlocksSubmit(t *testing.T) {
 	}
 }
 
-// TestVueCustomSubmitBlocks 锁定：未登记或未实现的无表单页面写前必须阻塞。
+// TestVueCustomSubmitBlocks 锁定：无表单页面不因渲染类型被特殊阻塞。
 func TestVueCustomSubmitBlocks(t *testing.T) {
 	view := &pollTarget{fakeTarget: &fakeTarget{instance: fakeTargetView{Found: false}}}
 	executor := step.NewExecutor(view, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
@@ -152,11 +152,8 @@ func TestVueCustomSubmitBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview == nil || preview.GateAllowed {
-		t.Fatalf("未实现的无表单入口必须阻塞：%+v", preview)
-	}
-	if !strings.Contains(preview.BlockReason, "无表单") {
-		t.Fatalf("阻塞原因必须说明无表单业务链路：%q", preview.BlockReason)
+	if preview == nil || !preview.GateAllowed {
+		t.Fatalf("无表单入口不应因渲染类型被特殊阻塞：%+v", preview)
 	}
 }
 

@@ -207,6 +207,50 @@ func f036LoadOnce(ctx context.Context, t *testing.T, rc *runtimeexec.Client, cur
 	return raw, handle.SessionID
 }
 
+// f036ChannelStats 调执行服务 /status 读取通道健康事实（G5 的可机读观测口）。
+// 通道复用是否正常必须能被断言，不能只依赖「日志里没看到某句话」。
+func f036ChannelStats(t *testing.T, sessionID string) (attachRejected, abortedInFlight, pending int) {
+	t.Helper()
+	base := strings.TrimRight(os.Getenv("RUNTIME_EXECUTOR_URL"), "/")
+	response, err := http.Get(base + "/runtime/session/" + sessionID + "/status")
+	if err != nil {
+		t.Fatalf("读取会话状态失败：%v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("读取会话状态正文失败：%v", err)
+	}
+	var parsed struct {
+		Channel struct {
+			AttachRejected  int `json:"attachRejected"`
+			AbortedInFlight int `json:"abortedInFlight"`
+			Pending         int `json:"pending"`
+		} `json:"channel"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("会话状态解析失败：%v（原文：%s）", err, string(body))
+	}
+	return parsed.Channel.AttachRejected, parsed.Channel.AbortedInFlight, parsed.Channel.Pending
+}
+
+// f036AssertChannelHealthy 断言 G5：运行期间不得出现「通道被新连接替换」或「在途转发被本地中止」。
+// 两个计数都必须可机读（来自己上 /status 的 channel 段），计数非零即失败并打印原始事实。
+func f036AssertChannelHealthy(t *testing.T, sessionID, scene string) {
+	t.Helper()
+	attachRejected, abortedInFlight, pending := f036ChannelStats(t, sessionID)
+	if attachRejected != 0 {
+		t.Fatalf("%s：通道被新连接替换 %d 次（G5 要求为 0）", scene, attachRejected)
+	}
+	if abortedInFlight != 0 {
+		t.Fatalf("%s：在途转发被本地中止 %d 次（G5 要求为 0）", scene, abortedInFlight)
+	}
+	// pending 在动作收敛后应为 0：仍有在途转发说明完成检测与通道状态不一致。
+	if pending != 0 {
+		t.Fatalf("%s：动作收敛后仍有 %d 笔在途转发", scene, pending)
+	}
+}
+
 // f036SessionTrace 调执行服务 /status 读取会话捕获的目标请求清单（只读观测口）。
 func f036SessionTrace(t *testing.T, sessionID string) []struct {
 	Seq         int    `json:"seq"`
@@ -505,4 +549,6 @@ func TestF036RealLoadLoopDetail(t *testing.T) {
 			}
 		}
 	}
+	// G5：真实装载是一次完整的通道往返，期间不得出现连接替换或在途转发被本地中止。
+	f036AssertChannelHealthy(t, sessionID, "详情装载（L1）")
 }

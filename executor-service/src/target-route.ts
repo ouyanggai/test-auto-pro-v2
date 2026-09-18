@@ -61,7 +61,7 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
   const trace = new RequestTraceRecorder()
   const ownOrigins = new Set(options.runtimeOrigins)
   // toolFlowName 由装载链路登记（闭包可变，路由处理器每次发出前读取最新值）。
-  let toolFlowName = ''
+  let toolFlowName = String(options.toolFlowName ?? '')
 
   async function handle (route: Route): Promise<void> {
     const request = route.request()

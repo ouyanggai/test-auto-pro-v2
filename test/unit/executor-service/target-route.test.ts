@@ -104,6 +104,28 @@ test('二进制上传按 base64 保真', async () => {
   })
 })
 
+test('主实例 submit 在转发前恢复工具流程名并保留其它字段', async () => {
+  let requestBody = ''
+  await withPage(async (page, originURL) => {
+    const handle = await installTargetRoute(page, {
+      runtimeOrigins: [originURL.replace(/\/$/, '')],
+      toolFlowName: '工具流程名',
+      forward: async payload => {
+        requestBody = payload.body ? Buffer.from(payload.body, 'base64').toString('utf8') : ''
+        return { httpStatus: 200, headers: { 'content-type': 'application/json' }, bodyEncoding: 'utf8', body: '{"isSuccess":true}' }
+      }
+    })
+    await page.goto(new URL('index.html', originURL).toString(), { waitUntil: 'load' })
+    const response = await page.evaluate(`window.doFetch('${new URL('/web/flowInstanceApi/submit', originURL)}', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data: { name: '页面流程名', status: 'draft', flowProxyId: 'proxy-1' } })
+    })`) as { status: number }
+    assert.equal(response.status, 200)
+    assert.deepEqual(JSON.parse(requestBody), { data: { name: '工具流程名', status: 'draft', flowProxyId: 'proxy-1' } })
+    await handle.uninstall()
+  })
+})
+
 test('转发失败时本地中止，不直连目标', async () => {
   await withPage(async (page, originURL) => {
     const handle = await installTargetRoute(page, {

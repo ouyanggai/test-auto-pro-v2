@@ -637,10 +637,13 @@ async function main (): Promise<void> {
         return
       }
       // trace.entries 是验证台的端点级观测口（L1/L2 断言写端点与只读事实）；不含请求/响应正文。
+      // channel 是 G5 的可机读通道健康事实：通道复用是否正常必须能被断言，
+      // 不能只依赖「日志里没看到某句话」这种不可机读的观察方式。
       send(200, {
         sessionId,
         loaded: session.loaded,
         channelConnected: session.channel.connected,
+        channel: session.channel.stats(),
         identity: session.identity,
         trace: {
           ...(session.route?.trace.stats() ?? { total: 0 }),
@@ -1076,7 +1079,9 @@ async function main (): Promise<void> {
                 requestTrace: verdict.requestTrace
               }
             }
-            const formAfter = await readNativeFormSnapshot(session.page).catch(() => ({}))
+            // 页面快照只作证据，不能冒充 Go 重读目标实例的最终事实；正文保护会把
+            // 目标重读结果写入 formAfter/fieldCountAfter。保留独立字段避免两种来源混淆。
+            const pageFormAfter = await readNativeFormSnapshot(session.page).catch(() => ({}))
             const verdictWithFacts = {
               ...finalVerdict,
               businessSummary: {
@@ -1084,9 +1089,9 @@ async function main (): Promise<void> {
                 newInstanceId,
                 debugWrites,
                 formBefore: session.formBefore,
-                formAfter,
+                pageFormAfter,
+                pageFieldCountAfter: Object.keys(pageFormAfter).length,
                 fieldCountBefore: Object.keys(session.formBefore).length,
-                fieldCountAfter: Object.keys(formAfter).length,
                 pageErrors: allPageErrors,
                 relevantErrorsAtEnd: await collectPageErrorEvidence(session.page).catch(() => -1),
                 relevantErrorsAtBaseline: errorsAtBaseline

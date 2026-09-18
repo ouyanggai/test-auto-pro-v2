@@ -1,6 +1,7 @@
 # F-036 独立执行服务与原生页面装载
 
 - 状态：implementing（2026-09-18 第二轮全部 G 门禁与七动作真实证据闭环，唯一遗留＝无表单真实写运行，见下方「第二轮完成点」；是否按边界进入人工验收由用户裁决）
+- 第三轮进度（2026-09-18）：保持 `implementing`。已补通道健康状态计数、已核实处理人视角待办读取、页面快照与 Go 写后目标重读字段隔离、逐动作真实动作台和表单选择器卸载；真实无表单写入、从空数据重建计划与七动作完整证据仍未完成。
 - 产品依据：`docs/PRODUCT.md` 的「F-036 独立执行服务与原生页面装载」
 - 架构依据：`docs/ARCHITECTURE.md` 的「F-036 独立执行服务」
 - 计划确认时间：2026-09-16（用户批准开始实现）
@@ -188,13 +189,13 @@
 **根因定位**：
 1. **页内Vue实例捕获失败**：`window.$vue` 不存在导致 `nativeHost` 序列化为空对象，`dispatchNativeAction` 打在空宿主上
 2. **SID未注入载荷**：页面 `axios` 无法从 `localStorage` 获取有效会话标识，模板列表等读取请求返回 `AUTH_401`
-3. **businessDone错误判定**：无写请求时仍返回 `true`，导致空执行被判定为成功
+3. **旧页面信号判定**：历史实现曾以 `businessDone`/页面异常参与终局，可能把无写或页面噪声误判为成功
 
 **修复方案**：
 1. **页内直接调用活实例**：通过 `page.evaluate` 在页面上下文中直接调用 Vue 方法，不序列化 `nativeHost`
 2. **Load时注入SID**：在 `LoadPayload` 添加 `SID` 和 `PlatformCode` 字段，页面写入 `localStorage` 供 `axios` 使用
 3. **原生宿主门禁**：捕获失败时不标记 `loaded=true`，返回 500 错误
-4. **写请求判定**：`businessDone` 只在有流程写请求成功（`fulfilled` 且 URL 包含 `submit/audit/transpond`）时返回 `true`
+4. **写请求判定**：现行实现只按动作期望写端点的 HTTP、`isSuccess` 和错误类型收口；页面信号仅保存为证据
 
 **验证结果**：
 - Go 单元测试通过（`BuildLoadPayload` 自身不带 SID，运行时注入）

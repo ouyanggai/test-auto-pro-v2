@@ -13,6 +13,10 @@
   工具 UI 两处待修已登记：配置页基础数据弹窗残留不可见遮罩需刷新解除；表单数据面板数字输入框
   键入值不进模型（本轮经 runtime setData 通道绕过）。本轮晨报见
   `docs/auto/2026-09-18-f036-round2-run-report.md`。
+- 2026-09-18 F-036 第三轮继续实施，状态仍为 **implementing**：服务端将页面写后快照改为
+  `pageFormAfter/pageFieldCountAfter`，`formAfter/fieldCountAfter` 仅由 Go 目标重读写入；聚合门禁的
+  真实动作台逐个调用 `TestF036RealActionLoop`，不再用动作键覆盖冒充执行；配置页基础数据选择器在关闭或离开表单面板时销毁；补充工具流程名恢复回归测试。
+  本轮尚未具备目标环境下的七动作真实证据、无表单真实写入和从空数据的完整 G1-G8 证据，不得进入 `ready_for_manual`。
 - 2026-09-17 F-036 第二轮修复按用户要求暂停，状态保持 **implementing**。已完成代码主体：通道单连接复用、
   接口终局判据、多次草稿 edit 模式、列表页原生转发与两笔写顺序门禁、所有原生渲染类型统一 runtime 路由、
   表单正文写前快照/写后回读保护；已通过 TypeScript 类型检查、执行服务测试 73/73、runtime Go 契约与单测。

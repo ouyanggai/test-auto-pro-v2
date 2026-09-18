@@ -1106,6 +1106,7 @@ void loadPage()
           </div>
         </header>
         <base-form-data-picker
+          v-if="dataPickerOpen"
           v-model:show="dataPickerOpen"
           :plan-id="planID"
           :path-id="pathID"
