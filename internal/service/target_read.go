@@ -216,6 +216,45 @@ func (s *TargetReadService) FlowTreeSnapshot(ctx context.Context, account, sourc
 	return result, err
 }
 
+// RuntimeFlowTreeSnapshot 读取运行实例当前实际绑定的代理树；加签重建代理后不能继续使用计划对象或旧缓存。
+// 输入必须是已落账的实例引用，读取不到当前代理时原样返回错误，调用方只能保留静态结构并说明原因。
+func (s *TargetReadService) RuntimeFlowTreeSnapshot(ctx context.Context, account, source, instanceID string) (target.FlowTreeSnapshot, error) {
+	if err := s.ready(); err != nil {
+		return target.FlowTreeSnapshot{}, err
+	}
+	var result target.FlowTreeSnapshot
+	err := s.sessions.DoRead(ctx, account, func(callContext context.Context, active target.Session) error {
+		var proxyID string
+		var entries []string
+		var found bool
+		var err error
+		switch strings.TrimSpace(source) {
+		case "new", "started":
+			proxyID, entries, _, _, found, err = s.client.FindSubmittedFlow(callContext, active, instanceID)
+		case "pending":
+			proxyID, entries, _, found, err = s.client.FindDueFlow(callContext, active, instanceID)
+		default:
+			return ErrTargetFlowNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !found || strings.TrimSpace(proxyID) == "" {
+			return ErrTargetFlowNotFound
+		}
+		tree, readErr := s.client.ReadProxyTree(callContext, active, proxyID)
+		if readErr != nil {
+			return readErr
+		}
+		if tree == nil {
+			return ErrTargetFlowStructureEmpty
+		}
+		result = target.FlowTreeSnapshot{Tree: tree, EntryNodeIDs: entries}
+		return nil
+	})
+	return result, err
+}
+
 // FlowRequirementSnapshot 按计划保存的来源读取同一流程树、当前入口和对应表单字段元数据。
 func (s *TargetReadService) FlowRequirementSnapshot(ctx context.Context, account, source, targetObjectID string) (target.FlowRequirementSnapshot, error) {
 	if err := s.ready(); err != nil {

@@ -35,6 +35,10 @@ type runGraphReader interface {
 	Get(ctx context.Context, planID uint64) (model.FlowGraph, error)
 }
 
+type runtimeGraphReader interface {
+	GetRuntime(ctx context.Context, planID uint64, instanceID string) (model.FlowGraph, error)
+}
+
 // runDetailGraphTimeout 限制详情轮询等待结构投影的最长时间。
 // 目标模板树的正常读取已实测超过 500ms；预算过短会让轮询把仍在返回的正常请求误判为失败。
 const runDetailGraphTimeout = 2 * time.Second
@@ -224,6 +228,43 @@ type RunNodeStateDTO struct {
 	StatusName string `json:"statusName"`
 }
 
+// RunFlowGraphDTO 是运行详情内嵌的最新结构投影；计划图与目标代理图保持同一公开字段形状。
+type RunFlowGraphDTO struct {
+	PlanID       string                `json:"planId"`
+	TargetName   string                `json:"targetName"`
+	FlowSource   string                `json:"flowSource"`
+	EntryNodeIDs []string              `json:"entryNodeIds"`
+	Nodes        []model.FlowGraphNode `json:"nodes"`
+	Edges        []model.FlowGraphEdge `json:"edges"`
+	Warnings     []string              `json:"warnings"`
+}
+
+// RunTimelineItemDTO 是节点面板统一时间线的一行：同一步骤只允许落入一种状态。
+type RunTimelineItemDTO struct {
+	StepNo     int       `json:"stepNo"`
+	Action     string    `json:"action,omitempty"`
+	ActionName string    `json:"actionName"`
+	NodeKey    string    `json:"nodeKey"`
+	NodeID     string    `json:"nodeId,omitempty"`
+	NodeName   string    `json:"nodeName"`
+	ActorName  string    `json:"actorName,omitempty"`
+	Status     string    `json:"status"`
+	StatusName string    `json:"statusName"`
+	StartedAt  time.Time `json:"startedAt,omitempty"`
+	DurationMs int64     `json:"durationMs,omitempty"`
+}
+
+// PathDeviationDTO 是路径偏离的可核对事实；目标节点缺少名称时保留事实卡片，不猜测名称或连线。
+type PathDeviationDTO struct {
+	Detected         bool     `json:"detected"`
+	Reason           string   `json:"reason,omitempty"`
+	ExpectedNodeID   string   `json:"expectedNodeId,omitempty"`
+	ExpectedNodeName string   `json:"expectedNodeName,omitempty"`
+	ActualNodeIDs    []string `json:"actualNodeIds"`
+	ActualNodeNames  []string `json:"actualNodeNames"`
+	StructureNote    string   `json:"structureNote,omitempty"`
+}
+
 // RunNodePlanActionDTO 是某个节点上的一条已配置计划动作（来源：编译场景）。
 // 字段全部是中文事实：编译场景本身就用中文写了前置条件、预期效果与失败处理，
 // 界面直接展示，不在前端翻译第二遍，也不输出动作键、作用范围枚举与演员策略等内部值。
@@ -337,6 +378,13 @@ type PathRunDetailDTO struct {
 	CurrentPhase      string    `json:"currentPhase,omitempty"`
 	CurrentPhaseNote  string    `json:"currentPhaseNote,omitempty"`
 	CurrentPhaseSince time.Time `json:"currentPhaseSince,omitempty"`
+	// DynamicGraph 是按当前运行实例最新 flowProxyId 读取的代理树；读取失败时保留静态图并说明原因。
+	DynamicGraph     *RunFlowGraphDTO `json:"dynamicGraph,omitempty"`
+	DynamicGraphNote string           `json:"dynamicGraphNote,omitempty"`
+	DynamicNodeIDs   []string         `json:"dynamicNodeIds"`
+	// StepTimeline 把已执行、正在执行和等待执行统一投影，前端不再猜测下一步。
+	StepTimeline  []RunTimelineItemDTO `json:"stepTimeline"`
+	PathDeviation PathDeviationDTO     `json:"pathDeviation"`
 }
 
 // BreakpointDTO 是断点的公开形态：类型、挂载对象种类与业务名称，不暴露内部键。
@@ -1123,10 +1171,53 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		Breakpoints:         []BreakpointDTO{},
 		Commands:            []CommandDTO{},
 		Paths:               []RunPathSummaryDTO{},
+		DynamicNodeIDs:      []string{},
+		StepTimeline:        []RunTimelineItemDTO{},
+		PathDeviation:       PathDeviationDTO{ActualNodeIDs: []string{}, ActualNodeNames: []string{}},
 		RunScheduleName:     runScheduleName(run),
 		RunConcurrencyLabel: runConcurrencyLabel(run),
 		PollIntervalMs:      s.runConfig.StatusPollInterval.Milliseconds(),
 		StaleAfterMs:        s.runConfig.StepProgressStaleAfter.Milliseconds(),
+	}
+	deviationGraph := graph
+	// 运行详情不能长期复用计划图：加签可能重建 flowProxy，当前实例的最新代理树才是动态节点事实。
+	if strings.TrimSpace(pathRun.MainInstanceRef) != "" {
+		if runtimeReader, ok := s.graphs.(runtimeGraphReader); ok {
+			dynamicCtx, cancelDynamic := context.WithTimeout(ctx, runDetailGraphTimeout)
+			dynamicGraph, dynamicErr := runtimeReader.GetRuntime(dynamicCtx, run.PlanID, pathRun.MainInstanceRef)
+			cancelDynamic()
+			if dynamicErr == nil {
+				detail.DynamicGraph = runFlowGraphDTO(dynamicGraph)
+				detail.DynamicGraphNote = "已按当前运行实例最新代理树读取；动态新增节点以目标返回事实展示"
+				// 偏离卡片只借用动态图的节点名称，不改变静态编译路径和控制门禁。
+				nodeByID := make(map[string]model.FlowGraphNode, len(graph.Nodes)+len(dynamicGraph.Nodes))
+				for _, node := range graph.Nodes {
+					nodeByID[node.ID] = node
+				}
+				for _, node := range dynamicGraph.Nodes {
+					nodeByID[node.ID] = node
+				}
+				deviationGraph.Nodes = make([]model.FlowGraphNode, 0, len(nodeByID))
+				for _, node := range nodeByID {
+					deviationGraph.Nodes = append(deviationGraph.Nodes, node)
+				}
+				staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
+				for _, node := range graph.Nodes {
+					staticNodeIDs[node.ID] = struct{}{}
+				}
+				for _, node := range dynamicGraph.Nodes {
+					if _, exists := staticNodeIDs[node.ID]; !exists {
+						detail.DynamicNodeIDs = append(detail.DynamicNodeIDs, node.ID)
+					}
+				}
+			} else {
+				detail.DynamicGraphNote = "动态结构暂时无法读取，当前页面保留计划结构和已落账事实"
+			}
+		} else {
+			detail.DynamicGraphNote = "动态结构读取能力未配置，当前页面保留计划结构和已落账事实"
+		}
+	} else {
+		detail.DynamicGraphNote = "运行实例尚未生成，暂时没有可读取的动态代理树"
 	}
 	if pathRun.Result != nil {
 		detail.ResultName = resultName(*pathRun.Result)
@@ -1162,6 +1253,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	// 配置读取或编译失败时退化为不标注，绝不阻塞详情展示。
 	configuredNodeKeys, pathChoices, compiledSteps := s.configuredRouteOf(ctx, run, pathRun.ExecutionPathID)
 	detail.PathChoices = pathChoices
+	controlView := s.control.View(pathRun.ID)
 	// 用编译场景补齐已执行步骤的动作组边界；缺少配置快照时保持空值，绝不猜测。
 	stepGroups := make(map[int]model.CompiledActionStep, len(compiledSteps))
 	for _, compiled := range compiledSteps {
@@ -1175,7 +1267,10 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	}
 	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	detail.NodePlans = buildNodePlans(compiledSteps, tokenToGraphID)
-	if view := s.control.View(pathRun.ID); view != nil {
+	detail.StepTimeline = buildStepTimeline(detail.Steps, detail.CurrentPreview, compiledSteps, graph, pathRun,
+		controlView != nil && controlView.StepInFlight, controlView != nil && controlView.LoopRunning)
+	if controlView != nil {
+		view := controlView
 		detail.ModeName = model.RunModeName(view.Mode)
 		detail.ControlVersion = view.Version
 		detail.StopReason = view.StopReason
@@ -1206,7 +1301,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	// 执行现场已丢失的运行（服务重启或执行结果无法确认，路径运行停在结果待确认且没有内存现场）
 	// 无法安全继续：如实告诉用户并引导从计划重新运行；界面不给任何对账、重放或登记入口。
-	if s.control.View(pathRun.ID) == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
+	if controlView == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
 		detail.SceneLost = true
 		detail.SceneLostNote = "本次运行已停止。请查看该步骤的错误信息：目标接口没有返回可确认的结果，或目标状态暂时无法读取。为避免重复操作，需要从计划重新发起运行。"
 		// 中断步定位：中断时正在执行的那一步尚未落账，已落账步骤之后的第一条编译步骤就是它。
@@ -1218,12 +1313,13 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				interrupted.Sequence, interrupted.Action)
 		}
 	}
+	detail.PathDeviation = buildPathDeviation(detail.StopReason, detail.Steps, attempts, compiledSteps, deviationGraph)
 	// F-028 失败动作重试：确定失败（写请求确认未生效或未发出）的步骤执行失败可以重试；
 	// 启动阶段失败（没有任何已执行步骤）引导重新发起，结果待确认是终局。
 	// 前提是执行现场不在（有现场说明运行仍在推进，谈不上重试）。
 	detail.Retryable = pathRun.Status == model.PathRunStatusFailed &&
 		(pathRun.FailureClass == nil || *pathRun.FailureClass != model.FailureClassWriteUncertain) &&
-		len(steps) > 0 && s.control.View(pathRun.ID) == nil
+		len(steps) > 0 && controlView == nil
 	if err := s.fillRunPathSummaries(ctx, run, detail); err != nil {
 		return nil, err
 	}
@@ -1236,6 +1332,118 @@ func runConcurrencyLabel(runRow model.Run) string {
 		return "逐条依次运行"
 	}
 	return "最多同时运行 " + strconv.Itoa(runCapacityOf(runRow)) + " 条路径"
+}
+
+// runFlowGraphDTO 将内部图转换为运行详情公开结构，保持计划图接口使用的字符串计划 ID 形状。
+func runFlowGraphDTO(graph model.FlowGraph) *RunFlowGraphDTO {
+	return &RunFlowGraphDTO{
+		PlanID: strconv.FormatUint(graph.PlanID, 10), TargetName: graph.TargetName, FlowSource: graph.FlowSource,
+		EntryNodeIDs: append([]string{}, graph.EntryNodeIDs...), Nodes: append([]model.FlowGraphNode{}, graph.Nodes...),
+		Edges: append([]model.FlowGraphEdge{}, graph.Edges...), Warnings: append([]string{}, graph.Warnings...),
+	}
+}
+
+// buildStepTimeline 生成节点面板的三态时间线；已落账事实优先，当前预览与等待步骤只补不重复的序号。
+func buildStepTimeline(steps []RunStepDTO, preview *RunPreviewDTO, compiled []model.CompiledActionStep, graph model.FlowGraph, pathRun model.PathRun, stepInFlight, loopRunning bool) []RunTimelineItemDTO {
+	items := make([]RunTimelineItemDTO, 0, len(steps)+2)
+	seen := map[int]bool{}
+	names := nodeNamesOf(graph)
+	tokens := tokenToGraphNodeID(graph)
+	for _, step := range steps {
+		items = append(items, RunTimelineItemDTO{StepNo: step.StepNo, Action: step.Action, ActionName: step.ActionName,
+			NodeKey: step.NodeKey, NodeID: step.NodeID, NodeName: step.NodeName, ActorName: step.ActorName,
+			Status: "executed", StatusName: "已执行", StartedAt: step.StartedAt, DurationMs: step.DurationMs})
+		seen[step.StepNo] = true
+	}
+	if preview != nil && !seen[preview.StepNo] {
+		nodeID := preview.NodeID
+		if nodeID == "" {
+			nodeID = tokens[preview.NodeKey]
+		}
+		nodeName := preview.NodeName
+		if nodeName == "" && nodeID != "" {
+			nodeName = names[nodeID]
+		}
+		status, statusName := "waiting", "等待执行"
+		if stepInFlight || loopRunning {
+			status, statusName = "running", "正在执行"
+		}
+		items = append(items, RunTimelineItemDTO{StepNo: preview.StepNo, Action: preview.Action, ActionName: preview.ActionName,
+			NodeKey: preview.NodeKey, NodeID: nodeID, NodeName: nodeName, ActorName: preview.ActorName,
+			Status: status, StatusName: statusName})
+		seen[preview.StepNo] = true
+	}
+	lastStep := 0
+	for _, step := range steps {
+		if step.StepNo > lastStep {
+			lastStep = step.StepNo
+		}
+	}
+	if preview != nil && preview.StepNo > lastStep {
+		lastStep = preview.StepNo
+	}
+	if !model.IsTerminalPathRunStatus(pathRun.Status) {
+		for _, candidate := range compiled {
+			if candidate.Sequence <= lastStep || seen[candidate.Sequence] {
+				continue
+			}
+			nodeID := tokens[candidate.NodeKey]
+			items = append(items, RunTimelineItemDTO{StepNo: candidate.Sequence, Action: string(candidate.Action),
+				ActionName: actionNameOf(string(candidate.Action)), NodeKey: candidate.NodeKey, NodeID: nodeID,
+				NodeName: names[nodeID], Status: "waiting", StatusName: "等待执行"})
+			break
+		}
+	}
+	return items
+}
+
+// buildPathDeviation 把偏离停机投影成预期节点、实际节点和保守名称；缺少写后事实时明确说明不可证明。
+func buildPathDeviation(stopReason string, steps []RunStepDTO, attempts []model.RunStepAttempt, compiled []model.CompiledActionStep, graph model.FlowGraph) PathDeviationDTO {
+	result := PathDeviationDTO{ActualNodeIDs: []string{}, ActualNodeNames: []string{}}
+	if !strings.Contains(stopReason, "路径偏离") {
+		return result
+	}
+	result.Detected = true
+	result.Reason = stopReason
+	names := nodeNamesOf(graph)
+	tokens := tokenToGraphNodeID(graph)
+	lastStep := 0
+	for _, item := range steps {
+		if item.StepNo > lastStep {
+			lastStep = item.StepNo
+		}
+	}
+	for _, candidate := range compiled {
+		if candidate.Sequence <= lastStep {
+			continue
+		}
+		result.ExpectedNodeID = tokens[candidate.NodeKey]
+		if result.ExpectedNodeID != "" {
+			result.ExpectedNodeName = names[result.ExpectedNodeID]
+		}
+		break
+	}
+	for index := len(attempts) - 1; index >= 0; index-- {
+		facts, decoded := step.DecodeInstanceFacts(attempts[index].BeforeFacts)
+		if !decoded || len(facts.AfterCurrentNodes) == 0 {
+			continue
+		}
+		result.ActualNodeIDs = append([]string{}, facts.AfterCurrentNodes...)
+		for _, nodeID := range facts.AfterCurrentNodes {
+			name := names[nodeID]
+			if strings.TrimSpace(name) == "" {
+				name = "目标新增节点（名称不可用）"
+			}
+			result.ActualNodeNames = append(result.ActualNodeNames, name)
+		}
+		break
+	}
+	if len(result.ActualNodeIDs) == 0 {
+		result.StructureNote = "已确认路径偏离，但运行记录没有保存可证明的写后当前节点集合"
+	} else if result.ExpectedNodeID == "" {
+		result.StructureNote = "已读取实际节点；配置路径的预期节点无法在当前结构中唯一绑定"
+	}
+	return result
 }
 
 // fillRunPathSummaries 填充运行级路径摘要：运行详情的路径切换区据此展示全部路径运行的独立状态。

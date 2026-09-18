@@ -43,6 +43,7 @@ const props = withDefaults(defineProps<{
   // runMode 是 F-016 的运行画布变体：真实节点承载九个中文运行态与当前步指示器。
   runMode?: boolean
   runNodeStates?: Record<string, { status: string; statusName: string }>
+  runDynamicNodeIds?: string[]
   currentRunNodeKey?: string
   // runBusy 表示当前步此刻真的在执行（放行在途／连续执行／核验中）：当前步节点据此播执行动画。
   runBusy?: boolean
@@ -59,7 +60,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
   configurationMode: false, configurationNodeStates: () => ({}), configurationFormStatus: '', configurationFormStatusName: '',
-  runMode: false, runNodeStates: () => ({}), currentRunNodeKey: '', runBusy: false, runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
+  runMode: false, runNodeStates: () => ({}), runDynamicNodeIds: () => [], currentRunNodeKey: '', runBusy: false, runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
   runSelectedNodeKey: '', runErrorNotes: () => ({}), runStepNotes: () => ({}),
 })
 const emit = defineEmits<{
@@ -102,10 +103,11 @@ const displayedLayout = computed(() => {
       const configurationInteractive = Boolean(props.configurationMode && configurationState?.interactive)
       // 运行模式：路径内节点可点开侧栏，路径外节点弱化只读。
       const runState = props.runNodeStates[node.id]
+      const dynamicNode = new Set(props.runDynamicNodeIds || []).has(node.id)
       // 运行模式下"能点开"的判定要以运行事实为准：已配置路线上的节点、当前步节点、
       // 以及任何已经有运行态的节点（实际走向偏离配置时就出现在路线外）都必须能点开看详情。
       const runTouched = Boolean(runState && runState.status && runState.status !== 'not_started')
-      const runInPath = analysis.reachableNodeIds.has(node.id) || node.id === props.currentRunNodeKey || runTouched
+      const runInPath = analysis.reachableNodeIds.has(node.id) || node.id === props.currentRunNodeKey || runTouched || dynamicNode
       const runInteractive = Boolean(props.runMode && runInPath)
       return {
         ...node,

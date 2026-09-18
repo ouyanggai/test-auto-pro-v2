@@ -1,7 +1,32 @@
 // 运行主线（F-016）前端类型：与后端 DTO 字段一一对应，不制造第二份语义。
+import type { FlowGraph } from '../flow-graph/types'
 export interface RunNodeState {
   status: string
   statusName: string
+}
+
+export interface RunTimelineItem {
+  stepNo: number
+  action?: string
+  actionName: string
+  nodeKey: string
+  nodeId?: string
+  nodeName: string
+  actorName?: string
+  status: 'executed' | 'running' | 'waiting'
+  statusName: string
+  startedAt?: string
+  durationMs?: number
+}
+
+export interface PathDeviation {
+  detected: boolean
+  reason?: string
+  expectedNodeId?: string
+  expectedNodeName?: string
+  actualNodeIds: string[]
+  actualNodeNames: string[]
+  structureNote?: string
 }
 
 export interface RunGateItem {
@@ -154,6 +179,11 @@ export interface PathRunDetail {
   graphError?: string
   // nodePlans 按图节点 ID 索引本次运行在该节点上的已配置计划（侧栏配置页签的唯一来源）。
   nodePlans?: Record<string, RunNodePlanAction[]>
+  dynamicGraph?: FlowGraph
+  dynamicGraphNote?: string
+  dynamicNodeIds: string[]
+  stepTimeline: RunTimelineItem[]
+  pathDeviation: PathDeviation
   pollIntervalMs: number
   staleAfterMs: number
   // 控制现场（F-017）：版本、当前步、生效断点、为什么停在这里、可用命令。

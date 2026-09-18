@@ -22,6 +22,10 @@ type FlowTreeReader interface {
 	FlowTreeSnapshotWithoutRelogin(context.Context, string, string, string) (target.FlowTreeSnapshot, error)
 }
 
+type runtimeFlowTreeReader interface {
+	RuntimeFlowTreeSnapshot(context.Context, string, string, string) (target.FlowTreeSnapshot, error)
+}
+
 type FlowAnalyzer interface {
 	Analyze(*target.FlowNodeTemplate) ([]model.FlowGraphNode, []model.FlowGraphEdge, []string, error)
 }
@@ -82,6 +86,35 @@ func (s *FlowGraphService) Get(ctx context.Context, planID uint64) (model.FlowGr
 	}
 	s.storeGraph(planID, generation, graph)
 	return graph, nil
+}
+
+// GetRuntime 按运行实例当前 flowProxyId 读取最新代理树；它绕过计划图缓存，只用于运行详情的事实投影。
+func (s *FlowGraphService) GetRuntime(ctx context.Context, planID uint64, instanceID string) (model.FlowGraph, error) {
+	plan, err := s.plans.Get(ctx, planID)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	reader, ok := s.target.(runtimeFlowTreeReader)
+	if !ok {
+		return model.FlowGraph{}, errors.New("运行期代理树读取能力未配置")
+	}
+	snapshot, err := reader.RuntimeFlowTreeSnapshot(ctx, plan.Account, plan.FlowSource, instanceID)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	if snapshot.Tree == nil {
+		return model.FlowGraph{}, ErrTargetFlowStructureEmpty
+	}
+	nodes, edges, warnings, err := s.analyzer.Analyze(snapshot.Tree)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	entries, err := validateEntryNodeIDs(snapshot.EntryNodeIDs, nodes)
+	if err != nil {
+		return model.FlowGraph{}, err
+	}
+	return model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
+		EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings}, nil
 }
 
 // refreshInBackground 在后台刷新投影；refreshing 标志保证同一计划同时只跑一个刷新，

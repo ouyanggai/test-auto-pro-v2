@@ -206,7 +206,10 @@ type InstanceFacts struct {
 	// BusinessSaveOtherBiz 是 BusinessSaveID 对应的 otherBiz，供恢复关联列表。
 	BusinessSaveOtherBiz string   `json:"businessSaveOtherBiz,omitempty"`
 	CurrentNodes         []string `json:"currentNodes,omitempty"`
-	DueNodes             []string `json:"dueNodes,omitempty"`
+	// AfterCurrentNodes 是写后核验得到的真实当前节点集合；与 BeforeFacts 中的写前事实分开保存，供运行详情解释路径偏离。
+	AfterCurrentNodes []string `json:"afterCurrentNodes,omitempty"`
+	AfterFlowProxyID  string   `json:"afterFlowProxyId,omitempty"`
+	DueNodes          []string `json:"dueNodes,omitempty"`
 	// StepNodeKey 记录本次关心的是哪个节点上的待办（审批步骤对照用）。
 	StepNodeKey string `json:"stepNodeKey,omitempty"`
 	// StorageRead/StorageFound 是暂存检查点读取事实；检查点标识、说明和更新时间用于判断本次是否新增或更新。
@@ -365,6 +368,8 @@ func DecodeInstanceFacts(raw string) (InstanceFacts, bool) {
 // mergeVerifyIssue 把写后核对结论并入落库 JSON，供下一步和重启恢复读取。
 func mergeVerifyIssue(before, after InstanceFacts) InstanceFacts {
 	merged := before
+	merged.AfterCurrentNodes = append([]string(nil), after.CurrentNodes...)
+	merged.AfterFlowProxyID = strings.TrimSpace(after.FlowProxyID)
 	merged.FormDataVerifyIssue = strings.TrimSpace(after.FormDataVerifyIssue)
 	merged.FormDataVerifyAt = strings.TrimSpace(after.FormDataVerifyAt)
 	merged.FormDataVerifyFingerprint = strings.TrimSpace(after.FormDataVerifyFingerprint)

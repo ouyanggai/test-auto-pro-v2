@@ -28,6 +28,14 @@ const activeTab = ref<PanelTab>('facts')
 // nodeSteps 是这个节点上已落账的步骤：按图节点 ID 过滤（旧数据回退令牌键）。
 const nodeSteps = computed<RunStep[]>(() => props.detail.steps.filter(step => (step.nodeId || step.nodeKey) === props.nodeKey))
 
+// nodeTimeline 只消费后端统一投影，避免面板从当前预览和已执行列表重复猜测同一步骤。
+const nodeTimeline = computed(() => (props.detail.stepTimeline ?? []).filter(item => (item.nodeId || item.nodeKey) === props.nodeKey))
+
+// timelineStep 按步序关联已落账详情；正在执行的预览与等待步骤没有详情按钮之外的事实可展开。
+function timelineStep(stepNo: number): RunStep | undefined {
+  return nodeSteps.value.find(step => step.stepNo === stepNo)
+}
+
 // nodeStateName 是这个节点的运行态中文名。
 const nodeStateName = computed(() => props.detail.nodeStates[props.nodeKey]?.statusName || '未开始')
 const nodeStatus = computed(() => props.detail.nodeStates[props.nodeKey]?.status || 'not_started')
@@ -512,28 +520,24 @@ const dialogStyle = computed(() => ({
 
       <!-- 运行信息：当前步一句话结论 + 已执行步骤清单，明细进详情弹窗。 -->
       <section v-show="activeTab === 'facts'" aria-label="节点运行信息">
-        <div v-if="currentPreview" class="run-panel__block">
-          <div class="run-panel__block-head">
-            <span class="run-panel__block-title">当前步：{{ previewActionLabel }}</span>
-            <n-button text size="tiny" type="info" @click="openStepDialog()">详情</n-button>
-          </div>
-          <p>处理人：{{ currentPreview.actorName || '执行时按已配置人员策略确定' }}</p>
-          <p v-if="currentPreview.expectedEffect">预期效果：{{ currentPreview.expectedEffect }}</p>
-          <p :class="currentPreview.gateAllowed ? 'run-panel__ok' : 'run-panel__bad'">{{ gateBrief }}</p>
-        </div>
-
-        <p v-if="nodeSteps.length > 0" class="run-panel__lead">已执行的步骤（{{ nodeSteps.length }}）：</p>
+        <p v-if="nodeTimeline.length > 0" class="run-panel__lead">步骤进度：</p>
         <ul class="run-panel__rows">
-          <li v-for="step in nodeSteps" :key="step.stepNo" class="run-panel__row">
+          <li v-for="item in nodeTimeline" :key="item.stepNo" class="run-panel__row" :class="`run-panel__timeline-row--${item.status}`">
             <div class="run-panel__row-main">
-              <span class="run-panel__row-title">第 {{ step.stepNo }} 步 · {{ stepActionLabel(step) }}</span>
-              <span class="run-panel__row-sub">{{ step.statusName }} · 耗时 {{ formatElapsed(step.durationMs) }} · 开始于 {{ formatTime(step.startedAt) }}</span>
+              <span class="run-panel__row-title">第 {{ item.stepNo }} 步 · {{ actionLabel(item.actionName, item.action) }} · {{ item.statusName }}</span>
+              <span class="run-panel__row-sub">
+                <template v-if="item.actorName">处理人：{{ item.actorName }} · </template>
+                <template v-if="item.status === 'executed' && timelineStep(item.stepNo)">耗时 {{ formatElapsed(timelineStep(item.stepNo)!.durationMs) }} · 开始于 {{ formatTime(timelineStep(item.stepNo)!.startedAt) }}</template>
+                <template v-else-if="item.status === 'running'">当前步骤正在处理或等待本次放行</template>
+                <template v-else>等待当前步骤完成后执行</template>
+              </span>
             </div>
-            <n-button text size="tiny" type="info" @click="openStepDialog(step)">详情</n-button>
+            <n-button v-if="item.status === 'executed' && timelineStep(item.stepNo)" text size="tiny" type="info" @click="openStepDialog(timelineStep(item.stepNo))">详情</n-button>
+            <n-button v-else-if="item.status === 'running'" text size="tiny" type="info" @click="openStepDialog()">详情</n-button>
           </li>
         </ul>
-        <p v-if="nodeSteps.length === 0 && !currentPreview" class="run-panel__lead" style="color: var(--run-secondary-text-color, #909090);">
-          这个节点还没有执行过步骤；运行推进到这里后会在这里显示已发生的事实。
+        <p v-if="nodeTimeline.length === 0" class="run-panel__lead" style="color: var(--run-secondary-text-color, #909090);">
+          这个节点当前没有已执行、正在执行或等待执行的步骤。
         </p>
       </section>
 
@@ -857,6 +861,21 @@ const dialogStyle = computed(() => ({
 .run-panel__row--bad {
   border-color: color-mix(in srgb, var(--error-color, #d03050) 46%, transparent);
   background: color-mix(in srgb, var(--error-color, #d03050) 6%, transparent);
+}
+
+.run-panel__timeline-row--executed {
+  color: var(--run-secondary-text-color, #909090);
+}
+
+.run-panel__timeline-row--running {
+  color: var(--primary-color, #18a058);
+  border-color: color-mix(in srgb, var(--primary-color, #18a058) 45%, var(--run-border-color, #ccc));
+  background: color-mix(in srgb, var(--primary-color, #18a058) 7%, transparent);
+}
+
+.run-panel__timeline-row--waiting {
+  color: var(--info-color, #2080f0);
+  background: color-mix(in srgb, var(--info-color, #2080f0) 5%, transparent);
 }
 
 .run-panel__row-main {

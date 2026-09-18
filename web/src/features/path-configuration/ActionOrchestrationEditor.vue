@@ -313,7 +313,12 @@ function removeAction(index: number) {
               <n-button quaternary circle title="上移动作" aria-label="上移动作" :disabled="readOnly || index === 0" @click="moveAction(index, -1)"><ArrowUpOutline /></n-button>
               <n-button quaternary circle title="下移动作" aria-label="下移动作" :disabled="readOnly || index === actions.length - 1" @click="moveAction(index, 1)"><ArrowDownOutline /></n-button>
               <n-popconfirm :disabled="readOnly" @positive-click="removeAction(index)">
-                <template #trigger><n-button type="error" quaternary circle title="删除动作" aria-label="删除动作" :disabled="readOnly"><CloseOutline /></n-button></template>
+                <template #trigger>
+                  <n-button type="error" quaternary title="删除动作" aria-label="删除动作" :disabled="readOnly">
+                    <CloseOutline />
+                    删除动作
+                  </n-button>
+                </template>
                 删除这个动作配置？
               </n-popconfirm>
             </div>

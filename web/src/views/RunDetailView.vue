@@ -113,6 +113,25 @@ const selectedNodeKey = ref('')
 
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 
+// mergeRunGraphs 保留计划图上的已配置事实，并把目标最新代理树新增的节点与可证明连线合并进画布。
+function mergeRunGraphs(base: FlowGraph, dynamic?: FlowGraph): FlowGraph {
+  if (!dynamic) return base
+  const nodes = new Map(base.nodes.map((node) => [node.id, node]))
+  for (const node of dynamic.nodes) {
+    nodes.set(node.id, { ...node, name: node.name || '目标新增节点（名称不可用）' })
+  }
+  const edges = new Map(base.edges.map((edge) => [edge.id, edge]))
+  for (const edge of dynamic.edges) edges.set(edge.id, edge)
+  return {
+    ...base,
+    targetName: dynamic.targetName || base.targetName,
+    entryNodeIds: dynamic.entryNodeIds.length > 0 ? dynamic.entryNodeIds : base.entryNodeIds,
+    nodes: [...nodes.values()],
+    edges: [...edges.values()],
+    warnings: [...new Set([...base.warnings, ...dynamic.warnings])],
+  }
+}
+
 // pathChoices 是这条路径已保存的分支选择：画布据此区分路径内/路径外节点（评审缺陷 8 的修复点）。
 const pathChoices = computed(() => detail.value?.pathChoices ?? [])
 
@@ -336,6 +355,8 @@ const runNodeStates = computed(() => {
   return states
 })
 
+const runDynamicNodeIds = computed(() => detail.value?.dynamicNodeIds ?? [])
+
 // runErrorNotes 是失败/结果待确认节点上的一句话错误摘要：
 // 取最后一个已落账步骤里第一个非成功尝试的原因原文，只呈现、不猜测。
 const runErrorNotes = computed<Record<string, string>>(() => {
@@ -422,7 +443,7 @@ async function loadDetail(): Promise<void> {
       try {
         const nextGraph = await fetchFlowGraph(String(next.planId), trackSignal(graphSignal))
         if (isCurrent(version, pathRunId || next.pathRunId)) {
-          graph.value = nextGraph
+          graph.value = mergeRunGraphs(nextGraph, next.dynamicGraph)
         }
       } catch (error) {
         if (!isAbortError(error) && isCurrent(version, pathRunId || next.pathRunId)) {
@@ -453,6 +474,9 @@ function applyDetail(next: PathRunDetail, version: number): void {
     if (kept) lastValidCurrentNodeByVersion.set(version, kept)
   }
   detail.value = next
+  if (graph.value && next.dynamicGraph) {
+    graph.value = mergeRunGraphs(graph.value, next.dynamicGraph)
+  }
   syncControl(next)
   lastUpdateAt.value = Date.now()
 }
@@ -626,14 +650,9 @@ async function retryFailed(): Promise<void> {
   }
 }
 
-// handleSelectRunNode 打开右侧检视面板。面板会挤掉画布宽度，首次打开时把这个节点重新
-// 平移到画布中央，否则用户刚点的节点会被面板推出视野。
+// handleSelectRunNode 只打开右侧检视面板；用户点选节点不应隐式改变画布视口。
 function handleSelectRunNode(nodeID: string): void {
-  const firstOpen = selectedNodeKey.value === ''
   selectedNodeKey.value = nodeID
-  if (firstOpen) {
-    void nextTick().then(() => focusNodeQuietly(nodeID)).catch(() => {})
-  }
 }
 
 // closeNodePanel 关闭检视面板；画布恢复整宽后如果仍在自动跟随，就把当前步重新居中。
@@ -1067,6 +1086,15 @@ onBeforeUnmount(() => {
         <n-alert v-if="detail.stopReason" type="warning" :show-icon="false" class="run-detail__notice-bar">
           {{ detail.stopReason }}
         </n-alert>
+        <n-alert v-if="detail.dynamicGraphNote" type="info" :show-icon="false" class="run-detail__notice-bar">
+          {{ detail.dynamicGraphNote }}
+        </n-alert>
+        <n-alert v-if="detail.pathDeviation?.detected" type="error" :show-icon="false" class="run-detail__notice-bar">
+          {{ detail.pathDeviation.reason || '路径偏离，后续步骤不提供放行。' }}
+          <span v-if="detail.pathDeviation.expectedNodeName">预期节点：{{ detail.pathDeviation.expectedNodeName }}。</span>
+          <span v-if="detail.pathDeviation.actualNodeNames.length > 0">实际节点：{{ detail.pathDeviation.actualNodeNames.join('、') }}。</span>
+          <span v-if="detail.pathDeviation.structureNote">{{ detail.pathDeviation.structureNote }}。</span>
+        </n-alert>
         <p v-if="topConclusion" class="run-detail__conclusion" role="status">{{ topConclusion }}</p>
         <p v-if="loadErrorText" class="run-detail__error" role="alert">{{ loadErrorText }}</p>
         <p v-if="errorText" class="run-detail__error" role="alert">{{ errorText }}</p>
@@ -1086,6 +1114,7 @@ onBeforeUnmount(() => {
             :choices="pathChoices"
             run-mode
             :run-node-states="runNodeStates"
+            :run-dynamic-node-ids="runDynamicNodeIds"
             :current-run-node-key="currentNodeKey"
             :run-busy="runBusy"
             :run-taken-edge-ids="runTakenEdgeIds"
