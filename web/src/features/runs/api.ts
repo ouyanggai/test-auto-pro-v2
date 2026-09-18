@@ -180,6 +180,8 @@ export interface PathRunDetail {
   // nodePlans 按图节点 ID 索引本次运行在该节点上的已配置计划（侧栏配置页签的唯一来源）。
   nodePlans?: Record<string, RunNodePlanAction[]>
   dynamicGraph?: FlowGraph
+  // dynamicGraphBindable 为 false 时动态图不能承载历史运行事实，画布必须继续使用计划图。
+  dynamicGraphBindable: boolean
   dynamicGraphNote?: string
   dynamicNodeIds: string[]
   stepTimeline: RunTimelineItem[]

@@ -93,6 +93,8 @@ const themeVars = useThemeVars()
 
 const detail = ref<PathRunDetail | null>(null)
 const graph = ref<FlowGraph | null>(null)
+// staticGraph 始终保存计划图，动态图无法唯一投影时用它承载历史运行事实。
+const staticGraph = ref<FlowGraph | null>(null)
 const loading = ref(true)
 const errorText = ref('')
 const loadErrorText = ref('')
@@ -134,10 +136,9 @@ function isUsableRunGraph(candidate: FlowGraph): boolean {
   return seen.size === ids.size
 }
 
-// mergeRunGraphs 以服务端投影的动态图作为唯一画布事实；服务端无法证明时已降级为完整目标图，
-// 这里绝不再把静态树和动态树按 ID 并集，避免加签重建后出现两个根节点。
-function mergeRunGraphs(base: FlowGraph, dynamic?: FlowGraph): FlowGraph {
-  if (!dynamic) return base
+// mergeRunGraphs 只接收服务端已证明可唯一投影的动态图；无法绑定时保留静态图承载运行事实。
+function mergeRunGraphs(base: FlowGraph, dynamic?: FlowGraph, dynamicBindable = false): FlowGraph {
+  if (!dynamic || !dynamicBindable) return base
   if (!isUsableRunGraph(dynamic)) {
     return {
       ...base,
@@ -466,7 +467,8 @@ async function loadDetail(): Promise<void> {
       try {
         const nextGraph = await fetchFlowGraph(String(next.planId), trackSignal(graphSignal))
         if (isCurrent(version, pathRunId || next.pathRunId)) {
-          graph.value = mergeRunGraphs(nextGraph, next.dynamicGraph)
+          staticGraph.value = nextGraph
+          graph.value = mergeRunGraphs(nextGraph, next.dynamicGraph, next.dynamicGraphBindable)
         }
       } catch (error) {
         if (!isAbortError(error) && isCurrent(version, pathRunId || next.pathRunId)) {
@@ -497,8 +499,8 @@ function applyDetail(next: PathRunDetail, version: number): void {
     if (kept) lastValidCurrentNodeByVersion.set(version, kept)
   }
   detail.value = next
-  if (graph.value && next.dynamicGraph) {
-    graph.value = mergeRunGraphs(graph.value, next.dynamicGraph)
+  if (staticGraph.value && next.dynamicGraph) {
+    graph.value = mergeRunGraphs(staticGraph.value, next.dynamicGraph, next.dynamicGraphBindable)
   }
   syncControl(next)
   lastUpdateAt.value = Date.now()

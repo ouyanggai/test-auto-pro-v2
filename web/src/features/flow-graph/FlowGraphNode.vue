@@ -40,6 +40,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       <handle type="target" :position="Position.Top" :connectable="false" />
       <span class="flow-node__type">{{ data.typeName }}</span>
       <span class="flow-node__name">{{ data.name }}</span>
+      <span v-if="data.auditPeople?.length" class="flow-node__people">处理人：{{ data.auditPeople.join('、') }}</span>
       <span class="flow-node__run-status">
         <!-- 状态点是细小连续的动态反馈：运行/核验中呼吸，其余状态静止；文字始终写清运行态。 -->
         <span
@@ -76,6 +77,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       <handle type="target" :position="Position.Top" :connectable="false" />
       <span class="flow-node__type">{{ data.typeName }}</span>
       <span class="flow-node__name">{{ data.name }}</span>
+      <span v-if="data.auditPeople?.length" class="flow-node__people">处理人：{{ data.auditPeople.join('、') }}</span>
       <span
         class="flow-node__configuration-status"
         :class="`flow-node__configuration-status--${data.configurationStatus || 'not_required'}`"
@@ -105,6 +107,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
     <handle type="target" :position="Position.Top" :connectable="false" />
     <span class="flow-node__type">{{ data.typeName }}</span>
     <span class="flow-node__name">{{ data.name }}</span>
+    <span v-if="data.auditPeople?.length" class="flow-node__people">处理人：{{ data.auditPeople.join('、') }}</span>
     <handle type="source" :position="Position.Bottom" :connectable="false" />
   </n-tag>
 </template>
@@ -113,7 +116,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 .flow-node {
   display: grid;
   width: 180px;
-  height: 72px;
+  height: 106px;
   padding: 9px 14px;
   align-content: center;
   justify-items: center;
@@ -125,7 +128,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 .flow-node-shell {
   position: relative;
   width: 180px;
-  height: 72px;
+  height: 106px;
 }
 
 .flow-node--configuration {
@@ -238,6 +241,19 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   font-size: 14px;
   font-weight: 600;
   line-height: 1.35;
+  text-align: center;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.flow-node__people {
+  display: -webkit-box;
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--flow-secondary-label-color, #777);
+  font-size: 11px;
+  line-height: 1.25;
   text-align: center;
   text-overflow: ellipsis;
   -webkit-box-orient: vertical;

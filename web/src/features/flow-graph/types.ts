@@ -7,6 +7,7 @@ export interface FlowGraphNode {
   type: FlowGraphNodeType
   typeName: string
   mergeTargetId?: string
+  auditPeople?: string[]
 }
 
 export interface FlowGraphEdge {
@@ -33,6 +34,7 @@ export interface FlowNodeData extends Record<string, unknown> {
   type: FlowGraphNodeType
   typeName: string
   mergeTargetId?: string
+  auditPeople?: string[]
   configurationMode?: boolean
   configurationStatus?: 'not_required' | 'pending' | 'partial' | 'configured' | 'runtime' | 'affected'
   configurationStatusName?: string

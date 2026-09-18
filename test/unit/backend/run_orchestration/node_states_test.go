@@ -38,6 +38,26 @@ func TestF016WaitingNodesDerivedFromConfiguredRoute(t *testing.T) {
 	}
 }
 
+// TestF037FailedStepKeepsNodeFact 验证第 9 步确定失败时，失败节点不会因刷新详情重新变成未开始。
+func TestF037FailedStepKeepsNodeFact(t *testing.T) {
+	graph := model.FlowGraph{Nodes: []model.FlowGraphNode{{ID: "node-start"}, {ID: "node-submit"}}}
+	token := analyzer.PathConfigNodeToken("node-submit")
+	startToken := analyzer.PathConfigNodeToken("node-start")
+	steps := []model.RunStep{
+		{NodeKey: startToken, Status: model.RunStepSucceeded},
+		{NodeKey: token, Status: model.RunStepFailed},
+	}
+	failure := model.FailureClassToolBug
+	pathRun := model.PathRun{Status: model.PathRunStatusFailed, FailureClass: &failure}
+	states := service.BuildNodeStatesForTest(graph, steps, pathRun, nil, []string{token})
+	if got := states["node-submit"].StatusName; got != model.PathRunStatusName(model.PathRunStatusFailed) {
+		t.Fatalf("失败步骤刷新后应保持失败，实际 %s", got)
+	}
+	if got := states["node-start"].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
+		t.Fatalf("此前已落账节点不应被刷新抹成未开始，实际 %s", got)
+	}
+}
+
 // TestF016RunDetailGraphReadBudget 验证运行详情不会用低于一秒的预算误杀正常的目标结构读取。
 func TestF016RunDetailGraphReadBudget(t *testing.T) {
 	if timeout := service.RunDetailGraphTimeoutForTest(); timeout < time.Second {

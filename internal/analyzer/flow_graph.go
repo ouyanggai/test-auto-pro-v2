@@ -39,7 +39,7 @@ func (a *FlowGraphAnalyzer) Analyze(root *target.FlowNodeTemplate) ([]model.Flow
 		nodes: make(map[string]model.FlowGraphNode), edges: make(map[string]model.FlowGraphEdge),
 		stack: make(map[string]bool), seen: make(map[string]bool),
 	}
-	if _, err := builder.parse(root, 1); err != nil {
+	if _, err := builder.parse(root, 1, "root"); err != nil {
 		return nil, nil, nil, err
 	}
 	nodes := make([]model.FlowGraphNode, 0, len(builder.nodeOrder))
@@ -53,7 +53,8 @@ func (a *FlowGraphAnalyzer) Analyze(root *target.FlowNodeTemplate) ([]model.Flow
 	return nodes, edges, builder.warnings, nil
 }
 
-func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string, error) {
+// parse 递归读取目标真实代理树，同时保存结构路径；路径来自目标树的 child/branch 关系，不能从汇合后的图边反推。
+func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int, structuralPath string) ([]string, error) {
 	if node == nil || depth > maxFlowDepth {
 		return nil, ErrFlowStructureInvalid
 	}
@@ -77,9 +78,10 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 		if name == "" {
 			name = typeName
 		}
-		graphNode := model.FlowGraphNode{ID: id, Name: name, Type: normalizedNodeType(node.Type, node.BranchExecuteType), TypeName: typeName}
+		graphNode := model.FlowGraphNode{ID: id, Name: name, Type: normalizedNodeType(node.Type, node.BranchExecuteType), TypeName: typeName, StructuralPath: structuralPath}
 		if node.AuditConfig != nil {
 			graphNode.AuditType = strings.TrimSpace(node.AuditConfig.AuditType)
+			graphNode.AuditPeople = auditPeople(node.AuditConfig.Details)
 		}
 		// F-034：目标 isSkip 声明随图节点进入运行时；nil 表示未声明（不允许跳过）。
 		graphNode.IsSkip = node.IsSkip
@@ -114,7 +116,7 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 			if err := b.addEdge(id, branch.Child.ID, kind, label, branchID); err != nil {
 				return nil, err
 			}
-			exits, err := b.parse(branch.Child, depth+1)
+			exits, err := b.parse(branch.Child, depth+1, fmt.Sprintf("%s/branch/%d", structuralPath, index))
 			if err != nil {
 				return nil, err
 			}
@@ -135,7 +137,7 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 				return nil, err
 			}
 		}
-		exits, err := b.parse(node.Child, depth+1)
+		exits, err := b.parse(node.Child, depth+1, structuralPath+"/child")
 		if err != nil {
 			return nil, err
 		}
@@ -152,11 +154,29 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int) ([]string
 	if err := b.addEdge(id, nextID, "sequence", "", ""); err != nil {
 		return nil, err
 	}
-	exits, err := b.parse(node.Child, depth+1)
+	exits, err := b.parse(node.Child, depth+1, structuralPath+"/child")
 	if err != nil {
 		return nil, err
 	}
 	return exits, nil
+}
+
+// auditPeople 提取目标审批明细中的非空名称并去重，避免把内部人员 ID 或空配置画到节点上。
+func auditPeople(details []target.FlowAuditDetail) []string {
+	people := make([]string, 0, len(details))
+	seen := make(map[string]struct{}, len(details))
+	for _, detail := range details {
+		name := strings.TrimSpace(detail.Name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		people = append(people, name)
+	}
+	return people
 }
 
 func (b *graphBuilder) addEdge(source, destination, kind, label, branchID string) error {

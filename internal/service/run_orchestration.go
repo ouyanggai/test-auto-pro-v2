@@ -379,9 +379,11 @@ type PathRunDetailDTO struct {
 	CurrentPhaseNote  string    `json:"currentPhaseNote,omitempty"`
 	CurrentPhaseSince time.Time `json:"currentPhaseSince,omitempty"`
 	// DynamicGraph 是按当前运行实例最新 flowProxyId 读取的代理树；读取失败时保留静态图并说明原因。
-	DynamicGraph     *RunFlowGraphDTO `json:"dynamicGraph,omitempty"`
-	DynamicGraphNote string           `json:"dynamicGraphNote,omitempty"`
-	DynamicNodeIDs   []string         `json:"dynamicNodeIds"`
+	DynamicGraph *RunFlowGraphDTO `json:"dynamicGraph,omitempty"`
+	// DynamicGraphBindable 表示动态图节点是否已唯一投影到运行事实图；为 false 时前端不得用动态图替换运行画布。
+	DynamicGraphBindable bool     `json:"dynamicGraphBindable"`
+	DynamicGraphNote     string   `json:"dynamicGraphNote,omitempty"`
+	DynamicNodeIDs       []string `json:"dynamicNodeIds"`
 	// StepTimeline 把已执行、正在执行和等待执行统一投影，前端不再猜测下一步。
 	StepTimeline  []RunTimelineItemDTO `json:"stepTimeline"`
 	PathDeviation PathDeviationDTO     `json:"pathDeviation"`
@@ -1187,6 +1189,10 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		StaleAfterMs:        s.runConfig.StepProgressStaleAfter.Milliseconds(),
 	}
 	deviationGraph := graph
+	// factGraph 是运行事实映射所使用的图。动态图无法唯一投影时，目标最新结构仍用于展示，
+	// 但历史步骤不能因为缺少唯一绑定而丢失节点键；此时保留静态计划图作为事实映射基准。
+	factGraph := graph
+	dynamicProjectionOK := true
 	// 运行详情不能长期复用计划图：加签可能重建 flowProxy，当前实例的最新代理树才是动态节点事实。
 	if strings.TrimSpace(pathRun.MainInstanceRef) != "" {
 		if runtimeReader, ok := s.graphs.(runtimeGraphReader); ok {
@@ -1196,11 +1202,16 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			if dynamicErr == nil {
 				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph)
 				deviationGraph = projected
+				dynamicProjectionOK = projectionOK
+				if projectionOK {
+					factGraph = projected
+				}
 				detail.DynamicGraph = runFlowGraphDTO(projected)
+				detail.DynamicGraphBindable = projectionOK
 				if projectionOK {
 					detail.DynamicGraphNote = "已按当前运行实例最新代理树读取，并按唯一结构位置绑定计划节点"
 				} else {
-					detail.DynamicGraphNote = "目标代理树已重建，但结构位置无法唯一绑定；页面只展示目标最新结构，不猜测旧节点对应关系"
+					detail.DynamicGraphNote = "目标代理树已重建，但结构位置无法唯一绑定；运行画布保留计划结构和已落账事实，目标最新结构仅作查看，不猜测旧节点对应关系"
 				}
 				staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
 				for _, node := range graph.Nodes {
@@ -1243,7 +1254,14 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	requestsByKey, summaryByKey := s.readAttemptRequests(pathRun.ID, attempts)
 	// 步骤与预览携带的是配置令牌键（编译场景的 nodeKey），画布与侧栏按图节点 ID 取值。
 	// 这里统一翻译出图节点 ID，键空间对齐后九个运行态、当前步标记与侧栏才真实可用（评审 P1）。
-	tokenToGraphID := tokenToGraphNodeID(graph)
+	// 投影失败只说明旧节点不能安全绑定到新结构，不代表已落账步骤不存在；
+	// 继续使用静态图把运行事实映射出来，避免详情刷新后步骤和失败节点全部变成未开始。
+	var tokenToGraphID map[string]string
+	if !dynamicProjectionOK {
+		tokenToGraphID = tokenToGraphNodeID(factGraph)
+	} else {
+		tokenToGraphID = tokenToGraphNodeID(deviationGraph)
+	}
 	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, requestsByKey, summaryByKey, s.router, tokenToGraphID)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
@@ -1266,9 +1284,9 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Steps[index].ReleaseRequired = compiled.ReleaseRequired
 		}
 	}
-	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
+	detail.NodeStates = buildNodeStates(factGraph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	detail.NodePlans = buildNodePlans(compiledSteps, tokenToGraphID)
-	detail.StepTimeline = buildStepTimeline(detail.Steps, detail.CurrentPreview, compiledSteps, graph, pathRun,
+	detail.StepTimeline = buildStepTimeline(detail.Steps, detail.CurrentPreview, compiledSteps, factGraph, pathRun,
 		controlView != nil && controlView.StepInFlight, controlView != nil && controlView.LoopRunning)
 	if controlView != nil {
 		view := controlView
@@ -1289,7 +1307,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		for _, command := range view.Commands {
 			detail.Commands = append(detail.Commands, CommandDTO{Command: string(command), Label: CommandLabel(command)})
 		}
-		nodeTable := nodeNamesOf(graph)
+		nodeTable := nodeNamesOf(factGraph)
 		for _, bp := range view.Breakpoints {
 			dto := BreakpointDTO{Type: string(bp.Type), TypeName: breakpointTypeName(string(bp.Type)),
 				NodeKey: bp.NodeKey, StepNo: bp.StepNo, Action: bp.Action}
@@ -1299,7 +1317,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Breakpoints = append(detail.Breakpoints, dto)
 		}
 	}
-	detail.NodeStates = buildNodeStates(graph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
+	detail.NodeStates = buildNodeStates(factGraph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	// 执行现场已丢失的运行（服务重启或执行结果无法确认，路径运行停在结果待确认且没有内存现场）
 	// 无法安全继续：如实告诉用户并引导从计划重新运行；界面不给任何对账、重放或登记入口。
 	if controlView == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
@@ -1385,6 +1403,29 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph) (model.FlowG
 func flowGraphStructuralPaths(graph model.FlowGraph) (map[string]string, bool) {
 	if len(graph.Nodes) == 0 {
 		return nil, false
+	}
+	// 图由目标树分析器生成时优先使用真实递归路径。目标条件分支的出口可能由外层统一汇合，
+	// 这种合法树形关系无法仅靠图边唯一反推，继续反推会把正常加签重建误报为结构异常。
+	withTreePaths := make(map[string]string, len(graph.Nodes))
+	allTreePaths := true
+	for _, node := range graph.Nodes {
+		id := strings.TrimSpace(node.ID)
+		path := strings.TrimSpace(node.StructuralPath)
+		if id == "" || path == "" {
+			allTreePaths = false
+			break
+		}
+		if previous, exists := withTreePaths[path]; exists && previous != id {
+			return nil, false
+		}
+		withTreePaths[path] = id
+	}
+	if allTreePaths && len(withTreePaths) == len(graph.Nodes) {
+		result := make(map[string]string, len(withTreePaths))
+		for path, id := range withTreePaths {
+			result[id] = path
+		}
+		return result, true
 	}
 	nodes := make(map[string]model.FlowGraphNode, len(graph.Nodes))
 	outgoing := make(map[string][]model.FlowGraphEdge)
@@ -2163,6 +2204,11 @@ func BuildStepDTOsForTest(steps []model.RunStep, attempts []model.RunStepAttempt
 // BuildNodeStatesForTest 暴露画布节点运行态推导，供 test 目录下的定向用例锁定「等待运行」语义。
 func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
 	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys)
+}
+
+// ProjectRuntimeGraphForTest 暴露运行期代理树投影，供根目录定向测试锁定加签重建后的结构绑定。
+func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph) (model.FlowGraph, bool) {
+	return projectRuntimeGraph(staticGraph, dynamicGraph)
 }
 
 // RunDetailGraphTimeoutForTest 暴露详情结构读取预算，供 test 目录锁定正常目标读取不被过短预算截断。

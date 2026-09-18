@@ -3,7 +3,7 @@ import { MarkerType, Position, type Edge, type Node } from '@vue-flow/core'
 import type { FlowGraph, FlowGraphEdge, FlowGraphNode, FlowNodeData, FlowTreeEdgeData } from './types'
 
 export const flowNodeWidth = 180
-export const flowNodeHeight = 72
+export const flowNodeHeight = 106
 export const flowRoutingHubSize = 8
 export const flowTreeHorizontalGap = 104
 export const flowTreeVerticalGap = 88
@@ -288,7 +288,7 @@ class FlowTreeLayout {
       draggable: false,
       selectable: false,
       connectable: false,
-      data: { name: node.name, type: node.type, typeName: node.typeName, mergeTargetId: node.mergeTargetId },
+      data: { name: node.name, type: node.type, typeName: node.typeName, mergeTargetId: node.mergeTargetId, auditPeople: node.auditPeople },
     }
   }
 
