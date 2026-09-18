@@ -141,12 +141,23 @@ export function detectFlowRejection (entry: FlowRejectionInput): string | null {
 // isPermissionCheckSubmit 识别权限校验型 POST /web/flowInstanceApi/submit：
 // 重提链的 checkFlowPermission（EnterpriseExamineOpinion checkFlowPermission，data.checkPermissions='first'）
 // 与 FlowDialog 打开时的前置校验都走 submit 端点，但它们不是流程写；只看 URL+方法会把
-// 「权限校验」误判成「流程已写」（施工令 §3 附加项）。按请求载荷语义排除。
+// 「权限校验」误判成「流程已写」（施工令 §3 附加项）。判定必须精确到 data 顶层的
+// checkPermissions 键：FormMaking 表单正文（formDataMongoVo）可能携带含同名子串的
+// 历史数据值（2026-09-19 夜间调休单实测），裸子串匹配会把真实草稿写误判成权限探测，
+// 导致「零写失败」误判而目标上实际已创建草稿实例。
 export function isPermissionCheckSubmit (entry: { url: string, body?: string, bodyEncoding?: string }): boolean {
   if (!entry.url.includes('/web/flowInstanceApi/submit')) return false
   let text = entry.body ?? ''
   if (entry.bodyEncoding === 'base64') text = Buffer.from(text, 'base64').toString('utf8')
-  return text.includes('checkPermissions')
+  if (text.trim() === '') return false
+  try {
+    const parsed = JSON.parse(text) as { data?: Record<string, unknown> }
+    const data = parsed?.data
+    return !!data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, 'checkPermissions')
+  } catch {
+    // 非 JSON 正文不属于页面构造的权限探测形状，按真实写对待（宁可靠拢到写侧保守处理）。
+    return false
+  }
 }
 
 function lockIfNeeded (input: CompletionInput, result: CompletionResult): CompletionResult {
