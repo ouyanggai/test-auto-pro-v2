@@ -115,10 +115,10 @@ func TestPlanLevelAndApplicationRouting(t *testing.T) {
 func TestRunScopeRoutesToPlanRunsAndWritesExecutionLog(t *testing.T) {
 	root := t.TempDir()
 	scope := businessScope("req-run")
-	scope.RunID, scope.RunSeq, scope.PathRunID = "501", "3", "88"
+	scope.RunID, scope.RunSeq, scope.PathRunID, scope.RunStartedAt = "501", "3", "88", "2026-09-03 18-56-31"
 	dir := writeBusinessLogs(t, root, scope)
-	expected := filepath.Join(root, "runs", "运行_3__员工请假单（集团）-自动回归__run-501",
-		"paths", "执行路径 1__path-run-88__path-13")
+	expected := filepath.Join(root, "runs", "员工请假单（集团）-自动回归__运行3",
+		"paths", "执行路径 1__2026-09-03 18-56-31")
 	if dir != expected {
 		t.Fatalf("运行日志目录不正确：\n实际 %s\n期望 %s", dir, expected)
 	}
@@ -229,12 +229,12 @@ func TestConsecutiveRunsAndPathsKeepTheirOwnDirectories(t *testing.T) {
 	dirs := map[string]string{}
 	for index, runID := range []string{"101", "102", "103"} {
 		scope := businessScope("req-run-" + runID)
-		scope.RunID, scope.RunSeq = runID, fmt.Sprint(index+1)
+		scope.RunID, scope.RunSeq, scope.RunStartedAt = runID, fmt.Sprint(index+1), fmt.Sprintf("2026-09-03 18-5%d-31", index+6)
 		scope.PathRunID = fmt.Sprint(880 + index)
 		dirs[runID] = writeBusinessLogs(t, root, scope)
 		expected := filepath.Join(root, "runs",
-			fmt.Sprintf("运行_%d__员工请假单（集团）-自动回归__run-%s", index+1, runID),
-			"paths", fmt.Sprintf("执行路径 1__path-run-%d__path-13", 880+index))
+			fmt.Sprintf("员工请假单（集团）-自动回归__运行%d", index+1),
+			"paths", fmt.Sprintf("执行路径 1__2026-09-03 18-5%d-31", index+6))
 		if dirs[runID] != expected {
 			t.Fatalf("第 %d 次运行的目录不正确：\n实际 %s\n期望 %s", index+1, dirs[runID], expected)
 		}
@@ -244,16 +244,16 @@ func TestConsecutiveRunsAndPathsKeepTheirOwnDirectories(t *testing.T) {
 	}
 	// 同一运行内两条同名路径按 pathRunId 分开，绝不互相覆盖。
 	sameRun := businessScope("req-same-path")
-	sameRun.RunID, sameRun.RunSeq, sameRun.PathRunID = "201", "7", "901"
+	sameRun.RunID, sameRun.RunSeq, sameRun.PathRunID, sameRun.RunStartedAt = "201", "7", "901", "2026-09-03 19-00-00"
 	first := writeBusinessLogs(t, root, sameRun)
-	sameRun.PathRunID, sameRun.RequestID = "902", "req-same-path-2"
+	sameRun.PathRunID, sameRun.RequestID, sameRun.RunStartedAt = "902", "req-same-path-2", "2026-09-03 19-00-01"
 	second := writeBusinessLogs(t, root, sameRun)
 	if first == second {
 		t.Fatalf("同名路径共用了目录：%s", first)
 	}
 	// 实例名称含中文、空格、斜杠与超长文本：只进元数据与日志字段，目录不受影响。
 	named := businessScope("req-instance-name")
-	named.RunID, named.RunSeq, named.PathRunID = "301", "9", "903"
+	named.RunID, named.RunSeq, named.PathRunID, named.RunStartedAt = "301", "9", "903", "2026-09-03 19-01-00"
 	named.InstanceID = "instance-301"
 	named.InstanceName = "请假单/审批 流程 " + strings.Repeat("超长名称", 40)
 	namedDir := writeBusinessLogs(t, root, named)

@@ -1073,7 +1073,10 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	}
 	newFlowProxyID := strings.TrimSpace(outcome.FlowProxyID)
 	newCurrentNodeID := strings.TrimSpace(outcome.CurrentNodeProxyID)
-	if (newFlowProxyID != "" && newFlowProxyID != oldFlowProxyID) || (newCurrentNodeID != "" && newCurrentNodeID != oldCurrentNodeID) {
+	// 加签会重建实例私有代理，即使目标响应省略新 ID 或沿用同一 ID，也必须按实例待办重新刷新整棵树。
+	// 只比较响应字段会漏掉目标页面实际使用的“写后重新取树”步骤，后续动作会继续拿旧节点事实。
+	remapAfterAddSign := session.preview != nil && session.preview.Action == model.ActionAddSign
+	if remapAfterAddSign || (newFlowProxyID != "" && newFlowProxyID != oldFlowProxyID) || (newCurrentNodeID != "" && newCurrentNodeID != oldCurrentNodeID) {
 		proxyID := newFlowProxyID
 		if proxyID == "" {
 			proxyID = oldFlowProxyID

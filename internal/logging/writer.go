@@ -175,8 +175,8 @@ func (r *Router) Bucket(scope Scope, name string) *Writer {
 }
 
 // BucketDir 返回当前作用域对应的日志目录，目录段全部经过清洗。
-// 运行阶段严格镜像页面层级「运行记录 -> 路径运行」：logs/runs/<运行目录>/paths/<路径运行目录>，
-// 目录名只用页面已有的稳定键（runId/pathRunId）加可读标签，实例名称不参与寻址。
+// 运行阶段严格镜像页面层级「运行记录 -> 路径运行」：logs/runs/<计划名+运行号>/paths/<路径名+时间戳>，
+// 完整 runId/pathRunId 仍在 meta.json 与日志字段中，实例名称不参与寻址。
 // 配置阶段仍按计划、执行路径与日期分层；只知道计划不知道执行路径时进计划级目录；
 // 确实无法归属业务对象时才进当天的应用程序目录。
 func (r *Router) BucketDir(scope Scope) string {

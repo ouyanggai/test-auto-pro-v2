@@ -62,12 +62,28 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 	nodeIDs := make(map[string]string, len(oldPaths))
 	usedNewIDs := make(map[string]string, len(oldPaths))
 	for oldID, path := range oldPaths {
+		// 先锁定完全相同的结构路径。旧实现把所有更深 child 都纳入候选，
+		// 因而同一条链上存在后继审批节点时把本应精确的节点误判成多候选。
 		candidates := make([]string, 0, 1)
 		for newPath, newID := range newIDByPath {
-			if newTypes[newID] != oldTypes[oldID] || !compatibleProxyStructurePath(path, newPath) {
-				continue
+			if newPath == path && newTypes[newID] == oldTypes[oldID] {
+				candidates = append(candidates, newID)
 			}
-			candidates = append(candidates, newID)
+		}
+		if len(candidates) == 0 {
+			minExtra := -1
+			for newPath, newID := range newIDByPath {
+				if newTypes[newID] != oldTypes[oldID] || !compatibleProxyStructurePath(path, newPath) {
+					continue
+				}
+				extra := childDepth(newPath) - childDepth(path)
+				if minExtra < 0 || extra < minExtra {
+					minExtra = extra
+					candidates = []string{newID}
+				} else if extra == minExtra {
+					candidates = append(candidates, newID)
+				}
+			}
 		}
 		if len(candidates) != 1 {
 			return ProxyRemap{}, fmt.Errorf("旧节点 %q 的结构路径 %q 无法唯一绑定到加签后流程树", oldID, path)
@@ -153,7 +169,34 @@ func (e *Executor) RemapProxyTreeForRun(ctx context.Context, runCtx RunContext, 
 	if err != nil {
 		return ProxyRemap{}, fmt.Errorf("取得读取加签代理树的目标会话失败：%w", err)
 	}
+	// updateFlowProxy 的成功响应在不同目标版本可能不返回新代理 ID；
+	// 页面本身会先刷新实例待办，再用待办事实里的最新 flowProxyId 读取整棵树。
+	// 这里必须复用同一事实链，不能把写前旧 ID 当成新模板继续使用。
+	if instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef); instanceID != "" {
+		latest, found, readErr := latestRunFlowProxy(ctx, e.target, session, strings.TrimSpace(runCtx.Source), instanceID)
+		if readErr != nil {
+			return ProxyRemap{}, fmt.Errorf("重新读取加签后的当前流程代理失败：%w", readErr)
+		}
+		if !found || strings.TrimSpace(latest) == "" {
+			return ProxyRemap{}, fmt.Errorf("加签后实例未返回当前流程代理标识")
+		}
+		flowProxyID = latest
+	}
 	return e.BuildProxyRemap(ctx, runCtx, session, flowProxyID)
+}
+
+// latestRunFlowProxy 按运行来源重新读取实例当前代理 ID；这是加签后刷新模板的唯一事实来源。
+func latestRunFlowProxy(ctx context.Context, client TargetClient, active target.Session, source, instanceID string) (string, bool, error) {
+	switch strings.TrimSpace(source) {
+	case "pending":
+		proxyID, _, _, found, err := client.FindDueFlow(ctx, active, instanceID)
+		return strings.TrimSpace(proxyID), found, err
+	case "new", "started", "":
+		proxyID, _, _, _, found, err := client.FindSubmittedFlow(ctx, active, instanceID)
+		return strings.TrimSpace(proxyID), found, err
+	default:
+		return "", false, fmt.Errorf("未知运行来源 %q，无法刷新流程代理", source)
+	}
 }
 
 // ApplyProxyRemap 将加签后的代理结构整体应用到运行上下文，避免只更新当前动作节点留下旧 ID。
@@ -265,6 +308,17 @@ func compatibleProxyStructurePath(oldPath, newPath string) bool {
 		}
 	}
 	return true
+}
+
+// childDepth 返回结构路径中的连续 child 深度，用于选择插入节点后的最近候选。
+func childDepth(path string) int {
+	depth := 0
+	for _, part := range strings.Split(path, "/") {
+		if part == "child" {
+			depth++
+		}
+	}
+	return depth
 }
 
 // proxyTreeBranches 返回目标树的分支副本，避免排序改变目标读取事实的原始顺序。

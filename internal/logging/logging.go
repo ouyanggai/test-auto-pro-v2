@@ -98,6 +98,8 @@ type Scope struct {
 	// 运行目录的唯一定位键是 RunID，两者必须同时保留。
 	RunID  string
 	RunSeq string
+	// RunStartedAt 是运行开始时间；生产运行目录用它生成可检索的时间戳。
+	RunStartedAt string
 	// PathRunID 是路径运行的唯一定位键（页面路径页每行），StepID、Attempt、Phase 由执行器填充。
 	PathRunID string
 	// InstanceID/InstanceName 是这次运行目标实例的业务信息，只进日志字段与 meta.json，
@@ -136,6 +138,7 @@ func (s Scope) Merge(next Scope) Scope {
 		{&merged.ExecutionPathName, next.ExecutionPathName},
 		{&merged.RunID, next.RunID},
 		{&merged.RunSeq, next.RunSeq},
+		{&merged.RunStartedAt, next.RunStartedAt},
 		{&merged.PathRunID, next.PathRunID},
 		{&merged.InstanceID, next.InstanceID},
 		{&merged.StepID, next.StepID},
@@ -199,8 +202,7 @@ func (s Scope) HasExecutionPath() bool {
 	return strings.TrimSpace(s.ExecutionPathID) != ""
 }
 
-// RunFolder 返回运行目录名：可读运行号 + 计划名 + 运行 ID，与页面「运行记录」的一行一一对应。
-// 唯一定位键是 runId，运行号只是同一计划内的可读标签，两者都保留在目录名里；
+// RunFolder 返回运行目录名：计划名 + 运行号；不可变运行 ID 仍保存在 meta.json 与日志字段中。
 // runId 缺失说明这次作用域还没有真实运行，不能当运行目录用。
 func (s Scope) RunFolder() string {
 	runID := strings.TrimSpace(s.RunID)
@@ -211,18 +213,20 @@ func (s Scope) RunFolder() string {
 	if label == "" {
 		label = runID
 	}
-	return "运行_" + SanitizePathSegment(label) + "__" + SanitizePathSegment(s.PlanName) + "__run-" + SanitizePathSegment(runID)
+	return SanitizePathSegment(s.PlanName) + "__运行" + SanitizePathSegment(label)
 }
 
-// PathRunFolder 返回路径运行目录名：可读路径名 + 路径运行 ID + 路径 ID，与页面路径页每行一一对应。
-// 稳定键是 pathRunId（pathId 与 pathName 只是可读辅助信息），同一运行内出现同名路径也不会互相覆盖；
-// pathRunId 缺失时返回空串，由调用方决定退回运行目录，绝不按路径名或计划名猜目录。
+// PathRunFolder 返回路径运行目录名：路径名 + 本次运行时间戳；路径运行 ID 与路径 ID 仍保存在元数据中。
+// pathRunId 缺失时返回空串，由调用方决定退回运行目录。
 func (s Scope) PathRunFolder() string {
 	pathRunID := strings.TrimSpace(s.PathRunID)
 	if pathRunID == "" {
 		return ""
 	}
-	return SanitizePathSegment(s.ExecutionPathName) + "__path-run-" + SanitizePathSegment(pathRunID) + "__path-" + SanitizePathSegment(s.ExecutionPathID)
+	if startedAt := strings.TrimSpace(s.RunStartedAt); startedAt != "" {
+		return SanitizePathSegment(s.ExecutionPathName) + "__" + SanitizePathSegment(startedAt)
+	}
+	return SanitizePathSegment(s.ExecutionPathName)
 }
 
 // IsRun 判断作用域是否指向一次真实运行；只有运行作用域才路由到计划的 runs 子树。

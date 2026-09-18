@@ -217,10 +217,10 @@ func TestBucketRoutingSeparatesApplicationConfigurationAndRun(t *testing.T) {
 	runDir := router.BucketDir(logging.Scope{
 		RequestID: "req-1", PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
 		ExecutionPathID: "13", ExecutionPathName: "执行路径 1",
-		RunID: "501", RunSeq: "3", PathRunID: "88",
+		RunID: "501", RunSeq: "3", PathRunID: "88", RunStartedAt: "2026-09-03 18-56-31",
 	})
-	expectedRun := filepath.Join(root, "runs", "运行_3__员工请假单（集团）-自动回归__run-501",
-		"paths", "执行路径 1__path-run-88__path-13")
+	expectedRun := filepath.Join(root, "runs", "员工请假单（集团）-自动回归__运行3",
+		"paths", "执行路径 1__2026-09-03 18-56-31")
 	if runDir != expectedRun {
 		t.Fatalf("执行阶段目录不正确：\n实际 %s\n期望 %s", runDir, expectedRun)
 	}
@@ -228,9 +228,9 @@ func TestBucketRoutingSeparatesApplicationConfigurationAndRun(t *testing.T) {
 	secondRun := router.BucketDir(logging.Scope{
 		RequestID: "req-2", PlanID: "7", PlanName: "员工请假单（集团）-自动回归",
 		ExecutionPathID: "13", ExecutionPathName: "执行路径 1",
-		RunID: "502", RunSeq: "4", PathRunID: "89",
+		RunID: "502", RunSeq: "4", PathRunID: "89", RunStartedAt: "2026-09-03 18-57-31",
 	})
-	if secondRun == runDir || !strings.Contains(secondRun, "run-502") {
+	if secondRun == runDir || !strings.Contains(secondRun, "运行4") {
 		t.Fatalf("同一计划的第二次运行没有独立目录：%s", secondRun)
 	}
 }

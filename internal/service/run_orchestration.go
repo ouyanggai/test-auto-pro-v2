@@ -915,9 +915,15 @@ func (s *RunOrchestrationService) runScopeByPathRun(ctx context.Context, pathRun
 }
 
 // runScopeOf 组装运行日志作用域：页面身份（计划/路径/运行/路径运行）+ 目标实例业务信息。
-// 目录键只用页面已有的 runId/pathRunId（见 logging.Router.BucketDir），显示名与实例名称只作可读标签；
+// 目录使用计划名、运行号、路径名和运行开始时间，完整 ID 仍用于日志字段与 meta.json；
 // 实例名称由执行器读到后补进 meta.json，这里只带已落账的实例 ID，绝不猜测名称。
 func runScopeOf(pathRun model.PathRun, run model.Run, plan model.Plan, pathName string) logging.Scope {
+	startedAt := run.CreatedAt
+	if pathRun.StartedAt != nil && !pathRun.StartedAt.IsZero() {
+		startedAt = *pathRun.StartedAt
+	} else if run.StartedAt != nil && !run.StartedAt.IsZero() {
+		startedAt = *run.StartedAt
+	}
 	return logging.Scope{
 		PlanID:            strconv.FormatUint(run.PlanID, 10),
 		PlanName:          plan.Name,
@@ -925,6 +931,7 @@ func runScopeOf(pathRun model.PathRun, run model.Run, plan model.Plan, pathName 
 		ExecutionPathName: pathName,
 		RunID:             strconv.FormatUint(run.ID, 10),
 		RunSeq:            strconv.FormatUint(run.RunNo, 10),
+		RunStartedAt:      startedAt.Local().Format("2006-01-02 15-04-05"),
 		PathRunID:         strconv.FormatUint(pathRun.ID, 10),
 		InstanceID:        strings.TrimSpace(pathRun.MainInstanceRef),
 	}
