@@ -23,6 +23,7 @@ import {
   savePathHistorySource,
 } from './api'
 import type { HistoryCandidate, HistoryCandidatePage, HistoryDataSource } from './types'
+import { createUuid } from '../../utils/uuid'
 
 const props = defineProps<{
   planId: string
@@ -45,7 +46,7 @@ const error = ref('')
 const search = ref('')
 let controller: AbortController | null = null
 let searchTimer: ReturnType<typeof setTimeout> | null = null
-let saveKey = crypto.randomUUID()
+let saveKey = createUuid()
 
 const currentSource = computed(() => props.scope === 'path'
   ? pageState.value?.pathSource
@@ -117,7 +118,7 @@ async function confirmSelection() {
     if (!pageState.value) pageState.value = { items: [], page: 1, pageSize: 20, total: 0, hasMore: false }
     if (props.scope === 'default') pageState.value.defaultSource = source
     else pageState.value.pathSource = source
-    saveKey = crypto.randomUUID()
+    saveKey = createUuid()
     emit('update:show', false)
     emit('saved', source)
   }
@@ -146,7 +147,7 @@ function applySearch() {
 watch(() => [props.planId, props.pathId, props.scope], () => {
   pageState.value = null
   selectedKey.value = ''
-  saveKey = crypto.randomUUID()
+  saveKey = createUuid()
 })
 watch(() => props.show, (open) => {
   if (open) {

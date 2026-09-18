@@ -7,6 +7,7 @@ import { useRouter } from 'vue-router'
 import { startRun, fetchRunDispatchDefault } from '../runs/api'
 import { fetchPlanRunReadiness, RunReadinessApiError } from './api'
 import type { PathRunReadiness, PlanRunReadiness, RunReadinessItem } from './types'
+import { createUuid } from '../../utils/uuid'
 
 const props = defineProps<{ show: boolean, planId: string, pathIds: string[] }>()
 const emit = defineEmits<{ 'update:show': [value: boolean], locate: [pathId: string, anchor: string] }>()
@@ -113,7 +114,7 @@ async function startSelectedRun() {
       targets.map(path => String(path.pathId)),
       mode.value,
       [],
-      crypto.randomUUID(),
+      createUuid(),
       pathDispatch.value,
       pathDispatch.value === 'parallel' ? pathMaxConcurrency.value : undefined,
     )

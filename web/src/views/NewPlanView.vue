@@ -48,6 +48,7 @@ import type {
   PlanFormValue,
   VerifiedTargetAccount,
 } from '../features/plans/types'
+import { createUuid } from '../utils/uuid'
 
 const router = useRouter()
 const message = useMessage()
@@ -522,7 +523,7 @@ async function submitPlan() {
     return
   }
 
-  const idempotencyKey = creationKey.value || crypto.randomUUID()
+  const idempotencyKey = creationKey.value || createUuid()
   creationKey.value = idempotencyKey
   creationController?.abort()
   const controller = new AbortController()

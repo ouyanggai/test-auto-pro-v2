@@ -37,6 +37,7 @@ test('一键配置与更换历史数据共用同一个基础表单数据弹窗',
   assert.match(planPathsView, /BaseFormDataPicker/)
   assert.match(planPathsView, /一键配置/)
   assert.match(planPathsView, /scope="default"/)
+  assert.match(planPathsView, /v-if="dataPickerOpen"/)
   assert.match(planPathsView, /@click="dataPickerOpen = true"/)
   assert.match(planPathsView, /@saved="startSelectedPreparation"/)
   assert.match(pathConfigurationView, /BaseFormDataPicker/)
@@ -45,6 +46,15 @@ test('一键配置与更换历史数据共用同一个基础表单数据弹窗',
   assert.doesNotMatch(pathConfigurationView, /智能生成/)
   assert.match(pathConfigurationView, /scope="path"/)
   assert.match(pathConfigurationView, /@saved="handleBaseFormDataSaved"/)
+})
+
+test('局域网 HTTP 页面不直接依赖安全上下文 UUID API', () => {
+  const uuid = readFileSync('web/src/utils/uuid.ts', 'utf8')
+  assert.match(uuid, /globalThis\.crypto/)
+  assert.match(uuid, /getRandomValues/)
+  for (const source of [planPathsView, pathConfigurationView, picker]) {
+    assert.equal(source.includes('crypto.randomUUID()'), false)
+  }
 })
 
 test('界面不再出现历史来源与历史回放这类内部术语，也没有旧生成入口', () => {

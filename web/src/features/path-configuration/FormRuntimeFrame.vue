@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { classifyRuntimeMessage, FORM_RUNTIME_VERSION, type RuntimeMessage } from './runtimeProtocol'
 import type { PathConfigurationDataWorkspace, PathFormRuntimeSession } from './types'
+import { createUuid } from '../../utils/uuid'
 
 const props = defineProps<{
   // viewKey 是当前按节点权限渲染的视图身份；变化时按新权限重新装载表单。
@@ -20,7 +21,7 @@ const emit = defineEmits<{
 }>()
 
 const iframe = ref<HTMLIFrameElement | null>(null)
-const sessionId = ref(crypto.randomUUID())
+const sessionId = ref(createUuid())
 // 开发态 iframe 指向表单运行时 dev 服（0.0.0.0 监听）：跟随当前访问的 hostname，
 // 从其它机器打开页面时不会把运行时解析成访问者自己的 127.0.0.1。
 const iframeSource = computed(() => import.meta.env.DEV ? `http://${window.location.hostname}:19001/form-runtime/#/test-auto-form` : '/form-runtime/#/test-auto-form')
@@ -69,7 +70,7 @@ function cancelRuntimeOperation() {
     target.postMessage({
       version: FORM_RUNTIME_VERSION,
       sessionId: sessionId.value,
-      requestId: crypto.randomUUID(),
+      requestId: createUuid(),
       type: 'cancel',
       payload: {},
     }, runtimeOrigin.value)
@@ -83,7 +84,7 @@ function postCommand(type: string, payload: Record<string, unknown> = {}, signal
   const target = iframe.value?.contentWindow
   if (!target || disposed || !runtimeActive) return Promise.reject(new Error('表单运行时尚未就绪'))
   if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new DOMException('操作已取消', 'AbortError'))
-  const requestId = crypto.randomUUID()
+  const requestId = createUuid()
   return new Promise((resolve, reject) => {
     const abort = () => {
       const request = pending.get(requestId)
@@ -256,7 +257,7 @@ function resetRuntime(notifyFrame: boolean) {
   if (notifyFrame && iframe.value?.contentWindow && !disposed) {
     try {
       iframe.value.contentWindow.postMessage({
-        version: FORM_RUNTIME_VERSION, sessionId: sessionId.value, requestId: crypto.randomUUID(), type: 'destroy', payload: {},
+        version: FORM_RUNTIME_VERSION, sessionId: sessionId.value, requestId: createUuid(), type: 'destroy', payload: {},
       }, runtimeOrigin.value)
     } catch (_) {
       // iframe 已经失效时销毁通知无法送达，下面仍会本地拒绝所有 pending 并推进 generation。
@@ -265,7 +266,7 @@ function resetRuntime(notifyFrame: boolean) {
   runtimeGeneration += 1
   runtimeActive = false
   runtimeReady = false
-  sessionId.value = crypto.randomUUID()
+  sessionId.value = createUuid()
   for (const request of pending.values()) {
     window.clearTimeout(request.timer)
     request.cleanup()

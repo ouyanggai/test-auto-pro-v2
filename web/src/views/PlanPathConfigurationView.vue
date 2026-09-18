@@ -17,6 +17,7 @@ import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue
 import FormDataHintsPanel from '../features/path-configuration/FormDataHintsPanel.vue'
 import FormRuntimeFrame from '../features/path-configuration/FormRuntimeFrame.vue'
 import NodeConfigurationPanel from '../features/path-configuration/NodeConfigurationPanel.vue'
+import { createUuid } from '../utils/uuid'
 import {
   bindPathConfigurationNodes,
   buildPathActionConfigurationInput,
@@ -407,9 +408,9 @@ async function loadPage() {
     currentPath.value = storedPath
     executionPaths.value = storedPaths
     await applyConfiguration(storedConfiguration, false)
-    nodeSaveKey = crypto.randomUUID()
-    instanceSaveKey = crypto.randomUUID()
-    formSaveKey = crypto.randomUUID()
+    nodeSaveKey = createUuid()
+    instanceSaveKey = createUuid()
+    formSaveKey = createUuid()
   }
   catch (caught) {
     if (!controller.signal.aborted && version === loadVersion) pageError.value = publicPageError(caught)
@@ -466,7 +467,7 @@ async function selectNextConfigurationNode() {
 async function finishConfirmedNodeSave() {
   const current = configuration.value
   if (!current) return
-  nodeSaveKey = crypto.randomUUID()
+  nodeSaveKey = createUuid()
   nodeSaveError.value = ''
   nodeSaveDetails.value = []
   const destination = resolveConfirmedNodeSaveDestination(
@@ -562,7 +563,7 @@ async function saveInstanceActions() {
       buildPathActionConfigurationInput(container, draft.value),
       instanceSaveKey,
     )
-    instanceSaveKey = crypto.randomUUID()
+    instanceSaveKey = createUuid()
     await reloadConfiguration()
     compiledVersion += 1
     compiledScenario.value = result.compiledScenario
@@ -574,7 +575,7 @@ async function saveInstanceActions() {
     try {
       const reconciled = await reloadConfiguration()
       if (reconciled.nodeRevision > previousRevision) {
-        instanceSaveKey = crypto.randomUUID()
+        instanceSaveKey = createUuid()
         instanceSavedSuccessfully.value = true
         await loadCompiledScenario()
         return
@@ -685,7 +686,7 @@ async function saveAllNodes() {
         pathID.value,
         node.key,
         buildPathActionConfigurationInput(nodeActionContainer(node), draft.value),
-        crypto.randomUUID(),
+        createUuid(),
       )
       compiledVersion += 1
       compiledScenario.value = result.compiledScenario
@@ -895,7 +896,7 @@ async function saveFormData(confirmationToken = '') {
     if (!isActiveFormOperation(epoch, frame) || controller.signal.aborted) return
     dataWorkspace.value = { ...data, ...result }
     runtimeStats.value = { filledEditable: 0, manualPending: 0 }
-    formSaveKey = crypto.randomUUID()
+    formSaveKey = createUuid()
     formSavedSuccessfully.value = true
     if (result.routeChanged) {
       const target = executionPaths.value.find(path => path.sequenceNo === result.path.sequenceNo && path.name === result.path.name)

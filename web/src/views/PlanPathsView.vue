@@ -12,6 +12,7 @@ import {
   NModal,
   NProgress,
   NResult,
+  NSpace,
   NSpin,
   NTag,
   NVirtualList,
@@ -62,6 +63,7 @@ import { fetchPlan, PlanApiError } from '../features/plans/persistence'
 import { flowSourceLabels } from '../features/plans/selection'
 import type { PersistedPlan } from '../features/plans/types'
 import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
+import { createUuid } from '../utils/uuid'
 
 const route = useRoute()
 const router = useRouter()
@@ -377,7 +379,7 @@ async function startSelectedPreparation() {
       planID.value,
       [...selectedRunPathIDs.value].map(pathID => Number(pathID)),
       0,
-      crypto.randomUUID(),
+      createUuid(),
     )
     schedulePreparationPoll()
   }
@@ -508,7 +510,7 @@ async function startNewPath() {
   draftName.value = ''
   draftChangedByGraph.value = false
   draftRecoveryError.value = ''
-  createKey.value = crypto.randomUUID()
+  createKey.value = createUuid()
   pathWorkspaceOpen.value = true
   await canvasRef.value?.setPageFullscreen(true)
 }
@@ -523,7 +525,7 @@ async function copyActivePath() {
   draftName.value = ''
   draftChangedByGraph.value = reconciled.changed
   draftRecoveryError.value = ''
-  createKey.value = crypto.randomUUID()
+  createKey.value = createUuid()
   pathWorkspaceOpen.value = true
   await canvasRef.value?.setPageFullscreen(true)
 }
@@ -725,7 +727,7 @@ async function startAutomaticGeneration() {
   if (!planMutable.value || !plan.value || plan.value.flowSource !== 'new' || paths.value.length > 0 || generationBusy.value) return
   generationError.value = ''
   try {
-    const key = crypto.randomUUID()
+    const key = createUuid()
     generationJob.value = await startPathGeneration(planID.value, key)
     await pollGeneration()
   } catch (caught) {
@@ -890,6 +892,7 @@ onMounted(() => {
               </div>
             </div>
             <base-form-data-picker
+              v-if="dataPickerOpen"
               v-model:show="dataPickerOpen"
               :plan-id="planID"
               scope="default"
