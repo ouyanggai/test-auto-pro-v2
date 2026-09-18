@@ -5,6 +5,11 @@
   `test/run-executor-service.sh` 现在只运行本地类型检查、构建、执行服务单元/集成、Go 契约和路由检查，
   不加载 `.env.local`，不连接目标平台，不自动启动浏览器。`RUNTIME_EXECUTOR_URL` 仍是正式 Go 服务连接
   独立执行服务的运行时配置，不是页面测试参数。后续由用户从页面创建/选择真实计划并手工运行，记录问题后再规划修复。
+- 2026-09-18 F-036 页面阻塞修复：局域网 HTTP 下统一使用兼容 UUID 工具，`PlanPathsView` 补齐 `NSpace` 注册，
+  基础数据弹窗仅在打开时挂载并在关闭/离开后销毁。用户此前反馈的 `crypto.randomUUID is not a function`、
+  `Failed to resolve component: n-space`、Vue `emitsOptions` 连带错误对应的本地代码问题已处理；
+  `injected.js` 的 unload/WebSocket 日志属于浏览器注入层，待人工验证确认是否仍影响页面。下一步只等待用户手工点击
+  「配置节点」和表单数据面板，反馈实际页面问题后再规划后续功能切片。
 - 2026-09-17 F-036 第二轮修复按用户要求暂停，状态保持 **implementing**。已完成代码主体：通道单连接复用、
   接口终局判据、多次草稿 edit 模式、列表页原生转发与两笔写顺序门禁、所有原生渲染类型统一 runtime 路由、
   表单正文写前快照/写后回读保护；已通过 TypeScript 类型检查、执行服务测试 73/73、runtime Go 契约与单测。
