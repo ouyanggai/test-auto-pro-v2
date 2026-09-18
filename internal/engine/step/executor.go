@@ -1695,6 +1695,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	} else if step.Action == model.ActionRollback {
 		reread = e.classifyRollbackReread(ctx, runCtx.PlanAccount, runCtx.PathRun.MainInstanceRef, session, preview.Facts, after)
 	} else if step.Action == model.ActionAddSign {
+		// 加签响应的 data 在部分目标版本只返回当前节点，完整的新代理标识只出现在写后事实。
+		// 先把事实中的 flowProxyId 回填到结果，控制层才能触发整棵代理树重绑定。
+		if strings.TrimSpace(outcome.FlowProxyID) == "" {
+			outcome.FlowProxyID = strings.TrimSpace(after.FlowProxyID)
+		}
 		reread = e.classifyAddSignReread(ctx, runCtx, step, session, preview, after, outcome)
 	} else if step.Action == model.ActionForward {
 		reread, outcome.AuxiliaryInstanceRef = e.classifyForwardReread(ctx, runCtx.PlanAccount, session, preview)

@@ -1066,20 +1066,62 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	if outcome.MainInstanceRef != "" {
 		session.runCtx.PathRun.MainInstanceRef = outcome.MainInstanceRef
 	}
-	if outcome.FlowProxyID != "" {
-		if strings.TrimSpace(outcome.FlowProxyID) != strings.TrimSpace(session.runCtx.FlowProxyID) {
-			session.runCtx.FlowProxyRemapped = true
-		}
-		session.runCtx.FlowProxyID = outcome.FlowProxyID
+	oldFlowProxyID := strings.TrimSpace(session.runCtx.FlowProxyID)
+	oldCurrentNodeID := ""
+	if session.preview != nil {
+		oldCurrentNodeID = strings.TrimSpace(session.runCtx.Nodes[session.preview.NodeKey].TargetNodeID)
 	}
-	if outcome.CurrentNodeProxyID != "" {
-		if nodeKey := session.preview.NodeKey; nodeKey != "" {
-			info := session.runCtx.Nodes[nodeKey]
-			if strings.TrimSpace(info.TargetNodeID) != strings.TrimSpace(outcome.CurrentNodeProxyID) {
+	newFlowProxyID := strings.TrimSpace(outcome.FlowProxyID)
+	newCurrentNodeID := strings.TrimSpace(outcome.CurrentNodeProxyID)
+	if (newFlowProxyID != "" && newFlowProxyID != oldFlowProxyID) || (newCurrentNodeID != "" && newCurrentNodeID != oldCurrentNodeID) {
+		proxyID := newFlowProxyID
+		if proxyID == "" {
+			proxyID = oldFlowProxyID
+		}
+		remap, remapErr := s.steps.RemapProxyTreeForRun(ctx, session.runCtx, proxyID)
+		if remapErr == nil && newCurrentNodeID != "" && session.preview != nil {
+			mappedCurrentID := remap.NodeIDs[oldCurrentNodeID]
+			if strings.TrimSpace(mappedCurrentID) != newCurrentNodeID {
+				remapErr = fmt.Errorf("加签响应当前节点 %q 与结构映射节点 %q 不一致", newCurrentNodeID, mappedCurrentID)
+			}
+		}
+		if remapErr != nil {
+			// 加签已经成功但新树无法证明对应关系：禁止把旧树交给下一步，
+			// 现场停在只读/停止状态，后续命令集合由 PauseStateDeviation 置空。
+			session.runCtx.FlowProxyID = proxyID
+			session.runCtx.FlowProxyRemapped = true
+			session.runCtx.FlowTree = nil
+			session.runCtx.GraphEdges = nil
+			session.runCtx.GraphNodeTypes = nil
+			stopReason := "加签后目标代理树已重建，但节点结构无法唯一重绑定：" + remapErr.Error() + "；已停止后续放行，只能查看或停止"
+			s.mu.Lock()
+			session.deviationStalled = true
+			session.stopReason = stopReason
+			s.mu.Unlock()
+			_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+				RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
+				Kind: "proxy_remap_failed", Label: stopReason,
+			}, s.now())
+		} else {
+			if err := step.ApplyProxyRemap(&session.runCtx, remap); err != nil {
+				session.runCtx.FlowProxyID = proxyID
+				session.runCtx.FlowProxyRemapped = true
+				session.runCtx.FlowTree = nil
+				session.runCtx.GraphEdges = nil
+				session.runCtx.GraphNodeTypes = nil
+				stopReason := "加签后目标代理树重绑定未完成：" + err.Error() + "；已停止后续放行，只能查看或停止"
+				s.mu.Lock()
+				session.deviationStalled = true
+				session.stopReason = stopReason
+				s.mu.Unlock()
+				_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+					RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
+					Kind: "proxy_remap_failed", Label: stopReason,
+				}, s.now())
+			} else {
+				session.runCtx.FlowProxyID = proxyID
 				session.runCtx.FlowProxyRemapped = true
 			}
-			info.TargetNodeID = outcome.CurrentNodeProxyID
-			session.runCtx.Nodes[nodeKey] = info
 		}
 	}
 	if auxiliaryRef := strings.TrimSpace(outcome.AuxiliaryInstanceRef); auxiliaryRef != "" {
@@ -1090,10 +1132,17 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 			Kind: "forward_auxiliary_created", Label: "转发已创建辅助流程", Detail: auxiliaryRef,
 		}, session.preview.StepNo)
 	}
+	remapStopped := false
+	s.mu.Lock()
+	remapStopped = session.deviationStalled && strings.Contains(session.stopReason, "加签后目标代理树")
+	s.mu.Unlock()
 	s.mu.Lock()
 	session.executedStepNos[session.preview.StepNo] = true
 	session.executedNodeKeys[session.preview.NodeKey] = true
 	s.mu.Unlock()
+	if remapStopped {
+		return result, nil
+	}
 	if outcome.DeviationDetected {
 		s.mu.Lock()
 		session.deviationStalled = true

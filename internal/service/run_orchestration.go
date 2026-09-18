@@ -1187,19 +1187,13 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			dynamicGraph, dynamicErr := runtimeReader.GetRuntime(dynamicCtx, run.PlanID, pathRun.MainInstanceRef)
 			cancelDynamic()
 			if dynamicErr == nil {
-				detail.DynamicGraph = runFlowGraphDTO(dynamicGraph)
-				detail.DynamicGraphNote = "已按当前运行实例最新代理树读取；动态新增节点以目标返回事实展示"
-				// 偏离卡片只借用动态图的节点名称，不改变静态编译路径和控制门禁。
-				nodeByID := make(map[string]model.FlowGraphNode, len(graph.Nodes)+len(dynamicGraph.Nodes))
-				for _, node := range graph.Nodes {
-					nodeByID[node.ID] = node
-				}
-				for _, node := range dynamicGraph.Nodes {
-					nodeByID[node.ID] = node
-				}
-				deviationGraph.Nodes = make([]model.FlowGraphNode, 0, len(nodeByID))
-				for _, node := range nodeByID {
-					deviationGraph.Nodes = append(deviationGraph.Nodes, node)
+				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph)
+				deviationGraph = projected
+				detail.DynamicGraph = runFlowGraphDTO(projected)
+				if projectionOK {
+					detail.DynamicGraphNote = "已按当前运行实例最新代理树读取，并按唯一结构位置绑定计划节点"
+				} else {
+					detail.DynamicGraphNote = "目标代理树已重建，但结构位置无法唯一绑定；页面只展示目标最新结构，不猜测旧节点对应关系"
 				}
 				staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
 				for _, node := range graph.Nodes {
@@ -1324,6 +1318,161 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		return nil, err
 	}
 	return detail, nil
+}
+
+// projectRuntimeGraph 将动态代理图按唯一拓扑位置投影到计划图 ID 空间。
+// 只在静态图的每个节点都能唯一找到对应位置时复用旧 ID；新节点保留目标真实 ID，无法证明时直接返回动态图。
+func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph) (model.FlowGraph, bool) {
+	staticPaths, staticOK := flowGraphStructuralPaths(staticGraph)
+	dynamicPaths, dynamicOK := flowGraphStructuralPaths(dynamicGraph)
+	if !staticOK || !dynamicOK {
+		return dynamicGraph, false
+	}
+	dynamicIDByPath := make(map[string]string, len(dynamicPaths))
+	for id, path := range dynamicPaths {
+		if previous, exists := dynamicIDByPath[path]; exists && previous != id {
+			return dynamicGraph, false
+		}
+		dynamicIDByPath[path] = id
+	}
+	dynamicToProjected := make(map[string]string, len(dynamicPaths))
+	for staticID, path := range staticPaths {
+		dynamicID := dynamicIDByPath[path]
+		if strings.TrimSpace(dynamicID) == "" {
+			return dynamicGraph, false
+		}
+		dynamicToProjected[dynamicID] = staticID
+	}
+	for dynamicID := range dynamicPaths {
+		if _, exists := dynamicToProjected[dynamicID]; !exists {
+			dynamicToProjected[dynamicID] = dynamicID
+		}
+	}
+	projected := dynamicGraph
+	projected.EntryNodeIDs = remapGraphIDs(dynamicGraph.EntryNodeIDs, dynamicToProjected)
+	projected.Nodes = make([]model.FlowGraphNode, 0, len(dynamicGraph.Nodes))
+	seen := map[string]bool{}
+	for _, node := range dynamicGraph.Nodes {
+		node.ID = dynamicToProjected[node.ID]
+		if node.MergeTargetID != "" {
+			node.MergeTargetID = dynamicToProjected[node.MergeTargetID]
+		}
+		if seen[node.ID] {
+			return dynamicGraph, false
+		}
+		seen[node.ID] = true
+		projected.Nodes = append(projected.Nodes, node)
+	}
+	projected.Edges = make([]model.FlowGraphEdge, 0, len(dynamicGraph.Edges))
+	for _, edge := range dynamicGraph.Edges {
+		edge.Source = dynamicToProjected[edge.Source]
+		edge.Target = dynamicToProjected[edge.Target]
+		edge.ID = strings.Join([]string{edge.Source, edge.Target, edge.Kind, edge.BranchID}, "|")
+		projected.Edges = append(projected.Edges, edge)
+	}
+	return projected, true
+}
+
+// flowGraphStructuralPaths 为结构图生成不依赖节点名称和业务 ID 的拓扑路径。
+// 路由分支按后端真实边顺序编号，汇合后只布局一次；遇到多根、循环或分叉不完整时拒绝证明。
+func flowGraphStructuralPaths(graph model.FlowGraph) (map[string]string, bool) {
+	if len(graph.Nodes) == 0 {
+		return nil, false
+	}
+	nodes := make(map[string]model.FlowGraphNode, len(graph.Nodes))
+	outgoing := make(map[string][]model.FlowGraphEdge)
+	incoming := make(map[string]int)
+	for _, node := range graph.Nodes {
+		id := strings.TrimSpace(node.ID)
+		if id == "" || nodes[id].ID != "" {
+			return nil, false
+		}
+		nodes[id] = node
+	}
+	for _, edge := range graph.Edges {
+		if nodes[edge.Source].ID == "" || nodes[edge.Target].ID == "" || edge.Source == edge.Target {
+			return nil, false
+		}
+		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
+		incoming[edge.Target]++
+	}
+	root := ""
+	for _, node := range graph.Nodes {
+		if incoming[node.ID] == 0 {
+			if root != "" {
+				return nil, false
+			}
+			root = node.ID
+		}
+	}
+	if root == "" {
+		return nil, false
+	}
+	paths := map[string]string{}
+	visiting := map[string]bool{}
+	var visit func(string, string, string) bool
+	visit = func(id, path, stopID string) bool {
+		if id == stopID {
+			return true
+		}
+		if visiting[id] {
+			return false
+		}
+		if previous, exists := paths[id]; exists {
+			return previous == path
+		}
+		if nodes[id].ID == "" {
+			return false
+		}
+		paths[id] = path
+		visiting[id] = true
+		defer delete(visiting, id)
+		branches := make([]model.FlowGraphEdge, 0)
+		sequence := make([]model.FlowGraphEdge, 0)
+		for _, edge := range outgoing[id] {
+			if edge.Kind == "sequence" {
+				sequence = append(sequence, edge)
+			} else {
+				branches = append(branches, edge)
+			}
+		}
+		if len(branches) > 0 {
+			if nodes[id].MergeTargetID == "" || len(sequence) != 0 {
+				return false
+			}
+			for index, edge := range branches {
+				if !visit(edge.Target, fmt.Sprintf("%s/branch/%d", path, index), nodes[id].MergeTargetID) {
+					return false
+				}
+			}
+			if !visit(nodes[id].MergeTargetID, path+"/child", "") {
+				return false
+			}
+			return true
+		}
+		if len(sequence) > 1 {
+			return false
+		}
+		if len(sequence) == 1 && !visit(sequence[0].Target, path+"/child", stopID) {
+			return false
+		}
+		return true
+	}
+	if !visit(root, "root", "") || len(paths) != len(nodes) {
+		return nil, false
+	}
+	return paths, true
+}
+
+// remapGraphIDs 复制并重映射入口节点集合，保持动态结构中的真实入口顺序。
+func remapGraphIDs(ids []string, mapping map[string]string) []string {
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if mapped := mapping[id]; mapped != "" {
+			result = append(result, mapped)
+		}
+	}
+	return result
 }
 
 // runConcurrencyLabel 返回运行的中文并发说明。

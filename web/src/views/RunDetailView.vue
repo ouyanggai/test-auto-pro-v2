@@ -113,21 +113,44 @@ const selectedNodeKey = ref('')
 
 const canvasRef = ref<InstanceType<typeof FlowGraphCanvas> | null>(null)
 
-// mergeRunGraphs 保留计划图上的已配置事实，并把目标最新代理树新增的节点与可证明连线合并进画布。
+// isUsableRunGraph 防止目标动态结构读取到不完整图时把画布送入多根/断边布局。
+function isUsableRunGraph(candidate: FlowGraph): boolean {
+  if (candidate.nodes.length === 0 || candidate.entryNodeIds.length !== 1) return false
+  const ids = new Set(candidate.nodes.map((node) => node.id))
+  if (candidate.edges.some((edge) => !ids.has(edge.source) || !ids.has(edge.target))) return false
+  const incoming = new Set(candidate.edges.map((edge) => edge.target))
+  if (candidate.nodes.filter((node) => !incoming.has(node.id)).length !== 1) return false
+  const outgoing = new Map<string, string[]>()
+  for (const edge of candidate.edges) outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target])
+  const seen = new Set<string>()
+  const queue = [...candidate.entryNodeIds]
+  while (queue.length > 0) {
+    const id = queue.shift()!
+    if (seen.has(id)) continue
+    if (!ids.has(id)) return false
+    seen.add(id)
+    queue.push(...(outgoing.get(id) ?? []))
+  }
+  return seen.size === ids.size
+}
+
+// mergeRunGraphs 以服务端投影的动态图作为唯一画布事实；服务端无法证明时已降级为完整目标图，
+// 这里绝不再把静态树和动态树按 ID 并集，避免加签重建后出现两个根节点。
 function mergeRunGraphs(base: FlowGraph, dynamic?: FlowGraph): FlowGraph {
   if (!dynamic) return base
-  const nodes = new Map(base.nodes.map((node) => [node.id, node]))
-  for (const node of dynamic.nodes) {
-    nodes.set(node.id, { ...node, name: node.name || '目标新增节点（名称不可用）' })
+  if (!isUsableRunGraph(dynamic)) {
+    return {
+      ...base,
+      warnings: [...new Set([...base.warnings, '动态结构暂时无法按唯一根节点布局，当前保留计划结构'])],
+    }
   }
-  const edges = new Map(base.edges.map((edge) => [edge.id, edge]))
-  for (const edge of dynamic.edges) edges.set(edge.id, edge)
   return {
-    ...base,
+    ...dynamic,
     targetName: dynamic.targetName || base.targetName,
-    entryNodeIds: dynamic.entryNodeIds.length > 0 ? dynamic.entryNodeIds : base.entryNodeIds,
-    nodes: [...nodes.values()],
-    edges: [...edges.values()],
+    nodes: dynamic.nodes.map((node) => ({
+      ...node,
+      name: node.name || '目标新增节点（名称不可用）',
+    })),
     warnings: [...new Set([...base.warnings, ...dynamic.warnings])],
   }
 }
