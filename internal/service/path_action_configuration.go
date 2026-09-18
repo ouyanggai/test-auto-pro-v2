@@ -1016,6 +1016,13 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 				rejections = append(rejections, "加签：会在目标流程中插入需审批的新节点，自动编排无法补齐该节点的审批步骤，请人工配置")
 				continue
 			}
+			// 取回的前提是“本人在该节点已有已办任务”，而一键配置的固定尾同意会在同一节点立即
+			// 推进流程（2026-09-19 夜间实测，运行 1 路径 1 第 11 步偏离）；取回排在同意前没有已办、
+			// 排在同意后实例已离开，顺序上永远不可执行，同样不能进入自动候选。
+			if kind == model.ActionRetrieve {
+				rejections = append(rejections, "取回：需要本人在该节点的已办任务，而固定尾同意会立即推进流程，顺序上不可执行，请人工配置")
+				continue
+			}
 			if !item.Enabled || item.SystemOnly || item.SystemInserted {
 				rejections = append(rejections, item.Label+"："+autoCandidateDisabledReason(item))
 				continue
