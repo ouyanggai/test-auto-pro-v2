@@ -39,8 +39,8 @@ func f034SkipRunContext(currentNodeKey string, isSkip *bool, auditType string) s
 		},
 		BranchSelections: map[string]string{routeNodeID: emptyNodeID},
 		GraphEdges: map[string][]step.GraphEdgeInfo{
-			"route-target":   {{Target: emptyNodeID}},
-			"empty-target":   {{Target: businessID}},
+			"route-target":    {{Target: emptyNodeID}},
+			"empty-target":    {{Target: businessID}},
 			"business-target": {},
 		},
 		GraphNodeTypes: map[string]string{routeNodeID: "manual", emptyNodeID: "empty", businessID: "common"},

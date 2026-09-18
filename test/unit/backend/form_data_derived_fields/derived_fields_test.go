@@ -60,8 +60,8 @@ func TestCrossNodeDerivedOpinionDoesNotBlock(t *testing.T) {
 		OverlaidValues: map[string]any{"reason": "发起填写", "auto_audit_info_1": ""},
 	}
 	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{Sequence: 2, Action: model.ActionApprove, NodeKey: "audit"}, map[string]any{
-		"reason":            "发起填写",
-		"auto_audit_info_1": "刘志阳 同意 2026-09-14 15:19",
+		"reason":                "发起填写",
+		"auto_audit_info_1":     "刘志阳 同意 2026-09-14 15:19",
 		"auto_audit_info_obj_1": map[string]any{"auditName": "刘志阳"},
 	}, true, previous)
 	if err != nil {

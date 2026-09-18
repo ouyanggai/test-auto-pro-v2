@@ -14,8 +14,8 @@ import (
 // f034SkipFacts 构造“实例待办已越过本步节点”的目标事实：待办落在路径后方节点。
 func f034SkipFacts() step.InstanceFacts {
 	return step.InstanceFacts{
-		Found:      true,
-		Status:     "run",
+		Found:        true,
+		Status:       "run",
 		CurrentNodes: []string{"late-target"},
 		DueNodes:     []string{"late-target"},
 	}

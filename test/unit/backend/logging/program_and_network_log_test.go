@@ -63,7 +63,12 @@ func TestErrorLogWritesClassChainSourceAndUserMessage(t *testing.T) {
 		if !strings.Contains(content, "user_message=暂时无法读取计划，请重试") {
 			t.Fatalf("%s 缺少界面同源提示：%s", name, content)
 		}
-		if !strings.Contains(content, "source=logging/logger.go:") && !strings.Contains(content, "source=logging/") {
+		// 来源定位必须存在，且必须指向 logging 包内的源文件。
+		// 分隔符不能写死：Windows 上 runtime 给出的是 `logging\logger.go:NN`，
+		// 只断言 `logging/` 会让该用例在 Windows 上恒失败（第三轮复核登记的基线红项）。
+		// 这里把两种分隔符都归一化后再比对，断言的是「来源已定位」而不是「路径长什么样」。
+		normalized := strings.ReplaceAll(content, `\`, "/")
+		if !strings.Contains(normalized, "source=logging/") {
 			t.Fatalf("%s 缺少来源定位：%s", name, content)
 		}
 		if !strings.Contains(content, "permission_denied") {

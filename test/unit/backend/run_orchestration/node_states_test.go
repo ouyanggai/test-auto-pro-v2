@@ -38,7 +38,6 @@ func TestF016WaitingNodesDerivedFromConfiguredRoute(t *testing.T) {
 	}
 }
 
-
 // TestF016RunDetailGraphReadBudget 验证运行详情不会用低于一秒的预算误杀正常的目标结构读取。
 func TestF016RunDetailGraphReadBudget(t *testing.T) {
 	if timeout := service.RunDetailGraphTimeoutForTest(); timeout < time.Second {
