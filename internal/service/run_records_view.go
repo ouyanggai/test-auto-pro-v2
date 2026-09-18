@@ -34,19 +34,26 @@ type RunPathsDTO struct {
 
 // RunPathProgressDTO 是一次运行里一条执行路径的进度事实：状态、当前节点与准确进度。
 type RunPathProgressDTO struct {
-	PathRunID        uint64     `json:"pathRunId"`
-	PathID           uint64     `json:"pathId"`
-	PathName         string     `json:"pathName"`
-	StatusName       string     `json:"statusName"`
-	ResultName       string     `json:"resultName,omitempty"`
-	FailureClassName string     `json:"failureClassName,omitempty"`
-	CurrentNodeName  string     `json:"currentNodeName,omitempty"`
-	DoneSteps        int        `json:"doneSteps"`
-	TotalSteps       int        `json:"totalSteps"`
-	ProgressPercent  int        `json:"progressPercent"`
-	StartedAt        *time.Time `json:"startedAt,omitempty"`
-	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
-	MainInstanceRef  string     `json:"mainInstanceRef,omitempty"`
+	PathRunID        uint64 `json:"pathRunId"`
+	PathID           uint64 `json:"pathId"`
+	PathName         string `json:"pathName"`
+	StatusName       string `json:"statusName"`
+	ResultName       string `json:"resultName,omitempty"`
+	FailureClassName string `json:"failureClassName,omitempty"`
+	CurrentNodeName  string `json:"currentNodeName,omitempty"`
+	DoneSteps        int    `json:"doneSteps"`
+	TotalSteps       int    `json:"totalSteps"`
+	ProgressPercent  int    `json:"progressPercent"`
+	// ExecutedSteps 与 SkippedSteps 把 DoneSteps 拆成两类互不相容的事实：
+	// 「真实执行成功」的步骤数与「目标自动跳过」的步骤数。DoneSteps 仍是二者之和（进度分子不变），
+	// 但界面与报告必须能分别表述，禁止再把跳过步并入「全部成功」的口径。
+	ExecutedSteps int `json:"executedSteps"`
+	SkippedSteps  int `json:"skippedSteps"`
+	// SkippedStepNos 逐个列出被目标自动跳过的步骤序号，供人工核对「哪几步没有真实执行」。
+	SkippedStepNos  []int      `json:"skippedStepNos"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
+	MainInstanceRef string     `json:"mainInstanceRef,omitempty"`
 }
 
 // ListAllRuns 跨计划列出运行（最新在前）：一行只对应一次计划运行，
@@ -161,16 +168,15 @@ func (s *RunOrchestrationService) RunPaths(ctx context.Context, runID uint64) (*
 		if err != nil {
 			return nil, err
 		}
-		doneSteps := 0
+		doneSteps, executedSteps, skippedStepNos := countStepOutcomes(steps)
 		lastNodeKey := ""
 		for _, stepRecord := range steps {
-			// 目标自动跳过的步骤没有写动作，但确实已被流程越过：计入已完成进度。
-			if stepRecord.Status == model.RunStepSucceeded || stepRecord.Status == model.RunStepSkipped {
-				doneSteps++
-			}
 			lastNodeKey = stepRecord.NodeKey
 		}
 		summary.DoneSteps = doneSteps
+		summary.ExecutedSteps = executedSteps
+		summary.SkippedSteps = len(skippedStepNos)
+		summary.SkippedStepNos = skippedStepNos
 		summary.TotalSteps = s.frozenTotalSteps(ctx, run, pathRun)
 		if summary.TotalSteps > 0 {
 			// 进度只由已落库步骤与冻结分母得出：完成才是 100%，失败或停止保留实际进度。
@@ -180,6 +186,33 @@ func (s *RunOrchestrationService) RunPaths(ctx context.Context, runID uint64) (*
 		dto.Paths = append(dto.Paths, summary)
 	}
 	return dto, nil
+}
+
+// countStepOutcomes 把已落账步骤按终态拆成三类计数：进度分子、真实执行成功步数、
+// 以及目标自动跳过的步骤序号。
+//
+// 为什么必须拆开：目标自动跳过的步骤（RunStepSkipped）没有任何写动作，只是被流程越过，
+// 它计入进度分子是对的，但绝不能与「真实执行成功」合并成同一个数字——2026-09-18 第二轮运行
+// 就把 1 个未执行的结束节点表述成「20/20 步全部成功」，用户因此以为全流程真实跑通
+// （第三轮复核 P0-1）。两类事实各自计数后，界面才能如实表述
+// 「已完成 N/M 步（其中真实执行 X 步，目标自动跳过 Y 步）」。
+//
+// 输入边界：只读 steps，不改变其顺序或内容；失败/不确定的步骤不计入任何一个成功计数。
+func countStepOutcomes(steps []model.RunStep) (doneSteps int, executedSteps int, skippedStepNos []int) {
+	skippedStepNos = []int{}
+	for _, stepRecord := range steps {
+		switch stepRecord.Status {
+		case model.RunStepSucceeded:
+			// 真实执行且确定成功：同时计入进度分子与「真实执行」。
+			doneSteps++
+			executedSteps++
+		case model.RunStepSkipped:
+			// 目标自动跳过：计入进度分子，但只出现在跳过清单里。
+			doneSteps++
+			skippedStepNos = append(skippedStepNos, stepRecord.StepNo)
+		}
+	}
+	return doneSteps, executedSteps, skippedStepNos
 }
 
 // frozenTotalSteps 返回本次运行冻结的总步骤数；历史运行（迁移 031 之前）没有冻结值，
@@ -228,6 +261,12 @@ func currentNodeNameOf(pathRun model.PathRun, previewName string, lastNodeKey st
 // 绝不删除目标平台实例或业务数据。运行中的记录必须先停止再删除（仓储层同事务守卫）。
 func (s *RunOrchestrationService) DeleteRun(ctx context.Context, runID uint64) error {
 	return s.store.DeleteRun(ctx, runID, s.now())
+}
+
+// CountStepOutcomesForTest 暴露步骤终态分型计数，供 test 目录锁定 T1 门禁 G8：
+// 「真实执行成功」与「目标自动跳过」必须分别计数，跳过步必须逐个可枚举。
+func CountStepOutcomesForTest(steps []model.RunStep) (int, int, []int) {
+	return countStepOutcomes(steps)
 }
 
 // runStatusNameOf 返回运行状态的中文显示名：计划间串行队列中的等待运行显示为「排队中」，

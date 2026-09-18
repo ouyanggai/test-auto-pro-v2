@@ -223,6 +223,11 @@ export interface RunPathProgress {
   doneSteps: number
   totalSteps: number
   progressPercent: number
+  // executedSteps / skippedSteps 把 doneSteps 拆成互不相容的两类事实：
+  // 真实执行成功的步数与目标自动跳过的步数；skippedStepNos 逐个列出跳过的步骤序号。
+  executedSteps: number
+  skippedSteps: number
+  skippedStepNos: number[]
   startedAt?: string
   finishedAt?: string
   mainInstanceRef?: string

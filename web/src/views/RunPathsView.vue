@@ -91,9 +91,13 @@ const deleteHint = computed(() => {
 })
 
 // progressText 把进度写成中文事实；分母缺失（历史运行）时如实显示「—」。
+// 存在目标自动跳过步时必须显式披露，禁止把「真实执行 18 步 + 目标跳过 2 步」
+// 表述成「20/20 步全部成功」——那会把未执行的步骤说成执行成功（第三轮复核 P0-1/T1）。
 function progressText(path: RunPathProgress): string {
   if (!path.totalSteps) return '进度：—（这次运行没有可用的步骤总数）'
-  return `已完成 ${path.doneSteps} / ${path.totalSteps} 步`
+  const base = `已完成 ${path.doneSteps} / ${path.totalSteps} 步`
+  if (!path.skippedSteps) return base
+  return `${base}（其中真实执行 ${path.executedSteps} 步，目标自动跳过 ${path.skippedSteps} 步：第 ${path.skippedStepNos.join('、')} 步）`
 }
 
 // statusTagType 让状态标签的颜色与语义一致；颜色之外始终有中文文字。
