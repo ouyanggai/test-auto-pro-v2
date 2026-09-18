@@ -33,10 +33,89 @@ function copyPersonSelection(values: readonly string[] | null | undefined): stri
   return Array.isArray(values) ? [...values] : []
 }
 
+// sha256Fallback 在非安全上下文中补齐 Web Crypto 不可用时的 SHA-256 计算。
+// 这里必须保持标准填充、字节序和 32 位溢出规则，否则生成的节点 key 会与后端脱节。
+function sha256Fallback(input: Uint8Array): Uint8Array {
+  const roundConstants = new Uint32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ])
+  const paddedLength = Math.ceil((input.length + 9) / 64) * 64
+  const padded = new Uint8Array(paddedLength)
+  padded.set(input)
+  padded[input.length] = 0x80
+  const bitLength = input.length * 8
+  const highLength = Math.floor(bitLength / 0x100000000)
+  const lowLength = bitLength >>> 0
+  padded[paddedLength - 8] = highLength >>> 24
+  padded[paddedLength - 7] = highLength >>> 16
+  padded[paddedLength - 6] = highLength >>> 8
+  padded[paddedLength - 5] = highLength
+  padded[paddedLength - 4] = lowLength >>> 24
+  padded[paddedLength - 3] = lowLength >>> 16
+  padded[paddedLength - 2] = lowLength >>> 8
+  padded[paddedLength - 1] = lowLength
+
+  let h0 = 0x6a09e667; let h1 = 0xbb67ae85; let h2 = 0x3c6ef372; let h3 = 0xa54ff53a
+  let h4 = 0x510e527f; let h5 = 0x9b05688c; let h6 = 0x1f83d9ab; let h7 = 0x5be0cd19
+  const rotateRight = (value: number, count: number) => (value >>> count) | (value << (32 - count))
+  const words = new Uint32Array(64)
+
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let index = 0; index < 16; index++) {
+      const position = offset + index * 4
+      words[index] = (padded[position] << 24) | (padded[position + 1] << 16) | (padded[position + 2] << 8) | padded[position + 3]
+    }
+    for (let index = 16; index < 64; index++) {
+      const value15 = words[index - 15]
+      const value2 = words[index - 2]
+      const small0 = rotateRight(value15, 7) ^ rotateRight(value15, 18) ^ (value15 >>> 3)
+      const small1 = rotateRight(value2, 17) ^ rotateRight(value2, 19) ^ (value2 >>> 10)
+      words[index] = (words[index - 16] + small0 + words[index - 7] + small1) >>> 0
+    }
+
+    let a = h0; let b = h1; let c = h2; let d = h3; let e = h4; let f = h5; let g = h6; let h = h7
+    for (let index = 0; index < 64; index++) {
+      const big1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25)
+      const choose = (e & f) ^ (~e & g)
+      const first = (h + big1 + choose + roundConstants[index] + words[index]) >>> 0
+      const big0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22)
+      const majority = (a & b) ^ (a & c) ^ (b & c)
+      const second = (big0 + majority) >>> 0
+      h = g; g = f; f = e; e = (d + first) >>> 0; d = c; c = b; b = a; a = (first + second) >>> 0
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0
+  }
+
+  const result = new Uint8Array(32)
+  const digest = [h0, h1, h2, h3, h4, h5, h6, h7]
+  digest.forEach((value, index) => {
+    result[index * 4] = value >>> 24; result[index * 4 + 1] = value >>> 16
+    result[index * 4 + 2] = value >>> 8; result[index * 4 + 3] = value
+  })
+  return result
+}
+
+// sha256Digest 优先使用浏览器原生实现，非安全上下文或原生调用失败时回退到本地实现。
+async function sha256Digest(input: Uint8Array): Promise<Uint8Array> {
+  const subtle = globalThis.crypto?.subtle
+  if (subtle) {
+    try { return new Uint8Array(await subtle.digest('SHA-256', input as unknown as BufferSource)) } catch { /* 非安全上下文由本地实现兜底。 */ }
+  }
+  return sha256Fallback(input)
+}
+
 // pathConfigNodeKey 使用与后端相同的稳定哈希绑定图节点与配置节点。
 export async function pathConfigNodeKey(nodeID: string): Promise<string> {
   const bytes = new TextEncoder().encode(`node:${nodeID.trim()}:configuration`)
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
+  const digest = await sha256Digest(bytes)
   return [...new Uint8Array(digest).slice(0, 16)].map(value => value.toString(16).padStart(2, '0')).join('')
 }
 

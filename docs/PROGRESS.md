@@ -1,5 +1,9 @@
 # 当前进度
 
+- 2026-09-18 F-036 页面路径配置兼容修复：后端 `/configuration` 成功返回后，节点绑定阶段不再直接依赖
+  非安全上下文不可用的 `crypto.subtle`；`pathConfigNodeKey` 在 HTTPS 原生 Web Crypto 不可用或调用失败时，
+  使用同输入、同 SHA-256 结果的浏览器本地实现，保持与 Go 服务端节点 key 一致。未新增固定账号、模板、实例或
+  浏览器自动测试，状态保持 **ready_for_manual**，等待用户通过页面重新打开路径配置确认。
 - 2026-09-18 F-036 按用户要求进入 **ready_for_manual**：删除目标账号、固定模板/实例 ID、动作变量和
   真实写动作台；删除 `real_load_loop_test.go`、`real_action_loop_test.go` 与 `f036-real-action-bench.mjs`。
   `test/run-executor-service.sh` 现在只运行本地类型检查、构建、执行服务单元/集成、Go 契约和路由检查，
