@@ -3,8 +3,10 @@ package target_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,10 +42,18 @@ func TestListTemplatesPreservesBusinessRejection(t *testing.T) {
 	}
 }
 
-// TestLoginPreservesBusinessRejection 验证登录完整业务拒绝保留目标 code/message，且不伪装成网络错误。
+// TestLoginPreservesBusinessRejection 验证登录完整业务拒绝保留目标 code/message，且不伪装成网络错误；
+// 同时锁定新登录协议：登录前必须先取验证码 flag，登录体必须携带 sign=该 flag。
 func TestLoginPreservesBusinessRejection(t *testing.T) {
+	var loginBody string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/web/user/api/login/user/getVerifiCode" {
+			_, _ = response.Write([]byte(`{"isSuccess":true,"data":{"flag":"login-flag"}}`))
+			return
+		}
+		body, _ := io.ReadAll(request.Body)
+		loginBody = string(body)
 		_, _ = response.Write([]byte(`{"isSuccess":false,"code":"LOGIN_403","message":"账号或密码错误"}`))
 	}))
 	defer server.Close()
@@ -63,6 +73,9 @@ func TestLoginPreservesBusinessRejection(t *testing.T) {
 	var rejection *target.BusinessRejection
 	if !errors.As(err, &rejection) || rejection.Code != "LOGIN_403" || rejection.Message != "账号或密码错误" {
 		t.Fatalf("登录业务拒绝未保留原始内容：%T %+v", err, rejection)
+	}
+	if !strings.Contains(loginBody, `"sign":"login-flag"`) {
+		t.Fatalf("登录请求体必须携带 sign=验证码接口 flag，实际：%s", loginBody)
 	}
 	if target.IsRetryableWriteConnectError(err) {
 		t.Fatal("登录业务拒绝不应进入连接重试")

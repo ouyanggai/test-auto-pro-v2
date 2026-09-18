@@ -50,7 +50,10 @@ func (f *targetHistoryFixture) handler(response http.ResponseWriter, request *ht
 	f.paths = append(f.paths, request.URL.Path)
 	f.mu.Unlock()
 	switch request.URL.Path {
+	case "/web/user/api/login/user/getVerifiCode":
+		writeHistoryTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{"flag": "verification-flag"}})
 	case "/web/user/api/login/user/login":
+
 		f.mu.Lock()
 		f.loginCount++
 		loginCount := f.loginCount
@@ -235,6 +238,8 @@ func assertTargetHistoryReadOnlyCalls(t *testing.T, fixture *targetHistoryFixtur
 	fixture.mu.Unlock()
 	allowed := map[string]bool{
 		"/web/user/api/login/user/login": true, "/web/flowInstanceApi/list": true,
+		// 新登录协议：登录前先取验证码 flag（只读，服务端不校验验证码文字）。
+		"/web/user/api/login/user/getVerifiCode":  true,
 		"/web/flowInstanceApi/getCurrentFromData": true, "/web/flowProxy/findById": true,
 		"/web/formProxy/findById": true,
 		// F-035：当前计划账号岗位事实来自目标人员目录（只读，带 dutyId/dutyName）。

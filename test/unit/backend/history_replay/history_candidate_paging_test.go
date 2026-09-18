@@ -27,7 +27,10 @@ type candidatePagingFixture struct {
 // handler 只实现登录与实例列表，并真实应用 statusList 与分页参数。
 func (f *candidatePagingFixture) handler(response http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
+	case "/web/user/api/login/user/getVerifiCode":
+		writeHistoryTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{"flag": "verification-flag"}})
 	case "/web/user/api/login/user/login":
+
 		writeHistoryTargetJSON(response, map[string]any{
 			"isSuccess": true, "sid": "sid-private",
 			"data": map[string]any{

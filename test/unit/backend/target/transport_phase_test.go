@@ -113,6 +113,12 @@ func TestF016TransportResponseLostIsUncertain(t *testing.T) {
 // 即使是 5xx 这类失败响应，传输阶段也是已响应，后续结论交给响应侧判定。
 func TestF016TransportRespondedCarriesHttpStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 登录先取验证码 flag：假件返回有效 flag，让探针到达真正的登录请求。
+		if r.URL.Path == "/web/user/api/login/user/getVerifiCode" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isSuccess":true,"data":{"flag":"transport-flag"}}`))
+			return
+		}
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte("upstream gone"))
 	}))

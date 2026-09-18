@@ -33,6 +33,9 @@ func newIdentityFixture(t *testing.T, directory map[string][]map[string]any) *fa
 			account, _ = data["account"].(string)
 		}
 		switch r.URL.Path {
+		case "/web/user/api/login/user/getVerifiCode":
+			// 新登录协议：登录前先取验证码 flag（服务端不校验验证码文字）。
+			_ = json.NewEncoder(w).Encode(map[string]any{"isSuccess": true, "data": map[string]any{"flag": "identity-flag"}})
 		case "/web/user/api/login/user/login":
 			fake.loginBodies = append(fake.loginBodies, body)
 			_ = json.NewEncoder(w).Encode(map[string]any{

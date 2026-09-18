@@ -54,6 +54,9 @@ func newFakeTarget(t *testing.T) *fakeTarget {
 // handler 按已核实只读协议响应登录、列表和流程树请求。
 func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
+	case "/web/user/api/login/user/getVerifiCode":
+		// 新登录协议：登录前先取验证码 flag（只读，服务端不校验验证码文字）。
+		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{"flag": "integration-flag"}})
 	case "/web/user/api/login/user/login":
 		f.handleLogin(response, request)
 	case "/web/flowTemplateApi/list":
@@ -981,8 +984,14 @@ func TestPathConfigurationSnapshotResolvesConcreteAuditDirectories(t *testing.T)
 	if len(wantCandidates) != 0 {
 		t.Fatalf("人员、部门和公司范围没有按真实目录候选解析：missing=%v candidates=%+v", wantCandidates, audit.Candidates)
 	}
-	if len(snapshot.Tree.Child.AddSignIssues) != 0 || len(snapshot.Tree.Child.AddSignCandidates) != 1 || snapshot.Tree.Child.AddSignCandidates[0].Name != "张三" {
-		t.Fatalf("加签节点人员目录没有独立按公司人员响应解析：candidates=%+v issues=%+v", snapshot.Tree.Child.AddSignCandidates, snapshot.Tree.Child.AddSignIssues)
+	// 加签候选语义是「当前账号公司的完整人员目录」（da542e2 起即如此），F-035 给目录假件补入
+	// 登录身份「测试人员」后，目录应同时包含两人且按目标返回顺序排列。
+	wantAddSign := map[string]bool{"张三": true, "测试人员": true}
+	for _, candidate := range snapshot.Tree.Child.AddSignCandidates {
+		delete(wantAddSign, candidate.Name)
+	}
+	if len(snapshot.Tree.Child.AddSignIssues) != 0 || len(wantAddSign) != 0 {
+		t.Fatalf("加签节点人员目录没有独立按公司人员响应解析：candidates=%+v issues=%+v missing=%v", snapshot.Tree.Child.AddSignCandidates, snapshot.Tree.Child.AddSignIssues, wantAddSign)
 	}
 	fake.mu.Lock()
 	flags := append([]string(nil), fake.directoryFlags...)

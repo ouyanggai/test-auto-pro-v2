@@ -106,13 +106,80 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}, nil
 }
 
+// fetchLoginVerificationFlag 请求目标验证码接口并只取登录所需的 flag 凭证。
+// 目标登录协议要求 sign 为一次新鲜的 getVerifiCode flag；验证码图片内容不被使用，
+// 服务端只校验 flag 的有效性与一次性，因此这里不下载和保存图片正文。
+func (c *Client) fetchLoginVerificationFlag(ctx context.Context) (string, error) {
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimRight(c.baseURL.Path, "/") + "/web/user/api/login/user/getVerifiCode"
+	endpoint.RawPath = ""
+	query := endpoint.Query()
+	if c.config.PlatformCode != "" {
+		query.Set("platformCode", c.config.PlatformCode)
+	}
+	endpoint.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return "", NewError(ErrorUnavailable, err)
+	}
+	req.Header.Set("Accept", "application/json")
+	// 与登录同一目标出口发出，保留传输分档与日志事实；验证码接口失败时登录必然被拒，
+	// 必须在发登录请求之前失败，不能带着空 sign 继续撞目标。
+	probe := &transportProbe{}
+	req = req.WithContext(withRequestMetadata(httptrace.WithClientTrace(req.Context(), probe.trace()), "read", ""))
+	response, err := c.httpClient.Do(req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return "", err
+		}
+		phase := probe.classify(err)
+		if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
+			return "", &Error{Kind: ErrorTimeout, Cause: err, Transport: phase}
+		}
+		return "", &Error{Kind: ErrorUnavailable, Cause: err, Transport: phase}
+	}
+	defer response.Body.Close()
+	reader := io.LimitReader(response.Body, maxResponseBytes+1)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", &Error{Kind: ErrorUnavailable, Transport: TransportInterrupted, Cause: err}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", &Error{Kind: ErrorUnavailable, HTTPStatus: response.StatusCode, Transport: TransportResponded, Cause: httpResponseDetail(data)}
+	}
+	var payload struct {
+		Data struct {
+			Flag string `json:"flag"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("invalid verification json")}
+	}
+	flag := strings.TrimSpace(payload.Data.Flag)
+	if flag == "" {
+		return "", &Error{Kind: ErrorResponseInvalid, Transport: TransportResponded, Cause: errors.New("verification flag missing")}
+	}
+	return flag, nil
+}
+
 // Login 按已核实协议加密服务端密码并获取只保留在后端的会话。
+// 目标平台 2026-09-19 起要求登录请求携带 sign=一次有效验证码接口返回的 flag；
+// 服务端不校验验证码文字本身，但 flag 必须来自本次登录前新鲜的 getVerifiCode 响应，
+// 旧 flag 或缺失 sign 会以「用户名错误或密码错误」拒绝。
 func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 	encrypted, err := EncryptPassword(c.config.LoginPassword, c.config.LoginAESKey)
 	if err != nil {
 		return Session{}, invalidResponse("invalid login encryption configuration")
 	}
+	sign, err := c.fetchLoginVerificationFlag(ctx)
+	if err != nil {
+		// flag 获取失败按原始传输/响应分类透传：登录尚未到达凭证校验，
+		// 伪装成登录拒绝会丢失 connect_refused/interrupted 等安全判定依据。
+		return Session{}, err
+	}
 	body := map[string]any{
+		"sign": sign,
 		"data": map[string]any{
 			"loginType":    "ACCOUNT",
 			"account":      strings.TrimSpace(account),
