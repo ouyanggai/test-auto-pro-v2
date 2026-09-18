@@ -1667,9 +1667,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	// 核验事实摘要落 step.log：会签等多人场景下「节点待办未清空」是常态，
 	// 不把判定依据（当前处理人待办/已办核对结果）写下来，事后无法解释结论怎么来的。
-	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("核验事实：实例可读=%v 状态=%s 当前处理人待办=%v（发现能力=%v） 当前处理人已办=%v/%v 实例当前节点=%v",
+	// 「当前处理人已办」必须打印语义分型而非布尔对：布尔只能表达读没读/读没读到，
+	// 无法区分「确实核对过并命中」「核对过但没有」「根本没做这项核对」（第三轮复核 P0-4）。
+	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("核验事实：实例可读=%v 状态=%s 当前处理人待办=%v（发现能力=%v） 当前处理人已办=%s 实例当前节点=%v",
 		after.Found, after.Status, after.CurrentTaskFound, after.CurrentTaskRead,
-		after.CompletedTaskRead, after.CompletedTaskFound, after.CurrentNodes))
+		completedTaskBasisName(after.CompletedTaskBasis), after.CurrentNodes))
 	reread := ClassifyReread(string(step.Action), stepTargetNodeID, before, after)
 	if reread == verdict.RereadUnreadable && preview.writeSent && preview.writeErr == nil {
 		// 核验读取失败（工具会话失效/目标抖动导致事实不可读）：写请求已发出且目标声明成功，

@@ -79,7 +79,9 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 	ctx.Followed = facts.TrackingRead && facts.Tracking
 	ctx.HasEditableProxy = facts.EditableProxyRead
 	ctx.CanSwitchActor = facts.ActorSwitchRead
-	ctx.HasCompletedTask = facts.CompletedTaskRead && facts.CompletedTaskFound
+	// 已办归属只能来自「确实核对过并命中」的正面分型：读取失败与未做核对都不能
+	// 让「本账号在本节点有已办」这一门禁前提成立（第三轮复核 P0-4）。
+	ctx.HasCompletedTask = facts.CompletedTaskBasis == CompletedTaskBasisCheckedFound
 	ctx.SuccessorStateKnown = facts.SuccessorStateKnown
 	ctx.NextTaskProcessed = facts.NextTaskProcessed
 	ctx.PreviousTaskExists = facts.PreviousTaskRead && facts.PreviousTaskExists

@@ -244,6 +244,13 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 						}
 					}
 				}
+				// 核验依据分型必须与实际读取过程同源：读取失败、确实没有、确实命中
+				// 是三种互不相容的语义，绝不能都塌缩成布尔对（第三轮复核 P0-4）。
+				facts.CompletedTaskBasis = completedTaskBasisOf(true, facts.CompletedTaskFound, doneErr != nil)
+			} else {
+				// 本步没有做这项核对（如处理人即计划账号本人时不切换会话）：
+				// 显式登记为占位，防止下游把未取证的布尔当成证据。
+				facts.CompletedTaskBasis = CompletedTaskBasisNotAttempted
 			}
 			return session, nil
 		case model.ActionAddSign:
@@ -300,6 +307,8 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		session = taskSession
 		facts.CompletedTaskRead = true
 		facts.CompletedTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
+		// 取回走 done 的 executorId 语义，读取成功即已核对：命中与否都是有效证据。
+		facts.CompletedTaskBasis = completedTaskBasisOf(true, facts.CompletedTaskFound, false)
 		facts.CompletedTaskLinkID = strings.TrimSpace(snapshot.LinkID)
 		facts.CompletedTaskNodeID = strings.TrimSpace(snapshot.FlowNodeProxyID)
 		facts.CompletedTaskParentID = strings.TrimSpace(snapshot.ParentLinkID)
@@ -563,7 +572,10 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 		// 会签中间态（2026-09-11 实测）：当前处理人同意后节点上仍有其他人的 pending 任务，
 		// 按「节点待办是否清空」对照会误判「写未生效」。此时以按执行人过滤的已办为准——
 		// 当前处理人在本节点的已完成任务已出现，说明本次审批已被目标记录，实例只是在等其他人。
-		actorDone := action == string(model.ActionApprove) && after.CompletedTaskRead && after.CompletedTaskFound &&
+		// 依据必须来自 CompletedTaskBasis 的正面分型：只有「确实核对过并命中」才算证据，
+		// 占位（未做核对）与读取失败都不能把未生效的写判成已生效（第三轮复核 P0-4）。
+		actorDone := action == string(model.ActionApprove) &&
+			after.CompletedTaskBasis == CompletedTaskBasisCheckedFound &&
 			strings.TrimSpace(after.CompletedTaskNodeID) == strings.TrimSpace(stepNodeKey)
 		if after.CurrentTaskFound {
 			if actorDone {
@@ -582,7 +594,8 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 	// 审批：本步节点的待办仍在，说明写未生效——除非本当前处理人的已办已出现（会签中间态）。
 	for _, node := range after.DueNodes {
 		if node == stepNodeKey {
-			if action == string(model.ActionApprove) && after.CompletedTaskRead && after.CompletedTaskFound &&
+			if action == string(model.ActionApprove) &&
+				after.CompletedTaskBasis == CompletedTaskBasisCheckedFound &&
 				strings.TrimSpace(after.CompletedTaskNodeID) == strings.TrimSpace(stepNodeKey) {
 				return verdict.RereadAdvanced
 			}

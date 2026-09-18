@@ -253,6 +253,17 @@ type InstanceFacts struct {
 	CompletedTaskParentID string `json:"completedTaskParentId,omitempty"`
 	CompletedTaskBatchNo  string `json:"completedTaskBatchNo,omitempty"`
 	CompletedTaskAuditWay string `json:"completedTaskAuditWay,omitempty"`
+	// CompletedTaskBasis 是「当前处理人已办」这项核验依据的语义分型（第三轮复核 P0-4）。
+	//
+	// 为什么必须分型：CompletedTaskRead/CompletedTaskFound 这对布尔只能表达
+	// 「读没读」与「读没读到」，无法区分三种语义完全不同的情形：
+	//   · 真的按执行人核对过已办并命中（会签中间态的有效证据）；
+	//   · 核对过但目标上确实没有该已办任务（否定证据）；
+	//   · 根本没有做这项核对（读取前提不成立，如处理人即计划账号本人时不切会话）。
+	// 前两种是核验依据，第三种只是占位；把它们都渲染成 true/false 会让占位看起来像事实，
+	// 一旦会签、委托或代批场景出现，判定就会建立在一个从未取证的布尔上。
+	// 取值见 CompletedTaskBasis* 常量；空串按未知处理，绝不当作证据。
+	CompletedTaskBasis string `json:"completedTaskBasis,omitempty"`
 	// 下面字段是动作门禁从目标任务链、代理树和审核记录得到的结论。
 	EditableProxyRead   bool   `json:"editableProxyRead,omitempty"`
 	ActorSwitchRead     bool   `json:"actorSwitchRead,omitempty"`
@@ -271,6 +282,58 @@ type InstanceFacts struct {
 	// PendingTaskRead/PendingTaskFound 是实例级动作（如催办）读取到的全实例待办事实。
 	PendingTaskRead  bool `json:"pendingTaskRead,omitempty"`
 	PendingTaskFound bool `json:"pendingTaskFound,omitempty"`
+}
+
+// CompletedTaskBasis 的取值：描述「当前处理人已办」这项核验依据到底是什么。
+const (
+	// CompletedTaskBasisCheckedFound：确实按执行人核对过已办，并且命中本节点的已完成任务。
+	// 这是会签中间态唯一有效的正面证据。
+	CompletedTaskBasisCheckedFound = "checked_found"
+	// CompletedTaskBasisCheckedAbsent：确实核对过已办，但目标上没有该执行人在本节点的已完成任务。
+	// 这是否定证据，不能当作「已生效」。
+	CompletedTaskBasisCheckedAbsent = "checked_absent"
+	// CompletedTaskBasisNotAttempted：根本没有做这项核对（读取前提不成立）。
+	// 它只是占位，绝不是核验依据——判定逻辑不得把它当成任何一侧的证据。
+	CompletedTaskBasisNotAttempted = "not_attempted"
+	// CompletedTaskBasisReadFailed：尝试核对但读取失败。失败同样不是证据，且必须与「确实没有」区分。
+	CompletedTaskBasisReadFailed = "read_failed"
+)
+
+// completedTaskBasisOf 按已办读取结果推导核验依据分型，避免各处自行用布尔拼装语义。
+// 输入边界：readFailed 表示读取过程出错；其余两参只在未失败时参与判断。
+func completedTaskBasisOf(readAttempted, found, readFailed bool) string {
+	if readFailed {
+		return CompletedTaskBasisReadFailed
+	}
+	if !readAttempted {
+		return CompletedTaskBasisNotAttempted
+	}
+	if found {
+		return CompletedTaskBasisCheckedFound
+	}
+	return CompletedTaskBasisCheckedAbsent
+}
+
+// CompletedTaskBasisOfForTest 暴露核验依据分型函数，供 test 目录锁定 T3：
+// 读取失败、未核对、核对到、核对不到四种语义必须互不塌缩。
+func CompletedTaskBasisOfForTest(readAttempted, found, readFailed bool) string {
+	return completedTaskBasisOf(readAttempted, found, readFailed)
+}
+
+// completedTaskBasisName 返回核验依据分型的中文说明，用于 step.log 让结论可解释。
+func completedTaskBasisName(basis string) string {
+	switch basis {
+	case CompletedTaskBasisCheckedFound:
+		return "已按执行人核对并命中"
+	case CompletedTaskBasisCheckedAbsent:
+		return "已按执行人核对但无该已办"
+	case CompletedTaskBasisReadFailed:
+		return "核对已办读取失败"
+	case CompletedTaskBasisNotAttempted:
+		return "未做该项核对（仅占位，不作为依据）"
+	default:
+		return "核验依据未知"
+	}
 }
 
 // EncodeInstanceFacts 把目标事实快照序列化为落库文本（run_step_attempts.before_facts）。
