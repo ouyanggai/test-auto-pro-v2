@@ -22,9 +22,12 @@ type ProxyRemap struct {
 	NextNodeAuditors         map[string][]target.NextAuditor
 }
 
-// BuildProxyRemap 读取加签后的完整代理树，并按旧树与新树的唯一结构路径建立节点映射。
+// BuildProxyRemap 读取加签后的完整代理树，并按旧树与新树的结构路径建立节点映射。
+// insertAfterOldNodeID 是加签插入新节点的旧树锚点（即写前当前节点）：插入后锚点子链上
+// 所有旧节点的结构路径整体多出一跳 child，按锚点位置确定性平移映射，绝不按名称猜测；
+// 锚点为空表示本次重建没有已知插入（其他动作触发的树重建），按完全相同的结构路径精确映射。
 // 读取失败、路径缺失或结构不唯一时返回错误，调用方必须停止后续放行，不能继续使用旧节点 ID。
-func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, session target.Session, flowProxyID string) (ProxyRemap, error) {
+func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, session target.Session, flowProxyID, insertAfterOldNodeID string) (ProxyRemap, error) {
 	flowProxyID = strings.TrimSpace(flowProxyID)
 	if flowProxyID == "" {
 		return ProxyRemap{}, fmt.Errorf("加签响应缺少新的流程代理标识")
@@ -59,36 +62,28 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 		newIDByPath[path] = id
 	}
 
+	// 插入锚点的旧结构路径：加签插入只发生在锚点与它的直接后继之间，
+	// 锚点子链上所有旧节点的新路径都要在锚点路径之后多出一跳 child，其余路径保持不变。
+	anchorPrefix := ""
+	if anchorID := strings.TrimSpace(insertAfterOldNodeID); anchorID != "" {
+		path, exists := oldPaths[anchorID]
+		if !exists {
+			return ProxyRemap{}, fmt.Errorf("加签锚点节点 %q 不在加签前流程树中，无法定位插入位置", anchorID)
+		}
+		anchorPrefix = path
+	}
+
 	nodeIDs := make(map[string]string, len(oldPaths))
 	usedNewIDs := make(map[string]string, len(oldPaths))
 	for oldID, path := range oldPaths {
-		// 先锁定完全相同的结构路径。旧实现把所有更深 child 都纳入候选，
-		// 因而同一条链上存在后继审批节点时把本应精确的节点误判成多候选。
-		candidates := make([]string, 0, 1)
-		for newPath, newID := range newIDByPath {
-			if newPath == path && newTypes[newID] == oldTypes[oldID] {
-				candidates = append(candidates, newID)
-			}
+		expectedPath := path
+		if anchorPrefix != "" && strings.HasPrefix(path, anchorPrefix+"/child") {
+			expectedPath = anchorPrefix + "/child" + strings.TrimPrefix(path, anchorPrefix)
 		}
-		if len(candidates) == 0 {
-			minExtra := -1
-			for newPath, newID := range newIDByPath {
-				if newTypes[newID] != oldTypes[oldID] || !compatibleProxyStructurePath(path, newPath) {
-					continue
-				}
-				extra := childDepth(newPath) - childDepth(path)
-				if minExtra < 0 || extra < minExtra {
-					minExtra = extra
-					candidates = []string{newID}
-				} else if extra == minExtra {
-					candidates = append(candidates, newID)
-				}
-			}
+		newID, exists := newIDByPath[expectedPath]
+		if !exists || newTypes[newID] != oldTypes[oldID] {
+			return ProxyRemap{}, fmt.Errorf("旧节点 %q 的结构路径 %q 无法唯一绑定到加签后流程树（期望路径 %q）", oldID, path, expectedPath)
 		}
-		if len(candidates) != 1 {
-			return ProxyRemap{}, fmt.Errorf("旧节点 %q 的结构路径 %q 无法唯一绑定到加签后流程树", oldID, path)
-		}
-		newID := candidates[0]
 		if previous, exists := usedNewIDs[newID]; exists && previous != oldID {
 			return ProxyRemap{}, fmt.Errorf("加签后节点 %q 被旧节点 %q 和 %q 重复绑定", newID, previous, oldID)
 		}
@@ -156,8 +151,9 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 }
 
 // RemapProxyTreeForRun 使用运行计划账号的当前目标会话读取新代理树并构造整体映射。
+// insertAfterOldNodeID 是加签插入节点的旧树锚点（写前当前节点），非加签重建传空串。
 // 代理重建发生在写后核验阶段，控制层不能复用已结束的动作会话，也不能在读取失败时继续使用旧树。
-func (e *Executor) RemapProxyTreeForRun(ctx context.Context, runCtx RunContext, flowProxyID string) (ProxyRemap, error) {
+func (e *Executor) RemapProxyTreeForRun(ctx context.Context, runCtx RunContext, flowProxyID, insertAfterOldNodeID string) (ProxyRemap, error) {
 	account := strings.TrimSpace(runCtx.PlanAccount)
 	if account == "" {
 		return ProxyRemap{}, fmt.Errorf("运行上下文缺少计划账号，无法读取加签后的流程代理树")
@@ -182,7 +178,7 @@ func (e *Executor) RemapProxyTreeForRun(ctx context.Context, runCtx RunContext, 
 		}
 		flowProxyID = latest
 	}
-	return e.BuildProxyRemap(ctx, runCtx, session, flowProxyID)
+	return e.BuildProxyRemap(ctx, runCtx, session, flowProxyID, insertAfterOldNodeID)
 }
 
 // latestRunFlowProxy 按运行来源重新读取实例当前代理 ID；这是加签后刷新模板的唯一事实来源。
@@ -276,49 +272,6 @@ func proxyTreeFacts(root *target.FlowNodeTemplate) (map[string]string, map[strin
 		return nil, nil, err
 	}
 	return paths, types, nil
-}
-
-// compatibleProxyStructurePath 判断旧结构路径是否能按顺序落在新结构路径上。
-// 新树允许在 child 链中插入节点；分支层级和分支序号必须完全一致，避免把不同分支误配到一起。
-func compatibleProxyStructurePath(oldPath, newPath string) bool {
-	oldParts := strings.Split(oldPath, "/")
-	newParts := strings.Split(newPath, "/")
-	oldChildren, newChildren := 0, 0
-	oldBranches, newBranches := make([]string, 0), make([]string, 0)
-	for _, part := range oldParts {
-		if part == "child" {
-			oldChildren++
-		} else if part != "root" {
-			oldBranches = append(oldBranches, part)
-		}
-	}
-	for _, part := range newParts {
-		if part == "child" {
-			newChildren++
-		} else if part != "root" {
-			newBranches = append(newBranches, part)
-		}
-	}
-	if oldChildren > newChildren || len(oldBranches) != len(newBranches) {
-		return false
-	}
-	for index := range oldBranches {
-		if oldBranches[index] != newBranches[index] {
-			return false
-		}
-	}
-	return true
-}
-
-// childDepth 返回结构路径中的连续 child 深度，用于选择插入节点后的最近候选。
-func childDepth(path string) int {
-	depth := 0
-	for _, part := range strings.Split(path, "/") {
-		if part == "child" {
-			depth++
-		}
-	}
-	return depth
 }
 
 // proxyTreeBranches 返回目标树的分支副本，避免排序改变目标读取事实的原始顺序。

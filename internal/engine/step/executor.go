@@ -222,6 +222,17 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		runRequest.LoadMode = runtimeexec.LoadModeInitiate
 	case model.ActionResubmit:
 		runRequest.LoadMode = runtimeexec.LoadModeEdit
+		// 重新发起弹窗的权限探测（checkFlowPermission 只带 flowProxyId）要求该 ID 能在目标
+		// 发起映射表（flow_form_scope_template/proxy）中查到；加签触发目标所有权复制后实例私有
+		// 代理不在其中，探测被「流程模板已被更新，请重新刷新页面，加载最新流程模板数据」拒绝，
+		// 页面随即中止、永远不发出 reSubmit（运行 8 实测）。新发起来源下计划绑定对象就是发布流程
+		// 代理（映射表中存在），装载行事实改用它——即目标报错自身要求的「最新流程模板」；真正的
+		// reSubmit 载荷由页面构造且不带 flowProxyId，后端按实例自身代理推进，不受此选择影响。
+		// 待发/已发来源下计划绑定对象是实例 ID，只能保持实例当前事实代理：实例未加签时
+		// 与发布代理一致可过探测，已加签实例的重新发起仍受目标映射表限制，如实保留阻塞。
+		if !strings.EqualFold(strings.TrimSpace(runCtx.Source), "pending") {
+			runRequest.FlowProxyID = runCtx.FlowProxyID
+		}
 	case model.ActionForward:
 		runRequest.LoadMode = runtimeexec.LoadModeForward
 		runRequest.ForwardCheckList = stringSliceParameter(step.Parameters, "forwardCheckList")
@@ -2129,7 +2140,9 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 		request.NodeProxyID = nodeProxyID
 	}
 	request.NodeProxyID = strings.TrimSpace(request.NodeProxyID)
-	request.FlowProxyTree, treeErr = target.AppendAddSignUsers(read.tree, request.NodeProxyID, request.UserIDs)
+	// 加签语义对齐目标平台手动加签：在当前节点之后插入加签审批节点（整棵树随 updateFlowProxy
+	// 发出），而不是把人员并入既有节点——后者不会产生新节点，目标「查看流程」看不到加签节点。
+	request.FlowProxyTree, treeErr = target.InsertAddSignNode(read.tree, request.NodeProxyID, request.UserIDs)
 	if treeErr != nil {
 		return session, treeErr
 	}
@@ -2569,9 +2582,10 @@ func parseAddSignWriteData(raw json.RawMessage) (string, string, error) {
 	return proxyID, nodeID, nil
 }
 
-// classifyAddSignReread 核对加签后的完整实例代理树是否真的持久化了本次人员明细。
-// updateFlowProxy 可能保持流程节点不变，不能只因响应带有代理标识就判成功；必须读回目标树，
-// 确认当前节点包含每个本次请求的人员，节点或人员缺失均按未变化处理。
+// classifyAddSignReread 核对加签后的完整实例代理树是否真的插入了本次加签审批节点。
+// updateFlowProxy 触发目标所有权复制后所有节点都会换新 ID，不能按写前节点 ID 回查；
+// 必须读回目标树，确认恰好一个节点以 personnel 明细包含每个本次请求的人员，
+// 零个说明未持久化，多个说明无法唯一证明，均按未变化/不可读处理。
 func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts, outcome StepOutcome) verdict.Reread {
 	if after.ReadError != "" {
 		return verdict.RereadUnreadable
@@ -2585,8 +2599,7 @@ func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext,
 		return verdict.RereadUnreadable
 	}
 	proxyID := firstNonEmpty(outcome.FlowProxyID, after.FlowProxyID, request.FlowProxyID, runCtx.FlowProxyID)
-	nodeID := firstNonEmpty(outcome.CurrentNodeProxyID, request.NodeProxyID)
-	if proxyID == "" || nodeID == "" {
+	if proxyID == "" {
 		return verdict.RereadUnreadable
 	}
 	account := strings.TrimSpace(session.Summary.Account)
@@ -2600,7 +2613,7 @@ func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext,
 	if err != nil {
 		return verdict.RereadUnreadable
 	}
-	updated, err := target.HasAddSignUsers(document, nodeID, request.UserIDs)
+	updated, err := target.HasAddSignNode(document, request.UserIDs)
 	if err != nil {
 		return verdict.RereadUnreadable
 	}

@@ -20,7 +20,8 @@ func (t remapTreeTarget) ReadProxyTree(context.Context, target.Session, string) 
 	return t.tree, nil
 }
 
-// TestBuildProxyRemapMapsThroughUniqueInsertedChild 验证插入异类型 child 后旧节点仍能唯一重绑定。
+// TestBuildProxyRemapMapsThroughUniqueInsertedChild 验证给出插入锚点后，锚点子链上的旧节点
+// 按插入后路径确定性重绑定，不会被新插入节点抢占。
 func TestBuildProxyRemapMapsThroughUniqueInsertedChild(t *testing.T) {
 	oldTree := &target.FlowNodeTemplate{
 		ID: "old-root", Type: "start",
@@ -39,12 +40,50 @@ func TestBuildProxyRemapMapsThroughUniqueInsertedChild(t *testing.T) {
 		Nodes:    map[string]NodeInfo{"approval": {TargetNodeID: "old-approve"}},
 	}
 
-	remap, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new")
+	remap, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new", "old-root")
 	if err != nil {
 		t.Fatalf("BuildProxyRemap() error = %v", err)
 	}
 	if got := remap.NodeIDs["old-approve"]; got != "new-approve" {
 		t.Fatalf("old approval mapped to %q, want new-approve", got)
+	}
+}
+
+// TestBuildProxyRemapSameTypeInsertionBindsByAnchor 验证同类型节点插入时必须依赖锚点：
+// 给出锚点后旧后继按插入后路径精确绑定，绝不会被新插入节点抢占（无锚点的精确匹配
+// 无法区分两者，因此控制层对加签重建强制要求锚点，见 control.go 的守卫）。
+func TestBuildProxyRemapSameTypeInsertionBindsByAnchor(t *testing.T) {
+	oldTree := &target.FlowNodeTemplate{
+		ID: "old-root", Type: "start",
+		Child: &target.FlowNodeTemplate{ID: "old-approve", Type: "common"},
+	}
+	newTree := &target.FlowNodeTemplate{
+		ID: "new-root", Type: "start",
+		Child: &target.FlowNodeTemplate{
+			ID: "new-sign", Type: "common",
+			Child: &target.FlowNodeTemplate{ID: "new-approve", Type: "common"},
+		},
+	}
+	executor := &Executor{target: remapTreeTarget{tree: newTree}}
+	runCtx := RunContext{
+		FlowTree: oldTree,
+		Nodes:    map[string]NodeInfo{"approval": {TargetNodeID: "old-approve"}},
+	}
+
+	remap, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new", "old-root")
+	if err != nil {
+		t.Fatalf("BuildProxyRemap() error = %v", err)
+	}
+	if got := remap.NodeIDs["old-approve"]; got != "new-approve" {
+		t.Fatalf("old approval mapped to %q, want new-approve", got)
+	}
+	// 锚点自身不平移：仍按原路径绑定到新树同位置节点。
+	if got := remap.NodeIDs["old-root"]; got != "new-root" {
+		t.Fatalf("old root mapped to %q, want new-root", got)
+	}
+	// 锚点不在旧树中时无法定位插入位置，必须拒绝。
+	if _, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new", "missing-anchor"); err == nil {
+		t.Fatal("BuildProxyRemap() with unknown anchor error = nil, want failure")
 	}
 }
 
@@ -73,7 +112,7 @@ func TestBuildProxyRemapRejectsDuplicateNodeIdentity(t *testing.T) {
 		Nodes:    map[string]NodeInfo{"approval": {TargetNodeID: "old-approve"}},
 	}
 
-	_, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new")
+	_, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new", "")
 	if err == nil || !strings.Contains(err.Error(), "结构不可证明") {
 		t.Fatalf("BuildProxyRemap() error = %v, want unprovable-structure failure", err)
 	}

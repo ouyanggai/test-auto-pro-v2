@@ -373,8 +373,8 @@ func TestF019AddSignVerifiesUpdatedProxyDocument(t *testing.T) {
 	if outcome.Verdict != string(verdict.OutcomeSucceeded) || targetFake.writeCalls != 1 {
 		t.Fatalf("加签应在写后代理树确认成功：outcome=%+v writes=%d", outcome, targetFake.writeCalls)
 	}
-	if verified, verifyErr := target.HasAddSignUsers(targetFake.request.FlowProxyTree, "node-current", []string{"user-add"}); verifyErr != nil || !verified {
-		t.Fatalf("发送的加签原子载荷没有追加目标人员：verified=%v err=%v", verified, verifyErr)
+	if verified, verifyErr := target.HasAddSignNode(targetFake.request.FlowProxyTree, []string{"user-add"}); verifyErr != nil || !verified {
+		t.Fatalf("发送的加签载荷没有插入包含目标人员的审批节点：verified=%v err=%v", verified, verifyErr)
 	}
 	if len(facts.attempts) != 1 || facts.attempts[0].Reread != string(verdict.RereadAdvanced) {
 		t.Fatalf("加签应记录代理树已更新的核验结论，attempts=%+v", facts.attempts)

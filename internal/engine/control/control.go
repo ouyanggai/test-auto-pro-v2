@@ -1081,7 +1081,22 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		if proxyID == "" {
 			proxyID = oldFlowProxyID
 		}
-		remap, remapErr := s.steps.RemapProxyTreeForRun(ctx, session.runCtx, proxyID)
+		// 加签重建现在会在写前当前节点之后插入新审批节点（对齐目标手动加签语义）：
+		// 重绑定必须知道插入锚点，才能把锚点子链上的旧节点整体平移一跳，而不是把
+		// 旧后继节点误绑到新插入节点上；锚点缺失时禁止绑定（宁可停步也不猜）。
+		// 非加签重建没有已知插入，锚点传空串按同构精确映射。
+		insertAnchor := ""
+		remapErr := error(nil)
+		if remapAfterAddSign {
+			insertAnchor = oldCurrentNodeID
+			if insertAnchor == "" {
+				remapErr = fmt.Errorf("加签重建缺少写前当前节点锚点，无法证明插入位置")
+			}
+		}
+		var remap step.ProxyRemap
+		if remapErr == nil {
+			remap, remapErr = s.steps.RemapProxyTreeForRun(ctx, session.runCtx, proxyID, insertAnchor)
+		}
 		if remapErr == nil && newCurrentNodeID != "" && session.preview != nil {
 			mappedCurrentID := remap.NodeIDs[oldCurrentNodeID]
 			if strings.TrimSpace(mappedCurrentID) != newCurrentNodeID {

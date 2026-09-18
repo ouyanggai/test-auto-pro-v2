@@ -419,6 +419,38 @@ func TestSaveDraftLoadModeFollowsMainInstance(t *testing.T) {
 	}
 }
 
+// TestResubmitLoadCarriesPublishedFlowProxy 验证重新发起装载的行事实使用计划绑定的发布流程代理：
+// 加签所有权复制后实例私有代理不在目标发起映射表中，权限探测会被「流程模板已被更新」拒绝，
+// 页面永远不发出 reSubmit（运行 8 实测）。待发/已发来源计划绑定的是实例 ID，保持实例事实代理。
+func TestResubmitLoadCarriesPublishedFlowProxy(t *testing.T) {
+	runner := &fakeRuntimeRunner{status: "success"}
+	executor := newExecutorForRouting(t, &recordingTarget{}, runner)
+	runCtx := runtimeRunCtx()
+	runCtx.Source = "new"
+	runCtx.FlowProxyID = "published-flow-proxy"
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	preview.Facts = step.InstanceFacts{Found: true, Status: "rejected", FlowProxyID: "instance-private-proxy"}
+
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionResubmit), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	request := runner.lastRequest()
+	if request.LoadMode != runtimeexec.LoadModeEdit {
+		t.Fatalf("重新发起应走待发编辑装载，实际 %q", request.LoadMode)
+	}
+	if request.FlowProxyID != "published-flow-proxy" {
+		t.Fatalf("重新发起装载应携带发布流程代理供权限探测通过，实际 %q", request.FlowProxyID)
+	}
+
+	// 待发/已发来源：计划绑定对象是实例 ID，装载行事实只能保持实例当前事实代理。
+	pendingCtx := runCtx
+	pendingCtx.Source = "pending"
+	pendingPreview := &step.StepPreview{ActorAccount: "actor-acct"}
+	pendingPreview.Facts = step.InstanceFacts{Found: true, Status: "rejected", FlowProxyID: "instance-private-proxy"}
+	executor.RunViaRuntimeForTest(context.Background(), pendingCtx, runtimeStep(model.ActionResubmit), target.Session{}, pendingPreview, step.ApprovedStep{Attempt: 1})
+	if got := runner.lastRequest().FlowProxyID; got != "instance-private-proxy" {
+		t.Fatalf("待发来源重新发起应保持实例事实代理，实际 %q", got)
+	}
+}
+
 // TestRuntimeApprovalRejectsShrunkFormBody 审批写后字段数少于页面写前快照时必须改判业务失败。
 func TestRuntimeApprovalRejectsShrunkFormBody(t *testing.T) {
 	view := &recordingTarget{taskID: "task-1", formData: map[string]any{"kept": 1}}
