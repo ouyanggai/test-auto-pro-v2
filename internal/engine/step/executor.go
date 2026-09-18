@@ -668,6 +668,16 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		action, reason, pendingName, diag := targetSkippedStepReason(runCtx, step, facts)
 		// 判定依据必须落 step.log：否则界面上「当前待办已经处理」无法解释实例究竟停在哪。
 		log.Phase("gate", step.Sequence, 1, "目标跳过判定："+diag)
+		// T7.2：路径上配置了写动作的节点不允许被跳过判定吞掉。
+		// 跳过只对「目标确实自动越过、本步无可执行动作」的节点成立；若本步带着用户配置的
+		// 写动作（来源=用户配置）而跳过判定要把它放行成跳过，那等于把用户明确要求的动作
+		// 静默丢弃，并让运行报告少一步真实执行——这正是第三轮复核 P0-1 关注的口径风险。
+		// 这里把跳过降级为阻塞，由人工确认目标事实，绝不静默丢动作。
+		if action == "skip" && step.Source == model.ActionStepSourceUser {
+			reason = fmt.Sprintf("本节点配置了动作「%s」，但目标跳过判定认为实例待办已越过本步（%s）；不允许把已配置的动作静默跳过，已阻塞本步请人工核对目标事实", actionName(step.Action), diag)
+			log.Phase("control", step.Sequence, 1, reason)
+			return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
+		}
 		switch action {
 		case "skip":
 			preview := &StepPreview{
