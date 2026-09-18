@@ -1767,7 +1767,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// 两边必须在同一键空间比较：CurrentNodes 是目标 nodeProxyId，预期节点必须取节点表反查出的
 		// TargetNodeID，拿编译场景的哈希键比较永远不相等，会把每一步都误判成偏离（评审 P1）。
 		// 判定保守：实例不可见、没有当前节点事实、或预期节点拿不到真实标识时不声称偏离。
-		if !outcome.NoMoreSteps {
+		// 加签会在控制层随后读取最新待办和代理树并整体重绑定节点；此处仍处于
+		// 重绑定前，旧配置节点 ID 与目标写后新节点 ID 不在同一事实空间，不能据此
+		// 判定路径偏离。若重绑定无法唯一证明，控制层会清空结构并强制停止放行。
+		if step.Action != model.ActionAddSign && !outcome.NoMoreSteps {
 			nextStep := runCtx.Steps[approved.NextIndex+1]
 			// 恢复链与系统导航本来就会跨越节点或回到前序节点，不能按“下一步必须仍在路径上”判定偏离；
 			// 普通用户步骤和固定尾动作仍做真实节点对照，真实分支偏离继续立即停止。

@@ -119,6 +119,7 @@ type addSignExecutionTarget struct {
 	*taskActionFactsTarget
 	beforeDocument json.RawMessage
 	afterDocument  json.RawMessage
+	afterView      *fakeTargetView
 	written        bool
 	writeCalls     int
 	request        target.ActionWriteRequest
@@ -137,6 +138,9 @@ func (t *addSignExecutionTarget) ExecuteActionWrite(_ context.Context, _ target.
 	t.writeCalls++
 	t.request = request
 	t.written = true
+	if t.afterView != nil {
+		t.fakeTarget.instance = *t.afterView
+	}
 	return target.WriteResponse{
 		StatusCode: 200, IsSuccess: true, IsSuccessPresent: true,
 		Data: json.RawMessage(`{"flowProxyId":"proxy-private","currentNodeProxyId":"node-current"}`),
@@ -374,5 +378,54 @@ func TestF019AddSignVerifiesUpdatedProxyDocument(t *testing.T) {
 	}
 	if len(facts.attempts) != 1 || facts.attempts[0].Reread != string(verdict.RereadAdvanced) {
 		t.Fatalf("加签应记录代理树已更新的核验结论，attempts=%+v", facts.attempts)
+	}
+}
+
+// TestF037AddSignProxyRebuildDoesNotTriggerPathDeviation 验证加签写后代理节点重建时，
+// 控制层尚未完成整树重绑定前不会拿旧节点 ID 误报路径偏离。
+func TestF037AddSignProxyRebuildDoesNotTriggerPathDeviation(t *testing.T) {
+	beforeDocument := json.RawMessage(`{"id":"proxy-private","flowNodeTemplate":{"id":"start","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]},"childFlowNodeTemplate":{"id":"node-current","flowNodeAuditConfig":{"flowNodeDetailConfigList":[{"bizId":"user-add","id":"user-add","auditDetailType":"personnel"}]}}}}`)
+	afterDocument := beforeDocument
+	targetFake := &addSignExecutionTarget{
+		taskActionFactsTarget: &taskActionFactsTarget{
+			fakeTarget: &fakeTarget{
+				instance:    fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-current"}, DueNodes: []string{"node-current"}},
+				flowProxyID: "proxy-private",
+			},
+			snapshot: target.TaskSnapshot{JobTaskID: "task-current", FlowNodeProxyID: "node-current", FlowProxyID: "proxy-private", TaskStatus: "pending"},
+			tree:     &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "node-current", Type: "common"}},
+		},
+		beforeDocument: beforeDocument,
+		afterDocument:  afterDocument,
+		afterView:      &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-rebuilt"}, DueNodes: []string{"node-rebuilt"}},
+	}
+	runCtx := newRunContext([]model.CompiledActionStep{
+		{Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: "node-audit"},
+		{Sequence: 2, Source: model.ActionStepSourceUser, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: "node-next"},
+	})
+	runCtx.Source = "pending"
+	runCtx.PathRun.MainInstanceRef = "instance-add-sign"
+	runCtx.FlowProxyID = "proxy-private"
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "当前审批", Type: "common", TargetNodeID: "node-current"}
+	runCtx.Nodes["node-next"] = step.NodeInfo{Name: "后续审批", Type: "common", TargetNodeID: "node-next-old"}
+	runCtx.ActionPersonIDs = map[string][]string{
+		step.ActionPersonIndex("node-audit", model.ActionAddSign): {"user-add"},
+	}
+	facts := &fakeFacts{}
+	executor := step.NewExecutor(targetFake, &fakeSessions{}, &fakeRunState{}, facts, fixedRunConfig(), nil)
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || !preview.GateAllowed {
+		t.Fatalf("加签前置事实应通过：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatalf("加签执行失败：%v", err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("加签应确定成功，实际 outcome=%+v", outcome)
+	}
+	if outcome.DeviationDetected {
+		t.Fatalf("加签后代理节点重建不应在旧 ID 比较阶段误报路径偏离：%+v", outcome)
 	}
 }

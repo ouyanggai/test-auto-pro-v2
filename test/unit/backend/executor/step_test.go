@@ -576,6 +576,38 @@ func TestF016SubmitHappyPath(t *testing.T) {
 	}
 }
 
+// TestF037OrdinaryActionStillDetectsPathDeviation 验证普通审批写后实际节点不在下一步配置路径时，
+// 仍然记录路径偏离，避免加签的 ID 重建例外扩大为全局放宽。
+func TestF037OrdinaryActionStillDetectsPathDeviation(t *testing.T) {
+	fakeTarget := &fakeTarget{
+		instance:   fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		dueTaskID:  "task-audit",
+		afterAudit: &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-other"}, DueNodes: nil},
+	}
+	runCtx := newRunContext([]model.CompiledActionStep{
+		approveStep(),
+		{Sequence: 3, Source: model.ActionStepSourceUser, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: "node-next"},
+	})
+	runCtx.PathRun.MainInstanceRef = "instance-9"
+	runCtx.Nodes["node-next"] = step.NodeInfo{Name: "后续审批", Type: "审批", TargetNodeID: "node-next"}
+	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || !preview.GateAllowed {
+		t.Fatalf("普通审批前置事实应通过：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatalf("普通审批执行失败：%v", err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("目标已前进时普通审批应确定成功，实际 outcome=%+v", outcome)
+	}
+	if !outcome.DeviationDetected {
+		t.Fatalf("普通审批实际节点偏离下一步配置时必须标记路径偏离：%+v", outcome)
+	}
+}
+
 // TestF016AuditUncertainStopsInAwaitingReconciliation 验证写结果不确定即停在待对账：
 // 审批返回成功声明但待办仍在（明确未变），结论必须是不确定，路径停止且无第二次写请求。
 func TestF016AuditUncertainStopsInAwaitingReconciliation(t *testing.T) {
