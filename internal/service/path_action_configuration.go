@@ -1009,6 +1009,13 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 			if _, allowed := autoExtraActionRanks[kind]; !allowed {
 				continue
 			}
+			// 加签会在目标代理树中插入一个需要审批的新节点（2026-09-19 夜间实测，运行 1 路径 1），
+			// 已编译场景无法自动为该节点补充审批步骤，路径必然在插入节点处安全停；这属于
+			// “不能安全编排”的动作，按 F-034 原则不进入一键配置候选，只保留人工配置入口。
+			if kind == model.ActionAddSign {
+				rejections = append(rejections, "加签：会在目标流程中插入需审批的新节点，自动编排无法补齐该节点的审批步骤，请人工配置")
+				continue
+			}
 			if !item.Enabled || item.SystemOnly || item.SystemInserted {
 				rejections = append(rejections, item.Label+"："+autoCandidateDisabledReason(item))
 				continue

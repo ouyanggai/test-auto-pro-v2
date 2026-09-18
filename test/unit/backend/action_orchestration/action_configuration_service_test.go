@@ -606,27 +606,42 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 	if !okFirst || firstUse.Action != model.ActionStorageFormData {
 		t.Fatalf("都没使用时仍按安全等级选暂存表单：first=%s", firstUse.Action)
 	}
-	// 同等级多样性：两个节点都只有加签/移交（等级 1）时，第二个节点选未用过的那个。
-	rankOneNode := func(key string) model.PathConfigNode {
+	// 加签不再进入一键配置候选：插入的新审批节点无法被自动编排（2026-09-19 夜间实测运行 1 路径 1），
+	// 即使目录候选完整也必须淘汰，且原因要指明人工配置入口。
+	signOnlyNode := func(key string) model.PathConfigNode {
 		return model.PathConfigNode{Key: key, Name: key, Kind: "common", Status: "pending",
 			ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
 				{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true,
 					Person: &model.PathConfigPerson{Key: key + ":add_sign", Title: "加签处理人", MinCount: 1, MaxCount: 1,
 						Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}},
 						Strategies: []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}}}},
+			}}}
+	}
+	_, _, okSign, signRejections := service.AutoExtraCandidatesForTest(41, 51, signOnlyNode("node-sign-only"), map[string]bool{})
+	if okSign {
+		t.Fatal("加签不应再被一键配置自动选中")
+	}
+	joinedRejections := strings.Join(signRejections, "；")
+	if !strings.Contains(joinedRejections, "加签") || !strings.Contains(joinedRejections, "人工配置") {
+		t.Fatalf("加签淘汰原因应说明插入节点与人工配置入口：%v", signRejections)
+	}
+	// 移交仍是等级一合法候选：目录完整时被选中，已使用时因无其他候选仍可选。
+	transferOnlyNode := func(key string) model.PathConfigNode {
+		return model.PathConfigNode{Key: key, Name: key, Kind: "common", Status: "pending",
+			ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
 				{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true, RequiresPerson: true,
 					Person: &model.PathConfigPerson{Key: key + ":transfer", Title: "移交处理人", MinCount: 1, MaxCount: 1,
 						Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}},
 						Strategies: []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}}}},
 			}}}
 	}
-	firstRankOne, _, okA, _ := service.AutoExtraCandidatesForTest(41, 51, rankOneNode("node-r1a"), map[string]bool{})
-	if !okA {
-		t.Fatal("等级一候选应存在")
+	firstRankOne, _, okA, _ := service.AutoExtraCandidatesForTest(41, 51, transferOnlyNode("node-r1a"), map[string]bool{})
+	if !okA || firstRankOne.Action != model.ActionTransfer {
+		t.Fatalf("移交候选应存在且被选中：first=%s ok=%v", firstRankOne.Action, okA)
 	}
-	secondRankOne, _, okB, _ := service.AutoExtraCandidatesForTest(41, 51, rankOneNode("node-r1b"), map[string]bool{string(firstRankOne.Action): true})
-	if !okB || secondRankOne.Action == firstRankOne.Action {
-		t.Fatalf("同等级内未使用动作应前置：first=%s second=%s", firstRankOne.Action, secondRankOne.Action)
+	secondRankOne, _, okB, _ := service.AutoExtraCandidatesForTest(41, 51, transferOnlyNode("node-r1b"), map[string]bool{string(firstRankOne.Action): true})
+	if !okB || secondRankOne.Action != model.ActionTransfer {
+		t.Fatalf("唯一安全候选即使已使用也应继续可选：second=%s ok=%v", secondRankOne.Action, okB)
 	}
 	// 需要人员的动作（如加签）在没有动作专属候选时不能自动配置，但暂存/不同意不受影响。
 	if person != nil {
@@ -634,23 +649,24 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 	}
 }
 
-// TestAutoNodeActionRequiresPersonCandidateFromActionCatalog 验证需要人员的候选（加签/移交）
-// 只有动作专属目录返回候选时才可接受，且生成的策略是动作私有键，不复用节点主处理人键。
+// TestAutoNodeActionRequiresPersonCandidateFromActionCatalog 验证需要人员的候选（移交）
+// 只有动作专属目录返回候选时才可接受，且生成的策略是动作私有键，不复用节点主处理人键；
+// 加签已按插入节点语义整体退出自动候选，无论目录是否完整（2026-09-19）。
 func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 	node := model.PathConfigNode{
 		Key: "node-sign", Name: "审批节点", Kind: "common", Status: "pending",
 		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
-			{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true,
-				Person: &model.PathConfigPerson{Key: "node-sign:add_sign", Title: "加签处理人", MinCount: 1, MaxCount: 1,
+			{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true, RequiresPerson: true,
+				Person: &model.PathConfigPerson{Key: "node-sign:transfer", Title: "移交处理人", MinCount: 1, MaxCount: 1,
 					Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}, {Label: "候选乙", Value: "candidate-b"}},
 					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}}}},
 		}},
 	}
 	action, person, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
-	if !ok || action.Action != model.ActionAddSign {
-		t.Fatalf("有完整动作专属候选时应选出加签：%+v ok=%v", action, ok)
+	if !ok || action.Action != model.ActionTransfer {
+		t.Fatalf("有完整动作专属候选时应选出移交：%+v ok=%v", action, ok)
 	}
-	if person == nil || person.Key != "node-sign:add_sign" || len(person.Selected) != 1 {
+	if person == nil || person.Key != "node-sign:transfer" || len(person.Selected) != 1 {
 		t.Fatalf("动作专属人员策略应基于动作私有键生成：%+v", person)
 	}
 
@@ -658,15 +674,33 @@ func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 	missing := model.PathConfigNode{
 		Key: "node-sign2", Name: "审批节点", Kind: "common", Status: "pending",
 		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
-			{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true},
+			{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true, RequiresPerson: true},
 		}},
 	}
 	_, _, okMissing, rejections := service.AutoExtraCandidatesForTest(41, 51, missing, map[string]bool{})
 	if okMissing {
-		t.Fatal("没有动作专属候选时不应接受加签")
+		t.Fatal("没有动作专属候选时不应接受移交")
 	}
-	if len(rejections) == 0 || !strings.Contains(strings.Join(rejections, "；"), "加签") {
-		t.Fatalf("淘汰原因应定位到加签：%v", rejections)
+	if len(rejections) == 0 || !strings.Contains(strings.Join(rejections, "；"), "移交") {
+		t.Fatalf("淘汰原因应定位到移交：%v", rejections)
+	}
+
+	// 加签即使目录完整也不再进入自动候选，淘汰原因指向人工配置入口。
+	fullSign := model.PathConfigNode{
+		Key: "node-sign3", Name: "审批节点", Kind: "common", Status: "pending",
+		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
+			{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true,
+				Person: &model.PathConfigPerson{Key: "node-sign3:add_sign", Title: "加签处理人", MinCount: 1, MaxCount: 1,
+					Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}, {Label: "候选乙", Value: "candidate-b"}},
+					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}}}},
+		}},
+	}
+	_, _, okSignFull, signRejections := service.AutoExtraCandidatesForTest(41, 51, fullSign, map[string]bool{})
+	if okSignFull {
+		t.Fatal("加签不应进入自动候选")
+	}
+	if !strings.Contains(strings.Join(signRejections, "；"), "人工配置") {
+		t.Fatalf("加签淘汰原因应指向人工配置：%v", signRejections)
 	}
 }
 
@@ -729,22 +763,22 @@ func TestAutoCandidatePersonValidationLockedWhenMinCountExceedsCatalog(t *testin
 	node := model.PathConfigNode{
 		Key: "node-short", Name: "会签节点", Kind: "common", Status: "pending",
 		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
-			{Kind: "add_sign", Scope: "task", Label: "加签", Enabled: true, RequiresPerson: true,
-				Person: &model.PathConfigPerson{Key: "node-short:add_sign", Title: "加签处理人", MinCount: 3, MaxCount: 4,
+			{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true, RequiresPerson: true,
+				Person: &model.PathConfigPerson{Key: "node-short:transfer", Title: "移交处理人", MinCount: 3, MaxCount: 4,
 					Options:    []model.PathConfigPersonOption{{Label: "候选甲", Value: "candidate-a"}, {Label: "候选乙", Value: "candidate-b"}},
 					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}, {Value: "manual", Label: "手动选择"}}}},
 		}},
 	}
 	action, person, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
-	if !ok || action.Action != model.ActionAddSign {
-		t.Fatalf("加签候选应生成（校验在接受阶段）：%+v ok=%v", action, ok)
+	if !ok || action.Action != model.ActionTransfer {
+		t.Fatalf("移交候选应生成（校验在接受阶段）：%+v ok=%v", action, ok)
 	}
 	if person == nil {
 		t.Fatal("应生成动作私有人员策略供接受阶段校验")
 	}
 	// 用模板目录复验：候选只有 2 人、模板要求至少 3 人，策略必须被淘汰（人数不足）。
 	personTarget := &analyzer.PathConfigPersonTarget{
-		Key: person.Key, Name: "加签处理人",
+		Key: person.Key, Name: "移交处理人",
 		CandidateTokens:   map[string]string{"candidate-a": "id-a", "candidate-b": "id-b"},
 		CandidateOrder:    []string{"id-a", "id-b"},
 		AllowedStrategies: map[string]bool{"random": true, "manual": true},
