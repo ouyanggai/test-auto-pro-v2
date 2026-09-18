@@ -1,5 +1,7 @@
 # F-036 夜间自主施工晨报（2026-09-16 23:00 ～ 2026-09-17 02:00）
 
+> 历史运行报告（不作为当前验收依据）。2026-09-18 用户已要求删除特殊真实测试，后续改由页面人工验证。
+
 > **2026-09-17 复核订正**：本报告的多项结论性表述已被第二轮复核证伪，以
 > `docs/auto/2026-09-17-f036-round2-unified-native-execution-repair-task.md` §2.1 与
 > `docs/features/F-036-independent-executor-native-page.md` 第二轮记录为准。要点：

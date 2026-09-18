@@ -1,22 +1,10 @@
 # 当前进度
 
-- 2026-09-18 F-036 第二轮收口（状态保持 **implementing**，唯一遗留待用户裁决）。浏览器页面实际创建
-  计划 `T-AUTO-F036R2-请假单-单路径`（骆蒙恩+员工请假单·智慧斯能），强制真实 L1 全过；单路径运行
-  run 2 20/20 步全部成功（保存草稿×2 同实例 → 重新提交 → 同意×11 含选择闭环），2 分 17 秒跑完；
-  多路径运行 run 3 一次启动路径 1+路径 4 串行全部完成。运行中发现并修复真实缺陷：处理人=计划账号
-  本人时 runtime 请求缺 accountKey 被执行服务 400 拒绝（提交 616dbf2，带回归用例）。
-  L2 单动作四件套证据补齐七动作（submit/storage/approve/reject/forward，证据在
-  `docs/auto/evidence-round2/`），通道全程复用零替换，审批写后表单字段数 29→29 未清空；
-  `bash test/run-executor-service.sh` 全绿。无表单真实写运行为唯一遗留：装载/配置/数据绑定已验证，
-  真实写阻塞于目标页面必填附件（自动化无法上传）与目标页面「导入最近一次数据」在无历史数据账号
-  上崩溃（kpiList 空指针，目标页面自身缺陷），已按用户协议登记待裁决。
-  工具 UI 两处待修已登记：配置页基础数据弹窗残留不可见遮罩需刷新解除；表单数据面板数字输入框
-  键入值不进模型（本轮经 runtime setData 通道绕过）。本轮晨报见
-  `docs/auto/2026-09-18-f036-round2-run-report.md`。
-- 2026-09-18 F-036 第三轮继续实施，状态仍为 **implementing**：服务端将页面写后快照改为
-  `pageFormAfter/pageFieldCountAfter`，`formAfter/fieldCountAfter` 仅由 Go 目标重读写入；聚合门禁的
-  真实动作台逐个调用 `TestF036RealActionLoop`，不再用动作键覆盖冒充执行；配置页基础数据选择器在关闭或离开表单面板时销毁；补充工具流程名恢复回归测试。
-  本轮尚未具备目标环境下的七动作真实证据、无表单真实写入和从空数据的完整 G1-G8 证据，不得进入 `ready_for_manual`。
+- 2026-09-18 F-036 按用户要求进入 **ready_for_manual**：删除目标账号、固定模板/实例 ID、动作变量和
+  真实写动作台；删除 `real_load_loop_test.go`、`real_action_loop_test.go` 与 `f036-real-action-bench.mjs`。
+  `test/run-executor-service.sh` 现在只运行本地类型检查、构建、执行服务单元/集成、Go 契约和路由检查，
+  不加载 `.env.local`，不连接目标平台，不自动启动浏览器。`RUNTIME_EXECUTOR_URL` 仍是正式 Go 服务连接
+  独立执行服务的运行时配置，不是页面测试参数。后续由用户从页面创建/选择真实计划并手工运行，记录问题后再规划修复。
 - 2026-09-17 F-036 第二轮修复按用户要求暂停，状态保持 **implementing**。已完成代码主体：通道单连接复用、
   接口终局判据、多次草稿 edit 模式、列表页原生转发与两笔写顺序门禁、所有原生渲染类型统一 runtime 路由、
   表单正文写前快照/写后回读保护；已通过 TypeScript 类型检查、执行服务测试 73/73、runtime Go 契约与单测。
