@@ -71,6 +71,36 @@ func TestAddSignInsertedNodeSurvivesProjection(t *testing.T) {
 	if !foundInserted {
 		t.Fatalf("投影结果里没有加签插入节点（proxy-inserted），节点列表：%+v", projectedIDs(projected))
 	}
+	// 画布入口必须是结构根（发起人节点），不是目标运行态返回的「当前节点」：否则前端从中段节点
+	// BFS 覆盖不到全图，会判定动态图不可用并回退静态计划图，加签节点随之消失（复现 run33 症状）。
+	if len(projected.EntryNodeIDs) != 1 || projected.EntryNodeIDs[0] != "plan-root" {
+		t.Fatalf("投影入口应为结构根 plan-root，实际 %+v", projected.EntryNodeIDs)
+	}
+	// 从入口出发必须能走到每一个投影节点（含加签插入节点），否则前端 BFS 覆盖不全。
+	incoming := map[string]bool{}
+	for _, e := range projected.Edges {
+		incoming[e.Target] = true
+	}
+	reach := map[string]bool{}
+	queue := append([]string{}, projected.EntryNodeIDs...)
+	adj := map[string][]string{}
+	for _, e := range projected.Edges {
+		adj[e.Source] = append(adj[e.Source], e.Target)
+	}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		if reach[n] {
+			continue
+		}
+		reach[n] = true
+		queue = append(queue, adj[n]...)
+	}
+	for _, node := range projected.Nodes {
+		if !reach[node.ID] {
+			t.Fatalf("投影入口无法到达节点 %s（%s），前端画布会判定动态图不可用", node.ID, node.Name)
+		}
+	}
 }
 
 func projectedIDs(graph model.FlowGraph) []string {

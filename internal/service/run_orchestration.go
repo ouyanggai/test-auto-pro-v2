@@ -1422,7 +1422,6 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph, insertedNode
 		}
 	}
 	projected := dynamicGraph
-	projected.EntryNodeIDs = remapGraphIDs(dynamicGraph.EntryNodeIDs, dynamicToProjected)
 	projected.Nodes = make([]model.FlowGraphNode, 0, len(dynamicGraph.Nodes))
 	seen := map[string]bool{}
 	for _, node := range dynamicGraph.Nodes {
@@ -1443,7 +1442,33 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph, insertedNode
 		edge.ID = strings.Join([]string{edge.Source, edge.Target, edge.Kind, edge.BranchID}, "|")
 		projected.Edges = append(projected.Edges, edge)
 	}
+	// 运行画布的入口必须是流程结构根（发起人节点），不能沿用目标运行态返回的「当前节点」。
+	// 目标 FindSubmittedFlow 把 currentNodes（实例此刻停在哪）当作 entryNodeIDs 返回，那是流程中段
+	// 的节点；前端 isUsableRunGraph 从 entryNodeIDs 做 BFS 要求覆盖全图，从中段节点出发到不了上游，
+	// 于是判为「不可用」并悄悄回退静态计划图——加签插入的节点就此在画布上消失（实测 run33：
+	// entry=当前节点，BFS 只覆盖 26 个节点里的 18 个）。这里改用「无入边的结构根」，与静态计划图口径一致。
+	projected.EntryNodeIDs = graphRootIDs(projected.Nodes, projected.Edges)
 	return projected, true
+}
+
+// graphRootIDs 返回结构图里没有任何入边的根节点（发起人节点）。正常流程树只有一个根；
+// 返回全部无入边节点，交由前端布局按「恰好一个根」校验，绝不猜测或补造根。
+func graphRootIDs(nodes []model.FlowGraphNode, edges []model.FlowGraphEdge) []string {
+	incoming := make(map[string]struct{}, len(edges))
+	for _, edge := range edges {
+		incoming[strings.TrimSpace(edge.Target)] = struct{}{}
+	}
+	roots := make([]string, 0, 1)
+	for _, node := range nodes {
+		id := strings.TrimSpace(node.ID)
+		if id == "" {
+			continue
+		}
+		if _, hasIncoming := incoming[id]; !hasIncoming {
+			roots = append(roots, id)
+		}
+	}
+	return roots
 }
 
 // graphNodeTypeByID 返回结构图节点 ID 到类型的映射，供容错绑定时校验类型一致。
