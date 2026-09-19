@@ -1303,7 +1303,9 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	// 「已发」currentAuditUserInfo 发现新的当前处理人并切换当前处理人——原步重跑。每次重跑都是
 	// 独立七阶段、独立落账的一次尝试（一次尝试仍最多一次写请求）。竞签节点一人审批后
 	// 实例前进，循环自然退出。上限取场景步数，防御数据异常导致的死循环。
-	if session.preview.Action == model.ActionApprove && !outcome.NoMoreSteps && !outcome.DeviationDetected {
+	// 被跳过的步骤（如取回准备同意在已有已办时跳过）不发写请求、实例本就停在本节点，绝不能进入
+	// 会签重跑——否则会对同一步反复「跳过」直到上限（实测取回前的准备同意被反复跳过打转）。
+	if session.preview.Action == model.ActionApprove && !session.preview.TargetSkipped && !outcome.NoMoreSteps && !outcome.DeviationDetected {
 		for extra := 0; extra < len(session.runCtx.Steps); extra++ {
 			still, probeErr := s.steps.InstanceStillAtStepNode(ctx, session.runCtx, session.runCtx.Steps[session.nextIndex])
 			if probeErr != nil || !still {
