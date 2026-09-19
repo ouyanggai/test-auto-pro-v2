@@ -606,8 +606,7 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 	if !okFirst || firstUse.Action != model.ActionStorageFormData {
 		t.Fatalf("都没使用时仍按安全等级选暂存表单：first=%s", firstUse.Action)
 	}
-	// 加签不再进入一键配置候选：插入的新审批节点无法被自动编排（2026-09-19 夜间实测运行 1 路径 1），
-	// 即使目录候选完整也必须淘汰，且原因要指明人工配置入口。
+	// 目录完整时加签必须保留在候选中；动态插入节点由后续运行切片负责写后编排。
 	signOnlyNode := func(key string) model.PathConfigNode {
 		return model.PathConfigNode{Key: key, Name: key, Kind: "common", Status: "pending",
 			ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
@@ -617,13 +616,18 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 						Strategies: []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}}}},
 			}}}
 	}
-	_, _, okSign, signRejections := service.AutoExtraCandidatesForTest(41, 51, signOnlyNode("node-sign-only"), map[string]bool{})
-	if okSign {
-		t.Fatal("加签不应再被一键配置自动选中")
+	signAction, signPerson, okSign, signRejections := service.AutoExtraCandidatesForTest(41, 51, signOnlyNode("node-sign-only"), map[string]bool{})
+	if !okSign || signAction.Action != model.ActionAddSign || signPerson == nil {
+		t.Fatalf("目录完整时加签应进入一键配置候选：action=%+v person=%+v rejections=%v", signAction, signPerson, signRejections)
 	}
-	joinedRejections := strings.Join(signRejections, "；")
-	if !strings.Contains(joinedRejections, "加签") || !strings.Contains(joinedRejections, "人工配置") {
-		t.Fatalf("加签淘汰原因应说明插入节点与人工配置入口：%v", signRejections)
+	// 取回同样保留在候选中；已办任务和取回后的游标复验由运行切片在编译/执行阶段裁决。
+	retrieveNode := model.PathConfigNode{Key: "node-retrieve", Name: "取回节点", Kind: "common", Status: "pending",
+		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
+			{Kind: "retrieve", Scope: "completed_task", Label: "取回", Enabled: true},
+		}}}
+	retrieveAction, _, okRetrieve, retrieveRejections := service.AutoExtraCandidatesForTest(41, 51, retrieveNode, map[string]bool{})
+	if !okRetrieve || retrieveAction.Action != model.ActionRetrieve {
+		t.Fatalf("目录完整时取回应进入一键配置候选：action=%+v rejections=%v", retrieveAction, retrieveRejections)
 	}
 	// 移交仍是等级一合法候选：目录完整时被选中，已使用时因无其他候选仍可选。
 	transferOnlyNode := func(key string) model.PathConfigNode {
@@ -651,7 +655,7 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 
 // TestAutoNodeActionRequiresPersonCandidateFromActionCatalog 验证需要人员的候选（移交）
 // 只有动作专属目录返回候选时才可接受，且生成的策略是动作私有键，不复用节点主处理人键；
-// 加签已按插入节点语义整体退出自动候选，无论目录是否完整（2026-09-19）。
+// 加签与移交一样，必须使用动作专属人员目录；完整目录时进入候选。
 func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 	node := model.PathConfigNode{
 		Key: "node-sign", Name: "审批节点", Kind: "common", Status: "pending",
@@ -695,12 +699,9 @@ func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}}}},
 		}},
 	}
-	_, _, okSignFull, signRejections := service.AutoExtraCandidatesForTest(41, 51, fullSign, map[string]bool{})
-	if okSignFull {
-		t.Fatal("加签不应进入自动候选")
-	}
-	if !strings.Contains(strings.Join(signRejections, "；"), "人工配置") {
-		t.Fatalf("加签淘汰原因应指向人工配置：%v", signRejections)
+	signAction, signPerson, okSignFull, signRejections := service.AutoExtraCandidatesForTest(41, 51, fullSign, map[string]bool{})
+	if !okSignFull || signAction.Action != model.ActionAddSign || signPerson == nil {
+		t.Fatalf("完整加签目录应进入自动候选：action=%+v person=%+v rejections=%v", signAction, signPerson, signRejections)
 	}
 }
 
