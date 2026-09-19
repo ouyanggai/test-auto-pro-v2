@@ -812,7 +812,11 @@ func (s *Service) ApproveWithCommandAsync(ctx context.Context, pathRunID uint64,
 // 游标所指步骤已经执行成功而下一步预览尚未建出来时（常见于目标结构读取瞬断），
 // 再次放行会把同一步再跑一遍：写步骤重复写、只读步骤重复落账虚增进度，都必须拒绝。
 func StepReReleaseGuard(command model.ControlCommand, executedStepNos map[int]bool, cursor int) error {
-	if command == model.CommandStep && executedStepNos[cursor] {
+	// 任何放行命令（单步/执行到下一节点/继续运行）都不得对「游标所指且已落账成功」的步骤再跑一遍：
+	// 之前只拦 step 命令，导致加签这类停在原游标（写后重绑定停机或下一步预览未建出）的场景，
+	// 再来一次 continue 就把同一步的写请求重复发出（实测重复加签插入了第二个审核人节点）。
+	// 正常连续放行时游标已前移到未执行步骤，executedStepNos[cursor] 为假，不会误拦。
+	if executedStepNos[cursor] {
 		return ErrStepAlreadyExecuted
 	}
 	return nil
