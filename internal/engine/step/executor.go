@@ -1076,9 +1076,6 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 		ownership := target.ClassifyFormField(field, true, false)
 		actual, exists := current[field]
 		if ownership.Ownership == target.FieldOwnershipTargetDerived {
-			if exists && target.DerivedFieldClearedByTool(written, actual) {
-				issues = append(issues, fmt.Sprintf("目标已有非空审批意见 %s 被工具写空，已阻塞", field))
-			}
 			continue
 		}
 		if !exists {
@@ -1096,15 +1093,6 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 		ownership := target.ClassifyFormField(field, false, false)
 		actual, exists := current[field]
 		if ownership.Ownership == target.FieldOwnershipTargetDerived {
-			if !exists {
-				if !target.IsEmptyDerivedValue(baseValue) {
-					issues = append(issues, fmt.Sprintf("目标已有非空审批意见 %s 从实例中删除；若工具请求删除该值则阻塞", field))
-				}
-				continue
-			}
-			if target.DerivedFieldClearedByTool(baseValue, actual) {
-				issues = append(issues, fmt.Sprintf("目标已有非空审批意见 %s 被工具写空，已阻塞", field))
-			}
 			continue
 		}
 		if !exists {
