@@ -1370,12 +1370,23 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph) (model.FlowG
 		}
 		dynamicIDByPath[path] = id
 	}
+	// 节点类型用于容错绑定时的一致性校验，避免把类型不同的节点错绑。
+	staticType := graphNodeTypeByID(staticGraph)
+	dynamicType := graphNodeTypeByID(dynamicGraph)
 	dynamicToProjected := make(map[string]string, len(dynamicPaths))
+	usedDynamic := make(map[string]bool, len(dynamicPaths))
 	for staticID, path := range staticPaths {
 		dynamicID := dynamicIDByPath[path]
 		if strings.TrimSpace(dynamicID) == "" {
-			return dynamicGraph, false
+			// 加签会在锚点之后插入新节点，使其后子链的结构路径整体多出一段；精确路径匹配不到时，
+			// 尝试「去掉一段后与静态路径一致、类型相同、且唯一未占用」的动态节点（即加签位移后的对应
+			// 节点），这样运行画布能画出加签后的最新结构，插入节点作为动态节点单独展示。
+			dynamicID = uniqueShiftedDynamicMatch(path, staticType[staticID], dynamicPaths, dynamicType, usedDynamic)
+			if strings.TrimSpace(dynamicID) == "" {
+				return dynamicGraph, false
+			}
 		}
+		usedDynamic[dynamicID] = true
 		dynamicToProjected[dynamicID] = staticID
 	}
 	for dynamicID := range dynamicPaths {
@@ -1406,6 +1417,64 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph) (model.FlowG
 		projected.Edges = append(projected.Edges, edge)
 	}
 	return projected, true
+}
+
+// graphNodeTypeByID 返回结构图节点 ID 到类型的映射，供容错绑定时校验类型一致。
+func graphNodeTypeByID(graph model.FlowGraph) map[string]string {
+	result := make(map[string]string, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		result[strings.TrimSpace(node.ID)] = strings.TrimSpace(node.Type)
+	}
+	return result
+}
+
+// uniqueShiftedDynamicMatch 在动态图里找「结构路径去掉一段后与 staticPath 一致、类型相同、且唯一未占用」
+// 的节点：加签在锚点之后插入新节点，会让其后子链的每个节点的结构路径整体多出一段，用它把位移后的
+// 节点对应回计划节点。命中不唯一或类型不符时返回空串，绝不猜测（宁可退回只读静态图）。
+func uniqueShiftedDynamicMatch(staticPath, staticType string, dynamicPaths, dynamicType map[string]string, used map[string]bool) string {
+	staticTokens := strings.Split(staticPath, "/")
+	match := ""
+	for dynamicID, dynamicPath := range dynamicPaths {
+		if used[dynamicID] {
+			continue
+		}
+		if strings.TrimSpace(dynamicType[dynamicID]) != strings.TrimSpace(staticType) {
+			continue
+		}
+		if !pathIsOneSegmentSuperset(strings.Split(dynamicPath, "/"), staticTokens) {
+			continue
+		}
+		if match != "" {
+			// 命中多个，无法唯一证明位移对应关系。
+			return ""
+		}
+		match = dynamicID
+	}
+	return match
+}
+
+// pathIsOneSegmentSuperset 判断 dynamicTokens 去掉恰好一段后是否等于 staticTokens。
+func pathIsOneSegmentSuperset(dynamicTokens, staticTokens []string) bool {
+	if len(dynamicTokens) != len(staticTokens)+1 {
+		return false
+	}
+	for skip := range dynamicTokens {
+		ok := true
+		for i, j := 0, 0; i < len(dynamicTokens); i++ {
+			if i == skip {
+				continue
+			}
+			if dynamicTokens[i] != staticTokens[j] {
+				ok = false
+				break
+			}
+			j++
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 // flowGraphStructuralPaths 为结构图生成不依赖节点名称和业务 ID 的拓扑路径。
