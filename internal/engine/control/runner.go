@@ -71,7 +71,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 		manualControl := session.mode == model.RunModeManual
 		facts := StepFacts{
 			StepNo: preview.StepNo, NodeKey: preview.NodeKey, Action: string(preview.Action),
-			IsWriteStep: preview.Endpoint != "", DeviationHit: session.deviationStalled,
+			IsWriteStep: preview.Endpoint != "", DeviationHit: session.pathDeviationHit,
 		}
 		// 断点集合只能在控制锁内读取；命中结果复制到局部变量后再做数据库写入。
 		hits := EvaluateBreakpointHits(facts, session.breakpoints)
@@ -128,6 +128,7 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 				// 路径偏离强制停止：不产出放行类命令（后续步骤在偏离后的结构上不成立）。
 				s.mu.Lock()
 				session.deviationStalled = true
+				session.pathDeviationHit = true
 				session.stopReason = "路径偏离：" + primary.Reason + "；后续步骤不提供放行，只能停止或查看"
 				s.mu.Unlock()
 				s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{

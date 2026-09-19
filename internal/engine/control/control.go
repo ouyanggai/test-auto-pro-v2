@@ -88,8 +88,13 @@ type activeStep struct {
 	// pauseRequested/stopRequested 是已落事实、待阶段 3 生效的请求。
 	pauseRequested bool
 	stopRequested  bool
-	// deviationStalled 表示路径偏离断点已强制停止：不产出放行类命令。
+	// deviationStalled 表示已强制停止、不再产出放行类命令的会话事实；来源包括真实路径偏离、
+	// 加签重绑定失败和加签插入独立审批节点。它只决定「是否还能放行」，不代表偏离本身。
 	deviationStalled bool
+	// pathDeviationHit 专指「写后核验认定的真实路径偏离」（实际命中分支与已配置路径不一致）。
+	// 它与 deviationStalled 分开：加签重绑定失败/插入节点等停机也会置 deviationStalled，但那不是
+	// 路径偏离，绝不能触发路径偏离断点，也不能把「加签重绑定失败」的准确原因覆写成「路径偏离」。
+	pathDeviationHit bool
 	// pendingMode 是已落事实、待安全边界（当前步走完核验与落账）生效的模式切换请求。
 	// nil 表示没有待生效的切换；切换只影响当前路径运行，绝不暗中改变其他路径。
 	pendingMode *model.RunMode
@@ -1179,6 +1184,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	if outcome.DeviationDetected {
 		s.mu.Lock()
 		session.deviationStalled = true
+		session.pathDeviationHit = true
 		s.mu.Unlock()
 		_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 			RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
@@ -1275,6 +1281,8 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	s.mu.Unlock()
 	if outcome.DeviationDetected {
 		s.mu.Lock()
+		session.deviationStalled = true
+		session.pathDeviationHit = true
 		session.stopReason = "路径偏离：实际命中分支与已配置路径不一致，后续步骤不再提供放行，只能停止或查看"
 		s.mu.Unlock()
 	}
