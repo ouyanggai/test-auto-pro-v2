@@ -198,30 +198,16 @@ func (s *Service) logRemapFailure(pathRunID uint64, session *activeStep, reason 
 // 模式在其边界等待放行（受控），自动模式自动推进；处理人/会签由执行器按插入节点自身的真实待办解析，
 // 与其他节点一致。编译期无法预知这些节点，只能在写后按最新代理树注入。返回注入的步骤数。
 func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeIDs []string) int {
-	if session == nil || len(insertedNodeIDs) == 0 {
+	if session == nil || session.preview == nil || len(insertedNodeIDs) == 0 {
 		return 0
 	}
-	steps := session.runCtx.Steps
-	insertAt := session.nextIndex + 1
-	if insertAt < 0 {
-		insertAt = 0
-	}
-	if insertAt > len(steps) {
-		insertAt = len(steps)
-	}
-	// 插入位置必须在「锚点节点自身的审批步骤」之后：加签只是在当前节点后插入新节点，实例仍停在
-	// 锚点节点（协同/审批），要等锚点节点被同意后待办才落到插入节点。若把插入节点的同意排在锚点
-	// 同意之前，执行器在插入节点上读不到待办。锚点节点的固定尾同意与加签步骤同 NodeKey，跳过它们。
-	if session.preview != nil {
-		anchorKey := session.preview.NodeKey
-		for insertAt < len(steps) && steps[insertAt].NodeKey == anchorKey {
-			insertAt++
-		}
-	}
+	anchorKey := session.preview.NodeKey
 	if session.runCtx.Nodes == nil {
 		session.runCtx.Nodes = map[string]step.NodeInfo{}
 	}
-	injected := make([]model.CompiledActionStep, 0, len(insertedNodeIDs))
+	// 为每个加签插入节点登记语义节点信息（幂等）；插入节点的合成键便于识别，避免重复注入。
+	insertedKeys := make([]string, 0, len(insertedNodeIDs))
+	insertedSet := make(map[string]bool, len(insertedNodeIDs))
 	for _, nodeID := range insertedNodeIDs {
 		nodeID = strings.TrimSpace(nodeID)
 		if nodeID == "" {
@@ -229,29 +215,55 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 		}
 		nodeKey := "add-sign-inserted-" + nodeID
 		session.runCtx.Nodes[nodeKey] = step.NodeInfo{Name: "加签审批节点", Type: "common", TargetNodeID: nodeID}
-		injected = append(injected, model.CompiledActionStep{
-			Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
-			ReleaseGroup:    fmt.Sprintf("add-sign-inserted-%d", len(injected)+1),
-			ReleaseRequired: true,
-			Precondition:    "加签在当前节点之后新增的审批节点：按该节点自身的真实待办和处理人审批",
-			ExpectedEffect:  "插入的加签审批节点处理完成后，实例沿目标真实路径继续",
-			StopOnFailure:   "该插入节点无真实待办或处理人不可解析时停止，不猜测人员",
-			RecoveryPolicy:  "重新读取实例最新代理树、当前待办和处理人", ReloadRequired: true,
-		})
+		insertedKeys = append(insertedKeys, nodeKey)
+		insertedSet[nodeKey] = true
 	}
-	if len(injected) == 0 {
+	if len(insertedKeys) == 0 {
 		return 0
 	}
-	newSteps := make([]model.CompiledActionStep, 0, len(steps)+len(injected))
-	newSteps = append(newSteps, steps[:insertAt]...)
-	newSteps = append(newSteps, injected...)
-	newSteps = append(newSteps, steps[insertAt:]...)
+	group := 0
+	insertedApprovals := func() []model.CompiledActionStep {
+		out := make([]model.CompiledActionStep, 0, len(insertedKeys))
+		for _, nodeKey := range insertedKeys {
+			group++
+			out = append(out, model.CompiledActionStep{
+				Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
+				ReleaseGroup:    fmt.Sprintf("add-sign-inserted-%d", group),
+				ReleaseRequired: true,
+				Precondition:    "加签在当前节点之后新增的审批节点：按该节点自身的真实待办和处理人审批",
+				ExpectedEffect:  "插入的加签审批节点处理完成后，实例沿目标真实路径继续",
+				StopOnFailure:   "该插入节点无真实待办或处理人不可解析时停止，不猜测人员",
+				RecoveryPolicy:  "重新读取实例最新代理树、当前待办和处理人", ReloadRequired: true,
+			})
+		}
+		return out
+	}
+	// 锚点节点每一次「同意」之后，实例都会流转到加签插入节点——不仅是正向固定尾同意，也包括
+	// 不同意/回退后恢复链重走时对锚点的再次同意。必须在每一次锚点同意之后补一次插入节点同意，
+	// 否则恢复重走会卡在加签节点：下一条恢复步骤指向别的节点，读到「当前待办已经处理」而停住。
+	steps := session.runCtx.Steps
+	newSteps := make([]model.CompiledActionStep, 0, len(steps)+len(insertedKeys)*2)
+	injectedCount := 0
+	for i := range steps {
+		newSteps = append(newSteps, steps[i])
+		isAnchorApprove := steps[i].Action == model.ActionApprove && steps[i].NodeKey == anchorKey
+		nextIsAnchorApprove := i+1 < len(steps) && steps[i+1].Action == model.ActionApprove && steps[i+1].NodeKey == anchorKey
+		nextIsInserted := i+1 < len(steps) && insertedSet[steps[i+1].NodeKey]
+		if isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted {
+			approvals := insertedApprovals()
+			newSteps = append(newSteps, approvals...)
+			injectedCount += len(approvals)
+		}
+	}
+	if injectedCount == 0 {
+		return 0
+	}
 	// 重新编号保持 StepNo 连续且不与已落账步骤冲突：插入点之前的已执行步骤位置不变、编号不变。
 	for i := range newSteps {
 		newSteps[i].Sequence = i + 1
 	}
 	session.runCtx.Steps = newSteps
-	return len(injected)
+	return injectedCount
 }
 
 // logFact 把控制事实同步写一行 control.log（日志失败不影响事实落库）。
