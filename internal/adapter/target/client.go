@@ -609,7 +609,11 @@ func auditHandlerInfo(data json.RawMessage) []NodeCurrentHandler {
 	var nodes map[string]struct {
 		AuditType string   `json:"auditType"`
 		BizIds    []string `json:"bizIds"`
-		UserList  []struct {
+		// UserIds 是 assign 类节点（含手动加签插入的审批节点）承载真实处理人用户 ID 的字段：
+		// 实测加签节点的 currentAuditUserInfo 里 bizIds/userList 为空，真实处理人只在 userIds 里，
+		// 只读 bizIds 会解析不出人（“当前处理人未能解析出登录账号”），后续待办与审批都无从进行。
+		UserIds  []string `json:"userIds"`
+		UserList []struct {
 			Name  string `json:"name"`
 			Phone string `json:"phone"`
 		} `json:"userList"`
@@ -624,8 +628,18 @@ func auditHandlerInfo(data json.RawMessage) []NodeCurrentHandler {
 			continue
 		}
 		handler := NodeCurrentHandler{NodeID: id, AuditType: strings.TrimSpace(info.AuditType)}
-		for _, bizID := range info.BizIds {
-			if trimmed := strings.TrimSpace(bizID); trimmed != "" {
+		// bizIds 与 userIds 语义相同（目标真实用户 ID），合并去重后统一按用户 ID 解析登录账号。
+		seenID := make(map[string]struct{})
+		for _, source := range [][]string{info.BizIds, info.UserIds} {
+			for _, bizID := range source {
+				trimmed := strings.TrimSpace(bizID)
+				if trimmed == "" {
+					continue
+				}
+				if _, exists := seenID[trimmed]; exists {
+					continue
+				}
+				seenID[trimmed] = struct{}{}
 				handler.BizIDs = append(handler.BizIDs, trimmed)
 			}
 		}
