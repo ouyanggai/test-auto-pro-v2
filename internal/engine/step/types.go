@@ -262,6 +262,11 @@ type InstanceFacts struct {
 	CompletedTaskParentID string `json:"completedTaskParentId,omitempty"`
 	CompletedTaskBatchNo  string `json:"completedTaskBatchNo,omitempty"`
 	CompletedTaskAuditWay string `json:"completedTaskAuditWay,omitempty"`
+	// CompletedTaskExecutorID 是取回节点最近一次「通过」审核记录的执行人（executorId）。
+	// 目标 saveRetrieveProcess 硬性要求取回人必须是该办结节点的审批人（executorId 必须匹配），
+	// 否则报「当前办结节点不是该用户审批,请使用正确的用户操作」。取回写请求必须以该处理人身份发出，
+	// 不能用计划账号/发起人顶替（用户裁决：这个节点的人同意以后，再由这个人取回）。
+	CompletedTaskExecutorID string `json:"completedTaskExecutorId,omitempty"`
 	// CompletedTaskBasis 是「当前处理人已办」这项核验依据的语义分型（第三轮复核 P0-4）。
 	//
 	// 为什么必须分型：CompletedTaskRead/CompletedTaskFound 这对布尔只能表达

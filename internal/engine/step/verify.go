@@ -349,15 +349,29 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if auditErr != nil {
 			return session, auditErr
 		}
+		retrieveNodeID := strings.TrimSpace(nodeID)
 		for _, record := range records {
 			if record.FlowJobTaskID == facts.CompletedTaskLinkID && strings.EqualFold(record.AuditStatus, "retrieve") {
 				facts.RetrieveAlreadyUsed = true
+			}
+			// 取回节点最近一次「通过」的审批人：取回写请求必须以该处理人身份发出，目标据 executorId 校验归属。
+			// 审核记录按时间返回，同节点多条时后写覆盖=取最近一次通过的执行人（会签取其一即可，目标校验的是成员归属）。
+			if strings.TrimSpace(record.FlowNodeProxyID) == retrieveNodeID && strings.EqualFold(record.AuditStatus, "pass") && strings.TrimSpace(record.ExecutorID) != "" {
+				facts.CompletedTaskExecutorID = strings.TrimSpace(record.ExecutorID)
 			}
 			if !containsString(facts.DueNodes, record.FlowNodeProxyID) || record.ExecutorID == "" || record.ExecutorID == session.UserID {
 				continue
 			}
 			if strings.EqualFold(record.AuditStatus, "pass") {
 				facts.CurrentTaskHandledByOther = true
+			}
+		}
+		// 把取回执行人交给写路径的处理人切换逻辑：取回一律以该办结节点的真实审批人身份发出，
+		// 与其它任务级动作同一条切换会话链路，绝不用计划账号顶替（用户裁决 + 目标 executorId 归属校验）。
+		if facts.CompletedTaskExecutorID != "" {
+			facts.CurrentTaskAssigneeID = facts.CompletedTaskExecutorID
+			if strings.TrimSpace(facts.CurrentTaskAssigneeName) == "" {
+				facts.CurrentTaskAssigneeName = facts.CompletedTaskExecutorID
 			}
 		}
 	}
