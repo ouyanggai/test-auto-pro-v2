@@ -8,6 +8,6 @@
     "code": "ERROR_99999",
     "message": "流程已完结,不支持取回"
   },
-  "expectedInitial": "unexplained",
-  "note": "按源码证据构造，本切片不发写请求，待 F-016 首次真实写复核或替换"
+  "expectedInitial": "business_rejected",
+  "note": "按源码证据构造：retrieve 的拒绝文案出现在 submit 端点，不得命中 retrieve 前置拒绝清单（不是 pre_rejected）；它是形状完整的业务拒绝，配合写后重读明确未变判确定失败并展示目标原话，不落待确认。待 F-016 首次真实写复核。"
 }

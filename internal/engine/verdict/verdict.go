@@ -72,7 +72,11 @@ const (
 	InitialPreRejected Initial = "pre_rejected"
 	// InitialOptimisticLock 表示命中乐观锁冲突提示。
 	InitialOptimisticLock Initial = "optimistic_lock"
-	// InitialUnexplained 表示不可解释失败，含 code=RESP200 异常包与清单外文案。
+	// InitialBusinessRejected 表示目标返回了形状完整的业务拒绝（HTTP 200 + isSuccess=false + 明确
+	// message，非鉴权码、非乐观锁）。这是目标正常的业务规则拒绝（如「下一节点已被处理,不支持取回」），
+	// 配合写后重读「明确未变」即判确定失败并原样展示目标原话；只有重读证明未推进才算无副作用。
+	InitialBusinessRejected Initial = "business_rejected"
+	// InitialUnexplained 表示不可解释失败，含 code=RESP200 异常包与真正无法归类的形状。
 	InitialUnexplained Initial = "unexplained"
 	// InitialNone 表示还没走到响应侧初判。
 	InitialNone Initial = ""

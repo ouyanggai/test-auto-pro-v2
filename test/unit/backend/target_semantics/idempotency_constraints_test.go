@@ -77,17 +77,19 @@ func TestPreRejectionMatchesEndpointAndExactMessage(t *testing.T) {
 	if result := verdict.Evaluate(hit); result.Initial != verdict.InitialPreRejected || result.Outcome != verdict.OutcomeFailed {
 		t.Fatalf("清单内文案没有判为前置拒绝：%+v", result)
 	}
-	// 同一条文案换到没有登记它的端点上必须落不可解释失败。
+	// 同一条文案换到没有登记它的端点上不得命中该端点的前置拒绝清单（不是 pre_rejected）；
+	// 但它仍是形状完整的正常业务拒绝（非程序异常），按 business_rejected 处理：配合写后重读明确
+	// 未变判确定失败并展示目标原话，不再落无意义的待确认（用户裁决：正常后端错误直接判失败）。
 	crossEndpoint := hit
 	crossEndpoint.Endpoint = "/web/flowInstanceApi/submit"
-	if result := verdict.Evaluate(crossEndpoint); result.Initial != verdict.InitialUnexplained {
-		t.Fatalf("文案跨端点被复用了：%+v", result)
+	if result := verdict.Evaluate(crossEndpoint); result.Initial != verdict.InitialBusinessRejected {
+		t.Fatalf("跨端点文案不应命中前置拒绝清单，应按业务拒绝处理：%+v", result)
 	}
-	// 关键字包含不算命中：多一个字就不是清单里那条文案。
+	// 关键字包含不算命中前置拒绝清单：多一个字就不是清单里那条文案（仍是正常业务拒绝，不是 pre_rejected）。
 	fuzzy := hit
 	fuzzy.Response = &verdict.Response{IsSuccessPresent: true, Code: "ERROR_99999", Message: "流程已完结,不支持取回。"}
-	if result := verdict.Evaluate(fuzzy); result.Initial != verdict.InitialUnexplained {
-		t.Fatalf("文案被模糊匹配了：%+v", result)
+	if result := verdict.Evaluate(fuzzy); result.Initial != verdict.InitialBusinessRejected {
+		t.Fatalf("多一个字不应命中前置拒绝清单，应按业务拒绝处理：%+v", result)
 	}
 	// 目标源码里带空格的那条文案必须原样全等匹配。
 	spaced := hit
@@ -157,8 +159,10 @@ func TestOptimisticLockMatchesRegisteredEndpointsOnly(t *testing.T) {
 		StatusCode: 200, Reread: verdict.RereadUnchanged,
 		Response: &verdict.Response{IsSuccessPresent: true, Code: "ERROR_99999", Message: verdict.OptimisticLockMessage},
 	})
-	if unregistered.Initial != verdict.InitialUnexplained {
-		t.Fatalf("未登记端点的同一文案不应命中乐观锁：%+v", unregistered)
+	// 未登记乐观锁的端点上，同一文案不得命中乐观锁特判（乐观锁的跨存储部分生效隐患只在登记端点成立）；
+	// 它是形状完整的业务拒绝，配合写后重读明确未变判确定失败并展示目标原话，不再落无意义的待确认。
+	if unregistered.Initial != verdict.InitialBusinessRejected {
+		t.Fatalf("未登记端点的同一文案不应命中乐观锁，应按业务拒绝处理：%+v", unregistered)
 	}
 }
 

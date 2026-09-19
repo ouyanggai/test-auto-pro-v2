@@ -651,12 +651,24 @@ func buildObservation(endpoint string, writeErr error, response target.WriteResp
 		transport == verdict.TransportResponded {
 		observation.SessionRejected = true
 	}
+	var rejection *target.BusinessRejection
 	if response.IsSuccessPresent {
 		observation.Response = &verdict.Response{
 			IsSuccess:        response.IsSuccess,
 			IsSuccessPresent: true,
 			Code:             response.Code,
 			Message:          response.Message,
+		}
+	} else if errors.As(writeErr, &rejection) && transport == verdict.TransportResponded {
+		// 目标返回完整响应且是明确业务拒绝（isSuccess=false 带 code/message，如「下一节点已被处理,
+		// 不支持取回」）：这是确定失败、无副作用的结构化事实，绝不能因为没解析出 WriteResponse
+		// 就当「不可解析」判成待确认——待确认对用户没有意义，也无从确认。原样带上 code/message
+		// 交给判定包按业务拒绝判确定失败，界面直接显示目标原话。
+		observation.Response = &verdict.Response{
+			IsSuccess:        false,
+			IsSuccessPresent: true,
+			Code:             strings.TrimSpace(rejection.Code),
+			Message:          strings.TrimSpace(rejection.Message),
 		}
 	} else if transport == verdict.TransportResponded {
 		// 收到完整响应但成功判据不可解析：按不可解析响应交给判定包，不允许乐观归档。

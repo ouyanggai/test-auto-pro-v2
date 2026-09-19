@@ -1,5 +1,7 @@
 package verdict
 
+import "strings"
+
 // classifyResponse 是判定第二步：把响应包收敛为五类初判。
 // 顺序不可调换：先确认响应形状本身站得住脚，再看鉴权码与文案清单。
 // 否则「isSuccess=true 却带鉴权码」这种矛盾包、以及 HTTP 3xx/4xx 的失败包，
@@ -46,7 +48,37 @@ func classifyResponse(observation Observation) Initial {
 	if isPreRejection(observation.Endpoint, message) {
 		return InitialPreRejected
 	}
+	// 形状完整的业务规则拒绝（HTTP 200 + isSuccess=false + 明确业务错误码 + 明确 message）：
+	// 这是目标正常的业务规则拒绝（如 FLOW_409「下一节点已被处理,不支持取回」），配合写后重读
+	// 「明确未变」判确定失败并原样展示目标原话——不是无法解释的异常，不该判待确认。
+	// 但 code=RESP200（本表示 HTTP OK）却 isSuccess=false，是「成功码 + 失败体」的自相矛盾包，
+	// 通常是目标程序异常泄漏（如「发生空指针异常」）而非业务规则拒绝——这类跨存储可能部分生效，
+	// 仍按不可解释失败判待确认，绝不乐观归档为确定失败。
+	if message != "" && !isAnomalyResponse(response.Code, message) {
+		return InitialBusinessRejected
+	}
 	return InitialUnexplained
+}
+
+// isAnomalyResponse 判断 isSuccess=false 的完整响应属于「目标程序异常泄漏」而非「正常业务规则拒绝」：
+//   - code=RESP200（本表示 HTTP OK）却 isSuccess=false，是「成功码 + 失败体」自相矛盾包；
+//   - 空 code 无法证明是正常业务拒绝；
+//   - message 含程序异常特征（空指针、异常、exception、null 等）说明是后端崩溃泄漏，不是业务规则。
+//
+// 这几类跨存储可能已部分生效，仍按不可解释失败判待确认、绝不乐观归档为确定失败（用户裁决：
+// 真正未知的才阻断；目标正常业务错误直接判失败并展示原话）。
+func isAnomalyResponse(code, message string) bool {
+	switch normalizeMessage(code) {
+	case "", "RESP200", "resp200":
+		return true
+	}
+	lower := strings.ToLower(message)
+	for _, marker := range []string{"空指针", "异常", "exception", "null pointer", "nullpointer", "stacktrace", "内部错误", "系统错误"} {
+		if strings.Contains(message, marker) || strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // carriesFailureMarker 判断一个声明成功的响应包是否同时带着明确的失败标记：
@@ -111,6 +143,16 @@ func combine(observation Observation, initial Initial) Verdict {
 		}
 		return uncertain(initial, rejectionReason("前置校验拒绝", observation.Reread),
 			"第 1.6 节矩阵：前置拒绝只有配合明确未变才算确定失败")
+	case InitialBusinessRejected:
+		if observation.Reread == RereadUnchanged {
+			return Verdict{
+				Outcome: OutcomeFailed, SideEffect: SideEffectNone, Initial: initial,
+				Reason: "目标按业务规则拒绝了本次操作，执行前后状态没有变化",
+				Basis:  "第 1.6 节矩阵：业务拒绝 + 明确未变 = 确定失败、无副作用；界面直接展示目标原话",
+			}
+		}
+		return uncertain(initial, rejectionReason("业务规则拒绝", observation.Reread),
+			"第 1.6 节矩阵：业务拒绝只有配合写后重读明确未变才算确定失败")
 	case InitialOptimisticLock:
 		// 语义清单第 1.6 节已用源码确认：审批路径在乐观锁检查之前已经写过 Mongo 表单数据，
 		// 关系库回滚不会撤销它，所以这一格由确定失败降级为不确定。
