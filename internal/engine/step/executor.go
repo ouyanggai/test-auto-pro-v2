@@ -662,6 +662,32 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		log.Phase("gate", step.Sequence, 1, "特殊业务未实现阻塞："+reason)
 		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
+	// 取回准备同意的运行时门禁（T04 retrieve_prepare_approve）：编译期只是提示，运行时以目标
+	// 已办事实为准。当前用户在本节点已有已办任务时，准备同意无必要，跳过本步直接取回，绝不多发
+	// 一次同意写请求；无已办时落到下方普通同意门禁——没有可同意的活动待办即阻塞，绝不无依据准备同意。
+	if step.RetrievePrepareConsent {
+		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+		doneSession, doneSnapshot, doneErr := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "done")
+		if doneErr == nil {
+			session = doneSession
+			if strings.TrimSpace(doneSnapshot.JobTaskID) != "" {
+				info := runCtx.Nodes[step.NodeKey]
+				reason := "当前用户在本节点已有已办任务，无需准备同意，直接取回"
+				log.Phase("control", step.Sequence, 1, "取回准备同意跳过："+reason)
+				return &StepPreview{
+					PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
+					ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
+					Action: step.Action, ActionName: "取回准备同意（已有已办，跳过）", NodeKey: step.NodeKey,
+					TargetNodeID: info.TargetNodeID, NodeName: info.Name,
+					ActorAccount: runCtx.PlanAccount, ActorName: actorName,
+					GateAllowed: true, Facts: facts, TargetSkipped: true, SkipReason: reason,
+					GateItems: []model.ActionPrecondition{},
+				}, false, nil
+			}
+		} else {
+			log.Phase("gate", step.Sequence, 1, "取回准备同意的已办事实读取失败，按普通同意门禁继续判定："+userFacingError(doneErr, target.WriteResponse{}))
+		}
+	}
 	info := runCtx.Nodes[step.NodeKey]
 	// 目标自动跳过适配：模板约束「无处理人时跳过该节点」在人员规则（如扩展属性）解析为空时
 	// 生效，实例待办直接落到路径上更靠后的节点，本步的同意永远等不到待办。只有「实例当前

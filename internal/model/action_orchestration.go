@@ -237,6 +237,10 @@ type CompiledActionStep struct {
 	StopOnFailure   string         `json:"stopOnFailure"`
 	RecoveryPolicy  string         `json:"recoveryPolicy"`
 	ReloadRequired  bool           `json:"reloadRequired"`
+	// RetrievePrepareConsent 标识取回动作组里的「准备同意」步骤：编译期按 completed 提示预置，
+	// 运行时若当前用户在本节点已有已办任务则跳过本步（不多发一次同意写请求），直接取回；
+	// 无已办且当前待办不允许当前用户同意时按普通同意门禁阻塞。
+	RetrievePrepareConsent bool `json:"retrievePrepareConsent,omitempty"`
 }
 
 // ActionConfigurationInput 是保存当前节点人员与有序动作的最小回写体，不携带目标 task/proxy ID。

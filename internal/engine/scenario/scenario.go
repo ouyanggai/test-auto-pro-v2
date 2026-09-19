@@ -258,7 +258,12 @@ func (c *compiler) emitUserAction(action model.ConfiguredAction, actionIndex int
 	c.beginGroup()
 	prepRequired := false
 	if action.Action == model.ActionRetrieve && c.completed[action.NodeKey] == false {
-		c.addGroupedStep(recoveryApproveStep(action, "取回前没有可取回已办，先生成当前节点已办"), true)
+		// 编译期 completed 只是提示：无法证明当前节点已有已办时预置一次准备同意。
+		// 运行时以目标已办事实为准——已有已办则跳过本步直接取回，避免多发一次同意。
+		prep := recoveryApproveStep(action, "取回前若当前用户在本节点无已办，先生成当前节点已办；运行时已有已办则跳过本准备同意，直接取回")
+		prep.RetrievePrepareConsent = true
+		prep.StopOnFailure = "无已办且当前待办不允许当前用户同意时停止，不无依据准备同意"
+		c.addGroupedStep(prep, true)
 		c.completed[action.NodeKey] = true
 		prepRequired = true
 	}
