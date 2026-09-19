@@ -32,9 +32,10 @@ func (t *retrieveRejectTarget) ExecuteActionWrite(context.Context, target.Sessio
 		"trace-retrieve-reject", &target.BusinessRejection{Code: "FLOW_409", Message: t.rejectMessage}
 }
 
-// TestRetrieveBusinessRejectionIsDefiniteFailure 锁定：目标对取回的明确业务拒绝必须判为确定失败
-// （附目标原话），绝不判成「结果待确认」——待确认对用户没有意义，也无从确认。
-func TestRetrieveBusinessRejectionIsDefiniteFailure(t *testing.T) {
+// TestRetrieveBusinessRejectionSkipsAndContinues 锁定用户裁决：目标对取回的明确业务拒绝
+// （如「下一节点已被处理,不支持取回」）是静态可预期的编排冲突、且确定无副作用——不阻断整条运行，
+// 按「警告并跳过该动作」处理并继续，尝试记录里保留目标原话。绝不判「结果待确认」，也不整条失败中断。
+func TestRetrieveBusinessRejectionSkipsAndContinues(t *testing.T) {
 	rejectMsg := "下一节点已被处理,不支持取回"
 	targetFake := &retrieveRejectTarget{
 		taskActionFactsTarget: &taskActionFactsTarget{
@@ -63,13 +64,20 @@ func TestRetrieveBusinessRejectionIsDefiniteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("取回执行返回错误：%v", err)
 	}
-	if outcome.Verdict != string(verdict.OutcomeFailed) {
-		t.Fatalf("目标明确业务拒绝应判确定失败，实际 verdict=%s（不得为待确认）", outcome.Verdict)
+	// 预期内失败：不整条中断，标记跳过并继续（本例只有一步 → 跳过后收尾）。
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("预期内取回拒绝应跳过并继续（不阻断），实际 verdict=%s", outcome.Verdict)
 	}
 	if len(facts.attempts) != 1 {
 		t.Fatalf("应恰好记录一次尝试，实际 %+v", facts.attempts)
 	}
+	if facts.attempts[0].Verdict != step.StepVerdictSkippedWarning {
+		t.Fatalf("尝试应记为「警告并跳过」，实际 verdict=%s", facts.attempts[0].Verdict)
+	}
+	if facts.attempts[0].SideEffect != string(verdict.SideEffectNone) {
+		t.Fatalf("确定无副作用才允许跳过，实际 sideEffect=%s", facts.attempts[0].SideEffect)
+	}
 	if !strings.Contains(facts.attempts[0].Reason, rejectMsg) {
-		t.Fatalf("失败原因必须带目标原话「%s」，实际：%s", rejectMsg, facts.attempts[0].Reason)
+		t.Fatalf("跳过原因必须带目标原话「%s」，实际：%s", rejectMsg, facts.attempts[0].Reason)
 	}
 }

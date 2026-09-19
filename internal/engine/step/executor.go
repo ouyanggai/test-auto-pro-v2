@@ -1791,6 +1791,19 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if durationMs == 0 {
 		durationMs = e.now().Sub(startedAt).Milliseconds()
 	}
+	// 静态可预期的编排冲突（用户配置的可选动作 + 确定失败 + 无副作用 + 非恢复链触发动作）不阻断整条运行：
+	// 按「警告并跳过该动作」处理，运行继续往下走。恢复链触发动作（不同意/撤回/回退）失败不在此列——
+	// 它们后面挂着依赖其生效的恢复步骤，跳过会留下悬空恢复链，仍按失败停止。
+	skippableWarning := verdictResult.Outcome == verdict.OutcomeFailed &&
+		verdictResult.SideEffect == verdict.SideEffectNone &&
+		step.Source == model.ActionStepSourceUser &&
+		!isForwardRecoveryAction(step.Action)
+	settleStatus := statusOfVerdict(verdictResult.Outcome)
+	settleVerdictTag := string(verdictResult.Outcome)
+	if skippableWarning {
+		settleStatus = model.RunStepSkipped
+		settleVerdictTag = StepVerdictSkippedWarning
+	}
 	record := model.RunStep{
 		PathRunID:    runCtx.PathRun.ID,
 		StepNo:       step.Sequence,
@@ -1798,7 +1811,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		Action:       string(step.Action),
 		NodeKey:      step.NodeKey,
 		ActorSummary: preview.ActorName,
-		Status:       statusOfVerdict(verdictResult.Outcome),
+		Status:       settleStatus,
 		StartedAt:    startedAt,
 		FinishedAt:   e.now(),
 		GateSnapshot: gateSnapshotJSON(preview, approved.RunCtx.SubmitBranchTargetNodeID),
@@ -1806,7 +1819,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	attempt := model.RunStepAttempt{
 		PathRunID:   runCtx.PathRun.ID,
 		AttemptNo:   attemptNo,
-		Verdict:     string(verdictResult.Outcome),
+		Verdict:     settleVerdictTag,
 		SideEffect:  string(verdictResult.SideEffect),
 		Transport:   string(target.TransportOf(preview.writeErr)),
 		Initial:     string(verdictResult.Initial),
@@ -1828,6 +1841,19 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 		return outcome, lineNo, err
+	}
+
+	if skippableWarning {
+		// 预期内失败：不结束路径运行，标记跳过并推进游标继续下一步（与目标自动跳过同一推进语义）。
+		outcome.Verdict = string(verdict.OutcomeSucceeded)
+		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		if !outcome.NoMoreSteps {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+				return outcome, lineNo, err
+			}
+		}
+		log.Phase("settle", step.Sequence, attemptNo, "预期内失败，已警告并跳过该动作、继续运行："+userMessage)
+		return outcome, lineNo, nil
 	}
 
 	switch verdictResult.Outcome {
@@ -1884,6 +1910,17 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		log.Phase("settle", step.Sequence, attemptNo, userMessage+"，路径运行已停止")
 	}
 	return outcome, lineNo, nil
+}
+
+// isForwardRecoveryAction 判断动作是否会在其后生成依赖它生效的恢复链（不同意/撤回/回退）。
+// 这类动作失败不能「跳过继续」：后面的重新提交/逐节点同意恢复步骤假设它已生效，跳过会留下悬空恢复链。
+func isForwardRecoveryAction(action model.ActionKey) bool {
+	switch action {
+	case model.ActionReject, model.ActionWithdraw, model.ActionRollback:
+		return true
+	default:
+		return false
+	}
 }
 
 // isSessionRejected 判断一次写调用是否被目标以会话失效拒绝（响应已收到、未进入业务）。

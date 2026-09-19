@@ -581,6 +581,10 @@ func (p *StepPreview) WriteSent() bool {
 // 单独取值以便事实行与界面如实区分「成功」与「被目标跳过」。
 const StepVerdictTargetSkipped = "target_skipped"
 
+// StepVerdictSkippedWarning 表示用户配置的可选动作被目标以「确定失败、无副作用」拒绝（如取回遇到
+// 「下一节点已被处理」这类静态可预期的编排冲突）：不阻断整条运行，按「警告并跳过该动作」处理并继续。
+const StepVerdictSkippedWarning = "skipped_warning"
+
 // StepOutcome 是一步走完后的结果，供控制层决定路径去向。
 type StepOutcome struct {
 	Verdict string // confirmed_success / confirmed_failure / uncertain

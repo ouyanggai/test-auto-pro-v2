@@ -114,7 +114,7 @@ func (s *FlowGraphService) GetRuntime(ctx context.Context, planID uint64, instan
 		return model.FlowGraph{}, err
 	}
 	return model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
-		EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings}, nil
+		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings}, nil
 }
 
 // refreshInBackground 在后台刷新投影；refreshing 标志保证同一计划同时只跑一个刷新，
@@ -211,7 +211,7 @@ func (s *FlowGraphService) readGraph(ctx context.Context, planID uint64) (model.
 	}
 	return model.FlowGraph{
 		PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
-		EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings,
+		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings,
 	}, nil
 }
 
@@ -243,6 +243,23 @@ func validateEntryNodeIDs(entryNodeIDs []string, nodes []model.FlowGraphNode) ([
 	return entries, nil
 }
 
+// applyInitiatorStartPeople 把发起节点画布上显示的「人」改成流程发起人本人（工具运行时=计划账号）。
+// 目标发起节点的 auditConfig 明细装的是公司/部门范围条目，直接画上去会在「发起人」节点显示成公司名字，
+// 而不是发起人姓名（用户报告）。这里用计划账号（本部署登录名即姓名）覆盖发起节点的人员展示；
+// 非发起节点不动。initiator 为空时保持原样，绝不臆造。
+func applyInitiatorStartPeople(nodes []model.FlowGraphNode, initiator string) []model.FlowGraphNode {
+	initiator = strings.TrimSpace(initiator)
+	if initiator == "" {
+		return nodes
+	}
+	for index := range nodes {
+		if strings.EqualFold(strings.TrimSpace(nodes[index].Type), "start") {
+			nodes[index].AuditPeople = []string{initiator}
+		}
+	}
+	return nodes
+}
+
 // readGraphWithoutRelogin 与 readGraph 同构，但底层目标读不允许重登：
 // 供后台刷新使用——刷新失败只影响画布投影新鲜度，绝不能拿用户的浏览器会话去换。
 func (s *FlowGraphService) readGraphWithoutRelogin(ctx context.Context, planID uint64) (model.FlowGraph, error) {
@@ -267,6 +284,6 @@ func (s *FlowGraphService) readGraphWithoutRelogin(ctx context.Context, planID u
 	}
 	return model.FlowGraph{
 		PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
-		EntryNodeIDs: entries, Nodes: nodes, Edges: edges, Warnings: warnings,
+		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings,
 	}, nil
 }
