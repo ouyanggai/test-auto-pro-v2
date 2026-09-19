@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -68,8 +69,17 @@ func TestF016TransportConnectRefusedIsDeterministicFailure(t *testing.T) {
 // TestF016TransportConnectTimeoutIsDeterministicFailure 断言“连接超时”同样归入连接阶段未完成：
 // 超时只说明还没连上目标，不等于请求已发出，结论必须是确定失败且无副作用。
 func TestF016TransportConnectTimeoutIsDeterministicFailure(t *testing.T) {
-	// 192.0.2.1 是 RFC 5737 保留网段（TEST-NET-1），SYN 会被网关丢弃，必然以连接超时收场。
+	// 连接阶段超时：用直接返回拨号超时错误的拨号器构造，不依赖真实网络对保留网段的丢包行为
+	//（实测本机出网路径会对 192.0.2.1 完成三次握手，超时发生在等响应头阶段，那是 interrupted 才对）。
+	// 注意不能用「阻塞到 ctx.Done」的拨号器：httptrace 的 ConnectStart/ConnectDone 由 net.Dialer 触发，
+	// 自定义拨号器绕过了它们；且 Go 1.27 的 Transport 会把拨号上下文与请求上下文脱钩，阻塞拨号永不返回，
+	// 探针拿不到任何判据只能落 unclassified。真实拨号超时的错误形状就是 *net.OpError{Op:"dial"}。
 	client := newF016Client(t, "http://192.0.2.1:1", 600*time.Millisecond)
+	if !client.SetDialContextForTest(func(_ context.Context, network, addr string) (net.Conn, error) {
+		return nil, &net.OpError{Op: "dial", Net: network, Err: os.ErrDeadlineExceeded}
+	}) {
+		t.Fatal("无法注入测试拨号器")
+	}
 	err := callLogin(t, client)
 	if err == nil {
 		t.Fatal("连接超时必须返回错误")

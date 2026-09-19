@@ -292,6 +292,29 @@ func (c *Client) CallWrite(ctx context.Context, path, sid, customerCode string, 
 	return result, traceID, err
 }
 
+// SetDialContextForTest 替换底层 *http.Transport 的拨号函数，供 test 目录构造「连接阶段一直未完成」的
+// 确定性传输故障。真实网络里保留网段（如 192.0.2.1）的 SYN 是否被丢弃取决于出网路径——实测本机会完成
+// 三次握手、超时发生在等响应头阶段，那按 interrupted 分档才是对的——所以不能拿真实网络当测试前提。
+// 沿日志包装链找到内层传输层；找不到时返回 false，调用方必须据此失败而不是静默通过。
+func (c *Client) SetDialContextForTest(dial func(ctx context.Context, network, addr string) (net.Conn, error)) bool {
+	if c == nil || c.httpClient == nil {
+		return false
+	}
+	transport := c.httpClient.Transport
+	for transport != nil {
+		switch typed := transport.(type) {
+		case *http.Transport:
+			typed.DialContext = dial
+			return true
+		case *loggingTransport:
+			transport = typed.next
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // CallWriteForTest 暴露统一写出口的载荷注入路径，供契约测试锁定信封注入（顶层 sid/projectId
 // 与 data.customerCode）。测试不连真实目标：请求在传输层失败，但注入发生在发送之前。
 func (c *Client) CallWriteForTest(ctx context.Context, path, sid string, body map[string]any) error {
