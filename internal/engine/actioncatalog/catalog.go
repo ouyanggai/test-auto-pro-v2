@@ -231,6 +231,71 @@ var actionDefinitions = []actionDefinition{
 	},
 }
 
+// actionStructureEffects 登记每个动作写后对实例结构或游标的稳定影响，
+// 供写后重读、代理树重绑定和运行画布判断旧节点标识是否失效。缺省视为无结构变化。
+var actionStructureEffects = map[model.ActionKey]model.ActionStructureEffect{
+	model.ActionSaveDraft:       model.StructureEffectNone,
+	model.ActionSubmit:          model.StructureEffectCursorMove,
+	model.ActionResubmit:        model.StructureEffectCursorMove,
+	model.ActionStorageFormData: model.StructureEffectNone,
+	model.ActionAddSign:         model.StructureEffectInsertNode,
+	model.ActionTransfer:        model.StructureEffectNone,
+	model.ActionApprove:         model.StructureEffectCursorMove,
+	model.ActionReject:          model.StructureEffectRecoveryChain,
+	model.ActionRollback:        model.StructureEffectRecoveryChain,
+	model.ActionRetrieve:        model.StructureEffectRecoveryChain,
+	model.ActionWithdraw:        model.StructureEffectRecoveryChain,
+	model.ActionUrge:            model.StructureEffectNone,
+	model.ActionForward:         model.StructureEffectAuxiliaryInstance,
+	model.ActionFollow:          model.StructureEffectNone,
+	model.ActionUnfollow:        model.StructureEffectNone,
+}
+
+// structureEffectOf 返回动作的写后结构效果；未登记的动作按无结构变化处理。
+func structureEffectOf(action model.ActionKey) model.ActionStructureEffect {
+	if effect, ok := actionStructureEffects[action]; ok {
+		return effect
+	}
+	return model.StructureEffectNone
+}
+
+// factCurrentlyUnavailable 判断动作门禁被关闭的原因是否属于「所需目标事实当前不可读/未生成」，
+// 这类原因既不能自动配置也不能人工裁决，必须回到用户重新验证目标事实，而不是当作动作不适用。
+func factCurrentlyUnavailable(action model.ActionKey, ctx model.ActionContext) bool {
+	switch action {
+	case model.ActionStorageFormData, model.ActionApprove, model.ActionReject, model.ActionAddSign, model.ActionTransfer:
+		// 目标节点已到达但未生成 currentAuditUserInfo/待办：处理人事实缺失（assignment_missing）。
+		return ctx.HandlerMissing
+	case model.ActionRollback:
+		// 存在前驱待办但前驱节点类型尚未从目标代理读到，无法安全判断是否可回退。
+		return ctx.PreviousTaskExists && normalizedNodeType(ctx.PreviousNodeType) == ""
+	default:
+		return false
+	}
+}
+
+// candidateStatus 把门禁结论投影为面向一键配置的候选三态和节点级原因。
+// 系统只读项不是用户可编排候选，返回空状态；启用即 auto_configurable，禁用按事实是否可读
+// 分为 fact_unavailable 与 manual_only（保留具体节点级原因，绝不删除目录项）。
+func candidateStatus(action model.ActionKey, systemOnly, enabled bool, reason string, ctx model.ActionContext) (model.ActionCandidateStatus, string) {
+	if systemOnly {
+		return "", ""
+	}
+	if enabled {
+		return model.CandidateAutoConfigurable, ""
+	}
+	if factCurrentlyUnavailable(action, ctx) {
+		return model.CandidateFactUnavailable, reason
+	}
+	return model.CandidateManualOnly, reason
+}
+
+// CandidateStatusForItem 依据最终门禁项和上下文重算候选三态，供投影层在调整 Enabled 后保持一致
+// （例如顺序依赖动作重算、转发缺接收人被置为禁用之后），避免候选状态与最终可用性不一致。
+func CandidateStatusForItem(item model.ActionCatalogItem, ctx model.ActionContext) (model.ActionCandidateStatus, string) {
+	return candidateStatus(item.Action, item.SystemOnly, item.Enabled, item.DisabledReason, ctx)
+}
+
 // NewService 创建无状态动作目录服务。
 func NewService() *Service { return &Service{} }
 
@@ -247,6 +312,7 @@ func (s *Service) Build(ctx model.ActionContext) []model.ActionCatalogItem {
 	items := make([]model.ActionCatalogItem, 0, len(actionDefinitions)+1)
 	for _, definition := range actionDefinitions {
 		gate := evaluate(definition.action, ctx)
+		candidateStatusValue, candidateReason := candidateStatus(definition.action, definition.systemOnly, gate.enabled, gate.reason, ctx)
 		items = append(items, model.ActionCatalogItem{
 			Action:             definition.action,
 			Category:           definition.category,
@@ -261,8 +327,11 @@ func (s *Service) Build(ctx model.ActionContext) []model.ActionCatalogItem {
 			ParameterDetails:   cloneParameters(definition.parameters),
 			Preconditions:      gate.preconditions,
 			ExpectedEffect:     definition.expectedEffect,
+			StructureEffect:    structureEffectOf(definition.action),
 			RequiresReload:     true,
 			ReloadRequirements: cloneStrings(definition.reloadRequirements),
+			CandidateStatus:    candidateStatusValue,
+			CandidateReason:    candidateReason,
 			SystemOnly:         definition.systemOnly,
 		})
 	}

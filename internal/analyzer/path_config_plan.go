@@ -289,6 +289,9 @@ func projectActionCatalog(
 			item.Enabled = false
 			item.DisabledReason = "目标公司人员目录未返回可用转发接收人"
 		}
+		// 顺序依赖动作重算与转发缺接收人置禁用都发生在目录构建之后，这里按最终可用性重算候选三态，
+		// 避免候选状态与 Enabled/DisabledReason 不一致。
+		item.CandidateStatus, item.CandidateReason = actioncatalog.CandidateStatusForItem(item, ctx)
 		result = append(result, projectedCatalogItem(item, person, actionRuntimeNote(item.Action, previousReason)))
 		validationTarget.Catalog = append(validationTarget.Catalog, item)
 		if item.Enabled {
@@ -434,7 +437,9 @@ func projectedCatalogItem(item model.ActionCatalogItem, person *model.PathConfig
 		Label: item.Label, Description: item.Description, Enabled: item.Enabled, DisabledReason: item.DisabledReason,
 		RequiresPerson: person != nil, Person: person, TargetOperation: item.TargetOperation,
 		Parameters: item.Parameters, ParameterDetails: item.ParameterDetails, Preconditions: item.Preconditions,
-		ExpectedEffect: item.ExpectedEffect, RequiresReload: item.RequiresReload, ReloadRequirements: item.ReloadRequirements,
+		ExpectedEffect: item.ExpectedEffect, StructureEffect: item.StructureEffect,
+		RequiresReload: item.RequiresReload, ReloadRequirements: item.ReloadRequirements,
+		CandidateStatus: item.CandidateStatus, CandidateReason: item.CandidateReason,
 		SystemOnly: item.SystemOnly, SystemNodeType: item.SystemNodeType, RuntimeNote: note,
 		SystemInserted: item.SystemInserted, SystemInsertedReason: item.SystemInsertedReason,
 	}

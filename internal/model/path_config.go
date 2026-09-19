@@ -261,11 +261,14 @@ type PathConfigActionCatalogItem struct {
 	Parameters         []string             `json:"parameters"`
 	ParameterDetails   []ActionParameter    `json:"parameterDetails"`
 	Preconditions      []ActionPrecondition `json:"preconditions"`
-	ExpectedEffect     string               `json:"expectedEffect"`
-	RequiresReload     bool                 `json:"requiresReload"`
-	ReloadRequirements []string             `json:"reloadRequirements"`
-	SystemOnly         bool                 `json:"systemOnly"`
-	SystemNodeType     string               `json:"systemNodeType"`
+	ExpectedEffect     string                `json:"expectedEffect"`
+	StructureEffect    ActionStructureEffect `json:"structureEffect,omitempty"`
+	RequiresReload     bool                  `json:"requiresReload"`
+	ReloadRequirements []string              `json:"reloadRequirements"`
+	CandidateStatus    ActionCandidateStatus `json:"candidateStatus,omitempty"`
+	CandidateReason    string                `json:"candidateReason,omitempty"`
+	SystemOnly         bool                  `json:"systemOnly"`
+	SystemNodeType     string                `json:"systemNodeType"`
 	// SystemInserted 表示该动作由场景编译器自动插入，浏览器不把它列为可选动作。
 	SystemInserted bool `json:"systemInserted"`
 	// SystemInsertedReason 说明编译器会在什么时候插入它。

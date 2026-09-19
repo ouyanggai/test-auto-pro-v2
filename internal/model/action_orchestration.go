@@ -66,6 +66,39 @@ const (
 	ActionSystemAutomatic ActionKey = "system_automatic"
 )
 
+// ActionStructureEffect 描述一个动作写入成功后对实例结构或游标的影响，
+// 供编译器、执行器和运行画布判断写后需要重读什么、能否沿用旧节点标识。
+type ActionStructureEffect string
+
+const (
+	// StructureEffectNone 表示写后实例结构、当前节点和游标都不变（暂存、催办、关注类）。
+	StructureEffectNone ActionStructureEffect = "none"
+	// StructureEffectCursorMove 表示实例沿真实路径推进，当前节点/待办发生移动（提交、同意）。
+	StructureEffectCursorMove ActionStructureEffect = "cursor_move"
+	// StructureEffectProxyRebuild 表示目标会重建实例私有代理树（旧节点 ID 失效）。
+	StructureEffectProxyRebuild ActionStructureEffect = "proxy_rebuild"
+	// StructureEffectInsertNode 表示写后代理树新增独立审批节点，需按锚点整体重绑定（加签）。
+	StructureEffectInsertNode ActionStructureEffect = "insert_node"
+	// StructureEffectRecoveryChain 表示进入同一主实例的恢复链（不同意、撤回、回退、取回）。
+	StructureEffectRecoveryChain ActionStructureEffect = "recovery_chain"
+	// StructureEffectAuxiliaryInstance 表示创建独立辅助实例，主实例游标不变（转发）。
+	StructureEffectAuxiliaryInstance ActionStructureEffect = "auxiliary_instance"
+)
+
+// ActionCandidateStatus 是动作目录候选面向一键配置的三态结论。
+// 一键配置只自动保存 auto_configurable；manual_only 与 fact_unavailable 保留在报告里并带节点级原因，
+// 目录项本身不会被删除。
+type ActionCandidateStatus string
+
+const (
+	// CandidateAutoConfigurable 表示当前目标事实、作用域和结构均满足，可进入自动候选。
+	CandidateAutoConfigurable ActionCandidateStatus = "auto_configurable"
+	// CandidateManualOnly 表示动作事实已知但当前不适用或需人工决策，保留供人工配置。
+	CandidateManualOnly ActionCandidateStatus = "manual_only"
+	// CandidateFactUnavailable 表示所需目标事实当前不可读/未生成，既不能自动也不能人工裁决。
+	CandidateFactUnavailable ActionCandidateStatus = "fact_unavailable"
+)
+
 // ActionCategory 描述动作目录中的业务分组。
 type ActionCategory string
 
@@ -127,10 +160,16 @@ type ActionCatalogItem struct {
 	ParameterDetails   []ActionParameter    `json:"parameterDetails"`
 	Preconditions      []ActionPrecondition `json:"preconditions"`
 	ExpectedEffect     string               `json:"expectedEffect"`
-	RequiresReload     bool                 `json:"requiresReload"`
-	ReloadRequirements []string             `json:"reloadRequirements"`
-	SystemOnly         bool                 `json:"systemOnly"`
-	SystemNodeType     string               `json:"systemNodeType,omitempty"`
+	// StructureEffect 是写后结构效果的稳定分类，供写后重读和运行画布判断旧节点标识是否失效。
+	StructureEffect    ActionStructureEffect `json:"structureEffect,omitempty"`
+	RequiresReload     bool                  `json:"requiresReload"`
+	ReloadRequirements []string              `json:"reloadRequirements"`
+	// CandidateStatus 是面向一键配置的候选三态结论；系统只读项保持空值。
+	CandidateStatus ActionCandidateStatus `json:"candidateStatus,omitempty"`
+	// CandidateReason 是 manual_only / fact_unavailable 时面向用户的节点级原因。
+	CandidateReason string `json:"candidateReason,omitempty"`
+	SystemOnly      bool   `json:"systemOnly"`
+	SystemNodeType  string `json:"systemNodeType,omitempty"`
 	// SystemInserted 表示该动作由场景编译器在恢复步骤中自动插入，用户不需要也不应该手工编排。
 	SystemInserted bool `json:"systemInserted,omitempty"`
 	// SystemInsertedReason 说明编译器会在什么时候插入它，供目录说明展示。
