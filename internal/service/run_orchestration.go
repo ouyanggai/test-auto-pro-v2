@@ -1307,6 +1307,16 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		for _, command := range view.Commands {
 			detail.Commands = append(detail.Commands, CommandDTO{Command: string(command), Label: CommandLabel(command)})
 		}
+		// 路径偏离、加签重绑定失败等停机是会话级事实：数据库状态可能仍是运行中，但会话已无任何放行
+		// 命令、也不在执行中。若仍按数据库状态显示「运行中」，用户会以为流程还在推进——这里按会话
+		// 事实把它投影为「已阻塞」，命令集合为空即证据，明确只能停止或查看，不再误导为运行中。
+		if strings.TrimSpace(view.StopReason) != "" && len(view.Commands) == 0 &&
+			!view.LoopRunning && !view.StepInFlight && !view.StopRequested &&
+			(pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying || pathRun.Status == model.PathRunStatusPaused) {
+			detail.StopKind = "blocked"
+			detail.StopKindNote = view.StopReason
+			detail.PathRunStatusName = "已阻塞（只能停止或查看）"
+		}
 		nodeTable := nodeNamesOf(factGraph)
 		for _, bp := range view.Breakpoints {
 			dto := BreakpointDTO{Type: string(bp.Type), TypeName: breakpointTypeName(string(bp.Type)),
