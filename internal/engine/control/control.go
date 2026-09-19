@@ -1139,6 +1139,21 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 			} else {
 				session.runCtx.FlowProxyID = proxyID
 				session.runCtx.FlowProxyRemapped = true
+				if len(remap.InsertedHumanNodeIDs) > 0 {
+					// 加签在目标新树里插入了独立审批节点：编译期无法预知，必须作为独立步骤按其自身
+					// 待办和最新处理人审批，绝不用原节点固定尾同意代替它。当前仅确定性地暴露插入节点并
+					// 停在只读/停止（命令集合由 PauseStateDeviation 置空），插入节点的自动审批执行需在
+					// 目标页面（F-037 验收后）核对真实待办与会签规则，不在未验证前盲目续跑。
+					stopReason := "加签后目标代理树新增独立审批节点（" + strings.Join(remap.InsertedHumanNodeIDs, "、") + "），需在其自身待办上完成审批；已停止后续放行，只能查看或停止"
+					s.mu.Lock()
+					session.deviationStalled = true
+					session.stopReason = stopReason
+					s.mu.Unlock()
+					_ = s.store.AppendRunEvent(ctx, model.RunEvent{
+						RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
+						Kind: "add_sign_inserted_node", Label: stopReason,
+					}, s.now())
+				}
 			}
 		}
 	}

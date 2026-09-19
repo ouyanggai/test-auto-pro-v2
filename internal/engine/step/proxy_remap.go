@@ -20,6 +20,10 @@ type ProxyRemap struct {
 	BranchSelections         map[string]string
 	SubmitBranchTargetNodeID string
 	NextNodeAuditors         map[string][]target.NextAuditor
+	// InsertedHumanNodeIDs 是加签后新树里未绑定到任何旧节点的人工审批/协同节点（即目标为加签
+	// 新插入的独立审批节点）。它按结构路径确定性得出，不按名称猜测：这些节点需要在自身待办上
+	// 完成审批，编译期不可能预知，必须由运行时按最新代理树和待办作为独立步骤处理。
+	InsertedHumanNodeIDs []string
 }
 
 // BuildProxyRemap 读取加签后的完整代理树，并按旧树与新树的结构路径建立节点映射。
@@ -144,9 +148,23 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 		}
 		nextAuditors[nodeKey] = auditors
 	}
+	// 加签后新树里未绑定到任何旧节点的人工节点即为插入的独立审批节点：按结构路径确定性得出，
+	// 稳定排序供运行时与详情展示。空表示本次重建没有新增人工节点（同构或仅人员明细变化）。
+	insertedHuman := make([]string, 0)
+	for newID, nodeType := range newTypes {
+		if _, mapped := usedNewIDs[newID]; mapped {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(nodeType)) {
+		case "common", "synergy":
+			insertedHuman = append(insertedHuman, newID)
+		}
+	}
+	sort.Strings(insertedHuman)
 	return ProxyRemap{
 		FlowTree: newTree, NodeIDs: nodeIDs, GraphEdges: graphEdges, GraphNodeTypes: graphNodeTypes,
 		BranchSelections: branchSelections, SubmitBranchTargetNodeID: submitTarget, NextNodeAuditors: nextAuditors,
+		InsertedHumanNodeIDs: insertedHuman,
 	}, nil
 }
 
