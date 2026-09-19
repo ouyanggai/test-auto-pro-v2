@@ -55,7 +55,8 @@ func newFakeTarget(t *testing.T) *fakeTarget {
 func (f *fakeTarget) handler(response http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
 	case "/web/user/api/login/user/getVerifiCode":
-		// 新登录协议：登录前先取验证码 flag（只读，服务端不校验验证码文字）。
+		// 新登录协议：登录前先取验证码 flag，登录请求携带顶层 sign=该 flag（只读）。
+		// 本假件不模拟 data.code 文字校验；是否校验属目标 profile 事实，不在此断言。
 		writeTargetJSON(response, map[string]any{"isSuccess": true, "data": map[string]any{"flag": "integration-flag"}})
 	case "/web/user/api/login/user/login":
 		f.handleLogin(response, request)

@@ -238,7 +238,8 @@ func assertTargetHistoryReadOnlyCalls(t *testing.T, fixture *targetHistoryFixtur
 	fixture.mu.Unlock()
 	allowed := map[string]bool{
 		"/web/user/api/login/user/login": true, "/web/flowInstanceApi/list": true,
-		// 新登录协议：登录前先取验证码 flag（只读，服务端不校验验证码文字）。
+		// 新登录协议：登录前先取验证码 flag，登录请求携带顶层 sign=该 flag（只读）。
+		// 本假件不模拟 data.code 文字校验；是否校验属目标 profile 事实，不在此断言。
 		"/web/user/api/login/user/getVerifiCode":  true,
 		"/web/flowInstanceApi/getCurrentFromData": true, "/web/flowProxy/findById": true,
 		"/web/formProxy/findById": true,

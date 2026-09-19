@@ -107,8 +107,10 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 }
 
 // fetchLoginVerificationFlag 请求目标验证码接口并只取登录所需的 flag 凭证。
-// 目标登录协议要求 sign 为一次新鲜的 getVerifiCode flag；验证码图片内容不被使用，
-// 服务端只校验 flag 的有效性与一次性，因此这里不下载和保存图片正文。
+// 目标登录协议要求登录请求携带 sign=一次新鲜的 getVerifiCode flag；本工具据此只提取 flag。
+// 是否同时校验验证码文字（data.code 与后端 Redis 值一致）取决于目标部署 profile，
+// 属于按 profile 登记的目标事实，不在这里断言；这里只保证不携带空 sign 继续登录。
+// 是否下载图片正文只影响本工具行为：当前 profile 下无需人工识图，故不下载图片正文。
 func (c *Client) fetchLoginVerificationFlag(ctx context.Context) (string, error) {
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimRight(c.baseURL.Path, "/") + "/web/user/api/login/user/getVerifiCode"
@@ -164,9 +166,11 @@ func (c *Client) fetchLoginVerificationFlag(ctx context.Context) (string, error)
 }
 
 // Login 按已核实协议加密服务端密码并获取只保留在后端的会话。
-// 目标平台 2026-09-19 起要求登录请求携带 sign=一次有效验证码接口返回的 flag；
-// 服务端不校验验证码文字本身，但 flag 必须来自本次登录前新鲜的 getVerifiCode 响应，
-// 旧 flag 或缺失 sign 会以「用户名错误或密码错误」拒绝。
+// 已核实的登录协议三段事实：①验证码接口必须先成功并返回 flag；②登录请求携带顶层
+// sign=本次新鲜 flag，data.code 携带配置 LoginCode；③flag 必须来自本次登录前新鲜的
+// getVerifiCode 响应，旧 flag 或缺失 sign 会被目标以「用户名错误或密码错误」拒绝。
+// 目标是否额外强制 data.code 文字与后端 Redis 值一致，随部署 profile 变化（pro profile
+// 观察到会比较），属按 profile 登记的目标事实，本函数不把某次部署结论推广到所有 profile。
 func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 	encrypted, err := EncryptPassword(c.config.LoginPassword, c.config.LoginAESKey)
 	if err != nil {
@@ -192,7 +196,14 @@ func (c *Client) Login(ctx context.Context, account string) (Session, error) {
 	resp, err := c.call(ctx, "/web/user/api/login/user/login", "", body)
 	if err != nil {
 		if IsKind(err, ErrorSessionExpired) {
-			return Session{}, NewError(ErrorLoginRejected, err)
+			// 区分两类 401：登录端点的传输层 HTTP 401 说明本次登录本身未通过鉴权（此时并无既存
+			// 会话），按登录拒绝处理；而 HTTP 200 包络里的 RESP401/AUTH_401/SID 失效属会话失效，
+			// 必须按会话错误原样透传（原始 message 保留在 Cause），不能混淆成登录/密码拒绝——否则
+			// 页面会据此给出不可重试的错误分类（T01：登录错误与会话失效分类不混淆）。
+			if targetErr := asError(err); targetErr != nil && targetErr.HTTPStatus == 401 {
+				return Session{}, NewError(ErrorLoginRejected, err)
+			}
+			return Session{}, err
 		}
 		var rejection *BusinessRejection
 		if errors.As(err, &rejection) {
