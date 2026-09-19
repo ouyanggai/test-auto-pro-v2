@@ -1375,12 +1375,22 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph) (model.FlowG
 	dynamicType := graphNodeTypeByID(dynamicGraph)
 	dynamicToProjected := make(map[string]string, len(dynamicPaths))
 	usedDynamic := make(map[string]bool, len(dynamicPaths))
-	for staticID, path := range staticPaths {
+	// 按结构路径从浅到深、稳定排序处理：锚点前的节点先精确绑定，锚点后的位移节点再逐层绑定，
+	// 避免遍历顺序不确定造成位移节点被错绑（加签插入节点会占用锚点原子路径）。
+	staticIDs := make([]string, 0, len(staticPaths))
+	for staticID := range staticPaths {
+		staticIDs = append(staticIDs, staticID)
+	}
+	sort.SliceStable(staticIDs, func(i, j int) bool { return staticPaths[staticIDs[i]] < staticPaths[staticIDs[j]] })
+	for _, staticID := range staticIDs {
+		path := staticPaths[staticID]
 		dynamicID := dynamicIDByPath[path]
-		if strings.TrimSpace(dynamicID) == "" {
-			// 加签会在锚点之后插入新节点，使其后子链的结构路径整体多出一段；精确路径匹配不到时，
-			// 尝试「去掉一段后与静态路径一致、类型相同、且唯一未占用」的动态节点（即加签位移后的对应
-			// 节点），这样运行画布能画出加签后的最新结构，插入节点作为动态节点单独展示。
+		// 精确路径命中还必须类型一致且未被占用：加签把「审核人」插到锚点的原子路径上，静态该路径的
+		// 节点（如条件分支）会与插入的 common 节点同路径但类型不同——不校验类型就会把插入节点错当成
+		// 原节点，真正的原节点（已整体位移一段）反而绑不上。类型不符/被占用时走位移容错匹配。
+		if strings.TrimSpace(dynamicID) == "" || usedDynamic[dynamicID] || strings.TrimSpace(dynamicType[dynamicID]) != strings.TrimSpace(staticType[staticID]) {
+			// 加签会在锚点之后插入新节点，使其后子链的结构路径整体多出一段；这里按「去掉一段后与静态
+			// 路径一致、类型相同、且唯一未占用」找到位移后的对应节点，插入节点则保持动态 ID 单独展示。
 			dynamicID = uniqueShiftedDynamicMatch(path, staticType[staticID], dynamicPaths, dynamicType, usedDynamic)
 			if strings.TrimSpace(dynamicID) == "" {
 				return dynamicGraph, false
