@@ -980,7 +980,7 @@ var autoExtraActionRanks = map[model.ActionKey]int{
 // 矩阵约束：发起节点只允许“保存草稿”；审批/协同节点只允许暂存表单、加签、移交、不同意、回退、取回；
 // 系统/空/条件等节点不补任何动作；需要人员的动作必须自带完整候选目录，找不到就给出精确原因。
 // 候选只经过静态过滤，完整场景编译仍由调用方逐个验证；不覆盖人工事实、固定尾动作不计入额外动作。
-func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool) ([]autoExtraCandidate, []string) {
+func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool, planAccount string) ([]autoExtraCandidate, []string) {
 	rejections := []string{}
 	// 目标模板声明“无处理人时跳过”等运行时语义与动作选择无关，静态阶段只保证动作本身可保存。
 	switch strings.TrimSpace(node.Kind) {
@@ -1063,7 +1063,12 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 					rejections = append(rejections, item.Label+"：目标没有返回动作专属处理人候选，不能自动配置")
 					continue
 				}
-				strategy := autoPersonStrategy(*item.Person, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
+				// 加签动作的处理人必须是运行期可登录的人：优先选计划账号本人（候选人里存在时），
+				// 否则回落到种子随机；移交/传阅沿用随机，等真实运行暴露同类问题再收敛。
+				strategy, preferred := autoSignPersonStrategyPreferPlanAccount(*item.Person, kind, planAccount)
+				if !preferred {
+					strategy = autoPersonStrategy(*item.Person, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
+				}
 				if len(strategy.Selected) == 0 {
 					rejections = append(rejections, item.Label+"：动作专属候选为空，不能用空人员凑数")
 					continue
@@ -1080,6 +1085,23 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 		// 只保留导航/只读语义；这不是配置失败，不产生淘汰原因。
 		return nil, rejections
 	}
+}
+
+// autoSignPersonStrategyPreferPlanAccount 为加签动作挑选「运行期可证明可登录」的处理人：
+// 候选里存在计划账号本人（按姓名匹配目标目录候选）时，返回 manual 策略锁定该候选；
+// 不存在或 planAccount 为空时返回 preferred=false，调用方回落到原种子随机策略。
+// 关键约束：不改变候选目录本身，只做确定性挑选，保证重复一键配置结果一致。
+func autoSignPersonStrategyPreferPlanAccount(person model.PathConfigPerson, kind model.ActionKey, planAccount string) (model.PathConfigPersonStrategyInput, bool) {
+	account := strings.TrimSpace(planAccount)
+	if kind != model.ActionAddSign || account == "" {
+		return model.PathConfigPersonStrategyInput{}, false
+	}
+	for _, option := range person.Options {
+		if strings.TrimSpace(option.Label) == account {
+			return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "manual", Seed: 1, Selected: []string{option.Value}}, true
+		}
+	}
+	return model.PathConfigPersonStrategyInput{}, false
 }
 
 // autoCandidateDisabledReason 返回候选被目标目录禁用时的具体原因，供一键配置结果报告定位。
@@ -1107,6 +1129,14 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	path, snapshot, analysis, current, found, _, err := s.loadWorkspace(ctx, planID, pathID)
 	if err != nil {
 		return err
+	}
+	// 加签人员优先用计划账号本人：计划账号是本次运行已证明可登录的账号；目标环境存在
+	// 姓名/手机号都无法登录的人员（目录 account/username 为空且登录名不生效），随机把加签
+	// 签到这类人员上，运行期切换处理人会被门禁按「处理人身份未确认」安全停机，整条路径必败。
+	// 读取失败不阻塞一键配置，只回落到原有随机策略。
+	planAccount := ""
+	if plan, planErr := s.plans.Get(ctx, planID); planErr == nil {
+		planAccount = strings.TrimSpace(plan.Account)
 	}
 	// 节点、人员和动作目录直接从这次已经读到的目标事实投影，不再额外读一遍目标流程。
 	configuration, _, err := s.configAnalyzer.Analyze(
@@ -1233,7 +1263,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				commitPendingPersons()
 				continue
 			}
-			candidates, rejections := autoExtraActionCandidates(*node, autoConfigureSeed(planID, pathID, node.Key), usedInPath(actions))
+			candidates, rejections := autoExtraActionCandidates(*node, autoConfigureSeed(planID, pathID, node.Key), usedInPath(actions), planAccount)
 			// 取回只在路径最后一个可执行审批节点自动生成：其余节点上取回会因跨节点规则必然失败，
 			// 直接从候选里剔除并记诊断，换该节点的其它安全候选（如暂存/加签/移交）。
 			if node.Key != lastHumanKey {
@@ -1569,7 +1599,7 @@ func autoConfigureActionKey(nodeKey, kind string) string {
 // autoExtraCandidatesForTest 暴露新候选矩阵的首选项与淘汰原因，供 test 目录锁定 F-034 行为：
 // 发起节点只允许保存草稿；审批节点按安全等级与稳定种子排序；系统节点无候选。
 func AutoExtraCandidatesForTest(planID, pathID uint64, node model.PathConfigNode, used map[string]bool) (model.ConfiguredAction, *model.PathConfigPersonStrategyInput, bool, []string) {
-	candidates, rejections := autoExtraActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used)
+	candidates, rejections := autoExtraActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used, "")
 	if len(candidates) == 0 {
 		return model.ConfiguredAction{}, nil, false, rejections
 	}
