@@ -584,6 +584,10 @@ type StepOutcome struct {
 	FlowProxyID string
 	// CurrentNodeProxyID 是加签更新后目标返回的当前节点代理标识。
 	CurrentNodeProxyID string
+	// AddSignAnchorNodeID 是加签写请求实际使用的锚点节点（写前真实当前待办节点，来自任务快照），
+	// 控制层的代理树重绑定必须用它作为插入锚点——它才是新插入节点的父节点，绝不能用离线编译
+	// 配置的节点键（两者在真实流转后可能不一致，用错锚点会导致整棵子链平移错位、无法唯一绑定）。
+	AddSignAnchorNodeID string
 	// AuxiliaryInstanceRef 是转发动作创建的辅助实例引用，供运行记录与后续状态确认使用。
 	AuxiliaryInstanceRef string
 	// DeviationDetected 表示核验重读的实际当前节点与已配置路径的下一个预期节点不一致

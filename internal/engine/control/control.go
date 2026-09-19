@@ -1110,7 +1110,13 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		insertAnchor := ""
 		remapErr := error(nil)
 		if remapAfterAddSign {
-			insertAnchor = oldCurrentNodeID
+			// 插入锚点必须用加签写请求实际使用的锚点（写前真实当前待办节点，来自任务快照），
+			// 而不是离线编译配置的节点键：真实流转后两者可能不一致（例如协同/条件流转后当前节点
+			// 已前移），用配置节点当锚点会把整棵子链平移错位，导致「无法唯一绑定」。
+			insertAnchor = strings.TrimSpace(outcome.AddSignAnchorNodeID)
+			if insertAnchor == "" {
+				insertAnchor = oldCurrentNodeID
+			}
 			if insertAnchor == "" {
 				remapErr = fmt.Errorf("加签重建缺少写前当前节点锚点，无法证明插入位置")
 			}
@@ -1119,8 +1125,10 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		if remapErr == nil {
 			remap, remapErr = s.steps.RemapProxyTreeForRun(ctx, session.runCtx, proxyID, insertAnchor)
 		}
-		if remapErr == nil && newCurrentNodeID != "" && session.preview != nil {
-			mappedCurrentID := remap.NodeIDs[oldCurrentNodeID]
+		if remapErr == nil && newCurrentNodeID != "" && insertAnchor != "" {
+			// 写后当前节点应当就是锚点在新树里的映射：加签把新审批节点插在锚点之后，锚点本身
+			// 仍是当前待办节点，只是换了新 ID。用真实锚点核对，才能证明整棵树重绑定正确。
+			mappedCurrentID := remap.NodeIDs[insertAnchor]
 			if strings.TrimSpace(mappedCurrentID) != newCurrentNodeID {
 				remapErr = fmt.Errorf("加签响应当前节点 %q 与结构映射节点 %q 不一致", newCurrentNodeID, mappedCurrentID)
 			}

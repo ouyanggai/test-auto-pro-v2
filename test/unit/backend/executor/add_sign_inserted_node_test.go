@@ -46,6 +46,73 @@ func TestBuildProxyRemapSurfacesInsertedHumanNode(t *testing.T) {
 	}
 }
 
+// TestBuildProxyRemapAnchorMustBeRealCurrentNode 复现真实加签失败：当前节点经协同/条件流转后已前移，
+// 加签写请求用真实当前节点（协同节点）作锚点插入，其后是带分支的条件结构。用真实锚点重绑定能穿过
+// 分支唯一绑定并暴露插入节点；用离线编译配置的靠前节点当锚点则整棵子链平移错位、绑定失败。
+func TestBuildProxyRemapAnchorMustBeRealCurrentNode(t *testing.T) {
+	// 旧树：start → common(A) → synergy(锚点) → condition(分支) → synergy(尾)；条件两分支各挂一个审批节点。
+	oldTree := &target.FlowNodeTemplate{ID: "s", Type: "start", Child: &target.FlowNodeTemplate{
+		ID: "a", Type: "common", Child: &target.FlowNodeTemplate{
+			ID: "anchor", Type: "synergy", Child: &target.FlowNodeTemplate{
+				ID: "cond", Type: "condition",
+				ConditionNodes: []target.FlowBranchTemplate{
+					{ID: "br0", Sort: 0, Child: &target.FlowNodeTemplate{ID: "b1", Type: "common"}},
+					{ID: "br1", Sort: 1, Child: &target.FlowNodeTemplate{ID: "b2", Type: "common"}},
+				},
+				Child: &target.FlowNodeTemplate{ID: "tail", Type: "synergy"},
+			},
+		},
+	}}
+	// 新树：目标在 synergy 锚点之后插入独立审批节点 ins，其后的条件子链整体下移一跳；所有 ID 重新生成。
+	newTree := &target.FlowNodeTemplate{ID: "s2", Type: "start", Child: &target.FlowNodeTemplate{
+		ID: "a2", Type: "common", Child: &target.FlowNodeTemplate{
+			ID: "anchor2", Type: "synergy", Child: &target.FlowNodeTemplate{
+				ID: "ins", Type: "common", Child: &target.FlowNodeTemplate{
+					ID: "cond2", Type: "condition",
+					ConditionNodes: []target.FlowBranchTemplate{
+						{ID: "br0b", Sort: 0, Child: &target.FlowNodeTemplate{ID: "b1b", Type: "common"}},
+						{ID: "br1b", Sort: 1, Child: &target.FlowNodeTemplate{ID: "b2b", Type: "common"}},
+					},
+					Child: &target.FlowNodeTemplate{ID: "tail2", Type: "synergy"},
+				},
+			},
+		},
+	}}
+	newExecutor := func() *step.Executor {
+		return step.NewExecutor(&taskActionFactsTarget{
+			fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run"}},
+			tree:       newTree,
+		}, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	}
+	baseCtx := func() step.RunContext {
+		runCtx := newRunContext([]model.CompiledActionStep{})
+		runCtx.FlowTree = oldTree
+		runCtx.Nodes = map[string]step.NodeInfo{
+			"a": {Name: "A", Type: "common", TargetNodeID: "a"},
+			"anchor": {Name: "锚点", Type: "synergy", TargetNodeID: "anchor"},
+			"tail": {Name: "尾", Type: "synergy", TargetNodeID: "tail"},
+		}
+		return runCtx
+	}
+
+	// 真实锚点（协同节点）→ 穿过分支唯一绑定并暴露插入节点。
+	remap, err := newExecutor().BuildProxyRemap(context.Background(), baseCtx(), target.Session{}, "proxy-new", "anchor")
+	if err != nil {
+		t.Fatalf("用真实当前节点作锚点应能唯一重绑定：%v", err)
+	}
+	if remap.NodeIDs["anchor"] != "anchor2" || remap.NodeIDs["cond"] != "cond2" || remap.NodeIDs["b1"] != "b1b" || remap.NodeIDs["tail"] != "tail2" {
+		t.Fatalf("真实锚点重绑定映射不正确：%v", remap.NodeIDs)
+	}
+	if len(remap.InsertedHumanNodeIDs) != 1 || remap.InsertedHumanNodeIDs[0] != "ins" {
+		t.Fatalf("应暴露插入的加签审批节点 ins，实际：%v", remap.InsertedHumanNodeIDs)
+	}
+
+	// 错误锚点（离线配置的靠前 common 节点）→ 子链平移错位，绑定失败。
+	if _, err := newExecutor().BuildProxyRemap(context.Background(), baseCtx(), target.Session{}, "proxy-new", "a"); err == nil {
+		t.Fatal("用错误的靠前节点当锚点应绑定失败（证明锚点必须是真实当前节点）")
+	}
+}
+
 // TestBuildProxyRemapNoInsertedNodeOnIsomorphicRebuild 验证同构重建（仅人员明细变化、无新增人工节点）
 // 不会误报插入节点。
 func TestBuildProxyRemapNoInsertedNodeOnIsomorphicRebuild(t *testing.T) {

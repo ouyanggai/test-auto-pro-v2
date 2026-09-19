@@ -1634,6 +1634,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		return outcome, lineNo, nil
 	}
 	if step.Action == model.ActionAddSign && preview.writeErr == nil {
+		// 记录加签写请求实际使用的锚点（写前真实当前待办节点）：控制层重绑定必须用它作插入锚点，
+		// 而不是离线编译配置的节点键——真实流转后两者可能不一致，用错锚点会导致整棵子链平移错位。
+		if request, ok := preview.request.(*target.ActionWriteRequest); ok {
+			outcome.AddSignAnchorNodeID = strings.TrimSpace(request.NodeProxyID)
+		}
 		proxyID, nodeID, parseErr := parseAddSignWriteData(preview.writeResponse.Data)
 		if parseErr != nil {
 			log.Phase("verify", step.Sequence, attemptNo, "加签响应未返回新的流程代理标识，后续任务将重新读取实时待办："+parseErr.Error())
