@@ -1145,6 +1145,11 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	// 避免“数据已保存但接口返回失败”的状态不一致。
 	diagnostics := make([]string, 0, 8)
 	blockingRejections := make([]string, 0, 8)
+	// 取回是硬规则动作：目标 saveRetrieveProcess 不支持跨节点取回——只有「取回节点的直接后继就是当前
+	// 待办节点」才允许。一键随机把取回配到中间节点时，后面节点的固定同意/驳回恢复链会重走并处理掉它的
+	// 后继，取回必然报「下一节点已被处理,不支持取回」。因此只在「路径最后一个可执行审批节点」自动生成取回：
+	// 该节点之后没有别的人工节点会推进其后继，取回在运行时可执行（用户裁决：特殊规则动作只生成在可执行的节点）。
+	lastHumanKey := lastHumanNodeKey(configuration)
 	for _, group := range configuration.Groups {
 		for gi := range group.Nodes {
 			node := &group.Nodes[gi]
@@ -1222,6 +1227,11 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				continue
 			}
 			candidates, rejections := autoExtraActionCandidates(*node, autoConfigureSeed(planID, pathID, node.Key), usedInPath(actions))
+			// 取回只在路径最后一个可执行审批节点自动生成：其余节点上取回会因跨节点规则必然失败，
+			// 直接从候选里剔除并记诊断，换该节点的其它安全候选（如暂存/加签/移交）。
+			if node.Key != lastHumanKey {
+				candidates, rejections = dropRetrieveCandidate(candidates, rejections)
+			}
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
 			diagnostics = append(diagnostics, rejections...)
 			if len(candidates) == 0 {
@@ -1359,6 +1369,43 @@ func diagnosticSummaryOfNode(nodeName string, diagnostics []string) string {
 }
 
 // usedInPath 统计当前路径已保存动作键，供跨节点“未使用动作优先”排序。
+// lastHumanNodeKey 返回配置里最后一个可执行审批/协同节点的键；没有则返回空串。
+// 用于把「取回」这类跨节点硬规则动作只放在其后继不会再被恢复链重走的节点上。
+func lastHumanNodeKey(configuration model.PathConfiguration) string {
+	last := ""
+	for _, group := range configuration.Groups {
+		for _, node := range group.Nodes {
+			switch strings.TrimSpace(node.Kind) {
+			case "common", "synergy":
+				last = node.Key
+			}
+		}
+	}
+	return last
+}
+
+// LastHumanNodeKeyForTest 暴露「路径最后一个可执行审批节点」的判定，供 test 目录锁定取回放置规则。
+func LastHumanNodeKeyForTest(configuration model.PathConfiguration) string {
+	return lastHumanNodeKey(configuration)
+}
+
+// dropRetrieveCandidate 从候选里剔除取回，并补一条淘汰原因（跨节点取回会被目标拒绝）。
+func dropRetrieveCandidate(candidates []autoExtraCandidate, rejections []string) ([]autoExtraCandidate, []string) {
+	kept := candidates[:0]
+	dropped := false
+	for _, candidate := range candidates {
+		if candidate.action.Action == model.ActionRetrieve {
+			dropped = true
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	if dropped {
+		rejections = append(rejections, "取回：仅在路径最后一个可执行审批节点自动配置（目标不支持跨节点取回，中间节点的后继会被恢复链重走处理）")
+	}
+	return kept, rejections
+}
+
 func usedInPath(actions []model.ConfiguredAction) map[string]bool {
 	used := make(map[string]bool, len(actions))
 	for _, action := range actions {
