@@ -1201,7 +1201,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			dynamicGraph, dynamicErr := runtimeReader.GetRuntime(dynamicCtx, run.PlanID, pathRun.MainInstanceRef)
 			cancelDynamic()
 			if dynamicErr == nil {
-				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph)
+				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedNodeIDsFromSteps(steps))
 				deviationGraph = projected
 				dynamicProjectionOK = projectionOK
 				if projectionOK {
@@ -1358,7 +1358,12 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 
 // projectRuntimeGraph 将动态代理图按唯一拓扑位置投影到计划图 ID 空间。
 // 只在静态图的每个节点都能唯一找到对应位置时复用旧 ID；新节点保留目标真实 ID，无法证明时直接返回动态图。
-func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph) (model.FlowGraph, bool) {
+//
+// insertedNodeIDs 是加签在目标新树里新增节点的「权威真实 ID」，来自已落账的加签注入步骤，不是结构猜测：
+// 这些节点在计划图里根本不存在，会与位移后的后继节点同路径同类型，只靠结构无法区分（会把插入节点错当成
+// 后继、真正的后继反而绑不上，甚至整图判为无法绑定而被前端丢弃，导致画布看不到加签节点）。这里先把它们
+// 从「可被静态节点占用」的候选池里排除，静态后继就能按位移正确绑定，插入节点则保留自身真实 ID 单独展示。
+func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs []string) (model.FlowGraph, bool) {
 	staticPaths, staticOK := flowGraphStructuralPaths(staticGraph)
 	dynamicPaths, dynamicOK := flowGraphStructuralPaths(dynamicGraph)
 	if !staticOK || !dynamicOK {
@@ -1376,6 +1381,17 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph) (model.FlowG
 	dynamicType := graphNodeTypeByID(dynamicGraph)
 	dynamicToProjected := make(map[string]string, len(dynamicPaths))
 	usedDynamic := make(map[string]bool, len(dynamicPaths))
+	// 加签插入节点的权威真实 ID 先占位为「已用」：它们没有对应的计划节点，绝不能被任何静态节点绑走。
+	// 只对确实存在于当前动态图里的插入 ID 生效（历史加签节点可能已随流程流转移除）。
+	for _, insertedID := range insertedNodeIDs {
+		insertedID = strings.TrimSpace(insertedID)
+		if insertedID == "" {
+			continue
+		}
+		if _, exists := dynamicPaths[insertedID]; exists {
+			usedDynamic[insertedID] = true
+		}
+	}
 	// 按结构路径从浅到深、稳定排序处理：锚点前的节点先精确绑定，锚点后的位移节点再逐层绑定，
 	// 避免遍历顺序不确定造成位移节点被错绑（加签插入节点会占用锚点原子路径）。
 	staticIDs := make([]string, 0, len(staticPaths))
@@ -2032,12 +2048,44 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 
 // tokenToGraphNodeID 从真实结构推导「配置令牌键 -> 图节点 ID」映射：
 // 编译场景、步骤事实与预览都用令牌键，而画布与侧栏以图节点 ID 为准，键空间必须在这里对齐。
+//
+// 加签插入节点的步骤键是合成键「add-sign-inserted-<真实节点ID>」，不是配置令牌，PathConfigNodeToken
+// 反推不出它；这里额外登记「合成键 -> 图节点 ID」，把插入节点的运行状态、当前步标记与侧栏落到真实图
+// 节点上，而不是幽灵合成键上（否则加签节点即便画出来也永远停在「未开始」）。图里存在插入节点才登记。
 func tokenToGraphNodeID(graph model.FlowGraph) map[string]string {
-	mapping := make(map[string]string, len(graph.Nodes))
+	graphIDs := make(map[string]struct{}, len(graph.Nodes))
 	for _, node := range graph.Nodes {
+		graphIDs[strings.TrimSpace(node.ID)] = struct{}{}
+	}
+	mapping := make(map[string]string, len(graph.Nodes)*2)
+	for _, node := range graph.Nodes {
+		id := strings.TrimSpace(node.ID)
 		mapping[analyzer.PathConfigNodeToken(node.ID)] = node.ID
+		// 若某图节点 ID 恰是某加签插入节点的真实 ID，则把它的合成键也指向该图节点。
+		if _, exists := graphIDs[id]; exists {
+			mapping[control.AddSignInsertedNodeKey(id)] = node.ID
+		}
 	}
 	return mapping
+}
+
+// insertedNodeIDsFromSteps 从已落账步骤里提取加签插入节点的权威真实 ID：注入步骤的 NodeKey 是合成键
+// 「add-sign-inserted-<真实节点ID>」，还原出的真实 ID 用于投影时把插入节点从静态绑定候选池里排除。
+func insertedNodeIDsFromSteps(steps []model.RunStep) []string {
+	seen := make(map[string]struct{}, len(steps))
+	ids := make([]string, 0, len(steps))
+	for _, stepRecord := range steps {
+		id := control.InsertedNodeIDFromKey(stepRecord.NodeKey)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // lastNodeOf 返回最后一步所在的节点键。
@@ -2297,8 +2345,9 @@ func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRu
 }
 
 // ProjectRuntimeGraphForTest 暴露运行期代理树投影，供根目录定向测试锁定加签重建后的结构绑定。
-func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph) (model.FlowGraph, bool) {
-	return projectRuntimeGraph(staticGraph, dynamicGraph)
+// insertedNodeIDs 是加签插入节点的权威真实 ID（来自已落账注入步骤），测试据此复现真实投影输入。
+func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs ...string) (model.FlowGraph, bool) {
+	return projectRuntimeGraph(staticGraph, dynamicGraph, insertedNodeIDs)
 }
 
 // RunDetailGraphTimeoutForTest 暴露详情结构读取预算，供 test 目录锁定正常目标读取不被过短预算截断。

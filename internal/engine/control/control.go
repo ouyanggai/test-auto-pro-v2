@@ -193,6 +193,26 @@ func (s *Service) logRemapFailure(pathRunID uint64, session *activeStep, reason 
 	}, stepNo)
 }
 
+// AddSignInsertedNodeKeyPrefix 是加签插入节点在运行步骤里使用的合成键前缀。
+// 键形如「add-sign-inserted-<目标真实节点ID>」：注入步骤、步骤事实与画布投影都靠这个前缀识别
+// 插入节点，并从键里还原出目标真实节点 ID。改前缀会破坏画布对加签节点的定位，务必与还原逻辑同步。
+const AddSignInsertedNodeKeyPrefix = "add-sign-inserted-"
+
+// AddSignInsertedNodeKey 按目标真实节点 ID 生成加签插入节点的合成步骤键。
+func AddSignInsertedNodeKey(nodeID string) string {
+	return AddSignInsertedNodeKeyPrefix + strings.TrimSpace(nodeID)
+}
+
+// InsertedNodeIDFromKey 从加签插入节点的合成步骤键还原目标真实节点 ID；不是插入节点键时返回空串。
+// 画布投影据此把插入节点的运行状态落到真实图节点上，而不是幽灵合成键上。
+func InsertedNodeIDFromKey(nodeKey string) string {
+	key := strings.TrimSpace(nodeKey)
+	if !strings.HasPrefix(key, AddSignInsertedNodeKeyPrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(key, AddSignInsertedNodeKeyPrefix))
+}
+
 // injectInsertedNodeApprovals 把加签在目标新树里新增的独立审批节点补成运行步骤，紧跟当前加签步骤之后，
 // 使其像普通节点一样被处理：每个插入节点补一条独立放行组（ReleaseRequired=true）的同意步骤——手动
 // 模式在其边界等待放行（受控），自动模式自动推进；处理人/会签由执行器按插入节点自身的真实待办解析，
@@ -213,7 +233,7 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 		if nodeID == "" {
 			continue
 		}
-		nodeKey := "add-sign-inserted-" + nodeID
+		nodeKey := AddSignInsertedNodeKey(nodeID)
 		session.runCtx.Nodes[nodeKey] = step.NodeInfo{Name: "加签审批节点", Type: "common", TargetNodeID: nodeID}
 		insertedKeys = append(insertedKeys, nodeKey)
 		insertedSet[nodeKey] = true
