@@ -171,6 +171,8 @@ type HistoryReplayJob struct {
 	LeaseOwner     string     `json:"-"`
 	LeaseExpiresAt *time.Time `json:"-"`
 	FencingToken   uint64     `json:"-"`
+	// ActionMode 是本任务的一键配置动作模式（approve_only|random），随任务持久化供 worker 与重启恢复读取。
+	ActionMode string `json:"-"`
 }
 
 // HistoryReplayItem 是任务内单路径检查点和回放结果。
@@ -206,6 +208,23 @@ type HistoryReplayItemPage struct {
 type HistoryReplayCreateInput struct {
 	PathIDs  []uint64 `json:"pathIds"`
 	Revision uint64   `json:"revision"`
+	// ActionMode 是一键配置动作模式：approve_only=每一步都同意（只配人员+固定同意，不加随机动作）；
+	// random（默认，含空串）=每个可执行节点随机补一条额外动作。仅这两种（用户裁决：先只做①②）。
+	ActionMode string `json:"actionMode,omitempty"`
+}
+
+// 一键配置动作模式取值。
+const (
+	HistoryReplayActionModeRandom      = "random"
+	HistoryReplayActionModeApproveOnly = "approve_only"
+)
+
+// NormalizeHistoryReplayActionMode 归一动作模式：空串或未知值一律回落 random，保持历史行为。
+func NormalizeHistoryReplayActionMode(mode string) string {
+	if mode == HistoryReplayActionModeApproveOnly {
+		return HistoryReplayActionModeApproveOnly
+	}
+	return HistoryReplayActionModeRandom
 }
 
 // HistoryBranchPatch 记录系统对条件驱动字段所做的最小修改。

@@ -70,12 +70,15 @@ export function savePathHistorySource(
   })
 }
 
-// createHistoryReplay 只提交用户明确勾选的路径 ID 和来源修订，不提交目标正文或派生状态。
-export function createHistoryReplay(planId: string, pathIds: number[], revision: number, idempotencyKey: string): Promise<HistoryReplayJob> {
+// HistoryReplayActionMode 是一键配置动作模式：approve_only=每一步都同意（快速跑通）；random=每节点随机一个动作。
+export type HistoryReplayActionMode = 'approve_only' | 'random'
+
+// createHistoryReplay 只提交用户明确勾选的路径 ID、来源修订与动作模式，不提交目标正文或派生状态。
+export function createHistoryReplay(planId: string, pathIds: number[], revision: number, idempotencyKey: string, actionMode: HistoryReplayActionMode = 'random'): Promise<HistoryReplayJob> {
   return requestReplay<HistoryReplayJob>(`/api/plans/${encodeURIComponent(planId)}/history-replays`, {
     method: 'POST',
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify({ pathIds, revision }),
+    body: JSON.stringify({ pathIds, revision, actionMode }),
   })
 }
 

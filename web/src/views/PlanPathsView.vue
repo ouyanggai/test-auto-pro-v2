@@ -11,6 +11,8 @@ import {
   NInput,
   NModal,
   NProgress,
+  NRadioButton,
+  NRadioGroup,
   NResult,
   NSpace,
   NSpin,
@@ -50,6 +52,7 @@ import type { ExecutionPath, ExecutionPathChoice, ExecutionPathWorkspaceMode, Pa
 import {
   cancelHistoryReplay,
   createHistoryReplay,
+  type HistoryReplayActionMode,
   fetchActiveHistoryReplay,
   fetchHistoryReplay,
   resumeHistoryReplay,
@@ -104,6 +107,8 @@ const pathSelectionError = ref('')
 const preparationJob = ref<HistoryReplayJob | null>(null)
 const preparationLoading = ref(false)
 const dataPickerOpen = ref(false)
+// 一键配置动作模式（用户裁决：先只做两种）——approve_only=每一步都同意跑通；random=每节点随机一个动作。
+const oneClickMode = ref<HistoryReplayActionMode>('random')
 // 运行入口：计划详情右上角的「运行」只启动当前勾选路径，与路径页的勾选范围严格一致。
 const runPreflightOpen = ref(false)
 const SAVED_PATH_ITEM_SIZE = 44
@@ -380,6 +385,7 @@ async function startSelectedPreparation() {
       [...selectedRunPathIDs.value].map(pathID => Number(pathID)),
       0,
       createUuid(),
+      oneClickMode.value,
     )
     schedulePreparationPoll()
   }
@@ -878,6 +884,10 @@ onMounted(() => {
               <div class="path-prepare__header-actions">
 							<n-button v-if="paths.length" size="small" secondary :disabled="preparationBusy || allPathsSelectedForRun" @click="setAllRunPathSelections(true)">全选</n-button>
                 <n-button v-if="paths.length" size="small" secondary :disabled="preparationBusy || selectedRunPathIDs.size === 0" @click="setAllRunPathSelections(false)">取消全选</n-button>
+							<n-radio-group v-if="planMutable && paths.length" v-model:value="oneClickMode" size="small" :disabled="preparationBusy">
+								<n-radio-button value="random">每节点随机一个动作</n-radio-button>
+								<n-radio-button value="approve_only">每一步都同意（快速跑通）</n-radio-button>
+							</n-radio-group>
 							<n-button
 								v-if="planMutable && paths.length"
 								size="small"

@@ -76,7 +76,7 @@ type HistoryReplayService struct {
 
 // HistoryReplayActionConfigurator 在一键配置时按真实门禁为路径补齐节点动作配置。
 type HistoryReplayActionConfigurator interface {
-	AutoConfigurePathActions(ctx context.Context, planID, pathID uint64) error
+	AutoConfigurePathActions(ctx context.Context, planID, pathID uint64, actionMode string) error
 }
 
 // NewHistoryReplayService 组装历史回放任务的计划、路径、目标只读和持久化边界。
@@ -147,7 +147,7 @@ func (s *HistoryReplayService) Create(ctx context.Context, planID uint64, input 
 		})
 	}
 	now := s.now().UTC()
-	job := model.HistoryReplayJob{ID: idempotencyKey, IdempotencyKey: idempotencyKey, PlanID: planID, Status: model.HistoryReplayStatusQueued, CreatedAt: now, UpdatedAt: now}
+	job := model.HistoryReplayJob{ID: idempotencyKey, IdempotencyKey: idempotencyKey, PlanID: planID, Status: model.HistoryReplayStatusQueued, ActionMode: model.NormalizeHistoryReplayActionMode(input.ActionMode), CreatedAt: now, UpdatedAt: now}
 	persisted, _, err := s.store.CreateReplay(ctx, job, items)
 	if err != nil {
 		return model.HistoryReplayJob{}, mapHistoryReplayRepositoryError(err)
@@ -356,7 +356,7 @@ func (s *HistoryReplayService) startWorker(requestContext context.Context, job m
 			s.mu.Unlock()
 		}()
 		defer cancel()
-		s.runWorker(ctx, job.ID, job.PlanID)
+		s.runWorker(ctx, job.ID, job.PlanID, job.ActionMode)
 	}()
 }
 
@@ -381,7 +381,7 @@ func (s *HistoryReplayService) stopWorker(jobID string) {
 }
 
 // runWorker 逐批领取明细；取消只阻止后续领取，已完成检查点不回滚。
-func (s *HistoryReplayService) runWorker(ctx context.Context, jobID string, planID uint64) {
+func (s *HistoryReplayService) runWorker(ctx context.Context, jobID string, planID uint64, actionMode string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -401,7 +401,7 @@ func (s *HistoryReplayService) runWorker(ctx context.Context, jobID string, plan
 			if ctx.Err() != nil {
 				return
 			}
-			result := s.replayItem(ctx, planID, item)
+			result := s.replayItem(ctx, planID, item, actionMode)
 			result.LeaseOwner, result.FencingToken = s.worker, item.FencingToken
 			if err := s.store.CompleteReplayItem(context.Background(), jobID, item.ID, result, s.now().UTC()); err != nil {
 				if errors.Is(err, repository.ErrHistoryReplayState) {
@@ -415,7 +415,7 @@ func (s *HistoryReplayService) runWorker(ctx context.Context, jobID string, plan
 }
 
 // replayItem 在单路径边界内读取快照、复验条件和运行时，任何证据缺口都保留原始数据并转 needs_input。
-func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, item model.HistoryReplayItem) model.HistoryReplayItem {
+func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, item model.HistoryReplayItem, actionMode string) model.HistoryReplayItem {
 	result := model.HistoryReplayItem{
 		ID: item.ID, JobID: item.JobID, PathID: item.PathID, PathRevision: item.PathRevision, SnapshotID: item.SnapshotID,
 		Status: model.HistoryReplayItemStatusNeedsInput, DataStatus: model.HistoryDataStatusNeedsInput,
@@ -446,7 +446,7 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 	configurator := s.actions
 	s.mu.Unlock()
 	if configurator != nil {
-		if err := configurator.AutoConfigurePathActions(ctx, planID, item.PathID); err != nil {
+		if err := configurator.AutoConfigurePathActions(ctx, planID, item.PathID, actionMode); err != nil {
 			// F-034：一键配置的淘汰原因（节点 X 未找到可安全配置的额外动作：原因 Y）随错误文案透出，
 			// 不再用一句泛化提示掩盖具体节点；写入本身已按部分成功落盘。
 			message := "节点动作未能自动配置完成，请打开路径手工确认"

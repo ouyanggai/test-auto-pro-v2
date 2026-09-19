@@ -888,13 +888,14 @@ func (r *HistoryReplayRepository) CreateReplay(ctx context.Context, job model.Hi
 	job.Running, job.Ready, job.NeedsInput, job.Affected, job.Failed, job.Cancelled = 0, 0, 0, 0, 0, 0
 	job.CreatedAt, job.UpdatedAt = now, now
 	job.CompletedAt = nil
+	actionMode := model.NormalizeHistoryReplayActionMode(job.ActionMode)
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO test_history_replay_jobs
   (id, plan_id, idempotency_key, status, total_count, pending_count, running_count,
    ready_count, needs_input_count, affected_count, failed_count, cancelled_count,
-   lease_owner, lease_expires_at, fencing_token, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, ?, ?)`,
-		job.ID, job.PlanID, job.IdempotencyKey, job.Status, job.Total, job.Pending, now, now)
+   lease_owner, lease_expires_at, fencing_token, action_mode, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, NULL, NULL, 0, ?, ?, ?)`,
+		job.ID, job.PlanID, job.IdempotencyKey, job.Status, job.Total, job.Pending, actionMode, now, now)
 	if err != nil {
 		return model.HistoryReplayJob{}, false, historyReplayCreateError(err)
 	}
@@ -1279,7 +1280,7 @@ FROM test_history_replay_items WHERE job_id = ? AND id > ? ORDER BY id LIMIT ?`,
 
 const historyReplayJobSelect = `SELECT id, plan_id, idempotency_key, status, total_count, pending_count,
 running_count, ready_count, needs_input_count, affected_count, failed_count, cancelled_count,
-lease_owner, lease_expires_at, fencing_token, created_at, updated_at, completed_at
+lease_owner, lease_expires_at, fencing_token, action_mode, created_at, updated_at, completed_at
 FROM test_history_replay_jobs`
 
 // historyReplayItemSelect 是任务明细的统一列顺序，所有读取都按同一 JSON 解码边界处理。
@@ -1435,7 +1436,7 @@ func scanHistoryReplayJob(row interface{ Scan(...any) error }) (model.HistoryRep
 	var job model.HistoryReplayJob
 	var leaseOwner sql.NullString
 	var leaseExpires, completed sql.NullTime
-	err := row.Scan(&job.ID, &job.PlanID, &job.IdempotencyKey, &job.Status, &job.Total, &job.Pending, &job.Running, &job.Ready, &job.NeedsInput, &job.Affected, &job.Failed, &job.Cancelled, &leaseOwner, &leaseExpires, &job.FencingToken, &job.CreatedAt, &job.UpdatedAt, &completed)
+	err := row.Scan(&job.ID, &job.PlanID, &job.IdempotencyKey, &job.Status, &job.Total, &job.Pending, &job.Running, &job.Ready, &job.NeedsInput, &job.Affected, &job.Failed, &job.Cancelled, &leaseOwner, &leaseExpires, &job.FencingToken, &job.ActionMode, &job.CreatedAt, &job.UpdatedAt, &completed)
 	if err != nil {
 		return model.HistoryReplayJob{}, err
 	}

@@ -1099,7 +1099,8 @@ func autoCandidateDisabledReason(item model.PathConfigActionCatalogItem) string 
 //  4. 候选先套目标静态动作矩阵（发起节点仅保存草稿；审批节点暂存/加签/移交/不同意/回退/取回；
 //     系统节点不补动作），再逐候选完整编译；无安全候选时报告节点名与原因，不以“已配置”凑数。
 //  5. 实例动作容器不参与本操作的自动补配：实例动作影响主实例生命周期，留给人工决策。
-func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID, pathID uint64) error {
+func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID, pathID uint64, actionMode string) error {
+	approveOnly := model.NormalizeHistoryReplayActionMode(actionMode) == model.HistoryReplayActionModeApproveOnly
 	if s.historyConfigStore == nil {
 		return &PathConfigError{Kind: PathConfigErrorStorage, Message: "动作配置存储暂不可用"}
 	}
@@ -1223,6 +1224,12 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			// 固定尾动作由编译器生成，有它的节点仍然需要补配。已有额外动作的节点
 			// 只补人员，人员补齐即提交（这是该节点既有配置的补全，不是半成品）。
 			if hasExtraUserAction(actions, node.Key) {
+				commitPendingPersons()
+				continue
+			}
+			// 「每一步都同意」模式：不补任何随机额外动作，只提交本节点人员策略；固定同意由场景编译器生成，
+			// 每个可执行节点都会有一条默认同意，实例一路同意跑到底（用户裁决：快速跑通模式）。
+			if approveOnly {
 				commitPendingPersons()
 				continue
 			}

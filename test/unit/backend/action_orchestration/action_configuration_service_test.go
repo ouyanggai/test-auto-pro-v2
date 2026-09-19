@@ -877,7 +877,7 @@ func TestAutoConfigureRejectsCountersignPersonShortageEndToEnd(t *testing.T) {
 		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "会签流程", RenderType: target.FormRenderTypeFormMaking}},
 		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path})
 	config.SetHistoryWorkspaceStores(store, store)
-	err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID)
+	err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, "")
 	if err == nil {
 		t.Fatal("人数不足时必须返回包含节点和人数原因的明确错误")
 	}
