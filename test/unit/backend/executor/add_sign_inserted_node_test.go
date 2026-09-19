@@ -88,9 +88,9 @@ func TestBuildProxyRemapAnchorMustBeRealCurrentNode(t *testing.T) {
 		runCtx := newRunContext([]model.CompiledActionStep{})
 		runCtx.FlowTree = oldTree
 		runCtx.Nodes = map[string]step.NodeInfo{
-			"a": {Name: "A", Type: "common", TargetNodeID: "a"},
+			"a":      {Name: "A", Type: "common", TargetNodeID: "a"},
 			"anchor": {Name: "锚点", Type: "synergy", TargetNodeID: "anchor"},
-			"tail": {Name: "尾", Type: "synergy", TargetNodeID: "tail"},
+			"tail":   {Name: "尾", Type: "synergy", TargetNodeID: "tail"},
 		}
 		return runCtx
 	}

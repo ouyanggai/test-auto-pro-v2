@@ -306,6 +306,12 @@ type RunConfig struct {
 	StepProgressStaleAfter time.Duration
 	// StatusPollInterval 是前端状态轮询间隔；强制单步下状态只在放行后变化，轮询够用。
 	StatusPollInterval time.Duration
+	// HandlerGenerationWait 是「目标节点已到达但处理人/待办尚未生成」时的最长等待预算：
+	// 目标是人工流转的审批系统，节点流转后生成下一处理人可能有明显延迟，这里给足等待时间再判，
+	// 避免把「目标暂时未就绪」误当成硬阻断。预算耗尽仍未生成才如实阻塞，绝不猜测人员。
+	HandlerGenerationWait time.Duration
+	// HandlerGenerationPollInterval 是等待处理人生成期间的复查间隔（只读，不发写请求）。
+	HandlerGenerationPollInterval time.Duration
 }
 
 // 运行参数的环境变量名与兜底默认值。
@@ -319,6 +325,8 @@ const (
 	runWriteRetryMaxDelayEnv  = "TEST_AUTO_PRO_WRITE_CONNECT_RETRY_MAX_DELAY"
 	runStepStaleAfterEnv      = "TEST_AUTO_PRO_STEP_STALE_AFTER"
 	runStatusPollIntervalEnv  = "TEST_AUTO_PRO_STATUS_POLL_INTERVAL"
+	runHandlerWaitEnv         = "TEST_AUTO_PRO_HANDLER_GENERATION_WAIT"
+	runHandlerPollIntervalEnv = "TEST_AUTO_PRO_HANDLER_GENERATION_POLL_INTERVAL"
 
 	defaultRunLeaseDuration       = 5 * time.Minute
 	defaultRunReadRetryAttempts   = 8
@@ -329,20 +337,26 @@ const (
 	defaultRunWriteRetryMaxDelay  = 10 * time.Second
 	defaultRunStepStaleAfter      = 10 * time.Minute
 	defaultRunStatusPollInterval  = 2 * time.Second
+	// DefaultHandlerGenerationWait / DefaultHandlerGenerationPollInterval 导出给执行器：配置为零值（如单测直接
+	// 构造 RunConfig）时兜底，避免等待预算退化成 0 而立刻阻断。
+	DefaultHandlerGenerationWait         = time.Minute
+	DefaultHandlerGenerationPollInterval = 3 * time.Second
 )
 
 // LoadRunConfig 读取执行器运行参数；非法或缺省时使用上述默认值。
 func LoadRunConfig() RunConfig {
 	return RunConfig{
-		LeaseDuration:              durationFromEnv(runLeaseDurationEnv, defaultRunLeaseDuration),
-		ReadOnlyRetryAttempts:      intFromEnv(runReadRetryAttemptsEnv, defaultRunReadRetryAttempts),
-		ReadOnlyRetryBaseDelay:     durationFromEnv(runReadRetryBaseDelayEnv, defaultRunReadRetryBaseDelay),
-		ReadOnlyRetryMaxDelay:      durationFromEnv(runReadRetryMaxDelayEnv, defaultRunReadRetryMaxDelay),
-		WriteConnectRetryAttempts:  intFromEnv(runWriteRetryAttemptsEnv, defaultRunWriteRetryAttempts),
-		WriteConnectRetryBaseDelay: durationFromEnv(runWriteRetryBaseDelayEnv, defaultRunWriteRetryBaseDelay),
-		WriteConnectRetryMaxDelay:  durationFromEnv(runWriteRetryMaxDelayEnv, defaultRunWriteRetryMaxDelay),
-		StepProgressStaleAfter:     durationFromEnv(runStepStaleAfterEnv, defaultRunStepStaleAfter),
-		StatusPollInterval:         durationFromEnv(runStatusPollIntervalEnv, defaultRunStatusPollInterval),
+		LeaseDuration:                 durationFromEnv(runLeaseDurationEnv, defaultRunLeaseDuration),
+		ReadOnlyRetryAttempts:         intFromEnv(runReadRetryAttemptsEnv, defaultRunReadRetryAttempts),
+		ReadOnlyRetryBaseDelay:        durationFromEnv(runReadRetryBaseDelayEnv, defaultRunReadRetryBaseDelay),
+		ReadOnlyRetryMaxDelay:         durationFromEnv(runReadRetryMaxDelayEnv, defaultRunReadRetryMaxDelay),
+		WriteConnectRetryAttempts:     intFromEnv(runWriteRetryAttemptsEnv, defaultRunWriteRetryAttempts),
+		WriteConnectRetryBaseDelay:    durationFromEnv(runWriteRetryBaseDelayEnv, defaultRunWriteRetryBaseDelay),
+		WriteConnectRetryMaxDelay:     durationFromEnv(runWriteRetryMaxDelayEnv, defaultRunWriteRetryMaxDelay),
+		StepProgressStaleAfter:        durationFromEnv(runStepStaleAfterEnv, defaultRunStepStaleAfter),
+		StatusPollInterval:            durationFromEnv(runStatusPollIntervalEnv, defaultRunStatusPollInterval),
+		HandlerGenerationWait:         durationFromEnv(runHandlerWaitEnv, DefaultHandlerGenerationWait),
+		HandlerGenerationPollInterval: durationFromEnv(runHandlerPollIntervalEnv, DefaultHandlerGenerationPollInterval),
 	}
 }
 

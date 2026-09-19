@@ -15,7 +15,8 @@ import (
 )
 
 // F-035/T07 处理人生成事实：目标节点已到达但 currentAuditUserInfo/待办为空时，
-// 有界轮询（≤5 次、≤10 秒）只读复查；超时后按 assignment_missing 阻塞，不显示“已处理”，
+// 有界轮询只读复查（预算来自配置 HandlerGenerationWait/PollInterval，生产默认 1 分钟、每 3 秒一次；
+// 单测用 10ms/2ms 压成 ≤5 次）；预算耗尽后按 assignment_missing 阻塞，不显示“已处理”，
 // 不重发写请求，也不回退计划账号或候选人。
 
 // pollTarget 是可控的目标假件：前 N 次读取无处理人，之后按设定出现处理人。

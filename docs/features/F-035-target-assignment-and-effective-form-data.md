@@ -78,7 +78,7 @@
   差异端点已在矩阵中登记并修正），新增 `test/contracts/f035/protocol/action_bodies_contract_test.go` 把每个动作的
   实际构造器输出与矩阵逐字段对照（required 必须存在、forbidden 不得出现）。
 - T07：实例事实新增“目标节点已到达但未生成 currentAuditUserInfo/待办”分型；进入“正在生成处理人”有界轮询
-  （≤5 次、≤10 秒、只读复查、绝不重发写请求）；超时后门禁按 `assignment_missing` 阻塞并显示“目标节点未生成处理人”。
+  （预算来自配置 TEST_AUTO_PRO_HANDLER_GENERATION_WAIT / _POLL_INTERVAL，默认 1 分钟、每 3 秒复查一次；只读复查、绝不重发写请求）；超时后门禁按 `assignment_missing` 阻塞并显示“目标节点未生成处理人”。
 - T08：回放状态拆分——新增 `HistoryDataStatusBaseReady`（基础数据已生成），批量回放不再伪装成最终 `ready`；
   前端路径列表与类型定义同步展示新状态。2026-09-15 用户裁决去掉浏览器验证环节：静态下拉的选项绑定由服务端
   按目标渲染口径解析回填（`path_data_static_options.go`），回放与保存均不再依赖浏览器 form-runtime；

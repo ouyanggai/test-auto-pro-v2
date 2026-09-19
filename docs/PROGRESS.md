@@ -190,7 +190,7 @@
   FormMaking 只发 `formProxyId`、无表单只发 `flowProxyId`（submit/reSubmit 强制互斥），运行上下文新增 `FormProxyID`
   从模板唯一 Forms 项取得（多表单阻塞）；计划账号身份扩展岗位事实（目标人员目录 dutyId/dutyName），身份读取失败
   与岗位缺失分别落 `IDENTITY_READ_FAILED`/`IDENTITY_DUTY_MISSING` 阻断，历史账号值不得进入请求；目标节点已到达但无
-  currentAuditUserInfo/待办时进入有界轮询（≤5 次、≤10 秒、只读），超时按 `assignment_missing` 阻塞并显示
+  currentAuditUserInfo/待办时进入有界轮询（预算来自配置，默认 1 分钟、每 3 秒复查一次、只读），超时按 `assignment_missing` 阻塞并显示
   “目标节点未生成处理人”，不再显示“当前待办已经处理”；step.log 新增协议摘要行。内网系统按用户裁决：日志原样记录
   完整请求/响应（含 SID 与表单正文），不做脱敏，已写入 AGENTS.md。新增 test/contracts/f035/protocol 与 identity、
   test/unit/backend/form_data_by_node、执行器 assignment_poll 定向用例与 f035/drift 漂移脚本。

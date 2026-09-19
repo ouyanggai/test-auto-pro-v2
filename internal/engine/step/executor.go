@@ -44,6 +44,10 @@ type Executor struct {
 	runtimeRunner RuntimeRunner
 	// runtimeBaseURL 是页面装载载荷的目标网关地址；空串=页面用相对路径请求。
 	runtimeBaseURL string
+	// handlerWait/handlerPollInterval 是「目标节点已到达但处理人尚未生成」的等待预算与复查间隔，
+	// 全部来自配置不写死；目标是人工流转系统，生成下一处理人可能有明显延迟，等够了再判。
+	handlerWait         time.Duration
+	handlerPollInterval time.Duration
 }
 
 // LogFactory 由装配层注入：复用 F-013 的运行目录路由打开 step.log。
@@ -66,8 +70,18 @@ func NewExecutor(targetClient TargetClient, sessions SessionProvider, runState R
 			WriteConnectAttempts: runConfig.WriteConnectRetryAttempts, WriteConnectBaseDelay: runConfig.WriteConnectRetryBaseDelay,
 			WriteConnectMaxDelay: runConfig.WriteConnectRetryMaxDelay, Now: now,
 		},
-		now: now,
+		now:                 now,
+		handlerWait:         orDefaultDuration(runConfig.HandlerGenerationWait, config.DefaultHandlerGenerationWait),
+		handlerPollInterval: orDefaultDuration(runConfig.HandlerGenerationPollInterval, config.DefaultHandlerGenerationPollInterval),
 	}
+}
+
+// orDefaultDuration 在配置为零值或负值时回退默认值，避免等待预算退化成 0。
+func orDefaultDuration(value, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // SetLogFactory 注入 step.log 工厂；必须在首次使用前调用。
@@ -1116,9 +1130,14 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 // 轮询期间任何一次读到处理人或待办即返回最新事实；全部超时仍无处理人时返回阻塞结论，
 // 停止原因按 assignment_missing 分型（目标没有产生处理人），不伪装成“已处理”。
 func (e *Executor) pollForHandlerGeneration(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, log *StepLog) (InstanceFacts, *target.Session, error) {
-	const maxPolls = 5
-	const pollInterval = 2 * time.Second
-	const totalBudget = 10 * time.Second
+	// 预算来自配置（TEST_AUTO_PRO_HANDLER_GENERATION_WAIT / _POLL_INTERVAL），不再写死 10 秒：
+	// 用户裁决——目标暂时未就绪要多等一会、重试后再判，而不是立刻硬阻断整条运行。
+	totalBudget := orDefaultDuration(e.handlerWait, config.DefaultHandlerGenerationWait)
+	pollInterval := orDefaultDuration(e.handlerPollInterval, config.DefaultHandlerGenerationPollInterval)
+	maxPolls := int(totalBudget / pollInterval)
+	if maxPolls < 1 {
+		maxPolls = 1
+	}
 	deadline := e.now().Add(totalBudget)
 	facts := InstanceFacts{}
 	for attempt := 1; attempt <= maxPolls; attempt++ {
@@ -1144,7 +1163,15 @@ func (e *Executor) pollForHandlerGeneration(ctx context.Context, runCtx RunConte
 	if facts.ReadError != "" {
 		return facts, nil, fmt.Errorf("目标节点未生成处理人，且复查读取失败：%s", facts.ReadError)
 	}
-	return facts, nil, fmt.Errorf("目标节点已到达但 %d 秒内未生成处理人和待办（assignment_missing）；已阻塞本步，不发送写请求，请到目标平台确认该节点的处理人配置", int(totalBudget.Seconds()))
+	return facts, nil, fmt.Errorf("目标节点已到达，但等了 %s 仍未生成处理人和待办（assignment_missing）；本步没有发送任何写请求，请到目标平台确认该节点的处理人配置", humanWaitDuration(totalBudget))
+}
+
+// humanWaitDuration 把等待预算写成人能读的时长：满一秒按秒，不足一秒按毫秒（单测用毫秒级预算时不显示「0 秒」）。
+func humanWaitDuration(d time.Duration) string {
+	if d >= time.Second {
+		return fmt.Sprintf("%d 秒", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%d 毫秒", d.Milliseconds())
 }
 
 // targetSkippedStepReason 判断本步节点是否已被目标自动跳过（F-034：按目标 isSkip 与审批类型分型）。

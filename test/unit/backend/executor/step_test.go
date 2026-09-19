@@ -25,6 +25,9 @@ func fixedRunConfig() config.RunConfig {
 		ReadOnlyRetryMaxDelay:  2 * time.Millisecond,
 		StepProgressStaleAfter: time.Minute,
 		StatusPollInterval:     time.Millisecond,
+		// 处理人生成等待预算：单测用毫秒级预算把「时间维度」压成「次数维度」（10ms/2ms → 最多 5 次复查）。
+		HandlerGenerationWait:         10 * time.Millisecond,
+		HandlerGenerationPollInterval: 2 * time.Millisecond,
 	}
 }
 
