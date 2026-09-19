@@ -79,14 +79,30 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 
 	nodeIDs := make(map[string]string, len(oldPaths))
 	usedNewIDs := make(map[string]string, len(oldPaths))
-	for oldID, path := range oldPaths {
+	// 按结构路径稳定排序遍历，保证「第一个绑定失败节点」可复现，也便于诊断输出有确定顺序。
+	oldOrder := make([]string, 0, len(oldPaths))
+	for oldID := range oldPaths {
+		oldOrder = append(oldOrder, oldID)
+	}
+	sort.SliceStable(oldOrder, func(i, j int) bool { return oldPaths[oldOrder[i]] < oldPaths[oldOrder[j]] })
+	for _, oldID := range oldOrder {
+		path := oldPaths[oldID]
 		expectedPath := path
 		if anchorPrefix != "" && strings.HasPrefix(path, anchorPrefix+"/child") {
 			expectedPath = anchorPrefix + "/child" + strings.TrimPrefix(path, anchorPrefix)
 		}
 		newID, exists := newIDByPath[expectedPath]
 		if !exists || newTypes[newID] != oldTypes[oldID] {
-			return ProxyRemap{}, fmt.Errorf("旧节点 %q 的结构路径 %q 无法唯一绑定到加签后流程树（期望路径 %q）", oldID, path, expectedPath)
+			// 诊断输出：把锚点、失败节点与新旧树的关键结构节点对照打进错误，供 step.log/事件定位
+			// 到底是锚点错、分支下标错位还是节点类型串变化（不含空节点，避免刷屏）。
+			gotType := "<无此路径>"
+			if exists {
+				gotType = newTypes[newID]
+			}
+			return ProxyRemap{}, fmt.Errorf(
+				"旧节点 %q(类型 %s) 的结构路径 %q 无法唯一绑定到加签后流程树（期望路径 %q，实际命中类型 %s）；加签重绑定结构诊断：%s",
+				oldID, oldTypes[oldID], path, expectedPath, gotType,
+				describeProxyStructure(insertAfterOldNodeID, anchorPrefix, oldPaths, oldTypes, newPaths, newTypes))
 		}
 		if previous, exists := usedNewIDs[newID]; exists && previous != oldID {
 			return ProxyRemap{}, fmt.Errorf("加签后节点 %q 被旧节点 %q 和 %q 重复绑定", newID, previous, oldID)
@@ -238,6 +254,43 @@ func ApplyProxyRemap(runCtx *RunContext, remap ProxyRemap) error {
 	runCtx.SubmitBranchTargetNodeID = remap.SubmitBranchTargetNodeID
 	runCtx.NextNodeAuditors = cloneNextNodeAuditors(remap.NextNodeAuditors)
 	return nil
+}
+
+// describeProxyStructure 生成加签重绑定失败诊断：锚点 + 新旧树关键结构节点（排除空/路由节点，
+// 避免刷屏）按结构路径对照。用于定位到底是锚点位置错、分支下标错位还是节点类型串变化。
+func describeProxyStructure(anchorID, anchorPrefix string, oldPaths, oldTypes, newPaths, newTypes map[string]string) string {
+	keep := func(t string) bool {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "start", "common", "synergy", "condition", "parallel", "manual", "merge":
+			return true
+		default:
+			return false
+		}
+	}
+	dump := func(paths, types map[string]string) string {
+		lines := make([]string, 0, len(paths))
+		for id, p := range paths {
+			if !keep(types[id]) {
+				continue
+			}
+			short := id
+			if len(short) > 10 {
+				short = short[:10]
+			}
+			lines = append(lines, fmt.Sprintf("[%s] %s (%s)", types[id], p, short))
+		}
+		sort.Strings(lines)
+		if len(lines) == 0 {
+			return "（无关键结构节点）"
+		}
+		return strings.Join(lines, " | ")
+	}
+	anchorShort := strings.TrimSpace(anchorID)
+	if len(anchorShort) > 10 {
+		anchorShort = anchorShort[:10]
+	}
+	return fmt.Sprintf("锚点=%s(路径 %q)；旧树关键节点=%s；新树关键节点=%s",
+		anchorShort, anchorPrefix, dump(oldPaths, oldTypes), dump(newPaths, newTypes))
 }
 
 // proxyTreeFacts 为目标树的每个节点生成只依赖拓扑位置的结构路径和类型；分支按目标顺序编号，不读取名称作为匹配依据。

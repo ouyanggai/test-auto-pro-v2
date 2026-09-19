@@ -176,6 +176,23 @@ func (s *Service) SetRecoveryLog(log *RecoveryLog) {
 	s.recoveryLog = log
 }
 
+// logRemapFailure 把加签重绑定失败的完整原因（含结构诊断）写一行 control.log，便于按运行目录直接定位。
+func (s *Service) logRemapFailure(pathRunID uint64, session *activeStep, reason string) {
+	if s.controlLog == nil || session == nil {
+		return
+	}
+	stepNo := 0
+	if session.preview != nil {
+		stepNo = session.preview.StepNo
+	}
+	s.controlLog.LogFact(pathRunID, model.RunControl{
+		RunID: session.runCtx.Run.ID, PathRunID: pathRunID,
+		Kind: model.ControlFactKind("proxy_remap_failed"), ObjectKind: "step",
+		ObjectKey: fmt.Sprintf("%d", stepNo), Reason: reason,
+		Source: model.RunControlSourceUI, CreatedAt: s.now(),
+	}, stepNo)
+}
+
 // logFact 把控制事实同步写一行 control.log（日志失败不影响事实落库）。
 func (s *Service) logFact(pathRunID uint64, control model.RunControl, stepNo int) {
 	s.controlLog.LogFact(pathRunID, control, stepNo)
@@ -1125,6 +1142,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 				RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
 				Kind: "proxy_remap_failed", Label: stopReason,
 			}, s.now())
+			s.logRemapFailure(pathRunID, session, stopReason)
 		} else {
 			if err := step.ApplyProxyRemap(&session.runCtx, remap); err != nil {
 				session.runCtx.FlowProxyID = proxyID
@@ -1141,6 +1159,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 					RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
 					Kind: "proxy_remap_failed", Label: stopReason,
 				}, s.now())
+				s.logRemapFailure(pathRunID, session, stopReason)
 			} else {
 				session.runCtx.FlowProxyID = proxyID
 				session.runCtx.FlowProxyRemapped = true
