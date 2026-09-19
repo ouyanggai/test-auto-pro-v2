@@ -1,0 +1,82 @@
+# 本地参考源码只用于业务核查，不进入当前仓库
+/参考代码/
+
+# 本地运行状态与日志
+/.runtime/
+/.plans/
+# 本地 Agent 工具缓存，不进版本库。
+/.claude/
+
+# 前端依赖、缓存与构建产物
+/node_modules/
+/web/node_modules/
+/web/dist/
+/web/.vite/
+/executor-service/node_modules/
+/executor-service/dist/
+/executor-service/page/dist/
+# flow-source 是按清单 git 同步的检出目录；同步元数据每次都会变，
+# 属于本机运行状态而不是源码，因此不跟踪（事实由 flow-source-manifest.json 固定）。
+/executor-service/flow-source/
+/executor-service/flow-source.json
+/executor-service/flow-source.lock.json
+
+*.tsbuildinfo
+
+# Go 构建与测试产物
+/bin/
+/server
+/test-auto-pro-v2
+*.test
+*.out
+/coverage/
+
+# 本地环境与凭证
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 编辑器与系统文件
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# F-013 日志目录只在本机保留，不进版本库。
+/logs/
+deploy/.env
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
