@@ -1210,9 +1210,9 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				detail.DynamicGraph = runFlowGraphDTO(projected)
 				detail.DynamicGraphBindable = projectionOK
 				if projectionOK {
-					detail.DynamicGraphNote = "已按当前运行实例最新代理树读取，并按唯一结构位置绑定计划节点"
+					detail.DynamicGraphNote = "" // 一切正常时不提示：用户不关心「代理树/结构绑定」这类内部术语
 				} else {
-					detail.DynamicGraphNote = "目标代理树已重建，但结构位置无法唯一绑定；运行画布保留计划结构和已落账事实，目标最新结构仅作查看，不猜测旧节点对应关系"
+					detail.DynamicGraphNote = "运行画布暂时按计划结构显示（目标流程结构有变化，暂时无法逐一对应）"
 				}
 				staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
 				for _, node := range graph.Nodes {
@@ -1224,7 +1224,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 					}
 				}
 			} else {
-				detail.DynamicGraphNote = "动态结构暂时无法读取，当前页面保留计划结构和已落账事实"
+				detail.DynamicGraphNote = "暂时读不到最新结构，画布先按计划结构显示"
 			}
 		} else {
 			detail.DynamicGraphNote = "动态结构读取能力未配置，当前页面保留计划结构和已落账事实"

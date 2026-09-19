@@ -1800,9 +1800,12 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		!isForwardRecoveryAction(step.Action)
 	settleStatus := statusOfVerdict(verdictResult.Outcome)
 	settleVerdictTag := string(verdictResult.Outcome)
+	settleReason := userMessage
 	if skippableWarning {
 		settleStatus = model.RunStepSkipped
 		settleVerdictTag = StepVerdictSkippedWarning
+		// 跳过的步骤不该显示成「执行失败」：去掉失败前缀，改成明确的「已跳过并继续」并保留目标原话。
+		settleReason = "已跳过并继续（该动作在当前流程状态下无法执行）：" + strings.TrimPrefix(userMessage, "执行失败：")
 	}
 	record := model.RunStep{
 		PathRunID:    runCtx.PathRun.ID,
@@ -1824,7 +1827,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		Transport:   string(target.TransportOf(preview.writeErr)),
 		Initial:     string(verdictResult.Initial),
 		Reread:      string(reread),
-		Reason:      userMessage,
+		Reason:      settleReason,
 		Basis:       verdictResult.Basis,
 		TraceID:     preview.writeTraceID,
 		CurlTraceID: preview.writeTraceID,
@@ -1852,7 +1855,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 				return outcome, lineNo, err
 			}
 		}
-		log.Phase("settle", step.Sequence, attemptNo, "预期内失败，已警告并跳过该动作、继续运行："+userMessage)
+		// 必须释放本步的推进权（fencing token）：否则租约仍被本步持有，下一步 ClaimExecution
+		// 会拿到「路径运行已被其他执行者占用」而卡住整条运行（与确定成功分支同一释放纪律）。
+		_ = e.runState.ReleaseExecution(ctx, runCtx.PathRun.ID, fencingToken)
+		log.Phase("settle", step.Sequence, attemptNo, settleReason)
 		return outcome, lineNo, nil
 	}
 

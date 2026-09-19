@@ -54,7 +54,8 @@ func TestRetrieveBusinessRejectionSkipsAndContinues(t *testing.T) {
 	runCtx.PathRun.MainInstanceRef = "instance-retrieve"
 	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "已办审批", Type: "common", TargetNodeID: "node-done"}
 	facts := &fakeFacts{}
-	executor := step.NewExecutor(targetFake, &fakeSessions{}, &fakeRunState{}, facts, fixedRunConfig(), nil)
+	runState := &fakeRunState{}
+	executor := step.NewExecutor(targetFake, &fakeSessions{}, runState, facts, fixedRunConfig(), nil)
 
 	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
 	if err != nil || finished || preview == nil || !preview.GateAllowed {
@@ -79,5 +80,9 @@ func TestRetrieveBusinessRejectionSkipsAndContinues(t *testing.T) {
 	}
 	if !strings.Contains(facts.attempts[0].Reason, rejectMsg) {
 		t.Fatalf("跳过原因必须带目标原话「%s」，实际：%s", rejectMsg, facts.attempts[0].Reason)
+	}
+	// 跳过后必须释放本步推进权，否则下一步 ClaimExecution 会拿到「路径运行已被其他执行者占用」而卡住。
+	if runState.released < 1 {
+		t.Fatalf("跳过分支必须释放执行租约，实际 released=%d", runState.released)
 	}
 }
