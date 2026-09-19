@@ -245,9 +245,9 @@ func (c *compiler) emitFixedTaskTail(nodeKey string) {
 	c.beginGroup()
 	c.addGroupedStep(model.CompiledActionStep{
 		Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
-		Precondition:   "当前人工节点所有用户动作已执行，且该节点仍有活动待办",
-		ExpectedEffect: expectedEffect(model.ActionApprove), StopOnFailure: "当前待办条件不满足时停止，不切换到其他处理人",
-		RecoveryPolicy: "重新读取实例状态、当前待办和真实路径", ReloadRequired: true,
+		Precondition:   "当前人工节点所有用户动作的写后核验已确认，活动待办仍属于该节点，且没有待处理的动态插入节点",
+		ExpectedEffect: expectedEffect(model.ActionApprove), StopOnFailure: "活动待办不再属于该节点、存在未处理动态插入节点或前序写后核验未确认时停止，明确显示节点/动作/下一步，命令集合为空，不切换处理人",
+		RecoveryPolicy: "重新读取实例状态、当前待办、代理树和真实路径", ReloadRequired: true,
 	}, true)
 	c.status = "run"
 	c.completed[nodeKey] = true
