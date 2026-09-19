@@ -113,6 +113,12 @@ type RunContext struct {
 	// 发起/草稿只发送 formProxyId（FormMaking）或 flowProxyId（无表单）；
 	// 禁止把发布流程代理 ID 当表单代理 ID，也禁止无依据同时发送两个代理字段。
 	FlowProxyID string
+	// PublishedFlowProxyID 是计划绑定的「发布流程代理 ID」（plan.TargetObjectID），运行期间恒定不变，
+	// 绝不被加签重建覆盖。加签会把 FlowProxyID 改成实例私有代理，而「重新发起」页面的权限探测
+	// （checkFlowPermission 只带 flowProxyId）要求该 ID 在目标发起映射表里——私有代理不在其中会被
+	// 「流程模板已被更新」拒绝、页面永不发出 reSubmit。重新发起装载必须用这份发布代理 ID 过探测，
+	// 真正的 reSubmit 载荷不带 flowProxyId、后端按实例自身代理推进，不受此选择影响。
+	PublishedFlowProxyID string
 	// FormProxyID 是 FormMaking 表单代理 ID（F-035）：从新流程模板唯一的 Forms 项取得，
 	// 发起/草稿只发送 formProxyId（FormMaking）或 flowProxyId（无表单）；
 	// 禁止把发布流程代理 ID 当表单代理 ID，也禁止无依据同时发送两个代理字段。

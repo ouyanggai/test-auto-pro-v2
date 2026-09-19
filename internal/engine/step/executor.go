@@ -199,8 +199,9 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		FlowProxyID: flowProxyID,
 		// 发起装载专用的计划绑定模板 ID：新发起来源下计划目标对象 ID 就是 /web/flowTemplateApi/list
 		// 返回的模板 ID（target_read.go 以它调 ReadTemplateConfiguration）；与表单/流程代理 ID 语义不同，
-		// 绝不互用（P1-2）。
-		FlowTemplateID:       runCtx.FlowProxyID,
+		// 绝不互用（P1-2）。用恒定的发布代理 ID：加签会把 FlowProxyID 改成实例私有代理，模板 ID 仍须是
+		// 计划绑定对象，否则重新发起装载会带着私有代理去权限探测被拒。
+		FlowTemplateID:       firstNonEmpty(runCtx.PublishedFlowProxyID, runCtx.FlowProxyID),
 		SelectFlowType:       runCtx.FlowType,
 		FlowNodeType:         runCtx.Nodes[step.NodeKey].AuditType,
 		NextNodeProxyID:      nextNodeTargetIDOf(runCtx, approved.NextIndex),
@@ -229,9 +230,10 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		// 代理（映射表中存在），装载行事实改用它——即目标报错自身要求的「最新流程模板」；真正的
 		// reSubmit 载荷由页面构造且不带 flowProxyId，后端按实例自身代理推进，不受此选择影响。
 		// 待发/已发来源下计划绑定对象是实例 ID，只能保持实例当前事实代理：实例未加签时
-		// 与发布代理一致可过探测，已加签实例的重新发起仍受目标映射表限制，如实保留阻塞。
+		// 与发布代理一致可过探测。新发起来源下用恒定的发布流程代理 ID（不被加签重建覆盖），
+		// 加签后的重新发起装载据此过权限探测，页面再发出真正的 reSubmit（载荷不带 flowProxyId）。
 		if !strings.EqualFold(strings.TrimSpace(runCtx.Source), "pending") {
-			runRequest.FlowProxyID = runCtx.FlowProxyID
+			runRequest.FlowProxyID = firstNonEmpty(runCtx.PublishedFlowProxyID, runCtx.FlowProxyID)
 		}
 	case model.ActionForward:
 		runRequest.LoadMode = runtimeexec.LoadModeForward

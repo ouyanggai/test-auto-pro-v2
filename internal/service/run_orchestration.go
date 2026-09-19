@@ -590,6 +590,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		PathName:                 path.Name,
 		PlanAccount:              plan.Account,
 		FlowProxyID:              plan.TargetObjectID,
+		PublishedFlowProxyID:     plan.TargetObjectID,
 		FormProxyID:              formProxyID,
 		FlowType:                 lifecycle.FlowType,
 		RenderType:               lifecycle.RenderType,
