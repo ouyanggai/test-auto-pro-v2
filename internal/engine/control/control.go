@@ -193,6 +193,67 @@ func (s *Service) logRemapFailure(pathRunID uint64, session *activeStep, reason 
 	}, stepNo)
 }
 
+// injectInsertedNodeApprovals 把加签在目标新树里新增的独立审批节点补成运行步骤，紧跟当前加签步骤之后，
+// 使其像普通节点一样被处理：每个插入节点补一条独立放行组（ReleaseRequired=true）的同意步骤——手动
+// 模式在其边界等待放行（受控），自动模式自动推进；处理人/会签由执行器按插入节点自身的真实待办解析，
+// 与其他节点一致。编译期无法预知这些节点，只能在写后按最新代理树注入。返回注入的步骤数。
+func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeIDs []string) int {
+	if session == nil || len(insertedNodeIDs) == 0 {
+		return 0
+	}
+	steps := session.runCtx.Steps
+	insertAt := session.nextIndex + 1
+	if insertAt < 0 {
+		insertAt = 0
+	}
+	if insertAt > len(steps) {
+		insertAt = len(steps)
+	}
+	// 插入位置必须在「锚点节点自身的审批步骤」之后：加签只是在当前节点后插入新节点，实例仍停在
+	// 锚点节点（协同/审批），要等锚点节点被同意后待办才落到插入节点。若把插入节点的同意排在锚点
+	// 同意之前，执行器在插入节点上读不到待办。锚点节点的固定尾同意与加签步骤同 NodeKey，跳过它们。
+	if session.preview != nil {
+		anchorKey := session.preview.NodeKey
+		for insertAt < len(steps) && steps[insertAt].NodeKey == anchorKey {
+			insertAt++
+		}
+	}
+	if session.runCtx.Nodes == nil {
+		session.runCtx.Nodes = map[string]step.NodeInfo{}
+	}
+	injected := make([]model.CompiledActionStep, 0, len(insertedNodeIDs))
+	for _, nodeID := range insertedNodeIDs {
+		nodeID = strings.TrimSpace(nodeID)
+		if nodeID == "" {
+			continue
+		}
+		nodeKey := "add-sign-inserted-" + nodeID
+		session.runCtx.Nodes[nodeKey] = step.NodeInfo{Name: "加签审批节点", Type: "common", TargetNodeID: nodeID}
+		injected = append(injected, model.CompiledActionStep{
+			Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
+			ReleaseGroup:    fmt.Sprintf("add-sign-inserted-%d", len(injected)+1),
+			ReleaseRequired: true,
+			Precondition:    "加签在当前节点之后新增的审批节点：按该节点自身的真实待办和处理人审批",
+			ExpectedEffect:  "插入的加签审批节点处理完成后，实例沿目标真实路径继续",
+			StopOnFailure:   "该插入节点无真实待办或处理人不可解析时停止，不猜测人员",
+			RecoveryPolicy:  "重新读取实例最新代理树、当前待办和处理人", ReloadRequired: true,
+		})
+	}
+	if len(injected) == 0 {
+		return 0
+	}
+	newSteps := make([]model.CompiledActionStep, 0, len(steps)+len(injected))
+	newSteps = append(newSteps, steps[:insertAt]...)
+	newSteps = append(newSteps, injected...)
+	newSteps = append(newSteps, steps[insertAt:]...)
+	// 重新编号保持 StepNo 连续且不与已落账步骤冲突：插入点之前的已执行步骤位置不变、编号不变。
+	for i := range newSteps {
+		newSteps[i].Sequence = i + 1
+	}
+	session.runCtx.Steps = newSteps
+	return len(injected)
+}
+
 // logFact 把控制事实同步写一行 control.log（日志失败不影响事实落库）。
 func (s *Service) logFact(pathRunID uint64, control model.RunControl, stepNo int) {
 	s.controlLog.LogFact(pathRunID, control, stepNo)
@@ -1176,18 +1237,20 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 				session.runCtx.FlowProxyID = proxyID
 				session.runCtx.FlowProxyRemapped = true
 				if len(remap.InsertedHumanNodeIDs) > 0 {
-					// 加签在目标新树里插入了独立审批节点：编译期无法预知，必须作为独立步骤按其自身
-					// 待办和最新处理人审批，绝不用原节点固定尾同意代替它。当前仅确定性地暴露插入节点并
-					// 停在只读/停止（命令集合由 PauseStateDeviation 置空），插入节点的自动审批执行需在
-					// 目标页面（F-037 验收后）核对真实待办与会签规则，不在未验证前盲目续跑。
-					stopReason := "加签后目标代理树新增独立审批节点（" + strings.Join(remap.InsertedHumanNodeIDs, "、") + "），需在其自身待办上完成审批；已停止后续放行，只能查看或停止"
-					s.mu.Lock()
-					session.deviationStalled = true
-					session.stopReason = stopReason
-					s.mu.Unlock()
+					// 加签在当前节点之后新增了独立审批节点：编译期无法预知，写后按最新代理树把它补成
+					// 运行步骤，紧跟当前加签步骤之后，像普通节点一样处理——手动模式在其边界等待放行
+					// （受控），自动模式自动推进；处理人/会签由执行器按该插入节点自身的真实待办解析，
+					// 与其他节点一致。
+					injected := s.injectInsertedNodeApprovals(session, remap.InsertedHumanNodeIDs)
+					if injected > 0 {
+						// 执行器在注入前已按旧步数算过 NoMoreSteps；注入了新步骤后本步不再是最后一步，
+						// 必须清掉该判断，否则会跳过插入节点直接收尾为完成。
+						outcome.NoMoreSteps = false
+					}
 					_ = s.store.AppendRunEvent(ctx, model.RunEvent{
 						RunID: session.runCtx.Run.ID, PathRunID: &pathRunID,
-						Kind: "add_sign_inserted_node", Label: stopReason,
+						Kind:  "add_sign_inserted_node",
+						Label: fmt.Sprintf("加签在当前节点之后新增审批节点（%s），已补入 %d 个独立审批步骤，按当前运行模式处理（手动等放行、自动自动推进）", strings.Join(remap.InsertedHumanNodeIDs, "、"), injected),
 					}, s.now())
 				}
 			}
