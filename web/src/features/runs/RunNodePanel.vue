@@ -637,8 +637,8 @@ const dialogStyle = computed(() => ({
           </div>
         </dl>
         <ul v-if="currentPreview.gateItems.length > 0" class="run-panel__conditions">
-          <li v-for="(item, index) in currentPreview.gateItems" :key="index" :class="item.passed ? '' : 'run-panel__bad'">
-            {{ item.description }}：{{ item.passed ? '满足' : '不满足' }}
+          <li v-for="(item, index) in currentPreview.gateItems" :key="index" :class="item.present ? '' : 'run-panel__bad'">
+            {{ gateItemText(item) }}
           </li>
         </ul>
         <p v-if="currentPreview.blockReason" class="run-panel__bad">{{ currentPreview.blockReason }}</p>

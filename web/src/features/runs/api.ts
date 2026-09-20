@@ -29,10 +29,13 @@ export interface PathDeviation {
   structureNote?: string
 }
 
+// RunGateItem 是当前步门禁的逐项检查事实，字段与后端 ActionPrecondition 对齐（label/present）。
+// 之前前端误用 description/passed，与后端 label/present 对不上，导致检查项渲染成空的「：不满足」。
 export interface RunGateItem {
   key: string
-  description: string
-  passed: boolean
+  label: string
+  required?: boolean
+  present: boolean
 }
 
 export interface RunPreview {
