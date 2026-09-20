@@ -45,6 +45,14 @@ func (r *memoryPlanRepository) List(_ context.Context, filter model.PlanListFilt
 	return append([]model.Plan(nil), r.plans...), nil
 }
 
+// Count 返回内存夹具中的计划总数，供分页测试。
+func (r *memoryPlanRepository) Count(_ context.Context, _ model.PlanListFilter) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	return len(r.plans), nil
+}
+
 func (r *memoryPlanRepository) Get(_ context.Context, id uint64) (model.Plan, error) {
 	if r.err != nil {
 		return model.Plan{}, r.err

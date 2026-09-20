@@ -270,8 +270,9 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
         show-quick-jumper
         @update:page="changePage"
         @update:page-size="changePageSize"
-      />
-      <span class="runs-view__total">共 {{ total }} 条</span>
+      >
+        <template #prefix="{ itemCount }">共 {{ itemCount }} 条</template>
+      </NPagination>
     </div>
   </section>
 </template>
@@ -318,6 +319,5 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 
 .runs-view__plan { font-weight: 500; }
 .runs-view__actions { display: flex; gap: 8px; white-space: nowrap; }
-.runs-view__pagination { display: flex; align-items: center; gap: 12px; }
-.runs-view__total { color: var(--n-text-color-3); font-size: 13px; }
+.runs-view__pagination { display: flex; align-items: center; justify-content: flex-end; }
 </style>

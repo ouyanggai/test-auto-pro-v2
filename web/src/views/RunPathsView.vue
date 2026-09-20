@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { NButton, NEmpty, NPopconfirm, NResult, NSpin, NTag, useThemeVars } from 'naive-ui'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { NButton, NEmpty, NPagination, NPopconfirm, NResult, NSpin, NTag, useThemeVars } from 'naive-ui'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { deleteRun, fetchRunPaths, formatTime, RunApiError } from '../features/runs/api'
@@ -63,6 +63,21 @@ function schedulePoll(): void {
     schedulePoll()
   }, 2000)
 }
+
+// 前端分页：整次运行的路径随元数据一次取回并轮询刷新，路径数量有上限，
+// 在已取回的数据上切片分页即可，既保留进度轮询又不必拆分接口。
+const page = ref(1)
+const pageSize = ref(10)
+const allPaths = computed<RunPathProgress[]>(() => view.value?.paths ?? [])
+const pagedPaths = computed<RunPathProgress[]>(() => {
+  const start = (page.value - 1) * pageSize.value
+  return allPaths.value.slice(start, start + pageSize.value)
+})
+// 轮询刷新后路径数量可能变化：当前页越界时回退到最后一页。
+watch(allPaths, (paths) => {
+  const maxPage = Math.max(1, Math.ceil(paths.length / pageSize.value))
+  if (page.value > maxPage) page.value = maxPage
+})
 
 // openPanel 进入该路径的运行面板（三层导航的第三层）。
 function openPanel(path: RunPathProgress): void {
@@ -168,7 +183,7 @@ onBeforeUnmount(() => {
       />
 
       <ul v-else class="run-paths__list">
-        <li v-for="path in view.paths" :key="path.pathRunId">
+        <li v-for="path in pagedPaths" :key="path.pathRunId">
           <button type="button" class="run-paths__card" @click="openPanel(path)">
             <div class="run-paths__card-head">
               <span class="run-paths__card-name">{{ path.pathName }}</span>
@@ -193,6 +208,20 @@ onBeforeUnmount(() => {
           </button>
         </li>
       </ul>
+
+      <div v-if="allPaths.length > 0" class="run-paths__pagination">
+        <NPagination
+          :page="page"
+          :page-size="pageSize"
+          :item-count="allPaths.length"
+          :page-sizes="[10, 20, 50]"
+          show-size-picker
+          @update:page="(value: number) => { page = value }"
+          @update:page-size="(size: number) => { pageSize = size; page = 1 }"
+        >
+          <template #prefix="{ itemCount }">共 {{ itemCount }} 条</template>
+        </NPagination>
+      </div>
     </template>
   </section>
 </template>
@@ -275,6 +304,11 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.run-paths__pagination {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .run-paths__card {
