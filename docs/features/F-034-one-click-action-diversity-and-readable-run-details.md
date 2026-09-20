@@ -96,7 +96,7 @@ F-034 只收敛信息层级，不删除日志事实：开发排查仍可在折�
 3. `scenario.Compile` 当前调用了 `validateActionStructure`、回退目标和关注提醒，但文件中定义的 `validateActionState`、`validateNodeOrder` 没有进入编译主流程；一键配置不能把“调用了完整编译”当成状态顺序已经校验，必须接入或在自动候选预检中等价执行。
 4. `validateActionPersons` 只对加签/移交/转发读取动作私有人员；候选策略必须与节点主处理人键分离，并在 `ResolveActionPersonIDs` 前验证候选仍属于本次目标目录。缺候选时应淘汰候选并记录原因，而不是保存空 `userIds`。
 5. `personConfig` 在 `run_node_choose` 有范围但 `Candidates` 为空时会标成“候选为空/需要处理”，这对 `isSkip=true` 的普通节点与运行时自选节点混在一起。实现时必须按目标后端规则分型：普通节点可跳过时进入“目标可能跳过”状态；`run_node_choose` 仍然是“必须显式选人”的阻塞。
-6. `targetSkippedStepReason` 目前只依据实例待办是否落到后方节点推断跳过，没有携带目标 `isSkip` 和节点审批类型。应把这两个事实加入 `NodeInfo/InstanceFacts`，只有“模板允许跳过 + 目标事实确实越过本节点”才返回 `TargetSkipped`，避免把路径解析错误、权限问题或尚未生成待办误判为正常跳过。
+6. （已收口）`targetSkippedStepReason` 已按目标 `isSkip` 与节点审批类型分型；只有“模板允许跳过 + 目标事实确实越过本节点”才返回 `TargetSkipped`，路径解析错误、权限问题或尚未生成待办不会被误判为正常跳过。2026-09-20 又补齐了用户配置动作随节点整体跳过及轮询前后判定顺序。
 
 #### 5.4 一键配置的安全算法（实现指导）
 
