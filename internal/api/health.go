@@ -178,6 +178,23 @@ func health(response http.ResponseWriter, _ *http.Request) {
 	_, _ = response.Write([]byte(healthResponse))
 }
 
+// NewHandlerWithAddSignExclusion 在既有组装之上注入排除名单管理端点。
+// 沿用"在组装处包一层"的方式：未命中本切片端点的请求原样交给既有 handler。
+func NewHandlerWithAddSignExclusion(base http.Handler, exclusion AddSignPersonExclusionService, searcher AddSignCandidateSearcher) http.Handler {
+	if exclusion == nil {
+		return base
+	}
+	mux := http.NewServeMux()
+	registerAddSignPersonExclusionRoutes(mux, exclusion, searcher)
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if _, pattern := mux.Handler(request); pattern != "" {
+			mux.ServeHTTP(response, request)
+			return
+		}
+		base.ServeHTTP(response, request)
+	})
+}
+
 // NewHandlerWithRunControl 在既有组装之上注入运行主线端点（F-016）。
 // 沿用"在组装处包一层"的方式：未命中本切片端点的请求原样交给既有 handler。
 func NewHandlerWithRunControl(base http.Handler, orchestrator RunOrchestrator) http.Handler {

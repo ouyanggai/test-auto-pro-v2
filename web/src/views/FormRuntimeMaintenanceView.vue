@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NCode, NDescriptions, NDescriptionsItem, NSpin, NTag, useMessage } from 'naive-ui'
-import { RouterLink } from 'vue-router'
+import { NAlert, NButton, NCard, NCode, NDescriptions, NDescriptionsItem, NIcon, NSpin, NTag, useMessage } from 'naive-ui'
+import { useRouter } from 'vue-router'
+import { ArrowBackOutline } from '@vicons/ionicons5'
 
 import {
   createRuntimeSyncJob,
@@ -15,6 +16,7 @@ import {
 } from '../features/form-runtime-maintenance/api'
 
 const message = useMessage()
+const router = useRouter()
 const source = ref<RuntimeSourceState | null>(null)
 const job = ref<RuntimeSyncJob | null>(null)
 const log = ref<RuntimeSyncLog | null>(null)
@@ -103,7 +105,19 @@ onBeforeUnmount(() => {
   <section class="runtime-maintenance">
     <header class="runtime-maintenance__header">
       <div>
-        <router-link to="/settings">返回系统设置</router-link>
+        <div class="back-nav">
+          <n-button
+            quaternary
+            size="small"
+            class="back-btn"
+            @click="router.push('/settings')"
+          >
+            <template #icon>
+              <n-icon :component="ArrowBackOutline" />
+            </template>
+            返回系统设置
+          </n-button>
+        </div>
         <h1>表单运行时维护</h1>
         <p>只从项目固定参考仓库同步，候选验证通过后才替换当前可用版本。</p>
       </div>
@@ -144,6 +158,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .runtime-maintenance { display: grid; gap: 16px; padding: 24px; }
+.back-nav { margin-bottom: 8px; }
+.back-btn { padding-left: 0; color: var(--n-text-color-2); font-weight: 500; transition: all 0.2s ease; }
+.back-btn:hover { color: var(--n-primary-color); transform: translateX(-2px); }
 .runtime-maintenance__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .runtime-maintenance__header h1 { margin: 6px 0 4px; }
 .runtime-maintenance__header p { margin: 0; color: var(--n-text-color-3); }

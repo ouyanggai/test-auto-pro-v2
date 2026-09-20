@@ -46,3 +46,23 @@ type TargetCompanyDirectory interface {
 	// CompanyIDByName 按公司名称查询全部未删除公司 ID；同名多家时由调用方拒绝解析，不猜测唯一公司。
 	CompanyIDByName(ctx context.Context, name string) ([]string, error)
 }
+
+// TargetUserRow 是目标用户中心 t_user 的人员关键列，供加签排除名单按姓名检索并点选人员。
+// PersonID 是 t_user.id，与加签候选回写值（personId）一致；Enabled=false 表示账号已停用，
+// 停用账号在目标目录里仍会作为加签候选出现，但无法登录，是「加签后运行停机」的主因。
+type TargetUserRow struct {
+	PersonID string
+	Name     string
+	Phone    string
+	Username string
+	Enabled  bool
+}
+
+// TargetUserDirectory 按姓名检索目标用户中心人员目录，实现方只允许执行 SELECT 并绑定租户编码。
+type TargetUserDirectory interface {
+	// SearchUsers 按姓名模糊检索未删除人员，limit 限制返回条数；name 为空时返回空结果，不全量拉取。
+	SearchUsers(ctx context.Context, name string, limit int) ([]TargetUserRow, error)
+	// ListDisabledUserIDs 返回本租户全部未删除但已停用（enable_type != 'enable'）的人员 ID。
+	// 停用账号无法登录，必然导致加签/移交后运行停机，因此默认从随机选择候选中排除。
+	ListDisabledUserIDs(ctx context.Context) ([]string, error)
+}

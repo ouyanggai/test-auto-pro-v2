@@ -26,6 +26,7 @@
 # Go 构建与测试产物
 /bin/
 /server
+/server.exe
 /test-auto-pro-v2
 *.test
 *.out

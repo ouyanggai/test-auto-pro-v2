@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -55,16 +56,17 @@ type PathConfigAnalyzer interface {
 
 // PathConfigService 组织计划身份、路径归属、目标重读和 F012 配置投影。
 type PathConfigService struct {
-	plans              *PlanService
-	target             PathConfigReader
-	flowAnalyzer       FlowAnalyzer
-	pathAnalyzer       ExecutionPathChoiceAnalyzer
-	configAnalyzer     PathConfigAnalyzer
-	pathRepository     repository.ExecutionPathRepository
-	historyStore       repository.HistoryReplayStore
-	historyConfigStore repository.HistoryPathConfigStore
-	companyDirectory   PathDataCompanyDirectory
-	now                func() time.Time
+	plans                    *PlanService
+	target                   PathConfigReader
+	flowAnalyzer             FlowAnalyzer
+	pathAnalyzer             ExecutionPathChoiceAnalyzer
+	configAnalyzer           PathConfigAnalyzer
+	pathRepository           repository.ExecutionPathRepository
+	historyStore             repository.HistoryReplayStore
+	historyConfigStore       repository.HistoryPathConfigStore
+	companyDirectory         PathDataCompanyDirectory
+	addSignExclusionService  *AddSignPersonExclusionService
+	now                      func() time.Time
 }
 
 // NewPathConfigService 组装 F012 路径配置服务依赖；持久化统一由历史路径配置仓储负责。
@@ -109,6 +111,10 @@ func (s *PathConfigService) Get(ctx context.Context, planID, pathID uint64) (mod
 	configuration.Revision, configuration.NodeRevision = stored.Revision, stored.NodeRevision
 	applyConfirmedNodeState(&configuration, decodeConfirmedNodeKeys(stored.ConfirmedNodeKeys))
 	if err := s.applyHistoryActionProjection(ctx, pathID, &configuration); err != nil {
+		return model.PathConfiguration{}, err
+	}
+	// 在返回配置前过滤排除名单中的加签人员候选
+	if err := s.applyExclusionFilter(ctx, &configuration); err != nil {
 		return model.PathConfiguration{}, err
 	}
 	configuration.Status = derivePathConfigurationStatus(configuration)
@@ -332,4 +338,90 @@ func summarizeConfigurationProgress(groups []model.PathConfigGroup) (model.PathC
 		}
 	}
 	return progress, next
+}
+
+// SetAddSignExclusion 注入排除名单服务，用于过滤一键配置的加签候选人员。
+func (s *PathConfigService) SetAddSignExclusion(exclusion *AddSignPersonExclusionService) {
+	s.addSignExclusionService = exclusion
+}
+
+// excludedPersonIDs 取应排除的人员 ID 集合（手动名单 + 停用账号）；未接入或读取失败时返回 nil，
+// 让调用方按无排除处理，绝不因排除名单读取抖动阻断整条运行发起。
+func (s *PathConfigService) excludedPersonIDs(ctx context.Context) map[string]bool {
+	if s.addSignExclusionService == nil {
+		return nil
+	}
+	excluded, err := s.addSignExclusionService.GetExcludedPersonIDs(ctx)
+	if err != nil {
+		return nil
+	}
+	return excluded
+}
+
+// applyExclusionFilter 对配置中所有人员的候选选项进行排除名单过滤。
+// 覆盖三处人员候选来源：
+//  1. 节点处理人 node.Persons[].Options（节点本身的处理人选择）；
+//  2. 节点动作目录 node.ActionConfiguration.Catalog[].Person.Options（加签/移交等动作的专属被指派人，
+//     一键配置从这里取被加签人——这是「陈涛无法登录」类故障的真正来源）；
+//  3. 实例动作 InstanceActions.Catalog[].Person.Options（同理，实例级动作的专属人员）。
+func (s *PathConfigService) applyExclusionFilter(ctx context.Context, configuration *model.PathConfiguration) error {
+	if s.addSignExclusionService == nil {
+		return nil
+	}
+	// 排除名单一次读取、全配置复用，避免逐个候选查库。
+	excluded, err := s.addSignExclusionService.GetExcludedPersonIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("查询排除名单失败：%w", err)
+	}
+	if len(excluded) == 0 {
+		return nil
+	}
+
+	for groupIndex := range configuration.Groups {
+		for nodeIndex := range configuration.Groups[groupIndex].Nodes {
+			node := &configuration.Groups[groupIndex].Nodes[nodeIndex]
+			// 1. 节点处理人候选
+			for personIndex := range node.Persons {
+				filterPersonOptionsInPlace(&node.Persons[personIndex], excluded)
+			}
+			// 2. 节点动作目录里各动作的专属人员候选（含加签被指派人）
+			filterActionCatalogPersons(node.ActionConfiguration.Catalog, excluded)
+		}
+	}
+	// 3. 实例动作目录的专属人员候选
+	filterActionCatalogPersons(configuration.InstanceActions.Catalog, excluded)
+	return nil
+}
+
+// filterPersonOptionsInPlace 就地剔除人员的排除候选，同时清理已选中被排除的人员。
+func filterPersonOptionsInPlace(person *model.PathConfigPerson, excluded map[string]bool) {
+	if person == nil {
+		return
+	}
+	if len(person.Options) > 0 {
+		kept := person.Options[:0]
+		for _, option := range person.Options {
+			if !excluded[option.Value] {
+				kept = append(kept, option)
+			}
+		}
+		person.Options = kept
+	}
+	// 已选人员里若有被排除的，一并剔除：避免运行期仍把被排除人当处理人。
+	if len(person.Selected) > 0 {
+		keptSelected := person.Selected[:0]
+		for _, value := range person.Selected {
+			if !excluded[value] {
+				keptSelected = append(keptSelected, value)
+			}
+		}
+		person.Selected = keptSelected
+	}
+}
+
+// filterActionCatalogPersons 剔除动作目录里各动作专属人员的排除候选。
+func filterActionCatalogPersons(catalog []model.PathConfigActionCatalogItem, excluded map[string]bool) {
+	for index := range catalog {
+		filterPersonOptionsInPlace(catalog[index].Person, excluded)
+	}
 }

@@ -29,12 +29,19 @@ var (
 type migrationFileError struct {
 	version   string
 	statement int
+	err       error
 }
 
 // Error 返回可定位且不含敏感连接信息的迁移失败摘要。
 func (e *migrationFileError) Error() string {
 	if e.statement > 0 {
+		if e.err != nil {
+			return fmt.Sprintf("%s（第 %d 条语句）：%v", e.version, e.statement, e.err)
+		}
 		return fmt.Sprintf("%s（第 %d 条语句）", e.version, e.statement)
+	}
+	if e.err != nil {
+		return fmt.Sprintf("%s：%v", e.version, e.err)
 	}
 	return e.version
 }
@@ -164,11 +171,11 @@ func applyMigrationFile(ctx context.Context, db *sql.DB, version string, content
 	defer conn.Close()
 	for ordinal, statement := range statements {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
-			return &migrationFileError{version: version, statement: ordinal + 1}
+			return &migrationFileError{version: version, statement: ordinal + 1, err: err}
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", version, time.Now().UTC()); err != nil {
-		return &migrationFileError{version: version}
+		return &migrationFileError{version: version, err: err}
 	}
 	return nil
 }

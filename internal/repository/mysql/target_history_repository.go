@@ -220,6 +220,75 @@ SELECT name FROM (
 	return name, true, nil
 }
 
+// SearchUsers 按姓名在目标用户中心 t_user 里模糊检索本租户未删除人员，供加签排除名单点选。
+// 只返回列表所需最少列；enable_type != 'enable' 记为停用（这类账号是加签后运行停机的主因）。
+// name 为空直接返回空结果，避免全量拉取；结果按停用优先、姓名排序，方便优先排除不可用人员。
+func (r *TargetHistoryRepository) SearchUsers(ctx context.Context, name string, limit int) ([]repository.TargetUserRow, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("目标业务库只读连接不可用")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return []repository.TargetUserRow{}, nil
+	}
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	query := fmt.Sprintf(`
+SELECT id, COALESCE(name, ''), COALESCE(phone, ''), COALESCE(username, ''), COALESCE(enable_type, '')
+FROM %s.t_user
+WHERE customer_code = ? AND is_delete = 0 AND name LIKE ?
+ORDER BY (enable_type = 'enable') ASC, name ASC
+LIMIT ?`, r.userCenter)
+	rows, err := r.db.QueryContext(ctx, query, r.customerCode, "%"+escapeTargetHistoryLike(name)+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]repository.TargetUserRow, 0, limit)
+	for rows.Next() {
+		var id, personName, phone, username, enableType string
+		if err := rows.Scan(&id, &personName, &phone, &username, &enableType); err != nil {
+			return nil, err
+		}
+		result = append(result, repository.TargetUserRow{
+			PersonID: strings.TrimSpace(id),
+			Name:     strings.TrimSpace(personName),
+			Phone:    strings.TrimSpace(phone),
+			Username: strings.TrimSpace(username),
+			Enabled:  strings.TrimSpace(enableType) == "enable",
+		})
+	}
+	return result, rows.Err()
+}
+
+// ListDisabledUserIDs 返回本租户未删除且已停用的人员 ID（enable_type 非 'enable' 视为停用）。
+// 停用账号无法登录目标平台，是加签/移交后运行停机的主因，默认从随机选择候选中排除。
+func (r *TargetHistoryRepository) ListDisabledUserIDs(ctx context.Context) ([]string, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("目标业务库只读连接不可用")
+	}
+	query := fmt.Sprintf(`
+SELECT id FROM %s.t_user
+WHERE customer_code = ? AND is_delete = 0 AND COALESCE(enable_type, '') <> 'enable'`, r.userCenter)
+	rows, err := r.db.QueryContext(ctx, query, r.customerCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
+}
+
 // CompanyIDByName 按公司名称读取目标用户中心全部未删除公司 ID（主数据与项目公司并集）；
 // 同名多条时由调用方拒绝解析，不猜测唯一公司。
 func (r *TargetHistoryRepository) CompanyIDByName(ctx context.Context, name string) ([]string, error) {

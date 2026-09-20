@@ -10,6 +10,7 @@ const RunPathsView = () => import('../views/RunPathsView.vue')
 const RunDetailView = () => import('../views/RunDetailView.vue')
 const SettingsView = () => import('../views/SettingsView.vue')
 const FormRuntimeMaintenanceView = () => import('../views/FormRuntimeMaintenanceView.vue')
+const AddSignExclusionView = () => import('../views/AddSignExclusionView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -26,6 +27,7 @@ const router = createRouter({
     { path: '/runs/:runId/paths/:pathRunId', component: RunDetailView },
     { path: '/settings', component: SettingsView },
     { path: '/settings/form-runtime', component: FormRuntimeMaintenanceView },
+    { path: '/settings/add-sign-exclusion', component: AddSignExclusionView },
   ],
 })
 

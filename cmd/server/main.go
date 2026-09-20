@@ -20,6 +20,7 @@ import (
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/formruntimemaintenance"
 	"test-auto-pro-v2/internal/logging"
+	"test-auto-pro-v2/internal/repository"
 	planmysql "test-auto-pro-v2/internal/repository/mysql"
 	"test-auto-pro-v2/internal/runtimeexec"
 	"test-auto-pro-v2/internal/service"
@@ -58,6 +59,8 @@ func main() {
 	targetReader := service.NewTargetReadServiceWithSession(engineTargetClient, sessionManager)
 	// 目标业务库只读连接可选：配置后基础表单数据候选走一次联表查询，未配置时回落到目标只读 API。
 	var targetCompanyDirectory service.PathDataCompanyDirectory
+	// targetUserDirectory 复用同一条只读连接，供加签排除名单按姓名检索目标人员目录；未配置时为 nil。
+	var targetUserDirectory repository.TargetUserDirectory
 	if bizDBConfig := config.LoadTargetBizDBConfig(); bizDBConfig.Enabled() {
 		bizContext, cancelBiz := context.WithTimeout(context.Background(), 10*time.Second)
 		candidateStore, bizErr := planmysql.NewTargetHistoryRepository(bizContext, bizDBConfig, targetConfig.CustomerCode)
@@ -69,6 +72,7 @@ func main() {
 			targetReader.SetHistoryCandidateStore(candidateStore)
 			// 数据工作区同步公司下拉真实 ID 复用同一条只读连接；目标库未配置时工作区保持历史行为。
 			targetCompanyDirectory = candidateStore
+			targetUserDirectory = candidateStore
 		}
 	}
 	planService := service.NewPlanService(planmysql.NewPlanRepository(planDatabase.DB))
@@ -85,6 +89,13 @@ func main() {
 		planService, targetReader, analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(),
 		analyzer.NewPathConfigAnalyzer(), pathRepository,
 	)
+	// 排除名单服务：在一键配置时过滤已排除的加签人员
+	addSignExclusionRepo := planmysql.NewAddSignPersonExclusionRepository(planDatabase.DB)
+	addSignExclusionService := service.NewAddSignPersonExclusionService(addSignExclusionRepo)
+	// 目标只读库可用时接入人员目录，让排除名单页能按姓名检索目标人员并点选加入。
+	if targetUserDirectory != nil {
+		addSignExclusionService.SetUserDirectory(targetUserDirectory)
+	}
 	workspaceRoot := os.Getenv("TEST_AUTO_PRO_WORKSPACE_ROOT")
 	if workspaceRoot == "" {
 		workspaceRoot, err = os.Getwd()
@@ -117,6 +128,8 @@ func main() {
 	if err := historyReplayService.Recover(context.Background()); err != nil {
 		log.Printf("恢复批量准备任务失败：%v", err)
 	}
+	// 排除名单服务注入路径配置，使一键配置时过滤已排除的加签人员
+	pathConfigService.SetAddSignExclusion(addSignExclusionService)
 	manifestPath := filepath.Join(workspaceRoot, "form-runtime", "sync-manifest.json")
 	manifest, err := formruntimemaintenance.LoadManifest(workspaceRoot, manifestPath)
 	if err != nil {
@@ -219,15 +232,24 @@ func main() {
 			}
 		}
 	}
+	// 只有接入目标人员目录时才提供检索能力，否则前端检索端点不注册，前端回落到手动录入。
+	var candidateSearcher api.AddSignCandidateSearcher
+	if addSignExclusionService.HasUserDirectory() {
+		candidateSearcher = addSignCandidateSearcher{service: addSignExclusionService}
+	}
 	server := &http.Server{
 		Addr: config.ServerAddress(),
 		Handler: api.WithRequestLogging(
-			api.NewHandlerWithRunControl(
-				api.NewHandlerWithRunReadiness(
-					api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
-					runReadinessService,
+			api.NewHandlerWithAddSignExclusion(
+				api.NewHandlerWithRunControl(
+					api.NewHandlerWithRunReadiness(
+						api.NewHandlerWithHistoryReplayAndDataServices(targetReader, planService, flowGraphService, executionPathService, pathRequirementService, pathConfigService, pathConfigService, maintenanceService, historyDataService, historyReplayService),
+						runReadinessService,
+					),
+					runOrchestrationService,
 				),
-				runOrchestrationService,
+				addSignExclusionService,
+				candidateSearcher,
 			),
 			appLogger,
 			logScopeResolver,
@@ -280,4 +302,28 @@ func main() {
 		}
 		appLogger.Info(logging.Scope{}, "后端服务已停止")
 	}
+}
+
+// addSignCandidateSearcher 把排除名单服务的人员检索适配为 api.AddSignCandidateSearcher，
+// 避免 service 包反向依赖 api 包（api 已依赖 service，反向会形成导入环）。
+type addSignCandidateSearcher struct {
+	service *service.AddSignPersonExclusionService
+}
+
+// SearchCandidates 按姓名检索目标人员目录并转换为 api 候选 DTO。
+func (a addSignCandidateSearcher) SearchCandidates(r *http.Request, name string) ([]api.AddSignCandidateDTO, error) {
+	persons, err := a.service.SearchCandidatePersons(r.Context(), name)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]api.AddSignCandidateDTO, 0, len(persons))
+	for _, person := range persons {
+		items = append(items, api.AddSignCandidateDTO{
+			PersonID:   person.PersonID,
+			PersonName: person.PersonName,
+			Phone:      person.Phone,
+			Enabled:    person.Enabled,
+		})
+	}
+	return items, nil
 }

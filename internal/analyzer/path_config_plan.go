@@ -46,6 +46,13 @@ func projectPathConfigPersonStrategy(nodeID string, stored map[string]string, ta
 
 // EncodePathConfigPersonStrategy 校验浏览器人员策略，并仅编码当前的工具侧 JSON。
 func EncodePathConfigPersonStrategy(target PathConfigPersonTarget, input model.PathConfigPersonStrategyInput) (string, string) {
+	return EncodePathConfigPersonStrategyWithExclusion(target, input, nil)
+}
+
+// EncodePathConfigPersonStrategyWithExclusion 在校验并重算人员策略时，额外把排除名单（含停用账号）
+// 从候选与结果中剔除：random/all 从剔除后的候选池挑，manual/target_default 命中排除项时按空/不足报错阻断。
+// exclusionIDs 以内部用户 ID（= 目标 t_user.id = personId）为键；nil 表示不启用排除，行为与原函数一致。
+func EncodePathConfigPersonStrategyWithExclusion(target PathConfigPersonTarget, input model.PathConfigPersonStrategyInput, exclusionIDs map[string]bool) (string, string) {
 	strategy := strings.TrimSpace(input.Strategy)
 	if !target.AllowedStrategies[strategy] {
 		return "", "人员策略不属于当前模板允许范围"
@@ -60,7 +67,10 @@ func EncodePathConfigPersonStrategy(target PathConfigPersonTarget, input model.P
 		seen[token] = true
 		selectedIDs = append(selectedIDs, id)
 	}
-	resolved, reason := expectedPathConfigPersonIDs(&target, strategy, seed, selectedIDs)
+	if exclusionIDs == nil {
+		exclusionIDs = map[string]bool{}
+	}
+	resolved, reason := expectedPathConfigPersonIDsWithExclusion(&target, strategy, seed, selectedIDs, exclusionIDs)
 	if reason != "" {
 		return "", reason
 	}
@@ -86,22 +96,45 @@ func resolveStoredPersonStrategy(target *PathConfigPersonTarget, strategy string
 	return expected, ""
 }
 
-// expectedPathConfigPersonIDs 在服务端重算策略结果，不能信任浏览器传入的随机或全选结果。
-func expectedPathConfigPersonIDs(target *PathConfigPersonTarget, strategy string, seed int64, selected []string) ([]string, string) {
+// expectedPathConfigPersonIDsWithExclusion 在服务端重算策略结果，考虑排除名单，不能信任浏览器传入的随机或全选结果。
+func expectedPathConfigPersonIDsWithExclusion(target *PathConfigPersonTarget, strategy string, seed int64, selected []string, exclusionIDs map[string]bool) ([]string, string) {
 	var result []string
+
+	// 先过滤出不在排除名单中的候选人
+	filteredCandidates := make([]string, 0, len(target.CandidateOrder))
+	for _, id := range target.CandidateOrder {
+		if !exclusionIDs[id] {
+			filteredCandidates = append(filteredCandidates, id)
+		}
+	}
+
 	switch strategy {
 	case "manual":
 		result = validRawPersonIDs(target, selected)
-		if len(result) != len(selected) {
-			return result, "已选人员不在当前节点的候选范围内"
+		// 从手动选择中移除被排除的人员
+		filtered := make([]string, 0, len(result))
+		for _, id := range result {
+			if !exclusionIDs[id] {
+				filtered = append(filtered, id)
+			}
+		}
+		result = filtered
+		if len(result) == 0 && len(selected) > 0 {
+			return result, "已选人员均在排除名单中，请重新选择"
 		}
 	case "target_default":
-		if len(target.DefaultIDs) == 0 {
-			return nil, "当前模板没有可用的目标默认人员"
+		defaultFiltered := make([]string, 0, len(target.DefaultIDs))
+		for _, id := range target.DefaultIDs {
+			if !exclusionIDs[id] {
+				defaultFiltered = append(defaultFiltered, id)
+			}
 		}
-		result = validRawPersonIDs(target, target.DefaultIDs)
+		if len(defaultFiltered) == 0 {
+			return nil, "当前模板的目标默认人员均在排除名单中"
+		}
+		result = validRawPersonIDs(target, defaultFiltered)
 	case "all":
-		result = validRawPersonIDs(target, target.CandidateOrder)
+		result = validRawPersonIDs(target, filteredCandidates)
 	case "random":
 		count := target.MinCount
 		if count < 1 {
@@ -110,7 +143,13 @@ func expectedPathConfigPersonIDs(target *PathConfigPersonTarget, strategy string
 		if target.MaxCount > 0 && count > target.MaxCount {
 			count = target.MaxCount
 		}
-		result = deterministicPathConfigPeople(target.CandidateOrder, seed, count)
+		if len(filteredCandidates) == 0 {
+			return nil, "所有候选人员均在排除名单中，无法进行随机选择"
+		}
+		if count > len(filteredCandidates) {
+			count = len(filteredCandidates)
+		}
+		result = deterministicPathConfigPeople(filteredCandidates, seed, count)
 	default:
 		return nil, "当前节点不支持所选的人员选择方式"
 	}
@@ -118,6 +157,11 @@ func expectedPathConfigPersonIDs(target *PathConfigPersonTarget, strategy string
 		return result, issue
 	}
 	return result, ""
+}
+
+// expectedPathConfigPersonIDs 在服务端重算策略结果，不能信任浏览器传入的随机或全选结果。
+func expectedPathConfigPersonIDs(target *PathConfigPersonTarget, strategy string, seed int64, selected []string) ([]string, string) {
+	return expectedPathConfigPersonIDsWithExclusion(target, strategy, seed, selected, make(map[string]bool))
 }
 
 // deterministicPathConfigPeople 用稳定 seed 选择目标候选，保证前后端预览一致。

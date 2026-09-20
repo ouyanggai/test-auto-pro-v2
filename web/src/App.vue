@@ -15,7 +15,12 @@ const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: '/settings' }, { default: () => '系统设置' }), key: '/settings' },
 ]
 
-const selectedKey = computed(() => (route.path.startsWith('/plans') ? '/plans' : route.path))
+const selectedKey = computed(() => {
+  if (route.path.startsWith('/plans')) return '/plans'
+  if (route.path.startsWith('/runs')) return '/runs'
+  if (route.path.startsWith('/settings')) return '/settings'
+  return route.path
+})
 // 运行详情是画布优先的工作台页：内容区去掉外层留白并禁用整页滚动，
 // 把顶栏以下的高度整块交给流程图（页面自己管纵向分区）。
 const flushContent = computed(() => /^\/runs\/[^/]+\/paths\/[^/]+$/.test(route.path))
