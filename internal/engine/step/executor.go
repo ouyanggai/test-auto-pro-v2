@@ -660,6 +660,41 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		log.Phase("gate", step.Sequence, 1, reason)
 		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
+	info := runCtx.Nodes[step.NodeKey]
+	// 目标已明确把待办推进到后续节点时，节点整体已经不存在可执行处理人；
+	// 先按目标 isSkip 分型，避免无处理人轮询把“允许自动跳过”的节点错误阻塞。
+	// 用户配置动作也属于该节点的一部分，节点跳过时动作随节点一起不执行，绝不凭空制造处理人或发送写请求。
+	targetSkipPreview := func(currentFacts InstanceFacts) (*StepPreview, bool) {
+		if step.Scope != model.ActionScopeTask && step.Scope != model.ActionScopeCompletedTask {
+			return nil, false
+		}
+		action, reason, pendingName, diag := targetSkippedStepReason(runCtx, step, currentFacts)
+		log.Phase("gate", step.Sequence, 1, "目标跳过判定："+diag)
+		switch action {
+		case "skip":
+			preview := &StepPreview{
+				PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
+				ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
+				Action: step.Action, ActionName: "目标跳过确认", NodeKey: step.NodeKey,
+				TargetNodeID: info.TargetNodeID, NodeName: info.Name,
+				ActorAccount: runCtx.PlanAccount, ActorName: actorName,
+				GateAllowed: true, Facts: currentFacts, TargetSkipped: true, SkipReason: reason,
+				GateItems: []model.ActionPrecondition{},
+			}
+			log.Phase("control", step.Sequence, 1, fmt.Sprintf("该节点已被目标自动跳过（实例待办已在「%s」）；节点动作不执行，放行将记录跳过并继续", pendingName))
+			return preview, true
+		case "block":
+			// 目标不允许跳过或本节点是运行时自选审批节点时，越过事实与动作配置冲突；
+			// 必须在发送前阻塞并展示原因，不能用计划账号、候选人或空人员代替目标处理人。
+			log.Phase("control", step.Sequence, 1, "目标不可能自动越过本节点，已在发送前阻塞："+reason)
+			return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), true
+		default:
+			return nil, false
+		}
+	}
+	if preview, decided := targetSkipPreview(facts); decided {
+		return preview, false, nil
+	}
 	// F-035：目标节点已到达但未生成处理人/待办时，进入“正在生成处理人”有界轮询；
 	// 总等待不超过 10 秒、最多 5 次，期间不发任何写请求。超时后按 assignment_missing 阻塞，
 	// 绝不显示“当前待办已经处理”，也不用计划账号或候选人代替目标返回的真实处理人。
@@ -672,6 +707,10 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 			session = *pollSession
 		}
 		facts = pollFacts
+	}
+	// 轮询期间目标可能已经把待办推进到后续节点；用最新事实再次判定，不能把已跳过节点误作无处理人阻塞。
+	if preview, decided := targetSkipPreview(facts); decided {
+		return preview, false, nil
 	}
 	// F-035 第四轮：已知特殊业务必须实现；只有未实现或未登记证明不足的分支才写前阻塞。
 	if reason := target.SpecialBusinessBlockReason(runCtx.FlowType, string(step.Action)); reason != "" {
@@ -702,45 +741,6 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 			}
 		} else {
 			log.Phase("gate", step.Sequence, 1, "取回准备同意的已办事实读取失败，按普通同意门禁继续判定："+userFacingError(doneErr, target.WriteResponse{}))
-		}
-	}
-	info := runCtx.Nodes[step.NodeKey]
-	// 目标自动跳过适配：模板约束「无处理人时跳过该节点」在人员规则（如扩展属性）解析为空时
-	// 生效，实例待办直接落到路径上更靠后的节点，本步的同意永远等不到待办。只有「实例当前
-	// 待办节点在已配置路径上严格位于本步之后」这一可证明事实才允许跳过；其余情形仍按既有
-	// 门禁判定，绝不猜测。跳过不发出任何写请求，放行后按「已跳过」落账并推进。
-	if step.Scope == model.ActionScopeTask || step.Scope == model.ActionScopeCompletedTask {
-		action, reason, pendingName, diag := targetSkippedStepReason(runCtx, step, facts)
-		// 判定依据必须落 step.log：否则界面上「当前待办已经处理」无法解释实例究竟停在哪。
-		log.Phase("gate", step.Sequence, 1, "目标跳过判定："+diag)
-		// T7.2：路径上配置了写动作的节点不允许被跳过判定吞掉。
-		// 跳过只对「目标确实自动越过、本步无可执行动作」的节点成立；若本步带着用户配置的
-		// 写动作（来源=用户配置）而跳过判定要把它放行成跳过，那等于把用户明确要求的动作
-		// 静默丢弃，并让运行报告少一步真实执行——这正是第三轮复核 P0-1 关注的口径风险。
-		// 这里把跳过降级为阻塞，由人工确认目标事实，绝不静默丢动作。
-		if action == "skip" && step.Source == model.ActionStepSourceUser {
-			reason = fmt.Sprintf("本节点配置了动作「%s」，但目标跳过判定认为实例待办已越过本步（%s）；不允许把已配置的动作静默跳过，已阻塞本步请人工核对目标事实", actionName(step.Action), diag)
-			log.Phase("control", step.Sequence, 1, reason)
-			return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
-		}
-		switch action {
-		case "skip":
-			preview := &StepPreview{
-				PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
-				ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
-				Action: step.Action, ActionName: "目标跳过确认", NodeKey: step.NodeKey,
-				TargetNodeID: info.TargetNodeID, NodeName: info.Name,
-				ActorAccount: runCtx.PlanAccount, ActorName: actorName,
-				GateAllowed: true, Facts: facts, TargetSkipped: true, SkipReason: reason,
-				GateItems: []model.ActionPrecondition{},
-			}
-			log.Phase("control", step.Sequence, 1, fmt.Sprintf("该节点已被目标自动跳过（实例待办已在「%s」）；放行将记录跳过并继续", pendingName))
-			return preview, false, nil
-		case "block":
-			// F-034：模板不允许跳过或自选节点缺人，目标不可能自动越过本节点；
-			// 必须在发送前阻塞，绝不发写请求，也不用空人员或随机人员凑数。
-			log.Phase("control", step.Sequence, 1, "目标不可能自动越过本节点，已在发送前阻塞："+reason)
-			return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 		}
 	}
 	catalogItem, allowed := evaluateGate(step, buildGateContext(runCtx, step, facts, info))
@@ -1226,7 +1226,7 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 			fmt.Sprintf("实例待办在「%s」，本节点为 run_node_choose，必须阻塞", pendingName)
 	}
 	if info.IsSkip == nil || !*info.IsSkip {
-		return "block", fmt.Sprintf("目标未在节点「%s」声明“无处理人时跳过”，而实例待办已越过该节点，无法安全继续", info.Name), pendingName,
+		return "block", fmt.Sprintf("本节点没有解析到可用处理人；目标未在节点「%s」声明“无处理人时跳过”，而实例待办已越过该节点，无法安全继续", info.Name), pendingName,
 			fmt.Sprintf("实例待办在「%s」，模板未声明 isSkip，必须阻塞", pendingName)
 	}
 	return "skip", fmt.Sprintf("实例待办已在「%s」，本节点已被目标自动跳过（无处理人时跳过该节点），没有可执行的审批动作", pendingName), pendingName,

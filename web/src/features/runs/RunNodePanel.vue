@@ -76,6 +76,17 @@ interface NodeErrorRow {
   step?: RunStep
 }
 
+// errorDetailStep 为错误行回溯已经落库的步骤事实：优先使用行自身关联的步骤，
+// 路径级停止行再按 stopStepNo 反查，避免失败后 currentPreview 被清理导致详情失效。
+function errorDetailStep(row: NodeErrorRow): RunStep | undefined {
+  if (row.step) return row.step
+  const stopStepNo = props.detail.stopStepNo
+  if (row.key === 'stop' && typeof stopStepNo === 'number') {
+    return nodeSteps.value.find(step => step.stepNo === stopStepNo)
+  }
+  return undefined
+}
+
 // isSuccessfulAttempt 兼容历史运行记录，同时让新记录统一使用“执行成功”。
 // 「目标跳过」是目标平台自动跳过节点的只读结论，不是错误，不进错误页签。
 function isSuccessfulAttempt(attempt: RunStepAttempt): boolean {
@@ -157,9 +168,11 @@ const planDialog = ref<RunNodePlanAction | null>(null)
 // openStepDialog 打开某一步的完整事实；错误页签点详情走同一个弹窗，不做第二套。
 function openStepDialog(step?: RunStep): void {
   if (!step) {
+    stepDialog.value = null
     previewDialogOpen.value = true
     return
   }
+  previewDialogOpen.value = false
   expandedCurl.value = ''
   stepDialog.value = step
 }
@@ -566,8 +579,8 @@ const dialogStyle = computed(() => ({
               <span class="run-panel__row-verdict">{{ row.verdict }}</span>
               <span class="run-panel__row-sub" :title="row.reason">{{ row.reason }}</span>
             </div>
-            <n-button v-if="row.step" text size="tiny" type="error" @click="openStepDialog(row.step)">详情</n-button>
-            <n-button v-else-if="currentPreview" text size="tiny" type="error" @click="openStepDialog()">详情</n-button>
+            <n-button v-if="errorDetailStep(row)" text size="tiny" type="error" data-testid="run-error-detail" @click.stop="openStepDialog(errorDetailStep(row))">详情</n-button>
+            <n-button v-else-if="currentPreview" text size="tiny" type="error" data-testid="run-error-preview-detail" @click.stop="openStepDialog()">详情</n-button>
           </li>
         </ul>
         <!-- F-028 失败动作重试：只在服务端判定可重试（确定失败、无目标副作用）时出现。

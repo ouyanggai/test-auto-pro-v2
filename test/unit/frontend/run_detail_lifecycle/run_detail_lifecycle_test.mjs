@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 const viewPath = new URL('../../../../web/src/views/RunDetailView.vue', import.meta.url)
@@ -61,6 +62,20 @@ test('节点面板仍有三个 Modal，切换路径时父级会卸载旧实例',
   assert.match(view, /v-if="selectedNodeKey && detail"/)
 })
 
+test('错误详情优先使用持久化步骤，路径停止行按 stopStepNo 回溯', () => {
+  assert.match(panel, /function errorDetailStep\(row: NodeErrorRow\): RunStep \| undefined/)
+  assert.match(panel, /row\.step/)
+  assert.match(panel, /props\.detail\.stopStepNo/)
+  assert.match(panel, /data-testid="run-error-detail"/)
+  assert.match(panel, /@click\.stop="openStepDialog\(errorDetailStep\(row\)\)"/)
+  assert.match(panel, /previewDialogOpen\.value = false/)
+})
+
+test('没有持久化事实时不渲染伪详情入口', () => {
+  assert.match(panel, /v-if="errorDetailStep\(row\)"/)
+  assert.match(panel, /v-else-if="currentPreview"/)
+})
+
 test('产品源码不调用 chrome.runtime / runtime.lastError', () => {
   const forbidden = /chrome\.runtime|browser\.runtime|runtime\.lastError|runtime\.sendMessage/
   const roots = [
@@ -68,12 +83,12 @@ test('产品源码不调用 chrome.runtime / runtime.lastError', () => {
     new URL('../../../../form-runtime/src/', import.meta.url),
   ]
   const hits = []
-  function walk(dirURL) {
-    const dir = fs.realpathSync(dirURL)
+  function walk(dirPath) {
+    const dir = fs.realpathSync(dirPath)
     for (const name of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = dir + '/' + name.name
       if (name.isDirectory()) {
-        walk(new URL(full + '/', 'file://'))
+        walk(full)
         continue
       }
       if (!/\.(vue|ts|js|mjs|css)$/.test(name.name)) continue
@@ -81,6 +96,6 @@ test('产品源码不调用 chrome.runtime / runtime.lastError', () => {
       if (forbidden.test(text)) hits.push(full)
     }
   }
-  for (const root of roots) walk(root)
+  for (const root of roots) walk(fileURLToPath(root))
   assert.deepEqual(hits, [], 'runtime.lastError 若出现在产品 URL，必须修发送端而不是吞错')
 })

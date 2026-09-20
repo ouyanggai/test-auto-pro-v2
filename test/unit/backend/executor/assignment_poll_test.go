@@ -60,7 +60,7 @@ func TestHandlerMissingBlocksAfterBoundedPoll(t *testing.T) {
 	if !containsAll(preview.BlockReason, "assignment_missing", "未生成处理人") {
 		t.Fatalf("阻塞原因必须说明 assignment_missing 与处理人未生成：%q", preview.BlockReason)
 	}
-	if view.fakeTarget.submitCalls != 0 && view.auditCalls() != 0 {
+	if view.fakeTarget.submitCalls != 0 || view.auditCalls() != 0 {
 		t.Fatal("等待处理人期间不得发送任何写请求")
 	}
 	// 有界性：初始读取 + 轮询次数封顶（5），不得超过 7 次实例事实读取。

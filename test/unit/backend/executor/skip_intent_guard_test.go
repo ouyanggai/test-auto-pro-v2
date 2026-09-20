@@ -1,14 +1,5 @@
-// F-036 第三轮 T7：路径上配置了动作的节点不允许被跳过判定吞掉。
-//
-// 背景（T7.1 结论）：第三轮复核 P0-1 依据「run 2 第 20 步没有 submit 行」判定该步未执行。
-// 复核该结论不正确——实测 step.log 中 step_id=20 完整具备
-// plan/gate/control/prepare/submit/verify/settle 七个阶段，其中 phase=prepare 与 phase=submit
-// 各有两行（会话就绪、协议摘要、runtime 收敛、目标接口返回成功），是一次真实执行的审批。
-// 复核把「step 20 的 targetNodeId 与前一步解析出的当前节点相同」误读成未执行，
-// 而前一步（step 19）是 system_navigation 只读导航步，本就不改变节点。
-//
-// 因此 T7.1 的答案属于「每一步都按各自节点真实执行」，不是「跳过判定放行」。
-// 本文件锁定 T7.2 要防的那类真实风险：跳过判定绝不能把用户明确配置的写动作静默丢弃。
+// F-036 第三轮 T7：目标已自动越过无处理人节点时，节点上的配置动作随节点整体跳过。
+// 用户保存过动作不代表目标仍有可执行待办；此时既不能凭空补处理人，也不能再发写请求。
 package executor_test
 
 import (
@@ -43,15 +34,16 @@ func f036SkipIntentRunContext(source model.ActionStepSource) step.RunContext {
 	}
 }
 
-// TestF036ConfiguredActionNotSwallowedBySkipDecision 锁定 T7.2 的核心不变式：
-// 本步是用户明确配置的写动作、且目标待办已越过本节点（跳过分型成立）时，
-// 执行器必须阻塞而不是返回跳过预览——绝不静默丢弃用户要求的动作。
-func TestF036ConfiguredActionNotSwallowedBySkipDecision(t *testing.T) {
+// TestF036ConfiguredActionFollowsTargetSkip 锁定目标平台的节点级语义：
+// 用户明确配置的写动作、且目标待办已越过本节点（isSkip=true）时，
+// 执行器必须返回可放行的跳过预览，不发任何写请求。
+func TestF036ConfiguredActionFollowsTargetSkip(t *testing.T) {
 	runCtx := f036SkipIntentRunContext(model.ActionStepSourceUser)
 	// 目标事实：实例待办已越过 early 节点、落在路径后方的 late 节点。
 	fake := &fakeTarget{instance: fakeTargetView{
 		Found: true, Status: "run",
-		CurrentNodes: []string{"late-target"}, DueNodes: []string{"late-target"},
+		// 目标已把实例推进到后续节点，但当前节点没有生成待办；这正是不能先进入处理人轮询的形状。
+		CurrentNodes: []string{"late-target"},
 	}}
 	executor := step.NewExecutor(fake, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
 
@@ -70,22 +62,20 @@ func TestF036ConfiguredActionNotSwallowedBySkipDecision(t *testing.T) {
 	if preview == nil {
 		t.Fatal("预览不应为空")
 	}
-	// 核心断言：用户配置的动作不得被跳过放行。
-	if preview.TargetSkipped {
-		t.Fatalf("用户明确配置的动作不得被跳过判定吞掉：%+v", preview)
+	if !preview.TargetSkipped {
+		t.Fatalf("用户配置动作应随目标节点整体跳过：%+v", preview)
 	}
-	if preview.GateAllowed {
-		t.Fatalf("应降级为阻塞而不是放行：%+v", preview)
+	if !preview.GateAllowed {
+		t.Fatalf("目标跳过预览应放行：%+v", preview)
 	}
-	if !strings.Contains(preview.BlockReason, "配置了动作") {
-		t.Fatalf("阻塞原因必须点明「本节点配置了动作」：%q", preview.BlockReason)
+	if strings.TrimSpace(preview.BlockReason) != "" {
+		t.Fatalf("跳过预览不应带阻塞原因：%q", preview.BlockReason)
 	}
-	if !strings.Contains(preview.BlockReason, "跳过") {
-		t.Fatalf("阻塞原因必须点明目标跳过判定：%q", preview.BlockReason)
+	if !strings.Contains(preview.SkipReason, "没有可执行的审批动作") {
+		t.Fatalf("跳过原因必须说明节点动作未执行：%q", preview.SkipReason)
 	}
-	// 阻塞必须是「门禁阻塞」分类，不能被当成工具缺陷。
-	if preview.BlockFailureClass != model.FailureClassGateBlocked {
-		t.Fatalf("应为门禁阻塞分类，实际 %q", preview.BlockFailureClass)
+	if fake.auditCalls != 0 || fake.actionCalls != 0 || fake.submitCalls != 0 {
+		t.Fatalf("目标已跳过时不得发任何写请求：audit=%d action=%d submit=%d", fake.auditCalls, fake.actionCalls, fake.submitCalls)
 	}
 }
 
