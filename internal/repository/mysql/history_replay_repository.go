@@ -384,7 +384,7 @@ func (r *HistoryReplayRepository) SaveDefault(ctx context.Context, record reposi
 		return repository.HistoryDefaultRecord{}, err
 	}
 	defer tx.Rollback()
-	// 计划主键行提供稳定的串行化锁，避免“默认来源尚不存在”时并发插入产生半成品。
+	// 计划主键行提供稳定的串行化锁，避免"默认来源尚不存在"时并发插入产生半成品。
 	if err := lockHistoryPlan(ctx, tx, record.PlanID); err != nil {
 		return repository.HistoryDefaultRecord{}, err
 	}

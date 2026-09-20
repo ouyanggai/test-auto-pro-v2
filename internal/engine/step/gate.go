@@ -15,7 +15,7 @@ import (
 
 // buildGateContext 把目标实时事实投影为动作目录可判定的上下文。
 // 投影规则：
-//   - 发起步骤：实例尚未持久化，状态留空即“新建”事实（actioncatalog 的 sourceIsNew 判据），
+//   - 发起步骤：实例尚未持久化，状态留空即"新建"事实（actioncatalog 的 sourceIsNew 判据），
 //     发起人就是计划账号；
 //   - 审批步骤：实例事实来自发起人会话的重读，待办事实来自当前处理人会话的重读，
 //     缺一不可，不得凭配置推断。
@@ -33,7 +33,7 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 		// 新发起没有实例创建人可读；已有实例必须使用目标返回的创建人事实。
 		ctx.IsInitiator = !facts.CreatorRead || facts.IsInitiator
 		if step.Action == model.ActionSubmit {
-			// 新发起提交：实例还不存在，“新建且非草稿”由运行上下文保证。
+			// 新发起提交：实例还不存在，"新建且非草稿"由运行上下文保证。
 			ctx.InstanceStatus = ""
 			ctx.InstanceVisible = false
 			return ctx
@@ -68,7 +68,7 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 		ctx.CurrentTaskDone = facts.Found && len(facts.DueNodes) == 0
 	}
 	// F-035：目标节点已到达但未生成处理人/待办是有界轮询后的独立阻塞分型：
-	// CurrentTaskDone 必须保持 false，否则无处理人会被误报成“当前待办已经处理”。
+	// CurrentTaskDone 必须保持 false，否则无处理人会被误报成"当前待办已经处理"。
 	if facts.HandlerGenerationRead && facts.HandlerMissing {
 		ctx.HandlerMissing = true
 		ctx.CurrentTaskDone = false
@@ -255,7 +255,7 @@ func buildRequestWithFacts(runCtx RunContext, step model.CompiledActionStep, ses
 			return nil, "", nil, fmt.Errorf("%s", blockReason)
 		}
 		if len(entries) == 0 && len(runCtx.GraphEdges) == 0 {
-			// 只有上下文没有边表（旧数据）时才按旧的“下一节点即入口”匹配；有边表时已阻塞。
+			// 只有上下文没有边表（旧数据）时才按旧的"下一节点即入口"匹配；有边表时已阻塞。
 			entries = nonEmptyList(chosenBranchEntryForNode(runCtx, nextNodeKey))
 		}
 		nextAuditors, err := nextAuditorsForTransition(runCtx, step, nextNodeKey, entries)
@@ -487,7 +487,7 @@ func actionPersonKey(nodeKey string, action model.ActionKey) string {
 }
 
 // nextAuditorsOf 提取分支选择参数 fixedExecuteNodeId：条件分支的手动指定节点，
-// 以目标“人员型选人”结构传递（与目标前端分支选择的传递方式一致）。
+// 以目标"人员型选人"结构传递（与目标前端分支选择的传递方式一致）。
 func nextAuditorsOf(step model.CompiledActionStep) []target.NextAuditor {
 	nodeID, ok := step.Parameters["fixedExecuteNodeId"].(string)
 	if !ok || nodeID == "" {

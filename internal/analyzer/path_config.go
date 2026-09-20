@@ -891,7 +891,7 @@ func (p *pathConfigProjection) buildField(nodeID string, detail target.FormField
 	return field, nil
 }
 
-// fieldValue 按“已保存值优先于实例现值”的规则取值：用户保存过的字段不能被实例现值覆盖。
+// fieldValue 按"已保存值优先于实例现值"的规则取值：用户保存过的字段不能被实例现值覆盖。
 func (p *pathConfigProjection) fieldValue(nodeID, fieldKey, controlType string, required bool, defaultValue string, options []model.PathConfigOption) (string, string) {
 	if stored, exists := p.storedFields[nodeID][fieldKey]; exists {
 		valid, reason := validateStoredValue(stored, controlType, required, options)

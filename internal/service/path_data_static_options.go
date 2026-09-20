@@ -52,7 +52,7 @@ func staticOptionBindingIssues(template map[string]any, original, values map[str
 		if !currentOK || current == nil {
 			continue
 		}
-		// 绑定值已与新显示名对应时无需解析（例如值字段本身就是显示值，如“事假”这类 value==显示名场景）。
+		// 绑定值已与新显示名对应时无需解析（例如值字段本身就是显示值，如"事假"这类 value==显示名场景）。
 		if option, ok := pair.findByValue(fmt.Sprint(current)); ok && option.label == desired {
 			continue
 		}

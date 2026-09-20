@@ -115,7 +115,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	if preview.runtimeHandled {
 		return true
 	}
-	reportPhase(approved, "submit", fmt.Sprintf("正在经无头表单运行时执行“%s”：真实页面组件将按目标顺序执行业务与流程请求，完成后仍会重读目标平台核验", firstNonEmpty(preview.ActionName, string(step.Action))))
+		reportPhase(approved, "submit", fmt.Sprintf("正在经无头表单运行时执行\"%s\"：真实页面组件将按目标顺序执行业务与流程请求，完成后仍会重读目标平台核验", firstNonEmpty(preview.ActionName, string(step.Action))))
 	action := string(step.Action)
 	if err := e.runtimeRunner.Health(ctx); err != nil {
 		preview.writeSent = false
@@ -662,7 +662,7 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	}
 	info := runCtx.Nodes[step.NodeKey]
 	// 目标已明确把待办推进到后续节点时，节点整体已经不存在可执行处理人；
-	// 先按目标 isSkip 分型，避免无处理人轮询把“允许自动跳过”的节点错误阻塞。
+	// 先按目标 isSkip 分型，避免无处理人轮询把"允许自动跳过"的节点错误阻塞。
 	// 用户配置动作也属于该节点的一部分，节点跳过时动作随节点一起不执行，绝不凭空制造处理人或发送写请求。
 	targetSkipPreview := func(currentFacts InstanceFacts) (*StepPreview, bool) {
 		if step.Scope != model.ActionScopeTask && step.Scope != model.ActionScopeCompletedTask {
@@ -695,9 +695,9 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	if preview, decided := targetSkipPreview(facts); decided {
 		return preview, false, nil
 	}
-	// F-035：目标节点已到达但未生成处理人/待办时，进入“正在生成处理人”有界轮询；
+	// F-035：目标节点已到达但未生成处理人/待办时，进入"正在生成处理人"有界轮询；
 	// 总等待不超过 10 秒、最多 5 次，期间不发任何写请求。超时后按 assignment_missing 阻塞，
-	// 绝不显示“当前待办已经处理”，也不用计划账号或候选人代替目标返回的真实处理人。
+	// 绝不显示"当前待办已经处理"，也不用计划账号或候选人代替目标返回的真实处理人。
 	if step.Scope == model.ActionScopeTask && facts.HandlerGenerationRead && facts.HandlerMissing && stepTargetNodeIDOf(runCtx, step) != "" {
 		pollFacts, pollSession, pollErr := e.pollForHandlerGeneration(ctx, runCtx, session, step, log)
 		if pollErr != nil {
@@ -840,7 +840,7 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	preview.RequestPreview = previewJSON(payload)
 	preview.request = request
 	log.Phase("control", step.Sequence, 1, "单步暂停，等待放行")
-	reportProgressSafe(reportProgress, "control", fmt.Sprintf("第 %d 步已就绪，等你确认执行：点击“执行这一步”后，会由“%s”在“%s”节点执行“%s”，只发送一次目标请求", step.Sequence, actorName, runCtx.Nodes[step.NodeKey].Name, catalogItem.Label))
+	reportProgressSafe(reportProgress, "control", fmt.Sprintf("第 %d 步已就绪，等你确认执行：点击\"执行这一步\"后，会由\"%s\"在\"%s\"节点执行\"%s\"，只发送一次目标请求", step.Sequence, actorName, runCtx.Nodes[step.NodeKey].Name, catalogItem.Label))
 	return preview, false, nil
 }
 
@@ -1113,10 +1113,10 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 	return message
 }
 
-// pollForHandlerGeneration 对“目标节点已到达但处理人/待办尚未生成”的场景执行有界轮询（F-035/T07）：
+// pollForHandlerGeneration 对"目标节点已到达但处理人/待办尚未生成"的场景执行有界轮询（F-035/T07）：
 // 最多 5 次、总等待不超过 10 秒，每次只重读实例事实（只读），绝不重发写请求。
 // 轮询期间任何一次读到处理人或待办即返回最新事实；全部超时仍无处理人时返回阻塞结论，
-// 停止原因按 assignment_missing 分型（目标没有产生处理人），不伪装成“已处理”。
+// 停止原因按 assignment_missing 分型（目标没有产生处理人），不伪装成"已处理"。
 func (e *Executor) pollForHandlerGeneration(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, log *StepLog) (InstanceFacts, *target.Session, error) {
 	// 预算来自配置（TEST_AUTO_PRO_HANDLER_GENERATION_WAIT / _POLL_INTERVAL），不再写死 10 秒：
 	// 用户裁决——目标暂时未就绪要多等一会、重试后再判，而不是立刻硬阻断整条运行。
@@ -1164,7 +1164,7 @@ func humanWaitDuration(d time.Duration) string {
 
 // targetSkippedStepReason 判断本步节点是否已被目标自动跳过（F-034：按目标 isSkip 与审批类型分型）。
 // 返回值：
-//   - action="skip"：模板声明允许跳过（isSkip=true）且实例待办可证明已越过本节点，无写请求记“目标已跳过”；
+//   - action="skip"：模板声明允许跳过（isSkip=true）且实例待办可证明已越过本节点，无写请求记"目标已跳过"；
 //   - action="block"：待办已越过本节点但模板未声明允许跳过（isSkip 未声明或为 false），
 //     或本节点是 run_node_choose 自选审批——目标不可能自动越过，必须阻塞，不能用空人员凑数；
 //   - action=""：无法证明越过，按既有门禁失败处理，绝不猜测。
@@ -1220,13 +1220,13 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 		return "", "", "", fmt.Sprintf("实例待办仍在「%s」（本步或更早），不构成跳过", pendingName)
 	}
 	// 待办确实越过本节点。分型依据目标后端规则：只有模板声明 isSkip=true 才递归跳过；
-	// run_node_choose 自选节点无论声明如何都要求显式人员，缺失即抛“未设置审批人”。
+	// run_node_choose 自选节点无论声明如何都要求显式人员，缺失即抛"未设置审批人"。
 	if strings.TrimSpace(info.AuditType) == "run_node_choose" {
 		return "block", fmt.Sprintf("节点「%s」是运行时自选审批节点，待办已越过但没有可用的已选处理人，不能自动跳过", info.Name), pendingName,
 			fmt.Sprintf("实例待办在「%s」，本节点为 run_node_choose，必须阻塞", pendingName)
 	}
 	if info.IsSkip == nil || !*info.IsSkip {
-		return "block", fmt.Sprintf("本节点没有解析到可用处理人；目标未在节点「%s」声明“无处理人时跳过”，而实例待办已越过该节点，无法安全继续", info.Name), pendingName,
+		return "block", fmt.Sprintf("本节点没有解析到可用处理人；目标未在节点「%s」声明\"无处理人时跳过\"，而实例待办已越过该节点，无法安全继续", info.Name), pendingName,
 			fmt.Sprintf("实例待办在「%s」，模板未声明 isSkip，必须阻塞", pendingName)
 	}
 	return "skip", fmt.Sprintf("实例待办已在「%s」，本节点已被目标自动跳过（无处理人时跳过该节点），没有可执行的审批动作", pendingName), pendingName,
@@ -1477,7 +1477,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	// 从 prepare 起把步骤号、尝试号、阶段注入目标请求上下文：本阶段所有目标请求
 	// （会话探活、任务新鲜读取）在 network.log 中按 step_id/attempt/phase 稳定归属。
 	ctx = withStepScope(ctx, step.Sequence, attemptNo, "prepare")
-	reportPhase(approved, "prepare", fmt.Sprintf("正在准备第 %d 步的实际操作人：为“%s”准备目标平台登录会话；这里只做账号准备，不会提交审批动作，准备好后才会发送一次“%s”请求", step.Sequence, preview.ActorName, firstNonEmpty(preview.ActionName, string(step.Action))))
+	reportPhase(approved, "prepare", fmt.Sprintf("正在准备第 %d 步的实际操作人：为\"%s\"准备目标平台登录会话；这里只做账号准备，不会提交审批动作，准备好后才会发送一次\"%s\"请求", step.Sequence, preview.ActorName, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 从取得执行会话开始独占计划账号，页面读取和其他执行不能并发刷新同一账号 SID。
 	var releasePlanUsage func()
 	var releaseActorUsage func()
@@ -1580,15 +1580,15 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	// F-035/T09 协议摘要：把代理 ID、批次号、nextAuditorList 条目数、表单数据版本与处理人来源
 	// 逐行落 step.log，页面请求与 curl.log 可逐字段对照；敏感值（SID、密码、表单正文）不进日志。
 	log.Phase("prepare", step.Sequence, attemptNo, protocolSummary(runCtx, step, preview))
-	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人“%s”会话已就绪，即将在“%s”节点发送一次“%s”请求", preview.ActorName, runCtx.Nodes[step.NodeKey].Name, firstNonEmpty(preview.ActionName, string(step.Action))))
+	reportPhase(approved, "prepare", fmt.Sprintf("当前处理人\"%s\"会话已就绪，即将在\"%s\"节点发送一次\"%s\"请求", preview.ActorName, runCtx.Nodes[step.NodeKey].Name, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 当前处理人账号可能不同于计划账号：计划账号锁与处理人锁同时持有到核验结束，
-	// 保证实例“已发”视角读取和真实待办写入不会互相覆盖 SID。
+	// 保证实例"已发"视角读取和真实待办写入不会互相覆盖 SID。
 
 	// 阶段 5：发出唯一一次写请求。审批任务 ID 在发送前现场新鲜读取（当前处理人与待办的新鲜复验）。
 	// 上报发生在发出之前：本次调用同步阻塞到目标响应返回，指示器在窗口内如实表达 submit 进行中。
 	// submit 阶段的目标请求（含写前待办新鲜读取）同样注入步骤作用域，network.log 可按阶段归属。
 	ctx = withStepScope(ctx, step.Sequence, attemptNo, "submit")
-	reportPhase(approved, "submit", fmt.Sprintf("正在向目标平台提交第 %d 步：“%s”在“%s”节点发送一次“%s”请求，发送后不会重复提交；完成后会重新查看目标平台确认结果", step.Sequence, preview.ActorName, runCtx.Nodes[step.NodeKey].Name, firstNonEmpty(preview.ActionName, string(step.Action))))
+	reportPhase(approved, "submit", fmt.Sprintf("正在向目标平台提交第 %d 步：\"%s\"在\"%s\"节点发送一次\"%s\"请求，发送后不会重复提交；完成后会重新查看目标平台确认结果", step.Sequence, preview.ActorName, runCtx.Nodes[step.NodeKey].Name, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 写请求前的租约续期：目标存在约 30 秒的慢请求，租约若在写请求期间过期，
 	// 另一执行者可能在核验未完成时领取推进权（评审缺陷 12：RenewLease 此前无调用方）。
 	// 续期失败说明推进权已易主，本步必须放弃且绝不发出写请求。
@@ -1597,7 +1597,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	// 写端点可能明确拒绝过期会话，执行器会在确认请求未进入业务后换新会话重发。
 	// 后续事实重读必须沿用真正完成写入的会话，否则会拿旧 SID 做完整退避，
-	// 把已经成功的目标写误判成“声明成功但事实不可读”。
+	// 把已经成功的目标写误判成"声明成功但事实不可读"。
 	if e.shouldRunViaRuntime(runCtx, step) {
 		// runtime 已接管写路径：回填 preview 写事实后走既有核验/落账，绝不调用 TargetClient 写出口。
 		e.runViaRuntime(ctx, runCtx, step, session, preview, log, approved)
@@ -1606,8 +1606,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	if !preview.writeSent {
 		// 零写入：写请求没有发出（发送前的待办新鲜复验失败或载荷缺失）。
-		// 没有发出的请求不存在“结果不确定”——把零写入判成不确定会把无副作用的失败
-		// 说成“可能已经写进目标”，还会把用户引向对账；这里按真实分类如实置败。
+		// 没有发出的请求不存在"结果不确定"——把零写入判成不确定会把无副作用的失败
+		// 说成"可能已经写进目标"，还会把用户引向对账；这里按真实分类如实置败。
 		outcome.Verdict = string(verdict.OutcomeFailed)
 		class := preview.writeErrClass
 		if class == "" {
@@ -1689,7 +1689,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	}
 	// 核验阶段的目标请求注入 verify 阶段作用域，与写请求、准备请求在日志中可区分。
 	ctx = withStepScope(ctx, step.Sequence, attemptNo, "verify")
-	reportPhase(approved, "verify", fmt.Sprintf("第 %d 步的请求已经发出，正在重新查看目标平台的流程节点和待办，确认“%s”是否已经生效；这里不会再次发送动作，确认后保存结果并继续下一步", step.Sequence, firstNonEmpty(preview.ActionName, string(step.Action))))
+	reportPhase(approved, "verify", fmt.Sprintf("第 %d 步的请求已经发出，正在重新查看目标平台的流程节点和待办，确认\"%s\"是否已经生效；这里不会再次发送动作，确认后保存结果并继续下一步", step.Sequence, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 重读对照一律用目标真实节点标识：目标返回的当前节点与待办都是真实标识，
 	// 拿工具侧不透明键去比会永远"待办已消失"，把没生效的写误判成已前进。
 	stepTargetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
@@ -1863,7 +1863,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// 判定路径偏离。若重绑定无法唯一证明，控制层会清空结构并强制停止放行。
 		if step.Action != model.ActionAddSign && !outcome.NoMoreSteps {
 			nextStep := runCtx.Steps[approved.NextIndex+1]
-			// 恢复链与系统导航本来就会跨越节点或回到前序节点，不能按“下一步必须仍在路径上”判定偏离；
+			// 恢复链与系统导航本来就会跨越节点或回到前序节点，不能按"下一步必须仍在路径上"判定偏离；
 			// 普通用户步骤和固定尾动作仍做真实节点对照，真实分支偏离继续立即停止。
 			if nextStep.Source != model.ActionStepSourceRecovery && nextStep.Source != model.ActionStepSourceNavigation {
 				expectedNextKey := nextStep.NodeKey
@@ -2044,7 +2044,7 @@ func (e *Executor) refreshTaskSnapshot(ctx context.Context, runCtx RunContext, s
 // 这正是历史上该误判的直接成因。
 //
 // 视角选择纪律（不猜测、不越权）：门禁阶段已解析出处理人时，提交阶段直接使用同一处理人
-// 视角读取任务；不能先用执行者视角碰运气，否则会把“执行者本人恰好能看到”误当成通用保证。
+// 视角读取任务；不能先用执行者视角碰运气，否则会把"执行者本人恰好能看到"误当成通用保证。
 // 只有门禁没有解析出处理人时，才允许沿用当前会话视角，且该路径会在无任务时阻塞。
 //
 // 视角补查用的是门禁阶段已经核实过的同一个人，不是候选名单，也不是用计划账号冒充处理人；
@@ -2080,7 +2080,7 @@ func (e *Executor) refreshPendingTaskSnapshotForAssignee(ctx context.Context, ru
 	if assigneeUserID != "" {
 		return session, target.TaskSnapshot{}, fmt.Errorf("目标客户端不支持按已核实处理人视角读取待办")
 	}
-	// 只有门禁没有解析出当前处理人时才允许沿用会话自身视角；此时日志事实会说明“执行者即视角来源”。
+	// 只有门禁没有解析出当前处理人时才允许沿用会话自身视角；此时日志事实会说明"执行者即视角来源"。
 	return e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
 }
 
@@ -2722,7 +2722,7 @@ func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext,
 }
 
 // classifyTransferReread 核对移交后当前处理人的任务是否已经换成新任务。
-// 移交不推进节点，单看实例节点会把成功误判为“未变化”；任务 ID 变化或当前处理人不再有待办才算前进。
+// 移交不推进节点，单看实例节点会把成功误判为"未变化"；任务 ID 变化或当前处理人不再有待办才算前进。
 func (e *Executor) classifyTransferReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts) verdict.Reread {
 	if after.ReadError != "" {
 		return verdict.RereadUnreadable
@@ -2744,7 +2744,7 @@ func (e *Executor) classifyTransferReread(ctx context.Context, runCtx RunContext
 
 // classifyRetrieveReread 核对取回后目标是否在原审批节点创建了新的待办。
 // 取回会保留原节点位置，因此实例节点和待办节点都可能不变；目标以新的 jobTaskId 表示新批次，
-// 必须对照写入前的已办任务号，不能把同节点的新待办误判为“没有变化”。
+// 必须对照写入前的已办任务号，不能把同节点的新待办误判为"没有变化"。
 func (e *Executor) classifyRetrieveReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts) verdict.Reread {
 	if after.ReadError != "" {
 		return verdict.RereadUnreadable
@@ -2842,7 +2842,7 @@ func containsNode(nodes []string, nodeKey string) bool {
 }
 
 // sessionWithRetry 取得当前处理人会话：登录与会话获取属只读阶段，允许有界重试与退避。
-// 每次重试都如实写进 step.log，不允许出现“看起来只调了一次”的日志。
+// 每次重试都如实写进 step.log，不允许出现"看起来只调了一次"的日志。
 func (e *Executor) sessionWithRetry(ctx context.Context, runCtx RunContext, log *StepLog, stepNo int, phase string) (target.Session, error) {
 	return RunWithConnectRetry(ctx, e.policy, func(callContext context.Context) (target.Session, error) {
 		return e.sessions.Current(callContext, runCtx.PlanAccount)
@@ -3045,7 +3045,7 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 		var err error
 		func() {
 			// 候选账号的登录、待办读取也必须串行；计划账号锁由调用方持有，
-			// 这里按“计划 -> 候选”顺序获取，避免多账号执行时锁顺序反转。
+			// 这里按"计划 -> 候选"顺序获取，避免多账号执行时锁顺序反转。
 			var release func()
 			if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok &&
 				!strings.EqualFold(strings.TrimSpace(match.Account), strings.TrimSpace(runCtx.PlanAccount)) {

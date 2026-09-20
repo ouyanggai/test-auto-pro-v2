@@ -452,7 +452,7 @@ func evaluateCurrentTask(ctx model.ActionContext) gateResult {
 	}
 	if !active {
 		// F-035：目标节点已到达但没有生成 currentAuditUserInfo 和待办时，
-		// 这是“目标节点未生成处理人”阻塞，不是“当前待办已经处理”——
+		// 这是"目标节点未生成处理人"阻塞，不是"当前待办已经处理"——
 		// 把无处理人显示成已处理会诱导用户重复提交同一节点。
 		if ctx.HandlerMissing {
 			return denyWith(g, "目标节点未生成处理人（处理人查询阻塞，assignment_missing），不能当作已处理")
@@ -523,7 +523,7 @@ func evaluateRollback(ctx model.ActionContext) gateResult {
 
 // evaluateRetrieve 复刻目标取回的已办归属、运行状态、会签边界。
 // 目标公开任务列表只能读取当前用户的 pending/done，无法安全得到所有后继任务；后继状态未知时，
-// 由 retrieveProcess 在实例锁内裁决并把目标原始错误返回页面，不能把未知误说成“后继已处理”。
+// 由 retrieveProcess 在实例锁内裁决并把目标原始错误返回页面，不能把未知误说成"后继已处理"。
 func evaluateRetrieve(ctx model.ActionContext) gateResult {
 	g := newGate()
 	running := instanceRunning(ctx)

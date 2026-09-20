@@ -71,8 +71,8 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 	}
 	facts.DueNodes = dueNodes
 	// F-035：目标节点已到达但未生成处理人的分型事实——实例可读、当前节点已知、
-	// 但 currentAuditUserInfo 与待办都为空。这只是“正在生成处理人”的证据，
-	// 绝不能被解释为“当前待办已经处理”；有界轮询结束后仍缺失则按 assignment_missing 阻塞。
+	// 但 currentAuditUserInfo 与待办都为空。这只是"正在生成处理人"的证据，
+	// 绝不能被解释为"当前待办已经处理"；有界轮询结束后仍缺失则按 assignment_missing 阻塞。
 	if len(facts.CurrentNodes) > 0 && len(facts.CurrentHandlers) == 0 && len(facts.DueNodes) == 0 {
 		facts.HandlerGenerationRead = true
 		facts.HandlerMissing = true
@@ -87,7 +87,7 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 		facts.ReadError = target.UserFacingErrorMessage(target.WriteResponse{}, taskErr)
 		return facts, taskErr
 	}
-	// 这些动作的流程主事实本来不会推进，必须读取目标各自的业务记录，不能用“节点没变”代替成功验证。
+	// 这些动作的流程主事实本来不会推进，必须读取目标各自的业务记录，不能用"节点没变"代替成功验证。
 	switch step.Action {
 	case model.ActionStorageFormData:
 		if reader, ok := e.target.(storageFormDataReader); ok {
@@ -317,9 +317,9 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if !facts.CompletedTaskFound {
 			return session, nil
 		}
-		// 目标任务列表没有“所有状态、所有人员”的有效读取方式：空 taskStatus 会被目标直接拒绝，
+		// 目标任务列表没有"所有状态、所有人员"的有效读取方式：空 taskStatus 会被目标直接拒绝，
 		// 而 pending/done 又只覆盖当前用户。后继任务是否合法必须交由 retrieveProcess 在实例锁内确认，
-		// 以目标接口原文作为失败结果，不能用不完整列表臆测为“后继已处理”。
+		// 以目标接口原文作为失败结果，不能用不完整列表臆测为"后继已处理"。
 		if hasTreeReader {
 			proxyID := firstNonEmpty(snapshot.FlowProxyID, runCtx.FlowProxyID)
 			if proxyID != "" {

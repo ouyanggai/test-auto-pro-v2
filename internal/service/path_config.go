@@ -291,7 +291,7 @@ func derivePathConfigurationStatus(configuration model.PathConfiguration) string
 	return "pending"
 }
 
-// applyConfirmedNodeState 用 F012 独立确认事实覆盖节点配置状态，避免“有记录即完成”。
+// applyConfirmedNodeState 用 F012 独立确认事实覆盖节点配置状态，避免"有记录即完成"。
 func applyConfirmedNodeState(configuration *model.PathConfiguration, confirmedKeys []string) {
 	confirmed := make(map[string]bool, len(confirmedKeys))
 	for _, key := range confirmedKeys {

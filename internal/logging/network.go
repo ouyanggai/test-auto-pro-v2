@@ -26,7 +26,7 @@ type NetworkRecord struct {
 	// ErrorType 是目标适配层的稳定错误分类，成功时留空。
 	ErrorType string
 	// TargetMessage 是目标业务包络的 message 字段安全摘要（F-034 评审 #3）：
-	// 如“手动条件分支,请选择”。只写包络层一句话，不含请求/响应正文，详情页据此展示目标原文。
+	// 如"手动条件分支,请选择"。只写包络层一句话，不含请求/响应正文，详情页据此展示目标原文。
 	TargetMessage string
 	// TargetCode 是目标业务包络的 code 字段原值（如 ERROR_99999），同样只作安全摘要。
 	TargetCode string

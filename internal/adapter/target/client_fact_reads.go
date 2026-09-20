@@ -182,7 +182,7 @@ func normalizeBizRelevance(values []BizRelevance) []BizRelevance {
 }
 
 // IsFlowCreator 按目标实例列表返回的创建人字段核对当前会话账号，供撤回、草稿和重新提交门禁使用。
-// 创建人字段缺失时返回响应异常，不能把“无法读取”当成当前用户就是发起人。
+// 创建人字段缺失时返回响应异常，不能把"无法读取"当成当前用户就是发起人。
 func (c *Client) IsFlowCreator(ctx context.Context, active Session, instanceID string) (bool, error) {
 	instanceID = strings.TrimSpace(instanceID)
 	userID := strings.TrimSpace(active.UserID)

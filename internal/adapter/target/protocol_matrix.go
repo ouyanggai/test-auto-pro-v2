@@ -270,7 +270,7 @@ func ProtocolMatrix() map[string]map[string]FieldPresence {
 }
 
 // 目标业务生命周期登记已迁到 special_business.go（F-035 第四轮）：
-// 已知分支必须按目标页面顺序实现，未知分支继续写前阻塞，禁止“命中即阻塞”当作完成。
+// 已知分支必须按目标页面顺序实现，未知分支继续写前阻塞，禁止"命中即阻塞"当作完成。
 
 // FlowLifecycleMeta 是流程生命周期元数据快照（F-035 评审补充）：
 // FlowType 是目标页面分派业务钩子的键（auditWay/selectFlowType）；

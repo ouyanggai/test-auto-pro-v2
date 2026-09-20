@@ -80,7 +80,7 @@ func EvaluateCondition(condition target.FlowCondition, values map[string]any) Ev
 		}
 		return Evaluation{Satisfied: javaEquals(left, right), Evaluable: true}
 	case "neq":
-		// Java 的 neq 对 null 直接返回 false，不能把缺失值改写为“不相等”。
+		// Java 的 neq 对 null 直接返回 false，不能把缺失值改写为"不相等"。
 		if left == nil || right == nil {
 			return Evaluation{Satisfied: false, Evaluable: true}
 		}
@@ -156,13 +156,13 @@ func conditionRightValue(condition target.FlowCondition, values map[string]any) 
 	return getPath(values, path)
 }
 
-// evaluateBooleanValue 保留目标 Y/N 校验后与“是”比较的不可满足语义。
+// evaluateBooleanValue 保留目标 Y/N 校验后与"是"比较的不可满足语义。
 func evaluateBooleanValue(value any) Evaluation {
 	text, ok := value.(string)
 	if !ok || (text != "Y" && text != "N") {
 		return unevaluable("boolean_value 仅接受目标 Y/N 值")
 	}
-	// 目标 Java 当前实现从不返回 true：合法 Y/N 之后仍比较中文“是”。
+	// 目标 Java 当前实现从不返回 true：合法 Y/N 之后仍比较中文"是"。
 	return Evaluation{Satisfied: false, Evaluable: true, Reason: "目标 boolean_value 规则不可满足"}
 }
 

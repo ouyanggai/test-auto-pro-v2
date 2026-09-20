@@ -237,7 +237,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		}
 	}
 	// T05 断言已由构造结构保证：扣留字段不会出现在 Overlaid 清单（本节点不写它们），
-	// 它们若存在于合并结果，只能是实例基线保留（目标已填值）——这恰恰是“保留上游值”的语义。
+	// 它们若存在于合并结果，只能是实例基线保留（目标已填值）——这恰恰是"保留上游值"的语义。
 	sort.Strings(plan.Overlaid)
 	sort.Strings(plan.Withheld)
 	sort.Strings(decision.OverlaidFields)

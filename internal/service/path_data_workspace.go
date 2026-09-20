@@ -63,7 +63,7 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 		patches = decodeWorkspacePatches(stored.BranchPatches)
 		runtimeValidation = decodeWorkspaceValidation(stored.RuntimeValidation)
 		storedIssues := decodeWorkspaceIssues(stored.Issues)
-		// 保存成功后，来源投影仍会带有“尚未按当前路径核对”的初始占位问题。
+		// 保存成功后，来源投影仍会带有"尚未按当前路径核对"的初始占位问题。
 		// 已存在的配置行才是本路径最后一次服务端复验事实；即使问题数组为空，也必须覆盖该占位问题。
 		if strings.TrimSpace(stored.DataStatus) != "" {
 			issues = storedIssues

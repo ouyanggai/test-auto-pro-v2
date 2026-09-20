@@ -47,7 +47,7 @@ func (c *Client) ProxyFor(request *http.Request) (*url.URL, error) {
 		return nil, nil
 	}
 	// 传输层可能被日志包装（SetNetworkLogger）：沿包装链找到内层 *http.Transport 再求值，
-	// 绝不凭“链路不可识别”直接下“无代理”的结论——那会掩盖代理绕过被破坏的回归（评审缺陷 19）。
+	// 绝不凭"链路不可识别"直接下"无代理"的结论——那会掩盖代理绕过被破坏的回归（评审缺陷 19）。
 	transport := c.httpClient.Transport
 	for transport != nil {
 		switch typed := transport.(type) {
@@ -634,7 +634,7 @@ func auditHandlerInfo(data json.RawMessage) []NodeCurrentHandler {
 		BizIds    []string `json:"bizIds"`
 		// UserIds 是 assign 类节点（含手动加签插入的审批节点）承载真实处理人用户 ID 的字段：
 		// 实测加签节点的 currentAuditUserInfo 里 bizIds/userList 为空，真实处理人只在 userIds 里，
-		// 只读 bizIds 会解析不出人（“当前处理人未能解析出登录账号”），后续待办与审批都无从进行。
+		// 只读 bizIds 会解析不出人（"当前处理人未能解析出登录账号"），后续待办与审批都无从进行。
 		UserIds  []string `json:"userIds"`
 		UserList []struct {
 			Name  string `json:"name"`
@@ -748,7 +748,7 @@ func firstNonEmpty(values ...string) string {
 func SubmittedStatusText(status string) string { return submittedStatusText(strings.TrimSpace(status)) }
 
 // ListTaskSnapshots 读取指定实例、指定目标任务状态的任务链接快照。
-// 目标服务只接受 pending 或 done；空状态不是“全部状态”，会被目标拒绝。任务较多时必须完整遍历分页，
+// 目标服务只接受 pending 或 done；空状态不是"全部状态"，会被目标拒绝。任务较多时必须完整遍历分页，
 // 否则当前待办、批次或已办归属可能落在第二页而被错误判为不存在。
 func (c *Client) ListTaskSnapshots(ctx context.Context, active Session, instanceID, taskStatus string) ([]TaskSnapshot, error) {
 	return c.ListTaskSnapshotsForUser(ctx, active, instanceID, taskStatus, "")
@@ -921,7 +921,7 @@ func (c *Client) FindDueTaskID(ctx context.Context, active Session, instanceID, 
 // Ping 用一次轻量只读请求探活会话：会话有效时无论业务结果如何都返回 nil；
 // 只有会话失效（RESP401/HTTP 401）或传输失败才返回错误。
 // 用途：执行器 prepare 阶段在登录后立即验证 sid 可用——实测目标存在
-// “首次登录的 sid 立即失效、重新登录后才有效”的现象（纲领第 4.4.1 节抖动家族）。
+// "首次登录的 sid 立即失效、重新登录后才有效"的现象（纲领第 4.4.1 节抖动家族）。
 // Ping 只回答一个问题：这个 SID 在目标上是否真的存在有效会话。
 // 判据是带完整业务参数的模板列表请求（与 ListTemplates 同形状的最小分页）：
 // 有效会话返回成功列表；会话无效时返回 AUTH_401/RESP401，或触发「分组id不存在」——

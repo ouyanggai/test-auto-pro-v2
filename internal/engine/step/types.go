@@ -87,8 +87,8 @@ type NodeInfo struct {
 	// AuditType 是目标在该节点配置的审批方式（run_node_choose/company/level 等）。
 	// 提交载荷按它决定是否必须携带 nextAuditorList 人员指定项（语义清单 1.8 补充）。
 	AuditType string
-	// IsSkip 是目标模板声明的“无处理人时跳过该节点”（nil=未声明，不允许跳过）。
-	// F-034：目标自动跳过判定必须同时满足“模板允许跳过 + 待办确实越过本节点”，
+	// IsSkip 是目标模板声明的"无处理人时跳过该节点"（nil=未声明，不允许跳过）。
+	// F-034：目标自动跳过判定必须同时满足"模板允许跳过 + 待办确实越过本节点"，
 	// 不再只靠待办位置推断；run_node_choose 自选节点无论该值如何都必须显式选人。
 	IsSkip *bool
 }
@@ -131,13 +131,13 @@ type RunContext struct {
 	FormPersonFields []target.NodeFormPersonField
 	// FlowTree 是目标流程树，供审批按 nextNodeProxyId 收窄 form_person 入口。
 	FlowTree *target.FlowNodeTemplate
-	// Source 是这条路径的流程来源（如“新发起”）；门禁投影与来源相关。
+	// Source 是这条路径的流程来源（如"新发起"）；门禁投影与来源相关。
 	Source string
 	// Nodes 是路径配置快照里这条路径的目标节点表（键=目标代理节点 Key），
 	// 供节点名称与节点类型查表。编译场景的 nodeKey 用的是这一套键，不是流程图节点 ID。
 	Nodes map[string]NodeInfo
 	// BranchSelections 是这条路径已保存的分支选择（分支节点 ID -> 所选分支的目标节点 ID）。
-	// 手动条件分支在提交/审批时必须显式携带所选节点，否则目标以“手动条件分支,请选择”拒绝。
+	// 手动条件分支在提交/审批时必须显式携带所选节点，否则目标以"手动条件分支,请选择"拒绝。
 	BranchSelections map[string]string
 	// GraphEdges 是真实图的邻接表（目标节点 ID -> 出边）：跨节点手动分支入口解析依赖它（F-034 T04）。
 	GraphEdges map[string][]GraphEdgeInfo
@@ -188,8 +188,8 @@ type InstanceFacts struct {
 	Found     bool   `json:"found"`
 	Status    string `json:"status,omitempty"`
 	// HandlerGenerationRead/HandlerMissing 表示已经按实例事实核实：目标节点已到达但
-	// 没有生成 currentAuditUserInfo 和待办（F-035/T07 的“正在生成处理人”分型事实）。
-	// 有界轮询结束后仍缺失时，门禁必须显示“目标节点未生成处理人”，不得显示“当前待办已经处理”。
+	// 没有生成 currentAuditUserInfo 和待办（F-035/T07 的"正在生成处理人"分型事实）。
+	// 有界轮询结束后仍缺失时，门禁必须显示"目标节点未生成处理人"，不得显示"当前待办已经处理"。
 	HandlerGenerationRead bool `json:"handlerGenerationRead,omitempty"`
 	HandlerMissing        bool `json:"handlerMissing,omitempty"`
 	// FormDataVerifyIssue 是写后表单数据逐字段核对的中文结论（F-035 评审补充）；
@@ -524,7 +524,7 @@ type StepPreview struct {
 	writeErr        error
 	writeDurationMs int64
 	// writeSent 表示写请求已经真正发出（或已尝试发出）。发送前的待办新鲜复验失败时保持 false：
-	// 没有发出的请求不存在“写结果不确定”，绝不能进三值判定的写判定路径。
+	// 没有发出的请求不存在"写结果不确定"，绝不能进三值判定的写判定路径。
 	writeSent bool
 	// writeErrClass 是零写入失败的归属分类（处理人/待办解析失败或工具缺陷），供落账时如实归类。
 	writeErrClass model.FailureClass

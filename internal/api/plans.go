@@ -241,7 +241,7 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 }
 
 // lastRunOutcomeText 将最近一次运行的终态转成展示口径（F-032）：
-// 有结果按结果展示（成功/失败），无结果按运行状态展示；completed 不翻译成“已完成”以免被误解为计划终态。
+// 有结果按结果展示（成功/失败），无结果按运行状态展示；completed 不翻译成"已完成"以免被误解为计划终态。
 func lastRunOutcomeText(status model.RunStatus, result *model.RunResult) string {
 	if result != nil {
 		switch *result {

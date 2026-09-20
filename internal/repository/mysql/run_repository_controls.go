@@ -73,7 +73,7 @@ func (r *RunRepository) LatestStepAttempt(ctx context.Context, pathRunID uint64)
 	var step model.RunStep
 	var attempt model.RunStepAttempt
 	// 排序必须确定：重放会为同一步再落一行 run_steps，只按 step_no 排序时 MySQL 可返回任一行，
-	// 对账三列就可能写到上一次尝试上。附加 id DESC 表达“同一步取最近一次执行”。
+	// 对账三列就可能写到上一次尝试上。附加 id DESC 表达"同一步取最近一次执行"。
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, path_run_id, step_no, source, action, node_key, status FROM run_steps
 		WHERE path_run_id = ? ORDER BY step_no DESC, id DESC LIMIT 1

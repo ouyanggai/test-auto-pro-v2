@@ -31,7 +31,7 @@ func NewRunRepository(db *sql.DB) *RunRepository {
 }
 
 // CreateRun 创建一次运行（等待运行）与它的唯一路径运行（等待运行），并在计划内单调递增分配运行号。
-// 运行号、运行、路径运行与两条创建事件在同一事务内落库，保证“运行怎么来的”可回放。
+// 运行号、运行、路径运行与两条创建事件在同一事务内落库，保证"运行怎么来的"可回放。
 func (r *RunRepository) CreateRun(ctx context.Context, planID uint64, executionPathID uint64, mode model.RunMode, trigger model.RunTriggerKind, maxConcurrency *int, now time.Time) (model.Run, model.PathRun, error) {
 	now = now.UTC()
 	for attempt := 0; attempt < runNumberRetryAttempts; attempt++ {
@@ -284,7 +284,7 @@ func (r *RunRepository) ListRunAttempts(ctx context.Context, pathRunID uint64) (
 		var failureClass sql.NullString
 		var statusCode sql.NullInt64
 		// 主键必须取回：对账三列的回写按 attempt.ID 定位，漏取会让 UPDATE 落在 id = 0 上，
-		// 表现为“对账跑过但三列永远是空”，事后无从复盘。
+		// 表现为"对账跑过但三列永远是空"，事后无从复盘。
 		var reconcileVerdict, recoveryAction, beforeFacts, runtimeDetail sql.NullString
 		if err := rows.Scan(&attempt.ID, &attempt.PathRunID, &attempt.StepID, &attempt.AttemptNo, &attempt.Verdict, &attempt.SideEffect,
 			&attempt.Transport, &statusCode, &attempt.Initial, &attempt.Reread, &failureClass, &attempt.Reason, &attempt.Basis,
@@ -834,7 +834,7 @@ func (r *RunRepository) ClaimPathRunLease(ctx context.Context, pathRunID uint64,
 
 // RenewPathRunLease 校验 owner 与 fencing token 后续租；未命中返回 ErrStaleLease。
 // 命中判定放在事务内的 SELECT ... FOR UPDATE，而不是依赖 UPDATE 受影响行数：
-// MySQL 默认统计“被更改的行”而不是“匹配的行”，当新到期时间与现值完全相同（同一毫秒内连续续租）
+// MySQL 默认统计"被更改的行"而不是"匹配的行"，当新到期时间与现值完全相同（同一毫秒内连续续租）
 // 时受影响行数为 0，会把一次合法续租误判成租约失效。
 func (r *RunRepository) RenewPathRunLease(ctx context.Context, pathRunID uint64, workerID string, fencingToken uint64, leaseDuration time.Duration, now time.Time) error {
 	now = now.UTC()

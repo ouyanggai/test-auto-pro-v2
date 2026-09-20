@@ -174,7 +174,7 @@ func (c *Client) SubmitFlowInstance(ctx context.Context, session Session, reques
 	envelope, traceID, err := c.CallWrite(ctx, WriteEndpointSubmit, session.SID, session.CustomerCode, body)
 	response := WriteResponse{}
 	if err != nil {
-		// 传输层失败没有可信状态码；只有“完整响应被拒收”的少数错误才带 HTTP 状态。
+		// 传输层失败没有可信状态码；只有"完整响应被拒收"的少数错误才带 HTTP 状态。
 		if targetErr := asError(err); targetErr != nil {
 			response.StatusCode = targetErr.HTTPStatus
 		}
@@ -222,7 +222,7 @@ type AuditCurrentTaskRequest struct {
 	FlowProxyID string
 	// AuditStatus 是目标 ExecuteResultEnum 的编码名；同意为 pass。
 	AuditStatus string
-	// ExecuteDesc 是审批意见（目标字段“处理备注”）。
+	// ExecuteDesc 是审批意见（目标字段"处理备注"）。
 	ExecuteDesc string
 	// FormData 是分支判断字段/表单数据的原始 JSON，可空。
 	FormData json.RawMessage
@@ -273,7 +273,7 @@ func BuildAuditBody(request AuditCurrentTaskRequest) map[string]any {
 	if len(request.NextAuditors) > 0 {
 		body["nextAuditorList"] = request.NextAuditors
 	}
-	// tracking 是页面无条件携带的顶层布尔；nil 视为 false，不能因“没配置”省略字段。
+	// tracking 是页面无条件携带的顶层布尔；nil 视为 false，不能因"没配置"省略字段。
 	tracking := false
 	if request.Tracking != nil {
 		tracking = *request.Tracking
@@ -295,7 +295,7 @@ func (c *Client) AuditCurrentTask(ctx context.Context, session Session, request 
 	// 「声明没有收到响应却带回状态码」的矛盾，把可判确定失败的抖动升级成待对账。
 	response := WriteResponse{}
 	if err != nil {
-		// 传输层失败没有可信状态码；只有“完整响应被拒收”的少数错误才带 HTTP 状态。
+		// 传输层失败没有可信状态码；只有"完整响应被拒收"的少数错误才带 HTTP 状态。
 		if targetErr := asError(err); targetErr != nil && targetErr.Transport == TransportResponded {
 			response.StatusCode = targetErr.HTTPStatus
 		}

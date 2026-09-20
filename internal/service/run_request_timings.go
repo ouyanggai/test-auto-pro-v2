@@ -33,7 +33,7 @@ type RunRequestDTO struct {
 	// Result 是目标业务结果：success / failure。
 	Result string `json:"result"`
 	// ResultSummary 是一句话业务结果摘要（F-034 T05）：来自结构化 WriteResponse.Message/Code、
-	// 传输状态与尝试原因，如“目标已接受请求”“目标拒绝：手动条件分支,请选择”“连接未建立，未发送”。
+	// 传输状态与尝试原因，如"目标已接受请求""目标拒绝：手动条件分支,请选择""连接未建立，未发送"。
 	// 不返回完整请求/响应正文，不编造读取类响应内容。
 	ResultSummary string `json:"resultSummary,omitempty"`
 	// Blocking 表示该请求的失败属于前置条件阻塞（受控拒绝清单），不是写结果不确定。
@@ -283,7 +283,7 @@ func ReadAttemptRequestsForTestWithRouter(router *logging.Router, pathRunID uint
 
 // fillRequestSummary 填充一句话业务结果摘要与阻塞标记（F-034 T05）。
 // 来源优先级：network.log 结构化业务消息 → 传输状态 → 尝试结论原因；没有可靠事实时留空，
-// 由前端显示“暂无真实结果摘要”，不用阶段时间或猜测填充。摘要不包含 SID、密码或完整正文。
+// 由前端显示"暂无真实结果摘要"，不用阶段时间或猜测填充。摘要不包含 SID、密码或完整正文。
 func fillRequestSummary(dto *RunRequestDTO, fields map[string]string, attempt *model.RunStepAttempt) {
 	if dto == nil {
 		return

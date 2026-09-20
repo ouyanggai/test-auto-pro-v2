@@ -150,7 +150,7 @@ type BreakpointHit struct {
 }
 
 // EvaluateBreakpointHits 返回该步骤在阶段 3 命中的全部断点（无命中返回空）。
-// 命中不在这里决定“停不停”——那由模式与命令集决定；这里只如实给出全部命中与主因。
+// 命中不在这里决定"停不停"——那由模式与命令集决定；这里只如实给出全部命中与主因。
 func EvaluateBreakpointHits(facts StepFacts, set *BreakpointSet) []BreakpointHit {
 	hits := []BreakpointHit{}
 	if set == nil {

@@ -866,7 +866,7 @@ func (s *Service) ApproveWithCommand(ctx context.Context, pathRunID uint64, comm
 
 // ApproveWithCommandAsync 按命令记录放行事实并立即返回；单步动作在后台完成七阶段执行，
 // 调用方通过 View 读取步骤执行中、核验中和落账后的状态。HTTP 请求不能绑定目标慢读重试，
-// 否则一次事实重读失败会把放行接口占住数分钟，前端看起来像“没有反应”。
+// 否则一次事实重读失败会把放行接口占住数分钟，前端看起来像"没有反应"。
 func (s *Service) ApproveWithCommandAsync(ctx context.Context, pathRunID uint64, command model.ControlCommand, cursor int, version int64) error {
 	session, err := s.reserveApproval(pathRunID, command, cursor, version)
 	if err != nil {
@@ -1193,7 +1193,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	newFlowProxyID := strings.TrimSpace(outcome.FlowProxyID)
 	newCurrentNodeID := strings.TrimSpace(outcome.CurrentNodeProxyID)
 	// 加签会重建实例私有代理，即使目标响应省略新 ID 或沿用同一 ID，也必须按实例待办重新刷新整棵树。
-	// 只比较响应字段会漏掉目标页面实际使用的“写后重新取树”步骤，后续动作会继续拿旧节点事实。
+	// 只比较响应字段会漏掉目标页面实际使用的"写后重新取树"步骤，后续动作会继续拿旧节点事实。
 	remapAfterAddSign := session.preview != nil && session.preview.Action == model.ActionAddSign
 	if remapAfterAddSign || (newFlowProxyID != "" && newFlowProxyID != oldFlowProxyID) || (newCurrentNodeID != "" && newCurrentNodeID != oldCurrentNodeID) {
 		proxyID := newFlowProxyID

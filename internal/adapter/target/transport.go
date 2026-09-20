@@ -32,7 +32,7 @@ const (
 // 无论此前是否有过失败的连接尝试，响应丢失一律按不确定处理；
 // 只有在请求从未写出时，连接阶段失败（ConnectDone 报错、错误链里存在 dial 阶段的 net.OpError，
 // 或错误返回时连接仍在建立中——请求级超时打断拨号时错误链往往没有 dial OpError）才构成
-// “连接阶段未完成”的确定失败；两者都无法证明时按无法归类（不确定）兜底。
+// "连接阶段未完成"的确定失败；两者都无法证明时按无法归类（不确定）兜底。
 func (p *transportProbe) classify(err error) TransportPhase {
 	if err == nil {
 		return TransportResponded
@@ -55,7 +55,7 @@ func (p *transportProbe) classify(err error) TransportPhase {
 
 // TransportOf 从错误链中取出传输层失败阶段，供执行器构造判定包输入。
 // err 为 nil 表示请求已完成并收到响应；错误链里没有本适配层的分档事实时，
-// 一律按无法归类处理（verdict 侧按不确定兜底），绝不推断成“确定失败”。
+// 一律按无法归类处理（verdict 侧按不确定兜底），绝不推断成"确定失败"。
 func TransportOf(err error) TransportPhase {
 	if err == nil {
 		return TransportResponded
@@ -67,7 +67,7 @@ func TransportOf(err error) TransportPhase {
 	return TransportUnclassified
 }
 
-// bypassProxy 显式返回“不使用代理”。内网目标请求绝不经过本机代理：
+// bypassProxy 显式返回"不使用代理"。内网目标请求绝不经过本机代理：
 // 纲领第 4.4.1 节实测本机代理会截走发往内网目标的请求并返回空正文 502，
 // 因此这里不依赖开发机是否正确设置 no_proxy，直接对一切目标请求绕过环境代理。
 func bypassProxy(*http.Request) (*url.URL, error) {

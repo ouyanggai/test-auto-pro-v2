@@ -300,7 +300,7 @@ func (c *compiler) emitUserAction(action model.ConfiguredAction, actionIndex int
 	}
 }
 
-// emitRecoveryFromStart 生成“重新提交 → 沿已选路径逐个人工节点同意 → 返回原节点”的恢复链。
+// emitRecoveryFromStart 生成"重新提交 → 沿已选路径逐个人工节点同意 → 返回原节点"的恢复链。
 func (c *compiler) emitRecoveryFromStart(target int, triggerKey string) {
 	if target < 0 {
 		target = c.lastHumanIndex()

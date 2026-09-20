@@ -214,8 +214,11 @@ type ActionContext struct {
 	CurrentTaskCountersign bool `json:"currentTaskCountersign"`
 	CurrentTaskParallel    bool `json:"currentTaskParallel"`
 	// HandlerMissing 表示目标节点已到达但未生成 currentAuditUserInfo 和待办（F-035）：
-	// 这是“正在生成处理人/处理人查询阻塞”的事实，绝不等于“当前待办已经处理”。
+	// 这是"正在生成处理人/处理人查询阻塞"的事实，绝不等于"当前待办已经处理"。
 	HandlerMissing bool `json:"handlerMissing"`
+	// IsLastAuditNode 表示当前节点是路径上最后一个审批节点（后续无审批节点）；
+	// 最后审批节点不支持取回（取回后无处可去，且可能因后继系统节点已到达导致取回必失败）。
+	IsLastAuditNode bool `json:"isLastAuditNode"`
 }
 
 // CompiledActionStep 是执行器消费的只读步骤；动作组与来源区分放行边界和恢复语义。

@@ -4,7 +4,7 @@ import "strings"
 
 // ResolveVueCustomPage 将目标无表单审批方式转换为复制运行时可解析的页面入口。
 // auditWay 是目标页面注册表使用的稳定键；工具不根据流程名称猜测组件，也不重建页面字段。
-// 已实现的专用链路（noFormFlowRegistry 中 implemented）标记 complete，不再用“尚未逐页面实现”阻断配置；
+// 已实现的专用链路（noFormFlowRegistry 中 implemented）标记 complete，不再用"尚未逐页面实现"阻断配置；
 // 未登记或未实现入口仍标记 partial 并携带阻断说明，禁止把通用字段清单伪装成完整协议。
 func ResolveVueCustomPage(renderType FormRenderType, auditWay, flowName string) *VueCustomPageRule {
 	if renderType != FormRenderTypeVueCustom {

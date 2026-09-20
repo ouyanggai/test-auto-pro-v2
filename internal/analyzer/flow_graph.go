@@ -88,7 +88,7 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int, structura
 		b.nodes[id] = graphNode
 		b.nodeOrder = append(b.nodeOrder, id)
 		if !known {
-			b.warnings = append(b.warnings, fmt.Sprintf("节点“%s”使用未知类型", name))
+			b.warnings = append(b.warnings, fmt.Sprintf("节点\"%s\"使用未知类型", name))
 		}
 	}
 

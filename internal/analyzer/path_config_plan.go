@@ -371,7 +371,7 @@ func catalogScopeAllowed(context, item model.ActionScope) bool {
 	}
 }
 
-// nodeActionContext 投影“按当前路径真实到达该节点时”的目标上下文；未证明的事实一律保持 false。
+// nodeActionContext 投影"按当前路径真实到达该节点时"的目标上下文；未证明的事实一律保持 false。
 func (p *pathConfigProjection) nodeActionContext(nodeID, nodeKind string, node *target.FlowNodeTemplate) (model.ActionContext, string) {
 	nodeKey, kind := PathConfigNodeToken(nodeID), strings.TrimSpace(nodeKind)
 	switch kind {
@@ -383,6 +383,7 @@ func (p *pathConfigProjection) nodeActionContext(nodeID, nodeKind string, node *
 			HasCurrentTask: true, InstanceVisible: true, HasCompletedTask: true,
 			HasEditableProxy: node != nil && len(node.AddSignIssues) == 0 && len(node.AddSignCandidates) > 0,
 			CanSwitchActor:   nodeActorSwitchable(node),
+			IsLastAuditNode:  !p.hasSuccessorAuditNode(nodeID),
 		}
 		previousID, previousReason := p.singlePreviousBusinessNode(nodeID)
 		if previousID != "" {
@@ -411,7 +412,7 @@ func nodeActorSwitchable(node *target.FlowNodeTemplate) bool {
 	return len(node.AuditConfig.Candidates) > 0 && len(node.AuditConfig.ResolutionIssues) == 0
 }
 
-// resolveOrderDependentGate 用“前置动作已执行”的等价上下文重算顺序依赖动作，真实顺序由场景编译器强制。
+// resolveOrderDependentGate 用"前置动作已执行"的等价上下文重算顺序依赖动作，真实顺序由场景编译器强制。
 func resolveOrderDependentGate(item model.ActionCatalogItem, ctx model.ActionContext) model.ActionCatalogItem {
 	if item.Enabled {
 		return item
@@ -561,6 +562,29 @@ func (p *pathConfigProjection) singlePreviousBusinessNode(nodeID string) (string
 		return candidateID, ""
 	}
 	return "", "无法从当前路径确定唯一真实上一待办"
+}
+
+// hasSuccessorAuditNode 判断当前节点在已选路径上是否有后继审批节点（common/synergy）。
+func (p *pathConfigProjection) hasSuccessorAuditNode(nodeID string) bool {
+	queue, seen := []string{nodeID}, map[string]bool{nodeID: true}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, edge := range p.outgoing[current] {
+			if !p.reachableEdge[edge.ID] || seen[edge.Target] {
+				continue
+			}
+			seen[edge.Target] = true
+			next := p.graphNodes[edge.Target]
+			switch next.Type {
+			case "common", "synergy":
+				return true
+			default:
+				queue = append(queue, next.ID)
+			}
+		}
+	}
+	return false
 }
 
 // firstNonEmptyPathConfig 返回用于公开反馈的第一个有效原因。

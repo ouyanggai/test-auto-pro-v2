@@ -429,7 +429,7 @@ func (p *requirementProjection) resolveField(key string, powers []target.FlowNod
 	if len(matchedByForm) != 1 || strings.TrimSpace(matchedByForm[0].FormName) == "" || strings.TrimSpace(matchedByForm[0].Name) == "" {
 		return "未识别的表单字段", false
 	}
-	// 只有多表单同键且节点权限唯一指向一个表单时才公开“表单 / 字段”，避免把内部 ID 当作消歧依据展示。
+	// 只有多表单同键且节点权限唯一指向一个表单时才公开"表单 / 字段"，避免把内部 ID 当作消歧依据展示。
 	return strings.TrimSpace(matchedByForm[0].FormName) + " / " + strings.TrimSpace(matchedByForm[0].Name), true
 }
 

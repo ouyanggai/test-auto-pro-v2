@@ -13,7 +13,7 @@ import (
 // Service 承载运行与路径运行的状态机推进、租约与启动恢复（纲领第 4.1、4.2 节）。
 // 边界：本包不直接发目标请求（目标写只由 internal/adapter/target 发出），
 // 也不做写结果判定（判定只由 internal/engine/verdict 完成）；
-// 这里只负责“状态怎么变、由谁推进、每次变更留下什么痕迹”。
+// 这里只负责"状态怎么变、由谁推进、每次变更留下什么痕迹"。
 type Service struct {
 	store         repository.RunStore
 	now           func() time.Time
@@ -102,7 +102,7 @@ func (s *Service) MarkVerifying(ctx context.Context, pathRunID uint64) error {
 }
 
 // BackToRunning 在一步核验落账完毕、进入下一步时把路径运行从核验中带回运行中。
-// 这是步骤循环的前进而非状态回退（迁移表允许该唯一一条“向后”通路）。
+// 这是步骤循环的前进而非状态回退（迁移表允许该唯一一条"向后"通路）。
 // 只读导航步骤没有核验中阶段：落账时状态仍是运行中，这里必须把"已在运行中"
 // 视为成功而不是冲突，否则导航步骤永远无法推进游标，长路径必然卡死在第一个导航步。
 func (s *Service) BackToRunning(ctx context.Context, pathRunID uint64) error {

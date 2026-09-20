@@ -482,11 +482,11 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 	graph, graphErr := s.graphs.Get(ctx, planID)
 	if graphErr != nil {
 		// 分支选择解析依赖真实结构；结构读不到时不能静默跳过——
-		// 否则提交载荷缺失分支参数，会在目标侧以“手动条件分支,请选择”失败。
+		// 否则提交载荷缺失分支参数，会在目标侧以"手动条件分支,请选择"失败。
 		return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationStorage, Message: "暂时无法读取真实流程结构，请重试"}
 	}
-	// F-034 T04：真实图边与节点类型进入运行上下文，跨节点手动分支入口解析不再依赖“下一业务节点
-	// 恰好是分支目标”的巧合；入口是空节点时同样能精确解析。
+	// F-034 T04：真实图边与节点类型进入运行上下文，跨节点手动分支入口解析不再依赖"下一业务节点
+	// 恰好是分支目标"的巧合；入口是空节点时同样能精确解析。
 	graphEdges := map[string][]step.GraphEdgeInfo{}
 	graphNodeTypes := map[string]string{}
 	for _, graphNode := range graph.Nodes {
@@ -1239,7 +1239,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	if pathRun.FailureClass != nil {
 		detail.FailureClassName = model.FailureClassName(*pathRun.FailureClass)
 		// F-034 T04：只有确定失败且最后一次尝试的初判是 pre_rejected（目标在任何写之前明确拒绝）
-		// 才投影为“阻塞”；写结果不确定、传输中断等仍保持“结果待确认”，其余失败保持“失败”。
+		// 才投影为"阻塞"；写结果不确定、传输中断等仍保持"结果待确认"，其余失败保持"失败"。
 		if *pathRun.FailureClass == model.FailureClassTargetRejected && detail.PathRunStatus == string(model.PathRunStatusFailed) && lastAttemptWasPreRejected(attempts) {
 			detail.StopKind = "blocked"
 			detail.StopKindNote = "目标在执行前明确拒绝了请求：前置条件未满足，没有产生任何写入"
@@ -2334,7 +2334,7 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 		"instanceStatus": preview.Facts.Status,
 		"currentNodes":   preview.Facts.CurrentNodes,
 		"dueNodes":       preview.Facts.DueNodes,
-		// 任务级步骤的待办来自实际处理人会话，必须单独告诉界面，不能只用计划账号视角的 dueNodes 判断“无待办”。
+		// 任务级步骤的待办来自实际处理人会话，必须单独告诉界面，不能只用计划账号视角的 dueNodes 判断"无待办"。
 		"currentTaskFound":        preview.Facts.CurrentTaskFound,
 		"currentTaskAssigneeName": preview.Facts.CurrentTaskAssigneeName,
 	}

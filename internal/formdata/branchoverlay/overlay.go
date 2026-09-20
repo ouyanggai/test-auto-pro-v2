@@ -710,9 +710,9 @@ func missingChoiceIssue(node *target.FlowNodeTemplate, branches []target.FlowBra
 	for index, branch := range branches {
 		options = append(options, branchDisplayName(branch, index))
 	}
-	message := fmt.Sprintf("路由“%s”缺少分支选择", name)
+	message := fmt.Sprintf("路由\"%s\"缺少分支选择", name)
 	if len(options) > 0 {
-		message += "，可选：“" + strings.Join(options, "” / “") + "”"
+		message += "，可选：\"" + strings.Join(options, "\" / \"") + "\""
 	} else if strings.TrimSpace(fallback) != "" {
 		message = fallback
 	}
@@ -744,7 +744,7 @@ func branchMismatchIssue(node *target.FlowNodeTemplate, branches []target.FlowBr
 	}
 	return Issue{
 		Code: "branch_mismatch", Path: node.ID, BranchKey: branches[expectedIndex].ID, Fields: fields,
-		Message: fmt.Sprintf("路由“%s”要求“%s”，当前数据实际命中“%s”", routeName, expected, actualName),
+		Message: fmt.Sprintf("路由\"%s\"要求\"%s\"，当前数据实际命中\"%s\"", routeName, expected, actualName),
 	}
 }
 
@@ -1400,7 +1400,7 @@ type KeyField struct {
 	Branches   []string `json:"branches,omitempty"`
 	Decisive   bool     `json:"decisive"`
 	// ConditionNodeIDs 是引用该字段的条件路由节点：填写时机必须与条件判定位置对照，
-	// 否则会提示用户“在条件判定之后的节点自动填写”，而分支其实已按缺值判定。
+	// 否则会提示用户"在条件判定之后的节点自动填写"，而分支其实已按缺值判定。
 	ConditionNodeIDs []string `json:"conditionNodeIds,omitempty"`
 }
 

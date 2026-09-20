@@ -50,7 +50,7 @@ type ActionSemanticsRequirement struct {
 // actionSemanticsRequirements 是动作到语义清单条目的映射：semantics_pending 提醒的真实数据源。
 // 未涉及的动作不凭空编造映射——映射缺失就不产生语义提醒，而不是猜条目。
 // F-016 覆盖的两个动作只涉及第 1、2 条（F-014 已勘定）：写路径的错误语义与幂等，
-// 这正是纲领第 8.2 节要求“第一次真实写之前必须掌握”的两条。
+// 这正是纲领第 8.2 节要求"第一次真实写之前必须掌握"的两条。
 var actionSemanticsRequirements = map[model.ActionKey][]ActionSemanticsRequirement{
 	model.ActionSubmit: {
 		{EntryID: "1", Title: "错误语义", Status: "已勘定"},
