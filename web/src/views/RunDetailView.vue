@@ -775,15 +775,11 @@ const overviewDone = computed(() => {
 // 目录按页面身份（runId/pathRunId）定位，用户不需要遍历全盘或按时间猜目录。
 const instanceMetaText = computed(() => {
   if (!detail.value) return ''
-  const parts: string[] = []
+  // 顶部只展示实例名称；实例编号与日志目录移入悬浮 title（instanceMetaTitle），不再堆在标题栏。
   if (detail.value.instanceNameAvailable && detail.value.instanceName) {
-    parts.push(`实例名称 ${detail.value.instanceName}`)
-  } else {
-    parts.push('实例名称不可用')
+    return `实例名称 ${detail.value.instanceName}`
   }
-  if (detail.value.instanceId) parts.push(`实例编号 ${detail.value.instanceId}`)
-  if (detail.value.logDir) parts.push(`日志 ${detail.value.logDir}`)
-  return parts.join(' · ')
+  return '实例名称不可用'
 })
 
 // instanceMetaTitle 悬浮说明名称不可用的真实原因与完整日志目录。
