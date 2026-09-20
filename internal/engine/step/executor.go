@@ -2863,12 +2863,22 @@ func sessionRefreshAllowed(err error) bool {
 	return !errors.As(err, &rejection)
 }
 
-// expectedNextTargetNodeID 求本步配置的下一跳目标节点标识，供写后核验判断实例是否已经推进。
-// 只对普通用户步骤与固定尾动作取值：恢复链与系统导航本来就会跨节点或回到前序节点，
-// 拿它们的下一步做推进判据没有意义（与路径偏离判定保持同一取舍）。
-// 取不到（步骤越界、节点未登记、目标标识为空）时返回空串，调用方据此放弃这条判据，
-// 绝不猜测下一跳。
+// expectedNextTargetNodeID 求本步的「下一跳目标节点标识」，供写后核验判断实例是否已经推进。
+// 取值顺序与门禁放行的分支持久化口径完全一致（executor.go 的 gateSnapshotJSON 调用点）：
+//   - 优先用运行期分支选择：本步若为跨手动分支路由的同意，门禁已经把该分支入口写进
+//     runCtx.SubmitBranchTargetNodeID，这一步的下一跳就是它；
+//   - 否则退回「编译步骤表里的下一步」：只对普通用户步骤与固定尾动作取值，
+//     恢复链与系统导航本来就会跨节点或回到前序节点，拿它们的下一步做推进判据没有意义
+//     （与路径偏离判定保持同一取舍）。
+//
+// 为什么不能只看编译步骤表：路径的 totalSteps 可能大于实际编译出的步骤数
+// （2026-09-21 运行 52/53 路径 2 实测 37 步只编译出 25 步），**末步没有"下一步"可用**，
+// 而末步恰恰是最需要判断"是否已推进"的地方。分支选择是运行期事实，不受步骤表长度限制。
+// 取不到时返回空串，调用方据此放弃这条判据，绝不猜测下一跳。
 func expectedNextTargetNodeID(runCtx RunContext, nextIndex int) string {
+	if target := strings.TrimSpace(runCtx.SubmitBranchTargetNodeID); target != "" {
+		return target
+	}
 	if nextIndex < 0 || nextIndex+1 >= len(runCtx.Steps) {
 		return ""
 	}
@@ -3477,4 +3487,10 @@ func TargetSkippedClassificationForTest(runCtx RunContext, step model.CompiledAc
 // 会话本人视角优先、读空时按已核实的处理人视角补查，且补查不改变既有任务身份。
 func (e *Executor) RefreshPendingTaskForAssigneeForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID string, session target.Session, assigneeUserID string) (target.Session, target.TaskSnapshot, error) {
 	return e.refreshPendingTaskSnapshotForAssignee(ctx, runCtx, step, nodeID, session, assigneeUserID)
+}
+
+// ExpectedNextTargetNodeIDForTest 暴露「下一跳锚点」取值口径，供 test 目录锁定：
+// 运行期分支选择优先于编译步骤表，末步（步骤表给不出下一步）仍然能取到锚点。
+func ExpectedNextTargetNodeIDForTest(runCtx RunContext, nextIndex int) string {
+	return expectedNextTargetNodeID(runCtx, nextIndex)
 }

@@ -1,4 +1,4 @@
-﻿package executor_test
+package executor_test
 
 import (
 	"context"
@@ -527,6 +527,11 @@ func TestF016RereadClassification(t *testing.T) {
 		{"未读到节点位置时仍按待办判", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
 			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"},
 				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadUnchanged},
+		// 末步（编译出的最后一步）没有"下一步"可比，但运行期分支选择仍然给出下一跳；
+		// 运行 52/53 路径 2 的失败步正是末步（路径声明 37 步、实际只编译出 25 步）。
+		{"末步靠分支选择锚点也能判已推进", string(model.ActionApprove), "3d452612", "62c02a8f", step.InstanceFacts{DueNodes: []string{"3d452612"}},
+			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"3d452612"}, CurrentNodes: []string{"62c02a8f"},
+				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadAdvanced},
 		{"暂存后流程事实稳定", string(model.ActionStorageFormData), "node-audit", "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, verdict.RereadUnchanged},
 		{"暂存后检查点已更新", string(model.ActionStorageFormData), "node-audit", "", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-1"}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-2"}, verdict.RereadAdvanced},
 		{"催办记录已增加", string(model.ActionUrge), "", "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 1}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 2}, verdict.RereadAdvanced},
@@ -536,6 +541,70 @@ func TestF016RereadClassification(t *testing.T) {
 		if got := step.ClassifyReread(item.action, item.nodeKey, item.nextNodeKey, item.before, item.after); got != item.want {
 			t.Fatalf("%s：重读结论应为 %s，实际 %s", item.name, item.want, got)
 		}
+	}
+}
+
+// TestExpectedNextTargetNodeIDPrefersBranchSelection 锁定「下一跳锚点」的取值口径：
+// 运行期分支选择优先于编译步骤表。运行 52/53 路径 2 的失败步是末步（路径声明 37 步、
+// 实际只编译出 25 步），步骤表给不出"下一步"，只有运行期分支选择能给出下一跳锚点。
+func TestExpectedNextTargetNodeIDPrefersBranchSelection(t *testing.T) {
+	steps := []model.CompiledActionStep{
+		{NodeKey: "node-a", Source: model.ActionStepSourceUser},
+		{NodeKey: "node-b", Source: model.ActionStepSourceUser},
+	}
+	nodes := map[string]step.NodeInfo{
+		"node-a": {TargetNodeID: "target-a"},
+		"node-b": {TargetNodeID: "target-b"},
+	}
+	cases := []struct {
+		name      string
+		runCtx    step.RunContext
+		nextIndex int
+		want      string
+	}{
+		{
+			name:      "有分支选择时优先用它，末步也能取到锚点",
+			runCtx:    step.RunContext{Steps: steps, Nodes: nodes, SubmitBranchTargetNodeID: "branch-target"},
+			nextIndex: 1,
+			want:      "branch-target",
+		},
+		{
+			name:      "无分支选择时退回下一步节点",
+			runCtx:    step.RunContext{Steps: steps, Nodes: nodes},
+			nextIndex: 0,
+			want:      "target-b",
+		},
+		{
+			name:      "末步且无分支选择时取不到，返回空串",
+			runCtx:    step.RunContext{Steps: steps, Nodes: nodes},
+			nextIndex: 1,
+			want:      "",
+		},
+		{
+			name: "恢复链来源不参与推进判据",
+			runCtx: step.RunContext{Steps: []model.CompiledActionStep{
+				{NodeKey: "node-a", Source: model.ActionStepSourceUser},
+				{NodeKey: "node-b", Source: model.ActionStepSourceRecovery},
+			}, Nodes: nodes},
+			nextIndex: 0,
+			want:      "",
+		},
+		{
+			name: "系统导航来源不参与推进判据",
+			runCtx: step.RunContext{Steps: []model.CompiledActionStep{
+				{NodeKey: "node-a", Source: model.ActionStepSourceUser},
+				{NodeKey: "node-b", Source: model.ActionStepSourceNavigation},
+			}, Nodes: nodes},
+			nextIndex: 0,
+			want:      "",
+		},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := step.ExpectedNextTargetNodeIDForTest(item.runCtx, item.nextIndex); got != item.want {
+				t.Fatalf("下一跳锚点应为 %q，实际 %q", item.want, got)
+			}
+		})
 	}
 }
 
