@@ -58,6 +58,15 @@ type TargetUserRow struct {
 	Enabled  bool
 }
 
+// AutoExcludedUserRow 是被系统默认排除的人员及其原因，供人员排除页展示自动排除项。
+// Reason 取值：disabled（账号已停用）| no_platform_role（已启用但当前平台无角色）。
+type AutoExcludedUserRow struct {
+	PersonID string
+	Name     string
+	Phone    string
+	Reason   string
+}
+
 // TargetUserDirectory 按姓名检索目标用户中心人员目录，实现方只允许执行 SELECT 并绑定租户编码。
 type TargetUserDirectory interface {
 	// SearchUsers 按姓名模糊检索未删除人员，limit 限制返回条数；name 为空时返回空结果，不全量拉取。
@@ -65,4 +74,10 @@ type TargetUserDirectory interface {
 	// ListDisabledUserIDs 返回本租户全部未删除但已停用（enable_type != 'enable'）的人员 ID。
 	// 停用账号无法登录，必然导致加签/移交后运行停机，因此默认从随机选择候选中排除。
 	ListDisabledUserIDs(ctx context.Context) ([]string, error)
+	// ListNoPlatformRoleUserIDs 返回本租户未删除、已启用、但在当前登录平台无角色记录的人员 ID。
+	// 这类账号登录会被目标判为「无权限!」，与停用账号同属登录必失败，默认一并排除。
+	ListNoPlatformRoleUserIDs(ctx context.Context) ([]string, error)
+	// ListAutoExcludedUsers 返回被系统默认排除的人员（停用 + 无平台角色），含姓名、手机与原因，供列表展示。
+	// nameFilter 非空时按姓名模糊过滤；停用与无角色互斥，一条记录只归一类原因。
+	ListAutoExcludedUsers(ctx context.Context, nameFilter string) ([]AutoExcludedUserRow, error)
 }

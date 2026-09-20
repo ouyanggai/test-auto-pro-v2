@@ -24,14 +24,37 @@ type AddSignCandidateDTO struct {
 	Enabled    bool   `json:"enabled"`
 }
 
-// AddSignCandidateSearcher 按姓名检索目标人员目录；未配置目标只读库时为 nil，对应端点返回不可用。
+// AutoExcludedPersonDTO 是系统默认排除的人员及原因；reason: disabled | no_platform_role。
+type AutoExcludedPersonDTO struct {
+	PersonID   string `json:"personId"`
+	PersonName string `json:"personName"`
+	Phone      string `json:"phone"`
+	Reason     string `json:"reason"`
+}
+
+// AddSignCandidateSearcher 按姓名检索目标人员目录、并列出系统自动排除人员；
+// 未配置目标只读库时为 nil，对应端点降级。
 type AddSignCandidateSearcher interface {
 	SearchCandidates(r *http.Request, name string) ([]AddSignCandidateDTO, error)
+	ListAutoExcluded(r *http.Request, name string) ([]AutoExcludedPersonDTO, error)
+}
+
+// exclusionListItemDTO 是人员排除列表的统一项：手动名单与系统自动排除合并展示。
+// source: manual（手动，可删除）| auto（系统默认排除，只读）。
+// autoReason 仅 source=auto 时有值：disabled（账号已停用）| no_platform_role（未分配当前平台权限）。
+type exclusionListItemDTO struct {
+	PersonID    string `json:"personId"`
+	PersonName  string `json:"personName"`
+	PersonPhone string `json:"personPhone"`
+	Reason      string `json:"reason"`
+	Source      string `json:"source"`
+	AutoReason  string `json:"autoReason,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
 }
 
 // registerAddSignPersonExclusionRoutes 注册排除名单相关路由；searcher 为空时不注册人员检索端点。
 func registerAddSignPersonExclusionRoutes(mux *http.ServeMux, service AddSignPersonExclusionService, searcher AddSignCandidateSearcher) {
-	mux.HandleFunc("GET /api/settings/add-sign-exclusion", handleListAddSignExclusion(service))
+	mux.HandleFunc("GET /api/settings/add-sign-exclusion", handleListAddSignExclusion(service, searcher))
 	mux.HandleFunc("POST /api/settings/add-sign-exclusion", handleAddSignExclusion(service))
 	mux.HandleFunc("DELETE /api/settings/add-sign-exclusion/{personId}", handleRemoveAddSignExclusion(service))
 	if searcher != nil {
@@ -59,26 +82,62 @@ func handleSearchAddSignCandidates(searcher AddSignCandidateSearcher) http.Handl
 	}
 }
 
-// handleListAddSignExclusion 获取排除名单列表
-func handleListAddSignExclusion(service AddSignPersonExclusionService) http.HandlerFunc {
+// handleListAddSignExclusion 获取人员排除列表：手动名单 + 系统自动排除（停用/无平台角色）合并展示。
+func handleListAddSignExclusion(service AddSignPersonExclusionService, searcher AddSignCandidateSearcher) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
-		// 从查询参数读取名字过滤条件
 		nameFilter := strings.TrimSpace(request.URL.Query().Get("name"))
 
-		items, err := service.List(request, nameFilter)
+		manual, err := service.List(request, nameFilter)
 		if err != nil {
 			writeFailure(response, http.StatusInternalServerError, "QUERY_EXCLUSION_FAILED", "查询排除名单失败", true)
 			return
 		}
+		items := make([]exclusionListItemDTO, 0, len(manual))
+		manualIDs := make(map[string]bool, len(manual))
+		for _, item := range manual {
+			manualIDs[item.PersonID] = true
+			items = append(items, exclusionListItemDTO{
+				PersonID: item.PersonID, PersonName: item.PersonName, PersonPhone: item.PersonPhone,
+				Reason: item.Reason, Source: "manual", UpdatedAt: item.UpdatedAt.Format("2006-01-02 15:04:05"),
+			})
+		}
+		manualCount := len(items)
 
-		if items == nil {
-			items = []model.AddSignPersonExclusionItem{}
+		// 系统自动排除：接入目标目录时一并列出；已在手动名单里的不重复展示。目录读取失败不影响手动名单返回。
+		autoCount := 0
+		if searcher != nil {
+			if autos, autoErr := searcher.ListAutoExcluded(request, nameFilter); autoErr == nil {
+				for _, auto := range autos {
+					if manualIDs[auto.PersonID] {
+						continue
+					}
+					items = append(items, exclusionListItemDTO{
+						PersonID: auto.PersonID, PersonName: auto.PersonName, PersonPhone: auto.Phone,
+						Reason: autoReasonText(auto.Reason), Source: "auto", AutoReason: auto.Reason,
+					})
+					autoCount++
+				}
+			}
 		}
 
 		writeSuccess(response, map[string]interface{}{
-			"items": items,
-			"total": len(items),
+			"items":       items,
+			"total":       len(items),
+			"manualTotal": manualCount,
+			"autoTotal":   autoCount,
 		})
+	}
+}
+
+// autoReasonText 把自动排除原因编码转成中文说明。
+func autoReasonText(reason string) string {
+	switch reason {
+	case "disabled":
+		return "账号已停用"
+	case "no_platform_role":
+		return "未分配当前平台权限"
+	default:
+		return "系统自动排除"
 	}
 }
 

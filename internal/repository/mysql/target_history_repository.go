@@ -19,12 +19,13 @@ type TargetHistoryRepository struct {
 	schema         string
 	userCenter     string
 	customerCode   string
+	platformCode   string
 	verifiedTables bool
 }
 
 // NewTargetHistoryRepository 打开目标业务库只读连接，并核对必需表存在。
 // 库名与用户中心库名都必须通过标识符白名单，避免任意 SQL 片段拼入查询。
-func NewTargetHistoryRepository(ctx context.Context, cfg config.TargetBizDBConfig, customerCode string) (*TargetHistoryRepository, error) {
+func NewTargetHistoryRepository(ctx context.Context, cfg config.TargetBizDBConfig, customerCode, platformCode string) (*TargetHistoryRepository, error) {
 	if !cfg.Enabled() {
 		return nil, errors.New("目标业务库只读配置未启用")
 	}
@@ -40,7 +41,8 @@ func NewTargetHistoryRepository(ctx context.Context, cfg config.TargetBizDBConfi
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
 	repo := &TargetHistoryRepository{
-		db: db, schema: cfg.Name, userCenter: cfg.UserCenterName, customerCode: strings.TrimSpace(customerCode),
+		db: db, schema: cfg.Name, userCenter: cfg.UserCenterName,
+		customerCode: strings.TrimSpace(customerCode), platformCode: strings.TrimSpace(platformCode),
 	}
 	if err := repo.verifyTables(ctx); err != nil {
 		db.Close()
@@ -287,6 +289,93 @@ WHERE customer_code = ? AND is_delete = 0 AND COALESCE(enable_type, '') <> 'enab
 		}
 	}
 	return ids, rows.Err()
+}
+
+// ListNoPlatformRoleUserIDs 返回本租户未删除、已启用、但在当前登录平台没有任何角色记录的人员 ID。
+// 目标登录判定（UserServiceImpl.login）：账号启用但 sys_user_role 中不存在
+// (user_id, platform_code, customer_code) 记录时返回「无权限!」，这类人员登录必然失败，
+// 与停用账号同属「运行到其节点必停机」，默认从随机选择与候选中排除。
+// platformCode 为空时无法判定平台权限，返回空集合（回落到仅停用过滤），不臆测。
+func (r *TargetHistoryRepository) ListNoPlatformRoleUserIDs(ctx context.Context) ([]string, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("目标业务库只读连接不可用")
+	}
+	if strings.TrimSpace(r.platformCode) == "" {
+		return []string{}, nil
+	}
+	// 只判定「是否存在匹配平台角色」，与登录派生查询 findAllByUserIdAndPlatformCodeAndCustomerCode 口径一致；
+	// 已启用且无匹配角色 = 登录会得到「无权限!」。停用账号交给 ListDisabledUserIDs，这里只补无权限一类。
+	query := fmt.Sprintf(`
+SELECT u.id FROM %[1]s.t_user u
+WHERE u.customer_code = ? AND u.is_delete = 0 AND u.enable_type = 'enable'
+  AND NOT EXISTS (
+    SELECT 1 FROM %[1]s.sys_user_role r
+    WHERE r.user_id = u.id AND r.platform_code = ? AND r.customer_code = ?
+  )`, r.userCenter)
+	rows, err := r.db.QueryContext(ctx, query, r.customerCode, r.platformCode, r.customerCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
+}
+
+// ListAutoExcludedUsers 返回被系统默认排除的人员（停用 + 已启用但当前平台无角色），含姓名/手机/原因。
+// 原因用 CASE 判定：enable_type 非 enable → disabled；否则（已启用但无平台角色）→ no_platform_role。
+// 无平台角色一类仅在配置了 platformCode 时纳入；nameFilter 非空按姓名模糊过滤。结果按原因、姓名排序。
+func (r *TargetHistoryRepository) ListAutoExcludedUsers(ctx context.Context, nameFilter string) ([]repository.AutoExcludedUserRow, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("目标业务库只读连接不可用")
+	}
+	platform := strings.TrimSpace(r.platformCode)
+	// 条件：停用；或（配置了平台码且）已启用但当前平台无角色。platform 为空时只纳入停用。
+	roleCondition := "0"
+	if platform != "" {
+		roleCondition = `(u.enable_type = 'enable' AND NOT EXISTS (
+			SELECT 1 FROM ` + r.userCenter + `.sys_user_role r
+			WHERE r.user_id = u.id AND r.platform_code = ? AND r.customer_code = ?
+		))`
+	}
+	query := fmt.Sprintf(`
+SELECT u.id, COALESCE(u.name, ''), COALESCE(u.phone, ''),
+       CASE WHEN u.enable_type <> 'enable' THEN 'disabled' ELSE 'no_platform_role' END AS reason
+FROM %s.t_user u
+WHERE u.customer_code = ? AND u.is_delete = 0
+  AND (u.enable_type <> 'enable' OR %s)
+  AND (? = '' OR u.name LIKE ?)
+ORDER BY reason ASC, u.name ASC`, r.userCenter, roleCondition)
+
+	args := []any{}
+	args = append(args, r.customerCode)
+	if platform != "" {
+		args = append(args, platform, r.customerCode)
+	}
+	args = append(args, nameFilter, "%"+escapeTargetHistoryLike(nameFilter)+"%")
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []repository.AutoExcludedUserRow{}
+	for rows.Next() {
+		var row repository.AutoExcludedUserRow
+		if err := rows.Scan(&row.PersonID, &row.Name, &row.Phone, &row.Reason); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
 
 // CompanyIDByName 按公司名称读取目标用户中心全部未删除公司 ID（主数据与项目公司并集）；

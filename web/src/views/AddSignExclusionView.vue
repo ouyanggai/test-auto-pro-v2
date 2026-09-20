@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from 'vue'
 import {
-  NAlert, NButton, NCard, NDataTable, NIcon, NInput, NSelect,
+  NAlert, NButton, NCard, NDataTable, NIcon, NInput, NSelect, NTag,
   NPopconfirm, NSpin, useMessage, type DataTableColumns, type SelectOption,
 } from 'naive-ui'
 import { useRouter } from 'vue-router'
@@ -33,6 +33,8 @@ let searchToken = 0
 let searchTimer: number | undefined
 
 const total = computed(() => items.value.length)
+const manualTotal = ref(0)
+const autoTotal = ref(0)
 
 // 候选转下拉选项：停用账号追加「已停用」标记，突出这类「加签后必停机」的人员，引导优先排除。
 const candidateOptions = computed<SelectOption[]>(() => candidates.value.map((c) => ({
@@ -71,6 +73,8 @@ async function loadItems() {
   try {
     const result = await fetchAddSignExclusions(nameFilter.value)
     items.value = result.items
+    manualTotal.value = result.manualTotal ?? 0
+    autoTotal.value = result.autoTotal ?? 0
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '排除名单读取失败'
@@ -118,19 +122,28 @@ async function remove(item: AddSignExclusionItem) {
 
 const columns = computed<DataTableColumns<AddSignExclusionItem>>(() => [
   { title: '姓名', key: 'personName', width: 120 },
-  { title: '人员标识', key: 'personId', ellipsis: { tooltip: true } },
   { title: '手机号', key: 'personPhone', width: 140, render: (row) => row.personPhone || '—' },
+  {
+    title: '来源',
+    key: 'source',
+    width: 110,
+    render: (row) => row.source === 'auto'
+      ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => '系统自动')
+      : h(NTag, { size: 'small', type: 'info', bordered: false }, () => '手动'),
+  },
   { title: '排除原因', key: 'reason', render: (row) => row.reason || '—' },
-  { title: '更新时间', key: 'updatedAt', width: 180 },
   {
     title: '操作',
     key: 'actions',
     width: 100,
-    render: (row) => h(
-      NPopconfirm,
-      { onPositiveClick: () => remove(row) },
-      { trigger: () => h(NButton, { size: 'small', tertiary: true, type: 'error' }, () => '移除'), default: () => `确认把 ${row.personName} 移出排除名单？` },
-    ),
+    // 系统自动排除（停用/无平台权限）由目标数据决定，不可手动移除；只有手动项可移除。
+    render: (row) => row.source === 'auto'
+      ? h('span', { style: 'color: var(--n-text-color-3)' }, '—')
+      : h(
+        NPopconfirm,
+        { onPositiveClick: () => remove(row) },
+        { trigger: () => h(NButton, { size: 'small', tertiary: true, type: 'error' }, () => '移除'), default: () => `确认把 ${row.personName} 移出排除名单？` },
+      ),
   },
 ])
 
@@ -153,8 +166,8 @@ onMounted(loadItems)
           返回系统设置
         </n-button>
       </div>
-      <h1>加签人员排除名单</h1>
-      <p>名单里的人员不会被一键配置的加签、移交随机选中。用于排除「目录里存在但无法登录目标平台」的人员，避免运行到其审批节点时因无法登录而整条路径失败。</p>
+      <h1>人员排除</h1>
+      <p>排除的人员不会被节点处理人、加签、移交、转发的随机选择选中，避免运行到其节点因无法登录而整条路径失败。账号已停用、或未分配当前平台权限的人员由系统自动排除（无需手动维护）；其余可手动添加。</p>
     </header>
 
     <n-alert v-if="errorMessage" type="error" :show-icon="false">{{ errorMessage }}</n-alert>
@@ -181,7 +194,7 @@ onMounted(loadItems)
     <n-card size="small">
       <template #header>
         <div class="exclusion__list-header">
-          <span>排除名单（共 {{ total }} 人）</span>
+          <span>共 {{ total }} 人（手动 {{ manualTotal }} · 系统自动 {{ autoTotal }}）</span>
           <div class="exclusion__search">
             <n-input v-model:value="nameFilter" placeholder="按姓名搜索" clearable @keyup.enter="loadItems" />
             <n-button @click="loadItems">搜索</n-button>

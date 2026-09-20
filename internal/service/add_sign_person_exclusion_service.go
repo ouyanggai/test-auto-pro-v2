@@ -85,29 +85,61 @@ func (s *AddSignPersonExclusionService) List(r *http.Request, nameFilter string)
 	return s.repo.List(r.Context(), nameFilter)
 }
 
+// AutoExcludedPerson 是系统默认排除的人员及原因，供列表展示（区别于手动名单）。
+// Reason: disabled（账号已停用）| no_platform_role（未分配当前平台权限）。
+type AutoExcludedPerson struct {
+	PersonID   string
+	PersonName string
+	Phone      string
+	Reason     string
+}
+
+// ListAutoExcluded 返回系统默认排除的人员（停用 + 无平台角色），供人员排除页展示；未接入目标目录时返回空。
+func (s *AddSignPersonExclusionService) ListAutoExcluded(r *http.Request, nameFilter string) ([]AutoExcludedPerson, error) {
+	if s.userDirectory == nil {
+		return []AutoExcludedPerson{}, nil
+	}
+	rows, err := s.userDirectory.ListAutoExcludedUsers(r.Context(), strings.TrimSpace(nameFilter))
+	if err != nil {
+		return nil, err
+	}
+	items := make([]AutoExcludedPerson, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, AutoExcludedPerson{
+			PersonID:   row.PersonID,
+			PersonName: row.Name,
+			Phone:      row.Phone,
+			Reason:     row.Reason,
+		})
+	}
+	return items, nil
+}
+
 // GetExcludedPersonIDs 获取应从随机选择候选中排除的全部 personID 集合：
-// 手动排除名单 + 目标平台已停用账号（停用账号必然登录失败，默认排除，无需手动维护）。
+// 手动排除名单 + 目标平台不可用账号（已停用、或已启用但当前平台无角色——两类登录都必然失败，
+// 默认排除，无需手动维护）。
 func (s *AddSignPersonExclusionService) GetExcludedPersonIDs(ctx context.Context) (map[string]bool, error) {
 	excluded, err := s.repo.GetExcluded(ctx)
 	if err != nil {
 		return nil, err
 	}
-	disabled, err := s.disabledUserIDs(ctx)
+	unusable, err := s.unusableUserIDs(ctx)
 	if err != nil {
-		// 停用名单读取失败不阻断手动排除名单生效：仍返回手动名单，避免整条一键配置因目标库抖动失败。
+		// 不可用名单读取失败不阻断手动排除名单生效：仍返回手动名单，避免整条一键配置因目标库抖动失败。
 		return excluded, nil
 	}
 	if excluded == nil {
-		excluded = make(map[string]bool, len(disabled))
+		excluded = make(map[string]bool, len(unusable))
 	}
-	for id := range disabled {
+	for id := range unusable {
 		excluded[id] = true
 	}
 	return excluded, nil
 }
 
-// disabledUserIDs 读取目标平台停用人员 ID 集合，带 TTL 缓存；未接入目标目录时返回空集合。
-func (s *AddSignPersonExclusionService) disabledUserIDs(ctx context.Context) (map[string]bool, error) {
+// unusableUserIDs 读取目标平台「登录必然失败」的人员 ID 集合，带 TTL 缓存；未接入目标目录时返回空集合。
+// 合并两类：enable_type 停用（ListDisabledUserIDs）+ 已启用但当前平台无角色（ListNoPlatformRoleUserIDs）。
+func (s *AddSignPersonExclusionService) unusableUserIDs(ctx context.Context) (map[string]bool, error) {
 	if s.userDirectory == nil {
 		return map[string]bool{}, nil
 	}
@@ -116,12 +148,19 @@ func (s *AddSignPersonExclusionService) disabledUserIDs(ctx context.Context) (ma
 	if s.disabledCache != nil && time.Now().Before(s.disabledExpiry) {
 		return s.disabledCache, nil
 	}
-	ids, err := s.userDirectory.ListDisabledUserIDs(ctx)
+	disabled, err := s.userDirectory.ListDisabledUserIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	set := make(map[string]bool, len(ids))
-	for _, id := range ids {
+	noRole, err := s.userDirectory.ListNoPlatformRoleUserIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(disabled)+len(noRole))
+	for _, id := range disabled {
+		set[id] = true
+	}
+	for _, id := range noRole {
 		set[id] = true
 	}
 	s.disabledCache = set

@@ -2,19 +2,24 @@
 // 排除名单里的人员不会被一键配置的加签/移交随机选中，用于规避「目录里存在但无法登录目标平台」
 // 的人员被选为被加签人后，运行到其审批节点时因无法登录而安全停机的整条路径失败。
 
+// AddSignExclusionItem 是人员排除列表的统一项：手动名单与系统自动排除合并。
+// source: manual（手动，可删除）| auto（系统默认排除，只读）。
+// autoReason 仅 auto 时有值：disabled（账号已停用）| no_platform_role（未分配当前平台权限）。
 export interface AddSignExclusionItem {
-  id: number
   personId: string
   personName: string
   personPhone: string
   reason: string
-  createdAt: string
-  updatedAt: string
+  source: 'manual' | 'auto'
+  autoReason?: string
+  updatedAt?: string
 }
 
 export interface AddSignExclusionListResult {
   items: AddSignExclusionItem[]
   total: number
+  manualTotal: number
+  autoTotal: number
 }
 
 export interface AddSignExclusionInput {
@@ -55,9 +60,9 @@ export function fetchAddSignExclusions(name?: string, signal?: AbortSignal) {
   return exclusionRequest<AddSignExclusionListResult>(`/api/settings/add-sign-exclusion${query}`, { method: 'GET' }, signal)
 }
 
-// addAddSignExclusion 新增或更新一条排除记录（personId 相同则更新）。
+// addAddSignExclusion 新增或更新一条排除记录（personId 相同则更新）。返回值前端不消费，用宽松类型。
 export function addAddSignExclusion(input: AddSignExclusionInput) {
-  return exclusionRequest<AddSignExclusionItem>('/api/settings/add-sign-exclusion', {
+  return exclusionRequest<Record<string, unknown>>('/api/settings/add-sign-exclusion', {
     method: 'POST',
     body: JSON.stringify(input),
   })

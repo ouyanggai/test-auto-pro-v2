@@ -93,7 +93,7 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 	if err != nil {
 		return model.ActionConfigurationResult{}, err
 	}
-	if err := validateActionPersons(validation, nodeKey, input.Persons, input.Actions); err != nil {
+	if err := validateActionPersons(validation, nodeKey, input.Persons, input.Actions, s.excludedPersonIDs(ctx)); err != nil {
 		return model.ActionConfigurationResult{}, err
 	}
 	personStrategies := decodeHistoryPersonStrategies(current.PersonStrategies)
@@ -224,7 +224,7 @@ func actionCatalogGates(validation analyzer.PathConfigValidation) []model.Action
 }
 
 // validateActionPersons 按当前真实节点的人员候选和人数边界复验动作保存附带的人员策略。
-func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey string, persons []model.PathConfigPersonStrategyInput, actions []model.ConfiguredAction) error {
+func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey string, persons []model.PathConfigPersonStrategyInput, actions []model.ConfiguredAction, excluded map[string]bool) error {
 	if len(persons) == 0 && !actionNeedsPerson(actions) {
 		return nil
 	}
@@ -250,7 +250,7 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 		if !ok {
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略不完整", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Person.Name, Reason: "缺少节点处理人员策略"}}}
 		}
-		if _, reason := analyzer.EncodePathConfigPersonStrategy(*target.Person, person); reason != "" {
+		if _, reason := analyzer.EncodePathConfigPersonStrategyWithExclusion(*target.Person, person, excluded); reason != "" {
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前节点人员策略不合法", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: target.Person.Name, Reason: reason}}}
 		}
 		delete(byKey, target.Person.Key)
@@ -281,7 +281,7 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 		if !ok {
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: personTarget.Name + "策略不完整", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: personTarget.Name, Reason: "动作需要明确候选人员"}}}
 		}
-		if _, reason := analyzer.EncodePathConfigPersonStrategy(*personTarget, person); reason != "" {
+		if _, reason := analyzer.EncodePathConfigPersonStrategyWithExclusion(*personTarget, person, excluded); reason != "" {
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作人员策略不合法", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: personTarget.Name, Reason: reason}}}
 		}
 	}
@@ -296,7 +296,7 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 		if actionTarget == nil {
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "人员策略不属于当前节点", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: key, Reason: "当前节点没有对应的人员候选目录"}}}
 		}
-		if _, reason := analyzer.EncodePathConfigPersonStrategy(*actionTarget, person); reason != "" {
+		if _, reason := analyzer.EncodePathConfigPersonStrategyWithExclusion(*actionTarget, person, excluded); reason != "" {
 			return &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作人员策略不合法", Affected: []model.PathConfigAffectedItem{{Kind: "person", Name: actionTarget.Name, Reason: reason}}}
 		}
 	}

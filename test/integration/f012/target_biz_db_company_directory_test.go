@@ -31,7 +31,7 @@ func TestTargetBizDBCompanyDirectory(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	store, err := planmysql.NewTargetHistoryRepository(ctx, bizConfig, targetConfig.CustomerCode)
+	store, err := planmysql.NewTargetHistoryRepository(ctx, bizConfig, targetConfig.CustomerCode, targetConfig.PlatformCode)
 	if err != nil {
 		t.Fatalf("打开目标业务库只读连接失败：%v", err)
 	}
@@ -136,7 +136,7 @@ func TestTargetBizDBCompanyDirectoryCoversProjectCompanies(t *testing.T) {
 		Host: planConfig.Host, Port: planConfig.Port, User: planConfig.User, Password: planConfig.Password,
 		Name: dbName, UserCenterName: dbName,
 	}
-	store, err := planmysql.NewTargetHistoryRepository(context.Background(), bizConfig, "tenant-a")
+	store, err := planmysql.NewTargetHistoryRepository(context.Background(), bizConfig, "tenant-a", "")
 	if err != nil {
 		t.Fatalf("打开临时公司目录连接失败：%v", err)
 	}

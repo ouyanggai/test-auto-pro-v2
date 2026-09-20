@@ -63,7 +63,7 @@ func main() {
 	var targetUserDirectory repository.TargetUserDirectory
 	if bizDBConfig := config.LoadTargetBizDBConfig(); bizDBConfig.Enabled() {
 		bizContext, cancelBiz := context.WithTimeout(context.Background(), 10*time.Second)
-		candidateStore, bizErr := planmysql.NewTargetHistoryRepository(bizContext, bizDBConfig, targetConfig.CustomerCode)
+		candidateStore, bizErr := planmysql.NewTargetHistoryRepository(bizContext, bizDBConfig, targetConfig.CustomerCode, targetConfig.PlatformCode)
 		cancelBiz()
 		if bizErr != nil {
 			log.Printf("目标业务库只读候选查询未启用：%v", bizErr)
@@ -323,6 +323,24 @@ func (a addSignCandidateSearcher) SearchCandidates(r *http.Request, name string)
 			PersonName: person.PersonName,
 			Phone:      person.Phone,
 			Enabled:    person.Enabled,
+		})
+	}
+	return items, nil
+}
+
+// ListAutoExcluded 列出系统默认排除的人员（停用/无平台角色）并转换为 api DTO。
+func (a addSignCandidateSearcher) ListAutoExcluded(r *http.Request, name string) ([]api.AutoExcludedPersonDTO, error) {
+	persons, err := a.service.ListAutoExcluded(r, name)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]api.AutoExcludedPersonDTO, 0, len(persons))
+	for _, person := range persons {
+		items = append(items, api.AutoExcludedPersonDTO{
+			PersonID:   person.PersonID,
+			PersonName: person.PersonName,
+			Phone:      person.Phone,
+			Reason:     person.Reason,
 		})
 	}
 	return items, nil

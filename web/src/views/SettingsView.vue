@@ -151,7 +151,7 @@ onMounted(() => {
               </div>
               <div class="setting-card__title-group">
                 <div class="setting-card__meta-tag">Exclusion List</div>
-                <h2 class="setting-card__title">加签人员排除名单</h2>
+                <h2 class="setting-card__title">人员排除</h2>
               </div>
             </div>
 
@@ -177,7 +177,7 @@ onMounted(() => {
             </div>
 
             <div class="setting-card__footer">
-              <span class="setting-card__action-text">管理加签排除名单</span>
+              <span class="setting-card__action-text">管理人员排除</span>
               <div class="setting-card__action-btn">
                 <n-icon :size="18" :component="ArrowForwardOutline" />
               </div>
