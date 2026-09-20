@@ -526,10 +526,24 @@ type flowCreatorReader interface {
 // 判定口径：
 //   - 发起：之前实例不存在，之后存在且处于运行/待发即「已前进」；仍不存在即「明确未变」；
 //     落成草稿或终态与发起语义矛盾即「自相矛盾」；
-//   - 审批：本步待办仍在即「明确未变」；待办消失且实例未出现撤回类回退状态即「已前进」。
-func ClassifyReread(action string, stepNodeKey string, before, after InstanceFacts) verdict.Reread {
+//   - 审批：实例当前节点已越过本步节点即「已前进」；本步待办仍在且实例未前进即「明确未变」。
+//
+// expectedNextNodeKey 是本步配置的下一跳目标节点标识（运行期从路径配置取得，不是写死的常量），
+// 用于识别「实例已经推进到下一跳、但目标返回的本人待办快照仍是写前旧值」这一读写时序窗口：
+// 该窗口下重读事实会同时给出「节点已前进」与「本人待办未消失」两条互相冲突的观察，
+// 只看待办会把一次已经生效的写误判成"未变"，进而把整条路径判成结果待确认（见下方审批分支）。
+func ClassifyReread(action string, stepNodeKey string, expectedNextNodeKey string, before, after InstanceFacts) verdict.Reread {
 	if after.ReadError != "" {
 		return verdict.RereadUnreadable
+	}
+	// 推进事实优先于待办快照：实例当前节点已经命中本步配置的下一跳，就是这次写已生效的直接证据。
+	// 目标的任务列表读取与实例节点写入不共享同一事务，会签/多处理人节点上本人那条 pending
+	// 记录常常比实例节点位置晚一拍消失；此时若只凭"本人待办还在"判明确未变，
+	// 会把一次真实成功的写判成无法确认，并让整条运行终局停止。
+	// 这条判据只用已经读到的目标事实：实例当前节点集合与运行期传入的下一跳标识都来自本次重读与路径配置，
+	// 不新增任何猜测，也不放松"读不到事实"时的保守判定。
+	if advancedByNodePosition(stepNodeKey, expectedNextNodeKey, after) {
+		return verdict.RereadAdvanced
 	}
 	if action == string(model.ActionStorageFormData) {
 		if !after.ActionFactRead {
@@ -635,6 +649,33 @@ func ClassifyReread(action string, stepNodeKey string, before, after InstanceFac
 	}
 	// 待办已消失：无论实例推进到下一节点还是直接结束，写都已生效。
 	return verdict.RereadAdvanced
+}
+
+// advancedByNodePosition 判断重读到的事实是否已经证明实例越过了本步节点。
+// 判定条件必须同时成立，缺一不可：
+//   - 本步节点标识与下一跳标识都已知（任一为空说明路径配置没有给出可核对的锚点，不能据此推断）；
+//   - 重读到的实例当前节点集合非空（空集说明本次没读到节点位置，不能当成"已前进"）；
+//   - 本步节点已经不在实例当前节点集合里（还在原地就说明写确实没推进）；
+//   - 实例当前节点集合命中了本步配置的下一跳（越到别的分支属于路径偏离，由独立的偏离判定处理，
+//     这里绝不能把"走到别处"也认成"本步成功"，否则会把走错分支洗成成功）。
+// 只用已经读到的目标事实与运行期路径配置，不写死任何节点标识。
+func advancedByNodePosition(stepNodeKey, expectedNextNodeKey string, after InstanceFacts) bool {
+	current := strings.TrimSpace(stepNodeKey)
+	expectedNext := strings.TrimSpace(expectedNextNodeKey)
+	if current == "" || expectedNext == "" || len(after.CurrentNodes) == 0 {
+		return false
+	}
+	for _, node := range after.CurrentNodes {
+		if strings.TrimSpace(node) == current {
+			return false
+		}
+	}
+	for _, node := range after.CurrentNodes {
+		if strings.TrimSpace(node) == expectedNext {
+			return true
+		}
+	}
+	return false
 }
 
 // ActionFactVerified 判断不推进主流程的动作是否已经由专用结果接口确认了预期变化。

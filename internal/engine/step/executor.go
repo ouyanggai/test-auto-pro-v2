@@ -1334,7 +1334,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		before := approved.Preview.Facts
 		before.StepNodeKey = after.StepNodeKey
-		reread := ClassifyReread(string(step.Action), after.StepNodeKey, before, after)
+		reread := ClassifyReread(string(step.Action), after.StepNodeKey,
+			expectedNextTargetNodeID(approved.RunCtx, approved.NextIndex), before, after)
 		observation := buildObservation(approved.Preview.Endpoint, nil, approved.Preview.writeResponse, reread)
 		observation.Action = string(step.Action)
 		observation.ActionFactVerified = ActionFactVerified(step.Action, reread)
@@ -1733,7 +1734,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf("核验事实：实例可读=%v 状态=%s 当前处理人待办=%v（发现能力=%v） 当前处理人已办=%s 实例当前节点=%v",
 		after.Found, after.Status, after.CurrentTaskFound, after.CurrentTaskRead,
 		completedTaskBasisName(after.CompletedTaskBasis), after.CurrentNodes))
-	reread := ClassifyReread(string(step.Action), stepTargetNodeID, before, after)
+	reread := ClassifyReread(string(step.Action), stepTargetNodeID,
+		expectedNextTargetNodeID(runCtx, approved.NextIndex), before, after)
 	if reread == verdict.RereadUnreadable && preview.writeSent && preview.writeErr == nil {
 		// 核验读取失败（工具会话失效/目标抖动导致事实不可读）：写请求已发出且目标声明成功，
 		// 但工具没能确认结果。2026-09-11 用户裁决：工具自己的读取错误不得把运行判成终局——
@@ -2859,6 +2861,26 @@ func sessionRefreshAllowed(err error) bool {
 	}
 	var rejection *target.BusinessRejection
 	return !errors.As(err, &rejection)
+}
+
+// expectedNextTargetNodeID 求本步配置的下一跳目标节点标识，供写后核验判断实例是否已经推进。
+// 只对普通用户步骤与固定尾动作取值：恢复链与系统导航本来就会跨节点或回到前序节点，
+// 拿它们的下一步做推进判据没有意义（与路径偏离判定保持同一取舍）。
+// 取不到（步骤越界、节点未登记、目标标识为空）时返回空串，调用方据此放弃这条判据，
+// 绝不猜测下一跳。
+func expectedNextTargetNodeID(runCtx RunContext, nextIndex int) string {
+	if nextIndex < 0 || nextIndex+1 >= len(runCtx.Steps) {
+		return ""
+	}
+	nextStep := runCtx.Steps[nextIndex+1]
+	if nextStep.Source == model.ActionStepSourceRecovery || nextStep.Source == model.ActionStepSourceNavigation {
+		return ""
+	}
+	nodeInfo, ok := runCtx.Nodes[nextStep.NodeKey]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(nodeInfo.TargetNodeID)
 }
 
 // InstanceStillAtStepNode 只读探测：实例当前节点是否仍停在编译步骤的节点上。

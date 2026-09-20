@@ -1,4 +1,4 @@
-package executor_test
+﻿package executor_test
 
 import (
 	"context"
@@ -496,24 +496,44 @@ func TestF016RereadClassification(t *testing.T) {
 		name    string
 		action  string
 		nodeKey string
-		before  step.InstanceFacts
-		after   step.InstanceFacts
-		want    verdict.Reread
+		// nextNodeKey 是本步配置的下一跳目标节点标识；为空表示本次没有可用的下一跳锚点。
+		nextNodeKey string
+		before      step.InstanceFacts
+		after       step.InstanceFacts
+		want        verdict.Reread
 	}{
-		{"发起后实例已运行", string(model.ActionSubmit), "", step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "run"}, verdict.RereadAdvanced},
-		{"发起后实例仍不存在", string(model.ActionSubmit), "", step.InstanceFacts{}, step.InstanceFacts{}, verdict.RereadUnchanged},
-		{"发起后落成草稿", string(model.ActionSubmit), "", step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "draft"}, verdict.RereadContradictory},
-		{"重读失败", string(model.ActionApprove), "node-audit", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{ReadError: "目标抖动"}, verdict.RereadUnreadable},
-		{"审批后待办仍在", string(model.ActionApprove), "node-audit", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}}, verdict.RereadUnchanged},
-		{"审批后待办消失", string(model.ActionApprove), "node-audit", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: nil}, verdict.RereadAdvanced},
-		{"审批后实例被撤回", string(model.ActionApprove), "node-audit", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "withdraw", DueNodes: nil}, verdict.RereadContradictory},
-		{"暂存后流程事实稳定", string(model.ActionStorageFormData), "node-audit", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, verdict.RereadUnchanged},
-		{"暂存后检查点已更新", string(model.ActionStorageFormData), "node-audit", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-1"}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-2"}, verdict.RereadAdvanced},
-		{"催办记录已增加", string(model.ActionUrge), "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 1}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 2}, verdict.RereadAdvanced},
-		{"关注状态已开启", string(model.ActionFollow), "", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: false}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: true}, verdict.RereadAdvanced},
+		{"发起后实例已运行", string(model.ActionSubmit), "", "", step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "run"}, verdict.RereadAdvanced},
+		{"发起后实例仍不存在", string(model.ActionSubmit), "", "", step.InstanceFacts{}, step.InstanceFacts{}, verdict.RereadUnchanged},
+		{"发起后落成草稿", string(model.ActionSubmit), "", "", step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "draft"}, verdict.RereadContradictory},
+		{"重读失败", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{ReadError: "目标抖动"}, verdict.RereadUnreadable},
+		{"审批后待办仍在", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}}, verdict.RereadUnchanged},
+		{"审批后待办消失", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: nil}, verdict.RereadAdvanced},
+		{"审批后实例被撤回", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "withdraw", DueNodes: nil}, verdict.RereadContradictory},
+		// 夜间实测现场（2026-09-21 运行 52 路径 2 第 25 步）：实例节点位置已经推进到配置的下一跳，
+		// 但目标返回的本人待办快照仍是写前旧值、本人已办也查不到。只看待办会把这次已经生效的写
+		// 判成"明确未变"，进而把整条运行判成结果待确认。节点位置是已读到的直接事实，必须优先。
+		{"节点已推进但本人待办快照滞后", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-next"},
+				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadAdvanced},
+		// 仍停在本步节点：即便传来了下一跳标识，也不能判已前进。
+		{"节点未推进时下一跳锚点无效", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-audit"},
+				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadUnchanged},
+		// 越到配置之外的分支属于路径偏离，绝不能认成"本步成功"。
+		{"节点越到非下一跳分支不判成功", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-other"},
+				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadUnchanged},
+		// 没有读到节点位置（空集）时不能据节点位置推断任何结论，仍按待办快照判。
+		{"未读到节点位置时仍按待办判", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"},
+				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadUnchanged},
+		{"暂存后流程事实稳定", string(model.ActionStorageFormData), "node-audit", "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, verdict.RereadUnchanged},
+		{"暂存后检查点已更新", string(model.ActionStorageFormData), "node-audit", "", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-1"}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-2"}, verdict.RereadAdvanced},
+		{"催办记录已增加", string(model.ActionUrge), "", "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 1}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 2}, verdict.RereadAdvanced},
+		{"关注状态已开启", string(model.ActionFollow), "", "", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: false}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: true}, verdict.RereadAdvanced},
 	}
 	for _, item := range cases {
-		if got := step.ClassifyReread(item.action, item.nodeKey, item.before, item.after); got != item.want {
+		if got := step.ClassifyReread(item.action, item.nodeKey, item.nextNodeKey, item.before, item.after); got != item.want {
 			t.Fatalf("%s：重读结论应为 %s，实际 %s", item.name, item.want, got)
 		}
 	}

@@ -1,4 +1,4 @@
-// F-036 第三轮 T3 定向验证：「当前处理人已办」必须是分型事实，不能塌缩成布尔对。
+﻿// F-036 第三轮 T3 定向验证：「当前处理人已办」必须是分型事实，不能塌缩成布尔对。
 //
 // 背景（复核 P0-4）：原实现用 CompletedTaskRead/CompletedTaskFound 这对布尔表达核验依据，
 // 但这对布尔只能说明「读没读」与「读没读到」，无法区分三种语义完全不同的情形：
@@ -42,7 +42,7 @@ func TestF036CountersignAdvancedRequiresCheckedFound(t *testing.T) {
 	after.CompletedTaskBasis = step.CompletedTaskBasisCheckedFound
 	after.CompletedTaskNodeID = "node-audit"
 
-	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", before, after)
+	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", "", before, after)
 	if got != verdict.RereadAdvanced {
 		t.Fatalf("已按执行人核对并命中本节点已办时应判为已推进，实际 %v", got)
 	}
@@ -60,7 +60,7 @@ func TestF036CountersignNotAdvancedWhenBasisNotAttempted(t *testing.T) {
 	after.CompletedTaskFound = true
 	after.CompletedTaskNodeID = "node-audit"
 
-	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", before, after)
+	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", "", before, after)
 	if got == verdict.RereadAdvanced {
 		t.Fatalf("未做已办核对时不得把仍在的待办判成已生效（这正是 P0-4 的误判形态）")
 	}
@@ -77,7 +77,7 @@ func TestF036CountersignNotAdvancedWhenBasisCheckedAbsent(t *testing.T) {
 	after.CompletedTaskBasis = step.CompletedTaskBasisCheckedAbsent
 	after.CompletedTaskRead = true
 
-	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", before, after)
+	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", "", before, after)
 	if got != verdict.RereadUnchanged {
 		t.Fatalf("核对过但没有该已办时应判为未见变化，实际 %v", got)
 	}
@@ -91,7 +91,7 @@ func TestF036CountersignNotAdvancedWhenBasisReadFailed(t *testing.T) {
 	after.CompletedTaskBasis = step.CompletedTaskBasisReadFailed
 	after.CompletedTaskRead = true
 
-	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", before, after)
+	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", "", before, after)
 	if got == verdict.RereadAdvanced {
 		t.Fatalf("已办核对读取失败时不得判为已生效")
 	}
@@ -106,7 +106,7 @@ func TestF036CountersignBasisMustMatchNode(t *testing.T) {
 	// 命中的已办在别的节点上。
 	after.CompletedTaskNodeID = "node-other"
 
-	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", before, after)
+	got := step.ClassifyReread(string(model.ActionApprove), "node-audit", "", before, after)
 	if got == verdict.RereadAdvanced {
 		t.Fatalf("已办不在本节点时不得判为已生效，实际 %v", got)
 	}
