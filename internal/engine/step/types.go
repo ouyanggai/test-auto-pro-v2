@@ -175,6 +175,11 @@ type RunContext struct {
 	// FlowProxyRemapped 表示本次运行已经通过加签响应确认实例代理被重建；
 	// 只有此时任务读取才允许在旧节点 ID 失配后按实例唯一任务恢复。
 	FlowProxyRemapped bool
+	// ExcludedActorIDs 是启动时解析的「不可用处理人」用户 ID 集合（手动排除名单 + 停用 + 无当前平台角色）。
+	// 竞签/多处理人节点在运行时挑「以谁的身份审批」时，优先跳过这些人（他们登录必然失败）：
+	// 任一可用处理人审批即可推进，绝不因为先命中了一个不可用的人就整条路径停机。
+	// 若一个节点的处理人全部不可用（如会签中必须签的人被排除），仍如实停机并说清是谁。
+	ExcludedActorIDs map[string]bool
 }
 
 // InstanceFacts 是一次目标事实读取的快照，用于门禁复验与事实重读对照。

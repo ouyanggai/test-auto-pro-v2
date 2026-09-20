@@ -345,7 +345,7 @@ func (s *PathConfigService) SetAddSignExclusion(exclusion *AddSignPersonExclusio
 	s.addSignExclusionService = exclusion
 }
 
-// excludedPersonIDs 取应排除的人员 ID 集合（手动名单 + 停用账号）；未接入或读取失败时返回 nil，
+// excludedPersonIDs 取应排除的人员 ID 集合（手动名单 + 停用账号 + 无当前平台角色）；未接入或读取失败时返回 nil，
 // 让调用方按无排除处理，绝不因排除名单读取抖动阻断整条运行发起。
 func (s *PathConfigService) excludedPersonIDs(ctx context.Context) map[string]bool {
 	if s.addSignExclusionService == nil {
@@ -356,6 +356,12 @@ func (s *PathConfigService) excludedPersonIDs(ctx context.Context) map[string]bo
 		return nil
 	}
 	return excluded
+}
+
+// ExcludedActorIDs 公开不可用处理人 ID 集合，供运行编排在构建执行上下文时注入：
+// 竞签/多处理人节点运行时据此优先跳过登录必然失败的处理人。
+func (s *PathConfigService) ExcludedActorIDs(ctx context.Context) map[string]bool {
+	return s.excludedPersonIDs(ctx)
 }
 
 // applyExclusionFilter 对配置中所有人员的候选选项进行排除名单过滤。

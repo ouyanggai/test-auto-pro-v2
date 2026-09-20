@@ -1871,9 +1871,16 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 				if nodeInfo, ok := runCtx.Nodes[expectedNextKey]; ok {
 					expectedNextTarget = strings.TrimSpace(nodeInfo.TargetNodeID)
 				}
-				if after.Found && len(after.CurrentNodes) > 0 && expectedNextTarget != "" && !containsNode(after.CurrentNodes, expectedNextTarget) {
+				// 多人依次审批 / 会签：同一节点审完一人后实例仍停在本节点，等下一位审批人。
+				// 这不是路径偏离——实例还没离开当前步节点。只有实例既不在当前步节点、也不在
+				// 配置的下一步节点时，才是真正的分支走错。仍停在本节点的情形交给控制层的
+				// 会签重跑循环（同意后实例未前进即用新发现的当前处理人继续审批），绝不误判偏离而跳过重跑。
+				currentStepTarget := strings.TrimSpace(preview.TargetNodeID)
+				stillAtCurrentNode := currentStepTarget != "" && containsNode(after.CurrentNodes, currentStepTarget)
+				if after.Found && len(after.CurrentNodes) > 0 && expectedNextTarget != "" &&
+					!containsNode(after.CurrentNodes, expectedNextTarget) && !stillAtCurrentNode {
 					outcome.DeviationDetected = true
-					log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，已配置路径的下一个预期节点是 %s", after.CurrentNodes, expectedNextTarget))
+					log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，既不是本步节点 %s 也不是配置的下一个预期节点 %s", after.CurrentNodes, currentStepTarget, expectedNextTarget))
 				}
 			}
 		}
@@ -2989,6 +2996,10 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 	// 手机号和姓名三条匹配键，不去重就会对同一个人重复发同一视角的任务查询，
 	// 既放大目标请求也把「一次事实核对」伪装成多次。
 	matches = dedupeHandlerAccounts(matches)
+	// 竞签/多处理人节点：优先以「可用处理人」的身份审批，跳过不可用的人（停用/无平台权限/被排除——
+	// 这些人登录必然失败）。任一可用处理人推进即可，绝不因为先命中一个不可用的人就整条路径停机。
+	// 全部不可用时保留原顺序继续尝试并在末尾报告：让「谁都无法登录」的真实原因如实暴露。
+	matches, excludedActorNames := partitionUsableHandlers(matches, runCtx.ExcludedActorIDs)
 	tried := []string{}
 	// F-030 评审 P2：优先用计划会话按处理人用户 ID 视角查询（不新增端点），
 	// 命中者才登录其会话；客户端不支持视角查询时回退旧的逐人登录重读。
@@ -3061,9 +3072,43 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 		return snapshot, match.UserID, name, actorSession, true, ""
 	}
 	if len(tried) == 0 {
+		if len(excludedActorNames) > 0 {
+			// 本节点的处理人全部在排除/不可用名单里（停用、无当前平台权限或被手动排除），
+			// 登录必然失败：如实说清是谁，指引去目标平台调整该节点处理人或授权，不冒用他人身份。
+			return target.TaskSnapshot{}, "", "", sess, false,
+				"本节点处理人均无法使用（" + strings.Join(excludedActorNames, "、") + "）：账号已停用、无当前平台权限或已被排除，无法登录；请在目标平台调整该节点处理人或为账号授权"
+		}
 		return target.TaskSnapshot{}, "", "", sess, false, "当前处理人未能解析出登录账号"
 	}
 	return target.TaskSnapshot{}, "", "", sess, false, "已依次核对当前处理人（" + strings.Join(tried, "、") + "）的待办，均未发现本节点待办"
+}
+
+// partitionUsableHandlers 把处理人候选分成「可用」和「不可用（在排除/停用/无权限集合里）」两部分，
+// 返回时可用的排在前面，让竞签/多处理人节点优先以可用处理人身份审批。
+// 若全部可用或 excluded 为空，原样返回、排除名单为空。返回的第二个值是被跳到后面的不可用处理人姓名，
+// 供「全部不可用」时的诊断说明。
+func partitionUsableHandlers(matches []target.HandlerAccount, excluded map[string]bool) ([]target.HandlerAccount, []string) {
+	if len(excluded) == 0 || len(matches) == 0 {
+		return matches, nil
+	}
+	usable := make([]target.HandlerAccount, 0, len(matches))
+	blocked := make([]target.HandlerAccount, 0, len(matches))
+	blockedNames := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if excluded[strings.TrimSpace(match.UserID)] {
+			blocked = append(blocked, match)
+			blockedNames = append(blockedNames, firstNonEmpty(match.Name, match.Account, match.UserID))
+			continue
+		}
+		usable = append(usable, match)
+	}
+	if len(usable) == 0 {
+		// 全部不可用：保持原候选顺序继续尝试（沿用既有登录失败路径），并带回姓名供诊断。
+		return matches, blockedNames
+	}
+	// 有可用处理人：只用可用的，被排除的完全不参与（竞签任一可用人推进即可）。
+	_ = blocked
+	return usable, nil
 }
 
 // currentHandlerForNode 从实例事实里取本节点的待办处理人信息。

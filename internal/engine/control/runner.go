@@ -6,6 +6,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"test-auto-pro-v2/internal/model"
 )
@@ -88,11 +89,42 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			}
 			hits = deviationHits
 		}
-		// 门禁阻塞表示本步根本不能放行；先停在阻塞现场，不能把预置断点伪装成已命中的执行事实。
+		// 路径偏离已在上一步写后核验确认（真实命中分支与已配置路径不一致）：后续步骤在偏离后的
+		// 结构上不成立，其门禁必然不通过。此时必须用「偏离」作为停止原因，绝不能让下游步骤的门禁
+		// 文案（如"当前待办已经处理"）抢先冒充原因误导用户；且自动模式下没有人工放行，走不下去就
+		// 自动停止到终态，不把路径运行一直挂在「运行中」等人工点停止。
+		s.mu.Lock()
+		deviationConfirmed := session.pathDeviationHit
+		deviationReason := session.stopReason
+		s.mu.Unlock()
+		if deviationConfirmed {
+			if strings.TrimSpace(deviationReason) == "" {
+				deviationReason = "路径偏离：实际命中分支与已配置路径不一致，后续步骤不再提供放行"
+				s.mu.Lock()
+				session.stopReason = deviationReason
+				s.mu.Unlock()
+			}
+			s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{
+				RunID: runID, PathRunID: &pathRunID,
+				Kind: "path_deviation_stopped", Label: "路径偏离，已自动停止：" + deviationReason,
+			}, preview.StepNo)
+			s.applyStop(ctx, pathRunID)
+			return
+		}
+		// 门禁阻塞表示本步根本不能放行。自动模式没有人工放行，持续阻塞就是走不下去，自动停止到终态；
+		// 单步/人工模式保留「停在阻塞现场等待人工查看」的既有行为。
 		if preview.BlockReason != "" {
 			s.mu.Lock()
 			session.stopReason = "条件不满足：" + preview.BlockReason
+			autoMode := session.mode == model.RunModeAuto
 			s.mu.Unlock()
+			if autoMode {
+				s.appendEventOrWarn(ctx, pathRunID, model.RunEvent{
+					RunID: runID, PathRunID: &pathRunID,
+					Kind: "gate_blocked_stopped", Label: "放行条件不满足，已自动停止：" + preview.BlockReason,
+				}, preview.StepNo)
+				s.applyStop(ctx, pathRunID)
+			}
 			return
 		}
 		for _, hit := range hits {

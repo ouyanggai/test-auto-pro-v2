@@ -607,6 +607,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		NodeEditableFields:       nodeEditableFields,
 		ActionPersonIDs:          actionPersonIDs,
 		NextNodeAuditors:         nextNodeAuditors,
+		ExcludedActorIDs:         s.pathNodes.ExcludedActorIDs(ctx),
 	}, nil
 }
 
