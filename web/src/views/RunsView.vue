@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { NButton, NCheckbox, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
+import { NButton, NCheckbox, NPagination, NPopconfirm, NSelect, NSpin, useThemeVars } from 'naive-ui'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/AppEmptyState.vue'
-import { deleteRun, fetchAllRuns, formatTime, RunApiError } from '../features/runs/api'
+import { deleteRun, fetchAllRunsPaged, formatTime, RunApiError } from '../features/runs/api'
 import type { RunSummary } from '../features/runs/api'
 
 // RunsView 是运行记录列表：一行只对应一次计划运行（跨计划）。
@@ -14,6 +14,11 @@ const themeVars = useThemeVars()
 const runs = ref<RunSummary[]>([])
 const loading = ref(false)
 const errorText = ref('')
+
+// 分页：页码从 1 起，总数由后端返回；切页或改每页大小都重新拉取。
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 
 // runStatusFilter 是运行状态筛选：空串表示全部；筛选在服务端完成，空结果与读取失败语义分开。
 const runStatusFilter = ref('')
@@ -26,18 +31,41 @@ const runStatusOptions = [
   { label: '已取消', value: 'cancelled' },
 ]
 
-// loadRuns 拉取运行列表（可按状态筛选）。
+// loadRuns 拉取运行列表（可按状态筛选、分页）。
 async function loadRuns(): Promise<void> {
   loading.value = true
   errorText.value = ''
   try {
-    runs.value = await fetchAllRuns(runStatusFilter.value)
+    const result = await fetchAllRunsPaged(runStatusFilter.value, page.value, pageSize.value)
+    runs.value = result.items
+    total.value = result.total
+    // 删除或筛选后当前页可能越界（如末页删空）：回退到最后一页重新拉取。
+    const maxPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      const retry = await fetchAllRunsPaged(runStatusFilter.value, page.value, pageSize.value)
+      runs.value = retry.items
+      total.value = retry.total
+    }
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '暂时无法读取任务列表，请重试'
     runs.value = []
   } finally {
     loading.value = false
   }
+}
+
+// changePage 切换页码后重新拉取。
+function changePage(next: number): void {
+  page.value = next
+  void loadRuns()
+}
+
+// changePageSize 改每页条数后回到第一页重新拉取。
+function changePageSize(size: number): void {
+  pageSize.value = size
+  page.value = 1
+  void loadRuns()
 }
 
 // openPaths 进入二级路径页：本次运行的执行路径列表。
@@ -118,9 +146,16 @@ function deleteHint(run: RunSummary): string {
   return `删除计划「${run.planName || '未知计划'}」的运行 #${run.runNo}：共 ${pathCount} 条执行路径的记录、步骤与日志引用会一并删除；目标平台上的实例和业务数据不受影响。删除后无法恢复。`
 }
 
-// clearRunStatusFilter 清除状态筛选并重新读取完整运行列表。
+// changeStatusFilter 状态筛选变化后回到第一页重新拉取。
+function changeStatusFilter(): void {
+  page.value = 1
+  void loadRuns()
+}
+
+// clearRunStatusFilter 清除状态筛选并回到第一页重新读取完整运行列表。
 function clearRunStatusFilter(): void {
   runStatusFilter.value = ''
+  page.value = 1
   void loadRuns()
 }
 
@@ -141,7 +176,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
         class="runs-view__status-select"
         :options="runStatusOptions"
         placeholder="全部状态"
-        @update:value="loadRuns"
+        @update:value="changeStatusFilter"
       />
       <NButton type="primary" @click="loadRuns">刷新</NButton>
       <NPopconfirm v-if="checkedCount > 0" @positive-click="removeChecked">
@@ -224,6 +259,20 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
         </tr>
       </tbody>
     </table>
+
+    <div v-if="!loading && total > 0" class="runs-view__pagination">
+      <NPagination
+        :page="page"
+        :page-size="pageSize"
+        :item-count="total"
+        :page-sizes="[10, 20, 50, 100]"
+        show-size-picker
+        show-quick-jumper
+        @update:page="changePage"
+        @update:page-size="changePageSize"
+      />
+      <span class="runs-view__total">共 {{ total }} 条</span>
+    </div>
   </section>
 </template>
 
@@ -269,4 +318,6 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
 
 .runs-view__plan { font-weight: 500; }
 .runs-view__actions { display: flex; gap: 8px; white-space: nowrap; }
+.runs-view__pagination { display: flex; align-items: center; gap: 12px; }
+.runs-view__total { color: var(--n-text-color-3); font-size: 13px; }
 </style>

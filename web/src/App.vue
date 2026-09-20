@@ -12,12 +12,14 @@ const appStore = useAppStore()
 const menuOptions: MenuOption[] = [
   { label: () => h(RouterLink, { to: '/plans' }, { default: () => '测试计划' }), key: '/plans' },
   { label: () => h(RouterLink, { to: '/runs' }, { default: () => '任务中心' }), key: '/runs' },
+  { label: () => h(RouterLink, { to: '/reports' }, { default: () => '报告中心' }), key: '/reports' },
   { label: () => h(RouterLink, { to: '/settings' }, { default: () => '系统设置' }), key: '/settings' },
 ]
 
 const selectedKey = computed(() => {
   if (route.path.startsWith('/plans')) return '/plans'
   if (route.path.startsWith('/runs')) return '/runs'
+  if (route.path.startsWith('/reports')) return '/reports'
   if (route.path.startsWith('/settings')) return '/settings'
   return route.path
 })

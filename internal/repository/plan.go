@@ -17,6 +17,8 @@ type PlanRepository interface {
 	// Update 保存计划当前配置；账号或流程绑定变化时同步标记已有路径配置受影响。
 	Update(context.Context, uint64, model.Plan) (model.Plan, error)
 	List(context.Context, model.PlanListFilter) ([]model.Plan, error)
+	// Count 返回与 List 同筛选条件下的计划总数，供分页展示。
+	Count(context.Context, model.PlanListFilter) (int, error)
 	Get(context.Context, uint64) (model.Plan, error)
 	// Delete 删除本系统计划；数据库外键同时清除其路径和工具侧配置。
 	Delete(context.Context, uint64) error

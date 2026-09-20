@@ -11,6 +11,8 @@ const RunDetailView = () => import('../views/RunDetailView.vue')
 const SettingsView = () => import('../views/SettingsView.vue')
 const FormRuntimeMaintenanceView = () => import('../views/FormRuntimeMaintenanceView.vue')
 const AddSignExclusionView = () => import('../views/AddSignExclusionView.vue')
+const ReportsView = () => import('../views/ReportsView.vue')
+const ReportDetailView = () => import('../views/ReportDetailView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -25,7 +27,11 @@ const router = createRouter({
     // 三层导航（2026-09-06）：运行列表 → 本次运行的执行路径 → 运行面板。
     { path: '/runs/:runId', component: RunPathsView },
     { path: '/runs/:runId/paths/:pathRunId', component: RunDetailView },
+    { path: '/reports', component: ReportsView },
+    { path: '/reports/:id', component: ReportDetailView },
     { path: '/settings', component: SettingsView },
+    { path: '/settings/reports', redirect: '/reports' },
+    { path: '/settings/reports/:id', redirect: (to) => `/reports/${to.params.id}` },
     { path: '/settings/form-runtime', component: FormRuntimeMaintenanceView },
     { path: '/settings/add-sign-exclusion', component: AddSignExclusionView },
   ],

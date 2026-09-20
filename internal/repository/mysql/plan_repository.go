@@ -120,8 +120,8 @@ FROM test_plans
 WHERE (? = '' OR name LIKE CONCAT('%', ?, '%'))
   AND (? = '' OR (` + planDerivedStatusExpr + `) = ?)
 ORDER BY updated_at DESC, id DESC
-LIMIT ?`
-	rows, err := r.db.QueryContext(ctx, query, filter.Name, filter.Name, filter.Status, filter.Status, filter.Limit)
+LIMIT ? OFFSET ?`
+	rows, err := r.db.QueryContext(ctx, query, filter.Name, filter.Name, filter.Status, filter.Status, filter.Limit, filter.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +138,19 @@ LIMIT ?`
 		return nil, err
 	}
 	return plans, nil
+}
+
+// Count 返回与 List 同名称/状态筛选下的计划总数，供分页展示总页数。
+func (r *PlanRepository) Count(ctx context.Context, filter model.PlanListFilter) (int, error) {
+	query := `
+SELECT COUNT(*) FROM test_plans
+WHERE (? = '' OR name LIKE CONCAT('%', ?, '%'))
+  AND (? = '' OR (` + planDerivedStatusExpr + `) = ?)`
+	var total int
+	if err := r.db.QueryRowContext(ctx, query, filter.Name, filter.Name, filter.Status, filter.Status).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // Get 按主键读取计划详情及真实路径数量。

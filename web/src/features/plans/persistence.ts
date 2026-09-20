@@ -26,6 +26,17 @@ type ApiEnvelope<T> = ApiSuccess<T> | ApiFailure
 
 interface PlanListResponse {
   items: PersistedPlan[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+// PlanPage 是分页计划列表结果：当前页行数据与满足筛选的总数。
+export interface PlanPage {
+  items: PlanRow[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface CreatePlanRequest {
@@ -115,14 +126,21 @@ export async function updatePlan(id: string, payload: CreatePlanRequest, signal:
   }, signal)
 }
 
-export async function fetchPlans(filters: PlanFilters, signal: AbortSignal): Promise<PlanRow[]> {
+// fetchPlansPaged 按筛选条件分页拉取计划列表，返回当前页行数据与总数。
+export async function fetchPlansPaged(filters: PlanFilters, page: number, pageSize: number, signal: AbortSignal): Promise<PlanPage> {
   const search = new URLSearchParams()
   const name = filters.name.trim()
   if (name) search.set('name', name)
   if (filters.status) search.set('status', filters.status)
-  const suffix = search.size > 0 ? `?${search}` : ''
-  const response = await request<PlanListResponse>(`/api/plans${suffix}`, { method: 'GET' }, signal)
-  return response.items.map(toPlanRow)
+  search.set('page', String(page))
+  search.set('pageSize', String(pageSize))
+  const response = await request<PlanListResponse>(`/api/plans?${search}`, { method: 'GET' }, signal)
+  return {
+    items: response.items.map(toPlanRow),
+    total: response.total ?? response.items.length,
+    page: response.page ?? page,
+    pageSize: response.pageSize ?? pageSize,
+  }
 }
 
 export async function fetchPlan(id: string, signal: AbortSignal): Promise<PersistedPlan> {

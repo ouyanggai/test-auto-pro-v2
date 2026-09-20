@@ -46,6 +46,7 @@ type RunOrchestrator interface {
 	RetryFailedStep(ctx context.Context, runID uint64, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	// 运行记录层级（2026-09-06）：跨计划列表（一行一次运行）、二级路径页与整次运行删除。
 	ListAllRuns(ctx context.Context, status string) ([]service.RunSummaryDTO, error)
+	ListAllRunsPaged(ctx context.Context, status string, page, pageSize int) (service.RunSummaryPage, error)
 	RunPaths(ctx context.Context, runID uint64) (*service.RunPathsDTO, error)
 	DeleteRun(ctx context.Context, runID uint64) error
 	ListRunEvents(ctx context.Context, runID uint64, afterEventID uint64, limit int, pathRunID uint64) ([]service.RunEventDTO, error)
@@ -82,12 +83,14 @@ func registerRunControlRoutes(mux *http.ServeMux, orchestrator RunOrchestrator) 
 func handleListAllRuns(orchestrator RunOrchestrator) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		status := strings.TrimSpace(request.URL.Query().Get("status"))
-		items, err := orchestrator.ListAllRuns(request.Context(), status)
+		page := parseQueryInt(request, "page", 1)
+		pageSize := parseQueryInt(request, "pageSize", 20)
+		result, err := orchestrator.ListAllRunsPaged(request.Context(), status, page, pageSize)
 		if err != nil {
 			writeRunControlError(response, err)
 			return
 		}
-		writeSuccess(response, items)
+		writeSuccess(response, result)
 	}
 }
 

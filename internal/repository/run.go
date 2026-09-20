@@ -79,6 +79,10 @@ type RunStore interface {
 	ListRunsByPlan(ctx context.Context, planID uint64, limit int) ([]model.Run, error)
 	// ListAllRunsFiltered 跨计划列出运行（游标分页、状态筛选），供运行记录列表总览使用。
 	ListAllRunsFiltered(ctx context.Context, status string, beforeID uint64, limit int) ([]model.Run, error)
+	// ListAllRunsPaged 跨计划列出运行（offset 页码分页、状态筛选），供运行记录列表分页展示。
+	ListAllRunsPaged(ctx context.Context, status string, limit, offset int) ([]model.Run, error)
+	// CountAllRuns 返回与筛选同条件的运行总数，供分页展示总页数。
+	CountAllRuns(ctx context.Context, status string) (int, error)
 	// ListRunIDsByAwaitingPaths 列出含结果待确认路径的运行 ID（去重），供启动时的历史清扫收尾聚合。
 	ListRunIDsByAwaitingPaths(ctx context.Context) ([]uint64, error)
 	// SetPathRunTotalSteps 冻结本次运行的总步骤数（进度分母）；只允许写一次，幂等。

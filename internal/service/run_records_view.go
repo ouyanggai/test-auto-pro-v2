@@ -63,6 +63,42 @@ func (s *RunOrchestrationService) ListAllRuns(ctx context.Context, status string
 	if err != nil {
 		return nil, err
 	}
+	return s.buildRunSummaries(ctx, runs)
+}
+
+// RunSummaryPage 是分页运行列表结果：当前页数据与满足筛选的总数。
+type RunSummaryPage struct {
+	Items    []RunSummaryDTO `json:"items"`
+	Total    int             `json:"total"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"pageSize"`
+}
+
+// ListAllRunsPaged 按状态筛选并分页返回运行列表；page 从 1 起，pageSize 越界时回落到默认区间。
+func (s *RunOrchestrationService) ListAllRunsPaged(ctx context.Context, status string, page, pageSize int) (RunSummaryPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	total, err := s.store.CountAllRuns(ctx, status)
+	if err != nil {
+		return RunSummaryPage{}, err
+	}
+	runs, err := s.store.ListAllRunsPaged(ctx, status, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return RunSummaryPage{}, err
+	}
+	items, err := s.buildRunSummaries(ctx, runs)
+	if err != nil {
+		return RunSummaryPage{}, err
+	}
+	return RunSummaryPage{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+// buildRunSummaries 把运行记录切片投影为列表摘要 DTO：补齐计划名、排队状态与路径汇总。
+func (s *RunOrchestrationService) buildRunSummaries(ctx context.Context, runs []model.Run) ([]RunSummaryDTO, error) {
 	planNames := map[uint64]string{}
 	if plans, listErr := s.plans.List(ctx, "", ""); listErr == nil {
 		for _, plan := range plans {

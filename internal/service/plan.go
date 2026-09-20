@@ -166,6 +166,41 @@ func (s *PlanService) List(ctx context.Context, name string, status model.PlanSt
 	return plans, nil
 }
 
+// PlanPage 是分页计划列表结果：当前页数据与满足筛选的总数。
+type PlanPage struct {
+	Items    []model.Plan
+	Total    int
+	Page     int
+	PageSize int
+}
+
+// ListPaged 按名称、状态筛选并分页返回计划列表；page 从 1 起，pageSize 越界时回落到默认区间。
+func (s *PlanService) ListPaged(ctx context.Context, name string, status model.PlanStatus, page, pageSize int) (PlanPage, error) {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > 60 {
+		return PlanPage{}, &PlanError{Kind: PlanErrorInvalidArgument, Message: "计划名称筛选不能超过 60 个字符"}
+	}
+	if status != "" && !model.ValidPlanStatus(status) {
+		return PlanPage{}, &PlanError{Kind: PlanErrorInvalidArgument, Message: "计划状态不正确"}
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	filter := model.PlanListFilter{Name: name, Status: status, Limit: pageSize, Offset: (page - 1) * pageSize}
+	total, err := s.repository.Count(ctx, filter)
+	if err != nil {
+		return PlanPage{}, mapRepositoryError(err)
+	}
+	plans, err := s.repository.List(ctx, filter)
+	if err != nil {
+		return PlanPage{}, mapRepositoryError(err)
+	}
+	return PlanPage{Items: plans, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
 // Get 按主键读取计划。
 func (s *PlanService) Get(ctx context.Context, id uint64) (model.Plan, error) {
 	if id == 0 {

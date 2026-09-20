@@ -331,9 +331,21 @@ function isAbortError(error: unknown, signal?: AbortSignal): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
-export function fetchAllRuns(status = ''): Promise<RunSummary[]> {
-  const query = status ? `?status=${encodeURIComponent(status)}` : ''
-  return requestOnce<RunSummary[]>(`/api/runs${query}`, { method: 'GET' })
+// RunSummaryPage 是分页运行列表结果：当前页数据与满足筛选的总数。
+export interface RunSummaryPage {
+  items: RunSummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+// fetchAllRunsPaged 按状态筛选并分页拉取运行列表。
+export function fetchAllRunsPaged(status = '', page = 1, pageSize = 20): Promise<RunSummaryPage> {
+  const search = new URLSearchParams()
+  if (status) search.set('status', status)
+  search.set('page', String(page))
+  search.set('pageSize', String(pageSize))
+  return requestOnce<RunSummaryPage>(`/api/runs?${search}`, { method: 'GET' })
 }
 
 export function fetchRunPaths(runId: string): Promise<RunPathsView> {

@@ -16,7 +16,7 @@ import { useRouter } from 'vue-router'
 import AppEmptyState from '../components/AppEmptyState.vue'
 import { fetchExecutionPaths } from '../features/execution-paths/api'
 import { planStatusLabels, planStatusOptions } from '../features/plans/logic'
-import { deletePlan, fetchPlans, PlanApiError } from '../features/plans/persistence'
+import { deletePlan, fetchPlansPaged, PlanApiError } from '../features/plans/persistence'
 import type { PlanFilters, PlanRow, PlanStatus } from '../features/plans/types'
 import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
 
@@ -28,6 +28,33 @@ const loading = ref(false)
 const loadError = ref('')
 let loadVersion = 0
 let loadController: AbortController | null = null
+
+// 服务端分页：页码从 1 起，总数由后端返回。
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+const pagination = computed(() => ({
+  page: page.value,
+  pageSize: pageSize.value,
+  itemCount: total.value,
+  showSizePicker: true,
+  showQuickJumper: true,
+  pageSizes: [10, 20, 50, 100],
+  prefix: () => `共 ${total.value} 条`,
+}))
+
+// changePage 切页后重新拉取。
+function changePage(next: number): void {
+  page.value = next
+  void loadPlans()
+}
+
+// changePageSize 改每页条数后回到第一页。
+function changePageSize(size: number): void {
+  pageSize.value = size
+  page.value = 1
+  void loadPlans()
+}
 
 const statusOptions: SelectOption[] = planStatusOptions
 const hasFilters = computed(() => Boolean(filters.name || filters.status))
@@ -94,9 +121,19 @@ async function loadPlans() {
   loading.value = true
   loadError.value = ''
   try {
-    const result = await fetchPlans(filters, controller.signal)
+    const result = await fetchPlansPaged(filters, page.value, pageSize.value, controller.signal)
     if (version !== loadVersion || controller.signal.aborted) return
-    plans.value = result
+    plans.value = result.items
+    total.value = result.total
+    // 删除或筛选后当前页可能越界（末页删空）：回退到最后一页重新拉取。
+    const maxPage = Math.max(1, Math.ceil(result.total / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      const retry = await fetchPlansPaged(filters, page.value, pageSize.value, controller.signal)
+      if (version !== loadVersion || controller.signal.aborted) return
+      plans.value = retry.items
+      total.value = retry.total
+    }
   }
   catch (error) {
     if (controller.signal.aborted || version !== loadVersion) return
@@ -115,7 +152,7 @@ function formatScheduledAt(value: string | null): string {
   return Number.isNaN(parsed.getTime()) ? '时间异常' : parsed.toLocaleString('zh-CN', { hour12: false })
 }
 
-watch([() => filters.name, () => filters.status], () => { void loadPlans() }, { immediate: true })
+watch([() => filters.name, () => filters.status], () => { page.value = 1; void loadPlans() }, { immediate: true })
 onBeforeUnmount(() => loadController?.abort())
 
 function statusTagType(status: PlanStatus): 'default' | 'success' | 'warning' | 'info' {
@@ -217,13 +254,17 @@ const columns: DataTableColumns<PlanRow> = [
 
     <div v-else class="plan-table-region">
       <n-data-table
+        remote
         :columns="columns"
         :data="plans"
         :loading="loading"
         :row-key="(row: PlanRow) => row.id"
         :scroll-x="1538"
         :single-line="false"
+        :pagination="pagination"
         striped
+        @update:page="changePage"
+        @update:page-size="changePageSize"
       >
         <template #empty>
           <app-empty-state

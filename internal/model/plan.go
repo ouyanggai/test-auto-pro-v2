@@ -54,4 +54,5 @@ type PlanListFilter struct {
 	Name   string
 	Status PlanStatus
 	Limit  int
+	Offset int
 }

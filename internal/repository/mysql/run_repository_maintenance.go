@@ -69,6 +69,43 @@ func (r *RunRepository) ListAllRunsFiltered(ctx context.Context, status string, 
 	return runs, rows.Err()
 }
 
+// ListAllRunsPaged 按状态筛选并用 offset/limit 分页返回运行记录，供运行列表页码分页。
+func (r *RunRepository) ListAllRunsPaged(ctx context.Context, status string, limit, offset int) ([]model.Run, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+		SELECT id, plan_id, run_no, mode, trigger_kind, max_concurrency, path_dispatch, status, result, started_at, finished_at, created_at, updated_at
+		FROM runs
+		WHERE (? = '' OR status = ?)
+		ORDER BY id DESC LIMIT ? OFFSET ?
+	`
+	rows, err := r.db.QueryContext(ctx, query, status, status, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := []model.Run{}
+	for rows.Next() {
+		run, scanErr := scanRun(rows.Scan)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
+
+// CountAllRuns 返回与筛选同条件的运行总数，供分页展示总页数。
+func (r *RunRepository) CountAllRuns(ctx context.Context, status string) (int, error) {
+	var total int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE (? = '' OR status = ?)`, status, status).Scan(&total)
+	return total, err
+}
+
 // ListRunIDsByAwaitingPaths 列出含结果待确认路径的运行 ID（去重、升序）。
 // 供启动阶段的历史清扫调用：这些运行的用户侧对账通路已移除，全部闭合时应收尾聚合。
 func (r *RunRepository) ListRunIDsByAwaitingPaths(ctx context.Context) ([]uint64, error) {

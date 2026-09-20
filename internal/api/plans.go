@@ -19,6 +19,7 @@ type PlanService interface {
 	Create(context.Context, string, service.CreatePlanInput) (model.Plan, bool, error)
 	Update(context.Context, uint64, service.UpdatePlanInput) (model.Plan, error)
 	List(context.Context, string, model.PlanStatus) ([]model.Plan, error)
+	ListPaged(context.Context, string, model.PlanStatus, int, int) (service.PlanPage, error)
 	Get(context.Context, uint64) (model.Plan, error)
 	Delete(context.Context, uint64) error
 }
@@ -54,7 +55,10 @@ type planResponse struct {
 }
 
 type planListResponse struct {
-	Items []planResponse `json:"items"`
+	Items    []planResponse `json:"items"`
+	Total    int            `json:"total"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"pageSize"`
 }
 
 // registerPlanRoutes 注册计划创建、编辑、列表和详情端点。
@@ -159,24 +163,40 @@ func handleCreatePlan(plans PlanService) http.HandlerFunc {
 	}
 }
 
-// handleListPlans 按名称和状态返回当前计划列表。
+// handleListPlans 按名称和状态分页返回计划列表；page/pageSize 缺省时由服务层回落到默认页大小。
 func handleListPlans(plans PlanService) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
-		items, err := plans.List(
+		page := parseQueryInt(request, "page", 1)
+		pageSize := parseQueryInt(request, "pageSize", 20)
+		result, err := plans.ListPaged(
 			request.Context(),
 			request.URL.Query().Get("name"),
 			model.PlanStatus(strings.TrimSpace(request.URL.Query().Get("status"))),
+			page, pageSize,
 		)
 		if err != nil {
 			writePlanError(response, err)
 			return
 		}
-		result := make([]planResponse, 0, len(items))
-		for _, item := range items {
-			result = append(result, toPlanResponse(item))
+		items := make([]planResponse, 0, len(result.Items))
+		for _, item := range result.Items {
+			items = append(items, toPlanResponse(item))
 		}
-		writeSuccess(response, planListResponse{Items: result})
+		writeSuccess(response, planListResponse{Items: items, Total: result.Total, Page: result.Page, PageSize: result.PageSize})
 	}
+}
+
+// parseQueryInt 读取正整数查询参数，缺省或非法时返回 fallback。
+func parseQueryInt(request *http.Request, key string, fallback int) int {
+	raw := strings.TrimSpace(request.URL.Query().Get(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // handleGetPlan 返回指定计划的持久化详情。
@@ -312,6 +332,11 @@ func (unavailablePlanService) Update(context.Context, uint64, service.UpdatePlan
 // List 在未注入计划存储时拒绝列表读取。
 func (unavailablePlanService) List(context.Context, string, model.PlanStatus) ([]model.Plan, error) {
 	return nil, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
+}
+
+// ListPaged 在未注入计划存储时拒绝分页列表读取。
+func (unavailablePlanService) ListPaged(context.Context, string, model.PlanStatus, int, int) (service.PlanPage, error) {
+	return service.PlanPage{}, &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
 }
 
 // Get 在未注入计划存储时拒绝详情读取。
