@@ -36,7 +36,11 @@ function timelineStep(stepNo: number): RunStep | undefined {
 }
 
 // nodeStateName 是这个节点的运行态中文名。
-const nodeStateName = computed(() => props.detail.nodeStates[props.nodeKey]?.statusName || '未开始')
+const nodeStateName = computed(() => {
+  const name = props.detail.nodeStates[props.nodeKey]?.statusName
+  if (name === '结果待确认') return '执行失败（结果未确认）'
+  return name || '未开始'
+})
 const nodeStatus = computed(() => props.detail.nodeStates[props.nodeKey]?.status || 'not_started')
 
 // isCurrentNode 用图节点 ID 比对：预览自带的 nodeKey 是配置令牌键，两套键空间不能混用，
@@ -118,7 +122,7 @@ const nodeErrors = computed<NodeErrorRow[]>(() => {
       })
     }
   }
-  if ((nodeStatus.value === 'failed' || nodeStatus.value === 'awaiting_reconciliation') && props.detail.stopReason) {
+  if ((nodeStatus.value === 'failed' || nodeStatus.value === 'awaiting_reconciliation' || nodeStatus.value === 'stopped') && props.detail.stopReason) {
     rows.push({
       key: 'stop',
       title: '路径运行停在这个节点',
@@ -146,7 +150,7 @@ const interruptedVerdict = computed(() => {
   if (props.detail.stopKind === 'blocked') return '阻塞'
   if (props.detail.pathRunStatus === 'failed') return '失败'
   if (props.detail.stepInFlight) return '正在执行，等待结果'
-  return '结果待确认'
+  return '执行失败（结果未确认）'
 })
 
 // 切换节点时重选页签：有错误先给错误，否则给运行信息；运行中出现新错误不抢走用户当前视图。

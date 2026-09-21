@@ -144,14 +144,11 @@ function progressText(path: RunPathProgress): string {
 
 // statusTagType 让状态标签的颜色与语义一致；颜色之外始终有中文文字。
 function statusTagType(statusName: string): 'default' | 'info' | 'success' | 'warning' | 'error' {
-  switch (statusName) {
-    case '已完成': return 'success'
-    case '失败': return 'error'
-    case '结果待确认': return 'warning'
-    case '运行中':
-    case '确认结果中': return 'info'
-    default: return 'default'
-  }
+  if (['失败', '执行失败（结果未确认）', '结果待确认'].includes(statusName)) return 'error'
+  if (statusName === '已完成') return 'success'
+  if (['运行中', '确认结果中'].includes(statusName)) return 'info'
+  if (['已停止', '已取消'].includes(statusName)) return 'warning'
+  return 'default'
 }
 
 onMounted(() => { void loadPaths() })
