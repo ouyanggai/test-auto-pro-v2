@@ -98,6 +98,14 @@ func walkAllEdges(nodeID, target string, runCtx RunContext, visited map[string]b
 
 // branchEntriesForStep 返回本步流转需要携带的手动分支入口；阻塞时返回原因供写前门禁拦截。
 // submit、resubmit、approve 共用同一解析器，预览阶段与写前待办刷新使用同一结果（F-034 T04）。
+//
+// 恢复链边界（2026-09-21 运行 76 路径 1 第 7 步实测）：
+// 加签插入节点之后的恢复链同意，其"下一业务节点"是加签前的锚点——那是插入节点在真实树里的
+// **前驱**，正向边必然走不到。此时要求正向分支入口没有意义：目标按实例自身代理推进，本步
+// 不需要携带任何手动分支入口。若沿用"有边表而走不到目标即阻塞"，会把每一次合法的
+// "加签后回退再恢复"都判成路径不匹配而停在写前。
+// 判据只看结构可达性（正向走不到，但存在从目标回到当前节点的正向可达），不匹配动作来源、
+// 中文节点名或步骤序号，避免把真正的"路径选择与实际流转不一致"放过去。
 func branchEntriesForStep(runCtx RunContext, step model.CompiledActionStep, nextNodeKey string) ([]string, string) {
 	currentTargetID := strings.TrimSpace(runCtx.Nodes[strings.TrimSpace(step.NodeKey)].TargetNodeID)
 	nextTargetID := strings.TrimSpace(runCtx.Nodes[strings.TrimSpace(nextNodeKey)].TargetNodeID)
@@ -105,7 +113,44 @@ func branchEntriesForStep(runCtx RunContext, step model.CompiledActionStep, next
 		// 任一端缺目标标识时无法做跨节点解析：保持空结果，由既有节点标识门禁处理。
 		return nil, ""
 	}
-	return resolveBranchEntriesForTransition(currentTargetID, nextTargetID, runCtx)
+	entries, blockReason := resolveBranchEntriesForTransition(currentTargetID, nextTargetID, runCtx)
+	if blockReason != "" && isReverseTransition(currentTargetID, nextTargetID, runCtx) {
+		// 目标是当前节点的上游：本次流转是恢复/回退语义，正向分支入口为空即正确结果。
+		return nil, ""
+	}
+	return entries, blockReason
+}
+
+// isReverseTransition 判断 next 是否为 current 的上游节点（即从 next 出发能正向走到 current）。
+//
+// 为什么需要它：加签会在锚点之后插入节点，随后回退会把实例退到插入节点上。此时恢复链里
+// 紧跟插入节点的那一步同意，其"下一业务节点"是插入节点的前驱锚点，正向边永远走不到。
+// 用"目标能否正向到达当前节点"确认这是反向流转，而不是路径配置错误。
+// 输入边界：两端 ID 均非空才判定；边表为空（旧数据）时返回 false，保持既有行为。
+func isReverseTransition(currentTargetID, nextTargetID string, runCtx RunContext) bool {
+	if currentTargetID == "" || nextTargetID == "" || currentTargetID == nextTargetID {
+		return false
+	}
+	if len(runCtx.GraphEdges) == 0 {
+		return false
+	}
+	visited := map[string]bool{}
+	forwardReachable(nextTargetID, currentTargetID, runCtx, visited)
+	return visited[currentTargetID]
+}
+
+// forwardReachable 沿真实图边做一次只读可达性遍历，用于判断反向流转；不发任何写请求。
+func forwardReachable(from, target string, runCtx RunContext, visited map[string]bool) {
+	if from == "" || visited[from] {
+		return
+	}
+	visited[from] = true
+	if from == target {
+		return
+	}
+	for _, edge := range runCtx.GraphEdges[from] {
+		forwardReachable(strings.TrimSpace(edge.Target), target, runCtx, visited)
+	}
 }
 
 // nonEmptyList 把单个可选入口包装成入口列表；空串返回 nil，兼容旧回退路径。

@@ -167,18 +167,42 @@ async function chooseHistoryCandidate (browser, keyword) {
 
 // openRunDialog 在路径页点击页头右上角的「运行」按钮，并等运行前检查完成。
 // 定位用 data-testid（页面为该按钮显式提供的稳定锚点），避免误点到路径行里的「运行」复选框。
+//
+// 为什么要重试：运行前检查会真实核对勾选路径的节点配置、基础表单数据与可执行步骤，
+// 内网目标偶有瞬断时检查会停在核对中。点击本身也可能落在弹窗尚未挂载的间隙里。
+// 这里做有界重试（最多 3 次），每次都先关掉可能残留的弹窗再重开；仍不出现才如实报错，
+// 绝不放宽判定口径（仍然只认页面显式的 run-preflight-summary 锚点）。
 export async function openRunDialog (browser, planId) {
   await openPlanPaths(browser, planId)
-  const clicked = await evalPage(browser, `
-    const button = $('[data-testid="plan-detail-run-button"]');
-    if (!button) return false;
-    fire(button);
-    return true;
-  `)
-  if (!clicked) throw new Error('页面上找不到「运行」按钮（data-testid=plan-detail-run-button）')
-  // 等“检查中”结束：以页面显式提供的 data-testid 摘要块为准，不用正文文案猜测。
-  // 检查完成后才会出现 run-preflight-summary；仍在核对时只有 checking 提示。
-  await waitFor(browser, 'return !!$(\'[data-testid="run-preflight-summary"]\')', { label: '运行前检查完成', timeoutMs: 180000 })
+  let lastError = null
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const clicked = await evalPage(browser, `
+      const button = $('[data-testid="plan-detail-run-button"]');
+      if (!button) return false;
+      fire(button);
+      return true;
+    `)
+    if (!clicked) throw new Error('页面上找不到「运行」按钮（data-testid=plan-detail-run-button）')
+    try {
+      // 等“检查中”结束：以页面显式提供的 data-testid 摘要块为准，不用正文文案猜测。
+      // 检查完成后才会出现 run-preflight-summary；仍在核对时只有 checking 提示。
+      await waitFor(browser, 'return !!$(\'[data-testid="run-preflight-summary"]\')', { label: '运行前检查完成', timeoutMs: 60000 })
+      return
+    } catch (error) {
+      lastError = error
+      // 关掉残留弹窗（点遮罩或「关闭」按钮），下一轮重新打开。
+      await evalPage(browser, `
+        const buttons = $$('.n-button').filter(visible);
+        const close = buttons.find((el) => textOf(el) === '关闭');
+        if (close) { fire(close); return true }
+        const mask = $('.n-modal-mask');
+        if (mask) { fire(mask); return true }
+        return false;
+      `)
+      await delay(1200)
+    }
+  }
+  throw lastError
 }
 
 // selectRunnablePaths 只勾选在运行前检查里判定为可运行的路径。
