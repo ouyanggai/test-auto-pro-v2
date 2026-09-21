@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { launchHeadlessChromium, HEADLESS_LAUNCH_ARGS } from './browser.ts'
 import { healthBody, listenPort, SERVICE_NAME } from './health.ts'
-import { SessionManager } from './session-manager.ts'
+import { SESSION_EVENTS, SessionManager } from './session-manager.ts'
 import { ForwardChannel, ForwardFailure } from './forward-channel.ts'
 import { installTargetRoute, type TargetRouteHandle } from './target-route.ts'
 import { assertForwardReady } from './navigate.ts'
@@ -545,12 +545,24 @@ async function main (): Promise<void> {
   const pageOrigin = await serveFlowPage(unpacked.distDir)
   let browser: Awaited<ReturnType<typeof launchHeadlessChromium>> | null = null
   let manager: SessionManager | null = null
+  let leaseReaper: NodeJS.Timeout | null = null
   const sessions = new Map<string, RuntimeSession>()
 
   async function ensureManager (): Promise<SessionManager> {
     if (manager) return manager
     browser = await launchHeadlessChromium()
     manager = new SessionManager(browser)
+    manager.events.on(SESSION_EVENTS.closed, closed => {
+      const runtime = sessions.get(closed.sessionId)
+      if (!runtime) return
+      runtime.destroyed = true
+      void runtime.route?.uninstall().catch(() => undefined)
+      sessions.delete(closed.sessionId)
+    })
+    const configuredReaperMs = Number(process.env.EXECUTOR_SESSION_REAPER_MS || 10000)
+    const reaperMs = Number.isFinite(configuredReaperMs) && configuredReaperMs >= 1000 ? configuredReaperMs : 10000
+    leaseReaper = setInterval(() => { manager?.reapExpired() }, reaperMs)
+    leaseReaper.unref()
     return manager
   }
 
@@ -630,6 +642,20 @@ async function main (): Promise<void> {
     const sessionId = sessionMatch[1]!
     const action = sessionMatch[2] ?? ''
     const session = sessions.get(sessionId)
+
+    if (request.method === 'POST' && action === '/heartbeat') {
+      if (!session) {
+        send(404, { error: '会话不存在' })
+        return
+      }
+      try {
+        const leaseExpiresAt = manager?.heartbeat(sessionId)
+        send(200, { sessionId, leaseExpiresAt })
+      } catch (error) {
+        send(409, { error: String((error as Error)?.message ?? error) })
+      }
+      return
+    }
 
     if (request.method === 'GET' && action === '/status') {
       if (!session) {
@@ -1123,6 +1149,7 @@ async function main (): Promise<void> {
   })
 
   async function shutdown (): Promise<void> {
+    if (leaseReaper) clearInterval(leaseReaper)
     await manager?.closeAll().catch(() => undefined)
     wss.close()
     server.close()

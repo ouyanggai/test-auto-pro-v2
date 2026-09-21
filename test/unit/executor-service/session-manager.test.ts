@@ -117,3 +117,27 @@ test('页面崩溃广播事件并释放会话', async () => {
     await browser.close().catch(() => undefined)
   }
 })
+
+test('租约心跳保活，过期后只回收孤儿会话并释放同账号门禁', async () => {
+  const browser = await launchHeadlessChromium()
+  let now = 1000
+  try {
+    const manager = new SessionManager(browser, { leaseMs: 10, now: () => now })
+    const first = await manager.create('account-lease')
+    now = 1009
+    manager.reapExpired()
+    await assert.rejects(() => manager.create('account-lease'), (error: Error) => error.message.includes('串行排队'))
+    manager.heartbeat(first.sessionId)
+    now = 1018
+    manager.reapExpired()
+    await assert.rejects(() => manager.create('account-lease'), (error: Error) => error.message.includes('串行排队'))
+    now = 1029
+    manager.reapExpired()
+    assert.equal(first.status, 'closed')
+    const next = await manager.create('account-lease')
+    assert.notEqual(next.sessionId, first.sessionId)
+    await manager.closeAll()
+  } finally {
+    await browser.close().catch(() => undefined)
+  }
+})

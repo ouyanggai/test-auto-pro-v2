@@ -5,6 +5,11 @@ import { EventEmitter } from 'node:events'
 import type { Browser } from 'playwright'
 import type { CloseReason, ManagedSession } from './types.ts'
 
+export interface SessionManagerOptions {
+  leaseMs?: number
+  now?: () => number
+}
+
 export const SESSION_EVENTS = {
   created: 'created',
   closed: 'closed',
@@ -22,25 +27,35 @@ export class SessionClosedError extends Error {
 export class SessionManager {
   private readonly browser: Browser
   private readonly sessions = new Map<string, ManagedSession>()
+  private readonly leaseMs: number
+  private readonly now: () => number
   readonly events = new EventEmitter()
 
-  constructor (browser: Browser) {
+  constructor (browser: Browser, options: SessionManagerOptions = {}) {
     this.browser = browser
+    const configuredLeaseMs = options.leaseMs ?? Number(process.env.EXECUTOR_SESSION_LEASE_MS || 90000)
+    this.leaseMs = Number.isFinite(configuredLeaseMs) && configuredLeaseMs > 0 ? configuredLeaseMs : 90000
+    this.now = options.now ?? Date.now
   }
 
   // create 为一次节点动作创建全新 BrowserContext 与页面。
   async create (accountKey: string): Promise<ManagedSession> {
     const key = accountKey.trim()
     if (!key) throw new Error('创建会话缺少账号唯一键')
+    // 创建前同步回收已过期租约，避免定时器尚未 tick 时旧会话仍阻塞同账号。
+    this.reapExpired()
     for (const existing of this.sessions.values()) {
       if (existing.accountKey === key && (existing.status === 'creating' || existing.status === 'ready')) {
         throw new Error(`账号 ${key} 已有未关闭会话 ${existing.sessionId}，同一账号必须由 Go 串行排队执行`)
       }
     }
+    const now = this.now()
     const session: ManagedSession = {
       sessionId: randomUUID(),
       accountKey: key,
       createdAt: new Date().toISOString(),
+      lastHeartbeatAt: now,
+      leaseExpiresAt: now + this.leaseMs,
       status: 'creating',
       context: null,
       page: null
@@ -69,6 +84,27 @@ export class SessionManager {
 
   list (): ManagedSession[] {
     return [...this.sessions.values()]
+  }
+
+  // heartbeat 续期由 Go 运行进程定期调用；进程消失后租约自然过期，不能靠旧进程主动 close。
+  heartbeat (sessionId: string): number {
+    const session = this.assertOpen(sessionId)
+    const now = this.now()
+    session.lastHeartbeatAt = now
+    session.leaseExpiresAt = now + this.leaseMs
+    return session.leaseExpiresAt
+  }
+
+  // reapExpired 只回收租约已经过期的活动会话，绝不抢占仍在续租的同账号会话。
+  reapExpired (now = this.now()): string[] {
+    const expired: string[] = []
+    for (const session of this.sessions.values()) {
+      if ((session.status === 'creating' || session.status === 'ready') && session.leaseExpiresAt <= now) {
+        expired.push(session.sessionId)
+        void this.release(session, 'lease_expired', `租约已过期（最后心跳 ${session.lastHeartbeatAt}）`).catch(() => undefined)
+      }
+    }
+    return expired
   }
 
   assertOpen (sessionId: string): ManagedSession {

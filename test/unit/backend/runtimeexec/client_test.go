@@ -402,6 +402,31 @@ func TestClientCreateSession(t *testing.T) {
 	}
 }
 
+// TestClientHeartbeat 续租请求必须命中指定 runtime 会话的心跳端点。
+func TestClientHeartbeat(t *testing.T) {
+	var called bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/runtime/session/sess-heartbeat/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.Method != http.MethodPost {
+			t.Fatalf("心跳方法不符：%s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client, err := runtimeexec.NewClient(server.URL, &fakeForwarder{}, &fakeSessions{})
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	if err := client.Heartbeat(context.Background(), "sess-heartbeat"); err != nil {
+		t.Fatalf("续租失败：%v", err)
+	}
+	if !called {
+		t.Fatal("未发送心跳请求")
+	}
+}
+
 // TestClientHealthRequiresV2Service 健康检查必须命中独立执行服务的 v2 协议。
 func TestClientHealthRequiresV2Service(t *testing.T) {
 	server := startFakeExecutor(t, nil)

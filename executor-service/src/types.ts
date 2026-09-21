@@ -14,6 +14,8 @@ export interface ManagedSession {
   sessionId: string
   accountKey: string
   createdAt: string
+  lastHeartbeatAt: number
+  leaseExpiresAt: number
   status: SessionStatus
   closedAt?: string
   closeReason?: string
@@ -21,4 +23,4 @@ export interface ManagedSession {
   page: Page | null
 }
 
-export type CloseReason = 'destroyed' | 'superseded' | 'crashed' | 'shutdown'
+export type CloseReason = 'destroyed' | 'superseded' | 'crashed' | 'shutdown' | 'lease_expired'

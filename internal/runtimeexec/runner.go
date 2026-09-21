@@ -130,6 +130,8 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		defer cancel()
 		_ = r.client.Destroy(destroyCtx, handle.SessionID)
 	}()
+	stopLease := r.startSessionLease(ctx, handle.SessionID)
+	defer stopLease()
 
 	// ⓪ 预热命令通道：装载期页面的目标读取（模板、字段权限、远程选项）要经 WS 转发 Go，
 	// 必须先于装载连接；若等 Execute 才连通道，装载期读取全部被本地中止，表单装载不完
@@ -268,6 +270,36 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	writeTracesMu.Unlock()
 	payload.NewInstanceID = extractNewInstanceID(payload.BusinessSummary)
 	return payload, nil
+}
+
+// startSessionLease 在动作期间续期执行服务租约；停止顺序先于 Destroy，避免关闭阶段又续租一次。
+func (r *RuntimeExecutor) startSessionLease(ctx context.Context, sessionID string) func() {
+	leaseCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-leaseCtx.Done():
+				return
+			case <-ticker.C:
+				heartbeatCtx, heartbeatCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := r.client.Heartbeat(heartbeatCtx, sessionID)
+				heartbeatCancel()
+				if err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // extractNewInstanceID 从 runtime 回传的业务摘要中取新发起实例 ID：

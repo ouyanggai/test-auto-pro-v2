@@ -11,7 +11,7 @@ F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，�
 - **精确选模板**：`InitFlowDialog` 只按 `auditWayList` 查询模板。执行装载必须带计划 `auditWay` 与绑定 `flowTemplateId`，在查询结果中精确匹配；0 条、不含绑定 ID 或多模板误取第一项均阻塞。
 - **薄桥接**：拦截 `$initFlow`/`$flowDetail` 返回的 `instance`，调用页面已有业务方法（`sumbitFlow`、暂存/同意/不同意/重提/转发、选择继续方法）。禁止手工执行宿主和 `/test-auto-form/exec*`。
 - **数据补丁**：页面自己读模板、实例和字段权限。完成后仅用组件现有 `setData`/`getValues`/`getData`（或自定义页等价接口）写入当前节点允许值，等待选项和联动再回读。无接口则 `unsupported`。
-- **协议**：生命周期仍为 `/runtime/session` + WebSocket。版本 `exec-engine/v2`，拒绝 v1。装载输入为身份、原生流程/任务上下文和当前节点数据补丁，不含 Go 渲染模板。
+- **协议与租约**：生命周期为 `/runtime/session` + `/heartbeat` + `/destroy` + WebSocket。版本 `exec-engine/v2`，拒绝 v1。执行服务以默认 90 秒租约约束 BrowserContext，Go 动作期间每 10 秒续租；只回收已过期且不再续租的会话，正常结束仍主动销毁，避免 Go 中止或重启留下永久账号门禁。装载输入为身份、原生流程/任务上下文和当前节点数据补丁，不含 Go 渲染模板。
 - **转发**：`page.route()` 必须在 `page.goto` 之前安装；转发通道未连接成功不得装载。目标请求只经现有 `internal/adapter/target`。一次写纪律不变；写未知禁止重发和回退 Go 写路径。
 - **门禁**：删除能力登记执行门禁和验证模式。执行依据原生页面能力与目标权限。完成判定以动作期望写端点的 HTTP、`isSuccess` 和错误类型为准；页面信号与页面异常只作 `businessSummary` 证据，写后由 Go 重读目标事实最终裁决。
 - **进程**：默认端口 `19011`，沿用 `RUNTIME_EXECUTOR_URL`。独立构建/启动/健康检查。删除 Go 进程托管。服务不可用只阻塞七个 runtime 动作。

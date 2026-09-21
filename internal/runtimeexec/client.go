@@ -140,6 +140,26 @@ func (c *Client) CreateSession(ctx context.Context, spec SessionSpec) (*SessionH
 	return &result, nil
 }
 
+// Heartbeat 续期执行服务会话租约；Go 进程消失后不再续租，执行服务才能回收孤儿会话。
+func (c *Client) Heartbeat(ctx context.Context, sessionID string) error {
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimRight(c.baseURL.Path, "/") + "/runtime/session/" + sessionID + "/heartbeat"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), nil)
+	if err != nil {
+		return err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("续期 runtime 会话失败：HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
 // Load 装载身份、流程和表单；cmd 必须是携带全部协议编号的完整 load 信封，
 // 经 EncodeMessage 复核后原样发给执行服务（服务端按信封顶层字段校验，不接受二次包装）。
 // mode 取 initiate 或 approve。
