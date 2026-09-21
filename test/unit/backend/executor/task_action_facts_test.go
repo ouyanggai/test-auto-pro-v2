@@ -276,8 +276,10 @@ func TestF019RetrieveLeavesUnknownSuccessorToTarget(t *testing.T) {
 	if preview.Endpoint != target.WriteEndpointRetrieve {
 		t.Fatalf("取回原子端点错误：%s", preview.Endpoint)
 	}
-	if targetFake.snapshotRead != 1 || targetFake.auditReads != 1 || targetFake.treeReads != 1 {
-		t.Fatalf("取回应读取已办任务、审核记录和代理树：snapshot=%d audit=%d tree=%d", targetFake.snapshotRead, targetFake.auditReads, targetFake.treeReads)
+	// 取回先按审核记录解析本节点的真实办结人作为已办读取视角，再用审核记录补齐已办事实，
+	// 因此审核记录被读两次（视角解析一次、事实补齐一次）；这是 2026-09-21 路径 5 缺陷修复后的既定顺序。
+	if targetFake.snapshotRead != 1 || targetFake.auditReads != 2 || targetFake.treeReads != 1 {
+		t.Fatalf("取回应读取已办任务、审核记录（视角解析+事实补齐各一次）和代理树：snapshot=%d audit=%d tree=%d", targetFake.snapshotRead, targetFake.auditReads, targetFake.treeReads)
 	}
 }
 

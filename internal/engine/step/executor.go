@@ -763,12 +763,21 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	// 取回准备同意的运行时门禁（T04 retrieve_prepare_approve）：编译期只是提示，运行时以目标
 	// 已办事实为准。当前用户在本节点已有已办任务时，准备同意无必要，跳过本步直接取回，绝不多发
 	// 一次同意写请求；无已办时落到下方普通同意门禁——没有可同意的活动待办即阻塞，绝不无依据准备同意。
+	//
+	// 为什么不能只看"已办读取命中"（2026-09-21 运行 100/101 路径 5 第 12 步实测）：done 读取按本步
+	// 节点等值过滤，而目标在本节点办结后会把该任务关联行的 flowNodeProxyID 改写成"实例流转到的下一节点"，
+	// 于是这里拿到的"命中"可能根本不是本节点的已办。路径 5 正是如此：省区经理从未被审批过，
+	// 本步却按一行他处已办跳过，紧接着的取回步骤便指向一个没有已办任务的节点，
+	// 实例停在原地，下一步报「当前待办已经处理」而停止整条路径。
+	// 因此跳过必须要求审核记录正面证明本节点确实办结过；证明不足时不跳过，
+	// 落到普通同意门禁按实时待办裁决（该门禁本来就会在无可同意待办时阻塞）。
 	if step.RetrievePrepareConsent {
 		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
 		doneSession, doneSnapshot, doneErr := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "done")
 		if doneErr == nil {
 			session = doneSession
-			if strings.TrimSpace(doneSnapshot.JobTaskID) != "" {
+			// 已办读取命中只是必要条件：还必须能证明"本步节点确实办结过"，否则不得跳过。
+			if e.retrieveDoneRowProvesNodeHandled(ctx, session, strings.TrimSpace(runCtx.PathRun.MainInstanceRef), nodeID, doneSnapshot) {
 				info := runCtx.Nodes[step.NodeKey]
 				reason := "当前用户在本节点已有已办任务，无需准备同意，直接取回"
 				log.Phase("control", step.Sequence, 1, "取回准备同意跳过："+reason)
@@ -2372,6 +2381,74 @@ func (e *Executor) retrieveDoneSnapshotByAuditLink(ctx context.Context, runCtx R
 func (e *Executor) RetrieveDoneSnapshotByAuditLinkForTest(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string) (target.TaskSnapshot, bool) {
 	facts := InstanceFacts{}
 	return e.retrieveDoneSnapshotByAuditLink(ctx, runCtx, session, step, nodeID, &facts)
+}
+
+// retrieveNodeHasAuditPass 判断本步节点是否确实被办结过，作为取回准备同意能否跳过的前提。
+//
+// 职责：读本实例审核记录，确认存在节点等于本步节点、状态为「通过」的记录。
+//
+// 为什么必须存在（2026-09-21 运行 100/101 路径 5 第 12 步实测）：done 读取按本步节点等值过滤，
+// 而目标在本节点办结后会把该任务关联行的 flowNodeProxyID 改写成"实例流转到的下一节点"，
+// 所以"读到了已办"并不等于"这个节点办结过"。路径 5 的省区经理从未被审批，本步却按一行他处已办
+// 跳过准备同意，紧接着的取回便指向没有已办任务的节点，实例停在原地，
+// 下一步报「当前待办已经处理」而停止整条路径。
+//
+// 输入边界：
+//   - 只读，不发写请求；instanceID 或 nodeID 为空时返回 false，由调用方落到普通同意门禁；
+//   - 目标不支持审核记录读取时返回 false（宁可多走一次普通同意门禁，也不无依据跳过）。
+//
+// 关键约束：
+//   - 只认节点严格相等且状态为「通过」的记录；
+//   - 读取失败返回 false，绝不吞错后当作"已办结"放行跳过。
+func (e *Executor) retrieveNodeHasAuditPass(ctx context.Context, session target.Session, instanceID, nodeID string) bool {
+	if strings.TrimSpace(instanceID) == "" || strings.TrimSpace(nodeID) == "" {
+		return false
+	}
+	auditReader, hasAuditReader := e.target.(auditRecordsReader)
+	if !hasAuditReader {
+		return false
+	}
+	records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
+	if auditErr != nil {
+		return false
+	}
+	for _, record := range records {
+		if strings.TrimSpace(record.FlowNodeProxyID) != strings.TrimSpace(nodeID) {
+			continue
+		}
+		if strings.EqualFold(record.AuditStatus, "pass") {
+			return true
+		}
+	}
+	return false
+}
+
+// retrieveDoneRowProvesNodeHandled 判断已办读取回来的这一行能否证明"本步节点确实已办结"。
+//
+// 职责：把取回准备同意的跳过判据收敛成一个明确的证明关系：
+// 已办行读到了任务号，且该行要么留在本步节点上（目标未改写节点），要么审核记录正面证明本节点通过过。
+//
+// 为什么必须单独成函数：跳过是一次"少发一个写请求"的放行决定，必须由可复述的证据支撑。
+// 只用"读到了已办"会在目标改写节点字段时把别处的已办当成本节点事实
+// （2026-09-21 运行 100/101 路径 5 第 12 步实测：省区经理从未审批却被跳过，
+// 随后取回指向没有已办任务的节点，路径停在原地）。
+//
+// 输入边界：
+//   - 快照任务号为空时直接返回 false（没有已办可依据）；
+//   - 审核记录不可读时不因此放行，只按行上节点是否等于本步节点判定。
+//
+// 关键约束：
+//   - 两种证明之一成立即可跳过；都不成立时返回 false，由调用方落到普通同意门禁按实时待办裁决。
+func (e *Executor) retrieveDoneRowProvesNodeHandled(ctx context.Context, session target.Session, instanceID, nodeID string, doneSnapshot target.TaskSnapshot) bool {
+	if strings.TrimSpace(doneSnapshot.JobTaskID) == "" {
+		return false
+	}
+	// 证明一：目标如实保留了节点归属，行就在本步节点上。
+	if strings.TrimSpace(doneSnapshot.FlowNodeProxyID) == strings.TrimSpace(nodeID) {
+		return true
+	}
+	// 证明二：行上节点已被目标改写成流转后的节点，此时以审核记录正面证明本节点通过过。
+	return e.retrieveNodeHasAuditPass(ctx, session, instanceID, nodeID)
 }
 
 // prepareActionWrite 按动作类型刷新任务身份，并在加签前读取完整代理文档；allowRefresh=false 用于会话恢复重发。

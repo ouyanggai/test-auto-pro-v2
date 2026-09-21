@@ -333,20 +333,61 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		if !hasTaskReader {
 			return session, nil
 		}
-		snapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "done", facts, allowDiscovery)
-		if resolveErr != nil {
-			return session, resolveErr
+		// 取回的已办读取必须带「本节点的真实办结人」视角，不能只看计划账号自己名下的已办。
+		//
+		// 为什么必须先解析视角（2026-09-21 运行 98 路径 5 第 13 步实测）：done 读取在
+		// executorId 为空时回落到当前会话用户（这里就是计划账号 骆蒙恩），于是只看得见
+		// 计划账号自己那一行已办（发起人 e06f47e5…，preExecuteName=项志飞），
+		// 而本步节点「省区经理」的已办属于另一位真实审批人，根本不在这次读取结果里。
+		// 后果有两层：门禁拿到的是"别的节点的已办"当成本节点事实；写前的处理人切换也解析不出
+		// 执行人（CompletedTaskExecutorID 为空），取回就以空登录账号发出，实例没有回到本节点。
+		// 因此从任务关联行里先定位本节点最近一次办结的关联行与执行人，用它作为 done 读取视角。
+		var snapshot target.TaskSnapshot
+		if viewUserID, viewDiag := e.retrieveDoneViewUser(ctx, runCtx, session, instanceID, strings.TrimSpace(nodeID)); viewUserID != "" {
+			viewSnapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForView(ctx, runCtx, step, nodeID, "done", viewUserID, session)
+			if resolveErr != nil {
+				return session, resolveErr
+			}
+			snapshot = viewSnapshot
+			session = taskSession
+			facts.CompletedTaskRead = true
+			facts.CompletedTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
+			facts.CompletedTaskBasis = completedTaskBasisOf(true, facts.CompletedTaskFound, false)
+			facts.CompletedTaskLinkID = strings.TrimSpace(snapshot.LinkID)
+			facts.CompletedTaskNodeID = strings.TrimSpace(snapshot.FlowNodeProxyID)
+			facts.CompletedTaskParentID = strings.TrimSpace(snapshot.ParentLinkID)
+			facts.CompletedTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)
+			facts.CompletedTaskAuditWay = strings.TrimSpace(snapshot.AuditWay)
+			if facts.CompletedTaskFound {
+				// 该行的执行人就是本节点真实办结人：取回必须由他本人发出，同时作为写前切换身份。
+				facts.CompletedTaskExecutorID = viewUserID
+				facts.CurrentTaskAssigneeID = viewUserID
+				if viewDiag != "" {
+					facts.AssigneeDiag = viewDiag
+				}
+				if hasAuditReader {
+					if auditFactsErr := e.applyRetrieveAuditEvidence(ctx, session, instanceID, strings.TrimSpace(nodeID), facts); auditFactsErr != nil {
+						return session, auditFactsErr
+					}
+				}
+			}
+		} else {
+			fallbackSnapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "done", facts, allowDiscovery)
+			if resolveErr != nil {
+				return session, resolveErr
+			}
+			snapshot = fallbackSnapshot
+			session = taskSession
+			facts.CompletedTaskRead = true
+			facts.CompletedTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
+			// 取回走 done 的 executorId 语义，读取成功即已核对：命中与否都是有效证据。
+			facts.CompletedTaskBasis = completedTaskBasisOf(true, facts.CompletedTaskFound, false)
+			facts.CompletedTaskLinkID = strings.TrimSpace(snapshot.LinkID)
+			facts.CompletedTaskNodeID = strings.TrimSpace(snapshot.FlowNodeProxyID)
+			facts.CompletedTaskParentID = strings.TrimSpace(snapshot.ParentLinkID)
+			facts.CompletedTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)
+			facts.CompletedTaskAuditWay = strings.TrimSpace(snapshot.AuditWay)
 		}
-		session = taskSession
-		facts.CompletedTaskRead = true
-		facts.CompletedTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
-		// 取回走 done 的 executorId 语义，读取成功即已核对：命中与否都是有效证据。
-		facts.CompletedTaskBasis = completedTaskBasisOf(true, facts.CompletedTaskFound, false)
-		facts.CompletedTaskLinkID = strings.TrimSpace(snapshot.LinkID)
-		facts.CompletedTaskNodeID = strings.TrimSpace(snapshot.FlowNodeProxyID)
-		facts.CompletedTaskParentID = strings.TrimSpace(snapshot.ParentLinkID)
-		facts.CompletedTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)
-		facts.CompletedTaskAuditWay = strings.TrimSpace(snapshot.AuditWay)
 		if !facts.CompletedTaskFound {
 			// 已办行按节点过滤读空，不能就此断定"没有已办"：目标在本节点办结后会把这个任务
 			// 关联行的 flowNodeProxyID 改写成"实例流转到的下一节点"（2026-09-21 运行 93 路径 3
@@ -399,6 +440,103 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		}
 	}
 	return session, nil
+}
+
+// retrieveDoneViewUser 解析本步节点最近一次办结人的用户 ID，作为取回 done 读取的查询视角。
+//
+// 职责：读本实例的审核记录（/web/flowAuditRecord/list，按实例查询、不受 executorId 过滤），
+// 找出 flowNodeProxyID 等于本步节点、且带执行人用户 ID 的最近一条记录，返回该执行人用户 ID。
+//
+// 为什么必须存在（2026-09-21 运行 98/100 路径 5 第 13 步实测）：done 读取在 executorId 为空时
+// 回落当前会话用户（门禁阶段就是计划账号会话），于是只看得见计划账号自己那一行已办，
+// 本步节点「省区经理」的已办属于另一位真实审批人，不在结果里。后果有两层：门禁把"别的节点的已办"
+// 当成本节点事实；写前处理人切换解析不出执行人（CompletedTaskExecutorID 为空），
+// 取回以空登录账号发出，实例没有回到本节点，后续步骤报「当前待办已经处理」而停止。
+//
+// 为什么不用已办列表找执行人：/web/flowJobTaskLink/list 在 done 视角下按 executorId 过滤，
+// 用它去找"别人的已办"是自相矛盾的（列表本身已被这个视角限死）。审核记录按实例查询、按节点归属，
+// 才是"这个节点是谁办结的"这一事实的正确来源。
+//
+// 输入边界：
+//   - 只读，不发写请求；instanceID 或 nodeID 为空时返回空串，由调用方沿用既有读取路径；
+//   - 目标不支持审核记录读取时返回空串，由调用方回落既有口径，不因此阻塞。
+//
+// 关键约束：
+//   - 只接受节点严格等于本步节点、且执行人用户 ID 非空、状态为「通过」的记录；
+//     命中多条时取最后一条（记录按时间返回，后写覆盖=最近一次办结），与取回"取最近一次已办"一致；
+//   - 找不到时返回空串，绝不猜测执行人，也绝不用计划账号顶替（那正是本缺陷的成因）。
+func (e *Executor) retrieveDoneViewUser(ctx context.Context, runCtx RunContext, session target.Session, instanceID, nodeID string) (string, string) {
+	if nodeID == "" || instanceID == "" {
+		return "", ""
+	}
+	auditReader, hasAuditReader := e.target.(auditRecordsReader)
+	if !hasAuditReader {
+		return "", ""
+	}
+	records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
+	if auditErr != nil {
+		// 读取失败不属于"没有视角"：如实记诊断，由调用方回落既有读取路径后按门禁裁决。
+		return "", "取回已办视角解析：审核记录读取失败，回落既有读取：" + auditErr.Error()
+	}
+	viewUserID := ""
+	for _, record := range records {
+		if strings.TrimSpace(record.FlowNodeProxyID) != nodeID {
+			continue
+		}
+		// 只认「通过」这类办结记录：驳回等其它状态不代表本节点被办结，不能作为取回对象。
+		if !strings.EqualFold(record.AuditStatus, "pass") {
+			continue
+		}
+		if executorID := strings.TrimSpace(record.ExecutorID); executorID != "" {
+			viewUserID = executorID
+		}
+	}
+	if viewUserID == "" {
+		return "", ""
+	}
+	return viewUserID, "取回已办视角解析：按审核记录定位到本步节点的真实办结人，已办读取改用该执行人视角"
+}
+
+// resolveTaskSnapshotForView 以指定执行人视角读取任务快照，并返回真正完成读取的会话。
+//
+// 职责：调用带视角的任务列表读取（done 走 data.executorId），在本实例里取出节点匹配的唯一快照。
+//
+// 为什么必须存在：取回的已办行所属执行人往往不是计划账号，用计划账号会话读取只会得到
+// 计划账号自己名下的行。目标原生支持按 data.executorId 限定查询视角，引擎据此读取本节点真实办结行。
+//
+// 输入边界：
+//   - viewUserID 为空时退化为既有读取路径；读取失败原样上抛，由调用方按既有纪律阻塞。
+//
+// 关键约束：
+//   - 节点匹配必须严格等值；命中多行时按"最近一次"取最后一行；
+//   - 不因视角读取无结果就放宽节点过滤或猜测任务号。
+func (e *Executor) resolveTaskSnapshotForView(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, nodeID, status, viewUserID string, session target.Session) (target.TaskSnapshot, string, string, target.Session, error) {
+	viewReader, hasViewReader := e.target.(taskSnapshotViewReader)
+	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	if !hasViewReader || instanceID == "" || strings.TrimSpace(viewUserID) == "" {
+		snapshot, err := e.readTaskSnapshot(ctx, runCtx, step, nodeID, session, status)
+		return snapshot, "", "", session, err
+	}
+	snapshots, active, viewErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, strings.TrimSpace(session.Summary.Account), session,
+		func(callContext context.Context, active target.Session) ([]target.TaskSnapshot, error) {
+			return viewReader.ListTaskSnapshotsForUser(callContext, active, instanceID, status, viewUserID)
+		})
+	if viewErr != nil {
+		return target.TaskSnapshot{}, "", "", session, viewErr
+	}
+	matched := target.TaskSnapshot{}
+	found := false
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.FlowNodeProxyID) != strings.TrimSpace(nodeID) {
+			continue
+		}
+		matched = snapshot
+		found = true
+	}
+	if !found {
+		return target.TaskSnapshot{}, "", "", active, nil
+	}
+	return matched, viewUserID, "", active, nil
 }
 
 // applyRetrieveAuditEvidence 用审核记录补齐取回所需的已办事实。
