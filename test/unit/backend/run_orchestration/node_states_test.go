@@ -101,3 +101,28 @@ func TestF039CompletedGraphHasStableVirtualEnd(t *testing.T) {
 		t.Fatalf("重复投影不应重复追加结束节点或连线：第一次=%d/%d 第二次=%d/%d", len(first.Nodes), len(first.Edges), len(second.Nodes), len(second.Edges))
 	}
 }
+
+// TestF039VirtualEndStateFollowsPathCompletion 锁定结束节点的运行态只由「整条路径是否走到头」决定：
+// 完成时点亮为成功（画布上绿色高亮），未完成保持未开始。结束节点不参与「等待运行」的路线语义，
+// 否则它会因为不在已配置节点序列里而永远停在「未开始」，完成时也不会变绿。
+func TestF039VirtualEndStateFollowsPathCompletion(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"start"},
+		Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "audit", Type: "common"}},
+		Edges:        []model.FlowGraphEdge{{ID: "start|audit|sequence|", Source: "start", Target: "audit", Kind: "sequence"}},
+	}
+	endGraph := service.EnsureVirtualEndNodeForTest(graph)
+
+	completed := service.BuildNodeStatesForTest(endGraph, nil, model.PathRun{Status: model.PathRunStatusCompleted}, nil, nil)
+	if got := completed[service.VirtualRunEndNodeIDForTest()].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
+		t.Fatalf("路径完成时结束节点应为已完成，实际 %s", got)
+	}
+
+	running := service.BuildNodeStatesForTest(endGraph, nil, model.PathRun{Status: model.PathRunStatusRunning}, nil, nil)
+	if got := running[service.VirtualRunEndNodeIDForTest()].StatusName; got != model.PathRunStatusName(model.PathRunStatusNotStarted) {
+		t.Fatalf("路径未完成时结束节点应保持未开始（不显示状态文案），实际 %s", got)
+	}
+	if got := running[service.VirtualRunEndNodeIDForTest()].StatusName; got == model.PathRunStatusName(model.PathRunStatusWaiting) {
+		t.Fatalf("结束节点不应进入「等待运行」，它只表达整条路径是否走到头，实际 %s", got)
+	}
+}

@@ -1212,19 +1212,24 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedNodeIDsFromSteps(steps))
 				deviationGraph = projected
 				dynamicProjectionOK = projectionOK
-				if projectionOK {
-					factGraph = projected
-				}
 				// 结束节点是每次运行的固定终点，不是"完成态才补的装饰"：运行中就要画在最后，
-				// 否则画布上看不到流程要在哪里收口。完成态由 buildNodeStates 给它绿色完成态。
+				// 否则画布上看不到流程要在哪里收口。必须在 buildNodeStates 之前补进 factGraph，
+				// 否则结束节点不在事实图里、拿不到运行态，完成时也就不会点亮成绿色。
 				projected = ensureVirtualEndNode(projected)
 				if projectionOK {
+					factGraph = projected
 					detail.DynamicGraph = runFlowGraphDTO(projected)
 					detail.DynamicGraphBindable = true
 				} else if len(graph.Nodes) > 0 {
 					// 结构无法唯一绑定时仍按计划结构收口，结束节点不能因动态读取异常消失。
-					detail.DynamicGraph = runFlowGraphDTO(ensureVirtualEndNode(graph))
+					endGraph := ensureVirtualEndNode(graph)
+					detail.DynamicGraph = runFlowGraphDTO(endGraph)
 					detail.DynamicGraphBindable = true
+					// 事实映射基准优先沿用可用的动态投影；只有完全没有动态投影时才退回静态收口图，
+					// 保证历史步骤不会因缺少唯一绑定而丢节点键，同时结束节点仍有运行态。
+					if len(dynamicGraph.Nodes) == 0 {
+						factGraph = endGraph
+					}
 				}
 				staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
 				for _, node := range graph.Nodes {
@@ -1241,8 +1246,11 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	if detail.DynamicGraph == nil && len(graph.Nodes) > 0 {
 		// 没有运行期结构读取能力时，直接使用计划结构并补稳定结束节点：
 		// 结束节点在运行中就要显示在最后，完成时再由节点运行态把它点亮为绿色。
-		detail.DynamicGraph = runFlowGraphDTO(ensureVirtualEndNode(graph))
+		endGraph := ensureVirtualEndNode(graph)
+		detail.DynamicGraph = runFlowGraphDTO(endGraph)
 		detail.DynamicGraphBindable = true
+		// factGraph 同步换成补了结束节点的图，结束节点才能拿到运行态（绿色高亮）。
+		factGraph = endGraph
 	}
 	if pathRun.Result != nil {
 		detail.ResultName = resultName(*pathRun.Result)
@@ -2477,9 +2485,14 @@ func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph, inser
 	return projectRuntimeGraph(staticGraph, dynamicGraph, insertedNodeIDs)
 }
 
-// EnsureVirtualEndNodeForTest 暴露完成态结束节点投影，供根目录定向测试锁定节点与连线稳定性。
+// EnsureVirtualEndNodeForTest 暴露结束节点投影，供根目录定向测试锁定节点与连线稳定性。
 func EnsureVirtualEndNodeForTest(graph model.FlowGraph) model.FlowGraph {
 	return ensureVirtualEndNode(graph)
+}
+
+// VirtualRunEndNodeIDForTest 暴露结束节点的固定 ID，供定向测试直接断言它的运行态。
+func VirtualRunEndNodeIDForTest() string {
+	return virtualRunEndNodeID
 }
 
 // RunDetailGraphTimeoutForTest 暴露详情结构读取预算，供 test 目录锁定正常目标读取不被过短预算截断。
