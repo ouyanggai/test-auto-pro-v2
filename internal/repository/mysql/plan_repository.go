@@ -184,7 +184,7 @@ func (r *PlanRepository) Delete(ctx context.Context, id uint64) error {
 	return tx.Commit()
 }
 
-// BatchDelete 批量删除计划及其运行记录；有活跃运行的计划会跳过并返回错误映射。
+// BatchDelete 批量删除计划及其运行记录；运行中的计划会跳过并返回错误映射。
 func (r *PlanRepository) BatchDelete(ctx context.Context, ids []uint64) map[uint64]error {
 	failures := make(map[uint64]error)
 	for _, id := range ids {

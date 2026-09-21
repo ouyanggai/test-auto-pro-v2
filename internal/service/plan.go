@@ -213,8 +213,7 @@ func (s *PlanService) Get(ctx context.Context, id uint64) (model.Plan, error) {
 	return plan, nil
 }
 
-// Delete 删除尚未进入运行事实的开发计划，并依赖仓储外键清理路径与工具侧配置。
-// Delete 删除计划及其全部运行记录；有活跃运行时拒绝删除。
+// Delete 删除计划及其全部运行记录；运行中的计划不能删除。
 func (s *PlanService) Delete(ctx context.Context, id uint64) error {
 	if id == 0 {
 		return &PlanError{Kind: PlanErrorInvalidArgument, Message: "计划 ID 不正确"}

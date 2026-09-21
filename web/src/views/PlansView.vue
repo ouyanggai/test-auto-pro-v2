@@ -34,12 +34,12 @@ let loadController: AbortController | null = null
 const checkedRowKeys = ref<DataTableRowKey[]>([])
 const batchDeleting = ref(false)
 
-// canBatchDelete 只允许批量删除「未运行」状态的计划
+// canBatchDelete 只允许批量删除「非运行中」状态的计划（未运行/已完成/失败都可删除）
 const canBatchDelete = computed(() => {
   if (checkedRowKeys.value.length === 0) return false
   return checkedRowKeys.value.every(id => {
     const plan = plans.value.find(p => p.id === id)
-    return plan?.status === 'not_started'
+    return plan?.status !== 'running'
   })
 })
 
@@ -129,7 +129,7 @@ async function removePlan(plan: PlanRow) {
 	}
 }
 
-// batchRemovePlans 批量删除选中计划；仅删除未运行状态的计划。
+// batchRemovePlans 批量删除选中计划；只有运行中的计划不能删除。
 async function batchRemovePlans() {
   if (!canBatchDelete.value) return
   batchDeleting.value = true
@@ -306,7 +306,7 @@ const columns: DataTableColumns<PlanRow> = [
               批量删除
             </n-button>
           </template>
-          删除后会清除本系统中的路径和配置，不能恢复。{{ canBatchDelete ? '' : '只能删除未运行状态的计划。' }}
+          删除后会清除本系统中的路径和配置，不能恢复。{{ canBatchDelete ? '' : '运行中的计划不能删除。' }}
         </n-popconfirm>
       </div>
     </div>
