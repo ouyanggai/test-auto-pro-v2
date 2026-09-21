@@ -115,7 +115,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	if preview.runtimeHandled {
 		return true
 	}
-		reportPhase(approved, "submit", fmt.Sprintf("正在经无头表单运行时执行\"%s\"：真实页面组件将按目标顺序执行业务与流程请求，完成后仍会重读目标平台核验", firstNonEmpty(preview.ActionName, string(step.Action))))
+	reportPhase(approved, "submit", fmt.Sprintf("正在经无头表单运行时执行\"%s\"：真实页面组件将按目标顺序执行业务与流程请求，完成后仍会重读目标平台核验", firstNonEmpty(preview.ActionName, string(step.Action))))
 	action := string(step.Action)
 	if err := e.runtimeRunner.Health(ctx); err != nil {
 		preview.writeSent = false
@@ -1076,6 +1076,10 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 		ownership := target.ClassifyFormField(field, true, false)
 		actual, exists := current[field]
 		if ownership.Ownership == target.FieldOwnershipTargetDerived {
+			// 目标可能在清空后省略空的伴生键；重发起只要回读不到非空意见即可视为已重置。
+			if decision.Action == string(model.ActionResubmit) && exists && !target.IsEmptyDerivedValue(actual) {
+				issues = append(issues, fmt.Sprintf("重新发起应清空审核意见字段 %s，但目标仍为 %v", field, actual))
+			}
 			continue
 		}
 		if !exists {

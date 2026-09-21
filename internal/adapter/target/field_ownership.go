@@ -14,7 +14,8 @@ const (
 	FieldOwnershipToolOwned FieldOwnership = "tool_owned"
 	// FieldOwnershipPreservedBusiness 上游节点已经填写、当前节点无权限覆盖的业务字段：丢失或被工具改写则阻塞。
 	FieldOwnershipPreservedBusiness FieldOwnership = "preserved_business"
-	// FieldOwnershipTargetDerived 目标引擎根据审批事实自动生成的字段：不与历史空值严格相等；禁止工具删除、清空或回写历史旧值。
+	// FieldOwnershipTargetDerived 目标引擎根据审批事实自动生成的字段：普通实例动作不与历史空值严格相等，
+	// 也禁止工具删除、清空或回写历史旧值；重新发起是产品明确要求清空意见的例外动作。
 	FieldOwnershipTargetDerived FieldOwnership = "target_derived"
 	// FieldOwnershipNodeOwnedFuture 后续节点才拥有的字段：当前请求不得提前发送。
 	FieldOwnershipNodeOwnedFuture FieldOwnership = "node_owned_future"
@@ -47,7 +48,8 @@ type FieldOwnershipRecord struct {
 
 // ClassifyFormField 按字段名与当前节点决策返回所有权分类。
 // overlaid 表示本节点实际覆盖；withheld 表示后续节点专属被扣留。
-// 目标衍生字段优先于覆盖/扣留判定：auto_audit_info_* 即使出现在配置覆盖清单里，写后核对仍按 target_derived 处理。
+// 目标衍生字段优先于覆盖/扣留判定：auto_audit_info_* 即使出现在配置覆盖清单里，普通动作写后核对仍按 target_derived 处理；
+// 重新发起的清空语义由动作构造器额外核对。
 func ClassifyFormField(field string, overlaid, withheld bool) FieldOwnershipRecord {
 	record := ClassifyTargetDerivedField(field)
 	if record.Ownership == FieldOwnershipTargetDerived {

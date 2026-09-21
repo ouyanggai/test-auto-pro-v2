@@ -93,3 +93,63 @@ func TestToolClearingDerivedOpinionBlocks(t *testing.T) {
 	}
 	_ = json.RawMessage(nil)
 }
+
+// TestResubmitResetsApprovalOpinionFamilies 锁定重新发起的业务语义：审核意见及已返回的伴生结构必须显式清空，
+// 且不能被上一节点“禁止工具清空衍生字段”的保护规则拦截。
+func TestResubmitResetsApprovalOpinionFamilies(t *testing.T) {
+	runCtx := step.RunContext{
+		EffectiveFormData:  []byte(`{"reason":"保留业务值","auto_audit_info_1":"配置阶段旧意见"}`),
+		Nodes:              map[string]step.NodeInfo{"start": {EditableFields: []string{"reason"}}},
+		NodeEditableFields: map[string][]string{"start": {"reason"}},
+	}
+	previous := &step.NodeFormDataDecision{
+		OverlaidFields: []string{"auto_audit_info_1"},
+		OverlaidValues: map[string]any{"auto_audit_info_1": "上一轮审批意见"},
+	}
+	plan, err := step.BuildNodeFormData(runCtx, model.CompiledActionStep{
+		Sequence: 4, Action: model.ActionResubmit, NodeKey: "start",
+	}, map[string]any{
+		"reason":                     "保留业务值",
+		"auto_audit_info_1":          "上一轮审批意见",
+		"auto_audit_info_obj_1":      map[string]any{"auditName": "审批人"},
+		"auto_audit_info_obj_list_1": []any{map[string]any{"opinion": "同意"}},
+		"auto_audit_info_2":          "另一条意见",
+	}, true, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Decision.ValidationIssues) != 0 {
+		t.Fatalf("重新发起清空审核意见不应被旧保护规则阻塞：%v", plan.Decision.ValidationIssues)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(plan.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["reason"] != "保留业务值" {
+		t.Fatalf("普通业务字段必须保留：%v", payload["reason"])
+	}
+	for _, key := range []string{"auto_audit_info_1", "auto_audit_info_2"} {
+		if value, ok := payload[key].(string); !ok || value != "" {
+			t.Fatalf("审核意见文本字段必须清空：%s=%#v", key, payload[key])
+		}
+		if !containsField(plan.Overlaid, key) {
+			t.Fatalf("重置字段必须进入覆盖清单：%s -> %v", key, plan.Overlaid)
+		}
+	}
+	if object, ok := payload["auto_audit_info_obj_1"].(map[string]any); !ok || len(object) != 0 {
+		t.Fatalf("审核意见对象字段必须清空：%#v", payload["auto_audit_info_obj_1"])
+	}
+	if list, ok := payload["auto_audit_info_obj_list_1"].([]any); !ok || len(list) != 0 {
+		t.Fatalf("审核意见列表字段必须清空：%#v", payload["auto_audit_info_obj_list_1"])
+	}
+}
+
+// containsField 判断字段清单是否包含指定键。
+func containsField(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

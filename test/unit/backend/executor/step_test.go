@@ -468,9 +468,16 @@ func TestF019ResubmitUsesLiveProxyFacts(t *testing.T) {
 		instance:    fakeTargetView{Found: true, Status: "rejected"},
 		flowProxyID: "flow-live",
 		formProxyID: "form-live",
+		instanceFormData: map[string]any{
+			"amount":                     "12.30",
+			"auto_audit_info_1":          "上一轮审批意见",
+			"auto_audit_info_obj_1":      map[string]any{"auditName": "审批人"},
+			"auto_audit_info_obj_list_1": []any{map[string]any{"opinion": "同意"}},
+		},
 	}
 	runCtx := newRunContext([]model.CompiledActionStep{resubmitStep()})
 	runCtx.PathRun.MainInstanceRef = "instance-9"
+	runCtx.EffectiveFormData = []byte(`{"amount":"12.30"}`)
 	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
 
 	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
@@ -487,6 +494,11 @@ func TestF019ResubmitUsesLiveProxyFacts(t *testing.T) {
 	// F-035 代理互斥：FormMaking 重提只发实时的 formProxyId，不再同时携带 flowProxyId。
 	if data["formProxyId"] != "form-live" || data["flowProxyId"] != nil {
 		t.Fatalf("必须且只能使用目标实代表单代理标识：%v", data)
+	}
+	for _, key := range []string{"auto_audit_info_1", "auto_audit_info_obj_1", "auto_audit_info_obj_list_1"} {
+		if !containsField(preview.FormOverlaid, key) {
+			t.Fatalf("重新提交必须把审核意见字段作为显式补丁：%s -> %v", key, preview.FormOverlaid)
+		}
 	}
 }
 

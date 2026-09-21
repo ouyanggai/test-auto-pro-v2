@@ -9,7 +9,7 @@
 - 已实现 FormMaking 特殊业务（资金往来/投资款前置保存、出版委托/专业提资日期改写、年度绩效意见）与已登记 NoFormFlow 页（合同评审、采购计划等）走专用 `mixin.saveData` + `flowProxyId`；合同盖章/合规自定义组件仍写前阻塞。
 - `ResolveVueCustomPage` 对已实现页标记 `complete`，未登记/通用入口仍 `partial` 阻断。
 - 配置期身份替换只覆盖已有登录人字段，不再新建 `global_user_basic_information` 污染无表单原始数据；无表单 `initiatorRange` 始终覆盖为当前会话用户。
-- `auto_audit_info_*` 按 `docs/TARGET_SEMANTICS.md` 第 16.1 节作为目标衍生字段处理。
+- `auto_audit_info_*` 按 `docs/TARGET_SEMANTICS.md` 第 16.1 节作为目标衍生字段处理；普通审批/暂存保留目标生成意见，重新发起按当前产品要求显式清空已返回的文本、对象和列表伴生键。
 - 运行详情请求代次/Abort/Teleport 已落地；`runtime.lastError` 产品源码零调用已锁定，无扩展浏览器 A/B 仍待人工完成。
 
 聚合执行任务、证据、测试和人工验收见 `docs/auto/2026-09-15-f035-review-round5-ui-state-and-assignment-task.md`；上一轮任务见 `docs/auto/2026-09-14-f035-review-and-runtime-repair-task.md`。

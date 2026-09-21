@@ -149,7 +149,13 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		overlaidValues := map[string]any{}
 		for key, value := range configured {
 			if target.IsTargetDerivedField(key) {
-				// 审批后目标会机械生成衍生意见：当前节点不得用配置阶段清空值覆盖目标现值。
+				// 审批后目标会机械生成衍生意见；只有重新发起明确要求重置，其他实例动作不得改写目标现值。
+				if compiled.Action == model.ActionResubmit {
+					merged[key] = emptyDerivedValue(key)
+					plan.Overlaid = append(plan.Overlaid, key)
+					decision.OverlaidFields = append(decision.OverlaidFields, key)
+					overlaidValues[key] = emptyDerivedValue(key)
+				}
 				continue
 			}
 			if fieldpower.Covers(editable, key) {
@@ -169,11 +175,21 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 			plan.Withheld = append(plan.Withheld, key)
 			decision.WithheldFields = append(decision.WithheldFields, key)
 		}
+		if compiled.Action == model.ActionResubmit {
+			// 重发起沿目标页面的 edit/reSubmit 语义发送整份当前表单，但审核意见必须显式清空。
+			// 以实例和当前配置中出现过的任一伴生键为触发，清空同序号已存在的完整意见结构，
+			// 避免只清文本而把对象/列表残留带回目标；不凭空创建实例从未返回的字段。
+			resetDerivedFields(merged, configured, &plan.Overlaid, &decision.OverlaidFields, overlaidValues)
+		}
 		decision.OverlaidValues = overlaidValues
 		decision.BaseValues = cloneForDecision(merged)
 		if previous != nil && decision.BaselineSource == "instance" {
 			for _, field := range previous.OverlaidFields {
 				if target.IsTargetDerivedField(field) {
+					if compiled.Action == model.ActionResubmit {
+						// 重发起清空审核意见是本动作的业务语义，不应被上一节点的“禁止工具清空”规则拦截。
+						continue
+					}
 					current, exists := merged[field]
 					if !exists {
 						if written, ok := previous.OverlaidValues[field]; ok && !target.IsEmptyDerivedValue(written) {
@@ -256,6 +272,42 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 	decision.FinalPayload = encoded
 	decision.PayloadFingerprint = decisionFingerprint(encoded)
 	return plan, nil
+}
+
+// resetDerivedFields 清空重新发起涉及的审核意见衍生字段；只处理实例或当前配置实际出现的键，避免凭空扩展表单结构。
+// 同一序号的文本、对象、列表字段按现有伴生键成组清空，并统一登记为本步实际覆盖字段，
+// 这样 Go 写路径与 runtime 页面补丁都会把“重置意见”作为显式变更发送出去。
+func resetDerivedFields(merged, configured map[string]any, overlaidFields, decisionFields *[]string, overlaidValues map[string]any) {
+	keys := map[string]bool{}
+	collect := func(values map[string]any) {
+		for key := range values {
+			if !target.IsTargetDerivedField(key) {
+				continue
+			}
+			for _, companion := range target.TargetDerivedCompanionKeys(key) {
+				if _, exists := merged[companion]; exists {
+					keys[companion] = true
+					continue
+				}
+				if _, exists := configured[companion]; exists {
+					keys[companion] = true
+				}
+			}
+		}
+	}
+	collect(merged)
+	collect(configured)
+	for key := range keys {
+		value := emptyDerivedValue(key)
+		merged[key] = value
+		overlaidValues[key] = value
+		if !containsString(*overlaidFields, key) {
+			*overlaidFields = append(*overlaidFields, key)
+		}
+		if !containsString(*decisionFields, key) {
+			*decisionFields = append(*decisionFields, key)
+		}
+	}
 }
 
 // decodeConfiguredFormData 以数字保真方式解码路径生效表单数据；空数据按空对象处理。
