@@ -260,11 +260,18 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	case model.ActionForward:
 		runRequest.LoadMode = runtimeexec.LoadModeForward
 		runRequest.ForwardCheckList = stringSliceParameter(step.Parameters, "forwardCheckList")
-		if strings.EqualFold(strings.TrimSpace(runCtx.Source), "pending") || strings.EqualFold(strings.TrimSpace(runCtx.Source), "backlog") {
-			runRequest.ForwardTab = "backlog"
-		} else {
-			runRequest.ForwardTab = "dueout"
-		}
+		// 转发必须装载「待办」(backlog) 列表页，不能按实例来源改选「待发」(dueout)。
+		//
+		// 为什么（2026-09-21 运行 80 路径 1 第 43 步实测）：原生列表页的「转发」入口只在
+		// 非 dueout/timedout 的标签页上渲染，且 transpond() 直接委托给当前激活标签页组件
+		// （this.$refs[this.activeName].transpond(...)）。dueout（待发）页既没有转发按钮，
+		// 其组件也没有 transpond 入口，装载必然等不到可转发的行而超时：
+		//
+		//	runtime 装载失败：执行服务返回 HTTP 500：page.waitForFunction: Timeout 60000ms exceeded
+		//
+		// 转发的语义是"把本人当前待办里的这条任务转给别人"，可转发的任务只出现在待办列表，
+		// 与实例最初是新发起还是待发来源无关。因此固定取 backlog，不再按来源分支。
+		runRequest.ForwardTab = "backlog"
 	default:
 		runRequest.LoadMode = runtimeexec.LoadModeApprove
 	}

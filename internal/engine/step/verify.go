@@ -181,12 +181,37 @@ func cloneBizRelevance(values []target.BizRelevance) []target.BizRelevance {
 	return result
 }
 
+// firstCurrentNodeID 返回实例事实里第一个非空的当前节点标识；没有时返回空串。
+//
+// 用途：实例级动作（转发/催办）不绑定配置节点，需要用实例的当前节点去匹配当前处理人，
+// 拿不到节点标识就只能按空节点查询，必然查不到待办。这里只做只读取值，不推断、不猜测。
+// 输入边界：facts 为空指针时返回空串（调用方通过值接收，无需额外判空）。
+func firstCurrentNodeID(facts *InstanceFacts) string {
+	if facts == nil {
+		return ""
+	}
+	for _, nodeID := range facts.CurrentNodes {
+		if trimmed := strings.TrimSpace(nodeID); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 // readActionTaskFacts 读取任务级动作的目标事实：当前待办、已办任务、任务链和代理树。
 // 这些事实只用于门禁和结果核验；任一关键事实缺失都保持禁用，不能靠动作配置猜测目标状态。
 func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string, facts *InstanceFacts, allowDiscovery bool) (target.Session, error) {
 	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 	if instanceID == "" {
 		return session, nil
+	}
+	// 实例级动作（转发/催办等）不绑定配置节点，传进来的 nodeID 是空串。它们作用于**实例的
+	// 当前活动待办**，因此节点标识回退到实例事实里已读到的当前节点（facts.CurrentNodes）：
+	// 否则按空节点匹配不到当前处理人，写前必然报「目标上已无当前处理人在本节点的待办任务」
+	// （2026-09-21 运行 79 路径 1 第 43 步实测：前 40 步全部成功，只剩收尾转发失败）。
+	// 只回退查询用的节点标识，不放宽任何待办/处理人要求——后续仍按真实待办裁决。
+	if strings.TrimSpace(nodeID) == "" && step.Scope == model.ActionScopeInstance {
+		nodeID = firstNonEmpty(facts.CurrentTaskNodeID, firstCurrentNodeID(facts))
 	}
 	_, hasTaskReader := e.target.(taskSnapshotReader)
 	listReader, hasListReader := e.target.(taskSnapshotListReader)
