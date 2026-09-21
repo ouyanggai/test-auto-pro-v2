@@ -343,7 +343,11 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		// 执行人（CompletedTaskExecutorID 为空），取回就以空登录账号发出，实例没有回到本节点。
 		// 因此从任务关联行里先定位本节点最近一次办结的关联行与执行人，用它作为 done 读取视角。
 		var snapshot target.TaskSnapshot
-		if viewUserID, viewDiag := e.retrieveDoneViewUser(ctx, runCtx, session, instanceID, strings.TrimSpace(nodeID)); viewUserID != "" {
+		viewUserID, viewDiag := e.retrieveDoneViewUser(ctx, runCtx, session, instanceID, strings.TrimSpace(nodeID))
+		if viewUserID != "" {
+			// 诊断必须披露"解析用的本步节点标识"：取回节点归属判定全依赖它，
+			// 一旦它与目标运行期节点不一致，问题在现场日志里可见，不必再靠复跑推断。
+			facts.AssigneeDiag = "本步节点标识=" + strings.TrimSpace(nodeID) + "；已办视角：" + viewDiag
 			viewSnapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForView(ctx, runCtx, step, nodeID, "done", viewUserID, session)
 			if resolveErr != nil {
 				return session, resolveErr
@@ -372,6 +376,13 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 				}
 			}
 		} else {
+			// 没有解析出视角不等于无事发生：把"用哪个节点标识去解析、为何没解析出来"如实记进诊断，
+			// 否则现场只剩一个空的处理人，无法判断是节点标识不对还是审核记录确实没有本节点通过记录。
+			if viewDiag != "" {
+				facts.AssigneeDiag = "取回已办视角解析未命中：本步节点标识=" + strings.TrimSpace(nodeID) + "；" + viewDiag
+			} else {
+				facts.AssigneeDiag = "取回已办视角解析未命中：本步节点标识=" + strings.TrimSpace(nodeID) + "；审核记录里没有该节点的通过记录"
+			}
 			fallbackSnapshot, _, _, taskSession, resolveErr := e.resolveTaskSnapshotForStep(ctx, runCtx, session, step, nodeID, "done", facts, allowDiscovery)
 			if resolveErr != nil {
 				return session, resolveErr
@@ -469,32 +480,53 @@ func (e *Executor) retrieveDoneViewUser(ctx context.Context, runCtx RunContext, 
 	if nodeID == "" || instanceID == "" {
 		return "", ""
 	}
-	auditReader, hasAuditReader := e.target.(auditRecordsReader)
-	if !hasAuditReader {
-		return "", ""
-	}
-	records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
-	if auditErr != nil {
-		// 读取失败不属于"没有视角"：如实记诊断，由调用方回落既有读取路径后按门禁裁决。
-		return "", "取回已办视角解析：审核记录读取失败，回落既有读取：" + auditErr.Error()
-	}
-	viewUserID := ""
-	for _, record := range records {
-		if strings.TrimSpace(record.FlowNodeProxyID) != nodeID {
-			continue
+	// 途径一：审核记录。它是"这个节点是谁办结的"最直接的事实来源。
+	if auditReader, hasAuditReader := e.target.(auditRecordsReader); hasAuditReader {
+		records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
+		if auditErr == nil {
+			viewUserID := ""
+			for _, record := range records {
+				if strings.TrimSpace(record.FlowNodeProxyID) != nodeID {
+					continue
+				}
+				// 只认「通过」这类办结记录：驳回等其它状态不代表本节点被办结，不能作为取回对象。
+				if !strings.EqualFold(record.AuditStatus, "pass") {
+					continue
+				}
+				if executorID := strings.TrimSpace(record.ExecutorID); executorID != "" {
+					viewUserID = executorID
+				}
+			}
+			if viewUserID != "" {
+				return viewUserID, "按审核记录定位到本步节点的真实办结人"
+			}
 		}
-		// 只认「通过」这类办结记录：驳回等其它状态不代表本节点被办结，不能作为取回对象。
-		if !strings.EqualFold(record.AuditStatus, "pass") {
-			continue
-		}
-		if executorID := strings.TrimSpace(record.ExecutorID); executorID != "" {
-			viewUserID = executorID
+	}
+	// 途径二：已办行自身携带的执行人。
+	//
+	// 为什么必须有这条兜底（2026-09-21 运行 35 路径 6 第 11 步实测）：审核记录并非总是覆盖每个节点——
+	// 该实例的任务关联行里存在节点 b9fc434e…（preAuditStatus=pass、preExecuteName=刘慧玲）的已办行，
+	// 但 /web/flowAuditRecord/list 只返回了 993daf28…、1a22172e…、a408500c… 三条，
+	// 本步节点一条也没有。只认审核记录会让视角解析空转，取回退回计划账号身份发出。
+	// 已办行上的 executorId 是目标对这些行给出的实际执行人，用它作为视角同样属于"读事实"而非猜测。
+	if listReader, hasListReader := e.target.(taskSnapshotListReader); hasListReader {
+		snapshots, listErr := listReader.ListTaskSnapshots(ctx, session, instanceID, "done")
+		if listErr == nil {
+			viewUserID := ""
+			for _, snapshot := range snapshots {
+				if strings.TrimSpace(snapshot.FlowNodeProxyID) != nodeID {
+					continue
+				}
+				if executorID := strings.TrimSpace(snapshot.ExecutorID); executorID != "" {
+					viewUserID = executorID
+				}
+			}
+			if viewUserID != "" {
+				return viewUserID, "按本步节点已办行携带的执行人定位"
+			}
 		}
 	}
-	if viewUserID == "" {
-		return "", ""
-	}
-	return viewUserID, "取回已办视角解析：按审核记录定位到本步节点的真实办结人，已办读取改用该执行人视角"
+	return "", ""
 }
 
 // resolveTaskSnapshotForView 以指定执行人视角读取任务快照，并返回真正完成读取的会话。

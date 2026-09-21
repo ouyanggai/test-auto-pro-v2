@@ -800,6 +800,12 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	if !allowed && strings.TrimSpace(facts.AssigneeDiag) != "" {
 		log.Phase("gate", step.Sequence, 1, "固定人员发现："+facts.AssigneeDiag)
 	}
+	// 取回的身份与已办视角解析结论必须无条件披露：它决定取回以谁的身份发出、指向哪一条已办。
+	// 只在拒绝时才打印会让"放行但身份解析为空"这类缺陷在日志里完全不可见
+	// （2026-09-21 路径 5/6 实测：门禁放行、取回以空登录账号发出，现场日志只剩一个空账号，无从定位）。
+	if step.Action == model.ActionRetrieve && strings.TrimSpace(facts.AssigneeDiag) != "" {
+		log.Phase("gate", step.Sequence, 1, "取回身份与已办视角："+facts.AssigneeDiag)
+	}
 	log.Phase("gate", step.Sequence, 1, gateSummary(catalogItem, allowed))
 
 	preview := &StepPreview{
