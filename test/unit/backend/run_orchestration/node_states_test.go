@@ -64,3 +64,40 @@ func TestF016RunDetailGraphReadBudget(t *testing.T) {
 		t.Fatalf("运行详情结构读取预算过短：%s", timeout)
 	}
 }
+
+// TestF039VerifyingKeepsCurrentNodeVisible 验证写后核验期间当前节点不被清空，
+// 状态直接显示“确认结果中”，避免画布在当前节点与下一节点之间出现空白期。
+func TestF039VerifyingKeepsCurrentNodeVisible(t *testing.T) {
+	graph := model.FlowGraph{Nodes: []model.FlowGraphNode{{ID: "node-audit"}, {ID: "node-next"}}}
+	preview := &service.RunPreviewDTO{NodeKey: analyzer.PathConfigNodeToken("node-audit")}
+	states := service.BuildNodeStatesForTest(graph, nil, model.PathRun{Status: model.PathRunStatusVerifying}, preview, []string{preview.NodeKey})
+	if got := states["node-audit"].StatusName; got != model.PathRunStatusName(model.PathRunStatusVerifying) {
+		t.Fatalf("核验期间当前节点应保持确认中，实际 %s", got)
+	}
+	if got := states["node-next"].StatusName; got == model.PathRunStatusName(model.PathRunStatusRunning) || got == model.PathRunStatusName(model.PathRunStatusVerifying) {
+		t.Fatalf("下一节点不应在当前节点核验完成前提前显示活动态，实际 %s", got)
+	}
+}
+
+// TestF039CompletedGraphHasStableVirtualEnd 验证完成态补出的虚拟结束节点和终端连线稳定且幂等。
+func TestF039CompletedGraphHasStableVirtualEnd(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"start"},
+		Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "audit", Type: "common"}},
+		Edges:        []model.FlowGraphEdge{{ID: "start|audit|sequence|", Source: "start", Target: "audit", Kind: "sequence"}},
+	}
+	first := service.EnsureVirtualEndNodeForTest(graph)
+	second := service.EnsureVirtualEndNodeForTest(first)
+	if len(first.Nodes) != 3 || len(first.Edges) != 2 {
+		t.Fatalf("完成态应补 1 个结束节点和 1 条终端边，实际 nodes=%d edges=%d", len(first.Nodes), len(first.Edges))
+	}
+	if first.Nodes[2].ID != "__run_virtual_end__" || first.Nodes[2].Type != "end" || first.Nodes[2].Name != "结束" {
+		t.Fatalf("虚拟结束节点形状错误：%+v", first.Nodes[2])
+	}
+	if first.Edges[1].Source != "audit" || first.Edges[1].Target != "__run_virtual_end__" {
+		t.Fatalf("终端边错误：%+v", first.Edges[1])
+	}
+	if len(second.Nodes) != len(first.Nodes) || len(second.Edges) != len(first.Edges) {
+		t.Fatalf("重复投影不应重复追加结束节点或连线：第一次=%d/%d 第二次=%d/%d", len(first.Nodes), len(first.Edges), len(second.Nodes), len(second.Edges))
+	}
+}

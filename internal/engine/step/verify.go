@@ -359,7 +359,10 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			if strings.TrimSpace(record.FlowNodeProxyID) == retrieveNodeID && strings.EqualFold(record.AuditStatus, "pass") && strings.TrimSpace(record.ExecutorID) != "" {
 				facts.CompletedTaskExecutorID = strings.TrimSpace(record.ExecutorID)
 			}
-			if !containsString(facts.DueNodes, record.FlowNodeProxyID) || record.ExecutorID == "" || record.ExecutorID == session.UserID {
+			// 当前取回人可能与计划账号不同；先按审核记录解析出的真实执行人判断归属，
+			// 再用会话 UserID 作为普通场景兜底，否则“该节点的人同意以后再取回”会被误判成他人已处理。
+			if !containsString(facts.DueNodes, record.FlowNodeProxyID) || record.ExecutorID == "" ||
+				record.ExecutorID == facts.CompletedTaskExecutorID || record.ExecutorID == session.UserID {
 				continue
 			}
 			if strings.EqualFold(record.AuditStatus, "pass") {
@@ -658,6 +661,7 @@ func ClassifyReread(action string, stepNodeKey string, expectedNextNodeKey strin
 //   - 本步节点已经不在实例当前节点集合里（还在原地就说明写确实没推进）；
 //   - 实例当前节点集合命中了本步配置的下一跳（越到别的分支属于路径偏离，由独立的偏离判定处理，
 //     这里绝不能把"走到别处"也认成"本步成功"，否则会把走错分支洗成成功）。
+//
 // 只用已经读到的目标事实与运行期路径配置，不写死任何节点标识。
 func advancedByNodePosition(stepNodeKey, expectedNextNodeKey string, after InstanceFacts) bool {
 	current := strings.TrimSpace(stepNodeKey)

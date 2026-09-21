@@ -182,6 +182,16 @@ func TestF034StepDTOCarriesStableActionKey(t *testing.T) {
 	}
 }
 
+// TestF039StepDTORecoversInsertedActorFromFacts 验证历史步骤摘要为空时仍从目标任务事实恢复执行人。
+func TestF039StepDTORecoversInsertedActorFromFacts(t *testing.T) {
+	facts := step.InstanceFacts{CurrentTaskAssigneeID: "user-inserted"}
+	raw := step.EncodeInstanceFacts(facts)
+	dtos := service.BuildStepDTOsForTest([]model.RunStep{{ID: 1, StepNo: 1, Action: "approve", NodeKey: "add-sign-inserted-node-1", Status: model.RunStepSucceeded}}, []model.RunStepAttempt{{StepID: 1, AttemptNo: 1, BeforeFacts: raw}})
+	if len(dtos) != 1 || dtos[0].ActorName != "user-inserted" {
+		t.Fatalf("步骤 DTO 应从事实恢复加签节点执行人，实际 %+v", dtos)
+	}
+}
+
 // TestF034SelectedManualBranchNeverSwitchesToOtherBranches 锁定 F-034 评审 #1：
 // 手动分支已有保存选择时只允许沿该选择继续；选中路径无法到达下一业务节点时直接阻塞，
 // 绝不遍历其他出边改走另一条分支——否则会把请求发到与路径选择不一致的路径。

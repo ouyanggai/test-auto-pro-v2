@@ -1107,9 +1107,6 @@ onBeforeUnmount(() => {
         <n-alert v-if="detail.stopReason" type="warning" :show-icon="false" class="run-detail__notice-bar">
           {{ detail.stopReason }}
         </n-alert>
-        <n-alert v-if="detail.dynamicGraphNote" type="info" :show-icon="false" class="run-detail__notice-bar">
-          {{ detail.dynamicGraphNote }}
-        </n-alert>
         <n-alert v-if="detail.pathDeviation?.detected" type="error" :show-icon="false" class="run-detail__notice-bar">
           {{ detail.pathDeviation.reason || '路径偏离，后续步骤不提供放行。' }}
           <span v-if="detail.pathDeviation.expectedNodeName">预期节点：{{ detail.pathDeviation.expectedNodeName }}。</span>

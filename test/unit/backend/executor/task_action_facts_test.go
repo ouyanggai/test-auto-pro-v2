@@ -57,10 +57,11 @@ func (t *taskActionFactsTarget) ReadProxyTree(context.Context, target.Session, s
 // retrieveExecutionTarget 模拟目标取回后把原已办任务改为新建 pending 任务的真实协议结果。
 type retrieveExecutionTarget struct {
 	*taskActionFactsTarget
-	before     target.TaskSnapshot
-	after      target.TaskSnapshot
-	written    bool
-	writeCalls int
+	before       target.TaskSnapshot
+	after        target.TaskSnapshot
+	written      bool
+	writeCalls   int
+	writeAccount string
 }
 
 // rollbackExecutionTarget 模拟目标回退后写入回退审核记录，并切换到并行策略节点。
@@ -164,8 +165,9 @@ func (t *retrieveExecutionTarget) FindTaskSnapshot(_ context.Context, _ target.S
 }
 
 // ExecuteActionWrite 模拟目标 retrieveProcess 成功，并让后续事实读取可见新的待办任务。
-func (t *retrieveExecutionTarget) ExecuteActionWrite(context.Context, target.Session, target.ActionWriteRequest) (target.WriteResponse, string, error) {
+func (t *retrieveExecutionTarget) ExecuteActionWrite(_ context.Context, session target.Session, _ target.ActionWriteRequest) (target.WriteResponse, string, error) {
 	t.writeCalls++
+	t.writeAccount = session.Summary.Account
 	t.written = true
 	return target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-retrieve", nil
 }
@@ -288,6 +290,7 @@ func TestF019RetrieveVerifiesNewPendingTask(t *testing.T) {
 			tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
 				ID: "node-done", Type: "common", Child: &target.FlowNodeTemplate{ID: "node-next", Type: "common"},
 			}},
+			records: []target.AuditRecordSnapshot{{FlowJobTaskID: "done-link", FlowInstanceID: "instance-retrieve", FlowNodeProxyID: "node-done", ExecutorID: "user-handler", AuditStatus: "pass"}},
 		},
 		before: target.TaskSnapshot{
 			LinkID: "done-link", JobTaskID: "done-task", FlowNodeProxyID: "node-done",
@@ -298,6 +301,7 @@ func TestF019RetrieveVerifiesNewPendingTask(t *testing.T) {
 			FlowProxyID: "proxy-current", TaskStatus: "pending",
 		},
 	}
+	targetFake.fakeTarget.handlerAccount = "handler-account"
 	runCtx := newRunContext([]model.CompiledActionStep{{
 		Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionRetrieve,
 		Scope: model.ActionScopeCompletedTask, NodeKey: "node-audit",
@@ -322,6 +326,9 @@ func TestF019RetrieveVerifiesNewPendingTask(t *testing.T) {
 	}
 	if targetFake.writeCalls != 1 {
 		t.Fatalf("取回应只发送一次原子写请求，实际 %d 次", targetFake.writeCalls)
+	}
+	if targetFake.writeAccount != "handler-account" {
+		t.Fatalf("取回写请求应使用实际审批人账号会话，实际 %q", targetFake.writeAccount)
 	}
 	if len(facts.attempts) != 1 || facts.attempts[0].Reread != string(verdict.RereadAdvanced) {
 		t.Fatalf("取回应记录已前进的事实核验，attempts=%+v", facts.attempts)

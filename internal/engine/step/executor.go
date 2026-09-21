@@ -648,9 +648,12 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 			"目标状态确认失败："+message, model.FailureClassGateBlocked), false, nil
 	}
 	ctx = e.annotateInstanceFromFacts(ctx, runCtx, log, facts)
-	if name := strings.TrimSpace(facts.CurrentTaskAssigneeName); name == "" {
-	} else {
+	if name := strings.TrimSpace(facts.CurrentTaskAssigneeName); name != "" {
 		actorName = name
+	} else if assigneeID := strings.TrimSpace(facts.CurrentTaskAssigneeID); assigneeID != "" {
+		// 目标偶尔只返回处理人 ID；保留该真实 ID 作为执行人摘要，不能回退为计划账号，
+		// 否则加签插入节点的已执行步骤会显示成空白或把计划账号误认成实际处理人。
+		actorName = assigneeID
 	}
 	if persisted := loadPersistedFormDataVerifyIssue(e.facts, runCtx.PathRun.ID, step.Sequence); persisted != "" {
 		facts.FormDataVerifyIssue = persisted
@@ -2943,7 +2946,9 @@ func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, 
 	if !ok || strings.TrimSpace(account) == "" {
 		return "", "", errors.New("人员目录中没有该用户的登录账号")
 	}
-	return strings.TrimSpace(account), "", nil
+	// 目录接口只返回账号而不返回姓名时，返回真实用户 ID 作为稳定可见摘要，
+	// 避免步骤事实的执行人字段为空或错误回退为计划账号。
+	return strings.TrimSpace(account), strings.TrimSpace(assigneeUserID), nil
 }
 
 // recordPrepareFailure 把 prepare 阶段（写请求发出前）的步骤失败落一条失败事实行。

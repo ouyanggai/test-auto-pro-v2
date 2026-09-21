@@ -1208,12 +1208,16 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				if projectionOK {
 					factGraph = projected
 				}
-				detail.DynamicGraph = runFlowGraphDTO(projected)
-				detail.DynamicGraphBindable = projectionOK
+				if pathRun.Status == model.PathRunStatusCompleted {
+					projected = ensureVirtualEndNode(projected)
+				}
 				if projectionOK {
-					detail.DynamicGraphNote = "" // 一切正常时不提示：用户不关心「代理树/结构绑定」这类内部术语
-				} else {
-					detail.DynamicGraphNote = "运行画布暂时按计划结构显示（目标流程结构有变化，暂时无法逐一对应）"
+					detail.DynamicGraph = runFlowGraphDTO(projected)
+					detail.DynamicGraphBindable = true
+				} else if pathRun.Status == model.PathRunStatusCompleted && len(graph.Nodes) > 0 {
+					// 结构无法唯一绑定时完成态仍按计划图收口，结束节点不能因动态读取异常消失。
+					detail.DynamicGraph = runFlowGraphDTO(ensureVirtualEndNode(graph))
+					detail.DynamicGraphBindable = true
 				}
 				staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
 				for _, node := range graph.Nodes {
@@ -1224,14 +1228,13 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 						detail.DynamicNodeIDs = append(detail.DynamicNodeIDs, node.ID)
 					}
 				}
-			} else {
-				detail.DynamicGraphNote = "暂时读不到最新结构，画布先按计划结构显示"
 			}
-		} else {
-			detail.DynamicGraphNote = "动态结构读取能力未配置，当前页面保留计划结构和已落账事实"
 		}
-	} else {
-		detail.DynamicGraphNote = "运行实例尚未生成，暂时没有可读取的动态代理树"
+	}
+	if pathRun.Status == model.PathRunStatusCompleted && detail.DynamicGraph == nil && len(graph.Nodes) > 0 {
+		// 没有运行期结构读取能力时，完成态直接使用计划结构并补稳定结束节点。
+		detail.DynamicGraph = runFlowGraphDTO(ensureVirtualEndNode(graph))
+		detail.DynamicGraphBindable = true
 	}
 	if pathRun.Result != nil {
 		detail.ResultName = resultName(*pathRun.Result)
@@ -1450,6 +1453,39 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph, insertedNode
 	// entry=当前节点，BFS 只覆盖 26 个节点里的 18 个）。这里改用「无入边的结构根」，与静态计划图口径一致。
 	projected.EntryNodeIDs = graphRootIDs(projected.Nodes, projected.Edges)
 	return projected, true
+}
+
+const virtualRunEndNodeID = "__run_virtual_end__"
+
+// ensureVirtualEndNode 为已完成运行补齐稳定的虚拟结束节点。
+// 目标代理树有时不返回 end 节点，但完成态画布必须有明确终点；只给当前无出边的终端节点补边，
+// 并保持固定 ID，避免轮询刷新后产生重复节点或不稳定连线。
+func ensureVirtualEndNode(graph model.FlowGraph) model.FlowGraph {
+	for _, node := range graph.Nodes {
+		if strings.TrimSpace(node.Type) == "end" || strings.TrimSpace(node.ID) == virtualRunEndNodeID {
+			return graph
+		}
+	}
+	result := graph
+	result.Nodes = append([]model.FlowGraphNode{}, graph.Nodes...)
+	result.Edges = append([]model.FlowGraphEdge{}, graph.Edges...)
+	result.Nodes = append(result.Nodes, model.FlowGraphNode{
+		ID: virtualRunEndNodeID, Name: "结束", Type: "end", TypeName: "结束",
+	})
+	outgoing := make(map[string]bool, len(result.Nodes))
+	for _, edge := range graph.Edges {
+		outgoing[strings.TrimSpace(edge.Source)] = true
+	}
+	for _, node := range graph.Nodes {
+		id := strings.TrimSpace(node.ID)
+		if id == "" || outgoing[id] {
+			continue
+		}
+		result.Edges = append(result.Edges, model.FlowGraphEdge{
+			ID: id + "|" + virtualRunEndNodeID + "|sequence|", Source: id, Target: virtualRunEndNodeID, Kind: "sequence",
+		})
+	}
+	return result
 }
 
 // graphRootIDs 返回结构图里没有任何入边的根节点（发起人节点）。正常流程树只有一个根；
@@ -1857,13 +1893,25 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 	}
 	dtos := make([]RunStepDTO, 0, len(steps))
 	for _, stepRecord := range steps {
+		actorName := strings.TrimSpace(stepRecord.ActorSummary)
+		if actorName == "" {
+			// 早期运行可能只落了空 ActorSummary；从同一步写前事实恢复目标实际处理人，
+			// 让加签节点历史详情也能显示真实姓名或用户 ID，而不是计划账号或空白。
+			for index := len(attemptsByStep[stepRecord.ID]) - 1; index >= 0 && actorName == ""; index-- {
+				facts, decoded := step.DecodeInstanceFacts(attemptsByStep[stepRecord.ID][index].BeforeFacts)
+				if !decoded {
+					continue
+				}
+				actorName = firstNonEmptyText(strings.TrimSpace(facts.CurrentTaskAssigneeName), strings.TrimSpace(facts.CurrentTaskAssigneeID), strings.TrimSpace(facts.CompletedTaskExecutorID))
+			}
+		}
 		dto := RunStepDTO{
 			StepNo:       stepRecord.StepNo,
 			ActionName:   actionNameOf(stepRecord.Action),
 			Action:       stepRecord.Action,
 			NodeKey:      stepRecord.NodeKey,
 			NodeID:       tokenToGraphID[stepRecord.NodeKey],
-			ActorName:    stepRecord.ActorSummary,
+			ActorName:    actorName,
 			StatusName:   stepStatusName(stepRecord.Status),
 			StartedAt:    stepRecord.StartedAt,
 			FinishedAt:   stepRecord.FinishedAt,
@@ -2066,8 +2114,12 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 			states[nodeID] = nodeState(model.PathRunStatusWaiting)
 		}
 	}
-	if preview != nil && preview.NodeKey != "" && pathRun.Status == model.PathRunStatusRunning {
-		states[graphNodeKey(preview.NodeKey)] = nodeState(model.PathRunStatusRunning)
+	if preview != nil && preview.NodeKey != "" && (pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying) {
+		status := model.PathRunStatusRunning
+		if pathRun.Status == model.PathRunStatusVerifying {
+			status = model.PathRunStatusVerifying
+		}
+		states[graphNodeKey(preview.NodeKey)] = nodeState(status)
 	}
 	return states
 }
@@ -2374,6 +2426,11 @@ func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRu
 // insertedNodeIDs 是加签插入节点的权威真实 ID（来自已落账注入步骤），测试据此复现真实投影输入。
 func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs ...string) (model.FlowGraph, bool) {
 	return projectRuntimeGraph(staticGraph, dynamicGraph, insertedNodeIDs)
+}
+
+// EnsureVirtualEndNodeForTest 暴露完成态结束节点投影，供根目录定向测试锁定节点与连线稳定性。
+func EnsureVirtualEndNodeForTest(graph model.FlowGraph) model.FlowGraph {
+	return ensureVirtualEndNode(graph)
 }
 
 // RunDetailGraphTimeoutForTest 暴露详情结构读取预算，供 test 目录锁定正常目标读取不被过短预算截断。
