@@ -497,6 +497,11 @@ async function loadDetail(): Promise<void> {
   }
 }
 
+// cachedDynamicGraph 缓存当前运行已经成功拿到过的动态图：
+// 一旦加签后拿到过包含加签节点的动态图，即使后续某次轮询返回的结构暂时缺失或退化，
+// 前端也绝对不丢弃该动态图退回静态计划图，彻底杜绝加签节点“时隐时现、兜圈子”的问题！
+let cachedDynamicGraph: FlowGraph | null = null
+
 function applyDetail(next: PathRunDetail, version: number): void {
   const previewKey = next.currentPreview?.nodeId || next.currentPreview?.nodeKey || ''
   if (previewKey) {
@@ -506,9 +511,16 @@ function applyDetail(next: PathRunDetail, version: number): void {
     if (kept) lastValidCurrentNodeByVersion.set(version, kept)
   }
   detail.value = next
+
+  // 1. 如果后端本次返回了可用的动态图，立即更新本地动态图缓存
   if (next.dynamicGraph && next.dynamicGraphBindable) {
-    graph.value = mergeRunGraphs(staticGraph.value || next.dynamicGraph, next.dynamicGraph, next.dynamicGraphBindable)
+    cachedDynamicGraph = mergeRunGraphs(staticGraph.value || next.dynamicGraph, next.dynamicGraph, next.dynamicGraphBindable)
+    graph.value = cachedDynamicGraph
+  } else if (cachedDynamicGraph) {
+    // 2. 如果后端本次没有返回（如偶发未读取），但之前已经有了动态图，坚决保持动态图！
+    graph.value = cachedDynamicGraph
   } else if (staticGraph.value) {
+    // 3. 只有从未生成过动态图时，才显示静态计划图
     graph.value = staticGraph.value
   }
   syncControl(next)

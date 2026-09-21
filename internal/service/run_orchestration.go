@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"test-auto-pro-v2/internal/adapter/target"
@@ -40,8 +41,8 @@ type runtimeGraphReader interface {
 }
 
 // runDetailGraphTimeout 限制详情轮询等待结构投影的最长时间。
-// 目标模板树的正常读取已实测超过 500ms；预算过短会让轮询把仍在返回的正常请求误判为失败。
-const runDetailGraphTimeout = 2 * time.Second
+// 目标代理树包含网络交互，预算适度放宽到 6 秒，防止因单次超时退回静态图引起加签节点频闪。
+const runDetailGraphTimeout = 6 * time.Second
 
 // RunOrchestrationErrorKind 是运行编排服务的错误种类，API 层映射为稳定状态码。
 type RunOrchestrationErrorKind string
@@ -94,6 +95,12 @@ type RunOrchestrationService struct {
 	now       func() time.Time
 	// pathNodes 提供路径配置快照的目标节点表（键=编译场景 nodeKey 的同一套键）。
 	pathNodes *PathConfigService
+
+	// dynamicGraphCache 缓存运行实例已成功解析出的动态代理图。
+	// 加签生成新节点后，若某次轮询目标接口偶发超时或瞬时不可读，坚决复用缓存的动态图，
+	// 绝不能在动态图与静态计划图之间反复横跳导致加签节点“时隐时现”。
+	dynamicGraphMu    sync.Mutex
+	dynamicGraphCache map[string]model.FlowGraph
 }
 
 // NewRunOrchestrationService 组装运行编排服务；router 用于读取 step.log 的阶段耗时。
@@ -118,6 +125,7 @@ func NewRunOrchestrationService(
 		plans: plans, paths: paths, graphs: graphs, configs: configs,
 		readiness: readiness, control: controlSvc, store: store, runState: runState,
 		router: router, runConfig: runConfig, pathNodes: pathNodes, now: now,
+		dynamicGraphCache: make(map[string]model.FlowGraph),
 	}
 }
 
@@ -1228,7 +1236,20 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			dynamicCtx, cancelDynamic := context.WithTimeout(ctx, runDetailGraphTimeout)
 			dynamicGraph, dynamicErr := runtimeReader.GetRuntime(dynamicCtx, run.PlanID, pathRun.MainInstanceRef)
 			cancelDynamic()
+			if dynamicErr != nil {
+				// 轮询偶发超时或瞬时网络抖动：只要历史曾经成功读到过动态代理图，坚决复用缓存！
+				s.dynamicGraphMu.Lock()
+				if cached, ok := s.dynamicGraphCache[pathRun.MainInstanceRef]; ok {
+					dynamicGraph = cached
+					dynamicErr = nil
+				}
+				s.dynamicGraphMu.Unlock()
+			}
 			if dynamicErr == nil {
+				s.dynamicGraphMu.Lock()
+				s.dynamicGraphCache[pathRun.MainInstanceRef] = dynamicGraph
+				s.dynamicGraphMu.Unlock()
+
 				currentPreview := s.control.CurrentPreview(pathRun.ID)
 				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedNodeIDsFromStepsAndPreview(steps, currentPreview))
 				deviationGraph = projected
