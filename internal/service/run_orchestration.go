@@ -1232,67 +1232,90 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	dynamicProjectionOK := true
 	// 运行详情不能长期复用计划图：加签可能重建 flowProxy，当前实例的最新代理树才是动态节点事实。
 	if strings.TrimSpace(pathRun.MainInstanceRef) != "" {
-		if runtimeReader, ok := s.graphs.(runtimeGraphReader); ok {
-			dynamicCtx, cancelDynamic := context.WithTimeout(ctx, runDetailGraphTimeout)
-			dynamicGraph, dynamicErr := runtimeReader.GetRuntime(dynamicCtx, run.PlanID, pathRun.MainInstanceRef)
-			cancelDynamic()
-			if dynamicErr != nil {
-				// 轮询偶发超时或瞬时网络抖动：只要历史曾经成功读到过动态代理图，坚决复用缓存！
-				s.dynamicGraphMu.Lock()
-				if cached, ok := s.dynamicGraphCache[pathRun.MainInstanceRef]; ok {
-					dynamicGraph = cached
-					dynamicErr = nil
+		// 1. 优先从控制层活动现场获取加签重建后的代理树（0 延迟、无网络、不占用账号锁）
+		var dynamicGraph model.FlowGraph
+		var dynamicErr error
+		hasDynamic := false
+		if s.control != nil {
+			if tree := s.control.RuntimeFlowTree(pathRun.ID); tree != nil {
+				analyzerImpl := analyzer.NewFlowGraphAnalyzer()
+				if nodes, edges, warnings, err := analyzerImpl.Analyze(tree); err == nil {
+					dynamicGraph = model.FlowGraph{
+						PlanID: run.PlanID, TargetName: plan.Name, FlowSource: plan.FlowSource,
+						EntryNodeIDs: graphRootIDs(nodes, edges), Nodes: applyInitiatorStartPeople(nodes, plan.Account),
+						Edges: edges, Warnings: warnings,
+					}
+					hasDynamic = true
 				}
-				s.dynamicGraphMu.Unlock()
 			}
-			if dynamicErr == nil {
-				s.dynamicGraphMu.Lock()
-				s.dynamicGraphCache[pathRun.MainInstanceRef] = dynamicGraph
-				s.dynamicGraphMu.Unlock()
+		}
+		// 2. 现场无内存树时（如会话已结束），走缓存或目标读取
+		if !hasDynamic {
+			if runtimeReader, ok := s.graphs.(runtimeGraphReader); ok {
+				dynamicCtx, cancelDynamic := context.WithTimeout(ctx, runDetailGraphTimeout)
+				dynamicGraph, dynamicErr = runtimeReader.GetRuntime(dynamicCtx, run.PlanID, pathRun.MainInstanceRef)
+				cancelDynamic()
+				if dynamicErr != nil {
+					// 轮询偶发超时或瞬时网络抖动：只要历史曾经成功读到过动态代理图，坚决复用缓存！
+					s.dynamicGraphMu.Lock()
+					if cached, ok := s.dynamicGraphCache[pathRun.MainInstanceRef]; ok {
+						dynamicGraph = cached
+						dynamicErr = nil
+					}
+					s.dynamicGraphMu.Unlock()
+				}
+				if dynamicErr == nil {
+					hasDynamic = true
+				}
+			}
+		}
+		if hasDynamic {
+			s.dynamicGraphMu.Lock()
+			s.dynamicGraphCache[pathRun.MainInstanceRef] = dynamicGraph
+			s.dynamicGraphMu.Unlock()
 
-				currentPreview := s.control.CurrentPreview(pathRun.ID)
-				insertedIDs := insertedNodeIDsFromStepsAndPreview(steps, currentPreview)
-				if s.control != nil {
-					for _, id := range s.control.ActiveInsertedNodeIDs(pathRun.ID) {
-						if !sliceContains(insertedIDs, id) {
-							insertedIDs = append(insertedIDs, id)
-						}
+			currentPreview := s.control.CurrentPreview(pathRun.ID)
+			insertedIDs := insertedNodeIDsFromStepsAndPreview(steps, currentPreview)
+			if s.control != nil {
+				for _, id := range s.control.ActiveInsertedNodeIDs(pathRun.ID) {
+					if !sliceContains(insertedIDs, id) {
+						insertedIDs = append(insertedIDs, id)
 					}
 				}
-				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedIDs)
-				deviationGraph = projected
-				dynamicProjectionOK = projectionOK
-				// 结束节点是每次运行的固定终点，不是"完成态才补的装饰"：运行中就要画在最后，
-				// 否则画布上看不到流程要在哪里收口。必须在 buildNodeStates 之前补进 factGraph，
-				// 否则结束节点不在事实图里、拿不到运行态，完成时也就不会点亮成绿色。
-				projected = ensureVirtualEndNode(projected)
-				if projectionOK {
-					factGraph = projected
-					detail.DynamicGraph = runFlowGraphDTO(projected)
-					detail.DynamicGraphBindable = true
-				} else if isUsableRunGraphModel(projected) {
-					// 即使与静态图唯一绑定不完全匹配，只要加签后动态图自身拓扑合法连通，
-					// 就必须展示动态图，绝不退回静态计划图导致加签节点消失。
-					factGraph = projected
-					detail.DynamicGraph = runFlowGraphDTO(projected)
-					detail.DynamicGraphBindable = true
-				} else if len(graph.Nodes) > 0 {
-					// 结构无法唯一绑定且动态图不合法时才按计划结构收口。
-					endGraph := ensureVirtualEndNode(graph)
-					detail.DynamicGraph = runFlowGraphDTO(endGraph)
-					detail.DynamicGraphBindable = true
-					if len(dynamicGraph.Nodes) == 0 {
-						factGraph = endGraph
-					}
+			}
+			projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedIDs)
+			deviationGraph = projected
+			dynamicProjectionOK = projectionOK
+			// 结束节点是每次运行的固定终点，不是"完成态才补的装饰"：运行中就要画在最后，
+			// 否则画布上看不到流程要在哪里收口。必须在 buildNodeStates 之前补进 factGraph，
+			// 否则结束节点不在事实图里、拿不到运行态，完成时也就不会点亮成绿色。
+			projected = ensureVirtualEndNode(projected)
+			if projectionOK {
+				factGraph = projected
+				detail.DynamicGraph = runFlowGraphDTO(projected)
+				detail.DynamicGraphBindable = true
+			} else if isUsableRunGraphModel(projected) {
+				// 即使与静态图唯一绑定不完全匹配，只要加签后动态图自身拓扑合法连通，
+				// 就必须展示动态图，绝不退回静态计划图导致加签节点消失。
+				factGraph = projected
+				detail.DynamicGraph = runFlowGraphDTO(projected)
+				detail.DynamicGraphBindable = true
+			} else if len(graph.Nodes) > 0 {
+				// 结构无法唯一绑定且动态图不合法时才按计划结构收口。
+				endGraph := ensureVirtualEndNode(graph)
+				detail.DynamicGraph = runFlowGraphDTO(endGraph)
+				detail.DynamicGraphBindable = true
+				if len(dynamicGraph.Nodes) == 0 {
+					factGraph = endGraph
 				}
-				staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
-				for _, node := range graph.Nodes {
-					staticNodeIDs[node.ID] = struct{}{}
-				}
-				for _, node := range dynamicGraph.Nodes {
-					if _, exists := staticNodeIDs[node.ID]; !exists {
-						detail.DynamicNodeIDs = append(detail.DynamicNodeIDs, node.ID)
-					}
+			}
+			staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
+			for _, node := range graph.Nodes {
+				staticNodeIDs[node.ID] = struct{}{}
+			}
+			for _, node := range dynamicGraph.Nodes {
+				if _, exists := staticNodeIDs[node.ID]; !exists {
+					detail.DynamicNodeIDs = append(detail.DynamicNodeIDs, node.ID)
 				}
 			}
 		}
@@ -2204,7 +2227,11 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 	for _, stepRecord := range steps {
 		key := graphNodeKey(stepRecord.NodeKey)
 		settled[key] = true
-		states[key] = nodeState(model.PathRunStatusCompleted)
+		if stepRecord.Action == string(model.ActionReject) {
+			states[key] = RunNodeStateDTO{Status: "rejected", StatusName: "已驳回"}
+		} else {
+			states[key] = nodeState(model.PathRunStatusCompleted)
+		}
 	}
 	// 收尾节点：失败或结果待确认时把最后一步的节点标成对应状态。
 	if pathRun.FailureClass != nil {
@@ -2236,7 +2263,7 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 			states[nodeID] = nodeState(model.PathRunStatusWaiting)
 		}
 	}
-	if preview != nil && (preview.NodeID != "" || preview.NodeKey != "") && (pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying) {
+	if preview != nil && (preview.NodeID != "" || preview.NodeKey != "") && (pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying || pathRun.Status == model.PathRunStatusPaused) {
 		status := model.PathRunStatusRunning
 		if pathRun.Status == model.PathRunStatusVerifying {
 			status = model.PathRunStatusVerifying

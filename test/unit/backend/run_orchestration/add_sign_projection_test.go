@@ -145,7 +145,7 @@ func branchTree(prefix string, withInsert bool) *target.FlowNodeTemplate {
 
 // TestAddSignNodeStatesWithDynamicRemap 验证加签导致代理树重建、节点 ID 变为动态 ID 时，
 // buildNodeStates 能通过 tokenToGraphID 正确将静态步骤键映射到动态图节点上，
-// 避免加签后后继节点（如省区经理）在执行不同意时在画布上显示为未开始或跳跃。
+// 且不同意（reject）动作状态被正确标注为「已驳回」，避免在画布上显示为未开始或跳跃。
 func TestAddSignNodeStatesWithDynamicRemap(t *testing.T) {
 	// 动态图中的节点：加签插入节点（proxy-inserted）与位移后的后继节点（proxy-sqjl）
 	graph := model.FlowGraph{Nodes: []model.FlowGraphNode{
@@ -176,8 +176,8 @@ func TestAddSignNodeStatesWithDynamicRemap(t *testing.T) {
 
 	states := service.BuildNodeStatesWithTokenMapForTest(graph, steps, pathRun, nil, nil, tokenToGraphID)
 
-	if got := states["proxy-sqjl"].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
-		t.Fatalf("省区经理节点的已完成状态没有落到动态图节点上，实际 %s", got)
+	if got := states["proxy-sqjl"].StatusName; got != "已驳回" {
+		t.Fatalf("省区经理节点的已驳回状态没有落到动态图节点上，实际 %s", got)
 	}
 	if got := states["proxy-inserted"].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
 		t.Fatalf("加签节点的已完成状态没有落到动态图节点上，实际 %s", got)

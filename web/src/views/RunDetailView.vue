@@ -207,9 +207,8 @@ async function runCommand(command: string): Promise<void> {
   looping.value = true
   errorText.value = ''
   try {
-    detail.value = await approveRun(runId, command, detail.value.currentStepNo, detail.value.controlVersion, detail.value?.pathRunId)
-    syncControl(detail.value)
-    lastUpdateAt.value = Date.now()
+    const result = await approveRun(runId, command, detail.value.currentStepNo, detail.value.controlVersion, detail.value?.pathRunId)
+    applyDetail(result, requestVersion)
   } catch (error) {
     errorText.value = error instanceof RunApiError ? error.message : '命令执行失败，请查看日志'
   } finally {

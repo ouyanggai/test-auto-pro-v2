@@ -513,6 +513,18 @@ func (s *Service) ActiveInsertedNodeIDs(pathRunID uint64) []string {
 	return ids
 }
 
+// RuntimeFlowTree 返回指定路径运行内存现场中当前持有的完整流程代理树（加签后由 RemapProxyTreeForRun 权威维护）。
+// 只要内存现场存在，详情编排可直接使用它分析动态图，无需发起目标网络读取和争抢账号锁。
+func (s *Service) RuntimeFlowTree(pathRunID uint64) *target.FlowNodeTemplate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.active[pathRunID]
+	if session == nil {
+		return nil
+	}
+	return session.runCtx.FlowTree
+}
+
 // ArmRetrySession 把重试后的控制现场装填回内存（F-028 失败动作重试）。
 // 前置条件由编排层保证：路径运行已重开为运行中，runCtx.Run/PathRun 已填入重开后的真实身份，
 // cursorIndex 是失败步骤在重编译场景中的下标，executed 集合只含已成功步骤。
