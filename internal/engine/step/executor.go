@@ -763,6 +763,16 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	// 取回准备同意的运行时门禁（T04 retrieve_prepare_approve）：编译期只是提示，运行时以目标
 	// 已办事实为准。当前用户在本节点已有已办任务时，准备同意无必要，跳过本步直接取回，绝不多发
 	// 一次同意写请求；无已办时落到下方普通同意门禁——没有可同意的活动待办即阻塞，绝不无依据准备同意。
+	//
+	// F-035/T04 复核（2026-09-21 运行 90 路径 2 第 3-4 步实测）：准备同意的目的只有一个——
+	// 「让**取回人本人**在本节点获得一条已办」。取回门禁的 owned_completed_task 是按
+	// **当前会话账号**（计划账号/取回人）核对已办的，所以准备同意必须由同一个账号完成才有意义。
+	// 目标节点由扩展属性等运行时人员处理时，普通同意门禁会把执行者切换成该节点真实处理人
+	// （实测执行者=刘慧玲，计划账号=骆蒙恩），准备同意产生的已办落在处理人名下，
+	// 取回人依旧没有已办——该步永远无法满足取回前提，路径必然停在取回写前，且重跑同样结果。
+	// 因此：读不到本账号已办、且当前待办的真实处理人不是本账号时，直接按「取回前提无法满足」阻塞，
+	// 并如实说明是谁在处理该节点。绝不改成用处理人身份去取回（那不是取回人的任务），
+	// 也绝不无依据地准备同意。
 	if step.RetrievePrepareConsent {
 		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
 		doneSession, doneSnapshot, doneErr := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "done")
@@ -781,6 +791,12 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 					GateAllowed: true, Facts: facts, TargetSkipped: true, SkipReason: reason,
 					GateItems: []model.ActionPrecondition{},
 				}, false, nil
+			}
+			// 本账号无已办：只有当前待办的处理人就是本账号时，准备同意才会给取回人本人留下已办。
+			// 计划账号用户 ID 从当前会话事实取得（就是取回人本人的身份）。
+			if blocker := retrievePrepareConsentBlocker(facts, session.UserID, runCtx.PlanAccount, nodeID); blocker != "" {
+				log.Phase("gate", step.Sequence, 1, blocker)
+				return e.blockedPreview(runCtx, step, actorName, blocker, model.FailureClassGateBlocked), false, nil
 			}
 		} else {
 			log.Phase("gate", step.Sequence, 1, "取回准备同意的已办事实读取失败，按普通同意门禁继续判定："+userFacingError(doneErr, target.WriteResponse{}))
@@ -3734,6 +3750,66 @@ func ScopeActsOnCurrentTodo(scope model.ActionScope) bool {
 // 输入边界：无入参；返回值为执行服务协议直接消费的标签键，不得改名。
 func ForwardTabForAction() string {
 	return "backlog"
+}
+
+// retrievePrepareConsentBlocker 判断「取回准备同意」在本节点是否根本无法达成目的。
+//
+// 准备同意的唯一目的是让**取回人本人**（当前会话账号，即计划账号）在本节点获得一条已办任务：
+// 取回门禁的 owned_completed_task 正是按当前会话账号核对已办的
+// （原生「取回」入口只出现在已办列表里，作用对象就是当前用户自己的已办）。
+// 普通同意门禁会把执行者切换成该节点目标裁决的真实处理人，因此当处理人不是本账号时，
+// 准备同意产生的已办落在处理人名下，取回人依旧没有已办——该步永远无法满足取回前提。
+//
+// 返回非空字符串表示「确实无法达成」并给出中文原因；返回空串表示可以继续按普通同意门禁尝试。
+//
+// 判定依据全部来自本次事实读取，不猜测人员：
+//   - 事实里读到了本节点当前处理人的用户 ID：与计划账号用户 ID 一致则可行（返回空串）；
+//     不一致则阻塞——待办属于别人，准备同意留不下本账号的已办；
+//   - 读不到本节点处理人，或拿不到处理人用户 ID，或拿不到计划账号用户 ID → 不阻塞，
+//     交给普通同意门禁按既有纪律处理（读不到不等于做不到，绝不把"没读到"当成"不可能"）。
+//
+// 为什么只比较用户 ID：姓名可能重名或被目标改写，只有用户 ID 是稳定身份。
+// planUserID 由调用方从计划账号会话事实取得；planAccount 仅用于错误信息展示。
+func retrievePrepareConsentBlocker(facts InstanceFacts, planUserID, planAccount, nodeID string) string {
+	nodeID = strings.TrimSpace(nodeID)
+	planUserID = strings.TrimSpace(planUserID)
+	if planUserID == "" {
+		return ""
+	}
+	handler, found := currentHandlerForNode(facts, nodeID)
+	if !found {
+		return ""
+	}
+	// 处理人条目存在但没有可用用户 ID（目标只回了姓名/手机号）：这属于"读不到"，不是"查过没有"，
+	// 不能据此断言取回人不在处理人之列，必须放行给普通同意门禁按既有纪律处理。
+	if len(handler.BizIDs) == 0 {
+		return ""
+	}
+	hasUserID := false
+	for _, handlerID := range handler.BizIDs {
+		trimmed := strings.TrimSpace(handlerID)
+		if trimmed == "" {
+			continue
+		}
+		hasUserID = true
+		if strings.EqualFold(trimmed, planUserID) {
+			// 本节点处理人就是取回人本人：准备同意会给他自己留下可核对的已办。
+			return ""
+		}
+	}
+	if !hasUserID {
+		return ""
+	}
+	return fmt.Sprintf("取回准备同意无法达成：节点「%s」的当前处理人不是取回人本人（计划账号 %s），"+
+		"该节点由目标运行时人员处理，准备同意产生的已办会落在处理人名下，"+
+		"取回人仍然没有已办任务；请把取回配置在取回人本人处理的节点",
+		nodeID, strings.TrimSpace(planAccount))
+}
+
+// RetrievePrepareConsentBlockerForTest 暴露取回准备同意的前提判定，供 test 目录锁定：
+// 只有本节点当前待办的处理人就是取回人本人时，准备同意才能给取回人留下已办。
+func RetrievePrepareConsentBlockerForTest(facts InstanceFacts, planUserID, planAccount, nodeID string) string {
+	return retrievePrepareConsentBlocker(facts, planUserID, planAccount, nodeID)
 }
 
 // ForwardAuxiliaryInstanceIDForTest 暴露转发响应体的关联实例取值，供 test 目录锁定：
