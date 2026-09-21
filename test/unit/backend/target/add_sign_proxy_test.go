@@ -170,6 +170,41 @@ func TestHasAddSignNodeRejectsAmbiguousMatches(t *testing.T) {
 	}
 }
 
+// TestAddSignWalkersHandleBranchAliases 验证遍历严格沿流程树拓扑前进，不再盲目递归所有字段。
+// 目标后端返回的节点对象同时带有 branchNodes / conditionNodes / parallelNodes 三组互为别名的
+// 分支字段，指向同一批节点对象；旧实现按 object 的所有 key 递归会把同一节点计数多次，
+// 导致加签锚点被误报"出现多次"、加签核对被误报"命中多个节点"。
+func TestAddSignWalkersHandleBranchAliases(t *testing.T) {
+	branch := `{"id":"cond-1","childFlowNodeTemplate":{"id":"node-branch","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]}}}`
+	tree := json.RawMessage(`{"id":"proxy-1","flowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]},"childFlowNodeTemplate":{"id":"node-2","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]}},"conditionNodes":[` + branch + `],"parallelNodes":[` + branch + `],"branchNodes":[` + branch + `]}}`)
+	// 别名分支不应让锚点被判为重复：这里必须能正常插入，且只在拓扑位置插入一次。
+	updated, err := target.InsertAddSignNode(tree, "node-2", []string{"user-3"}, nil)
+	if err != nil {
+		t.Fatalf("分支别名不应导致锚点重复计数：%v", err)
+	}
+	if !strings.Contains(string(updated), "user-3") {
+		t.Fatalf("插入的加签人员应落在代理树中：%s", updated)
+	}
+}
+
+// TestAddSignWalkersTraverseConditionBranch 验证条件分支内的节点能被定位并命中人员核对：
+// 分支节点的处理人属于路径末端节点，只有沿 conditionNodes 递归才能到达。
+func TestAddSignWalkersTraverseConditionBranch(t *testing.T) {
+	branch := `{"id":"cond-1","childFlowNodeTemplate":{"id":"node-branch","flowNodeAuditConfig":{"flowNodeDetailConfigList":[{"bizId":"user-7","auditDetailType":"personnel"}]}}}`
+	tree := json.RawMessage(`{"id":"proxy-1","flowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]},"conditionNodes":[` + branch + `]}}`)
+	matched, err := target.HasAddSignNode(tree, []string{"user-7"})
+	if err != nil {
+		t.Fatalf("条件分支核对失败：%v", err)
+	}
+	if !matched {
+		t.Fatalf("条件分支内的加签人员应被核对命中：%s", tree)
+	}
+	// 锚点位于条件分支内时也必须能被找到，否则加签直接拒绝发送。
+	if _, err := target.InsertAddSignNode(tree, "node-branch", []string{"user-8"}, nil); err != nil {
+		t.Fatalf("条件分支内的锚点应可定位：%v", err)
+	}
+}
+
 // TestBuildAddSignBodyUsesUpdateFlowProxy 验证加签正文使用完整代理协议，不再复用移交端点。
 func TestBuildAddSignBodyUsesUpdateFlowProxy(t *testing.T) {
 	tree := json.RawMessage(`{"id":"proxy-1","flowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]}}}`)

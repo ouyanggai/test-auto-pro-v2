@@ -102,6 +102,10 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 		} else {
 			issues = append(issues, *issue)
 		}
+		if issue := validateProxyRemapOrder(action, index, actions); issue == nil {
+		} else {
+			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
+		}
 		// 按顺序维护状态事实：重新提交来源、关注状态、移交连续性与最近节点位置。
 		switch action.Action {
 		case model.ActionSaveDraft, model.ActionReject, model.ActionWithdraw:
@@ -518,6 +522,32 @@ func validateStateReminder(action model.ConfiguredAction, index int, actions []m
 	case model.ActionFollow:
 		if seenFollow {
 			return advisoryIssue(index, action, "ACTION_FOLLOW_ALREADY_ACTIVE", "当前顺序重复关注，运行时将按目标实时关注状态裁决")
+		}
+	}
+	return nil
+}
+
+// validateProxyRemapOrder 阻止「加签」之后仍排布依赖既有代理树/任务身份的节点动作。
+//
+// 为什么必须阻断（2026-09-21 夜间路径 10 实测）：加签发的是 updateFlowProxy，目标会重建实例私有
+// 流程代理并为整棵树生成新节点 ID，实例待办随即落到新插入的加签节点上。排在加签之后的节点动作
+// （如同一节点的转发/移交/取回）记录的仍是重建前的节点标识与任务视角，运行时必然读不到待办，
+// 报「目标上已无当前处理人在本节点的待办任务」而停止整条路径。
+//
+// 这是一条顺序约束，不是运行时兜底：让它停在配置阶段，用户能立刻看到并调整动作次序，
+// 而不是等到真实写矩阵跑到一半才失败。同节点内把加签排到最后即可满足。
+// 输入边界：actions 已按 Order 升序；只读遍历，不修改动作集合。
+func validateProxyRemapOrder(action model.ConfiguredAction, index int, actions []model.ConfiguredAction) *model.ActionConfigurationIssue {
+	if action.Scope != model.ActionScopeTask {
+		return nil
+	}
+	for _, previous := range actions {
+		if previous.Order >= action.Order {
+			break
+		}
+		if previous.Action == model.ActionAddSign && previous.NodeKey == action.NodeKey {
+			return blockingIssue(index, action, "ACTION_AFTER_PROXY_REMAP",
+				"加签会重建实例流程代理并为节点生成新标识，同一节点上排在加签之后的动作无法再按原节点读取待办；请把加签排到该节点动作的最后")
 		}
 	}
 	return nil

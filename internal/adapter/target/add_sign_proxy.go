@@ -40,22 +40,43 @@ func InsertAddSignNode(flowProxyTree json.RawMessage, nodeProxyID string, userID
 	var insertErr error
 	var walk func(any)
 	walk = func(value any) {
-		object, ok := value.(map[string]any)
-		if ok {
-			if strings.TrimSpace(stringValue(object["id"])) == nodeProxyID {
-				found++
-				if insertErr == nil {
-					insertErr = insertNodeAfter(object, ids, personNames)
-				}
-			}
-			for _, child := range object {
-				walk(child)
-			}
+		node, ok := value.(map[string]any)
+		if !ok {
 			return
 		}
-		if list, ok := value.([]any); ok {
-			for _, child := range list {
-				walk(child)
+		// 若当前顶层对象包装了 flowNodeTemplate（如 {"id": "proxy-1", "flowNodeTemplate": {...}}），进入模板树遍历
+		if templateObj, hasTemplate := node["flowNodeTemplate"].(map[string]any); hasTemplate {
+			walk(templateObj)
+			return
+		}
+		if strings.TrimSpace(stringValue(node["id"])) == nodeProxyID {
+			found++
+			if insertErr == nil {
+				insertErr = insertNodeAfter(node, ids, personNames)
+			}
+		}
+		// 严格沿流程树的拓扑关系递归：主干 childFlowNodeTemplate 与分支 conditionNodes / parallelNodes。
+		// 避免盲目遍历 object 的所有 key，因为目标后端对象中存在冗余别名字段（如 branchNodes 与 conditionNodes 包含相同节点对象），
+		// 盲目全字段遍历会导致同一个节点被计数多次并误报“加签锚点在流程代理树中出现多次”。
+		if child := node["childFlowNodeTemplate"]; child != nil {
+			walk(child)
+		}
+		if conditions, ok := node["conditionNodes"].([]any); ok {
+			for _, cond := range conditions {
+				if condObj, ok := cond.(map[string]any); ok {
+					if branchChild := condObj["childFlowNodeTemplate"]; branchChild != nil {
+						walk(branchChild)
+					}
+				}
+			}
+		}
+		if parallels, ok := node["parallelNodes"].([]any); ok {
+			for _, parallel := range parallels {
+				if parallelObj, ok := parallel.(map[string]any); ok {
+					if branchChild := parallelObj["childFlowNodeTemplate"]; branchChild != nil {
+						walk(branchChild)
+					}
+				}
 			}
 		}
 	}
@@ -157,19 +178,36 @@ func HasAddSignNode(flowProxyTree json.RawMessage, userIDs []string) (bool, erro
 	matched := 0
 	var walk func(any)
 	walk = func(value any) {
-		object, ok := value.(map[string]any)
-		if ok {
-			if containsAllPersonnelDetails(object, ids) {
-				matched++
-			}
-			for _, child := range object {
-				walk(child)
-			}
+		node, ok := value.(map[string]any)
+		if !ok {
 			return
 		}
-		if list, ok := value.([]any); ok {
-			for _, child := range list {
-				walk(child)
+		if templateObj, hasTemplate := node["flowNodeTemplate"].(map[string]any); hasTemplate {
+			walk(templateObj)
+			return
+		}
+		if containsAllPersonnelDetails(node, ids) {
+			matched++
+		}
+		if child := node["childFlowNodeTemplate"]; child != nil {
+			walk(child)
+		}
+		if conditions, ok := node["conditionNodes"].([]any); ok {
+			for _, cond := range conditions {
+				if condObj, ok := cond.(map[string]any); ok {
+					if branchChild := condObj["childFlowNodeTemplate"]; branchChild != nil {
+						walk(branchChild)
+					}
+				}
+			}
+		}
+		if parallels, ok := node["parallelNodes"].([]any); ok {
+			for _, parallel := range parallels {
+				if parallelObj, ok := parallel.(map[string]any); ok {
+					if branchChild := parallelObj["childFlowNodeTemplate"]; branchChild != nil {
+						walk(branchChild)
+					}
+				}
 			}
 		}
 	}

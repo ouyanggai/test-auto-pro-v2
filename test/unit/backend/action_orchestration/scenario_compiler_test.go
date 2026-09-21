@@ -1,4 +1,4 @@
-package action_orchestration_test
+﻿package action_orchestration_test
 
 import "testing"
 
@@ -198,6 +198,46 @@ func TestF026StructuralErrorsStillBlock(t *testing.T) {
 			}
 			t.Fatalf("结构错误码错误：got=%+v want=%s", compileErr.Issues, item.code)
 		})
+	}
+}
+
+// TestProxyRemapOrderBlocksActionsAfterAddSign 锁定 2026-09-21 夜间路径 10 实测缺陷：
+// 加签（updateFlowProxy）会重建实例流程代理并为节点生成新标识，同一节点上排在加签之后的动作
+// 再按原节点读待办必然为空，运行时报「目标上已无当前处理人在本节点的待办任务」而停止整条路径。
+// 该顺序约束必须在配置阶段阻断；把加签排到最后（或换节点）则正常通过。
+func TestProxyRemapOrderBlocksActionsAfterAddSign(t *testing.T) {
+	nodes := []model.FlowGraphNode{
+		{ID: "start", Type: "start"}, {ID: "review", Type: "common"}, {ID: "end", Type: "end"},
+	}
+	seq := []string{"start", "review", "end"}
+
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "sign", Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: "review", Order: 1},
+			{Key: "storage", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "review", Order: 2},
+		},
+		Nodes: nodes, NodeSequence: seq,
+	})
+	if err == nil {
+		t.Fatalf("加签之后仍排布同节点动作必须在配置阶段阻断，实际编译成功：%+v", result.Steps)
+	}
+	compileErr, ok := err.(*scenario.CompileError)
+	if !ok {
+		t.Fatalf("错误类型不是 CompileError：%T %v", err, err)
+	}
+	if len(compileErr.Issues) == 0 || compileErr.Issues[0].Code != "ACTION_AFTER_PROXY_REMAP" {
+		t.Fatalf("结构错误码错误：got=%+v want=ACTION_AFTER_PROXY_REMAP", compileErr.Issues)
+	}
+
+	// 反向顺序（暂存在前、加签在后）是合法排布，不能被这条规则误伤。
+	if _, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "storage", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "review", Order: 1},
+			{Key: "sign", Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: "review", Order: 2},
+		},
+		Nodes: nodes, NodeSequence: seq,
+	}); err != nil {
+		t.Fatalf("加签排在最后是合法排布，不应被阻断：%v", err)
 	}
 }
 
