@@ -193,6 +193,13 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		return ActionRunResult{}, fmt.Errorf("装载信封解析失败：%w", err)
 	}
 	if _, err := r.client.Load(ctx, handle.SessionID, loadMessage); err != nil {
+		// 转发装载失败时把关键装载事实一并说明：标签页选错是本类超时的典型原因
+		// （2026-09-21 运行 80 实测 dueout 页没有转发入口，装载必然等不到可转发行）。
+		// 只记录与排障有关的非敏感上下文，不打印 SID 或表单正文。
+		if loadMode == LoadModeForward {
+			return ActionRunResult{}, fmt.Errorf("runtime 装载失败（装载模式=%s，标签页=%s，实例=%s，任务=%s）：%w",
+				loadMode, strings.TrimSpace(loadPayload.ForwardTab), strings.TrimSpace(loadPayload.InstanceID), strings.TrimSpace(loadPayload.JobTaskID), err)
+		}
 		return ActionRunResult{}, fmt.Errorf("runtime 装载失败：%w", err)
 	}
 

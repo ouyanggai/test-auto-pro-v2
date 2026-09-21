@@ -159,7 +159,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		// 视角用户取自预览阶段已核实的当前处理人事实（门禁用同一个 ID 查到过该待办）；
 		// 没有事实时为空串，由 refreshPendingTaskSnapshotForAssignee 回退本人视角并留下原因。
 		assigneeUserID := strings.TrimSpace(preview.Facts.CurrentTaskAssigneeID)
-		_, snapshot, snapErr := e.refreshPendingTaskSnapshotForAssignee(ctx, runCtx, step, nodeID, session, assigneeUserID)
+		actorSession, snapshot, snapErr := e.refreshPendingTaskSnapshotForAssignee(ctx, runCtx, step, nodeID, session, assigneeUserID)
 		if snapErr != nil {
 			preview.writeSent = false
 			preview.writeErr = fmt.Errorf("runtime 执行前读取当前任务失败：%w", snapErr)
@@ -177,6 +177,20 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 			return true
 		}
 		jobTaskID = strings.TrimSpace(snapshot.JobTaskID)
+		// 转发必须用**当前处理人**的会话装载：原生待办列表按登录人过滤，只有待办归属人才能
+		// 在自己的待办页里看到这一行。若仍用计划账号会话装载，装载会一直等不到匹配行而超时
+		// （2026-09-21 运行 82 路径 1 第 43 步实测：装载模式=forward，标签页=backlog，
+		// 实例与任务号都正确，但会话仍是计划账号 骆蒙恩，而待办属于 张泽华）。
+		// refreshPendingTaskSnapshotForAssignee 命中时会一并返回处理人会话；只有它确实
+		// 解析到处理人本人（账号非空且不同于计划账号）时才切换，否则保持原会话，
+		// 绝不用计划账号冒充处理人、也不猜测人员。
+		if step.Action == model.ActionForward {
+			if handlerAccount := strings.TrimSpace(actorSession.Summary.Account); handlerAccount != "" &&
+				!strings.EqualFold(handlerAccount, strings.TrimSpace(session.Summary.Account)) {
+				session = actorSession
+				log.Phase("prepare", step.Sequence, approved.Attempt, fmt.Sprintf("转发装载切换到当前处理人会话_%s", session.Summary.DisplayName))
+			}
+		}
 	}
 	// 发起人身份必须是计划账号的真实用户事实（工具发起的实例一律由计划账号发起）。
 	// 主实例引用是实例 ID，把它填进发起人用户 ID 会让目标把实例当人；取不到用户事实就阻塞。
@@ -271,7 +285,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		//
 		// 转发的语义是"把本人当前待办里的这条任务转给别人"，可转发的任务只出现在待办列表，
 		// 与实例最初是新发起还是待发来源无关。因此固定取 backlog，不再按来源分支。
-		runRequest.ForwardTab = "backlog"
+		runRequest.ForwardTab = ForwardTabForAction()
 	default:
 		runRequest.LoadMode = runtimeexec.LoadModeApprove
 	}
@@ -2158,6 +2172,12 @@ func (e *Executor) refreshPendingTaskSnapshotForAssignee(ctx context.Context, ru
 				continue
 			}
 			candidate.PendingUserID = assigneeUserID
+			// 命中待办后把会话切到**处理人本人**：待办列表按登录人过滤，后续装载/提交必须由
+			// 待办归属人发起，否则目标侧看不到这一行（转发装载等待行超时的根因）。
+			// 处理人账号解析不到时保持原会话并如实回落，不猜测、不冒用计划账号。
+			if handlerSession, ok := e.handlerSessionFor(ctx, runCtx, assigneeUserID); ok {
+				return handlerSession, candidate, nil
+			}
 			return active, candidate, nil
 		}
 		return active, target.TaskSnapshot{}, nil
@@ -2167,6 +2187,51 @@ func (e *Executor) refreshPendingTaskSnapshotForAssignee(ctx context.Context, ru
 	}
 	// 只有门禁没有解析出当前处理人时才允许沿用会话自身视角；此时日志事实会说明"执行者即视角来源"。
 	return e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
+}
+
+// handlerSessionFor 按处理人用户 ID 解析出其登录账号并取得会话，供需要以处理人身份发起的动作使用。
+//
+// 为什么需要它：原生待办列表按登录人过滤，转发这类"作用于本人待办"的动作必须由待办归属人发起；
+// 用计划账号装载会一直等不到匹配行（2026-09-21 运行 82 路径 1 第 43 步实测：
+// 装载模式=forward、标签页=backlog、实例与任务号均正确，但会话仍是计划账号，而待办属于他人）。
+//
+// 解析口径：走人员目录按用户 ID 反查账号，命中且账号非空才登录；
+// 解析不到、账号为空、登录失败都返回 false，由调用方保持原会话并如实回落——
+// 绝不猜测人员，也绝不用计划账号冒充处理人。
+// 输入边界：assigneeUserID 为空直接返回 false，不发任何目标请求。
+func (e *Executor) handlerSessionFor(ctx context.Context, runCtx RunContext, assigneeUserID string) (target.Session, bool) {
+	assigneeUserID = strings.TrimSpace(assigneeUserID)
+	if assigneeUserID == "" {
+		return target.Session{}, false
+	}
+	resolver, ok := e.target.(userAccountResolver)
+	if !ok {
+		return target.Session{}, false
+	}
+	planSession, planErr := e.sessions.Current(ctx, runCtx.PlanAccount)
+	if planErr != nil {
+		return target.Session{}, false
+	}
+	accounts, _, resolveErr := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, planSession.Summary.Account, planSession,
+		func(callContext context.Context, active target.Session) (map[string]target.UserAccount, error) {
+			return resolver.UserAccountsByID(callContext, active, []string{assigneeUserID})
+		})
+	if resolveErr != nil {
+		return target.Session{}, false
+	}
+	info, found := accounts[assigneeUserID]
+	if !found {
+		return target.Session{}, false
+	}
+	account := strings.TrimSpace(info.Account)
+	if account == "" {
+		return target.Session{}, false
+	}
+	handlerSession, sessionErr := e.sessions.Current(ctx, account)
+	if sessionErr != nil {
+		return target.Session{}, false
+	}
+	return handlerSession, true
 }
 
 // refreshPendingTaskSnapshotWithFallback 保留任务级动作的会话优先顺序；自身视角读空时才补查已核实处理人。
@@ -3578,6 +3643,18 @@ func TargetSkippedClassificationForTest(runCtx RunContext, step model.CompiledAc
 // 取回/回退/撤回的成立前提就是实例待办已越过目标节点，绝不能套用推进型的目标跳过判定。
 func IsRecoveryEffectStepForTest(step model.CompiledActionStep) bool {
 	return isRecoveryEffectStep(step)
+}
+
+// ForwardTabForAction 返回转发动作必须装载的原生列表页标签。
+//
+// 恒为 backlog（待办）：原生列表页的「转发」入口只在非 dueout/timedout 的标签页渲染，
+// 且页面的 transpond() 委托给当前激活标签页组件，dueout 页没有该入口；
+// 而"可转发的任务"本身只出现在待办列表里。按实例来源改选标签页会让装载等不到可转发行
+// （2026-09-21 运行 80 路径 1 第 43 步实测装载超时）。因此不提供按来源分支的口径。
+//
+// 输入边界：无入参；返回值为执行服务协议直接消费的标签键，不得改名。
+func ForwardTabForAction() string {
+	return "backlog"
 }
 
 // RefreshPendingTaskForAssigneeForTest 暴露提交阶段的待办刷新入口，供 test 目录锁定 T2：

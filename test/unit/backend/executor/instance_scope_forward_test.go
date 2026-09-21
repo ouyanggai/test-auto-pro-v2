@@ -80,3 +80,54 @@ func TestInstanceScopeForwardCarriesConfiguredReceiver(t *testing.T) {
 		t.Fatalf("转发载荷必须携带配置选定的人员，实际载荷：%s", string(encoded))
 	}
 }
+
+// 2026-09-21 运行 80/82 路径 1 第 43 步缺陷回归：转发装载的标签页口径。
+//
+// 现象：节点回退与会话切换都正确之后，装载仍然超时：
+//
+//	runtime 装载失败：执行服务返回 HTTP 500：page.waitForFunction: Timeout 60000ms exceeded
+//
+// 根因（原生页面产物取证）：列表页的「转发」入口只在非 dueout/timedout 标签页渲染，
+// 且 transpond() 委托给当前激活标签页组件（this.$refs[this.activeName].transpond(...)）；
+// dueout（待发）页既无入口也无该组件方法。而"可转发的任务"只出现在待办列表里。
+//
+// 修复口径：转发固定装载 backlog，不按实例来源分支。
+// 这条测试锁定"不退回按来源选页"——那正是导致装载等不到可转发行的原缺陷。
+
+// TestForwardTabIsAlwaysBacklog 锁定：转发装载标签恒为 backlog（待办），
+// 不得因实例来源不同改选 dueout（待发）——dueout 页没有转发入口，装载必然超时。
+func TestForwardTabIsAlwaysBacklog(t *testing.T) {
+	if got := step.ForwardTabForAction(); got != "backlog" {
+		t.Fatalf("转发装载标签必须是 backlog（待办），实际：%q", got)
+	}
+}
+
+// TestForwardTabIsNotSourceDependent 锁定：转发装载标签不随实例来源变化。
+// 逐个来源断言构造出的写请求都能成功，并且装载标签始终等于恒定口径——
+// 防止将来重新引入"按来源选标签页"的分支（dueout 页没有转发入口，会直接导致装载超时）。
+func TestForwardTabIsNotSourceDependent(t *testing.T) {
+	sources := []string{"create", "pending", "backlog", "dueout", "submitted", "", "unknown"}
+	for _, source := range sources {
+		runCtx := instanceForwardRunCtx()
+		runCtx.Source = source
+		compiled := model.CompiledActionStep{
+			Source: model.ActionStepSourceUser, Action: model.ActionForward,
+			Scope: model.ActionScopeInstance, NodeKey: "",
+		}
+		_, _, payload, err := step.BuildRequestForTest(runCtx, compiled, target.Session{CompanyID: "company-id", UserID: "user-id"}, json.RawMessage(`{}`), "")
+		if err != nil {
+			t.Fatalf("来源 %q 下构造实例级转发请求失败：%v", source, err)
+		}
+		raw, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			t.Fatalf("来源 %q 下序列化转发载荷失败：%v", source, marshalErr)
+		}
+		// 写载荷必须始终携带配置接收人：来源变化只影响装载页，绝不影响收件人。
+		if !strings.Contains(string(raw), "receiver-user-id") {
+			t.Fatalf("来源 %q 下转发载荷丢失配置接收人，实际载荷：%s", source, string(raw))
+		}
+		if got := step.ForwardTabForAction(); got != "backlog" {
+			t.Fatalf("来源 %q 下转发装载标签偏离恒定口径：%q", source, got)
+		}
+	}
+}

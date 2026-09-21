@@ -159,21 +159,56 @@ async function readNativeFormSnapshot (page: Page): Promise<Record<string, unkno
 
 // prepareForwardList 在原生列表数据模型中精确选中实例与任务，调用 transpond 完成弹窗准备。
 async function prepareForwardList (page: Page, input: { tab: string, instanceId: string, jobTaskId: string, receiverId: string, receiverName: string, checkList: string[] }): Promise<void> {
-  await page.waitForFunction(({ tab, instanceId, jobTaskId }) => {
-    interface VNode { $children?: VNode[], $refs?: Record<string, unknown> }
-    const root = (window as unknown as { $vue?: VNode }).$vue
-    if (!root) return false
-    const queue: VNode[] = [root]
-    while (queue.length > 0) {
-      const node = queue.shift()!
-      const child = node.$refs?.[tab] as { tableData?: Array<Record<string, unknown>> } | undefined
-      if (child && Array.isArray(child.tableData)) {
-        return child.tableData.some(row => String(row.flowInstanceId ?? row.id ?? '') === instanceId && (!jobTaskId || String(row.jobTaskId ?? '') === jobTaskId))
+  try {
+    await page.waitForFunction(({ tab, instanceId, jobTaskId }) => {
+      interface VNode { $children?: VNode[], $refs?: Record<string, unknown> }
+      const root = (window as unknown as { $vue?: VNode }).$vue
+      if (!root) return false
+      const queue: VNode[] = [root]
+      while (queue.length > 0) {
+        const node = queue.shift()!
+        const child = node.$refs?.[tab] as { tableData?: Array<Record<string, unknown>> } | undefined
+        if (child && Array.isArray(child.tableData)) {
+          return child.tableData.some(row => String(row.flowInstanceId ?? row.id ?? '') === instanceId && (!jobTaskId || String(row.jobTaskId ?? '') === jobTaskId))
+        }
+        queue.push(...(node.$children ?? []))
       }
-      queue.push(...(node.$children ?? []))
-    }
-    return false
-  }, { tab: input.tab, instanceId: input.instanceId, jobTaskId: input.jobTaskId }, { timeout: CAPTURE_TIMEOUT_MS })
+      return false
+    }, { tab: input.tab, instanceId: input.instanceId, jobTaskId: input.jobTaskId }, { timeout: CAPTURE_TIMEOUT_MS })
+  } catch (error) {
+    // 超时不能让排障停在"等不到行"：把页面真实看到了什么一并说清楚——
+    // 列表组件是否存在、渲染了多少行、有没有同实例但不同任务号的行。
+    // 这是把"超时"翻译成可定位事实的关键证据，不猜测原因。
+    const evidence = await page.evaluate(({ tab, instanceId }) => {
+      interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, $options?: { name?: string } }
+      const root = (window as unknown as { $vue?: VNode }).$vue
+      if (!root) return { vueRoot: false, listFound: false }
+      const queue: VNode[] = [root]
+      const seen = new Set<VNode>()
+      let listFound = false
+      let rowCount = -1
+      const sameInstanceRows: Array<{ jobTaskId: string }> = []
+      while (queue.length > 0) {
+        const node = queue.shift()!
+        if (!node || seen.has(node)) continue
+        seen.add(node)
+        const child = node.$refs?.[tab] as { tableData?: Array<Record<string, unknown>> } | undefined
+        if (child && Array.isArray(child.tableData)) {
+          listFound = true
+          rowCount = child.tableData.length
+          for (const row of child.tableData) {
+            if (String(row.flowInstanceId ?? row.id ?? '') === instanceId) {
+              sameInstanceRows.push({ jobTaskId: String(row.jobTaskId ?? '') })
+            }
+          }
+          break
+        }
+        queue.push(...(node.$children ?? []))
+      }
+      return { vueRoot: true, listFound, rowCount, sameInstanceRows }
+    }, { tab: input.tab, instanceId: input.instanceId }).catch(() => ({ evidenceFailed: true }))
+    throw new Error(`转发列表装载超时：未在「${input.tab}」标签页等到实例 ${input.instanceId} / 任务 ${input.jobTaskId} 的行；页面事实=${JSON.stringify(evidence)}`)
+  }
   await page.evaluate(async payload => {
     interface VNode { $children?: VNode[], $refs?: Record<string, unknown> }
     interface ListHost extends VNode {
