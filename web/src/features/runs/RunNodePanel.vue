@@ -4,12 +4,11 @@ import { computed, ref, watch } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
 import { actionLabel } from './presentation'
-import { runtimeStageViews, runtimeStatusLabel } from './runtimeDetail'
 import type { PathRunDetail, RunNodePlanAction, RunPreview, RunRequestItem, RunStep, RunStepAttempt } from './api'
 
-// RunNodePanel 是点击画布节点后才出现的检视面板：三个页签只给简要事实，
-// 完整内容（门禁逐项、阶段耗时、日志位置与可重放 curl）一律进详情弹窗，
-// 避免把一屏堆满说明文字。写结果不确定只呈现结论与依据，不渲染任何重试或继续入口（纲领第 4.4 节）。
+// RunNodePanel 是点击画布节点后才出现的检视面板：三个页签只给简要事实。
+// 详情弹窗按用户裁决做了收敛：正文只讲「谁做了什么、什么结果」，
+// 折叠的技术细节只保留四件事——执行的操作、写入/读取接口及其耗时、日志位置。
 const props = defineProps<{
   detail: PathRunDetail
   nodeKey: string
@@ -173,24 +172,7 @@ function openStepDialog(step?: RunStep): void {
     return
   }
   previewDialogOpen.value = false
-  expandedCurl.value = ''
   stepDialog.value = step
-}
-
-// expandedCurl 控制请求与响应正文的展开；默认折叠避免超大正文卡住界面。
-const expandedCurl = ref<string>('')
-const CURL_LIMIT = 20000
-
-// curlText 对超限正文做有界渲染：超出部分给中文说明并引导去日志文件看全文。
-function curlText(step: RunStep): string {
-  const block = step.attempts[0]?.curlBlock || ''
-  if (block.length <= CURL_LIMIT) return block
-  return block.slice(0, CURL_LIMIT) + `\n……正文超过 ${CURL_LIMIT} 字符，已截断显示；完整内容请在日志目录的 curl.log 查看。`
-}
-
-// toggleCurl 展开或收起某一步的请求与响应正文。
-function toggleCurl(stepNo: number): void {
-  expandedCurl.value = expandedCurl.value === String(stepNo) ? '' : String(stepNo)
 }
 
 // copyLogRef 复制日志相对路径与行号：粘贴到 code-server 搜索即可直达（三次点击标准）。
@@ -204,49 +186,28 @@ async function copyLogRef(attempt: RunStepAttempt): Promise<void> {
   }
 }
 
-// copyCurl 复制原始字节内容（不做界面美化），供直接重放。
-async function copyCurl(step: RunStep): Promise<void> {
-  const block = step.attempts[0]?.curlBlock || ''
-  if (!block) {
-    message.warning('本次尝试没有可重放的 curl 记录')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(block)
-    message.success('已复制可重放 curl')
-  } catch {
-    // 剪贴板不可用必须明说：告知用户去 curl.log 里复制，不静默吞掉。
-    message.error('复制失败：浏览器剪贴板不可用，请在日志目录的 curl.log 中查看')
-  }
-}
-
-// phaseOrder 用于按七阶段顺序展示耗时（阶段流水只在详情里给排查者看）。
-const phaseOrder: Array<[string, string]> = [
-  ['plan', '确认要做什么'], ['gate', '检查能不能做'], ['control', '等你确认执行'], ['prepare', '正在准备实际操作人'],
-  ['submit', '向目标提交'], ['verify', '回读确认结果'], ['settle', '保存结果'],
-]
-
-// phaseFlow 是本地执行过程的展示序列：只列实际发生过的阶段，用 F-030 的用户口径命名。
-const phaseFlow = computed<Array<[string, string]>>(() => {
-  const durations = stepDialog.value?.attempts[0]?.phaseDurations
-  if (!durations) return phaseOrder
-  return phaseOrder.filter(([phase]) => durations[phase] !== undefined)
-})
-
 // attemptRequests 返回某一步的请求明细；多尝试时合并展示（按发生顺序已在后端排好）。
 function attemptRequests(step: RunStep): RunRequestItem[] {
   return step.attempts.flatMap(attempt => attempt.requests ?? [])
 }
 
-// runtimeDetail 是当前步骤最新一次尝试的 runtime 三阶段投影（评审 P1-7 生产接线）：
-// 只有 runtime 接管的步骤才有该数据，非 runtime 步骤为 null，区块整体不渲染。
-const runtimeDetail = computed(() => stepDialog.value?.attempts.find(attempt => attempt.runtimeDetail)?.runtimeDetail ?? null)
+// nodeOperations 列出当前节点实际执行过的操作（步序 + 中文动作名）：
+// 让「这个节点做了什么」一眼可见，不需要读尝试结论或阶段流水。
+const nodeOperations = computed<Array<{ stepNo: number; label: string }>>(() =>
+  nodeSteps.value.map(step => ({ stepNo: step.stepNo, label: stepActionLabel(step) })),
+)
 
-// runtimeStageViewList 把三阶段投影映射为中文视图（表单业务处理 → 流程动作 → 提交后业务处理）。
-const runtimeStageViewList = computed(() => runtimeStageViews(runtimeDetail.value?.stages ?? []))
-
-// runtimeStatusText 是 runtime 七值判定的中文口径；业务失败不显示为流程失败。
-const runtimeStatusText = computed(() => runtimeDetail.value ? runtimeStatusLabel(runtimeDetail.value.status) : '')
+// requestGroupsByOutcome 把本节点的接口请求按「写入 / 读取」分类成两个标题分组。
+// 用户裁决：接口分类直接当标题用，不再重复一层「接口请求」总标题，也不显示阶段名。
+const requestGroupsByOutcome = computed<Array<{ key: string; title: string; items: RunRequestItem[] }>>(() => {
+  const requests = nodeSteps.value.flatMap(step => attemptRequests(step))
+  const writes = requests.filter(req => req.requestClass === 'write')
+  const reads = requests.filter(req => req.requestClass !== 'write')
+  const groups: Array<{ key: string; title: string; items: RunRequestItem[] }> = []
+  if (writes.length > 0) groups.push({ key: 'write', title: '写入接口', items: writes })
+  if (reads.length > 0) groups.push({ key: 'read', title: '读取接口', items: reads })
+  return groups
+})
 
 // stepOutcomeTitle 是步骤结果摘要的状态词（F-034 T06）：
 // 优先级：结构化阻塞 > 确定失败 > 结果待确认 > 运行中；只有写结果不确定才用“结果待确认”。
@@ -306,113 +267,6 @@ const stepPlainSummary = computed(() => {
   if (title === '结果待确认') return `${who} 在「${where}」做了「${what}」，请求发出了但结果还没确认。`
   return `${who} 在「${where}」做了「${what}」，当前状态：${title}。`
 })
-
-// stepTimingNote 用一句白话解释步骤总耗时与接口等待的关系（F-034 T06）。
-const stepTimingNote = computed(() => {
-  const step = stepDialog.value
-  if (!step) return ''
-  const summary = stepRequestSummary.value
-  if (!summary || summary.count === 0) return `这一步共 ${formatElapsed(step.durationMs)}，暂无真实接口耗时记录`
-  const total = summary.allDurationsKnown ? formatElapsed(summary.totalMs) : `${formatElapsed(summary.totalMs)}+（部分未知）`
-  return `这一步共 ${formatElapsed(step.durationMs)}，其中目标接口等待 ${total}，其余时间用于读取当前待办和保存结果`
-})
-
-// requestResultText 请求行结果：优先后端业务摘要，无摘要时退回 HTTP/传输状态（F-034 T06）。
-function requestResultText(req: RunRequestItem): string {
-  if (req.resultSummary) return req.resultSummary
-  if (req.result === 'success') return '成功'
-  if (!req.statusCode) return '传输失败'
-  return `失败（HTTP ${req.statusCode}）`
-}
-
-// stepRequestSummary 多尝试汇总：聚合全部 attempt 的指标，保证明细列表与顶部指标是同一批数据
-// （审查 P1：此前只取第一条 attempt，重试或重新核验时明细与指标不一致）。
-const stepRequestSummary = computed(() => {
-  const attempts = stepDialog.value?.attempts ?? []
-  const merged = { totalMs: 0, writeMs: 0, count: 0, writeCount: 0, allDurationsKnown: true }
-  let hasSummary = false
-  for (const attempt of attempts) {
-    const summary = attempt.requestSummary
-    if (!summary) continue
-    hasSummary = true
-    merged.count += summary.count
-    merged.writeCount += summary.writeCount
-    merged.writeMs += summary.writeMs
-    merged.totalMs += summary.totalMs
-    if (!summary.allDurationsKnown) merged.allDurationsKnown = false
-  }
-  return hasSummary ? merged : null
-})
-
-// copyTrace 复制完整 trace_id，供在 curl.log / network.log 中检索原文。
-async function copyTrace(traceId: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(traceId)
-    message.success('已复制 trace，可在 curl.log 中检索')
-  } catch {
-    message.error('复制失败：浏览器剪贴板不可用，请手动从日志目录检索')
-  }
-}
-
-// GateSnapshotShape 是门禁结论快照的结构：逐项中文条件与满足情况。
-interface GateSnapshotShape {
-  allowed?: boolean
-  reason?: string
-  items?: Array<{ label?: string; key?: string; required?: boolean; present?: boolean }>
-  // 按节点权限构造表单数据的两个清单（F-024）：解释“这个字段为什么没提交/为什么变了”。
-  formOverlaid?: string[]
-  formWithheld?: string[]
-}
-
-// gateItemText 把服务端检查项翻译成用户看得懂的判断结果，不显示抽象条件名。
-function gateItemText(item: { label?: string; key?: string; required?: boolean; present?: boolean }): string {
-  const present = item.present === true
-  switch (item.key) {
-    case 'active_task':
-      return present ? '目标已查到当前处理人的待处理待办' : '目标没有查到待处理的待办：可能已流转给其他处理人，或已经被处理'
-    case 'running_instance':
-      return present ? '流程当前正在运行' : '流程当前不在运行中'
-    case 'human_node':
-      return present ? '当前节点是人工审批节点' : '当前节点不是人工审批节点'
-    case 'not_forwarded':
-      return present ? '当前不是转发辅助流程' : '当前是转发辅助流程，不能直接处理主流程'
-    case 'initiator':
-      return present ? '当前账号是流程发起人' : '当前账号不是流程发起人'
-    case 'new_or_draft':
-      return present ? '实例处于新建或草稿状态' : '实例当前不在新建或草稿状态'
-    case 'new_instance':
-      return present ? '实例尚未提交，可以新建提交' : '实例已经存在，不能再次新建提交'
-    case 'resubmittable_status':
-      return present ? '实例处于可重新提交状态' : '实例当前状态不能重新提交'
-    case 'not_ended':
-      return present ? '实例尚未结束' : '实例已经结束'
-    default:
-      if (item.label) return `${item.label}：${present ? '已满足' : (item.required === false ? '不适用' : '未满足')}`
-      return present ? '检查项已满足' : '检查项未满足'
-  }
-}
-
-// gateSnapshotLines 还原放行当时的门禁判定与逐项条件满足情况，不出现内部字段英文名。
-function gateSnapshotLines(step: RunStep): string[] {
-  if (!step.gateSnapshot) return []
-  let snapshot: GateSnapshotShape
-  try {
-    snapshot = JSON.parse(step.gateSnapshot) as GateSnapshotShape
-  } catch {
-    return []
-  }
-  const lines: string[] = [snapshot.allowed ? '检查结果：通过，可以放行' : `检查结果：未通过${snapshot.reason ? `（${snapshot.reason}）` : ''}`]
-  for (const item of snapshot.items || []) {
-    lines.push(gateItemText(item))
-  }
-  if (snapshot.formOverlaid && snapshot.formOverlaid.length > 0) {
-    lines.push(`按本节点权限覆盖的字段：${snapshot.formOverlaid.join('、')}`)
-  }
-  if (snapshot.formWithheld && snapshot.formWithheld.length > 0) {
-    lines.push(`按本节点权限未携带的字段：${snapshot.formWithheld.join('、')}`)
-  }
-  return lines
-}
 
 // finalFactsText 把最终目标事实摘要渲染为中文行，不直接输出英文键 JSON。
 // 主实例 ID 属内部标识不上界面（用户裁决）：需要在目标平台定位实例时走日志目录的运行记录。
@@ -476,10 +330,33 @@ function statusTagType(statusName: string): 'success' | 'error' | 'warning' | 'i
   return 'info'
 }
 
-// gateTone 按门禁项文字是否包含未满足判断展示色，不改变服务端的事实口径。
-function gateTone(line: string): string {
-  if (line.includes('未满足') || line.includes('未通过') || line.includes('失败')) return 'run-panel__condition--failed'
-  return 'run-panel__condition--passed'
+// gateItemText 把服务端检查项翻译成用户看得懂的判断结果，不显示抽象条件名。
+// 运行前预览（「即将发出的请求」）仍逐项展示这些检查结论，用于解释这一步能不能放行。
+function gateItemText(item: { label?: string; key?: string; required?: boolean; present?: boolean }): string {
+  const present = item.present === true
+  switch (item.key) {
+    case 'active_task':
+      return present ? '目标已查到当前处理人的待处理待办' : '目标没有查到待处理的待办：可能已流转给其他处理人，或已经被处理'
+    case 'running_instance':
+      return present ? '流程当前正在运行' : '流程当前不在运行中'
+    case 'human_node':
+      return present ? '当前节点是人工审批节点' : '当前节点不是人工审批节点'
+    case 'not_forwarded':
+      return present ? '当前不是转发辅助流程' : '当前是转发辅助流程，不能直接处理主流程'
+    case 'initiator':
+      return present ? '当前账号是流程发起人' : '当前账号不是流程发起人'
+    case 'new_or_draft':
+      return present ? '实例处于新建或草稿状态' : '实例当前不在新建或草稿状态'
+    case 'new_instance':
+      return present ? '实例尚未提交，可以新建提交' : '实例已经存在，不能再次新建提交'
+    case 'resubmittable_status':
+      return present ? '实例处于可重新提交状态' : '实例当前状态不能重新提交'
+    case 'not_ended':
+      return present ? '实例尚未结束' : '实例已经结束'
+    default:
+      if (item.label) return `${item.label}：${present ? '已满足' : (item.required === false ? '不适用' : '未满足')}`
+      return present ? '检查项已满足' : '检查项未满足'
+  }
 }
 
 // dialogStyle 是三个详情弹窗共用的尺寸与配色：弹窗内容被传送到 body，
@@ -677,103 +554,49 @@ const dialogStyle = computed(() => ({
           <p v-if="stepNextText" class="run-panel__why-next">下一步：{{ stepNextText }}</p>
         </div>
 
-        <!-- 尝试结论：只保留每次尝试的一句话结论；接口路径、阶段流水等技术细节全部进排查区。 -->
-        <section class="run-panel__section">
-          <p class="run-panel__section-title">每次尝试的结果</p>
-          <p v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo" class="run-panel__attempt-line">
-            第 {{ attempt.attemptNo }} 次：{{ attempt.verdictName }}——{{ attempt.reason }}
-          </p>
-        </section>
-
-        <!-- 排查入口：默认折叠；接口请求、runtime 阶段、日志、trace、curl、检查项、原文都在这里。
-             用户裁决：这些术语没人看得懂，不放在弹窗正文，只留给需要排查的人。 -->
+        <!-- 排查入口：默认折叠。用户裁决：技术细节只留四件事——这个节点做了什么动作、
+             请求了哪些接口（按接口分类做标题）、每个接口用了多久、日志在哪。
+             阶段流水、attempt 结论文案、trace、检查项、原始报文一律不再展示。 -->
         <details class="run-panel__debug">
-          <summary>技术细节：接口请求、日志与原始报文（排查用）</summary>
+          <summary>技术细节：这个节点做了什么、请求了哪些接口</summary>
 
-          <!-- 接口请求：按真实发生顺序的简洁行列表，每行只有类型、接口、真实耗时与结果摘要。 -->
+          <!-- 这个节点做了哪些动作：按实际执行的步骤列出，动作名用中文口径。 -->
           <section class="run-panel__section">
-            <p class="run-panel__section-title">接口请求</p>
-            <ul v-if="attemptRequests(stepDialog).length > 0" class="run-panel__req-lines">
-              <li v-for="(req, index) in attemptRequests(stepDialog)" :key="index" class="run-panel__req-line">
+            <p class="run-panel__section-title">执行的操作</p>
+            <ul class="run-panel__op-lines">
+              <li v-for="item in nodeOperations" :key="item.stepNo" class="run-panel__op-line">
+                <span class="run-panel__op-no">第 {{ item.stepNo }} 步</span>
+                <span class="run-panel__op-name">{{ item.label }}</span>
+              </li>
+            </ul>
+          </section>
+
+          <!-- 接口请求按「动作分类」做标题分组：路径跟着分类走，用户按分类找接口，不用读阶段名。 -->
+          <section
+            v-for="group in requestGroupsByOutcome"
+            :key="group.key"
+            class="run-panel__section"
+          >
+            <p class="run-panel__section-title">{{ group.title }}</p>
+            <ul class="run-panel__req-lines">
+              <li v-for="(req, index) in group.items" :key="index" class="run-panel__req-line">
                 <span class="run-panel__req-kind" :class="req.requestClass === 'write' ? 'run-panel__req-kind--write' : 'run-panel__req-kind--read'">
                   {{ req.requestClass === 'write' ? '写入' : '读取' }}
                 </span>
                 <span class="run-panel__req-path">{{ req.endpoint }}</span>
                 <span class="run-panel__req-num run-panel__mono">{{ req.durationKnown ? `${req.durationMs} ms` : '耗时未知' }}</span>
-                <span class="run-panel__req-outcome" :class="req.result === 'success' ? 'run-panel__ok' : 'run-panel__bad'">
-                  {{ requestResultText(req) }}
-                </span>
-              </li>
-            </ul>
-            <p v-else class="run-panel__muted">这一步没有发出真实接口请求（历史运行或读取类步骤未产生网络日志）</p>
-            <p class="run-panel__timing-note">{{ stepTimingNote }}</p>
-          </section>
-
-          <!-- runtime 执行详情（评审 P1-7）：三阶段进度、判定状态与逐请求摘要；
-               只在 runtime 接管的步骤出现，完整正文仍走日志文件。 -->
-          <section v-if="runtimeDetail" class="run-panel__section">
-            <p class="run-panel__section-title">表单运行时执行详情</p>
-            <p class="run-panel__runtime-status">
-              判定：<n-tag size="small" :type="runtimeDetail.status === 'success' ? 'success' : (runtimeDetail.status === 'uncertain' || runtimeDetail.status === 'timeout' ? 'warning' : 'error')">
-                {{ runtimeStatusText }}
-              </n-tag>
-              <span v-if="runtimeDetail.message" class="run-panel__runtime-message">{{ runtimeDetail.message }}</span>
-            </p>
-            <ul class="run-panel__runtime-stages">
-              <li v-for="stage in runtimeStageViewList" :key="stage.name" class="run-panel__runtime-stage">
-                <span class="run-panel__runtime-stage-name">{{ stage.name }}</span>
-                <span class="run-panel__runtime-stage-state" :class="`run-panel__tone--${stage.tone}`">{{ stage.stateLabel }}</span>
-                <span class="run-panel__runtime-stage-count">{{ stage.requests }} 个请求</span>
-              </li>
-            </ul>
-            <ul v-if="runtimeDetail.requests.length > 0" class="run-panel__runtime-requests">
-              <li v-for="req in runtimeDetail.requests" :key="req.seq" class="run-panel__runtime-request">
-                <span class="run-panel__mono">{{ req.method }}</span>
-                <span class="run-panel__req-path">{{ req.path }}</span>
-                <span :class="req.state === 'fulfilled' ? 'run-panel__ok' : 'run-panel__bad'">
-                  {{ req.state === 'fulfilled' ? `完成${req.httpStatus ? `（HTTP ${req.httpStatus}）` : ''}` : (req.state === 'aborted' ? '已中止' : '已拦截') }}
-                </span>
-                <span v-if="req.durationMs" class="run-panel__req-num run-panel__mono">{{ req.durationMs }} ms</span>
               </li>
             </ul>
           </section>
+          <p v-if="requestGroupsByOutcome.length === 0" class="run-panel__muted">这一步没有发出真实接口请求（历史运行或读取类步骤未产生网络日志）</p>
 
+          <!-- 日志位置：只给目录与行号，便于直接去翻原文。 -->
           <dl class="run-panel__debug-list">
             <template v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo">
               <div><dt>日志位置</dt><dd class="run-panel__debug-path">{{ attempt.logPath }} 第 {{ attempt.logLine }} 行</dd></div>
               <div><dt></dt><dd><n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button></dd></div>
-              <div v-if="attempt.traceId"><dt>trace</dt><dd class="run-panel__debug-path">{{ attempt.traceId }}</dd></div>
-              <div v-if="attempt.traceId"><dt></dt><dd><n-button text size="tiny" type="info" @click="copyTrace(attempt.traceId)">复制 trace</n-button></dd></div>
             </template>
           </dl>
-          <div v-if="stepDialog.attempts[0]?.curlBlock" class="run-panel__curl-actions">
-            <n-button text size="tiny" type="info" @click="copyCurl(stepDialog)">复制可重放 curl</n-button>
-            <n-button text size="tiny" type="info" @click="toggleCurl(stepDialog.stepNo)">
-              {{ expandedCurl === String(stepDialog.stepNo) ? '收起原始请求与响应' : '展开原始请求与响应' }}
-            </n-button>
-          </div>
-          <p v-else class="run-panel__no-curl">这次尝试没有发出写请求；完整网络日志见运行目录的 curl.log。</p>
-          <pre v-if="expandedCurl === String(stepDialog.stepNo) && stepDialog.attempts[0]?.curlBlock" class="run-panel__pre">{{ curlText(stepDialog) }}</pre>
-
-          <!-- 内部排查内容统一收在这里，标签用人话；不把阶段名当主标题。 -->
-          <section v-if="gateSnapshotLines(stepDialog).length > 0" class="run-panel__section">
-            <p class="run-panel__section-title">这一步的检查项</p>
-            <ul class="run-panel__conditions">
-              <li v-for="(line, index) in gateSnapshotLines(stepDialog)" :key="index" class="run-panel__condition" :class="gateTone(line)">
-                <span class="run-panel__condition-dot"></span>
-                <span>{{ line }}</span>
-              </li>
-            </ul>
-          </section>
-          <section v-if="stepDialog.attempts[0]?.phaseDurations" class="run-panel__section">
-            <p class="run-panel__section-title">本地执行各环节用时</p>
-            <ul class="run-panel__phase-lines">
-              <li v-for="[phase, label] in phaseFlow" :key="phase">
-                {{ label }}：{{ formatElapsed(stepDialog.attempts[0].phaseDurations?.[phase] ?? -1) }}
-              </li>
-            </ul>
-          </section>
-          <p v-else class="run-panel__muted">{{ stepDialog.attempts[0]?.phaseDurationsNote || '暂无本地执行过程记录' }}</p>
         </details>
       </template>
     </n-modal>
