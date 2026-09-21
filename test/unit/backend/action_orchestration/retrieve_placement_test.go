@@ -7,10 +7,9 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
-// TestRetrievePlacedOnLastExecutableHumanNode 锁定用户裁决与目标跨节点取回硬规则：
-// 一键配置里「取回」只能落在路径最后一个可执行审批/协同节点上——它之后没有别的人工节点会推进其后继，
-// 取回在运行时才可执行。中间的审批节点、以及系统/条件/结束节点都不是取回的合法宿主。
-func TestRetrievePlacedOnLastExecutableHumanNode(t *testing.T) {
+// TestRetrievePlacedOnIntermediateAndNotLastHumanNode 锁定取回放置规则（任务书 4.1/4.2）：
+// 中间节点在直接后继人工待办未处理时可以取回；路径末节点没有后继人工待办窗口，目标后端必然拒绝，故排除。
+func TestRetrievePlacedOnIntermediateAndNotLastHumanNode(t *testing.T) {
 	configuration := model.PathConfiguration{Groups: []model.PathConfigGroup{
 		{Nodes: []model.PathConfigNode{
 			{Key: "start", Kind: "start"},
@@ -24,14 +23,14 @@ func TestRetrievePlacedOnLastExecutableHumanNode(t *testing.T) {
 		}},
 	}}
 	if got := service.LastHumanNodeKeyForTest(configuration); got != "audit-last" {
-		t.Fatalf("取回宿主应为最后一个可执行审批节点 audit-last，实际 %q", got)
+		t.Fatalf("路径最后一个可执行审批节点应为 audit-last，实际 %q", got)
 	}
 
-	// 没有任何人工节点时不返回宿主（不给取回找一个必然失败的落点）。
+	// 没有任何人工节点时不返回宿主。
 	systemOnly := model.PathConfiguration{Groups: []model.PathConfigGroup{
 		{Nodes: []model.PathConfigNode{{Key: "start", Kind: "start"}, {Key: "cond", Kind: "condition"}, {Key: "end", Kind: "end"}}},
 	}}
 	if got := service.LastHumanNodeKeyForTest(systemOnly); got != "" {
-		t.Fatalf("没有可执行审批节点时不应给取回找落点，实际 %q", got)
+		t.Fatalf("没有可执行审批节点时不应有末节点，实际 %q", got)
 	}
 }

@@ -583,28 +583,15 @@ func TestConfirmedNodeKeysCoverSavedActionNodes(t *testing.T) {
 	}
 }
 
-// TestAutoNodeActionSafetyRankAndCoverage 验证 F-034 候选顺序：安全等级优先（暂存表单最安全），
-// 同级内本路径未使用动作前置，再按稳定种子轮转；结果可复现。
+// TestAutoNodeActionSafetyRankAndCoverage 验证候选顺序：本路径尚未使用的动作优先，
+// 同级内按稳定种子轮转打散，回退与取回不再因安全等级被压到最后；结果可复现。
 func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
-	node := autoConfigureNode("node-a", []string{"approve", "reject", "storage_form_data", "add_sign", "rollback_previous"})
-	first, person, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
-	if !ok {
-		t.Fatal("审批节点应至少给出一个候选动作")
-	}
-	if first.Action != model.ActionStorageFormData {
-		t.Fatalf("审批节点最安全额外动作是暂存表单，实际选出：%s", first.Action)
-	}
-	// 跨节点多样性（F-034 评审修正）：本路径尚未使用的动作优先，跨安全等级生效——
+	// 跨节点多样性：本路径尚未使用的动作优先——
 	// 暂存表单被用过时，未使用的不同意排在再次暂存之前。
 	secondNode := autoConfigureNode("node-b", []string{"storage_form_data", "reject"})
 	second, _, okSecond, _ := service.AutoExtraCandidatesForTest(41, 51, secondNode, map[string]bool{string(model.ActionStorageFormData): true})
 	if !okSecond || second.Action != model.ActionReject {
-		t.Fatalf("未使用动作应优先（跨等级）：second=%s ok=%v", second.Action, okSecond)
-	}
-	// 首次使用时安全等级仍然生效：都没用过时先选最安全的暂存表单。
-	firstUse, _, okFirst, _ := service.AutoExtraCandidatesForTest(41, 51, secondNode, map[string]bool{})
-	if !okFirst || firstUse.Action != model.ActionStorageFormData {
-		t.Fatalf("都没使用时仍按安全等级选暂存表单：first=%s", firstUse.Action)
+		t.Fatalf("未使用动作应优先：second=%s ok=%v", second.Action, okSecond)
 	}
 	// 目录完整时加签必须保留在候选中；动态插入节点由后续运行切片负责写后编排。
 	signOnlyNode := func(key string) model.PathConfigNode {
@@ -646,10 +633,6 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 	secondRankOne, _, okB, _ := service.AutoExtraCandidatesForTest(41, 51, transferOnlyNode("node-r1b"), map[string]bool{string(firstRankOne.Action): true})
 	if !okB || secondRankOne.Action != model.ActionTransfer {
 		t.Fatalf("唯一安全候选即使已使用也应继续可选：second=%s ok=%v", secondRankOne.Action, okB)
-	}
-	// 需要人员的动作（如加签）在没有动作专属候选时不能自动配置，但暂存/不同意不受影响。
-	if person != nil {
-		t.Fatalf("暂存表单不需要动作专属人员策略：%+v", person)
 	}
 }
 

@@ -84,8 +84,10 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			issues = append(issues, *issue)
 		}
 		if issue := validateRollbackTargetIssue(action, index, nodeIndex(sequence, action.NodeKey), sequence, nodeTypes); issue == nil {
-		} else {
+		} else if issue.Blocking {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
+		} else {
+			issues = append(issues, *issue)
 		}
 		if issue := validateActionState(action, index, resubmitReady, followed); issue == nil {
 		} else {
@@ -474,7 +476,9 @@ func validateActionStructure(action model.ConfiguredAction, index int, nodes map
 	return nil
 }
 
-// validateRollbackTargetIssue 阻止把回退动作配置到没有可恢复前驱的节点。
+// validateRollbackTargetIssue 检查回退动作的前驱；
+// 没有前驱待办属于无法形成合法动作意图的结构性错误，必须阻断；
+// 前驱为发起节点属于目标后端可执行性规则，按任务书 4.4 允许保存并显示非阻断提醒（运行时重新核验并安全跳过）。
 func validateRollbackTargetIssue(action model.ConfiguredAction, index, position int, sequence []string, nodeTypes map[string]string) *model.ActionConfigurationIssue {
 	if action.Action != model.ActionRollback || position < 0 || position >= len(sequence) {
 		return nil
@@ -484,7 +488,7 @@ func validateRollbackTargetIssue(action model.ConfiguredAction, index, position 
 	}
 	previous := previousHumanIndex(position, sequence, nodeTypes)
 	if previous < 0 || strings.EqualFold(strings.TrimSpace(nodeTypes[sequence[previous]]), "start") {
-		return blockingIssue(index, action, "ROLLBACK_PREVIOUS_START", "直接前一节点是发起节点，目标规则不允许回退")
+		return advisoryIssue(index, action, "ROLLBACK_PREVIOUS_START", "直接前一节点是发起节点，目标后端规则不允许回退；运行时将重新核对并安全跳过")
 	}
 	return nil
 }

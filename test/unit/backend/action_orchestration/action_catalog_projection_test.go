@@ -149,11 +149,14 @@ func TestPathConfigurationProjectsRealActionCatalog(t *testing.T) {
 func TestSaveActionConfigurationEnforcesCatalogGate(t *testing.T) {
 	config, plan, path := newCatalogProjectionService(t, 822, 832)
 	reviewKey := analyzer.PathConfigNodeToken("review")
-	_, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174821", model.ActionConfigurationInput{
+	savedRollback, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, reviewKey, "123e4567-e89b-12d3-a456-426614174821", model.ActionConfigurationInput{
 		Actions: []model.ConfiguredAction{{Key: "rollback-1", Action: model.ActionRollback, Scope: model.ActionScopeTask, Order: 1}},
 	})
-	if reason := gateBlockedReason(t, err, "rollback_previous"); !strings.Contains(reason, "发起节点") {
-		t.Fatalf("回退阻断原因未复用目标门禁说明：%q", reason)
+	if err != nil {
+		t.Fatalf("回退动作到发起节点前驱属于目标可执行性规则，应允许保存并作为提醒：%v", err)
+	}
+	if len(savedRollback.Issues) == 0 || !strings.Contains(savedRollback.Issues[0].Message, "发起节点") {
+		t.Fatalf("回退提醒未包含发起节点说明：%+v", savedRollback.Issues)
 	}
 	secondKey := analyzer.PathConfigNodeToken("second")
 	savedTransfer, transferErr := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, secondKey, "123e4567-e89b-12d3-a456-426614174822", model.ActionConfigurationInput{
@@ -163,7 +166,14 @@ func TestSaveActionConfigurationEnforcesCatalogGate(t *testing.T) {
 	} else {
 		t.Fatalf("移交动作保存失败：%v", transferErr)
 	}
-	if len(savedTransfer.Issues) > 0 && savedTransfer.Issues[0].Blocking == false && strings.Contains(savedTransfer.Issues[0].Message, "移交") {
+	var transferIssue *model.ActionConfigurationIssue
+	for i := range savedTransfer.Issues {
+		if savedTransfer.Issues[i].ActionKey == model.ActionTransfer {
+			transferIssue = &savedTransfer.Issues[i]
+			break
+		}
+	}
+	if transferIssue != nil && transferIssue.Blocking == false && strings.Contains(transferIssue.Message, "移交") {
 	} else {
 		t.Fatalf("移交运行时变化应形成非阻断提醒：%+v", savedTransfer.Issues)
 	}

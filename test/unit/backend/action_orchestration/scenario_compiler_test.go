@@ -174,13 +174,13 @@ func TestF026StructuralErrorsStillBlock(t *testing.T) {
 			code:    "ACTION_SCOPE_INVALID",
 		},
 		{
-			name: "回退到发起节点",
+			name: "没有直接前一待办",
 			actions: []model.ConfiguredAction{
 				{Key: "rollback", Action: model.ActionRollback, Scope: model.ActionScopeTask, NodeKey: "review"},
 			},
-			nodes: []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "review", Type: "common"}},
-			seq:   []string{"start", "review"},
-			code:  "ROLLBACK_PREVIOUS_START",
+			nodes: []model.FlowGraphNode{{ID: "review", Type: "common"}},
+			seq:   []string{"review"},
+			code:  "ROLLBACK_PREVIOUS_MISSING",
 		},
 	}
 	for _, item := range cases {

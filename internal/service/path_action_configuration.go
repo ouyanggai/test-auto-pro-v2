@@ -994,13 +994,12 @@ var autoExtraActionRanks = map[model.ActionKey]int{
 	model.ActionRollback: 3,
 }
 
-// autoExtraActionCandidates 按目标前后端静态动作矩阵给出该节点可尝试的额外动作候选与淘汰原因（F-034 T02）。
+// autoExtraActionCandidates 按目标前后端静态动作矩阵给出该节点可尝试的额外动作候选与淘汰原因。
 // 矩阵约束：发起节点只允许"保存草稿"；审批/协同节点只允许暂存表单、加签、移交、不同意、回退、取回；
 // 系统/空/条件等节点不补任何动作；需要人员的动作必须自带完整候选目录，找不到就给出精确原因。
 // 候选只经过静态过滤，完整场景编译仍由调用方逐个验证；不覆盖人工事实、固定尾动作不计入额外动作。
 func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool, planAccount string) ([]autoExtraCandidate, []string) {
 	rejections := []string{}
-	// 目标模板声明"无处理人时跳过"等运行时语义与动作选择无关，静态阶段只保证动作本身可保存。
 	switch strings.TrimSpace(node.Kind) {
 	case "start":
 		// 发起节点固定尾动作负责"提交"；唯一的额外动作是保存草稿，重新提交是恢复链动作不许随机分配。
@@ -1022,9 +1021,17 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 		return nil, rejections
 	case "common", "synergy":
 		available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
+		allowedActions := map[model.ActionKey]bool{
+			model.ActionStorageFormData: true,
+			model.ActionAddSign:         true,
+			model.ActionTransfer:        true,
+			model.ActionRetrieve:        true,
+			model.ActionReject:          true,
+			model.ActionRollback:        true,
+		}
 		for _, item := range node.ActionConfiguration.Catalog {
 			kind := model.ActionKey(item.Kind)
-			if _, allowed := autoExtraActionRanks[kind]; !allowed {
+			if !allowedActions[kind] {
 				continue
 			}
 			if !item.Enabled || item.SystemOnly || item.SystemInserted {
@@ -1039,26 +1046,21 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 			}
 			return nil, rejections
 		}
-		// 排序（F-034 评审修正）：本路径尚未使用的动作优先（跨安全等级），
-		// 同为未使用/已使用时再按安全等级与稳定键排，最后按种子在同优先级内轮转；
-		// 不用全局随机数，重试可复现。
+		// 排序（4.1 统一规则）：本路径尚未使用的动作优先，同为未使用/已使用时按稳定键排，
+		// 再按种子在同优先级内轮转打散，不再用人为安全等级把取回、回退排在后面。
 		sort.SliceStable(available, func(left, right int) bool {
 			leftUsed, rightUsed := used[available[left].Kind], used[available[right].Kind]
 			if leftUsed != rightUsed {
 				return !leftUsed
 			}
-			leftRank, rightRank := autoExtraActionRanks[model.ActionKey(available[left].Kind)], autoExtraActionRanks[model.ActionKey(available[right].Kind)]
-			if leftRank != rightRank {
-				return leftRank < rightRank
-			}
 			return available[left].Kind < available[right].Kind
 		})
-		// 种子偏移只在同一优先级（未使用+等级相同的连续段）内部进行，不破坏前面的全局次序。
+		// 种子偏移只在同一优先级（未使用/已使用的连续段）内部进行，保证重复一键配置幂等。
 		rotated := make([]model.PathConfigActionCatalogItem, 0, len(available))
 		for start := 0; start < len(available); {
 			end := start + 1
-			usedKey, rank := used[available[start].Kind], autoExtraActionRanks[model.ActionKey(available[start].Kind)]
-			for end < len(available) && used[available[end].Kind] == usedKey && autoExtraActionRanks[model.ActionKey(available[end].Kind)] == rank {
+			usedKey := used[available[start].Kind]
+			for end < len(available) && used[available[end].Kind] == usedKey {
 				end++
 			}
 			group := available[start:end]
@@ -1072,7 +1074,7 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 		for _, item := range rotated {
 			kind := model.ActionKey(item.Kind)
 			candidate := autoExtraCandidate{
-				rank: autoExtraActionRanks[kind],
+				rank: 0,
 				action: model.ConfiguredAction{Key: autoConfigureActionKey(node.Key, item.Kind), Action: kind,
 					Scope: model.ActionScope(item.Scope), NodeKey: node.Key, Order: 1},
 			}
@@ -1081,14 +1083,11 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 					rejections = append(rejections, item.Label+"：目标没有返回动作专属处理人候选，不能自动配置")
 					continue
 				}
-				// 加签动作的处理人从目标目录候选人中挑选，排除发起人（planAccount），避免默认加签给自己；
-				// 移交/传阅沿用随机。
 				strategy := autoSignPersonStrategyExcludePlanAccount(*item.Person, kind, planAccount, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
 				if len(strategy.Selected) == 0 {
 					rejections = append(rejections, item.Label+"：动作专属候选为空（或排除发起人后无可用候选），不能自动配置")
 					continue
 				}
-				// 完整策略/人数校验在接受循环进行（需要验证层的人员目标目录，见 validateAutoCandidatePerson）。
 				person := strategy
 				candidate.person = &person
 			}
@@ -1290,11 +1289,8 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				continue
 			}
 			candidates, rejections := autoExtraActionCandidates(*node, autoConfigureSeed(planID, pathID, node.Key), usedInPath(actions), planAccount)
-			// 取回只在路径最后一个可执行审批节点自动生成：其余节点上取回会因跨节点规则必然失败，
-			// 直接从候选里剔除并记诊断，换该节点的其它安全候选（如暂存/加签/移交）。
-			if node.Key != lastHumanKey {
-				candidates, rejections = dropRetrieveCandidate(candidates, rejections)
-			}
+			// 取回规则：末节点没有后继人工待办窗口，从候选排除；中间人工节点有直接后继窗口，正常允许取回。
+			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
 			diagnostics = append(diagnostics, rejections...)
 			if len(candidates) == 0 {
@@ -1341,6 +1337,70 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			}
 		}
 	}
+	// 实例动作容器一键配置（任务书 4.1）：从实例动作目录中挑选一条可用动作（如 forward/withdraw/urge 等），
+	// 不占用节点额外动作名额；仅在尚未配置任何实例动作时尝试配置。
+	instanceContainerKey := analyzer.PathConfigInstanceActionKey()
+	hasInstanceAction := false
+	for _, a := range actions {
+		if a.Scope == model.ActionScopeInstance {
+			hasInstanceAction = true
+			break
+		}
+	}
+	if !hasInstanceAction && !approveOnly && len(configuration.InstanceActions.Catalog) > 0 {
+		instanceSeed := autoConfigureSeed(planID, pathID, "instance_actions")
+		availableInstance := make([]model.PathConfigActionCatalogItem, 0, len(configuration.InstanceActions.Catalog))
+		for _, item := range configuration.InstanceActions.Catalog {
+			if !item.Enabled || item.SystemOnly || item.SystemInserted {
+				continue
+			}
+			availableInstance = append(availableInstance, item)
+		}
+		// 优先挑选转发（forward）或未使用的实例动作
+		sort.SliceStable(availableInstance, func(i, j int) bool {
+			iForward := availableInstance[i].Kind == string(model.ActionForward)
+			jForward := availableInstance[j].Kind == string(model.ActionForward)
+			if iForward != jForward {
+				return iForward
+			}
+			return availableInstance[i].Kind < availableInstance[j].Kind
+		})
+		for _, item := range availableInstance {
+			kind := model.ActionKey(item.Kind)
+			candidateAction := model.ConfiguredAction{
+				Key:    autoConfigureActionKey(instanceContainerKey, item.Kind),
+				Action: kind,
+				Scope:  model.ActionScopeInstance,
+				Order:  len(actions) + 1,
+			}
+			var personStrategy *model.PathConfigPersonStrategyInput
+			if item.RequiresPerson {
+				if item.Person == nil || len(item.Person.Options) == 0 {
+					continue
+				}
+				p := autoPersonStrategy(*item.Person, instanceSeed)
+				if len(p.Selected) == 0 {
+					continue
+				}
+				personStrategy = &p
+			}
+			merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{candidateAction}, instanceContainerKey, analysis.graph, analysis.pathAnalysis)
+			if mergeErr != nil {
+				continue
+			}
+			if _, compileErr := compilePathActions(merged, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation)); compileErr != nil {
+				continue
+			}
+			actions = merged
+			if personStrategy != nil {
+				personStrategies[personStrategy.Key] = *personStrategy
+			}
+			changed = true
+			autoConfiguredNodes = append(autoConfiguredNodes, "实例动作（"+actionDisplayLabel(kind)+"）")
+			break
+		}
+	}
+
 	// 只有业务节点没有任何可用动作才返回失败；候选级失败只是诊断，不改变整体成功语义。
 	var rejectionError error
 	if len(blockingRejections) > 0 {
@@ -1452,8 +1512,11 @@ func LastHumanNodeKeyForTest(configuration model.PathConfiguration) string {
 	return lastHumanNodeKey(configuration)
 }
 
-// dropRetrieveCandidate 从候选里剔除取回，并补一条淘汰原因（跨节点取回会被目标拒绝）。
-func dropRetrieveCandidate(candidates []autoExtraCandidate, rejections []string) ([]autoExtraCandidate, []string) {
+// dropRetrieveCandidateIfNoNextWindow 当当前节点是路径最后一个人工节点（无后继人工待办窗口）时剔除取回动作。
+func dropRetrieveCandidateIfNoNextWindow(nodeKey, lastHumanKey string, candidates []autoExtraCandidate, rejections []string) ([]autoExtraCandidate, []string) {
+	if nodeKey != lastHumanKey {
+		return candidates, rejections
+	}
 	kept := candidates[:0]
 	dropped := false
 	for _, candidate := range candidates {
@@ -1464,7 +1527,7 @@ func dropRetrieveCandidate(candidates []autoExtraCandidate, rejections []string)
 		kept = append(kept, candidate)
 	}
 	if dropped {
-		rejections = append(rejections, "取回：仅在路径最后一个可执行审批节点自动配置（目标不支持跨节点取回，中间节点的后继会被恢复链重走处理）")
+		rejections = append(rejections, "取回：路径末节点没有后继人工待办窗口，目标后端必然拒绝取回")
 	}
 	return kept, rejections
 }
