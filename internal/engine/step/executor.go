@@ -159,7 +159,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		// 视角用户取自预览阶段已核实的当前处理人事实（门禁用同一个 ID 查到过该待办）；
 		// 没有事实时为空串，由 refreshPendingTaskSnapshotForAssignee 回退本人视角并留下原因。
 		assigneeUserID := strings.TrimSpace(preview.Facts.CurrentTaskAssigneeID)
-		actorSession, snapshot, snapErr := e.refreshPendingTaskSnapshotForAssignee(ctx, runCtx, step, nodeID, session, assigneeUserID)
+		_, snapshot, snapErr := e.refreshPendingTaskSnapshotForAssignee(ctx, runCtx, step, nodeID, session, assigneeUserID)
 		if snapErr != nil {
 			preview.writeSent = false
 			preview.writeErr = fmt.Errorf("runtime 执行前读取当前任务失败：%w", snapErr)
@@ -177,20 +177,9 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 			return true
 		}
 		jobTaskID = strings.TrimSpace(snapshot.JobTaskID)
-		// 转发必须用**当前处理人**的会话装载：原生待办列表按登录人过滤，只有待办归属人才能
-		// 在自己的待办页里看到这一行。若仍用计划账号会话装载，装载会一直等不到匹配行而超时
-		// （2026-09-21 运行 82 路径 1 第 43 步实测：装载模式=forward，标签页=backlog，
-		// 实例与任务号都正确，但会话仍是计划账号 骆蒙恩，而待办属于 张泽华）。
-		// refreshPendingTaskSnapshotForAssignee 命中时会一并返回处理人会话；只有它确实
-		// 解析到处理人本人（账号非空且不同于计划账号）时才切换，否则保持原会话，
-		// 绝不用计划账号冒充处理人、也不猜测人员。
-		if step.Action == model.ActionForward {
-			if handlerAccount := strings.TrimSpace(actorSession.Summary.Account); handlerAccount != "" &&
-				!strings.EqualFold(handlerAccount, strings.TrimSpace(session.Summary.Account)) {
-				session = actorSession
-				log.Phase("prepare", step.Sequence, approved.Attempt, fmt.Sprintf("转发装载切换到当前处理人会话_%s", session.Summary.DisplayName))
-			}
-		}
+		// 说明：转发所需的"执行者=当前处理人"口径统一由 prepare 阶段解析并写入
+		// preview.ActorAccount / preview.ActorName（实例级动作与任务级动作同一条路径），
+		// 这里不再单独切换会话——两处各切一次会让身份来源分叉，难以核对。
 	}
 	// 发起人身份必须是计划账号的真实用户事实（工具发起的实例一律由计划账号发起）。
 	// 主实例引用是实例 ID，把它填进发起人用户 ID 会让目标把实例当人；取不到用户事实就阻塞。
@@ -1605,7 +1594,14 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	// 任务级动作以目标实时待办的真实处理人身份发出（工作包 D）：
 	// 事实里的 currentPendingUserId 是目标裁决的实际处理人，必须解析其登录账号并切换到当前处理人的会话，
 	// 绝不冒用计划账号审批他人任务。解析失败就如实置败并指出节点与人员，不能静默回退到计划账号。
-	if step.Scope == model.ActionScopeTask || step.Scope == model.ActionScopeCompletedTask {
+	//
+	// 实例级转发同样必须切换：它作用于"本人当前待办里的这条任务"，而原生待办列表按登录人过滤——
+	// 用计划账号装载会一直等不到属于处理人的那一行而超时
+	// （2026-09-21 运行 85 路径 1 第 43 步实测：节点、标签页、实例与任务号全部正确，
+	// 网关侧会话也切到了处理人，但 preview.ActorAccount 仍是计划账号，
+	// 于是执行服务拿到的身份依旧是计划账号，backlog 列表渲染了 10 行却无一行属于本实例）。
+	// 判据集中在 ScopeActsOnCurrentTodo，今后新增同类动作自动获得同一口径。
+	if ScopeActsOnCurrentTodo(step.Scope) {
 		if assigneeID := strings.TrimSpace(preview.Facts.CurrentTaskAssigneeID); assigneeID != "" {
 			if account, name, resolveErr := e.assigneeAccount(ctx, session, assigneeID); resolveErr != nil {
 				class := model.FailureClassActorUnresolved
@@ -2951,15 +2947,32 @@ func (e *Executor) classifyRollbackReread(ctx context.Context, account, instance
 
 // classifyForwardReread 从转发响应中提取辅助实例并按目标实例接口确认其已创建。
 // 转发不改变主实例，不能用主实例节点是否变化判断成功。
+// classifyForwardReread 判定转发写请求是否已在目标生效。
+//
+// 转发的语义是"把本人当前待办里的这条任务转给他人"，它**不推进流程节点**：
+// 写成功后节点位置与"本人待办"都可能保持原样，因此不能用"节点是否前进"或
+// "待办是否消失"作判据——那会把一次成功的转发判成"明确未变"，进而升级为
+// "执行结果暂时无法确认"并让整条运行终局停止（2026-09-21 运行 86 路径 1 第 43 步实测）。
+//
+// 判据取值：转发响应 data 里的实例标识 + 该实例在「已发」列表中的可见性。
+// 响应缺少可判定的实例标识时返回 RereadUnreadable（如实说"读不到依据"），
+// 绝不猜测成功——写结果不确定时的保守纪律不变。
+//
+// 第二个返回值是辅助实例引用：转发可能在目标侧派生一条新的关联实例，
+// 控制层据此重绑定代理树；读不到时为空串。
 func (e *Executor) classifyForwardReread(ctx context.Context, account string, session target.Session, preview *StepPreview) (verdict.Reread, string) {
 	response := preview.writeResponse.Data
 	if len(response) == 0 || string(response) == "null" {
+		// 把真实原因写进事实诊断：只回一句"无法确认"会让排障分不清
+		// "目标没返回数据"和"返回了但没有可用标识"这两种完全不同的情况。
+		e.recordForwardRereadReason(preview, "转发响应没有返回数据体，缺少可判定的实例标识")
 		return verdict.RereadUnreadable, ""
 	}
 	var raw struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(response, &raw); err != nil || strings.TrimSpace(raw.ID) == "" {
+		e.recordForwardRereadReason(preview, "转发响应缺少 id 字段，无法据响应体定位实例")
 		return verdict.RereadUnreadable, ""
 	}
 	instanceID := strings.TrimSpace(raw.ID)
@@ -2967,6 +2980,7 @@ func (e *Executor) classifyForwardReread(ctx context.Context, account string, se
 		FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error)
 	})
 	if !ok {
+		e.recordForwardRereadReason(preview, "目标客户端不支持已发列表读取，无法核对转发结果")
 		return verdict.RereadUnreadable, instanceID
 	}
 	result, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
@@ -2975,12 +2989,25 @@ func (e *Executor) classifyForwardReread(ctx context.Context, account string, se
 			return found, readErr
 		})
 	if err != nil {
+		e.recordForwardRereadReason(preview, "转发结果核对读取失败："+err.Error())
 		return verdict.RereadUnreadable, instanceID
 	}
 	if !result {
+		e.recordForwardRereadReason(preview, "实例 "+instanceID+" 在已发列表中不可见")
 		return verdict.RereadUnchanged, instanceID
 	}
 	return verdict.RereadAdvanced, instanceID
+}
+
+// recordForwardRereadReason 把转发结果核对的具体依据写入预览事实诊断。
+//
+// 为什么需要：转发不推进节点，"结果无法确认"这条结论必须带上它读到了什么、
+// 缺了什么，否则界面与日志都只剩一句无法复核的结论。只写非敏感事实，不含 SID 与表单正文。
+func (e *Executor) recordForwardRereadReason(preview *StepPreview, reason string) {
+	if preview == nil {
+		return
+	}
+	preview.Facts.AssigneeDiag = firstNonEmpty(reason, preview.Facts.AssigneeDiag)
 }
 
 // containsNode 判断节点键集合是否包含目标节点。
@@ -3643,6 +3670,27 @@ func TargetSkippedClassificationForTest(runCtx RunContext, step model.CompiledAc
 // 取回/回退/撤回的成立前提就是实例待办已越过目标节点，绝不能套用推进型的目标跳过判定。
 func IsRecoveryEffectStepForTest(step model.CompiledActionStep) bool {
 	return isRecoveryEffectStep(step)
+}
+
+// ScopeActsOnCurrentTodo 判断该动作作用域是否"作用于本人当前的待办任务"。
+//
+// 为什么单独成函数：这类动作在 prepare 阶段必须把执行者身份切换到目标裁决的当前处理人，
+// 因为原生待办列表按登录人过滤——用计划账号发起会看不到属于他人的待办行。
+// 覆盖三种作用域：
+//   - task / completed_task：本节点本人待办（审批、暂存、驳回、取回等）；
+//   - instance：实例的当前活动待办（转发等），配置里没有节点键，但同样是"本人的待办"。
+//
+// 为什么不用动作名白名单：白名单每加一个同类动作就要同步改一处，漏改就退化成
+// "用计划账号冒充处理人"；按作用域判定让新增动作自动继承正确口径。
+//
+// 输入边界：initiator 作用域（发起人身份动作）不属于本人待办，返回 false。
+func ScopeActsOnCurrentTodo(scope model.ActionScope) bool {
+	switch scope {
+	case model.ActionScopeTask, model.ActionScopeCompletedTask, model.ActionScopeInstance:
+		return true
+	default:
+		return false
+	}
 }
 
 // ForwardTabForAction 返回转发动作必须装载的原生列表页标签。

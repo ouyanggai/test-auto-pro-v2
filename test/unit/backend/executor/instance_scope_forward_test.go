@@ -102,6 +102,56 @@ func TestForwardTabIsAlwaysBacklog(t *testing.T) {
 	}
 }
 
+// 2026-09-21 运行 85 路径 1 第 43 步缺陷回归：实例级转发的执行者身份。
+//
+// 现象：节点回退、标签页与会话切换全部生效后，装载仍然超时，页面事实给出关键证据：
+//
+//	{"vueRoot":true,"listFound":true,"rowCount":10,"sameInstanceRows":[]}
+//
+// backlog 列表渲染了 10 行，却没有一行属于本实例——说明列表是按**计划账号**的身份查询的。
+// 根因：prepare 阶段只在 task/completed_task 作用域解析并切换处理人身份，
+// 实例级 forward 的 preview.ActorAccount 仍是计划账号，执行服务据此注入的身份也就是计划账号。
+//
+// 修复口径：凡"作用于本人当前待办"的作用域都必须切换执行者身份，含 instance。
+
+// TestInstanceScopeActsOnCurrentTodo 锁定：实例级作用域属于"作用于本人当前待办"，
+// 必须在 prepare 阶段切换执行者身份（这正是运行 85 第 43 步装载超时的根因）。
+func TestInstanceScopeActsOnCurrentTodo(t *testing.T) {
+	for _, scope := range []model.ActionScope{
+		model.ActionScopeTask, model.ActionScopeCompletedTask, model.ActionScopeInstance,
+	} {
+		if !step.ScopeActsOnCurrentTodo(scope) {
+			t.Fatalf("作用域 %q 作用于本人当前待办，必须切换执行者身份", scope)
+		}
+	}
+}
+
+// TestInitiatorScopeDoesNotActOnCurrentTodo 锁定安全边界：发起人身份动作不属于本人待办，
+// 不得因为本次修复被误纳入身份切换范围（否则会拿处理人身份冒充发起人）。
+func TestInitiatorScopeDoesNotActOnCurrentTodo(t *testing.T) {
+	if step.ScopeActsOnCurrentTodo(model.ActionScopeInitiator) {
+		t.Fatal("发起人作用域不作用于本人待办，不得纳入执行者身份切换")
+	}
+}
+
+// TestForwardIsInstanceScopeActingOnCurrentTodo 锁定转发这条真实链路的两项口径同时成立：
+// 作用域是 instance（配置里没有节点键），且该作用域必须触发执行者身份切换。
+func TestForwardIsInstanceScopeActingOnCurrentTodo(t *testing.T) {
+	compiled := model.CompiledActionStep{
+		Source: model.ActionStepSourceUser, Action: model.ActionForward,
+		Scope: model.ActionScopeInstance, NodeKey: "",
+	}
+	if compiled.Scope != model.ActionScopeInstance {
+		t.Fatalf("转发的配置作用域应为 instance，实际：%q", compiled.Scope)
+	}
+	if !step.ScopeActsOnCurrentTodo(compiled.Scope) {
+		t.Fatal("转发作用于本人当前待办，必须切换执行者身份")
+	}
+	if compiled.NodeKey != "" {
+		t.Fatalf("实例级转发不应绑定配置节点键，实际：%q", compiled.NodeKey)
+	}
+}
+
 // TestForwardTabIsNotSourceDependent 锁定：转发装载标签不随实例来源变化。
 // 逐个来源断言构造出的写请求都能成功，并且装载标签始终等于恒定口径——
 // 防止将来重新引入"按来源选标签页"的分支（dueout 页没有转发入口，会直接导致装载超时）。
