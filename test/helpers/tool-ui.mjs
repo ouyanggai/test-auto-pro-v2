@@ -176,7 +176,9 @@ export async function openRunDialog (browser, planId) {
     return true;
   `)
   if (!clicked) throw new Error('页面上找不到「运行」按钮（data-testid=plan-detail-run-button）')
-  await waitFor(browser, 'return textOf(document.body).includes("条路径，本次运行")', { label: '运行前检查完成', timeoutMs: 180000 })
+  // 等“检查中”结束：以页面显式提供的 data-testid 摘要块为准，不用正文文案猜测。
+  // 检查完成后才会出现 run-preflight-summary；仍在核对时只有 checking 提示。
+  await waitFor(browser, 'return !!$(\'[data-testid="run-preflight-summary"]\')', { label: '运行前检查完成', timeoutMs: 180000 })
 }
 
 // selectRunnablePaths 只勾选在运行前检查里判定为可运行的路径。

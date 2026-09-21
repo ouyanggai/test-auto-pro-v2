@@ -261,15 +261,29 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 	// 锚点节点每一次「同意」之后，实例都会流转到加签插入节点——不仅是正向固定尾同意，也包括
 	// 不同意/回退后恢复链重走时对锚点的再次同意。必须在每一次锚点同意之后补一次插入节点同意，
 	// 否则恢复重走会卡在加签节点：下一条恢复步骤指向别的节点，读到「当前待办已经处理」而停住。
+	//
+	// 另一侧同样要补：回退（rollBackThePreviousLevel）把实例退回到锚点之后，实例实际停在
+	// **加签插入节点**上，而不是锚点本身。此时恢复链里指向锚点的恢复同意会先撞上"待办已越过
+	// 锚点"（实例待办在加签节点），在写前阻塞并停止整条路径（2026-09-21 运行 75 路径 1 第 28 步实测）。
+	// 因此在「回退之后、指向锚点的恢复同意之前」必须先补一次插入节点同意，把实例从加签节点推回。
+	// 判据只看结构关系（本步是回退、其后存在指向锚点的同意），不依赖具体节点名或路径编号。
 	steps := session.runCtx.Steps
 	newSteps := make([]model.CompiledActionStep, 0, len(steps)+len(insertedKeys)*2)
 	injectedCount := 0
 	for i := range steps {
+		// 回退之后紧跟的锚点同意：先补插入节点同意，保证恢复链从加签节点开始推进。
+		rollbackBeforeAnchorApprove := steps[i].Action == model.ActionApprove && steps[i].NodeKey == anchorKey &&
+			rollbackPrecedes(steps, i, anchorKey)
+		if rollbackBeforeAnchorApprove {
+			approvals := insertedApprovals()
+			newSteps = append(newSteps, approvals...)
+			injectedCount += len(approvals)
+		}
 		newSteps = append(newSteps, steps[i])
 		isAnchorApprove := steps[i].Action == model.ActionApprove && steps[i].NodeKey == anchorKey
 		nextIsAnchorApprove := i+1 < len(steps) && steps[i+1].Action == model.ActionApprove && steps[i+1].NodeKey == anchorKey
 		nextIsInserted := i+1 < len(steps) && insertedSet[steps[i+1].NodeKey]
-		if isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted {
+		if isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted && !rollbackBeforeAnchorApprove {
 			approvals := insertedApprovals()
 			newSteps = append(newSteps, approvals...)
 			injectedCount += len(approvals)
@@ -284,6 +298,40 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 	}
 	session.runCtx.Steps = newSteps
 	return injectedCount
+}
+
+// rollbackPrecedes 判断「指向锚点节点的这一步同意」是否由回退动作引出。
+//
+// 为什么需要它（2026-09-21 运行 75 路径 1 第 28 步实测）：回退会把实例退到锚点的后继——
+// 当锚点之后已经插入过加签节点时，实例实际停在加签节点上。恢复链里那条指向锚点的恢复同意
+// 于是先撞上"实例待办已越过锚点"，被判无可用处理人而在写前阻塞，路径停在回退之后。
+// 唯一安全的做法是在这条同意之前先补插入节点同意，把实例沿真实路径推回锚点。
+//
+// 识别口径：在 i 之前最近的一个「人工步骤」是回退动作，且中间没有别的锚点同意。
+// 只看结构与动作语义，不匹配任何中文节点名、路径编号或固定步骤序号。
+// 输入边界：steps 为当前运行步骤表；i 必须落在表内，越界返回 false。
+func rollbackPrecedes(steps []model.CompiledActionStep, i int, anchorKey string) bool {
+	if i <= 0 || i >= len(steps) {
+		return false
+	}
+	for j := i - 1; j >= 0; j-- {
+		// 跳过只读的系统导航：它不改变实例位置，也不改变"谁把实例退回来"这个事实。
+		if steps[j].Source == model.ActionStepSourceNavigation {
+			continue
+		}
+		// 遇到另一次锚点同意就不再判定：那说明本步同意是正向流转的一部分，不是回退引出。
+		if steps[j].Action == model.ActionApprove && steps[j].NodeKey == anchorKey {
+			return false
+		}
+		return steps[j].Action == model.ActionRollback
+	}
+	return false
+}
+
+// RollbackPrecedesForTest 暴露「本步锚点同意是否由回退引出」的判定，供 test 目录锁定
+// 2026-09-21 运行 75 路径 1 缺陷：回退后实例停在加签插入节点，恢复链必须先补插入节点同意。
+func RollbackPrecedesForTest(steps []model.CompiledActionStep, i int, anchorKey string) bool {
+	return rollbackPrecedes(steps, i, anchorKey)
 }
 
 // logFact 把控制事实同步写一行 control.log（日志失败不影响事实落库）。
