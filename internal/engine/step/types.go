@@ -169,6 +169,10 @@ type RunContext struct {
 	// ActionPersonIDs 是启动时按当前目标目录解析的动作人员 ID；只允许执行器内部使用，
 	// 不向浏览器或持久化场景透传目标业务标识。
 	ActionPersonIDs map[string][]string
+	// ActionPersonNames 是启动时与 ActionPersonIDs 用同一份目标目录解析出的 ID→中文姓名映射。
+	// 加签插入节点必须把姓名写进目标人员明细，否则目标只落 ID：节点名称退化成通用「审核人」、
+	// 运行画布上没有审批人可显示。姓名只能来自目录核实结果，不能由执行器自行编造。
+	ActionPersonNames map[string]string
 	// NextNodeAuditors 是启动时为 run_node_choose 下一节点解析的真实处理人。
 	// 仅在内存执行上下文中保存，提交、重新提交和同意都使用同一份结果构造目标 nextAuditorList。
 	NextNodeAuditors map[string][]target.NextAuditor

@@ -16,7 +16,7 @@ import (
 // 且保留代理文档未知字段；新节点形状对齐目标手动加签设计器（assign 人员明细、加签标记、字段权限复制）。
 func TestInsertAddSignNodeSplicesApprovalNode(t *testing.T) {
 	original := json.RawMessage(`{"id":"proxy-1","flowNodeTemplate":{"id":"node-1","flowNodeFieldPowerTemplateList":[{"formFieldTemplateEnglishName":"vacateType"}],"flowNodeAuditConfig":{"userVoList":[{"id":"user-2","name":"用户二"}],"flowNodeDetailConfigList":[{"bizId":"user-1","id":"user-1","name":"已有人员","auditDetailType":"personnel"}]},"childFlowNodeTemplate":{"id":"node-2","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]}}},"opaque":{"keep":true}}`)
-	updated, err := target.InsertAddSignNode(original, "node-1", []string{"user-2", "user-2"})
+	updated, err := target.InsertAddSignNode(original, "node-1", []string{"user-2", "user-2"}, nil)
 	if err != nil {
 		t.Fatalf("插入加签节点失败：%v", err)
 	}
@@ -75,10 +75,66 @@ func TestInsertAddSignNodeRejectsAmbiguousAnchor(t *testing.T) {
 		"ambiguous": `{"flowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]},"childFlowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]}}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := target.InsertAddSignNode(json.RawMessage(tree), "node-1", []string{"user-1"}); err == nil {
+			if _, err := target.InsertAddSignNode(json.RawMessage(tree), "node-1", []string{"user-1"}, nil); err == nil {
 				t.Fatal("锚点结构不明确时应拒绝生成加签树")
 			}
 		})
+	}
+}
+
+// TestInsertAddSignNodeKeepsPersonNameFromDirectory 锁定加签节点必须写上中文姓名这一条：
+// 锚点节点自带的候选目录（userVoList）与加签用的公司人员目录是两套数据，加签的人通常不在锚点
+// 候选里。只看锚点会把姓名全部丢掉，插入节点只落 ID、名称退化成通用「审核人」，
+// 运行画布上也就没有审批人可显示。姓名必须由调用方按目标公司人员目录核实后传入。
+func TestInsertAddSignNodeKeepsPersonNameFromDirectory(t *testing.T) {
+	// 锚点候选目录里没有 user-3，模拟「加签的人不在锚点处理人范围」这一常见现场。
+	original := json.RawMessage(`{"id":"proxy-1","flowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"userVoList":[{"id":"user-9","name":"无关人员"}],"flowNodeDetailConfigList":[]},"childFlowNodeTemplate":{"id":"node-2"}}}`)
+	updated, err := target.InsertAddSignNode(original, "node-1", []string{"user-3"}, map[string]string{"user-3": "张三"})
+	if err != nil {
+		t.Fatalf("插入加签节点失败：%v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(updated, &document); err != nil {
+		t.Fatalf("更新后的代理树不是有效 JSON：%v", err)
+	}
+	inserted := document["flowNodeTemplate"].(map[string]any)["childFlowNodeTemplate"].(map[string]any)
+	if inserted["nodeName"] != "张三" {
+		t.Fatalf("插入节点应使用目录核实的中文姓名命名，实际 %v：%s", inserted["nodeName"], updated)
+	}
+	config := inserted["flowNodeAuditConfig"].(map[string]any)
+	details := config["flowNodeDetailConfigList"].([]any)
+	if len(details) != 1 {
+		t.Fatalf("插入节点人员明细应只有一条，实际 %d 条：%s", len(details), updated)
+	}
+	detail := details[0].(map[string]any)
+	if detail["name"] != "张三" {
+		t.Fatalf("人员明细必须带上中文姓名（目标靠它渲染审批人），实际 %v：%s", detail["name"], updated)
+	}
+	if detail["bizId"] != "user-3" {
+		t.Fatalf("人员明细 ID 应为加签目标人员，实际 %v", detail["bizId"])
+	}
+}
+
+// TestInsertAddSignNodeFallsBackWhenNameMissing 锁定姓名取不到时的兜底：
+// 调用方给不出姓名时保持目标协议最小字段（只落 ID），不编造姓名，也不因此拒绝发送。
+func TestInsertAddSignNodeFallsBackWhenNameMissing(t *testing.T) {
+	original := json.RawMessage(`{"id":"proxy-1","flowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]},"childFlowNodeTemplate":{"id":"node-2"}}}`)
+	updated, err := target.InsertAddSignNode(original, "node-1", []string{"user-3"}, map[string]string{})
+	if err != nil {
+		t.Fatalf("姓名缺失不应阻断加签：%v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(updated, &document); err != nil {
+		t.Fatalf("更新后的代理树不是有效 JSON：%v", err)
+	}
+	inserted := document["flowNodeTemplate"].(map[string]any)["childFlowNodeTemplate"].(map[string]any)
+	details := inserted["flowNodeAuditConfig"].(map[string]any)["flowNodeDetailConfigList"].([]any)
+	detail := details[0].(map[string]any)
+	if _, hasName := detail["name"]; hasName {
+		t.Fatalf("姓名未知时不得编造 name 字段：%v", detail)
+	}
+	if inserted["nodeName"] != "审核人" {
+		t.Fatalf("姓名未知时节点名应退化为通用名，实际 %v", inserted["nodeName"])
 	}
 }
 
@@ -86,7 +142,7 @@ func TestInsertAddSignNodeRejectsAmbiguousAnchor(t *testing.T) {
 // 以 personnel 明细包含全部加签人员时确认成功，其他类型命中不算。
 func TestHasAddSignNodeReadsInsertedNode(t *testing.T) {
 	original := json.RawMessage(`{"id":"proxy-1","flowNodeTemplate":{"id":"node-1","flowNodeAuditConfig":{"flowNodeDetailConfigList":[{"bizId":"user-1","auditDetailType":"personnel"},{"bizId":"user-2","auditDetailType":"initiator"}]},"childFlowNodeTemplate":{"id":"node-2","flowNodeAuditConfig":{"flowNodeDetailConfigList":[]}}}}`)
-	updated, err := target.InsertAddSignNode(original, "node-1", []string{"user-2"})
+	updated, err := target.InsertAddSignNode(original, "node-1", []string{"user-2"}, nil)
 	if err != nil {
 		t.Fatalf("准备加签代理树失败：%v", err)
 	}

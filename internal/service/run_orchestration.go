@@ -528,6 +528,9 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		}
 	}
 	actionPersonIDs := map[string][]string{}
+	// 与 ID 用同一份目标目录同时解析姓名：加签插入节点要把中文姓名写进目标人员明细，
+	// 否则目标只落 ID、节点名称退化成通用「审核人」，运行画布上没有审批人可显示。
+	actionPersonNames := map[string]string{}
 	if s.pathNodes != nil {
 		for _, compiled := range steps {
 			if compiled.Action != model.ActionAddSign && compiled.Action != model.ActionTransfer && compiled.Action != model.ActionForward {
@@ -537,11 +540,14 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 			if compiled.Action == model.ActionForward {
 				nodeKey = analyzer.PathConfigInstanceActionKey()
 			}
-			resolved, resolveErr := s.pathNodes.ResolveActionPersonIDs(ctx, planID, pathID, nodeKey, compiled.Action)
+			resolved, resolvedNames, resolveErr := s.pathNodes.ResolveActionPersonIDs(ctx, planID, pathID, nodeKey, compiled.Action)
 			if resolveErr != nil {
 				return step.RunContext{}, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "动作人员策略无法按当前目标结构解析：" + resolveErr.Error()}
 			}
 			actionPersonIDs[step.ActionPersonIndex(compiled.NodeKey, compiled.Action)] = resolved
+			for id, name := range resolvedNames {
+				actionPersonNames[id] = name
+			}
 		}
 	}
 	nextNodeAuditors := map[string][]target.NextAuditor{}
@@ -606,6 +612,7 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		EffectiveFormData:        config.EffectiveFormData,
 		NodeEditableFields:       nodeEditableFields,
 		ActionPersonIDs:          actionPersonIDs,
+		ActionPersonNames:        actionPersonNames,
 		NextNodeAuditors:         nextNodeAuditors,
 		ExcludedActorIDs:         s.pathNodes.ExcludedActorIDs(ctx),
 	}, nil

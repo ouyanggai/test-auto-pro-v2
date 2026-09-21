@@ -16,7 +16,12 @@ import (
 // 人员明细不会产生新节点，「查看流程」因此看不到加签节点。输入必须是目标 /web/flowProxy/findById
 // 返回的完整 FlowProxyVo；锚点节点和人员均要求唯一、非空，任何结构不明确的情况都在发出写请求前失败，
 // 避免用简化树覆盖目标代理配置。
-func InsertAddSignNode(flowProxyTree json.RawMessage, nodeProxyID string, userIDs []string) (json.RawMessage, error) {
+//
+// personNames 是加签人员的 ID→中文姓名映射，由调用方用目标公司人员目录核实后传入。
+// 它必须独立于锚点节点自带的候选目录（userVoList/defaultUserVoList）：加签常用的「公司人员目录」
+// 与锚点节点的处理人范围是两套数据，锚点候选里通常没有本次加签的人，只看锚点会把姓名全部丢掉，
+// 结果是插入节点只落 ID、名称退化成通用「审核人」，运行画布上也就没有审批人可显示。
+func InsertAddSignNode(flowProxyTree json.RawMessage, nodeProxyID string, userIDs []string, personNames map[string]string) (json.RawMessage, error) {
 	nodeProxyID = strings.TrimSpace(nodeProxyID)
 	if nodeProxyID == "" {
 		return nil, errors.New("加签锚点节点代理标识为空，拒绝发送")
@@ -40,7 +45,7 @@ func InsertAddSignNode(flowProxyTree json.RawMessage, nodeProxyID string, userID
 			if strings.TrimSpace(stringValue(object["id"])) == nodeProxyID {
 				found++
 				if insertErr == nil {
-					insertErr = insertNodeAfter(object, ids)
+					insertErr = insertNodeAfter(object, ids, personNames)
 				}
 			}
 			for _, child := range object {
@@ -73,10 +78,16 @@ func InsertAddSignNode(flowProxyTree json.RawMessage, nodeProxyID string, userID
 
 // insertNodeAfter 在锚点节点与其现有后继之间插入加签审批节点。
 // 新节点不携带 ID，由目标后端在所有权复制时生成；后继子树整体成为新节点的后继。
-func insertNodeAfter(anchor map[string]any, userIDs []string) error {
-	// 人员名称候选目录挂在锚点的审批配置上（userVoList/defaultUserVoList）。
+// 人员姓名优先取调用方已核实的公司人员目录，锚点节点自带的候选目录只作为兜底补充。
+func insertNodeAfter(anchor map[string]any, userIDs []string, personNames map[string]string) error {
 	auditConfig, _ := anchor["flowNodeAuditConfig"].(map[string]any)
 	names := candidateNames(auditConfig)
+	for id, name := range personNames {
+		// 调用方目录是权威来源：同名冲突时以它为准，锚点候选只补它没有的人。
+		if strings.TrimSpace(id) != "" && strings.TrimSpace(name) != "" {
+			names[id] = strings.TrimSpace(name)
+		}
+	}
 	details := make([]any, 0, len(userIDs))
 	displayNames := make([]string, 0, len(userIDs))
 	for _, userID := range userIDs {

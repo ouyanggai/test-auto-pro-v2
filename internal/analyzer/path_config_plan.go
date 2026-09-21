@@ -499,11 +499,17 @@ func addSignNodePersonConfig(nodeID string, node *target.FlowNodeTemplate) (*mod
 }
 
 // actionCandidatePersonConfig 将目标人员候选转换为动作私有的不透明策略模型。
+// candidateNames 以候选人 ID 为键一并留给运行期：加签插入节点必须把中文姓名写进目标人员明细，
+// 只保存令牌会让运行期拿不到姓名，目标最终只落 ID、节点名称退化成通用「审核人」。
 func actionCandidatePersonConfig(nodeID, actionKind, title, detail string, candidates, defaults []target.FlowAuditCandidate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
 	key, options, candidateTokens, rawToToken := PathConfigPersonToken(nodeID+":"+actionKind), make([]model.PathConfigPersonOption, 0, len(candidates)), map[string]string{}, map[string]string{}
+	candidateNames := make(map[string]string, len(candidates))
 	for _, candidate := range candidates {
 		token := PathConfigPersonOptionToken(nodeID+":"+actionKind, candidate.ID)
 		candidateTokens[token], rawToToken[candidate.ID] = candidate.ID, token
+		if name := strings.TrimSpace(candidate.Name); name != "" {
+			candidateNames[candidate.ID] = name
+		}
 		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token})
 	}
 	if len(options) == 0 {
@@ -522,7 +528,7 @@ func actionCandidatePersonConfig(nodeID, actionKind, title, detail string, candi
 	if len(options) > 1 {
 		strategies, allowed["all"] = append(strategies, model.PathConfigPersonStrategyOption{Value: "all", Label: "全部候选"}), true
 	}
-	personTarget := &PathConfigPersonTarget{Key: key, Name: title, CandidateTokens: candidateTokens, CandidateOrder: candidateOrder(candidates), DefaultIDs: defaultIDs, AllowedStrategies: allowed, Required: true, MinCount: 1, MaxCount: len(options)}
+	personTarget := &PathConfigPersonTarget{Key: key, Name: title, CandidateTokens: candidateTokens, CandidateNames: candidateNames, CandidateOrder: candidateOrder(candidates), DefaultIDs: defaultIDs, AllowedStrategies: allowed, Required: true, MinCount: 1, MaxCount: len(options)}
 	seed := stablePathConfigSeed(nodeID + ":action")
 	randomIDs := deterministicPathConfigPeople(candidateOrder(candidates), seed, 1)
 	randomSelected := make([]string, 0, len(randomIDs))

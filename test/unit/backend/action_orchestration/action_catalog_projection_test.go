@@ -194,12 +194,17 @@ func TestResolveActionPersonIDsMapsOpaqueSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("保存移交人员策略失败：%v", err)
 	}
-	ids, err := config.ResolveActionPersonIDs(context.Background(), plan.ID, path.ID, nodeKey, model.ActionTransfer)
+	ids, names, err := config.ResolveActionPersonIDs(context.Background(), plan.ID, path.ID, nodeKey, model.ActionTransfer)
 	if err != nil {
 		t.Fatalf("解析移交人员策略失败：%v", err)
 	}
 	if len(ids) != 1 || ids[0] != "user-a" {
 		t.Fatalf("应解析为真实目标用户 ID，实际 %v", ids)
+	}
+	// 姓名与 ID 必须来自同一份目录核实结果：加签插入节点要靠它把中文姓名写进目标人员明细，
+	// 姓名缺失会让目标只落 ID、节点名称退化成通用「审核人」。
+	if names["user-a"] == "" {
+		t.Fatalf("应按同一目录解析出人员姓名，实际 %v", names)
 	}
 }
 

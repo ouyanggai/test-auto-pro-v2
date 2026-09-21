@@ -2264,7 +2264,9 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 	request.NodeProxyID = strings.TrimSpace(request.NodeProxyID)
 	// 加签语义对齐目标平台手动加签：在当前节点之后插入加签审批节点（整棵树随 updateFlowProxy
 	// 发出），而不是把人员并入既有节点——后者不会产生新节点，目标「查看流程」看不到加签节点。
-	request.FlowProxyTree, treeErr = target.InsertAddSignNode(read.tree, request.NodeProxyID, request.UserIDs)
+	// 姓名必须随写请求一起落进目标人员明细，否则目标只保存 ID：节点名称退化成通用「审核人」，
+	// 运行画布上没有审批人可显示。姓名来自启动时用目标公司人员目录核实过的 ActionPersonNames。
+	request.FlowProxyTree, treeErr = target.InsertAddSignNode(read.tree, request.NodeProxyID, request.UserIDs, runCtx.ActionPersonNames)
 	if treeErr != nil {
 		return session, treeErr
 	}

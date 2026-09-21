@@ -333,45 +333,59 @@ func decodeHistoryPersonStrategies(raw []byte) map[string]model.PathConfigPerson
 
 // ResolveActionPersonIDs 按运行启动时的真实目标目录把动作人员策略解析为内部用户 ID。
 // 浏览器只保存不透明候选键；目标结构或候选变化时必须重新校验并阻止运行，不能猜测替代。
-func (s *PathConfigService) ResolveActionPersonIDs(ctx context.Context, planID, pathID uint64, nodeKey string, action model.ActionKey) ([]string, error) {
+// 同时返回 ID→中文姓名映射：加签插入节点要把姓名写进目标人员明细，姓名只能来自这份目录核实，
+// 执行器不得自行编造，也不依赖锚点节点自带的处理人候选（那是另一套数据，通常不含本次加签的人）。
+func (s *PathConfigService) ResolveActionPersonIDs(ctx context.Context, planID, pathID uint64, nodeKey string, action model.ActionKey) ([]string, map[string]string, error) {
 	if planID == 0 || pathID == 0 || strings.TrimSpace(nodeKey) == "" {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "人员策略解析参数不正确"}
+		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalidArgument, Message: "人员策略解析参数不正确"}
 	}
 	path, snapshot, analysis, current, found, _, err := s.loadWorkspace(ctx, planID, pathID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	validation, err := s.pathActionGates(snapshot, path, analysis, found)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	node, ok := validation.NodeTokens[strings.TrimSpace(nodeKey)]
 	if !ok {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作节点不属于当前真实路径"}
+		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "动作节点不属于当前真实路径"}
 	}
 	personTarget := node.ActionPersons[string(action)]
 	if personTarget == nil {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作没有可用的目标人员候选"}
+		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作没有可用的目标人员候选"}
 	}
 	strategies := decodeHistoryPersonStrategies(current.PersonStrategies)
 	strategy, ok := strategies[personTarget.Key]
 	if !ok {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作缺少已保存的人员策略"}
+		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作缺少已保存的人员策略"}
 	}
 	// 运行发起前用排除名单（手动名单 + 目标停用账号）重算：random 从剔除后的候选池挑，
 	// manual 命中排除项则报错阻断——绝不把停用/不可登录的人当被加签人发出去，避免运行到其节点才登录失败。
 	excluded := s.excludedPersonIDs(ctx)
 	encoded, reason := analyzer.EncodePathConfigPersonStrategyWithExclusion(*personTarget, strategy, excluded)
 	if reason != "" {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作人员策略已失效：" + reason}
+		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作人员策略已失效：" + reason}
 	}
 	var planData struct {
 		Selected []string `json:"selected"`
 	}
 	if err := json.Unmarshal([]byte(encoded), &planData); err != nil || len(planData.Selected) == 0 {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作没有可执行的目标人员"}
+		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作没有可执行的目标人员"}
 	}
-	return append([]string(nil), planData.Selected...), nil
+	// 姓名直接取人员目标已核实的候选名映射（CandidateNames 以候选人 ID 为键）：
+	// 解析出的人必然来自该候选集合，取不到名字就留空，绝不猜测或编造姓名。
+	names := map[string]string{}
+	for _, id := range personTarget.CandidateTokens {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if name := strings.TrimSpace(personTarget.CandidateNames[id]); name != "" {
+			names[id] = name
+		}
+	}
+	return append([]string(nil), planData.Selected...), names, nil
 }
 
 // ResolveNodeAuditors 按当前目标目录解析 run_node_choose 节点的真实处理人。
