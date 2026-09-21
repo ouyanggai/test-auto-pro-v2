@@ -21,14 +21,16 @@ function inject (steps, anchorKey, insertedKeys) {
   for (let i = 0; i < steps.length; i += 1) {
     const rollbackBefore = steps[i].action === 'approve' && steps[i].nodeKey === anchorKey && rollbackPrecedes(steps, i, anchorKey)
     if (rollbackBefore) {
+      // 替换语义：用插入节点同意替换这条多余的锚点恢复同意。
       for (const key of insertedKeys) out.push({ source: 'system_default', action: 'approve', nodeKey: key, injected: true })
       injected += insertedKeys.length
+      continue
     }
     out.push(steps[i])
     const isAnchorApprove = steps[i].action === 'approve' && steps[i].nodeKey === anchorKey
     const nextIsAnchorApprove = i + 1 < steps.length && steps[i + 1].action === 'approve' && steps[i + 1].nodeKey === anchorKey
     const nextIsInserted = i + 1 < steps.length && insertedSet.has(steps[i + 1].nodeKey)
-    if (isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted && !rollbackBefore) {
+    if (isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted) {
       for (const key of insertedKeys) out.push({ source: 'system_default', action: 'approve', nodeKey: key, injected: true })
       injected += insertedKeys.length
     }

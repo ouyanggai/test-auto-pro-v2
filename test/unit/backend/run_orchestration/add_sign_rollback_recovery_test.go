@@ -31,7 +31,11 @@ func rollbackRecoverySteps() []model.CompiledActionStep {
 }
 
 // TestRollbackBeforeAnchorApproveIsRecognized 锁定：回退之后那条指向锚点的恢复同意必须被识别，
-// 从而在其之前补插入节点同意；这正是运行 75 卡住的那一步。
+// 从而用插入节点同意替换它；这正是运行 75/76/77 卡住的那一步。
+//
+// 为什么是"替换"而不是"在它之前追加"：回退把实例退到锚点之后的插入节点上，实例已经越过锚点。
+// 那条锚点恢复同意是多余的——运行 77 第 29 步实测它撞上"待办已越过锚点"而在写前阻塞。
+// 真正需要的是把实例从插入节点推回，补一次插入节点同意即等价于完成这次恢复。
 func TestRollbackBeforeAnchorApproveIsRecognized(t *testing.T) {
 	steps := rollbackRecoverySteps()
 	// 下标 4 是回退引出的锚点恢复同意。

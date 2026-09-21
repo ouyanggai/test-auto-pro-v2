@@ -262,28 +262,31 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 	// 不同意/回退后恢复链重走时对锚点的再次同意。必须在每一次锚点同意之后补一次插入节点同意，
 	// 否则恢复重走会卡在加签节点：下一条恢复步骤指向别的节点，读到「当前待办已经处理」而停住。
 	//
-	// 另一侧同样要补：回退（rollBackThePreviousLevel）把实例退回到锚点之后，实例实际停在
-	// **加签插入节点**上，而不是锚点本身。此时恢复链里指向锚点的恢复同意会先撞上"待办已越过
-	// 锚点"（实例待办在加签节点），在写前阻塞并停止整条路径（2026-09-21 运行 75 路径 1 第 28 步实测）。
-	// 因此在「回退之后、指向锚点的恢复同意之前」必须先补一次插入节点同意，把实例从加签节点推回。
+	// 回退引出的锚点同意是**替换**而不是追加（2026-09-21 运行 75/76/77 路径 1 实测）：
+	// 回退（rollBackThePreviousLevel）把实例退到锚点之后，实例实际停在加签插入节点上。
+	// 此时那条指向锚点的恢复同意是多余的——实例已经越过锚点，它必然会撞上"待办已越过锚点"
+	// 而在写前阻塞（运行 77 第 29 步实测：同意插入节点后实例已到「发起人部门分管领导」，
+	// 恢复同意却仍要求审批锚点「发起人综合部负责人」）。真正需要的是把实例从插入节点推回，
+	// 也就是补一次插入节点同意；补完即等价于完成了这次恢复，原锚点同意必须丢弃。
 	// 判据只看结构关系（本步是回退、其后存在指向锚点的同意），不依赖具体节点名或路径编号。
 	steps := session.runCtx.Steps
 	newSteps := make([]model.CompiledActionStep, 0, len(steps)+len(insertedKeys)*2)
 	injectedCount := 0
 	for i := range steps {
-		// 回退之后紧跟的锚点同意：先补插入节点同意，保证恢复链从加签节点开始推进。
+		// 回退之后紧跟的锚点同意：用插入节点同意替换它，避免对已越过的锚点重复审批。
 		rollbackBeforeAnchorApprove := steps[i].Action == model.ActionApprove && steps[i].NodeKey == anchorKey &&
 			rollbackPrecedes(steps, i, anchorKey)
 		if rollbackBeforeAnchorApprove {
 			approvals := insertedApprovals()
 			newSteps = append(newSteps, approvals...)
 			injectedCount += len(approvals)
+			continue
 		}
 		newSteps = append(newSteps, steps[i])
 		isAnchorApprove := steps[i].Action == model.ActionApprove && steps[i].NodeKey == anchorKey
 		nextIsAnchorApprove := i+1 < len(steps) && steps[i+1].Action == model.ActionApprove && steps[i+1].NodeKey == anchorKey
 		nextIsInserted := i+1 < len(steps) && insertedSet[steps[i+1].NodeKey]
-		if isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted && !rollbackBeforeAnchorApprove {
+		if isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted {
 			approvals := insertedApprovals()
 			newSteps = append(newSteps, approvals...)
 			injectedCount += len(approvals)
