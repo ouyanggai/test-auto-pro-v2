@@ -348,6 +348,18 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		facts.CompletedTaskBatchNo = strings.TrimSpace(snapshot.BatchNo)
 		facts.CompletedTaskAuditWay = strings.TrimSpace(snapshot.AuditWay)
 		if !facts.CompletedTaskFound {
+			// 已办行按节点过滤读空，不能就此断定"没有已办"：目标在本节点办结后会把这个任务
+			// 关联行的 flowNodeProxyID 改写成"实例流转到的下一节点"（2026-09-21 运行 93 路径 3
+			// 实测：同一条 jobTaskId 858ded51… 在 pending 时是发起人 a408500c…，办结后变成
+			// 省区经理 b9fc434e…），因此"按本步节点等值过滤"必然漏掉本人刚产生的已办。
+			// 审核记录按办结时点落库、节点字段不被改写，是本节点「确实已被办结」的权威正面分型，
+			// 用它补这一件事；补不到就保持读空，由门禁按既有纪律阻塞，绝不用未知顶替事实。
+			if !hasAuditReader {
+				return session, nil
+			}
+			if auditFactsErr := e.applyRetrieveAuditEvidence(ctx, session, instanceID, strings.TrimSpace(nodeID), facts); auditFactsErr != nil {
+				return session, auditFactsErr
+			}
 			return session, nil
 		}
 		// 目标任务列表没有"所有状态、所有人员"的有效读取方式：空 taskStatus 会被目标直接拒绝，
@@ -360,7 +372,11 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 				if treeErr != nil {
 					return session, treeErr
 				}
-				facts.RetrieveNodeIsStart = isStartNodeType(nodeTypeInTree(tree, snapshot.FlowNodeProxyID))
+				// 判断"已办是否落在发起节点"必须用本步配置节点的目标 ID，不能用已办行上的
+				// flowNodeProxyID：该字段在本节点办结后会被目标改写成流转到的下一节点
+				// （实测同一条已办从发起人 a408500c… 变成省区经理 b9fc434e…），
+				// 用它判类型会把"发起节点不支持取回"这条门禁判反。
+				facts.RetrieveNodeIsStart = isStartNodeType(nodeTypeInTree(tree, strings.TrimSpace(nodeID)))
 				for _, currentNodeID := range facts.CurrentNodes {
 					node := nodeInTree(tree, currentNodeID)
 					if node == nil || node.AuditConfig == nil {
@@ -378,53 +394,102 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			facts.CurrentTaskHandledByOther = true
 			return session, nil
 		}
-		records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
-		if auditErr != nil {
-			return session, auditErr
+		if auditFactsErr := e.applyRetrieveAuditEvidence(ctx, session, instanceID, strings.TrimSpace(nodeID), facts); auditFactsErr != nil {
+			return session, auditFactsErr
 		}
-		retrieveNodeID := strings.TrimSpace(nodeID)
-		for _, record := range records {
-			if record.FlowJobTaskID == facts.CompletedTaskLinkID && strings.EqualFold(record.AuditStatus, "retrieve") {
-				facts.RetrieveAlreadyUsed = true
-			}
-			// 取回节点最近一次「通过」的审批人：取回写请求必须以该处理人身份发出，目标据 executorId 校验归属。
-			// 审核记录按时间返回，同节点多条时后写覆盖=取最近一次通过的执行人（会签取其一即可，目标校验的是成员归属）。
-			if strings.TrimSpace(record.FlowNodeProxyID) == retrieveNodeID && strings.EqualFold(record.AuditStatus, "pass") && strings.TrimSpace(record.ExecutorID) != "" {
-				facts.CompletedTaskExecutorID = strings.TrimSpace(record.ExecutorID)
-				if name := strings.TrimSpace(record.ExecutorName); name != "" {
-					facts.CurrentTaskAssigneeName = name
-				}
-			}
-			// 当前取回人可能与计划账号不同；先按审核记录解析出的真实执行人判断归属，
-			// 再用会话 UserID 作为普通场景兜底，否则“该节点的人同意以后再取回”会被误判成他人已处理。
-			if !containsString(facts.DueNodes, record.FlowNodeProxyID) || record.ExecutorID == "" ||
-				record.ExecutorID == facts.CompletedTaskExecutorID || record.ExecutorID == session.UserID {
-				continue
-			}
-			if strings.EqualFold(record.AuditStatus, "pass") {
-				facts.CurrentTaskHandledByOther = true
+	}
+	return session, nil
+}
+
+// applyRetrieveAuditEvidence 用审核记录补齐取回所需的已办事实。
+//
+// 职责：读取本实例的审核记录，判定本步骤节点是否确实已被办结、办结人是谁，
+// 并把结论写进 facts，供取回门禁与取回写请求的身份切换使用。
+//
+// 为什么必须存在（2026-09-21 运行 90/93 路径 2、3 实测）：目标在本节点办结后，会把任务关联行的
+// flowNodeProxyID 改写成"实例流转到的下一节点"。同一条 jobTaskId 858ded51… 在 pending 时是
+// 发起人 a408500c…，03:10:19 办结后变成省区经理 b9fc434e…。于是"拿本步节点等值过滤已办行"
+// 永远读不到刚产生的已办（实测 target_rows=1/matched_rows=1 命中却因节点不符被丢弃），
+// 门禁把"确实已办结"误判成"没有已办"，把可取回的实例判成不可取，路径停在取回写前且重跑结果相同。
+// 审核记录按办结时点落库、节点字段不被改写，是本节点「确实已被办结」的权威正面分型。
+//
+// 输入边界：
+//   - 只读审核记录，不发任何写请求；
+//   - nodeID 为空时不做补齐（无从判断本节点），保持既有事实。
+//
+// 关键约束：
+//   - 只有确实读到本节点「通过」且带执行人用户 ID 的记录才把已办判为命中，
+//     绝不因"存在别的节点已办"就放行；
+//   - 已办批次号保持读空，不猜测批次；实例归属由审核记录的 executorId 决定；
+//   - 读取失败必须原样上抛，让本步按既有纪律阻塞，绝不吞错后当作"没有已办"。
+func (e *Executor) applyRetrieveAuditEvidence(ctx context.Context, session target.Session, instanceID, nodeID string, facts *InstanceFacts) error {
+	if facts == nil || strings.TrimSpace(nodeID) == "" {
+		return nil
+	}
+	auditReader, hasAuditReader := e.target.(auditRecordsReader)
+	if !hasAuditReader {
+		return nil
+	}
+	records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
+	if auditErr != nil {
+		return auditErr
+	}
+	retrieveNodeID := strings.TrimSpace(nodeID)
+	completedNodePassFound := false
+	completedNodePassLinkID := ""
+	for _, record := range records {
+		if record.FlowJobTaskID == facts.CompletedTaskLinkID && strings.EqualFold(record.AuditStatus, "retrieve") {
+			facts.RetrieveAlreadyUsed = true
+		}
+		// 取回节点最近一次「通过」的审批人：取回写请求必须以该处理人身份发出，目标据 executorId 校验归属。
+		// 审核记录按时间返回，同节点多条时后写覆盖=取最近一次通过的执行人（会签取其一即可，目标校验的是成员归属）。
+		if strings.TrimSpace(record.FlowNodeProxyID) == retrieveNodeID && strings.EqualFold(record.AuditStatus, "pass") && strings.TrimSpace(record.ExecutorID) != "" {
+			facts.CompletedTaskExecutorID = strings.TrimSpace(record.ExecutorID)
+			completedNodePassFound = true
+			completedNodePassLinkID = strings.TrimSpace(record.FlowJobTaskID)
+			if name := strings.TrimSpace(record.ExecutorName); name != "" {
+				facts.CurrentTaskAssigneeName = name
 			}
 		}
-		// 把取回执行人交给写路径的处理人切换逻辑：取回一律以该办结节点的真实审批人身份发出，
-		// 与其它任务级动作同一条切换会话链路，绝不用计划账号顶替（用户裁决 + 目标 executorId 归属校验）。
-		if facts.CompletedTaskExecutorID != "" {
-			facts.CurrentTaskAssigneeID = facts.CompletedTaskExecutorID
-			// 执行人中文名称优先由审核记录中的 executorName 提供；若未提供则从目录反查真实姓名，绝不把 32 位 ID 当作姓名。
-			if strings.TrimSpace(facts.CurrentTaskAssigneeName) == "" {
-				if resolver, ok := e.target.(userAccountResolver); ok {
-					if accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
-						func(callContext context.Context, active target.Session) (map[string]target.UserAccount, error) {
-							return resolver.UserAccountsByID(callContext, active, []string{facts.CompletedTaskExecutorID})
-						}); err == nil {
-						if info, ok := accounts[facts.CompletedTaskExecutorID]; ok {
-							facts.CurrentTaskAssigneeName = firstNonEmpty(strings.TrimSpace(info.Name), strings.TrimSpace(info.Account))
-						}
+		// 当前取回人可能与计划账号不同；先按审核记录解析出的真实执行人判断归属，
+		// 再用会话 UserID 作为普通场景兜底，否则“该节点的人同意以后再取回”会被误判成他人已处理。
+		if !containsString(facts.DueNodes, record.FlowNodeProxyID) || record.ExecutorID == "" ||
+			record.ExecutorID == facts.CompletedTaskExecutorID || record.ExecutorID == session.UserID {
+			continue
+		}
+		if strings.EqualFold(record.AuditStatus, "pass") {
+			facts.CurrentTaskHandledByOther = true
+		}
+	}
+	// 已办行按节点过滤读空、但审核记录证明本节点确实已被办结时，采用审核记录作为正面分型。
+	if !facts.CompletedTaskFound && completedNodePassFound {
+		facts.CompletedTaskFound = true
+		facts.CompletedTaskBasis = CompletedTaskBasisCheckedFound
+		facts.CompletedTaskNodeID = retrieveNodeID
+		if completedNodePassLinkID != "" {
+			// 保留任务关联行 ID，供"是否已被取回"的重复判定使用（与审核记录同源可比）。
+			facts.CompletedTaskLinkID = completedNodePassLinkID
+		}
+	}
+	// 把取回执行人交给写路径的处理人切换逻辑：取回一律以该办结节点的真实审批人身份发出，
+	// 与其它任务级动作同一条切换会话链路，绝不用计划账号顶替（用户裁决 + 目标 executorId 归属校验）。
+	if facts.CompletedTaskExecutorID != "" {
+		facts.CurrentTaskAssigneeID = facts.CompletedTaskExecutorID
+		// 执行人中文名称优先由审核记录中的 executorName 提供；若未提供则从目录反查真实姓名，绝不把 32 位 ID 当作姓名。
+		if strings.TrimSpace(facts.CurrentTaskAssigneeName) == "" {
+			if resolver, ok := e.target.(userAccountResolver); ok {
+				if accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
+					func(callContext context.Context, active target.Session) (map[string]target.UserAccount, error) {
+						return resolver.UserAccountsByID(callContext, active, []string{facts.CompletedTaskExecutorID})
+					}); err == nil {
+					if info, ok := accounts[facts.CompletedTaskExecutorID]; ok {
+						facts.CurrentTaskAssigneeName = firstNonEmpty(strings.TrimSpace(info.Name), strings.TrimSpace(info.Account))
 					}
 				}
 			}
 		}
 	}
-	return session, nil
+	return nil
 }
 
 // previousNodeFromAuditRecords 用审核记录里的 flowJobTaskId 定位前一任务的真实节点。

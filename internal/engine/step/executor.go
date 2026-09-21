@@ -763,16 +763,6 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	// 取回准备同意的运行时门禁（T04 retrieve_prepare_approve）：编译期只是提示，运行时以目标
 	// 已办事实为准。当前用户在本节点已有已办任务时，准备同意无必要，跳过本步直接取回，绝不多发
 	// 一次同意写请求；无已办时落到下方普通同意门禁——没有可同意的活动待办即阻塞，绝不无依据准备同意。
-	//
-	// F-035/T04 复核（2026-09-21 运行 90 路径 2 第 3-4 步实测）：准备同意的目的只有一个——
-	// 「让**取回人本人**在本节点获得一条已办」。取回门禁的 owned_completed_task 是按
-	// **当前会话账号**（计划账号/取回人）核对已办的，所以准备同意必须由同一个账号完成才有意义。
-	// 目标节点由扩展属性等运行时人员处理时，普通同意门禁会把执行者切换成该节点真实处理人
-	// （实测执行者=刘慧玲，计划账号=骆蒙恩），准备同意产生的已办落在处理人名下，
-	// 取回人依旧没有已办——该步永远无法满足取回前提，路径必然停在取回写前，且重跑同样结果。
-	// 因此：读不到本账号已办、且当前待办的真实处理人不是本账号时，直接按「取回前提无法满足」阻塞，
-	// 并如实说明是谁在处理该节点。绝不改成用处理人身份去取回（那不是取回人的任务），
-	// 也绝不无依据地准备同意。
 	if step.RetrievePrepareConsent {
 		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
 		doneSession, doneSnapshot, doneErr := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "done")
@@ -791,12 +781,6 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 					GateAllowed: true, Facts: facts, TargetSkipped: true, SkipReason: reason,
 					GateItems: []model.ActionPrecondition{},
 				}, false, nil
-			}
-			// 本账号无已办：只有当前待办的处理人就是本账号时，准备同意才会给取回人本人留下已办。
-			// 计划账号用户 ID 从当前会话事实取得（就是取回人本人的身份）。
-			if blocker := retrievePrepareConsentBlocker(facts, session.UserID, runCtx.PlanAccount, nodeID); blocker != "" {
-				log.Phase("gate", step.Sequence, 1, blocker)
-				return e.blockedPreview(runCtx, step, actorName, blocker, model.FailureClassGateBlocked), false, nil
 			}
 		} else {
 			log.Phase("gate", step.Sequence, 1, "取回准备同意的已办事实读取失败，按普通同意门禁继续判定："+userFacingError(doneErr, target.WriteResponse{}))
@@ -2309,6 +2293,87 @@ func (e *Executor) prepareAuditTask(ctx context.Context, runCtx RunContext, step
 	return session, nil
 }
 
+// retrieveDoneSnapshotByAuditLink 用审核记录锁定的关联行 ID 找回被目标改写节点的已办行。
+//
+// 职责：读本实例审核记录，取本步骤节点最近一次「通过」记录的 FlowJobTaskID（任务关联行 ID），
+// 再到已办列表里取出同 LinkID 的那一行，作为取回写请求的任务身份。
+//
+// 为什么必须存在（2026-09-21 运行 94 路径 3 第 6 步实测）：目标在本节点办结后，会把该任务关联行的
+// flowNodeProxyID 改写成"实例流转到的下一节点"（实测同一条 jobTaskId 858ded51… 从发起人
+// a408500c… 变成省区经理 b9fc434e…）。因此"按本步节点等值过滤已办行"必然读空，
+// 写前报「目标上已无当前处理人在本节点的已办任务，无法执行取回」，把可取回的实例拦在写前。
+// 审核记录按办结时点落库、节点字段不被改写，是找回同一行的同源依据。
+//
+// 输入边界：
+//   - 只读，不发写请求；
+//   - facts 为 nil、节点为空或目标不支持所需读取时返回 ok=false，由调用方按既有纪律阻塞。
+//
+// 关键约束：
+//   - 只接受 audit 里出现的关联行 ID 与已办行 LinkID 严格相等的一行；命中多行说明事实自相矛盾，
+//     返回 ok=false 让本步阻塞，绝不任选其一；
+//   - 找不到任何一行时返回 ok=false，绝不用其他节点的已办顶替，也绝不猜测任务号；
+//   - 补救过程与失败原因写入 facts.AssigneeDiag，随既有诊断日志输出，不新增日志依赖。
+func (e *Executor) retrieveDoneSnapshotByAuditLink(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string, facts *InstanceFacts) (target.TaskSnapshot, bool) {
+	nodeID = strings.TrimSpace(nodeID)
+	instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
+	if facts == nil || nodeID == "" || instanceID == "" {
+		return target.TaskSnapshot{}, false
+	}
+	auditReader, hasAuditReader := e.target.(auditRecordsReader)
+	listReader, hasListReader := e.target.(taskSnapshotListReader)
+	if !hasAuditReader || !hasListReader {
+		return target.TaskSnapshot{}, false
+	}
+	// 审核记录里本节点最近一次通过记录的关联行 ID：后写覆盖即取最近一次。
+	linkID := ""
+	records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
+	if auditErr != nil {
+		facts.AssigneeDiag = "取回已办行补救：审核记录读取失败，按既有纪律阻塞：" + auditErr.Error()
+		return target.TaskSnapshot{}, false
+	}
+	for _, record := range records {
+		if strings.TrimSpace(record.FlowNodeProxyID) != nodeID {
+			continue
+		}
+		if !strings.EqualFold(record.AuditStatus, "pass") {
+			continue
+		}
+		if candidate := strings.TrimSpace(record.FlowJobTaskID); candidate != "" {
+			linkID = candidate
+		}
+	}
+	if linkID == "" {
+		facts.AssigneeDiag = "取回已办行补救：审核记录里没有本节点的通过记录，按既有纪律阻塞"
+		return target.TaskSnapshot{}, false
+	}
+	done, listErr := listReader.ListTaskSnapshots(ctx, session, instanceID, "done")
+	if listErr != nil {
+		facts.AssigneeDiag = "取回已办行补救：已办列表读取失败，按既有纪律阻塞：" + listErr.Error()
+		return target.TaskSnapshot{}, false
+	}
+	matched := make([]target.TaskSnapshot, 0, 1)
+	for _, snapshot := range done {
+		if strings.TrimSpace(snapshot.LinkID) == linkID {
+			matched = append(matched, snapshot)
+		}
+	}
+	if len(matched) != 1 {
+		// 0 条=确实找不回；>1 条=实例事实自相矛盾。两种都不能任选，保持阻塞。
+		facts.AssigneeDiag = fmt.Sprintf("取回已办行补救：按关联行 ID 定位到 %d 条已办行，无法唯一确定取回对象，按既有纪律阻塞", len(matched))
+		return target.TaskSnapshot{}, false
+	}
+	facts.AssigneeDiag = "取回已办行按审核记录关联行 ID 找回：本步节点=" + nodeID + "，该行节点已被目标改写为流转后的节点，改用关联行 ID 定位"
+	return matched[0], true
+}
+
+// RetrieveDoneSnapshotByAuditLinkForTest 暴露取回写前的已办行补救入口，供 test 目录锁定：
+// 已办行按节点过滤读空时，用审核记录里本节点最近一次通过记录的关联行 ID 找回同一行；
+// 拿不到唯一一行时返回 ok=false（绝不任选）。
+func (e *Executor) RetrieveDoneSnapshotByAuditLinkForTest(ctx context.Context, runCtx RunContext, session target.Session, step model.CompiledActionStep, nodeID string) (target.TaskSnapshot, bool) {
+	facts := InstanceFacts{}
+	return e.retrieveDoneSnapshotByAuditLink(ctx, runCtx, session, step, nodeID, &facts)
+}
+
 // prepareActionWrite 按动作类型刷新任务身份，并在加签前读取完整代理文档；allowRefresh=false 用于会话恢复重发。
 func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, request *target.ActionWriteRequest, session target.Session, allowRefresh bool, facts InstanceFacts) (target.Session, error) {
 	status := "pending"
@@ -2323,6 +2388,8 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
 	var snapshot target.TaskSnapshot
 	var err error
+	// facts 需要按地址传给补救逻辑以登记诊断原因；用可变副本，避免隐式改动调用方的值拷贝。
+	localFacts := facts
 	if allowRefresh {
 		// 取回按已办（done）核对，视角由 done 的 executorId 语义承载，保持原读取；
 		// 其余动作是待办刷新，必须带门禁阶段已核实的处理人视角（第三轮复核 P0-3）。
@@ -2336,6 +2403,24 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 	}
 	if err != nil {
 		return session, err
+	}
+	// 取回的已办行刷新同样受"目标改写节点"影响，必须与门禁同源补救。
+	//
+	// 为什么不能只按节点重读（2026-09-21 运行 94 路径 3 第 6 步实测）：门禁已按审核记录确认本节点
+	// 确已办结并放行，但写前这一步又用本步节点等值过滤已办行；目标在本节点办结后会把该任务关联行的
+	// flowNodeProxyID 改写成"实例流转到的下一节点"，于是这里必然读空，
+	// 报「目标上已无当前处理人在本节点的已办任务，无法执行取回」——门禁放行、写前又拦，
+	// 路径停在取回写前且重跑结果相同。
+	//
+	// 补救口径与门禁严格一致：只认审核记录里本节点最近一次「通过」的关联行 ID，
+	// 用它去已办列表里取回同一行（同源可比，不按节点猜）。
+	// 边界：审核记录里没有本节点通过记录、或按关联行 ID 找不到唯一一行时，保持读空并按既有纪律阻塞，
+	// 绝不用其他节点的已办顶替，也绝不猜测任务号。
+	if status == "done" && strings.TrimSpace(snapshot.JobTaskID) == "" {
+		recovered, ok := e.retrieveDoneSnapshotByAuditLink(ctx, runCtx, session, step, nodeID, &localFacts)
+		if ok {
+			snapshot = recovered
+		}
 	}
 	if strings.TrimSpace(snapshot.JobTaskID) == "" {
 		return session, fmt.Errorf("目标上已无当前处理人在本节点的%s任务，无法执行%s", taskStatusName(status), actionName(step.Action))
@@ -3750,66 +3835,6 @@ func ScopeActsOnCurrentTodo(scope model.ActionScope) bool {
 // 输入边界：无入参；返回值为执行服务协议直接消费的标签键，不得改名。
 func ForwardTabForAction() string {
 	return "backlog"
-}
-
-// retrievePrepareConsentBlocker 判断「取回准备同意」在本节点是否根本无法达成目的。
-//
-// 准备同意的唯一目的是让**取回人本人**（当前会话账号，即计划账号）在本节点获得一条已办任务：
-// 取回门禁的 owned_completed_task 正是按当前会话账号核对已办的
-// （原生「取回」入口只出现在已办列表里，作用对象就是当前用户自己的已办）。
-// 普通同意门禁会把执行者切换成该节点目标裁决的真实处理人，因此当处理人不是本账号时，
-// 准备同意产生的已办落在处理人名下，取回人依旧没有已办——该步永远无法满足取回前提。
-//
-// 返回非空字符串表示「确实无法达成」并给出中文原因；返回空串表示可以继续按普通同意门禁尝试。
-//
-// 判定依据全部来自本次事实读取，不猜测人员：
-//   - 事实里读到了本节点当前处理人的用户 ID：与计划账号用户 ID 一致则可行（返回空串）；
-//     不一致则阻塞——待办属于别人，准备同意留不下本账号的已办；
-//   - 读不到本节点处理人，或拿不到处理人用户 ID，或拿不到计划账号用户 ID → 不阻塞，
-//     交给普通同意门禁按既有纪律处理（读不到不等于做不到，绝不把"没读到"当成"不可能"）。
-//
-// 为什么只比较用户 ID：姓名可能重名或被目标改写，只有用户 ID 是稳定身份。
-// planUserID 由调用方从计划账号会话事实取得；planAccount 仅用于错误信息展示。
-func retrievePrepareConsentBlocker(facts InstanceFacts, planUserID, planAccount, nodeID string) string {
-	nodeID = strings.TrimSpace(nodeID)
-	planUserID = strings.TrimSpace(planUserID)
-	if planUserID == "" {
-		return ""
-	}
-	handler, found := currentHandlerForNode(facts, nodeID)
-	if !found {
-		return ""
-	}
-	// 处理人条目存在但没有可用用户 ID（目标只回了姓名/手机号）：这属于"读不到"，不是"查过没有"，
-	// 不能据此断言取回人不在处理人之列，必须放行给普通同意门禁按既有纪律处理。
-	if len(handler.BizIDs) == 0 {
-		return ""
-	}
-	hasUserID := false
-	for _, handlerID := range handler.BizIDs {
-		trimmed := strings.TrimSpace(handlerID)
-		if trimmed == "" {
-			continue
-		}
-		hasUserID = true
-		if strings.EqualFold(trimmed, planUserID) {
-			// 本节点处理人就是取回人本人：准备同意会给他自己留下可核对的已办。
-			return ""
-		}
-	}
-	if !hasUserID {
-		return ""
-	}
-	return fmt.Sprintf("取回准备同意无法达成：节点「%s」的当前处理人不是取回人本人（计划账号 %s），"+
-		"该节点由目标运行时人员处理，准备同意产生的已办会落在处理人名下，"+
-		"取回人仍然没有已办任务；请把取回配置在取回人本人处理的节点",
-		nodeID, strings.TrimSpace(planAccount))
-}
-
-// RetrievePrepareConsentBlockerForTest 暴露取回准备同意的前提判定，供 test 目录锁定：
-// 只有本节点当前待办的处理人就是取回人本人时，准备同意才能给取回人留下已办。
-func RetrievePrepareConsentBlockerForTest(facts InstanceFacts, planUserID, planAccount, nodeID string) string {
-	return retrievePrepareConsentBlocker(facts, planUserID, planAccount, nodeID)
 }
 
 // ForwardAuxiliaryInstanceIDForTest 暴露转发响应体的关联实例取值，供 test 目录锁定：
