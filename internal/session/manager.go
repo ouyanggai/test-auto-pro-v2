@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -21,6 +22,15 @@ type cacheEntry struct {
 	version   uint64
 }
 
+// sessionConflict 记录目标平台拒绝新会话的短暂冲突窗口。
+// 目标同账号只允许单会话时，连续新 SID 失效说明外部会话仍在互踢；窗口内禁止再次登录，
+// 避免每个排队读请求都重复触发目标登录并把一次冲突放大成 401 风暴。
+type sessionConflict struct {
+	blockedUntil time.Time
+}
+
+const sessionConflictCooldown = 30 * time.Second
+
 type Manager struct {
 	client LoginClient
 	ttl    time.Duration
@@ -33,6 +43,7 @@ type Manager struct {
 	mu           sync.RWMutex
 	entries      map[string]cacheEntry
 	versions     map[string]uint64
+	conflicts    map[string]sessionConflict
 	lockMu       sync.Mutex
 	accountLocks map[string]*sync.Mutex
 	// useMu 与 useLocks 是账号「使用中」锁：同一账号同一时间只允许一个操作持有会话，
@@ -71,6 +82,7 @@ func NewManager(client LoginClient, ttl time.Duration, options ...Option) *Manag
 		retryAttempts: 1,
 		entries:       make(map[string]cacheEntry),
 		versions:      make(map[string]uint64),
+		conflicts:     make(map[string]sessionConflict),
 		accountLocks:  make(map[string]*sync.Mutex),
 	}
 	for _, option := range options {
@@ -87,6 +99,7 @@ func (m *Manager) Verify(ctx context.Context, account string) (target.AccountSum
 	if err != nil {
 		return target.AccountSummary{}, err
 	}
+	m.clearSessionConflict(account)
 	return session.Summary, nil
 }
 
@@ -102,6 +115,9 @@ func (m *Manager) Refresh(ctx context.Context, account string) (target.Session, 
 	lock := m.accountLock(normalizeAccount(account))
 	lock.Lock()
 	defer lock.Unlock()
+	if err := m.activeConflictError(account); err != nil {
+		return target.Session{}, err
+	}
 	m.invalidate(account, "")
 	return m.loginFresh(ctx, account)
 }
@@ -132,6 +148,7 @@ func (m *Manager) DoReadWithoutRelogin(ctx context.Context, account string, call
 	}
 	callErr := call(target.WithRetryAttempt(ctx, false, 1), active)
 	if callErr == nil {
+		m.clearSessionConflict(account)
 		return nil
 	}
 	if target.IsKind(callErr, target.ErrorSessionExpired) {
@@ -157,12 +174,14 @@ func (m *Manager) doReadWithSession(ctx context.Context, account string, active 
 		callContext := target.WithRetryAttempt(ctx, requestAttempt > 1, requestAttempt)
 		err := call(callContext, active)
 		if err == nil {
+			m.clearSessionConflict(account)
 			return nil
 		}
 		if target.IsKind(err, target.ErrorSessionExpired) {
 			if sessionRefreshed {
 				m.invalidate(account, active.SID)
-				return target.NewError(target.ErrorSessionExpired, errors.New("新会话仍然失效，可能存在浏览器或其他进程的外部会话竞争"))
+				m.markSessionConflict(account)
+				return target.NewError(target.ErrorSessionExpired, errors.New("新会话仍然失效，可能存在浏览器或其他进程的外部会话竞争；已暂停自动重登"))
 			}
 			sessionRefreshed = true
 			m.invalidate(account, active.SID)
@@ -194,11 +213,17 @@ func (m *Manager) getOrLogin(ctx context.Context, account string) (target.Sessio
 	if cached, ok := m.cached(key); ok {
 		return cached, nil
 	}
+	if err := m.activeConflictError(account); err != nil {
+		return target.Session{}, err
+	}
 	lock := m.accountLock(key)
 	lock.Lock()
 	defer lock.Unlock()
 	if cached, ok := m.cached(key); ok {
 		return cached, nil
+	}
+	if err := m.activeConflictError(account); err != nil {
+		return target.Session{}, err
 	}
 	// 登录期间可能有 Refresh 使旧请求失效；代次不一致时丢弃旧登录结果并重新登录，
 	// 避免迟到的旧 SID 覆盖刷新后的有效会话。
@@ -299,6 +324,41 @@ func (m *Manager) invalidate(account, sid string) {
 	m.versions[key]++
 	delete(m.entries, key)
 	m.mu.Unlock()
+}
+
+// markSessionConflict 开启账号级短暂熔断；它只由“新会话仍然立即失效”触发，
+// 普通网络错误和首次会话失效仍按既有有界重试处理。
+func (m *Manager) markSessionConflict(account string) {
+	key := normalizeAccount(account)
+	m.mu.Lock()
+	m.conflicts[key] = sessionConflict{blockedUntil: m.now().Add(sessionConflictCooldown)}
+	m.mu.Unlock()
+	log.Printf("[session] 账号 %s 检测到新会话连续失效，进入 %s 会话冲突熔断", strings.TrimSpace(account), sessionConflictCooldown)
+}
+
+// clearSessionConflict 在任一会话请求成功后解除熔断，允许账号恢复正常缓存与登录。
+func (m *Manager) clearSessionConflict(account string) {
+	key := normalizeAccount(account)
+	m.mu.Lock()
+	delete(m.conflicts, key)
+	m.mu.Unlock()
+}
+
+// activeConflictError 返回仍在冲突窗口内的稳定会话错误；窗口过期后由下一次调用负责恢复登录。
+func (m *Manager) activeConflictError(account string) error {
+	key := normalizeAccount(account)
+	now := m.now()
+	m.mu.Lock()
+	conflict, ok := m.conflicts[key]
+	if ok && !now.Before(conflict.blockedUntil) {
+		delete(m.conflicts, key)
+		ok = false
+	}
+	m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	return target.NewError(target.ErrorSessionExpired, fmt.Errorf("账号 %s 存在目标平台单会话冲突，已暂停自动重登至 %s", strings.TrimSpace(account), conflict.blockedUntil.Format(time.RFC3339)))
 }
 
 func (m *Manager) accountLock(key string) *sync.Mutex {

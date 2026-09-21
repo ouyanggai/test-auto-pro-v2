@@ -183,6 +183,38 @@ func TestSessionManagerRelogsAndReplaysOnlyOnce(t *testing.T) {
 	}
 }
 
+// TestSessionManagerStopsRepeatedReloginAfterExternalSessionConflict 验证新 SID 连续失效后，
+// 后续排队请求不会继续登录放大目标平台的互踢；冲突窗口过期后仍可恢复登录。
+func TestSessionManagerStopsRepeatedReloginAfterExternalSessionConflict(t *testing.T) {
+	client := newFakeLoginClient()
+	now := time.Unix(1000, 0)
+	manager := session.NewManager(client, time.Hour, session.WithClock(func() time.Time { return now }))
+	read := func() error {
+		return manager.DoRead(context.Background(), "account-a", func(context.Context, target.Session) error {
+			return target.NewError(target.ErrorSessionExpired, nil)
+		})
+	}
+	if err := read(); !target.IsKind(err, target.ErrorSessionExpired) {
+		t.Fatalf("首次冲突未返回会话失效：%v", err)
+	}
+	if got := client.loginCount("account-a"); got != 2 {
+		t.Fatalf("首次冲突应只尝试初始登录和一次重登，实际 %d 次", got)
+	}
+	if err := read(); !target.IsKind(err, target.ErrorSessionExpired) {
+		t.Fatalf("熔断窗口内未返回稳定会话失效：%v", err)
+	}
+	if got := client.loginCount("account-a"); got != 2 {
+		t.Fatalf("熔断窗口内不应再次登录，实际 %d 次", got)
+	}
+	now = now.Add(31 * time.Second)
+	if err := read(); !target.IsKind(err, target.ErrorSessionExpired) {
+		t.Fatalf("冲突窗口过期后仍应按一次重登失败返回会话失效：%v", err)
+	}
+	if got := client.loginCount("account-a"); got != 4 {
+		t.Fatalf("冲突窗口过期后应恢复一次登录周期，实际 %d 次", got)
+	}
+}
+
 func TestSessionManagerReusesValidSession(t *testing.T) {
 	client := newFakeLoginClient()
 	manager := session.NewManager(client, time.Hour)

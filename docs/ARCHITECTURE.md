@@ -229,7 +229,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 - `cmd/sync-v1-target-config` 只在维护时读取显式指定的 V1 YAML，将目标网关、平台/租户代码和 AES key 与既有本机登录配置合并，使用 `0600` 临时文件原子替换 `.env.local`，并在清空当前进程 `TARGET_*` 后做完整性检查。命令不含 V1 绝对路径或登录值，不回显配置值；正常启动不依赖 V1 仓库。
 - `TARGET_PLATFORM_CODE` 默认 `200001`、`TARGET_TEMPLATE_PLATFORM_CODES` 默认 `200001,999999`、`TARGET_SESSION_TTL` 默认 `8h`、`TARGET_HTTP_TIMEOUT` 默认 `120s`，均来自用户批准沿用的 V1 非敏感约定；`TARGET_CUSTOMER_CODE` 可为空。敏感配置没有代码默认值。
 - `internal/adapter/target` 是唯一拼装目标 URL、加密登录密码、传递 SID 和解析目标响应的区域。SID 只在当前已验证会话内存中按目标协议进入 body、query、header；不写入配置数据库、历史快照或浏览器长期存储。内网测试环境的运行与调试日志原样记录请求/响应与传输事实；日志文件不进 Git，也不经公开 API 返回。
-- `internal/session` 使用单进程内存缓存，按去除首尾空白的账号键控，默认绝对 TTL 为 8 小时；该 TTL 只是本地缓存上限，目标运行时 TTL 以目标部署配置为准。每个账号独立锁定登录和使用，不同账号不互相阻塞；会话失效后只允许当前账号重登和重放一次，第二次失效停步。
+- `internal/session` 使用单进程内存缓存，按去除首尾空白的账号键控，默认绝对 TTL 为 8 小时；该 TTL 只是本地缓存上限，目标运行时 TTL 以目标部署配置为准。每个账号独立锁定登录和使用，不同账号不互相阻塞；会话失效后只允许当前账号重登和重放一次，第二次失效停步并进入 30 秒账号级会话冲突熔断，熔断期间禁止再次登录，避免目标平台单会话互踢被放大成 401 风暴。该锁与缓存均为当前 Go 进程内机制，不能约束浏览器或其他进程的同账号会话。
 - 缓存条目只保存 SID、必要账号摘要和目标代码，不保存密码、AES key 或 code；进程退出自然清空。F-002 不引入 Redis，多实例共享需求出现后再单独评估。
 - 对浏览器提供三个独立边界：`POST /api/target/accounts/verify`、`GET /api/target/flow-templates`、`GET /api/target/flow-instances`。公开响应只含验证摘要、候选 DTO、分页或稳定错误，不含 SID、凭证、customerCode、platformCode 或目标敏感原文。
 - 模板、已发、待发分别映射 `/web/flowTemplateApi/list`、`/web/flowInstanceApi/list`、`/web/flowJobTaskLink/list`；三类 DTO 独立，不用同一个模糊目标类型覆盖字段差异。
