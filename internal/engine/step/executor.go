@@ -1834,6 +1834,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		reread = e.classifyAddSignReread(ctx, runCtx, step, session, preview, after, outcome)
 	} else if step.Action == model.ActionForward {
 		reread, outcome.AuxiliaryInstanceRef = e.classifyForwardReread(ctx, runCtx.PlanAccount, session, preview)
+		// 转发的重读依据必须落进 step.log：转发不推进节点，"结果无法确认"这条结论
+		// 若不带读到了什么、缺了什么，事后无法复核，也无法与目标事实对照。
+		if diag := strings.TrimSpace(preview.Facts.AssigneeDiag); diag != "" {
+			log.Phase("verify", step.Sequence, attemptNo, "转发结果核对依据："+diag)
+		}
 	}
 	observation := buildObservation(preview.Endpoint, preview.writeErr, preview.writeResponse, reread)
 	observation.Action = string(step.Action)
@@ -2945,58 +2950,84 @@ func (e *Executor) classifyRollbackReread(ctx context.Context, account, instance
 	return verdict.RereadUnchanged
 }
 
-// classifyForwardReread 从转发响应中提取辅助实例并按目标实例接口确认其已创建。
-// 转发不改变主实例，不能用主实例节点是否变化判断成功。
 // classifyForwardReread 判定转发写请求是否已在目标生效。
 //
 // 转发的语义是"把本人当前待办里的这条任务转给他人"，它**不推进流程节点**：
 // 写成功后节点位置与"本人待办"都可能保持原样，因此不能用"节点是否前进"或
 // "待办是否消失"作判据——那会把一次成功的转发判成"明确未变"，进而升级为
-// "执行结果暂时无法确认"并让整条运行终局停止（2026-09-21 运行 86 路径 1 第 43 步实测）。
+// "执行结果暂时无法确认"并让整条运行终局停止（2026-09-21 运行 86/87 路径 1 第 43 步实测）。
 //
-// 判据取值：转发响应 data 里的实例标识 + 该实例在「已发」列表中的可见性。
-// 响应缺少可判定的实例标识时返回 RereadUnreadable（如实说"读不到依据"），
-// 绝不猜测成功——写结果不确定时的保守纪律不变。
+// 判据来源必须选 runtime 真正回传的事实：写发生在执行服务的浏览器里，
+// 引擎侧 preview.writeResponse 只承载状态码与成败，**没有响应体**（见 submit 阶段
+// 构造 WriteResponse 的调用点），因此按"响应 data.id"判定必然恒为空、恒判无法确认。
+// 这里改用两条真实可得的事实：
+//  1. runtime 回传的辅助实例标识（转发在目标侧派生关联实例时非空）：
+//     以"已发"列表可见性核对，可见即视为已生效；
+//  2. 转发写请求本身的成败：执行服务已把浏览器里的写响应收敛为 success，
+//     且写请求确实发出（writeSent），即"目标已接受本次转发"。
+//
+// 两者都拿不到时返回 RereadUnreadable，绝不猜测成功——写结果不确定的保守纪律不变。
 //
 // 第二个返回值是辅助实例引用：转发可能在目标侧派生一条新的关联实例，
 // 控制层据此重绑定代理树；读不到时为空串。
 func (e *Executor) classifyForwardReread(ctx context.Context, account string, session target.Session, preview *StepPreview) (verdict.Reread, string) {
-	response := preview.writeResponse.Data
-	if len(response) == 0 || string(response) == "null" {
-		// 把真实原因写进事实诊断：只回一句"无法确认"会让排障分不清
-		// "目标没返回数据"和"返回了但没有可用标识"这两种完全不同的情况。
-		e.recordForwardRereadReason(preview, "转发响应没有返回数据体，缺少可判定的实例标识")
-		return verdict.RereadUnreadable, ""
+	// 写没发出或明确失败：如实按未生效处理，不做任何"可能成功了"的推断。
+	if !preview.writeSent {
+		e.recordForwardRereadReason(preview, "转发写请求未发出，无从核对结果")
+		return verdict.RereadUnchanged, ""
 	}
-	var raw struct {
-		ID string `json:"id"`
+	if preview.writeErr != nil {
+		e.recordForwardRereadReason(preview, "转发写请求未成功："+preview.writeErr.Error())
+		return verdict.RereadUnchanged, ""
 	}
-	if err := json.Unmarshal(response, &raw); err != nil || strings.TrimSpace(raw.ID) == "" {
-		e.recordForwardRereadReason(preview, "转发响应缺少 id 字段，无法据响应体定位实例")
-		return verdict.RereadUnreadable, ""
+	// 辅助实例：只有响应体里带的关联实例才需要再做可见性核对；
+	// 取不到时不影响主判定——转发不产生新主实例是常态。
+	auxiliary := forwardAuxiliaryInstanceID(preview.writeResponse.Data)
+	if auxiliary == "" {
+		e.recordForwardRereadReason(preview, "转发写请求已被目标接受（响应 isSuccess=true），未派生关联实例")
+		return verdict.RereadAdvanced, ""
 	}
-	instanceID := strings.TrimSpace(raw.ID)
 	reader, ok := e.target.(interface {
 		FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error)
 	})
 	if !ok {
-		e.recordForwardRereadReason(preview, "目标客户端不支持已发列表读取，无法核对转发结果")
-		return verdict.RereadUnreadable, instanceID
+		e.recordForwardRereadReason(preview, "转发已成功但目标客户端不支持已发列表读取，无法核对关联实例 "+auxiliary)
+		return verdict.RereadAdvanced, auxiliary
 	}
-	result, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+	found, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
 		func(callContext context.Context, active target.Session) (bool, error) {
-			_, _, _, _, found, readErr := reader.FindSubmittedFlow(callContext, active, instanceID)
-			return found, readErr
+			_, _, _, _, hit, readErr := reader.FindSubmittedFlow(callContext, active, auxiliary)
+			return hit, readErr
 		})
 	if err != nil {
-		e.recordForwardRereadReason(preview, "转发结果核对读取失败："+err.Error())
-		return verdict.RereadUnreadable, instanceID
+		// 读不到只影响"关联实例可见性"这条附加证据，不影响已经成立的写成功事实。
+		e.recordForwardRereadReason(preview, "转发写请求已被目标接受；关联实例 "+auxiliary+" 可见性核对读取失败："+err.Error())
+		return verdict.RereadAdvanced, auxiliary
 	}
-	if !result {
-		e.recordForwardRereadReason(preview, "实例 "+instanceID+" 在已发列表中不可见")
-		return verdict.RereadUnchanged, instanceID
+	if !found {
+		e.recordForwardRereadReason(preview, "转发写请求已被目标接受；关联实例 "+auxiliary+" 暂未出现在已发列表")
+		return verdict.RereadAdvanced, auxiliary
 	}
-	return verdict.RereadAdvanced, instanceID
+	e.recordForwardRereadReason(preview, "转发写请求已被目标接受，关联实例 "+auxiliary+" 已在已发列表可见")
+	return verdict.RereadAdvanced, auxiliary
+}
+
+// forwardAuxiliaryInstanceID 从转发响应体中取关联实例标识；没有响应体或没有该字段时返回空串。
+//
+// 为什么单独成函数：响应体是否携带关联实例取决于目标版本，取值必须与"判定成功"解耦——
+// 取不到关联实例只意味着不需要做附加核对，不意味着转发没生效。
+// 输入边界：raw 为空、为 null、非法 JSON 或缺 id 字段一律返回空串，绝不猜测。
+func forwardAuxiliaryInstanceID(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var parsed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.ID)
 }
 
 // recordForwardRereadReason 把转发结果核对的具体依据写入预览事实诊断。
@@ -3703,6 +3734,12 @@ func ScopeActsOnCurrentTodo(scope model.ActionScope) bool {
 // 输入边界：无入参；返回值为执行服务协议直接消费的标签键，不得改名。
 func ForwardTabForAction() string {
 	return "backlog"
+}
+
+// ForwardAuxiliaryInstanceIDForTest 暴露转发响应体的关联实例取值，供 test 目录锁定：
+// 取不到关联实例时返回空串（不猜测），且非法 JSON 不得导致误判。
+func ForwardAuxiliaryInstanceIDForTest(raw json.RawMessage) string {
+	return forwardAuxiliaryInstanceID(raw)
 }
 
 // RefreshPendingTaskForAssigneeForTest 暴露提交阶段的待办刷新入口，供 test 目录锁定 T2：

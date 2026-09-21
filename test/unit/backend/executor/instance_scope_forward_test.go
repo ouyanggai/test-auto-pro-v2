@@ -152,6 +152,44 @@ func TestForwardIsInstanceScopeActingOnCurrentTodo(t *testing.T) {
 	}
 }
 
+// 2026-09-21 运行 86/87 路径 1 第 43 步缺陷回归：转发结果的判定依据。
+//
+// 现象：转发写请求已经真正发出并被目标接受（日志「runtime 完成」「目标接口返回成功」），
+// 但结果被判定为"目标接口已返回成功，但执行结果暂时无法确认"，路径随即停止。
+//
+// 根因：runtime 写路径构造的 preview.writeResponse 只承载状态码与成败，**没有响应体**
+// （见 submit 阶段构造 WriteResponse 的调用点）。而转发判定按"响应 data.id"取关联实例，
+// 于是恒为空、恒判无法确认——这与目标状态无关，属工具自身缺陷。
+//
+// 修复口径：改用 runtime 真正回传的事实——写请求已发出且执行服务已把浏览器写响应
+// 收敛为 success，即"目标已接受本次转发"；关联实例可见性降级为附加证据。
+
+// TestForwardAuxiliaryInstanceIDParsesResponse 锁定：响应体带 id 时能取出关联实例。
+func TestForwardAuxiliaryInstanceIDParsesResponse(t *testing.T) {
+	got := step.ForwardAuxiliaryInstanceIDForTest(json.RawMessage(`{"id":"aux-instance-1","other":"x"}`))
+	if got != "aux-instance-1" {
+		t.Fatalf("应从转发响应中取出关联实例，实际：%q", got)
+	}
+}
+
+// TestForwardAuxiliaryInstanceIDEmptyWhenAbsent 锁定：没有响应体、为 null、缺 id 字段、
+// 或非法 JSON 时一律返回空串——取不到关联实例只意味着不需要附加核对，
+// 绝不因此把"无需核对"当成"未生效"。
+func TestForwardAuxiliaryInstanceIDEmptyWhenAbsent(t *testing.T) {
+	cases := map[string]json.RawMessage{
+		"空响应体":    nil,
+		"null":    json.RawMessage(`null`),
+		"空对象":     json.RawMessage(`{}`),
+		"id 为空串":  json.RawMessage(`{"id":"  "}`),
+		"非法 JSON": json.RawMessage(`{not json`),
+	}
+	for name, raw := range cases {
+		if got := step.ForwardAuxiliaryInstanceIDForTest(raw); got != "" {
+			t.Fatalf("%s：关联实例应为空串，实际：%q", name, got)
+		}
+	}
+}
+
 // TestForwardTabIsNotSourceDependent 锁定：转发装载标签不随实例来源变化。
 // 逐个来源断言构造出的写请求都能成功，并且装载标签始终等于恒定口径——
 // 防止将来重新引入"按来源选标签页"的分支（dueout 页没有转发入口，会直接导致装载超时）。
