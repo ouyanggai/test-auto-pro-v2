@@ -148,6 +148,14 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	switch step.Action {
 	case model.ActionApprove, model.ActionReject, model.ActionStorageFormData, model.ActionForward:
 		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+		if nodeID == "" {
+			// 实例级动作（转发/催办等）不绑定配置节点，NodeKey 为空，按空节点查待办必然查空，
+			// 于是每一步都报「目标上已无当前处理人在本节点的待办任务」而停在写前
+			// （2026-09-21 运行 78 路径 1 第 43 步实测：前 40 步全部成功，只剩收尾的转发失败）。
+			// 这类动作作用于**实例的当前活动待办**，因此节点标识取自实例事实里已核实的当前任务节点。
+			// 只做标识回退，不放宽待办要求：仍然要求真实读到 jobTaskId，读不到一样在写前阻塞。
+			nodeID = strings.TrimSpace(preview.Facts.CurrentTaskNodeID)
+		}
 		// 视角用户取自预览阶段已核实的当前处理人事实（门禁用同一个 ID 查到过该待办）；
 		// 没有事实时为空串，由 refreshPendingTaskSnapshotForAssignee 回退本人视角并留下原因。
 		assigneeUserID := strings.TrimSpace(preview.Facts.CurrentTaskAssigneeID)

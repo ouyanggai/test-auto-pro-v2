@@ -201,8 +201,12 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 	}
 
 	switch step.Action {
+	// ActionForward 是实例级动作，配置里没有节点键；它作用于实例的当前活动待办，
+	// 因此必须和审批族一样解析出"当前待办属于哪个节点、由谁处理"，否则写前无法拿到
+	// jobTaskId，每一步都报「目标上已无当前处理人在本节点的待办任务」而停在写前
+	// （2026-09-21 运行 78 路径 1 第 43 步实测）。
 	case model.ActionStorageFormData, model.ActionApprove, model.ActionReject,
-		model.ActionAddSign, model.ActionTransfer, model.ActionRollback:
+		model.ActionAddSign, model.ActionTransfer, model.ActionRollback, model.ActionForward:
 		if !hasTaskReader {
 			return session, nil
 		}
@@ -252,6 +256,10 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 				// 显式登记为占位，防止下游把未取证的布尔当成证据。
 				facts.CompletedTaskBasis = CompletedTaskBasisNotAttempted
 			}
+			return session, nil
+		case model.ActionForward:
+			// 转发不改主实例游标，也不产生本节点的已办：它只需要把"实例当前活动待办"
+			// 的真实节点与处理人事实留给写前门禁取 jobTaskId，因此这里不做额外核验。
 			return session, nil
 		case model.ActionAddSign:
 			personIDs := runCtx.ActionPersonIDs[ActionPersonIndex(step.NodeKey, step.Action)]
