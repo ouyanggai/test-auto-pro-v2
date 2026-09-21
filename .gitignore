@@ -27,7 +27,11 @@
 /bin/
 /server
 /server.exe
+/server.exe~
 /test-auto-pro-v2
+# 根目录下手动或临时编译出的可执行文件（如 go build -o xxx.exe）
+/*.exe
+/*.exe~
 *.test
 *.out
 /coverage/
