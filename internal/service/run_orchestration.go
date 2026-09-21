@@ -1334,24 +1334,18 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	var tokenToGraphID map[string]string
 	if !dynamicProjectionOK {
 		tokenToGraphID = tokenToGraphNodeID(factGraph)
-	} else {
-		tokenToGraphID = tokenToGraphNodeID(deviationGraph)
-	}
-	// 无论是否投影成功，控制层内存现场中维护的节点映射（加签重建代理树后的 oldKey -> targetID）
-	// 是当前执行所依据的权威事实，优先对齐键空间，使加签后节点的步骤与状态能准确映射到图节点上。
-	if s.control != nil {
-		for key, targetID := range s.control.NodeTargetIDs(pathRun.ID) {
-			if targetID != "" {
-				tokenToGraphID[key] = targetID
-				tokenToGraphID[analyzer.PathConfigNodeToken(targetID)] = targetID
+		// 仅在动态图无法投影回静态 ID 空间、画布只能直接展示目标动态代理图时，
+		// 才需要使用控制层重绑定后的新目标节点 ID 兜底，避免步骤事实完全无法关联动态节点。
+		if s.control != nil {
+			for key, targetID := range s.control.NodeTargetIDs(pathRun.ID) {
+				if targetID != "" {
+					tokenToGraphID[key] = targetID
+					tokenToGraphID[analyzer.PathConfigNodeToken(targetID)] = targetID
+				}
 			}
 		}
-	}
-	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
-		if preview.NodeKey != "" && preview.TargetNodeID != "" {
-			tokenToGraphID[preview.NodeKey] = preview.TargetNodeID
-			tokenToGraphID[analyzer.PathConfigNodeToken(preview.TargetNodeID)] = preview.TargetNodeID
-		}
+	} else {
+		tokenToGraphID = tokenToGraphNodeID(factGraph)
 	}
 	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, requestsByKey, summaryByKey, s.router, tokenToGraphID)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
