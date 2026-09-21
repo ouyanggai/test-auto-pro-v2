@@ -128,7 +128,11 @@ const planID = computed(() => String(route.params.id || ''))
 const planMutable = computed(() => Boolean(plan.value))
 const activePath = computed(() => paths.value.find((path) => path.id === activePathID.value) ?? null)
 const visiblePaths = computed(() => paths.value)
-const preparationPathListHeight = computed(() => Math.min(visiblePaths.value.length, 5) * PREPARATION_PATH_ITEM_SIZE)
+// preparationPathListHeight 是路径列表的可视高度：最多放下 MAX_VISIBLE_PATHS 行，超出部分靠列表内部滚动。
+// 必须与 CSS 的 max-height 保持同一个上限——两处各写一个上限时，较小的那个会截断列表，
+// 而虚拟列表按外层 style 高度算滚动范围，被 CSS 截掉的行既渲染不出来也滚不到，路径直接变成点不到。
+const MAX_VISIBLE_PATHS = 5
+const preparationPathListHeight = computed(() => Math.min(visiblePaths.value.length, MAX_VISIBLE_PATHS) * PREPARATION_PATH_ITEM_SIZE)
 const pageThemeStyle = computed(() => ({
   '--plan-card-color': themeVars.value.cardColor,
   '--plan-page-color': themeVars.value.bodyColor,
@@ -1444,7 +1448,9 @@ onMounted(() => {
 
 .path-prepare__list {
   min-height: 0;
-  max-height: clamp(96px, calc(var(--plan-screen-height) - 380px), 280px);
+  /* 高度由内联 style（行数 × 行高，上限 5 行 = 420px）决定；这里只兜住小屏：
+     上限必须不小于 5 行，否则会盖掉内联高度、把列表截断成不可滚动（路径点不到）。 */
+  max-height: 420px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
