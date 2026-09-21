@@ -125,6 +125,14 @@ type TaskSnapshot struct {
 	BatchNo         string
 	TaskStatus      string
 	ExecutorID      string
+	// ExecutorName 是已办行上目标记录的办结人姓名（preExecuteName）。
+	//
+	// 为什么必须带出：目标的已办行并非都携带 executorId——2026-09-21 运行 35/36 路径 6 实测，
+	// 节点 b9fc434e…（省区经理）的已办行是 taskStatus=done、preAuditStatus=pass、
+	// preExecuteName=刘慧玲，却完全没有 executorId 字段；同时该节点在 /web/flowAuditRecord/list
+	// 里也没有任何记录。两条"按 ID 取办结人"的路径同时落空，取回于是退回计划账号身份发出。
+	// 姓名是这一行上唯一可用于反查登录账号的办结人事实，因此必须解析并带出。
+	ExecutorName string
 	// PendingUserID/PendingUserName 是目标裁决的当前待办实际处理人（currentPendingUserId/Name）。
 	// 任务级动作必须以该处理人身份发出写请求，不能冒用计划账号审批他人任务。
 	PendingUserID         string

@@ -798,14 +798,18 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 		return nil, err
 	}
 	type rawTaskSnapshot struct {
-		LinkID                 string `json:"id"`
-		ParentLinkID           string `json:"pid"`
-		JobTaskID              string `json:"jobTaskId"`
-		FlowInstanceID         string `json:"flowInstanceId"`
-		FlowNodeProxyID        string `json:"flowNodeProxyId"`
-		BatchNo                string `json:"batchNo"`
-		TaskStatus             string `json:"taskStatus"`
-		ExecutorID             string `json:"executorId"`
+		LinkID          string `json:"id"`
+		ParentLinkID    string `json:"pid"`
+		JobTaskID       string `json:"jobTaskId"`
+		FlowInstanceID  string `json:"flowInstanceId"`
+		FlowNodeProxyID string `json:"flowNodeProxyId"`
+		BatchNo         string `json:"batchNo"`
+		TaskStatus      string `json:"taskStatus"`
+		ExecutorID      string `json:"executorId"`
+		// PreExecuteName/PreAuditStatus 是已办行的办结人与办结结论：目标在这些行上
+		// 未必给出 executorId，姓名是唯一可用于反查登录账号的办结人事实（见 TaskSnapshot.ExecutorName）。
+		PreExecuteName         string `json:"preExecuteName"`
+		PreAuditStatus         string `json:"preAuditStatus"`
 		FormProxyID            string `json:"formProxyId"`
 		FlowProxyID            string `json:"flowProxyId"`
 		AuditWay               string `json:"auditWay"`
@@ -855,6 +859,7 @@ func (c *Client) ListTaskSnapshotsForUser(ctx context.Context, active Session, i
 				JobTaskID: jobTaskID, FlowInstanceID: strings.TrimSpace(item.FlowInstanceID),
 				FlowNodeProxyID: strings.TrimSpace(item.FlowNodeProxyID), BatchNo: strings.TrimSpace(item.BatchNo),
 				TaskStatus: strings.TrimSpace(item.TaskStatus), ExecutorID: strings.TrimSpace(item.ExecutorID),
+				ExecutorName:  strings.TrimSpace(item.PreExecuteName),
 				PendingUserID: strings.TrimSpace(item.CurrentPendingUserID), PendingUserName: strings.TrimSpace(item.CurrentPendingUserName),
 				FormProxyID: strings.TrimSpace(item.FormProxyID), FlowProxyID: strings.TrimSpace(item.FlowProxyID),
 				AuditWay: strings.TrimSpace(item.AuditWay), FlowNextNodeAuditType: strings.TrimSpace(item.FlowNextNodeAuditType),

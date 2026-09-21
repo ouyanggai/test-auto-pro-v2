@@ -3937,3 +3937,23 @@ func (e *Executor) RefreshPendingTaskForAssigneeForTest(ctx context.Context, run
 func ExpectedNextTargetNodeIDForTest(runCtx RunContext, nextIndex int) string {
 	return expectedNextTargetNodeID(runCtx, nextIndex)
 }
+
+// ReadActionTaskFactsForTest 暴露任务级事实读取（含取回办结人视角解析）供 test 目录锁定：
+// 取回身份由谁承担是安全敏感行为，必须在根 test/ 下用假目标直接断言，
+// 而不是只能靠真实目标复跑来间接确认。
+func ReadActionTaskFactsForTest(ctx context.Context, executor *Executor, runCtx RunContext, step model.CompiledActionStep) (InstanceFacts, error) {
+	facts := InstanceFacts{StepNodeKey: step.NodeKey}
+	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	session, err := executor.planSessionForTest(ctx, runCtx)
+	if err != nil {
+		return facts, err
+	}
+	_, taskErr := executor.readActionTaskFacts(ctx, runCtx, session, step, nodeID, &facts, true)
+	return facts, taskErr
+}
+
+// planSessionForTest 取计划账号会话，供 test 目录复用生产同一条会话获取路径，
+// 避免测试自行拼装会话而绕过登录语义。
+func (e *Executor) planSessionForTest(ctx context.Context, runCtx RunContext) (target.Session, error) {
+	return e.sessions.Current(ctx, runCtx.PlanAccount)
+}
