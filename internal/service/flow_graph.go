@@ -113,8 +113,8 @@ func (s *FlowGraphService) GetRuntime(ctx context.Context, planID uint64, instan
 	if err != nil {
 		return model.FlowGraph{}, err
 	}
-	return ensureVirtualEndNode(model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
-		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings}), nil
+	return model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
+		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings}, nil
 }
 
 // refreshInBackground 在后台刷新投影；refreshing 标志保证同一计划同时只跑一个刷新，
@@ -209,10 +209,10 @@ func (s *FlowGraphService) readGraph(ctx context.Context, planID uint64) (model.
 	if err != nil {
 		return model.FlowGraph{}, err
 	}
-	return ensureVirtualEndNode(model.FlowGraph{
+	return model.FlowGraph{
 		PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
 		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings,
-	}), nil
+	}, nil
 }
 
 // validateEntryNodeIDs 去重入口并确认每个入口都属于本次分析出的真实代理树。
@@ -282,8 +282,8 @@ func (s *FlowGraphService) readGraphWithoutRelogin(ctx context.Context, planID u
 	if err != nil {
 		return model.FlowGraph{}, err
 	}
-	return ensureVirtualEndNode(model.FlowGraph{
+	return model.FlowGraph{
 		PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
 		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings,
-	}), nil
+	}, nil
 }

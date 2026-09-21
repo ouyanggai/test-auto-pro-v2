@@ -462,13 +462,20 @@ async function loadDetail(): Promise<void> {
       })
     }
     await pollEvents(version, controller.signal)
-    if (!graph.value) {
+    if (!graph.value || next.dynamicGraph) {
       const graphSignal = new AbortController()
       try {
-        const nextGraph = await fetchFlowGraph(String(next.planId), trackSignal(graphSignal))
+        if (!staticGraph.value) {
+          const nextGraph = await fetchFlowGraph(String(next.planId), trackSignal(graphSignal))
+          if (isCurrent(version, pathRunId || next.pathRunId)) {
+            staticGraph.value = nextGraph
+          }
+        }
         if (isCurrent(version, pathRunId || next.pathRunId)) {
-          staticGraph.value = nextGraph
-          graph.value = mergeRunGraphs(nextGraph, next.dynamicGraph, next.dynamicGraphBindable)
+          const base = staticGraph.value || next.dynamicGraph
+          if (base) {
+            graph.value = mergeRunGraphs(base, next.dynamicGraph, next.dynamicGraphBindable)
+          }
         }
       } catch (error) {
         if (!isAbortError(error) && isCurrent(version, pathRunId || next.pathRunId)) {
@@ -499,8 +506,10 @@ function applyDetail(next: PathRunDetail, version: number): void {
     if (kept) lastValidCurrentNodeByVersion.set(version, kept)
   }
   detail.value = next
-  if (staticGraph.value && next.dynamicGraph) {
-    graph.value = mergeRunGraphs(staticGraph.value, next.dynamicGraph, next.dynamicGraphBindable)
+  if (next.dynamicGraph && next.dynamicGraphBindable) {
+    graph.value = mergeRunGraphs(staticGraph.value || next.dynamicGraph, next.dynamicGraph, next.dynamicGraphBindable)
+  } else if (staticGraph.value) {
+    graph.value = staticGraph.value
   }
   syncControl(next)
   lastUpdateAt.value = Date.now()

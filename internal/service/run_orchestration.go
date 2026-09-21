@@ -1144,6 +1144,26 @@ func (s *RunOrchestrationService) RunDetailByPathRun(ctx context.Context, pathRu
 }
 
 // detail 聚合路径运行详情：运行事实、节点状态、当前预览、最终目标事实。
+// isUsableRunGraphModel 校验图是否具备合法连通结构，防止不完整图送入前端。
+func isUsableRunGraphModel(candidate model.FlowGraph) bool {
+	if len(candidate.Nodes) == 0 || len(candidate.EntryNodeIDs) != 1 {
+		return false
+	}
+	ids := make(map[string]struct{}, len(candidate.Nodes))
+	for _, node := range candidate.Nodes {
+		ids[node.ID] = struct{}{}
+	}
+	for _, edge := range candidate.Edges {
+		if _, ok := ids[edge.Source]; !ok {
+			return false
+		}
+		if _, ok := ids[edge.Target]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pathRun model.PathRun) (*PathRunDetailDTO, error) {
 	plan, err := s.plans.Get(ctx, run.PlanID)
 	if err != nil {
@@ -1221,13 +1241,17 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 					factGraph = projected
 					detail.DynamicGraph = runFlowGraphDTO(projected)
 					detail.DynamicGraphBindable = true
+				} else if isUsableRunGraphModel(projected) {
+					// 即使与静态图唯一绑定不完全匹配，只要加签后动态图自身拓扑合法连通，
+					// 就必须展示动态图，绝不退回静态计划图导致加签节点消失。
+					factGraph = projected
+					detail.DynamicGraph = runFlowGraphDTO(projected)
+					detail.DynamicGraphBindable = true
 				} else if len(graph.Nodes) > 0 {
-					// 结构无法唯一绑定时仍按计划结构收口，结束节点不能因动态读取异常消失。
+					// 结构无法唯一绑定且动态图不合法时才按计划结构收口。
 					endGraph := ensureVirtualEndNode(graph)
 					detail.DynamicGraph = runFlowGraphDTO(endGraph)
 					detail.DynamicGraphBindable = true
-					// 事实映射基准优先沿用可用的动态投影；只有完全没有动态投影时才退回静态收口图，
-					// 保证历史步骤不会因缺少唯一绑定而丢节点键，同时结束节点仍有运行态。
 					if len(dynamicGraph.Nodes) == 0 {
 						factGraph = endGraph
 					}

@@ -81,7 +81,17 @@ func (b *graphBuilder) parse(node *target.FlowNodeTemplate, depth int, structura
 		graphNode := model.FlowGraphNode{ID: id, Name: name, Type: normalizedNodeType(node.Type, node.BranchExecuteType), TypeName: typeName, StructuralPath: structuralPath}
 		if node.AuditConfig != nil {
 			graphNode.AuditType = strings.TrimSpace(node.AuditConfig.AuditType)
-			graphNode.AuditPeople = auditPeople(node.AuditConfig.Details)
+			people := auditPeople(node.AuditConfig.Details)
+			if len(people) == 0 && len(node.AuditConfig.Candidates) > 0 {
+				candidateNames := make([]string, 0, len(node.AuditConfig.Candidates))
+				for _, c := range node.AuditConfig.Candidates {
+					if cName := strings.TrimSpace(c.Name); cName != "" {
+						candidateNames = append(candidateNames, cName)
+					}
+				}
+				people = candidateNames
+			}
+			graphNode.AuditPeople = people
 		}
 		// F-034：目标 isSkip 声明随图节点进入运行时；nil 表示未声明（不允许跳过）。
 		graphNode.IsSkip = node.IsSkip
