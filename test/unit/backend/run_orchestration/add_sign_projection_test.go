@@ -103,6 +103,151 @@ func TestAddSignInsertedNodeSurvivesProjection(t *testing.T) {
 	}
 }
 
+// branchTree 构造真实分支树：发起人(start) -> 综合部(common) -> 发起人(synergy) -> 分支(condition: 分支0省区经理(common), 分支1空节点) -> 负责人(common) -> 结束。
+func branchTree(prefix string, withInsert bool) *target.FlowNodeTemplate {
+	sqjl := &target.FlowNodeTemplate{
+		ID: prefix + "-sqjl", Type: "common", Name: "省区经理",
+	}
+	emptyBranch := &target.FlowNodeTemplate{
+		ID: prefix + "-empty", Type: "empty", Name: "空节点",
+	}
+	condNode := &target.FlowNodeTemplate{
+		ID: prefix + "-branch", Type: "condition", Name: "分支",
+		ConditionNodes: []target.FlowBranchTemplate{
+			{ID: prefix + "-c0", Name: "条件1", Child: sqjl},
+			{ID: prefix + "-c1", Name: "条件2", Child: emptyBranch},
+		},
+		Child: &target.FlowNodeTemplate{
+			ID: prefix + "-fzr", Type: "common", Name: "发起人综合部负责人",
+			Child: &target.FlowNodeTemplate{
+				ID: prefix + "-end", Type: "end", Name: "结束",
+			},
+		},
+	}
+	afterAnchor := condNode
+	if withInsert {
+		afterAnchor = &target.FlowNodeTemplate{
+			ID: prefix + "-inserted", Type: "common", Name: "加签审批节点",
+			Child: condNode,
+		}
+	}
+	return &target.FlowNodeTemplate{
+		ID: prefix + "-root", Type: "start", Name: "发起人",
+		Child: &target.FlowNodeTemplate{
+			ID: prefix + "-dept", Type: "common", Name: "行政综合部",
+			Child: &target.FlowNodeTemplate{
+				ID: prefix + "-anchor", Type: "synergy", Name: "发起人协同",
+				Child: afterAnchor,
+			},
+		},
+	}
+}
+
+// TestAddSignNodeStatesWithDynamicRemap 验证加签导致代理树重建、节点 ID 变为动态 ID 时，
+// buildNodeStates 能通过 tokenToGraphID 正确将静态步骤键映射到动态图节点上，
+// 避免加签后后继节点（如省区经理）在执行不同意时在画布上显示为未开始或跳跃。
+func TestAddSignNodeStatesWithDynamicRemap(t *testing.T) {
+	// 动态图中的节点：加签插入节点（proxy-inserted）与位移后的后继节点（proxy-sqjl）
+	graph := model.FlowGraph{Nodes: []model.FlowGraphNode{
+		{ID: "proxy-root", Name: "发起人"},
+		{ID: "proxy-anchor", Name: "发起人协同"},
+		{ID: "proxy-inserted", Name: "加签审批节点"},
+		{ID: "proxy-sqjl", Name: "省区经理"},
+	}}
+
+	// 静态计划编译出的步骤，使用静态 token 键
+	staticAnchorToken := analyzer.PathConfigNodeToken("plan-anchor")
+	staticSQJLToken := analyzer.PathConfigNodeToken("plan-sqjl")
+	insertedKey := control.AddSignInsertedNodeKey("proxy-inserted")
+
+	steps := []model.RunStep{
+		{NodeKey: staticAnchorToken, Action: "approve", Status: model.RunStepSucceeded},
+		{NodeKey: insertedKey, Action: "approve", Status: model.RunStepSucceeded},
+		{NodeKey: staticSQJLToken, Action: "reject", Status: model.RunStepSucceeded},
+	}
+	pathRun := model.PathRun{Status: model.PathRunStatusRunning}
+
+	// tokenToGraphID 将静态令牌映射到动态图节点 ID
+	tokenToGraphID := map[string]string{
+		staticAnchorToken: "proxy-anchor",
+		insertedKey:       "proxy-inserted",
+		staticSQJLToken:   "proxy-sqjl",
+	}
+
+	states := service.BuildNodeStatesWithTokenMapForTest(graph, steps, pathRun, nil, nil, tokenToGraphID)
+
+	if got := states["proxy-sqjl"].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
+		t.Fatalf("省区经理节点的已完成状态没有落到动态图节点上，实际 %s", got)
+	}
+	if got := states["proxy-inserted"].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
+		t.Fatalf("加签节点的已完成状态没有落到动态图节点上，实际 %s", got)
+	}
+}
+// 插入节点步骤尚未生成或落账时（insertedNodeIDs 为空），投影是否仍然能够成功绑定。
+func TestAddSignInsertedNodeBeforeConditionBranchWithEmptyInsertedIDs(t *testing.T) {
+	analyzerImpl := analyzer.NewFlowGraphAnalyzer()
+	staticNodes, staticEdges, _, err := analyzerImpl.Analyze(branchTree("plan", false))
+	if err != nil {
+		t.Fatalf("分析计划树失败：%v", err)
+	}
+	dynamicNodes, dynamicEdges, _, err := analyzerImpl.Analyze(branchTree("proxy", true))
+	if err != nil {
+		t.Fatalf("分析加签后代理树失败：%v", err)
+	}
+	staticGraph := model.FlowGraph{Nodes: staticNodes, Edges: staticEdges}
+	dynamicGraph := model.FlowGraph{Nodes: dynamicNodes, Edges: dynamicEdges}
+
+	// 传入空 insertedNodeIDs
+	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph)
+	if !bindable {
+		t.Fatalf("insertedNodeIDs 为空时，投影必须仍然能够成功绑定，实际 bindable=false")
+	}
+
+	foundSQJL := false
+	for _, node := range projected.Nodes {
+		if node.ID == "plan-sqjl" {
+			foundSQJL = true
+		}
+	}
+	if !foundSQJL {
+		t.Fatalf("省区经理未能投影回计划 ID plan-sqjl，投影节点列表：%+v", projectedIDs(projected))
+	}
+}
+// 加签插入在 synergy 节点与 condition 分支节点之间，后继为包含分支的复杂子树。
+// 验证：投影必须成功绑定，省区经理必须正确映射回 static ID，加签节点必须保留 dynamic ID。
+func TestAddSignInsertedNodeBeforeConditionBranch(t *testing.T) {
+	analyzerImpl := analyzer.NewFlowGraphAnalyzer()
+	staticNodes, staticEdges, _, err := analyzerImpl.Analyze(branchTree("plan", false))
+	if err != nil {
+		t.Fatalf("分析计划树失败：%v", err)
+	}
+	dynamicNodes, dynamicEdges, _, err := analyzerImpl.Analyze(branchTree("proxy", true))
+	if err != nil {
+		t.Fatalf("分析加签后代理树失败：%v", err)
+	}
+	staticGraph := model.FlowGraph{Nodes: staticNodes, Edges: staticEdges}
+	dynamicGraph := model.FlowGraph{Nodes: dynamicNodes, Edges: dynamicEdges}
+
+	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph, "proxy-inserted")
+	if !bindable {
+		t.Fatalf("加签后代理树合法，投影必须可绑定，实际 bindable=false")
+	}
+
+	// 验证省区经理是否正确映射回 plan-sqjl
+	foundSQJL := false
+	for _, node := range projected.Nodes {
+		if node.ID == "plan-sqjl" {
+			foundSQJL = true
+			if node.Name != "省区经理" {
+				t.Fatalf("省区经理名称不匹配：%+v", node)
+			}
+		}
+	}
+	if !foundSQJL {
+		t.Fatalf("省区经理未能投影回计划 ID plan-sqjl，投影节点列表：%+v", projectedIDs(projected))
+	}
+}
+
 func projectedIDs(graph model.FlowGraph) []string {
 	ids := make([]string, 0, len(graph.Nodes))
 	for _, node := range graph.Nodes {

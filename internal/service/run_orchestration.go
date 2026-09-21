@@ -1251,7 +1251,15 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				s.dynamicGraphMu.Unlock()
 
 				currentPreview := s.control.CurrentPreview(pathRun.ID)
-				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedNodeIDsFromStepsAndPreview(steps, currentPreview))
+				insertedIDs := insertedNodeIDsFromStepsAndPreview(steps, currentPreview)
+				if s.control != nil {
+					for _, id := range s.control.ActiveInsertedNodeIDs(pathRun.ID) {
+						if !sliceContains(insertedIDs, id) {
+							insertedIDs = append(insertedIDs, id)
+						}
+					}
+				}
+				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedIDs)
 				deviationGraph = projected
 				dynamicProjectionOK = projectionOK
 				// 结束节点是每次运行的固定终点，不是"完成态才补的装饰"：运行中就要画在最后，
@@ -1329,6 +1337,22 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	} else {
 		tokenToGraphID = tokenToGraphNodeID(deviationGraph)
 	}
+	// 无论是否投影成功，控制层内存现场中维护的节点映射（加签重建代理树后的 oldKey -> targetID）
+	// 是当前执行所依据的权威事实，优先对齐键空间，使加签后节点的步骤与状态能准确映射到图节点上。
+	if s.control != nil {
+		for key, targetID := range s.control.NodeTargetIDs(pathRun.ID) {
+			if targetID != "" {
+				tokenToGraphID[key] = targetID
+				tokenToGraphID[analyzer.PathConfigNodeToken(targetID)] = targetID
+			}
+		}
+	}
+	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
+		if preview.NodeKey != "" && preview.TargetNodeID != "" {
+			tokenToGraphID[preview.NodeKey] = preview.TargetNodeID
+			tokenToGraphID[analyzer.PathConfigNodeToken(preview.TargetNodeID)] = preview.TargetNodeID
+		}
+	}
 	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, requestsByKey, summaryByKey, s.router, tokenToGraphID)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
@@ -1357,7 +1381,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Steps[index].ReleaseRequired = compiled.ReleaseRequired
 		}
 	}
-	detail.NodeStates = buildNodeStates(factGraph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
+	detail.NodeStates = buildNodeStates(factGraph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys, tokenToGraphID)
 	detail.NodePlans = buildNodePlans(compiledSteps, tokenToGraphID)
 	detail.StepTimeline = buildStepTimeline(detail.Steps, detail.CurrentPreview, compiledSteps, factGraph, pathRun,
 		controlView != nil && controlView.StepInFlight, controlView != nil && controlView.LoopRunning)
@@ -1400,7 +1424,6 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Breakpoints = append(detail.Breakpoints, dto)
 		}
 	}
-	detail.NodeStates = buildNodeStates(factGraph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys)
 	// 执行现场已丢失的运行（服务重启或执行结果无法确认，路径运行停在结果待确认且没有内存现场）
 	// 无法安全继续：如实告诉用户并引导从计划重新运行；界面不给任何对账、重放或登记入口。
 	if controlView == nil && pathRun.Status == model.PathRunStatusAwaitingReconciliation {
@@ -2165,8 +2188,10 @@ func actionScopeName(scope model.ActionScope) string {
 // buildNodeStates 推导画布节点的九个中文运行态：
 // 已落账步骤的节点已完成；失败/结果待确认的收尾节点单独标出；当前步节点运行中；
 // 已配置路线上尚未到达的节点等待运行；路线外节点未开始。状态不只靠颜色，界面必须渲染中文。
-func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
-	tokenToGraphID := tokenToGraphNodeID(graph)
+func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string, tokenToGraphID map[string]string) map[string]RunNodeStateDTO {
+	if tokenToGraphID == nil {
+		tokenToGraphID = tokenToGraphNodeID(graph)
+	}
 	states := map[string]RunNodeStateDTO{}
 	for _, node := range graph.Nodes {
 		states[node.ID] = RunNodeStateDTO{Status: string(model.PathRunStatusNotStarted), StatusName: model.PathRunStatusName(model.PathRunStatusNotStarted)}
@@ -2217,12 +2242,16 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 			states[nodeID] = nodeState(model.PathRunStatusWaiting)
 		}
 	}
-	if preview != nil && preview.NodeKey != "" && (pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying) {
+	if preview != nil && (preview.NodeID != "" || preview.NodeKey != "") && (pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying) {
 		status := model.PathRunStatusRunning
 		if pathRun.Status == model.PathRunStatusVerifying {
 			status = model.PathRunStatusVerifying
 		}
-		states[graphNodeKey(preview.NodeKey)] = nodeState(status)
+		targetKey := preview.NodeID
+		if targetKey == "" {
+			targetKey = graphNodeKey(preview.NodeKey)
+		}
+		states[targetKey] = nodeState(status)
 	}
 	// 结束节点是流程收口位置，不参与"等待运行"的路线语义：它只表达"整条路径走到头了没有"。
 	// 路径已完成即点亮为成功（画布上绿色高亮）；未完成保持未开始（结束节点本身不要状态文案）。
@@ -2239,22 +2268,22 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 // tokenToGraphNodeID 从真实结构推导「配置令牌键 -> 图节点 ID」映射：
 // 编译场景、步骤事实与预览都用令牌键，而画布与侧栏以图节点 ID 为准，键空间必须在这里对齐。
 //
-// 加签插入节点的步骤键是合成键「add-sign-inserted-<真实节点ID>」，不是配置令牌，PathConfigNodeToken
-// 反推不出它；这里额外登记「合成键 -> 图节点 ID」，把插入节点的运行状态、当前步标记与侧栏落到真实图
-// 节点上，而不是幽灵合成键上（否则加签节点即便画出来也永远停在「未开始」）。图里存在插入节点才登记。
+// 1. 常规节点：PathConfigNodeToken(node.ID) -> node.ID
+// 2. 加签合成键：AddSignInsertedNodeKey(node.ID) -> node.ID
+// 3. 动态图节点直连：node.ID -> node.ID（当步骤已经按重构后的真实节点 ID 记录时，直接对齐）
 func tokenToGraphNodeID(graph model.FlowGraph) map[string]string {
-	graphIDs := make(map[string]struct{}, len(graph.Nodes))
-	for _, node := range graph.Nodes {
-		graphIDs[strings.TrimSpace(node.ID)] = struct{}{}
-	}
-	mapping := make(map[string]string, len(graph.Nodes)*2)
+	mapping := make(map[string]string, len(graph.Nodes)*3)
 	for _, node := range graph.Nodes {
 		id := strings.TrimSpace(node.ID)
-		mapping[analyzer.PathConfigNodeToken(node.ID)] = node.ID
-		// 若某图节点 ID 恰是某加签插入节点的真实 ID，则把它的合成键也指向该图节点。
-		if _, exists := graphIDs[id]; exists {
-			mapping[control.AddSignInsertedNodeKey(id)] = node.ID
+		if id == "" {
+			continue
 		}
+		// 节点自身的真实 ID 映射到自身
+		mapping[id] = id
+		// 静态配置生成的令牌键
+		mapping[analyzer.PathConfigNodeToken(id)] = id
+		// 加签插入节点生成的合成键
+		mapping[control.AddSignInsertedNodeKey(id)] = id
 	}
 	return mapping
 }
@@ -2539,9 +2568,24 @@ func BuildStepDTOsForTest(steps []model.RunStep, attempts []model.RunStepAttempt
 	return buildStepDTOs(steps, attempts, nil, nil, nil, nil, nil)
 }
 
+// sliceContains 判断字符串切片是否包含指定值。
+func sliceContains(slice []string, val string) bool {
+	for _, item := range slice {
+		if item == val {
+			return true
+		}
+	}
+	return false
+}
+
 // BuildNodeStatesForTest 暴露画布节点运行态推导，供 test 目录下的定向用例锁定「等待运行」语义。
 func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string) map[string]RunNodeStateDTO {
-	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys)
+	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys, tokenToGraphNodeID(graph))
+}
+
+// BuildNodeStatesWithTokenMapForTest 暴露画布节点运行态推导，允许外部传入显式 tokenMap 以验证动态节点重映射。
+func BuildNodeStatesWithTokenMapForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string, tokenMap map[string]string) map[string]RunNodeStateDTO {
+	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys, tokenMap)
 }
 
 // ProjectRuntimeGraphForTest 暴露运行期代理树投影，供根目录定向测试锁定加签重建后的结构绑定。

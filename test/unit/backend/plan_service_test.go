@@ -94,6 +94,25 @@ func (r *memoryPlanRepository) Delete(_ context.Context, id uint64) error {
 	return repository.ErrPlanNotFound
 }
 
+// BatchDelete 批量删除内存夹具中的计划。
+func (r *memoryPlanRepository) BatchDelete(_ context.Context, ids []uint64) map[uint64]error {
+	failures := map[uint64]error{}
+	for _, id := range ids {
+		found := false
+		for index, plan := range r.plans {
+			if plan.ID == id {
+				r.plans = append(r.plans[:index], r.plans[index+1:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			failures[id] = repository.ErrPlanNotFound
+		}
+	}
+	return failures
+}
+
 // TestPlanServiceCreatesNotStartedPlanAndReusesIdempotencyKey 验证新计划固定为未运行且幂等复用。
 func TestPlanServiceCreatesNotStartedPlanAndReusesIdempotencyKey(t *testing.T) {
 	repo := newMemoryPlanRepository()

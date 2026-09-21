@@ -465,6 +465,54 @@ func (s *Service) CurrentPreview(pathRunID uint64) *step.StepPreview {
 	return session.preview
 }
 
+// NodeTargetIDs 返回指定路径运行当前在内存中维护的节点令牌键到真实目标节点 ID 的映射。
+// 在加签导致流程代理树重建后，旧配置节点令牌键与新目标节点 ID 之间的对应关系由此提供权威事实。
+func (s *Service) NodeTargetIDs(pathRunID uint64) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.active[pathRunID]
+	if session == nil || session.runCtx.Nodes == nil {
+		return nil
+	}
+	result := make(map[string]string, len(session.runCtx.Nodes))
+	for key, info := range session.runCtx.Nodes {
+		if targetID := strings.TrimSpace(info.TargetNodeID); targetID != "" {
+			result[key] = targetID
+		}
+	}
+	return result
+}
+
+// ActiveInsertedNodeIDs 返回指定路径运行当前内存现场中已知的所有加签插入节点真实 ID。
+// 即使插入步骤尚未落账，内存现场也已提前注入了插入节点，可用于动态图投影时准确排除。
+func (s *Service) ActiveInsertedNodeIDs(pathRunID uint64) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.active[pathRunID]
+	if session == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var ids []string
+	for _, stepRecord := range session.runCtx.Steps {
+		if id := InsertedNodeIDFromKey(stepRecord.NodeKey); id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for key, info := range session.runCtx.Nodes {
+		if id := InsertedNodeIDFromKey(key); id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+		if id := strings.TrimSpace(info.TargetNodeID); id != "" && strings.HasPrefix(key, AddSignInsertedNodeKeyPrefix) && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // ArmRetrySession 把重试后的控制现场装填回内存（F-028 失败动作重试）。
 // 前置条件由编排层保证：路径运行已重开为运行中，runCtx.Run/PathRun 已填入重开后的真实身份，
 // cursorIndex 是失败步骤在重编译场景中的下标，executed 集合只含已成功步骤。

@@ -48,6 +48,20 @@ func (r *contractPlanRepository) List(_ context.Context, filter model.PlanListFi
 	return []model.Plan{r.plan}, nil
 }
 
+// Count 返回夹具中的计划总数。
+func (r *contractPlanRepository) Count(_ context.Context, filter model.PlanListFilter) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	if !r.found {
+		return 0, nil
+	}
+	if filter.Status != "" && filter.Status != r.plan.Status {
+		return 0, nil
+	}
+	return 1, nil
+}
+
 func (r *contractPlanRepository) Get(_ context.Context, id uint64) (model.Plan, error) {
 	if r.err != nil {
 		return model.Plan{}, r.err
@@ -83,6 +97,17 @@ func (r *contractPlanRepository) Delete(_ context.Context, id uint64) error {
 	}
 	r.found = false
 	return nil
+}
+
+// BatchDelete 批量删除夹具中的计划，供批量删除契约验证。
+func (r *contractPlanRepository) BatchDelete(_ context.Context, ids []uint64) map[uint64]error {
+	failures := map[uint64]error{}
+	for _, id := range ids {
+		if err := r.Delete(context.Background(), id); err != nil {
+			failures[id] = err
+		}
+	}
+	return failures
 }
 
 // TestPlanAPIContractsAndIdempotency 验证计划接口三态协议和创建幂等。
