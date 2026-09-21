@@ -686,6 +686,13 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		if step.Scope != model.ActionScopeTask && step.Scope != model.ActionScopeCompletedTask {
 			return nil, false
 		}
+		// 「实例待办已越过本节点」只在"推进型动作"上是异常信号；对恢复型动作恰恰是正常前提。
+		// 取回（retrieve）的语义就是恢复本人已经走过的节点：此时实例待办必然停在该节点的后继，
+		// 若沿用目标跳过判定，就会把每一次合法取回都误判成"无处理人且不允许跳过"而写前阻塞。
+		// 因此恢复型动作不参与跳过判定，改由动作自身的已办/后继门禁（取回按 done 已办核对）裁决。
+		if isRecoveryEffectStep(step) {
+			return nil, false
+		}
 		action, reason, pendingName, diag := targetSkippedStepReason(runCtx, step, currentFacts)
 		log.Phase("gate", step.Sequence, 1, "目标跳过判定："+diag)
 		switch action {
@@ -1182,6 +1189,22 @@ func humanWaitDuration(d time.Duration) string {
 		return fmt.Sprintf("%d 秒", int(d.Seconds()))
 	}
 	return fmt.Sprintf("%d 毫秒", d.Milliseconds())
+}
+
+// isRecoveryEffectStep 判断本步是否是"把实例拉回已经走过的节点"的恢复型动作。
+// 这类动作的成立前提就是实例待办已经越过目标节点（取回要求本人在该节点留有已办、
+// 回退要求存在真实前驱、撤回要求实例已流转），因此：
+//   - 不能套用"待办越过即视为目标自动跳过"的推进型判定，否则合法恢复被写前阻塞；
+//   - 它们各自的安全门禁由动作专属事实承担（取回核对 done 已办、回退解析真实前驱）。
+//
+// 输入边界：只读 step，不改状态；调用方仍须保证动作专属门禁不被跳过。
+func isRecoveryEffectStep(step model.CompiledActionStep) bool {
+	switch step.Action {
+	case model.ActionRetrieve, model.ActionRollback, model.ActionWithdraw:
+		return true
+	default:
+		return false
+	}
 }
 
 // targetSkippedStepReason 判断本步节点是否已被目标自动跳过（F-034：按目标 isSkip 与审批类型分型）。
@@ -1890,21 +1913,30 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			// 恢复链与系统导航本来就会跨越节点或回到前序节点，不能按"下一步必须仍在路径上"判定偏离；
 			// 普通用户步骤和固定尾动作仍做真实节点对照，真实分支偏离继续立即停止。
 			if nextStep.Source != model.ActionStepSourceRecovery && nextStep.Source != model.ActionStepSourceNavigation {
-				expectedNextKey := nextStep.NodeKey
-				expectedNextTarget := ""
-				if nodeInfo, ok := runCtx.Nodes[expectedNextKey]; ok {
-					expectedNextTarget = strings.TrimSpace(nodeInfo.TargetNodeID)
-				}
-				// 多人依次审批 / 会签：同一节点审完一人后实例仍停在本节点，等下一位审批人。
-				// 这不是路径偏离——实例还没离开当前步节点。只有实例既不在当前步节点、也不在
-				// 配置的下一步节点时，才是真正的分支走错。仍停在本节点的情形交给控制层的
-				// 会签重跑循环（同意后实例未前进即用新发现的当前处理人继续审批），绝不误判偏离而跳过重跑。
 				currentStepTarget := strings.TrimSpace(preview.TargetNodeID)
 				stillAtCurrentNode := currentStepTarget != "" && containsNode(after.CurrentNodes, currentStepTarget)
-				if after.Found && len(after.CurrentNodes) > 0 && expectedNextTarget != "" &&
-					!containsNode(after.CurrentNodes, expectedNextTarget) && !stillAtCurrentNode {
+
+				// 收集当前动作之后路径上所有合法的后续目标节点（含紧随的下一个节点、跳过节点后的下一业务节点）：
+				// 流程向前推进时，目标可能穿透空节点或跳过无处理人节点前进到后续节点。
+				// 只有当前节点既不是当前步节点、也不是路径上任何合法的后续预期节点时，才判定为真正的路径偏离。
+				hasValidNextNode := false
+				for futureIdx := approved.NextIndex + 1; futureIdx < len(runCtx.Steps); futureIdx++ {
+					futureKey := strings.TrimSpace(runCtx.Steps[futureIdx].NodeKey)
+					if futureKey == "" {
+						continue
+					}
+					if nodeInfo, ok := runCtx.Nodes[futureKey]; ok {
+						futureTarget := strings.TrimSpace(nodeInfo.TargetNodeID)
+						if futureTarget != "" && containsNode(after.CurrentNodes, futureTarget) {
+							hasValidNextNode = true
+							break
+						}
+					}
+				}
+
+				if after.Found && len(after.CurrentNodes) > 0 && !stillAtCurrentNode && !hasValidNextNode {
 					outcome.DeviationDetected = true
-					log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v，既不是本步节点 %s 也不是配置的下一个预期节点 %s", after.CurrentNodes, currentStepTarget, expectedNextTarget))
+					log.Phase("settle", step.Sequence, attemptNo, fmt.Sprintf("路径偏离：实际当前节点 %v 不在当前节点或后续预期路径节点中", after.CurrentNodes))
 				}
 			}
 		}
@@ -2009,6 +2041,10 @@ func (e *Executor) refreshSessionForWrite(ctx context.Context, account string) (
 // 只有这个状态才需要按当前处理人事实发现任务；已办（done）由取回动作按会话本人读取。
 const taskStatusPendingValue = "pending"
 
+// taskStatusDoneValue 是目标任务列表里「已办」的状态名，与目标协议一致。
+// 取回动作只能绑定这个状态下、且属于本步节点的任务：已办与节点强绑定，不允许撇开节点回退匹配。
+const taskStatusDoneValue = "done"
+
 // taskSnapshotReader 是目标任务身份的可选能力面；旧的测试假件仍可用 FindDueTaskID，
 // 真实客户端必须实现完整快照以提供 jobTaskId、batchNo 和已办任务范围。
 type taskSnapshotReader interface {
@@ -2035,6 +2071,16 @@ func (e *Executor) readTaskSnapshot(ctx context.Context, runCtx RunContext, step
 			return snapshot, err
 		}
 		// updateFlowProxy 会重建实例私有代理，旧节点 ID 可能失效；只有整实例恰好一条任务时才允许回退。
+		//
+		// done（已办）绝不允许这份"撇开节点"的回退（2026-09-21 夜间路径 9 实测）：
+		// 取回要求的是"本人在本节点留下的那条已办"，一旦去掉节点过滤，回退会把实例上任意一条
+		// 已办任务（实测命中加签节点 2843705d… 的 done 任务）绑到取回请求的 jobTaskId 上，
+		// 目标对该节点返回「空指针异常」；更危险的是它可能成功取回一个并非本步节点的已办，
+		// 让工具在错误节点上产生真实副作用。节点 ID 因代理重建失效时，正确做法是让本步
+		// 如实读空并按"没有已办"阻塞，绝不用其他节点的已办顶替。
+		if strings.TrimSpace(status) == taskStatusDoneValue {
+			return snapshot, err
+		}
 		return reader.FindTaskSnapshot(ctx, session, instanceID, "", status)
 	}
 	if status == "done" {
@@ -3511,6 +3557,12 @@ type auditTrace struct {
 func TargetSkippedClassificationForTest(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) (string, string) {
 	action, reason, _, _ := targetSkippedStepReason(runCtx, step, facts)
 	return action, reason
+}
+
+// IsRecoveryEffectStepForTest 暴露恢复型动作判定，供 test 目录锁定 2026-09-21 取回阻塞缺陷：
+// 取回/回退/撤回的成立前提就是实例待办已越过目标节点，绝不能套用推进型的目标跳过判定。
+func IsRecoveryEffectStepForTest(step model.CompiledActionStep) bool {
+	return isRecoveryEffectStep(step)
 }
 
 // RefreshPendingTaskForAssigneeForTest 暴露提交阶段的待办刷新入口，供 test 目录锁定 T2：
