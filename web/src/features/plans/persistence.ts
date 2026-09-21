@@ -152,6 +152,25 @@ export async function deletePlan(id: string): Promise<void> {
 	await request<{ deleted: boolean }>(`/api/plans/${encodeURIComponent(id)}`, { method: 'DELETE' }, new AbortController().signal)
 }
 
+// BatchDeleteResult 批量删除结果：成功数、失败映射。
+export interface BatchDeleteResult {
+	successCount: number
+	failures: Array<{ id: string; message: string }>
+}
+
+// batchDeletePlans 批量删除计划；返回成功数与失败项。
+export async function batchDeletePlans(ids: string[]): Promise<BatchDeleteResult> {
+	const response = await request<{ successCount: number; failures: Record<string, string> }>(
+		'/api/plans/batch-delete',
+		{ method: 'POST', body: JSON.stringify({ ids }) },
+		new AbortController().signal,
+	)
+	return {
+		successCount: response.successCount,
+		failures: Object.entries(response.failures).map(([id, message]) => ({ id, message })),
+	}
+}
+
 async function request<T>(path: string, init: RequestInit, signal: AbortSignal): Promise<T> {
   let response: Response
   try {

@@ -214,21 +214,28 @@ func (s *PlanService) Get(ctx context.Context, id uint64) (model.Plan, error) {
 }
 
 // Delete 删除尚未进入运行事实的开发计划，并依赖仓储外键清理路径与工具侧配置。
+// Delete 删除计划及其全部运行记录；有活跃运行时拒绝删除。
 func (s *PlanService) Delete(ctx context.Context, id uint64) error {
 	if id == 0 {
 		return &PlanError{Kind: PlanErrorInvalidArgument, Message: "计划 ID 不正确"}
-	}
-	plan, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return mapRepositoryError(err)
-	}
-	if plan.Status != model.PlanStatusNotStarted {
-		return &PlanError{Kind: PlanErrorInvalidArgument, Message: "已有运行记录的计划不能删除"}
 	}
 	if err := s.repository.Delete(ctx, id); err != nil {
 		return mapRepositoryError(err)
 	}
 	return nil
+}
+
+// BatchDelete 批量删除计划；返回失败项的 ID→错误映射。
+func (s *PlanService) BatchDelete(ctx context.Context, ids []uint64) map[uint64]error {
+	if len(ids) == 0 {
+		return nil
+	}
+	failures := s.repository.BatchDelete(ctx, ids)
+	result := make(map[uint64]error, len(failures))
+	for id, err := range failures {
+		result[id] = mapRepositoryError(err)
+	}
+	return result
 }
 
 // normalizeCreateInput 清理计划文本并统一定时时区。
@@ -321,6 +328,8 @@ func mapRepositoryError(err error) error {
 		return &PlanError{Kind: PlanErrorNotFound, Message: "计划不存在"}
 	case errors.Is(err, repository.ErrPlanDataInvalid):
 		return &PlanError{Kind: PlanErrorDataInvalid, Message: "计划数据异常"}
+	case errors.Is(err, repository.ErrPlanStatusConflict):
+		return &PlanError{Kind: PlanErrorInvalidArgument, Message: err.Error()}
 	default:
 		return &PlanError{Kind: PlanErrorStorage, Message: "计划存储暂不可用"}
 	}

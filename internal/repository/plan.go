@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	ErrPlanNotFound    = errors.New("计划不存在")
-	ErrPlanDataInvalid = errors.New("计划数据异常")
+	ErrPlanNotFound       = errors.New("计划不存在")
+	ErrPlanDataInvalid    = errors.New("计划数据异常")
+	ErrPlanStatusConflict = errors.New("计划状态冲突")
 )
 
 type PlanRepository interface {
@@ -20,6 +21,8 @@ type PlanRepository interface {
 	// Count 返回与 List 同筛选条件下的计划总数，供分页展示。
 	Count(context.Context, model.PlanListFilter) (int, error)
 	Get(context.Context, uint64) (model.Plan, error)
-	// Delete 删除本系统计划；数据库外键同时清除其路径和工具侧配置。
+	// Delete 删除计划及其全部运行记录；有活跃运行返回 ErrPlanStatusConflict。
 	Delete(context.Context, uint64) error
+	// BatchDelete 批量删除计划；返回失败映射（空映射表示全部成功）。
+	BatchDelete(context.Context, []uint64) map[uint64]error
 }

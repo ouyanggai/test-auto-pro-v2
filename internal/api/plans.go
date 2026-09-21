@@ -22,6 +22,7 @@ type PlanService interface {
 	ListPaged(context.Context, string, model.PlanStatus, int, int) (service.PlanPage, error)
 	Get(context.Context, uint64) (model.Plan, error)
 	Delete(context.Context, uint64) error
+	BatchDelete(context.Context, []uint64) map[uint64]error
 }
 
 type createPlanRequest struct {
@@ -68,6 +69,7 @@ func registerPlanRoutes(mux *http.ServeMux, plans PlanService) {
 	mux.HandleFunc("GET /api/plans", handleListPlans(plans))
 	mux.HandleFunc("GET /api/plans/{id}", handleGetPlan(plans))
 	mux.HandleFunc("DELETE /api/plans/{id}", handleDeletePlan(plans))
+	mux.HandleFunc("POST /api/plans/batch-delete", handleBatchDeletePlans(plans))
 }
 
 // handleUpdatePlan 解析完整计划配置并保存；不接受历史运行字段，避免覆盖运行事实。
@@ -119,6 +121,59 @@ func handleDeletePlan(plans PlanService) http.HandlerFunc {
 			return
 		}
 		writeSuccess(response, map[string]bool{"deleted": true})
+	}
+}
+
+// handleBatchDeletePlans 批量删除计划；返回成功数与失败项详情。
+func handleBatchDeletePlans(plans PlanService) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		var input struct {
+			IDs []string `json:"ids"`
+		}
+		decoder := json.NewDecoder(io.LimitReader(request.Body, maxAPIRequestBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "批量删除请求格式不正确", false)
+			return
+		}
+		if err := ensureJSONEnd(decoder); err != nil {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "批量删除请求只能包含一个对象", false)
+			return
+		}
+		if len(input.IDs) == 0 {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "请选择要删除的计划", false)
+			return
+		}
+		if len(input.IDs) > 100 {
+			writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", "单次最多删除 100 个计划", false)
+			return
+		}
+		ids := make([]uint64, 0, len(input.IDs))
+		for _, raw := range input.IDs {
+			id, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
+			if err != nil || id == 0 {
+				writeFailure(response, http.StatusBadRequest, "INVALID_ARGUMENT", fmt.Sprintf("计划 ID 不正确: %s", raw), false)
+				return
+			}
+			ids = append(ids, id)
+		}
+		failures := plans.BatchDelete(request.Context(), ids)
+		succeeded := len(ids) - len(failures)
+		result := map[string]any{
+			"succeeded": succeeded,
+			"failed":    len(failures),
+		}
+		if len(failures) > 0 {
+			failureDetails := make([]map[string]string, 0, len(failures))
+			for id, err := range failures {
+				failureDetails = append(failureDetails, map[string]string{
+					"id":      strconv.FormatUint(id, 10),
+					"message": err.Error(),
+				})
+			}
+			result["failures"] = failureDetails
+		}
+		writeSuccess(response, result)
 	}
 }
 
@@ -347,4 +402,9 @@ func (unavailablePlanService) Get(context.Context, uint64) (model.Plan, error) {
 // Delete 在未注入计划存储时拒绝删除。
 func (unavailablePlanService) Delete(context.Context, uint64) error {
 	return &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}
+}
+
+// BatchDelete 在未注入计划存储时拒绝批量删除。
+func (unavailablePlanService) BatchDelete(context.Context, []uint64) map[uint64]error {
+	return map[uint64]error{0: &service.PlanError{Kind: service.PlanErrorStorage, Message: "计划存储暂不可用"}}
 }

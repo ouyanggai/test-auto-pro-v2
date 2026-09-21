@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	driver "github.com/go-sql-driver/mysql"
@@ -170,18 +171,68 @@ FROM test_plans WHERE id = ?`, id)
 	return plan, err
 }
 
-// Delete 删除一个计划；路径及其工具侧配置由外键级联清理，绝不访问目标平台。
+// Delete 删除一个计划及其全部运行记录；路径及其工具侧配置由外键级联清理，绝不访问目标平台。
 func (r *PlanRepository) Delete(ctx context.Context, id uint64) error {
-	result, err := r.db.ExecContext(ctx, "DELETE FROM test_plans WHERE id = ?", id)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
+	defer tx.Rollback()
+	if err := r.deletePlanWithRuns(ctx, tx, id); err != nil {
 		return err
 	}
-	if count == 0 {
-		return repository.ErrPlanNotFound
+	return tx.Commit()
+}
+
+// BatchDelete 批量删除计划及其运行记录；有活跃运行的计划会跳过并返回错误映射。
+func (r *PlanRepository) BatchDelete(ctx context.Context, ids []uint64) map[uint64]error {
+	failures := make(map[uint64]error)
+	for _, id := range ids {
+		if err := r.Delete(ctx, id); err != nil {
+			failures[id] = err
+		}
+	}
+	return failures
+}
+
+// deletePlanWithRuns 在事务内删除计划及其全部运行记录子树。
+func (r *PlanRepository) deletePlanWithRuns(ctx context.Context, tx *sql.Tx, planID uint64) error {
+	// 1. 锁定计划行并检查存在性
+	var exists bool
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM test_plans WHERE id = ? FOR UPDATE", planID).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return repository.ErrPlanNotFound
+		}
+		return err
+	}
+
+	// 2. 检查是否有活跃运行
+	var activeCount int
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM runs WHERE plan_id = ? AND status IN ('pending', 'running')",
+		planID).Scan(&activeCount); err != nil {
+		return err
+	}
+	if activeCount > 0 {
+		return fmt.Errorf("%w: 这个计划还有 %d 次运行正在进行中；请先停止全部运行，再删除", repository.ErrPlanStatusConflict, activeCount)
+	}
+
+	// 3. 按依赖顺序删除运行子树
+	stmts := []string{
+		"DELETE FROM run_manual_conclusions WHERE path_run_id IN (SELECT id FROM path_runs WHERE run_id IN (SELECT id FROM runs WHERE plan_id = ?))",
+		"DELETE FROM run_step_attempts WHERE path_run_id IN (SELECT id FROM path_runs WHERE run_id IN (SELECT id FROM runs WHERE plan_id = ?))",
+		"DELETE FROM run_steps WHERE path_run_id IN (SELECT id FROM path_runs WHERE run_id IN (SELECT id FROM runs WHERE plan_id = ?))",
+		"DELETE FROM run_controls WHERE run_id IN (SELECT id FROM runs WHERE plan_id = ?)",
+		"DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE plan_id = ?)",
+		"DELETE FROM path_runs WHERE run_id IN (SELECT id FROM runs WHERE plan_id = ?)",
+		"DELETE FROM plan_run_queue WHERE plan_id = ?",
+		"DELETE FROM runs WHERE plan_id = ?",
+		"DELETE FROM test_plans WHERE id = ?", // 级联清除 paths/batches/snapshots/history_* 等有 FK 的表
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt, planID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

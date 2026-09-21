@@ -9,6 +9,7 @@ import {
   NTag,
   useMessage,
   type DataTableColumns,
+  type DataTableRowKey,
   type SelectOption,
 } from 'naive-ui'
 import { useRouter } from 'vue-router'
@@ -16,7 +17,7 @@ import { useRouter } from 'vue-router'
 import AppEmptyState from '../components/AppEmptyState.vue'
 import { fetchExecutionPaths } from '../features/execution-paths/api'
 import { planStatusLabels, planStatusOptions } from '../features/plans/logic'
-import { deletePlan, fetchPlansPaged, PlanApiError } from '../features/plans/persistence'
+import { batchDeletePlans, deletePlan, fetchPlansPaged, PlanApiError } from '../features/plans/persistence'
 import type { PlanFilters, PlanRow, PlanStatus } from '../features/plans/types'
 import RunPreflightDialog from '../features/run-readiness/RunPreflightDialog.vue'
 
@@ -28,6 +29,21 @@ const loading = ref(false)
 const loadError = ref('')
 let loadVersion = 0
 let loadController: AbortController | null = null
+
+// 批量操作：选中的计划 ID 集合
+const checkedRowKeys = ref<DataTableRowKey[]>([])
+const batchDeleting = ref(false)
+
+// canBatchDelete 只允许批量删除「未运行」状态的计划
+const canBatchDelete = computed(() => {
+  if (checkedRowKeys.value.length === 0) return false
+  return checkedRowKeys.value.every(id => {
+    const plan = plans.value.find(p => p.id === id)
+    return plan?.status === 'not_started'
+  })
+})
+
+const selectedCount = computed(() => checkedRowKeys.value.length)
 
 // 服务端分页：页码从 1 起，总数由后端返回。
 const page = ref(1)
@@ -113,6 +129,31 @@ async function removePlan(plan: PlanRow) {
 	}
 }
 
+// batchRemovePlans 批量删除选中计划；仅删除未运行状态的计划。
+async function batchRemovePlans() {
+  if (!canBatchDelete.value) return
+  batchDeleting.value = true
+  try {
+    const ids = checkedRowKeys.value.map(String)
+    const result = await batchDeletePlans(ids)
+    if (result.failures.length > 0) {
+      const failureMsg = result.failures.map(f => `计划 ${f.id}: ${f.message}`).join('；')
+      message.warning(`成功删除 ${result.successCount} 个计划，${result.failures.length} 个失败：${failureMsg}`)
+    } else {
+      message.success(`已删除 ${result.successCount} 个计划`)
+    }
+    checkedRowKeys.value = []
+    await loadPlans()
+  }
+  catch (error) {
+    const apiError = error instanceof PlanApiError ? error : new PlanApiError('批量删除失败，请重试')
+    message.error(apiError.message)
+  }
+  finally {
+    batchDeleting.value = false
+  }
+}
+
 async function loadPlans() {
   loadController?.abort()
   const controller = new AbortController()
@@ -162,6 +203,7 @@ function statusTagType(status: PlanStatus): 'default' | 'success' | 'warning' | 
 }
 
 const columns: DataTableColumns<PlanRow> = [
+  { type: 'selection' },
   { title: '计划名称', key: 'name', width: 220, ellipsis: { tooltip: true } },
   { title: '流程名称', key: 'flowName', width: 180, ellipsis: { tooltip: true } },
   { title: '发起账号', key: 'accountName', width: 190, ellipsis: { tooltip: true } },
@@ -245,6 +287,28 @@ const columns: DataTableColumns<PlanRow> = [
         placeholder="全部状态"
       />
       <n-button :disabled="!hasFilters" @click="clearFilters">清空</n-button>
+      <div v-if="selectedCount > 0" class="batch-actions">
+        <span class="batch-count">已选 {{ selectedCount }} 项</span>
+        <n-popconfirm
+          :positive-text="`删除 ${selectedCount} 个计划`"
+          negative-text="取消"
+          :disabled="!canBatchDelete"
+          @positive-click="batchRemovePlans"
+        >
+          <template #trigger>
+            <n-button
+              secondary
+              type="error"
+              size="small"
+              :disabled="!canBatchDelete"
+              :loading="batchDeleting"
+            >
+              批量删除
+            </n-button>
+          </template>
+          删除后会清除本系统中的路径和配置，不能恢复。{{ canBatchDelete ? '' : '只能删除未运行状态的计划。' }}
+        </n-popconfirm>
+      </div>
     </div>
 
     <div v-if="loadError" class="plan-load-error" role="alert">
@@ -259,10 +323,12 @@ const columns: DataTableColumns<PlanRow> = [
         :data="plans"
         :loading="loading"
         :row-key="(row: PlanRow) => row.id"
+        :checked-row-keys="checkedRowKeys"
         :scroll-x="1538"
         :single-line="false"
         :pagination="pagination"
         striped
+        @update:checked-row-keys="(keys: DataTableRowKey[]) => checkedRowKeys = keys"
         @update:page="changePage"
         @update:page-size="changePageSize"
       >
@@ -322,6 +388,7 @@ const columns: DataTableColumns<PlanRow> = [
   align-items: center;
   gap: 12px;
   margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 
 .plan-name-filter {
@@ -330,6 +397,21 @@ const columns: DataTableColumns<PlanRow> = [
 
 .plan-status-filter {
   width: 180px;
+}
+
+.batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  padding: 8px 16px;
+  background: var(--n-color-target);
+  border-radius: 6px;
+}
+
+.batch-count {
+  font-size: 14px;
+  color: var(--n-text-color-2);
 }
 
 .plan-table-region {
