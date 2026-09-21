@@ -76,12 +76,16 @@ func (t *actorSwitchTarget) ListTaskSnapshotsForUser(ctx context.Context, sessio
 }
 
 // UserAccountsByID 是人员目录账号解析假件：ownerID → zhangsan。
-func (t *actorSwitchTarget) UserAccountsByID(_ context.Context, _ target.Session, ids []string) (map[string]string, error) {
+func (t *actorSwitchTarget) UserAccountsByID(_ context.Context, _ target.Session, ids []string) (map[string]target.UserAccount, error) {
 	t.accountsRead = true
-	out := map[string]string{}
+	out := map[string]target.UserAccount{}
 	for _, id := range ids {
 		if account, ok := t.accounts[id]; ok {
-			out[id] = account
+			name := t.ownerName
+			if name == "" {
+				name = account
+			}
+			out[id] = target.UserAccount{Account: account, Name: name}
 		}
 	}
 	return out, nil

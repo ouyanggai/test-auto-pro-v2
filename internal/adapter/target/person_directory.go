@@ -630,13 +630,13 @@ func (c *Client) ResolveFlowAuditMetadataForTest(ctx context.Context, active Ses
 	c.resolveFlowAuditMetadata(ctx, active, tree)
 }
 
-// UserAccountsByID 按目标用户 ID 集合解析登录账号（findByCompanyIdUserList 的 account 字段）。
+// UserAccountsByID 按目标用户 ID 集合解析登录账号与真实姓名（findByCompanyIdUserList 的 account 与 name 字段）。
 // 任务级动作的写请求必须以目标实时待办的实际处理人身份发出：任务列表给出 currentPendingUserId，
-// 这里把它映射回登录账号供执行器切换演员会话。查不到的 ID 不进结果，由调用方决定是否阻断。
+// 这里把它映射回登录账号与姓名供执行器切换演员会话并如实呈现中文名称。查不到的 ID 不进结果，由调用方决定是否阻断。
 // 单次全量分页读取（size=1000），结果由调用方按步骤复用；只读，可安全重试。
-func (c *Client) UserAccountsByID(ctx context.Context, active Session, ids []string) (map[string]string, error) {
+func (c *Client) UserAccountsByID(ctx context.Context, active Session, ids []string) (map[string]UserAccount, error) {
 	if len(ids) == 0 {
-		return map[string]string{}, nil
+		return map[string]UserAccount{}, nil
 	}
 	if strings.TrimSpace(active.CompanyID) == "" {
 		return nil, fmt.Errorf("login response missing company id")
@@ -660,7 +660,7 @@ func (c *Client) UserAccountsByID(ctx context.Context, active Session, ids []str
 			want[trimmed] = struct{}{}
 		}
 	}
-	result := make(map[string]string, len(want))
+	result := make(map[string]UserAccount, len(want))
 	for _, item := range page.DataList {
 		candidate := auditCandidateFromNamed(item)
 		// 目标人员目录的 account/username 在部分部署为空；登录账号实测可使用姓名或手机号，
@@ -669,7 +669,11 @@ func (c *Client) UserAccountsByID(ctx context.Context, active Session, ids []str
 		if _, needed := want[candidate.ID]; !needed || account == "" {
 			continue
 		}
-		result[candidate.ID] = account
+		name := firstNonEmpty(candidate.Name, item.RealName, item.DisplayName, item.Name, account)
+		result[candidate.ID] = UserAccount{
+			Account: account,
+			Name:    name,
+		}
 	}
 	return result, nil
 }

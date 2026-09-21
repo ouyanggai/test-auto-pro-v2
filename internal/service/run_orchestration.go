@@ -1883,6 +1883,23 @@ func pathNameOf(ctx context.Context, paths repository.ExecutionPathRepository, p
 	return path.Name
 }
 
+// isOpaqueIdentifier 判断文案是否为 32 位十六进制或标准 UUID 等不透明系统标识，避免前端误将用户 ID 渲染为人名。
+func isOpaqueIdentifier(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) == 32 {
+		for _, r := range trimmed {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+		return true
+	}
+	if len(trimmed) == 36 && strings.Count(trimmed, "-") == 4 {
+		return true
+	}
+	return false
+}
+
 // buildStepDTOs 把步骤与尝试事实组装为公开 DTO，并附上 step.log 解析出的阶段耗时。
 func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phaseTimings map[string]map[string]int64,
 	requestsByKey map[string][]RunRequestDTO, summaryByKey map[string]runRequestSummaryDTO,
@@ -1894,15 +1911,30 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 	dtos := make([]RunStepDTO, 0, len(steps))
 	for _, stepRecord := range steps {
 		actorName := strings.TrimSpace(stepRecord.ActorSummary)
-		if actorName == "" {
-			// 早期运行可能只落了空 ActorSummary；从同一步写前事实恢复目标实际处理人，
-			// 让加签节点历史详情也能显示真实姓名或用户 ID，而不是计划账号或空白。
-			for index := len(attemptsByStep[stepRecord.ID]) - 1; index >= 0 && actorName == ""; index-- {
+		// 历史运行记录可能 ActorSummary 为空，或此前误落了 32 位 UUID 用户 ID；
+		// 优先从写前事实中的 CurrentTaskAssigneeName 恢复可读中文姓名。
+		if actorName == "" || isOpaqueIdentifier(actorName) {
+			candidateName := ""
+			for index := len(attemptsByStep[stepRecord.ID]) - 1; index >= 0 && candidateName == ""; index-- {
 				facts, decoded := step.DecodeInstanceFacts(attemptsByStep[stepRecord.ID][index].BeforeFacts)
 				if !decoded {
 					continue
 				}
-				actorName = firstNonEmptyText(strings.TrimSpace(facts.CurrentTaskAssigneeName), strings.TrimSpace(facts.CurrentTaskAssigneeID), strings.TrimSpace(facts.CompletedTaskExecutorID))
+				if name := strings.TrimSpace(facts.CurrentTaskAssigneeName); name != "" && !isOpaqueIdentifier(name) {
+					candidateName = name
+				}
+			}
+			if candidateName != "" {
+				actorName = candidateName
+			} else if actorName == "" {
+				// 确实拿不到任何姓名时，才使用 ID 兜底，避免字段完全空白
+				for index := len(attemptsByStep[stepRecord.ID]) - 1; index >= 0 && actorName == ""; index-- {
+					facts, decoded := step.DecodeInstanceFacts(attemptsByStep[stepRecord.ID][index].BeforeFacts)
+					if !decoded {
+						continue
+					}
+					actorName = firstNonEmptyText(strings.TrimSpace(facts.CurrentTaskAssigneeName), strings.TrimSpace(facts.CurrentTaskAssigneeID), strings.TrimSpace(facts.CompletedTaskExecutorID))
+				}
 			}
 		}
 		dto := RunStepDTO{

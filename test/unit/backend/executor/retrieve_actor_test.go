@@ -50,7 +50,8 @@ func TestRetrieveActorResolvesToNodeApprover(t *testing.T) {
 	if preview.Facts.CurrentTaskAssigneeID != "user-handler" {
 		t.Fatalf("取回应以节点审批人身份发出（CurrentTaskAssigneeID=user-handler），实际 %q（计划账号顶替是错的）", preview.Facts.CurrentTaskAssigneeID)
 	}
-	if preview.ActorName != "user-handler" {
-		t.Fatalf("目标只返回实际处理人 ID 时，取回预览也应保留执行人信息，实际 %q", preview.ActorName)
+	// 取回预览必须呈现真实审批人姓名（从人员目录或审核记录解析），绝不能被计划账号顶替，也不应显示无业务意义的内部 ID。
+	if preview.ActorName != "测试处理人" {
+		t.Fatalf("取回预览应解析并展示实际处理人姓名（测试处理人），实际 %q（计划账号顶替或裸露内部 ID 都是错的）", preview.ActorName)
 	}
 }

@@ -136,6 +136,12 @@ type TaskSnapshot struct {
 	BranchExecuteType     string
 }
 
+// UserAccount 包含人员目录解析出的用户登录账号与真实姓名。
+type UserAccount struct {
+	Account string
+	Name    string
+}
+
 // AuditRecordSnapshot 是目标审核记录的只读事实摘要，用于取回和并发会签门禁。
 type AuditRecordSnapshot struct {
 	FlowJobTaskID   string
@@ -143,6 +149,7 @@ type AuditRecordSnapshot struct {
 	FlowNodeProxyID string
 	BatchNo         string
 	ExecutorID      string
+	ExecutorName    string
 	AuditStatus     string
 }
 

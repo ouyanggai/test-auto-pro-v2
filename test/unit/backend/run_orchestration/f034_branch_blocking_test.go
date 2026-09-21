@@ -192,6 +192,33 @@ func TestF039StepDTORecoversInsertedActorFromFacts(t *testing.T) {
 	}
 }
 
+// TestF039StepDTOPrefersRealNameToOpaqueUUID 验证即使历史步骤误记录了 32 位 UUID，
+// 组装 DTO 时也必须优先从写前事实恢复真实的中文姓名，绝不在界面上透传 UUID。
+func TestF039StepDTOPrefersRealNameToOpaqueUUID(t *testing.T) {
+	const opaqueUUID = "0546c9d3aa80455ab9045440a9991137"
+	const realName = "刘慧玲"
+	facts := step.InstanceFacts{
+		CurrentTaskAssigneeID:   opaqueUUID,
+		CurrentTaskAssigneeName: realName,
+	}
+	raw := step.EncodeInstanceFacts(facts)
+	dtos := service.BuildStepDTOsForTest([]model.RunStep{{
+		ID:           1,
+		StepNo:       1,
+		Action:       "approve",
+		NodeKey:      "node-audit",
+		Status:       model.RunStepSucceeded,
+		ActorSummary: opaqueUUID, // 模拟历史步骤中误存的 32 位 UUID
+	}}, []model.RunStepAttempt{{
+		StepID:      1,
+		AttemptNo:   1,
+		BeforeFacts: raw,
+	}})
+	if len(dtos) != 1 || dtos[0].ActorName != realName {
+		t.Fatalf("步骤 DTO 应将 32 位 UUID 恢复为真实姓名 %q，实际 %+v", realName, dtos)
+	}
+}
+
 // TestF034SelectedManualBranchNeverSwitchesToOtherBranches 锁定 F-034 评审 #1：
 // 手动分支已有保存选择时只允许沿该选择继续；选中路径无法到达下一业务节点时直接阻塞，
 // 绝不遍历其他出边改走另一条分支——否则会把请求发到与路径选择不一致的路径。

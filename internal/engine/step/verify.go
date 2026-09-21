@@ -358,6 +358,9 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			// 审核记录按时间返回，同节点多条时后写覆盖=取最近一次通过的执行人（会签取其一即可，目标校验的是成员归属）。
 			if strings.TrimSpace(record.FlowNodeProxyID) == retrieveNodeID && strings.EqualFold(record.AuditStatus, "pass") && strings.TrimSpace(record.ExecutorID) != "" {
 				facts.CompletedTaskExecutorID = strings.TrimSpace(record.ExecutorID)
+				if name := strings.TrimSpace(record.ExecutorName); name != "" {
+					facts.CurrentTaskAssigneeName = name
+				}
 			}
 			// 当前取回人可能与计划账号不同；先按审核记录解析出的真实执行人判断归属，
 			// 再用会话 UserID 作为普通场景兜底，否则“该节点的人同意以后再取回”会被误判成他人已处理。
@@ -373,8 +376,18 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 		// 与其它任务级动作同一条切换会话链路，绝不用计划账号顶替（用户裁决 + 目标 executorId 归属校验）。
 		if facts.CompletedTaskExecutorID != "" {
 			facts.CurrentTaskAssigneeID = facts.CompletedTaskExecutorID
+			// 执行人中文名称优先由审核记录中的 executorName 提供；若未提供则从目录反查真实姓名，绝不把 32 位 ID 当作姓名。
 			if strings.TrimSpace(facts.CurrentTaskAssigneeName) == "" {
-				facts.CurrentTaskAssigneeName = facts.CompletedTaskExecutorID
+				if resolver, ok := e.target.(userAccountResolver); ok {
+					if accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
+						func(callContext context.Context, active target.Session) (map[string]target.UserAccount, error) {
+							return resolver.UserAccountsByID(callContext, active, []string{facts.CompletedTaskExecutorID})
+						}); err == nil {
+						if info, ok := accounts[facts.CompletedTaskExecutorID]; ok {
+							facts.CurrentTaskAssigneeName = firstNonEmpty(strings.TrimSpace(info.Name), strings.TrimSpace(info.Account))
+						}
+					}
+				}
 			}
 		}
 	}

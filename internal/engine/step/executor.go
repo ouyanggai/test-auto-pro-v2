@@ -651,9 +651,24 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	if name := strings.TrimSpace(facts.CurrentTaskAssigneeName); name != "" {
 		actorName = name
 	} else if assigneeID := strings.TrimSpace(facts.CurrentTaskAssigneeID); assigneeID != "" {
-		// 目标偶尔只返回处理人 ID；保留该真实 ID 作为执行人摘要，不能回退为计划账号，
-		// 否则加签插入节点的已执行步骤会显示成空白或把计划账号误认成实际处理人。
-		actorName = assigneeID
+		// 目标偶尔只在待办中返回处理人 ID；优先从人员目录解析真实中文姓名，
+		// 避免加签插入节点或普通审批在放行前预览把 32 位 UUID 裸露在界面上。
+		if resolver, ok := e.target.(userAccountResolver); ok {
+			if accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
+				func(callContext context.Context, active target.Session) (map[string]target.UserAccount, error) {
+					return resolver.UserAccountsByID(callContext, active, []string{assigneeID})
+				}); err == nil {
+				if info, ok := accounts[assigneeID]; ok {
+					if resolvedName := firstNonEmpty(strings.TrimSpace(info.Name), strings.TrimSpace(info.Account)); resolvedName != "" {
+						actorName = resolvedName
+						facts.CurrentTaskAssigneeName = resolvedName
+					}
+				}
+			}
+		}
+		if actorName == runCtx.PlanAccount && assigneeID != "" {
+			actorName = assigneeID
+		}
 	}
 	if persisted := loadPersistedFormDataVerifyIssue(e.facts, runCtx.PathRun.ID, step.Sequence); persisted != "" {
 		facts.FormDataVerifyIssue = persisted
@@ -2927,6 +2942,7 @@ func (e *Executor) InstanceStillAtStepNode(ctx context.Context, runCtx RunContex
 // assigneeAccount 把目标实时待办的实际处理人（用户 ID）解析为登录账号与姓名。
 // 人员目录按公司全量分页读取并就地缓存一次调用；查不到说明目录里没有该用户，
 // 调用方必须阻断本步，绝不能回退成计划账号冒充审批。
+// 解析出的姓名优先使用人员目录真实中文姓名，姓名为空时使用登录账号兜底，绝不把 32 位用户 ID 充当姓名展示。
 // 目录读取沿用读路径会话纪律（readOnlyWithSessionRetry）：目标会话可能在门禁读取与
 // 账号解析之间被作废（实测返回 RESP401「SID已失效!」），失效只允许重登并重放同一只读请求
 // （有界、重登间退避防触发目标会话限制），不能把会话失效直接放大成处理人解析失败。
@@ -2936,19 +2952,22 @@ func (e *Executor) assigneeAccount(ctx context.Context, session target.Session, 
 		return "", "", errors.New("目标客户端不支持人员目录账号解析")
 	}
 	accounts, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
-		func(callContext context.Context, active target.Session) (map[string]string, error) {
+		func(callContext context.Context, active target.Session) (map[string]target.UserAccount, error) {
 			return resolver.UserAccountsByID(callContext, active, []string{assigneeUserID})
 		})
 	if err != nil {
 		return "", "", err
 	}
-	account, ok := accounts[assigneeUserID]
-	if !ok || strings.TrimSpace(account) == "" {
+	info, ok := accounts[assigneeUserID]
+	account := strings.TrimSpace(info.Account)
+	if !ok || account == "" {
 		return "", "", errors.New("人员目录中没有该用户的登录账号")
 	}
-	// 目录接口只返回账号而不返回姓名时，返回真实用户 ID 作为稳定可见摘要，
-	// 避免步骤事实的执行人字段为空或错误回退为计划账号。
-	return strings.TrimSpace(account), strings.TrimSpace(assigneeUserID), nil
+	name := strings.TrimSpace(info.Name)
+	if name == "" {
+		name = account
+	}
+	return account, name, nil
 }
 
 // recordPrepareFailure 把 prepare 阶段（写请求发出前）的步骤失败落一条失败事实行。
@@ -3202,7 +3221,7 @@ type handlerAccountMatcher interface {
 
 // userAccountResolver 是人员目录账号解析能力的最小接口，由目标适配层实现。
 type userAccountResolver interface {
-	UserAccountsByID(ctx context.Context, active target.Session, ids []string) (map[string]string, error)
+	UserAccountsByID(ctx context.Context, active target.Session, ids []string) (map[string]target.UserAccount, error)
 }
 
 // readOnlyWithSessionRetry 执行目标只读操作；会话失效时先刷新会话再立即重读，其他临时错误按配置退避。

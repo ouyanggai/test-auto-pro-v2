@@ -278,17 +278,17 @@ func (f *fakeTarget) FindSubmittedFlowFacts(_ context.Context, _ target.Session,
 	}, nil
 }
 
-// UserAccountsByID 是人员目录账号解析假件：默认把处理人解析为计划账号，
+// UserAccountsByID 是人员目录账号解析假件：默认把处理人解析为计划账号与测试姓名，
 // 专用假件用 handlerAccount 表达"另一位处理人"的账号（actorSwitchTarget 另有自己的映射）。
-func (f *fakeTarget) UserAccountsByID(_ context.Context, _ target.Session, ids []string) (map[string]string, error) {
+func (f *fakeTarget) UserAccountsByID(_ context.Context, _ target.Session, ids []string) (map[string]target.UserAccount, error) {
 	account := strings.TrimSpace(f.handlerAccount)
 	if account == "" {
 		account = "oyg-test"
 	}
-	result := make(map[string]string, len(ids))
+	result := make(map[string]target.UserAccount, len(ids))
 	for _, id := range ids {
 		if trimmed := strings.TrimSpace(id); trimmed != "" {
-			result[trimmed] = account
+			result[trimmed] = target.UserAccount{Account: account, Name: "测试处理人"}
 		}
 	}
 	return result, nil
