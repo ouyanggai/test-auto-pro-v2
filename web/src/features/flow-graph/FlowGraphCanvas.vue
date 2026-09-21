@@ -122,7 +122,11 @@ const displayedLayout = computed(() => {
           : configurationInteractive
             ? `${node.data?.name || '流程节点'}，${configurationState?.statusName || '待配置'}，按回车或空格选择节点`
             : `${node.data?.name || '流程节点'}，不可配置`,
-        class: (props.runMode ? runInPath : analysis.reachableNodeIds.has(node.id)) ? 'flow-node--path-active' : 'flow-node--path-muted',
+        class: [
+          props.runMode ? (runInPath ? 'flow-node--path-active' : 'flow-node--path-muted') : (analysis.reachableNodeIds.has(node.id) ? 'flow-node--path-active' : 'flow-node--path-muted'),
+          // 结束节点单独标记：它不显示运行状态文案，只用整块颜色表达"流程走到头了没有"。
+          ...(props.runMode && node.data?.type === 'end' ? ['flow-node--end'] : []),
+        ],
         data: {
           ...node.data,
           configurationMode: props.configurationMode && !props.runMode,

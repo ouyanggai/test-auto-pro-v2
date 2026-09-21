@@ -8,6 +8,9 @@ import type { FlowNodeData } from './types'
 const props = defineProps<{ data: FlowNodeData }>()
 const emit = defineEmits<{ openForm: [] }>()
 
+// isEndNode 标识流程收口节点：它不显示运行状态文案与步骤事实，只用颜色表达"走到头了没有"。
+const isEndNode = computed(() => props.data.type === 'end')
+
 const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>(() => {
   switch (props.data.type) {
     case 'start': return 'success'
@@ -41,7 +44,9 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       <span class="flow-node__type">{{ data.typeName }}</span>
       <span class="flow-node__name">{{ data.name }}</span>
       <span v-if="data.auditPeople?.length" class="flow-node__people">处理人：{{ data.auditPeople.join('、') }}</span>
-      <span class="flow-node__run-status">
+      <!-- 结束节点不承载运行状态：它只是流程收口位置，写「未开始/已完成」都是噪音。
+           走到头就整块绿色高亮，没走到就保持中性，状态含义由颜色单独表达。 -->
+      <span v-if="!isEndNode" class="flow-node__run-status">
         <!-- 状态点是细小连续的动态反馈：运行/核验中呼吸，其余状态静止；文字始终写清运行态。 -->
         <span
           v-if="data.runStatus === 'running' || data.runStatus === 'verifying'"
@@ -52,11 +57,11 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
         <span v-if="data.runCurrent && data.runBusy" class="flow-node__run-spinner" aria-hidden="true" />
         {{ data.runStatusName || '未开始' }}
       </span>
-      <span v-if="data.runCurrent" class="flow-node__run-current-badge" role="status">
+      <span v-if="data.runCurrent && !isEndNode" class="flow-node__run-current-badge" role="status">
         {{ data.runBusy ? '正在执行' : '当前步' }}
       </span>
       <!-- 已落账步骤的紧凑事实（步序·动作·处理人·耗时）：卡片直接呈现这一步做了什么，不必点开右栏。 -->
-      <span v-if="data.runStepNote" class="flow-node__run-step">{{ data.runStepNote }}</span>
+      <span v-if="data.runStepNote && !isEndNode" class="flow-node__run-step">{{ data.runStepNote }}</span>
       <handle type="source" :position="Position.Bottom" :connectable="false" />
     </div>
     <!-- 错误摘要浮在卡片下方：一眼可见失败原因的第一句话，不撑破布局（完整依据在右栏）。 -->
@@ -319,6 +324,23 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
 .flow-node--run-cancelled { opacity: 0.6; }
 .flow-node--run-stopped .flow-node__run-status,
 .flow-node--run-cancelled .flow-node__run-status { color: var(--warning-color, #f0a020); }
+
+/* 结束节点：不显示状态文案，用整块颜色表达收口结果。
+   未走到 = 中性弱化；走到头 = 实心绿色高亮，一眼看出流程正常结束。 */
+.flow-node--end .flow-node__type,
+.flow-node--end .flow-node__name { color: inherit; }
+.flow-node--end.flow-node--run-not_started {
+  border-style: solid;
+  opacity: 0.55;
+}
+.flow-node--end.flow-node--run-completed {
+  color: #fff;
+  background: var(--success-color, #18a058);
+  border-color: var(--success-color, #18a058);
+  border-width: 2px;
+  opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success-color, #18a058) 26%, transparent);
+}
 
 .flow-node--run-selected {
   border-color: var(--flow-direction-color);

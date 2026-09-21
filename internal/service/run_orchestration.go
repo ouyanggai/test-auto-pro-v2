@@ -1215,14 +1215,14 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				if projectionOK {
 					factGraph = projected
 				}
-				if pathRun.Status == model.PathRunStatusCompleted {
-					projected = ensureVirtualEndNode(projected)
-				}
+				// 结束节点是每次运行的固定终点，不是"完成态才补的装饰"：运行中就要画在最后，
+				// 否则画布上看不到流程要在哪里收口。完成态由 buildNodeStates 给它绿色完成态。
+				projected = ensureVirtualEndNode(projected)
 				if projectionOK {
 					detail.DynamicGraph = runFlowGraphDTO(projected)
 					detail.DynamicGraphBindable = true
-				} else if pathRun.Status == model.PathRunStatusCompleted && len(graph.Nodes) > 0 {
-					// 结构无法唯一绑定时完成态仍按计划图收口，结束节点不能因动态读取异常消失。
+				} else if len(graph.Nodes) > 0 {
+					// 结构无法唯一绑定时仍按计划结构收口，结束节点不能因动态读取异常消失。
 					detail.DynamicGraph = runFlowGraphDTO(ensureVirtualEndNode(graph))
 					detail.DynamicGraphBindable = true
 				}
@@ -1238,8 +1238,9 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			}
 		}
 	}
-	if pathRun.Status == model.PathRunStatusCompleted && detail.DynamicGraph == nil && len(graph.Nodes) > 0 {
-		// 没有运行期结构读取能力时，完成态直接使用计划结构并补稳定结束节点。
+	if detail.DynamicGraph == nil && len(graph.Nodes) > 0 {
+		// 没有运行期结构读取能力时，直接使用计划结构并补稳定结束节点：
+		// 结束节点在运行中就要显示在最后，完成时再由节点运行态把它点亮为绿色。
 		detail.DynamicGraph = runFlowGraphDTO(ensureVirtualEndNode(graph))
 		detail.DynamicGraphBindable = true
 	}
@@ -2159,6 +2160,15 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 			status = model.PathRunStatusVerifying
 		}
 		states[graphNodeKey(preview.NodeKey)] = nodeState(status)
+	}
+	// 结束节点是流程收口位置，不参与"等待运行"的路线语义：它只表达"整条路径走到头了没有"。
+	// 路径已完成即点亮为成功（画布上绿色高亮）；未完成保持未开始（结束节点本身不要状态文案）。
+	if _, exists := states[virtualRunEndNodeID]; exists {
+		if pathRun.Status == model.PathRunStatusCompleted {
+			states[virtualRunEndNodeID] = nodeState(model.PathRunStatusCompleted)
+		} else {
+			states[virtualRunEndNodeID] = nodeState(model.PathRunStatusNotStarted)
+		}
 	}
 	return states
 }
