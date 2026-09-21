@@ -243,18 +243,16 @@ func validateEntryNodeIDs(entryNodeIDs []string, nodes []model.FlowGraphNode) ([
 	return entries, nil
 }
 
-// applyInitiatorStartPeople 把发起节点画布上显示的「人」改成流程发起人本人（工具运行时=计划账号）。
-// 目标发起节点的 auditConfig 明细装的是公司/部门范围条目，直接画上去会在「发起人」节点显示成公司名字，
-// 而不是发起人姓名（用户报告）。这里用计划账号（本部署登录名即姓名）覆盖发起节点的人员展示；
-// 非发起节点不动。initiator 为空时保持原样，绝不臆造。
+// applyInitiatorStartPeople 把发起节点画布上显示的「人」改成流程发起人本人（工具运行时=计划账号），
+// 同时清空空节点（empty）上的候选人员展示，避免空节点被误填或显示成发起人。
 func applyInitiatorStartPeople(nodes []model.FlowGraphNode, initiator string) []model.FlowGraphNode {
 	initiator = strings.TrimSpace(initiator)
-	if initiator == "" {
-		return nodes
-	}
 	for index := range nodes {
-		if strings.EqualFold(strings.TrimSpace(nodes[index].Type), "start") {
+		nodeType := strings.ToLower(strings.TrimSpace(nodes[index].Type))
+		if nodeType == "start" && initiator != "" {
 			nodes[index].AuditPeople = []string{initiator}
+		} else if nodeType == "empty" {
+			nodes[index].AuditPeople = nil
 		}
 	}
 	return nodes

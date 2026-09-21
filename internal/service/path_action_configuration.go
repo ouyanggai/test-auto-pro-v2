@@ -1081,14 +1081,11 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 					rejections = append(rejections, item.Label+"：目标没有返回动作专属处理人候选，不能自动配置")
 					continue
 				}
-				// 加签动作的处理人必须是运行期可登录的人：优先选计划账号本人（候选人里存在时），
-				// 否则回落到种子随机；移交/传阅沿用随机，等真实运行暴露同类问题再收敛。
-				strategy, preferred := autoSignPersonStrategyPreferPlanAccount(*item.Person, kind, planAccount)
-				if !preferred {
-					strategy = autoPersonStrategy(*item.Person, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
-				}
+				// 加签动作的处理人从目标目录候选人中挑选，排除发起人（planAccount），避免默认加签给自己；
+				// 移交/传阅沿用随机。
+				strategy := autoSignPersonStrategyExcludePlanAccount(*item.Person, kind, planAccount, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
 				if len(strategy.Selected) == 0 {
-					rejections = append(rejections, item.Label+"：动作专属候选为空，不能用空人员凑数")
+					rejections = append(rejections, item.Label+"：动作专属候选为空（或排除发起人后无可用候选），不能自动配置")
 					continue
 				}
 				// 完整策略/人数校验在接受循环进行（需要验证层的人员目标目录，见 validateAutoCandidatePerson）。
@@ -1105,21 +1102,28 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 	}
 }
 
-// autoSignPersonStrategyPreferPlanAccount 为加签动作挑选「运行期可证明可登录」的处理人：
-// 候选里存在计划账号本人（按姓名匹配目标目录候选）时，返回 manual 策略锁定该候选；
-// 不存在或 planAccount 为空时返回 preferred=false，调用方回落到原种子随机策略。
-// 关键约束：不改变候选目录本身，只做确定性挑选，保证重复一键配置结果一致。
-func autoSignPersonStrategyPreferPlanAccount(person model.PathConfigPerson, kind model.ActionKey, planAccount string) (model.PathConfigPersonStrategyInput, bool) {
+// autoSignPersonStrategyExcludePlanAccount 为加签动作挑选处理人：
+// 明确排除流程发起人（planAccount），从剩余合法候选人中按确定性种子挑选；
+// 若候选人仅有发起人一人或无其它候选，返回空选集。
+func autoSignPersonStrategyExcludePlanAccount(person model.PathConfigPerson, kind model.ActionKey, planAccount string, seed uint64) model.PathConfigPersonStrategyInput {
+	if kind != model.ActionAddSign {
+		return autoPersonStrategy(person, seed)
+	}
 	account := strings.TrimSpace(planAccount)
-	if kind != model.ActionAddSign || account == "" {
-		return model.PathConfigPersonStrategyInput{}, false
-	}
-	for _, option := range person.Options {
-		if strings.TrimSpace(option.Label) == account {
-			return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "manual", Seed: 1, Selected: []string{option.Value}}, true
+	filtered := person
+	if account != "" {
+		remainingOptions := make([]model.PathConfigPersonOption, 0, len(person.Options))
+		for _, opt := range person.Options {
+			if strings.TrimSpace(opt.Label) != account {
+				remainingOptions = append(remainingOptions, opt)
+			}
 		}
+		filtered.Options = remainingOptions
 	}
-	return model.PathConfigPersonStrategyInput{}, false
+	if len(filtered.Options) == 0 {
+		return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "manual", Seed: 1, Selected: nil}
+	}
+	return autoPersonStrategy(filtered, seed)
 }
 
 // autoCandidateDisabledReason 返回候选被目标目录禁用时的具体原因，供一键配置结果报告定位。

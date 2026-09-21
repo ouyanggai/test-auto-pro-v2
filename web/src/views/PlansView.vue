@@ -250,7 +250,7 @@ const columns: DataTableColumns<PlanRow> = [
         ),
         h(NButton, { size: 'small', secondary: true, type: 'primary', onClick: () => editPlan(row) }, { default: () => '编辑计划' }),
         h(NButton, { size: 'small', secondary: true, onClick: () => editPaths(row) }, { default: () => '编辑路径' }),
-        row.status === 'not_started' ? h('span', { class: 'plan-row-actions__delete' }, [
+        row.status !== 'running' ? h('span', { class: 'plan-row-actions__delete' }, [
           h(NPopconfirm, { positiveText: '删除计划', negativeText: '取消', onPositiveClick: () => void removePlan(row) }, {
             default: () => '删除后会清除本系统中的路径和配置，不能恢复。',
             trigger: () => h(NButton, { size: 'small', secondary: true, type: 'error' }, { default: () => '删除' }),

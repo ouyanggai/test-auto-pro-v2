@@ -410,15 +410,22 @@ const runBusy = computed(() => acting.value
 // runStepNotes 按图节点 ID 汇总每个节点最近一次已落账步骤的紧凑事实：
 // 步序·动作·处理人·耗时都取自运行详情 DTO 的同源事实，卡片直接呈现，不点开右栏也能读。
 // 多步骤节点（如动作次数循环）显示最后一步的耗时，步序显示该节点最后走过的序号。
+// 对于空节点或系统导航步骤，不显示发起人账号，直接表达为系统自动处理。
 const runStepNotes = computed<Record<string, string>>(() => {
   const notes: Record<string, string> = {}
   if (!detail.value) return notes
   for (const step of detail.value.steps) {
     const nodeID = step.nodeId || step.nodeKey
     if (!nodeID) continue
+    const targetNode = graphNodeByID.value.get(nodeID)
+    const isStepEmptyNode = targetNode?.type === 'empty' || targetNode?.name === '空节点'
     const seconds = step.durationMs >= 1000 ? `${Math.round(step.durationMs / 1000)}秒` : `${step.durationMs}毫秒`
-    const actor = step.actorName ? `· ${step.actorName}` : ''
-    notes[nodeID] = `第 ${step.stepNo} 步 ${actionLabel(step.actionName, step.action)} ${actor} · ${seconds}`.replace(/\s+/g, ' ').trim()
+    if (isStepEmptyNode || step.action === 'system_automatic') {
+      notes[nodeID] = `第 ${step.stepNo} 步 系统自动跳过 · ${seconds}`.trim()
+    } else {
+      const actor = step.actorName ? `· ${step.actorName}` : ''
+      notes[nodeID] = `第 ${step.stepNo} 步 ${actionLabel(step.actionName, step.action)} ${actor} · ${seconds}`.replace(/\s+/g, ' ').trim()
+    }
   }
   return notes
 })

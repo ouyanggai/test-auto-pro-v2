@@ -3,7 +3,7 @@ import { NButton, NEmpty, NPagination, NPopconfirm, NResult, NSpin, NTag, useThe
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { deleteRun, fetchRunPaths, formatTime, RunApiError } from '../features/runs/api'
+import { deleteRun, fetchRunPaths, formatTime, RunApiError, stopRun } from '../features/runs/api'
 import type { RunPathProgress, RunPathsView } from '../features/runs/api'
 
 // RunPathsView 是二级路径页：一次运行实际参与的执行路径。
@@ -22,6 +22,33 @@ const viewNotFound = computed(() => loadFailure.value?.status === 404)
 
 // deleting 表示删除请求在途：按钮忙碌，重复点击不会发出第二个删除请求。
 const deleting = ref(false)
+// stoppingAll 表示停止所有路径请求在途。
+const stoppingAll = ref(false)
+
+// canStopAll 判断当前是否有尚未停止/终结的路径。
+const canStopAll = computed(() => {
+  if (!view.value) return false
+  const terminal = ['已完成', '失败', '已停止', '已取消']
+  if (terminal.includes(view.value.runStatusName)) return false
+  return view.value.paths.some(p => !terminal.includes(p.statusName))
+})
+
+// stopAllPaths 停止所有未完成的运行路径。
+async function stopAllPaths(): Promise<void> {
+  if (stoppingAll.value || !view.value) return
+  stoppingAll.value = true
+  errorText.value = ''
+  try {
+    const terminal = ['已完成', '失败', '已停止', '已取消']
+    const activePaths = view.value.paths.filter(p => !terminal.includes(p.statusName))
+    await Promise.allSettled(activePaths.map(p => stopRun(runId, p.pathRunId)))
+    await loadPaths()
+  } catch (error) {
+    errorText.value = error instanceof RunApiError ? error.message : '停止失败，请重试'
+  } finally {
+    stoppingAll.value = false
+  }
+}
 
 // loadPaths 读取本次运行的路径进度；轮询只在运行未结束时继续。
 async function loadPaths(): Promise<void> {
@@ -164,6 +191,12 @@ onBeforeUnmount(() => {
           <span>{{ view.scheduleName }} · {{ view.concurrencyLabel }}</span>
           <span>开始于 {{ formatTime(view.startedAt) }}</span>
           <span v-if="view.finishedAt">结束于 {{ formatTime(view.finishedAt) }}</span>
+          <NPopconfirm v-if="canStopAll" @positive-click="stopAllPaths">
+            <template #trigger>
+              <NButton size="small" type="warning" ghost :loading="stoppingAll">停止所有路径</NButton>
+            </template>
+            确定要停止本次运行的所有活动路径吗？正在执行的步骤将在当前步完成后停止。
+          </NPopconfirm>
           <NPopconfirm @positive-click="removeRun">
             <template #trigger>
               <NButton size="small" type="error" ghost :loading="deleting">删除本次运行</NButton>
