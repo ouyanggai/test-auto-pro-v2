@@ -478,10 +478,14 @@ func (c *Client) ReadTemplateTree(ctx context.Context, active Session, templateI
 	return tree, err
 }
 
-// ReadProxyTree 按已核实的 flowProxyId 读取既有实例代理树。
+// ReadProxyTree 按已核实的 flowProxyId 读取既有实例代理树，并补全人员名称目录。
 func (c *Client) ReadProxyTree(ctx context.Context, active Session, proxyID string) (*FlowNodeTemplate, error) {
 	tree, _, _, _, _, _, err := c.readFlowDetail(ctx, active, "/web/flowProxy/findById", proxyID)
-	return tree, err
+	if err != nil {
+		return nil, err
+	}
+	c.resolveFlowAuditMetadata(ctx, active, tree)
+	return tree, nil
 }
 
 // ReadFlowProxyDocument 读取目标返回的完整 FlowProxyVo 原始文档，供实例私有代理更新原样回传。

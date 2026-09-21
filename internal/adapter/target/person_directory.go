@@ -524,7 +524,7 @@ func appendAuditResolutionIssue(config *FlowNodeAuditConfig, category, reason st
 // auditDirectoryCategory 把目标人员类型映射为目录类别；未知值不会作为目标枚举公开。
 func auditDirectoryCategory(value, auditType string) string {
 	switch strings.TrimSpace(value) {
-	case "personnel":
+	case "personnel", "assign":
 		return "人员"
 	case "position":
 		return "岗位"

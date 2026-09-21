@@ -253,19 +253,33 @@ const stepNextText = computed(() => {
 })
 
 // stepPlainSummary 是最直白的一句话：谁 + 在哪个节点 + 做了什么 + 什么结果（失败带原因）。
-// 用户裁决：不要术语和内部黑话，就说「哪个人做哪个动作是什么结果」。
+// 用户裁决：加签显示「谁执行了加签，加签给了谁」；不要术语和内部黑话，不要出现「做了同意了」等废话。
 const stepPlainSummary = computed(() => {
   const step = stepDialog.value
   if (!step) return ''
   const who = step.actorName?.trim() || '处理人'
   const where = (props.nodeName || step.nodeKey || '该节点').trim()
-  const what = stepActionLabel(step)
   const title = stepOutcomeTitle.value
-  if (title === '成功') return `${who} 在「${where}」做了「${what}」，成功了。`
-  if (title === '失败') return `${who} 在「${where}」做了「${what}」，失败了：${stepWhyText.value || '目标未返回具体原因'}。`
-  if (title === '阻塞') return `${who} 在「${where}」的「${what}」没能开始：${stepWhyText.value || '前置条件不满足'}。`
-  if (title === '结果待确认') return `${who} 在「${where}」做了「${what}」，请求发出了但结果还没确认。`
-  return `${who} 在「${where}」做了「${what}」，当前状态：${title}。`
+
+  // 加签动作特殊简洁表达：谁在哪个节点执行了加签，加签给了谁
+  if (step.action === 'add_sign' || step.actionName === '加签') {
+    const addSignTarget = currentPreview.value?.facts?.currentTaskAssigneeName
+      || props.detail.currentPreview?.actorName
+      || (nodeTimeline.value.find(item => item.stepNo === step.stepNo + 1)?.actorName)
+      || '指定人员'
+    if (title === '成功') return `${who} 在「${where}」执行了加签，加签给了 ${addSignTarget}。`
+    if (title === '失败') return `${who} 在「${where}」执行加签失败：${stepWhyText.value || '目标未返回具体原因'}。`
+    if (title === '阻塞') return `${who} 在「${where}」的加签未能开始：${stepWhyText.value || '前置条件不满足'}。`
+    return `${who} 在「${where}」执行加签，当前状态：${title}。`
+  }
+
+  // 普通审批与操作：简洁表达谁在哪个节点执行了什么操作
+  const what = actionLabel(step.actionName, step.action)
+  if (title === '成功') return `${who} 在「${where}」执行了「${what}」。`
+  if (title === '失败') return `${who} 在「${where}」执行「${what}」失败：${stepWhyText.value || '目标未返回具体原因'}。`
+  if (title === '阻塞') return `${who} 在「${where}」的「${what}」未能开始：${stepWhyText.value || '前置条件不满足'}。`
+  if (title === '结果待确认') return `${who} 在「${where}」执行了「${what}」，等待确认结果。`
+  return `${who} 在「${where}」执行「${what}」，当前状态：${title}。`
 })
 
 // finalFactsText 把最终目标事实摘要渲染为中文行，不直接输出英文键 JSON。
@@ -533,13 +547,13 @@ const dialogStyle = computed(() => ({
       preset="card"
       class="run-panel__dialog"
       :style="dialogStyle"
-      :title="stepDialog ? `第 ${stepDialog.stepNo} 步 · ${stepActionLabel(stepDialog)}` : ''"
+      :title="stepDialog ? `第 ${stepDialog.stepNo} 步 · 执行操作` : ''"
       @update:show="stepDialog = null"
     >
       <template v-if="stepDialog">
-        <!-- 最直白的一句话：谁做了什么动作、什么结果。用户裁决：不要术语和黑话。 -->
+        <!-- 谁执行了什么动作、加签给了谁 -->
         <p class="run-panel__plain" :class="`run-panel__plain--${stepOutcomeTone}`">{{ stepPlainSummary }}</p>
-        <!-- 结果状态 + 步骤总耗时；动作/节点/处理人已在上面那句话里说清。 -->
+        <!-- 结果状态 + 步骤总耗时 -->
         <div class="run-panel__summary">
           <div class="run-panel__summary-main">
             <n-tag size="small" :type="stepOutcomeTone">{{ stepOutcomeTitle }}</n-tag>
@@ -554,13 +568,11 @@ const dialogStyle = computed(() => ({
           <p v-if="stepNextText" class="run-panel__why-next">下一步：{{ stepNextText }}</p>
         </div>
 
-        <!-- 排查入口：默认折叠。用户裁决：技术细节只留四件事——这个节点做了什么动作、
-             请求了哪些接口（按接口分类做标题）、每个接口用了多久、日志在哪。
-             阶段流水、attempt 结论文案、trace、检查项、原始报文一律不再展示。 -->
-        <details class="run-panel__debug">
-          <summary>技术细节：这个节点做了什么、请求了哪些接口</summary>
+        <!-- 技术细节：四要素（操作、请求接口列表按分类做标题、用时、日志位置），删除一切废话 -->
+        <div class="run-panel__tech-details">
+          <p class="run-panel__tech-title">技术细节</p>
 
-          <!-- 这个节点做了哪些动作：按实际执行的步骤列出，动作名用中文口径。 -->
+          <!-- 1. 执行的操作 -->
           <section class="run-panel__section">
             <p class="run-panel__section-title">执行的操作</p>
             <ul class="run-panel__op-lines">
@@ -571,7 +583,7 @@ const dialogStyle = computed(() => ({
             </ul>
           </section>
 
-          <!-- 接口请求按「动作分类」做标题分组：路径跟着分类走，用户按分类找接口，不用读阶段名。 -->
+          <!-- 2. 请求的接口（以接口分类为标题，显示接口与耗时） -->
           <section
             v-for="group in requestGroupsByOutcome"
             :key="group.key"
@@ -588,16 +600,19 @@ const dialogStyle = computed(() => ({
               </li>
             </ul>
           </section>
-          <p v-if="requestGroupsByOutcome.length === 0" class="run-panel__muted">这一步没有发出真实接口请求（历史运行或读取类步骤未产生网络日志）</p>
+          <p v-if="requestGroupsByOutcome.length === 0" class="run-panel__muted">这一步没有发出真实接口请求</p>
 
-          <!-- 日志位置：只给目录与行号，便于直接去翻原文。 -->
-          <dl class="run-panel__debug-list">
-            <template v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo">
-              <div><dt>日志位置</dt><dd class="run-panel__debug-path">{{ attempt.logPath }} 第 {{ attempt.logLine }} 行</dd></div>
-              <div><dt></dt><dd><n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button></dd></div>
-            </template>
-          </dl>
-        </details>
+          <!-- 3. 日志位置 -->
+          <section class="run-panel__section">
+            <p class="run-panel__section-title">日志位置</p>
+            <dl class="run-panel__debug-list">
+              <template v-for="attempt in stepDialog.attempts" :key="attempt.attemptNo">
+                <div><dt></dt><dd class="run-panel__debug-path">{{ attempt.logPath }} 第 {{ attempt.logLine }} 行</dd></div>
+                <div><dt></dt><dd><n-button text size="tiny" type="info" @click="copyLogRef(attempt)">复制日志位置</n-button></dd></div>
+              </template>
+            </dl>
+          </section>
+        </div>
       </template>
     </n-modal>
   </aside>
@@ -860,7 +875,20 @@ const dialogStyle = computed(() => ({
   line-height: 1.6;
 }
 
-/* 排查折叠区：日志路径可换行/横向滚动，复制按钮独立成行，不挤压主结论。 */
+/* 技术细节区：直接展开，包含操作、接口与耗时、日志位置 */
+.run-panel__tech-details {
+  margin: 14px 0 0;
+  border-top: 1px dashed var(--run-border-color, var(--flow-edge-color, #ccc));
+  padding-top: 12px;
+}
+
+.run-panel__tech-title {
+  margin: 0 0 10px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--run-secondary-text-color, #909090);
+}
+
 .run-panel__debug {
   margin: 4px 0 0;
   border: 1px solid var(--run-border-color, var(--flow-edge-color, #ccc));

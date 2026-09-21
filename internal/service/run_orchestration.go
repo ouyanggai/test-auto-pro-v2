@@ -1209,7 +1209,8 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			dynamicGraph, dynamicErr := runtimeReader.GetRuntime(dynamicCtx, run.PlanID, pathRun.MainInstanceRef)
 			cancelDynamic()
 			if dynamicErr == nil {
-				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedNodeIDsFromSteps(steps))
+				currentPreview := s.control.CurrentPreview(pathRun.ID)
+				projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedNodeIDsFromStepsAndPreview(steps, currentPreview))
 				deviationGraph = projected
 				dynamicProjectionOK = projectionOK
 				// 结束节点是每次运行的固定终点，不是"完成态才补的装饰"：运行中就要画在最后，
@@ -1286,7 +1287,13 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, requestsByKey, summaryByKey, s.router, tokenToGraphID)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
-		detail.CurrentPreview.NodeID = tokenToGraphID[preview.NodeKey]
+		mappedNodeID := tokenToGraphID[preview.NodeKey]
+		if mappedNodeID == "" {
+			if id := control.InsertedNodeIDFromKey(preview.NodeKey); id != "" {
+				mappedNodeID = id
+			}
+		}
+		detail.CurrentPreview.NodeID = mappedNodeID
 		detail.CurrentStepNo = preview.StepNo
 	}
 	// 已配置路线（编译场景节点序列与分支选择）：画布据此标注「等待运行」并区分路径内外；
@@ -2124,6 +2131,9 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 		if mapped := tokenToGraphID[key]; mapped != "" {
 			return mapped
 		}
+		if id := control.InsertedNodeIDFromKey(key); id != "" {
+			return id
+		}
 		return key
 	}
 	settled := map[string]bool{}
@@ -2204,11 +2214,13 @@ func tokenToGraphNodeID(graph model.FlowGraph) map[string]string {
 	return mapping
 }
 
-// insertedNodeIDsFromSteps 从已落账步骤里提取加签插入节点的权威真实 ID：注入步骤的 NodeKey 是合成键
-// 「add-sign-inserted-<真实节点ID>」，还原出的真实 ID 用于投影时把插入节点从静态绑定候选池里排除。
-func insertedNodeIDsFromSteps(steps []model.RunStep) []string {
-	seen := make(map[string]struct{}, len(steps))
-	ids := make([]string, 0, len(steps))
+// insertedNodeIDsFromStepsAndPreview 从已落账步骤和当前预览里提取加签插入节点的权威真实 ID：
+// 注入步骤的 NodeKey 是合成键「add-sign-inserted-<真实节点ID>」，还原出的真实 ID 用于投影时把插入节点从静态绑定候选池里排除。
+// 在执行加签插入节点的步骤期间（尚未落账），预览里的 NodeKey 也是合成键，若不一并计入，
+// 投影会把当前执行中的插入节点误绑定或漏掉排除，导致加签节点无法及时在画布上高亮。
+func insertedNodeIDsFromStepsAndPreview(steps []model.RunStep, preview *step.StepPreview) []string {
+	seen := make(map[string]struct{}, len(steps)+1)
+	ids := make([]string, 0, len(steps)+1)
 	for _, stepRecord := range steps {
 		id := control.InsertedNodeIDFromKey(stepRecord.NodeKey)
 		if id == "" {
@@ -2219,6 +2231,14 @@ func insertedNodeIDsFromSteps(steps []model.RunStep) []string {
 		}
 		seen[id] = struct{}{}
 		ids = append(ids, id)
+	}
+	if preview != nil {
+		if id := control.InsertedNodeIDFromKey(preview.NodeKey); id != "" {
+			if _, exists := seen[id]; !exists {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
 	}
 	return ids
 }
