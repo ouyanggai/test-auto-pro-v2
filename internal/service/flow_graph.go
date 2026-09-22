@@ -111,7 +111,11 @@ func (s *FlowGraphService) GetRuntime(ctx context.Context, planID uint64, instan
 	}
 	entries, err := validateEntryNodeIDs(snapshot.EntryNodeIDs, nodes)
 	if err != nil {
-		return model.FlowGraph{}, err
+		// 完结态流程或待办清空的实例无活动当前节点；以结构无入边根节点作为入口，不中断动态代理树读取。
+		entries = graphRootIDs(nodes, edges)
+		if len(entries) == 0 {
+			return model.FlowGraph{}, err
+		}
 	}
 	return model.FlowGraph{PlanID: plan.ID, TargetName: plan.TargetObjectName, FlowSource: plan.FlowSource,
 		EntryNodeIDs: entries, Nodes: applyInitiatorStartPeople(nodes, plan.Account), Edges: edges, Warnings: warnings}, nil

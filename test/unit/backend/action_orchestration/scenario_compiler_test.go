@@ -369,3 +369,21 @@ func TestF026RollbackTwiceWalksBackThroughPreviousManualNode(t *testing.T) {
 		t.Fatalf("步骤[%d] 错误：got(%s,%s,%s) want(%s,%s,%s)，全部=%+v", index, step.Source, step.Action, step.NodeKey, item.source, item.action, item.node, result.Steps)
 	}
 }
+// TestForwardBeforeSubmitBlocked 验证流程处于草稿且尚未提交时，禁止执行转发动作。
+func TestForwardBeforeSubmitBlocked(t *testing.T) {
+	_, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "draft-1", Action: model.ActionSaveDraft, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 1},
+			{Key: "forward-1", Action: model.ActionForward, Scope: model.ActionScopeInstance, NodeKey: "", Order: 2},
+		},
+		Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "review", Type: "common"}, {ID: "end", Type: "end"}},
+		NodeSequence: []string{"start", "review", "end"},
+	})
+	if err == nil {
+		t.Fatal("流程未发起前执行转发必须被阻断，实际未报错")
+	}
+	compileErr, ok := err.(*scenario.CompileError)
+	if !ok || len(compileErr.Issues) == 0 || compileErr.Issues[0].Code != "ACTION_FORWARD_BEFORE_SUBMIT" {
+		t.Fatalf("阻断原因应为 ACTION_FORWARD_BEFORE_SUBMIT，实际报错：%v", err)
+	}
+}

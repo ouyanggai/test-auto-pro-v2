@@ -106,6 +106,10 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 		} else {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
+		if issue := validateForwardOrder(action, index, actions); issue == nil {
+		} else {
+			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
+		}
 		// 按顺序维护状态事实：重新提交来源、关注状态、移交连续性与最近节点位置。
 		switch action.Action {
 		case model.ActionSaveDraft, model.ActionReject, model.ActionWithdraw:
@@ -568,6 +572,29 @@ func validateProxyRemapOrder(action model.ConfiguredAction, index int, actions [
 			return blockingIssue(index, action, "ACTION_AFTER_PROXY_REMAP",
 				"加签会重建实例流程代理并为节点生成新标识，同一节点上排在加签之后的动作无法再按原节点读取待办；请把加签排到该节点动作的最后")
 		}
+	}
+	return nil
+}
+// validateForwardOrder 阻止在流程尚未发起（仅保存草稿且未提交）时执行转发动作。
+func validateForwardOrder(action model.ConfiguredAction, index int, actions []model.ConfiguredAction) *model.ActionConfigurationIssue {
+	if action.Action != model.ActionForward {
+		return nil
+	}
+	hasSubmit := false
+	hasDraft := false
+	for _, previous := range actions {
+		if previous.Order >= action.Order {
+			break
+		}
+		if previous.Action == model.ActionSubmit || previous.Action == model.ActionResubmit {
+			hasSubmit = true
+		}
+		if previous.Action == model.ActionSaveDraft {
+			hasDraft = true
+		}
+	}
+	if hasDraft && !hasSubmit {
+		return blockingIssue(index, action, "ACTION_FORWARD_BEFORE_SUBMIT", "流程处于草稿状态尚未发起，无法执行转发；转发只能在流程提交后执行")
 	}
 	return nil
 }

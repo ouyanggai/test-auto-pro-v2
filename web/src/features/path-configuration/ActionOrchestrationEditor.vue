@@ -48,9 +48,13 @@ function openAllPeople(person: PathConfigPerson) {
 const dropIndex = ref(-1)
 
 const nodeCatalog = computed(() => props.container.actionConfiguration.catalog ?? [])
-const instanceCatalog = computed(() => props.instanceContainer?.actionConfiguration.catalog ?? [])
-const catalog = computed(() => [...nodeCatalog.value, ...instanceCatalog.value])
-// 可编排动作排除两类：系统自动节点语义，以及由场景编译器自动插入的恢复动作（如重新提交）。
+// isInitiatorNode 标识流程发起节点：流程尚未发起，只能保存草稿，绝不能配置转发等依赖已发起实例的动作。
+const isInitiatorNode = computed(() => {
+  return props.container.actionConfiguration.base?.kind === 'submit' ||
+    props.container.actionConfiguration.catalog.some(item => item.kind === 'save_draft' || item.kind === 'submit')
+})
+const visibleInstanceCatalog = computed(() => isInitiatorNode.value ? [] : (props.instanceContainer?.actionConfiguration.catalog ?? []))
+const catalog = computed(() => [...nodeCatalog.value, ...visibleInstanceCatalog.value])
 const selectableCatalog = computed(() => catalog.value.filter(item => !item.systemOnly && !item.systemInserted))
 const enabledCatalog = computed(() => selectableCatalog.value.filter(item => item.enabled))
 const systemCatalog = computed(() => catalog.value.filter(item => item.systemOnly))
@@ -63,8 +67,7 @@ const editorDisabled = computed(() => props.readOnly || props.blocked || !select
 const hasChanges = computed(() => JSON.stringify(expandActions()) !== JSON.stringify([...props.savedActions, ...(props.instanceSavedActions ?? [])]))
 
 // instanceKinds 记录哪些动作属于实例级容器，保存时据此拆分到对应容器。
-const instanceKinds = computed(() => new Set(instanceCatalog.value.map(item => item.kind)))
-
+const instanceKinds = computed(() => new Set(visibleInstanceCatalog.value.map(item => item.kind)))
 function catalogItem(kind: PathConfigActionKind): PathConfigActionCatalogItem | undefined { return catalog.value.find(item => item.kind === kind) }
 
 function enabledCatalogItem(kind: PathConfigActionKind): PathConfigActionCatalogItem | undefined { return enabledCatalog.value.find(item => item.kind === kind) }
@@ -75,7 +78,7 @@ function actionPerson(kind: PathConfigActionKind) { return enabledCatalogItem(ki
 function actionOptions() {
   const groups = [
     { label: '当前节点动作', items: nodeCatalog.value.filter(item => !item.systemOnly && !item.systemInserted) },
-    { label: '实例级动作（作用于整个流程实例）', items: instanceCatalog.value.filter(item => !item.systemOnly && !item.systemInserted) },
+    { label: '实例级动作（作用于整个流程实例）', items: visibleInstanceCatalog.value.filter(item => !item.systemOnly && !item.systemInserted) },
   ]
   return groups.filter(group => group.items.length).map(group => ({
     type: 'group' as const,

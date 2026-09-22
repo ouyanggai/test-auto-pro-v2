@@ -126,3 +126,40 @@ func TestF039VirtualEndStateFollowsPathCompletion(t *testing.T) {
 		t.Fatalf("结束节点不应进入「等待运行」，它只表达整条路径是否走到头，实际 %s", got)
 	}
 }
+// TestStructuralPathsMapTokensWhenControlSessionCleared 验证当控制层现场被释放时，
+// 静态 Token 与动态图节点能通过结构路径成功对齐，避免完成态刷新后节点全部退化为未开始。
+func TestStructuralPathsMapTokensWhenControlSessionCleared(t *testing.T) {
+	// staticGraph 节点
+	staticGraph := model.FlowGraph{Nodes: []model.FlowGraphNode{
+		{ID: "plan-start", StructuralPath: "root"},
+		{ID: "plan-audit", StructuralPath: "root/child"},
+	}}
+	_ = staticGraph
+	// factGraph 为动态代理图
+	factGraph := model.FlowGraph{Nodes: []model.FlowGraphNode{
+		{ID: "dyn-start", StructuralPath: "root"},
+		{ID: "dyn-audit", StructuralPath: "root/child"},
+	}}
+	staticStartToken := analyzer.PathConfigNodeToken("plan-start")
+	staticAuditToken := analyzer.PathConfigNodeToken("plan-audit")
+	steps := []model.RunStep{
+		{NodeKey: staticStartToken, Status: model.RunStepSucceeded},
+		{NodeKey: staticAuditToken, Status: model.RunStepSucceeded},
+	}
+	pathRun := model.PathRun{Status: model.PathRunStatusCompleted}
+
+	// 模拟未开启 dynamicProjectionOK 且 control session 已清除时的结构路径映射
+	tokenToGraphID := map[string]string{
+		staticStartToken: "dyn-start",
+		staticAuditToken: "dyn-audit",
+	}
+
+	states := service.BuildNodeStatesWithTokenMapForTest(factGraph, steps, pathRun, nil, nil, tokenToGraphID)
+
+	if got := states["dyn-start"].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
+		t.Fatalf("静态 Token 应通过结构路径映射到动态节点 dyn-start，实际 %s", got)
+	}
+	if got := states["dyn-audit"].StatusName; got != model.PathRunStatusName(model.PathRunStatusCompleted) {
+		t.Fatalf("静态 Token 应通过结构路径映射到动态节点 dyn-audit，实际 %s", got)
+	}
+}

@@ -1305,9 +1305,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				endGraph := ensureVirtualEndNode(graph)
 				detail.DynamicGraph = runFlowGraphDTO(endGraph)
 				detail.DynamicGraphBindable = true
-				if len(dynamicGraph.Nodes) == 0 {
-					factGraph = endGraph
-				}
+				factGraph = endGraph
 			}
 			staticNodeIDs := make(map[string]struct{}, len(graph.Nodes))
 			for _, node := range graph.Nodes {
@@ -1364,6 +1362,23 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 				if targetID != "" {
 					tokenToGraphID[key] = targetID
 					tokenToGraphID[analyzer.PathConfigNodeToken(targetID)] = targetID
+				}
+			}
+		}
+		// 控制层内存现场已清理时（如运行已结束），按静态图与事实图的结构路径对齐映射关系，
+		// 确保刷新详情后已落账步骤的静态 Token 依然能精准映射到事实图节点。
+		staticPaths, staticOK := flowGraphStructuralPaths(graph)
+		dynamicPaths, dynamicOK := flowGraphStructuralPaths(factGraph)
+		if staticOK && dynamicOK {
+			dynamicIDByPath := make(map[string]string, len(dynamicPaths))
+			for id, path := range dynamicPaths {
+				dynamicIDByPath[path] = id
+			}
+			for staticID, path := range staticPaths {
+				if dynamicID := dynamicIDByPath[path]; dynamicID != "" {
+					token := analyzer.PathConfigNodeToken(staticID)
+					tokenToGraphID[token] = dynamicID
+					tokenToGraphID[staticID] = dynamicID
 				}
 			}
 		}

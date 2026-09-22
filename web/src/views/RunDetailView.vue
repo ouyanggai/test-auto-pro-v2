@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import FlowGraphCanvas from '../features/flow-graph/FlowGraphCanvas.vue'
-import type { FlowGraph } from '../features/flow-graph/types'
+import type { FlowGraph, FlowGraphNode, FlowGraphEdge } from '../features/flow-graph/types'
 import {
   approveRun,
   fetchRunDetail,
@@ -136,23 +136,59 @@ function isUsableRunGraph(candidate: FlowGraph): boolean {
   return seen.size === ids.size
 }
 
+const virtualRunEndNodeID = '__run_virtual_end__'
+
+// ensureVirtualEndNode 为运行画布补齐稳定的虚拟结束节点，保证动态图或回退计划图末尾都有明确终点。
+function ensureVirtualEndNode(candidate: FlowGraph): FlowGraph {
+  if (candidate.nodes.some(node => node.type === 'end' || node.id === virtualRunEndNodeID)) {
+    return candidate
+  }
+  const nodes: FlowGraphNode[] = [...candidate.nodes, {
+    id: virtualRunEndNodeID,
+    name: '结束',
+    type: 'end',
+    typeName: '结束',
+  }]
+  const outgoing = new Set(candidate.edges.map(edge => edge.source.trim()))
+  const edges: FlowGraphEdge[] = [...candidate.edges]
+  for (const node of candidate.nodes) {
+    const id = node.id.trim()
+    if (!id || outgoing.has(id)) continue
+    edges.push({
+      id: `${id}|${virtualRunEndNodeID}|sequence|`,
+      source: id,
+      target: virtualRunEndNodeID,
+      kind: 'sequence',
+      label: '',
+      branchId: '',
+    })
+  }
+  return {
+    ...candidate,
+    nodes,
+    edges,
+  }
+}
+
 // mergeRunGraphs 只接收服务端已证明可唯一投影的动态图；无法绑定时保留静态图承载运行事实。
 function mergeRunGraphs(base: FlowGraph, dynamic?: FlowGraph, dynamicBindable = false): FlowGraph {
-  if (!dynamic || !dynamicBindable) return base
-  if (!isUsableRunGraph(dynamic)) {
+  const safeBase = ensureVirtualEndNode(base)
+  if (!dynamic || !dynamicBindable) return safeBase
+  const safeDynamic = ensureVirtualEndNode(dynamic)
+  if (!isUsableRunGraph(safeDynamic)) {
     return {
-      ...base,
-      warnings: [...new Set([...base.warnings, '动态结构暂时无法按唯一根节点布局，当前保留计划结构'])],
+      ...safeBase,
+      warnings: [...new Set([...safeBase.warnings, '动态结构暂时无法按唯一根节点布局，当前保留计划结构'])],
     }
   }
   return {
-    ...dynamic,
-    targetName: dynamic.targetName || base.targetName,
-    nodes: dynamic.nodes.map((node) => ({
+    ...safeDynamic,
+    targetName: safeDynamic.targetName || safeBase.targetName,
+    nodes: safeDynamic.nodes.map((node) => ({
       ...node,
       name: node.name || '目标新增节点（名称不可用）',
     })),
-    warnings: [...new Set([...base.warnings, ...dynamic.warnings])],
+    warnings: [...new Set([...safeBase.warnings, ...safeDynamic.warnings])],
   }
 }
 
@@ -526,8 +562,8 @@ function applyDetail(next: PathRunDetail, version: number): void {
     // 2. 如果后端本次没有返回（如偶发未读取），但之前已经有了动态图，坚决保持动态图！
     graph.value = cachedDynamicGraph
   } else if (staticGraph.value) {
-    // 3. 只有从未生成过动态图时，才显示静态计划图
-    graph.value = staticGraph.value
+    // 3. 只有从未生成过动态图时，才显示静态计划图（并确保虚拟结束节点常驻）
+    graph.value = ensureVirtualEndNode(staticGraph.value)
   }
   syncControl(next)
   lastUpdateAt.value = Date.now()
