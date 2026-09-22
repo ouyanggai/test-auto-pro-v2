@@ -261,9 +261,23 @@ func (c *compiler) emitFixedTaskTail(nodeKey string) {
 
 // emitUserAction 输出一条用户动作，并在动作离开节点时补齐恢复链。
 func (c *compiler) emitUserAction(action model.ConfiguredAction, actionIndex int) {
-	c.beginGroup()
+	// 如果当前动作是取回，且前一步骤恰好是同节点的同意步骤（用户同意或准备同意），
+	// 则取回与该同意属于同一个动作组屏障：不开启新组，先在同一动作组内连续消耗取回，
+	// 避免在同意后、取回前将后继节点推进动作提前放行。
+	canFuseWithPreviousApprove := false
+	if action.Action == model.ActionRetrieve && len(c.steps) > 0 {
+		lastStep := c.steps[len(c.steps)-1]
+		if lastStep.NodeKey == action.NodeKey && lastStep.Action == model.ActionApprove && lastStep.ReleaseGroup == c.currentGroup {
+			canFuseWithPreviousApprove = true
+		}
+	}
+
+	if !canFuseWithPreviousApprove {
+		c.beginGroup()
+	}
+
 	prepRequired := false
-	if action.Action == model.ActionRetrieve && c.completed[action.NodeKey] == false {
+	if action.Action == model.ActionRetrieve && c.completed[action.NodeKey] == false && !canFuseWithPreviousApprove {
 		// 编译期 completed 只是提示：无法证明当前节点已有已办时预置一次准备同意。
 		// 运行时以目标已办事实为准——已有已办则跳过本步直接取回，避免多发一次同意。
 		prep := recoveryApproveStep(action, "取回前若当前用户在本节点无已办，先生成当前节点已办；运行时已有已办则跳过本准备同意，直接取回")
@@ -273,7 +287,12 @@ func (c *compiler) emitUserAction(action model.ConfiguredAction, actionIndex int
 		c.completed[action.NodeKey] = true
 		prepRequired = true
 	}
-	c.addGroupedStep(userStep(action), prepRequired == false)
+
+	releaseRequired := true
+	if prepRequired || canFuseWithPreviousApprove {
+		releaseRequired = false
+	}
+	c.addGroupedStep(userStep(action), releaseRequired)
 	switch action.Action {
 	case model.ActionSaveDraft:
 		c.status = "draft"

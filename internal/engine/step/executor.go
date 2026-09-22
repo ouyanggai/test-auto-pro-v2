@@ -2014,11 +2014,12 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	return outcome, lineNo, nil
 }
 
-// isForwardRecoveryAction 判断动作是否会在其后生成依赖它生效的恢复链（不同意/撤回/回退）。
-// 这类动作失败不能「跳过继续」：后面的重新提交/逐节点同意恢复步骤假设它已生效，跳过会留下悬空恢复链。
+// isForwardRecoveryAction 判断动作是否属于恢复链关键动作（不同意/撤回/回退/取回）。
+// 这类动作失败不能「跳过继续」：取回是用户配置的关键流转动作，其后有依赖其生效的恢复链；
+// 目标明确拒绝时必须如实判定为失败并保留目标原话，绝不能伪装跳过。
 func isForwardRecoveryAction(action model.ActionKey) bool {
 	switch action {
-	case model.ActionReject, model.ActionWithdraw, model.ActionRollback:
+	case model.ActionReject, model.ActionWithdraw, model.ActionRollback, model.ActionRetrieve:
 		return true
 	default:
 		return false
@@ -2432,28 +2433,22 @@ func (e *Executor) retrieveNodeHasAuditPass(ctx context.Context, session target.
 // retrieveDoneRowProvesNodeHandled 判断已办读取回来的这一行能否证明"本步节点确实已办结"。
 //
 // 职责：把取回准备同意的跳过判据收敛成一个明确的证明关系：
-// 已办行读到了任务号，且该行要么留在本步节点上（目标未改写节点），要么审核记录正面证明本节点通过过。
-//
-// 为什么必须单独成函数：跳过是一次"少发一个写请求"的放行决定，必须由可复述的证据支撑。
-// 只用"读到了已办"会在目标改写节点字段时把别处的已办当成本节点事实
-// （2026-09-21 运行 100/101 路径 5 第 12 步实测：省区经理从未审批却被跳过，
-// 随后取回指向没有已办任务的节点，路径停在原地）。
+// 已办行必须读到了任务号，且必须经审核记录正面证明本节点存在「通过」记录；
+// 避免因目标后端将前驱节点的已办任务节点 ID 改写为流转后的当前节点，导致本节点准备同意被误跳过。
 //
 // 输入边界：
 //   - 快照任务号为空时直接返回 false（没有已办可依据）；
-//   - 审核记录不可读时不因此放行，只按行上节点是否等于本步节点判定。
+//   - instanceID 或 nodeID 为空时返回 false。
 //
 // 关键约束：
-//   - 两种证明之一成立即可跳过；都不成立时返回 false，由调用方落到普通同意门禁按实时待办裁决。
+//   - 必须有审核记录正面证明本节点通过；没有审核记录正面证明时绝不跳过准备同意，
+//     落到普通同意门禁按实时待办裁决。
 func (e *Executor) retrieveDoneRowProvesNodeHandled(ctx context.Context, session target.Session, instanceID, nodeID string, doneSnapshot target.TaskSnapshot) bool {
 	if strings.TrimSpace(doneSnapshot.JobTaskID) == "" {
 		return false
 	}
-	// 证明一：目标如实保留了节点归属，行就在本步节点上。
-	if strings.TrimSpace(doneSnapshot.FlowNodeProxyID) == strings.TrimSpace(nodeID) {
-		return true
-	}
-	// 证明二：行上节点已被目标改写成流转后的节点，此时以审核记录正面证明本节点通过过。
+	// 无论已办行上的节点字段如何，目标系统都可能将前驱已办行节点改写为流转后的当前节点。
+	// 因此跳过准备同意必须以审核记录正面证明本节点已通过为必要条件，绝不凭单行已办轻率跳过。
 	return e.retrieveNodeHasAuditPass(ctx, session, instanceID, nodeID)
 }
 
@@ -3936,24 +3931,4 @@ func (e *Executor) RefreshPendingTaskForAssigneeForTest(ctx context.Context, run
 // 运行期分支选择优先于编译步骤表，末步（步骤表给不出下一步）仍然能取到锚点。
 func ExpectedNextTargetNodeIDForTest(runCtx RunContext, nextIndex int) string {
 	return expectedNextTargetNodeID(runCtx, nextIndex)
-}
-
-// ReadActionTaskFactsForTest 暴露任务级事实读取（含取回办结人视角解析）供 test 目录锁定：
-// 取回身份由谁承担是安全敏感行为，必须在根 test/ 下用假目标直接断言，
-// 而不是只能靠真实目标复跑来间接确认。
-func ReadActionTaskFactsForTest(ctx context.Context, executor *Executor, runCtx RunContext, step model.CompiledActionStep) (InstanceFacts, error) {
-	facts := InstanceFacts{StepNodeKey: step.NodeKey}
-	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
-	session, err := executor.planSessionForTest(ctx, runCtx)
-	if err != nil {
-		return facts, err
-	}
-	_, taskErr := executor.readActionTaskFacts(ctx, runCtx, session, step, nodeID, &facts, true)
-	return facts, taskErr
-}
-
-// planSessionForTest 取计划账号会话，供 test 目录复用生产同一条会话获取路径，
-// 避免测试自行拼装会话而绕过登录语义。
-func (e *Executor) planSessionForTest(ctx context.Context, runCtx RunContext) (target.Session, error) {
-	return e.sessions.Current(ctx, runCtx.PlanAccount)
 }

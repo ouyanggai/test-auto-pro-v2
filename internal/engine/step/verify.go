@@ -369,11 +369,6 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 				if viewDiag != "" {
 					facts.AssigneeDiag = viewDiag
 				}
-				if hasAuditReader {
-					if auditFactsErr := e.applyRetrieveAuditEvidence(ctx, session, instanceID, strings.TrimSpace(nodeID), facts); auditFactsErr != nil {
-						return session, auditFactsErr
-					}
-				}
 			}
 		} else {
 			// 没有解析出视角不等于无事发生：把"用哪个节点标识去解析、为何没解析出来"如实记进诊断，
@@ -390,7 +385,13 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 			snapshot = fallbackSnapshot
 			session = taskSession
 			facts.CompletedTaskRead = true
-			facts.CompletedTaskFound = strings.TrimSpace(snapshot.JobTaskID) != ""
+			// 取回必须有确凿的办结人 ID：若已办行连 executorId 都没有，不能视作找到了合法已办任务。
+			hasExecutorID := strings.TrimSpace(snapshot.ExecutorID) != ""
+			facts.CompletedTaskFound = strings.TrimSpace(snapshot.JobTaskID) != "" && hasExecutorID
+			if hasExecutorID {
+				facts.CompletedTaskExecutorID = strings.TrimSpace(snapshot.ExecutorID)
+				facts.CurrentTaskAssigneeID = facts.CompletedTaskExecutorID
+			}
 			// 取回走 done 的 executorId 语义，读取成功即已核对：命中与否都是有效证据。
 			facts.CompletedTaskBasis = completedTaskBasisOf(true, facts.CompletedTaskFound, false)
 			facts.CompletedTaskLinkID = strings.TrimSpace(snapshot.LinkID)
@@ -480,8 +481,6 @@ func (e *Executor) retrieveDoneViewUser(ctx context.Context, runCtx RunContext, 
 	if nodeID == "" || instanceID == "" {
 		return "", ""
 	}
-	// nameDiag 承载"只拿到姓名但没能换成用户 ID"的说明，随返回值一并交给调用方落日志。
-	nameDiag := ""
 	// 途径一：审核记录。它是"这个节点是谁办结的"最直接的事实来源。
 	if auditReader, hasAuditReader := e.target.(auditRecordsReader); hasAuditReader {
 		records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
@@ -505,106 +504,27 @@ func (e *Executor) retrieveDoneViewUser(ctx context.Context, runCtx RunContext, 
 		}
 	}
 	// 途径二：已办读取结果里带办结人信息的行。
-	//
-	// 为什么必须有这条兜底（2026-09-21 运行 35/36 路径 6 第 11 步实测）：审核记录对本步节点只返回
-	// 一条空壳（node=b9fc434e… 而 executorId/executorName/auditStatus 全空），拿不到办结人。
-	// 而同一条 jobTask（0df2b55e…）在任务关联行里出现两次、节点归属互相矛盾：
-	//   - node=b9fc434e…（本步节点）：preExecuteName=刘慧玲，但没有 executorId；
-	//   - node=a408500c…（发起人）：preExecuteName=刘慧玲，同样没有 executorId。
-	// 目标把"本节点办结"的痕迹同时挂在两处且都不给用户 ID，只有姓名可用于反查。
-	//
-	// 因此这里的匹配口径是：**节点归属或姓名任一可用**——行落在本步节点上，或行上带姓名。
-	// 为什么不坚持节点等值：本缺陷的节点字段本身就不可信（同一 jobTask 挂两个节点），
-	// 而姓名经人员目录反查出的用户 ID 是唯一身份，反查不唯一/失败时一律返回空，绝不猜测。
-	// 注意这里只用于确定"取回由谁发出"，不放宽任何门禁：真正的已办归属仍由审核记录与
-	// 写前核验各自裁决，取回对象仍必须按关联行 ID 精确匹配。
+	// 口径必须严格按节点等值：只认本步节点上的已办行，且必须携带真实执行人 ID。
+	// 严禁按姓名经人员目录模糊反查账号（同名或跨节点反查易产生严重越权与身份错配）。
 	if listReader, hasListReader := e.target.(taskSnapshotListReader); hasListReader {
 		snapshots, listErr := listReader.ListTaskSnapshots(ctx, session, instanceID, "done")
 		if listErr == nil {
 			viewUserID := ""
-			executorName := ""
 			for _, snapshot := range snapshots {
-				onNode := strings.TrimSpace(snapshot.FlowNodeProxyID) == nodeID
-				name := strings.TrimSpace(snapshot.ExecutorName)
-				if !onNode && name == "" {
+				if strings.TrimSpace(snapshot.FlowNodeProxyID) != nodeID {
 					continue
 				}
-				if executorID := strings.TrimSpace(snapshot.ExecutorID); executorID != "" && onNode {
+				if executorID := strings.TrimSpace(snapshot.ExecutorID); executorID != "" {
 					viewUserID = executorID
-				}
-				if name != "" {
-					executorName = name
+					break
 				}
 			}
 			if viewUserID != "" {
 				return viewUserID, "按本步节点已办行的执行人 ID 定位"
 			}
-			if executorName != "" {
-				// 目标只给了姓名：必须经人员目录换成用户 ID 才能作为取回身份，绝不拿姓名冒充 ID，
-				// 也绝不在反查不唯一或失败时猜测——反查不到就返回空，由调用方按既有纪律回落。
-				if resolvedID, resolveDiag := e.resolveViewUserByName(ctx, session, executorName); resolvedID != "" {
-					return resolvedID, resolveDiag
-				} else if resolveDiag != "" {
-					nameDiag = resolveDiag
-				}
-			}
 		}
 	}
-	return "", nameDiag
-}
-
-// resolveViewUserByName 把已办行上的办结人姓名反查为目标用户 ID，供取回以此人身份发出。
-//
-// 职责：调用人员目录按姓名匹配，返回唯一命中的用户 ID 与可写入日志的说明。
-//
-// 为什么必须存在（2026-09-21 运行 35/36 路径 6 第 11 步实测）：本步节点的已办行只带
-// preExecuteName=刘慧玲、不带 executorId，而该节点在审核记录里也没有任何条目，
-// 于是两条按 ID 取办结人的路径同时落空，取回以空登录账号的计划账号身份发出，实例停在原地。
-// 姓名是这一行上唯一可用的办结人事实，必须经目录换成用户 ID 才能用于登录。
-//
-// 输入边界：
-//   - 只读，不发写请求；姓名为空或目标不支持目录匹配时返回空串；
-//   - 目录读取失败时返回空串并把原因写进说明，不因此阻塞门禁。
-//
-// 关键约束：
-//   - 只在匹配结果唯一时才返回该用户 ID；同名多人时返回空串并说明，
-//     绝不在歧义下任选一人（选错身份会以他人名义发取回，属于不可接受的越权）。
-func (e *Executor) resolveViewUserByName(ctx context.Context, session target.Session, name string) (string, string) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", ""
-	}
-	matcher, hasMatcher := e.target.(handlerAccountMatcher)
-	if !hasMatcher {
-		return "", ""
-	}
-	// 以"姓名"作为唯一匹配条件：姓名字段走 handler.Users[].Name，手机号留空不参与匹配。
-	accounts, matchErr := matcher.MatchHandlerAccounts(ctx, session, target.NodeCurrentHandler{
-		Users: []target.TaskPendingUser{{Name: name}},
-	})
-	if matchErr != nil {
-		return "", "已办行只给出办结人姓名「" + name + "」，人员目录反查失败：" + matchErr.Error()
-	}
-	matchedID := ""
-	distinct := map[string]bool{}
-	for _, account := range accounts {
-		if !strings.HasPrefix(account.Key, "name:") {
-			continue
-		}
-		if userID := strings.TrimSpace(account.UserID); userID != "" {
-			distinct[userID] = true
-			matchedID = userID
-		}
-	}
-	switch len(distinct) {
-	case 0:
-		return "", "已办行只给出办结人姓名「" + name + "」，人员目录里没有唯一对应账号"
-	case 1:
-		return matchedID, "已办行只给出办结人姓名「" + name + "」，已按人员目录反查为唯一账号"
-	default:
-		// 同名多人：身份有歧义，不得任选其一，返回空让门禁按既有纪律裁决。
-		return "", "已办行只给出办结人姓名「" + name + "」，人员目录里存在多个同名账号，身份不唯一"
-	}
+	return "", ""
 }
 
 // resolveTaskSnapshotForView 以指定执行人视角读取任务快照，并返回真正完成读取的会话。

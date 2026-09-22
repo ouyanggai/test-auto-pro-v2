@@ -20,7 +20,10 @@ type retrieveRejectTarget struct {
 
 func (t *retrieveRejectTarget) FindTaskSnapshot(_ context.Context, _ target.Session, _ string, _ string, status string) (target.TaskSnapshot, error) {
 	if status == "done" {
-		return target.TaskSnapshot{LinkID: "done-link", JobTaskID: "done-task", FlowNodeProxyID: "node-done", FlowProxyID: "proxy-current", TaskStatus: "done"}, nil
+		return target.TaskSnapshot{
+			LinkID: "done-link", JobTaskID: "done-task", FlowNodeProxyID: "node-done",
+			FlowProxyID: "proxy-current", TaskStatus: "done", ExecutorID: "user-handler",
+		}, nil
 	}
 	return target.TaskSnapshot{}, nil
 }
@@ -32,14 +35,18 @@ func (t *retrieveRejectTarget) ExecuteActionWrite(context.Context, target.Sessio
 		"trace-retrieve-reject", &target.BusinessRejection{Code: "FLOW_409", Message: t.rejectMessage}
 }
 
-// TestRetrieveBusinessRejectionSkipsAndContinues 锁定用户裁决：目标对取回的明确业务拒绝
-// （如「下一节点已被处理,不支持取回」）是静态可预期的编排冲突、且确定无副作用——不阻断整条运行，
-// 按「警告并跳过该动作」处理并继续，尝试记录里保留目标原话。绝不判「结果待确认」，也不整条失败中断。
-func TestRetrieveBusinessRejectionSkipsAndContinues(t *testing.T) {
+// TestRetrieveBusinessRejectionFailsWithoutSkip 锁定用户裁决：目标对取回的明确业务拒绝
+// （如「下一节点已被处理,不支持取回」）属于恢复链动作的真实业务失败，绝不能伪装为「警告并跳过」。
+// 必须如实判为确定失败（OutcomeFailed），保留目标原话，并把路径运行置为失败终态。
+func TestRetrieveBusinessRejectionFailsWithoutSkip(t *testing.T) {
 	rejectMsg := "下一节点已被处理,不支持取回"
 	targetFake := &retrieveRejectTarget{
 		taskActionFactsTarget: &taskActionFactsTarget{
 			fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-done"}, DueNodes: []string{"node-done"}}},
+			records: []target.AuditRecordSnapshot{{
+				FlowJobTaskID: "done-link", FlowNodeProxyID: "node-done",
+				ExecutorID: "user-handler", AuditStatus: "pass",
+			}},
 			tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
 				ID: "node-done", Type: "common", Child: &target.FlowNodeTemplate{ID: "node-next", Type: "common"},
 			}},
@@ -65,24 +72,21 @@ func TestRetrieveBusinessRejectionSkipsAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("取回执行返回错误：%v", err)
 	}
-	// 预期内失败：不整条中断，标记跳过并继续（本例只有一步 → 跳过后收尾）。
-	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
-		t.Fatalf("预期内取回拒绝应跳过并继续（不阻断），实际 verdict=%s", outcome.Verdict)
+	// 取回失败必须如实判定为失败，不得伪装跳过并声称成功
+	if outcome.Verdict != string(verdict.OutcomeFailed) {
+		t.Fatalf("取回被目标明确拒绝时必须判确定失败，实际 verdict=%s", outcome.Verdict)
 	}
 	if len(facts.attempts) != 1 {
 		t.Fatalf("应恰好记录一次尝试，实际 %+v", facts.attempts)
 	}
-	if facts.attempts[0].Verdict != step.StepVerdictSkippedWarning {
-		t.Fatalf("尝试应记为「警告并跳过」，实际 verdict=%s", facts.attempts[0].Verdict)
-	}
-	if facts.attempts[0].SideEffect != string(verdict.SideEffectNone) {
-		t.Fatalf("确定无副作用才允许跳过，实际 sideEffect=%s", facts.attempts[0].SideEffect)
+	if facts.attempts[0].Verdict != string(verdict.OutcomeFailed) {
+		t.Fatalf("尝试应记为确定失败，实际 verdict=%s", facts.attempts[0].Verdict)
 	}
 	if !strings.Contains(facts.attempts[0].Reason, rejectMsg) {
-		t.Fatalf("跳过原因必须带目标原话「%s」，实际：%s", rejectMsg, facts.attempts[0].Reason)
+		t.Fatalf("失败原因必须带目标原话「%s」，实际「%s」", rejectMsg, facts.attempts[0].Reason)
 	}
-	// 跳过后必须释放本步推进权，否则下一步 ClaimExecution 会拿到「路径运行已被其他执行者占用」而卡住。
-	if runState.released < 1 {
-		t.Fatalf("跳过分支必须释放执行租约，实际 released=%d", runState.released)
+	// 失败后路径运行必须置为失败终态
+	if len(runState.finishedTo) != 1 || runState.finishedTo[0] != model.PathRunStatusFailed {
+		t.Fatalf("失败分支必须将路径运行置为失败终态，实际 finishedTo=%v", runState.finishedTo)
 	}
 }

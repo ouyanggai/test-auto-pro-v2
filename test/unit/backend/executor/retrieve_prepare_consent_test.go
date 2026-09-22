@@ -23,7 +23,7 @@ func prepConsentRunContext() step.RunContext {
 }
 
 // TestRetrievePrepareConsentSkippedWhenDoneExists 验证「已有已办直接取回」：当前用户在本节点已有
-// 已办任务时，取回准备同意在预览阶段判为跳过，不发出任何写请求。
+// 已办任务且审核记录证实通过时，取回准备同意在预览阶段判为跳过，不发出任何写请求。
 func TestRetrievePrepareConsentSkippedWhenDoneExists(t *testing.T) {
 	targetFake := &taskActionFactsTarget{
 		fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-done"}, DueNodes: []string{"node-done"}}},
@@ -31,6 +31,10 @@ func TestRetrievePrepareConsentSkippedWhenDoneExists(t *testing.T) {
 			LinkID: "done-link", JobTaskID: "done-task", FlowNodeProxyID: "node-done",
 			FlowProxyID: "proxy-current", TaskStatus: "done",
 		},
+		records: []target.AuditRecordSnapshot{{
+			FlowJobTaskID: "done-link", FlowNodeProxyID: "node-done",
+			ExecutorID: "user-handler", AuditStatus: "pass",
+		}},
 		tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "node-done", Type: "common"}},
 	}
 	runCtx := prepConsentRunContext()

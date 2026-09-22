@@ -32,6 +32,13 @@ func (t *taskActionFactsTarget) FindTaskSnapshot(context.Context, target.Session
 
 // ListTaskSnapshotsForUser 让事实发现路径复用本假件的任务快照与读取计数。
 func (t *taskActionFactsTarget) ListTaskSnapshotsForUser(ctx context.Context, session target.Session, instanceID, status, queryUserID string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) == "done" {
+		t.snapshotRead++
+		if t.snapshot.FlowNodeProxyID == "" || strings.TrimSpace(queryUserID) == t.snapshot.ExecutorID {
+			return []target.TaskSnapshot{t.snapshot}, nil
+		}
+		return nil, nil
+	}
 	if strings.TrimSpace(status) != "pending" || strings.TrimSpace(queryUserID) != t.currentHandlerUserID() {
 		return nil, nil
 	}
@@ -254,8 +261,12 @@ func TestF019RetrieveLeavesUnknownSuccessorToTarget(t *testing.T) {
 		fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-next"}, DueNodes: []string{"node-next"}}},
 		snapshot: target.TaskSnapshot{
 			LinkID: "done-link", JobTaskID: "done-task", FlowNodeProxyID: "node-done",
-			FlowProxyID: "proxy-current", TaskStatus: "done",
+			FlowProxyID: "proxy-current", TaskStatus: "done", ExecutorID: "user-handler",
 		},
+		records: []target.AuditRecordSnapshot{{
+			FlowJobTaskID: "done-link", FlowNodeProxyID: "node-done",
+			ExecutorID: "user-handler", AuditStatus: "pass",
+		}},
 		tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
 			ID: "node-done", Type: "common", Child: &target.FlowNodeTemplate{ID: "node-next", Type: "common"},
 		}},
