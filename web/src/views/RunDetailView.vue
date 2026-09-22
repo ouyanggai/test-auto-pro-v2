@@ -493,6 +493,10 @@ const runStepNotes = computed<Record<string, string>>(() => {
     const seconds = step.durationMs >= 1000 ? `${Math.round(step.durationMs / 1000)}秒` : `${step.durationMs}毫秒`
     if (isStepEmptyNode || step.action === 'system_automatic') {
       notes[nodeID] = `第 ${step.stepNo} 步 系统自动跳过 · ${seconds}`.trim()
+    } else if (step.action === 'forward' || step.actionName === '转发') {
+      const receiver = step.receiverName ? ` → ${step.receiverName}` : ''
+      const actor = step.actorName ? `· ${step.actorName}${receiver}` : ''
+      notes[nodeID] = `第 ${step.stepNo} 步 转发 ${actor} · ${seconds}`.replace(/\s+/g, ' ').trim()
     } else {
       const actor = step.actorName ? `· ${step.actorName}` : ''
       notes[nodeID] = `第 ${step.stepNo} 步 ${actionLabel(step.actionName, step.action)} ${actor} · ${seconds}`.replace(/\s+/g, ' ').trim()

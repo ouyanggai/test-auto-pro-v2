@@ -462,6 +462,9 @@ type StepPreview struct {
 	// ActorAccount 与 ActorName 是解析出的唯一真实当前处理人；SID 绝不进入本结构或任何展示。
 	ActorAccount string
 	ActorName    string
+	// ReceiverID 与 ReceiverName 是转发动作的接收人标识与姓名。
+	ReceiverID   string
+	ReceiverName string
 	// ExpectedEffect 来自动作目录的预期效果中文说明。
 	ExpectedEffect string
 	// Endpoint 是即将发出的写请求端点（白名单内）。

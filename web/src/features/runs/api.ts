@@ -50,6 +50,7 @@ export interface RunPreview {
   nodeId?: string
   nodeName: string
   actorName: string
+  receiverName?: string
   expectedEffect: string
   endpoint: string
   requestPreview: string
@@ -119,6 +120,7 @@ export interface RunStep {
   nodeId?: string
   nodeName: string
   actorName: string
+  receiverName?: string
   statusName: string
   startedAt: string
   finishedAt: string
@@ -136,6 +138,7 @@ export interface RunNodePlanAction {
   actionName: string
   // action 是稳定动作键：actionLabel 据此映射中文，不从中文名反推动作类型。
   action?: string
+  receiverName?: string
   sourceName: string
   scopeName: string
   precondition?: string

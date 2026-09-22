@@ -149,6 +149,7 @@ type RunPreviewDTO struct {
 	NodeID         string                     `json:"nodeId,omitempty"`
 	NodeName       string                     `json:"nodeName"`
 	ActorName      string                     `json:"actorName"`
+	ReceiverName   string                     `json:"receiverName,omitempty"`
 	ExpectedEffect string                     `json:"expectedEffect"`
 	Endpoint       string                     `json:"endpoint"`
 	RequestPreview string                     `json:"requestPreview"`
@@ -220,9 +221,10 @@ type RunStepDTO struct {
 	// NodeID 是该节点在图上的真实标识：画布与侧栏按它取运行状态与步骤（与 nodeKey 是两套键空间）。
 	NodeID     string    `json:"nodeId,omitempty"`
 	NodeName   string    `json:"nodeName"`
-	ActorName  string    `json:"actorName"`
-	StatusName string    `json:"statusName"`
-	StartedAt  time.Time `json:"startedAt"`
+	ActorName    string    `json:"actorName"`
+	ReceiverName string    `json:"receiverName,omitempty"`
+	StatusName   string    `json:"statusName"`
+	StartedAt    time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
 	DurationMs int64     `json:"durationMs"`
 	// GateSnapshot 是放行时的门禁结论快照（逐项中文条件 JSON），侧栏据此还原当时的门禁判定。
@@ -255,9 +257,10 @@ type RunTimelineItemDTO struct {
 	NodeKey    string    `json:"nodeKey"`
 	NodeID     string    `json:"nodeId,omitempty"`
 	NodeName   string    `json:"nodeName"`
-	ActorName  string    `json:"actorName,omitempty"`
-	Status     string    `json:"status"`
-	StatusName string    `json:"statusName"`
+	ActorName    string    `json:"actorName,omitempty"`
+	ReceiverName string    `json:"receiverName,omitempty"`
+	Status       string    `json:"status"`
+	StatusName   string    `json:"statusName"`
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	DurationMs int64     `json:"durationMs,omitempty"`
 }
@@ -284,6 +287,7 @@ type RunNodePlanActionDTO struct {
 	ActionName      string `json:"actionName"`
 	// Action 是稳定动作键（F-034 评审）：前端据此走集中中文映射，不从中文名反推动作类型。
 	Action         string `json:"action,omitempty"`
+	ReceiverName   string `json:"receiverName,omitempty"`
 	SourceName     string `json:"sourceName"`
 	ScopeName      string `json:"scopeName"`
 	Precondition   string `json:"precondition,omitempty"`
@@ -2254,6 +2258,15 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 				}
 			}
 		}
+		receiverName := ""
+		if strings.TrimSpace(stepRecord.GateSnapshot) != "" {
+			var gateMeta struct {
+				ReceiverName string `json:"receiverName"`
+			}
+			if err := json.Unmarshal([]byte(stepRecord.GateSnapshot), &gateMeta); err == nil {
+				receiverName = gateMeta.ReceiverName
+			}
+		}
 		dto := RunStepDTO{
 			StepNo:       stepRecord.StepNo,
 			ActionName:   actionNameOf(stepRecord.Action),
@@ -2261,6 +2274,7 @@ func buildStepDTOs(steps []model.RunStep, attempts []model.RunStepAttempt, phase
 			NodeKey:      stepRecord.NodeKey,
 			NodeID:       tokenToGraphID[stepRecord.NodeKey],
 			ActorName:    actorName,
+			ReceiverName: receiverName,
 			StatusName:   stepStatusName(stepRecord.Status),
 			StartedAt:    stepRecord.StartedAt,
 			FinishedAt:   stepRecord.FinishedAt,
@@ -2781,7 +2795,8 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 		// 这里统一经过集中中文映射，已知动作键始终返回中文名。
 		Action: string(preview.Action), ActionName: actionNameOf(string(preview.Action)),
 		NodeKey: preview.NodeKey, NodeName: preview.NodeName,
-		ActorName: preview.ActorName, ExpectedEffect: preview.ExpectedEffect,
+		ActorName: preview.ActorName, ReceiverName: preview.ReceiverName,
+		ExpectedEffect: preview.ExpectedEffect,
 		Endpoint: preview.Endpoint, RequestPreview: preview.RequestPreview,
 		GateAllowed: preview.GateAllowed, GateReason: preview.GateReason,
 		GateItems: preview.GateItems, Facts: facts, BlockReason: preview.BlockReason,

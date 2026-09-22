@@ -826,6 +826,12 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		GateItems:       catalogItem.Preconditions,
 		Facts:           facts,
 	}
+	if step.Action == model.ActionForward {
+		preview.ReceiverID = firstActionPersonID(runCtx.ActionPersonIDs[actionPersonKey(step.NodeKey, step.Action)])
+		if preview.ReceiverID != "" {
+			preview.ReceiverName = personNameFor(runCtx, preview.ReceiverID)
+		}
+	}
 	if step.Scope != model.ActionScopeTask && step.Scope != model.ActionScopeCompletedTask {
 		preview.ActorAccount = runCtx.PlanAccount
 	}
@@ -1346,9 +1352,12 @@ func gateSnapshotJSON(preview *StepPreview, branchTarget string) string {
 		BranchTarget string                     `json:"branchTarget,omitempty"`
 		// 按节点权限构造表单数据的两个清单：用户据此解释"这个字段为什么没被提交/为什么变了"。
 		FormOverlaid []string `json:"formOverlaid,omitempty"`
-		FormWithheld []string `json:"formWithheld,omitempty"`
+		FormWithheld []string                   `json:"formWithheld,omitempty"`
+		ReceiverID   string                     `json:"receiverId,omitempty"`
+		ReceiverName string                     `json:"receiverName,omitempty"`
 	}{Allowed: preview.GateAllowed, Reason: preview.GateReason, Items: preview.GateItems,
-		BranchTarget: branchTarget, FormOverlaid: preview.FormOverlaid, FormWithheld: preview.FormWithheld}
+		BranchTarget: branchTarget, FormOverlaid: preview.FormOverlaid, FormWithheld: preview.FormWithheld,
+		ReceiverID: preview.ReceiverID, ReceiverName: preview.ReceiverName}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return ""

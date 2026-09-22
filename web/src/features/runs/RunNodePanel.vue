@@ -277,6 +277,15 @@ const stepPlainSummary = computed(() => {
     return `${who} 在「${where}」执行加签，当前状态：${title}。`
   }
 
+  // 转发动作特殊简洁表达：谁在哪个节点执行了转发，转发给了谁
+  if (step.action === 'forward' || step.actionName === '转发') {
+    const receiver = step.receiverName?.trim() || '指定人员'
+    if (title === '成功') return `${who} 在「${where}」执行了转发，转发给了 ${receiver}。`
+    if (title === '失败') return `${who} 在「${where}」执行转发失败：${stepWhyText.value || '目标未返回具体原因'}。`
+    if (title === '阻塞') return `${who} 在「${where}」的转发未能开始：${stepWhyText.value || '前置条件不满足'}。`
+    return `${who} 在「${where}」执行转发，转发给了 ${receiver}，等待确认结果。`
+  }
+
   // 普通审批与操作：简洁表达谁在哪个节点执行了什么操作
   const what = actionLabel(step.actionName, step.action)
   if (title === '成功') return `${who} 在「${where}」执行了「${what}」。`
@@ -497,8 +506,8 @@ const dialogStyle = computed(() => ({
     >
       <dl v-if="planDialog" class="run-panel__facts">
         <div><dt>动作</dt><dd>{{ actionLabel(planDialog.actionName, planDialog.action) }}</dd></div>
+        <div v-if="planDialog.receiverName"><dt>转发接收人</dt><dd><strong>{{ planDialog.receiverName }}</strong></dd></div>
         <div><dt>来源</dt><dd>{{ planDialog.sourceName }}</dd></div>
-        <div><dt>作用范围</dt><dd>{{ planDialog.scopeName }}</dd></div>
         <div v-if="planDialog.precondition"><dt>前置条件</dt><dd>{{ planDialog.precondition }}</dd></div>
         <div v-if="planDialog.expectedEffect"><dt>预期效果</dt><dd>{{ planDialog.expectedEffect }}</dd></div>
         <div v-if="planDialog.stopOnFailure"><dt>失败处理</dt><dd>{{ planDialog.stopOnFailure }}</dd></div>
@@ -524,8 +533,8 @@ const dialogStyle = computed(() => ({
           <div><dt>动作</dt><dd>{{ previewActionLabel }}</dd></div>
           <div><dt>步序</dt><dd>第 {{ currentPreview.stepNo }} 步，共 {{ currentPreview.totalSteps }} 步</dd></div>
           <div><dt>处理人</dt><dd>{{ currentPreview.actorName || '执行时按已配置人员策略确定' }}</dd></div>
+          <div v-if="currentPreview.receiverName"><dt>转发接收人</dt><dd><strong>{{ currentPreview.receiverName }}</strong></dd></div>
           <div v-if="currentPreview.expectedEffect"><dt>预期效果</dt><dd>{{ currentPreview.expectedEffect }}</dd></div>
-          <div v-if="currentPreview.endpoint"><dt>目标端点</dt><dd class="run-panel__mono">{{ currentPreview.endpoint }}</dd></div>
           <div>
             <dt>检查结论</dt>
             <dd :class="currentPreview.gateAllowed ? 'run-panel__ok' : 'run-panel__bad'">{{ gateBrief }}</dd>
@@ -565,7 +574,9 @@ const dialogStyle = computed(() => ({
           </div>
           <span class="run-panel__summary-time">共用时 {{ formatElapsed(stepDialog.durationMs) }}</span>
         </div>
-
+        <div v-if="stepDialog.receiverName" style="margin: 8px 0; font-size: 13px;">
+          <span>转发接收人：<strong>{{ stepDialog.receiverName }}</strong></span>
+        </div>
         <!-- 为什么不能/不能继续 + 下一步怎么处理：阻塞与失败时紧邻结论显示。 -->
         <div v-if="stepOutcomeTitle !== '成功'" class="run-panel__why">
           <p v-if="stepWhyText" class="run-panel__why-reason">为什么不能继续：{{ stepWhyText }}</p>
