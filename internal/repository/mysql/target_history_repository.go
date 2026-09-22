@@ -107,7 +107,7 @@ func (r *TargetHistoryRepository) TargetHistoryCandidates(ctx context.Context, f
 	if err != nil || total == 0 {
 		return []repository.TargetHistoryCandidateRow{}, total, err
 	}
-	// 已完成实例整体优先，其余按发起时间倒序；排序完全来自目标业务库原字段。
+	// 智能相关度排序：流程名完全匹配优先、已完成实例优先、发起时间倒序。
 	query := fmt.Sprintf(`
 SELECT i.id, COALESCE(i.name, ''), COALESCE(p.flow_name, ''), COALESCE(f.name, ''), COALESCE(NULLIF(i.flow_code, ''), COALESCE(p.code, '')),
        COALESCE(i.flow_proxy_id, ''), COALESCE(i.form_proxy_id, ''), COALESCE(i.status, ''),
@@ -118,9 +118,10 @@ LEFT JOIN %[1]s.t_form_proxy f ON f.id = i.form_proxy_id
 LEFT JOIN %[2]s.t_user u ON u.id = i.creater_id
 LEFT JOIN %[2]s.t_company c ON c.id = i.company_id
 WHERE %[3]s
-ORDER BY (i.status = 'end') DESC, i.create_date DESC, i.id DESC
+ORDER BY (p.flow_name = ?) DESC, (i.status = 'end') DESC, i.create_date DESC, i.id DESC
 LIMIT ? OFFSET ?`, r.schema, r.userCenter, where)
-	rows, err := r.db.QueryContext(ctx, query, append(append([]any{}, args...), pageSize, (page-1)*pageSize)...)
+	queryArgs := append(append([]any{}, args...), flowName, pageSize, (page-1)*pageSize)
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -142,17 +143,25 @@ LIMIT ? OFFSET ?`, r.schema, r.userCenter, where)
 
 // candidateConditions 组装只使用目标原字段的查询条件；所有用户输入都走占位符。
 func (r *TargetHistoryRepository) candidateConditions(filter repository.TargetHistoryCandidateFilter, flowName string) (string, []any) {
-	conditions := []string{"i.is_delete = 0", "i.customer_code = ?", "p.flow_name = ?"}
-	args := []any{r.customerCode, flowName}
+	conditions := []string{"i.is_delete = 0"}
+	args := make([]any, 0)
+	if customerCode := strings.TrimSpace(r.customerCode); customerCode != "" {
+		conditions = append(conditions, "(i.customer_code = ? OR i.customer_code IS NULL OR i.customer_code = '')")
+		args = append(args, customerCode)
+	}
+	// 流程名称智能模糊匹配：完全相等或互相包含均可匹配
+	escapedFlow := escapeTargetHistoryLike(flowName)
+	conditions = append(conditions, "(p.flow_name = ? OR p.flow_name LIKE ? OR ? LIKE CONCAT('%', p.flow_name, '%'))")
+	args = append(args, flowName, "%"+escapedFlow+"%", flowName)
+
 	if flowCode := strings.TrimSpace(filter.FlowCode); flowCode != "" {
-		// 实例或其私有代理写入了不同流程编码时精确排除；两处都没有编码时只能依靠流程名称身份。
 		conditions = append(conditions, "(COALESCE(NULLIF(i.flow_code, ''), COALESCE(p.code, '')) = '' OR COALESCE(NULLIF(i.flow_code, ''), COALESCE(p.code, '')) = ?)")
 		args = append(args, flowCode)
 	}
 	if formName := strings.TrimSpace(filter.FormName); formName != "" {
-		// 有表单时只接受同名表单；该实例没有表单代理时退回流程名称身份。
-		conditions = append(conditions, "(COALESCE(f.name, '') = '' OR COALESCE(f.name, '') = ?)")
-		args = append(args, formName)
+		escapedForm := escapeTargetHistoryLike(formName)
+		conditions = append(conditions, "(COALESCE(f.name, '') = '' OR f.name = ? OR f.name LIKE ? OR ? LIKE CONCAT('%', f.name, '%'))")
+		args = append(args, formName, "%"+escapedForm+"%", formName)
 	}
 	for _, keyword := range filter.ExcludeNameKeywords {
 		keyword = strings.TrimSpace(keyword)
@@ -163,9 +172,13 @@ func (r *TargetHistoryRepository) candidateConditions(filter repository.TargetHi
 		args = append(args, "%"+escapeTargetHistoryLike(keyword)+"%")
 	}
 	if query := strings.TrimSpace(filter.Query); query != "" {
-		conditions = append(conditions, "(COALESCE(i.name, '') LIKE ? OR COALESCE(u.name, '') LIKE ? OR COALESCE(c.name, '') LIKE ?)")
-		pattern := "%" + escapeTargetHistoryLike(query) + "%"
-		args = append(args, pattern, pattern, pattern)
+		// 支持空格分词的多关键词智能匹配
+		words := strings.Fields(query)
+		for _, word := range words {
+			wordPattern := "%" + escapeTargetHistoryLike(word) + "%"
+			conditions = append(conditions, "(COALESCE(i.name, '') LIKE ? OR COALESCE(u.name, '') LIKE ? OR COALESCE(c.name, '') LIKE ? OR COALESCE(f.name, '') LIKE ? OR COALESCE(p.flow_name, '') LIKE ?)")
+			args = append(args, wordPattern, wordPattern, wordPattern, wordPattern, wordPattern)
+		}
 	}
 	return strings.Join(conditions, " AND "), args
 }
