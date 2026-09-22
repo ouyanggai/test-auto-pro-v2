@@ -1366,7 +1366,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			}
 		}
 		// 控制层内存现场已清理时（如运行已结束），按静态图与事实图的结构路径对齐映射关系，
-		// 确保刷新详情后已落账步骤的静态 Token 依然能精准映射到事实图节点。
+		// 结合精确路径与加签位移容错匹配，确保刷新详情后已落账步骤的静态 Token 依然能精准映射到事实图节点。
 		staticPaths, staticOK := flowGraphStructuralPaths(graph)
 		dynamicPaths, dynamicOK := flowGraphStructuralPaths(factGraph)
 		if staticOK && dynamicOK {
@@ -1374,9 +1374,28 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			for id, path := range dynamicPaths {
 				dynamicIDByPath[path] = id
 			}
+			staticType := graphNodeTypeByID(graph)
+			dynamicType := graphNodeTypeByID(factGraph)
+			usedDynamic := make(map[string]bool, len(dynamicPaths))
+			// 1. 先进行精确结构路径命中与类型一致性映射
 			for staticID, path := range staticPaths {
-				if dynamicID := dynamicIDByPath[path]; dynamicID != "" {
+				dynamicID := dynamicIDByPath[path]
+				if dynamicID != "" && strings.TrimSpace(dynamicType[dynamicID]) == strings.TrimSpace(staticType[staticID]) {
+					usedDynamic[dynamicID] = true
 					token := analyzer.PathConfigNodeToken(staticID)
+					tokenToGraphID[token] = dynamicID
+					tokenToGraphID[staticID] = dynamicID
+				}
+			}
+			// 2. 对因加签插入新节点导致后继子链路径整体多出一段的节点，进行唯一位移容错匹配
+			for staticID, path := range staticPaths {
+				token := analyzer.PathConfigNodeToken(staticID)
+				if tokenToGraphID[token] != "" {
+					continue
+				}
+				dynamicID := uniqueShiftedDynamicMatch(path, staticType[staticID], dynamicPaths, dynamicType, usedDynamic)
+				if dynamicID != "" {
+					usedDynamic[dynamicID] = true
 					tokenToGraphID[token] = dynamicID
 					tokenToGraphID[staticID] = dynamicID
 				}
@@ -1593,7 +1612,7 @@ func ensureVirtualEndNode(graph model.FlowGraph) model.FlowGraph {
 	result.Nodes = append([]model.FlowGraphNode{}, graph.Nodes...)
 	result.Edges = append([]model.FlowGraphEdge{}, graph.Edges...)
 	result.Nodes = append(result.Nodes, model.FlowGraphNode{
-		ID: virtualRunEndNodeID, Name: "结束", Type: "end", TypeName: "结束",
+		ID: virtualRunEndNodeID, Name: "结束", Type: "end", TypeName: "结束", StructuralPath: "root/__end__",
 	})
 	outgoing := make(map[string]bool, len(result.Nodes))
 	for _, edge := range graph.Edges {
@@ -1699,8 +1718,13 @@ func flowGraphStructuralPaths(graph model.FlowGraph) (map[string]string, bool) {
 	// 这种合法树形关系无法仅靠图边唯一反推，继续反推会把正常加签重建误报为结构异常。
 	withTreePaths := make(map[string]string, len(graph.Nodes))
 	allTreePaths := true
+	hasVirtualEnd := false
 	for _, node := range graph.Nodes {
 		id := strings.TrimSpace(node.ID)
+		if id == virtualRunEndNodeID {
+			hasVirtualEnd = true
+			continue
+		}
 		path := strings.TrimSpace(node.StructuralPath)
 		if id == "" || path == "" {
 			allTreePaths = false
@@ -1711,10 +1735,17 @@ func flowGraphStructuralPaths(graph model.FlowGraph) (map[string]string, bool) {
 		}
 		withTreePaths[path] = id
 	}
-	if allTreePaths && len(withTreePaths) == len(graph.Nodes) {
-		result := make(map[string]string, len(withTreePaths))
+	expectedCount := len(graph.Nodes)
+	if hasVirtualEnd {
+		expectedCount--
+	}
+	if allTreePaths && len(withTreePaths) == expectedCount && expectedCount > 0 {
+		result := make(map[string]string, len(graph.Nodes))
 		for path, id := range withTreePaths {
 			result[id] = path
+		}
+		if hasVirtualEnd {
+			result[virtualRunEndNodeID] = "root/__end__"
 		}
 		return result, true
 	}
@@ -2628,6 +2659,10 @@ func BuildNodeStatesWithTokenMapForTest(graph model.FlowGraph, steps []model.Run
 // insertedNodeIDs 是加签插入节点的权威真实 ID（来自已落账注入步骤），测试据此复现真实投影输入。
 func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs ...string) (model.FlowGraph, bool) {
 	return projectRuntimeGraph(staticGraph, dynamicGraph, insertedNodeIDs)
+}
+// FlowGraphStructuralPathsForTest 暴露拓扑结构路径计算，供测试复现图结构解析。
+func FlowGraphStructuralPathsForTest(graph model.FlowGraph) (map[string]string, bool) {
+	return flowGraphStructuralPaths(graph)
 }
 
 // EnsureVirtualEndNodeForTest 暴露结束节点投影，供根目录定向测试锁定节点与连线稳定性。

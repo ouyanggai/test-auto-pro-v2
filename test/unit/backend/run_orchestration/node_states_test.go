@@ -163,3 +163,33 @@ func TestStructuralPathsMapTokensWhenControlSessionCleared(t *testing.T) {
 		t.Fatalf("静态 Token 应通过结构路径映射到动态节点 dyn-audit，实际 %s", got)
 	}
 }
+// TestComplexBranchWithVirtualEndPaths 验证包含复杂分支与虚拟结束节点的图能够成功计算结构路径。
+func TestComplexBranchWithVirtualEndPaths(t *testing.T) {
+	// 构造多条件分支汇合树并补齐虚拟结束节点
+	tree := branchTree("test", true)
+	analyzerImpl := analyzer.NewFlowGraphAnalyzer()
+	nodes, edges, _, err := analyzerImpl.Analyze(tree)
+	if err != nil {
+		t.Fatalf("Analyze 失败：%v", err)
+	}
+	nodesWithoutEnd := make([]model.FlowGraphNode, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Type != "end" {
+			nodesWithoutEnd = append(nodesWithoutEnd, n)
+		}
+	}
+	edgesWithoutEnd := make([]model.FlowGraphEdge, 0, len(edges))
+	for _, e := range edges {
+		if e.Target != "test-end" {
+			edgesWithoutEnd = append(edgesWithoutEnd, e)
+		}
+	}
+	graph := service.EnsureVirtualEndNodeForTest(model.FlowGraph{Nodes: nodesWithoutEnd, Edges: edgesWithoutEnd})
+	paths, ok := service.FlowGraphStructuralPathsForTest(graph)
+	if !ok || len(paths) == 0 {
+		t.Fatalf("带有虚拟结束节点的复杂分支树应成功计算结构路径，实际 ok=%v, paths len=%d", ok, len(paths))
+	}
+	if paths[service.VirtualRunEndNodeIDForTest()] != "root/__end__" {
+		t.Fatalf("虚拟结束节点路径应为 root/__end__，实际 %s", paths[service.VirtualRunEndNodeIDForTest()])
+	}
+}
