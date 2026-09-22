@@ -49,8 +49,10 @@ func TestAddSignInsertedNodeSurvivesProjection(t *testing.T) {
 	staticGraph := model.FlowGraph{Nodes: staticNodes, Edges: staticEdges}
 	dynamicGraph := model.FlowGraph{Nodes: dynamicNodes, Edges: dynamicEdges}
 
-	// proxy-inserted 是加签插入节点的权威真实 ID（真实运行里来自已落账注入步骤）。
-	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph, "proxy-inserted")
+	// proxy-inserted 是加签插入节点的权威真实 ID（真实运行里来自已落账注入步骤）；
+	// plan-anchor 是加签锚点令牌（真实运行里来自已落账加签步骤的 NodeKey），位移量据此推导。
+	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph,
+		[]string{"proxy-inserted"}, []string{analyzer.PathConfigNodeToken("plan-anchor")})
 	if !bindable {
 		t.Fatalf("加签后代理树合法，投影必须可绑定，实际 bindable=false（前端会丢掉动态图导致看不到加签节点）")
 	}
@@ -183,6 +185,7 @@ func TestAddSignNodeStatesWithDynamicRemap(t *testing.T) {
 		t.Fatalf("加签节点的已完成状态没有落到动态图节点上，实际 %s", got)
 	}
 }
+
 // 插入节点步骤尚未生成或落账时（insertedNodeIDs 为空），投影是否仍然能够成功绑定。
 func TestAddSignInsertedNodeBeforeConditionBranchWithEmptyInsertedIDs(t *testing.T) {
 	analyzerImpl := analyzer.NewFlowGraphAnalyzer()
@@ -197,8 +200,9 @@ func TestAddSignInsertedNodeBeforeConditionBranchWithEmptyInsertedIDs(t *testing
 	staticGraph := model.FlowGraph{Nodes: staticNodes, Edges: staticEdges}
 	dynamicGraph := model.FlowGraph{Nodes: dynamicNodes, Edges: dynamicEdges}
 
-	// 传入空 insertedNodeIDs
-	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph)
+	// 传入空 insertedNodeIDs（插入步骤尚未落账），锚点令牌照常由加签步骤提供。
+	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph,
+		nil, []string{analyzer.PathConfigNodeToken("plan-anchor")})
 	if !bindable {
 		t.Fatalf("insertedNodeIDs 为空时，投影必须仍然能够成功绑定，实际 bindable=false")
 	}
@@ -213,6 +217,7 @@ func TestAddSignInsertedNodeBeforeConditionBranchWithEmptyInsertedIDs(t *testing
 		t.Fatalf("省区经理未能投影回计划 ID plan-sqjl，投影节点列表：%+v", projectedIDs(projected))
 	}
 }
+
 // 加签插入在 synergy 节点与 condition 分支节点之间，后继为包含分支的复杂子树。
 // 验证：投影必须成功绑定，省区经理必须正确映射回 static ID，加签节点必须保留 dynamic ID。
 func TestAddSignInsertedNodeBeforeConditionBranch(t *testing.T) {
@@ -228,7 +233,8 @@ func TestAddSignInsertedNodeBeforeConditionBranch(t *testing.T) {
 	staticGraph := model.FlowGraph{Nodes: staticNodes, Edges: staticEdges}
 	dynamicGraph := model.FlowGraph{Nodes: dynamicNodes, Edges: dynamicEdges}
 
-	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph, "proxy-inserted")
+	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph,
+		[]string{"proxy-inserted"}, []string{analyzer.PathConfigNodeToken("plan-anchor")})
 	if !bindable {
 		t.Fatalf("加签后代理树合法，投影必须可绑定，实际 bindable=false")
 	}

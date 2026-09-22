@@ -25,7 +25,7 @@ func TestF037RuntimeProjectionUsesTargetTreePaths(t *testing.T) {
 	}
 	staticGraph := model.FlowGraph{Nodes: staticNodes, Edges: staticEdges}
 	dynamicGraph := model.FlowGraph{Nodes: dynamicNodes, Edges: dynamicEdges}
-	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph)
+	projected, bindable := service.ProjectRuntimeGraphForTest(staticGraph, dynamicGraph, nil, nil)
 	if !bindable {
 		t.Fatal("合法的目标代理树重建不应判定为无法绑定")
 	}

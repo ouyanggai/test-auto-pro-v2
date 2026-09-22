@@ -126,6 +126,7 @@ func TestF039VirtualEndStateFollowsPathCompletion(t *testing.T) {
 		t.Fatalf("结束节点不应进入「等待运行」，它只表达整条路径是否走到头，实际 %s", got)
 	}
 }
+
 // TestStructuralPathsMapTokensWhenControlSessionCleared 验证当控制层现场被释放时，
 // 静态 Token 与动态图节点能通过结构路径成功对齐，避免完成态刷新后节点全部退化为未开始。
 func TestStructuralPathsMapTokensWhenControlSessionCleared(t *testing.T) {
@@ -163,6 +164,7 @@ func TestStructuralPathsMapTokensWhenControlSessionCleared(t *testing.T) {
 		t.Fatalf("静态 Token 应通过结构路径映射到动态节点 dyn-audit，实际 %s", got)
 	}
 }
+
 // TestComplexBranchWithVirtualEndPaths 验证包含复杂分支与虚拟结束节点的图能够成功计算结构路径。
 func TestComplexBranchWithVirtualEndPaths(t *testing.T) {
 	// 构造多条件分支汇合树并补齐虚拟结束节点

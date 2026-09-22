@@ -1193,6 +1193,14 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	if err != nil {
 		return nil, err
 	}
+	// 加签锚点令牌来自已落账的加签步骤：插入只发生在锚点与其原后继之间，锚点位置是推导
+	// 「静态路径 -> 动态路径」位移量的权威事实，只依赖落库步骤，与控制层内存现场是否还在无关。
+	anchorTokens := make([]string, 0, len(steps))
+	for _, stepRecord := range steps {
+		if stepRecord.Action == string(model.ActionAddSign) {
+			anchorTokens = append(anchorTokens, stepRecord.NodeKey)
+		}
+	}
 	attempts, err := s.store.ListRunAttempts(ctx, pathRun.ID)
 	if err != nil {
 		return nil, err
@@ -1283,7 +1291,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 					}
 				}
 			}
-			projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedIDs)
+			projected, projectionOK := projectRuntimeGraph(graph, dynamicGraph, insertedIDs, anchorTokens)
 			deviationGraph = projected
 			dynamicProjectionOK = projectionOK
 			// 结束节点是每次运行的固定终点，不是"完成态才补的装饰"：运行中就要画在最后，
@@ -1350,60 +1358,19 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	requestsByKey, summaryByKey := s.readAttemptRequests(pathRun.ID, attempts)
 	// 步骤与预览携带的是配置令牌键（编译场景的 nodeKey），画布与侧栏按图节点 ID 取值。
 	// 这里统一翻译出图节点 ID，键空间对齐后九个运行态、当前步标记与侧栏才真实可用（评审 P1）。
-	// 投影失败只说明旧节点不能安全绑定到新结构，不代表已落账步骤不存在；
-	// 继续使用静态图把运行事实映射出来，避免详情刷新后步骤和失败节点全部变成未开始。
 	var tokenToGraphID map[string]string
 	if !dynamicProjectionOK {
-		tokenToGraphID = tokenToGraphNodeID(factGraph)
-		// 仅在动态图无法投影回静态 ID 空间、画布只能直接展示目标动态代理图时，
-		// 才需要使用控制层重绑定后的新目标节点 ID 兜底，避免步骤事实完全无法关联动态节点。
+		var controlNodeTargetIDs map[string]string
 		if s.control != nil {
-			for key, targetID := range s.control.NodeTargetIDs(pathRun.ID) {
-				if targetID != "" {
-					tokenToGraphID[key] = targetID
-					tokenToGraphID[analyzer.PathConfigNodeToken(targetID)] = targetID
-				}
-			}
+			controlNodeTargetIDs = s.control.NodeTargetIDs(pathRun.ID)
 		}
-		// 控制层内存现场已清理时（如运行已结束），按静态图与事实图的结构路径对齐映射关系，
-		// 结合精确路径与加签位移容错匹配，确保刷新详情后已落账步骤的静态 Token 依然能精准映射到事实图节点。
-		staticPaths, staticOK := flowGraphStructuralPaths(graph)
-		dynamicPaths, dynamicOK := flowGraphStructuralPaths(factGraph)
-		if staticOK && dynamicOK {
-			dynamicIDByPath := make(map[string]string, len(dynamicPaths))
-			for id, path := range dynamicPaths {
-				dynamicIDByPath[path] = id
-			}
-			staticType := graphNodeTypeByID(graph)
-			dynamicType := graphNodeTypeByID(factGraph)
-			usedDynamic := make(map[string]bool, len(dynamicPaths))
-			// 1. 先进行精确结构路径命中与类型一致性映射
-			for staticID, path := range staticPaths {
-				dynamicID := dynamicIDByPath[path]
-				if dynamicID != "" && strings.TrimSpace(dynamicType[dynamicID]) == strings.TrimSpace(staticType[staticID]) {
-					usedDynamic[dynamicID] = true
-					token := analyzer.PathConfigNodeToken(staticID)
-					tokenToGraphID[token] = dynamicID
-					tokenToGraphID[staticID] = dynamicID
-				}
-			}
-			// 2. 对因加签插入新节点导致后继子链路径整体多出一段的节点，进行唯一位移容错匹配
-			for staticID, path := range staticPaths {
-				token := analyzer.PathConfigNodeToken(staticID)
-				if tokenToGraphID[token] != "" {
-					continue
-				}
-				dynamicID := uniqueShiftedDynamicMatch(path, staticType[staticID], dynamicPaths, dynamicType, usedDynamic)
-				if dynamicID != "" {
-					usedDynamic[dynamicID] = true
-					tokenToGraphID[token] = dynamicID
-					tokenToGraphID[staticID] = dynamicID
-				}
-			}
-		}
+		tokenToGraphID = bindStepTokensToFactGraph(graph, factGraph, controlNodeTargetIDs, anchorTokens, insertedNodeIDsFromStepsAndPreview(steps, nil))
 	} else {
 		tokenToGraphID = tokenToGraphNodeID(factGraph)
 	}
+	// 插入节点步骤的合成键对齐与投影成败无关：代理树重建会更换插入节点 ID，
+	// 两种投影结果下都要按锚点插入位置把合成键对齐到事实图节点，画布才能点亮加签审批人。
+	bindInsertedStepKeys(graph, factGraph, anchorTokens, steps, tokenToGraphID)
 	detail.Steps = buildStepDTOs(steps, attempts, phaseTimings, requestsByKey, summaryByKey, s.router, tokenToGraphID)
 	if preview := s.control.CurrentPreview(pathRun.ID); preview != nil {
 		detail.CurrentPreview = previewDTO(preview)
@@ -1509,57 +1476,20 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 // 这些节点在计划图里根本不存在，会与位移后的后继节点同路径同类型，只靠结构无法区分（会把插入节点错当成
 // 后继、真正的后继反而绑不上，甚至整图判为无法绑定而被前端丢弃，导致画布看不到加签节点）。这里先把它们
 // 从「可被静态节点占用」的候选池里排除，静态后继就能按位移正确绑定，插入节点则保留自身真实 ID 单独展示。
-func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs []string) (model.FlowGraph, bool) {
+// anchorTokens 是已落账加签步骤的锚点令牌（锚点=执行加签时的当前节点），位移量由锚点位置确定性推导。
+func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs, anchorTokens []string) (model.FlowGraph, bool) {
 	staticPaths, staticOK := flowGraphStructuralPaths(staticGraph)
 	dynamicPaths, dynamicOK := flowGraphStructuralPaths(dynamicGraph)
 	if !staticOK || !dynamicOK {
 		return dynamicGraph, false
 	}
-	dynamicIDByPath := make(map[string]string, len(dynamicPaths))
-	for id, path := range dynamicPaths {
-		if previous, exists := dynamicIDByPath[path]; exists && previous != id {
-			return dynamicGraph, false
-		}
-		dynamicIDByPath[path] = id
+	bound := alignStaticToDynamicByStructure(staticPaths, dynamicPaths, staticGraph, dynamicGraph, anchorTokens, insertedNodeIDs)
+	if len(bound) != len(staticPaths) {
+		// 任何一个计划节点都无法唯一绑定时整图放弃投影：部分复用旧 ID 会把两种键空间混在一张画布上。
+		return dynamicGraph, false
 	}
-	// 节点类型用于容错绑定时的一致性校验，避免把类型不同的节点错绑。
-	staticType := graphNodeTypeByID(staticGraph)
-	dynamicType := graphNodeTypeByID(dynamicGraph)
 	dynamicToProjected := make(map[string]string, len(dynamicPaths))
-	usedDynamic := make(map[string]bool, len(dynamicPaths))
-	// 加签插入节点的权威真实 ID 先占位为「已用」：它们没有对应的计划节点，绝不能被任何静态节点绑走。
-	// 只对确实存在于当前动态图里的插入 ID 生效（历史加签节点可能已随流程流转移除）。
-	for _, insertedID := range insertedNodeIDs {
-		insertedID = strings.TrimSpace(insertedID)
-		if insertedID == "" {
-			continue
-		}
-		if _, exists := dynamicPaths[insertedID]; exists {
-			usedDynamic[insertedID] = true
-		}
-	}
-	// 按结构路径从浅到深、稳定排序处理：锚点前的节点先精确绑定，锚点后的位移节点再逐层绑定，
-	// 避免遍历顺序不确定造成位移节点被错绑（加签插入节点会占用锚点原子路径）。
-	staticIDs := make([]string, 0, len(staticPaths))
-	for staticID := range staticPaths {
-		staticIDs = append(staticIDs, staticID)
-	}
-	sort.SliceStable(staticIDs, func(i, j int) bool { return staticPaths[staticIDs[i]] < staticPaths[staticIDs[j]] })
-	for _, staticID := range staticIDs {
-		path := staticPaths[staticID]
-		dynamicID := dynamicIDByPath[path]
-		// 精确路径命中还必须类型一致且未被占用：加签把「审核人」插到锚点的原子路径上，静态该路径的
-		// 节点（如条件分支）会与插入的 common 节点同路径但类型不同——不校验类型就会把插入节点错当成
-		// 原节点，真正的原节点（已整体位移一段）反而绑不上。类型不符/被占用时走位移容错匹配。
-		if strings.TrimSpace(dynamicID) == "" || usedDynamic[dynamicID] || strings.TrimSpace(dynamicType[dynamicID]) != strings.TrimSpace(staticType[staticID]) {
-			// 加签会在锚点之后插入新节点，使其后子链的结构路径整体多出一段；这里按「去掉一段后与静态
-			// 路径一致、类型相同、且唯一未占用」找到位移后的对应节点，插入节点则保持动态 ID 单独展示。
-			dynamicID = uniqueShiftedDynamicMatch(path, staticType[staticID], dynamicPaths, dynamicType, usedDynamic)
-			if strings.TrimSpace(dynamicID) == "" {
-				return dynamicGraph, false
-			}
-		}
-		usedDynamic[dynamicID] = true
+	for staticID, dynamicID := range bound {
 		dynamicToProjected[dynamicID] = staticID
 	}
 	for dynamicID := range dynamicPaths {
@@ -1659,12 +1589,238 @@ func graphNodeTypeByID(graph model.FlowGraph) map[string]string {
 	return result
 }
 
-// uniqueShiftedDynamicMatch 在动态图里找「结构路径去掉一段后与 staticPath 一致、类型相同、且唯一未占用」
-// 的节点：加签在锚点之后插入新节点，会让其后子链的每个节点的结构路径整体多出一段，用它把位移后的
-// 节点对应回计划节点。命中不唯一或类型不符时返回空串，绝不猜测（宁可退回只读静态图）。
+// alignStaticToDynamicByStructure 按结构路径把静态计划节点对齐到动态图节点，返回 staticID -> dynamicID。
+// 对齐分两层：先用已落账加签步骤的锚点推导每个静态节点的「期望动态路径」直连——一次运行可能连续加签
+// 多次，位移按锚点位置累加（1 段、2 段、3 段……），期望路径能从根一次性算准，同时避免同类型链上
+// 「浅一层节点恰好落在同一路径」的精确命中错绑；期望路径未命中（其他动作触发的树重建、加签锚点不在
+// 当前静态图等）再按「去掉若干段后一致、类型相同、唯一未占用」的位移容错匹配兜底。
+// 绑定不上的静态节点不出现在结果里，由调用方决定是放弃投影还是保留事实映射继续展示。
+func alignStaticToDynamicByStructure(staticPaths, dynamicPaths map[string]string, staticGraph, dynamicGraph model.FlowGraph, anchorTokens, insertedNodeIDs []string) map[string]string {
+	dynamicIDByPath := make(map[string]string, len(dynamicPaths))
+	for id, path := range dynamicPaths {
+		dynamicIDByPath[path] = id
+	}
+	// 节点类型用于绑定一致性校验：加签把「审核人」插到锚点子链上，同路径的候选类型不同时绝不能绑。
+	staticType := graphNodeTypeByID(staticGraph)
+	dynamicType := graphNodeTypeByID(dynamicGraph)
+	usedDynamic := make(map[string]bool, len(dynamicPaths))
+	// 加签插入节点的权威真实 ID 先占位为「已用」：它们没有对应的计划节点，绝不能被任何静态节点绑走。
+	// 只对确实存在于当前动态图里的插入 ID 生效（历史插入节点可能已被后续代理树重建更换 ID 或移除）。
+	for _, insertedID := range insertedNodeIDs {
+		insertedID = strings.TrimSpace(insertedID)
+		if insertedID == "" {
+			continue
+		}
+		if _, exists := dynamicPaths[insertedID]; exists {
+			usedDynamic[insertedID] = true
+		}
+	}
+	anchors := addSignAnchorSegments(staticPaths, anchorTokens)
+	bound := make(map[string]string, len(staticPaths))
+	// 按结构路径从浅到深绑定：浅层锚点先占位，深层位移节点的候选池随之收敛，剩余候选才能唯一对应，
+	// 遍历顺序不确定会让位移节点被错绑。
+	staticIDs := make([]string, 0, len(staticPaths))
+	for staticID := range staticPaths {
+		staticIDs = append(staticIDs, staticID)
+	}
+	sort.SliceStable(staticIDs, func(i, j int) bool { return staticPaths[staticIDs[i]] < staticPaths[staticIDs[j]] })
+	for _, staticID := range staticIDs {
+		path := staticPaths[staticID]
+		// 期望动态路径：静态路径延伸到的每个加签锚点都会在其后多出一跳 child，多次加签逐层累加。
+		expected := strings.Join(shiftedStructuralPath(strings.Split(path, "/"), anchors), "/")
+		dynamicID := dynamicIDByPath[expected]
+		if dynamicID == "" || usedDynamic[dynamicID] || strings.TrimSpace(dynamicType[dynamicID]) != strings.TrimSpace(staticType[staticID]) {
+			dynamicID = uniqueShiftedDynamicMatch(path, staticType[staticID], dynamicPaths, dynamicType, usedDynamic)
+		}
+		if dynamicID == "" {
+			continue
+		}
+		usedDynamic[dynamicID] = true
+		bound[staticID] = dynamicID
+	}
+	return bound
+}
+
+// addSignAnchorSegments 把已落账加签步骤的锚点令牌解析为静态结构路径段序列，按路径排序。
+// 同一锚点加签多次则出现多次（每次插入都多一跳）；解析不出的锚点（节点已不在当前静态图等）
+// 直接忽略，只影响期望路径推导的精度，不阻塞其余节点的对齐。
+func addSignAnchorSegments(staticPaths map[string]string, anchorTokens []string) [][]string {
+	pathByToken := make(map[string]string, len(staticPaths))
+	for id := range staticPaths {
+		pathByToken[analyzer.PathConfigNodeToken(id)] = staticPaths[id]
+	}
+	anchors := make([][]string, 0, len(anchorTokens))
+	for _, token := range anchorTokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if path, exists := pathByToken[token]; exists && path != "" {
+			anchors = append(anchors, strings.Split(path, "/"))
+		}
+	}
+	sort.Slice(anchors, func(i, j int) bool {
+		return strings.Join(anchors[i], "/") < strings.Join(anchors[j], "/")
+	})
+	return anchors
+}
+
+// shiftedStructuralPath 推导静态节点在动态树中的期望结构路径：静态路径的每个严格真前缀若是某个
+// 加签锚点的完整路径，则该锚点的插入会在其后多出一跳 child，多个锚点逐层累加。
+// 锚点自身与锚点之前的节点路径保持不变（插入只发生在锚点与其原后继之间）。
+func shiftedStructuralPath(staticSegments []string, anchors [][]string) []string {
+	expected := make([]string, 0, len(staticSegments)+len(anchors))
+	for index := 1; index <= len(staticSegments); index++ {
+		expected = append(expected, staticSegments[index-1])
+		if index == len(staticSegments) {
+			break
+		}
+		prefix := strings.Join(staticSegments[:index], "/")
+		for _, anchor := range anchors {
+			if len(anchor) == index && strings.Join(anchor, "/") == prefix {
+				expected = append(expected, "child")
+			}
+		}
+	}
+	return expected
+}
+
+// bindStepTokensToFactGraph 在动态图无法唯一投影回计划 ID 空间时，推导「配置令牌键 -> 事实图节点 ID」。
+// 投影失败只说明旧节点不能安全绑定到新结构，不代表已落账步骤不存在；继续把运行事实映射到事实图，
+// 避免详情刷新后步骤和失败节点全部变成未开始。映射顺序（后写覆盖先写）：
+// 1) 事实图节点直连（步骤按重构后的真实节点 ID 记录时直接对齐）；
+// 2) 控制层重绑定的权威事实（加签重建代理树后 runCtx 维护的配置令牌到真实目标节点 ID）；
+// 3) 结构对齐：加签锚点期望路径直连 + 位移容错匹配（见 alignStaticToDynamicByStructure）。
+func bindStepTokensToFactGraph(staticGraph, factGraph model.FlowGraph, controlNodeTargetIDs map[string]string, anchorTokens, insertedNodeIDs []string) map[string]string {
+	tokenToGraphID := tokenToGraphNodeID(factGraph)
+	// 控制层重绑定事实只在画布直接展示目标动态代理图（投影失败）时兜底使用，
+	// 避免已落账步骤完全无法关联动态节点。
+	for key, targetID := range controlNodeTargetIDs {
+		if targetID != "" {
+			tokenToGraphID[key] = targetID
+			tokenToGraphID[analyzer.PathConfigNodeToken(targetID)] = targetID
+		}
+	}
+	staticPaths, staticOK := flowGraphStructuralPaths(staticGraph)
+	dynamicPaths, dynamicOK := flowGraphStructuralPaths(factGraph)
+	if !staticOK || !dynamicOK {
+		return tokenToGraphID
+	}
+	bound := alignStaticToDynamicByStructure(staticPaths, dynamicPaths, staticGraph, factGraph, anchorTokens, insertedNodeIDs)
+	for staticID, dynamicID := range bound {
+		token := analyzer.PathConfigNodeToken(staticID)
+		tokenToGraphID[token] = dynamicID
+		tokenToGraphID[staticID] = dynamicID
+	}
+	return tokenToGraphID
+}
+
+// bindInsertedStepKeys 把加签插入节点步骤的合成键对齐到事实图节点，无论动态图是否成功投影都要执行：
+// 投影成功时事实图回计划 ID 空间、插入节点保留真实 ID；投影失败时事实图就是目标动态图。
+// 已落账的插入审批步骤携带合成键「add-sign-inserted-<当时真实ID>」，但后续加签会重建代理树并整树更换
+// 节点 ID，合成键里的 ID 随之失效，插入节点在画布上就会退回「未开始」。对齐依据是可证明的结构事实：
+// 插入节点必然位于锚点期望路径的直接后继位置，该位置不可能属于任何计划节点，类型必为人工审批/协同；
+// 同一锚点多次插入时按步骤顺序依次占据后继链。位置唯一即对齐，绝不按名称猜测。
+func bindInsertedStepKeys(staticGraph, factGraph model.FlowGraph, anchorTokens []string, steps []model.RunStep, tokenToGraphID map[string]string) {
+	if len(steps) == 0 || len(anchorTokens) == 0 {
+		return
+	}
+	staticPaths, staticOK := flowGraphStructuralPaths(staticGraph)
+	dynamicPaths, dynamicOK := flowGraphStructuralPaths(factGraph)
+	if !staticOK || !dynamicOK {
+		return
+	}
+	anchors := addSignAnchorSegments(staticPaths, anchorTokens)
+	segmentsByToken := make(map[string][]string, len(anchorTokens))
+	for _, token := range anchorTokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if path, exists := staticPathsByToken(staticPaths, token); exists {
+			segmentsByToken[token] = strings.Split(path, "/")
+		}
+	}
+	// 每个插入合成键归属最近一次加签动作的锚点（加签动作步骤的 NodeKey 就是锚点令牌）；
+	// 同一锚点多次插入时按落账顺序依次占据后继链。
+	keyOrderByAnchor := map[string][]string{}
+	var anchorOrder []string
+	lastAnchor := ""
+	for _, stepRecord := range steps {
+		if stepRecord.Action == string(model.ActionAddSign) {
+			lastAnchor = strings.TrimSpace(stepRecord.NodeKey)
+			continue
+		}
+		if lastAnchor == "" {
+			continue
+		}
+		insertedID := control.InsertedNodeIDFromKey(stepRecord.NodeKey)
+		if insertedID == "" {
+			continue
+		}
+		key := control.AddSignInsertedNodeKey(insertedID)
+		if !sliceContains(keyOrderByAnchor[lastAnchor], key) {
+			keyOrderByAnchor[lastAnchor] = append(keyOrderByAnchor[lastAnchor], key)
+			anchorOrder = append(anchorOrder, lastAnchor)
+		}
+	}
+	// 事实图里属于静态计划 ID 空间的节点绝不能被插入步骤占用。
+	staticNodeIDs := make(map[string]bool, len(staticGraph.Nodes))
+	for _, node := range staticGraph.Nodes {
+		staticNodeIDs[strings.TrimSpace(node.ID)] = true
+	}
+	dynamicType := graphNodeTypeByID(factGraph)
+	dynamicIDByPath := make(map[string]string, len(dynamicPaths))
+	for id, path := range dynamicPaths {
+		dynamicIDByPath[path] = id
+	}
+	for _, anchorToken := range anchorOrder {
+		keys := keyOrderByAnchor[anchorToken]
+		anchor := segmentsByToken[anchorToken]
+		for index, key := range keys {
+			if anchor == nil {
+				break
+			}
+			// 第 index 个插入节点位于「锚点期望路径 + 第 index 跳后继」：锚点期望路径只吸收更早锚点的
+			// 位移，自身插入不位移自身位置，因此后继跳以普通 child 依次追加。
+			segments := append(shiftedStructuralPath(anchor, anchors), make([]string, index+1)...)
+			for i := len(anchor); i < len(segments); i++ {
+				segments[i] = "child"
+			}
+			position := strings.Join(segments, "/")
+			dynamicID := dynamicIDByPath[position]
+			// 位置上没有事实图节点、它属于计划节点、或类型不是人工审批/协同，
+			// 都说明结构事实与插入记录不再吻合，停止该锚点的对齐。
+			if dynamicID == "" || staticNodeIDs[dynamicID] {
+				break
+			}
+			nodeType := strings.ToLower(strings.TrimSpace(dynamicType[dynamicID]))
+			if nodeType != "common" && nodeType != "synergy" {
+				break
+			}
+			tokenToGraphID[key] = dynamicID
+		}
+	}
+}
+
+// staticPathsByToken 返回静态图节点令牌对应的结构路径，供加签锚点定位使用。
+func staticPathsByToken(staticPaths map[string]string, token string) (string, bool) {
+	for id, path := range staticPaths {
+		if analyzer.PathConfigNodeToken(id) == token {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+// uniqueShiftedDynamicMatch 在动态图里找「结构路径去掉若干段后与 staticPath 一致、类型相同、且唯一未占用」
+// 的节点：加签在锚点之后插入新节点，会让其后子链的结构路径整体多出一段，用它把位移后的节点对应回计划节点。
+// 一次运行可能连续发生多次加签，位移按锚点位置累加（第二次加签之后的节点位移 2 段、第三次之后 3 段），
+// 因此按位移段数从小到大逐层尝试：某一层有唯一类型一致的未占用候选才绑定，全部层都不唯一时返回空串，
+// 绝不猜测（宁可退回只读静态图）。
 func uniqueShiftedDynamicMatch(staticPath, staticType string, dynamicPaths, dynamicType map[string]string, used map[string]bool) string {
 	staticTokens := strings.Split(staticPath, "/")
-	match := ""
+	candidatesByShift := map[int][]string{}
 	for dynamicID, dynamicPath := range dynamicPaths {
 		if used[dynamicID] {
 			continue
@@ -1672,40 +1828,47 @@ func uniqueShiftedDynamicMatch(staticPath, staticType string, dynamicPaths, dyna
 		if strings.TrimSpace(dynamicType[dynamicID]) != strings.TrimSpace(staticType) {
 			continue
 		}
-		if !pathIsOneSegmentSuperset(strings.Split(dynamicPath, "/"), staticTokens) {
+		dynamicTokens := strings.Split(dynamicPath, "/")
+		shift := len(dynamicTokens) - len(staticTokens)
+		if shift < 1 {
 			continue
 		}
-		if match != "" {
-			// 命中多个，无法唯一证明位移对应关系。
-			return ""
+		if !pathIsShiftedSuperset(dynamicTokens, staticTokens, shift) {
+			continue
 		}
-		match = dynamicID
+		candidatesByShift[shift] = append(candidatesByShift[shift], dynamicID)
 	}
-	return match
+	shifts := make([]int, 0, len(candidatesByShift))
+	for shift := range candidatesByShift {
+		shifts = append(shifts, shift)
+	}
+	sort.Ints(shifts)
+	for _, shift := range shifts {
+		if len(candidatesByShift[shift]) == 1 {
+			return candidatesByShift[shift][0]
+		}
+	}
+	return ""
 }
 
-// pathIsOneSegmentSuperset 判断 dynamicTokens 去掉恰好一段后是否等于 staticTokens。
-func pathIsOneSegmentSuperset(dynamicTokens, staticTokens []string) bool {
-	if len(dynamicTokens) != len(staticTokens)+1 {
+// pathIsShiftedSuperset 判断 dynamicTokens 恰好去掉 shift 段后是否等于 staticTokens。
+// 被去掉的段只允许是 "child"：加签插入只会让子链多出普通后继跳，分支段（branch/N 等）
+// 永远不会被插入，禁止跳过它们才能防止把另一条分支的节点错当成位移后的对应节点。
+func pathIsShiftedSuperset(dynamicTokens, staticTokens []string, shift int) bool {
+	if shift < 1 || len(dynamicTokens) != len(staticTokens)+shift {
 		return false
 	}
-	for skip := range dynamicTokens {
-		ok := true
-		for i, j := 0, 0; i < len(dynamicTokens); i++ {
-			if i == skip {
-				continue
-			}
-			if dynamicTokens[i] != staticTokens[j] {
-				ok = false
-				break
-			}
-			j++
+	matched := 0
+	for _, token := range dynamicTokens {
+		if matched < len(staticTokens) && token == staticTokens[matched] {
+			matched++
+			continue
 		}
-		if ok {
-			return true
+		if token != "child" {
+			return false
 		}
 	}
-	return false
+	return matched == len(staticTokens)
 }
 
 // flowGraphStructuralPaths 为结构图生成不依赖节点名称和业务 ID 的拓扑路径。
@@ -2656,10 +2819,19 @@ func BuildNodeStatesWithTokenMapForTest(graph model.FlowGraph, steps []model.Run
 }
 
 // ProjectRuntimeGraphForTest 暴露运行期代理树投影，供根目录定向测试锁定加签重建后的结构绑定。
-// insertedNodeIDs 是加签插入节点的权威真实 ID（来自已落账注入步骤），测试据此复现真实投影输入。
-func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs ...string) (model.FlowGraph, bool) {
-	return projectRuntimeGraph(staticGraph, dynamicGraph, insertedNodeIDs)
+// insertedNodeIDs 是加签插入节点的权威真实 ID；anchorTokens 是已落账加签步骤的锚点令牌。
+func ProjectRuntimeGraphForTest(staticGraph, dynamicGraph model.FlowGraph, insertedNodeIDs, anchorTokens []string) (model.FlowGraph, bool) {
+	return projectRuntimeGraph(staticGraph, dynamicGraph, insertedNodeIDs, anchorTokens)
 }
+
+// BindStepTokensToFactGraphForTest 暴露投影失败后的步骤令牌兜底映射与插入节点合成键对齐，
+// 供定向测试锁定「多次加签位移」场景下静态 Token 与动态节点的对齐结果。
+func BindStepTokensToFactGraphForTest(staticGraph, factGraph model.FlowGraph, controlNodeTargetIDs map[string]string, anchorTokens, insertedNodeIDs []string, steps []model.RunStep) map[string]string {
+	tokenToGraphID := bindStepTokensToFactGraph(staticGraph, factGraph, controlNodeTargetIDs, anchorTokens, insertedNodeIDs)
+	bindInsertedStepKeys(staticGraph, factGraph, anchorTokens, steps, tokenToGraphID)
+	return tokenToGraphID
+}
+
 // FlowGraphStructuralPathsForTest 暴露拓扑结构路径计算，供测试复现图结构解析。
 func FlowGraphStructuralPathsForTest(graph model.FlowGraph) (map[string]string, bool) {
 	return flowGraphStructuralPaths(graph)
