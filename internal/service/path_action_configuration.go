@@ -1420,6 +1420,11 @@ func validateAutoCandidatePerson(validation analyzer.PathConfigValidation, nodeK
 		return "当前节点没有人员候选目录"
 	}
 	personTarget := nodeTarget.ActionPersons[string(candidate.action.Action)]
+	if personTarget == nil && candidate.action.Action == model.ActionForward {
+		if instanceTarget, instanceOk := validation.NodeTokens[analyzer.PathConfigInstanceActionKey()]; instanceOk {
+			personTarget = instanceTarget.ActionPersons[string(model.ActionForward)]
+		}
+	}
 	if personTarget == nil {
 		return "当前动作没有动作专属人员候选目录"
 	}

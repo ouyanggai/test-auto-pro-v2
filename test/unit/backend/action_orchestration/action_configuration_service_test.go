@@ -1034,30 +1034,36 @@ func TestAutoConfigureNodeActionDiversity(t *testing.T) {
 			},
 		},
 	}
-	plan := model.Plan{ID: 501, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
-	path := model.ExecutionPath{ID: 5001, PlanID: plan.ID, SequenceNo: 1, Name: "多节点路径"}
-	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
-	config := service.NewPathConfigService(
-		service.NewPlanService(actionPlanRepository{plan: plan}),
-		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: multiNodeTree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: []model.ExecutionPath{path}},
-	)
-	config.SetHistoryWorkspaceStores(store, store)
-	if err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, ""); err != nil {
-		t.Fatalf("自动配置失败：%v", err)
-	}
-	var actions []model.ConfiguredAction
-	if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
-		t.Fatalf("反序列化已配置动作失败：%v", err)
-	}
+	multiNodeTree.ForwardCandidates = []target.FlowAuditCandidate{{ID: "forward-recv-1", Name: "转发接收人"}}
 	seenActions := map[model.ActionKey]bool{}
-	for _, a := range actions {
-		if a.NodeKey != "start" {
-			seenActions[a.Action] = true
+	// 跑多条路径，验证转发与撤回与节点动作合起来随机编排，且能被覆盖到
+	for pathID := uint64(5001); pathID <= 5010; pathID++ {
+		plan := model.Plan{ID: pathID, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+		path := model.ExecutionPath{ID: pathID, PlanID: plan.ID, SequenceNo: uint(pathID - 5000), Name: "多节点路径"}
+		store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
+		config := service.NewPathConfigService(
+			service.NewPlanService(actionPlanRepository{plan: plan}),
+			&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: multiNodeTree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
+			analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: []model.ExecutionPath{path}},
+		)
+		config.SetHistoryWorkspaceStores(store, store)
+		if err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, ""); err != nil {
+			t.Fatalf("自动配置失败：%v", err)
+		}
+		var actions []model.ConfiguredAction
+		if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
+			t.Fatalf("反序列化已配置动作失败：%v", err)
+		}
+		for _, a := range actions {
+			if a.NodeKey != "start" {
+				seenActions[a.Action] = true
+			}
 		}
 	}
-	// 3 个审批节点应尽可能配置不同动作
-	if len(seenActions) < 2 {
-		t.Fatalf("多节点路径应尽量覆盖不同动作，实际配置的动作种数：%d，动作清单：%+v", len(seenActions), seenActions)
+	if !seenActions[model.ActionForward] {
+		t.Fatalf("转发(forward)应进入随机编排候选且被覆盖，实际未出现。所有动作：%+v", seenActions)
+	}
+	if !seenActions[model.ActionWithdraw] {
+		t.Fatalf("撤回(withdraw)应进入随机编排候选且被覆盖，实际未出现。所有动作：%+v", seenActions)
 	}
 }
