@@ -1304,8 +1304,8 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			}
 			nodeSeed := autoConfigureSeed(planID, pathID, node.Key)
 			nodeSeed += uint64(denseRank)
-			// 发起方式交替起点由计划级种子随机决定；其余节点额外动作的种子叠加密集排名做打散。
-			draftFirst := initiatorDraftFirst(planID, uint64(denseRank))
+			// 发起人节点单独随机决定是否配置保存草稿；其余节点额外动作的种子叠加密集排名做打散。
+			draftFirst := autoConfigureSeed(planID, pathID, node.Key+":initiator_draft")%2 == 1
 			candidates, rejections := autoExtraActionCandidates(*node, nodeSeed, usedInPath(actions), planAccount, draftFirst)
 			// 取回规则：末节点没有后继人工待办窗口，从候选排除；中间人工节点有直接后继窗口，正常允许取回。
 			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
@@ -1317,7 +1317,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				// 该侧目录缺失保存草稿时同样退化为直接提交，原因留在诊断里。
 				commitPendingPersons()
 				confirmedNodes = append(confirmedNodes, node.Key)
-				if !initiatorDraftFirst(planID, uint64(denseRank)) {
+				if !draftFirst {
 					autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交）")
 				} else {
 					autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交：目录缺失保存草稿）")
@@ -1368,8 +1368,8 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			}
 		}
 	}
-	// 实例动作容器一键配置（任务书 4.1）：从实例动作目录中挑选一条可用动作（如 forward/withdraw/urge 等），
-	// 不占用节点额外动作名额；仅在尚未配置任何实例动作时尝试配置。
+	// 实例动作一键配置：只允许“撤回”（withdraw）参与一键配置（排除转发、催办、关注等动作）。
+	// 撤回是实例级动作，不占用节点名额，起点由种子决定，让部分路径覆盖撤回恢复链，保证全动作多样性。
 	instanceContainerKey := analyzer.PathConfigInstanceActionKey()
 	hasInstanceAction := false
 	for _, a := range actions {
@@ -1379,82 +1379,32 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 		}
 	}
 	if len(blockingRejections) == 0 && !hasInstanceAction && !approveOnly && len(configuration.InstanceActions.Catalog) > 0 {
-		instanceSeed := autoConfigureSeed(planID, pathID, "instance_actions")
-		availableInstance := make([]model.PathConfigActionCatalogItem, 0, len(configuration.InstanceActions.Catalog))
-		for _, item := range configuration.InstanceActions.Catalog {
-			if !item.Enabled || item.SystemOnly || item.SystemInserted {
-				continue
-			}
-			availableInstance = append(availableInstance, item)
-		}
-		// 实例动作「随机起点的严格轮询」（用户裁决：要随机，但尽量覆盖全部动作）：
-		// 轮询池固定为 转发→撤回→催办→关注，起点由计划级种子随机决定（同一计划内固定），
-		// 路径按序号依次轮转——路径 1 拿到哪个动作随计划而变，但同计划的多条路径必然
-		// 完整覆盖全部动作，不会独占关注。取消关注等其余可用动作不参与自动轮询
-		// （仍可手工配置），只在四个轮询动作全部不可用时追加在队尾兜底。
-		// 此前按动作键字母序从 0 轮转，follow 恰好排第一，路径 1 永远是关注。
-		poolOrder := []model.ActionKey{model.ActionForward, model.ActionWithdraw, model.ActionUrge, model.ActionFollow}
-		ordered := make([]model.PathConfigActionCatalogItem, 0, len(poolOrder))
-		for _, want := range poolOrder {
-			for _, item := range availableInstance {
-				if model.ActionKey(item.Kind) == want {
-					ordered = append(ordered, item)
-					break
-				}
+		var withdrawItem *model.PathConfigActionCatalogItem
+		for i := range configuration.InstanceActions.Catalog {
+			item := &configuration.InstanceActions.Catalog[i]
+			if item.Kind == string(model.ActionWithdraw) && item.Enabled && !item.SystemOnly && !item.SystemInserted {
+				withdrawItem = item
+				break
 			}
 		}
-		if len(ordered) > 0 {
-			specKinds := make(map[model.ActionKey]bool, len(ordered))
-			for _, item := range ordered {
-				specKinds[model.ActionKey(item.Kind)] = true
-			}
-			fallback := make([]model.PathConfigActionCatalogItem, 0, len(availableInstance))
-			for _, item := range availableInstance {
-				if !specKinds[model.ActionKey(item.Kind)] {
-					fallback = append(fallback, item)
-				}
-			}
-			start := int(autoConfigureSeed(planID, 0, "instance_rotation") % uint64(len(ordered)))
-			offset := (start + denseRank) % len(ordered)
-			rotated := make([]model.PathConfigActionCatalogItem, 0, len(ordered)+len(fallback))
-			for i := range ordered {
-				rotated = append(rotated, ordered[(i+offset)%len(ordered)])
-			}
-			availableInstance = append(rotated, fallback...)
-		}
-		for _, item := range availableInstance {
-			kind := model.ActionKey(item.Kind)
+		// 路径轮换打散：部分路径配置撤回恢复链，保证多路径多样化覆盖
+		withdrawSeed := autoConfigureSeed(planID, pathID, "instance_withdraw")
+		shouldWithdraw := (withdrawSeed+uint64(denseRank))%3 == 1
+		if withdrawItem != nil && shouldWithdraw {
 			candidateAction := model.ConfiguredAction{
-				Key:    autoConfigureActionKey(instanceContainerKey, item.Kind),
-				Action: kind,
+				Key:    autoConfigureActionKey(instanceContainerKey, withdrawItem.Kind),
+				Action: model.ActionWithdraw,
 				Scope:  model.ActionScopeInstance,
 				Order:  len(actions) + 1,
 			}
-			var personStrategy *model.PathConfigPersonStrategyInput
-			if item.RequiresPerson {
-				if item.Person == nil || len(item.Person.Options) == 0 {
-					continue
-				}
-				p := autoPersonStrategy(*item.Person, instanceSeed)
-				if len(p.Selected) == 0 {
-					continue
-				}
-				personStrategy = &p
-			}
 			merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{candidateAction}, instanceContainerKey, analysis.graph, analysis.pathAnalysis)
-			if mergeErr != nil {
-				continue
+			if mergeErr == nil {
+				if _, compileErr := compilePathActions(merged, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation)); compileErr == nil {
+					actions = merged
+					changed = true
+					autoConfiguredNodes = append(autoConfiguredNodes, "实例动作（撤回）")
+				}
 			}
-			if _, compileErr := compilePathActions(merged, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation)); compileErr != nil {
-				continue
-			}
-			actions = merged
-			if personStrategy != nil {
-				personStrategies[personStrategy.Key] = *personStrategy
-			}
-			changed = true
-			autoConfiguredNodes = append(autoConfiguredNodes, "实例动作（"+actionDisplayLabel(kind)+"）")
-			break
 		}
 	}
 	// 只有业务节点没有任何可用动作才返回失败；候选级失败只是诊断，不改变整体成功语义。

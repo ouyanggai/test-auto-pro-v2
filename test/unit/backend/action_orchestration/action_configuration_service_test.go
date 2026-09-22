@@ -3,7 +3,6 @@ package action_orchestration_test
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"strings"
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
@@ -949,141 +948,121 @@ func instanceActionOf(actions []model.ConfiguredAction) string {
 	return ""
 }
 
-// TestAutoConfigureInstanceActionRandomRoundRobin 验证实例动作「随机起点的严格轮询」（用户裁决）：
-// 同一计划内路径按序号依次轮转，四条路径完整覆盖 转发/撤回/催办/关注 且互不重复，
-// 第五条路径循环回第一条的动作；路径 1 拿到哪个动作随计划随机（跨计划能出现不同起点）。
-func TestAutoConfigureInstanceActionRandomRoundRobin(t *testing.T) {
+// TestAutoConfigureInstanceActionOnlyWithdrawAndSingleNodeAction 验证一键配置的实例动作仅允许撤回（排除转发、催办等），
+// 且每个节点仅配置一条额外动作，杜绝“所有节点都被加了两个动作且第二个相同”。
+func TestAutoConfigureInstanceActionOnlyWithdrawAndSingleNodeAction(t *testing.T) {
 	plan := model.Plan{ID: 301, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
-	// 预先构建全部路径，供密集排名计算
 	allPaths := []model.ExecutionPath{
-		{ID: 3001, PlanID: plan.ID, SequenceNo: 1, Name: "路径"},
-		{ID: 3002, PlanID: plan.ID, SequenceNo: 2, Name: "路径"},
-		{ID: 3003, PlanID: plan.ID, SequenceNo: 3, Name: "路径"},
-		{ID: 3004, PlanID: plan.ID, SequenceNo: 4, Name: "路径"},
+		{ID: 3001, PlanID: plan.ID, SequenceNo: 1, Name: "路径1"},
+		{ID: 3002, PlanID: plan.ID, SequenceNo: 2, Name: "路径2"},
+		{ID: 3003, PlanID: plan.ID, SequenceNo: 3, Name: "路径3"},
 	}
-	kindBySequence := map[uint64]string{}
 	for _, path := range allPaths {
 		actions := autoConfigurePlanPath(t, plan, path, allPaths)
-		kind := instanceActionOf(actions)
-		if kind == "" {
-			t.Fatalf("序号 %d 的路径应配置出实例动作", path.SequenceNo)
+		if kind := instanceActionOf(actions); kind != "" && kind != string(model.ActionWithdraw) {
+			t.Fatalf("一键配置实例动作只允许撤回，实际配置了：%s", kind)
 		}
-		kindBySequence[uint64(path.SequenceNo)] = kind
-	}
-	if len(kindBySequence) != 4 {
-		t.Fatalf("四条路径应覆盖四个不同实例动作，实际：%+v", kindBySequence)
-	}
-	fifthPath := model.ExecutionPath{ID: 3005, PlanID: plan.ID, SequenceNo: 5, Name: "路径"}
-	fifth := instanceActionOf(autoConfigurePlanPath(t, plan, fifthPath, append(allPaths, fifthPath)))
-	if fifth != kindBySequence[1] {
-		t.Fatalf("第五条路径应循环回第一条的动作 %s，实际 %s", kindBySequence[1], fifth)
-	}
-	firstKinds := map[string]bool{}
-	for planID := uint64(301); planID <= 312; planID++ {
-		varied := model.Plan{ID: planID, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
-		variedPath := model.ExecutionPath{ID: planID, PlanID: planID, SequenceNo: 1, Name: "路径"}
-		firstKinds[instanceActionOf(autoConfigurePlanPath(t, varied, variedPath, []model.ExecutionPath{variedPath}))] = true
-	}
-	if len(firstKinds) < 2 {
-		t.Fatalf("轮询起点应随计划随机：多个计划的路径 1 只出现了 %+v", firstKinds)
-	}
-}
-
-// TestAutoConfigureInstanceActionDiversity 验证一键配置对实例动作真随机打散，
-// 在多条不同路径下可随机覆盖不同类型的实例动作（转发、撤回、催办、关注等），不再独占关注；
-// 且当选出撤回动作时，场景编译能正确生成发起人重新提交恢复链。
-func TestAutoConfigureInstanceActionDiversity(t *testing.T) {
-	plan := model.Plan{ID: 101, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
-	tree := actionConfigurationTree()
-	tree.ForwardCandidates = []target.FlowAuditCandidate{{ID: "forward-recv-1", Name: "转发接收人"}}
-
-	// 预先构建全部 20 条路径
-	allPaths := make([]model.ExecutionPath, 0, 20)
-	for pathID := uint64(201); pathID <= 220; pathID++ {
-		allPaths = append(allPaths, model.ExecutionPath{
-			ID: pathID, PlanID: plan.ID, SequenceNo: uint(pathID - 200), Name: "路径-" + strconv.FormatUint(pathID, 10),
-		})
-	}
-
-	seenInstanceKinds := map[string]bool{}
-	hasWithdrawWithRecovery := false
-
-	for _, path := range allPaths {
-		store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
-		config := service.NewPathConfigService(
-			service.NewPlanService(actionPlanRepository{plan: plan}),
-			&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
-			analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: allPaths},
-		)
-		config.SetHistoryWorkspaceStores(store, store)
-		err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, "")
-		if err != nil {
-			t.Fatalf("路径 %d 自动配置失败：%v", path.ID, err)
-		}
-		var actions []model.ConfiguredAction
-		if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
-			t.Fatalf("反序列化已配置动作失败：%v", err)
-		}
-
+		// 验证每个节点的额外动作数量不超过 1 条
+		actionsPerNode := map[string]int{}
 		for _, a := range actions {
-			if a.Scope == model.ActionScopeInstance {
-				seenInstanceKinds[string(a.Action)] = true
-				if a.Action == model.ActionWithdraw {
-					var steps []model.CompiledActionStep
-					if err := json.Unmarshal(store.record.CompiledSteps, &steps); err != nil {
-						t.Fatalf("反序列化编译步骤失败：%v", err)
-					}
-					// 验证撤回后有发起人的重新提交步骤
-					hasResubmit := false
-					for _, s := range steps {
-						if s.Action == model.ActionResubmit && s.Scope == model.ActionScopeInitiator {
-							hasResubmit = true
-							break
-						}
-					}
-					if hasResubmit {
-						hasWithdrawWithRecovery = true
-					}
-				}
+			if a.Scope != model.ActionScopeInstance {
+				actionsPerNode[a.NodeKey]++
+			}
+		}
+		for nodeKey, count := range actionsPerNode {
+			if count > 1 {
+				t.Fatalf("节点 %s 配置了 %d 条额外动作，预期最多 1 条", nodeKey, count)
 			}
 		}
 	}
+}
 
-	if len(seenInstanceKinds) < 2 {
-		t.Fatalf("实例动作未实现真随机多样化打散，实际只出现了：%+v", seenInstanceKinds)
+// TestAutoConfigureInitiatorIndependentRandom 验证发起人节点单独随机决定是否保存草稿。
+func TestAutoConfigureInitiatorIndependentRandom(t *testing.T) {
+	tree := actionConfigurationTree()
+	// 构造多条不同 ID 路径，验证发起人节点能随机出现直接提交（0 条动作）和保存草稿（1 条动作）两种情况
+	draftCount := 0
+	submitCount := 0
+	for pathID := uint64(1); pathID <= 40; pathID++ {
+		plan := model.Plan{ID: pathID * 10, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+		path := model.ExecutionPath{ID: pathID, PlanID: plan.ID, SequenceNo: uint(pathID), Name: "路径"}
+		store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
+		config := service.NewPathConfigService(
+			service.NewPlanService(actionPlanRepository{plan: plan}),
+			&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "流程", RenderType: target.FormRenderTypeFormMaking}},
+			analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: []model.ExecutionPath{path}},
+		)
+		config.SetHistoryWorkspaceStores(store, store)
+		if err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, ""); err != nil {
+			t.Fatalf("自动配置失败：%v", err)
+		}
+		var actions []model.ConfiguredAction
+		if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
+			t.Fatalf("反序列化失败：%v", err)
+		}
+		hasDraft := false
+		for _, a := range actions {
+			if a.Action == model.ActionSaveDraft {
+				hasDraft = true
+				break
+			}
+		}
+		if hasDraft {
+			draftCount++
+		} else {
+			submitCount++
+		}
 	}
-	if !hasWithdrawWithRecovery {
-		t.Fatal("未验证到撤回动作成功生成发起人重新提交恢复链")
+	if draftCount == 0 || submitCount == 0 {
+		t.Fatalf("发起人节点独立随机应出现保存草稿和直接提交两种情况，实际：草稿=%d, 直接提交=%d", draftCount, submitCount)
 	}
 }
 
-// TestAutoConfigureInstanceActionWithGaps 验证密集排名修复非连续序号场景：
-// 当计划内勾选路径的 SequenceNo 不连续（如只勾选 1/3/7/15），密集排名将其压缩为 1/2/3/4，
-// 使四条路径仍能轮询覆盖全部四种实例动作，而非全部坍缩到同一动作。
-func TestAutoConfigureInstanceActionWithGaps(t *testing.T) {
-	plan := model.Plan{ID: 401, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
-	// 模拟用户只勾选了序号 1、3、7、15 的四条路径（中间有间隙）
-	allPaths := []model.ExecutionPath{
-		{ID: 4001, PlanID: plan.ID, SequenceNo: 1, Name: "路径1"},
-		{ID: 4003, PlanID: plan.ID, SequenceNo: 3, Name: "路径3"},
-		{ID: 4007, PlanID: plan.ID, SequenceNo: 7, Name: "路径7"},
-		{ID: 4015, PlanID: plan.ID, SequenceNo: 15, Name: "路径15"},
+// TestAutoConfigureNodeActionDiversity 验证审批节点动作尽量满足所有的动作都有。
+func TestAutoConfigureNodeActionDiversity(t *testing.T) {
+	// 构造包含 3 个连续审批节点的流程
+	multiNodeTree := &target.FlowNodeTemplate{
+		ID: "start", Type: "start",
+		Child: &target.FlowNodeTemplate{
+			ID: "node1", Type: "common", Name: "审批一",
+			AuditConfig: &target.FlowNodeAuditConfig{AuditType: "appoint", Mode: "all"},
+			AddSignCandidates: []target.FlowAuditCandidate{{ID: "user-1", Name: "用户 1"}},
+			Child: &target.FlowNodeTemplate{
+				ID: "node2", Type: "common", Name: "审批二",
+				AuditConfig: &target.FlowNodeAuditConfig{AuditType: "appoint", Mode: "all"},
+				AddSignCandidates: []target.FlowAuditCandidate{{ID: "user-2", Name: "用户 2"}},
+				Child: &target.FlowNodeTemplate{
+					ID: "node3", Type: "common", Name: "审批三",
+					AuditConfig: &target.FlowNodeAuditConfig{AuditType: "appoint", Mode: "all"},
+					Child: &target.FlowNodeTemplate{ID: "end", Type: "end"},
+				},
+			},
+		},
 	}
-	kindBySequence := map[uint]string{}
-	for _, path := range allPaths {
-		actions := autoConfigurePlanPath(t, plan, path, allPaths)
-		kind := instanceActionOf(actions)
-		if kind == "" {
-			t.Fatalf("序号 %d 的路径应配置出实例动作", path.SequenceNo)
+	plan := model.Plan{ID: 501, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 5001, PlanID: plan.ID, SequenceNo: 1, Name: "多节点路径"}
+	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
+	config := service.NewPathConfigService(
+		service.NewPlanService(actionPlanRepository{plan: plan}),
+		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: multiNodeTree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: []model.ExecutionPath{path}},
+	)
+	config.SetHistoryWorkspaceStores(store, store)
+	if err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, ""); err != nil {
+		t.Fatalf("自动配置失败：%v", err)
+	}
+	var actions []model.ConfiguredAction
+	if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
+		t.Fatalf("反序列化已配置动作失败：%v", err)
+	}
+	seenActions := map[model.ActionKey]bool{}
+	for _, a := range actions {
+		if a.NodeKey != "start" {
+			seenActions[a.Action] = true
 		}
-		kindBySequence[path.SequenceNo] = kind
 	}
-	// 验证四条路径覆盖四种不同动作
-	seenKinds := map[string]bool{}
-	for _, kind := range kindBySequence {
-		seenKinds[kind] = true
-	}
-	if len(seenKinds) != 4 {
-		t.Fatalf("非连续序号的四条路径应覆盖四种不同实例动作，实际：%+v", kindBySequence)
+	// 3 个审批节点应尽可能配置不同动作
+	if len(seenActions) < 2 {
+		t.Fatalf("多节点路径应尽量覆盖不同动作，实际配置的动作种数：%d，动作清单：%+v", len(seenActions), seenActions)
 	}
 }

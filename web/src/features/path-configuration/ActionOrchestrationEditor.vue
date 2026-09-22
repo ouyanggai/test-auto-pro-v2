@@ -61,11 +61,8 @@ const systemCatalog = computed(() => catalog.value.filter(item => item.systemOnl
 const insertedCatalog = computed(() => catalog.value.filter(item => item.systemInserted))
 const disabledCatalog = computed(() => selectableCatalog.value.filter(item => !item.enabled && item.disabledReason))
 const actions = computed(() => actionDraft.value)
-// 发起人节点做不了实例级动作没有意义，绝不把实例级动作拼入发起人节点摘要
-const savedSummary = computed(() => {
-  const actionsToShow = isInitiatorNode.value ? props.savedActions : [...props.savedActions, ...(props.instanceSavedActions ?? [])]
-  return collapseActions(actionsToShow)
-})
+// 节点动作摘要只展示当前节点动作，避免把整条路径的实例动作伪装成当前节点的第二个动作
+const savedSummary = computed(() => collapseActions(props.savedActions))
 const canAddAction = computed(() => enabledCatalog.value.length > 0 && actions.value.length < MAX_ACTIONS)
 const editorDisabled = computed(() => props.readOnly || props.blocked || !selectableCatalog.value.length)
 const hasChanges = computed(() => {
@@ -277,7 +274,12 @@ function removeAction(index: number) {
       </n-tag>
       <span v-if="!savedSummary.length && !container.actionConfiguration.base" class="action-orchestration__muted">未添加动作</span>
     </div>
-
+    <div v-if="!isInitiatorNode && props.instanceSavedActions?.length" class="action-orchestration__instance-summary">
+      <small class="action-orchestration__muted">实例动作（作用于整条路径）：</small>
+      <n-tag v-for="item in collapseActions(props.instanceSavedActions)" :key="item.action.key" size="tiny" type="warning">
+        {{ actionDisplayLabel(item.action.kind) }}{{ item.count > 1 ? ` ×${item.count}` : '' }}
+      </n-tag>
+    </div>
     <details v-if="selectableCatalog.length" class="action-orchestration__catalog">
       <summary>动作目录（{{ enabledCatalog.length }} / {{ selectableCatalog.length }} 可配置，含不可配置原因）</summary>
       <ul>
