@@ -275,8 +275,8 @@ function removeAction(index: number) {
       <span v-if="!savedSummary.length && !container.actionConfiguration.base" class="action-orchestration__muted">未添加动作</span>
     </div>
     <div v-if="!isInitiatorNode && props.instanceSavedActions?.length" class="action-orchestration__instance-summary">
-      <small class="action-orchestration__muted">实例动作（作用于整条路径）：</small>
-      <n-tag v-for="item in collapseActions(props.instanceSavedActions)" :key="item.action.key" size="tiny" type="warning">
+      <small class="action-orchestration__muted">实例动作（整条路径）：</small>
+      <n-tag v-for="item in collapseActions(props.instanceSavedActions)" :key="item.action.key" size="small" type="warning">
         {{ actionDisplayLabel(item.action.kind) }}{{ item.count > 1 ? ` ×${item.count}` : '' }}
       </n-tag>
     </div>

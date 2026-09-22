@@ -650,7 +650,7 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 	if !okSign || signAction.Action != model.ActionAddSign || signPerson == nil {
 		t.Fatalf("目录完整时加签应进入一键配置候选：action=%+v person=%+v rejections=%v", signAction, signPerson, signRejections)
 	}
-	// 取回同样保留在候选中；已办任务和取回后的游标复验由运行切片在编译/执行阶段裁决。
+	// 取回作为节点动作候选，目录完整时应进入一键配置候选。
 	retrieveNode := model.PathConfigNode{Key: "node-retrieve", Name: "取回节点", Kind: "common", Status: "pending",
 		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
 			{Kind: "retrieve", Scope: "completed_task", Label: "取回", Enabled: true},
@@ -948,8 +948,8 @@ func instanceActionOf(actions []model.ConfiguredAction) string {
 	return ""
 }
 
-// TestAutoConfigureInstanceActionOnlyWithdrawAndSingleNodeAction 验证一键配置的实例动作仅允许撤回（排除转发、催办等），
-// 且每个节点仅配置一条额外动作，杜绝“所有节点都被加了两个动作且第二个相同”。
+// TestAutoConfigureInstanceActionOnlyWithdrawAndSingleNodeAction 验证一键配置的实例动作配置撤回（排除转发、催办等），
+// 节点动作允许取回在内的节点动作，且每个节点仅配置一条额外动作，杜绝“所有节点都被加了两个动作且第二个相同”。
 func TestAutoConfigureInstanceActionOnlyWithdrawAndSingleNodeAction(t *testing.T) {
 	plan := model.Plan{ID: 301, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
 	allPaths := []model.ExecutionPath{
@@ -957,10 +957,15 @@ func TestAutoConfigureInstanceActionOnlyWithdrawAndSingleNodeAction(t *testing.T
 		{ID: 3002, PlanID: plan.ID, SequenceNo: 2, Name: "路径2"},
 		{ID: 3003, PlanID: plan.ID, SequenceNo: 3, Name: "路径3"},
 	}
+	withdrawCount := 0
 	for _, path := range allPaths {
 		actions := autoConfigurePlanPath(t, plan, path, allPaths)
-		if kind := instanceActionOf(actions); kind != "" && kind != string(model.ActionWithdraw) {
-			t.Fatalf("一键配置实例动作只允许撤回，实际配置了：%s", kind)
+		kind := instanceActionOf(actions)
+		if kind != "" {
+			if kind != string(model.ActionWithdraw) {
+				t.Fatalf("一键配置实例动作只允许撤回，实际配置了：%s", kind)
+			}
+			withdrawCount++
 		}
 		// 验证每个节点的额外动作数量不超过 1 条
 		actionsPerNode := map[string]int{}
@@ -974,6 +979,9 @@ func TestAutoConfigureInstanceActionOnlyWithdrawAndSingleNodeAction(t *testing.T
 				t.Fatalf("节点 %s 配置了 %d 条额外动作，预期最多 1 条", nodeKey, count)
 			}
 		}
+	}
+	if withdrawCount == 0 {
+		t.Fatal("一键配置应配置出实例动作撤回(withdraw)")
 	}
 }
 

@@ -1029,6 +1029,7 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 		return nil, rejections
 	case "common", "synergy":
 		available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
+		// 节点动作候选：暂存、加签、移交、取回、不同意、回退。
 		allowedActions := map[model.ActionKey]bool{
 			model.ActionStorageFormData: true,
 			model.ActionAddSign:         true,
@@ -1215,11 +1216,6 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	// 避免"数据已保存但接口返回失败"的状态不一致。
 	diagnostics := make([]string, 0, 8)
 	blockingRejections := make([]string, 0, 8)
-	// 取回是硬规则动作：目标 saveRetrieveProcess 不支持跨节点取回——只有「取回节点的直接后继就是当前
-	// 待办节点」才允许。一键随机把取回配到中间节点时，后面节点的固定同意/驳回恢复链会重走并处理掉它的
-	// 后继，取回必然报「下一节点已被处理,不支持取回」。因此只在「路径最后一个可执行审批节点」自动生成取回：
-	// 该节点之后没有别的人工节点会推进其后继，取回在运行时可执行（用户裁决：特殊规则动作只生成在可执行的节点）。
-	lastHumanKey := lastHumanNodeKey(configuration)
 	for _, group := range configuration.Groups {
 		for gi := range group.Nodes {
 			node := &group.Nodes[gi]
@@ -1307,8 +1303,6 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			// 发起人节点单独随机决定是否配置保存草稿；其余节点额外动作的种子叠加密集排名做打散。
 			draftFirst := autoConfigureSeed(planID, pathID, node.Key+":initiator_draft")%2 == 1
 			candidates, rejections := autoExtraActionCandidates(*node, nodeSeed, usedInPath(actions), planAccount, draftFirst)
-			// 取回规则：末节点没有后继人工待办窗口，从候选排除；中间人工节点有直接后继窗口，正常允许取回。
-			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
 			diagnostics = append(diagnostics, rejections...)
 			if strings.TrimSpace(node.Kind) == "start" && len(candidates) == 0 {
@@ -1387,10 +1381,8 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				break
 			}
 		}
-		// 路径轮换打散：部分路径配置撤回恢复链，保证多路径多样化覆盖
-		withdrawSeed := autoConfigureSeed(planID, pathID, "instance_withdraw")
-		shouldWithdraw := (withdrawSeed+uint64(denseRank))%3 == 1
-		if withdrawItem != nil && shouldWithdraw {
+		// 实例动作目录存在可用撤回时直接配置撤回，生成撤回恢复链，确保用户一键配置后能看到撤回
+		if withdrawItem != nil {
 			candidateAction := model.ConfiguredAction{
 				Key:    autoConfigureActionKey(instanceContainerKey, withdrawItem.Kind),
 				Action: model.ActionWithdraw,
