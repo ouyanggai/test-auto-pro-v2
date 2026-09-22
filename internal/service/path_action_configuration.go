@@ -1296,7 +1296,11 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				commitPendingPersons()
 				continue
 			}
-			candidates, rejections := autoExtraActionCandidates(*node, autoConfigureSeed(planID, pathID, node.Key), usedInPath(actions), planAccount)
+			nodeSeed := autoConfigureSeed(planID, pathID, node.Key)
+			if path.SequenceNo > 0 {
+				nodeSeed += uint64(path.SequenceNo)
+			}
+			candidates, rejections := autoExtraActionCandidates(*node, nodeSeed, usedInPath(actions), planAccount)
 			// 取回规则：末节点没有后继人工待办窗口，从候选排除；中间人工节点有直接后继窗口，正常允许取回。
 			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
@@ -1380,6 +1384,9 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				return availableInstance[i].Kind < availableInstance[j].Kind
 			})
 			offset := int(instanceSeed % uint64(len(availableInstance)))
+			if path.SequenceNo > 0 {
+				offset = int((path.SequenceNo - 1) % uint(len(availableInstance)))
+			}
 			rotated := make([]model.PathConfigActionCatalogItem, len(availableInstance))
 			for i := range availableInstance {
 				rotated[i] = availableInstance[(i+offset)%len(availableInstance)]
@@ -1424,12 +1431,11 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	// 只有业务节点没有任何可用动作才返回失败；候选级失败只是诊断，不改变整体成功语义。
 	var rejectionError error
 	if len(blockingRejections) > 0 {
-		rejectionError = &PathConfigError{Kind: PathConfigErrorInvalid,
+		return &PathConfigError{Kind: PathConfigErrorInvalid,
 			Message: strings.Join(dedupStrings(blockingRejections), "；")}
 	}
 	if !changed {
-		// 部分节点无安全候选也要报告；写入没有变化时同样返回原因，不静默吞掉。
-		return rejectionError
+		return nil
 	}
 	compiled, compileErr := compilePathActions(actions, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation))
 	if compileErr != nil {

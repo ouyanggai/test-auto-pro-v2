@@ -287,7 +287,7 @@ func (p *pathConfigProjection) instanceActionConfiguration() model.PathConfigAct
 		Catalog: []model.ActionCatalogItem{},
 	}
 	actionPersons := map[model.ActionKey]*model.PathConfigPerson{}
-	if len(p.forwardIssues) == 0 && len(p.forwardCandidates) > 0 {
+	if len(p.forwardCandidates) > 0 {
 		if person, personTarget := actionCandidatePersonConfig(PathConfigInstanceActionKey(), "forward", "转发接收人", "候选来自目标公司人员目录", p.forwardCandidates, nil); person != nil && personTarget != nil {
 			actionPersons[model.ActionForward] = person
 			validationTarget.ActionPersons[string(model.ActionForward)] = personTarget
