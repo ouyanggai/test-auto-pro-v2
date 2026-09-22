@@ -462,7 +462,7 @@ func validateActionStructure(action model.ConfiguredAction, index int, nodes map
 	if action.Scope != wantScope {
 		return blockingIssue(index, action, "ACTION_SCOPE_INVALID", "动作作用域与目标动作目录不一致")
 	}
-	if action.Scope == model.ActionScopeInstance && strings.TrimSpace(action.NodeKey) != "" {
+	if action.Scope == model.ActionScopeInstance && action.Action != model.ActionForward && action.Action != model.ActionWithdraw && strings.TrimSpace(action.NodeKey) != "" {
 		return blockingIssue(index, action, "ACTION_NODE_INVALID", "实例动作不能绑定语义节点")
 	}
 	if action.Scope != model.ActionScopeInstance && strings.TrimSpace(action.NodeKey) == "" {
@@ -696,7 +696,7 @@ func validateAction(action model.ConfiguredAction, index int, nodes map[string]s
 	if action.Scope != wantScope {
 		return issue(index, action, "ACTION_SCOPE_INVALID", "动作作用域与目标动作目录不一致")
 	}
-	if action.Scope == model.ActionScopeInstance && strings.TrimSpace(action.NodeKey) != "" {
+	if action.Scope == model.ActionScopeInstance && action.Action != model.ActionForward && action.Action != model.ActionWithdraw && strings.TrimSpace(action.NodeKey) != "" {
 		return issue(index, action, "ACTION_NODE_INVALID", "实例动作不能绑定语义节点")
 	}
 	if action.Scope != model.ActionScopeInstance && strings.TrimSpace(action.NodeKey) == "" {

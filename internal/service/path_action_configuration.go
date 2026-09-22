@@ -668,13 +668,26 @@ func mergeNodeActions(existing, submitted []model.ConfiguredAction, nodeKey stri
 			submittedOrders[action.Order] = action.Key
 		}
 		if action.Scope == model.ActionScopeInstance {
-			if !instanceContainer {
-				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作只能在实例动作容器保存", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作不属于当前语义节点"}}}
+			if action.Action != model.ActionForward && action.Action != model.ActionWithdraw {
+				if !instanceContainer {
+					return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作只能在实例动作容器保存", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作不属于当前语义节点"}}}
+				}
+				if key := strings.TrimSpace(action.NodeKey); key != "" && key != nodeKey {
+					return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作不能绑定节点", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作必须使用空节点键"}}}
+				}
+				action.NodeKey = ""
+			} else {
+				if instanceContainer {
+					action.NodeKey = ""
+				} else {
+					if strings.TrimSpace(action.NodeKey) == "" {
+						action.NodeKey = nodeKey
+					}
+					if action.NodeKey != nodeKey {
+						return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "一次只能保存当前语义节点的动作", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "动作节点键与当前保存节点不一致"}}}
+					}
+				}
 			}
-			if key := strings.TrimSpace(action.NodeKey); key != "" && key != nodeKey {
-				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作不能绑定节点", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作必须使用空节点键"}}}
-			}
-			action.NodeKey = ""
 		} else {
 			if instanceContainer {
 				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作容器只能保存实例作用域动作", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "节点动作必须在对应语义节点保存"}}}
@@ -998,7 +1011,7 @@ var autoExtraActionRanks = map[model.ActionKey]int{
 // 矩阵约束：发起节点只允许"保存草稿"；审批/协同节点只允许暂存表单、加签、移交、不同意、回退、取回；
 // 系统/空/条件等节点不补任何动作；需要人员的动作必须自带完整候选目录，找不到就给出精确原因。
 // 候选只经过静态过滤，完整场景编译仍由调用方逐个验证；不覆盖人工事实、固定尾动作不计入额外动作。
-func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool, planAccount string, draftFirst bool) ([]autoExtraCandidate, []string) {
+func autoExtraActionCandidates(node model.PathConfigNode, instanceCatalog []model.PathConfigActionCatalogItem, seed uint64, used map[string]bool, planAccount string, draftFirst bool) ([]autoExtraCandidate, []string) {
 	rejections := []string{}
 	switch strings.TrimSpace(node.Kind) {
 	case "start":
@@ -1028,8 +1041,8 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 		rejections = append(rejections, "保存草稿：当前目标目录未返回发起端动作，不能保存")
 		return nil, rejections
 	case "common", "synergy":
-		available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog))
-		// 节点动作候选：暂存、加签、移交、取回、不同意、回退。
+		available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog)+len(instanceCatalog))
+		// 节点动作候选：全部节点动作（暂存、加签、移交、取回、不同意、回退）+ 实例动作中的转发与撤回，全部合起来随机
 		allowedActions := map[model.ActionKey]bool{
 			model.ActionStorageFormData: true,
 			model.ActionAddSign:         true,
@@ -1037,8 +1050,17 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 			model.ActionRetrieve:        true,
 			model.ActionReject:          true,
 			model.ActionRollback:        true,
+			model.ActionForward:         true,
+			model.ActionWithdraw:        true,
 		}
-		for _, item := range node.ActionConfiguration.Catalog {
+		rawCatalog := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog)+len(instanceCatalog))
+		rawCatalog = append(rawCatalog, node.ActionConfiguration.Catalog...)
+		for _, item := range instanceCatalog {
+			if item.Kind == string(model.ActionForward) || item.Kind == string(model.ActionWithdraw) {
+				rawCatalog = append(rawCatalog, item)
+			}
+		}
+		for _, item := range rawCatalog {
 			kind := model.ActionKey(item.Kind)
 			if !allowedActions[kind] {
 				continue
@@ -1092,7 +1114,12 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 					rejections = append(rejections, item.Label+"：目标没有返回动作专属处理人候选，不能自动配置")
 					continue
 				}
-				strategy := autoSignPersonStrategyExcludePlanAccount(*item.Person, kind, planAccount, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
+				var strategy model.PathConfigPersonStrategyInput
+				if kind == model.ActionAddSign {
+					strategy = autoSignPersonStrategyExcludePlanAccount(*item.Person, kind, planAccount, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
+				} else {
+					strategy = autoPersonStrategy(*item.Person, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
+				}
 				if len(strategy.Selected) == 0 {
 					rejections = append(rejections, item.Label+"：动作专属候选为空（或排除发起人后无可用候选），不能自动配置")
 					continue
@@ -1302,7 +1329,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			nodeSeed += uint64(denseRank)
 			// 发起人节点单独随机决定是否配置保存草稿；其余节点额外动作的种子叠加密集排名做打散。
 			draftFirst := autoConfigureSeed(planID, pathID, node.Key+":initiator_draft")%2 == 1
-			candidates, rejections := autoExtraActionCandidates(*node, nodeSeed, usedInPath(actions), planAccount, draftFirst)
+			candidates, rejections := autoExtraActionCandidates(*node, configuration.InstanceActions.Catalog, nodeSeed, usedInPath(actions), planAccount, draftFirst)
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
 			diagnostics = append(diagnostics, rejections...)
 			if strings.TrimSpace(node.Kind) == "start" && len(candidates) == 0 {
@@ -1359,43 +1386,6 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			if !accepted {
 				// 该业务节点最终没有任何额外动作：属于必须让用户看到的失败，候选级失败原因一并附上。
 				blockingRejections = append(blockingRejections, "节点 "+node.Name+" 未找到可安全配置的额外动作："+strings.Join(dedupStrings(append([]string{diagnosticSummaryOfNode(node.Name, diagnostics)}, rejections...)), "；"))
-			}
-		}
-	}
-	// 实例动作一键配置：只允许“撤回”（withdraw）参与一键配置（排除转发、催办、关注等动作）。
-	// 撤回是实例级动作，不占用节点名额，起点由种子决定，让部分路径覆盖撤回恢复链，保证全动作多样性。
-	instanceContainerKey := analyzer.PathConfigInstanceActionKey()
-	hasInstanceAction := false
-	for _, a := range actions {
-		if a.Scope == model.ActionScopeInstance {
-			hasInstanceAction = true
-			break
-		}
-	}
-	if len(blockingRejections) == 0 && !hasInstanceAction && !approveOnly && len(configuration.InstanceActions.Catalog) > 0 {
-		var withdrawItem *model.PathConfigActionCatalogItem
-		for i := range configuration.InstanceActions.Catalog {
-			item := &configuration.InstanceActions.Catalog[i]
-			if item.Kind == string(model.ActionWithdraw) && item.Enabled && !item.SystemOnly && !item.SystemInserted {
-				withdrawItem = item
-				break
-			}
-		}
-		// 实例动作目录存在可用撤回时直接配置撤回，生成撤回恢复链，确保用户一键配置后能看到撤回
-		if withdrawItem != nil {
-			candidateAction := model.ConfiguredAction{
-				Key:    autoConfigureActionKey(instanceContainerKey, withdrawItem.Kind),
-				Action: model.ActionWithdraw,
-				Scope:  model.ActionScopeInstance,
-				Order:  len(actions) + 1,
-			}
-			merged, mergeErr := mergeNodeActions(actions, []model.ConfiguredAction{candidateAction}, instanceContainerKey, analysis.graph, analysis.pathAnalysis)
-			if mergeErr == nil {
-				if _, compileErr := compilePathActions(merged, analysis.graph, analysis.pathAnalysis, actionCatalogGates(validation)); compileErr == nil {
-					actions = merged
-					changed = true
-					autoConfiguredNodes = append(autoConfiguredNodes, "实例动作（撤回）")
-				}
 			}
 		}
 	}
@@ -1715,7 +1705,7 @@ func initiatorDraftFirst(planID, pathSequenceNo uint64) bool {
 // AutoExtraCandidatesForTest 暴露一键配置的节点额外候选推导，供定向测试锁定随机覆盖规则。
 func AutoExtraCandidatesForTest(planID, pathID uint64, pathSequenceNo uint64, node model.PathConfigNode, used map[string]bool) (model.ConfiguredAction, *model.PathConfigPersonStrategyInput, bool, []string) {
 	draftFirst := initiatorDraftFirst(planID, pathSequenceNo)
-	candidates, rejections := autoExtraActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used, "", draftFirst)
+	candidates, rejections := autoExtraActionCandidates(node, nil, autoConfigureSeed(planID, pathID, node.Key), used, "", draftFirst)
 	if len(candidates) == 0 {
 		return model.ConfiguredAction{}, nil, false, rejections
 	}
