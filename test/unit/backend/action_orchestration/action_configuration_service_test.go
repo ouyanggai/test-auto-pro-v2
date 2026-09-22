@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"testing"
-	"time"
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/model"
 	"test-auto-pro-v2/internal/repository"
 	"test-auto-pro-v2/internal/service"
+	"testing"
+	"time"
 )
 
 type actionPlanRepository struct {
@@ -453,43 +453,56 @@ func autoInitiatorNode(key string, kinds []string) model.PathConfigNode {
 	}
 }
 
-// TestAutoNodeActionInitiatorOnlySaveDraft 验证发起节点随机规则（用户裁决）：
-// 发起人只有保存草稿、提交、重新提交；随机就两种情况：要么直接提交（无额外动作），要么先保存草稿再重新提交（额外动作为保存草稿）。
+// TestAutoNodeActionInitiatorOnlySaveDraft 验证发起节点「随机起点的严格交替」（用户裁决）：
+// 同一计划内两条路径的发起方式严格互补——一条直接提交（无额外动作），另一条先保存草稿再重新提交
+// （额外动作为保存草稿）；交替起点随计划随机，多个计划的路径 1 应能出现两种发起方式。
 // 重新提交由场景编译器作为恢复链固定尾动作生成，不作为独立额外候选分配。
 func TestAutoNodeActionInitiatorOnlySaveDraft(t *testing.T) {
 	node := autoInitiatorNode("node-a", []string{"save_draft", "resubmit"})
-	// 遍历不同种子，验证发起节点只可能产出两类结果：直接提交（无额外动作）或保存草稿（有额外动作且动作为 save_draft）
-	hasDirectSubmit := false
-	hasSaveDraft := false
-	for seed := uint64(1); seed <= 20; seed++ {
-		action, _, ok, _ := service.AutoExtraCandidatesForTest(seed, seed+10, node, map[string]bool{})
-		if !ok {
-			hasDirectSubmit = true
-		} else {
-			hasSaveDraft = true
-			if action.Action != model.ActionSaveDraft || action.NodeKey != "node-a" {
-				t.Fatalf("发起节点额外动作只能是保存草稿，实际=%+v", action)
-			}
-		}
+	_, _, okOdd, _ := service.AutoExtraCandidatesForTest(11, 21, 1, node, map[string]bool{})
+	_, _, okEven, _ := service.AutoExtraCandidatesForTest(11, 21, 2, node, map[string]bool{})
+	if okOdd == okEven {
+		t.Fatalf("同一计划内两条路径的发起方式必须互补，实际 seq1=%v seq2=%v", okOdd, okEven)
 	}
-	if !hasDirectSubmit {
-		t.Fatal("发起节点应能随机到直接提交（无额外动作）")
+	draftAction, _, okDraft, _ := service.AutoExtraCandidatesForTest(11, 21, 2, node, map[string]bool{})
+	if !okDraft {
+		draftAction, _, okDraft, _ = service.AutoExtraCandidatesForTest(11, 21, 1, node, map[string]bool{})
 	}
-	if !hasSaveDraft {
-		t.Fatal("发起节点应能随机到先保存草稿再重新提交")
+	if !okDraft {
+		t.Fatal("两条路径中应有一条先保存草稿再重新提交")
+	}
+	if draftAction.Action != model.ActionSaveDraft || draftAction.NodeKey != "node-a" {
+		t.Fatalf("先存草稿一侧的额外动作只能是保存草稿，实际=%+v", draftAction)
+	}
+	sides := map[bool]bool{}
+	for planID := uint64(1); planID <= 20; planID++ {
+		_, _, ok, _ := service.AutoExtraCandidatesForTest(planID, planID*10, 1, node, map[string]bool{})
+		sides[ok] = true
+	}
+	if len(sides) < 2 {
+		t.Fatal("交替起点应随计划随机：多个计划的路径 1 应能出现两种发起方式")
 	}
 }
 
-// TestAutoNodeActionInitiatorWithoutCatalogReportsReason 验证发起节点目录缺失保存草稿时给出精确淘汰原因，
-// 不再用提交/重新提交凑数。
+// TestAutoNodeActionInitiatorWithoutCatalogReportsReason 验证发起节点目录缺失保存草稿时给出精确淘汰原因：
+// 草稿一侧不能给出候选，也不允许用提交/重新提交凑数；直接提交一侧正常放行。
 func TestAutoNodeActionInitiatorWithoutCatalogReportsReason(t *testing.T) {
 	node := autoInitiatorNode("node-b", []string{"resubmit"})
-	_, _, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
-	if ok {
-		t.Fatal("目录没有保存草稿时不应给出候选")
+	rejectionSeen := false
+	for seq := uint64(1); seq <= 2; seq++ {
+		_, _, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, seq, node, map[string]bool{})
+		if ok {
+			t.Fatalf("目录没有保存草稿时不应给出候选（seq=%d）", seq)
+		}
+		if len(rejections) > 0 {
+			rejectionSeen = true
+			if !strings.Contains(strings.Join(rejections, "；"), "保存草稿") {
+				t.Fatalf("淘汰原因应定位到保存草稿：%v", rejections)
+			}
+		}
 	}
-	if len(rejections) == 0 || !strings.Contains(strings.Join(rejections, "；"), "保存草稿") {
-		t.Fatalf("淘汰原因应定位到保存草稿：%v", rejections)
+	if !rejectionSeen {
+		t.Fatal("草稿一侧应报告保存草稿缺失的淘汰原因")
 	}
 }
 
@@ -601,7 +614,7 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 	// 跨节点多样性：本路径尚未使用的动作优先——
 	// 暂存表单被用过时，未使用的不同意排在再次暂存之前。
 	secondNode := autoConfigureNode("node-b", []string{"storage_form_data", "reject"})
-	second, _, okSecond, _ := service.AutoExtraCandidatesForTest(41, 51, secondNode, map[string]bool{string(model.ActionStorageFormData): true})
+	second, _, okSecond, _ := service.AutoExtraCandidatesForTest(41, 51, 2, secondNode, map[string]bool{string(model.ActionStorageFormData): true})
 	if !okSecond || second.Action != model.ActionReject {
 		t.Fatalf("未使用动作应优先：second=%s ok=%v", second.Action, okSecond)
 	}
@@ -615,7 +628,7 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 						Strategies: []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}}}},
 			}}}
 	}
-	signAction, signPerson, okSign, signRejections := service.AutoExtraCandidatesForTest(41, 51, signOnlyNode("node-sign-only"), map[string]bool{})
+	signAction, signPerson, okSign, signRejections := service.AutoExtraCandidatesForTest(41, 51, 2, signOnlyNode("node-sign-only"), map[string]bool{})
 	if !okSign || signAction.Action != model.ActionAddSign || signPerson == nil {
 		t.Fatalf("目录完整时加签应进入一键配置候选：action=%+v person=%+v rejections=%v", signAction, signPerson, signRejections)
 	}
@@ -624,7 +637,7 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 		ActionConfiguration: model.PathConfigActionConfiguration{Catalog: []model.PathConfigActionCatalogItem{
 			{Kind: "retrieve", Scope: "completed_task", Label: "取回", Enabled: true},
 		}}}
-	retrieveAction, _, okRetrieve, retrieveRejections := service.AutoExtraCandidatesForTest(41, 51, retrieveNode, map[string]bool{})
+	retrieveAction, _, okRetrieve, retrieveRejections := service.AutoExtraCandidatesForTest(41, 51, 2, retrieveNode, map[string]bool{})
 	if !okRetrieve || retrieveAction.Action != model.ActionRetrieve {
 		t.Fatalf("目录完整时取回应进入一键配置候选：action=%+v rejections=%v", retrieveAction, retrieveRejections)
 	}
@@ -638,11 +651,11 @@ func TestAutoNodeActionSafetyRankAndCoverage(t *testing.T) {
 						Strategies: []model.PathConfigPersonStrategyOption{{Value: "manual", Label: "手动选择"}}}},
 			}}}
 	}
-	firstRankOne, _, okA, _ := service.AutoExtraCandidatesForTest(41, 51, transferOnlyNode("node-r1a"), map[string]bool{})
+	firstRankOne, _, okA, _ := service.AutoExtraCandidatesForTest(41, 51, 2, transferOnlyNode("node-r1a"), map[string]bool{})
 	if !okA || firstRankOne.Action != model.ActionTransfer {
 		t.Fatalf("移交候选应存在且被选中：first=%s ok=%v", firstRankOne.Action, okA)
 	}
-	secondRankOne, _, okB, _ := service.AutoExtraCandidatesForTest(41, 51, transferOnlyNode("node-r1b"), map[string]bool{string(firstRankOne.Action): true})
+	secondRankOne, _, okB, _ := service.AutoExtraCandidatesForTest(41, 51, 2, transferOnlyNode("node-r1b"), map[string]bool{string(firstRankOne.Action): true})
 	if !okB || secondRankOne.Action != model.ActionTransfer {
 		t.Fatalf("唯一安全候选即使已使用也应继续可选：second=%s ok=%v", secondRankOne.Action, okB)
 	}
@@ -661,7 +674,7 @@ func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}}}},
 		}},
 	}
-	action, person, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
+	action, person, ok, _ := service.AutoExtraCandidatesForTest(41, 51, 2, node, map[string]bool{})
 	if !ok || action.Action != model.ActionTransfer {
 		t.Fatalf("有完整动作专属候选时应选出移交：%+v ok=%v", action, ok)
 	}
@@ -676,7 +689,7 @@ func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 			{Kind: "transfer", Scope: "task", Label: "移交", Enabled: true, RequiresPerson: true},
 		}},
 	}
-	_, _, okMissing, rejections := service.AutoExtraCandidatesForTest(41, 51, missing, map[string]bool{})
+	_, _, okMissing, rejections := service.AutoExtraCandidatesForTest(41, 51, 2, missing, map[string]bool{})
 	if okMissing {
 		t.Fatal("没有动作专属候选时不应接受移交")
 	}
@@ -694,7 +707,7 @@ func TestAutoNodeActionRequiresPersonCandidateFromActionCatalog(t *testing.T) {
 					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}}}},
 		}},
 	}
-	signAction, signPerson, okSignFull, signRejections := service.AutoExtraCandidatesForTest(41, 51, fullSign, map[string]bool{})
+	signAction, signPerson, okSignFull, signRejections := service.AutoExtraCandidatesForTest(41, 51, 2, fullSign, map[string]bool{})
 	if !okSignFull || signAction.Action != model.ActionAddSign || signPerson == nil {
 		t.Fatalf("完整加签目录应进入自动候选：action=%+v person=%+v rejections=%v", signAction, signPerson, signRejections)
 	}
@@ -709,7 +722,7 @@ func TestAutoNodeActionSystemNodesNoCandidates(t *testing.T) {
 				{Kind: "storage_form_data", Scope: "task", Label: "暂存当前表单", Enabled: true},
 			}},
 		}
-		if action, _, ok, _ := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{}); ok {
+		if action, _, ok, _ := service.AutoExtraCandidatesForTest(41, 51, 2, node, map[string]bool{}); ok {
 			t.Fatalf("系统节点 %s 不应有用户动作候选：%+v", kind, action)
 		}
 	}
@@ -765,7 +778,7 @@ func TestAutoCandidatePersonValidationLockedWhenMinCountExceedsCatalog(t *testin
 					Strategies: []model.PathConfigPersonStrategyOption{{Value: "random", Label: "范围随机"}, {Value: "manual", Label: "手动选择"}}}},
 		}},
 	}
-	action, person, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
+	action, person, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, 2, node, map[string]bool{})
 	if !ok || action.Action != model.ActionTransfer {
 		t.Fatalf("移交候选应生成（校验在接受阶段）：%+v ok=%v", action, ok)
 	}
@@ -795,7 +808,7 @@ func TestAutoCandidatePersonValidationLockedWhenMinCountExceedsCatalog(t *testin
 func TestAutoExtraCandidatesRejectedReasonsEnablePersonHoldback(t *testing.T) {
 	// 发起节点目录缺失保存草稿 → 候选为空 + 淘汰原因。
 	node := autoInitiatorNode("node-holdback", []string{"resubmit"})
-	_, _, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, node, map[string]bool{})
+	_, _, ok, rejections := service.AutoExtraCandidatesForTest(41, 51, 2, node, map[string]bool{})
 	if ok {
 		t.Fatal("无安全候选时应返回 ok=false")
 	}
@@ -804,7 +817,7 @@ func TestAutoExtraCandidatesRejectedReasonsEnablePersonHoldback(t *testing.T) {
 	}
 	// 系统节点无候选、无原因（不参与补配，也不阻塞）。
 	systemNode := model.PathConfigNode{Key: "node-empty", Name: "空节点", Kind: "empty", Status: "pending"}
-	if action, _, hasCandidate, _ := service.AutoExtraCandidatesForTest(41, 51, systemNode, map[string]bool{}); hasCandidate {
+	if action, _, hasCandidate, _ := service.AutoExtraCandidatesForTest(41, 51, 2, systemNode, map[string]bool{}); hasCandidate {
 		t.Fatalf("系统节点不应有候选：%+v", action)
 	}
 }
@@ -881,6 +894,75 @@ func TestAutoConfigureRejectsCountersignPersonShortageEndToEnd(t *testing.T) {
 	}
 	if store.writes != 0 || strings.Contains(string(store.record.PersonStrategies), "review") {
 		t.Fatalf("不完整人员策略不得落库：writes=%d strategies=%s", store.writes, store.record.PersonStrategies)
+	}
+}
+
+// autoConfigurePlanPath 用固定目标树对指定计划/路径执行一键配置，返回已落库的全部已配置动作。
+func autoConfigurePlanPath(t *testing.T, plan model.Plan, path model.ExecutionPath) []model.ConfiguredAction {
+	t.Helper()
+	tree := actionConfigurationTree()
+	tree.ForwardCandidates = []target.FlowAuditCandidate{{ID: "forward-recv-1", Name: "转发接收人"}}
+	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
+	config := service.NewPathConfigService(
+		service.NewPlanService(actionPlanRepository{plan: plan}),
+		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path},
+	)
+	config.SetHistoryWorkspaceStores(store, store)
+	if err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, ""); err != nil {
+		t.Fatalf("路径 %d 自动配置失败：%v", path.ID, err)
+	}
+	var actions []model.ConfiguredAction
+	if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
+		t.Fatalf("反序列化已配置动作失败：%v", err)
+	}
+	return actions
+}
+
+// instanceActionOf 返回已配置动作里的实例动作键；没有则返回空串。
+func instanceActionOf(actions []model.ConfiguredAction) string {
+	for _, a := range actions {
+		if a.Scope == model.ActionScopeInstance {
+			return string(a.Action)
+		}
+	}
+	return ""
+}
+
+// TestAutoConfigureInstanceActionRandomRoundRobin 验证实例动作「随机起点的严格轮询」（用户裁决）：
+// 同一计划内路径按序号依次轮转，四条路径完整覆盖 转发/撤回/催办/关注 且互不重复，
+// 第五条路径循环回第一条的动作；路径 1 拿到哪个动作随计划随机（跨计划能出现不同起点）。
+func TestAutoConfigureInstanceActionRandomRoundRobin(t *testing.T) {
+	plan := model.Plan{ID: 301, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	kindBySequence := map[uint64]string{}
+	for seq := uint64(1); seq <= 4; seq++ {
+		actions := autoConfigurePlanPath(t, plan, model.ExecutionPath{
+			ID: uint64(3000 + seq), PlanID: plan.ID, SequenceNo: uint(seq), Name: "路径",
+		})
+		kind := instanceActionOf(actions)
+		if kind == "" {
+			t.Fatalf("序号 %d 的路径应配置出实例动作", seq)
+		}
+		kindBySequence[seq] = kind
+	}
+	if len(kindBySequence) != 4 {
+		t.Fatalf("四条路径应覆盖四个不同实例动作，实际：%+v", kindBySequence)
+	}
+	fifth := instanceActionOf(autoConfigurePlanPath(t, plan, model.ExecutionPath{
+		ID: 3005, PlanID: plan.ID, SequenceNo: 5, Name: "路径",
+	}))
+	if fifth != kindBySequence[1] {
+		t.Fatalf("第五条路径应循环回第一条的动作 %s，实际 %s", kindBySequence[1], fifth)
+	}
+	firstKinds := map[string]bool{}
+	for planID := uint64(301); planID <= 312; planID++ {
+		varied := model.Plan{ID: planID, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+		firstKinds[instanceActionOf(autoConfigurePlanPath(t, varied, model.ExecutionPath{
+			ID: planID, PlanID: planID, SequenceNo: 1, Name: "路径",
+		}))] = true
+	}
+	if len(firstKinds) < 2 {
+		t.Fatalf("轮询起点应随计划随机：多个计划的路径 1 只出现了 %+v", firstKinds)
 	}
 }
 

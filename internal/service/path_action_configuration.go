@@ -998,16 +998,16 @@ var autoExtraActionRanks = map[model.ActionKey]int{
 // 矩阵约束：发起节点只允许"保存草稿"；审批/协同节点只允许暂存表单、加签、移交、不同意、回退、取回；
 // 系统/空/条件等节点不补任何动作；需要人员的动作必须自带完整候选目录，找不到就给出精确原因。
 // 候选只经过静态过滤，完整场景编译仍由调用方逐个验证；不覆盖人工事实、固定尾动作不计入额外动作。
-func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool, planAccount string) ([]autoExtraCandidate, []string) {
+func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[string]bool, planAccount string, draftFirst bool) ([]autoExtraCandidate, []string) {
 	rejections := []string{}
 	switch strings.TrimSpace(node.Kind) {
 	case "start":
-		// 发起节点只有保存草稿、提交、重新提交两种随机情况（用户裁决）：
-		// 1. 直接提交：不配置额外动作，由场景编译器自动生成固定尾动作"提交"；
-		// 2. 先保存草稿再重新提交：配置额外动作"保存草稿"，由场景编译器自动生成固定尾动作"重新提交"。
-		// 发起人节点绝不配置实例级动作。
-		if seed%2 == 0 {
-			// 随机情况 1：直接提交，不添加额外动作
+		// 发起节点「随机起点的严格交替」（用户裁决：要随机，但两种发起方式都要覆盖）：
+		// 交替起点由计划级种子随机决定，同一计划内按路径序号严格互补——一路径直接提交
+		// （无额外动作，由场景编译器自动生成固定尾动作"提交"），另一路径先保存草稿再重新提交
+		// （额外动作为保存草稿，固定尾动作自动切换为"重新提交"），两种方式 50/50 全覆盖。
+		// 发起人节点绝不配置实例级动作。此前用种子哈希奇偶决定，无法保证两种方式都出现。
+		if !draftFirst {
 			return nil, rejections
 		}
 		// 随机情况 2：先保存草稿再重新提交
@@ -1300,17 +1300,24 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			if path.SequenceNo > 0 {
 				nodeSeed += uint64(path.SequenceNo)
 			}
-			candidates, rejections := autoExtraActionCandidates(*node, nodeSeed, usedInPath(actions), planAccount)
+			// 发起方式交替起点由计划级种子随机决定；其余节点额外动作的种子叠加路径序号做打散。
+			draftFirst := initiatorDraftFirst(planID, uint64(path.SequenceNo))
+			candidates, rejections := autoExtraActionCandidates(*node, nodeSeed, usedInPath(actions), planAccount, draftFirst)
 			// 取回规则：末节点没有后继人工待办窗口，从候选排除；中间人工节点有直接后继窗口，正常允许取回。
 			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
 			diagnostics = append(diagnostics, rejections...)
 			if strings.TrimSpace(node.Kind) == "start" && len(candidates) == 0 {
-				// 发起人节点随机到直接提交：不配置额外用户动作，由场景编译器自动生成固定尾动作"提交"，
-				// 此时仅提交发起人必要的人员策略并确认节点，不作为阻塞失败。
+				// 发起人节点随机到直接提交一侧：不配置额外用户动作，由场景编译器自动生成固定尾动作
+				// "提交"，此时仅提交发起人必要的人员策略并确认节点，不作为阻塞失败。
+				// 该侧目录缺失保存草稿时同样退化为直接提交，原因留在诊断里。
 				commitPendingPersons()
 				confirmedNodes = append(confirmedNodes, node.Key)
-				autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交）")
+				if !initiatorDraftFirst(planID, uint64(path.SequenceNo)) {
+					autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交）")
+				} else {
+					autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交：目录缺失保存草稿）")
+				}
 				continue
 			}
 			if len(candidates) == 0 {
@@ -1376,22 +1383,40 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			}
 			availableInstance = append(availableInstance, item)
 		}
-		// 实例动作多样化打散（用户裁决）：
-		// 转发(forward)、撤回(withdraw)、催办(urge)、关注(follow)、取消关注(unfollow)进入同一个候选池；
-		// 结合计划 ID、路径 ID 的实例随机种子打散轮转，使不同路径能均匀覆盖不同的实例动作，不再独占关注。
-		if len(availableInstance) > 1 {
-			sort.Slice(availableInstance, func(i, j int) bool {
-				return availableInstance[i].Kind < availableInstance[j].Kind
-			})
-			offset := int(instanceSeed % uint64(len(availableInstance)))
-			if path.SequenceNo > 0 {
-				offset = int((path.SequenceNo - 1) % uint(len(availableInstance)))
+		// 实例动作「随机起点的严格轮询」（用户裁决：要随机，但尽量覆盖全部动作）：
+		// 轮询池固定为 转发→撤回→催办→关注，起点由计划级种子随机决定（同一计划内固定），
+		// 路径按序号依次轮转——路径 1 拿到哪个动作随计划而变，但同计划的多条路径必然
+		// 完整覆盖全部动作，不会独占关注。取消关注等其余可用动作不参与自动轮询
+		// （仍可手工配置），只在四个轮询动作全部不可用时追加在队尾兜底。
+		// 此前按动作键字母序从 0 轮转，follow 恰好排第一，路径 1 永远是关注。
+		poolOrder := []model.ActionKey{model.ActionForward, model.ActionWithdraw, model.ActionUrge, model.ActionFollow}
+		ordered := make([]model.PathConfigActionCatalogItem, 0, len(poolOrder))
+		for _, want := range poolOrder {
+			for _, item := range availableInstance {
+				if model.ActionKey(item.Kind) == want {
+					ordered = append(ordered, item)
+					break
+				}
 			}
-			rotated := make([]model.PathConfigActionCatalogItem, len(availableInstance))
-			for i := range availableInstance {
-				rotated[i] = availableInstance[(i+offset)%len(availableInstance)]
+		}
+		if len(ordered) > 0 {
+			specKinds := make(map[model.ActionKey]bool, len(ordered))
+			for _, item := range ordered {
+				specKinds[model.ActionKey(item.Kind)] = true
 			}
-			availableInstance = rotated
+			fallback := make([]model.PathConfigActionCatalogItem, 0, len(availableInstance))
+			for _, item := range availableInstance {
+				if !specKinds[model.ActionKey(item.Kind)] {
+					fallback = append(fallback, item)
+				}
+			}
+			start := int(autoConfigureSeed(planID, 0, "instance_rotation") % uint64(len(ordered)))
+			offset := (start + int(path.SequenceNo) + len(ordered) - 1) % len(ordered)
+			rotated := make([]model.PathConfigActionCatalogItem, 0, len(ordered)+len(fallback))
+			for i := range ordered {
+				rotated = append(rotated, ordered[(i+offset)%len(ordered)])
+			}
+			availableInstance = append(rotated, fallback...)
 		}
 		for _, item := range availableInstance {
 			kind := model.ActionKey(item.Kind)
@@ -1713,8 +1738,18 @@ func autoConfigureActionKey(nodeKey, kind string) string {
 
 // autoExtraCandidatesForTest 暴露新候选矩阵的首选项与淘汰原因，供 test 目录锁定 F-034 行为：
 // 发起节点只允许保存草稿；审批节点按安全等级与稳定种子排序；系统节点无候选。
-func AutoExtraCandidatesForTest(planID, pathID uint64, node model.PathConfigNode, used map[string]bool) (model.ConfiguredAction, *model.PathConfigPersonStrategyInput, bool, []string) {
-	candidates, rejections := autoExtraActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used, "")
+// initiatorDraftFirst 判断指定路径的发起节点是否配置「先保存草稿再重新提交」：
+// 交替起点由计划级种子随机决定（不同计划起点不同），同一计划内奇偶路径严格互补，
+// 保证两种发起方式在同一计划内 50/50 全覆盖且可复现（重复一键配置结果一致）。
+func initiatorDraftFirst(planID, pathSequenceNo uint64) bool {
+	side := autoConfigureSeed(planID, 0, "initiator_side") % 2
+	return (side+pathSequenceNo)%2 == 0
+}
+
+// AutoExtraCandidatesForTest 暴露一键配置的节点额外候选推导，供定向测试锁定随机覆盖规则。
+func AutoExtraCandidatesForTest(planID, pathID uint64, pathSequenceNo uint64, node model.PathConfigNode, used map[string]bool) (model.ConfiguredAction, *model.PathConfigPersonStrategyInput, bool, []string) {
+	draftFirst := initiatorDraftFirst(planID, pathSequenceNo)
+	candidates, rejections := autoExtraActionCandidates(node, autoConfigureSeed(planID, pathID, node.Key), used, "", draftFirst)
 	if len(candidates) == 0 {
 		return model.ConfiguredAction{}, nil, false, rejections
 	}
