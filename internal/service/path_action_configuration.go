@@ -1002,7 +1002,15 @@ func autoExtraActionCandidates(node model.PathConfigNode, seed uint64, used map[
 	rejections := []string{}
 	switch strings.TrimSpace(node.Kind) {
 	case "start":
-		// 发起节点固定尾动作负责"提交"；唯一的额外动作是保存草稿，重新提交是恢复链动作不许随机分配。
+		// 发起节点只有保存草稿、提交、重新提交两种随机情况（用户裁决）：
+		// 1. 直接提交：不配置额外动作，由场景编译器自动生成固定尾动作"提交"；
+		// 2. 先保存草稿再重新提交：配置额外动作"保存草稿"，由场景编译器自动生成固定尾动作"重新提交"。
+		// 发起人节点绝不配置实例级动作。
+		if seed%2 == 0 {
+			// 随机情况 1：直接提交，不添加额外动作
+			return nil, rejections
+		}
+		// 随机情况 2：先保存草稿再重新提交
 		for _, item := range node.ActionConfiguration.Catalog {
 			if item.Kind != string(model.ActionSaveDraft) {
 				continue
@@ -1293,8 +1301,16 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
 			diagnostics = append(diagnostics, rejections...)
+			if strings.TrimSpace(node.Kind) == "start" && len(candidates) == 0 {
+				// 发起人节点随机到直接提交：不配置额外用户动作，由场景编译器自动生成固定尾动作"提交"，
+				// 此时仅提交发起人必要的人员策略并确认节点，不作为阻塞失败。
+				commitPendingPersons()
+				confirmedNodes = append(confirmedNodes, node.Key)
+				autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交）")
+				continue
+			}
 			if len(candidates) == 0 {
-				// 系统节点没有候选是正常情况；业务节点没有候选时不假装已配置，原因升级为阻塞，
+				// 系统节点没有候选是正常情况；审批/协同业务节点没有候选时不假装已配置，原因升级为阻塞，
 				// 且该节点的人员策略不写入（评审 #2：没有安全动作就不留下部分配置）。
 				if isConfigurableBusinessNode(node.Kind) {
 					blockingRejections = append(blockingRejections, "节点 "+node.Name+" 未找到可安全配置的额外动作："+strings.Join(dedupStrings(rejections), "；"))
@@ -1347,7 +1363,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			break
 		}
 	}
-	if !hasInstanceAction && !approveOnly && len(configuration.InstanceActions.Catalog) > 0 {
+	if len(blockingRejections) == 0 && !hasInstanceAction && !approveOnly && len(configuration.InstanceActions.Catalog) > 0 {
 		instanceSeed := autoConfigureSeed(planID, pathID, "instance_actions")
 		availableInstance := make([]model.PathConfigActionCatalogItem, 0, len(configuration.InstanceActions.Catalog))
 		for _, item := range configuration.InstanceActions.Catalog {
@@ -1356,15 +1372,20 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			}
 			availableInstance = append(availableInstance, item)
 		}
-		// 优先挑选转发（forward）或未使用的实例动作
-		sort.SliceStable(availableInstance, func(i, j int) bool {
-			iForward := availableInstance[i].Kind == string(model.ActionForward)
-			jForward := availableInstance[j].Kind == string(model.ActionForward)
-			if iForward != jForward {
-				return iForward
+		// 实例动作多样化打散（用户裁决）：
+		// 转发(forward)、撤回(withdraw)、催办(urge)、关注(follow)、取消关注(unfollow)进入同一个候选池；
+		// 结合计划 ID、路径 ID 的实例随机种子打散轮转，使不同路径能均匀覆盖不同的实例动作，不再独占关注。
+		if len(availableInstance) > 1 {
+			sort.Slice(availableInstance, func(i, j int) bool {
+				return availableInstance[i].Kind < availableInstance[j].Kind
+			})
+			offset := int(instanceSeed % uint64(len(availableInstance)))
+			rotated := make([]model.PathConfigActionCatalogItem, len(availableInstance))
+			for i := range availableInstance {
+				rotated[i] = availableInstance[(i+offset)%len(availableInstance)]
 			}
-			return availableInstance[i].Kind < availableInstance[j].Kind
-		})
+			availableInstance = rotated
+		}
 		for _, item := range availableInstance {
 			kind := model.ActionKey(item.Kind)
 			candidateAction := model.ConfiguredAction{
@@ -1400,7 +1421,6 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			break
 		}
 	}
-
 	// 只有业务节点没有任何可用动作才返回失败；候选级失败只是诊断，不改变整体成功语义。
 	var rejectionError error
 	if len(blockingRejections) > 0 {

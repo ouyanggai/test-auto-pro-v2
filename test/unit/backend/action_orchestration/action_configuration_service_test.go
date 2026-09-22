@@ -3,10 +3,10 @@ package action_orchestration_test
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
-
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/analyzer"
 	"test-auto-pro-v2/internal/model"
@@ -80,7 +80,7 @@ func (s *actionHistoryStore) SavePathConfig(_ context.Context, record repository
 		}
 		return repository.HistoryPathConfigRecord{}, repository.ErrHistoryPathConfigConflict
 	}
-	if s.found && s.record.IdempotencyKey == record.IdempotencyKey {
+	if s.found && strings.TrimSpace(record.IdempotencyKey) != "" && s.record.IdempotencyKey == record.IdempotencyKey {
 		return s.record, nil
 	}
 	if (!s.found && expectedRevision != 0) || (s.found && expectedRevision != s.record.Revision) {
@@ -453,18 +453,30 @@ func autoInitiatorNode(key string, kinds []string) model.PathConfigNode {
 	}
 }
 
-// TestAutoNodeActionInitiatorOnlySaveDraft 验证 F-034 矩阵：发起节点唯一可自动补配的额外动作是“保存草稿”；
-// 提交由固定尾动作承载，重新提交是恢复链动作不许随机分配，其他键不出现在候选里。
+// TestAutoNodeActionInitiatorOnlySaveDraft 验证发起节点随机规则（用户裁决）：
+// 发起人只有保存草稿、提交、重新提交；随机就两种情况：要么直接提交（无额外动作），要么先保存草稿再重新提交（额外动作为保存草稿）。
+// 重新提交由场景编译器作为恢复链固定尾动作生成，不作为独立额外候选分配。
 func TestAutoNodeActionInitiatorOnlySaveDraft(t *testing.T) {
-	used := map[string]bool{}
-	first, _, ok, _ := service.AutoExtraCandidatesForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), used)
-	if !ok || first.NodeKey != "node-a" || first.Action != model.ActionSaveDraft {
-		t.Fatalf("发起节点应只选出保存草稿：%+v ok=%v", first, ok)
+	node := autoInitiatorNode("node-a", []string{"save_draft", "resubmit"})
+	// 遍历不同种子，验证发起节点只可能产出两类结果：直接提交（无额外动作）或保存草稿（有额外动作且动作为 save_draft）
+	hasDirectSubmit := false
+	hasSaveDraft := false
+	for seed := uint64(1); seed <= 20; seed++ {
+		action, _, ok, _ := service.AutoExtraCandidatesForTest(seed, seed+10, node, map[string]bool{})
+		if !ok {
+			hasDirectSubmit = true
+		} else {
+			hasSaveDraft = true
+			if action.Action != model.ActionSaveDraft || action.NodeKey != "node-a" {
+				t.Fatalf("发起节点额外动作只能是保存草稿，实际=%+v", action)
+			}
+		}
 	}
-	// 重复点击结果可复现：同一节点同一种子选出的动作键与语义一致。
-	repeat, _, okRepeat, _ := service.AutoExtraCandidatesForTest(41, 51, autoInitiatorNode("node-a", []string{"save_draft", "resubmit"}), map[string]bool{})
-	if !okRepeat || repeat.Action != first.Action || repeat.Key != first.Key {
-		t.Fatalf("同一节点重复自动配置结果不稳定：%+v / %+v", first, repeat)
+	if !hasDirectSubmit {
+		t.Fatal("发起节点应能随机到直接提交（无额外动作）")
+	}
+	if !hasSaveDraft {
+		t.Fatal("发起节点应能随机到先保存草稿再重新提交")
 	}
 }
 
@@ -869,5 +881,66 @@ func TestAutoConfigureRejectsCountersignPersonShortageEndToEnd(t *testing.T) {
 	}
 	if store.writes != 0 || strings.Contains(string(store.record.PersonStrategies), "review") {
 		t.Fatalf("不完整人员策略不得落库：writes=%d strategies=%s", store.writes, store.record.PersonStrategies)
+	}
+}
+
+// TestAutoConfigureInstanceActionDiversity 验证一键配置对实例动作真随机打散，
+// 在多条不同路径下可随机覆盖不同类型的实例动作（转发、撤回、催办、关注等），不再独占关注；
+// 且当选出撤回动作时，场景编译能正确生成发起人重新提交恢复链。
+func TestAutoConfigureInstanceActionDiversity(t *testing.T) {
+	plan := model.Plan{ID: 101, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	tree := actionConfigurationTree()
+	tree.ForwardCandidates = []target.FlowAuditCandidate{{ID: "forward-recv-1", Name: "转发接收人"}}
+
+	seenInstanceKinds := map[string]bool{}
+	hasWithdrawWithRecovery := false
+
+	for pathID := uint64(201); pathID <= 220; pathID++ {
+		path := model.ExecutionPath{ID: pathID, PlanID: plan.ID, SequenceNo: uint(pathID - 200), Name: "路径-" + strconv.FormatUint(pathID, 10)}
+		store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
+		config := service.NewPathConfigService(
+			service.NewPlanService(actionPlanRepository{plan: plan}),
+			&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
+			analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path},
+		)
+		config.SetHistoryWorkspaceStores(store, store)
+		err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, "")
+		if err != nil {
+			t.Fatalf("路径 %d 自动配置失败：%v", pathID, err)
+		}
+		var actions []model.ConfiguredAction
+		if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
+			t.Fatalf("反序列化已配置动作失败：%v", err)
+		}
+
+		for _, a := range actions {
+			if a.Scope == model.ActionScopeInstance {
+				seenInstanceKinds[string(a.Action)] = true
+				if a.Action == model.ActionWithdraw {
+					var steps []model.CompiledActionStep
+					if err := json.Unmarshal(store.record.CompiledSteps, &steps); err != nil {
+						t.Fatalf("反序列化编译步骤失败：%v", err)
+					}
+					// 验证撤回后有发起人的重新提交步骤
+					hasResubmit := false
+					for _, s := range steps {
+						if s.Action == model.ActionResubmit && s.Scope == model.ActionScopeInitiator {
+							hasResubmit = true
+							break
+						}
+					}
+					if hasResubmit {
+						hasWithdrawWithRecovery = true
+					}
+				}
+			}
+		}
+	}
+
+	if len(seenInstanceKinds) < 2 {
+		t.Fatalf("实例动作未实现真随机多样化打散，实际只出现了：%+v", seenInstanceKinds)
+	}
+	if !hasWithdrawWithRecovery {
+		t.Fatal("未验证到撤回动作成功生成发起人重新提交恢复链")
 	}
 }

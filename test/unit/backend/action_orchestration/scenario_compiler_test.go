@@ -369,15 +369,15 @@ func TestF026RollbackTwiceWalksBackThroughPreviousManualNode(t *testing.T) {
 		t.Fatalf("步骤[%d] 错误：got(%s,%s,%s) want(%s,%s,%s)，全部=%+v", index, step.Source, step.Action, step.NodeKey, item.source, item.action, item.node, result.Steps)
 	}
 }
-// TestForwardBeforeSubmitBlocked 验证流程处于草稿且尚未提交时，禁止执行转发动作。
+// TestForwardBeforeSubmitBlocked 验证流程处于草稿且尚未提交进入后续审批运行时，禁止执行转发动作。
 func TestForwardBeforeSubmitBlocked(t *testing.T) {
 	_, err := scenario.Compile(scenario.Input{
 		Actions: []model.ConfiguredAction{
 			{Key: "draft-1", Action: model.ActionSaveDraft, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 1},
 			{Key: "forward-1", Action: model.ActionForward, Scope: model.ActionScopeInstance, NodeKey: "", Order: 2},
 		},
-		Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "review", Type: "common"}, {ID: "end", Type: "end"}},
-		NodeSequence: []string{"start", "review", "end"},
+		Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "end", Type: "end"}},
+		NodeSequence: []string{"start", "end"},
 	})
 	if err == nil {
 		t.Fatal("流程未发起前执行转发必须被阻断，实际未报错")
@@ -385,5 +385,26 @@ func TestForwardBeforeSubmitBlocked(t *testing.T) {
 	compileErr, ok := err.(*scenario.CompileError)
 	if !ok || len(compileErr.Issues) == 0 || compileErr.Issues[0].Code != "ACTION_FORWARD_BEFORE_SUBMIT" {
 		t.Fatalf("阻断原因应为 ACTION_FORWARD_BEFORE_SUBMIT，实际报错：%v", err)
+	}
+}
+
+// TestForwardAfterDraftAndResubmitSucceeds 验证首节点保存草稿后重新提交进入后续审批节点，转发作为实例动作可成功编译。
+func TestForwardAfterDraftAndResubmitSucceeds(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "draft-1", Action: model.ActionSaveDraft, Scope: model.ActionScopeInitiator, NodeKey: "start", Order: 1},
+			{Key: "forward-1", Action: model.ActionForward, Scope: model.ActionScopeInstance, NodeKey: "", Order: 2},
+		},
+		Nodes:        []model.FlowGraphNode{{ID: "start", Type: "start"}, {ID: "review", Type: "common"}, {ID: "end", Type: "end"}},
+		NodeSequence: []string{"start", "review", "end"},
+	})
+	if err != nil {
+		t.Fatalf("草稿后重新提交流转到审批节点的转发应编译成功，实际报错：%v", err)
+	}
+	if len(result.Steps) != 5 {
+		t.Fatalf("期望 5 个步骤，实际步骤数=%d：%+v", len(result.Steps), result.Steps)
+	}
+	if result.Steps[0].Action != model.ActionSaveDraft || result.Steps[1].Action != model.ActionResubmit || result.Steps[2].Action != model.ActionForward || result.Steps[3].Action != model.ActionApprove || result.Steps[4].Action != model.ActionSystemAutomatic {
+		t.Fatalf("步骤序列不符合预期：全部步骤=%+v", result.Steps)
 	}
 }

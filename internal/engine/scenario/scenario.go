@@ -106,7 +106,7 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 		} else {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
-		if issue := validateForwardOrder(action, index, actions); issue == nil {
+		if issue := validateForwardOrder(action, index, actions, sequence, nodeTypes); issue == nil {
 		} else {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
@@ -575,26 +575,37 @@ func validateProxyRemapOrder(action model.ConfiguredAction, index int, actions [
 	}
 	return nil
 }
-// validateForwardOrder 阻止在流程尚未发起（仅保存草稿且未提交）时执行转发动作。
-func validateForwardOrder(action model.ConfiguredAction, index int, actions []model.ConfiguredAction) *model.ActionConfigurationIssue {
+// validateForwardOrder 阻止在流程尚未发起（如首节点仅保存草稿且整条路径无后续审批节点使其重新提交运行）时执行转发动作。
+// 转发只能在流程提交并进入运行状态后执行；发起人节点内部不能执行转发，未发起实例不能执行转发。
+func validateForwardOrder(action model.ConfiguredAction, index int, actions []model.ConfiguredAction, sequence []string, nodeTypes map[string]string) *model.ActionConfigurationIssue {
 	if action.Action != model.ActionForward {
 		return nil
 	}
-	hasSubmit := false
+	// 转发是实例动作，不能绑定在发起人节点内部
+	if action.NodeKey != "" && strings.ToLower(strings.TrimSpace(nodeTypes[action.NodeKey])) == "start" {
+		return blockingIssue(index, action, "ACTION_FORWARD_BEFORE_SUBMIT", "流程处于发起节点尚未提交，无法执行转发；转发只能在流程提交后执行")
+	}
+	// 检查流程是否处于草稿且无法提交进入后续节点（例如整条路径没有后续人工审批节点让草稿重新提交）
 	hasDraft := false
-	for _, previous := range actions {
-		if previous.Order >= action.Order {
+	for _, a := range actions {
+		if a.Action == model.ActionSaveDraft {
+			hasDraft = true
 			break
 		}
-		if previous.Action == model.ActionSubmit || previous.Action == model.ActionResubmit {
-			hasSubmit = true
-		}
-		if previous.Action == model.ActionSaveDraft {
-			hasDraft = true
-		}
 	}
-	if hasDraft && !hasSubmit {
-		return blockingIssue(index, action, "ACTION_FORWARD_BEFORE_SUBMIT", "流程处于草稿状态尚未发起，无法执行转发；转发只能在流程提交后执行")
+	if hasDraft {
+		// 如果整条路径没有后续人工审批节点（如只有 start -> end），草稿不会推进为运行中流程，不能转发
+		hasSubsequentHumanNode := false
+		for i := 1; i < len(sequence); i++ {
+			nt := strings.ToLower(strings.TrimSpace(nodeTypes[sequence[i]]))
+			if nt == "common" || nt == "synergy" {
+				hasSubsequentHumanNode = true
+				break
+			}
+		}
+		if !hasSubsequentHumanNode {
+			return blockingIssue(index, action, "ACTION_FORWARD_BEFORE_SUBMIT", "流程处于草稿状态尚未发起，无法执行转发；转发只能在流程提交后执行")
+		}
 	}
 	return nil
 }
