@@ -20,13 +20,11 @@
 
       <template scope="scope">
         <span v-if="printRead" class="print-read-label">
-          <!-- <span>333</span> -->
-          <span>{{ parsedInfo.name }}</span>
-          <!-- <span>{{ JSON.parse(currentInfoObj) }}</span> -->
+          <span>{{ displayName }}</span>
         </span>
 
         <template v-else>
-          <el-input v-if="parsedInfo.name" readonly v-model="scope.viewName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
+          <el-input v-if="displayName" readonly :value="displayName" :disabled="disabled" @focus="openInfoDialog" style="width:100%;padding-left: 5px;">
             <el-button slot="append" icon="el-icon-search" @click="checkDetail"></el-button>
           </el-input>
           <el-button v-else type="primary" :disabled="disabled" @click="openInfoDialog" style="margin-left:5px;">{{ placeholder }}</el-button>
@@ -129,8 +127,21 @@ export default {
     parsedInfo () {
       return parseJsonObject(this.currentInfoObj)
     },
-    fieldType(){
-      console.log('this.fieldSelectType',this.fieldSelectType)
+    displayName () {
+      const info = this.parsedInfo
+      if (!info) return ''
+      if (typeof info === 'string') return info
+      if (info.name) return info.name
+      if (info.contractName) return info.contractName
+      if (info.title) return info.title
+      if (info.contractNumber) return info.contractNumber
+      if (info.rowData) {
+        const row = parseJsonObject(info.rowData)
+        if (row && (row.name || row.contractName)) return row.name || row.contractName
+      }
+      return info.id || ''
+    },
+    fieldType () {
       let copyType = JSON.parse(JSON.stringify(this.fieldSelectType))
       var str = '';
       for (var item in this.typeList){

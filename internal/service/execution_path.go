@@ -327,13 +327,10 @@ func (s *ExecutionPathService) generatePathsBatch(ctx context.Context, planID ui
 	} else if found {
 		return existing, false, nil
 	}
-	plan, err := s.plans.Get(ctx, planID)
-	if err != nil {
+	if _, err := s.plans.Get(ctx, planID); err != nil {
 		return model.ExecutionPathBatchResult{}, false, err
 	}
-	if plan.FlowSource != "new" {
-		return model.ExecutionPathBatchResult{}, false, &ExecutionPathError{Kind: ExecutionPathErrorInvalid, Message: "只有新发起计划可以自动解析全部路径"}
-	}
+	// 已发/待发流程同样支持自动推导后续路径
 	graph, err := s.graphs.Get(ctx, planID)
 	if err != nil {
 		return model.ExecutionPathBatchResult{}, false, err

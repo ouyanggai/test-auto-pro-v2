@@ -73,6 +73,14 @@ function digestMappings (sourceRoot, mappings, files) {
 // sync 把固定参考仓库完整可运行资产镜像到实际候选源码，不触碰本地 iframe 适配层。
 function sync () {
   const config = getSyncConfig()
+  try {
+    if (fs.existsSync(path.join(config.sourceRoot, '.git'))) {
+      childProcess.execFileSync('git', ['-C', config.sourceRoot, 'pull', '--ff-only'], { stdio: 'ignore', timeout: 15000 })
+      process.stdout.write(`[GIT] 已快进拉取最新代码: ${config.sourceRoot}\n`)
+    }
+  } catch (error) {
+    process.stdout.write(`[GIT] 拉取跳过或失败（使用本地最新提交）: ${error.message}\n`)
+  }
   assertLiveTargetClean(config.targetRoot)
   const files = trackedFiles(config.sourceRoot)
   const backup = preservePaths(config.targetRoot, config.manifest)

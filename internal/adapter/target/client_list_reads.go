@@ -88,10 +88,8 @@ func (c *Client) ListHistoryInstances(ctx context.Context, session Session, quer
 		statusList = historyInstanceAllStatuses()
 	}
 	data := map[string]any{
-		"useScope":                     "invest",
-		"auditWayList":                 []string{},
-		"statusList":                   statusList,
-		"flowInstanceBizRelevanceList": []map[string]any{{"otherBiz": "company", "otherBizId": ""}},
+		"auditWayList": []string{},
+		"statusList":   statusList,
 	}
 	if value := strings.TrimSpace(query.FlowName); value != "" {
 		data["flowName"] = value

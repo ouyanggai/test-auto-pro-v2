@@ -24,6 +24,7 @@ import LtdOrDepSelect from '@/components/Custom/components/LtdOrDepSelect/index.
 import FlowListMulSelect from '@/components/Custom/components/FlowListMulSelect/index.vue';
 import RequestPayout from '@/components/Custom/components/RequestPayout/index.vue';
 import GeneralListSelectShow from '@/components/Custom/components/GeneralListSelectShow/index.vue';
+import ContractChangeListSelect from '@/components/Custom/components/ContractChangeListSelect.vue';
 import GeneralFlowListMulSelect from '@/components/Custom/components/GeneralFlowListMulSelect/index.vue';
 import PersonMulSelect from '@/components/Custom/components/PersonMulSelect/index.vue';
 import CustomeFileView from '@/components/Custom/components/CustomeFileView';
@@ -46,6 +47,7 @@ Vue.use(FormMaking, {
     { name: 'custome-select-project', component: CustomeSelectProject },
     { name: 'custome-expense-budgetType', component: ExpenseBudgetType },
     { name: 'general-list-select-show', component: GeneralListSelectShow },
+    { name: 'contract-change-list-select', component: ContractChangeListSelect },
     { name: 'person-mulSelect', component: PersonMulSelect },
     { name: 'general-flow-list-mulSelect', component: GeneralFlowListMulSelect },
     { name: 'custome-info-select', component: CustomeInfoSelect },

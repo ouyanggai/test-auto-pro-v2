@@ -355,8 +355,8 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 	if err != nil {
 		return model.PathConfigurationDataResult{}, err
 	}
-	if source.snapshot == nil {
-		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "请先选择基础表单数据", Affected: []model.PathConfigAffectedItem{{Kind: "form", Name: "基础表单数据", Reason: "当前路径尚未绑定可用基础表单数据"}}}
+	if source.snapshot == nil && len(input.Values) == 0 {
+		return model.PathConfigurationDataResult{}, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "请先选择基础表单数据或在表单中填写数据", Affected: []model.PathConfigAffectedItem{{Kind: "form", Name: "基础表单数据", Reason: "当前路径尚未绑定可用基础表单数据且未填写表单数据"}}}
 	}
 	// 浏览器提交的修订号是保存并发屏障的一部分；先在换路计算前核对，避免旧正文取得新的确认令牌。
 	if input.Revision != current.Revision {
@@ -582,6 +582,17 @@ func (s *PathConfigService) workspaceSource(ctx context.Context, planID, pathID 
 			}
 			source := projectHistorySource(model.HistorySourceModeDefault, snapshotValue, defaultRecord.Revision, currentSummary)
 			return historyWorkspaceSource{dataSource: source, snapshot: &snapshotValue, dataStatus: source.DataStatus}, nil
+		} else if len(snapshot.InstanceValues) > 0 {
+			// 已发/待发流程自动继承实例已有表单数据作为初始基线快照
+			pseudoSnapshot := model.HistorySnapshot{
+				PlanID: planID, FlowCode: snapshot.FlowCode, FormName: snapshot.FlowName, FlowName: snapshot.FlowName,
+				RawFormData: snapshot.InstanceValues,
+			}
+			source := model.HistoryDataSource{
+				Mode: model.HistorySourceModeDefault,
+				DataStatus: model.HistoryDataStatusReady,
+			}
+			return historyWorkspaceSource{dataSource: source, snapshot: &pseudoSnapshot, dataStatus: model.HistoryDataStatusReady}, nil
 		}
 	}
 	if mode == model.HistorySourceModeDefault {

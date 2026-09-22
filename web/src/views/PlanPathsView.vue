@@ -258,7 +258,7 @@ async function loadPage() {
 			// 首次读到路径就套用默认勾选：已配置且数据就绪的路径默认勾上，用户点运行时通常就是要跑这些。
 			// 这里必须走 defaultRunSelection 而不是清空，否则每次进页面都要重新勾一遍。
 			selectedRunPathIDs.value = defaultRunSelection([])
-			if (planMutable.value && plan.value.flowSource === 'new' && pathsResult.value.length === 0) void startAutomaticGeneration()
+			if (planMutable.value && pathsResult.value.length === 0) void startAutomaticGeneration()
 		void restoreActivePreparation(controller.signal)
     }
     else {
@@ -732,9 +732,9 @@ function pathDataLabel(path: ExecutionPath): string {
 	return '数据未选择'
 }
 
-// startAutomaticGeneration 新发起计划首次进入详情时自动解析全部合法路径。
+// startAutomaticGeneration 计划首次进入详情时自动解析全部合法路径。
 async function startAutomaticGeneration() {
-  if (!planMutable.value || !plan.value || plan.value.flowSource !== 'new' || paths.value.length > 0 || generationBusy.value) return
+  if (!planMutable.value || !plan.value || paths.value.length > 0 || generationBusy.value) return
   generationError.value = ''
   try {
     const key = createUuid()
@@ -1161,7 +1161,7 @@ onMounted(() => {
                       <h3>已保存的路径</h3>
                       <n-button text size="small" aria-label="关闭已保存路径" @click="closeSavedPaths">关闭</n-button>
                     </header>
-					<div v-if="plan.flowSource === 'new' && generationJob" class="saved-paths-popover__generate">
+					<div v-if="generationJob" class="saved-paths-popover__generate">
 						<span>路径解析 {{ generationJob.completed }}/{{ generationJob.total || '...' }}</span>
 						<n-button v-if="generationBusy" size="small" secondary @click="cancelGeneration">取消</n-button>
 						<n-button v-else-if="generationJob.status === 'cancelled' || generationJob.status === 'failed'" size="small" secondary @click="resumeGeneration">恢复</n-button>

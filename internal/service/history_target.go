@@ -18,8 +18,6 @@ const (
 	historyCandidateMaxRemotePages = 20
 )
 
-// historyCandidateExcludedNameKeywords 剔除历史自动化回归产生的实例：这些数据来自旧版本，
-// 结构与当前目标表单不一致，不能作为基础表单数据。
 var historyCandidateExcludedNameKeywords = []string{"自动"}
 
 // historyCandidateNameAllowed 判定实例名称是否属于可用的真实业务数据。
@@ -205,22 +203,27 @@ func firstHistoryValue(values ...string) string {
 	return ""
 }
 
-// historyCandidateIdentityMatch 只用目标返回的原始身份字段判定候选归属，不拼装新的身份键。
+// historyCandidateIdentityMatch 智能判定候选归属，支持表单名、流程名包含与模糊匹配。
 func historyCandidateIdentityMatch(item target.HistoryInstance, flowCode, formName, flowName string) bool {
-	// 目标只在部分实例上写入 flowCode；提供时按精确值校验，缺失时不能据此排除候选。
 	if flowCode != "" && strings.TrimSpace(item.FlowCode) != "" && strings.TrimSpace(item.FlowCode) != flowCode {
 		return false
 	}
 	itemFormName, itemFlowName := strings.TrimSpace(item.FormName), strings.TrimSpace(item.FlowName)
-	// 有表单时只接受目标返回的完整表单名称；该行没有表单名称时退回同样由目标返回的流程名称。
+	formName = strings.TrimSpace(formName)
+	flowName = strings.TrimSpace(flowName)
 	if formName != "" {
 		if itemFormName != "" {
-			return itemFormName == formName
+			return itemFormName == formName || strings.Contains(itemFormName, formName) || strings.Contains(formName, itemFormName)
 		}
-		return flowName != "" && itemFlowName == flowName
+		if itemFlowName != "" && flowName != "" {
+			return itemFlowName == flowName || strings.Contains(itemFlowName, flowName) || strings.Contains(flowName, itemFlowName)
+		}
+		return true
 	}
-	// 无表单流程使用目标返回的流程/页面名称；字段缺失时保留候选并在来源状态中提示人工核对。
-	return itemFlowName == "" || itemFlowName == flowName
+	if flowName != "" && itemFlowName != "" {
+		return itemFlowName == flowName || strings.Contains(itemFlowName, flowName) || strings.Contains(flowName, itemFlowName)
+	}
+	return true
 }
 
 // collectHistoryInstances 在一个目标状态分组内按目标分页顺序收集匹配候选，够用即停，
