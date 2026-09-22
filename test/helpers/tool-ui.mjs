@@ -247,11 +247,35 @@ export async function selectRunnablePaths (browser, planId) {
 // PATH_LIST_SELECTOR 指向路径勾选列表（n-virtual-list 的根元素）。
 const PATH_LIST_SELECTOR = '.path-prepare__list'
 
-// PATH_LIST_SCROLLER 取虚拟列表真正可滚动的那个容器。
-// n-virtual-list 的根元素自己 overflow 是 visible（实测 scrollHeight === clientHeight），
-// 滚动发生在它内部的 .n-virtual-list__container 上；直接设根元素的 scrollTop 不会生效，
-// 这也是"按序号滚到目标行"一直失败的原因。
-export const PATH_LIST_SCROLLER = `${PATH_LIST_SELECTOR} .n-virtual-list__container`
+// PATH_LIST_SCROLLER 取虚拟列表真正可滚动的那个容器（选择器形式，供断言用）。
+export const PATH_LIST_SCROLLER = `${PATH_LIST_SELECTOR} .v-vl`
+
+// PATH_LIST_SCROLLER_RESOLVER 是在页面里就地解析"真正能滚动元素"的表达式。
+//
+// 为什么不能写死选择器（2026-09-21 实测）：
+//   - `.path-prepare__list` 自身 overflow 是 hidden，scrollHeight === clientHeight（420），不可滚；
+//   - 它的祖先 `.path-prepare` 虽然能滚（509 > 485），但那只是外层页面容器，
+//     滚它并不会让虚拟列表多渲染行；
+//   - 真正承载 12 条路径滚动的是列表**内部**的 `.v-vl`（scrollHeight 1008 = 12 × 84，clientHeight 420）。
+// 因此必须先在列表内部找可滚动后代，找不到再退到祖先，最后才退回根元素自身。
+// 之前写死 `.n-virtual-list__container` 与实际节点不符，滚动全部落空，
+// #8 及其后的行永远不进渲染集，表现成"勾选第 8 条路径失败：序号行未渲染"。
+export const PATH_LIST_SCROLLER_RESOLVER = `
+  (() => {
+    const root = document.querySelector(${JSON.stringify(PATH_LIST_SELECTOR)});
+    if (!root) return null;
+    const OVERFLOW = 4;
+    const canScroll = (el) => el && el.scrollHeight - el.clientHeight > OVERFLOW;
+    const inner = [root, ...root.querySelectorAll('*')].find(canScroll);
+    if (inner) return inner;
+    let el = root.parentElement;
+    for (let i = 0; i < 6 && el; i++) {
+      if (canScroll(el)) return el;
+      el = el.parentElement;
+    }
+    return root;
+  })()
+`
 
 // setAllRunPathSelections 用页面上的「全选／取消全选」按钮把勾选态归零或全开。
 export async function setAllRunPathSelections (browser, all) {
@@ -276,8 +300,19 @@ export async function toggleRunPathSelection (browser, sequence, wanted) {
   const result = await evalPage(browser, `
     const root = $(${JSON.stringify(PATH_LIST_SELECTOR)});
     if (!root) return { ok: false, reason: '找不到路径列表容器' };
-    // 虚拟列表把滚动放在内部 container 上；取不到时退回根元素，并用实测滚动范围判断是否真的能滚。
-    const list = root.querySelector('.n-virtual-list__container') || root;
+    // 就地解析真正可滚动元素：优先列表内部的虚拟滚动容器，其次外层滚动祖先。
+    // 写死选择器会在容器层级变化时静默失去滚动能力（见 PATH_LIST_SCROLLER_RESOLVER 说明）。
+    const OVERFLOW = 4;
+    const canScroll = (el) => el && el.scrollHeight - el.clientHeight > OVERFLOW;
+    let list = [root, ...root.querySelectorAll('*')].find(canScroll);
+    if (!list) {
+      let el = root.parentElement;
+      for (let i = 0; i < 6 && el; i++) {
+        if (canScroll(el)) { list = el; break; }
+        el = el.parentElement;
+      }
+    }
+    if (!list) list = root;
     const wantedSequence = '#${sequence}';
     const rendered = () => $$('.path-prepare__item').filter(visible);
     const findRow = () => rendered()
