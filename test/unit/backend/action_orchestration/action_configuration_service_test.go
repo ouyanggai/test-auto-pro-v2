@@ -29,7 +29,8 @@ func (r actionPlanRepository) Get(_ context.Context, id uint64) (model.Plan, err
 
 type actionPathRepository struct {
 	repository.ExecutionPathRepository
-	path model.ExecutionPath
+	path  model.ExecutionPath
+	paths []model.ExecutionPath
 }
 
 // Get 返回动作配置测试使用的完整执行路径。
@@ -38,6 +39,24 @@ func (r actionPathRepository) Get(_ context.Context, planID, pathID uint64) (mod
 		return model.ExecutionPath{}, repository.ErrExecutionPathNotFound
 	}
 	return r.path, nil
+}
+
+// List 返回指定计划的全部路径，供密集排名计算使用。
+func (r actionPathRepository) List(_ context.Context, planID uint64) ([]model.ExecutionPath, error) {
+	if len(r.paths) > 0 {
+		var result []model.ExecutionPath
+		for _, p := range r.paths {
+			if p.PlanID == planID {
+				result = append(result, p)
+			}
+		}
+		return result, nil
+	}
+	// 回落为单路径模式（兼容不传 paths 的旧测试）
+	if r.path.PlanID == planID {
+		return []model.ExecutionPath{r.path}, nil
+	}
+	return nil, nil
 }
 
 type actionTargetReader struct {
@@ -898,7 +917,8 @@ func TestAutoConfigureRejectsCountersignPersonShortageEndToEnd(t *testing.T) {
 }
 
 // autoConfigurePlanPath 用固定目标树对指定计划/路径执行一键配置，返回已落库的全部已配置动作。
-func autoConfigurePlanPath(t *testing.T, plan model.Plan, path model.ExecutionPath) []model.ConfiguredAction {
+// 为正确计算密集排名，需传入该计划的全部路径（含当前路径）。
+func autoConfigurePlanPath(t *testing.T, plan model.Plan, path model.ExecutionPath, allPaths []model.ExecutionPath) []model.ConfiguredAction {
 	t.Helper()
 	tree := actionConfigurationTree()
 	tree.ForwardCandidates = []target.FlowAuditCandidate{{ID: "forward-recv-1", Name: "转发接收人"}}
@@ -906,7 +926,7 @@ func autoConfigurePlanPath(t *testing.T, plan model.Plan, path model.ExecutionPa
 	config := service.NewPathConfigService(
 		service.NewPlanService(actionPlanRepository{plan: plan}),
 		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
-		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: allPaths},
 	)
 	config.SetHistoryWorkspaceStores(store, store)
 	if err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, ""); err != nil {
@@ -934,32 +954,35 @@ func instanceActionOf(actions []model.ConfiguredAction) string {
 // 第五条路径循环回第一条的动作；路径 1 拿到哪个动作随计划随机（跨计划能出现不同起点）。
 func TestAutoConfigureInstanceActionRandomRoundRobin(t *testing.T) {
 	plan := model.Plan{ID: 301, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	// 预先构建全部路径，供密集排名计算
+	allPaths := []model.ExecutionPath{
+		{ID: 3001, PlanID: plan.ID, SequenceNo: 1, Name: "路径"},
+		{ID: 3002, PlanID: plan.ID, SequenceNo: 2, Name: "路径"},
+		{ID: 3003, PlanID: plan.ID, SequenceNo: 3, Name: "路径"},
+		{ID: 3004, PlanID: plan.ID, SequenceNo: 4, Name: "路径"},
+	}
 	kindBySequence := map[uint64]string{}
-	for seq := uint64(1); seq <= 4; seq++ {
-		actions := autoConfigurePlanPath(t, plan, model.ExecutionPath{
-			ID: uint64(3000 + seq), PlanID: plan.ID, SequenceNo: uint(seq), Name: "路径",
-		})
+	for _, path := range allPaths {
+		actions := autoConfigurePlanPath(t, plan, path, allPaths)
 		kind := instanceActionOf(actions)
 		if kind == "" {
-			t.Fatalf("序号 %d 的路径应配置出实例动作", seq)
+			t.Fatalf("序号 %d 的路径应配置出实例动作", path.SequenceNo)
 		}
-		kindBySequence[seq] = kind
+		kindBySequence[uint64(path.SequenceNo)] = kind
 	}
 	if len(kindBySequence) != 4 {
 		t.Fatalf("四条路径应覆盖四个不同实例动作，实际：%+v", kindBySequence)
 	}
-	fifth := instanceActionOf(autoConfigurePlanPath(t, plan, model.ExecutionPath{
-		ID: 3005, PlanID: plan.ID, SequenceNo: 5, Name: "路径",
-	}))
+	fifthPath := model.ExecutionPath{ID: 3005, PlanID: plan.ID, SequenceNo: 5, Name: "路径"}
+	fifth := instanceActionOf(autoConfigurePlanPath(t, plan, fifthPath, append(allPaths, fifthPath)))
 	if fifth != kindBySequence[1] {
 		t.Fatalf("第五条路径应循环回第一条的动作 %s，实际 %s", kindBySequence[1], fifth)
 	}
 	firstKinds := map[string]bool{}
 	for planID := uint64(301); planID <= 312; planID++ {
 		varied := model.Plan{ID: planID, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
-		firstKinds[instanceActionOf(autoConfigurePlanPath(t, varied, model.ExecutionPath{
-			ID: planID, PlanID: planID, SequenceNo: 1, Name: "路径",
-		}))] = true
+		variedPath := model.ExecutionPath{ID: planID, PlanID: planID, SequenceNo: 1, Name: "路径"}
+		firstKinds[instanceActionOf(autoConfigurePlanPath(t, varied, variedPath, []model.ExecutionPath{variedPath}))] = true
 	}
 	if len(firstKinds) < 2 {
 		t.Fatalf("轮询起点应随计划随机：多个计划的路径 1 只出现了 %+v", firstKinds)
@@ -974,21 +997,28 @@ func TestAutoConfigureInstanceActionDiversity(t *testing.T) {
 	tree := actionConfigurationTree()
 	tree.ForwardCandidates = []target.FlowAuditCandidate{{ID: "forward-recv-1", Name: "转发接收人"}}
 
+	// 预先构建全部 20 条路径
+	allPaths := make([]model.ExecutionPath, 0, 20)
+	for pathID := uint64(201); pathID <= 220; pathID++ {
+		allPaths = append(allPaths, model.ExecutionPath{
+			ID: pathID, PlanID: plan.ID, SequenceNo: uint(pathID - 200), Name: "路径-" + strconv.FormatUint(pathID, 10),
+		})
+	}
+
 	seenInstanceKinds := map[string]bool{}
 	hasWithdrawWithRecovery := false
 
-	for pathID := uint64(201); pathID <= 220; pathID++ {
-		path := model.ExecutionPath{ID: pathID, PlanID: plan.ID, SequenceNo: uint(pathID - 200), Name: "路径-" + strconv.FormatUint(pathID, 10)}
+	for _, path := range allPaths {
 		store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
 		config := service.NewPathConfigService(
 			service.NewPlanService(actionPlanRepository{plan: plan}),
 			&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: tree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-a", FlowName: "多样化流程", RenderType: target.FormRenderTypeFormMaking}},
-			analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path},
+			analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: allPaths},
 		)
 		config.SetHistoryWorkspaceStores(store, store)
 		err := config.AutoConfigurePathActions(context.Background(), plan.ID, path.ID, "")
 		if err != nil {
-			t.Fatalf("路径 %d 自动配置失败：%v", pathID, err)
+			t.Fatalf("路径 %d 自动配置失败：%v", path.ID, err)
 		}
 		var actions []model.ConfiguredAction
 		if err := json.Unmarshal(store.record.UserActions, &actions); err != nil {
@@ -1024,5 +1054,36 @@ func TestAutoConfigureInstanceActionDiversity(t *testing.T) {
 	}
 	if !hasWithdrawWithRecovery {
 		t.Fatal("未验证到撤回动作成功生成发起人重新提交恢复链")
+	}
+}
+
+// TestAutoConfigureInstanceActionWithGaps 验证密集排名修复非连续序号场景：
+// 当计划内勾选路径的 SequenceNo 不连续（如只勾选 1/3/7/15），密集排名将其压缩为 1/2/3/4，
+// 使四条路径仍能轮询覆盖全部四种实例动作，而非全部坍缩到同一动作。
+func TestAutoConfigureInstanceActionWithGaps(t *testing.T) {
+	plan := model.Plan{ID: 401, Account: "account-a", FlowSource: "new", TargetObjectID: "flow-a", Status: model.PlanStatusNotStarted}
+	// 模拟用户只勾选了序号 1、3、7、15 的四条路径（中间有间隙）
+	allPaths := []model.ExecutionPath{
+		{ID: 4001, PlanID: plan.ID, SequenceNo: 1, Name: "路径1"},
+		{ID: 4003, PlanID: plan.ID, SequenceNo: 3, Name: "路径3"},
+		{ID: 4007, PlanID: plan.ID, SequenceNo: 7, Name: "路径7"},
+		{ID: 4015, PlanID: plan.ID, SequenceNo: 15, Name: "路径15"},
+	}
+	kindBySequence := map[uint]string{}
+	for _, path := range allPaths {
+		actions := autoConfigurePlanPath(t, plan, path, allPaths)
+		kind := instanceActionOf(actions)
+		if kind == "" {
+			t.Fatalf("序号 %d 的路径应配置出实例动作", path.SequenceNo)
+		}
+		kindBySequence[path.SequenceNo] = kind
+	}
+	// 验证四条路径覆盖四种不同动作
+	seenKinds := map[string]bool{}
+	for _, kind := range kindBySequence {
+		seenKinds[kind] = true
+	}
+	if len(seenKinds) != 4 {
+		t.Fatalf("非连续序号的四条路径应覆盖四种不同实例动作，实际：%+v", kindBySequence)
 	}
 }

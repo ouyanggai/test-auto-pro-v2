@@ -1159,6 +1159,12 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	if err != nil {
 		return err
 	}
+	// 实例轮询与发起交替改用密集排名：路径在当前计划全部路径中的 0-based 位置，
+	// 避免删路径后序号不连续（1,5,9,13）时所有路径坍缩到同一动作/发起方式。
+	denseRank, err := s.computePathDenseRank(ctx, planID, pathID)
+	if err != nil {
+		return err
+	}
 	// 加签人员优先用计划账号本人：计划账号是本次运行已证明可登录的账号；目标环境存在
 	// 姓名/手机号都无法登录的人员（目录 account/username 为空且登录名不生效），随机把加签
 	// 签到这类人员上，运行期切换处理人会被门禁按「处理人身份未确认」安全停机，整条路径必败。
@@ -1297,11 +1303,9 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				continue
 			}
 			nodeSeed := autoConfigureSeed(planID, pathID, node.Key)
-			if path.SequenceNo > 0 {
-				nodeSeed += uint64(path.SequenceNo)
-			}
-			// 发起方式交替起点由计划级种子随机决定；其余节点额外动作的种子叠加路径序号做打散。
-			draftFirst := initiatorDraftFirst(planID, uint64(path.SequenceNo))
+			nodeSeed += uint64(denseRank)
+			// 发起方式交替起点由计划级种子随机决定；其余节点额外动作的种子叠加密集排名做打散。
+			draftFirst := initiatorDraftFirst(planID, uint64(denseRank))
 			candidates, rejections := autoExtraActionCandidates(*node, nodeSeed, usedInPath(actions), planAccount, draftFirst)
 			// 取回规则：末节点没有后继人工待办窗口，从候选排除；中间人工节点有直接后继窗口，正常允许取回。
 			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
@@ -1313,7 +1317,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				// 该侧目录缺失保存草稿时同样退化为直接提交，原因留在诊断里。
 				commitPendingPersons()
 				confirmedNodes = append(confirmedNodes, node.Key)
-				if !initiatorDraftFirst(planID, uint64(path.SequenceNo)) {
+				if !initiatorDraftFirst(planID, uint64(denseRank)) {
 					autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交）")
 				} else {
 					autoConfiguredNodes = append(autoConfiguredNodes, node.Name+"（直接提交：目录缺失保存草稿）")
@@ -1411,7 +1415,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 				}
 			}
 			start := int(autoConfigureSeed(planID, 0, "instance_rotation") % uint64(len(ordered)))
-			offset := (start + int(path.SequenceNo) + len(ordered) - 1) % len(ordered)
+			offset := (start + denseRank) % len(ordered)
 			rotated := make([]model.PathConfigActionCatalogItem, 0, len(ordered)+len(fallback))
 			for i := range ordered {
 				rotated = append(rotated, ordered[(i+offset)%len(ordered)])
@@ -1728,6 +1732,26 @@ func AutoPersonStrategyForTest(person model.PathConfigPerson, seed uint64) model
 func autoConfigureSeed(planID, pathID uint64, token string) uint64 {
 	digest := sha256.Sum256([]byte(fmt.Sprintf("auto:%d:%d:%s", planID, pathID, token)))
 	return binary.BigEndian.Uint64(digest[:8])
+}
+
+// computePathDenseRank 计算路径在计划内的密集排名（0-based），用于轮询偏移和交替计算。
+// 当路径序号不连续（删除路径后产生跳号 1,5,9,13）时，密集排名仍然是 0,1,2,3，
+// 避免所有路径因序号模运算同余坍缩到同一个动作。
+func (s *PathConfigService) computePathDenseRank(ctx context.Context, planID, pathID uint64) (int, error) {
+	paths, err := s.pathRepository.List(ctx, planID)
+	if err != nil {
+		return 0, fmt.Errorf("列举计划路径失败: %w", err)
+	}
+	// 按 SequenceNo 升序排列，找到 pathID 的位置（0-based）
+	sort.Slice(paths, func(i, j int) bool {
+		return paths[i].SequenceNo < paths[j].SequenceNo
+	})
+	for rank, p := range paths {
+		if p.ID == pathID {
+			return rank, nil
+		}
+	}
+	return 0, fmt.Errorf("路径 %d 不在计划 %d 的路径列表中", pathID, planID)
 }
 
 // autoConfigureActionKey 生成稳定动作记录键，重复一键配置不会产生新记录键。
