@@ -1177,26 +1177,6 @@ onBeforeUnmount(() => {
         <span class="run-detail__phase-note">{{ detail.currentPhaseNote || '当前阶段说明暂时不可用，可从日志入口查看执行过程' }}</span>
       </div>
 
-      <!-- F-020 多路径运行：调度说明与路径切换 chips 合并为一行。 -->
-      <div v-if="(detail.paths?.length ?? 0) > 1" class="run-detail__subbar">
-        <span class="run-detail__schedule">{{ detail.runScheduleName }} · {{ detail.runConcurrencyLabel }}</span>
-        <div class="run-detail__paths" role="tablist" aria-label="路径运行列表">
-          <button
-            v-for="path in detail.paths"
-            :key="path.pathRunId"
-            type="button"
-            class="run-detail__path"
-            :class="{ 'run-detail__path--active': path.pathRunId === (detail.pathRunId || selectedPathRunID) }"
-            role="tab"
-            :aria-selected="path.pathRunId === (detail.pathRunId || selectedPathRunID)"
-            @click="switchPathRun(path.pathRunId)"
-          >
-            <span class="run-detail__path-name">{{ path.pathName }}</span>
-            <span class="run-detail__path-status">{{ path.statusName }}<template v-if="path.resultName"> · {{ path.resultName }}</template></span>
-          </button>
-        </div>
-      </div>
-
       <!-- 结论与提示区：只在真的有内容时占位，高度有界，不把画布挤没。 -->
       <div
         v-if="detail.stopReason || topConclusion || loadErrorText || errorText || actionText || sceneLostNote || detail.graphError"

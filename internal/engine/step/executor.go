@@ -101,7 +101,7 @@ func (e *Executor) shouldRunViaRuntime(runCtx RunContext, step model.CompiledAct
 	}
 	switch step.Action {
 	case model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData,
-		model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward:
+		model.ActionApprove, model.ActionReject, model.ActionResubmit:
 		return true
 	default:
 		return false

@@ -190,11 +190,11 @@ func TestRoutingWithoutRunnerKeepsGoPath(t *testing.T) {
 	}
 }
 
-// TestRoutingWithRunnerCoverSevenActions 配置后七个表单动作走 runtime，Go 直连动作不走。
-func TestRoutingWithRunnerCoverSevenActions(t *testing.T) {
+// TestRoutingWithRunnerCoverActions 配置后六个表单动作走 runtime，Go 直连动作（含转发、撤回等）不走。
+func TestRoutingWithRunnerCoverActions(t *testing.T) {
 	executor := newExecutorForRouting(t, &recordingTarget{}, &fakeRuntimeRunner{status: "success"})
 	runCtx := runtimeRunCtx()
-	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData, model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward} {
+	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData, model.ActionApprove, model.ActionReject, model.ActionResubmit} {
 		if !executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
 			t.Fatalf("表单动作 %s 应走 runtime", action)
 		}
@@ -205,7 +205,7 @@ func TestRoutingWithRunnerCoverSevenActions(t *testing.T) {
 			t.Fatalf("渲染类型 %s 的审批动作都应统一走 runtime", renderType)
 		}
 	}
-	for _, action := range []model.ActionKey{model.ActionAddSign, model.ActionTransfer, model.ActionRollback, model.ActionRetrieve, model.ActionWithdraw, model.ActionUrge, model.ActionFollow, model.ActionUnfollow, model.ActionSystemAutomatic} {
+	for _, action := range []model.ActionKey{model.ActionForward, model.ActionAddSign, model.ActionTransfer, model.ActionRollback, model.ActionRetrieve, model.ActionWithdraw, model.ActionUrge, model.ActionFollow, model.ActionUnfollow, model.ActionSystemAutomatic} {
 		if executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
 			t.Fatalf("动作 %s 不应走 runtime", action)
 		}
