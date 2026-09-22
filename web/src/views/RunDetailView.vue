@@ -211,6 +211,37 @@ const runTakenEdgeIds = computed<string[]>(() => {
       }
     }
   }
+  // 流程已完成时，补齐从最后一步节点到结束节点（包含中间自动节点）的走过连线
+  if (detail.value.pathRunStatusName === '已完成' && settledKeys.length > 0) {
+    const lastKey = settledKeys[settledKeys.length - 1]
+    const endNode = graph.value.nodes.find((n) => n.type === 'end')
+    if (endNode && lastKey && lastKey !== endNode.id) {
+      const queue: string[] = [lastKey]
+      const visited = new Set<string>([lastKey])
+      const parentEdge = new Map<string, { from: string; edgeId: string }>()
+      while (queue.length > 0) {
+        const current = queue.shift()!
+        if (current === endNode.id) break
+        for (const edge of graph.value.edges) {
+          if (edge.source === current && !visited.has(edge.target)) {
+            visited.add(edge.target)
+            parentEdge.set(edge.target, { from: current, edgeId: edge.id })
+            queue.push(edge.target)
+          }
+        }
+      }
+      if (parentEdge.has(endNode.id)) {
+        let curr = endNode.id
+        while (parentEdge.has(curr)) {
+          const info = parentEdge.get(curr)!
+          if (!ids.includes(info.edgeId)) {
+            ids.push(info.edgeId)
+          }
+          curr = info.from
+        }
+      }
+    }
+  }
   return ids
 })
 
@@ -397,6 +428,10 @@ const currentNodeKey = computed(() => {
   const kept = lastValidCurrentNodeByVersion.get(requestVersion) || ''
   if (kept && detail.value && !['已完成', '失败', '结果待确认', '已停止', '已取消'].includes(detail.value.pathRunStatusName)) {
     return kept
+  }
+  if (detail.value?.pathRunStatusName === '已完成') {
+    const endNode = graph.value?.nodes.find((n) => n.type === 'end')
+    if (endNode) return endNode.id
   }
   if (detail.value?.steps && detail.value.steps.length > 0) {
     const lastStep = detail.value.steps[detail.value.steps.length - 1]

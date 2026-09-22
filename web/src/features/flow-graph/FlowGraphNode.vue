@@ -34,7 +34,10 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       class="flow-node flow-node--run flow-node--end-simple"
       :class="[
         data.runStatus ? `flow-node--run-${data.runStatus}` : '',
-        { 'flow-node--run-completed': data.runStatus === 'completed' },
+        {
+          'flow-node--run-completed': data.runStatus === 'completed',
+          'flow-node--run-current': data.runCurrent,
+        },
       ]"
       title="结束"
     >
