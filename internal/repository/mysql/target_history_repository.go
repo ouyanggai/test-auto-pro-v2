@@ -87,27 +87,34 @@ WHERE table_schema = ? AND table_name IN ('t_flow_instance', 't_flow_proxy', 't_
 	return nil
 }
 
-// TargetHistoryCandidates 按流程身份分页返回候选关键列与真实总数，不限制发起人。
+// TargetHistoryCandidates 按亲和度排序分页返回全量历史候选，优先展示同流程/同编码实例，不限制流程名与发起人。
 func (r *TargetHistoryRepository) TargetHistoryCandidates(ctx context.Context, filter repository.TargetHistoryCandidateFilter, page, pageSize int) ([]repository.TargetHistoryCandidateRow, int, error) {
 	if r == nil || r.db == nil {
 		return nil, 0, errors.New("目标业务库只读连接不可用")
 	}
 	flowName := strings.TrimSpace(filter.FlowName)
-	if flowName == "" {
-		return []repository.TargetHistoryCandidateRow{}, 0, nil
-	}
+	flowCode := strings.TrimSpace(filter.FlowCode)
+	formName := strings.TrimSpace(filter.FormName)
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	where, args := r.candidateConditions(filter, flowName)
+	where, args := r.candidateConditions(filter)
 	total, err := r.candidateTotal(ctx, where, args)
 	if err != nil || total == 0 {
 		return []repository.TargetHistoryCandidateRow{}, total, err
 	}
-	// 智能相关度排序：流程名完全匹配优先、已完成实例优先、发起时间倒序。
+	// 智能亲和度排序：
+	// 1. 流程名完全一致排最前
+	// 2. 流程名模糊包含次之
+	// 3. 流程编码一致再次之
+	// 4. 表单名一致再次之
+	// 5. 已办结(end)实例优先于运行中
+	// 6. 发起时间倒序（最新在前）
+	escapedFlow := escapeTargetHistoryLike(flowName)
+	likeFlowPattern := "%" + escapedFlow + "%"
 	query := fmt.Sprintf(`
 SELECT i.id, COALESCE(i.name, ''), COALESCE(p.flow_name, ''), COALESCE(f.name, ''), COALESCE(NULLIF(i.flow_code, ''), COALESCE(p.code, '')),
        COALESCE(i.flow_proxy_id, ''), COALESCE(i.form_proxy_id, ''), COALESCE(i.status, ''),
@@ -118,9 +125,15 @@ LEFT JOIN %[1]s.t_form_proxy f ON f.id = i.form_proxy_id
 LEFT JOIN %[2]s.t_user u ON u.id = i.creater_id
 LEFT JOIN %[2]s.t_company c ON c.id = i.company_id
 WHERE %[3]s
-ORDER BY (p.flow_name = ?) DESC, (i.status = 'end') DESC, i.create_date DESC, i.id DESC
+ORDER BY (p.flow_name = ?) DESC,
+         (p.flow_name LIKE ? OR ? LIKE CONCAT('%%', p.flow_name, '%%')) DESC,
+         (COALESCE(NULLIF(i.flow_code, ''), COALESCE(p.code, '')) = ?) DESC,
+         (f.name = ?) DESC,
+         (i.status = 'end') DESC,
+         i.create_date DESC,
+         i.id DESC
 LIMIT ? OFFSET ?`, r.schema, r.userCenter, where)
-	queryArgs := append(append([]any{}, args...), flowName, pageSize, (page-1)*pageSize)
+	queryArgs := append(append([]any{}, args...), flowName, likeFlowPattern, flowName, flowCode, formName, pageSize, (page-1)*pageSize)
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -141,27 +154,13 @@ LIMIT ? OFFSET ?`, r.schema, r.userCenter, where)
 	return result, total, nil
 }
 
-// candidateConditions 组装只使用目标原字段的查询条件；所有用户输入都走占位符。
-func (r *TargetHistoryRepository) candidateConditions(filter repository.TargetHistoryCandidateFilter, flowName string) (string, []any) {
+// candidateConditions 组装基础过滤条件；放宽流程名与表单名硬过滤，由 ORDER BY 负责智能亲和排序。
+func (r *TargetHistoryRepository) candidateConditions(filter repository.TargetHistoryCandidateFilter) (string, []any) {
 	conditions := []string{"i.is_delete = 0"}
 	args := make([]any, 0)
 	if customerCode := strings.TrimSpace(r.customerCode); customerCode != "" {
 		conditions = append(conditions, "(i.customer_code = ? OR i.customer_code IS NULL OR i.customer_code = '')")
 		args = append(args, customerCode)
-	}
-	// 流程名称智能模糊匹配：完全相等或互相包含均可匹配
-	escapedFlow := escapeTargetHistoryLike(flowName)
-	conditions = append(conditions, "(p.flow_name = ? OR p.flow_name LIKE ? OR ? LIKE CONCAT('%', p.flow_name, '%'))")
-	args = append(args, flowName, "%"+escapedFlow+"%", flowName)
-
-	if flowCode := strings.TrimSpace(filter.FlowCode); flowCode != "" {
-		conditions = append(conditions, "(COALESCE(NULLIF(i.flow_code, ''), COALESCE(p.code, '')) = '' OR COALESCE(NULLIF(i.flow_code, ''), COALESCE(p.code, '')) = ?)")
-		args = append(args, flowCode)
-	}
-	if formName := strings.TrimSpace(filter.FormName); formName != "" {
-		escapedForm := escapeTargetHistoryLike(formName)
-		conditions = append(conditions, "(COALESCE(f.name, '') = '' OR f.name = ? OR f.name LIKE ? OR ? LIKE CONCAT('%', f.name, '%'))")
-		args = append(args, formName, "%"+escapedForm+"%", formName)
 	}
 	for _, keyword := range filter.ExcludeNameKeywords {
 		keyword = strings.TrimSpace(keyword)
