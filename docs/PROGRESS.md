@@ -1,5 +1,12 @@
 # 当前进度
 
+- 2026-09-23 F-041「完整分支与选人组合适配」实施完成，停在 **ready_for_manual**：
+  ① 目录层补齐主管副总接口：`person_directory.go` 增加 `FindSuperiorLeader`（`/web/user/api/user/findSuperiorLeader`）与 `FindGrandpaSuperiorLeader`（`/findGrandpaSuperiorLeader`）；
+  ② 解析层自选策略智能兜底：`path_action_configuration.go` 对并行分支或未单独手动配置的 `run_node_choose` 节点，自动以目标默认候选人（`target_default`）或范围随机（`random`）兜底，消除少配分支即中断；
+  ③ 运行上下文全流程自选解析：`run_orchestration.go` 增加对流程图全量 `nodes` 中所有自选节点的全局解析，并存入 `NextNodeAuditors`，确保并行同级各分支人员全部就绪；
+  ④ 执行服务并行闭环与节点人员注入：`runner.go` 增强对 `parallelChooseNodes`、`parallelNodes` 和 `branchNodes` 的兼容解析；`native-dispatch.ts` 在 `parallel_choose` 时向原生组件的 `parallelNodeChooseList` 与 `parallelChooseNodes` 自动注入对应分支人员的 `nodeAuditList`，彻底解决原生组件报“当前并行分支下有节点审批人未指定”的断裂。
+  Go 构建、vet、后端 17 个测试包全部通过，前端类型检查通过，等待用户人工核验。
+
 - 2026-09-23 F-040「表单数据自主生成、智能历史检索与已发路径推导」实施完成，停在 **ready_for_manual**：
   ① 合同组件回显修复与组件补齐：`GeneralListSelectShow/index.vue` 增强 `displayName` 计算属性，同时兼容 `contractName`、`name`、`title` 以及纯 ID 场景；补齐引入并全局注册 `contract-change-list-select` 及其专用弹窗 `ContractChangeListSelectList.vue`；`form-runtime` 同步脚本增加启动拉取 Git 最新代码逻辑；
   ② 已发/待发流程自动继承实例数据：`path_data_workspace.go` 在未保存路径覆盖时，若实例已有当前表单数据（`InstanceValues`），自动将其作为初始基线快照，无需用户弹窗二次选择；

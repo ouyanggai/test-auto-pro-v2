@@ -409,7 +409,14 @@ func (s *PathConfigService) ResolveNodeAuditors(ctx context.Context, planID, pat
 	strategies := decodeHistoryPersonStrategies(current.PersonStrategies)
 	strategy, ok := strategies[node.Person.Key]
 	if !ok {
-		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点缺少已保存的处理人策略"}
+		// 并行分支或未单独配置的自选节点智能兜底：默认候选优先，其次范围随机
+		if len(node.Person.DefaultIDs) > 0 {
+			strategy = model.PathConfigPersonStrategyInput{Key: node.Person.Key, Strategy: "target_default"}
+		} else if len(node.Person.CandidateTokens) > 0 {
+			strategy = model.PathConfigPersonStrategyInput{Key: node.Person.Key, Strategy: "random"}
+		} else {
+			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点缺少已保存的处理人策略且无可用候选人"}
+		}
 	}
 	excluded := s.excludedPersonIDs(ctx)
 	encoded, reason := analyzer.EncodePathConfigPersonStrategyWithExclusion(*node.Person, strategy, excluded)

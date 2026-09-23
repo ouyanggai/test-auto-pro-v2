@@ -205,12 +205,26 @@ export function nativeChoiceContinue (
   }
   if (errorType === 'parallel_choose') {
     const entries = (choice.branchEntryNodeProxyIds ?? []).map(String)
-    const list = (opinion.parallelNodeChooseList as Array<Record<string, unknown>> | undefined) ?? []
-    for (const item of list) {
-      const id = String(item.id ?? '')
-      if (id && entries.includes(id)) item.nextNodeTemplateId = id
+    const targetLists = [
+      opinion.parallelNodeChooseList as Array<Record<string, unknown>> | undefined,
+      opinion.parallelChooseNodes as Array<Record<string, unknown>> | undefined
+    ]
+    for (const list of targetLists) {
+      if (!Array.isArray(list)) continue
+      for (const item of list) {
+        const id = String(item.nextNodeTemplateId ?? item.id ?? '')
+        if (id && (entries.length === 0 || entries.includes(id))) {
+          item.nextNodeTemplateId = id
+          const matched = auditors.filter(a => String(a.nodeProxyId ?? '') === id).map(a => ({
+            id: String(a.bizId ?? ''),
+            name: String(a.name ?? '')
+          }))
+          if (matched.length > 0) {
+            item.nodeAuditList = matched
+          }
+        }
+      }
     }
-    opinion.parallelNodeChooseList = list
     if (typeof opinion.handleSaveParallelChooseNode !== 'function') throw new Error('ExamineOpinion 缺少 handleSaveParallelChooseNode')
     opinion.handleSaveParallelChooseNode()
     return { component: 'ExamineOpinion', method: 'handleSaveParallelChooseNode' }

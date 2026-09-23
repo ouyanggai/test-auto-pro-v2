@@ -612,6 +612,21 @@ func (s *RunOrchestrationService) buildRunContext(ctx context.Context, planID, p
 		}
 		nextNodeAuditors[nextNodeKey] = resolved
 	}
+	// 全流程节点补充解析：覆盖并行同级分支、手动分支与多自选组合
+	for nodeKey, nodeInfo := range nodes {
+		if _, resolved := nextNodeAuditors[nodeKey]; resolved {
+			continue
+		}
+		if s.pathNodes == nil {
+			continue
+		}
+		if strings.TrimSpace(nodeInfo.AuditType) == "run_node_choose" {
+			resolved, resolveErr := s.pathNodes.ResolveNodeAuditors(ctx, planID, pathID, nodeKey)
+			if resolveErr == nil && len(resolved) > 0 {
+				nextNodeAuditors[nodeKey] = resolved
+			}
+		}
+	}
 	return step.RunContext{
 		Run:                      model.Run{PlanID: planID},
 		PathRun:                  model.PathRun{ExecutionPathID: pathID},

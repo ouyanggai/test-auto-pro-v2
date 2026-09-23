@@ -340,6 +340,16 @@ func (r *RuntimeExecutor) buildChoice(request RuntimeRunRequest, eventData json.
 				ID       string `json:"id"`
 				NodeName string `json:"nodeName"`
 			} `json:"branchNodes"`
+			ParallelChooseNodes []struct {
+				ID                 string `json:"id"`
+				NextNodeTemplateID string `json:"nextNodeTemplateId"`
+				NodeName           string `json:"nodeName"`
+			} `json:"parallelChooseNodes"`
+			ParallelNodes []struct {
+				ID                 string `json:"id"`
+				NextNodeTemplateID string `json:"nextNodeTemplateId"`
+				NodeName           string `json:"nodeName"`
+			} `json:"parallelNodes"`
 			Node struct {
 				ID string `json:"id"`
 			} `json:"node"`
@@ -372,16 +382,49 @@ func (r *RuntimeExecutor) buildChoice(request RuntimeRunRequest, eventData json.
 		}
 		return nil
 	case "parallel_choose":
-		// 并行：逐个分支携带各自节点人员。评审 P1-6：任一自选分支缺已配置人员时整体放弃继续
-		//（由执行器阻塞），绝不发送不完整的 nextAuditors，也绝不用目标临时节点集合覆盖已保存配置。
+		// 并行：逐个分支携带各自节点人员，支持 parallelChooseNodes、parallelNodes 和 branchNodes
+		type parallelCandidate struct {
+			id string
+		}
+		seen := make(map[string]bool)
+		candidates := make([]parallelCandidate, 0)
+		addCandidate := func(id, nextID string) {
+			targetID := strings.TrimSpace(id)
+			if targetID == "" {
+				targetID = strings.TrimSpace(nextID)
+			}
+			if targetID != "" && !seen[targetID] {
+				seen[targetID] = true
+				candidates = append(candidates, parallelCandidate{id: targetID})
+			}
+		}
+		for _, node := range data.Data.ParallelChooseNodes {
+			addCandidate(node.ID, node.NextNodeTemplateID)
+		}
+		for _, node := range data.Data.ParallelNodes {
+			addCandidate(node.ID, node.NextNodeTemplateID)
+		}
+		for _, node := range data.Data.BranchNodes {
+			addCandidate(node.ID, "")
+		}
 		entries := []string{}
 		auditors := []NextAuditorEntry{}
-		for _, node := range data.Data.BranchNodes {
-			if !branchPersonnelSatisfied(request, node.ID) {
+		for _, candidate := range candidates {
+			if !branchPersonnelSatisfied(request, candidate.id) {
 				return nil
 			}
-			entries = append(entries, node.ID)
-			auditors = append(auditors, auditorsForNode(request, node.ID)...)
+			entries = append(entries, candidate.id)
+			auditors = append(auditors, auditorsForNode(request, candidate.id)...)
+		}
+		// 若从错误载荷中未能提取到任何节点，则从已配置的 NextNodeAuditors 中收集全部已知并行节点
+		if len(entries) == 0 {
+			for _, a := range request.NextNodeAuditors {
+				if a.NodeProxyID != "" && !seen[a.NodeProxyID] {
+					seen[a.NodeProxyID] = true
+					entries = append(entries, a.NodeProxyID)
+					auditors = append(auditors, a)
+				}
+			}
 		}
 		if len(entries) == 0 {
 			return nil

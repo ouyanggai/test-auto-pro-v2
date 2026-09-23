@@ -796,3 +796,51 @@ func (c *Client) CurrentUserDuty(ctx context.Context, active Session) (string, s
 	}
 	return "", "", fmt.Errorf("current user not found in personnel directory")
 }
+
+// FindSuperiorLeader 读取指定用户的直属部门主管 ID。
+func (c *Client) FindSuperiorLeader(ctx context.Context, active Session, userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = strings.TrimSpace(active.UserID)
+	}
+	resp, err := c.call(ctx, "/web/user/api/user/findSuperiorLeader", active.SID, map[string]any{
+		"data": map[string]any{"id": userID},
+	})
+	if err != nil {
+		return "", err
+	}
+	if !responseSucceeded(resp) {
+		return "", responseError(resp)
+	}
+	var user struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resp.Data, &user); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(user.ID), nil
+}
+
+// FindGrandpaSuperiorLeader 读取指定用户的分管副总 ID。
+func (c *Client) FindGrandpaSuperiorLeader(ctx context.Context, active Session, userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		userID = strings.TrimSpace(active.UserID)
+	}
+	resp, err := c.call(ctx, "/web/user/api/user/findGrandpaSuperiorLeader", active.SID, map[string]any{
+		"data": map[string]any{"id": userID},
+	})
+	if err != nil {
+		return "", err
+	}
+	if !responseSucceeded(resp) {
+		return "", responseError(resp)
+	}
+	var user struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resp.Data, &user); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(user.ID), nil
+}
