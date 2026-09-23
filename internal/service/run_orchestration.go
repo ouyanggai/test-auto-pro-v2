@@ -95,7 +95,10 @@ type RunOrchestrationService struct {
 	now       func() time.Time
 	// pathNodes 提供路径配置快照的目标节点表（键=编译场景 nodeKey 的同一套键）。
 	pathNodes *PathConfigService
-
+	sessions  interface {
+		SetAccountConcurrency(int)
+		AccountConcurrency() int
+	}
 	// dynamicGraphCache 缓存运行实例已成功解析出的动态代理图。
 	// 加签生成新节点后，若某次轮询目标接口偶发超时或瞬时不可读，坚决复用缓存的动态图，
 	// 绝不能在动态图与静态计划图之间反复横跳导致加签节点“时隐时现”。
@@ -117,16 +120,24 @@ func NewRunOrchestrationService(
 	runConfig config.RunConfig,
 	pathNodes *PathConfigService,
 	now func() time.Time,
+	sessions ...interface {
+		SetAccountConcurrency(int)
+		AccountConcurrency() int
+	},
 ) *RunOrchestrationService {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &RunOrchestrationService{
+	svc := &RunOrchestrationService{
 		plans: plans, paths: paths, graphs: graphs, configs: configs,
 		readiness: readiness, control: controlSvc, store: store, runState: runState,
 		router: router, runConfig: runConfig, pathNodes: pathNodes, now: now,
 		dynamicGraphCache: make(map[string]model.FlowGraph),
 	}
+	if len(sessions) > 0 && sessions[0] != nil {
+		svc.sessions = sessions[0]
+	}
+	return svc
 }
 
 // StartRunInput 是启动一次运行的最小请求。

@@ -46,11 +46,12 @@ type Manager struct {
 	conflicts    map[string]sessionConflict
 	lockMu       sync.Mutex
 	accountLocks map[string]*sync.Mutex
-	// useMu 与 useLocks 是账号「使用中」锁：同一账号同一时间只允许一个操作持有会话，
-	// 其他需要该账号的操作原地等待。目标平台同账号重复登录会踢掉旧会话，
-	// 审批链路持有此锁即可避免并发使用同一处理人账号时互相踢下线。
-	useMu    sync.Mutex
-	useLocks map[string]*sync.Mutex
+	// useMu 与 useSemaphores 是账号「使用中」并发控制：支持配置每个账号的并发槽容量。
+	// 默认容量为 1（严格互斥串行），当开启人员并发时可扩展为最大并发数（如 2~20），
+	// 允许多个并发任务复用同一个缓存的有效 SID 并发请求，消除排队等待。
+	useMu              sync.Mutex
+	useSemaphores      map[string]chan struct{}
+	accountConcurrency int
 }
 
 type Option func(*Manager)
@@ -372,30 +373,55 @@ func (m *Manager) accountLock(key string) *sync.Mutex {
 	return lock
 }
 
-// LockAccountUsage 占用某账号的会话（2026-09-11 用户裁决：当前人正在使用中就等别人用完再用）。
-// 返回释放函数；调用方在持有期间完成「读待办 → 审批 → 核验」的完整操作。
-// 同一账号的并发操作在此排队，避免重复登录把正在使用的会话踢下线。
-// 注意：持有期间调用方不得再对本账号做会话刷新以外的 getOrLogin，否则会自己锁死自己。
+// SetAccountConcurrency 设置全局或当前运行的人员并发度：<=1 为严格串行互斥，>1 为允许 N 个并发。
+func (m *Manager) SetAccountConcurrency(concurrency int) {
+	m.useMu.Lock()
+	defer m.useMu.Unlock()
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	m.accountConcurrency = concurrency
+	// 调整并发度时清空旧信号量池，后续按新并发容量动态创建
+	m.useSemaphores = map[string]chan struct{}{}
+}
+
+// AccountConcurrency 返回当前设置的人员并发度。
+func (m *Manager) AccountConcurrency() int {
+	m.useMu.Lock()
+	defer m.useMu.Unlock()
+	if m.accountConcurrency <= 0 {
+		return 1
+	}
+	return m.accountConcurrency
+}
+
+// LockAccountUsage 占用某账号的会话槽位。
+// 在串行模式下排队（容量=1），在人员并发模式下允许多条路径并发复用有效 SID（容量=N）。
 func (m *Manager) LockAccountUsage(account string) func() {
 	key := "use:" + normalizeAccount(account)
 	m.useMu.Lock()
-	if m.useLocks == nil {
-		m.useLocks = map[string]*sync.Mutex{}
+	if m.useSemaphores == nil {
+		m.useSemaphores = map[string]chan struct{}{}
 	}
-	lock, ok := m.useLocks[key]
-	if !ok {
-		lock = &sync.Mutex{}
-		m.useLocks[key] = lock
+	capacity := m.accountConcurrency
+	if capacity <= 0 {
+		capacity = 1
+	}
+	sem, ok := m.useSemaphores[key]
+	if !ok || cap(sem) != capacity {
+		sem = make(chan struct{}, capacity)
+		m.useSemaphores[key] = sem
 	}
 	m.useMu.Unlock()
-	// F-030/T03：账号锁等待结构化计时。同账号路径并发时，等待时长在此可见，
-	// 与目标接口耗时（network.log duration_s）严格分开，不能混为一谈。
+
 	started := time.Now()
-	lock.Lock()
+	sem <- struct{}{}
 	if waited := time.Since(started); waited > 100*time.Millisecond {
-		log.Printf("[session] 账号锁等待 account=%s waited=%s（同账号其他路径正在使用会话，串行排队中）", account, waited.Round(time.Millisecond))
+		log.Printf("[session] 账号锁等待 account=%s waited=%s（当前账号并发已达上限 %d，排队中）", account, waited.Round(time.Millisecond), capacity)
 	}
-	return lock.Unlock
+	return func() {
+		<-sem
+	}
 }
 
 func normalizeAccount(account string) string {

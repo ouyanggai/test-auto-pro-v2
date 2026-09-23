@@ -33,6 +33,9 @@ type CreateRunInput struct {
 	MaxConcurrency   *int
 	// PathDispatch 是本运行的计划内路径调度方式（serial / parallel）：来自启动弹窗的本次选择。
 	PathDispatch string
+	// AccountConcurrencyEnabled 与 AccountMaxConcurrency 控制会话管理器的人员并发度。
+	AccountConcurrencyEnabled bool
+	AccountMaxConcurrency     *int
 	// IdempotencyKey 非空时按（计划, 键）唯一约束幂等：同键重试返回已有运行，绝不创建第二份。
 	IdempotencyKey string
 	// PresetBreakpoints 是预置断点集合的原始 JSON：每条路径运行开始时重放同一预置。

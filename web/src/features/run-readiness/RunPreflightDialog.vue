@@ -85,9 +85,15 @@ async function runCheck() {
 const startStage = ref('')
 const pathDispatch = ref<'serial' | 'parallel'>('serial')
 const pathMaxConcurrency = ref<number>(2)
+const accountConcurrencyEnabled = ref<boolean>(true)
+const accountMaxConcurrency = ref<number>(5)
 const dispatchOptions = [
   { value: 'serial', title: '串行', description: '路径按顺序逐条运行' },
   { value: 'parallel', title: '并行', description: '多条路径同时运行，可设最大并发数' },
+]
+const accountConcurrencyOptions = [
+  { value: 'serial', title: '人员互斥串行', description: '同一处理人排队依次执行（严格串行）' },
+  { value: 'concurrent', title: '会话复用并发', description: '复用有效会话，多条路径可同时使用同一人员' },
 ]
 async function loadDispatchDefault(): Promise<void> {
   try {
@@ -117,6 +123,8 @@ async function startSelectedRun() {
       createUuid(),
       pathDispatch.value,
       pathDispatch.value === 'parallel' ? pathMaxConcurrency.value : undefined,
+      accountConcurrencyEnabled.value,
+      accountConcurrencyEnabled.value ? accountMaxConcurrency.value : undefined,
     )
     startStage.value = '启动完成，正在打开运行界面…'
     emit('update:show', false)
@@ -230,10 +238,37 @@ watch(() => props.show, (open) => {
               （2 ~ 20）
             </label>
           </div>
+
+          <p class="run-preflight__section-label">人员并发控制</p>
+          <div class="run-preflight__dispatch" role="radiogroup" aria-label="人员并发控制">
+            <button
+              v-for="option in accountConcurrencyOptions"
+              :key="option.value"
+              type="button"
+              class="run-preflight__card run-preflight__card--inline"
+              :class="{ 'run-preflight__card--active': (option.value === 'concurrent') === accountConcurrencyEnabled }"
+              role="radio"
+              :aria-checked="(option.value === 'concurrent') === accountConcurrencyEnabled"
+              @click="accountConcurrencyEnabled = (option.value === 'concurrent')"
+            >
+              <span class="run-preflight__card-title">{{ option.title }}</span>
+              <span class="run-preflight__card-desc">{{ option.description }}</span>
+            </button>
+            <label v-if="accountConcurrencyEnabled" class="run-preflight__concurrency">
+              人员最大并发
+              <input
+                v-model.number="accountMaxConcurrency"
+                type="number"
+                min="2"
+                max="20"
+                class="run-preflight__concurrency-input"
+              >
+              （2 ~ 20）
+            </label>
+          </div>
           <p class="run-preflight__muted">路线和配置对不上时会自动停下，不会硬跑。</p>
         </template>
       </template>
-
       <!-- 有阻塞：只说哪些路径、因为什么，点击直接跳去处理。 -->
       <template v-else-if="blockedPaths.length">
         <div class="run-preflight__verdict run-preflight__verdict--blocked">

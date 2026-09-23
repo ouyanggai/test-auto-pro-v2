@@ -42,7 +42,11 @@ module.exports = {
     host: '0.0.0.0',
     port: 19001,
     open: false,
-    hot: true
+    hot: true,
+    disableHostCheck: true,
+    headers: {
+      'Access-Control-Allow-Origin': '*'
+    }
   },
   css: {
     loaderOptions: {

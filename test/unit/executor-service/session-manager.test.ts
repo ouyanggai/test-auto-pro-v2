@@ -82,15 +82,22 @@ test('已关闭会话拒绝执行新命令', async () => {
   }
 })
 
-test('同账号并发创建被拒绝', async () => {
+test('同账号支持并发创建独立会话，达到并发上限后被拒绝', async () => {
   const browser = await launchHeadlessChromium()
   try {
-    const manager = new SessionManager(browser)
-    await manager.create('account-serial')
+    const manager = new SessionManager(browser, { maxAccountConcurrency: 2 })
+    const first = await manager.create('account-parallel')
+    const second = await manager.create('account-parallel')
+    assert.equal(first.status, 'ready')
+    assert.equal(second.status, 'ready')
+    assert.notEqual(first.sessionId, second.sessionId)
     await assert.rejects(
-      () => manager.create('account-serial'),
-      (error: Error) => error.message.includes('串行排队')
+      () => manager.create('account-parallel'),
+      (error: Error) => error.message.includes('当前活跃会话数已达上限')
     )
+    await manager.close(first.sessionId)
+    const third = await manager.create('account-parallel')
+    assert.equal(third.status, 'ready')
     await manager.closeAll()
   } finally {
     await browser.close().catch(() => undefined)
@@ -118,19 +125,19 @@ test('页面崩溃广播事件并释放会话', async () => {
   }
 })
 
-test('租约心跳保活，过期后只回收孤儿会话并释放同账号门禁', async () => {
+test('租约心跳保活，过期后只回收孤儿会话并释放同账号门禁配额', async () => {
   const browser = await launchHeadlessChromium()
   let now = 1000
   try {
-    const manager = new SessionManager(browser, { leaseMs: 10, now: () => now })
+    const manager = new SessionManager(browser, { leaseMs: 10, now: () => now, maxAccountConcurrency: 1 })
     const first = await manager.create('account-lease')
     now = 1009
     manager.reapExpired()
-    await assert.rejects(() => manager.create('account-lease'), (error: Error) => error.message.includes('串行排队'))
+    await assert.rejects(() => manager.create('account-lease'), (error: Error) => error.message.includes('当前活跃会话数已达上限'))
     manager.heartbeat(first.sessionId)
     now = 1018
     manager.reapExpired()
-    await assert.rejects(() => manager.create('account-lease'), (error: Error) => error.message.includes('串行排队'))
+    await assert.rejects(() => manager.create('account-lease'), (error: Error) => error.message.includes('当前活跃会话数已达上限'))
     now = 1029
     manager.reapExpired()
     assert.equal(first.status, 'closed')

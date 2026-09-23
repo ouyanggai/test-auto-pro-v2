@@ -23,8 +23,14 @@ const emit = defineEmits<{
 const iframe = ref<HTMLIFrameElement | null>(null)
 const sessionId = ref(createUuid())
 // 开发态 iframe 指向表单运行时 dev 服（0.0.0.0 监听）：跟随当前访问的 hostname，
-// 从其它机器打开页面时不会把运行时解析成访问者自己的 127.0.0.1。
-const iframeSource = computed(() => import.meta.env.DEV ? `http://${window.location.hostname}:19001/form-runtime/#/test-auto-form` : '/form-runtime/#/test-auto-form')
+// 当以 localhost 或 127.0.0.1 访问时，自动解析为局域网 IP 192.168.1.248，
+// 确保表单运行时对外发出的 Origin 与 220 目标网关配置一致。
+const iframeSource = computed(() => {
+  if (!import.meta.env.DEV) return '/form-runtime/#/test-auto-form'
+  const host = window.location.hostname
+  const resolvedHost = (host === 'localhost' || host === '127.0.0.1') ? '192.168.1.248' : host
+  return `http://${resolvedHost}:19001/form-runtime/#/test-auto-form`
+})
 const runtimeOrigin = computed(() => new URL(iframeSource.value, window.location.href).origin)
 const RUNTIME_LOAD_TIMEOUT_MS = 60_000
 const pending = new Map<string, { resolve: (payload: Record<string, unknown>) => void, reject: (error: Error) => void, timer?: number, cleanup: () => void }>()

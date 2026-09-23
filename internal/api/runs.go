@@ -31,7 +31,7 @@ func decodeRunBody(request *http.Request, target any) error {
 // RunOrchestrator 是运行主线的处理器的服务面：启动（模式与断点）、详情、放行命令、断点、暂停、停止、列表。
 type RunOrchestrator interface {
 	// StartRunWithPaths 按勾选路径集合启动（F-020）：多路径一次运行，路径串并与并发数来自启动弹窗本次选择。
-	StartRunWithPaths(ctx context.Context, planID uint64, pathIDs []uint64, mode model.RunMode, breakpoints []control.Breakpoint, idempotencyKey string, pathDispatch string, pathMaxConcurrency *int) (*service.RunStartDTO, error)
+	StartRunWithPaths(ctx context.Context, planID uint64, pathIDs []uint64, mode model.RunMode, breakpoints []control.Breakpoint, idempotencyKey string, pathDispatch string, pathMaxConcurrency *int, accountConcurrencyOpts ...any) (*service.RunStartDTO, error)
 	RunDetail(ctx context.Context, runID uint64) (*service.PathRunDetailDTO, error)
 	RunDetailByRunAndPathRun(ctx context.Context, runID, pathRunID uint64) (*service.PathRunDetailDTO, error)
 	// 控制端点以运行 ID 寻址；多路径运行必须携带路径运行身份（pathRunId），单路径可省略。
@@ -154,7 +154,9 @@ type startRunRequest struct {
 	PathDispatch string `json:"pathDispatch"`
 	// PathMaxConcurrency 是并行时的最大并发数（2~20）；串行时忽略。
 	PathMaxConcurrency *int `json:"pathMaxConcurrency"`
-	// IdempotencyKey 是本次启动的幂等键：同键重试返回同一次运行，绝不创建第二个运行。
+	// AccountConcurrencyEnabled 与 AccountMaxConcurrency 控制会话管理器的人员并发度。
+	AccountConcurrencyEnabled bool `json:"accountConcurrencyEnabled"`
+	AccountMaxConcurrency     *int `json:"accountMaxConcurrency"`
 	IdempotencyKey string `json:"idempotencyKey"`
 }
 
@@ -217,7 +219,7 @@ func handleStartRun(orchestrator RunOrchestrator) http.HandlerFunc {
 			}
 			breakpoints = append(breakpoints, bp)
 		}
-		result, err := orchestrator.StartRunWithPaths(request.Context(), body.PlanID, body.PathIDs, mode, breakpoints, body.IdempotencyKey, body.PathDispatch, body.PathMaxConcurrency)
+		result, err := orchestrator.StartRunWithPaths(request.Context(), body.PlanID, body.PathIDs, mode, breakpoints, body.IdempotencyKey, body.PathDispatch, body.PathMaxConcurrency, body.AccountConcurrencyEnabled, body.AccountMaxConcurrency)
 		if err != nil {
 			writeRunControlError(response, err)
 			return

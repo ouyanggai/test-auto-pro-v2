@@ -30,10 +30,9 @@ function fail (message) {
 }
 
 // git 只执行固定只读参数并返回文本；调用方负责保证参数来自清单，不接受任意输入。
-function git (root, args) {
-  return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
+function git (root, args, options = {}) {
+  return childProcess.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30000, ...options }).trim()
 }
-
 // gitRaw 与 git 相同，但不裁剪首尾空白。
 // porcelain 状态行的第一列就是「暂存区状态」，为空时是一个前导空格；
 // 用 git() 的 trim() 会把第一行的前导空格吃掉，导致把「未暂存的删除」误读成「已暂存的修改」。
@@ -130,17 +129,17 @@ function hasContentChanges () {
 
 // cloneAt 做一次干净克隆：先删残留目录，再 fetch 到临时目录并检出。
 // 不直接 clone --branch 是为了在同一处统一处理锁定的 commit（分支 HEAD 已前移时仍可复现）。
-function cloneAt (manifest, head) {
+function cloneAt (manifest, head, remoteOverride) {
   fs.rmSync(targetRoot, { recursive: true, force: true })
   fs.mkdirSync(targetRoot, { recursive: true })
+  const remote = remoteOverride || manifest.remote
   git(targetRoot, ['init', '--quiet'])
-  git(targetRoot, ['remote', 'add', 'origin', manifest.remote])
+  git(targetRoot, ['remote', 'add', 'origin', remote])
   git(targetRoot, ['fetch', '--quiet', '--depth', '1', 'origin', head])
   git(targetRoot, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'])
   git(targetRoot, ['branch', '--quiet', '--force', manifest.branch, 'HEAD'])
   removeNoise(targetRoot)
 }
-
 // assertNotConfigRuntime 挡住把 flow-source 指向 form-runtime 运行源码的误配置：
 // 两者都必须各自独立，跨用会让执行服务装载与表单运行时互相污染。
 function assertNotConfigRuntime () {
@@ -186,16 +185,66 @@ function stageFormMaking () {
   process.stdout.write('[OK] FormMaking 产物已从受控副本补齐\n')
 }
 
+function resolveRemoteCandidates (remote) {
+  const candidates = [remote]
+  // 内网 GitLab 在 Windows/Node 环境下若 SSH 密钥未加载，提供等价 HTTP 路径作为自动降级候选。
+  if (remote.startsWith('git@') && remote.includes(':')) {
+    const match = remote.match(/^git@([^:]+):(.+)$/)
+    if (match) {
+      candidates.push(`http://${match[1]}/${match[2]}`)
+    }
+  }
+  return candidates
+}
+
+// fetchRemoteLatestHEAD 尝试探测远端最新 HEAD。
+function fetchRemoteLatestHEAD (manifest) {
+  const candidates = resolveRemoteCandidates(manifest.remote)
+  for (const remote of candidates) {
+    try {
+      const output = childProcess.execFileSync('git', ['ls-remote', remote, `refs/heads/${manifest.branch}`], {
+        encoding: 'utf8',
+        timeout: 10000
+      }).trim()
+      if (output) {
+        const match = output.match(/^([0-9a-f]{40})\s+/)
+        if (match) return { head: match[1], remote }
+      }
+    } catch {
+      // 继续尝试下一候选
+    }
+  }
+  return null
+}
+
 function main () {
   const manifest = readManifest()
   assertNotConfigRuntime()
 
-  // HEAD 固定：远端分支前移不自动跟进，避免目标页面行为在无审查时漂移。
-  const head = manifest.head
+  // 自动检测并拉取远端最新代码：
+  // 当开启 EXECUTOR_PULL_LATEST=1 或传入 --pull-latest 时，自动探测远端对应分支最新 HEAD；
+  // 若探测成功则跟进最新 HEAD，若网络不可达则安全回落到清单锁定的版本。
+  const pullLatest = process.env.EXECUTOR_PULL_LATEST === '1' || process.argv.includes('--pull-latest')
+  let head = manifest.head
+  let targetRemote = manifest.remote
+
+  if (pullLatest) {
+    const remoteInfo = fetchRemoteLatestHEAD(manifest)
+    if (remoteInfo) {
+      if (remoteInfo.head !== head) {
+        process.stdout.write(`[GIT] 远端 ${manifest.branch} 分支发现新提交：${head.slice(0, 7)} -> ${remoteInfo.head.slice(0, 7)}\n`)
+      }
+      head = remoteInfo.head
+      targetRemote = remoteInfo.remote
+    } else {
+      process.stdout.write(`[GIT] 远端分支不可达，安全回退至清单锁定版本 ${head.slice(0, 7)}\n`)
+    }
+  }
+
   if (!/^[0-9a-f]{40}$/.test(String(head))) fail(`清单 head 必须是完整提交号：${head}`)
   if (!manifest.remote || !manifest.branch) fail('清单必须给出 remote 与 branch')
 
-  if (isCheckedOutAt(manifest, head)) {
+  if (isCheckedOutAt({ ...manifest, remote: targetRemote }, head)) {
     const digest = digestDirectory(targetRoot)
     writeMetadata(manifest, head, digest, 'unchanged')
     process.stdout.write(`[GIT] flow-source 已是最新 ${head.slice(0, 7)}（未变更）\n`)
@@ -206,9 +255,24 @@ function main () {
   // 这里不能用 ls-remote 按 SHA 探测（服务端只按 ref 过滤，已前移的提交会查不到，
   // 但按 SHA 直接 fetch 依然成立）。失败时给出明确原因，绝不静默留下半同步目录。
   try {
-    cloneAt(manifest, head)
+    cloneAt(manifest, head, targetRemote)
   } catch (error) {
-    fail(`从 ${manifest.remote} 同步提交 ${head} 失败：${String(error?.message ?? error)}`)
+    // 如果使用 targetRemote 失败，尝试候选降级
+    let cloned = false
+    const candidates = resolveRemoteCandidates(manifest.remote)
+    for (const altRemote of candidates) {
+      if (altRemote === targetRemote) continue
+      try {
+        cloneAt(manifest, head, altRemote)
+        cloned = true
+        break
+      } catch {
+        // 继续
+      }
+    }
+    if (!cloned) {
+      fail(`从 ${manifest.remote} 同步提交 ${head} 失败：${String(error?.message ?? error)}`)
+    }
   }
   const actual = git(targetRoot, ['rev-parse', 'HEAD'])
   if (actual !== head) fail(`检出提交不符：期望 ${head}，实际 ${actual}`)

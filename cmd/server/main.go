@@ -196,6 +196,7 @@ func main() {
 	runOrchestrationService := service.NewRunOrchestrationService(
 		planService, pathRepository, flowGraphService, historyWorkspaceStore,
 		runReadinessService, controlService, runStore, runStateService, logRouter, runConfig, pathConfigService, time.Now,
+		sessionManager,
 	)
 	// F-020 运行级调度 Worker：串行按序推进、并行按最大并发补位、单次定时启动一次性消费。
 	// 调度只做分配，目标写请求仍只由执行器经适配层发出；启动恢复依赖数据库状态，重启即续排。

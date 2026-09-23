@@ -1,6 +1,9 @@
 // 独立执行服务：健康检查 + 会话生命周期。
 // POST /runtime/session 只创建 BrowserContext，不导航；装载前必须先连转发通道。
 import http from 'node:http'
+import childProcess from 'node:child_process'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { launchHeadlessChromium, HEADLESS_LAUNCH_ARGS } from './browser.ts'
@@ -574,7 +577,34 @@ function nativeURL (origin: string, payload: Record<string, unknown>): string {
   return `${origin}#/flow/detail/${encodeURIComponent(instanceId)}?${params.toString()}`
 }
 
+async function ensureLatestFlowSource (): Promise<void> {
+  // 启动时自动检查并同步 rsh-flow-components 最新代码（可设置 EXECUTOR_DISABLE_AUTO_SYNC=1 禁用）
+  if (process.env.EXECUTOR_DISABLE_AUTO_SYNC === '1') return
+  const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const syncScript = path.join(serviceRoot, 'scripts', 'sync-flow-source.js')
+  const buildScript = path.join(serviceRoot, 'scripts', 'build-native-page.js')
+  try {
+    // 1. 同步远端最新分支，若有更新则拉取
+    childProcess.execFileSync(process.execPath, [syncScript, '--pull-latest'], {
+      cwd: serviceRoot,
+      encoding: 'utf8',
+      timeout: 60000,
+      stdio: 'inherit'
+    })
+    // 2. 检查 dist 是否需要根据更新后的源码重新构建
+    childProcess.execFileSync(process.execPath, [buildScript], {
+      cwd: serviceRoot,
+      encoding: 'utf8',
+      timeout: 300000,
+      stdio: 'inherit'
+    })
+  } catch (error) {
+    console.warn('[executor] 启动时自动同步 rsh-flow-components 告警（已回落到本地版本）：', (error as Error)?.message ?? error)
+  }
+}
+
 async function main (): Promise<void> {
+  await ensureLatestFlowSource()
   const port = listenPort()
   const unpacked = extractPageDist()
   const pageOrigin = await serveFlowPage(unpacked.distDir)

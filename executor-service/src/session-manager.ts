@@ -8,6 +8,7 @@ import type { CloseReason, ManagedSession } from './types.ts'
 export interface SessionManagerOptions {
   leaseMs?: number
   now?: () => number
+  maxAccountConcurrency?: number
 }
 
 export const SESSION_EVENTS = {
@@ -28,6 +29,7 @@ export class SessionManager {
   private readonly browser: Browser
   private readonly sessions = new Map<string, ManagedSession>()
   private readonly leaseMs: number
+  private readonly maxAccountConcurrency: number
   private readonly now: () => number
   readonly events = new EventEmitter()
 
@@ -35,6 +37,8 @@ export class SessionManager {
     this.browser = browser
     const configuredLeaseMs = options.leaseMs ?? Number(process.env.EXECUTOR_SESSION_LEASE_MS || 90000)
     this.leaseMs = Number.isFinite(configuredLeaseMs) && configuredLeaseMs > 0 ? configuredLeaseMs : 90000
+    const configuredAccountConcurrency = options.maxAccountConcurrency ?? Number(process.env.EXECUTOR_ACCOUNT_CONCURRENCY || 20)
+    this.maxAccountConcurrency = Number.isFinite(configuredAccountConcurrency) && configuredAccountConcurrency > 0 ? configuredAccountConcurrency : 20
     this.now = options.now ?? Date.now
   }
 
@@ -42,12 +46,16 @@ export class SessionManager {
   async create (accountKey: string): Promise<ManagedSession> {
     const key = accountKey.trim()
     if (!key) throw new Error('创建会话缺少账号唯一键')
-    // 创建前同步回收已过期租约，避免定时器尚未 tick 时旧会话仍阻塞同账号。
+    // 创建前同步回收已过期租约，避免定时器尚未 tick 时旧会话仍占用配额。
     this.reapExpired()
+    let activeCountForAccount = 0
     for (const existing of this.sessions.values()) {
       if (existing.accountKey === key && (existing.status === 'creating' || existing.status === 'ready')) {
-        throw new Error(`账号 ${key} 已有未关闭会话 ${existing.sessionId}，同一账号必须由 Go 串行排队执行`)
+        activeCountForAccount++
       }
+    }
+    if (activeCountForAccount >= this.maxAccountConcurrency) {
+      throw new Error(`账号 ${key} 当前活跃会话数已达上限（${activeCountForAccount}/${this.maxAccountConcurrency}），请等待前序会话释放`)
     }
     const now = this.now()
     const session: ManagedSession = {

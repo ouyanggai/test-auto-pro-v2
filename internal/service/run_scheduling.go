@@ -87,7 +87,8 @@ type RunPathSummaryDTO struct {
 // 由调度器在上一轮计划运行终态后放行；并行计划不受限，直接开跑。
 func (s *RunOrchestrationService) StartRunWithPaths(ctx context.Context, planID uint64, pathIDs []uint64,
 	mode model.RunMode, presets []control.Breakpoint, idempotencyKey string,
-	pathDispatch string, pathMaxConcurrency *int) (*RunStartDTO, error) {
+	pathDispatch string, pathMaxConcurrency *int,
+	accountConcurrencyOpts ...any) (*RunStartDTO, error) {
 	if !validRunModes()[mode] {
 		return nil, &RunOrchestrationError{Kind: RunOrchestrationInvalid, Message: "运行模式不正确"}
 	}
@@ -136,6 +137,35 @@ func (s *RunOrchestrationService) StartRunWithPaths(ctx context.Context, planID 
 	} else if pathDispatch == "parallel" {
 		capacity = 1
 	}
+	// 人员并发控制：是否启用人员并发与最大人员并发度（默认2~20，默认5）
+	accountConcurrencyEnabled := false
+	var accountMaxConcurrency *int
+	for _, opt := range accountConcurrencyOpts {
+		switch v := opt.(type) {
+		case bool:
+			accountConcurrencyEnabled = v
+		case *int:
+			accountMaxConcurrency = v
+		case int:
+			val := v
+			accountMaxConcurrency = &val
+		}
+	}
+	if accountConcurrencyEnabled {
+		limit := 5
+		if accountMaxConcurrency != nil && *accountMaxConcurrency >= 2 && *accountMaxConcurrency <= 20 {
+			limit = *accountMaxConcurrency
+		}
+		accountMaxConcurrency = &limit
+		if s.sessions != nil {
+			s.sessions.SetAccountConcurrency(limit)
+		}
+	} else {
+		accountMaxConcurrency = nil
+		if s.sessions != nil {
+			s.sessions.SetAccountConcurrency(1)
+		}
+	}
 	presetJSON, err := json.Marshal(presets)
 	if err != nil {
 		return nil, err
@@ -143,6 +173,7 @@ func (s *RunOrchestrationService) StartRunWithPaths(ctx context.Context, planID 
 	created, pathRuns, err := s.store.CreateRunWithPaths(ctx, repository.CreateRunInput{
 		PlanID: planID, ExecutionPathIDs: pathIDs, Mode: mode,
 		Trigger: model.RunTriggerManual, MaxConcurrency: &capacity, PathDispatch: pathDispatch,
+		AccountConcurrencyEnabled: accountConcurrencyEnabled, AccountMaxConcurrency: accountMaxConcurrency,
 		IdempotencyKey: idempotencyKey, PresetBreakpoints: string(presetJSON),
 	})
 	if err != nil {

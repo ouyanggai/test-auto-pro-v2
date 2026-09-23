@@ -438,6 +438,8 @@ export function startRun(
   idempotencyKey = '',
   pathDispatch: 'serial' | 'parallel' = 'serial',
   pathMaxConcurrency?: number,
+  accountConcurrencyEnabled?: boolean,
+  accountMaxConcurrency?: number,
 ): Promise<RunStartResult> {
   return requestOnce<RunStartResult>(`/api/plans/${encodeURIComponent(planId)}/runs`, {
     method: 'POST',
@@ -445,6 +447,8 @@ export function startRun(
     body: JSON.stringify({
       planId: Number(planId), pathIds: pathIds.map(Number), mode, breakpoints, idempotencyKey,
       pathDispatch, pathMaxConcurrency: pathDispatch === 'parallel' ? (pathMaxConcurrency ?? 2) : null,
+      accountConcurrencyEnabled: !!accountConcurrencyEnabled,
+      accountMaxConcurrency: accountConcurrencyEnabled ? (accountMaxConcurrency ?? 5) : null,
     }),
   })
 }
