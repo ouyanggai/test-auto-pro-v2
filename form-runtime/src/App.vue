@@ -247,6 +247,12 @@ export default {
         }
 		await this.refresh(loadContext)
 		this.assertActiveSession(loadContext)
+        // 最终确认一次数据已完整落入 FormMaking，避免中间异步联动清空字段
+        const form = this.form()
+        if (form && typeof form.setData === 'function') {
+          restoreIntendedValues(this.values, this.savedValues)
+          await form.setData(clonePlain(this.values))
+        }
         this.savedValues = clonePlain(this.values)
         this.loading = false
         const loadResult = {
@@ -409,8 +415,6 @@ export default {
       const restored = restoreIntendedValues(this.values, this.savedValues)
       if (restored) {
         await form.setData(clonePlain(this.values))
-        const host = this.$refs.formHost
-        if (host) host.editData = clonePlain(this.values)
         await this.$nextTick()
       }
       this.changedFields = []
