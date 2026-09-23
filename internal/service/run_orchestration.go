@@ -1329,18 +1329,21 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			// 否则结束节点不在事实图里、拿不到运行态，完成时也就不会点亮成绿色。
 			projected = ensureVirtualEndNode(projected)
 			if projectionOK {
+				projected = s.applyConfiguredAuditorsToGraph(ctx, run.PlanID, pathRun.ExecutionPathID, projected)
 				factGraph = projected
 				detail.DynamicGraph = runFlowGraphDTO(projected)
 				detail.DynamicGraphBindable = true
 			} else if isUsableRunGraphModel(projected) {
 				// 即使与静态图唯一绑定不完全匹配，只要加签后动态图自身拓扑合法连通，
 				// 就必须展示动态图，绝不退回静态计划图导致加签节点消失。
+				projected = s.applyConfiguredAuditorsToGraph(ctx, run.PlanID, pathRun.ExecutionPathID, projected)
 				factGraph = projected
 				detail.DynamicGraph = runFlowGraphDTO(projected)
 				detail.DynamicGraphBindable = true
 			} else if len(graph.Nodes) > 0 {
 				// 结构无法唯一绑定且动态图不合法时才按计划结构收口。
 				endGraph := ensureVirtualEndNode(graph)
+				endGraph = s.applyConfiguredAuditorsToGraph(ctx, run.PlanID, pathRun.ExecutionPathID, endGraph)
 				detail.DynamicGraph = runFlowGraphDTO(endGraph)
 				detail.DynamicGraphBindable = true
 				factGraph = endGraph
@@ -1360,6 +1363,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		// 没有运行期结构读取能力时，直接使用计划结构并补稳定结束节点：
 		// 结束节点在运行中就要显示在最后，完成时再由节点运行态把它点亮为绿色。
 		endGraph := ensureVirtualEndNode(graph)
+		endGraph = s.applyConfiguredAuditorsToGraph(ctx, run.PlanID, pathRun.ExecutionPathID, endGraph)
 		detail.DynamicGraph = runFlowGraphDTO(endGraph)
 		detail.DynamicGraphBindable = true
 		// factGraph 同步换成补了结束节点的图，结束节点才能拿到运行态（绿色高亮）。
@@ -1555,6 +1559,48 @@ func projectRuntimeGraph(staticGraph, dynamicGraph model.FlowGraph, insertedNode
 	// entry=当前节点，BFS 只覆盖 26 个节点里的 18 个）。这里改用「无入边的结构根」，与静态计划图口径一致。
 	projected.EntryNodeIDs = graphRootIDs(projected.Nodes, projected.Edges)
 	return projected, true
+}
+
+// applyConfiguredAuditorsToGraph 将已配置确定的处理人名单覆盖到图节点，让等候执行与运行中的自选节点卡片精准显示已选人员。
+func (s *RunOrchestrationService) applyConfiguredAuditorsToGraph(ctx context.Context, planID, pathID uint64, graph model.FlowGraph) model.FlowGraph {
+	if s.pathNodes == nil || len(graph.Nodes) == 0 {
+		return graph
+	}
+	configured, err := s.pathNodes.Get(ctx, planID, pathID)
+	if err != nil {
+		return graph
+	}
+	namesByToken := make(map[string][]string)
+	for _, group := range configured.Groups {
+		for _, node := range group.Nodes {
+			for _, person := range node.Persons {
+				if len(person.Selected) > 0 {
+					selectedNames := make([]string, 0, len(person.Selected))
+					for _, id := range person.Selected {
+						for _, opt := range person.Options {
+							if opt.Value == id {
+								selectedNames = append(selectedNames, opt.Label)
+								break
+							}
+						}
+					}
+					if len(selectedNames) > 0 {
+						namesByToken[node.Key] = selectedNames
+					}
+				}
+			}
+		}
+	}
+	if len(namesByToken) == 0 {
+		return graph
+	}
+	for i := range graph.Nodes {
+		token := analyzer.PathConfigNodeToken(graph.Nodes[i].ID)
+		if names, ok := namesByToken[token]; ok && len(names) > 0 {
+			graph.Nodes[i].AuditPeople = names
+		}
+	}
+	return graph
 }
 
 const virtualRunEndNodeID = "__run_virtual_end__"
