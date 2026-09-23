@@ -105,6 +105,11 @@ func (s *FlowGraphService) GetRuntime(ctx context.Context, planID uint64, instan
 	if snapshot.Tree == nil {
 		return model.FlowGraph{}, ErrTargetFlowStructureEmpty
 	}
+	// 加签重建后目标返回的分支数组顺序可能不稳定；与计划静态模板树对齐分支顺序，
+	// 确保画布上的左右分支排列与计划图及目标平台界面完全一致，杜绝左右颠倒。
+	if staticSnap, snapErr := s.target.FlowTreeSnapshot(ctx, plan.Account, plan.FlowSource, plan.TargetObjectID); snapErr == nil && staticSnap.Tree != nil {
+		target.AlignProxyTreeBranches(staticSnap.Tree, snapshot.Tree)
+	}
 	nodes, edges, warnings, err := s.analyzer.Analyze(snapshot.Tree)
 	if err != nil {
 		return model.FlowGraph{}, err

@@ -146,3 +146,95 @@ func TestValidateAddSignCurrentNode(t *testing.T) {
 		t.Fatalf("无关节点不匹配必须报错阻断")
 	}
 }
+// TestBuildProxyRemapReorderedParallelBranches 验证加签导致新树并行分支颠倒时，重映射依然准确对齐，绝不张冠李戴。
+func TestBuildProxyRemapReorderedParallelBranches(t *testing.T) {
+	// 旧树：分支0是资金副主任，分支1是张政
+	oldTree := &target.FlowNodeTemplate{
+		ID: "old-root", Type: "start",
+		Child: &target.FlowNodeTemplate{
+			ID: "old-p", Type: "parallel",
+			ParallelNodes: []target.FlowBranchTemplate{
+				{
+					ID:   "old-b2",
+					Name: "节点2",
+					Sort: 1,
+					Child: &target.FlowNodeTemplate{
+						ID:   "old-zj",
+						Name: "财资部-资金副主任",
+						Type: "common",
+					},
+				},
+				{
+					ID:   "old-b1",
+					Name: "节点1",
+					Sort: 1,
+					Child: &target.FlowNodeTemplate{
+						ID:   "old-zz",
+						Name: "张政",
+						Type: "common",
+					},
+				},
+			},
+		},
+	}
+
+	// 新树：目标平台加签后把张政排到了第0位，资金副主任排到了第1位，且张政后插入了宋恺
+	newTree := &target.FlowNodeTemplate{
+		ID: "new-root", Type: "start",
+		Child: &target.FlowNodeTemplate{
+			ID: "new-p", Type: "parallel",
+			ParallelNodes: []target.FlowBranchTemplate{
+				{
+					ID:   "new-b1",
+					Name: "节点1",
+					Sort: 1,
+					Child: &target.FlowNodeTemplate{
+						ID:   "new-zz",
+						Name: "张政",
+						Type: "common",
+						Child: &target.FlowNodeTemplate{
+							ID:   "new-sign",
+							Name: "宋恺",
+							Type: "common",
+						},
+					},
+				},
+				{
+					ID:   "new-b2",
+					Name: "节点2",
+					Sort: 1,
+					Child: &target.FlowNodeTemplate{
+						ID:   "new-zj",
+						Name: "财资部-资金副主任",
+						Type: "common",
+					},
+				},
+			},
+		},
+	}
+
+	executor := &Executor{target: remapTreeTarget{tree: newTree}}
+	runCtx := RunContext{
+		FlowTree: oldTree,
+		Nodes: map[string]NodeInfo{
+			"k_zj": {TargetNodeID: "old-zj", Name: "财资部-资金副主任"},
+			"k_zz": {TargetNodeID: "old-zz", Name: "张政"},
+		},
+	}
+
+	remap, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new", "old-zz")
+	if err != nil {
+		t.Fatalf("BuildProxyRemap() error = %v", err)
+	}
+
+	// 核心断言：必须准确对齐，绝对不能颠倒
+	if got := remap.NodeIDs["old-zj"]; got != "new-zj" {
+		t.Errorf("资金副主任应映射为 new-zj，实际为 %q", got)
+	}
+	if got := remap.NodeIDs["old-zz"]; got != "new-zz" {
+		t.Errorf("张政应映射为 new-zz，实际为 %q", got)
+	}
+	if len(remap.InsertedHumanNodeIDs) != 1 || remap.InsertedHumanNodeIDs[0] != "new-sign" {
+		t.Errorf("新插入加签节点应为 new-sign，实际为 %v", remap.InsertedHumanNodeIDs)
+	}
+}

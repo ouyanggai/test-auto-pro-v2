@@ -50,6 +50,10 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 	if newTree == nil {
 		return ProxyRemap{}, fmt.Errorf("加签后的流程代理树为空")
 	}
+	// 关键对齐：目标平台加签后返回的新树 parallelNodes/conditionNodes 切片顺序可能不稳定（如刚修改的分支被排到首位）。
+	// 在提取结构路径前，必须将新树的分支顺序恢复为与加签前旧树严格对齐，
+	// 保证各分支序号不变、结构路径不变，杜绝不同分支同类型节点发生张冠李戴对调。
+	target.AlignProxyTreeBranches(runCtx.FlowTree, newTree)
 	oldPaths, oldTypes, err := proxyTreeFacts(runCtx.FlowTree)
 	if err != nil {
 		return ProxyRemap{}, fmt.Errorf("加签前流程树结构不可证明：%w", err)
