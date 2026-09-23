@@ -117,3 +117,32 @@ func TestBuildProxyRemapRejectsDuplicateNodeIdentity(t *testing.T) {
 		t.Fatalf("BuildProxyRemap() error = %v, want unprovable-structure failure", err)
 	}
 }
+// TestValidateAddSignCurrentNode 验证常规线性加签精确匹配、并行网关分流祖先放行以及不匹配阻断。
+func TestValidateAddSignCurrentNode(t *testing.T) {
+	remap := ProxyRemap{
+		GraphNodeTypes: map[string]string{
+			"p-gateway": "parallel",
+			"task-a":    "common",
+			"task-b":    "common",
+			"other":     "common",
+		},
+		GraphEdges: map[string][]GraphEdgeInfo{
+			"p-gateway": {{Target: "task-a"}, {Target: "task-b"}},
+		},
+	}
+
+	// 1. 常规精确匹配通过
+	if err := ValidateAddSignCurrentNode("task-a", "task-a", remap); err != nil {
+		t.Fatalf("精确匹配不应报错：%v", err)
+	}
+
+	// 2. 并行网关场景：响应当前节点为并行网关，映射锚点为分支子节点，应放行
+	if err := ValidateAddSignCurrentNode("p-gateway", "task-a", remap); err != nil {
+		t.Fatalf("并行祖先网关不应报错：%v", err)
+	}
+
+	// 3. 不匹配且不是并行祖先：应报错阻断
+	if err := ValidateAddSignCurrentNode("other", "task-a", remap); err == nil {
+		t.Fatalf("无关节点不匹配必须报错阻断")
+	}
+}

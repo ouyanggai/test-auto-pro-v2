@@ -398,3 +398,43 @@ func cloneNextNodeAuditors(input map[string][]target.NextAuditor) map[string][]t
 	}
 	return result
 }
+// ValidateAddSignCurrentNode 校验加签写响应返回的当前节点与锚点在新树中的映射是否一致。
+//
+// 业务规则与为什么这样处理：
+// 1. 普通线性审批流中，加签将新节点插入到当前锚点之后，锚点本身仍是当前待办节点，两节点 ID 必须严格相等；
+// 2. 并行分支场景中，目标平台在实例主记录（t_flow_instance）上返回的 currentNodeProxyId 为并行网关节点
+//    （executeNodeType 为 parallel），而真实的加签锚点处于该并行网关分流的子分支上。若响应当前节点为
+//    并行网关且能正向到达映射后的锚点节点，属目标平台在并行网关下的合法状态，不判定为不一致。
+func ValidateAddSignCurrentNode(newCurrentNodeID, mappedCurrentID string, remap ProxyRemap) error {
+	newCurrentNodeID = strings.TrimSpace(newCurrentNodeID)
+	mappedCurrentID = strings.TrimSpace(mappedCurrentID)
+	if newCurrentNodeID == "" || mappedCurrentID == "" {
+		return nil
+	}
+	if newCurrentNodeID == mappedCurrentID {
+		return nil
+	}
+	// 并行网关分流场景兼容：响应节点为并行网关且能正向到达映射锚点
+	if strings.EqualFold(strings.TrimSpace(remap.GraphNodeTypes[newCurrentNodeID]), "parallel") {
+		visited := map[string]bool{}
+		forwardReachableInGraphEdges(newCurrentNodeID, mappedCurrentID, remap.GraphEdges, visited)
+		if visited[mappedCurrentID] {
+			return nil
+		}
+	}
+	return fmt.Errorf("加签响应当前节点 %q 与结构映射节点 %q 不一致", newCurrentNodeID, mappedCurrentID)
+}
+
+// forwardReachableInGraphEdges 沿边表做只读可达性遍历。
+func forwardReachableInGraphEdges(from, target string, edges map[string][]GraphEdgeInfo, visited map[string]bool) {
+	if from == "" || visited[from] {
+		return
+	}
+	visited[from] = true
+	if from == target {
+		return
+	}
+	for _, edge := range edges[from] {
+		forwardReachableInGraphEdges(strings.TrimSpace(edge.Target), target, edges, visited)
+	}
+}

@@ -1334,12 +1334,10 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 			remap, remapErr = s.steps.RemapProxyTreeForRun(ctx, session.runCtx, proxyID, insertAnchor)
 		}
 		if remapErr == nil && newCurrentNodeID != "" && insertAnchor != "" {
-			// 写后当前节点应当就是锚点在新树里的映射：加签把新审批节点插在锚点之后，锚点本身
-			// 仍是当前待办节点，只是换了新 ID。用真实锚点核对，才能证明整棵树重绑定正确。
+			// 写后当前节点应当就是锚点在新树里的映射（或并行网关场景下为分流到锚点的并行祖先）：
+			// 加签把新审批节点插在锚点之后，锚点本身仍是当前待办节点，只是换了新 ID。
 			mappedCurrentID := remap.NodeIDs[insertAnchor]
-			if strings.TrimSpace(mappedCurrentID) != newCurrentNodeID {
-				remapErr = fmt.Errorf("加签响应当前节点 %q 与结构映射节点 %q 不一致", newCurrentNodeID, mappedCurrentID)
-			}
+			remapErr = step.ValidateAddSignCurrentNode(newCurrentNodeID, mappedCurrentID, remap)
 		}
 		if remapErr != nil {
 			// 加签已经成功但新树无法证明对应关系：禁止把旧树交给下一步，
