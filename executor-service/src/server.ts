@@ -45,6 +45,7 @@ interface RuntimeSession {
   loadMode: string
   instanceId: string
   forwardPostscriptRequired: boolean
+  formValidationError?: string
   formBefore: Record<string, unknown>
 }
 
@@ -1105,6 +1106,40 @@ async function main (): Promise<void> {
               if (action === 'approve' || action === 'reject') {
                 await autoConfirmMessageBox(session.page)
               }
+              // 提交/重新提交/审批时，等待渲染周期并捕获页面表单校验错误
+              if (action === 'submit' || action === 'resubmit' || action === 'approve') {
+                const validationErrors = await session.page.evaluate(() => {
+                  const errors: string[] = []
+                  const items = Array.from(document.querySelectorAll('.el-form-item.is-error, .sub-form-item.is-error'))
+                  for (const item of items) {
+                    const labelEl = item.querySelector('.el-form-item__label')
+                    const errEl = item.querySelector('.el-form-item__error')
+                    const label = (labelEl?.textContent || '').trim().replace(/[*：:]/g, '')
+                    const msg = (errEl?.textContent || '').trim()
+                    if (label && msg) errors.push(`${label}（${msg}）`)
+                    else if (label) errors.push(`${label}未填写`)
+                    else if (msg) errors.push(msg)
+                  }
+                  const tableCells = Array.from(document.querySelectorAll('.el-table__row td.is-error, .el-table__row .is-error'))
+                  for (const cell of tableCells) {
+                    const errEl = cell.querySelector('.el-form-item__error')
+                    const td = cell.closest('td')
+                    const table = cell.closest('table')
+                    const colIdx = td?.cellIndex
+                    const th = colIdx != null && table ? table.querySelectorAll('th')?.[colIdx] : null
+                    const colName = (th?.textContent || '').trim().replace(/[*：:]/g, '')
+                    const rowIdx = (cell.closest('tr')?.rowIndex ?? 0)
+                    const msg = (errEl?.textContent || '').trim() || '未填写'
+                    if (colName) errors.push(`明细第${rowIdx}行【${colName}】（${msg}）`)
+                  }
+                  return Array.from(new Set(errors))
+                }).catch(() => [])
+                if (validationErrors.length > 0) {
+                  session.formValidationError = validationErrors.join('、')
+                } else {
+                  session.formValidationError = undefined
+                }
+              }
             }
             const verdict = readOnly
               ? { status: 'success' as const, requestTrace: [] }
@@ -1115,6 +1150,7 @@ async function main (): Promise<void> {
                 hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000),
                 idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),
                 forwardPostscriptRequired: session.forwardPostscriptRequired,
+                formValidationError: session.formValidationError,
                 gate: async () => {
                   if (!session.choicePending) return true
                   // 选择继续未在窗口内到达（Go 侧放弃闭环）：放行判定，让完成检测按目标拒绝收口。

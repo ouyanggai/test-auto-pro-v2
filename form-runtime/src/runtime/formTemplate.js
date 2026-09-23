@@ -206,6 +206,10 @@ export async function captureFormValues (form, validate) {
     try {
       await form.getData(true)
     } catch (_) {
+      const fieldErrors = collectFormValidationErrors()
+      if (fieldErrors.length > 0) {
+        throw new Error(`请先完成表单中的必填项：${fieldErrors.join('、')}`)
+      }
       throw new Error('请先完成表单中的必填项')
     }
   }
@@ -282,8 +286,8 @@ export function formValuesFingerprint (values) {
 // 再重放原模板声明的 onChange 联动；无法唯一匹配时产生阻断问题，绝不猜测绑定值。
 
 const OPTION_WIDGET_TYPES = new Set(['select', 'radio', 'checkbox', 'cascader'])
-// 子表单是唯一把行数组写进模型值的容器；grid/report/table/tabs 等只是布局容器，不改变取值路径。
-const VALUE_GROUP_TYPES = new Set(['subform'])
+// 子表单与动态表格是把行数组写进模型值的容器；grid/report/tabs 等只是布局容器，不改变取值路径。
+const VALUE_GROUP_TYPES = new Set(['subform', 'table'])
 // 目标约定：模型以 _flow 结尾的附件组件承载"关联流程回传的文件"。配置阶段子流程不会运行，
 // 这些组件永远不会有内容，按宿主联动终态隐藏并计入隐藏统计，避免误导用户填写。
 const RELATED_FLOW_ATTACHMENT_SUFFIX = '_flow'
@@ -301,6 +305,7 @@ export function optionFieldDescriptors (template) {
       const model = String(component && component.model || '').trim()
       if (VALUE_GROUP_TYPES.has(type)) {
         visit(component.list, model || group)
+        visit(component.tableColumns, model || group)
         continue
       }
       const options = (component && component.options) || {}
@@ -410,7 +415,7 @@ function optionEntries (values, descriptor) {
   const rows = values[descriptor.group]
   if (!Array.isArray(rows)) return []
   return rows.map((row, index) => (row && typeof row === 'object'
-    ? { path: descriptor.group + '.' + descriptor.model + '[' + index + ']', container: row }
+    ? { path: descriptor.group + '.' + descriptor.model + '[' + index + ']', formPath: descriptor.group + '.' + index + '.' + descriptor.model, container: row }
     : null)).filter(Boolean)
 }
 
@@ -436,9 +441,13 @@ function normalizeLiveOptionLabels (descriptor, options) {
 
 // fieldOptions 读取控件当前真实选项：优先 FormMaking 公共选项 API（getOptionData 深拷贝，
 // 异步刷新后总是最新），静态选项回落模板声明，最后才是包装层组件引用，避免空选项误判。
-function fieldOptions (form, descriptor) {
+function fieldOptions (form, descriptor, entryPath) {
   try {
-    const options = form && typeof form.getOptionData === 'function' ? form.getOptionData(descriptor.model) : null
+    const key = entryPath || descriptor.model
+    let options = form && typeof form.getOptionData === 'function' ? form.getOptionData(key) : null
+    if (!Array.isArray(options) || options.length === 0) {
+      options = form && typeof form.getOptionData === 'function' ? form.getOptionData(descriptor.model) : null
+    }
     if (Array.isArray(options) && options.length > 0) return normalizeLiveOptionLabels(descriptor, options)
   } catch (_) {
     // 字段实例尚未完成挂载时静默回落，不能中断只读历史回放。
@@ -822,6 +831,69 @@ export async function replayFieldChangeEvents (form, fields) {
 function formItemContext (form, field) {
   const context = form?.formItemContexts?.[field]
   return Array.isArray(context) ? context[0] : context
+}
+// collectFormValidationErrors 提取当前页面上 Element UI 标记的未通过校验字段及错误提示。
+export function collectFormValidationErrors () {
+  if (typeof document === 'undefined') return []
+  const errors = []
+  const items = Array.from(document.querySelectorAll('.el-form-item.is-error, .sub-form-item.is-error'))
+  for (const item of items) {
+    const labelEl = item.querySelector('.el-form-item__label')
+    const errEl = item.querySelector('.el-form-item__error')
+    const label = (labelEl?.textContent || '').trim().replace(/[*：:]/g, '')
+    const msg = (errEl?.textContent || '').trim()
+    if (label && msg) errors.push(`${label}（${msg}）`)
+    else if (label) errors.push(`${label}未填写`)
+    else if (msg) errors.push(msg)
+  }
+  const tableCells = Array.from(document.querySelectorAll('.el-table__row td.is-error, .el-table__row .is-error'))
+  for (const cell of tableCells) {
+    const errEl = cell.querySelector('.el-form-item__error')
+    const td = cell.closest('td')
+    const table = cell.closest('table')
+    const colIdx = td?.cellIndex
+    const th = colIdx != null && table ? table.querySelectorAll('th')?.[colIdx] : null
+    const colName = (th?.textContent || '').trim().replace(/[*：:]/g, '')
+    const rowIdx = (cell.closest('tr')?.rowIndex ?? 0)
+    const msg = (errEl?.textContent || '').trim() || '未填写'
+    if (colName) errors.push(`明细第${rowIdx}行【${colName}】（${msg}）`)
+  }
+  return Array.from(new Set(errors))
+}
+
+// restoreIntendedValues 在联动执行后恢复原本非空但被模板脚本（如合同变更）误清空的字段意图值。
+export function restoreIntendedValues (liveValues, intendedValues) {
+  if (!liveValues || typeof liveValues !== 'object' || !intendedValues || typeof intendedValues !== 'object') return false
+  let changed = false
+  for (const key of Object.keys(intendedValues)) {
+    const intended = intendedValues[key]
+    const live = liveValues[key]
+    if (Array.isArray(intended)) {
+      if (Array.isArray(live)) {
+        for (let i = 0; i < intended.length && i < live.length; i++) {
+          if (intended[i] && typeof intended[i] === 'object' && live[i] && typeof live[i] === 'object') {
+            for (const subKey of Object.keys(intended[i])) {
+              const intendedSub = intended[i][subKey]
+              const liveSub = live[i][subKey]
+              if (intendedSub !== '' && intendedSub !== null && intendedSub !== undefined &&
+                  (liveSub === '' || liveSub === null || liveSub === undefined)) {
+                live[i][subKey] = clonePlain(intendedSub)
+                changed = true
+              }
+            }
+          }
+        }
+      } else if (intended.length > 0) {
+        liveValues[key] = clonePlain(intended)
+        changed = true
+      }
+    } else if (intended !== '' && intended !== null && intended !== undefined &&
+               (live === '' || live === null || live === undefined)) {
+      liveValues[key] = clonePlain(intended)
+      changed = true
+    }
+  }
+  return changed
 }
 
 // formItemContextEntries 展平子表单可能生成的同名字段上下文，并保留根模型路径。

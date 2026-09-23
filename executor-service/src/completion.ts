@@ -41,6 +41,7 @@ export interface CompletionInput {
   hardTimeoutMs: number
   idleWindowMs: number
   forwardPostscriptRequired?: boolean
+  formValidationError?: string
   gate?: () => Promise<boolean>
   writeGate?: WriteGate
 }
@@ -183,6 +184,9 @@ function finalize (input: CompletionInput, entries: TraceEntry[]): CompletionRes
     : []
   if (!expectedPath) return { status: 'failed', message: `动作 ${input.action} 没有登记期望写端点`, requestTrace }
   if (expectedEntries.length === 0) {
+    if (input.formValidationError) {
+      return { status: 'failed', message: `表单数据缺失无法发起请求，请检查表单数据（${input.formValidationError}）`, requestTrace }
+    }
     if (allWriteEntries.length > 0) {
       return { status: 'failed', message: `动作未调用期望写端点 ${expectedPath}，实际调用了 ${allWriteEntries.map(entry => entry.url).join('、')}`, requestTrace }
     }

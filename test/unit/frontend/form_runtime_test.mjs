@@ -9,7 +9,7 @@ const runtimeFrameSource = fs.readFileSync(new URL('../../../web/src/features/pa
 const pathConfigurationViewSource = fs.readFileSync(new URL('../../../web/src/views/PlanPathConfigurationView.vue', import.meta.url), 'utf8')
 const registeredRuntimeComponentNames = [...runtimeSource.matchAll(/name:\s*['"]([^'"]+)['"]\s*,\s*component:/g)].map(match => match[1])
 process.env.VUE_APP_TARGET_COMPONENT_NAMES = JSON.stringify(registeredRuntimeComponentNames)
-const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } = await import('../../../form-runtime/src/runtime/formTemplate.js')
+const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, optionFieldDescriptors, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents, restoreIntendedValues } = await import('../../../form-runtime/src/runtime/formTemplate.js')
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
@@ -1238,4 +1238,40 @@ test('表单值指纹按键字典序稳定，键顺序不同不算改动', () =>
   const right = { a: { x: '施工类', y: [1, 2] }, b: 1 }
   assert.equal(formValuesFingerprint(left), formValuesFingerprint(right))
   assert.notEqual(formValuesFingerprint(left), formValuesFingerprint({ ...left, b: 2 }))
+})
+test('restoreIntendedValues 自动恢复被联动脚本误清空的子表单及主表非空意图值', () => {
+  const intended = {
+    contractObj: '{"id":"c1"}',
+    collectionDetailsVoList: [
+      { businessType: '001', receivingAccount: '141000240012019004817', realityMoney: 3 },
+    ],
+  }
+  const live = {
+    contractObj: '{"id":"c1"}',
+    collectionDetailsVoList: [
+      { businessType: '001', receivingAccount: '', realityMoney: 3 },
+    ],
+  }
+  const changed = restoreIntendedValues(live, intended)
+  assert.equal(changed, true)
+  assert.equal(live.collectionDetailsVoList[0].receivingAccount, '141000240012019004817')
+})
+
+test('optionFieldDescriptors 正确递归 table 动态表格容器下的列字段', () => {
+  const template = {
+    list: [
+      {
+        type: 'table',
+        model: 'collectionDetailsVoList',
+        name: '收款明细',
+        tableColumns: [
+          { type: 'select', model: 'receivingAccount', name: '收款账户', options: { dataBind: true } },
+        ],
+      },
+    ],
+  }
+  const descriptors = optionFieldDescriptors(template)
+  assert.equal(descriptors.length, 1)
+  assert.equal(descriptors[0].group, 'collectionDetailsVoList')
+  assert.equal(descriptors[0].model, 'receivingAccount')
 })

@@ -17,7 +17,7 @@
 
 <script>
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from './runtime/protocol'
-import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents } from './runtime/formTemplate'
+import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPatches, formRuntimeStats, formValuesFingerprint, hiddenFieldKeys, optionCoordinationIssues, prepareTemplate, refreshPreparedForm, replayFieldChangeEvents, restoreIntendedValues } from './runtime/formTemplate'
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
@@ -405,6 +405,14 @@ export default {
 	  this.assertActiveSession(refreshContext)
 	  this.optionCoordinationIssues = finalCoordination.issues
 	  this.values = finalCoordination.values
+      // 联动执行后恢复原本非空但被模板脚本误清空的字段意图值（如合同变更误清空收款明细账户）
+      const restored = restoreIntendedValues(this.values, this.savedValues)
+      if (restored) {
+        await form.setData(clonePlain(this.values))
+        const host = this.$refs.formHost
+        if (host) host.editData = clonePlain(this.values)
+        await this.$nextTick()
+      }
       this.changedFields = []
     },
 	// waitForTargetRequests 等待目标请求归零并保持稳定，涵盖响应回调继续触发的链式数据源。

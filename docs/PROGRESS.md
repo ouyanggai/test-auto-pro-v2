@@ -7,13 +7,15 @@
   ④ 执行服务并行闭环与节点人员注入：`runner.go` 增强对 `parallelChooseNodes`、`parallelNodes` 和 `branchNodes` 的兼容解析；`native-dispatch.ts` 在 `parallel_choose` 时向原生组件的 `parallelNodeChooseList` 与 `parallelChooseNodes` 自动注入对应分支人员的 `nodeAuditList`，彻底解决原生组件报“当前并行分支下有节点审批人未指定”的断裂。
   Go 构建、vet、后端 17 个测试包全部通过，前端类型检查通过，等待用户人工核验。
 
-- 2026-09-23 F-040「表单数据自主生成、智能历史检索与已发路径推导」实施完成，停在 **ready_for_manual**：
-  ① 合同组件回显修复与组件补齐：`GeneralListSelectShow/index.vue` 增强 `displayName` 计算属性，同时兼容 `contractName`、`name`、`title` 以及纯 ID 场景；补齐引入并全局注册 `contract-change-list-select` 及其专用弹窗 `ContractChangeListSelectList.vue`；`form-runtime` 同步脚本增加启动拉取 Git 最新代码逻辑；
-  ② 已发/待发流程自动继承实例数据：`path_data_workspace.go` 在未保存路径覆盖时，若实例已有当前表单数据（`InstanceValues`），自动将其作为初始基线快照，无需用户弹窗二次选择；
-  ③ 放开新发起流程表单保存硬门禁：`SaveData` 允许在未选基础表单数据时，只要用户在目标表单组件内填写了有效数据（`input.Values` 非空），即可直接作为完整表单数据保存；
-  ④ 历史实例查询全面解绑：`client_list_reads.go` 彻底移除 `flowInstanceBizRelevanceList`（公司关联）与 `useScope: "invest"`（投资范围）硬编码过滤；`history_target.go` 优化 `historyCandidateIdentityMatch` 支持表单名与流程名的包含与模糊匹配，解决机房进入申请表等非投资或非公司流程无法被检索到的问题；
-  ⑤ 已发/待发流程自动推导后续路径：`execution_path.go` 移除 `plan.FlowSource != "new"` 拦截，`PlanPathsView.vue` 支持对已发/待发计划自动触发后台路径解析，从实例当前节点沿代理树自动推导后续确定分支路径。
-  Go 构建、vet、后端 17 个包全部单元测试全绿，前端类型检查通过，等待用户人工核验。
+- 2026-09-23 F-040「表单数据自主生成、子表单保护与校验错误明确透出」实施完成，停在 **ready_for_manual**：
+  ① 子表单与动态表格回填保护：`formTemplate.js` 的 `VALUE_GROUP_TYPES` 补充 `table` 类型，递归解析 `tableColumns` 列描述符；新增 `restoreIntendedValues` 机制，在表单初始化联动与异步数据源加载收敛后，自动对比并恢复被目标模板脚本（如合同 onChange）误清空的明细行非空意图值（如收款明细【收款账户】），彻底消除子表单下拉框留空问题；
+  ② 执行服务表单必填校验错误明确透出：`server.ts` 在动作分发后捕获页面的表单校验错误（`.is-error` / `.el-form-item__error`）；`completion.ts` 在未捕获到期望写请求时，若存在表单校验错误，由原本含糊的“未发出期望写请求 /web/flowInstanceApi/reSubmit”转为直接明确提示“表单数据缺失无法发起请求，请检查表单数据（明细第N行【字段名】...）”，前端用户一目了然；
+  ③ 合同组件回显修复与组件补齐：`GeneralListSelectShow/index.vue` 增强 `displayName` 计算属性，同时兼容 `contractName`、`name`、`title` 以及纯 ID 场景；补齐引入并全局注册 `contract-change-list-select` 及其专用弹窗 `ContractChangeListSelectList.vue`；`form-runtime` 同步脚本增加启动拉取 Git 最新代码逻辑；
+  ④ 已发/待发流程自动继承实例数据：`path_data_workspace.go` 在未保存路径覆盖时，若实例已有当前表单数据（`InstanceValues`），自动将其作为初始基线快照，无需用户弹窗二次选择；
+  ⑤ 放开新发起流程表单保存硬门禁：`SaveData` 允许在未选基础表单数据时，只要用户在目标表单组件内填写了有效数据（`input.Values` 非空），即可直接作为完整表单数据保存；
+  ⑥ 历史实例查询全面解绑：`client_list_reads.go` 彻底移除 `flowInstanceBizRelevanceList`（公司关联）与 `useScope: "invest"`（投资范围）硬编码过滤；`history_target.go` 优化 `historyCandidateIdentityMatch` 支持表单名与流程名的包含与模糊匹配，解决机房进入申请表等非投资或非公司流程无法被检索到的问题；
+  ⑦ 已发/待发流程自动推导后续路径：`execution_path.go` 移除 `plan.FlowSource != "new"` 拦截，`PlanPathsView.vue` 支持对已发/待发计划自动触发后台路径解析，从实例当前节点沿代理树自动推导后续确定分支路径。
+  Go 构建、vet、后端 17 个包全部单元测试全绿，前端 58 个测试用例全绿，类型检查通过，等待用户人工核验。
 
 - 2026-09-22 「一键配置全是关注」根因修复并按用户裁决调整为随机起点轮询：①旧实现把实例动作候选池按动作键字母序排列，follow 恰好排第一且轮询偏移从 0 开始，路径 1 永远配置成关注（画布每张节点卡又都附带实例动作摘要，看起来"全部节点都是关注"）；②一键配置只对勾选路径生效且只补空不覆盖——问题计划当时的批量任务 total=1，路径 2/3/4 根本没被配置，已配好的路径 1 即使修复后重跑也保留旧动作；③发起人"交替"此前用哈希种子奇偶决定，无法保证两种发起方式都出现。现改为：实例动作按固定池 转发→撤回→催办→关注「随机起点严格轮询」——起点由计划级种子随机决定（不同计划组合不同），同计划内按路径序号依次轮转必然全覆盖，第五条路径循环回第一条；发起节点交替起点同样由计划级种子随机，同计划奇偶路径严格互补 50/50；取消关注不参与自动轮询（仍可手工配置）。新增随机轮询覆盖与发起互补定向单测，Go 构建、vet、全部单测与契约测试通过；用真实计划 26 对路径 2/3/4 重新一键配置实测：催办/关注/转发全出现、发起方式逐条互补。停在 **ready_for_manual**，等待用户人工核验（注意：路径 1 的关注是修复前旧配置，一键配置只补空不覆盖，需手工清除或删除该路径重跑才能看到新轮询结果）。
 - 2026-09-22 动作编排升级为按路径序号严格轮询的最大化全动作覆盖算法并重启后端服务：①修复转发候选在目标公司人员超过 1000 人时因附带上限提示 issue 被误禁用的缺陷，放行转发接收人解析；②实例动作改用基于路径序号 `path.SequenceNo` 严格轮转（Round-Robin）：路径 1、2、3、4 严格按顺序分配转发（forward）、撤回（withdraw）、催办（urge）、关注（follow），多路径循环轮流穷尽覆盖；③发起节点按路径序号交替分配“直接提交”与“先存草稿再重提”；④审批节点按路径序号与节点位移轮流分配暂存、加签、移交、驳回、回退、取回等全部审批动作，消除伪随机分布不均导致动作遗漏；⑤重新编译 `.runtime/server.exe` 并完成后台服务热重启，确保浏览器请求立即命中最新逻辑。定向测试全部通过，Go 构建、vet、全量单元测试全绿，停在 **ready_for_manual**，等待用户人工核验。
