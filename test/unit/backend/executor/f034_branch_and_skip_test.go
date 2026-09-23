@@ -107,3 +107,46 @@ func TestF034BuildRequestCrossEmptyNodeCarriesEntry(t *testing.T) {
 		t.Fatalf("应携带空入口 nodeProxyId 且不伪造人员：%v", body["nextAuditorList"])
 	}
 }
+// TestParallelBranchTransitionNotBlocked 验证并行分支场景：两个兄弟分支互不可达时，分支A的审批流转不会被误判为路径断裂阻塞。
+func TestParallelBranchTransitionNotBlocked(t *testing.T) {
+	runCtx := step.RunContext{
+		GraphEdges: map[string][]step.GraphEdgeInfo{
+			"start":    {{Target: "parallel"}},
+			"parallel": {{Target: "branch_a"}, {Target: "branch_b"}},
+			"branch_a": {{Target: "merge"}},
+			"branch_b": {{Target: "merge"}},
+		},
+		GraphNodeTypes: map[string]string{
+			"start":    "start",
+			"parallel": "parallel",
+			"branch_a": "common",
+			"branch_b": "common",
+			"merge":    "common",
+		},
+		Nodes: map[string]step.NodeInfo{
+			"k_parallel": {TargetNodeID: "parallel"},
+			"k_a":        {TargetNodeID: "branch_a", Name: "资金副主任", AuditType: "common"},
+			"k_b":        {TargetNodeID: "branch_b", Name: "张政", AuditType: "common"},
+			"k_merge":    {TargetNodeID: "merge", Name: "会计", AuditType: "common"},
+		},
+	}
+
+	// 1. 测试从 branch_a 走向 branch_b（两个并行支线）：不应阻塞，返回空入口
+	entries, blockReason := step.BranchEntriesForTransitionForTest("k_a", "k_b", runCtx)
+	if blockReason != "" {
+		t.Fatalf("并行分支推进时不应阻塞：%s", blockReason)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("并行分支推进时不应携带跨分支入口：%v", entries)
+	}
+
+	// 2. 测试 BuildRequestForTest 在并行场景下能成功构造载荷
+	stepA := f034Step("k_a")
+	_, endpoint, _, err := step.BuildRequestForTest(runCtx, stepA, target.Session{CompanyID: "c-1"}, json.RawMessage(`{}`), "k_b")
+	if err != nil {
+		t.Fatalf("并行分支审批构造载荷不应报错：%v", err)
+	}
+	if endpoint != target.WriteEndpointAudit {
+		t.Fatalf("审批端点应为 WriteEndpointAudit：%s", endpoint)
+	}
+}

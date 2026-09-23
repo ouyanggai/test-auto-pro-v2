@@ -106,6 +106,11 @@ func walkAllEdges(nodeID, target string, runCtx RunContext, visited map[string]b
 // "加签后回退再恢复"都判成路径不匹配而停在写前。
 // 判据只看结构可达性（正向走不到，但存在从目标回到当前节点的正向可达），不匹配动作来源、
 // 中文节点名或步骤序号，避免把真正的"路径选择与实际流转不一致"放过去。
+//
+// 并行分支边界（2026-09-23 收款登记表测试实测）：
+// 当流程包含并行节点时，多个分支的待办同时被目标引擎激活。步骤列表中按顺序排列了各分支的动作（如分支A资金副主任同意 -> 分支B张政加签/同意）。
+// 当前分支节点同意时，下一步是兄弟分支节点，两者互不可达但同属并行分流；此时当前支线推进不跨越兄弟分支入口，
+// 正向分支入口为空即正确结果，绝不能误判为路径不符而阻塞。
 func branchEntriesForStep(runCtx RunContext, step model.CompiledActionStep, nextNodeKey string) ([]string, string) {
 	currentTargetID := strings.TrimSpace(runCtx.Nodes[strings.TrimSpace(step.NodeKey)].TargetNodeID)
 	nextTargetID := strings.TrimSpace(runCtx.Nodes[strings.TrimSpace(nextNodeKey)].TargetNodeID)
@@ -114,8 +119,9 @@ func branchEntriesForStep(runCtx RunContext, step model.CompiledActionStep, next
 		return nil, ""
 	}
 	entries, blockReason := resolveBranchEntriesForTransition(currentTargetID, nextTargetID, runCtx)
-	if blockReason != "" && isReverseTransition(currentTargetID, nextTargetID, runCtx) {
-		// 目标是当前节点的上游：本次流转是恢复/回退语义，正向分支入口为空即正确结果。
+	if blockReason != "" && (isReverseTransition(currentTargetID, nextTargetID, runCtx) || isParallelBranch(currentTargetID, nextTargetID, runCtx)) {
+		// 目标是当前节点的上游（回退/恢复）或处于并行分支（各分支独立流转/并行推进）：
+		// 正向分支入口为空即正确结果。
 		return nil, ""
 	}
 	return entries, blockReason
@@ -137,6 +143,51 @@ func isReverseTransition(currentTargetID, nextTargetID string, runCtx RunContext
 	visited := map[string]bool{}
 	forwardReachable(nextTargetID, currentTargetID, runCtx, visited)
 	return visited[currentTargetID]
+}
+// isParallelBranch 判断 current 与 next 是否处于不同的并行分支上（互相不可正向到达，但拥有共同的并行分流节点）。
+//
+// 业务规则与为什么这样处理：
+// 当流程包含并行网关（parallel）时，目标引擎会同时激活多个分支上的待办任务。
+// 测试计划将多个并行分支的节点步骤排为线性序列执行。当一个分支的节点审批完成时，
+// 步骤列表中的下一步可能是另一个并行分支的节点；由于两条分支互不连通，正向寻径必然走不到。
+// 在并行分支场景下，当前节点的同意是在推进自身支线，不需要也不可能携带通往兄弟支线的手动分支入口，
+// 正向分支入口为空即正确结果，绝不能误判为路径不符而阻塞。
+// 输入边界：两端 ID 均非空才判定；边表为空（旧数据）时返回 false，保持既有行为。
+func isParallelBranch(currentTargetID, nextTargetID string, runCtx RunContext) bool {
+	if currentTargetID == "" || nextTargetID == "" || currentTargetID == nextTargetID {
+		return false
+	}
+	if len(runCtx.GraphEdges) == 0 {
+		return false
+	}
+	// 1. 两者互不连通：current 不能正向走到 next，next 也不能正向走到 current
+	visitedFromCurrent := map[string]bool{}
+	forwardReachable(currentTargetID, nextTargetID, runCtx, visitedFromCurrent)
+	if visitedFromCurrent[nextTargetID] {
+		return false
+	}
+	visitedFromNext := map[string]bool{}
+	forwardReachable(nextTargetID, currentTargetID, runCtx, visitedFromNext)
+	if visitedFromNext[currentTargetID] {
+		return false
+	}
+	// 2. 检查是否存在一个共同祖先 parallel 节点，能够同时正向到达 current 与 next
+	for nodeID := range runCtx.GraphEdges {
+		if !strings.EqualFold(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]), "parallel") {
+			continue
+		}
+		reachCurrent := map[string]bool{}
+		forwardReachable(nodeID, currentTargetID, runCtx, reachCurrent)
+		if !reachCurrent[currentTargetID] {
+			continue
+		}
+		reachNext := map[string]bool{}
+		forwardReachable(nodeID, nextTargetID, runCtx, reachNext)
+		if reachNext[nextTargetID] {
+			return true
+		}
+	}
+	return false
 }
 
 // forwardReachable 沿真实图边做一次只读可达性遍历，用于判断反向流转；不发任何写请求。
