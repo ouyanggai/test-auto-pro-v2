@@ -99,8 +99,8 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	if len(values) == 0 && dataStatus == "" {
 		dataStatus = model.HistoryDataStatusEmpty
 	}
-	if !found && len(values) > 0 && len(issues) == 0 {
-		dataStatus = model.HistoryDataStatusNeedsInput
+	if !found && len(values) > 0 && !hasBlockingWorkspaceIssue(issues) {
+		dataStatus = model.HistoryDataStatusReady
 	}
 	if len(issues) == 0 && dataStatus == model.HistoryDataStatusEmpty {
 		issues = []model.HistoryDataIssue{}

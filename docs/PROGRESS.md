@@ -1,5 +1,11 @@
 # 当前进度
 
+- 2026-09-23 历史表单数据通用自动对齐与回填意图保护修复完成，停在 **ready_for_manual**：
+  ① 后端子表单控制列通用自动对齐：`formdata.go` 增加 `alignSubformColumnControlFields`，严格遵循目标平台规范（`_col` 结尾的占位字段承载子表单列权限），若占位字段在快照中为空，自动从子表单明细行对应列提取非空值补齐，消除因历史空值导致目标原生校验拦截；
+  ② 执行服务回填后联动意图值自动恢复与保护：`server.ts` 增加 `restoreIntendedPatchViaPage`，在数据注入并等待异步选项/联动稳定后，通用比对意图数据与页面实时数据，若项目/合同/账号等非空意图值被目标页面原生联动脚本误置空，自动进行二次补偿赋值，确保原生提交校验 100% 通过；
+  ③ 数据工作区自动就绪闭环：`path_data_workspace.go` 在具备有效表单数据且无阻断问题时自动收敛数据状态为 `ready`，彻底消除人工必须每次点开表单弹窗点保存的依赖；
+  ④ 真实运行端到端验证通过：`欧阳改并行测试加签__运行5` 第 1 步提交 `submit`（创建实例 `d61be8e63531493cbddc9759f1755f0c`）直接自动成功，并连续自动执行完成系统导航、加签（白珣发出 `updateFlowProxy`）与资金副主任审批，第 5 步加签插入节点审批顺利就绪。
+  后端全量单元测试与契约测试全绿，`go vet` 通过，前端类型检查通过，等待用户人工核验。
 - 2026-09-23 F-041「完整分支与选人组合适配」实施完成，停在 **ready_for_manual**：
   ① 目录层补齐主管副总接口：`person_directory.go` 增加 `FindSuperiorLeader`（`/web/user/api/user/findSuperiorLeader`）与 `FindGrandpaSuperiorLeader`（`/findGrandpaSuperiorLeader`）；
   ② 解析层自选策略智能兜底：`path_action_configuration.go` 对并行分支或未单独手动配置的 `run_node_choose` 节点，自动以目标默认候选人（`target_default`）或范围随机（`random`）兜底，消除少配分支即中断；

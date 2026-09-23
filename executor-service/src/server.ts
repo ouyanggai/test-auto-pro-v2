@@ -444,6 +444,117 @@ async function applyNodePatchViaPage (page: Page, _mode: string, patch: Record<s
     return values as Record<string, unknown>
   }, { patch, keys: allowedKeys })
 }
+// restoreIntendedPatchViaPage 对比页面实时值与意图值，自动恢复被异步联动脚本误清空的有效意图值。
+async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[]): Promise<Record<string, unknown> | null> {
+  return page.evaluate(async ({ patch, keys }) => {
+    interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
+    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
+    const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
+    if (!container) return null
+    const queue: unknown[] = [container]
+    const seen = new Set<unknown>()
+    let api: Record<string, unknown> | null = null
+    while (queue.length > 0 && api === null) {
+      const candidate = queue.shift()
+      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
+      seen.add(candidate)
+      const value = candidate as Record<string, unknown>
+      if ((typeof value.setData === 'function' && typeof value.getValues === 'function') ||
+        (typeof value.setValues === 'function' && typeof value.getValues === 'function') ||
+        (typeof value.setFormData === 'function' && typeof value.getFormData === 'function')) api = value
+      queue.push(...((value.$children as unknown[] | undefined) ?? []), ...Object.values((value.$refs as Record<string, unknown> | undefined) ?? {}))
+    }
+    if (!api) return null
+    const getter = (api.getValues ?? api.getFormData) as () => unknown
+    const setter = (api.setData ?? api.setValues ?? api.setFormData) as (values: Record<string, unknown>) => unknown
+    const current = (await getter.call(api)) as Record<string, unknown> | null
+    if (!current || typeof current !== 'object') return null
+
+    const restorePatch: Record<string, unknown> = {}
+    let needRestore = false
+
+    const parseId = (val: unknown): string | null => {
+      if (!val) return null
+      if (typeof val === 'object' && val !== null && 'id' in val && (val as { id?: unknown }).id) return String((val as { id?: unknown }).id)
+      if (typeof val === 'string' && val.trim().startsWith('{')) {
+        try {
+          const obj = JSON.parse(val)
+          if (obj && obj.id) return String(obj.id)
+        } catch {}
+      }
+      return null
+    }
+
+    for (const key of keys) {
+      const intended = patch[key]
+      const live = current[key]
+      if (intended === undefined || intended === null || intended === '') continue
+
+      if (Array.isArray(intended)) {
+        if (Array.isArray(live) && live.length > 0) {
+          let arrayChanged = false
+          const mergedArray = live.map((row, rIdx) => {
+            const intendedRow = intended[rIdx]
+            if (!intendedRow || typeof intendedRow !== 'object' || !row || typeof row !== 'object') return row
+            const newRow = { ...(row as Record<string, unknown>) }
+            for (const [col, colVal] of Object.entries(intendedRow as Record<string, unknown>)) {
+              if (colVal !== undefined && colVal !== null && colVal !== '' && (newRow[col] === undefined || newRow[col] === null || newRow[col] === '')) {
+                newRow[col] = colVal
+                arrayChanged = true
+              }
+            }
+            return newRow
+          })
+          if (arrayChanged) {
+            restorePatch[key] = mergedArray
+            needRestore = true
+          }
+        }
+        continue
+      }
+
+      const intendedId = parseId(intended)
+      if (intendedId) {
+        const liveId = parseId(live)
+        if (!liveId || liveId !== intendedId) {
+          restorePatch[key] = intended
+          needRestore = true
+          continue
+        }
+      }
+
+      if (live === undefined || live === null || live === '') {
+        restorePatch[key] = intended
+        needRestore = true
+      }
+    }
+
+    for (const [key, val] of Object.entries(current)) {
+      if (key.endsWith('_col') && (val === undefined || val === null || val === '')) {
+        const targetCol = key.slice(0, -4)
+        for (const listVal of Object.values(current)) {
+          if (Array.isArray(listVal) && listVal.length > 0) {
+            const firstRow = listVal[0]
+            if (firstRow && typeof firstRow === 'object' && targetCol in firstRow) {
+              const cVal = (firstRow as Record<string, unknown>)[targetCol]
+              if (cVal !== undefined && cVal !== null && cVal !== '') {
+                restorePatch[key] = cVal
+                needRestore = true
+                break
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (needRestore) {
+      await setter.call(api, restorePatch)
+      return (await getter.call(api)) as Record<string, unknown>
+    }
+    return current
+  }, { patch, keys: allowedKeys })
+}
 
 // waitForOptionsReady 等待远程选项/联动收敛：trace 无在途转发请求且条目数保持稳定窗。
 // 就绪必须「等」出来，不允许任何硬编码标志（施工令 §2 假修清单）。
@@ -994,6 +1105,12 @@ async function main (): Promise<void> {
               throw new UnsupportedFormError('补丁应用时表单数据接口不可用')
             }
             patchReadback = readback
+            // 回填后二次等待联动与远程请求收敛，并通用恢复被原生联动脚本误清空的非空意图值
+            await waitForOptionsReady(session.route.trace, 600)
+            const restoredReadback = await restoreIntendedPatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed)
+            if (restoredReadback !== null) {
+              patchReadback = restoredReadback
+            }
           }
 
           session.formBefore = await readNativeFormSnapshot(session.page)

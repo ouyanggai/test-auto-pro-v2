@@ -228,3 +228,34 @@ func TestCrossNodeNestedValueRewriteBlocks(t *testing.T) {
 		t.Fatal("嵌套字段值被改写必须阻塞（深度比较）")
 	}
 }
+
+// TestAlignSubformColumnControlFields 锁定通用规则：以 _col 结尾的子表单列控制占位字段若为空，
+// 自动从子表单明细对应列获取非空值，避免因历史空值导致目标原生表单校验失败。
+func TestAlignSubformColumnControlFields(t *testing.T) {
+	runCtx := step.RunContext{
+		EffectiveFormData: []byte(`{
+			"businessType_col": "",
+			"details": [
+				{"businessType": "001", "money": 100}
+			]
+		}`),
+		Nodes: map[string]step.NodeInfo{
+			"start": {EditableFields: []string{"businessType_col", "details"}},
+		},
+		NodeEditableFields: map[string][]string{
+			"start": {"businessType_col", "details"},
+		},
+	}
+	steps := []model.CompiledActionStep{{Sequence: 1, Action: model.ActionSubmit, NodeKey: "start"}}
+	plan, err := step.BuildNodeFormData(runCtx, steps[0], nil, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(plan.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["businessType_col"] != "001" {
+		t.Fatalf("businessType_col 必须自动对齐子表单同名列值 '001'，实际为：%v", payload["businessType_col"])
+	}
+}

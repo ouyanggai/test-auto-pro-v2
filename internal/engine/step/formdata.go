@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-
+	"strings"
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/formdata/fieldpower"
 	"test-auto-pro-v2/internal/jsonvalues"
@@ -122,6 +122,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 	if err != nil {
 		return FormDataPlan{}, err
 	}
+	alignSubformColumnControlFields(configured)
 	info := runCtx.Nodes[compiled.NodeKey]
 	plan := FormDataPlan{Overlaid: []string{}, Withheld: []string{}}
 	editable := nodeEditableFields(runCtx, compiled.NodeKey)
@@ -252,6 +253,7 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 			}
 		}
 	}
+	alignSubformColumnControlFields(merged)
 	// T05 断言已由构造结构保证：扣留字段不会出现在 Overlaid 清单（本节点不写它们），
 	// 它们若存在于合并结果，只能是实例基线保留（目标已填值）——这恰恰是"保留上游值"的语义。
 	sort.Strings(plan.Overlaid)
@@ -375,5 +377,48 @@ func emptyDerivedValue(field string) any {
 		return []any{}
 	default:
 		return ""
+	}
+}
+
+// alignSubformColumnControlFields 通用对齐子表单列权限占位控制字段（以 _col 结尾）。
+// 目标平台规范：子表单每列权限由额外的 <col>_col 占位字段承载；若该占位字段值为空，
+// 自动从当前表单中子表单明细首行的同名列获取非空值进行对齐，避免因历史空值导致目标原生校验拦截。
+func alignSubformColumnControlFields(values map[string]any) {
+	if len(values) == 0 {
+		return
+	}
+	for key, val := range values {
+		if !strings.HasSuffix(key, "_col") {
+			continue
+		}
+		strVal, isStr := val.(string)
+		if val != nil && (!isStr || strings.TrimSpace(strVal) != "") {
+			continue
+		}
+		targetCol := strings.TrimSuffix(key, "_col")
+		for _, v := range values {
+			rows, ok := v.([]any)
+			if !ok || len(rows) == 0 {
+				continue
+			}
+			found := false
+			for _, rowItem := range rows {
+				rowMap, isMap := rowItem.(map[string]any)
+				if !isMap {
+					continue
+				}
+				if colVal, exists := rowMap[targetCol]; exists && colVal != nil {
+					colStr, okStr := colVal.(string)
+					if !okStr || strings.TrimSpace(colStr) != "" {
+						values[key] = colVal
+						found = true
+						break
+					}
+				}
+			}
+			if found {
+				break
+			}
+		}
 	}
 }
