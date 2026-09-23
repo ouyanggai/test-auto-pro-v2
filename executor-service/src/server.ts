@@ -143,7 +143,13 @@ async function readNativeFormSnapshot (page: Page): Promise<Record<string, unkno
       if (typeof getter !== 'function') continue
       try {
         const values = await (getter as () => unknown).call(node)
-        if (values && typeof values === 'object' && !Array.isArray(values) && Object.keys(values as object).length > 0) return values as Record<string, unknown>
+        if (values && typeof values === 'object' && !Array.isArray(values) && Object.keys(values as object).length > 0) {
+          const sanitized: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(values as Record<string, unknown>)) {
+            if (k.trim() !== '') sanitized[k.trim()] = v
+          }
+          return sanitized
+        }
       } catch {}
     }
     const keys = ['editData', 'currentFormData', 'formData', 'infoForm', 'formModel', 'detailData']
@@ -155,7 +161,13 @@ async function readNativeFormSnapshot (page: Page): Promise<Record<string, unkno
         const record = value as Record<string, unknown>
         if (Object.keys(record).length > Object.keys(best).length) best = record
       }
-      if (Object.keys(best).length > 0) return best
+      if (Object.keys(best).length > 0) {
+        const sanitized: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(best)) {
+          if (k.trim() !== '') sanitized[k.trim()] = v
+        }
+        return sanitized
+      }
     }
     return {}
   })

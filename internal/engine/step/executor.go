@@ -432,19 +432,58 @@ func (e *Executor) protectRuntimeFormBody(ctx context.Context, runCtx RunContext
 	if len(result.BusinessSummary) > 0 {
 		_ = json.Unmarshal(result.BusinessSummary, &summary)
 	}
-	before := runtimeSummaryFieldCount(summary["fieldCountBefore"])
-	after := len(current)
+	beforeMap, _ := summary["formBefore"].(map[string]any)
+	beforeClean := cleanFormKeys(beforeMap)
+	afterClean := cleanFormKeys(current)
+
+	before := len(beforeClean)
+	if before == 0 {
+		before = runtimeSummaryFieldCount(summary["fieldCountBefore"])
+	}
+	after := len(afterClean)
 	summary["formAfter"] = current
 	summary["fieldCountAfter"] = after
 	if encoded, encodeErr := json.Marshal(summary); encodeErr == nil {
 		result.BusinessSummary = encoded
 	}
+	// 表单正文保护：防止写动作意外清空整个表单正文（如整表被空对象覆盖）。
+	// 为什么这样处理：
+	// 浏览器页面中可能携带空字符串键（如未命名容器绑定的 "" 属性），而在服务端持久化时这些无效空键会被自动剔除；
+	// 若盲目按未清洗的原始数量对比，会因空键过滤（例如写前 41 vs 写后 40）误报字段减少。
+	// 这里通过清洗无效键并双重核对业务字段是否存在，只有在写前确实有字段、写后数量下跌且存在实质性业务字段缺失时才判定为失败。
 	if before > 0 && after < before {
-		result.Status = "business_failed"
-		result.Message = fmt.Sprintf("写后表单正文字段明显减少：写前 %d 个，写后 %d 个；已阻止继续执行", before, after)
-		log.Phase("verify", step.Sequence, attempt, result.Message)
+		missing := countMissingBusinessFields(beforeClean, afterClean)
+		if missing > 0 {
+			result.Status = "business_failed"
+			result.Message = fmt.Sprintf("写后表单正文字段明显减少：写前 %d 个，写后 %d 个，缺失 %d 个业务字段；已阻止继续执行", before, after, missing)
+			log.Phase("verify", step.Sequence, attempt, result.Message)
+		}
 	}
 	return result
+}
+
+// cleanFormKeys 过滤掉空字符串等无效字段键，保持有效业务字段的准确统计。
+func cleanFormKeys(data map[string]any) map[string]any {
+	cleaned := make(map[string]any, len(data))
+	for k, v := range data {
+		trimmed := strings.TrimSpace(k)
+		if trimmed == "" {
+			continue
+		}
+		cleaned[trimmed] = v
+	}
+	return cleaned
+}
+
+// countMissingBusinessFields 检查写前表单字段在写后是否发生真实丢失。
+func countMissingBusinessFields(before, after map[string]any) int {
+	missing := 0
+	for k := range before {
+		if _, ok := after[k]; !ok {
+			missing++
+		}
+	}
+	return missing
 }
 
 // runtimeSummaryFieldCount 把 JSON 解码后的字段数收敛为非负整数。
