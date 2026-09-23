@@ -124,6 +124,9 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			transferred = true
 		}
 		if nodeIdx >= 0 {
+			if lastNodeIndex >= 0 && nodeIdx != lastNodeIndex {
+				transferred = false
+			}
 			lastNodeIndex = nodeIdx
 		}
 	}
@@ -751,9 +754,9 @@ func validateActionState(action model.ConfiguredAction, index int, resubmitReady
 	return nil
 }
 
-// validateNodeOrder 阻止没有恢复步骤支撑的回跳或移交后隐式切换演员。
+// validateNodeOrder 阻止没有恢复步骤支撑的回跳或同节点移交后隐式切换演员。
 func validateNodeOrder(action model.ConfiguredAction, index, nodeIndex, lastNodeIndex int, transferred bool) *model.ActionConfigurationIssue {
-	if transferred && action.Scope == model.ActionScopeTask && action.Action != model.ActionTransfer && action.ActorPolicy == "" {
+	if transferred && nodeIndex == lastNodeIndex && action.Scope == model.ActionScopeTask && action.Action != model.ActionTransfer && action.ActorPolicy == "" {
 		return issue(index, action, "ACTOR_CONTINUITY_UNKNOWN", "移交后后续动作必须显式指定可回读的处理人策略")
 	}
 	if nodeIndex >= 0 && lastNodeIndex >= 0 && nodeIndex < lastNodeIndex && action.Action != model.ActionRollback && action.Action != model.ActionRetrieve && action.Action != model.ActionResubmit {

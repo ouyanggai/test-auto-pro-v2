@@ -272,13 +272,11 @@ func (p *pathConfigProjection) actionConfiguration(nodeID, nodeName, nodeKind st
 		actionPersons[model.ActionAddSign] = person
 		validationTarget.ActionPersons[string(model.ActionAddSign)] = personTarget
 	}
-	// 移交使用当前节点目标返回的真实处理人候选；它与节点原有处理人策略分开编码，
-	// 避免固定处理人规则没有可编辑策略时，移交仍然把空 userIds 发给目标。
-	if node != nil && node.AuditConfig != nil && len(node.AuditConfig.Candidates) > 0 && len(node.AuditConfig.ResolutionIssues) == 0 {
-		if person, personTarget := actionCandidatePersonConfig(nodeID, "transfer", "移交处理人", "候选来自当前待办可切换的目标人员目录", node.AuditConfig.Candidates, node.AuditConfig.DefaultCandidates); person != nil && personTarget != nil {
-			actionPersons[model.ActionTransfer] = person
-			validationTarget.ActionPersons[string(model.ActionTransfer)] = personTarget
-		}
+	// 移交参照目标平台 Backlog/index.vue 的 clickHandOver 实现：
+	// 优先选用全公司组织架构树人员（与加签共享目录池），若全员目录不可用则回退至节点候选。
+	if person, personTarget := transferNodePersonConfig(nodeID, node); person != nil && personTarget != nil {
+		actionPersons[model.ActionTransfer] = person
+		validationTarget.ActionPersons[string(model.ActionTransfer)] = personTarget
 	}
 	ctx, previousReason := p.nodeActionContext(nodeID, nodeKind, node)
 	result.Catalog = projectActionCatalog(ctx, scope, actionPersons, previousReason, &validationTarget)
@@ -417,10 +415,32 @@ func instanceActionContext() model.ActionContext {
 
 // nodeActorSwitchable 只在目标节点人员目录已完整解析且存在候选时认为可以切换演员。
 func nodeActorSwitchable(node *target.FlowNodeTemplate) bool {
-	if node == nil || node.AuditConfig == nil {
+	if node == nil {
+		return false
+	}
+	if len(node.AddSignIssues) == 0 && len(node.AddSignCandidates) > 0 {
+		return true
+	}
+	if node.AuditConfig == nil {
 		return false
 	}
 	return len(node.AuditConfig.Candidates) > 0 && len(node.AuditConfig.ResolutionIssues) == 0
+}
+
+// transferNodePersonConfig 参照目标平台 Backlog/index.vue 的 clickHandOver 实现，
+// 移交弹出的 PersonSelectDialog 选用公司组织架构树人员（与加签共享全员目录池）。
+// 若全员目录可用则优先使用，若不存在则回退至节点审核规则返回的有效候选，避免固定处理人节点无候选。
+func transferNodePersonConfig(nodeID string, node *target.FlowNodeTemplate) (*model.PathConfigPerson, *PathConfigPersonTarget) {
+	if node == nil {
+		return nil, nil
+	}
+	if len(node.AddSignIssues) == 0 && len(node.AddSignCandidates) > 0 {
+		return actionCandidatePersonConfig(nodeID, "transfer", "移交处理人", "候选来自当前待办可切换的目标公司人员目录", node.AddSignCandidates, nil)
+	}
+	if node.AuditConfig != nil && len(node.AuditConfig.Candidates) > 0 && len(node.AuditConfig.ResolutionIssues) == 0 {
+		return actionCandidatePersonConfig(nodeID, "transfer", "移交处理人", "候选来自当前待办可切换的目标人员目录", node.AuditConfig.Candidates, node.AuditConfig.DefaultCandidates)
+	}
+	return nil, nil
 }
 
 // resolveOrderDependentGate 用"前置动作已执行"的等价上下文重算顺序依赖动作，真实顺序由场景编译器强制。

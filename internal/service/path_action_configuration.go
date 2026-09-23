@@ -102,6 +102,19 @@ func (s *PathConfigService) saveActionConfigurationOnce(ctx context.Context, pla
 		person.Selected = append([]string(nil), person.Selected...)
 		personStrategies[person.Key] = person
 	}
+	for index := range input.Actions {
+		if input.Actions[index].Action == model.ActionTransfer && strings.TrimSpace(input.Actions[index].ActorPolicy) == "" {
+			for _, person := range input.Persons {
+				if strings.Contains(person.Key, ":transfer") && strings.TrimSpace(person.Strategy) != "" {
+					input.Actions[index].ActorPolicy = strings.TrimSpace(person.Strategy)
+					break
+				}
+			}
+			if input.Actions[index].ActorPolicy == "" {
+				input.Actions[index].ActorPolicy = "manual"
+			}
+		}
+	}
 	actions, mergeErr := mergeNodeActions(existing, input.Actions, nodeKey, analysis.graph, analysis.pathAnalysis)
 	if mergeErr != nil {
 		return model.ActionConfigurationResult{}, mergeErr
@@ -1120,6 +1133,8 @@ func autoExtraActionCandidates(node model.PathConfigNode, instanceCatalog []mode
 				var strategy model.PathConfigPersonStrategyInput
 				if kind == model.ActionAddSign {
 					strategy = autoSignPersonStrategyExcludePlanAccount(*item.Person, kind, planAccount, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
+				} else if kind == model.ActionTransfer {
+					strategy = autoTransferPersonStrategyExcludePlanAccount(*item.Person, planAccount, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
 				} else {
 					strategy = autoPersonStrategy(*item.Person, autoConfigureSeed(0, 0, node.Key+":action:"+item.Kind))
 				}
@@ -1129,6 +1144,7 @@ func autoExtraActionCandidates(node model.PathConfigNode, instanceCatalog []mode
 				}
 				person := strategy
 				candidate.person = &person
+				candidate.action.ActorPolicy = strategy.Strategy
 			}
 			candidates = append(candidates, candidate)
 		}
@@ -1147,6 +1163,27 @@ func autoSignPersonStrategyExcludePlanAccount(person model.PathConfigPerson, kin
 	if kind != model.ActionAddSign {
 		return autoPersonStrategy(person, seed)
 	}
+	account := strings.TrimSpace(planAccount)
+	filtered := person
+	if account != "" {
+		remainingOptions := make([]model.PathConfigPersonOption, 0, len(person.Options))
+		for _, opt := range person.Options {
+			if strings.TrimSpace(opt.Label) != account {
+				remainingOptions = append(remainingOptions, opt)
+			}
+		}
+		filtered.Options = remainingOptions
+	}
+	if len(filtered.Options) == 0 {
+		return model.PathConfigPersonStrategyInput{Key: person.Key, Strategy: "manual", Seed: 1, Selected: nil}
+	}
+	return autoPersonStrategy(filtered, seed)
+}
+
+// autoTransferPersonStrategyExcludePlanAccount 为移交动作挑选处理人：
+// 明确排除流程发起人（planAccount），从剩余合法候选人中按确定性种子挑选；
+// 若候选人仅有发起人一人或无其它候选，返回空选集。
+func autoTransferPersonStrategyExcludePlanAccount(person model.PathConfigPerson, planAccount string, seed uint64) model.PathConfigPersonStrategyInput {
 	account := strings.TrimSpace(planAccount)
 	filtered := person
 	if account != "" {

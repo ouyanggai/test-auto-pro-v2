@@ -1067,3 +1067,65 @@ func TestAutoConfigureNodeActionDiversity(t *testing.T) {
 		t.Fatalf("撤回(withdraw)应进入随机编排候选且被覆盖，实际未出现。所有动作：%+v", seenActions)
 	}
 }
+// TestAutoConfigureTransferActionWithExcludePlanAccount 验证移交动作纳入一键配置体系：
+// 1. 移交使用全公司组织架构树人员（与加签共享目录池），且排除发起人（planAccount）；
+// 2. 移交动作的 ActorPolicy 自动同步人员策略（非空），满足场景编译门禁；
+// 3. 移交后后续节点不需要强制指定 ActorPolicy，整条链路可顺利编译为可恢复场景。
+func TestAutoConfigureTransferActionWithExcludePlanAccount(t *testing.T) {
+	transferTree := &target.FlowNodeTemplate{
+		ID: "start", Type: "start", Name: "发起人",
+		Child: &target.FlowNodeTemplate{
+			ID: "node1", Type: "common", Name: "审批节点一",
+			AddSignCandidates: []target.FlowAuditCandidate{
+				{ID: "initiator-id", Name: "initiator_user"}, // 发起人账号，应被排除
+				{ID: "user-target-1", Name: "被移交人候选"},
+			},
+			Child: &target.FlowNodeTemplate{
+				ID: "node2", Type: "common", Name: "审批节点二",
+				Child: &target.FlowNodeTemplate{ID: "end", Type: "end"},
+			},
+		},
+	}
+	plan := model.Plan{ID: 9901, Account: "initiator_user", FlowSource: "new", TargetObjectID: "flow-transfer", Status: model.PlanStatusNotStarted}
+	path := model.ExecutionPath{ID: 9901, PlanID: plan.ID, SequenceNo: 1, Name: "移交流程路径"}
+	store := &actionHistoryStore{found: true, record: repository.HistoryPathConfigRecord{PathID: path.ID, Revision: 1, NodeRevision: 1}}
+	config := service.NewPathConfigService(
+		service.NewPlanService(actionPlanRepository{plan: plan}),
+		&actionTargetReader{snapshot: target.PathConfigurationSnapshot{Tree: transferTree, EntryNodeIDs: []string{"start"}, FlowCode: "flow-transfer", FlowName: "移交流程", RenderType: target.FormRenderTypeFormMaking}},
+		analyzer.NewFlowGraphAnalyzer(), analyzer.NewExecutionPathAnalyzer(), analyzer.NewPathConfigAnalyzer(), actionPathRepository{path: path, paths: []model.ExecutionPath{path}},
+	)
+	config.SetHistoryWorkspaceStores(store, store)
+
+	// 手工保存 node1 移交动作，node2 不填 ActorPolicy，验证跨节点场景编译无阻断
+	node1Key := analyzer.PathConfigNodeToken("node1")
+	personKey := analyzer.PathConfigPersonToken("node1:transfer")
+	personToken := analyzer.PathConfigPersonOptionToken("node1:transfer", "user-target-1")
+	saveResult, err := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, node1Key, "123e4567-e89b-12d3-a456-426614174891", model.ActionConfigurationInput{
+		Persons: []model.PathConfigPersonStrategyInput{{Key: personKey, Strategy: "manual", Seed: 1, Selected: []string{personToken}}},
+		Actions: []model.ConfiguredAction{{Key: "transfer-act-1", Action: model.ActionTransfer, Scope: model.ActionScopeTask, NodeKey: node1Key, Order: 1, ActorPolicy: "manual"}},
+	})
+	if err != nil {
+		t.Fatalf("保存包含移交的动作配置失败：%v", err)
+	}
+	if len(saveResult.Issues) > 0 {
+		for _, issue := range saveResult.Issues {
+			if issue.Blocking {
+				t.Fatalf("移交动作场景编译不应产生阻断错误：%+v", issue)
+			}
+		}
+	}
+
+	// 验证 node2 保存普通审批动作，不带 ActorPolicy，不被 ACTOR_CONTINUITY_UNKNOWN 阻断
+	node2Key := analyzer.PathConfigNodeToken("node2")
+	saveResult2, err2 := config.SaveActionConfiguration(context.Background(), plan.ID, path.ID, node2Key, "123e4567-e89b-12d3-a456-426614174892", model.ActionConfigurationInput{
+		Actions: []model.ConfiguredAction{{Key: "storage-act-2", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: node2Key, Order: 1}},
+	})
+	if err2 != nil {
+		t.Fatalf("移交后后续节点动作保存失败：%v", err2)
+	}
+	for _, issue := range saveResult2.Issues {
+		if issue.Blocking {
+			t.Fatalf("移交后后续节点不应被阻断：%+v", issue)
+		}
+	}
+}
