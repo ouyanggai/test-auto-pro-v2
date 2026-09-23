@@ -1,5 +1,11 @@
 # 当前进度
 
+- 2026-09-23 参照目标平台代码将移交动作完整纳入动作配置与执行体系，停在 **ready_for_manual**：
+  ① 移交人员候选与门禁严格对齐目标平台架构树：参照目标平台 `views/GroupApproveManage/Backlog/index.vue` 的 `clickHandOver` 与 `PersonSelectDialog.vue` 实现，移交弹出的选人窗口实际选用全公司组织架构树人员；`path_config_plan.go` 改造 `transferNodePersonConfig` 与 `nodeActorSwitchable`，优先复用 `AddSignCandidates` 公司人员目录池，彻底解除固定审批人或未预先计算候选节点导致移交被误禁用的缺陷；
+  ② 修复一键配置移交候选策略与发起人排除：`path_action_configuration.go` 新增 `autoTransferPersonStrategyExcludePlanAccount`，明确排除流程发起人并确定性选出被移交人；自动配置候选时同步补齐 `candidate.action.ActorPolicy`，彻底消除一键配置试编译时因 `ACTOR_POLICY_REQUIRED` 导致的移交候选全数淘汰；
+  ③ 修正场景编译器跨节点移交连续性校验：`scenario.go` 修正 `validateNodeOrder` 与 `transferred` 标志位维护，限制 `ACTOR_CONTINUITY_UNKNOWN` 仅对同一节点内移交后的紧邻动作生效；当流程流转到后续节点时自动重置 `transferred`，由执行引擎的 `switchToCurrentHandler` 动态发现并登录真实处理人，彻底消除跨节点普通动作因缺少 `ActorPolicy` 被无辜阻断的缺陷；
+  ④ 写入动作、核验与后续同意执行体系闭环：移交写端点 `/web/flowInstanceApi/approverAppend` 保持严格协议信封（`data{id, jobTaskId, batchNo, auditRecord{transfer}}` + `approverAppendVo{flowNodeProxyId, userIds}`）；写后核验 `classifyTransferReread` 确认原处理人待办移除；同节点默认尾动作 `approve` 自动通过 `switchToCurrentHandler` 切换至被移交人会话完成节点审批流转；
+  ⑤ 自动化验证与服务编译：后端 26 个测试包全部通过，新增 `TestAutoConfigureTransferActionWithExcludePlanAccount` 定向单测通过，`go vet` 通过，前端类型检查通过。
 - 2026-09-23 历史候选全量查询与智能亲和排序改造完成，停在 **ready_for_manual**：
   ① 放宽直连库历史实例硬过滤：`target_history_repository.go` 彻底移除 `WHERE p.flow_name = ...` 强制同名与同表单过滤，解除因流程重命名、模板小版本改动或新流程无同名实例导致的候选弹窗全空硬阻断；
   ② 智能多维亲和度权重排序：查询结果全面按 1) 流程名完全一致优先；2) 流程名模糊包含次之；3) 流程编码一致再次之；4) 表单名一致再次之；5) 完结态(`status='end'`)优先；6) 发起时间倒序排列；保证当前流程的实例必然顶置在前排，其他可用表单实例顺延展示；
