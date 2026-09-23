@@ -25,6 +25,19 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
   }
 })
 
+// displayAuditPeople 精准展示处理人：若已有落账步骤事实则由 runStepNote 承载；多于3人时标记为自选候选范围，杜绝将几百人全量铺开。
+const displayAuditPeople = computed(() => {
+  if (props.data.runMode && props.data.runStepNote) {
+    return ''
+  }
+  const people = props.data.auditPeople ?? []
+  if (!people.length) return ''
+  if (people.length <= 3) {
+    return `处理人：${people.join('、')}`
+  }
+  return `自选候选：${people.slice(0, 2).join('、')} 等 ${people.length} 人`
+})
+
 </script>
 
 <template>
@@ -62,7 +75,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       <handle type="target" :position="Position.Top" :connectable="false" />
       <span class="flow-node__type">{{ data.typeName }}</span>
       <span class="flow-node__name">{{ data.name }}</span>
-      <span v-if="data.auditPeople?.length && !isEmptyNode" class="flow-node__people">处理人：{{ data.auditPeople.join('、') }}</span>
+      <span v-if="displayAuditPeople && !isEmptyNode" class="flow-node__people">{{ displayAuditPeople }}</span>
       <span v-else-if="isEmptyNode" class="flow-node__people flow-node__people--empty">系统自动跳过</span>
       <span class="flow-node__run-status">
         <!-- 状态点是细小连续的动态反馈：运行/核验中呼吸，其余状态静止；文字始终写清运行态。 -->
@@ -100,7 +113,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
       <handle type="target" :position="Position.Top" :connectable="false" />
       <span class="flow-node__type">{{ data.typeName }}</span>
       <span class="flow-node__name">{{ data.name }}</span>
-      <span v-if="data.auditPeople?.length && !isEmptyNode" class="flow-node__people">处理人：{{ data.auditPeople.join('、') }}</span>
+      <span v-if="displayAuditPeople && !isEmptyNode" class="flow-node__people">{{ displayAuditPeople }}</span>
       <span v-else-if="isEmptyNode" class="flow-node__people flow-node__people--empty">系统自动跳过</span>
       <span
         class="flow-node__configuration-status"
@@ -131,7 +144,7 @@ const tagType = computed<'default' | 'success' | 'warning' | 'error' | 'info'>((
     <handle type="target" :position="Position.Top" :connectable="false" />
     <span class="flow-node__type">{{ data.typeName }}</span>
     <span class="flow-node__name">{{ data.name }}</span>
-    <span v-if="data.auditPeople?.length && !isEmptyNode" class="flow-node__people">处理人：{{ data.auditPeople.join('、') }}</span>
+    <span v-if="displayAuditPeople && !isEmptyNode" class="flow-node__people">{{ displayAuditPeople }}</span>
     <span v-else-if="isEmptyNode" class="flow-node__people flow-node__people--empty">系统自动跳过</span>
     <handle type="source" :position="Position.Bottom" :connectable="false" />
   </n-tag>

@@ -545,6 +545,22 @@ func projectedPersonSelection(person model.PathConfigPerson, strategy model.Path
 		}
 		return selected
 	case "random":
+		// 优先使用已保存的有效已选人，保证配置与运行视图完全一致
+		if len(strategy.Selected) > 0 {
+			allowed := make(map[string]bool, len(person.Options))
+			for _, option := range person.Options {
+				allowed[option.Value] = true
+			}
+			valid := make([]string, 0, len(strategy.Selected))
+			for _, val := range strategy.Selected {
+				if allowed[val] {
+					valid = append(valid, val)
+				}
+			}
+			if len(valid) > 0 {
+				return valid
+			}
+		}
 		if len(person.Options) == 0 {
 			return []string{}
 		}

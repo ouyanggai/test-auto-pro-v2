@@ -300,7 +300,14 @@ export function resolvedPersonStrategySelection(person: PathConfigPerson, input?
   const strategy = input?.strategy ?? person.strategy ?? 'manual'
   if (strategy === 'target_default') return copyPersonSelection(person.defaultSelected)
   if (strategy === 'all') return person.options.map(option => option.value)
-  if (strategy === 'random') { if (!person.options.length) return []; const count = Math.min(person.options.length, Math.max(1, person.minCount || 1)); const start = normalizedPathConfigSeed(input?.seed ?? person.strategySeed) % person.options.length; return Array.from({ length: count }, (_, index) => person.options[(start + index) % person.options.length].value) }
+  if (strategy === 'random') {
+    if (input?.selected?.length) return copyPersonSelection(input.selected)
+    if (person.selected?.length) return copyPersonSelection(person.selected)
+    if (!person.options.length) return []
+    const count = Math.min(person.options.length, Math.max(1, person.minCount || 1))
+    const start = normalizedPathConfigSeed(input?.seed ?? person.strategySeed) % person.options.length
+    return Array.from({ length: count }, (_, index) => person.options[(start + index) % person.options.length].value)
+  }
   return copyPersonSelection(input?.selected ?? person.selected)
 }
 

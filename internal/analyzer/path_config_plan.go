@@ -136,12 +136,23 @@ func expectedPathConfigPersonIDsWithExclusion(target *PathConfigPersonTarget, st
 	case "all":
 		result = validRawPersonIDs(target, filteredCandidates)
 	case "random":
+		// 优先使用配置阶段已确定并保存的人员选择，保持与界面展示绝对一致
+		validSelected := make([]string, 0, len(selected))
+		for _, id := range selected {
+			if !exclusionIDs[id] && target.CandidateNames[id] != "" {
+				validSelected = append(validSelected, id)
+			}
+		}
 		count := target.MinCount
 		if count < 1 {
 			count = 1
 		}
 		if target.MaxCount > 0 && count > target.MaxCount {
 			count = target.MaxCount
+		}
+		if len(validSelected) >= count {
+			result = validSelected[:count]
+			break
 		}
 		if len(filteredCandidates) == 0 {
 			return nil, "所有候选人员均在排除名单中，无法进行随机选择"
