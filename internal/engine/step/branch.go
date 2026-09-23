@@ -173,7 +173,9 @@ func isParallelBranch(currentTargetID, nextTargetID string, runCtx RunContext) b
 	}
 	// 2. 检查是否存在一个共同祖先 parallel 节点，能够同时正向到达 current 与 next
 	for nodeID := range runCtx.GraphEdges {
-		if !strings.EqualFold(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]), "parallel") {
+		nodeType := strings.ToLower(strings.TrimSpace(runCtx.GraphNodeTypes[nodeID]))
+		isParallelGateway := nodeType == "parallel" || nodeType == "parallel_gateway" || nodeType == "并行"
+		if !isParallelGateway {
 			continue
 		}
 		reachCurrent := map[string]bool{}

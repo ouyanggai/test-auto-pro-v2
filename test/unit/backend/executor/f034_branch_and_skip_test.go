@@ -150,3 +150,74 @@ func TestParallelBranchTransitionNotBlocked(t *testing.T) {
 		t.Fatalf("审批端点应为 WriteEndpointAudit：%s", endpoint)
 	}
 }
+// TestMultiNodeParallelBranchTransitions 验证多节点、多分支（>=3支线）、嵌套及交错执行的复杂并行场景均能正确放行。
+func TestMultiNodeParallelBranchTransitions(t *testing.T) {
+	// 拓扑：
+	// start -> p1
+	// p1 -> A1 -> A2 -> merge1
+	// p1 -> p2 (嵌套并行)
+	// p2 -> B1 -> B2 -> merge2
+	// p2 -> C1 -> merge2
+	// merge2 -> merge1
+	// merge1 -> end
+	runCtx := step.RunContext{
+		GraphEdges: map[string][]step.GraphEdgeInfo{
+			"start":  {{Target: "p1"}},
+			"p1":     {{Target: "A1"}, {Target: "p2"}},
+			"A1":     {{Target: "A2"}},
+			"A2":     {{Target: "merge1"}},
+			"p2":     {{Target: "B1"}, {Target: "C1"}},
+			"B1":     {{Target: "B2"}},
+			"B2":     {{Target: "merge2"}},
+			"C1":     {{Target: "merge2"}},
+			"merge2": {{Target: "merge1"}},
+			"merge1": {{Target: "end"}},
+		},
+		GraphNodeTypes: map[string]string{
+			"start":  "start",
+			"p1":     "parallel",
+			"A1":     "common",
+			"A2":     "common",
+			"p2":     "parallel",
+			"B1":     "common",
+			"B2":     "common",
+			"C1":     "common",
+			"merge2": "merge",
+			"merge1": "merge",
+			"end":    "end",
+		},
+		Nodes: map[string]step.NodeInfo{
+			"k_A1": {TargetNodeID: "A1", Name: "A1", AuditType: "common"},
+			"k_A2": {TargetNodeID: "A2", Name: "A2", AuditType: "common"},
+			"k_B1": {TargetNodeID: "B1", Name: "B1", AuditType: "common"},
+			"k_B2": {TargetNodeID: "B2", Name: "B2", AuditType: "common"},
+			"k_C1": {TargetNodeID: "C1", Name: "C1", AuditType: "common"},
+			"k_m1": {TargetNodeID: "merge1", Name: "merge1", AuditType: "common"},
+		},
+	}
+
+	cases := []struct {
+		from string
+		to   string
+		desc string
+	}{
+		{"k_A1", "k_A2", "支线A内部顺序推进：A1 -> A2"},
+		{"k_A2", "k_B1", "跨支线切换：A2 -> B1"},
+		{"k_B1", "k_B2", "支线B内部顺序推进：B1 -> B2"},
+		{"k_B2", "k_C1", "跨兄弟并行支线切换：B2 -> C1"},
+		{"k_C1", "k_m1", "汇聚推进：C1 -> merge1"},
+		{"k_A1", "k_B1", "交错执行：A1 -> B1"},
+		{"k_B1", "k_A2", "交错执行：B1 -> A2"},
+		{"k_A2", "k_C1", "跨3条支线切换：A2 -> C1"},
+	}
+
+	for _, tc := range cases {
+		entries, blockReason := step.BranchEntriesForTransitionForTest(tc.from, tc.to, runCtx)
+		if blockReason != "" {
+			t.Fatalf("[%s] 不应阻塞，但报错: %s", tc.desc, blockReason)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("[%s] 无手动分支时不应携带分支入口: %v", tc.desc, entries)
+		}
+	}
+}
