@@ -252,12 +252,11 @@ export function buildPathActionConfigurationInput(container: PathActionContainer
     }
     if (item.person) personsByKey.set(item.person.key, { key: item.person.key, strategy: item.person.strategy, seed: item.person.seed, selected: copyPersonSelection(item.person.selected) })
     actions.push({
-      key: item.key, action, scope, nodeKey: scope === 'instance' ? undefined : container.key, order,
+      key: item.key, action, scope, nodeKey: container.key, order,
       ...(Object.keys(parameters).length ? { parameters } : {}),
       ...((item.actorPolicy || item.person?.strategy) ? { actorPolicy: item.actorPolicy || item.person?.strategy } : {}),
       ...(item.note ? { note: item.note } : {}),
     })
-    order += 1
   })
   return { persons: [...personsByKey.values()], actions }
 }

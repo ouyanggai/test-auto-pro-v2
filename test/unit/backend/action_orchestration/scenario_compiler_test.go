@@ -408,3 +408,41 @@ func TestForwardAfterDraftAndResubmitSucceeds(t *testing.T) {
 		t.Fatalf("步骤序列不符合预期：全部步骤=%+v", result.Steps)
 	}
 }
+
+// TestNodeBoundWithdrawCompilesInPlaceAndRecovers 验证撤回绑定到具体节点后，在该节点处原位触发并生成恢复链回到该节点。
+func TestNodeBoundWithdrawCompilesInPlaceAndRecovers(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "withdraw-1", Action: model.ActionWithdraw, Scope: model.ActionScopeInstance, NodeKey: "review", Order: 1},
+		},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Type: "start"}, {ID: "mid", Type: "common"},
+			{ID: "review", Type: "common"}, {ID: "end", Type: "end"},
+		},
+		NodeSequence: []string{"start", "mid", "review", "end"},
+	})
+	if err != nil {
+		t.Fatalf("节点绑定撤回编译失败：%v", err)
+	}
+	// 步骤应为：
+	// 1. start submit
+	// 2. mid approve
+	// 3. review withdraw (用户步骤，NodeKey=review)
+	// 4. start resubmit (恢复步骤)
+	// 5. mid approve (恢复步骤)
+	// 6. review approve (固定尾动作)
+	// 7. end system_automatic
+	var withdrawStep *model.CompiledActionStep
+	for i := range result.Steps {
+		if result.Steps[i].Action == model.ActionWithdraw {
+			withdrawStep = &result.Steps[i]
+			break
+		}
+	}
+	if withdrawStep == nil {
+		t.Fatalf("未找到撤回步骤，全部步骤=%+v", result.Steps)
+	}
+	if withdrawStep.NodeKey != "review" {
+		t.Fatalf("撤回步骤未绑定到 review 节点，NodeKey=%s", withdrawStep.NodeKey)
+	}
+}

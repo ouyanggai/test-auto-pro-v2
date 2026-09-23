@@ -674,31 +674,13 @@ func mergeNodeActions(existing, submitted []model.ConfiguredAction, nodeKey stri
 			}
 			submittedOrders[action.Order] = action.Key
 		}
-		if action.Scope == model.ActionScopeInstance {
-			if action.Action != model.ActionForward && action.Action != model.ActionWithdraw {
-				if !instanceContainer {
-					return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作只能在实例动作容器保存", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作不属于当前语义节点"}}}
-				}
-				if key := strings.TrimSpace(action.NodeKey); key != "" && key != nodeKey {
-					return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作不能绑定节点", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "实例动作必须使用空节点键"}}}
-				}
-				action.NodeKey = ""
-			} else {
-				if instanceContainer {
-					action.NodeKey = ""
-				} else {
-					if strings.TrimSpace(action.NodeKey) == "" {
-						action.NodeKey = nodeKey
-					}
-					if action.NodeKey != nodeKey {
-						return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "一次只能保存当前语义节点的动作", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "动作节点键与当前保存节点不一致"}}}
-					}
-				}
-			}
-		} else {
-			if instanceContainer {
+		// 所有动作均直接绑定到当前语义节点，不再区分普通任务与实例动作；若通过旧实例容器保存则依然校验作用域
+		if instanceContainer {
+			if action.Scope != model.ActionScopeInstance {
 				return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "实例动作容器只能保存实例作用域动作", Affected: []model.PathConfigAffectedItem{{Kind: "action", Name: action.Key, Reason: "节点动作必须在对应语义节点保存"}}}
 			}
+			action.NodeKey = ""
+		} else {
 			if strings.TrimSpace(action.NodeKey) == "" {
 				action.NodeKey = nodeKey
 			}
@@ -1049,7 +1031,7 @@ func autoExtraActionCandidates(node model.PathConfigNode, instanceCatalog []mode
 		return nil, rejections
 	case "common", "synergy":
 		available := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog)+len(instanceCatalog))
-		// 节点动作候选：全部节点动作（暂存、加签、移交、取回、不同意、回退）+ 实例动作中的转发与撤回，全部合起来随机
+		// 节点动作候选：全部节点动作与实例管理动作合并统一随机编排，直接绑定归属当前节点
 		allowedActions := map[model.ActionKey]bool{
 			model.ActionStorageFormData: true,
 			model.ActionAddSign:         true,
@@ -1059,14 +1041,12 @@ func autoExtraActionCandidates(node model.PathConfigNode, instanceCatalog []mode
 			model.ActionRollback:        true,
 			model.ActionForward:         true,
 			model.ActionWithdraw:        true,
+			model.ActionUrge:            true,
+			model.ActionFollow:          true,
 		}
 		rawCatalog := make([]model.PathConfigActionCatalogItem, 0, len(node.ActionConfiguration.Catalog)+len(instanceCatalog))
 		rawCatalog = append(rawCatalog, node.ActionConfiguration.Catalog...)
-		for _, item := range instanceCatalog {
-			if item.Kind == string(model.ActionForward) || item.Kind == string(model.ActionWithdraw) {
-				rawCatalog = append(rawCatalog, item)
-			}
-		}
+		rawCatalog = append(rawCatalog, instanceCatalog...)
 		for _, item := range rawCatalog {
 			kind := model.ActionKey(item.Kind)
 			if !allowedActions[kind] {
@@ -1250,6 +1230,7 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 	// 避免"数据已保存但接口返回失败"的状态不一致。
 	diagnostics := make([]string, 0, 8)
 	blockingRejections := make([]string, 0, 8)
+	lastHumanKey := lastHumanNodeKey(configuration)
 	for _, group := range configuration.Groups {
 		for gi := range group.Nodes {
 			node := &group.Nodes[gi]
@@ -1338,6 +1319,8 @@ func (s *PathConfigService) AutoConfigurePathActions(ctx context.Context, planID
 			draftFirst := autoConfigureSeed(planID, pathID, node.Key+":initiator_draft")%2 == 1
 			candidates, rejections := autoExtraActionCandidates(*node, configuration.InstanceActions.Catalog, nodeSeed, usedInPath(actions), planAccount, draftFirst)
 			// F-034 评审修正：候选级失败先记入诊断，只有业务节点最终没有任何可用动作才升级为阻塞失败。
+			// 取回规则：末节点没有后继人工待办窗口，从候选排除；中间人工节点有直接后继窗口，正常允许取回
+			candidates, rejections = dropRetrieveCandidateIfNoNextWindow(node.Key, lastHumanKey, candidates, rejections)
 			diagnostics = append(diagnostics, rejections...)
 			if strings.TrimSpace(node.Kind) == "start" && len(candidates) == 0 {
 				// 发起人节点随机到直接提交一侧：不配置额外用户动作，由场景编译器自动生成固定尾动作

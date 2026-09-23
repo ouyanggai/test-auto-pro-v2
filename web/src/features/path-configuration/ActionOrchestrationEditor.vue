@@ -61,13 +61,17 @@ const systemCatalog = computed(() => catalog.value.filter(item => item.systemOnl
 const insertedCatalog = computed(() => catalog.value.filter(item => item.systemInserted))
 const disabledCatalog = computed(() => selectableCatalog.value.filter(item => !item.enabled && item.disabledReason))
 const actions = computed(() => actionDraft.value)
-// 节点动作摘要只展示当前节点动作，避免把整条路径的实例动作伪装成当前节点的第二个动作
+const INSTANCE_MANAGEMENT_KINDS = new Set(['withdraw', 'urge', 'forward', 'follow', 'unfollow'])
+function isInstanceAction(kind: string): boolean {
+  return INSTANCE_MANAGEMENT_KINDS.has(kind)
+}
 const savedSummary = computed(() => collapseActions(props.savedActions))
+const nodeActionsSummary = computed(() => collapseActions(props.savedActions.filter(action => !isInstanceAction(action.kind))))
+const instanceActionsSummary = computed(() => collapseActions(props.savedActions.filter(action => isInstanceAction(action.kind))))
 const canAddAction = computed(() => enabledCatalog.value.length > 0 && actions.value.length < MAX_ACTIONS)
 const editorDisabled = computed(() => props.readOnly || props.blocked || !selectableCatalog.value.length)
 const hasChanges = computed(() => {
-  const currentSaved = isInitiatorNode.value ? props.savedActions : [...props.savedActions, ...(props.instanceSavedActions ?? [])]
-  return JSON.stringify(expandActions()) !== JSON.stringify(currentSaved)
+  return JSON.stringify(expandActions()) !== JSON.stringify(props.savedActions)
 })
 
 // ACTION_NAMES 全局动作中文映射兜底，防止任何位置将英文动作键裸露给用户。
@@ -171,14 +175,12 @@ function expandActions(): PathConfigConfiguredActionInput[] {
 
 function emitActions() {
   const expanded = expandActions()
-  emit('update', props.container.key, expanded.filter(action => !instanceKinds.value.has(action.kind)))
-  if (props.instanceContainer) emit('update', props.instanceContainer.key, expanded.filter(action => instanceKinds.value.has(action.kind)))
+  emit('update', props.container.key, expanded)
 }
 
-// openEditor 从已保存动作还原草稿，并把连续同类动作折叠回次数。
+// openEditor 从当前节点已保存动作还原草稿，不再被全局实例动作跨节点污染。
 function openEditor() {
-  const actionsToEdit = isInitiatorNode.value ? props.savedActions : [...props.savedActions, ...(props.instanceSavedActions ?? [])]
-  const collapsed = collapseActions(actionsToEdit)
+  const collapsed = collapseActions(props.savedActions)
   actionDraft.value = collapsed.map(item => item.action)
   repeatDraft.value = Object.fromEntries(collapsed.map(item => [item.action.key, item.count]))
   allowClose.value = false
@@ -264,14 +266,25 @@ function removeAction(index: number) {
     <p v-if="!isInitiatorNode && instanceContainer" class="action-orchestration__note">下拉上半是当前节点动作，下半是作用于整个实例的动作。</p>
 
     <div class="action-orchestration__summary">
-      <n-tag v-for="(item, index) in savedSummary" :key="item.action.key" size="small">
-        {{ index + 1 }}. {{ actionDisplayLabel(item.action.kind) }}{{ item.count > 1 ? ` ×${item.count}` : '' }}
-      </n-tag>
-      <!-- 同意/提交/重新提交作为默认基本动作，直接并入动作列表尾部并加默认标识，不再单独展示固定尾动作区块 -->
-      <n-tag v-if="container.actionConfiguration.base" size="small" type="info" data-testid="default-tail-action">
-        {{ baseActionLabel }}
-        <n-tag size="tiny" type="primary" :bordered="false" class="action-orchestration__default-mark">默认</n-tag>
-      </n-tag>
+      <div v-if="nodeActionsSummary.length" class="action-summary-section">
+        <span class="action-summary-label">节点动作：</span>
+        <n-tag v-for="(item, index) in nodeActionsSummary" :key="item.action.key" size="small">
+          {{ index + 1 }}. {{ actionDisplayLabel(item.action.kind) }}{{ item.count > 1 ? ` ×${item.count}` : '' }}
+        </n-tag>
+      </div>
+      <div v-if="instanceActionsSummary.length" class="action-summary-section">
+        <span class="action-summary-label">实例动作：</span>
+        <n-tag v-for="(item, index) in instanceActionsSummary" :key="item.action.key" size="small" type="warning">
+          {{ index + 1 }}. {{ actionDisplayLabel(item.action.kind) }}{{ item.count > 1 ? ` ×${item.count}` : '' }}
+        </n-tag>
+      </div>
+      <div v-if="container.actionConfiguration.base" class="action-summary-section">
+        <span class="action-summary-label">默认尾动作：</span>
+        <n-tag size="small" type="info" data-testid="default-tail-action">
+          {{ baseActionLabel }}
+          <n-tag size="tiny" type="primary" :bordered="false" class="action-orchestration__default-mark">默认</n-tag>
+        </n-tag>
+      </div>
       <span v-if="!savedSummary.length && !container.actionConfiguration.base" class="action-orchestration__muted">未添加动作</span>
     </div>
     <details v-if="selectableCatalog.length" class="action-orchestration__catalog">
@@ -403,6 +416,8 @@ function removeAction(index: number) {
 .action-orchestration__note,.action-orchestration__hint{margin:0;font-size:12px;opacity:.75}
 .action-orchestration__muted{font-size:12px;opacity:.6}
 .action-orchestration__summary{display:flex;flex-wrap:wrap;gap:6px}
+.action-summary-section{display:flex;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
+.action-summary-label{font-size:12px;font-weight:500;color:var(--n-text-color-2,#606266)}
 .action-orchestration__default-mark{margin-left:4px}
 .action-orchestration__catalog{font-size:12px}
 .action-orchestration__catalog ul{display:grid;gap:8px;margin:8px 0 0;padding-left:16px}
