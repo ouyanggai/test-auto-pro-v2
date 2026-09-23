@@ -247,8 +247,9 @@ type FlowAuditScope struct {
 
 // FlowAuditCandidate 是目标详情已经返回的受限人员候选，仅在后端内部参与不透明键映射。
 type FlowAuditCandidate struct {
-	ID   string
-	Name string
+	ID      string
+	Name    string
+	Company string
 }
 
 // FlowAuditResolutionIssue 记录目标目录解析失败的公开类别与原因，不携带目标响应原文。

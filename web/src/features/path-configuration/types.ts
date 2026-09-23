@@ -281,6 +281,7 @@ export interface PathConfigPersonDisplayItem {
 export interface PathConfigPersonOption {
   label: string
   value: string
+  group?: string
 }
 
 export type PathConfigPersonStrategy = 'target_default' | 'manual' | 'random' | 'all'

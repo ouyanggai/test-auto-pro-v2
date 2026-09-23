@@ -3,7 +3,7 @@ import { NAlert, NButton, NEmpty, NSelect, NTag } from 'naive-ui'
 import { computed, ref } from 'vue'
 import ActionOrchestrationEditor from './ActionOrchestrationEditor.vue'
 import ActionFlowDialog from './ActionFlowDialog.vue'
-import { containerActionsDraft, nodeActionContainer, normalizedPersonStrategy, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
+import { buildPersonSelectOptions, containerActionsDraft, nodeActionContainer, normalizedPersonStrategy, pathConfigurationMessage, pathConfigurationStatusName, resolvedPersonStrategySelection, summarizePathConfigPersonItems } from './logic'
 import type { PathActionFlowLabels } from './logic'
 import type { PathActionConfigurationIssue, PathActionContainer, PathCompiledActionStep, PathConfigConfiguredActionInput, PathConfigDraft, PathConfigNode, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
@@ -32,8 +32,8 @@ function reloadActionFlow() {
 
 // personDraft 返回当前人员策略草稿。
 function personDraft(person: PathConfigPerson) { return normalizedPersonStrategy(person, props.draft.personStrategies[person.key]) }
-// personOptions 生成不透明人员候选。
-function personOptions(person: PathConfigPerson) { return person.options.map(option => ({ label: option.label, value: option.value })) }
+// personOptions 生成按公司分组的人员候选选项。
+function personOptions(person: PathConfigPerson) { return buildPersonSelectOptions(person) as any }
 // strategyOptions 生成当前模板允许的策略候选。
 function strategyOptions(person: PathConfigPerson) { return person.strategies.map(option => ({ label: option.label, value: option.value })) }
 // updatePersonStrategy 更新当前节点处理人员草稿。
@@ -63,7 +63,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
           <template v-if="person.editable">
             <div class="person-controls">
               <n-select :value="personDraft(person).strategy" :options="strategyOptions(person)" :disabled="readOnly" @update:value="value => updatePersonStrategy(person, { strategy: value })" />
-              <n-select v-if="personDraft(person).strategy === 'manual'" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" :disabled="readOnly" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
+              <n-select v-if="personDraft(person).strategy === 'manual'" filterable clearable placeholder="可输入姓名或拼音搜索，按公司分组" :multiple="person.multiple" :value="person.multiple ? personDraft(person).selected : (personDraft(person).selected[0] ?? null)" :options="personOptions(person)" :disabled="readOnly" @update:value="value => updatePersonStrategy(person, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
             </div>
             <small v-if="personDraft(person).selected.length">当前选择：{{ personDraft(person).selected.map(value => person.options.find(option => option.value === value)?.label || '已选人员').join('、') }}</small>
           </template>

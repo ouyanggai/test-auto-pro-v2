@@ -181,10 +181,11 @@ type PathConfigPersonDisplayItem struct {
 	Count    int    `json:"count"`
 }
 
-// PathConfigPersonOption 只公开合法候选的中文名称与不透明回写键。
+// PathConfigPersonOption 只公开合法候选的中文名称、不透明回写键与归属公司分组。
 type PathConfigPersonOption struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+	Group string `json:"group,omitempty"`
 }
 
 // PathConfigPersonStrategyOption 是目标模板当前允许的人员选择策略。

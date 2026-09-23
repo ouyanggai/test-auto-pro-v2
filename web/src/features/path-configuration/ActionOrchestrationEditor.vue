@@ -3,7 +3,7 @@ import { AddOutline, ArrowDownOutline, ArrowUpOutline, CloseOutline, ReorderTwoO
 import { NAlert, NButton, NCard, NInputNumber, NModal, NPopconfirm, NSelect, NSpace, NTag } from 'naive-ui'
 import { computed, ref } from 'vue'
 
-import { copyPathConfigActions, normalizedPersonStrategy } from './logic'
+import { buildPersonSelectOptions, copyPathConfigActions, normalizedPersonStrategy } from './logic'
 import type { PathActionContainer, PathConfigActionCatalogItem, PathConfigActionKind, PathConfigConfiguredActionInput, PathConfigPerson, PathConfigPersonStrategyInput } from './types'
 
 const props = defineProps<{
@@ -33,15 +33,15 @@ const ALL_PEOPLE_PREVIEW = 5
 
 // personAllSummary 生成“张三、李四 等 12 人”样式的摘要，只取前几人避免撑开卡片。
 function personAllSummary(person: PathConfigPerson): string {
-  const names = personOptions(person).map(option => option.label)
+  const names = person.options.map(option => option.label)
   const preview = names.slice(0, ALL_PEOPLE_PREVIEW).join('、')
   return names.length > ALL_PEOPLE_PREVIEW ? `${preview} 等 ${names.length} 人` : preview
 }
 
 // openAllPeople 打开第二个弹窗，滚动展示全部候选人名单。
 function openAllPeople(person: PathConfigPerson) {
-  allPeopleTitle.value = `全部候选人员（${personOptions(person).length} 人）`
-  allPeopleNames.value = personOptions(person).map(option => option.label)
+  allPeopleTitle.value = `全部候选人员（${person.options.length} 人）`
+  allPeopleNames.value = person.options.map(option => option.label)
   allPeopleOpen.value = true
 }
 
@@ -133,7 +133,7 @@ function actionHint(kind: PathConfigActionKind): string {
 
 function personDraft(person: PathConfigPerson) { return normalizedPersonStrategy(person, props.personStrategies[person.key]) }
 
-function personOptions(person: PathConfigPerson) { return person.options.map(option => ({ label: option.label, value: option.value })) }
+function personOptions(person: PathConfigPerson) { return buildPersonSelectOptions(person) as any }
 
 function strategyOptions(person: PathConfigPerson) { return person.strategies.map(option => ({ label: option.label, value: option.value })) }
 
@@ -364,7 +364,7 @@ function removeAction(index: number) {
           <small class="action-row__hint">{{ actionHint(action.kind) }}</small>
           <div v-if="actionPerson(action.kind)" class="action-person-fields">
             <n-select filterable :value="action.person?.strategy || actionPerson(action.kind)!.strategy" :options="strategyOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { strategy: value as PathConfigPersonStrategyInput['strategy'] })" />
-            <n-select v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'manual'" filterable :multiple="actionPerson(action.kind)!.multiple" :value="actionPerson(action.kind)!.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
+            <n-select v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'manual'" filterable clearable placeholder="可输入姓名或拼音搜索，按公司分组" :multiple="actionPerson(action.kind)!.multiple" :value="actionPerson(action.kind)!.multiple ? (action.person?.selected || []) : (action.person?.selected?.[0] || null)" :options="personOptions(actionPerson(action.kind)!)" :disabled="readOnly" @update:value="value => updateActionPerson(index, actionPerson(action.kind)!, { selected: Array.isArray(value) ? value : (value ? [value] : []) })" />
             <!-- 全部候选只展示前几人加人数汇总，防止候选人过多撑爆弹窗；完整名单由第二个弹窗滚动查看 -->
             <template v-if="(action.person?.strategy || actionPerson(action.kind)!.strategy) === 'all'">
               <span class="action-person-all">{{ personAllSummary(actionPerson(action.kind)!) }}</span>

@@ -596,12 +596,8 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 		}
 		return model.PathConfigPerson{Title: title, Mode: mode, Source: source, Status: status, StatusName: statusName, Detail: detail, Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
-	if len(config.Candidates) == 0 {
-		if len(config.Scopes) > 0 {
-			return model.PathConfigPerson{Title: title, Mode: "review", Source: source, Status: "blocked", StatusName: "候选为空", Detail: detail + "；当前合法范围内没有可选人员", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
-		}
-		// 没有静态范围时只允许明确说明真实依赖，不能伪造全公司候选。
-		return model.PathConfigPerson{Title: title, Mode: "runtime", Source: source, Status: "runtime", StatusName: "运行时确定", Detail: detail + "；依赖真实任务上下文，只能在实际执行该节点时加载候选", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
+	if len(config.Candidates) == 0 && len(config.Scopes) > 0 {
+		return model.PathConfigPerson{Title: title, Mode: "review", Source: source, Status: "blocked", StatusName: "候选为空", Detail: detail + "；当前合法范围内没有可选人员", Items: items, Selected: []string{}, Options: []model.PathConfigPersonOption{}, Strategies: []model.PathConfigPersonStrategyOption{}}
 	}
 	key := PathConfigPersonToken(nodeID)
 	options := make([]model.PathConfigPersonOption, 0, len(config.Candidates))
@@ -613,7 +609,7 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 		candidateTokens[token] = candidate.ID
 		candidateNames[candidate.ID] = candidate.Name
 		rawToToken[candidate.ID] = token
-		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token})
+		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token, Group: candidate.Company})
 	}
 	multiple := strings.TrimSpace(config.Mode) == "countersign"
 	minCount := 1

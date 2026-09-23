@@ -510,7 +510,7 @@ func actionCandidatePersonConfig(nodeID, actionKind, title, detail string, candi
 		if name := strings.TrimSpace(candidate.Name); name != "" {
 			candidateNames[candidate.ID] = name
 		}
-		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token})
+		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token, Group: candidate.Company})
 	}
 	if len(options) == 0 {
 		return nil, nil

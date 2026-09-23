@@ -32,13 +32,21 @@ type rawAuditNamedItem struct {
 	Phone       string `json:"phone"`
 	// DutyID/DutyName 是人员目录返回的岗位事实（目标 UserRepository 查询直接带出 dutyId/dutyName），
 	// 供当前计划账号身份构造 global_user_basic_information.dutyId/dutyName。
-	DutyID   string `json:"dutyId"`
-	DutyName string `json:"dutyName"`
-	UserVo   *struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		RealName    string `json:"realName"`
-		DisplayName string `json:"displayName"`
+	DutyID         string `json:"dutyId"`
+	DutyName       string `json:"dutyName"`
+	CompanyID      string `json:"companyId"`
+	CompanyName    string `json:"companyName"`
+	DepartmentID   string `json:"departmentId"`
+	DepartmentName string `json:"departmentName"`
+	UserVo         *struct {
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		RealName       string `json:"realName"`
+		DisplayName    string `json:"displayName"`
+		CompanyID      string `json:"companyId"`
+		CompanyName    string `json:"companyName"`
+		DepartmentID   string `json:"departmentId"`
+		DepartmentName string `json:"departmentName"`
 	} `json:"userVo"`
 }
 
@@ -203,6 +211,24 @@ func (r *auditDirectoryResolver) resolve(config *FlowNodeAuditConfig) {
 		scope.Name = name
 		config.Candidates = appendUniqueAuditCandidates(config.Candidates, candidates...)
 	}
+	if strings.TrimSpace(config.AuditType) == "run_node_choose" && len(config.Candidates) == 0 && len(config.Scopes) == 0 {
+		// 目标平台未限定审批人自选范围时，默认全公司人员均可选
+		if items, err := r.personnelItems(); err == nil && len(items) > 0 {
+			candidates := make([]FlowAuditCandidate, 0, len(items))
+			for _, item := range items {
+				c := auditCandidateFromNamed(item)
+				candidates = append(candidates, c)
+			}
+			config.Candidates = appendUniqueAuditCandidates(nil, candidates...)
+		}
+	}
+	// 为未带公司的候选人补充当前登录公司名称
+	defaultCompany := strings.TrimSpace(r.active.Summary.CompanyName)
+	for i := range config.Candidates {
+		if config.Candidates[i].Company == "" {
+			config.Candidates[i].Company = defaultCompany
+		}
+	}
 	config.Candidates = appendUniqueAuditCandidates(nil, config.Candidates...)
 	if len(config.Candidates) > maxAuditDirectoryCandidates {
 		config.Candidates = config.Candidates[:maxAuditDirectoryCandidates]
@@ -290,7 +316,7 @@ func (r *auditDirectoryResolver) organizationalScope(nameFlag, id string) (strin
 		return "", nil, fmt.Errorf("audit scope not found")
 	}
 	candidates := make([]FlowAuditCandidate, 0)
-	collectAuditDirectoryUsers(*node, &candidates)
+	collectAuditDirectoryUsers(*node, strings.TrimSpace(r.active.Summary.CompanyName), &candidates)
 	candidates = appendUniqueAuditCandidates(nil, candidates...)
 	if len(candidates) == 0 {
 		return "", nil, fmt.Errorf("audit scope has no personnel")
@@ -463,12 +489,24 @@ func (r *auditDirectoryResolver) positionCandidates(positionID string) ([]FlowAu
 	return result, nil
 }
 
-// auditCandidateFromNamed 兼容普通用户项和角色关系中的 userVo，不公开其内部 ID。
+// auditCandidateFromNamed 兼容普通用户项和角色关系中的 userVo，提取人员信息并提取所属公司。
 func auditCandidateFromNamed(item rawAuditNamedItem) FlowAuditCandidate {
-	if item.UserVo != nil {
-		return FlowAuditCandidate{ID: strings.TrimSpace(item.UserVo.ID), Name: firstNonEmpty(item.UserVo.Name, item.UserVo.RealName, item.UserVo.DisplayName)}
+	company := strings.TrimSpace(item.CompanyName)
+	if company == "" && item.UserVo != nil {
+		company = strings.TrimSpace(item.UserVo.CompanyName)
 	}
-	return FlowAuditCandidate{ID: strings.TrimSpace(item.ID), Name: firstNonEmpty(item.Name, item.RealName, item.DisplayName)}
+	if item.UserVo != nil {
+		return FlowAuditCandidate{
+			ID:      strings.TrimSpace(item.UserVo.ID),
+			Name:    firstNonEmpty(item.UserVo.Name, item.UserVo.RealName, item.UserVo.DisplayName),
+			Company: company,
+		}
+	}
+	return FlowAuditCandidate{
+		ID:      strings.TrimSpace(item.ID),
+		Name:    firstNonEmpty(item.Name, item.RealName, item.DisplayName),
+		Company: company,
+	}
 }
 
 // findAuditDirectoryNode 递归查找目标目录节点，目录由受限目标响应提供且不在公开 DTO 中透传。
@@ -485,27 +523,43 @@ func findAuditDirectoryNode(nodes []rawAuditDirectoryNode, id string) *rawAuditD
 	return nil
 }
 
-// collectAuditDirectoryUsers 只收集目标目录明确标为人员的子节点，避免把组织或岗位 ID 当候选人。
-func collectAuditDirectoryUsers(node rawAuditDirectoryNode, result *[]FlowAuditCandidate) {
+// collectAuditDirectoryUsers 只收集目标目录明确标为人员的子节点，按树层级继承所属公司。
+func collectAuditDirectoryUsers(node rawAuditDirectoryNode, currentCompany string, result *[]FlowAuditCandidate) {
+	if strings.TrimSpace(node.Type) == "7" || strings.TrimSpace(node.Type) == "1" {
+		if name := firstNonEmpty(node.Name, node.DisplayName, node.RealName); name != "" {
+			currentCompany = strings.TrimSpace(name)
+		}
+	}
 	if strings.TrimSpace(node.Type) == "5" {
-		*result = append(*result, FlowAuditCandidate{ID: strings.TrimSpace(node.ID), Name: firstNonEmpty(node.Name, node.RealName, node.DisplayName)})
+		*result = append(*result, FlowAuditCandidate{
+			ID:      strings.TrimSpace(node.ID),
+			Name:    firstNonEmpty(node.Name, node.RealName, node.DisplayName),
+			Company: currentCompany,
+		})
 	}
 	for _, child := range node.ChildrenList {
-		collectAuditDirectoryUsers(child, result)
+		collectAuditDirectoryUsers(child, currentCompany, result)
 	}
 }
 
 // appendUniqueAuditCandidates 按内部 ID 去重合法候选，空 ID 或空名称不能形成可保存 token。
 func appendUniqueAuditCandidates(current []FlowAuditCandidate, candidates ...FlowAuditCandidate) []FlowAuditCandidate {
-	seen := make(map[string]bool, len(current)+len(candidates))
+	seen := make(map[string]int, len(current)+len(candidates))
 	result := make([]FlowAuditCandidate, 0, len(current)+len(candidates))
 	for _, candidate := range append(append([]FlowAuditCandidate(nil), current...), candidates...) {
 		candidate.ID = strings.TrimSpace(candidate.ID)
 		candidate.Name = strings.TrimSpace(candidate.Name)
-		if candidate.ID == "" || candidate.Name == "" || seen[candidate.ID] {
+		candidate.Company = strings.TrimSpace(candidate.Company)
+		if candidate.ID == "" || candidate.Name == "" {
 			continue
 		}
-		seen[candidate.ID] = true
+		if idx, exists := seen[candidate.ID]; exists {
+			if result[idx].Company == "" && candidate.Company != "" {
+				result[idx].Company = candidate.Company
+			}
+			continue
+		}
+		seen[candidate.ID] = len(result)
 		result = append(result, candidate)
 	}
 	return result

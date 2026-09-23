@@ -315,6 +315,50 @@ export function normalizedPersonStrategy(person: PathConfigPerson, input?: PathC
 // normalizedPathConfigSeed 保持浏览器 seed 在安全整数范围内。
 export function normalizedPathConfigSeed(seed: unknown): number { return typeof seed === 'number' && Number.isSafeInteger(seed) && seed >= 1 ? seed : 1 }
 
+// buildPersonSelectOptions 将人员候选按公司分组为 Naive UI 的 SelectGroupOption 或平铺列表。
+export function buildPersonSelectOptions(person: PathConfigPerson): Array<Record<string, unknown>> {
+  const groups = new Map<string, Array<{ label: string; value: string }>>()
+  const ungrouped: Array<{ label: string; value: string }> = []
+
+  for (const option of person.options) {
+    const item = { label: option.label, value: option.value }
+    const groupName = option.group ? option.group.trim() : ''
+    if (groupName) {
+      let list = groups.get(groupName)
+      if (!list) {
+        list = []
+        groups.set(groupName, list)
+      }
+      list.push(item)
+    } else {
+      ungrouped.push(item)
+    }
+  }
+
+  if (groups.size === 0) {
+    return ungrouped
+  }
+
+  const result: Array<Record<string, unknown>> = []
+  for (const [groupName, children] of groups.entries()) {
+    result.push({
+      type: 'group',
+      label: groupName,
+      key: groupName,
+      children,
+    })
+  }
+  if (ungrouped.length > 0) {
+    result.push({
+      type: 'group',
+      label: '其他',
+      key: '__other__',
+      children: ungrouped,
+    })
+  }
+  return result
+}
+
 // validPathConfigActions 在提交前校验目录和动作专用人员；重复动作记录是合法的，被门禁禁用的动作不合法。
 export function validPathConfigActions(container: PathActionContainer, input: PathConfigConfiguredActionInput[]): boolean {
   if (!input || input.length > 10) return false
