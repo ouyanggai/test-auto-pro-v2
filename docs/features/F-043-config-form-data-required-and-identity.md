@@ -1,6 +1,6 @@
 # F-043 配置期表单数据准备：缺失必填安全补齐与计划账号身份注入
 
-- 状态：`ready_for_manual`（2026-09-24 缺陷①安全补齐+文件上传、缺陷②身份注入均已实施并自动验证；等待用户在浏览器与真实目标人工核对，未获明确验收不标 `accepted`、不自动开始下一功能）
+- 状态：`ready_for_manual`（2026-09-24 缺陷①安全补齐+文件上传、缺陷②身份注入均已实施并自动验证。用户人工核对反馈缺陷②未通过：一键配置后当前登录人字段仍显示历史发起人；已定位真实根因并重做缺陷②后重新停在 `ready_for_manual`，等待用户在浏览器与真实目标再次人工核对，未获明确验收不标 `accepted`、不自动开始下一功能）
 - 提出时间：2026-09-24
 - 依赖：F-012 历史业务数据回放与节点动作编排、F-035 真实处理人与有效表单数据闭环、F-036 独立执行服务（form-runtime 预览装载）。均已落地；本切片只修配置期数据准备的两个正确性缺口，不改运行期写协议、动作语义或调度。
 
@@ -84,8 +84,10 @@
 ## 9. 本切片实施现状（2026-09-24 收口，`ready_for_manual`）
 
 - 缺陷①（必填安全补齐 + 文件上传）：按范围落地并测试。`internal/service/path_data_fill.go` 的 `requiredFieldFill` 对「当前模板 `Required` + 发起态可编辑 + 当前值为空」的 FormMaking 字段按类型确定性补齐（文本占位/数字 `json.Number` 保真/单多选取有效选项/日期今天/开关 `true`/颜色），无法安全确定者落 `needs_input` 带字段中文名；接入 `GetData`（只读预览、附件非阻断待上传）、`SaveData`、一键回放 `replayItem` 三入口。文件上传 `internal/adapter/target/client_file_upload.go` 的 `UploadFile`（multipart `/web/file/api/file/uploadFile`，受限超时、只发一次不重发、非业务写不进白名单）+ `path_data_upload.go` 账号级一次性上传缓存与超集回显。运行前检查 `run_readiness.go` 对 `needs_input`/`affected`/`empty` 挡住启动。提交 798dea4、4a5b74d。
-- 缺陷②（身份注入）：**方案已按用户 2026-09-24 裁决更换**。原计划 3(b)/8 的「扩展 `ApplyUserIdentityForAction` 固定键映射 / 依赖模板『默认取当前登录用户』标记」被否决——机房进入申请表无法提供当前用户字段 englishName，且模板 fork 仅有 `valueOrigin:'fromUser'`、按字段名清单覆盖会误伤业务里真实选定的他人（如 `contractUserName`）。改为：**注入正确身份 → 表单初始化事件按计划账号填好「当前用户」类字段 → 回放历史业务数据时剔除这些字段、不用历史发起人值覆盖**。判据只看「初始化后字段值是否内嵌当前账号唯一标识（userId/companyId）」，与字段名无关，故不误伤业务里真实选定的他人（初始化前那些字段为空、不含当前账号标识）。
-  - 运行执行侧：`executor-service/src/data-patch.ts` 的 `applyNodePatch` 先读初始化值，`dropCurrentUserFields` 从补丁剔除当前用户字段；`server.ts` 的 `applyNodePatchViaPage`/`restoreIntendedPatchViaPage` 透传 `identity`。提交 965e821。
-  - 配置预览侧：新增纯函数 `form-runtime/src/runtime/identityFields.js:stripCurrentUserFields`，`form-runtime/src/App.vue` load(formmaking) 在 `setData` 历史值前调用 `stripInitIdentityFields`，从待写入值与恢复基线剔除当前用户字段及人员选择器伴生键（`__virtualName`/`__formPersonId`/`__condition`）。提交 2f853ed。
+- 缺陷②（身份注入）：**经用户人工核对反馈未通过后重做（2026-09-24）**。用户提供了机房进入申请表的初始化事件代码,定位真实根因:目标表单 `eventScript` 里 `key='refresh'`（名「初始化当前登录人信息」）的脚本从 `window.localStorage` 的 `invest-power-system-*`（`userName`/`userDepartmentId`/`userDepartmentName`/`companyId`/`companyName` 等）读当前登录人,填申请人/部门/公司等字段,但用「仅空值填充」守卫（`if(!this.getValue('applicantName'))...`）。历史回放时这些字段已被历史发起人值填满,守卫跳过,当前用户字段残留历史值。此前「注入身份 → 初始化事件覆盖 → 回放剔除」方案的前提（初始化会覆盖）不成立,已推倒重做。
+  - 新方案（不硬编码字段名/englishName）:初始化完成后,用表单自身的初始化脚本在「空值探针」下重算当前用户字段应有的计划账号取值,只覆盖「取值确实内嵌注入身份串」的字段;业务字面默认值（如无陪同=`无`）与历史真实选定的他人（取值不含计划账号标识）不受影响。
+  - 配置预览侧：`form-runtime/src/runtime/identityFields.js` 提供纯函数 `pickIdentityDerived(捕获补丁, 身份串)`;`form-runtime/src/App.vue` load(formmaking) 在最终 `setData` 之后调用 `applyPlanAccountIdentity`——把 `getValue` 归空、`setData` 改为捕获、`triggerEvent`/`display`/`validate` 屏蔽,重跑所有读 `invest-power-system-*` 的初始化脚本,`pickIdentityDerived` 后 `setData` 覆盖并同步 `values`/`savedValues`。提交 478e7f8。
+  - 运行执行侧：`executor-service/src/server.ts` 的 `injectIdentityScript` 补 `userDepartmentId`/`departmentId` 键（事件读 `invest-power-system-userDepartmentId`）;新增 `applyPlanIdentityViaPage`,仅发起态在数据落定最后一步同样以空值探针重算并权威覆盖当前用户字段（审批等模式这些字段属真实发起人,绝不用当前操作人覆盖）。提交 478e7f8。
+  - 弃用:旧 `stripCurrentUserFields`/`stripInitIdentityFields`（前提被证伪）已删除;`data-patch.ts`/`server.ts` 里按 `userId/companyId` 值判定的补丁剔除保留为防御层,当前用户字段的权威修正统一由上述初始化脚本探针完成。
 - 已暂不实现（经用户明确“先收口”选择，另开后续切片）：完成标准 61 的「无法自动补齐的 `needs_input` 字段手填一次、跨共享该字段路径自动传播」——属效率项，`needs_input` 的正确性门禁与运行前阻塞已生效，不影响本切片正确性。
-- 自动验证：`executor-service` typecheck 通过、`data-patch` 单测 5/5；前端 `form_runtime_test.mjs` 61/61（新增当前用户字段剔除/回落/不误伤 3 例）；`go build ./...` 通过、后端 `test/unit/backend/history_replay`、`.../executor` 单测通过。视觉与真实目标身份呈现由用户人工核对。
+- 自动验证：前端 `form_runtime_test.mjs` 61/61（`pickIdentityDerived` 新增挑出当前用户字段/不误伤他人/空回落 3 例）;`executor-service` typecheck 通过;`go build ./...` 与后端 `test/unit/backend/history_replay`、`.../executor` 单测通过。视觉与真实目标身份呈现由用户浏览器人工核对（一键配置后申请人/部门/公司显示计划账号本人）。
