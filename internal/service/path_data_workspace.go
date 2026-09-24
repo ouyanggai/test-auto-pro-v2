@@ -133,7 +133,7 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	if snapshot.RenderType == target.FormRenderTypeFormMaking && len(values) > 0 {
 		fillIssues := requiredFieldFill(requiredFieldFillInput{
 			fields: snapshot.FormFields,
-			powers: buildInitiatorPowerMap(formPermissions(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs)),
+			powers: initiatorFieldPowers(snapshot.Tree),
 			labels: keyFieldLabels(snapshot),
 			now:    s.now(),
 		}, values)
@@ -457,6 +457,21 @@ func (s *PathConfigService) SaveData(ctx context.Context, planID, pathID uint64,
 		}})
 	default:
 		replaceUserIdentityValues(overlay.Values, identity)
+	}
+	// F-043 缺陷1：落盘前对当前模板必填但历史为空且发起态可编辑的字段做确定性安全补齐；
+	// 普通字段填有效默认，必填附件一次性真实上传目标并回填引用（账号级缓存，慢接口每账号只调一次），
+	// 无法安全确定有效值或附件上传失败的字段落阻断问题，随下方 workspaceDataStatus 收敛为 needs_input。
+	if snapshot.RenderType == target.FormRenderTypeFormMaking {
+		account := ""
+		if plan, planErr := s.plans.Get(ctx, planID); planErr == nil {
+			account = plan.Account
+		}
+		fillIssues := requiredFieldFill(requiredFieldFillInput{
+			fields: snapshot.FormFields, powers: initiatorFieldPowers(snapshot.Tree),
+			labels: keyFieldLabels(snapshot), now: s.now(),
+			uploadFill: newPlaceholderUploadFill(ctx, s.target, account),
+		}, overlay.Values)
+		issues = appendHistoryIssues(issues, fillIssues)
 	}
 	// 决定性条件字段填不出或填了也影响不了分支时，必须把阻断问题落进配置行：
 	// 运行前检查读的是已落库的 issues，只在读取响应里显示挡不住启动（评审 P1）。

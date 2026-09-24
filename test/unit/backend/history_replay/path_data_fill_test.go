@@ -132,3 +132,32 @@ func TestRequiredFieldFillUploadUsesUploader(t *testing.T) {
 		t.Fatalf("附件未回填目标引用：%#v", values["attachment"])
 	}
 }
+
+// TestUploadValueForFieldSupersetShape 锁定上传回显值为超集单元素数组，
+// 覆盖目标各上传组件读取的关键引用键（name/id/fileId/fileUrl/absolutelyFileUrl），且优先绝对地址。
+func TestUploadValueForFieldSupersetShape(t *testing.T) {
+	value := service.UploadValueForFieldForTest(target.UploadedFile{
+		ID: "REL-1", FileID: "FILE-9", FileURL: "/f/9", AbsolutelyFileURL: "http://t/f/9",
+		OriginFileName: "占位.txt", FileType: "ordinaryFile",
+	})
+	list, ok := value.([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("上传值必须是单元素数组：%#v", value)
+	}
+	entry, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatalf("上传值元素必须是对象：%#v", list[0])
+	}
+	if entry["fileId"] != "FILE-9" || entry["id"] != "REL-1" {
+		t.Fatalf("文件标识引用键不正确：%#v", entry)
+	}
+	if entry["absolutelyFileUrl"] != "http://t/f/9" || entry["url"] != "http://t/f/9" {
+		t.Fatalf("文件地址应优先绝对地址：%#v", entry)
+	}
+	if entry["name"] != "占位.txt" || entry["originFileName"] != "占位.txt" {
+		t.Fatalf("文件名引用键不正确：%#v", entry)
+	}
+	if entry["status"] != "uploaded" {
+		t.Fatalf("上传状态键缺失：%#v", entry)
+	}
+}

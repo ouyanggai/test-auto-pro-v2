@@ -506,6 +506,19 @@ func (s *HistoryReplayService) replayItem(ctx context.Context, planID uint64, it
 	if template, _ := runtimeTemplate(current.Forms); len(template) > 0 {
 		result.Issues = append(result.Issues, staticOptionBindingIssues(template, snapshot.RawFormData, overlay.Values)...)
 	}
+	// F-043 缺陷1：一键配置落盘前对当前模板必填但历史为空且发起态可编辑的字段做确定性安全补齐；
+	// 普通字段填有效默认，必填附件一次性真实上传目标并回填引用（账号级缓存，慢接口每账号只调一次），
+	// 无法安全确定有效值或附件上传失败的字段落阻断问题，随下方 hasBlockingWorkspaceIssue 收敛为 needs_input。
+	if current.RenderType == target.FormRenderTypeFormMaking {
+		fillIssues := requiredFieldFill(requiredFieldFillInput{
+			fields:     current.FormFields,
+			powers:     initiatorFieldPowers(current.Tree),
+			labels:     keyFieldLabels(current),
+			now:        s.now(),
+			uploadFill: newPlaceholderUploadFill(ctx, s.target, plan.Account),
+		}, overlay.Values)
+		result.Issues = append(result.Issues, fillIssues...)
+	}
 	if hasBlockingWorkspaceIssue(result.Issues) {
 		return result
 	}

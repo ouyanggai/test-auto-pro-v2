@@ -280,19 +280,6 @@ func containsAny(value string, substrings ...string) bool {
 	return false
 }
 
-// buildInitiatorPowerMap 把发起态字段权限投影为「字段->权限」映射，供补齐引擎判断可编辑性。
-func buildInitiatorPowerMap(permissions []model.PathFormPermission) map[string]string {
-	powers := make(map[string]string, len(permissions))
-	for _, permission := range permissions {
-		field := strings.TrimSpace(permission.Field)
-		if field == "" {
-			continue
-		}
-		powers[field] = permission.Power
-	}
-	return powers
-}
-
 // RequiredFieldFillForTest 暴露缺失必填安全补齐，供 test 目录锁定确定性补齐与 needs_input 边界。
 // powers 为 nil 视为无字段权限声明（发起态全部可填）；uploadFill 为 nil 模拟只读预览（附件不实际上传）。
 func RequiredFieldFillForTest(fields []target.FormFieldDetail, powers, labels map[string]string, now time.Time, values map[string]any, uploadFill func(target.FormFieldDetail) (any, bool)) []model.HistoryDataIssue {
