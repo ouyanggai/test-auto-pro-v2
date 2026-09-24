@@ -1,43 +1,26 @@
-// F-043 缺陷②:注入身份后,表单初始化事件会把「当前用户」类字段(申请人/部门/公司等)填成计划账号。
-// 本模块负责在应用历史业务数据前,识别并剔除这些当前用户字段,使初始化结果保留,不被历史发起人值覆盖。
+// F-043 缺陷②:目标表单的初始化脚本(eventScript key='refresh',名「初始化当前登录人信息」)从
+// window.localStorage 的 invest-power-system-* 键读当前登录人,填「申请人/部门/公司」等当前用户字段。
+// 但脚本用「仅空值填充」守卫(if(!this.getValue('applicantName'))...),历史回放时这些字段已被历史发起人
+// 值填满,守卫跳过,当前用户字段保留历史值。本模块提供:把「空值探针重跑初始化脚本」捕获到的补丁里,
+// 只挑出「取值确实来自注入的计划账号身份」的字段,用于覆盖历史值,业务默认值(如无陪同='无')不挑出。
 
-// CURRENT_USER_COMPANION_SUFFIXES 是人员/公司选择器写入的伴生键(虚拟名、人员对象、条件判据),
-// 与主键同属一个当前用户字段,剔除主键时必须一并剔除,避免残留历史发起人的显示名或条件值。
-const CURRENT_USER_COMPANION_SUFFIXES = ['__virtualName', '__formPersonId', '__condition']
-
-// deleteKey 只删除对象自有键,不触碰原型链,避免误删或对非对象抛错。
-function deleteKey (target, key) {
-  if (target && typeof target === 'object' && Object.prototype.hasOwnProperty.call(target, key)) {
-    delete target[key]
-  }
-}
-
-// stripCurrentUserFields 依据「初始化后的字段值是否内嵌当前账号唯一标识」判定当前用户字段,
-// 从待写入值 values 与恢复基线 savedValues 中同步剔除该字段及其伴生键,返回被剔除的主键列表(供测试与日志)。
-// 判据只看值不看字段名:初始化前当前用户字段为空、不含当前账号标识,因此不会误伤业务里真实选定的他人;
-// identityIds 为空或初始化值不可用时不剔除任何字段,回落为按历史数据整份覆盖的原行为。
-export function stripCurrentUserFields (values, savedValues, initValues, identityIds) {
-  const ids = (identityIds || []).filter(id => typeof id === 'string' && id.trim() !== '')
-  if (ids.length === 0 || !initValues || typeof initValues !== 'object') return []
-  const stripped = []
-  for (const key of Object.keys(initValues)) {
-    const value = initValues[key]
-    if (value === undefined || value === null) continue
+// pickIdentityDerived 从探针捕获的补丁中,挑出取值内嵌任一计划账号身份串(userId/userName/公司/部门等)的字段。
+// 判据只看值不看字段名:历史真实选定的他人取值不含当前计划账号标识,因此不会被误挑;业务字面默认值同理不含标识被排除。
+// identityValues 为空或补丁为空时返回空对象,调用方据此回落为不覆盖任何字段。
+export function pickIdentityDerived (capturedPatch, identityValues) {
+  const ids = (identityValues || []).filter(value => typeof value === 'string' && value.trim() !== '')
+  const picked = {}
+  if (!capturedPatch || typeof capturedPatch !== 'object' || ids.length === 0) return picked
+  for (const [key, value] of Object.entries(capturedPatch)) {
+    if (value === undefined || value === null || value === '') continue
     let text
     try {
-      // 值可能是字符串、对象或数组;统一序列化后判断是否内嵌当前账号标识,序列化失败的循环引用值直接跳过。
+      // 值可能是字符串、{id,name} 对象或数组;统一序列化后判断是否内嵌计划账号标识,循环引用等序列化失败值跳过。
       text = typeof value === 'string' ? value : JSON.stringify(value)
     } catch (_) {
       continue
     }
-    if (!text || !ids.some(id => text.includes(id))) continue
-    stripped.push(key)
-    deleteKey(values, key)
-    deleteKey(savedValues, key)
-    for (const suffix of CURRENT_USER_COMPANION_SUFFIXES) {
-      deleteKey(values, key + suffix)
-      deleteKey(savedValues, key + suffix)
-    }
+    if (text && ids.some(id => text.includes(id))) picked[key] = value
   }
-  return stripped
+  return picked
 }

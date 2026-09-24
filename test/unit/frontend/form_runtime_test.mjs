@@ -13,7 +13,7 @@ const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRu
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
-import { stripCurrentUserFields } from '../../../form-runtime/src/runtime/identityFields.js'
+import { pickIdentityDerived } from '../../../form-runtime/src/runtime/identityFields.js'
 
 test('目标表单模板递归应用权限且复杂组件不降级', () => {
   const prepared = prepareTemplate({
@@ -1277,53 +1277,39 @@ test('optionFieldDescriptors 正确递归 table 动态表格容器下的列字�
   assert.equal(descriptors[0].model, 'receivingAccount')
 })
 
-// F-043 缺陷②(配置预览侧):注入身份后表单初始化事件已把当前用户字段填成计划账号,
-// 历史业务数据整份回放时不得用历史发起人值把这些字段覆盖回去。
-test('初始化后内嵌当前账号标识的字段判为当前用户字段并从待写入值与恢复基线剔除', () => {
-  const values = {
-    applyUser: '{"id":"user-hist","name":"张三"}',
-    applyUser__virtualName: '张三',
-    applyUser__formPersonId: 'user-hist',
-    reason: '历史请假事由',
-    amount: '1000',
+// F-043 缺陷②(配置预览侧):表单 refresh 初始化脚本按注入身份从 localStorage 取当前登录人填当前用户字段,
+// 但「仅空值填充」守卫在历史回放时被历史值挡住。空值探针重跑脚本后,只挑出取值来自计划账号身份的字段覆盖。
+test('空值探针补丁里只挑出取值来自计划账号身份的当前用户字段', () => {
+  // 模拟机房进入申请表 refresh 在空值探针下算出的补丁:applicantName=姓名、部门/公司为 {id,name}、hasCompanion 为业务默认。
+  const captured = {
+    applicantName: '欧阳改',
+    applicantDepName: '{"id":"dep-7","name":"信息中心"}',
+    applicantCompanyName: '{"id":"comp-3","name":"智慧能源"}',
+    hasCompanion: '无'
   }
-  const savedValues = { ...values }
-  // 初始化事件按注入身份(user-new)把 applyUser 及其伴生键填成计划账号,业务字段保持历史值。
-  const initValues = {
-    applyUser: '{"id":"user-new","name":"计划账号"}',
-    applyUser__virtualName: '计划账号',
-    applyUser__formPersonId: 'user-new',
-    reason: '历史请假事由',
-    amount: '1000',
-  }
-  const stripped = stripCurrentUserFields(values, savedValues, initValues, ['user-new', 'company-new'])
-  // 主键与内嵌当前账号标识的伴生键都会被识别;这里只断言主键在剔除列表内,伴生键的清理由下方存在性断言覆盖。
-  assert.ok(stripped.includes('applyUser'))
-  // 主键与全部伴生键都被剔除,后续 setData 不会用历史发起人值覆盖初始化结果。
-  assert.equal('applyUser' in values, false)
-  assert.equal('applyUser__virtualName' in values, false)
-  assert.equal('applyUser__formPersonId' in values, false)
-  assert.equal('applyUser' in savedValues, false)
-  assert.equal('applyUser__formPersonId' in savedValues, false)
-  // 业务里真实选定的他人字段(初始化后仍是历史值、不含当前账号标识)必须保留。
-  assert.equal(values.reason, '历史请假事由')
-  assert.equal(values.amount, '1000')
+  const identityValues = ['user-42', '欧阳改', 'comp-3', '智慧能源', 'dep-7', '信息中心']
+  const patch = pickIdentityDerived(captured, identityValues)
+  // 当前用户字段(取值内嵌计划账号姓名/部门 id/公司 id)被挑出。
+  assert.equal(patch.applicantName, '欧阳改')
+  assert.equal(patch.applicantDepName, '{"id":"dep-7","name":"信息中心"}')
+  assert.equal(patch.applicantCompanyName, '{"id":"comp-3","name":"智慧能源"}')
+  // 业务字面默认值(不含任何计划账号标识)不被挑出,不会覆盖历史真实值。
+  assert.equal('hasCompanion' in patch, false)
 })
 
-test('无身份标识或初始化值不可用时不剔除任何字段(回落整份覆盖)', () => {
-  const values = { applyUser: '{"id":"user-new"}', reason: 'x' }
-  const savedValues = { ...values }
-  assert.deepEqual(stripCurrentUserFields(values, savedValues, { applyUser: '{"id":"user-new"}' }, []), [])
-  assert.deepEqual(stripCurrentUserFields(values, savedValues, null, ['user-new']), [])
-  assert.equal('applyUser' in values, true)
+test('历史真实选定他人的取值不含计划账号标识,不被挑出覆盖', () => {
+  // 探针补丁里若混入历史选定他人(如陪同人/经办他人),其 id/姓名不属于计划账号身份串,必须排除。
+  const captured = { partnerUser: '{"id":"user-other","name":"李四"}', applyUser: '{"id":"user-42","name":"欧阳改"}' }
+  const patch = pickIdentityDerived(captured, ['user-42', '欧阳改'])
+  assert.equal(patch.applyUser, '{"id":"user-42","name":"欧阳改"}')
+  assert.equal('partnerUser' in patch, false)
 })
 
-test('业务字段真实选定他人时初始化不含当前账号标识,不被误剔除', () => {
-  const values = { partnerUser: '{"id":"user-other"}', partnerUser__virtualName: '李四' }
-  const savedValues = { ...values }
-  // 初始化事件不改业务选人字段,其值仍是历史选定的他人,不含当前账号标识 user-new。
-  const initValues = { partnerUser: '{"id":"user-other"}', partnerUser__virtualName: '李四' }
-  assert.deepEqual(stripCurrentUserFields(values, savedValues, initValues, ['user-new']), [])
-  assert.equal(values.partnerUser, '{"id":"user-other"}')
-  assert.equal(values.partnerUser__virtualName, '李四')
+test('身份串为空或补丁为空时不挑出任何字段(回落不覆盖)', () => {
+  assert.deepEqual(pickIdentityDerived({ applicantName: '欧阳改' }, []), {})
+  assert.deepEqual(pickIdentityDerived({ applicantName: '欧阳改' }, ['']), {})
+  assert.deepEqual(pickIdentityDerived(null, ['user-42']), {})
+  assert.deepEqual(pickIdentityDerived({}, ['user-42']), {})
+  // 空串/空值字段不参与匹配,避免空身份串误挑。
+  assert.deepEqual(pickIdentityDerived({ a: '', b: null }, ['user-42']), {})
 })

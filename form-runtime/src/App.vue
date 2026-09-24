@@ -21,7 +21,7 @@ import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPat
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
-import { stripCurrentUserFields } from './runtime/identityFields'
+import { pickIdentityDerived } from './runtime/identityFields'
 import HostVuePage from './HostVuePage.vue'
 
 export default {
@@ -237,10 +237,6 @@ export default {
           this.bindFormChange()
           const form = this.form()
           if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
-          // F-043 缺陷②：注入身份后，表单初始化事件已把「当前用户」类字段（申请人/部门/公司等）填成计划账号。
-          // 读取初始化后的值，凡内嵌当前账号唯一标识（userId/companyId）的字段判为当前用户字段，
-          // 从待写入值与恢复基线中剔除（含人员选择器伴生键），使初始化结果保留，不被历史发起人值覆盖。
-          await this.stripInitIdentityFields(form, [String(payload.userId || ''), String(payload.companyId || '')])
           await form.setData(clonePlain(this.values))
 			this.assertActiveSession(loadContext)
           await this.$nextTick()
@@ -257,6 +253,17 @@ export default {
         if (form && typeof form.setData === 'function') {
           restoreIntendedValues(this.values, this.savedValues)
           await form.setData(clonePlain(this.values))
+        }
+        // F-043 缺陷②:历史数据已把「当前用户」类字段(申请人/部门/公司等)填成历史发起人,
+        // 表单 refresh 初始化脚本的「仅空值填充」守卫因此跳过、不会覆盖为计划账号。这里在初始化完成后,
+        // 用表单自身的初始化脚本(读注入身份的 localStorage)在空值探针下重算这些字段的计划账号取值并覆盖,
+        // 业务字段与历史真实选定的他人不受影响。必须放在上面最终 setData 之后,否则会被历史值再次覆盖回去。
+        if (form && typeof form.setData === 'function') {
+          await this.applyPlanAccountIdentity(form, [
+            String(payload.userId || ''), String(payload.accountName || ''),
+            String(payload.companyId || ''), String(payload.companyName || ''),
+            String(payload.departmentId || ''), String(payload.departmentName || '')
+          ])
         }
         this.savedValues = clonePlain(this.values)
         this.loading = false
@@ -359,18 +366,52 @@ export default {
 	  this.assertActiveSession(context)
       this.values = clonePlain(values)
     },
-    // stripInitIdentityFields 读取初始化后的表单值,把已按注入身份填好的「当前用户」类字段从待写入值与恢复基线中剔除,
-    // 使初始化结果保留,不被历史发起人值覆盖(F-043 缺陷②)。具体判定与剔除委托给 stripCurrentUserFields 纯函数。
-    async stripInitIdentityFields (form, identityIds) {
-      if (!form || typeof form.getValues !== 'function') return
-      let initValues
-      try {
-        initValues = await form.getValues()
-      } catch (_) {
-        // 初始化值暂不可读时不剔除任何字段,回落为按历史数据整份覆盖的原行为。
-        return
+    // applyPlanAccountIdentity 修正「当前用户」类字段:表单 refresh 初始化脚本按注入身份从 localStorage 取当前登录人,
+    // 但脚本对已有值的字段用「仅空值填充」守卫跳过,历史回放时这些字段保留历史发起人值。这里在初始化完成后,
+    // 用表单自身的初始化脚本在「空值探针」下重算它们的计划账号取值,只把取值确实来自注入身份的字段覆盖回去。
+    // identityValues 为计划账号身份串集合(userId/姓名/公司/部门等),用于判定捕获补丁里哪些字段来自当前用户。
+    async applyPlanAccountIdentity (form, identityValues) {
+      const ids = (identityValues || []).map(value => String(value || '')).filter(value => value.trim() !== '')
+      if (ids.length === 0 || !form) return
+      const scripts = (form.formData && form.formData.config && Array.isArray(form.formData.config.eventScript))
+        ? form.formData.config.eventScript : []
+      // 只重跑「读 invest-power-system-* 身份」的初始化脚本,避免触发无关业务事件。
+      const identityScripts = scripts.filter(script => script && typeof script.func === 'string' && script.func.indexOf('invest-power-system-') >= 0)
+      const eventFns = form.eventFunction || (form.formData && form.formData.eventFunction)
+      if (identityScripts.length === 0 || !eventFns) return
+      const captured = {}
+      const original = {
+        getValue: form.getValue, getValues: form.getValues, setData: form.setData,
+        triggerEvent: form.triggerEvent, display: form.display, validate: form.validate
       }
-      stripCurrentUserFields(this.values, this.savedValues, initValues, identityIds)
+      try {
+        // 空值探针:让脚本的「仅空值填充」守卫全部通过,算出当前用户字段应有的计划账号取值;
+        // setData 只捕获不落表单;triggerEvent/display/validate 屏蔽,避免探针触发联动、显隐或校验副作用。
+        form.getValue = () => ''
+        form.getValues = () => ({})
+        form.setData = patch => { if (patch && typeof patch === 'object') Object.assign(captured, patch) }
+        form.triggerEvent = () => undefined
+        if (typeof original.display === 'function') form.display = () => undefined
+        if (typeof original.validate === 'function') form.validate = () => Promise.resolve()
+        for (const script of identityScripts) {
+          const handler = eventFns[script.key]
+          if (typeof handler !== 'function') continue
+          // 单个脚本探针失败(依赖未屏蔽的宿主上下文等)只跳过该脚本,不影响其余,回落为不覆盖该字段。
+          try { await handler.call(form, {}) } catch (_) {}
+        }
+      } finally {
+        form.getValue = original.getValue
+        form.getValues = original.getValues
+        form.setData = original.setData
+        form.triggerEvent = original.triggerEvent
+        if (typeof original.display === 'function') form.display = original.display
+        if (typeof original.validate === 'function') form.validate = original.validate
+      }
+      const patch = pickIdentityDerived(captured, ids)
+      if (Object.keys(patch).length === 0) return
+      await form.setData(clonePlain(patch))
+      Object.assign(this.values, patch)
+      Object.assign(this.savedValues, patch)
     },
 	async refresh (context) {
       if (this.renderType === 'vue_custom') return

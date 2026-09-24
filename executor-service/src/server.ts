@@ -579,6 +579,81 @@ async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Re
   }, { patch, keys: allowedKeys, identity })
 }
 
+// applyPlanIdentityViaPage 在数据落定后,用表单自身的初始化脚本(读注入身份的 localStorage)在空值探针下
+// 重算「当前用户」类字段(申请人/部门/公司等)的计划账号取值,只覆盖取值确实来自注入身份的字段。
+// 目标表单 refresh 初始化脚本对已有值字段用「仅空值填充」守卫跳过,历史回放时这些字段残留历史发起人,
+// 本函数作为数据落定最后一步权威覆盖(F-043 缺陷②),业务字段与历史真实选定的他人不受影响。
+async function applyPlanIdentityViaPage (page: Page, identity: { userId: string, accountName: string, companyId: string, companyName: string, departmentId: string, departmentName: string }): Promise<Record<string, unknown> | null> {
+  return page.evaluate(async ({ identity }) => {
+    interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
+    const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
+    const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
+    if (!container) return null
+    const queue: unknown[] = [container]
+    const seen = new Set<unknown>()
+    let api: Record<string, unknown> | null = null
+    while (queue.length > 0 && api === null) {
+      const candidate = queue.shift()
+      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) continue
+      seen.add(candidate)
+      const value = candidate as Record<string, unknown>
+      // 必须是带 eventScript 的 FormMaking 实例(有 setData/getValues + formData),否则无法探针初始化脚本。
+      if (typeof value.setData === 'function' && typeof value.getValues === 'function' && value.formData) api = value
+      queue.push(...((value.$children as unknown[] | undefined) ?? []), ...Object.values((value.$refs as Record<string, unknown> | undefined) ?? {}))
+    }
+    if (!api) return null
+    // FormMaking 实例是页面内不可表达的库类型:以命名常量断言其脚本容器与编译函数表,仅本函数内读取。
+    const formData = api.formData as { config?: { eventScript?: Array<{ key?: string, func?: string }> }, eventFunction?: Record<string, unknown> } | undefined
+    const scripts = (formData && formData.config && Array.isArray(formData.config.eventScript)) ? formData.config.eventScript : []
+    // 只重跑「读 invest-power-system-* 身份」的初始化脚本,避免触发无关业务事件。
+    const identityScripts = scripts.filter(script => script && typeof script.func === 'string' && script.func.indexOf('invest-power-system-') >= 0)
+    const eventFns = (api.eventFunction ?? (formData && formData.eventFunction)) as Record<string, unknown> | undefined
+    if (identityScripts.length === 0 || !eventFns) return null
+    const captured: Record<string, unknown> = {}
+    const orig = { getValue: api.getValue, getValues: api.getValues, setData: api.setData, triggerEvent: api.triggerEvent, display: api.display, validate: api.validate }
+    try {
+      // 空值探针:让脚本「仅空值填充」守卫全部通过,算出当前用户字段应有的计划账号取值;
+      // setData 只捕获;triggerEvent/display/validate 屏蔽,避免探针触发联动、显隐或校验副作用。
+      Object.assign(api, {
+        getValue: () => '',
+        getValues: () => ({}),
+        setData: (patch: Record<string, unknown>) => { if (patch && typeof patch === 'object') Object.assign(captured, patch) },
+        triggerEvent: () => undefined,
+        ...(typeof orig.display === 'function' ? { display: () => undefined } : {}),
+        ...(typeof orig.validate === 'function' ? { validate: () => Promise.resolve() } : {})
+      })
+      for (const script of identityScripts) {
+        const handler = script.key ? eventFns[script.key] : undefined
+        if (typeof handler !== 'function') continue
+        // 单个脚本探针失败只跳过该脚本,不影响其余,回落为不覆盖该字段。
+        try { await handler.call(api, {}) } catch {}
+      }
+    } finally {
+      Object.assign(api, {
+        getValue: orig.getValue, getValues: orig.getValues, setData: orig.setData, triggerEvent: orig.triggerEvent,
+        ...(typeof orig.display === 'function' ? { display: orig.display } : {}),
+        ...(typeof orig.validate === 'function' ? { validate: orig.validate } : {})
+      })
+    }
+    const ids = [identity.userId, identity.accountName, identity.companyId, identity.companyName, identity.departmentId, identity.departmentName].filter(value => typeof value === 'string' && value.trim() !== '')
+    const patch: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(captured)) {
+      if (value === undefined || value === null || value === '') continue
+      let text: string
+      try { text = typeof value === 'string' ? value : JSON.stringify(value) } catch { continue }
+      if (text && ids.some(id => text.includes(id))) patch[key] = value
+    }
+    if (Object.keys(patch).length === 0) return null
+    const setData = api.setData
+    if (typeof setData === 'function') await setData.call(api, patch)
+    // 回读覆盖后的完整值作为本步 readback,与页面实时表单保持一致。
+    const getValues = api.getValues
+    if (typeof getValues !== 'function') return null
+    const values = await getValues.call(api)
+    return values && typeof values === 'object' ? values : null
+  }, { identity })
+}
+
 // waitForOptionsReady 等待远程选项/联动收敛：trace 无在途转发请求且条目数保持稳定窗。
 // 就绪必须「等」出来，不允许任何硬编码标志（施工令 §2 假修清单）。
 async function waitForOptionsReady (trace: { list: () => Array<{ state: string }> }, idleMs: number): Promise<void> {
@@ -612,6 +687,8 @@ function injectIdentityScript (payload: Record<string, unknown>): string {
     companyId: String(payload.companyId ?? ''),
     companyName: String(payload.companyName ?? ''),
     userDepartmentName: String(payload.departmentName ?? ''),
+    userDepartmentId: String(payload.departmentId ?? ''),
+    departmentId: String(payload.departmentId ?? ''),
     topCompanyId: String(payload.companyId ?? ''),
     platformCode: String(payload.platformCode ?? '999999')
   }
@@ -1134,6 +1211,17 @@ async function main (): Promise<void> {
             if (restoredReadback !== null) {
               patchReadback = restoredReadback
             }
+          }
+          if (mode === 'initiate') {
+            // 仅发起态:当前用户字段(申请人/部门/公司)应为计划发起账号。表单 refresh 初始化脚本的「仅空值填充」
+            // 守卫可能被历史/补丁值挡住,这里用表单自身初始化脚本在空值探针下重算并权威覆盖(F-043 缺陷②);
+            // 审批等模式下这些字段属真实发起人,绝不用当前操作人覆盖,故仅发起态执行。
+            const identityReadback = await applyPlanIdentityViaPage(session.page, {
+              userId: String(payload.userId ?? ''), accountName: String(payload.accountName ?? ''),
+              companyId: String(payload.companyId ?? ''), companyName: String(payload.companyName ?? ''),
+              departmentId: String(payload.departmentId ?? ''), departmentName: String(payload.departmentName ?? '')
+            })
+            if (identityReadback !== null) patchReadback = identityReadback
           }
 
           session.formBefore = await readNativeFormSnapshot(session.page)
