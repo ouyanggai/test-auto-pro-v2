@@ -521,6 +521,15 @@ func TestF016RereadClassification(t *testing.T) {
 		{"审批后待办仍在", string(model.ActionApprove), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}}, verdict.RereadUnchanged},
 		{"审批后待办消失", string(model.ActionApprove), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: nil}, verdict.RereadAdvanced},
 		{"审批后实例被撤回", string(model.ActionApprove), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "withdraw", DueNodes: nil}, verdict.RereadContradictory},
+		// 不同意成功后目标同事务置 status=rejected 并回退到起始节点；即使本人待办快照晚一拍仍在（读写时序窗口），
+		// 也必须凭状态判为已生效，不能因待办未清空落「未变」→暂时无法确认（2026-09-24 多动作核验审计）。
+		{"不同意成功状态已rejected即使本人待办快照滞后也判已推进", string(model.ActionReject), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}},
+			step.InstanceFacts{Found: true, Status: "rejected", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-start"},
+				CurrentTaskRead: true, CurrentTaskFound: true}, verdict.RereadAdvanced},
+		// 不同意尚未生效（状态仍 run、本人待办仍在）时不得凭空判成功，保持未变。
+		{"不同意后状态仍run且本人待办仍在判未变", string(model.ActionReject), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}},
+			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-audit"},
+				CurrentTaskRead: true, CurrentTaskFound: true}, verdict.RereadUnchanged},
 		// 夜间实测现场（2026-09-21 运行 52 路径 2 第 25 步）：实例节点位置已经推进到配置的下一跳，
 		// 但目标返回的本人待办快照仍是写前旧值、本人已办也查不到。只看待办会把这次已经生效的写
 		// 判成"明确未变"，进而把整条运行判成结果待确认。节点位置是已读到的直接事实，必须优先。

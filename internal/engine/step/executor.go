@@ -3160,6 +3160,36 @@ func (e *Executor) classifyAddSignReread(ctx context.Context, runCtx RunContext,
 	return verdict.RereadUnchanged
 }
 
+// hasAuditRecordForTaskLink 判断实例审核记录里是否存在「指定任务关联行 + 指定 auditStatus」的记录。
+// 审核记录与写动作在目标同一事务落库、节点字段不被改写，是抗「待办快照滞后」的原子正面证据
+// （2026-09-24 多动作核验审计:移交/取回等只凭待办快照会在读写时序窗口内把成功误判为暂时无法确认）。
+// linkID 或 instanceID 为空、目标不支持审核记录读取、或读取失败时一律返回 false——只作正面补强，
+// 绝不因读不到就把未生效判成已生效。
+func (e *Executor) hasAuditRecordForTaskLink(ctx context.Context, account string, session target.Session, instanceID, linkID, auditStatus string) bool {
+	linkID = strings.TrimSpace(linkID)
+	instanceID = strings.TrimSpace(instanceID)
+	if linkID == "" || instanceID == "" {
+		return false
+	}
+	reader, ok := e.target.(auditRecordsReader)
+	if !ok {
+		return false
+	}
+	records, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+		func(callContext context.Context, active target.Session) ([]target.AuditRecordSnapshot, error) {
+			return reader.ListAuditRecords(callContext, active, instanceID)
+		})
+	if err != nil {
+		return false
+	}
+	for _, record := range records {
+		if strings.TrimSpace(record.FlowJobTaskID) == linkID && strings.EqualFold(strings.TrimSpace(record.AuditStatus), auditStatus) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyTransferReread 核对移交后当前处理人的任务是否已经换成新任务。
 // 移交不推进节点，单看实例节点会把成功误判为"未变化"；任务 ID 变化或当前处理人不再有待办才算前进。
 func (e *Executor) classifyTransferReread(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, after InstanceFacts) verdict.Reread {
@@ -3176,6 +3206,15 @@ func (e *Executor) classifyTransferReread(ctx context.Context, runCtx RunContext
 		return verdict.RereadUnreadable
 	}
 	if snapshot.JobTaskID == "" || strings.TrimSpace(snapshot.JobTaskID) != strings.TrimSpace(request.JobTaskID) {
+		return verdict.RereadAdvanced
+	}
+	// 兜底正面证据：移交在目标同事务写入一条 transfer 审核记录(原任务关联行)，节点不推进、原任务办结。
+	// 原处理人 pending 快照晚一拍仍返回本人待办时，用它确认移交已生效，避免与「会签末签」同型的误判。
+	account := strings.TrimSpace(session.Summary.Account)
+	if account == "" {
+		account = runCtx.PlanAccount
+	}
+	if e.hasAuditRecordForTaskLink(ctx, account, session, strings.TrimSpace(runCtx.PathRun.MainInstanceRef), preview.Facts.CurrentTaskLinkID, "transfer") {
 		return verdict.RereadAdvanced
 	}
 	return verdict.RereadUnchanged
@@ -3198,6 +3237,16 @@ func (e *Executor) classifyRetrieveReread(ctx context.Context, runCtx RunContext
 		return verdict.RereadUnreadable
 	}
 	if snapshot.JobTaskID != "" && strings.TrimSpace(snapshot.JobTaskID) != strings.TrimSpace(request.JobTaskID) {
+		return verdict.RereadAdvanced
+	}
+	// 兜底正面证据：取回在目标同事务写入一条 retrieve 审核记录(取回的已办关联行)。取回门禁已确保
+	// 本已办行此前不存在 retrieve 记录(RetrieveAlreadyUsed 命中即阻塞)，故写后出现即本次取回所致；
+	// 新 pending 快照晚一拍不可见时用它确认取回已生效。
+	account := strings.TrimSpace(session.Summary.Account)
+	if account == "" {
+		account = runCtx.PlanAccount
+	}
+	if e.hasAuditRecordForTaskLink(ctx, account, session, strings.TrimSpace(runCtx.PathRun.MainInstanceRef), preview.Facts.CompletedTaskLinkID, "retrieve") {
 		return verdict.RereadAdvanced
 	}
 	return verdict.RereadUnchanged

@@ -898,17 +898,21 @@ func ClassifyReread(action string, stepNodeKey string, forwardNodeKeys []string,
 		actorDone := action == string(model.ActionApprove) &&
 			after.CompletedTaskBasis == CompletedTaskBasisCheckedFound &&
 			strings.TrimSpace(after.CompletedTaskNodeID) == strings.TrimSpace(stepNodeKey)
-		if after.CurrentTaskFound {
-			if actorDone {
-				return verdict.RereadAdvanced
-			}
-			return verdict.RereadUnchanged
-		}
+		// 实例状态是目标同事务写入的原子权威事实，优先于可能滞后一拍的本人待办快照：
+		// 不同意成功后目标当场置 status=rejected 并把当前节点回退到起始节点（FlowAuditServiceImpl.audit），
+		// 若先看「本人待办是否仍在」，会在 flowJobTaskLink 待办快照滞后于实例状态写入的窗口内，
+		// 把一次成功的不同意误判成「未变」→「暂时无法确认」（2026-09-24 多动作核验审计）。
 		if after.Found && action == string(model.ActionReject) && strings.EqualFold(after.Status, "rejected") {
 			return verdict.RereadAdvanced
 		}
 		if after.Found && action == string(model.ActionApprove) && (strings.EqualFold(after.Status, "withdraw") || strings.EqualFold(after.Status, "rejected")) {
 			return verdict.RereadContradictory
+		}
+		if after.CurrentTaskFound {
+			if actorDone {
+				return verdict.RereadAdvanced
+			}
+			return verdict.RereadUnchanged
 		}
 		return verdict.RereadAdvanced
 	}

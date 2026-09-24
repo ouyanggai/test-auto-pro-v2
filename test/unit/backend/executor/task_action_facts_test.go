@@ -449,3 +449,166 @@ func TestF037AddSignProxyRebuildDoesNotTriggerPathDeviation(t *testing.T) {
 		t.Fatalf("加签后代理节点重建不应在旧 ID 比较阶段误报路径偏离：%+v", outcome)
 	}
 }
+
+// transferAuditFallbackTarget 模拟移交成功但原处理人 pending 待办快照晚一拍仍返回同一任务的现场：
+// 只能凭目标同事务写入的 transfer 审核记录（挂在原任务关联行）确认移交已生效。
+type transferAuditFallbackTarget struct {
+	*taskActionFactsTarget
+	written    bool
+	writeCalls int
+}
+
+// ListTaskSnapshotsForUser 让移交后的 pending 读取始终返回同一条陈旧待办，锁定「快照滞后」现场。
+func (t *transferAuditFallbackTarget) ListTaskSnapshotsForUser(_ context.Context, _ target.Session, _, status, _ string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) != "pending" {
+		return nil, nil
+	}
+	return []target.TaskSnapshot{t.snapshot}, nil
+}
+
+// ListAuditRecords 移交后追加一条挂在原任务关联行的 transfer 审核记录。
+func (t *transferAuditFallbackTarget) ListAuditRecords(context.Context, target.Session, string) ([]target.AuditRecordSnapshot, error) {
+	t.auditReads++
+	records := append([]target.AuditRecordSnapshot(nil), t.records...)
+	if t.written {
+		records = append(records, target.AuditRecordSnapshot{
+			FlowJobTaskID: t.snapshot.LinkID, FlowNodeProxyID: t.snapshot.FlowNodeProxyID, AuditStatus: "transfer",
+		})
+	}
+	return records, nil
+}
+
+// ExecuteActionWrite 模拟目标接受移交，但当前处理人待办快照尚未刷新。
+func (t *transferAuditFallbackTarget) ExecuteActionWrite(context.Context, target.Session, target.ActionWriteRequest) (target.WriteResponse, string, error) {
+	t.writeCalls++
+	t.written = true
+	return target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-transfer", nil
+}
+
+// retrieveAuditFallbackTarget 模拟取回成功但新建 pending 待办快照晚一拍尚不可见的现场：
+// 只能凭目标同事务写入的 retrieve 审核记录（挂在原办结关联行）确认取回已生效。
+type retrieveAuditFallbackTarget struct {
+	*taskActionFactsTarget
+	before     target.TaskSnapshot
+	written    bool
+	writeCalls int
+}
+
+// FindTaskSnapshot 取回前返回本节点已办任务；取回后新建待办尚未可见，返回空。
+func (t *retrieveAuditFallbackTarget) FindTaskSnapshot(_ context.Context, _ target.Session, _ string, _ string, status string) (target.TaskSnapshot, error) {
+	t.snapshotRead++
+	if status == "done" && !t.written {
+		return t.before, nil
+	}
+	return target.TaskSnapshot{}, nil
+}
+
+// ListAuditRecords 取回后追加一条挂在原办结关联行的 retrieve 审核记录。
+func (t *retrieveAuditFallbackTarget) ListAuditRecords(context.Context, target.Session, string) ([]target.AuditRecordSnapshot, error) {
+	t.auditReads++
+	records := append([]target.AuditRecordSnapshot(nil), t.records...)
+	if t.written {
+		records = append(records, target.AuditRecordSnapshot{
+			FlowJobTaskID: t.before.LinkID, FlowNodeProxyID: t.before.FlowNodeProxyID, AuditStatus: "retrieve",
+		})
+	}
+	return records, nil
+}
+
+// ExecuteActionWrite 模拟目标 retrieveProcess 成功，但新建待办尚未在快照中可见。
+func (t *retrieveAuditFallbackTarget) ExecuteActionWrite(context.Context, target.Session, target.ActionWriteRequest) (target.WriteResponse, string, error) {
+	t.writeCalls++
+	t.written = true
+	return target.WriteResponse{StatusCode: 200, IsSuccess: true, IsSuccessPresent: true}, "trace-retrieve", nil
+}
+
+// TestTransferVerifiedByAuditRecordWhenPendingLags 验证移交成功但原处理人 pending 待办快照滞后时，
+// 由目标同事务写入的 transfer 审核记录确认移交已生效，不落「未变化」->暂时无法确认。
+func TestTransferVerifiedByAuditRecordWhenPendingLags(t *testing.T) {
+	targetFake := &transferAuditFallbackTarget{taskActionFactsTarget: &taskActionFactsTarget{
+		fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-current"}, DueNodes: []string{"node-current"}}},
+		snapshot: target.TaskSnapshot{
+			LinkID: "current-link", JobTaskID: "current-task", BatchNo: "batch-current",
+			FlowNodeProxyID: "node-current", FlowProxyID: "proxy-current", TaskStatus: "pending",
+		},
+		tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{ID: "node-current", Type: "common"}},
+	}}
+	runCtx := newRunContext([]model.CompiledActionStep{{
+		Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionTransfer,
+		Scope: model.ActionScopeTask, NodeKey: "node-audit",
+	}})
+	runCtx.Source = "pending"
+	runCtx.PathRun.MainInstanceRef = "instance-transfer"
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "当前审批", Type: "common", TargetNodeID: "node-current"}
+	runCtx.ActionPersonIDs = map[string][]string{
+		step.ActionPersonIndex("node-audit", model.ActionTransfer): {"receiver-1"},
+	}
+	state := &fakeRunState{}
+	facts := &fakeFacts{}
+	executor := step.NewExecutor(targetFake, &fakeSessions{}, state, facts, fixedRunConfig(), nil)
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || !preview.GateAllowed {
+		t.Fatalf("移交前置事实应通过：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatalf("移交执行失败：%v", err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("原处理人待办快照滞后时移交应由 transfer 审核记录确认成功，实际 verdict=%s", outcome.Verdict)
+	}
+	if targetFake.writeCalls != 1 {
+		t.Fatalf("移交应只发送一次原子写请求，实际 %d 次", targetFake.writeCalls)
+	}
+	if len(facts.attempts) != 1 || facts.attempts[0].Reread != string(verdict.RereadAdvanced) {
+		t.Fatalf("移交应由审核记录记录为已前进，attempts=%+v", facts.attempts)
+	}
+}
+
+// TestRetrieveVerifiedByAuditRecordWhenPendingLags 验证取回成功但新建 pending 待办快照滞后时，
+// 由目标同事务写入的 retrieve 审核记录确认取回已生效，不落「未变化」->暂时无法确认。
+func TestRetrieveVerifiedByAuditRecordWhenPendingLags(t *testing.T) {
+	targetFake := &retrieveAuditFallbackTarget{
+		taskActionFactsTarget: &taskActionFactsTarget{
+			fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-done"}, DueNodes: []string{"node-done"}}},
+			tree: &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
+				ID: "node-done", Type: "common", Child: &target.FlowNodeTemplate{ID: "node-next", Type: "common"},
+			}},
+			records: []target.AuditRecordSnapshot{{FlowJobTaskID: "done-link", FlowInstanceID: "instance-retrieve", FlowNodeProxyID: "node-done", ExecutorID: "user-handler", AuditStatus: "pass"}},
+		},
+		before: target.TaskSnapshot{
+			LinkID: "done-link", JobTaskID: "done-task", FlowNodeProxyID: "node-done",
+			FlowProxyID: "proxy-current", TaskStatus: "done",
+		},
+	}
+	targetFake.fakeTarget.handlerAccount = "handler-account"
+	runCtx := newRunContext([]model.CompiledActionStep{{
+		Sequence: 1, Source: model.ActionStepSourceUser, Action: model.ActionRetrieve,
+		Scope: model.ActionScopeCompletedTask, NodeKey: "node-audit",
+	}})
+	runCtx.Source = "done"
+	runCtx.PathRun.MainInstanceRef = "instance-retrieve"
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "已办审批", Type: "common", TargetNodeID: "node-done"}
+	state := &fakeRunState{}
+	facts := &fakeFacts{}
+	executor := step.NewExecutor(targetFake, &fakeSessions{}, state, facts, fixedRunConfig(), nil)
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || !preview.GateAllowed {
+		t.Fatalf("取回前置事实应通过：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatalf("取回执行失败：%v", err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("新建待办快照滞后时取回应由 retrieve 审核记录确认成功，实际 verdict=%s", outcome.Verdict)
+	}
+	if targetFake.writeCalls != 1 {
+		t.Fatalf("取回应只发送一次原子写请求，实际 %d 次", targetFake.writeCalls)
+	}
+	if len(facts.attempts) != 1 || facts.attempts[0].Reread != string(verdict.RereadAdvanced) {
+		t.Fatalf("取回应由审核记录记录为已前进，attempts=%+v", facts.attempts)
+	}
+}
