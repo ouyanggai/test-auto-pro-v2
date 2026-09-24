@@ -410,8 +410,8 @@ async function formApiAvailable (page: Page, _mode: string): Promise<boolean> {
 
 // applyNodePatchViaPage 在页面内一次完成「数据接口解析 → 只写允许字段 → 回读完整值」。
 // 返回回读值；宿主缺失返回 null，由调用方按 unsupported 阻塞。
-async function applyNodePatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[]): Promise<Record<string, unknown> | null> {
-  return page.evaluate(async ({ patch, keys }) => {
+async function applyNodePatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[], identity: { userId: string, companyId: string }): Promise<Record<string, unknown> | null> {
+  return page.evaluate(async ({ patch, keys, identity }) => {
     interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
     const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
     const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
@@ -430,23 +430,37 @@ async function applyNodePatchViaPage (page: Page, _mode: string, patch: Record<s
       queue.push(...((value.$children as unknown[] | undefined) ?? []), ...Object.values((value.$refs as Record<string, unknown> | undefined) ?? {}))
     }
     if (!api) return null
-    const picked: Record<string, unknown> = {}
-    for (const key of keys) {
-      if (Object.prototype.hasOwnProperty.call(patch, key)) picked[key] = patch[key]
-      const virtual = `${key}__virtualName`
-      if (Object.prototype.hasOwnProperty.call(patch, virtual)) picked[virtual] = patch[virtual]
-    }
     const setter = (api.setData ?? api.setValues ?? api.setFormData) as (values: Record<string, unknown>) => unknown
     const getter = (api.getValues ?? api.getFormData) as () => unknown
+    // F-043 缺陷②：先读初始化后的表单值——表单初始化事件已按注入身份填好「当前用户」类字段。
+    const initValues = (await getter.call(api)) as Record<string, unknown> | null
+    const ids = [identity.userId, identity.companyId].filter(id => typeof id === 'string' && id.trim() !== '')
+    const isCurrentUser = (value: unknown): boolean => {
+      if (ids.length === 0 || value === null || value === undefined) return false
+      let text: string
+      try { text = typeof value === 'string' ? value : JSON.stringify(value) } catch { return false }
+      return !!text && ids.some(id => text.includes(id))
+    }
+    const companions = ['__virtualName', '__formPersonId', '__condition']
+    const picked: Record<string, unknown> = {}
+    for (const key of keys) {
+      // 当前用户字段由表单初始化事件按注入身份填好，不用历史发起人值覆盖（缺陷②）。
+      if (initValues && isCurrentUser(initValues[key])) continue
+      if (Object.prototype.hasOwnProperty.call(patch, key)) picked[key] = patch[key]
+      for (const suffix of companions) {
+        const companion = `${key}${suffix}`
+        if (Object.prototype.hasOwnProperty.call(patch, companion)) picked[companion] = patch[companion]
+      }
+    }
     await setter.call(api, picked)
     const values = await getter.call(api)
     if (values === null || values === undefined || typeof values !== 'object') return null
     return values as Record<string, unknown>
-  }, { patch, keys: allowedKeys })
+  }, { patch, keys: allowedKeys, identity })
 }
 // restoreIntendedPatchViaPage 对比页面实时值与意图值，自动恢复被异步联动脚本误清空的有效意图值。
-async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[]): Promise<Record<string, unknown> | null> {
-  return page.evaluate(async ({ patch, keys }) => {
+async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Record<string, unknown>, allowedKeys: string[], identity: { userId: string, companyId: string }): Promise<Record<string, unknown> | null> {
+  return page.evaluate(async ({ patch, keys, identity }) => {
     interface VNode { $children?: VNode[], $refs?: Record<string, unknown>, [key: string]: unknown }
     const native = (window as unknown as { __executorNative?: { initFlow?: unknown, flowDetail?: unknown, forwardList?: unknown } }).__executorNative
     const container = (native?.initFlow || native?.flowDetail || native?.forwardList) as VNode | undefined
@@ -469,6 +483,14 @@ async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Re
     const setter = (api.setData ?? api.setValues ?? api.setFormData) as (values: Record<string, unknown>) => unknown
     const current = (await getter.call(api)) as Record<string, unknown> | null
     if (!current || typeof current !== 'object') return null
+    // F-043 缺陷②：当前用户字段由表单初始化事件按注入身份填好，联动回补时不得恢复历史发起人值。
+    const currentUserIds = [identity.userId, identity.companyId].filter(id => typeof id === 'string' && id.trim() !== '')
+    const isCurrentUserValue = (value: unknown): boolean => {
+      if (currentUserIds.length === 0 || value === null || value === undefined) return false
+      let text: string
+      try { text = typeof value === 'string' ? value : JSON.stringify(value) } catch { return false }
+      return !!text && currentUserIds.some(id => text.includes(id))
+    }
 
     const restorePatch: Record<string, unknown> = {}
     let needRestore = false
@@ -488,6 +510,7 @@ async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Re
     for (const key of keys) {
       const intended = patch[key]
       const live = current[key]
+      if (isCurrentUserValue(live)) continue
       if (intended === undefined || intended === null || intended === '') continue
 
       if (Array.isArray(intended)) {
@@ -553,7 +576,7 @@ async function restoreIntendedPatchViaPage (page: Page, _mode: string, patch: Re
       return (await getter.call(api)) as Record<string, unknown>
     }
     return current
-  }, { patch, keys: allowedKeys })
+  }, { patch, keys: allowedKeys, identity })
 }
 
 // waitForOptionsReady 等待远程选项/联动收敛：trace 无在途转发请求且条目数保持稳定窗。
@@ -1100,14 +1123,14 @@ async function main (): Promise<void> {
             }
             // 等待就绪：trace 无在途请求 + 稳定窗（远程选项/联动收敛），绝不硬编码就绪标志。
             await waitForOptionsReady(session.route.trace, 900)
-            const readback = await applyNodePatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed)
+            const readback = await applyNodePatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed, { userId: String(payload.userId ?? ''), companyId: String(payload.companyId ?? '') })
             if (readback === null) {
               throw new UnsupportedFormError('补丁应用时表单数据接口不可用')
             }
             patchReadback = readback
             // 回填后二次等待联动与远程请求收敛，并通用恢复被原生联动脚本误清空的非空意图值
             await waitForOptionsReady(session.route.trace, 600)
-            const restoredReadback = await restoreIntendedPatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed)
+            const restoredReadback = await restoreIntendedPatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed, { userId: String(payload.userId ?? ''), companyId: String(payload.companyId ?? '') })
             if (restoredReadback !== null) {
               patchReadback = restoredReadback
             }

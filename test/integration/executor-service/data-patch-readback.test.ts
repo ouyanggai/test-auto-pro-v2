@@ -39,3 +39,32 @@ test('回读结果不是对象 → unsupported（数据接口不可信）', asyn
     (error: unknown) => error instanceof UnsupportedFormError
   )
 })
+
+test('当前用户字段由初始化事件填好 → 补丁不用历史发起人值覆盖（缺陷②）', async () => {
+  const written: string[] = []
+  await applyNodePatch({
+    setData: next => { written.push(...Object.keys(next)) },
+    // 初始化后：applyUser 已被表单按注入身份（user-plan）填好；reason 业务字段仍为空待补。
+    getValues: () => ({
+      applyUser: '{"id":"user-plan","name":"欧阳改"}',
+      applyUser__condition: '欧阳改',
+      reason: ''
+    })
+  }, {
+    applyUser: '{"id":"user-hist","name":"黄成礼"}',
+    applyUser__condition: '黄成礼',
+    reason: '进入机房检修'
+  }, { allowedKeys: ['applyUser', 'reason'], identity: { userId: 'user-plan', companyId: 'company-plan' } })
+  assert.ok(!written.includes('applyUser'), '当前用户字段不应被历史发起人值覆盖')
+  assert.ok(!written.includes('applyUser__condition'), '当前用户字段伴生键不应被覆盖')
+  assert.ok(written.includes('reason'), '业务字段仍需应用历史/路径修正值')
+})
+
+test('无身份提示时不跳过任何字段（回落原覆盖行为）', async () => {
+  const written: string[] = []
+  await applyNodePatch({
+    setData: next => { written.push(...Object.keys(next)) },
+    getValues: () => ({ applyUser: '{"id":"user-plan"}', reason: '' })
+  }, { applyUser: '{"id":"user-hist"}', reason: 'x' }, { allowedKeys: ['applyUser', 'reason'] })
+  assert.ok(written.includes('applyUser'), '无身份提示应回落为按补丁覆盖')
+})
