@@ -1,452 +1,145 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { NButton, NCard, NSpin } from 'naive-ui'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  NButton,
-  NCard,
-  NDataTable,
-  NIcon,
-  NTag,
-  useThemeVars,
-  type DataTableColumns,
-} from 'naive-ui'
-import {
-  ArrowBackOutline,
-  SpeedometerOutline,
-  CheckmarkCircleOutline,
-  ShieldCheckmarkOutline,
-} from '@vicons/ionicons5'
 
+import AppEmptyState from '../components/AppEmptyState.vue'
+import ReportMetricsPanel from '../features/reports/ReportMetricsPanel.vue'
+import { fetchPlanReport, formatMs, formatPercent, latencyText, ReportApiError } from '../features/reports/api'
+import type { ReportPathCard, ReportPlanDetail } from '../features/reports/api'
+
+// ReportDetailView 是报告中心 L1 计划详情（分）：计划头部、计划级专业指标与各路径指标表。
+// 与 L0 同口径但范围收敛到本计划；点击任一路径进入 L2。
 const route = useRoute()
 const router = useRouter()
-const themeVars = useThemeVars()
+const detail = ref<ReportPlanDetail | null>(null)
+const loading = ref(false)
+const errorText = ref('')
+let controller: AbortController | null = null
 
-const planId = computed(() => (route.params.id as string) || 'plan-1')
-
-// 计划细化定义
-const planDetailMap: Record<string, {
-  name: string
-  version: string
-  templateProxyId: string
-  description: string
-  totalRuns: number
-  passRate: number
-  avgDuration: string
-  p50Duration: string
-  p90Duration: string
-  p95Duration: string
-  pathsCount: number
-  flakyRate: string
-}> = {
-  'plan-1': {
-    name: '投资立项常规分支全量校验',
-    version: 'v2.4.0',
-    templateProxyId: 'FP-INV-2026-004',
-    description: '涵盖立项发起、主部门审查、财务风险评估与投资决策会签同意的全链路流程验证。',
-    totalRuns: 218,
-    passRate: 98.6,
-    avgDuration: '3.8s',
-    p50Duration: '3.1s',
-    p90Duration: '5.2s',
-    p95Duration: '6.2s',
-    pathsCount: 4,
-    flakyRate: '0.4%',
-  },
-  'plan-2': {
-    name: '风控合规加签与会签组合验证',
-    version: 'v1.8.2',
-    templateProxyId: 'FP-RISK-2026-012',
-    description: '针对风控动态加签节点、多级会签并行、加签人员防错过滤等边界分支的自动化深测。',
-    totalRuns: 164,
-    passRate: 94.5,
-    avgDuration: '5.4s',
-    p50Duration: '4.6s',
-    p90Duration: '8.4s',
-    p95Duration: '9.8s',
-    pathsCount: 3,
-    flakyRate: '2.1%',
-  },
-  'plan-3': {
-    name: '出纳复核异常驳回与取回链路',
-    version: 'v3.1.0',
-    templateProxyId: 'FP-FIN-2026-088',
-    description: '检验出纳初审驳回至经办人再提交、审批人在下一节点处理前主动取回并重新决策的动作组。',
-    totalRuns: 104,
-    passRate: 93.2,
-    avgDuration: '3.6s',
-    p50Duration: '2.9s',
-    p90Duration: '5.9s',
-    p95Duration: '7.4s',
-    pathsCount: 3,
-    flakyRate: '1.2%',
-  },
+// planId 从路由取；切换计划时重新加载。
+function currentPlanId(): string {
+  return String(route.params.id ?? '')
 }
 
-const currentPlan = computed(() => planDetailMap[planId.value] || planDetailMap['plan-1'])
-
-// 路径细分拓扑
-interface PathDetailRow {
-  pathId: string
-  pathName: string
-  pathTopology: string
-  execCount: number
-  passRate: number
-  p50Duration: string
-  p95Duration: string
-  flakyScore: string
-  status: 'optimal' | 'attention'
-  lastIssue: string
+// loadDetail 拉取计划详情聚合。
+async function loadDetail(): Promise<void> {
+  const planId = currentPlanId()
+  if (!planId) return
+  controller?.abort()
+  controller = new AbortController()
+  loading.value = true
+  errorText.value = ''
+  try {
+    detail.value = await fetchPlanReport(planId, controller.signal)
+  }
+  catch (error) {
+    if (controller.signal.aborted) return
+    errorText.value = error instanceof ReportApiError ? error.message : '暂时无法读取计划报告，请重试'
+    detail.value = null
+  }
+  finally {
+    if (!controller.signal.aborted) loading.value = false
+  }
 }
 
-const pathDetailRows: PathDetailRow[] = [
-  {
-    pathId: 'PATH-01',
-    pathName: '主线标准放行路径',
-    pathTopology: '发起 -> 主管审批 -> 财务总监 -> 归档',
-    execCount: 112,
-    passRate: 100,
-    p50Duration: '2.8s',
-    p95Duration: '3.2s',
-    flakyScore: '0.0%',
-    status: 'optimal',
-    lastIssue: '—',
-  },
-  {
-    pathId: 'PATH-02',
-    pathName: '大额投资合规加签路径',
-    pathTopology: '发起 -> 主管加签 -> 合规风控审查 -> 插入节点放行',
-    execCount: 56,
-    passRate: 96.4,
-    p50Duration: '4.2s',
-    p95Duration: '5.8s',
-    flakyScore: '1.8%',
-    status: 'optimal',
-    lastIssue: '加签人员名单包含不可登录账号 (已由名单排除收敛)',
-  },
-  {
-    pathId: 'PATH-03',
-    pathName: '前置驳回重发回流分支',
-    pathTopology: '发起 -> 财务初审驳回 -> 重新发起(改值) -> 重新提交',
-    execCount: 32,
-    passRate: 93.8,
-    p50Duration: '3.6s',
-    p95Duration: '4.6s',
-    flakyScore: '3.1%',
-    status: 'attention',
-    lastIssue: '目标后端代理树更新延迟，重新发起弹窗短时无响应',
-  },
-  {
-    pathId: 'PATH-04',
-    pathName: '多维度条件分支分流路径',
-    pathTopology: '发起 -> 预算金额分支判定 -> 专家评审委员会',
-    execCount: 18,
-    passRate: 100,
-    p50Duration: '3.0s',
-    p95Duration: '3.9s',
-    flakyScore: '0.0%',
-    status: 'optimal',
-    lastIssue: '—',
-  },
-]
+// openPath 下钻到 L2 路径详情。
+function openPath(path: ReportPathCard): void {
+  router.push(`/reports/${currentPlanId()}/paths/${path.executionPathId}`)
+}
 
-const pathColumns: DataTableColumns<PathDetailRow> = [
-  { title: '路径编号', key: 'pathId', width: 95 },
-  { title: '执行路径名称', key: 'pathName', minWidth: 160 },
-  { title: '拓扑流转关系', key: 'pathTopology', minWidth: 260, ellipsis: { tooltip: true } },
-  { title: '累计验证', key: 'execCount', width: 90, render: (row) => `${row.execCount} 次` },
-  {
-    title: '放行成功率 (FPY)',
-    key: 'passRate',
-    width: 130,
-    render: (row) => `${row.passRate}%`,
-  },
-  { title: 'P50 时延', key: 'p50Duration', width: 90 },
-  { title: 'P95 时延', key: 'p95Duration', width: 90 },
-  { title: 'Flaky 抖动', key: 'flakyScore', width: 95 },
-  {
-    title: '健康评级',
-    key: 'status',
-    width: 95,
-    render: (row) => (row.status === 'optimal' ? '优良' : '需关注'),
-  },
-  { title: '近期阻断事实', key: 'lastIssue', minWidth: 200, ellipsis: { tooltip: true } },
-]
+watch(() => route.params.id, () => { void loadDetail() })
+onMounted(() => { void loadDetail() })
+onBeforeUnmount(() => { controller?.abort() })
 </script>
 
 <template>
-  <div class="detail-page">
-    <header class="detail-header">
-      <div class="back-nav">
-        <n-button
-          quaternary
-          size="small"
-          class="back-btn"
-          @click="router.push('/reports')"
-        >
-          <template #icon>
-            <n-icon :component="ArrowBackOutline" />
-          </template>
-          返回报告中心
-        </n-button>
+  <section class="report-detail">
+    <header class="report-detail__header">
+      <div>
+        <NButton text type="primary" @click="router.push('/reports')">← 返回报告中心</NButton>
+        <h1>{{ detail?.planName || '计划详情' }}</h1>
       </div>
-
-      <div class="header-main">
-        <div class="header-main__title-row">
-          <h1 class="plan-title">{{ currentPlan.name }}</h1>
-          <span class="version-tag">{{ currentPlan.version }}</span>
-          <span class="proxy-tag">流程代理 ID: {{ currentPlan.templateProxyId }}</span>
-        </div>
-        <p class="plan-desc">{{ currentPlan.description }}</p>
-      </div>
+      <NButton type="primary" :loading="loading" @click="loadDetail">刷新</NButton>
     </header>
 
-    <!-- 顶栏 KPI 指标栏 (包含 P50/P90/P95 完整性能台阶) -->
-    <section class="stat-deck">
-      <div class="stat-deck-card">
-        <span class="stat-deck-card__label">覆盖路径分支</span>
-        <span class="stat-deck-card__value">{{ currentPlan.pathsCount }} <small>条</small></span>
-        <span class="stat-deck-card__sub">全分支拓扑覆盖</span>
-      </div>
-      <div class="stat-deck-card">
-        <span class="stat-deck-card__label">累计执行总次</span>
-        <span class="stat-deck-card__value">{{ currentPlan.totalRuns }} <small>次</small></span>
-        <span class="stat-deck-card__sub">稳定回放验证</span>
-      </div>
-      <div class="stat-deck-card">
-        <span class="stat-deck-card__label">放行一次成功率 (FPY)</span>
-        <span class="stat-deck-card__value text--success">{{ currentPlan.passRate }} <small>%</small></span>
-        <span class="stat-deck-card__sub">Flaky 率 {{ currentPlan.flakyRate }}</span>
-      </div>
-      <div class="stat-deck-card">
-        <span class="stat-deck-card__label">平均 / P95 时延</span>
-        <span class="stat-deck-card__value">{{ currentPlan.avgDuration }} <small>/ {{ currentPlan.p95Duration }}</small></span>
-        <span class="stat-deck-card__sub">P50: {{ currentPlan.p50Duration }} | P90: {{ currentPlan.p90Duration }}</span>
-      </div>
-    </section>
+    <p v-if="errorText" class="report-detail__error" role="alert">{{ errorText }}</p>
 
-    <!-- 拓扑细化表格 -->
-    <section class="table-section">
-      <n-card size="small" class="section-card">
-        <template #header>
-          <div class="card-title-group">
-            <span class="card-main-title">路径分支流转拓扑与质量下钻明细</span>
-            <span class="card-sub-title">按各分支节点流转拓扑切分度量 P50/P95 耗时阶梯与阻断事实</span>
-          </div>
-        </template>
+    <div v-if="loading && !detail" class="report-detail__loading"><NSpin size="small" /><span>正在读取计划报告……</span></div>
 
-        <n-data-table
-          :columns="pathColumns"
-          :data="pathDetailRows"
-          :bordered="false"
-          size="small"
+    <template v-else-if="detail">
+      <!-- 计划头部 -->
+      <NCard size="small" class="report-detail__meta">
+        <div class="meta-grid">
+          <div><span class="meta__label">账号</span><span class="meta__value">{{ detail.account || '—' }}</span></div>
+          <div><span class="meta__label">流程来源</span><span class="meta__value">{{ detail.flowSource || '—' }}</span></div>
+          <div><span class="meta__label">目标对象</span><span class="meta__value">{{ detail.targetObjectName || '—' }}</span></div>
+          <div><span class="meta__label">路径总数</span><span class="meta__value">{{ detail.totalPaths }}</span></div>
+          <div><span class="meta__label">累计运行次数</span><span class="meta__value">{{ detail.runCount }}</span></div>
+        </div>
+      </NCard>
+
+      <!-- 计划级专业指标 -->
+      <h2 class="report-detail__section-title">计划级专业指标</h2>
+      <ReportMetricsPanel :metrics="detail.metrics" />
+
+      <!-- 各路径指标表：点击进入 L2 -->
+      <NCard size="small" title="各执行路径指标" class="report-detail__paths">
+        <AppEmptyState
+          v-if="detail.paths.length === 0"
+          title="该计划还没有执行路径"
+          description="在计划的路径页保存执行路径后，这里会按路径汇总运行指标。"
         />
-      </n-card>
-    </section>
-
-    <!-- 质量评估与建议 -->
-    <section class="summary-section">
-      <n-card size="small" class="section-card summary-card">
-        <div class="summary-header">
-          <n-icon :component="ShieldCheckmarkOutline" />
-          <span>自动化测试工程评估与建议</span>
-        </div>
-        <div class="summary-list">
-          <div class="summary-row">
-            <span class="summary-tag">覆盖度良好</span>
-            <p>主线放行路径（PATH-01）与条件分流（PATH-04）成功率达到 100%，耗时 P95 稳定在 4 秒以内，可作为基线持续回归。</p>
-          </div>
-          <div class="summary-row">
-            <span class="summary-tag">安全防错收益</span>
-            <p>加签人员排除名单在 PATH-02 已生效，成功过滤 4 次由于测试人员账号停用造成的无效流转中断。</p>
-          </div>
-          <div class="summary-row">
-            <span class="summary-tag">时延注意项</span>
-            <p>PATH-03 涉及驳回重填后代理更新，偶有 P95 达 4.6 秒，属于目标平台底层结构写入同步耗时，已加入平滑等待与重试机制。</p>
-          </div>
-        </div>
-      </n-card>
-    </section>
-  </div>
+        <table v-else class="report-table">
+          <thead>
+            <tr>
+              <th>序号</th>
+              <th>路径名称</th>
+              <th>运行次数</th>
+              <th>成功率</th>
+              <th>平均步骤数</th>
+              <th>平均步骤耗时</th>
+              <th>平均接口耗时</th>
+              <th>最近结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="path in detail.paths" :key="path.executionPathId" class="report-table__row" @click="openPath(path)">
+              <td>{{ path.sequenceNo }}</td>
+              <td class="report-table__name">{{ path.name }}</td>
+              <td>{{ path.pathRunCount }}</td>
+              <td>
+                <template v-if="path.finishedPathRuns > 0">{{ formatPercent(path.successRate) }}</template>
+                <template v-else>—</template>
+              </td>
+              <td>{{ path.avgSteps > 0 ? path.avgSteps.toFixed(1) : '—' }}</td>
+              <td>{{ path.stepLatencyMs.sampleCount > 0 ? formatMs(path.stepLatencyMs.mean) : '暂无样本' }}</td>
+              <td>{{ path.interfaceLatencyMs.sampleCount > 0 ? formatMs(path.interfaceLatencyMs.mean) : '暂无真实请求耗时' }}</td>
+              <td>{{ path.lastResultName || '未运行' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="report-detail__legend">步骤耗时来自步骤尝试墙钟，接口耗时来自 network.log 传输层，两者口径不同分开展示。分位明细：{{ latencyText(detail.metrics.stepLatencyMs) }}。</p>
+      </NCard>
+    </template>
+  </section>
 </template>
 
 <style scoped>
-.detail-page {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 8px 0 40px;
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-
-.back-nav {
-  margin-bottom: 8px;
-}
-
-.back-btn {
-  padding-left: 0;
-  color: var(--n-text-color-2);
-  font-weight: 500;
-  transition: all 0.2s ease;
-}
-
-.back-btn:hover {
-  color: var(--n-primary-color);
-  transform: translateX(-2px);
-}
-
-.header-main__title-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 6px;
-  flex-wrap: wrap;
-}
-
-.plan-title {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--n-text-color);
-}
-
-.version-tag {
-  font-size: 11px;
-  padding: 2px 7px;
-  background: v-bind('themeVars.tagColor');
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  color: var(--n-text-color-2);
-}
-
-.proxy-tag {
-  font-size: 12px;
-  color: var(--n-text-color-3);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-}
-
-.plan-desc {
-  margin: 0;
-  font-size: 13px;
-  color: var(--n-text-color-3);
-  max-width: 800px;
-  line-height: 1.6;
-}
-
-/* 顶栏四列卡片 */
-.stat-deck {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-}
-
-.stat-deck-card {
-  background: v-bind('themeVars.cardColor');
-  border: 1px solid v-bind('themeVars.borderColor');
-  border-radius: 9px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.stat-deck-card__label {
-  font-size: 12px;
-  color: var(--n-text-color-3);
-}
-
-.stat-deck-card__value {
-  font-size: 24px;
-  font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  color: var(--n-text-color);
-}
-
-.stat-deck-card__value small {
-  font-size: 13px;
-  font-weight: normal;
-  color: var(--n-text-color-3);
-}
-
-.stat-deck-card__sub {
-  font-size: 11.5px;
-  color: var(--n-text-color-3);
-}
-
-.text--success {
-  color: #18a058;
-}
-
-/* 表格卡片 */
-.section-card {
-  border-radius: 12px;
-}
-
-.card-title-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 2px 0;
-}
-
-.card-main-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--n-text-color);
-}
-
-.card-sub-title {
-  font-size: 12px;
-  color: var(--n-text-color-3);
-}
-
-/* 总结建议 */
-.summary-card {
-  background: v-bind('themeVars.actionColor');
-}
-
-.summary-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #18a058;
-  margin-bottom: 12px;
-}
-
-.summary-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.summary-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 12.5px;
-  line-height: 1.55;
-}
-
-.summary-tag {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: v-bind('themeVars.tagColor');
-  color: var(--n-text-color-2);
-  flex-shrink: 0;
-}
-
-.summary-row p {
-  margin: 0;
-  color: var(--n-text-color-2);
-}
-
-@media (max-width: 860px) {
-  .stat-deck {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
+.report-detail { display: grid; gap: 16px; padding: 20px 24px; }
+.report-detail__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.report-detail__header h1 { margin: 6px 0 0; font-size: 20px; }
+.report-detail__error { color: var(--error-color, #d03050); margin: 0; }
+.report-detail__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
+.meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.meta__label { display: block; color: var(--text-color-3); font-size: 12px; }
+.meta__value { font-size: 15px; font-weight: 500; color: var(--text-color-1); }
+.report-detail__section-title { margin: 8px 0 0; font-size: 16px; }
+.report-detail__legend { margin: 12px 0 0; color: var(--text-color-3); font-size: 12px; line-height: 1.6; }
+.report-table { width: 100%; border-collapse: collapse; }
+.report-table th,
+.report-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--divider-color); }
+.report-table__row { cursor: pointer; }
+.report-table__row:hover { background: color-mix(in srgb, var(--card-color) 92%, var(--primary-color)); }
+.report-table__name { font-weight: 500; }
 </style>

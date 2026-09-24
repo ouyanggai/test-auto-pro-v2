@@ -128,6 +128,9 @@ importers:
       '@vue-flow/core':
         specifier: ^1.48.2
         version: 1.48.2(vue@3.5.40(typescript@5.9.3))
+      echarts:
+        specifier: 6.1.0
+        version: 6.1.0
       naive-ui:
         specifier: 2.44.1
         version: 2.44.1(vue@3.5.40(typescript@5.9.3))
@@ -137,6 +140,9 @@ importers:
       vue:
         specifier: 3.5.40
         version: 3.5.40(typescript@5.9.3)
+      vue-echarts:
+        specifier: 8.3.0
+        version: 8.3.0(echarts@6.1.0)(vue@3.5.40(typescript@5.9.3))
       vue-router:
         specifier: 5.2.0
         version: 5.2.0(@vue/compiler-sfc@3.5.40)(esbuild@0.28.2)(pinia@4.0.2(@vue/devtools-api@8.2.1)(typescript@5.9.3)(vue@3.5.40(typescript@5.9.3)))(rolldown@1.1.5)(rollup@4.62.4)(vite@8.1.5(@types/node@26.2.0)(esbuild@0.28.2)(sass@1.97.3)(tsx@4.23.13)(yaml@2.9.0))(vue@3.5.40(typescript@5.9.3))(webpack@4.47.0)
@@ -3003,6 +3009,9 @@ packages:
 
   ecc-jsbn@0.1.2:
     resolution: {integrity: sha512-eh9O+hwRHNbG4BLTjEl3nw044CkGm5X6LoaCf7LPp7UU8Qrt47JYNi6nPX8xjW97TKGKm1ouctg0QSpZe9qrnw==}
+
+  echarts@6.1.0:
+    resolution: {integrity: sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA==}
 
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
@@ -5904,6 +5913,9 @@ packages:
       typescript:
         optional: true
 
+  tslib@2.3.0:
+    resolution: {integrity: sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg==}
+
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
@@ -6226,6 +6238,12 @@ packages:
       '@vue/composition-api':
         optional: true
 
+  vue-echarts@8.3.0:
+    resolution: {integrity: sha512-gqOZ5uuBF4x4KTXQpTmgH5BuAwUSO+y9U7L1pHCIESQvgnTitXtnyjrfePH+9YXMRhmTLjchEx3EnsPhoiIX/A==}
+    peerDependencies:
+      echarts: ^6.0.0
+      vue: ^3.3.0
+
   vue-hot-reload-api@2.3.4:
     resolution: {integrity: sha512-BXq3jwIagosjgNVae6tkHzzIk6a8MHFtzAdwhnV5VlvPTFxDCvIttgSiHWjdGoTJvXtmRu5HacExfdarRcFhog==}
 
@@ -6511,6 +6529,9 @@ packages:
   yargs@16.2.2:
     resolution: {integrity: sha512-Nt9ZJjXTv5R8MHbqby/wXQ6Gi0Bb3TcYZkR1bzuL4yB2OxWPkXknz513gEF0GoA6tn00UpbPvERW8rzCuWCA6w==}
     engines: {node: '>=10'}
+
+  zrender@6.1.0:
+    resolution: {integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ==}
 
 snapshots:
 
@@ -9815,6 +9836,11 @@ snapshots:
     dependencies:
       jsbn: 0.1.1
       safer-buffer: 2.1.2
+
+  echarts@6.1.0:
+    dependencies:
+      tslib: 2.3.0
+      zrender: 6.1.0
 
   ee-first@1.1.1: {}
 
@@ -13159,6 +13185,8 @@ snapshots:
 
   ts-pnp@1.2.0: {}
 
+  tslib@2.3.0: {}
+
   tslib@2.8.1:
     optional: true
 
@@ -13429,6 +13457,11 @@ snapshots:
 
   vue-demi@0.14.10(vue@3.5.40(typescript@5.9.3)):
     dependencies:
+      vue: 3.5.40(typescript@5.9.3)
+
+  vue-echarts@8.3.0(echarts@6.1.0)(vue@3.5.40(typescript@5.9.3)):
+    dependencies:
+      echarts: 6.1.0
       vue: 3.5.40(typescript@5.9.3)
 
   vue-hot-reload-api@2.3.4: {}
@@ -13881,3 +13914,7 @@ snapshots:
       string-width: 4.2.3
       y18n: 5.0.8
       yargs-parser: 20.2.9
+
+  zrender@6.1.0:
+    dependencies:
+      tslib: 2.3.0

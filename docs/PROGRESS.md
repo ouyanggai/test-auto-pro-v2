@@ -1,5 +1,10 @@
 # 当前进度
 
+- 2026-09-24 F-042「报告中心真实度量（总分总）」实施与自动验证完成，停在 **ready_for_manual**：
+  ① 只读聚合后端：新增 `internal/repository/report.go`/`internal/repository/mysql/report_repository.go`（计数、计划汇总、路径运行行、尝试行的分组聚合 SQL，样本按范围有界拉取，无 N+1/无全表）、`internal/service/report_center.go`（成功率、一次通过率 FPY、路径覆盖度、结果/失败分类分布、步骤与目标接口时延分位、接口读写与重试统计、运行实例耗时三分解）、`internal/api/report.go`（`GET /api/reports/overview`、`/plans/{id}`、`/plans/{id}/paths/{pathId}`），并在 `cmd/server/main.go` 接线；分位一律用 `github.com/montanaflynn/stats` 计算，接口耗时读取复用运行编排服务的 `network.log` 口径。
+  ② 前端三级看板：`ReportsView.vue`(L0)/`ReportDetailView.vue`(L1) 改为真实接口驱动并删除全部硬编码假数据常量，新增 `PathReportView.vue`(L2) 与 `/reports/:planId/paths/:pathId` 路由；图表用 ECharts + `vue-echarts`（`web/src/features/reports/`）渲染，L3 复用现有运行详情页；空/错/暂无样本按产品原则用文字状态呈现（无 `network.log` 显示「暂无真实请求耗时」，缺执行器/编排分量显示「未知」，不用 0ms 冒充）。
+  ③ 验证：`go build ./...` 通过；新增 `test/integration/f042_report_aggregation_test.go` 在真实 MySQL 上断言聚合口径（成功率 0.5、FPY 0、覆盖度、结果分布、执行器耗时分解与未知降级），与既有 `TestF042ExecutorMsRoundTrip` 一并通过；前端 `pnpm run typecheck` 与 `pnpm run build` 通过。
+  下一步：等待用户在浏览器与真实目标环境人工核对（首页统计与任务中心一致、三级下钻数据自上而下对得上、运行实例耗时分解真实、图表清晰无假数据残留）；未获用户明确验收不标记 accepted，不自动开始下一功能。
 - 2026-09-24 催办接收人判定、跟踪命名纠正与幂等跳过、取回准备同意防误跳过修复完成，停在 **ready_for_manual**：
   ① 催办待办接收人门禁基于实时实例运行事实判定：`gate.go` 修正 `ctx.HasPendingRecipient` 计算逻辑，当实例处于运行态（`run`）且已发事实返回了待办人（`CurrentHandlers`）或当前节点（`CurrentNodes`）时直接判定为存在可催办接收人，彻底消除发起人因自身名下无待办导致查空拦截的缺陷；催办写请求固定由发起人（计划账号）发出；
   ② 纠正目标原生跟踪命名并实现幂等放行跳过：彻底废除“关注/取消关注”自造名词，前后端统一恢复为目标平台原生术语**“设为跟踪（flowTracking）”**与**“取消跟踪”**；`executor.go` 实现幂等跳过逻辑，当实例已处于跟踪状态执行“设为跟踪”或已未跟踪执行“取消跟踪”时，直接判定放行并标记 `TargetSkipped=true`（记录跳过原因），跳过重复写请求并继续推进下一步，绝不中断执行器；

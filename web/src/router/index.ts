@@ -13,6 +13,7 @@ const FormRuntimeMaintenanceView = () => import('../views/FormRuntimeMaintenance
 const AddSignExclusionView = () => import('../views/AddSignExclusionView.vue')
 const ReportsView = () => import('../views/ReportsView.vue')
 const ReportDetailView = () => import('../views/ReportDetailView.vue')
+const PathReportView = () => import('../views/PathReportView.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -29,6 +30,7 @@ const router = createRouter({
     { path: '/runs/:runId/paths/:pathRunId', component: RunDetailView },
     { path: '/reports', component: ReportsView },
     { path: '/reports/:id', component: ReportDetailView },
+    { path: '/reports/:planId/paths/:pathId', component: PathReportView },
     { path: '/settings', component: SettingsView },
     { path: '/settings/reports', redirect: '/reports' },
     { path: '/settings/reports/:id', redirect: (to) => `/reports/${to.params.id}` },
