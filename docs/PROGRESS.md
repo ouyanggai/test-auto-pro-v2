@@ -1,5 +1,12 @@
 # 当前进度
 
+- 2026-09-24 规划 F-042「报告中心真实度量（总分总）」，状态 **awaiting_approval**：报告中心当前整页为硬编码假数据（`ReportsView.vue`/`ReportDetailView.vue` 写死常量、`/reports` 不调后端）。
+  规划改为只读三级聚合看板——L0 首页上半统计第一级计划情况、下半给专业测试指标（路径成功率/一次通过率 FPY/路径覆盖度/步骤与接口时延分位/停机分类占比/接口读写统计/重试统计）；
+  L1 计划详情看各路径指标；L2 路径详情看运行实例指标（执行了哪些接口、接口耗时、工具端编排耗时、执行器耗时分解）；L3 复用现有运行详情。
+  只读既有运行记录六表与 `network.log`，严格沿用 F-030 耗时口径（未知显示「未知」，不用 0ms 或阶段差值冒充），不新增运行状态机或运行事实表、不调用目标写接口；
+  用户已裁决（2026-09-24）：执行器精确墙钟耗时采用选项 B——独立执行服务真实计时器采集、随动作结果上报，仅补一条最小向前迁移 036 为 `run_step_attempts.executor_ms` 落库；
+  统计分位与图表一律使用成熟热门库（Go `github.com/montanaflynn/stats` + 前端 ECharts/`vue-echarts`），不手写分位与图表。计划见 `docs/features/F-042-report-center-real-metrics.md`，未获批准不进入 `implementing`。
+  下一步：等待用户明确批准后进入 `implementing`。
 - 2026-09-23 参照目标平台代码将移交动作完整纳入动作配置与执行体系，停在 **ready_for_manual**：
   ① 移交人员候选与门禁严格对齐目标平台架构树：参照目标平台 `views/GroupApproveManage/Backlog/index.vue` 的 `clickHandOver` 与 `PersonSelectDialog.vue` 实现，移交弹出的选人窗口实际选用全公司组织架构树人员；`path_config_plan.go` 改造 `transferNodePersonConfig` 与 `nodeActorSwitchable`，优先复用 `AddSignCandidates` 公司人员目录池，彻底解除固定审批人或未预先计算候选节点导致移交被误禁用的缺陷；
   ② 修复一键配置移交候选策略与发起人排除：`path_action_configuration.go` 新增 `autoTransferPersonStrategyExcludePlanAccount`，明确排除流程发起人并确定性选出被移交人；自动配置候选时同步补齐 `candidate.action.ActorPolicy`，彻底消除一键配置试编译时因 `ACTOR_POLICY_REQUIRED` 导致的移交候选全数淘汰；

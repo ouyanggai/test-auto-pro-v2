@@ -1,5 +1,20 @@
 # 技术架构
 
+## F-042 报告中心真实度量（只读聚合）
+
+F-042 把报告中心从前端硬编码假数据改为基于既有运行事实的只读「总分总」三级聚合，不新增运行状态机或运行事实表、不改执行引擎判定/调度/核验语义、不调用目标平台任何写接口；仅补一条最小向前迁移（036）采集执行器真实计时。状态 `awaiting_approval`。
+
+- **事实唯一来源**：MySQL 运行记录六表（`runs`/`path_runs`/`run_steps`/`run_step_attempts`/`run_events`/`run_controls`，迁移 026）与运行目录 `network.log`（F-030 传输层 `duration_s`）。不新增造数来源，不读目标平台业务库做报告。
+- **只读聚合服务**：新增 `internal/service/report_center.go`（暂名），复用 `run_request_timings.go` 的窗口归属与耗时口径；分位、计数、成功数用带索引的分组聚合 SQL 一次算出，避免逐行读全表或 N+1；范围大时分页与时间范围保护。
+- **三个只读接口**：`GET /api/reports/overview`（L0 计划计数+专业指标）、`GET /api/reports/plans/{planId}`（L1 计划头部+计划级指标+各路径指标）、`GET /api/reports/plans/{planId}/paths/{pathId}`（L2 路径头部+路径级指标+运行实例列表）。L3 运行实例明细复用现有 `GET /api/runs/{runId}` 与二级路径详情，不新增第二套详情。
+- **热门库（不手写分位与图表）**：分位/均值/中位数在 Go 侧用主流统计库 `github.com/montanaflynn/stats` 计算，标准计数/求和/占比仍用 SQL；前端看板用 Apache ECharts + `vue-echarts` 渲染，不手写 SVG/Canvas 图表。依赖锁定精确版本，只引广泛使用、活跃维护的库。
+- **耗时口径**：目标接口耗时只用 `network.log` 传输层 `duration_s`，与步骤耗时（`run_step_attempts.duration_ms`）分开；工具端编排耗时 = 步骤总耗时 − 同尝试内目标接口传输耗时，账号排队等待单列。未知带 `xxxKnown` 布尔，前端显示「未知」，历史无日志显示「暂无真实请求耗时」，不用 0ms 或阶段差值冒充。
+- **执行器真实计时（选项 B）**：独立执行服务在动作从装载到收敛用真实计时器测墙钟耗时，随 `ActionRunResult` 上报 `executorMs`；Go 落账时写入新列 `run_step_attempts.executor_ms`（迁移 036，`BIGINT NULL`，只写一次、永不 UPDATE，同 `before_facts`/`runtime_detail` 纪律）。非 runtime 步骤为空显示「无执行器环节」，历史行为空显示「未知」。只加字段与一处采集，不改动作语义、写纪律与核验。
+- **公开与安全**：DTO 只返回统计与安全摘要，不返回 SID、密码、完整请求/响应正文；正文继续只走既有 `curl.log`/日志入口。
+- **前端**：`ReportsView.vue`/`ReportDetailView.vue` 改为真实接口驱动并删除假常量，新增 L2 路径详情视图，复用 Naive UI 现有组件，不引入新 UI 框架。
+
+实现与人工门禁见 `docs/features/F-042-report-center-real-metrics.md`；未获批准不进入 `implementing`。
+
 ## F-036 独立执行服务
 
 F-036 将页面执行从 `form-runtime/` 迁到根目录 `executor-service/`，与配置侧彻底隔离。状态 `ready_for_manual`；目标平台真实运行由用户页面人工核对，仓库不再维护固定真实写测试入口。
