@@ -15,12 +15,19 @@ import (
 // 目标只读 API 的实例列表需要逐页拉取并逐行解析人员目录，账号历史达到数千条时明显变慢；
 // 这里用一次带索引的联表查询取回列表所需的最少列，表单正文仍只能通过目标只读协议读取。
 type TargetHistoryRepository struct {
-	db             *sql.DB
-	schema         string
-	userCenter     string
-	customerCode   string
-	platformCode   string
-	verifiedTables bool
+	db               *sql.DB
+	schema           string
+	userCenter       string
+	quotedSchema     string
+	quotedUserCenter string
+	customerCode     string
+	platformCode     string
+	verifiedTables   bool
+}
+
+// quoteIdent 为库名添加反引号，避免连字符库名（如 workflow-center）产生 SQL 语法解析错误。
+func quoteIdent(name string) string {
+	return "`" + strings.TrimSpace(name) + "`"
 }
 
 // NewTargetHistoryRepository 打开目标业务库只读连接，并核对必需表存在。
@@ -42,6 +49,7 @@ func NewTargetHistoryRepository(ctx context.Context, cfg config.TargetBizDBConfi
 	db.SetMaxIdleConns(2)
 	repo := &TargetHistoryRepository{
 		db: db, schema: cfg.Name, userCenter: cfg.UserCenterName,
+		quotedSchema: quoteIdent(cfg.Name), quotedUserCenter: quoteIdent(cfg.UserCenterName),
 		customerCode: strings.TrimSpace(customerCode), platformCode: strings.TrimSpace(platformCode),
 	}
 	if err := repo.verifyTables(ctx); err != nil {
@@ -132,7 +140,7 @@ ORDER BY (p.flow_name = ?) DESC,
          (i.status = 'end') DESC,
          i.create_date DESC,
          i.id DESC
-LIMIT ? OFFSET ?`, r.schema, r.userCenter, where)
+LIMIT ? OFFSET ?`, r.quotedSchema, r.quotedUserCenter, where)
 	queryArgs := append(append([]any{}, args...), flowName, likeFlowPattern, flowName, flowCode, formName, pageSize, (page-1)*pageSize)
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -191,7 +199,7 @@ JOIN %[1]s.t_flow_proxy p ON p.id = i.flow_proxy_id
 LEFT JOIN %[1]s.t_form_proxy f ON f.id = i.form_proxy_id
 LEFT JOIN %[2]s.t_user u ON u.id = i.creater_id
 LEFT JOIN %[2]s.t_company c ON c.id = i.company_id
-WHERE %[3]s`, r.schema, r.userCenter, where)
+WHERE %[3]s`, r.quotedSchema, r.quotedUserCenter, where)
 	var total int
 	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
 		return 0, err
@@ -218,13 +226,13 @@ func (r *TargetHistoryRepository) CompanyNameByID(ctx context.Context, companyID
 		return "", false, nil
 	}
 	var name string
-	err := r.db.QueryRowContext(ctx, `
+	query := fmt.Sprintf(`
 SELECT name FROM (
-  SELECT name FROM `+r.userCenter+`.t_company WHERE id = ? AND customer_code = ? AND is_delete = 0
+  SELECT name FROM %[1]s.t_company WHERE id = ? AND customer_code = ? AND is_delete = 0
   UNION ALL
-  SELECT name FROM `+r.userCenter+`.t_project_company WHERE id = ? AND customer_code = ? AND is_delete = 0
-) company_directory LIMIT 1`,
-		companyID, r.customerCode, companyID, r.customerCode).Scan(&name)
+  SELECT name FROM %[1]s.t_project_company WHERE id = ? AND customer_code = ? AND is_delete = 0
+) company_directory LIMIT 1`, r.quotedUserCenter)
+	err := r.db.QueryRowContext(ctx, query, companyID, r.customerCode, companyID, r.customerCode).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -253,7 +261,7 @@ SELECT id, COALESCE(name, ''), COALESCE(phone, ''), COALESCE(username, ''), COAL
 FROM %s.t_user
 WHERE customer_code = ? AND is_delete = 0 AND name LIKE ?
 ORDER BY (enable_type = 'enable') ASC, name ASC
-LIMIT ?`, r.userCenter)
+LIMIT ?`, r.quotedUserCenter)
 	rows, err := r.db.QueryContext(ctx, query, r.customerCode, "%"+escapeTargetHistoryLike(name)+"%", limit)
 	if err != nil {
 		return nil, err
@@ -284,7 +292,7 @@ func (r *TargetHistoryRepository) ListDisabledUserIDs(ctx context.Context) ([]st
 	}
 	query := fmt.Sprintf(`
 SELECT id FROM %s.t_user
-WHERE customer_code = ? AND is_delete = 0 AND COALESCE(enable_type, '') <> 'enable'`, r.userCenter)
+WHERE customer_code = ? AND is_delete = 0 AND COALESCE(enable_type, '') <> 'enable'`, r.quotedUserCenter)
 	rows, err := r.db.QueryContext(ctx, query, r.customerCode)
 	if err != nil {
 		return nil, err
@@ -323,7 +331,7 @@ WHERE u.customer_code = ? AND u.is_delete = 0 AND u.enable_type = 'enable'
   AND NOT EXISTS (
     SELECT 1 FROM %[1]s.sys_user_role r
     WHERE r.user_id = u.id AND r.platform_code = ? AND r.customer_code = ?
-  )`, r.userCenter)
+  )`, r.quotedUserCenter)
 	rows, err := r.db.QueryContext(ctx, query, r.customerCode, r.platformCode, r.customerCode)
 	if err != nil {
 		return nil, err
@@ -353,10 +361,10 @@ func (r *TargetHistoryRepository) ListAutoExcludedUsers(ctx context.Context, nam
 	// 条件：停用；或（配置了平台码且）已启用但当前平台无角色。platform 为空时只纳入停用。
 	roleCondition := "0"
 	if platform != "" {
-		roleCondition = `(u.enable_type = 'enable' AND NOT EXISTS (
-			SELECT 1 FROM ` + r.userCenter + `.sys_user_role r
+		roleCondition = fmt.Sprintf(`(u.enable_type = 'enable' AND NOT EXISTS (
+			SELECT 1 FROM %[1]s.sys_user_role r
 			WHERE r.user_id = u.id AND r.platform_code = ? AND r.customer_code = ?
-		))`
+		))`, r.quotedUserCenter)
 	}
 	query := fmt.Sprintf(`
 SELECT u.id, COALESCE(u.name, ''), COALESCE(u.phone, ''),
@@ -365,7 +373,7 @@ FROM %s.t_user u
 WHERE u.customer_code = ? AND u.is_delete = 0
   AND (u.enable_type <> 'enable' OR %s)
   AND (? = '' OR u.name LIKE ?)
-ORDER BY reason ASC, u.name ASC`, r.userCenter, roleCondition)
+ORDER BY reason ASC, u.name ASC`, r.quotedUserCenter, roleCondition)
 
 	args := []any{}
 	args = append(args, r.customerCode)
@@ -400,13 +408,13 @@ func (r *TargetHistoryRepository) CompanyIDByName(ctx context.Context, name stri
 	if name == "" {
 		return []string{}, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `
+	query := fmt.Sprintf(`
 SELECT id FROM (
-  SELECT id FROM `+r.userCenter+`.t_company WHERE name = ? AND customer_code = ? AND is_delete = 0
+  SELECT id FROM %[1]s.t_company WHERE name = ? AND customer_code = ? AND is_delete = 0
   UNION ALL
-  SELECT id FROM `+r.userCenter+`.t_project_company WHERE name = ? AND customer_code = ? AND is_delete = 0
-) company_directory`,
-		name, r.customerCode, name, r.customerCode)
+  SELECT id FROM %[1]s.t_project_company WHERE name = ? AND customer_code = ? AND is_delete = 0
+) company_directory`, r.quotedUserCenter)
+	rows, err := r.db.QueryContext(ctx, query, name, r.customerCode, name, r.customerCode)
 	if err != nil {
 		return nil, err
 	}

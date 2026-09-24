@@ -102,6 +102,20 @@ func TestValidDatabaseName(t *testing.T) {
 	}
 }
 
+// TestValidTargetDatabaseName 校验目标业务库与用户中心库名规则：允许连字符，但拒绝反引号与空格。
+func TestValidTargetDatabaseName(t *testing.T) {
+	for _, valid := range []string{"workflow-center", "rsh_cloud_user_center", "workflow-center-api", "DB1"} {
+		if !config.ValidTargetDatabaseName(valid) {
+			t.Fatalf("合法目标库名被拒绝：%s", valid)
+		}
+	}
+	for _, invalid := range []string{"", "test auto", "db`x", "workflow;drop", strings.Repeat("a", 65)} {
+		if config.ValidTargetDatabaseName(invalid) {
+			t.Fatalf("非法目标库名被接受：%q", invalid)
+		}
+	}
+}
+
 func unsetPlanDBEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{"PLAN_DB_HOST", "PLAN_DB_PORT", "PLAN_DB_USER", "PLAN_DB_PASSWORD", "PLAN_DB_NAME"} {

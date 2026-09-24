@@ -261,9 +261,25 @@ type TargetBizDBConfig struct {
 
 const (
 	defaultTargetBizDBPort           = 3306
-	defaultTargetBizDBName           = "rsh_cloud_workflow_center"
+	defaultTargetBizDBName           = "workflow-center"
 	defaultTargetBizDBUserCenterName = "rsh_cloud_user_center"
 )
+
+// ValidTargetDatabaseName 校验目标业务库或用户中心库名：允许英文字母、数字、下划线和连字符。
+// 目标平台微服务常采用中划线命名（如 workflow-center），故放宽允许连字符，同时限制 1-64 字符且严禁空格、引号与反引号以防 SQL 注入。
+func ValidTargetDatabaseName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, character := range name {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
 
 // LoadTargetBizDBConfig 读取目标业务库只读配置；未配置主机时视为未启用。
 func LoadTargetBizDBConfig() TargetBizDBConfig {
@@ -282,7 +298,7 @@ func LoadTargetBizDBConfig() TargetBizDBConfig {
 // Enabled 只在主机、账号和库名都合法时启用快速候选查询，库名必须通过标识符白名单。
 func (c TargetBizDBConfig) Enabled() bool {
 	return !c.localConfigInvalid && c.Host != "" && c.User != "" && c.Port > 0 && c.Port <= 65535 &&
-		ValidDatabaseName(c.Name) && ValidDatabaseName(c.UserCenterName)
+		ValidTargetDatabaseName(c.Name) && ValidTargetDatabaseName(c.UserCenterName)
 }
 
 // RunConfig 是执行器的运行参数。全部预算走配置不写死：目标存在稳定约 30 秒的真实慢请求，
