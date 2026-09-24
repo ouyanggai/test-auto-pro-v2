@@ -75,6 +75,38 @@ func TestBranchOverlayFieldRightAndOrderedLogic(t *testing.T) {
 	}
 }
 
+// TestBranchOverlayLastBranchConditionCandidate 验证：
+// 当路由节点有 3 个条件分支，且最后一个分支（条件3）声明了 input_v9ntg1r6 == 3 时，
+// 选择条件3分支必须能够提取出候选值 3 并生成 input_v9ntg1r6=3 的分支补丁，顺利达到 ready 状态。
+func TestBranchOverlayLastBranchConditionCandidate(t *testing.T) {
+	tree := &target.FlowNodeTemplate{
+		ID: "start", Type: "start",
+		Child: &target.FlowNodeTemplate{
+			ID: "router", Type: "condition",
+			ConditionNodes: []target.FlowBranchTemplate{
+				{ID: "b1", Name: "条件1", Sort: 1, Conditions: []target.FlowCondition{{FieldA: "input_v9ntg1r6", ValueB: "1", Judge: "eq"}}},
+				{ID: "b2", Name: "条件2", Sort: 2, Conditions: []target.FlowCondition{{FieldA: "input_v9ntg1r6", ValueB: "2", Judge: "eq"}}},
+				{ID: "b3", Name: "条件3", Sort: 3, Conditions: []target.FlowCondition{{FieldA: "input_v9ntg1r6", ValueB: "3", Judge: "eq"}}},
+			},
+		},
+	}
+	result := branchoverlay.Apply(branchoverlay.Input{
+		Tree: tree,
+		Choices: []model.ExecutionPathChoice{
+			{RouteNodeID: "router", BranchID: "b3"},
+		},
+		Values: map[string]any{
+			"input_v9ntg1r6": 1, // 历史数据为 1（命中条件 1）
+		},
+	})
+	if result.Status != branchoverlay.StatusReady {
+		t.Fatalf("选择条件3应生成最小补丁并达到 ready，实际 status=%s issues=%+v", result.Status, result.Issues)
+	}
+	if fmt.Sprintf("%v", result.Values["input_v9ntg1r6"]) != "3" {
+		t.Fatalf("条件3补丁应将 input_v9ntg1r6 修改为 3，实际为 %v", result.Values["input_v9ntg1r6"])
+	}
+}
+
 // TestBranchOverlayMinimalPatchPreservesRawData 验证最小补丁只改目标条件真正读取的顶层键，
 // 其他原始正文（含嵌套对象和子表）保持深复制不动。
 func TestBranchOverlayMinimalPatchPreservesRawData(t *testing.T) {

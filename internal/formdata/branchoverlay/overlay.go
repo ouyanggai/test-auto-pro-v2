@@ -511,8 +511,7 @@ func collectReferences(tree *target.FlowNodeTemplate, selected map[string]string
 			}
 			manual := isManualNode(node)
 			if !manual {
-				last := len(branches) - 1
-				for branchIndex := 0; branchIndex <= index && branchIndex < last; branchIndex++ {
+				for branchIndex := 0; branchIndex <= index; branchIndex++ {
 					for _, condition := range branches[branchIndex].Conditions {
 						references = append(references, newReference(node.ID, branches[branchIndex].ID, condition, branchIndex == index))
 					}
