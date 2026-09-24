@@ -1501,7 +1501,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		before := approved.Preview.Facts
 		before.StepNodeKey = after.StepNodeKey
 		reread := ClassifyReread(string(step.Action), after.StepNodeKey,
-			expectedNextTargetNodeID(approved.RunCtx, approved.NextIndex), before, after)
+			forwardPathTargetNodeIDs(approved.RunCtx, approved.NextIndex), before, after)
 		observation := buildObservation(approved.Preview.Endpoint, nil, approved.Preview.writeResponse, reread)
 		observation.Action = string(step.Action)
 		observation.ActionFactVerified = ActionFactVerified(step.Action, reread)
@@ -1910,7 +1910,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		after.Found, after.Status, after.CurrentTaskFound, after.CurrentTaskRead,
 		completedTaskBasisName(after.CompletedTaskBasis), after.CurrentNodes))
 	reread := ClassifyReread(string(step.Action), stepTargetNodeID,
-		expectedNextTargetNodeID(runCtx, approved.NextIndex), before, after)
+		forwardPathTargetNodeIDs(runCtx, approved.NextIndex), before, after)
 	if reread == verdict.RereadUnreadable && preview.writeSent && preview.writeErr == nil {
 		// 核验读取失败（工具会话失效/目标抖动导致事实不可读）：写请求已发出且目标声明成功，
 		// 但工具没能确认结果。2026-09-11 用户裁决：工具自己的读取错误不得把运行判成终局——
@@ -3357,34 +3357,38 @@ func sessionRefreshAllowed(err error) bool {
 	return !errors.As(err, &rejection)
 }
 
-// expectedNextTargetNodeID 求本步的「下一跳目标节点标识」，供写后核验判断实例是否已经推进。
-// 取值顺序与门禁放行的分支持久化口径完全一致（executor.go 的 gateSnapshotJSON 调用点）：
-//   - 优先用运行期分支选择：本步若为跨手动分支路由的同意，门禁已经把该分支入口写进
-//     runCtx.SubmitBranchTargetNodeID，这一步的下一跳就是它；
-//   - 否则退回「编译步骤表里的下一步」：只对普通用户步骤与固定尾动作取值，
-//     恢复链与系统导航本来就会跨节点或回到前序节点，拿它们的下一步做推进判据没有意义
-//     （与路径偏离判定保持同一取舍）。
-//
-// 为什么不能只看编译步骤表：路径的 totalSteps 可能大于实际编译出的步骤数
-// （2026-09-21 运行 52/53 路径 2 实测 37 步只编译出 25 步），**末步没有"下一步"可用**，
-// 而末步恰恰是最需要判断"是否已推进"的地方。分支选择是运行期事实，不受步骤表长度限制。
-// 取不到时返回空串，调用方据此放弃这条判据，绝不猜测下一跳。
-func expectedNextTargetNodeID(runCtx RunContext, nextIndex int) string {
-	if target := strings.TrimSpace(runCtx.SubmitBranchTargetNodeID); target != "" {
-		return target
+// forwardPathTargetNodeIDs 汇总本步之后路径上所有合法后续业务节点的目标标识，供写后核验判断实例是否已经推进。
+// 取值口径与门禁放行的分支持久化一致，并覆盖会签末签等「跨节点前进」形态：
+//   - 运行期分支选择优先纳入：跨手动分支路由的同意，其下一跳写在 runCtx.SubmitBranchTargetNodeID；
+//     它也是编译末步唯一可用的锚点（路径声明步数可能大于实际编译步数，末步没有"下一步"可取）。
+//   - 再纳入编译步骤表里本步之后每一个用户步骤与固定尾动作的节点：目标可能穿透空节点或无处理人
+//     节点直接前进到更靠后的已配置节点，因此"已推进"不能只认紧邻下一跳，必须覆盖全部后续合法节点
+//     （2026-09-24 会签末签实测：末签同意后实例直接推进到后续节点，只认紧邻下一跳会漏判成"暂时无法确认"）。
+//   - 恢复链与系统导航本来就会跨节点或回到前序节点，拿它们做前进锚点没有意义（与路径偏离判定同一取舍），一律排除。
+// 取不到任何锚点时返回空切片，调用方据此放弃这条判据，绝不猜测下一跳。
+func forwardPathTargetNodeIDs(runCtx RunContext, nextIndex int) []string {
+	ids := make([]string, 0, 4)
+	seen := map[string]bool{}
+	// add 去重登记一个非空目标节点标识。
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
 	}
-	if nextIndex < 0 || nextIndex+1 >= len(runCtx.Steps) {
-		return ""
+	add(runCtx.SubmitBranchTargetNodeID)
+	for idx := nextIndex + 1; idx < len(runCtx.Steps); idx++ {
+		st := runCtx.Steps[idx]
+		if st.Source == model.ActionStepSourceRecovery || st.Source == model.ActionStepSourceNavigation {
+			continue
+		}
+		if info, ok := runCtx.Nodes[strings.TrimSpace(st.NodeKey)]; ok {
+			add(info.TargetNodeID)
+		}
 	}
-	nextStep := runCtx.Steps[nextIndex+1]
-	if nextStep.Source == model.ActionStepSourceRecovery || nextStep.Source == model.ActionStepSourceNavigation {
-		return ""
-	}
-	nodeInfo, ok := runCtx.Nodes[nextStep.NodeKey]
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(nodeInfo.TargetNodeID)
+	return ids
 }
 
 // InstanceStillAtStepNode 只读探测：实例当前节点是否仍停在编译步骤的节点上。
@@ -4034,8 +4038,8 @@ func (e *Executor) RefreshPendingTaskForAssigneeForTest(ctx context.Context, run
 	return e.refreshPendingTaskSnapshotForAssignee(ctx, runCtx, step, nodeID, session, assigneeUserID)
 }
 
-// ExpectedNextTargetNodeIDForTest 暴露「下一跳锚点」取值口径，供 test 目录锁定：
-// 运行期分支选择优先于编译步骤表，末步（步骤表给不出下一步）仍然能取到锚点。
-func ExpectedNextTargetNodeIDForTest(runCtx RunContext, nextIndex int) string {
-	return expectedNextTargetNodeID(runCtx, nextIndex)
+// ForwardPathTargetNodeIDsForTest 暴露「本步之后合法路径节点集合」取值口径，供 test 目录锁定：
+// 运行期分支选择与编译步骤表里全部后续用户步骤都纳入，恢复链与系统导航排除，末步靠分支选择仍能取到锚点。
+func ForwardPathTargetNodeIDsForTest(runCtx RunContext, nextIndex int) []string {
+	return forwardPathTargetNodeIDs(runCtx, nextIndex)
 }

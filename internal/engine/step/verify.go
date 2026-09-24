@@ -821,11 +821,11 @@ type flowCreatorReader interface {
 //     落成草稿或终态与发起语义矛盾即「自相矛盾」；
 //   - 审批：实例当前节点已越过本步节点即「已前进」；本步待办仍在且实例未前进即「明确未变」。
 //
-// expectedNextNodeKey 是本步配置的下一跳目标节点标识（运行期从路径配置取得，不是写死的常量），
-// 用于识别「实例已经推进到下一跳、但目标返回的本人待办快照仍是写前旧值」这一读写时序窗口：
+// forwardNodeKeys 是本步之后所有合法路径节点的目标标识集合（运行期从路径配置取得，不是写死的常量），
+// 用于识别「实例已经推进到某个后续节点、但目标返回的本人待办快照仍是写前旧值」这一读写时序窗口：
 // 该窗口下重读事实会同时给出「节点已前进」与「本人待办未消失」两条互相冲突的观察，
 // 只看待办会把一次已经生效的写误判成"未变"，进而把整条路径判成结果待确认（见下方审批分支）。
-func ClassifyReread(action string, stepNodeKey string, expectedNextNodeKey string, before, after InstanceFacts) verdict.Reread {
+func ClassifyReread(action string, stepNodeKey string, forwardNodeKeys []string, before, after InstanceFacts) verdict.Reread {
 	if after.ReadError != "" {
 		return verdict.RereadUnreadable
 	}
@@ -833,9 +833,9 @@ func ClassifyReread(action string, stepNodeKey string, expectedNextNodeKey strin
 	// 目标的任务列表读取与实例节点写入不共享同一事务，会签/多处理人节点上本人那条 pending
 	// 记录常常比实例节点位置晚一拍消失；此时若只凭"本人待办还在"判明确未变，
 	// 会把一次真实成功的写判成无法确认，并让整条运行终局停止。
-	// 这条判据只用已经读到的目标事实：实例当前节点集合与运行期传入的下一跳标识都来自本次重读与路径配置，
+	// 这条判据只用已经读到的目标事实：实例当前节点集合与运行期传入的后续合法节点集合都来自本次重读与路径配置，
 	// 不新增任何猜测，也不放松"读不到事实"时的保守判定。
-	if advancedByNodePosition(stepNodeKey, expectedNextNodeKey, after) {
+	if advancedByNodePosition(stepNodeKey, forwardNodeKeys, after) {
 		return verdict.RereadAdvanced
 	}
 	if action == string(model.ActionStorageFormData) {
@@ -946,27 +946,39 @@ func ClassifyReread(action string, stepNodeKey string, expectedNextNodeKey strin
 
 // advancedByNodePosition 判断重读到的事实是否已经证明实例越过了本步节点。
 // 判定条件必须同时成立，缺一不可：
-//   - 本步节点标识与下一跳标识都已知（任一为空说明路径配置没有给出可核对的锚点，不能据此推断）；
+//   - 本步节点标识已知，且至少有一个「本步之后的合法路径节点」可用作锚点（任一为空说明路径配置
+//     没有给出可核对的锚点，不能据此推断）；
 //   - 重读到的实例当前节点集合非空（空集说明本次没读到节点位置，不能当成"已前进"）；
 //   - 本步节点已经不在实例当前节点集合里（还在原地就说明写确实没推进）；
-//   - 实例当前节点集合命中了本步配置的下一跳（越到别的分支属于路径偏离，由独立的偏离判定处理，
-//     这里绝不能把"走到别处"也认成"本步成功"，否则会把走错分支洗成成功）。
+//   - 实例当前节点集合命中了任一「本步之后的合法路径节点」。
+//
+// 为什么锚点必须是「本步之后所有合法路径节点」而不是单一的紧邻下一跳（2026-09-24 实测 会签末签）：
+// 会签节点要求每个处理人各自审批，最后一人同意后目标立即把实例推进到后续节点，同时本人那条
+// pending 待办快照晚一拍消失、本人已办行的 flowNodeProxyId 被改写成推进后的新节点。此时既不是
+// 「仍停在本节点」（可用已办 CheckedFound 证明的会签中间态），紧邻下一跳又可能是被目标穿透的空/
+// 无处理人节点——真实落点是更靠后的合法节点。只认紧邻下一跳会漏判，落进「待办仍在 + 已办 CheckedAbsent」
+// 的审批分支，把一次已经生效的末签写判成「暂时无法确认」并让整条运行终局停止。
+// 越到配置之外的节点不在集合内，仍不认成推进，交由独立的路径偏离判定处理（绝不把"走到别处"洗成成功）。
 //
 // 只用已经读到的目标事实与运行期路径配置，不写死任何节点标识。
-func advancedByNodePosition(stepNodeKey, expectedNextNodeKey string, after InstanceFacts) bool {
+func advancedByNodePosition(stepNodeKey string, forwardNodeKeys []string, after InstanceFacts) bool {
 	current := strings.TrimSpace(stepNodeKey)
-	expectedNext := strings.TrimSpace(expectedNextNodeKey)
-	if current == "" || expectedNext == "" || len(after.CurrentNodes) == 0 {
+	if current == "" || len(forwardNodeKeys) == 0 || len(after.CurrentNodes) == 0 {
 		return false
 	}
+	// 还停在本步节点 → 写确实没推进。
 	for _, node := range after.CurrentNodes {
 		if strings.TrimSpace(node) == current {
 			return false
 		}
 	}
+	// 实例当前节点命中任一「本步之后的合法路径节点」→ 已推进（含目标穿透空/无处理人节点直达更靠后节点）。
 	for _, node := range after.CurrentNodes {
-		if strings.TrimSpace(node) == expectedNext {
-			return true
+		trimmed := strings.TrimSpace(node)
+		for _, forward := range forwardNodeKeys {
+			if trimmed != "" && trimmed == strings.TrimSpace(forward) {
+				return true
+			}
 		}
 	}
 	return false

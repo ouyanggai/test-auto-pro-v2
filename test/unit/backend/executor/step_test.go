@@ -508,58 +508,66 @@ func TestF016RereadClassification(t *testing.T) {
 		name    string
 		action  string
 		nodeKey string
-		// nextNodeKey 是本步配置的下一跳目标节点标识；为空表示本次没有可用的下一跳锚点。
-		nextNodeKey string
-		before      step.InstanceFacts
-		after       step.InstanceFacts
-		want        verdict.Reread
+		// nextNodeKeys 是本步之后所有合法路径节点的目标标识集合；为空表示本次没有可用的推进锚点。
+		nextNodeKeys []string
+		before       step.InstanceFacts
+		after        step.InstanceFacts
+		want         verdict.Reread
 	}{
-		{"发起后实例已运行", string(model.ActionSubmit), "", "", step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "run"}, verdict.RereadAdvanced},
-		{"发起后实例仍不存在", string(model.ActionSubmit), "", "", step.InstanceFacts{}, step.InstanceFacts{}, verdict.RereadUnchanged},
-		{"发起后落成草稿", string(model.ActionSubmit), "", "", step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "draft"}, verdict.RereadContradictory},
-		{"重读失败", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{ReadError: "目标抖动"}, verdict.RereadUnreadable},
-		{"审批后待办仍在", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}}, verdict.RereadUnchanged},
-		{"审批后待办消失", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: nil}, verdict.RereadAdvanced},
-		{"审批后实例被撤回", string(model.ActionApprove), "node-audit", "", step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "withdraw", DueNodes: nil}, verdict.RereadContradictory},
+		{"发起后实例已运行", string(model.ActionSubmit), "", nil, step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "run"}, verdict.RereadAdvanced},
+		{"发起后实例仍不存在", string(model.ActionSubmit), "", nil, step.InstanceFacts{}, step.InstanceFacts{}, verdict.RereadUnchanged},
+		{"发起后落成草稿", string(model.ActionSubmit), "", nil, step.InstanceFacts{}, step.InstanceFacts{Found: true, Status: "draft"}, verdict.RereadContradictory},
+		{"重读失败", string(model.ActionApprove), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{ReadError: "目标抖动"}, verdict.RereadUnreadable},
+		{"审批后待办仍在", string(model.ActionApprove), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}}, verdict.RereadUnchanged},
+		{"审批后待办消失", string(model.ActionApprove), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "run", DueNodes: nil}, verdict.RereadAdvanced},
+		{"审批后实例被撤回", string(model.ActionApprove), "node-audit", nil, step.InstanceFacts{DueNodes: []string{"node-audit"}}, step.InstanceFacts{Found: true, Status: "withdraw", DueNodes: nil}, verdict.RereadContradictory},
 		// 夜间实测现场（2026-09-21 运行 52 路径 2 第 25 步）：实例节点位置已经推进到配置的下一跳，
 		// 但目标返回的本人待办快照仍是写前旧值、本人已办也查不到。只看待办会把这次已经生效的写
 		// 判成"明确未变"，进而把整条运行判成结果待确认。节点位置是已读到的直接事实，必须优先。
-		{"节点已推进但本人待办快照滞后", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+		{"节点已推进但本人待办快照滞后", string(model.ActionApprove), "node-audit", []string{"node-next"}, step.InstanceFacts{DueNodes: []string{"node-audit"}},
 			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-next"},
 				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadAdvanced},
-		// 仍停在本步节点：即便传来了下一跳标识，也不能判已前进。
-		{"节点未推进时下一跳锚点无效", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+		// 会签末签（2026-09-24 实测 欧阳改测试07 路径 1 第 18 步）：最后一名会签处理人同意后目标立即把实例
+		// 推进到后续节点，本人待办快照晚一拍消失（CurrentTaskFound 仍为真）、本人已办行的 flowNodeProxyId
+		// 被改写成推进后的新节点（本节点等值过滤命中不到，落 CheckedAbsent）。真实落点是紧邻下一跳之后的
+		// 更靠后合法节点（目标穿透了空/无处理人节点）。必须按「命中任一后续合法路径节点」判为已推进，
+		// 否则会漏判成"暂时无法确认"并让整条运行终局停止。
+		{"会签末签跨节点前进到更靠后合法节点判已推进", string(model.ActionApprove), "node-audit", []string{"node-next", "node-later"}, step.InstanceFacts{DueNodes: []string{"node-audit"}},
+			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-later"},
+				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadAdvanced},
+		// 仍停在本步节点：即便传来了后续锚点，也不能判已前进。
+		{"节点未推进时后续锚点无效", string(model.ActionApprove), "node-audit", []string{"node-next"}, step.InstanceFacts{DueNodes: []string{"node-audit"}},
 			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-audit"},
 				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadUnchanged},
-		// 越到配置之外的分支属于路径偏离，绝不能认成"本步成功"。
-		{"节点越到非下一跳分支不判成功", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+		// 越到配置之外的节点属于路径偏离，不在后续合法节点集合内，绝不能认成"本步成功"（交由独立偏离判定处理）。
+		{"节点越到配置外分支不判成功", string(model.ActionApprove), "node-audit", []string{"node-next"}, step.InstanceFacts{DueNodes: []string{"node-audit"}},
 			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, CurrentNodes: []string{"node-other"},
 				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadUnchanged},
 		// 没有读到节点位置（空集）时不能据节点位置推断任何结论，仍按待办快照判。
-		{"未读到节点位置时仍按待办判", string(model.ActionApprove), "node-audit", "node-next", step.InstanceFacts{DueNodes: []string{"node-audit"}},
+		{"未读到节点位置时仍按待办判", string(model.ActionApprove), "node-audit", []string{"node-next"}, step.InstanceFacts{DueNodes: []string{"node-audit"}},
 			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"},
 				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadUnchanged},
 		// 末步（编译出的最后一步）没有"下一步"可比，但运行期分支选择仍然给出下一跳；
 		// 运行 52/53 路径 2 的失败步正是末步（路径声明 37 步、实际只编译出 25 步）。
-		{"末步靠分支选择锚点也能判已推进", string(model.ActionApprove), "3d452612", "62c02a8f", step.InstanceFacts{DueNodes: []string{"3d452612"}},
+		{"末步靠分支选择锚点也能判已推进", string(model.ActionApprove), "3d452612", []string{"62c02a8f"}, step.InstanceFacts{DueNodes: []string{"3d452612"}},
 			step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"3d452612"}, CurrentNodes: []string{"62c02a8f"},
 				CurrentTaskRead: true, CurrentTaskFound: true, CompletedTaskBasis: step.CompletedTaskBasisCheckedAbsent}, verdict.RereadAdvanced},
-		{"暂存后流程事实稳定", string(model.ActionStorageFormData), "node-audit", "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, verdict.RereadUnchanged},
-		{"暂存后检查点已更新", string(model.ActionStorageFormData), "node-audit", "", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-1"}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-2"}, verdict.RereadAdvanced},
-		{"催办记录已增加", string(model.ActionUrge), "", "", step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 1}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 2}, verdict.RereadAdvanced},
-		{"关注状态已开启", string(model.ActionFollow), "", "", step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: false}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: true}, verdict.RereadAdvanced},
+		{"暂存后流程事实稳定", string(model.ActionStorageFormData), "node-audit", nil, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, StorageFound: true, StorageDataID: "data-1", StorageAuditDesc: "同一说明", StorageUpdateDate: "2026-09-07 10:00:00"}, verdict.RereadUnchanged},
+		{"暂存后检查点已更新", string(model.ActionStorageFormData), "node-audit", nil, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-1"}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, StorageFound: true, StorageDataID: "data-2"}, verdict.RereadAdvanced},
+		{"催办记录已增加", string(model.ActionUrge), "", nil, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 1}, step.InstanceFacts{Found: true, Status: "run", DueNodes: []string{"node-audit"}, ActionFactRead: true, UrgeRecordCount: 2}, verdict.RereadAdvanced},
+		{"关注状态已开启", string(model.ActionFollow), "", nil, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: false}, step.InstanceFacts{Found: true, Status: "run", ActionFactRead: true, Tracking: true}, verdict.RereadAdvanced},
 	}
 	for _, item := range cases {
-		if got := step.ClassifyReread(item.action, item.nodeKey, item.nextNodeKey, item.before, item.after); got != item.want {
+		if got := step.ClassifyReread(item.action, item.nodeKey, item.nextNodeKeys, item.before, item.after); got != item.want {
 			t.Fatalf("%s：重读结论应为 %s，实际 %s", item.name, item.want, got)
 		}
 	}
 }
 
-// TestExpectedNextTargetNodeIDPrefersBranchSelection 锁定「下一跳锚点」的取值口径：
-// 运行期分支选择优先于编译步骤表。运行 52/53 路径 2 的失败步是末步（路径声明 37 步、
-// 实际只编译出 25 步），步骤表给不出"下一步"，只有运行期分支选择能给出下一跳锚点。
-func TestExpectedNextTargetNodeIDPrefersBranchSelection(t *testing.T) {
+// TestForwardPathTargetNodeIDs 锁定「本步之后合法路径节点集合」的取值口径：
+// 运行期分支选择与编译步骤表里全部后续用户步骤都纳入（覆盖会签末签跨空节点前进到更靠后节点），
+// 恢复链与系统导航排除，末步靠分支选择仍能取到锚点。
+func TestForwardPathTargetNodeIDs(t *testing.T) {
 	steps := []model.CompiledActionStep{
 		{NodeKey: "node-a", Source: model.ActionStepSourceUser},
 		{NodeKey: "node-b", Source: model.ActionStepSourceUser},
@@ -567,30 +575,47 @@ func TestExpectedNextTargetNodeIDPrefersBranchSelection(t *testing.T) {
 	nodes := map[string]step.NodeInfo{
 		"node-a": {TargetNodeID: "target-a"},
 		"node-b": {TargetNodeID: "target-b"},
+		"node-c": {TargetNodeID: "target-c"},
 	}
 	cases := []struct {
 		name      string
 		runCtx    step.RunContext
 		nextIndex int
-		want      string
+		want      []string
 	}{
 		{
-			name:      "有分支选择时优先用它，末步也能取到锚点",
+			name:      "有分支选择时纳入，末步也能取到锚点",
 			runCtx:    step.RunContext{Steps: steps, Nodes: nodes, SubmitBranchTargetNodeID: "branch-target"},
 			nextIndex: 1,
-			want:      "branch-target",
+			want:      []string{"branch-target"},
 		},
 		{
-			name:      "无分支选择时退回下一步节点",
+			name:      "无分支选择时纳入紧邻的后续步骤节点",
 			runCtx:    step.RunContext{Steps: steps, Nodes: nodes},
 			nextIndex: 0,
-			want:      "target-b",
+			want:      []string{"target-b"},
 		},
 		{
-			name:      "末步且无分支选择时取不到，返回空串",
+			name: "覆盖本步之后所有后续步骤节点（目标可穿透空节点直达更靠后节点）",
+			runCtx: step.RunContext{Steps: []model.CompiledActionStep{
+				{NodeKey: "node-a", Source: model.ActionStepSourceUser},
+				{NodeKey: "node-b", Source: model.ActionStepSourceUser},
+				{NodeKey: "node-c", Source: model.ActionStepSourceUser},
+			}, Nodes: nodes},
+			nextIndex: 0,
+			want:      []string{"target-b", "target-c"},
+		},
+		{
+			name:      "分支选择锚点与后续步骤节点同时纳入",
+			runCtx:    step.RunContext{Steps: steps, Nodes: nodes, SubmitBranchTargetNodeID: "branch-x"},
+			nextIndex: 0,
+			want:      []string{"branch-x", "target-b"},
+		},
+		{
+			name:      "末步且无分支选择时为空",
 			runCtx:    step.RunContext{Steps: steps, Nodes: nodes},
 			nextIndex: 1,
-			want:      "",
+			want:      nil,
 		},
 		{
 			name: "恢复链来源不参与推进判据",
@@ -599,7 +624,7 @@ func TestExpectedNextTargetNodeIDPrefersBranchSelection(t *testing.T) {
 				{NodeKey: "node-b", Source: model.ActionStepSourceRecovery},
 			}, Nodes: nodes},
 			nextIndex: 0,
-			want:      "",
+			want:      nil,
 		},
 		{
 			name: "系统导航来源不参与推进判据",
@@ -608,13 +633,19 @@ func TestExpectedNextTargetNodeIDPrefersBranchSelection(t *testing.T) {
 				{NodeKey: "node-b", Source: model.ActionStepSourceNavigation},
 			}, Nodes: nodes},
 			nextIndex: 0,
-			want:      "",
+			want:      nil,
 		},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			if got := step.ExpectedNextTargetNodeIDForTest(item.runCtx, item.nextIndex); got != item.want {
-				t.Fatalf("下一跳锚点应为 %q，实际 %q", item.want, got)
+			got := step.ForwardPathTargetNodeIDsForTest(item.runCtx, item.nextIndex)
+			if len(got) != len(item.want) {
+				t.Fatalf("后续合法节点集合应为 %v，实际 %v", item.want, got)
+			}
+			for i := range item.want {
+				if got[i] != item.want[i] {
+					t.Fatalf("后续合法节点集合应为 %v，实际 %v", item.want, got)
+				}
 			}
 		})
 	}
