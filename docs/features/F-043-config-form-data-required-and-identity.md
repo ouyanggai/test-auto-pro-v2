@@ -1,6 +1,6 @@
 # F-043 配置期表单数据准备：缺失必填安全补齐与计划账号身份注入
 
-- 状态：`implementing`（2026-09-24 用户明确批准开始实施；用户确认目标接口可调用，但文件上传接口有时较慢，必须处理好超时/一次性上传缓存复用，不阻塞其余补齐）
+- 状态：`ready_for_manual`（2026-09-24 缺陷①安全补齐+文件上传、缺陷②身份注入均已实施并自动验证；等待用户在浏览器与真实目标人工核对，未获明确验收不标 `accepted`、不自动开始下一功能）
 - 提出时间：2026-09-24
 - 依赖：F-012 历史业务数据回放与节点动作编排、F-035 真实处理人与有效表单数据闭环、F-036 独立执行服务（form-runtime 预览装载）。均已落地；本切片只修配置期数据准备的两个正确性缺口，不改运行期写协议、动作语义或调度。
 
@@ -56,12 +56,12 @@
 
 ## 5. 完成标准
 
-- [ ] 选中历史实例、当前模板某可编辑字段必填而历史为空：能确定有效默认的普通字段被自动补齐为有效值并判 `ready`；无需逐条手填。
-- [ ] 文件上传缺失时，用项目内占位文件真实上传目标并回填目标返回引用，表单该字段成为目标可识别的有效值。
-- [ ] 无法安全确定的字段（自定义组件/业务敏感/不可解析远程）不被随机填值，判 `needs_input` 并带字段中文名；一次填写可跨共享该字段的路径传播。
-- [ ] 历史值本已满足当前必填时行为不变（仍 `ready`），不产生误报或覆盖已有业务值。
-- [ ] 表单「申请人/部门/公司」等取当前环境人员的字段显示计划配置账号信息，不再显示历史发起人；业务数据字段不被改动。
-- [ ] 传入 form-runtime 的身份载荷含完整当前用户字段，键名与目标契约一致；运行前检查读到 `needs_input` 时挡住启动；`go build ./...` 通过。
+- [X] 选中历史实例、当前模板某可编辑字段必填而历史为空：能确定有效默认的普通字段被自动补齐为有效值并判 `ready`；无需逐条手填。（`path_data_fill.go`，798dea4）
+- [X] 文件上传缺失时，用项目内占位文件真实上传目标并回填目标返回引用，表单该字段成为目标可识别的有效值。（`client_file_upload.go`/`path_data_upload.go`，4a5b74d）
+- [X] 无法安全确定的字段（自定义组件/业务敏感/不可解析远程）不被随机填值，判 `needs_input` 并带字段中文名。（798dea4）｜⏸ 附带的“一次填写可跨共享该字段的路径传播”为效率项、非正确性门禁，经用户 2026-09-24 明确选择“先收口”后**暂不实现**，另开后续切片。
+- [X] 历史值本已满足当前必填时行为不变（仍 `ready`），不产生误报或覆盖已有业务值。（`path_data_fill_test.go`/`path_data_company_sync_test.go`）
+- [X] 表单「申请人/部门/公司」等取当前环境人员的字段显示计划配置账号信息，不再显示历史发起人；业务数据字段不被改动。（身份注入+初始化保留+回放剔除：运行执行侧 `data-patch.ts` 965e821、配置预览侧 `App.vue`/`identityFields.js` 2f853ed）
+- [X] 传入 form-runtime 的身份载荷含完整当前用户字段，键名与目标契约一致；运行前检查读到 `needs_input` 时挡住启动；`go build ./...` 通过。（`App.vue` load 载荷 L204-212、`run_readiness.go`）
 
 ## 6. 分类测试（保存在根目录 `test/`，只跑本功能相关）
 
@@ -80,3 +80,12 @@
 
 - 本文档只完成规划，等待用户明确批准后才进入 `implementing`。
 - 缺陷 2(b) 的「当前用户字段判据」需在实施时先读 fork 的当前用户解析与真实模板确认信号；若模板无该标记，按范围内回落方案处理，不扩张到目标源码改动。
+
+## 9. 本切片实施现状（2026-09-24 收口，`ready_for_manual`）
+
+- 缺陷①（必填安全补齐 + 文件上传）：按范围落地并测试。`internal/service/path_data_fill.go` 的 `requiredFieldFill` 对「当前模板 `Required` + 发起态可编辑 + 当前值为空」的 FormMaking 字段按类型确定性补齐（文本占位/数字 `json.Number` 保真/单多选取有效选项/日期今天/开关 `true`/颜色），无法安全确定者落 `needs_input` 带字段中文名；接入 `GetData`（只读预览、附件非阻断待上传）、`SaveData`、一键回放 `replayItem` 三入口。文件上传 `internal/adapter/target/client_file_upload.go` 的 `UploadFile`（multipart `/web/file/api/file/uploadFile`，受限超时、只发一次不重发、非业务写不进白名单）+ `path_data_upload.go` 账号级一次性上传缓存与超集回显。运行前检查 `run_readiness.go` 对 `needs_input`/`affected`/`empty` 挡住启动。提交 798dea4、4a5b74d。
+- 缺陷②（身份注入）：**方案已按用户 2026-09-24 裁决更换**。原计划 3(b)/8 的「扩展 `ApplyUserIdentityForAction` 固定键映射 / 依赖模板『默认取当前登录用户』标记」被否决——机房进入申请表无法提供当前用户字段 englishName，且模板 fork 仅有 `valueOrigin:'fromUser'`、按字段名清单覆盖会误伤业务里真实选定的他人（如 `contractUserName`）。改为：**注入正确身份 → 表单初始化事件按计划账号填好「当前用户」类字段 → 回放历史业务数据时剔除这些字段、不用历史发起人值覆盖**。判据只看「初始化后字段值是否内嵌当前账号唯一标识（userId/companyId）」，与字段名无关，故不误伤业务里真实选定的他人（初始化前那些字段为空、不含当前账号标识）。
+  - 运行执行侧：`executor-service/src/data-patch.ts` 的 `applyNodePatch` 先读初始化值，`dropCurrentUserFields` 从补丁剔除当前用户字段；`server.ts` 的 `applyNodePatchViaPage`/`restoreIntendedPatchViaPage` 透传 `identity`。提交 965e821。
+  - 配置预览侧：新增纯函数 `form-runtime/src/runtime/identityFields.js:stripCurrentUserFields`，`form-runtime/src/App.vue` load(formmaking) 在 `setData` 历史值前调用 `stripInitIdentityFields`，从待写入值与恢复基线剔除当前用户字段及人员选择器伴生键（`__virtualName`/`__formPersonId`/`__condition`）。提交 2f853ed。
+- 已暂不实现（经用户明确“先收口”选择，另开后续切片）：完成标准 61 的「无法自动补齐的 `needs_input` 字段手填一次、跨共享该字段路径自动传播」——属效率项，`needs_input` 的正确性门禁与运行前阻塞已生效，不影响本切片正确性。
+- 自动验证：`executor-service` typecheck 通过、`data-patch` 单测 5/5；前端 `form_runtime_test.mjs` 61/61（新增当前用户字段剔除/回落/不误伤 3 例）；`go build ./...` 通过、后端 `test/unit/backend/history_replay`、`.../executor` 单测通过。视觉与真实目标身份呈现由用户人工核对。
