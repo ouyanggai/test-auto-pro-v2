@@ -423,3 +423,69 @@ func TestF016StopControl(t *testing.T) {
 		t.Fatalf("延迟生效的停止不得先落控制事实：count=%d err=%v", deferredCount, err)
 	}
 }
+
+// TestRetrievePrepareConsentDoesNotEnterCountersignLoop 验证：
+// 取回准备同意步骤（RetrievePrepareConsent）在会签节点即使审批通过且实例仍停在本节点，
+// 也绝对禁止进入会签多处理人重跑循环，必须直接推进到下一步（取回），彻底杜绝反复跳过死循环。
+func TestRetrievePrepareConsentDoesNotEnterCountersignLoop(t *testing.T) {
+	database := newF016ControlDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	store := planmysql.NewRunRepository(database.DB)
+	runService := run.NewService(store, "worker-test-retrieve-no-loop", time.Minute, time.Now)
+
+	fakeTarget := &fakeTarget{
+		instance:     fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		afterSubmit:  &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+		afterAudit:   &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: nil}, // 当前人待办已完成，但实例仍在当前节点（会签中间态）
+		dueTaskID:    "task-audit",
+		submitResult: &target.SubmitFlowInstanceResult{InstanceID: "instance-loop", Status: "run"},
+		auditResult:  &target.AuditCurrentTaskResult{InstanceID: "instance-loop", Status: "run"},
+	}
+	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, runService, store, fixedRunConfig(), nil)
+	controller := control.NewService(runService, executor, store, time.Now)
+
+	prepStep := model.CompiledActionStep{
+		Sequence: 2, Source: model.ActionStepSourceRecovery, Action: model.ActionApprove,
+		Scope: model.ActionScopeTask, NodeKey: "node-audit", RetrievePrepareConsent: true,
+	}
+	retrieveStep := model.CompiledActionStep{
+		Sequence: 3, Source: model.ActionStepSourceUser, Action: model.ActionRetrieve,
+		Scope: model.ActionScopeCompletedTask, NodeKey: "node-audit",
+	}
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), prepStep, retrieveStep})
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "会签节点", Type: "common", TargetNodeID: "node-audit"}
+
+	started, err := controller.Start(ctx, runCtx)
+	if err != nil || started.Preview == nil {
+		t.Fatalf("启动失败：%v", err)
+	}
+	// 第 1 步发起
+	first, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, 1, 1)
+	if err != nil || first.NextPreview == nil || first.NextPreview.StepNo != 2 {
+		t.Fatalf("发起失败或未停在第 2 步：err=%v result=%+v", err, first)
+	}
+
+	// 放行第 2 步（取回准备同意）
+	second, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, 2, 2)
+	if err != nil {
+		t.Fatalf("放行第 2 步失败：%v", err)
+	}
+	// 关键断言 1：仅发出 1 次同意写请求，绝不进行会签循环重发
+	if fakeTarget.auditCalls != 1 {
+		t.Fatalf("取回准备同意绝不能在会签节点多次审批，实际 auditCalls=%d", fakeTarget.auditCalls)
+	}
+	// 关键断言 2：下一步预览直接推进到第 3 步（取回），不滞留在第 2 步
+	if second.NextPreview == nil || second.NextPreview.StepNo != 3 {
+		t.Fatalf("取回准备同意执行后应直接推进到第 3 步（取回），实际 nextPreview=%+v", second.NextPreview)
+	}
+	// 关键断言 3：数据库中第 2 步仅落账 1 次
+	var stepCount int
+	if err := database.DB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM run_steps WHERE path_run_id = ? AND step_no = 2", started.PathRun.ID).Scan(&stepCount); err != nil {
+		t.Fatalf("查询步骤落账失败：%v", err)
+	}
+	if stepCount != 1 {
+		t.Fatalf("第 2 步在数据库中应只有 1 次落账，实际有 %d 次落账（杜绝多重跳过死循环）", stepCount)
+	}
+}

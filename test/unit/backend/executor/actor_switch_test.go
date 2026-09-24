@@ -3,9 +3,9 @@ package executor_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
-
 	"test-auto-pro-v2/internal/adapter/target"
 	"test-auto-pro-v2/internal/engine/step"
 	"test-auto-pro-v2/internal/engine/verdict"
@@ -232,5 +232,120 @@ func TestApproveAsSelfAssigneeKeepsRuntimeAccountKey(t *testing.T) {
 		if account != "oyg-test" {
 			t.Fatalf("处理人=计划账号时不应登录其他账号：%v", sessions.requested)
 		}
+	}
+}
+
+// failingAccountSessions 支持按账号模拟部分账号登录失败。
+type failingAccountSessions struct {
+	accountRecordingSessions
+	failAccounts map[string]error
+}
+
+func (s *failingAccountSessions) Current(ctx context.Context, account string) (target.Session, error) {
+	if err, ok := s.failAccounts[account]; ok {
+		return target.Session{}, err
+	}
+	return s.accountRecordingSessions.Current(ctx, account)
+}
+
+func (s *failingAccountSessions) Refresh(ctx context.Context, account string) (target.Session, error) {
+	return s.Current(ctx, account)
+}
+
+// multiHandlerTarget 模拟多处理人/抢签节点返回多个待处理人。
+type multiHandlerTarget struct {
+	*actorSwitchTarget
+	allHandlers []string
+}
+
+func (t *multiHandlerTarget) FindSubmittedFlowFacts(_ context.Context, _ target.Session, _ string) (target.SubmittedFlowFacts, error) {
+	view := t.currentView()
+	flowProxyID := t.flowProxyID
+	if flowProxyID == "" {
+		flowProxyID = "flow-proxy-1"
+	}
+	handlers := make([]target.NodeCurrentHandler, 0, len(view.DueNodes))
+	for _, nodeID := range view.DueNodes {
+		handlers = append(handlers, target.NodeCurrentHandler{
+			NodeID: strings.TrimSpace(nodeID), AuditType: "run_node_choose",
+			BizIDs: t.allHandlers,
+		})
+	}
+	return target.SubmittedFlowFacts{
+		FlowProxyID: flowProxyID, CurrentNodes: view.CurrentNodes, Status: view.Status,
+		Handlers: handlers, Name: "测试实例", Found: view.Found,
+	}, nil
+}
+
+func (t *multiHandlerTarget) ListTaskSnapshotsForUser(ctx context.Context, session target.Session, instanceID, status, queryUserID string) ([]target.TaskSnapshot, error) {
+	if strings.TrimSpace(status) != "pending" {
+		return nil, nil
+	}
+	for _, h := range t.allHandlers {
+		if queryUserID == h {
+			return []target.TaskSnapshot{{
+				JobTaskID: "task-" + h, FlowNodeProxyID: "node-audit", FlowProxyID: "proxy-1",
+				PendingUserID: h, PendingUserName: h,
+			}}, nil
+		}
+	}
+	return nil, nil
+}
+func (t *multiHandlerTarget) MatchHandlerAccounts(_ context.Context, _ target.Session, handler target.NodeCurrentHandler) ([]target.HandlerAccount, error) {
+	result := []target.HandlerAccount{}
+	for _, bizID := range handler.BizIDs {
+		if acc, ok := t.accounts[bizID]; ok {
+			result = append(result, target.HandlerAccount{
+				Key: "id:" + bizID, UserID: bizID, Name: bizID, Account: acc,
+			})
+		}
+	}
+	return result, nil
+}
+
+
+// TestSwitchToCurrentHandlerSkipsUnloginableCandidateAndPicksNext 验证：
+// 当抢签/多处理人节点的第一个候选人无法登录（例如无权限、账号停用）时，
+// 执行器不会认死该候选人导致整条路径停机，而是自动跳过并尝试下一个可用候选人推进流程。
+func TestSwitchToCurrentHandlerSkipsUnloginableCandidateAndPicksNext(t *testing.T) {
+	targetFake := &multiHandlerTarget{
+		actorSwitchTarget: &actorSwitchTarget{
+			fakeTarget: &fakeTarget{
+				instance:    fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
+				afterAudit:  &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-next"}},
+				auditResult: &target.AuditCurrentTaskResult{InstanceID: "instance-multi", Status: "run"},
+			},
+			accounts: map[string]string{
+				"user-unloginable": "zhaofei-bad",
+				"user-available":   "libai-good",
+			},
+		},
+		allHandlers: []string{"user-unloginable", "user-available"},
+	}
+	sessions := &failingAccountSessions{
+		failAccounts: map[string]error{
+			"zhaofei-bad": errors.New("无权限!"),
+		},
+	}
+	executor := step.NewExecutor(targetFake, sessions, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
+	runCtx.PathRun.MainInstanceRef = "instance-multi"
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil || preview.BlockReason != "" {
+		t.Fatalf("审批预览应成功放行，实际 finished=%v err=%v block=%s", finished, err, previewBlock(preview))
+	}
+	if preview.ActorName != "user-available" {
+		t.Fatalf("应自动跳过无法登录的 zhaofei-bad 并选用 user-available，实际选中：%q", preview.ActorName)
+	}
+	outcome, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0})
+	if err != nil {
+		t.Fatalf("审批执行应成功：%v", err)
+	}
+	if outcome.Verdict != string(verdict.OutcomeSucceeded) {
+		t.Fatalf("审批应确定成功，实际 outcome=%+v", outcome)
+	}
+	if len(targetFake.writeAccounts) != 1 || targetFake.writeAccounts[0] != "libai-good" {
+		t.Fatalf("写请求必须以可用候选人 libai-good 发出，实际：%v", targetFake.writeAccounts)
 	}
 }

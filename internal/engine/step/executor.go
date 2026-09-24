@@ -3607,15 +3607,38 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 				if wantNode != "" && strings.TrimSpace(snapshot.FlowNodeProxyID) != wantNode {
 					continue
 				}
-				// 命中：登录该处理人会话供后续读取；登录失败退回计划会话（写路径会重新解析）。
+				// 命中：尝试登录该处理人会话；若当前处理人无法登录（例如停用、无权限等），
+				// 绝不能直接认作有效处理人放行——抢签/多处理人节点必须继续尝试下一个候选人，
+				// 避免单人凭据不可用阻断整个节点推进（2026-09-24 路径 1 审核人 5 抢签节点赵飞无权限实测）。
+				account := strings.TrimSpace(match.Account)
+				if account != "" {
+					var release func()
+					if locker, ok := e.sessions.(interface{ LockAccountUsage(string) func() }); ok &&
+						!strings.EqualFold(account, strings.TrimSpace(runCtx.PlanAccount)) {
+						release = locker.LockAccountUsage(account)
+					}
+					actorSession, sessionErr := e.sessions.Current(ctx, account)
+					if sessionErr != nil && sessionRefreshAllowed(sessionErr) {
+						actorSession, sessionErr = e.sessions.Refresh(ctx, account)
+					}
+					if release != nil {
+						release()
+					}
+					if sessionErr == nil {
+						snapshot.PendingUserID = match.UserID
+						name := firstNonEmpty(match.Name, actorSession.Summary.DisplayName, session.Summary.DisplayName)
+						snapshot.PendingUserName = name
+						return snapshot, match.UserID, name, actorSession, true, ""
+					}
+					log := e.stepLogFor(runCtx)
+					log.Phase("gate", step.Sequence, 1, fmt.Sprintf("候选处理人 %s（账号 %s）会话登录失败（%s），尝试下一位候选处理人", firstNonEmpty(match.Name, account), account, userFacingError(sessionErr, target.WriteResponse{})))
+					// 账号明确登录失败（无权限、密码错误等），放弃当前候选人，继续循环尝试 matches 中的下一位可用候选人
+					break
+				}
+				// 账号为空表示沿用当前会话（不额外登录，如单人节点或计划账号本人），直接返回当前会话
 				snapshot.PendingUserID = match.UserID
 				name := firstNonEmpty(match.Name, session.Summary.DisplayName)
 				snapshot.PendingUserName = name
-				if account := strings.TrimSpace(match.Account); account != "" {
-					if actorSession, sessionErr := e.sessions.Current(ctx, account); sessionErr == nil {
-						return snapshot, match.UserID, name, actorSession, true, ""
-					}
-				}
 				return snapshot, match.UserID, name, session, true, ""
 			}
 		}

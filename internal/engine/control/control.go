@@ -1434,16 +1434,21 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	// 实例前进，循环自然退出。上限取场景步数，防御数据异常导致的死循环。
 	// 被跳过的步骤（如取回准备同意在已有已办时跳过）不发写请求、实例本就停在本节点，绝不能进入
 	// 会签重跑——否则会对同一步反复「跳过」直到上限（实测取回前的准备同意被反复跳过打转）。
-	if session.preview.Action == model.ActionApprove && !session.preview.TargetSkipped && !outcome.NoMoreSteps && !outcome.DeviationDetected {
+	// 取回准备同意（RetrievePrepareConsent）为恢复链专属前置步骤，职责仅为产生已办记录供后续取回，
+	// 绝非业务多处理人会签，无论首次是否发写请求均严格禁止进入会签重跑循环。
+	currentStep := session.runCtx.Steps[session.nextIndex]
+	if session.preview.Action == model.ActionApprove && !session.preview.TargetSkipped && !currentStep.RetrievePrepareConsent && !outcome.NoMoreSteps && !outcome.DeviationDetected {
 		for extra := 0; extra < len(session.runCtx.Steps); extra++ {
 			still, probeErr := s.steps.InstanceStillAtStepNode(ctx, session.runCtx, session.runCtx.Steps[session.nextIndex])
 			if probeErr != nil || !still {
 				break
 			}
 			extraPreview, extraFinished, buildErr := s.steps.BuildPreviewWithProgress(ctx, session.runCtx, session.nextIndex, s.previewProgressReporter(session))
-			if buildErr != nil || extraFinished || extraPreview.BlockReason != "" {
-				// 探测与预览之间存在竞态（实例恰好前进/被跳过）：跳出循环，交给下方
+			if buildErr != nil || extraFinished || extraPreview.BlockReason != "" || extraPreview.TargetSkipped {
+				// 探测与预览之间存在竞态（实例恰好前进/被跳过/无需写）：跳出循环，交给下方
 				// 下一步预览构建按目标真实事实裁决，绝不带着过期预览继续审批。
+				// 特别地：若 extraPreview 判定为已跳过（TargetSkipped=true），说明已无待审批写请求，
+				// 必须立即退出循环，避免在同一节点反复跳过落账直至步数上限死循环。
 				break
 			}
 			extraApproved := step.ApprovedStep{
