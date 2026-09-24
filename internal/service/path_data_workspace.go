@@ -126,6 +126,19 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	default:
 		replaceUserIdentityValues(values, identity)
 	}
+	// F-043 缺陷1：按当前模板对「必填、发起态可编辑、历史值为空」的字段做确定性安全补齐——
+	// 普通字段（文本/数字/单多选/日期/开关/颜色）填确定性有效默认，避免用户逐条手填；
+	// 无法安全确定有效值的字段（自定义组件/人员组织/级联/未上传附件）落 needs_input，不再放行真正缺失的必填。
+	// 只读预览不实际上传附件（uploadFill 为 nil），交由一键配置或保存时真实上传，避免每次预览触发慢上传。
+	if snapshot.RenderType == target.FormRenderTypeFormMaking && len(values) > 0 {
+		fillIssues := requiredFieldFill(requiredFieldFillInput{
+			fields: snapshot.FormFields,
+			powers: buildInitiatorPowerMap(formPermissions(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs)),
+			labels: keyFieldLabels(snapshot),
+			now:    s.now(),
+		}, values)
+		issues = appendHistoryIssues(issues, fillIssues)
+	}
 	// 条件字段的填写时机按节点权限算出；一个节点都填不了的决定性条件字段必须阻断，
 	// 否则运行到那一步只能听天由命地走目标现有数据决定的分支。
 	keyFields := workspaceKeyFields(snapshot, path.Choices, values, analysis.pathAnalysis.ReachableNodeIDs)
@@ -136,6 +149,11 @@ func (s *PathConfigService) GetData(ctx context.Context, planID, pathID uint64) 
 	// 这类流程按整份数据提交、不做分段填写，必须让用户知道而不是默默换一套行为。
 	if degraded := fieldPowerDegradationIssues(snapshot.Tree, analysis.pathAnalysis.ReachableNodeIDs); len(degraded) > 0 {
 		issues = appendHistoryIssues(issues, degraded)
+	}
+	// F-043：补齐、身份注入与必填完整性校验新增的阻断问题必须反映到数据状态，
+	// 否则前端仍按 ready 放行启动；只把已判 ready 的降级为 needs_input，不改动 empty 语义。
+	if dataStatus == model.HistoryDataStatusReady && hasBlockingWorkspaceIssue(issues) {
+		dataStatus = model.HistoryDataStatusNeedsInput
 	}
 	return model.PathConfigurationF012{
 		Path: pathConfigPath(path), Revision: stored.Revision, NodeRevision: stored.NodeRevision,
