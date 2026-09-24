@@ -13,6 +13,7 @@ const { captureFormValues, componentRuntimeName, coordinateOptionPatches, formRu
 const { clearRuntimeAuth, installRuntimeStorageFacade, localstorageGet } = await import('../../../form-runtime/src/runtime/memoryAuth.js')
 import { FORM_RUNTIME_VERSION, isRuntimeCommand } from '../../../form-runtime/src/runtime/protocol.js'
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from '../../../form-runtime/src/runtime/requestPolicy.js'
+import { stripCurrentUserFields } from '../../../form-runtime/src/runtime/identityFields.js'
 
 test('目标表单模板递归应用权限且复杂组件不降级', () => {
   const prepared = prepareTemplate({
@@ -1274,4 +1275,55 @@ test('optionFieldDescriptors 正确递归 table 动态表格容器下的列字�
   assert.equal(descriptors.length, 1)
   assert.equal(descriptors[0].group, 'collectionDetailsVoList')
   assert.equal(descriptors[0].model, 'receivingAccount')
+})
+
+// F-043 缺陷②(配置预览侧):注入身份后表单初始化事件已把当前用户字段填成计划账号,
+// 历史业务数据整份回放时不得用历史发起人值把这些字段覆盖回去。
+test('初始化后内嵌当前账号标识的字段判为当前用户字段并从待写入值与恢复基线剔除', () => {
+  const values = {
+    applyUser: '{"id":"user-hist","name":"张三"}',
+    applyUser__virtualName: '张三',
+    applyUser__formPersonId: 'user-hist',
+    reason: '历史请假事由',
+    amount: '1000',
+  }
+  const savedValues = { ...values }
+  // 初始化事件按注入身份(user-new)把 applyUser 及其伴生键填成计划账号,业务字段保持历史值。
+  const initValues = {
+    applyUser: '{"id":"user-new","name":"计划账号"}',
+    applyUser__virtualName: '计划账号',
+    applyUser__formPersonId: 'user-new',
+    reason: '历史请假事由',
+    amount: '1000',
+  }
+  const stripped = stripCurrentUserFields(values, savedValues, initValues, ['user-new', 'company-new'])
+  // 主键与内嵌当前账号标识的伴生键都会被识别;这里只断言主键在剔除列表内,伴生键的清理由下方存在性断言覆盖。
+  assert.ok(stripped.includes('applyUser'))
+  // 主键与全部伴生键都被剔除,后续 setData 不会用历史发起人值覆盖初始化结果。
+  assert.equal('applyUser' in values, false)
+  assert.equal('applyUser__virtualName' in values, false)
+  assert.equal('applyUser__formPersonId' in values, false)
+  assert.equal('applyUser' in savedValues, false)
+  assert.equal('applyUser__formPersonId' in savedValues, false)
+  // 业务里真实选定的他人字段(初始化后仍是历史值、不含当前账号标识)必须保留。
+  assert.equal(values.reason, '历史请假事由')
+  assert.equal(values.amount, '1000')
+})
+
+test('无身份标识或初始化值不可用时不剔除任何字段(回落整份覆盖)', () => {
+  const values = { applyUser: '{"id":"user-new"}', reason: 'x' }
+  const savedValues = { ...values }
+  assert.deepEqual(stripCurrentUserFields(values, savedValues, { applyUser: '{"id":"user-new"}' }, []), [])
+  assert.deepEqual(stripCurrentUserFields(values, savedValues, null, ['user-new']), [])
+  assert.equal('applyUser' in values, true)
+})
+
+test('业务字段真实选定他人时初始化不含当前账号标识,不被误剔除', () => {
+  const values = { partnerUser: '{"id":"user-other"}', partnerUser__virtualName: '李四' }
+  const savedValues = { ...values }
+  // 初始化事件不改业务选人字段,其值仍是历史选定的他人,不含当前账号标识 user-new。
+  const initValues = { partnerUser: '{"id":"user-other"}', partnerUser__virtualName: '李四' }
+  assert.deepEqual(stripCurrentUserFields(values, savedValues, initValues, ['user-new']), [])
+  assert.equal(values.partnerUser, '{"id":"user-other"}')
+  assert.equal(values.partnerUser__virtualName, '李四')
 })

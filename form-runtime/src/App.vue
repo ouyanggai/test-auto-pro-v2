@@ -21,6 +21,7 @@ import { buildValuesEnvelope, captureFormValues, clonePlain, coordinateOptionPat
 import { createTargetRequestTracker, installReadOnlyRequestPolicy } from './runtime/requestPolicy'
 import { clearRuntimeAuth, installRuntimeStorageFacade, setRuntimeAuth } from './runtime/memoryAuth'
 import { setConfig as setRuntimeEnvironment } from './runtime/runtimeEnvironment'
+import { stripCurrentUserFields } from './runtime/identityFields'
 import HostVuePage from './HostVuePage.vue'
 
 export default {
@@ -236,6 +237,10 @@ export default {
           this.bindFormChange()
           const form = this.form()
           if (!form || typeof form.setData !== 'function') throw new Error('目标 FormMaking 运行时缺少 setData 能力')
+          // F-043 缺陷②：注入身份后，表单初始化事件已把「当前用户」类字段（申请人/部门/公司等）填成计划账号。
+          // 读取初始化后的值，凡内嵌当前账号唯一标识（userId/companyId）的字段判为当前用户字段，
+          // 从待写入值与恢复基线中剔除（含人员选择器伴生键），使初始化结果保留，不被历史发起人值覆盖。
+          await this.stripInitIdentityFields(form, [String(payload.userId || ''), String(payload.companyId || '')])
           await form.setData(clonePlain(this.values))
 			this.assertActiveSession(loadContext)
           await this.$nextTick()
@@ -353,6 +358,19 @@ export default {
       await form.setData(clonePlain(values))
 	  this.assertActiveSession(context)
       this.values = clonePlain(values)
+    },
+    // stripInitIdentityFields 读取初始化后的表单值,把已按注入身份填好的「当前用户」类字段从待写入值与恢复基线中剔除,
+    // 使初始化结果保留,不被历史发起人值覆盖(F-043 缺陷②)。具体判定与剔除委托给 stripCurrentUserFields 纯函数。
+    async stripInitIdentityFields (form, identityIds) {
+      if (!form || typeof form.getValues !== 'function') return
+      let initValues
+      try {
+        initValues = await form.getValues()
+      } catch (_) {
+        // 初始化值暂不可读时不剔除任何字段,回落为按历史数据整份覆盖的原行为。
+        return
+      }
+      stripCurrentUserFields(this.values, this.savedValues, initValues, identityIds)
     },
 	async refresh (context) {
       if (this.renderType === 'vue_custom') return
