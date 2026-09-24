@@ -271,7 +271,7 @@ func (r *RunRepository) ListRunAttempts(ctx context.Context, pathRunID uint64) (
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code, initial, reread,
 		       failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms,
-		       reconcile_verdict, recovery_action, is_replay, before_facts, runtime_detail
+		       reconcile_verdict, recovery_action, is_replay, before_facts, runtime_detail, executor_ms
 		FROM run_step_attempts WHERE path_run_id = ? ORDER BY id ASC
 	`, pathRunID)
 	if err != nil {
@@ -286,16 +286,21 @@ func (r *RunRepository) ListRunAttempts(ctx context.Context, pathRunID uint64) (
 		// 主键必须取回：对账三列的回写按 attempt.ID 定位，漏取会让 UPDATE 落在 id = 0 上，
 		// 表现为"对账跑过但三列永远是空"，事后无从复盘。
 		var reconcileVerdict, recoveryAction, beforeFacts, runtimeDetail sql.NullString
+		var executorMs sql.NullInt64
 		if err := rows.Scan(&attempt.ID, &attempt.PathRunID, &attempt.StepID, &attempt.AttemptNo, &attempt.Verdict, &attempt.SideEffect,
 			&attempt.Transport, &statusCode, &attempt.Initial, &attempt.Reread, &failureClass, &attempt.Reason, &attempt.Basis,
 			&attempt.TraceID, &attempt.CurlTraceID, &attempt.LogPath, &attempt.LogLine, &attempt.DurationMs,
-			&reconcileVerdict, &recoveryAction, &attempt.IsReplay, &beforeFacts, &runtimeDetail); err != nil {
+			&reconcileVerdict, &recoveryAction, &attempt.IsReplay, &beforeFacts, &runtimeDetail, &executorMs); err != nil {
 			return nil, err
 		}
 		attempt.ReconcileVerdict = reconcileVerdict.String
 		attempt.RecoveryAction = recoveryAction.String
 		attempt.BeforeFacts = beforeFacts.String
 		attempt.RuntimeDetail = runtimeDetail.String
+		if executorMs.Valid {
+			attempt.ExecutorMs = executorMs.Int64
+			attempt.ExecutorMsKnown = true
+		}
 		if statusCode.Valid {
 			attempt.StatusCode = int(statusCode.Int64)
 		}

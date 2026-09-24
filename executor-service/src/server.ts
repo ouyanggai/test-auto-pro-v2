@@ -1217,6 +1217,8 @@ async function main (): Promise<void> {
             return
           }
           const readOnly = action === 'capture' || action === 'validate'
+          // 执行器真实计时起点：动作从此处装载分发直到收敛，墙钟差值即执行器处理耗时（F-042 选项 B）。
+          const executorStart = performance.now()
           try {
             session.actionInFlight = true
             const baselineSeq = session.route!.trace.lastSeq
@@ -1340,6 +1342,8 @@ async function main (): Promise<void> {
             const pageFormAfter = await readNativeFormSnapshot(session.page).catch(() => ({}))
             const verdictWithFacts = {
               ...finalVerdict,
+              // 执行器墙钟真实耗时（毫秒）：与 status/requestTrace/businessSummary 平级上报给 Go 落库。
+              executorMs: Math.round(performance.now() - executorStart),
               businessSummary: {
                 dispatched: dispatchFacts,
                 newInstanceId,
@@ -1355,7 +1359,7 @@ async function main (): Promise<void> {
             }
             sendEnvelope(ws, session, 'result', envelope.requestId, verdictWithFacts)
           } catch (error) {
-            sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error) })
+            sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error), executorMs: Math.round(performance.now() - executorStart) })
           } finally {
             session.actionInFlight = false
           }

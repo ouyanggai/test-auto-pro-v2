@@ -130,6 +130,9 @@ export interface RequestResponsePayload {
 export interface ResultPayload {
   status: ResultStatus
   message?: string
+  // executorMs 是执行服务对本次动作从装载到收敛测得的真实墙钟耗时（毫秒，F-042 选项 B）；
+  // 缺失表示本次没有回传结果（连接断开等），Go 侧按未知降级，绝不用 0 冒充。
+  executorMs?: number
   requestTrace?: Array<Record<string, unknown>>
   formValuesBefore?: Record<string, unknown>
   formValuesAfter?: Record<string, unknown>

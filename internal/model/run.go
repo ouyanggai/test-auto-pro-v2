@@ -274,11 +274,11 @@ type Run struct {
 	AccountConcurrencyEnabled bool
 	AccountMaxConcurrency     *int
 	Status                    RunStatus
-	Result       *RunResult
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	Result                    *RunResult
+	StartedAt                 *time.Time
+	FinishedAt                *time.Time
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 	// IdempotencyKey 是启动请求的幂等键：同键重试返回同一次运行，绝不创建第二个运行（F-020）。
 	IdempotencyKey string
 	// PresetBreakpoints 是启动时预置的断点集合原始 JSON：调度器在每条路径运行开始时重放同一预置。
@@ -391,6 +391,10 @@ type RunStepAttempt struct {
 	// RuntimeDetail 是 runtime 动作的三阶段投影与请求轨迹摘要（JSON 文本，run_step_attempts.runtime_detail）。
 	// 只在插入时写一次；空值表示非 runtime 步骤或本迁移之前的尝试，详情页按缺失降级。
 	RuntimeDetail string
+	// ExecutorMs/ExecutorMsKnown 是执行服务上报的动作墙钟真实耗时（毫秒，F-042 选项 B，run_step_attempts.executor_ms）。
+	// 只在插入时写一次；Known=false（列为 NULL）表示非 runtime 步骤或本迁移之前的历史尝试，报告按缺失降级。
+	ExecutorMs      int64
+	ExecutorMsKnown bool
 }
 
 // RunControlAction 是人工控制事实的动作类别；本切片只承载放行与停止两类。

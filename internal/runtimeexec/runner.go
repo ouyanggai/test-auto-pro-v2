@@ -71,8 +71,11 @@ type ActionRunResult struct {
 	Message         string
 	RequestTrace    json.RawMessage
 	BusinessSummary json.RawMessage
-	NewInstanceID   string   `json:"-"`
-	WriteTraceIDs   []string `json:"-"`
+	// ExecutorMs 是执行服务上报的动作墙钟真实耗时（毫秒，F-042 选项 B）；
+	// 指针区分「结果带回了耗时」与「连接断开没有结果」——nil 即未知，落库写 NULL。
+	ExecutorMs    *int64   `json:"executorMs"`
+	NewInstanceID string   `json:"-"`
+	WriteTraceIDs []string `json:"-"`
 }
 
 // RuntimeRunner 是执行器对 runtime 能力的接口面（*RuntimeExecutor 满足）。

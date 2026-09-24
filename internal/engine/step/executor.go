@@ -538,6 +538,11 @@ func (e *Executor) rememberRuntimeFacts(preview *StepPreview, result runtimeexec
 	if encoded, err := json.Marshal(projection); err == nil {
 		preview.runtimeDetailJSON = string(encoded)
 	}
+	// 执行器墙钟真实耗时：仅当本次结果带回时记为已知，连接断开等无结果场景保持未知（落库写 NULL）。
+	if result.ExecutorMs != nil {
+		preview.executorMs = *result.ExecutorMs
+		preview.executorMsKnown = true
+	}
 }
 
 // RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。
@@ -1426,9 +1431,9 @@ func gateSnapshotJSON(preview *StepPreview, branchTarget string) string {
 		BranchTarget string                     `json:"branchTarget,omitempty"`
 		// 按节点权限构造表单数据的两个清单：用户据此解释"这个字段为什么没被提交/为什么变了"。
 		FormOverlaid []string `json:"formOverlaid,omitempty"`
-		FormWithheld []string                   `json:"formWithheld,omitempty"`
-		ReceiverID   string                     `json:"receiverId,omitempty"`
-		ReceiverName string                     `json:"receiverName,omitempty"`
+		FormWithheld []string `json:"formWithheld,omitempty"`
+		ReceiverID   string   `json:"receiverId,omitempty"`
+		ReceiverName string   `json:"receiverName,omitempty"`
 	}{Allowed: preview.GateAllowed, Reason: preview.GateReason, Items: preview.GateItems,
 		BranchTarget: branchTarget, FormOverlaid: preview.FormOverlaid, FormWithheld: preview.FormWithheld,
 		ReceiverID: preview.ReceiverID, ReceiverName: preview.ReceiverName}
@@ -1514,7 +1519,8 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			Reread: string(reread), Reason: userMessage, Basis: verdictResult.Basis,
 			// 重新核验沿用首次执行的 runtime 投影：写请求没有重发，投影仍是这次尝试的事实。
 			RuntimeDetail: preview.runtimeDetailJSON,
-			TraceID:       approved.Preview.writeTraceID, CurlTraceID: approved.Preview.writeTraceID,
+			ExecutorMs:    preview.executorMs, ExecutorMsKnown: preview.executorMsKnown,
+			TraceID: approved.Preview.writeTraceID, CurlTraceID: approved.Preview.writeTraceID,
 			DurationMs: e.now().Sub(startedAt).Milliseconds(),
 		}
 		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
@@ -1809,6 +1815,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			IsReplay:   approved.IsReplay,
 			// runtime 零写入失败同样保留三阶段投影：请求轨迹能证明「流程动作未发出」。
 			RuntimeDetail: preview.runtimeDetailJSON,
+			ExecutorMs:    preview.executorMs, ExecutorMsKnown: preview.executorMsKnown,
 		}
 		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 			return outcome, lineNo, err
@@ -2004,6 +2011,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// runtime 三阶段投影与请求轨迹随尝试行落库（评审 P1-7）：详情接口据此展示
 		// runtime 三阶段、请求轨迹与业务失败状态；非 runtime 步骤为空。
 		RuntimeDetail: preview.runtimeDetailJSON,
+		ExecutorMs:    preview.executorMs, ExecutorMsKnown: preview.executorMsKnown,
 	}
 	if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 		return outcome, lineNo, err

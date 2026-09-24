@@ -163,12 +163,12 @@ func (r *RunRepository) RecordStepAttempt(ctx context.Context, step model.RunSte
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO run_step_attempts (path_run_id, step_id, attempt_no, verdict, side_effect, transport, status_code,
 			initial, reread, failure_class, reason, basis, trace_id, curl_trace_id, log_path, log_line, duration_ms,
-			is_replay, before_facts, runtime_detail, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			is_replay, before_facts, runtime_detail, executor_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, step.PathRunID, stepID, attempt.AttemptNo, attempt.Verdict, attempt.SideEffect, attempt.Transport,
 		nullableInt(attempt.StatusCode), attempt.Initial, attempt.Reread, nullableFailureClass(attempt.FailureClass),
 		attempt.Reason, attempt.Basis, attempt.TraceID, attempt.CurlTraceID, attempt.LogPath, attempt.LogLine,
-		attempt.DurationMs, attempt.IsReplay, nullableString(attempt.BeforeFacts), nullableString(attempt.RuntimeDetail), now); err != nil {
+		attempt.DurationMs, attempt.IsReplay, nullableString(attempt.BeforeFacts), nullableString(attempt.RuntimeDetail), nullableExecutorMs(attempt.ExecutorMsKnown, attempt.ExecutorMs), now); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -188,6 +188,15 @@ func nullableString(value string) any {
 // nullableInt 把零值整数转为 NULL（HTTP 状态码缺省表示未收到状态行）。
 func nullableInt(value int) any {
 	if value == 0 {
+		return nil
+	}
+	return value
+}
+
+// nullableExecutorMs 在执行器真实计时已知时写入毫秒值，否则写 NULL（非 runtime 步骤或历史尝试）。
+// 与 nullableInt 的零值判定不同：执行器 0 毫秒是合法真实值，只有「未知」才写 NULL，避免报告把真实 0 当缺失。
+func nullableExecutorMs(known bool, value int64) any {
+	if !known {
 		return nil
 	}
 	return value

@@ -505,6 +505,10 @@ type StepPreview struct {
 	// runtimeDetailJSON 是本动作三阶段投影的落账文本（run_step_attempts.runtime_detail），
 	// 在 runtime 事实回填时统一构造；非 runtime 步骤恒为空。
 	runtimeDetailJSON string
+	// executorMs/executorMsKnown 是执行服务上报的动作墙钟真实耗时（毫秒，F-042 选项 B）；
+	// 仅 runtime 动作有值，Known=false 表示非 runtime 步骤或未收到结果，落库写 NULL。
+	executorMs      int64
+	executorMsKnown bool
 	// TargetSkipped 表示本步节点已被目标自动跳过（模板约束「无处理人时跳过该节点」生效，
 	// 实例待办已落到路径上更靠后的节点）：不发出写请求，放行后按「已跳过」落账并推进。
 	// SkipReason 是给用户看的中文依据，必须说清为什么判定被跳过。
