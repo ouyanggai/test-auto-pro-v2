@@ -356,15 +356,41 @@ func cloneForDecision(source map[string]any) map[string]any {
 	return cloned
 }
 
-// deepEqualNormalized 把两个值按 JSON 序列化后比较（json.Number 原样保留），
+// DeepEqualNormalized 把两个值按 JSON 序列化后比较（json.Number 原样保留），
 // 覆盖嵌套对象、数组与表格字段；字符串比较不做排序扰动，键序差异由 map 序列化的确定性吸收。
+// 对于人员/部门/公司等选择器字段，目标平台可能只落盘 {"id":...} 省略冗余 name，此处容纳等价 ID 比较。
+func DeepEqualNormalized(a, b any) bool {
+	return deepEqualNormalized(a, b)
+}
+
 func deepEqualNormalized(a, b any) bool {
 	encodedA, errA := json.Marshal(a)
 	encodedB, errB := json.Marshal(b)
 	if errA != nil || errB != nil {
 		return fmt.Sprint(a) == fmt.Sprint(b)
 	}
-	return string(encodedA) == string(encodedB)
+	if string(encodedA) == string(encodedB) {
+		return true
+	}
+	// 选择器 JSON 字符串等价容差：当两端均为合法的选择器 JSON 时，若 id 相等且非空，
+	// 且若两端都提供了 name 则 name 也必须相等（允许目标平台只保存或返回包含 id 的瘦对象）。
+	strA, isStrA := a.(string)
+	strB, isStrB := b.(string)
+	if isStrA && isStrB {
+		var objA, objB map[string]any
+		if json.Unmarshal([]byte(strA), &objA) == nil && json.Unmarshal([]byte(strB), &objB) == nil {
+			idA, hasIdA := objA["id"].(string)
+			idB, hasIdB := objB["id"].(string)
+			if hasIdA && hasIdB && idA != "" && idA == idB {
+				nameA, hasNameA := objA["name"].(string)
+				nameB, hasNameB := objB["name"].(string)
+				if (!hasNameA || !hasNameB) || nameA == nameB {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // emptyDerivedValue 按目标衍生字段种类返回空形状：文本空串、对象空 map、列表空数组。

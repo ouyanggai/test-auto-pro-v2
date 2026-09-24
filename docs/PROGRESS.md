@@ -1,4 +1,9 @@
 # 当前进度
+- 2026-09-24 运行 #1「欧阳改测试08」第 2 步（重新提交 resubmit）表单写后核验误报「字段 myCompanyName 发送的值未被目标保存」只读定位并修复（非新功能，属运行引擎表单写后核验口径缺陷）：
+  根因：工具侧按目标选择器规范发送标准 JSON 字符串 `{"id":"6e1235cf416e4143947311c6cc93d78e","name":"广东斯能投资有限责任公司"}`。目标平台后端在存储表单数据（`/web/flowInstanceApi/submit` 及 `getCurrentFromData`）时，对部分公司选择器只保留核心标识 `{"id":"6e1235cf416e4143947311c6cc93d78e"}`，省略冗余的 `name`（其伴生字段 `myCompanyName__condition` 则单独保留了中文名）。写后核验工具函数 `deepEqualNormalized` 原先仅做严格的 JSON 序列化字符串比对，把目标的瘦 ID 对象与工具发送的完整对象判定为不相等，产生误报并阻塞了后续步骤。
+  修复：在 `internal/engine/step/formdata.go` 的 `deepEqualNormalized`（及导出的 `DeepEqualNormalized`）中增加选择器 JSON 等价容差：当双方均为合法选择器 JSON 且 `id` 相同非空时，若一方省略 `name` 或双方 `name` 相同，即判定等价，不再误报丢失。
+  验证：新增定向单元测试 `test/unit/backend/executor/form_data_equal_test.go`（覆盖 id 相等省略 name、反向等价、不同 id 拦截、不同 name 拦截、普通字符串）；后端 26 个测试包全部通过，go vet/go build 通过；重新编译并热重启 `.runtime/server.exe`。
+
 
 - 2026-09-24 运行 #2「欧阳改测试07」路径 1 失败与路径 12 反复跳过第 25 步 45 次只读根因定位与修复完成：
   ① 路径 12「跳过 25 的什么鬼」（45 步跳过与最终已停止）：根因为第 25 步系恢复链插入的「取回准备同意」步骤（RetrievePrepareConsent），首次真实同意成功后因审核人 10 为 2 人会签节点实例仍停在原地，被错误送入会签重跑循环（control.go:1438）；在重跑构建预览时 RetrievePrepareConsent 判定本节点已办结返回 TargetSkipped=true，但循环内部未检查该标志，继续把跳过当成功落账，且跳过不改变实例节点导致死循环空转 44 次直到场景步数上限（45 次第 25 步）。紧接着第 26 步取回命中目标会签未完结取回（FlowInstanceServiceImpl.java:929），目标仅将记录设为失效未恢复待办，致第 27 步查无待办卡住轮询后停止。修复：control.go 明确隔离 RetrievePrepareConsent 严禁进入会签循环；会签循环内部一旦遇到 extraPreview.TargetSkipped=true 立即 break 退出循环，彻底消除空转。
