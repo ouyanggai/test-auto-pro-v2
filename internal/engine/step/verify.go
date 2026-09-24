@@ -481,13 +481,24 @@ func (e *Executor) retrieveDoneViewUser(ctx context.Context, runCtx RunContext, 
 	if nodeID == "" || instanceID == "" {
 		return "", ""
 	}
+	nodeName := ""
+	for _, n := range runCtx.Nodes {
+		if strings.TrimSpace(n.TargetNodeID) == nodeID {
+			nodeName = strings.TrimSpace(n.Name)
+			break
+		}
+	}
 	// 途径一：审核记录。它是"这个节点是谁办结的"最直接的事实来源。
 	if auditReader, hasAuditReader := e.target.(auditRecordsReader); hasAuditReader {
 		records, auditErr := auditReader.ListAuditRecords(ctx, session, instanceID)
 		if auditErr == nil {
 			viewUserID := ""
 			for _, record := range records {
-				if strings.TrimSpace(record.FlowNodeProxyID) != nodeID {
+				match := strings.TrimSpace(record.FlowNodeProxyID) == nodeID
+				if !match && nodeName != "" && strings.TrimSpace(record.AuditNodeName) != "" && strings.TrimSpace(record.AuditNodeName) == nodeName {
+					match = true
+				}
+				if !match {
 					continue
 				}
 				// 只认「通过」这类办结记录：驳回等其它状态不代表本节点被办结，不能作为取回对象。

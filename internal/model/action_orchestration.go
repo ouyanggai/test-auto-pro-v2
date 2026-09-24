@@ -58,9 +58,9 @@ const (
 	ActionUrge ActionKey = "urge"
 	// ActionForward 表示创建独立辅助转发流程。
 	ActionForward ActionKey = "forward"
-	// ActionFollow 表示关注主实例。
+	// ActionFollow 表示设为跟踪主实例。
 	ActionFollow ActionKey = "follow"
-	// ActionUnfollow 表示取消关注主实例。
+	// ActionUnfollow 表示取消跟踪主实例。
 	ActionUnfollow ActionKey = "unfollow"
 	// ActionSystemAutomatic 表示系统节点的只读自动语义，不是可配置的用户写动作。
 	ActionSystemAutomatic ActionKey = "system_automatic"
@@ -291,8 +291,8 @@ var actionChineseNames = map[ActionKey]string{
 	ActionWithdraw:        "撤回",
 	ActionUrge:            "催办",
 	ActionForward:         "转发",
-	ActionFollow:          "关注",
-	ActionUnfollow:        "取消关注",
+	ActionFollow:          "设为跟踪",
+	ActionUnfollow:        "取消跟踪",
 	ActionSystemAutomatic: "系统自动动作",
 }
 

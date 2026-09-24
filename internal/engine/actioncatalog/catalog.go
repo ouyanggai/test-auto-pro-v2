@@ -209,25 +209,25 @@ var actionDefinitions = []actionDefinition{
 	},
 	{
 		action: model.ActionFollow, category: model.ActionCategoryInstanceManagement, scope: model.ActionScopeInstance,
-		label: "关注", description: "按当前用户保存主实例关注状态，不迁移任务。",
+		label: "设为跟踪", description: "按当前用户保存主实例跟踪状态，不迁移任务。",
 		targetOperation: "/web/flowInstanceApi/flowTracking",
 		parameters: []model.ActionParameter{
 			{Name: "data.id", Required: true, Description: "目标流程实例键"},
-			{Name: "tracking", Value: "true", Required: true, Description: "固定开启当前用户关注"},
+			{Name: "tracking", Value: "true", Required: true, Description: "固定开启当前用户跟踪"},
 		},
-		expectedEffect:     "当前用户关注主实例；流程状态、任务状态和节点位置不变。",
-		reloadRequirements: []string{"当前用户关注状态"},
+		expectedEffect:     "当前用户跟踪主实例；流程状态、任务状态和节点位置不变。",
+		reloadRequirements: []string{"当前用户跟踪状态"},
 	},
 	{
 		action: model.ActionUnfollow, category: model.ActionCategoryInstanceManagement, scope: model.ActionScopeInstance,
-		label: "取消关注", description: "按当前用户清除主实例关注状态，不迁移任务。",
+		label: "取消跟踪", description: "按当前用户清除主实例跟踪状态，不迁移任务。",
 		targetOperation: "/web/flowInstanceApi/flowTracking",
 		parameters: []model.ActionParameter{
 			{Name: "data.id", Required: true, Description: "目标流程实例键"},
-			{Name: "tracking", Value: "false", Required: true, Description: "固定关闭当前用户关注"},
+			{Name: "tracking", Value: "false", Required: true, Description: "固定关闭当前用户跟踪"},
 		},
-		expectedEffect:     "当前用户取消关注主实例；流程状态、任务状态和节点位置不变。",
-		reloadRequirements: []string{"当前用户关注状态"},
+		expectedEffect:     "当前用户取消跟踪主实例；流程状态、任务状态和节点位置不变。",
+		reloadRequirements: []string{"当前用户跟踪状态"},
 	},
 }
 
@@ -624,26 +624,26 @@ func evaluateForward(ctx model.ActionContext) gateResult {
 	return g
 }
 
-// evaluateFollow 根据当前用户已有关注状态分别计算关注和取消关注门禁。
+// evaluateFollow 根据当前用户已有跟踪状态分别计算设为跟踪和取消跟踪门禁。
 func evaluateFollow(ctx model.ActionContext, unfollow bool) gateResult {
 	g := newGate()
 	visible := instanceVisible(ctx)
 	running := instanceRunning(ctx)
 	state := ctx.Followed
 	add(&g, "visible_instance", "当前账号可以看到目标实例", true, visible)
-	add(&g, "running_instance", "目标页面允许对运行中实例修改关注状态", true, running)
-	add(&g, "tracking_state", "已确认当前用户的关注状态", true, true)
+	add(&g, "running_instance", "目标页面允许对运行中实例修改跟踪状态", true, running)
+	add(&g, "tracking_state", "已确认当前用户的跟踪状态", true, true)
 	if !visible {
-		return denyWith(g, "当前账号看不到目标实例，无法修改关注状态")
+		return denyWith(g, "当前账号看不到目标实例，无法修改跟踪状态")
 	}
 	if !running {
-		return denyWith(g, "当前实例不在运行中，不能修改关注状态")
+		return denyWith(g, "当前实例不在运行中，不能修改跟踪状态")
 	}
 	if unfollow && !state {
-		return denyWith(g, "当前用户尚未关注该实例")
+		return denyWith(g, "当前用户尚未跟踪该实例")
 	}
 	if !unfollow && state {
-		return denyWith(g, "当前用户已经关注该实例")
+		return denyWith(g, "当前用户已经跟踪该实例")
 	}
 	return g
 }

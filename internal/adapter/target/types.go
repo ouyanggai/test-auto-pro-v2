@@ -159,6 +159,7 @@ type AuditRecordSnapshot struct {
 	ExecutorID      string
 	ExecutorName    string
 	AuditStatus     string
+	AuditNodeName   string
 }
 
 // FlowTreeSnapshot 把本次读取的真实代理树和运行态入口绑定在一起。

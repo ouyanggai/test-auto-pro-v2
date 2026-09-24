@@ -15,8 +15,8 @@ const actionLabels: Record<string, string> = {
   withdraw: '撤回',
   urge: '催办',
   forward: '转发',
-  follow: '关注',
-  unfollow: '取消关注',
+  follow: '设为跟踪',
+  unfollow: '取消跟踪',
   system_automatic: '系统自动动作',
 }
 

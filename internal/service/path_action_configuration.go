@@ -665,8 +665,8 @@ func actionDisplayLabel(action model.ActionKey) string {
 		model.ActionWithdraw:        "撤回",
 		model.ActionUrge:            "催办",
 		model.ActionForward:         "转发",
-		model.ActionFollow:          "关注",
-		model.ActionUnfollow:        "取消关注",
+		model.ActionFollow:          "设为跟踪",
+		model.ActionUnfollow:        "取消跟踪",
 		model.ActionSystemAutomatic: "系统自动动作",
 	}
 	if label, ok := labels[action]; ok {

@@ -355,6 +355,7 @@ func (c *Client) ListAuditRecords(ctx context.Context, active Session, instanceI
 		ExecutorID      string `json:"executorId"`
 		ExecutorName    string `json:"executorName"`
 		AuditStatus     string `json:"auditStatus"`
+		AuditNodeName   string `json:"auditNodeName"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
 		return nil, err
@@ -368,7 +369,7 @@ func (c *Client) ListAuditRecords(ctx context.Context, active Session, instanceI
 			FlowJobTaskID: strings.TrimSpace(item.FlowJobTaskID), FlowInstanceID: strings.TrimSpace(item.FlowInstanceID),
 			FlowNodeProxyID: strings.TrimSpace(item.FlowNodeProxyID), BatchNo: strings.TrimSpace(item.BatchNo),
 			ExecutorID: strings.TrimSpace(item.ExecutorID), ExecutorName: strings.TrimSpace(item.ExecutorName),
-			AuditStatus: strings.TrimSpace(item.AuditStatus),
+			AuditStatus: strings.TrimSpace(item.AuditStatus), AuditNodeName: strings.TrimSpace(item.AuditNodeName),
 		})
 	}
 	return result, nil

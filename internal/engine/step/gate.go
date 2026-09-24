@@ -73,9 +73,12 @@ func buildGateContext(runCtx RunContext, step model.CompiledActionStep, facts In
 		ctx.HandlerMissing = true
 		ctx.CurrentTaskDone = false
 	}
-	// 实例级动作也必须基于本次目标读取决定可用性：关注状态、待办接收人和已办归属
+	// 实例级动作也必须基于本次目标读取决定可用性：跟踪状态、待办接收人和已办归属
 	// 都不能从用户之前保存的编排配置推断。
-	ctx.HasPendingRecipient = len(facts.DueNodes) > 0 || (facts.PendingTaskRead && facts.PendingTaskFound)
+	// 当实例处于运行态（run）且目标已发列表明确返回了当前待办人（CurrentHandlers）或当前节点（CurrentNodes）时，
+	// 实例确定存在正在等待处理的接收人，即使发起人自身名下无待办也允许催办。
+	hasRunningRecipient := facts.Status == "run" && (len(facts.CurrentHandlers) > 0 || len(facts.CurrentNodes) > 0)
+	ctx.HasPendingRecipient = len(facts.DueNodes) > 0 || (facts.PendingTaskRead && facts.PendingTaskFound) || hasRunningRecipient
 	ctx.Followed = facts.TrackingRead && facts.Tracking
 	ctx.HasEditableProxy = facts.EditableProxyRead
 	ctx.CanSwitchActor = facts.ActorSwitchRead

@@ -875,6 +875,23 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		preview.ActorAccount = runCtx.PlanAccount
 	}
 	if !allowed {
+		// 设为跟踪 / 取消跟踪的幂等跳过：当前已处于目标状态时，跳过重复写请求，不中断执行器。
+		if step.Action == model.ActionFollow && facts.TrackingRead && facts.Tracking {
+			reason := "当前实例已处于跟踪状态，无需重复设置"
+			log.Phase("control", step.Sequence, 1, reason)
+			preview.GateAllowed = true
+			preview.TargetSkipped = true
+			preview.SkipReason = reason
+			return preview, false, nil
+		}
+		if step.Action == model.ActionUnfollow && facts.TrackingRead && !facts.Tracking {
+			reason := "当前实例已处于未跟踪状态，无需重复设置"
+			log.Phase("control", step.Sequence, 1, reason)
+			preview.GateAllowed = true
+			preview.TargetSkipped = true
+			preview.SkipReason = reason
+			return preview, false, nil
+		}
 		reason := catalogItem.DisabledReason
 		if reason == "" {
 			reason = "放行条件不满足"
@@ -888,6 +905,20 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		preview.BlockReason = "放行条件不满足：" + reason
 		preview.BlockFailureClass = model.FailureClassGateBlocked
 		log.Phase("control", step.Sequence, 1, "单步暂停，等待放行；本步条件未满足："+reason)
+		return preview, false, nil
+	}
+
+	// 设为跟踪 / 取消跟踪的幂等跳过：当前已处于目标状态时，跳过重复写请求，不中断执行器。
+	if step.Action == model.ActionFollow && facts.TrackingRead && facts.Tracking {
+		preview.TargetSkipped = true
+		preview.SkipReason = "当前实例已处于跟踪状态，无需重复设置"
+		log.Phase("control", step.Sequence, 1, preview.SkipReason)
+		return preview, false, nil
+	}
+	if step.Action == model.ActionUnfollow && facts.TrackingRead && !facts.Tracking {
+		preview.TargetSkipped = true
+		preview.SkipReason = "当前实例已处于未跟踪状态，无需重复设置"
+		log.Phase("control", step.Sequence, 1, preview.SkipReason)
 		return preview, false, nil
 	}
 
@@ -1277,6 +1308,10 @@ func humanWaitDuration(d time.Duration) string {
 //
 // 输入边界：只读 step，不改状态；调用方仍须保证动作专属门禁不被跳过。
 func isRecoveryEffectStep(step model.CompiledActionStep) bool {
+	// 取回准备同意步骤必须执行以产生已办审核记录，绝不能被提前误判为自动跳过。
+	if step.RetrievePrepareConsent {
+		return true
+	}
 	switch step.Action {
 	case model.ActionRetrieve, model.ActionRollback, model.ActionWithdraw:
 		return true
@@ -2395,8 +2430,16 @@ func (e *Executor) retrieveDoneSnapshotByAuditLink(ctx context.Context, runCtx R
 		facts.AssigneeDiag = "取回已办行补救：审核记录读取失败，按既有纪律阻塞：" + auditErr.Error()
 		return target.TaskSnapshot{}, false
 	}
+	nodeName := ""
+	if info, ok := runCtx.Nodes[step.NodeKey]; ok {
+		nodeName = strings.TrimSpace(info.Name)
+	}
 	for _, record := range records {
-		if strings.TrimSpace(record.FlowNodeProxyID) != nodeID {
+		match := strings.TrimSpace(record.FlowNodeProxyID) == nodeID
+		if !match && nodeName != "" && strings.TrimSpace(record.AuditNodeName) != "" && strings.TrimSpace(record.AuditNodeName) == nodeName {
+			match = true
+		}
+		if !match {
 			continue
 		}
 		if !strings.EqualFold(record.AuditStatus, "pass") {
@@ -2456,7 +2499,11 @@ func (e *Executor) RetrieveDoneSnapshotByAuditLinkForTest(ctx context.Context, r
 //   - 只认节点严格相等且状态为「通过」的记录；
 //   - 读取失败返回 false，绝不吞错后当作"已办结"放行跳过。
 func (e *Executor) retrieveNodeHasAuditPass(ctx context.Context, session target.Session, instanceID, nodeID string) bool {
-	if strings.TrimSpace(instanceID) == "" || strings.TrimSpace(nodeID) == "" {
+	return e.retrieveNodeHasAuditPassWithName(ctx, session, instanceID, nodeID, "")
+}
+
+func (e *Executor) retrieveNodeHasAuditPassWithName(ctx context.Context, session target.Session, instanceID, nodeID, nodeName string) bool {
+	if strings.TrimSpace(instanceID) == "" || (strings.TrimSpace(nodeID) == "" && strings.TrimSpace(nodeName) == "") {
 		return false
 	}
 	auditReader, hasAuditReader := e.target.(auditRecordsReader)
@@ -2468,7 +2515,11 @@ func (e *Executor) retrieveNodeHasAuditPass(ctx context.Context, session target.
 		return false
 	}
 	for _, record := range records {
-		if strings.TrimSpace(record.FlowNodeProxyID) != strings.TrimSpace(nodeID) {
+		match := nodeID != "" && strings.TrimSpace(record.FlowNodeProxyID) == strings.TrimSpace(nodeID)
+		if !match && nodeName != "" && strings.TrimSpace(record.AuditNodeName) != "" && strings.TrimSpace(record.AuditNodeName) == strings.TrimSpace(nodeName) {
+			match = true
+		}
+		if !match {
 			continue
 		}
 		if strings.EqualFold(record.AuditStatus, "pass") {
