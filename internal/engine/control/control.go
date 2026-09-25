@@ -475,7 +475,7 @@ func (s *Service) initSession(ctx context.Context, runCtx step.RunContext, mode 
 	if finished {
 		class := model.FailureClassToolBug
 		if _, err := s.runs.Finish(ctx, startedPathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
-			"编译场景为空，无法执行"); err != nil {
+			"编译场景为空，无法执行", ""); err != nil {
 			return nil, nil, err
 		}
 		result.PathFinished = true
@@ -1481,7 +1481,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		if reviewErr != nil {
 			return result, reviewErr
 		}
-		if err := s.finishCompleted(ctx, pathRunID, session.runCtx, facts); err != nil {
+		if err := s.finishCompleted(ctx, pathRunID, session.runCtx, facts, outcome.SettleDetail); err != nil {
 			return result, err
 		}
 		s.clear(pathRunID)
@@ -1508,7 +1508,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		if reviewErr != nil {
 			return result, reviewErr
 		}
-		if err := s.finishCompleted(ctx, pathRunID, session.runCtx, facts); err != nil {
+		if err := s.finishCompleted(ctx, pathRunID, session.runCtx, facts, outcome.SettleDetail); err != nil {
 			return result, err
 		}
 		s.clear(pathRunID)
@@ -1533,7 +1533,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 }
 
 // finishCompleted 场景走完的统一收尾：最终目标事实摘要落库 + 路径运行与运行聚合收尾为已完成。
-func (s *Service) finishCompleted(ctx context.Context, pathRunID uint64, runCtx step.RunContext, facts step.FinalTargetFacts) error {
+func (s *Service) finishCompleted(ctx context.Context, pathRunID uint64, runCtx step.RunContext, facts step.FinalTargetFacts, settleDetail string) error {
 	summary, err := json.Marshal(facts)
 	if err != nil {
 		return err
@@ -1542,7 +1542,7 @@ func (s *Service) finishCompleted(ctx context.Context, pathRunID uint64, runCtx 
 		return err
 	}
 	_, err = s.runs.Finish(ctx, pathRunID, model.PathRunStatusCompleted, runResultOf(model.RunResultSucceeded), nil,
-		"编译场景全部步骤确定成功，路径运行完成")
+		"编译场景全部步骤确定成功，路径运行完成", settleDetail)
 	return err
 }
 
@@ -1650,7 +1650,7 @@ func (s *Service) sealPostWriteFailure(ctx context.Context, pathRunID uint64, se
 	s.mu.Unlock()
 
 	class := model.FailureClassWriteUncertain
-	if _, finishErr := s.runs.Finish(ctx, pathRunID, model.PathRunStatusAwaitingReconciliation, runResultOf(model.RunResultAwaitingReconcile), &class, reason); finishErr != nil {
+	if _, finishErr := s.runs.Finish(ctx, pathRunID, model.PathRunStatusAwaitingReconciliation, runResultOf(model.RunResultAwaitingReconcile), &class, reason, ""); finishErr != nil {
 		s.mu.Lock()
 		if s.active[pathRunID] == session {
 			session.stopReason += "；运行状态保存失败，已禁止再次放行"

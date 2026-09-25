@@ -334,7 +334,7 @@ func (s *RunOrchestrationService) beginPathRunOnScheduler(ctx context.Context, r
 func (s *RunOrchestrationService) finishPathRunFailed(ctx context.Context, pathRunID uint64, reason string) {
 	class := model.FailureClassToolBug
 	result := model.RunResultFailed
-	_, _ = s.runState.Finish(ctx, pathRunID, model.PathRunStatusFailed, &result, &class, reason)
+	_, _ = s.runState.Finish(ctx, pathRunID, model.PathRunStatusFailed, &result, &class, reason, "")
 }
 
 // NewScheduler 组装运行级调度 Worker：路径启动与定时触发回调都指向本服务。

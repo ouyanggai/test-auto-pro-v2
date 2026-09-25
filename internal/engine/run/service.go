@@ -132,17 +132,18 @@ func (s *Service) AdvancePathRun(ctx context.Context, pathRunID uint64, from, to
 
 // Finish 把路径运行推进到终态并镜像收尾运行聚合。
 // 待对账不镜像运行状态：运行保持运行中，唯一合法恢复动作属于对账切片（F-018）。
-func (s *Service) Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label string) (model.PathRun, error) {
+func (s *Service) Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label, detail string) (model.PathRun, error) {
 	return s.store.FinishPathRun(ctx, pathRunID, to, result, failureClass, model.RunEvent{
-		Kind:  "path_run_finished",
-		Label: label,
+		Kind:   "path_run_finished",
+		Label:  label,
+		Detail: detail,
 	}, s.now())
 }
 
 // Stop 处理用户停止：运行中或暂停的路径运行置为已停止；已发生的事实全部保留。
 // 路径结果留空——停止时场景没有走完，成功/失败/待对账三种结论都不成立，状态本身就是结论。
 func (s *Service) Stop(ctx context.Context, pathRunID uint64) (model.PathRun, error) {
-	return s.Finish(ctx, pathRunID, model.PathRunStatusStopped, nil, nil, "用户停止运行，已发生的事实全部保留")
+	return s.Finish(ctx, pathRunID, model.PathRunStatusStopped, nil, nil, "用户停止运行，已发生的事实全部保留", "")
 }
 
 // ReopenForRetry 把确定失败的路径运行重新装填为运行中（F-028 失败动作重试的唯一状态入口）。

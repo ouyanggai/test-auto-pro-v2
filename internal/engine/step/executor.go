@@ -1618,6 +1618,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		case verdict.OutcomeSucceeded:
 			outcome.Verdict = string(verdict.OutcomeSucceeded)
 			outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+			outcome.SettleDetail = settleEventDetail(preview, userMessage)
 			if !outcome.NoMoreSteps {
 				if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, userMessage)); err != nil {
 					return outcome, lineNo, err
@@ -1626,13 +1627,13 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		case verdict.OutcomeFailed:
 			class := model.FailureClassTargetRejected
 			if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
-				"重新核验判定失败："+userMessage); err != nil {
+				"重新核验判定失败："+userMessage, settleEventDetail(preview, userMessage)); err != nil {
 				return outcome, lineNo, err
 			}
 		default:
 			class := model.FailureClassWriteUncertain
 			if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusAwaitingReconciliation, runResultOf(model.RunResultAwaitingReconcile), &class,
-				"重新核验仍未确认执行结果："+userMessage); err != nil {
+				"重新核验仍未确认执行结果："+userMessage, settleEventDetail(preview, userMessage)); err != nil {
 				return outcome, lineNo, err
 			}
 		}
@@ -1658,6 +1659,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		outcome.SettleDetail = settleEventDetail(preview, "导航步骤只读校验通过")
 		if !outcome.NoMoreSteps {
 			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, "导航步骤只读校验通过")); err != nil {
 				return outcome, lineNo, err
@@ -1689,6 +1691,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		outcome.SettleDetail = settleEventDetail(preview, preview.SkipReason)
 		if !outcome.NoMoreSteps {
 			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, preview.SkipReason)); err != nil {
 				return outcome, lineNo, err
@@ -1718,7 +1721,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			return outcome, lineNo, recordErr
 		}
 		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
-			"路径在第 "+formatUint(uint64(step.Sequence))+" 步失败："+preview.BlockReason); err != nil {
+			"路径在第 "+formatUint(uint64(step.Sequence))+" 步失败："+preview.BlockReason, ""); err != nil {
 			return outcome, lineNo, err
 		}
 		reportPhase(approved, "control", "放行被拒绝："+preview.BlockReason)
@@ -1778,7 +1781,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
 			return outcome, lineNo, recordErr
 		}
-		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+		if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason, ""); finishErr != nil {
 			return outcome, lineNo, finishErr
 		}
 		return outcome, lineNo, nil
@@ -1803,7 +1806,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 					attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录身份未确认，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
 					return outcome, lineNo, recordErr
 				}
-				if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+				if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason, ""); finishErr != nil {
 					return outcome, lineNo, finishErr
 				}
 				return outcome, lineNo, nil
@@ -1822,7 +1825,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 							attemptNo, approved.IsReplay, startedAt, class, reason, "当前处理人登录会话未就绪，没有发出写请求", log.RelativePath(), lineNo); recordErr != nil {
 							return outcome, lineNo, recordErr
 						}
-						if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); finishErr != nil {
+						if _, finishErr := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason, ""); finishErr != nil {
 							return outcome, lineNo, finishErr
 						}
 						return outcome, lineNo, nil
@@ -1908,7 +1911,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
 			return outcome, lineNo, err
 		}
-		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason); err != nil {
+		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class, reason, ""); err != nil {
 			return outcome, lineNo, err
 		}
 		log.Phase("settle", step.Sequence, attemptNo, "执行失败已记录，路径运行置为失败")
@@ -2109,6 +2112,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// 预期内失败：不结束路径运行，标记跳过并推进游标继续下一步（与目标自动跳过同一推进语义）。
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		outcome.SettleDetail = settleEventDetail(preview, settleReason)
 		if !outcome.NoMoreSteps {
 			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, settleReason)); err != nil {
 				return outcome, lineNo, err
@@ -2125,6 +2129,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	case verdict.OutcomeSucceeded:
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		outcome.SettleDetail = settleEventDetail(preview, userMessage)
 		// 路径偏离判据（T04）：只用重读到的真实事实——实际当前节点集合里没有已配置路径的下一个预期节点。
 		// 两边必须在同一键空间比较：CurrentNodes 是目标 nodeProxyId，预期节点必须取节点表反查出的
 		// TargetNodeID，拿编译场景的哈希键比较永远不相等，会把每一步都误判成偏离（评审 P1）。
@@ -2176,7 +2181,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		outcome.Verdict = string(verdict.OutcomeFailed)
 		class := model.FailureClassTargetRejected
 		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusFailed, runResultOf(model.RunResultFailed), &class,
-			"第 "+formatUint(uint64(step.Sequence))+" 步"+userMessage); err != nil {
+			"第 "+formatUint(uint64(step.Sequence))+" 步"+userMessage, settleEventDetail(preview, userMessage)); err != nil {
 			return outcome, lineNo, err
 		}
 		log.Phase("settle", step.Sequence, attemptNo, userMessage+"，路径运行置为失败")
@@ -2185,7 +2190,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		outcome.Verdict = string(verdict.OutcomeUncertain)
 		class := model.FailureClassWriteUncertain
 		if _, err := e.runState.Finish(ctx, runCtx.PathRun.ID, model.PathRunStatusAwaitingReconciliation, runResultOf(model.RunResultAwaitingReconcile), &class,
-			"第 "+formatUint(uint64(step.Sequence))+" 步"+userMessage); err != nil {
+			"第 "+formatUint(uint64(step.Sequence))+" 步"+userMessage, settleEventDetail(preview, userMessage)); err != nil {
 			return outcome, lineNo, err
 		}
 		log.Phase("settle", step.Sequence, attemptNo, userMessage+"，路径运行已停止")

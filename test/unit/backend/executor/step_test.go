@@ -39,6 +39,7 @@ type fakeRunState struct {
 	released      int
 	finishedTo    []model.PathRunStatus
 	finishClasses []model.FailureClass
+	finishDetails []string
 }
 
 func (f *fakeRunState) SetMainInstanceRef(context.Context, uint64, string) error { return nil }
@@ -65,11 +66,12 @@ func (f *fakeRunState) BackToRunning(context.Context, uint64, string) error {
 	return nil
 }
 
-func (f *fakeRunState) Finish(_ context.Context, _ uint64, to model.PathRunStatus, _ *model.RunResult, failureClass *model.FailureClass, _ string) (model.PathRun, error) {
+func (f *fakeRunState) Finish(_ context.Context, _ uint64, to model.PathRunStatus, _ *model.RunResult, failureClass *model.FailureClass, _, detail string) (model.PathRun, error) {
 	f.finishedTo = append(f.finishedTo, to)
 	if failureClass != nil {
 		f.finishClasses = append(f.finishClasses, *failureClass)
 	}
+	f.finishDetails = append(f.finishDetails, detail)
 	return model.PathRun{ID: 1, Status: to}, nil
 }
 

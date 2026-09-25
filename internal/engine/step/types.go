@@ -61,7 +61,7 @@ type RunStateControl interface {
 	ReleaseExecution(ctx context.Context, pathRunID uint64, fencingToken uint64) error
 	MarkVerifying(ctx context.Context, pathRunID uint64) error
 	BackToRunning(ctx context.Context, pathRunID uint64, detail string) error
-	Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label string) (model.PathRun, error)
+	Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label, detail string) (model.PathRun, error)
 }
 
 type RunFactsStore interface {
@@ -631,4 +631,7 @@ type StepOutcome struct {
 	// DeviationDetected 表示核验重读的实际当前节点与已配置路径的下一个预期节点不一致
 	//（纲领第 7.4 节：偏离是独立事实，停止在下一步阶段 3 生效）。
 	DeviationDetected bool
+	// SettleDetail 是本步落账的事件流补充明细（节点·动作·目标写端点·结果原话）。
+	// 收尾为「已完成」的最后一步没有 BackToRunning 事件承载它，控制层收尾时把它写进终态事件（§3.4）。
+	SettleDetail string
 }
