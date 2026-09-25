@@ -86,6 +86,17 @@ func (r *recordingTarget) writeCalls() []string {
 	return append([]string(nil), r.writes...)
 }
 
+// CurrentUserIdentity 提供实时身份读取能力面：返回完整身份，让 runtime 装载通过 §3.3 身份门禁。
+// 既有路由/映射用例并不校验身份，只需门禁放行；不实现该接口或返回不完整身份的阻塞语义由专门用例覆盖。
+func (r *recordingTarget) CurrentUserIdentity(context.Context, target.Session) (target.UserIdentity, error) {
+	return target.UserIdentity{
+		UserID: "user-actor", UserName: "处理人",
+		CompanyID: "company-1", CompanyName: "公司一",
+		DepartmentID: "dept-1", DepartmentName: "部门一",
+		DutyID: "duty-1", DutyName: "岗位一",
+	}, nil
+}
+
 type fakeRuntimeRunner struct {
 	mu        sync.Mutex
 	status    string
