@@ -45,6 +45,8 @@ type RunEventDTO struct {
 	PathRunID uint64 `json:"pathRunId,omitempty"`
 	Kind      string `json:"kind"`
 	Label     string `json:"label"`
+	// Detail 是事件补充明细：本步落账事件带出节点、调用的目标接口与目标返回结果原话，供事件流按节点展示。
+	Detail    string `json:"detail,omitempty"`
 	CreatedAt string `json:"createdAt"`
 }
 
@@ -57,7 +59,7 @@ func (s *RunOrchestrationService) ListRunEvents(ctx context.Context, runID uint6
 	}
 	dtos := make([]RunEventDTO, 0, len(events))
 	for _, event := range events {
-		dto := RunEventDTO{ID: event.ID, Kind: event.Kind, Label: event.Label}
+		dto := RunEventDTO{ID: event.ID, Kind: event.Kind, Label: event.Label, Detail: event.Detail}
 		if event.PathRunID != nil {
 			dto.PathRunID = *event.PathRunID
 		}

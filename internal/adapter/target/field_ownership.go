@@ -94,6 +94,19 @@ func IsTargetDerivedField(field string) bool {
 	return ClassifyTargetDerivedField(field).Ownership == FieldOwnershipTargetDerived
 }
 
+// systemStructuralFields 是目标流程引擎自己管理、会出现在 formDataMongoVo 里但绝不属于任何节点业务内容的
+// 结构性标识字段。工具重发整份表单时会把它们带上，但目标按实例自身重写/规范化，读回值可能缺失或不同；
+// 因此这些字段一律不纳入表单写后核对，否则会把「实例自身 ID 未原样回显」误判成写入丢失而阻塞整条路径。
+// 目前只登记实测确认的 flowInstanceId（实例自身 ID）；后续如再观察到同类结构键，在此登记，禁止在执行器里另写特例。
+var systemStructuralFields = map[string]bool{
+	"flowInstanceId": true,
+}
+
+// IsSystemStructuralField 判断字段是否为目标引擎管理的结构性标识字段（不参与业务写后核对）。
+func IsSystemStructuralField(field string) bool {
+	return systemStructuralFields[strings.TrimSpace(field)]
+}
+
 // TargetDerivedCompanionKeys 返回同序号文本/对象/列表伴生键（含自身），供清空与核对一次处理完整结构。
 func TargetDerivedCompanionKeys(field string) []string {
 	return ClassifyTargetDerivedField(field).CompanionKeys

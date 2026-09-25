@@ -60,7 +60,7 @@ func (f *fakeRunState) MarkVerifying(context.Context, uint64) error {
 	return nil
 }
 
-func (f *fakeRunState) BackToRunning(context.Context, uint64) error {
+func (f *fakeRunState) BackToRunning(context.Context, uint64, string) error {
 	f.backToRunning++
 	return nil
 }

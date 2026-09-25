@@ -1252,6 +1252,7 @@ onBeforeUnmount(() => {
             <li v-for="event in runEvents" :key="event.id">
               <span class="run-detail__event-time">{{ event.createdAt }}</span>
               <span>{{ event.label }}</span>
+              <span v-if="event.detail" class="run-detail__event-detail">{{ event.detail }}</span>
             </li>
             <li v-if="runEvents.length === 0" class="run-detail__event-empty">还没有事件；放行后这里会按顺序追加。</li>
           </ol>
@@ -1545,6 +1546,17 @@ onBeforeUnmount(() => {
   margin-right: 8px;
   color: var(--run-secondary-text-color, #909090);
   font-variant-numeric: tabular-nums;
+}
+
+/* 事件补充明细：节点·接口·目标返回原话，单独一行灰显，便于按节点核对调用的接口与原始错误 */
+.run-detail__event-detail {
+  display: block;
+  margin: 2px 0 0 0;
+  color: var(--run-secondary-text-color, #909090);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
 }
 
 .run-detail__event-empty {

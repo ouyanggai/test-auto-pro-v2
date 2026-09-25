@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 
 import { formatElapsed, formatTime } from './api'
 import { actionLabel } from './presentation'
+import { runtimeStatusLabel } from './runtimeDetail'
 import type { PathRunDetail, RunNodePlanAction, RunPreview, RunRequestItem, RunStep, RunStepAttempt } from './api'
 
 // RunNodePanel 是点击画布节点后才出现的检视面板：三个页签只给简要事实。
@@ -245,6 +246,41 @@ const stepWhyText = computed(() => {
   if (stepBlocked) return props.detail.stopKindNote || '目标在执行前明确拒绝了请求：前置条件未满足'
   const failedAttempt = step.attempts.find(attempt => !isSuccessfulAttempt(attempt))
   return failedAttempt?.reason || ''
+})
+
+// StepTargetReturn 是一条尝试的目标平台原始返回：调用状态中文、原始错误原话与逐请求接口。
+// 目的：动作详情直接看到「请求了什么接口、目标返回了什么错误」，不再只给一句加工过的结论。
+interface StepTargetReturn {
+  attemptNo: number
+  statusLabel: string
+  isError: boolean
+  message: string
+  requests: Array<{ method: string; path: string; httpStatus?: number; state: string }>
+}
+
+// stepTargetReturns 汇总本步各尝试的 runtime 执行详情（后端 BuildDetailProjection 落库原文）：
+// status 非 success 视为异常并高亮，message 为目标平台原样返回的错误原话，requests 为逐条真实接口调用。
+const stepTargetReturns = computed<StepTargetReturn[]>(() => {
+  const step = stepDialog.value
+  if (!step) return []
+  const rows: StepTargetReturn[] = []
+  for (const attempt of step.attempts) {
+    const detail = attempt.runtimeDetail
+    if (!detail) continue
+    rows.push({
+      attemptNo: attempt.attemptNo,
+      statusLabel: runtimeStatusLabel(detail.status),
+      isError: detail.status !== 'success',
+      message: (detail.message ?? '').trim(),
+      requests: (detail.requests ?? []).map(req => ({
+        method: req.method,
+        path: req.path,
+        httpStatus: req.httpStatus,
+        state: req.state,
+      })),
+    })
+  }
+  return rows
 })
 
 // stepNextText 回答“下一步怎么处理”（F-034 T06）：按结果语义给出可操作建议，不展示内部阶段。
@@ -611,11 +647,30 @@ const dialogStyle = computed(() => ({
                   {{ req.requestClass === 'write' ? '写入' : '读取' }}
                 </span>
                 <span class="run-panel__req-path">{{ req.endpoint }}</span>
+                <span class="run-panel__req-num run-panel__mono">HTTP {{ req.statusCode }}</span>
+                <span v-if="req.resultSummary || req.result" class="run-panel__req-result" :class="{ 'run-panel__req-result--bad': req.blocking }">{{ req.resultSummary || req.result }}</span>
                 <span class="run-panel__req-num run-panel__mono">{{ req.durationKnown ? `${req.durationMs} ms` : '耗时未知' }}</span>
               </li>
             </ul>
           </section>
           <p v-if="requestGroupsByOutcome.length === 0" class="run-panel__muted">这一步没有发出真实接口请求</p>
+
+          <!-- 3. 目标平台原始返回：逐尝试显示调用状态、原始错误原话与逐条真实接口调用 -->
+          <section v-if="stepTargetReturns.length > 0" class="run-panel__section">
+            <p class="run-panel__section-title">目标平台原始返回</p>
+            <div v-for="ret in stepTargetReturns" :key="ret.attemptNo" class="run-panel__target-return">
+              <p class="run-panel__target-head">
+                <span class="run-panel__req-kind" :class="ret.isError ? 'run-panel__req-kind--write' : 'run-panel__req-kind--read'">第 {{ ret.attemptNo }} 次 · {{ ret.statusLabel }}</span>
+              </p>
+              <p v-if="ret.message" class="run-panel__target-message" :class="{ 'run-panel__target-message--bad': ret.isError }">{{ ret.message }}</p>
+              <ul v-if="ret.requests.length > 0" class="run-panel__req-lines">
+                <li v-for="(req, index) in ret.requests" :key="index" class="run-panel__req-line">
+                  <span class="run-panel__req-path run-panel__mono">{{ req.method }} {{ req.path }}</span>
+                  <span class="run-panel__req-num run-panel__mono">{{ req.httpStatus ? `HTTP ${req.httpStatus}` : req.state }}</span>
+                </li>
+              </ul>
+            </div>
+          </section>
 
           <!-- 3. 日志位置 -->
           <section class="run-panel__section">
@@ -1299,6 +1354,39 @@ const dialogStyle = computed(() => ({
   line-height: 1.4;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
+}
+
+/* 目标平台原始返回：逐尝试块、原始错误原话高亮、逐条接口结果 */
+.run-panel__req-result {
+  font-size: 12px;
+  color: var(--run-secondary-text-color, #909090);
+}
+.run-panel__req-result--bad {
+  color: var(--error-color, #d03050);
+  font-weight: 600;
+}
+.run-panel__target-return {
+  margin: 6px 0;
+  padding: 6px 0;
+  border-top: 1px dashed var(--n-border-color, #e0e0e6);
+}
+.run-panel__target-head {
+  margin: 0 0 4px;
+}
+.run-panel__target-message {
+  margin: 4px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--code-color, #f5f5f5);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.run-panel__target-message--bad {
+  color: var(--error-color, #d03050);
+  background: color-mix(in srgb, var(--error-color, #d03050) 8%, transparent);
 }
 
 .run-panel__req-retry {

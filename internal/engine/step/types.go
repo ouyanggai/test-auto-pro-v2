@@ -60,7 +60,7 @@ type RunStateControl interface {
 	RenewLease(ctx context.Context, pathRunID uint64, fencingToken uint64) error
 	ReleaseExecution(ctx context.Context, pathRunID uint64, fencingToken uint64) error
 	MarkVerifying(ctx context.Context, pathRunID uint64) error
-	BackToRunning(ctx context.Context, pathRunID uint64) error
+	BackToRunning(ctx context.Context, pathRunID uint64, detail string) error
 	Finish(ctx context.Context, pathRunID uint64, to model.PathRunStatus, result *model.RunResult, failureClass *model.FailureClass, label string) (model.PathRun, error)
 }
 

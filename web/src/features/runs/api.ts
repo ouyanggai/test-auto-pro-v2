@@ -367,6 +367,8 @@ export interface RunEventItem {
   pathRunId?: number
   kind: string
   label: string
+  // detail 是事件补充明细：本步落账带出节点、调用的目标接口与目标返回结果原话（后端 detail 字段）。
+  detail?: string
   createdAt: string
 }
 

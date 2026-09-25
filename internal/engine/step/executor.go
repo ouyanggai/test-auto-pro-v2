@@ -207,12 +207,12 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		Action:       action,
 		ToolFlowName: instanceName(runCtx, step),
 		Session:      e.sessionFactsForRuntime(ctx, session),
-		Initiator:   initiator,
-		Values:      formDataFromPreviewRequest(preview),
-		InstanceID:  runCtx.PathRun.MainInstanceRef,
-		JobTaskID:   jobTaskID,
-		NodeProxyID: stepTargetNodeIDOf(runCtx, step),
-		AuditDesc:   auditMessage(runCtx, step),
+		Initiator:    initiator,
+		Values:       formDataFromPreviewRequest(preview),
+		InstanceID:   runCtx.PathRun.MainInstanceRef,
+		JobTaskID:    jobTaskID,
+		NodeProxyID:  stepTargetNodeIDOf(runCtx, step),
+		AuditDesc:    auditMessage(runCtx, step),
 		// 权限=当前节点声明可编辑字段；变更字段=本步实际覆盖的字段（预览阶段已按权限构造）。
 		Permissions:   runCtx.Nodes[step.NodeKey].EditableFields,
 		ChangedFields: preview.FormOverlaid,
@@ -588,6 +588,29 @@ func (e *Executor) rememberRuntimeFacts(preview *StepPreview, result runtimeexec
 		preview.executorMs = *result.ExecutorMs
 		preview.executorMsKnown = true
 	}
+}
+
+// settleEventDetail 组装「本步落账」事件流补充明细：节点、动作、调用的目标写端点与目标返回结果原话。
+// 目的：运行事件流按节点直接看到「这个节点调了什么接口、目标返回了什么」，目标原始错误原话随 userMessage 带出。
+func settleEventDetail(preview *StepPreview, userMessage string) string {
+	parts := make([]string, 0, 3)
+	head := strings.TrimSpace(preview.NodeName)
+	action := strings.TrimSpace(preview.ActionName)
+	switch {
+	case head != "" && action != "":
+		parts = append(parts, "节点「"+head+"」·"+action)
+	case action != "":
+		parts = append(parts, action)
+	case head != "":
+		parts = append(parts, "节点「"+head+"」")
+	}
+	if ep := strings.TrimSpace(preview.Endpoint); ep != "" {
+		parts = append(parts, "接口 "+ep)
+	}
+	if msg := strings.TrimSpace(userMessage); msg != "" {
+		parts = append(parts, msg)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。
@@ -1253,6 +1276,11 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 	overlaidSet := map[string]bool{}
 	for _, field := range decision.OverlaidFields {
 		overlaidSet[field] = true
+		// 系统结构性字段（如 flowInstanceId 实例自身 ID）由目标引擎管理，读回可能缺失或被规范化，
+		// 不纳入业务写后核对，避免把「实例自身 ID 未原样回显」误判成写入丢失而阻塞整条路径。
+		if target.IsSystemStructuralField(field) {
+			continue
+		}
 		written, hasWritten := decision.OverlaidValues[field]
 		if !hasWritten {
 			continue
@@ -1276,6 +1304,9 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 	}
 	for field, baseValue := range decision.BaseValues {
 		if overlaidSet[field] || containsString(decision.WithheldFields, field) {
+			continue
+		}
+		if target.IsSystemStructuralField(field) {
 			continue
 		}
 		ownership := target.ClassifyFormField(field, false, false)
@@ -1576,7 +1607,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			outcome.Verdict = string(verdict.OutcomeSucceeded)
 			outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
 			if !outcome.NoMoreSteps {
-				if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+				if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, userMessage)); err != nil {
 					return outcome, lineNo, err
 				}
 			}
@@ -1616,7 +1647,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
 		if !outcome.NoMoreSteps {
-			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, "导航步骤只读校验通过")); err != nil {
 				return outcome, lineNo, err
 			}
 		}
@@ -1647,7 +1678,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
 		if !outcome.NoMoreSteps {
-			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, preview.SkipReason)); err != nil {
 				return outcome, lineNo, err
 			}
 		}
@@ -1942,7 +1973,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		log.Phase("verify", step.Sequence, attemptNo, message)
 		reportPhase(approved, "verify", message)
 		outcome.RereadFailed = true
-		if backErr := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); backErr != nil {
+		if backErr := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, ""); backErr != nil {
 			return outcome, 0, backErr
 		}
 		return outcome, 0, nil
@@ -1964,7 +1995,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		log.Phase("verify", step.Sequence, attemptNo, message)
 		reportPhase(approved, "verify", message)
 		outcome.RereadFailed = true
-		if backErr := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); backErr != nil {
+		if backErr := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, ""); backErr != nil {
 			return outcome, 0, backErr
 		}
 		return outcome, 0, nil
@@ -2067,7 +2098,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		outcome.Verdict = string(verdict.OutcomeSucceeded)
 		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
 		if !outcome.NoMoreSteps {
-			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, settleReason)); err != nil {
 				return outcome, lineNo, err
 			}
 		}
@@ -2122,7 +2153,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			}
 		}
 		if !outcome.NoMoreSteps {
-			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID); err != nil {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, settleEventDetail(preview, userMessage)); err != nil {
 				return outcome, lineNo, err
 			}
 		}
@@ -3459,6 +3490,7 @@ func sessionRefreshAllowed(err error) bool {
 //     节点直接前进到更靠后的已配置节点，因此"已推进"不能只认紧邻下一跳，必须覆盖全部后续合法节点
 //     （2026-09-24 会签末签实测：末签同意后实例直接推进到后续节点，只认紧邻下一跳会漏判成"暂时无法确认"）。
 //   - 恢复链与系统导航本来就会跨节点或回到前序节点，拿它们做前进锚点没有意义（与路径偏离判定同一取舍），一律排除。
+//
 // 取不到任何锚点时返回空切片，调用方据此放弃这条判据，绝不猜测下一跳。
 func forwardPathTargetNodeIDs(runCtx RunContext, nextIndex int) []string {
 	ids := make([]string, 0, 4)
