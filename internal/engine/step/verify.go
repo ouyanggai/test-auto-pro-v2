@@ -268,10 +268,14 @@ func (e *Executor) readActionTaskFacts(ctx context.Context, runCtx RunContext, s
 				facts.CompletedTaskRead = true
 				if doneErr == nil {
 					for _, doneSnapshot := range done {
+						// 记录本账号全部已办关联行 ID：会签并存快照下即使目标改写了已办行的节点字段，
+						// 也能用写前本人待办关联行 ID 在此匹配，证明本次处理已完成（不依赖节点等值）。
+						if link := strings.TrimSpace(doneSnapshot.LinkID); link != "" {
+							facts.CompletedTaskLinkIDs = append(facts.CompletedTaskLinkIDs, link)
+						}
 						if strings.TrimSpace(doneSnapshot.FlowNodeProxyID) == strings.TrimSpace(nodeID) {
 							facts.CompletedTaskFound = true
 							facts.CompletedTaskNodeID = strings.TrimSpace(doneSnapshot.FlowNodeProxyID)
-							break
 						}
 					}
 				}
@@ -837,7 +841,7 @@ func ClassifyReread(action string, stepNodeKey string, forwardNodeKeys []string,
 	// 会把一次真实成功的写判成无法确认，并让整条运行终局停止。
 	// 这条判据只用已经读到的目标事实：实例当前节点集合与运行期传入的后续合法节点集合都来自本次重读与路径配置，
 	// 不新增任何猜测，也不放松"读不到事实"时的保守判定。
-	if advancedByNodePosition(stepNodeKey, forwardNodeKeys, after) {
+	if advancedByNodePosition(stepNodeKey, forwardNodeKeys, before, after) {
 		return verdict.RereadAdvanced
 	}
 	if action == string(model.ActionStorageFormData) {
@@ -951,43 +955,64 @@ func ClassifyReread(action string, stepNodeKey string, forwardNodeKeys []string,
 }
 
 // advancedByNodePosition 判断重读到的事实是否已经证明实例越过了本步节点。
-// 判定条件必须同时成立，缺一不可：
-//   - 本步节点标识已知，且至少有一个「本步之后的合法路径节点」可用作锚点（任一为空说明路径配置
-//     没有给出可核对的锚点，不能据此推断）；
-//   - 重读到的实例当前节点集合非空（空集说明本次没读到节点位置，不能当成"已前进"）；
-//   - 本步节点已经不在实例当前节点集合里（还在原地就说明写确实没推进）；
-//   - 实例当前节点集合命中了任一「本步之后的合法路径节点」。
+// 分两种成立情形（其余一律判未推进，保守）：
+//   1. 本步节点已不在实例当前节点集合，且集合命中任一「本步之后的合法路径节点」——
+//      既有跨节点判据，含目标穿透空/无处理人节点直达更靠后的合法节点。
+//   2. 本步节点与后续合法节点在同一快照并存（会签/并行尚未完全推进）：仅当本步执行人的完成事实
+//      已确认时才判已推进——本人这一签已生效、实例只是在等其他会签人；只有别的并行分支推进而本步
+//      没有完成事实时，绝不认成本步成功（§3.2 Run 169 路径 8 待对账现象）。
 //
-// 为什么锚点必须是「本步之后所有合法路径节点」而不是单一的紧邻下一跳（2026-09-24 实测 会签末签）：
-// 会签节点要求每个处理人各自审批，最后一人同意后目标立即把实例推进到后续节点，同时本人那条
-// pending 待办快照晚一拍消失、本人已办行的 flowNodeProxyId 被改写成推进后的新节点。此时既不是
-// 「仍停在本节点」（可用已办 CheckedFound 证明的会签中间态），紧邻下一跳又可能是被目标穿透的空/
-// 无处理人节点——真实落点是更靠后的合法节点。只认紧邻下一跳会漏判，落进「待办仍在 + 已办 CheckedAbsent」
-// 的审批分支，把一次已经生效的末签写判成「暂时无法确认」并让整条运行终局停止。
-// 越到配置之外的节点不在集合内，仍不认成推进，交由独立的路径偏离判定处理（绝不把"走到别处"洗成成功）。
-//
+// 前置：本步节点标识已知、至少有一个后续合法节点、实例当前节点集合非空；任一为空都不据此推断。
 // 只用已经读到的目标事实与运行期路径配置，不写死任何节点标识。
-func advancedByNodePosition(stepNodeKey string, forwardNodeKeys []string, after InstanceFacts) bool {
+func advancedByNodePosition(stepNodeKey string, forwardNodeKeys []string, before, after InstanceFacts) bool {
 	current := strings.TrimSpace(stepNodeKey)
 	if current == "" || len(forwardNodeKeys) == 0 || len(after.CurrentNodes) == 0 {
 		return false
 	}
-	// 还停在本步节点 → 写确实没推进。
-	for _, node := range after.CurrentNodes {
-		if strings.TrimSpace(node) == current {
-			return false
-		}
-	}
-	// 实例当前节点命中任一「本步之后的合法路径节点」→ 已推进（含目标穿透空/无处理人节点直达更靠后节点）。
+	stillAtCurrent := false
+	forwardHit := false
 	for _, node := range after.CurrentNodes {
 		trimmed := strings.TrimSpace(node)
+		if trimmed == "" {
+			continue
+		}
+		if trimmed == current {
+			stillAtCurrent = true
+			continue
+		}
 		for _, forward := range forwardNodeKeys {
-			if trimmed != "" && trimmed == strings.TrimSpace(forward) {
+			if trimmed == strings.TrimSpace(forward) {
+				forwardHit = true
+				break
+			}
+		}
+	}
+	if !forwardHit {
+		return false
+	}
+	if !stillAtCurrent {
+		// 本步节点已消失且命中后续合法节点：既有跨节点成功判据。
+		return true
+	}
+	// 本步节点与后续合法节点并存：必须有本步执行人的完成证据才认成已前进。
+	return actorCompletedThisStep(stepNodeKey, before, after)
+}
+
+// actorCompletedThisStep 判断本步执行人是否已经在本步产生了完成事实。
+// 优先按稳定任务关联行 ID 绑定：写前本人待办任务关联行 ID 在写后应作为同一行的已办出现；
+// 即使目标把已办行的节点字段改写成流转后的节点，关联行 ID 也不变，故不受节点等值失效影响。
+// 回退按「确实核对并命中本节点已办」的正面分型（CheckedFound 且节点匹配）；两者皆无
+// （含只核对到别的并行分支、只读到否定/占位/失败证据）时判未完成。
+func actorCompletedThisStep(stepNodeKey string, before, after InstanceFacts) bool {
+	if link := strings.TrimSpace(before.CurrentTaskLinkID); link != "" {
+		for _, done := range after.CompletedTaskLinkIDs {
+			if strings.TrimSpace(done) == link {
 				return true
 			}
 		}
 	}
-	return false
+	return after.CompletedTaskBasis == CompletedTaskBasisCheckedFound &&
+		strings.TrimSpace(after.CompletedTaskNodeID) == strings.TrimSpace(stepNodeKey)
 }
 
 // ActionFactVerified 判断不推进主流程的动作是否已经由专用结果接口确认了预期变化。

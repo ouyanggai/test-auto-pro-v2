@@ -290,6 +290,10 @@ type InstanceFacts struct {
 	// 一旦会签、委托或代批场景出现，判定就会建立在一个从未取证的布尔上。
 	// 取值见 CompletedTaskBasis* 常量；空串按未知处理，绝不当作证据。
 	CompletedTaskBasis string `json:"completedTaskBasis,omitempty"`
+	// CompletedTaskLinkIDs 是写后重读到的本账号全部已办任务关联行 ID（稳定的 flowJobTaskLink 行 ID）。
+	// 会签/并行并存快照下用它按稳定关联行绑定「本步执行人是否已完成本次处理」：目标办结后会把已办行的
+	// 节点字段改写成流转后的节点，节点等值比较会漏判，而关联行 ID 不变，故可作为不受节点改写影响的正面证据。
+	CompletedTaskLinkIDs []string `json:"completedTaskLinkIds,omitempty"`
 	// 下面字段是动作门禁从目标任务链、代理树和审核记录得到的结论。
 	EditableProxyRead   bool   `json:"editableProxyRead,omitempty"`
 	ActorSwitchRead     bool   `json:"actorSwitchRead,omitempty"`
