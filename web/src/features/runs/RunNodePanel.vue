@@ -248,8 +248,9 @@ const stepWhyText = computed(() => {
   return failedAttempt?.reason || ''
 })
 
-// StepTargetReturn 是一条尝试的目标平台原始返回：调用状态中文、原始错误原话与逐请求接口。
-// 目的：动作详情直接看到「请求了什么接口、目标返回了什么错误」，不再只给一句加工过的结论。
+// StepTargetReturn 是一条 runtime 尝试的目标平台原始返回：调用状态中文、原始错误原话与逐请求接口。
+// 目的：runtime 动作详情直接看到「请求了什么接口、目标返回了什么错误」；普通 Go 写动作没有该投影，
+// 其目标结果见上方「请求的接口」区的结果摘要与「为什么不能继续」，不在本区呈现。
 interface StepTargetReturn {
   attemptNo: number
   statusLabel: string
@@ -655,9 +656,10 @@ const dialogStyle = computed(() => ({
           </section>
           <p v-if="requestGroupsByOutcome.length === 0" class="run-panel__muted">这一步没有发出真实接口请求</p>
 
-          <!-- 3. 目标平台原始返回：逐尝试显示调用状态、原始错误原话与逐条真实接口调用 -->
+          <!-- 3. runtime 目标平台原始返回：仅 runtime 动作有该投影，逐尝试显示调用状态、原始错误原话与逐条真实接口调用；
+               普通 Go 写动作的目标结果沿用上方「请求的接口」结果摘要与「为什么不能继续」，本区对其不渲染，空区不代表没有目标结果 -->
           <section v-if="stepTargetReturns.length > 0" class="run-panel__section">
-            <p class="run-panel__section-title">目标平台原始返回</p>
+            <p class="run-panel__section-title">runtime 目标平台原始返回</p>
             <div v-for="ret in stepTargetReturns" :key="ret.attemptNo" class="run-panel__target-return">
               <p class="run-panel__target-head">
                 <span class="run-panel__req-kind" :class="ret.isError ? 'run-panel__req-kind--write' : 'run-panel__req-kind--read'">第 {{ ret.attemptNo }} 次 · {{ ret.statusLabel }}</span>
