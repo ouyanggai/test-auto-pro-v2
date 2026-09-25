@@ -1,4 +1,11 @@
 # 当前进度
+- 2026-09-25 Plan 59 / Run 169 最新复审（`docs/auto/2026-09-25-plan59-run169-latest-review-repair.md`）五项修复实施完成，停在 **ready_for_manual**（分支 `执行引擎改造`）：
+  ① §3.1 系统结构字段（`flowInstanceId`）统一从业务载荷构造（`formdata.go`）与 runtime 写后正文保护（`executor.go` `protectRuntimeFormBody`→`businessFormKeys`）剔除，复用 `target.IsSystemStructuralField` 唯一入口，实例 ID 由顶层协议承担（提交 `354a81a`）；
+  ② §3.3 `sessionFactsForRuntime` 改为返回 `(SessionFacts, error)`，runtime 身份读取能力缺失/失败/字段缺失一律写前 `GateBlocked`，与 `nodeFormData` 同口径，不回退会话缓存（提交 `8f25c51`）；
+  ③ §3.2 `advancedByNodePosition` 新增并存分支：本步节点与后续合法节点并存（会签/并行未完全推进）时需本步执行人完成证据（优先按稳定任务关联行 ID `CurrentTaskLinkID`↔`CompletedTaskLinkIDs` 绑定，回退 CheckedFound+本节点匹配）才判已推进；只有别分支推进不成功（提交 `f60b531`）；
+  ④ §3.4 `run.Service.Finish`/`RunStateControl.Finish` 增独立 `detail` 参数，成功/确定失败/结果待确认终态事件统一携带 `settleEventDetail`（节点·动作·目标写端点·结果），`StepOutcome.SettleDetail` 带回最后一步明细供 `finishCompleted` 写入（提交 `59579d6`）；
+  ⑤ §3.5 采「仅要求 runtime 动作」方案（不新增数据库列/迁移）：`RunNodePanel.vue`「目标平台原始返回」改名「runtime 目标平台原始返回」，说明普通 Go 动作沿用「请求的接口」结果摘要与「为什么不能继续」（提交 `3dd3501`）。
+  验证：`go build ./...`、`go vet ./...`、`go test ./test/unit/backend/...`、`go test ./test/contracts/...`、`web` 目录 `npm run typecheck` 全通过；`git diff --check` 无异常；新增定向回归覆盖五项。未跑：真实浏览器与目标平台重跑，按报告第 6 节由用户人工验收后再决定是否 `accepted`。
 - 2026-09-25 运行 #2「欧阳改测试09」（合同纠纷/非诉讼登记）第 2 步 resubmit 装载 60s 超时只读定位并修复（非新功能，属运行引擎双平台码适配缺陷）：
   根因：目标为 200001/999999 双平台，同一账号在不同平台发起的实例分属不同平台码——机房进入实例=200001、合同纠纷实例（`0d7f17a2ebb24fbdbbe4579cf0b4182a`）=999999（`flowInstanceApi/list` 实证）。运行时页面 axios 默认 `platformCode||200001`，实例重建类装载（重提/编辑/审批/转发）对 999999 实例一律用 200001 查询，详情弹窗 `examineDialogVisible` 永不置真，`waitForDetailReady` 的 `page.waitForFunction` 60s 超时、装载失败；200001 实例恰好匹配才正常。该次运行所有转发请求 platformCode 均为 200001，与实例 999999 不符。
   修复（全部落在主仓 Go 唯一目标出口，避免依赖易被 auto-sync 覆盖的 flow-source 副本）：`findSubmittedFlowFacts` 捕获实例 `platformCode` → `InstanceFacts.PlatformCode`（`verify.go` 映射）→ `RuntimeRunRequest.PlatformCode`（`executor.go` 取 `preview.Facts.PlatformCode`，发起类实例不存在留空）；`runtimeexec.Client` 新增按会话登记的 `sessionPlatform`，`RunAction` 装载前 `SetSessionPlatformCode`、销毁时清除；读泵转发 `handleForward`/`forwardOnce` 携带该平台码，`ForwardRuntimeRequest` 以「运行事实为准」覆盖查询 `platformCode`（与 sid 同一纪律），非空才覆盖、发起类保留页面默认。
