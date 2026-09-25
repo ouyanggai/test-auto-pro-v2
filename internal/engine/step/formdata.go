@@ -110,6 +110,18 @@ func decisionFingerprint(payload json.RawMessage) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// stripSystemStructuralFields 从表单载荷中剔除目标流程引擎自管的结构性标识字段（如 flowInstanceId）。
+// 为什么必须剔除：实例自身 ID 由请求协议顶层 instanceId/实例上下文承担，绝不能作为业务表单字段
+// 从历史 formData 透传；目标会按实例自身重写/规范化这些键，回读缺失时若参与业务写后核对会被误判成
+// 「业务字段丢失」而阻塞整条路径。构造、普通写后核对与 runtime 正文保护共用 target 侧同一判定入口。
+func stripSystemStructuralFields(values map[string]any) {
+	for key := range values {
+		if target.IsSystemStructuralField(key) {
+			delete(values, key)
+		}
+	}
+}
+
 // BuildNodeFormData 按上述规则构造本步写请求的表单数据并产出完整节点决策（F-035/T05）。
 // hasInstance 区分「发起（主实例还不存在）」与「实例存在但表单数据为空」：
 // 后者必须以空对象为基线走实例分支，绝不能退回发起分支把整份历史配置当载荷——
@@ -140,6 +152,8 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 			return FormDataPlan{}, err
 		}
 		merged = copied
+		// 实例基线里目标自管的结构性字段不进业务载荷：既不作为保留字段回写，也不参与写后核对。
+		stripSystemStructuralFields(merged)
 		plan.BaseFromInstance = true
 		if len(merged) == 0 {
 			plan.BaseEmptyInstance = true
@@ -149,6 +163,10 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		}
 		overlaidValues := map[string]any{}
 		for key, value := range configured {
+			if target.IsSystemStructuralField(key) {
+				// 系统结构性字段不作为业务表单字段：既不覆盖也不保留，实例 ID 由顶层协议承担。
+				continue
+			}
 			if target.IsTargetDerivedField(key) {
 				// 审批后目标会机械生成衍生意见；只有重新发起明确要求重置，其他实例动作不得改写目标现值。
 				if compiled.Action == model.ActionResubmit {
@@ -233,6 +251,10 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		decision.BaselineSource = "initiation"
 		// 发起：基线就是发起态渲染出来的完整表单模型，只去掉只有后续节点才能编辑的字段。
 		for key, value := range configured {
+			if target.IsSystemStructuralField(key) {
+				// 发起同样不透传系统结构性字段：新实例 ID 由目标在提交时生成。
+				continue
+			}
 			if ownedByOtherNodeOnly(runCtx, compiled.NodeKey, key) {
 				plan.Withheld = append(plan.Withheld, key)
 				decision.WithheldFields = append(decision.WithheldFields, key)

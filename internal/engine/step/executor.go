@@ -478,8 +478,8 @@ func (e *Executor) protectRuntimeFormBody(ctx context.Context, runCtx RunContext
 		_ = json.Unmarshal(result.BusinessSummary, &summary)
 	}
 	beforeMap, _ := summary["formBefore"].(map[string]any)
-	beforeClean := cleanFormKeys(beforeMap)
-	afterClean := cleanFormKeys(current)
+	beforeClean := businessFormKeys(beforeMap)
+	afterClean := businessFormKeys(current)
 
 	before := len(beforeClean)
 	if before == 0 {
@@ -517,6 +517,15 @@ func cleanFormKeys(data map[string]any) map[string]any {
 		}
 		cleaned[trimmed] = v
 	}
+	return cleaned
+}
+
+// businessFormKeys 在 cleanFormKeys 的空键清洗之上，再剔除目标引擎自管的系统结构性字段（如 flowInstanceId）。
+// 为什么：runtime 写后回读用它做字段数统计与「缺失业务字段」比较；结构性字段由目标按实例重写，
+// 回读可能缺失，若计入业务字段会把「实例自身 ID 未原样回显」误判成正文减少而改判 business_failed。
+func businessFormKeys(data map[string]any) map[string]any {
+	cleaned := cleanFormKeys(data)
+	stripSystemStructuralFields(cleaned)
 	return cleaned
 }
 
@@ -616,6 +625,11 @@ func settleEventDetail(preview *StepPreview, userMessage string) string {
 // RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。
 func (e *Executor) RunViaRuntimeForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, preview *StepPreview, approved ApprovedStep) bool {
 	return e.runViaRuntime(ctx, runCtx, step, session, preview, nil, approved)
+}
+
+// ProtectRuntimeFormBodyForTest 暴露 runtime 写后正文保护，供回归用例锁定系统结构性字段不被计入业务字段丢失。
+func (e *Executor) ProtectRuntimeFormBodyForTest(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, session target.Session, result runtimeexec.ActionRunResult, attempt int) runtimeexec.ActionRunResult {
+	return e.protectRuntimeFormBody(ctx, runCtx, step, session, result, nil, attempt)
 }
 
 func (e *Executor) SetLogFactory(factory LogFactory) {
