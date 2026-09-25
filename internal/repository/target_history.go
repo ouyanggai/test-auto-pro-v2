@@ -77,6 +77,9 @@ type TargetUserDirectory interface {
 	// ListNoPlatformRoleUserIDs 返回本租户未删除、已启用、但在当前登录平台无角色记录的人员 ID。
 	// 这类账号登录会被目标判为「无权限!」，与停用账号同属登录必失败，默认一并排除。
 	ListNoPlatformRoleUserIDs(ctx context.Context) ([]string, error)
+	// ListValidPlatformUserIDs 返回本租户未删除、已启用且在当前登录平台有角色的白名单用户 ID 集合。
+	// 任何不在白名单内的用户（停用、无权限、或已从用户中心物理删除的幽灵用户）均无法登录。
+	ListValidPlatformUserIDs(ctx context.Context) ([]string, error)
 	// ListAutoExcludedUsers 返回被系统默认排除的人员（停用 + 无平台角色），含姓名、手机与原因，供列表展示。
 	// nameFilter 非空时按姓名模糊过滤；停用与无角色互斥，一条记录只归一类原因。
 	ListAutoExcludedUsers(ctx context.Context, nameFilter string) ([]AutoExcludedUserRow, error)

@@ -373,9 +373,9 @@ func (s *PathConfigService) ResolveActionPersonIDs(ctx context.Context, planID, 
 	if !ok {
 		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作缺少已保存的人员策略"}
 	}
-	// 运行发起前用排除名单（手动名单 + 目标停用账号）重算：random 从剔除后的候选池挑，
+	// 运行发起前用排除名单（手动名单 + 目标停用账号 + 无平台角色/幽灵用户）重算：random 从剔除后的候选池挑，
 	// manual 命中排除项则报错阻断——绝不把停用/不可登录的人当被加签人发出去，避免运行到其节点才登录失败。
-	excluded := s.excludedPersonIDs(ctx)
+	excluded := s.EffectiveExclusionIDsForCandidates(ctx, personTarget.CandidateOrder)
 	encoded, reason := analyzer.EncodePathConfigPersonStrategyWithExclusion(*personTarget, strategy, excluded)
 	if reason != "" {
 		return nil, nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "当前动作人员策略已失效：" + reason}
@@ -431,7 +431,7 @@ func (s *PathConfigService) ResolveNodeAuditors(ctx context.Context, planID, pat
 			return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点缺少已保存的处理人策略且无可用候选人"}
 		}
 	}
-	excluded := s.excludedPersonIDs(ctx)
+	excluded := s.EffectiveExclusionIDsForCandidates(ctx, node.Person.CandidateOrder)
 	encoded, reason := analyzer.EncodePathConfigPersonStrategyWithExclusion(*node.Person, strategy, excluded)
 	if reason != "" {
 		return nil, &PathConfigError{Kind: PathConfigErrorInvalid, Message: "下一节点处理人策略已失效：" + reason}

@@ -358,12 +358,41 @@ func (s *PathConfigService) excludedPersonIDs(ctx context.Context) map[string]bo
 	return excluded
 }
 
+// EffectiveExclusionIDsForCandidates 返回针对一组具体候选人 ID 计算的生效排除集合。
+// 如果存在有效用户白名单（具备平台角色的用户集合），任何候选人若不在白名单内（包含幽灵人员），直接纳入排除集合；
+// 同时合并已有的排除名单（手动排除 + 停用 + 无平台角色）。
+func (s *PathConfigService) EffectiveExclusionIDsForCandidates(ctx context.Context, candidateIDs []string) map[string]bool {
+	baseExcluded := s.excludedPersonIDs(ctx)
+	validSet := s.ValidPlatformUserSet(ctx)
+	if len(validSet) == 0 {
+		return baseExcluded
+	}
+	result := make(map[string]bool, len(baseExcluded)+len(candidateIDs))
+	for id := range baseExcluded {
+		result[id] = true
+	}
+	for _, id := range candidateIDs {
+		id = strings.TrimSpace(id)
+		if id != "" && !validSet[id] {
+			result[id] = true
+		}
+	}
+	return result
+}
+
+// ValidPlatformUserSet 返回具备当前平台角色的有效用户白名单集合；若不可用返回 nil。
+func (s *PathConfigService) ValidPlatformUserSet(ctx context.Context) map[string]bool {
+	if s.addSignExclusionService == nil {
+		return nil
+	}
+	return s.addSignExclusionService.ValidPlatformUserSet(ctx)
+}
+
 // ExcludedActorIDs 公开不可用处理人 ID 集合，供运行编排在构建执行上下文时注入：
 // 竞签/多处理人节点运行时据此优先跳过登录必然失败的处理人。
 func (s *PathConfigService) ExcludedActorIDs(ctx context.Context) map[string]bool {
 	return s.excludedPersonIDs(ctx)
 }
-
 // applyExclusionFilter 对配置中所有人员的候选选项进行排除名单过滤。
 // 覆盖三处人员候选来源：
 //  1. 节点处理人 node.Persons[].Options（节点本身的处理人选择）；
@@ -374,60 +403,96 @@ func (s *PathConfigService) applyExclusionFilter(ctx context.Context, configurat
 	if s.addSignExclusionService == nil {
 		return nil
 	}
-	// 排除名单一次读取、全配置复用，避免逐个候选查库。
+	// 排除名单与有效用户白名单一次读取、全配置复用，避免逐个候选查库。
 	excluded, err := s.addSignExclusionService.GetExcludedPersonIDs(ctx)
 	if err != nil {
 		return fmt.Errorf("查询排除名单失败：%w", err)
 	}
-	if len(excluded) == 0 {
+	validSet := s.addSignExclusionService.ValidPlatformUserSet(ctx)
+	if len(excluded) == 0 && len(validSet) == 0 {
 		return nil
 	}
-
 	for groupIndex := range configuration.Groups {
 		for nodeIndex := range configuration.Groups[groupIndex].Nodes {
 			node := &configuration.Groups[groupIndex].Nodes[nodeIndex]
 			// 1. 节点处理人候选
 			for personIndex := range node.Persons {
-				filterPersonOptionsInPlace(&node.Persons[personIndex], excluded)
+				filterPersonOptionsInPlaceWithValidSet(&node.Persons[personIndex], excluded, validSet)
 			}
 			// 2. 节点动作目录里各动作的专属人员候选（含加签被指派人）
-			filterActionCatalogPersons(node.ActionConfiguration.Catalog, excluded)
+			filterActionCatalogPersonsWithValidSet(node.ActionConfiguration.Catalog, excluded, validSet)
 		}
 	}
 	// 3. 实例动作目录的专属人员候选
-	filterActionCatalogPersons(configuration.InstanceActions.Catalog, excluded)
+	filterActionCatalogPersonsWithValidSet(configuration.InstanceActions.Catalog, excluded, validSet)
 	return nil
 }
 
-// filterPersonOptionsInPlace 就地剔除人员的排除候选，同时清理已选中被排除的人员。
-func filterPersonOptionsInPlace(person *model.PathConfigPerson, excluded map[string]bool) {
+// isOptionPermitted 判定某个候选人 ID 是否允许入选：必须未在排除名单，且若白名单可用时必须在白名单内。
+func isOptionPermitted(id string, excluded map[string]bool, validSet map[string]bool) bool {
+	if excluded != nil && excluded[id] {
+		return false
+	}
+	if len(validSet) > 0 && !validSet[id] {
+		return false
+	}
+	return true
+}
+
+// filterPersonOptionsInPlaceWithValidSet 就地剔除人员的不可用候选（排除名单 + 幽灵人员/无权限人员），同时清理已选中人员。
+func filterPersonOptionsInPlaceWithValidSet(person *model.PathConfigPerson, excluded map[string]bool, validSet map[string]bool) {
 	if person == nil {
 		return
+	}
+	// 回写键 Value 是不透明令牌，排除名单与白名单都以候选人原始 ID 为键，
+	// 必须用选项内部保留的原始 ID（RawID）比对；直接拿令牌比原始 ID 会把全部候选误删。
+	// 已选人员 Selected 存的也是令牌，先由选项建立 令牌->原始ID 映射再判定。
+	tokenToRaw := make(map[string]string, len(person.Options))
+	for _, option := range person.Options {
+		tokenToRaw[option.Value] = option.RawID
 	}
 	if len(person.Options) > 0 {
 		kept := person.Options[:0]
 		for _, option := range person.Options {
-			if !excluded[option.Value] {
+			if isOptionPermitted(option.RawID, excluded, validSet) {
 				kept = append(kept, option)
 			}
 		}
 		person.Options = kept
 	}
-	// 已选人员里若有被排除的，一并剔除：避免运行期仍把被排除人当处理人。
+	// 已选人员里若有不可用的，一并剔除：避免运行期仍把不可用人当处理人。
+	// 令牌在原选项被删或本就不存在时映射为空串，空串必然不在白名单，判为不可用剔除。
 	if len(person.Selected) > 0 {
 		keptSelected := person.Selected[:0]
-		for _, value := range person.Selected {
-			if !excluded[value] {
-				keptSelected = append(keptSelected, value)
+		for _, token := range person.Selected {
+			if isOptionPermitted(tokenToRaw[token], excluded, validSet) {
+				keptSelected = append(keptSelected, token)
 			}
 		}
 		person.Selected = keptSelected
 	}
 }
 
+// filterPersonOptionsInPlace 就地剔除人员的排除候选，同时清理已选中被排除的人员。
+func filterPersonOptionsInPlace(person *model.PathConfigPerson, excluded map[string]bool) {
+	filterPersonOptionsInPlaceWithValidSet(person, excluded, nil)
+}
+
+// filterActionCatalogPersonsWithValidSet 剔除动作目录里各动作专属人员的不可用候选。
+func filterActionCatalogPersonsWithValidSet(catalog []model.PathConfigActionCatalogItem, excluded map[string]bool, validSet map[string]bool) {
+	for index := range catalog {
+		filterPersonOptionsInPlaceWithValidSet(catalog[index].Person, excluded, validSet)
+	}
+}
+
+// FilterPersonOptionsForTest 暴露人员候选排除过滤，供 test 目录锁定关键约束：
+// 选项回写键 Value 是不透明令牌，排除名单与白名单只能按候选原始 ID（RawID）比对，
+// 用令牌比原始 ID 会把全部合法候选误删，导致「审批人自选」等节点候选清空、无法配置。
+func FilterPersonOptionsForTest(person *model.PathConfigPerson, excluded, validSet map[string]bool) {
+	filterPersonOptionsInPlaceWithValidSet(person, excluded, validSet)
+}
+
 // filterActionCatalogPersons 剔除动作目录里各动作专属人员的排除候选。
 func filterActionCatalogPersons(catalog []model.PathConfigActionCatalogItem, excluded map[string]bool) {
-	for index := range catalog {
-		filterPersonOptionsInPlace(catalog[index].Person, excluded)
-	}
+	filterActionCatalogPersonsWithValidSet(catalog, excluded, nil)
 }

@@ -609,7 +609,7 @@ func (p *pathConfigProjection) personConfig(nodeID string, node *target.FlowNode
 		candidateTokens[token] = candidate.ID
 		candidateNames[candidate.ID] = candidate.Name
 		rawToToken[candidate.ID] = token
-		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token, Group: candidate.Company})
+		options = append(options, model.PathConfigPersonOption{Label: candidate.Name, Value: token, Group: candidate.Company, RawID: candidate.ID})
 	}
 	multiple := strings.TrimSpace(config.Mode) == "countersign"
 	minCount := 1

@@ -32,8 +32,11 @@ type AddSignPersonExclusionService struct {
 	disabledMu     sync.Mutex
 	disabledCache  map[string]bool
 	disabledExpiry time.Time
-}
 
+	validMu     sync.Mutex
+	validCache  map[string]bool
+	validExpiry time.Time
+}
 // NewAddSignPersonExclusionService 创建服务实例
 func NewAddSignPersonExclusionService(repo *mysql.AddSignPersonExclusionRepository) *AddSignPersonExclusionService {
 	return &AddSignPersonExclusionService{repo: repo}
@@ -42,6 +45,29 @@ func NewAddSignPersonExclusionService(repo *mysql.AddSignPersonExclusionReposito
 // SetUserDirectory 注入目标人员目录只读来源，用于按姓名检索候选；未注入时检索端点不注册。
 func (s *AddSignPersonExclusionService) SetUserDirectory(directory repository.TargetUserDirectory) {
 	s.userDirectory = directory
+}
+
+// ValidPlatformUserSet 返回当前租户具备平台角色的有效用户白名单集合；未接入目标目录或白名单不可用时返回 nil。
+func (s *AddSignPersonExclusionService) ValidPlatformUserSet(ctx context.Context) map[string]bool {
+	if s.userDirectory == nil {
+		return nil
+	}
+	s.validMu.Lock()
+	defer s.validMu.Unlock()
+	if s.validCache != nil && time.Now().Before(s.validExpiry) {
+		return s.validCache
+	}
+	validIDs, err := s.userDirectory.ListValidPlatformUserIDs(ctx)
+	if err != nil || len(validIDs) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(validIDs))
+	for _, id := range validIDs {
+		set[id] = true
+	}
+	s.validCache = set
+	s.validExpiry = time.Now().Add(disabledUsersTTL)
+	return set
 }
 
 // HasUserDirectory 报告是否已接入目标人员目录，供组装处决定要不要注册检索端点。
@@ -138,7 +164,9 @@ func (s *AddSignPersonExclusionService) GetExcludedPersonIDs(ctx context.Context
 }
 
 // unusableUserIDs 读取目标平台「登录必然失败」的人员 ID 集合，带 TTL 缓存；未接入目标目录时返回空集合。
-// 合并两类：enable_type 停用（ListDisabledUserIDs）+ 已启用但当前平台无角色（ListNoPlatformRoleUserIDs）。
+// 优先使用白名单反向排除：读取本租户具备当前平台有效角色的白名单用户 ID（ListValidPlatformUserIDs）；
+// 若白名单可用，凡是不在白名单中的人员（包含停用、无权限、或已从用户中心物理删除的幽灵人员）一律进入排除集。
+// 若白名单方法未实现或返回空，回退到历史的停用+无角色黑名单并集。
 func (s *AddSignPersonExclusionService) unusableUserIDs(ctx context.Context) (map[string]bool, error) {
 	if s.userDirectory == nil {
 		return map[string]bool{}, nil
@@ -148,6 +176,33 @@ func (s *AddSignPersonExclusionService) unusableUserIDs(ctx context.Context) (ma
 	if s.disabledCache != nil && time.Now().Before(s.disabledExpiry) {
 		return s.disabledCache, nil
 	}
+	validIDs, err := s.userDirectory.ListValidPlatformUserIDs(ctx)
+	if err == nil && len(validIDs) > 0 {
+		validSet := make(map[string]bool, len(validIDs))
+		for _, id := range validIDs {
+			validSet[id] = true
+		}
+		// 结合停用与无角色人员（供明确标记）并构建兜底黑名单标记
+		disabled, _ := s.userDirectory.ListDisabledUserIDs(ctx)
+		noRole, _ := s.userDirectory.ListNoPlatformRoleUserIDs(ctx)
+		set := make(map[string]bool, len(disabled)+len(noRole))
+		for _, id := range disabled {
+			set[id] = true
+		}
+		for _, id := range noRole {
+			set[id] = true
+		}
+		// 保存白名单到排除服务以便针对外部候选人快速过滤
+		s.validMu.Lock()
+		s.validCache = validSet
+		s.validExpiry = time.Now().Add(disabledUsersTTL)
+		s.validMu.Unlock()
+
+		s.disabledCache = set
+		s.disabledExpiry = time.Now().Add(disabledUsersTTL)
+		return set, nil
+	}
+
 	disabled, err := s.userDirectory.ListDisabledUserIDs(ctx)
 	if err != nil {
 		return nil, err

@@ -349,6 +349,40 @@ WHERE u.customer_code = ? AND u.is_delete = 0 AND u.enable_type = 'enable'
 	}
 	return ids, rows.Err()
 }
+// ListValidPlatformUserIDs 返回本租户未删除、已启用且在当前登录平台有角色的白名单用户 ID 集合。
+// 目标平台登录机制（UserServiceImpl.login）：要求用户存在、已启用、且在 sys_user_role 存在当前平台的角色记录。
+// 任何不在该白名单中的人员（包含已从用户中心物理删除但残留在工作流配置里的幽灵人员）登录均必然失败。
+func (r *TargetHistoryRepository) ListValidPlatformUserIDs(ctx context.Context) ([]string, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("目标业务库只读连接不可用")
+	}
+	if strings.TrimSpace(r.platformCode) == "" {
+		return []string{}, nil
+	}
+	query := fmt.Sprintf(`
+SELECT DISTINCT u.id FROM %[1]s.t_user u
+JOIN %[1]s.sys_user_role r ON r.user_id = u.id
+WHERE u.customer_code = ? AND u.is_delete = 0 AND u.enable_type = 'enable'
+  AND r.platform_code = ? AND r.customer_code = ?
+`, r.quotedUserCenter)
+	rows, err := r.db.QueryContext(ctx, query, r.customerCode, r.platformCode, r.customerCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
+}
+
 
 // ListAutoExcludedUsers 返回被系统默认排除的人员（停用 + 已启用但当前平台无角色），含姓名/手机/原因。
 // 原因用 CASE 判定：enable_type 非 enable → disabled；否则（已启用但无平台角色）→ no_platform_role。

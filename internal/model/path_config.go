@@ -186,6 +186,9 @@ type PathConfigPersonOption struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
 	Group string `json:"group,omitempty"`
+	// RawID 是候选人的原始目标 ID，仅服务端按原始 ID 做排除名单/白名单过滤时使用；
+	// 回写键 Value 是不透明令牌，原始 ID 不得出 JSON，浏览器无法反推真实标识。
+	RawID string `json:"-"`
 }
 
 // PathConfigPersonStrategyOption 是目标模板当前允许的人员选择策略。
