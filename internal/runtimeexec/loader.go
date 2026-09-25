@@ -21,14 +21,18 @@ const (
 	LoadModeView     = "view"
 )
 
-// SessionFacts 是装载需要的会话事实子集，由调用方从 target.Session 投影；SID 不在其中。
+// SessionFacts 是装载需要的会话事实子集，由调用方从 target.Session 及当前账号身份投影；SID 不在其中。
 type SessionFacts struct {
-	UserID       string
-	CompanyID    string
-	DepartmentID string
-	CustomerCode string
-	Account      string
-	DisplayName  string
+	UserID         string
+	CompanyID      string
+	CompanyName    string
+	DepartmentID   string
+	DepartmentName string
+	DutyID         string
+	DutyName       string
+	CustomerCode   string
+	Account        string
+	DisplayName    string
 }
 
 // LoadPayload 是 load 命令的载荷形状。
@@ -55,6 +59,8 @@ type LoadPayload struct {
 	CompanyName     string        `json:"companyName,omitempty"`
 	DepartmentID    string        `json:"departmentId,omitempty"`
 	DepartmentName  string        `json:"departmentName,omitempty"`
+	DutyID          string        `json:"dutyId,omitempty"`
+	DutyName        string        `json:"dutyName,omitempty"`
 	CustomerCode    string        `json:"customerCode,omitempty"`
 	UserID          string        `json:"userId,omitempty"`
 	AccountName     string        `json:"accountName,omitempty"`
@@ -110,6 +116,8 @@ type LoadInput struct {
 	Permissions   []string
 	ChangedFields []string
 	BaseURL       string
+	// PlatformCode 是本次装载的目标平台码：实例重建类取实例事实，发起类留空由页面回落默认。
+	PlatformCode  string
 	Initiator     ActorIdentity
 	// —— 目标代理与节点事实（评审 P1-3）——
 	FormProxyID    string
@@ -195,11 +203,16 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 		Initiator:                    input.Initiator,
 		CurrentOperator:              current,
 		CompanyID:                    strings.TrimSpace(input.Session.CompanyID),
+		CompanyName:                  strings.TrimSpace(input.Session.CompanyName),
 		DepartmentID:                 strings.TrimSpace(input.Session.DepartmentID),
+		DepartmentName:               strings.TrimSpace(input.Session.DepartmentName),
+		DutyID:                       strings.TrimSpace(input.Session.DutyID),
+		DutyName:                     strings.TrimSpace(input.Session.DutyName),
 		CustomerCode:                 strings.TrimSpace(input.Session.CustomerCode),
 		UserID:                       current.UserID,
 		AccountName:                  strings.TrimSpace(input.Session.Account),
 		BaseURL:                      strings.TrimRight(input.BaseURL, "/"),
+		PlatformCode:                 strings.TrimSpace(input.PlatformCode),
 		FormProxyID:                  strings.TrimSpace(input.FormProxyID),
 		FlowTemplateID:               strings.TrimSpace(input.FlowTemplateID),
 		FlowProxyID:                  strings.TrimSpace(input.FlowProxyID),

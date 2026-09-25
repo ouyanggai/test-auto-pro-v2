@@ -213,6 +213,9 @@ type InstanceFacts struct {
 	// 不能把计划里的流程代理或历史表单代理当成当前实例标识。
 	FlowProxyID string `json:"flowProxyId,omitempty"`
 	FormProxyID string `json:"formProxyId,omitempty"`
+	// PlatformCode 是目标实例所属平台码（200001/999999）：实例重建类装载把它下发给运行时页面，
+	// 页面据此对每个目标请求发正确平台码，避免用默认 200001 查 999999 实例导致详情弹窗不打开、装载超时。
+	PlatformCode string `json:"platformCode,omitempty"`
 	// BizRelevance 是目标实例当前业务关联；重提和转发必须沿用它，避免辅助流程丢失业务归属。
 	BizRelevance []target.BizRelevance `json:"bizRelevance,omitempty"`
 	// BusinessSaveID 是本步前置业务保存已经成功返回的 id（F-035 第四轮）。

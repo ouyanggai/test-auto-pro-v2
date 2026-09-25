@@ -31,6 +31,10 @@ type PageForwardRequest struct {
 	Body []byte
 	// CustomerCode 是当前会话客户码；非空时覆盖页面请求头里的同名字段语义。
 	CustomerCode string
+	// PlatformCode 是本次运行应强制的目标平台码（实例重建类装载取实例真实平台）；
+	// 非空时覆盖页面查询里的默认平台码——页面 axios 默认 200001，会把 999999 实例查空导致装载超时，
+	// 这里以运行事实为准统一覆盖，与 sid「以 Go 会话为准」同一纪律。发起类为空则保留页面默认。
+	PlatformCode string
 }
 
 // PageForwardResponse 是目标平台的原始响应事实；任何 HTTP 状态都原样返回给页面。
@@ -69,6 +73,12 @@ func (c *Client) ForwardRuntimeRequest(ctx context.Context, session Session, req
 	// 保证「runtime 的每个目标请求都使用当前账号缓存的 SID」这一硬约束。
 	if session.SID != "" {
 		query.Set("sid", session.SID)
+	}
+	// 平台码以本次运行事实为准：实例重建类装载带回实例真实平台码（200001/999999），
+	// 覆盖页面 axios 的默认 200001；否则 999999 实例被查空、详情弹窗不打开、装载 60s 超时。
+	// 发起类装载 PlatformCode 为空，保留页面默认平台码不动。
+	if pc := strings.TrimSpace(request.PlatformCode); pc != "" {
+		query.Set("platformCode", pc)
 	}
 	endpoint.RawQuery = query.Encode()
 	// 目标网关按「请求体顶层 sid」鉴权（直连出口 InjectWriteEnvelope 复刻其 axios 拦截器语义）：

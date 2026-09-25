@@ -133,3 +133,56 @@ func TestBuildLoadPayloadCarriesProxyAndForwardFacts(t *testing.T) {
 		t.Fatalf("缺实例的转发装载必须被拒绝")
 	}
 }
+
+// TestBuildLoadPayloadCarriesPlatformCode 验证实例重建类装载把实例真实平台码带进载荷，
+// 发起类装载缺省留空由运行时页面回落默认；这是修复 999999 实例被默认 200001 查空导致装载超时的关键透传点。
+func TestBuildLoadPayloadCarriesPlatformCode(t *testing.T) {
+	values := json.RawMessage(`{"reason":"x"}`)
+	editPayload, err := runtimeexec.BuildLoadPayload(runtimeexec.LoadInput{
+		Mode:         runtimeexec.LoadModeEdit,
+		Session:      runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "处理人"},
+		ToolFlowName: "工具流程",
+		InstanceID:   "instance-1",
+		PlatformCode: "999999",
+	}, values)
+	if err != nil {
+		t.Fatalf("合法编辑装载被拒绝：%v", err)
+	}
+	if editPayload.PlatformCode != "999999" {
+		t.Fatalf("实例重建类装载必须携带实例真实平台码：%+v", editPayload)
+	}
+	raw, err := json.Marshal(editPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"platformCode":"999999"`) {
+		t.Fatalf("编辑装载载荷缺少平台码：%s", raw)
+	}
+
+	initiatePayload, err := runtimeexec.BuildLoadPayload(runtimeexec.LoadInput{
+		Mode:           runtimeexec.LoadModeInitiate,
+		Session:        runtimeexec.SessionFacts{UserID: "u-1", Account: "acct", DisplayName: "发起人"},
+		ToolFlowName:   "工具流程",
+		SelectFlowType: "employee_leave",
+		FlowTemplateID: "tpl-1",
+	}, values)
+	if err != nil {
+		t.Fatalf("合法发起装载被拒绝：%v", err)
+	}
+	if initiatePayload.PlatformCode != "" {
+		t.Fatalf("发起装载平台码应留空由页面回落默认：%+v", initiatePayload)
+	}
+	if strings.Contains(string(mustJSON(t, initiatePayload)), `"platformCode"`) {
+		t.Fatalf("发起装载不应序列化空平台码字段（omitempty）")
+	}
+}
+
+// mustJSON 是测试内的 JSON 序列化辅助：失败即终止，避免每处重复错误处理。
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	return raw
+}

@@ -95,7 +95,11 @@ type submittedFlowFacts struct {
 	Handlers []NodeCurrentHandler
 	// Name 是目标实例名称：优先 name，其次 formName（F-031/T05）。
 	// 只作业务信息写进日志字段与 meta.json，不参与日志目录寻址；为空表示目标没返回名称。
-	Name  string
+	Name string
+	// PlatformCode 是目标实例所属平台码（200001/999999 双平台）：实例重建类装载（重提/编辑/审批/转发）
+	// 必须让运行时页面按这份实例事实发起目标请求；用页面默认 200001 查 999999 实例会查空，
+	// 详情弹窗永远不打开，装载在 waitForFunction 处 60s 超时（欧阳改测试09 实测）。
+	PlatformCode string
 	Found bool
 }
 
@@ -131,6 +135,7 @@ func (c *Client) findSubmittedFlowFacts(ctx context.Context, active Session, ins
 		CurrentNodeProxyID   string          `json:"currentNodeProxyId"`
 		CurrentAuditUserInfo json.RawMessage `json:"currentAuditUserInfo"`
 		BizRelevance         []BizRelevance  `json:"flowInstanceBizRelevanceList"`
+		PlatformCode         string          `json:"platformCode"`
 	}
 	if err := decodeArray(resp.Data, &raw); err != nil {
 		return submittedFlowFacts{}, err
@@ -158,8 +163,9 @@ func (c *Client) findSubmittedFlowFacts(ctx context.Context, active Session, ins
 				BizRelevance: normalizeBizRelevance(item.BizRelevance),
 				Handlers:     handlers,
 				// 名称优先 name，其次 formName；两者都空时保留空串由调用方按「不可用」展示。
-				Name:  strings.TrimSpace(firstNonEmpty(item.Name, item.FormName)),
-				Found: true,
+				Name:         strings.TrimSpace(firstNonEmpty(item.Name, item.FormName)),
+				PlatformCode: strings.TrimSpace(item.PlatformCode),
+				Found:        true,
 			}, nil
 		}
 	}

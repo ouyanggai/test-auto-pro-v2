@@ -445,7 +445,13 @@ async function applyNodePatchViaPage (page: Page, _mode: string, patch: Record<s
     const picked: Record<string, unknown> = {}
     for (const key of keys) {
       // 当前用户字段由表单初始化事件按注入身份填好，不用历史发起人值覆盖（缺陷②）。
-      if (initValues && isCurrentUser(initValues[key])) continue
+      // 但若待写入补丁自身也是当前用户的值（例如带有完整中文名的选择器），则保留补丁，不予跳过。
+      if (initValues && isCurrentUser(initValues[key])) {
+        const patchVal = patch[key]
+        if (!(patchVal !== undefined && patchVal !== null && patchVal !== '' && isCurrentUser(patchVal))) {
+          continue
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(patch, key)) picked[key] = patch[key]
       for (const suffix of companions) {
         const companion = `${key}${suffix}`
@@ -678,19 +684,37 @@ async function waitForOptionsReady (trace: { list: () => Array<{ state: string }
 }
 
 function injectIdentityScript (payload: Record<string, unknown>): string {
+  const accountName = String(payload.accountName ?? '')
+  const userName = String(payload.displayName ?? payload.accountName ?? '')
+  const companyId = String(payload.companyId ?? '')
+  const companyName = String(payload.companyName ?? '')
+  const departmentId = String(payload.departmentId ?? '')
+  const departmentName = String(payload.departmentName ?? '')
+  const dutyId = String(payload.dutyId ?? '')
+  const dutyName = String(payload.dutyName ?? '')
+  const customerCode = String(payload.customerCode ?? '')
+  const sid = String(payload.sid ?? '')
+  const userId = String(payload.userId ?? '')
+  const platformCode = String(payload.platformCode ?? '999999')
+
   const identity = {
-    sid: String(payload.sid ?? ''),
-    token: String(payload.sid ?? ''),
-    customerCode: String(payload.customerCode ?? ''),
-    userId: String(payload.userId ?? ''),
-    userName: String(payload.accountName ?? ''),
-    companyId: String(payload.companyId ?? ''),
-    companyName: String(payload.companyName ?? ''),
-    userDepartmentName: String(payload.departmentName ?? ''),
-    userDepartmentId: String(payload.departmentId ?? ''),
-    departmentId: String(payload.departmentId ?? ''),
-    topCompanyId: String(payload.companyId ?? ''),
-    platformCode: String(payload.platformCode ?? '999999')
+    sid,
+    token: sid,
+    customerCode,
+    userId,
+    userName: userName || accountName,
+    userAccount: accountName,
+    companyId,
+    companyName,
+    userDepartmentName: departmentName,
+    userDepartmentId: departmentId,
+    departmentId,
+    departmentName,
+    dutyId,
+    dutyName,
+    dutyLevel: dutyId,
+    topCompanyId: companyId,
+    platformCode
   }
   return `(() => {
     const identity = ${JSON.stringify(identity)};
@@ -704,6 +728,46 @@ function injectIdentityScript (payload: Record<string, unknown>): string {
       window.localStorage.setItem('token', identity.sid);
       window.localStorage.setItem(prefix + '-token', identity.sid);
     }
+    try {
+      const userObj = {
+        id: identity.userId,
+        name: identity.userName,
+        customerCode: identity.customerCode,
+        companyId: identity.companyId,
+        companyName: identity.companyName,
+        departmentId: identity.departmentId,
+        departmentName: identity.userDepartmentName,
+        dutyId: identity.dutyId,
+        dutyName: identity.dutyName,
+        flag: identity.companyId
+      };
+      window.sessionStorage.setItem('user', JSON.stringify(userObj));
+    } catch {}
+    const syncStore = () => {
+      if (window.$store && window.$store.commit) {
+        try {
+          if (identity.token) window.$store.commit('user/SET_TOKEN', identity.token);
+          if (identity.userName) window.$store.commit('user/SET_USER_NAME', identity.userName);
+          if (identity.userId) window.$store.commit('user/SET_USER_ID', identity.userId);
+          if (identity.customerCode) window.$store.commit('user/SET_CUSTOMERCODE', identity.customerCode);
+          if (identity.companyId) window.$store.commit('user/SET_COMPANY_ID', identity.companyId);
+          if (identity.companyName && window.$store._mutations && window.$store._mutations['user/SET_COMPANY_NAME']) {
+            window.$store.commit('user/SET_COMPANY_NAME', identity.companyName);
+          }
+          if (identity.departmentId && window.$store._mutations && window.$store._mutations['user/SET_DEPARTMENTID']) {
+            window.$store.commit('user/SET_DEPARTMENTID', identity.departmentId);
+          }
+          if (identity.dutyId && window.$store._mutations && window.$store._mutations['user/SET_DUTY_ID']) {
+            window.$store.commit('user/SET_DUTY_ID', identity.dutyId);
+          }
+          if (identity.dutyName && window.$store._mutations && window.$store._mutations['user/SET_DUTY_NAME']) {
+            window.$store.commit('user/SET_DUTY_NAME', identity.dutyName);
+          }
+        } catch {}
+      }
+    };
+    syncStore();
+    setTimeout(syncStore, 50);
     // 页面异常采集（S7 完成判定与 S1 装载诊断共用）：任何 pageerror / 未处理 rejection
     // 都落进 __executorPageErrors，判定阶段「页面无异常」以它为准，不再使用幻影全局标志。
     window.__executorPageErrors = [];
@@ -764,22 +828,28 @@ function injectIdentityScript (payload: Record<string, unknown>): string {
 // 实例行主体由页面 getInstanceId 自行从目标读取，这里只带页面外部拿不到的上下文。
 function nativeURL (origin: string, payload: Record<string, unknown>): string {
   const mode = String(payload.mode ?? 'initiate')
+  // 平台码统一带进 URL：运行时 axios 的 resolveRuntimePlatformCode 优先读 location 上的 platformCode，
+  // 让实例重建类装载按实例真实平台（200001/999999）发目标请求；缺失时页面自身回落默认平台码。
+  const platformCode = String(payload.platformCode ?? '')
   if (mode === 'initiate') {
     const params = new URLSearchParams()
     if (payload.selectFlowType) params.set('auditWay', String(payload.selectFlowType))
     if (payload.flowTemplateId) params.set('flowTemplateId', String(payload.flowTemplateId))
     if (payload.companyId) params.set('companyId', String(payload.companyId))
     if (payload.toolFlowName) params.set('title', String(payload.toolFlowName))
+    if (platformCode) params.set('platformCode', platformCode)
     return `${origin}#/flow/initiate?${params.toString()}`
   }
   if (mode === 'forward') {
     const tab = String(payload.forwardTab ?? 'backlog')
-    return `${origin}#/flow/approve/${encodeURIComponent(tab)}?tab=${encodeURIComponent(tab)}`
+    const suffix = platformCode ? `&platformCode=${encodeURIComponent(platformCode)}` : ''
+    return `${origin}#/flow/approve/${encodeURIComponent(tab)}?tab=${encodeURIComponent(tab)}${suffix}`
   }
   const instanceId = String(payload.instanceId ?? '')
   const detailMode = mode === 'approve' ? 'audit' : mode
   const params = new URLSearchParams()
   params.set('mode', detailMode)
+  if (platformCode) params.set('platformCode', platformCode)
   const relevance = Array.isArray(payload.flowInstanceBizRelevanceList) ? payload.flowInstanceBizRelevanceList : []
   // taskContext 行事实：FlowDetail.getTaskContext 优先解析它；getInstanceId 的实例查询
   // 也依赖 flowInstanceBizRelevanceList。字段名与目标 FlowDetail 契约一一对应，不得改名。

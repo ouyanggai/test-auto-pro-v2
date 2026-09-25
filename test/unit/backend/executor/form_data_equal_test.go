@@ -33,7 +33,16 @@ func TestDeepEqualNormalizedSelectorJSON(t *testing.T) {
 		t.Fatalf("相同 id 但不同 name 不得判定为等价")
 	}
 
-	// 5. 普通 JSON 字符串正常比对
+	// 5. 目标返回带 name:"" 空字符串的瘦对象，应判定为等价
+	emptyNameActual := `{"id":"6e1235cf416e4143947311c6cc93d78e","name":""}`
+	if !step.DeepEqualNormalized(written, emptyNameActual) {
+		t.Fatalf("发送带 name，目标返回 name 为空串，应判定为等价")
+	}
+	if !step.DeepEqualNormalized(emptyNameActual, written) {
+		t.Fatalf("发送 name 为空串，目标返回完整 name，反向应判定为等价")
+	}
+
+	// 6. 普通 JSON 字符串正常比对
 	if !step.DeepEqualNormalized("abc", "abc") {
 		t.Fatalf("普通字符串相等测试失败")
 	}

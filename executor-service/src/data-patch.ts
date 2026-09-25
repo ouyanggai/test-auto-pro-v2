@@ -69,6 +69,11 @@ function dropCurrentUserFields (
   const companions = ['__virtualName', '__formPersonId', '__condition']
   for (const key of allowedKeys) {
     if (!isCurrentUserField(initValues[key], identity)) continue
+    // 若待写入补丁自身也是当前用户的值（例如带有完整中文名的选择器），则保留补丁，不予剔除
+    const patchVal = allowed[key]
+    if (patchVal !== undefined && patchVal !== null && patchVal !== '' && isCurrentUserField(patchVal, identity)) {
+      continue
+    }
     delete allowed[key]
     for (const suffix of companions) delete allowed[`${key}${suffix}`]
   }

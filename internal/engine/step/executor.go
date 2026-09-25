@@ -206,10 +206,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		Account:      preview.ActorAccount,
 		Action:       action,
 		ToolFlowName: instanceName(runCtx, step),
-		Session: runtimeexec.SessionFacts{
-			UserID: session.UserID, CompanyID: session.CompanyID, DepartmentID: session.DepartmentID,
-			CustomerCode: session.CustomerCode, Account: session.Summary.Account, DisplayName: session.Summary.DisplayName,
-		},
+		Session:      e.sessionFactsForRuntime(ctx, session),
 		Initiator:   initiator,
 		Values:      formDataFromPreviewRequest(preview),
 		InstanceID:  runCtx.PathRun.MainInstanceRef,
@@ -235,6 +232,9 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		ReceiverName:         receiverName,
 		BranchNodeAuditTypes: branchAuditTypes(runCtx),
 		BaseURL:              e.runtimeBaseURL,
+		// 平台码取本步已读的实例事实：实例重建类装载（重提/编辑/审批/转发）必须按实例真实平台
+		// 发目标请求；发起类实例尚不存在，留空由运行时页面回落默认平台码。
+		PlatformCode: strings.TrimSpace(preview.Facts.PlatformCode),
 	}
 	// 装载模式由持久化实例事实决定：首次草稿走发起，已有主实例的后续草稿走待发编辑。
 	switch step.Action {
@@ -380,6 +380,51 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 判定失败："+result.Message)
 	}
 	return true
+}
+
+// sessionFactsForRuntime 从当前会话及目标实时人员目录读取完整身份事实，
+// 供 runtime 装载注入 window.localStorage（含 companyName/departmentName/dutyId/dutyName 等），
+// 避免因缺少公司或部门名称导致模板前端初始化脚本拼装出空名称（如机房进入申请表）。
+func (e *Executor) sessionFactsForRuntime(ctx context.Context, session target.Session) runtimeexec.SessionFacts {
+	facts := runtimeexec.SessionFacts{
+		UserID:       session.UserID,
+		CompanyID:    session.CompanyID,
+		CompanyName:  session.Summary.CompanyName,
+		DepartmentID: session.DepartmentID,
+		CustomerCode: session.CustomerCode,
+		Account:      session.Summary.Account,
+		DisplayName:  session.Summary.DisplayName,
+	}
+	identityReader, canReadIdentity := e.target.(runtimeIdentityReader)
+	if canReadIdentity {
+		if identity, err := identityReader.CurrentUserIdentity(ctx, session); err == nil {
+			if strings.TrimSpace(identity.CompanyName) != "" {
+				facts.CompanyName = identity.CompanyName
+			}
+			if strings.TrimSpace(identity.DepartmentName) != "" {
+				facts.DepartmentName = identity.DepartmentName
+			}
+			if strings.TrimSpace(identity.DepartmentID) != "" {
+				facts.DepartmentID = identity.DepartmentID
+			}
+			if strings.TrimSpace(identity.CompanyID) != "" {
+				facts.CompanyID = identity.CompanyID
+			}
+			if strings.TrimSpace(identity.DutyID) != "" {
+				facts.DutyID = identity.DutyID
+			}
+			if strings.TrimSpace(identity.DutyName) != "" {
+				facts.DutyName = identity.DutyName
+			}
+			if strings.TrimSpace(identity.UserName) != "" {
+				facts.DisplayName = identity.UserName
+			}
+			if strings.TrimSpace(identity.UserID) != "" {
+				facts.UserID = identity.UserID
+			}
+		}
+	}
+	return facts
 }
 
 // stringSliceParameter 从动作参数读取字符串数组；非数组或空项直接忽略，绝不猜测配置值。
@@ -3632,7 +3677,7 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 					}
 					log := e.stepLogFor(runCtx)
 					log.Phase("gate", step.Sequence, 1, fmt.Sprintf("候选处理人 %s（账号 %s）会话登录失败（%s），尝试下一位候选处理人", firstNonEmpty(match.Name, account), account, userFacingError(sessionErr, target.WriteResponse{})))
-					// 账号明确登录失败（无权限、密码错误等），放弃当前候选人，继续循环尝试 matches 中的下一位可用候选人
+					// 账号明确登录失败（无权限、密码错误等），放弃当前候选人的当前快照，继续扫描下一个快照或下一位候选人
 					break
 				}
 				// 账号为空表示沿用当前会话（不额外登录，如单人节点或计划账号本人），直接返回当前会话

@@ -48,6 +48,8 @@ func (e *Executor) readInstanceFacts(ctx context.Context, runCtx RunContext, ses
 	facts.Found = true
 	facts.Status = snapshot.Status
 	facts.FlowProxyID = strings.TrimSpace(snapshot.FlowProxyID)
+	// 平台码取实例事实：实例重建类装载据此让运行时页面按正确平台发起目标请求。
+	facts.PlatformCode = strings.TrimSpace(snapshot.PlatformCode)
 	// 实例名称只作业务信息：目标没返回名称时保持空串，由日志与详情按「不可用」如实展示。
 	facts.InstanceName = strings.TrimSpace(snapshot.Name)
 	if len(snapshot.FormProxyIDs) > 0 {

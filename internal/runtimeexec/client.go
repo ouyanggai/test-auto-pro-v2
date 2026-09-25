@@ -65,8 +65,11 @@ type Client struct {
 	sessions SessionProvider
 	// forwardTimeout 是单笔页面请求转发到目标平台的超时；目标存在约 30 秒慢请求，取 90 秒上限。
 	forwardTimeout time.Duration
-	connectionsMu  sync.Mutex
-	connections    map[string]*sessionConn
+	connectionsMu sync.Mutex
+	connections   map[string]*sessionConn
+	// sessionPlatform 按会话 ID 记录本次运行应强制的目标平台码（实例重建类装载取实例真实平台）；
+	// 读泵转发时据此覆盖页面默认平台码，修复 999999 实例被默认 200001 查空导致的装载超时。
+	sessionPlatform map[string]string
 }
 
 // sessionConn 是一个会话的唯一 WebSocket；预热、装载期转发和动作命令共享它，
@@ -96,8 +99,48 @@ func NewClient(baseURL string, forward TargetForwarder, sessions SessionProvider
 		forward:        forward,
 		sessions:       sessions,
 		forwardTimeout: 90 * time.Second,
-		connections:    make(map[string]*sessionConn),
+		connections:     make(map[string]*sessionConn),
+		sessionPlatform: make(map[string]string),
 	}, nil
+}
+
+// SetSessionPlatformCode 登记本次运行会话应强制的目标平台码；空值不登记（发起类保留页面默认）。
+// 由 RunAction 在装载前调用，读泵转发时据此覆盖页面默认平台码。
+func (c *Client) SetSessionPlatformCode(sessionID, platformCode string) {
+	sessionID = strings.TrimSpace(sessionID)
+	platformCode = strings.TrimSpace(platformCode)
+	if sessionID == "" {
+		return
+	}
+	c.connectionsMu.Lock()
+	defer c.connectionsMu.Unlock()
+	if platformCode == "" {
+		delete(c.sessionPlatform, sessionID)
+		return
+	}
+	c.sessionPlatform[sessionID] = platformCode
+}
+
+// sessionPlatformCode 读取会话登记的强制平台码；未登记返回空串。
+func (c *Client) sessionPlatformCode(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	c.connectionsMu.Lock()
+	defer c.connectionsMu.Unlock()
+	return c.sessionPlatform[sessionID]
+}
+
+// clearSessionPlatformCode 会话销毁时清除登记，避免会话 ID 复用时串味。
+func (c *Client) clearSessionPlatformCode(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	c.connectionsMu.Lock()
+	defer c.connectionsMu.Unlock()
+	delete(c.sessionPlatform, sessionID)
 }
 
 // Health 探测独立执行服务是否可接受命令；失败时七个 runtime 动作写前阻塞。
@@ -486,11 +529,13 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	// 页面烘焙的网关绝对路径可能带 /api 前缀：写端点判定必须按同一口径归一，
 	// 否则真实写被判成「未写出」，断线时按零写入失败处理会诱发重发。
 	isWrite := target.IsKnownWriteRequestPath(parsed.Path)
+	// 本会话强制平台码（实例重建类装载取实例真实平台）：随每次转发覆盖页面默认平台码。
+	platformCode := c.sessionPlatformCode(message.SessionID)
 	session, err := c.sessions.Current(ctx, state.account)
 	if err != nil {
 		return nil, fmt.Errorf("取得账号 %s 会话失败：%w", state.account, err)
 	}
-	response, err := c.forwardOnce(ctx, session, forwarded, parsed)
+	response, err := c.forwardOnce(ctx, session, forwarded, parsed, platformCode)
 	if err == nil {
 		if isWrite {
 			state.markWritten()
@@ -516,7 +561,7 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	if refreshErr != nil {
 		return nil, fmt.Errorf("会话失效且重登失败：%w", refreshErr)
 	}
-	response, err = c.forwardOnce(ctx, refreshed, forwarded, parsed)
+	response, err = c.forwardOnce(ctx, refreshed, forwarded, parsed, platformCode)
 	if isWrite {
 		if err == nil {
 			state.markWritten()
@@ -535,7 +580,7 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 }
 
 // forwardOnce 发出一次页面转发请求。
-func (c *Client) forwardOnce(ctx context.Context, session target.Session, forwarded *ForwardedRequest, parsed *url.URL) (*target.PageForwardResponse, error) {
+func (c *Client) forwardOnce(ctx context.Context, session target.Session, forwarded *ForwardedRequest, parsed *url.URL, platformCode string) (*target.PageForwardResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.forwardTimeout)
 	defer cancel()
 	body, err := forwarded.decodedBody()
@@ -549,6 +594,7 @@ func (c *Client) forwardOnce(ctx context.Context, session target.Session, forwar
 		Header:       forwarded.Headers,
 		Body:         body,
 		CustomerCode: session.CustomerCode,
+		PlatformCode: platformCode,
 	})
 }
 

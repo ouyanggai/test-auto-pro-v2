@@ -61,6 +61,9 @@ type RuntimeRunRequest struct {
 	BranchNodeAuditTypes map[string]string
 	BaseURL              string
 	LoadMode             string
+	// PlatformCode 是本次装载应使用的目标平台码（实例重建类取实例事实，发起类可留空回落默认）：
+	// 运行时页面据它对每个目标请求发正确平台码，修复 999999 实例被默认 200001 查空导致的装载超时。
+	PlatformCode string
 }
 
 // ActionRunResult 是 runtime 动作的最终判定事实（状态为协议七值之一）。
@@ -128,10 +131,15 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	if err != nil {
 		return ActionRunResult{}, fmt.Errorf("创建 runtime 会话失败：%w", err)
 	}
+	// 登记本会话强制平台码：实例重建类装载带回实例真实平台（200001/999999），
+	// 装载与动作期每次转发据此覆盖页面默认平台码，修复 999999 实例被查空导致的装载超时。
+	// 发起类 PlatformCode 为空，不登记、保留页面默认。
+	r.client.SetSessionPlatformCode(handle.SessionID, request.PlatformCode)
 	defer func() {
 		destroyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = r.client.Destroy(destroyCtx, handle.SessionID)
+		r.client.clearSessionPlatformCode(handle.SessionID)
 	}()
 	stopLease := r.startSessionLease(ctx, handle.SessionID)
 	defer stopLease()
@@ -165,6 +173,7 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 		Permissions:   permissions,
 		ChangedFields: request.ChangedFields,
 		BaseURL:       request.BaseURL,
+		PlatformCode:  request.PlatformCode,
 		Initiator:     request.Initiator,
 		// 目标代理与节点事实（评审 P1-3）：目标组件按这些字段组装最终流程载荷。
 		FormProxyID:                  request.FormProxyID,

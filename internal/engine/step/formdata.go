@@ -373,7 +373,8 @@ func deepEqualNormalized(a, b any) bool {
 		return true
 	}
 	// 选择器 JSON 字符串等价容差：当两端均为合法的选择器 JSON 时，若 id 相等且非空，
-	// 且若两端都提供了 name 则 name 也必须相等（允许目标平台只保存或返回包含 id 的瘦对象）。
+	// 若两端均提供了非空的 name 则 name 必须相等；若任一端省略 name 或 name 为空串（目标瘦对象/只返回 id 场景），
+	// 只要核心标识 id 一致即视为等价，不产生未保存误报。
 	strA, isStrA := a.(string)
 	strB, isStrB := b.(string)
 	if isStrA && isStrB {
@@ -384,7 +385,9 @@ func deepEqualNormalized(a, b any) bool {
 			if hasIdA && hasIdB && idA != "" && idA == idB {
 				nameA, hasNameA := objA["name"].(string)
 				nameB, hasNameB := objB["name"].(string)
-				if (!hasNameA || !hasNameB) || nameA == nameB {
+				trimmedNameA := strings.TrimSpace(nameA)
+				trimmedNameB := strings.TrimSpace(nameB)
+				if (!hasNameA || trimmedNameA == "") || (!hasNameB || trimmedNameB == "") || trimmedNameA == trimmedNameB {
 					return true
 				}
 			}

@@ -68,3 +68,21 @@ test('无身份提示时不跳过任何字段（回落原覆盖行为）', async
   }, { applyUser: '{"id":"user-hist"}', reason: 'x' }, { allowedKeys: ['applyUser', 'reason'] })
   assert.ok(written.includes('applyUser'), '无身份提示应回落为按补丁覆盖')
 })
+
+test('补丁本身包含当前用户完整信息时保留补丁写入（不被误跳过）', async () => {
+  const written: Record<string, unknown> = {}
+  await applyNodePatch({
+    setData: next => { Object.assign(written, next) },
+    // 初始化后：页面取出的 company 为瘦对象（name 为空）
+    getValues: () => ({
+      company: '{"id":"company-plan","name":""}',
+      reason: ''
+    })
+  }, {
+    // 补丁提供了当前用户带有完整公司名称的有效对象
+    company: '{"id":"company-plan","name":"深圳市润世华智数技术有限公司"}',
+    reason: '巡检'
+  }, { allowedKeys: ['company', 'reason'], identity: { userId: 'user-plan', companyId: 'company-plan' } })
+  assert.ok(written.company, '补丁本身是当前用户时应保留')
+  assert.equal(written.company, '{"id":"company-plan","name":"深圳市润世华智数技术有限公司"}')
+})

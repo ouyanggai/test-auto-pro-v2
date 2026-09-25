@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -74,4 +75,62 @@ func TestForwardRuntimeRequestStripsDuplicatedGatewayPrefix(t *testing.T) {
 		t.Fatalf("出口未收到任何请求")
 	}
 	var _ = json.Marshal
+}
+
+// TestForwardRuntimeRequestOverridesPlatformCode 锁定转发出口的平台码覆盖语义：
+// 实例重建类装载带回实例真实平台码时，出口必须用它覆盖页面默认平台码（页面 axios 默认 200001）；
+// 发起类不带平台码时保留页面查询里的原值。这是修复 999999 实例被默认 200001 查空、装载超时的关键出口。
+func TestForwardRuntimeRequestOverridesPlatformCode(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Query().Get("platformCode"))
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, `{"isSuccess":true}`)
+	}))
+	defer server.Close()
+
+	client, err := target.NewClient(target.ClientConfig{BaseURL: server.URL + "/api", Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("构造客户端失败：%v", err)
+	}
+	ctx := context.Background()
+	pageQuery := url.Values{}
+	pageQuery.Set("platformCode", "200001") // 页面默认平台码
+
+	// 非空 PlatformCode：出口覆盖为实例真实平台 999999。
+	if _, err := client.ForwardRuntimeRequest(ctx, target.Session{SID: "sid-x"}, target.PageForwardRequest{
+		Method: http.MethodPost, Path: "/web/flowInstanceApi/getCurrentFromData",
+		Query: cloneValues(pageQuery), Header: map[string]string{"content-type": "application/json"},
+		Body: []byte(`{}`), PlatformCode: "999999",
+	}); err != nil {
+		t.Fatalf("带平台码转发失败：%v", err)
+	}
+	// 空 PlatformCode：保留页面默认 200001。
+	if _, err := client.ForwardRuntimeRequest(ctx, target.Session{SID: "sid-x"}, target.PageForwardRequest{
+		Method: http.MethodPost, Path: "/web/flowInstanceApi/getCurrentFromData",
+		Query: cloneValues(pageQuery), Header: map[string]string{"content-type": "application/json"},
+		Body: []byte(`{}`), PlatformCode: "",
+	}); err != nil {
+		t.Fatalf("不带平台码转发失败：%v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("出口应收到 2 笔请求，实际 %d", len(seen))
+	}
+	if seen[0] != "999999" {
+		t.Fatalf("实例重建类转发平台码应被覆盖为 999999，实际 %q", seen[0])
+	}
+	if seen[1] != "200001" {
+		t.Fatalf("发起类转发应保留页面默认平台码 200001，实际 %q", seen[1])
+	}
+}
+
+// cloneValues 复制查询参数，避免用例间共享底层切片。
+func cloneValues(src url.Values) url.Values {
+	dst := url.Values{}
+	for k, vs := range src {
+		for _, v := range vs {
+			dst.Add(k, v)
+		}
+	}
+	return dst
 }
