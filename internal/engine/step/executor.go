@@ -834,6 +834,21 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		return e.blockedPreview(runCtx, step, actorName, reason, model.FailureClassGateBlocked), false, nil
 	}
 	info := runCtx.Nodes[step.NodeKey]
+	// 取回动作若紧跟一个已被目标自动跳过的准备同意，目标从未为该节点生成已办审核记录，
+	// 继续把取回当成可执行写动作只会得到“没有已办任务”并错误停机。沿用已落账的目标跳过事实，
+	// 把取回记为零写入的目标跳过，让路径继续到后续步骤。
+	if step.Action == model.ActionRetrieve && retrieveFollowsTargetSkippedPreparation(e.facts, runCtx, nextIndex) {
+		reason := "取回目标节点已被目标自动跳过，未产生可取回的已办任务；取回不适用，不发送请求"
+		log.Phase("control", step.Sequence, 1, reason)
+		return &StepPreview{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
+			ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
+			Action: step.Action, ActionName: "取回（目标节点已跳过，不适用）", NodeKey: step.NodeKey,
+			TargetNodeID: info.TargetNodeID, NodeName: info.Name, ActorAccount: runCtx.PlanAccount, ActorName: actorName,
+			GateAllowed: true, Facts: facts, TargetSkipped: true, SkipReason: reason,
+			GateItems: []model.ActionPrecondition{},
+		}, false, nil
+	}
 	// 目标已明确把待办推进到后续节点时，节点整体已经不存在可执行处理人；
 	// 先按目标 isSkip 分型，避免无处理人轮询把"允许自动跳过"的节点错误阻塞。
 	// 用户配置动作也属于该节点的一部分，节点跳过时动作随节点一起不执行，绝不凭空制造处理人或发送写请求。
@@ -4217,6 +4232,34 @@ func recoveryTriggerWasSkipped(store RunFactsStore, runCtx RunContext, step mode
 	default:
 		return false
 	}
+}
+
+// retrieveFollowsTargetSkippedPreparation 判断取回是否紧跟一个已被目标自动跳过的准备同意。
+// 只有直接前置步骤、同一节点且已落账原因为“目标自动跳过”时才成立；已有真实已办而跳过准备同意
+// 的情况必须继续走正常取回门禁，不能被误判成目标没有生成已办任务。
+func retrieveFollowsTargetSkippedPreparation(store RunFactsStore, runCtx RunContext, nextIndex int) bool {
+	if nextIndex <= 0 || nextIndex >= len(runCtx.Steps) || runCtx.PathRun.ID == 0 {
+		return false
+	}
+	current := runCtx.Steps[nextIndex]
+	previous := runCtx.Steps[nextIndex-1]
+	if current.Action != model.ActionRetrieve || !previous.RetrievePrepareConsent ||
+		previous.Action != model.ActionApprove || previous.NodeKey != current.NodeKey ||
+		previous.Source != model.ActionStepSourceRecovery {
+		return false
+	}
+	reader, ok := store.(persistedAttemptReader)
+	if !ok {
+		return false
+	}
+	stepRow, attempt, err := reader.LatestStepAttempt(context.Background(), runCtx.PathRun.ID)
+	if err != nil || stepRow.StepNo != previous.Sequence || stepRow.StepNo >= current.Sequence {
+		return false
+	}
+	if attempt.Verdict != StepVerdictTargetSkipped {
+		return false
+	}
+	return strings.Contains(strings.TrimSpace(attempt.Reason), "目标自动跳过")
 }
 
 // isSkip=true 且越过本节点 → 跳过；isSkip 未声明/false 且越过 → 阻塞；run_node_choose 越过 → 阻塞。

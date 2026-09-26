@@ -242,20 +242,9 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 		return 0
 	}
 	group := 0
-	insertedApprovals := func() []model.CompiledActionStep {
-		out := make([]model.CompiledActionStep, 0, len(insertedKeys))
-		for _, nodeKey := range insertedKeys {
-			group++
-			out = append(out, model.CompiledActionStep{
-				Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
-				ReleaseGroup:    fmt.Sprintf("add-sign-inserted-%d", group),
-				ReleaseRequired: true,
-				Precondition:    "加签在当前节点之后新增的审批节点：按该节点自身的真实待办和处理人审批",
-				ExpectedEffect:  "插入的加签审批节点处理完成后，实例沿目标真实路径继续",
-				StopOnFailure:   "该插入节点无真实待办或处理人不可解析时停止，不猜测人员",
-				RecoveryPolicy:  "重新读取实例最新代理树、当前待办和处理人", ReloadRequired: true,
-			})
-		}
+	insertedApprovals := func(anchor model.CompiledActionStep) []model.CompiledActionStep {
+		out := buildInsertedNodeApprovals(anchor, insertedKeys, group)
+		group += len(out)
 		return out
 	}
 	// 锚点节点每一次「同意」之后，实例都会流转到加签插入节点——不仅是正向固定尾同意，也包括
@@ -277,7 +266,7 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 		rollbackBeforeAnchorApprove := steps[i].Action == model.ActionApprove && steps[i].NodeKey == anchorKey &&
 			rollbackPrecedes(steps, i, anchorKey)
 		if rollbackBeforeAnchorApprove {
-			approvals := insertedApprovals()
+			approvals := insertedApprovals(steps[i])
 			newSteps = append(newSteps, approvals...)
 			injectedCount += len(approvals)
 			continue
@@ -287,7 +276,7 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 		nextIsAnchorApprove := i+1 < len(steps) && steps[i+1].Action == model.ActionApprove && steps[i+1].NodeKey == anchorKey
 		nextIsInserted := i+1 < len(steps) && insertedSet[steps[i+1].NodeKey]
 		if isAnchorApprove && !nextIsAnchorApprove && !nextIsInserted {
-			approvals := insertedApprovals()
+			approvals := insertedApprovals(steps[i])
 			newSteps = append(newSteps, approvals...)
 			injectedCount += len(approvals)
 		}
@@ -301,6 +290,36 @@ func (s *Service) injectInsertedNodeApprovals(session *activeStep, insertedNodeI
 	}
 	session.runCtx.Steps = newSteps
 	return injectedCount
+}
+
+// buildInsertedNodeApprovals 构造加签新增审批节点的运行步骤，并继承恢复锚点的触发依赖。
+// 恢复锚点被目标跳过时，后面的动态加签节点也必须标记为不适用，不能脱离触发动作单独执行。
+func buildInsertedNodeApprovals(anchor model.CompiledActionStep, insertedKeys []string, startGroup int) []model.CompiledActionStep {
+	source := model.ActionStepSourceSystemDefault
+	sourceActionKey := ""
+	if anchor.Source == model.ActionStepSourceRecovery && strings.TrimSpace(anchor.SourceActionKey) != "" {
+		source = model.ActionStepSourceRecovery
+		sourceActionKey = strings.TrimSpace(anchor.SourceActionKey)
+	}
+	out := make([]model.CompiledActionStep, 0, len(insertedKeys))
+	for index, nodeKey := range insertedKeys {
+		group := startGroup + index + 1
+		out = append(out, model.CompiledActionStep{
+			Source: source, SourceActionKey: sourceActionKey, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: nodeKey,
+			ReleaseGroup:    fmt.Sprintf("add-sign-inserted-%d", group),
+			ReleaseRequired: true,
+			Precondition:    "加签在当前节点之后新增的审批节点：按该节点自身的真实待办和处理人审批",
+			ExpectedEffect:  "插入的加签审批节点处理完成后，实例沿目标真实路径继续",
+			StopOnFailure:   "该插入节点无真实待办或处理人不可解析时停止，不猜测人员",
+			RecoveryPolicy:  "重新读取实例最新代理树、当前待办和处理人", ReloadRequired: true,
+		})
+	}
+	return out
+}
+
+// InsertedNodeApprovalsForTest 暴露加签步骤构造结果，供根目录测试锁定恢复触发依赖的继承规则。
+func InsertedNodeApprovalsForTest(anchor model.CompiledActionStep, insertedKeys []string) []model.CompiledActionStep {
+	return buildInsertedNodeApprovals(anchor, insertedKeys, 0)
 }
 
 // rollbackPrecedes 判断「指向锚点节点的这一步同意」是否由回退动作引出。

@@ -114,6 +114,46 @@ func TestRetrievePrepareConsentUsesTargetSkipWhenNodeIsSkipped(t *testing.T) {
 	}
 }
 
+// TestRetrieveSkipsAfterPreparationNodeWasTargetSkipped 验证：
+// 准备同意已被目标自动跳过时，后续取回没有真实已办前置，也应零写入跳过并继续路径。
+func TestRetrieveSkipsAfterPreparationNodeWasTargetSkipped(t *testing.T) {
+	runCtx := newRunContext([]model.CompiledActionStep{
+		{
+			Sequence: 1, Source: model.ActionStepSourceRecovery, SourceActionKey: "retrieve-action-1",
+			Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: "node-audit", RetrievePrepareConsent: true,
+		},
+		{
+			Sequence: 2, Source: model.ActionStepSourceUser, SourceActionKey: "retrieve-action-1",
+			Action: model.ActionRetrieve, Scope: model.ActionScopeCompletedTask, NodeKey: "node-audit",
+		},
+		{Sequence: 3, Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: "node-next"},
+	})
+	runCtx.Source = "submitted"
+	runCtx.PathRun.MainInstanceRef = "instance-retrieve-skip"
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "已跳过审批", Type: "common", TargetNodeID: "node-audit"}
+	runCtx.Nodes["node-next"] = step.NodeInfo{Name: "后续审批", Type: "common", TargetNodeID: "node-next"}
+	targetFake := &taskActionFactsTarget{
+		fakeTarget: &fakeTarget{instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-next"}, DueNodes: []string{"node-next"}}},
+		snapshot:   target.TaskSnapshot{},
+	}
+	facts := &fakeFacts{
+		steps:    []model.RunStep{{PathRunID: runCtx.PathRun.ID, StepNo: 1, Source: string(model.ActionStepSourceRecovery), Action: string(model.ActionApprove), NodeKey: "node-audit"}},
+		attempts: []model.RunStepAttempt{{PathRunID: runCtx.PathRun.ID, Verdict: step.StepVerdictTargetSkipped, Reason: "实例待办已在「后续审批」，本节点已被目标自动跳过（无处理人时跳过该节点）"}},
+	}
+	executor := step.NewExecutor(targetFake, &fakeSessions{}, &fakeRunState{}, facts, fixedRunConfig(), nil)
+
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 1)
+	if err != nil || finished || preview == nil {
+		t.Fatalf("目标跳过后的取回预览失败：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	if !preview.TargetSkipped || !strings.Contains(preview.SkipReason, "取回目标节点已被目标自动跳过") {
+		t.Fatalf("取回应沿用准备同意的目标跳过事实并零写入：%+v", preview)
+	}
+	if targetFake.actionCalls != 0 {
+		t.Fatalf("目标跳过后的取回不应发写请求，实际 %d 次", targetFake.actionCalls)
+	}
+}
+
 type followTrackingTarget struct {
 	*taskActionFactsTarget
 	isTracking bool

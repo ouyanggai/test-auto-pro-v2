@@ -1,4 +1,6 @@
 # 当前进度
+- 2026-09-26 Plan 59 / Run 172 根因复核与修复完成，切片停在 **ready_for_manual**：路径 1、6 的停止根因为取回准备同意被目标 `isSkip=true` 自动跳过后，工具仍把取回当作有已办记录的可执行动作；路径 4 的停止根因为动态加签审批步骤未继承被目标跳过的恢复触发键。工具现按前一步已落账的“目标自动跳过”事实将取回零写入记为 `target_skipped` 并继续，动态加签步骤继承恢复来源和 `SourceActionKey`，触发动作跳过时一并记为 `recovery_not_applicable`。路径 9、10 的取回接口返回成功且有取回审核记录，但目标后续响应仍缺少 Java `saveRetrieveProcess/createPendingJob` 预期的 pending/当前处理人，暂记目标平台待确认，不在工具侧加兜底。新增取回与动态加签回归测试；`go test` 受影响包、`go vet`、`git diff --check` 通过。未连接目标平台、未发真实写、未启动浏览器；待人工复跑路径 1、4、6、9、10。
+- 评审与修复文档：`docs/review/2026-09-26-plan59-run172-review-and-fix.md`。
 - 2026-09-26 Plan 59 / Run 171 Java 对照复核与工具侧修复完成，切片停在 **ready_for_manual**：确认 6 条停止路径均为工具侧问题。按 Java `FlowOperateServiceImpl` 的 `isSkip=true` 递归跳过语义，`RetrievePrepareConsent` 现在会在目标已越过无人节点时零写入记录 `target_skipped`；不同意/撤回/回退被跳过后，恢复链读取内存或最近落账尝试事实并标记 `recovery_not_applicable`，不再发送无效 `reSubmit`；取回写后读取最新实例代理和当前节点集合，使用现有 `ProxyRemap` 结构映射，当前节点缺失或不在新树时停止后续放行。新增目标跳过、重启恢复和代理节点安全校验回归。受影响 Go 测试、`go build ./...`、受影响包 `go vet`、差异检查通过；完整 `go test ./...` 已跑到全部 Go 包及契约测试通过，但命令在后续长耗时阶段超时，未将其宣称为全量完成。未连接目标平台、未发真实写、未启动浏览器；待用户人工核对路径 1、3、4、6、9、10 后再决定是否接受。
 - 2026-09-26 执行器服务启动修复完成（分支 `执行引擎改造`，3 处代码提交）：
   现象：`pnpm --dir executor-service start` 报 `缺少 flow-source/dist` 退出；启动日志先出「自动同步 rsh-flow-components 告警 … node.exe ETIMEDOUT」。
