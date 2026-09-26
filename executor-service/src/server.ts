@@ -875,14 +875,16 @@ async function ensureLatestFlowSource (): Promise<void> {
   const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const syncScript = path.join(serviceRoot, 'scripts', 'sync-flow-source.js')
   const buildScript = path.join(serviceRoot, 'scripts', 'build-native-page.js')
-  // 1. 远端同步是尽力而为:内网 git(192.168.1.155)不可达时只告警,绝不因此跳过本地页面构建;
+  // 1. 远端同步是尽力而为:内网 git 抖动/不可达时只告警,绝不因此跳过本地页面构建;
   //    EXECUTOR_DISABLE_AUTO_SYNC=1 只关掉这一步远端拉取,不影响下面的本地构建兜底。
+  //    超时给到 180s:一次全量 checkout+FormMaking 补齐+全树摘要实测约 60s,旧的 60s 上限过紧、
+  //    正常同步也会被判 ETIMEDOUT(叠加破坏性 cloneAt 就会清空 flow-source),故留足余量。
   if (process.env.EXECUTOR_DISABLE_AUTO_SYNC !== '1') {
     try {
       childProcess.execFileSync(process.execPath, [syncScript, '--pull-latest'], {
         cwd: serviceRoot,
         encoding: 'utf8',
-        timeout: 60000,
+        timeout: 180000,
         stdio: 'inherit'
       })
     } catch (error) {
