@@ -127,18 +127,31 @@ function hasContentChanges () {
   })
 }
 
-// cloneAt 做一次干净克隆：先删残留目录，再 fetch 到临时目录并检出。
-// 不直接 clone --branch 是为了在同一处统一处理锁定的 commit（分支 HEAD 已前移时仍可复现）。
+// cloneAt 做一次干净克隆:先在同级临时目录 fetch+检出,成功后再原子替换 flow-source。
+// 旧实现先 rmSync(targetRoot) 再就地 fetch:任何 fetch 超时或网络抖动都会把已有工作副本
+//(含 babel.config.js、dist、node_modules)清空成半截目录且无法回退--这正是本次启动故障的根因。
+// 改为「临时目录克隆成功 -> 删旧 -> 改名」后,克隆失败时旧目录原样保留,启动仍可回落到本地版本。
+// 不直接 clone --branch 是为了在同一处统一处理锁定的 commit(分支 HEAD 已前移时仍可复现)。
 function cloneAt (manifest, head, remoteOverride) {
-  fs.rmSync(targetRoot, { recursive: true, force: true })
-  fs.mkdirSync(targetRoot, { recursive: true })
   const remote = remoteOverride || manifest.remote
-  git(targetRoot, ['init', '--quiet'])
-  git(targetRoot, ['remote', 'add', 'origin', remote])
-  git(targetRoot, ['fetch', '--quiet', '--depth', '1', 'origin', head])
-  git(targetRoot, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'])
-  git(targetRoot, ['branch', '--quiet', '--force', manifest.branch, 'HEAD'])
-  removeNoise(targetRoot)
+  const tempRoot = `${targetRoot}.sync-${process.pid}`
+  fs.rmSync(tempRoot, { recursive: true, force: true })
+  fs.mkdirSync(tempRoot, { recursive: true })
+  try {
+    git(tempRoot, ['init', '--quiet'])
+    git(tempRoot, ['remote', 'add', 'origin', remote])
+    git(tempRoot, ['fetch', '--quiet', '--depth', '1', 'origin', head])
+    git(tempRoot, ['checkout', '--quiet', '--detach', 'FETCH_HEAD'])
+    git(tempRoot, ['branch', '--quiet', '--force', manifest.branch, 'HEAD'])
+    removeNoise(tempRoot)
+  } catch (error) {
+    // 克隆失败必须清掉半截临时目录,绝不留下污染下次判断的残骸,再把原始错误抛给调用方降级处理。
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    throw error
+  }
+  // 成功后才动真实目录:替换窗口极短;上面任一步失败都已 throw,targetRoot 全程未被触碰。
+  fs.rmSync(targetRoot, { recursive: true, force: true })
+  fs.renameSync(tempRoot, targetRoot)
 }
 // assertNotConfigRuntime 挡住把 flow-source 指向 form-runtime 运行源码的误配置：
 // 两者都必须各自独立，跨用会让执行服务装载与表单运行时互相污染。

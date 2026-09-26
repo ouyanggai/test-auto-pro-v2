@@ -1,4 +1,10 @@
 # 当前进度
+- 2026-09-26 执行器服务启动修复完成（分支 `执行引擎改造`，3 处代码提交）：
+  现象：`pnpm --dir executor-service start` 报 `缺少 flow-source/dist` 退出；启动日志先出「自动同步 rsh-flow-components 告警 … node.exe ETIMEDOUT」。
+  根因链：`server.ts` `ensureLatestFlowSource` 把远端同步与本地构建放在同一个 try——同步一旦抛错，构建被整段跳过，dist 从不产出，`extractPageDist` 抛错退出；`sync-flow-source.js` `cloneAt` 先 `rmSync(flow-source)` 再就地 fetch，同步中断会把 babel.config.js/dist/.git 连同工作副本清空；babel.config.js 被 gitignore、只随克隆落地，缺失后 vue-cli 构建再无法进行。
+  修复：① `server.ts` 拆分同步（尽力而为、失败仅告警）与构建（始终执行），`EXECUTOR_DISABLE_AUTO_SYNC=1` 只关远端拉取、不再连带跳过构建（提交 `b5bda7d`）；② `build-native-page.js` 新增 `ensureBabelConfig`，babel.config.js 缺失时按上游标准预设兜底恢复（提交 `b5bda7d`）；③ `sync-flow-source.js` `cloneAt` 改为临时目录克隆成功后原子替换，失败时旧 flow-source 原样保留（本提交）。
+  纠正上一条（9-25）运维注意的错误判断：`git@192.168.1.155` 实际可达——本机 ssh key 直连成功（`ssh -T` 返回 GitLab 欢迎、`git ls-remote`/`fetch --depth 1` 均约 2s、`refs/heads/test`=`e141a79`），babel.config.js 上游有跟踪、克隆会带出；此前 ETIMEDOUT 属瞬时/首连叠加破坏性 cloneAt 造成的连锁，并非远端不可达。因此本机运行 executor-service 不再必须带 `EXECUTOR_DISABLE_AUTO_SYNC=1`。
+  验证：`npm run typecheck` 通过；两脚本 `node --check` 通过；本地 `build-native-page` 成功产出 dist；起 executor-service 后 `/health` 返回 `{ok:true,...}`、`/flow` 页面正常装载；`cloneAt` 临时替换/失败回滚语义以隔离脚本实测（失败保留旧目录、成功原子替换）。真实浏览器流程仍由用户人工核对。
 - 2026-09-25 Plan 59 / Run 169 最新复审（`docs/auto/2026-09-25-plan59-run169-latest-review-repair.md`）五项修复实施完成，停在 **ready_for_manual**（分支 `执行引擎改造`）：
   ① §3.1 系统结构字段（`flowInstanceId`）统一从业务载荷构造（`formdata.go`）与 runtime 写后正文保护（`executor.go` `protectRuntimeFormBody`→`businessFormKeys`）剔除，复用 `target.IsSystemStructuralField` 唯一入口，实例 ID 由顶层协议承担（提交 `354a81a`）；
   ② §3.3 `sessionFactsForRuntime` 改为返回 `(SessionFacts, error)`，runtime 身份读取能力缺失/失败/字段缺失一律写前 `GateBlocked`，与 `nodeFormData` 同口径，不回退会话缓存（提交 `8f25c51`）；
