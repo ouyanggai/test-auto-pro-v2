@@ -872,20 +872,27 @@ function nativeURL (origin: string, payload: Record<string, unknown>): string {
 }
 
 async function ensureLatestFlowSource (): Promise<void> {
-  // 启动时自动检查并同步 rsh-flow-components 最新代码（可设置 EXECUTOR_DISABLE_AUTO_SYNC=1 禁用）
-  if (process.env.EXECUTOR_DISABLE_AUTO_SYNC === '1') return
   const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const syncScript = path.join(serviceRoot, 'scripts', 'sync-flow-source.js')
   const buildScript = path.join(serviceRoot, 'scripts', 'build-native-page.js')
+  // 1. 远端同步是尽力而为:内网 git(192.168.1.155)不可达时只告警,绝不因此跳过本地页面构建;
+  //    EXECUTOR_DISABLE_AUTO_SYNC=1 只关掉这一步远端拉取,不影响下面的本地构建兜底。
+  if (process.env.EXECUTOR_DISABLE_AUTO_SYNC !== '1') {
+    try {
+      childProcess.execFileSync(process.execPath, [syncScript, '--pull-latest'], {
+        cwd: serviceRoot,
+        encoding: 'utf8',
+        timeout: 60000,
+        stdio: 'inherit'
+      })
+    } catch (error) {
+      console.warn('[executor] 启动时自动同步 rsh-flow-components 告警(已回落到本地版本):', (error as Error)?.message ?? error)
+    }
+  }
+  // 2. 本地页面构建独立于同步结果:无论同步成功、失败还是被禁用,都必须让 dist 对应当前源码。
+  //    build-native-page 自身按输入摘要判定是否重建,dist 已最新时是快速空操作;
+  //    这里单独兜底,根治「同步失败->构建被整段跳过->缺 dist->启动失败」的连锁。
   try {
-    // 1. 同步远端最新分支，若有更新则拉取
-    childProcess.execFileSync(process.execPath, [syncScript, '--pull-latest'], {
-      cwd: serviceRoot,
-      encoding: 'utf8',
-      timeout: 60000,
-      stdio: 'inherit'
-    })
-    // 2. 检查 dist 是否需要根据更新后的源码重新构建
     childProcess.execFileSync(process.execPath, [buildScript], {
       cwd: serviceRoot,
       encoding: 'utf8',
@@ -893,7 +900,7 @@ async function ensureLatestFlowSource (): Promise<void> {
       stdio: 'inherit'
     })
   } catch (error) {
-    console.warn('[executor] 启动时自动同步 rsh-flow-components 告警（已回落到本地版本）：', (error as Error)?.message ?? error)
+    console.warn('[executor] 原生 /flow 页面构建告警(沿用现有 dist,缺失则启动仍会失败):', (error as Error)?.message ?? error)
   }
 }
 

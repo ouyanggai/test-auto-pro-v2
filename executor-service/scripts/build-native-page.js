@@ -18,6 +18,7 @@ const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const flowSource = path.join(serviceRoot, 'flow-source')
 const distDir = path.join(flowSource, 'dist')
 const stampPath = path.join(flowSource, '.native-page-build.json')
+const babelConfigPath = path.join(flowSource, 'babel.config.js')
 
 // 构建输入是这些目录/文件的内容摘要；任一变化都应触发重建。
 const BUILD_INPUTS = ['src', 'public', 'package.json', 'vue.config.js', 'babel.config.js']
@@ -106,9 +107,21 @@ function runBuild () {
   }
 }
 
+// ensureBabelConfig 兜底恢复 flow-source/babel.config.js。
+// 该文件被 Git 忽略、只随远端克隆落地;内网 git 不可达导致的克隆超时会把它连同 dist 一并清空,
+// 缺失时 vue-cli-service build 直接失败。内容与参考仓库 rsh-flow-components 一致(vue-cli 标准预设),
+// 只在缺失时写入、已存在则原样保留,避免与克隆结果产生第二处口径。
+function ensureBabelConfig () {
+  if (fs.existsSync(babelConfigPath)) return
+  process.stdout.write('[BUILD] 恢复缺失的 flow-source/babel.config.js\n')
+  fs.writeFileSync(babelConfigPath, "module.exports = {\n  presets: ['@vue/cli-plugin-babel/preset'],\n  compact: false\n};\n")
+}
+
 function main () {
   if (!fs.existsSync(flowSource)) fail('缺少 executor-service/flow-source，先执行 pnpm --dir executor-service sync-source')
   if (!fs.existsSync(path.join(flowSource, 'package.json'))) fail('flow-source 缺少 package.json')
+  // babel.config.js 是构建输入:缺失会让 digest 计算与 vue-cli 构建同时失败,先兜底恢复再算摘要。
+  ensureBabelConfig()
 
   const digest = digestInputs()
   if (isPageFresh(digest)) {
