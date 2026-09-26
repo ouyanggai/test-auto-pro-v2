@@ -639,6 +639,16 @@ function schedulePoll(version = requestVersion): void {
   }, interval)
 }
 
+// eventKindClass 把事件 kind 映射到语义色类，让错误/停止类事件一眼醒目。
+// 不用 kind 全名，只分四档：success / warning / error / 默认，
+// 界面不需要显示 kind 原文，只需要语义颜色。
+function eventKindClass(kind: string): string {
+  if (kind === 'path_run_started' || kind === 'path_run_completed' || kind === 'step_executed') return 'event--success'
+  if (kind === 'gate_blocked_stopped' || kind === 'path_deviation_stopped' || kind === 'proxy_remap_failed' || kind === 'run_uncertain_closed') return 'event--error'
+  if (kind === 'breakpoint_hit' || kind === 'path_deviation' || kind === 'paused') return 'event--warning'
+  return ''
+}
+
 async function pollEvents(version = requestVersion, signal?: AbortSignal): Promise<void> {
   const pathRunId = selectedPathRunID.value
   if (eventPathRunID !== pathRunId) {
@@ -1249,10 +1259,12 @@ onBeforeUnmount(() => {
         <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放「状态怎么变的」。 -->
         <section v-show="activeTab === 'events'" class="run-detail__events" aria-label="事件流">
           <ol class="run-detail__event-list">
-            <li v-for="event in runEvents" :key="event.id">
-              <span class="run-detail__event-time">{{ event.createdAt }}</span>
-              <span>{{ event.label }}</span>
-              <span v-if="event.detail" class="run-detail__event-detail">{{ event.detail }}</span>
+            <li v-for="event in runEvents" :key="event.id" class="run-detail__event-item" :class="eventKindClass(event.kind)">
+              <div class="run-detail__event-row">
+                <span class="run-detail__event-time">{{ event.createdAt }}</span>
+                <span class="run-detail__event-label">{{ event.label }}</span>
+              </div>
+              <div v-if="event.detail" class="run-detail__event-detail">{{ event.detail }}</div>
             </li>
             <li v-if="runEvents.length === 0" class="run-detail__event-empty">还没有事件；放行后这里会按顺序追加。</li>
           </ol>
@@ -1550,13 +1562,48 @@ onBeforeUnmount(() => {
 
 /* 事件补充明细：节点·接口·目标返回原话，单独一行灰显，便于按节点核对调用的接口与原始错误 */
 .run-detail__event-detail {
-  display: block;
-  margin: 2px 0 0 0;
+  margin: 3px 0 0 0;
+  padding: 4px 8px;
+  background: color-mix(in oklch, currentColor 5%, transparent);
+  border-radius: 4px;
   color: var(--run-secondary-text-color, #909090);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
   word-break: break-all;
+}
+
+/* 每条事件行：时间 + 标签排在同一行，detail 折行显示 */
+.run-detail__event-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.run-detail__event-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  flex-wrap: wrap;
+}
+.run-detail__event-label {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* 语义颜色：错误类事件红色，警告类橙色，成功类绿色 */
+.event--error {
+  color: var(--error-color, #d03050);
+}
+.event--error .run-detail__event-detail {
+  color: color-mix(in oklch, var(--error-color, #d03050) 80%, transparent);
+  background: color-mix(in oklch, var(--error-color, #d03050) 8%, transparent);
+}
+.event--warning {
+  color: color-mix(in oklch, #e07c00 90%, black);
+}
+.event--success {
+  color: var(--success-color, #18a058);
 }
 
 .run-detail__event-empty {

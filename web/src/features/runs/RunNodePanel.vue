@@ -238,7 +238,8 @@ const stepOutcomeTone = computed<'success' | 'error' | 'warning' | 'info'>(() =>
   return 'info'
 })
 
-// stepWhyText 回答“为什么不能/没能继续”（F-034 T06）：优先受控阻塞说明，其次尝试原因。
+// stepWhyText 回答”为什么不能/没能继续”（F-034 T06）：优先受控阻塞说明，其次尝试原因。
+// 补充：把 gateSnapshot 里未满足的门禁条件逐条列出，不再只显示一句模糊结论。
 const stepWhyText = computed(() => {
   const step = stepDialog.value
   if (!step) return ''
@@ -246,6 +247,25 @@ const stepWhyText = computed(() => {
   if (stepBlocked) return props.detail.stopKindNote || '目标在执行前明确拒绝了请求：前置条件未满足'
   const failedAttempt = step.attempts.find(attempt => !isSuccessfulAttempt(attempt))
   return failedAttempt?.reason || ''
+})
+
+// stepGateFailedItems 从 gateSnapshot 读取未满足的门禁条件：失败/阻塞步骤在详情弹窗里逐条展示，
+// 让用户清楚知道是「没有待处理的待办」还是「实例状态不对」，而不是只看到一句”前置条件未满足”。
+const stepGateFailedItems = computed<Array<{ label: string; text: string }>>(() => {
+  const step = stepDialog.value
+  if (!step?.gateSnapshot) return []
+  try {
+    const snapshot = JSON.parse(step.gateSnapshot) as {
+      allowed?: boolean
+      items?: Array<{ key?: string; label?: string; present?: boolean; required?: boolean }>
+    }
+    if (snapshot.allowed) return []
+    return (snapshot.items ?? [])
+      .filter(item => item.present === false)
+      .map(item => ({ label: item.label || item.key || '', text: gateItemText(item) }))
+  } catch {
+    return []
+  }
 })
 
 // StepTargetReturn 是一条 runtime 尝试的目标平台原始返回：调用状态中文、原始错误原话与逐请求接口。
@@ -302,11 +322,13 @@ const stepPlainSummary = computed(() => {
   const where = (props.nodeName || step.nodeKey || '该节点').trim()
   const title = stepOutcomeTitle.value
 
-  // 加签动作特殊简洁表达：谁在哪个节点执行了加签，加签给了谁
+  // 加签动作特殊简洁表达：谁在哪个节点执行了加签，加签给了谁。
+  // 历史步骤的被加签人从 step.receiverName 取（后端从 gateSnapshot 落库），
+  // 只在没有落库时才退到 currentPreview，避免已完成步骤显示"指定人员"。
   if (step.action === 'add_sign' || step.actionName === '加签') {
-    const addSignTarget = currentPreview.value?.facts?.currentTaskAssigneeName
-      || props.detail.currentPreview?.actorName
-      || (nodeTimeline.value.find(item => item.stepNo === step.stepNo + 1)?.actorName)
+    const addSignTarget = step.receiverName?.trim()
+      || (currentPreview.value?.facts?.currentTaskAssigneeName as string | undefined)?.trim()
+      || (nodeTimeline.value.find(item => item.stepNo === step.stepNo + 1)?.actorName)?.trim()
       || '指定人员'
     if (title === '成功') return `${who} 在「${where}」执行了加签，加签给了 ${addSignTarget}。`
     if (title === '失败') return `${who} 在「${where}」执行加签失败：${stepWhyText.value || '目标未返回具体原因'}。`
@@ -611,12 +633,28 @@ const dialogStyle = computed(() => ({
           </div>
           <span class="run-panel__summary-time">共用时 {{ formatElapsed(stepDialog.durationMs) }}</span>
         </div>
-        <div v-if="stepDialog.receiverName" style="margin: 8px 0; font-size: 13px;">
-          <span>转发接收人：<strong>{{ stepDialog.receiverName }}</strong></span>
+        <!-- 加签/转发：在结论行正下方明确显示执行人给了谁，不让用户去猜 -->
+        <div v-if="stepDialog.receiverName" class="run-panel__receiver">
+          <span v-if="stepDialog.action === 'add_sign' || stepDialog.actionName === '加签'">
+            加签给：<strong>{{ stepDialog.receiverName }}</strong>
+          </span>
+          <span v-else-if="stepDialog.action === 'transfer' || stepDialog.actionName === '移交'">
+            移交给：<strong>{{ stepDialog.receiverName }}</strong>
+          </span>
+          <span v-else>
+            接收人：<strong>{{ stepDialog.receiverName }}</strong>
+          </span>
         </div>
-        <!-- 为什么不能/不能继续 + 下一步怎么处理：阻塞与失败时紧邻结论显示。 -->
+        <!-- 为什么不能/没能继续 + 下一步怎么处理：阻塞与失败时紧邻结论显示。 -->
         <div v-if="stepOutcomeTitle !== '成功'" class="run-panel__why">
           <p v-if="stepWhyText" class="run-panel__why-reason">为什么不能继续：{{ stepWhyText }}</p>
+          <!-- 门禁条件逐条展开：让用户清楚知道是哪一项条件没满足，而不是只看到"前置条件未满足" -->
+          <ul v-if="stepGateFailedItems.length > 0" class="run-panel__gate-failed">
+            <li v-for="item in stepGateFailedItems" :key="item.label" class="run-panel__gate-failed-item">
+              <span class="run-panel__gate-failed-icon">✗</span>
+              <span>{{ item.text }}</span>
+            </li>
+          </ul>
           <p v-if="stepNextText" class="run-panel__why-next">下一步：{{ stepNextText }}</p>
         </div>
 
@@ -1158,6 +1196,39 @@ const dialogStyle = computed(() => ({
   margin: 4px 0 0;
   color: var(--run-secondary-text-color, #909090);
   line-height: 1.6;
+}
+
+/* 接收人/加签对象行：紧跟结论一句话显示，让用户不用再翻详情就能看到执行给了谁 */
+.run-panel__receiver {
+  margin: 4px 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 门禁未满足条件列表：失败/阻塞时把每一项没过的条件逐条说清楚，
+   而不是只显示"前置条件未满足"这句话让用户猜 */
+.run-panel__gate-failed {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--error-color, #d03050);
+  background: color-mix(in oklch, var(--error-color, #d03050) 8%, transparent);
+  border-radius: 0 6px 6px 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.run-panel__gate-failed-item {
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.run-panel__gate-failed-icon {
+  color: var(--error-color, #d03050);
+  font-weight: 600;
+  flex-shrink: 0;
+  width: 14px;
 }
 
 </style>
