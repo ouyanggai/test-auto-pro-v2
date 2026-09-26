@@ -1,6 +1,8 @@
 package executor_test
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"test-auto-pro-v2/internal/engine/step"
@@ -39,7 +41,49 @@ func recoverySkipContext() step.RunContext {
 	}
 }
 
-// TestRecoveryEffectStepsExcludedFromSkipGuard 锁定：取回/回退/撤回归入恢复型动作，
+// TestRecoveryStepUsesPersistedSkippedTrigger 验证进程重启后仍能从最近一次尝试恢复恢复链门禁，
+// 不因内存现场丢失而重新发送没有前置副作用的重新提交。
+func TestRecoveryStepUsesPersistedSkippedTrigger(t *testing.T) {
+	runCtx := recoverySkipContext()
+	runCtx.PathRun.ID = 991
+	runCtx.Steps = []model.CompiledActionStep{
+		{Sequence: 1, Source: model.ActionStepSourceUser, SourceActionKey: "reject-1", Action: model.ActionReject, Scope: model.ActionScopeTask, NodeKey: "early"},
+		{Sequence: 2, Source: model.ActionStepSourceRecovery, SourceActionKey: "reject-1", Action: model.ActionResubmit, Scope: model.ActionScopeInitiator, NodeKey: "early"},
+	}
+	facts := &fakeFacts{
+		steps:    []model.RunStep{{PathRunID: runCtx.PathRun.ID, StepNo: 1, Source: string(model.ActionStepSourceUser), Action: string(model.ActionReject)}},
+		attempts: []model.RunStepAttempt{{PathRunID: runCtx.PathRun.ID, AttemptNo: 1, Verdict: step.StepVerdictTargetSkipped}},
+	}
+	executor := step.NewExecutor(&fakeTarget{instance: fakeTargetView{Found: true, Status: "run"}}, &fakeSessions{}, &fakeRunState{}, facts, fixedRunConfig(), nil)
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 1)
+	if err != nil || finished || preview == nil {
+		t.Fatalf("从落账事实恢复恢复链门禁失败：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	if !preview.RecoveryNotApplicable {
+		t.Fatalf("已落账的目标跳过触发动作必须让恢复链未适用：%+v", preview)
+	}
+}
+
+// 触发动作被目标跳过后，恢复步骤只记录 not_applicable，不发送重新提交或恢复审批。
+func TestRecoveryStepBecomesNotApplicableAfterSkippedTrigger(t *testing.T) {
+	runCtx := recoverySkipContext()
+	runCtx.RecoveryTriggerOutcomes = map[string]string{"reject-1": "target_skipped"}
+	runCtx.Steps = []model.CompiledActionStep{{
+		Sequence: 1, Source: model.ActionStepSourceRecovery, SourceActionKey: "reject-1",
+		Action: model.ActionResubmit, Scope: model.ActionScopeInitiator, NodeKey: "early",
+	}}
+	executor := step.NewExecutor(&fakeTarget{instance: fakeTargetView{
+		Found: true, Status: "run", CurrentNodes: []string{"late-target"}, DueNodes: []string{"late-target"},
+	}}, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	preview, finished, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || finished || preview == nil {
+		t.Fatalf("恢复链未适用预览失败：finished=%v err=%v preview=%+v", finished, err, preview)
+	}
+	if !preview.RecoveryNotApplicable || !strings.Contains(preview.SkipReason, "未适用") {
+		t.Fatalf("触发动作被跳过后恢复步骤必须标记未适用：%+v", preview)
+	}
+}
+
 // 推进型的同意/不同意/加签等不得被误纳入，否则会拆掉真实的写前阻塞门禁。
 func TestRecoveryEffectStepsExcludedFromSkipGuard(t *testing.T) {
 	for _, action := range []model.ActionKey{model.ActionRetrieve, model.ActionRollback, model.ActionWithdraw} {

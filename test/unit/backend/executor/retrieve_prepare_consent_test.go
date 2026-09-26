@@ -71,10 +71,10 @@ func TestRetrievePrepareConsentNotSkippedWhenNoDone(t *testing.T) {
 		t.Fatalf("无已办时取回准备同意不应被跳过，应落到普通同意门禁：%+v", preview)
 	}
 }
-// TestRetrievePrepareConsentNotMistakenlySkippedByTargetSkippedStep 验证：
-// 即使当前节点配置了 isSkip=true 且实例当前节点显示在后续节点，取回准备同意步骤
-// 也绝不能被 targetSkippedStepReason 误跳过，保证准备同意能被正常裁决与执行。
-func TestRetrievePrepareConsentNotMistakenlySkippedByTargetSkippedStep(t *testing.T) {
+
+// TestRetrievePrepareConsentUsesTargetSkipWhenNodeIsSkipped 验证：
+// 即使是取回准备同意，目标已递归越过 isSkip=true 的无人节点时也必须零写入记录目标跳过。
+func TestRetrievePrepareConsentUsesTargetSkipWhenNodeIsSkipped(t *testing.T) {
 	isSkip := true
 	runCtx := newRunContext([]model.CompiledActionStep{
 		{
@@ -85,12 +85,17 @@ func TestRetrievePrepareConsentNotMistakenlySkippedByTargetSkippedStep(t *testin
 			Sequence: 2, Source: model.ActionStepSourceUser, Action: model.ActionRetrieve,
 			Scope: model.ActionScopeCompletedTask, NodeKey: "node-audit",
 		},
+		{
+			Sequence: 3, Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove,
+			Scope: model.ActionScopeTask, NodeKey: "node-next",
+		},
 	})
 	runCtx.Source = "submitted"
 	runCtx.PathRun.MainInstanceRef = "instance-retrieve-skip"
 	runCtx.Nodes["node-audit"] = step.NodeInfo{
 		Name: "审核人1", Type: "common", TargetNodeID: "node-1", IsSkip: &isSkip,
 	}
+	runCtx.Nodes["node-next"] = step.NodeInfo{Name: "后续节点", Type: "common", TargetNodeID: "node-2"}
 
 	targetFake := &taskActionFactsTarget{
 		fakeTarget: &fakeTarget{instance: fakeTargetView{
@@ -104,9 +109,8 @@ func TestRetrievePrepareConsentNotMistakenlySkippedByTargetSkippedStep(t *testin
 	if err != nil {
 		t.Fatalf("预览生成失败：%v", err)
 	}
-	// 准备同意绝不能被判为“实例待办已在后续节点，本节点已被目标自动跳过”
-	if preview.TargetSkipped && strings.Contains(preview.SkipReason, "自动跳过") {
-		t.Fatalf("取回准备同意绝不能被 targetSkippedStepReason 误判为目标自动跳过，实际 preview=%+v", preview)
+	if !preview.TargetSkipped || !strings.Contains(preview.SkipReason, "自动跳过") {
+		t.Fatalf("目标 isSkip=true 且待办已越过时，准备同意应记录目标跳过并零写入：%+v", preview)
 	}
 }
 
@@ -159,6 +163,7 @@ func TestFollowActionIdempotentSkipWhenAlreadyFollowed(t *testing.T) {
 		t.Fatalf("跳过原因应说明已处于跟踪状态：%s", preview.SkipReason)
 	}
 }
+
 // TestUrgeActionAllowedWhenInstanceHasCurrentHandlers 验证：
 // 当发起人查询自己的待办为空（DueNodes 为空），但已发列表明确返回了当前待办人（CurrentHandlers）
 // 且实例处于 run 状态时，催办动作的 HasPendingRecipient 必须判定为满足，顺利放行催办。

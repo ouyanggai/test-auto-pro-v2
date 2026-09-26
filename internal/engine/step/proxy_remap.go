@@ -222,10 +222,11 @@ func (e *Executor) RemapProxyTreeForRun(ctx context.Context, runCtx RunContext, 
 // latestRunFlowProxy 按运行来源重新读取实例当前代理 ID；这是加签后刷新模板的唯一事实来源。
 func latestRunFlowProxy(ctx context.Context, client TargetClient, active target.Session, source, instanceID string) (string, bool, error) {
 	switch strings.TrimSpace(source) {
-	case "pending":
-		proxyID, _, _, found, err := client.FindDueFlow(ctx, active, instanceID)
-		return strings.TrimSpace(proxyID), found, err
-	case "new", "started", "":
+	case "new", "started", "pending", "done", "submitted", "":
+		if strings.EqualFold(strings.TrimSpace(source), "pending") {
+			proxyID, _, _, found, err := client.FindDueFlow(ctx, active, instanceID)
+			return strings.TrimSpace(proxyID), found, err
+		}
 		proxyID, _, _, _, found, err := client.FindSubmittedFlow(ctx, active, instanceID)
 		return strings.TrimSpace(proxyID), found, err
 	default:
@@ -402,13 +403,34 @@ func cloneNextNodeAuditors(input map[string][]target.NextAuditor) map[string][]t
 	}
 	return result
 }
+
+// ValidateCurrentNodesInRemap 验证写后实例当前节点全部属于刚读取的目标代理树。
+// 当前节点不在新树中时，目标事实与代理结构无法唯一对应，调用方必须停止而不能沿用旧节点。
+func ValidateCurrentNodesInRemap(currentNodeIDs []string, remap ProxyRemap) error {
+	if len(currentNodeIDs) == 0 {
+		return fmt.Errorf("写后目标未返回当前节点，无法验证代理树重绑定")
+	}
+	seen := map[string]bool{}
+	for _, rawID := range currentNodeIDs {
+		nodeID := strings.TrimSpace(rawID)
+		if nodeID == "" || seen[nodeID] {
+			continue
+		}
+		seen[nodeID] = true
+		if _, exists := remap.GraphNodeTypes[nodeID]; !exists {
+			return fmt.Errorf("写后目标当前节点 %q 不在最新代理树中", nodeID)
+		}
+	}
+	return nil
+}
+
 // ValidateAddSignCurrentNode 校验加签写响应返回的当前节点与锚点在新树中的映射是否一致。
 //
 // 业务规则与为什么这样处理：
-// 1. 普通线性审批流中，加签将新节点插入到当前锚点之后，锚点本身仍是当前待办节点，两节点 ID 必须严格相等；
-// 2. 并行分支场景中，目标平台在实例主记录（t_flow_instance）上返回的 currentNodeProxyId 为并行网关节点
-//    （executeNodeType 为 parallel），而真实的加签锚点处于该并行网关分流的子分支上。若响应当前节点为
-//    并行网关且能正向到达映射后的锚点节点，属目标平台在并行网关下的合法状态，不判定为不一致。
+//  1. 普通线性审批流中，加签将新节点插入到当前锚点之后，锚点本身仍是当前待办节点，两节点 ID 必须严格相等；
+//  2. 并行分支场景中，目标平台在实例主记录（t_flow_instance）上返回的 currentNodeProxyId 为并行网关节点
+//     （executeNodeType 为 parallel），而真实的加签锚点处于该并行网关分流的子分支上。若响应当前节点为
+//     并行网关且能正向到达映射后的锚点节点，属目标平台在并行网关下的合法状态，不判定为不一致。
 func ValidateAddSignCurrentNode(newCurrentNodeID, mappedCurrentID string, remap ProxyRemap) error {
 	newCurrentNodeID = strings.TrimSpace(newCurrentNodeID)
 	mappedCurrentID = strings.TrimSpace(mappedCurrentID)

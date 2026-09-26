@@ -1240,6 +1240,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		// 重新核验：只重读结果，绝不重发写请求；尝试序号顺延，事实如实追加。
 		attempt = attemptNo + 1
 	}
+	currentStep := session.runCtx.Steps[session.nextIndex]
 	outcome, _, err := s.steps.RunApprovedStep(ctx, step.ApprovedStep{
 		RunCtx: session.runCtx, Preview: session.preview, NextIndex: session.nextIndex,
 		Attempt: attempt, IsReplay: isReplay, ReportProgress: reporter, Reverify: reverify,
@@ -1256,6 +1257,12 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		session.stopReason = "结果读取失败，已停在本步；重新放行只重新读取结果，不会重复发写请求"
 		s.mu.Unlock()
 		return result, nil
+	}
+	if currentStep.Source == model.ActionStepSourceUser && currentStep.SourceActionKey != "" && session.preview.TargetSkipped {
+		if session.runCtx.RecoveryTriggerOutcomes == nil {
+			session.runCtx.RecoveryTriggerOutcomes = map[string]string{}
+		}
+		session.runCtx.RecoveryTriggerOutcomes[currentStep.SourceActionKey] = "target_skipped"
 	}
 	if reverify {
 		s.mu.Lock()
@@ -1306,7 +1313,10 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	// 加签会重建实例私有代理，即使目标响应省略新 ID 或沿用同一 ID，也必须按实例待办重新刷新整棵树。
 	// 只比较响应字段会漏掉目标页面实际使用的"写后重新取树"步骤，后续动作会继续拿旧节点事实。
 	remapAfterAddSign := session.preview != nil && session.preview.Action == model.ActionAddSign
-	if remapAfterAddSign || (newFlowProxyID != "" && newFlowProxyID != oldFlowProxyID) || (newCurrentNodeID != "" && newCurrentNodeID != oldCurrentNodeID) {
+	// 取回会让实例沿目标新批次重新绑定当前代理树；加签则会插入节点并重建代理树。
+	remapAfterRetrieve := session.preview != nil && session.preview.Action == model.ActionRetrieve
+	remapRequired := remapAfterAddSign || remapAfterRetrieve || (newFlowProxyID != "" && newFlowProxyID != oldFlowProxyID) || (newCurrentNodeID != "" && newCurrentNodeID != oldCurrentNodeID)
+	if remapRequired {
 		proxyID := newFlowProxyID
 		if proxyID == "" {
 			proxyID = oldFlowProxyID
@@ -1333,6 +1343,9 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		if remapErr == nil {
 			remap, remapErr = s.steps.RemapProxyTreeForRun(ctx, session.runCtx, proxyID, insertAnchor)
 		}
+		if remapErr == nil && remapAfterRetrieve {
+			remapErr = step.ValidateCurrentNodesInRemap(outcome.CurrentNodeProxyIDs, remap)
+		}
 		if remapErr == nil && newCurrentNodeID != "" && insertAnchor != "" {
 			// 写后当前节点应当就是锚点在新树里的映射（或并行网关场景下为分流到锚点的并行祖先）：
 			// 加签把新审批节点插在锚点之后，锚点本身仍是当前待办节点，只是换了新 ID。
@@ -1347,7 +1360,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 			session.runCtx.FlowTree = nil
 			session.runCtx.GraphEdges = nil
 			session.runCtx.GraphNodeTypes = nil
-			stopReason := "加签后目标代理树已重建，但节点结构无法唯一重绑定：" + remapErr.Error() + "；已停止后续放行，只能查看或停止"
+			stopReason := "写后目标代理树已重建，但节点结构无法唯一重绑定：" + remapErr.Error() + "；已停止后续放行，只能查看或停止"
 			s.mu.Lock()
 			session.deviationStalled = true
 			session.stopReason = stopReason
@@ -1364,7 +1377,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 				session.runCtx.FlowTree = nil
 				session.runCtx.GraphEdges = nil
 				session.runCtx.GraphNodeTypes = nil
-				stopReason := "加签后目标代理树重绑定未完成：" + err.Error() + "；已停止后续放行，只能查看或停止"
+				stopReason := "写后目标代理树重绑定未完成：" + err.Error() + "；已停止后续放行，只能查看或停止"
 				s.mu.Lock()
 				session.deviationStalled = true
 				session.stopReason = stopReason
@@ -1377,7 +1390,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 			} else {
 				session.runCtx.FlowProxyID = proxyID
 				session.runCtx.FlowProxyRemapped = true
-				if len(remap.InsertedHumanNodeIDs) > 0 {
+				if remapAfterAddSign && len(remap.InsertedHumanNodeIDs) > 0 {
 					// 加签在当前节点之后新增了独立审批节点：编译期无法预知，写后按最新代理树把它补成
 					// 运行步骤，紧跟当前加签步骤之后，像普通节点一样处理——手动模式在其边界等待放行
 					// （受控），自动模式自动推进；处理人/会签由执行器按该插入节点自身的真实待办解析，
@@ -1407,7 +1420,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	}
 	remapStopped := false
 	s.mu.Lock()
-	remapStopped = session.deviationStalled && strings.Contains(session.stopReason, "加签后目标代理树")
+	remapStopped = session.deviationStalled && strings.Contains(session.stopReason, "写后目标代理树")
 	s.mu.Unlock()
 	s.mu.Lock()
 	session.executedStepNos[session.preview.StepNo] = true
@@ -1436,7 +1449,7 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	// 会签重跑——否则会对同一步反复「跳过」直到上限（实测取回前的准备同意被反复跳过打转）。
 	// 取回准备同意（RetrievePrepareConsent）为恢复链专属前置步骤，职责仅为产生已办记录供后续取回，
 	// 绝非业务多处理人会签，无论首次是否发写请求均严格禁止进入会签重跑循环。
-	currentStep := session.runCtx.Steps[session.nextIndex]
+	// currentStep 已在本次放行开始时捕获，后续会签循环继续复用同一游标步骤。
 	if session.preview.Action == model.ActionApprove && !session.preview.TargetSkipped && !currentStep.RetrievePrepareConsent && !outcome.NoMoreSteps && !outcome.DeviationDetected {
 		for extra := 0; extra < len(session.runCtx.Steps); extra++ {
 			still, probeErr := s.steps.InstanceStillAtStepNode(ctx, session.runCtx, session.runCtx.Steps[session.nextIndex])

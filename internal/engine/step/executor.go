@@ -723,6 +723,19 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 	// 作用域只到本次预览：放行后的核验（RunApprovedStep）不经过这里，天然全新读取。
 	ctx = target.AttachTaskSnapshotScope(ctx)
 	step := runCtx.Steps[nextIndex]
+	if step.Source == model.ActionStepSourceRecovery && strings.TrimSpace(step.SourceActionKey) != "" &&
+		recoveryTriggerWasSkipped(e.facts, runCtx, step) {
+		info := runCtx.Nodes[step.NodeKey]
+		reason := "触发恢复链的动作被目标跳过，恢复链未适用；不发送重新提交或恢复审批请求"
+		return &StepPreview{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, TotalSteps: len(runCtx.Steps),
+			ReleaseGroup: step.ReleaseGroup, ReleaseRequired: step.ReleaseRequired,
+			Action: step.Action, ActionName: "恢复链未适用", NodeKey: step.NodeKey,
+			TargetNodeID: info.TargetNodeID, NodeName: info.Name, ActorAccount: runCtx.PlanAccount,
+			GateAllowed: true, RecoveryNotApplicable: true, SkipReason: reason,
+			GateItems: []model.ActionPrecondition{},
+		}, false, nil
+	}
 	// 预览请求统一归属到本步第 1 次尝试：预览只读不写，不存在别的尝试号。
 	ctx = withStepScope(ctx, step.Sequence, 1, "plan")
 	reportProgressSafe(reportProgress, "plan", fmt.Sprintf("正在确认第 %d 步要做什么：查看要操作的节点和动作，确认它属于当前流程", step.Sequence))
@@ -828,10 +841,8 @@ func (e *Executor) BuildPreviewWithProgress(ctx context.Context, runCtx RunConte
 		if step.Scope != model.ActionScopeTask && step.Scope != model.ActionScopeCompletedTask {
 			return nil, false
 		}
-		// 「实例待办已越过本节点」只在"推进型动作"上是异常信号；对恢复型动作恰恰是正常前提。
-		// 取回（retrieve）的语义就是恢复本人已经走过的节点：此时实例待办必然停在该节点的后继，
-		// 若沿用目标跳过判定，就会把每一次合法取回都误判成"无处理人且不允许跳过"而写前阻塞。
-		// 因此恢复型动作不参与跳过判定，改由动作自身的已办/后继门禁（取回按 done 已办核对）裁决。
+		// 恢复型动作以实例已越过本步为合法前提；但取回准备同意是推进型前置步骤，
+		// 必须服从目标 isSkip 规则，否则目标已递归越过无人节点时工具会错误阻塞。
 		if isRecoveryEffectStep(step) {
 			return nil, false
 		}
@@ -1394,17 +1405,10 @@ func humanWaitDuration(d time.Duration) string {
 }
 
 // isRecoveryEffectStep 判断本步是否是"把实例拉回已经走过的节点"的恢复型动作。
-// 这类动作的成立前提就是实例待办已经越过目标节点（取回要求本人在该节点留有已办、
-// 回退要求存在真实前驱、撤回要求实例已流转），因此：
-//   - 不能套用"待办越过即视为目标自动跳过"的推进型判定，否则合法恢复被写前阻塞；
-//   - 它们各自的安全门禁由动作专属事实承担（取回核对 done 已办、回退解析真实前驱）。
-//
+// 取回准备同意属于推进型前置步骤，必须遵循目标 isSkip 递归跳过规则；真正的取回、回退和撤回
+// 才以实例已经越过目标节点作为合法前提，并由动作专属事实继续裁决。
 // 输入边界：只读 step，不改状态；调用方仍须保证动作专属门禁不被跳过。
 func isRecoveryEffectStep(step model.CompiledActionStep) bool {
-	// 取回准备同意步骤必须执行以产生已办审核记录，绝不能被提前误判为自动跳过。
-	if step.RetrievePrepareConsent {
-		return true
-	}
 	switch step.Action {
 	case model.ActionRetrieve, model.ActionRollback, model.ActionWithdraw:
 		return true
@@ -1667,6 +1671,34 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		}
 		// 导航步骤是只读的，没有领取推进权，也就无需释放。
 		log.Phase("settle", step.Sequence, 1, "导航步骤完成")
+		return outcome, lineNo, nil
+	}
+	if preview.RecoveryNotApplicable {
+		lineNo := log.Phase("settle", step.Sequence, 1, "恢复链未适用："+preview.SkipReason)
+		record := model.RunStep{
+			PathRunID: runCtx.PathRun.ID, StepNo: step.Sequence, Source: string(step.Source),
+			Action: string(step.Action), NodeKey: step.NodeKey, ActorSummary: preview.ActorName,
+			Status: model.RunStepSkipped, StartedAt: startedAt, FinishedAt: e.now(),
+			GateSnapshot: gateSnapshotJSON(preview, approved.RunCtx.SubmitBranchTargetNodeID),
+		}
+		attempt := model.RunStepAttempt{
+			PathRunID: runCtx.PathRun.ID, AttemptNo: attemptNo, Verdict: "recovery_not_applicable",
+			SideEffect: string(verdict.SideEffectNone), Reason: preview.SkipReason,
+			Basis:   "触发动作已记录为目标跳过，恢复链无适用前提",
+			LogPath: log.RelativePath(), LogLine: lineNo,
+		}
+		if _, err := e.facts.RecordStepAttempt(ctx, record, attempt, e.now()); err != nil {
+			return StepOutcome{Verdict: string(verdict.OutcomeFailed)}, lineNo, err
+		}
+		outcome.Verdict = string(verdict.OutcomeSucceeded)
+		outcome.NoMoreSteps = approved.NextIndex+1 >= len(runCtx.Steps)
+		outcome.SettleDetail = settleEventDetail(preview, preview.SkipReason)
+		if !outcome.NoMoreSteps {
+			if err := e.runState.BackToRunning(ctx, runCtx.PathRun.ID, outcome.SettleDetail); err != nil {
+				return outcome, lineNo, err
+			}
+		}
+		log.Phase("settle", step.Sequence, 1, preview.SkipReason)
 		return outcome, lineNo, nil
 	}
 	if preview.TargetSkipped {
@@ -1978,6 +2010,15 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	if readErr == nil && strings.TrimSpace(after.ReadError) == "" {
 		// 核验重读同时把实例名称补进日志作用域与 meta.json；写后屏障之后的新事实优先。
 		ctx = e.annotateInstanceFromFacts(ctx, runCtx, log, after)
+		if step.Action == model.ActionRetrieve {
+			// 取回写后目标会返回新批次的当前节点集合；控制层必须以这份事实重绑定代理树，
+			// 否则下一步仍会把编译期旧节点当作当前待办，无法发现目标新建的 pending。
+			outcome.FlowProxyID = strings.TrimSpace(after.FlowProxyID)
+			outcome.CurrentNodeProxyIDs = append([]string(nil), after.CurrentNodes...)
+			if len(outcome.CurrentNodeProxyIDs) > 0 {
+				outcome.CurrentNodeProxyID = strings.TrimSpace(outcome.CurrentNodeProxyIDs[0])
+			}
+		}
 	}
 	if readErr != nil || strings.TrimSpace(after.ReadError) != "" {
 		// 核验重读失败（工具侧会话失效或目标抖动）：写请求已发出且目标声明成功，但结果未确认。
@@ -4146,7 +4187,38 @@ type auditTrace struct {
 	total int
 }
 
-// TargetSkippedClassificationForTest 暴露跳过/阻塞分型判定，供 test 目录锁定 F-034 评审 #2 行为：
+// recoveryTriggerWasSkipped 判断恢复链触发动作是否已经被目标跳过。
+// 先读当前运行内存事实，再读最近一次已落账尝试，确保进程重启后不会重新发送无前置副作用的重提或恢复审批。
+func recoveryTriggerWasSkipped(store RunFactsStore, runCtx RunContext, step model.CompiledActionStep) bool {
+	triggerKey := strings.TrimSpace(step.SourceActionKey)
+	if triggerKey == "" || step.Source != model.ActionStepSourceRecovery {
+		return false
+	}
+	if runCtx.RecoveryTriggerOutcomes[triggerKey] == "target_skipped" {
+		return true
+	}
+	reader, ok := store.(persistedAttemptReader)
+	if !ok || runCtx.PathRun.ID == 0 {
+		return false
+	}
+	previous, attempt, err := reader.LatestStepAttempt(context.Background(), runCtx.PathRun.ID)
+	if err != nil || previous.StepNo >= step.Sequence {
+		return false
+	}
+	if attempt.Verdict == "recovery_not_applicable" && previous.Source == string(model.ActionStepSourceRecovery) {
+		return true
+	}
+	if attempt.Verdict != StepVerdictTargetSkipped {
+		return false
+	}
+	switch model.ActionKey(previous.Action) {
+	case model.ActionReject, model.ActionWithdraw, model.ActionRollback:
+		return true
+	default:
+		return false
+	}
+}
+
 // isSkip=true 且越过本节点 → 跳过；isSkip 未声明/false 且越过 → 阻塞；run_node_choose 越过 → 阻塞。
 func TargetSkippedClassificationForTest(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) (string, string) {
 	action, reason, _, _ := targetSkippedStepReason(runCtx, step, facts)

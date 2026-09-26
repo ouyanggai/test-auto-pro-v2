@@ -7,7 +7,21 @@ import (
 	"test-auto-pro-v2/internal/engine/step"
 )
 
-// TestApplyProxyRemapRemapsWholeRunContext 验证加签重建后所有运行期节点事实一次性换绑。
+// TestValidateCurrentNodesInRemapRequiresKnownCurrentNodes 验证取回写后必须拿到非空且属于新代理树的当前节点，
+// 缺失或不属于新树时不能沿用旧节点继续放行。
+func TestValidateCurrentNodesInRemapRequiresKnownCurrentNodes(t *testing.T) {
+	remap := step.ProxyRemap{GraphNodeTypes: map[string]string{"new-current": "common"}}
+	if err := step.ValidateCurrentNodesInRemap(nil, remap); err == nil {
+		t.Fatal("写后缺少当前节点时必须阻断代理重绑定")
+	}
+	if err := step.ValidateCurrentNodesInRemap([]string{"old-current"}, remap); err == nil {
+		t.Fatal("写后当前节点不在新代理树时必须阻断代理重绑定")
+	}
+	if err := step.ValidateCurrentNodesInRemap([]string{"new-current", "new-current"}, remap); err != nil {
+		t.Fatalf("新代理树中的当前节点应通过校验：%v", err)
+	}
+}
+
 func TestApplyProxyRemapRemapsWholeRunContext(t *testing.T) {
 	runCtx := step.RunContext{
 		FlowTree: &target.FlowNodeTemplate{ID: "old-root"},

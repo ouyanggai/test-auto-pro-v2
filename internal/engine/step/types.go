@@ -176,9 +176,12 @@ type RunContext struct {
 	// NextNodeAuditors 是启动时为 run_node_choose 下一节点解析的真实处理人。
 	// 仅在内存执行上下文中保存，提交、重新提交和同意都使用同一份结果构造目标 nextAuditorList。
 	NextNodeAuditors map[string][]target.NextAuditor
-	// FlowProxyRemapped 表示本次运行已经通过加签响应确认实例代理被重建；
+	// FlowProxyRemapped 表示本次运行已经通过目标事实确认实例代理被重建；
 	// 只有此时任务读取才允许在旧节点 ID 失配后按实例唯一任务恢复。
 	FlowProxyRemapped bool
+	// RecoveryTriggerOutcomes 记录恢复链触发动作的运行结论，仅在当前运行内存中使用。
+	// 触发动作被目标跳过时，依赖它的恢复步骤必须 not_applicable，禁止伪造驳回/撤回状态。
+	RecoveryTriggerOutcomes map[string]string
 	// ExcludedActorIDs 是启动时解析的「不可用处理人」用户 ID 集合（手动排除名单 + 停用 + 无当前平台角色）。
 	// 竞签/多处理人节点在运行时挑「以谁的身份审批」时，优先跳过这些人（他们登录必然失败）：
 	// 任一可用处理人审批即可推进，绝不因为先命中了一个不可用的人就整条路径停机。
@@ -521,6 +524,8 @@ type StepPreview struct {
 	// SkipReason 是给用户看的中文依据，必须说清为什么判定被跳过。
 	TargetSkipped bool
 	SkipReason    string
+	// RecoveryNotApplicable 表示触发恢复链的用户动作未生效，当前系统恢复步骤不适用且零写入。
+	RecoveryNotApplicable bool
 	// RequestPayload 是放行后将要发出的请求载荷（与预览同源），只在内存流转，含会话无关字段。
 	RequestPayload map[string]any
 	// FormOverlaid 与 FormWithheld 是本步表单数据按节点权限构造的结果：
@@ -618,10 +623,12 @@ type StepOutcome struct {
 	NoMoreSteps bool
 	// MainInstanceRef 是本步之后的主实例引用（发起成功时写入）。
 	MainInstanceRef string
-	// FlowProxyID 是加签更新后目标返回的新实例私有流程代理标识。
+	// FlowProxyID 是写后事实中的实例私有流程代理标识；取回等动作可能使其与写前不同。
 	FlowProxyID string
-	// CurrentNodeProxyID 是加签更新后目标返回的当前节点代理标识。
+	// CurrentNodeProxyID 是写后事实中的单一当前节点代理标识。
 	CurrentNodeProxyID string
+	// CurrentNodeProxyIDs 是写后事实中的完整活动节点集合，并行场景不能压缩为单一节点。
+	CurrentNodeProxyIDs []string
 	// AddSignAnchorNodeID 是加签写请求实际使用的锚点节点（写前真实当前待办节点，来自任务快照），
 	// 控制层的代理树重绑定必须用它作为插入锚点——它才是新插入节点的父节点，绝不能用离线编译
 	// 配置的节点键（两者在真实流转后可能不一致，用错锚点会导致整棵子链平移错位、无法唯一绑定）。
