@@ -339,8 +339,10 @@ func (r *RunRepository) AdvanceRunStatus(ctx context.Context, runID uint64, from
 		finishedAt = now
 	}
 	// 首次离开等待运行（进入运行中）时补记运行级开始时间；列表的开始/结束时间由此而来。
+	// 排队中的运行若直接进入终态（取消、服务重启后停止）也补记开始时间，
+	// 否则 started_at 永远为 null，前端只能显示创建时间，误导为"没有真正启动过"。
 	startedAt := any(nil)
-	if to == model.RunStatusRunning {
+	if to == model.RunStatusRunning || isTerminalRunStatus(to) {
 		startedAt = now
 	}
 	if _, err := tx.ExecContext(ctx, `

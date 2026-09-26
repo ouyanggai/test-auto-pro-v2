@@ -107,6 +107,33 @@ func IsSystemStructuralField(field string) bool {
 	return systemStructuralFields[strings.TrimSpace(field)]
 }
 
+// personPickerCompanionSuffixes 是目标人员选择组件自动生成的伴生字段后缀。
+// 这类字段由目标平台的人员选择组件在写入时自动附带，用于记录条件、人员 ID 与下拉显示名：
+//   - __condition：人员选择的条件字段，记录选择了哪个分支条件
+//   - __formPersonId：人员选择的人员 ID 字段
+//   - __virtualName：人员选择的虚拟显示名字段
+//
+// 特点：工具提交时会写入这些字段，目标平台在节点流转后，下一节点若没有同名人员组件，
+// /getCurrentFromData 接口不会在当前节点视图里返回这些字段——字段没有真正消失，只是
+// 不在当前节点的字段权限范围内。因此跨节点时不能以这些字段"不存在"来判定丢失。
+var personPickerCompanionSuffixes = []string{
+	"__condition",
+	"__formPersonId",
+	"__virtualName",
+}
+
+// IsPersonPickerCompanionField 判断字段是否为目标人员选择组件的伴生字段。
+// 伴生字段在节点流转后不一定出现在下一节点的表单视图里，不能做跨节点丢失核对。
+func IsPersonPickerCompanionField(field string) bool {
+	f := strings.TrimSpace(field)
+	for _, suffix := range personPickerCompanionSuffixes {
+		if strings.HasSuffix(f, suffix) && len(f) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // TargetDerivedCompanionKeys 返回同序号文本/对象/列表伴生键（含自身），供清空与核对一次处理完整结构。
 func TargetDerivedCompanionKeys(field string) []string {
 	return ClassifyTargetDerivedField(field).CompanionKeys

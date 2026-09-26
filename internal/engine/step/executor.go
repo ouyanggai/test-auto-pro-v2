@@ -1319,6 +1319,11 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 		if target.IsSystemStructuralField(field) {
 			continue
 		}
+		// 人员选择组件伴生字段（__condition、__formPersonId、__virtualName 后缀）在节点流转后
+		// 不一定出现在下一节点的表单视图里，不能以"字段未出现"来判断保存失败。
+		if target.IsPersonPickerCompanionField(field) {
+			continue
+		}
 		written, hasWritten := decision.OverlaidValues[field]
 		if !hasWritten {
 			continue
@@ -1345,6 +1350,10 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 			continue
 		}
 		if target.IsSystemStructuralField(field) {
+			continue
+		}
+		// 人员选择组件伴生字段在节点流转后不在下一节点的表单视图里，不做跨节点保留核对。
+		if target.IsPersonPickerCompanionField(field) {
 			continue
 		}
 		ownership := target.ClassifyFormField(field, false, false)

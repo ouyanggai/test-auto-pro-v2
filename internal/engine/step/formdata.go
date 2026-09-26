@@ -226,6 +226,12 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 				if fieldpower.Covers(editable, field) {
 					continue
 				}
+				// 人员选择组件伴生字段（__condition、__formPersonId、__virtualName 后缀）
+				// 在节点流转后不一定出现在下一节点的表单视图里（目标平台按节点字段权限返回），
+				// 字段"消失"是目标平台的正常行为而不是真正的数据丢失，不能阻断运行。
+				if target.IsPersonPickerCompanionField(field) {
+					continue
+				}
 				current, exists := merged[field]
 				if !exists {
 					decision.ValidationIssues = append(decision.ValidationIssues,
