@@ -62,6 +62,15 @@ func (s *Service) runLoop(ctx context.Context, pathRunID uint64, session *active
 			s.applyStop(ctx, pathRunID)
 			return
 		}
+		// 安全阀：deviationStalled 代表会话已进入只读停机态（路径偏离、重绑定失败等）。
+		// 自动循环不得在 deviationStalled=true 时继续发放行——否则取回被目标跳过后重绑定
+		// 失败、结论仍是 confirmed_success 时，循环会无限重执行同一步直到进程重启。
+		s.mu.Lock()
+		stalled := session.deviationStalled
+		s.mu.Unlock()
+		if stalled {
+			return
+		}
 		s.mu.Lock()
 		preview := session.preview
 		if preview == nil {

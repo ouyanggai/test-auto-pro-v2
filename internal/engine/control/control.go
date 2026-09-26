@@ -1333,7 +1333,10 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	// 只比较响应字段会漏掉目标页面实际使用的"写后重新取树"步骤，后续动作会继续拿旧节点事实。
 	remapAfterAddSign := session.preview != nil && session.preview.Action == model.ActionAddSign
 	// 取回会让实例沿目标新批次重新绑定当前代理树；加签则会插入节点并重建代理树。
-	remapAfterRetrieve := session.preview != nil && session.preview.Action == model.ActionRetrieve
+	// 注意：取回步骤被目标自动跳过时（TargetSkipped=true），没有发送写请求，目标代理树未重建，
+	// 不需要重绑定；强行重绑定会因 CurrentNodeProxyIDs 为空而触发 ValidateCurrentNodesInRemap 失败，
+	// 随后 deviationStalled=true 但结论仍是 confirmed_success，导致自动模式无限循环重执行。
+	remapAfterRetrieve := session.preview != nil && session.preview.Action == model.ActionRetrieve && !session.preview.TargetSkipped
 	remapRequired := remapAfterAddSign || remapAfterRetrieve || (newFlowProxyID != "" && newFlowProxyID != oldFlowProxyID) || (newCurrentNodeID != "" && newCurrentNodeID != oldCurrentNodeID)
 	if remapRequired {
 		proxyID := newFlowProxyID
