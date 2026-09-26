@@ -27,8 +27,10 @@ type staticOptionEntry struct {
 // 用户裁决去掉浏览器验证环节，因此对 remote:false 且 options 声明完整的静态下拉，服务端可以直接按
 // 目标渲染口径（showLabel 时显示 label，否则直接显示 value）把期望显示名唯一匹配成绑定值。
 // 边界：
-//   - 只处理值字段存在、虚拟显示字段被补丁改过（与原值不同）的控件，其他形态不猜测；
-//   - 远程控件（remote:true）没有静态选项来源，不在此解析，仍按既有链路（远程数据源同步或浏览器）处理；
+//   - 优先处理显示字段被补丁改过的控件，回填绑定值；
+//   - 其次检查显示字段未被补丁改的控件，若当前绑定值不在合法选项里（可能是模板漂移导致选项 ID 变化），
+//     落 STATIC_OPTION_STALE 阻断并告知用户字段名、当前值和可用选项，让用户清楚地知道该如何调整；
+//   - 远程控件（remote:true）没有静态选项来源，不在此解析，仍按既有链路处理；
 //   - 显示名在选项里找不到或同名多条时落阻断并保留原值，绝不猜测绑定值；
 //   - 值字段已被补丁直接改写时视为已解析，不做覆盖。
 func staticOptionBindingIssues(template map[string]any, original, values map[string]any) []model.HistoryDataIssue {
@@ -40,40 +42,64 @@ func staticOptionBindingIssues(template map[string]any, original, values map[str
 	for _, pair := range pairs {
 		virtualField := pair.valueField + "__virtualName"
 		desired, desiredOK := values[virtualField].(string)
-		if !desiredOK || strings.TrimSpace(desired) == "" {
-			continue
-		}
-		before, existed := original[virtualField]
-		if !existed || strings.TrimSpace(fmt.Sprint(before)) == strings.TrimSpace(desired) {
-			// 显示名没变化：可能是直接命中路径或历史已一致，绑定值不做任何改动。
-			continue
-		}
+		before, beforeExisted := original[virtualField]
+		virtualChanged := desiredOK && strings.TrimSpace(desired) != "" &&
+			(!beforeExisted || strings.TrimSpace(fmt.Sprint(before)) != strings.TrimSpace(desired))
+
 		current, currentOK := values[pair.valueField]
 		if !currentOK || current == nil {
 			continue
 		}
-		// 绑定值已与新显示名对应时无需解析（例如值字段本身就是显示值，如"事假"这类 value==显示名场景）。
-		if option, ok := pair.findByValue(fmt.Sprint(current)); ok && option.label == desired {
-			continue
-		}
-		matched, found := pair.matchByLabel(desired)
-		if !found {
+		currentStr := fmt.Sprint(current)
+
+		if virtualChanged {
+			// 显示名被补丁改过：把新显示名解析为绑定值。
+			if option, ok := pair.findByValue(currentStr); ok && option.label == desired {
+				// 绑定值已与新显示名对应，无需解析。
+				continue
+			}
+			matched, found := pair.matchByLabel(desired)
+			if !found {
+				issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
+					Code: "STATIC_OPTION_UNRESOLVED", Path: pair.valueField, Blocking: true,
+					Message: fmt.Sprintf("静态选项里找不到「%s」，控件仍会显示并提交历史值：%v；可选项：%s",
+						desired, currentStr, pair.optionLabels()),
+				}})
+				continue
+			}
+			if len(matched) != 1 {
+				issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
+					Code: "STATIC_OPTION_AMBIGUOUS", Path: pair.valueField, Blocking: true,
+					Message: fmt.Sprintf("静态选项里存在 %d 个「%s」，无法唯一确定绑定值，保留历史值：%v；可选项：%s",
+						len(matched), desired, currentStr, pair.optionLabels()),
+				}})
+				continue
+			}
+			// 按目标渲染口径回填：值字段写入选项绑定值，虚拟显示字段保持补丁目标名。
+			values[pair.valueField] = matched[0].value
+			values[virtualField] = desired
+		} else {
+			// 显示名未被补丁改：检查历史绑定值是否还在当前模板的合法选项里（模板漂移检测）。
+			// 值字段为空时不检查（表示未填写，不是非法值）。
+			if strings.TrimSpace(currentStr) == "" {
+				continue
+			}
+			if _, ok := pair.findByValue(currentStr); ok {
+				// 绑定值仍在合法选项里，不做处理。
+				continue
+			}
+			// 绑定值已不在合法选项里：模板漂移导致选项变化，告知用户需要重新选择。
+			// 显示名有值时一并展示，帮助用户知道历史上选的是什么。
+			historyDisplay := currentStr
+			if desiredOK && strings.TrimSpace(desired) != "" {
+				historyDisplay = desired + "（历史值 " + currentStr + "）"
+			}
 			issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
-				Code: "STATIC_OPTION_UNRESOLVED", Path: pair.valueField, Blocking: true,
-				Message: fmt.Sprintf("静态选项里找不到%s，控件仍会显示并提交历史值：%v", desired, current),
+				Code: "STATIC_OPTION_STALE", Path: pair.valueField, Blocking: true,
+				Message: fmt.Sprintf("历史数据「%s」不在当前模板的合法选项里，需要重新选择；当前可选：%s",
+					historyDisplay, pair.optionLabels()),
 			}})
-			continue
 		}
-		if len(matched) != 1 {
-			issues = appendHistoryIssues(issues, []model.HistoryDataIssue{{
-				Code: "STATIC_OPTION_AMBIGUOUS", Path: pair.valueField, Blocking: true,
-				Message: fmt.Sprintf("静态选项里存在 %d 个%s，无法唯一确定绑定值，保留历史值：%v", len(matched), desired, current),
-			}})
-			continue
-		}
-		// 按目标渲染口径回填：值字段写入选项绑定值，虚拟显示字段保持补丁目标名，保证回显与提交一致。
-		values[pair.valueField] = matched[0].value
-		values[virtualField] = desired
 	}
 	if len(issues) == 0 {
 		return nil
@@ -178,4 +204,19 @@ func (p staticOptionPair) matchByLabel(label string) ([]staticOptionEntry, bool)
 		}
 	}
 	return matched, len(matched) > 0
+}
+
+// optionLabels 返回所有选项的显示名列表，用于在错误信息里告知用户可选值。
+// 超过八条时截断并标注省略数量，避免错误信息过长。
+func (p staticOptionPair) optionLabels() string {
+	const maxDisplay = 8
+	labels := make([]string, 0, len(p.options))
+	for _, entry := range p.options {
+		labels = append(labels, "「"+entry.label+"」")
+	}
+	if len(labels) <= maxDisplay {
+		return strings.Join(labels, " / ")
+	}
+	visible := labels[:maxDisplay]
+	return strings.Join(visible, " / ") + fmt.Sprintf(" 等共 %d 项", len(labels))
 }

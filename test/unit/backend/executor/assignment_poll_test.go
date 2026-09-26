@@ -125,7 +125,8 @@ func TestSpecialBusinessLifecycleBlocksSubmit(t *testing.T) {
 	executor := step.NewExecutor(view, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), func() time.Time { return time.Unix(0, 0).UTC() })
 	// 新发起（无实例）：与发起链路一致，不进入待办轮询。
 	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), approveStep()})
-	runCtx.FlowType = "contract_seal_review"
+	// contract_compliance_review 仍然是 unimplemented，用它锁定"未实现特殊业务必须阻塞"行为。
+	runCtx.FlowType = "contract_compliance_review"
 	runCtx.RenderType = "formmaking"
 	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
 	if err != nil {
@@ -134,7 +135,7 @@ func TestSpecialBusinessLifecycleBlocksSubmit(t *testing.T) {
 	if preview == nil || preview.GateAllowed {
 		t.Fatalf("特殊业务流程类型必须阻塞：%+v", preview)
 	}
-	if !strings.Contains(preview.BlockReason, "contract_seal_review") {
+	if !strings.Contains(preview.BlockReason, "contract_compliance_review") {
 		t.Fatalf("阻塞原因必须指明流程类型：%q", preview.BlockReason)
 	}
 	if view.fakeTarget.submitCalls != 0 || view.auditCalls() != 0 {

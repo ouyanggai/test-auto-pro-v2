@@ -61,15 +61,15 @@ var specialBusinessRegistry = map[string]SpecialBusinessSpec{
 	},
 	"contract_seal_review": {
 		FlowType:         "contract_seal_review",
-		Status:           SpecialBusinessUnimplemented,
-		SourceSymbol:     "ContractSealReviewBusiness.contractBusiness / saveOrModifyContractInfo",
+		Status:           SpecialBusinessImplemented,
+		SourceSymbol:     "ContractSealReviewBusiness.contractBusiness / saveOrModifyContractInfo + legalProcedureBind",
 		Trigger:          "selectFlowType==contract_seal_review",
 		Order:            []string{"pre:contractReview.increase|modify", "pre:legalProcedureBind", "main:flowInstanceApi/submit|audit"},
 		BusinessEndpoint: "/web/measuring/api/contractReview/increase",
 		MainEndpoint:     WriteEndpointSubmit,
 		FailContinues:    false,
 		IdempotentBy:     "businessId+batchCode",
-		UnimplementedWhy: "盖章评审还依赖合同文件、手续文件绑定与集成快照；无组件实例不能发通用 submit 顶替",
+		Notes:            "与 contract_compliance_review 共用同一个 buildContractReviewSaveBody；盖章评审用 stampStatus/stampExamineStatus 替代合规评审状态字段",
 	},
 	"cost_funds_transactions": {
 		FlowType:         "cost_funds_transactions",

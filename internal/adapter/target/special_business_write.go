@@ -66,6 +66,8 @@ func buildSpecialBusinessSaveBody(spec SpecialBusinessSpec, formData json.RawMes
 		return buildAnnualAssessmentSaveBody(values), nil
 	case "expense_budget":
 		return buildExpenseBudgetSaveBody(values), nil
+	case "contract_seal_review", "contract_compliance_review":
+		return buildContractReviewSaveBody(values, action), nil
 	default:
 		return map[string]any{"data": values}, nil
 	}
@@ -96,7 +98,101 @@ func buildNoFormFlowSaveBody(spec NoFormFlowSpec, formData json.RawMessage, acti
 	}
 }
 
-// buildCostFundsSaveBody 对齐 FlowDialog.saveCostFundsBusiness：先保存请款业务再发主流程。
+// buildContractReviewSaveBody 对齐 ContractSealReviewBusiness.saveOrModifyContractInfo /
+// LegalContractDocTable 里相同的 contractBusiness → saveOrModifyContractInfo 调用链。
+// 发起时用 saveContractInfo，审批/重新发起时用 modifyContract（登记方用同一个端点 increase）。
+// stampStatus/stampExamineStatus 是盖章评审特有的状态字段；合规评审走同一函数时该字段不存在也不影响。
+func buildContractReviewSaveBody(values map[string]any, action string) map[string]any {
+	projectID, projectName := func() (string, string) {
+		raw, ok := values["project"].(string)
+		if !ok || strings.TrimSpace(raw) == "" {
+			return formString(values, "projectId"), formString(values, "contractProjectName")
+		}
+		id, name := pickerJSONIDName(values["project"])
+		return id, name
+	}()
+
+	userID, _ := pickerJSONIDName(values["contractUserName"])
+	_, depName := pickerJSONIDName(values["contractDepName"])
+	depID, _ := pickerJSONIDName(values["contractDepName"])
+	_, companyName := pickerJSONIDName(values["contractCompanyName"])
+	companyID, _ := pickerJSONIDName(values["contractCompanyName"])
+
+	// classificationId 可能是字符串或数组，取最后一个元素。
+	classificationID := func() string {
+		switch v := values["classificationId"].(type) {
+		case string:
+			return strings.TrimSpace(v)
+		case []any:
+			if len(v) > 0 {
+				if s, ok := v[len(v)-1].(string); ok {
+					return strings.TrimSpace(s)
+				}
+			}
+			return ""
+		default:
+			return formString(values, "classificationId")
+		}
+	}()
+
+	isDraft := action == "save_draft"
+
+	business := map[string]any{
+		"projectId":           projectID,
+		"contractProjectName": projectName,
+		"classificationId":    classificationID,
+		"contractName":        formString(values, "contractName"),
+		"contractNumber":      formString(values, "contractNumber"),
+		"contractContent":     formString(values, "contractContent"),
+		"contractTalk":        formString(values, "contractTalk"),
+		"contractSum":         formString(values, "contractSum"),
+		"contractUserName":    formString(values, "contractUserName", "contractUserDisplayName"),
+		"contractDepName":     depName,
+		"contractCompanyName": companyName,
+		"handledBy":           userID,
+		"payMethod":           formString(values, "payMethod"),
+		"depId":               formString(values, "initiatorDepartmentId", "depId"),
+		"status":              formString(values, "status", "examineStatus"),
+		"examineStatus":       firstNonEmpty(formString(values, "examineStatus"), "0"),
+		"fileStatus": func() string {
+			if raw, ok := values["sealContractFile"].([]any); ok && len(raw) > 0 {
+				return "1"
+			}
+			return "0"
+		}(),
+		"contractSubtableVo": map[string]any{
+			"businessTime": func() string {
+				t := formString(values, "businessTime")
+				if t != "" && !strings.Contains(t, " ") {
+					return t + " 00:00:00"
+				}
+				return t
+			}(),
+			"paymentType":          formString(values, "paymentType"),
+			"handlingDepartment":   depID,
+			"handlingCompany":      companyID,
+			"stampStatus":          func() string { if isDraft { return "0" }; return "1" }(),
+			"stampExamineStatus":   "0",
+		},
+	}
+
+	if id := formString(values, "id", "businessId"); id != "" {
+		business["id"] = id
+	}
+
+	// contractBody: 优先使用已格式化好的字段，回退到 contractBodys（盖章评审发起回显用字段）。
+	if cb := formString(values, "contractBody", "contractBodys"); cb != "" {
+		business["contractBody"] = cb
+	}
+
+	finalParam := map[string]any{"data": business}
+	if bc := formString(values, "batchCode"); bc != "" && action != "save_draft" {
+		finalParam["batchCode"] = bc
+	}
+	return finalParam
+}
+
+
 func buildCostFundsSaveBody(flowType string, values map[string]any, action string) map[string]any {
 	depID, depName := pickerJSONIDName(values["requestDepName"])
 	userID, userName := pickerJSONIDName(values["requestUserName"])
