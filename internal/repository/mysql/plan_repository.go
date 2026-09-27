@@ -18,13 +18,14 @@ type PlanRepository struct {
 }
 
 // planDerivedStatusExpr 从 runs 运行事实派生计划公开状态（F-032）：
-// 存在等待中/运行中记录则运行中；存在历史运行则已运行；否则保留存储列（未运行）。
-// 读侧以运行事实为准，即使历史数据的状态列未同步也能自愈；存储列的同步由运行事务内的
-// syncPlanRunStatus 负责维护运行事实冗余列，删除守卫等写侧判断仍读该存储列。
+// 仅当存在真正处于运行中的记录时才派生为运行中；排队等待中（pending）或无活跃运行且有历史运行则为已完成；
+// 否则保留存储列（未运行）。
+// 关键约束：不能将 pending 粗暴归为 running，否则串行排队中的计划在列表页会被误判为运行中，
+// 且前端删除按钮会被锁定（导致无法删除排队计划）。
 const planDerivedStatusExpr = `
 CASE
-  WHEN EXISTS(SELECT 1 FROM runs ar WHERE ar.plan_id = test_plans.id AND ar.status IN ('pending','running')) THEN 'running'
-  WHEN EXISTS(SELECT 1 FROM runs ar WHERE ar.plan_id = test_plans.id) THEN 'completed'
+  WHEN EXISTS(SELECT 1 FROM runs ar WHERE ar.plan_id = test_plans.id AND ar.status = 'running') THEN 'running'
+  WHEN EXISTS(SELECT 1 FROM runs ar WHERE ar.plan_id = test_plans.id AND ar.status <> 'pending') THEN 'completed'
   ELSE test_plans.status
 END`
 
@@ -35,7 +36,7 @@ const planRunSummarySelect = `
 (SELECT ar.status FROM runs ar WHERE ar.plan_id = test_plans.id ORDER BY ar.run_no DESC LIMIT 1) AS last_run_status,
 (SELECT ar.result FROM runs ar WHERE ar.plan_id = test_plans.id ORDER BY ar.run_no DESC LIMIT 1) AS last_run_result,
 (SELECT ar.finished_at FROM runs ar WHERE ar.plan_id = test_plans.id ORDER BY ar.run_no DESC LIMIT 1) AS last_run_finished_at,
-EXISTS(SELECT 1 FROM runs ar WHERE ar.plan_id = test_plans.id AND ar.status IN ('pending','running')) AS has_active_run`
+EXISTS(SELECT 1 FROM runs ar WHERE ar.plan_id = test_plans.id AND ar.status = 'running') AS has_active_run`
 
 // NewPlanRepository 创建计划仓储并复用已迁移的计划数据库连接池。
 func NewPlanRepository(db *sql.DB) *PlanRepository {
@@ -206,10 +207,10 @@ func (r *PlanRepository) deletePlanWithRuns(ctx context.Context, tx *sql.Tx, pla
 		return err
 	}
 
-	// 2. 检查是否有活跃运行
+	// 2. 检查是否有正在执行中的活跃运行（仅 running 阻塞删除，排队中 pending 允许随计划级联清理）
 	var activeCount int
 	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM runs WHERE plan_id = ? AND status IN ('pending', 'running')",
+		"SELECT COUNT(*) FROM runs WHERE plan_id = ? AND status = 'running'",
 		planID).Scan(&activeCount); err != nil {
 		return err
 	}

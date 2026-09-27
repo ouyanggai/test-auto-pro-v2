@@ -171,6 +171,10 @@ func (r *RunRepository) DeleteRun(ctx context.Context, runID uint64, now time.Ti
 	if _, err := tx.ExecContext(ctx, "DELETE FROM path_runs WHERE run_id = ?", runID); err != nil {
 		return err
 	}
+	// 级联清理计划间串行等待队列中的排队行，防止遗留孤儿排队记录影响后续调度
+	if _, err := tx.ExecContext(ctx, "DELETE FROM plan_run_queue WHERE run_id = ?", runID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM runs WHERE id = ?", runID); err != nil {
 		return err
 	}

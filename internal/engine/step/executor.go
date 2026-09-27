@@ -197,7 +197,8 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	}
 	// runtime 身份门禁（§3.3）：装载必须携带完整的实时会话身份。读取能力不存在、实时读取失败或
 	// 必需字段缺失都在创建 runtime 会话与发出任何浏览器写请求前落 GateBlocked，绝不静默用会话缓存冒充。
-	sessionFacts, sessionErr := e.sessionFactsForRuntime(ctx, session)
+	actorAccount := firstNonEmpty(strings.TrimSpace(preview.ActorAccount), strings.TrimSpace(session.Summary.Account), strings.TrimSpace(runCtx.PlanAccount))
+	sessionFacts, activeSession, sessionErr := e.sessionFactsForRuntime(ctx, actorAccount, session)
 	if sessionErr != nil {
 		preview.writeSent = false
 		preview.writeErr = sessionErr
@@ -206,6 +207,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		log.Phase("submit", step.Sequence, approved.Attempt, "runtime 身份门禁阻塞："+sessionErr.Error())
 		return true
 	}
+	session = activeSession
 	// 目标代理与节点事实（评审 P1-3）：FlowDialog/审批组件的最终流程载荷直接消费这些字段。
 	// 表单代理优先用实例当前事实（重提/加签后可能变化），回落实计划模板事实。
 	formProxyID := firstNonEmpty(preview.Facts.FormProxyID, runCtx.FormProxyID)
@@ -398,17 +400,20 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 // 与 nodeFormData 同一阻塞口径（protocol_matrix.CurrentUserIdentity 合约）：读取能力不存在、实时读取失败、
 // 或必需身份字段缺失都返回门禁错误，绝不静默回退会话缓存冒充实时事实——否则 runtime 会拿着不完整或
 // 过期的公司/部门/岗位继续写目标。只允许继续使用已核实的当前会话固有字段（CustomerCode/Account）。
-func (e *Executor) sessionFactsForRuntime(ctx context.Context, session target.Session) (runtimeexec.SessionFacts, error) {
+func (e *Executor) sessionFactsForRuntime(ctx context.Context, account string, session target.Session) (runtimeexec.SessionFacts, target.Session, error) {
 	identityReader, canReadIdentity := e.target.(runtimeIdentityReader)
 	if !canReadIdentity {
-		return runtimeexec.SessionFacts{}, fmt.Errorf("目标客户端不支持实时身份读取，runtime 装载不能按当前会话覆盖身份")
+		return runtimeexec.SessionFacts{}, session, fmt.Errorf("目标客户端不支持实时身份读取，runtime 装载不能按当前会话覆盖身份")
 	}
-	identity, err := identityReader.CurrentUserIdentity(ctx, session)
+	identity, active, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, account, session,
+		func(callContext context.Context, currentSession target.Session) (target.UserIdentity, error) {
+			return identityReader.CurrentUserIdentity(callContext, currentSession)
+		})
 	if err != nil {
-		return runtimeexec.SessionFacts{}, fmt.Errorf("读取当前会话实时身份失败：%s", target.UserFacingErrorMessage(target.WriteResponse{}, err))
+		return runtimeexec.SessionFacts{}, active, fmt.Errorf("读取当前会话实时身份失败：%s", target.UserFacingErrorMessage(target.WriteResponse{}, err))
 	}
 	if !identity.Complete() {
-		return runtimeexec.SessionFacts{}, fmt.Errorf("当前会话在目标平台缺少身份字段 %s，runtime 写请求前已阻塞", strings.Join(identity.MissingFields(), "、"))
+		return runtimeexec.SessionFacts{}, active, fmt.Errorf("当前会话在目标平台缺少身份字段 %s，runtime 写请求前已阻塞", strings.Join(identity.MissingFields(), "、"))
 	}
 	// 实时身份完整：runtime 收到的公司/部门/岗位/用户与当前读取结果一致。
 	return runtimeexec.SessionFacts{
@@ -419,10 +424,10 @@ func (e *Executor) sessionFactsForRuntime(ctx context.Context, session target.Se
 		DepartmentName: identity.DepartmentName,
 		DutyID:         identity.DutyID,
 		DutyName:       identity.DutyName,
-		CustomerCode:   session.CustomerCode,
-		Account:        session.Summary.Account,
+		CustomerCode:   active.CustomerCode,
+		Account:        active.Summary.Account,
 		DisplayName:    identity.UserName,
-	}, nil
+	}, active, nil
 }
 
 // stringSliceParameter 从动作参数读取字符串数组；非数组或空项直接忽略，绝不猜测配置值。

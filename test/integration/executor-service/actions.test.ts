@@ -83,6 +83,29 @@ test('同意/不同意走 submitCheckBefore 原生入口且互不误触', () => 
   assert.equal(((tree.flowDetail ?? tree.initFlow) as unknown as { $children: Array<{ approveForm: { approveMessage: string } }> }).$children[0]!.approveForm.approveMessage, '同意意见')
   assert.deepEqual(calls, ['pass', 'no_pass', 'pass'])
 })
+test('合同盖章审批缺失自定义业务组件时，平滑回退到普通审核', () => {
+  const calls: string[] = []
+  const tree = makeTree('flowDetail', 'ExamineOpinion', {
+    approveForm: { approveMessage: '' },
+    selectFlowType: 'contract_seal_review',
+    dealFormBusiness: function (this: unknown, func: (flag: unknown, type: unknown) => unknown, flag: unknown, type: unknown) {
+      // 原生实现没有判空直接访问未挂载的自定义组件：
+      const generateForm = (this as { $parent?: { $refs?: { generateForm?: { getComponent: (name: string) => unknown } } } })?.$parent?.$refs?.generateForm
+      const custom = generateForm?.getComponent('custom_contractSealField') as { contractBusiness: unknown }
+      custom.contractBusiness // 必定报错 TypeError: Cannot read properties of undefined
+      func(flag, type)
+    },
+    submitCheckBefore: function (this: unknown, type: unknown) {
+      (this as { dealFormBusiness: (func: (flag: unknown, type: unknown) => unknown, flag: unknown, type: unknown) => unknown }).dealFormBusiness(
+        (flag, t) => { calls.push(`audited-${String(t)}`) },
+        true,
+        type
+      )
+    }
+  })
+  nativeDispatch(tree, { action: 'approve' })
+  assert.deepEqual(calls, ['audited-pass'])
+})
 
 test('重提走 saveSubmit("submit")', () => {
   const calls: string[] = []
@@ -137,6 +160,22 @@ test('选择继续 custom_choose：写 chooseBranchList + chooseBranchNode 后�
   assert.deepEqual((opinion.chooseBranchNode as Record<string, unknown>).nextNodeTemplateId, 'entry-9')
   assert.deepEqual(result, { component: 'ExamineOpinion', method: 'handleSaveBranchChooseNode' })
   assert.deepEqual(calls, ['branch-continue'])
+})
+test('选择继续 custom_choose 发起态（FlowDialog）：写 chooseBranchList + nextNodeProxyId + chooseBranchNode 后走原生继续', () => {
+  const calls: string[] = []
+  const tree = makeTree('InitFlowDialog', 'FlowDialog', {
+    chooseBranchList: [],
+    handleSaveBranchChooseNode: () => { calls.push('flow-dialog-branch-continue') }
+  })
+  const result = nativeChoiceContinue(tree, 'custom_choose', { kind: 'branch', branchEntryNodeProxyIds: ['entry-init-1'] }, {
+    data: { branchNodes: [{ id: 'entry-init-1', flowNodeAuditConfig: { auditType: 'company' } }] }
+  })
+  const dialog = ((tree.initFlow ?? tree.flowDetail) as unknown as { $children: Array<Record<string, unknown>> }).$children[0]!
+  assert.deepEqual(dialog.chooseBranchList, ['entry-init-1'])
+  assert.deepEqual(dialog.nextNodeProxyId, 'entry-init-1')
+  assert.deepEqual(dialog.chooseBranchNode, { nextNodeTemplateId: 'entry-init-1', auditType: 'company' })
+  assert.deepEqual(result, { component: 'FlowDialog', method: 'handleSaveBranchChooseNode' })
+  assert.deepEqual(calls, ['flow-dialog-branch-continue'])
 })
 
 test('选择继续 run_node_choose：以 checkboxPersonGroup 调 getSelectPerson', () => {

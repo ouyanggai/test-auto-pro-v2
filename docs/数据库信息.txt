@@ -1,0 +1,10 @@
+- 用户/密码：root/Ts@666,.,  203服务器
+
+
+192数据库
+TARGET_DB_HOST="192.168.1.192"
+TARGET_DB_PORT=3306
+TARGET_DB_USER="Situser"
+TARGET_DB_PASSWORD="Sit@db2023.."
+TARGET_DB_NAME="workflow-center"
+TARGET_DB_USER_CENTER_NAME="rsh_cloud_user_center_pro_20260520"

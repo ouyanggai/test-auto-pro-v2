@@ -275,3 +275,67 @@ func TestF032PlanListAggregatesLastRun(t *testing.T) {
 		t.Fatalf("按已运行筛选结果不正确：n=%d err=%v", len(filtered), err)
 	}
 }
+
+// TestF032PlanPendingDoesNotBlockDelete 验证排队中的 pending 运行不阻塞计划删除，且 DeleteRun 级联清理等待队列。
+func TestF032PlanPendingDoesNotBlockDelete(t *testing.T) {
+	db := openF032Store(t)
+	ctx := context.Background()
+	runs := planmysql.NewRunRepository(db.DB)
+	plans := planmysql.NewPlanRepository(db.DB)
+	planID := insertF032Plan(t, db.DB, "f032-pending-del")
+
+	// 1. 创建 pending 运行并入等待队列
+	run, _, err := runs.CreateRun(ctx, planID, 31, model.RunModeAuto, model.RunTriggerManual, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("创建运行失败：%v", err)
+	}
+	if err := runs.EnqueueRun(ctx, run.ID, planID, time.Now().UTC()); err != nil {
+		t.Fatalf("入等待队列失败：%v", err)
+	}
+
+	// 2. 计划查询：没有 running 记录，派生状态不应为 running（应保留未运行 not_started）
+	plan, err := plans.Get(ctx, planID)
+	if err != nil {
+		t.Fatalf("查询计划失败：%v", err)
+	}
+	if plan.Status == model.PlanStatusRunning || plan.HasActiveRun {
+		t.Fatalf("仅排队中的计划不应派生为运行中：status=%s hasActiveRun=%v", plan.Status, plan.HasActiveRun)
+	}
+
+	// 3. 删除计划：排队中的计划允许删除，且级联删除 runs 与 plan_run_queue
+	if err := plans.Delete(ctx, planID); err != nil {
+		t.Fatalf("排队中的计划应允许直接删除：%v", err)
+	}
+	var queueCount int
+	if err := db.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM plan_run_queue WHERE run_id = ?", run.ID).Scan(&queueCount); err != nil {
+		t.Fatalf("查询等待队列失败：%v", err)
+	}
+	if queueCount != 0 {
+		t.Fatalf("删除计划后等待队列应被级联清理：count=%d", queueCount)
+	}
+
+	// 4. 单次运行删除：验证 DeleteRun 也会级联清理 plan_run_queue
+	planID2 := insertF032Plan(t, db.DB, "f032-run-del")
+	run2, pathRun2, err := runs.CreateRun(ctx, planID2, 32, model.RunModeAuto, model.RunTriggerManual, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("创建运行2失败：%v", err)
+	}
+	if err := runs.EnqueueRun(ctx, run2.ID, planID2, time.Now().UTC()); err != nil {
+		t.Fatalf("入等待队列2失败：%v", err)
+	}
+	// 把路径运行先收尾为 stopped 满足 DeleteRun 前置
+	if _, err := runs.AdvancePathRunStatus(ctx, pathRun2.ID, model.PathRunStatusWaiting, model.PathRunStatusCancelled,
+		model.RunEvent{Kind: "path_run_cancelled", Label: "取消"}, time.Now().UTC()); err != nil {
+		t.Fatalf("收尾路径失败：%v", err)
+	}
+	if err := runs.DeleteRun(ctx, run2.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("DeleteRun 失败：%v", err)
+	}
+	var queueCount2 int
+	if err := db.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM plan_run_queue WHERE run_id = ?", run2.ID).Scan(&queueCount2); err != nil {
+		t.Fatalf("查询等待队列2失败：%v", err)
+	}
+	if queueCount2 != 0 {
+		t.Fatalf("DeleteRun 后等待队列应被级联清理：count=%d", queueCount2)
+	}
+}

@@ -114,6 +114,33 @@ export function nativeDispatch (native: NativeCaptured | undefined, input: Dispa
       break
     case 'approve':
     case 'reject':
+      // 容错：dealFormBusiness 仅当节点表单内真实挂载了自定义业务组件（如 custom_contractSealField）时才委托；
+      // 若当前审批节点表单未配置该组件（getComponent 返回空），原生代码未判空会导致抛出 TypeError 并阻断主流程审批。
+      // 此处安全兜底：若自定义组件缺失，平滑回退到普通流程审批 func(flag, type)。
+      {
+        const rawComp = component as unknown as { dealFormBusiness?: (func: (flag: unknown, type: unknown) => unknown, flag: unknown, type: unknown) => unknown }
+        if (typeof rawComp.dealFormBusiness === 'function' && !(rawComp.dealFormBusiness as { __patched?: boolean }).__patched) {
+          const patchedDeal = function (this: unknown, func: (flag: unknown, type: unknown) => unknown, flag: unknown, type: unknown) {
+            try {
+              const self = this as { selectFlowType?: string, $parent?: { $parent?: { $refs?: { generateForm?: { getComponent?: (name: string) => unknown } } }, $refs?: { generateForm?: { getComponent?: (name: string) => unknown } } } }
+              const generateForm = self?.$parent?.$parent?.$refs?.generateForm || self?.$parent?.$refs?.generateForm
+              const fieldName = self?.selectFlowType === 'contract_seal_review' ? 'custom_contractSealField'
+                : self?.selectFlowType === 'contract_compliance_review' ? 'custom_contractLegalField'
+                  : null
+              const customField = fieldName && typeof generateForm?.getComponent === 'function' ? generateForm.getComponent(fieldName) : null
+              if (customField && typeof (customField as { contractBusiness?: unknown }).contractBusiness === 'function') {
+                (customField as { contractBusiness: (form: unknown, that: unknown, flag: unknown, type: unknown) => unknown }).contractBusiness(generateForm, self, flag, type)
+                return
+              }
+            } catch {
+              // 自定义组件异常时平滑回退到标准流程审批
+            }
+            func.call(this, flag, type)
+          }
+          ;(patchedDeal as { __patched?: boolean }).__patched = true
+          rawComp.dealFormBusiness = patchedDeal
+        }
+      }
       // 走原生按钮入口 submitCheckBefore：内含 $confirm → approveForm.validate → formMakingFormBusiness；
       // $confirm 的确认按钮由服务端在执行后于页面内点击（已知差异，登记于设计文档）。
       if (typeof component.submitCheckBefore !== 'function') throw new Error('ExamineOpinion 缺少 submitCheckBefore 方法')
@@ -166,10 +193,12 @@ export function nativeChoiceContinue (
   }
   const container = (native?.initFlow || native?.flowDetail) as VNode | undefined
   if (!container) throw new Error('原生宿主未捕获，不能继续选择')
-  const opinion = find(container, 'ExamineOpinion')
+  const isInitiate = Boolean(native?.initFlow)
+  const component = isInitiate ? find(container, 'FlowDialog') : find(container, 'ExamineOpinion')
+  const componentName = isInitiate ? 'FlowDialog' : 'ExamineOpinion'
   const auditors = (choice.nextAuditors ?? []) as Array<{ nodeProxyId?: string, bizId?: string, name?: string }>
   if (auditors.length > 0) {
-    const list = (opinion.nextAuditorList as Array<Record<string, unknown>> | undefined) ?? []
+    const list = (component.nextAuditorList as Array<Record<string, unknown>> | undefined) ?? []
     for (const auditor of auditors) {
       const entry = {
         name: String(auditor.name ?? ''),
@@ -181,7 +210,7 @@ export function nativeChoiceContinue (
       const exists = list.some(item => item.nodeProxyId === entry.nodeProxyId)
       if (!exists) list.push(entry)
     }
-    opinion.nextAuditorList = list
+    component.nextAuditorList = list
   }
   if (errorType === 'custom_choose') {
     const entry = String(choice.branchEntryNodeProxyIds?.[0] ?? '')
@@ -191,23 +220,29 @@ export function nativeChoiceContinue (
     const branchNode = nodes.find(item => String(item?.id ?? '') === entry)
     const auditType = String(branchNode?.flowNodeAuditConfig?.auditType ?? '')
     if (auditType === 'run_node_choose') {
-      const list = (opinion.nextAuditorList as Array<Record<string, unknown>> | undefined) ?? []
+      const list = (component.nextAuditorList as Array<Record<string, unknown>> | undefined) ?? []
       const has = list.some(item => item.nodeProxyId === entry)
       if (!has) throw new Error('分支入口为审批人自选且未配置人员，拒绝继续（绝不带空人员提交）')
     }
-    opinion.chooseBranchNode = { nextNodeTemplateId: entry, auditType }
-    // 原生提交载荷从 chooseBranchList 取分支选择（handleChangeChooseBranch 维护，
-    // 构造时 push({nodeProxyId})）：不写它，第二笔写仍会被目标要求选分支（实测）。
-    opinion.chooseBranchList = Array.from(new Set([...((opinion.chooseBranchList as string[] | undefined) ?? []), entry]))
-    if (typeof opinion.handleSaveBranchChooseNode !== 'function') throw new Error('ExamineOpinion 缺少 handleSaveBranchChooseNode')
-    opinion.handleSaveBranchChooseNode()
-    return { component: 'ExamineOpinion', method: 'handleSaveBranchChooseNode' }
+    component.chooseBranchNode = { nextNodeTemplateId: entry, auditType }
+    component.chooseBranchList = Array.from(new Set([...((component.chooseBranchList as string[] | undefined) ?? []), entry]))
+    if (isInitiate) {
+      component.nextNodeProxyId = entry
+    }
+    const saveMethod = typeof component.handleSaveBranchChooseNode === 'function'
+      ? 'handleSaveBranchChooseNode'
+      : typeof component.handleSaveChooseBranch === 'function'
+        ? 'handleSaveChooseBranch'
+        : null
+    if (!saveMethod) throw new Error(`${componentName} 缺少 handleSaveBranchChooseNode`)
+    ;(component[saveMethod] as () => unknown)()
+    return { component: componentName, method: saveMethod }
   }
   if (errorType === 'parallel_choose') {
     const entries = (choice.branchEntryNodeProxyIds ?? []).map(String)
     const targetLists = [
-      opinion.parallelNodeChooseList as Array<Record<string, unknown>> | undefined,
-      opinion.parallelChooseNodes as Array<Record<string, unknown>> | undefined
+      component.parallelNodeChooseList as Array<Record<string, unknown>> | undefined,
+      component.parallelChooseNodes as Array<Record<string, unknown>> | undefined
     ]
     for (const list of targetLists) {
       if (!Array.isArray(list)) continue
@@ -225,17 +260,17 @@ export function nativeChoiceContinue (
         }
       }
     }
-    if (typeof opinion.handleSaveParallelChooseNode !== 'function') throw new Error('ExamineOpinion 缺少 handleSaveParallelChooseNode')
-    opinion.handleSaveParallelChooseNode()
-    return { component: 'ExamineOpinion', method: 'handleSaveParallelChooseNode' }
+    if (typeof component.handleSaveParallelChooseNode !== 'function') throw new Error(`${componentName} 缺少 handleSaveParallelChooseNode`)
+    component.handleSaveParallelChooseNode()
+    return { component: componentName, method: 'handleSaveParallelChooseNode' }
   }
   // run_node_choose：原生 getSelectPerson 消费 checkboxPersonGroup（{name,id,nodeProxyId}）。
-  if (typeof opinion.getSelectPerson !== 'function') throw new Error('ExamineOpinion 缺少 getSelectPerson')
+  if (typeof component.getSelectPerson !== 'function') throw new Error(`${componentName} 缺少 getSelectPerson`)
   const group = auditors.map(auditor => ({
     name: String(auditor.name ?? ''),
     id: String(auditor.bizId ?? ''),
     nodeProxyId: String(auditor.nodeProxyId ?? '')
   }))
-  opinion.getSelectPerson({ checkboxPersonGroup: group })
-  return { component: 'ExamineOpinion', method: 'getSelectPerson' }
+  component.getSelectPerson({ checkboxPersonGroup: group })
+  return { component: componentName, method: 'getSelectPerson' }
 }

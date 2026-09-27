@@ -74,6 +74,12 @@ export class SessionManager {
       const page = await context.newPage()
       session.context = context
       session.page = page
+      page.on('console', msg => {
+        console.log(`[page ${session.accountKey} ${msg.type()}]`, msg.text())
+      })
+      page.on('pageerror', err => {
+        console.error(`[pageerror ${session.accountKey}]`, err)
+      })
       page.on('crash', () => {
         void this.handleCrash(session.sessionId)
       })

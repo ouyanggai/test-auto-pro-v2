@@ -66,10 +66,6 @@ func (r *RunRepository) tryCreateRun(ctx context.Context, planID uint64, executi
 	if err != nil {
 		return model.Run{}, model.PathRun{}, err
 	}
-	// F-032：创建运行即视为运行事实开始，计划存储列从「未运行」推进到「运行中」，永不回退。
-	if err := syncPlanRunStatus(ctx, tx, planID, model.RunStatusRunning, now); err != nil {
-		return model.Run{}, model.PathRun{}, err
-	}
 	runID, err := result.LastInsertId()
 	if err != nil {
 		return model.Run{}, model.PathRun{}, err

@@ -31,6 +31,11 @@ func TestPlanLastRunText(t *testing.T) {
 			"第 7 次运行中",
 		},
 		{
+			"排队等待中非活跃",
+			model.Plan{LastRunNo: &runNo, LastRunStatus: model.RunStatusPending, HasActiveRun: false},
+			"第 7 次：等待运行",
+		},
+		{
 			"最近一次成功",
 			model.Plan{LastRunNo: &runNo, LastRunStatus: model.RunStatusCompleted, LastRunResult: &resultSucceeded, LastRunFinishedAt: &now},
 			"第 7 次：成功",

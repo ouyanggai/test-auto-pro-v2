@@ -167,10 +167,6 @@ func (r *RunRepository) tryCreateRunWithPaths(ctx context.Context, input reposit
 			Status: model.PathRunStatusWaiting, CreatedAt: now, UpdatedAt: now,
 		})
 	}
-	// F-032：创建运行即视为运行事实开始，计划存储列从「未运行」推进到「运行中」，永不回退。
-	if err := syncPlanRunStatus(ctx, tx, input.PlanID, model.RunStatusRunning, now); err != nil {
-		return model.Run{}, nil, err
-	}
 	if err := tx.Commit(); err != nil {
 		return model.Run{}, nil, err
 	}
