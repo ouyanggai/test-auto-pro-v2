@@ -368,15 +368,16 @@ func (r *RunRepository) DequeueRun(ctx context.Context, now time.Time) (uint64, 
 		return 0, err
 	}
 
-	// 领取前确认没有别的非终态运行：串行语义是「同一时刻只有一个计划运行在跑」。
-	// 自身此刻仍是 pending，也会被计入，因此阈值是 1 而不是 0。
-	var active int
+	// 领取前确认没有别的运行在跑：串行语义是「同一时刻只有一个计划运行处于执行中」。
+	// 关键并发边界：只统计正在执行的运行（running / verifying / paused）；
+	// 队列中其他 pending 运行属于排队等待者，绝不能计入执行中，否则多计划同时排队时计数大于 1 导致队列永久死锁。
+	var running int
 	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM runs WHERE status IN (?, ?)",
-		string(model.RunStatusPending), string(model.RunStatusRunning)).Scan(&active); err != nil {
+		"SELECT COUNT(*) FROM runs WHERE status IN (?, ?, ?)",
+		string(model.RunStatusRunning), "verifying", "paused").Scan(&running); err != nil {
 		return 0, err
 	}
-	if active > 1 {
+	if running > 0 {
 		// 还有别的计划在跑：保留队列行，返回 0 让下一轮 Tick 再试。
 		return 0, nil
 	}
@@ -395,9 +396,10 @@ func (r *RunRepository) DequeueRun(ctx context.Context, now time.Time) (uint64, 
 	if affected != 1 {
 		return 0, nil
 	}
+	// 关键状态记录：出队放行时必须同步落盘 started_at，使前端能够正常展示开始时间。
 	if _, err := tx.ExecContext(ctx,
-		"UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
-		string(model.RunStatusRunning), now, runID, string(model.RunStatusPending)); err != nil {
+		"UPDATE runs SET status = ?, started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = ?",
+		string(model.RunStatusRunning), now, now, runID, string(model.RunStatusPending)); err != nil {
 		return 0, err
 	}
 	// F-032：队列放行后运行真正进入运行中；计划存储列同步推进（等待运行也计为运行中事实）。

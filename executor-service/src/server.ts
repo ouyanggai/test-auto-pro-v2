@@ -91,7 +91,8 @@ async function waitForInitiateReady (page: Page): Promise<void> {
   await page.waitForFunction(
     `(() => {
       const instance = window.__executorNative && window.__executorNative.initFlow;
-      return Boolean(instance && instance.approveDialogVisible === true && instance.flowJson && instance.flowJson.id);
+      const json = Array.isArray(instance?.flowJson) ? instance.flowJson[0] : instance?.flowJson;
+      return Boolean(instance && instance.approveDialogVisible === true && json && json.id);
     })()`,
     undefined,
     { timeout: CAPTURE_TIMEOUT_MS }
@@ -104,7 +105,7 @@ async function waitForDetailReady (page: Page): Promise<void> {
     `(() => {
       const instance = window.__executorNative && window.__executorNative.flowDetail;
       if (!instance) return false;
-      return instance.examineDialogVisible === true || instance.ExpensesClaimFormVisible === true;
+      return instance.examineDialogVisible === true || instance.this_EnterpriseExamineDialogVisible === true || instance.ExpensesClaimFormVisible === true;
     })()`,
     undefined,
     { timeout: CAPTURE_TIMEOUT_MS }
@@ -1215,8 +1216,10 @@ async function main (): Promise<void> {
               }, plan.boundId)
               await waitForInitiateReady(session.page)
               templateId = await session.page.evaluate(() => {
-                const native = (window as unknown as { __executorNative?: { initFlow?: { flowJson?: { id?: string } } } }).__executorNative
-                return String(native?.initFlow?.flowJson?.id ?? '')
+                const native = (window as unknown as { __executorNative?: { initFlow?: { flowJson?: { id?: string } | { id?: string }[] } } }).__executorNative
+                const json = native?.initFlow?.flowJson
+                const obj = Array.isArray(json) ? json[0] : json
+                return String(obj?.id ?? '')
               })
               if (templateId !== plan.boundId) {
                 throw new InitiateBlockedError(`装载完成但实际模板 ${templateId} != 计划绑定模板 ${plan.boundId}`)

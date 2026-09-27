@@ -189,7 +189,18 @@ class FlowTreeLayout {
   }
 
   private layoutRoute(node: FlowGraphNode, branchEdges: FlowGraphEdge[], stopId: string, ancestors: Set<string>): SegmentBlock {
-    const mergeTargetId = node.mergeTargetId ?? ''
+    let mergeTargetId = node.mergeTargetId ?? ''
+    if (!mergeTargetId && !stopId) {
+      // 容错：仅当外层无祖先汇合点且当前路由为顶层末端路由时，若所有分支直接汇入虚拟结束节点，
+      // 才以虚拟结束节点作为汇合锚点，避免各分支内部重复布局结束节点；内层路由坚决继承祖先停止点。
+      const isDirectEndBranch = (branch: FlowGraphEdge) => {
+        const out = this.outgoingById.get(branch.target) ?? []
+        return out.length === 1 && out[0].target === '__run_virtual_end__'
+      }
+      if (branchEdges.length > 0 && branchEdges.every(isDirectEndBranch)) {
+        mergeTargetId = '__run_virtual_end__'
+      }
+    }
     const branchStopId = mergeTargetId || stopId
     const branches = branchEdges.map((edge) => ({
       edge,

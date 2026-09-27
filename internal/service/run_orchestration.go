@@ -1608,30 +1608,65 @@ const virtualRunEndNodeID = "__run_virtual_end__"
 // ensureVirtualEndNode 为已完成运行补齐稳定的虚拟结束节点。
 // 目标代理树有时不返回 end 节点，但完成态画布必须有明确终点；只给当前无出边的终端节点补边，
 // 并保持固定 ID，避免轮询刷新后产生重复节点或不稳定连线。
+// ensureVirtualEndNode 为运行画布补齐稳定的虚拟结束节点，并为末端无显式汇合点的路由节点连接汇合锚点。
+// 输入：静态流程图或动态投影图；约束：若已有真实 end 节点则原样返回，虚拟结束节点 ID 保持全局固定。
 func ensureVirtualEndNode(graph model.FlowGraph) model.FlowGraph {
+	hasVirtualEnd := false
 	for _, node := range graph.Nodes {
-		if strings.TrimSpace(node.Type) == "end" || strings.TrimSpace(node.ID) == virtualRunEndNodeID {
+		if strings.TrimSpace(node.ID) == virtualRunEndNodeID {
+			hasVirtualEnd = true
+			break
+		}
+		if strings.TrimSpace(node.Type) == "end" {
 			return graph
 		}
 	}
 	result := graph
 	result.Nodes = append([]model.FlowGraphNode{}, graph.Nodes...)
 	result.Edges = append([]model.FlowGraphEdge{}, graph.Edges...)
-	result.Nodes = append(result.Nodes, model.FlowGraphNode{
-		ID: virtualRunEndNodeID, Name: "结束", Type: "end", TypeName: "结束", StructuralPath: "root/__end__",
-	})
-	outgoing := make(map[string]bool, len(result.Nodes))
-	for _, edge := range graph.Edges {
-		outgoing[strings.TrimSpace(edge.Source)] = true
-	}
-	for _, node := range graph.Nodes {
-		id := strings.TrimSpace(node.ID)
-		if id == "" || outgoing[id] {
-			continue
-		}
-		result.Edges = append(result.Edges, model.FlowGraphEdge{
-			ID: id + "|" + virtualRunEndNodeID + "|sequence|", Source: id, Target: virtualRunEndNodeID, Kind: "sequence",
+	if !hasVirtualEnd {
+		result.Nodes = append(result.Nodes, model.FlowGraphNode{
+			ID: virtualRunEndNodeID, Name: "结束", Type: "end", TypeName: "结束", StructuralPath: "root/__end__",
 		})
+		outgoing := make(map[string]bool, len(result.Nodes))
+		for _, edge := range graph.Edges {
+			outgoing[strings.TrimSpace(edge.Source)] = true
+		}
+		for _, node := range graph.Nodes {
+			id := strings.TrimSpace(node.ID)
+			if id == "" || outgoing[id] {
+				continue
+			}
+			result.Edges = append(result.Edges, model.FlowGraphEdge{
+				ID: id + "|" + virtualRunEndNodeID + "|sequence|", Source: id, Target: virtualRunEndNodeID, Kind: "sequence",
+			})
+		}
+	}
+	// 关键业务规则：目标流程若在顶层末端使用条件/并行/手动分支且各分支直接连接虚拟结束节点，
+	// 模板不返回显式 mergeTargetId。此时若不为末端路由节点补全 MergeTargetID，前端结构化树布局会因缺少统一汇合锚点
+	// 而在遍历各分支时重复布局结束节点。
+	// 约束：只对末端分支直接全部汇入 virtualRunEndNodeID 的路由节点补全，绝不改写内层路由节点（内层路由必须继承祖先停止点）。
+	edgesBySource := make(map[string][]model.FlowGraphEdge, len(result.Nodes))
+	for _, edge := range result.Edges {
+		src := strings.TrimSpace(edge.Source)
+		edgesBySource[src] = append(edgesBySource[src], edge)
+	}
+	for i := range result.Nodes {
+		nodeType := strings.TrimSpace(result.Nodes[i].Type)
+		if (nodeType == "condition" || nodeType == "parallel" || nodeType == "manual") && strings.TrimSpace(result.Nodes[i].MergeTargetID) == "" {
+			branches := edgesBySource[strings.TrimSpace(result.Nodes[i].ID)]
+			allDirectToEnd := len(branches) > 0
+			for _, b := range branches {
+				targetEdges := edgesBySource[strings.TrimSpace(b.Target)]
+				if !(len(targetEdges) == 1 && strings.TrimSpace(targetEdges[0].Target) == virtualRunEndNodeID) {
+					allDirectToEnd = false
+					break
+				}
+			}
+			if allDirectToEnd {
+				result.Nodes[i].MergeTargetID = virtualRunEndNodeID
+			}
+		}
 	}
 	return result
 }

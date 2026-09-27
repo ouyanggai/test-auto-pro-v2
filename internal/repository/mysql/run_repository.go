@@ -445,6 +445,33 @@ func (r *RunRepository) AdvancePathRunStatus(ctx context.Context, pathRunID uint
 	if err := appendRunEvent(ctx, tx, event, now); err != nil {
 		return model.PathRun{}, err
 	}
+	if model.IsTerminalPathRunStatus(to) {
+		if aggregate, ok := aggregateRunTerminal(ctx, tx, runID); ok {
+			// 聚合收尾：支持从 pending 与 running 推进到终态
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE runs SET status = ?, result = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)
+			`, string(aggregate.status), nullableRunResultOf(aggregate.result), now, now, runID, string(model.RunStatusPending), string(model.RunStatusRunning)); err != nil {
+				return model.PathRun{}, err
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM plan_run_queue WHERE run_id = ?", runID); err != nil {
+				return model.PathRun{}, err
+			}
+			if err := appendRunEvent(ctx, tx, model.RunEvent{
+				RunID: runID,
+				Kind:  "run_finished",
+				Label: fmt.Sprintf("运行收尾：%s（%s）", model.RunStatusName(aggregate.status), aggregate.summary),
+			}, now); err != nil {
+				return model.PathRun{}, err
+			}
+			var runPlanID uint64
+			if err := tx.QueryRowContext(ctx, "SELECT plan_id FROM runs WHERE id = ?", runID).Scan(&runPlanID); err != nil {
+				return model.PathRun{}, err
+			}
+			if err := syncPlanRunStatus(ctx, tx, runPlanID, aggregate.status, now); err != nil {
+				return model.PathRun{}, err
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return model.PathRun{}, err
 	}
@@ -508,9 +535,14 @@ func (r *RunRepository) FinishPathRun(ctx context.Context, pathRunID uint64, to 
 	if aggregate, ok := aggregateRunTerminal(ctx, tx, runID); ok {
 		// 聚合收尾同样只允许从运行中前进，带状态守卫；空结果显式置 NULL，
 		// 与 FinishRunIfAllPathsClosed 的表示保持一致（评审 P2）。
+		// 聚合收尾：支持从 pending 与 running 推进到终态（串行排队/等待中被全部停止时前序状态为 pending）。
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE runs SET status = ?, result = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = ?
-		`, string(aggregate.status), nullableRunResultOf(aggregate.result), now, now, runID, string(model.RunStatusRunning)); err != nil {
+			UPDATE runs SET status = ?, result = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)
+		`, string(aggregate.status), nullableRunResultOf(aggregate.result), now, now, runID, string(model.RunStatusPending), string(model.RunStatusRunning)); err != nil {
+			return model.PathRun{}, err
+		}
+		// 运行终态后清除排队队列行，解除队列阻塞
+		if _, err := tx.ExecContext(ctx, "DELETE FROM plan_run_queue WHERE run_id = ?", runID); err != nil {
 			return model.PathRun{}, err
 		}
 		if err := appendRunEvent(ctx, tx, model.RunEvent{
@@ -748,8 +780,11 @@ func (r *RunRepository) FinishRunIfAllPathsClosed(ctx context.Context, runID uin
 		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE runs SET status = ?, result = COALESCE(result, ?), finished_at = COALESCE(finished_at, ?), updated_at = ? WHERE id = ? AND status = ?
-	`, string(aggregate.status), nullableRunResultOf(aggregate.result), now, now, runID, string(model.RunStatusRunning)); err != nil {
+		UPDATE runs SET status = ?, result = COALESCE(result, ?), finished_at = COALESCE(finished_at, ?), updated_at = ? WHERE id = ? AND status IN (?, ?)
+	`, string(aggregate.status), nullableRunResultOf(aggregate.result), now, now, runID, string(model.RunStatusPending), string(model.RunStatusRunning)); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM plan_run_queue WHERE run_id = ?", runID); err != nil {
 		return false, err
 	}
 	if err := appendRunEvent(ctx, tx, model.RunEvent{

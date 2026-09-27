@@ -140,28 +140,48 @@ const virtualRunEndNodeID = '__run_virtual_end__'
 
 // ensureVirtualEndNode 为运行画布补齐稳定的虚拟结束节点，保证动态图或回退计划图末尾都有明确终点。
 function ensureVirtualEndNode(candidate: FlowGraph): FlowGraph {
-  if (candidate.nodes.some(node => node.type === 'end' || node.id === virtualRunEndNodeID)) {
-    return candidate
-  }
-  const nodes: FlowGraphNode[] = [...candidate.nodes, {
-    id: virtualRunEndNodeID,
-    name: '结束',
-    type: 'end',
-    typeName: '结束',
-  }]
-  const outgoing = new Set(candidate.edges.map(edge => edge.source.trim()))
-  const edges: FlowGraphEdge[] = [...candidate.edges]
-  for (const node of candidate.nodes) {
-    const id = node.id.trim()
-    if (!id || outgoing.has(id)) continue
-    edges.push({
-      id: `${id}|${virtualRunEndNodeID}|sequence|`,
-      source: id,
-      target: virtualRunEndNodeID,
-      kind: 'sequence',
-      label: '',
-      branchId: '',
+  const hasEnd = candidate.nodes.some(node => node.type === 'end' || node.id === virtualRunEndNodeID)
+  let nodes: FlowGraphNode[] = candidate.nodes.map(n => ({ ...n }))
+  let edges: FlowGraphEdge[] = [...candidate.edges]
+  if (!hasEnd) {
+    nodes.push({
+      id: virtualRunEndNodeID,
+      name: '结束',
+      type: 'end',
+      typeName: '结束',
     })
+    const outgoing = new Set(candidate.edges.map(edge => edge.source.trim()))
+    for (const node of candidate.nodes) {
+      const id = node.id.trim()
+      if (!id || outgoing.has(id)) continue
+      edges.push({
+        id: `${id}|${virtualRunEndNodeID}|sequence|`,
+        source: id,
+        target: virtualRunEndNodeID,
+        kind: 'sequence',
+        label: '',
+        branchId: '',
+      })
+    }
+  }
+  // 为顶层末端无显式汇合点的分支/并行/条件路由节点补齐指向结束节点的汇合锚点，避免分支遍历重复布局结束节点
+  const edgesBySrc = new Map<string, FlowGraphEdge[]>()
+  for (const edge of edges) {
+    const list = edgesBySrc.get(edge.source) ?? []
+    list.push(edge)
+    edgesBySrc.set(edge.source, list)
+  }
+  for (const node of nodes) {
+    if (['condition', 'parallel', 'manual'].includes(node.type) && !node.mergeTargetId) {
+      const branches = edgesBySrc.get(node.id) ?? []
+      const allDirect = branches.length > 0 && branches.every((b) => {
+        const out = edgesBySrc.get(b.target) ?? []
+        return out.length === 1 && out[0].target === virtualRunEndNodeID
+      })
+      if (allDirect) {
+        node.mergeTargetId = virtualRunEndNodeID
+      }
+    }
   }
   return {
     ...candidate,

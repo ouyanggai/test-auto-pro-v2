@@ -8,7 +8,7 @@ import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
 
 // TARGET_PATH_PREFIXES 与 Go 侧 internal/runtimeexec（forward.go）镜像维护：
 // 命中任一前缀的请求都视为目标平台请求，必须经过 Go 转发。
-export const TARGET_PATH_PREFIXES = ['/web/', '/flowInstanceApi', '/api/']
+export const TARGET_PATH_PREFIXES = ['/web/', '/flowInstanceApi', '/api/', '/api']
 
 // TARGET_PREFIXES 匹配规则：路径包含目标段即目标请求，与来源主机无关——
 // 目标网关主机可能随部署变化，且构建产物可能把绝对网关地址（含 /api 前缀）烘焙进页面，
