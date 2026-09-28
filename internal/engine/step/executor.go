@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -500,10 +501,11 @@ func (e *Executor) protectRuntimeFormBody(ctx context.Context, runCtx RunContext
 	// 若盲目按未清洗的原始数量对比，会因空键过滤（例如写前 41 vs 写后 40）误报字段减少。
 	// 这里通过清洗无效键并双重核对业务字段是否存在，只有在写前确实有字段、写后数量下跌且存在实质性业务字段缺失时才判定为失败。
 	if before > 0 && after < before {
-		missing := countMissingBusinessFields(beforeClean, afterClean)
+		missingKeys := missingBusinessFieldNames(beforeClean, afterClean)
+		missing := len(missingKeys)
 		if missing > 0 {
 			result.Status = "business_failed"
-			result.Message = fmt.Sprintf("写后表单正文字段明显减少：写前 %d 个，写后 %d 个，缺失 %d 个业务字段；已阻止继续执行", before, after, missing)
+			result.Message = fmt.Sprintf("写后表单正文字段明显减少：写前 %d 个，写后 %d 个，缺失 %d 个业务字段（%s）；已阻止继续执行", before, after, missing, strings.Join(missingKeys, ", "))
 			log.Phase("verify", step.Sequence, attempt, result.Message)
 		}
 	}
@@ -523,23 +525,30 @@ func cleanFormKeys(data map[string]any) map[string]any {
 	return cleaned
 }
 
-// businessFormKeys 在 cleanFormKeys 的空键清洗之上，再剔除目标引擎自管的系统结构性字段（如 flowInstanceId）。
-// 为什么：runtime 写后回读用它做字段数统计与「缺失业务字段」比较；结构性字段由目标按实例重写，
-// 回读可能缺失，若计入业务字段会把「实例自身 ID 未原样回显」误判成正文减少而改判 business_failed。
+// businessFormKeys 在 cleanFormKeys 的空键清洗之上，剔除目标引擎自管的系统结构性字段和登录上下文字段。
+// 为什么：runtime 写后回读用它做字段数统计与「缺失业务字段」比较；前者由目标按实例重写，后者由当前会话覆盖，
+// 两者都不代表业务正文丢失，若计入会把正常目标行为误判成正文减少而改判 business_failed。
 func businessFormKeys(data map[string]any) map[string]any {
 	cleaned := cleanFormKeys(data)
 	stripSystemStructuralFields(cleaned)
+	for key := range cleaned {
+		if target.IsTargetContextField(key) {
+			delete(cleaned, key)
+		}
+	}
 	return cleaned
 }
 
-// countMissingBusinessFields 检查写前表单字段在写后是否发生真实丢失。
-func countMissingBusinessFields(before, after map[string]any) int {
-	missing := 0
-	for k := range before {
-		if _, ok := after[k]; !ok {
-			missing++
+// missingBusinessFieldNames 返回写前存在、写后缺失的业务字段名，并按稳定顺序排序。
+// 具体字段名进入阻塞消息，便于直接定位目标接口或节点权限造成的正文丢失。
+func missingBusinessFieldNames(before, after map[string]any) []string {
+	missing := make([]string, 0)
+	for key := range before {
+		if _, ok := after[key]; !ok {
+			missing = append(missing, key)
 		}
 	}
+	sort.Strings(missing)
 	return missing
 }
 
@@ -1324,6 +1333,10 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 		if target.IsSystemStructuralField(field) {
 			continue
 		}
+		if target.IsTargetContextField(field) {
+			// 目标会按当前登录会话重写身份上下文，节点间变化不属于业务正文丢失。
+			continue
+		}
 		// 人员选择组件伴生字段（__condition、__formPersonId、__virtualName 后缀）在节点流转后
 		// 不一定出现在下一节点的表单视图里，不能以"字段未出现"来判断保存失败。
 		if target.IsPersonPickerCompanionField(field) {
@@ -1355,6 +1368,10 @@ func (e *Executor) verifyFormDataAfterWrite(ctx context.Context, runCtx RunConte
 			continue
 		}
 		if target.IsSystemStructuralField(field) {
+			continue
+		}
+		if target.IsTargetContextField(field) {
+			// 当前处理人、部门和公司字段由目标会话维护，不做上游业务值保留核对。
 			continue
 		}
 		// 人员选择组件伴生字段在节点流转后不在下一节点的表单视图里，不做跨节点保留核对。

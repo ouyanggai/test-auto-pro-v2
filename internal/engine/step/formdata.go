@@ -204,6 +204,11 @@ func BuildNodeFormData(runCtx RunContext, compiled model.CompiledActionStep, ins
 		decision.BaseValues = cloneForDecision(merged)
 		if previous != nil && decision.BaselineSource == "instance" {
 			for _, field := range previous.OverlaidFields {
+				if target.IsTargetContextField(field) {
+					// 目标页面会在每个写动作前按当前登录会话覆盖身份上下文；节点处理人变化导致
+					// currentDepName 等字段不同是目标语义，不是上一节点业务值被改写。
+					continue
+				}
 				if target.IsTargetDerivedField(field) {
 					if compiled.Action == model.ActionResubmit {
 						// 重发起清空审核意见是本动作的业务语义，不应被上一节点的“禁止工具清空”规则拦截。

@@ -10,6 +10,9 @@ import (
 type FieldOwnership string
 
 const (
+	// FieldOwnershipTargetContext 是目标平台按当前登录会话维护的上下文身份字段。
+	// 这些字段会随节点处理人变化，不能参与跨节点业务值保留或写后正文核对。
+	FieldOwnershipTargetContext FieldOwnership = "target_context"
 	// FieldOwnershipToolOwned 当前节点配置明确覆盖的业务字段：目标保存后必须等于本次实际发送值。
 	FieldOwnershipToolOwned FieldOwnership = "tool_owned"
 	// FieldOwnershipPreservedBusiness 上游节点已经填写、当前节点无权限覆盖的业务字段：丢失或被工具改写则阻塞。
@@ -48,9 +51,12 @@ type FieldOwnershipRecord struct {
 
 // ClassifyFormField 按字段名与当前节点决策返回所有权分类。
 // overlaid 表示本节点实际覆盖；withheld 表示后续节点专属被扣留。
-// 目标衍生字段优先于覆盖/扣留判定：auto_audit_info_* 即使出现在配置覆盖清单里，普通动作写后核对仍按 target_derived 处理；
-// 重新发起的清空语义由动作构造器额外核对。
+// 目标上下文和衍生字段优先于覆盖/扣留判定：会话身份变化不作业务核对，auto_audit_info_* 即使出现在配置覆盖清单里，
+// 普通动作写后核对仍按 target_derived 处理；重新发起的清空语义由动作构造器额外核对。
 func ClassifyFormField(field string, overlaid, withheld bool) FieldOwnershipRecord {
+	if IsTargetContextField(field) {
+		return FieldOwnershipRecord{Ownership: FieldOwnershipTargetContext}
+	}
 	record := ClassifyTargetDerivedField(field)
 	if record.Ownership == FieldOwnershipTargetDerived {
 		return record
@@ -65,6 +71,22 @@ func ClassifyFormField(field string, overlaid, withheld bool) FieldOwnershipReco
 	}
 	record.Ownership = FieldOwnershipPreservedBusiness
 	return record
+}
+
+// IsTargetContextField 判断字段是否由目标平台当前登录会话维护。
+// 发起、重提和审批写入时，目标页面都会按实时身份覆盖这些键；节点切换后值变化是正常事实，
+// 不能把它们当成上一节点写入的业务值来阻塞恢复。global_user_basic_information 虽不在逐字段规则表中，
+// 但同样是目标登录上下文的整体字段，必须一并排除。
+func IsTargetContextField(field string) bool {
+	key := strings.TrimSpace(field)
+	if key == "" {
+		return false
+	}
+	if key == "global_user_basic_information" {
+		return true
+	}
+	_, ok := targetLoginIdentityFieldRules[key]
+	return ok
 }
 
 // ClassifyTargetDerivedField 识别目标审批意见衍生字段及其伴生键。

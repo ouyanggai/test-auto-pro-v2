@@ -208,6 +208,31 @@ func TestCrossNodeValueRewriteBlocks(t *testing.T) {
 	}
 }
 
+// TestCrossNodeTargetContextRewriteIgnored 锁定目标会话字段语义：当前处理部门变化时，
+// 不得把 currentDepName 当成上一节点业务值被改写而阻塞后续节点。
+func TestCrossNodeTargetContextRewriteIgnored(t *testing.T) {
+	runCtx := nodeFormRunContext()
+	previous := &step.NodeFormDataDecision{
+		StepNo: 1, NodeKey: "start", Action: "submit", BaselineSource: "initiation",
+		OverlaidFields: []string{"currentDepName"},
+		OverlaidValues: map[string]any{"currentDepName": "综合管理部"},
+	}
+	instanceCurrent := map[string]any{
+		"amount":         float64(100),
+		"reason":         "发起填写",
+		"currentDepName": "建设运营部",
+	}
+	plan, err := step.BuildNodeFormData(runCtx,
+		model.CompiledActionStep{Sequence: 2, Action: model.ActionReject, NodeKey: "audit"},
+		instanceCurrent, true, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Decision.ValidationIssues) != 0 {
+		t.Fatalf("目标会话字段变化不应阻塞：%v", plan.Decision.ValidationIssues)
+	}
+}
+
 // TestCrossNodeNestedValueRewriteBlocks 锁定嵌套对象/表格字段的深度比较。
 func TestCrossNodeNestedValueRewriteBlocks(t *testing.T) {
 	runCtx := nodeFormRunContext()

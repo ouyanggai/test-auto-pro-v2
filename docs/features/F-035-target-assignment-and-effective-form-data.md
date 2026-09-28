@@ -2,6 +2,12 @@
 
 - 状态：implementing（2026-09-15 第五轮人工复核退回：下拉实际绑定值、固定尾动作与删除/中文显示、结构化配置缺口、阻塞状态聚合和路径 12 请求/处理人对照仍未完成；上一轮特殊业务/NoFormFlow、衍生字段分类、写后核对和运行详情请求代次整改继续有效，但不得进入 ready_for_manual）
 
+## 2026-09-28 本轮原子修复（仍保持 implementing）
+
+- 针对运行 7 路径 2 的恢复误报，目标适配层新增 `target_context` 字段所有权：`currentDepName`、部门/公司/人员选择器登录字段及 `global_user_basic_information` 统一按当前会话上下文处理，不再参加跨节点业务值改写、写后缺失和保留值核对；普通业务字段的严格核对规则不变。
+- 写后正文保护继续按清洗后的业务字段计数，并在阻塞消息中列出稳定排序的具体缺失字段名，便于从 step.log 直接定位目标接口或节点权限问题。
+- 新增 `TestCrossNodeTargetContextRewriteIgnored`、`TestRuntimeProtectReportsBusinessFieldNames` 回归用例；定向 `form_data_by_node`、`executor`、`target` 单元测试通过。未连接目标平台、未启动浏览器，F-035 仍需完成第五轮其余人工复核项后再进入 `ready_for_manual`。
+
 ## 本切片实施现状（2026-09-14，第四轮继续整改，停在 implementing）
 
 第四轮已从“命中即阻塞”推进到逐页面实现，但仍未达到人工验收条件。已落地且本轮补齐：

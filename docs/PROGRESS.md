@@ -1,4 +1,5 @@
 # 当前进度
+- 2026-09-28 工作区清理与 F-035 单项修复完成：先将上一轮未提交的并行/场景草稿保存为可恢复 stash `清理前保存：上一轮并行与表单修复草稿`，再在洁净基线上实施本轮修复。运行 7 路径 2 的 `currentDepName` 部门变化不再被跨节点表单核对误判为业务值改写；目标登录上下文统一归类为 `target_context`，写后正文保护排除这些会话字段但继续阻塞真正丢失的业务字段；阻塞消息新增具体缺失字段名。新增回归测试，`go test ./test/unit/backend/form_data_by_node ./test/unit/backend/executor ./test/unit/backend/target` 通过。F-035 仍保持 `implementing`，并行分支独立执行/汇合、加签后路径校验及真实目标请求对照尚未在本原子切片内完成；未连接目标平台、未启动浏览器。
 - 2026-09-27 计划状态阻塞、串行调度卡死与发起态自选分支崩溃根因复核与修复完成，切片停在 **ready_for_manual**：
   ① 计划列表运行中与删除阻断：根因为 planDerivedStatusExpr 过度判定 pending 为 running，且 Delete/BatchDelete 事务内将 pending 排队误算为运行占用阻断删除，加上 CreateRun 过早刷写入 running；修复为仅以存在活跃在跑路径的真实 running 为准，排队 pending 允许正常删除并级联清理 plan_run_queue，CreateRun 延后至真实出队或启动才同步计划运行态。
   ② 串行队列卡死与开始时间丢失：根因为 DequeueRun 从 plan_run_queue 取出运行记录推进时遗漏了设置 started_at，导致界面开始时间为空；且历史删除未级联清理等待队列产生孤儿排队行；修复为 DequeueRun 补齐 started_at 赋值并在 DeleteRun/Delete 事务中级联清理 plan_run_queue。
