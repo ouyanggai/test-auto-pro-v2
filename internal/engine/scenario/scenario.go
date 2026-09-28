@@ -67,6 +67,30 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 	if len(actions) == 0 {
 		return Result{Actions: []model.ConfiguredAction{}, Steps: []model.CompiledActionStep{}, Issues: []model.ActionConfigurationIssue{}}, nil
 	}
+	if len(input.Edges) > 0 {
+		// 旧配置的 Order 可能按广度遍历保存。互不相依的并行分支按当前拓扑
+		// 重排，但同节点动作及显式重新提交的生命周期顺序不能被改写。
+		hasExplicitResubmit := false
+		for _, action := range actions {
+			hasExplicitResubmit = hasExplicitResubmit || action.Action == model.ActionResubmit
+		}
+		if !hasExplicitResubmit {
+			positions := indexOf(sequence)
+			sort.SliceStable(actions, func(i, j int) bool {
+				left, right := positions[actions[i].NodeKey], positions[actions[j].NodeKey]
+				if actions[i].NodeKey == "" {
+					left = len(sequence)
+				}
+				if actions[j].NodeKey == "" {
+					right = len(sequence)
+				}
+				return left < right
+			})
+			for index := range actions {
+				actions[index].Order = index + 1
+			}
+		}
+	}
 	nodeTypes := make(map[string]string, len(nodes))
 	for key, node := range nodes {
 		nodeTypes[key] = node.Type
@@ -97,7 +121,7 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
 		nodeIdx := nodeIndex(sequence, action.NodeKey)
-		if issue := validateNodeOrder(action, index, nodeIdx, lastNodeIndex, transferred); issue == nil {
+		if issue := validateNodeOrder(action, index, nodeIdx, lastNodeIndex, transferred, sequence, outgoingOf(sequence, input.Edges)); issue == nil {
 		} else {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		}
@@ -359,10 +383,16 @@ func (c *compiler) emitRecoveryFromStart(target int, triggerKey string) {
 		Precondition: "实例已被驳回或撤回，等待发起人重新提交", ExpectedEffect: expectedEffect(model.ActionResubmit),
 		StopOnFailure: "恢复条件不满足时停止并定位触发动作", RecoveryPolicy: "不创建第二主实例，按目标事实重新读取", ReloadRequired: true,
 	}, false)
+	// 重新提交会重新激活整处分叉：已经完成的兄弟分支也失去已办事实，
+	// 必须在继续原节点前重新同意；尚未走到的分支留给后面的固定尾动作。
+	previouslyCompleted := c.completed
 	c.status = "run"
 	c.completed = map[string]bool{}
-	for _, nodeKey := range c.recoveryPathNodes(c.sequence[start], c.sequence[target]) {
-		c.emitRecoveryPass(c.indexOf[nodeKey], triggerKey)
+	for index := start + 1; index < target; index++ {
+		nodeKey := c.sequence[index]
+		if previouslyCompleted[nodeKey] || (isAutomaticNode(c.nodeTypes[nodeKey]) && c.reachable(c.sequence[start], nodeKey)) {
+			c.emitRecoveryPass(index, triggerKey)
+		}
 	}
 	c.cursor = target
 }
@@ -373,17 +403,49 @@ func (c *compiler) emitRollbackRecovery(target int, triggerKey string) {
 	if target < 0 || target >= len(c.sequence) {
 		return
 	}
-	chain := c.rollbackReturnChain(c.sequence[target])
-	if len(chain) == 0 {
+	previousKey := c.graphPreviousHuman(c.sequence[target])
+	if previousKey == "" {
 		return
 	}
-	previousKey := chain[0]
 	c.addGroupedStep(recoveryApproveStep(model.ConfiguredAction{Key: triggerKey, NodeKey: previousKey}, "回退到真实前驱节点后重新处理"), false)
 	c.completed[previousKey] = true
-	for _, nodeKey := range chain[1:] {
-		c.emitRecoveryPass(c.indexOf[nodeKey], triggerKey)
+	// 分支首节点退回分叉前主线时，目标撤销整个并行段的已办；
+	// 分支内部回退则只重做本支后继，不能误触碰兄弟分支。
+	for index := c.indexOf[previousKey] + 1; index < target; index++ {
+		nodeKey := c.sequence[index]
+		if !c.reachable(previousKey, nodeKey) {
+			continue
+		}
+		if c.completed[nodeKey] || isAutomaticNode(c.nodeTypes[nodeKey]) {
+			c.emitRecoveryPass(index, triggerKey)
+		}
 	}
 	c.cursor = target
+}
+
+// reachable 判断真实路径边上是否能从前驱到达后继；无边路径保持线性语义。
+func (c *compiler) reachable(from, to string) bool {
+	if len(c.outgoing) == 0 {
+		return c.indexOf[from] <= c.indexOf[to]
+	}
+	seen := map[string]bool{}
+	var visit func(string) bool
+	visit = func(key string) bool {
+		if key == to {
+			return true
+		}
+		if seen[key] {
+			return false
+		}
+		seen[key] = true
+		for _, next := range c.outgoing[key] {
+			if visit(next) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(from)
 }
 
 // emitRecoveryPass 在恢复链经过人工节点时发出真实同意，经过系统节点时只读导航。
@@ -455,7 +517,7 @@ func isFixedTailAction(action model.ActionKey) bool {
 }
 
 // previousHumanIndex 跳过自动节点，定位指定位置之前最近的人工或发起节点。
-// 仅在没有路径边时使用；并行路径必须改走 rollbackReturnChain。
+// 仅在没有路径边时使用；并行路径必须沿真实入边寻找前驱。
 func previousHumanIndex(position int, sequence []string, nodeTypes map[string]string) int {
 	if position > len(sequence) {
 		position = len(sequence)
@@ -466,26 +528,6 @@ func previousHumanIndex(position int, sequence []string, nodeTypes map[string]st
 		}
 	}
 	return -1
-}
-
-// rollbackReturnChain 返回从回退落点回到原节点、且不含两端的人工与导航节点。
-// 有入边时前驱只取路径顺序最靠前的那一个：并行汇合点不能把兄弟分支算成回退目标。
-// 没有边时退回线性前驱，保持旧调用方行为。
-func (c *compiler) rollbackReturnChain(nodeKey string) []string {
-	start := c.graphPreviousHuman(nodeKey)
-	if start == "" {
-		return nil
-	}
-	if len(c.outgoing) == 0 {
-		previous := c.indexOf[start]
-		target := c.indexOf[nodeKey]
-		chain := []string{start}
-		for index := previous + 1; index < target; index++ {
-			chain = append(chain, c.sequence[index])
-		}
-		return chain
-	}
-	return append([]string{start}, c.forwardSpine(start, nodeKey)...)
 }
 
 // graphPreviousHuman 沿入边跳过自动节点，找到回退会重建待办的人工节点。
@@ -526,77 +568,6 @@ func (c *compiler) graphPreviousHuman(nodeKey string) string {
 		frontier = nextFrontier
 	}
 	return ""
-}
-
-// recoveryPathNodes 返回从主线起点到目标节点之间所有真实祖先节点，并按配置路径顺序稳定排序。
-// 直接祖先只有当前并行分支时不会带入兄弟分支；目标位于并行汇合点之后时，所有能到达汇合点的分支都会保留，
-// 这样不同意/撤回恢复既不漏掉并行分支，也不把不可达兄弟误编进恢复链。
-func (c *compiler) recoveryPathNodes(start, target string) []string {
-	start = strings.TrimSpace(start)
-	target = strings.TrimSpace(target)
-	if start == "" || target == "" || start == target {
-		return nil
-	}
-	if len(c.outgoing) == 0 {
-		from, fromOK := c.indexOf[start]
-		to, toOK := c.indexOf[target]
-		if !fromOK || !toOK || from >= to {
-			return nil
-		}
-		return append([]string(nil), c.sequence[from+1:to]...)
-	}
-	reachable := map[string]bool{}
-	var walkForward func(string)
-	walkForward = func(node string) {
-		if node == "" || reachable[node] {
-			return
-		}
-		reachable[node] = true
-		for _, next := range c.outgoing[node] {
-			walkForward(next)
-		}
-	}
-	walkForward(start)
-	canReachTarget := map[string]bool{}
-	var walkBackward func(string)
-	walkBackward = func(node string) {
-		if node == "" || canReachTarget[node] {
-			return
-		}
-		canReachTarget[node] = true
-		for _, previous := range c.incoming[node] {
-			walkBackward(previous)
-		}
-	}
-	walkBackward(target)
-	result := make([]string, 0)
-	for _, nodeKey := range c.sequence {
-		if nodeKey != start && nodeKey != target && reachable[nodeKey] && canReachTarget[nodeKey] {
-			result = append(result, nodeKey)
-		}
-	}
-	return result
-}
-
-// forwardSpine 从回退落点沿唯一后继走到原节点，只收集中间节点。
-// 后继分叉说明路径边不完整，停止续接，避免再次猜进兄弟分支。
-func (c *compiler) forwardSpine(from, until string) []string {
-	var spine []string
-	seen := map[string]bool{from: true}
-	current := from
-	for {
-		nexts := c.outgoing[current]
-		if len(nexts) != 1 {
-			return spine
-		}
-		next := nexts[0]
-		if next == until || seen[next] {
-			return spine
-		}
-		seen[next] = true
-		spine = append(spine, next)
-		current = next
-	}
 }
 
 // incomingOf 只保留两端都在当前路径上的入边，并按路径顺序稳定排序。
@@ -961,11 +932,16 @@ func validateActionState(action model.ConfiguredAction, index int, resubmitReady
 }
 
 // validateNodeOrder 阻止没有恢复步骤支撑的回跳或同节点移交后隐式切换演员。
-func validateNodeOrder(action model.ConfiguredAction, index, nodeIndex, lastNodeIndex int, transferred bool) *model.ActionConfigurationIssue {
+func validateNodeOrder(action model.ConfiguredAction, index, nodeIndex, lastNodeIndex int, transferred bool, sequence []string, outgoing map[string][]string) *model.ActionConfigurationIssue {
 	if transferred && nodeIndex == lastNodeIndex && action.Scope == model.ActionScopeTask && action.Action != model.ActionTransfer && action.ActorPolicy == "" {
 		return issue(index, action, "ACTOR_CONTINUITY_UNKNOWN", "移交后后续动作必须显式指定可回读的处理人策略")
 	}
-	if nodeIndex >= 0 && lastNodeIndex >= 0 && nodeIndex < lastNodeIndex && action.Action != model.ActionRollback && action.Action != model.ActionRetrieve && action.Action != model.ActionResubmit {
+	backtrack := nodeIndex >= 0 && lastNodeIndex >= 0 && nodeIndex < lastNodeIndex
+	if backtrack && len(outgoing) > 0 {
+		probe := &compiler{sequence: sequence, indexOf: indexOf(sequence), outgoing: outgoing}
+		backtrack = probe.reachable(sequence[nodeIndex], sequence[lastNodeIndex])
+	}
+	if backtrack && action.Action != model.ActionRollback && action.Action != model.ActionRetrieve && action.Action != model.ActionResubmit {
 		return issue(index, action, "ACTION_PATH_BACKTRACK", "动作回到前序节点但没有回退或取回恢复步骤")
 	}
 	return nil

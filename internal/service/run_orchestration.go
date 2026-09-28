@@ -230,14 +230,14 @@ type RunStepDTO struct {
 	ReleaseGroup    string `json:"releaseGroup,omitempty"`
 	ReleaseRequired bool   `json:"releaseRequired,omitempty"`
 	// NodeID 是该节点在图上的真实标识：画布与侧栏按它取运行状态与步骤（与 nodeKey 是两套键空间）。
-	NodeID     string    `json:"nodeId,omitempty"`
-	NodeName   string    `json:"nodeName"`
+	NodeID       string    `json:"nodeId,omitempty"`
+	NodeName     string    `json:"nodeName"`
 	ActorName    string    `json:"actorName"`
 	ReceiverName string    `json:"receiverName,omitempty"`
 	StatusName   string    `json:"statusName"`
 	StartedAt    time.Time `json:"startedAt"`
-	FinishedAt time.Time `json:"finishedAt"`
-	DurationMs int64     `json:"durationMs"`
+	FinishedAt   time.Time `json:"finishedAt"`
+	DurationMs   int64     `json:"durationMs"`
 	// GateSnapshot 是放行时的门禁结论快照（逐项中文条件 JSON），侧栏据此还原当时的门禁判定。
 	GateSnapshot string              `json:"gateSnapshot,omitempty"`
 	Attempts     []RunStepAttemptDTO `json:"attempts"`
@@ -262,18 +262,18 @@ type RunFlowGraphDTO struct {
 
 // RunTimelineItemDTO 是节点面板统一时间线的一行：同一步骤只允许落入一种状态。
 type RunTimelineItemDTO struct {
-	StepNo     int       `json:"stepNo"`
-	Action     string    `json:"action,omitempty"`
-	ActionName string    `json:"actionName"`
-	NodeKey    string    `json:"nodeKey"`
-	NodeID     string    `json:"nodeId,omitempty"`
-	NodeName   string    `json:"nodeName"`
+	StepNo       int       `json:"stepNo"`
+	Action       string    `json:"action,omitempty"`
+	ActionName   string    `json:"actionName"`
+	NodeKey      string    `json:"nodeKey"`
+	NodeID       string    `json:"nodeId,omitempty"`
+	NodeName     string    `json:"nodeName"`
 	ActorName    string    `json:"actorName,omitempty"`
 	ReceiverName string    `json:"receiverName,omitempty"`
 	Status       string    `json:"status"`
 	StatusName   string    `json:"statusName"`
-	StartedAt  time.Time `json:"startedAt,omitempty"`
-	DurationMs int64     `json:"durationMs,omitempty"`
+	StartedAt    time.Time `json:"startedAt,omitempty"`
+	DurationMs   int64     `json:"durationMs,omitempty"`
 }
 
 // PathDeviationDTO 是路径偏离的可核对事实；目标节点缺少名称时保留事实卡片，不猜测名称或连线。
@@ -352,6 +352,8 @@ type PathRunDetailDTO struct {
 	Steps                 []RunStepDTO               `json:"steps"`
 	CurrentPreview        *RunPreviewDTO             `json:"currentPreview,omitempty"`
 	NodeStates            map[string]RunNodeStateDTO `json:"nodeStates"`
+	// ActiveNodeIDs 是目标实例当前同时激活的节点集合；单步放行仍逐次核验写入。
+	ActiveNodeIDs []string `json:"activeNodeIds"`
 	// GraphError 原样携带结构读取失败的底层错误文案；为空表示结构读取正常。
 	GraphError string `json:"graphError,omitempty"`
 	// NodePlans 是按图节点 ID 索引的「本次运行在该节点上的已配置计划」：
@@ -1248,6 +1250,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 		PathID:            pathRun.ExecutionPathID,
 		PathName:          pathNameOf(ctx, s.paths, run.PlanID, pathRun.ExecutionPathID, plan.Name),
 		NodeStates:        map[string]RunNodeStateDTO{},
+		ActiveNodeIDs:     []string{},
 		GraphError:        graphErrorText,
 		NodePlans:         map[string][]RunNodePlanActionDTO{},
 		// 数组型字段一律以空数组起步：nil 切片会序列化成 JSON null，前端按数组读取会整页崩溃。
@@ -1393,11 +1396,11 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	// 步骤与预览携带的是配置令牌键（编译场景的 nodeKey），画布与侧栏按图节点 ID 取值。
 	// 这里统一翻译出图节点 ID，键空间对齐后九个运行态、当前步标记与侧栏才真实可用（评审 P1）。
 	var tokenToGraphID map[string]string
+	var controlNodeTargetIDs map[string]string
+	if s.control != nil {
+		controlNodeTargetIDs = s.control.NodeTargetIDs(pathRun.ID)
+	}
 	if !dynamicProjectionOK {
-		var controlNodeTargetIDs map[string]string
-		if s.control != nil {
-			controlNodeTargetIDs = s.control.NodeTargetIDs(pathRun.ID)
-		}
 		tokenToGraphID = bindStepTokensToFactGraph(graph, factGraph, controlNodeTargetIDs, anchorTokens, insertedNodeIDsFromStepsAndPreview(steps, nil))
 	} else {
 		tokenToGraphID = tokenToGraphNodeID(factGraph)
@@ -1433,7 +1436,10 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 			detail.Steps[index].ReleaseRequired = compiled.ReleaseRequired
 		}
 	}
-	detail.NodeStates = buildNodeStates(factGraph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys, tokenToGraphID)
+	if pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying || pathRun.Status == model.PathRunStatusPaused {
+		detail.ActiveNodeIDs = activeRunNodeIDs(factGraph, detail.CurrentPreview, tokenToGraphID, controlNodeTargetIDs)
+	}
+	detail.NodeStates = buildNodeStates(factGraph, steps, pathRun, detail.CurrentPreview, configuredNodeKeys, tokenToGraphID, detail.ActiveNodeIDs...)
 	detail.NodePlans = buildNodePlans(compiledSteps, tokenToGraphID)
 	detail.StepTimeline = buildStepTimeline(detail.Steps, detail.CurrentPreview, compiledSteps, factGraph, pathRun,
 		controlView != nil && controlView.StepInFlight, controlView != nil && controlView.LoopRunning)
@@ -2535,7 +2541,7 @@ func actionScopeName(scope model.ActionScope) string {
 // buildNodeStates 推导画布节点的九个中文运行态：
 // 已落账步骤的节点已完成；失败/结果待确认的收尾节点单独标出；当前步节点运行中；
 // 已配置路线上尚未到达的节点等待运行；路线外节点未开始。状态不只靠颜色，界面必须渲染中文。
-func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string, tokenToGraphID map[string]string) map[string]RunNodeStateDTO {
+func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string, tokenToGraphID map[string]string, activeNodeIDs ...string) map[string]RunNodeStateDTO {
 	if tokenToGraphID == nil {
 		tokenToGraphID = tokenToGraphNodeID(graph)
 	}
@@ -2593,6 +2599,13 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 			states[nodeID] = nodeState(model.PathRunStatusWaiting)
 		}
 	}
+	if pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying || pathRun.Status == model.PathRunStatusPaused {
+		for _, id := range activeNodeIDs {
+			if _, exists := states[id]; exists {
+				states[id] = nodeState(model.PathRunStatusRunning)
+			}
+		}
+	}
 	if preview != nil && (preview.NodeID != "" || preview.NodeKey != "") && (pathRun.Status == model.PathRunStatusRunning || pathRun.Status == model.PathRunStatusVerifying || pathRun.Status == model.PathRunStatusPaused) {
 		status := model.PathRunStatusRunning
 		if pathRun.Status == model.PathRunStatusVerifying {
@@ -2614,6 +2627,39 @@ func buildNodeStates(graph model.FlowGraph, steps []model.RunStep, pathRun model
 		}
 	}
 	return states
+}
+
+// activeRunNodeIDs 把目标当前全部待办节点映射到本次详情的图空间；不猜测无法重绑定的节点。
+func activeRunNodeIDs(graph model.FlowGraph, preview *RunPreviewDTO, tokenToGraphID, targetByToken map[string]string) []string {
+	if preview == nil {
+		return []string{}
+	}
+	graphIDs := map[string]bool{}
+	for _, node := range graph.Nodes {
+		graphIDs[node.ID] = true
+	}
+	targetToGraph := map[string]string{}
+	for token, target := range targetByToken {
+		if id := tokenToGraphID[token]; target != "" && graphIDs[id] {
+			targetToGraph[target] = id
+		}
+	}
+	seen := map[string]bool{}
+	result := []string{}
+	for _, field := range []string{"currentNodes", "dueNodes"} {
+		values, _ := preview.Facts[field].([]string)
+		for _, target := range values {
+			id := target
+			if !graphIDs[id] {
+				id = targetToGraph[target]
+			}
+			if id != "" && graphIDs[id] && !seen[id] {
+				seen[id] = true
+				result = append(result, id)
+			}
+		}
+	}
+	return result
 }
 
 // tokenToGraphNodeID 从真实结构推导「配置令牌键 -> 图节点 ID」映射：
@@ -2904,7 +2950,7 @@ func previewDTO(preview *step.StepPreview) *RunPreviewDTO {
 		NodeKey: preview.NodeKey, NodeName: preview.NodeName,
 		ActorName: preview.ActorName, ReceiverName: preview.ReceiverName,
 		ExpectedEffect: preview.ExpectedEffect,
-		Endpoint: preview.Endpoint, RequestPreview: preview.RequestPreview,
+		Endpoint:       preview.Endpoint, RequestPreview: preview.RequestPreview,
 		GateAllowed: preview.GateAllowed, GateReason: preview.GateReason,
 		GateItems: preview.GateItems, Facts: facts, BlockReason: preview.BlockReason,
 	}
@@ -2936,8 +2982,13 @@ func BuildNodeStatesForTest(graph model.FlowGraph, steps []model.RunStep, pathRu
 }
 
 // BuildNodeStatesWithTokenMapForTest 暴露画布节点运行态推导，允许外部传入显式 tokenMap 以验证动态节点重映射。
-func BuildNodeStatesWithTokenMapForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string, tokenMap map[string]string) map[string]RunNodeStateDTO {
-	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys, tokenMap)
+func BuildNodeStatesWithTokenMapForTest(graph model.FlowGraph, steps []model.RunStep, pathRun model.PathRun, preview *RunPreviewDTO, configuredNodeKeys []string, tokenMap map[string]string, activeNodeIDs ...string) map[string]RunNodeStateDTO {
+	return buildNodeStates(graph, steps, pathRun, preview, configuredNodeKeys, tokenMap, activeNodeIDs...)
+}
+
+// ActiveRunNodeIDsForTest 暴露只读活动节点映射，验证并行待办能同时投影到画布。
+func ActiveRunNodeIDsForTest(graph model.FlowGraph, preview *RunPreviewDTO, tokenMap, targetByToken map[string]string) []string {
+	return activeRunNodeIDs(graph, preview, tokenMap, targetByToken)
 }
 
 // ProjectRuntimeGraphForTest 暴露运行期代理树投影，供根目录定向测试锁定加签重建后的结构绑定。

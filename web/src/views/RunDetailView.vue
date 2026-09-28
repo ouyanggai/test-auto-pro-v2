@@ -1246,6 +1246,7 @@ onBeforeUnmount(() => {
             :run-node-states="runNodeStates"
             :run-dynamic-node-ids="runDynamicNodeIds"
             :current-run-node-key="currentNodeKey"
+            :active-run-node-keys="detail.activeNodeIds || []"
             :run-busy="runBusy"
             :run-taken-edge-ids="runTakenEdgeIds"
             :run-deviation-edge-ids="runDeviationEdgeIds"

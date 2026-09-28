@@ -169,6 +169,22 @@ func (s *RunReadinessService) pathInput(ctx context.Context, graph model.FlowGra
 	input.ConfigIssues, input.ConfigNotices = decodeConfigIssues(config.Issues, graphNodeNames(graph))
 	input.CompiledStepCount = countJSONArray(config.CompiledSteps)
 	input.ConfiguredActions = decodeConfiguredActions(config.UserActions)
+	// 运行与配置预检必须使用同一份当前真实图；旧的 compiled_steps 不能证明
+	// 当前动作仍可编译。先拦住结构错误，避免创建路径运行后才由调度器报启动失败。
+	if len(config.UserActions) > 0 && len(input.TopologyIssues) == 0 {
+		analysis, analysisErr := s.analyzer.Analyze(graph, path.Choices)
+		if analysisErr == nil && analysis.Complete {
+			compiled, compileErr := compilePathActions(decodeWorkspaceActions(config.UserActions), graph, analysis, nil)
+			if compileErr != nil {
+				input.ConfigIssues = append(input.ConfigIssues, model.PathConfigAffectedItem{
+					Kind: "action", Name: pathDisplayName(path),
+					Reason: "当前动作配置无法运行：" + compileErr.Error() + "；请在节点动作配置中调整",
+				})
+			} else {
+				input.CompiledStepCount = len(compiled.Steps)
+			}
+		}
+	}
 	// semantics_pending 的真实数据源：按动作到语义条目的映射汇总未勘定条目。
 	input.PendingSemanticsEntries = pendingSemanticsFor(input.ConfiguredActions)
 	return input

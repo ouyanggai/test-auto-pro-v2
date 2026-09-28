@@ -79,6 +79,34 @@ func TestF039VerifyingKeepsCurrentNodeVisible(t *testing.T) {
 	}
 }
 
+// TestParallelActiveNodesHighlightedTogether 验证三个真实并行待办一起高亮，汇合节点仍等待。
+func TestParallelActiveNodesHighlightedTogether(t *testing.T) {
+	graph := model.FlowGraph{Nodes: []model.FlowGraphNode{
+		{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "after"},
+	}}
+	token := analyzer.PathConfigNodeToken("a")
+	preview := &service.RunPreviewDTO{NodeKey: token, Facts: map[string]any{
+		"currentNodes": []string{"target-a", "target-b", "target-c"},
+		"dueNodes":     []string{"target-b"},
+	}}
+	tokenMap := map[string]string{token: "a", "token-b": "b", "token-c": "c"}
+	targetMap := map[string]string{token: "target-a", "token-b": "target-b", "token-c": "target-c"}
+	active := service.ActiveRunNodeIDsForTest(graph, preview, tokenMap, targetMap)
+	if len(active) != 3 {
+		t.Fatalf("三个并行节点都应呈现活动状态：%v", active)
+	}
+	states := service.BuildNodeStatesWithTokenMapForTest(graph, nil, model.PathRun{Status: model.PathRunStatusRunning},
+		preview, []string{"a", "b", "c", "after"}, tokenMap, active...)
+	for _, id := range []string{"a", "b", "c"} {
+		if states[id].Status != string(model.PathRunStatusRunning) {
+			t.Fatalf("活动分支 %s 未高亮：%+v", id, states)
+		}
+	}
+	if states["after"].Status != string(model.PathRunStatusWaiting) {
+		t.Fatalf("全部分支完成前汇合后继只能等待：%+v", states)
+	}
+}
+
 // TestF039CompletedGraphHasStableVirtualEnd 验证完成态补出的虚拟结束节点和终端连线稳定且幂等。
 func TestF039CompletedGraphHasStableVirtualEnd(t *testing.T) {
 	graph := model.FlowGraph{

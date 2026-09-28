@@ -85,9 +85,8 @@ func TestF034PendingNotAdvancedNeitherSkipsNorBlocks(t *testing.T) {
 	}
 }
 
-// TestParallelInactiveBranchSkipsWithoutIsSkip 锁定运行 8 路径 2：
-// 线性步骤走到未激活的并行兄弟分支时，不受模板 isSkip 约束，零写入跳过并继续处理真实活动分支。
-func TestParallelInactiveBranchSkipsWithoutIsSkip(t *testing.T) {
+// TestParallelSiblingAloneCannotProveBranchSkipped 锁定并行兄弟活动不能证明本支已审核或自动跳过。
+func TestParallelSiblingAloneCannotProveBranchSkipped(t *testing.T) {
 	runCtx := step.RunContext{
 		Nodes: map[string]step.NodeInfo{
 			"inactive": {Name: "公司顾问", Type: "common", TargetNodeID: "branch-a-task"},
@@ -106,11 +105,11 @@ func TestParallelInactiveBranchSkipsWithoutIsSkip(t *testing.T) {
 	}
 	facts := step.InstanceFacts{Found: true, Status: "run", CurrentNodes: []string{"branch-b-task"}}
 	action, reason := step.TargetSkippedClassificationForTest(runCtx, runCtx.Steps[0], facts)
-	if action != "skip" {
-		t.Fatalf("未激活的并行兄弟分支应零写入跳过，实际 %s（%s）", action, reason)
+	if action != "block" {
+		t.Fatalf("不能从兄弟分支活动推断本支完成，实际 %s（%s）", action, reason)
 	}
-	if !strings.Contains(reason, "并行兄弟分支") {
-		t.Fatalf("跳过原因必须说明并行分支事实：%s", reason)
+	if !strings.Contains(reason, "无法证明") {
+		t.Fatalf("阻断原因必须说明缺少本支完成证据：%s", reason)
 	}
 }
 

@@ -1577,12 +1577,11 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 	if pendingIndex <= expectedIndex && !isParallelBranch(expectedNodeID, pendingNodeID, runCtx) {
 		return "", "", "", fmt.Sprintf("实例待办仍在「%s」（本步或更早），不构成跳过", pendingName)
 	}
-	// 并行兄弟分支会被编译成线性步骤，但目标只返回当前仍激活的分支待办。
-	// 当后方待办与本步互不可达、且共享真实并行祖先时，本步分支已经不再激活；
-	// 这不是模板 isSkip 语义，允许零写入越过本地步骤，继续处理仍活跃的兄弟分支。
+	// 兄弟分支正在处理并不能证明本支已经完成：目标可能尚在生成待办，
+	// 或刚重新发起全部分支。不能因为线性步骤序号就把本支零写入略过。
 	if isParallelBranch(strings.TrimSpace(info.TargetNodeID), pendingNodeID, runCtx) {
-		return "skip", fmt.Sprintf("实例当前激活的是并行兄弟分支「%s」，节点「%s」当前未激活；本节点动作不发送请求", pendingName, info.Name), pendingName,
-			fmt.Sprintf("实例待办在并行兄弟分支「%s」，本节点当前未激活，按并行分支事实跳过", pendingName)
+		return "block", fmt.Sprintf("并行分支「%s」仍有待办，但无法证明节点「%s」已完成或被目标跳过；请核对全部分支待办后继续", pendingName, info.Name), pendingName,
+			fmt.Sprintf("并行兄弟分支「%s」活动不能证明本步节点已完成，禁止按线性序号跳过", pendingName)
 	}
 	// 待办确实越过本节点。分型依据目标后端规则：只有模板声明 isSkip=true 才递归跳过；
 	// run_node_choose 自选节点无论声明如何都要求显式人员，缺失即抛"未设置审批人"。

@@ -45,6 +45,7 @@ const props = withDefaults(defineProps<{
   runNodeStates?: Record<string, { status: string; statusName: string }>
   runDynamicNodeIds?: string[]
   currentRunNodeKey?: string
+  activeRunNodeKeys?: string[]
   // runBusy 表示当前步此刻真的在执行（放行在途／连续执行／核验中）：当前步节点据此播执行动画。
   runBusy?: boolean
   // runTakenEdgeIds 是运行中真实走过的连线（按步骤顺序相邻节点连接）；
@@ -60,7 +61,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   choices: () => [], workspaceOpen: false, branchEditing: false, workspaceExitDisabled: false, saveGuideVisible: false, savedPathsOpen: false,
   configurationMode: false, configurationNodeStates: () => ({}), configurationFormStatus: '', configurationFormStatusName: '',
-  runMode: false, runNodeStates: () => ({}), runDynamicNodeIds: () => [], currentRunNodeKey: '', runBusy: false, runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
+  runMode: false, runNodeStates: () => ({}), runDynamicNodeIds: () => [], currentRunNodeKey: '', activeRunNodeKeys: () => [], runBusy: false, runTakenEdgeIds: () => [], runDeviationEdgeIds: () => [],
   runSelectedNodeKey: '', runErrorNotes: () => ({}), runStepNotes: () => ({}),
 })
 const emit = defineEmits<{
@@ -96,6 +97,7 @@ const displayedLayout = computed(() => {
   // 运行态叠加：真实走过的连线加粗带流向，偏离已配置路径的连线标红（T08 要求）。
   const takenIds = new Set(props.runTakenEdgeIds || [])
   const deviatedIds = new Set(props.runDeviationEdgeIds || [])
+  const activeIds = new Set(props.activeRunNodeKeys || [])
   const showRunEdges = props.runMode && (takenIds.size > 0 || deviatedIds.size > 0)
   return {
     nodes: laidOut.value.nodes.map((node) => {
@@ -107,7 +109,7 @@ const displayedLayout = computed(() => {
       // 运行模式下"能点开"的判定要以运行事实为准：已配置路线上的节点、当前步节点、
       // 以及任何已经有运行态的节点（实际走向偏离配置时就出现在路线外）都必须能点开看详情。
       const runTouched = Boolean(runState && runState.status && runState.status !== 'not_started')
-      const runInPath = analysis.reachableNodeIds.has(node.id) || node.id === props.currentRunNodeKey || runTouched || dynamicNode
+      const runInPath = analysis.reachableNodeIds.has(node.id) || node.id === props.currentRunNodeKey || activeIds.has(node.id) || runTouched || dynamicNode
       const runInteractive = Boolean(props.runMode && runInPath)
       return {
         ...node,
@@ -118,7 +120,7 @@ const displayedLayout = computed(() => {
         connectable: false,
         deletable: false,
         ariaLabel: props.runMode
-          ? `${node.data?.name || '流程节点'}，${runState?.statusName || '未开始'}${node.id === props.currentRunNodeKey ? '，当前步' : ''}`
+          ? `${node.data?.name || '流程节点'}，${runState?.statusName || '未开始'}${activeIds.has(node.id) ? '，活动待办' : ''}${node.id === props.currentRunNodeKey ? '，当前步' : ''}`
           : configurationInteractive
             ? `${node.data?.name || '流程节点'}，${configurationState?.statusName || '待配置'}，按回车或空格选择节点`
             : `${node.data?.name || '流程节点'}，不可配置`,
@@ -140,6 +142,7 @@ const displayedLayout = computed(() => {
           runStatus: runState?.status,
           runStatusName: runState?.statusName,
           runCurrent: props.runMode && node.id === props.currentRunNodeKey,
+          runActive: props.runMode && activeIds.has(node.id),
           runBusy: props.runMode && props.runBusy,
           runSelected: props.runMode && node.id === props.runSelectedNodeKey,
           runErrorNote: props.runErrorNotes?.[node.id],

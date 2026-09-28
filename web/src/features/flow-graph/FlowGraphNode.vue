@@ -49,7 +49,7 @@ const displayAuditPeople = computed(() => {
         data.runStatus ? `flow-node--run-${data.runStatus}` : '',
         {
           'flow-node--run-completed': data.runStatus === 'completed',
-          'flow-node--run-current': data.runCurrent,
+          'flow-node--run-current': data.runCurrent || data.runActive,
         },
       ]"
       title="结束"
@@ -64,12 +64,12 @@ const displayAuditPeople = computed(() => {
       :class="[
         data.runStatus ? `flow-node--run-${data.runStatus}` : '',
         {
-          'flow-node--run-current': data.runCurrent,
+          'flow-node--run-current': data.runCurrent || data.runActive,
           'flow-node--run-busy': data.runCurrent && data.runBusy,
           'flow-node--run-selected': data.runSelected && !data.runCurrent,
         },
       ]"
-      :aria-label="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runCurrent ? (data.runBusy ? '，正在执行这一步' : '，当前步') : ''}${data.runSelected ? '，正在查看' : ''}`"
+      :aria-label="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runActive ? '，活动待办' : ''}${data.runCurrent ? (data.runBusy ? '，正在执行这一步' : '，当前步') : ''}${data.runSelected ? '，正在查看' : ''}`"
       :title="`${data.name}，运行态：${data.runStatusName || '未开始'}${data.runStepNote ? `，最近一步：${data.runStepNote}` : ''}${data.runErrorNote ? `，问题：${data.runErrorNote}` : ''}`"
     >
       <handle type="target" :position="Position.Top" :connectable="false" />
@@ -91,6 +91,7 @@ const displayAuditPeople = computed(() => {
       <span v-if="data.runCurrent" class="flow-node__run-current-badge" role="status">
         {{ data.runBusy ? '正在执行' : '当前步' }}
       </span>
+      <span v-else-if="data.runActive" class="flow-node__run-current-badge" role="status">活动待办</span>
       <!-- 已落账步骤的紧凑事实（步序·动作·处理人·耗时）：卡片直接呈现这一步做了什么，不必点开右栏。 -->
       <span v-if="data.runStepNote" class="flow-node__run-step">{{ data.runStepNote }}</span>
       <handle type="source" :position="Position.Bottom" :connectable="false" />

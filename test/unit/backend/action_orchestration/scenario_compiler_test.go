@@ -370,8 +370,8 @@ func TestF026RollbackTwiceWalksBackThroughPreviousManualNode(t *testing.T) {
 	}
 }
 
-// TestParallelRollbackRecoveryStaysOnOwnBranch 验证并行分支回退只沿本支前驱恢复，不把先遍历到的兄弟分支编进恢复链。
-func TestParallelRollbackRecoveryStaysOnOwnBranch(t *testing.T) {
+// TestParallelRollbackBeforeForkReopensAllBranches 验证首节点退回分叉前时已完成兄弟分支必须重新审核。
+func TestParallelRollbackBeforeForkReopensAllBranches(t *testing.T) {
 	result, err := scenario.Compile(scenario.Input{
 		Actions: []model.ConfiguredAction{
 			{Key: "rollback-b", Action: model.ActionRollback, Scope: model.ActionScopeTask, NodeKey: "b1", Order: 1},
@@ -397,11 +397,6 @@ func TestParallelRollbackRecoveryStaysOnOwnBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("并行分支回退编译失败：%v", err)
 	}
-	for _, step := range result.Steps {
-		if step.Source == model.ActionStepSourceRecovery && step.NodeKey == "a1" {
-			t.Fatalf("回退恢复串到了兄弟分支 a1：%+v", result.Steps)
-		}
-	}
 	want := []struct {
 		source model.ActionStepSource
 		action model.ActionKey
@@ -413,6 +408,7 @@ func TestParallelRollbackRecoveryStaysOnOwnBranch(t *testing.T) {
 		{model.ActionStepSourceUser, model.ActionRollback, "b1"},
 		{model.ActionStepSourceRecovery, model.ActionApprove, "start"},
 		{model.ActionStepSourceNavigation, model.ActionSystemAutomatic, "fork"},
+		{model.ActionStepSourceRecovery, model.ActionApprove, "a1"},
 		{model.ActionStepSourceSystemDefault, model.ActionApprove, "b1"},
 		{model.ActionStepSourceNavigation, model.ActionSystemAutomatic, "join"},
 		{model.ActionStepSourceNavigation, model.ActionSystemAutomatic, "end"},
@@ -473,8 +469,8 @@ func TestParallelRollbackRecoveryUsesSameBranchPredecessor(t *testing.T) {
 	}
 }
 
-// TestParallelRejectRecoveryStaysOnSelectedBranch 验证不同意后的主线恢复不会把并行兄弟分支当成线性前驱。
-func TestParallelRejectRecoveryStaysOnSelectedBranch(t *testing.T) {
+// TestParallelRejectRecoveryRestartsCompletedBranches 验证不同意重新发起时原先已完成的并行支线也重新审核。
+func TestParallelRejectRecoveryRestartsCompletedBranches(t *testing.T) {
 	result, err := scenario.Compile(scenario.Input{
 		Actions: []model.ConfiguredAction{
 			{Key: "reject-b", Action: model.ActionReject, Scope: model.ActionScopeTask, NodeKey: "b1", Order: 1},
@@ -494,15 +490,17 @@ func TestParallelRejectRecoveryStaysOnSelectedBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("并行分支不同意恢复编译失败：%v", err)
 	}
+	found := false
 	for _, compiled := range result.Steps {
-		if compiled.Source == model.ActionStepSourceRecovery && compiled.NodeKey == "a1" {
-			t.Fatalf("不同意恢复不应进入兄弟分支 a1：%+v", result.Steps)
-		}
+		found = found || (compiled.Source == model.ActionStepSourceRecovery && compiled.NodeKey == "a1" && compiled.Action == model.ActionApprove)
+	}
+	if !found {
+		t.Fatalf("重新发起后必须重审已完成的兄弟分支 a1：%+v", result.Steps)
 	}
 }
 
-// TestParallelWithdrawRecoveryStaysOnSelectedBranch 验证实例级撤回恢复到并行分支目标时不穿过兄弟分支。
-func TestParallelWithdrawRecoveryStaysOnSelectedBranch(t *testing.T) {
+// TestParallelWithdrawRecoveryRestartsCompletedBranches 验证撤回后重新发起必须重审已完成的并行支线。
+func TestParallelWithdrawRecoveryRestartsCompletedBranches(t *testing.T) {
 	result, err := scenario.Compile(scenario.Input{
 		Actions: []model.ConfiguredAction{
 			{Key: "withdraw", Action: model.ActionWithdraw, Scope: model.ActionScopeInstance, Order: 1},
@@ -522,10 +520,70 @@ func TestParallelWithdrawRecoveryStaysOnSelectedBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("并行分支撤回恢复编译失败：%v", err)
 	}
+	found := false
 	for _, compiled := range result.Steps {
-		if compiled.Source == model.ActionStepSourceRecovery && compiled.NodeKey == "a1" {
-			t.Fatalf("撤回恢复不应进入兄弟分支 a1：%+v", result.Steps)
+		found = found || (compiled.Source == model.ActionStepSourceRecovery && compiled.NodeKey == "a1" && compiled.Action == model.ActionApprove)
+	}
+	if !found {
+		t.Fatalf("撤回后必须重审已完成的兄弟分支 a1：%+v", result.Steps)
+	}
+}
+
+// TestParallelOldActionOrderRecompiledByGraph 验证旧广度序动作按真实拓扑编译，全部支线先于共同后继。
+func TestParallelOldActionOrderRecompiledByGraph(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "a1-action", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "a1", Order: 1},
+			{Key: "b1-action", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "b1", Order: 2},
+			{Key: "a2-action", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "a2", Order: 3},
+			{Key: "after-action", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "after", Order: 4},
+		},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Type: "start"}, {ID: "fork", Type: "parallel"},
+			{ID: "a1", Type: "common"}, {ID: "a2", Type: "common"},
+			{ID: "b1", Type: "common"}, {ID: "after", Type: "common"},
+		},
+		NodeSequence: []string{"start", "fork", "a1", "a2", "b1", "after"},
+		Edges: []model.FlowGraphEdge{
+			{Source: "start", Target: "fork"}, {Source: "fork", Target: "a1"},
+			{Source: "a1", Target: "a2"}, {Source: "fork", Target: "b1"},
+			{Source: "a2", Target: "after"}, {Source: "b1", Target: "after"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("旧广度序动作必须可重新编译：%v", err)
+	}
+	seen := map[string]int{}
+	for _, compiled := range result.Steps {
+		if compiled.Action == model.ActionApprove && compiled.Source == model.ActionStepSourceSystemDefault {
+			seen[compiled.NodeKey] = compiled.Sequence
 		}
+	}
+	if seen["a1"] == 0 || seen["a2"] <= seen["a1"] || seen["b1"] == 0 ||
+		seen["after"] <= seen["a2"] || seen["after"] <= seen["b1"] {
+		t.Fatalf("汇合节点必须等待两支全部完成：%v，步骤=%+v", seen, result.Steps)
+	}
+	if result.Actions[1].NodeKey != "a2" || result.Actions[2].NodeKey != "b1" {
+		t.Fatalf("旧广度序应归一到当前真实图，同时保留同节点次序：%+v", result.Actions)
+	}
+}
+
+// TestParallelOldAncestorOrderCanonicalized 验证旧动作序号即使倒置真实祖先也按图归一。
+func TestParallelOldAncestorOrderCanonicalized(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "down", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "a2", Order: 1},
+			{Key: "up", Action: model.ActionStorageFormData, Scope: model.ActionScopeTask, NodeKey: "a1", Order: 2},
+		},
+		Nodes:        []model.FlowGraphNode{{ID: "a1", Type: "common"}, {ID: "a2", Type: "common"}},
+		NodeSequence: []string{"a1", "a2"},
+		Edges:        []model.FlowGraphEdge{{Source: "a1", Target: "a2"}},
+	})
+	if err != nil {
+		t.Fatalf("旧配置的祖先序号应按当前图归一：%v", err)
+	}
+	if result.Actions[0].Key != "up" || result.Actions[1].Key != "down" {
+		t.Fatalf("上游动作必须先于下游，实际：%+v", result.Actions)
 	}
 }
 

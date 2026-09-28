@@ -47,6 +47,7 @@ export interface FlowNodeData extends Record<string, unknown> {
   runStatus?: string
   runStatusName?: string
   runCurrent?: boolean
+  runActive?: boolean
   // runBusy 表示当前步此刻真的在执行（放行请求在途、连续执行中或核验中）：
   // 节点据此显示执行动画，与「停在这里等放行」区分开。
   runBusy?: boolean
