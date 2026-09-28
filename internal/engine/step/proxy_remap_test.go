@@ -117,6 +117,7 @@ func TestBuildProxyRemapRejectsDuplicateNodeIdentity(t *testing.T) {
 		t.Fatalf("BuildProxyRemap() error = %v, want unprovable-structure failure", err)
 	}
 }
+
 // TestValidateAddSignCurrentNode 验证常规线性加签精确匹配、并行网关分流祖先放行以及不匹配阻断。
 func TestValidateAddSignCurrentNode(t *testing.T) {
 	remap := ProxyRemap{
@@ -140,12 +141,21 @@ func TestValidateAddSignCurrentNode(t *testing.T) {
 	if err := ValidateAddSignCurrentNode("p-gateway", "task-a", remap); err != nil {
 		t.Fatalf("并行祖先网关不应报错：%v", err)
 	}
+	// 3. 加签后目标可能立即把当前节点返回为新插入的审批节点；只要它位于锚点之后，
+	// 结构上就是合法的加签结果，不能再按旧锚点严格相等误报路径不一致。
+	remap.InsertedHumanNodeIDs = []string{"new-sign"}
+	remap.GraphNodeTypes["new-sign"] = "common"
+	remap.GraphEdges["task-a"] = []GraphEdgeInfo{{Target: "new-sign"}}
+	if err := ValidateAddSignCurrentNode("new-sign", "task-a", remap); err != nil {
+		t.Fatalf("新插入节点位于锚点之后应放行：%v", err)
+	}
 
-	// 3. 不匹配且不是并行祖先：应报错阻断
+	// 4. 不匹配且不是并行祖先或新插入节点：应报错阻断
 	if err := ValidateAddSignCurrentNode("other", "task-a", remap); err == nil {
 		t.Fatalf("无关节点不匹配必须报错阻断")
 	}
 }
+
 // TestBuildProxyRemapReorderedParallelBranches 验证加签导致新树并行分支颠倒时，重映射依然准确对齐，绝不张冠李戴。
 func TestBuildProxyRemapReorderedParallelBranches(t *testing.T) {
 	// 旧树：分支0是资金副主任，分支1是张政

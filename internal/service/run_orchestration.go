@@ -446,9 +446,9 @@ func (s *RunOrchestrationService) compileRunSteps(ctx context.Context, planID, p
 	if err != nil {
 		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: "分支选择与当前真实结构不一致，请重新校验执行路径"}
 	}
-	nodes, sequence := semanticScenarioNodes(graph, analysis)
+	nodes, sequence, edges := semanticScenarioGraph(graph, analysis)
 	compiled, compileErr := scenario.Compile(scenario.Input{
-		Actions: decodeWorkspaceActions(rawActions), Nodes: nodes, NodeSequence: sequence, FinalNodeKey: lastString(sequence),
+		Actions: decodeWorkspaceActions(rawActions), Nodes: nodes, NodeSequence: sequence, Edges: edges, FinalNodeKey: lastString(sequence),
 	})
 	if compileErr == nil {
 		return compiled.Steps, nil

@@ -18,6 +18,9 @@ type Input struct {
 	Actions      []model.ConfiguredAction
 	Nodes        []model.FlowGraphNode
 	NodeSequence []string
+	// Edges 是当前路径上的真实后继关系（端点已换成语义键）。
+	// 为空时回退按节点顺序找前驱；并行路径必须传入，否则回退恢复会串到兄弟分支。
+	Edges        []model.FlowGraphEdge
 	FinalNodeKey string
 	Catalog      []model.ActionCatalogItem
 }
@@ -83,7 +86,7 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 		} else {
 			issues = append(issues, *issue)
 		}
-		if issue := validateRollbackTargetIssue(action, index, nodeIndex(sequence, action.NodeKey), sequence, nodeTypes); issue == nil {
+		if issue := validateRollbackTargetIssue(action, index, nodeIndex(sequence, action.NodeKey), sequence, nodeTypes, incomingOf(sequence, input.Edges), indexOf(sequence)); issue == nil {
 		} else if issue.Blocking {
 			return Result{Actions: actions, Issues: []model.ActionConfigurationIssue{*issue}}, &CompileError{Issues: []model.ActionConfigurationIssue{*issue}}
 		} else {
@@ -130,7 +133,10 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 			lastNodeIndex = nodeIdx
 		}
 	}
-	compiler := &compiler{nodeTypes: nodeTypes, sequence: sequence, status: "new", completed: map[string]bool{}, cursor: -1}
+	compiler := &compiler{
+		nodeTypes: nodeTypes, sequence: sequence, status: "new", completed: map[string]bool{}, cursor: -1,
+		incoming: incomingOf(sequence, input.Edges), outgoing: outgoingOf(sequence, input.Edges), indexOf: indexOf(sequence),
+	}
 	for _, action := range actions {
 		if isFixedTailAction(action.Action) {
 			continue
@@ -161,6 +167,9 @@ func (c *Compiler) Compile(input Input) (Result, error) {
 type compiler struct {
 	nodeTypes    map[string]string
 	sequence     []string
+	incoming     map[string][]string
+	outgoing     map[string][]string
+	indexOf      map[string]int
 	status       string
 	completed    map[string]bool
 	followed     bool
@@ -352,22 +361,27 @@ func (c *compiler) emitRecoveryFromStart(target int, triggerKey string) {
 	}, false)
 	c.status = "run"
 	c.completed = map[string]bool{}
-	for index := start + 1; index < target; index++ {
-		c.emitRecoveryPass(index, triggerKey)
+	for _, nodeKey := range c.recoveryPathNodes(c.sequence[start], c.sequence[target]) {
+		c.emitRecoveryPass(c.indexOf[nodeKey], triggerKey)
 	}
 	c.cursor = target
 }
 
 // emitRollbackRecovery 生成从真实前驱人工节点返回到原节点的恢复链。
+// 有图时只沿本路径入边往回走：并行分支的兄弟不在入边上，不能被编进恢复链。
 func (c *compiler) emitRollbackRecovery(target int, triggerKey string) {
-	previous := previousHumanIndex(target, c.sequence, c.nodeTypes)
-	if previous < 0 {
+	if target < 0 || target >= len(c.sequence) {
 		return
 	}
-	c.addGroupedStep(recoveryApproveStep(model.ConfiguredAction{Key: triggerKey, NodeKey: c.sequence[previous]}, "回退到真实前驱节点后重新处理"), false)
-	c.completed[c.sequence[previous]] = true
-	for index := previous + 1; index < target; index++ {
-		c.emitRecoveryPass(index, triggerKey)
+	chain := c.rollbackReturnChain(c.sequence[target])
+	if len(chain) == 0 {
+		return
+	}
+	previousKey := chain[0]
+	c.addGroupedStep(recoveryApproveStep(model.ConfiguredAction{Key: triggerKey, NodeKey: previousKey}, "回退到真实前驱节点后重新处理"), false)
+	c.completed[previousKey] = true
+	for _, nodeKey := range chain[1:] {
+		c.emitRecoveryPass(c.indexOf[nodeKey], triggerKey)
 	}
 	c.cursor = target
 }
@@ -441,6 +455,7 @@ func isFixedTailAction(action model.ActionKey) bool {
 }
 
 // previousHumanIndex 跳过自动节点，定位指定位置之前最近的人工或发起节点。
+// 仅在没有路径边时使用；并行路径必须改走 rollbackReturnChain。
 func previousHumanIndex(position int, sequence []string, nodeTypes map[string]string) int {
 	if position > len(sequence) {
 		position = len(sequence)
@@ -451,6 +466,183 @@ func previousHumanIndex(position int, sequence []string, nodeTypes map[string]st
 		}
 	}
 	return -1
+}
+
+// rollbackReturnChain 返回从回退落点回到原节点、且不含两端的人工与导航节点。
+// 有入边时前驱只取路径顺序最靠前的那一个：并行汇合点不能把兄弟分支算成回退目标。
+// 没有边时退回线性前驱，保持旧调用方行为。
+func (c *compiler) rollbackReturnChain(nodeKey string) []string {
+	start := c.graphPreviousHuman(nodeKey)
+	if start == "" {
+		return nil
+	}
+	if len(c.outgoing) == 0 {
+		previous := c.indexOf[start]
+		target := c.indexOf[nodeKey]
+		chain := []string{start}
+		for index := previous + 1; index < target; index++ {
+			chain = append(chain, c.sequence[index])
+		}
+		return chain
+	}
+	return append([]string{start}, c.forwardSpine(start, nodeKey)...)
+}
+
+// graphPreviousHuman 沿入边跳过自动节点，找到回退会重建待办的人工节点。
+func (c *compiler) graphPreviousHuman(nodeKey string) string {
+	if len(c.incoming) == 0 {
+		position := c.indexOf[nodeKey]
+		previous := previousHumanIndex(position, c.sequence, c.nodeTypes)
+		if previous < 0 {
+			return ""
+		}
+		return c.sequence[previous]
+	}
+	seen := map[string]bool{nodeKey: true}
+	frontier := []string{nodeKey}
+	for len(frontier) > 0 {
+		nextFrontier := make([]string, 0)
+		found := make([]string, 0, 1)
+		for _, current := range frontier {
+			for _, previous := range c.incoming[current] {
+				if seen[previous] {
+					continue
+				}
+				seen[previous] = true
+				if isHumanNode(c.nodeTypes[previous]) {
+					found = append(found, previous)
+					continue
+				}
+				nextFrontier = append(nextFrontier, previous)
+			}
+		}
+		if len(found) == 1 {
+			return found[0]
+		}
+		if len(found) > 1 {
+			// 汇合点有多个同层人工前驱，不能按遍历顺序猜一个回退目标。
+			return ""
+		}
+		frontier = nextFrontier
+	}
+	return ""
+}
+
+// recoveryPathNodes 返回从主线起点到目标节点之间所有真实祖先节点，并按配置路径顺序稳定排序。
+// 直接祖先只有当前并行分支时不会带入兄弟分支；目标位于并行汇合点之后时，所有能到达汇合点的分支都会保留，
+// 这样不同意/撤回恢复既不漏掉并行分支，也不把不可达兄弟误编进恢复链。
+func (c *compiler) recoveryPathNodes(start, target string) []string {
+	start = strings.TrimSpace(start)
+	target = strings.TrimSpace(target)
+	if start == "" || target == "" || start == target {
+		return nil
+	}
+	if len(c.outgoing) == 0 {
+		from, fromOK := c.indexOf[start]
+		to, toOK := c.indexOf[target]
+		if !fromOK || !toOK || from >= to {
+			return nil
+		}
+		return append([]string(nil), c.sequence[from+1:to]...)
+	}
+	reachable := map[string]bool{}
+	var walkForward func(string)
+	walkForward = func(node string) {
+		if node == "" || reachable[node] {
+			return
+		}
+		reachable[node] = true
+		for _, next := range c.outgoing[node] {
+			walkForward(next)
+		}
+	}
+	walkForward(start)
+	canReachTarget := map[string]bool{}
+	var walkBackward func(string)
+	walkBackward = func(node string) {
+		if node == "" || canReachTarget[node] {
+			return
+		}
+		canReachTarget[node] = true
+		for _, previous := range c.incoming[node] {
+			walkBackward(previous)
+		}
+	}
+	walkBackward(target)
+	result := make([]string, 0)
+	for _, nodeKey := range c.sequence {
+		if nodeKey != start && nodeKey != target && reachable[nodeKey] && canReachTarget[nodeKey] {
+			result = append(result, nodeKey)
+		}
+	}
+	return result
+}
+
+// forwardSpine 从回退落点沿唯一后继走到原节点，只收集中间节点。
+// 后继分叉说明路径边不完整，停止续接，避免再次猜进兄弟分支。
+func (c *compiler) forwardSpine(from, until string) []string {
+	var spine []string
+	seen := map[string]bool{from: true}
+	current := from
+	for {
+		nexts := c.outgoing[current]
+		if len(nexts) != 1 {
+			return spine
+		}
+		next := nexts[0]
+		if next == until || seen[next] {
+			return spine
+		}
+		seen[next] = true
+		spine = append(spine, next)
+		current = next
+	}
+}
+
+// incomingOf 只保留两端都在当前路径上的入边，并按路径顺序稳定排序。
+func incomingOf(sequence []string, edges []model.FlowGraphEdge) map[string][]string {
+	return adjacency(sequence, edges, false)
+}
+
+// outgoingOf 只保留两端都在当前路径上的出边，并按路径顺序稳定排序。
+func outgoingOf(sequence []string, edges []model.FlowGraphEdge) map[string][]string {
+	return adjacency(sequence, edges, true)
+}
+
+// adjacency 把路径边收成邻接表。forward 为真时键是起点，否则键是终点。
+func adjacency(sequence []string, edges []model.FlowGraphEdge, forward bool) map[string][]string {
+	onPath := make(map[string]bool, len(sequence))
+	for _, key := range sequence {
+		onPath[key] = true
+	}
+	result := make(map[string][]string)
+	for _, edge := range edges {
+		source := strings.TrimSpace(edge.Source)
+		target := strings.TrimSpace(edge.Target)
+		if source == "" || target == "" || !onPath[source] || !onPath[target] {
+			continue
+		}
+		if forward {
+			result[source] = append(result[source], target)
+		} else {
+			result[target] = append(result[target], source)
+		}
+	}
+	order := indexOf(sequence)
+	for key, values := range result {
+		sort.SliceStable(values, func(i, j int) bool { return order[values[i]] < order[values[j]] })
+		result[key] = values
+	}
+	return result
+}
+
+// indexOf 返回节点键在当前路径中的下标。
+func indexOf(sequence []string) map[string]int {
+	result := make(map[string]int, len(sequence))
+	for index, key := range sequence {
+		result[key] = index
+	}
+	return result
 }
 
 // validateActionStructure 校验动作结构、作用域、节点与不可伪造参数；实时门禁只做非阻断提醒。
@@ -507,15 +699,28 @@ func validateActionStructure(action model.ConfiguredAction, index int, nodes map
 // validateRollbackTargetIssue 检查回退动作的前驱；
 // 没有前驱待办属于无法形成合法动作意图的结构性错误，必须阻断；
 // 前驱为发起节点属于目标后端可执行性规则，按任务书 4.4 允许保存并显示非阻断提醒（运行时重新核验并安全跳过）。
-func validateRollbackTargetIssue(action model.ConfiguredAction, index, position int, sequence []string, nodeTypes map[string]string) *model.ActionConfigurationIssue {
+// incoming 非空时按本路径图前驱判断，避免并行兄弟被当成上一待办。
+func validateRollbackTargetIssue(action model.ConfiguredAction, index, position int, sequence []string, nodeTypes map[string]string, incoming map[string][]string, positions map[string]int) *model.ActionConfigurationIssue {
 	if action.Action != model.ActionRollback || position < 0 || position >= len(sequence) {
 		return nil
 	}
-	if position == 0 {
-		return blockingIssue(index, action, "ROLLBACK_PREVIOUS_MISSING", "当前节点没有目标引擎解析出的直接前一待办，不能回退")
+	previousKey := ""
+	if len(incoming) == 0 {
+		if position == 0 {
+			return blockingIssue(index, action, "ROLLBACK_PREVIOUS_MISSING", "当前节点没有目标引擎解析出的直接前一待办，不能回退")
+		}
+		previous := previousHumanIndex(position, sequence, nodeTypes)
+		if previous >= 0 {
+			previousKey = sequence[previous]
+		}
+	} else {
+		probe := &compiler{nodeTypes: nodeTypes, sequence: sequence, incoming: incoming, indexOf: positions}
+		previousKey = probe.graphPreviousHuman(sequence[position])
+		if previousKey == "" {
+			return blockingIssue(index, action, "ROLLBACK_PREVIOUS_MISSING", "当前节点没有目标引擎解析出的直接前一待办，不能回退")
+		}
 	}
-	previous := previousHumanIndex(position, sequence, nodeTypes)
-	if previous < 0 || strings.EqualFold(strings.TrimSpace(nodeTypes[sequence[previous]]), "start") {
+	if previousKey == "" || strings.EqualFold(strings.TrimSpace(nodeTypes[previousKey]), "start") {
 		return advisoryIssue(index, action, "ROLLBACK_PREVIOUS_START", "直接前一节点是发起节点，目标后端规则不允许回退；运行时将重新核对并安全跳过")
 	}
 	return nil
@@ -576,6 +781,7 @@ func validateProxyRemapOrder(action model.ConfiguredAction, index int, actions [
 	}
 	return nil
 }
+
 // validateForwardOrder 阻止在流程尚未发起（如首节点仅保存草稿且整条路径无后续审批节点使其重新提交运行）时执行转发动作。
 // 转发只能在流程提交并进入运行状态后执行；发起人节点内部不能执行转发，未发起实例不能执行转发。
 func validateForwardOrder(action model.ConfiguredAction, index int, actions []model.ConfiguredAction, sequence []string, nodeTypes map[string]string) *model.ActionConfigurationIssue {
@@ -763,35 +969,6 @@ func validateNodeOrder(action model.ConfiguredAction, index, nodeIndex, lastNode
 		return issue(index, action, "ACTION_PATH_BACKTRACK", "动作回到前序节点但没有回退或取回恢复步骤")
 	}
 	return nil
-}
-
-// validateRollbackTarget 阻止把回退动作配置到没有可恢复前驱的发起节点。
-func validateRollbackTarget(action model.ConfiguredAction, index, position int, sequence []string, nodeTypes map[string]string) *model.ActionConfigurationIssue {
-	if action.Action != model.ActionRollback || position < 0 || position >= len(sequence) {
-		return nil
-	}
-	if position == 0 {
-		return issue(index, action, "ROLLBACK_PREVIOUS_MISSING", "当前节点没有目标引擎解析出的直接前一待办，不能回退")
-	}
-	previous := previousActionNodeIndex(position, sequence, nodeTypes)
-	if previous < 0 || strings.EqualFold(strings.TrimSpace(nodeTypes[sequence[previous]]), "start") {
-		return issue(index, action, "ROLLBACK_PREVIOUS_START", "直接前一节点是发起节点，目标规则不允许回退")
-	}
-	return nil
-}
-
-// previousActionNodeIndex 跳过条件、并行和结束等自动节点，定位目标引擎的最近人工前驱。
-func previousActionNodeIndex(position int, sequence []string, nodeTypes map[string]string) int {
-	if position > len(sequence) {
-		position = len(sequence)
-	}
-	for index := position - 1; index >= 0; index-- {
-		switch strings.ToLower(strings.TrimSpace(nodeTypes[sequence[index]])) {
-		case "common", "synergy", "start":
-			return index
-		}
-	}
-	return -1
 }
 
 // actionScope 返回稳定动作键对应的目标作用域。

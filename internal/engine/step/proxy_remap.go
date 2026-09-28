@@ -440,6 +440,20 @@ func ValidateAddSignCurrentNode(newCurrentNodeID, mappedCurrentID string, remap 
 	if newCurrentNodeID == mappedCurrentID {
 		return nil
 	}
+	// 目标加签写入后可能立即把当前待办切到新插入的审批节点，而不是继续返回旧锚点。
+	// 只有“确实由本次重建识别出的插入人工节点”且从锚点沿最新图边可达时才放行，
+	// 避免为了消除误报而把任意新节点都当成合法路径。
+	for _, insertedID := range remap.InsertedHumanNodeIDs {
+		if strings.TrimSpace(insertedID) != newCurrentNodeID {
+			continue
+		}
+		visited := map[string]bool{}
+		forwardReachableInGraphEdges(mappedCurrentID, newCurrentNodeID, remap.GraphEdges, visited)
+		if visited[newCurrentNodeID] {
+			return nil
+		}
+		return fmt.Errorf("加签响应当前节点 %q 虽为新插入节点，但不在锚点 %q 的后继路径上", newCurrentNodeID, mappedCurrentID)
+	}
 	// 并行网关分流场景兼容：响应节点为并行网关且能正向到达映射锚点
 	if strings.EqualFold(strings.TrimSpace(remap.GraphNodeTypes[newCurrentNodeID]), "parallel") {
 		visited := map[string]bool{}

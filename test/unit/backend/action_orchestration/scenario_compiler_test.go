@@ -1,4 +1,4 @@
-﻿package action_orchestration_test
+package action_orchestration_test
 
 import "testing"
 
@@ -369,6 +369,166 @@ func TestF026RollbackTwiceWalksBackThroughPreviousManualNode(t *testing.T) {
 		t.Fatalf("步骤[%d] 错误：got(%s,%s,%s) want(%s,%s,%s)，全部=%+v", index, step.Source, step.Action, step.NodeKey, item.source, item.action, item.node, result.Steps)
 	}
 }
+
+// TestParallelRollbackRecoveryStaysOnOwnBranch 验证并行分支回退只沿本支前驱恢复，不把先遍历到的兄弟分支编进恢复链。
+func TestParallelRollbackRecoveryStaysOnOwnBranch(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "rollback-b", Action: model.ActionRollback, Scope: model.ActionScopeTask, NodeKey: "b1", Order: 1},
+		},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Type: "start"},
+			{ID: "fork", Type: "parallel"},
+			{ID: "a1", Type: "common"},
+			{ID: "b1", Type: "common"},
+			{ID: "join", Type: "merge"},
+			{ID: "end", Type: "end"},
+		},
+		NodeSequence: []string{"start", "fork", "a1", "b1", "join", "end"},
+		Edges: []model.FlowGraphEdge{
+			{ID: "e1", Source: "start", Target: "fork"},
+			{ID: "e2", Source: "fork", Target: "a1"},
+			{ID: "e3", Source: "fork", Target: "b1"},
+			{ID: "e4", Source: "a1", Target: "join"},
+			{ID: "e5", Source: "b1", Target: "join"},
+			{ID: "e6", Source: "join", Target: "end"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("并行分支回退编译失败：%v", err)
+	}
+	for _, step := range result.Steps {
+		if step.Source == model.ActionStepSourceRecovery && step.NodeKey == "a1" {
+			t.Fatalf("回退恢复串到了兄弟分支 a1：%+v", result.Steps)
+		}
+	}
+	want := []struct {
+		source model.ActionStepSource
+		action model.ActionKey
+		node   string
+	}{
+		{model.ActionStepSourceSystemDefault, model.ActionSubmit, "start"},
+		{model.ActionStepSourceNavigation, model.ActionSystemAutomatic, "fork"},
+		{model.ActionStepSourceSystemDefault, model.ActionApprove, "a1"},
+		{model.ActionStepSourceUser, model.ActionRollback, "b1"},
+		{model.ActionStepSourceRecovery, model.ActionApprove, "start"},
+		{model.ActionStepSourceNavigation, model.ActionSystemAutomatic, "fork"},
+		{model.ActionStepSourceSystemDefault, model.ActionApprove, "b1"},
+		{model.ActionStepSourceNavigation, model.ActionSystemAutomatic, "join"},
+		{model.ActionStepSourceNavigation, model.ActionSystemAutomatic, "end"},
+	}
+	if len(result.Steps) != len(want) {
+		t.Fatalf("步骤数=%d，期望=%d，全部=%+v", len(result.Steps), len(want), result.Steps)
+	}
+	for index, item := range want {
+		step := result.Steps[index]
+		if step.Source == item.source && step.Action == item.action && step.NodeKey == item.node {
+			continue
+		}
+		t.Fatalf("步骤[%d] 错误：got(%s,%s,%s) want(%s,%s,%s)，全部=%+v", index, step.Source, step.Action, step.NodeKey, item.source, item.action, item.node, result.Steps)
+	}
+}
+
+// TestParallelRollbackRecoveryUsesSameBranchPredecessor 验证分支内已有人工前驱时，回退恢复停在本支前驱，不退到兄弟分支或分叉前的主线。
+func TestParallelRollbackRecoveryUsesSameBranchPredecessor(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "rollback-b", Action: model.ActionRollback, Scope: model.ActionScopeTask, NodeKey: "b1", Order: 1},
+		},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Type: "start"},
+			{ID: "fork", Type: "parallel"},
+			{ID: "a1", Type: "common"},
+			{ID: "b0", Type: "common"},
+			{ID: "b1", Type: "common"},
+			{ID: "join", Type: "merge"},
+			{ID: "end", Type: "end"},
+		},
+		NodeSequence: []string{"start", "fork", "a1", "b0", "b1", "join", "end"},
+		Edges: []model.FlowGraphEdge{
+			{ID: "e1", Source: "start", Target: "fork"},
+			{ID: "e2", Source: "fork", Target: "a1"},
+			{ID: "e3", Source: "fork", Target: "b0"},
+			{ID: "e4", Source: "b0", Target: "b1"},
+			{ID: "e5", Source: "a1", Target: "join"},
+			{ID: "e6", Source: "b1", Target: "join"},
+			{ID: "e7", Source: "join", Target: "end"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("同分支回退编译失败：%v", err)
+	}
+	var recovery []string
+	for _, step := range result.Steps {
+		if step.Source != model.ActionStepSourceRecovery {
+			continue
+		}
+		recovery = append(recovery, step.NodeKey)
+		if step.NodeKey == "a1" || step.NodeKey == "start" {
+			t.Fatalf("回退恢复离开了本分支：%+v", result.Steps)
+		}
+	}
+	if len(recovery) != 1 || recovery[0] != "b0" {
+		t.Fatalf("恢复链应为只同意 b0，实际=%v，全部=%+v", recovery, result.Steps)
+	}
+}
+
+// TestParallelRejectRecoveryStaysOnSelectedBranch 验证不同意后的主线恢复不会把并行兄弟分支当成线性前驱。
+func TestParallelRejectRecoveryStaysOnSelectedBranch(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "reject-b", Action: model.ActionReject, Scope: model.ActionScopeTask, NodeKey: "b1", Order: 1},
+		},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Type: "start"}, {ID: "fork", Type: "parallel"},
+			{ID: "a1", Type: "common"}, {ID: "b1", Type: "common"}, {ID: "join", Type: "merge"}, {ID: "end", Type: "end"},
+		},
+		NodeSequence: []string{"start", "fork", "a1", "b1", "join", "end"},
+		Edges: []model.FlowGraphEdge{
+			{ID: "e1", Source: "start", Target: "fork"},
+			{ID: "e2", Source: "fork", Target: "a1"}, {ID: "e3", Source: "fork", Target: "b1"},
+			{ID: "e4", Source: "a1", Target: "join"}, {ID: "e5", Source: "b1", Target: "join"},
+			{ID: "e6", Source: "join", Target: "end"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("并行分支不同意恢复编译失败：%v", err)
+	}
+	for _, compiled := range result.Steps {
+		if compiled.Source == model.ActionStepSourceRecovery && compiled.NodeKey == "a1" {
+			t.Fatalf("不同意恢复不应进入兄弟分支 a1：%+v", result.Steps)
+		}
+	}
+}
+
+// TestParallelWithdrawRecoveryStaysOnSelectedBranch 验证实例级撤回恢复到并行分支目标时不穿过兄弟分支。
+func TestParallelWithdrawRecoveryStaysOnSelectedBranch(t *testing.T) {
+	result, err := scenario.Compile(scenario.Input{
+		Actions: []model.ConfiguredAction{
+			{Key: "withdraw", Action: model.ActionWithdraw, Scope: model.ActionScopeInstance, Order: 1},
+		},
+		Nodes: []model.FlowGraphNode{
+			{ID: "start", Type: "start"}, {ID: "fork", Type: "parallel"},
+			{ID: "a1", Type: "common"}, {ID: "b1", Type: "common"}, {ID: "join", Type: "merge"}, {ID: "end", Type: "end"},
+		},
+		NodeSequence: []string{"start", "fork", "a1", "b1", "join", "end"},
+		Edges: []model.FlowGraphEdge{
+			{ID: "e1", Source: "start", Target: "fork"},
+			{ID: "e2", Source: "fork", Target: "a1"}, {ID: "e3", Source: "fork", Target: "b1"},
+			{ID: "e4", Source: "a1", Target: "join"}, {ID: "e5", Source: "b1", Target: "join"},
+			{ID: "e6", Source: "join", Target: "end"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("并行分支撤回恢复编译失败：%v", err)
+	}
+	for _, compiled := range result.Steps {
+		if compiled.Source == model.ActionStepSourceRecovery && compiled.NodeKey == "a1" {
+			t.Fatalf("撤回恢复不应进入兄弟分支 a1：%+v", result.Steps)
+		}
+	}
+}
+
 // TestForwardBeforeSubmitBlocked 验证流程处于草稿且尚未提交进入后续审批运行时，禁止执行转发动作。
 func TestForwardBeforeSubmitBlocked(t *testing.T) {
 	_, err := scenario.Compile(scenario.Input{

@@ -739,12 +739,19 @@ func mergeNodeActions(existing, submitted []model.ConfiguredAction, nodeKey stri
 
 // compilePathActions 将真实图节点转换为不透明语义键并调用纯场景编译器，同时带上当前动作门禁。
 func compilePathActions(actions []model.ConfiguredAction, graph model.FlowGraph, analysis model.ExecutionPathAnalysis, catalog []model.ActionCatalogItem) (scenario.Result, error) {
-	nodes, sequence := semanticScenarioNodes(graph, analysis)
-	return scenario.Compile(scenario.Input{Actions: actions, Nodes: nodes, NodeSequence: sequence, FinalNodeKey: lastString(sequence), Catalog: catalog})
+	nodes, sequence, edges := semanticScenarioGraph(graph, analysis)
+	return scenario.Compile(scenario.Input{Actions: actions, Nodes: nodes, NodeSequence: sequence, Edges: edges, FinalNodeKey: lastString(sequence), Catalog: catalog})
 }
 
 // semanticScenarioNodes 为场景编译器建立目标节点到工具语义键的内部索引。
 func semanticScenarioNodes(graph model.FlowGraph, analysis model.ExecutionPathAnalysis) ([]model.FlowGraphNode, []string) {
+	nodes, sequence, _ := semanticScenarioGraph(graph, analysis)
+	return nodes, sequence
+}
+
+// semanticScenarioGraph 把当前路径节点和可达边换成同一套语义键。
+// 边只保留两端都在本路径上的关系，供回退恢复沿图前驱返回，而不是按遍历顺序猜兄弟分支。
+func semanticScenarioGraph(graph model.FlowGraph, analysis model.ExecutionPathAnalysis) ([]model.FlowGraphNode, []string, []model.FlowGraphEdge) {
 	byID := make(map[string]model.FlowGraphNode, len(graph.Nodes))
 	for _, node := range graph.Nodes {
 		byID[node.ID] = node
@@ -757,6 +764,7 @@ func semanticScenarioNodes(graph model.FlowGraph, analysis model.ExecutionPathAn
 	}
 	result := make([]model.FlowGraphNode, 0, len(ids))
 	sequence := make([]string, 0, len(ids))
+	tokenByID := make(map[string]string, len(ids))
 	for _, id := range ids {
 		node, ok := byID[id]
 		if !ok {
@@ -764,10 +772,28 @@ func semanticScenarioNodes(graph model.FlowGraph, analysis model.ExecutionPathAn
 		}
 		key := analyzer.PathConfigNodeToken(node.ID)
 		node.ID = key
+		tokenByID[id] = key
 		result = append(result, node)
 		sequence = append(sequence, key)
 	}
-	return result, sequence
+	edgeIDs := make(map[string]bool, len(analysis.ReachableEdgeIDs))
+	for _, id := range analysis.ReachableEdgeIDs {
+		edgeIDs[id] = true
+	}
+	edges := make([]model.FlowGraphEdge, 0, len(graph.Edges))
+	for _, edge := range graph.Edges {
+		if len(edgeIDs) > 0 && !edgeIDs[edge.ID] {
+			continue
+		}
+		source, sourceOK := tokenByID[edge.Source]
+		target, targetOK := tokenByID[edge.Target]
+		if !sourceOK || !targetOK {
+			continue
+		}
+		edge.Source, edge.Target = source, target
+		edges = append(edges, edge)
+	}
+	return result, sequence, edges
 }
 
 // semanticNodePositions 返回当前路径语义节点顺序，实例动作放在路径末端保持稳定。
