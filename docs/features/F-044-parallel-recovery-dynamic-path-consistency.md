@@ -1,6 +1,6 @@
 # F-044 并行分支恢复与动态加签路径一致性补缺
 
-- 状态：implementing（2026-09-28 运行 16 路径 5 人工复验未通过，正在修复 runtime 审批页丢失 form_person 伴生键的问题）
+- 状态：ready_for_manual（2026-09-28 运行 16 路径 5 根因已确认并完成工具侧修复，等待用户重跑验收）
 - 依据：F-039 夜间审查修复、F-037 运行画布与加签重绑定、运行 7 路径 1/2/12 的失败证据。
 
 ## 单一用户结果
@@ -83,7 +83,7 @@ pnpm --dir web run build
 
 本轮工具修复：新增 `readonlyFields` 装载协议。运行引擎按后续节点的 form_person 声明计算源字段基键，runtime 页面在审批装载后用原生表单 setter 回填这些字段及 `__formPersonId/__condition/__virtualName` 伴生键；它们不进入 `permissions`，也不改变本步 `changedFields`，不会扩大当前加签审批人的编辑权限。若目标声明人员字段而实例数据缺失，仍由写前门禁明确阻塞，不猜测人员。
 
-本轮自动验证：`go test ./internal/runtimeexec ./internal/engine/step ./test/unit/backend/runtimeexec -count=1`、对应 `go vet`、`go test ./test/contracts/f035/protocol -run 'TestApplyFormPersonFieldRule|TestCollectFormPersonFieldsByAction' -count=1`、`pnpm --dir executor-service run typecheck` 与 `git diff --check` 通过。完整 F-035 合同生命周期套件仍有与本轮无关的既有失败（`TestSpecialBusinessLifecycleRegistry` 的合同盖章阻塞断言），未发送新的目标写请求；执行服务重启后待用户重新运行路径 5 验证。
+本轮自动验证：`go test ./internal/runtimeexec ./internal/engine/step ./test/unit/backend/runtimeexec -count=1`、对应 `go vet`、`go test ./test/contracts/f035/protocol -run 'TestApplyFormPersonFieldRule|TestCollectFormPersonFieldsByAction' -count=1`、`go build ./...`、`pnpm --dir executor-service run typecheck` 与 `git diff --check` 通过。完整 F-035 合同生命周期套件仍有与本轮无关的既有失败（`TestSpecialBusinessLifecycleRegistry` 的合同盖章阻塞断言）。后端和执行服务已重启并健康，本轮未发送新的目标写请求；F-044 现停在 `ready_for_manual`。
 
 本轮人工检查：重新运行同一计划，确认不再在调度启动时报前序回跳；进入并行段时所有当前待办一起高亮、短支线先完成后共同后继仍等待；不同意、撤回、首节点退回分叉前再继续时各已完成支线重新审核，分支内回退仅重走本支。若目标事实只返回一个兄弟分支而本支是否完成未知，工具应阻断并说明无法证明，不应静默跳过。
 
