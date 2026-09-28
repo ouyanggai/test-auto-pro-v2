@@ -118,6 +118,11 @@ func TestApplyFormPersonFieldRule(t *testing.T) {
 	if target.ApplyFormPersonFieldRule(values, field) {
 		t.Fatalf("源字段缺失不得产出：%v", values)
 	}
+	directField := target.NodeFormPersonField{NodeID: "node-2", Field: "accountantUserName", Scope: target.FormPersonScopeApprovalNextEntry}
+	values = map[string]any{"accountantUserName": `{"id":"user-10","name":"万舒"}`}
+	if !target.ApplyFormPersonFieldRule(values, directField) || values["accountantUserName"] != "user-10" {
+		t.Fatalf("直接声明主字段时也必须转换为真实用户 ID：%v", values)
+	}
 }
 
 func TestUnregisteredEndpointRejectsWrite(t *testing.T) {

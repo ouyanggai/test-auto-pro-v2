@@ -767,14 +767,21 @@ export default {
       var values = this.$refs.generateForm.getValues();
       this.getFlowDetailFindFormPerson.fields.forEach(field => {
           let key = field.bizId
-          if(values[key] === undefined) {
+          // 目标流程树既可能声明伴生键（xxx__formPersonId），也可能直接声明人员主字段（xxx）。
+          // 审批页最终需要的是用户 ID；不能只在键缺失时转换，否则主字段已有 JSON
+          // 人员对象会原样提交，目标随后按“表单人员数据获取失败”拒绝流转。
+          let rawValue = values[key]
+          if (rawValue === undefined || rawValue === null || rawValue === '') {
             let realField = key.replace('__formPersonId','')
-            if (this.isJSON(values[realField])) {
-              let obj = JSON.parse(values[realField])
+            rawValue = values[realField]
+          }
+          if (this.isJSON(rawValue)) {
+            let obj = JSON.parse(rawValue)
+            if (obj && obj.id !== undefined && obj.id !== null && obj.id !== '') {
               param.formDataMongoVo.data[key] = obj.id
-            }else{
-              param.formDataMongoVo.data[key] = values[realField]
             }
+          } else if (rawValue !== undefined && rawValue !== null && rawValue !== '') {
+            param.formDataMongoVo.data[key] = rawValue
           }
       });
     },

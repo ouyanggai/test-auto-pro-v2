@@ -434,11 +434,27 @@ func ApplyFormPersonFieldRule(values map[string]any, field NodeFormPersonField) 
 	if values == nil {
 		return false
 	}
-	if existing, exists := values[field.Field]; exists && existing != nil && existing != "" {
-		return false
-	}
 	source := formPersonSourceKey(field)
 	if source == field.Field {
+		// 目标流程树有时直接把主字段声明为 form_person，而不是声明
+		// xxx__formPersonId 伴生字段。此时目标审批页仍要求该键提交用户 ID，
+		// 不能把表单里的 JSON 人员对象原样发送。
+		raw, exists := values[field.Field]
+		if !exists || raw == nil || raw == "" {
+			return false
+		}
+		if encoded, ok := raw.(string); ok {
+			var decoded struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(encoded)), &decoded); err == nil && strings.TrimSpace(decoded.ID) != "" {
+				values[field.Field] = strings.TrimSpace(decoded.ID)
+				return true
+			}
+		}
+		return false
+	}
+	if existing, exists := values[field.Field]; exists && existing != nil && existing != "" {
 		return false
 	}
 	raw, exists := values[source]
