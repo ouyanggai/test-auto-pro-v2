@@ -23,6 +23,8 @@ type handlerFactTarget struct {
 	viewCalls []string
 	// snapshotCalls 记录按会话直接读取任务快照的次数（计划账号视角）。
 	snapshotCalls int
+	// snapshotNodeID 是视角查询返回的目标实时节点 ID；为空时沿用 node-audit。
+	snapshotNodeID string
 }
 
 // FindSubmittedFlowFacts 返回带 currentAuditUserInfo 处理人的实例事实。
@@ -52,12 +54,111 @@ func (t *handlerFactTarget) MatchHandlerAccounts(_ context.Context, _ target.Ses
 func (t *handlerFactTarget) ListTaskSnapshotsForUser(_ context.Context, _ target.Session, _, _, queryUserID string) ([]target.TaskSnapshot, error) {
 	t.viewCalls = append(t.viewCalls, queryUserID)
 	if queryUserID == "user-2" {
+		nodeID := strings.TrimSpace(t.snapshotNodeID)
+		if nodeID == "" {
+			nodeID = "node-audit"
+		}
 		return []target.TaskSnapshot{{
-			JobTaskID: "task-fact", FlowNodeProxyID: "node-audit", FlowProxyID: "flow-proxy-1",
+			JobTaskID: "task-fact", FlowNodeProxyID: nodeID, FlowProxyID: "flow-proxy-1",
 			FlowInstanceID: "instance-9", TaskStatus: "pending",
 		}}, nil
 	}
 	return nil, nil
+}
+
+// TestDynamicNodeIDMatchesUniqueHandlerName 锁定运行 8 路径 1/4/6/10：
+// 实例私有代理重建后节点 ID 会变化，currentAuditUserInfo 的唯一同名节点仍是实时处理人事实。
+// 执行器必须用新节点 ID 查询待办，不能回退计划账号或继续拿旧 ID 过滤。
+func TestDynamicNodeIDMatchesUniqueHandlerName(t *testing.T) {
+	viewTarget := &handlerFactTarget{
+		fakeTarget: &fakeTarget{
+			instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-dynamic"}, DueNodes: []string{"node-dynamic"}},
+		},
+		handlers: []target.NodeCurrentHandler{{
+			NodeID: "node-dynamic", NodeName: "财资部-会计", AuditType: "assign", BizIDs: []string{"user-2"},
+		}},
+		snapshotNodeID: "node-dynamic",
+	}
+	sessions := &recordingSessions{}
+	executor := step.NewExecutor(viewTarget, sessions, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	runCtx := factRunContext(nil)
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "财资部-会计", Type: "common", TargetNodeID: "node-compiled-old", AuditType: "assign"}
+
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview == nil || !preview.GateAllowed {
+		t.Fatalf("唯一同名动态节点应发现真实待办并通过门禁：%+v", preview)
+	}
+	if preview.Facts.CurrentTaskNodeID != "node-dynamic" || !preview.Facts.CurrentTaskFound {
+		t.Fatalf("当前任务必须绑定目标实时节点 ID：%+v", preview.Facts)
+	}
+}
+
+// TestDynamicNodeIDCarriesThroughWritePreparation 锁定动态节点通过门禁后的 Go 写前刷新：
+// prepare 阶段必须继续按实时节点读取 jobTaskId，不能重新使用编译期旧节点而在发送前误报无待办。
+func TestDynamicNodeIDCarriesThroughWritePreparation(t *testing.T) {
+	viewTarget := &handlerFactTarget{
+		fakeTarget: &fakeTarget{
+			instance:    fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-dynamic"}, DueNodes: []string{"node-dynamic"}},
+			auditResult: &target.AuditCurrentTaskResult{InstanceID: "instance-9", Status: "run"},
+		},
+		handlers: []target.NodeCurrentHandler{{
+			NodeID: "node-dynamic", NodeName: "财资部-会计", AuditType: "assign", BizIDs: []string{"user-2"},
+		}},
+		snapshotNodeID: "node-dynamic",
+	}
+	sessions := &recordingSessions{}
+	executor := step.NewExecutor(viewTarget, sessions, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	runCtx := factRunContext(nil)
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "财资部-会计", Type: "common", TargetNodeID: "node-compiled-old", AuditType: "assign"}
+
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("动态节点预览应通过：preview=%+v err=%v", preview, err)
+	}
+	if _, _, err := executor.RunApprovedStep(context.Background(), step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0}); err != nil {
+		t.Fatalf("动态节点执行不应在写前失败：%v", err)
+	}
+	if viewTarget.auditCalls != 1 {
+		t.Fatalf("写前刷新必须按实时节点命中任务并发出一次审批，实际 %d 次，写错误=%v", viewTarget.auditCalls, preview.WriteErrForTest())
+	}
+}
+
+// TestDynamicNodeIDCarriesIntoRuntimeRequest 锁定动态节点通过门禁后的 runtime 请求：
+// jobTaskId 与 nodeProxyId 必须来自同一条实时待办，不能一个是新任务、另一个仍是编译期旧节点。
+func TestDynamicNodeIDCarriesIntoRuntimeRequest(t *testing.T) {
+	viewTarget := &handlerFactTarget{
+		fakeTarget: &fakeTarget{
+			instance: fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-dynamic"}, DueNodes: []string{"node-dynamic"}},
+		},
+		handlers: []target.NodeCurrentHandler{{
+			NodeID: "node-dynamic", NodeName: "财资部-会计", AuditType: "assign", BizIDs: []string{"user-2"},
+		}},
+		snapshotNodeID: "node-dynamic",
+	}
+	sessions := &recordingSessions{}
+	runtime := &recordingRuntimeRunner{}
+	executor := step.NewExecutor(viewTarget, sessions, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	executor.EnableRuntimeExecution(runtime, "")
+	runCtx := factRunContext(nil)
+	runCtx.Nodes["node-audit"] = step.NodeInfo{Name: "财资部-会计", Type: "common", TargetNodeID: "node-compiled-old", AuditType: "assign"}
+
+	preview, _, err := executor.BuildPreview(context.Background(), runCtx, 0)
+	if err != nil || preview == nil || !preview.GateAllowed {
+		t.Fatalf("动态节点预览应通过：preview=%+v err=%v", preview, err)
+	}
+	handled := executor.RunViaRuntimeForTest(context.Background(), runCtx, runCtx.Steps[0], target.Session{
+		SID: "sid-lisi", UserID: "user-2", Summary: target.AccountSummary{Account: "lisi", DisplayName: "李四"},
+	}, preview, step.ApprovedStep{RunCtx: runCtx, Preview: preview, NextIndex: 0, Attempt: 1})
+	if !handled || len(runtime.requests) != 1 {
+		t.Fatalf("审批应由 runtime 接管并下发一次请求：handled=%v requests=%d err=%v", handled, len(runtime.requests), preview.WriteErrForTest())
+	}
+	request := runtime.requests[0]
+	if request.JobTaskID != "task-fact" || request.NodeProxyID != "node-dynamic" {
+		t.Fatalf("runtime 必须使用同一实时待办的任务与节点：jobTaskId=%q nodeProxyId=%q", request.JobTaskID, request.NodeProxyID)
+	}
 }
 
 // FindTaskSnapshot 表示计划账号本人没有待办；正确实现不得把这次落空当成需要扫描配置候选的信号。

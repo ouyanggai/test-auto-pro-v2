@@ -577,7 +577,7 @@ func TestF016RereadClassification(t *testing.T) {
 
 // TestForwardPathTargetNodeIDs 锁定「本步之后合法路径节点集合」的取值口径：
 // 运行期分支选择与编译步骤表里全部后续用户步骤都纳入（覆盖会签末签跨空节点前进到更靠后节点），
-// 恢复链与系统导航排除，末步靠分支选择仍能取到锚点。
+// 普通步骤排除恢复链，恢复链同意纳入同一触发组的后续恢复同意；系统导航排除，末步靠分支选择仍能取到锚点。
 func TestForwardPathTargetNodeIDs(t *testing.T) {
 	steps := []model.CompiledActionStep{
 		{NodeKey: "node-a", Source: model.ActionStepSourceUser},
@@ -636,6 +636,16 @@ func TestForwardPathTargetNodeIDs(t *testing.T) {
 			}, Nodes: nodes},
 			nextIndex: 0,
 			want:      nil,
+		},
+		{
+			name: "恢复链同意纳入同一触发组的后续恢复同意节点",
+			runCtx: step.RunContext{Steps: []model.CompiledActionStep{
+				{NodeKey: "node-a", Source: model.ActionStepSourceRecovery, SourceActionKey: "reject-1", Action: model.ActionApprove},
+				{NodeKey: "node-b", Source: model.ActionStepSourceRecovery, SourceActionKey: "reject-1", Action: model.ActionApprove},
+				{NodeKey: "node-c", Source: model.ActionStepSourceRecovery, SourceActionKey: "reject-2", Action: model.ActionApprove},
+			}, Nodes: nodes},
+			nextIndex: 0,
+			want:      []string{"target-b"},
 		},
 		{
 			name: "系统导航来源不参与推进判据",

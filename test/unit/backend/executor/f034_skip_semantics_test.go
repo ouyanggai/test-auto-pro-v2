@@ -85,5 +85,34 @@ func TestF034PendingNotAdvancedNeitherSkipsNorBlocks(t *testing.T) {
 	}
 }
 
+// TestParallelInactiveBranchSkipsWithoutIsSkip 锁定运行 8 路径 2：
+// 线性步骤走到未激活的并行兄弟分支时，不受模板 isSkip 约束，零写入跳过并继续处理真实活动分支。
+func TestParallelInactiveBranchSkipsWithoutIsSkip(t *testing.T) {
+	runCtx := step.RunContext{
+		Nodes: map[string]step.NodeInfo{
+			"inactive": {Name: "公司顾问", Type: "common", TargetNodeID: "branch-a-task"},
+			"active":   {Name: "合规部-分管领导", Type: "common", TargetNodeID: "branch-b-task"},
+		},
+		Steps: []model.CompiledActionStep{
+			{Source: model.ActionStepSourceUser, Action: model.ActionAddSign, Scope: model.ActionScopeTask, NodeKey: "inactive"},
+			{Source: model.ActionStepSourceSystemDefault, Action: model.ActionApprove, Scope: model.ActionScopeTask, NodeKey: "active"},
+		},
+		GraphEdges: map[string][]step.GraphEdgeInfo{
+			"parallel":      {{Target: "branch-a-task"}, {Target: "branch-b-task"}},
+			"branch-a-task": {{Target: "merge"}},
+			"branch-b-task": {{Target: "merge"}},
+		},
+		GraphNodeTypes: map[string]string{"parallel": "parallel", "branch-a-task": "common", "branch-b-task": "common", "merge": "common"},
+	}
+	facts := step.InstanceFacts{Found: true, Status: "run", CurrentNodes: []string{"branch-b-task"}}
+	action, reason := step.TargetSkippedClassificationForTest(runCtx, runCtx.Steps[0], facts)
+	if action != "skip" {
+		t.Fatalf("未激活的并行兄弟分支应零写入跳过，实际 %s（%s）", action, reason)
+	}
+	if !strings.Contains(reason, "并行兄弟分支") {
+		t.Fatalf("跳过原因必须说明并行分支事实：%s", reason)
+	}
+}
+
 // f034PtrBool 是布尔指针辅助。
 func f034PtrBool(value bool) *bool { return &value }

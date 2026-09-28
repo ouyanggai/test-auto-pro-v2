@@ -1,6 +1,6 @@
 # F-044 并行分支恢复与动态加签路径一致性补缺
 
-- 状态：ready_for_manual（2026-09-28 自动验证完成，等待用户手动执行第二轮运行测试）
+- 状态：ready_for_manual（2026-09-28 运行 8 反馈修复与自动验证完成，等待用户重新运行同一路径验收）
 - 依据：F-039 夜间审查修复、F-037 运行画布与加签重绑定、运行 7 路径 1/2/12 的失败证据。
 
 ## 单一用户结果
@@ -35,6 +35,22 @@
 - [x] 文档状态进入 `ready_for_manual`，提供第二轮手工运行顺序；不标记 `accepted`。
 
 ## 自动验证
+
+2026-09-28 运行 8 反馈：路径 1/4/6/10 在实例私有代理换 ID 后仍按旧节点 ID 查处理人；路径 2 把未激活的并行兄弟分支误套模板 `isSkip`；路径 3 把目标清洗的人员选择器伴生字段误判为正文丢失；路径 9 把同一恢复组的后续审批节点排除在合法前进锚点外。本轮回到 `implementing` 修复并重新验证，完成后再次停在 `ready_for_manual`。
+
+2026-09-28 修复完成：`currentAuditUserInfo` 保留节点名称，编译期节点 ID 失效时只允许唯一同名动态节点重绑定；门禁命中的实时节点 ID 贯穿 Go 写前任务刷新、runtime `nodeProxyId` 和写后核验。未激活的并行兄弟分支按真实图关系零写入跳过；人员选择器主字段仍存在时允许目标清洗伴生字段；同一恢复触发组的后续恢复同意纳入合法前进锚点。新增预览、Go 写前执行、runtime 请求、并行跳过、正文保护和恢复链回归测试。
+
+本轮自动验证结果：
+
+```text
+go test ./internal/engine/scenario ./internal/engine/step ./internal/service
+go test ./test/unit/backend/action_orchestration ./test/unit/backend/executor ./test/unit/backend/target
+go vet ./internal/engine/scenario ./internal/engine/step ./internal/service
+go build ./...
+git diff --check
+```
+
+以上检查全部通过；未连接目标平台、未发送真实写请求、未启动浏览器。
 
 只运行当前切片相关检查：
 

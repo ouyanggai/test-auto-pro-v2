@@ -618,6 +618,7 @@ type TaskPendingUser struct {
 // 待处理人员（姓名+手机号）。会签节点在全部处理人审批完成前一直出现在实例事实里。
 type NodeCurrentHandler struct {
 	NodeID    string
+	NodeName  string
 	AuditType string
 	BizIDs    []string
 	Users     []TaskPendingUser
@@ -631,6 +632,7 @@ func auditHandlerInfo(data json.RawMessage) []NodeCurrentHandler {
 	}
 	var nodes map[string]struct {
 		AuditType string   `json:"auditType"`
+		NodeName  string   `json:"nodeName"`
 		BizIds    []string `json:"bizIds"`
 		// UserIds 是 assign 类节点（含手动加签插入的审批节点）承载真实处理人用户 ID 的字段：
 		// 实测加签节点的 currentAuditUserInfo 里 bizIds/userList 为空，真实处理人只在 userIds 里，
@@ -650,7 +652,11 @@ func auditHandlerInfo(data json.RawMessage) []NodeCurrentHandler {
 		if id == "" {
 			continue
 		}
-		handler := NodeCurrentHandler{NodeID: id, AuditType: strings.TrimSpace(info.AuditType)}
+		handler := NodeCurrentHandler{
+			NodeID:    id,
+			NodeName:  strings.TrimSpace(info.NodeName),
+			AuditType: strings.TrimSpace(info.AuditType),
+		}
 		// bizIds 与 userIds 语义相同（目标真实用户 ID），合并去重后统一按用户 ID 解析登录账号。
 		seenID := make(map[string]struct{})
 		for _, source := range [][]string{info.BizIds, info.UserIds} {

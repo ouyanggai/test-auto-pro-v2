@@ -18,7 +18,7 @@ func TestSubmittedFlowHandlerParsesUserIds(t *testing.T) {
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = response.Write([]byte(`{"isSuccess":true,"data":[{
 			"id":"inst-1","flowProxyId":"proxy-1","status":"run","currentNodeProxyId":"node-x",
-			"currentAuditUserInfo":{"node-x":{"auditType":"assign","nodeId":"node-x","roleName":null,
+			"currentAuditUserInfo":{"node-x":{"auditType":"assign","nodeName":"动态加签审批","nodeId":"node-x","roleName":null,
 				"userIds":["user-added-1"],"bizIds":[],"userList":[]}}
 		}]}`))
 	}))
@@ -38,6 +38,9 @@ func TestSubmittedFlowHandlerParsesUserIds(t *testing.T) {
 	handler := facts.Handlers[0]
 	if handler.NodeID != "node-x" {
 		t.Fatalf("处理人节点键不正确：%+v", handler)
+	}
+	if handler.NodeName != "动态加签审批" {
+		t.Fatalf("处理人节点名称必须保留，供实例私有代理换 ID 后按唯一名称重绑定：%+v", handler)
 	}
 	found := false
 	for _, id := range handler.BizIDs {

@@ -148,7 +148,12 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	jobTaskID := ""
 	switch step.Action {
 	case model.ActionApprove, model.ActionReject, model.ActionStorageFormData, model.ActionForward:
-		nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+		// 实例私有代理在加签、恢复或条件重建后会换掉节点 ID；门禁已经用 currentAuditUserInfo
+		// 找到了本次真实任务，因此提交前刷新必须优先沿用该任务节点，不能退回编译期旧 ID。
+		nodeID := firstNonEmpty(
+			strings.TrimSpace(preview.Facts.CurrentTaskNodeID),
+			strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID),
+		)
 		if nodeID == "" {
 			// 实例级动作（转发/催办等）不绑定配置节点，NodeKey 为空，按空节点查待办必然查空，
 			// 于是每一步都报「目标上已无当前处理人在本节点的待办任务」而停在写前
@@ -225,7 +230,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		Values:       formDataFromPreviewRequest(preview),
 		InstanceID:   runCtx.PathRun.MainInstanceRef,
 		JobTaskID:    jobTaskID,
-		NodeProxyID:  stepTargetNodeIDOf(runCtx, step),
+		NodeProxyID:  pendingTaskNodeIDOf(runCtx, step, preview.Facts),
 		AuditDesc:    auditMessage(runCtx, step),
 		// 权限=当前节点声明可编辑字段；变更字段=本步实际覆盖的字段（预览阶段已按权限构造）。
 		Permissions:   runCtx.Nodes[step.NodeKey].EditableFields,
@@ -544,12 +549,37 @@ func businessFormKeys(data map[string]any) map[string]any {
 func missingBusinessFieldNames(before, after map[string]any) []string {
 	missing := make([]string, 0)
 	for key := range before {
-		if _, ok := after[key]; !ok {
-			missing = append(missing, key)
+		if _, ok := after[key]; ok {
+			continue
 		}
+		// 人员选择组件的伴生字段由目标页面维护。目标在节点流转后可能只清洗
+		// __formPersonId / __condition / __virtualName，但仍保留主人员字段；此时业务值没有丢失。
+		// 只有主字段也缺失时才继续按正文丢失阻塞，避免吞掉真正的人员数据损坏。
+		if primary, ok := personPickerPrimaryField(key); ok {
+			if _, primaryExists := after[primary]; primaryExists {
+				continue
+			}
+		}
+		missing = append(missing, key)
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// personPickerPrimaryField 返回人员选择伴生字段对应的主字段名。
+// 非伴生字段或去掉后缀后主字段为空时返回 false，避免把普通业务字段误归类。
+func personPickerPrimaryField(field string) (string, bool) {
+	if !target.IsPersonPickerCompanionField(field) {
+		return "", false
+	}
+	key := strings.TrimSpace(field)
+	for _, suffix := range []string{"__condition", "__formPersonId", "__virtualName"} {
+		if strings.HasSuffix(key, suffix) {
+			primary := strings.TrimSpace(strings.TrimSuffix(key, suffix))
+			return primary, primary != ""
+		}
+	}
+	return "", false
 }
 
 // runtimeSummaryFieldCount 把 JSON 解码后的字段数收敛为非负整数。
@@ -1257,6 +1287,12 @@ func stepTargetNodeIDOf(runCtx RunContext, step model.CompiledActionStep) string
 	return strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
 }
 
+// pendingTaskNodeIDOf 返回待办动作本次真正命中的目标节点 ID。
+// 实例私有代理重建后必须优先沿用门禁读到的实时任务节点；没有待办事实的发起类动作才回退编译节点。
+func pendingTaskNodeIDOf(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) string {
+	return firstNonEmpty(strings.TrimSpace(facts.CurrentTaskNodeID), stepTargetNodeIDOf(runCtx, step))
+}
+
 // nextNodeTargetIDOf 返回本次流转下一业务节点在目标平台的真实代理 ID；
 // 审批组件把它作为 nextAuditorList 缺省归属兜底（评审 P1-3）。取不到返回空串。
 func nextNodeTargetIDOf(runCtx RunContext, nextIndex int) string {
@@ -1492,6 +1528,7 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 		return "", "", "", "本步节点不在编译场景中"
 	}
 	pendingIndex := -1
+	pendingNodeID := ""
 	seen := map[string]bool{}
 	for _, nodeID := range append(append([]string{}, facts.DueNodes...), facts.CurrentNodes...) {
 		id := strings.TrimSpace(nodeID)
@@ -1510,6 +1547,7 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 			if pendingIndex < 0 || index < pendingIndex {
 				pendingIndex = index
 				pendingName = nodeInfo.Name
+				pendingNodeID = id
 			}
 			break
 		}
@@ -1519,6 +1557,13 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 	}
 	if pendingIndex <= expectedIndex {
 		return "", "", "", fmt.Sprintf("实例待办仍在「%s」（本步或更早），不构成跳过", pendingName)
+	}
+	// 并行兄弟分支会被编译成线性步骤，但目标只返回当前仍激活的分支待办。
+	// 当后方待办与本步互不可达、且共享真实并行祖先时，本步分支已经不再激活；
+	// 这不是模板 isSkip 语义，允许零写入越过本地步骤，继续处理仍活跃的兄弟分支。
+	if isParallelBranch(strings.TrimSpace(info.TargetNodeID), pendingNodeID, runCtx) {
+		return "skip", fmt.Sprintf("实例当前激活的是并行兄弟分支「%s」，节点「%s」当前未激活；本节点动作不发送请求", pendingName, info.Name), pendingName,
+			fmt.Sprintf("实例待办在并行兄弟分支「%s」，本节点当前未激活，按并行分支事实跳过", pendingName)
 	}
 	// 待办确实越过本节点。分型依据目标后端规则：只有模板声明 isSkip=true 才递归跳过；
 	// run_node_choose 自选节点无论声明如何都要求显式人员，缺失即抛"未设置审批人"。
@@ -1631,7 +1676,10 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			return outcome, 0, nil
 		}
 		after, _, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
-		after.StepNodeKey = stepTargetNodeIDOf(runCtx, step)
+		after.StepNodeKey = firstNonEmpty(
+			strings.TrimSpace(preview.Facts.CurrentTaskNodeID),
+			stepTargetNodeIDOf(runCtx, step),
+		)
 		if readErr != nil || after.ReadError != "" {
 			outcome.RereadFailed = true
 			return outcome, 0, nil
@@ -2037,7 +2085,11 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 	reportPhase(approved, "verify", fmt.Sprintf("第 %d 步的请求已经发出，正在重新查看目标平台的流程节点和待办，确认\"%s\"是否已经生效；这里不会再次发送动作，确认后保存结果并继续下一步", step.Sequence, firstNonEmpty(preview.ActionName, string(step.Action))))
 	// 重读对照一律用目标真实节点标识：目标返回的当前节点与待办都是真实标识，
 	// 拿工具侧不透明键去比会永远"待办已消失"，把没生效的写误判成已前进。
-	stepTargetNodeID := runCtx.Nodes[step.NodeKey].TargetNodeID
+	// 动态代理重建后，编译节点 ID 可能已经失效；写前门禁命中的真实任务节点才是本次写的核验锚点。
+	stepTargetNodeID := firstNonEmpty(
+		strings.TrimSpace(preview.Facts.CurrentTaskNodeID),
+		strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID),
+	)
 	before := preview.Facts
 	before.StepNodeKey = stepTargetNodeID
 	after, session, readErr := e.readFactsWithRetry(ctx, runCtx, session, step)
@@ -2557,7 +2609,7 @@ func (e *Executor) refreshPendingTaskSnapshotWithFallback(ctx context.Context, r
 
 // prepareAuditTask 在同意动作写入前读取实时任务号与流程代理，避免会话刷新后沿用预览阶段的旧身份。
 func (e *Executor) prepareAuditTask(ctx context.Context, runCtx RunContext, step model.CompiledActionStep, request *target.AuditCurrentTaskRequest, session target.Session, allowRefresh bool, facts InstanceFacts) (target.Session, error) {
-	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	nodeID := pendingTaskNodeIDOf(runCtx, step, facts)
 	var snapshot target.TaskSnapshot
 	var err error
 	if allowRefresh {
@@ -2750,7 +2802,12 @@ func (e *Executor) prepareActionWrite(ctx context.Context, runCtx RunContext, st
 	default:
 		return session, nil
 	}
-	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	// 待办动作沿用门禁命中的实时任务节点；取回操作的是已办行，不能把当前 pending 节点套给它，
+	// 仍以本步编译节点配合审核记录关联行补救来定位真实已办。
+	nodeID := stepTargetNodeIDOf(runCtx, step)
+	if status == "pending" {
+		nodeID = pendingTaskNodeIDOf(runCtx, step, facts)
+	}
 	var snapshot target.TaskSnapshot
 	var err error
 	// facts 需要按地址传给补救逻辑以登记诊断原因；用可变副本，避免隐式改动调用方的值拷贝。
@@ -3380,7 +3437,8 @@ func (e *Executor) classifyTransferReread(ctx context.Context, runCtx RunContext
 	if !ok || strings.TrimSpace(request.JobTaskID) == "" {
 		return verdict.RereadUnreadable
 	}
-	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	// 移交不推进节点，写后必须重读写请求实际绑定的任务节点；动态代理重建后编译节点已经失效。
+	nodeID := firstNonEmpty(strings.TrimSpace(request.NodeProxyID), pendingTaskNodeIDOf(runCtx, step, preview.Facts))
 	_, snapshot, err := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
 	if err != nil {
 		return verdict.RereadUnreadable
@@ -3411,7 +3469,8 @@ func (e *Executor) classifyRetrieveReread(ctx context.Context, runCtx RunContext
 	if !ok || strings.TrimSpace(request.JobTaskID) == "" {
 		return verdict.RereadUnreadable
 	}
-	nodeID := strings.TrimSpace(runCtx.Nodes[step.NodeKey].TargetNodeID)
+	// 取回后应在原已办节点生成新待办；这里使用写前已办事实，不能改用实例此刻的其他 pending 节点。
+	nodeID := firstNonEmpty(strings.TrimSpace(preview.Facts.CompletedTaskNodeID), stepTargetNodeIDOf(runCtx, step))
 	_, snapshot, err := e.refreshTaskSnapshot(ctx, runCtx, step, nodeID, session, "pending")
 	if err != nil {
 		return verdict.RereadUnreadable
@@ -3593,7 +3652,9 @@ func sessionRefreshAllowed(err error) bool {
 //   - 再纳入编译步骤表里本步之后每一个用户步骤与固定尾动作的节点：目标可能穿透空节点或无处理人
 //     节点直接前进到更靠后的已配置节点，因此"已推进"不能只认紧邻下一跳，必须覆盖全部后续合法节点
 //     （2026-09-24 会签末签实测：末签同意后实例直接推进到后续节点，只认紧邻下一跳会漏判成"暂时无法确认"）。
-//   - 恢复链与系统导航本来就会跨节点或回到前序节点，拿它们做前进锚点没有意义（与路径偏离判定同一取舍），一律排除。
+//   - 普通步骤不能把后面的恢复链当作正向锚点；但当前步骤本身是恢复链同意时，同一触发动作下的
+//     后续恢复同意就是目标应到达的合法节点，必须纳入。运行 8 路径 9 正是因一律排除恢复步骤，
+//     已推进到下一恢复节点仍被旧待办快照误判为“暂时无法确认”。系统导航仍一律排除。
 //
 // 取不到任何锚点时返回空切片，调用方据此放弃这条判据，绝不猜测下一跳。
 func forwardPathTargetNodeIDs(runCtx RunContext, nextIndex int) []string {
@@ -3609,10 +3670,24 @@ func forwardPathTargetNodeIDs(runCtx RunContext, nextIndex int) []string {
 		ids = append(ids, id)
 	}
 	add(runCtx.SubmitBranchTargetNodeID)
+	var current model.CompiledActionStep
+	if nextIndex >= 0 && nextIndex < len(runCtx.Steps) {
+		current = runCtx.Steps[nextIndex]
+	}
 	for idx := nextIndex + 1; idx < len(runCtx.Steps); idx++ {
 		st := runCtx.Steps[idx]
-		if st.Source == model.ActionStepSourceRecovery || st.Source == model.ActionStepSourceNavigation {
+		if st.Source == model.ActionStepSourceNavigation {
 			continue
+		}
+		if st.Source == model.ActionStepSourceRecovery {
+			// 只有同一恢复触发动作下的“恢复同意 -> 后续恢复同意”可作为推进锚点；
+			// 普通步骤、不同恢复组或重新提交步骤仍不能借恢复链证明自己成功。
+			if current.Source != model.ActionStepSourceRecovery ||
+				current.Action != model.ActionApprove || st.Action != model.ActionApprove ||
+				strings.TrimSpace(current.SourceActionKey) == "" ||
+				strings.TrimSpace(st.SourceActionKey) != strings.TrimSpace(current.SourceActionKey) {
+				continue
+			}
 		}
 		if info, ok := runCtx.Nodes[strings.TrimSpace(st.NodeKey)]; ok {
 			add(info.TargetNodeID)
@@ -3741,7 +3816,8 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 	if !hasResolver {
 		return target.TaskSnapshot{}, "", "", sess, false, "目标客户端不支持人员目录解析，无法发现当前处理人"
 	}
-	handler, ok := currentHandlerForNode(facts, nodeID)
+	nodeName := strings.TrimSpace(runCtx.Nodes[step.NodeKey].Name)
+	handler, ok := currentHandlerForNode(facts, nodeID, nodeName)
 	if !ok {
 		instanceID := strings.TrimSpace(runCtx.PathRun.MainInstanceRef)
 		if len(facts.CurrentHandlers) == 0 {
@@ -3751,6 +3827,9 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 		}
 		return target.TaskSnapshot{}, "", "", sess, false, fmt.Sprintf("实例 %s 的 currentAuditUserInfo 里没有本节点的处理人信息", instanceID)
 	}
+	// 处理人事实命中后，后续待办查询必须使用目标本次返回的真实节点 ID。
+	// 名称兜底只负责把旧编译节点映射到唯一同名动态节点，不允许继续拿旧 ID 过滤任务。
+	taskNodeID := firstNonEmpty(strings.TrimSpace(handler.NodeID), strings.TrimSpace(nodeID))
 	matches, _, err := readOnlyWithSessionRetry(ctx, e.policy, e.sessions, session.Summary.Account, session,
 		func(callContext context.Context, active target.Session) ([]target.HandlerAccount, error) {
 			return resolver.MatchHandlerAccounts(callContext, active, handler)
@@ -3783,7 +3862,7 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 			if viewErr != nil {
 				continue
 			}
-			wantNode := strings.TrimSpace(nodeID)
+			wantNode := taskNodeID
 			for _, snapshot := range snapshots {
 				if wantNode != "" && strings.TrimSpace(snapshot.FlowNodeProxyID) != wantNode {
 					continue
@@ -3848,7 +3927,7 @@ func (e *Executor) switchToCurrentHandler(ctx context.Context, runCtx RunContext
 			if err != nil {
 				return
 			}
-			snapshot, err = e.readTaskSnapshot(ctx, runCtx, step, nodeID, actorSession, status)
+			snapshot, err = e.readTaskSnapshot(ctx, runCtx, step, taskNodeID, actorSession, status)
 		}()
 		if err != nil || strings.TrimSpace(snapshot.JobTaskID) == "" {
 			continue
@@ -3901,12 +3980,30 @@ func partitionUsableHandlers(matches []target.HandlerAccount, excluded map[strin
 }
 
 // currentHandlerForNode 从实例事实里取本节点的待办处理人信息。
-func currentHandlerForNode(facts InstanceFacts, nodeID string) (target.NodeCurrentHandler, bool) {
+// 先按目标节点 ID 精确匹配；实例私有代理重建导致旧 ID 失效时，只允许唯一同名节点兜底。
+// 同名命中不唯一时返回失败，绝不猜测使用哪一个处理人。
+func currentHandlerForNode(facts InstanceFacts, nodeID, nodeName string) (target.NodeCurrentHandler, bool) {
 	nodeID = strings.TrimSpace(nodeID)
 	for _, handler := range facts.CurrentHandlers {
 		if strings.TrimSpace(handler.NodeID) == nodeID {
 			return handler, true
 		}
+	}
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return target.NodeCurrentHandler{}, false
+	}
+	var matched target.NodeCurrentHandler
+	count := 0
+	for _, handler := range facts.CurrentHandlers {
+		if strings.TrimSpace(handler.NodeName) != nodeName {
+			continue
+		}
+		matched = handler
+		count++
+	}
+	if count == 1 {
+		return matched, true
 	}
 	return target.NodeCurrentHandler{}, false
 }

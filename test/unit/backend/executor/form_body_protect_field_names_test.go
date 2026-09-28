@@ -40,3 +40,43 @@ func TestRuntimeProtectReportsBusinessFieldNames(t *testing.T) {
 		t.Fatalf("目标上下文字段不应进入缺失诊断：%s", result.Message)
 	}
 }
+
+// TestRuntimeProtectAllowsPersonPickerCompanionCleanup 锁定运行 8 路径 3：
+// 主人员字段仍存在时，目标清洗 __formPersonId 伴生字段不代表业务正文丢失。
+func TestRuntimeProtectAllowsPersonPickerCompanionCleanup(t *testing.T) {
+	after := map[string]any{
+		"legalUserName":            `{"id":"user-1","name":"孙乐"}`,
+		"legalUserName__condition": "孙乐",
+	}
+	executor := runtimeProtectExecutor(after)
+	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
+	runCtx.PathRun.MainInstanceRef = "instance-1"
+	before := map[string]any{
+		"legalUserName":               `{"id":"user-1","name":"孙乐"}`,
+		"legalUserName__condition":    "孙乐",
+		"legalUserName__formPersonId": "user-1",
+	}
+	result := executor.ProtectRuntimeFormBodyForTest(
+		context.Background(), runCtx, approveStep(), target.Session{}, runtimeProtectResult(t, before), 1)
+	if result.Status != "success" {
+		t.Fatalf("主人员字段仍在时伴生字段清洗不得改判失败，实际 %q：%s", result.Status, result.Message)
+	}
+}
+
+// TestRuntimeProtectBlocksPersonPickerPrimaryFieldLoss 锁定正文保护下界：
+// 主人员字段和伴生字段一起丢失时仍必须阻塞，不能借伴生字段容差吞掉真实业务值。
+func TestRuntimeProtectBlocksPersonPickerPrimaryFieldLoss(t *testing.T) {
+	after := map[string]any{}
+	executor := runtimeProtectExecutor(after)
+	runCtx := newRunContext([]model.CompiledActionStep{approveStep()})
+	runCtx.PathRun.MainInstanceRef = "instance-1"
+	before := map[string]any{
+		"legalUserName":               `{"id":"user-1","name":"孙乐"}`,
+		"legalUserName__formPersonId": "user-1",
+	}
+	result := executor.ProtectRuntimeFormBodyForTest(
+		context.Background(), runCtx, approveStep(), target.Session{}, runtimeProtectResult(t, before), 1)
+	if result.Status != "business_failed" || !strings.Contains(result.Message, "legalUserName") {
+		t.Fatalf("主人员字段丢失必须继续阻塞，实际 %q：%s", result.Status, result.Message)
+	}
+}
