@@ -466,7 +466,10 @@ func ValidateCurrentNodesInRemap(currentNodeIDs []string, remap ProxyRemap) erro
 	seen := map[string]bool{}
 	for _, rawID := range currentNodeIDs {
 		nodeID := strings.TrimSpace(rawID)
-		if nodeID == "" || seen[nodeID] {
+		if nodeID == "" {
+			return fmt.Errorf("写后目标返回空当前节点，无法验证代理树重绑定")
+		}
+		if seen[nodeID] {
 			continue
 		}
 		seen[nodeID] = true

@@ -2072,7 +2072,7 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 			log.Phase("verify", step.Sequence, attemptNo, "加签响应未返回新的流程代理标识，后续任务将重新读取实时待办："+parseErr.Error())
 		} else {
 			outcome.FlowProxyID = proxyID
-			outcome.CurrentNodeProxyID = nodeID
+			outcome.AddSignResponseNodeID = nodeID
 		}
 	}
 	// 写请求已发出：从这一行起 step.log 携带链路 ID，submit 之后的阶段行可与 network.log、curl.log 互查。
@@ -2183,6 +2183,18 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		// 先把事实中的 flowProxyId 回填到结果，控制层才能触发整棵代理树重绑定。
 		if strings.TrimSpace(outcome.FlowProxyID) == "" {
 			outcome.FlowProxyID = strings.TrimSpace(after.FlowProxyID)
+		}
+		// 加签响应里的 currentNodeProxyId 只作诊断；并行/条件流转时它可能是接口
+		// 处理游标，而写后实例 CurrentNodes 才是后续代理重绑定的权威活动节点集合。
+		outcome.CurrentNodeProxyIDs = append([]string(nil), after.CurrentNodes...)
+		if len(outcome.CurrentNodeProxyIDs) > 0 {
+			outcome.CurrentNodeProxyID = strings.TrimSpace(outcome.CurrentNodeProxyIDs[0])
+		}
+		if responseNodeID := strings.TrimSpace(outcome.AddSignResponseNodeID); responseNodeID != "" {
+			log.Phase("verify", step.Sequence, attemptNo, fmt.Sprintf(
+				"加签响应节点仅作接口游标诊断：响应=%s，写后实例活动节点=%v",
+				responseNodeID, outcome.CurrentNodeProxyIDs,
+			))
 		}
 		reread = e.classifyAddSignReread(ctx, runCtx, step, session, preview, after, outcome)
 	} else if step.Action == model.ActionForward {

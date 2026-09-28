@@ -625,7 +625,7 @@ type StepOutcome struct {
 	MainInstanceRef string
 	// FlowProxyID 是写后事实中的实例私有流程代理标识；取回等动作可能使其与写前不同。
 	FlowProxyID string
-	// CurrentNodeProxyID 是写后事实中的单一当前节点代理标识。
+	// CurrentNodeProxyID 是写后事实中的单一当前节点代理标识，仅从实例写后事实派生。
 	CurrentNodeProxyID string
 	// CurrentNodeProxyIDs 是写后事实中的完整活动节点集合，并行场景不能压缩为单一节点。
 	CurrentNodeProxyIDs []string
@@ -633,6 +633,9 @@ type StepOutcome struct {
 	// 控制层的代理树重绑定必须用它作为插入锚点——它才是新插入节点的父节点，绝不能用离线编译
 	// 配置的节点键（两者在真实流转后可能不一致，用错锚点会导致整棵子链平移错位、无法唯一绑定）。
 	AddSignAnchorNodeID string
+	// AddSignResponseNodeID 仅记录 updateFlowProxy 响应中的节点字段；该字段在并行场景
+	// 可能代表接口处理游标，不作为写后实例当前节点的权威依据。
+	AddSignResponseNodeID string
 	// AuxiliaryInstanceRef 是转发动作创建的辅助实例引用，供运行记录与后续状态确认使用。
 	AuxiliaryInstanceRef string
 	// DeviationDetected 表示核验重读的实际当前节点与已配置路径的下一个预期节点不一致

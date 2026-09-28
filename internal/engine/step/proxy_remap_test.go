@@ -156,6 +156,44 @@ func TestValidateAddSignCurrentNode(t *testing.T) {
 	}
 }
 
+// TestValidateAddSignUsesWrittenInstanceFactsForParallelCurrentNode 验证并行加签时接口响应游标
+// 与写后实例活动节点不同，不应单独阻断代理重绑定；控制层会校验完整活动节点集合。
+func TestValidateAddSignUsesWrittenInstanceFactsForParallelCurrentNode(t *testing.T) {
+	remap := ProxyRemap{
+		GraphNodeTypes: map[string]string{
+			"anchor-new": "common", "current-from-instance": "common",
+		},
+		GraphEdges: map[string][]GraphEdgeInfo{
+			"anchor-new": {{Target: "current-from-instance"}},
+		},
+	}
+	if err := ValidateCurrentNodesInRemap([]string{"current-from-instance"}, remap); err != nil {
+		t.Fatalf("写后实例当前节点属于新代理树时应通过：%v", err)
+	}
+}
+
+// TestValidateCurrentNodesInRemapRejectsUnprovableFacts 验证加签后缺少或失真的活动节点事实时必须停步。
+func TestValidateCurrentNodesInRemapRejectsUnprovableFacts(t *testing.T) {
+	remap := ProxyRemap{
+		GraphNodeTypes: map[string]string{"known-node": "common"},
+	}
+	tests := []struct {
+		name string
+		ids  []string
+	}{
+		{name: "活动节点为空", ids: nil},
+		{name: "活动节点标识为空", ids: []string{""}},
+		{name: "活动节点不在新树", ids: []string{"unknown-node"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateCurrentNodesInRemap(tt.ids, remap); err == nil {
+				t.Fatalf("ValidateCurrentNodesInRemap(%v) 应阻断无法证明的写后事实", tt.ids)
+			}
+		})
+	}
+}
+
 // TestBuildProxyRemapReorderedParallelBranches 验证加签导致新树并行分支颠倒时，重映射依然准确对齐，绝不张冠李戴。
 func TestBuildProxyRemapReorderedParallelBranches(t *testing.T) {
 	// 旧树：分支0是资金副主任，分支1是张政

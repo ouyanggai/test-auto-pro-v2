@@ -1368,11 +1368,17 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 		if remapErr == nil && remapAfterRetrieve {
 			remapErr = step.ValidateCurrentNodesInRemap(outcome.CurrentNodeProxyIDs, remap)
 		}
-		if remapErr == nil && newCurrentNodeID != "" && insertAnchor != "" {
+		if remapErr == nil && newCurrentNodeID != "" && insertAnchor != "" && !remapAfterAddSign {
 			// 写后当前节点应当就是锚点在新树里的映射（或并行网关场景下为分流到锚点的并行祖先）：
 			// 加签把新审批节点插在锚点之后，锚点本身仍是当前待办节点，只是换了新 ID。
 			mappedCurrentID := remap.NodeIDs[insertAnchor]
 			remapErr = step.ValidateAddSignCurrentNode(newCurrentNodeID, mappedCurrentID, remap)
+		}
+		// 并行加签时实例写后事实可能返回多个活动节点；完整集合必须全部属于新树，
+		// 单一 CurrentNodeProxyID 不再作为额外的错误来源，避免拿接口响应游标
+		// 与实例事实互相覆盖后误停。集合为空也必须阻断，不能把“无法证明”当成合法重绑定。
+		if remapErr == nil && remapAfterAddSign {
+			remapErr = step.ValidateCurrentNodesInRemap(outcome.CurrentNodeProxyIDs, remap)
 		}
 		if remapErr != nil {
 			// 加签已经成功但新树无法证明对应关系：禁止把旧树交给下一步，
