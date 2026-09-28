@@ -1499,10 +1499,10 @@ func isRecoveryEffectStep(step model.CompiledActionStep) bool {
 	}
 }
 
-// targetSkippedStepReason 判断本步节点是否已被目标自动跳过（F-034：按目标 isSkip 与审批类型分型）。
+// targetSkippedStepReason 逐一核对本步与全部活动待办，再判断本步是否已被目标跳过。
 // 返回值：
 //   - action="skip"：模板声明允许跳过（isSkip=true）且实例待办可证明已越过本节点，无写请求记"目标已跳过"；
-//   - action="block"：待办已越过本节点但模板未声明允许跳过（isSkip 未声明或为 false），
+//   - action="block"：并行上游尚有待办，或待办已越过本节点但模板未声明允许跳过，
 //     或本节点是 run_node_choose 自选审批——目标不可能自动越过，必须阻塞，不能用空人员凑数；
 //   - action=""：无法证明越过，按既有门禁失败处理，绝不猜测。
 func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, facts InstanceFacts) (action, reason, pendingName, diag string) {
@@ -1529,6 +1529,7 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 	}
 	pendingIndex := -1
 	pendingNodeID := ""
+	expectedNodeID := strings.TrimSpace(info.TargetNodeID)
 	seen := map[string]bool{}
 	for _, nodeID := range append(append([]string{}, facts.DueNodes...), facts.CurrentNodes...) {
 		id := strings.TrimSpace(nodeID)
@@ -1536,6 +1537,24 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 			continue
 		}
 		seen[id] = true
+		if id == expectedNodeID {
+			return "", "", "", fmt.Sprintf("本步节点「%s」仍有活动待办，不构成跳过", info.Name)
+		}
+		// 本步下游的共同后继必须等每一条并行支线完成；任何尚在上游的待办
+		// 都不能被较早的线性步骤序号掩盖，更不能套用 isSkip 越过汇合点。
+		upstream := map[string]bool{}
+		forwardReachable(id, expectedNodeID, runCtx, upstream)
+		if upstream[expectedNodeID] {
+			name := id
+			for _, node := range runCtx.Nodes {
+				if node.TargetNodeID == id {
+					name = node.Name
+					break
+				}
+			}
+			return "block", fmt.Sprintf("并行分支「%s」仍有待办，节点「%s」尚未到达；必须完成所有分支后才能继续主流程", name, info.Name), name,
+				fmt.Sprintf("活动待办 %s 是本步节点 %s 的真实上游，汇合前不得推进", id, expectedNodeID)
+		}
 		for key, nodeInfo := range runCtx.Nodes {
 			if strings.TrimSpace(nodeInfo.TargetNodeID) != id {
 				continue
@@ -1555,7 +1574,7 @@ func targetSkippedStepReason(runCtx RunContext, step model.CompiledActionStep, f
 	if pendingIndex < 0 {
 		return "", "", "", fmt.Sprintf("实例当前/待办节点 %v 都不在已配置路径上，无法判定跳过", append(append([]string{}, facts.DueNodes...), facts.CurrentNodes...))
 	}
-	if pendingIndex <= expectedIndex {
+	if pendingIndex <= expectedIndex && !isParallelBranch(expectedNodeID, pendingNodeID, runCtx) {
 		return "", "", "", fmt.Sprintf("实例待办仍在「%s」（本步或更早），不构成跳过", pendingName)
 	}
 	// 并行兄弟分支会被编译成线性步骤，但目标只返回当前仍激活的分支待办。

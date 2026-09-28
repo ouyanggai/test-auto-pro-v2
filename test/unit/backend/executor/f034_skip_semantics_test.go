@@ -114,5 +114,37 @@ func TestParallelInactiveBranchSkipsWithoutIsSkip(t *testing.T) {
 	}
 }
 
+// TestParallelActiveSiblingDoesNotHideCurrentOrMergePredecessor 验证多待办时逐一核对本节点与汇合上游。
+func TestParallelActiveSiblingDoesNotHideCurrentOrMergePredecessor(t *testing.T) {
+	runCtx := step.RunContext{
+		Nodes: map[string]step.NodeInfo{
+			"finance": {Name: "财务总监", Type: "common", TargetNodeID: "finance"},
+			"pei":     {Name: "合规部-分管领导", Type: "common", TargetNodeID: "pei"},
+			"advisor": {Name: "公司顾问", Type: "common", TargetNodeID: "advisor"},
+		},
+		Steps: []model.CompiledActionStep{
+			{NodeKey: "finance", Action: model.ActionApprove},
+			{NodeKey: "pei", Action: model.ActionApprove},
+			{NodeKey: "advisor", Action: model.ActionApprove},
+		},
+		GraphEdges: map[string][]step.GraphEdgeInfo{
+			"parallel": {{Target: "finance"}, {Target: "pei"}},
+			"finance":  {{Target: "advisor"}},
+			"pei":      {{Target: "advisor"}},
+		},
+		GraphNodeTypes: map[string]string{"parallel": "parallel"},
+	}
+	facts := step.InstanceFacts{Found: true, CurrentNodes: []string{"finance", "pei"}, DueNodes: []string{"finance", "pei"}}
+	action, reason := step.TargetSkippedClassificationForTest(runCtx, runCtx.Steps[1], facts)
+	if action != "" {
+		t.Fatalf("本节点仍有待办，不得被较早兄弟分支掩盖：%s %s", action, reason)
+	}
+	facts.CurrentNodes, facts.DueNodes = []string{"pei"}, []string{"pei"}
+	action, reason = step.TargetSkippedClassificationForTest(runCtx, runCtx.Steps[2], facts)
+	if action != "block" || !strings.Contains(reason, "必须完成所有分支") {
+		t.Fatalf("并行汇合前应阻塞主流程：%s %s", action, reason)
+	}
+}
+
 // f034PtrBool 是布尔指针辅助。
 func f034PtrBool(value bool) *bool { return &value }

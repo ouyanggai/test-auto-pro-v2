@@ -46,6 +46,54 @@ func TestBuildProxyRemapSurfacesInsertedHumanNode(t *testing.T) {
 	}
 }
 
+// TestBuildProxyRemapAlignsBranchesBelowInsertedNode 复现运行 9 路径 5：锚点后插入审批节点且并行分支重排。
+func TestBuildProxyRemapAlignsBranchesBelowInsertedNode(t *testing.T) {
+	oldTree := &target.FlowNodeTemplate{ID: "start", Type: "start", Child: &target.FlowNodeTemplate{
+		ID: "anchor", Type: "common", Child: &target.FlowNodeTemplate{
+			ID: "route", Type: "condition", ConditionNodes: []target.FlowBranchTemplate{
+				{ID: "chosen", Name: "施工类", Child: &target.FlowNodeTemplate{
+					ID: "parallel", Type: "parallel", ParallelNodes: []target.FlowBranchTemplate{
+						{ID: "money", Name: "节点2", Child: &target.FlowNodeTemplate{ID: "finance", Name: "财资部-会计", Type: "common", Child: &target.FlowNodeTemplate{ID: "director", Name: "财务总监", Type: "common"}}},
+						{ID: "law", Name: "节点1", Child: &target.FlowNodeTemplate{ID: "legal", Name: "法务专员", Type: "common"}},
+					},
+				}},
+			},
+			Child: &target.FlowNodeTemplate{ID: "advisor", Type: "common"},
+		},
+	}}
+	newTree := &target.FlowNodeTemplate{ID: "start-new", Type: "start", Child: &target.FlowNodeTemplate{
+		ID: "anchor-new", Type: "common", Child: &target.FlowNodeTemplate{
+			ID: "inserted", Type: "common", Child: &target.FlowNodeTemplate{
+				ID: "route-new", Type: "condition", ConditionNodes: []target.FlowBranchTemplate{
+					{ID: "chosen-new", Name: "施工类", Child: &target.FlowNodeTemplate{
+						ID: "parallel-new", Type: "parallel", ParallelNodes: []target.FlowBranchTemplate{
+							{ID: "law-new", Name: "节点1", Child: &target.FlowNodeTemplate{ID: "legal-new", Name: "法务专员", Type: "common"}},
+							{ID: "money-new", Name: "节点2", Child: &target.FlowNodeTemplate{ID: "finance-new", Name: "财资部-会计", Type: "common", Child: &target.FlowNodeTemplate{ID: "director-new", Name: "财务总监", Type: "common"}}},
+						},
+					}},
+				},
+				Child: &target.FlowNodeTemplate{ID: "advisor-new", Type: "common"},
+			},
+		},
+	}}
+	runCtx := newRunContext(nil)
+	runCtx.FlowTree = oldTree
+	runCtx.Nodes = map[string]step.NodeInfo{
+		"finance": {TargetNodeID: "finance"}, "director": {TargetNodeID: "director"}, "advisor": {TargetNodeID: "advisor"},
+	}
+	executor := step.NewExecutor(&taskActionFactsTarget{fakeTarget: &fakeTarget{}, tree: newTree}, &fakeSessions{}, &fakeRunState{}, &fakeFacts{}, fixedRunConfig(), nil)
+	remap, err := executor.BuildProxyRemap(context.Background(), runCtx, target.Session{}, "proxy-new", "anchor")
+	if err != nil {
+		t.Fatalf("插入后重排分支应唯一重绑定：%v", err)
+	}
+	if remap.NodeIDs["director"] != "director-new" || remap.NodeIDs["legal"] != "legal-new" || remap.NodeIDs["advisor"] != "advisor-new" {
+		t.Fatalf("分支重绑定错位：%v", remap.NodeIDs)
+	}
+	if len(remap.InsertedHumanNodeIDs) != 1 || remap.InsertedHumanNodeIDs[0] != "inserted" {
+		t.Fatalf("只应注入加签节点：%v", remap.InsertedHumanNodeIDs)
+	}
+}
+
 // TestBuildProxyRemapAnchorMustBeRealCurrentNode 复现真实加签失败：当前节点经协同/条件流转后已前移，
 // 加签写请求用真实当前节点（协同节点）作锚点插入，其后是带分支的条件结构。用真实锚点重绑定能穿过
 // 分支唯一绑定并暴露插入节点；用离线编译配置的靠前节点当锚点则整棵子链平移错位、绑定失败。

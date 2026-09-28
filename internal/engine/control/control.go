@@ -1449,6 +1449,17 @@ func (s *Service) approveOneStep(ctx context.Context, pathRunID uint64, session 
 	session.executedNodeKeys[session.preview.NodeKey] = true
 	s.mu.Unlock()
 	if remapStopped {
+		// 写请求与步骤已经确认成功，但新代理树不可证明时不再保留“运行中”的
+		// 假现场；持久终态先落库，再撤销内存游标，自动/单步循环均据此退出。
+		reason := session.stopReason
+		if _, err := s.runs.Finish(ctx, pathRunID, model.PathRunStatusStopped, nil, nil, reason, "目标写入已确认成功；后续节点未执行"); err != nil {
+			return result, fmt.Errorf("代理树重绑定失败后保存路径停止状态失败：%w", err)
+		}
+		s.mu.Lock()
+		session.finished = true
+		s.mu.Unlock()
+		s.clear(pathRunID)
+		result.PathFinished = true
 		return result, nil
 	}
 	if outcome.DeviationDetected {

@@ -1,6 +1,6 @@
 # F-044 并行分支恢复与动态加签路径一致性补缺
 
-- 状态：ready_for_manual（2026-09-28 运行 8 反馈修复与自动验证完成，等待用户重新运行同一路径验收）
+- 状态：ready_for_manual（2026-09-28 运行 9 反馈修复与自动验证完成，等待用户重新运行同一路径验收）
 - 依据：F-039 夜间审查修复、F-037 运行画布与加签重绑定、运行 7 路径 1/2/12 的失败证据。
 
 ## 单一用户结果
@@ -39,6 +39,24 @@
 2026-09-28 运行 8 反馈：路径 1/4/6/10 在实例私有代理换 ID 后仍按旧节点 ID 查处理人；路径 2 把未激活的并行兄弟分支误套模板 `isSkip`；路径 3 把目标清洗的人员选择器伴生字段误判为正文丢失；路径 9 把同一恢复组的后续审批节点排除在合法前进锚点外。本轮回到 `implementing` 修复并重新验证，完成后再次停在 `ready_for_manual`。
 
 2026-09-28 修复完成：`currentAuditUserInfo` 保留节点名称，编译期节点 ID 失效时只允许唯一同名动态节点重绑定；门禁命中的实时节点 ID 贯穿 Go 写前任务刷新、runtime `nodeProxyId` 和写后核验。未激活的并行兄弟分支按真实图关系零写入跳过；人员选择器主字段仍存在时允许目标清洗伴生字段；同一恢复触发组的后续恢复同意纳入合法前进锚点。新增预览、Go 写前执行、runtime 请求、并行跳过、正文保护和恢复链回归测试。
+
+2026-09-28 运行 9 人工验收未通过，按用户反馈由 `ready_for_manual` 返回 `implementing`：路径 1/3/4/6/9/10 的活动并行待办被最小步骤序号掩盖；路径 2 的较短支线先入队，使“公司顾问”排到裴国英所在合规支线末端之前；路径 5 的加签插入节点导致对齐递归错一层，重排后的并行分支没有对齐，且重绑失败只停止放行、未持久收尾。
+
+本轮修复后重新停在 `ready_for_manual`：可达图按真实入边稳定拓扑排序，所有并行支线先于共同后继；门禁逐一核对本节点及活动上游待办，汇合前阻塞且不发写请求；加签从插入点以下再次对齐分支并按结构路径重绑；无法重绑时在确认写成功后落 `stopped` 终态并退出循环。新增较短/嵌套支线、多个同时活动待办、插入后并行重排回归测试。
+
+运行 9 路径 5 的既有“运行中”记录没有被本次代码修改回写：本机未运行后端，且本进程缺少计划库连接配置，不能安全操作旧记录；服务正常运行后应通过该路径的停止入口关闭。未连接目标平台、未发送真实写请求、未启动浏览器，所有路径的真实通过仍待用户重跑确认。
+
+本轮实际验证：
+
+```text
+go test ./test/unit/backend ./test/unit/backend/executor ./test/unit/backend/control ./test/unit/backend/action_orchestration ./test/unit/backend/target ./test/unit/backend/run_orchestration
+go test ./internal/analyzer ./internal/engine/scenario ./internal/engine/step ./internal/engine/control ./internal/service ./internal/adapter/target
+go vet ./internal/analyzer ./internal/engine/scenario ./internal/engine/step ./internal/engine/control ./internal/service ./internal/adapter/target
+go build ./...
+git diff --check
+```
+
+上述检查通过；依赖计划库的 `TestF016StopControl` 因缺少 `PLAN_DB_HOST/USER/PASSWORD` 跳过，不能作为本轮终态落库的实测证据。
 
 本轮自动验证结果：
 

@@ -28,7 +28,8 @@ type ProxyRemap struct {
 
 // BuildProxyRemap 读取加签后的完整代理树，并按旧树与新树的结构路径建立节点映射。
 // insertAfterOldNodeID 是加签插入新节点的旧树锚点（即写前当前节点）：插入后锚点子链上
-// 所有旧节点的结构路径整体多出一跳 child，按锚点位置确定性平移映射，绝不按名称猜测；
+// 所有旧节点的结构路径整体多出一跳 child；先在插入层以下对齐重排的分支，
+// 再按锚点位置确定性平移映射，绝不按节点名称猜测；
 // 锚点为空表示本次重建没有已知插入（其他动作触发的树重建），按完全相同的结构路径精确映射。
 // 读取失败、路径缺失或结构不唯一时返回错误，调用方必须停止后续放行，不能继续使用旧节点 ID。
 func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, session target.Session, flowProxyID, insertAfterOldNodeID string) (ProxyRemap, error) {
@@ -79,6 +80,28 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 			return ProxyRemap{}, fmt.Errorf("加签锚点节点 %q 不在加签前流程树中，无法定位插入位置", anchorID)
 		}
 		anchorPrefix = path
+		// 完整树先对齐了锚点之前的分支；插入节点使锚点以下的新旧递归错开一层，
+		// 必须从真实插入点再次对齐，否则并行分支重排会把同类型节点错绑。
+		newAnchor := proxyNodeAtPath(newTree, path)
+		oldAnchor := proxyNodeAtPath(runCtx.FlowTree, path)
+		if newAnchor == nil || oldAnchor == nil || newAnchor.Type != oldAnchor.Type || newAnchor.Child == nil ||
+			(oldAnchor.Child != nil && newAnchor.Child.Child == nil) {
+			return ProxyRemap{}, fmt.Errorf("加签锚点 %q 的新旧结构无法定位插入节点", anchorID)
+		}
+		if oldAnchor.Child != nil {
+			target.AlignProxyTreeBranches(oldAnchor.Child, newAnchor.Child.Child)
+		}
+		newPaths, newTypes, err = proxyTreeFacts(newTree)
+		if err != nil {
+			return ProxyRemap{}, fmt.Errorf("加签后分支对齐失败：%w", err)
+		}
+		newIDByPath = make(map[string]string, len(newPaths))
+		for id, newPath := range newPaths {
+			if previous, exists := newIDByPath[newPath]; exists && previous != id {
+				return ProxyRemap{}, fmt.Errorf("加签后结构路径 %q 对应多个节点", newPath)
+			}
+			newIDByPath[newPath] = id
+		}
 	}
 
 	nodeIDs := make(map[string]string, len(oldPaths))
@@ -186,6 +209,36 @@ func (e *Executor) BuildProxyRemap(ctx context.Context, runCtx RunContext, sessi
 		BranchSelections: branchSelections, SubmitBranchTargetNodeID: submitTarget, NextNodeAuditors: nextAuditors,
 		InsertedHumanNodeIDs: insertedHuman,
 	}, nil
+}
+
+// proxyNodeAtPath 按已核实的结构路径定位树节点；只用于插入锚点定位，不按名称或新 ID 猜测。
+func proxyNodeAtPath(root *target.FlowNodeTemplate, path string) *target.FlowNodeTemplate {
+	parts := strings.Split(path, "/")
+	if root == nil || len(parts) == 0 || parts[0] != "root" {
+		return nil
+	}
+	node := root
+	for i := 1; i < len(parts) && node != nil; i++ {
+		if parts[i] == "child" {
+			node = node.Child
+			continue
+		}
+		if i+1 >= len(parts) {
+			return nil
+		}
+		branches, kind := proxyTreeBranches(node)
+		if kind != parts[i] {
+			return nil
+		}
+		sort.SliceStable(branches, func(a, b int) bool { return branches[a].Sort < branches[b].Sort })
+		index := -1
+		if _, err := fmt.Sscanf(parts[i+1], "%d", &index); err != nil || index < 0 || index >= len(branches) {
+			return nil
+		}
+		node = branches[index].Child
+		i++
+	}
+	return node
 }
 
 // RemapProxyTreeForRun 使用运行计划账号的当前目标会话读取新代理树并构造整体映射。

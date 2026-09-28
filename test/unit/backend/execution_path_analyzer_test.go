@@ -109,6 +109,36 @@ func TestExecutionPathAnalyzerParallelIncludesAllBranchesAndNestedChoices(t *tes
 	}
 }
 
+// TestParallelMergeWaitsForNestedBranchTail 锁定较短分支先入队时，汇合后的主线仍须排在所有支线末端之后。
+func TestParallelMergeWaitsForNestedBranchTail(t *testing.T) {
+	graph := model.FlowGraph{
+		EntryNodeIDs: []string{"parallel"},
+		Nodes: []model.FlowGraphNode{
+			pathNode("parallel", "parallel"), pathNode("finance", "common"), pathNode("legal", "common"),
+			pathNode("legal-route", "condition"), pathNode("pei", "common"), pathNode("advisor", "common"),
+		},
+		Edges: []model.FlowGraphEdge{
+			pathEdge("finance-entry", "parallel", "finance", "parallel", "finance-entry"),
+			pathEdge("legal-entry", "parallel", "legal", "parallel", "legal-entry"),
+			pathEdge("finance-merge", "finance", "advisor", "sequence", ""),
+			pathEdge("legal-route-edge", "legal", "legal-route", "sequence", ""),
+			pathEdge("pei-choice", "legal-route", "pei", "condition", "pei-choice"),
+			pathEdge("pei-merge", "pei", "advisor", "sequence", ""),
+		},
+	}
+	got, err := analyzer.NewExecutionPathAnalyzer().Analyze(graph, []model.ExecutionPathChoice{{RouteNodeID: "legal-route", BranchID: "pei-choice"}})
+	if err != nil || !got.Complete {
+		t.Fatalf("并行路径分析失败：%+v %v", got, err)
+	}
+	positions := map[string]int{}
+	for i, id := range got.ReachableNodeIDs {
+		positions[id] = i
+	}
+	if positions["advisor"] <= positions["pei"] || positions["advisor"] <= positions["finance"] {
+		t.Fatalf("公司顾问提前进入主线，仍有裴国英支线待办：%v", got.ReachableNodeIDs)
+	}
+}
+
 // TestExecutionPathAnalyzerRejectsDuplicateMissingExtraAndCrossGraphChoice 验证不可信选择的拒绝边界。
 func TestExecutionPathAnalyzerRejectsDuplicateMissingExtraAndCrossGraphChoice(t *testing.T) {
 	graph := model.FlowGraph{

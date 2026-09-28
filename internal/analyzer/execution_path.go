@@ -125,9 +125,45 @@ func (a *ExecutionPathAnalyzer) Analyze(graph model.FlowGraph, choices []model.E
 		// 未被遍历使用的选择来自不可达路由或其他图，必须整条拒绝。
 		return model.ExecutionPathAnalysis{}, ErrExecutionPathInvalid
 	}
+	// 并行汇合点可能从较短支线先入队；编译顺序必须等待所有可达入边，
+	// 否则较长支线的末端审批会被排到共同后继之后。
+	indegree := make(map[string]int, len(reachableNodes))
+	selectedEdges := make(map[string]bool, len(reachableEdges))
+	for _, id := range reachableNodes {
+		indegree[id] = 0
+	}
+	for _, id := range reachableEdges {
+		selectedEdges[id] = true
+	}
+	for _, edge := range graph.Edges {
+		if selectedEdges[edge.ID] {
+			indegree[edge.Target]++
+		}
+	}
+	ordered := make([]string, 0, len(reachableNodes))
+	emitted := make(map[string]bool, len(reachableNodes))
+	for len(ordered) < len(reachableNodes) {
+		next := ""
+		for _, id := range reachableNodes {
+			if !emitted[id] && indegree[id] == 0 {
+				next = id
+				break
+			}
+		}
+		if next == "" {
+			return model.ExecutionPathAnalysis{}, ErrExecutionPathInvalid
+		}
+		emitted[next] = true
+		ordered = append(ordered, next)
+		for _, edge := range outgoing[next] {
+			if selectedEdges[edge.ID] {
+				indegree[edge.Target]--
+			}
+		}
+	}
 	return model.ExecutionPathAnalysis{
 		Complete: len(missing) == 0, MissingRouteNodeIDs: missing,
-		ReachableNodeIDs: reachableNodes, ReachableEdgeIDs: reachableEdges,
+		ReachableNodeIDs: ordered, ReachableEdgeIDs: reachableEdges,
 	}, nil
 }
 
