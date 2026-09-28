@@ -45,6 +45,8 @@ type LoadPayload struct {
 	Permissions []string `json:"permissions"`
 	// ChangedFields 是补丁触及的字段：等待选项及联动完成后再回读。
 	ChangedFields []string `json:"changedFields"`
+	// ReadonlyFields 是审批页解析后续 form_person 所需的只读字段；它们只用于装载回填，不能改变节点权限。
+	ReadonlyFields []string `json:"readonlyFields"`
 	// ToolFlowName 是工具流程名称：最终流程请求中目标脚本不得改写。
 	ToolFlowName string `json:"toolFlowName"`
 	// InstanceID 是主实例 ID；新建草稿/新发起时为空。
@@ -107,18 +109,19 @@ type ActorIdentity struct {
 
 // LoadInput 汇总装载所需的调用方事实。
 type LoadInput struct {
-	Mode          string
-	Session       SessionFacts
-	ToolFlowName  string
-	InstanceID    string
-	JobTaskID     string
-	NodeProxyID   string
-	Permissions   []string
-	ChangedFields []string
-	BaseURL       string
+	Mode           string
+	Session        SessionFacts
+	ToolFlowName   string
+	InstanceID     string
+	JobTaskID      string
+	NodeProxyID    string
+	Permissions    []string
+	ChangedFields  []string
+	ReadonlyFields []string
+	BaseURL        string
 	// PlatformCode 是本次装载的目标平台码：实例重建类取实例事实，发起类留空由页面回落默认。
-	PlatformCode  string
-	Initiator     ActorIdentity
+	PlatformCode string
+	Initiator    ActorIdentity
 	// —— 目标代理与节点事实（评审 P1-3）——
 	FormProxyID    string
 	FlowProxyID    string
@@ -183,6 +186,10 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 	if changed == nil {
 		changed = []string{}
 	}
+	readonly := input.ReadonlyFields
+	if readonly == nil {
+		readonly = []string{}
+	}
 	relevance := input.FlowInstanceBizRelevanceList
 	if relevance == nil {
 		relevance = []BizRelevance{}
@@ -196,6 +203,7 @@ func BuildLoadPayload(input LoadInput, values json.RawMessage) (*LoadPayload, er
 		Values:                       values,
 		Permissions:                  permissions,
 		ChangedFields:                changed,
+		ReadonlyFields:               readonly,
 		ToolFlowName:                 strings.TrimSpace(input.ToolFlowName),
 		InstanceID:                   strings.TrimSpace(input.InstanceID),
 		JobTaskID:                    strings.TrimSpace(input.JobTaskID),

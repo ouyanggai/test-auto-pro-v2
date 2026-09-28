@@ -1,6 +1,6 @@
 # F-044 并行分支恢复与动态加签路径一致性补缺
 
-- 状态：ready_for_manual（2026-09-28 运行 13 路径 5 动态加签后表单人员解析修复与自动验证完成，等待用户重新运行验收）
+- 状态：implementing（2026-09-28 运行 16 路径 5 人工复验未通过，正在修复 runtime 审批页丢失 form_person 伴生键的问题）
 - 依据：F-039 夜间审查修复、F-037 运行画布与加签重绑定、运行 7 路径 1/2/12 的失败证据。
 
 ## 单一用户结果
@@ -77,9 +77,13 @@ pnpm --dir web run build
 
 上述检查通过；未连接目标平台、未发送真实写请求、未启动浏览器，因此不能代替用户对本次全部路径的真实运行验收。
 
-2026-09-28 运行 13 路径 5 人工验收未通过，按用户反馈由 `ready_for_manual` 返回 `implementing`：动态加签插入节点同意后，下一节点「财资部-会计」为 `form_person`，目标拒绝“表单人员数据获取失败”。日志确认实例当前表单仍保留 `accountantUserName` 的真实人员 JSON、`__formPersonId` 与 `__condition`，失败发生在审批页将表单人员字段组装为目标请求时。
+2026-09-28 运行 13 路径 5 人工验收未通过，按用户反馈由 `ready_for_manual` 返回 `implementing`：动态加签插入节点同意后，下一节点「财资部-会计」为 `form_person`，目标拒绝“表单人员数据获取失败”。当时只修了直接声明主字段的 Go/页面兼容，未覆盖审批页提交前丢失人员选择器伴生键的情况。
 
-本轮修复后重新停在 `ready_for_manual`：审批页同时兼容 `form_person` 声明伴生键和直接声明主字段；只要已有值是人员 JSON 就转换为真实用户 ID，空值才回退读取主字段，不替换真实人员、不扩大动态加签节点编辑权限。Go 目标适配层同步支持直接声明主字段，新增回归测试；后端定向测试、`go vet`、runtime Vue 生产构建和 `git diff --check` 通过。完整 F-035 合同生命周期套件仍有一个与本轮无关的既有失败（未实现合同盖章必须阻塞），未连接目标平台、未发送新的真实写请求、未启动浏览器。
+2026-09-28 运行 16 路径 5 复验给出可区分的完整证据：实例 `b4368cd4cb7047f0805beb5e725db4dc` 的 step 50 trace `8d2e8f9396adbfb8` 在页面装载前快照中同时存在 `accountantUserName`、`accountantUserName__formPersonId=0e39251edba840ac9846279c7e674be5` 和 `accountantUserName__condition=万舒`；runtime 实际发出的 `/flowInstanceApi/audit` 请求仍有主字段 JSON 与条件字段，但提交前页面快照已没有 `__formPersonId`，目标接口以 HTTP 200 业务失败返回“节点:【财资部-会计】,是表单人员,表单人员数据获取失败,请指定人员”。同一请求的 `request_written=true`，写后实例仍停在目标节点 `b4f5feaf547b4c9bad7a1ee8853b7b03`。因此根因属于工具侧 runtime 页面回填/回读链，不是目标平台随机失败。
+
+本轮工具修复：新增 `readonlyFields` 装载协议。运行引擎按后续节点的 form_person 声明计算源字段基键，runtime 页面在审批装载后用原生表单 setter 回填这些字段及 `__formPersonId/__condition/__virtualName` 伴生键；它们不进入 `permissions`，也不改变本步 `changedFields`，不会扩大当前加签审批人的编辑权限。若目标声明人员字段而实例数据缺失，仍由写前门禁明确阻塞，不猜测人员。
+
+本轮自动验证：`go test ./internal/runtimeexec ./internal/engine/step ./test/unit/backend/runtimeexec -count=1`、对应 `go vet`、`go test ./test/contracts/f035/protocol -run 'TestApplyFormPersonFieldRule|TestCollectFormPersonFieldsByAction' -count=1`、`pnpm --dir executor-service run typecheck` 与 `git diff --check` 通过。完整 F-035 合同生命周期套件仍有与本轮无关的既有失败（`TestSpecialBusinessLifecycleRegistry` 的合同盖章阻塞断言），未发送新的目标写请求；执行服务重启后待用户重新运行路径 5 验证。
 
 本轮人工检查：重新运行同一计划，确认不再在调度启动时报前序回跳；进入并行段时所有当前待办一起高亮、短支线先完成后共同后继仍等待；不同意、撤回、首节点退回分叉前再继续时各已完成支线重新审核，分支内回退仅重走本支。若目标事实只返回一个兄弟分支而本支是否完成未知，工具应阻断并说明无法证明，不应静默跳过。
 

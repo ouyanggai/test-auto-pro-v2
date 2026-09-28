@@ -535,6 +535,7 @@ func TestRunViaRuntimeCarriesProxyNodeAndFormFacts(t *testing.T) {
 	runCtx.FlowProxyID = "flow-proxy-plan"
 	runCtx.Nodes["node-1"] = step.NodeInfo{TargetNodeID: "target-node-1", Name: "审批节点", AuditType: "run_node_choose", EditableFields: []string{"reason"}}
 	runCtx.Nodes["node-2"] = step.NodeInfo{TargetNodeID: "target-node-2", Name: "下一节点", AuditType: "company"}
+	runCtx.FormPersonFields = []target.NodeFormPersonField{{NodeID: "target-node-2", Field: "accountantUserName__formPersonId"}}
 	runCtx.Steps = []model.CompiledActionStep{
 		{Action: model.ActionApprove, NodeKey: "node-1"},
 		{Action: model.ActionApprove, NodeKey: "node-2"},
@@ -570,6 +571,9 @@ func TestRunViaRuntimeCarriesProxyNodeAndFormFacts(t *testing.T) {
 	}
 	if len(request.ChangedFields) != 1 || request.ChangedFields[0] != "reason" {
 		t.Fatalf("装载必须携带本步覆盖字段：%+v", request.ChangedFields)
+	}
+	if len(request.ReadonlyFields) != 1 || request.ReadonlyFields[0] != "accountantUserName" {
+		t.Fatalf("审批装载必须保留 form_person 只读依赖字段：%+v", request.ReadonlyFields)
 	}
 	if request.BranchNodeAuditTypes["target-node-1"] != "run_node_choose" || request.BranchNodeAuditTypes["target-node-2"] != "company" {
 		t.Fatalf("选择闭环需要节点审批方式映射：%+v", request.BranchNodeAuditTypes)

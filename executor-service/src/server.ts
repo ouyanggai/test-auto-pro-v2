@@ -1265,7 +1265,12 @@ async function main (): Promise<void> {
           }
 
           // 数据补丁（S5 核心）：宿主按模式解析到真实表单 API；找不到=unsupported，绝不静默跳过。
-          const allowed = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
+          // 只读 form_person 依赖字段也要经过原生表单 setter；否则审批组件的 getValues
+          // 可能在提交前清掉 __formPersonId，目标随后无法解析下一节点处理人。
+          // 它们与 changedFields 分开传输，不能改变当前节点的编辑权限或写入意图。
+          const changed = Array.isArray(payload.changedFields) ? payload.changedFields.map(String) : []
+          const readonly = Array.isArray(payload.readonlyFields) ? payload.readonlyFields.map(String) : []
+          const allowed = [...new Set([...changed, ...readonly])]
           let patchReadback: Record<string, unknown> = {}
           if (allowed.length > 0) {
             // 表单宿主是异步渲染的（发起链 Steps1 监听 flowJson 自动 nextStep，

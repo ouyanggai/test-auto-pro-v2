@@ -17,6 +17,7 @@ func TestBuildLoadPayload(t *testing.T) {
 		SelectFlowType: "employee_leave",
 		FlowTemplateID: "73eaa9b297b54364a3c320d3002a1b4f",
 		Permissions:    []string{"reason"},
+		ReadonlyFields: []string{"accountantUserName"},
 		BaseURL:        "https://target.example.com/",
 	}, values)
 	if err != nil {
@@ -30,6 +31,9 @@ func TestBuildLoadPayload(t *testing.T) {
 	}
 	if payload.BaseURL != "https://target.example.com" {
 		t.Fatalf("装载基础字段错误：%+v", payload)
+	}
+	if len(payload.ReadonlyFields) != 1 || payload.ReadonlyFields[0] != "accountantUserName" {
+		t.Fatalf("装载必须保留只读表单人员依赖字段：%+v", payload.ReadonlyFields)
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

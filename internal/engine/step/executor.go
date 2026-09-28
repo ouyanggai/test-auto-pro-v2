@@ -233,8 +233,9 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		NodeProxyID:  pendingTaskNodeIDOf(runCtx, step, preview.Facts),
 		AuditDesc:    auditMessage(runCtx, step),
 		// 权限=当前节点声明可编辑字段；变更字段=本步实际覆盖的字段（预览阶段已按权限构造）。
-		Permissions:   runCtx.Nodes[step.NodeKey].EditableFields,
-		ChangedFields: preview.FormOverlaid,
+		Permissions:    runCtx.Nodes[step.NodeKey].EditableFields,
+		ChangedFields:  preview.FormOverlaid,
+		ReadonlyFields: runtimeFormPersonReadonlyFields(runCtx, step, approved.NextIndex),
 		// 代理与节点事实：目标提交按 formId 决定发送 formProxyId/flowProxyId（评审 P1-3 根因）。
 		FormProxyID: formProxyID,
 		FlowProxyID: flowProxyID,
@@ -1301,6 +1302,43 @@ func nextNodeTargetIDOf(runCtx RunContext, nextIndex int) string {
 		return ""
 	}
 	return strings.TrimSpace(runCtx.Nodes[nextNodeKey].TargetNodeID)
+}
+
+// runtimeFormPersonReadonlyFields 计算审批页装载时必须保留的 form_person 源字段。
+// 这些键只用于恢复目标页面解析下一节点所需的真实用户值，不进入当前节点编辑权限或本步变更字段。
+func runtimeFormPersonReadonlyFields(runCtx RunContext, step model.CompiledActionStep, nextIndex int) []string {
+	nextNodeKey := FollowingActionNodeKey(runCtx.Steps, nextIndex)
+	nextNodeID := ""
+	if info, ok := runCtx.Nodes[nextNodeKey]; ok {
+		nextNodeID = strings.TrimSpace(info.TargetNodeID)
+	}
+	fields := target.CollectFormPersonFieldsForAction(runCtx.FlowTree, string(step.Action), runCtx.FlowType, nextNodeID)
+	if len(fields) == 0 {
+		fields = filterFormPersonFields(runCtx.FormPersonFields, string(step.Action), runCtx.FlowType, nextNodeID)
+	}
+	if len(fields) == 0 {
+		fields = runCtx.FormPersonFields
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		key := strings.TrimSpace(field.Field)
+		for _, suffix := range []string{"__formPersonId", "__condition", "__virtualName"} {
+			key = strings.TrimSuffix(key, suffix)
+		}
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
 }
 
 // personNameFor 在启动时已解析的人员目录里反查目标用户 ID 对应的姓名；
