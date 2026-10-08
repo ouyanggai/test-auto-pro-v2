@@ -1,9 +1,15 @@
-.dockerignore（F-023 构建上下文卫生）：凭证、日志、参考源码、缓存与构建产物一律不进镜像层。
+# .dockerignore：凭证、日志、参考源码、缓存与构建产物一律不进镜像层。
 .env.local
 .env.*
+.env
+**/.env
+**/.env.*
+**/.npmrc
+**/*.key
+**/*.pem
 deploy/.env
-参考代码/
-重构指南/
+# 参考代码/、重构指南/ 等中文根目录；旧版 BuildKit 的排除模式头只接受 ASCII。
+[^a-zA-Z0-9._]*/
 logs/
 .git/
 .runtime/
@@ -11,6 +17,23 @@ node_modules/
 web/node_modules/
 form-runtime/node_modules/
 web/dist/
+**/node_modules/
+**/.git/
+executor-service/dist/
+executor-service/page/dist/
+executor-service/flow-source.json
+executor-service/flow-source.lock.json
+executor-service/flow-source/dist/
+executor-service/flow-source/.env*
+executor-service/flow-source/.npmrc
+executor-service/flow-source/.claude/
+executor-service/flow-source/.omc/
+.tmp/
+runtime/
+bin/
+server
+server.exe
+coverage.out
 test/
 docs/
 *.log

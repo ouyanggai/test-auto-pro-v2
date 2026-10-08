@@ -42,6 +42,8 @@
 
 ## 运行环境
 
+正式部署使用六服务 Docker Compose，准备、启动和验活步骤见 [部署说明](deploy/README.md)。
+
 - Go `1.25`
 - Node.js `>=20.19`
 - pnpm `10.25`

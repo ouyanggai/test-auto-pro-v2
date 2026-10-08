@@ -185,6 +185,9 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 
 ## 固定选型
 
+- Docker 发布按 `deploy/docker-compose.yml` 一次交付 MySQL、后端、主前端、配置表单运行时、独立执行服务和 code-server 六个服务。MySQL 与执行服务只在容器内网可达；后端通过 `http://executor:19011` 调用执行服务。执行镜像固定独立源码快照，启动时不自动同步远端；配置侧维护仍消费由 `make refs-sync` 安全准备并只读挂载的参考仓库。
+- 配置侧生产产物卷在后端为 `/app/web/dist/form-runtime`，在 nginx 为 `/usr/share/nginx/html/form-runtime`，两处必须指向同一卷根。维护镜像包含锁定的配置侧构建依赖，切换验证读取 `/form-runtime/runtime-health.json`；后端健康探针使用镜像内必有的 Node，不依赖缺失的 curl/wget。
+
 - 主前端：Vue 3、Vite、Vue Router、Pinia、Naive UI；F-012 的 `form-runtime/` 是配置侧隔离例外，直接使用从目标平台复制的 Vue 2、Element UI 和多表单运行时，并通过 iframe 接入主应用。F-036 的 `executor-service/` 是执行侧隔离例外，使用另一份独立组件快照和原生 `/flow` 路由，不与配置侧共享源码或产物。
 - 后端：Go 单体，一个二进制进程；F-000 使用标准库 `net/http`。
 - 包管理：pnpm。

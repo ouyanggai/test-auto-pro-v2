@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# F-023 编排结构契约：五个服务、端口约定、健康检查、卷边界与配置注入口径。
+# F-023 编排结构契约：六个服务、端口约定、健康检查、卷边界与配置注入口径。
 
 set -euo pipefail
 
@@ -15,10 +15,12 @@ fail() {
 compose='deploy/docker-compose.yml'
 [ -f "${compose}" ] || fail "缺少 Compose 文件：${compose}"
 
-# 五个服务齐备。
-for service in mysql backend web form-runtime code-server; do
+# 独立执行服务必须参与发布，否则配置正常但实际运行不可用。
+for service in mysql backend web form-runtime executor code-server; do
   grep -qE "^  ${service}:" "${compose}" || fail "缺少服务：${service}"
 done
+grep -qF 'RUNTIME_EXECUTOR_URL: http://executor:19011' "${compose}" || fail '后端缺少执行服务连接'
+grep -qF 'Dockerfile.executor' "${compose}" || fail '缺少独立执行服务构建'
 
 # 端口约定与本机一致：19000/19080/19001/19002。
 for port in 19000 19080 19001 19002; do

@@ -1,6 +1,8 @@
-# F-023 一条命令起全套：MySQL、后端、前端、表单运行时与 code-server。
+# 一条命令起全套：MySQL、后端、前端、配置表单、独立执行服务与日志查看器。
 # 纪律：目标地址与凭证只经外部环境注入；MySQL 仅在 Compose 网络可达；
 # logs/ 双向挂载给后端与 code-server；表单运行时 live 卷由后端维护流水线接管。
+
+name: test-auto-pro-v2
 
 services:
   mysql:
@@ -22,12 +24,15 @@ services:
     # 不发布 3306 到宿主：工具库只在 Compose 网络内可达。
 
   backend:
+    image: test-auto-pro-v2_backend:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile.backend
     restart: unless-stopped
     depends_on:
       mysql:
+        condition: service_healthy
+      executor:
         condition: service_healthy
     environment:
       # 目标平台地址与凭证只来自外部环境；缺必需变量时后端启动即失败并给中文说明。
@@ -37,13 +42,21 @@ services:
       TARGET_LOGIN_CODE: ${TARGET_LOGIN_CODE}
       TARGET_PLATFORM_CODE: ${TARGET_PLATFORM_CODE:-200001}
       TARGET_TEMPLATE_PLATFORM_CODES: ${TARGET_TEMPLATE_PLATFORM_CODES:-200001,999999}
+      TARGET_CUSTOMER_CODE: ${TARGET_CUSTOMER_CODE:-}
+      TARGET_DB_HOST: ${TARGET_DB_HOST:-}
+      TARGET_DB_PORT: ${TARGET_DB_PORT:-3306}
+      TARGET_DB_USER: ${TARGET_DB_USER:-}
+      TARGET_DB_PASSWORD: ${TARGET_DB_PASSWORD:-}
+      TARGET_DB_NAME: ${TARGET_DB_NAME:-}
+      TARGET_DB_USER_CENTER_NAME: ${TARGET_DB_USER_CENTER_NAME:-}
+      RUNTIME_EXECUTOR_URL: http://executor:19011
       PLAN_DB_HOST: mysql
       PLAN_DB_PORT: 3306
       PLAN_DB_NAME: ${PLAN_DB_NAME:-test_auto_pro_v2}
       PLAN_DB_USER: ${PLAN_DB_USER:-test_auto_pro}
       PLAN_DB_PASSWORD: ${PLAN_DB_PASSWORD}
       TEST_AUTO_PRO_WORKSPACE_ROOT: /app
-      FORM_RUNTIME_HEALTH_URL: ${FORM_RUNTIME_HEALTH_URL:-http://form-runtime:19001/}
+      FORM_RUNTIME_HEALTH_URL: http://form-runtime:19001/form-runtime/runtime-health.json
       TEST_AUTO_PRO_LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-14}
     volumes:
       # 项目根 logs/（与 code-server、人工验收口径一致；compose 在 deploy/ 下故取 ../）。
@@ -56,13 +69,14 @@ services:
     ports:
       - "${BACKEND_PORT:-19080}:19080"
     healthcheck:
-      test: ["CMD", "bash", "-c", "command -v curl >/dev/null 2>&1 && curl -fsS http://127.0.0.1:19080/api/health || wget -qO- http://127.0.0.1:19080/api/health"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:19080/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 30s
 
   web:
+    image: test-auto-pro-v2_web:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
@@ -79,6 +93,7 @@ services:
       retries: 12
 
   form-runtime:
+    image: test-auto-pro-v2_form-runtime:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile.form-runtime
@@ -88,7 +103,7 @@ services:
         condition: service_healthy
     volumes:
       # 与后端共享 live 卷：维护流水线切换版本，这里即时提供新产物。
-      - fr-live:/usr/share/nginx/html:ro
+      - fr-live:/usr/share/nginx/html/form-runtime:ro
     ports:
       - "${FORM_RUNTIME_PORT:-19001}:19001"
     healthcheck:
@@ -97,9 +112,28 @@ services:
       timeout: 5s
       retries: 12
 
+  executor:
+    image: test-auto-pro-v2_executor:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.executor
+    restart: unless-stopped
+    # 发布时执行固定源码快照，不在服务启动时访问内网 Git 或漂移到新版本。
+    environment:
+      EXECUTOR_DISABLE_AUTO_SYNC: "1"
+      EXECUTOR_PORT: "19011"
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:19011/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
   code-server:
     image: codercom/code-server:4.96.4
     restart: unless-stopped
+    user: "${CODE_SERVER_UID:-1000}:${CODE_SERVER_GID:-1000}"
     command: --auth=none --user-data-dir=/home/coder/.config /home/coder/logs
     environment:
       DOCKER_USER: ${CODE_SERVER_UID:-1000}

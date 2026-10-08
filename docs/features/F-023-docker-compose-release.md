@@ -1,6 +1,6 @@
 # F-023 Docker Compose 发布编排
 
-- 状态：ready_for_manual（2026-09-06 按用户全自动指令实施完成；Compose 冷启动实测被本机镜像仓库不可达阻断，已如实记录并保留显式启用开关）
+- 状态：ready_for_manual（2026-10-08 按用户部署指令完成 192.168.2.200 六服务部署与验活；等待页面与真实流程人工核对）
 - 产品依据：`docs/PRODUCT.md` 设置行为（表单运行时维护与日志查看）、产品原则第 2、4、6 条和“正式发布用 Docker Compose”裁决
 - 架构依据：`docs/ARCHITECTURE.md` 固定选型、本地端口、服务边界、日志挂载和 form-runtime 维护流水线
 - 纲领依据：`docs/EXECUTION_PROGRAM.md` 第 6.6、6.7、9、10、11 节，以及 F-013、F-016 至 F-022 已验收能力
@@ -8,7 +8,7 @@
 
 ## 目标
 
-提供一条可重复的 Docker Compose 发布路径，一次启动 MySQL、Go 后端、Vue 前端、`form-runtime` 和 code-server 日志查看器；服务有健康检查、持久化卷、启动顺序和清晰的配置边界，开发/发布环境都不把凭证写入镜像或仓库。
+提供一条可重复的 Docker Compose 发布路径，一次启动 MySQL、Go 后端、Vue 前端、`form-runtime`、独立执行服务和 code-server 日志查看器；服务有健康检查、持久化卷、启动顺序和清晰的配置边界，开发/发布环境都不把凭证写入镜像或仓库。
 
 ## 单一用户结果
 
@@ -20,8 +20,9 @@
 | --- | --- | --- | --- |
 | `mysql` | 工具侧 MySQL 与迁移 | 仅 Compose 网络 | 数据库卷 |
 | `backend` | Go API、Worker、迁移执行 | `19080` | `logs/` 挂载 |
-| `frontend` | Vue 3 生产静态资源与 `/api` 反代 | `19000` | 无 |
+| `web` | Vue 3 生产静态资源与 `/api` 反代 | `19000` | 无 |
 | `form-runtime` | 复制目标表单运行时 | `19001` | current/previous 运行时卷 |
+| `executor` | 固定源码的原生页面与无头浏览器执行 | 仅 Compose 网络 | 无 |
 | `code-server` | 日志目录查看与编辑 | `19002` | 与宿主 `logs/` 双向挂载 |
 
 目标平台地址、登录凭证、工具库账号和加密密钥只从 Compose 外部环境或被忽略的 env 文件注入；不构建进镜像、不返回前端、不写入 Git。
@@ -169,7 +170,21 @@
 
 ## 人工验收
 
-1. 复制 `.env.example` 到被忽略的本机配置并填入测试值，执行 Compose 启动命令，确认五个服务按依赖顺序健康。
+### 2026-10-08 当前发布补齐与部署实测
+
+本节覆盖早期五服务编排的发布口径。用户明确要求把当前应用部署到 `192.168.2.200`；本轮只处理发布配置和部署，不修改业务语义、数据库模型或目标平台，不代替人工验收。
+
+- 完成标准：六服务健康、现有迁移完成、主入口/API/配置表单/日志可访问、执行服务无头浏览器真实启动、日志双向挂载有效、数据库重启后迁移记录与数据保持；结束后停在 `ready_for_manual`。
+- 编排补齐 `executor` 与后端 `RUNTIME_EXECUTOR_URL`，固定项目和镜像名称，执行服务只在容器内网可达。执行镜像消费独立 `test/e141a799408192bac1fe1f3dc7d821a2cee64986` 快照，并关闭启动时远端自动同步。
+- 修复后端镜像缺少健康探针工具、配置表单 live 卷多一层目录、维护镜像缺少锁定构建依赖、工作区安装遗漏执行服务 manifest、Corepack 下载失败和旧 BuildKit 中文排除模式错误。执行镜像系统包使用重试与独立缓存，浏览器仅安装默认无头运行需要的 headless shell。
+- 部署目录 `/opt/test-auto-pro-v2`，主应用 `19000`、后端 `19080`、配置表单 `19001`、日志查看器 `19002`；MySQL 与执行服务不发布宿主端口。工具库为独立新库，未导入开发机计划和运行记录；既有 V1 保留。
+- `make refs-sync` 在服务器通过临时签名代理安全完成 `13/13`，未把私钥复制到服务器。目标配置与新工具库密码只存在权限 `600` 的 `deploy/.env` 和运行容器环境中。
+- 实测通过：Compose 配置解析、当前切片结构/构建上下文检查、Linux 镜像实际构建与启动；23 个现有迁移已完成，最大版本 `036_f042_report_executor_ms.sql`；主入口、计划/运行/报告/维护来源 API 与表单/日志入口 HTTP 200；六服务健康、Chromium `153.0.8010.12` 启动、后端到执行器协议 `exec-engine/v2`、日志双向读写探针通过；工具库与后端重启后迁移和数据一致。
+- 已撤除临时下载代理和 SSH 隧道、恢复 Docker 原下载配置；Docker 守护进程重启后六服务仍健康，验活脚本再次通过。修正服务器原有 containerd 过期 PID 导致 Docker 启动失败的问题，启动前仅处理未指向 containerd 的 PID 文件；Docker 已启用开机启动。
+- 证据保留在服务器 `logs/deployment-build.log`、`deployment-refs-sync.log`、`deployment-smoke.log`、`deployment-smoke-after-restart.log`、`deployment-schema-before.txt`、`deployment-schema-after.txt`，不提交日志或凭证。入口与运维命令见 `deploy/README.md`。
+- 未运行目标业务写请求，未自动打开人工验收浏览器。下一步用户在新服务器核对页面、表单编辑和真实流程运行；不标记 `accepted`，不开始下一功能。
+
+1. 复制 `.env.example` 到被忽略的本机配置并填入测试值，执行 Compose 启动命令，确认六个服务按依赖顺序健康。
 2. 使用空 MySQL 卷启动，确认迁移完成；停止后再次启动，确认运行事实和迁移版本保持不变。
 3. 打开 19000 前端、19001 form-runtime 和 19002 code-server，确认页面、iframe 和日志目录均可用。
 4. 触发后端写入一条运行日志，确认宿主 `logs/` 与 code-server 同时可见；容器内写入探针后确认宿主立即可读。

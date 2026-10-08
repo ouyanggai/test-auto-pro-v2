@@ -34,20 +34,29 @@ done
 
 if [ "${F023_COMPOSE_UP:-0}" = "1" ]; then
   printf '%s\n' '[F-023] Compose 冷启动实测（显式启用）'
-  docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example up -d --build
-  printf '%s\n' '[F-023] 等待五个服务健康……'
+  env_file="${F023_ENV_FILE:-deploy/.env}"
+  [ -f "${env_file}" ] || { echo '缺少部署环境文件，先填写 deploy/.env' >&2; exit 1; }
+  compose=(docker compose -f deploy/docker-compose.yml --env-file "${env_file}")
+  "${compose[@]}" up -d --build
+  printf '%s\n' '[F-023] 等待六个服务健康……'
   for i in $(seq 1 60); do
-    if docker compose -f deploy/docker-compose.yml ps --status healthy | grep -q backend; then
+    containers="$("${compose[@]}" ps -q)"
+    healthy=0
+    if [ -n "${containers}" ]; then
+      healthy="$(docker inspect --format '{{.State.Health.Status}}' ${containers} | grep -c '^healthy$' || true)"
+    fi
+    if [ "${healthy}" = 6 ]; then
       break
     fi
     sleep 5
   done
-  docker compose -f deploy/docker-compose.yml ps
+  "${compose[@]}" ps
+  F023_ENV_FILE="${env_file}" ./test/integration/f023_deployment_smoke.sh
   curl -fsS "http://127.0.0.1:${BACKEND_PORT:-19080}/api/health" >/dev/null && printf '%s\n' '[F-023] 后端健康'
   curl -fsS "http://127.0.0.1:${WEB_PORT:-19000}/" >/dev/null && printf '%s\n' '[F-023] 前端可访问'
   curl -fsS "http://127.0.0.1:${FORM_RUNTIME_PORT:-19001}/" >/dev/null && printf '%s\n' '[F-023] 表单运行时可访问'
   printf '%s\n' '[F-023] 停止并清理（保留命名卷与宿主日志）'
-  docker compose -f deploy/docker-compose.yml down
+  "${compose[@]}" down
 else
   printf '%s\n' '[F-023] Compose 冷启动实测未启用：设置 F023_COMPOSE_UP=1 且准备好 deploy/.env 后运行（构建依赖外网与较长时间）'
 fi
