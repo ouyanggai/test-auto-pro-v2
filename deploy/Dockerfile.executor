@@ -8,7 +8,13 @@ COPY form-runtime/package.json ./form-runtime/package.json
 COPY executor-service/package.json ./executor-service/package.json
 RUN pnpm install --frozen-lockfile --filter test-auto-pro-v2-executor-service
 COPY executor-service ./executor-service
-RUN pnpm --dir executor-service build-native-page
+# 长连接下载曾中断；保留已校验的 npm 缓存并有限重试，失败仍阻止发布切换。
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    for attempt in 1 2 3; do \
+      npm_config_fetch_retries=5 pnpm --dir executor-service build-native-page && exit 0; \
+      [ "$attempt" != 3 ] || exit 1; \
+      sleep 5; \
+    done
 # 原生页构建完成后依赖不再用于运行；保留源码摘要和产物，使启动检查保持幂等。
 RUN rm -rf executor-service/flow-source/node_modules executor-service/node_modules
 

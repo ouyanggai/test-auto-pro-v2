@@ -1,0 +1,2 @@
+# Windows 双击入口必须使用 CRLF，避免 cmd.exe 将多行命令错误拼接。
+deploy/update.cmd text eol=crlf
