@@ -42,6 +42,7 @@ done
 printf '%s\n' '[F-042] 前端术语表与数据口径（node）'
 node --experimental-strip-types --test test/unit/frontend/report_glossary_test.mjs
 node --experimental-strip-types --test test/unit/frontend/report_metrics_format_test.mjs
+node --experimental-strip-types --test test/unit/frontend/report_views_structure_test.mjs
 
 printf '%s\n' '[F-042] 前端类型检查与构建'
 (cd web && npx vue-tsc --noEmit)
