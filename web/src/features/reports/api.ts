@@ -1,6 +1,8 @@
 // F-042 报告中心前端类型与请求：与后端 report_center.go DTO 字段一一对应，不制造第二份语义。
 // 全部只读聚合，无写操作；错误文案与后端同源，只在网络层失败时给中文兜底。
-import { formatTime } from '../runs/api'
+// formatTime 复用运行主线的中文时间格式化，避免报告里出现第二种时间写法；
+// 带 .ts 扩展名是为了让根目录 test/unit/frontend 的 node 用例能直接加载本模块。
+import { formatTime } from '../runs/api.ts'
 
 export { formatTime }
 
@@ -67,6 +69,8 @@ export interface ReportOverview {
   counts: ReportCounts
   plans: ReportPlanCard[]
   metrics: ReportMetrics
+  // generatedAt 是本次统计的服务端时刻，页面据此显示「数据截至 …」。
+  generatedAt?: string
 }
 
 export interface ReportPathCard {
@@ -93,6 +97,8 @@ export interface ReportPlanDetail {
   runCount: number
   metrics: ReportMetrics
   paths: ReportPathCard[]
+  // generatedAt 是本次统计的服务端时刻，页面据此显示「数据截至 …」。
+  generatedAt?: string
 }
 
 export interface ReportRunInstance {
@@ -124,6 +130,8 @@ export interface ReportPathDetail {
   runCount: number
   metrics: ReportMetrics
   runs: ReportRunInstance[]
+  // generatedAt 是本次统计的服务端时刻，页面据此显示「数据截至 …」。
+  generatedAt?: string
 }
 
 // ReportApiError 是报告接口的网络层兜底错误：文案与后端同源，网络失败时给中文提示。
@@ -189,14 +197,67 @@ export function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`
 }
 
-// formatMs 把毫秒格式化为易读文本；超过 1 秒进位到秒，保留一位小数。
+// formatMs 把毫秒格式化为易读文本；超过 1 秒进位到秒，保留两位小数。
 export function formatMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`
   return `${Math.round(ms)} ms`
+}
+
+// formatCount 统一整数千分位，读大数字不用逐位数。
+export function formatCount(value: number): string {
+  return value.toLocaleString('zh-CN')
+}
+
+// ratioText 把比率与分子分母拼成「66.7%（2/3）」：用户要求每个数字都说得清来历，
+// 分母为 0 时只显示占位符，绝不显示 0% 让人误读成「全军覆没」。
+export function ratioText(rate: number, numerator: number, denominator: number): string {
+  if (denominator <= 0) return '暂无样本'
+  return `${formatPercent(rate)}（${formatCount(numerator)}/${formatCount(denominator)}）`
+}
+
+// generatedAtText 生成「数据截至 …」文案；服务端没给时刻时如实说明未知，不用当前时间冒充。
+export function generatedAtText(value?: string): string {
+  if (!value) return '数据截至时间未知'
+  return `数据截至 ${formatTime(value)}`
 }
 
 // latencyText 汇总一组分位为一行文本；无样本返回「暂无足够样本」。
 export function latencyText(stats: LatencyStats): string {
   if (!stats || stats.sampleCount === 0) return '暂无足够样本'
   return `P50 ${formatMs(stats.p50)} · P90 ${formatMs(stats.p90)} · P95 ${formatMs(stats.p95)} · 均值 ${formatMs(stats.mean)}`
+}
+
+// resultTagType 把中文结果名映射为状态标签类型：成功/失败/停止/取消/待确认各有语义色，
+// 让用户扫一眼就能分清结果，不用逐行读文字。
+export function resultTagType(name: string): 'success' | 'error' | 'warning' | 'info' | 'default' {
+  switch (name) {
+    case '成功':
+      return 'success'
+    case '失败':
+      return 'error'
+    case '已停止':
+      return 'warning'
+    case '已取消':
+      return 'default'
+    case '结果待确认':
+      return 'info'
+    default:
+      return 'default'
+  }
+}
+
+// distributionRows 把「名称 → 次数」映射转成按次数倒序的行并带上占比，
+// 供图下数值明细表使用：图形给观感，表格给可核对的数字。
+export interface DistributionRow {
+  name: string
+  count: number
+  share: number
+}
+
+export function distributionRows(distribution: Record<string, number> | undefined): DistributionRow[] {
+  const entries = Object.entries(distribution || {}).filter(([, count]) => count > 0)
+  const total = entries.reduce((sum, [, count]) => sum + count, 0)
+  return entries
+    .sort((left, right) => right[1] - left[1])
+    .map(([name, count]) => ({ name, count, share: total > 0 ? count / total : 0 }))
 }

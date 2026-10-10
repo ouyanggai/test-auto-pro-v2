@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { NButton, NCard, NSpin } from 'naive-ui'
+import { NButton, NCard, NSpin, NTag } from 'naive-ui'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import AppEmptyState from '../components/AppEmptyState.vue'
+import ReportGlossaryEntry from '../features/reports/ReportGlossaryEntry.vue'
 import ReportMetricsPanel from '../features/reports/ReportMetricsPanel.vue'
-import { fetchReportOverview, formatPercent, formatTime, ReportApiError } from '../features/reports/api'
+import TermHint from '../features/reports/TermHint.vue'
+import { fetchReportOverview, formatCount, formatPercent, formatTime, generatedAtText, resultTagType, ReportApiError } from '../features/reports/api'
+import { overviewTermIds } from '../features/reports/glossary'
 import type { ReportOverview, ReportPlanCard } from '../features/reports/api'
 
 // ReportsView 是报告中心 L0 首页（总）：上半计划情况计数与计划维度表，下半全局专业指标。
 // 全部数字来自真实运行记录聚合接口，无任何硬编码统计常量；空/错/加载三态分别用文字状态呈现。
+// 本轮排版：计数、计划表、专业指标三段各带小标题；结果列用状态标签；右上角常驻「指标口径说明」。
 const router = useRouter()
 const overview = ref<ReportOverview | null>(null)
 const loading = ref(false)
@@ -56,9 +60,12 @@ onBeforeUnmount(() => { controller?.abort() })
     <header class="report-view__header">
       <div>
         <h1>报告中心</h1>
-        <p class="report-view__hint">从计划全貌逐级下钻到单条运行实例，全部数据来自真实运行记录，只读、不造数。</p>
+        <p class="report-view__hint">从计划全貌逐级下钻到单条运行实例，全部数据来自真实运行记录，只读、不造数。点计划看路径，点路径看每次运行。</p>
       </div>
-      <NButton type="primary" :loading="loading" @click="loadOverview">刷新</NButton>
+      <div class="report-view__actions">
+        <ReportGlossaryEntry :term-ids="overviewTermIds" />
+        <NButton type="primary" :loading="loading" @click="loadOverview">刷新</NButton>
+      </div>
     </header>
 
     <p v-if="errorText" class="report-view__error" role="alert">{{ errorText }}</p>
@@ -77,62 +84,78 @@ onBeforeUnmount(() => { controller?.abort() })
 
       <template v-else>
         <!-- 上半部分第一级：全局计划情况计数 -->
+        <h2 class="report-view__section-title">计划情况 <span class="report-view__stamp">{{ generatedAtText(overview.generatedAt) }}</span></h2>
         <section class="report-view__counts">
           <NCard size="small" class="count"><p class="count__label">计划总数</p><p class="count__value">{{ overview.counts.plansTotal }}</p></NCard>
           <NCard size="small" class="count"><p class="count__label">有运行记录的计划</p><p class="count__value">{{ overview.counts.plansWithRuns }}</p></NCard>
-          <NCard size="small" class="count"><p class="count__label">累计运行次数</p><p class="count__value">{{ overview.counts.runsTotal }}</p></NCard>
-          <NCard size="small" class="count"><p class="count__label">累计路径运行</p><p class="count__value">{{ overview.counts.pathRunsTotal }}</p></NCard>
+          <NCard size="small" class="count">
+            <p class="count__label">累计运行次数 <TermHint term-id="run" /></p>
+            <p class="count__value">{{ overview.counts.runsTotal }}</p>
+          </NCard>
+          <NCard size="small" class="count">
+            <p class="count__label">累计路径运行 <TermHint term-id="path-run" /></p>
+            <p class="count__value">{{ formatCount(overview.counts.pathRunsTotal) }}</p>
+          </NCard>
           <NCard size="small" class="count"><p class="count__label">进行中运行</p><p class="count__value">{{ overview.counts.runsRunning }}</p></NCard>
         </section>
 
         <!-- 计划维度表：点击任一行进入 L1 -->
         <NCard size="small" title="计划维度统计" class="report-view__plans">
+          <template #header-extra><span class="report-table__note">点击任一行进入该计划的路径指标</span></template>
           <AppEmptyState
             v-if="overview.plans.length === 0"
             title="暂无计划统计"
             description="计划列表为空。"
           />
-          <table v-else class="report-table">
-            <thead>
-              <tr>
-                <th>计划</th>
-                <th>运行次数</th>
-                <th>路径运行</th>
-                <th>成功率</th>
-                <th>结果分布</th>
-                <th>路径覆盖度</th>
-                <th>最近运行</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="plan in overview.plans" :key="plan.planId" class="report-table__row" @click="openPlan(plan)">
-                <td class="report-table__name">{{ plan.planName || `计划 ${plan.planId}` }}</td>
-                <td>{{ plan.runCount }}</td>
-                <td>{{ plan.pathRunCount }}</td>
-                <td>
-                  <template v-if="plan.finishedPathRuns > 0">{{ formatPercent(plan.successRate) }}</template>
-                  <template v-else>—</template>
-                </td>
-                <td>{{ distributionText(plan.resultDistribution) }}</td>
-                <td>
-                  <template v-if="plan.totalPaths > 0">{{ formatPercent(plan.pathCoverage) }}（{{ plan.coveredPaths }}/{{ plan.totalPaths }}）</template>
-                  <template v-else>—</template>
-                </td>
-                <td>
-                  <template v-if="plan.lastRunNo">
-                    #{{ plan.lastRunNo }}
-                    <template v-if="plan.lastRunResultName"> · {{ plan.lastRunResultName }}</template>
-                    <template v-if="plan.lastRunFinishedAt"> · {{ formatTime(plan.lastRunFinishedAt) }}</template>
-                  </template>
-                  <template v-else>未运行</template>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div v-else class="report-table__scroll">
+            <table class="report-table">
+              <thead>
+                <tr>
+                  <th>计划</th>
+                  <th>运行次数 <TermHint term-id="run" /></th>
+                  <th>路径运行 <TermHint term-id="path-run" /></th>
+                  <th>成功率 <TermHint term-id="success-rate" /></th>
+                  <th>结果分布</th>
+                  <th>路径覆盖度 <TermHint term-id="path-coverage" /></th>
+                  <th>最近运行</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="plan in overview.plans" :key="plan.planId" class="report-table__row" @click="openPlan(plan)">
+                  <td class="report-table__name">{{ plan.planName || `计划 ${plan.planId}` }}</td>
+                  <td class="report-table__num">{{ plan.runCount }}</td>
+                  <td class="report-table__num">{{ formatCount(plan.pathRunCount) }}</td>
+                  <td class="report-table__num">
+                    <template v-if="plan.finishedPathRuns > 0">
+                      {{ formatPercent(plan.successRate) }}<span class="report-table__sub">（{{ plan.succeededPathRuns }}/{{ plan.finishedPathRuns }}）</span>
+                    </template>
+                    <template v-else>—</template>
+                  </td>
+                  <td>{{ distributionText(plan.resultDistribution) }}</td>
+                  <td class="report-table__num">
+                    <template v-if="plan.totalPaths > 0">
+                      {{ formatPercent(plan.pathCoverage) }}<span class="report-table__sub">（{{ plan.coveredPaths }}/{{ plan.totalPaths }}）</span>
+                    </template>
+                    <template v-else>—</template>
+                  </td>
+                  <td>
+                    <template v-if="plan.lastRunNo">
+                      <NTag size="small" :bordered="false" round :type="resultTagType(plan.lastRunResultName || '')">#{{ plan.lastRunNo }} {{ plan.lastRunResultName }}</NTag>
+                      <template v-if="plan.lastRunFinishedAt"><span class="report-table__sub">{{ formatTime(plan.lastRunFinishedAt) }}</span></template>
+                    </template>
+                    <template v-else>未运行</template>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </NCard>
 
         <!-- 下半部分：全局专业指标 -->
-        <h2 class="report-view__section-title">全局专业指标</h2>
+        <h2 class="report-view__section-title">
+          专业指标
+          <span class="report-view__stamp">{{ generatedAtText(overview.generatedAt) }}</span>
+        </h2>
         <ReportMetricsPanel :metrics="overview.metrics" />
       </template>
     </template>
@@ -140,24 +163,32 @@ onBeforeUnmount(() => { controller?.abort() })
 </template>
 
 <style scoped>
-.report-view { display: grid; gap: 16px; padding: 20px 24px; }
+.report-view { display: grid; gap: 16px; padding: 20px 24px; align-content: start; }
 .report-view__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .report-view__header h1 { margin: 0; font-size: 20px; }
-.report-view__hint { margin: 6px 0 0; opacity: 0.75; }
+.report-view__hint { margin: 6px 0 0; opacity: 0.75; max-width: 720px; }
+.report-view__actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .report-view__error { color: var(--error-color, #d03050); margin: 0; }
 .report-view__loading { display: flex; gap: 10px; align-items: center; opacity: 0.8; }
+.report-view__section-title { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 0; font-size: 16px; }
+.report-view__stamp { color: var(--text-color-3); font-size: 12px; font-weight: 400; }
 .report-view__counts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
 }
 .count__label { margin: 0; color: var(--text-color-3); font-size: 13px; }
 .count__value { margin: 6px 0 0; font-size: 26px; font-weight: 600; color: var(--text-color-1); }
-.report-view__section-title { margin: 8px 0 0; font-size: 16px; }
+.report-view__plans :deep(.n-card__content) { padding-top: 8px; }
+.report-table__scroll { overflow-x: auto; }
 .report-table { width: 100%; border-collapse: collapse; }
 .report-table th,
-.report-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--divider-color); }
+.report-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--divider-color); white-space: nowrap; }
+.report-table th { position: sticky; top: 0; z-index: 1; background: var(--card-color); color: var(--text-color-3); font-weight: 500; }
 .report-table__row { cursor: pointer; }
 .report-table__row:hover { background: color-mix(in srgb, var(--card-color) 92%, var(--primary-color)); }
 .report-table__name { font-weight: 500; }
+.report-table__note { color: var(--text-color-3); font-size: 12px; }
+.report-table__num { text-align: right; font-variant-numeric: tabular-nums; }
+.report-table__sub { margin-left: 6px; color: var(--text-color-3); font-size: 12px; }
 </style>
