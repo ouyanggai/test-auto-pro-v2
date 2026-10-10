@@ -237,30 +237,44 @@ func matchAttemptWindow(windows map[string][2]time.Time, at time.Time) (string, 
 	return bestKey, best
 }
 
-// requestClassOf 从请求分类：写端点白名单与执行事实一致（纲领：写请求只出白名单端点）。
+// writeEndpointWhitelist 是写端点白名单，与 target 写动作常量（write_actions.go）一一对应。
+// 报告中心的快速聚合与运行详情的请求归类共用这一份，避免两处口径漂移。
+var writeEndpointWhitelist = []string{
+	"flowInstanceApi/submit",
+	"flowInstanceApi/audit",
+	"flowInstanceApi/addSign",
+	"flowInstanceApi/withdraw",
+	"flowInstanceApi/retrieveProcess",
+	"flowInstanceApi/transfer",
+	"flowInstanceApi/forward",
+	"urgeHandleRecord/sendUrgeMessage",
+	"flowInstanceApi/rollBackThePreviousLevel",
+	"flowInstanceApi/revocation",
+	"flowInstanceApi/transpond",
+	"flowInstanceApi/flowTracking",
+	"flowInstanceApi/approverAppend",
+	"flowInstanceApi/updateFlowProxy",
+	"flowInstanceApi/storageFormData",
+	"flowInstanceApi/reSubmit",
+}
+
+// isWriteEndpoint 判断端点是否属于写白名单：旧日志缺 request_class 字段时按端点兜底归类，
+// 防止写请求被误计为读取（报告中心的接口读写统计与运行详情共用该判定）。
+func isWriteEndpoint(endpoint string) bool {
+	for _, candidate := range writeEndpointWhitelist {
+		if strings.Contains(endpoint, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestClassOf 从请求分类：优先日志里的 request_class，缺失时按写端点白名单兜底。
 func requestClassOf(fields map[string]string) string {
 	if fields["request_class"] == "write" {
 		return "write"
 	}
-	// 兜底：旧日志缺 request_class 字段时按写端点白名单归类，
-	// 白名单与 target 写动作常量（write_actions.go）一一对应，防写请求被误计为读取。
-	switch {
-	case strings.Contains(fields["endpoint"], "flowInstanceApi/submit"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/audit"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/addSign"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/withdraw"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/retrieveProcess"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/transfer"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/forward"),
-		strings.Contains(fields["endpoint"], "urgeHandleRecord/sendUrgeMessage"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/rollBackThePreviousLevel"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/revocation"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/transpond"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/flowTracking"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/approverAppend"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/updateFlowProxy"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/storageFormData"),
-		strings.Contains(fields["endpoint"], "flowInstanceApi/reSubmit"):
+	if isWriteEndpoint(fields["endpoint"]) {
 		return "write"
 	}
 	return "read"

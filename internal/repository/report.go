@@ -72,6 +72,16 @@ type ReportAttemptRow struct {
 	IsReplay        bool
 }
 
+// ReportPathRunLogDir 是一条路径运行的日志定位事实：报告中心据此直接读该路径运行目录的 network.log。
+// 旧实现对每条路径运行各查一次尝试行（N+1），本类型让一次查询取回全部定位信息，报告侧不再碰尝试表。
+type ReportPathRunLogDir struct {
+	PathRunID uint64
+	Status    model.PathRunStatus
+	// LogPath 是该路径运行任一已落账尝试的 step.log 相对路径；空表示这次运行没有落过任何日志。
+	// 与运行详情同口径：同一次路径运行的所有日志都在同一目录，取任一条即可定位目录。
+	LogPath string
+}
+
 // ReportStore 是报告中心只读聚合仓储；实现只读运行记录六表，绝不写库或读目标平台业务库。
 type ReportStore interface {
 	// ReportCounts 返回首页第一级计划情况计数（全量 COUNT）。
@@ -82,4 +92,6 @@ type ReportStore interface {
 	ReportPathRunRows(ctx context.Context, scope ReportScope) ([]ReportPathRunRow, error)
 	// ReportAttemptRows 按范围有界返回尝试事实行（最新在前）。
 	ReportAttemptRows(ctx context.Context, scope ReportScope) ([]ReportAttemptRow, error)
+	// ReportPathRunLogDirs 按范围一次返回每条路径运行的日志定位（最新在前，分组聚合，无 N+1）。
+	ReportPathRunLogDirs(ctx context.Context, scope ReportScope) ([]ReportPathRunLogDir, error)
 }

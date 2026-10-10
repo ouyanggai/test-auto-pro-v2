@@ -1,6 +1,8 @@
 // F-042 报告中心真实度量：只读「总分总」三级聚合服务。
 // 事实唯一来源是运行记录六表与运行目录 network.log（F-030 传输层 duration_s）；
 // 分位/均值一律用成熟统计库 github.com/montanaflynn/stats 计算，不手写排序与插值。
+// 接口耗时读取由 report_interface_scan.go 的快速聚合器按路径运行目录全量统计，
+// 不再借用运行编排服务的逐尝试归属（那条路径要读 step.log 且会漏计登录/结构读取类请求）。
 // 内网项目不脱敏：本服务只做聚合与安全统计，不额外搬运请求/响应正文，正文仍在既有日志与运行详情入口。
 package service
 
@@ -18,50 +20,6 @@ import (
 // interfaceLogSampleCap 是单次报告读取 network.log 的路径运行上限（采样上限保护）：
 // 接口耗时是唯一需要逐路径运行读日志的指标，超过此上限只统计最近的样本并标记已截断。
 const interfaceLogSampleCap = 200
-
-// ReportInterfaceStats 是一次路径运行的目标接口传输事实汇总（复用 readAttemptRequests 的口径）。
-type ReportInterfaceStats struct {
-	DurationsMs      []float64 // 全部有真实耗时的接口请求（毫秒）
-	WriteDurationsMs []float64 // 其中写请求的耗时（毫秒）
-	ReadCount        int       // 读请求次数
-	WriteCount       int       // 写请求次数
-	AnyKnown         bool      // 是否读到任何真实耗时（无则前端显示「暂无真实请求耗时」）
-}
-
-// interfaceStatsReader 是报告服务对「按路径运行读取接口耗时事实」的依赖面，由运行编排服务提供。
-type interfaceStatsReader interface {
-	PathRunInterfaceStats(ctx context.Context, pathRunID uint64) (ReportInterfaceStats, error)
-}
-
-// PathRunInterfaceStats 汇总一次路径运行的目标接口传输耗时事实（F-042 报告聚合复用）：
-// 复用 readAttemptRequests 的 network.log 归属与读写口径，把逐请求耗时、读写计数汇总为样本；
-// 无日志或历史残缺时 AnyKnown=false，调用方据此按缺失降级，绝不用 0 冒充。
-func (s *RunOrchestrationService) PathRunInterfaceStats(ctx context.Context, pathRunID uint64) (ReportInterfaceStats, error) {
-	attempts, err := s.store.ListRunAttempts(ctx, pathRunID)
-	if err != nil {
-		return ReportInterfaceStats{}, err
-	}
-	requestsByKey, _ := s.readAttemptRequests(pathRunID, attempts)
-	result := ReportInterfaceStats{}
-	for _, list := range requestsByKey {
-		for _, req := range list {
-			isWrite := req.RequestClass == "write"
-			if isWrite {
-				result.WriteCount++
-			} else {
-				result.ReadCount++
-			}
-			if req.DurationKnown {
-				result.AnyKnown = true
-				result.DurationsMs = append(result.DurationsMs, float64(req.DurationMs))
-				if isWrite {
-					result.WriteDurationsMs = append(result.WriteDurationsMs, float64(req.DurationMs))
-				}
-			}
-		}
-	}
-	return result, nil
-}
 
 // LatencyStats 是一组耗时样本的分位摘要（毫秒）。SampleCount=0 时前端显示「暂无足够样本」，不显示 0。
 type LatencyStats struct {
@@ -125,6 +83,8 @@ type ReportOverviewDTO struct {
 	Counts  repository.ReportCounts `json:"counts"`
 	Plans   []ReportPlanCardDTO     `json:"plans"`
 	Metrics ReportMetrics           `json:"metrics"`
+	// GeneratedAt 是本次统计的服务端时刻，前端据此显示「数据截至 …」。
+	GeneratedAt time.Time `json:"generatedAt"`
 }
 
 // ReportPathCardDTO 是计划详情里各执行路径的一行。
@@ -153,6 +113,8 @@ type ReportPlanDetailDTO struct {
 	RunCount         int                 `json:"runCount"`
 	Metrics          ReportMetrics       `json:"metrics"`
 	Paths            []ReportPathCardDTO `json:"paths"`
+	// GeneratedAt 是本次统计的服务端时刻，前端据此显示「数据截至 …」，让用户判断数字有多新。
+	GeneratedAt time.Time `json:"generatedAt"`
 }
 
 // ReportRunInstanceDTO 是路径详情里一次运行实例的一行；点击进入现有运行详情页（L3）。
@@ -189,23 +151,30 @@ type ReportPathDetailDTO struct {
 	RunCount            int                    `json:"runCount"`
 	Metrics             ReportMetrics          `json:"metrics"`
 	Runs                []ReportRunInstanceDTO `json:"runs"`
+	// GeneratedAt 是本次统计的服务端时刻，前端据此显示「数据截至 …」。
+	GeneratedAt time.Time `json:"generatedAt"`
 }
 
 // ReportCenterService 组装报告中心的三级只读聚合。
 type ReportCenterService struct {
-	store      repository.ReportStore
-	plans      *PlanService
-	paths      repository.ExecutionPathRepository
-	interfaces interfaceStatsReader
-	now        func() time.Time
+	store   repository.ReportStore
+	plans   *PlanService
+	paths   repository.ExecutionPathRepository
+	scanner *ReportInterfaceScanner
+	now     func() time.Time
 }
 
-// NewReportCenterService 构造报告中心服务；interfaces 由运行编排服务提供接口耗时读取。
-func NewReportCenterService(store repository.ReportStore, plans *PlanService, paths repository.ExecutionPathRepository, interfaces interfaceStatsReader, now func() time.Time) *ReportCenterService {
+// NewReportCenterService 构造报告中心服务。
+// logRoot 是日志根目录：接口耗时由快速聚合器直接读各路径运行目录的 network.log，
+// 不再借用运行编排服务（那条路径要读 step.log 且会把登录/结构读取类请求漏计）。
+func NewReportCenterService(store repository.ReportStore, plans *PlanService, paths repository.ExecutionPathRepository, logRoot string, now func() time.Time) *ReportCenterService {
 	if now == nil {
 		now = time.Now
 	}
-	return &ReportCenterService{store: store, plans: plans, paths: paths, interfaces: interfaces, now: now}
+	return &ReportCenterService{
+		store: store, plans: plans, paths: paths,
+		scanner: NewReportInterfaceScanner(logRoot), now: now,
+	}
 }
 
 // Overview 组装 L0 首页：全量计数、计划维度表与全局专业指标。
@@ -254,9 +223,9 @@ func (s *ReportCenterService) Overview(ctx context.Context) (ReportOverviewDTO, 
 	if err != nil {
 		return ReportOverviewDTO{}, err
 	}
-	ifaceByPathRun, capped := s.interfaceStatsByPathRun(ctx, pathRunRows)
+	ifaceByPathRun, capped := s.interfaceStatsByPathRun(ctx, repository.ReportScope{})
 	metrics := computeMetrics(pathRunRows, attemptRows, ifaceByPathRun, totalPaths, capped)
-	return ReportOverviewDTO{Counts: counts, Plans: cards, Metrics: metrics}, nil
+	return ReportOverviewDTO{Counts: counts, Plans: cards, Metrics: metrics, GeneratedAt: s.now()}, nil
 }
 
 // PlanReport 组装 L1 计划详情：计划头部、计划级指标与各路径指标。
@@ -277,7 +246,8 @@ func (s *ReportCenterService) PlanReport(ctx context.Context, planID uint64) (Re
 	if err != nil {
 		return ReportPlanDetailDTO{}, err
 	}
-	ifaceByPathRun, capped := s.interfaceStatsByPathRun(ctx, pathRunRows)
+	// 接口耗时按计划范围取：一次查询拿日志目录，再有界并发扫描（只读 network.log）。
+	ifaceByPathRun, capped := s.interfaceStatsByPathRun(ctx, repository.ReportScope{PlanID: planID})
 	metrics := computeMetrics(pathRunRows, attemptRows, ifaceByPathRun, plan.PathCount, capped)
 
 	rowsByPath := map[uint64][]repository.ReportPathRunRow{}
@@ -312,7 +282,7 @@ func (s *ReportCenterService) PlanReport(ctx context.Context, planID uint64) (Re
 	return ReportPlanDetailDTO{
 		PlanID: plan.ID, PlanName: plan.Name, Account: plan.Account, FlowSource: plan.FlowSource,
 		TargetObjectName: plan.TargetObjectName, TotalPaths: plan.PathCount, RunCount: runCount,
-		Metrics: metrics, Paths: cards,
+		Metrics: metrics, Paths: cards, GeneratedAt: s.now(),
 	}, nil
 }
 
@@ -331,7 +301,8 @@ func (s *ReportCenterService) PathReport(ctx context.Context, planID, executionP
 	if err != nil {
 		return ReportPathDetailDTO{}, err
 	}
-	ifaceByPathRun, capped := s.interfaceStatsByPathRun(ctx, pathRunRows)
+	// 接口耗时按路径范围取：一次查询拿日志目录，再有界并发扫描（只读 network.log）。
+	ifaceByPathRun, capped := s.interfaceStatsByPathRun(ctx, scope)
 	coveredTotal := 1
 	metrics := computeMetrics(pathRunRows, attemptRows, ifaceByPathRun, coveredTotal, capped)
 
@@ -379,29 +350,23 @@ func (s *ReportCenterService) PathReport(ctx context.Context, planID, executionP
 	return ReportPathDetailDTO{
 		PlanID: planID, ExecutionPathID: executionPathID, SequenceNo: int(path.SequenceNo),
 		Name: pathDisplayName(path), ConfigurationStatus: path.ConfigurationStatus,
-		RunCount: len(pathRunRows), Metrics: metrics, Runs: runs,
+		RunCount: len(pathRunRows), Metrics: metrics, Runs: runs, GeneratedAt: s.now(),
 	}, nil
 }
 
-// interfaceStatsByPathRun 为一批路径运行读取接口耗时事实（有上限保护）；超过上限只读最近样本并返回已截断。
-func (s *ReportCenterService) interfaceStatsByPathRun(ctx context.Context, rows []repository.ReportPathRunRow) (map[uint64]ReportInterfaceStats, bool) {
+// interfaceStatsByPathRun 为一个范围读取接口耗时事实：
+// 先用一条查询取回范围内每条路径运行的日志定位，再交给快速聚合器有界并发扫描。
+// 仓储读取失败时按「无接口事实」降级，不让整页报告失败（前端显示「暂无真实请求耗时」）。
+func (s *ReportCenterService) interfaceStatsByPathRun(ctx context.Context, scope repository.ReportScope) (map[uint64]ReportInterfaceStats, bool) {
 	out := map[uint64]ReportInterfaceStats{}
-	if s.interfaces == nil {
+	if s.scanner == nil {
 		return out, false
 	}
-	capped := false
-	for index, row := range rows {
-		if index >= interfaceLogSampleCap {
-			capped = true
-			break
-		}
-		stat, err := s.interfaces.PathRunInterfaceStats(ctx, row.PathRunID)
-		if err != nil {
-			continue
-		}
-		out[row.PathRunID] = stat
+	dirs, err := s.store.ReportPathRunLogDirs(ctx, scope)
+	if err != nil {
+		return out, false
 	}
-	return out, capped
+	return s.scanner.Aggregate(ctx, dirs)
 }
 
 // computeMetrics 从路径运行行、尝试行与接口耗时事实计算一个范围的专业测试指标。

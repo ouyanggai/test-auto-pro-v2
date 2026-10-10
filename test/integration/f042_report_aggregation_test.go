@@ -2,6 +2,9 @@ package integration_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -129,9 +132,9 @@ func TestF042ReportAggregation(t *testing.T) {
 		t.Fatalf("应得 3 条尝试行，实际 %d", len(attemptRows))
 	}
 
-	// —— 服务层三级聚合断言（接口读取器传 nil：接口耗时降级为未知）——
+	// —— 服务层三级聚合断言（日志根指向空目录：接口耗时降级为未知）——
 	reports := service.NewReportCenterService(reportStore, service.NewPlanService(planmysql.NewPlanRepository(db)),
-		planmysql.NewExecutionPathRepository(db), nil, func() time.Time { return now })
+		planmysql.NewExecutionPathRepository(db), t.TempDir(), func() time.Time { return now })
 
 	overview, err := reports.Overview(ctx)
 	if err != nil {
@@ -191,5 +194,138 @@ func TestF042ReportAggregation(t *testing.T) {
 		if run.OrchestrationKnown {
 			t.Fatalf("接口分量未知时编排耗时必须为未知，不硬凑")
 		}
+	}
+}
+
+// TestF042ReportInterfaceStatsFromNetworkLog 锁定本轮口径修正与耗时分解口径（F-042）：
+// 在真实 MySQL 播种的运行记录之外，造一份真实 network.log，断言报告的接口调用次数按
+// 路径运行全量计（含 step_id=- 的登录/结构读取行，旧口径整行漏计），并且
+// 接口耗时/执行器耗时/工具端编排耗时的派生值与播种事实逐项对得上。
+func TestF042ReportInterfaceStatsFromNetworkLog(t *testing.T) {
+	store := openF020Store(t)
+	db := store.db.DB
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	planResult, err := db.ExecContext(ctx,
+		"INSERT INTO test_plans (create_key, name, account, account_display_name, flow_source, target_object_id, target_object_name, run_mode, status, created_at, updated_at) VALUES ('k-f042-netlog', 'F042网络日志计划', 'acct', '账号', 'new', 'obj', '报告流程', 'serial', 'not_started', NOW(3), NOW(3))")
+	if err != nil {
+		t.Fatalf("播种计划失败：%v", err)
+	}
+	planID, err := planResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("读取计划 ID 失败：%v", err)
+	}
+	pathResult, err := db.ExecContext(ctx,
+		"INSERT INTO test_execution_paths (plan_id, sequence_no, create_key, name, created_at, updated_at) VALUES (?, 1, 'path-f042-netlog', '路径甲', NOW(3), NOW(3))",
+		planID)
+	if err != nil {
+		t.Fatalf("播种路径失败：%v", err)
+	}
+	pathID, err := pathResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("读取路径 ID 失败：%v", err)
+	}
+	_, pathRuns, err := store.runs.CreateRunWithPaths(ctx, repository.CreateRunInput{
+		PlanID: uint64(planID), ExecutionPathIDs: []uint64{uint64(pathID)},
+		Mode: model.RunModeAuto, Trigger: model.RunTriggerManual, MaxConcurrency: f020MaxConcurrency(1),
+	})
+	if err != nil {
+		t.Fatalf("创建运行失败：%v", err)
+	}
+	pathRunID := pathRuns[0].ID
+	// 两步尝试：共 220ms，执行器真实计时 170ms（两步都已知）。
+	attemptRows := []struct {
+		step, number  int
+		duration      int64
+		executor      int64
+		executorKnown bool
+	}{
+		{1, 1, 100, 80, true},
+		{2, 1, 120, 90, true},
+	}
+	for _, attempt := range attemptRows {
+		if _, recErr := store.runs.RecordStepAttempt(ctx, model.RunStep{
+			PathRunID: pathRunID, StepNo: attempt.step, Source: "user", Action: "submit", NodeKey: "node",
+			Status: model.RunStepSucceeded, StartedAt: now, FinishedAt: now,
+		}, model.RunStepAttempt{
+			PathRunID: pathRunID, AttemptNo: attempt.number, Verdict: "confirmed_success", TraceID: "t",
+			LogPath: "logs/netlog/step.log", LogLine: 1,
+			DurationMs: attempt.duration, ExecutorMs: attempt.executor, ExecutorMsKnown: attempt.executorKnown,
+		}, now); recErr != nil {
+			t.Fatalf("落账尝试失败：%v", recErr)
+		}
+	}
+	succeeded := string(model.RunResultSucceeded)
+	if _, upErr := db.ExecContext(ctx,
+		"UPDATE path_runs SET status = 'completed', result = ?, finished_at = NOW(3), updated_at = NOW(3) WHERE id = ?",
+		succeeded, pathRunID); upErr != nil {
+		t.Fatalf("置终态失败：%v", upErr)
+	}
+
+	// 真实 network.log：4 行里有 2 行 step_id=-（模板读取与待办轮询，旧口径会整行漏计），
+	// 其中 1 行还缺 duration_s（计入次数、不计耗时样本）。
+	logRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(logRoot, "logs", "netlog"), 0o755); err != nil {
+		t.Fatalf("建日志目录失败：%v", err)
+	}
+	line := func(stepID, endpoint, class, duration string) string {
+		classField := "request_class=" + class + " "
+		if class == "" {
+			classField = ""
+		}
+		return "time=2026-10-10_10:00:00 level=info path_run_id=" + strconv.FormatUint(pathRunID, 10) +
+			" step_id=" + stepID + " attempt=1 endpoint=" + endpoint + " " + classField +
+			" status_code=200 duration_s=" + duration + " result=success\n"
+	}
+	body := line("-", "/api/web/flowTemplateApi/list", "", "0.005") +
+		line("1", "/api/web/flowInstanceApi/submit", "write", "0.010") +
+		line("2", "/api/web/flowInstanceApi/audit", "write", "0.020") +
+		line("-", "/api/web/flowJobTaskLink/list", "read", "-")
+	if err := os.WriteFile(filepath.Join(logRoot, "logs", "netlog", "network.log"), []byte(body), 0o644); err != nil {
+		t.Fatalf("写 network.log 失败：%v", err)
+	}
+
+	reportStore := planmysql.NewReportRepository(db)
+	reports := service.NewReportCenterService(reportStore, service.NewPlanService(planmysql.NewPlanRepository(db)),
+		planmysql.NewExecutionPathRepository(db), logRoot, func() time.Time { return now })
+
+	pathReport, err := reports.PathReport(ctx, uint64(planID), uint64(pathID))
+	if err != nil {
+		t.Fatalf("PathReport 失败：%v", err)
+	}
+	if len(pathReport.Runs) != 1 {
+		t.Fatalf("应有 1 次运行实例，实际 %d", len(pathReport.Runs))
+	}
+	run := pathReport.Runs[0]
+	// 接口调用按路径运行全量计：4 行全部计入（旧口径只算能归属到步骤尝试的行，会得 2）。
+	if run.InterfaceCalls != 4 {
+		t.Fatalf("接口调用应为 4 次（含 step_id=- 两行），实际 %d", run.InterfaceCalls)
+	}
+	// 耗时分解：接口 35ms（5+10+20，缺 duration_s 的读取不计样本）+ 执行器 170ms，
+	// 工具端编排 = 步骤总耗时 220 − 接口 35 − 执行器 170 = 15ms。
+	if !run.InterfaceDurationKnown || run.InterfaceDurationMs != 35 {
+		t.Fatalf("接口耗时应为 35ms/已知，实际 %v/%v", run.InterfaceDurationMs, run.InterfaceDurationKnown)
+	}
+	if run.InterfaceWriteDurationMs != 30 {
+		t.Fatalf("写请求耗时合计应为 30ms，实际 %v", run.InterfaceWriteDurationMs)
+	}
+	if !run.OrchestrationKnown || run.OrchestrationDurationMs != 15 {
+		t.Fatalf("工具端编排耗时应为 15ms/已知，实际 %v/%v", run.OrchestrationDurationMs, run.OrchestrationKnown)
+	}
+	// 计划级指标同样按全量口径聚合，且带统计时刻。
+	planReport, err := reports.PlanReport(ctx, uint64(planID))
+	if err != nil {
+		t.Fatalf("PlanReport 失败：%v", err)
+	}
+	if planReport.Metrics.InterfaceCalls != 4 || planReport.Metrics.InterfaceReadCalls != 2 ||
+		planReport.Metrics.InterfaceWriteCalls != 2 {
+		t.Fatalf("计划级接口统计不符：%+v", planReport.Metrics)
+	}
+	if planReport.Metrics.InterfaceLatencyMs.SampleCount != 3 {
+		t.Fatalf("接口耗时样本应为 3 条（缺 duration_s 的那行不计），实际 %d", planReport.Metrics.InterfaceLatencyMs.SampleCount)
+	}
+	if !planReport.GeneratedAt.Equal(now) {
+		t.Fatalf("计划详情统计时刻应为 %v，实际 %v", now, planReport.GeneratedAt)
 	}
 }

@@ -162,6 +162,37 @@ func (r *ReportRepository) ReportPathRunRows(ctx context.Context, scope reposito
 	return result, rows.Err()
 }
 
+// ReportPathRunLogDirs 用一条分组聚合 SQL 取回范围内每条路径运行的日志定位（最新在前）。
+// 尝试行的 log_path 取非空最大值：同一次路径运行的所有尝试日志同目录，任一非空值都能定位到目录；
+// 与 ReportPathRunRows 同样设样本上限，避免范围极大时一次构造过多行。
+func (r *ReportRepository) ReportPathRunLogDirs(ctx context.Context, scope repository.ReportScope) ([]repository.ReportPathRunLogDir, error) {
+	where, args := reportScopeClause(scope)
+	args = append(args, reportScopeLimit(scope))
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT pr.id, pr.status, COALESCE(MAX(NULLIF(a.log_path, '')), '')
+		FROM path_runs pr JOIN runs r ON pr.run_id = r.id
+		LEFT JOIN run_step_attempts a ON a.path_run_id = pr.id`+where+`
+		GROUP BY pr.id, pr.status
+		ORDER BY pr.id DESC
+		LIMIT ?
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []repository.ReportPathRunLogDir{}
+	for rows.Next() {
+		var dir repository.ReportPathRunLogDir
+		var status string
+		if err := rows.Scan(&dir.PathRunID, &status, &dir.LogPath); err != nil {
+			return nil, err
+		}
+		dir.Status = model.PathRunStatus(status)
+		result = append(result, dir)
+	}
+	return result, rows.Err()
+}
+
 // ReportAttemptRows 按范围有界拉取尝试事实行（最新在前），供步骤/执行器耗时分位与重试统计使用。
 func (r *ReportRepository) ReportAttemptRows(ctx context.Context, scope repository.ReportScope) ([]repository.ReportAttemptRow, error) {
 	where, args := reportScopeClause(scope)
