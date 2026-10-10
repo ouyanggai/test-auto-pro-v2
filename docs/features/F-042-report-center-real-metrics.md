@@ -1,6 +1,6 @@
 # F-042 报告中心真实度量（总分总）
 
-- 状态：`implementing`（2026-10-10 用户已明确批准本轮范围并开始实施；完成自动验证后停在 `ready_for_manual`）
+- 状态：`ready_for_manual`（2026-10-10 本轮实施与自动验证完成：性能、层级收敛、名词解释、数据口径做细均已落地，等待用户在浏览器人工核对）
 - 提出时间：2026-09-24
 - 依赖：F-016 运行记录六表、F-020 多路径调度、F-021 运行记录分析视图、F-030 请求耗时事实、F-036 独立执行服务。前四项已落地；本切片在 F-036 执行服务上补一处真实计时上报。
 - 用户裁决（2026-09-24）：执行器耗时采用选项 B（补真实计时器落库）；统计与图表一律使用成熟热门库，不手写分位与图表渲染以规避 bug。
@@ -152,14 +152,39 @@
 
 ## 8. 完成标准
 
-- [ ] L0/L1/L2 打开到可读明显变快：聚合对仓储只发 1 次日志目录查询、不读 `step.log`、扫描有界并发并有终态签名缓存，对应单测全部通过。
-- [ ] 接口耗时与调用次数按第 5.5 节口径统计（全量请求行），与运行详情页的逐尝试归属并存且各自写清口径；无 `network.log` 仍显示「暂无真实请求耗时」，不用 0 冒充。
-- [ ] 三级层级按第 2 节收敛：L1/L2 只渲染核心指标摘要 + 本级主体表，不再出现整套指标面板；L0 保留完整专业指标。
-- [ ] 术语表按第 3 节清单全量落地；每个指标卡标签与相关表头/列名旁有 info 图标可查解释；三个页面右上角都有「指标口径说明」总入口。
-- [ ] 每张比率卡带分子分母；分位带样本数；结果与失败分类图下有数值明细；三个页面都显示数据截至时间。
-- [ ] 排版统一：页面骨架、卡片、结果标签、表格横向滚动与粘性表头、数字右对齐、空/错/加载三态文字状态；无假数据残留。
-- [ ] `go build ./...`、`go vet`、后端定向单测、真实 MySQL 集成测试、前端类型检查与构建通过；性能相关断言（查询次数、不读 step.log、缓存命中）有用例锁定。
-- [ ] 文档状态已更新为 `ready_for_manual`。
+- [x] L0/L1/L2 打开到可读明显变快：聚合对仓储只发 1 次日志目录查询、不读 `step.log`、扫描有界并发并有终态签名缓存，对应单测全部通过。
+- [x] 接口耗时与调用次数按第 5.5 节口径统计（全量请求行），与运行详情页的逐尝试归属并存且各自写清口径；无 `network.log` 仍显示「暂无真实请求耗时」，不用 0 冒充。
+- [x] 三级层级按第 2 节收敛：L1/L2 只渲染核心指标摘要 + 本级主体表，不再出现整套指标面板；L0 保留完整专业指标。
+- [x] 术语表按第 3 节清单全量落地；每个指标卡标签与相关表头/列名旁有 info 图标可查解释；三个页面右上角都有「指标口径说明」总入口。
+- [x] 每张比率卡带分子分母；分位带样本数；结果与失败分类图下有数值明细；三个页面都显示数据截至时间。
+- [x] 排版统一：页面骨架、卡片、结果标签、表格横向滚动与粘性表头、数字右对齐、空/错/加载三态文字状态；无假数据残留。
+- [x] `go build ./...`、`go vet`、后端定向单测、真实 MySQL 集成测试、前端类型检查与构建通过；性能相关断言（查询次数、不读 step.log、缓存命中）有用例锁定。
+- [x] 文档状态已更新为 `ready_for_manual`。
+
+## 8.1 实施记录（2026-10-10）
+
+**后端（提交 `9b24c86`）**
+
+- 新增 `ReportPathRunLogDirs` 仓储方法：一条带 `LEFT JOIN run_step_attempts` 与分组聚合的 SQL 取回范围内每条路径运行的 ID、状态与非空 `log_path`，替代逐路径运行的 `ListRunAttempts`（N+1）。
+- 新增 `internal/service/report_interface_scan.go`：只扫 `network.log` 的快速聚合器——逐字段匹配、零 map 分配、不建 DTO、不排序、不填充摘要、不读 `step.log`；固定 8 worker 有界并发；终态路径运行按 `(绝对路径, size, mtime)` 签名缓存，运行中的每次重算；请求上下文取消时停止读盘。
+- 接口耗时口径修正（第 5.5 节）：按「该路径运行目录 `network.log` 中 `path_run_id` 匹配」的全部请求行统计。实测该修正把典型路径运行的请求计数从漏计约 12% 回到全量（工作区 38,414 行 `step_id=-` 此前被整行丢弃）。
+- 删除 `interfaceStatsReader` 与 `RunOrchestrationService.PathRunInterfaceStats`；`NewReportCenterService` 改为接收日志根目录，`cmd/server/main.go` 传 `logRouter.Root()`，不再借用运行编排服务。
+- `requestClassOf` 的写端点白名单提为 `writeEndpointWhitelist` + `isWriteEndpoint`，报告快速聚合与运行详情共用同一份判定。
+- 三个只读接口 DTO 增加 `GeneratedAt`。
+- 实测（工作区真实日志、66 个路径运行 / 66.9 MB `network.log`）：冷启动聚合 **14.6 ms**（旧实现仅解析 `network.log` 就 1.13 s，还要再扫 131.4 MB `step.log` 并发 66 次数据库查询）；二次读取命中终态缓存 **0.55 ms**。
+
+**前端（提交 `aa8bf2a`、`6946a6f`）**
+
+- 新增 `glossary.ts`（29 条名词、6 组）、`TermHint.vue`（行内 info 图标 + popover）、`ReportGlossaryEntry.vue`（右上角「指标口径说明」总入口）、`ReportMetricSummary.vue`（L1/L2 共用摘要）、`ReportChart.vue`（`defineAsyncComponent` 懒加载 ECharts，569 KB 独立 chunk，首屏不等图表库）。
+- 层级收敛：`ReportMetricsPanel` 只服务 L0；`ReportDetailView`/`PathReportView` 改为「头部 + 核心指标摘要 + 本级主体表」。L2 运行实例表由 12 列合并精简为 10 列，结果列改状态标签，表格外包横向滚动 + 粘性表头，数字列右对齐。
+- 数据做细：`ratioText`（分子分母）、`distributionRows`（图下数值明细）、`generatedAtText`（数据截至时间）、分位卡补样本数、`formatCount` 千分位、结果名映射状态标签 `resultTagType`。
+- `web/tsconfig.json` 开放 `allowImportingTsExtensions`，让报告模块能被根目录 node 用例直接加载（`web/src/features/reports/api.ts` 的 `formatTime` 导入带 `.ts` 扩展名）。
+
+**测试（`test/run-f042.sh` 汇总，全部通过）**
+
+- 单元：`test/unit/backend/report_center_scan/`（全量计、写端点白名单兜底、终态缓存命中与失效、运行中不缓存、缺失降级、采样上限、一次查询无 N+1、generatedAt、仓储失败降级）；`test/unit/backend/run_request_timings/` 回归。
+- 集成：`test/integration/f042_report_aggregation_test.go` 新增 `TestF042ReportInterfaceStatsFromNetworkLog`，在真实 MySQL + 真实 `network.log` 上断言 4 次调用全量计、接口 35ms / 写 30ms / 编排 15ms 的派生值。
+- 前端：`test/unit/frontend/report_glossary_test.mjs`（5 例）、`report_metrics_format_test.mjs`（6 例）、`report_views_structure_test.mjs`（5 例）。
 
 ## 9. 分类测试（保存在根目录 `test/`，只跑本功能相关）
 
@@ -175,7 +200,7 @@
 - [ ] 报告中心首页、计划详情、路径详情都能较快打开并可读；刷新后的数字与任务中心的运行记录对得上。
 - [ ] 每级只看本级的一等信息：首页看全局，计划详情主要看各路径，路径详情主要看每次运行实例；没有同一套指标重复三遍。
 - [ ] 每个指标旁的 info 图标点开有看得懂的解释；右上角「指标口径说明」能一次看全。
-- [ ] 每张比率卡能看到分子/分母，分位能看到样本数，页面能看到数据截至时间；运行实例表能看清每次运行的接口/步骤/执行器/工具端耗时，未知项如实显示。
+- [x] 每张比率卡能看到分子/分母，分位能看到样本数，页面能看到数据截至时间；运行实例表能看清每次运行的接口/步骤/执行器/工具端耗时，未知项如实显示。
 - [ ] 空数据、读取失败、暂无样本都是清楚的文字状态，没有空白图、假数据或内部术语。
 
 ## 11. 停止条件
