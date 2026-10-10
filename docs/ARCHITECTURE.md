@@ -2,18 +2,21 @@
 
 ## F-042 报告中心真实度量（只读聚合）
 
-F-042 把报告中心从前端硬编码假数据改为基于既有运行事实的只读「总分总」三级聚合，不新增运行状态机或运行事实表、不改执行引擎判定/调度/核验语义、不调用目标平台任何写接口；仅补一条最小向前迁移（036）采集执行器真实计时。状态 `ready_for_manual`（2026-09-24 自动实施与验证完成，等待用户在浏览器与真实目标环境人工核对）。
+F-042 把报告中心从前端硬编码假数据改为基于既有运行事实的只读「总分总」三级聚合，不新增运行状态机或运行事实表、不改执行引擎判定/调度/核验语义、不调用目标平台任何写接口；仅补一条最小向前迁移（036）采集执行器真实计时。2026-09-24 首轮实施与自动验证完成；2026-10-10 用户人工验收反馈（加载慢、层级重复、缺名词解释、排版与数据权威性不足）后返回 `awaiting_approval` 重新规划，等批准后按本轮范围实施。
 
 - **事实唯一来源**：MySQL 运行记录六表（`runs`/`path_runs`/`run_steps`/`run_step_attempts`/`run_events`/`run_controls`，迁移 026）与运行目录 `network.log`（F-030 传输层 `duration_s`）。不新增造数来源，不读目标平台业务库做报告。
-- **只读聚合服务**：新增 `internal/service/report_center.go`（暂名），复用 `run_request_timings.go` 的窗口归属与耗时口径；分位、计数、成功数用带索引的分组聚合 SQL 一次算出，避免逐行读全表或 N+1；范围大时分页与时间范围保护。
-- **三个只读接口**：`GET /api/reports/overview`（L0 计划计数+专业指标）、`GET /api/reports/plans/{planId}`（L1 计划头部+计划级指标+各路径指标）、`GET /api/reports/plans/{planId}/paths/{pathId}`（L2 路径头部+路径级指标+运行实例列表）。L3 运行实例明细复用现有 `GET /api/runs/{runId}` 与二级路径详情，不新增第二套详情。
+- **只读聚合服务**：`internal/service/report_center.go`；计数、成功数、结果/分类分布用带索引的分组聚合 SQL 一次算出；范围大时样本行有上限保护。
+- **三个只读接口**：`GET /api/reports/overview`（L0 计划计数+专业指标）、`GET /api/reports/plans/{planId}`（L1 计划头部+核心指标摘要+各路径指标）、`GET /api/reports/plans/{planId}/paths/{pathId}`（L2 路径头部+核心指标摘要+运行实例列表）。L3 运行实例明细复用现有 `GET /api/runs/{runId}` 与二级路径详情，不新增第二套详情。
+- **性能（2026-10-10 本轮）**：一次查询取回范围内路径运行的日志目录与终态（`ReportPathRunLogDirs`，`LEFT JOIN run_step_attempts` 分组聚合），替代逐路径运行的 `ListRunAttempts`；报告接口耗时聚合改为按路径运行目录快速扫描 `network.log`（只累计样本与读写次数，不建 DTO、不排序、不填充摘要、不读 `step.log`），扫描用固定 worker 数（默认 8）的有界并发；终态路径运行按 `(绝对路径, size, mtime)` 签名缓存聚合结果，运行中的路径运行每次重算。前端 ECharts 包装组件改 `defineAsyncComponent` 懒加载，首屏先出计数、计划表与文字指标。报告服务自己持有日志根目录，不再借用运行编排服务；`interfaceStatsReader` 与 `RunOrchestrationService.PathRunInterfaceStats` 随本轮删除，不留双路。
+- **接口耗时口径修正（本轮）**：报告的接口调用次数、读/写占比、接口耗时分位与写请求耗时，按「该路径运行目录 `network.log` 中 `path_run_id` 等于本路径运行」的全部请求行统计（读/写归类沿用 `requestClassOf` 端点白名单兜底）；原按 `step_id/attempt` 归属到尝试的算法会把登录、结构读取与归属不上的请求整行丢弃，导致报告数字小于真实调用量。L3 运行详情页仍按步骤/尝试归属展示，只改统计范围、不改传输层计时。
+- **名词解释与数据权威性（本轮）**：术语表集中在 `web/src/features/reports/glossary.ts`（`id`/名称/一句话解释/怎么算/数据来源/容易误解的点），行内 `TermHint.vue` 用 `NPopover` 呈现，三个页面右上角另设「指标口径说明」总入口；三个只读接口 DTO 增加 `generatedAt`。比率卡必须带分子分母，分位必须带样本数，结果与分类占比在图外另给数值明细表。层级按「各自只放本级的一等信息」收敛：`ReportMetricsPanel` 只服务 L0，L1/L2 用共用的 `ReportMetricSummary`。
 - **热门库（不手写分位与图表）**：分位/均值/中位数在 Go 侧用主流统计库 `github.com/montanaflynn/stats` 计算，标准计数/求和/占比仍用 SQL；前端看板用 Apache ECharts + `vue-echarts` 渲染，不手写 SVG/Canvas 图表。依赖锁定精确版本，只引广泛使用、活跃维护的库。
 - **耗时口径**：目标接口耗时只用 `network.log` 传输层 `duration_s`，与步骤耗时（`run_step_attempts.duration_ms`）分开；工具端编排耗时 = 步骤总耗时 − 同尝试内目标接口传输耗时，账号排队等待单列。未知带 `xxxKnown` 布尔，前端显示「未知」，历史无日志显示「暂无真实请求耗时」，不用 0ms 或阶段差值冒充。
 - **执行器真实计时（选项 B）**：独立执行服务在动作从装载到收敛用真实计时器测墙钟耗时，随 `ActionRunResult` 上报 `executorMs`；Go 落账时写入新列 `run_step_attempts.executor_ms`（迁移 036，`BIGINT NULL`，只写一次、永不 UPDATE，同 `before_facts`/`runtime_detail` 纪律）。非 runtime 步骤为空显示「无执行器环节」，历史行为空显示「未知」。只加字段与一处采集，不改动作语义、写纪律与核验。
 - **内网不脱敏**：现有 `network.log`/`curl.log` 按 AGENTS.md 原样全量记录（含 SID、表单正文），本切片不新增任何脱敏或日志剥离层；报告 DTO 只按统计需要返回字段与标识，不额外搬运请求/响应正文（正文按原样保留在既有日志与运行详情入口），属范围取舍非脱敏。
-- **前端**：`ReportsView.vue`/`ReportDetailView.vue` 改为真实接口驱动并删除假常量，新增 L2 路径详情视图，复用 Naive UI 现有组件，不引入新 UI 框架。
+- **前端**：`ReportsView.vue`/`ReportDetailView.vue`/`PathReportView.vue` 全部由真实接口驱动，图表组件懒加载，复用 Naive UI 现有组件，不引入新 UI 框架。
 
-实现与人工门禁见 `docs/features/F-042-report-center-real-metrics.md`；2026-09-24 用户已批准，进入 `implementing`，完成自动验证后停在 `ready_for_manual`。
+实现与人工门禁见 `docs/features/F-042-report-center-real-metrics.md`；2026-10-10 用户人工验收反馈已记录，等待明确批准后进入 `implementing`，完成自动验证后停在 `ready_for_manual`。
 
 ## F-036 独立执行服务
 
