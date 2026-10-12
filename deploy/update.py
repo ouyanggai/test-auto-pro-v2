@@ -11,6 +11,7 @@ import select
 import shlex
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -20,6 +21,34 @@ import uuid
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOISE = {'.npmrc', '.claude', '.omc'}
 APP_DIRS = {'cmd', 'internal', 'web', 'form-runtime', 'executor-service', 'deploy'}
+
+
+def configure_output():
+    """把本机标准输出固定为 UTF-8，且不可编码字符按替换处理。
+
+    Windows 控制台默认 GBK：服务器构建输出里的勾选等 Unicode 符号无法用 GBK 表示，
+    直接 print 会抛 UnicodeEncodeError，把整个发布从本机侧打断（服务器其实构建正常），
+    结果发布失败、现场留在服务器上。发布只能因服务器失败而失败，不能因本机输出编码失败。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding='utf-8', errors='replace')
+        except (ValueError, OSError):
+            # 输出被重定向到不支持重配的对象时保持原样，由 emit 兜底。
+            pass
+
+
+def emit(text):
+    """安全输出一段服务器日志：任何编码问题都不允许中断发布。"""
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except UnicodeEncodeError:
+        sys.stdout.write(text.encode('utf-8', 'replace').decode('ascii', 'replace'))
+        sys.stdout.flush()
 
 
 def git(root, *args):
@@ -160,7 +189,7 @@ def remote_run(client, command, log):
                 data = channel.recv(65536)
                 log.write(data)
                 log.flush()
-                print(data.decode('utf-8', errors='replace'), end='', flush=True)
+                emit(data.decode('utf-8', errors='replace'))
             elif channel.exit_status_ready():
                 return channel.recv_exit_status()
             else:
@@ -169,6 +198,7 @@ def remote_run(client, command, log):
 
 def main():
     """本机入口读取被忽略的凭证配置，上传后执行同一套服务器发布流程。"""
+    configure_output()
     parser = argparse.ArgumentParser(description='一键更新 192.168.2.200 当前应用')
     parser.add_argument('--config', type=pathlib.Path, default=ROOT / 'deploy/.env.update.json')
     parser.add_argument('--package-only', type=pathlib.Path, help='仅生成发布包，不连接服务器')
