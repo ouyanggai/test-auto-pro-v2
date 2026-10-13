@@ -21,6 +21,8 @@ import { canContinueChoice, CHOICE_ERRORS } from './native-actions.ts'
 import { nativeChoiceContinue, nativeDispatch, type ChoiceContinueChoice, type DispatchInput } from './native-dispatch.ts'
 import { isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
+import { ExecutionBaselineRecorder, describeBaselineError, type BaselineSpan } from './execution-baseline.ts'
+import { readBaselineSource } from './baseline-source.ts'
 
 interface RuntimeSession {
   sessionId: string
@@ -47,6 +49,7 @@ interface RuntimeSession {
   forwardPostscriptRequired: boolean
   formValidationError?: string
   formBefore: Record<string, unknown>
+  baseline: ExecutionBaselineRecorder
 }
 
 interface SessionCreateBody {
@@ -912,6 +915,10 @@ async function main (): Promise<void> {
   const port = listenPort()
   const unpacked = extractPageDist()
   const pageOrigin = await serveFlowPage(unpacked.distDir)
+  // 仅显式开启时读取本地构建信息一次；它是采样时的来源记录，不冒充目标部署版本。
+  const baselineEnabled = process.env.EXECUTOR_BASELINE === '1'
+  const baselineSource = baselineEnabled
+    ? readBaselineSource(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')) : null
   let browser: Awaited<ReturnType<typeof launchHeadlessChromium>> | null = null
   let manager: SessionManager | null = null
   let leaseReaper: NodeJS.Timeout | null = null
@@ -925,6 +932,7 @@ async function main (): Promise<void> {
       const runtime = sessions.get(closed.sessionId)
       if (!runtime) return
       runtime.destroyed = true
+      runtime.baseline.checkpoint('session_closed_event', { reason: closed.closeReason, boundary: 'event_only_context_close_not_confirmed', stats: runtime.baseline.stats() })
       void runtime.route?.uninstall().catch(() => undefined)
       sessions.delete(closed.sessionId)
     })
@@ -965,11 +973,17 @@ async function main (): Promise<void> {
           send(400, { error: '创建会话必须携带 accountKey/runId/pathRunId/stepId' })
           return
         }
+        const baseline = new ExecutionBaselineRecorder({ accountKey, runId, pathRunId, stepId }, { enabled: baselineEnabled })
+        baseline.checkpoint('local_source', baselineSource)
+        const createSpan = baseline.begin('session_create')
         const record = await (await ensureManager()).create(accountKey).catch(error => {
+          if (createSpan) baseline.end(createSpan, 'error', { error: describeBaselineError(error) })
           send(409, { error: String((error as Error)?.message ?? error) })
           return null
         })
         if (!record || !record.page) return
+        baseline.setContext({ sessionId: record.sessionId })
+        baseline.end(createSpan, 'returned', { sessionId: record.sessionId, boundary: 'context_and_page_created' })
         const channel = new ForwardChannel()
         sessions.set(record.sessionId, {
           sessionId: record.sessionId,
@@ -994,7 +1008,8 @@ async function main (): Promise<void> {
           loadMode: '',
           instanceId: '',
           forwardPostscriptRequired: false,
-          formBefore: {}
+          formBefore: {},
+          baseline
         })
         send(200, { sessionId: record.sessionId, status: record.status })
       })().catch(error => {
@@ -1062,8 +1077,11 @@ async function main (): Promise<void> {
           return
         }
         session.destroyed = true
+        const closeSpan = session.baseline.begin('session_destroy')
         await session.route?.uninstall().catch(() => undefined)
         await manager?.close(sessionId, 'destroyed')
+        session.baseline.end(closeSpan, 'returned', { boundary: 'existing_close_call_returned' })
+        session.baseline.checkpoint('session_destroy_returned', { stats: session.baseline.stats() })
         sessions.delete(sessionId)
         send(200, { destroyed: true })
       })()
@@ -1087,13 +1105,25 @@ async function main (): Promise<void> {
           send(409, { error: '会话已关闭，不能装载' })
           return
         }
+        let loadSpan: BaselineSpan | null = null
+        let loadStage: BaselineSpan | null = null
         try {
           assertForwardReady(session.channel)
           const payload = (envelope.payload ?? {}) as Record<string, unknown>
+          session.baseline.setContext({
+            loadRequestId: envelope.requestId, mode: payload.mode ?? 'unknown', sid: payload.sid ?? 'unknown',
+            userId: payload.userId ?? 'unknown', platformCode: payload.platformCode ?? 'unknown', projectId: payload.projectId ?? 'unknown',
+            customerCode: payload.customerCode ?? 'unknown', instanceId: payload.instanceId ?? 'not_supplied',
+            jobTaskId: payload.jobTaskId ?? 'not_supplied', nodeProxyId: payload.nodeProxyId ?? 'not_supplied', batchId: payload.batchId ?? 'unknown',
+            currentOperator: payload.currentOperator ?? 'unknown', initiator: payload.initiator ?? 'unknown',
+            loginType: payload.loginType ?? 'unknown'
+          })
+          loadSpan = session.baseline.begin('load')
           const runtimeOrigin = new URL(pageOrigin.url).origin
           session.route = await installTargetRoute(session.page, {
             runtimeOrigins: [runtimeOrigin],
             toolFlowName: String(payload.toolFlowName ?? ''),
+            baseline: session.baseline,
             forward: async requestPayload => {
               if (session.writeGate.isLocked && requestPayload.method === 'POST') {
                 throw new ForwardFailure('动作已硬超时，拒绝新写请求')
@@ -1139,13 +1169,18 @@ async function main (): Promise<void> {
               return outcome
             }
           })
+          loadStage = session.baseline.begin('identity_script_install')
           await session.page.addInitScript(injectIdentityScript(payload))
+          session.baseline.end(loadStage, 'returned')
+          loadStage = session.baseline.begin('navigation')
           await session.page.goto(nativeURL(pageOrigin.url, payload), { waitUntil: 'domcontentloaded' })
+          session.baseline.end(loadStage, 'returned', { boundary: 'domcontentloaded_only' })
           const mode = String(payload.mode ?? 'initiate')
           session.loadMode = mode
           session.instanceId = String(payload.instanceId ?? '')
           session.forwardPostscriptRequired = Array.isArray(payload.forwardCheckList) && payload.forwardCheckList.map(String).includes('fuyan')
           // 转发使用列表页自身组件；其他模式由 $initFlow/$flowDetail 捕获宿主。
+          loadStage = session.baseline.begin('host_capture')
           if (mode === 'forward') {
             const tab = String(payload.forwardTab ?? 'backlog')
             await prepareForwardList(session.page, {
@@ -1161,12 +1196,14 @@ async function main (): Promise<void> {
             // 捕获失败直接抛错，绝不把“没捕到”当装载成功。
             session.nativeHost = await waitForExecutorNative(session.page)
           }
+          session.baseline.end(loadStage, 'returned', { boundary: 'host_capture_only' })
           const warnings: string[] = []
           let templateId = ''
           let templateCandidates: string[] = []
           let hostPath: string[] = []
           let detailSemantics: Record<string, unknown> | null = null
 
+          loadStage = session.baseline.begin('native_load_preparation')
           if (mode === 'initiate') {
             // 发起模板精确选择（S2）：判据=trace 里 /web/flowTemplateApi/list 的真实响应。
             // 原生 mounted 只在 params.auditWay 存在时查询（InitFlowDialog.vue mounted），
@@ -1264,6 +1301,7 @@ async function main (): Promise<void> {
             }
           }
 
+          session.baseline.end(loadStage, 'returned', { hostPath, templateId, boundary: 'existing_ready_checks_returned' })
           // 数据补丁（S5 核心）：宿主按模式解析到真实表单 API；找不到=unsupported，绝不静默跳过。
           // 只读 form_person 依赖字段也要经过原生表单 setter；否则审批组件的 getValues
           // 可能在提交前清掉 __formPersonId，目标随后无法解析下一节点处理人。
@@ -1276,6 +1314,7 @@ async function main (): Promise<void> {
             // 表单宿主是异步渲染的（发起链 Steps1 监听 flowJson 自动 nextStep，
             // OtherSteps2 的 v-if 挂载与 FormMaking 初始化都在下一个 tick 之后）：
             // 轮询等待表单接口出现，超时才判 unsupported。
+            loadStage = session.baseline.begin('form_api_availability')
             const apiDeadline = Date.now() + CAPTURE_TIMEOUT_MS
             let available = false
             while (Date.now() < apiDeadline) {
@@ -1285,16 +1324,26 @@ async function main (): Promise<void> {
             if (!available) {
               throw new UnsupportedFormError('未能在原生组件链上找到 setData/getValues 表单接口')
             }
+            session.baseline.end(loadStage, 'returned')
+            // 本切片只记录原等待返回，不把空闲窗解释成所有原生联动已完成。
+            loadStage = session.baseline.begin('existing_options_wait_before_patch')
             // 等待就绪：trace 无在途请求 + 稳定窗（远程选项/联动收敛），绝不硬编码就绪标志。
             await waitForOptionsReady(session.route.trace, 900)
+            session.baseline.end(loadStage, 'returned')
+            loadStage = session.baseline.begin('existing_form_patch')
             const readback = await applyNodePatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed, { userId: String(payload.userId ?? ''), companyId: String(payload.companyId ?? '') })
+            session.baseline.end(loadStage, 'returned')
             if (readback === null) {
               throw new UnsupportedFormError('补丁应用时表单数据接口不可用')
             }
             patchReadback = readback
             // 回填后二次等待联动与远程请求收敛，并通用恢复被原生联动脚本误清空的非空意图值
+            loadStage = session.baseline.begin('existing_options_wait_after_patch')
             await waitForOptionsReady(session.route.trace, 600)
+            session.baseline.end(loadStage, 'returned')
+            loadStage = session.baseline.begin('existing_patch_restore')
             const restoredReadback = await restoreIntendedPatchViaPage(session.page, mode, (payload.values ?? {}) as Record<string, unknown>, allowed, { userId: String(payload.userId ?? ''), companyId: String(payload.companyId ?? '') })
+            session.baseline.end(loadStage, 'returned')
             if (restoredReadback !== null) {
               patchReadback = restoredReadback
             }
@@ -1303,15 +1352,19 @@ async function main (): Promise<void> {
             // 仅发起态:当前用户字段(申请人/部门/公司)应为计划发起账号。表单 refresh 初始化脚本的「仅空值填充」
             // 守卫可能被历史/补丁值挡住,这里用表单自身初始化脚本在空值探针下重算并权威覆盖(F-043 缺陷②);
             // 审批等模式下这些字段属真实发起人,绝不用当前操作人覆盖,故仅发起态执行。
+            loadStage = session.baseline.begin('existing_plan_identity_patch')
             const identityReadback = await applyPlanIdentityViaPage(session.page, {
               userId: String(payload.userId ?? ''), accountName: String(payload.accountName ?? ''),
               companyId: String(payload.companyId ?? ''), companyName: String(payload.companyName ?? ''),
               departmentId: String(payload.departmentId ?? ''), departmentName: String(payload.departmentName ?? '')
             })
+            session.baseline.end(loadStage, 'returned')
             if (identityReadback !== null) patchReadback = identityReadback
           }
 
+          loadStage = session.baseline.begin('existing_form_snapshot_before')
           session.formBefore = await readNativeFormSnapshot(session.page)
+          session.baseline.end(loadStage, 'returned', { boundary: 'existing_snapshot_returned' })
           if (mode !== 'initiate' && mode !== 'forward' && Object.keys(session.formBefore).length === 0) {
             throw new UnsupportedFormError('实例表单正文尚未加载，拒绝让空表单进入写动作')
           }
@@ -1330,12 +1383,17 @@ async function main (): Promise<void> {
           const traceUrls = session.route.trace.list().map(entry => ({
             seq: entry.seq, method: entry.method, url: entry.url, state: entry.state, httpStatus: entry.response?.httpStatus
           }))
+          session.baseline.end(loadSpan, 'returned', { boundary: 'existing_load_result', mode, hostPath })
+          session.baseline.checkpoint('load_returned', { stats: session.baseline.stats() })
           send(200, {
             ready: true,
             mode,
             diagnostics: { mode, hostPath, templateId, templateCandidates, semantics: detailSemantics, patchReadback, warnings, pageErrors, traceUrls }
           })
         } catch (error) {
+          if (loadStage) session.baseline.end(loadStage, 'error', { error: describeBaselineError(error) })
+          if (loadSpan) session.baseline.end(loadSpan, 'error', { error: describeBaselineError(error) })
+          session.baseline.checkpoint('load_failed', { stats: session.baseline.stats() })
           // 装载期异常按七值语义映射：表单接口缺失=unsupported（阻塞+原因）；
           // 无权限/绑定缺失等发起阻塞=blocked；其余才是服务端故障（500）。
           console.error('[executor] 装载失败 mode=', String((envelope.payload as Record<string, unknown> | undefined)?.mode ?? ''),
@@ -1394,6 +1452,7 @@ async function main (): Promise<void> {
               sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: '当前没有等待选择的动作' })
               return
             }
+            const choiceSpan = session.baseline.begin('existing_choice_continue', { requestId: envelope.requestId })
             try {
               const choice = (envelope.payload as { choice?: ChoiceContinueChoice } | undefined)?.choice
               if (!choice) throw new Error('choice_continue 缺少 choice 载荷')
@@ -1403,8 +1462,10 @@ async function main (): Promise<void> {
               session.choicePending = false
               // 只允许继续一次：继续后不再接受第二个 choice_continue。
               await dispatchChoiceContinueOnPage(session.page, errorType, choice, session.lastChoiceError)
+              session.baseline.end(choiceSpan, 'returned', { boundary: 'existing_choice_dispatch_returned', errorType })
               sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'success' })
             } catch (error) {
+              if (choiceSpan) session.baseline.end(choiceSpan, 'error', { error: describeBaselineError(error) })
               session.choicePending = false
               sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error) })
             }
@@ -1417,26 +1478,36 @@ async function main (): Promise<void> {
           const readOnly = action === 'capture' || action === 'validate'
           // 执行器真实计时起点：动作从此处装载分发直到收敛，墙钟差值即执行器处理耗时（F-042 选项 B）。
           const executorStart = performance.now()
+          session.baseline.setContext({ action, actionRequestId: envelope.requestId })
+          const actionSpan = session.baseline.begin('execute', { baselineSeq: session.route?.trace.lastSeq })
+          let actionStage: BaselineSpan | null = null
           try {
             session.actionInFlight = true
             const baselineSeq = session.route!.trace.lastSeq
             // 页面异常只保留为证据，不参与终局；终局只看动作期望写端点响应。
+            actionStage = session.baseline.begin('existing_page_error_evidence_before')
             const errorsAtBaseline = await collectPageErrorEvidence(session.page)
+            session.baseline.end(actionStage, 'returned')
             let dispatchFacts: { component: string, method: string } | null = null
             if (!readOnly) {
               const payload = (envelope.payload ?? {}) as { auditDesc?: string, loadMode?: string, nextNodeAuditors?: DispatchInput['nextNodeAuditors'] }
-              dispatchFacts = await dispatchBusinessAction(session.page, {
+              actionStage = session.baseline.begin('native_dispatch_evaluate')
+              dispatchFacts = await session.baseline.invoke('native_dispatch_invocation', () => dispatchBusinessAction(session.page, {
                 action,
                 loadMode: payload.loadMode ?? session.loadMode,
                 auditDesc: payload.auditDesc,
                 nextNodeAuditors: payload.nextNodeAuditors
-              })
+              }))
+              session.baseline.end(actionStage, 'returned', { dispatched: dispatchFacts, boundary: 'page_evaluate_returned_internal_business_unknown' })
               // 同意/不同意走原生 $confirm 弹窗：在页面内点击确认主按钮（已知差异，登记于设计文档）。
               if (action === 'approve' || action === 'reject') {
+                actionStage = session.baseline.begin('existing_confirmation')
                 await autoConfirmMessageBox(session.page)
+                session.baseline.end(actionStage, 'returned')
               }
               // 提交/重新提交/审批时，等待渲染周期并捕获页面表单校验错误
               if (action === 'submit' || action === 'resubmit' || action === 'approve') {
+                actionStage = session.baseline.begin('existing_validation_error_read')
                 const validationErrors = await session.page.evaluate(() => {
                   const errors: string[] = []
                   const items = Array.from(document.querySelectorAll('.el-form-item.is-error, .sub-form-item.is-error'))
@@ -1463,6 +1534,7 @@ async function main (): Promise<void> {
                   }
                   return Array.from(new Set(errors))
                 }).catch(() => [])
+                session.baseline.end(actionStage, 'returned', { boundary: 'existing_error_read_returned' })
                 if (validationErrors.length > 0) {
                   session.formValidationError = validationErrors.join('、')
                 } else {
@@ -1470,6 +1542,7 @@ async function main (): Promise<void> {
                 }
               }
             }
+            actionStage = session.baseline.begin('existing_completion_detection')
             const verdict = readOnly
               ? { status: 'success' as const, requestTrace: [] }
               : await settleCompletion({
@@ -1487,6 +1560,7 @@ async function main (): Promise<void> {
                 },
                 writeGate: session.writeGate
               })
+            session.baseline.end(actionStage, 'returned', { status: verdict.status, boundary: 'existing_verdict_only_not_target_fact_verification' })
             // 分发事实回传：调用了哪个组件哪个方法（L2 断言与运行详情的证据）。
             // debugWrites 记录动作窗口内每笔流程端点请求的判定输入（是否权限校验、响应摘要），
             // 供失败诊断与端点级证据核对。
@@ -1537,7 +1611,9 @@ async function main (): Promise<void> {
             }
             // 页面快照只作证据，不能冒充 Go 重读目标实例的最终事实；正文保护会把
             // 目标重读结果写入 formAfter/fieldCountAfter。保留独立字段避免两种来源混淆。
+            actionStage = session.baseline.begin('existing_form_snapshot_after')
             const pageFormAfter = await readNativeFormSnapshot(session.page).catch(() => ({}))
+            session.baseline.end(actionStage, 'returned', { boundary: 'existing_snapshot_returned' })
             const verdictWithFacts = {
               ...finalVerdict,
               // 执行器墙钟真实耗时（毫秒）：与 status/requestTrace/businessSummary 平级上报给 Go 落库。
@@ -1555,8 +1631,13 @@ async function main (): Promise<void> {
                 relevantErrorsAtBaseline: errorsAtBaseline
               }
             }
+            session.baseline.end(actionSpan, 'returned', { status: finalVerdict.status, boundary: 'existing_result_only' })
+            session.baseline.checkpoint('execute_returned', { stats: session.baseline.stats() })
             sendEnvelope(ws, session, 'result', envelope.requestId, verdictWithFacts)
           } catch (error) {
+            if (actionStage) session.baseline.end(actionStage, 'error', { error: describeBaselineError(error) })
+            if (actionSpan) session.baseline.end(actionSpan, 'error', { error: describeBaselineError(error) })
+            session.baseline.checkpoint('execute_failed', { stats: session.baseline.stats() })
             sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error), executorMs: Math.round(performance.now() - executorStart) })
           } finally {
             session.actionInFlight = false

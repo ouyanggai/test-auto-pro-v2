@@ -4,6 +4,7 @@
 import type { Page, Request, Route } from 'playwright'
 import { canSendForwardStep } from './completion.ts'
 import { RequestTraceRecorder, type TraceEntry } from './request-trace.ts'
+import type { ExecutionBaselineRecorder } from './execution-baseline.ts'
 
 
 // TARGET_PATH_PREFIXES 与 Go 侧 internal/runtimeexec（forward.go）镜像维护：
@@ -34,6 +35,8 @@ export interface ForwardOutcome {
 // 返回即 Go 发回的目标原始响应；抛错表示转发失败（网络断开、Go 拒绝），调用方必须中止请求。
 export interface TargetRouteOptions {
   runtimeOrigins: string[]
+  // baseline 只记录既有转发/回填边界，不增加目标请求，不参与主写或附言的放行判断。
+  baseline?: ExecutionBaselineRecorder
   forward: (payload: {
     method: string
     url: string
@@ -141,8 +144,13 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       bodyEncoding: body ? bodyEncoding : undefined,
       writeSequence
     })
+    const responseSpan = options.baseline?.begin('target_response', {
+      traceSeq: entry.seq,
+      request: { method: entry.method, url: entry.url, headers: entry.headers, body: entry.body, bodyEncoding: entry.bodyEncoding, writeSequence: entry.writeSequence }
+    }) ?? null
+    let fulfillSpan = null as ReturnType<ExecutionBaselineRecorder['begin']>
     try {
-      const outcome = await options.forward({
+      const payload = {
         method: entry.method,
         url: entry.url,
         headers: entry.headers,
@@ -150,7 +158,11 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
         bodyEncoding: entry.bodyEncoding ?? 'utf8',
         action: entry.action,
         writeSequence: entry.writeSequence
-      })
+      }
+      // 同步透传 forward 的原 Promise；计时在原 await 两侧，不额外挂任何异步回调。
+      const outcome = await (options.baseline
+        ? options.baseline.invoke('forward_invocation', () => options.forward(payload))
+        : options.forward(payload))
       trace.markFulfilled(entry, {
         httpStatus: outcome.httpStatus,
         headers: outcome.headers,
@@ -159,6 +171,7 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - Date.parse(entry.requestAt)
       })
+      options.baseline?.end(responseSpan, 'returned', { traceSeq: entry.seq, response: entry.response, boundary: 'full_response_available' })
       const contentType = outcome.headers['content-type'] ?? outcome.headers['Content-Type']
       const fulfillBody = outcome.body === undefined
         ? undefined
@@ -175,15 +188,19 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       const fulfillHeaders = Object.fromEntries(
         Object.entries(outcome.headers ?? {}).filter(([name]) => !unsafeHeader(name))
       )
+      fulfillSpan = options.baseline?.begin('page_fulfill', { traceSeq: entry.seq }) ?? null
       await route.fulfill({
         status: outcome.httpStatus,
         headers: fulfillHeaders,
         ...(contentType ? {} : { contentType: 'application/octet-stream' }),
         ...(fulfillBody === undefined ? {} : { body: fulfillBody })
       })
+      options.baseline?.end(fulfillSpan, 'returned', { traceSeq: entry.seq, boundary: 'route_fulfill_returned' })
     } catch (error) {
       // 转发失败（Go 不可达/拒绝）：请求绝不能落到目标平台，本地中止并记录原因。
       trace.markAborted(entry, 'aborted', String((error as Error)?.message ?? error))
+      options.baseline?.end(responseSpan, 'error', { traceSeq: entry.seq, error: entry.abortReason, targetWriteResult: 'unknown' })
+      options.baseline?.end(fulfillSpan, 'error', { traceSeq: entry.seq, error: entry.abortReason })
       console.error('[executor] 转发失败中止:', request.url(), '|', String((error as Error)?.message ?? error))
       await route.abort('blockedbyclient')
     }

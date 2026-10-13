@@ -1,11 +1,11 @@
 # F-045：先把现有步骤和耗时记清楚
 
-- 状态：`awaiting_approval`，意思是计划已写好，等待用户明确批准实施。
+- 状态：`ready_for_manual`，F-045 已实现并通过当前范围的自动验证，等待用户手工核对。后续优化未开始。
 - 分支：`codex/性能优化与可靠性实施`。
 - 用户要求：独立看目标平台源码，深入找性能和可靠性问题，不能破坏当前功能；2026-10-13 本轮先把文档写好。
 - 业务依据：这次读取的目标前端、FormMaking、网关、用户服务和流程服务源码。不使用以前的项目或功能文档。
 - 完整计划和源码位置：[性能优化计划](../performance/2026-10-13-target-source-performance-switch-plan.md)。它是这次新写的分析，不是旧规则。
-- 当前没有开始代码实施。文档完成、建立分支、用户说“继续写文档”，都不等于批准执行全部优化。
+- 实施批准只覆盖本文件范围；整体计划中的后续优化仍不自动开工。
 
 ## 1. 这一步要解决什么
 
@@ -125,19 +125,19 @@
 
 ## 6. 实施前后要勾的完成标准
 
-以下是后续代码切片的标准，当前仅文档阶段，不把它们提前勾成完成：
+以下勾选代表本轮本地实现和自动验证完成，不代表真实目标流程或部署已经通过人工验收：
 
-- [ ] 只实施本文范围；动代码前写清修改位置和本次完成标准。
-- [ ] 参考源码/部署/动态配置对应关系有记录，未知没有变成已证明。
-- [ ] 普通发起/同意与转发步骤表有源码位置，覆盖代理准备、校验、显示伴生值、前后保存和附言。
-- [ ] 原调用次数、完整参数、因果顺序、this、返回值、原 Promise 和错误传播保持。
-- [ ] 额外目标请求、表单调用、业务事件和组件挂载均为零；没有为了计时新增等待。
-- [ ] 已有调用点可见的正文、回调和后续保存时间分开，无法确认的内部异步记未知。
-- [ ] 延迟联动、四类选择、后续保存失败、一直不结束的回调、401、普通权限和跨平台/项目情形有本地验证。
-- [ ] 开启/关闭记录有成本对照；未改变业务调度/截止条件，未造成明显慢端退化。
-- [ ] 提供真实基线手工采集入口、操作步骤和未验证项；没有自动真实写或代替用户验收。
-- [ ] 当前范围相关测试和必要类型检查/构建实际执行；失败、未做、跳过均如实记录。
-- [ ] 原子成果验证通过后中文提交，停在 ready_for_manual，没有自动做下一项。
+- [x] 只实施本文范围；动代码前已写清修改位置和本次完成标准。
+- [x] 参考源码/本地输入的对应关系已记录；部署和动态配置保留未确认。
+- [x] 普通发起/同意与转发步骤表有源码位置，覆盖代理准备、校验、显示伴生值、前后保存和附言。
+- [x] 本地对照中原调用次数、完整参数、因果顺序、this、返回值、原 Promise 和错误保持。
+- [x] 本地对照新增目标请求、表单调用、业务事件和组件挂载为零；接线未增加业务 await 或等待。
+- [x] 正文可用、页面回填和已有调用返回分开；内部回调、表单异步和目标事实未确认时记未知。
+- [x] 本地覆盖延迟/乱序、挂起、401、四类响应、后续保存失败及身份切换；只证明观察不改变原行为，不冒充真实权限或表单验收。
+- [x] 开关记录及小/大模拟正文有成本对照，未改原调度/截止规则；真实 stdout、页面截止与慢端表现待人工采集。
+- [x] 提供真实基线采集入口、操作步骤和未验证项；没有自动真实写或代替用户验收。
+- [x] 当前相关测试、类型检查和 Node 语法检查实际通过；执行器直接运行 TS，本轮未改页面构建输入，不启动完整服务或跑浏览器构建测试。
+- [x] 本轮代码、测试和证据随本文做同一次中文原子提交；状态停在 ready_for_manual，没有自动做下一项。
 
 ## 7. 怎么验证，不扩大测试范围
 
@@ -159,4 +159,121 @@
 5. 核对开启记录是否影响原来操作和等待。发现功能变化或明显退化，返回本切片修正并重新验证。
 6. 用户明确验收前保持 ready_for_manual。验收后只结束本项；下一项需要根据真实记录重新明确范围并批准。
 
-2026-10-13：本轮只整理可读、可执行的计划，创建中文实施分支，状态仍为 awaiting_approval。没有开始代码实施、上线或用户验收。
+## 9. 本轮实施记录
+
+2026-10-13：用户明确批准开始实施，状态进入 implementing。
+
+本轮写代码前的完成标准：复用现有调用和请求轨迹，仅添加可开关的诊断记录；调用参数、次数、顺序、原 Promise、返回/错误和结果判断保持不变；记录失败不能干扰业务；无法确认的内部完成时间记未知；本地对照证明新增目标请求和表单调用为零，并实测采集成本。完成后中文提交，停在 ready_for_manual。
+
+实际修改位置：新增 executor-service/src/execution-baseline.ts 和 baseline-source.ts；在 target-route.ts 的原有转发/回填，以及 server.ts 的原有创建、装载、动作、选择继续和关闭调用旁接线。新增根目录 test/unit/executor-service 的两个测试与 test/performance/executor-service 的成本实验。未改目标源码、数据库、业务接口或执行规则，未启动浏览器或发送真实业务写。
+
+## 10. 目标步骤表与本地版本差异
+
+以下“应该怎样做”只来自本次目标源码。FC 是参考 rsh-flow-components，IP 是参考 rsh-cloud-invest-power-system，均从 src/ 起算。源码 HEAD 见完整计划附录，10 个参考仓库本轮再次检查，HEAD 未变且工作树干净。
+
+| 动作 | 目标平台已有步骤及源码 | 本次记录能说明什么 |
+|---|---|---|
+| 发起装载 | FC components/InitFlowDialog/InitFlowDialog.vue:64-69/90-139：按权限读候选模板，选择后读详情 | 记录现有导航、宿主捕获和准备返回；不多读模板或权限 |
+| 普通 FormMaking 发起 | FC views/GroupApproveManage/Submitted/components/FlowDialog.vue:659-675/704-760：getData 校验、getValues 完整值、当前身份及关联；876-907：前置事件、可选文件保存、主 submit、成功事件、业务绑定和后处理 | 原请求正文与现有页面调用边界可见；内部文件/事件未全部 await，结束不能猜 |
+| 条件业务绑定 | 同文件:923-937；FC views/GroupApproveManage/flowBusinessLifecycle.js:29-57：只有已注册业务类型要求绑定，其他类型 skipped | 不能规定所有普通表单必须发同一绑定 HTTP；看当前实际业务链 |
+| 发起权限准备 | WC FlowSubmitServiceImpl.java:102-125/422-429：submit(first) 缺代理时先复制代理 | 保存原请求/响应，不把它标成无业务保存的普通读 |
+| 普通 FormMaking 同意 | IP views/GroupApproveManage/components/EnterpriseExamineOpinion.vue:745-773/888-899/976-1000/1032-1048/1087-1110/1768-1788：确认与意见、校验和完整值、归属及人员、前置业务/文件/人员事件、audit、后处理 | 分发返回、原确认、已有结果检测和请求分开；内部业务结束未知 |
+| 转发 | FC/IP views/GroupApproveManage/components/flowTypeMixin.js:139-199/206-266/270-299/311-351：原附言/日志、历史参数、接收人/关联、transpond 返回新实例、保存当前附言、刷新关闭 | 两笔现有写分别记录；第二笔失败不补发第一笔，fuyan 不决定第二笔是否应该保存 |
+| 四类选择 | IP EnterpriseExamineOpinion.vue:1827-1890/1802-1818，parallel 继续:655-675：custom_choose、parallel_choose、run_node_choose、extended_attribute_users | 完整响应原样记录；四类记录通过不等于当前执行器已经完整支持四类继续 |
+| 回调/401 | FC utils/axios.js:185-232：异步 callback 不被 await，部分错误/401/选择分支不结束外层 Promise | HTTP 正文可用不能证明业务回调完成；没有新增 then、计时器或取消 |
+
+本地输入记录（2026-10-13）：
+
+| 项目 | 已确认内容 | 没有证明什么 |
+|---|---|---|
+| 本次参考 FC | 24f3a280cd3942cf26644bd278c84c7aa3a8b116 | 不代表目标部署或执行器当前输入 |
+| 执行器清单、同步元数据和检出 HEAD | e141a799408192bac1fe1f3dc7d821a2cee64986，与参考 FC 不同；检出树还有 5 个工具噪声文件删除 | 不冒充参考 HEAD；本轮不修或同步该副本 |
+| 原生页面构建戳 | inputDigest=0ab8d532a8cd027bb1681b614255f9da2bfa14106b574d05518a7f7e3c3d56bf；builtAt=2026-09-27T02:26:47.627Z；按现有构建算法重算匹配 | 算法跳过 dist，包括 FormMaking bundle，不能证明完整产物或当前运行页面 |
+| 配置页面副本 | .f007-source.json 记录 master@bff4ef8b938db5578c3f7eab1f482a4e9388917c；当前摘要与其元数据不匹配，原因未确认 | 摘要算法包含 dist，不能直接认定业务源码改脏；清单要求 test 也不证明已经同步 |
+| 本地两份 FormMaking.common.js | 都是 1,441,497 字节，SHA-256=79551fb9e5ae7c6e69008f485563e8115c9905e90902c54a5148ff74eb35828c | 只证明两份字节相同；不能对应本次 FM HEAD，也不能证明目标部署产物 |
+| 组件对照 | 参考、执行器副本、配置副本的 FlowDialog/ExamineOpinion 字节均不同；配置副本缺 flowBusinessLifecycle.js | 目标参考步骤不能直接写成当前执行器已经全部做到 |
+| 真实环境 | 未调用真实目标接口，未启动服务或浏览器 | 目标部署、动态表单配置、真实吞吐和权限结果仍未确认 |
+
+顺带发现、但本切片没有修改的当前执行差异：server.ts 用 fuyan 设置 forwardPostscriptRequired；native-actions.ts/completion.ts 的选择判断仍按现有三类和单次继续处理。这与本次目标源码的完整语义不能直接等同。当前自动回归只证明新增记录没有改变这些既有判断，不证明它们已经修正。
+
+## 11. 实际验证与采集成本
+
+使用 Node v22.23.2。以下文件逐个直接执行，避免测试 runner 另开子进程：
+
+```powershell
+node --experimental-strip-types test/unit/executor-service/execution-baseline.test.ts
+node --experimental-strip-types test/unit/executor-service/baseline-source.test.ts
+node --experimental-strip-types test/unit/executor-service/completion.test.ts
+node --experimental-strip-types test/integration/executor-service/actions.test.ts
+node --experimental-strip-types test/performance/executor-service/execution-baseline-benchmark.ts
+pnpm --filter test-auto-pro-v2-executor-service typecheck
+node --experimental-strip-types --check executor-service/src/server.ts
+```
+
+- 新记录对照 17/17、来源采集 5/5、现有结果检测 11/11、现有生产动作分发 17/17，共 50/50 通过，无跳过。
+- 类型检查和服务入口语法检查通过；没有运行会启动 Chromium 的总测试、probe 或服务。
+- 两轮只读接线复查完成；额外错误转换可能改变原对象的问题已修复并补回归。默认 stdout 的实际两条诊断行已用本文 PowerShell 过滤/解析方法验证，未启动服务；这不是完整 stdout 成本基准。
+- 最初用 node --test 同时跑四个文件，环境禁止创建测试子进程，报 spawn EPERM；改用上面的逐文件入口后通过。这次失败是执行方式限制，保留记录，不算业务测试通过。
+- Node 提示根包未声明 type:module；pnpm 使用的 Node v20.11.1 提示 web 的 engine 要求。相关检查返回 0；本切片未顺手改根包或工具链。
+
+2026-10-13 本地成本实验结果（只是这一轮样本，不是稳定性能承诺）：
+
+| 实验 | 样本与范围 | 关闭记录批次 P95 | 开启记录批次 P95 | 业务调用对照 |
+|---|---|---:|---:|---|
+| 内存 JSON 编码 | 各 100 样本，每批 200 调用，各预热 2000 | 0.0067 ms | 1.4279 ms | 两边原调用/模拟请求/表单计数各 22000，新增调用为 0 |
+| 256 字节模拟正文写文件 | 各 100 样本，每批 2 调用，各预热 20 | 0.0011 ms | 0.1390 ms | 各 220 调用；开启写 880 条、约 0.52 MB |
+| 64 KiB 模拟正文写文件 | 同上 | 0.0012 ms | 0.9235 ms | 各 220 调用；开启写 880 条、约 29.24 MB |
+
+实验也输出最大值、编码量和堆/RSS采样，活动步骤最终为 0。它包含真实 JSON 编码及本地 writeSync，但不包含 fsync、真实页面、生产 console/stdout 重定向和目标服务；内存采样也不是累计分配量。真实日志环境会有额外开销，仍须第 12 节人工采集，不能宣称记录“零成本”或已经提速。
+
+## 12. 从哪里开启、怎么看记录
+
+没有新增页面按钮、业务接口或数据库字段。诊断开关是执行服务进程环境变量 `EXECUTOR_BASELINE=1`，默认关闭。只在你手工启动的执行器上开启；先处理好当前在途动作，不在有未知业务写时直接重启。
+
+以下是项目根目录 PowerShell 的手工采集示例，使用支持 strip-types 的 Node。用户自行操作，本轮未执行这些启动命令：
+
+```powershell
+New-Item -ItemType Directory -Force -Path ".runtime" | Out-Null
+$env:EXECUTOR_BASELINE = "1"
+$env:EXECUTOR_DISABLE_AUTO_SYNC = "1"
+node --env-file-if-exists=executor-service/.env --experimental-strip-types executor-service/src/server.ts *> .runtime/f045-executor-baseline.log
+```
+
+关闭自动拉取是为本次采集固定本地输入，不改变源码版本或业务规则。现有服务启动仍有本地构建步骤，启动后的 local_source 记录才是该进程当时读取的线索；本轮没有运行同步或构建来替换目标副本。
+
+从日志取出诊断行，按账号/路径/步骤核对：
+
+```powershell
+$f045Records = Get-Content -LiteralPath ".runtime/f045-executor-baseline.log" |
+  Where-Object { $_ -match '^\{"type":"execution_baseline"' } |
+  ForEach-Object { ConvertFrom-Json -InputObject $_ }
+$f045Records |
+  Select-Object sequence,name,phase,durationMs,outcome,
+    @{Name="pathRunId";Expression={$_.context.pathRunId}},
+    @{Name="stepId";Expression={$_.context.stepId}} |
+  Format-Table -AutoSize
+```
+
+记录中的 context 是该调用开始时已持有的信息；没有传入的项目、批次等明确 unknown/not_supplied，真实请求还保留完整头和正文。结束行沿用开始身份，晚响应不归到下一个动作。完整正文保持原编码：base64 需要按原编码解码，不截断、不脱敏；同时可用已有 Go network.log 核对真实目标传输时间，两个口径不能直接相加。
+
+| 记录名称 | 怎样理解 |
+|---|---|
+| local_source | 本机版本线索，部署与 FormMaking 源码来源依然 unknown |
+| session_create / session_destroy | 原有创建/关闭调用的可见耗时；session_closed_event 本身不证明 Context 已关闭 |
+| load、navigation、host_capture、native_load_preparation | 原有装载边界返回，不等于内部表单异步全完成 |
+| existing_options_wait_*、existing_form_patch、existing_patch_restore | 原有等待和已有 setter/恢复步骤的耗时；没有新增 getter/setter |
+| native_dispatch_invocation | 原函数同步返回；原 Promise 对象没有替换，也没有新增 then |
+| native_dispatch_evaluate | 原 page.evaluate 返回；内部业务脚本/保存是否完成仍未知 |
+| target_response | Go 配对返回完整响应已可用；包含通道/排队等等待，不是纯目标网络时间 |
+| page_fulfill | 原页面回填调用返回；不是原生业务回调完成 |
+| existing_completion_detection / execute_returned | 当前执行器已有判定已返回；记录不修其规则、不证明目标事实核对完成 |
+
+checkpoint 的 pending 是仍未观察到结束的步骤，不取消它们。unknowns 列出的内部表单、业务回调、目标事实和部署版本没有被推断为完成。stats 中 sinkFailures 或 droppedSpans 非零说明记录不完整，不得拿它作为下一项优化的可信证据。
+
+为了不触发错误对象的 getter、toString 或代理钩子，新增诊断不会额外读取业务错误对象的内容，仅记对象内容未观察。原业务返回和原日志继续保留详细错误；目标 HTTP 的原有请求/响应和 abortReason 按已有内容记录，不能把新增摘要当成完整业务错误的替代。
+
+人工按第 8 节操作普通发起/同意、转发两种 fuyan 情况，先核对功能，再看耗时。需要开/关比较时使用不同的等价受控实例，不对同一真实实例重复主写。账号、模板、字段和数据量要保持可比，不能把它们变化造成的差异归因于开关记录；首次与重复装载、无人观察与持续观察、同环境与切换环境分别标注。
+
+采集结束，在确认在途动作状态后正常停止执行器；下次启动不设置 EXECUTOR_BASELINE=1 即不记录。PowerShell 中用 `Remove-Item Env:EXECUTOR_BASELINE -ErrorAction SilentlyContinue` 恢复诊断开关；EXECUTOR_DISABLE_AUTO_SYNC 是否保留按现有本地启动要求决定，本文不授权额外同步。日志保留在本机 .runtime，不提交。
+
+当前停在 ready_for_manual，真实流程和真实日志成本待用户核对，没有进入 accepted，也没有开始 P1～P4。
