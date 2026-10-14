@@ -107,7 +107,38 @@ func planFailedStepRetry(compiledSteps []model.CompiledActionStep, totalSteps *i
 	return plan, nil
 }
 
+// failedStepRetrySafe 判断失败步骤是否可以安全重发；只有每一次尝试都明确证明没有目标副作用才允许。
+// 失败步骤只要出现一次 possible、uncertain 或缺失副作用事实，就必须停在原地，避免再次发送同一业务写请求。
+func failedStepRetrySafe(steps []model.RunStep, attempts []model.RunStepAttempt, failedStepNo int) bool {
+	var stepID uint64
+	for _, row := range steps {
+		if row.StepNo == failedStepNo {
+			stepID = row.ID
+			break
+		}
+	}
+	if stepID == 0 {
+		return false
+	}
+	seen := false
+	for _, attempt := range attempts {
+		if attempt.StepID != stepID {
+			continue
+		}
+		seen = true
+		if attempt.SideEffect != "none" {
+			return false
+		}
+	}
+	return seen
+}
+
 // PlanFailedStepRetryForTest 把 planFailedStepRetry 暴露给定向单测：测试与产品走同一份校验规则。
 func PlanFailedStepRetryForTest(compiledSteps []model.CompiledActionStep, totalSteps *int, factRows []model.RunStep) (RetryPlan, error) {
 	return planFailedStepRetry(compiledSteps, totalSteps, factRows)
+}
+
+// FailedStepRetrySafeForTest 暴露失败步骤副作用门禁，供根目录测试锁定“不确定不重发”规则。
+func FailedStepRetrySafeForTest(steps []model.RunStep, attempts []model.RunStepAttempt, failedStepNo int) bool {
+	return failedStepRetrySafe(steps, attempts, failedStepNo)
 }

@@ -899,6 +899,10 @@ func (s *RunOrchestrationService) RetryFailedStep(ctx context.Context, runID uin
 	if err != nil {
 		return nil, err
 	}
+	attemptRows, err := s.store.ListRunAttempts(ctx, pathRunID)
+	if err != nil {
+		return nil, err
+	}
 	// 重试按当前 user_actions 重新编译场景；前缀校验确保失败后没改过配置，
 	// 改过就拒绝——继续执行一份与原运行不同的场景比重新发起一次运行更危险。
 	runCtx, err := s.buildRunContext(ctx, runRow.PlanID, pathRun.ExecutionPathID)
@@ -908,6 +912,10 @@ func (s *RunOrchestrationService) RetryFailedStep(ctx context.Context, runID uin
 	plan, err := planFailedStepRetry(runCtx.Steps, pathRun.TotalSteps, factRows)
 	if err != nil {
 		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict, Message: err.Error()}
+	}
+	if !failedStepRetrySafe(factRows, attemptRows, plan.StepNo) {
+		return nil, &RunOrchestrationError{Kind: RunOrchestrationConflict,
+			Message: "失败步骤已经发出过可能产生副作用的请求，不能重试同一动作；请先到目标平台确认后重新发起运行"}
 	}
 	reopenedPathRun, reopenedRun, err := s.runState.ReopenForRetry(ctx, pathRunID, plan.StepNo)
 	if err != nil {
@@ -1502,7 +1510,7 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	// 前提是执行现场不在（有现场说明运行仍在推进，谈不上重试）。
 	detail.Retryable = pathRun.Status == model.PathRunStatusFailed &&
 		(pathRun.FailureClass == nil || *pathRun.FailureClass != model.FailureClassWriteUncertain) &&
-		len(steps) > 0 && controlView == nil
+		len(steps) > 0 && controlView == nil && failedStepRetrySafe(steps, attempts, steps[len(steps)-1].StepNo)
 	if err := s.fillRunPathSummaries(ctx, run, detail); err != nil {
 		return nil, err
 	}

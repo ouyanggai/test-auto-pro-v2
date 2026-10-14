@@ -109,3 +109,26 @@ func TestF028RetryPlanRejectsStartupFailureAndBrokenFacts(t *testing.T) {
 		t.Fatalf("失败步骤无失败记录必须拒绝重试")
 	}
 }
+
+// TestF028RetryRequiresExplicitNoSideEffect 确认只有每次尝试都证明零副作用时才允许重发失败步骤。
+func TestF028RetryRequiresExplicitNoSideEffect(t *testing.T) {
+	steps := []model.RunStep{{ID: 1, StepNo: 1, Status: model.RunStepSucceeded}, {ID: 2, StepNo: 2, Status: model.RunStepFailed}}
+	tests := []struct {
+		name     string
+		attempts []model.RunStepAttempt
+		want     bool
+	}{
+		{name: "明确没有副作用", attempts: []model.RunStepAttempt{{StepID: 2, AttemptNo: 1, SideEffect: "none"}}, want: true},
+		{name: "转发主请求可能已生效", attempts: []model.RunStepAttempt{{StepID: 2, AttemptNo: 1, SideEffect: "possible"}}},
+		{name: "重试中先无副作用后可能生效", attempts: []model.RunStepAttempt{{StepID: 2, AttemptNo: 1, SideEffect: "none"}, {StepID: 2, AttemptNo: 2, SideEffect: "possible"}}},
+		{name: "缺少副作用事实", attempts: []model.RunStepAttempt{{StepID: 2, AttemptNo: 1}}},
+		{name: "缺少失败尝试", attempts: []model.RunStepAttempt{{StepID: 1, AttemptNo: 1, SideEffect: "none"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := service.FailedStepRetrySafeForTest(steps, test.attempts, 2); got != test.want {
+				t.Fatalf("安全重试判定 = %v，期望 %v", got, test.want)
+			}
+		})
+	}
+}
