@@ -173,6 +173,25 @@ func TestPlanServiceUpdatesPlanAfterRun(t *testing.T) {
 	}
 }
 
+// TestPlanServiceKeepsPausedSourcesEditable 验证暂停新建的旧来源计划仍可按原来源编辑保存。
+func TestPlanServiceKeepsPausedSourcesEditable(t *testing.T) {
+	for _, source := range []string{"started", "pending"} {
+		t.Run(source, func(t *testing.T) {
+			repo := newMemoryPlanRepository()
+			repo.plans = []model.Plan{{ID: 9, Name: "旧计划", Account: "account", AccountDisplayName: "账号", FlowSource: source, TargetObjectID: "obj", TargetObjectName: "流程", RunMode: "serial"}}
+			updated, err := service.NewPlanService(repo).Update(context.Background(), 9, service.UpdatePlanInput{
+				Name: "改过名称", Account: "account", AccountDisplayName: "账号", FlowSource: source, TargetObjectID: "obj", TargetObjectName: "流程", RunMode: "serial",
+			})
+			if err != nil {
+				t.Fatalf("旧来源计划应允许保存其他编辑：%v", err)
+			}
+			if updated.FlowSource != source || updated.TargetObjectID != "obj" || updated.Name != "改过名称" {
+				t.Fatalf("编辑应保留原流程来源和目标：%+v", updated)
+			}
+		})
+	}
+}
+
 // TestPlanServiceValidatesCreateBoundaries 验证创建计划的字段边界。
 func TestPlanServiceValidatesCreateBoundaries(t *testing.T) {
 	parallelOne := 1
@@ -189,7 +208,9 @@ func TestPlanServiceValidatesCreateBoundaries(t *testing.T) {
 	}{
 		{name: "幂等键缺失", key: ""},
 		{name: "计划名缺失", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.Name = "" }},
-		{name: "来源非法", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.FlowSource = "other" }},
+		{name: "已发来源暂停开放", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.FlowSource = "started" }},
+		{name: "待发来源暂停开放", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.FlowSource = "pending" }},
+		{name: "未知来源", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.FlowSource = "other" }},
 		{name: "流程缺失", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.TargetObjectID = "" }},
 		{name: "串行含并发数", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.MaxConcurrency = &serialValue }},
 		{name: "并行并发越界", key: testCreateKey, edit: func(input *service.CreatePlanInput) { input.RunMode = "parallel"; input.MaxConcurrency = &parallelOne }},

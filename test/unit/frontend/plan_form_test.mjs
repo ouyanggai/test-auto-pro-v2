@@ -11,12 +11,10 @@ import {
   takeCandidateBatches,
 } from '../../../web/src/features/plans/selection.ts'
 
-test('未验证账号时只允许新发起来源', () => {
-  assert.equal(isFlowSourceAvailable('new', false), true)
-  assert.equal(isFlowSourceAvailable('started', false), false)
-  assert.equal(isFlowSourceAvailable('pending', false), false)
-  assert.equal(isFlowSourceAvailable('started', true), true)
-  assert.equal(isFlowSourceAvailable('pending', true), true)
+test('新建计划当前只允许新发起来源', () => {
+  assert.equal(isFlowSourceAvailable('new'), true)
+  assert.equal(isFlowSourceAvailable('started'), false)
+  assert.equal(isFlowSourceAvailable('pending'), false)
 })
 
 test('三个来源返回三类语义不同的本地候选', () => {

@@ -117,7 +117,7 @@ const sourceOptions = computed(() => (
   (Object.entries(flowSourceLabels) as Array<[FlowSource, string]>).map(([value, label]) => ({
     value,
     label,
-    disabled: !isFlowSourceAvailable(value, accountVerified.value),
+    disabled: !isFlowSourceAvailable(value),
   }))
 ))
 const selectedCandidateKey = computed(() => {
@@ -423,7 +423,7 @@ watch(() => form.account, async () => {
 })
 
 watch(() => form.flowSource, async (source) => {
-  if (!isFlowSourceAvailable(source, accountVerified.value)) {
+  if (!isFlowSourceAvailable(source)) {
     form.flowSource = 'new'
     return
   }
@@ -613,7 +613,7 @@ async function submitPlan() {
                   {{ option.label }}
                 </n-radio-button>
               </n-radio-group>
-              <n-text v-if="!accountVerified" depth="3">验证账号后可选择“已发”或“待发”。</n-text>
+              <n-text depth="3">目前只开放“新发起”，从流程模板创建计划。</n-text>
             </div>
           </n-form-item-gi>
 

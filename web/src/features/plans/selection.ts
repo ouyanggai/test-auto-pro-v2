@@ -14,8 +14,8 @@ export const flowSelectionLabels: Record<FlowSource, string> = {
   pending: '待发流程',
 }
 
-export function isFlowSourceAvailable(source: FlowSource, accountVerified: boolean): boolean {
-  return source === 'new' || accountVerified
+export function isFlowSourceAvailable(source: FlowSource): boolean {
+  return source === 'new'
 }
 
 export function getCandidateSearchText(candidate: FlowCandidate): string {

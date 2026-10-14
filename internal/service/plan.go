@@ -263,6 +263,9 @@ func validateCreateInput(createKey string, input CreatePlanInput, now time.Time)
 
 // validatePlanFields 校验创建与编辑共用的计划配置边界，不把编辑请求伪装成创建请求。
 func validatePlanFields(input CreatePlanInput, now time.Time) string {
+	if input.FlowSource != "new" {
+		return "目前只支持从流程模板新发起创建计划"
+	}
 	return validatePlanFieldsForUpdate(input, now, false)
 }
 
