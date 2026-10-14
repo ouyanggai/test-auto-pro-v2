@@ -97,6 +97,10 @@ func (e *Executor) EnableRuntimeExecution(runner RuntimeRunner, loadBaseURL stri
 // shouldRunViaRuntime 判定本步是否走 runtime：原生页面支持的渲染类型统一承载七个表单动作。
 // Go 直连动作（加签/移交/回退/取回/撤回/催办/关注/取消关注）与系统节点永不经 runtime。
 func (e *Executor) shouldRunViaRuntime(runCtx RunContext, step model.CompiledActionStep) bool {
+	// 转发是“创建新实例再保存当前附言”的复合动作，缺执行器也不能退回单笔直连。
+	if step.Action == model.ActionForward {
+		return true
+	}
 	if e.runtimeRunner == nil {
 		return false
 	}
@@ -118,6 +122,14 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	}
 	reportPhase(approved, "submit", fmt.Sprintf("正在经无头表单运行时执行\"%s\"：真实页面组件将按目标顺序执行业务与流程请求，完成后仍会重读目标平台核验", firstNonEmpty(preview.ActionName, string(step.Action))))
 	action := string(step.Action)
+	if e.runtimeRunner == nil {
+		preview.writeSent = false
+		preview.writeErr = fmt.Errorf("执行服务未配置，拒绝执行且不回退直连接口")
+		preview.writeErrClass = model.FailureClassGateBlocked
+		preview.runtimeHandled = true
+		log.Phase("submit", step.Sequence, approved.Attempt, preview.writeErr.Error())
+		return true
+	}
 	if err := e.runtimeRunner.Health(ctx); err != nil {
 		preview.writeSent = false
 		preview.writeErr = fmt.Errorf("执行服务不可用，拒绝执行且不回退旧接口：%w", err)
@@ -283,6 +295,11 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	case model.ActionForward:
 		runRequest.LoadMode = runtimeexec.LoadModeForward
 		runRequest.ForwardCheckList = stringSliceParameter(step.Parameters, "forwardCheckList")
+		// 转发复制的是目标当前正文，不执行审批字段补丁或后继审批人注入。
+		// 当前附言允许空文本，不能借用“代为同意”的默认审批意见。
+		runRequest.AuditDesc, _ = step.Parameters["approveMessage"].(string)
+		runRequest.ChangedFields = nil
+		runRequest.ReadonlyFields = nil
 		// 转发必须装载「待办」(backlog) 列表页，不能按实例来源改选「待发」(dueout)。
 		//
 		// 为什么（2026-09-21 运行 80 路径 1 第 43 步实测）：原生列表页的「转发」入口只在
@@ -304,6 +321,9 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	// 防止目标返回的临时节点集合诱导工具发出与已保存配置无关的分支。
 	// 没有边表的旧数据保持既有行为（与 F-034 T04 同一口径）；有边表而校验不过即写前阻塞。
 	for branchNodeID, entryID := range runCtx.BranchSelections {
+		if step.Action == model.ActionForward {
+			break
+		}
 		if len(runCtx.GraphEdges) > 0 {
 			reachable := false
 			for _, edge := range runCtx.GraphEdges[branchNodeID] {
@@ -324,6 +344,9 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		runRequest.BranchSelections = append(runRequest.BranchSelections, runtimeexec.BranchSelection{NodeProxyID: branchNodeID, EntryNodeID: entryID})
 	}
 	for nodeKey, auditors := range runCtx.NextNodeAuditors {
+		if step.Action == model.ActionForward {
+			break
+		}
 		if info, ok := runCtx.Nodes[nodeKey]; ok {
 			for _, auditor := range auditors {
 				// 空人员条目绝不下发：runtime 会把它们原样装入目标的 nextAuditorList，
@@ -367,6 +390,10 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	preview.runtimeHandled = true
 	e.rememberRuntimeFacts(preview, result)
 	preview.writeResponse = target.WriteResponse{StatusCode: 200, IsSuccessPresent: true, IsSuccess: result.Status == "success"}
+	if step.Action == model.ActionForward && result.ForwardInstanceID != "" {
+		// 第二笔失败也要保留第一笔创建的实例；它不是原主实例，绝不能覆盖主实例引用。
+		preview.writeResponse.Data, _ = json.Marshal(map[string]string{"id": result.ForwardInstanceID})
+	}
 	switch result.Status {
 	case "success":
 		preview.writeSent = true
@@ -2250,6 +2277,14 @@ func (e *Executor) RunApprovedStep(ctx context.Context, approved ApprovedStep) (
 		observation.ActionFactVerified = true
 	}
 	verdictResult := verdict.Evaluate(observation)
+	if step.Action == model.ActionForward && preview.runtimeStatus == "business_failed" {
+		// 主实例游标不变不能证明“转发没写入”：第一笔可能已经创建新实例。
+		// 明确的后续保存失败必须停步，不能被可选动作的“无副作用跳过”规则放行。
+		verdictResult = verdict.Verdict{
+			Outcome: verdict.OutcomeFailed, SideEffect: verdict.SideEffectPossible,
+			Reason: preview.runtimeMessage, Basis: "转发主请求已成功，但当前附言没有完整保存；禁止重发转发主请求",
+		}
+	}
 	userMessage := userResultMessage(step.Action, verdictResult, preview.writeResponse, preview.writeErr, after)
 	log.Phase("verify", step.Sequence, attemptNo, "执行结果："+userMessage)
 
@@ -3599,35 +3634,26 @@ func (e *Executor) classifyRollbackReread(ctx context.Context, account, instance
 // "待办是否消失"作判据——那会把一次成功的转发判成"明确未变"，进而升级为
 // "执行结果暂时无法确认"并让整条运行终局停止（2026-09-21 运行 86/87 路径 1 第 43 步实测）。
 //
-// 判据来源必须选 runtime 真正回传的事实：写发生在执行服务的浏览器里，
-// 引擎侧 preview.writeResponse 只承载状态码与成败，**没有响应体**（见 submit 阶段
-// 构造 WriteResponse 的调用点），因此按"响应 data.id"判定必然恒为空、恒判无法确认。
-// 这里改用两条真实可得的事实：
-//  1. runtime 回传的辅助实例标识（转发在目标侧派生关联实例时非空）：
-//     以"已发"列表可见性核对，可见即视为已生效；
-//  2. 转发写请求本身的成败：执行服务已把浏览器里的写响应收敛为 success，
-//     且写请求确实发出（writeSent），即"目标已接受本次转发"。
-//
-// 两者都拿不到时返回 RereadUnreadable，绝不猜测成功——写结果不确定的保守纪律不变。
-//
-// 第二个返回值是辅助实例引用：转发可能在目标侧派生一条新的关联实例，
-// 控制层据此重绑定代理树；读不到时为空串。
+// 原生组件先创建新实例再保存当前附言，runtime 的 success 必须已经核实这两笔请求。
+// 新实例标识从执行器摘要回填到 writeResponse.Data；它与原主实例分开记录。
+// 已发列表读取只补充可见性证据，不能把失败的第二笔写成成功，也不能丢掉已创建的实例。
 func (e *Executor) classifyForwardReread(ctx context.Context, account string, session target.Session, preview *StepPreview) (verdict.Reread, string) {
-	// 写没发出或明确失败：如实按未生效处理，不做任何"可能成功了"的推断。
+	auxiliary := forwardAuxiliaryInstanceID(preview.writeResponse.Data)
+	// 未发送与部分写入必须分开；第二笔失败不代表第一笔创建的实例不存在。
 	if !preview.writeSent {
 		e.recordForwardRereadReason(preview, "转发写请求未发出，无从核对结果")
 		return verdict.RereadUnchanged, ""
 	}
 	if preview.writeErr != nil {
-		e.recordForwardRereadReason(preview, "转发写请求未成功："+preview.writeErr.Error())
+		e.recordForwardRereadReason(preview, "转发完整步骤未成功："+preview.writeErr.Error())
+		if auxiliary != "" || preview.runtimeStatus == "business_failed" || preview.runtimeStatus == "uncertain" || preview.runtimeStatus == "timeout" {
+			return verdict.RereadUnreadable, auxiliary
+		}
 		return verdict.RereadUnchanged, ""
 	}
-	// 辅助实例：只有响应体里带的关联实例才需要再做可见性核对；
-	// 取不到时不影响主判定——转发不产生新主实例是常态。
-	auxiliary := forwardAuxiliaryInstanceID(preview.writeResponse.Data)
 	if auxiliary == "" {
-		e.recordForwardRereadReason(preview, "转发写请求已被目标接受（响应 isSuccess=true），未派生关联实例")
-		return verdict.RereadAdvanced, ""
+		e.recordForwardRereadReason(preview, "转发没有返回新实例标识，无法确认附言保存属于本次转发")
+		return verdict.RereadUnreadable, ""
 	}
 	reader, ok := e.target.(interface {
 		FindSubmittedFlow(context.Context, target.Session, string) (string, []string, string, []string, bool, error)

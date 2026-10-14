@@ -70,6 +70,21 @@ test('转发调用列表组件 confirmTranspond', () => {
   assert.deepEqual(calls, ['forward'])
 })
 
+test('转发保留接收人与历史勾选，并在调用原生方法前写入当前附言，包括空文本', () => {
+  for (const text of ['', '本次附言']) {
+    for (const checkList of [[], ['fuyan']]) {
+      const values: unknown[] = []
+      const host = {
+        $options: { name: 'Backlog' },
+        approveForm: { approveMessage: '旧文本', personId: 'receiver-1', checkList },
+        confirmTranspond () { values.push({ ...this.approveForm }) }
+      }
+      nativeDispatch({ forwardList: host }, { action: 'forward', loadMode: 'forward', auditDesc: text })
+      assert.deepEqual(values, [{ approveMessage: text, personId: 'receiver-1', checkList }])
+    }
+  }
+})
+
 test('同意/不同意走 submitCheckBefore 原生入口且互不误触', () => {
   const calls: string[] = []
   const make = () => makeTree('flowDetail', 'ExamineOpinion', {

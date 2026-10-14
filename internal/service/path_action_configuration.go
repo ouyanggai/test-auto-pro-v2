@@ -258,6 +258,9 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 		}
 		byKey[person.Key] = person
 	}
+	// 转发接收人来自实例级目录，自动配置已经使用这份目录；编辑同一动作也必须按它复验。
+	// 这里只复用当前已读取的真实候选，不放宽人员数量、排除名单或节点归属。
+	instanceTarget := validation.NodeTokens[analyzer.PathConfigInstanceActionKey()]
 	if target.Person != nil {
 		person, ok := byKey[target.Person.Key]
 		if !ok {
@@ -277,6 +280,9 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 			personTarget = target.ActionPersons[string(model.ActionTransfer)]
 		} else if action.Action == model.ActionForward {
 			personTarget = target.ActionPersons[string(model.ActionForward)]
+			if personTarget == nil {
+				personTarget = instanceTarget.ActionPersons[string(model.ActionForward)]
+			}
 		}
 		if personTarget == nil {
 			if action.Action == model.ActionTransfer {
@@ -304,6 +310,15 @@ func validateActionPersons(validation analyzer.PathConfigValidation, nodeKey str
 			if candidate != nil && candidate.Key == key {
 				actionTarget = candidate
 				break
+			}
+		}
+		if actionTarget == nil {
+			for _, action := range actions {
+				candidate := instanceTarget.ActionPersons[string(model.ActionForward)]
+				if action.Action == model.ActionForward && candidate != nil && candidate.Key == key {
+					actionTarget = candidate
+					break
+				}
 			}
 		}
 		if actionTarget == nil {

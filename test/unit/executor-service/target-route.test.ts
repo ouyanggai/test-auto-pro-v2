@@ -152,7 +152,7 @@ test('转发主写与附言按 writeSequence 串行且各自只允许一次', as
           httpStatus: 200,
           headers: { 'content-type': 'application/json' },
           bodyEncoding: 'utf8',
-          body: JSON.stringify({ isSuccess: true })
+          body: JSON.stringify({ isSuccess: true, data: { id: 'new-forward-instance' } })
         }
       }
     })
@@ -161,7 +161,7 @@ test('转发主写与附言按 writeSequence 串行且各自只允许一次', as
     const postscriptURL = new URL('/web/flowInstancePostscript/save', originURL).toString()
     const main = await page.evaluate(`window.doFetch('${mainURL}', { method: 'POST', body: '{}' })`) as { status: number }
     assert.equal(main.status, 200)
-    const postscript = await page.evaluate(`window.doFetch('${postscriptURL}', { method: 'POST', body: '{}' })`) as { status: number }
+    const postscript = await page.evaluate(`window.doFetch('${postscriptURL}', { method: 'POST', body: '{"data":{"flowInstanceId":"new-forward-instance","id":"postscript-1","text":""}}' })`) as { status: number }
     assert.equal(postscript.status, 200)
     await assert.rejects(() => page.evaluate(`window.doFetch('${mainURL}', { method: 'POST', body: '{}' })`))
     assert.deepEqual(sequences, [1, 2])
@@ -187,7 +187,7 @@ test('转发主写成功前禁止发送附言', async () => {
 })
 
 test('目标路径前缀与 Go 侧允许清单镜像', () => {
-  assert.deepEqual(TARGET_PATH_PREFIXES, ['/web/', '/flowInstanceApi', '/api/'])
+  assert.deepEqual(TARGET_PATH_PREFIXES, ['/web/', '/flowInstanceApi', '/api/', '/api'])
 })
 
 test('转发通道未连接禁止导航', () => {

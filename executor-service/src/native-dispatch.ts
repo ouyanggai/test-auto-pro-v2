@@ -71,7 +71,8 @@ export function nativeDispatch (native: NativeCaptured | undefined, input: Dispa
     component = find(container, 'ExamineOpinion')
   }
   const auditDesc = String(input.auditDesc ?? '')
-  if (auditDesc !== '' && component.approveForm && typeof component.approveForm === 'object') {
+  if ((action === 'forward' || auditDesc !== '') && component.approveForm && typeof component.approveForm === 'object') {
+    // 转发允许明确的空附言，不能留下宿主上一次填写的文本。
     (component.approveForm as { approveMessage?: string }).approveMessage = auditDesc
   }
   if (Array.isArray(input.nextNodeAuditors) && input.nextNodeAuditors.length > 0) {

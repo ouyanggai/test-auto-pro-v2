@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -173,15 +172,16 @@ func TestF019ForwardRecordsAuxiliaryInstance(t *testing.T) {
 		instance:     fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
 		afterSubmit:  &fakeTargetView{Found: true, Status: "run", CurrentNodes: []string{"node-audit"}, DueNodes: []string{"node-audit"}},
 		submitResult: &target.SubmitFlowInstanceResult{InstanceID: "instance-main", Status: "run"},
-		actionResponse: target.WriteResponse{
-			StatusCode: 200, IsSuccess: true, IsSuccessPresent: true,
-			Data: json.RawMessage(`{"id":"instance-forwarded"}`),
-		},
+		dueTaskID:    "task-forward",
 	}
-	executor := step.NewExecutor(fakeTarget, &fakeSessions{}, runService, store, fixedRunConfig(), nil)
+	forwardSessions := &forwardControlSessions{}
+	executor := step.NewExecutor(fakeTarget, forwardSessions, runService, store, fixedRunConfig(), nil)
 	controller := control.NewService(runService, executor, store, time.Now)
 	forward := model.CompiledActionStep{Sequence: 2, Source: model.ActionStepSourceUser, Action: model.ActionForward, Scope: model.ActionScopeInstance}
-	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), forward})
+	// 转发后原主实例仍在审批节点，路径也保留该节点，避免夹具把合法落点当成偏离。
+	nextApprove := approveStep()
+	nextApprove.Sequence = 3
+	runCtx := newRunContext([]model.CompiledActionStep{submitStep(), forward, nextApprove})
 	runCtx.ActionPersonIDs = map[string][]string{
 		step.ActionPersonIndex("", model.ActionForward): {"receiver-1"},
 	}
@@ -194,9 +194,12 @@ func TestF019ForwardRecordsAuxiliaryInstance(t *testing.T) {
 	if err != nil || first.NextPreview == nil {
 		t.Fatalf("提交主实例失败：err=%v result=%+v", err, first)
 	}
+	// 本例只替换转发这一步的完整执行事实，不把旧的单笔直连当作转发成功。
+	forwardSessions.runtimeReady = true
+	executor.EnableRuntimeExecution(&forwardResultRunner{status: "success", instanceID: "instance-forwarded"}, "")
 	second, err := controller.ApproveWithCommand(ctx, started.PathRun.ID, model.CommandStep, first.NextPreview.StepNo, 2)
 	if err != nil {
-		t.Fatalf("转发步骤失败：%v", err)
+		t.Fatalf("转发步骤失败：%v，第一次结果=%+v，预览=%+v", err, first, first.NextPreview)
 	}
 	if second.Outcome.AuxiliaryInstanceRef != "instance-forwarded" {
 		t.Fatalf("转发应返回已确认的辅助实例引用：%+v", second.Outcome)

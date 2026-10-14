@@ -107,7 +107,7 @@ func TestActionPayloadsKeepEmptyFormContainer(t *testing.T) {
 	}
 }
 
-// TestForwardEmptyFormUsesAtomicTargetWrite 验证空表单转发能穿过发送前校验并命中目标原子端点。
+// TestForwardEmptyFormUsesAtomicTargetWrite 验证空表单也不能退回只发转发主请求的旧出口。
 func TestForwardEmptyFormUsesAtomicTargetWrite(t *testing.T) {
 	var path string
 	var body map[string]any
@@ -130,18 +130,12 @@ func TestForwardEmptyFormUsesAtomicTargetWrite(t *testing.T) {
 	_, _, err := client.ExecuteActionWrite(context.Background(), target.Session{SID: "sid"}, target.ActionWriteRequest{
 		Action: "forward", ReceiverID: "user-1", Name: "转发测试",
 	})
-	if err != nil {
-		t.Fatalf("空表单转发不应在本地校验阶段被拒绝：%v", err)
+	var validation *target.RequestValidationError
+	if !errors.As(err, &validation) || !strings.Contains(err.Error(), "原生执行器") {
+		t.Fatalf("直连转发必须在写前阻止：%v", err)
 	}
-	if path != target.WriteEndpointTranspond {
-		t.Fatalf("转发写入端点错误：%s", path)
-	}
-	formData, ok := body["formDataMongoVo"].(map[string]any)
-	if !ok {
-		t.Fatalf("实际转发请求缺少 formDataMongoVo：%v", body)
-	}
-	if data, ok := formData["data"].(map[string]any); !ok || len(data) != 0 {
-		t.Fatalf("实际转发请求空表单不正确：%v", formData)
+	if path != "" || body != nil {
+		t.Fatalf("被阻止的直连转发不能到达 HTTP 出口：%s，%v", path, body)
 	}
 }
 
@@ -342,16 +336,6 @@ func TestAllAtomicActionsSendVerifiedTargetContracts(t *testing.T) {
 				return err
 			},
 			fields: map[string]any{"flowInstanceId": "instance-1"},
-		},
-		{
-			name: "转发", endpoint: "/web/flowInstanceApi/transpond",
-			send: func() error {
-				_, _, err := client.ExecuteActionWrite(context.Background(), target.Session{SID: "sid"}, target.ActionWriteRequest{
-					Action: "forward", ReceiverID: "user-2", Name: "转发实例", FormData: formData,
-				})
-				return err
-			},
-			fields: map[string]any{"data.name": "转发实例", "receiverId": "user-2", "formDataMongoVo.data.amount": float64(12)},
 		},
 		{
 			name: "关注", endpoint: "/web/flowInstanceApi/flowTracking",

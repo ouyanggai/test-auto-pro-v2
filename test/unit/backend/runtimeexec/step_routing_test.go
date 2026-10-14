@@ -104,6 +104,7 @@ type fakeRuntimeRunner struct {
 	healthErr error
 	trace     json.RawMessage
 	summary   json.RawMessage
+	forwardID string
 	calls     int
 	requests  []runtimeexec.RuntimeRunRequest
 }
@@ -115,6 +116,7 @@ func (f *fakeRuntimeRunner) Health(context.Context) error {
 	return f.healthErr
 }
 
+// RunAction 记录实际传入的运行时请求，并返回测试指定的状态和独立转发实例。
 func (f *fakeRuntimeRunner) RunAction(_ context.Context, request runtimeexec.RuntimeRunRequest) (runtimeexec.ActionRunResult, error) {
 	f.mu.Lock()
 	f.calls++
@@ -123,7 +125,7 @@ func (f *fakeRuntimeRunner) RunAction(_ context.Context, request runtimeexec.Run
 	if f.err != nil {
 		return runtimeexec.ActionRunResult{Status: "failed", Message: "fake-error", WriteTraceIDs: []string{"trace-1"}}, f.err
 	}
-	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake", RequestTrace: f.trace, BusinessSummary: f.summary}, nil
+	return runtimeexec.ActionRunResult{Status: f.status, Message: "fake", RequestTrace: f.trace, BusinessSummary: f.summary, ForwardInstanceID: f.forwardID}, nil
 }
 
 func (f *fakeRuntimeRunner) callCount() int {
@@ -190,22 +192,30 @@ func runtimeRunCtx() step.RunContext {
 	}
 }
 
-// TestRoutingWithoutRunnerKeepsGoPath 未配置 runtime：所有动作都不走 runtime（第一阶段兼容）。
+// TestRoutingWithoutRunnerKeepsGoPath 未配置 runtime 时其他既有动作保持路由，转发必须阻塞而不能回退单笔直连。
 func TestRoutingWithoutRunnerKeepsGoPath(t *testing.T) {
 	executor := newExecutorForRouting(t, &recordingTarget{}, nil)
 	runCtx := runtimeRunCtx()
-	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionApprove, model.ActionForward, model.ActionAddSign} {
+	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionApprove, model.ActionAddSign} {
 		if executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
 			t.Fatalf("未配置 runtime 时动作 %s 不应走 runtime", action)
 		}
 	}
+	if !executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(model.ActionForward)) {
+		t.Fatal("转发不允许回退 Go 单笔直连")
+	}
+	preview := &step.StepPreview{ActorAccount: "actor-acct"}
+	executor.RunViaRuntimeForTest(context.Background(), runCtx, runtimeStep(model.ActionForward), target.Session{}, preview, step.ApprovedStep{Attempt: 1})
+	if preview.WriteSent() || !strings.Contains(preview.WriteErrForTest().Error(), "未配置") {
+		t.Fatal("缺少执行器的转发必须写前阻塞")
+	}
 }
 
-// TestRoutingWithRunnerCoverActions 配置后六个表单动作走 runtime，Go 直连动作（含转发、撤回等）不走。
+// TestRoutingWithRunnerCoverActions 配置后七个原生动作走 runtime，其他既有直连动作保持路由。
 func TestRoutingWithRunnerCoverActions(t *testing.T) {
 	executor := newExecutorForRouting(t, &recordingTarget{}, &fakeRuntimeRunner{status: "success"})
 	runCtx := runtimeRunCtx()
-	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData, model.ActionApprove, model.ActionReject, model.ActionResubmit} {
+	for _, action := range []model.ActionKey{model.ActionSaveDraft, model.ActionSubmit, model.ActionStorageFormData, model.ActionApprove, model.ActionReject, model.ActionResubmit, model.ActionForward} {
 		if !executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
 			t.Fatalf("表单动作 %s 应走 runtime", action)
 		}
@@ -216,7 +226,7 @@ func TestRoutingWithRunnerCoverActions(t *testing.T) {
 			t.Fatalf("渲染类型 %s 的审批动作都应统一走 runtime", renderType)
 		}
 	}
-	for _, action := range []model.ActionKey{model.ActionForward, model.ActionAddSign, model.ActionTransfer, model.ActionRollback, model.ActionRetrieve, model.ActionWithdraw, model.ActionUrge, model.ActionFollow, model.ActionUnfollow, model.ActionSystemAutomatic} {
+	for _, action := range []model.ActionKey{model.ActionAddSign, model.ActionTransfer, model.ActionRollback, model.ActionRetrieve, model.ActionWithdraw, model.ActionUrge, model.ActionFollow, model.ActionUnfollow, model.ActionSystemAutomatic} {
 		if executor.ShouldRunViaRuntimeForTest(runCtx, runtimeStep(action)) {
 			t.Fatalf("动作 %s 不应走 runtime", action)
 		}

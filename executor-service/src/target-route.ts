@@ -116,14 +116,16 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       }
     }
     const bodyEncoding: 'utf8' | 'base64' = 'base64'
+    const headers = await safeHeaders(request)
     const writeSequence = request.method() === 'POST' && request.url().includes('/web/flowInstanceApi/transpond')
       ? 1
       : request.method() === 'POST' && request.url().includes('/web/flowInstancePostscript/save') ? 2 : undefined
-    if (writeSequence !== undefined && !canSendForwardStep(trace.list(), writeSequence)) {
+    // 检查与登记之间不能 await：并发进入的两笔请求必须看到彼此的占位，防止双写。
+    if (writeSequence !== undefined && !canSendForwardStep(trace.list(), writeSequence, { body, bodyEncoding })) {
       const entry = trace.begin({
         method: request.method(),
         url: request.url(),
-        headers: await safeHeaders(request),
+        headers,
         action: '',
         body,
         bodyEncoding: body ? bodyEncoding : undefined,
@@ -131,14 +133,14 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       })
       trace.markAborted(entry, 'blocked', writeSequence === 1
         ? '转发主请求已登记，禁止重复发送'
-        : '转发主请求尚未确认成功或附言已登记，禁止发送附言')
+        : '转发主请求尚未明确成功、附言实例不匹配或附言已登记，禁止发送附言')
       await route.abort('blockedbyclient')
       return
     }
     const entry: TraceEntry = trace.begin({
       method: request.method(),
       url: request.url(),
-      headers: await safeHeaders(request),
+      headers,
       action: '',
       body,
       bodyEncoding: body ? bodyEncoding : undefined,

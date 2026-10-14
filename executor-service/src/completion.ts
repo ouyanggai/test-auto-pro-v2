@@ -40,7 +40,6 @@ export interface CompletionInput {
   baselineSeq: number
   hardTimeoutMs: number
   idleWindowMs: number
-  forwardPostscriptRequired?: boolean
   formValidationError?: string
   gate?: () => Promise<boolean>
   writeGate?: WriteGate
@@ -73,6 +72,7 @@ export interface ForwardStepEntry {
   state: string
   url: string
   writeSequence?: number
+  response?: { body?: string, bodyEncoding?: string, httpStatus: number }
 }
 
 export interface WriteLookup {
@@ -99,13 +99,38 @@ export class WriteGate {
   }
 }
 
-// canSendForwardStep 转发第一步未确认时禁止附言；同一步不得重复发出。
-export function canSendForwardStep (entries: ForwardStepEntry[], writeSequence: number): boolean {
+// parseForwardJSON 只解析完整 JSON 对象，缺正文、数组或非法正文都不能冒充成功证据。
+function parseForwardJSON (body?: string, bodyEncoding?: string): Record<string, unknown> | null {
+  if (!body) return null
+  try {
+    const value = JSON.parse(bodyEncoding === 'base64' ? Buffer.from(body, 'base64').toString('utf8') : body)
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+  } catch { return null }
+}
+
+// forwardInstanceID 只从明确成功的转发响应取新实例 ID；HTTP 200 本身不能证明成功。
+export function forwardInstanceID (entry: ForwardStepEntry | undefined): string {
+  if (!entry || entry.state !== 'fulfilled' || entry.response?.httpStatus !== 200) return ''
+  const value = parseForwardJSON(entry.response.body, entry.response.bodyEncoding)
+  const data = value?.data as { id?: unknown } | undefined
+  return value?.isSuccess === true && typeof data?.id === 'string' ? data.id.trim() : ''
+}
+
+// postscriptMatchesInstance 确认附言属于这次新实例，允许空文本，但不接受空 ID 或错误容器。
+function postscriptMatchesInstance (request: { body?: string, bodyEncoding?: string } | undefined, instanceId: string): boolean {
+  if (!request || !instanceId) return false
+  const value = parseForwardJSON(request.body, request.bodyEncoding)
+  const data = value?.data as { flowInstanceId?: unknown, id?: unknown, text?: unknown } | undefined
+  return data?.flowInstanceId === instanceId && typeof data.id === 'string' && data.id.trim() !== '' && typeof data.text === 'string'
+}
+
+// canSendForwardStep 两笔写各放行一次；第二笔必须晚于明确成功且指向刚创建的新实例。
+export function canSendForwardStep (entries: ForwardStepEntry[], writeSequence: number, request?: { body?: string, bodyEncoding?: string }): boolean {
   if (writeSequence !== 1 && writeSequence !== 2) return false
   const sameStep = entries.filter(entry => entry.writeSequence === writeSequence || (writeSequence === 1 && entry.url.includes('/web/flowInstanceApi/transpond')))
   if (writeSequence === 1) return sameStep.length === 0
   const first = entries.find(entry => entry.writeSequence === 1 || entry.url.includes('/web/flowInstanceApi/transpond'))
-  if (!first || first.state !== 'fulfilled' || detectFlowRejection(first) !== null) return false
+  if (!postscriptMatchesInstance(request, forwardInstanceID(first))) return false
   return !entries.some(entry => entry.writeSequence === 2 || entry.url.includes('/web/flowInstancePostscript/save'))
 }
 
@@ -162,10 +187,44 @@ export function isPermissionCheckSubmit (entry: { url: string, body?: string, bo
 }
 
 function lockIfNeeded (input: CompletionInput, result: CompletionResult): CompletionResult {
-  if (result.status === 'timeout' || result.status === 'uncertain') {
+  // 转发一旦收口失败也禁止迟到的回调继续写，尤其不能在“附言未发出”之后又补发。
+  if (result.status === 'timeout' || result.status === 'uncertain' || (input.action === 'forward' && result.status !== 'success')) {
     input.writeGate?.lock(result.message ?? result.status)
   }
   return result
+}
+
+// finalizeForward 只用两笔完整响应判定转发，不把原主实例未推进当成没有副作用。
+function finalizeForward (entries: TraceEntry[], mainEntries: TraceEntry[], requestTrace: TraceSummary[]): CompletionResult {
+  const result = (status: CompletionVerdict, message: string): CompletionResult => ({ status, message, requestTrace })
+  const main = mainEntries[0]!
+  if (main.state === 'blocked') return result('failed', `转发主请求被本地阻止：${main.abortReason ?? main.url}`)
+  if (main.state !== 'fulfilled' || !main.response) return result('uncertain', '转发主请求响应丢失，结果待确认；禁止重发主请求')
+  const mainEnvelope = parseForwardJSON(main.response.body, main.response.bodyEncoding)
+  const rejection = detectFlowRejection(main)
+  if (main.response.httpStatus === 401 || mainEnvelope?.isSuccess === false || mainEnvelope?.code === 'RESP401' || mainEnvelope?.code === 'AUTH_401') {
+    return result('target_rejected', rejection ?? String(mainEnvelope?.message ?? '目标拒绝转发'))
+  }
+  if (main.response.httpStatus !== 200 || mainEnvelope?.isSuccess !== true) {
+    return result('uncertain', '转发响应没有完整、明确的成功标记，结果待确认；禁止重发主请求')
+  }
+  const instanceId = forwardInstanceID(main)
+  if (!instanceId) return result('business_failed', '转发主请求已成功，但没有返回新实例 ID，不能安全保存附言')
+  const postscript = entries.filter(entry => entry.method === 'POST' && entry.url.includes(FORWARD_POSTSCRIPT_PATH))
+  // fuyan 控制历史数据；目标源码无论勾选与否，都保存本次附言（包括空文本）。
+  if (postscript.length === 0) return result('business_failed', '转发主请求已成功，但附言请求没有发出；禁止重发主请求')
+  if (mainEntries.length !== 1 || postscript.length !== 1 || postscript[0]!.seq <= main.seq || !postscriptMatchesInstance(postscript[0], instanceId)) {
+    return result('business_failed', '转发主请求已成功，但附言实例或请求顺序不正确；禁止重发主请求')
+  }
+  const saved = postscript[0]!
+  if (saved.state === 'blocked') return result('business_failed', `转发主请求已成功，但附言被本地阻止：${saved.abortReason ?? saved.url}`)
+  if (saved.state !== 'fulfilled' || !saved.response) return result('uncertain', '转发主请求已成功，附言响应丢失，保存结果待确认；禁止重发主请求')
+  const savedEnvelope = parseForwardJSON(saved.response.body, saved.response.bodyEncoding)
+  if (saved.response.httpStatus === 401 || savedEnvelope?.isSuccess === false || savedEnvelope?.code === 'RESP401' || savedEnvelope?.code === 'AUTH_401') {
+    return result('business_failed', `转发主请求已成功，但附言保存失败：${String(savedEnvelope?.message ?? `HTTP ${saved.response.httpStatus}`)}；禁止重发主请求`)
+  }
+  if (saved.response.httpStatus !== 200 || savedEnvelope?.isSuccess !== true) return result('uncertain', '转发主请求已成功，附言缺少完整、明确的成功响应，保存结果待确认；禁止重发主请求')
+  return { status: 'success', requestTrace }
 }
 
 // isFlowWriteEntry 判定一笔请求是否为真实流程主写：端点命中且不是权限校验型 submit。
@@ -192,6 +251,7 @@ function finalize (input: CompletionInput, entries: TraceEntry[]): CompletionRes
     }
     return { status: 'failed', message: `动作没有发出期望写请求 ${expectedPath}`, requestTrace }
   }
+  if (input.action === 'forward') return finalizeForward(entries, expectedEntries, requestTrace)
   const lostWrite = expectedEntries.find(entry => entry.state === 'aborted')
   if (lostWrite) return { status: 'uncertain', message: `写响应丢失：${lostWrite.url}`, requestTrace }
   const blockedWrite = expectedEntries.find(entry => entry.state === 'blocked')
@@ -211,27 +271,7 @@ function finalize (input: CompletionInput, entries: TraceEntry[]): CompletionRes
   if (!hasExpectedSuccess) {
     return { status: 'failed', message: `期望写端点 ${expectedPath} 没有成功响应`, requestTrace }
   }
-  if (input.action === 'forward') {
-    const postscript = entries.filter(entry => entry.method === 'POST' && entry.url.includes(FORWARD_POSTSCRIPT_PATH))
-    if (input.forwardPostscriptRequired && postscript.length === 0) {
-      return { status: 'business_failed', message: '转发主请求已成功，但附言请求没有发出', requestTrace }
-    }
-    const failedPostscript = postscript.find(entry => entry.state !== 'fulfilled' || entry.response?.httpStatus !== 200 || detectEnvelopeRejection(entry) !== null)
-    if (failedPostscript) return { status: 'business_failed', message: `转发主请求已成功，但附言请求未完成：${failedPostscript.url}`, requestTrace }
-  }
   return { status: 'success', requestTrace }
-}
-
-// detectEnvelopeRejection 解析非流程端点的统一响应信封，供转发附言判定使用。
-function detectEnvelopeRejection (entry: TraceEntry): string | null {
-  if (entry.state !== 'fulfilled' || !entry.response) return '响应未完成'
-  if (entry.response.httpStatus !== 200) return `HTTP ${entry.response.httpStatus}`
-  if (!entry.response.body) return null
-  try {
-    const text = entry.response.bodyEncoding === 'base64' ? Buffer.from(entry.response.body, 'base64').toString('utf8') : entry.response.body
-    const parsed = JSON.parse(text)
-    return parsed?.isSuccess === false ? String(parsed.message ?? '目标拒绝') : null
-  } catch { return '响应正文无法解析' }
 }
 
 // settleCompletion 等待动作落定并给出终局；轮询实现，稳定窗内无在途请求即收敛。

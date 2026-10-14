@@ -19,7 +19,7 @@ import { resolveDetailSemantics } from './native-detail.ts'
 import { UnsupportedFormError } from './data-patch.ts'
 import { canContinueChoice, CHOICE_ERRORS } from './native-actions.ts'
 import { nativeChoiceContinue, nativeDispatch, type ChoiceContinueChoice, type DispatchInput } from './native-dispatch.ts'
-import { isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
+import { forwardInstanceID, isPermissionCheckSubmit, settleCompletion, WriteGate } from './completion.ts'
 import type { Page } from 'playwright'
 import { ExecutionBaselineRecorder, describeBaselineError, type BaselineSpan } from './execution-baseline.ts'
 import { readBaselineSource } from './baseline-source.ts'
@@ -37,7 +37,6 @@ interface RuntimeSession {
   actionInFlight: boolean
   destroyed: boolean
   writeGate: WriteGate
-  transpondConfirmed: boolean
   choicePending: boolean
   choicePendingAt: number
   lastChoiceError: Record<string, unknown> | null
@@ -46,7 +45,6 @@ interface RuntimeSession {
   nativeHost: Record<string, unknown> | null
   loadMode: string
   instanceId: string
-  forwardPostscriptRequired: boolean
   formValidationError?: string
   formBefore: Record<string, unknown>
   baseline: ExecutionBaselineRecorder
@@ -998,7 +996,6 @@ async function main (): Promise<void> {
           actionInFlight: false,
           destroyed: false,
           writeGate: new WriteGate(),
-          transpondConfirmed: false,
           choicePending: false,
           choicePendingAt: 0,
           lastChoiceError: null,
@@ -1007,7 +1004,6 @@ async function main (): Promise<void> {
           nativeHost: null,
           loadMode: '',
           instanceId: '',
-          forwardPostscriptRequired: false,
           formBefore: {},
           baseline
         })
@@ -1128,9 +1124,6 @@ async function main (): Promise<void> {
               if (session.writeGate.isLocked && requestPayload.method === 'POST') {
                 throw new ForwardFailure('动作已硬超时，拒绝新写请求')
               }
-              if (requestPayload.url.includes('/flowInstancePostscript/save') && !session.transpondConfirmed) {
-                throw new ForwardFailure('转发主请求未确认成功，禁止发送附言请求')
-              }
               const outcome = await session.channel.send({
                 sessionId: session.sessionId,
                 runId: session.runId,
@@ -1144,9 +1137,6 @@ async function main (): Promise<void> {
                   const text = outcome.bodyEncoding === 'base64' ? Buffer.from(outcome.body, 'base64').toString('utf8') : outcome.body
                   parsedResponse = JSON.parse(text)
                 } catch { parsedResponse = null }
-              }
-              if (requestPayload.url.includes('/web/flowInstanceApi/transpond') && outcome.httpStatus === 200 && parsedResponse?.isSuccess !== false) {
-                session.transpondConfirmed = true
               }
               // 选择要求识别（S6/P1-6）：流程写响应 isSuccess=false 且 errorType 属于三种选择错误时，
               // 置位 choicePending 并向 Go 发 choice_required 事件；继续命令经 choice_continue 回来。
@@ -1178,7 +1168,6 @@ async function main (): Promise<void> {
           const mode = String(payload.mode ?? 'initiate')
           session.loadMode = mode
           session.instanceId = String(payload.instanceId ?? '')
-          session.forwardPostscriptRequired = Array.isArray(payload.forwardCheckList) && payload.forwardCheckList.map(String).includes('fuyan')
           // 转发使用列表页自身组件；其他模式由 $initFlow/$flowDetail 捕获宿主。
           loadStage = session.baseline.begin('host_capture')
           if (mode === 'forward') {
@@ -1481,9 +1470,9 @@ async function main (): Promise<void> {
           session.baseline.setContext({ action, actionRequestId: envelope.requestId })
           const actionSpan = session.baseline.begin('execute', { baselineSeq: session.route?.trace.lastSeq })
           let actionStage: BaselineSpan | null = null
+          const baselineSeq = session.route?.trace.lastSeq ?? 0
           try {
             session.actionInFlight = true
-            const baselineSeq = session.route!.trace.lastSeq
             // 页面异常只保留为证据，不参与终局；终局只看动作期望写端点响应。
             actionStage = session.baseline.begin('existing_page_error_evidence_before')
             const errorsAtBaseline = await collectPageErrorEvidence(session.page)
@@ -1551,7 +1540,6 @@ async function main (): Promise<void> {
                 baselineSeq,
                 hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000),
                 idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200),
-                forwardPostscriptRequired: session.forwardPostscriptRequired,
                 formValidationError: session.formValidationError,
                 gate: async () => {
                   if (!session.choicePending) return true
@@ -1621,6 +1609,8 @@ async function main (): Promise<void> {
               businessSummary: {
                 dispatched: dispatchFacts,
                 newInstanceId,
+                // 转发新实例独立于原主实例；后续保存失败时也留下已创建的引用。
+                forwardInstanceId: action === 'forward' ? forwardInstanceID(session.route!.trace.list().find(entry => entry.seq > baselineSeq && entry.writeSequence === 1)) : '',
                 debugWrites,
                 formBefore: session.formBefore,
                 pageFormAfter,
@@ -1638,7 +1628,18 @@ async function main (): Promise<void> {
             if (actionStage) session.baseline.end(actionStage, 'error', { error: describeBaselineError(error) })
             if (actionSpan) session.baseline.end(actionSpan, 'error', { error: describeBaselineError(error) })
             session.baseline.checkpoint('execute_failed', { stats: session.baseline.stats() })
-            sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error), executorMs: Math.round(performance.now() - executorStart) })
+            if (action === 'forward' && session.route) {
+              // 页面异常也可能发生在第一笔成功之后：用已收集请求收口，不能报成零写入。
+              const completion = await settleCompletion({ action, trace: session.route.trace, baselineSeq, hardTimeoutMs: Number(process.env.EXECUTOR_ACTION_TIMEOUT_MS || 180000), idleWindowMs: Number(process.env.EXECUTOR_IDLE_WINDOW_MS || 1200), writeGate: session.writeGate })
+              sendEnvelope(ws, session, 'result', envelope.requestId, {
+                ...completion,
+                message: completion.message ?? String((error as Error)?.message ?? error),
+                executorMs: Math.round(performance.now() - executorStart),
+                businessSummary: { forwardInstanceId: forwardInstanceID(session.route.trace.list().find(entry => entry.seq > baselineSeq && entry.writeSequence === 1)), pageError: String((error as Error)?.message ?? error) }
+              })
+            } else {
+              sendEnvelope(ws, session, 'result', envelope.requestId, { status: 'failed', message: String((error as Error)?.message ?? error), executorMs: Math.round(performance.now() - executorStart) })
+            }
           } finally {
             session.actionInFlight = false
           }

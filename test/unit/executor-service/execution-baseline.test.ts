@@ -375,8 +375,8 @@ test('转发主写成功而附言失败，开关记录不改变原判定且不�
       ? outcome({ isSuccess: true, data: { id: 'new-instance' } })
       : outcome({ isSuccess: false, message: '附言保存失败' })))
     await fixture.request({ url: 'https://target.invalid/api/web/flowInstanceApi/transpond', body: '{"data":{"id":"old-instance"},"fuyan":false}' })
-    await fixture.request({ url: 'https://target.invalid/api/web/flowInstancePostscript/save', body: '{"data":{"flowInstanceId":"new-instance","desc":""}}' })
-    const verdict = await settleCompletion({ action: 'forward', trace: fixture.handle.trace, baselineSeq: 0, hardTimeoutMs: 1000, idleWindowMs: 1, forwardPostscriptRequired: true })
+    await fixture.request({ url: 'https://target.invalid/api/web/flowInstancePostscript/save', body: '{"data":{"flowInstanceId":"new-instance","id":"postscript-1","text":""}}' })
+    const verdict = await settleCompletion({ action: 'forward', trace: fixture.handle.trace, baselineSeq: 0, hardTimeoutMs: 1000, idleWindowMs: 1 })
     return { fixture, verdict: { status: verdict.status, message: verdict.message } }
   }
   const off = await run(false)
@@ -386,6 +386,18 @@ test('转发主写成功而附言失败，开关记录不改变原判定且不�
   assert.deepEqual(on.verdict, off.verdict)
   assert.equal(on.verdict.status, 'business_failed')
   assert.equal(on.fixture.events.filter(event => event.kind === 'forward').length, 2)
+})
+
+test('并发进入的重复转发主请求只有一笔能到写出口', async () => {
+  const response = Promise.withResolvers<ForwardOutcome>()
+  const fixture = await makeFakeRouteFixture(false, () => response.promise)
+  const first = fixture.request({ url: 'https://target.invalid/api/web/flowInstanceApi/transpond', body: '{}' })
+  const duplicate = fixture.request({ url: 'https://target.invalid/api/web/flowInstanceApi/transpond', body: '{}' })
+  await duplicate
+  assert.equal(fixture.events.filter(event => event.kind === 'forward').length, 1)
+  assert.deepEqual(fixture.handle.trace.list().map(entry => entry.state), ['forwarding', 'blocked'])
+  response.resolve(outcome({ isSuccess: true, data: { id: 'new-instance' } }))
+  await first
 })
 
 test('正文转发失败仍保持原中止行为，不新发请求', async () => {

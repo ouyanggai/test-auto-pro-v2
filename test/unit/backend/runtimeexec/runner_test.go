@@ -19,9 +19,11 @@ import (
 
 // runnerHarness 汇集执行器测试的假服务与捕获结果。
 type runnerHarness struct {
-	mu          sync.Mutex
-	loadBodies  []string
-	loadPayload map[string]any
+	mu            sync.Mutex
+	loadBodies    []string
+	loadPayload   map[string]any
+	resultStatus  string
+	resultSummary json.RawMessage
 }
 
 // newRunnerServer 启动假执行服务：记录 load 请求原文并返回成功结果。
@@ -58,7 +60,11 @@ func newRunnerServer(t *testing.T, harness *runnerHarness) *httptest.Server {
 				return
 			}
 			if env.Kind == runtimeexec.KindExecute {
-				raw, _ := json.Marshal(map[string]any{"status": "success", "message": "完成", "requestTrace": []any{}})
+				status := harness.resultStatus
+				if status == "" {
+					status = "success"
+				}
+				raw, _ := json.Marshal(map[string]any{"status": status, "message": "完成", "requestTrace": []any{}, "businessSummary": harness.resultSummary})
 				_ = ws.WriteJSON(map[string]any{
 					"version": runtimeexec.ProtocolVersion, "kind": "result", "requestId": env.RequestID,
 					"sessionId": env.SessionID, "runId": env.RunID, "pathRunID": env.PathRunID, "stepId": env.StepID,
@@ -71,6 +77,26 @@ func newRunnerServer(t *testing.T, harness *runnerHarness) *httptest.Server {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
+}
+
+// TestRunActionRetainsForwardInstanceOnPartialFailure 通过真实 WebSocket 结果解码验证转发实例与新主实例分开保存。
+func TestRunActionRetainsForwardInstanceOnPartialFailure(t *testing.T) {
+	harness := &runnerHarness{resultStatus: "business_failed", resultSummary: json.RawMessage(`{"forwardInstanceId":"aux-created"}`)}
+	server := newRunnerServer(t, harness)
+	client, err := runtimeexec.NewClient(server.URL, &fakeForwarder{}, &fakeSessions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtimeexec.NewRuntimeExecutor(client).RunAction(context.Background(), runtimeexec.RuntimeRunRequest{
+		RunID: "r", PathRunID: "p", StepID: "s", Account: "acct", Action: "forward",
+		ToolFlowName: "转发核对",
+		InstanceID:   "original-main", JobTaskID: "current-task", NodeProxyID: "current-node", ReceiverID: "receiver",
+		Session:   runtimeexec.SessionFacts{UserID: "actor", Account: "acct", DisplayName: "处理人"},
+		Initiator: runtimeexec.ActorIdentity{UserID: "initiator", Name: "发起人"},
+	})
+	if err != nil || result.Status != "business_failed" || result.ForwardInstanceID != "aux-created" || result.NewInstanceID != "" {
+		t.Fatalf("部分失败的转发实例必须独立保留：%+v，错误=%v", result, err)
+	}
 }
 
 // TestRunActionSendsValidLoadEnvelope 动作编排的装载信封必须是完整协议信封：

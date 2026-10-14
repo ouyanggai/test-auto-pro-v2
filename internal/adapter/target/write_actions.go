@@ -285,6 +285,10 @@ func BuildActionBody(request ActionWriteRequest) (map[string]any, string, error)
 
 // ExecuteActionWrite 发出动作写请求（唯一一次），返回完整响应事实与 trace_id。
 func (c *Client) ExecuteActionWrite(ctx context.Context, session Session, request ActionWriteRequest) (WriteResponse, string, error) {
+	// 转发由原生组件顺序完成主请求和当前附言，禁止保留只发主请求的独立写路径。
+	if request.Action == "forward" {
+		return WriteResponse{}, "", &RequestValidationError{Message: "转发必须通过原生执行器完成，不能单独发送主请求"}
+	}
 	if err := validateActionWriteRequest(request); err != nil {
 		return WriteResponse{}, "", &RequestValidationError{Message: err.Error()}
 	}

@@ -77,9 +77,11 @@ type ActionRunResult struct {
 	BusinessSummary json.RawMessage
 	// ExecutorMs 是执行服务上报的动作墙钟真实耗时（毫秒，F-042 选项 B）；
 	// 指针区分「结果带回了耗时」与「连接断开没有结果」——nil 即未知，落库写 NULL。
-	ExecutorMs    *int64   `json:"executorMs"`
-	NewInstanceID string   `json:"-"`
-	WriteTraceIDs []string `json:"-"`
+	ExecutorMs    *int64 `json:"executorMs"`
+	NewInstanceID string `json:"-"`
+	// ForwardInstanceID 是转发新建的关联实例；失败时也保留，不能混入原主实例引用。
+	ForwardInstanceID string   `json:"-"`
+	WriteTraceIDs     []string `json:"-"`
 }
 
 // RuntimeRunner 是执行器对 runtime 能力的接口面（*RuntimeExecutor 满足）。
@@ -290,6 +292,7 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	payload.WriteTraceIDs = append([]string(nil), writeTraces...)
 	writeTracesMu.Unlock()
 	payload.NewInstanceID = extractNewInstanceID(payload.BusinessSummary)
+	payload.ForwardInstanceID = extractForwardInstanceID(payload.BusinessSummary)
 	return payload, nil
 }
 
@@ -336,6 +339,18 @@ func extractNewInstanceID(summary json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(parsed.NewInstanceID)
+}
+
+// extractForwardInstanceID 读取执行器已经从明确成功转发响应取得的新实例标识。
+// 它与发起的新主实例分开保存，避免转发改变当前路径绑定的原主实例。
+func extractForwardInstanceID(summary json.RawMessage) string {
+	var parsed struct {
+		ForwardInstanceID string `json:"forwardInstanceId"`
+	}
+	if err := json.Unmarshal(summary, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.ForwardInstanceID)
 }
 
 // BuildChoiceForTest 暴露选择闭环的继续载荷构造，供单元测试锁定严格校验口径（评审 P1-6）。
