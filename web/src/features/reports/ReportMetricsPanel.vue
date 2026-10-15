@@ -119,7 +119,7 @@ const failurePieOption = computed(() => buildPieOption(props.metrics.failureClas
     <section class="metrics-panel__latency">
       <NCard size="small" title="步骤耗时分位" class="chart-card">
         <template #header-extra><span class="chart-card__note">来自步骤尝试墙钟 <TermHint term-id="step-duration" /></span></template>
-        <ReportChart v-if="metrics.stepLatencyMs.sampleCount > 0" class="chart" :option="stepLatencyOption" />
+        <ReportChart v-if="metrics.stepLatencyMs.sampleCount > 0" :option="stepLatencyOption" />
         <p v-else class="chart__empty">暂无足够样本</p>
         <p class="chart-card__foot">
           样本 {{ formatCount(metrics.stepLatencyMs.sampleCount) }} 次 · {{ latencyText(metrics.stepLatencyMs) }}
@@ -130,7 +130,7 @@ const failurePieOption = computed(() => buildPieOption(props.metrics.failureClas
       </NCard>
       <NCard size="small" title="目标接口耗时分位" class="chart-card">
         <template #header-extra><span class="chart-card__note">来自 network.log 传输层 <TermHint term-id="interface-duration" /></span></template>
-        <ReportChart v-if="metrics.interfaceKnown && metrics.interfaceLatencyMs.sampleCount > 0" class="chart" :option="interfaceLatencyOption" />
+        <ReportChart v-if="metrics.interfaceKnown && metrics.interfaceLatencyMs.sampleCount > 0" :option="interfaceLatencyOption" />
         <p v-else-if="!metrics.interfaceKnown" class="chart__empty">暂无真实请求耗时</p>
         <p v-else class="chart__empty">暂无足够样本</p>
         <p class="chart-card__foot">
@@ -144,7 +144,7 @@ const failurePieOption = computed(() => buildPieOption(props.metrics.failureClas
     <section class="metrics-panel__dist">
       <NCard size="small" title="结果与停机分类占比" class="chart-card">
         <template #header-extra><span class="chart-card__note">按已结束的路径运行统计</span></template>
-        <ReportChart v-if="hasResults" class="chart" :option="resultPieOption" />
+        <ReportChart v-if="hasResults" :option="resultPieOption" />
         <p v-else class="chart__empty">暂无已结束运行</p>
         <table v-if="resultRows.length > 0" class="detail-table">
           <thead>
@@ -161,7 +161,7 @@ const failurePieOption = computed(() => buildPieOption(props.metrics.failureClas
       </NCard>
       <NCard size="small" title="失败分类分布" class="chart-card">
         <template #header-extra><span class="chart-card__note"><TermHint term-id="failure-class" />只统计失败/停止的运行</span></template>
-        <ReportChart v-if="hasFailures" class="chart" :option="failurePieOption" />
+        <ReportChart v-if="hasFailures" :option="failurePieOption" />
         <p v-else class="chart__empty">范围内暂无失败运行</p>
         <table v-if="failureRows.length > 0" class="detail-table">
           <thead>
@@ -201,7 +201,6 @@ const failurePieOption = computed(() => buildPieOption(props.metrics.failureClas
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 12px;
 }
-.chart { height: 220px; }
 .chart__empty {
   display: flex; align-items: center; justify-content: center;
   height: 220px; margin: 0; color: var(--text-color-3);

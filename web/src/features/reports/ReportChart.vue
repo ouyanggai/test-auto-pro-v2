@@ -10,16 +10,28 @@ defineProps<{ option: Record<string, unknown> }>()
 </script>
 
 <template>
-  <Suspense>
-    <VChart class="report-chart" :option="option" autoresize />
-    <template #fallback>
-      <p class="report-chart__loading">图表正在加载……</p>
-    </template>
-  </Suspense>
+  <div class="report-chart">
+    <Suspense>
+      <VChart class="report-chart__canvas" :option="option" autoresize />
+      <template #fallback>
+        <p class="report-chart__loading" role="status">图表正在加载……</p>
+      </template>
+    </Suspense>
+  </div>
 </template>
 
 <style scoped>
 .report-chart {
+  /* 高度属于始终存在的实体容器，不依赖 Suspense 转发父级类名，也不能由 Canvas 反向撑高。 */
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  height: 220px;
+  flex: none;
+}
+.report-chart__canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
