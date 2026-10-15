@@ -111,7 +111,7 @@ function itemCount(person: PathConfigPerson) { return summarizePathConfigPersonI
       </div>
       <div v-if="!readOnly" class="save-actions">
         <n-button secondary :loading="saving" :disabled="saveAllDisabled" @click="emit('saveAll')">保存全部节点</n-button>
-        <n-button class="save-button" type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
+        <n-button class="save-button app-button--solid-primary" type="primary" :loading="saving" :disabled="saveDisabled" @click="emit('save')">保存当前节点</n-button>
       </div>
     </footer>
 

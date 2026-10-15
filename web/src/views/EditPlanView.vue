@@ -178,7 +178,7 @@ onBeforeUnmount(() => loadController?.abort())
           </n-form-item-gi>
           <n-form-item-gi v-if="form.scheduleEnabled" span="12" path="scheduledAt" label="启动时间"><n-date-picker v-model:value="form.scheduledAt" class="full-width-control" type="datetime" clearable /></n-form-item-gi>
           <n-form-item-gi v-if="showMaxConcurrency" span="12" path="maxConcurrency" label="路径最大并发数"><n-input-number v-model:value="form.maxConcurrency" class="full-width-control" :min="2" :max="20" :precision="0" /></n-form-item-gi>
-          <n-form-item-gi span="24" :show-label="false" :show-feedback="false"><div class="form-actions"><n-button type="primary" attr-type="submit" :loading="saving">保存计划</n-button></div></n-form-item-gi>
+          <n-form-item-gi span="24" :show-label="false" :show-feedback="false"><div class="form-actions"><n-button class="app-button--solid-primary" type="primary" attr-type="submit" :loading="saving">保存计划</n-button></div></n-form-item-gi>
         </n-grid>
       </n-form>
     </div>

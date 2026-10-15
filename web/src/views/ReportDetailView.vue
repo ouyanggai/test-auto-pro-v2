@@ -66,7 +66,7 @@ onBeforeUnmount(() => { controller?.abort() })
       </div>
       <div class="report-detail__actions">
         <ReportGlossaryEntry :term-ids="planTermIds" />
-        <NButton type="primary" :loading="loading" @click="loadDetail">刷新</NButton>
+        <NButton class="app-button--solid-primary" type="primary" :loading="loading" @click="loadDetail">刷新</NButton>
       </div>
     </header>
 

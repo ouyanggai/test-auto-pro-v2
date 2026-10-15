@@ -269,7 +269,7 @@ const columns: DataTableColumns<PlanRow> = [
         <h1>测试计划</h1>
         <p>查看并筛选已经保存的测试计划。</p>
       </div>
-      <n-button type="primary" @click="router.push('/plans/new')">新建计划</n-button>
+      <n-button class="app-button--solid-primary" type="primary" @click="router.push('/plans/new')">新建计划</n-button>
     </header>
 
     <div class="plan-filters" aria-label="测试计划筛选">
@@ -341,7 +341,7 @@ const columns: DataTableColumns<PlanRow> = [
               : '新建一个测试计划，开始配置需要验证的流程和执行路径。'"
           >
             <n-button v-if="hasFilters" secondary type="primary" @click="clearFilters">查看全部计划</n-button>
-            <n-button v-else type="primary" @click="router.push('/plans/new')">新建计划</n-button>
+            <n-button class="app-button--solid-primary" v-else type="primary" @click="router.push('/plans/new')">新建计划</n-button>
           </app-empty-state>
         </template>
       </n-data-table>

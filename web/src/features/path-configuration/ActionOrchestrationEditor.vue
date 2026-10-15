@@ -260,7 +260,7 @@ function removeAction(index: number) {
   <section class="action-orchestration">
     <div class="action-orchestration__header">
       <h3>{{ title }}</h3>
-      <n-button type="primary" size="small" :disabled="editorDisabled" @click="openEditor">动作配置</n-button>
+      <n-button class="app-button--solid-primary" type="primary" size="small" :disabled="editorDisabled" @click="openEditor">动作配置</n-button>
     </div>
     <p v-if="container.actionConfiguration.note" class="action-orchestration__note">{{ container.actionConfiguration.note }}</p>
     <p v-if="!isInitiatorNode && instanceContainer" class="action-orchestration__note">下拉上半是当前节点动作，下半是作用于整个实例的动作。</p>
@@ -391,7 +391,7 @@ function removeAction(index: number) {
             <n-button @click="closeEditor">取消</n-button>
             <!-- 添加动作是编辑器唯一的新增入口，误删会让已有动作无法补充，结构契约测试对其有断言 -->
             <n-button :disabled="readOnly || !canAddAction" data-testid="add-action" @click="addAction"><AddOutline /> 添加动作</n-button>
-            <n-button type="primary" :disabled="readOnly" @click="saveEditor">保存动作配置</n-button>
+            <n-button class="app-button--solid-primary" type="primary" :disabled="readOnly" @click="saveEditor">保存动作配置</n-button>
           </n-space>
         </template>
       </n-card>

@@ -64,7 +64,7 @@ onBeforeUnmount(() => { controller?.abort() })
       </div>
       <div class="report-view__actions">
         <ReportGlossaryEntry :term-ids="overviewTermIds" />
-        <NButton type="primary" :loading="loading" @click="loadOverview">刷新</NButton>
+        <NButton class="app-button--solid-primary" type="primary" :loading="loading" @click="loadOverview">刷新</NButton>
       </div>
     </header>
 
@@ -79,7 +79,7 @@ onBeforeUnmount(() => { controller?.abort() })
         title="还没有测试计划"
         description="创建测试计划并运行后，报告中心会按真实运行记录汇总这里的统计与图表。"
       >
-        <NButton type="primary" @click="router.push('/plans')">前往测试计划</NButton>
+        <NButton class="app-button--solid-primary" type="primary" @click="router.push('/plans')">前往测试计划</NButton>
       </AppEmptyState>
 
       <template v-else>

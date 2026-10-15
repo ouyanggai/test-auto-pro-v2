@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { browserStorage, readSkinId, readThemeMode, skinStorageKey, themeStorageKey, writePreference } from '../appearance/preferences'
+import { browserStorage, readSkinId, readThemeMode, skinStorageKey, themeStorageKey, writePreference } from '../appearance/preferences.ts'
 import type { SkinId, ThemeMode } from '../appearance/skins'
 export type { SkinId, ThemeMode } from '../appearance/skins'
 

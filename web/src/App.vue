@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref, watch } from 'vue'
+import { computed, h, onMounted, ref, watch } from 'vue'
 import { NButton, NConfigProvider, NGlobalStyle, NLayout, NLayoutContent, NLayoutHeader, NLayoutSider, NMenu, NMessageProvider, NNotificationProvider, darkTheme, dateZhCN, zhCN } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
@@ -9,6 +9,7 @@ import { buildThemeOverrides } from './appearance/naiveTheme'
 import { applyAppearance } from './appearance/applyAppearance'
 import AppearanceMenu from './components/AppearanceMenu.vue'
 import AmbientLayer from './components/AmbientLayer.vue'
+import { startPointerGlow } from './appearance/pointerGlow'
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -33,6 +34,14 @@ const flushContent = computed(() => /^\/runs\/[^/]+\/paths\/[^/]+$/.test(route.p
 const naiveTheme = computed(() => (appStore.themeMode === 'dark' ? darkTheme : null))
 const themeOverrides = computed(() => buildThemeOverrides(appStore.skinId, appStore.themeMode))
 watch([() => appStore.skinId, () => appStore.themeMode], ([skin, mode]) => applyAppearance(skin, mode), { immediate: true })
+onMounted(() => {
+  // 主题变量先更新，随后再读取光晕尺寸；监听只属于当前皮肤，切走立即释放。
+  watch(() => appStore.skinId, (skin, _previous, onCleanup) => {
+    if (skin !== 'deep-space' && skin !== 'aurora') return
+    const spot = document.querySelector<HTMLElement>('.app-ambient__spot')
+    if (spot) onCleanup(startPointerGlow(spot))
+  }, { immediate: true, flush: 'post' })
+})
 const themeToggleLabel = computed(() => (appStore.themeMode === 'dark' ? '切换为浅色主题' : '切换为深色主题'))
 const sidebarCollapsed = ref(false)
 </script>

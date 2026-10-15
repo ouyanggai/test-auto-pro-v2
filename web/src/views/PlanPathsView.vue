@@ -844,7 +844,7 @@ onMounted(() => {
             <n-space class="page-heading__actions" align="center" size="small">
               <span class="page-heading__selection">已勾选 {{ selectedRunPathIDs.size }} / {{ paths.length }} 条路径</span>
               <!-- 运行入口：只启动勾选路径，预检与启动同范围；计划列表那一处按「已配置且数据就绪」启动。 -->
-              <n-button
+              <n-button class="app-button--solid-primary"
                 type="primary"
                 data-testid="plan-detail-run-button"
                 :disabled="preparationBusy || selectedRunPathIDs.size === 0"
@@ -915,7 +915,7 @@ onMounted(() => {
 							<span>数据就绪 {{ preparationJob.ready }} · 需补充 {{ preparationJob.needsInput }} · 受影响 {{ preparationJob.affected }} · 失败 {{ preparationJob.failed }}</span>
 							<div class="path-prepare__job-actions">
 								<n-button v-if="planMutable && preparationBusy" size="tiny" :loading="preparationLoading" @click="cancelCurrentPreparation">取消</n-button>
-								<n-button v-else-if="planMutable && (preparationJob.status === 'cancelled' || preparationJob.status === 'failed')" size="tiny" type="primary" :loading="preparationLoading" @click="resumeCurrentPreparation">恢复</n-button>
+								<n-button class="app-button--solid-primary" v-else-if="planMutable && (preparationJob.status === 'cancelled' || preparationJob.status === 'failed')" size="tiny" type="primary" :loading="preparationLoading" @click="resumeCurrentPreparation">恢复</n-button>
 							</div>
 						</div>
 						<div class="path-prepare__job-current">
@@ -936,7 +936,7 @@ onMounted(() => {
             </div>
             <div v-else-if="!paths.length" class="path-prepare__empty">
               <span>{{ generationBusy ? '正在后台解析全部合法路径' : '请先配置并保存执行路径' }}</span>
-							<n-button v-if="planMutable && !generationBusy" type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="startNewPath">
+							<n-button class="app-button--solid-primary" v-if="planMutable && !generationBusy" type="primary" :disabled="!graph || graphLoading || !allowNewPath" @click="startNewPath">
                 新增路径
               </n-button>
             </div>
@@ -1010,7 +1010,7 @@ onMounted(() => {
                 @retry="retryGraph"
               >
                 <template #canvas-actions-normal>
-                  <n-button
+                  <n-button class="app-button--solid-primary"
 										v-if="planMutable"
                     size="small"
                     type="primary"
@@ -1031,7 +1031,7 @@ onMounted(() => {
                   >
                     已保存的路径
                   </n-button>
-                  <n-button
+                  <n-button class="app-button--solid-primary"
                     v-if="!workspacePresentation.branchEditing && allowNewPath"
                     size="small"
                     type="primary"
@@ -1123,14 +1123,14 @@ onMounted(() => {
                     <footer class="path-selection-panel__footer">
                       <template v-if="workspaceMode === 'view'">
 												<n-button :disabled="!activePath || workspaceActionBusy || preparationBusy" @click="() => openPathConfiguration()">{{ planMutable ? '配置节点' : '查看配置' }}</n-button>
-												<n-button v-if="planMutable" type="primary" :disabled="!activePath || workspaceActionBusy" @click="editActivePath">编辑路径</n-button>
+												<n-button class="app-button--solid-primary" v-if="planMutable" type="primary" :disabled="!activePath || workspaceActionBusy" @click="editActivePath">编辑路径</n-button>
 												<n-dropdown v-if="planMutable" trigger="click" :options="pathMoreOptions" :disabled="workspaceActionBusy" @select="handlePathMoreAction">
                           <n-button secondary :disabled="!activePath || workspaceActionBusy">更多</n-button>
                         </n-dropdown>
                       </template>
                       <template v-else>
                         <n-button :disabled="saving" @click="cancelPathEditing">取消</n-button>
-                        <n-button type="primary" :loading="saving" :disabled="saveDisabled" @click="savePath">保存路径</n-button>
+                        <n-button class="app-button--solid-primary" type="primary" :loading="saving" :disabled="saveDisabled" @click="savePath">保存路径</n-button>
                       </template>
                     </footer>
                   </section>

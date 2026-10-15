@@ -201,7 +201,7 @@ onBeforeUnmount(() => {
       <template #footer>
         <n-space justify="end">
           <n-button :disabled="saving" @click="emit('update:show', false)">取消</n-button>
-          <n-button type="primary" :loading="saving" :disabled="disabled || loading || ((scope === 'default' || pathMode === 'override') && !selectedKey)" @click="confirmSelection">
+          <n-button class="app-button--solid-primary" type="primary" :loading="saving" :disabled="disabled || loading || ((scope === 'default' || pathMode === 'override') && !selectedKey)" @click="confirmSelection">
             {{ confirmText || '确认' }}
           </n-button>
         </n-space>

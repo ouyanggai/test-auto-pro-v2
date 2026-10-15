@@ -77,7 +77,7 @@ onBeforeUnmount(() => { controller?.abort() })
       </div>
       <div class="path-report__actions">
         <ReportGlossaryEntry :term-ids="pathTermIds" />
-        <NButton type="primary" :loading="loading" @click="loadDetail">刷新</NButton>
+        <NButton class="app-button--solid-primary" type="primary" :loading="loading" @click="loadDetail">刷新</NButton>
       </div>
     </header>
 

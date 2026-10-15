@@ -177,7 +177,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
         placeholder="全部状态"
         @update:value="changeStatusFilter"
       />
-      <NButton type="primary" @click="loadRuns">刷新</NButton>
+      <NButton class="app-button--solid-primary" type="primary" @click="loadRuns">刷新</NButton>
       <NPopconfirm v-if="checkedCount > 0" @positive-click="removeChecked">
         <template #trigger>
           <NButton type="error" ghost :loading="deletingBatch">删除选中（{{ checkedCount }}）</NButton>
@@ -199,7 +199,7 @@ onBeforeUnmount(() => { /* 本页无常驻定时器 */ })
         : '运行测试计划后，每次运行的结果都会按时间出现在这里。'"
     >
       <NButton v-if="runStatusFilter" secondary type="primary" @click="clearRunStatusFilter">查看全部任务</NButton>
-      <NButton v-else type="primary" @click="router.push('/plans')">前往测试计划</NButton>
+      <NButton class="app-button--solid-primary" v-else type="primary" @click="router.push('/plans')">前往测试计划</NButton>
     </AppEmptyState>
 
     <table v-else class="runs-view__table">

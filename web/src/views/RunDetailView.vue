@@ -1180,7 +1180,7 @@ onBeforeUnmount(() => {
             title="从失败的这一步重新装填本次运行；重试本身不发任何写请求，装填后按原运行模式继续"
             @click="retryFailed"
           >重试失败动作</n-button>
-          <n-button
+          <n-button class="app-button--solid-primary"
             size="small"
             type="primary"
             :loading="acting"

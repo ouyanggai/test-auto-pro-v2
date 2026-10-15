@@ -721,7 +721,7 @@ async function submitPlan() {
 
           <n-form-item-gi span="24" :show-label="false" :show-feedback="false">
             <div ref="submitGuideRef" class="form-actions">
-              <n-button type="primary" attr-type="submit" :loading="creationLoading" :disabled="creationLoading">
+              <n-button class="app-button--solid-primary" type="primary" attr-type="submit" :loading="creationLoading" :disabled="creationLoading">
                 创建并选择路径
               </n-button>
             </div>

@@ -290,7 +290,7 @@ watch(() => props.show, (open) => {
         <span v-if="starting" class="run-preflight__stage" role="status">{{ startStage }}</span>
         <n-button size="small" quaternary :disabled="starting" @click="emit('update:show', false)">关闭</n-button>
         <!-- F-016/F-020/S01：只启动本次勾选的可执行路径，多路径按计划配置串行或并行。 -->
-        <n-button
+        <n-button class="app-button--solid-primary"
           size="small"
           type="primary"
           :loading="starting"

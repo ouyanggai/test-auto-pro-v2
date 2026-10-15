@@ -1,6 +1,6 @@
 # F-049 视觉与实现规格（可直接照做）
 
-- 状态：随 F-049 为 implementing；2026-10-15 用户已明确批准实施。
+- 状态：随 F-049 为 ready_for_manual；2026-10-15 实现与自动验证完成，等待用户浏览器核对。
 - 作用：[F-049](F-049-futuristic-skins-and-ui-polish.md) 说"做什么、怎么验收"，本文件说"每个像素、每个文件怎么做"。数值、变量名、文件名都已定死；实施者不需要再做审美判断，只需照表落地并按文末测试验证。
 - 与 ARCHITECTURE 的分工：技术边界以 [ARCHITECTURE.md F-049 章节](../ARCHITECTURE.md#f-049-主题与界面边界) 为准，本文是其具体化；冲突时以 ARCHITECTURE 为准并回头改本文。
 
@@ -286,14 +286,17 @@ html.style.colorScheme = mode     // 让滚动条与原生控件跟随
 
 ```html
 <script>
+  // 在应用与主题样式加载前确定外观，避免深色刷新时先闪白。
   (function () {
+    var d = document.documentElement
+    d.dataset.skin = 'default'
+    d.dataset.mode = 'light'
     try {
       var skin = localStorage.getItem('test-auto-pro-skin')
-      var d = document.documentElement
-      d.dataset.skin = { 'deep-space': 1, aurora: 1, titanium: 1 }[skin] ? skin : 'default'
+      d.dataset.skin = skin === 'deep-space' || skin === 'aurora' || skin === 'titanium' ? skin : 'default'
       d.dataset.mode = localStorage.getItem('test-auto-pro-theme') === 'dark' ? 'dark' : 'light'
-      d.style.colorScheme = d.dataset.mode
     } catch (e) {}
+    d.style.colorScheme = d.dataset.mode
   })()
 </script>
 ```
@@ -466,12 +469,14 @@ html[data-skin="deep-space"] body { /* 由 Naive 写 bodyColor，这里不覆盖
 }
 ```
 
-玻璃面（**只**用于下列元素，同屏 `backdrop-filter` 元素不超过 6 个）：`.app-header`、`.app-sidebar`、`.n-modal .n-card`/`.n-dialog`（含 `.n-modal-mask`）、KPI/摘要类卡片（`.kpi`、`.n-card` 在非表格场景）：
+玻璃面只用于顶栏、侧栏、前三张 KPI 和末个仍有内容的弹窗，共 2 + 3 + 1，最多 6 处。不能给所有 n-card 或遮罩加模糊，否则报告页五张 KPI 就会超出预算：
 
 ```css
-[data-skin="aurora"] .app-header, [data-skin="aurora"] .app-sidebar, [data-skin="aurora"] .n-card {
+[data-skin="aurora"] .app-header,
+[data-skin="aurora"] .app-sidebar,
+[data-skin="aurora"] .metrics-panel__kpis > .kpi:nth-child(-n + 3),
+[data-skin="aurora"] body > .n-modal-container:nth-last-child(1 of .n-modal-container:has(.app-dialog)) .app-dialog {
   -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%);
-  border: 1px solid color-mix(in srgb, var(--primary-color) 22%, transparent);
 }
 /* 含表格、日志、代码的卡片内部一律回到阅读面，禁止玻璃 */
 [data-skin="aurora"] .n-card .n-data-table, [data-skin="aurora"] .n-card pre, [data-skin="aurora"] .n-card .n-code { background: var(--ta-reading); }
@@ -480,7 +485,7 @@ html[data-skin="deep-space"] body { /* 由 Naive 写 bodyColor，这里不覆盖
 悬停折光：卡片和主按钮悬停时一道高光自左向右扫过，**仅悬停触发，0.8s 一次**：
 
 ```css
-[data-skin="aurora"] .n-card:hover, [data-skin="aurora"] .n-button--primary-type:hover {
+[data-skin="aurora"] .n-card:hover, [data-skin="aurora"] .app-button--solid-primary:hover {
   background-image: linear-gradient(115deg, transparent 40%, rgba(255,255,255,.14) 50%, transparent 60%);
   background-size: 250% 100%; background-position: -20% 0; transition: background-position .8s var(--ta-ease);
 }
@@ -519,7 +524,7 @@ html[data-skin="deep-space"] body { /* 由 Naive 写 bodyColor，这里不覆盖
 金色只在三处：
 
 ```css
-[data-skin="titanium"] .n-menu-item-content--selected::before { /* 侧栏当前项左侧竖条 */
+[data-skin="titanium"] .n-menu-item-content--selected::after { /* 侧栏金线；保留 Naive 的 ::before 选中底色 */
   content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--ta-accent-2);
 }
 [data-skin="titanium"] .n-tabs .n-tabs-tab--active + .n-tabs-bar, [data-skin="titanium"] .n-tabs-bar { background: var(--ta-accent-2); }
@@ -528,22 +533,38 @@ html[data-skin="deep-space"] body { /* 由 Naive 写 bodyColor，这里不覆盖
 }
 ```
 
-主按钮：`background-image: linear-gradient(180deg, lift(primary) 0%, primary 100%)`（用 `color-mix(in srgb, var(--primary-color) 88%, #fff)` 实现）、`box-shadow: var(--ta-shadow-1)`；悬停描边：`box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 40%, transparent), var(--ta-shadow-2)`。圆角取令牌（控件 6、卡片 8），边线一律 1px 实线，**不使用任何渐变边框或发光**。
+主按钮：只对显式标记的 `app-button--solid-primary` 添加 `background-image: linear-gradient(180deg, lift(primary) 0%, primary 100%)`（用 `color-mix(in srgb, var(--primary-color) 88%, white)` 实现）、`box-shadow: var(--ta-shadow-1)`。标记只加在 type=primary 且没有 text/secondary/ghost/tertiary/quaternary 的按钮上，避免文字按钮被实心底盖住。悬停描边：`box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 40%, transparent), var(--ta-shadow-2)`。圆角取令牌（控件 6、卡片 8），边线一律 1px 实线，**不使用任何渐变边框或发光**。
 
 ### 4.5 指针光晕（深空、极光使用）
 
 `pointerGlow.ts`：
 
 ```ts
-// 只写一个元素的 transform，不写任何 CSS 变量，不触发整页样式重算。
+// 指针移动只合并成一个待绘制帧，并且只写光晕本身的合成变换，不触发整页变量重算。
 export function startPointerGlow(spot: HTMLElement): () => void {
-  let x = innerWidth * 0.7, y = innerHeight * 0.3, pending = false
+  const host = spot.ownerDocument.defaultView!
+  let x = host.innerWidth * .7, y = host.innerHeight * .3
+  let frame: number | undefined
+  let stopped = false
   const half = spot.offsetWidth / 2
-  const paint = () => { pending = false; spot.style.transform = `translate3d(${x - half}px, ${y - half}px, 0)` }
-  const onMove = (e: PointerEvent) => { x = e.clientX; y = e.clientY; if (!pending) { pending = true; requestAnimationFrame(paint) } }
-  addEventListener('pointermove', onMove, { passive: true })
+  const paint = () => {
+    frame = undefined
+    if (!stopped) spot.style.transform = 'translate3d(' + (x - half) + 'px, ' + (y - half) + 'px, 0)'
+  }
+  const onMove = (event: PointerEvent) => {
+    x = event.clientX
+    y = event.clientY
+    if (frame === undefined) frame = host.requestAnimationFrame(paint)
+  }
+  host.addEventListener('pointermove', onMove, { passive: true })
   paint()
-  return () => removeEventListener('pointermove', onMove)
+  return () => {
+    stopped = true
+    host.removeEventListener('pointermove', onMove)
+    // 切皮肤或卸载时取消尚未执行的帧，防止旧回调覆盖下一套皮肤的光晕位置。
+    if (frame !== undefined) host.cancelAnimationFrame(frame)
+    spot.style.removeProperty('transform')
+  }
 }
 ```
 

@@ -970,7 +970,7 @@ void loadPage()
       <div class="path-configuration-page__actions">
         <n-button size="small" secondary @click="backToPlan">返回计划详情</n-button>
         <n-button v-if="workspace === 'nodes' && configuration?.nextNodeKey" size="small" secondary @click="selectNextConfigurationNode">下一待配置节点</n-button>
-        <n-button v-if="plan" size="small" type="primary" @click="runPreflightOpen = true">运行</n-button>
+        <n-button class="app-button--solid-primary" v-if="plan" size="small" type="primary" @click="runPreflightOpen = true">运行</n-button>
       </div>
     </header>
 
@@ -1076,7 +1076,7 @@ void loadPage()
 			<template v-if="!formReadOnly">
               <n-button size="small" type="primary" secondary :disabled="formRuntimeLoading || formRestoring || formSaving" @click="dataPickerOpen = true">更换历史数据</n-button>
               <n-button size="small" :loading="formRestoring" :disabled="formRuntimeLoading || formRestoring || formSaving" @click="restoreSavedForm">恢复已保存数据</n-button>
-              <n-button size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formRestoring" @click="saveFormData()">保存表单数据</n-button>
+              <n-button class="app-button--solid-primary" size="small" type="primary" :loading="formSaving" :disabled="runtimeBlocked || formRuntimeLoading || formRestoring" @click="saveFormData()">保存表单数据</n-button>
             </template>
           </div>
         </header>

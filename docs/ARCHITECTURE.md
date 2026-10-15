@@ -88,23 +88,23 @@ F-030 只在现有执行器、会话协调器、目标传输日志和运行详�
 
 ## F-049 主题与界面边界
 
-用户已于 2026-10-15 批准实施，状态为 `implementing`。只调整主工具前端的呈现，不调整后端、数据库、执行器或目标表单运行时。
+用户已于 2026-10-15 批准实施并完成自动验证，状态为 `ready_for_manual`。只调整主工具前端的呈现，不调整后端、数据库、执行器或目标表单运行时。
 
 - 在现有 `web/src/stores/app.ts` 中增加 `SkinId = default | deep-space | aurora | titanium`，使用独立的浏览器存储键 `test-auto-pro-skin`；缺省为 `default`。继续沿用现有 `ThemeMode = light | dark` 和 `test-auto-pro-theme`，不把皮肤与深浅偏好合并成八个存储值。
 - 复用现有 `NConfigProvider`、`NGlobalStyle`、`darkTheme` 与全局样式。统一表面、文字、边框、状态、阴影、圆角和间距变量；主题标识与工具变量放到文档根节点，使 Teleport 到 body 的弹窗、下拉和提示也能取到。无新增后端配置、主题接口或 UI 库。
-- 令牌表（`web/src/appearance/skins.ts`）是唯一的颜色来源，同时产出三份结果：Naive `themeOverrides`、`<html>` 上的 `data-skin`/`data-mode` 与 CSS 变量、图表 option 基础配置。CSS 文件不写色值（首屏兜底底色除外）。默认皮肤不写 `themeOverrides`，令牌取自 Naive 自身的 light/dark 公共值并由测试对照。新皮肤的半透明色只允许出现在 `Layout.headerColor/siderColor` 与 `Card.color`，`Layout.color` 清空以显示氛围层。
+- 令牌表（`web/src/appearance/skins.ts`）统一提供组件、全局变量与图表配色，产出 Naive `themeOverrides`、`<html>` 的 `data-skin`/`data-mode` 与 CSS 变量、图表 option 基础配置。常规 CSS 不写色值，首屏兜底底色和视觉规格明确规定的装饰遮罩除外。默认皮肤不写 `themeOverrides`，令牌取自 Naive 自身的 light/dark 公共值并由测试对照。新皮肤的半透明表面只用于 `Layout.headerColor/siderColor` 与 `Card.color`；阅读面保持不透明，`Layout.color` 清空以显示氛围层。
 - 补齐源码已在使用但从未定义的全局变量（`--text-color-1/2/3`、`--divider-color`、`--card-color`、`--primary-color`、`--font-family-mono` 等），并以全局变量取代各弹窗内由 `useThemeVars()` 注入的局部颜色；弹窗尺寸改为统一类 `app-dialog--sm/md/lg`。首屏由 `index.html` 内联脚本先写 `data-skin`/`data-mode`，避免闪白。
 - 氛围层是 `AmbientLayer` 内的固定 DOM，与业务状态零耦合；持续动画仅用 `transform`/`opacity`，同屏 `backdrop-filter` 元素不超过 6 个且不用于表格、日志、代码。指针光晕只写一个元素的 `transform`，不写 CSS 变量。具体数值见 [F-049 视觉与实现规格](features/F-049-visual-spec.md)。
 - F-000 的扁平应用壳和当前配色保留为默认皮肤基础；F-049 的三套新皮肤允许渐变、玻璃、金属层次、阴影和装饰。默认皮肤也整理排版与弹窗，但不套用新皮肤的强氛围效果。
 - 间距采用 `4/8/12/16/24/32/48px`，普通页面水平留白随桌面宽度在 `24—48px` 调整；运行详情保留画布优先的 flush 工作台。根节点最小宽度仍为 1024px，不新增移动端布局。
-- 统一现有弹窗的宽高与间距：小型确认 480px、普通编辑及动作详情 760px、大型明细 960px，均受视口可用宽高约束；正文独立滚动，有操作的弹窗底部稳定可见。保留现有开关、关闭限制、加载门禁、确认回调和层级关系。
+- 统一现有弹窗的宽高与间距：小型确认 480px、普通编辑及计划动作详情 760px、大型明细、当前步与动作接口详情 960px，均受视口可用宽高约束；正文独立滚动，有操作的弹窗底部稳定可见。保留现有开关、关闭限制、加载门禁、确认回调和层级关系。
 - 主题更新通过配置、变量及当前实例的样式更新完成；不以皮肤值作为 RouterView、表单 iframe、Vue Flow 或 ECharts 的重建 key，不增加为换肤服务的卸载重挂和重新装载调用。保留编辑草稿、画布视口、选中节点、图例选择与弹窗状态。
 - 画布继续复用当前主题变量与既有树布局；不能仅改节点内边距而破坏当前 180×106 节点几何、端口或边路径。图表通过现有 option 更新文字、坐标、图例与 tooltip 外观，保持图表实例、数据、图例选择和懒加载方式。
 - `FormRuntimeFrame.vue` 仅调整工具外框。主工具变量不注入 iframe，不修改 `form-runtime/src/App.vue` 当前强制浅色与白底，也不改原生表单内容、协议、数据或生命周期。
 - 氛围层使用 CSS 合成动画；指针跟随使用单一的按帧回调，不为每个卡片注册一套指针监听或逐帧驱动业务响应式状态。装饰层 `pointer-events: none`，不改变内容布局和操作命中位置。不引入视频、重型三维库或额外轮询；按用户决定不增加系统减弱动效联动。
 - 运行、成功、失败、警告等视觉反馈继续消费现有事实；装饰色与状态色分开定义。换肤不得发起业务请求，不改 F-048 接口归属、完整目标原话、真实耗时或事件投影。
 
-实施范围、现有 11 处弹窗清单与验证步骤见 [F-049](features/F-049-futuristic-skins-and-ui-polish.md)；当前在同一切片内分批实施与验证。
+极光模糊限定为顶栏、侧栏、前三张 KPI 与一个末层弹窗，避免报告页面超过 6 处。实心主按钮通过 app-button--solid-primary 标记，装饰不覆盖文字、次级或幽灵按钮；钛金侧栏金线使用 ::after，保留 Naive 自身 ::before 的选中底色。实施范围、11 处弹窗清单与实际验证证据见 [F-049](features/F-049-futuristic-skins-and-ui-polish.md)。
 
 ## F-035 处理人异步事实与最终表单快照（实施中）
 
@@ -265,7 +265,7 @@ F-012 取代旧的规则目录、ConstraintIR、通用生成器和路径准备�
 ## 前端边界
 
 - 应用壳只提供产品名、三个中文导航、主题切换和路由内容区；不在 F-000 实现计划列表、创建页或其他业务页面。
-- 默认应用壳使用 Naive UI 文档站式的扁平布局：顶栏横跨全宽，侧栏从顶栏下方开始，主内容占用剩余空间；`NLayoutHeader bordered` 与 `NLayoutSider bordered` 负责肉眼可见的 1px 语义分隔线，不使用卡片套层、渐变、阴影或装饰图形。F-049 待批准的新皮肤装饰边界见其主题章节，不将新皮肤效果套到默认风格。
+- 默认应用壳使用 Naive UI 文档站式的扁平布局：顶栏横跨全宽，侧栏从顶栏下方开始，主内容占用剩余空间；`NLayoutHeader bordered` 与 `NLayoutSider bordered` 负责肉眼可见的 1px 语义分隔线，不使用卡片套层、渐变、阴影或装饰图形。F-049 新皮肤的装饰边界见其主题章节，不将新皮肤效果套到默认风格。
 - 顶栏、侧栏、工作区与主内容均使用未嵌入的 Naive `NLayout` 层级；默认皮肤的浅色和深色各自保持同一基础表面色，新皮肤的表面层次按 F-049 主题章节处理。普通 DOM 不依赖 Naive 组件局部 `--n-*` 背景或边线变量。
 - 侧栏使用 `NLayoutSider` 的 `collapse-mode="width"`、`show-trigger="arrow-circle"` 与 `collapsed-width="0"`；圆形触发器真实点击区至少为 `32px × 32px`，零宽收缩态通过定位覆盖完整留在 viewport 内，收缩时不展示无依据图标。
 - 浏览器根节点固定为 `100dvh` 且不滚动；顶栏固定，侧栏可收缩，主内容区独立 `overflow-y: auto`，侧栏仅在菜单超出时自身滚动。Flex/Grid 子项使用最小尺寸约束，避免撑出 viewport。

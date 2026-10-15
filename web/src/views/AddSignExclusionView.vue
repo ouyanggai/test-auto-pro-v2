@@ -186,7 +186,7 @@ onMounted(loadItems)
           @search="handleSearch"
         />
         <n-input v-model:value="reason" placeholder="排除原因（可选），如：账号已停用无法登录" />
-        <n-button type="primary" :loading="submitting" :disabled="!selectedPersonId" @click="submit">加入排除名单</n-button>
+        <n-button class="app-button--solid-primary" type="primary" :loading="submitting" :disabled="!selectedPersonId" @click="submit">加入排除名单</n-button>
       </div>
       <p class="exclusion__hint">按姓名检索目标平台人员目录，点选后自动带上人员标识。标注「已停用」的账号无法登录，是加签后运行停机的主因，建议优先排除。</p>
     </n-card>
