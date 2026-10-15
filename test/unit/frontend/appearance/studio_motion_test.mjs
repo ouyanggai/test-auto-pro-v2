@@ -50,7 +50,7 @@ test('真实导航组件在两套皮肤和嵌套路由中都保留四个链接�
 
 // 有界 DOM 替身只提供动画层消费的能力，记录真正的事件、帧、写入和取消行为。
 function environment() {
-  const listeners = new Map(), frames = new Map(), animations = [], observers = []
+  const listeners = new Map(), frames = new Map(), animations = [], observers = [], sizeObservers = []
   let sequence = 0
   class Element {
     constructor() {
@@ -64,6 +64,7 @@ function environment() {
     closest() { return this }
     getBoundingClientRect() { return { left: 10, top: 20, width: 300, height: 200 } }
     querySelectorAll() { return [] }
+    querySelector() { return viewport }
     matches(selector) { return selector === '.app-dialog' && this.dialog === true }
     animate(keyframes, options) {
       const value = { element: this, keyframes, options, finished: new Promise(() => {}), paused: false, cancelled: false,
@@ -77,14 +78,19 @@ function environment() {
     observe() {}
     disconnect() { this.disconnected = true }
   }
+  class SizeObserver extends Observer {
+    constructor(callback) { super(callback); sizeObservers.push(this); observers.pop() }
+  }
   const doc = { hidden: false, body: {}, addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name),
-    defaultView: { requestAnimationFrame: fn => { frames.set(++sequence, fn); return sequence }, cancelAnimationFrame: id => frames.delete(id) } }
-  const root = new Element(), content = new Element()
+    defaultView: { requestAnimationFrame: fn => { frames.set(++sequence, fn); return sequence }, cancelAnimationFrame: id => frames.delete(id),
+      getComputedStyle: () => ({ paddingTop: '28px', paddingBottom: '40px' }) } }
+  const root = new Element(), content = new Element(), viewport = new Element()
+  viewport.clientHeight = 720
   root.ownerDocument = doc
   content.querySelectorAll = () => Array.from({ length: 5 }, () => new Element())
-  const previous = { Element: globalThis.Element, HTMLElement: globalThis.HTMLElement, MutationObserver: globalThis.MutationObserver }
-  Object.assign(globalThis, { Element, HTMLElement: Element, MutationObserver: Observer })
-  return { root, content, doc, listeners, frames, animations, observers, Element, restore() {
+  const previous = { Element: globalThis.Element, HTMLElement: globalThis.HTMLElement, MutationObserver: globalThis.MutationObserver, ResizeObserver: globalThis.ResizeObserver }
+  Object.assign(globalThis, { Element, HTMLElement: Element, MutationObserver: Observer, ResizeObserver: SizeObserver })
+  return { root, content, doc, listeners, frames, animations, observers, sizeObservers, viewport, Element, restore() {
     for (const [key, value] of Object.entries(previous)) if (value === undefined) delete globalThis[key]; else globalThis[key] = value
   } }
 }
@@ -110,6 +116,22 @@ test('指针反馈合并同帧事件、只持有一个表面，切走后释放�
     assert.equal(second.values.size, 0)
     assert.ok(e.animations.every(animation => animation.cancelled))
     assert.ok(e.observers.every(observer => observer.disconnected))
+    assert.equal(e.root.values.size, 0)
+  } finally { e.restore() }
+})
+
+test('配置区按实际工作区和留白适配高度，窗口变化后更新，退出释放尺寸观察器', () => {
+  const e = environment()
+  try {
+    const controller = startStudioMotion(e.root, e.content)
+    assert.equal(e.root.values.get('--studio-frame-height'), '720px')
+    assert.equal(e.root.values.get('--studio-content-height'), '652px')
+    e.viewport.clientHeight = 460
+    e.sizeObservers[0].callback()
+    assert.equal(e.root.values.get('--studio-frame-height'), '460px')
+    assert.equal(e.root.values.get('--studio-content-height'), '392px')
+    controller.stop()
+    assert.ok(e.sizeObservers[0].disconnected)
     assert.equal(e.root.values.size, 0)
   } finally { e.restore() }
 })

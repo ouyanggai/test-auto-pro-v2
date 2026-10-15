@@ -1,5 +1,5 @@
 /* 极光与钛金的新视觉入口。所有规则限定到这两套皮肤，业务组件和默认/深空不经过此层。 */
-:is([data-skin="aurora"], [data-skin="titanium"]) { --studio-spring: cubic-bezier(.16, 1, .3, 1); }
+:is([data-skin="aurora"], [data-skin="titanium"]) { --studio-spring: cubic-bezier(.16, 1, .3, 1); --studio-content-height: 100%; --studio-frame-height: 100%; }
 [data-skin="aurora"] {
   --app-sidebar-width: 112px;
   --app-content-pad-x: 32px;
@@ -121,6 +121,12 @@
 
 /* 所有页面沿用真实内容，统一抹去重复外层留白，不动运行画布和配置页的内部几何。 */
 :is([data-skin="aurora"], [data-skin="titanium"]) .app-main :is(.plan-page, .runs-view) { padding: 0; max-width: none; }
+/* 直接使用真实工作区尺寸，避免原先固定减去 64px 顶栏后让配置表单超出新外壳。 */
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-main .plan-paths-page { --plan-screen-height: var(--studio-content-height); }
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-main .path-configuration-page { height: var(--studio-content-height); min-height: 0; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-main .path-configuration-page--form {
+  height: var(--studio-frame-height); min-height: var(--studio-frame-height); max-height: var(--studio-frame-height);
+}
 :is([data-skin="aurora"], [data-skin="titanium"]) .app-shell .app-main :is(.path-configuration-page__identity h1, .graph-heading h2) { font-size: 17px; line-height: 24px; letter-spacing: 0; }
 :is([data-skin="aurora"], [data-skin="titanium"]) .app-main .page-heading > div > p { color: var(--text-color-3); margin-top: 10px; }
 :is([data-skin="aurora"], [data-skin="titanium"]) .app-main :is(.plan-filters, .runs-view__toolbar) {

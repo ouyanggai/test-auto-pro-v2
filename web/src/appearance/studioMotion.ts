@@ -18,6 +18,19 @@ export function startStudioMotion(root: HTMLElement, content: HTMLElement) {
   let point = { x: 0, y: 0 }
   root.style.setProperty('--studio-spring', studioSpring)
 
+  // 外壳高度随窄轨/横向导航和窗口变化；只测量工作区，不改画布几何或引入会限制 fixed 全屏的容器。
+  const viewport = content.querySelector<HTMLElement>(':scope > .n-layout-scroll-container')!
+  const syncSize = () => {
+    if (stopped) return
+    const style = host.getComputedStyle(viewport)
+    const readingHeight = viewport.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
+    root.style.setProperty('--studio-frame-height', viewport.clientHeight + 'px')
+    root.style.setProperty('--studio-content-height', Math.max(0, readingHeight) + 'px')
+  }
+  const resizeObserver = new ResizeObserver(syncSize)
+  resizeObserver.observe(viewport)
+  syncSize()
+
   const animate = (element: HTMLElement, delay = 0, dialog = false) => {
     if (stopped || doc.hidden || running.size >= 12 || !element.isConnected) return
     // 独立 translate 不覆盖 Naive 弹窗自身的 transform；不动画布、表单或表格数据行。
@@ -91,6 +104,7 @@ export function startStudioMotion(root: HTMLElement, content: HTMLElement) {
     stop() {
       stopped = true
       observer.disconnect()
+      resizeObserver.disconnect()
       doc.removeEventListener('pointermove', move)
       doc.removeEventListener('pointerleave', clearReflection)
       doc.removeEventListener('visibilitychange', visibility)
@@ -98,6 +112,8 @@ export function startStudioMotion(root: HTMLElement, content: HTMLElement) {
       for (const animation of running) animation.cancel()
       running.clear()
       root.style.removeProperty('--studio-spring')
+      root.style.removeProperty('--studio-frame-height')
+      root.style.removeProperty('--studio-content-height')
       delete root.dataset.studioMotion
     },
   }
