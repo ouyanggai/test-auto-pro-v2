@@ -245,3 +245,11 @@
 - 发布前唯一运行已完成，12 条路径均已结束。本轮没有创建或更改运行；已有 1 个计划和 1 条运行的数量与身份发布前后保持，没有向目标平台发送业务写请求。
 - 本机最终日志 `.runtime/deploy/20261015-143519-2e98068f.log`、独立核对 `.runtime/deploy/post-f049-studio-verification.json`；服务器日志 `/opt/test-auto-pro-v2/logs/update-.test-auto-pro-v2-update-20261015-143519-2e98068f.log`，均不提交 Git。
 - 下一步用户按 `Ctrl+F5`，分别查看极光/钛金的深浅版本；从四个导航进入各页，检查侧栏收起后再换肤、嵌套页返回入口、列表与弹窗、较矮窗口中的配置画布/表单，以及未保存内容和快速连续切换。参考链接及设计取舍见视觉规格文首。状态保持 ready_for_manual，本轮没有启动验收浏览器或代替用户确认观感。
+
+### 报告图表高度修复已更新到 2.200
+
+- 2026-10-15 一键发布成功，线上源码版本 `f433406e78d3edc926c526fd80a1bae3ba0a5807`。82 项相关检查、类型检查与正式构建通过；ReportChart 与 ReportMetricsPanel 的数据脚本与修复前逐字一致，本轮只调整图表尺寸结构与样式。
+- 六服务健康，执行器与日志挂载验活通过；1086 个发布源文件匹配，首页资源及真正承载图表样式的懒加载文件 `ReportsView-CDEwzUJ5.css` 均与本地构建逐字节一致。实际 HTTP 返回的图表根容器规则为 220px、渲染器为 absolute/inset:0，确认修改已上线。
+- 仅 web 容器更新，另外五个服务的容器与镜像保持。报告 overview 的 counts 和 metrics 发布前后完全相同；1 个计划、1 条运行的数量和身份，以及配置、挂载、配置表单 live 版本保持。
+- 本机日志 `.runtime/deploy/20261015-150141-92881dc7.log`；独立核对 `.runtime/deploy/post-f049-chart-verification.json`、`.runtime/deploy/post-f049-chart-report-verification.json`；服务器日志 `/opt/test-auto-pro-v2/logs/update-.test-auto-pro-v2-update-20261015-150141-92881dc7.log`，均不进入 Git。
+- 人工复核：Ctrl+F5 后打开报告中心，停留观察图表高度不再持续变化，向下滚动到分布图和计划表；缩窄窗口、连续切换皮肤和深浅模式，确认布局、提示与图例可用。仍为 ready_for_manual，本轮未自动启动浏览器，不能把结构和资源核对当成视觉验收。
