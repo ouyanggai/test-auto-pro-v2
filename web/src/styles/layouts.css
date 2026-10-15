@@ -32,69 +32,17 @@
 }
 [data-skin="deep-space"] .app-main :is(.n-button, .n-input, .n-base-selection, .n-tag) { border-radius: 2px; }
 [data-skin="deep-space"] .app-shell .app-main th { font-family: var(--font-family-mono); letter-spacing: .06em; text-transform: uppercase; }
-
-/* ========== 极光玻璃：悬浮岛屿。外壳拆成互相分离的圆润浮层 ========== */
-[data-skin="aurora"] { --app-sidebar-width: 256px; }
-[data-skin="aurora"] .app-shell > .n-layout-scroll-container { padding: 14px 16px 16px; gap: 14px; grid-template-rows: 60px minmax(0, 1fr); }
-[data-skin="aurora"] .app-header {
-  border: 1px solid color-mix(in srgb, var(--primary-color) 24%, transparent); border-radius: 30px;
-  box-shadow: var(--ta-shadow-2);
-}
-[data-skin="aurora"] .app-header .product-name { background: linear-gradient(90deg, var(--primary-color), var(--ta-accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-[data-skin="aurora"] .app-workspace { background: transparent; }
-[data-skin="aurora"] .app-workspace > .n-layout-scroll-container { gap: 16px; background: transparent; }
-[data-skin="aurora"] .app-sidebar {
-  border: 1px solid color-mix(in srgb, var(--primary-color) 22%, transparent); border-radius: 28px;
-  box-shadow: var(--ta-shadow-2); height: 100%;
-}
-[data-skin="aurora"] .app-sidebar .n-menu-item-content { border-radius: 999px; }
-[data-skin="aurora"] .app-sidebar .n-menu-item-content--selected { box-shadow: 0 6px 18px -8px var(--primary-color); }
-[data-skin="aurora"] .app-main {
-  border: 1px solid color-mix(in srgb, var(--primary-color) 18%, transparent); border-radius: 32px; overflow: hidden;
-  background: color-mix(in srgb, var(--ta-surface) 55%, transparent); box-shadow: var(--ta-shadow-1);
-}
-[data-skin="aurora"] .app-main :is(.n-card, .setting-card) { border-radius: 22px; }
-[data-skin="aurora"] .app-main :is(.n-button, .n-input, .n-base-selection) { border-radius: 999px; }
-[data-skin="aurora"] .app-main .n-input--textarea { border-radius: 18px; }
-[data-skin="aurora"] .app-shell .app-main h1 { font-size: 28px; line-height: 36px; font-weight: 700; }
-[data-skin="aurora"] .app-main :is(table, .n-data-table) { border-radius: 18px; overflow: hidden; }
-
-/* ========== 钛金精密：顶部横向工作台。侧栏变成顶部页签条，紧凑高密度 ========== */
-[data-skin="titanium"] { --app-sidebar-width: 0px; }
-[data-skin="titanium"] .app-header { padding-left: 28px; }
-[data-skin="titanium"] .app-header .product-name { position: static; display: block !important; margin-right: 28px; letter-spacing: .02em; }
-[data-skin="titanium"] .app-workspace > .n-layout-scroll-container { flex-direction: column !important; }
-[data-skin="titanium"] .app-sidebar {
-  flex: none !important; width: 100% !important; max-width: none !important; min-width: 0 !important; height: 44px !important;
-  border-right: 0; border-bottom: 1px solid var(--border-color);
-}
-[data-skin="titanium"] .app-sidebar .n-layout-toggle-button { display: none; }
-[data-skin="titanium"] .app-sidebar .n-layout-sider-scroll-container { overflow: hidden !important; }
-[data-skin="titanium"] .app-sidebar-content { padding: 0 var(--app-content-pad-x) !important; }
-[data-skin="titanium"] .app-sidebar nav { height: 100%; }
-[data-skin="titanium"] .app-sidebar .n-menu { display: flex; flex-direction: row; align-items: stretch; gap: 4px; height: 100%; }
-[data-skin="titanium"] .app-sidebar .n-menu-item { height: 100%; margin: 0; }
-[data-skin="titanium"] .app-sidebar .n-menu-item-content { min-height: 0 !important; height: 100%; padding: 0 18px !important; border-radius: 0 !important; }
-[data-skin="titanium"] .app-sidebar .n-menu-item-content--selected { background: transparent !important; box-shadow: inset 0 -2px 0 var(--ta-accent-2); }
-[data-skin="titanium"] .app-sidebar .n-menu-item-content--selected::after { display: none; }
-[data-skin="titanium"] .app-main > .n-layout-scroll-container { padding-top: 24px; }
 /* 高密度：表格行、标签与卡片全部收紧，直角工业感 */
-[data-skin="titanium"] .app-shell .app-main :is(th, td) { padding: 6px 12px; }
-[data-skin="titanium"] .app-shell .app-main th { height: 34px; border-bottom: 1px solid var(--ta-border-strong); }
-[data-skin="titanium"] .app-main :is(.n-card, .setting-card) { border-radius: 4px; box-shadow: none; border: 1px solid var(--border-color); }
-[data-skin="titanium"] .app-main :is(.n-button, .n-input, .n-base-selection, .n-tag) { border-radius: 3px; }
-[data-skin="titanium"] .app-shell .app-main h1 { font-size: 20px; line-height: 28px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
-[data-skin="titanium"] .app-main .n-card--small-size { --n-padding-top: 12px; --n-padding-bottom: 12px; --n-padding-left: 14px; }
 
 /* ========== 空状态：去掉整块底色，只留一枚轻量图形与文字 ========== */
-.app-empty-state, .app-main .n-empty { background: transparent !important; border: 0 !important; box-shadow: none !important; clip-path: none !important; }
+.app-empty-state,
+.app-main .n-empty { background: transparent !important; border: 0 !important; box-shadow: none !important; clip-path: none !important; }
 .app-empty-state__message::before {
   content: ""; width: 64px; height: 64px; margin-bottom: 18px; border-radius: 50%;
   border: 1.5px dashed color-mix(in srgb, var(--text-color-3) 55%, transparent);
   background: radial-gradient(circle, color-mix(in srgb, var(--primary-color) 22%, transparent) 0 5px, transparent 6px);
 }
 [data-skin="deep-space"] .app-empty-state__message::before { border-radius: 0; border-style: solid; transform: rotate(45deg) scale(.8); }
-[data-skin="titanium"] .app-empty-state__message::before { border-radius: 4px; border-style: solid; }
 /* 表格无数据时不再铺一整块阅读面底色 */
 .app-main .n-data-table:has(.n-data-table-empty),
 .app-main .n-data-table:has(.n-data-table-empty) :is(.n-data-table-wrapper, .n-data-table-base-table, table, tbody, td) { background: transparent !important; }

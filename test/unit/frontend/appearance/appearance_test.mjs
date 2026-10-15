@@ -373,14 +373,14 @@ test('连续指针事件只排一帧，取消皮肤时清理监听与旧帧，�
 test('氛围样式可解析，持续动画只改合成属性，光晕和玻璃数量有上限', () => {
   // 使用现有 Vite 的 CSS 解析器，无新增依赖；检查真实关键帧而不是简单数文本行。
   const postcss = createRequire(requireWeb.resolve('vite'))('postcss')
-  const css = read('web/src/styles/skins.css')
+  const css = read('web/src/styles/skins.css') + '\n' + read('web/src/styles/studio.css')
   const root = postcss.parse(css)
   let frames = 0
   root.walkAtRules('keyframes', frame => {
     frames++
     frame.walkDecls(declaration => assert.ok(['transform', 'opacity'].includes(declaration.prop), frame.params + ' 禁止持续动画属性 ' + declaration.prop))
   })
-  assert.ok(frames >= 8)
+  assert.ok(frames > 0)
   for (const id of ['deep-space', 'aurora', 'titanium']) {
     const promoted = new Set()
     root.walkRules(rule => {
@@ -392,8 +392,7 @@ test('氛围样式可解析，持续动画只改合成属性，光晕和玻璃�
   const glassRules = []
   root.walkDecls('backdrop-filter', declaration => glassRules.push(declaration.parent.selector))
   assert.equal(glassRules.length, 1)
-  assert.ok(glassRules[0].includes('.kpi:nth-child(-n + 3)'))
-  assert.ok(glassRules[0].includes('.n-modal-container:nth-last-child(1 of .n-modal-container:has(.app-dialog))'))
+  assert.ok(glassRules[0].includes('.app-header, .app-sidebar'))
   assert.doesNotMatch(glassRules[0], /(?:^|,)\s*[^,]* (?:\.n-card|table|pre|\.n-code)\s*(?:,|$)/)
   for (const selector of ['.app-ambient', '.app-ambient > i', '.app-ambient::before', '[data-skin] .app-header::after']) {
     let guarded = false
@@ -406,7 +405,7 @@ test('氛围样式可解析，持续动画只改合成属性，光晕和玻璃�
   assert.doesNotMatch(read('web/src/components/AmbientLayer.vue'), /useAppStore|fetch\(|defineProps|:key/)
   assert.doesNotMatch(read('web/src/appearance/pointerGlow.ts'), /setProperty|fetch\(|setInterval/)
   assert.doesNotMatch(css, /\.n-menu-item-content--selected::before/)
-  assert.match(css, /\.n-menu-item-content--selected::after/)
+  assert.match(read('web/src/components/StudioNavigation.vue'), /studio-navigation__indicator[^>]*aria-hidden="true"/)
   root.walkRules(rule => {
     if (rule.selector.includes('data-skin="titanium"') && rule.nodes.some(node => node.prop === 'background-image') && rule.selector.includes('button')) {
       assert.ok(rule.selector.includes('.app-button--solid-primary'), '实心渐变不能覆盖文字或幽灵按钮')

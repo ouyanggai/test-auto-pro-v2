@@ -80,4 +80,15 @@ function handleKey(event: KeyboardEvent, id: SkinId) {
 .appearance-preview__card { left: 40px; top: 22px; width: 64%; height: 16px; border: 1px solid var(--preview-border); border-radius: var(--preview-radius); background: var(--preview-surface); }
 .appearance-preview__card--second { top: 46px; width: 45%; }
 .appearance-preview__dot { left: 10px; top: 24px; width: 8px; height: 8px; border-radius: 50%; background: var(--preview-primary); }
+/* 缩略图跟随实际外壳：极光是独立窄轨，钛金是横向工作台。 */
+[data-skin-choice="aurora"] .appearance-preview { background: radial-gradient(ellipse at top right, var(--preview-a), transparent), var(--preview-bg); }
+[data-skin-choice="aurora"] .appearance-preview__header { inset: 5px 6px auto; height: 10px; border: 1px solid var(--preview-border); border-radius: 4px; }
+[data-skin-choice="aurora"] .appearance-preview__sidebar { left: 6px; top: 20px; bottom: 6px; width: 19px; border: 1px solid var(--preview-border); border-radius: 5px; }
+[data-skin-choice="aurora"] .appearance-preview__card { left: 31px; top: 20px; height: 48px; border-radius: 6px; }
+[data-skin-choice="aurora"] .appearance-preview__card--second { top: 28px; left: 40px; height: 3px; width: 35%; background: var(--preview-border); border: 0; }
+[data-skin-choice="aurora"] .appearance-preview__dot { left: 12px; top: 28px; width: 6px; height: 6px; border-radius: 2px; }
+[data-skin-choice="titanium"] .appearance-preview__sidebar { inset: 12px 0 auto; height: 11px; width: 100%; border-right: 0; border-bottom: 1px solid var(--preview-border); }
+[data-skin-choice="titanium"] .appearance-preview__card { top: 32px; left: 10px; height: 13px; width: 86%; border-radius: 2px; }
+[data-skin-choice="titanium"] .appearance-preview__card--second { top: 50px; width: 65%; }
+[data-skin-choice="titanium"] .appearance-preview__dot { left: 10px; top: 15px; width: 20px; height: 3px; border-radius: 1px; }
 </style>

@@ -11,5 +11,6 @@ import './styles/layout.css'
 import './styles/skins.css'
 import './styles/layouts.css'
 import './styles/modern.css'
+import './styles/studio.css'
 
 createApp(App).use(createPinia()).use(router).mount('#app')

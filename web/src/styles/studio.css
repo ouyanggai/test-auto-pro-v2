@@ -1,0 +1,179 @@
+/* 极光与钛金的新视觉入口。所有规则限定到这两套皮肤，业务组件和默认/深空不经过此层。 */
+:is([data-skin="aurora"], [data-skin="titanium"]) { --studio-spring: cubic-bezier(.16, 1, .3, 1); }
+[data-skin="aurora"] {
+  --app-sidebar-width: 112px;
+  --app-content-pad-x: 32px;
+  --app-content-pad-top: 28px;
+  --app-content-pad-bottom: 32px;
+  --studio-space: 14px;
+  --studio-radius: 24px;
+}
+[data-skin="titanium"] {
+  --app-sidebar-width: 0px;
+  --app-content-pad-x: 36px;
+  --app-content-pad-top: 28px;
+  --app-content-pad-bottom: 40px;
+  --studio-space: 0px;
+  --studio-radius: 14px;
+}
+
+/* 导航是实际链接，共享一个连续移动的选中面；装饰层不盖住文字和点击。 */
+:is([data-skin="aurora"], [data-skin="titanium"]) .studio-navigation { position: relative; isolation: isolate; }
+.studio-navigation__indicator {
+  position: absolute; pointer-events: none; z-index: -1; opacity: 0; transform-origin: top left;
+  background: color-mix(in srgb, var(--primary-color) 9%, var(--ta-reading));
+  border: 1px solid color-mix(in srgb, var(--primary-color) 18%, var(--border-color));
+  border-radius: 16px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 18%, transparent), var(--ta-shadow-1);
+}
+.studio-navigation__link {
+  position: relative; display: flex; align-items: center; justify-content: center; gap: 9px;
+  min-width: 0; color: var(--text-color-2); text-decoration: none; border-radius: 16px;
+  transition: color 180ms ease, background-color 180ms ease;
+}
+.studio-navigation__link[aria-current="page"] { color: var(--primary-color); }
+.studio-navigation__link:hover { color: var(--text-color-1); }
+.studio-navigation__link:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 3px; }
+.studio-navigation__icon { flex: none; width: 22px; height: 22px; transition: transform 460ms var(--studio-spring); }
+.studio-navigation__link[aria-current="page"] .studio-navigation__icon { transform: translateY(-1px); }
+.studio-navigation__index { font: 10px var(--font-family-mono); opacity: .7; }
+.studio-brand-mark { width: 30px; height: 30px; flex: none; color: var(--primary-color); }
+:is([data-skin="aurora"], [data-skin="titanium"]) .product-name {
+  position: static; display: flex; align-items: center; gap: 10px; flex: none;
+  margin-right: 32px; font-size: 13px; font-weight: 600; letter-spacing: .01em;
+}
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-header {
+  display: flex; align-items: center; padding: 0 24px; overflow: visible;
+}
+:is([data-skin="aurora"], [data-skin="titanium"]) .header-toolbar {
+  flex: none; padding: 5px; gap: 4px; border: 1px solid var(--divider-color); border-radius: 12px;
+  background: color-mix(in srgb, var(--ta-reading) 70%, transparent);
+}
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-sidebar-content { padding: 0; }
+
+/* 极光：细窄导航浮在环境光里，阅读工作面有完整、不透明的底。 */
+[data-skin="aurora"] .app-shell > .n-layout-scroll-container {
+  padding: 16px; gap: var(--studio-space); grid-template-rows: 64px minmax(0, 1fr);
+}
+[data-skin="aurora"] .app-header { border: 1px solid var(--border-color); border-radius: 20px; }
+[data-skin="aurora"] .app-workspace > .n-layout-scroll-container { gap: var(--studio-space); }
+[data-skin="aurora"] .app-sidebar {
+  flex-basis: 112px !important; width: 112px !important; max-width: 112px !important;
+  border: 1px solid var(--border-color); border-radius: 22px;
+}
+[data-skin="aurora"] .studio-navigation { display: flex; flex-direction: column; gap: 12px; padding: 14px 12px; }
+[data-skin="aurora"] .studio-navigation__link { flex-direction: column; height: 76px; font-size: 11px; font-weight: 500; gap: 8px; }
+[data-skin="aurora"] .studio-navigation__index { display: none; }
+[data-skin="aurora"] .app-main {
+  border: 1px solid var(--border-color); border-radius: var(--studio-radius); overflow: hidden;
+  background: var(--ta-reading); box-shadow: var(--ta-shadow-1);
+}
+/* 同屏只有两处玻璃：顶栏和窄导航。弹窗、日志、表格和代码不叠玻璃。 */
+[data-skin="aurora"] :is(.app-header, .app-sidebar) {
+  backdrop-filter: blur(22px) saturate(135%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 26%, transparent), var(--ta-shadow-1);
+}
+[data-skin="aurora"] .app-main .n-card {
+  background: var(--ta-reading); border: 1px solid var(--divider-color); border-radius: 18px;
+  box-shadow: var(--ta-shadow-1);
+}
+[data-skin="aurora"] .app-main .n-card:hover { border-color: var(--border-color); }
+[data-skin="aurora"] .app-shell .app-main h1 { font-size: 30px; line-height: 1.3; font-weight: 600; letter-spacing: -.035em; }
+[data-skin="aurora"] .app-main .n-data-table-wrapper { border-radius: 16px; }
+[data-skin="aurora"] .app-shell .app-main th { background: var(--ta-surface-2); font-weight: 500; }
+[data-skin="aurora"] .app-main :is(.n-input, .n-base-selection) { box-shadow: inset 0 1px 2px color-mix(in srgb, var(--text-color-1) 3%, transparent); }
+[data-skin="aurora"] .app-button--solid-primary:not(.n-button--disabled) {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 22%, transparent), 0 6px 16px -8px var(--primary-color);
+}
+[data-skin="aurora"] .app-dialog { border: 1px solid var(--border-color); }
+[data-skin="aurora"] .app-dialog :is(.n-card-header, .n-dialog__title) {
+  background: linear-gradient(115deg, color-mix(in srgb, var(--primary-color) 6%, var(--ta-raised)), var(--ta-raised));
+  border-radius: var(--ta-radius-card) var(--ta-radius-card) 0 0;
+}
+[data-skin="aurora"] .app-dialog :is(.n-card__footer, .n-card__action, .n-dialog__action) { background: var(--ta-surface-2); border-radius: 0 0 var(--ta-radius-card) var(--ta-radius-card); }
+
+/* 钛金：完整横向导航和排印工作台，暖色只作焦点；不把背景做成扫动的进度条。 */
+[data-skin="titanium"] .app-shell > .n-layout-scroll-container { grid-template-rows: 68px minmax(0, 1fr); }
+[data-skin="titanium"] .app-header { border-bottom: 1px solid var(--border-color); }
+[data-skin="titanium"] .studio-brand-mark { border-radius: 9px; background: var(--ta-surface-2); padding: 2px; }
+[data-skin="titanium"] .header-toolbar { border-radius: 7px; }
+[data-skin="titanium"] .app-workspace > .n-layout-scroll-container { flex-direction: column !important; }
+[data-skin="titanium"] .app-sidebar {
+  flex: 0 0 64px !important; height: 64px !important; width: 100% !important; max-width: none !important;
+  border: 0; border-bottom: 1px solid var(--border-color); background: var(--ta-chrome);
+}
+[data-skin="titanium"] .studio-navigation { display: flex; align-items: center; height: 64px; gap: 8px; padding: 8px var(--app-content-pad-x); }
+[data-skin="titanium"] .studio-navigation__link { height: 46px; min-width: 146px; padding: 0 18px; border-radius: 7px; font-size: 13px; }
+[data-skin="titanium"] .studio-navigation__index { margin-left: 12px; }
+[data-skin="titanium"] .studio-navigation__icon { width: 18px; height: 18px; }
+[data-skin="titanium"] .studio-navigation__indicator { border-radius: 7px; box-shadow: inset 0 -2px 0 var(--primary-color); }
+[data-skin="titanium"] .app-main { height: auto; background: var(--ta-bg); }
+[data-skin="titanium"] .app-shell .app-main h1 { font-size: 34px; line-height: 1.25; font-weight: 600; letter-spacing: -.045em; }
+[data-skin="titanium"] .app-main .n-card { border: 1px solid var(--border-color); border-radius: 14px; box-shadow: var(--ta-shadow-1); background: var(--ta-reading); }
+[data-skin="titanium"] .app-shell .app-main th { height: 46px; background: var(--ta-surface-2); font-size: 11px; letter-spacing: .04em; font-weight: 600; border-bottom-color: var(--border-color); }
+[data-skin="titanium"] .app-shell .app-main td { padding-top: 13px; padding-bottom: 13px; }
+[data-skin="titanium"] .app-main tbody tr:hover > td { background: var(--hover-color); }
+[data-skin="titanium"] .app-main :is(.n-input, .n-base-selection) { background: var(--ta-reading); }
+[data-skin="titanium"] .app-button--solid-primary:not(.n-button--disabled) { box-shadow: inset 0 1px 0 color-mix(in srgb, white 20%, transparent), var(--ta-shadow-1); }
+[data-skin="titanium"] .app-dialog { border: 1px solid var(--ta-border-strong); }
+[data-skin="titanium"] .app-dialog :is(.n-card-header, .n-dialog__title) { font-weight: 600; letter-spacing: -.02em; }
+[data-skin="titanium"] .app-dialog :is(.n-card__footer, .n-card__action, .n-dialog__action) { background: var(--ta-surface-2); border-radius: 0 0 var(--ta-radius-card) var(--ta-radius-card); }
+
+/* 所有页面沿用真实内容，统一抹去重复外层留白，不动运行画布和配置页的内部几何。 */
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-main :is(.plan-page, .runs-view) { padding: 0; max-width: none; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-shell .app-main :is(.path-configuration-page__identity h1, .graph-heading h2) { font-size: 17px; line-height: 24px; letter-spacing: 0; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-main .page-heading > div > p { color: var(--text-color-3); margin-top: 10px; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-main :is(.plan-filters, .runs-view__toolbar) {
+  padding: 14px 16px; gap: 12px; border: 1px solid var(--divider-color); border-radius: var(--ta-radius-control); background: var(--ta-reading);
+}
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-main :is(.runs-view__table, .report-table) { background: var(--ta-reading); }
+:is([data-skin="aurora"], [data-skin="titanium"]) :is(.n-dropdown-menu, .n-popover, .n-base-select-menu) { border: 1px solid var(--border-color); }
+:is([data-skin="aurora"], [data-skin="titanium"]) .n-button:not(.n-button--disabled):active { scale: .975; transition: scale 120ms ease; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .n-button:focus-visible { outline-offset: 3px; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .n-tabs-bar { transition-duration: 380ms; transition-timing-function: var(--studio-spring); }
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-empty-state { min-height: 280px; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .app-empty-state__message::before {
+  width: 50px; height: 50px; border-radius: 16px; border: 1px solid var(--border-color);
+  background: linear-gradient(135deg, var(--ta-surface-2), transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, white 18%, transparent);
+}
+[data-skin="titanium"] .app-empty-state__message::before { border-radius: 8px; }
+
+/* 一个表面响应指针：只有细边缘反光，不让整块文字摇晃或倾斜。 */
+:is([data-skin="aurora"], [data-skin="titanium"]) :is(.n-card, .setting-card) { position: relative; }
+:is([data-skin="aurora"], [data-skin="titanium"]) .studio-reflecting::after {
+  content: ""; position: absolute; inset: 0; padding: 1px; border-radius: inherit; pointer-events: none; z-index: 2;
+  background: radial-gradient(240px circle at var(--studio-x) var(--studio-y), color-mix(in srgb, var(--primary-color) 65%, transparent), transparent 85%);
+  mask: linear-gradient(black 0 0) content-box exclude, linear-gradient(black 0 0);
+}
+:is([data-skin="aurora"], [data-skin="titanium"]) .studio-reflecting { --studio-x: 50%; --studio-y: 50%; }
+
+/* 极光的远景是两片柔软透镜：无逐帧渐变重绘，尺寸受视口限制。 */
+[data-skin="aurora"] .app-ambient::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 85% 0, var(--ta-glow-a), transparent 65%); }
+[data-skin="aurora"] .app-ambient__a, [data-skin="aurora"] .app-ambient__b {
+  width: min(80vw, 1100px); height: min(80vw, 1100px); border-radius: 50%; will-change: transform;
+  background: radial-gradient(ellipse at 40% 35%, transparent 34%, var(--ta-glow-a) 54%, transparent 71%);
+}
+[data-skin="aurora"] .app-ambient__a { top: -70%; right: -18%; animation: studio-lens-a 36s ease-in-out infinite alternate; }
+[data-skin="aurora"] .app-ambient__b { bottom: -80%; left: -28%; background: radial-gradient(ellipse at 55% 45%, transparent 30%, var(--ta-glow-b) 55%, transparent 72%); animation: studio-lens-b 42s ease-in-out infinite alternate; }
+[data-skin="aurora"] :is(.app-ambient__c, .app-ambient__grid, .app-ambient__spot) { display: none; }
+@keyframes studio-lens-a { from { transform: translate3d(0, 0, 0) rotate(-15deg); } to { transform: translate3d(-5vw, 5vh, 0) rotate(18deg); } }
+@keyframes studio-lens-b { from { transform: translate3d(0, 0, 0) rotate(10deg); } to { transform: translate3d(6vw, -4vh, 0) rotate(-15deg); } }
+
+/* 钛金的远景只有一圈极淡金属折面，慢速光泽不表达任何运行状态。 */
+[data-skin="titanium"] .app-ambient__a {
+  width: min(100vw, 1400px); aspect-ratio: 1; right: -40%; top: -55%; border-radius: 50%; will-change: transform;
+  background: conic-gradient(from 30deg, transparent, var(--ta-glow-a), transparent 40%, var(--ta-glow-b), transparent 80%);
+  mask: radial-gradient(circle, transparent 44%, black 45%, black 60%, transparent 61%);
+  animation: studio-metal-light 80s linear infinite;
+}
+[data-skin="titanium"] :is(.app-ambient__b, .app-ambient__c, .app-ambient__grid, .app-ambient__spot) { display: none; }
+@keyframes studio-metal-light { to { transform: rotate(360deg); } }
+html[data-studio-motion="paused"] .app-ambient > i { animation-play-state: paused; }
+
+/* 1024px 起的桌面窗口仍留够筛选与操作空间，长表格沿用现有横向滚动。 */
+@media (max-width: 1279px) {
+  [data-skin="aurora"] { --app-content-pad-x: 24px; }
+  [data-skin="aurora"] .app-shell > .n-layout-scroll-container { padding: 10px; gap: 10px; }
+  :is([data-skin="aurora"], [data-skin="titanium"]) .product-name { margin-right: 20px; font-size: 12px; }
+  [data-skin="titanium"] { --app-content-pad-x: 24px; }
+}
