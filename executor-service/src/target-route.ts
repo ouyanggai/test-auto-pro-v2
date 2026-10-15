@@ -40,6 +40,7 @@ export interface TargetRouteOptions {
   forward: (payload: {
     method: string
     url: string
+    requestSeq: number
     headers: Record<string, string>
     body?: string
     bodyEncoding: 'utf8' | 'base64'
@@ -155,6 +156,7 @@ export async function installTargetRoute (page: Page, options: TargetRouteOption
       const payload = {
         method: entry.method,
         url: entry.url,
+        requestSeq: entry.seq,
         headers: entry.headers,
         body: entry.body,
         bodyEncoding: entry.bodyEncoding ?? 'utf8',

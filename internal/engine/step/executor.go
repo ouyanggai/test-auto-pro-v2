@@ -231,7 +231,8 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 	formProxyID := firstNonEmpty(preview.Facts.FormProxyID, runCtx.FormProxyID)
 	flowProxyID := firstNonEmpty(preview.Facts.CurrentTaskFlowProxy, preview.Facts.FlowProxyID, runCtx.FlowProxyID)
 	runRequest := runtimeexec.RuntimeRunRequest{
-		RunID:        fmt.Sprintf("%d", runCtx.Run.RunNo),
+		// runtime 的 runId 必须是运行表主键，页面运行号只用于显示和目录名。
+		RunID:        fmt.Sprintf("%d", runCtx.Run.ID),
 		PathRunID:    fmt.Sprintf("%d", runCtx.PathRun.ID),
 		StepID:       fmt.Sprintf("%d", step.Sequence),
 		Account:      preview.ActorAccount,
@@ -268,6 +269,7 @@ func (e *Executor) runViaRuntime(ctx context.Context, runCtx RunContext, step mo
 		// 发目标请求；发起类实例尚不存在，留空由运行时页面回落默认平台码。
 		PlatformCode: strings.TrimSpace(preview.Facts.PlatformCode),
 	}
+	runRequest.LogScope = runtimeLogScope(runCtx, log, step.Sequence, approved.Attempt)
 	// 装载模式由持久化实例事实决定：首次草稿走发起，已有主实例的后续草稿走待发编辑。
 	switch step.Action {
 	case model.ActionSaveDraft:
@@ -669,10 +671,12 @@ func (e *Executor) rememberRuntimeFacts(preview *StepPreview, result runtimeexec
 	}
 }
 
-// settleEventDetail 组装「本步落账」事件流补充明细：节点、动作、调用的目标写端点与目标返回结果原话。
-// 目的：运行事件流按节点直接看到「这个节点调了什么接口、目标返回了什么」，目标原始错误原话随 userMessage 带出。
+// settleEventDetail 为总览事件记录步骤、节点、实际执行人与结果原话；逐接口明细由动作弹窗负责。
 func settleEventDetail(preview *StepPreview, userMessage string) string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 5)
+	if preview.StepNo > 0 {
+		parts = append(parts, fmt.Sprintf("第 %d 步", preview.StepNo))
+	}
 	head := strings.TrimSpace(preview.NodeName)
 	action := strings.TrimSpace(preview.ActionName)
 	switch {
@@ -683,13 +687,29 @@ func settleEventDetail(preview *StepPreview, userMessage string) string {
 	case head != "":
 		parts = append(parts, "节点「"+head+"」")
 	}
-	if ep := strings.TrimSpace(preview.Endpoint); ep != "" {
-		parts = append(parts, "接口 "+ep)
+	if actor := strings.TrimSpace(preview.ActorName); actor != "" {
+		parts = append(parts, "执行人："+actor)
 	}
-	if msg := strings.TrimSpace(userMessage); msg != "" {
-		parts = append(parts, msg)
+	if receiver := strings.TrimSpace(preview.ReceiverName); receiver != "" {
+		parts = append(parts, "接收人："+receiver)
 	}
-	return strings.Join(parts, " · ")
+	if strings.TrimSpace(userMessage) != "" {
+		parts = append(parts, userMessage)
+	}
+	// 结果解释可能比原始错误更概括；另外保留原话，不能让用户只能打开局部详情才能看到错误。
+	rawMessage := preview.runtimeMessage
+	if preview.writeResponse.Message != "" {
+		rawMessage = preview.writeResponse.Message
+	}
+	if strings.TrimSpace(rawMessage) != "" && !strings.Contains(userMessage, rawMessage) {
+		parts = append(parts, "动作返回："+rawMessage)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// SettleEventDetailForTest 暴露事件的人类可读投影，供根目录测试核对节点上下文和完整错误原话。
+func SettleEventDetailForTest(preview *StepPreview, userMessage string) string {
+	return settleEventDetail(preview, userMessage)
 }
 
 // RunViaRuntimeForTest 暴露 runtime 执行分支，供契约测试锁定无双写与结果映射。
@@ -720,6 +740,19 @@ func withStepScope(ctx context.Context, stepNo, attemptNo int, phase string) con
 		Attempt: formatUint(uint64(attemptNo)),
 		Phase:   phase,
 	})
+}
+
+// runtimeLogScope 为独立转发读循环复制本步真实日志归属；它不会继承动作 goroutine 的 context。
+func runtimeLogScope(runCtx RunContext, log *StepLog, stepNo, attemptNo int) logging.Scope {
+	scope := runLogScopeOf(runCtx)
+	if log != nil {
+		// StepLog 已吸收本动作读到的实例名称等最新事实，优先沿用同一份作用域。
+		scope = log.scope
+	}
+	scope.StepID = formatUint(uint64(stepNo))
+	scope.Attempt = formatUint(uint64(attemptNo))
+	scope.Phase = "submit"
+	return scope
 }
 
 // stepLogFor 返回该路径运行的 step.log 写入器；未注入工厂时返回空写入器（写入静默跳过）。

@@ -29,6 +29,14 @@ test('期望写端点 HTTP 200 且未明确拒绝时判 success', async () => {
   assert.equal(verdict.status, 'success')
 })
 
+test('完成结果保留原始请求出现时间和序号，供动作接口流转排序', async () => {
+  const trace = seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: ok() }])
+  const original = trace.list()[0]!
+  const result = await settleCompletion({ ...base, action: 'submit', trace })
+  assert.equal(result.requestTrace[0]!.seq, original.seq)
+  assert.equal(result.requestTrace[0]!.requestAt, original.requestAt)
+})
+
 test('SID 失效判 target_rejected', async () => {
   const verdict = await settleCompletion({ ...base, action: 'submit', trace: seedTrace([{ method: 'POST', url: 'https://t/api/web/flowInstanceApi/submit', state: 'fulfilled', body: encoded({ isSuccess: false, code: 'RESP401', message: '会话无效' }) }]) })
   assert.equal(verdict.status, 'target_rejected')

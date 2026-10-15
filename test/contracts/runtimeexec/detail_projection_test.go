@@ -77,3 +77,24 @@ func TestDetailProjectionFailureStatuses(t *testing.T) {
 		t.Fatalf("后置失败必须把提交后阶段标记 failed：%v", business.Stages[2])
 	}
 }
+
+// TestDetailProjectionKeepsSequenceAndReadWriteClass 页面 POST 读取不能被当成写入，附言是真实写入。
+func TestDetailProjectionKeepsSequenceAndReadWriteClass(t *testing.T) {
+	trace := json.RawMessage(`[
+		{"seq":7,"method":"POST","url":"https://t/api/web/formProxy/findById?sid=SECRET","state":"fulfilled","httpStatus":200,"requestAt":"2026-10-15T01:00:00.010Z","durationMs":9000},
+		{"seq":8,"method":"POST","url":"https://t/api/web/flowInstancePostscript/save","state":"blocked","abortReason":"附言已登记，禁止重发"}
+	]`)
+	original := "  错误 原话\n" + strings.Repeat("原因", 150)
+	detail := runtimeexec.BuildDetailProjection(runtimeexec.ActionRunResult{Status: "business_failed", Message: original}, trace, "v2")
+	if detail.Message != original || len(detail.Requests) != 2 {
+		t.Fatalf("原话和逐请求轨迹必须保留：%+v", detail)
+	}
+	read, write := detail.Requests[0], detail.Requests[1]
+	if read.Seq != 7 || read.RequestClass != "read" || read.RequestAt != "2026-10-15T01:00:00.010Z" || write.Seq != 8 || write.RequestClass != "write" || write.AbortReason != "附言已登记，禁止重发" {
+		t.Fatalf("序号、分类或拦截说明错误：%+v", detail.Requests)
+	}
+	raw, _ := json.Marshal(detail)
+	if strings.Contains(string(raw), "durationMs") || strings.Contains(string(raw), "SECRET") {
+		t.Fatalf("页面墙钟耗时不能冒充接口传输耗时：%s", raw)
+	}
+}

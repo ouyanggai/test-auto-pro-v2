@@ -1,6 +1,7 @@
 package target_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -8,8 +9,7 @@ import (
 	"test-auto-pro-v2/internal/adapter/target"
 )
 
-// F-034 评审 #3：传输层必须把目标业务包络的 message/code 安全摘要写入网络日志记录，
-// 供运行详情“接口返回什么”直接展示目标原文；摘要压成单行且超长截断，不携带正文。
+// TestInspectEnvelopeExtractsMessageAndCode 提取目标包络结果和业务码，不把 HTTP 成功当成业务成功。
 func TestInspectEnvelopeExtractsMessageAndCode(t *testing.T) {
 	kind, _, _, message, code := target.InspectEnvelopeForTest(`{"isSuccess":false,"errorType":"custom_choose","message":"手动条件分支,请选择","code":"ERROR_99999","data":{}}`)
 	if kind != "business_failure" {
@@ -22,11 +22,11 @@ func TestInspectEnvelopeExtractsMessageAndCode(t *testing.T) {
 	if kind != "business_success" || message != "ok" || code != "" {
 		t.Fatalf("成功包络摘要不正确：kind=%s message=%q code=%q", kind, message, code)
 	}
-	// 多行超长文案压成单行并截断，保证单行日志格式。
+	// 原话完整保留，单行日志编码由日志器处理。
 	long := "a\\nb\\tc"
 	kind, _, _, message, _ = target.InspectEnvelopeForTest(`{"isSuccess":false,"message":"` + long + `"}`)
-	if kind != "business_failure" || message != "a b c" {
-		t.Fatalf("多行摘要应压成单行：message=%q", message)
+	if kind != "business_failure" || message != "a\nb\tc" {
+		t.Fatalf("多行原话必须原样保留：message=%q", message)
 	}
 	// 非包络正文不产生摘要。
 	if _, _, _, message, code := target.InspectEnvelopeForTest("<html>502</html>"); message != "" || code != "" {
@@ -34,18 +34,21 @@ func TestInspectEnvelopeExtractsMessageAndCode(t *testing.T) {
 	}
 }
 
-// TestSanitizeTruncatesByRune 锁定按 rune 截断：超长中文摘要不产生非法 UTF-8 字节序列。
-func TestSanitizeTruncatesByRune(t *testing.T) {
-	long := strings.Repeat("中", 300)
-	kind, _, _, message, _ := target.InspectEnvelopeForTest(`{"isSuccess":false,"message":"` + long + `"}`)
+// TestTargetMessageKeepsFullLengthAndWhitespace 锁定长中文、空白和换行不会被截断、清洗。
+func TestTargetMessageKeepsFullLengthAndWhitespace(t *testing.T) {
+	long := "  错误 原话\n\t" + strings.Repeat("中", 300) + "  "
+	raw, err := json.Marshal(map[string]any{"isSuccess": false, "message": long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind, _, _, message, _ := target.InspectEnvelopeForTest(string(raw))
 	if kind != "business_failure" {
 		t.Fatalf("包络分类不正确：%s", kind)
 	}
-	runes := []rune(message)
-	if len(runes) != 200 {
-		t.Fatalf("应按 rune 截断到 200：len=%d", len(runes))
+	if message != long {
+		t.Fatalf("原话必须完整保留：len=%d", len([]rune(message)))
 	}
 	if !utf8.ValidString(message) {
-		t.Fatal("截断后的摘要必须是合法 UTF-8")
+		t.Fatal("原话必须是合法 UTF-8")
 	}
 }

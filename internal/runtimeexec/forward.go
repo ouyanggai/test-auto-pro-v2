@@ -15,8 +15,10 @@ var TargetPathPrefixes = []string{"/web/", "/flowInstanceApi", "/api/"}
 // ForwardedRequest 是 request_forward 消息的载荷形状（与 TS 侧 RequestForwardPayload 对齐）。
 // Body 为原样正文；二进制（上传）按 bodyEncoding=base64 保真，内网日志不脱敏。
 type ForwardedRequest struct {
-	Method        string            `json:"method"`
-	URL           string            `json:"url"`
+	Method string `json:"method"`
+	URL    string `json:"url"`
+	// RequestSeq 是执行器内按页面请求发生顺序递增的编号，供运行轨迹与 network.log 精确合并。
+	RequestSeq    int               `json:"requestSeq,omitempty"`
 	Headers       map[string]string `json:"headers"`
 	Body          string            `json:"body,omitempty"`
 	BodyEncoding  string            `json:"bodyEncoding,omitempty"`

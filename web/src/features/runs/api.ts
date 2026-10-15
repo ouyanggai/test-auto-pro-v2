@@ -85,7 +85,7 @@ export interface RunStepAttempt {
 // RuntimeExecutionDetail 是 runtime 动作的执行详情投影（与 internal/runtimeexec/detail.go 同形）。
 export interface RuntimeExecutionDetail {
   stages: Array<{ name: string, state: 'pending' | 'running' | 'done' | 'failed' | 'uncertain', note?: string, requests: number }>
-  requests: Array<{ seq: number, method: string, path: string, state: string, httpStatus?: number, durationMs?: number }>
+  requests: Array<{ seq: number, method: string, path: string, requestClass: 'read' | 'write', state: string, httpStatus?: number, requestAt?: string, abortReason?: string }>
   capabilityVersion: string
   status: string
   message?: string
@@ -94,12 +94,17 @@ export interface RuntimeExecutionDetail {
 // RunRequestItem 是一条真实目标接口请求的安全摘要。
 export interface RunRequestItem {
   phase?: string
+  method?: string
+  requestSeq?: number
   requestClass: 'read' | 'write'
   endpoint: string
   durationMs: number
   durationKnown?: boolean
   statusCode: number
   result: string
+  businessResult?: 'success' | 'failure'
+  targetMessage?: string
+  targetCode?: string
   // resultSummary/blocking 是 F-034/T05 的一句话业务结果摘要与阻塞标记（后端受控生成）。
   resultSummary?: string
   blocking?: boolean
@@ -172,6 +177,7 @@ export interface PathRunDetail {
   pathName: string
   // logDir 是这次运行的路径运行日志目录（相对日志根），由页面身份（runId/pathRunId）直接得出。
   logDir?: string
+  requestLogAvailable: boolean
   // 目标实例身份：instanceName 只作业务信息展示，不参与日志目录定位；
   // instanceNameAvailable 为 false 时显示「实例名称不可用」并用 instanceNameNote 说明原因。
   instanceId?: string

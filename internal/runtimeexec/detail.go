@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
+
+	"test-auto-pro-v2/internal/adapter/target"
 )
 
 // StageState 是单个阶段的中文可解释状态。
@@ -27,14 +29,16 @@ type RuntimeStage struct {
 	Requests int        `json:"requests"`
 }
 
-// RuntimeRequestSummary 是单笔请求的可展示摘要：仅路径、方法、状态与耗时，无正文无 SID。
+// RuntimeRequestSummary 保留页面请求顺序、路径和返回事实；接口耗时仅由传输日志提供。
 type RuntimeRequestSummary struct {
-	Seq        int    `json:"seq"`
-	Method     string `json:"method"`
-	Path       string `json:"path"`
-	State      string `json:"state"`
-	HTTPStatus int    `json:"httpStatus,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
+	Seq          int    `json:"seq"`
+	Method       string `json:"method"`
+	Path         string `json:"path"`
+	RequestClass string `json:"requestClass"`
+	State        string `json:"state"`
+	HTTPStatus   int    `json:"httpStatus,omitempty"`
+	RequestAt    string `json:"requestAt,omitempty"`
+	AbortReason  string `json:"abortReason,omitempty"`
 }
 
 // RuntimeExecutionDetail 是一次 runtime 动作的运行详情投影。
@@ -52,10 +56,10 @@ type runtimeDetailRequestEntry struct {
 	Seq         int    `json:"seq"`
 	Method      string `json:"method"`
 	URL         string `json:"url"`
+	RequestAt   string `json:"requestAt,omitempty"`
 	State       string `json:"state"`
 	AbortReason string `json:"abortReason,omitempty"`
 	HTTPStatus  int    `json:"httpStatus,omitempty"`
-	DurationMs  int64  `json:"durationMs,omitempty"`
 }
 
 // BuildDetailProjection 从动作结果与请求轨迹构造运行详情投影。
@@ -76,12 +80,14 @@ func BuildDetailProjection(result ActionRunResult, requestTrace json.RawMessage,
 	summaries := make([]RuntimeRequestSummary, 0, len(entries))
 	for _, entry := range entries {
 		summaries = append(summaries, RuntimeRequestSummary{
-			Seq:        entry.Seq,
-			Method:     entry.Method,
-			Path:       sanitizePath(entry.URL),
-			State:      entry.State,
-			HTTPStatus: entry.HTTPStatus,
-			DurationMs: entry.DurationMs,
+			Seq:          entry.Seq,
+			Method:       entry.Method,
+			Path:         sanitizePath(entry.URL),
+			RequestClass: runtimeRequestClass(entry.URL),
+			State:        entry.State,
+			HTTPStatus:   entry.HTTPStatus,
+			RequestAt:    entry.RequestAt,
+			AbortReason:  entry.AbortReason,
 		})
 		if isFlowPath(entry.URL) && entry.State == "fulfilled" && (flowSeq == -1 || entry.Seq < flowSeq) {
 			flowSeq = entry.Seq
@@ -132,6 +138,15 @@ func BuildDetailProjection(result ActionRunResult, requestTrace json.RawMessage,
 		detail.Stages[0].State = StageFailed
 	}
 	return detail
+}
+
+// runtimeRequestClass 按目标写端点白名单分类页面请求；HTTP 方法本身不能说明业务是否写入。
+func runtimeRequestClass(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err == nil && target.IsKnownWriteRequestPath(parsed.Path) {
+		return "write"
+	}
+	return "read"
 }
 
 // sanitizePath 只保留路径部分并剥离查询参数（查询可能携带 sid）。

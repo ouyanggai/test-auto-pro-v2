@@ -22,6 +22,12 @@ import (
 // Header 保留页面原样请求头；Host/Cookie/内容长度等由本出口重建，防止伪造会话归属。
 type PageForwardRequest struct {
 	Method string
+	// RequestClass 是唯一目标出口登记的读写事实，不能从 HTTP 方法推断（页面大量只读接口也使用 POST）。
+	RequestClass string
+	// RequestSeq 对应执行器完整动作轨迹中的原始顺序号；普通 Go 目标调用不设置。
+	RequestSeq int
+	// RetryAttempt 是本次会话刷新重放序号：首次为 1，SID 刷新后的唯一重放为 2。
+	RetryAttempt int
 	// Path 是目标端点路径（如 /web/flowInstanceApi/submit）；Query 原样保留页面查询参数。
 	Path  string
 	Query url.Values
@@ -117,7 +123,14 @@ func (c *Client) ForwardRuntimeRequest(ctx context.Context, session Session, req
 	}
 	traceID := logging.NewTraceID()
 	probe := &transportProbe{}
-	req = req.WithContext(withRequestMetadata(httptrace.WithClientTrace(req.Context(), probe.trace()), "runtime_forward", traceID))
+	requestClass := strings.TrimSpace(request.RequestClass)
+	if requestClass != "write" {
+		requestClass = "read"
+	}
+	ctx = WithRuntimeRequestSeq(ctx, request.RequestSeq)
+	ctx = WithRetryAttempt(ctx, request.RetryAttempt > 1, request.RetryAttempt)
+	req = req.WithContext(ctx)
+	req = req.WithContext(withRequestMetadata(httptrace.WithClientTrace(req.Context(), probe.trace()), requestClass, traceID))
 	response, err := c.httpClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

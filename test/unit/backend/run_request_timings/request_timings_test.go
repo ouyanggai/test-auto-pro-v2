@@ -1,8 +1,9 @@
-// F-030/T06：目标请求耗时明细的定向验证。
-// 锁定三件事：network.log 解析归类正确、读写分类兜底可靠、缺失日志优雅降级不返回猜测值。
+// 请求详情只按步骤事实归属，覆盖数据库主键与步骤序号不同、日志缺失和目标错误保真。
 package run_request_timings_test
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,164 +15,168 @@ import (
 	"test-auto-pro-v2/internal/service"
 )
 
-// newTimingFixture 组装 router 根目录与尝试事实：只用于请求明细解析，不碰数据库。
-func newTimingFixture(t *testing.T, networkContent, stepContent string) (*logging.Router, []model.RunStepAttempt) {
+// newTimingFixture 使用与真实落账一致的不同主键和步序，不依赖 step.log 推断请求归属。
+func newTimingFixture(t *testing.T, content *string) (*logging.Router, []model.RunStep, []model.RunStepAttempt) {
 	t.Helper()
 	root := t.TempDir()
-	rel := filepath.Join("runs", "p1", "42", "1", "step.log")
-	full := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	rel := filepath.Join("runs", "测试计划", "paths", "测试路径", "step.log")
+	dir := filepath.Join(root, filepath.Dir(rel))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(full, []byte(stepContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if networkContent != "" {
-		if err := os.WriteFile(filepath.Join(filepath.Dir(full), "network.log"), []byte(networkContent), 0o644); err != nil {
+	if content != nil {
+		if err := os.WriteFile(filepath.Join(dir, "network.log"), []byte(*content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	attempts := []model.RunStepAttempt{{StepID: 18, AttemptNo: 1, LogPath: rel}}
-	return logging.NewRouter(root, time.Now), attempts
+	steps := []model.RunStep{{ID: 70018, StepNo: 18}, {ID: 70019, StepNo: 19}}
+	attempts := []model.RunStepAttempt{{StepID: 70018, AttemptNo: 1, LogPath: rel}, {StepID: 70018, AttemptNo: 2, LogPath: rel}, {StepID: 70019, AttemptNo: 1, LogPath: rel}}
+	return logging.NewRouter(root, time.Now), steps, attempts
 }
 
-func TestReadAttemptRequestsGroupsByAttemptWindow(t *testing.T) {
-	stepLog := strings.Join([]string{
-		"time=2026-09-11_22:19:10 level=info run_id=90 path_run_id=106 step_id=18 attempt=1 phase=plan message=a",
-		"time=2026-09-11_22:19:30 level=info run_id=90 path_run_id=106 step_id=18 attempt=1 phase=settle message=b",
+// TestRequestIdentityUsesStepNumber 验证主键不等于步序时仍精确归属，不混入相邻动作或其他路径。
+func TestRequestIdentityUsesStepNumber(t *testing.T) {
+	content := strings.Join([]string{
+		"path_run_id=106 step_id=18 attempt=1 phase=prepare runtime_request_seq=1 trace_id=t1 method=POST endpoint=/api/web/formProxy/findById request_class=read status_code=200 duration_s=0.512 result=success retry_attempt=1",
+		"path_run_id=106 step_id=18 attempt=2 phase=submit runtime_request_seq=4 trace_id=t2 method=POST endpoint=/api/web/flowInstancePostscript/save request_class=write status_code=200 duration_s=0.300 result=success retry_attempt=2",
+		"path_run_id=106 step_id=19 attempt=1 trace_id=t3 method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.100 result=success retry_attempt=1",
+		"path_run_id=999 step_id=18 attempt=1 trace_id=other-path method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.100 result=success retry_attempt=1",
+		"path_run_id=106 step_id=70018 attempt=1 trace_id=wrong-id method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.100 result=success retry_attempt=1",
 	}, "\n")
-	networkLog := strings.Join([]string{
-		// 窗口内：gate 读取请求
-		"time=2026-09-11_22:19:12 level=info run_id=90 path_run_id=106 step_id=- attempt=- trace_id=t1 method=POST endpoint=/api/web/flowInstanceApi/list request_class=read status_code=200 duration_s=0.512 result=success retry_attempt=1",
-		// 窗口内：写请求（带端点兜底分类）
-		"time=2026-09-11_22:19:20 level=info run_id=90 path_run_id=106 step_id=- attempt=- trace_id=t2 method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.300 result=success retry_attempt=1",
-		// 窗口外：登录请求不归属任何尝试
-		"time=2026-09-11_22:18:26 level=info run_id=90 path_run_id=106 step_id=- attempt=- trace_id=t0 method=POST endpoint=/api/web/user/api/login/user/login request_class=read status_code=200 duration_s=0.100 result=success retry_attempt=1",
+	router, steps, attempts := newTimingFixture(t, &content)
+	requests, summaries, available := service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+	if !available || len(requests) != 3 || len(requests["18:1"]) != 1 || len(requests["19:1"]) != 1 {
+		t.Fatalf("应只归属三次真实尝试：%+v，完整=%v", requests, available)
+	}
+	read, write := requests["18:1"][0], requests["18:2"][0]
+	if read.Method != "POST" || read.RequestClass != "read" || read.DurationMs != 512 || read.RuntimeRequestSeq != 1 || read.Phase != "prepare" {
+		t.Fatalf("读取请求事实不正确：%+v", read)
+	}
+	if write.RequestClass != "write" || write.RetryAttempt != 2 || write.RuntimeRequestSeq != 4 || summaries["18:2"].WriteCount != 1 {
+		t.Fatalf("附言写入或重试事实丢失：%+v", write)
+	}
+}
+
+// TestRequestOrderUsesTransportStart 验证并发响应先后相反时按传输开始时刻排序。
+func TestRequestOrderUsesTransportStart(t *testing.T) {
+	content := strings.Join([]string{
+		"path_run_id=106 step_id=18 attempt=1 request_at=2026-10-15T10:00:00.020+08:00 trace_id=second method=POST endpoint=/api/web/flowInstancePostscript/save request_class=write status_code=200 duration_s=0.010 result=success",
+		"path_run_id=106 step_id=18 attempt=1 request_at=2026-10-15T10:00:00.010+08:00 trace_id=first method=POST endpoint=/api/web/flowInstanceApi/transpond request_class=write status_code=200 duration_s=0.100 result=success",
 	}, "\n")
-	router, attempts := newTimingFixture(t, networkLog, stepLog)
-	requests, summary := service.ReadAttemptRequestsForTestWithRouter(router, 106, attempts)
-	if got := requests["18:1"]; len(got) != 2 {
-		t.Fatalf("窗口内应归属 2 条请求，实际 %d：%+v", len(got), requests)
-	}
-	if requests["18:1"][0].RequestClass != "read" || requests["18:1"][0].DurationMs != 512 {
-		t.Fatalf("读取请求归类或耗时错误：%+v", requests["18:1"][0])
-	}
-	if requests["18:1"][1].RequestClass != "write" || requests["18:1"][1].DurationMs != 300 {
-		t.Fatalf("写请求归类或耗时错误：%+v", requests["18:1"][1])
-	}
-	summary1 := summary["18:1"]
-	if summary1.Count != 2 || summary1.WriteCount != 1 || summary1.TotalMs != 812 || summary1.WriteMs != 300 {
-		t.Fatalf("汇总指标错误：%+v", summary1)
+	router, steps, attempts := newTimingFixture(t, &content)
+	requests, _, _ := service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+	rows := requests["18:1"]
+	if len(rows) != 2 || rows[0].TraceID != "first" || rows[1].TraceID != "second" {
+		t.Fatalf("请求顺序应按开始时刻而非完成时刻：%+v", rows)
 	}
 }
 
-func TestRequestClassFallsBackToEndpointWhitelist(t *testing.T) {
-	networkLog := "time=2026-09-11_22:19:20 level=info run_id=90 path_run_id=106 step_id=- attempt=- trace_id=t2 method=POST endpoint=/api/web/flowInstanceApi/submit status_code=200 duration_s=0.2 result=success retry_attempt=1"
-	// 旧日志缺 request_class 字段时按写端点白名单兜底
-	networkLog = strings.Replace(networkLog, " request_class=write", "", 1)
-	stepLog := "time=2026-09-11_22:19:10 level=info run_id=90 path_run_id=106 step_id=1 attempt=1 phase=plan message=a\n" +
-		"time=2026-09-11_22:19:30 level=info run_id=90 path_run_id=106 step_id=1 attempt=1 phase=settle message=b"
-	router, attempts := newTimingFixture(t, networkLog, stepLog)
-	requests, _ := service.ReadAttemptRequestsForTestWithRouter(router, 106, attempts)
-	if got := requests["1:1"]; len(got) != 1 || got[0].RequestClass != "write" {
-		t.Fatalf("旧日志缺 request_class 时应按写端点白名单归类为 write：%+v", requests)
+// TestRequestEvidenceDistinguishesEmptyMissingAndUnreadable 验证缺失、读取中断和空文件给出不同证据状态。
+func TestRequestEvidenceDistinguishesEmptyMissingAndUnreadable(t *testing.T) {
+	cases := []struct {
+		name      string
+		content   *string
+		available bool
+	}{
+		{name: "日志不存在"},
+		{name: "可读空日志", content: stringPointer(""), available: true},
+		{name: "扫描中断", content: stringPointer(strings.Repeat("x", 1024*1024+1))},
+		{name: "没有动作归属", content: stringPointer("path_run_id=106 step_id=- attempt=- trace_id=unscoped method=POST endpoint=/api/web/flowInstanceApi/list result=success")},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			router, steps, attempts := newTimingFixture(t, item.content)
+			requests, _, available := service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+			if available != item.available || len(requests) != 0 {
+				t.Fatalf("空状态不能冒充未发出请求：可用=%v，明细=%+v", available, requests)
+			}
+		})
 	}
 }
 
-func TestMissingNetworkLogDegradesWithoutGuessing(t *testing.T) {
-	stepLog := "time=2026-09-11_22:19:10 level=info run_id=90 path_run_id=106 step_id=1 attempt=1 phase=plan message=a"
-	router, attempts := newTimingFixture(t, "", stepLog)
-	requests, summary := service.ReadAttemptRequestsForTestWithRouter(router, 106, attempts)
-	if len(requests) != 0 || len(summary) != 0 {
-		t.Fatalf("缺失 network.log 时应返回空明细与空汇总，不得返回猜测值：%+v", requests)
-	}
-	if _, ok := summary["1:1"]; ok {
-		t.Fatal("缺失日志时不应产生汇总指标")
+// stringPointer 为测试明确区分日志不存在与存在但为空，不用于生产兼容逻辑。
+func stringPointer(value string) *string { return &value }
+
+// TestTargetMessageIsKeptVerbatim 验证长中文、空格、制表符和换行从日志解码后完整保留。
+func TestTargetMessageIsKeptVerbatim(t *testing.T) {
+	message := "  目标错误 原话\n\t" + strings.Repeat("具体原因", 100) + "  "
+	content := "path_run_id=106 step_id=18 attempt=1 trace_id=err method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.150 result=failure code=ERROR_99999 target_message_b64=" + base64.StdEncoding.EncodeToString([]byte(message))
+	router, steps, attempts := newTimingFixture(t, &content)
+	attempts[0].Initial = "pre_rejected"
+	requests, _, _ := service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+	row := requests["18:1"][0]
+	if row.TargetMessage != message || row.TargetCode != "ERROR_99999" || !row.Blocking || !strings.Contains(row.ResultSummary, message) {
+		t.Fatalf("目标错误原话不可截断或压成单行：%+v", row)
 	}
 }
 
-// TestReadAttemptRequestsPrefersStepScopeOverWindow 锁定 F-030 评审 P1 修复：
-// network.log 行携带 step_id/attempt 时按日志直接归属，不再依赖秒级时间窗口推断——
-// 两个步骤窗口重叠（第 1 步重试核验与第 2 步预览交错）时也不会归错。
-func TestReadAttemptRequestsPrefersStepScopeOverWindow(t *testing.T) {
-	stepLog := strings.Join([]string{
-		// 第 1 步窗口：22:19:10 → 22:19:40（含重试）
-		"time=2026-09-11_22:19:10 level=info run_id=90 path_run_id=106 step_id=1 attempt=1 phase=plan message=a",
-		"time=2026-09-11_22:19:40 level=info run_id=90 path_run_id=106 step_id=1 attempt=2 phase=settle message=b",
-		// 第 2 步窗口：22:19:20 → 22:19:50（与第 1 步重叠）
-		"time=2026-09-11_22:19:20 level=info run_id=90 path_run_id=106 step_id=2 attempt=1 phase=plan message=c",
-		"time=2026-09-11_22:19:50 level=info run_id=90 path_run_id=106 step_id=2 attempt=1 phase=settle message=d",
-	}, "\n")
-	networkLog := strings.Join([]string{
-		// 时间落在两个窗口重叠区，但日志行声明属于第 2 步：必须按 step_id/attempt 归属。
-		"time=2026-09-11_22:19:25 level=info run_id=90 path_run_id=106 step_id=2 attempt=1 phase=gate trace_id=t1 method=POST endpoint=/api/web/flowInstanceApi/list request_class=read status_code=200 duration_s=0.4 result=success retry_attempt=1",
-		// 同理：声明属于第 1 步第 2 次尝试的重试请求。
-		"time=2026-09-11_22:19:35 level=info run_id=90 path_run_id=106 step_id=1 attempt=2 phase=verify trace_id=t2 method=POST endpoint=/api/web/flowJobTaskLink/list request_class=read status_code=200 duration_s=0.2 result=success retry_attempt=2",
-		// step_id 对不上尝试记录（如登录/结构读取遗留）：不硬归属。
-		"time=2026-09-11_22:19:26 level=info run_id=90 path_run_id=106 step_id=9 attempt=1 phase=plan trace_id=t3 method=POST endpoint=/api/web/flowInstanceApi/list request_class=read status_code=200 duration_s=0.1 result=success retry_attempt=1",
-	}, "\n")
-	router, attempts := newTimingFixture(t, networkLog, stepLog)
-	attempts = []model.RunStepAttempt{{StepID: 1, AttemptNo: 1, LogPath: attempts[0].LogPath}, {StepID: 1, AttemptNo: 2}, {StepID: 2, AttemptNo: 1}}
-	requests, _ := service.ReadAttemptRequestsForTestWithRouter(router, 106, attempts)
-	if got := requests["2:1"]; len(got) != 1 || got[0].TraceID != "t1" || got[0].Phase != "gate" {
-		t.Fatalf("重叠窗口内应按 step_id/attempt 直接归属到第 2 步，实际 %v", requests)
+// TestUnknownDurationKeepsPhysicalWriteCount 验证损坏耗时不冒充零，写请求次数仍按真实记录计数。
+func TestUnknownDurationKeepsPhysicalWriteCount(t *testing.T) {
+	lines := []string{}
+	for _, duration := range []string{"-", "NaN", "Inf", "-1", "1e100"} {
+		lines = append(lines, "path_run_id=106 step_id=18 attempt=1 method=POST endpoint=/api/web/flowInstancePostscript/save request_class=write duration_s="+duration+" result=failure")
 	}
-	if got := requests["1:2"]; len(got) != 1 || got[0].TraceID != "t2" || got[0].Phase != "verify" {
-		t.Fatalf("重试请求应归属到第 1 步第 2 次尝试，实际 %v", requests)
-	}
-	if _, ok := requests["9:1"]; ok {
-		t.Fatal("step_id 对不上尝试记录的请求不应硬归属")
-	}
-}
-
-// 编译期确认 DTO 字段不携带敏感信息：只允许白名单键出现在 JSON 输出。
-func TestRunRequestDTOHasNoSensitiveFields(t *testing.T) {
-	dto := service.RunRequestDTO{Phase: "verify", RequestClass: "write", Endpoint: "flowInstanceApi/audit", DurationMs: 300, StatusCode: 200, Result: "success", RetryAttempt: 1, TraceID: "t2", At: "2026-09-11_22:19:20"}
-	raw, err := time.Now(), error(nil)
-	_ = raw
-	_ = err
-	text := strings.Join([]string{dto.Phase, dto.RequestClass, dto.Endpoint, dto.TraceID}, "")
-	for _, banned := range []string{"sid", "password"} {
-		if strings.Contains(strings.ToLower(text), banned) {
-			t.Fatalf("请求摘要携带敏感字段：%s", banned)
+	content := strings.Join(lines, "\n")
+	router, steps, attempts := newTimingFixture(t, &content)
+	requests, summaries, _ := service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+	for _, row := range requests["18:1"] {
+		if row.DurationKnown {
+			t.Fatalf("损坏耗时不得当作已知：%+v", row)
 		}
 	}
+	if summary := summaries["18:1"]; summary.WriteCount != 5 || summary.AllDurationsKnown {
+		t.Fatalf("未知耗时不应影响真实写请求计数：%+v", summary)
+	}
 }
 
-// TestRequestSummaryCarriesTargetMessage 锁定 F-034 评审 #3：
-// 传输层把目标业务包络的 message/code 安全摘要写入 network.log 后，
-// 详情请求行的结果摘要必须直接展示目标原文，如「目标拒绝：手动条件分支,请选择」；
-// 传输失败显示“未得到目标结果”，无 message 的写成功显示“目标已接受请求”。
-func TestRequestSummaryCarriesTargetMessage(t *testing.T) {
-	stepLog := strings.Join([]string{
-		"time=2026-09-13_10:00:00 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 phase=plan message=a",
-		"time=2026-09-13_10:00:10 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 phase=settle message=b",
-	}, "\n")
-	networkLog := strings.Join([]string{
-		// 前置阻塞拒绝：目标 message 进摘要，尝试初判 pre_rejected → blocking。
-		"time=2026-09-13_10:00:02 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 trace_id=t1 method=POST endpoint=/api/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.150 result=failure outcome_kind=business_failure error_type=custom_choose message=手动条件分支,请选择 code=ERROR_99999 retry_attempt=1",
-		// 无 message 的写成功。
-		"time=2026-09-13_10:00:05 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 trace_id=t2 method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write status_code=200 duration_s=0.120 result=success retry_attempt=1",
-		// 传输失败：没有 HTTP 状态码。
-		"time=2026-09-13_10:00:07 level=info run_id=1 path_run_id=2 step_id=18 attempt=1 trace_id=t3 method=POST endpoint=/api/web/flowInstanceApi/audit request_class=write duration_s=0.050 result=failure transport_phase=connect_failed retry_attempt=1",
-	}, "\n")
-	router, attempts := newTimingFixture(t, networkLog, stepLog)
-	attempts[0].Initial = "pre_rejected"
-	requests, _ := service.ReadAttemptRequestsForTestWithRouter(router, 2, attempts)
-	rows := requests["18:1"]
-	if len(rows) != 3 {
-		t.Fatalf("应归属 3 条请求：%+v", requests)
+// TestReadFailureNeverSaysSuccess 验证无业务 message 的失败读取不会被摘要包装为读取成功。
+func TestReadFailureNeverSaysSuccess(t *testing.T) {
+	content := "path_run_id=106 step_id=18 attempt=1 method=POST endpoint=/api/web/flowInstanceApi/list request_class=read status_code=500 result=failure"
+	router, steps, attempts := newTimingFixture(t, &content)
+	requests, _, _ := service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+	if row := requests["18:1"][0]; strings.Contains(row.ResultSummary, "成功") {
+		t.Fatalf("失败不能显示成功：%+v", row)
 	}
-	if rows[0].ResultSummary != "目标拒绝（前置条件未满足）：手动条件分支,请选择" {
-		t.Fatalf("拒绝摘要应携带目标原文：%q", rows[0].ResultSummary)
+}
+
+// TestRunRequestDTOOnlyCarriesRequestFacts 验证详情契约只带请求摘要，不新增会话或完整正文字段。
+func TestRunRequestDTOOnlyCarriesRequestFacts(t *testing.T) {
+	raw, err := json.Marshal(service.RunRequestDTO{Method: "POST", RuntimeRequestSeq: 2, TargetMessage: "拒绝", TargetCode: "ERROR", RequestClass: "write"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !rows[0].Blocking {
-		t.Fatal("前置拒绝请求应标记 blocking")
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
 	}
-	if rows[1].ResultSummary != "目标已接受请求" {
-		t.Fatalf("无 message 的写成功摘要应为接受请求：%q", rows[1].ResultSummary)
+	for _, key := range []string{"sid", "password", "body", "headers", "responseBody"} {
+		if _, ok := fields[key]; ok {
+			t.Fatalf("公开摘要不能新增正文或身份字段：%s", key)
+		}
 	}
-	if rows[2].ResultSummary == "" || strings.Contains(rows[2].ResultSummary, "目标拒绝") {
-		t.Fatalf("传输失败应显示未得到目标结果：%q", rows[2].ResultSummary)
+	if fields["method"] != "POST" || fields["requestSeq"] != float64(2) || fields["targetMessage"] != "拒绝" {
+		t.Fatalf("请求身份和原话缺失：%s", raw)
+	}
+}
+
+// TestRequestRotationRetainsEarlierActionRequests 验证轮转后仍能读取保留的前面动作记录，不能把清理当作未发出。
+func TestRequestRotationRetainsEarlierActionRequests(t *testing.T) {
+	content := "path_run_id=106 step_id=19 attempt=1 method=POST endpoint=/web/formProxy/findById result=success"
+	router, steps, attempts := newTimingFixture(t, &content)
+	dir := filepath.Dir(filepath.Join(router.Root(), attempts[0].LogPath))
+	older := "path_run_id=106 step_id=18 attempt=1 method=POST endpoint=/web/flowInstanceApi/transpond request_class=write result=success"
+	if err := os.WriteFile(filepath.Join(dir, "network.log.1"), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	requests, _, available := service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+	if !available || len(requests["18:1"]) != 1 || len(requests["19:1"]) != 1 {
+		t.Fatalf("轮转文件不能漏掉早先动作：%+v", requests)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "network.log.3"), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, available = service.ReadAttemptRequestsForTestWithRouter(router, 106, steps, attempts)
+	if available {
+		t.Fatal("最老备份存在时不能假定更早记录没有被清理")
 	}
 }

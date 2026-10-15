@@ -55,6 +55,7 @@ export interface TraceSummary {
   seq: number
   method: string
   url: string
+  requestAt: string
   state: string
   abortReason?: string
   httpStatus?: number
@@ -315,6 +316,7 @@ function summarize (entries: TraceEntry[]): TraceSummary[] {
     seq: entry.seq,
     method: entry.method,
     url: entry.url,
+    requestAt: entry.requestAt,
     state: entry.state,
     abortReason: entry.abortReason,
     httpStatus: entry.response?.httpStatus,

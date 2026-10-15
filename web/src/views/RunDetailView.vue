@@ -662,8 +662,13 @@ function schedulePoll(version = requestVersion): void {
 // eventKindClass 把事件 kind 映射到语义色类，让错误/停止类事件一眼醒目。
 // 不用 kind 全名，只分四档：success / warning / error / 默认，
 // 界面不需要显示 kind 原文，只需要语义颜色。
-function eventKindClass(kind: string): string {
-  if (kind === 'path_run_started' || kind === 'path_run_completed' || kind === 'step_executed') return 'event--success'
+function eventKindClass(kind: string, label: string): string {
+  // 收尾事件同时承载成功与失败，不能只按 finished 把目标拒绝显示为绿色。
+  if (kind === 'path_run_finished') {
+    if (/失败|未确认|拒绝|不满足|无法确认/.test(label)) return 'event--error'
+    if (/停止|取消/.test(label)) return 'event--warning'
+  }
+  if (kind === 'path_run_started' || kind === 'path_run_step_settled') return 'event--success'
   if (kind === 'gate_blocked_stopped' || kind === 'path_deviation_stopped' || kind === 'proxy_remap_failed' || kind === 'run_uncertain_closed') return 'event--error'
   if (kind === 'breakpoint_hit' || kind === 'path_deviation' || kind === 'paused') return 'event--warning'
   return ''
@@ -1279,8 +1284,9 @@ onBeforeUnmount(() => {
 
         <!-- F-021 事件流时间线：按数据库顺序只追加，供事后回放「状态怎么变的」。 -->
         <section v-show="activeTab === 'events'" class="run-detail__events" aria-label="事件流">
+          <p class="run-detail__event-intro">按发生顺序查看各节点的流转、执行结果与错误；单个动作的接口详情可在流程图中打开。</p>
           <ol class="run-detail__event-list">
-            <li v-for="event in runEvents" :key="event.id" class="run-detail__event-item" :class="eventKindClass(event.kind)">
+            <li v-for="event in runEvents" :key="event.id" class="run-detail__event-item" :class="eventKindClass(event.kind, event.label)">
               <div class="run-detail__event-row">
                 <span class="run-detail__event-time">{{ event.createdAt }}</span>
                 <span class="run-detail__event-label">{{ event.label }}</span>
@@ -1581,7 +1587,7 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* 事件补充明细：节点·接口·目标返回原话，单独一行灰显，便于按节点核对调用的接口与原始错误 */
+/* 事件展示整个流程的节点、执行人和结果；错误原文保持换行，长内容可以滚动读完。 */
 .run-detail__event-detail {
   margin: 3px 0 0 0;
   padding: 4px 8px;
@@ -1592,6 +1598,9 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.5;
   word-break: break-all;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow: auto;
 }
 
 /* 每条事件行：时间 + 标签排在同一行，detail 折行显示 */

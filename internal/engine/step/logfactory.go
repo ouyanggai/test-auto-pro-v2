@@ -15,24 +15,7 @@ import (
 // 实例身份只在读到时补进作用域与 meta.json，不参与目录寻址。
 func NewRouterStepLogFactory(router *logging.Router) LogFactory {
 	return func(runCtx RunContext) *StepLog {
-		startedAt := runCtx.Run.CreatedAt
-		if runCtx.PathRun.StartedAt != nil && !runCtx.PathRun.StartedAt.IsZero() {
-			startedAt = *runCtx.PathRun.StartedAt
-		} else if runCtx.Run.StartedAt != nil && !runCtx.Run.StartedAt.IsZero() {
-			startedAt = *runCtx.Run.StartedAt
-		}
-		scope := logging.Scope{
-			PlanID:            strconv.FormatUint(runCtx.Run.PlanID, 10),
-			PlanName:          runCtx.PlanName,
-			ExecutionPathID:   strconv.FormatUint(runCtx.PathRun.ExecutionPathID, 10),
-			ExecutionPathName: runCtx.PathName,
-			RunID:             strconv.FormatUint(runCtx.Run.ID, 10),
-			RunSeq:            strconv.FormatUint(runCtx.Run.RunNo, 10),
-			RunStartedAt:      startedAt.Local().Format("2006-01-02 15-04-05"),
-			PathRunID:         strconv.FormatUint(runCtx.PathRun.ID, 10),
-			// 待发/已发场景在运行开始就绑定真实实例；新发起要等提交成功才有实例 ID。
-			InstanceID: strings.TrimSpace(runCtx.PathRun.MainInstanceRef),
-		}
+		scope := runLogScopeOf(runCtx)
 		writer := router.Bucket(scope, "step.log")
 		log := NewStepLog(writer, scope, nil)
 		log.SetInstanceScopeUpdater(func(updated logging.Scope) {
@@ -43,5 +26,27 @@ func NewRouterStepLogFactory(router *logging.Router) LogFactory {
 			log.SetRelativePath(filepath.ToSlash(filepath.Join(relative, "step.log")))
 		}
 		return log
+	}
+}
+
+// runLogScopeOf 用数据库主键和已确认的显示名构造路径运行日志作用域，供阶段日志与 runtime 转发共用。
+func runLogScopeOf(runCtx RunContext) logging.Scope {
+	startedAt := runCtx.Run.CreatedAt
+	if runCtx.PathRun.StartedAt != nil && !runCtx.PathRun.StartedAt.IsZero() {
+		startedAt = *runCtx.PathRun.StartedAt
+	} else if runCtx.Run.StartedAt != nil && !runCtx.Run.StartedAt.IsZero() {
+		startedAt = *runCtx.Run.StartedAt
+	}
+	return logging.Scope{
+		PlanID:            strconv.FormatUint(runCtx.Run.PlanID, 10),
+		PlanName:          runCtx.PlanName,
+		ExecutionPathID:   strconv.FormatUint(runCtx.PathRun.ExecutionPathID, 10),
+		ExecutionPathName: runCtx.PathName,
+		RunID:             strconv.FormatUint(runCtx.Run.ID, 10),
+		RunSeq:            strconv.FormatUint(runCtx.Run.RunNo, 10),
+		RunStartedAt:      startedAt.Local().Format("2006-01-02 15-04-05"),
+		PathRunID:         strconv.FormatUint(runCtx.PathRun.ID, 10),
+		// 待发/已发场景在运行开始就绑定真实实例；新发起要等提交成功才有实例 ID。
+		InstanceID: strings.TrimSpace(runCtx.PathRun.MainInstanceRef),
 	}
 }

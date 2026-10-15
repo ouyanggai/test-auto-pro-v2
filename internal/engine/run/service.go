@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"test-auto-pro-v2/internal/model"
@@ -114,6 +115,14 @@ func (s *Service) BackToRunning(ctx context.Context, pathRunID uint64, detail st
 		}, s.now())
 	if err != nil {
 		if pathRun, getErr := s.store.GetPathRun(ctx, pathRunID); getErr == nil && pathRun.Status == model.PathRunStatusRunning {
+			// 导航与目标自动跳过不经过 verifying，但仍是用户需要观察的节点流转。
+			// 只追加观察事件，不变更状态；记录故障不得改变原有只读步骤的执行结论。
+			if eventErr := s.store.AppendRunEvent(ctx, model.RunEvent{
+				RunID: pathRun.RunID, PathRunID: &pathRunID,
+				Kind: "path_run_step_settled", Label: "本步检查与记录完成，进入下一步", Detail: detail,
+			}, s.now()); eventErr != nil {
+				fmt.Fprintf(os.Stderr, "运行事件记录失败 path_run_id=%d kind=path_run_step_settled error=%v\n", pathRunID, eventErr)
+			}
 			return nil
 		}
 	}

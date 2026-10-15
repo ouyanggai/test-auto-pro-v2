@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"test-auto-pro-v2/internal/logging"
 )
 
 // NextAuditorEntry 是 runtime 协议的节点人员条目（与 TS 侧 NextAuditorEntry 对齐）。
@@ -31,8 +33,11 @@ type RuntimeRunRequest struct {
 	RunID     string
 	PathRunID string
 	StepID    string
-	Account   string
-	Action    string
+	// LogScope 是执行器准备本步目标请求时已经确认的真实日志归属。
+	// 页面请求在独立读循环里转发，不能再依赖动作 goroutine 的 context 自动继承作用域。
+	LogScope logging.Scope
+	Account  string
+	Action   string
 	// ToolFlowName 是工具流程名称：最终流程请求中目标脚本不得改写。
 	ToolFlowName   string
 	Session        SessionFacts
@@ -138,11 +143,15 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	// 装载与动作期每次转发据此覆盖页面默认平台码，修复 999999 实例被查空导致的装载超时。
 	// 发起类 PlatformCode 为空，不登记、保留页面默认。
 	r.client.SetSessionPlatformCode(handle.SessionID, request.PlatformCode)
+	prepareScope := request.LogScope
+	prepareScope.Phase = "prepare"
+	r.client.SetSessionLogScope(handle.SessionID, prepareScope)
 	defer func() {
 		destroyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = r.client.Destroy(destroyCtx, handle.SessionID)
 		r.client.clearSessionPlatformCode(handle.SessionID)
+		r.client.clearSessionLogScope(handle.SessionID)
 	}()
 	stopLease := r.startSessionLease(ctx, handle.SessionID)
 	defer stopLease()
@@ -269,6 +278,8 @@ func (r *RuntimeExecutor) RunAction(ctx context.Context, request RuntimeRunReque
 	if err != nil {
 		return ActionRunResult{}, err
 	}
+	// 装载期转发归为 prepare；从 execute 命令开始，独立读泵转发请求归为 submit。
+	r.client.setSessionLogPhase(handle.SessionID, "submit")
 	result, err := r.client.Execute(ctx, handle.SessionID, request.Account, Message{
 		Kind:      KindExecute,
 		RequestID: fmt.Sprintf("exec-%d", time.Now().UnixNano()),

@@ -343,6 +343,8 @@ type PathRunDetailDTO struct {
 	// LogDir 是这次运行的路径运行日志目录（相对日志根），从页面身份（runId/pathRunId）直接算出，
 	// 用户不必遍历全盘或按时间猜目录。
 	LogDir string `json:"logDir,omitempty"`
+	// RequestLogAvailable 区分日志证据不存在/不可读与真实请求数量为零。
+	RequestLogAvailable bool `json:"requestLogAvailable"`
 	// InstanceID/InstanceName 是目标实例身份：实例名称只作业务信息，不参与日志目录寻址。
 	// 名称读不到时 InstanceNameAvailable 为假并带原因，界面显示「实例名称不可用」，不用其他名字冒充。
 	InstanceID            string                     `json:"instanceId,omitempty"`
@@ -1212,6 +1214,7 @@ func isUsableRunGraphModel(candidate model.FlowGraph) bool {
 	return true
 }
 
+// detail 只读组装当前路径运行事实、节点投影和精确归属的接口记录，不触发目标写入或改变运行结论。
 func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pathRun model.PathRun) (*PathRunDetailDTO, error) {
 	plan, err := s.plans.Get(ctx, run.PlanID)
 	if err != nil {
@@ -1400,7 +1403,8 @@ func (s *RunOrchestrationService) detail(ctx context.Context, run model.Run, pat
 	s.fillRunLogLocation(detail, run, pathRun, plan, attempts)
 	phaseTimings := s.readPhaseTimings(pathRun.ID, attempts)
 	// F-030/T04：真实目标请求明细与汇总，一次读取按尝试归组，详情接口不逐请求扫描。
-	requestsByKey, summaryByKey := s.readAttemptRequests(pathRun.ID, attempts)
+	requestsByKey, summaryByKey, requestLogAvailable := s.readAttemptRequests(pathRun.ID, steps, attempts)
+	detail.RequestLogAvailable = requestLogAvailable
 	// 步骤与预览携带的是配置令牌键（编译场景的 nodeKey），画布与侧栏按图节点 ID 取值。
 	// 这里统一翻译出图节点 ID，键空间对齐后九个运行态、当前步标记与侧栏才真实可用（评审 P1）。
 	var tokenToGraphID map[string]string

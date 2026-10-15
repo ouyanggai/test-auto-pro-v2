@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"test-auto-pro-v2/internal/adapter/target"
+	"test-auto-pro-v2/internal/logging"
 )
 
 // SessionProvider 与执行器侧同语义：Current 取缓存会话，Refresh 强制重登。
@@ -65,11 +66,13 @@ type Client struct {
 	sessions SessionProvider
 	// forwardTimeout 是单笔页面请求转发到目标平台的超时；目标存在约 30 秒慢请求，取 90 秒上限。
 	forwardTimeout time.Duration
-	connectionsMu sync.Mutex
-	connections   map[string]*sessionConn
+	connectionsMu  sync.Mutex
+	connections    map[string]*sessionConn
 	// sessionPlatform 按会话 ID 记录本次运行应强制的目标平台码（实例重建类装载取实例真实平台）；
 	// 读泵转发时据此覆盖页面默认平台码，修复 999999 实例被默认 200001 查空导致的装载超时。
 	sessionPlatform map[string]string
+	// sessionLogScopes 把不在 Go 动作 goroutine 里的 runtime 转发请求重新接回当前步骤日志目录。
+	sessionLogScopes map[string]logging.Scope
 }
 
 // sessionConn 是一个会话的唯一 WebSocket；预热、装载期转发和动作命令共享它，
@@ -95,12 +98,13 @@ func NewClient(baseURL string, forward TargetForwarder, sessions SessionProvider
 		// 环回调用预算对齐动作硬超时（默认 180s）：flowId 自装载链路要等目标模板、
 		// 字段权限与远程选项全部经 Go 转发读回并渲染完成，60s 会在装载中途掐断
 		// （2026-09-16 真实验收实测 load 超时）。创建/销毁等快调用不受影响。
-		http:           &http.Client{Timeout: 180 * time.Second},
-		forward:        forward,
-		sessions:       sessions,
-		forwardTimeout: 90 * time.Second,
-		connections:     make(map[string]*sessionConn),
-		sessionPlatform: make(map[string]string),
+		http:             &http.Client{Timeout: 180 * time.Second},
+		forward:          forward,
+		sessions:         sessions,
+		forwardTimeout:   90 * time.Second,
+		connections:      make(map[string]*sessionConn),
+		sessionPlatform:  make(map[string]string),
+		sessionLogScopes: make(map[string]logging.Scope),
 	}, nil
 }
 
@@ -141,6 +145,59 @@ func (c *Client) clearSessionPlatformCode(sessionID string) {
 	c.connectionsMu.Lock()
 	defer c.connectionsMu.Unlock()
 	delete(c.sessionPlatform, sessionID)
+}
+
+// SetSessionLogScope 登记本次 runtime 会话的日志归属；phase 在装载与动作期切换，其他身份保持固定。
+func (c *Client) SetSessionLogScope(sessionID string, scope logging.Scope) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	c.connectionsMu.Lock()
+	defer c.connectionsMu.Unlock()
+	c.sessionLogScopes[sessionID] = scope
+}
+
+// setSessionLogPhase 切换独立读泵后续转发请求的阶段，避免把动作请求记成装载读取。
+func (c *Client) setSessionLogPhase(sessionID, phase string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || strings.TrimSpace(phase) == "" {
+		return
+	}
+	c.connectionsMu.Lock()
+	scope, ok := c.sessionLogScopes[sessionID]
+	if ok {
+		scope.Phase = strings.TrimSpace(phase)
+		c.sessionLogScopes[sessionID] = scope
+	}
+	c.connectionsMu.Unlock()
+}
+
+// sessionLogScope 读取已登记作用域，再由当前转发信封补足协议里的运行、路径和步骤标识。
+func (c *Client) sessionLogScope(sessionID string, message *Message) logging.Scope {
+	sessionID = strings.TrimSpace(sessionID)
+	c.connectionsMu.Lock()
+	scope := c.sessionLogScopes[sessionID]
+	c.connectionsMu.Unlock()
+	if message == nil {
+		return scope
+	}
+	return scope.Merge(logging.Scope{
+		RunID:     strings.TrimSpace(message.RunID),
+		PathRunID: strings.TrimSpace(message.PathRunID),
+		StepID:    strings.TrimSpace(message.StepID),
+	})
+}
+
+// clearSessionLogScope 会话销毁时清除日志身份，避免 sessionId 复用时把请求记到旧运行。
+func (c *Client) clearSessionLogScope(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	c.connectionsMu.Lock()
+	defer c.connectionsMu.Unlock()
+	delete(c.sessionLogScopes, sessionID)
 }
 
 // Health 探测独立执行服务是否可接受命令；失败时七个 runtime 动作写前阻塞。
@@ -531,11 +588,15 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	isWrite := target.IsKnownWriteRequestPath(parsed.Path)
 	// 本会话强制平台码（实例重建类装载取实例真实平台）：随每次转发覆盖页面默认平台码。
 	platformCode := c.sessionPlatformCode(message.SessionID)
+	// 会话首次登录及失效重登也是本动作发起的目标读取，先补归属，再调用会话管理器。
+	// 同一笔请求及其受控会话刷新重放使用同一阶段，避免重放期间阶段切换导致两条传输串组。
+	scope := c.sessionLogScope(message.SessionID, message)
+	ctx = logging.WithScope(ctx, scope)
 	session, err := c.sessions.Current(ctx, state.account)
 	if err != nil {
 		return nil, fmt.Errorf("取得账号 %s 会话失败：%w", state.account, err)
 	}
-	response, err := c.forwardOnce(ctx, session, forwarded, parsed, platformCode)
+	response, err := c.forwardOnce(ctx, session, forwarded, parsed, platformCode, isWrite, scope, 1)
 	if err == nil {
 		if isWrite {
 			state.markWritten()
@@ -561,7 +622,7 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	if refreshErr != nil {
 		return nil, fmt.Errorf("会话失效且重登失败：%w", refreshErr)
 	}
-	response, err = c.forwardOnce(ctx, refreshed, forwarded, parsed, platformCode)
+	response, err = c.forwardOnce(ctx, refreshed, forwarded, parsed, platformCode, isWrite, scope, 2)
 	if isWrite {
 		if err == nil {
 			state.markWritten()
@@ -579,10 +640,12 @@ func (c *Client) handleForward(ctx context.Context, state *executeState, message
 	return response, err
 }
 
-// forwardOnce 发出一次页面转发请求。
-func (c *Client) forwardOnce(ctx context.Context, session target.Session, forwarded *ForwardedRequest, parsed *url.URL, platformCode string) (*target.PageForwardResponse, error) {
+// forwardOnce 发出一次页面转发请求，并把本会话的真实运行作用域交给目标传输层落日志。
+func (c *Client) forwardOnce(ctx context.Context, session target.Session, forwarded *ForwardedRequest, parsed *url.URL, platformCode string, isWrite bool, scope logging.Scope, retryAttempt int) (*target.PageForwardResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.forwardTimeout)
 	defer cancel()
+	// 页面请求由独立 WebSocket 读泵处理，原动作 context 不在此 goroutine；显式补回日志身份。
+	callCtx = logging.WithScope(callCtx, scope)
 	body, err := forwarded.decodedBody()
 	if err != nil {
 		return nil, err
@@ -595,7 +658,18 @@ func (c *Client) forwardOnce(ctx context.Context, session target.Session, forwar
 		Body:         body,
 		CustomerCode: session.CustomerCode,
 		PlatformCode: platformCode,
+		RequestClass: requestClassOfWrite(isWrite),
+		RequestSeq:   forwarded.RequestSeq,
+		RetryAttempt: retryAttempt,
 	})
+}
+
+// requestClassOfWrite 把已登记端点的分类传到统一目标出口，附言等复合写也不会落成 read。
+func requestClassOfWrite(isWrite bool) string {
+	if isWrite {
+		return "write"
+	}
+	return "read"
 }
 
 // requestResponsePayloadOf 把转发结果转成 request_response 载荷；失败以 httpStatus=0 表达，

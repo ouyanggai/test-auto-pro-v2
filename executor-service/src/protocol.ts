@@ -113,6 +113,7 @@ export interface ChoicePayload {
 export interface RequestForwardPayload {
   method: string
   url: string
+  requestSeq: number
   headers: Record<string, string>
   body?: string
   action: RuntimeAction | ''

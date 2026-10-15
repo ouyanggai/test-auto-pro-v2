@@ -14,6 +14,7 @@ type requestClassKey struct{}
 type requestTraceIDKey struct{}
 type requestRetryKey struct{}
 type requestRetryAttemptKey struct{}
+type runtimeRequestSeqKey struct{}
 
 // RequestClassFromContext 读取请求分类；未标记的请求一律按只读处理。
 func RequestClassFromContext(ctx context.Context) string {
@@ -56,4 +57,21 @@ func RetryAttemptFromContext(ctx context.Context) int {
 		return 1
 	}
 	return value
+}
+
+// WithRuntimeRequestSeq 把页面转发轨迹序号挂到传输请求，供 network.log 与执行器明细精确对应。
+func WithRuntimeRequestSeq(ctx context.Context, sequence int) context.Context {
+	if sequence <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, runtimeRequestSeqKey{}, sequence)
+}
+
+// RuntimeRequestSeqFromContext 读取页面转发轨迹序号；普通目标请求返回 0。
+func RuntimeRequestSeqFromContext(ctx context.Context) int {
+	sequence, _ := ctx.Value(runtimeRequestSeqKey{}).(int)
+	if sequence < 1 {
+		return 0
+	}
+	return sequence
 }

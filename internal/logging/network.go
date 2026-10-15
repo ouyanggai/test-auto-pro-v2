@@ -2,6 +2,7 @@ package logging
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -12,8 +13,12 @@ import (
 // NetworkRecord 是一次目标平台请求的日志事实；调用方只填自己能证明的字段。
 // RequestClass 区分 read/write，传输阶段与 requestWritten 共同说明请求是否可能产生副作用。
 type NetworkRecord struct {
-	TraceID      string
-	CurlTraceID  string
+	TraceID     string
+	CurlTraceID string
+	// RuntimeRequestSeq 是页面轨迹的请求顺序号，0 表示普通目标调用。
+	RuntimeRequestSeq int
+	// RequestAt 是实际传输开始时刻，避免并发响应先后颠倒接口流转顺序。
+	RequestAt    time.Time
 	Method       string
 	Endpoint     string
 	RequestClass string
@@ -25,8 +30,7 @@ type NetworkRecord struct {
 	OutcomeKind string
 	// ErrorType 是目标适配层的稳定错误分类，成功时留空。
 	ErrorType string
-	// TargetMessage 是目标业务包络的 message 字段安全摘要（F-034 评审 #3）：
-	// 如"手动条件分支,请选择"。只写包络层一句话，不含请求/响应正文，详情页据此展示目标原文。
+	// TargetMessage 是目标包络 message 原文，保留完整长度和换行，详情页按原话展示。
 	TargetMessage string
 	// TargetCode 是目标业务包络的 code 字段原值（如 ERROR_99999），同样只作安全摘要。
 	TargetCode string
@@ -86,6 +90,8 @@ func (l *Logger) Network(scope Scope, record NetworkRecord) {
 	fields = append(fields,
 		Field{Key: "trace_id", Value: traceID},
 		Field{Key: "curl_trace_id", Value: curlTraceID},
+		Field{Key: "runtime_request_seq", Value: strconv.Itoa(record.RuntimeRequestSeq)},
+		Field{Key: "request_at", Value: record.RequestAt.Format(time.RFC3339Nano)},
 		Field{Key: "method", Value: strings.ToUpper(strings.TrimSpace(record.Method))},
 		Field{Key: "endpoint", Value: record.Endpoint},
 		Field{Key: "request_class", Value: requestClass},
@@ -96,6 +102,8 @@ func (l *Logger) Network(scope Scope, record NetworkRecord) {
 		Field{Key: "error_type", Value: record.ErrorType},
 		// F-034 评审 #3：目标业务 message/code 安全摘要随网络日志落盘，详情页据此展示目标原文。
 		Field{Key: "message", Value: record.TargetMessage},
+		// 原话编码成单行字段，避开通用日志格式的空格替换和换行清洗；详情读取后原样还原。
+		Field{Key: "target_message_b64", Value: base64.StdEncoding.EncodeToString([]byte(record.TargetMessage))},
 		Field{Key: "code", Value: record.TargetCode},
 		Field{Key: "retry", Value: boolValue(record.Retry)},
 		Field{Key: "retry_attempt", Value: strconv.Itoa(retryAttemptValue(record.RetryAttempt))},

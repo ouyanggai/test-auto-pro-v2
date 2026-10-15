@@ -53,8 +53,9 @@ func (t *loggingTransport) RoundTrip(request *http.Request) (*http.Response, err
 	requestBody := readRequestBody(request)
 	record := logging.NetworkRecord{
 		TraceID: traceID, CurlTraceID: traceID,
-		Method:   request.Method,
-		Endpoint: request.URL.Path,
+		Method:            request.Method,
+		Endpoint:          request.URL.Path,
+		RuntimeRequestSeq: RuntimeRequestSeqFromContext(request.Context()),
 		// 分类由唯一请求出口标记；未标记的历史只读调用按 read 落盘。
 		RequestClass: RequestClassFromContext(request.Context()),
 		Curl:         logging.CurlCommand(request.Method, request.URL.String(), requestHeaders(request), requestBody),
@@ -62,6 +63,7 @@ func (t *loggingTransport) RoundTrip(request *http.Request) (*http.Response, err
 		RetryAttempt: RetryAttemptFromContext(request.Context()),
 	}
 	started := time.Now()
+	record.RequestAt = started
 	probe := &transportProbe{}
 	request = request.WithContext(httptrace.WithClientTrace(request.Context(), probe.trace()))
 	response, err := next.RoundTrip(request)
@@ -75,6 +77,8 @@ func (t *loggingTransport) RoundTrip(request *http.Request) (*http.Response, err
 	}
 	record.StatusCode = response.StatusCode
 	body := captureResponseBody(response)
+	// 响应正文也属于真实传输；计时到完整读取后结束，不能只统计收到响应头之前的耗时。
+	record.Duration = time.Since(started)
 	record.ResponseBody = body
 	record.Result = "success"
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -151,13 +155,12 @@ func transportErrorType(err error) string {
 	return string(ErrorUnavailable)
 }
 
-// inspectEnvelope 从目标业务包络提取结果分类、目标实例/任务标识与 message/code 安全摘要（F-034 评审 #3）。
-// message/code 只取包络层一句话与错误码，不含任何请求/响应正文；解析失败时不猜测、留空。
-// InspectEnvelopeForTest 是包络提取的导出形态：供 test 目录按公开行为锁定 message/code 摘要。
+// InspectEnvelopeForTest 供根目录测试核对目标包络结果与 message/code 原文；解析失败时不猜测。
 func InspectEnvelopeForTest(body string) (outcomeKind, instanceID, taskID, targetMessage, targetCode string) {
 	return inspectEnvelope(body)
 }
 
+// inspectEnvelope 只提取包络结果与原始消息，不截断或改写目标平台的错误说明。
 func inspectEnvelope(body string) (outcomeKind, instanceID, taskID, targetMessage, targetCode string) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" || (!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
@@ -183,23 +186,8 @@ func inspectEnvelope(body string) (outcomeKind, instanceID, taskID, targetMessag
 	}
 	instanceID = strings.TrimSpace(firstNonEmpty(parsed.Data.InstanceID, parsed.Data.ID))
 	taskID = strings.TrimSpace(parsed.Data.TaskID)
-	// 安全摘要：压成单行并限制长度，保证单行日志格式且不携带正文。
-	targetMessage = sanitizeTargetSummary(parsed.Message)
-	targetCode = sanitizeTargetSummary(parsed.Code)
+	// message 是目标错误原话；单行日志的编码由 Logger 负责，不在这里丢掉换行或长内容。
+	targetMessage = parsed.Message
+	targetCode = parsed.Code
 	return outcomeKind, instanceID, taskID, targetMessage, targetCode
-}
-
-// sanitizeTargetSummary 把目标包络摘要压成单行安全文本：去换行/制表符并限制长度，不含正文。
-func sanitizeTargetSummary(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	replacer := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ")
-	value = replacer.Replace(value)
-	// F-034 评审建议：按 rune 截断避免把中文切成非法 UTF-8 字节序列。
-	if runes := []rune(value); len(runes) > 200 {
-		value = string(runes[:200])
-	}
-	return value
 }
