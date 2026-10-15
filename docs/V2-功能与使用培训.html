@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>流程自动化测试平台 · V2 · 功能与使用培训</title>
+<style>
+  *{box-sizing:border-box;}
+  :root{--bg:#ffffff;--fg:#1f2328;--muted:#57606a;--line:#d0d7de;--soft:#f6f8fa;--soft2:#eef1f4;--accent:#0969da;}
+  html,body{margin:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       color:var(--fg);line-height:1.75;background:var(--bg);}
+  #sidebar{position:fixed;left:0;top:0;width:250px;height:100vh;overflow-y:auto;
+           border-right:1px solid var(--line);padding:24px 14px;background:var(--soft);}
+  #sidebar .p-title{font-size:15px;font-weight:700;margin:0 0 2px;padding:0 10px;}
+  #sidebar .p-sub{font-size:12px;color:var(--muted);padding:0 10px;margin-bottom:16px;}
+  .toc-menu{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);margin:16px 10px 6px;}
+  #toc a{display:flex;gap:8px;align-items:baseline;padding:5px 10px;color:var(--muted);
+         text-decoration:none;font-size:13px;border-radius:6px;border-left:2px solid transparent;}
+  #toc a .n{font-variant-numeric:tabular-nums;font-size:11px;color:#8c959f;min-width:20px;}
+  #toc a:hover{background:var(--soft2);color:var(--fg);}
+  #toc a.active{background:#ddf4ff;color:var(--accent);border-left-color:var(--accent);font-weight:600;}
+  #content{margin-left:250px;max-width:920px;padding:0 40px 160px;}
+  .hero{padding:76px 8px 44px;border-bottom:1px solid var(--line);margin-bottom:8px;}
+  .hero .eyebrow{color:var(--accent);font-weight:700;letter-spacing:.06em;font-size:13px;}
+  .hero h1{font-size:37px;line-height:1.2;margin:14px 0 10px;}
+  .hero .lead{font-size:16px;color:var(--muted);max-width:720px;}
+  .hero .meta{margin-top:20px;font-size:13px;color:#8c959f;}
+  .menu-head{margin:50px 0 6px;padding:10px 0 8px;border-bottom:2px solid var(--al,#0969da);
+             display:flex;align-items:center;gap:10px;}
+  .menu-head .dot{width:10px;height:10px;border-radius:50%;background:var(--al,#0969da);}
+  .menu-head h2{margin:0;font-size:21px;}
+  .sec{border:1px solid var(--line);border-radius:12px;margin:20px 0;overflow:hidden;}
+  .sec .head{display:flex;align-items:flex-start;gap:14px;padding:16px 20px 14px;background:var(--soft);
+             border-bottom:1px solid var(--line);}
+  .sec .badge{flex:none;width:40px;height:40px;border-radius:10px;color:#fff;font-weight:700;
+              display:flex;align-items:center;justify-content:center;font-size:15px;
+              font-variant-numeric:tabular-nums;background:var(--al,#0969da);}
+  .sec .head .kicker{font-size:12px;font-weight:600;color:var(--al,#0969da);}
+  .sec .head h3{margin:2px 0 0;font-size:19px;}
+  .body{padding:6px 22px 18px;}
+  .purpose{font-size:15px;color:#3d444d;padding:14px 0 6px;border-bottom:1px dashed var(--line);margin-bottom:6px;}
+  .purpose b{color:var(--al,#0969da);font-weight:600;}
+  .block-label{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);margin:16px 0 6px;}
+  ul.pts{list-style:none;margin:0;padding:0;}
+  ul.pts li{position:relative;padding:6px 0 6px 20px;font-size:14.5px;}
+  ul.pts li::before{content:"";position:absolute;left:2px;top:14px;width:7px;height:7px;border-radius:2px;
+                    background:var(--al,#0969da);}
+  ul.pts li b{font-weight:700;color:#1f2328;}
+  .idea{background:var(--soft);border-left:3px solid var(--al,#0969da);border-radius:0 8px 8px 0;
+        padding:11px 16px;font-size:14px;color:#3d444d;margin-top:6px;}
+  .steps{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
+  .steps .step{background:var(--soft);border:1px solid var(--line);border-radius:20px;
+               padding:6px 14px;font-size:13px;font-weight:600;color:#3d444d;}
+  @media (max-width:900px){#sidebar{display:none;}#content{margin-left:0;padding:0 18px 90px;}}
+  </style>
+</head>
+<body>
+<aside id="sidebar">
+  <div class="p-title">流程自动化测试平台 · V2</div>
+  <div class="p-sub">功能与使用培训</div>
+  <nav id="toc"><div class="toc-menu">总览</div><a href="#s00" data-target="s00"><span class="n">00</span><span>工具是做什么的</span></a><div class="toc-menu">测试计划</div><a href="#s01" data-target="s01"><span class="n">01</span><span>测试计划列表</span></a><a href="#s02" data-target="s02"><span class="n">02</span><span>新建计划</span></a><a href="#s03" data-target="s03"><span class="n">03</span><span>执行路径选择</span></a><a href="#s04" data-target="s04"><span class="n">04</span><span>节点配置 · 人员</span></a><a href="#s05" data-target="s05"><span class="n">05</span><span>历史数据配置</span></a><a href="#s06" data-target="s06"><span class="n">06</span><span>动作配置</span></a><a href="#s07" data-target="s07"><span class="n">07</span><span>运行前检查与启动</span></a><div class="toc-menu">任务中心</div><a href="#s08" data-target="s08"><span class="n">08</span><span>任务列表</span></a><a href="#s09" data-target="s09"><span class="n">09</span><span>运行画布与节点详情</span></a><div class="toc-menu">报告中心</div><a href="#s10" data-target="s10"><span class="n">10</span><span>报告中心 · 总览与下钻</span></a><div class="toc-menu">系统设置</div><a href="#s11" data-target="s11"><span class="n">11</span><span>系统设置 · 账号与流程</span></a><a href="#s12" data-target="s12"><span class="n">12</span><span>系统设置 · 表单运行时维护</span></a><div class="toc-menu">小结</div><a href="#s13" data-target="s13"><span class="n">13</span><span>记住这几件事</span></a></nav>
+</aside>
+<main id="content">
+  <header class="hero">
+    <div class="eyebrow">功能与使用培训</div>
+    <h1>流程自动化测试平台 · V2</h1>
+    <div class="lead">按左侧四个菜单、从上到下逐个页面讲清功能点：每个页面能做什么、每个功能怎么用、以及背后为什么这么设计。全程用真实账号、真实流程、真实历史数据，在目标平台上真实跑一遍。</div>
+    <div class="meta">内部使用培训 · 2026-09-28</div>
+  </header>
+  <div class="menu-head" style="--al:#6E56CF"><span class="dot"></span><h2>总览</h2></div>
+  <section class="sec" id="s00" style="--al:#6E56CF">
+    <div class="head">
+      <div class="badge">00</div>
+      <div><div class="kicker">总览</div><h3>工具是做什么的</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>帮测试人员在目标平台上自动跑通多级审批流程并记录结果，全程用真实账号、真实流程、真实历史数据、真实执行。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>用途</b>：替代手工登录多个账号、逐个节点点"同意"、手工造测试数据的重复劳动。</li><li><b>四个菜单</b>：测试计划（建计划、配置、启动）、任务中心（看任务和过程）、报告中心（真实度量）、系统设置（账号与运行时）。</li><li><b>一条主线</b>：建计划 → 选执行路径 → 配数据 / 人员 / 动作 → 检查并启动 → 看结果。</li><li><b>底线</b>：工具只读取和驱动目标平台，绝不改它的数据、权限和业务规则。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">界面一页只做一件事，桌面优先，全中文。下面按左侧菜单从上到下，逐个页面讲清功能点。</div>
+      <div class="steps"><span class="step">测试计划</span><span class="step">任务中心</span><span class="step">报告中心</span><span class="step">系统设置</span></div>
+    </div>
+  </section><div class="menu-head" style="--al:#0969DA"><span class="dot"></span><h2>测试计划</h2></div>
+  <section class="sec" id="s01" style="--al:#0969DA">
+    <div class="head">
+      <div class="badge">01</div>
+      <div><div class="kicker">测试计划</div><h3>测试计划列表</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>所有测试计划的入口，看到已有计划，进去继续配置或运行。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>筛选</b>：按计划名和计划状态筛选，条件可清空；没有匹配项时显示正常空状态。</li><li><b>列表信息</b>：一行看清计划、流程、发起账号、路径数量、运行方式、定时信息、计划状态和最近一次运行结果。</li><li><b>计划状态</b>：只有未运行 / 运行中 / 已运行三种，由真实运行事实决定；"已运行"只表示有过运行记录，不代表最近一次成功。</li><li><b>每行入口</b>：所有计划都提供"编辑计划""编辑路径""运行"（未配置完时为"继续配置"）。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">状态只用于展示和筛选，不决定能不能改、能不能再跑；改计划只影响以后的运行。列表只显示真实持久化数据，默认按最近修改时间倒序，读取失败会明确提示并允许重试。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s02" style="--al:#0969DA">
+    <div class="head">
+      <div class="badge">02</div>
+      <div><div class="kicker">测试计划</div><h3>新建计划</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>用一个整页填完一个计划的基本设置。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>计划名 + 账号验证</b>：填计划名和一个真实账号，先验证这个账号能不能登录目标平台。</li><li><b>流程来源</b>：新发起（选流程模板）、已发（选已发实例）、待发（选待发实例），三类分开，不用一个字段混着。</li><li><b>对象选择</b>：按来源列出候选，显示名称、分类、流程分组、表单关联、更新时间等真实信息供挑选。</li><li><b>运行方式</b>：串行或并行；并行时可设最大并发数。</li><li><b>定时启动</b>：可选；关掉后不保留定时时间。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">账号一改，验证立即失效、已选的模板 / 实例清空，防止拿旧账号跑错配置；未验证账号时只能用"新发起"。点"创建并选择路径"才真正保存，成功后计划进入"未运行"，刷新或重启后仍在列表里。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s03" style="--al:#0969DA">
+    <div class="head">
+      <div class="badge">03</div>
+      <div><div class="kicker">测试计划</div><h3>执行路径选择</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>在目标平台当前真实的流程图上，选出这次要测的一条条路径。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>只读流程图</b>：实时读回目标真实结构，可平移、缩放、适配视口，但节点不能拖动、连线或删除。</li><li><b>新增路径</b>：用"新增路径"在流程图上逐处选择分支走向，完成后保存。</li><li><b>分支规则</b>：条件分支、手动分支每处必须且只能选一个可达走向；并行分支的全部真实分支自动同属一条路径。</li><li><b>复制路径</b>：同一条线路可复制多份，各自使用相互独立的真实实例和数据；每条路径有稳定序号。</li><li><b>全路径解析</b>：新发起计划创建后后台自动算出全部合法完整路径，可查询、取消或恢复，不用手动触发。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">一条执行路径 = 一个真实流程实例；已发 / 待发计划各绑定一个实例，最多一条路径。目标流程变了，每次打开都用当前结构重新核对，对得上的保留，对不上的标"需重选"，不按名字猜、也不自动删。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s04" style="--al:#0969DA">
+    <div class="head">
+      <div class="badge">04</div>
+      <div><div class="kicker">测试计划</div><h3>节点配置 · 人员</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>给路径上需要选人的节点，配好由谁来处理。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>人员规则展示</b>：每个业务节点都显示人员规则、来源、能不能手选和当前状态，能读到的人员 / 岗位 / 部门都显示业务名称。</li><li><b>随机 / 手动</b>：目标开放选人的节点，可一键在合法范围内随机选一人，也可手动在同一范围内选。</li><li><b>会签 / 竞签</b>：会签按目标规定的人数约束，竞签只选一人。</li><li><b>主处理人 vs 动作接收人</b>：节点主处理人与加签 / 移交 / 转发的接收人是两个独立配置域，一键配置不会互相覆盖。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">固定人员、发起人关系、职级、表单人员等由目标运行时决定的项，只标"运行时确定"，工具不伪装成可手选候选。候选失效或范围解析失败时阻止保存。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s05" style="--al:#0969DA">
+    <div class="head">
+      <div class="badge">05</div>
+      <div><div class="kicker">测试计划</div><h3>历史数据配置</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>给这条路径准备表单数据——挑一条真实历史实例来回放。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>选历史来源</b>：从当前账号可见的历史实例里挑一条作为数据来源，已完成状态优先。</li><li><b>原样回显</b>：历史表单数据按原始 JSON 结构完整回显到复制的表单运行时里。</li><li><b>最小分支补丁</b>：只对影响这条路径分支走向的字段做可证明的最小改动，普通字段和未知数据保持历史事实。</li><li><b>条件字段可改</b>：允许手动修改条件字段；修改导致实际换路时会展示影响并要你确认，确认后重新核对新路径。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">没有候选时只引导你先去目标平台发起、填写一次，不提供造数兜底；非完成状态会提示数据可能不完整。这一步只写工具自己的库，不向目标平台发任何写请求。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s06" style="--al:#0969DA">
+    <div class="head">
+      <div class="badge">06</div>
+      <div><div class="kicker">测试计划</div><h3>动作配置</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>配每个节点要执行哪些动作、按什么顺序执行。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>动作工作区</b>：显示当前节点真实可用的动作、必要参数、门禁和中文禁用原因。</li><li><b>多条记录 + 拖拽排序</b>：用多条独立记录表达重复动作，拖拽调整执行顺序，不用次数或循环模型。</li><li><b>一键配置</b>：自动给每个可配置节点补一个合理的额外动作，省得逐个点；没有安全动作的节点会说明原因。</li><li><b>固定尾动作只读</b>：发起节点固定"提交"、审批节点固定"同意"，由系统生成、永远排在最后、不可增删移动。</li><li><b>场景预览</b>：保存后生成只读预览，区分用户动作、系统恢复步骤和系统导航。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">系统会自动补"回退 / 撤回后重新走一遍"这类恢复步骤；动作顺序在同一实例上恢复不了就不让保存，并指出第一条问题。所有动作名称统一用中文显示。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s07" style="--al:#0969DA">
+    <div class="head">
+      <div class="badge">07</div>
+      <div><div class="kicker">测试计划</div><h3>运行前检查与启动</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>启动前把问题摆清楚，再选怎么跑。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>阻塞 vs 提醒</b>：阻塞必须先解决，能点着直接跳到要修的地方；提醒不挡启动，交给你判断。</li><li><b>运行模式</b>：自动跑完、单步、或人工逐步放行，三选一后启动。</li><li><b>人工控制按钮</b>："执行这一步""继续执行后续步骤"，按钮旁写明会不会发真实写请求、停止何时生效。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">每次启动生成一条独立、改不了的运行记录，并冻结当次配置快照；单条路径失败不会自动终止其他路径。</div>
+      
+    </div>
+  </section><div class="menu-head" style="--al:#1A7F37"><span class="dot"></span><h2>任务中心</h2></div>
+  <section class="sec" id="s08" style="--al:#1A7F37">
+    <div class="head">
+      <div class="badge">08</div>
+      <div><div class="kicker">任务中心</div><h3>任务列表</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>统一看所有任务的状态和结果（页面名"任务列表"）。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>三类一起看</b>：等待中、运行中、历史结果放在一个列表里查看。</li><li><b>结果状态</b>：成功 / 失败 / 已停止 / 已取消 / 等待运行 / 运行中，另有一个诚实的"结果待确认"。</li><li><b>进入详情</b>：点任意任务进入运行画布，看这次到底怎么跑的。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">真结果只有成功和失败；"结果待确认"表示写请求发出去了但确认不了成没成（超时、响应丢失等），不给重试，只能重新发起，工具绝不盲目重发。状态一律以真实运行事实为准。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s09" style="--al:#1A7F37">
+    <div class="head">
+      <div class="badge">09</div>
+      <div><div class="kicker">任务中心</div><h3>运行画布与节点详情</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>看一次运行的全过程，以及每个节点到底发生了什么。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>节点三态</b>：已执行、正在执行、待执行，用不同主题色区分，一眼看清进度。</li><li><b>节点动作详情</b>：谁在哪个节点做了什么动作、什么结果、用了多久、调了哪些接口。</li><li><b>大白话优先</b>：首屏说清动作 / 节点 / 处理人 / 结果 / 下一步；技术阶段、参数和原始报文收进"查看日志"折叠区。</li><li><b>重试</b>：确定失败可从失败那一步重试；"结果待确认"没有重试入口，只能从计划重新发起。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">路径实际走向和配置对不上时会硬停下并显示预期与实际节点，不提供绕过入口；运行期新增的加签等节点也会按实例最新结构投影出来。工具绝不自动继续或重发写请求。</div>
+      
+    </div>
+  </section><div class="menu-head" style="--al:#9A6700"><span class="dot"></span><h2>报告中心</h2></div>
+  <section class="sec" id="s10" style="--al:#9A6700">
+    <div class="head">
+      <div class="badge">10</div>
+      <div><div class="kicker">报告中心</div><h3>报告中心 · 总览与下钻</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>用真实运行记录看测试度量，从全局逐级钻到单次运行。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>总（计划全景）</b>：全部计划的总览：计划数、运行次数、路径运行次数、结果分布、最近运行。</li><li><b>分（计划详情）</b>：点进一个计划，看它各条路径的运行次数、成功率、平均步骤、平均耗时、覆盖动作。</li><li><b>分（路径详情）</b>：点进一条路径，看它每次运行实例的状态、结果、步骤数、总耗时、调了哪些接口及耗时分解。</li><li><b>专业指标</b>：成功率、一次通过率、路径覆盖度、耗时分位、停机分类、重试统计等，每个都随卡片写清算法和分母。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">所有数字只来自真实运行记录，不造数、不预估；耗时按真实计时，没有记录就写"未知"，不用 0 毫秒冒充。图表用成熟图表库渲染，不手写。</div>
+      
+    </div>
+  </section><div class="menu-head" style="--al:#CF222E"><span class="dot"></span><h2>系统设置</h2></div>
+  <section class="sec" id="s11" style="--al:#CF222E">
+    <div class="head">
+      <div class="badge">11</div>
+      <div><div class="kicker">系统设置</div><h3>系统设置 · 账号与流程</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>维护建计划时常用到的账号和流程范围。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>常用账号</b>：维护常用的目标真实账号，建计划时方便选。</li><li><b>排除账号</b>：标记不参与的账号；加签排除名单会自动过滤停用账号，避免选到登录不了的人导致运行卡住。</li><li><b>排除流程</b>：标记不测的流程。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">账号和流程都必须从目标平台真实候选里选，不能手填名字冒充真实对象；最近使用只存在当前浏览器、用于排序，不自动选中。</div>
+      
+    </div>
+  </section>
+  <section class="sec" id="s12" style="--al:#CF222E">
+    <div class="head">
+      <div class="badge">12</div>
+      <div><div class="kicker">系统设置</div><h3>系统设置 · 表单运行时维护</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>维护渲染表单用的运行时组件，保持最新可用。</div>
+      <div class="block-label">功能点</div>
+      <ul class="pts"><li><b>一键同步更新</b>：一个按钮把表单运行时从固定来源同步并更新到最新。</li><li><b>状态展示</b>：展示来源、分支、HEAD、工作树状态、维护阶段、结果和有界在线日志。</li></ul>
+      <div class="block-label">设计思路</div>
+      <div class="idea">用户只能一键同步，不能输入任意仓库、路径、分支或命令；候选构建失败不影响当前版本，实际服务没通过核验或切换失败时会自动回退到上一个可用版本。</div>
+      
+    </div>
+  </section><div class="menu-head" style="--al:#BC4C00"><span class="dot"></span><h2>小结</h2></div>
+  <section class="sec" id="s13" style="--al:#BC4C00">
+    <div class="head">
+      <div class="badge">13</div>
+      <div><div class="kicker">小结</div><h3>记住这几件事</h3></div>
+    </div>
+    <div class="body">
+      <div class="purpose"><b>这个页面做什么：</b>一页回顾这个工具最核心的取舍。</div>
+      <div class="block-label">记住三点</div>
+      <ul class="pts"><li><b>全真实</b>：真实账号、真实流程结构、真实历史表单数据、真实发请求执行。</li><li><b>三条底线</b>：一次写、写完重读目标确认、拿不准就停下，绝不乱重发。</li><li><b>只读驱动</b>：只读取和驱动目标平台，不改它的数据、权限和业务规则。</li></ul>
+      <div class="block-label">明确不做</div>
+      <div class="idea">不改目标平台、不绕过业务校验、不模拟或替换真实处理人；不做周期定时、不自动删除、不删目标平台数据。</div>
+      
+    </div>
+  </section>
+</main>
+<script>
+  // 滚动高亮当前页对应的目录项。
+  const links = [...document.querySelectorAll('#toc a')];
+  const map = new Map(links.map((a) => [a.dataset.target, a]));
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting) {
+        links.forEach((a) => a.classList.remove('active'));
+        const a = map.get(e.target.id);
+        if (a) { a.classList.add('active'); a.scrollIntoView({block:'nearest'}); }
+      }
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  document.querySelectorAll('.sec').forEach((s) => obs.observe(s));
+</script>
+</body>
+</html>
