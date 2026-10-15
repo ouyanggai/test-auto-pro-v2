@@ -9,5 +9,6 @@ import '@vue-flow/controls/dist/style.css'
 import './styles.css'
 import './styles/layout.css'
 import './styles/skins.css'
+import './styles/layouts.css'
 
 createApp(App).use(createPinia()).use(router).mount('#app')
