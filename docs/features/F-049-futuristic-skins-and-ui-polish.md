@@ -222,3 +222,10 @@
 - 配置文件摘要、所有服务挂载和读写属性、MySQL 容器、配置表单 live 版本均与发布前一致。发布前没有执行中的任务，计划与运行数量发布前后均为 0。
 - 本机发布日志为 `.runtime/deploy/20261015-133341-6677e1cf.log`；独立核对结果为 `.runtime/deploy/post-f049-verification.json`。服务器日志为 `/opt/test-auto-pro-v2/logs/update-.test-auto-pro-v2-update-20261015-133341-6677e1cf.log`。这些运行文件不进入 Git。
 - 状态继续保持 `ready_for_manual`。用户刷新主界面后，在顶栏“外观”选择皮肤与深浅模式，按本文人工清单核对；本次发布没有代替用户确认视觉或业务验收。
+
+### 长列表弹窗修复已更新到 2.200
+
+- 使用同一一键脚本更新成功，线上源码版本为 `b49353f30a8213cebc6af6d2ab2d5a7fc15fc339`。六服务健康、HTTP、执行器协议、Chromium 启动和日志双向挂载再次通过。
+- 独立核对 1080 个发布源文件与本次源文件一致，首页 23 个 JS/CSS 与本地正式构建逐字节一致，实际返回的 CSS 已包含修正的卡片正文滚动规则。配置文件摘要、全部挂载与读写属性、MySQL 容器和配置表单 live 版本保持；发布前后的计划数量均为 1，运行数量均为 0。
+- 本机发布日志 `.runtime/deploy/20261015-134430-4cc37428.log`，独立核对结果 `.runtime/deploy/post-f049-dialog-verification.json`；服务器发布日志 `/opt/test-auto-pro-v2/logs/update-.test-auto-pro-v2-update-20261015-134430-4cc37428.log`，均不进入 Git。
+- 用户按 `Ctrl+F5` 后重新打开基础数据弹窗，滚动到列表末尾并翻页，再缩小窗口高度，核对内容始终在白底正文内、标题与取消/确认按钮仍能操作；选择与确认保持原行为。仍为 ready_for_manual，未代替用户作浏览器视觉验收。
