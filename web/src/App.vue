@@ -10,6 +10,7 @@ import { applyAppearance } from './appearance/applyAppearance'
 import AppearanceMenu from './components/AppearanceMenu.vue'
 import AmbientLayer from './components/AmbientLayer.vue'
 import { startPointerGlow } from './appearance/pointerGlow'
+import { switchAppearance } from './appearance/transition'
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -65,7 +66,7 @@ const sidebarCollapsed = ref(false)
                 size="small"
                 class="theme-toggle"
                 :aria-label="themeToggleLabel"
-                @click="appStore.toggleThemeMode"
+                @click="switchAppearance(appStore.toggleThemeMode)"
               >
                 {{ appStore.themeMode === 'dark' ? '浅色' : '深色' }}
               </n-button>

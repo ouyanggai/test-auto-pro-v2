@@ -1,0 +1,188 @@
+/* 现代 Web 能力层：OKLCH 混色、@property 光束、弹簧缓动 linear()、滚动驱动动画、View Transitions、胶片颗粒。
+   所有规则只作用于三套新皮肤，默认皮肤不受影响；装饰一律不接收点击、不改变布局与命中区。
+   不支持的浏览器会自然退回 skins.css / layouts.css 的静态表现。 */
+
+@property --ta-beam { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+
+:root {
+  /* 弹簧缓动：轻微过冲再回稳，比 cubic-bezier 更有物理感 */
+  --ta-spring: linear(0, 0.218 2.1%, 0.862 6.5%, 1.066 8.4%, 1.1 10.1%, 1.057 12.6%, 0.995 15.1%, 0.98 17.6%, 0.99 20%, 1.002 25%, 1);
+  --ta-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------- 换肤：圆形扩散，由 transition.ts 驱动 ---------- */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; }
+
+/* ---------- 胶片颗粒：消除渐变色带，给纯色面一点纸感 ---------- */
+[data-skin]:not([data-skin="default"]) .app-ambient::after {
+  content: ""; position: absolute; inset: 0; background-image: var(--ta-grain); background-size: 180px; opacity: .05;
+}
+[data-skin]:not([data-skin="default"])[data-mode="light"] .app-ambient::after { opacity: .035; }
+
+/* ---------- 交互手感：弹簧过渡 + 按下回弹 ---------- */
+[data-skin]:not([data-skin="default"]) :where(.n-button, .n-menu-item-content, .n-tabs-tab, .n-tag) {
+  transition-duration: 360ms; transition-timing-function: var(--ta-spring);
+}
+[data-skin]:not([data-skin="default"]) .n-button:not(.n-button--disabled):active { transform: scale(.96); transition-duration: 90ms; }
+[data-skin]:not([data-skin="default"]) { accent-color: var(--primary-color); }
+[data-skin]:not([data-skin="default"]) .app-main :is(h1, h2, h3) { text-wrap: balance; }
+[data-skin]:not([data-skin="default"]) .app-main :is(.n-statistic-value, .kpi__value, td, th) { font-feature-settings: "tnum", "zero"; }
+
+/* ---------- 滚动驱动：顶栏随内容滚动抬升，表格行进入视口时依次浮现 ---------- */
+@supports (animation-timeline: scroll()) {
+  [data-skin]:not([data-skin="default"]) .app-shell { timeline-scope: --ta-main; }
+  [data-skin]:not([data-skin="default"]) .app-main > .n-layout-scroll-container { scroll-timeline: --ta-main block; }
+  [data-skin]:not([data-skin="default"]) .app-header { animation: ta-header-lift linear both; animation-timeline: --ta-main; animation-range: 0 140px; }
+  [data-skin]:not([data-skin="default"]) .app-main tbody tr:nth-child(-n + 40) {
+    animation: ta-row-in linear both; animation-timeline: view(); animation-range: entry 0% entry 60%;
+  }
+}
+@keyframes ta-header-lift { to { box-shadow: var(--ta-shadow-2); } }
+@keyframes ta-row-in { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
+
+/* 卡片描边层：用 mask 挖出 1px 环，叠渐变或光束；不改卡片自身背景与盒模型 */
+[data-skin]:not([data-skin="default"]) .app-main .n-card { position: relative; }
+[data-skin]:not([data-skin="default"]) .app-main .n-card::before {
+  content: ""; position: absolute; inset: 0; z-index: 1; padding: 1px; border-radius: inherit; pointer-events: none;
+  -webkit-mask: linear-gradient(black 0 0) content-box, linear-gradient(black 0 0); -webkit-mask-composite: xor;
+          mask: linear-gradient(black 0 0) content-box exclude, linear-gradient(black 0 0);
+}
+
+/* =====================================================================
+   深空指挥舱：星云 + 星点 + 雷达扫描 + 卡片边框光束
+   ===================================================================== */
+[data-skin="deep-space"] .app-ambient::before {
+  background:
+    radial-gradient(900px 540px at 88% -10%, color-mix(in oklch, var(--primary-color) 24%, transparent), transparent 64%),
+    radial-gradient(760px 560px at -6% 108%, color-mix(in oklch, var(--ta-accent-2) 22%, transparent), transparent 62%),
+    radial-gradient(1400px 380px at 50% 125%, color-mix(in oklch, var(--primary-color) 12%, transparent), transparent 70%);
+}
+[data-skin="deep-space"][data-mode="light"] .app-ambient::before {
+  background:
+    radial-gradient(900px 540px at 88% -10%, color-mix(in oklch, var(--primary-color) 13%, transparent), transparent 64%),
+    radial-gradient(760px 560px at -6% 108%, color-mix(in oklch, var(--ta-accent-2) 10%, transparent), transparent 62%);
+}
+/* 星点：稀疏的亮点缓慢明灭，只在深色出现 */
+[data-skin="deep-space"] .app-ambient__b {
+  display: block; inset: 0;
+  background:
+    radial-gradient(1.5px 1.5px at 12% 22%, var(--text-color-1), transparent),
+    radial-gradient(1px 1px at 27% 68%, var(--text-color-1), transparent),
+    radial-gradient(2px 2px at 41% 14%, var(--primary-color), transparent),
+    radial-gradient(1px 1px at 58% 82%, var(--text-color-1), transparent),
+    radial-gradient(1.5px 1.5px at 73% 36%, var(--text-color-1), transparent),
+    radial-gradient(1px 1px at 86% 61%, var(--primary-color), transparent),
+    radial-gradient(1.5px 1.5px at 93% 9%, var(--text-color-1), transparent),
+    radial-gradient(1px 1px at 6% 88%, var(--text-color-1), transparent);
+  animation: ta-twinkle 6s ease-in-out infinite alternate;
+}
+[data-skin="deep-space"][data-mode="light"] .app-ambient__b { display: none; }
+@keyframes ta-twinkle { from { opacity: .25; } to { opacity: .9; } }
+/* 雷达：右上角一道渐隐的扫描扇面，圆环外缘淡出 */
+[data-skin="deep-space"] .app-ambient__c {
+  display: block; width: 880px; height: 880px; right: -300px; top: -300px; border-radius: 50%; will-change: transform;
+  background: conic-gradient(from 0deg, transparent 0deg, transparent 300deg, color-mix(in oklch, var(--primary-color) 30%, transparent) 358deg, color-mix(in oklch, var(--primary-color) 55%, transparent) 360deg);
+  -webkit-mask-image: radial-gradient(circle, black 18%, transparent 70%); mask-image: radial-gradient(circle, black 18%, transparent 70%);
+  animation: ta-radar 16s linear infinite;
+}
+[data-skin="deep-space"][data-mode="light"] .app-ambient__c { opacity: .45; }
+@keyframes ta-radar { to { transform: rotate(360deg); } }
+/* 面板：顶沿高光 + 悬停时一束光沿边框流转 */
+[data-skin="deep-space"] .app-main .n-card { box-shadow: inset 0 1px 0 color-mix(in oklch, var(--text-color-1) 7%, transparent); }
+[data-skin="deep-space"] .app-main .n-card::before {
+  background: conic-gradient(from var(--ta-beam), transparent 0 62%, color-mix(in oklch, var(--primary-color) 90%, transparent) 80%, var(--ta-accent-2) 88%, transparent 96%);
+  opacity: 0; transition: opacity 400ms ease;
+}
+[data-skin="deep-space"] .app-main .n-card:hover::before { opacity: 1; animation: ta-beam-spin 4.5s linear infinite; }
+@keyframes ta-beam-spin { to { --ta-beam: 360deg; } }
+[data-skin="deep-space"] .app-header { backdrop-filter: none; box-shadow: inset 0 -1px 0 color-mix(in oklch, var(--primary-color) 30%, transparent); }
+/* 当前导航项：左侧能量条 + 渐变底 */
+[data-skin="deep-space"] .app-sidebar .n-menu-item-content--selected {
+  background: linear-gradient(90deg in oklch, color-mix(in oklch, var(--primary-color) 22%, transparent), transparent 85%) !important;
+}
+[data-skin="deep-space"] .app-shell .app-main h1 {
+  background: linear-gradient(90deg in oklch, var(--text-color-1) 40%, var(--primary-color)); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+[data-skin="deep-space"] .app-shell .app-main h1::before { -webkit-text-fill-color: var(--primary-color); }
+
+/* =====================================================================
+   极光玻璃：多层网格渐变 + 缓慢色相漂移 + 渐变描边 + 渐变文字
+   ===================================================================== */
+[data-skin="aurora"] .app-ambient__a, [data-skin="aurora"] .app-ambient__b, [data-skin="aurora"] .app-ambient__c {
+  width: 860px; height: 860px; filter: blur(110px); opacity: .9;
+}
+[data-skin="aurora"][data-mode="light"] .app-ambient__a, [data-skin="aurora"][data-mode="light"] .app-ambient__b, [data-skin="aurora"][data-mode="light"] .app-ambient__c { opacity: .75; }
+[data-skin="aurora"] .app-ambient__a { background: radial-gradient(circle at 35% 35%, var(--ta-glow-a), transparent 68%); }
+[data-skin="aurora"] .app-ambient__b { background: radial-gradient(circle at 60% 40%, var(--ta-glow-b), transparent 66%); }
+[data-skin="aurora"] .app-ambient__c { background: radial-gradient(circle at 50% 50%, var(--ta-glow-c), transparent 66%); }
+/* 底部地平线微光，让页面有"天空"的纵深 */
+[data-skin="aurora"] .app-ambient::before {
+  content: ""; position: absolute; inset: auto 0 0 0; height: 38vh;
+  background: linear-gradient(to top in oklch, color-mix(in oklch, var(--primary-color) 14%, transparent), transparent);
+}
+[data-skin="aurora"] .app-main .n-card::before {
+  background: linear-gradient(135deg in oklch, color-mix(in oklch, var(--primary-color) 70%, transparent), transparent 38%, transparent 62%, color-mix(in oklch, var(--ta-accent-2) 60%, transparent));
+}
+[data-skin="aurora"] .app-main .n-card { box-shadow: var(--ta-shadow-1); }
+[data-skin="aurora"] .app-main .n-card:hover { box-shadow: var(--ta-shadow-2); }
+[data-skin="aurora"] .app-main, [data-skin="aurora"] .app-sidebar, [data-skin="aurora"] .app-header {
+  box-shadow: inset 0 1px 0 color-mix(in oklch, white 28%, transparent), var(--ta-shadow-1);
+}
+[data-skin="aurora"][data-mode="light"] .app-main, [data-skin="aurora"][data-mode="light"] .app-sidebar, [data-skin="aurora"][data-mode="light"] .app-header {
+  box-shadow: inset 0 1px 0 white, var(--ta-shadow-1);
+}
+[data-skin="aurora"] .app-shell .app-main h1 {
+  background: linear-gradient(100deg in oklch, var(--text-color-1) 30%, var(--primary-color) 75%, var(--ta-accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+[data-skin="aurora"] .app-sidebar .n-menu-item-content--selected {
+  background: linear-gradient(100deg in oklch, color-mix(in oklch, var(--primary-color) 26%, transparent), color-mix(in oklch, var(--ta-accent-2) 18%, transparent)) !important;
+}
+[data-skin="aurora"] .app-button--solid-primary:not(.n-button--disabled) {
+  background-image: linear-gradient(120deg in oklch, var(--primary-color), color-mix(in oklch, var(--primary-color) 55%, var(--ta-accent-2)));
+}
+
+/* =====================================================================
+   钛金精密：阳极氧化金属 —— 渐变高光边、拉丝顶栏、暖金微光
+   ===================================================================== */
+[data-skin="titanium"] .app-header, [data-skin="titanium"] .app-sidebar {
+  background-image:
+    linear-gradient(180deg in oklch, color-mix(in oklch, white 9%, transparent), transparent 55%, color-mix(in oklch, black 12%, transparent)),
+    repeating-linear-gradient(90deg, color-mix(in oklch, var(--text-color-1) 2.4%, transparent) 0 1px, transparent 1px 3px);
+  box-shadow: inset 0 1px 0 color-mix(in oklch, white 14%, transparent);
+}
+[data-skin="titanium"][data-mode="light"] .app-header, [data-skin="titanium"][data-mode="light"] .app-sidebar { box-shadow: inset 0 1px 0 white; }
+[data-skin="titanium"] .app-main .n-card::before {
+  background: linear-gradient(180deg in oklch, color-mix(in oklch, white 34%, transparent), transparent 34%, transparent 70%, color-mix(in oklch, black 22%, transparent));
+}
+[data-skin="titanium"][data-mode="light"] .app-main .n-card::before {
+  background: linear-gradient(180deg in oklch, white, transparent 40%, transparent 72%, color-mix(in oklch, var(--text-color-1) 16%, transparent));
+}
+[data-skin="titanium"] .app-main .n-card { box-shadow: inset 0 0 0 1px color-mix(in oklch, black 25%, transparent), var(--ta-shadow-1); }
+[data-skin="titanium"][data-mode="light"] .app-main .n-card { box-shadow: var(--ta-shadow-1); }
+/* 当前页签：暖金下划线从中心弹簧展开 + 一抹金色柔光 */
+[data-skin="titanium"] .app-sidebar .n-menu-item-content--selected {
+  background: linear-gradient(to top in oklch, color-mix(in oklch, var(--ta-accent-2) 18%, transparent), transparent 70%) !important;
+}
+[data-skin="titanium"] .app-sidebar .n-menu-item-content--selected { box-shadow: none; }
+[data-skin="titanium"] .app-sidebar .n-menu-item-content::after {
+  content: ""; position: absolute; left: 14px; right: 14px; bottom: 0; height: 2px; background: var(--ta-accent-2);
+  transform: scaleX(0); transition: transform 520ms var(--ta-spring);
+}
+[data-skin="titanium"] .app-sidebar .n-menu-item-content--selected::after { display: block; transform: scaleX(1); }
+[data-skin="titanium"] .app-sidebar .n-menu-item-content:hover::after { transform: scaleX(.5); }
+[data-skin="titanium"] .app-sidebar .n-menu-item-content--selected:hover::after { transform: scaleX(1); }
+/* 掠光更窄更亮，像金属倒角上滑过的高光 */
+[data-skin="titanium"] .app-ambient__a { background: linear-gradient(100deg, transparent 44%, var(--ta-glow-a) 50%, transparent 56%); }
+[data-skin="titanium"] .app-ambient__b { background: linear-gradient(100deg, transparent 47%, var(--ta-glow-b) 50%, transparent 53%); }
+[data-skin="titanium"] .app-ambient::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    radial-gradient(1100px 600px at 100% 0%, color-mix(in oklch, var(--primary-color) 10%, transparent), transparent 65%),
+    radial-gradient(800px 500px at 0% 100%, color-mix(in oklch, var(--ta-accent-2) 7%, transparent), transparent 65%);
+}
+[data-skin="titanium"] .app-shell .app-main h1 { letter-spacing: -.01em; }
+[data-skin="titanium"] .app-shell .app-main h1::after {
+  content: ""; display: block; width: 36px; height: 2px; margin-top: 12px; margin-bottom: -13px; background: var(--ta-accent-2);
+}

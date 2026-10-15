@@ -3,8 +3,9 @@ import { computed } from 'vue'
 import { NButton, NIcon, NPopover, NRadioButton, NRadioGroup } from 'naive-ui'
 import { CheckmarkOutline, ColorPaletteOutline } from '@vicons/ionicons5'
 import { skinCatalog, skinTokens } from '../appearance/skins'
-import type { SkinId } from '../appearance/skins'
+import type { SkinId, ThemeMode } from '../appearance/skins'
 import { useAppStore } from '../stores/app'
+import { switchAppearance } from '../appearance/transition'
 
 const store = useAppStore()
 const previews = computed(() => Object.fromEntries(skinCatalog.map(({ id }) => {
@@ -22,7 +23,7 @@ function handleKey(event: KeyboardEvent, id: SkinId) {
   if (!offset) return
   event.preventDefault()
   const next = skinCatalog[(skinCatalog.findIndex(skin => skin.id === id) + offset + skinCatalog.length) % skinCatalog.length]!
-  store.setSkinId(next.id)
+  void switchAppearance(() => store.setSkinId(next.id))
   const group = (event.currentTarget as HTMLElement).parentElement
   group?.querySelector<HTMLButtonElement>('[data-skin-choice="' + next.id + '"]')?.focus()
 }
@@ -42,7 +43,7 @@ function handleKey(event: KeyboardEvent, id: SkinId) {
         <button v-for="skin in skinCatalog" :key="skin.id" type="button" role="radio"
           class="appearance-menu__choice" :class="{ 'is-selected': store.skinId === skin.id }"
           :aria-checked="store.skinId === skin.id" :tabindex="store.skinId === skin.id ? 0 : -1"
-          :data-skin-choice="skin.id" @click="store.setSkinId(skin.id)" @keydown="handleKey($event, skin.id)">
+          :data-skin-choice="skin.id" @click="void switchAppearance(() => store.setSkinId(skin.id))" @keydown="handleKey($event, skin.id)">
           <span class="appearance-preview" :style="previews[skin.id]">
             <i class="appearance-preview__header"></i><i class="appearance-preview__sidebar"></i>
             <i class="appearance-preview__card"></i><i class="appearance-preview__card appearance-preview__card--second"></i>
@@ -54,7 +55,7 @@ function handleKey(event: KeyboardEvent, id: SkinId) {
         </button>
       </div>
       <div class="appearance-menu__label appearance-menu__label--mode">明暗</div>
-      <n-radio-group :value="store.themeMode" size="small" aria-label="明暗模式" @update:value="store.setThemeMode">
+      <n-radio-group :value="store.themeMode" size="small" aria-label="明暗模式" @update:value="(mode: ThemeMode) => switchAppearance(() => store.setThemeMode(mode))">
         <n-radio-button value="light">浅色</n-radio-button><n-radio-button value="dark">深色</n-radio-button>
       </n-radio-group>
     </div>

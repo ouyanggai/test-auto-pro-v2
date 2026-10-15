@@ -131,7 +131,7 @@ test('八种首屏底色与实际令牌一致，切换入口保持快捷键与�
   assert.equal(rules.length, 8)
   for (const [, id, mode, color] of rules) assert.deepEqual(parseColor(color), parseColor(skinTokens[id ?? 'default'][mode].bg))
   const app = read('web/src/App.vue'), menu = read('web/src/components/AppearanceMenu.vue')
-  assert.match(app, /@click="appStore.toggleThemeMode"/)
+  assert.match(app, /switchAppearance(appStore.toggleThemeMode)/)
   assert.match(menu, /role="radiogroup"/)
   assert.match(menu, /role="radio"/)
   assert.match(menu, /aria-checked/)
